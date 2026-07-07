@@ -27417,22 +27417,22 @@ body > .mermaid-diagram--fullscreen {
   margin-bottom: 12px;
 }
 
-.sidebar--workbench .project-tree__section-title {
-  min-height: 28px;
-  padding: 6px 0 2px 8px;
-  color: var(--fg-faint);
-  font-size: 14px;
-  font-weight: 620;
-  line-height: 1.35;
+.sidebar--workbench .project-tree__section--pinned .project-tree__folder {
+  padding-left: 8px;
 }
 
-:root[data-theme-style] .sidebar--workbench .project-tree__section-title {
-  min-height: 28px;
-  padding: 6px 0 2px 8px;
-  font-size: 14px;
-  font-weight: 620;
-  letter-spacing: 0;
-  text-transform: none;
+.sidebar--workbench .project-tree__section--pinned .project-tree__folder-main > svg {
+  width: 14px;
+  height: 14px;
+  color: var(--fg-faint);
+}
+
+:root[data-theme-style] .sidebar--workbench .project-tree__section--pinned .project-tree__folder-main > svg {
+  display: inline-flex;
+  width: 14px;
+  height: 14px;
+  color: var(--fg-faint);
+  stroke-width: 1.9;
 }
 
 .sidebar--workbench .project-tree__folder {
