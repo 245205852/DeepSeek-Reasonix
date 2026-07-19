@@ -1953,7 +1953,7 @@ func ContinueSessionPath(prevPath, dir, model string) string {
 // the model so the filename hints at what the conversation was with. dir is
 // typically config.SessionDir().
 func NewSessionPath(dir, model string) string {
-	safe := strings.NewReplacer("/", "-", "\\", "-").Replace(model)
+	safe := strings.NewReplacer("/", "-", "\\", "-", ":", "-", "<", "-", ">", "-", "\"", "-", "|", "-", "?", "-", "*", "-").Replace(model)
 	if safe == "" {
 		safe = "session"
 	}
