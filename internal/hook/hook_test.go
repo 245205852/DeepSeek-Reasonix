@@ -14,6 +14,7 @@ import (
 
 	fileencoding "reasonix/internal/fileutil/encoding"
 	"reasonix/internal/pluginpkg"
+	"reasonix/internal/sandbox"
 )
 
 func writeSettings(t *testing.T, dir, json string) {
@@ -341,6 +342,52 @@ func TestRepairablePowerShellFileArgs(t *testing.T) {
 	}
 }
 
+// installSuperpowersV611HookFixture reproduces the package shape reported in
+// #6602: a Codex-kind installation of superpowers 6.1.1 whose Claude
+// compatibility manifest launches a quoted, mixed-separator run-hook.cmd.
+// Keep the hooks document byte-for-byte equivalent to the upstream v6.1.1
+// declaration so changes in parsing, root expansion, or execution mode cannot
+// silently fall back to a synthetic contract that the affected plugin did not
+// use.
+func installSuperpowersV611HookFixture(t *testing.T, home string) string {
+	t.Helper()
+	reasonixHome := filepath.Join(home, ".reasonix")
+	root := filepath.Join(reasonixHome, "plugins", "superpowers fixture")
+	writeHookTestFile(t, filepath.Join(root, pluginpkg.CodexManifest), `{
+  "name": "superpowers",
+  "description": "Core skills library for Claude Code",
+  "version": "6.1.1"
+}`)
+	writeHookTestFile(t, filepath.Join(root, "hooks", "hooks.json"), `{
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "startup|clear|compact",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/run-hook.cmd\" session-start",
+            "async": false
+          }
+        ]
+      }
+    ]
+  }
+}`)
+	writeHookTestFile(t, filepath.Join(root, "hooks", "run-hook.cmd"),
+		"@echo off\r\nset /p hook_input=\r\necho %1:%hook_input%\r\n")
+	if err := pluginpkg.Upsert(reasonixHome, pluginpkg.InstalledPlugin{
+		Name:         "superpowers",
+		Root:         "plugins/superpowers fixture",
+		Version:      "6.1.1",
+		ManifestKind: "codex",
+		Enabled:      true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	return root
+}
+
 func TestLoadPermissionRequestHook(t *testing.T) {
 	home := t.TempDir()
 	writeSettings(t, home, `{"hooks":{"PermissionRequest":[{"match":"bash","command":"notify"}]}}`)
@@ -351,6 +398,31 @@ func TestLoadPermissionRequestHook(t *testing.T) {
 	}
 	if got[0].Event != PermissionRequest || got[0].Match != "bash" || got[0].Command != "notify" {
 		t.Fatalf("loaded hook = %+v, want PermissionRequest/bash/notify", got[0])
+	}
+}
+
+func TestLoadSuperpowersV611SessionStartExecutionContract(t *testing.T) {
+	home := t.TempDir()
+	root := installSuperpowersV611HookFixture(t, home)
+
+	got := Load(LoadOptions{HomeDir: home, ProjectRoot: filepath.Join(home, "workspace")})
+	if len(got) != 1 {
+		t.Fatalf("hooks = %+v, want the upstream superpowers SessionStart hook", got)
+	}
+	h := got[0]
+	if h.Scope != ScopePlugin || h.Event != SessionStart || h.Match != "startup|clear|compact" {
+		t.Fatalf("loaded hook identity = %+v", h)
+	}
+	if h.ExecutionMode != ExecutionShell || h.Shell != "" || h.Argv != nil {
+		t.Fatalf("execution contract = mode %q shell %q argv %#v, want automatic shell form",
+			h.ExecutionMode, h.Shell, h.Argv)
+	}
+	wantCommand := `"` + root + `/hooks/run-hook.cmd" session-start`
+	if h.Command != wantCommand {
+		t.Fatalf("command = %q, want exact expanded upstream command %q", h.Command, wantCommand)
+	}
+	if h.Cwd != root || h.PayloadFormat != "claude" || h.Env["CLAUDE_PLUGIN_ROOT"] != root {
+		t.Fatalf("Claude execution metadata = %+v", h)
 	}
 }
 
@@ -454,6 +526,44 @@ func TestLoadIncludesPluginClaudeCompatibilityHooks(t *testing.T) {
 	}
 	if h := byEvent[PostToolUse]; h.PayloadFormat != "claude" || h.Env["CLAUDE_PLUGIN_ROOT"] != root {
 		t.Fatalf("Claude compatibility metadata = %+v", h)
+	}
+}
+
+func TestLoadPluginHooksPreservesExecutionContract(t *testing.T) {
+	home := t.TempDir()
+	reasonixHome := filepath.Join(home, ".reasonix")
+	root := filepath.Join(reasonixHome, "plugins", "hook-contract")
+	writeHookTestFile(t, filepath.Join(root, pluginpkg.NativeManifest), `{
+  "name": "hook-contract",
+  "hooks": {
+    "SessionStart": [
+      {"command":"bin/check","args":[],"shellCommand":true},
+      {"command":"printf 'one' && printf 'two'","shell":"bash"}
+    ]
+  }
+}`)
+	if err := pluginpkg.Upsert(reasonixHome, pluginpkg.InstalledPlugin{
+		Name:         "hook-contract",
+		Root:         "plugins/hook-contract",
+		ManifestKind: "native",
+		Enabled:      true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	got := Load(LoadOptions{HomeDir: home})
+	if len(got) != 2 {
+		t.Fatalf("hooks = %+v, want two plugin hooks", got)
+	}
+	if got[0].ExecutionMode != ExecutionExec || got[0].Argv == nil || len(got[0].Argv) != 0 {
+		t.Fatalf("empty args hook = %+v, want explicit exec form", got[0])
+	}
+	if want := filepath.Join(root, "bin", "check"); got[0].Command != want {
+		t.Fatalf("exec command = %q, want plugin-relative %q", got[0].Command, want)
+	}
+	if got[1].ExecutionMode != ExecutionShell || got[1].Shell != "bash" ||
+		got[1].Command != "printf 'one' && printf 'two'" {
+		t.Fatalf("shell hook = %+v, want raw Bash shell form", got[1])
 	}
 }
 
@@ -654,6 +764,14 @@ func TestWindowsBatchCommandLineLeavesOtherShellContractsAlone(t *testing.T) {
 		if got, ok := windowsBatchCommandLine(command); ok {
 			t.Errorf("windowsBatchCommandLine(%q) unexpectedly matched as %q", command, got)
 		}
+	}
+}
+
+func TestWindowsCmdCommandLinePreservesCompoundShellScript(t *testing.T) {
+	command := `"C:\plugins\hook.cmd" "argument with spaces" && echo "chained" | findstr chained`
+	want := `cmd.exe /d /s /c ""C:\plugins\hook.cmd" "argument with spaces" && echo "chained" | findstr chained"`
+	if got := windowsCmdCommandLine(command); got != want {
+		t.Fatalf("cmd command line = %q, want %q", got, want)
 	}
 }
 
@@ -1293,8 +1411,13 @@ func TestRunFiltersByEventAndTool(t *testing.T) {
 
 func TestRunClaudePayloadAndDirectArgs(t *testing.T) {
 	hooks := []ResolvedHook{{
-		HookConfig: HookConfig{Command: "/tmp/agent-critter", Argv: []string{"--hook"}, PayloadFormat: "claude"},
-		Event:      PostToolUseFailure,
+		HookConfig: HookConfig{
+			Command:       "/tmp/agent-critter",
+			Argv:          []string{"--hook"},
+			ExecutionMode: ExecutionExec,
+			PayloadFormat: "claude",
+		},
+		Event: PostToolUseFailure,
 	}}
 	var input SpawnInput
 	Run(context.Background(), Payload{
@@ -1302,7 +1425,7 @@ func TestRunClaudePayloadAndDirectArgs(t *testing.T) {
 		ToolName: "bash", ToolArgs: json.RawMessage(`{"command":"false"}`),
 		ToolResult: "remote: denied", Error: "exit 1",
 	}, hooks, func(_ context.Context, in SpawnInput) SpawnResult { input = in; return SpawnResult{ExitCode: 0} })
-	if input.Command != "/tmp/agent-critter" || len(input.Args) != 1 || input.Args[0] != "--hook" {
+	if input.Command != "/tmp/agent-critter" || input.Mode != ExecutionExec || len(input.Args) != 1 || input.Args[0] != "--hook" {
 		t.Fatalf("direct hook input = %+v", input)
 	}
 	var payload map[string]any
@@ -1502,6 +1625,40 @@ func TestDefaultSpawner(t *testing.T) {
 	r = DefaultSpawner(ctx, SpawnInput{Command: "sleep 5", Timeout: 100 * time.Millisecond})
 	if !r.TimedOut {
 		t.Errorf("expected timeout, got %+v", r)
+	}
+}
+
+func TestDefaultSpawnerExplicitShellPreservesCompoundScript(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows shell selection is covered by windows_batch_test.go")
+	}
+	r := DefaultSpawner(context.Background(), SpawnInput{
+		Command: `printf '%s' "$HOOK_TEST_MARKER" && printf '%s' '|done'`,
+		Mode:    ExecutionShell,
+		Shell:   "bash",
+		Env:     map[string]string{"HOOK_TEST_MARKER": "shell"},
+		Timeout: realSpawnTimeout,
+	})
+	if r.ExitCode != 0 || r.Stdout != "shell|done" {
+		t.Fatalf("explicit shell-form hook failed: %+v", r)
+	}
+}
+
+func TestPowerShellCommandEncodesScriptWithoutQuoteReparsing(t *testing.T) {
+	command := `Write-Output "a && 'b'"; $value = "C:\Program Files\hook"`
+	cmd := powerShellCommand(context.Background(), "powershell", command)
+	if got, want := cmd.Args[:4], []string{"powershell", "-NoProfile", "-NonInteractive", "-EncodedCommand"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("PowerShell argv prefix = %#v, want %#v", got, want)
+	}
+	decoded, err := decodePowerShellCommandForTest(cmd.Args[4])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := decoded, sandbox.PowerShellUTF8Script(command); got != want {
+		t.Fatalf("decoded command = %q, want %q", got, want)
+	}
+	if strings.Contains(cmd.Args[4], command) {
+		t.Fatalf("raw script leaked into Windows command-line quoting: %#v", cmd.Args)
 	}
 }
 
