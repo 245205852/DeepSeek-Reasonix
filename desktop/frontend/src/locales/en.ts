@@ -199,6 +199,7 @@ export const en = {
   "workspace.searchMatchCase": "Match case",
   "workspace.searchWholeWord": "Match whole word",
   "workspace.searchClose": "Close search",
+  "workspace.searchNoResults": "No results",
   "workspace.codeLine": "Line {line}",
   "workspace.addSelectionToChat": "Add to Chat",
   "workspace.addFileReferenceToChat": "Add file reference",

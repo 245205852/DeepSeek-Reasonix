@@ -123,6 +123,7 @@ export const zhTW: Record<DictKey, string> = {
   "workspace.searchMatchCase": "區分大小寫",
   "workspace.searchWholeWord": "全字拼寫須相符",
   "workspace.searchClose": "關閉尋找",
+  "workspace.searchNoResults": "無結果",
   "workspace.codeLine": "第 {line} 行",
   "workspace.addSelectionToChat": "新增到聊天",
   "workspace.addFileReferenceToChat": "新增檔案引用",

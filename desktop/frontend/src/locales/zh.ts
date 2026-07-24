@@ -200,6 +200,7 @@ export const zh: Record<DictKey, string> = {
   "workspace.searchMatchCase": "区分大小写",
   "workspace.searchWholeWord": "全词匹配",
   "workspace.searchClose": "关闭查找",
+  "workspace.searchNoResults": "无结果",
   "workspace.codeLine": "第 {line} 行",
   "workspace.addSelectionToChat": "添加到聊天",
   "workspace.addFileReferenceToChat": "添加文件引用",

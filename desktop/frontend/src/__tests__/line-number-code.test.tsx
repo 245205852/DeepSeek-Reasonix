@@ -62,6 +62,10 @@ ok(
   findCodeMatches("猫 猫咪 猫", "猫", false, true).matches.length === 2,
   "whole-word matching respects Unicode word characters",
 );
+ok(
+  findCodeMatches("a+b aab a+b", "a+b").matches.length === 2,
+  "treats regex metacharacters as literal search text",
+);
 
 const cappedMatches = findCodeMatches("x".repeat(MAX_SEARCH_MATCHES + 1), "x");
 ok(cappedMatches.matches.length === MAX_SEARCH_MATCHES, "caps pathological result sets");

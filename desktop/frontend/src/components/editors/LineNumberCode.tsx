@@ -358,7 +358,7 @@ export default function LineNumberCode({
 
   return (
     <div
-      className={`code-block__wrap${searchOpen ? " code-block__wrap--search-open" : ""}`}
+      className="code-block__wrap"
       onKeyDownCapture={(event) => {
         if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "f") {
           event.preventDefault();
@@ -378,6 +378,12 @@ export default function LineNumberCode({
     >
       {searchOpen && (
         <div className="code-search">
+          <span className="code-search__icon" aria-hidden="true">
+            <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round">
+              <circle cx="6.5" cy="6.5" r="5" />
+              <path d="M10.5 10.5L14 14" />
+            </svg>
+          </span>
           <input
             ref={inputRef}
             type="text"
@@ -397,34 +403,13 @@ export default function LineNumberCode({
             <span className="code-search__count">
               {searchPending
                 ? t("common.loading")
-                : t("workspace.searchCount", {
-                  current: totalMatches > 0 ? activeMatchIndex + 1 : 0,
-                  total: totalMatchLabel,
-                })}
+                : totalMatches > 0
+                  ? t("workspace.searchCount", {
+                    current: activeMatchIndex + 1,
+                    total: totalMatchLabel,
+                  })
+                  : t("workspace.searchNoResults")}
             </span>
-          )}
-
-          {query && !searchPending && totalMatches > 0 && (
-            <>
-              <button
-                className="code-search__nav"
-                onClick={() => jumpToMatch(-1)}
-                aria-label={t("workspace.searchPrevious")}
-                title={t("workspace.searchPrevious")}
-                type="button"
-              >
-                <svg width="12" height="12" viewBox="0 0 12 12"><path d="M6 2L2 6l4 4" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/></svg>
-              </button>
-              <button
-                className="code-search__nav"
-                onClick={() => jumpToMatch(1)}
-                aria-label={t("workspace.searchNext")}
-                title={t("workspace.searchNext")}
-                type="button"
-              >
-                <svg width="12" height="12" viewBox="0 0 12 12"><path d="M2 2l4 4-4 4" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/></svg>
-              </button>
-            </>
           )}
 
           <button
@@ -453,6 +438,30 @@ export default function LineNumberCode({
           >
             ab
           </button>
+
+          {query && !searchPending && totalMatches > 0 && (
+            <>
+              <button
+                className="code-search__nav"
+                onClick={() => jumpToMatch(-1)}
+                aria-label={t("workspace.searchPrevious")}
+                title={t("workspace.searchPrevious")}
+                type="button"
+              >
+                <svg width="12" height="12" viewBox="0 0 12 12"><path d="M6 2L2 6l4 4" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/></svg>
+              </button>
+              <button
+                className="code-search__nav"
+                onClick={() => jumpToMatch(1)}
+                aria-label={t("workspace.searchNext")}
+                title={t("workspace.searchNext")}
+                type="button"
+              >
+                <svg width="12" height="12" viewBox="0 0 12 12"><path d="M2 2l4 4-4 4" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/></svg>
+              </button>
+            </>
+          )}
+
           <button
             className="code-search__close"
             onClick={closeSearch}

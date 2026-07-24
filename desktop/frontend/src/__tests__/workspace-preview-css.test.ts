@@ -87,8 +87,7 @@ eq(finalDeclaration(".workspace-preview__body--code .code-block__wrap", "min-hei
 eq(finalDeclaration(".workspace-preview__body--code .code", "overflow"), "auto", "code viewport owns horizontal and vertical scrolling");
 eq(finalDeclaration(".workspace-preview__body--code .code", "min-height"), "0", "code viewport can shrink inside the preview pane");
 eq(finalDeclaration(".workspace-preview__body--code .code", "margin"), "0", "code viewport scrollbar sits at the visible pane bottom");
-eq(finalDeclaration(".code-search__input", "min-width"), "0", "search input can shrink in the minimum preview width");
-eq(finalDeclaration(".code-block__wrap--search-open .code-block__copy", "top"), "42px", "open search moves copy below its toolbar");
+eq(finalDeclaration(".code-search__input", "min-width"), "60px", "search input reserves a minimum readable width");
 eq(
   computedDeclaration(
     `<html data-theme-style="default"><head></head><body><div class="workspace-preview__body workspace-preview__body--code"><div class="code code--lines"></div></div></body></html>`,
