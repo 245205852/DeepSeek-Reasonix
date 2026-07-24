@@ -147,8 +147,8 @@ type DesktopConfig struct {
 	StatusBarItems          []string `toml:"status_bar_items"`           // ordered visible desktop status bar items
 	DefaultToolApprovalMode string   `toml:"default_tool_approval_mode"` // ask|auto|yolo; defaults to auto for newly-created desktop sessions
 	CheckUpdates            *bool    `toml:"check_updates"`              // startup update checks; nil keeps the default enabled
-	Telemetry               *bool    `toml:"telemetry"`                  // anonymous launch ping (install id + version + OS); nil keeps the default enabled
-	Metrics                 *bool    `toml:"metrics"`                    // aggregate desktop metrics (anonymous signal/bucket counts; no content); nil keeps the default enabled
+	Telemetry               *bool    `toml:"telemetry"`                  // anonymous launch ping plus scrubbed next-launch native crash diagnostics; nil keeps the default enabled
+	Metrics                 *bool    `toml:"metrics"`                    // aggregate desktop metrics (anonymous signal/bucket counts, including lifecycle health; no content); nil keeps the default enabled
 	ProviderAccess          []string `toml:"provider_access"`            // desktop-only list of provider entries shown in Settings > Model > Access
 	ExpandThinking          bool     `toml:"expand_thinking"`            // true = show reasoning text expanded by default; false = collapsed
 	ConversationWidth       string   `toml:"conversation_width"`         // standard|full; max transcript width; empty = standard

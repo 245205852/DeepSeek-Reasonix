@@ -99,6 +99,8 @@ func main() {
 	if handled, exitCode := RunRemoteAskPassHelper(context.Background(), os.Args[1:], os.Getenv, os.Stdout); handled {
 		os.Exit(exitCode)
 	}
+	capturePreviousFatalCrash()
+	installFatalCrashOutput()
 
 	launch := parseDesktopLaunchArgs(os.Args[1:])
 	if config.SafeModeRequested() {
@@ -106,6 +108,7 @@ func main() {
 	}
 
 	tracker := repair.NewStartupTracker("")
+	previousRun := tracker.ObservePreviousRun()
 	var continueLaunch bool
 	launch.SafeMode, continueLaunch = preparePackagedStartupRecovery(tracker, tracker.SafeModeRecommended(), launch.SafeMode)
 	if !continueLaunch {
@@ -120,6 +123,14 @@ func main() {
 	// counts as a crash toward the Safe Mode threshold.
 	startupState, _ := tracker.Begin(version, launch.SafeMode)
 	trackerOwned := startupState.PID == os.Getpid()
+	installProfile := telemetryInstallProfile()
+	updateFrom, updateTo := "", ""
+	if tx, err := repair.ReadPendingUpdate(); err == nil {
+		updateFrom, updateTo = tx.FromVersion, tx.ToVersion
+	}
+	if trackerOwned {
+		_ = tracker.MarkLaunchContext(installProfile, updateFrom, updateTo)
+	}
 	// Keep WebKit acceleration enabled during normal Linux launches. If the
 	// startup tracker selects Safe Mode after a crash loop (or the user requests
 	// it explicitly), NVIDIA systems use the broader renderer fallback before
@@ -127,6 +138,7 @@ func main() {
 	configureWebKitRendererRecovery(launch.SafeMode)
 
 	app := NewApp()
+	app.previousRun = previousRun
 	if trackerOwned {
 		app.startupTracker = tracker
 	}
@@ -162,6 +174,7 @@ func main() {
 		Width:     width,
 		Height:    height,
 		Frameless: goruntime.GOOS == "windows",
+		Logger:    newCrashCaptureLogger(app),
 		MinWidth:  760,
 		MinHeight: 480,
 		// Match the dark UI shell so the initial webview background doesn't flash
