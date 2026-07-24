@@ -1118,6 +1118,16 @@ func (a *Agent) reserveParentWrite(runTool tool.Tool, args json.RawMessage, read
 // a round count. A positive maxSteps imposes an optional hard guard, surfaced as
 // a resumable notice when hit.
 func (a *Agent) Run(ctx context.Context, input string) (runErr error) {
+	runMaxSteps := a.maxSteps
+	runMaxStepsKey := a.maxStepsKey
+	runLimitHostOwned := false
+	if limit, ok := runStepLimitFromContext(ctx); ok {
+		runMaxSteps = limit.steps
+		runLimitHostOwned = true
+		if limit.key != "" {
+			runMaxStepsKey = limit.key
+		}
+	}
 	a.recoveryRunSeq.Add(1)
 	if a.deliveryProfile && a.workspaceLease != nil {
 		a.workspaceLease.BeginRun()
@@ -1253,7 +1263,7 @@ func (a *Agent) Run(ctx context.Context, input string) (runErr error) {
 		}
 	}
 	executorHandoff := a.executorHandoffGuard && strings.Contains(input, executorHandoffMarker)
-	for step := 0; a.maxSteps <= 0 || step < a.maxSteps || graceRound || recoveryGraceRound; step++ {
+	for step := 0; runMaxSteps <= 0 || step < runMaxSteps || graceRound || recoveryGraceRound; step++ {
 		// Consume a queued steer and persist it to the session so it
 		// survives tab switches and history replay. The model sees it as
 		// guidance (with a prefix), not a new task. One cache miss per
@@ -1333,7 +1343,7 @@ func (a *Agent) Run(ctx context.Context, input string) (runErr error) {
 			readiness := a.finalReadinessCheckFor(finalizeTask)
 			if graceRound && (readiness.reason != "" || !hasVisibleFinalAnswer(text)) {
 				a.maybeCompact(ctx, usage)
-				return &maxStepsPause{steps: a.maxSteps, key: a.maxStepsKey}
+				return &maxStepsPause{steps: runMaxSteps, key: runMaxStepsKey}
 			}
 			if readiness.reason != "" {
 				// Extend the base retry budget only when the missing-requirement
@@ -1405,7 +1415,7 @@ func (a *Agent) Run(ctx context.Context, input string) (runErr error) {
 		// Grace round guard: if we already gave the model one extra response
 		// and it still wants to call tools, stop here.
 		if graceRound {
-			return &maxStepsPause{steps: a.maxSteps, key: a.maxStepsKey}
+			return &maxStepsPause{steps: runMaxSteps, key: runMaxStepsKey}
 		}
 		// Recovery Episode exhausted: one finalization round only. Further tool
 		// calls are not executed; return a typed pause so the host can surface
@@ -1511,17 +1521,21 @@ func (a *Agent) Run(ctx context.Context, input string) (runErr error) {
 
 		// When the tool-call budget runs out this round, give the model
 		// one grace round to produce a final answer from completed work.
-		if a.maxSteps > 0 && step+1 >= a.maxSteps {
+		if runMaxSteps > 0 && step+1 >= runMaxSteps {
 			graceRound = true
-			nudge := fmt.Sprintf("Do not call any more tools — your tool-call round limit (%s) has been reached. Instead, synthesize a final answer from all the work already completed: summarize what was accomplished, what remains to be done, and any decisions the user should make. The user can increase %s or continue in the next turn if more work is needed.", a.maxStepsKey, a.maxStepsKey)
+			nextStep := fmt.Sprintf("The user can increase %s or continue in the next turn if more work is needed.", runMaxStepsKey)
+			if runLimitHostOwned {
+				nextStep = "Use the evidence already collected, label remaining uncertainty, and keep the final answer actionable."
+			}
+			nudge := fmt.Sprintf("Do not call any more tools — your tool-call round limit (%s) has been reached. Instead, synthesize a final answer from all the work already completed: summarize what was accomplished, what remains to be done, and any decisions the user should make. %s", runMaxStepsKey, nextStep)
 			a.session.Add(provider.Message{Role: provider.RoleUser, Content: a.withTurnPreferences(nudge)})
-			a.sink.Emit(event.Event{Kind: event.Notice, Level: event.LevelInfo, Code: event.NoticeCodeToolBudget, Text: toolBudgetNoticeText(), Detail: fmt.Sprintf("budget (%s=%d) exhausted: one grace round to finalize", a.maxStepsKey, a.maxSteps)})
+			a.sink.Emit(event.Event{Kind: event.Notice, Level: event.LevelInfo, Code: event.NoticeCodeToolBudget, Text: toolBudgetNoticeText(), Detail: fmt.Sprintf("budget (%s=%d) exhausted: one grace round to finalize", runMaxStepsKey, runMaxSteps)})
 		}
 	}
 	// Only reached when a positive maxSteps guard is configured. The work so far
 	// is already in the session, so the user can just send another message to pick
 	// up where it left off.
-	return &maxStepsPause{steps: a.maxSteps, key: a.maxStepsKey}
+	return &maxStepsPause{steps: runMaxSteps, key: runMaxStepsKey}
 }
 
 // warnMissingToolCallReasoning surfaces a thinking-mode tool_calls turn that
@@ -1551,9 +1565,9 @@ func (a *Agent) warnMissingToolCallReasoning(calls []provider.ToolCall, reasonin
 
 // maxStepsPause is the deliberate stop when a positive tool-call budget runs
 // out: the session already holds the completed work and the user is asked to
-// continue. It is a control-flow signal, not a provider failure — Coordinator
-// matches on it to surface the pause instead of degrading the turn to
-// executor-only.
+// continue. It is a control-flow signal, not a provider failure. Coordinator
+// treats planner research budgets specially: ordinary plan-and-execute work
+// falls back to the executor, while explicit execution boundaries fail closed.
 type maxStepsPause struct {
 	steps int
 	key   string

@@ -203,11 +203,37 @@ prefix cache-stable:
 
 - The **planner** (low-frequency) runs in its own session with the same standing
   memory context plus a filtered read-only research tool set, then produces a
-  concise plan. It can inspect files/docs before planning, but writer and
-  workflow tools are not exposed to it. It has no user-configured total-round
-  cap; caller cancellation and context safeguards remain available.
+  concise plan. A deterministic host policy chooses executor-only, light
+  planning, full planning, plan-for-approval, or explicit plan-only from
+  pristine user text plus trusted turn metadata. It does not call a classifier
+  model and does not infer host state from controller-authored prompt blocks.
+  Explicit Plan Mode, synthetic turns, short contextual replies, atomic edits,
+  and bounded read-only actions avoid a second planner; cross-surface,
+  structured, ambiguous, and high-risk work uses the full contract. Active Goal
+  and Delivery turns upgrade non-atomic mutation work, while bounded read-only
+  actions remain executor-only. The privacy-safe
+  route/depth/reason decision is emitted in phase detail.
+- Light plans use a small per-turn research-round budget and return a compact
+  objective, 1-4 ordered steps, likely touchpoints, and primary verification.
+  Full plans use a larger bounded budget and distinguish verified from candidate
+  touchpoints, with risks, acceptance criteria, command-level verification, and
+  rollback when relevant. The depth contract stays in one stable system prompt;
+  only a small host-authored `<planner-turn>` block changes per user turn. If
+  the planner still does not finalize after the bounded research and grace
+  round, plan-and-execute falls back to the executor with the pristine task;
+  plan-only and plan-for-approval remain fail-closed. The incomplete planner
+  turn is rolled back rather than exposed as a broken manual continuation.
+- A bare plan-first route hands the completed plan directly to the executor.
+  Plan-for-approval is reserved for an explicit request to wait for
+  confirmation; the host enforces that boundary even if the planner omits its
+  marker, then hands the approved plan to the executor. A headless host persists
+  the plan so a later turn can continue. Explicit plan-only requests persist the
+  plan and end the current turn without execution. A planner failure on either
+  execution boundary cannot fall back to the executor. These directives may
+  appear after the task clause; quoted examples do not change the route.
 - The plan is handed off as structured text to the **executor** — a full
-  tool-using `Agent` in its own session — which carries it out.
+  tool-using `Agent` in its own session — which validates candidate assumptions
+  and carries it out.
 - The sessions never mix, so neither model's prefix is disturbed by the other's
   turns; both grow prepend-only and stay cache-friendly. This reconciles
   "cache-first" with "two-model collaboration": switching models *inside one

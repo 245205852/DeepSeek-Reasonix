@@ -1645,6 +1645,7 @@ func (c *Controller) Run(ctx context.Context, input string) (err error) {
 	}
 	c.markInFlightTurn(startMessages, true)
 	defer c.clearInFlightTurn()
+	ctx = c.withPlannerTurnMetadata(ctx, rawInput, false, startMessages)
 	err = c.runner.Run(ctx, c.withCapabilityRoute(input, rawInput))
 	return err
 }

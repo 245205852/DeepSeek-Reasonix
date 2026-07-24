@@ -1605,7 +1605,7 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 				CapabilityLedger:         plannerLedger,
 				CapabilityAudit:          plannerAudit,
 			}
-			runner = agent.NewCoordinator(plannerProv, plannerSess, pe.Price, plannerTools, plannerOpts, executor, cfg.Agent.Temperature, sink, control.NewPlannerGate())
+			runner = agent.NewCoordinatorWithPlannerPolicy(plannerProv, plannerSess, pe.Price, plannerTools, plannerOpts, executor, cfg.Agent.Temperature, sink, control.NewPlannerPolicy())
 			label = entry.Model + " + planner " + pe.Model
 		}
 	}
