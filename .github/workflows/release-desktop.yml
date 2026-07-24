@@ -1,9 +1,10 @@
 name: Release desktop
 
 # Desktop (Wails) release line. Stable releases are called by
-# release-stable.yml after its single GitHub environment approval. Direct tag
-# pushes are retained only for desktop prereleases so they can still ship
-# independently.
+# release-stable.yml after its single GitHub environment approval. Desktop
+# prerelease tags are relayed by release-desktop-trigger.yml to this workflow on
+# protected main-v2. Production SignPath requests therefore always have the
+# exact main-v2 origin; canary requests use a separate test policy.
 #
 # Wails cannot cross-compile a CGO/WebKit binary, so build/ fans out to one native
 # runner per platform. Artifacts are minisign-signed (MINISIGN_* secrets), a
@@ -18,8 +19,6 @@ name: Release desktop
 # and uploads only to R2's canary/ pointer — no GitHub release, so canary never
 # shows on the releases page and never touches latest/.
 on:
-  push:
-    tags: ["desktop-v*-*"]
   workflow_dispatch:
     inputs:
       channel:
@@ -35,6 +34,11 @@ on:
         description: "canary: intended next stable version, e.g. 1.5.0"
         required: false
         type: string
+      production_signing_smoke:
+        description: "Sign with the production certificate, verify trust, and do not publish"
+        required: false
+        default: false
+        type: boolean
   workflow_call:
     inputs:
       channel:
@@ -99,7 +103,7 @@ jobs:
 
   release-gate:
     name: approve standalone desktop release
-    if: ${{ !inputs.orchestrated && !(github.event_name == 'workflow_dispatch' && inputs.channel == 'canary') }}
+    if: ${{ !inputs.orchestrated && !(github.event_name == 'workflow_dispatch' && inputs.channel == 'canary' && !inputs.production_signing_smoke) }}
     runs-on: ubuntu-latest
     environment: release
     steps:
@@ -110,7 +114,7 @@ jobs:
   cache-guard:
     name: cache hit guard
     needs: [orchestration-guard, release-gate]
-    if: ${{ always() && !cancelled() && ((inputs.orchestrated && needs.orchestration-guard.result == 'success') || (!inputs.orchestrated && ((github.event_name == 'workflow_dispatch' && inputs.channel == 'canary') || needs.release-gate.result == 'success'))) }}
+    if: ${{ always() && !cancelled() && ((inputs.orchestrated && needs.orchestration-guard.result == 'success') || (!inputs.orchestrated && ((github.event_name == 'workflow_dispatch' && inputs.channel == 'canary' && !inputs.production_signing_smoke) || needs.release-gate.result == 'success'))) }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -237,6 +241,23 @@ jobs:
           REF_NAME: ${{ github.ref_name }}
           RUN_NUMBER: ${{ github.run_number }}
 
+      # Official Windows releases must fail closed. Forks can still exercise
+      # unsigned packaging without repository secrets, but esengine releases
+      # may never publish an unsigned payload or installer.
+      - name: Require Windows Authenticode signing
+        if: runner.os == 'Windows' && github.repository == 'esengine/DeepSeek-Reasonix'
+        env:
+          RELEASE_SIGNING_READY: ${{ vars.SIGNPATH_RELEASE_SIGNING_READY }}
+        run: |
+          if [ "$HAS_SIGNPATH" != "true" ]; then
+            echo "SIGNPATH_API_TOKEN is required for official Windows releases" >&2
+            exit 1
+          fi
+          if [ "${{ steps.ver.outputs.channel }}" != "canary" ] && [ "${{ inputs.production_signing_smoke }}" != "true" ] && [ "$RELEASE_SIGNING_READY" != "true" ]; then
+            echo "SIGNPATH_RELEASE_SIGNING_READY must be true for stable/rc Windows releases" >&2
+            exit 1
+          fi
+
       - name: Build and package
         env:
           # macOS Developer ID + notarization path turns on only when all five
@@ -248,44 +269,117 @@ jobs:
           APPLE_API_ISSUER_ID: ${{ secrets.APPLE_API_ISSUER_ID }}
         run: scripts/desktop-build.sh "${{ matrix.platform }}" "${{ steps.ver.outputs.version }}" "${{ steps.ver.outputs.channel }}"
 
-      # Authenticode-sign the Windows installer through SignPath. Runs BEFORE minisign:
-      # the signature rewrites the installer's bytes, so the updater's minisign sig and
-      # the manifest SHA must be computed over the signed build. SignPath pulls the file
-      # from the Actions artifact API, so it must be uploaded first. Canary signs with the
-      # test certificate; stable/rc sign with the Foundation release certificate, but only
-      # once SIGNPATH_RELEASE_SIGNING_READY is set. The release-signing policy verifies the
-      # trusted GitHub origin and intentionally retains its manual approval process as a
-      # second-party control. Each Windows architecture can require its own confirmation.
-      - name: Upload unsigned installer for SignPath
-        if: runner.os == 'Windows' && env.HAS_SIGNPATH == 'true' && (steps.ver.outputs.channel == 'canary' || vars.SIGNPATH_RELEASE_SIGNING_READY == 'true')
-        id: unsigned-installer
+      # Sign every executable that users actually run before rebuilding the
+      # portable archive and NSIS installer. Signing only the finished NSIS
+      # container leaves reasonix-desktop.exe and its sidecars unsigned after
+      # installation, which can trigger Defender reputation/ML quarantine.
+      - name: Upload unsigned Windows payload for SignPath
+        if: runner.os == 'Windows' && env.HAS_SIGNPATH == 'true' && (steps.ver.outputs.channel == 'canary' || inputs.production_signing_smoke || vars.SIGNPATH_RELEASE_SIGNING_READY == 'true')
+        id: unsigned-windows-payload
         uses: actions/upload-artifact@v7
         with:
-          name: unsigned-${{ matrix.name }}
-          path: dist/*installer*.exe
+          name: unsigned-payload-${{ matrix.name }}
+          path: desktop/build/windows/signing-payload/*.exe
           if-no-files-found: error
           retention-days: 1
 
-      - name: Submit installer for Authenticode signing
-        if: runner.os == 'Windows' && env.HAS_SIGNPATH == 'true' && (steps.ver.outputs.channel == 'canary' || vars.SIGNPATH_RELEASE_SIGNING_READY == 'true')
+      - name: Submit Windows payload for Authenticode signing
+        if: runner.os == 'Windows' && env.HAS_SIGNPATH == 'true' && (steps.ver.outputs.channel == 'canary' || inputs.production_signing_smoke || vars.SIGNPATH_RELEASE_SIGNING_READY == 'true')
+        id: submit-windows-payload
         uses: signpath/github-action-submit-signing-request@v2
         with:
           api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
           organization-id: ${{ secrets.SIGNPATH_ORGANIZATION_ID }}
           project-slug: DeepSeek-Reasonix
-          signing-policy-slug: ${{ steps.ver.outputs.channel == 'canary' && 'test-signing' || 'release-signing' }}
-          artifact-configuration-slug: windows-installer
+          signing-policy-slug: ${{ (inputs.production_signing_smoke || steps.ver.outputs.channel != 'canary') && 'release-signing' || 'test-signing-ci-approval' }}
+          artifact-configuration-slug: windows-payload
+          github-artifact-id: ${{ steps.unsigned-windows-payload.outputs.artifact-id }}
+          github-token: ${{ github.token }}
+          wait-for-completion: false
+
+      # The release certificate requires an approval for every request. Stable
+      # builds reach this step only after the repository's release environment
+      # has been approved; the dedicated SignPath CI identity records the
+      # corresponding request approval without adding another human gate.
+      # Canary uses the same path with an approval-enabled test policy.
+      - name: Approve and download signed Windows payload
+        if: runner.os == 'Windows' && env.HAS_SIGNPATH == 'true' && (steps.ver.outputs.channel == 'canary' || inputs.production_signing_smoke || vars.SIGNPATH_RELEASE_SIGNING_READY == 'true')
+        shell: pwsh
+        env:
+          SIGNPATH_API_TOKEN: ${{ secrets.SIGNPATH_API_TOKEN }}
+        run: |
+          $waitForExternalApproval = "${{ inputs.production_signing_smoke }}" -eq "true"
+          ./scripts/complete-signpath-request.ps1 `
+            -OrganizationId "${{ secrets.SIGNPATH_ORGANIZATION_ID }}" `
+            -SigningRequestId "${{ steps.submit-windows-payload.outputs.signing-request-id }}" `
+            -ExpectedSigningPolicySlug "${{ (inputs.production_signing_smoke || steps.ver.outputs.channel != 'canary') && 'release-signing' || 'test-signing-ci-approval' }}" `
+            -OutputArtifactDirectory "signed-payload" `
+            -TimeoutSeconds 1800 `
+            -WaitForExternalApproval:$waitForExternalApproval
+
+      - name: Rebuild Windows packages from signed payload
+        if: runner.os == 'Windows' && env.HAS_SIGNPATH == 'true' && (steps.ver.outputs.channel == 'canary' || inputs.production_signing_smoke || vars.SIGNPATH_RELEASE_SIGNING_READY == 'true')
+        run: scripts/package-windows-desktop.sh "${{ matrix.platform == 'windows/arm64' && 'arm64' || 'amd64' }}" signed-payload
+
+      # The second request signs the rebuilt NSIS container. Release signing
+      # also verifies every payload signature against a Windows trusted root.
+      # Canary uses a separate installer configuration because SignPath test
+      # certificates are intentionally untrusted; the runner still verifies
+      # signature presence and exact payload/portable hashes below.
+      - name: Upload unsigned installer for SignPath
+        if: runner.os == 'Windows' && env.HAS_SIGNPATH == 'true' && (steps.ver.outputs.channel == 'canary' || inputs.production_signing_smoke || vars.SIGNPATH_RELEASE_SIGNING_READY == 'true')
+        id: unsigned-installer
+        uses: actions/upload-artifact@v7
+        with:
+          name: unsigned-${{ matrix.name }}
+          path: desktop/build/windows/installer-signing-bundle/*.exe
+          if-no-files-found: error
+          retention-days: 1
+
+      - name: Submit installer for Authenticode signing
+        if: runner.os == 'Windows' && env.HAS_SIGNPATH == 'true' && (steps.ver.outputs.channel == 'canary' || inputs.production_signing_smoke || vars.SIGNPATH_RELEASE_SIGNING_READY == 'true')
+        id: submit-windows-installer
+        uses: signpath/github-action-submit-signing-request@v2
+        with:
+          api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
+          organization-id: ${{ secrets.SIGNPATH_ORGANIZATION_ID }}
+          project-slug: DeepSeek-Reasonix
+          signing-policy-slug: ${{ (inputs.production_signing_smoke || steps.ver.outputs.channel != 'canary') && 'release-signing' || 'test-signing-ci-approval' }}
+          artifact-configuration-slug: ${{ (inputs.production_signing_smoke || steps.ver.outputs.channel != 'canary') && 'windows-installer-v2' || 'windows-installer-test-v2' }}
           github-artifact-id: ${{ steps.unsigned-installer.outputs.artifact-id }}
           github-token: ${{ github.token }}
-          wait-for-completion: true
-          # Leave headroom for the manual SignPath confirmation, origin verification,
-          # malware scanning, and signing.
-          wait-for-completion-timeout-in-seconds: 1800
-          output-artifact-directory: signed
+          wait-for-completion: false
+
+      - name: Approve and download signed Windows installer
+        if: runner.os == 'Windows' && env.HAS_SIGNPATH == 'true' && (steps.ver.outputs.channel == 'canary' || inputs.production_signing_smoke || vars.SIGNPATH_RELEASE_SIGNING_READY == 'true')
+        shell: pwsh
+        env:
+          SIGNPATH_API_TOKEN: ${{ secrets.SIGNPATH_API_TOKEN }}
+        run: |
+          $waitForExternalApproval = "${{ inputs.production_signing_smoke }}" -eq "true"
+          ./scripts/complete-signpath-request.ps1 `
+            -OrganizationId "${{ secrets.SIGNPATH_ORGANIZATION_ID }}" `
+            -SigningRequestId "${{ steps.submit-windows-installer.outputs.signing-request-id }}" `
+            -ExpectedSigningPolicySlug "${{ (inputs.production_signing_smoke || steps.ver.outputs.channel != 'canary') && 'release-signing' || 'test-signing-ci-approval' }}" `
+            -OutputArtifactDirectory "signed-installer" `
+            -TimeoutSeconds 1800 `
+            -WaitForExternalApproval:$waitForExternalApproval
 
       - name: Replace installer with signed build
-        if: runner.os == 'Windows' && env.HAS_SIGNPATH == 'true' && (steps.ver.outputs.channel == 'canary' || vars.SIGNPATH_RELEASE_SIGNING_READY == 'true')
-        run: cp signed/*installer*.exe dist/
+        if: runner.os == 'Windows' && env.HAS_SIGNPATH == 'true' && (steps.ver.outputs.channel == 'canary' || inputs.production_signing_smoke || vars.SIGNPATH_RELEASE_SIGNING_READY == 'true')
+        run: cp signed-installer/*installer*.exe dist/
+
+      - name: Verify Windows Authenticode release contract
+        if: runner.os == 'Windows' && env.HAS_SIGNPATH == 'true' && (steps.ver.outputs.channel == 'canary' || inputs.production_signing_smoke || vars.SIGNPATH_RELEASE_SIGNING_READY == 'true')
+        shell: pwsh
+        run: |
+          $arch = if ("${{ matrix.platform }}" -eq "windows/arm64") { "arm64" } else { "amd64" }
+          $trusted = "${{ inputs.production_signing_smoke || steps.ver.outputs.channel != 'canary' }}" -eq "true"
+          ./scripts/verify-windows-authenticode.ps1 `
+            -PayloadDirectory signed-payload `
+            -InstallerPath "dist/Reasonix-windows-$arch-installer.exe" `
+            -PortableArchivePath "dist/Reasonix-windows-$arch.zip" `
+            -RequireTrusted:$trusted
 
       - name: Sign artifacts (minisign)
         working-directory: desktop
@@ -303,7 +397,7 @@ jobs:
   publish:
     name: publish release
     needs: build
-    if: ${{ always() && !cancelled() && needs.build.result == 'success' }}
+    if: ${{ always() && !cancelled() && needs.build.result == 'success' && !inputs.production_signing_smoke }}
     runs-on: ubuntu-latest
     # The stable caller has already passed the single GitHub release approval.
     # Direct prereleases/manual stable recovery pass release-gate; canaries run

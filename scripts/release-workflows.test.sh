@@ -14,6 +14,26 @@ trap cleanup EXIT
 # Stable tags have one entrypoint and one protected environment. Reusable
 # publishers must verify that only that entrypoint can claim prior approval.
 [ "$(grep -Ec '^    environment: release$' "$repo_root/.github/workflows/release-stable.yml")" = "1" ]
+for relay in release-stable-trigger.yml release-desktop-trigger.yml; do
+	grep -Eq 'actions: write' "$repo_root/.github/workflows/$relay"
+	grep -Eq "CONTROL_PLANE_REF.*default_branch" "$repo_root/.github/workflows/$relay"
+	grep -Eq "CONTROL_PLANE_REF !== 'main-v2'" "$repo_root/.github/workflows/$relay"
+	grep -Eq 'createWorkflowDispatch' "$repo_root/.github/workflows/$relay"
+	grep -Eq 'ref: process\.env\.CONTROL_PLANE_REF' "$repo_root/.github/workflows/$relay"
+done
+grep -Eq "workflow_id: 'release-stable\.yml'" \
+	"$repo_root/.github/workflows/release-stable-trigger.yml"
+grep -Eq "allow_recovery: 'false'" \
+	"$repo_root/.github/workflows/release-stable-trigger.yml"
+grep -Eq 'ALLOW_STABLE_RECOVERY:.*inputs\.allow_recovery' \
+	"$repo_root/.github/workflows/release-stable.yml"
+grep -Eq "workflow_id: 'release-desktop\.yml'" \
+	"$repo_root/.github/workflows/release-desktop-trigger.yml"
+if grep -Eq '^  push:$' "$repo_root/.github/workflows/release-stable.yml" ||
+	grep -Eq '^  push:$' "$repo_root/.github/workflows/release-desktop.yml"; then
+	echo "production workflow must be dispatched on protected main-v2, not run on a tag origin" >&2
+	exit 1
+fi
 for workflow in release.yml release-npm.yml release-desktop.yml; do
 	grep -Eq 'github\.workflow_ref' "$repo_root/.github/workflows/$workflow"
 	grep -Eq 'github\.ref_protected' "$repo_root/.github/workflows/$workflow"
@@ -24,6 +44,19 @@ for workflow in release.yml release-npm.yml release-desktop.yml; do
 done
 grep -Eq "needs\.build\.result == 'success'" "$repo_root/.github/workflows/release-desktop.yml"
 grep -Eq "needs\.publish\.result == 'success'" "$repo_root/.github/workflows/release-desktop.yml"
+grep -Eq '^      production_signing_smoke:$' "$repo_root/.github/workflows/release-desktop.yml"
+grep -Eq "signing-policy-slug:.*production_signing_smoke.*release-signing.*test-signing-ci-approval" \
+	"$repo_root/.github/workflows/release-desktop.yml"
+grep -Eq "needs\.build\.result == 'success'.*!inputs\.production_signing_smoke" \
+	"$repo_root/.github/workflows/release-desktop.yml"
+[ "$(grep -Ec 'wait-for-completion: false' "$repo_root/.github/workflows/release-desktop.yml")" = "2" ]
+[ "$(grep -Ec 'complete-signpath-request\.ps1' "$repo_root/.github/workflows/release-desktop.yml")" = "2" ]
+[ "$(grep -Ec -- '-WaitForExternalApproval:\$waitForExternalApproval' "$repo_root/.github/workflows/release-desktop.yml")" = "2" ]
+[ "$(grep -Ec 'signpath-api-url' "$repo_root/.github/workflows/release-desktop.yml")" = "0" ]
+grep -Eq 'steps\.submit-windows-payload\.outputs\.signing-request-id' \
+	"$repo_root/.github/workflows/release-desktop.yml"
+grep -Eq 'steps\.submit-windows-installer\.outputs\.signing-request-id' \
+	"$repo_root/.github/workflows/release-desktop.yml"
 grep -Eq '^  postflight:$' "$repo_root/.github/workflows/release-stable.yml"
 grep -Eq 'verify-stable-release-artifacts\.sh' "$repo_root/.github/workflows/release-stable.yml"
 grep -Eq 'name: Upload reviewed release notes' "$repo_root/.github/workflows/release-stable.yml"

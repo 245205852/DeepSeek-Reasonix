@@ -29,14 +29,15 @@ ending in `-canary.N` publish under the `canary` dist-tag.)
 | Action | Who | Mechanism |
 |---|---|---|
 | **Cut a canary** | any maintainer (write access) | `workflow_dispatch`, runs without a production approval |
-| **Ship stable** | release-tag creators + one configured reviewer | atomically push the three stable tags; the **Release stable** workflow requests one GitHub `release`-environment approval before every channel publishes |
-| **Ship a standalone RC** | release-tag creators + one configured reviewer | push the surface-specific prerelease tag; that one standalone workflow requests one `release` approval |
+| **Ship stable** | release-tag creators + one configured reviewer | atomically push the three stable tags; a minimal tag relay dispatches **Release stable** on protected `main-v2`, which requests one GitHub `release`-environment approval before every channel publishes |
+| **Ship a standalone RC** | release-tag creators + one configured reviewer | push the surface-specific prerelease tag; a minimal relay dispatches the standalone workflow on protected `main-v2`, which requests one `release` approval |
 
 So a maintainer can dispatch a canary anytime. A stable release pauses once in
 the **Release stable** run until a configured reviewer approves the GitHub
 `release` environment; the CLI, npm, and Desktop jobs then continue without
-another GitHub environment prompt. Windows signing intentionally retains
-separate SignPath confirmations for the AMD64 and ARM64 requests.
+another human approval. SignPath still verifies the trusted GitHub origin,
+scans the Windows artifacts, signs every installed executable, rebuilds the
+packages, and signs the outer installers.
 
 > Repo settings backing this: Environments → `release` has the release owners as
 > required reviewers, and the release-tag ruleset restricts
@@ -44,22 +45,23 @@ separate SignPath confirmations for the AMD64 and ARM64 requests.
 > orchestrator and standalone RC/recovery paths reference the protected
 > environment.
 
-The reusable publishers additionally require the stable orchestrator to run on
-the protected stable tag (or protected `main-v2` recovery ref). Normal tag-push
-releases bind the caller workflow commit to the approved SHA. Recovery keeps the
-fixed control-plane workflow on protected `main-v2`, resolves the existing three
-tags to one immutable historical SHA on `main-v2`, and uses that SHA only for the
-actual build and publication checkouts. Every publisher revalidates its remote
-release tag immediately before publication. An unprotected branch cannot claim
-that it already passed the approval job.
+The tag-triggered workflows contain no build or signing steps. They relay only
+the immutable candidate tag to the current workflow on protected `main-v2`.
+The reusable publishers require that protected control plane, while the
+orchestrator resolves the three release tags to one immutable candidate SHA and
+uses that SHA only for build and publication checkouts. Recovery follows the
+same model for an older tag on `main-v2` history. Every publisher revalidates
+its remote release tag immediately before publication. An unprotected branch
+cannot claim that it already passed the approval job.
 
-Repository `write` access remains a privileged role: GitHub Actions workflows on
-repository branches can access repository-level Actions secrets. Do not grant
-`write` to someone who must be technically unable to publish. A stricter trust
-separation requires moving external publication credentials to protected
-environment secrets or provider-side OIDC/trusted-publishing policies; the
-workflow approval and tag ruleset primarily protect the supported release path
-from accidental or unauthorized invocation.
+Repository `write` access remains a privileged role because repository-level
+Actions secrets are available to workflows on repository branches. Production
+Windows signing has an additional provider-side boundary: SignPath accepts the
+trusted `.github/workflows/release-desktop.yml` build definition only when its
+origin branch is exactly `main-v2`. Never broaden that policy to `**` or a
+tag-shaped wildcard. Other publication credentials should move to protected
+environment secrets or provider-side OIDC/trusted-publishing policies when
+strict separation from repository writers is required.
 
 ## The release loop
 
@@ -103,14 +105,17 @@ from accidental or unauthorized invocation.
    git tag desktop-v1.4.0
    git push --atomic origin v1.4.0 npm-v1.4.0 desktop-v1.4.0
    ```
-   The `v1.4.0` tag starts **Release stable**. Its preflight requires all three
-   tags to exist on the exact current `main-v2` commit, renders the reviewed
-   release notes, and runs the cache guard. It then **waits once for a configured
-   reviewer to approve the GitHub `release` environment** before invoking all
-   three publishers. The approval records the immutable release commit; every
-   publisher checks out that SHA and fails if its remote tag moves afterward.
-   The two Windows signing requests then retain their manual SignPath
-   confirmations as a separate control.
+   The `v1.4.0` tag starts a minimal relay, which dispatches **Release stable**
+   on protected `main-v2`. Its preflight requires all three tags to exist on the
+   exact current `main-v2` commit, renders the reviewed release notes, and runs
+   the cache guard. It then **waits once for a configured reviewer to approve the
+   GitHub `release` environment** before invoking all three publishers. The
+   approval records the immutable release commit; every publisher checks out
+   that SHA and fails if its remote tag moves afterward.
+   Windows signing then runs automatically under SignPath trusted-build and
+   origin verification: each architecture signs its installed executable
+   payload first, rebuilds the portable archive and NSIS package, and finally
+   signs the outer installer.
    A stable `npm-v*` publish moves the `latest` dist-tag automatically (build.mjs)
    and release-npm.yml verifies it landed. **Do not skip the npm tag**: the stable
    preflight fails when the matching `npm-v*` or `desktop-v*` tag is missing or
@@ -150,10 +155,32 @@ from accidental or unauthorized invocation.
   npm, and Desktop tags to remain aligned on an ancestor of current `main-v2`,
   then uses the same single approval and postflight. Never move or recreate the
   published tags to pick up a workflow fix.
-- Windows release signing uses SignPath trusted-build and origin verification.
-  Keep **Use approval process** enabled on `release-signing`: the AMD64 and ARM64
-  requests can each require a manual confirmation after the single GitHub
-  release-environment approval.
+- Windows release signing uses SignPath trusted-build, origin verification, and
+  malware scanning. Keep the checked-in `windows-payload`,
+  `windows-installer-test-v2`, and `windows-installer-v2` artifact
+  configurations synchronized with the matching SignPath project slugs before
+  merging a workflow that references them. Keep the legacy
+  `windows-installer` configuration available for older release refs.
+  `windows-payload` signs the desktop, Guard, launcher, update helper, CLI, and
+  generated NSIS uninstaller. Canary uses `windows-installer-test-v2` to sign
+  the rebuilt NSIS container because SignPath test certificates intentionally
+  do not chain to a Windows trusted root; the Windows runner still requires
+  signatures on all payload files and verifies exact portable-package hashes.
+  Stable and RC releases use `windows-installer-v2`, which verifies the trusted
+  payload signatures before signing the outer installer. The release
+  certificate requires SignPath approval for every request. The stable release
+  reaches Windows signing only after the single GitHub `release` environment
+  approval; a dedicated SignPath CI identity then approves each payload and
+  installer request through the SignPath API. Canary uses the
+  approval-enabled `test-signing-ci-approval` policy with the test certificate,
+  so the same automation is exercised without consuming the release
+  certificate. SignPath must restrict both policies to the trusted
+  `.github/workflows/release-desktop.yml` build definition. Human SignPath
+  approvers remain available for emergency recovery, but normal releases do
+  not require additional SignPath clicks. The production policy must allow the
+  exact branch `main-v2` only. Stable and prerelease tag events are relayed to
+  that protected control plane; do not replace the exact match with `**`, `v*`,
+  or `desktop-v*`.
 - Desktop in-app updates use R2 first, then the `crash.reasonix.io` desktop release
   gateway. The gateway resolves the `desktop-v*` release line directly and never uses
   GitHub's repository-wide `/releases/latest`, because plain `v*` tags are the CLI

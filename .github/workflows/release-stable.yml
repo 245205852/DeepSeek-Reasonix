@@ -2,18 +2,14 @@ name: Release stable
 run-name: Release stable ${{ inputs.tag || github.ref_name }}
 
 # Stable publication has exactly one GitHub environment gate. Push the CLI,
-# npm, and desktop tags atomically; the vX.Y.Z tag starts this workflow,
-# preflight verifies that all three tags point to the current main-v2 commit,
-# and one GitHub approval releases every channel. A manual recovery runs the
-# fixed control plane from protected main-v2 while preserving an older tagged
-# candidate on main-v2 history. SignPath intentionally keeps its separate
-# manual confirmations. Prerelease and canary workflows remain independently
-# callable.
+# npm, and desktop tags atomically; release-stable-trigger.yml relays the vX.Y.Z
+# tag to this workflow on protected main-v2. Preflight verifies that all three
+# tags point to the current main-v2 commit, and one GitHub approval releases
+# every channel. Keeping the control-plane ref on main-v2 lets SignPath restrict
+# production signing to that one protected origin instead of trusting wildcard
+# tag-like branch names. Manual recovery uses the same fixed control plane while
+# preserving an older tagged candidate on main-v2 history.
 on:
-  push:
-    tags:
-      - 'v*'
-      - '!v*-*'
   workflow_dispatch:
     inputs:
       tag:
@@ -32,6 +28,11 @@ on:
         type: boolean
       publish_desktop:
         description: "Recover the Desktop/R2 channel"
+        required: false
+        default: true
+        type: boolean
+      allow_recovery:
+        description: "Allow an existing stable tag on main-v2 history (manual recovery only)"
         required: false
         default: true
         type: boolean
@@ -76,7 +77,7 @@ jobs:
         id: release
         env:
           RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
-          ALLOW_STABLE_RECOVERY: ${{ github.event_name == 'workflow_dispatch' }}
+          ALLOW_STABLE_RECOVERY: ${{ inputs.allow_recovery }}
         run: bash scripts/resolve-stable-release.sh
       - name: Validate reviewed release notes
         run: node scripts/release-notes.mjs render --version "${{ steps.release.outputs.cli_tag }}" --output /tmp/release-notes.md
