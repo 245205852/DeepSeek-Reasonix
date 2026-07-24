@@ -545,6 +545,25 @@ func (c *Controller) SetDisplayRecorder(fn func(content, display string)) {
 	c.displayRecorder = fn
 }
 
+// SetOnSessionRecovered installs the ownership handoff invoked before the
+// controller commits to an automatically created recovery branch. Frontends
+// that acquire their session owner after controller construction (for example
+// reasonix serve) use this before publishing the controller.
+func (c *Controller) SetOnSessionRecovered(fn func(SessionRecoveryInfo) error) {
+	if c == nil {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.onSessionRecovered = fn
+}
+
+func (c *Controller) sessionRecoveredHandler() func(SessionRecoveryInfo) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.onSessionRecovered
+}
+
 func (c *Controller) recordDisplay(content, display string) {
 	if strings.TrimSpace(display) == "" || content == display {
 		return
@@ -605,7 +624,11 @@ func (c *Controller) markEditedForNewUser(startMessages int, original string) {
 		}
 		msgs[i].Edited = true
 		msgs[i].Original = original
-		s.Replace(msgs)
+		// A periodic autosave may already contain this user message without its
+		// local edit metadata. Classify the prefix mutation atomically so the
+		// turn-end save performs an owned rewrite instead of forking a bogus
+		// same-revision recovery branch.
+		s.Rewrite(msgs)
 		return
 	}
 }
@@ -3679,8 +3702,8 @@ func (c *Controller) commitRecoveredSession(originalPath, reason string, info ag
 		Reason:       reason,
 		Meta:         info.Meta,
 	}
-	if c.onSessionRecovered != nil {
-		if err := c.onSessionRecovered(recoveryInfo); err != nil {
+	if onSessionRecovered := c.sessionRecoveredHandler(); onSessionRecovered != nil {
+		if err := onSessionRecovered(recoveryInfo); err != nil {
 			return fmt.Errorf("commit recovered session: %w", err)
 		}
 	}

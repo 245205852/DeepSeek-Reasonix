@@ -1057,6 +1057,45 @@ func TestSnapshotActivityPersistsOwnedCompactionRewrite(t *testing.T) {
 	}
 }
 
+func TestEditedPromptMetadataAfterMidTurnSnapshotStaysOnOwnedSession(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "edited-mid-turn.jsonl")
+
+	sess := agent.NewSession("sys")
+	sess.Add(provider.Message{Role: provider.RoleUser, Content: "edited prompt"})
+	sess.Add(provider.Message{Role: provider.RoleAssistant, Content: "partial"})
+	if err := sess.Save(path); err != nil {
+		t.Fatalf("Save mid-turn transcript: %v", err)
+	}
+	// The model finishes after the periodic snapshot. Turn teardown then adds
+	// local inline-edit metadata to the already-persisted user message.
+	sess.Add(provider.Message{Role: provider.RoleAssistant, Content: "final"})
+	exec := agent.New(nil, nil, sess, agent.Options{}, event.Discard)
+	ctrl := New(Options{Executor: exec, SessionDir: dir, SessionPath: path, Label: "test"})
+	ctrl.markEditedForNewUser(1, "original prompt")
+
+	if err := ctrl.SnapshotActivity(); err != nil {
+		t.Fatalf("SnapshotActivity edited turn: %v", err)
+	}
+	if got := ctrl.SessionPath(); got != path {
+		t.Fatalf("edited turn moved to recovery path %q, want owned path %q", got, path)
+	}
+	loaded, err := agent.LoadSession(path)
+	if err != nil {
+		t.Fatalf("LoadSession: %v", err)
+	}
+	if got := len(loaded.Messages); got != 4 {
+		t.Fatalf("saved message count = %d, want 4: %+v", got, loaded.Messages)
+	}
+	user := loaded.Messages[1]
+	if !user.Edited || user.Original != "original prompt" || user.Content != "edited prompt" {
+		t.Fatalf("saved edited user metadata = %+v", user)
+	}
+	if matches, err := filepath.Glob(filepath.Join(dir, "*-recovery-*.jsonl")); err != nil || len(matches) != 0 {
+		t.Fatalf("spurious recovery branches = %v err=%v, want none", matches, err)
+	}
+}
+
 func TestRecoveryBranchPersistsLaterOwnedCompactionRewrite(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "session.jsonl")
