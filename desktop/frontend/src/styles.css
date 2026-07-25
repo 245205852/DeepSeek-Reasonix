@@ -4770,6 +4770,13 @@ a[href] {
   opacity: 0.55;
 }
 
+/* Override browser user-agent <code> monospace so inherited font (from
+   .code / .code-lines-wrap) reaches highlighted tokens and line text. */
+.code code,
+.code-line-text {
+  font-family: inherit;
+}
+
 /* copy affordance — code blocks (hover) and message actions */
 .copybtn {
   display: inline-flex;
@@ -4832,7 +4839,7 @@ a[href] {
   box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 48%, transparent);
 }
 .code-lines-wrap {
-  font-family: var(--font-mono);
+  font-family: var(--typography-code-font, var(--font-mono));
   font-size: var(--font-code);
   line-height: 1.55;
   color: var(--fg);
@@ -35121,7 +35128,7 @@ body > .mermaid-diagram--fullscreen {
   margin-bottom: 6px;
 }
 .remote-file-view__path {
-  font-family: monospace;
+  font-family: var(--font-mono, monospace);
   font-size: var(--text-xs);
   color: var(--fg-faint);
   overflow: hidden;
@@ -35130,7 +35137,7 @@ body > .mermaid-diagram--fullscreen {
 .remote-file-view__editor {
   width: 100%;
   min-height: 320px;
-  font-family: monospace;
+  font-family: var(--font-mono, monospace);
   font-size: var(--font-code);
   background: var(--bg-soft);
   color: var(--fg);
@@ -35215,7 +35222,7 @@ body > .mermaid-diagram--fullscreen {
   font-size: var(--text-sm);
 }
 .remote-hostkey-dialog__fp {
-  font-family: monospace;
+  font-family: var(--font-mono, monospace);
   word-break: break-all;
 }
 .remote-hostkey-dialog__actions {
