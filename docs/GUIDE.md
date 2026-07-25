@@ -399,9 +399,11 @@ loading model are documented in [the Chinese desktop hooks guide](./DESKTOP_HOOK
 
 Shortcuts are documented by client because users usually look for the keys that
 work in the surface they are using. Desktop keeps its Plan toggle, while the CLI
-cycles Ask, Auto, and Plan with `Shift+Tab`. `Ctrl/Cmd+Y` controls YOLO, and
-desktop paste stays on the platform paste key. In the CLI, terminal-native text
-paste and application-owned image paste use separate shortcuts.
+cycles Ask, Auto, and Plan with `Shift+Tab`. Desktop uses `Cmd+Y` on macOS or
+`Ctrl+Y` elsewhere for YOLO by default. If YOLO is rebound on Windows/Linux,
+`Ctrl+Y` becomes the standard composer redo fallback. Desktop paste stays on the
+platform paste key; in the CLI, terminal-native text paste and
+application-owned image paste use separate shortcuts.
 
 `[ui].shortcut_layout` is still accepted for old configs, but the shortcut
 behavior below is unified across layouts.
@@ -414,8 +416,10 @@ setting does not change desktop or web text fields.
 
 ### Desktop GUI
 
-Desktop shortcuts are managed from **Settings → Shortcuts**. Pick a row, press a
-new key combination, and Reasonix saves it for the desktop app. Conflicting
+Desktop shortcuts are managed from **Settings → Shortcuts**. Pick a configurable
+row, press a new key combination, and Reasonix saves it for the desktop app.
+Standard editing shortcuts such as Undo and Redo are shown as locked rows because
+the WebView's native text history uses those platform chords. Conflicting
 bindings are rejected so one shortcut never triggers two actions. Press `?` or
 use the help button in the topic bar to open the shortcuts sheet; it is generated
 from the same shortcut registry, so it reflects any custom bindings.
@@ -440,7 +444,9 @@ Composer shortcuts:
 | `Enter` | Sends the current message | IME composition confirmation is left alone. |
 | `Shift+Enter` | Inserts a newline | The composer keeps focus. |
 | `Shift+Tab` | Toggles Plan on/off | Plan changes the workflow instruction; built-in writers keep the active Ask/Auto/YOLO and Sandbox boundary, while MCP writer/destructive targets stay hard-blocked for the whole planning phase. |
-| `Cmd+Y` / `Ctrl+Y` | Toggles YOLO on/off | Turning YOLO off restores the previous Ask/Auto base when known. |
+| `Cmd+Z` on macOS, `Ctrl+Z` on Windows/Linux | Undoes the latest composer edit | Native typing stays in the WebView history; Reasonix-managed paste, cut, folded blocks, and structured tokens are restored as complete transactions. |
+| `Cmd+Shift+Z` on macOS, `Ctrl+Shift+Z` on Windows/Linux | Redoes the latest composer edit | On Windows/Linux, `Ctrl+Y` is also accepted after the YOLO shortcut has been rebound. |
+| `Cmd+Y` / `Ctrl+Y` (default) | Toggles YOLO on/off | Turning YOLO off restores the previous Ask/Auto base when known. The current binding is shown in **Settings → Shortcuts**. |
 | `Cmd+V` on macOS, `Ctrl+V` on Windows/Linux | Pastes clipboard content | Clipboard images are attached; images can also be dropped into the composer. |
 | Plain `Up` / `Down` at the prompt boundary | Recalls older or newer submitted prompts | Modified arrows and native text navigation stay with the textarea. |
 | `Esc` while a turn is running | Cancels the running turn | If the turn has not produced a response yet, the draft is restored. |

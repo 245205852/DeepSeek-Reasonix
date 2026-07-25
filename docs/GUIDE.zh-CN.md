@@ -317,8 +317,9 @@ Thinking 覆盖选项：
 
 这里按使用端来写，因为用户通常是先知道“我现在在桌面端/CLI”，再找对应按键。
 桌面端仍用 `Shift+Tab` 切换 Plan；CLI 则用它在 Ask、Auto、Plan 之间循环。
-`Ctrl/Cmd+Y` 只管 YOLO。桌面端粘贴继续走系统快捷键；CLI 则把终端原生文本粘贴
-和应用接管的图片粘贴拆成不同快捷键。
+桌面端默认用 macOS 的 `Cmd+Y` 或 Windows/Linux 的 `Ctrl+Y` 切换 YOLO；
+如果在 Windows/Linux 上改绑了 YOLO，`Ctrl+Y` 会成为输入框的标准重做兼容键。
+桌面端粘贴继续走系统快捷键；CLI 则把终端原生文本粘贴和应用接管的图片粘贴拆成不同快捷键。
 
 `[ui].shortcut_layout` 仍被接受以兼容旧配置，但下面的快捷键行为已经跨布局统一。
 
@@ -329,7 +330,8 @@ CLI/TUI 文本输入可通过 `[ui].cursor_shape` 设置光标形状，支持 `u
 
 ### 桌面端 GUI
 
-桌面端快捷键在 **设置 → 快捷键** 中管理。选择一行后按下新的组合键，Reasonix 会为桌面端保存该绑定。
+桌面端快捷键在 **设置 → 快捷键** 中管理。选择可配置的行后按下新的组合键，Reasonix 会为桌面端保存该绑定。
+撤销、重做等标准编辑快捷键会以锁定行展示，因为 WebView 的原生文本历史依赖这些平台组合键。
 如果新组合键和已有动作冲突，会拒绝保存，避免一个快捷键触发两个动作。按 `?` 或点击 topic bar
 里的帮助按钮可打开快捷键帮助表；帮助表由同一份快捷键 registry 生成，因此会同步显示自定义后的绑定。
 
@@ -353,7 +355,9 @@ CLI/TUI 文本输入可通过 `[ui].cursor_shape` 设置光标形状，支持 `u
 | `Enter` | 发送当前消息 | IME 组合输入确认不会被截获。 |
 | `Shift+Enter` | 插入换行 | 输入框保持焦点。 |
 | `Shift+Tab` | 切换 Plan 开/关 | Plan 只改变“先规划”的工作流；内置 writer 仍走当前 Ask/Auto/YOLO 与 Sandbox，MCP writer/destructive 目标在整个规划阶段保持硬阻断。 |
-| `Cmd+Y` / `Ctrl+Y` | 切换 YOLO 开/关 | 关闭 YOLO 时会尽量恢复之前的 Ask/Auto 基底。 |
+| macOS `Cmd+Z`，Windows/Linux `Ctrl+Z` | 撤销输入框中的最近一次编辑 | 普通键入继续由 WebView 原生历史管理；Reasonix 接管的粘贴、剪切、折叠块和结构化 token 会作为完整事务恢复。 |
+| macOS `Cmd+Shift+Z`，Windows/Linux `Ctrl+Shift+Z` | 重做输入框中的最近一次编辑 | Windows/Linux 改绑 YOLO 后也可使用 `Ctrl+Y`。 |
+| `Cmd+Y` / `Ctrl+Y`（默认） | 切换 YOLO 开/关 | 关闭 YOLO 时会尽量恢复之前的 Ask/Auto 基底；当前绑定可在 **设置 → 快捷键** 查看。 |
 | macOS `Cmd+V`，Windows/Linux `Ctrl+V` | 粘贴剪贴板内容 | 剪贴板图片会作为附件加入；图片也可以拖进输入框。 |
 | 输入边界处的普通 `Up` / `Down` | 回放更旧或更新的已提交提示词 | 带修饰键的方向键和原生文本导航仍交给 textarea。 |
 | 运行中按 `Esc` | 取消当前 turn | 如果后端尚未开始回复，会恢复草稿。 |

@@ -69,7 +69,9 @@ Yolo maximizes continuous execution. Ordinary tool permission prompts are skippe
 
 ### How to enable
 
-- Select Yolo directly under the composer, choose it as the new-session default, or toggle with `Ctrl+Y` / `Cmd+Y`.
+- Select Yolo directly under the composer, choose it as the new-session default,
+  or use the current binding shown in **Settings → Shortcuts** (`Ctrl+Y` /
+  `Cmd+Y` by default).
 - Select Ask or Auto directly to leave Yolo.
 - When entered via shortcut, Reasonix remembers the previous Ask/Auto baseline and restores it on the next toggle.
 
