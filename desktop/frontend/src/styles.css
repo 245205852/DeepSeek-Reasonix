@@ -4869,7 +4869,7 @@ a[href] {
   line-height: inherit;
 }
 
-/* ── search bar (Ctrl+F) — Codex-style floating popup ─────────────────── */
+/* ── search bar (Ctrl+F) ──────────────────────────────────────────────── */
 .code-search {
   position: absolute;
   top: 42px;
@@ -4918,6 +4918,19 @@ a[href] {
   font-size: var(--font-xs);
   padding: 0 4px;
 }
+.code-search__count--error {
+  max-width: 168px;
+  overflow: hidden;
+  color: var(--danger);
+  text-overflow: ellipsis;
+}
+.code-search__actions {
+  display: flex;
+  align-items: center;
+  flex: 0 0 auto;
+  gap: 2px;
+  margin-left: auto;
+}
 .code-search__close {
   display: inline-flex;
   align-items: center;
@@ -4933,6 +4946,26 @@ a[href] {
   flex-shrink: 0;
 }
 .code-search__close:hover {
+  background: var(--bg-elev-1);
+  color: var(--fg);
+}
+.code-search__copy.copybtn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 20px;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  gap: 0;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--fg-faint);
+}
+.code-search__copy.copybtn:hover,
+.code-search__copy.copybtn:focus-visible {
+  gap: 0;
   background: var(--bg-elev-1);
   color: var(--fg);
 }
@@ -9160,6 +9193,20 @@ body > .mermaid-diagram--fullscreen {
   display: flex;
   flex-direction: column;
   min-height: 0;
+}
+.workspace-preview__body--code .code-search {
+  position: static;
+  z-index: var(--z-local-handle);
+  flex: 0 0 auto;
+  flex-wrap: wrap;
+  box-sizing: border-box;
+  width: 100%;
+  max-width: none;
+  min-width: 0;
+  padding: 5px 8px;
+  border-width: 0 0 1px;
+  border-radius: 0;
+  box-shadow: none;
 }
 .workspace-preview__body .code-block,
 .workspace-preview__body .code {
