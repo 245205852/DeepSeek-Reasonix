@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
-import { Activity, ChevronsUpDown, CircleDollarSign, CircleGauge, Database, Folder, GitBranch, Layers, Percent, Puzzle, RefreshCw, Server, Settings, Square, Unplug, Wallet, Zap } from "lucide-react";
+import { Activity, ChevronsUpDown, CircleDollarSign, CircleGauge, Database, FileOutput, Folder, Gauge, GitBranch, HardDrive, Layers, Percent, Puzzle, RefreshCw, Server, Settings, Square, Unplug, Wallet, Zap } from "lucide-react";
 import { AnchoredPopover } from "./AnchoredPopover";
 import { RemoteConnectionErrorDialog } from "./RemoteConnectionErrorDialog";
 import { Tooltip } from "./Tooltip";
@@ -65,6 +65,18 @@ function formatTokenCount(tokens?: number): string {
 function formatTurnCount(turns: number | undefined, t: Translator): string {
   if (typeof turns !== "number" || turns < 0) return "-";
   return t(turns === 1 ? "history.turnOne" : "history.turnOther", { n: turns });
+}
+
+
+function formatTps(outputTokens?: number, startAt?: number, doneAt?: number, waitAccumMs?: number): string | null {
+  if (!outputTokens || outputTokens <= 0) return null;
+  if (!startAt || startAt <= 0) return null;
+  if (!doneAt || doneAt <= startAt) return null;
+  const elapsedSec = (doneAt - startAt - (waitAccumMs ?? 0)) / 1000;
+  if (elapsedSec < 0.001) return null;
+  const tps = outputTokens / elapsedSec;
+  if (tps < 1) return "<1 t/s";
+  return `${Math.round(tps)} t/s`;
 }
 
 const STATUS_SOURCE_ORDER = ["executor", "planner", "subagent", "compaction", "classifier", "title"];
@@ -161,6 +173,10 @@ export function StatusBar({
   sessionTurns,
   sessionTokens,
   turnTokens,
+  lastTurnOutputTokens,
+  lastTurnStartAt,
+  lastTurnDoneAt,
+  lastTurnWaitAccumMs = 0,
   turnCost,
   cost,
   currency,
@@ -191,6 +207,10 @@ export function StatusBar({
   sessionTurns?: number;
   sessionTokens?: number;
   turnTokens?: number;
+  lastTurnOutputTokens?: number;
+  lastTurnStartAt?: number;
+  lastTurnDoneAt?: number;
+  lastTurnWaitAccumMs?: number;
   turnCost?: number;
   cost?: number;
   currency?: string;
@@ -237,6 +257,11 @@ export function StatusBar({
   const tokenLabel = markEstimated(formatTokenCount(sessionTokens), sessionEstimated);
   const turnTokenLabel = markEstimated(formatTokenCount(turnTokens), turnEstimated);
   const balanceLabel = balance?.available && balance.display ? balance.display : "-";
+  const tpsLabel = formatTps(lastTurnOutputTokens, lastTurnStartAt, lastTurnDoneAt, lastTurnWaitAccumMs);
+  const outputTokensLabel = usage?.completionTokens ? usage.completionTokens.toLocaleString() : "-";
+  const cacheHit = usage?.cacheHitTokens;
+  const cacheMiss = usage?.cacheMissTokens;
+  const hasCacheTokens = typeof cacheHit === "number" || typeof cacheMiss === "number";
   const metricLabelStyle = labelStyle === "text" ? "text" : "icon";
   const visibleItems = normalizeStatusBarItems(items);
   const cacheTooltip = sourceCacheTooltip(t, t("status.cacheTitle"), context);
@@ -314,6 +339,38 @@ export function StatusBar({
         </span>
       </Tooltip>
     ),
+    turn_tps: (
+      <Tooltip label={t("status.tpsTitle")} className="statusbar__metric statusbar__metric--tps">
+        <span className="stat statusbar__tps">
+          <MetricLabel style={metricLabelStyle} icon={<Gauge size={12} />} label={t("status.tpsLabel")} />
+          <b className={tpsLabel === null ? "stat__value--empty" : undefined}>{tpsLabel ?? "-"}</b>
+        </span>
+      </Tooltip>
+    ),
+    turn_output_tokens: (
+      <Tooltip label={t("status.outputTokensTitle")} className="statusbar__metric statusbar__metric--output-tokens">
+        <span className="stat statusbar__output-tokens">
+          <MetricLabel style={metricLabelStyle} icon={<FileOutput size={12} />} label={t("status.outputTokensLabel")} />
+          <b className={outputTokensLabel === "-" ? "stat__value--empty" : undefined}>{outputTokensLabel}</b>
+        </span>
+      </Tooltip>
+    ),
+    turn_cache_tokens: (
+      <Tooltip label={t("status.cacheTokensTitle")} className="statusbar__metric statusbar__metric--cache-tokens">
+        <span className="stat statusbar__cache-tokens">
+          <MetricLabel style={metricLabelStyle} icon={<HardDrive size={12} />} label={t("status.cacheTokensLabel")} />
+          {hasCacheTokens ? (
+            <>
+              <span>{t("status.cacheHitShort")} </span><b>{typeof cacheHit === "number" && cacheHit > 0 ? cacheHit.toLocaleString() : "0"}</b>
+              <span className="statusbar__cache-sep">|</span>
+              <span>{t("status.cacheMissShort")} </span><b>{typeof cacheMiss === "number" && cacheMiss > 0 ? cacheMiss.toLocaleString() : "0"}</b>
+            </>
+          ) : (
+            <b className="stat__value--empty">-</b>
+          )}
+        </span>
+      </Tooltip>
+    ),
     context: (
       <Tooltip label={t("status.ctxTitle")} className="statusbar__metric statusbar__metric--ctx">
         <span className="stat statusbar__ctx">
@@ -357,8 +414,26 @@ export function StatusBar({
   const renderedItems = visibleItems
     .map((id) => ({ id, node: itemRenderers[id] }))
     .filter(({ node }) => node !== null && node !== undefined && node !== false);
+  const statusbarRef = useRef<HTMLDivElement>(null);
+  // React's onWheel is a passive listener, so preventDefault() there would be
+  // a no-op (plus a console warning). Register a native non-passive listener
+  // instead so wheel-panning the status bar also stops page scroll.
+  useEffect(() => {
+    const el = statusbarRef.current;
+    if (!el) return;
+    const onWheel = (e: WheelEvent) => {
+      if (el.scrollWidth <= el.clientWidth) return;
+      e.preventDefault();
+      el.scrollLeft += e.deltaY;
+    };
+    el.addEventListener("wheel", onWheel, { passive: false });
+    return () => el.removeEventListener("wheel", onWheel);
+  }, []);
   return (
-    <div className={`statusbar statusbar--${metricLabelStyle}`}>
+    <div
+      className={`statusbar statusbar--${metricLabelStyle}`}
+      ref={statusbarRef}
+    >
       <div className="statusbar__group statusbar__group--items">
         <RemoteStatusBarChip
           hosts={remoteHosts}

@@ -352,10 +352,22 @@ interface State {
   deliveryRecoveryActive: boolean;
   discardTurn?: boolean;
   turnStartAt: number;
+  turnDoneAt: number;
+  // (completionTokens + reasoningTokens) accumulated across usage events within
+  // the current turn. Used by the status bar for per-turn output-token display
+  // and TPS calculation.
+  turnOutputTokens: number;
   // Time spent waiting on the user (approval/ask) within the current turn.
   // Closed intervals accumulate here; an open interval uses promptWaitStartedAt
   // so background tabs keep counting while not rendered by Composer.
   turnWaitAccumMs: number;
+  // Last completed turn's values — preserved across turn boundaries so the
+  // status bar can display the most recent completed turn's TPS and token
+  // counts until the current turn finishes and overwrites them.
+  lastTurnOutputTokens: number;
+  lastTurnStartAt: number;
+  lastTurnDoneAt: number;
+  lastTurnWaitAccumMs: number;
   promptWaitStartedAt?: number;
   // promptEventClock() reading taken when the CURRENT pending prompt first
   // arrived. Orders the prompt against reconciliation snapshots so a snapshot
@@ -434,7 +446,13 @@ export const initialState: State = {
   deliveryRecoveryActive: false,
   promptEpoch: 0,
   turnStartAt: 0,
+  turnDoneAt: 0,
+  turnOutputTokens: 0,
   turnWaitAccumMs: 0,
+  lastTurnOutputTokens: 0,
+  lastTurnStartAt: 0,
+  lastTurnDoneAt: 0,
+  lastTurnWaitAccumMs: 0,
   turnTokens: 0,
   turnTotalTokens: 0,
   turnCost: 0,
@@ -1012,13 +1030,15 @@ function endPromptWaitIfIdle(s: State, now = Date.now()): State {
   return endPromptWait(s, now);
 }
 
-function resetTurnTiming(now = Date.now()): Pick<State, "turnStartAt" | "turnWaitAccumMs" | "promptWaitStartedAt" | "turnTokens" | "turnTotalTokens" | "turnCost" | "turnArgChars"> {
+function resetTurnTiming(now = Date.now()): Pick<State, "turnStartAt" | "turnDoneAt" | "turnWaitAccumMs" | "promptWaitStartedAt" | "turnTokens" | "turnTotalTokens" | "turnOutputTokens" | "turnCost" | "turnArgChars"> {
   return {
     turnStartAt: now,
+    turnDoneAt: 0,
     turnWaitAccumMs: 0,
     promptWaitStartedAt: undefined,
     turnTokens: 0,
     turnTotalTokens: 0,
+    turnOutputTokens: 0,
     turnCost: 0,
     turnArgChars: 0,
   };
@@ -1388,6 +1408,7 @@ function applyEvent(s: State, e: WireEvent): State {
       const updateContextGauge = updatesContextGauge(e.usage);
       const used = e.usage && s.context.window && updateContextGauge ? e.usage.promptTokens : s.context.used;
       const turnTokens = s.turnTokens + (e.usage?.completionTokens ?? 0);
+      const turnOutputTokens = s.turnOutputTokens + (e.usage?.completionTokens ?? 0) + (e.usage?.reasoningTokens ?? 0);
       const usageTokens = usageTotalTokens(e.usage);
       const turnTotalTokens = s.turnTotalTokens + usageTokens;
       const sessionTokens = s.sessionTokens + usageTokens;
@@ -1398,7 +1419,7 @@ function applyEvent(s: State, e: WireEvent): State {
       const usage = updateContextGauge ? e.usage : s.usage;
       // The completed round's usage now accounts for the streamed tool-call
       // arguments, so drop the live estimate rather than double-count it.
-      return { ...s, usage, context: { ...s.context, used, sessionTokens }, turnTokens, turnTotalTokens, turnCost, turnArgChars: 0, sessionTokens, sessionCost, sessionCurrency, usageSeq: s.usageSeq + 1 };
+      return { ...s, usage, context: { ...s.context, used, sessionTokens }, turnTokens, turnOutputTokens, turnTotalTokens, turnCost, turnArgChars: 0, sessionTokens, sessionCost, sessionCurrency, usageSeq: s.usageSeq + 1 };
     }
     case "notice":
       return appendNoticeToState(s, e.level ?? "info", e.text ?? "", e.detail, e.code);
@@ -1462,6 +1483,7 @@ function applyEvent(s: State, e: WireEvent): State {
     case "turn_done": {
       if (s.pendingUser !== undefined) s = flushPendingUser(s);
       const now = Date.now();
+      s = { ...s, turnDoneAt: now, lastTurnOutputTokens: s.turnOutputTokens, lastTurnStartAt: s.turnStartAt, lastTurnDoneAt: now, lastTurnWaitAccumMs: s.turnWaitAccumMs };
       const workDurationMs = currentTurnDurationMs(s, now);
       let lastUserIndex = -1;
       let lastAssistantIndex = -1;
@@ -2302,6 +2324,10 @@ export function useController() {
         prev.currentAssistant === next.currentAssistant &&
         prev.pendingUser === next.pendingUser &&
         prev.retry === next.retry;
+      // Text/reasoning-only deltas only update the live stream — which the
+      // frontend reads through its own subscription — so they must not bump the
+      // full controller tree (the run-strip TPS estimate subscribes to the live
+      // stream directly and updates itself).
       if (!streamDeltaOnly) bump();
     }
   }, [bump, notifyLiveListeners]);
