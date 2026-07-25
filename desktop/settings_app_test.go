@@ -929,6 +929,29 @@ func TestSetDesktopCheckUpdatesPersistsToUserConfig(t *testing.T) {
 	}
 }
 
+func TestSetDesktopUpdateChannelPersistsToUserConfig(t *testing.T) {
+	isolateDesktopUserDirs(t)
+
+	app := NewApp()
+	if got := app.Settings().UpdateChannel; got != "stable" {
+		t.Fatalf("Settings().UpdateChannel default = %q, want stable", got)
+	}
+	if err := app.SetDesktopUpdateChannel("canary"); err != nil {
+		t.Fatalf("SetDesktopUpdateChannel: %v", err)
+	}
+	view := app.Settings()
+	if view.UpdateChannel != "preview" {
+		t.Fatalf("Settings().UpdateChannel = %q, want preview", view.UpdateChannel)
+	}
+	cfg := config.LoadForEdit(config.UserConfigPath())
+	if cfg.Desktop.UpdateChannel != "preview" {
+		t.Fatalf("desktop.update_channel = %q, want preview", cfg.Desktop.UpdateChannel)
+	}
+	if cfg.DesktopUpdateChannel() != "preview" {
+		t.Fatalf("DesktopUpdateChannel() = %q, want preview", cfg.DesktopUpdateChannel())
+	}
+}
+
 func TestSetDesktopConversationWidthPersistsToUserConfig(t *testing.T) {
 	isolateDesktopUserDirs(t)
 

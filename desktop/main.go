@@ -43,9 +43,10 @@ var assets embed.FS
 // prompts to update.
 var version = "dev"
 
-// channel selects which updater pointer this build polls, injected via
-// `-X main.channel=canary`. Default "stable" tracks the public release; "canary"
-// tracks the opt-in pre-release line and never crosses over to stable.
+// channel records the build's release line, injected via
+// `-X main.channel=preview`. Default "stable" tracks the public release;
+// "preview" tracks the opt-in test line. Legacy "canary" builds are treated as
+// preview for compatibility.
 var channel = "stable"
 
 // macSelfUpdate is injected as "true" only for Developer ID signed + notarized
@@ -75,7 +76,7 @@ func windowsWebview2GPUDisabled() bool {
 			return false
 		}
 	}
-	return channel == "canary"
+	return channel == "preview" || channel == "canary"
 }
 
 func linuxWebviewGpuPolicy(pattern string) linux.WebviewGpuPolicy {

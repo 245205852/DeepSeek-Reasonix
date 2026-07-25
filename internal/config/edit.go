@@ -350,6 +350,13 @@ func (c *Config) SetDesktopCheckUpdates(enabled bool) error {
 	return nil
 }
 
+// SetDesktopUpdateChannel selects the desktop updater channel. Unknown values
+// fall back to stable; legacy canary/beta/next aliases are normalized to preview.
+func (c *Config) SetDesktopUpdateChannel(channel string) error {
+	c.Desktop.UpdateChannel = NormalizeDesktopUpdateChannel(channel)
+	return nil
+}
+
 // SetColdResumePrune toggles auto-elision of stale tool results on cold resume.
 func (c *Config) SetColdResumePrune(enabled bool) error {
 	c.Agent.ColdResumePrune = &enabled

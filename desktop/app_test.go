@@ -942,6 +942,9 @@ func TestDesktopStartupSettingsUsesUserDesktopPreferencesWithoutFullSettingsPayl
 	if err := userCfg.SetDesktopCheckUpdates(false); err != nil {
 		t.Fatalf("set desktop check updates: %v", err)
 	}
+	if err := userCfg.SetDesktopUpdateChannel("preview"); err != nil {
+		t.Fatalf("set desktop update channel: %v", err)
+	}
 	userCfg.Bot.Enabled = true
 	userCfg.Bot.Allowlist.Enabled = true
 	userCfg.Bot.Allowlist.QQUsers = []string{"alice"}
@@ -950,7 +953,7 @@ func TestDesktopStartupSettingsUsesUserDesktopPreferencesWithoutFullSettingsPayl
 	}
 
 	got := NewApp().DesktopStartupSettings()
-	if got.DesktopLanguage != "en" || got.DesktopLayoutStyle != "classic" || got.DesktopTheme != "dark" || got.DesktopThemeStyle != "graphite" || got.DisplayMode != "standard" || got.StatusBarStyle != "icon" || got.CheckUpdates {
+	if got.DesktopLanguage != "en" || got.DesktopLayoutStyle != "classic" || got.DesktopTheme != "dark" || got.DesktopThemeStyle != "graphite" || got.DisplayMode != "standard" || got.StatusBarStyle != "icon" || got.CheckUpdates || got.UpdateChannel != "preview" {
 		t.Fatalf("DesktopStartupSettings desktop prefs = %+v, want user-level startup prefs", got)
 	}
 	if want := []string{"workspace", "git_branch", "model"}; !reflect.DeepEqual(got.StatusBarItems, want) {

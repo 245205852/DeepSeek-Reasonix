@@ -349,6 +349,7 @@ export function SettingsPanel({
                     <UpdatesSection
                       configPath={s.configPath}
                       checkUpdates={s.checkUpdates}
+                      updateChannel={s.updateChannel}
                       telemetry={s.telemetry !== false}
                       metrics={s.metrics !== false}
                       settingsBusy={busy}
@@ -1360,6 +1361,7 @@ function normalizeSettingsView(view: SettingsView | null | undefined): SettingsV
     statusBarItems: normalizeStatusBarItems(view.statusBarItems),
     conversationWidth: normalizeConversationWidth(view.conversationWidth),
     checkUpdates: view.checkUpdates !== false,
+    updateChannel: view.updateChannel === "preview" ? "preview" : "stable",
   };
 }
 
@@ -6669,6 +6671,7 @@ const mb = (n: number) => (n / MB).toFixed(1);
 function UpdatesSection({
   configPath,
   checkUpdates,
+  updateChannel,
   telemetry,
   metrics,
   settingsBusy,
@@ -6676,13 +6679,15 @@ function UpdatesSection({
 }: {
   configPath: string;
   checkUpdates: boolean;
+  updateChannel: string;
   telemetry: boolean;
   metrics: boolean;
   settingsBusy: boolean;
   applySettings: (fn: () => Promise<void>) => Promise<void>;
 }) {
   const t = useT();
-  const { status, check, download: downloadUpdate, install: installUpdate, openDownload } = useUpdater();
+  const { status, check, download: downloadUpdate, install: installUpdate, openDownload, reset } = useUpdater();
+  const selectedChannel = updateChannel === "preview" ? "preview" : "stable";
   const [version, setVersion] = useState("");
   useEffect(() => {
     app.Version().then(setVersion).catch(() => {});
@@ -6697,6 +6702,28 @@ function UpdatesSection({
 
   return (
     <SettingsSection title={t("updater.title")}>
+      <SettingsField
+        className="settings-field--wide-copy"
+        label={t("updater.channelSettingLabel")}
+        hint={t("updater.channelSettingHint")}
+      >
+        <div className="provider-add-segmented" role="group" aria-label={t("updater.channelSettingLabel")}>
+          {(["stable", "preview"] as const).map((nextChannel) => (
+            <button
+              key={nextChannel}
+              type="button"
+              disabled={settingsBusy || updaterBusy}
+              className={selectedChannel === nextChannel ? "provider-add-segmented__item provider-add-segmented__item--active" : "provider-add-segmented__item"}
+              onClick={() => {
+                if (nextChannel === selectedChannel) return;
+                void applySettings(() => app.SetDesktopUpdateChannel(nextChannel)).then(reset);
+              }}
+            >
+              {nextChannel === "stable" ? t("updater.channelStable") : t("updater.channelPreview")}
+            </button>
+          ))}
+        </div>
+      </SettingsField>
       <SettingsField
         className="settings-field--wide-copy"
         label={t("updater.autoCheckLabel")}
@@ -6731,7 +6758,7 @@ function UpdatesSection({
         />
       </SettingsField>
       <SettingsField label={t("updater.currentVersion", { v: version || "…" })}>
-        <button className="btn btn--small" disabled={updaterBusy} onClick={() => void check()}>
+        <button className="btn btn--small" disabled={updaterBusy} onClick={() => void check(selectedChannel)}>
           {status.kind === "checking" ? t("updater.checking") : t("updater.checkButton")}
         </button>
       </SettingsField>

@@ -71,12 +71,12 @@ func TestWindowsReleaseSignsPayloadBeforeRepackaging(t *testing.T) {
 	}
 	for _, want := range []string{
 		`artifact-configuration-slug: windows-payload`,
-		`(inputs.production_signing_smoke || steps.ver.outputs.channel != 'canary') && 'windows-installer-v2' || 'windows-installer-test-v2'`,
+		`artifact-configuration-slug: windows-installer-v2`,
 		`path: desktop/build/windows/signing-payload/*.exe`,
 		`path: desktop/build/windows/installer-signing-bundle/*.exe`,
 		`github.repository == 'esengine/DeepSeek-Reasonix'`,
-		`SIGNPATH_API_TOKEN is required for official Windows releases`,
-		`signing-policy-slug: ${{ (inputs.production_signing_smoke || steps.ver.outputs.channel != 'canary') && 'release-signing' || 'test-signing-ci-approval' }}`,
+		`SIGNPATH_API_TOKEN is required for public Windows Preview and Stable releases`,
+		`signing-policy-slug: release-signing`,
 		`needs.build.result == 'success' && !inputs.production_signing_smoke`,
 		`wait-for-completion: false`,
 		`steps.submit-windows-payload.outputs.signing-request-id`,
@@ -86,6 +86,15 @@ func TestWindowsReleaseSignsPayloadBeforeRepackaging(t *testing.T) {
 	} {
 		if !strings.Contains(workflow, want) {
 			t.Errorf("desktop release workflow is missing signing contract %q", want)
+		}
+	}
+	for _, forbidden := range []string{
+		`signing-policy-slug: test-signing`,
+		`artifact-configuration-slug: windows-installer-test-v2`,
+		`steps.ver.outputs.channel == 'canary'`,
+	} {
+		if strings.Contains(workflow, forbidden) {
+			t.Errorf("public desktop release workflow contains legacy Canary signing contract %q", forbidden)
 		}
 	}
 

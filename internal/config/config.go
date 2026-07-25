@@ -147,6 +147,7 @@ type DesktopConfig struct {
 	StatusBarItems          []string `toml:"status_bar_items"`           // ordered visible desktop status bar items
 	DefaultToolApprovalMode string   `toml:"default_tool_approval_mode"` // ask|auto|yolo; defaults to auto for newly-created desktop sessions
 	CheckUpdates            *bool    `toml:"check_updates"`              // startup update checks; nil keeps the default enabled
+	UpdateChannel           string   `toml:"update_channel"`             // stable|preview; canary is accepted as a legacy alias for preview
 	Telemetry               *bool    `toml:"telemetry"`                  // anonymous launch ping plus scrubbed next-launch native crash diagnostics; nil keeps the default enabled
 	Metrics                 *bool    `toml:"metrics"`                    // aggregate desktop metrics (anonymous signal/bucket counts, including lifecycle health; no content); nil keeps the default enabled
 	ProviderAccess          []string `toml:"provider_access"`            // desktop-only list of provider entries shown in Settings > Model > Access
@@ -441,6 +442,27 @@ func (c *Config) DesktopCheckUpdates() bool {
 		return true
 	}
 	return *c.Desktop.CheckUpdates
+}
+
+// NormalizeDesktopUpdateChannel returns the canonical desktop update channel.
+// "canary" is accepted for existing configs and older release terminology, but
+// new writes use "preview" because that is the user-facing channel name.
+func NormalizeDesktopUpdateChannel(ch string) string {
+	switch strings.ToLower(strings.TrimSpace(ch)) {
+	case "preview", "canary", "beta", "next":
+		return "preview"
+	default:
+		return "stable"
+	}
+}
+
+// DesktopUpdateChannel returns the desktop channel whose latest pointer should be
+// checked. Missing or unknown configs default to stable.
+func (c *Config) DesktopUpdateChannel() string {
+	if c == nil {
+		return "stable"
+	}
+	return NormalizeDesktopUpdateChannel(c.Desktop.UpdateChannel)
 }
 
 // ColdResumePruneEnabled reports whether stale tool results are elided when a

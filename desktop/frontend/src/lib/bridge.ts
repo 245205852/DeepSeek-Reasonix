@@ -414,6 +414,7 @@ export interface AppBindings {
   GetDesktopZoomFactor(): Promise<number>;
   RestartApplication(): Promise<void>;
   SetDesktopCheckUpdates(enabled: boolean): Promise<void>;
+  SetDesktopUpdateChannel(channel: string): Promise<void>;
   SetDesktopTelemetry(enabled: boolean): Promise<void>;
   SetDesktopMetrics(enabled: boolean): Promise<void>;
   SetExpandThinking(on: boolean): Promise<void>;
@@ -428,9 +429,9 @@ export interface AppBindings {
   // Runtime-only.
   SetBypass(on: boolean): Promise<void>;
   Version(): Promise<string>;
-  CheckUpdate(): Promise<UpdateInfo | null>;
-  DownloadUpdate(): Promise<UpdateDownloadResult | null>;
-  InstallUpdate(): Promise<void>;
+  CheckUpdate(channel: string): Promise<UpdateInfo | null>;
+  DownloadUpdate(channel: string): Promise<UpdateDownloadResult | null>;
+  InstallUpdate(channel: string): Promise<void>;
   ApplyUpdate(): Promise<void>;
   OpenDownloadPage(): Promise<void>;
   NeedsOnboarding(): Promise<boolean>;
@@ -1525,6 +1526,7 @@ function makeMockApp(): AppBindings {
     statusBarItems: [...DEFAULT_STATUS_BAR_ITEMS],
     defaultToolApprovalMode: "auto",
     checkUpdates: true,
+    updateChannel: "stable",
     telemetry: true,
     metrics: true,
     configPath: "~/projects/reasonix/reasonix.toml",
@@ -4140,6 +4142,9 @@ function makeMockApp(): AppBindings {
         async SetDesktopCheckUpdates(enabled: boolean) {
           settings.checkUpdates = enabled;
         },
+        async SetDesktopUpdateChannel(channel: string) {
+          settings.updateChannel = channel === "preview" ? "preview" : "stable";
+        },
         async SetDesktopTelemetry(enabled: boolean) {
           settings.telemetry = enabled;
         },
@@ -4183,7 +4188,7 @@ function makeMockApp(): AppBindings {
     async Version() {
       return "v1.0.0 (browser dev)";
     },
-    async CheckUpdate() {
+    async CheckUpdate(channel: string) {
       // Keep the default browser preview focused on the primary product surface.
       // DownloadUpdate/InstallUpdate remain mocked for explicit updater-flow tests.
       return {
@@ -4191,7 +4196,7 @@ function makeMockApp(): AppBindings {
         current: "v1.0.0",
         latest: "v1.0.0",
         notes: "",
-        channel: "stable",
+        channel: channel === "preview" ? "preview" : "stable",
         canSelfUpdate: false,
         manualOnly: true,
         installMode: "manual",
@@ -4201,7 +4206,7 @@ function makeMockApp(): AppBindings {
         assetSize: 0,
       };
     },
-    async DownloadUpdate() {
+    async DownloadUpdate(channel: string) {
       const total = 12_345_678;
       for (let r = 0; r <= total; r += 1_800_000) {
         emitUpdater({ phase: "downloading", received: Math.min(r, total), total });
@@ -4210,9 +4215,9 @@ function makeMockApp(): AppBindings {
       emitUpdater({ phase: "verifying", received: total, total });
       await delay(500);
       emitUpdater({ phase: "downloaded", received: total, total });
-      return { version: "v1.1.0", channel: "stable", path: "/tmp/reasonix-update", size: total, sha256: "mock" };
+      return { version: "v1.1.0", channel: channel === "preview" ? "preview" : "stable", path: "/tmp/reasonix-update", size: total, sha256: "mock" };
     },
-    async InstallUpdate() {
+    async InstallUpdate(_channel: string) {
       const total = 12_345_678;
       emitUpdater({ phase: "installing", received: total, total });
       await delay(500);
@@ -4220,8 +4225,8 @@ function makeMockApp(): AppBindings {
       // The real shell relaunches here; the mock just stops.
     },
     async ApplyUpdate() {
-      await this.DownloadUpdate();
-      await this.InstallUpdate();
+      await this.DownloadUpdate("");
+      await this.InstallUpdate("");
     },
     async OpenDownloadPage() {
       if (typeof window !== "undefined") {

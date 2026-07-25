@@ -1,6 +1,6 @@
 # Releasing
 
-How Reasonix ships, who can ship what, and the canary-before-stable flow.
+How Reasonix ships, who can ship what, and the Preview-before-Stable flow.
 
 ## Branch model: trunk + tags
 
@@ -10,37 +10,70 @@ How Reasonix ships, who can ship what, and the canary-before-stable flow.
 - **`v1`** is the archived 1.0/legacy line — maintenance only.
 - **Hotfix** an already-released version by branching from its tag, fixing, and tagging again.
 
-There is no separate "production" or "develop" branch by design — the canary channel
-provides the pre-release buffer instead of a long-lived branch.
+There is no separate "production" or "develop" branch by design. Desktop
+Preview provides the fast pre-release buffer instead of a long-lived branch.
 
 ## Channels
 
 | Surface | Stable | Pre-release buffer |
 |---|---|---|
+| Native CLI | GitHub Release `vX.Y.Z` + Homebrew | GitHub prerelease `vX.Y.Z-preview.N` (never Homebrew or GitHub Latest) |
 | npm | `latest` (current 1.x stable) | `next` (rc), `canary` (`npm i reasonix@canary`) |
-| Desktop | R2 `latest/` pointer + release gateway | R2 `canary/` pointer + release gateway proxy (never on the GitHub releases page) |
+| Desktop | R2 `latest/` pointer + release gateway | R2 `preview/` pointer + release gateway proxy (never on the GitHub releases page) |
 
-A canary build is isolated: it **never** moves `latest` / `next` / desktop `latest/`.
-Testers opt in explicitly. (Desktop builds carry `-X main.channel=canary`; npm versions
-ending in `-canary.N` publish under the `canary` dist-tag.)
+Native CLI and Desktop have exactly two user-facing channels:
+
+- **Preview** is the opt-in, fast channel, normally cut every 1–2 days. Native
+  CLI uses an immutable protected `vX.Y.Z-preview.N` tag and a GitHub
+  prerelease; Desktop builds carry `-X main.channel=preview`, use the same
+  version shape, and move only the desktop `preview/` pointer.
+- **Stable** is the weekly channel. It publishes the native CLI GitHub Release
+  and Homebrew cask and moves only the desktop `latest/` pointer.
+
+Both channels are public product builds. Homebrew remains Stable-only because
+it has no separate prerelease channel. On Windows, Desktop Preview and Stable
+use the same verified publisher identity and the SignPath `release-signing`
+policy. Certificate trust must not be used to communicate release quality.
+`test-signing` is reserved for internal CI/signing validation and must never
+publish the public Preview pointer.
+
+An RC is not a third user-facing channel. If a weekly candidate needs a freeze,
+use a surface-specific `vX.Y.Z-rc.N` or `desktop-vX.Y.Z-rc.N` tag as an
+internal candidate checkpoint. Neither moves a rolling pointer or Homebrew.
+npm retains its separate `next` and `canary` dist-tags.
+
+### Desktop channel compatibility
+
+| Input/client state | Effective behavior |
+|---|---|
+| No `desktop.update_channel` setting | Stable |
+| `stable` | Stable |
+| `preview` | Preview |
+| Legacy `canary`, `beta`, or `next` setting | Normalized as Preview; future writes persist `preview` |
+| Unknown value | Stable (fail closed) |
+| Older client polling `canary/latest.json` | Receives the mirrored Preview pointer |
+| New client polling Preview | Tries `preview/` first, then legacy `canary/` during migration |
 
 ## Who can release what
 
 | Action | Who | Mechanism |
 |---|---|---|
-| **Cut a canary** | any maintainer (write access) | `workflow_dispatch`, runs without a production approval |
+| **Cut Native CLI Preview** | release-tag creator + configured reviewer | create and push a protected `vX.Y.Z-preview.N` tag; a minimal relay dispatches **Release** on protected `main-v2`, which classifies it as Preview, pauses on the `canary` environment, and publishes a GitHub prerelease without touching Homebrew or Latest |
+| **Cut Desktop Preview** | maintainer + configured reviewer | dispatch **Release desktop** on protected `main-v2`; the `canary` GitHub environment is retained as a compatibility name and must have the same required reviewers as `release` |
 | **Ship stable** | release-tag creators + one configured reviewer | atomically push the three stable tags; a minimal tag relay dispatches **Release stable** on protected `main-v2`, which requests one GitHub `release`-environment approval before every channel publishes |
 | **Ship a standalone RC** | release-tag creators + one configured reviewer | push the surface-specific prerelease tag; a minimal relay dispatches the standalone workflow on protected `main-v2`, which requests one `release` approval |
 
-So a maintainer can dispatch a canary anytime. A stable release pauses once in
-the **Release stable** run until a configured reviewer approves the GitHub
-`release` environment; the CLI, npm, and Desktop jobs then continue without
-another human approval. SignPath still verifies the trusted GitHub origin,
-scans the Windows artifacts, signs every installed executable, rebuilds the
-packages, and signs the outer installers.
+Preview remains operationally fast, but its public artifacts are not an
+unreviewed or test-certificate path. Native CLI Preview tag runs and Desktop
+Preview dispatches pause at the legacy `canary` environment approval. Desktop
+then uses the production SignPath policy. A stable release pauses once in
+**Release stable** until a configured reviewer approves the `release`
+environment. The jobs then continue without another human approval: SignPath
+verifies the trusted GitHub origin, scans and signs every installed executable,
+rebuilds the packages, and signs the outer installers.
 
-> Repo settings backing this: Environments → `release` has the release owners as
-> required reviewers, and the release-tag ruleset restricts
+> Repo settings backing this: Environments → `release` and `canary` have the
+> same release owners as required reviewers, and the release-tag ruleset restricts
 > `v*`/`npm-v*`/`desktop-v*` creation, update, and deletion. Only the
 > orchestrator and standalone RC/recovery paths reference the protected
 > environment.
@@ -87,17 +120,25 @@ strict separation from repository writers is required.
    `/changelog/` and both CLI and Desktop GitHub Releases; the desktop app links
    to that web history from Settings → Updates. A missing catalog entry still
    blocks stable publication.
-3. **Cut a canary** before the intended release (e.g. heading for `1.4.0`):
-   - Desktop: Actions → **Release desktop** → `channel: canary`, `base_version: 1.4.0`
+3. **Cut Preview** during the intended release cycle (e.g. heading for `1.4.0`):
+   - Native CLI: create and push the next protected Preview tag:
+     ```sh
+     git tag v1.4.0-preview.1
+     git push origin v1.4.0-preview.1
+     ```
+   - Desktop: Actions → **Release desktop** → `channel: preview`, `base_version: 1.4.0`
    - CLI: Actions → **Release npm** → `base_version: 1.4.0`
-   - Publishes `1.4.0-canary.N` to the desktop R2 `canary/` pointer (no GitHub release) and npm `@canary`.
-4. **Test** — testers install `reasonix@canary` (CLI) or grab the desktop canary
-   build from its R2 link, and report bugs.
-5. **Fix** on `main-v2` via PRs; re-cut the canary as needed (`canary.N` bumps).
+   - Publishes the native CLI as a GitHub prerelease and Desktop to R2
+     `preview/` (no Desktop GitHub release), mirroring Desktop `canary/` only
+     for older clients. npm still publishes its independent `@canary` channel.
+4. **Test** — native CLI testers download the immutable GitHub prerelease;
+   desktop users opt into Preview in Settings → Updates; npm CLI testers
+   install `reasonix@canary`.
+5. **Fix** on `main-v2` via PRs; re-cut Preview as needed (`preview.N` bumps).
    Re-run **Prepare release notes** after material fixes. Reuse the still-open
    release-bound PR when possible; otherwise the workflow updates the same
    dedicated release-notes branch and PR without publishing anything.
-6. **Ship stable** when the canary is clean and the release-notes PR is merged —
+6. **Ship stable** when Preview is clean and the release-notes PR is merged —
    create the three tags locally, then push them atomically:
    ```sh
    git tag v1.4.0
@@ -127,7 +168,7 @@ strict separation from repository writers is required.
    both GitHub Releases contain their required assets and npm `latest` exactly
    matches the approved version; missing artifacts can no longer produce a green
    stable run.
-7. **Next cycle** — the canary rolls on toward `1.5.0`.
+7. **Next cycle** — Preview rolls on toward `1.5.0`.
 
 ### Release-PR frequency rule
 
@@ -147,8 +188,9 @@ strict separation from repository writers is required.
 
 ## Notes
 
-- Canary version numbers use the workflow `run_number`, so the desktop and CLI canary
-  numbers differ (e.g. `canary.11` vs `canary.2`). Only monotonicity per channel matters.
+- Native CLI Preview uses the protected tag's explicit `N`; Desktop Preview and
+  npm Canary use their workflow `run_number`, so suffixes can differ. Only
+  monotonicity per surface matters.
 - A stable `-rc` tag (e.g. `npm-v1.4.0-rc.1`) still ships under `next`, not `canary`.
 - Recover an interrupted stable release by dispatching **Release stable** from
   protected `main-v2` with the existing `vX.Y.Z` tag. Recovery requires the CLI,
@@ -156,38 +198,35 @@ strict separation from repository writers is required.
   then uses the same single approval and postflight. Never move or recreate the
   published tags to pick up a workflow fix.
 - Windows release signing uses SignPath trusted-build, origin verification, and
-  malware scanning. Keep the checked-in `windows-payload`,
-  `windows-installer-test-v2`, and `windows-installer-v2` artifact
-  configurations synchronized with the matching SignPath project slugs before
-  merging a workflow that references them. Keep the legacy
-  `windows-installer` configuration available for older release refs.
+  malware scanning. Keep the checked-in `windows-payload` and
+  `windows-installer-v2` artifact configurations synchronized with the matching
+  SignPath project slugs before merging a workflow that references them. Keep
+  the legacy `windows-installer` and internal test configurations available for
+  older release refs and signing validation, but never use them for public
+  Preview or Stable artifacts.
   `windows-payload` signs the desktop, Guard, launcher, update helper, CLI, and
-  generated NSIS uninstaller. Canary uses `windows-installer-test-v2` to sign
-  the rebuilt NSIS container because SignPath test certificates intentionally
-  do not chain to a Windows trusted root; the Windows runner still requires
-  signatures on all payload files and verifies exact portable-package hashes.
-  Stable and RC releases use `windows-installer-v2`, which verifies the trusted
-  payload signatures before signing the outer installer. The release
-  certificate requires SignPath approval for every request. The stable release
-  reaches Windows signing only after the single GitHub `release` environment
-  approval; a dedicated SignPath CI identity then approves each payload and
-  installer request through the SignPath API. Canary uses the
-  approval-enabled `test-signing-ci-approval` policy with the test certificate,
-  so the same automation is exercised without consuming the release
-  certificate. SignPath must restrict both policies to the trusted
-  `.github/workflows/release-desktop.yml` build definition. Human SignPath
-  approvers remain available for emergency recovery, but normal releases do
-  not require additional SignPath clicks. The production policy must allow the
-  exact branch `main-v2` only. Stable and prerelease tag events are relayed to
-  that protected control plane; do not replace the exact match with `**`, `v*`,
-  or `desktop-v*`.
+  generated NSIS uninstaller. `windows-installer-v2` verifies those trusted
+  payload signatures before signing the rebuilt outer installer. The release
+  certificate requires SignPath approval for every request. Preview and Stable
+  reach Windows signing only after their GitHub environment approval; a
+  dedicated SignPath CI identity then approves each payload and installer
+  request through the SignPath API. Human SignPath approvers remain available
+  for emergency recovery, but normal releases do not require additional
+  SignPath clicks. SignPath must restrict `release-signing` to the trusted
+  `.github/workflows/release-desktop.yml` build definition and exact `main-v2`
+  branch. Stable and prerelease tag events are relayed to that protected control
+  plane; do not replace the exact branch match with `**`, `v*`, or
+  `desktop-v*`. Set `SIGNPATH_RELEASE_SIGNING_READY=true` only after AMD64 and
+  ARM64 pass a production certificate smoke run; Preview and Stable both fail
+  closed while the production signing path is not ready.
 - Desktop in-app updates use R2 first, then the `crash.reasonix.io` desktop release
   gateway. The gateway resolves the `desktop-v*` release line directly and never uses
   GitHub's repository-wide `/releases/latest`, because plain `v*` tags are the CLI
   release line. Stable CLI releases also carry a compatibility `latest.json` asset so
   older desktop builds that still use GitHub `latest` do not 404.
-- Canary uses R2 plus the same gateway proxy for the `canary/` pointer; it never
-  appears on the GitHub releases page.
+- Preview uses R2 plus the same gateway proxy for `preview/`; it never appears
+  on the GitHub releases page. Releases also mirror the legacy `canary/`
+  pointer, and the gateway accepts `/canary/`, until old desktop clients age out.
 - DeepSeek is an editorial drafting dependency, not a runtime or publishing dependency.
   The API key is available only to the manually dispatched preparation workflow; tag
   workflows publish the reviewed JSON already committed to `main-v2` and never call a model.

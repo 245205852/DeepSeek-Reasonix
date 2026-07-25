@@ -14,7 +14,7 @@
 #
 # Usage: scripts/desktop-build.sh <os/arch> <version> [channel]
 #   e.g. scripts/desktop-build.sh darwin/arm64 v1.1.0
-#        scripts/desktop-build.sh darwin/arm64 v1.5.0-canary.20260608.42 canary
+#        scripts/desktop-build.sh darwin/arm64 v1.5.0-preview.42 preview
 set -euo pipefail
 
 PLATFORM="${1:?usage: desktop-build.sh <os/arch> <version> [channel]}"
