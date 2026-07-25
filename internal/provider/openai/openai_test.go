@@ -1376,3 +1376,62 @@ func TestBuildRequestDefaultsEmptyToolParameters(t *testing.T) {
 		t.Fatalf("nil parameters should default to %s, got %s in %s", want, got, body)
 	}
 }
+
+
+// TestNormaliseUsageMiniMax verifies that normaliseUsage correctly reads
+// Anthropic-style cache fields returned by MiniMax on its OpenAI-compatible
+// endpoint (input_tokens / output_tokens / cache_read_input_tokens /
+// cache_creation_input_tokens).
+func TestNormaliseUsageMiniMax(t *testing.T) {
+	// MiniMax cache-hit response (OpenAI-compatible endpoint)
+	hit := normaliseUsage(&wireUsage{
+		InputTokens:          21,
+		OutputTokens:         393,
+		CacheCreationInputTokens: 0,
+		CacheReadInputTokens: 188086,
+	})
+	if hit.PromptTokens != 21 {
+		t.Errorf("PromptTokens = %d, want 21", hit.PromptTokens)
+	}
+	if hit.CompletionTokens != 393 {
+		t.Errorf("CompletionTokens = %d, want 393", hit.CompletionTokens)
+	}
+	if hit.CacheHitTokens != 188086 {
+		t.Errorf("CacheHitTokens = %d, want 188086", hit.CacheHitTokens)
+	}
+	if hit.CacheMissTokens != 0 {
+		t.Errorf("CacheMissTokens = %d, want 0", hit.CacheMissTokens)
+	}
+
+	// MiniMax cache-creation response
+	creation := normaliseUsage(&wireUsage{
+		InputTokens:          21,
+		OutputTokens:         393,
+		CacheCreationInputTokens: 188086,
+		CacheReadInputTokens: 0,
+	})
+	if creation.CacheHitTokens != 0 {
+		t.Errorf("CacheHitTokens = %d, want 0", creation.CacheHitTokens)
+	}
+	if creation.CacheMissTokens != 188086 {
+		t.Errorf("CacheMissTokens = %d, want 188086", creation.CacheMissTokens)
+	}
+
+	// DeepSeek-style fields should still take priority
+	deepseek := normaliseUsage(&wireUsage{
+		PromptTokens:          100,
+		CompletionTokens:      50,
+		PromptCacheHitTokens:  30,
+		PromptCacheMissTokens: 70,
+		CacheReadInputTokens:  999, // should be ignored
+	})
+	if deepseek.PromptTokens != 100 {
+		t.Errorf("PromptTokens = %d, want 100", deepseek.PromptTokens)
+	}
+	if deepseek.CacheHitTokens != 30 {
+		t.Errorf("CacheHitTokens = %d, want 30", deepseek.CacheHitTokens)
+	}
+	if deepseek.CacheMissTokens != 70 {
+		t.Errorf("CacheMissTokens = %d, want 70", deepseek.CacheMissTokens)
+	}
+}

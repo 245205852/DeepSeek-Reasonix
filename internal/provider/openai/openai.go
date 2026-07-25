@@ -811,21 +811,40 @@ func (c *client) readStream(ctx context.Context, resp *http.Response, out chan<-
 // Whichever side reports non-zero wins; miss is derived when only hit is given.
 // Reasoning tokens land in completion_tokens_details on thinking-mode models.
 func normaliseUsage(u *wireUsage) *provider.Usage {
+	// Resolve prompt/completion tokens — fall back to Anthropic-style field names
+	// used by MiniMax and similar providers on the OpenAI-compatible endpoint.
+	prompt := u.PromptTokens
+	if prompt == 0 {
+		prompt = u.InputTokens
+	}
+	completion := u.CompletionTokens
+	if completion == 0 {
+		completion = u.OutputTokens
+	}
+
+	// Resolve cache tokens: try DeepSeek top-level, then OpenAI nested details,
+	// then Anthropic-style fields (MiniMax on OpenAI-compatible endpoint).
 	hit := u.PromptCacheHitTokens
 	miss := u.PromptCacheMissTokens
 	if hit == 0 && u.PromptTokensDetails != nil {
 		hit = u.PromptTokensDetails.CachedTokens
 	}
-	if miss == 0 && hit > 0 && u.PromptTokens > hit {
-		miss = u.PromptTokens - hit
+	if hit == 0 {
+		hit = u.CacheReadInputTokens
+	}
+	if miss == 0 {
+		miss = u.CacheCreationInputTokens
+	}
+	if miss == 0 && hit > 0 && prompt > hit {
+		miss = prompt - hit
 	}
 	reasoning := 0
 	if u.CompletionTokensDetails != nil {
 		reasoning = u.CompletionTokensDetails.ReasoningTokens
 	}
 	return &provider.Usage{
-		PromptTokens:     u.PromptTokens,
-		CompletionTokens: u.CompletionTokens,
+		PromptTokens:     prompt,
+		CompletionTokens: completion,
 		TotalTokens:      u.TotalTokens,
 		CacheHitTokens:   hit,
 		CacheMissTokens:  miss,
@@ -958,11 +977,15 @@ type streamResponse struct {
 // OpenAI/MiMo nested details — normaliseUsage chooses whichever side
 // reports values.
 type wireUsage struct {
-	PromptTokens          int `json:"prompt_tokens"`
-	CompletionTokens      int `json:"completion_tokens"`
-	TotalTokens           int `json:"total_tokens"`
-	PromptCacheHitTokens  int `json:"prompt_cache_hit_tokens"`
-	PromptCacheMissTokens int `json:"prompt_cache_miss_tokens"`
+	PromptTokens              int `json:"prompt_tokens"`
+	CompletionTokens          int `json:"completion_tokens"`
+	TotalTokens               int `json:"total_tokens"`
+	InputTokens               int `json:"input_tokens"`
+	OutputTokens              int `json:"output_tokens"`
+	PromptCacheHitTokens      int `json:"prompt_cache_hit_tokens"`
+	PromptCacheMissTokens     int `json:"prompt_cache_miss_tokens"`
+	CacheCreationInputTokens  int `json:"cache_creation_input_tokens"`
+	CacheReadInputTokens      int `json:"cache_read_input_tokens"`
 	PromptTokensDetails   *struct {
 		CachedTokens int `json:"cached_tokens"`
 	} `json:"prompt_tokens_details"`
