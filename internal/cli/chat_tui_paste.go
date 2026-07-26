@@ -80,6 +80,78 @@ func (m *chatTUI) expandPastedBlocks(displayed string) string {
 		}
 		sent = strings.ReplaceAll(sent, block.label, repl)
 	}
+	// Recover orphaned paste labels that lost their block entries during a
+	// session reload.  Each label follows the format
+	// [Pasted text #N · M lines]; the original content was expanded into the
+	// transcript the last time it was submitted.  Scan the conversation
+	// history for a prior user message carrying the matching Begin/End block
+	// and re-expand from there.  Labels with no recoverable content are
+	// stripped so the model never sees a raw placeholder.
+	sent = m.recoverOrphanedPasteLabels(sent)
+	return sent
+}
+
+var orphanedPasteLabelRe = regexp.MustCompile(`\[Pasted text #(\d+) · \d+ lines\]`)
+
+// recoverOrphanedPasteLabels restores paste content for labels whose
+// pastedBlock was lost (typically after a session reload cleared the in-memory
+// pastedBlocks slice).  It scans the conversation history for a prior
+// submission that contains the expanded block and reconstructs it.
+func (m *chatTUI) recoverOrphanedPasteLabels(sent string) string {
+	// Fast path: no label-like tokens at all.
+	if !strings.Contains(sent, "[Pasted text #") {
+		return sent
+	}
+	matches := orphanedPasteLabelRe.FindAllStringSubmatchIndex(sent, -1)
+	if len(matches) == 0 {
+		return sent
+	}
+	// Collect the labels we already know about so we only attempt recovery
+	// for genuinely orphaned ones.
+	known := make(map[string]bool, len(m.pastedBlocks))
+	for _, b := range m.pastedBlocks {
+		known[b.label] = true
+	}
+	// Scan conversation history once for all orphaned labels.
+	var history []string
+	for _, idx := range matches {
+		label := sent[idx[0]:idx[1]]
+		if known[label] {
+			continue
+		}
+		if history == nil {
+			for _, msg := range m.ctrl.History() {
+				if msg.Role == "user" || msg.Role == "assistant" {
+					history = append(history, msg.Content)
+				}
+			}
+		}
+		beginMarker := "--- Begin " + label + " ---"
+		endMarker := "--- End " + label + " ---"
+		recovered := ""
+		for _, h := range history {
+			bi := strings.Index(h, beginMarker)
+			if bi < 0 {
+				continue
+			}
+			bi += len(beginMarker)
+			ei := strings.Index(h[bi:], endMarker)
+			if ei < 0 {
+				continue
+			}
+			recovered = strings.TrimSpace(h[bi : bi+ei])
+			break
+		}
+		if recovered != "" {
+			sent = strings.ReplaceAll(sent, label,
+				fmt.Sprintf("%s\n\n--- Begin %s ---\n%s\n--- End %s ---", label, label, recovered, label))
+		} else {
+			// Content not recoverable — strip the raw placeholder so the model
+			// does not receive an unexpanded token it cannot interpret.
+			sent = strings.ReplaceAll(sent, label, "")
+			sent = strings.TrimSpace(sent)
+		}
+	}
 	return sent
 }
 
