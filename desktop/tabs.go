@@ -2220,6 +2220,7 @@ func (a *App) openTopicTabWithActivation(scope, workspaceRoot, topicID, sessionP
 			a.mu.Unlock()
 			return TabMeta{}, err
 		}
+		pinSessionBranchMeta(sessionPath, scope, actualRoot, topicID, topicTitle)
 	}
 	profile := loadTabSessionProfile(sessionPath)
 	tab := &WorkspaceTab{
@@ -2477,6 +2478,7 @@ func (a *App) ensureBlankTab(scope, workspaceRoot, forcedTokenMode string) (TabM
 			a.mu.Unlock()
 			return TabMeta{}, err
 		}
+		pinSessionBranchMeta(prePath, scope, actualRoot, topicID, topicTitle)
 		created.SessionPath = prePath
 		a.saveTabsLocked()
 		meta := a.tabMeta(created, true)
@@ -2526,6 +2528,7 @@ func (a *App) ensureBlankTab(scope, workspaceRoot, forcedTokenMode string) (TabM
 		a.mu.Unlock()
 		return TabMeta{}, err
 	}
+	pinSessionBranchMeta(prePath, scope, actualRoot, topicID, topicTitle)
 	created.SessionPath = prePath
 	a.saveTabsLocked()
 	meta := a.tabMeta(created, true)
@@ -2580,6 +2583,23 @@ func createEmptySessionFile(dir, model string) (string, error) {
 		return "", err
 	}
 	return "", fmt.Errorf("create empty session file: exhausted filename retries")
+}
+
+// pinSessionBranchMeta stores the workspace scope, root, and topic on a
+// newly created session's BranchMeta sidecar so that the tab controller
+// build (reconcileTabWithPinnedSessionMeta) does not reclassify a
+// project-scoped tab as global (issue #6914).
+func pinSessionBranchMeta(sessionPath, scope, workspaceRoot, topicID, topicTitle string) {
+	m, ok, err := agent.LoadBranchMeta(sessionPath)
+	if err != nil || !ok {
+		return
+	}
+	m.Scope = scope
+	m.WorkspaceRoot = workspaceRoot
+	m.TopicID = topicID
+	m.TopicTitle = topicTitle
+	m.UpdatedAt = time.Now().UTC()
+	_ = agent.SaveBranchMeta(sessionPath, m)
 }
 
 func blankTabSessionPathHasNoContent(tab *WorkspaceTab) bool {

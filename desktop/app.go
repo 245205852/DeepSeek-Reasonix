@@ -3408,6 +3408,7 @@ func (a *App) openTransientBlankRuntime(scope, workspaceRoot string) error {
 	if err != nil {
 		return err
 	}
+	pinSessionBranchMeta(sessionPath, scope, actualRoot, "", defaultTopicTitle)
 	tab := &WorkspaceTab{
 		Scope:            scope,
 		WorkspaceRoot:    actualRoot,
