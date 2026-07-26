@@ -87,11 +87,12 @@ type goalAdvanceInput struct {
 // state to persist (built under mu when something changed); notice is surfaced
 // to the user; cont reports whether the goal loop should continue.
 type goalAdvanceResult struct {
-	notice string
-	cont   bool
-	path   string
-	data   []byte
-	ok     bool
+	notice    string
+	intercept string
+	cont      bool
+	path      string
+	data      []byte
+	ok        bool
 }
 
 // goalStatePath derives a session's persisted goal-state sidecar.
@@ -256,6 +257,16 @@ func (g *goalMachine) takeIntercept() (string, bool) {
 	return msg, true
 }
 
+// setIntercept stores a continuation-turn override for the next loop
+// iteration. advance() returns the intercept via goalAdvanceResult and the
+// caller (advanceGoalAfterTurn) stores it here so takeIntercept can consume
+// it in the next synthetic turn.
+func (g *goalMachine) setIntercept(msg string) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.interceptMsg = msg
+}
+
 // advance runs one continuation step of the goal FSM from already-gathered
 // inputs. It mutates the machine, decides whether to keep looping, and builds
 // the state to persist when the goal reached a terminal/notice point.
@@ -267,20 +278,21 @@ func (g *goalMachine) advance(in goalAdvanceInput) goalAdvanceResult {
 	}
 	g.turns++
 	var notice string
+	var intercept string
 	switch in.status {
 	case GoalStatusComplete:
 		if incomplete := formatIncompleteTodos(in.todos, in.readiness); len(incomplete) > 0 && (g.strict || g.intercepts == 0) {
 			// In strict mode every claim is blocked until todos are done;
 			// otherwise only the first consecutive claim is intercepted.
 			g.intercepts++
-			g.interceptMsg = incomplete
+			intercept = incomplete
 			break
 		}
 		// Todos are all done — in strict mode run self-check before final
 		// completion. Non-strict mode completes immediately.
 		if g.strict && !g.selfCheckDone {
 			g.selfCheckDone = true
-			g.interceptMsg = goalSelfCheckTurn
+			intercept = goalSelfCheckTurn
 			break
 		}
 		// Self-check passed — complete the goal.
@@ -291,7 +303,6 @@ func (g *goalMachine) advance(in goalAdvanceInput) goalAdvanceResult {
 		g.status = GoalStatusComplete
 		g.blocks = 0
 		g.block = ""
-		g.interceptMsg = ""
 		notice = goalCompleteNotice
 	case GoalStatusBlocked:
 		reason := cleanGoalBlockReason(in.reason)
@@ -318,14 +329,14 @@ func (g *goalMachine) advance(in goalAdvanceInput) goalAdvanceResult {
 	// Idle detection: if the agent went multiple turns without any tool calls,
 	// inject a reminder to make progress (unless the goal is already completing
 	// or hitting the auto-turn limit).
-	if notice == "" && g.interceptMsg == "" {
+	if notice == "" && intercept == "" {
 		if in.toolCalled {
 			g.idleTurns = 0
 		} else {
 			g.idleTurns++
 			if g.idleTurns >= maxGoalIdleTurns {
 				g.idleTurns = 0
-				g.interceptMsg = "No tool calls in recent turns. Either make progress with tools or signal [goal:blocked:<reason>]."
+				intercept = "No tool calls in recent turns. Either make progress with tools or signal [goal:blocked:<reason>]."
 			}
 		}
 	}
@@ -338,7 +349,7 @@ func (g *goalMachine) advance(in goalAdvanceInput) goalAdvanceResult {
 		g.idleTurns = 0
 		notice = g.block
 	}
-	res := goalAdvanceResult{notice: notice, cont: notice == ""}
+	res := goalAdvanceResult{notice: notice, intercept: intercept, cont: notice == ""}
 	if notice != "" {
 		res.path, res.data, res.ok = g.buildStateLocked(in.todos)
 	}

@@ -387,6 +387,9 @@ func (o *turnOrchestrator) advanceGoalAfterTurn() bool {
 		todos:      c.goalTodos(),
 		readiness:  readiness,
 	})
+	if res.intercept != "" {
+		c.goals.setIntercept(res.intercept)
+	}
 	c.persistGoalState(res.path, res.data, res.ok)
 	if res.notice != "" {
 		c.finalizeAutoResearchTask(autoResearchTaskID, res.notice)
