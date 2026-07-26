@@ -4410,6 +4410,17 @@ a[href] {
 .md a:hover {
   text-decoration: underline;
 }
+.md .md-rich-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  max-width: 100%;
+  vertical-align: -0.12em;
+  white-space: nowrap;
+}
+.md .md-rich-link svg {
+  flex: 0 0 auto;
+}
 .md blockquote {
   margin: 0 0 12px;
   padding: 2px 14px;
