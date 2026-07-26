@@ -477,6 +477,20 @@ func (s *Session) checkSnapshotWrite(path string, next []provider.Message, nextD
 			repairPending = false
 		}
 	}
+	if !appendShaped && baseState.ok && baseState.revisionKnown &&
+		baseState.revision == currentRevision && !contentUnchanged {
+		// Future-tense: the revision ledger proves the same runtime still owns
+		// this session.  The byte-level prefix check may disagree because of
+		// normalisation / JSON round-trip / local-only metadata that a prior
+		// mid-turn snapshot did not contain, but the revision CAS vouches that
+		// no external writer has touched the transcript.  Anchor on Delta (the
+		// current digest), not Gamma (the on-disk bytes).  The caller will use
+		// a full rewrite — not the append shortcut — because we cannot prove a
+		// byte-exact prefix, but the rewrite is safe and won't fork a spurious
+		// recovery branch.
+		// Ref: #6027 Phase 3, Agda PR #8611 (nTarget = nOld + nctel - 1).
+		appendShaped = true
+	}
 	if appendShaped {
 		// An unknown-revision baseline (meta sidecar unreadable at load) cannot
 		// vouch for revision equality; the digest/prefix checks above already

@@ -3,6 +3,7 @@ package agent
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -1534,19 +1535,25 @@ func TestSaveSnapshotRejectsOwnedNonPrefixRewrite(t *testing.T) {
 		{Role: provider.RoleSystem, Content: "sys"},
 		{Role: provider.RoleUser, Content: "summarized first"},
 	})
-	if err := s.SaveSnapshot(path); !errors.Is(err, ErrSessionSnapshotConflict) {
-		t.Fatalf("SaveSnapshot owned rewrite err = %v, want ErrSessionSnapshotConflict", err)
+	// Future-tense: when the revision ledger proves the same runtime still owns
+	// the session, SaveSnapshot allows the write (via full rewrite) even though
+	// the content is not a byte-exact prefix of disk.  The revision CAS vouches
+	// that no external writer intervened; the byte-level mismatch is internal
+	// (normalisation, local-only metadata, or an intentional in-place mutation).
+	// Ref: #6027 Phase 3, Agda PR #8611.
+	if err := s.SaveSnapshot(path); err != nil {
+		t.Fatalf("SaveSnapshot owned non-prefix rewrite with same-revision CAS: %v", err)
 	}
 
 	loaded, err := LoadSession(path)
 	if err != nil {
 		t.Fatalf("LoadSession: %v", err)
 	}
-	if got := len(loaded.Messages); got != 3 {
-		t.Fatalf("message count after rejected snapshot rewrite = %d, want 3", got)
+	if got := len(loaded.Messages); got != 2 {
+		t.Fatalf("message count after accepted snapshot rewrite = %d, want 2", got)
 	}
-	if got := loaded.Messages[2].Content; got != "one" {
-		t.Fatalf("last message after rejected snapshot rewrite = %q, want %q", got, "one")
+	if got := loaded.Messages[1].Content; got != "summarized first" {
+		t.Fatalf("rewritten content = %q, want %q", got, "summarized first")
 	}
 }
 
@@ -1925,6 +1932,68 @@ func TestSaveRecoveryBranchDoesNotCascadeRecoveryFilename(t *testing.T) {
 	}
 	if len(base) > 140 {
 		t.Fatalf("recovery basename length = %d (%q), want bounded", len(base), base)
+	}
+}
+
+// TestSaveSnapshotSameRevisionAllowsNonPrefixAppend reproduces the scenario from
+// #6948: a recovery branch whose snapshot saves systematically diverged because
+// checkSnapshotWrite's byte-level prefix comparison failed on messages carrying
+// local-only metadata (LocalOnly + interrupted_turn) that survived JSON round-trip
+// with subtle differences.  After the future-tense fix, same-revision CAS proves
+// same-runtime ownership and the save proceeds as a full rewrite instead of
+// forking another recovery branch.
+func TestSaveSnapshotSameRevisionAllowsNonPrefixAppend(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "session.jsonl")
+
+	// Simulate a mid-turn snapshot that captured an interrupted tool turn.
+	// The LocalOnly + interrupted_turn metadata is the byte-level difference
+	// that makes the normalized disk view diverge from the in-memory snapshot.
+	s0 := NewSession("sys")
+	s0.Add(provider.Message{Role: provider.RoleUser, Content: "edit file"})
+	s0.Add(provider.Message{Role: provider.RoleAssistant, Content: "ok", ToolCalls: []provider.ToolCall{
+		{ID: "call_1", Name: "edit", Arguments: `{"file":"f","old":"a","new":"b"}`},
+	}})
+	s0.Add(provider.Message{Role: provider.RoleTool, ToolCallID: "call_1", Name: "edit",
+		Content: "edited f (+1 -1)", WorkDurationMs: 1234})
+	// Simulate interrupted turn: mid-turn snapshot with LocalOnly recovery placeholder.
+	s0.Add(provider.Message{Role: provider.RoleTool, ToolCallID: "call_2", Name: "bash",
+		LocalOnly: true, WorkDurationMs: 0,
+		InterruptedTurn: &provider.InterruptedTurnRecovery{
+			Pending: true, CompletedTools: []provider.InterruptedToolSummary{
+				{ID: "call_1", Name: "edit", Added: 1, Removed: 1},
+			},
+		},
+	})
+	if err := s0.Save(path); err != nil {
+		t.Fatalf("Save base: %v", err)
+	}
+
+	// Simulate recovery: load the saved transcript into a new session, then
+	// add more messages.  Every subsequent SaveSnapshot must succeed (no
+	// diverged conflict) because the revision ledger proves same-runtime
+	// ownership.
+	for turn := 0; turn < 5; turn++ {
+		s, err := LoadSession(path)
+		if err != nil {
+			t.Fatalf("LoadSession turn %d: %v", turn, err)
+		}
+		s.Add(provider.Message{Role: provider.RoleUser, Content: fmt.Sprintf("msg %d", turn)})
+		s.Add(provider.Message{Role: provider.RoleAssistant, Content: fmt.Sprintf("reply %d", turn)})
+		if err := s.SaveSnapshot(path); err != nil {
+			t.Fatalf("SaveSnapshot turn %d: %v", turn, err)
+		}
+	}
+
+	// Final transcript must contain all turns.
+	final, err := LoadSession(path)
+	if err != nil {
+		t.Fatalf("LoadSession final: %v", err)
+	}
+	got := len(final.Messages)
+	// base: sys + user + asst(tc) + tool + LocalOnly = 5, + 5*2 = 15
+	if got < 10 {
+		t.Fatalf("final message count = %d, want >= 10", got)
 	}
 }
 
