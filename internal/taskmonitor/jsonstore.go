@@ -204,20 +204,39 @@ func (s *FileStore) SaveTask(ctx context.Context, projectDir string, snap TaskSn
 		return err
 	}
 	taskDir := filepath.Join(root, id)
-	// Read current version for CAS
+	if err := os.MkdirAll(taskDir, 0o755); err != nil {
+		return fmt.Errorf("save task: %w", err)
+	}
+
+	target := filepath.Join(taskDir, "snapshot.json")
+	// Read current version for CAS check
 	current, err := s.readSnapshot(taskDir)
 	if err == nil && snap.Version <= current.Version {
 		return fmt.Errorf("save task: version conflict: stored=%d, given=%d", current.Version, snap.Version)
 	}
-	// Ensure directory exists
-	if err := os.MkdirAll(taskDir, 0o755); err != nil {
-		return fmt.Errorf("save task: %w", err)
-	}
+
 	data, err := json.Marshal(snap)
 	if err != nil {
 		return fmt.Errorf("save task: marshal: %w", err)
 	}
-	return os.WriteFile(filepath.Join(taskDir, "snapshot.json"), data, 0o644)
+
+	// Atomic write via temp file + rename
+	tmp, err := os.CreateTemp(taskDir, ".snapshot-*.tmp")
+	if err != nil {
+		return fmt.Errorf("save task: %w", err)
+	}
+	tmpName := tmp.Name()
+	if _, err := tmp.Write(data); err != nil {
+		tmp.Close()
+		os.Remove(tmpName)
+		return fmt.Errorf("save task: %w", err)
+	}
+	tmp.Close()
+	if err := os.Rename(tmpName, target); err != nil {
+		os.Remove(tmpName)
+		return fmt.Errorf("save task: %w", err)
+	}
+	return nil
 }
 
 // SaveEvent implements WriteStore.
