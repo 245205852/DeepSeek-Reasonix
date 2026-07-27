@@ -1,0 +1,161 @@
+package taskmonitor
+
+import (
+	"context"
+	"fmt"
+	"sort"
+	"sync"
+)
+
+// defaultSchemaVersion is used when AppendEvent implicitly creates a
+// TaskSnapshot for a task that has not been explicitly upserted.
+const defaultSchemaVersion = 1
+
+// InMemoryStore is a fully-in-memory Store implementation intended for
+// testing and as a reference mock.  It is goroutine-safe.
+//
+// IMPORTANT: This store grows without bound (no eviction, no capacity
+// limits).  It is NOT suitable for production use.  Production stores
+// must implement resource caps and persistence.
+type InMemoryStore struct {
+	mu     sync.RWMutex
+	tasks  map[string]*TaskSnapshot       // taskID → snapshot
+	events map[string][]TaskEvent         // taskID → ordered events
+	byProj map[string]map[string]struct{} // projectDir → set of taskIDs
+}
+
+// NewInMemoryStore returns a ready-to-use InMemoryStore.
+func NewInMemoryStore() *InMemoryStore {
+	return &InMemoryStore{
+		tasks:  make(map[string]*TaskSnapshot),
+		events: make(map[string][]TaskEvent),
+		byProj: make(map[string]map[string]struct{}),
+	}
+}
+
+// UpsertTask inserts or replaces a task snapshot and registers it under
+// projectDir.  It is a test/convenience helper — not part of the Store
+// interface.
+func (s *InMemoryStore) UpsertTask(projectDir string, snap TaskSnapshot) error {
+	if err := snap.Validate(); err != nil {
+		return fmt.Errorf("upsert task: %w", err)
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	cp := snap
+	s.tasks[snap.TaskID] = &cp
+	if s.byProj[projectDir] == nil {
+		s.byProj[projectDir] = make(map[string]struct{})
+	}
+	s.byProj[projectDir][snap.TaskID] = struct{}{}
+	return nil
+}
+
+// AppendEvent appends a validated event to the task's event log.
+// It is a test/convenience helper — not part of the Store interface.
+func (s *InMemoryStore) AppendEvent(projectDir string, ev TaskEvent) error {
+	if err := ev.Validate(); err != nil {
+		return fmt.Errorf("append event: %w", err)
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	// ensure task exists (at least minimally)
+	if _, ok := s.tasks[ev.TaskID]; !ok {
+		s.tasks[ev.TaskID] = &TaskSnapshot{
+			SchemaVersion: defaultSchemaVersion,
+			TaskID:        ev.TaskID,
+			SessionID:     ev.SessionID,
+			State:         ev.State,
+			CreatedAt:     ev.Timestamp,
+			UpdatedAt:     ev.Timestamp,
+		}
+	}
+	if s.byProj[projectDir] == nil {
+		s.byProj[projectDir] = make(map[string]struct{})
+	}
+	s.byProj[projectDir][ev.TaskID] = struct{}{}
+
+	// Update snapshot from event.
+	// ErrorCode and ErrorSummary are overwritten only when the event carries
+	// a non-empty value; they are NOT cleared by events that lack them.
+	snap := s.tasks[ev.TaskID]
+	snap.State = ev.State
+	snap.UpdatedAt = ev.Timestamp
+	if ev.ErrorCode != "" {
+		snap.ErrorCode = ev.ErrorCode
+	}
+	if ev.ErrorSummary != "" {
+		snap.ErrorSummary = ev.ErrorSummary
+	}
+
+	s.events[ev.TaskID] = append(s.events[ev.TaskID], ev)
+	return nil
+}
+
+// ListTasks implements Store.
+func (s *InMemoryStore) ListTasks(ctx context.Context, projectDir string) ([]TaskSnapshot, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	var ids []string
+	if projectDir == "" {
+		for id := range s.tasks {
+			ids = append(ids, id)
+		}
+	} else {
+		proj, ok := s.byProj[projectDir]
+		if !ok {
+			return []TaskSnapshot{}, nil
+		}
+		for id := range proj {
+			ids = append(ids, id)
+		}
+	}
+
+	result := make([]TaskSnapshot, 0, len(ids))
+	for _, id := range ids {
+		snap, ok := s.tasks[id]
+		if !ok {
+			continue
+		}
+		cp := *snap
+		result = append(result, cp)
+	}
+
+	sort.Slice(result, func(i, j int) bool {
+		return result[i].UpdatedAt.After(result[j].UpdatedAt)
+	})
+	return result, nil
+}
+
+// GetTask implements Store.
+func (s *InMemoryStore) GetTask(ctx context.Context, taskID string) (*TaskSnapshot, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	snap, ok := s.tasks[taskID]
+	if !ok {
+		return nil, nil
+	}
+	cp := *snap
+	return &cp, nil
+}
+
+// ListEvents implements Store.
+func (s *InMemoryStore) ListEvents(ctx context.Context, taskID string, afterSequence int) ([]TaskEvent, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	all, ok := s.events[taskID]
+	if !ok {
+		return []TaskEvent{}, nil
+	}
+	result := make([]TaskEvent, 0)
+	for _, e := range all {
+		if e.Sequence > afterSequence {
+			result = append(result, e)
+		}
+	}
+	sort.Slice(result, func(i, j int) bool {
+		return result[i].Sequence < result[j].Sequence
+	})
+	return result, nil
+}
