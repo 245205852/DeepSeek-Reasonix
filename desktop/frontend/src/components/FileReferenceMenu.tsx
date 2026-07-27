@@ -3,11 +3,22 @@ import { FileText, Folder } from "lucide-react";
 import { asArray } from "../lib/array";
 import { filterAtMatches } from "../lib/atMatches";
 import { app } from "../lib/bridge";
+import { activeRefTokenRe, escapeRefPath, unescapeRefPath } from "../lib/refToken";
 import type { DirEntry } from "../lib/types";
 import { VirtualMenu } from "./VirtualMenu";
 
+const FILE_REF_SEARCH_CACHE_TTL_MS = 5000;
+
+type FileRefSearchCacheEntry = {
+  entries: DirEntry[];
+  cachedAt: number;
+};
+
+// dirEntrySubmitPath returns the real filesystem path for a picked entry. The
+// typed atDir may carry backslash-escaped spaces (the @token grammar), so it
+// is unescaped before joining with the entry name.
 export function dirEntrySubmitPath(entry: DirEntry, atDir: string): string {
-  return entry.path || atDir + entry.name;
+  return entry.path || unescapeRefPath(atDir) + entry.name;
 }
 
 export function dirEntryMenuLabel(entry: DirEntry): string {
@@ -15,22 +26,27 @@ export function dirEntryMenuLabel(entry: DirEntry): string {
 }
 
 export function activeFileReferenceToken(text: string): { raw: string; dir: string; frag: string } | null {
-  const match = /(?:^|\s)@([^\s]*)$/.exec(text);
+  const queryText = text.replace(/[\r\n]+$/u, "");
+  const match = activeRefTokenRe.exec(queryText);
   if (!match) return null;
   const raw = match[1];
   const slash = raw.lastIndexOf("/");
   return {
     raw,
     dir: slash >= 0 ? raw.slice(0, slash + 1) : "",
-    frag: (slash >= 0 ? raw.slice(slash + 1) : raw).toLowerCase(),
+    frag: unescapeRefPath(slash >= 0 ? raw.slice(slash + 1) : raw).toLowerCase(),
   };
 }
 
+// pickInlineFileReference replaces the typed token with an inline @reference.
+// Whitespace in the path is escaped so the ref survives @-token parsing on
+// submit (the control layer unescapes it back to the real path).
 export function pickInlineFileReference(text: string, atRaw: string | null, atDir: string, entry: DirEntry): string {
-  const atPos = text.length - (atRaw?.length ?? 0) - 1;
-  const prefix = text.slice(0, Math.max(0, atPos));
+  const queryText = text.replace(/[\r\n]+$/u, "");
+  const atPos = queryText.length - (atRaw?.length ?? 0) - 1;
+  const prefix = queryText.slice(0, Math.max(0, atPos));
   const refPath = dirEntrySubmitPath(entry, atDir);
-  return prefix + "@" + refPath + (entry.isDir ? "/" : " ");
+  return prefix + "@" + escapeRefPath(refPath) + (entry.isDir ? "/" : " ");
 }
 
 export function insertTextAtSelection(
@@ -48,7 +64,7 @@ export function insertTextAtSelection(
   return { value: next, caret: before.length + text.length };
 }
 
-export function useFileReferenceMenu(text: string, cwd?: string) {
+export function useFileReferenceMenu(text: string, cwd?: string, tabId?: string, workspaceScopeKey?: string) {
   const token = useMemo(() => activeFileReferenceToken(text), [text]);
   const atRaw = token?.raw ?? null;
   const atDir = token?.dir ?? "";
@@ -58,19 +74,21 @@ export function useFileReferenceMenu(text: string, cwd?: string) {
   const [active, setActive] = useState(0);
   const [dismissed, setDismissed] = useState(false);
   const dirCache = useRef<Record<string, DirEntry[]>>({});
-  const searchCache = useRef<Record<string, DirEntry[]>>({});
-  const prevCwdRef = useRef(cwd);
+  const searchCache = useRef<Record<string, FileRefSearchCacheEntry>>({});
+  const fileRefTabId = tabId ?? "";
+  const fileRefScopeKey = workspaceScopeKey ?? `${fileRefTabId}\u0000${cwd ?? ""}`;
+  const prevFileRefScopeRef = useRef(fileRefScopeKey);
 
   useEffect(() => {
-    if (prevCwdRef.current === cwd) return;
-    prevCwdRef.current = cwd;
+    if (prevFileRefScopeRef.current === fileRefScopeKey) return;
+    prevFileRefScopeRef.current = fileRefScopeKey;
     dirCache.current = {};
     searchCache.current = {};
     setEntries([]);
     setSearchEntries([]);
     setActive(0);
     setDismissed(false);
-  }, [cwd]);
+  }, [fileRefScopeKey]);
 
   useEffect(() => {
     setActive(0);
@@ -82,21 +100,23 @@ export function useFileReferenceMenu(text: string, cwd?: string) {
     const cached = dirCache.current[atDir];
     if (cached) {
       setEntries(cached);
-      return;
+    } else {
+      setEntries([]);
     }
     let live = true;
     app
-      .ListDir(atDir)
+      .ListDirForTab(fileRefTabId, unescapeRefPath(atDir))
       .then((next) => {
         const list = asArray(next);
+        if (!live) return;
         dirCache.current[atDir] = list;
-        if (live) setEntries(list);
+        setEntries(list);
       })
       .catch(() => {});
     return () => {
       live = false;
     };
-  }, [atRaw === null, atDir, cwd]);
+  }, [atRaw === null, atDir, fileRefScopeKey, fileRefTabId]);
 
   useEffect(() => {
     if (atRaw === null || atDir !== "" || atFrag === "") {
@@ -105,23 +125,25 @@ export function useFileReferenceMenu(text: string, cwd?: string) {
     }
     const cached = searchCache.current[atFrag];
     if (cached) {
-      setSearchEntries(cached);
-      return;
+      setSearchEntries(cached.entries);
+      if (Date.now() - cached.cachedAt < FILE_REF_SEARCH_CACHE_TTL_MS) return;
+    } else {
+      setSearchEntries([]);
     }
-    setSearchEntries([]);
     let live = true;
     app
-      .SearchFileRefs(atFrag)
+      .SearchFileRefsForTab(fileRefTabId, atFrag)
       .then((next) => {
-        const list = next ?? [];
-        searchCache.current[atFrag] = list;
-        if (live) setSearchEntries(list);
+        const list = asArray(next);
+        if (!live) return;
+        searchCache.current[atFrag] = { entries: list, cachedAt: Date.now() };
+        setSearchEntries(list);
       })
       .catch(() => {});
     return () => {
       live = false;
     };
-  }, [atRaw === null, atDir, atFrag, cwd]);
+  }, [atRaw === null, atDir, atFrag, fileRefScopeKey, fileRefTabId]);
 
   const items = useMemo(() => {
     if (atRaw === null) return [];

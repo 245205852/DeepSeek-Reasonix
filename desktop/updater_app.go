@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"runtime"
@@ -9,6 +10,7 @@ import (
 	wruntime "github.com/wailsapp/wails/v2/pkg/runtime"
 
 	"reasonix/desktop/internal/update"
+	"reasonix/internal/repair"
 )
 
 // updater_app.go is the auto-updater's bound command surface — the App methods the
@@ -17,6 +19,8 @@ import (
 // download progress as "updater:progress" events and routes macOS to the manual
 // download path unless the macOS build was Developer ID signed and notarized.
 
+var errUpdateManualRequired = errors.New("update: manual update required")
+
 // Version returns the build version injected via -ldflags (see main.go). The
 // frontend displays it; CheckUpdate compares against it.
 func (a *App) Version() string { return version }
@@ -24,45 +28,55 @@ func (a *App) Version() string { return version }
 // CheckUpdate fetches the manifest (R2, then GitHub) and reports whether a newer
 // build is available for this platform. Safe to call on startup: a network error
 // surfaces in UpdateInfo.Err rather than failing, so the UI can stay quiet.
-func (a *App) CheckUpdate() (*UpdateInfo, error) {
+func (a *App) CheckUpdate(selectedChannel string) (*UpdateInfo, error) {
+	selectedChannel = targetUpdateChannel(selectedChannel)
+	profile := detectInstallProfile()
 	c, err := httpClient()
 	if err != nil {
+		a.recordUpdateError(err)
 		return &UpdateInfo{
-			Current:       version,
-			Channel:       channel,
-			CanSelfUpdate: canSelfUpdate(),
-			ManualOnly:    !canSelfUpdate(),
-			ManualReason:  manualUpdateReason(),
-			DownloadURL:   downloadPage(),
-			Err:           err.Error(),
+			Current:           version,
+			Channel:           selectedChannel,
+			CanSelfUpdate:     profile.CanSelfUpdate && canSelfUpdate(),
+			ManualOnly:        !(profile.CanSelfUpdate && canSelfUpdate()),
+			ManualReason:      firstNonEmptyStr(profile.ManualReason, manualUpdateReason()),
+			InstallMode:       profile.Mode,
+			RequiresElevation: profile.RequiresElev,
+			DownloadURL:       downloadPage(),
+			Err:               err.Error(),
 		}, nil
 	}
 	ctx, cancel := context.WithTimeout(a.reqCtx(), httpTimeout)
 	defer cancel()
-	m, err := fetchManifest(ctx, c)
+	v4, _ := httpClientIPv4()
+	m, err := fetchManifest(ctx, c, v4, selectedChannel)
 	if err != nil {
+		a.recordUpdateError(err)
 		return &UpdateInfo{
-			Current:       version,
-			Channel:       channel,
-			CanSelfUpdate: canSelfUpdate(),
-			ManualOnly:    !canSelfUpdate(),
-			ManualReason:  manualUpdateReason(),
-			DownloadURL:   downloadPage(),
-			Err:           err.Error(),
+			Current:           version,
+			Channel:           selectedChannel,
+			CanSelfUpdate:     profile.CanSelfUpdate && canSelfUpdate(),
+			ManualOnly:        !(profile.CanSelfUpdate && canSelfUpdate()),
+			ManualReason:      firstNonEmptyStr(profile.ManualReason, manualUpdateReason()),
+			InstallMode:       profile.Mode,
+			RequiresElevation: profile.RequiresElev,
+			DownloadURL:       downloadPage(),
+			Err:               err.Error(),
 		}, nil
 	}
-	info := evaluate(version, m)
+	info := evaluateForChannel(version, selectedChannel, m)
 	return &info, nil
 }
 
-// OpenDownloadPage opens the releases page in the browser — the macOS manual-update
+// OpenDownloadPage opens the install page in the browser — the macOS manual-update
 // path and a fallback link elsewhere.
 func (a *App) OpenDownloadPage() {
 	page := downloadPage()
 	if c, err := httpClient(); err == nil {
 		ctx, cancel := context.WithTimeout(a.reqCtx(), httpTimeout)
 		defer cancel()
-		if m, err := fetchManifest(ctx, c); err == nil && m.DownloadPage != "" {
+		v4, _ := httpClientIPv4()
+		if m, err := fetchManifest(ctx, c, v4, targetUpdateChannel("")); err == nil && m.DownloadPage != "" {
 			page = m.DownloadPage
 		}
 	}
@@ -74,10 +88,11 @@ func (a *App) OpenDownloadPage() {
 // DownloadUpdate downloads, verifies, and caches the latest build. Installation is
 // deliberately a separate user action so the UI can show "downloaded" before the
 // app quits to finish the update.
-func (a *App) DownloadUpdate() (*UpdateDownloadResult, error) {
-	if !canSelfUpdate() {
-		a.OpenDownloadPage()
-		return nil, nil
+func (a *App) DownloadUpdate(selectedChannel string) (*UpdateDownloadResult, error) {
+	selectedChannel = targetUpdateChannel(selectedChannel)
+	profile := detectInstallProfile()
+	if !profile.CanSelfUpdate || !canSelfUpdate() {
+		return nil, a.requireManualUpdate(profile)
 	}
 	c, err := httpClient()
 	if err != nil {
@@ -85,20 +100,25 @@ func (a *App) DownloadUpdate() (*UpdateDownloadResult, error) {
 	}
 	ctx, cancel := context.WithTimeout(a.reqCtx(), httpTimeout)
 	defer cancel()
-	m, err := fetchManifest(ctx, c)
+	v4, _ := httpClientIPv4()
+	m, err := fetchManifest(ctx, c, v4, selectedChannel)
 	if err != nil {
 		return nil, a.failUpdate(err)
 	}
-	asset, ok := m.Asset()
+	profile = profileForManifest(profile, m)
+	if !profile.CanSelfUpdate {
+		return nil, a.requireManualUpdate(profile)
+	}
+	asset, kind, ok := selectUpdateAsset(m, profile)
 	if !ok {
 		return nil, a.failUpdate(fmt.Errorf("no update artifact for %s", update.CurrentPlatform()))
 	}
 
-	data, err := a.downloadVerify(asset)
+	data, sig, err := a.downloadVerify(selectedChannel, asset)
 	if err != nil {
 		return nil, a.failUpdate(err)
 	}
-	meta, err := saveCachedUpdate(m.Version, asset, data)
+	meta, err := saveCachedUpdateForChannel(selectedChannel, m.Version, asset, data, kind, sig)
 	if err != nil {
 		return nil, a.failUpdate(err)
 	}
@@ -113,27 +133,126 @@ func (a *App) DownloadUpdate() (*UpdateDownloadResult, error) {
 }
 
 // InstallUpdate applies the cached, verified update and then exits/relaunches.
-func (a *App) InstallUpdate() error {
-	if !canSelfUpdate() {
-		a.OpenDownloadPage()
-		return nil
+func (a *App) InstallUpdate(selectedChannel string) error {
+	selectedChannel = targetUpdateChannel(selectedChannel)
+	profile := detectInstallProfile()
+	if !profile.CanSelfUpdate || !canSelfUpdate() {
+		return a.requireManualUpdate(profile)
 	}
-	meta, data, err := readVerifiedCachedUpdate()
+	meta, data, err := readVerifiedCachedUpdateForChannel(selectedChannel)
 	if err != nil {
 		return a.failUpdate(err)
 	}
+	// Re-detect install type at install time so a path change between download
+	// and install cannot apply the wrong artifact kind.
+	if c, err := httpClient(); err == nil {
+		ctx, cancel := context.WithTimeout(a.reqCtx(), httpTimeout)
+		defer cancel()
+		v4, _ := httpClientIPv4()
+		if m, err := fetchManifest(ctx, c, v4, selectedChannel); err == nil {
+			profile = profileForManifest(detectInstallProfile(), m)
+		} else {
+			profile = detectInstallProfile()
+		}
+	} else {
+		profile = detectInstallProfile()
+	}
+	if !profile.CanSelfUpdate {
+		return a.requireManualUpdate(profile)
+	}
+	if err := ensureDebCacheMatchesProfile(meta, profile); err != nil {
+		return a.failUpdate(err)
+	}
+	// Portable cache vs deb profile (and the reverse) are also rejected when
+	// artifact kinds disagree with the active mode.
+	wantKind := profile.ArtifactKind
+	if wantKind == "" {
+		wantKind = artifactKindTarball
+	}
+	if artifactKindFromMeta(meta.ArtifactKind) != artifactKindFromMeta(wantKind) {
+		return a.failUpdate(errUpdateCacheMismatch)
+	}
+
+	switch profile.Mode {
+	case installModeDeb:
+		return a.installDebUpdate(meta)
+	default:
+		return a.installPortableUpdate(meta, data)
+	}
+}
+
+func (a *App) installDebUpdate(meta *cachedUpdate) error {
+	// authorizing = Polkit password dialog. The helper streams
+	// REASONIX_UPDATE_PHASE=installing on stderr after validation and before
+	// apt-get, so the UI can leave authorizing while the package manager runs.
+	a.emitProgress("authorizing", meta.Size, meta.Size, "")
+	err := applyDebLinux(meta.Path, meta.SignaturePath, func(phase string) {
+		if phase == "installing" {
+			a.emitProgress("installing", meta.Size, meta.Size, "")
+		}
+	})
+	if isAuthCancelled(err) {
+		// User dismissed the Polkit dialog: keep the verified cache and return to
+		// the downloaded state so they can retry. Do not count as an update error.
+		a.recordUpdateEvent("authorization_cancelled")
+		a.emitProgress("downloaded", meta.Size, meta.Size, "")
+		return nil
+	}
+	if err != nil {
+		if errors.Is(err, errUpdateAuthFailed) {
+			// Surface a manual-install hint without writing /usr/bin ourselves.
+			return a.failUpdate(fmt.Errorf("%w. %s", err, manualDebInstallHint()))
+		}
+		return a.failUpdate(err)
+	}
+	// Ensure installing was shown even if a phase line was missed (older helper).
 	a.emitProgress("installing", meta.Size, meta.Size, "")
+	a.emitProgress("done", meta.Size, meta.Size, "")
+	a.shutdown(a.ctx)
+	_ = relaunchThroughGuard()
+	os.Exit(0)
+	return nil
+}
+
+func (a *App) installPortableUpdate(meta *cachedUpdate, data []byte) error {
+	a.emitProgress("installing", meta.Size, meta.Size, "")
+	if runtime.GOOS == "windows" || runtime.GOOS == "linux" {
+		// Back up the complete release unit (main binary + Guard/launcher
+		// siblings the installer also replaces) so rollback never leaves a
+		// mixed-version install. Deb installs deliberately skip this — Guard
+		// cannot rewrite /usr/bin and would corrupt dpkg state.
+		if _, err := repair.PrepareFileUpdate(version, meta.Version, currentExecutablePath(), updateSiblingArtifacts()...); err != nil {
+			return a.failUpdate(err)
+		}
+	}
+	var err error
 	switch runtime.GOOS {
 	case "windows":
-		err = applyWindowsFile(meta.Path)
+		err = applyWindowsFile(meta.Path, meta.Version)
 	case "darwin":
-		err = applyMac(meta.Path)
+		err = applyMac(meta.Path, meta.Version)
 	case "linux":
 		err = applyLinux(data)
 	default:
 		err = fmt.Errorf("self-update unsupported on %s", runtime.GOOS)
 	}
 	if err != nil {
+		if runtime.GOOS == "linux" {
+			// applyLinux replaces the Guard binary before the main-binary
+			// swap, so a failure here can already have produced a mixed
+			// install. Restore the recorded release unit instead of
+			// discarding the rollback metadata; if the restore itself fails,
+			// keep the pending transaction so Guard can retry the rollback on
+			// the next launch.
+			if _, rollbackErr := repair.RollbackPendingUpdate(); rollbackErr != nil {
+				a.recordUpdateError(rollbackErr)
+			}
+		} else {
+			// Windows hands off to an installer process and macOS cancels its
+			// own transaction inside applyMac: a failure here means nothing
+			// was replaced yet, so just drop the pending transaction.
+			_ = repair.CancelPendingUpdate(meta.Version)
+		}
 		return a.failUpdate(err)
 	}
 
@@ -144,7 +263,7 @@ func (a *App) InstallUpdate() error {
 	// macOS the installer/helper we launched takes over once we exit.
 	a.shutdown(a.ctx)
 	if runtime.GOOS == "linux" {
-		_ = relaunch()
+		_ = relaunchThroughGuard()
 	}
 	os.Exit(0)
 	return nil
@@ -153,39 +272,40 @@ func (a *App) InstallUpdate() error {
 // ApplyUpdate is kept for older frontend bindings and tests. New UI code uses the
 // explicit download → install split.
 func (a *App) ApplyUpdate() error {
-	if _, err := a.DownloadUpdate(); err != nil {
+	selectedChannel := targetUpdateChannel("")
+	if _, err := a.DownloadUpdate(selectedChannel); err != nil {
 		return err
 	}
-	return a.InstallUpdate()
+	return a.InstallUpdate(selectedChannel)
 }
 
 // downloadVerify downloads the asset (streaming progress), verifies its minisign
 // signature against the embedded public key, then its sha256. It returns the
-// verified bytes and never touches disk on a bad signature.
-func (a *App) downloadVerify(asset update.Asset) ([]byte, error) {
+// verified bytes and the raw signature (needed for deb helper re-verification).
+func (a *App) downloadVerify(selectedChannel string, asset update.Asset) (data, sig []byte, err error) {
 	c, err := httpClient()
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	v4, _ := httpClientIPv4() // best-effort IPv4 fallback; nil just means retries reuse c
-	data, err := download(a.reqCtx(), c, v4, asset.URL, asset.Size, func(rcv, total int64) {
+	data, err = downloadForChannel(a.reqCtx(), c, v4, selectedChannel, asset.URL, asset.Size, func(rcv, total int64) {
 		a.emitProgress("downloading", rcv, total, "")
 	})
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	a.emitProgress("verifying", asset.Size, asset.Size, "")
-	sig, err := fetchBytes(a.reqCtx(), c, asset.Sig)
+	sig, err = fetchBytesFallbackForChannel(a.reqCtx(), c, v4, selectedChannel, asset.Sig)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	if err := update.Verify(data, sig); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	if err := checkSHA256(data, asset.SHA256); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	return data, nil
+	return data, sig, nil
 }
 
 // reqCtx is the context for updater HTTP calls — the Wails context once startup has
@@ -208,6 +328,54 @@ func (a *App) emitProgress(phase string, received, total int64, errMsg string) {
 
 // failUpdate emits an error progress event and returns the error to the caller.
 func (a *App) failUpdate(err error) error {
+	a.recordUpdateError(err)
 	a.emitProgress("error", 0, 0, err.Error())
 	return err
+}
+
+// requireManualUpdate moves the frontend out of its busy state before opening
+// the download page. Install mode and manifest availability are re-checked at
+// each updater boundary, so either can legitimately change after the frontend
+// started downloading or authorizing.
+func (a *App) requireManualUpdate(profile installProfile) error {
+	err := a.failUpdate(manualUpdateRequiredError(profile))
+	a.OpenDownloadPage()
+	return err
+}
+
+func manualUpdateRequiredError(profile installProfile) error {
+	reason := firstNonEmptyStr(profile.ManualReason, manualUpdateReason(), "automatic update is unavailable for this install")
+	return fmt.Errorf("%w: %s", errUpdateManualRequired, reason)
+}
+
+func (a *App) recordUpdateError(err error) {
+	if err == nil || version == "dev" {
+		return
+	}
+	if isAuthCancelled(err) {
+		// Cancellation is an expected user action, not a failure rate signal.
+		return
+	}
+	if m := a.metrics.Load(); m != nil {
+		m.inc("updater_error", errorClass(err.Error()))
+	}
+}
+
+// recordUpdateEvent records a non-failure updater signal (e.g. auth cancelled).
+func (a *App) recordUpdateEvent(bucket string) {
+	if version == "dev" {
+		return
+	}
+	if m := a.metrics.Load(); m != nil {
+		m.inc("updater_event", bucket)
+	}
+}
+
+func firstNonEmptyStr(values ...string) string {
+	for _, v := range values {
+		if v != "" {
+			return v
+		}
+	}
+	return ""
 }

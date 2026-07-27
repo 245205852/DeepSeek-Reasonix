@@ -5,7 +5,7 @@ import React, { act } from "react";
 import { createRoot } from "react-dom/client";
 import { initialState, reducer, useController, type Item } from "../lib/useController";
 import type { AppBindings } from "../lib/bridge";
-import type { BalanceInfo, CheckpointMeta, ContextInfo, EffortInfo, HistoryMessage, JobView, Meta, TabMeta } from "../lib/types";
+import type { BalanceInfo, CheckpointMeta, ContextInfo, EffortInfo, HistoryMessage, JobView, Meta, TabMeta, WireEvent } from "../lib/types";
 
 let passed = 0;
 let failed = 0;
@@ -74,7 +74,7 @@ function tabMeta(overrides: Partial<TabMeta> = {}): TabMeta {
   };
 }
 
-function meta(): Meta {
+function meta(overrides: Partial<Meta> = {}): Meta {
   return {
     label: "model",
     ready: true,
@@ -91,6 +91,7 @@ function meta(): Meta {
     tokenMode: "full",
     goal: "",
     goalStatus: "stopped",
+    ...overrides,
   };
 }
 
@@ -138,7 +139,12 @@ globalThis.requestAnimationFrame = dom.window.requestAnimationFrame.bind(dom.win
 globalThis.cancelAnimationFrame = dom.window.cancelAnimationFrame.bind(dom.window);
 
 const staleHistory = deferred<HistoryMessage[]>();
+const staleSessionMeta = deferred<Meta>();
 let newSessionCalls = 0;
+let backendCanonicalTodos = [{ content: "Old task", status: "in_progress" }];
+let holdNextMeta = false;
+let staleMetaStarted = false;
+const eventHandlers: Array<(event: WireEvent) => void> = [];
 const context: ContextInfo = { used: 12, window: 100, sessionTokens: 12 };
 const effort: EffortInfo = { supported: true, current: "auto", default: "auto", levels: ["auto"] };
 const balance: BalanceInfo = { available: false, display: "" };
@@ -146,14 +152,24 @@ const jobs: JobView[] = [];
 const checkpoints: CheckpointMeta[] = [];
 
 window.runtime = {
-  EventsOn: () => () => {},
+  EventsOn: (name: string, cb: (...data: unknown[]) => void) => {
+    if (name === "agent:event") eventHandlers.push(cb as (event: WireEvent) => void);
+    return () => {};
+  },
   BrowserOpenURL: () => {},
 };
 window.go = {
   main: {
     App: {
       ListTabs: async () => [tabMeta()],
-      MetaForTab: async () => meta(),
+      MetaForTab: async () => {
+        if (holdNextMeta) {
+          holdNextMeta = false;
+          staleMetaStarted = true;
+          return staleSessionMeta.promise;
+        }
+        return meta({ canonicalTodos: backendCanonicalTodos });
+      },
       ContextUsageForTab: async () => context,
       EffortForTab: async () => effort,
       BalanceForTab: async () => balance,
@@ -168,6 +184,22 @@ window.go = {
       ReplayPendingPrompts: async () => {},
       NewSession: async () => {
         newSessionCalls += 1;
+        backendCanonicalTodos = [];
+      },
+      NewSessionForTab: async (tabID: string) => {
+        if (tabID !== "tab-a") throw new Error(`unexpected new-session target ${tabID}`);
+        newSessionCalls += 1;
+        backendCanonicalTodos = [];
+      },
+      ResumeSessionPageForTab: async () => {
+        backendCanonicalTodos = [{ content: "Restored task", status: "completed" }];
+        return {
+          messages: [{ role: "user", content: "restore" }, { role: "assistant", content: "done" }],
+          startTurn: 0,
+          endTurn: 1,
+          totalTurns: 1,
+          hasOlder: false,
+        };
       },
     } as Partial<AppBindings> as AppBindings,
   },
@@ -192,11 +224,32 @@ await act(async () => {
 await waitFor("active tab", () => controller?.activeTabId === "tab-a");
 
 await act(async () => {
+  await controller?.refreshMeta();
+  await flushPromises();
+});
+eq(controller?.state.meta?.canonicalTodos?.[0]?.content, "Old task", "pre-reset metadata exposes the current session todo");
+
+holdNextMeta = true;
+await act(async () => {
+  for (const handler of eventHandlers) handler({ kind: "turn_done", tabId: "tab-a" });
+  await flushPromises();
+});
+await waitFor("stale metadata request", () => staleMetaStarted);
+
+await act(async () => {
   await controller?.newSession();
   await flushPromises();
 });
-eq(newSessionCalls, 1, "NewSession is called once");
+eq(newSessionCalls, 1, "tab-scoped NewSession is called once");
 eq(controller?.state.items.length, 0, "new session clears the visible transcript");
+eq(controller?.state.meta?.canonicalTodos?.length, 0, "new session refresh replaces the previous session todo with an authoritative empty list");
+
+await act(async () => {
+  staleSessionMeta.resolve(meta({ canonicalTodos: [{ content: "Old task", status: "in_progress" }] }));
+  await staleSessionMeta.promise;
+  await flushPromises();
+});
+eq(controller?.state.meta?.canonicalTodos?.length, 0, "metadata started before a session transition cannot restore the previous todo");
 
 await act(async () => {
   staleHistory.resolve([{ role: "user", content: "old prompt" }]);
@@ -207,14 +260,24 @@ await act(async () => {
 eq(controller?.state.items.length, 0, "stale history load cannot repopulate a new blank session");
 
 await act(async () => {
+  await controller?.resumeSession("/sessions/restored.jsonl", "tab-a");
+  await flushPromises();
+});
+eq(controller?.state.meta?.canonicalTodos?.[0]?.status, "completed", "resuming a session refreshes its authoritative canonical todo state");
+
+await act(async () => {
   root.unmount();
 });
 
 const guardedStartupTabs = deferred<TabMeta[]>();
-let ensureBlankSurfaceCalls = 0;
+const staleProjectA = "/repo/project-a";
+const targetProjectB = "/repo/project-b";
+const ensureBlankSurfaceCalls: Array<{ scope: string; workspaceRoot: string }> = [];
 window.go.main.App = {
   ListTabs: async () => guardedStartupTabs.promise,
-  MetaForTab: async () => meta(),
+  MetaForTab: async (tabID: string) => tabID === "tab-new"
+    ? meta({ cwd: targetProjectB, workspaceRoot: targetProjectB, workspaceName: "project-b", workspacePath: targetProjectB })
+    : meta({ cwd: staleProjectA, workspaceRoot: staleProjectA, workspaceName: "project-a", workspacePath: staleProjectA }),
   ContextUsageForTab: async () => context,
   EffortForTab: async () => effort,
   BalanceForTab: async () => balance,
@@ -224,9 +287,17 @@ window.go.main.App = {
   HistoryPageForTab: async () => ({ messages: [], startTurn: 0, endTurn: 0, totalTurns: 0, hasOlder: false }),
   HistoryCheckpointTurnsForTab: async () => [],
   ReplayPendingPrompts: async () => {},
-  EnsureBlankSurface: async () => {
-    ensureBlankSurfaceCalls += 1;
-    return tabMeta({ id: "tab-new", topicId: "topic-new", topicTitle: "New session" });
+  EnsureBlankSurface: async (scope: string, workspaceRoot: string) => {
+    ensureBlankSurfaceCalls.push({ scope, workspaceRoot });
+    return tabMeta({
+      id: "tab-new",
+      topicId: "topic-new",
+      topicTitle: "New session",
+      workspaceRoot: targetProjectB,
+      workspaceName: "project-b",
+      workspacePath: targetProjectB,
+      cwd: targetProjectB,
+    });
   },
 } as Partial<AppBindings> as AppBindings;
 
@@ -239,20 +310,31 @@ await act(async () => {
 });
 
 await act(async () => {
-  await controller?.ensureBlankSurface("project", "/repo");
+  await controller?.ensureBlankSurface("project", targetProjectB);
   await flushPromises();
 });
 
-eq(ensureBlankSurfaceCalls, 1, "EnsureBlankSurface is called once");
+eq(ensureBlankSurfaceCalls.length, 1, "EnsureBlankSurface is called once");
+eq(ensureBlankSurfaceCalls[0]?.workspaceRoot, targetProjectB, "EnsureBlankSurface keeps the requested project root");
 eq(controller?.activeTabId, "tab-new", "blank surface becomes active before startup sync resolves");
+eq(controller?.state.meta?.workspaceRoot, targetProjectB, "blank surface exposes the new project root");
 
 await act(async () => {
-  guardedStartupTabs.resolve([tabMeta({ id: "tab-old", topicId: "topic-old", topicTitle: "Old session" })]);
+  guardedStartupTabs.resolve([tabMeta({
+    id: "tab-old",
+    topicId: "topic-old",
+    topicTitle: "Old session",
+    workspaceRoot: staleProjectA,
+    workspaceName: "project-a",
+    workspacePath: staleProjectA,
+    cwd: staleProjectA,
+  })]);
   await guardedStartupTabs.promise;
   await flushPromises();
 });
 
 eq(controller?.activeTabId, "tab-new", "guarded startup sync cannot restore an older active tab");
+eq(controller?.state.meta?.workspaceRoot, targetProjectB, "guarded startup sync cannot restore the old project root");
 
 await act(async () => {
   guardRoot.unmount();

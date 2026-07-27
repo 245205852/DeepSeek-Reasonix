@@ -1,6 +1,7 @@
 package control
 
 import (
+	"crypto/rand"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -8,17 +9,19 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 	"unicode"
 
 	"reasonix/internal/evidence"
+	fileencoding "reasonix/internal/fileutil/encoding"
 	"reasonix/internal/store"
 )
 
 const (
 	maxGoalAutoTurns   = 50
 	maxGoalIdleTurns   = 2
-	goalContinueTurn   = "Continue pursuing the active goal. If it is complete, provide the concise final result and end with [goal:complete]. If it is truly blocked on a user-owned decision after trying sensible defaults, end with [goal:blocked:<short reason>]. Otherwise do the next useful work and end with [goal:continue]."
-	goalSelfCheckTurn  = "The agent signaled goal completion and all tasks are marked done. Before finalizing, perform a brief quality self-check:\n1. Verify any changed files compile or parse correctly\n2. Run the relevant tests if applicable\n3. Confirm the original requirements are met\nIf everything checks out, signal [goal:complete]. If issues are found, fix them and signal [goal:complete] when done."
+	goalContinueTurn   = "Continue pursuing the active goal under its task contract. If it is complete, provide the concise final result and end with [goal:complete]. If progress genuinely requires user-only information, an irreversible or externally visible operation, or a changed scope, end with [goal:blocked:<short reason>]. Otherwise use sensible defaults, do the next useful work, and end with [goal:continue]."
+	goalSelfCheckTurn  = "The agent signaled goal completion and all tasks are marked done. Before finalizing, perform a brief quality self-check:\n1. Verify any changed files compile or parse correctly\n2. Run the relevant tests if applicable\n3. Confirm the original request, output format, constraints, and success criteria are met\nIf everything checks out, signal [goal:complete]. If issues are found, fix them and signal [goal:complete] when done."
 	goalCompleteNotice = "goal complete"
 )
 
@@ -37,6 +40,8 @@ type goalMachine struct {
 	status             string
 	researchMode       GoalResearchMode
 	autoResearchTaskID string
+	scopeID            string
+	deliveryCheckpoint evidence.DeliveryCheckpoint
 	turns              int
 	blocks             int
 	block              string
@@ -55,15 +60,17 @@ type goalMachine struct {
 
 // goalState is the serializable form of a running goal.
 type goalState struct {
-	Goal               string              `json:"goal,omitempty"`
-	Status             string              `json:"status,omitempty"`
-	ResearchMode       GoalResearchMode    `json:"researchMode,omitempty"`
-	AutoResearchTaskID string              `json:"autoResearchTaskID,omitempty"`
-	Turns              int                 `json:"turns,omitempty"`
-	Blocks             int                 `json:"blocks,omitempty"`
-	Block              string              `json:"block,omitempty"`
-	Strict             bool                `json:"strict,omitempty"`
-	Todos              []evidence.TodoItem `json:"todos,omitempty"`
+	Goal               string                      `json:"goal,omitempty"`
+	Status             string                      `json:"status,omitempty"`
+	ResearchMode       GoalResearchMode            `json:"researchMode,omitempty"`
+	AutoResearchTaskID string                      `json:"autoResearchTaskID,omitempty"`
+	ScopeID            string                      `json:"scopeID,omitempty"`
+	DeliveryCheckpoint evidence.DeliveryCheckpoint `json:"deliveryCheckpoint,omitempty"`
+	Turns              int                         `json:"turns,omitempty"`
+	Blocks             int                         `json:"blocks,omitempty"`
+	Block              string                      `json:"block,omitempty"`
+	Strict             bool                        `json:"strict,omitempty"`
+	Todos              []evidence.TodoItem         `json:"todos,omitempty"`
 }
 
 // goalAdvanceInput carries everything the FSM needs for one continuation step,
@@ -120,6 +127,26 @@ func (g *goalMachine) currentAutoResearchTaskID() string {
 	return g.autoResearchTaskID
 }
 
+func (g *goalMachine) deliveryScope() (id, task string, ok bool) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if strings.TrimSpace(g.goal) == "" || g.status != GoalStatusRunning {
+		return "", "", false
+	}
+	if g.scopeID == "" {
+		g.scopeID = newGoalScopeID()
+	}
+	return g.scopeID, g.goal, true
+}
+
+func newGoalScopeID() string {
+	var raw [16]byte
+	if _, err := rand.Read(raw[:]); err == nil {
+		return fmt.Sprintf("goal-%x", raw[:])
+	}
+	return fmt.Sprintf("goal-fallback-%d-%d", os.Getpid(), time.Now().UnixNano())
+}
+
 // active reports whether a goal is currently running.
 func (g *goalMachine) active() bool {
 	g.mu.Lock()
@@ -152,8 +179,12 @@ func (g *goalMachine) set(goal string, mode GoalResearchMode, autoResearchTaskID
 	g.selfCheckDone, g.idleTurns, g.strict = false, 0, false
 	if goal == "" {
 		g.goal, g.status, g.researchMode, g.autoResearchTaskID = "", GoalStatusStopped, GoalResearchAuto, ""
+		g.scopeID = ""
+		g.deliveryCheckpoint = evidence.DeliveryCheckpoint{}
 	} else {
 		g.goal, g.status, g.researchMode, g.autoResearchTaskID = goal, GoalStatusRunning, mode, autoResearchTaskID
+		g.scopeID = newGoalScopeID()
+		g.deliveryCheckpoint = evidence.DeliveryCheckpoint{ScopeID: g.scopeID}
 	}
 	return g.buildStateLocked(todos)
 }
@@ -178,6 +209,39 @@ func (g *goalMachine) stop(status string, todos []evidence.TodoItem) (string, []
 	g.selfCheckDone = false
 	g.idleTurns = 0
 	return g.buildStateLocked(todos)
+}
+
+func (g *goalMachine) resume(todos []evidence.TodoItem) (path string, data []byte, persist, resumed bool) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if strings.TrimSpace(g.goal) == "" || g.status == GoalStatusComplete {
+		return "", nil, false, false
+	}
+	g.status = GoalStatusRunning
+	g.blocks, g.block = 0, ""
+	g.interceptMsg, g.intercepts = "", 0
+	g.selfCheckDone, g.idleTurns = false, 0
+	if g.scopeID == "" {
+		g.scopeID = newGoalScopeID()
+	}
+	path, data, persist = g.buildStateLocked(todos)
+	return path, data, persist, true
+}
+
+func (g *goalMachine) setDeliveryCheckpoint(checkpoint evidence.DeliveryCheckpoint, todos []evidence.TodoItem) (string, []byte, bool) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if g.scopeID == "" || checkpoint.ScopeID != g.scopeID {
+		return "", nil, false
+	}
+	g.deliveryCheckpoint = checkpoint
+	return g.buildStateLocked(todos)
+}
+
+func (g *goalMachine) deliveryState() evidence.DeliveryCheckpoint {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return g.deliveryCheckpoint
 }
 
 // takeIntercept consumes a pending continuation-turn override, if any.
@@ -294,6 +358,8 @@ func (g *goalMachine) buildStateLocked(todos []evidence.TodoItem) (path string, 
 		Status:             g.status,
 		ResearchMode:       g.researchMode,
 		AutoResearchTaskID: g.autoResearchTaskID,
+		ScopeID:            g.scopeID,
+		DeliveryCheckpoint: g.deliveryCheckpoint,
 		Turns:              g.turns,
 		Blocks:             g.blocks,
 		Block:              g.block,
@@ -347,7 +413,7 @@ func (g *goalMachine) terminalTodosFromState(sessionPath string) ([]evidence.Tod
 	if strings.TrimSpace(sessionPath) == "" {
 		return nil, false
 	}
-	data, err := os.ReadFile(goalStatePath(sessionPath))
+	data, err := fileencoding.ReadFileUTF8(goalStatePath(sessionPath))
 	if err != nil {
 		if !os.IsNotExist(err) {
 			slog.Warn("controller: read goal state", "err", err)
@@ -370,15 +436,15 @@ func (g *goalMachine) terminalTodosFromState(sessionPath string) ([]evidence.Tod
 	return append([]evidence.TodoItem(nil), state.Todos...), true
 }
 
-// restoreRunningFromState reloads the active running goal from the persisted
-// sidecar during cold resume. Terminal sidecar data is intentionally ignored:
-// terminal todo repair is handled by terminalTodosFromState without reviving the
-// goal loop.
-func (g *goalMachine) restoreRunningFromState(sessionPath string) {
+// restoreFromState reloads Goal state from the persisted sidecar during resume.
+// The sidecar is authoritative when present: a stale tab profile must not turn
+// a blocked or stopped Goal back into a running one during a controller rebuild.
+// Recoverable terminal states retain their scope for an explicit ResumeGoal.
+func (g *goalMachine) restoreFromState(sessionPath string) {
 	if strings.TrimSpace(sessionPath) == "" {
 		return
 	}
-	data, err := os.ReadFile(goalStatePath(sessionPath))
+	data, err := fileencoding.ReadFileUTF8(goalStatePath(sessionPath))
 	if err != nil {
 		if !os.IsNotExist(err) {
 			slog.Warn("controller: read goal state", "err", err)
@@ -390,15 +456,27 @@ func (g *goalMachine) restoreRunningFromState(sessionPath string) {
 		slog.Warn("controller: parse goal state", "err", err)
 		return
 	}
-	if state.Status != GoalStatusRunning || strings.TrimSpace(state.Goal) == "" {
-		return
-	}
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	g.goal = strings.TrimSpace(state.Goal)
-	g.status = GoalStatusRunning
+	g.status = state.Status
+	if g.status == "" {
+		g.status = GoalStatusStopped
+	}
 	g.researchMode = state.ResearchMode
 	g.autoResearchTaskID = strings.TrimSpace(state.AutoResearchTaskID)
+	g.scopeID = strings.TrimSpace(state.ScopeID)
+	if g.goal != "" && g.scopeID == "" {
+		g.scopeID = newGoalScopeID()
+	}
+	g.deliveryCheckpoint = state.DeliveryCheckpoint
+	if g.scopeID == "" {
+		g.deliveryCheckpoint = evidence.DeliveryCheckpoint{}
+	} else if g.deliveryCheckpoint.ScopeID == "" {
+		g.deliveryCheckpoint.ScopeID = g.scopeID
+	} else if g.deliveryCheckpoint.ScopeID != g.scopeID {
+		g.deliveryCheckpoint = evidence.DeliveryCheckpoint{ScopeID: g.scopeID}
+	}
 	g.turns = state.Turns
 	g.blocks = state.Blocks
 	g.block = state.Block

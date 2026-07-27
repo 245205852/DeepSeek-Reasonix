@@ -2,6 +2,7 @@ package cli
 
 import (
 	"fmt"
+	"strings"
 
 	tea "charm.land/bubbletea/v2"
 
@@ -9,14 +10,14 @@ import (
 	"reasonix/internal/i18n"
 )
 
-// runModelSubcommand handles "/model": with no argument it lists the configured
-// (provider, model) refs and marks the active one; "/model <ref>" switches the
+// runModelSubcommand handles "/model": with no argument it opens the configured
+// model picker; "/model <ref>" switches the
 // session to that model in place, carrying the conversation across. The actual
 // controller build runs asynchronously so it cannot block the TUI event loop.
 func (m *chatTUI) runModelSubcommand(input string) {
 	args := tokenizeArgs(input) // args[0] == "/model"
 	if len(args) < 2 {
-		m.showModels()
+		m.openModelPicker()
 		return
 	}
 	ref := args[1]
@@ -24,8 +25,12 @@ func (m *chatTUI) runModelSubcommand(input string) {
 		m.notice(i18n.M.ModelSwitchUnavailable)
 		return
 	}
-	if m.ctrl.Running() {
+	if m.runtimeSwitchBusy() {
 		m.notice(i18n.M.ModelSwitchBusy)
+		return
+	}
+	if m.modelSwitchPending {
+		m.notice(i18n.M.RuntimeSwitchPending)
 		return
 	}
 	if ref == m.modelRef {
@@ -37,10 +42,22 @@ func (m *chatTUI) runModelSubcommand(input string) {
 	// default. Mirrors the pattern used by /theme (persistTheme), /effort, and
 	// /language.
 	m.persistModel(ref)
-	carried := m.ctrl.History()
-	prevPath := m.ctrl.SessionPath()
 	if err := m.ctrl.Snapshot(); err != nil {
 		m.notice("model: snapshot failed: " + err.Error())
+	}
+	// Capture the resume path and history only after Snapshot: a snapshot
+	// conflict can retarget the controller to a recovery branch (or adopt the
+	// newer disk transcript), and a pre-snapshot capture would bind the rebuilt
+	// controller back to the original file, re-conflicting on every later save.
+	carried := m.ctrl.History()
+	prevPath := m.ctrl.SessionPath()
+	// Move the lease before the rebuilt controller binds prevPath for writing
+	// (AdoptHistory resumes there): after a snapshot retarget the lease still
+	// guards the old path, and the async build must not open an unguarded
+	// writer on the recovery branch.
+	if err := m.rebindSessionLease(prevPath); err != nil {
+		m.notice("model: " + sessionLeaseHeldNotice(err))
+		return
 	}
 	m.notice(fmt.Sprintf(i18n.M.ModelSwitchingFmt, ref))
 
@@ -56,7 +73,12 @@ func (m *chatTUI) runModelSubcommand(input string) {
 	// must happen here, before we hand the new controller back.
 	m.modelSwitchPending = true
 	m.pendingModelSwitch = func() tea.Msg {
-		c, err := build(ref, carried, prevPath)
+		c, err := build(controllerBuildSpec{
+			ModelRef:         ref,
+			RuntimeProfile:   m.runtimeProfile,
+			ToolApprovalMode: oldCtrl.ToolApprovalMode(),
+			PlanMode:         oldCtrl.PlanMode(),
+		}, carried, prevPath, oldCtrl)
 		if err != nil {
 			return modelSwitchMsg{ref: ref, err: err}
 		}
@@ -72,30 +94,34 @@ func (m *chatTUI) runModelSubcommand(input string) {
 			oldCtrl:  oldCtrl,
 			label:    c.Label(),
 			commands: c.Commands(),
-			skills:   c.Skills(),
+			skills:   c.SlashSkills(),
 			host:     c.Host(),
 		}
 	}
 }
 
-// showModels lists the configured provider/model refs, marking the active one.
-func (m *chatTUI) showModels() {
-	cfg, err := config.Load()
-	if err != nil {
-		m.notice("model: " + err.Error())
+func (m *chatTUI) openModelPicker() {
+	refs := modelRefs()
+	if len(refs) == 0 {
+		m.notice("model: no configured chat models")
 		return
 	}
-	var refs []string
-	for i := range cfg.Providers {
-		p := &cfg.Providers[i]
-		if !p.Configured() {
-			continue
+	items := make([]quickPickerItem, 0, len(refs))
+	selected := 0
+	for _, ref := range refs {
+		parts := strings.SplitN(ref, "/", 2)
+		description := ""
+		if len(parts) == 2 {
+			description = "Provider: " + parts[0]
 		}
-		for _, model := range p.ChatModelList() {
-			refs = append(refs, p.Name+"/"+model)
+		status := ""
+		if ref == m.modelRef {
+			status = "active"
+			selected = len(items)
 		}
+		items = append(items, quickPickerItem{ID: ref, Label: ref, Description: description, Status: status})
 	}
-	m.commitLine(renderModels(m.width, refs, m.modelRef))
+	m.quickPick = &quickPicker{kind: quickPickerModel, title: "Select model", items: items, selected: selected}
 }
 
 // persistModel writes ref (a "provider/model" string) to default_model in the
@@ -111,6 +137,10 @@ func (m *chatTUI) persistModel(ref string) {
 	if path == "" {
 		return
 	}
+	// Serialize the load-modify-save against other in-process user-config
+	// editors so concurrent writers don't drop each other's fields.
+	unlock := config.LockUserConfigEdits()
+	defer unlock()
 	edit := config.LoadForEdit(path)
 	if err := edit.SetDefaultModel(ref); err != nil {
 		m.notice(fmt.Sprintf("model: persist refused: %v (ref=%s)", err, ref))

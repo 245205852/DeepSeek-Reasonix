@@ -11,6 +11,7 @@ import { CodeViewer } from "./CodeViewer";
 import { classifyLinkIcon, parseGitHubLink, type GitHubLinkInfo, type LinkIconKind } from "./githubLink";
 import { normalizeMath } from "./mathNormalize";
 import { openExternal } from "../lib/bridge";
+import { markdownImageSource } from "../lib/markdownImage";
 
 const MermaidDiagram = lazy(() => import("./MermaidDiagram"));
 
@@ -174,6 +175,15 @@ function createComponents(plainStatusBlocks: boolean): Components {
         </a>
       );
     },
+    img: ({ src, alt, title }) => (
+      <img
+        src={markdownImageSource(src)}
+        alt={alt ?? ""}
+        title={title}
+        loading="lazy"
+        referrerPolicy="no-referrer"
+      />
+    ),
   };
 }
 

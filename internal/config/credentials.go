@@ -8,9 +8,10 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/BurntSushi/toml"
+	"github.com/joho/godotenv"
 
 	"reasonix/internal/fileutil"
+	fileencoding "reasonix/internal/fileutil/encoding"
 )
 
 const (
@@ -123,7 +124,7 @@ func credentialsStoreMode() string {
 		CredentialsStore string `toml:"credentials_store"`
 	}
 	if path := userConfigLoadPath(); path != "" {
-		_, _ = toml.DecodeFile(path, &partial)
+		_, _ = decodeTOMLFile(path, &partial)
 	}
 	return normalizeCredentialsStore(partial.CredentialsStore)
 }
@@ -173,8 +174,37 @@ func credentialEnvNamesFromConfig(cfg *Config) []string {
 		add(conn.Credential.AppSecretEnv)
 		add(conn.Credential.TokenEnv)
 	}
+	for _, h := range cfg.Remote.Hosts {
+		add(h.PassphraseEnv)
+		add(h.PasswordEnv)
+	}
 	sort.Strings(out)
 	return out
+}
+
+// CredentialEnvNames returns every environment-variable name whose value can
+// be loaded from Reasonix's global credential store. This includes configured
+// provider/bot keys and stored keys that are no longer referenced by the
+// current config: loadCredentialStoreForRoot loads the whole credential file,
+// so stale entries must remain outside child-process environments too.
+func (c *Config) CredentialEnvNames() []string {
+	names := credentialEnvNamesFromConfig(c)
+	seen := make(map[string]bool, len(names))
+	for _, name := range names {
+		seen[name] = true
+	}
+	if file, ok := readDotEnvFile(UserCredentialsPath()); ok {
+		for name := range file.Values {
+			name = strings.TrimSpace(name)
+			if !isCredentialKey(name) || seen[name] {
+				continue
+			}
+			seen[name] = true
+			names = append(names, name)
+		}
+	}
+	sort.Strings(names)
+	return names
 }
 
 func resolveProviderCredentialsForRoot(root string, cfg *Config) {
@@ -249,6 +279,12 @@ func SetCredential(key, value string) (string, error) {
 	return StoreCredentialLines([]string{key + "=" + value})
 }
 
+// IsValidCredentialKey reports whether key can be stored in Reasonix's dotenv
+// credential file and exposed as an environment variable.
+func IsValidCredentialKey(key string) bool {
+	return isCredentialKey(strings.TrimSpace(key))
+}
+
 func RemoveCredential(key string) error {
 	key = strings.TrimSpace(key)
 	if key == "" || !isCredentialKey(key) {
@@ -301,17 +337,20 @@ func CredentialsTargetDescription() string {
 func parseCredentialLines(lines []string) map[string]string {
 	out := map[string]string{}
 	for _, raw := range lines {
-		line := strings.TrimPrefix(strings.TrimSpace(raw), "export ")
-		if line == "" || strings.HasPrefix(line, "#") {
+		if strings.ContainsAny(raw, "\r\n") {
 			continue
 		}
-		key, value, ok := strings.Cut(line, "=")
-		key = strings.TrimSpace(key)
-		value = strings.Trim(strings.TrimSpace(value), `"'`)
-		if !ok || !isCredentialKey(key) || strings.ContainsAny(value, "\r\n") {
+		values, err := godotenv.Unmarshal(raw)
+		if err != nil {
 			continue
 		}
-		out[key] = value
+		for key, value := range values {
+			key = strings.TrimSpace(key)
+			if !isCredentialKey(key) || strings.ContainsAny(value, "\r\n") {
+				continue
+			}
+			out[key] = value
+		}
 	}
 	return out
 }
@@ -478,8 +517,10 @@ func credentialSourceCandidates(root string) []CredentialSource {
 	if p := UserCredentialsPath(); p != "" {
 		out = append(out, CredentialSource{Kind: CredentialSourceCredentials, Path: p})
 	}
-	if home, err := os.UserHomeDir(); err == nil {
-		out = append(out, CredentialSource{Kind: CredentialSourceHomeEnv, Path: filepath.Join(home, ".env")})
+	if IsolatedHomeDir() == "" {
+		if home, err := os.UserHomeDir(); err == nil {
+			out = append(out, CredentialSource{Kind: CredentialSourceHomeEnv, Path: filepath.Join(home, ".env")})
+		}
 	}
 	return out
 }
@@ -519,7 +560,7 @@ func storeCredentialsInFile(path string, assignments map[string]string) error {
 			continue
 		}
 		if value, hit := assignments[key]; hit {
-			lines[i] = key + "=" + value
+			lines[i] = formatCredentialLine(key, value)
 			replaced[key] = true
 		}
 	}
@@ -530,10 +571,28 @@ func storeCredentialsInFile(path string, assignments map[string]string) error {
 	sort.Strings(keys)
 	for _, key := range keys {
 		if !replaced[key] {
-			lines = append(lines, key+"="+assignments[key])
+			lines = append(lines, formatCredentialLine(key, assignments[key]))
 		}
 	}
 	return writeCredentialFileLines(path, lines)
+}
+
+func formatCredentialLine(key, value string) string {
+	if isBareDotEnvValue(value) {
+		return key + "=" + value
+	}
+	line, err := godotenv.Marshal(map[string]string{key: value})
+	if err != nil {
+		return key + "=" + value
+	}
+	return line
+}
+
+func isBareDotEnvValue(value string) bool {
+	if value == "" {
+		return true
+	}
+	return !strings.ContainsAny(value, " \t\r\n#'\"\\")
 }
 
 func removeCredentialFromFile(path, key string) error {
@@ -556,7 +615,7 @@ func removeCredentialFromFile(path, key string) error {
 }
 
 func readCredentialFileLines(path string) ([]string, error) {
-	data, err := os.ReadFile(path)
+	data, err := fileencoding.ReadFileUTF8(path)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return nil, nil

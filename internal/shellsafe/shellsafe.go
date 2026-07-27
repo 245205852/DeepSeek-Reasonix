@@ -1,13 +1,14 @@
 // Package shellsafe is the single source of truth for which shell commands are
-// read-only — they don't modify filesystem, network, or process state. Both the
-// permission auto-approve path (internal/permission) and the plan-mode gate
-// (internal/planmode) classify command membership against these tables, so the
-// two can't drift (the drift was #5341: a git subcommand auto-approved by
-// permission yet blocked while planning). Each consumer still layers its own
-// argument-rigor on top — plan mode is intentionally stricter than auto-approve.
+// read-only — they don't modify filesystem, network, or process state. The
+// permission auto-approve path and explicitly read-only runners share these
+// tables so their command classification cannot drift.
 package shellsafe
 
-import "strings"
+import (
+	"strings"
+
+	"reasonix/internal/shellparse"
+)
 
 // ReadOnlyCommands holds single-word commands whose base name alone implies a
 // read-only operation. The first word of a command (lowercased) is looked up
@@ -71,7 +72,7 @@ var ReadOnlyPrefixes = map[string]map[string]bool{
 // substitution — chaining/redirection/expansion can smuggle a write past a
 // read-only base-word check, so any such command is treated as not read-only.
 func ContainsShellSyntax(cmd string) bool {
-	return strings.ContainsAny(cmd, ";|&<>\n\r`") || strings.Contains(cmd, "$(")
+	return shellparse.ContainsShellSyntax(cmd)
 }
 
 // CommandIsReadOnly reports whether the command's base/subcommand is in the
@@ -80,12 +81,8 @@ func ContainsShellSyntax(cmd string) bool {
 // ok is false when the command contains shell syntax or the base/subcommand is
 // not a known read-only operation.
 func CommandIsReadOnly(command string) (base, sub string, ok bool) {
-	cmd := strings.TrimSpace(command)
-	if cmd == "" || ContainsShellSyntax(cmd) {
-		return "", "", false
-	}
-	fields := strings.Fields(cmd)
-	if len(fields) == 0 {
+	fields, malformed := shellparse.StaticFields(command)
+	if malformed != "" || len(fields) == 0 {
 		return "", "", false
 	}
 	base = strings.ToLower(fields[0])

@@ -9,7 +9,6 @@ import (
 	"os/exec"
 	"runtime"
 	"strings"
-	"unicode"
 
 	tea "charm.land/bubbletea/v2"
 
@@ -17,6 +16,7 @@ import (
 	"reasonix/internal/control"
 	"reasonix/internal/mcpdiag"
 	"reasonix/internal/plugin"
+	"reasonix/internal/shellparse"
 )
 
 func (m chatTUI) applyMCPAction(v mcpServerView, action mcpAction) (tea.Model, tea.Cmd) {
@@ -27,7 +27,7 @@ func (m chatTUI) applyMCPAction(v mcpServerView, action mcpAction) (tea.Model, t
 		m.mcp.stage = mcpStageMode
 		m.mcp.mode = mcpModeIndex(v.Tier)
 	case mcpActionEdit:
-		return m.openMCPConfig()
+		return m.openMCPConfig(v)
 	case mcpActionAuth:
 		return m.authenticateMCP(v)
 	case mcpActionClearAuth:
@@ -135,20 +135,21 @@ func (m chatTUI) applyMCPMode(tier string) (tea.Model, tea.Cmd) {
 	if !ok {
 		return m, nil
 	}
-	cfg, err := config.Load()
+	workspace := m.mcpWorkspaceRoot()
+	cfg, err := config.LoadForRoot(workspace)
 	if err != nil {
 		m.notice("mcp mode: " + err.Error())
 		return m, nil
 	}
 	found := false
 	var selected config.PluginEntry
-	for i := range cfg.Plugins {
-		if cfg.Plugins[i].Name == v.Name {
-			cfg.Plugins[i].Tier = normalizeMCPTierForCLI(tier)
-			if !cfg.Plugins[i].ShouldAutoStart() {
-				cfg.Plugins[i].AutoStart = mcpBoolPtr(true)
+	for _, entry := range cfg.Plugins {
+		if entry.Name == v.Name {
+			entry.Tier = normalizeMCPTierForCLI(tier)
+			if !entry.ShouldAutoStart() {
+				entry.AutoStart = mcpBoolPtr(true)
 			}
-			selected = cfg.Plugins[i]
+			selected = entry
 			found = true
 			break
 		}
@@ -157,7 +158,7 @@ func (m chatTUI) applyMCPMode(tier string) (tea.Model, tea.Cmd) {
 		m.notice(fmt.Sprintf("mcp mode: no configured MCP server named %q", v.Name))
 		return m, nil
 	}
-	if err := cfg.Save(); err != nil {
+	if _, err := config.UpsertPluginInSourceForRoot(workspace, selected); err != nil {
 		m.notice("mcp mode: " + err.Error())
 		return m, nil
 	}
@@ -196,14 +197,12 @@ func recordMCPModePluginFailure(ctrl control.Capabilities, e config.PluginEntry,
 	}, err)
 }
 
-func (m chatTUI) openMCPConfig() (tea.Model, tea.Cmd) {
-	path := ""
-	if m.mcp != nil {
-		path = m.mcp.snapshot.configPath
+func (m chatTUI) openMCPConfig(v mcpServerView) (tea.Model, tea.Cmd) {
+	fallback := config.UserConfigPath()
+	if m.mcp != nil && strings.TrimSpace(m.mcp.snapshot.configPath) != "" {
+		fallback = m.mcp.snapshot.configPath
 	}
-	if strings.TrimSpace(path) == "" {
-		path = mcpConfigLocation()
-	}
+	path := mcpConfigPathForView(v, fallback)
 	launch, err := mcpEditConfigLaunchCommand(path, exec.LookPath)
 	if err != nil {
 		m.notice("edit config: " + err.Error())
@@ -252,7 +251,7 @@ func (m chatTUI) clearMCPAuthentication(v mcpServerView) (tea.Model, tea.Cmd) {
 		m.notice("managed MCP servers do not store authentication")
 		return m, nil
 	}
-	_, changed, _, err := config.ClearPluginAuthenticationInSource(v.Name)
+	_, changed, _, err := config.ClearPluginAuthenticationInSourceForRoot(m.mcpWorkspaceRoot(), v.Name)
 	if err != nil {
 		m.notice("clear authentication: " + err.Error())
 		return m, nil
@@ -298,19 +297,6 @@ func normalizeMCPTierForCLI(tier string) string {
 	default:
 		return "background"
 	}
-}
-
-func mcpConfigLocation() string {
-	if path := config.SourcePath(); path != "" {
-		return path
-	}
-	if _, err := os.Stat(".mcp.json"); err == nil {
-		return ".mcp.json"
-	}
-	if path := config.UserConfigPath(); path != "" {
-		return path
-	}
-	return "reasonix.toml"
 }
 
 type mcpEditConfigLaunch struct {
@@ -431,10 +417,10 @@ func mcpConnected(ctrl control.Capabilities, name string) bool {
 // (e.g. "code --wait", "nvim -p") and shell variable / tilde references
 // (e.g. "$HOME/bin/myeditor", "~/bin/myeditor"); these are expanded without
 // invoking a shell, and the editor binary is resolved by the OS directly.
-// Shell metacharacters in the value cannot be executed: the expanded value is
-// parsed only into argv words, so a value like "vim; rm -rf ~" becomes the
-// literal argv ["vim;", "rm", "-rf", "~/..."] and "vim;" is looked up as the
-// program name (failing harmlessly) rather than being interpreted by a shell.
+// Shell metacharacters in the value cannot be executed: the expanded value must
+// parse as one static shell command. Control operators, redirection,
+// substitution, globbing, assignments, and other shell-shaping syntax are
+// rejected before launch.
 //
 // This matches the safe pattern already used by the terminal-editor
 // fallback (exec.Command(bin, path)) in the same function and avoids the
@@ -442,7 +428,7 @@ func mcpConnected(ctrl control.Capabilities, name string) bool {
 // a shell command string.
 //
 // Quoting and backslash escaping are honored for word splitting only; shell
-// operators, globbing, command substitution, and redirection are not evaluated.
+// operators, globbing, command substitution, and redirection are rejected.
 // Tilde expansion only covers the leading-token forms "~" and "~/..."; "~user"
 // is not supported (and was not reliably supported by the prior sh -lc path
 // either, since $HOME for another user is not available without getpwuid).
@@ -460,59 +446,10 @@ func editorLaunchCmd(editor, path string) (*exec.Cmd, error) {
 }
 
 func splitEditorCommand(s string) ([]string, error) {
-	var args []string
-	var b strings.Builder
-	var quote rune
-	escaped := false
-	escapedQuote := rune(0)
-	inWord := false
-
-	flush := func() {
-		if inWord {
-			args = append(args, b.String())
-			b.Reset()
-			inWord = false
-		}
+	args, malformed := shellparse.StaticFields(s)
+	if malformed != "" {
+		return nil, fmt.Errorf("%s", malformed)
 	}
-
-	for _, r := range s {
-		switch {
-		case escaped:
-			if escapedQuote == '"' && r != '$' && r != '`' && r != '"' && r != '\\' {
-				b.WriteRune('\\')
-			}
-			b.WriteRune(r)
-			inWord = true
-			escaped = false
-			escapedQuote = 0
-		case r == '\\' && quote != '\'':
-			inWord = true
-			escaped = true
-			escapedQuote = quote
-		case quote != 0:
-			if r == quote {
-				quote = 0
-			} else {
-				b.WriteRune(r)
-			}
-			inWord = true
-		case r == '\'' || r == '"':
-			quote = r
-			inWord = true
-		case unicode.IsSpace(r):
-			flush()
-		default:
-			b.WriteRune(r)
-			inWord = true
-		}
-	}
-	if escaped {
-		b.WriteRune('\\')
-	}
-	if quote != 0 {
-		return nil, fmt.Errorf("unterminated %q quote", quote)
-	}
-	flush()
 	return args, nil
 }
 

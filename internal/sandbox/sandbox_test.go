@@ -1,13 +1,15 @@
 package sandbox
 
 import (
+	"os"
 	"os/exec"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
 )
 
-// --- Spec.enforce ---
+// --- Spec.Enforce ---
 
 func TestEnforce(t *testing.T) {
 	cases := []struct {
@@ -22,8 +24,8 @@ func TestEnforce(t *testing.T) {
 	}
 	for _, c := range cases {
 		s := Spec{Mode: c.mode}
-		if got := s.enforce(); got != c.want {
-			t.Errorf("Spec{%q}.enforce() = %v, want %v", c.mode, got, c.want)
+		if got := s.Enforce(); got != c.want {
+			t.Errorf("Spec{%q}.Enforce() = %v, want %v", c.mode, got, c.want)
 		}
 	}
 }
@@ -32,7 +34,7 @@ func TestEnforce(t *testing.T) {
 
 func TestSpecZeroValue(t *testing.T) {
 	var s Spec
-	if s.enforce() {
+	if s.Enforce() {
 		t.Error("zero-value Spec should not enforce")
 	}
 	if s.Network {
@@ -40,6 +42,30 @@ func TestSpecZeroValue(t *testing.T) {
 	}
 	if len(s.WriteRoots) != 0 {
 		t.Error("zero-value Spec should have no write roots")
+	}
+}
+
+func TestUnavailableMessageIsActionable(t *testing.T) {
+	msg := UnavailableMessage()
+	want := []string{
+		"refusing to run unconfined",
+		`[sandbox] bash = "off"`,
+		"Settings -> Sandbox",
+	}
+	if runtime.GOOS == "windows" {
+		// Windows ships no OS-level Bash backend and the effective mode is
+		// fixed to off, so the remediation states that fact instead of
+		// pointing at a config edit the platform would ignore.
+		want = []string{
+			"refusing to run unconfined",
+			"OS-level Bash sandbox",
+			`fixed to "off"`,
+		}
+	}
+	for _, w := range want {
+		if !strings.Contains(msg, w) {
+			t.Fatalf("UnavailableMessage() = %q, want %q", msg, w)
+		}
 	}
 }
 
@@ -302,8 +328,31 @@ func TestAvailableNonDarwin(t *testing.T) {
 	if runtime.GOOS == "darwin" {
 		t.Skip("testing non-darwin path")
 	}
-	_, err := exec.LookPath("bwrap")
-	if Available() != (err == nil) {
-		t.Errorf("Available() = %v, bwrap err = %v", Available(), err)
+	if runtime.GOOS == "windows" {
+		t.Skip("windows has its own helper-backed sandbox availability")
+	}
+	if Available() {
+		if _, err := exec.LookPath("bwrap"); err != nil {
+			t.Errorf("Available() = true, but bwrap lookup failed: %v", err)
+		}
+	}
+}
+
+func TestInstalledButUnusableBwrapIsUnavailable(t *testing.T) {
+	if runtime.GOOS == "darwin" || runtime.GOOS == "windows" {
+		t.Skip("bubblewrap-only test")
+	}
+	dir := t.TempDir()
+	bwrap := filepath.Join(dir, "bwrap")
+	if err := os.WriteFile(bwrap, []byte("#!/bin/sh\nexit 1\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir)
+	if Available() {
+		t.Fatal("non-functional bwrap binary was reported available")
+	}
+	argv, wrapped := Command(Spec{Mode: "enforce"}, Shell{Kind: ShellBash, Path: "sh"}, "true")
+	if wrapped || len(argv) == 0 || argv[0] != "sh" {
+		t.Fatalf("Command with unusable bwrap = %v, wrapped=%v; want unwrapped shell for caller fail-closed", argv, wrapped)
 	}
 }

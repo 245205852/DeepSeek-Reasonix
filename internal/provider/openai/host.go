@@ -3,6 +3,8 @@ package openai
 import (
 	"net/url"
 	"strings"
+
+	"reasonix/internal/provider"
 )
 
 // matchesVendorHost reports whether baseURL points at one of the canonical
@@ -43,4 +45,53 @@ func IsDeepSeek(baseURL string) bool {
 // `minimax` — to avoid clashing with any future minimax-branded gateway.
 func IsMiniMax(baseURL string) bool {
 	return matchesVendorHost(baseURL, "minimaxi.com", "api.minimaxi.com")
+}
+
+// IsMiMo reports whether baseURL points at Xiaomi MiMo's OpenAI-compatible API.
+// MiMo follows the OpenAI chat shape but authenticates with an `api-key` header
+// instead of the usual Authorization bearer header.
+func IsMiMo(baseURL string) bool {
+	return provider.IsMiMoEndpoint(baseURL)
+}
+
+// IsZhipu reports whether baseURL points at Zhipu's OpenAI-compatible endpoint
+// for GLM models — either the China host (open.bigmodel.cn, *.bigmodel.cn) or
+// the international Z.ai host (api.z.ai, *.z.ai). Both speak the same wire shape,
+// where chain-of-thought is gated by `thinking.type` (enabled|disabled) and
+// `reasoning_effort` is silently ignored, so the client routes reasoning control
+// to the thinking knob for either host.
+func IsZhipu(baseURL string) bool {
+	return matchesVendorHost(baseURL, "bigmodel.cn", "open.bigmodel.cn") ||
+		matchesVendorHost(baseURL, "z.ai", "api.z.ai")
+}
+
+// IsLongCat reports whether baseURL points at LongCat's OpenAI-compatible API.
+// LongCat uses the OpenAI chat shape, but gates thinking with thinking.type
+// enabled|disabled rather than the generic reasoning_effort field.
+func IsLongCat(baseURL string) bool {
+	return matchesVendorHost(baseURL, "longcat.chat", "api.longcat.chat")
+}
+
+// IsKimiAPI reports whether baseURL is one of Moonshot's official Kimi direct
+// API endpoints. Gate Kimi-specific wire compatibility on the exact API hosts
+// so OpenAI-compatible relays carrying the same model ID remain untouched.
+func IsKimiAPI(baseURL string) bool {
+	u, err := url.Parse(baseURL)
+	if err != nil {
+		return false
+	}
+	switch strings.ToLower(u.Hostname()) {
+	case "api.moonshot.cn", "api.moonshot.ai":
+		return true
+	default:
+		return false
+	}
+}
+
+// IsOllamaCloud reports whether baseURL points at Ollama Cloud's hosted
+// OpenAI-compatible endpoint. Local Ollama servers intentionally do not match:
+// the hosted API accepts the reasoning_effort=max extension, while localhost
+// deployments vary by model/version.
+func IsOllamaCloud(baseURL string) bool {
+	return matchesVendorHost(baseURL, "ollama.com", "ollama.com")
 }

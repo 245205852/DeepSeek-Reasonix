@@ -10,11 +10,13 @@ import (
 	"strings"
 	"time"
 	"unicode/utf8"
+
+	"reasonix/internal/shellparse"
 )
 
 type diffOpts struct {
-	bin, model, repo, base, testCmd string
-	maxSteps, timeoutSec, attempts  int
+	bin, model, repo, base, testCmd, profile string
+	maxSteps, timeoutSec, attempts           int
 }
 
 type testRef struct{ name, pkg string }
@@ -35,7 +37,11 @@ type pinResult struct {
 func runDiff(o diffOpts) string {
 	srcFiles := changedGoFiles(o.repo, o.base, false)
 	if len(srcFiles) == 0 {
-		return "## 🤖 Reasonix e2e — diff test-gen\n\nNo Go source changes in this PR (excluding `_test.go`); nothing to generate tests for.\n"
+		profile := o.profile
+		if profile == "" {
+			profile = benchmarkProfileBaseline
+		}
+		return fmt.Sprintf("## 🤖 Reasonix e2e — diff test-gen (%s)\n\nNo Go source changes in this PR (excluding `_test.go`); nothing to generate tests for.\n", profile)
 	}
 	pkgs := packagesOf(srcFiles)
 	prompt := buildDiffPrompt(srcFiles, pkgs, truncate(gitOut(o.repo, "diff", o.base+"...HEAD", "--")))
@@ -78,6 +84,7 @@ func runOnce(o diffOpts, srcFiles, pkgs []string, prompt string) diffReport {
 	if o.model != "" {
 		args = append(args, "--model", o.model)
 	}
+	args = appendBenchmarkProfileArgs(args, o.profile)
 	args = append(args, prompt)
 	cmd := exec.CommandContext(ctx, o.bin, args...)
 	cmd.Dir = o.repo
@@ -112,7 +119,7 @@ func runOnce(o diffOpts, srcFiles, pkgs []string, prompt string) diffReport {
 		newTests: refs, sourceTouched: sourceTouched, testsPass: testsPass,
 		pins: pins, mut: mut, covered: covered, coverTotal: coverTotal,
 		buildOK: buildOK, buildOut: buildOut, failing: failingTestNames(testOut),
-		passed: passed, m: m, runErr: runErr, testOut: testOut, testDiff: testDiff,
+		passed: passed, profile: o.profile, m: m, runErr: runErr, testOut: testOut, testDiff: testDiff,
 	}
 }
 
@@ -188,6 +195,7 @@ type diffReport struct {
 	buildOut            string
 	failing             []string
 	passed              bool
+	profile             string
 	attempt, attempts   int
 	m                   runMetrics
 	runErr              error
@@ -201,7 +209,11 @@ func renderDiff(r diffReport) string {
 	if r.passed {
 		result = "✅ pass"
 	}
-	fmt.Fprintf(&b, "## 🤖 Reasonix e2e — diff test-gen\n\n")
+	profile := r.profile
+	if profile == "" {
+		profile = benchmarkProfileBaseline
+	}
+	fmt.Fprintf(&b, "## 🤖 Reasonix e2e — diff test-gen (%s)\n\n", profile)
 	fmt.Fprintf(&b, "**Result:** %s · **%d** changed source file(s) across **%d** package(s)\n\n", result, len(r.srcFiles), len(r.pkgs))
 
 	pinned, byAssert := countPins(r.pins), countAssertionPins(r.pins)
@@ -221,6 +233,15 @@ func renderDiff(r diffReport) string {
 	fmt.Fprintf(&b, "| Tokens (prompt / completion) | %s / %s |\n", comma(r.m.PromptTokens), comma(r.m.CompletionTokens))
 	fmt.Fprintf(&b, "| Model calls | %d |\n", r.m.Steps)
 	fmt.Fprintf(&b, "| Cost | %s%.4f |\n", currencySym(r.m.Currency), r.m.Cost)
+	if r.m.CapabilityRoutes > 0 || r.m.CapabilitySkillInvocations > 0 || r.m.CapabilityMCPCall > 0 || r.m.ReadinessChecks > 0 {
+		fmt.Fprintf(&b, "| Capability routes (semantic) | %d (%d) |\n", r.m.CapabilityRoutes, r.m.CapabilitySemanticRoutes)
+		fmt.Fprintf(&b, "| Routed candidates (require / prefer / suggest / declined) | %d (%d / %d / %d / %d) |\n", r.m.CapabilityRoutedCandidates, r.m.CapabilityRoutedRequire, r.m.CapabilityRoutedPrefer, r.m.CapabilityRoutedSuggest, r.m.CapabilityDeclines)
+		fmt.Fprintf(&b, "| Skill invocations / MCP proxy calls | %d / %d |\n", r.m.CapabilitySkillInvocations, r.m.CapabilityMCPCall)
+		fmt.Fprintf(&b, "| Review blocks / readiness recoveries | %d / %d |\n", r.m.CapabilityReviewBlocks, r.m.ReadinessRecoveries)
+		if r.m.CapabilityRouterCost > 0 || r.m.CapabilityRouterLatencyMs > 0 {
+			fmt.Fprintf(&b, "| Capability-router cost / latency | %s%.4f / %dms |\n", currencySym(r.m.Currency), r.m.CapabilityRouterCost, r.m.CapabilityRouterLatencyMs)
+		}
+	}
 	if len(r.failing) > 0 {
 		fmt.Fprintf(&b, "| Failing tests | `%s` |\n", strings.Join(r.failing, "`, `"))
 	}
@@ -546,55 +567,23 @@ func failingTestNames(out string) []string {
 }
 
 func runTests(repo, testCmd string, pkgs []string) (bool, string) {
-	fields := splitShellFields(testCmd)
+	test, err := shellparse.ParseStaticCommand(testCmd, shellparse.StaticCommandPolicy{AllowEnvAssignments: true, AllowStderrToStdout: true})
+	if err != nil {
+		return false, "invalid test command: " + err.Error()
+	}
+	fields := test.Argv
 	if len(fields) == 0 {
 		fields = []string{"go", "test"}
 	}
 	args := append(fields[1:], pkgs...)
 	cmd := exec.Command(fields[0], args...)
 	cmd.Dir = repo
+	if len(test.Env) > 0 {
+		cmd.Env = append(os.Environ(), test.Env...)
+	}
 	cmd.WaitDelay = 5 * time.Minute // bound the wait if `go test` hangs
 	out, err := cmd.CombinedOutput()
 	return err == nil, string(out)
-}
-
-// splitShellFields splits on whitespace, honoring single/double-quoted spans and stripping the quotes.
-func splitShellFields(s string) []string {
-	var out []string
-	var cur strings.Builder
-	inSingle, inDouble := false, false
-	for i := 0; i < len(s); i++ {
-		c := s[i]
-		switch {
-		case inSingle:
-			if c == '\'' {
-				inSingle = false
-			} else {
-				cur.WriteByte(c)
-			}
-		case inDouble:
-			if c == '"' {
-				inDouble = false
-			} else {
-				cur.WriteByte(c)
-			}
-		case c == '\'':
-			inSingle = true
-		case c == '"':
-			inDouble = true
-		case c == ' ' || c == '\t' || c == '\n':
-			if cur.Len() > 0 {
-				out = append(out, cur.String())
-				cur.Reset()
-			}
-		default:
-			cur.WriteByte(c)
-		}
-	}
-	if cur.Len() > 0 {
-		out = append(out, cur.String())
-	}
-	return out
 }
 
 // changedGoFiles lists .go files changed by base...HEAD, excluding *_test.go

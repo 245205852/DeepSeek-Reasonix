@@ -85,6 +85,9 @@ func TestGenManifest(t *testing.T) {
 	if m.Version != "v1.2.0" {
 		t.Fatalf("version = %q, want v1.2.0", m.Version)
 	}
+	if m.DownloadPage != "https://reasonix.io/?download=desktop#start" {
+		t.Fatalf("download_page = %q, want official install page", m.DownloadPage)
+	}
 	if len(m.Platforms) != 5 {
 		t.Fatalf("want 5 platforms, got %d: %v", len(m.Platforms), m.Platforms)
 	}
@@ -92,7 +95,7 @@ func TestGenManifest(t *testing.T) {
 	if !ok {
 		t.Fatal("windows-amd64 missing")
 	}
-	wantURL := "https://github.com/esengine/reasonix/releases/download/desktop-v1.2.0/Reasonix-windows-amd64-installer.exe"
+	wantURL := "https://github.com/esengine/DeepSeek-Reasonix/releases/download/desktop-v1.2.0/Reasonix-windows-amd64-installer.exe"
 	if win.URL != wantURL {
 		t.Fatalf("windows url = %q, want %q", win.URL, wantURL)
 	}
@@ -111,13 +114,55 @@ func TestGenManifest(t *testing.T) {
 	if !strings.HasSuffix(arm.URL, "/Reasonix-windows-arm64-installer.exe") {
 		t.Fatalf("windows-arm64 url = %q, want the installer, not the portable zip", arm.URL)
 	}
-	// The Linux updater channel must stay the .tar.gz; the co-located .deb is a
-	// human download and must not shadow the linux-amd64 key.
+	// The Linux portable channel stays the .tar.gz; the co-located .deb lands
+	// only in native_packages so older clients keep resolving platforms["linux-amd64"].
 	lin, ok := m.Platforms["linux-amd64"]
 	if !ok {
 		t.Fatal("linux-amd64 missing")
 	}
 	if !strings.HasSuffix(lin.URL, "/Reasonix-linux-amd64.tar.gz") {
 		t.Fatalf("linux-amd64 url = %q, want the .tar.gz, not the .deb", lin.URL)
+	}
+	if lin.Sig == "" || lin.SHA256 == "" || lin.Size == 0 {
+		t.Fatalf("linux portable asset incomplete: %+v", lin)
+	}
+	deb, ok := m.NativePackages["linux-amd64"]
+	if !ok {
+		t.Fatal("native_packages linux-amd64 missing")
+	}
+	if !strings.HasSuffix(deb.URL, "/Reasonix-linux-amd64.deb") {
+		t.Fatalf("native linux-amd64 url = %q, want the .deb", deb.URL)
+	}
+	if deb.Sig != deb.URL+".minisig" || deb.SHA256 == "" || deb.Size == 0 {
+		t.Fatalf("native linux asset incomplete: %+v", deb)
+	}
+}
+
+// TestGenManifestIgnoresUnknownNativePackages ensures a .deb without a known
+// platform key is skipped rather than inventing a native_packages entry.
+func TestGenManifestIgnoresUnknownNativePackages(t *testing.T) {
+	dir := t.TempDir()
+	for _, n := range []string{
+		"Reasonix-linux-amd64.tar.gz",
+		"Reasonix-mystery.deb",
+	} {
+		if err := os.WriteFile(filepath.Join(dir, n), []byte(n), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Setenv("GITHUB_REPOSITORY", "esengine/DeepSeek-Reasonix")
+	if err := genManifest(dir, "v1.2.0", "desktop-v1.2.0"); err != nil {
+		t.Fatalf("genManifest: %v", err)
+	}
+	raw, err := os.ReadFile(filepath.Join(dir, "latest.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var m update.Manifest
+	if err := json.Unmarshal(raw, &m); err != nil {
+		t.Fatal(err)
+	}
+	if len(m.NativePackages) != 0 {
+		t.Fatalf("unexpected native_packages: %+v", m.NativePackages)
 	}
 }

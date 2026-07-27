@@ -15,6 +15,17 @@ location.
 Set `REASONIX_HOME` to override Reasonix home for tests, CI, or portable
 installations. Normal users should not need it.
 
+When `REASONIX_HOME` is set, the runtime is fully self-contained: all
+configuration, state, cache, and data live under that directory tree. Legacy
+migration, OS-home convention directory scanning, and all other fallback paths
+are skipped so no data leaks in from a system-wide production install.
+
+Advanced test and portable setups may set `REASONIX_STATE_HOME` to move runtime
+state such as sessions, archives, and memory. It does not move global config or
+provider credentials: those remain under `REASONIX_HOME`. If an older build wrote
+provider keys to `REASONIX_STATE_HOME/.env`, Reasonix imports those keys
+non-destructively when `<Reasonix home>/.env` is missing them.
+
 ## What Lives There
 
 | Data | Path |
@@ -25,10 +36,13 @@ installations. Normal users should not need it.
 | Global slash commands | `<Reasonix home>/commands/` |
 | Global skills | `<Reasonix home>/skills/` |
 | Global hooks | `<Reasonix home>/settings.json` |
-| Hook trust store | `<Reasonix home>/trust.json` |
-| Sessions | `<Reasonix home>/sessions/` |
-| Archives | `<Reasonix home>/archive/` |
-| Memory | `<Reasonix home>/memory/` and `<Reasonix home>/projects/` |
+| Remote-SSH managed known_hosts | `<Reasonix home>/remote/known_hosts` |
+| Sessions | `<state root>/sessions/` |
+| Archives | `<state root>/archive/` |
+| Memory | `<state root>/memory/` and `<state root>/projects/` |
+
+`<state root>` defaults to `<Reasonix home>`. It only differs when
+`REASONIX_STATE_HOME` is set.
 
 The global user config is named `config.toml`. Project-local config files keep
 the name `reasonix.toml`. If someone says "global reasonix.toml", they usually
@@ -42,6 +56,13 @@ skill, sandbox, bot, and agent settings that Reasonix renders into user config.
 Provider entries store the name of the credential variable in `api_key_env`, not
 the secret value.
 
+Saved provider and bot credential variables are removed from every
+model-controlled child-process environment. The global credential `.env` is
+also hidden from Reasonix's file readers, sandboxed shell commands, and MCP
+servers; this does not change the visibility of a project's ordinary `.env`.
+On Windows, shell commands remain outside an OS sandbox as documented in the
+Guide, so approve shell access only for trusted tasks.
+
 Example:
 
 ```toml
@@ -52,14 +73,10 @@ credentials_store = "auto"   # legacy compatibility; provider keys are in .env
 
 [ui]
 theme = "auto"
-cursor_shape = "underline"   # CLI/TUI text cursor: underline|block|bar
+cursor_shape = "bar"         # CLI/TUI text cursor: underline|block|bar
 
 [desktop]
 provider_access = ["deepseek"]
-
-[agent]
-auto_plan = "off"
-max_steps = 0
 
 [[providers]]
 name        = "deepseek"
@@ -78,9 +95,9 @@ Do not put API key values in `config.toml`. This file is regular configuration:
 it is safe to inspect, edit, migrate, and include in diagnostics after standard
 redaction. Secrets belong in the global `.env` below.
 
-`[ui].cursor_shape` affects only the CLI/TUI composer. The default `underline`
-avoids terminal block-cursor artifacts with double-width CJK characters; use
-`block` or `bar` if you prefer those cursor shapes.
+`[ui].cursor_shape` affects only the CLI/TUI composer. The default `bar` stays
+visible without covering double-width CJK characters; use `block` or
+`underline` if you prefer those cursor shapes.
 
 ### Custom provider `api_key_env` names
 
@@ -93,7 +110,9 @@ Reasonix derives the default from the provider name. Names that normalize to
 ASCII keep readable env names such as `LOCAL_GATEWAY_API_KEY`; names made
 entirely of non-ASCII characters get a stable hash suffix such as
 `CUSTOM_d39b9067_API_KEY` so two Chinese provider names do not share
-`CUSTOM_API_KEY`.
+`CUSTOM_API_KEY`. Names beginning with a digit get a `CUSTOM_` prefix so the
+generated environment variable remains valid; for example, `9router` becomes
+`CUSTOM_9ROUTER_API_KEY`.
 
 In the CLI custom-provider wizard, the provider name is generated from the base
 URL first, then the same provider-name rule is applied. For example
@@ -116,6 +135,11 @@ discovery candidates such as `/models` and `/v1/models`. If a gateway gives you 
 complete chat request URL, set `chat_url`; Reasonix will use it directly and will
 not append `/chat/completions`. If model discovery needs a separate address, set
 `models_url`.
+
+If a gateway requires vendor-specific top-level request body fields, set
+`extra_body`, for example `extra_body = { enable_thinking = true }`. These values
+are merged into the OpenAI-compatible chat JSON request body without allowing
+core fields such as `model`, `messages`, `tools`, or `stream` to be overridden.
 
 ## Global `.env`
 
@@ -160,7 +184,9 @@ into the process environment, and Reasonix control variables such as
 Caches remain in the OS cache directory, for example
 `~/Library/Caches/reasonix` on macOS, `$XDG_CACHE_HOME/reasonix` or
 `~/.cache/reasonix` on Linux, and `%LOCALAPPDATA%\reasonix\cache` on Windows.
-Set `REASONIX_CACHE_HOME` to override the cache root.
+Set `REASONIX_CACHE_HOME` to override the cache root. When `REASONIX_HOME` is
+set, the cache is placed under `$REASONIX_HOME/cache` (unless
+`REASONIX_CACHE_HOME` is also set, which takes precedence).
 
 ## Config Priority
 

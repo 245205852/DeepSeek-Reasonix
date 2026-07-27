@@ -27,6 +27,7 @@ import (
 
 	"reasonix/internal/bot"
 	"reasonix/internal/config"
+	fileencoding "reasonix/internal/fileutil/encoding"
 )
 
 const (
@@ -44,7 +45,11 @@ const (
 	weixinItemText      = 1
 	weixinMsgTypeBot    = 2
 	weixinMsgStateDone  = 2
+
+	weixinHTTPTimeout = 30 * time.Second
 )
+
+var weixinHTTPClient = &http.Client{Timeout: weixinHTTPTimeout}
 
 // ilinkUpdate 微信 iLink getupdates 返回的更新消息。
 type ilinkUpdate struct {
@@ -249,7 +254,7 @@ func (a *adapter) loadContextTokens() {
 	if path == "" {
 		return
 	}
-	data, err := os.ReadFile(path)
+	data, err := fileencoding.ReadFileUTF8(path)
 	if err != nil {
 		return
 	}
@@ -290,7 +295,7 @@ func ilinkGET(ctx context.Context, baseURL, endpoint string) (map[string]any, er
 	}
 	req.Header.Set("iLink-App-Id", ilinkAppID)
 	req.Header.Set("iLink-App-ClientVersion", fmt.Sprintf("%d", ilinkClientVersion))
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := weixinHTTPClient.Do(req)
 	if err != nil {
 		return nil, err
 	}
@@ -368,7 +373,7 @@ func (a *adapter) getUpdates(ctx context.Context) ([]ilinkUpdate, error) {
 	}
 	setIlinkHeaders(req, tok, body)
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := weixinHTTPClient.Do(req)
 	if err != nil {
 		return nil, err
 	}
@@ -586,7 +591,7 @@ func (a *adapter) sendMessage(ctx context.Context, msg bot.OutboundMessage) (bot
 	}
 	setIlinkHeaders(req, tok, body)
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := weixinHTTPClient.Do(req)
 	if err != nil {
 		return bot.SendResult{}, err
 	}
@@ -638,7 +643,7 @@ func (a *adapter) sendTyping(ctx context.Context, chatID string) error {
 	}
 	setIlinkHeaders(req, tok, body)
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := weixinHTTPClient.Do(req)
 	if err != nil {
 		return err
 	}

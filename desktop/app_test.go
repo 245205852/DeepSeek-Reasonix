@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -20,18 +21,78 @@ import (
 	"time"
 
 	"reasonix/internal/agent"
+	"reasonix/internal/billing"
 	"reasonix/internal/boot"
+	"reasonix/internal/bot"
 	"reasonix/internal/config"
 	"reasonix/internal/control"
 	"reasonix/internal/event"
+	"reasonix/internal/evidence"
 	"reasonix/internal/jobs"
+	"reasonix/internal/mcplaunch"
 	"reasonix/internal/memory"
 	"reasonix/internal/plugin"
+	"reasonix/internal/pluginpkg"
 	"reasonix/internal/provider"
+	"reasonix/internal/sandbox"
+	"reasonix/internal/skill"
+	"reasonix/internal/store"
 	"reasonix/internal/tool"
 )
 
+type todoMetaController struct {
+	control.SessionAPI
+	todos []evidence.TodoItem
+}
+
+func (c *todoMetaController) Todos() []evidence.TodoItem {
+	return append([]evidence.TodoItem(nil), c.todos...)
+}
+
+func TestCanonicalTodosMetaWireContract(t *testing.T) {
+	if got := ctrlTodos(nil); got != nil {
+		t.Fatalf("nil controller todos = %+v, want unavailable", *got)
+	}
+
+	empty := Meta{CanonicalTodos: ctrlTodos(&todoMetaController{})}
+	raw, err := json.Marshal(empty)
+	if err != nil {
+		t.Fatalf("marshal empty canonical todos: %v", err)
+	}
+	if !strings.Contains(string(raw), `"canonicalTodos":[]`) {
+		t.Fatalf("empty canonical todos must encode as an authoritative empty array: %s", raw)
+	}
+
+	ctrl := &todoMetaController{todos: []evidence.TodoItem{{Content: "Ship", Status: "completed"}}}
+	got := ctrlTodos(ctrl)
+	if got == nil || len(*got) != 1 || (*got)[0].Status != "completed" {
+		t.Fatalf("canonical todos = %+v, want completed task", got)
+	}
+
+	unavailable, err := json.Marshal(Meta{CanonicalTodos: ctrlTodos(nil)})
+	if err != nil {
+		t.Fatalf("marshal unavailable canonical todos: %v", err)
+	}
+	if strings.Contains(string(unavailable), "canonicalTodos") {
+		t.Fatalf("unavailable canonical todos should preserve the legacy fallback contract: %s", unavailable)
+	}
+}
+
+func TestPluginToolsToViewPreservesSchemaError(t *testing.T) {
+	got := pluginToolsToView([]plugin.ToolInfo{{
+		Name: "generate_yso_bytes", Description: "Generate payload", ReadOnlyHint: true,
+		SchemaError: "invalid input schema: bad nested type",
+	}})
+	if len(got) != 1 || got[0].SchemaError != "invalid input schema: bad nested type" {
+		t.Fatalf("tool views = %+v", got)
+	}
+}
+
 func desktopMCPHTTPServer(t *testing.T) *httptest.Server {
+	return desktopMCPHTTPServerWithTool(t, "h", "greet")
+}
+
+func desktopMCPHTTPServerWithTool(t *testing.T, serverName, toolName string) *httptest.Server {
 	t.Helper()
 	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var req struct {
@@ -52,11 +113,11 @@ func desktopMCPHTTPServer(t *testing.T) *httptest.Server {
 		case "initialize":
 			result = map[string]any{
 				"protocolVersion": "2024-11-05",
-				"serverInfo":      map[string]any{"name": "h", "version": "0"},
+				"serverInfo":      map[string]any{"name": serverName, "version": "0"},
 			}
 		case "tools/list":
 			result = map[string]any{"tools": []map[string]any{{
-				"name":        "greet",
+				"name":        toolName,
 				"description": "Greet someone.",
 				"inputSchema": map[string]any{"type": "object"},
 			}}}
@@ -67,6 +128,71 @@ func desktopMCPHTTPServer(t *testing.T) *httptest.Server {
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(resp)
 	}))
+}
+
+func TestDesktopMCPHelperProcess(t *testing.T) {
+	if os.Getenv("GO_WANT_DESKTOP_MCP_HELPER") != "1" {
+		return
+	}
+	if addr := os.Getenv("DESKTOP_MCP_START_GATE_ADDR"); addr != "" {
+		conn, err := net.Dial("tcp", addr)
+		if err != nil {
+			_, _ = fmt.Fprintf(os.Stderr, "connect MCP start gate %s: %v\n", addr, err)
+			os.Exit(24)
+		}
+		var release [1]byte
+		if _, err := io.ReadFull(conn, release[:]); err != nil {
+			_ = conn.Close()
+			_, _ = fmt.Fprintf(os.Stderr, "wait for MCP start gate %s: %v\n", addr, err)
+			os.Exit(25)
+		}
+		_ = conn.Close()
+	}
+	var instanceListener net.Listener
+	if addr := os.Getenv("DESKTOP_MCP_SINGLE_INSTANCE_ADDR"); addr != "" {
+		var err error
+		instanceListener, err = net.Listen("tcp", addr)
+		if err != nil {
+			_, _ = fmt.Fprintf(os.Stderr, "another MCP instance is already using %s: %v\n", addr, err)
+			os.Exit(23)
+		}
+		defer instanceListener.Close()
+	}
+	dec := json.NewDecoder(os.Stdin)
+	enc := json.NewEncoder(os.Stdout)
+	for {
+		var req struct {
+			ID     *int   `json:"id"`
+			Method string `json:"method"`
+		}
+		if err := dec.Decode(&req); err != nil {
+			if errors.Is(err, io.EOF) {
+				return
+			}
+			t.Fatalf("decode helper request: %v", err)
+		}
+		if req.ID == nil {
+			continue
+		}
+		var result any
+		switch req.Method {
+		case "initialize":
+			result = map[string]any{
+				"protocolVersion": "2024-11-05",
+				"serverInfo":      map[string]any{"name": "desktop-helper", "version": "0"},
+			}
+		case "tools/list":
+			result = map[string]any{"tools": []map[string]any{{
+				"name": "greet", "description": "Greet someone.",
+				"inputSchema": map[string]any{"type": "object"},
+			}}}
+		default:
+			result = map[string]any{}
+		}
+		if err := enc.Encode(map[string]any{"jsonrpc": "2.0", "id": *req.ID, "result": result}); err != nil {
+			t.Fatalf("encode helper response: %v", err)
+		}
+	}
 }
 
 // setTestCtrl creates a minimal workspace tab (if needed) and sets its
@@ -108,6 +234,29 @@ func isolateDesktopUserDirs(t *testing.T) string {
 	return home
 }
 
+func primarySessionFiles(paths []string) []string {
+	out := make([]string, 0, len(paths))
+	for _, path := range paths {
+		if store.IsSessionTranscriptName(filepath.Base(path)) {
+			out = append(out, path)
+		}
+	}
+	return out
+}
+
+func readConflictLogLines(t *testing.T, path string) []string {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read conflict log: %v", err)
+	}
+	text := strings.TrimSpace(string(data))
+	if text == "" {
+		return nil
+	}
+	return strings.Split(text, "\n")
+}
+
 func setDesktopTestCredential(t *testing.T, key, value string) {
 	t.Helper()
 	if _, err := config.SetCredential(key, value); err != nil {
@@ -141,6 +290,43 @@ func TestNeedsOnboardingTreatsBlankSavedKeyAsMissing(t *testing.T) {
 	app := NewApp()
 	if !app.NeedsOnboarding() {
 		t.Fatal("NeedsOnboarding should require a non-empty saved credential")
+	}
+}
+
+func TestNeedsOnboardingAcceptsConfiguredCustomProvider(t *testing.T) {
+	isolateDesktopUserDirs(t)
+	cfg := config.Default()
+	cfg.DefaultModel = "custom/custom-model"
+	cfg.Desktop.ProviderAccess = []string{"custom"}
+	cfg.Providers = []config.ProviderEntry{{
+		Name: "custom", Kind: "openai", BaseURL: "https://models.example.invalid/v1",
+		Model: "custom-model", APIKeyEnv: "CUSTOM_API_KEY",
+	}}
+	if err := cfg.SaveTo(config.UserConfigPath()); err != nil {
+		t.Fatalf("save custom provider config: %v", err)
+	}
+	setDesktopTestCredential(t, "CUSTOM_API_KEY", "saved-custom-key")
+
+	if NewApp().NeedsOnboarding() {
+		t.Fatal("NeedsOnboarding should be false when a custom provider is configured")
+	}
+}
+
+func TestNeedsOnboardingAcceptsNoAuthLocalProvider(t *testing.T) {
+	isolateDesktopUserDirs(t)
+	cfg := config.Default()
+	cfg.DefaultModel = "local/local-model"
+	cfg.Desktop.ProviderAccess = []string{"local"}
+	cfg.Providers = []config.ProviderEntry{{
+		Name: "local", Kind: "openai", BaseURL: "http://127.0.0.1:11434/v1",
+		Model: "local-model",
+	}}
+	if err := cfg.SaveTo(config.UserConfigPath()); err != nil {
+		t.Fatalf("save local provider config: %v", err)
+	}
+
+	if NewApp().NeedsOnboarding() {
+		t.Fatal("NeedsOnboarding should be false for a no-auth local provider")
 	}
 }
 
@@ -196,11 +382,49 @@ func TestCommandsIncludesEffortNotThinking(t *testing.T) {
 	}
 }
 
+func TestCommandsClassifiesSubagentSkills(t *testing.T) {
+	ctrl := control.New(control.Options{Skills: []skill.Skill{
+		{Name: "init", Description: "inline skill", RunAs: skill.RunInline},
+		{Name: "explore", Description: "isolated skill", RunAs: skill.RunSubagent, Color: "amber"},
+	}})
+	defer ctrl.Close()
+	app := NewApp()
+	app.setTestCtrl(ctrl, "")
+
+	kinds := map[string]string{}
+	groups := map[string]string{}
+	colors := map[string]string{}
+	for _, cmd := range app.Commands() {
+		kinds[cmd.Name] = cmd.Kind
+		groups[cmd.Name] = cmd.Group
+		colors[cmd.Name] = cmd.Color
+	}
+	if kinds["init"] != "skill" {
+		t.Fatalf("inline skill kind = %q, want skill", kinds["init"])
+	}
+	if kinds["explore"] != "subagent" {
+		t.Fatalf("subagent skill kind = %q, want subagent", kinds["explore"])
+	}
+	if colors["explore"] != "amber" {
+		t.Fatalf("subagent skill color = %q, want amber", colors["explore"])
+	}
+	if groups["new"] != "actions" {
+		t.Fatalf("new command group = %q, want actions", groups["new"])
+	}
+	if groups["mcp"] != "integrations" || groups["plugins"] != "integrations" {
+		t.Fatalf("integration command groups = mcp:%q plugins:%q", groups["mcp"], groups["plugins"])
+	}
+	if groups["skill"] != "skills" {
+		t.Fatalf("skill command group = %q, want skills", groups["skill"])
+	}
+}
+
 func TestMetaForTabIncludesWorkspaceContext(t *testing.T) {
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git not installed")
 	}
 	isolateDesktopUserDirs(t)
+	resetWorkspaceGitBranchMetaCacheForTest(t)
 
 	repo := t.TempDir()
 	configuredSandboxRoot := filepath.Join(t.TempDir(), "sandbox")
@@ -249,8 +473,15 @@ func TestMetaForTabIncludesWorkspaceContext(t *testing.T) {
 	if strings.Contains(string(raw), "sandboxPath") || strings.Contains(string(raw), configuredSandboxRoot) {
 		t.Fatalf("meta should not expose configured sandbox root as sandboxPath: %s", raw)
 	}
-	if got.GitBranch != "feature/meta" {
-		t.Fatalf("gitBranch = %q, want feature/meta", got.GitBranch)
+	deadline := time.Now().Add(time.Second)
+	for {
+		if got = app.MetaForTab("tab-1"); got.GitBranch == "feature/meta" {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("gitBranch = %q, want feature/meta after async refresh", got.GitBranch)
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 }
 
@@ -711,6 +942,9 @@ func TestDesktopStartupSettingsUsesUserDesktopPreferencesWithoutFullSettingsPayl
 	if err := userCfg.SetDesktopCheckUpdates(false); err != nil {
 		t.Fatalf("set desktop check updates: %v", err)
 	}
+	if err := userCfg.SetDesktopUpdateChannel("preview"); err != nil {
+		t.Fatalf("set desktop update channel: %v", err)
+	}
 	userCfg.Bot.Enabled = true
 	userCfg.Bot.Allowlist.Enabled = true
 	userCfg.Bot.Allowlist.QQUsers = []string{"alice"}
@@ -719,7 +953,7 @@ func TestDesktopStartupSettingsUsesUserDesktopPreferencesWithoutFullSettingsPayl
 	}
 
 	got := NewApp().DesktopStartupSettings()
-	if got.DesktopLanguage != "en" || got.DesktopLayoutStyle != "classic" || got.DesktopTheme != "dark" || got.DesktopThemeStyle != "graphite" || got.DisplayMode != "standard" || got.StatusBarStyle != "icon" || got.CheckUpdates {
+	if got.DesktopLanguage != "en" || got.DesktopLayoutStyle != "classic" || got.DesktopTheme != "dark" || got.DesktopThemeStyle != "graphite" || got.DisplayMode != "standard" || got.StatusBarStyle != "icon" || got.CheckUpdates || got.UpdateChannel != "preview" {
 		t.Fatalf("DesktopStartupSettings desktop prefs = %+v, want user-level startup prefs", got)
 	}
 	if want := []string{"workspace", "git_branch", "model"}; !reflect.DeepEqual(got.StatusBarItems, want) {
@@ -955,20 +1189,35 @@ api_key_env = "DEEPSEEK_API_KEY"
 	}
 
 	app := NewApp()
+	if got := app.Settings().Agent.MaxSubagentDepth; got != agent.DefaultMaxSubagentDepth {
+		t.Fatalf("default max subagent depth = %d, want %d", got, agent.DefaultMaxSubagentDepth)
+	}
 	if err := app.SetSubagentModel("deepseek/deepseek-v4-pro"); err != nil {
 		t.Fatalf("SetSubagentModel: %v", err)
 	}
 	if err := app.SetSubagentEffort("max"); err != nil {
 		t.Fatalf("SetSubagentEffort: %v", err)
 	}
+	if err := app.SetMaxSubagentDepth(1); err != nil {
+		t.Fatalf("SetMaxSubagentDepth(1): %v", err)
+	}
+	if err := app.SetMaxSubagentDepth(2); err != nil {
+		t.Fatalf("SetMaxSubagentDepth(2): %v", err)
+	}
 
 	got := app.Settings()
 	if got.SubagentModel != "deepseek/deepseek-v4-pro" || got.SubagentEffort != "max" {
 		t.Fatalf("subagent settings = model:%q effort:%q", got.SubagentModel, got.SubagentEffort)
 	}
+	if got.Agent.MaxSubagentDepth != 2 {
+		t.Fatalf("max subagent depth = %d, want 2", got.Agent.MaxSubagentDepth)
+	}
 	cfg := config.LoadForEdit(config.UserConfigPath())
 	if cfg.Agent.SubagentModel != "deepseek/deepseek-v4-pro" || cfg.Agent.SubagentEffort != "max" {
 		t.Fatalf("saved config = model:%q effort:%q", cfg.Agent.SubagentModel, cfg.Agent.SubagentEffort)
+	}
+	if cfg.Agent.MaxSubagentDepth != 2 {
+		t.Fatalf("saved max_subagent_depth = %d, want 2", cfg.Agent.MaxSubagentDepth)
 	}
 }
 
@@ -1214,6 +1463,432 @@ api_key_env = "DEEPSEEK_API_KEY"
 	}
 }
 
+func TestSettingsSurfacesCuratedProviderPresets(t *testing.T) {
+	isolateDesktopUserDirs(t)
+
+	view := NewApp().Settings()
+	if len(view.ProviderPresets) < 18 {
+		t.Fatalf("Settings().ProviderPresets length = %d, want curated custom presets", len(view.ProviderPresets))
+	}
+	got := map[string]ProviderPresetView{}
+	for _, preset := range view.ProviderPresets {
+		got[preset.ID] = preset
+	}
+	for _, curated := range config.CuratedProviderPresets() {
+		id := curated.ID
+		preset, ok := got[id]
+		if !ok {
+			t.Fatalf("Settings().ProviderPresets missing %q: %+v", id, view.ProviderPresets)
+		}
+		if preset.KeyEnv == "" || len(preset.ProviderNames) == 0 || len(preset.Models) == 0 {
+			t.Fatalf("preset %q view has missing fields: %+v", id, preset)
+		}
+	}
+}
+
+func providerPresetViewByID(t *testing.T, view SettingsView, id string) ProviderPresetView {
+	t.Helper()
+	for _, preset := range view.ProviderPresets {
+		if preset.ID == id {
+			return preset
+		}
+	}
+	t.Fatalf("Settings().ProviderPresets missing %q: %+v", id, view.ProviderPresets)
+	return ProviderPresetView{}
+}
+
+func TestSettingsMarksPresetAddedWhenSameNameProviderExistsWithoutAccess(t *testing.T) {
+	isolateDesktopUserDirs(t)
+	if err := os.MkdirAll(filepath.Dir(config.UserConfigPath()), 0o755); err != nil {
+		t.Fatalf("mkdir config dir: %v", err)
+	}
+	if err := os.WriteFile(config.UserConfigPath(), []byte(`
+[desktop]
+provider_access = []
+
+[[providers]]
+name = "mimo-api"
+kind = "openai"
+base_url = "https://custom.example/v1"
+models = ["custom-model"]
+default = "custom-model"
+api_key_env = "MIMO_API_KEY"
+`), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	view := NewApp().Settings()
+	presetView := providerPresetViewByID(t, view, "mimo-api")
+	if !presetView.Added || presetView.Status != providerPresetStatusNameConflict || !reflect.DeepEqual(presetView.StatusProviderNames, []string{"mimo-api"}) {
+		t.Fatalf("mimo-api preset view = %+v, want name-conflict because a different same-name provider exists", presetView)
+	}
+
+	var providerView *ProviderView
+	for i := range view.Providers {
+		if view.Providers[i].Name == "mimo-api" {
+			providerView = &view.Providers[i]
+			break
+		}
+	}
+	if providerView == nil {
+		t.Fatal("mimo-api provider view missing")
+	}
+	if providerView.Added {
+		t.Fatalf("mimo-api provider Added = true, want false until provider_access explicitly enables it")
+	}
+}
+
+func TestSettingsMarksLegacyEquivalentPresetAsInstalled(t *testing.T) {
+	isolateDesktopUserDirs(t)
+	preset, ok := config.CuratedProviderPreset("mimo-api")
+	if !ok || len(preset.Entries) == 0 {
+		t.Fatal("missing mimo-api preset")
+	}
+	legacy := preset.Entries[0]
+	legacy.PresetID = ""
+	legacy.PresetVersion = 0
+	cfg := config.Default()
+	if err := cfg.UpsertProvider(legacy); err != nil {
+		t.Fatalf("upsert legacy provider: %v", err)
+	}
+	if err := cfg.SaveTo(config.UserConfigPath()); err != nil {
+		t.Fatalf("save config: %v", err)
+	}
+
+	view := NewApp().Settings()
+	presetView := providerPresetViewByID(t, view, "mimo-api")
+	if !presetView.Added || presetView.Status != providerPresetStatusInstalled || !reflect.DeepEqual(presetView.StatusProviderNames, []string{"mimo-api"}) {
+		t.Fatalf("mimo-api preset view = %+v, want installed for legacy equivalent config", presetView)
+	}
+}
+
+func TestSettingsMarksPresetWithChangedCoreConfigAsModified(t *testing.T) {
+	isolateDesktopUserDirs(t)
+	preset, ok := config.CuratedProviderPreset("mimo-api")
+	if !ok || len(preset.Entries) == 0 {
+		t.Fatal("missing mimo-api preset")
+	}
+	modified := preset.Entries[0]
+	modified.BaseURL = "https://custom.example/v1"
+	cfg := config.Default()
+	if err := cfg.UpsertProvider(modified); err != nil {
+		t.Fatalf("upsert modified provider: %v", err)
+	}
+	cfg.Desktop.ProviderAccess = []string{"mimo-api"}
+	if err := cfg.SaveTo(config.UserConfigPath()); err != nil {
+		t.Fatalf("save config: %v", err)
+	}
+
+	view := NewApp().Settings()
+	presetView := providerPresetViewByID(t, view, "mimo-api")
+	if !presetView.Added || presetView.Status != providerPresetStatusInstalledModified || !reflect.DeepEqual(presetView.StatusProviderNames, []string{"mimo-api"}) {
+		t.Fatalf("mimo-api preset view = %+v, want installed-modified for edited preset provider", presetView)
+	}
+}
+
+func TestSettingsMigratesLegacyStepFunPresetBaseURLs(t *testing.T) {
+	isolateDesktopUserDirs(t)
+
+	cfg := config.Default()
+	stepfun, ok := config.CuratedProviderPreset("stepfun")
+	if !ok || len(stepfun.Entries) != 1 {
+		t.Fatal("missing stepfun preset")
+	}
+	stepfunEntry := stepfun.Entries[0]
+	stepfunEntry.BaseURL = "https://api.stepfun.ai/step_plan/v1"
+	stepfunAnthropic, ok := config.CuratedProviderPreset("stepfun-anthropic")
+	if !ok || len(stepfunAnthropic.Entries) != 1 {
+		t.Fatal("missing stepfun-anthropic preset")
+	}
+	stepfunAnthropicEntry := stepfunAnthropic.Entries[0]
+	stepfunAnthropicEntry.BaseURL = "https://api.stepfun.ai/step_plan"
+	cfg.Providers = append(cfg.Providers, stepfunEntry, stepfunAnthropicEntry)
+	cfg.Desktop.ProviderAccess = []string{"stepfun", "stepfun-anthropic"}
+	if err := cfg.SaveTo(config.UserConfigPath()); err != nil {
+		t.Fatalf("save config: %v", err)
+	}
+
+	view := NewApp().Settings()
+	for _, id := range []string{"stepfun", "stepfun-anthropic"} {
+		presetView := providerPresetViewByID(t, view, id)
+		if !presetView.Added || presetView.Status != providerPresetStatusInstalled {
+			t.Fatalf("%s preset view = %+v, want installed after migration", id, presetView)
+		}
+	}
+
+	migrated := config.LoadForEdit(config.UserConfigPath())
+	stepfunEntryView, ok := migrated.Provider("stepfun")
+	if !ok {
+		t.Fatal("stepfun provider missing after migration")
+	}
+	if got := stepfunEntryView.BaseURL; got != "https://api.stepfun.com/step_plan/v1" {
+		t.Fatalf("stepfun base_url = %q, want official URL", got)
+	}
+	stepfunAnthropicEntryView, ok := migrated.Provider("stepfun-anthropic")
+	if !ok {
+		t.Fatal("stepfun-anthropic provider missing after migration")
+	}
+	if got := stepfunAnthropicEntryView.BaseURL; got != "https://api.stepfun.com/step_plan" {
+		t.Fatalf("stepfun-anthropic base_url = %q, want official URL", got)
+	}
+}
+
+func TestSettingsMarksSimilarProviderPresetWithoutBlockingAdd(t *testing.T) {
+	isolateDesktopUserDirs(t)
+	preset, ok := config.CuratedProviderPreset("mimo-api")
+	if !ok || len(preset.Entries) == 0 {
+		t.Fatal("missing mimo-api preset")
+	}
+	similar := preset.Entries[0]
+	similar.Name = "my-mimo"
+	similar.PresetID = ""
+	similar.PresetVersion = 0
+	cfg := config.Default()
+	if err := cfg.UpsertProvider(similar); err != nil {
+		t.Fatalf("upsert similar provider: %v", err)
+	}
+	if err := cfg.SaveTo(config.UserConfigPath()); err != nil {
+		t.Fatalf("save config: %v", err)
+	}
+
+	view := NewApp().Settings()
+	presetView := providerPresetViewByID(t, view, "mimo-api")
+	if presetView.Added || presetView.Status != providerPresetStatusSimilarExisting || !reflect.DeepEqual(presetView.StatusProviderNames, []string{"my-mimo"}) {
+		t.Fatalf("mimo-api preset view = %+v, want non-blocking similar-existing status", presetView)
+	}
+}
+
+func TestAddProviderPresetAccessSavesEditableProviderAndKey(t *testing.T) {
+	isolateDesktopUserDirs(t)
+	t.Setenv("MIMO_API_KEY", "")
+	os.Unsetenv("MIMO_API_KEY")
+
+	if warning, err := NewApp().AddProviderPresetAccess("mimo-api", "sk-mimo"); err != nil {
+		t.Fatalf("AddProviderPresetAccess: %v", err)
+	} else if warning != "" {
+		t.Fatalf("AddProviderPresetAccess warning = %q, want none", warning)
+	}
+
+	cfg := config.LoadForEdit(config.UserConfigPath())
+	p, ok := cfg.Provider("mimo-api")
+	if !ok {
+		t.Fatal("mimo-api provider not saved")
+	}
+	if p.Kind != "openai" || p.BaseURL != "https://api.xiaomimimo.com/v1" || p.Default != "mimo-v2.5-pro" {
+		t.Fatalf("mimo-api provider after preset add = %+v", p)
+	}
+	if p.PresetID != "mimo-api" || p.PresetVersion != config.ProviderPresetVersion {
+		t.Fatalf("mimo-api preset metadata = %q/%d, want mimo-api/%d", p.PresetID, p.PresetVersion, config.ProviderPresetVersion)
+	}
+	if !p.NoProxy {
+		t.Fatal("mimo-api preset should save no_proxy = true")
+	}
+	if !p.HasVisionModel("mimo-v2.5") || p.HasVisionModel("mimo-v2.5-pro") {
+		t.Fatalf("mimo vision_models = %+v, want only vision-capable MiMo models", p.VisionModels)
+	}
+	if price := p.PriceForModel("mimo-v2.5-pro"); price == nil || price.Currency != "¥" {
+		t.Fatalf("mimo-v2.5-pro price = %+v, want RMB pricing", price)
+	}
+	if !providerAccessSet(cfg.Desktop.ProviderAccess)["mimo-api"] {
+		t.Fatalf("provider_access missing mimo-api: %+v", cfg.Desktop.ProviderAccess)
+	}
+	data, err := os.ReadFile(config.UserCredentialsPath())
+	if err != nil {
+		t.Fatalf("read saved credentials: %v", err)
+	}
+	if !strings.Contains(string(data), "MIMO_API_KEY=sk-mimo") {
+		t.Fatalf("saved credentials missing MiMo key:\n%s", data)
+	}
+
+	view := NewApp().Settings()
+	var presetView *ProviderPresetView
+	var providerView *ProviderView
+	for i := range view.ProviderPresets {
+		if view.ProviderPresets[i].ID == "mimo-api" {
+			presetView = &view.ProviderPresets[i]
+		}
+	}
+	for i := range view.Providers {
+		if view.Providers[i].Name == "mimo-api" {
+			providerView = &view.Providers[i]
+		}
+	}
+	if presetView == nil || !presetView.Added || presetView.Status != providerPresetStatusInstalled || !presetView.KeySet {
+		t.Fatalf("mimo-api preset view = %+v, want installed/key-set", presetView)
+	}
+	if providerView == nil || providerView.BuiltIn || !providerView.Added || !providerView.KeySet {
+		t.Fatalf("mimo provider view = %+v, want editable added custom provider with key", providerView)
+	}
+}
+
+func TestAddProviderPresetAccessDoesNotOverwriteExistingProvider(t *testing.T) {
+	isolateDesktopUserDirs(t)
+	t.Setenv("MIMO_API_KEY", "")
+	os.Unsetenv("MIMO_API_KEY")
+	setDesktopTestCredential(t, "MIMO_API_KEY", "sk-original")
+
+	cfg := config.Default()
+	custom := config.ProviderEntry{
+		Name:      "mimo-api",
+		Kind:      "openai",
+		BaseURL:   "https://custom.example/v1",
+		Models:    []string{"custom-model"},
+		Default:   "custom-model",
+		APIKeyEnv: "MIMO_API_KEY",
+		Headers:   map[string]string{"X-Custom": "keep-me"},
+	}
+	if err := cfg.UpsertProvider(custom); err != nil {
+		t.Fatalf("upsert custom provider: %v", err)
+	}
+	cfg.Desktop.ProviderAccess = []string{"mimo-api"}
+	if err := cfg.SaveTo(config.UserConfigPath()); err != nil {
+		t.Fatalf("save config: %v", err)
+	}
+
+	if warning, err := NewApp().AddProviderPresetAccess("mimo-api", "sk-new"); err == nil {
+		t.Fatal("AddProviderPresetAccess unexpectedly overwrote an existing provider")
+	} else if !strings.Contains(err.Error(), "provider name(s) already exist") {
+		t.Fatalf("AddProviderPresetAccess error = %v, want name-exists guard", err)
+	} else if warning != "" {
+		t.Fatalf("AddProviderPresetAccess warning = %q, want none on rejected add", warning)
+	}
+
+	cfg = config.LoadForEdit(config.UserConfigPath())
+	got, ok := cfg.Provider("mimo-api")
+	if !ok {
+		t.Fatal("mimo-api provider missing after rejected add")
+	}
+	if got.BaseURL != custom.BaseURL || got.DefaultModel() != custom.DefaultModel() || !reflect.DeepEqual(got.ModelList(), custom.ModelList()) || !reflect.DeepEqual(got.Headers, custom.Headers) {
+		t.Fatalf("mimo-api provider was overwritten: %+v, want custom %+v", got, custom)
+	}
+	data, err := os.ReadFile(config.UserCredentialsPath())
+	if err != nil {
+		t.Fatalf("read saved credentials: %v", err)
+	}
+	if strings.Contains(string(data), "sk-new") || !strings.Contains(string(data), "MIMO_API_KEY=sk-original") {
+		t.Fatalf("credentials changed after rejected add:\n%s", data)
+	}
+}
+
+func TestResetProviderPresetAccessOverwritesSameNameProvider(t *testing.T) {
+	isolateDesktopUserDirs(t)
+	t.Setenv("MIMO_API_KEY", "")
+	os.Unsetenv("MIMO_API_KEY")
+	setDesktopTestCredential(t, "MIMO_API_KEY", "sk-original")
+
+	cfg := config.Default()
+	custom := config.ProviderEntry{
+		Name:      "mimo-api",
+		Kind:      "openai",
+		BaseURL:   "https://custom.example/v1",
+		Models:    []string{"custom-model"},
+		Default:   "custom-model",
+		APIKeyEnv: "MIMO_API_KEY",
+		Headers:   map[string]string{"X-Custom": "remove-me"},
+	}
+	if err := cfg.UpsertProvider(custom); err != nil {
+		t.Fatalf("upsert custom provider: %v", err)
+	}
+	if err := cfg.SaveTo(config.UserConfigPath()); err != nil {
+		t.Fatalf("save config: %v", err)
+	}
+
+	if err := NewApp().ResetProviderPresetAccess("mimo-api"); err != nil {
+		t.Fatalf("ResetProviderPresetAccess: %v", err)
+	}
+
+	cfg = config.LoadForEdit(config.UserConfigPath())
+	got, ok := cfg.Provider("mimo-api")
+	if !ok {
+		t.Fatal("mimo-api provider missing after reset")
+	}
+	if got.BaseURL != "https://api.xiaomimimo.com/v1" || got.DefaultModel() != "mimo-v2.5-pro" || got.PresetID != "mimo-api" || got.PresetVersion != config.ProviderPresetVersion {
+		t.Fatalf("mimo-api provider after reset = %+v, want preset template", got)
+	}
+	if len(got.Headers) != 0 {
+		t.Fatalf("mimo-api headers after reset = %+v, want preset headers", got.Headers)
+	}
+	if !providerAccessSet(cfg.Desktop.ProviderAccess)["mimo-api"] {
+		t.Fatalf("provider_access missing mimo-api after reset: %+v", cfg.Desktop.ProviderAccess)
+	}
+	data, err := os.ReadFile(config.UserCredentialsPath())
+	if err != nil {
+		t.Fatalf("read saved credentials: %v", err)
+	}
+	if !strings.Contains(string(data), "MIMO_API_KEY=sk-original") {
+		t.Fatalf("credentials changed after reset:\n%s", data)
+	}
+
+	presetView := providerPresetViewByID(t, NewApp().Settings(), "mimo-api")
+	if !presetView.Added || presetView.Status != providerPresetStatusInstalled {
+		t.Fatalf("mimo-api preset view = %+v, want installed after reset", presetView)
+	}
+}
+
+func TestResetProviderPresetAccessRejectsMissingSameNameProvider(t *testing.T) {
+	isolateDesktopUserDirs(t)
+
+	if err := NewApp().ResetProviderPresetAccess("mimo-api"); err == nil {
+		t.Fatal("ResetProviderPresetAccess unexpectedly reset a missing provider")
+	} else if !strings.Contains(err.Error(), "no same-name provider exists") {
+		t.Fatalf("ResetProviderPresetAccess error = %v, want missing same-name provider guard", err)
+	}
+}
+
+func TestAddEveryProviderPresetAccessInstallsTemplate(t *testing.T) {
+	for _, preset := range config.CuratedProviderPresets() {
+		preset := preset
+		t.Run(preset.ID, func(t *testing.T) {
+			isolateDesktopUserDirs(t)
+
+			if warning, err := NewApp().AddProviderPresetAccess(preset.ID, "sk-test"); err != nil {
+				t.Fatalf("AddProviderPresetAccess(%q): %v", preset.ID, err)
+			} else if warning != "" {
+				t.Fatalf("AddProviderPresetAccess(%q) warning = %q, want none", preset.ID, warning)
+			}
+
+			cfg := config.LoadForEdit(config.UserConfigPath())
+			access := providerAccessSet(cfg.Desktop.ProviderAccess)
+			for _, entry := range preset.Entries {
+				got, ok := cfg.Provider(entry.Name)
+				if !ok {
+					t.Fatalf("provider %q from preset %q was not saved", entry.Name, preset.ID)
+				}
+				if !access[entry.Name] {
+					t.Fatalf("provider_access for preset %q missing %q: %+v", preset.ID, entry.Name, cfg.Desktop.ProviderAccess)
+				}
+				if got.Kind != entry.Kind || got.BaseURL != entry.BaseURL || got.DefaultModel() != entry.DefaultModel() || got.APIKeyEnv != entry.APIKeyEnv || got.AuthHeader != entry.AuthHeader || got.NoProxy != entry.NoProxy {
+					t.Fatalf("provider %q core fields = %+v, want template %+v", entry.Name, got, entry)
+				}
+				if got.PresetID != preset.ID || got.PresetVersion != config.ProviderPresetVersion {
+					t.Fatalf("provider %q preset metadata = %q/%d, want %q/%d", entry.Name, got.PresetID, got.PresetVersion, preset.ID, config.ProviderPresetVersion)
+				}
+				if got.ContextWindow != entry.ContextWindow || got.Thinking != entry.Thinking || got.DefaultEffort != entry.DefaultEffort || got.ReasoningProtocol != entry.ReasoningProtocol {
+					t.Fatalf("provider %q capability fields = %+v, want template %+v", entry.Name, got, entry)
+				}
+				if !reflect.DeepEqual(got.ModelList(), entry.ModelList()) || !reflect.DeepEqual(got.VisionModels, entry.VisionModels) || !reflect.DeepEqual(got.SupportedEfforts, entry.SupportedEfforts) {
+					t.Fatalf("provider %q models/capabilities = %+v, want template %+v", entry.Name, got, entry)
+				}
+				if !reflect.DeepEqual(got.Headers, entry.Headers) || !reflect.DeepEqual(got.ExtraBody, entry.ExtraBody) {
+					t.Fatalf("provider %q request extras = %+v, want template %+v", entry.Name, got, entry)
+				}
+			}
+
+			view := NewApp().Settings()
+			var presetView *ProviderPresetView
+			for i := range view.ProviderPresets {
+				if view.ProviderPresets[i].ID == preset.ID {
+					presetView = &view.ProviderPresets[i]
+					break
+				}
+			}
+			if presetView == nil || !presetView.Added || presetView.Status != providerPresetStatusInstalled || !presetView.KeySet || !presetView.Configured {
+				t.Fatalf("preset view for %q = %+v, want installed/key-set/configured", preset.ID, presetView)
+			}
+		})
+	}
+}
+
 func TestAddOfficialProviderAccessRejectsBackgroundJobsBeforeSavingKey(t *testing.T) {
 	isolateDesktopUserDirs(t)
 	t.Setenv("DEEPSEEK_API_KEY", "")
@@ -1306,6 +1981,756 @@ api_key_env = "PROXY_DEEPSEEK_KEY"
 	}
 	if access["deepseek"] {
 		t.Fatalf("provider_access = %+v, should not canonicalize custom proxy to deepseek", cfg.Desktop.ProviderAccess)
+	}
+}
+
+func TestSetProviderKeyLeaseHeldKeepsCurrentController(t *testing.T) {
+	isolateDesktopUserDirs(t)
+	setDesktopTestCredential(t, "OLD_MODEL_KEY", "sk-test")
+
+	cfg := config.Default()
+	cfg.DefaultModel = "old/old-model"
+	cfg.Desktop.ProviderAccess = []string{"old"}
+	cfg.Providers = []config.ProviderEntry{
+		{Name: "old", Kind: "openai", BaseURL: "https://example.invalid/v1", Model: "old-model", APIKeyEnv: "OLD_MODEL_KEY"},
+		{Name: "longcat", Kind: "openai", BaseURL: "https://longcat.example/v1", Model: "longcat-chat", APIKeyEnv: "LONGCAT_API_KEY"},
+	}
+	if err := cfg.SaveTo(config.UserConfigPath()); err != nil {
+		t.Fatalf("save config: %v", err)
+	}
+
+	dir := config.SessionDir()
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("mkdir session dir: %v", err)
+	}
+	sessionPath := filepath.Join(dir, "externally-leased-provider-key.jsonl")
+	if err := os.WriteFile(sessionPath, nil, 0o644); err != nil {
+		t.Fatalf("write placeholder session: %v", err)
+	}
+	externalLease, err := agent.TryAcquireSessionLease(sessionPath)
+	if err != nil {
+		t.Fatalf("TryAcquireSessionLease: %v", err)
+	}
+	defer externalLease.Release()
+
+	oldSession := agent.NewSession("old system prompt")
+	oldSession.Add(provider.Message{Role: provider.RoleUser, Content: "hello"})
+	oldExec := agent.New(nil, nil, oldSession, agent.Options{}, event.Discard)
+	oldCtrl := control.New(control.Options{Executor: oldExec, SessionDir: dir, SessionPath: sessionPath, Label: "old", Sink: event.Discard})
+	defer oldCtrl.Close()
+
+	app := NewApp()
+	app.ctx = context.Background()
+	tab := &WorkspaceTab{
+		ID:          "tab_provider",
+		Scope:       "global",
+		SessionPath: sessionPath,
+		Ready:       true,
+		model:       "old/old-model",
+		Ctrl:        oldCtrl,
+		sink:        &tabEventSink{tabID: "tab_provider", app: app},
+		disabledMCP: map[string]ServerView{},
+	}
+	app.tabs = map[string]*WorkspaceTab{tab.ID: tab}
+	app.tabOrder = []string{tab.ID}
+	app.activeTabID = tab.ID
+
+	warning, err := app.SetProviderKey("LONGCAT_API_KEY", "sk-longcat")
+	if err != nil {
+		t.Fatalf("SetProviderKey: %v", err)
+	}
+	if !strings.Contains(warning, "current session could not refresh yet") || !strings.Contains(warning, "another Reasonix window") {
+		t.Fatalf("SetProviderKey warning = %q, want deferred rebuild warning", warning)
+	}
+	if strings.Contains(warning, sessionPath) || strings.Contains(warning, "held by") {
+		t.Fatalf("SetProviderKey surfaced raw lease details: %v", warning)
+	}
+	if tab.Ctrl != oldCtrl {
+		t.Fatalf("tab controller changed after failed provider-key rebuild")
+	}
+	if tab.StartupErr != "" {
+		t.Fatalf("tab startup error = %q, want unchanged current session", tab.StartupErr)
+	}
+	if got := tab.Ctrl.History(); len(got) < 2 || got[1].Content != "hello" {
+		t.Fatalf("history after failed provider-key rebuild = %+v", got)
+	}
+	if access := providerAccessSet(config.LoadForEditWithoutCredentials(config.UserConfigPath()).Desktop.ProviderAccess); !access["longcat"] {
+		t.Fatalf("provider_access should still persist longcat after key save")
+	}
+}
+
+func TestSetProviderKeyRebuildSupersedesInFlightStartupBuild(t *testing.T) {
+	isolateDesktopUserDirs(t)
+
+	cfg := config.Default()
+	cfg.DefaultModel = "old/old-model"
+	cfg.Desktop.ProviderAccess = []string{"old"}
+	cfg.Providers = []config.ProviderEntry{{
+		Name:      "old",
+		Kind:      "openai",
+		BaseURL:   "https://example.invalid/v1",
+		Model:     "old-model",
+		APIKeyEnv: "OLD_MODEL_KEY",
+	}}
+	if err := cfg.SaveTo(config.UserConfigPath()); err != nil {
+		t.Fatalf("save config: %v", err)
+	}
+
+	dir := config.SessionDir()
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("mkdir session dir: %v", err)
+	}
+	sessionPath := filepath.Join(dir, "startup-build-in-flight.jsonl")
+	if err := os.WriteFile(sessionPath, nil, 0o644); err != nil {
+		t.Fatalf("write placeholder session: %v", err)
+	}
+
+	app := NewApp()
+	app.ctx = context.Background()
+	app.readyHook = func() {}
+	// Model the async startup build still being in flight: no controller yet,
+	// a live build generation, and a cancellable build context.
+	buildCtx, buildCancel := context.WithCancel(context.Background())
+	const startupGeneration = 1
+	tab := &WorkspaceTab{
+		ID:              "tab_key_rebuild",
+		Scope:           "global",
+		SessionPath:     sessionPath,
+		model:           "old/old-model",
+		buildGeneration: startupGeneration,
+		buildCancel:     buildCancel,
+		disabledMCP:     map[string]ServerView{},
+	}
+	tab.sink = &tabEventSink{tabID: tab.ID, app: app}
+	app.tabs = map[string]*WorkspaceTab{tab.ID: tab}
+	app.tabOrder = []string{tab.ID}
+	app.activeTabID = tab.ID
+	t.Cleanup(tab.releaseSessionLease)
+
+	if _, err := app.SetProviderKey("OLD_MODEL_KEY", "sk-new"); err != nil {
+		t.Fatalf("SetProviderKey: %v", err)
+	}
+	if tab.Ctrl == nil {
+		t.Fatal("provider-key rebuild did not install a controller")
+	}
+	defer tab.Ctrl.Close()
+
+	assertTabBuildSuperseded(t, app, tab, startupGeneration, buildCtx)
+}
+
+func TestSaveProviderWithKeyLeaseHeldPersistsCustomProvider(t *testing.T) {
+	isolateDesktopUserDirs(t)
+	setDesktopTestCredential(t, "OLD_MODEL_KEY", "sk-test")
+
+	cfg := config.Default()
+	cfg.DefaultModel = "old/old-model"
+	cfg.Desktop.ProviderAccess = []string{"old"}
+	cfg.Providers = []config.ProviderEntry{{
+		Name:      "old",
+		Kind:      "openai",
+		BaseURL:   "https://example.invalid/v1",
+		Model:     "old-model",
+		APIKeyEnv: "OLD_MODEL_KEY",
+	}}
+	if err := cfg.SaveTo(config.UserConfigPath()); err != nil {
+		t.Fatalf("save config: %v", err)
+	}
+
+	dir := config.SessionDir()
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("mkdir session dir: %v", err)
+	}
+	sessionPath := filepath.Join(dir, "externally-leased-custom-provider.jsonl")
+	if err := os.WriteFile(sessionPath, nil, 0o644); err != nil {
+		t.Fatalf("write placeholder session: %v", err)
+	}
+	externalLease, err := agent.TryAcquireSessionLease(sessionPath)
+	if err != nil {
+		t.Fatalf("TryAcquireSessionLease: %v", err)
+	}
+	defer externalLease.Release()
+
+	oldSession := agent.NewSession("old system prompt")
+	oldSession.Add(provider.Message{Role: provider.RoleUser, Content: "hello"})
+	oldExec := agent.New(nil, nil, oldSession, agent.Options{}, event.Discard)
+	oldCtrl := control.New(control.Options{Executor: oldExec, SessionDir: dir, SessionPath: sessionPath, Label: "old", Sink: event.Discard})
+	defer oldCtrl.Close()
+
+	app := NewApp()
+	app.ctx = context.Background()
+	tab := &WorkspaceTab{
+		ID:          "tab_custom_provider",
+		Scope:       "global",
+		SessionPath: sessionPath,
+		Ready:       true,
+		model:       "old/old-model",
+		Ctrl:        oldCtrl,
+		sink:        &tabEventSink{tabID: "tab_custom_provider", app: app},
+		disabledMCP: map[string]ServerView{},
+	}
+	app.tabs = map[string]*WorkspaceTab{tab.ID: tab}
+	app.tabOrder = []string{tab.ID}
+	app.activeTabID = tab.ID
+
+	warning, err := app.SaveProviderWithKey(ProviderView{
+		Name:      "proxy",
+		Kind:      "openai",
+		BaseURL:   "https://proxy.example/v1",
+		Models:    []string{"model-a", "model-b"},
+		Default:   "model-a",
+		APIKeyEnv: "PROXY_API_KEY",
+	}, "sk-proxy")
+	if err != nil {
+		t.Fatalf("SaveProviderWithKey: %v", err)
+	}
+	if !strings.Contains(warning, "current session could not refresh yet") || !strings.Contains(warning, "another Reasonix window") {
+		t.Fatalf("SaveProviderWithKey warning = %q, want deferred rebuild warning", warning)
+	}
+	if strings.Contains(warning, sessionPath) || strings.Contains(warning, "held by") {
+		t.Fatalf("SaveProviderWithKey surfaced raw lease details: %v", warning)
+	}
+	if tab.Ctrl != oldCtrl {
+		t.Fatalf("tab controller changed after failed provider rebuild")
+	}
+	gotCfg := config.LoadForEditWithoutCredentials(config.UserConfigPath())
+	got, ok := gotCfg.Provider("proxy")
+	if !ok {
+		t.Fatal("custom provider was not saved")
+	}
+	if want := []string{"model-a", "model-b"}; !reflect.DeepEqual(got.ModelList(), want) {
+		t.Fatalf("custom provider models = %v, want %v", got.ModelList(), want)
+	}
+	if !providerAccessSet(gotCfg.Desktop.ProviderAccess)["proxy"] {
+		t.Fatalf("provider_access = %+v, want proxy", gotCfg.Desktop.ProviderAccess)
+	}
+	data, err := os.ReadFile(config.UserCredentialsPath())
+	if err != nil {
+		t.Fatalf("read credentials: %v", err)
+	}
+	if !strings.Contains(string(data), "PROXY_API_KEY=sk-proxy") {
+		t.Fatalf("provider key was not saved:\n%s", data)
+	}
+}
+
+func TestConfigChangeLeaseHeldPersistsAndDefersRefresh(t *testing.T) {
+	isolateDesktopUserDirs(t)
+	setDesktopTestCredential(t, "OLD_MODEL_KEY", "sk-test")
+
+	cfg := config.Default()
+	cfg.DefaultModel = "old/old-model"
+	cfg.Desktop.ProviderAccess = []string{"old"}
+	cfg.Providers = []config.ProviderEntry{{
+		Name:      "old",
+		Kind:      "openai",
+		BaseURL:   "https://example.invalid/v1",
+		Model:     "old-model",
+		APIKeyEnv: "OLD_MODEL_KEY",
+	}}
+	if err := cfg.SaveTo(config.UserConfigPath()); err != nil {
+		t.Fatalf("save config: %v", err)
+	}
+
+	dir := config.SessionDir()
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("mkdir session dir: %v", err)
+	}
+	sessionPath := filepath.Join(dir, "externally-leased-settings.jsonl")
+	if err := os.WriteFile(sessionPath, nil, 0o644); err != nil {
+		t.Fatalf("write placeholder session: %v", err)
+	}
+	externalLease, err := agent.TryAcquireSessionLease(sessionPath)
+	if err != nil {
+		t.Fatalf("TryAcquireSessionLease: %v", err)
+	}
+	defer externalLease.Release()
+
+	oldExec := agent.New(nil, nil, agent.NewSession("old system prompt"), agent.Options{}, event.Discard)
+	oldCtrl := control.New(control.Options{Executor: oldExec, SessionDir: dir, SessionPath: sessionPath, Label: "old", Sink: event.Discard})
+	defer oldCtrl.Close()
+
+	app := NewApp()
+	app.ctx = context.Background()
+	tab := &WorkspaceTab{
+		ID:          "tab_settings",
+		Scope:       "global",
+		SessionPath: sessionPath,
+		Ready:       true,
+		model:       "old/old-model",
+		Ctrl:        oldCtrl,
+		sink:        &tabEventSink{tabID: "tab_settings", app: app},
+		disabledMCP: map[string]ServerView{},
+	}
+	app.tabs = map[string]*WorkspaceTab{tab.ID: tab}
+	app.tabOrder = []string{tab.ID}
+	app.activeTabID = tab.ID
+
+	if err := app.SetMaxSubagentDepth(1); err != nil {
+		t.Fatalf("SetMaxSubagentDepth should defer lease-held refresh instead of failing: %v", err)
+	}
+	if tab.Ctrl != oldCtrl {
+		t.Fatalf("tab controller changed after deferred settings rebuild")
+	}
+	got := config.LoadForEditWithoutCredentials(config.UserConfigPath())
+	if got.Agent.MaxSubagentDepth != 1 {
+		t.Fatalf("saved max_subagent_depth = %d, want 1", got.Agent.MaxSubagentDepth)
+	}
+}
+
+func TestDeferredRebuildRetryAppliesAfterLeaseRelease(t *testing.T) {
+	isolateDesktopUserDirs(t)
+	setDesktopTestCredential(t, "OLD_MODEL_KEY", "sk-test")
+
+	prevInterval := deferredRebuildRetryInterval
+	deferredRebuildRetryInterval = 20 * time.Millisecond
+	t.Cleanup(func() { deferredRebuildRetryInterval = prevInterval })
+
+	cfg := config.Default()
+	cfg.DefaultModel = "old/old-model"
+	cfg.Desktop.ProviderAccess = []string{"old"}
+	cfg.Providers = []config.ProviderEntry{{
+		Name:      "old",
+		Kind:      "openai",
+		BaseURL:   "https://example.invalid/v1",
+		Model:     "old-model",
+		APIKeyEnv: "OLD_MODEL_KEY",
+	}}
+	if err := cfg.SaveTo(config.UserConfigPath()); err != nil {
+		t.Fatalf("save config: %v", err)
+	}
+
+	dir := config.SessionDir()
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("mkdir session dir: %v", err)
+	}
+	sessionPath := filepath.Join(dir, "deferred-rebuild-retry.jsonl")
+	if err := os.WriteFile(sessionPath, nil, 0o644); err != nil {
+		t.Fatalf("write placeholder session: %v", err)
+	}
+	externalLease, err := agent.TryAcquireSessionLease(sessionPath)
+	if err != nil {
+		t.Fatalf("TryAcquireSessionLease: %v", err)
+	}
+	released := false
+	defer func() {
+		if !released {
+			externalLease.Release()
+		}
+	}()
+
+	oldExec := agent.New(nil, nil, agent.NewSession("old system prompt"), agent.Options{}, event.Discard)
+	oldCtrl := control.New(control.Options{Executor: oldExec, SessionDir: dir, SessionPath: sessionPath, Label: "old", Sink: event.Discard})
+	defer oldCtrl.Close()
+
+	app := NewApp()
+	app.ctx = context.Background()
+	app.readyHook = func() {}
+	app.enableDeferredRebuildRetry()
+	t.Cleanup(app.stopDeferredRebuildRetry)
+	tab := &WorkspaceTab{
+		ID:          "tab_deferred_retry",
+		Scope:       "global",
+		SessionPath: sessionPath,
+		Ready:       true,
+		model:       "old/old-model",
+		Ctrl:        oldCtrl,
+		sink:        &tabEventSink{tabID: "tab_deferred_retry", app: app},
+		disabledMCP: map[string]ServerView{},
+	}
+	installNoopRuntimeEvents(app, tab.sink)
+	app.tabs = map[string]*WorkspaceTab{tab.ID: tab}
+	app.tabOrder = []string{tab.ID}
+	app.activeTabID = tab.ID
+	t.Cleanup(func() {
+		if c := app.controllerForTab(tab); c != nil && c != oldCtrl {
+			c.Close()
+		}
+		tab.releaseSessionLease()
+	})
+
+	if err := app.SetMaxSubagentDepth(1); err != nil {
+		t.Fatalf("SetMaxSubagentDepth: %v", err)
+	}
+	if !app.deferredRebuildPending(tab.ID) {
+		t.Fatal("deferred rebuild was not scheduled while the lease is held")
+	}
+	if app.controllerForTab(tab) != oldCtrl {
+		t.Fatal("controller changed while the lease is still held")
+	}
+
+	externalLease.Release()
+	released = true
+
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		if !app.deferredRebuildPending(tab.ID) && app.controllerForTab(tab) != oldCtrl {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if app.deferredRebuildPending(tab.ID) {
+		t.Fatal("deferred rebuild is still pending after the lease was released")
+	}
+	if c := app.controllerForTab(tab); c == nil || c == oldCtrl {
+		t.Fatalf("controller was not rebuilt after the lease release: got %p", c)
+	}
+}
+
+func TestDeferredRebuildScheduleAfterStopIsNoop(t *testing.T) {
+	app := NewApp()
+	app.stopDeferredRebuildRetry()
+	app.scheduleDeferredRebuild("tab_x", "settings")
+	if app.deferredRebuildPending("tab_x") {
+		t.Fatal("schedule after stop should not register pending work")
+	}
+}
+
+func TestDeferredRebuildWaitsForTabToBecomeActive(t *testing.T) {
+	isolateDesktopUserDirs(t)
+	setDesktopTestCredential(t, "OLD_MODEL_KEY", "sk-test")
+
+	prevInterval := deferredRebuildRetryInterval
+	deferredRebuildRetryInterval = 20 * time.Millisecond
+	t.Cleanup(func() { deferredRebuildRetryInterval = prevInterval })
+
+	cfg := config.Default()
+	cfg.DefaultModel = "old/old-model"
+	cfg.Desktop.ProviderAccess = []string{"old"}
+	cfg.Providers = []config.ProviderEntry{{
+		Name:      "old",
+		Kind:      "openai",
+		BaseURL:   "https://example.invalid/v1",
+		Model:     "old-model",
+		APIKeyEnv: "OLD_MODEL_KEY",
+	}}
+	if err := cfg.SaveTo(config.UserConfigPath()); err != nil {
+		t.Fatalf("save config: %v", err)
+	}
+
+	dir := config.SessionDir()
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("mkdir session dir: %v", err)
+	}
+	sessionPath := filepath.Join(dir, "deferred-rebuild-inactive.jsonl")
+	if err := os.WriteFile(sessionPath, nil, 0o644); err != nil {
+		t.Fatalf("write placeholder session: %v", err)
+	}
+	externalLease, err := agent.TryAcquireSessionLease(sessionPath)
+	if err != nil {
+		t.Fatalf("TryAcquireSessionLease: %v", err)
+	}
+	released := false
+	defer func() {
+		if !released {
+			externalLease.Release()
+		}
+	}()
+
+	oldExec := agent.New(nil, nil, agent.NewSession("old system prompt"), agent.Options{}, event.Discard)
+	oldCtrl := control.New(control.Options{Executor: oldExec, SessionDir: dir, SessionPath: sessionPath, Label: "old", Sink: event.Discard})
+	defer oldCtrl.Close()
+
+	otherCtrl := control.New(control.Options{Label: "other"})
+	defer otherCtrl.Close()
+
+	app := NewApp()
+	app.ctx = context.Background()
+	app.readyHook = func() {}
+	app.enableDeferredRebuildRetry()
+	t.Cleanup(app.stopDeferredRebuildRetry)
+	tab := &WorkspaceTab{
+		ID:          "tab_pending",
+		Scope:       "global",
+		SessionPath: sessionPath,
+		Ready:       true,
+		model:       "old/old-model",
+		Ctrl:        oldCtrl,
+		sink:        &tabEventSink{tabID: "tab_pending", app: app},
+		disabledMCP: map[string]ServerView{},
+	}
+	installNoopRuntimeEvents(app, tab.sink)
+	other := &WorkspaceTab{
+		ID:          "tab_other",
+		Scope:       "global",
+		Ready:       true,
+		model:       "old/old-model",
+		Ctrl:        otherCtrl,
+		sink:        &tabEventSink{tabID: "tab_other", app: app},
+		disabledMCP: map[string]ServerView{},
+	}
+	app.tabs = map[string]*WorkspaceTab{tab.ID: tab, other.ID: other}
+	app.tabOrder = []string{tab.ID, other.ID}
+	app.activeTabID = tab.ID
+	t.Cleanup(func() {
+		if c := app.controllerForTab(tab); c != nil && c != oldCtrl {
+			c.Close()
+		}
+		tab.releaseSessionLease()
+	})
+
+	if err := app.SetMaxSubagentDepth(1); err != nil {
+		t.Fatalf("SetMaxSubagentDepth: %v", err)
+	}
+	if !app.deferredRebuildPending(tab.ID) {
+		t.Fatal("deferred rebuild was not scheduled while the lease is held")
+	}
+
+	// Focus another tab, then release the lease: the retry must not rebuild
+	// while the pending tab is inactive (rebuildSettingLocked acts on the
+	// active tab), and must not touch the focused tab's runtime either.
+	app.mu.Lock()
+	app.activeTabID = other.ID
+	app.mu.Unlock()
+	externalLease.Release()
+	released = true
+
+	time.Sleep(150 * time.Millisecond)
+	if !app.deferredRebuildPending(tab.ID) {
+		t.Fatal("pending entry was consumed while its tab was inactive")
+	}
+	if app.controllerForTab(tab) != oldCtrl {
+		t.Fatal("inactive pending tab was rebuilt")
+	}
+	if app.controllerForTab(other) != otherCtrl {
+		t.Fatal("focused tab was rebuilt by another tab's deferred retry")
+	}
+
+	// Switch back: the retry should now refresh the pending tab.
+	app.mu.Lock()
+	app.activeTabID = tab.ID
+	app.mu.Unlock()
+
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		if !app.deferredRebuildPending(tab.ID) && app.controllerForTab(tab) != oldCtrl {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if app.deferredRebuildPending(tab.ID) {
+		t.Fatal("deferred rebuild still pending after its tab became active again")
+	}
+	if c := app.controllerForTab(tab); c == nil || c == oldCtrl {
+		t.Fatalf("controller was not rebuilt after tab reactivation: got %p", c)
+	}
+}
+
+func TestSetEffortForTabLeaseHeldKeepsOldControllerAlive(t *testing.T) {
+	isolateDesktopUserDirs(t)
+	setDesktopTestCredential(t, "OLD_MODEL_KEY", "sk-test")
+
+	cfg := config.Default()
+	cfg.DefaultModel = "old/old-model"
+	cfg.Desktop.ProviderAccess = []string{"old"}
+	cfg.Providers = []config.ProviderEntry{{
+		Name:             "old",
+		Kind:             "openai",
+		BaseURL:          "https://example.invalid/v1",
+		Model:            "old-model",
+		APIKeyEnv:        "OLD_MODEL_KEY",
+		SupportedEfforts: []string{"low", "max"},
+	}}
+	if err := cfg.SaveTo(config.UserConfigPath()); err != nil {
+		t.Fatalf("save config: %v", err)
+	}
+
+	dir := config.SessionDir()
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("mkdir session dir: %v", err)
+	}
+	sessionPath := filepath.Join(dir, "externally-leased-effort-switch.jsonl")
+	if err := os.WriteFile(sessionPath, nil, 0o644); err != nil {
+		t.Fatalf("write placeholder session: %v", err)
+	}
+	externalLease, err := agent.TryAcquireSessionLease(sessionPath)
+	if err != nil {
+		t.Fatalf("TryAcquireSessionLease: %v", err)
+	}
+	released := false
+	defer func() {
+		if !released {
+			externalLease.Release()
+		}
+	}()
+
+	oldExec := agent.New(nil, nil, agent.NewSession("old system prompt"), agent.Options{}, event.Discard)
+	oldCtrl := control.New(control.Options{Executor: oldExec, SessionDir: dir, SessionPath: sessionPath, Label: "old", Sink: event.Discard})
+	defer oldCtrl.Close()
+
+	app := NewApp()
+	app.ctx = context.Background()
+	tab := &WorkspaceTab{
+		ID:          "tab_effort",
+		Scope:       "global",
+		SessionPath: sessionPath,
+		Ready:       true,
+		model:       "old/old-model",
+		Ctrl:        oldCtrl,
+		sink:        &tabEventSink{tabID: "tab_effort", app: app},
+		disabledMCP: map[string]ServerView{},
+	}
+	app.tabs = map[string]*WorkspaceTab{tab.ID: tab}
+	app.tabOrder = []string{tab.ID}
+	app.activeTabID = tab.ID
+	t.Cleanup(func() {
+		if c := app.controllerForTab(tab); c != nil && c != oldCtrl {
+			c.Close()
+		}
+		tab.releaseSessionLease()
+	})
+
+	err = app.SetEffortForTab(tab.ID, "max")
+	if !errors.Is(err, agent.ErrSessionLeaseHeld) {
+		t.Fatalf("SetEffortForTab err = %v, want ErrSessionLeaseHeld", err)
+	}
+	if strings.Contains(err.Error(), sessionPath) || strings.Contains(err.Error(), "held by") {
+		t.Fatalf("SetEffortForTab surfaced raw lease details: %v", err)
+	}
+	if tab.Ctrl != oldCtrl {
+		t.Fatal("tab controller changed after failed effort switch")
+	}
+
+	// The failed switch must leave the old runtime alive: after the other
+	// window releases the lease, retrying from the same tab has to succeed.
+	// (The old code closed the old controller before acquiring the lease, so
+	// this retry died on a snapshot of a closed session.)
+	externalLease.Release()
+	released = true
+	if err := app.SetEffortForTab(tab.ID, "max"); err != nil {
+		t.Fatalf("SetEffortForTab retry after lease release: %v", err)
+	}
+	if tab.Ctrl == oldCtrl {
+		t.Fatal("retry did not rebuild the controller")
+	}
+}
+
+func TestSetEffortForTabReanchorsDepthCapRecoveryBranch(t *testing.T) {
+	isolateDesktopUserDirs(t)
+	setDesktopTestCredential(t, "OLD_MODEL_KEY", "sk-test")
+
+	cfg := config.Default()
+	cfg.DefaultModel = "old/old-model"
+	cfg.Desktop.ProviderAccess = []string{"old"}
+	cfg.Providers = []config.ProviderEntry{{
+		Name:             "old",
+		Kind:             "openai",
+		BaseURL:          "https://example.invalid/v1",
+		Model:            "old-model",
+		APIKeyEnv:        "OLD_MODEL_KEY",
+		SupportedEfforts: []string{"low", "max"},
+	}}
+	if err := cfg.SaveTo(config.UserConfigPath()); err != nil {
+		t.Fatalf("save config: %v", err)
+	}
+
+	dir := config.SessionDir()
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("mkdir session dir: %v", err)
+	}
+	recoveryPath := filepath.Join(dir, "effort-switch-conflict-recovery-deadbeef.jsonl")
+	disk := agent.NewSession("old system prompt")
+	disk.Add(provider.Message{Role: provider.RoleUser, Content: "first"})
+	disk.Add(provider.Message{Role: provider.RoleAssistant, Content: "one"})
+	disk.Add(provider.Message{Role: provider.RoleUser, Content: "disk second"})
+	if err := disk.Save(recoveryPath); err != nil {
+		t.Fatalf("save recovery branch: %v", err)
+	}
+	meta, ok, err := agent.LoadBranchMeta(recoveryPath)
+	if err != nil || !ok {
+		t.Fatalf("LoadBranchMeta ok=%v err=%v", ok, err)
+	}
+	meta.Recovered = true
+	meta.ParentID = "effort-switch-conflict"
+	meta.RecoveryReason = "snapshot conflict"
+	meta.RecoveryDepth = agent.SessionRecoveryMaxDepth
+	if err := agent.SaveBranchMeta(recoveryPath, meta); err != nil {
+		t.Fatalf("SaveBranchMeta: %v", err)
+	}
+
+	stale := agent.NewSession("old system prompt")
+	stale.Add(provider.Message{Role: provider.RoleUser, Content: "first"})
+	stale.Add(provider.Message{Role: provider.RoleAssistant, Content: "one"})
+	stale.Add(provider.Message{Role: provider.RoleUser, Content: "local second"})
+	oldExec := agent.New(nil, nil, stale, agent.Options{}, event.Discard)
+
+	app := NewApp()
+	app.ctx = context.Background()
+	app.runtimeEvents.emit = func(context.Context, string, ...interface{}) {}
+	tab := &WorkspaceTab{
+		ID:          "tab_depth_cap_effort",
+		Scope:       "global",
+		SessionPath: recoveryPath,
+		Ready:       true,
+		model:       "old/old-model",
+		disabledMCP: map[string]ServerView{},
+	}
+	tab.sink = &tabEventSink{tabID: tab.ID, app: app}
+	oldCtrl := control.New(control.Options{
+		Executor:            oldExec,
+		SessionDir:          dir,
+		SessionPath:         recoveryPath,
+		Label:               "old",
+		Sink:                tab.sink,
+		SessionRecoveryMeta: app.tabSessionRecoveryMeta(tab),
+		OnSessionRecovered:  app.handleTabSessionRecovered(tab),
+	})
+	tab.Ctrl = oldCtrl
+	app.tabs = map[string]*WorkspaceTab{tab.ID: tab}
+	app.tabOrder = []string{tab.ID}
+	app.activeTabID = tab.ID
+	t.Cleanup(func() {
+		if tab.Ctrl != nil {
+			tab.Ctrl.Close()
+		}
+		tab.releaseSessionLease()
+	})
+	stale.IncrementRewrite()
+
+	if err := app.SetEffortForTab(tab.ID, "max"); err != nil {
+		t.Fatalf("SetEffortForTab: %v", err)
+	}
+	if got := tab.Ctrl.SessionPath(); got != recoveryPath {
+		t.Fatalf("session path after effort switch = %q, want current recovery branch %q", got, recoveryPath)
+	}
+	if got := tab.currentSessionPath(); got != recoveryPath {
+		t.Fatalf("tab current session path = %q, want %q", got, recoveryPath)
+	}
+	if tab.sessionLease == nil || sessionRuntimeKey(tab.sessionLease.Path()) != sessionRuntimeKey(recoveryPath) {
+		t.Fatalf("tab lease path = %q, want %q", tab.sessionLeaseRuntimeKey(), recoveryPath)
+	}
+	matches, err := filepath.Glob(filepath.Join(dir, "*-recovery-*.jsonl"))
+	if err != nil {
+		t.Fatalf("glob recovery branches: %v", err)
+	}
+	matches = primarySessionFiles(matches)
+	if len(matches) != 1 || matches[0] != recoveryPath {
+		t.Fatalf("recovery branches after effort switch = %v, want only %q", matches, recoveryPath)
+	}
+
+	lines := readConflictLogLines(t, store.SessionConflictLog(recoveryPath))
+	if len(lines) != 1 {
+		t.Fatalf("conflict log lines = %v, want one depth-cap diagnostic", lines)
+	}
+	if !strings.Contains(lines[0], `"outcome":"recovery_depth_cap_force_saved"`) {
+		t.Fatalf("conflict diagnostic = %s, want depth-cap outcome", lines[0])
+	}
+	if strings.Contains(lines[0], dir) || strings.Contains(lines[0], recoveryPath) {
+		t.Fatalf("conflict diagnostic leaked local path: %s", lines[0])
+	}
+
+	if err := tab.Ctrl.Snapshot(); err != nil {
+		t.Fatalf("Snapshot after effort switch recovery: %v", err)
+	}
+	afterLines := readConflictLogLines(t, store.SessionConflictLog(recoveryPath))
+	if len(afterLines) != len(lines) {
+		t.Fatalf("follow-up snapshot appended conflict diagnostics: before=%v after=%v", lines, afterLines)
+	}
+	matches, err = filepath.Glob(filepath.Join(dir, "*-recovery-*.jsonl"))
+	if err != nil {
+		t.Fatalf("glob recovery branches after snapshot: %v", err)
+	}
+	matches = primarySessionFiles(matches)
+	if len(matches) != 1 || matches[0] != recoveryPath {
+		t.Fatalf("recovery branches after follow-up snapshot = %v, want only %q", matches, recoveryPath)
 	}
 }
 
@@ -1523,6 +2948,13 @@ func TestModelsForTabListsMimoAPIPaidAccess(t *testing.T) {
 	setDesktopTestCredential(t, "MIMO_API_KEY", "sk-test")
 
 	cfg := config.Default()
+	preset, ok := config.CuratedProviderPreset("mimo-api")
+	if !ok || len(preset.Entries) == 0 {
+		t.Fatal("mimo-api preset missing")
+	}
+	if err := cfg.UpsertProvider(preset.Entries[0]); err != nil {
+		t.Fatalf("upsert mimo-api preset: %v", err)
+	}
 	cfg.DefaultModel = "mimo-api/mimo-v2.5-pro"
 	cfg.Desktop.ProviderAccess = []string{"mimo-api"}
 	if err := cfg.SaveTo(config.UserConfigPath()); err != nil {
@@ -1534,14 +2966,13 @@ func TestModelsForTabListsMimoAPIPaidAccess(t *testing.T) {
 	for _, want := range []string{
 		"mimo-api/mimo-v2.5-pro",
 		"mimo-api/mimo-v2.5",
-		"mimo-api/mimo-v2-omni",
 	} {
 		if !refs[want] {
 			t.Fatalf("Models() refs = %+v, missing %s", models, want)
 		}
 	}
-	if len(models) != 3 {
-		t.Fatalf("Models() len = %d, want 3: %+v", len(models), models)
+	if len(models) != 2 {
+		t.Fatalf("Models() len = %d, want 2: %+v", len(models), models)
 	}
 }
 
@@ -1617,7 +3048,7 @@ func TestSetModelForTabRejectsProviderOutsideAccess(t *testing.T) {
 	}
 }
 
-func TestSetModelForTabRefreshesCarriedSystemPrompt(t *testing.T) {
+func TestSetModelForTabRefreshesCarriedSystemPromptWithoutChangingDefaults(t *testing.T) {
 	isolateDesktopUserDirs(t)
 	setDesktopTestCredential(t, "OLD_MODEL_KEY", "sk-test")
 	setDesktopTestCredential(t, "NEW_MODEL_KEY", "sk-test")
@@ -1661,8 +3092,15 @@ func TestSetModelForTabRefreshesCarriedSystemPrompt(t *testing.T) {
 		sink:        &tabEventSink{tabID: "tab_a", app: app},
 		disabledMCP: map[string]ServerView{},
 	}
-	app.tabs = map[string]*WorkspaceTab{tab.ID: tab}
-	app.tabOrder = []string{tab.ID}
+	sibling := &WorkspaceTab{
+		ID:          "tab_b",
+		Scope:       "global",
+		Ready:       true,
+		model:       "old/old-model",
+		disabledMCP: map[string]ServerView{},
+	}
+	app.tabs = map[string]*WorkspaceTab{tab.ID: tab, sibling.ID: sibling}
+	app.tabOrder = []string{tab.ID, sibling.ID}
 	app.activeTabID = tab.ID
 	t.Cleanup(func() {
 		if tab.Ctrl != nil {
@@ -1686,6 +3124,582 @@ func TestSetModelForTabRefreshesCarriedSystemPrompt(t *testing.T) {
 	if history[1].Role != provider.RoleUser || history[1].Content != "hello" {
 		t.Fatalf("carried user message changed: %+v", history[1])
 	}
+	if got := config.LoadForEdit(config.UserConfigPath()).DefaultModel; got != "old/old-model" {
+		t.Fatalf("default model after session switch = %q, want old/old-model", got)
+	}
+	if sibling.model != "old/old-model" {
+		t.Fatalf("sibling tab model after session switch = %q, want old/old-model", sibling.model)
+	}
+}
+
+// TestSetModelForTabRestoresSessionAuthorizations pins the fix for a model
+// switch dropping same-session "Allow for this session" tool grants and
+// Plan-mode read-only command trust, forcing the user to re-approve
+// something already granted this session after every model/effort/token-mode
+// switch.
+func TestSetModelForTabRestoresSessionAuthorizations(t *testing.T) {
+	isolateDesktopUserDirs(t)
+	setDesktopTestCredential(t, "OLD_MODEL_KEY", "sk-test")
+	setDesktopTestCredential(t, "NEW_MODEL_KEY", "sk-test")
+
+	cfg := config.Default()
+	cfg.DefaultModel = "old/old-model"
+	cfg.Desktop.ProviderAccess = []string{"old", "new"}
+	cfg.Providers = []config.ProviderEntry{
+		{Name: "old", Kind: "openai", BaseURL: "https://example.invalid/v1", Model: "old-model", APIKeyEnv: "OLD_MODEL_KEY"},
+		{Name: "new", Kind: "openai", BaseURL: "https://example.invalid/v1", Model: "new-model", APIKeyEnv: "NEW_MODEL_KEY"},
+	}
+	if err := cfg.SaveTo(config.UserConfigPath()); err != nil {
+		t.Fatalf("save config: %v", err)
+	}
+
+	dir := config.SessionDir()
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("mkdir session dir: %v", err)
+	}
+	oldExec := agent.New(nil, nil, agent.NewSession("old system prompt"), agent.Options{}, event.Discard)
+	oldPath := filepath.Join(dir, "old.jsonl")
+	oldCtrl := control.New(control.Options{Executor: oldExec, SessionDir: dir, SessionPath: oldPath, Label: "old", Sink: event.Discard})
+	oldCtrl.RestoreSessionAuthorizations(control.SessionAuthorizations{
+		Grants:                   []string{"bash|go test ./..."},
+		PlanModeReadOnlyCommands: []string{"go test ./..."},
+	})
+
+	app := NewApp()
+	app.ctx = context.Background()
+	tab := &WorkspaceTab{
+		ID:          "tab_a",
+		Scope:       "global",
+		Ready:       true,
+		model:       "old/old-model",
+		Ctrl:        oldCtrl,
+		sink:        &tabEventSink{tabID: "tab_a", app: app},
+		disabledMCP: map[string]ServerView{},
+	}
+	app.tabs = map[string]*WorkspaceTab{tab.ID: tab}
+	app.tabOrder = []string{tab.ID}
+	app.activeTabID = tab.ID
+	t.Cleanup(func() {
+		if tab.Ctrl != nil {
+			tab.Ctrl.Close()
+		}
+	})
+
+	if err := app.SetModelForTab(tab.ID, "new/new-model"); err != nil {
+		t.Fatalf("SetModelForTab: %v", err)
+	}
+
+	newCtrl, ok := tab.Ctrl.(*control.Controller)
+	if !ok {
+		t.Fatalf("tab.Ctrl = %T, want *control.Controller", tab.Ctrl)
+	}
+	got := newCtrl.SessionAuthorizations()
+	if len(got.Grants) != 1 || got.Grants[0] != "bash|go test ./..." {
+		t.Fatalf("restored grants = %+v, want [\"bash|go test ./...\"]", got.Grants)
+	}
+	if len(got.PlanModeReadOnlyCommands) != 1 || got.PlanModeReadOnlyCommands[0] != "go test ./..." {
+		t.Fatalf("restored plan-mode read-only commands = %+v, want [\"go test ./...\"]", got.PlanModeReadOnlyCommands)
+	}
+}
+
+// TestRebuildSettingLockedRestoresSessionAuthorizations covers the same
+// dropped-session-authorization bug for the settings-change rebuild path
+// (also used by the deferred-rebuild retry loop), independent from
+// SetModelForTab's own rebuild.
+func TestRebuildSettingLockedRestoresSessionAuthorizations(t *testing.T) {
+	isolateDesktopUserDirs(t)
+	setDesktopTestCredential(t, "OLD_MODEL_KEY", "sk-test")
+
+	cfg := config.Default()
+	cfg.DefaultModel = "old/old-model"
+	cfg.Desktop.ProviderAccess = []string{"old"}
+	cfg.Providers = []config.ProviderEntry{
+		{Name: "old", Kind: "openai", BaseURL: "https://example.invalid/v1", Model: "old-model", APIKeyEnv: "OLD_MODEL_KEY"},
+	}
+	if err := cfg.SaveTo(config.UserConfigPath()); err != nil {
+		t.Fatalf("save config: %v", err)
+	}
+
+	dir := config.SessionDir()
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("mkdir session dir: %v", err)
+	}
+	oldExec := agent.New(nil, nil, agent.NewSession("old system prompt"), agent.Options{}, event.Discard)
+	oldPath := filepath.Join(dir, "old.jsonl")
+	oldCtrl := control.New(control.Options{Executor: oldExec, SessionDir: dir, SessionPath: oldPath, Label: "old", Sink: event.Discard})
+	oldCtrl.RestoreSessionAuthorizations(control.SessionAuthorizations{
+		Grants:                   []string{"bash|go test ./..."},
+		PlanModeReadOnlyCommands: []string{"go test ./..."},
+	})
+
+	app := NewApp()
+	app.ctx = context.Background()
+	tab := &WorkspaceTab{
+		ID:          "tab_a",
+		Scope:       "global",
+		Ready:       true,
+		model:       "old/old-model",
+		Ctrl:        oldCtrl,
+		sink:        &tabEventSink{tabID: "tab_a", app: app},
+		disabledMCP: map[string]ServerView{},
+	}
+	app.tabs = map[string]*WorkspaceTab{tab.ID: tab}
+	app.tabOrder = []string{tab.ID}
+	app.activeTabID = tab.ID
+	app.readyHook = func() {}
+	t.Cleanup(func() {
+		if tab.Ctrl != nil {
+			tab.Ctrl.Close()
+		}
+	})
+
+	if err := app.rebuildSetting("settings"); err != nil {
+		t.Fatalf("rebuildSetting: %v", err)
+	}
+
+	newCtrl, ok := tab.Ctrl.(*control.Controller)
+	if !ok {
+		t.Fatalf("tab.Ctrl = %T, want *control.Controller", tab.Ctrl)
+	}
+	got := newCtrl.SessionAuthorizations()
+	if len(got.Grants) != 1 || got.Grants[0] != "bash|go test ./..." {
+		t.Fatalf("restored grants = %+v, want [\"bash|go test ./...\"]", got.Grants)
+	}
+	if len(got.PlanModeReadOnlyCommands) != 1 || got.PlanModeReadOnlyCommands[0] != "go test ./..." {
+		t.Fatalf("restored plan-mode read-only commands = %+v, want [\"go test ./...\"]", got.PlanModeReadOnlyCommands)
+	}
+}
+
+func TestSetModelForTabContinuesRecoveryPathAfterSnapshotConflict(t *testing.T) {
+	isolateDesktopUserDirs(t)
+	setDesktopTestCredential(t, "OLD_MODEL_KEY", "sk-test")
+	setDesktopTestCredential(t, "NEW_MODEL_KEY", "sk-test")
+
+	cfg := config.Default()
+	cfg.DefaultModel = "old/old-model"
+	cfg.Desktop.ProviderAccess = []string{"old", "new"}
+	cfg.Providers = []config.ProviderEntry{
+		{Name: "old", Kind: "openai", BaseURL: "https://example.invalid/v1", Model: "old-model", APIKeyEnv: "OLD_MODEL_KEY"},
+		{Name: "new", Kind: "openai", BaseURL: "https://example.invalid/v1", Model: "new-model", APIKeyEnv: "NEW_MODEL_KEY"},
+	}
+	if err := cfg.SaveTo(config.UserConfigPath()); err != nil {
+		t.Fatalf("save config: %v", err)
+	}
+
+	dir := config.SessionDir()
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("mkdir session dir: %v", err)
+	}
+	originalPath := filepath.Join(dir, "model-switch-conflict.jsonl")
+	current := agent.NewSession("old system prompt")
+	current.Add(provider.Message{Role: provider.RoleUser, Content: "first"})
+	current.Add(provider.Message{Role: provider.RoleAssistant, Content: "one"})
+	current.Add(provider.Message{Role: provider.RoleUser, Content: "disk second"})
+	if err := current.Save(originalPath); err != nil {
+		t.Fatalf("save current session: %v", err)
+	}
+
+	stale := agent.NewSession("old system prompt")
+	stale.Add(provider.Message{Role: provider.RoleUser, Content: "first"})
+	stale.Add(provider.Message{Role: provider.RoleAssistant, Content: "one"})
+	stale.Add(provider.Message{Role: provider.RoleUser, Content: "local second"})
+	oldExec := agent.New(nil, nil, stale, agent.Options{}, event.Discard)
+
+	app := NewApp()
+	app.ctx = context.Background()
+	app.runtimeEvents.emit = func(context.Context, string, ...interface{}) {}
+	tab := &WorkspaceTab{
+		ID:          "tab_recovery_model",
+		Scope:       "global",
+		SessionPath: originalPath,
+		Ready:       true,
+		model:       "old/old-model",
+		disabledMCP: map[string]ServerView{},
+	}
+	tab.sink = &tabEventSink{tabID: tab.ID, app: app}
+	oldCtrl := control.New(control.Options{
+		Executor:            oldExec,
+		SessionDir:          dir,
+		SessionPath:         originalPath,
+		Label:               "old",
+		Sink:                tab.sink,
+		SessionRecoveryMeta: app.tabSessionRecoveryMeta(tab),
+		OnSessionRecovered:  app.handleTabSessionRecovered(tab),
+	})
+	tab.Ctrl = oldCtrl
+	app.tabs = map[string]*WorkspaceTab{tab.ID: tab}
+	app.tabOrder = []string{tab.ID}
+	app.activeTabID = tab.ID
+	t.Cleanup(func() {
+		if tab.Ctrl != nil {
+			tab.Ctrl.Close()
+		}
+		tab.releaseSessionLease()
+	})
+
+	if err := app.SetModelForTab(tab.ID, "new/new-model"); err != nil {
+		t.Fatalf("SetModelForTab: %v", err)
+	}
+	recoveryPath := tab.Ctrl.SessionPath()
+	if recoveryPath == "" || recoveryPath == originalPath || !strings.Contains(filepath.Base(recoveryPath), "-recovery-") {
+		t.Fatalf("model switch session path = %q, want recovery path distinct from %q", recoveryPath, originalPath)
+	}
+	if got := tab.currentSessionPath(); got != recoveryPath {
+		t.Fatalf("tab current session path = %q, want recovery path %q", got, recoveryPath)
+	}
+	if tab.sessionLease == nil || sessionRuntimeKey(tab.sessionLease.Path()) != sessionRuntimeKey(recoveryPath) {
+		t.Fatalf("tab lease path = %q, want recovery path %q", tab.sessionLeaseRuntimeKey(), recoveryPath)
+	}
+
+	matches, err := filepath.Glob(filepath.Join(dir, "*-recovery-*.jsonl"))
+	if err != nil {
+		t.Fatalf("glob recovery branches: %v", err)
+	}
+	matches = primarySessionFiles(matches)
+	if len(matches) != 1 || matches[0] != recoveryPath {
+		t.Fatalf("recovery branches after model switch = %v, want only %q", matches, recoveryPath)
+	}
+	if err := tab.Ctrl.Snapshot(); err != nil {
+		t.Fatalf("Snapshot after model switch recovery: %v", err)
+	}
+	matches, err = filepath.Glob(filepath.Join(dir, "*-recovery-*.jsonl"))
+	if err != nil {
+		t.Fatalf("glob recovery branches after snapshot: %v", err)
+	}
+	matches = primarySessionFiles(matches)
+	if len(matches) != 1 || matches[0] != recoveryPath {
+		t.Fatalf("recovery branches after follow-up snapshot = %v, want only %q", matches, recoveryPath)
+	}
+}
+
+func TestSetModelForTabReusesCurrentSessionLease(t *testing.T) {
+	isolateDesktopUserDirs(t)
+	setDesktopTestCredential(t, "OLD_MODEL_KEY", "sk-test")
+	setDesktopTestCredential(t, "NEW_MODEL_KEY", "sk-test")
+
+	cfg := config.Default()
+	cfg.DefaultModel = "old/old-model"
+	cfg.Desktop.ProviderAccess = []string{"old", "new"}
+	cfg.Providers = []config.ProviderEntry{
+		{Name: "old", Kind: "openai", BaseURL: "https://example.invalid/v1", Model: "old-model", APIKeyEnv: "OLD_MODEL_KEY"},
+		{Name: "new", Kind: "openai", BaseURL: "https://example.invalid/v1", Model: "new-model", APIKeyEnv: "NEW_MODEL_KEY"},
+	}
+	if err := cfg.SaveTo(config.UserConfigPath()); err != nil {
+		t.Fatalf("save config: %v", err)
+	}
+
+	dir := config.SessionDir()
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("mkdir session dir: %v", err)
+	}
+	oldSession := agent.NewSession("old system prompt")
+	oldSession.Add(provider.Message{Role: provider.RoleUser, Content: "hello"})
+	oldExec := agent.New(nil, nil, oldSession, agent.Options{}, event.Discard)
+	oldPath := filepath.Join(dir, "leased-model-switch.jsonl")
+	oldCtrl := control.New(control.Options{Executor: oldExec, SessionDir: dir, SessionPath: oldPath, Label: "old", Sink: event.Discard})
+
+	app := NewApp()
+	app.ctx = context.Background()
+	tab := &WorkspaceTab{
+		ID:          "tab_a",
+		Scope:       "global",
+		Ready:       true,
+		model:       "old/old-model",
+		Ctrl:        oldCtrl,
+		sink:        &tabEventSink{tabID: "tab_a", app: app},
+		disabledMCP: map[string]ServerView{},
+	}
+	app.tabs = map[string]*WorkspaceTab{tab.ID: tab}
+	app.tabOrder = []string{tab.ID}
+	app.activeTabID = tab.ID
+	t.Cleanup(func() {
+		if tab.Ctrl != nil {
+			tab.Ctrl.Close()
+		}
+		tab.releaseSessionLease()
+	})
+
+	if err := tab.ensureSessionLease(oldPath); err != nil {
+		t.Fatalf("ensureSessionLease: %v", err)
+	}
+	if err := app.SetModelForTab(tab.ID, "new/new-model"); err != nil {
+		t.Fatalf("SetModelForTab: %v", err)
+	}
+	if tab.Ctrl == nil || tab.Ctrl == oldCtrl {
+		t.Fatalf("tab controller was not rebuilt")
+	}
+	if got := tab.model; got != "new/new-model" {
+		t.Fatalf("tab model = %q, want new/new-model", got)
+	}
+	if tab.sessionLease == nil || sessionRuntimeKey(tab.sessionLease.Path()) != sessionRuntimeKey(oldPath) {
+		t.Fatalf("session lease path = %q, want %q", tab.currentSessionPath(), oldPath)
+	}
+	history := tab.Ctrl.History()
+	if len(history) < 2 || history[1].Role != provider.RoleUser || history[1].Content != "hello" {
+		t.Fatalf("carried history = %+v, want original user message", history)
+	}
+}
+
+func TestSetModelForTabWaitsForConcurrentBlankSessionLease(t *testing.T) {
+	isolateDesktopUserDirs(t)
+	setDesktopTestCredential(t, "OLD_MODEL_KEY", "sk-test")
+	setDesktopTestCredential(t, "NEW_MODEL_KEY", "sk-test")
+
+	cfg := config.Default()
+	cfg.DefaultModel = "old/old-model"
+	cfg.Desktop.ProviderAccess = []string{"old", "new"}
+	cfg.Providers = []config.ProviderEntry{
+		{Name: "old", Kind: "openai", BaseURL: "https://example.invalid/v1", Model: "old-model", APIKeyEnv: "OLD_MODEL_KEY"},
+		{Name: "new", Kind: "openai", BaseURL: "https://example.invalid/v1", Model: "new-model", APIKeyEnv: "NEW_MODEL_KEY"},
+	}
+	if err := cfg.SaveTo(config.UserConfigPath()); err != nil {
+		t.Fatalf("save config: %v", err)
+	}
+
+	dir := desktopSessionDir(globalTabWorkspaceRoot())
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("mkdir sessions: %v", err)
+	}
+	path := filepath.Join(dir, "blank-model-switch-race.jsonl")
+	if err := os.WriteFile(path, nil, 0o644); err != nil {
+		t.Fatalf("write blank session: %v", err)
+	}
+
+	app := NewApp()
+	app.ctx = context.Background()
+	tab := &WorkspaceTab{
+		ID:            "tab_blank_race",
+		Scope:         "global",
+		WorkspaceRoot: globalTabWorkspaceRoot(),
+		SessionPath:   path,
+		Ready:         true,
+		model:         "old/old-model",
+		sink:          &tabEventSink{tabID: "tab_blank_race", app: app},
+		disabledMCP:   map[string]ServerView{},
+	}
+	app.tabs = map[string]*WorkspaceTab{tab.ID: tab}
+	app.tabOrder = []string{tab.ID}
+	app.activeTabID = tab.ID
+	t.Cleanup(func() {
+		if tab.Ctrl != nil {
+			tab.Ctrl.Close()
+		}
+		tab.releaseSessionLease()
+	})
+
+	acquired := make(chan struct{})
+	releaseHook := make(chan struct{})
+	var once sync.Once
+	sessionLeaseAcquireHookForTest = func() {
+		once.Do(func() {
+			close(acquired)
+			<-releaseHook
+		})
+	}
+	t.Cleanup(func() { sessionLeaseAcquireHookForTest = nil })
+
+	buildErr := make(chan error, 1)
+	go func() {
+		buildErr <- tab.ensureSessionLease(path)
+	}()
+
+	select {
+	case <-acquired:
+	case err := <-buildErr:
+		t.Fatalf("background lease acquire returned before hook: %v", err)
+	case <-time.After(2 * time.Second):
+		t.Fatal("background lease acquire did not start")
+	}
+
+	switchErr := make(chan error, 1)
+	go func() {
+		switchErr <- app.SetModelForTab(tab.ID, "new/new-model")
+	}()
+
+	select {
+	case err := <-switchErr:
+		t.Fatalf("SetModelForTab returned before concurrent lease was bound: %v", err)
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	close(releaseHook)
+	if err := <-buildErr; err != nil {
+		t.Fatalf("background ensureSessionLease: %v", err)
+	}
+	if err := <-switchErr; err != nil {
+		t.Fatalf("SetModelForTab: %v", err)
+	}
+	if tab.Ctrl == nil {
+		t.Fatal("model switch did not build a controller")
+	}
+	if got := tab.model; got != "new/new-model" {
+		t.Fatalf("tab model = %q, want new/new-model", got)
+	}
+	if tab.sessionLease == nil || sessionRuntimeKey(tab.sessionLease.Path()) != sessionRuntimeKey(path) {
+		t.Fatalf("session lease path = %q, want %q", tab.currentSessionPath(), path)
+	}
+}
+
+func TestSetModelForTabLeaseHeldKeepsCurrentController(t *testing.T) {
+	isolateDesktopUserDirs(t)
+	setDesktopTestCredential(t, "OLD_MODEL_KEY", "sk-test")
+	setDesktopTestCredential(t, "NEW_MODEL_KEY", "sk-test")
+
+	cfg := config.Default()
+	cfg.DefaultModel = "old/old-model"
+	cfg.Desktop.ProviderAccess = []string{"old", "new"}
+	cfg.Providers = []config.ProviderEntry{
+		{Name: "old", Kind: "openai", BaseURL: "https://example.invalid/v1", Model: "old-model", APIKeyEnv: "OLD_MODEL_KEY"},
+		{Name: "new", Kind: "openai", BaseURL: "https://example.invalid/v1", Model: "new-model", APIKeyEnv: "NEW_MODEL_KEY"},
+	}
+	if err := cfg.SaveTo(config.UserConfigPath()); err != nil {
+		t.Fatalf("save config: %v", err)
+	}
+
+	dir := config.SessionDir()
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("mkdir session dir: %v", err)
+	}
+	oldPath := filepath.Join(dir, "externally-leased-model-switch.jsonl")
+	if err := os.WriteFile(oldPath, nil, 0o644); err != nil {
+		t.Fatalf("write placeholder session: %v", err)
+	}
+	externalLease, err := agent.TryAcquireSessionLease(oldPath)
+	if err != nil {
+		t.Fatalf("TryAcquireSessionLease: %v", err)
+	}
+	defer externalLease.Release()
+
+	oldSession := agent.NewSession("old system prompt")
+	oldSession.Add(provider.Message{Role: provider.RoleUser, Content: "hello"})
+	oldExec := agent.New(nil, nil, oldSession, agent.Options{}, event.Discard)
+	oldCtrl := control.New(control.Options{Executor: oldExec, SessionDir: dir, SessionPath: oldPath, Label: "old", Sink: event.Discard})
+	defer oldCtrl.Close()
+
+	app := NewApp()
+	app.ctx = context.Background()
+	tab := &WorkspaceTab{
+		ID:          "tab_a",
+		Scope:       "global",
+		Ready:       true,
+		model:       "old/old-model",
+		Ctrl:        oldCtrl,
+		sink:        &tabEventSink{tabID: "tab_a", app: app},
+		disabledMCP: map[string]ServerView{},
+	}
+	app.tabs = map[string]*WorkspaceTab{tab.ID: tab}
+	app.tabOrder = []string{tab.ID}
+	app.activeTabID = tab.ID
+
+	err = app.SetModelForTab(tab.ID, "new/new-model")
+	if !errors.Is(err, agent.ErrSessionLeaseHeld) {
+		t.Fatalf("SetModelForTab err = %v, want ErrSessionLeaseHeld", err)
+	}
+	if strings.Contains(err.Error(), oldPath) || strings.Contains(err.Error(), "held by") {
+		t.Fatalf("SetModelForTab surfaced raw lease details: %v", err)
+	}
+	if tab.Ctrl != oldCtrl {
+		t.Fatalf("tab controller changed after failed switch")
+	}
+	if got := tab.model; got != "old/old-model" {
+		t.Fatalf("tab model = %q, want old/old-model", got)
+	}
+	info, err := os.Stat(oldPath)
+	if err != nil {
+		t.Fatalf("stat session: %v", err)
+	}
+	if info.Size() != 0 {
+		t.Fatalf("session file size = %d, want unchanged empty file", info.Size())
+	}
+}
+
+func TestSetModelForTabReattachesDetachedRuntime(t *testing.T) {
+	isolateDesktopUserDirs(t)
+	setDesktopTestCredential(t, "OLD_MODEL_KEY", "sk-test")
+	setDesktopTestCredential(t, "NEW_MODEL_KEY", "sk-test")
+
+	cfg := config.Default()
+	cfg.DefaultModel = "old/old-model"
+	cfg.Desktop.ProviderAccess = []string{"old", "new"}
+	cfg.Providers = []config.ProviderEntry{
+		{Name: "old", Kind: "openai", BaseURL: "https://example.invalid/v1", Model: "old-model", APIKeyEnv: "OLD_MODEL_KEY"},
+		{Name: "new", Kind: "openai", BaseURL: "https://example.invalid/v1", Model: "new-model", APIKeyEnv: "NEW_MODEL_KEY"},
+	}
+	if err := cfg.SaveTo(config.UserConfigPath()); err != nil {
+		t.Fatalf("save config: %v", err)
+	}
+
+	dir := desktopSessionDir(globalTabWorkspaceRoot())
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("mkdir session dir: %v", err)
+	}
+	path := filepath.Join(dir, "detached-model-switch.jsonl")
+	oldSession := agent.NewSession("old system prompt")
+	oldSession.Add(provider.Message{Role: provider.RoleUser, Content: "hello from detached"})
+	oldExec := agent.New(nil, nil, oldSession, agent.Options{}, event.Discard)
+	oldCtrl := control.New(control.Options{Executor: oldExec, SessionDir: dir, SessionPath: path, Label: "old", Sink: event.Discard})
+	lease, err := agent.TryAcquireSessionLease(path)
+	if err != nil {
+		t.Fatalf("TryAcquireSessionLease: %v", err)
+	}
+
+	app := NewApp()
+	app.ctx = context.Background()
+	key := sessionRuntimeKey(path)
+	detached := &WorkspaceTab{
+		ID:             detachedRuntimeTabID(key),
+		Scope:          "global",
+		SessionPath:    path,
+		Ctrl:           oldCtrl,
+		Ready:          true,
+		model:          "old/old-model",
+		disabledMCP:    map[string]ServerView{},
+		SharedHostKey:  "detached-host",
+		ActivityStatus: "",
+	}
+	detached.adoptSessionLease(lease)
+	tab := &WorkspaceTab{
+		ID:          "tab_a",
+		Scope:       "global",
+		SessionPath: path,
+		Ready:       true,
+		model:       "old/old-model",
+		sink:        &tabEventSink{tabID: "tab_a", app: app},
+		disabledMCP: map[string]ServerView{},
+	}
+	app.tabs = map[string]*WorkspaceTab{tab.ID: tab}
+	app.detachedSessions = map[string]*WorkspaceTab{key: detached}
+	app.tabOrder = []string{tab.ID}
+	app.activeTabID = tab.ID
+	t.Cleanup(func() {
+		if tab.Ctrl != nil {
+			tab.Ctrl.Close()
+		}
+		tab.releaseSessionLease()
+		if detached.sessionLease != nil {
+			detached.releaseSessionLease()
+		}
+	})
+
+	if err := app.SetModelForTab(tab.ID, "new/new-model"); err != nil {
+		t.Fatalf("SetModelForTab: %v", err)
+	}
+	if _, ok := app.detachedSessions[key]; ok {
+		t.Fatal("detached runtime was not consumed")
+	}
+	if tab.Ctrl == nil || tab.Ctrl == oldCtrl {
+		t.Fatalf("tab controller was not rebuilt from detached runtime")
+	}
+	if got := tab.model; got != "new/new-model" {
+		t.Fatalf("tab model = %q, want new/new-model", got)
+	}
+	if tab.sessionLease == nil || sessionRuntimeKey(tab.sessionLease.Path()) != key {
+		t.Fatalf("session lease path = %q, want %q", tab.currentSessionPath(), path)
+	}
+	history := tab.Ctrl.History()
+	if len(history) < 2 || history[1].Content != "hello from detached" {
+		t.Fatalf("carried history = %+v, want detached user message", history)
+	}
 }
 
 type staleWorkspaceBindingFixture struct {
@@ -1706,11 +3720,22 @@ func newStaleWorkspaceBindingFixtureWithLayout(t *testing.T, suffix, layoutStyle
 	isolateDesktopUserDirs(t)
 	setDesktopTestCredential(t, "TEST_MODEL_KEY", "sk-test")
 
+	// Steers and idle-steer fallbacks start real provider turns (they are no
+	// longer command-interpreted), so the fixture's provider must complete
+	// instantly instead of pointing at an unreachable host — otherwise every
+	// steer leaves the controller running for the rest of the test.
+	providerStub := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		_, _ = io.WriteString(w, "data: {\"choices\":[{\"delta\":{\"content\":\"ok\"}}]}\n\ndata: [DONE]\n\n")
+	}))
+	t.Cleanup(providerStub.Close)
+
 	cfg := config.Default()
 	cfg.DefaultModel = "test/test-model"
 	cfg.Desktop.ProviderAccess = []string{"test"}
 	cfg.Providers = []config.ProviderEntry{
-		{Name: "test", Kind: "openai", BaseURL: "https://example.invalid/v1", Model: "test-model", APIKeyEnv: "TEST_MODEL_KEY"},
+		{Name: "test", Kind: "openai", BaseURL: providerStub.URL, Model: "test-model", APIKeyEnv: "TEST_MODEL_KEY"},
 	}
 	if strings.TrimSpace(layoutStyle) != "" {
 		if err := cfg.SetDesktopLayoutStyle(layoutStyle); err != nil {
@@ -1871,10 +3896,49 @@ func TestEnsureTabControllerWorkspaceRebuildsStaleWorkspace(t *testing.T) {
 	assertTabRebuiltToPinnedWorkspace(t, f)
 }
 
+func TestEnsureTabControllerWorkspaceWarnsWhenPinnedSessionSwitchesWorkspace(t *testing.T) {
+	f := newStaleWorkspaceBindingFixture(t, "warn_workspace_switch")
+	events := make(chan event.Event, 8)
+	f.tab.sink.SetBotSink(event.FuncSink(func(e event.Event) {
+		events <- e
+	}))
+
+	if err := f.app.ensureTabControllerWorkspace(f.tab); err != nil {
+		t.Fatalf("ensureTabControllerWorkspace: %v", err)
+	}
+	assertTabRebuiltToPinnedWorkspace(t, f)
+
+	deadline := time.After(2 * time.Second)
+	for {
+		select {
+		case e := <-events:
+			if e.Kind == event.Notice &&
+				e.Level == event.LevelWarn &&
+				strings.Contains(strings.ToLower(e.Text), strings.ToLower(f.projectA)) &&
+				strings.Contains(e.Text, "switched tab") {
+				return
+			}
+		case <-deadline:
+			t.Fatal("did not receive workspace switch warning notice")
+		}
+	}
+}
+
+func TestDescribeSessionBindingWorkspaceKeepsWindowsPathReadable(t *testing.T) {
+	path := `C:\Users\Jane Doe\Reasonix`
+	want := `project workspace "C:\Users\Jane Doe\Reasonix"`
+	if got := describeSessionBindingWorkspace("project", path); got != want {
+		t.Fatalf("describeSessionBindingWorkspace = %q, want %q", got, want)
+	}
+}
+
 func TestSteerForTabReconcilesStaleWorkspaceBeforeIdleFallback(t *testing.T) {
 	f := newStaleWorkspaceBindingFixture(t, "steer_idle_fallback")
 
-	if err := f.app.SteerForTab(f.tab.ID, "/unknown-command"); err != nil {
+	// The idle fallback submits the steer text verbatim as a provider turn
+	// (steers are never command-interpreted); the fixture's provider stub
+	// completes it instantly.
+	if err := f.app.SteerForTab(f.tab.ID, "steer guidance"); err != nil {
 		t.Fatalf("SteerForTab: %v", err)
 	}
 	waitNotRunning(t, f.tab.Ctrl)
@@ -2011,7 +4075,7 @@ func runQuickClickWorkspaceReconcileTest(t *testing.T, layoutStyle string) {
 	}
 	actions := []quickAction{
 		{name: "submit", run: func() error { return f.app.SubmitToTab(f.tab.ID, "/unknown-command") }},
-		{name: "steer", run: func() error { return f.app.SteerForTab(f.tab.ID, "/unknown-command") }},
+		{name: "steer", run: func() error { return f.app.SteerForTab(f.tab.ID, "steer guidance") }},
 		{name: "compact", run: func() error { return f.app.Compact() }},
 		{name: "submit-display", run: func() error { return f.app.SubmitDisplayToTab(f.tab.ID, "/unknown display", "/unknown-command") }},
 	}
@@ -2051,6 +4115,14 @@ func runQuickClickWorkspaceReconcileTest(t *testing.T, layoutStyle string) {
 	wg.Wait()
 	close(errs)
 	for err := range errs {
+		// The steer action holds a real provider turn now, so racing quick
+		// clicks may legitimately observe a busy controller. This test
+		// asserts workspace-rebuild serialization, not that every
+		// concurrent action wins the turn.
+		if strings.Contains(err.Error(), "turn already running") ||
+			strings.Contains(err.Error(), "cannot compact while a turn is running") {
+			continue
+		}
 		t.Error(err)
 	}
 	if t.Failed() {
@@ -2238,6 +4310,234 @@ func TestDeleteProviderMigratesConfigAndOpenTabs(t *testing.T) {
 	}
 }
 
+// assertTabBuildSuperseded checks that the startup build registered before the
+// mutation (generation) can no longer install its controller and that its
+// build context was cancelled.
+func assertTabBuildSuperseded(t *testing.T, app *App, tab *WorkspaceTab, generation uint64, buildCtx context.Context) {
+	t.Helper()
+	app.mu.Lock()
+	superseded := app.tabBuildSupersededLocked(tab, generation)
+	app.mu.Unlock()
+	if !superseded {
+		t.Fatal("in-flight startup build was not superseded; finishing it would reinstall a stale controller")
+	}
+	select {
+	case <-buildCtx.Done():
+	default:
+		t.Fatal("in-flight startup build context was not cancelled")
+	}
+	if tab.buildCancel != nil {
+		t.Fatal("build cancel was not cleared")
+	}
+}
+
+func TestDeleteProviderSupersedesInFlightStartupBuild(t *testing.T) {
+	isolateDesktopUserDirs(t)
+	setDesktopTestCredential(t, "REASONIX_TEST_KEY", "sk-test")
+
+	cfg := config.Default()
+	cfg.DefaultModel = "prov-b/model-b1"
+	cfg.Providers = []config.ProviderEntry{
+		{Name: "prov-a", Kind: "openai", BaseURL: "https://a.example.com", Model: "model-a1", APIKeyEnv: "REASONIX_TEST_KEY"},
+		{Name: "prov-b", Kind: "openai", BaseURL: "https://b.example.com", Model: "model-b1", APIKeyEnv: "REASONIX_TEST_KEY"},
+	}
+	cfg.Desktop.ProviderAccess = []string{"prov-a", "prov-b"}
+	if err := cfg.SaveTo(config.UserConfigPath()); err != nil {
+		t.Fatalf("save config: %v", err)
+	}
+
+	app := NewApp()
+	// Model the async startup build still being in flight for the affected
+	// tab: no controller yet, a live generation, a cancellable build context.
+	buildCtx, buildCancel := context.WithCancel(context.Background())
+	tab := &WorkspaceTab{
+		ID:              "tab_a",
+		Scope:           "global",
+		model:           "prov-a/model-a1",
+		buildGeneration: 1,
+		buildCancel:     buildCancel,
+	}
+	app.tabs = map[string]*WorkspaceTab{tab.ID: tab}
+	app.tabOrder = []string{tab.ID}
+	app.activeTabID = tab.ID
+
+	if err := app.DeleteProvider("prov-a"); err != nil {
+		t.Fatalf("DeleteProvider: %v", err)
+	}
+	assertTabBuildSuperseded(t, app, tab, 1, buildCtx)
+	if tab.model != "prov-b/model-b1" {
+		t.Fatalf("tab model after delete = %q, want prov-b/model-b1", tab.model)
+	}
+}
+
+func TestRemoveBuiltInProviderAccessSupersedesInFlightStartupBuild(t *testing.T) {
+	isolateDesktopUserDirs(t)
+	setDesktopTestCredential(t, "REASONIX_TEST_KEY", "sk-test")
+
+	cfg := config.Default()
+	cfg.DefaultModel = "prov-b/model-b1"
+	cfg.Providers = []config.ProviderEntry{
+		{Name: "deepseek", Kind: "openai", BaseURL: "https://api.deepseek.com", Model: "deepseek-chat", APIKeyEnv: "REASONIX_TEST_KEY"},
+		{Name: "prov-b", Kind: "openai", BaseURL: "https://b.example.com", Model: "model-b1", APIKeyEnv: "REASONIX_TEST_KEY"},
+	}
+	cfg.Desktop.ProviderAccess = []string{"deepseek", "prov-b"}
+	if err := cfg.SaveTo(config.UserConfigPath()); err != nil {
+		t.Fatalf("save config: %v", err)
+	}
+
+	app := NewApp()
+	buildCtx, buildCancel := context.WithCancel(context.Background())
+	tab := &WorkspaceTab{
+		ID:              "tab_ds",
+		Scope:           "global",
+		model:           "deepseek/deepseek-chat",
+		buildGeneration: 1,
+		buildCancel:     buildCancel,
+	}
+	app.tabs = map[string]*WorkspaceTab{tab.ID: tab}
+	app.tabOrder = []string{tab.ID}
+	app.activeTabID = tab.ID
+
+	if err := app.RemoveProviderAccess("deepseek"); err != nil {
+		t.Fatalf("RemoveProviderAccess: %v", err)
+	}
+	assertTabBuildSuperseded(t, app, tab, 1, buildCtx)
+	if tab.model != "prov-b/model-b1" {
+		t.Fatalf("tab model after access removal = %q, want prov-b/model-b1", tab.model)
+	}
+}
+
+func TestClearActiveSessionRuntimeSupersedesInFlightStartupBuild(t *testing.T) {
+	isolateDesktopUserDirs(t)
+	setDesktopTestCredential(t, "OLD_MODEL_KEY", "sk-test")
+
+	cfg := config.Default()
+	cfg.DefaultModel = "old/old-model"
+	cfg.Desktop.ProviderAccess = []string{"old"}
+	cfg.Providers = []config.ProviderEntry{{
+		Name:      "old",
+		Kind:      "openai",
+		BaseURL:   "https://example.invalid/v1",
+		Model:     "old-model",
+		APIKeyEnv: "OLD_MODEL_KEY",
+	}}
+	if err := cfg.SaveTo(config.UserConfigPath()); err != nil {
+		t.Fatalf("save config: %v", err)
+	}
+
+	dir := config.SessionDir()
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("mkdir session dir: %v", err)
+	}
+	sessionPath := filepath.Join(dir, "clear-runtime-in-flight.jsonl")
+	if err := os.WriteFile(sessionPath, nil, 0o644); err != nil {
+		t.Fatalf("write placeholder session: %v", err)
+	}
+
+	oldSession := agent.NewSession("old system prompt")
+	oldExec := agent.New(nil, nil, oldSession, agent.Options{}, event.Discard)
+	oldCtrl := control.New(control.Options{Executor: oldExec, SessionDir: dir, SessionPath: sessionPath, Label: "old", Sink: event.Discard})
+
+	app := NewApp()
+	// A runtime is attached while an older async build is still in flight
+	// (e.g. attached via topic activation); destroying the session must
+	// invalidate that build so it cannot resurrect the destroyed session.
+	buildCtx, buildCancel := context.WithCancel(context.Background())
+	tab := &WorkspaceTab{
+		ID:              "tab_clear",
+		Scope:           "global",
+		SessionPath:     sessionPath,
+		model:           "old/old-model",
+		Ready:           true,
+		Ctrl:            oldCtrl,
+		buildGeneration: 1,
+		buildCancel:     buildCancel,
+		disabledMCP:     map[string]ServerView{},
+	}
+	tab.sink = &tabEventSink{tabID: tab.ID, app: app}
+	app.tabs = map[string]*WorkspaceTab{tab.ID: tab}
+	app.tabOrder = []string{tab.ID}
+	app.activeTabID = tab.ID
+	t.Cleanup(tab.releaseSessionLease)
+
+	if err := app.clearActiveSessionRuntime(tab, oldCtrl); err != nil {
+		t.Fatalf("clearActiveSessionRuntime: %v", err)
+	}
+	if tab.Ctrl == nil || tab.Ctrl == oldCtrl {
+		t.Fatalf("clear did not install a fresh controller (ctrl=%v)", tab.Ctrl)
+	}
+	defer tab.Ctrl.Close()
+	assertTabBuildSuperseded(t, app, tab, 1, buildCtx)
+}
+
+func TestClearActiveSessionRuntimeReleasesResourcesWhenTabReplaced(t *testing.T) {
+	isolateDesktopUserDirs(t)
+	setDesktopTestCredential(t, "OLD_MODEL_KEY", "sk-test")
+
+	cfg := config.Default()
+	cfg.DefaultModel = "old/old-model"
+	cfg.Desktop.ProviderAccess = []string{"old"}
+	cfg.Providers = []config.ProviderEntry{{
+		Name:      "old",
+		Kind:      "openai",
+		BaseURL:   "https://example.invalid/v1",
+		Model:     "old-model",
+		APIKeyEnv: "OLD_MODEL_KEY",
+	}}
+	if err := cfg.SaveTo(config.UserConfigPath()); err != nil {
+		t.Fatalf("save config: %v", err)
+	}
+
+	dir := config.SessionDir()
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("mkdir session dir: %v", err)
+	}
+	sessionPath := filepath.Join(dir, "clear-runtime-replaced-tab.jsonl")
+	if err := os.WriteFile(sessionPath, nil, 0o644); err != nil {
+		t.Fatalf("write placeholder session: %v", err)
+	}
+
+	oldSession := agent.NewSession("old system prompt")
+	oldExec := agent.New(nil, nil, oldSession, agent.Options{}, event.Discard)
+	oldCtrl := control.New(control.Options{Executor: oldExec, SessionDir: dir, SessionPath: sessionPath, Label: "old", Sink: event.Discard})
+
+	app := NewApp()
+	tab := &WorkspaceTab{
+		ID:          "tab_replaced",
+		Scope:       "global",
+		SessionPath: sessionPath,
+		model:       "old/old-model",
+		Ready:       true,
+		Ctrl:        oldCtrl,
+		disabledMCP: map[string]ServerView{},
+	}
+	tab.sink = &tabEventSink{tabID: tab.ID, app: app}
+	// The tab entry now points at a replacement struct (the tab was closed and
+	// reopened while the clear ran off-lock), so the swap must not apply.
+	replacement := &WorkspaceTab{ID: tab.ID, Scope: "global"}
+	app.tabs = map[string]*WorkspaceTab{tab.ID: replacement}
+	app.tabOrder = []string{tab.ID}
+	app.activeTabID = tab.ID
+	t.Cleanup(tab.releaseSessionLease)
+
+	err := app.clearActiveSessionRuntime(tab, oldCtrl)
+	if err == nil || !strings.Contains(err.Error(), "changed while clearing") {
+		t.Fatalf("clearActiveSessionRuntime error = %v, want tab-changed error", err)
+	}
+	if replacement.Ctrl != nil {
+		t.Fatalf("replacement tab controller = %v, want untouched nil", replacement.Ctrl)
+	}
+	if tab.Ctrl != oldCtrl {
+		t.Fatalf("replaced tab controller = %v, want left on the destroyed runtime", tab.Ctrl)
+	}
+	if key := tab.sessionLeaseRuntimeKey(); key != "" {
+		t.Fatalf("replaced tab still holds a session lease for %q; the fresh lease leaked", key)
+	}
+	if _, err := os.Stat(sessionPath); !os.IsNotExist(err) {
+		t.Fatalf("old session artifacts were not destroyed (stat err=%v)", err)
+	}
+}
+
 func TestDeleteProviderRejectsRunningAffectedTab(t *testing.T) {
 	isolateDesktopUserDirs(t)
 	setDesktopTestCredential(t, "REASONIX_TEST_KEY", "sk-test")
@@ -2270,6 +4570,149 @@ func TestDeleteProviderRejectsRunningAffectedTab(t *testing.T) {
 	close(runner.release)
 	waitNotRunning(t, ctrl)
 	ctrl.Close()
+}
+
+func TestDeleteProviderRechecksWorkAfterWaitingForRuntimeMutation(t *testing.T) {
+	isolateDesktopUserDirs(t)
+	setDesktopTestCredential(t, "REASONIX_TEST_KEY", "sk-test")
+	cfg := config.Default()
+	cfg.DefaultModel = "prov-a/model-a1"
+	cfg.Providers = []config.ProviderEntry{
+		{Name: "prov-a", Kind: "openai", BaseURL: "https://a.example.com", Model: "model-a1", APIKeyEnv: "REASONIX_TEST_KEY"},
+		{Name: "prov-b", Kind: "openai", BaseURL: "https://b.example.com", Model: "model-b1", APIKeyEnv: "REASONIX_TEST_KEY"},
+	}
+	if err := cfg.SaveTo(config.UserConfigPath()); err != nil {
+		t.Fatalf("save config: %v", err)
+	}
+
+	runner := &blockingRunner{started: make(chan struct{}), release: make(chan struct{})}
+	app := NewApp()
+	app.setTestCtrl(control.New(control.Options{Runner: runner}), "prov-a/model-a1")
+	ctrl := app.activeCtrl()
+	app.runtimeRebuildMu.Lock()
+	rebuildHeld := true
+	defer func() {
+		if rebuildHeld {
+			app.runtimeRebuildMu.Unlock()
+		}
+	}()
+	deleteEntered := make(chan struct{})
+	var enteredOnce sync.Once
+	app.runtimeMutationBeforeLockHook = func(operation string) {
+		if operation == "delete-provider" {
+			enteredOnce.Do(func() { close(deleteEntered) })
+		}
+	}
+	deleteDone := make(chan error, 1)
+	go func() { deleteDone <- app.DeleteProvider("prov-a") }()
+	select {
+	case <-deleteEntered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("provider deletion did not reach the runtime lifecycle lock")
+	}
+
+	ctrl.Submit("work")
+	select {
+	case <-runner.started:
+	case <-time.After(5 * time.Second):
+		t.Fatal("turn did not start while provider deletion waited for the lifecycle lock")
+	}
+	app.runtimeRebuildMu.Unlock()
+	rebuildHeld = false
+	select {
+	case err := <-deleteDone:
+		if err == nil || !strings.Contains(err.Error(), "active work") {
+			t.Fatalf("DeleteProvider after late turn error = %v, want active-work guard", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("provider deletion did not re-check runtime work after acquiring the lock")
+	}
+	if _, ok := config.LoadForEdit(config.UserConfigPath()).Provider("prov-a"); !ok {
+		t.Fatal("provider was deleted after a turn started while deletion waited")
+	}
+
+	close(runner.release)
+	waitNotRunning(t, ctrl)
+	ctrl.Close()
+}
+
+func TestDeleteProviderReleasesAffectedTabSharedHostReference(t *testing.T) {
+	isolateDesktopUserDirs(t)
+	setDesktopTestCredential(t, "REASONIX_TEST_KEY", "sk-test")
+	cfg := config.Default()
+	cfg.DefaultModel = "prov-a/model-a1"
+	cfg.Providers = []config.ProviderEntry{
+		{Name: "prov-a", Kind: "openai", BaseURL: "https://a.example.com", Model: "model-a1", APIKeyEnv: "REASONIX_TEST_KEY"},
+		{Name: "prov-b", Kind: "openai", BaseURL: "https://b.example.com", Model: "model-b1", APIKeyEnv: "REASONIX_TEST_KEY"},
+	}
+	if err := cfg.SaveTo(config.UserConfigPath()); err != nil {
+		t.Fatalf("save config: %v", err)
+	}
+
+	app := NewApp()
+	hostKey := "provider-shared-host"
+	host := app.acquireSharedHost(hostKey)
+	ctrl := control.New(control.Options{Host: host})
+	tab := &WorkspaceTab{
+		ID: "affected", Scope: "global", Ready: true, Ctrl: ctrl,
+		model: "prov-a/model-a1", SharedHostKey: hostKey, disabledMCP: map[string]ServerView{},
+	}
+	app.tabs = map[string]*WorkspaceTab{tab.ID: tab}
+	app.tabOrder = []string{tab.ID}
+	app.activeTabID = tab.ID
+
+	if err := app.DeleteProvider("prov-a"); err != nil {
+		t.Fatalf("DeleteProvider: %v", err)
+	}
+	if tab.SharedHostKey != "" {
+		t.Fatalf("affected tab retained shared host key %q", tab.SharedHostKey)
+	}
+	app.sharedHostsMu.Lock()
+	_, retained := app.sharedHosts[hostKey]
+	app.sharedHostsMu.Unlock()
+	if retained {
+		t.Fatal("provider deletion leaked the affected tab's shared host reference")
+	}
+}
+
+func TestRemoveBuiltInProviderAccessReleasesAffectedTabSharedHostReference(t *testing.T) {
+	isolateDesktopUserDirs(t)
+	setDesktopTestCredential(t, "REASONIX_TEST_KEY", "sk-test")
+	cfg := config.Default()
+	cfg.DefaultModel = "deepseek/deepseek-chat"
+	cfg.Providers = []config.ProviderEntry{
+		{Name: "deepseek", Kind: "openai", BaseURL: "https://api.deepseek.com", Model: "deepseek-chat", APIKeyEnv: "REASONIX_TEST_KEY"},
+		{Name: "prov-b", Kind: "openai", BaseURL: "https://b.example.com", Model: "model-b1", APIKeyEnv: "REASONIX_TEST_KEY"},
+	}
+	cfg.Desktop.ProviderAccess = []string{"deepseek", "prov-b"}
+	if err := cfg.SaveTo(config.UserConfigPath()); err != nil {
+		t.Fatalf("save config: %v", err)
+	}
+
+	app := NewApp()
+	hostKey := "provider-access-shared-host"
+	host := app.acquireSharedHost(hostKey)
+	ctrl := control.New(control.Options{Host: host})
+	tab := &WorkspaceTab{
+		ID: "affected", Scope: "global", Ready: true, Ctrl: ctrl,
+		model: "deepseek/deepseek-chat", SharedHostKey: hostKey, disabledMCP: map[string]ServerView{},
+	}
+	app.tabs = map[string]*WorkspaceTab{tab.ID: tab}
+	app.tabOrder = []string{tab.ID}
+	app.activeTabID = tab.ID
+
+	if err := app.RemoveProviderAccess("deepseek"); err != nil {
+		t.Fatalf("RemoveProviderAccess: %v", err)
+	}
+	if tab.SharedHostKey != "" {
+		t.Fatalf("affected tab retained shared host key %q", tab.SharedHostKey)
+	}
+	app.sharedHostsMu.Lock()
+	_, retained := app.sharedHosts[hostKey]
+	app.sharedHostsMu.Unlock()
+	if retained {
+		t.Fatal("provider access removal leaked the affected tab's shared host reference")
+	}
 }
 
 func TestDeleteProviderRejectsAffectedBackgroundJobs(t *testing.T) {
@@ -2396,6 +4839,126 @@ func TestConnectKeyRejectsBackgroundJobsBeforeSavingKey(t *testing.T) {
 	}
 	if data, readErr := os.ReadFile(config.UserCredentialsPath()); readErr == nil && strings.Contains(string(data), "DEEPSEEK_API_KEY") {
 		t.Fatalf("onboarding key should not be saved after rejected connect:\n%s", data)
+	}
+}
+
+func TestConnectKeyRestoresDeepSeekProviderAccess(t *testing.T) {
+	isolateDesktopUserDirs(t)
+	cfg := config.Default()
+	cfg.DefaultModel = "custom/custom-model"
+	cfg.Desktop.ProviderAccess = []string{"custom"}
+	cfg.Providers = []config.ProviderEntry{{
+		Name: "custom", Kind: "openai", BaseURL: "https://models.example.invalid/v1",
+		Model: "custom-model", APIKeyEnv: "CUSTOM_API_KEY",
+	}}
+	if err := cfg.SaveTo(config.UserConfigPath()); err != nil {
+		t.Fatalf("save custom provider config: %v", err)
+	}
+
+	oldFetch := connectKeyBalanceFetch
+	connectKeyBalanceFetch = func(context.Context, *http.Client, string, string) (*billing.Balance, error) {
+		return &billing.Balance{Available: true}, nil
+	}
+	t.Cleanup(func() { connectKeyBalanceFetch = oldFetch })
+
+	app := NewApp()
+	app.ctx = context.Background()
+	app.readyHook = func() {}
+	app.setTestCtrl(control.New(control.Options{Label: "custom"}), "custom/custom-model")
+	defer func() {
+		if ctrl := app.activeCtrl(); ctrl != nil {
+			ctrl.Close()
+		}
+	}()
+	if _, err := app.ConnectKey("sk-test"); err != nil {
+		t.Fatalf("ConnectKey: %v", err)
+	}
+
+	got := config.LoadForEditWithoutCredentials(config.UserConfigPath())
+	if !providerAccessSet(got.Desktop.ProviderAccess)["deepseek"] {
+		t.Fatalf("provider_access = %v, want DeepSeek restored", got.Desktop.ProviderAccess)
+	}
+	if _, ok := got.Provider("deepseek"); !ok {
+		t.Fatal("DeepSeek provider template should be restored")
+	}
+	if app.NeedsOnboarding() {
+		t.Fatal("restored DeepSeek access and saved key should satisfy onboarding")
+	}
+}
+
+func TestConnectKeyRebuildLeaseHeldKeepsCurrentController(t *testing.T) {
+	isolateDesktopUserDirs(t)
+	t.Setenv(onboardingKeyEnv, "")
+	os.Unsetenv(onboardingKeyEnv)
+	setDesktopTestCredential(t, "OLD_MODEL_KEY", "sk-test")
+
+	oldFetch := connectKeyBalanceFetch
+	connectKeyBalanceFetch = func(context.Context, *http.Client, string, string) (*billing.Balance, error) {
+		return &billing.Balance{Available: true}, nil
+	}
+	t.Cleanup(func() { connectKeyBalanceFetch = oldFetch })
+
+	cfg := config.Default()
+	cfg.DefaultModel = "old/old-model"
+	cfg.Desktop.ProviderAccess = []string{"old"}
+	cfg.Providers = []config.ProviderEntry{
+		{Name: "old", Kind: "openai", BaseURL: "https://example.invalid/v1", Model: "old-model", APIKeyEnv: "OLD_MODEL_KEY"},
+	}
+	if err := cfg.SaveTo(config.UserConfigPath()); err != nil {
+		t.Fatalf("save config: %v", err)
+	}
+
+	dir := config.SessionDir()
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("mkdir session dir: %v", err)
+	}
+	sessionPath := filepath.Join(dir, "externally-leased-connect-key.jsonl")
+	if err := os.WriteFile(sessionPath, nil, 0o644); err != nil {
+		t.Fatalf("write placeholder session: %v", err)
+	}
+	externalLease, err := agent.TryAcquireSessionLease(sessionPath)
+	if err != nil {
+		t.Fatalf("TryAcquireSessionLease: %v", err)
+	}
+	defer externalLease.Release()
+
+	oldSession := agent.NewSession("old system prompt")
+	oldSession.Add(provider.Message{Role: provider.RoleUser, Content: "hello"})
+	oldExec := agent.New(nil, nil, oldSession, agent.Options{}, event.Discard)
+	oldCtrl := control.New(control.Options{Executor: oldExec, SessionDir: dir, SessionPath: sessionPath, Label: "old", Sink: event.Discard})
+	defer oldCtrl.Close()
+
+	app := NewApp()
+	app.ctx = context.Background()
+	tab := &WorkspaceTab{
+		ID:          "tab_connect",
+		Scope:       "global",
+		SessionPath: sessionPath,
+		Ready:       true,
+		model:       "old/old-model",
+		Ctrl:        oldCtrl,
+		sink:        &tabEventSink{tabID: "tab_connect", app: app},
+		disabledMCP: map[string]ServerView{},
+	}
+	app.tabs = map[string]*WorkspaceTab{tab.ID: tab}
+	app.tabOrder = []string{tab.ID}
+	app.activeTabID = tab.ID
+
+	warning, err := app.ConnectKey("sk-test")
+	if err != nil {
+		t.Fatalf("ConnectKey: %v", err)
+	}
+	if !strings.Contains(warning, "another Reasonix window") {
+		t.Fatalf("ConnectKey warning = %q, want user-facing lease warning", warning)
+	}
+	if tab.Ctrl != oldCtrl {
+		t.Fatalf("tab controller changed after failed connect-key rebuild")
+	}
+	if tab.StartupErr != "" {
+		t.Fatalf("tab startup error = %q, want unchanged current session", tab.StartupErr)
+	}
+	if !config.CredentialStored(onboardingKeyEnv) {
+		t.Fatal("onboarding key should be persisted even when hot rebuild is deferred")
 	}
 }
 
@@ -2531,6 +5094,192 @@ func TestSetTokenModeRebuildsController(t *testing.T) {
 	saved := loadTabsFile()
 	if len(saved.Tabs) != 1 || saved.Tabs[0].TokenMode != "economy" {
 		t.Fatalf("saved tabs = %+v, want economy token mode", saved.Tabs)
+	}
+}
+
+func TestSetTokenModeDeliveryRebuildsAndPersistsProfile(t *testing.T) {
+	isolateDesktopUserDirs(t)
+
+	app := NewApp()
+	app.ctx = context.Background()
+	app.readyHook = func() {}
+	old := control.New(control.Options{Label: "old-controller"})
+	app.setTestCtrl(old, "deepseek-flash/deepseek-v4-flash")
+	defer func() {
+		if c := app.activeCtrl(); c != nil {
+			c.Close()
+		}
+	}()
+
+	if err := app.SetTokenMode(boot.TokenModeDelivery); err != nil {
+		t.Fatalf("SetTokenMode(delivery): %v", err)
+	}
+	if c := app.activeCtrl(); c == nil || c == old {
+		t.Fatal("delivery profile should rebuild the active controller")
+	}
+	tab := app.activeTab()
+	if got := currentTabTokenMode(tab); got != boot.TokenModeDelivery {
+		t.Fatalf("token mode = %q, want delivery", got)
+	}
+	if got := app.Meta().TokenMode; got != boot.TokenModeDelivery {
+		t.Fatalf("Meta token mode = %q, want delivery", got)
+	}
+	saved := loadTabsFile()
+	if len(saved.Tabs) != 1 || saved.Tabs[0].TokenMode != boot.TokenModeDelivery {
+		t.Fatalf("saved tabs = %+v, want delivery profile", saved.Tabs)
+	}
+
+	// Leaving delivery must clear the persisted tokenMode so a restart does not
+	// re-arm final-readiness gates (#6582).
+	if err := app.SetTokenMode(boot.TokenModeFull); err != nil {
+		t.Fatalf("SetTokenMode(full): %v", err)
+	}
+	if got := currentTabTokenMode(app.activeTab()); got != boot.TokenModeFull {
+		t.Fatalf("token mode after full = %q, want full", got)
+	}
+	if got := app.Meta().TokenMode; got != boot.TokenModeFull {
+		t.Fatalf("Meta token mode after full = %q, want full", got)
+	}
+	saved = loadTabsFile()
+	if len(saved.Tabs) != 1 {
+		t.Fatalf("saved tabs = %+v", saved.Tabs)
+	}
+	if saved.Tabs[0].TokenMode != "" {
+		t.Fatalf("saved tokenMode = %q, want omitted/empty for full", saved.Tabs[0].TokenMode)
+	}
+}
+
+func TestSetTokenModeReusesCurrentSessionLease(t *testing.T) {
+	isolateDesktopUserDirs(t)
+	setDesktopTestCredential(t, "OLD_MODEL_KEY", "sk-test")
+
+	cfg := config.Default()
+	cfg.DefaultModel = "old/old-model"
+	cfg.Desktop.ProviderAccess = []string{"old"}
+	cfg.Providers = []config.ProviderEntry{
+		{Name: "old", Kind: "openai", BaseURL: "https://example.invalid/v1", Model: "old-model", APIKeyEnv: "OLD_MODEL_KEY"},
+	}
+	if err := cfg.SaveTo(config.UserConfigPath()); err != nil {
+		t.Fatalf("save config: %v", err)
+	}
+
+	dir := config.SessionDir()
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("mkdir session dir: %v", err)
+	}
+	session := agent.NewSession("old system prompt")
+	session.Add(provider.Message{Role: provider.RoleUser, Content: "hello"})
+	exec := agent.New(nil, nil, session, agent.Options{}, event.Discard)
+	path := filepath.Join(dir, "leased-token-mode-switch.jsonl")
+	oldCtrl := control.New(control.Options{Executor: exec, SessionDir: dir, SessionPath: path, Label: "old", Sink: event.Discard})
+
+	app := NewApp()
+	app.ctx = context.Background()
+	tab := &WorkspaceTab{
+		ID:          "tab_a",
+		Scope:       "global",
+		Ready:       true,
+		model:       "old/old-model",
+		Ctrl:        oldCtrl,
+		sink:        &tabEventSink{tabID: "tab_a", app: app},
+		disabledMCP: map[string]ServerView{},
+	}
+	app.tabs = map[string]*WorkspaceTab{tab.ID: tab}
+	app.tabOrder = []string{tab.ID}
+	app.activeTabID = tab.ID
+	t.Cleanup(func() {
+		if tab.Ctrl != nil {
+			tab.Ctrl.Close()
+		}
+		tab.releaseSessionLease()
+	})
+
+	if err := tab.ensureSessionLease(path); err != nil {
+		t.Fatalf("ensureSessionLease: %v", err)
+	}
+	if err := app.SetTokenModeForTab(tab.ID, "economy"); err != nil {
+		t.Fatalf("SetTokenModeForTab: %v", err)
+	}
+	if tab.Ctrl == nil || tab.Ctrl == oldCtrl {
+		t.Fatalf("tab controller was not rebuilt")
+	}
+	if got := currentTabTokenMode(tab); got != "economy" {
+		t.Fatalf("token mode = %q, want economy", got)
+	}
+	if tab.sessionLease == nil || sessionRuntimeKey(tab.sessionLease.Path()) != sessionRuntimeKey(path) {
+		t.Fatalf("session lease path = %q, want %q", tab.currentSessionPath(), path)
+	}
+	history := tab.Ctrl.History()
+	if len(history) < 2 || history[1].Role != provider.RoleUser || history[1].Content != "hello" {
+		t.Fatalf("carried history = %+v, want original user message", history)
+	}
+}
+
+func TestSetTokenModeLeaseHeldKeepsCurrentController(t *testing.T) {
+	isolateDesktopUserDirs(t)
+	setDesktopTestCredential(t, "OLD_MODEL_KEY", "sk-test")
+
+	cfg := config.Default()
+	cfg.DefaultModel = "old/old-model"
+	cfg.Desktop.ProviderAccess = []string{"old"}
+	cfg.Providers = []config.ProviderEntry{
+		{Name: "old", Kind: "openai", BaseURL: "https://example.invalid/v1", Model: "old-model", APIKeyEnv: "OLD_MODEL_KEY"},
+	}
+	if err := cfg.SaveTo(config.UserConfigPath()); err != nil {
+		t.Fatalf("save config: %v", err)
+	}
+
+	dir := config.SessionDir()
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("mkdir session dir: %v", err)
+	}
+	path := filepath.Join(dir, "externally-leased-token-mode-switch.jsonl")
+	if err := os.WriteFile(path, nil, 0o644); err != nil {
+		t.Fatalf("write placeholder session: %v", err)
+	}
+	externalLease, err := agent.TryAcquireSessionLease(path)
+	if err != nil {
+		t.Fatalf("TryAcquireSessionLease: %v", err)
+	}
+	defer externalLease.Release()
+
+	session := agent.NewSession("old system prompt")
+	session.Add(provider.Message{Role: provider.RoleUser, Content: "hello"})
+	exec := agent.New(nil, nil, session, agent.Options{}, event.Discard)
+	oldCtrl := control.New(control.Options{Executor: exec, SessionDir: dir, SessionPath: path, Label: "old", Sink: event.Discard})
+	defer oldCtrl.Close()
+
+	app := NewApp()
+	app.ctx = context.Background()
+	tab := &WorkspaceTab{
+		ID:          "tab_a",
+		Scope:       "global",
+		Ready:       true,
+		model:       "old/old-model",
+		Ctrl:        oldCtrl,
+		sink:        &tabEventSink{tabID: "tab_a", app: app},
+		disabledMCP: map[string]ServerView{},
+	}
+	app.tabs = map[string]*WorkspaceTab{tab.ID: tab}
+	app.tabOrder = []string{tab.ID}
+	app.activeTabID = tab.ID
+
+	err = app.SetTokenModeForTab(tab.ID, "economy")
+	if !errors.Is(err, agent.ErrSessionLeaseHeld) {
+		t.Fatalf("SetTokenModeForTab err = %v, want ErrSessionLeaseHeld", err)
+	}
+	if strings.Contains(err.Error(), path) || strings.Contains(err.Error(), "held by") {
+		t.Fatalf("SetTokenModeForTab surfaced raw lease details: %v", err)
+	}
+	if tab.Ctrl != oldCtrl {
+		t.Fatalf("tab controller changed after failed switch")
+	}
+	if got := currentTabTokenMode(tab); got != "full" {
+		t.Fatalf("token mode = %q, want full", got)
+	}
+	meta := app.MetaForTab(tab.ID)
+	if !meta.Ready || meta.Runtime.Phase != sessionRuntimeReady {
+		t.Fatalf("failed switch disabled current runtime: ready=%v phase=%q", meta.Ready, meta.Runtime.Phase)
 	}
 }
 
@@ -3010,6 +5759,56 @@ func TestFileRefsUseActiveTabWorkspaceRoot(t *testing.T) {
 	}
 }
 
+func TestFileRefsForTabIgnoreActiveParentWorkspace(t *testing.T) {
+	parentRoot := robustTempDir(t)
+	childRoot := filepath.Join(parentRoot, "child")
+	if err := os.MkdirAll(childRoot, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(parentRoot, "parent-only.txt"), []byte("parent"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(parentRoot, "shared.txt"), []byte("parent shared"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(childRoot, "child-only.txt"), []byte("child"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(childRoot, "shared.txt"), []byte("child shared"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	app := &App{
+		tabs: map[string]*WorkspaceTab{
+			"parent": {ID: "parent", Scope: "project", WorkspaceRoot: parentRoot},
+			"child":  {ID: "child", Scope: "project", WorkspaceRoot: childRoot},
+		},
+		activeTabID: "parent",
+	}
+
+	listed := app.ListDirForTab("child", "")
+	if !hasDirEntry(listed, "child-only.txt") || hasDirEntry(listed, "parent-only.txt") {
+		t.Fatalf("ListDirForTab(child) = %+v, want only child workspace entries", listed)
+	}
+	found := app.SearchFileRefsForTab("child", "child-only")
+	if !hasDirEntry(found, "child-only.txt") {
+		t.Fatalf("SearchFileRefsForTab(child) = %+v, want child-only.txt", found)
+	}
+	preview := app.ReadFileForTab("child", "shared.txt")
+	if preview.Err != "" || preview.Body != "child shared" {
+		t.Fatalf("ReadFileForTab(child) = %+v, want child workspace file", preview)
+	}
+	path, ok, err := app.workspaceOrExternalPathForTab("child", "shared.txt")
+	if err != nil || !ok || path != filepath.Join(childRoot, "shared.txt") {
+		t.Fatalf("workspaceOrExternalPathForTab(child) = (%q, %v, %v)", path, ok, err)
+	}
+
+	legacy := app.ReadFile("shared.txt")
+	if legacy.Err != "" || legacy.Body != "parent shared" {
+		t.Fatalf("ReadFile legacy active-tab behavior = %+v, want parent workspace file", legacy)
+	}
+}
+
 func TestFileRefsIncludeRegisteredExternalFolderChildren(t *testing.T) {
 	workspace := robustTempDir(t)
 	external := filepath.Join(robustTempDir(t), "Folder With Spaces")
@@ -3033,11 +5832,12 @@ func TestFileRefsIncludeRegisteredExternalFolderChildren(t *testing.T) {
 	app := &App{
 		tabs: map[string]*WorkspaceTab{
 			"project": {ID: "project", WorkspaceRoot: workspace, Ctrl: ctrl},
+			"other":   {ID: "other", WorkspaceRoot: robustTempDir(t)},
 		},
-		activeTabID: "project",
+		activeTabID: "other",
 	}
 
-	listed := app.ListDir(token + "/src/")
+	listed := app.ListDirForTab("project", token+"/src/")
 	if len(listed) != 1 ||
 		listed[0].Name != "outside.txt" ||
 		listed[0].Path != token+"/src/outside.txt" ||
@@ -3045,7 +5845,7 @@ func TestFileRefsIncludeRegisteredExternalFolderChildren(t *testing.T) {
 		t.Fatalf("ListDir external src = %+v, want outside token/display path", listed)
 	}
 
-	found := app.SearchFileRefs("outside")
+	found := app.SearchFileRefsForTab("project", "outside")
 	var externalHit *DirEntry
 	for i := range found {
 		if found[i].Path == token+"/src/outside.txt" {
@@ -3057,7 +5857,7 @@ func TestFileRefsIncludeRegisteredExternalFolderChildren(t *testing.T) {
 		t.Fatalf("SearchFileRefs external hit = %+v, all results %+v", externalHit, found)
 	}
 
-	preview := app.ReadFile(token + "/src/outside.txt")
+	preview := app.ReadFileForTab("project", token+"/src/outside.txt")
 	if preview.Err != "" || preview.Body != "outside" {
 		t.Fatalf("ReadFile external token preview = %+v, want outside file body", preview)
 	}
@@ -3280,8 +6080,8 @@ func TestDeleteSessionWithStuckJobReturnsAfterSingleGrace(t *testing.T) {
 	}
 
 	grace := 500 * time.Millisecond
-	slack := 300 * time.Millisecond
-	jm := jobs.NewManager(event.Discard, jobs.WithTeardownGrace(grace))
+	teardownNotices := make(chan event.Event, 2)
+	jm := jobs.NewManager(teardownNoticeSink(teardownNotices), jobs.WithTeardownGrace(grace))
 	ctrl := control.New(control.Options{SessionDir: dir, SessionPath: path, Label: "test", Jobs: jm})
 	keepCtrl := control.New(control.Options{SessionDir: dir, SessionPath: keepPath, Label: "keep"})
 	releaseJob := startNonCooperativeSessionJob(t, jm, path)
@@ -3301,9 +6101,10 @@ func TestDeleteSessionWithStuckJobReturnsAfterSingleGrace(t *testing.T) {
 		t.Fatalf("DeleteSession(stuck job): %v", err)
 	}
 	elapsed := time.Since(start)
-	if elapsed > grace+slack {
-		t.Fatalf("DeleteSession took %s, want one teardown grace plus scheduling slack", elapsed)
+	if elapsed > grace+2*time.Second {
+		t.Fatalf("DeleteSession took %s, want one teardown grace plus bounded metadata I/O", elapsed)
 	}
+	assertSingleTeardownTimeoutNotice(t, teardownNotices, grace)
 	if !agent.IsCleanupPending(path) {
 		t.Fatalf("stuck delete should mark cleanup pending")
 	}
@@ -3396,6 +6197,49 @@ func TestDeleteSessionValidTrashRemovesEmptyLiveStub(t *testing.T) {
 	}
 }
 
+func TestDeleteSessionValidTrashRemovesDuplicateLiveSession(t *testing.T) {
+	isolateDesktopUserDirs(t)
+
+	dir := config.SessionDir()
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("mkdir session dir: %v", err)
+	}
+	path := filepath.Join(dir, "duplicate-recovery.jsonl")
+	content := []byte(`{"role":"user","content":"same recovery"}` + "\n")
+	if err := os.WriteFile(path, content, 0o644); err != nil {
+		t.Fatalf("write live session: %v", err)
+	}
+	trashPath := filepath.Join(dir, sessionTrashDir, filepath.Base(path), filepath.Base(path))
+	if err := os.MkdirAll(filepath.Dir(trashPath), 0o755); err != nil {
+		t.Fatalf("create trash dir: %v", err)
+	}
+	if err := os.WriteFile(trashPath, content, 0o644); err != nil {
+		t.Fatalf("write trash session: %v", err)
+	}
+
+	activePath := filepath.Join(dir, "active.jsonl")
+	if err := os.WriteFile(activePath, []byte(`{"role":"user","content":"active"}`+"\n"), 0o644); err != nil {
+		t.Fatalf("write active session: %v", err)
+	}
+	activeCtrl := control.New(control.Options{SessionDir: dir, SessionPath: activePath, Label: "active"})
+	defer activeCtrl.Close()
+	app := &App{
+		tabs:        map[string]*WorkspaceTab{"active": {ID: "active", Scope: "global", Ctrl: activeCtrl, Ready: true}},
+		activeTabID: "active",
+		tabOrder:    []string{"active"},
+	}
+
+	if err := app.DeleteSession(filepath.Base(path)); err != nil {
+		t.Fatalf("DeleteSession should remove duplicate live session: %v", err)
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("duplicate live session should be removed, stat err = %v", err)
+	}
+	if got, err := os.ReadFile(trashPath); err != nil || string(got) != string(content) {
+		t.Fatalf("existing trash should remain authoritative, got %q err=%v", string(got), err)
+	}
+}
+
 func TestRestoreSessionRejectsOpenEmptyLiveStub(t *testing.T) {
 	isolateDesktopUserDirs(t)
 
@@ -3434,7 +6278,7 @@ func TestRestoreSessionRejectsOpenEmptyLiveStub(t *testing.T) {
 	}
 }
 
-func TestDeleteSessionValidTrashRejectsNonEmptyLive(t *testing.T) {
+func TestDeleteSessionValidTrashRenamesDifferentLiveConflict(t *testing.T) {
 	isolateDesktopUserDirs(t)
 
 	dir := config.SessionDir()
@@ -3458,15 +6302,34 @@ func TestDeleteSessionValidTrashRejectsNonEmptyLive(t *testing.T) {
 	app := NewApp()
 	app.setTestCtrl(activeCtrl, "")
 
-	err := app.DeleteSession(filepath.Base(path))
-	if err == nil || !strings.Contains(err.Error(), "already exists in trash") {
-		t.Fatalf("DeleteSession conflict error = %v, want valid trash conflict", err)
+	if err := app.DeleteSession(filepath.Base(path)); err != nil {
+		t.Fatalf("DeleteSession should move different live session to a unique trash item: %v", err)
 	}
-	if _, err := os.Stat(path); err != nil {
-		t.Fatalf("non-empty live session should remain: %v", err)
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("live session should be moved out of active history, stat err = %v", err)
 	}
-	if _, err := os.Stat(trashPath); err != nil {
-		t.Fatalf("trash session should remain: %v", err)
+	if got, err := os.ReadFile(trashPath); err != nil || !strings.Contains(string(got), "trashed") {
+		t.Fatalf("original trash session should remain, got %q err=%v", string(got), err)
+	}
+	trashed, err := listTrashedSessionFiles(dir)
+	if err != nil {
+		t.Fatalf("list trash: %v", err)
+	}
+	var renamedPath string
+	for _, candidate := range trashed {
+		if candidate != trashPath && filepath.Base(candidate) == filepath.Base(path) {
+			renamedPath = candidate
+			break
+		}
+	}
+	if renamedPath == "" {
+		t.Fatalf("renamed trash copy not found in %#v", trashed)
+	}
+	if filepath.Base(filepath.Dir(renamedPath)) == filepath.Base(path) {
+		t.Fatalf("renamed trash copy reused fixed trash item dir: %s", renamedPath)
+	}
+	if got, err := os.ReadFile(renamedPath); err != nil || !strings.Contains(string(got), "new work") {
+		t.Fatalf("renamed trash session = %q err=%v, want live content", string(got), err)
 	}
 }
 
@@ -3535,7 +6398,7 @@ func TestDeleteSessionCancelsInactiveOpenRuntime(t *testing.T) {
 	}
 }
 
-func TestTrashTopicWithStuckJobReturnsAfterSingleGrace(t *testing.T) {
+func TestTrashTopicRejectsBackgroundJob(t *testing.T) {
 	isolateDesktopUserDirs(t)
 
 	projectRoot := t.TempDir()
@@ -3552,9 +6415,7 @@ func TestTrashTopicWithStuckJobReturnsAfterSingleGrace(t *testing.T) {
 	}
 	sessionPath := writeTopicSession(t, dir, "stuck-topic.jsonl", topicID, "Stuck trash", projectRoot)
 
-	grace := 500 * time.Millisecond
-	slack := 300 * time.Millisecond
-	jm := jobs.NewManager(event.Discard, jobs.WithTeardownGrace(grace))
+	jm := jobs.NewManager(event.Discard)
 	ctrl := control.New(control.Options{SessionDir: dir, SessionPath: sessionPath, Label: "test", Jobs: jm, WorkspaceRoot: projectRoot})
 	releaseJob := startNonCooperativeSessionJob(t, jm, sessionPath)
 	defer func() {
@@ -3588,19 +6449,99 @@ func TestTrashTopicWithStuckJobReturnsAfterSingleGrace(t *testing.T) {
 		activeTabID: "stuck",
 	}
 
-	start := time.Now()
-	if err := app.TrashTopic(topicID); err != nil {
-		t.Fatalf("TrashTopic(stuck job): %v", err)
+	if err := app.TrashTopic(topicID); !errors.Is(err, errTopicHasActiveWork) {
+		t.Fatalf("TrashTopic(background job) error = %v, want %v", err, errTopicHasActiveWork)
 	}
-	elapsed := time.Since(start)
-	if elapsed > grace+slack {
-		t.Fatalf("TrashTopic took %s, want one teardown grace plus scheduling slack", elapsed)
+	if _, ok := app.tabs["stuck"]; !ok {
+		t.Fatal("rejected archive should keep the background-job topic tab")
 	}
-	if !agent.IsCleanupPending(sessionPath) {
-		t.Fatalf("stuck topic trash should mark cleanup pending")
+	if agent.IsCleanupPending(sessionPath) {
+		t.Fatal("rejected archive should not mark session cleanup pending")
 	}
 	if _, err := os.Stat(sessionPath); err != nil {
-		t.Fatalf("stuck topic session should remain until delayed trash: %v", err)
+		t.Fatalf("rejected archive should preserve the live session: %v", err)
+	}
+	trashPath := filepath.Join(dir, sessionTrashDir, "stuck-topic.jsonl", "stuck-topic.jsonl")
+	if _, err := os.Stat(trashPath); !os.IsNotExist(err) {
+		t.Fatalf("rejected archive created a trash entry, stat err = %v", err)
+	}
+	if got := loadTopicTitle(projectRoot, topicID); got != "Stuck trash" {
+		t.Fatalf("rejected archive topic title = %q, want Stuck trash", got)
+	}
+}
+
+func teardownNoticeSink(out chan<- event.Event) event.Sink {
+	return event.FuncSink(func(e event.Event) {
+		if e.Kind == event.Notice && strings.Contains(e.Detail, "background job teardown timed out") {
+			out <- e
+		}
+	})
+}
+
+func assertSingleTeardownTimeoutNotice(t *testing.T, notices <-chan event.Event, grace time.Duration) {
+	t.Helper()
+	var notice event.Event
+	select {
+	case notice = <-notices:
+	default:
+		t.Fatal("missing background-job teardown timeout notice")
+	}
+	var waited time.Duration
+	for _, field := range strings.Fields(notice.Detail) {
+		if !strings.HasPrefix(field, "waited=") {
+			continue
+		}
+		parsed, err := time.ParseDuration(strings.TrimSuffix(strings.TrimPrefix(field, "waited="), ";"))
+		if err != nil {
+			t.Fatalf("parse teardown waited field %q: %v", field, err)
+		}
+		waited = parsed
+		break
+	}
+	if waited < grace-10*time.Millisecond || waited > grace+250*time.Millisecond {
+		t.Fatalf("teardown notice waited %s, want one %s grace; detail: %s", waited, grace, notice.Detail)
+	}
+	select {
+	case extra := <-notices:
+		t.Fatalf("duplicate teardown timeout notice: %+v", extra)
+	default:
+	}
+}
+
+func TestWaitDestroyHandlesWaitsConcurrently(t *testing.T) {
+	started := make(chan int, 2)
+	release := make(chan struct{})
+	var releaseOnce sync.Once
+	releaseAll := func() { releaseOnce.Do(func() { close(release) }) }
+	defer releaseAll()
+
+	handle := func(id int) control.SessionDestroyHandle {
+		return control.SessionDestroyHandle{Wait: func() jobs.TeardownResult {
+			started <- id
+			<-release
+			return jobs.TeardownResult{TimedOut: []jobs.TeardownJob{{ID: strconv.Itoa(id)}}}
+		}}
+	}
+	done := make(chan bool, 1)
+	go func() { done <- waitDestroyHandles([]control.SessionDestroyHandle{handle(1), handle(2)}) }()
+
+	seen := map[int]bool{}
+	for len(seen) < 2 {
+		select {
+		case id := <-started:
+			seen[id] = true
+		case <-time.After(2 * time.Second):
+			t.Fatalf("destroy waits did not start concurrently; started=%v", seen)
+		}
+	}
+	releaseAll()
+	select {
+	case timedOut := <-done:
+		if !timedOut {
+			t.Fatal("waitDestroyHandles lost timed-out result")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("waitDestroyHandles did not return after all waits completed")
 	}
 }
 
@@ -3675,6 +6616,17 @@ func TestDesktopSessionAPIsUseControllerSessionDir(t *testing.T) {
 	}
 	if err := app.RenameSession(pathA, "A title"); err != nil {
 		t.Fatalf("RenameSession in active session dir: %v", err)
+	}
+	meta, ok, err := agent.LoadBranchMeta(pathA)
+	if err != nil || !ok {
+		t.Fatalf("LoadBranchMeta after RenameSession ok=%v err=%v", ok, err)
+	}
+	if meta.CustomTitle != "A title" {
+		t.Fatalf("custom title should be written to branch meta, got %q", meta.CustomTitle)
+	}
+	sessions = app.ListSessions()
+	if len(sessions) != 1 || sessions[0].Title != "A title" {
+		t.Fatalf("ListSessions should return custom title from branch meta, got %+v", sessions)
 	}
 	if titles := loadSessionTitles(dirA); titles["a.jsonl"] != "A title" {
 		t.Fatalf("title should be written beside the active session, got %+v", titles)
@@ -4209,7 +7161,56 @@ args = ["-y", "@playwright/mcp"]
 	t.Fatalf("playwright MCP missing from Capabilities: %+v", view.Servers)
 }
 
-func TestDesktopSharedHostBackgroundMCPAutoConnectsOnBoot(t *testing.T) {
+func TestCapabilitiesIncludesInstalledPlugins(t *testing.T) {
+	isolateDesktopUserDirs(t)
+	reasonixHome := config.ReasonixHomeDir()
+	root := filepath.Join(reasonixHome, "plugins", "superpowers")
+	if err := os.MkdirAll(filepath.Join(root, "skills"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(root, "skills", "plan"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "skills", "plan", "SKILL.md"), []byte("---\ndescription: Plan work\n---\nbody"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(root, ".codex-plugin"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, ".codex-plugin", "plugin.json"), []byte(`{
+  "name": "superpowers",
+  "version": "6.1.0",
+  "description": "Planning workflows",
+  "skills": "./skills/"
+}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := pluginpkg.Upsert(reasonixHome, pluginpkg.InstalledPlugin{
+		Name:         "superpowers",
+		Root:         "plugins/superpowers",
+		Version:      "6.1.0",
+		Description:  "Planning workflows",
+		ManifestKind: "codex",
+		Enabled:      true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	app := NewApp()
+	plugins := app.Capabilities().Plugins
+	if len(plugins) != 1 || plugins[0].Name != "superpowers" || plugins[0].Skills != 1 {
+		t.Fatalf("Capabilities().Plugins = %+v", plugins)
+	}
+	if len(plugins[0].SkillDetails) != 1 || plugins[0].SkillDetails[0].Invocation != "/superpowers:plan" {
+		t.Fatalf("Capabilities().Plugins skill details = %+v", plugins[0].SkillDetails)
+	}
+}
+
+func TestDesktopSharedHostProjectMCPConnectsWithoutLaunchApproval(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping background MCP boot integration test in short mode")
+	}
+
 	isolateDesktopUserDirs(t)
 	dir := robustTempDir(t)
 	t.Chdir(dir)
@@ -4245,7 +7246,12 @@ url = %q
 		time.Sleep(25 * time.Millisecond)
 	}
 	if !sharedHost.HasClient("h") {
-		t.Fatalf("background MCP did not auto-connect; connecting=%v failures=%+v", sharedHost.ConnectingServers(), sharedHost.Failures())
+		t.Fatalf("project MCP did not connect automatically; failures=%+v", sharedHost.Failures())
+	}
+	for _, failure := range sharedHost.Failures() {
+		if failure.Name == "h" && failure.RequiresLaunchApproval {
+			t.Fatalf("project MCP unexpectedly requested launch approval: %+v", failure)
+		}
 	}
 
 	app := NewApp()
@@ -4263,8 +7269,34 @@ url = %q
 	app.activeTabID = "test"
 
 	view := app.MCPServers()
-	if len(view) != 1 || view[0].Name != "h" || view[0].Status != "connected" || view[0].StartIntent != "automatic" || view[0].RuntimeState != "ready" || view[0].Tools != 1 {
-		t.Fatalf("MCPServers() = %+v, want h connected automatic ready with one tool", view)
+	if len(view) != 1 || view[0].Name != "h" || view[0].Status != "connected" || view[0].RuntimeState != "ready" || view[0].RequiresLaunchApproval {
+		t.Fatalf("MCPServers() = %+v, want trusted connected project h", view)
+	}
+}
+
+func TestProjectMCPViewIsTrustedAndKeepsProjectSource(t *testing.T) {
+	entry := config.PluginEntry{Name: "project", Source: config.MCPSourceProjectConfig}
+	connected := withPluginConfig(ServerView{Name: entry.Name, Status: "connected"}, entry)
+	if connected.RequiresLaunchApproval {
+		t.Fatalf("connected project MCP still requires launch approval: %+v", connected)
+	}
+	blocked := withPluginConfig(ServerView{
+		Name: entry.Name, Status: "failed", RequiresLaunchApproval: true,
+	}, entry)
+	if blocked.RequiresLaunchApproval {
+		t.Fatalf("project MCP exposed obsolete launch approval action: %+v", blocked)
+	}
+	if blocked.Source != "project" || blocked.ConfigSource != "reasonix.toml" {
+		t.Fatalf("blocked project MCP source = %q/%q, want project/reasonix.toml", blocked.Source, blocked.ConfigSource)
+	}
+
+	user := withPluginConfig(ServerView{Name: "user", Status: "connected"},
+		config.PluginEntry{Name: "user", Source: config.MCPSourceUserConfig})
+	if user.RequiresLaunchApproval {
+		t.Fatalf("user-config MCP must not be launch-gate governed: %+v", user)
+	}
+	if user.Source != "user" || user.ConfigSource != "config.toml" {
+		t.Fatalf("user MCP source = %q/%q, want user/config.toml", user.Source, user.ConfigSource)
 	}
 }
 
@@ -4336,6 +7368,42 @@ tier = "lazy"
 		}
 	}
 	t.Fatalf("time missing after disable: %+v", view.Servers)
+}
+
+func TestSetMCPServerEnabledRestoresOnDemandWithoutConnecting(t *testing.T) {
+	isolateDesktopUserDirs(t)
+	t.Setenv("REASONIX_CACHE_HOME", t.TempDir())
+	dir := robustTempDir(t)
+	t.Chdir(dir)
+	if err := os.WriteFile(filepath.Join(dir, "reasonix.toml"), []byte(`
+[[plugins]]
+name = "offline"
+type = "http"
+url = "http://127.0.0.1:1/mcp"
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	host := plugin.NewHost()
+	defer host.Close()
+	reg := tool.NewRegistry()
+	ctrl := control.New(control.Options{Host: host, Registry: reg, PluginCtx: context.Background(), WorkspaceRoot: dir})
+	app := NewApp()
+	app.setTestCtrl(ctrl, "")
+	app.tabs["test"].WorkspaceRoot = dir
+
+	if err := app.SetMCPServerEnabled("offline", false); err != nil {
+		t.Fatalf("SetMCPServerEnabled(false): %v", err)
+	}
+	if err := app.SetMCPServerEnabled("offline", true); err != nil {
+		t.Fatalf("SetMCPServerEnabled(true) forced an unavailable connection: %v", err)
+	}
+	if host.HasClient("offline") {
+		t.Fatal("durable enable started the disconnected MCP server")
+	}
+	if _, ok := reg.Get("mcp__offline__connect"); !ok {
+		t.Fatalf("on-demand connect stub missing after enable; names=%v", reg.Names())
+	}
 }
 
 func TestSetMCPServerEnabledSharedHostPreservesSiblingTabs(t *testing.T) {
@@ -4423,6 +7491,1041 @@ url = %q
 	}
 }
 
+func TestAuthorizeAndConnectMCPServerStartsProjectOnlyOnce(t *testing.T) {
+	gateAddr, attempts := newDesktopMCPStartGate(t, func(_ int, conn net.Conn) {
+		_, _ = conn.Write([]byte{1})
+	})
+	fixture := newGatedDesktopMCPLaunchFixture(t, gateAddr)
+	waitForDesktopMCPStartAttempt(t, attempts, 1)
+	oldSiblingTool, found := fixture.siblingRegistry.Get("mcp__h__greet")
+	if !found {
+		t.Fatal("sibling registry missing initial h tool")
+	}
+
+	if err := fixture.app.AuthorizeAndConnectMCPServer("h"); err != nil {
+		t.Fatalf("AuthorizeAndConnectMCPServer(h): %v", err)
+	}
+	waitForDesktopMCPStartAttempt(t, attempts, 2)
+	select {
+	case attempt := <-attempts:
+		t.Fatalf("project authorization started a temporary connection process (unexpected attempt %d)", attempt)
+	case <-time.After(250 * time.Millisecond):
+	}
+	if !fixture.sharedHost.HasClient("h") {
+		t.Fatal("project authorization did not leave h connected")
+	}
+	if _, found := fixture.activeRegistry.Get("mcp__h__greet"); !found {
+		t.Fatal("active registry was not refreshed after project authorization")
+	}
+	newSiblingTool, found := fixture.siblingRegistry.Get("mcp__h__greet")
+	if !found || newSiblingTool == oldSiblingTool {
+		t.Fatal("sibling registry did not receive the single new project connection")
+	}
+	if _, found := fixture.disabledRegistry.Get("mcp__h__greet"); found {
+		t.Fatal("project authorization re-enabled h in a disabled sibling tab")
+	}
+}
+
+func TestReconnectMCPServerRefreshesEverySharedHostRegistry(t *testing.T) {
+	fixture := newGatedDesktopMCPLaunchFixture(t, "")
+	oldSiblingTool, found := fixture.siblingRegistry.Get("mcp__h__greet")
+	if !found {
+		t.Fatal("sibling registry missing initial h tool")
+	}
+	if err := fixture.app.ReconnectMCPServer("h"); err != nil {
+		t.Fatalf("ReconnectMCPServer(h): %v", err)
+	}
+	if !fixture.sharedHost.HasClient("h") {
+		t.Fatal("shared host did not reconnect h")
+	}
+	if _, found := fixture.activeRegistry.Get("mcp__h__greet"); !found {
+		t.Fatal("active registry was not refreshed")
+	}
+	newSiblingTool, found := fixture.siblingRegistry.Get("mcp__h__greet")
+	if !found || newSiblingTool == oldSiblingTool {
+		t.Fatal("sibling registry retained the tool backed by the disconnected client")
+	}
+	if _, found := fixture.disabledRegistry.Get("mcp__h__greet"); found {
+		t.Fatal("reconnect re-enabled a tab where the server was disabled")
+	}
+}
+
+func TestReconnectMCPServerUsesEffectiveProjectConfigWhenUserNameIsShadowed(t *testing.T) {
+	isolateDesktopUserDirs(t)
+	dir := robustTempDir(t)
+	userServer := desktopMCPHTTPServerWithTool(t, "user-shadow", "user_tool")
+	defer userServer.Close()
+	projectServer := desktopMCPHTTPServerWithTool(t, "project-effective", "project_tool")
+	defer projectServer.Close()
+
+	userCfg := config.LoadForEdit(config.UserConfigPath())
+	userCfg.Plugins = []config.PluginEntry{{Name: "h", Type: "http", URL: userServer.URL}}
+	if err := userCfg.SaveTo(config.UserConfigPath()); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "reasonix.toml"), []byte(fmt.Sprintf(`
+[[plugins]]
+name = "h"
+type = "http"
+url = %q
+`, projectServer.URL)), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	host := plugin.NewHost()
+	t.Cleanup(host.Close)
+	registry := tool.NewRegistry()
+	ctrl := control.New(control.Options{
+		Host: host, Registry: registry, PluginCtx: context.Background(), WorkspaceRoot: dir,
+		MCPConfigureSpec: func(spec *plugin.Spec) {
+			// This test isolates effective-source selection from the project launch
+			// approval flow, which has its own end-to-end coverage.
+			spec.RequireLaunchApproval = false
+			spec.Authorized = true
+		},
+	})
+	app := NewApp()
+	app.tabs = map[string]*WorkspaceTab{
+		"active": {
+			ID: "active", Scope: "global", WorkspaceRoot: dir, Ready: true,
+			Ctrl: ctrl, disabledMCP: map[string]ServerView{},
+		},
+	}
+	app.activeTabID = "active"
+
+	if err := app.ReconnectMCPServer("h"); err != nil {
+		t.Fatalf("ReconnectMCPServer(h): %v", err)
+	}
+	if _, found := registry.Get("mcp__h__project_tool"); !found {
+		t.Fatal("reconnect did not use the effective project MCP configuration")
+	}
+	if _, found := registry.Get("mcp__h__user_tool"); found {
+		t.Fatal("reconnect used the shadowed user MCP configuration")
+	}
+}
+
+func TestUpdateMCPServerRefreshesEverySharedHostRegistry(t *testing.T) {
+	fixture := newGatedDesktopMCPLaunchFixture(t, "")
+	oldSiblingTool, found := fixture.siblingRegistry.Get("mcp__h__greet")
+	if !found {
+		t.Fatal("sibling registry missing initial h tool")
+	}
+	root := fixture.app.tabs["active"].WorkspaceRoot
+	cfg, err := config.LoadForRoot(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	entry, found := findPluginEntry(cfg.Plugins, "h")
+	if !found {
+		t.Fatal("fixture config missing h")
+	}
+	if err := fixture.app.UpdateMCPServer("h", MCPServerInput{
+		Name: "h", Transport: entry.Type, Command: entry.Command, Args: entry.Args,
+	}); err != nil {
+		t.Fatalf("UpdateMCPServer(h): %v", err)
+	}
+	if !fixture.sharedHost.HasClient("h") {
+		t.Fatal("shared host did not reconnect h")
+	}
+	if _, found := fixture.activeRegistry.Get("mcp__h__greet"); !found {
+		t.Fatal("active registry was not refreshed")
+	}
+	newSiblingTool, found := fixture.siblingRegistry.Get("mcp__h__greet")
+	if !found || newSiblingTool == oldSiblingTool {
+		t.Fatal("sibling registry retained the tool backed by the disconnected client")
+	}
+	if _, found := fixture.disabledRegistry.Get("mcp__h__greet"); found {
+		t.Fatal("update re-enabled a tab where the server was disabled")
+	}
+}
+
+func TestClearMCPServerAuthenticationClearsEverySharedHostRegistry(t *testing.T) {
+	fixture := newGatedDesktopMCPLaunchFixture(t, "")
+	if err := fixture.app.ClearMCPServerAuthentication("h"); err != nil {
+		t.Fatalf("ClearMCPServerAuthentication(h): %v", err)
+	}
+	if fixture.sharedHost.HasClient("h") {
+		t.Fatal("shared host retained h after clearing authentication")
+	}
+	for label, registry := range map[string]*tool.Registry{
+		"active": fixture.activeRegistry, "sibling": fixture.siblingRegistry, "disabled": fixture.disabledRegistry,
+	} {
+		if _, found := registry.Get("mcp__h__greet"); found {
+			t.Fatalf("%s registry retained h after clearing authentication", label)
+		}
+	}
+}
+
+func TestRemoveMCPServerClearsEverySharedHostRegistry(t *testing.T) {
+	fixture := newGatedDesktopMCPLaunchFixture(t, "")
+	if err := fixture.app.RemoveMCPServer("h"); err != nil {
+		t.Fatalf("RemoveMCPServer(h): %v", err)
+	}
+	if fixture.sharedHost.HasClient("h") {
+		t.Fatal("shared host retained the removed server")
+	}
+	for label, registry := range map[string]*tool.Registry{
+		"active": fixture.activeRegistry, "sibling": fixture.siblingRegistry, "disabled": fixture.disabledRegistry,
+	} {
+		if _, found := registry.Get("mcp__h__greet"); found {
+			t.Fatalf("%s registry retained the removed server tool", label)
+		}
+	}
+	for id, tab := range fixture.app.tabs {
+		if _, disabled := tab.disabledMCP["h"]; disabled {
+			t.Fatalf("tab %s retained removed-server disabled state", id)
+		}
+	}
+}
+
+type gatedDesktopMCPLaunchFixture struct {
+	app              *App
+	sharedHost       *plugin.Host
+	activeRegistry   *tool.Registry
+	siblingRegistry  *tool.Registry
+	disabledRegistry *tool.Registry
+}
+
+func newGatedDesktopMCPLaunchFixture(t *testing.T, startGateAddr string) gatedDesktopMCPLaunchFixture {
+	t.Helper()
+	isolateDesktopUserDirs(t)
+	dir := robustTempDir(t)
+	t.Chdir(dir)
+
+	exe, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	singleInstanceAddr := listener.Addr().String()
+	if err := listener.Close(); err != nil {
+		t.Fatal(err)
+	}
+	gateConfig := ""
+	if startGateAddr != "" {
+		gateConfig = fmt.Sprintf("DESKTOP_MCP_START_GATE_ADDR = %q\n", startGateAddr)
+	}
+	helperArgs := []string{"-test.run=TestDesktopMCPHelperProcess", "--"}
+	if err := os.WriteFile(filepath.Join(dir, "reasonix.toml"), []byte(fmt.Sprintf(`
+[[plugins]]
+name = "h"
+command = %q
+args = ["-test.run=TestDesktopMCPHelperProcess", "--"]
+
+[plugins.env]
+GO_WANT_DESKTOP_MCP_HELPER = "1"
+DESKTOP_MCP_SINGLE_INSTANCE_ADDR = %q
+%s
+[sandbox]
+network = true
+`, exe, singleInstanceAddr, gateConfig)), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	entry := config.PluginEntry{
+		Name: "h", Command: exe, Args: helperArgs,
+		Env: map[string]string{
+			"GO_WANT_DESKTOP_MCP_HELPER":       "1",
+			"DESKTOP_MCP_SINGLE_INSTANCE_ADDR": singleInstanceAddr,
+		},
+	}
+	if startGateAddr != "" {
+		entry.Env["DESKTOP_MCP_START_GATE_ADDR"] = startGateAddr
+	}
+	cfg, err := config.LoadForRoot(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	runtimeSpecs := boot.PluginSpecsForRootWithOptions([]config.PluginEntry{entry}, dir, boot.PluginSpecOptions{
+		DefaultCallTimeout: time.Duration(cfg.MCPCallTimeoutSeconds()) * time.Second,
+		LaunchManager:      mcplaunch.ForWorkspace(config.ReasonixHomeDir(), dir),
+		ConfigSource:       "workspace_config",
+		StateHome:          config.ReasonixHomeDir(),
+		WriterRoots:        cfg.WriteRootsForRoot(dir),
+		ForbidReadRoots:    cfg.ForbidReadRootsForRoot(dir),
+		Network:            cfg.Sandbox.Network,
+	})
+	if len(runtimeSpecs) != 1 {
+		t.Fatalf("runtime specs = %d, want 1", len(runtimeSpecs))
+	}
+	runtimeSpec := runtimeSpecs[0]
+	configure := func(spec *plugin.Spec) { *spec = runtimeSpec }
+	lifeCtx, lifeCancel := context.WithCancel(context.Background())
+	t.Cleanup(lifeCancel)
+	callCtx, callCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer callCancel()
+	sharedHost := plugin.NewHost()
+	t.Cleanup(sharedHost.Close)
+	tools, err := sharedHost.AddWithLifecycle(lifeCtx, callCtx, runtimeSpec)
+	if err != nil {
+		t.Fatalf("sharedHost.Add: %v", err)
+	}
+
+	activeRegistry := tool.NewRegistry()
+	siblingRegistry := tool.NewRegistry()
+	disabledRegistry := tool.NewRegistry()
+	for _, mt := range tools {
+		activeRegistry.Add(mt)
+		siblingRegistry.Add(mt)
+		disabledRegistry.Add(mt)
+	}
+	activeCtrl := control.New(control.Options{
+		Host: sharedHost, Registry: activeRegistry, PluginCtx: lifeCtx,
+		MCPConfigureSpec: configure, WorkspaceRoot: dir,
+	})
+	siblingCtrl := control.New(control.Options{
+		Host: sharedHost, Registry: siblingRegistry, PluginCtx: lifeCtx,
+		MCPConfigureSpec: configure, WorkspaceRoot: dir,
+	})
+	disabledCtrl := control.New(control.Options{
+		Host: sharedHost, Registry: disabledRegistry, PluginCtx: lifeCtx,
+		MCPConfigureSpec: configure, WorkspaceRoot: dir,
+	})
+	disabledCtrl.UnregisterMCPServerTools("h")
+	app := NewApp()
+	app.tabs = map[string]*WorkspaceTab{
+		"active": {
+			ID: "active", Scope: "global", WorkspaceRoot: dir, Ready: true,
+			Ctrl: activeCtrl, SharedHostKey: dir, disabledMCP: map[string]ServerView{},
+		},
+		"sibling": {
+			ID: "sibling", Scope: "global", WorkspaceRoot: dir, Ready: true,
+			Ctrl: siblingCtrl, SharedHostKey: dir, disabledMCP: map[string]ServerView{},
+		},
+		"disabled": {
+			ID: "disabled", Scope: "global", WorkspaceRoot: dir, Ready: true,
+			Ctrl: disabledCtrl, SharedHostKey: dir,
+			disabledMCP: map[string]ServerView{"h": {Name: "h", Status: "disabled"}},
+		},
+	}
+	app.activeTabID = "active"
+	return gatedDesktopMCPLaunchFixture{
+		app: app, sharedHost: sharedHost,
+		activeRegistry: activeRegistry, siblingRegistry: siblingRegistry, disabledRegistry: disabledRegistry,
+	}
+}
+
+func newDesktopMCPStartGate(t *testing.T, handle func(attempt int, conn net.Conn)) (string, <-chan int) {
+	t.Helper()
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = listener.Close() })
+	attempts := make(chan int, 8)
+	go func() {
+		for attempt := 1; ; attempt++ {
+			conn, err := listener.Accept()
+			if err != nil {
+				return
+			}
+			attempts <- attempt
+			handle(attempt, conn)
+			_ = conn.Close()
+		}
+	}()
+	return listener.Addr().String(), attempts
+}
+
+func waitForDesktopMCPStartAttempt(t *testing.T, attempts <-chan int, want int) {
+	t.Helper()
+	deadline := time.NewTimer(5 * time.Second)
+	defer deadline.Stop()
+	for {
+		select {
+		case got := <-attempts:
+			if got == want {
+				return
+			}
+		case <-deadline.C:
+			t.Fatalf("timed out waiting for MCP start attempt %d", want)
+		}
+	}
+}
+
+func TestAuthorizeAndConnectMCPServerSerializesConcurrentDisable(t *testing.T) {
+	releaseConnection := make(chan struct{})
+	gateAddr, attempts := newDesktopMCPStartGate(t, func(attempt int, conn net.Conn) {
+		if attempt == 2 {
+			<-releaseConnection
+		}
+		_, _ = conn.Write([]byte{1})
+	})
+	fixture := newGatedDesktopMCPLaunchFixture(t, gateAddr)
+
+	disableEntered := make(chan struct{})
+	var disableOnce sync.Once
+	fixture.app.runtimeMutationBeforeLockHook = func(operation string) {
+		if operation == "set-enabled" {
+			disableOnce.Do(func() { close(disableEntered) })
+		}
+	}
+	authorizeDone := make(chan error, 1)
+	go func() { authorizeDone <- fixture.app.AuthorizeAndConnectMCPServer("h") }()
+	waitForDesktopMCPStartAttempt(t, attempts, 2)
+	disableDone := make(chan error, 1)
+	go func() { disableDone <- fixture.app.SetMCPServerEnabled("h", false) }()
+	select {
+	case <-disableEntered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("concurrent disable did not reach the MCP lifecycle lock")
+	}
+	select {
+	case err := <-disableDone:
+		t.Fatalf("concurrent disable bypassed authorization serialization: %v", err)
+	case <-time.After(200 * time.Millisecond):
+	}
+	close(releaseConnection)
+	if err := <-authorizeDone; err != nil {
+		t.Fatalf("AuthorizeAndConnectMCPServer(h): %v", err)
+	}
+	if err := <-disableDone; err != nil {
+		t.Fatalf("SetMCPServerEnabled(h,false): %v", err)
+	}
+	if _, found := fixture.activeRegistry.Get("mcp__h__greet"); found {
+		t.Fatal("authorization reconnect overrode the later per-tab disable")
+	}
+	if _, disabled := fixture.app.tabs["active"].disabledMCP["h"]; !disabled {
+		t.Fatal("active tab did not retain the later disable decision")
+	}
+	if _, found := fixture.siblingRegistry.Get("mcp__h__greet"); !found {
+		t.Fatal("active-tab disable removed the shared MCP from its enabled sibling")
+	}
+}
+
+// RemovePlugin disconnects the uninstalled plugin's MCP servers, so it must
+// serialize on the MCP lifecycle lock: an unlocked disconnect interleaving
+// with authorization lets the reconnect relaunch the just-removed
+// server from its stale snapshot. The plugin does not need to exist — the
+// lock is taken before the uninstall runs, which is the contract under test.
+func TestRemovePluginSerializesWithMCPAuthorization(t *testing.T) {
+	releaseConnection := make(chan struct{})
+	gateAddr, attempts := newDesktopMCPStartGate(t, func(attempt int, conn net.Conn) {
+		if attempt == 2 {
+			<-releaseConnection
+		}
+		_, _ = conn.Write([]byte{1})
+	})
+	fixture := newGatedDesktopMCPLaunchFixture(t, gateAddr)
+
+	removeEntered := make(chan struct{})
+	var removeOnce sync.Once
+	fixture.app.runtimeMutationBeforeLockHook = func(operation string) {
+		if operation == "remove-plugin" {
+			removeOnce.Do(func() { close(removeEntered) })
+		}
+	}
+	authorizeDone := make(chan error, 1)
+	go func() { authorizeDone <- fixture.app.AuthorizeAndConnectMCPServer("h") }()
+	waitForDesktopMCPStartAttempt(t, attempts, 2)
+	removeDone := make(chan error, 1)
+	go func() { removeDone <- fixture.app.RemovePlugin("not-an-installed-plugin") }()
+	select {
+	case <-removeEntered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("RemovePlugin did not reach the MCP lifecycle lock")
+	}
+	select {
+	case err := <-removeDone:
+		t.Fatalf("RemovePlugin bypassed authorization serialization: %v", err)
+	case <-time.After(200 * time.Millisecond):
+	}
+	close(releaseConnection)
+	if err := <-authorizeDone; err != nil {
+		t.Fatalf("AuthorizeAndConnectMCPServer(h): %v", err)
+	}
+	// The uninstall itself is expected to fail (the plugin is not installed);
+	// only the ordering matters. It must complete once the lock is free.
+	select {
+	case <-removeDone:
+	case <-time.After(5 * time.Second):
+		t.Fatal("RemovePlugin did not complete after the trust connection released the lock")
+	}
+	if _, found := fixture.activeRegistry.Get("mcp__h__greet"); !found {
+		t.Fatal("authorization reconnect result was lost after the serialized RemovePlugin")
+	}
+}
+
+// installGatedTestPluginPackage registers an installed plugin package whose
+// manifest declares the gated fixture's MCP server, so RemovePlugin exercises
+// the real uninstall and MCP disconnect flow. Returns the plugin root.
+func installGatedTestPluginPackage(t *testing.T, mcpServerName string) string {
+	t.Helper()
+	reasonixHome := config.ReasonixHomeDir()
+	root := filepath.Join(reasonixHome, "plugins", "review-helper")
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, pluginpkg.NativeManifest), []byte(fmt.Sprintf(`{
+  "name": "review-helper",
+  "version": "1.0.0",
+  "mcpServers": {
+    %q: { "type": "stdio", "command": "helper" }
+  }
+}`, mcpServerName)), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := pluginpkg.Upsert(reasonixHome, pluginpkg.InstalledPlugin{
+		Name:         "review-helper",
+		Root:         "plugins/review-helper",
+		Version:      "1.0.0",
+		ManifestKind: "reasonix",
+		Enabled:      true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	return root
+}
+
+func installedPluginNamed(t *testing.T, name string) bool {
+	t.Helper()
+	st, err := pluginpkg.LoadState(config.ReasonixHomeDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, p := range st.Plugins {
+		if p.Name == name {
+			return true
+		}
+	}
+	return false
+}
+
+// A global plugin uninstall must clean every runtime, not only the active tab:
+// sibling registries on the shared Host would otherwise keep provider-visible
+// tools backed by the closed client, and other workspaces would keep running
+// the uninstalled server.
+func TestRemovePluginDisconnectsEveryRuntime(t *testing.T) {
+	fixture := newGatedDesktopMCPLaunchFixture(t, "")
+	pluginRoot := installGatedTestPluginPackage(t, "h")
+
+	if err := fixture.app.RemovePlugin("review-helper"); err != nil {
+		t.Fatalf("RemovePlugin(review-helper): %v", err)
+	}
+	if fixture.sharedHost.HasClient("h") {
+		t.Fatal("uninstall left the shared MCP client connected")
+	}
+	for name, reg := range map[string]*tool.Registry{
+		"active":   fixture.activeRegistry,
+		"sibling":  fixture.siblingRegistry,
+		"disabled": fixture.disabledRegistry,
+	} {
+		if _, found := reg.Get("mcp__h__greet"); found {
+			t.Fatalf("%s registry still exposes the uninstalled MCP tool", name)
+		}
+	}
+	if _, err := os.Stat(pluginRoot); !os.IsNotExist(err) {
+		t.Fatalf("plugin root still present after uninstall (err=%v)", err)
+	}
+	if installedPluginNamed(t, "review-helper") {
+		t.Fatal("plugin state still lists the uninstalled plugin")
+	}
+}
+
+// The pre-lock active-work check can go stale during the lifecycle-lock wait.
+// Work that starts mid-wait must fail the removal before anything is deleted;
+// the old order deleted the plugin first and only then reported the failure.
+func TestRemovePluginRechecksActiveWorkUnderLock(t *testing.T) {
+	releaseConnection := make(chan struct{})
+	gateAddr, attempts := newDesktopMCPStartGate(t, func(attempt int, conn net.Conn) {
+		if attempt == 2 {
+			<-releaseConnection
+		}
+		_, _ = conn.Write([]byte{1})
+	})
+	fixture := newGatedDesktopMCPLaunchFixture(t, gateAddr)
+	installGatedTestPluginPackage(t, "h")
+
+	removeEntered := make(chan struct{})
+	var removeOnce sync.Once
+	fixture.app.runtimeMutationBeforeLockHook = func(operation string) {
+		if operation == "remove-plugin" {
+			removeOnce.Do(func() { close(removeEntered) })
+		}
+	}
+	authorizeDone := make(chan error, 1)
+	go func() { authorizeDone <- fixture.app.AuthorizeAndConnectMCPServer("h") }()
+	waitForDesktopMCPStartAttempt(t, attempts, 2)
+	removeDone := make(chan error, 1)
+	go func() { removeDone <- fixture.app.RemovePlugin("review-helper") }()
+	select {
+	case <-removeEntered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("RemovePlugin did not reach the MCP lifecycle lock")
+	}
+	// While RemovePlugin waits for the lock, background work starts on the
+	// active tab — exactly the window the pre-lock check cannot see.
+	busy := newBackgroundJobController(t, "remove-plugin-active-work")
+	fixture.app.mu.Lock()
+	fixture.app.tabs["active"].Ctrl = busy
+	fixture.app.mu.Unlock()
+	close(releaseConnection)
+	if err := <-authorizeDone; err != nil {
+		t.Fatalf("AuthorizeAndConnectMCPServer(h): %v", err)
+	}
+	err := <-removeDone
+	if err == nil || !strings.Contains(err.Error(), "stop background jobs") {
+		t.Fatalf("RemovePlugin during background work error = %v, want active-work guard", err)
+	}
+	if !installedPluginNamed(t, "review-helper") {
+		t.Fatal("active-work guard fired only after the plugin was already uninstalled")
+	}
+}
+
+// A global uninstall disconnects every runtime, so the busy guard must cover
+// every runtime too: a background job on a sibling tab must fail the removal
+// before anything is deleted, not silently lose its plugin MCP mid-run.
+func TestRemovePluginRejectsBusySiblingRuntime(t *testing.T) {
+	fixture := newGatedDesktopMCPLaunchFixture(t, "")
+	installGatedTestPluginPackage(t, "h")
+	busy := newBackgroundJobController(t, "sibling-busy")
+	fixture.app.mu.Lock()
+	fixture.app.tabs["sibling"].Ctrl = busy
+	fixture.app.mu.Unlock()
+
+	err := fixture.app.RemovePlugin("review-helper")
+	if err == nil || !strings.Contains(err.Error(), "stop background jobs") {
+		t.Fatalf("RemovePlugin with busy sibling error = %v, want active-work guard", err)
+	}
+	if !installedPluginNamed(t, "review-helper") {
+		t.Fatal("plugin was uninstalled despite a busy sibling runtime")
+	}
+	if !fixture.sharedHost.HasClient("h") {
+		t.Fatal("busy-sibling guard still disconnected the shared MCP client")
+	}
+	if _, found := fixture.activeRegistry.Get("mcp__h__greet"); !found {
+		t.Fatal("busy-sibling guard still removed active registry tools")
+	}
+}
+
+// Detached runtimes keep running after their tab is closed; the uninstall busy
+// guard must see them through the same gate sweep as visible tabs.
+func TestRemovePluginRejectsBusyDetachedRuntime(t *testing.T) {
+	fixture := newGatedDesktopMCPLaunchFixture(t, "")
+	installGatedTestPluginPackage(t, "h")
+	busy := newBackgroundJobController(t, "detached-busy")
+	fixture.app.mu.Lock()
+	fixture.app.detachedSessions = map[string]*WorkspaceTab{
+		"detached": {
+			ID: "detached", Scope: "global", Ready: true,
+			Ctrl: busy, disabledMCP: map[string]ServerView{},
+		},
+	}
+	fixture.app.mu.Unlock()
+
+	err := fixture.app.RemovePlugin("review-helper")
+	if err == nil || !strings.Contains(err.Error(), "stop background jobs") {
+		t.Fatalf("RemovePlugin with busy detached runtime error = %v, want active-work guard", err)
+	}
+	if !installedPluginNamed(t, "review-helper") {
+		t.Fatal("plugin was uninstalled despite a busy detached runtime")
+	}
+}
+
+// A turn start holds its tab's turn gate before the controller reports active
+// work, so an idle check done without the gate can go stale immediately. The
+// authorization must wait on the sibling's gate — never disconnect first — and must
+// fail once the gated re-check sees the started work.
+func TestAuthorizeAndConnectMCPServerWaitsForSiblingTurnGate(t *testing.T) {
+	gateAddr, attempts := newDesktopMCPStartGate(t, func(attempt int, conn net.Conn) {
+		_, _ = conn.Write([]byte{1})
+	})
+	fixture := newGatedDesktopMCPLaunchFixture(t, gateAddr)
+	waitForDesktopMCPStartAttempt(t, attempts, 1) // drain the fixture's initial connect
+	sibling := fixture.app.tabs["sibling"]
+
+	// Simulate the racing turn: it takes the gate first, and only transitions
+	// its controller to busy while holding it.
+	sibling.turnStartMu.Lock()
+	authorizeDone := make(chan error, 1)
+	go func() { authorizeDone <- fixture.app.AuthorizeAndConnectMCPServer("h") }()
+	select {
+	case got := <-attempts:
+		t.Fatalf("trust connection launched (attempt %d) while a sibling turn gate was held", got)
+	case err := <-authorizeDone:
+		t.Fatalf("AuthorizeAndConnectMCPServer returned %v without waiting for the sibling turn gate", err)
+	case <-time.After(700 * time.Millisecond):
+	}
+	if !fixture.sharedHost.HasClient("h") {
+		t.Fatal("authorization disconnected the shared client while a sibling turn gate was held")
+	}
+	busy := newBackgroundJobController(t, "sibling-turn")
+	fixture.app.mu.Lock()
+	sibling.Ctrl = busy
+	fixture.app.mu.Unlock()
+	sibling.turnStartMu.Unlock()
+
+	err := <-authorizeDone
+	if err == nil || !strings.Contains(err.Error(), "stop background jobs") {
+		t.Fatalf("AuthorizeAndConnectMCPServer after sibling turn start error = %v, want active-work guard", err)
+	}
+	if !fixture.sharedHost.HasClient("h") {
+		t.Fatal("failed authorization left the shared client disconnected")
+	}
+	if _, found := fixture.siblingRegistry.Get("mcp__h__greet"); !found {
+		t.Fatal("authorization stripped the busy sibling of its MCP tools")
+	}
+	if _, found := fixture.activeRegistry.Get("mcp__h__greet"); !found {
+		t.Fatal("authorization stripped the active tab of its MCP tools")
+	}
+}
+
+// waitForRuntimeAdmissionBarrier polls until the work-admission write lock is
+// held, marking the point where a lifecycle mutation froze new admissions.
+func waitForRuntimeAdmissionBarrier(t *testing.T, app *App) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if app.runtimeAdmissionMu.TryRLock() {
+			app.runtimeAdmissionMu.RUnlock()
+			time.Sleep(2 * time.Millisecond)
+			continue
+		}
+		return
+	}
+	t.Fatal("lifecycle mutation never acquired the work-admission barrier")
+}
+
+func TestBridgeDriveReleasesRuntimeAdmissionWhenTakeoverWasReclaimed(t *testing.T) {
+	fixture := newGatedDesktopMCPLaunchFixture(t, "")
+	fixture.app.tabs["active"].sink = &tabEventSink{tabID: "active", app: fixture.app}
+	fixture.app.botBridge = &botBridgeHub{
+		takeovers:    make(map[string]bot.DesktopWatchRoute),
+		takeoverTabs: make(map[string]string),
+	}
+
+	err := fixture.app.bridgeDrive("active", "hello", bot.DesktopWatchRoute{})
+	if err == nil || !strings.Contains(err.Error(), "接管已解除") {
+		t.Fatalf("bridgeDrive error = %v, want lost-takeover error", err)
+	}
+	if !fixture.app.runtimeAdmissionMu.TryLock() {
+		t.Fatal("bridgeDrive leaked the runtime-admission read lock")
+	}
+	fixture.app.runtimeAdmissionMu.Unlock()
+}
+
+func TestBeginTabTurnWorkspaceRepairDoesNotRecursivelyLockAdmission(t *testing.T) {
+	fixture := newStaleWorkspaceBindingFixture(t, "admission_writer")
+	fixture.tab.reconcileMu.Lock()
+
+	turnDone := make(chan error, 1)
+	go func() {
+		admission, _, err := fixture.app.beginTabTurn(fixture.tab.ID, false)
+		if admission != nil {
+			admission.abort()
+		}
+		turnDone <- err
+	}()
+	deadline := time.Now().Add(5 * time.Second)
+	for fixture.app.runtimeAdmissionMu.TryLock() {
+		fixture.app.runtimeAdmissionMu.Unlock()
+		if time.Now().After(deadline) {
+			fixture.tab.reconcileMu.Unlock()
+			t.Fatal("beginTabTurn never acquired the admission read lock")
+		}
+		time.Sleep(time.Millisecond)
+	}
+
+	writerRebuildLocked := make(chan struct{})
+	writerAdmissionLocked := make(chan struct{})
+	writerDone := make(chan struct{})
+	go func() {
+		fixture.app.runtimeRebuildMu.Lock()
+		close(writerRebuildLocked)
+		fixture.app.runtimeAdmissionMu.Lock()
+		close(writerAdmissionLocked)
+		fixture.app.runtimeAdmissionMu.Unlock()
+		fixture.app.runtimeRebuildMu.Unlock()
+		close(writerDone)
+	}()
+	<-writerRebuildLocked
+	for fixture.app.runtimeAdmissionMu.TryRLock() {
+		fixture.app.runtimeAdmissionMu.RUnlock()
+		time.Sleep(time.Millisecond)
+	}
+	fixture.tab.reconcileMu.Unlock()
+
+	select {
+	case err := <-turnDone:
+		if err != nil {
+			t.Fatalf("beginTabTurn after workspace repair: %v", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("workspace repair recursively waited on runtimeAdmissionMu with a writer pending")
+	}
+	select {
+	case <-writerAdmissionLocked:
+	case <-time.After(5 * time.Second):
+		t.Fatal("lifecycle writer never acquired runtimeAdmissionMu after repaired turn admission")
+	}
+	select {
+	case <-writerDone:
+	case <-time.After(5 * time.Second):
+		t.Fatal("lifecycle writer did not complete after repaired turn admission")
+	}
+}
+
+func TestAuthorizeAndConnectMCPServerSerializesCloseOfCapturedRuntime(t *testing.T) {
+	releaseConnection := make(chan struct{})
+	gateAddr, attempts := newDesktopMCPStartGate(t, func(attempt int, conn net.Conn) {
+		if attempt == 2 {
+			<-releaseConnection
+		}
+		_, _ = conn.Write([]byte{1})
+	})
+	fixture := newGatedDesktopMCPLaunchFixture(t, gateAddr)
+	waitForDesktopMCPStartAttempt(t, attempts, 1)
+
+	dir := fixture.app.tabs["active"].WorkspaceRoot
+	otherRoot := robustTempDir(t)
+	otherHost := plugin.NewHost()
+	t.Cleanup(otherHost.Close)
+	otherCtrl := control.New(control.Options{Host: otherHost, WorkspaceRoot: otherRoot})
+	t.Cleanup(otherCtrl.Close)
+	fixture.app.tabs = map[string]*WorkspaceTab{
+		"active": fixture.app.tabs["active"],
+		"other": {
+			ID: "other", Scope: "project", WorkspaceRoot: otherRoot, Ready: true,
+			Ctrl: otherCtrl, disabledMCP: map[string]ServerView{},
+		},
+	}
+	fixture.app.tabOrder = []string{"active", "other"}
+	fixture.app.activeTabID = "active"
+	fixture.app.sharedHosts = map[string]*sharedPluginHost{
+		dir: {host: fixture.sharedHost, refs: 1},
+	}
+
+	authorizeDone := make(chan error, 1)
+	go func() { authorizeDone <- fixture.app.AuthorizeAndConnectMCPServer("h") }()
+	waitForDesktopMCPStartAttempt(t, attempts, 2)
+	closeDone := make(chan error, 1)
+	go func() { closeDone <- fixture.app.CloseTab("active") }()
+	select {
+	case err := <-closeDone:
+		t.Fatalf("CloseTab bypassed the MCP lifecycle barrier: %v", err)
+	case <-time.After(300 * time.Millisecond):
+	}
+
+	close(releaseConnection)
+	if err := <-authorizeDone; err != nil {
+		t.Fatalf("AuthorizeAndConnectMCPServer(h): %v", err)
+	}
+	if err := <-closeDone; err != nil {
+		t.Fatalf("CloseTab(active) after trust: %v", err)
+	}
+}
+
+func TestCloseTabWaitsForPendingTurnAdmission(t *testing.T) {
+	fixture := newGatedDesktopMCPLaunchFixture(t, "")
+	admission, _, err := fixture.app.beginTabTurn("active", false)
+	if err != nil {
+		t.Fatalf("beginTabTurn(active): %v", err)
+	}
+	released := false
+	defer func() {
+		if !released {
+			admission.abort()
+		}
+	}()
+
+	closeDone := make(chan error, 1)
+	go func() { closeDone <- fixture.app.CloseTab("active") }()
+	select {
+	case err := <-closeDone:
+		admission.abort()
+		released = true
+		t.Fatalf("CloseTab bypassed a pending turn admission and closed its controller: %v", err)
+	case <-time.After(300 * time.Millisecond):
+	}
+
+	admission.abort()
+	released = true
+	select {
+	case err := <-closeDone:
+		if err != nil {
+			t.Fatalf("CloseTab(active) after turn admission release: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("CloseTab did not resume after the pending turn admission was released")
+	}
+}
+
+func TestCloseTabRemainsVisibleToPendingMCPHostGateSnapshot(t *testing.T) {
+	fixture := newGatedDesktopMCPLaunchFixture(t, "")
+	active := fixture.app.tabs["active"]
+	active.turnStartMu.Lock()
+
+	authorizeDone := make(chan error, 1)
+	go func() { authorizeDone <- fixture.app.AuthorizeAndConnectMCPServer("h") }()
+	waitForRuntimeAdmissionBarrier(t, fixture.app)
+
+	closeDone := make(chan error, 1)
+	go func() { closeDone <- fixture.app.CloseTab("active") }()
+	time.Sleep(300 * time.Millisecond)
+	fixture.app.mu.RLock()
+	stillVisible := fixture.app.tabs["active"] == active
+	fixture.app.mu.RUnlock()
+	if !stillVisible {
+		active.turnStartMu.Unlock()
+		t.Fatal("CloseTab unlinked the runtime before the pending MCP Host gate snapshot")
+	}
+	select {
+	case err := <-closeDone:
+		active.turnStartMu.Unlock()
+		t.Fatalf("CloseTab bypassed the lifecycle barrier: %v", err)
+	default:
+	}
+
+	active.turnStartMu.Unlock()
+	if err := <-authorizeDone; err != nil {
+		t.Fatalf("AuthorizeAndConnectMCPServer(h): %v", err)
+	}
+	if err := <-closeDone; err != nil {
+		t.Fatalf("CloseTab(active): %v", err)
+	}
+}
+
+func TestAuthorizeAndConnectMCPServerKeepsInvokingWorkspaceWhenActiveTabChanges(t *testing.T) {
+	fixture := newGatedDesktopMCPLaunchFixture(t, "")
+	otherRoot := robustTempDir(t)
+	otherCtrl := control.New(control.Options{Host: plugin.NewHost(), WorkspaceRoot: otherRoot})
+	t.Cleanup(otherCtrl.Close)
+	fixture.app.tabs["other"] = &WorkspaceTab{
+		ID: "other", Scope: "project", WorkspaceRoot: otherRoot, Ready: true,
+		Ctrl: otherCtrl, disabledMCP: map[string]ServerView{},
+	}
+	fixture.app.tabOrder = []string{"active", "sibling", "disabled", "other"}
+
+	sibling := fixture.app.tabs["sibling"]
+	sibling.turnStartMu.Lock()
+	authorizeDone := make(chan error, 1)
+	go func() { authorizeDone <- fixture.app.AuthorizeAndConnectMCPServer("h") }()
+	waitForRuntimeAdmissionBarrier(t, fixture.app)
+	if err := fixture.app.SetActiveTab("other"); err != nil {
+		sibling.turnStartMu.Unlock()
+		t.Fatalf("SetActiveTab(other): %v", err)
+	}
+	sibling.turnStartMu.Unlock()
+
+	if err := <-authorizeDone; err != nil {
+		t.Fatalf("authorization operation drifted from its invoking workspace: %v", err)
+	}
+}
+
+// Work admission — not tab-set stability — is the gate invariant: a runtime
+// added after the gate snapshot must not be able to start a turn while the
+// uninstall holds the barrier. The late turn goes through the real
+// beginTabTurn admission path and must only be admitted after the uninstall.
+func TestRemovePluginBlocksLateTurnAdmission(t *testing.T) {
+	fixture := newGatedDesktopMCPLaunchFixture(t, "")
+	installGatedTestPluginPackage(t, "h")
+	dir := fixture.app.tabs["active"].WorkspaceRoot
+
+	// Hold an existing tab's gate so the uninstall blocks mid-acquisition
+	// with the admission barrier already held.
+	sibling := fixture.app.tabs["sibling"]
+	sibling.turnStartMu.Lock()
+	removeDone := make(chan error, 1)
+	go func() { removeDone <- fixture.app.RemovePlugin("review-helper") }()
+	waitForRuntimeAdmissionBarrier(t, fixture.app)
+
+	lateCtrl := control.New(control.Options{Host: plugin.NewHost(), WorkspaceRoot: dir})
+	t.Cleanup(lateCtrl.Close)
+	fixture.app.mu.Lock()
+	fixture.app.tabs["late"] = &WorkspaceTab{
+		ID: "late", Scope: "global", WorkspaceRoot: dir, Ready: true,
+		Ctrl: lateCtrl, disabledMCP: map[string]ServerView{},
+	}
+	fixture.app.mu.Unlock()
+	type admission struct {
+		turn *tabTurnAdmission
+		ctrl control.SessionAPI
+		err  error
+	}
+	admitted := make(chan admission, 1)
+	go func() {
+		turn, ctrl, err := fixture.app.beginTabTurn("late", false)
+		admitted <- admission{turn: turn, ctrl: ctrl, err: err}
+	}()
+	select {
+	case got := <-admitted:
+		t.Fatalf("late turn was admitted (err=%v) while the uninstall held the admission barrier", got.err)
+	case <-time.After(300 * time.Millisecond):
+	}
+
+	sibling.turnStartMu.Unlock()
+	if err := <-removeDone; err != nil {
+		t.Fatalf("RemovePlugin(review-helper): %v", err)
+	}
+	got := <-admitted
+	if got.err != nil {
+		t.Fatalf("late turn admission after uninstall: %v", got.err)
+	}
+	got.turn.abort()
+	if installedPluginNamed(t, "review-helper") {
+		t.Fatal("uninstall did not complete before the late turn was admitted")
+	}
+}
+
+// A tab created during the 30s trust connection must not complete its async
+// controller build — attaching to the shared Host mid-connection can relaunch a
+// single-instance server or leave a registry the authorization never saw. The build
+// goes through the real startTabControllerBuild path and must only run after
+// the authorization releases the barrier.
+func TestAuthorizeAndConnectMCPServerBlocksLateControllerBuild(t *testing.T) {
+	releaseConnection := make(chan struct{})
+	gateAddr, attempts := newDesktopMCPStartGate(t, func(attempt int, conn net.Conn) {
+		if attempt == 2 {
+			<-releaseConnection
+		}
+		_, _ = conn.Write([]byte{1})
+	})
+	fixture := newGatedDesktopMCPLaunchFixture(t, gateAddr)
+	waitForDesktopMCPStartAttempt(t, attempts, 1) // drain the fixture's initial connect
+	dir := fixture.app.tabs["active"].WorkspaceRoot
+
+	authorizeDone := make(chan error, 1)
+	go func() { authorizeDone <- fixture.app.AuthorizeAndConnectMCPServer("h") }()
+	waitForDesktopMCPStartAttempt(t, attempts, 2) // connection launched: gates held
+
+	late := &WorkspaceTab{
+		ID: "late", Scope: "global", WorkspaceRoot: dir,
+		disabledMCP: map[string]ServerView{},
+	}
+	late.sink = &tabEventSink{tabID: "late", app: fixture.app}
+	fixture.app.mu.Lock()
+	fixture.app.tabs["late"] = late
+	fixture.app.mu.Unlock()
+	buildDone := make(chan struct{})
+	go func() {
+		// a.ctx is nil in this fixture, so the build runs synchronously on
+		// this goroutine — through the real buildTabControllerWithContext.
+		fixture.app.startTabControllerBuild(late)
+		close(buildDone)
+	}()
+	select {
+	case <-buildDone:
+		t.Fatal("late controller build completed while the trust connection held the admission barrier")
+	case <-time.After(400 * time.Millisecond):
+	}
+
+	close(releaseConnection)
+	if err := <-authorizeDone; err != nil {
+		t.Fatalf("AuthorizeAndConnectMCPServer(h): %v", err)
+	}
+	select {
+	case <-buildDone:
+	case <-time.After(10 * time.Second):
+		t.Fatal("late controller build never ran after the authorization released the barrier")
+	}
+	if !fixture.sharedHost.HasClient("h") {
+		t.Fatal("authorization did not leave the shared client reconnected")
+	}
+}
+
 func TestSetMCPServerEnabledRejectsBackgroundJobs(t *testing.T) {
 	isolateDesktopUserDirs(t)
 
@@ -4454,6 +8557,7 @@ args = ["serve"]
 	app := NewApp()
 	app.setTestCtrl(control.New(control.Options{Host: plugin.NewHost()}), "")
 	defer app.activeCtrl().Close()
+	app.activeTab().disabledMCP["time"] = ServerView{Name: "time", Status: "disabled", Enabled: false}
 
 	if err := app.UpdateMCPServer("time", MCPServerInput{
 		Name:      "time",
@@ -4481,6 +8585,71 @@ args = ["serve"]
 	}
 	if _, ok := findPluginEntry(cfg.Plugins, "time"); ok {
 		t.Fatalf("time plugin still configured after remove: %+v", cfg.Plugins)
+	}
+}
+
+func TestRemoveProjectMCPRevealsAndRegistersGlobalFallback(t *testing.T) {
+	isolateDesktopUserDirs(t)
+	dir := robustTempDir(t)
+	t.Chdir(dir)
+	userCfg := config.LoadForEdit(config.UserConfigPath())
+	userCfg.Plugins = []config.PluginEntry{{Name: "docs", Command: "global-docs"}}
+	if err := userCfg.SaveTo(config.UserConfigPath()); err != nil {
+		t.Fatal(err)
+	}
+	projectPath := filepath.Join(dir, "reasonix.toml")
+	if err := os.WriteFile(projectPath, []byte(`
+[[plugins]]
+name = "docs"
+command = "project-docs"
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	reg := tool.NewRegistry()
+	var configured []plugin.Spec
+	ctrl := control.New(control.Options{
+		Host:          plugin.NewHost(),
+		Registry:      reg,
+		WorkspaceRoot: dir,
+		MCPConfigureSpec: func(spec *plugin.Spec) {
+			configured = append(configured, *spec)
+		},
+	})
+	defer ctrl.Close()
+	projectEntry, found, err := desktopEffectiveMCPServer(dir, "docs")
+	if err != nil || !found {
+		t.Fatalf("load project docs: entry=%+v found=%v err=%v", projectEntry, found, err)
+	}
+	if _, err := ctrl.RegisterMCPServerOnDemand(projectEntry); err != nil {
+		t.Fatalf("register project docs: %v", err)
+	}
+
+	app := NewApp()
+	app.setTestCtrl(ctrl, "")
+	app.activeTab().WorkspaceRoot = dir
+	if err := app.RemoveMCPServer("docs"); err != nil {
+		t.Fatalf("RemoveMCPServer(docs): %v", err)
+	}
+
+	projectCfg := config.LoadForEdit(projectPath)
+	if _, found := findPluginEntry(projectCfg.Plugins, "docs"); found {
+		t.Fatalf("project docs still configured after removal: %+v", projectCfg.Plugins)
+	}
+	globalCfg := config.LoadForEdit(config.UserConfigPath())
+	globalEntry, found := findPluginEntry(globalCfg.Plugins, "docs")
+	if !found || globalEntry.Command != "global-docs" {
+		t.Fatalf("global docs fallback = %+v, found=%v", globalEntry, found)
+	}
+	effective, found, err := desktopEffectiveMCPServer(dir, "docs")
+	if err != nil || !found || effective.Source != config.MCPSourceUserConfig || effective.Command != "global-docs" {
+		t.Fatalf("effective docs fallback = %+v, found=%v err=%v", effective, found, err)
+	}
+	if len(configured) < 2 || configured[len(configured)-1].Command != "global-docs" {
+		t.Fatalf("registered specs = %+v, want global fallback registered last", configured)
+	}
+	if _, found := reg.Get("mcp__docs__connect"); !found {
+		t.Fatalf("global fallback connect surface missing; names=%v", reg.Names())
 	}
 }
 
@@ -4555,6 +8724,103 @@ func TestRemoveMCPServerDeletesProjectMCPJSONEntry(t *testing.T) {
 	}
 }
 
+func TestRemoveMCPServerRejectsPluginManagedServerWithoutDisconnecting(t *testing.T) {
+	isolateDesktopUserDirs(t)
+	dir := robustTempDir(t)
+	t.Chdir(dir)
+
+	srv := desktopMCPHTTPServer(t)
+	defer srv.Close()
+	reasonixHome := config.ReasonixHomeDir()
+	root := filepath.Join(reasonixHome, "plugins", "superpowers")
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, pluginpkg.NativeManifest), []byte(fmt.Sprintf(`{
+  "name": "superpowers",
+  "version": "1.0.0",
+  "mcpServers": {
+    "helper": { "type": "http", "url": %q }
+  }
+}`, srv.URL)), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := pluginpkg.Upsert(reasonixHome, pluginpkg.InstalledPlugin{
+		Name:         "superpowers",
+		Root:         "plugins/superpowers",
+		Version:      "1.0.0",
+		ManifestKind: "reasonix",
+		Enabled:      true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := config.LoadForRoot(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	entry, ok := findPluginEntry(cfg.Plugins, "helper")
+	if !ok {
+		t.Fatalf("plugin-managed MCP missing from config: %+v", cfg.Plugins)
+	}
+	ctrl := control.New(control.Options{Host: plugin.NewHost()})
+	defer ctrl.Close()
+	if _, err := ctrl.ConnectMCPServer(entry); err != nil {
+		t.Fatalf("connect plugin-managed MCP: %v", err)
+	}
+
+	app := NewApp()
+	app.setTestCtrl(ctrl, "")
+	app.activeTab().WorkspaceRoot = dir
+	err = app.RemoveMCPServer("helper")
+	if err == nil || !strings.Contains(err.Error(), "managed by plugin") || !strings.Contains(err.Error(), "superpowers") {
+		t.Fatalf("RemoveMCPServer(plugin-managed) error = %v", err)
+	}
+	if !mcpConnected(ctrl, "helper") {
+		t.Fatal("plugin-managed MCP was disconnected despite rejected removal")
+	}
+	for action, actionErr := range map[string]error{
+		"clear auth": app.ClearMCPServerAuthentication("helper"),
+		"update":     app.UpdateMCPServer("helper", MCPServerInput{Name: "helper", Transport: "http", URL: srv.URL}),
+	} {
+		if actionErr == nil || !strings.Contains(actionErr.Error(), "managed by plugin") {
+			t.Fatalf("%s plugin-managed MCP error = %v", action, actionErr)
+		}
+	}
+	if _, found := findPluginEntry(config.LoadForEdit(config.UserConfigPath()).Plugins, "helper"); found {
+		t.Fatal("plugin-managed MCP mutation created a user-config shadow")
+	}
+	servers := app.MCPServers()
+	if len(servers) != 1 || servers[0].Name != "helper" || servers[0].ManagedByPlugin != "superpowers" {
+		t.Fatalf("MCPServers() = %+v, want helper managed by superpowers", servers)
+	}
+}
+
+func TestRemoveMCPServerRejectsRuntimeOnlyServerWithoutDisconnecting(t *testing.T) {
+	isolateDesktopUserDirs(t)
+	dir := robustTempDir(t)
+	t.Chdir(dir)
+
+	srv := desktopMCPHTTPServer(t)
+	defer srv.Close()
+	ctrl := control.New(control.Options{Host: plugin.NewHost()})
+	defer ctrl.Close()
+	if _, err := ctrl.ConnectMCPServer(config.PluginEntry{Name: "runtime-only", Type: "http", URL: srv.URL}); err != nil {
+		t.Fatalf("connect runtime-only MCP: %v", err)
+	}
+
+	app := NewApp()
+	app.setTestCtrl(ctrl, "")
+	app.activeTab().WorkspaceRoot = dir
+	err := app.RemoveMCPServer("runtime-only")
+	if err == nil || !strings.Contains(err.Error(), "no removable MCP server") {
+		t.Fatalf("RemoveMCPServer(runtime-only) error = %v", err)
+	}
+	if !mcpConnected(ctrl, "runtime-only") {
+		t.Fatal("runtime-only MCP was disconnected despite failed persistence removal")
+	}
+}
+
 func TestUpdateMCPServerEditsProjectMCPJSONEntry(t *testing.T) {
 	isolateDesktopUserDirs(t)
 	dir := robustTempDir(t)
@@ -4570,6 +8836,14 @@ func TestUpdateMCPServerEditsProjectMCPJSONEntry(t *testing.T) {
 	app := NewApp()
 	app.setTestCtrl(control.New(control.Options{Host: plugin.NewHost()}), "")
 	defer app.activeCtrl().Close()
+	entry, ok, err := desktopEffectiveMCPServer(dir, "codegraph")
+	if err != nil || !ok {
+		t.Fatalf("load codegraph entry: found=%v err=%v", ok, err)
+	}
+	if err := config.DefaultMCPActivationStore().SetServerEnabled(entry, dir, false); err != nil {
+		t.Fatal(err)
+	}
+	app.activeTab().disabledMCP["codegraph"] = ServerView{}
 
 	if err := app.UpdateMCPServer("codegraph", MCPServerInput{
 		Name:      "codegraph",
@@ -4604,100 +8878,56 @@ func TestUpdateMCPServerEditsProjectMCPJSONEntry(t *testing.T) {
 	}
 }
 
-func TestTrustMCPServerToolPersistsTrustedReadOnlyTools(t *testing.T) {
+func TestUpdateMCPServerPreservesProjectTOMLSourceAndGlobalShadow(t *testing.T) {
 	isolateDesktopUserDirs(t)
 	dir := robustTempDir(t)
 	t.Chdir(dir)
-	if err := os.WriteFile(filepath.Join(dir, "reasonix.toml"), []byte(`
+	userCfg := config.LoadForEdit(config.UserConfigPath())
+	userCfg.Plugins = []config.PluginEntry{{Name: "docs", Command: "global-docs"}}
+	if err := userCfg.SaveTo(config.UserConfigPath()); err != nil {
+		t.Fatal(err)
+	}
+	projectPath := filepath.Join(dir, "reasonix.toml")
+	if err := os.WriteFile(projectPath, []byte(`
 [[plugins]]
-name = "github"
-command = "npx"
-args = ["-y", "@modelcontextprotocol/server-github"]
-trusted_read_only_tools = ["pull_request_read"]
+name = "docs"
+command = "project-docs"
 `), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
 	app := NewApp()
-	app.setTestCtrl(control.New(control.Options{Host: plugin.NewHost()}), "")
+	app.setTestCtrl(control.New(control.Options{Host: plugin.NewHost(), WorkspaceRoot: dir}), "")
 	defer app.activeCtrl().Close()
-
-	if err := app.TrustMCPServerTool("github", " issue_read "); err != nil {
-		t.Fatalf("TrustMCPServerTool(github, issue_read): %v", err)
+	app.activeTab().WorkspaceRoot = dir
+	entry, ok, err := desktopEffectiveMCPServer(dir, "docs")
+	if err != nil || !ok || entry.Source != config.MCPSourceProjectConfig {
+		t.Fatalf("load project docs entry: entry=%+v found=%v err=%v", entry, ok, err)
 	}
-	if err := app.TrustMCPServerTool("github", "issue_read"); err != nil {
-		t.Fatalf("TrustMCPServerTool duplicate: %v", err)
-	}
-	if err := app.TrustMCPServerTools("github", []string{" search_issues ", "issue_read", ""}); err != nil {
-		t.Fatalf("TrustMCPServerTools(github): %v", err)
-	}
-	if err := app.UntrustMCPServerTool("github", " pull_request_read "); err != nil {
-		t.Fatalf("UntrustMCPServerTool(github, pull_request_read): %v", err)
-	}
-	cfg, err := config.LoadForRoot(dir)
-	if err != nil {
+	if err := config.DefaultMCPActivationStore().SetServerEnabled(entry, dir, false); err != nil {
 		t.Fatal(err)
 	}
-	updated, ok := findPluginEntry(cfg.Plugins, "github")
-	if !ok {
-		t.Fatalf("github plugin missing: %+v", cfg.Plugins)
-	}
-	if !reflect.DeepEqual(updated.TrustedReadOnlyTools, []string{"issue_read", "search_issues"}) {
-		t.Fatalf("trusted read-only tools = %+v", updated.TrustedReadOnlyTools)
-	}
-	for _, s := range app.MCPServers() {
-		if s.Name == "github" {
-			if !reflect.DeepEqual(s.TrustedReadOnlyTools, []string{"issue_read", "search_issues"}) {
-				t.Fatalf("view trusted read-only tools = %+v", s.TrustedReadOnlyTools)
-			}
-			return
-		}
-	}
-	t.Fatalf("github MCP missing from view")
-}
+	app.activeTab().disabledMCP["docs"] = ServerView{}
 
-func TestTrustMCPServerToolPersistsProjectMCPJSONEntry(t *testing.T) {
-	isolateDesktopUserDirs(t)
-	dir := robustTempDir(t)
-	t.Chdir(dir)
-	if err := os.WriteFile(filepath.Join(dir, ".mcp.json"), []byte(`{
-  "mcpServers": {
-    "codegraph": { "command": "codegraph", "args": ["serve", "--mcp"] }
-  }
-}`), 0o644); err != nil {
-		t.Fatal(err)
+	if err := app.UpdateMCPServer("docs", MCPServerInput{
+		Name: "docs", Transport: "stdio", Command: "project-docs-updated",
+	}); err != nil {
+		t.Fatalf("UpdateMCPServer(project reasonix.toml docs): %v", err)
 	}
 
-	app := NewApp()
-	app.setTestCtrl(control.New(control.Options{Host: plugin.NewHost()}), "")
-	defer app.activeCtrl().Close()
-
-	if err := app.TrustMCPServerTool("codegraph", "codegraph_context"); err != nil {
-		t.Fatalf("TrustMCPServerTool(.mcp.json codegraph): %v", err)
+	projectCfg := config.LoadForEdit(projectPath)
+	projectEntry, found := findPluginEntry(projectCfg.Plugins, "docs")
+	if !found || projectEntry.Command != "project-docs-updated" {
+		t.Fatalf("project docs entry = %+v, found=%v", projectEntry, found)
 	}
-
-	raw, err := os.ReadFile(filepath.Join(dir, ".mcp.json"))
-	if err != nil {
-		t.Fatal(err)
+	globalCfg := config.LoadForEdit(config.UserConfigPath())
+	globalEntry, found := findPluginEntry(globalCfg.Plugins, "docs")
+	if !found || globalEntry.Command != "global-docs" {
+		t.Fatalf("global shadow changed while editing project entry: %+v, found=%v", globalEntry, found)
 	}
-	var doc struct {
-		MCPServers map[string]struct {
-			TrustedReadOnlyTools []string `json:"trusted_read_only_tools"`
-		} `json:"mcpServers"`
-	}
-	if err := json.Unmarshal(raw, &doc); err != nil {
-		t.Fatal(err)
-	}
-	if !reflect.DeepEqual(doc.MCPServers["codegraph"].TrustedReadOnlyTools, []string{"codegraph_context"}) {
-		t.Fatalf(".mcp.json trusted_read_only_tools = %+v", doc.MCPServers["codegraph"].TrustedReadOnlyTools)
-	}
-	cfg, err := config.LoadForRoot(dir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	updated, ok := findPluginEntry(cfg.Plugins, "codegraph")
-	if !ok || !reflect.DeepEqual(updated.TrustedReadOnlyTools, []string{"codegraph_context"}) {
-		t.Fatalf("merged codegraph trusted_read_only_tools = %+v, found=%v", updated.TrustedReadOnlyTools, ok)
+	effective, found, err := desktopEffectiveMCPServer(dir, "docs")
+	if err != nil || !found || effective.Source != config.MCPSourceProjectConfig || effective.Command != "project-docs-updated" {
+		t.Fatalf("effective docs after edit = %+v, found=%v err=%v", effective, found, err)
 	}
 }
 
@@ -4754,6 +8984,198 @@ func TestAddMCPServerPersistsRemoteHeaders(t *testing.T) {
 		}
 	}
 	t.Fatalf("stripe MCP missing from view: %+v", view)
+}
+
+func TestInstallMCPServerHandshakeFailureDoesNotPersist(t *testing.T) {
+	isolateDesktopUserDirs(t)
+	dir := robustTempDir(t)
+	t.Chdir(dir)
+
+	app := NewApp()
+	app.setTestCtrl(control.New(control.Options{Host: plugin.NewHost()}), "")
+	defer app.activeCtrl().Close()
+
+	result, err := app.InstallMCPServer(MCPServerInput{
+		Name: "broken", Transport: "stdio", Command: "reasonix-missing-mcp-binary",
+	})
+	if err != nil {
+		t.Fatalf("InstallMCPServer returned transport error instead of structured issue: %v", err)
+	}
+	if result.State != "issue" || result.Action != "retry" {
+		t.Fatalf("install result = %+v, want retryable issue", result)
+	}
+	cfg, err := config.LoadForRoot(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := findPluginEntry(cfg.Plugins, "broken"); ok {
+		t.Fatalf("failed candidate was persisted: %+v", cfg.Plugins)
+	}
+	for _, server := range app.MCPServers() {
+		if server.Name == "broken" {
+			t.Fatalf("failed candidate leaked into the installed server list: %+v", server)
+		}
+	}
+}
+
+func TestInstallMCPServerAuthenticationRequiredPersistsForResume(t *testing.T) {
+	isolateDesktopUserDirs(t)
+	dir := robustTempDir(t)
+	t.Chdir(dir)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+	}))
+	defer srv.Close()
+
+	app := NewApp()
+	app.setTestCtrl(control.New(control.Options{Host: plugin.NewHost()}), "")
+	defer app.activeCtrl().Close()
+
+	result, err := app.InstallMCPServer(MCPServerInput{Name: "oauth", Transport: "http", URL: srv.URL})
+	if err != nil {
+		t.Fatalf("InstallMCPServer auth result: %v", err)
+	}
+	if result.State != "action_required" || result.Action != "authenticate" {
+		t.Fatalf("install result = %+v, want authentication action", result)
+	}
+	cfg, err := config.LoadForRoot(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := findPluginEntry(cfg.Plugins, "oauth"); !ok {
+		t.Fatalf("auth-pending candidate must persist for resume: %+v", cfg.Plugins)
+	}
+}
+
+func TestAddMCPServerPersistsConnectionConfiguration(t *testing.T) {
+	isolateDesktopUserDirs(t)
+	dir := robustTempDir(t)
+	t.Chdir(dir)
+	srv := desktopMCPHTTPServer(t)
+	defer srv.Close()
+
+	app := NewApp()
+	app.setTestCtrl(control.New(control.Options{Host: plugin.NewHost()}), "")
+	defer app.activeCtrl().Close()
+	autoStart := false
+	callTimeout := 45
+	_, err := app.AddMCPServer(MCPServerInput{
+		Name:               "admin",
+		Transport:          "streamable-http",
+		URL:                srv.URL,
+		AutoStart:          &autoStart,
+		CallTimeoutSeconds: &callTimeout,
+		ToolTimeoutSeconds: map[string]int{
+			"wipe": 120,
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := config.LoadForRoot(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	entry, ok := findPluginEntry(cfg.Plugins, "admin")
+	if !ok || entry.Type != "http" || entry.AutoStart == nil || *entry.AutoStart ||
+		entry.CallTimeoutSeconds != 45 || entry.ToolTimeoutSeconds["wipe"] != 120 {
+		t.Fatalf("persisted advanced MCP entry = %+v, found=%v", entry, ok)
+	}
+
+	views := app.MCPServers()
+	if len(views) != 1 || views[0].Transport != "http" || views[0].AutoStart ||
+		views[0].CallTimeoutSeconds != 45 || views[0].ToolTimeoutSeconds["wipe"] != 120 {
+		t.Fatalf("advanced MCP ServerView = %+v", views)
+	}
+}
+
+func TestUpdateMCPServerPreservesAbsentFieldsAndClearsExplicitOnes(t *testing.T) {
+	isolateDesktopUserDirs(t)
+	dir := robustTempDir(t)
+	t.Chdir(dir)
+	srv := desktopMCPHTTPServer(t)
+	defer srv.Close()
+
+	app := NewApp()
+	app.setTestCtrl(control.New(control.Options{Host: plugin.NewHost()}), "")
+	defer app.activeCtrl().Close()
+	callTimeout := 45
+	if _, err := app.AddMCPServer(MCPServerInput{
+		Name:               "admin",
+		Transport:          "http",
+		URL:                srv.URL,
+		CallTimeoutSeconds: &callTimeout,
+		ToolTimeoutSeconds: map[string]int{"wipe": 120},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	// An old frontend (or a partial payload) omits optional timeout fields.
+	if err := app.UpdateMCPServer("admin", MCPServerInput{Name: "admin", Transport: "http", URL: srv.URL}); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := config.LoadForRoot(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	entry, ok := findPluginEntry(cfg.Plugins, "admin")
+	if !ok || entry.CallTimeoutSeconds != 45 || entry.ToolTimeoutSeconds["wipe"] != 120 {
+		t.Fatalf("absent input fields must preserve persisted values, entry = %+v, found=%v", entry, ok)
+	}
+
+	// Explicit zero values are the editor's clear semantics.
+	cleared := 0
+	if err := app.UpdateMCPServer("admin", MCPServerInput{
+		Name:               "admin",
+		Transport:          "http",
+		URL:                srv.URL,
+		CallTimeoutSeconds: &cleared,
+		ToolTimeoutSeconds: map[string]int{},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err = config.LoadForRoot(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	entry, ok = findPluginEntry(cfg.Plugins, "admin")
+	if !ok || entry.CallTimeoutSeconds != 0 || len(entry.ToolTimeoutSeconds) != 0 {
+		t.Fatalf("explicit empty fields must clear persisted values, entry = %+v, found=%v", entry, ok)
+	}
+}
+
+func TestUpdateMCPServerFailedCandidateRollsBackConfigAndConnection(t *testing.T) {
+	isolateDesktopUserDirs(t)
+	dir := robustTempDir(t)
+	t.Chdir(dir)
+	srv := desktopMCPHTTPServer(t)
+	defer srv.Close()
+
+	app := NewApp()
+	app.setTestCtrl(control.New(control.Options{Host: plugin.NewHost()}), "")
+	defer app.activeCtrl().Close()
+	if _, err := app.AddMCPServer(MCPServerInput{Name: "stable", Transport: "http", URL: srv.URL}); err != nil {
+		t.Fatal(err)
+	}
+
+	err := app.UpdateMCPServer("stable", MCPServerInput{
+		Name: "stable", Transport: "stdio", Command: "reasonix-missing-mcp-binary",
+	})
+	if err == nil {
+		t.Fatal("broken update candidate should fail")
+	}
+	cfg, err := config.LoadForRoot(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	entry, ok := findPluginEntry(cfg.Plugins, "stable")
+	if !ok || entry.Type != "http" || entry.URL != srv.URL {
+		t.Fatalf("failed update changed durable config: %+v, found=%v", entry, ok)
+	}
+	if !app.activeCtrl().Host().HasClient("stable") {
+		t.Fatal("previous MCP connection was not restored after failed update")
+	}
 }
 
 func TestCapabilitiesMarksBackgroundRemoteMCPAuthPossible(t *testing.T) {
@@ -4909,7 +9331,7 @@ tier = "lazy"
 	t.Fatalf("figma MCP missing from Capabilities: %+v", view.Servers)
 }
 
-func TestUpdateMCPServerMigratesLegacyTierToBackground(t *testing.T) {
+func TestUpdateMCPServerMigratesLegacyTierInProjectSource(t *testing.T) {
 	isolateDesktopUserDirs(t)
 	dir := robustTempDir(t)
 	t.Chdir(dir)
@@ -4931,6 +9353,14 @@ tier = "lazy"
 			c.Close()
 		}
 	}()
+	entry, ok, err := desktopEffectiveMCPServer(dir, "playwright")
+	if err != nil || !ok {
+		t.Fatalf("load playwright entry: found=%v err=%v", ok, err)
+	}
+	if err := config.DefaultMCPActivationStore().SetServerEnabled(entry, dir, false); err != nil {
+		t.Fatal(err)
+	}
+	app.activeTab().disabledMCP["playwright"] = ServerView{Name: "playwright", Status: "disabled", Enabled: false}
 
 	if err := app.UpdateMCPServer("playwright", MCPServerInput{
 		Name:      "playwright",
@@ -4951,25 +9381,25 @@ tier = "lazy"
 		t.Fatalf("env TOKEN = %q, want preserved env", got)
 	}
 	userCfg := config.LoadForEdit(config.UserConfigPath())
-	userPlugin, ok := findPluginEntry(userCfg.Plugins, "playwright")
-	if !ok {
-		t.Fatalf("playwright should be migrated to user config: %+v", userCfg.Plugins)
-	}
-	if userPlugin.Command != "node" || userPlugin.Env["TOKEN"] != "${PLAYWRIGHT_TOKEN}" {
-		t.Fatalf("user plugin after migration = %+v", userPlugin)
-	}
-	if userPlugin.Tier != "" {
-		t.Fatalf("user plugin tier = %q, want migrated empty", userPlugin.Tier)
+	if _, ok := findPluginEntry(userCfg.Plugins, "playwright"); ok {
+		t.Fatalf("project plugin should not be copied to user config: %+v", userCfg.Plugins)
 	}
 	projectCfg := config.LoadForEdit(filepath.Join(dir, "reasonix.toml"))
-	if _, ok := findPluginEntry(projectCfg.Plugins, "playwright"); ok {
-		t.Fatalf("project plugin should be removed after desktop migration: %+v", projectCfg.Plugins)
+	projectPlugin, ok := findPluginEntry(projectCfg.Plugins, "playwright")
+	if !ok {
+		t.Fatalf("playwright should remain in project config: %+v", projectCfg.Plugins)
+	}
+	if projectPlugin.Command != "node" || projectPlugin.Env["TOKEN"] != "${PLAYWRIGHT_TOKEN}" {
+		t.Fatalf("project plugin after update = %+v", projectPlugin)
+	}
+	if projectPlugin.Tier != "" {
+		t.Fatalf("project plugin tier = %q, want migrated empty", projectPlugin.Tier)
 	}
 	view := app.Capabilities()
 	for _, s := range view.Servers {
 		if s.Name == "playwright" {
-			if s.Status != "failed" {
-				t.Fatalf("updated MCP status = %q, want failed after immediate reconnect attempt; server = %+v", s.Status, s)
+			if s.Status != "disabled" {
+				t.Fatalf("updated MCP status = %q, want disabled without a readiness probe; server = %+v", s.Status, s)
 			}
 			if s.Command != "node" || len(s.Args) != 1 || s.Args[0] != "server.js" {
 				t.Fatalf("server command not refreshed: %+v", s)
@@ -4996,6 +9426,7 @@ args = ["-y", "@playwright/mcp"]
 	app := NewApp()
 	app.setTestCtrl(control.New(control.Options{Host: plugin.NewHost()}), "")
 	defer app.activeCtrl().Close()
+	app.activeTab().disabledMCP["playwright"] = ServerView{}
 
 	if err := app.UpdateMCPServer("playwright", MCPServerInput{
 		Name:      "playwright",
@@ -5017,14 +9448,14 @@ args = ["-y", "@playwright/mcp"]
 	}
 }
 
-func TestUpdateMCPServerRecordsReconnectFailure(t *testing.T) {
+func TestUpdateMCPServerRejectsReconnectFailureWithoutPersisting(t *testing.T) {
 	isolateDesktopUserDirs(t)
 	dir := robustTempDir(t)
 	t.Chdir(dir)
 	if err := os.WriteFile(filepath.Join(dir, "reasonix.toml"), []byte(`
 [[plugins]]
 name = "broken"
-command = "npx"
+command = "reasonix-old-missing-mcp-binary"
 tier = "background"
 `), 0o644); err != nil {
 		t.Fatal(err)
@@ -5038,18 +9469,18 @@ tier = "background"
 		Name:      "broken",
 		Transport: "stdio",
 		Command:   "reasonix-missing-mcp-binary",
-	}); err != nil {
-		t.Fatalf("UpdateMCPServer should persist config even when reconnect fails: %v", err)
+	}); err == nil {
+		t.Fatal("UpdateMCPServer should reject an unusable candidate")
 	}
 	cfg, err := config.Load()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := cfg.Plugins[0].Command; got != "reasonix-missing-mcp-binary" {
-		t.Fatalf("updated command = %q, want missing binary", got)
+	if got := cfg.Plugins[0].Command; got != "reasonix-old-missing-mcp-binary" {
+		t.Fatalf("failed update command = %q, want original command", got)
 	}
 	if got := cfg.Plugins[0].Tier; got != "" {
-		t.Fatalf("updated tier = %q, want migrated empty", got)
+		t.Fatalf("loaded legacy tier = %q, want normalized empty", got)
 	}
 	if !mcpFailed(app.activeCtrl(), "broken") {
 		t.Fatalf("Host.Failures() = %+v, want broken failure recorded", app.activeCtrl().Host().Failures())
@@ -5060,8 +9491,8 @@ tier = "background"
 			if s.Status != "failed" {
 				t.Fatalf("server status = %q, want failed; server = %+v", s.Status, s)
 			}
-			if s.Command != "reasonix-missing-mcp-binary" || s.Tier != "background" {
-				t.Fatalf("server config not refreshed after failed reconnect: %+v", s)
+			if s.Command != "reasonix-old-missing-mcp-binary" || s.Tier != "background" {
+				t.Fatalf("failed candidate leaked into server config: %+v", s)
 			}
 			return
 		}
@@ -5125,7 +9556,7 @@ name = "codegraph"
 	t.Fatalf("codegraph missing after reconnect: %+v", view.Servers)
 }
 
-func TestSetMCPServerTierRecordsConnectFailure(t *testing.T) {
+func TestSetMCPServerTierPreservesProjectSourceAndRecordsConnectFailure(t *testing.T) {
 	isolateDesktopUserDirs(t)
 	dir := robustTempDir(t)
 	t.Chdir(dir)
@@ -5157,16 +9588,16 @@ tier = "lazy"
 		t.Fatalf("saved tier = %q, want migrated empty", got)
 	}
 	userCfg := config.LoadForEdit(config.UserConfigPath())
-	userPlugin, ok := findPluginEntry(userCfg.Plugins, "broken")
-	if !ok {
-		t.Fatalf("broken should be migrated to user config: %+v", userCfg.Plugins)
-	}
-	if userPlugin.Tier != "" {
-		t.Fatalf("user plugin tier = %q, want migrated empty", userPlugin.Tier)
+	if _, ok := findPluginEntry(userCfg.Plugins, "broken"); ok {
+		t.Fatalf("project plugin should not be copied to user config: %+v", userCfg.Plugins)
 	}
 	projectCfg := config.LoadForEdit(filepath.Join(dir, "reasonix.toml"))
-	if _, ok := findPluginEntry(projectCfg.Plugins, "broken"); ok {
-		t.Fatalf("project plugin should be removed after desktop migration: %+v", projectCfg.Plugins)
+	projectPlugin, ok := findPluginEntry(projectCfg.Plugins, "broken")
+	if !ok {
+		t.Fatalf("broken should remain in project config: %+v", projectCfg.Plugins)
+	}
+	if projectPlugin.Tier != "" {
+		t.Fatalf("project plugin tier = %q, want migrated empty", projectPlugin.Tier)
 	}
 	if !mcpFailed(app.activeCtrl(), "broken") {
 		t.Fatalf("Host.Failures() = %+v, want broken failure recorded", app.activeCtrl().Host().Failures())
@@ -5301,6 +9732,133 @@ func TestRunShellForTabRoutesToRequestedTab(t *testing.T) {
 		case <-deadline:
 			t.Fatal("timed out waiting for inactive shell turn")
 		}
+	}
+}
+
+func TestRunShellForTabStaysBoundDuringRapidProjectTabSwitching(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping shell cancellation integration test in short mode")
+	}
+
+	isolateDesktopUserDirs(t)
+
+	projectA := t.TempDir()
+	projectB := t.TempDir()
+	globalRoot := t.TempDir()
+	shellEvents := make(chan event.Event, 64)
+	projectEvents := make(chan event.Event, 64)
+	globalEvents := make(chan event.Event, 64)
+	shellCtrl := control.New(control.Options{
+		Sink:          event.FuncSink(func(e event.Event) { shellEvents <- e }),
+		WorkspaceRoot: projectA,
+	})
+	projectCtrl := control.New(control.Options{
+		Sink:          event.FuncSink(func(e event.Event) { projectEvents <- e }),
+		WorkspaceRoot: projectB,
+	})
+	globalCtrl := control.New(control.Options{
+		Sink:          event.FuncSink(func(e event.Event) { globalEvents <- e }),
+		WorkspaceRoot: globalRoot,
+	})
+	defer shellCtrl.Close()
+	defer projectCtrl.Close()
+	defer globalCtrl.Close()
+
+	app := &App{
+		tabs: map[string]*WorkspaceTab{
+			"shell":     {ID: "shell", Scope: "project", WorkspaceRoot: projectA, Ctrl: shellCtrl, Ready: true},
+			"project-b": {ID: "project-b", Scope: "project", WorkspaceRoot: projectB, Ctrl: projectCtrl, Ready: true},
+			"global":    {ID: "global", Scope: "global", WorkspaceRoot: globalRoot, Ctrl: globalCtrl, Ready: true},
+		},
+		tabOrder:    []string{"shell", "project-b", "global"},
+		activeTabID: "shell",
+	}
+
+	marker := "shell-route-marker.txt"
+	if err := app.RunShellForTab("shell", longRunningMarkerCommand(marker)); err != nil {
+		t.Fatalf("RunShellForTab: %v", err)
+	}
+	waitForShellDispatch(t, shellEvents, marker)
+	waitForFile(t, filepath.Join(projectA, marker), "shell")
+
+	for i := 0; i < 8; i++ {
+		if err := app.SetActiveTab("project-b"); err != nil {
+			t.Fatalf("SetActiveTab(project-b): %v", err)
+		}
+		if err := app.SetActiveTab("global"); err != nil {
+			t.Fatalf("SetActiveTab(global): %v", err)
+		}
+		if err := app.SetActiveTab("shell"); err != nil {
+			t.Fatalf("SetActiveTab(shell): %v", err)
+		}
+	}
+	if err := app.SetActiveTab("project-b"); err != nil {
+		t.Fatalf("SetActiveTab(project-b final): %v", err)
+	}
+	app.CancelTab("shell")
+
+	cancelled := false
+	deadline := time.After(15 * time.Second)
+	for {
+		select {
+		case e := <-shellEvents:
+			if e.Kind == event.ToolResult && e.Tool.Name == "bash" {
+				cancelled = e.Tool.Err != ""
+			}
+			if e.Kind == event.TurnDone {
+				if !cancelled {
+					t.Fatal("shell tab finished without a cancelled shell result")
+				}
+				if _, err := os.Stat(filepath.Join(projectB, marker)); !errors.Is(err, os.ErrNotExist) {
+					t.Fatalf("shell marker appeared in project-b workspace: %v", err)
+				}
+				if got := activeTabIDForTest(app); got != "project-b" {
+					t.Fatalf("active tab = %q, want project-b after background shell cancel", got)
+				}
+				assertNoEvents(t, projectEvents, "project-b")
+				assertNoEvents(t, globalEvents, "global")
+				return
+			}
+		case <-deadline:
+			t.Fatal("timed out waiting for shell tab cancellation")
+		}
+	}
+}
+
+func longRunningMarkerCommand(marker string) string {
+	if sandbox.ResolveShell("", "", nil).Kind == sandbox.ShellPowerShell {
+		return fmt.Sprintf("Set-Content -LiteralPath %s -Value shell; Start-Sleep -Seconds 30", marker)
+	}
+	return fmt.Sprintf("printf shell > %s; sleep 30", marker)
+}
+
+func waitForShellDispatch(t *testing.T, ch <-chan event.Event, marker string) {
+	t.Helper()
+	deadline := time.After(5 * time.Second)
+	for {
+		select {
+		case e := <-ch:
+			if e.Kind == event.ToolDispatch && strings.Contains(e.Tool.Args, marker) {
+				return
+			}
+		case <-deadline:
+			t.Fatal("timed out waiting for shell dispatch")
+		}
+	}
+}
+
+func activeTabIDForTest(app *App) string {
+	app.mu.RLock()
+	defer app.mu.RUnlock()
+	return app.activeTabID
+}
+
+func assertNoEvents(t *testing.T, ch <-chan event.Event, name string) {
+	t.Helper()
+	select {
+	case e := <-ch:
+		t.Fatalf("%s received event while shell ran in another tab: %+v", name, e)
+	default:
 	}
 }
 

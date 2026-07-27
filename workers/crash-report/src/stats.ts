@@ -172,8 +172,28 @@ const METRIC_SIGNAL_LABELS: Record<string, { en: string; zh: string }> = {
   provider_error: { en: "Provider errors", zh: "Provider 错误" },
   cache_hit: { en: "Cache hit rate", zh: "缓存命中率" },
   tool_error: { en: "Tool errors", zh: "工具错误" },
+  updater_error: { en: "Updater errors", zh: "更新器错误" },
+  updater_event: { en: "Updater events", zh: "更新器事件" },
   compaction: { en: "Compactions", zh: "压缩" },
   turns: { en: "Turns", zh: "轮次" },
+  desktop_hang: { en: "Desktop hangs", zh: "桌面卡死" },
+  desktop_hang_age: { en: "Desktop hang age", zh: "桌面卡死时长" },
+  desktop_exit: { en: "Desktop exits", zh: "桌面退出" },
+  desktop_exit_phase: { en: "Abnormal exit phase", zh: "异常退出阶段" },
+  desktop_uptime: { en: "Uptime before exit", zh: "退出前运行时长" },
+  desktop_install: { en: "Install profile", zh: "安装方式" },
+  desktop_update_transition: { en: "Update transition", zh: "升级阶段" },
+  desktop_restore: { en: "Window restore", zh: "窗口恢复" },
+  desktop_webview2_failure: { en: "WebView2 failures", zh: "WebView2 故障" },
+  recovery_failure: { en: "Recovery failures", zh: "恢复失败" },
+  recovery_rule_continue: { en: "Rule recovery continues", zh: "规则恢复继续" },
+  recovery_review_continue: { en: "Review recovery continues", zh: "复核恢复继续" },
+  recovery_human_prompt: { en: "Recovery prompts", zh: "恢复询问" },
+  recovery_human_continue: { en: "Human recovery continues", zh: "人工恢复继续" },
+  recovery_human_revise: { en: "Human recovery revisions", zh: "人工恢复修订" },
+  recovery_review_error: { en: "Recovery review errors", zh: "恢复复核错误" },
+  recovery_repeat_prompt: { en: "Repeated recovery prompts", zh: "重复恢复询问" },
+  recovery_review_latency: { en: "Recovery review latency", zh: "恢复复核耗时" },
   client_surface: { en: "Client surface", zh: "客户端形态" },
   client_version: { en: "Client version", zh: "客户端版本" },
   settings_language: { en: "Settings: language", zh: "设置：语言" },
@@ -182,7 +202,6 @@ const METRIC_SIGNAL_LABELS: Record<string, { en: string; zh: string }> = {
   settings_theme_style: { en: "Settings: theme style", zh: "设置：主题" },
   settings_close_behavior: { en: "Settings: close behavior", zh: "设置：关闭行为" },
   settings_display_mode: { en: "Settings: transcript mode", zh: "设置：会话展示" },
-  settings_auto_plan: { en: "Settings: auto plan", zh: "设置：自动计划" },
   settings_status_bar_style: { en: "Settings: status bar style", zh: "设置：信息栏样式" },
   settings_status_bar_items_count: { en: "Settings: status bar items", zh: "设置：信息栏项数" },
   settings_check_updates: { en: "Settings: update checks", zh: "设置：更新检查" },
@@ -210,7 +229,35 @@ const METRIC_SIGNAL_LABELS: Record<string, { en: string; zh: string }> = {
   settings_bot_connection_approval: { en: "Bot: connection approval", zh: "机器人：连接审批" },
 };
 
-const AGENT_METRIC_SIGNALS = ["finish_reason", "empty_final", "provider_error", "cache_hit", "tool_error", "compaction", "turns"];
+const AGENT_METRIC_SIGNALS = [
+  "finish_reason",
+  "empty_final",
+  "provider_error",
+  "cache_hit",
+  "tool_error",
+  "updater_error",
+  "updater_event",
+  "compaction",
+  "turns",
+  "desktop_hang",
+  "desktop_hang_age",
+  "desktop_exit",
+  "desktop_exit_phase",
+  "desktop_uptime",
+  "desktop_install",
+  "desktop_update_transition",
+  "desktop_restore",
+  "desktop_webview2_failure",
+  "recovery_failure",
+  "recovery_rule_continue",
+  "recovery_review_continue",
+  "recovery_human_prompt",
+  "recovery_human_continue",
+  "recovery_human_revise",
+  "recovery_review_error",
+  "recovery_repeat_prompt",
+  "recovery_review_latency",
+];
 const DEFAULT_OPEN_SETTING_GROUPS = new Set(["Client", "Models", "Providers"]);
 
 const SETTINGS_METRIC_GROUPS: { en: string; zh: string; signals: string[] }[] = [
@@ -250,7 +297,7 @@ const SETTINGS_METRIC_GROUPS: { en: string; zh: string; signals: string[] }[] = 
   {
     en: "Behavior toggles",
     zh: "行为开关",
-    signals: ["settings_close_behavior", "settings_auto_plan", "settings_check_updates"],
+    signals: ["settings_close_behavior", "settings_check_updates"],
   },
   {
     en: "Bots",
@@ -341,6 +388,12 @@ function healthLevel(kind: "cache" | "rate", value: number | null): "good" | "wa
   return "bad";
 }
 
+function countHealthLevel(value: number): "good" | "warn" | "bad" {
+  if (value <= 0) return "good";
+  if (value <= 2) return "warn";
+  return "bad";
+}
+
 function levelText(level: "good" | "warn" | "bad" | "unknown"): string {
   if (level === "good") return i18n("Good", "健康");
   if (level === "warn") return i18n("Watch", "关注");
@@ -371,6 +424,12 @@ function agentHealth(rows: MetricRow[], previousRows: MetricRow[]): string {
   if (!rows.length) return `<div class="empty">${i18n("No agent health metrics yet", "暂无运行健康指标")}</div>`;
   const cache = cacheHitRate(rows);
   const prevCache = cacheHitRate(previousRows);
+  const desktopHangs = sumMetric(rows, "desktop_hang");
+  const prevDesktopHangs = sumMetric(previousRows, "desktop_hang");
+  const abnormalExits = rows.filter((r) => r.signal === "desktop_exit" && r.bucket === "abnormal").reduce((sum, r) => sum + r.total, 0);
+  const prevAbnormalExits = previousRows.filter((r) => r.signal === "desktop_exit" && r.bucket === "abnormal").reduce((sum, r) => sum + r.total, 0);
+  const webViewFailures = sumMetric(rows, "desktop_webview2_failure");
+  const prevWebViewFailures = sumMetric(previousRows, "desktop_webview2_failure");
   const rateCard = (signal: string, en: string, zh: string) => {
     const value = ratioPer100(rows, signal);
     const prev = ratioPer100(previousRows, signal);
@@ -394,6 +453,27 @@ ${rateCard("provider_error", "Provider errors", "Provider 错误")}
 ${rateCard("tool_error", "Tool errors", "工具错误")}
 ${rateCard("empty_final", "Empty final guard", "空回复拦截")}
 ${rateCard("compaction", "Compactions", "压缩")}
+${healthCard(
+  { en: "Desktop hangs", zh: "桌面卡死" },
+  String(desktopHangs),
+  countHealthLevel(desktopHangs),
+  healthDeltaHTML(deltaLabel(desktopHangs, prevDesktopHangs)),
+  healthDetailHTML(rows, "desktop_hang_age"),
+)}
+${healthCard(
+  { en: "Abnormal desktop exits", zh: "桌面异常退出" },
+  String(abnormalExits),
+  countHealthLevel(abnormalExits),
+  healthDeltaHTML(deltaLabel(abnormalExits, prevAbnormalExits)),
+  healthDetailHTML(rows, "desktop_exit_phase"),
+)}
+${healthCard(
+  { en: "WebView2 process failures", zh: "WebView2 进程故障" },
+  String(webViewFailures),
+  countHealthLevel(webViewFailures),
+  healthDeltaHTML(deltaLabel(webViewFailures, prevWebViewFailures)),
+  healthDetailHTML(rows, "desktop_webview2_failure"),
+)}
 </div>`;
 }
 
@@ -419,7 +499,9 @@ type CrashRow = {
   severity: string;
   last_os: string;
   last_arch: string;
+  last_channel: string;
   regressed_at: string;
+  development?: boolean;
 };
 
 function clip(s: string, n: number): string {
@@ -483,7 +565,7 @@ function reportGroups(rows: CrashRow[], compact = false): string {
 <span class="crash-summary"><span>${c.title ? esc(clip(c.title, compact ? 88 : 120)) : `<span class="muted">${i18n("No summary captured", "暂无摘要")}</span>`}</span><small>${esc(c.fingerprint.slice(0, 8))} · ${esc(c.seen)}</small>${
         c.regressed_at ? `<em>${i18nHTML(`regressed ${esc(c.regressed_at.slice(0, 10))}`, `回归 ${esc(c.regressed_at.slice(0, 10))}`)}</em>` : ""
       }</span>
-<span class="crash-scope"><small>${esc(c.source || "legacy")}</small><small>${esc(versions)}</small><small>${platform ? esc(platform) : "unknown platform"}</small></span>
+<span class="crash-scope"><small>${esc(c.source || "legacy")}</small><small>${esc(versions)}</small><small>${platform ? esc(platform) : "unknown platform"}</small>${c.last_channel && c.last_channel !== "stable" ? `<small>${esc(c.last_channel)}</small>` : ""}</span>
 <span class="crash-health"><span class="pill">${esc(c.severity || "medium")}</span><span class="pill ${c.kind === "crash" ? "crash" : ""}">${esc(c.kind)}</span>${statusPill(c.status)}</span>
 <span class="crash-count">${c.count}</span>
 </a>`;
@@ -530,7 +612,16 @@ export function renderStats(
   const cache = cacheHitRate(agentMetrics);
   const providerRate = ratioPer100(agentMetrics, "provider_error");
   const toolRate = ratioPer100(agentMetrics, "tool_error");
-  const healthWatchCount = [healthLevel("cache", cache), healthLevel("rate", providerRate), healthLevel("rate", toolRate)].filter((v) => v === "warn" || v === "bad").length;
+  const desktopHangs = sumMetric(agentMetrics, "desktop_hang");
+  const abnormalExits = agentMetrics
+    .filter((r) => r.signal === "desktop_exit" && r.bucket === "abnormal")
+    .reduce((sum, r) => sum + r.total, 0);
+  const webViewFailures = sumMetric(agentMetrics, "desktop_webview2_failure");
+  const healthWatchCount =
+    [healthLevel("cache", cache), healthLevel("rate", providerRate), healthLevel("rate", toolRate)].filter((v) => v === "warn" || v === "bad").length +
+    (desktopHangs > 0 ? 1 : 0) +
+    (abnormalExits > 0 ? 1 : 0) +
+    (webViewFailures > 0 ? 1 : 0);
   const modulePath = (module: StatsModule) => (module === "usage" ? "/stats" : `/stats/${module}`);
   const filterQS = (patch: Record<string, string>, module: StatsModule = activeModule) => {
     const params = new URLSearchParams();
@@ -571,13 +662,21 @@ export function renderStats(
   )}">${i18n("Opens", "按启动")}</a>
 </div>`;
   const overviewTone = topSeverityTone(data.overview.openReports, data.overview.regressedReports, data.overview.criticalOpenReports);
+  const isDevelopmentDiagnostic = (row: CrashRow) => row.development ?? row.fingerprint.startsWith("dev:");
+  const releaseCrashes = data.crashes.filter(
+    (row) => row.kind !== "performance" && row.severity !== "low" && !isDevelopmentDiagnostic(row),
+  );
+  const performanceDiagnostics = data.crashes.filter(
+    (row) => row.kind === "performance" && !isDevelopmentDiagnostic(row),
+  );
+  const developmentDiagnostics = data.crashes.filter(isDevelopmentDiagnostic);
   const overview = `<section class="overview-grid">
 ${statCard({ en: "Active today", zh: "今日活跃" }, String(totalUsers), i18n("anonymous installs", "匿名安装"), filterQS({}, "usage"))}
 ${statCard({ en: "Latest adoption", zh: "最新版本占比" }, latestVersionShare(data.overview.latestAdoptionPct), i18nHTML(`latest ${esc(data.latestVersion || "n/a")}`, `最新 ${esc(data.latestVersion || "n/a")}`), filterQS({}, "usage"))}
 ${statCard({ en: "Open reports", zh: "未处理报告" }, String(data.overview.openReports), i18n("needs triage", "需要分诊"), filterQS({}, "diagnostics"), overviewTone)}
 ${statCard({ en: "New in latest", zh: "最新新增" }, String(data.overview.newLatestReports), i18n("first seen on latest", "首次出现在最新版"), filterQS({}, "diagnostics"), data.overview.newLatestReports ? "warn" : "good")}
 ${statCard({ en: "Regressions", zh: "回归问题" }, String(data.overview.regressedReports), i18n("previously resolved", "曾经解决后复现"), filterQS({}, "diagnostics"), data.overview.regressedReports ? "bad" : "good")}
-${statCard({ en: "Agent health", zh: "运行健康" }, healthWatchCount ? String(healthWatchCount) : "OK", i18nHTML(`${pct(cache)} cache · ${providerRate === null ? "n/a" : Number(providerRate.toFixed(1))}/100 provider`, `${pct(cache)} 缓存 · ${providerRate === null ? "n/a" : Number(providerRate.toFixed(1))}/100 Provider`), filterQS({}, "health"), healthWatchCount ? "warn" : "good")}
+${statCard({ en: "Agent health", zh: "运行健康" }, healthWatchCount ? String(healthWatchCount) : "OK", i18nHTML(`${pct(cache)} cache · ${providerRate === null ? "n/a" : Number(providerRate.toFixed(1))}/100 provider · ${desktopHangs} hangs`, `${pct(cache)} 缓存 · ${providerRate === null ? "n/a" : Number(providerRate.toFixed(1))}/100 Provider · ${desktopHangs} 次卡死`), filterQS({}, "health"), healthWatchCount ? "warn" : "good")}
 </section>`;
   const pageOverview = activeModule === "usage" ? overview : "";
   const dashboardNav = `<nav class="site-nav" aria-label="Stats navigation">
@@ -608,7 +707,9 @@ ${anyPing ? dailyChart(days) : `<div class="empty">${i18n("No pings yet — data
 <section class="module-panel"><h3>${i18nHTML(`Platforms <b>— ${rangeText}</b>`, `平台分布 <b>— ${rangeText}</b>`)}</h3>${listBars(data.platforms)}</section>
 </div></section>`;
   const diagnosticsModule = `<section id="diagnostics" class="card full module-card"><div class="module-head"><div><span>${i18n("Module", "模块")}</span><h2>${i18n("Diagnostic triage", "诊断分诊")}</h2></div><a class="module-action" href="#top">${i18n("Back to overview", "回到概览")}</a></div>
-<section class="module-panel"><h3>${i18nHTML("Needs attention <b>— top 10 prioritized diagnostics</b>", "优先处理 <b>— 最需要看的 10 条诊断</b>")}</h3>${reportGroups(data.crashes.slice(0, 10), true)}</section>
+<section class="module-panel"><h3>${i18nHTML("Needs attention <b>— top 10 release crashes and exceptions</b>", "优先处理 <b>— 正式版崩溃与异常 Top 10</b>")}</h3>${reportGroups(releaseCrashes.slice(0, 10), true)}</section>
+${performanceDiagnostics.length ? `<section class="module-panel"><h3>${i18nHTML("Performance signals <b>— tracked separately from crashes</b>", "性能信号 <b>— 与崩溃分开统计</b>")}</h3>${reportGroups(performanceDiagnostics.slice(0, 5), true)}</section>` : ""}
+${developmentDiagnostics.length ? `<section class="module-panel"><h3>${i18nHTML("Development diagnostics <b>— excluded from release priority</b>", "开发版诊断 <b>— 不计入正式版优先级</b>")}</h3>${reportGroups(developmentDiagnostics.slice(0, 5), true)}</section>` : ""}
 ${filters}
 <section class="module-panel"><h3>${i18nHTML("All report groups <b>— open, regression, severity, count, recency</b>", "全部诊断分组 <b>— 未处理、回归、严重性、次数和最近出现</b>")}</h3>${reportGroups(data.crashes)}</section>
 </section>`;

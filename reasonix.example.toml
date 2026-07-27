@@ -1,8 +1,8 @@
 # Reasonix configuration.
-# Resolution order: flag > ./reasonix.toml > ~/.reasonix/config.toml > built-in defaults.
+# Resolution order: flag > ./reasonix.toml > <Reasonix home>/config.toml > built-in defaults.
 # Fields marked user/global only are not overridden by ./reasonix.toml.
 # Provider entries name secrets via api_key_env; saved key values live in
-# Reasonix's global ~/.reasonix/.env. Never put API key values here.
+# Reasonix's global <Reasonix home>/.env. Never put API key values here.
 
 default_model = "deepseek"   # a provider name (→ its default model) or "provider/model"
 # language      = "zh"   # ui language; empty = auto-detect from $LANG / $REASONIX_LANG
@@ -11,7 +11,7 @@ default_model = "deepseek"   # a provider name (→ its default model) or "provi
 theme = "auto"   # auto|dark|light; controls CLI colors only; REASONIX_THEME can override per run
 # theme_style = "graphite"   # graphite|aurora|slate|carbon|nocturne|amber and legacy aliases
 # shortcut_layout = "desktop"   # classic|desktop; compatibility setting; Shift+Tab toggles Plan, Ctrl+Y toggles YOLO
-# cursor_shape = "underline"   # block|underline|bar; text input cursor shape; default underline to avoid CJK rendering artifacts
+# cursor_shape = "bar"   # block|underline|bar; text input cursor shape; slim default avoids covering CJK characters
 
 [desktop]
 layout_style = "classic"   # classic|workbench|creation; desktop layout style
@@ -19,25 +19,18 @@ layout_style = "classic"   # classic|workbench|creation; desktop layout style
 # theme_style = "graphite"   # graphite|aurora|slate|carbon|nocturne|amber and legacy aliases
 
 [notifications]
-enabled = false   # system notifications for CLI chat/run; default off
+enabled = false   # system notifications for CLI and desktop turns; default off
 turn_done = true   # notify when a turn finishes
 approval_request = true   # notify when a tool approval is waiting
 ask_request = true   # notify when a question is waiting
 
 [agent]
-system_prompt = """
-You are Reasonix, a coding agent focused on executing code tasks.
-Use the provided tools to read and write files and run shell commands.
-Principles: understand the request before acting; verify with tools instead of
-guessing; keep changes minimal and correct; briefly summarize what you did."""
+# system_prompt = "You are ..."   # custom persona/prompt; unset or empty = built-in default
 # system_prompt_file = "prompts/system.md"   # overrides system_prompt when set
-max_steps         = 0    # user/global only; executor tool-call rounds; 0 = no limit
-planner_max_steps = 0    # user/global only; planner read-only tool-call rounds; 0 = no limit
 temperature       = 0.0
-auto_plan         = "off"   # user-level only; ignored in project reasonix.toml
-memory_compiler = { enabled = true }   # user-level only; Memory v5 execution compiler
+# recovery_model = ""               # optional reviewer for low-risk automatic recovery; falls back to guardian_model then main model
 # reasoning_language = "auto"   # visible reasoning text: auto|zh|en
-# auto_plan_classifier = "deepseek-flash"   # optional; only used for borderline tasks
+# plan_mode_read_only_commands = ["gh issue view"]   # legacy compatibility only; Plan bash uses Permissions
 soft_compact_ratio  = 0.5   # notice only; keeps the cache-first prefix intact
 tool_result_snip_ratio = 0.6   # snip stale tool results before summary compaction
 compact_ratio       = 0.8   # try compacting when prompt reaches this fraction
@@ -45,12 +38,20 @@ compact_force_ratio = 0.9   # force compacting at this high-water mark
 # planner_model = "deepseek-pro"   # optional: enable two-model collaboration
 # subagent_model = "deepseek-pro"   # optional default for runAs=subagent skills
 # subagent_models = { review = "deepseek-pro", security_review = "deepseek-pro" }   # per-skill overrides
+# max_subagent_concurrency = 6   # session-wide sub-agent concurrency (task/fleet/skills)
+# max_parallel_writers = 3       # concurrent writers with non-overlapping write_paths
 # output_style = "explanatory"   # persona/tone folded into the prompt: explanatory | learning | concise,
 #                                  or a custom .reasonix/output-styles/<name>.md ; empty = default
 
 # A provider is a vendor endpoint (one base_url + key) that offers one or more
 # models. Use `models = [...]` to expose several under a single entry — switching
 # models reuses the same connection; no need to re-declare base_url/api_key.
+# In the desktop app, Settings -> Model -> Access -> Add provider includes
+# recommended editable presets for Kimi CN/Global, Kimi Coding Plan, MiMo API
+# and Anthropic/token-plan regions, MiniMax CN/Global API and Anthropic routes,
+# GLM/Z.AI CN/Global API and coding-plan routes, OpenCode Go/Zen, Qwen/DashScope
+# CN/Global API and coding-plan routes, StepFun, NovitaAI, GMI, Vercel AI
+# Gateway, HuggingFace, NVIDIA, KiloCode, and Ollama Cloud.
 [[providers]]
 name        = "deepseek"
 kind        = "openai"
@@ -59,6 +60,8 @@ models      = ["deepseek-v4-flash", "deepseek-v4-pro"]
 default     = "deepseek-v4-flash"   # optional; defaults to the first of `models`
 api_key_env = "DEEPSEEK_API_KEY"
 context_window = 1000000
+# Optional per-model context budgets. Omitted models inherit context_window.
+# model_overrides = { "deepseek-v4-flash" = { context_window = 1000000 } }
 # Official DeepSeek providers seed RMB prices by default.
 # Set prices explicitly only when you want to pin a currency/rate.
 # prices = { "deepseek-v4-flash" = { cache_hit = 0.02, input = 1, output = 2, currency = "¥" }, "deepseek-v4-pro" = { cache_hit = 0.025, input = 3, output = 6, currency = "¥" } }   # per 1M tokens
@@ -66,7 +69,8 @@ context_window = 1000000
 effort      = "high"
 
 # A single-model provider still works (use `model = "..."`) — pick this form when
-# a model needs its own base_url / context_window / price.
+# a model needs its own base_url. Use model_overrides when models share an endpoint
+# but need distinct context windows or capability settings.
 
 # Custom /effort levels for a provider. When supported_efforts is set, the
 # /effort command exposes these levels; default_effort is what "/effort auto"
@@ -90,6 +94,8 @@ effort      = "high"
 # OpenAI shim). base_url is optional (defaults to https://api.anthropic.com). Note:
 # this provider does not enable extended thinking and does not send temperature —
 # current Claude models reject sampling params (see internal/provider/anthropic).
+# Some Anthropic-compatible gateways use Bearer auth instead of x-api-key; set
+# auth_header = true for those (for example MiniMax Global or Vercel AI Gateway).
 [[providers]]
 name           = "claude"
 kind           = "anthropic"
@@ -124,7 +130,7 @@ stalled_warning_seconds = 900   # warn once per background job after this many q
 # workspace_root = ""
 # allow_write    = ["/tmp"]
 # forbid_read    = ["${HOME}/.ssh"]
-# bash           = "enforce"   # enforce (default) | off
+# bash           = "enforce"   # enforce (default on macOS/Linux) | off; Windows fixes this to off because it has no OS-level Bash sandbox
 # network        = true
 
 # Skills are invokable playbooks (SKILL.md / <name>.md with frontmatter), found
@@ -139,10 +145,10 @@ stalled_warning_seconds = 900   # warn once per background job after this many q
 
 # Hooks run shell commands around the loop (PreToolUse / PostToolUse /
 # PermissionRequest / UserPromptSubmit / Stop). They are NOT configured here — put them in
-# settings.json: ~/.reasonix/settings.json (global, always on) and
-# <project>/.reasonix/settings.json (project, runs only after `/hooks trust`).
+# settings.json: <Reasonix home>/settings.json (global, always on) and
+# <project>/.reasonix/settings.json (project, loaded automatically).
 # Exit 0 = pass, exit 2 = block (PreToolUse / UserPromptSubmit only). Example
-# ~/.reasonix/settings.json:
+# <Reasonix home>/settings.json:
 #   { "hooks": {
 #       "PreToolUse":  [ { "match": "bash", "command": "my-guard.sh" } ],
 #       "PermissionRequest": [ { "match": "bash", "command": "notify-send 'approval needed'" } ],
@@ -162,9 +168,6 @@ stalled_warning_seconds = 900   # warn once per background job after this many q
 # # call_timeout_seconds = 600
 # # Raw MCP tool names with per-tool call timeouts.
 # # tool_timeout_seconds = { "generate_video" = 1800 }
-# # Optional pre-seeded read-only trust. Interactive sessions can also remember
-# # audited third-party readers when you choose "always allow" from the trust prompt.
-# # trusted_read_only_tools = ["search"]
 # # Enabled MCP servers connect automatically in the background after session
 # # start. Use /mcp or the desktop MCP panel to refresh, reconnect, or disable.
 
@@ -176,6 +179,33 @@ stalled_warning_seconds = 900   # warn once per background job after this many q
 # model      = ""        # 用于 bot 的模型，空则用 default_model
 # max_steps  = 25
 # debounce_ms = 1500      # 消息合并窗口（毫秒）
+# queue_mode = "steer"    # steer|followup|collect|interrupt
+# queue_cap  = 20         # 每个会话最多保留的排队消息数
+# queue_drop = "summarize" # summarize|old|new
+# ignore_self_messages = true # 忽略 bot 自己发出的回声消息
+#
+# [bot.self_user_ids]
+# qq = []                 # 可选：各平台 bot 自己的 user/open id
+# feishu = []
+# weixin = []
+#
+# [bot.control]
+# enabled = false         # 本机 loopback HTTP API：GET /status, GET /metrics, POST /send
+# addr = "127.0.0.1:37913"
+# token_env = "REASONIX_BOT_CONTROL_TOKEN"
+#
+# [[bot.routes]]
+# connection_id = "feishu-lark" # 可选；空字段表示通配
+# chat_type = "group"
+# chat_id = "oc_xxx"
+# workspace_root = "/path/to/project"
+# model = "deepseek-pro"
+# tool_approval_mode = "ask"
+#
+# [bot.pairing]
+# enabled = true
+# request_ttl_minutes = 60
+# max_pending_per_platform = 3
 #
 # [bot.allowlist]
 # enabled     = true
@@ -183,6 +213,12 @@ stalled_warning_seconds = 900   # warn once per background job after this many q
 # qq_users    = []
 # feishu_users = []
 # weixin_users = []
+# qq_approvers = []       # 为空时沿用 allowlist 用户可审批的兼容行为
+# feishu_approvers = []
+# weixin_approvers = []
+# qq_admins = []          # 配置后 /yolo 和 /mode 仅限 admin
+# feishu_admins = []
+# weixin_admins = []
 # qq_groups   = []
 # feishu_groups = []
 # weixin_groups = []

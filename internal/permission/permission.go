@@ -9,6 +9,8 @@ import (
 	"context"
 	"encoding/json"
 	"strings"
+
+	"reasonix/internal/shellparse"
 )
 
 // Decision is the outcome of evaluating a tool call against a Policy.
@@ -112,6 +114,17 @@ type Policy struct {
 	Allow []Rule
 	Ask   []Rule
 	Deny  []Rule
+	// SessionAllow is an explicit frontend/session override such as Claude
+	// Code's --allowed-tools. Deny rules still win, while these rules override
+	// configured Ask entries for the current process only.
+	SessionAllow []Rule
+}
+
+// WithSessionAllow returns a copy of p with additional ephemeral allow rules.
+// Malformed entries are ignored consistently with New.
+func (p Policy) WithSessionAllow(rules []string) Policy {
+	p.SessionAllow = append(append([]Rule(nil), p.SessionAllow...), parseRules(rules)...)
+	return p
 }
 
 // New builds a Policy from config string slices and a mode string ("ask" by
@@ -130,17 +143,50 @@ func New(mode string, allow, ask, deny []string) Policy {
 // for glob matching. Calls with multiple subjects, such as move_file's source
 // and destination paths, must be safe for every subject before the call is
 // allowed. Precedence: deny > ask > allow > fallback (Allow for readers, Mode
-// for writers).
+// for writers). SessionAllow sits between deny and configured ask rules.
 func (p Policy) Decide(toolName string, readOnly bool, args json.RawMessage) Decision {
 	return p.DecideSubjects(toolName, readOnly, Subjects(args))
+}
+
+// ExplicitlyDenies reports only configured deny-rule matches. It deliberately
+// excludes the fallback Mode so installing or explicitly authorizing an MCP
+// server remains the final allow decision.
+func (p Policy) ExplicitlyDenies(toolName string, args json.RawMessage) bool {
+	subjects := Subjects(args)
+	if len(subjects) == 0 {
+		subjects = []string{""}
+	}
+	for _, subject := range subjects {
+		if matchAny(p.Deny, toolName, subject) {
+			return true
+		}
+	}
+	return false
 }
 
 // DecideSubject evaluates a tool call when the caller already extracted the
 // stable approval subject from args.
 func (p Policy) DecideSubject(toolName string, readOnly bool, subject string) Decision {
+	if canonicalRuleTool(toolName) == "bash" {
+		switch {
+		case matchAny(p.Deny, toolName, subject):
+			return Deny
+		case matchAny(p.SessionAllow, toolName, subject):
+			return Allow
+		case matchAny(p.Ask, toolName, subject):
+			return Ask
+		case matchAny(p.Allow, toolName, subject):
+			return Allow
+		}
+		if parts := DecomposeBashCommand(subject); parts != nil {
+			return p.decideBashSegments(readOnly, parts)
+		}
+	}
 	switch {
 	case matchAny(p.Deny, toolName, subject):
 		return Deny
+	case matchAny(p.SessionAllow, toolName, subject):
+		return Allow
 	case matchAny(p.Ask, toolName, subject):
 		return Ask
 	case matchAny(p.Allow, toolName, subject):
@@ -150,6 +196,55 @@ func (p Policy) DecideSubject(toolName string, readOnly bool, subject string) De
 	default:
 		return p.Mode
 	}
+}
+
+// decideBashSegments evaluates each simple-command segment of a compound bash
+// invocation against the rule table independently. This lets prefix rules like
+// `Bash(git push:*)` — created by the existing auto-save path for atomic
+// commands — cover common compound flows (`git add . && git commit && git
+// push`) without ever synthesizing a new prefix from a compound command.
+//
+// Precedence stays deny > ask > allow > fallback. Any single segment hitting
+// deny denies the whole call; any segment needing approval turns the whole
+// call into Ask; the whole call is Allow only if every segment is covered or
+// writer fallback allows uncovered segments.
+// A segment recognized as read-only by shellsafe (echo/ls/git status/...) is
+// allowed on its own without a rule, matching the behavior of an atomic
+// read-only bash call.
+func (p Policy) decideBashSegments(readOnly bool, parts []string) Decision {
+	out := Allow
+	for _, sub := range parts {
+		segReadOnly := readOnly
+		if !segReadOnly {
+			if isReadOnlyBashSubject(sub) {
+				segReadOnly = true
+			}
+		}
+		switch {
+		case matchAny(p.Deny, "bash", sub):
+			return Deny
+		case matchAny(p.SessionAllow, "bash", sub):
+			// covered by the explicit session allowlist
+		case matchAny(p.Ask, "bash", sub):
+			out = Ask
+		case matchAny(p.Allow, "bash", sub):
+			// covered
+		case segReadOnly:
+			// covered
+		default:
+			// Segment not covered by a rule or read-only classification: apply
+			// the same writer fallback used for atomic bash commands.
+			switch p.Mode {
+			case Deny:
+				return Deny
+			case Ask:
+				out = Ask
+			default:
+				// covered by fallback allow
+			}
+		}
+	}
+	return out
 }
 
 // DecideSubjects evaluates a tool call against every subject the call touches.
@@ -368,8 +463,7 @@ func NewGate(p Policy, a Approver) *Gate { return &Gate{Policy: p, Approver: a} 
 // reason the agent feeds back to the model.
 func (g *Gate) Check(ctx context.Context, toolName string, args json.RawMessage, readOnly bool) (bool, string, error) {
 	if toolName == "bash" && !readOnly {
-		subject := Subject(args)
-		if isReadOnlyBashSubject(subject) {
+		if BashCommandIsReadOnly(args) {
 			readOnly = true
 		}
 	}
@@ -410,6 +504,13 @@ func (g *Gate) Check(ctx context.Context, toolName string, args json.RawMessage,
 	default:
 		return true, "", nil
 	}
+}
+
+// ExplicitlyDenies reports whether an explicit deny rule matches. Authorized
+// MCP servers use this narrow view so install-time authorization is not
+// followed by redundant per-call approval prompts.
+func (g *Gate) ExplicitlyDenies(toolName string, args json.RawMessage) bool {
+	return g.Policy.ExplicitlyDenies(toolName, args)
 }
 
 func (g *Gate) approve(ctx context.Context, toolName, subject string, args json.RawMessage) (bool, bool, string, error) {
@@ -485,7 +586,10 @@ func BashCommandPrefix(subject string) string {
 	if BashDangerWarning(cmd) != "" {
 		return ""
 	}
-	fields := strings.Fields(cmd)
+	fields, malformed := shellparse.StaticFields(cmd)
+	if malformed != "" {
+		return ""
+	}
 	if len(fields) < 2 {
 		return ""
 	}
@@ -583,8 +687,21 @@ func bashPrefixBase(pattern string) (string, bool) {
 }
 
 func bashPrefixMatches(base, subject string) bool {
-	if containsShellSyntax(subject) {
+	if normalized, ok := normalizeBashSafeRedirectsForMatch(subject); ok {
+		subject = normalized
+	}
+	fields, malformed := shellparse.StaticFields(subject)
+	if malformed != "" {
 		return false
 	}
-	return subject == base || strings.HasPrefix(subject, base+" ")
+	baseFields, malformed := shellparse.StaticFields(base)
+	if malformed != "" || len(baseFields) == 0 || len(fields) < len(baseFields) {
+		return false
+	}
+	for i, want := range baseFields {
+		if fields[i] != want {
+			return false
+		}
+	}
+	return true
 }
