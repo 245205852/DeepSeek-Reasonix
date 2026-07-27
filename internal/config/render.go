@@ -700,7 +700,8 @@ func RenderTOMLForScope(c *Config, scope RenderScope) string {
 
 	b.WriteString("# External MCP servers. type: \"stdio\" (default, a subprocess) | \"http\" | \"sse\".\n")
 	b.WriteString("# ${VAR} / ${VAR:-default} are expanded from the environment in command/args/env/url/headers.\n")
-	if len(c.Plugins) == 0 {
+	plugins := tomlPluginsForScope(c.Plugins, scope)
+	if len(plugins) == 0 {
 		b.WriteString("# [[plugins]]\n")
 		b.WriteString("# name    = \"example\"\n")
 		b.WriteString("# command = \"reasonix-plugin-example\"\n")
@@ -712,7 +713,7 @@ func RenderTOMLForScope(c *Config, scope RenderScope) string {
 		b.WriteString("# url     = \"https://mcp.stripe.com\"\n")
 		b.WriteString("# headers = { Authorization = \"Bearer ${STRIPE_KEY}\" }\n")
 	} else {
-		for _, pl := range c.Plugins {
+		for _, pl := range plugins {
 			b.WriteString("\n[[plugins]]\n")
 			fmt.Fprintf(&b, "name    = %q\n", pl.Name)
 			if pl.Type != "" {
@@ -748,6 +749,31 @@ func RenderTOMLForScope(c *Config, scope RenderScope) string {
 	}
 
 	return b.String()
+}
+
+// tomlPluginsForScope keeps merged runtime entries in their owning config
+// source. Unknown provenance is retained for callers that construct a Config
+// directly before saving it to a specific target.
+func tomlPluginsForScope(plugins []PluginEntry, scope RenderScope) []PluginEntry {
+	if scope == RenderScopeFull {
+		return plugins
+	}
+	out := make([]PluginEntry, 0, len(plugins))
+	for _, pl := range plugins {
+		switch pl.Source {
+		case MCPSourceUnknown:
+			out = append(out, pl)
+		case MCPSourceUserConfig:
+			if scope == RenderScopeUser {
+				out = append(out, pl)
+			}
+		case MCPSourceProjectConfig:
+			if scope == RenderScopeProject {
+				out = append(out, pl)
+			}
+		}
+	}
+	return out
 }
 
 // RenderTOMLProjectDelta generates TOML containing only the sections and fields
@@ -1127,7 +1153,7 @@ func RenderTOMLProjectDelta(c *Config) string {
 	}
 
 	// [[plugins]] — always include when set; replaces all existing entries
-	for _, pl := range c.Plugins {
+	for _, pl := range tomlPluginsForScope(c.Plugins, RenderScopeProject) {
 		b.WriteString("[[plugins]]\n")
 		fmt.Fprintf(&b, "name    = %q\n", pl.Name)
 		if pl.Type != "" {
