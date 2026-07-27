@@ -18,13 +18,14 @@ type Store interface {
 	// ordered by UpdatedAt descending (most-recently-active first).
 	ListTasks(ctx context.Context, projectDir string) ([]TaskSnapshot, error)
 
-	// GetTask returns the latest snapshot for taskID.
+	// GetTask returns the latest snapshot for taskID under projectDir.
 	// Returns nil, nil when the task is not found.
-	GetTask(ctx context.Context, taskID string) (*TaskSnapshot, error)
+	GetTask(ctx context.Context, projectDir string, taskID string) (*TaskSnapshot, error)
 
-	// ListEvents returns events for taskID whose Sequence > afterSequence,
-	// ordered by Sequence ascending.  Pass 0 for afterSequence to start
-	// from the beginning.  When the task cannot be found, it returns an
-	// empty slice with no error.
-	ListEvents(ctx context.Context, taskID string, afterSequence int) ([]TaskEvent, error)
+	// ListEvents returns events for taskID under projectDir whose
+	// Sequence > afterSequence, ordered by Sequence ascending.
+	// Pass 0 for afterSequence to start from the beginning.
+	// When the task cannot be found, it returns an empty slice with
+	// no error.
+	ListEvents(ctx context.Context, projectDir string, taskID string, afterSequence int) ([]TaskEvent, error)
 }

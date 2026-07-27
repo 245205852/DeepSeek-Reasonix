@@ -64,8 +64,14 @@ func (current TaskState) ValidTransition(next TaskState) bool {
 	if current == next {
 		return false
 	}
+	// Terminal states cannot transition to anything, not even unknown states.
+	if current.Terminal() {
+		return false
+	}
+	// Unknown next states are allowed (forward-compat) provided current is
+	// not terminal (guarded above).
 	if !next.IsKnown() {
-		return true // forward-compat
+		return true
 	}
 	switch current {
 	case TaskStateQueued:

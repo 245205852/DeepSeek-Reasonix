@@ -18,18 +18,20 @@ const defaultSchemaVersion = 1
 // limits).  It is NOT suitable for production use.  Production stores
 // must implement resource caps and persistence.
 type InMemoryStore struct {
-	mu     sync.RWMutex
-	tasks  map[string]*TaskSnapshot       // taskID → snapshot
-	events map[string][]TaskEvent         // taskID → ordered events
-	byProj map[string]map[string]struct{} // projectDir → set of taskIDs
+	mu      sync.RWMutex
+	tasks   map[string]*TaskSnapshot       // taskID → snapshot
+	events  map[string][]TaskEvent         // taskID → ordered events
+	byProj  map[string]map[string]struct{} // projectDir → set of taskIDs
+	lastSeq map[string]int                 // taskID → last seen sequence
 }
 
 // NewInMemoryStore returns a ready-to-use InMemoryStore.
 func NewInMemoryStore() *InMemoryStore {
 	return &InMemoryStore{
-		tasks:  make(map[string]*TaskSnapshot),
-		events: make(map[string][]TaskEvent),
-		byProj: make(map[string]map[string]struct{}),
+		tasks:   make(map[string]*TaskSnapshot),
+		events:  make(map[string][]TaskEvent),
+		byProj:  make(map[string]map[string]struct{}),
+		lastSeq: make(map[string]int),
 	}
 }
 
@@ -53,12 +55,43 @@ func (s *InMemoryStore) UpsertTask(projectDir string, snap TaskSnapshot) error {
 
 // AppendEvent appends a validated event to the task's event log.
 // It is a test/convenience helper — not part of the Store interface.
+//
+// Validation rules:
+//   - Sequence must be strictly greater than the previous event's sequence
+//     (monotonic increasing, no duplicates allowed).
+//   - Events cannot be appended after the task has reached a terminal state.
+//   - If the task already exists (from UpsertTask), the event's TaskID and
+//     SessionID must match.
 func (s *InMemoryStore) AppendEvent(projectDir string, ev TaskEvent) error {
 	if err := ev.Validate(); err != nil {
 		return fmt.Errorf("append event: %w", err)
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+
+	// --- sequence validation ---
+	prev, hasPrev := s.lastSeq[ev.TaskID]
+	if hasPrev {
+		if ev.Sequence <= prev {
+			return fmt.Errorf("append event: sequence %d is not strictly greater than previous %d",
+				ev.Sequence, prev)
+		}
+	}
+
+	// --- terminal-state guard ---
+	if snap, ok := s.tasks[ev.TaskID]; ok && snap.State.Terminal() {
+		return fmt.Errorf("append event: task %s is in terminal state %q",
+			ev.TaskID, snap.State)
+	}
+
+	// --- identity validation ---
+	if snap, ok := s.tasks[ev.TaskID]; ok {
+		if ev.SessionID != snap.SessionID {
+			return fmt.Errorf("append event: SessionID mismatch (event=%q, snapshot=%q)",
+				ev.SessionID, snap.SessionID)
+		}
+	}
+
 	// ensure task exists (at least minimally)
 	if _, ok := s.tasks[ev.TaskID]; !ok {
 		s.tasks[ev.TaskID] = &TaskSnapshot{
@@ -70,6 +103,8 @@ func (s *InMemoryStore) AppendEvent(projectDir string, ev TaskEvent) error {
 			UpdatedAt:     ev.Timestamp,
 		}
 	}
+	s.lastSeq[ev.TaskID] = ev.Sequence
+
 	if s.byProj[projectDir] == nil {
 		s.byProj[projectDir] = make(map[string]struct{})
 	}
@@ -94,6 +129,9 @@ func (s *InMemoryStore) AppendEvent(projectDir string, ev TaskEvent) error {
 
 // ListTasks implements Store.
 func (s *InMemoryStore) ListTasks(ctx context.Context, projectDir string) ([]TaskSnapshot, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
@@ -129,9 +167,24 @@ func (s *InMemoryStore) ListTasks(ctx context.Context, projectDir string) ([]Tas
 }
 
 // GetTask implements Store.
-func (s *InMemoryStore) GetTask(ctx context.Context, taskID string) (*TaskSnapshot, error) {
+func (s *InMemoryStore) GetTask(ctx context.Context, projectDir string, taskID string) (*TaskSnapshot, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	s.mu.RLock()
 	defer s.mu.RUnlock()
+
+	// When projectDir is specified, verify the task belongs to that project.
+	if projectDir != "" {
+		proj, ok := s.byProj[projectDir]
+		if !ok {
+			return nil, nil
+		}
+		if _, ok := proj[taskID]; !ok {
+			return nil, nil
+		}
+	}
+
 	snap, ok := s.tasks[taskID]
 	if !ok {
 		return nil, nil
@@ -141,9 +194,24 @@ func (s *InMemoryStore) GetTask(ctx context.Context, taskID string) (*TaskSnapsh
 }
 
 // ListEvents implements Store.
-func (s *InMemoryStore) ListEvents(ctx context.Context, taskID string, afterSequence int) ([]TaskEvent, error) {
+func (s *InMemoryStore) ListEvents(ctx context.Context, projectDir string, taskID string, afterSequence int) ([]TaskEvent, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	s.mu.RLock()
 	defer s.mu.RUnlock()
+
+	// When projectDir is specified, verify the task belongs to that project.
+	if projectDir != "" {
+		proj, ok := s.byProj[projectDir]
+		if !ok {
+			return []TaskEvent{}, nil
+		}
+		if _, ok := proj[taskID]; !ok {
+			return []TaskEvent{}, nil
+		}
+	}
+
 	all, ok := s.events[taskID]
 	if !ok {
 		return []TaskEvent{}, nil

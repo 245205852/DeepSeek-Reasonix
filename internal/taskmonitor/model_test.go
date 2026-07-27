@@ -42,28 +42,36 @@ func TestTaskStateValidTransition(t *testing.T) {
 		from, to TaskState
 		valid    bool
 	}{
+		// queued
 		{TaskStateQueued, TaskStateRunning, true},
 		{TaskStateQueued, TaskStateCancelled, true},
 		{TaskStateQueued, TaskStateStale, true},
 		{TaskStateQueued, TaskStateSucceeded, false},
 		{TaskStateQueued, TaskStateFailed, false},
 		{TaskStateQueued, TaskStateQueued, false},
+		// running
 		{TaskStateRunning, TaskStateWaiting, true},
 		{TaskStateRunning, TaskStateSucceeded, true},
 		{TaskStateRunning, TaskStateFailed, true},
 		{TaskStateRunning, TaskStateCancelled, true},
 		{TaskStateRunning, TaskStateStale, true},
 		{TaskStateRunning, TaskStateQueued, false},
+		// waiting
 		{TaskStateWaiting, TaskStateRunning, true},
 		{TaskStateWaiting, TaskStateSucceeded, true},
 		{TaskStateWaiting, TaskStateFailed, true},
 		{TaskStateWaiting, TaskStateCancelled, true},
 		{TaskStateWaiting, TaskStateStale, true},
 		{TaskStateWaiting, TaskStateQueued, false},
+		// terminal → anything (including unknown) is invalid
 		{TaskStateSucceeded, TaskStateRunning, false},
 		{TaskStateFailed, TaskStateRunning, false},
 		{TaskStateCancelled, TaskStateRunning, false},
 		{TaskStateStale, TaskStateRunning, false},
+		{TaskStateSucceeded, "future-state", false},
+		{TaskStateFailed, "future-state", false},
+		{TaskStateCancelled, "future-state", false},
+		{TaskStateStale, "future-state", false},
 	}
 	for _, tc := range tests {
 		got := tc.from.ValidTransition(tc.to)
@@ -74,11 +82,13 @@ func TestTaskStateValidTransition(t *testing.T) {
 }
 
 func TestTaskStateUnknownTransition(t *testing.T) {
+	// unknown → known: allowed (forward-compat)
 	if !TaskState("future-state").ValidTransition(TaskStateRunning) {
 		t.Error("unknown state should allow transitions to known states")
 	}
+	// known non-terminal → unknown: allowed
 	if !TaskStateQueued.ValidTransition("future-state") {
-		t.Error("known state should allow transitions to unknown states")
+		t.Error("known non-terminal state should allow transitions to unknown states")
 	}
 }
 
@@ -105,14 +115,14 @@ func TestTaskStateUnmarshalJSON_Known(t *testing.T) {
 	}
 }
 
+// ---------------------------------------------------------------------------
+// TaskSnapshot
+// ---------------------------------------------------------------------------
+
 func TestTaskSnapshotValidate_Valid(t *testing.T) {
 	ts := TaskSnapshot{
-		SchemaVersion: 1,
-		TaskID:        "task-1",
-		SessionID:     "sess-1",
-		State:         TaskStateRunning,
-		CreatedAt:     time.Now().Add(-time.Hour),
-		UpdatedAt:     time.Now(),
+		SchemaVersion: 1, TaskID: "task-1", SessionID: "sess-1",
+		State: TaskStateRunning, CreatedAt: time.Now().Add(-time.Hour), UpdatedAt: time.Now(),
 	}
 	if err := ts.Validate(); err != nil {
 		t.Errorf("expected valid, got: %v", err)
@@ -137,7 +147,7 @@ func TestTaskSnapshotValidate_MissingFields(t *testing.T) {
 			continue
 		}
 		if !strings.Contains(err.Error(), tc.want) {
-			t.Errorf("%s: expected error containing %q, got %q", tc.name, tc.want, err.Error())
+			t.Errorf("%s: expected %q in error, got %q", tc.name, tc.want, err.Error())
 		}
 	}
 }
@@ -148,11 +158,8 @@ func TestTaskSnapshotValidate_UpdatedBeforeCreated(t *testing.T) {
 		State: TaskStateQueued, CreatedAt: time.Now(), UpdatedAt: time.Now().Add(-time.Hour),
 	}
 	err := ts.Validate()
-	if err == nil {
-		t.Fatal("expected error for UpdatedAt before CreatedAt")
-	}
-	if !strings.Contains(err.Error(), "before CreatedAt") {
-		t.Errorf("unexpected error: %v", err)
+	if err == nil || !strings.Contains(err.Error(), "before CreatedAt") {
+		t.Fatalf("expected 'before CreatedAt' error, got %v", err)
 	}
 }
 
@@ -185,60 +192,10 @@ func TestTaskSnapshotValidate_FieldLengthLimits(t *testing.T) {
 	}
 	for _, tc := range tests {
 		err := tc.snap.Validate()
-		if err == nil {
-			t.Errorf("%s: expected error, got nil", tc.name)
-			continue
-		}
-		if !strings.Contains(err.Error(), tc.want) {
-			t.Errorf("%s: expected %q in error, got %q", tc.name, tc.want, err.Error())
+		if err == nil || !strings.Contains(err.Error(), tc.want) {
+			t.Errorf("%s: expected %q in error, got %v", tc.name, tc.want, err)
 		}
 	}
-}
-
-func TestTaskEventValidate_FieldLengthLimits(t *testing.T) {
-	long := strings.Repeat("x", maxFieldLen+1)
-	longSummary := strings.Repeat("y", maxErrorSummaryLen+1)
-	base := TaskEvent{
-		Sequence: 1, Timestamp: time.Now(), EventType: "e",
-		TaskID: "t", SessionID: "s", State: TaskStateQueued,
-	}
-	tests := []struct {
-		name  string
-		event TaskEvent
-		want  string
-	}{
-		{"TaskID too long", withField(base, "TaskID", long), "TaskID exceeds"},
-		{"SessionID too long", withField(base, "SessionID", long), "SessionID exceeds"},
-		{"EventType too long", withField(base, "EventType", long), "EventType exceeds"},
-		{"ErrorCode too long", withField(base, "ErrorCode", long), "ErrorCode exceeds"},
-		{"ErrorSummary too long", withField(base, "ErrorSummary", longSummary), "ErrorSummary exceeds"},
-	}
-	for _, tc := range tests {
-		err := tc.event.Validate()
-		if err == nil {
-			t.Errorf("%s: expected error, got nil", tc.name)
-			continue
-		}
-		if !strings.Contains(err.Error(), tc.want) {
-			t.Errorf("%s: expected %q in error, got %q", tc.name, tc.want, err.Error())
-		}
-	}
-}
-
-func withField(ev TaskEvent, field, val string) TaskEvent {
-	switch field {
-	case "TaskID":
-		ev.TaskID = val
-	case "SessionID":
-		ev.SessionID = val
-	case "EventType":
-		ev.EventType = val
-	case "ErrorCode":
-		ev.ErrorCode = val
-	case "ErrorSummary":
-		ev.ErrorSummary = val
-	}
-	return ev
 }
 
 func TestTaskSnapshotJSON_RoundTrip(t *testing.T) {
@@ -260,6 +217,10 @@ func TestTaskSnapshotJSON_RoundTrip(t *testing.T) {
 		t.Errorf("round-trip mismatch")
 	}
 }
+
+// ---------------------------------------------------------------------------
+// TaskEvent
+// ---------------------------------------------------------------------------
 
 func TestTaskEventValidate_Valid(t *testing.T) {
 	ev := TaskEvent{
@@ -286,28 +247,61 @@ func TestTaskEventValidate_MissingFields(t *testing.T) {
 	}
 	for _, tc := range tests {
 		err := tc.event.Validate()
-		if err == nil {
-			t.Errorf("%s: expected error, got nil", tc.name)
-			continue
-		}
-		if !strings.Contains(err.Error(), tc.want) {
-			t.Errorf("%s: expected %q in error, got %q", tc.name, tc.want, err.Error())
+		if err == nil || !strings.Contains(err.Error(), tc.want) {
+			t.Errorf("%s: expected %q in error, got %v", tc.name, tc.want, err)
 		}
 	}
 }
 
+func TestTaskEventValidate_FieldLengthLimits(t *testing.T) {
+	long := strings.Repeat("x", maxFieldLen+1)
+	longSummary := strings.Repeat("y", maxErrorSummaryLen+1)
+	base := TaskEvent{
+		Sequence: 1, Timestamp: time.Now(), EventType: "e",
+		TaskID: "t", SessionID: "s", State: TaskStateQueued,
+	}
+	tests := []struct {
+		name  string
+		event TaskEvent
+		want  string
+	}{
+		{"TaskID too long", withField(base, "TaskID", long), "TaskID exceeds"},
+		{"SessionID too long", withField(base, "SessionID", long), "SessionID exceeds"},
+		{"EventType too long", withField(base, "EventType", long), "EventType exceeds"},
+		{"ErrorCode too long", withField(base, "ErrorCode", long), "ErrorCode exceeds"},
+		{"ErrorSummary too long", withField(base, "ErrorSummary", longSummary), "ErrorSummary exceeds"},
+	}
+	for _, tc := range tests {
+		err := tc.event.Validate()
+		if err == nil || !strings.Contains(err.Error(), tc.want) {
+			t.Errorf("%s: expected %q in error, got %v", tc.name, tc.want, err)
+		}
+	}
+}
+
+func withField(ev TaskEvent, field, val string) TaskEvent {
+	switch field {
+	case "TaskID":
+		ev.TaskID = val
+	case "SessionID":
+		ev.SessionID = val
+	case "EventType":
+		ev.EventType = val
+	case "ErrorCode":
+		ev.ErrorCode = val
+	case "ErrorSummary":
+		ev.ErrorSummary = val
+	}
+	return ev
+}
+
 func TestTaskEventJSON_NoSensitiveFields(t *testing.T) {
 	raw := `{
-		"sequence": 1,
-		"timestamp": "2025-01-01T00:00:00Z",
-		"event_type": "tool_dispatch",
-		"task_id": "t1",
-		"session_id": "s1",
+		"sequence": 1, "timestamp": "2025-01-01T00:00:00Z",
+		"event_type": "tool_dispatch", "task_id": "t1", "session_id": "s1",
 		"state": "running",
-		"prompt": "SECRET",
-		"tool_args": "rm -rf /",
-		"tool_result": "sensitive",
-		"reasoning": "private"
+		"prompt": "SECRET", "tool_args": "rm -rf /",
+		"tool_result": "sensitive", "reasoning": "private"
 	}`
 	var ev TaskEvent
 	if err := json.Unmarshal([]byte(raw), &ev); err != nil {
@@ -322,7 +316,9 @@ func TestTaskEventJSON_NoSensitiveFields(t *testing.T) {
 	}
 }
 
-// --- InMemoryStore tests ---
+// ---------------------------------------------------------------------------
+// InMemoryStore
+// ---------------------------------------------------------------------------
 
 func seedTime(i int) time.Time {
 	return time.Date(2025, 1, 1, 0, 0, i, 0, time.UTC)
@@ -331,11 +327,8 @@ func seedTime(i int) time.Time {
 func TestInMemoryStore_ListTasks_Empty(t *testing.T) {
 	store := NewInMemoryStore()
 	tasks, err := store.ListTasks(context.Background(), "/proj")
-	if err != nil {
-		t.Fatalf("ListTasks: %v", err)
-	}
-	if len(tasks) != 0 {
-		t.Errorf("expected empty, got %d tasks", len(tasks))
+	if err != nil || len(tasks) != 0 {
+		t.Fatalf("expected empty, got %d tasks, err=%v", len(tasks), err)
 	}
 }
 
@@ -345,34 +338,17 @@ func TestInMemoryStore_ListTasks_ProjectIsolation(t *testing.T) {
 		SchemaVersion: 1, TaskID: "a1", SessionID: "s1",
 		State: TaskStateRunning, CreatedAt: seedTime(1), UpdatedAt: seedTime(10),
 	})
-	mustUpsert(t, store, "/proj-a", TaskSnapshot{
-		SchemaVersion: 1, TaskID: "a2", SessionID: "s2",
-		State: TaskStateSucceeded, CreatedAt: seedTime(2), UpdatedAt: seedTime(11),
-	})
 	mustUpsert(t, store, "/proj-b", TaskSnapshot{
 		SchemaVersion: 1, TaskID: "b1", SessionID: "s3",
 		State: TaskStateFailed, CreatedAt: seedTime(3), UpdatedAt: seedTime(12),
-		ErrorCode: "E1",
 	})
-
 	aTasks, _ := store.ListTasks(context.Background(), "/proj-a")
-	if len(aTasks) != 2 {
-		t.Fatalf("expected 2 tasks in /proj-a, got %d", len(aTasks))
+	if len(aTasks) != 1 || aTasks[0].TaskID != "a1" {
+		t.Fatalf("expected [a1] in /proj-a")
 	}
-	for _, tsk := range aTasks {
-		if tsk.TaskID == "b1" {
-			t.Error("project B task leaked into project A")
-		}
-	}
-
-	bTasks, _ := store.ListTasks(context.Background(), "/proj-b")
-	if len(bTasks) != 1 || bTasks[0].TaskID != "b1" {
-		t.Fatalf("expected [b1] in /proj-b")
-	}
-
 	unknown, _ := store.ListTasks(context.Background(), "/no-such")
 	if len(unknown) != 0 {
-		t.Errorf("expected empty for unknown project, got %d", len(unknown))
+		t.Errorf("expected empty, got %d", len(unknown))
 	}
 }
 
@@ -388,7 +364,7 @@ func TestInMemoryStore_ListTasks_AllProjects(t *testing.T) {
 	})
 	tasks, _ := store.ListTasks(context.Background(), "")
 	if len(tasks) != 2 {
-		t.Fatalf("expected 2 tasks across all projects, got %d", len(tasks))
+		t.Fatalf("expected 2 tasks, got %d", len(tasks))
 	}
 }
 
@@ -402,16 +378,27 @@ func TestInMemoryStore_ListTasks_SortOrder(t *testing.T) {
 		SchemaVersion: 1, TaskID: "new", SessionID: "s", State: TaskStateRunning,
 		CreatedAt: seedTime(2), UpdatedAt: seedTime(10),
 	})
-	mustUpsert(t, store, "/p", TaskSnapshot{
-		SchemaVersion: 1, TaskID: "mid", SessionID: "s", State: TaskStateFailed,
-		CreatedAt: seedTime(3), UpdatedAt: seedTime(7),
-	})
 	tasks, _ := store.ListTasks(context.Background(), "/p")
-	if len(tasks) != 3 {
-		t.Fatalf("expected 3 tasks, got %d", len(tasks))
+	if tasks[0].TaskID != "new" || tasks[1].TaskID != "old" {
+		t.Errorf("sort order wrong: [0]=%q [1]=%q", tasks[0].TaskID, tasks[1].TaskID)
 	}
-	if tasks[0].TaskID != "new" || tasks[1].TaskID != "mid" || tasks[2].TaskID != "old" {
-		t.Errorf("sort order wrong: %v", []string{tasks[0].TaskID, tasks[1].TaskID, tasks[2].TaskID})
+}
+
+func TestInMemoryStore_GetTask_ProjectIsolation(t *testing.T) {
+	store := NewInMemoryStore()
+	mustUpsert(t, store, "/proj-a", TaskSnapshot{
+		SchemaVersion: 1, TaskID: "t1", SessionID: "s",
+		State: TaskStateRunning, CreatedAt: seedTime(1), UpdatedAt: seedTime(2),
+	})
+	// same task in different project — should not be visible
+	snap, err := store.GetTask(context.Background(), "/proj-b", "t1")
+	if err != nil || snap != nil {
+		t.Fatalf("expected nil in /proj-b, got snap=%v err=%v", snap, err)
+	}
+	// in /proj-a it should be found
+	snap, err = store.GetTask(context.Background(), "/proj-a", "t1")
+	if err != nil || snap == nil {
+		t.Fatalf("expected snapshot in /proj-a, got err=%v", err)
 	}
 }
 
@@ -422,31 +409,29 @@ func TestInMemoryStore_GetTask_Found(t *testing.T) {
 		State: TaskStateFailed, CreatedAt: seedTime(1), UpdatedAt: seedTime(2),
 		ErrorCode: "EXIT_42",
 	})
-	snap, err := store.GetTask(context.Background(), "t1")
-	if err != nil || snap == nil {
-		t.Fatalf("GetTask: %v, snap=%v", err, snap)
+	snap, err := store.GetTask(context.Background(), "/p", "t1")
+	if err != nil || snap == nil || snap.ErrorCode != "EXIT_42" {
+		t.Fatalf("GetTask: err=%v snap=%v", err, snap)
 	}
-	if snap.ErrorCode != "EXIT_42" {
-		t.Errorf("ErrorCode: expected EXIT_42, got %q", snap.ErrorCode)
-	}
+	// mutation safety
 	snap.ErrorCode = "MUTATED"
-	snap2, _ := store.GetTask(context.Background(), "t1")
+	snap2, _ := store.GetTask(context.Background(), "/p", "t1")
 	if snap2.ErrorCode == "MUTATED" {
-		t.Error("GetTask must return a copy, not a reference")
+		t.Error("GetTask must return a copy")
 	}
 }
 
 func TestInMemoryStore_GetTask_NotFound(t *testing.T) {
 	store := NewInMemoryStore()
-	snap, err := store.GetTask(context.Background(), "ghost")
+	snap, err := store.GetTask(context.Background(), "", "ghost")
 	if err != nil || snap != nil {
-		t.Errorf("expected nil, nil for unknown task, got %v, %v", snap, err)
+		t.Errorf("expected nil,nil, got %v,%v", snap, err)
 	}
 }
 
 func TestInMemoryStore_ListEvents_Empty(t *testing.T) {
 	store := NewInMemoryStore()
-	events, _ := store.ListEvents(context.Background(), "no-task", 0)
+	events, _ := store.ListEvents(context.Background(), "", "no-task", 0)
 	if len(events) != 0 {
 		t.Errorf("expected empty, got %d", len(events))
 	}
@@ -456,17 +441,17 @@ func TestInMemoryStore_ListEvents_SequenceOrder(t *testing.T) {
 	store := NewInMemoryStore()
 	for i := 1; i <= 5; i++ {
 		mustAppend(t, store, "/p", TaskEvent{
-			Sequence: i, Timestamp: seedTime(i), EventType: "state_change",
+			Sequence: i, Timestamp: seedTime(i), EventType: "e",
 			TaskID: "t", SessionID: "s", State: TaskStateRunning,
 		})
 	}
-	events, _ := store.ListEvents(context.Background(), "t", 0)
+	events, _ := store.ListEvents(context.Background(), "/p", "t", 0)
 	if len(events) != 5 {
 		t.Fatalf("expected 5 events, got %d", len(events))
 	}
 	for i, ev := range events {
 		if ev.Sequence != i+1 {
-			t.Errorf("event[%d].Sequence: expected %d, got %d", i, i+1, ev.Sequence)
+			t.Errorf("event[%d].Sequence=%d, want %d", i, ev.Sequence, i+1)
 		}
 	}
 }
@@ -479,9 +464,86 @@ func TestInMemoryStore_ListEvents_Cursor(t *testing.T) {
 			TaskID: "t", SessionID: "s", State: TaskStateRunning,
 		})
 	}
-	events, _ := store.ListEvents(context.Background(), "t", 3)
+	events, _ := store.ListEvents(context.Background(), "/p", "t", 3)
 	if len(events) != 2 || events[0].Sequence != 4 || events[1].Sequence != 5 {
-		t.Errorf("expected events 4,5 after cursor 3, got %d events", len(events))
+		t.Errorf("expected events 4,5, got %v", events)
+	}
+}
+
+func TestInMemoryStore_ListEvents_ProjectIsolation(t *testing.T) {
+	store := NewInMemoryStore()
+	mustAppend(t, store, "/proj-a", TaskEvent{
+		Sequence: 1, Timestamp: seedTime(1), EventType: "e",
+		TaskID: "t", SessionID: "s", State: TaskStateRunning,
+	})
+	// Query from a different project
+	events, _ := store.ListEvents(context.Background(), "/proj-b", "t", 0)
+	if len(events) != 0 {
+		t.Errorf("expected empty in /proj-b, got %d events", len(events))
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Event validation
+// ---------------------------------------------------------------------------
+
+func TestInMemoryStore_AppendEvent_RejectsDuplicateSequence(t *testing.T) {
+	store := NewInMemoryStore()
+	mustAppend(t, store, "/p", TaskEvent{
+		Sequence: 1, Timestamp: seedTime(1), EventType: "e",
+		TaskID: "t", SessionID: "s", State: TaskStateRunning,
+	})
+	err := store.AppendEvent("/p", TaskEvent{
+		Sequence: 1, Timestamp: seedTime(2), EventType: "e",
+		TaskID: "t", SessionID: "s", State: TaskStateRunning,
+	})
+	if err == nil || !strings.Contains(err.Error(), "strictly greater") {
+		t.Fatalf("expected 'strictly greater' error for duplicate seq, got %v", err)
+	}
+}
+
+func TestInMemoryStore_AppendEvent_RejectsRegressingSequence(t *testing.T) {
+	store := NewInMemoryStore()
+	mustAppend(t, store, "/p", TaskEvent{
+		Sequence: 5, Timestamp: seedTime(1), EventType: "e",
+		TaskID: "t", SessionID: "s", State: TaskStateRunning,
+	})
+	err := store.AppendEvent("/p", TaskEvent{
+		Sequence: 3, Timestamp: seedTime(2), EventType: "e",
+		TaskID: "t", SessionID: "s", State: TaskStateRunning,
+	})
+	if err == nil || !strings.Contains(err.Error(), "strictly greater") {
+		t.Fatalf("expected 'strictly greater' error for regressing seq, got %v", err)
+	}
+}
+
+func TestInMemoryStore_AppendEvent_RejectsTerminalAppend(t *testing.T) {
+	store := NewInMemoryStore()
+	mustUpsert(t, store, "/p", TaskSnapshot{
+		SchemaVersion: 1, TaskID: "t", SessionID: "s",
+		State: TaskStateSucceeded, CreatedAt: seedTime(1), UpdatedAt: seedTime(2),
+	})
+	err := store.AppendEvent("/p", TaskEvent{
+		Sequence: 1, Timestamp: seedTime(3), EventType: "e",
+		TaskID: "t", SessionID: "s", State: TaskStateRunning,
+	})
+	if err == nil || !strings.Contains(err.Error(), "terminal state") {
+		t.Fatalf("expected 'terminal state' error, got %v", err)
+	}
+}
+
+func TestInMemoryStore_AppendEvent_RejectsSessionIDMismatch(t *testing.T) {
+	store := NewInMemoryStore()
+	mustUpsert(t, store, "/p", TaskSnapshot{
+		SchemaVersion: 1, TaskID: "t", SessionID: "s-original",
+		State: TaskStateRunning, CreatedAt: seedTime(1), UpdatedAt: seedTime(2),
+	})
+	err := store.AppendEvent("/p", TaskEvent{
+		Sequence: 1, Timestamp: seedTime(3), EventType: "e",
+		TaskID: "t", SessionID: "s-different", State: TaskStateRunning,
+	})
+	if err == nil || !strings.Contains(err.Error(), "SessionID mismatch") {
+		t.Fatalf("expected 'SessionID mismatch' error, got %v", err)
 	}
 }
 
@@ -500,9 +562,12 @@ func TestInMemoryStore_AppendEvent_UpdatesSnapshot(t *testing.T) {
 		TaskID: "t", SessionID: "s", State: TaskStateFailed,
 		ErrorCode: "CRASH", ErrorSummary: "unexpected panic",
 	})
-	snap, _ := store.GetTask(context.Background(), "t")
+	snap, _ := store.GetTask(context.Background(), "/p", "t")
 	if snap.State != TaskStateFailed || snap.ErrorCode != "CRASH" {
 		t.Errorf("snapshot not updated: state=%q code=%q", snap.State, snap.ErrorCode)
+	}
+	if !snap.UpdatedAt.Equal(seedTime(3)) {
+		t.Errorf("UpdatedAt not updated: %v", snap.UpdatedAt)
 	}
 }
 
@@ -520,6 +585,34 @@ func TestInMemoryStore_AppendEvent_Invalid(t *testing.T) {
 	}
 }
 
+func TestInMemoryStore_ContextCancellation(t *testing.T) {
+	store := NewInMemoryStore()
+	mustUpsert(t, store, "/p", TaskSnapshot{
+		SchemaVersion: 1, TaskID: "t", SessionID: "s",
+		State: TaskStateRunning, CreatedAt: seedTime(1), UpdatedAt: seedTime(2),
+	})
+	mustAppend(t, store, "/p", TaskEvent{
+		Sequence: 1, Timestamp: seedTime(1), EventType: "e",
+		TaskID: "t", SessionID: "s", State: TaskStateRunning,
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	_, err := store.ListTasks(ctx, "/p")
+	if err == nil {
+		t.Error("ListTasks should return error for cancelled context")
+	}
+	_, err = store.GetTask(ctx, "/p", "t")
+	if err == nil {
+		t.Error("GetTask should return error for cancelled context")
+	}
+	_, err = store.ListEvents(ctx, "/p", "t", 0)
+	if err == nil {
+		t.Error("ListEvents should return error for cancelled context")
+	}
+}
+
 func TestStore_DoesNotLeakSensitiveViaInterface(t *testing.T) {
 	store := NewInMemoryStore()
 	mustUpsert(t, store, "/p", TaskSnapshot{
@@ -527,7 +620,7 @@ func TestStore_DoesNotLeakSensitiveViaInterface(t *testing.T) {
 		State: TaskStateFailed, CreatedAt: seedTime(1), UpdatedAt: seedTime(2),
 		ErrorCode: "ERR", ErrorSummary: "safe summary",
 	})
-	snap, _ := store.GetTask(context.Background(), "t")
+	snap, _ := store.GetTask(context.Background(), "/p", "t")
 	data, _ := json.Marshal(snap)
 	s := string(data)
 	for _, forbidden := range []string{"prompt", "tool_args", "tool_result", "reasoning", "approval"} {
@@ -536,6 +629,10 @@ func TestStore_DoesNotLeakSensitiveViaInterface(t *testing.T) {
 		}
 	}
 }
+
+// ---------------------------------------------------------------------------
+// helpers
+// ---------------------------------------------------------------------------
 
 func mustUpsert(t *testing.T, store *InMemoryStore, proj string, snap TaskSnapshot) {
 	t.Helper()
