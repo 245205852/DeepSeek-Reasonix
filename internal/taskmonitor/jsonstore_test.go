@@ -140,3 +140,13 @@ func TestFileStore_RejectsDotTaskID(t *testing.T) {
 		t.Fatalf("expected rejection for '.', got %v", err)
 	}
 }
+
+func TestFileStore_RejectsDotDotTaskID(t *testing.T) {
+	dir := t.TempDir()
+	store := NewFileStore(".reasonix/tasks")
+
+	_, err := store.GetTask(context.Background(), dir, "..")
+	if err == nil || !strings.Contains(err.Error(), "invalid") {
+		t.Fatalf("expected rejection for '..', got %v", err)
+	}
+}
