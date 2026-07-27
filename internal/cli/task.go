@@ -236,7 +236,12 @@ func taskStopCmd(store taskmonitor.Store, args []string) int {
 		return 2
 	}
 
-	cs := taskmonitor.NewControlService(taskmonitor.NewInMemoryStore())
+	ws, ok := store.(taskmonitor.WriteStore)
+	if !ok {
+		fmt.Fprintln(os.Stderr, "task stop: store does not support writes")
+		return 1
+	}
+	cs := taskmonitor.NewControlService(ws)
 	res, err := cs.StopTask(context.Background(), *dir, id, *expectedVersion, *reason, *idemKey)
 	return outputControlResult(res, err)
 }
@@ -261,7 +266,12 @@ func taskCancelCmd(store taskmonitor.Store, args []string) int {
 		return 2
 	}
 
-	cs := taskmonitor.NewControlService(taskmonitor.NewInMemoryStore())
+	ws, ok := store.(taskmonitor.WriteStore)
+	if !ok {
+		fmt.Fprintln(os.Stderr, "task cancel: store does not support writes")
+		return 1
+	}
+	cs := taskmonitor.NewControlService(ws)
 	res, err := cs.CancelTask(context.Background(), *dir, id, *expectedVersion, *reason, *idemKey)
 	return outputControlResult(res, err)
 }
@@ -285,7 +295,12 @@ func taskResumeCmd(store taskmonitor.Store, args []string) int {
 		return 2
 	}
 
-	cs := taskmonitor.NewControlService(taskmonitor.NewInMemoryStore())
+	ws, ok := store.(taskmonitor.WriteStore)
+	if !ok {
+		fmt.Fprintln(os.Stderr, "task resume: store does not support writes")
+		return 1
+	}
+	cs := taskmonitor.NewControlService(ws)
 	res, err := cs.ResumeTask(context.Background(), *dir, id, *expectedVersion, *idemKey)
 	return outputControlResult(res, err)
 }
@@ -307,9 +322,26 @@ func taskOpenSessionCmd(store taskmonitor.Store, args []string) int {
 		return 2
 	}
 
-	cs := taskmonitor.NewControlService(taskmonitor.NewInMemoryStore())
-	res, err := cs.OpenTaskSession(context.Background(), *dir, id)
-	return outputControlResult(res, err)
+	// open-session is read-only — use Store directly
+	snap, err := store.GetTask(context.Background(), *dir, id)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return 1
+	}
+	res := taskmonitor.ControlResult{
+		SchemaVersion: 1,
+		Command:       "open_session",
+		TaskID:        id,
+	}
+	if snap == nil {
+		res.Error = &taskmonitor.CtrlError{Code: taskmonitor.ErrTaskNotFound, Message: "task not found"}
+		return outputControlResult(res, nil)
+	}
+	res.SessionID = snap.SessionID
+	res.State = snap.State
+	res.Version = snap.Version
+	res.Accepted = true
+	return outputControlResult(res, nil)
 }
 
 func outputControlResult(res taskmonitor.ControlResult, err error) int {
