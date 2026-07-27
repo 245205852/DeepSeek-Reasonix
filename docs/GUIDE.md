@@ -561,10 +561,19 @@ for example `Bash(npm run build)`, `Bash(npm run test:*)`, and `Edit(docs/**)`.
 `reasonix` can grant Bash as an exact command or as a conservative command
 prefix (for example `Bash(go test:*)`), while file-editing tools share session
 edit grants and persist path-scoped rules such as `Edit(src/app.go)`.
-`reasonix run` stays autonomous but still honours `deny`.
+Parameter/arithmetic expansions, assignments, heredocs, file redirects, and globs cannot reuse a bare
+Bash, prefix, or glob allow; a user-approved reusable choice saves the whole
+command as `Bash=<literal>`. They still follow normal fallback, so Auto executes
+them without an extra prompt. Command/process substitution, a dynamic command
+name, `eval`, `source`, shell `-c`, inline runtime code, and unparseable forms
+require a human in interactive Ask/Auto. Headless Ask/Auto/DontAsk reject that
+nested/indirect class unless an exact literal exists; YOLO may bypass it.
+`reasonix run` otherwise stays autonomous and always honours `deny`.
 
 Ask is not read-only: after approval, a writer can still run. Permissions decide
 whether to allow or prompt; the Sandbox is the enforced capability boundary.
+The sandbox remains a second boundary after authorization; confinement cannot
+make ambiguous command parsing safe to authorize automatically.
 
 Permissions are *policy* (which calls to allow / prompt). The **sandbox** is
 *enforcement*: the file-writers (`write_file` / `edit_file` / `multi_edit` / `move_file`)
