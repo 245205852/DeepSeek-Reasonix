@@ -375,6 +375,21 @@ func (c *Config) SetDesktopMetrics(enabled bool) error {
 	return nil
 }
 
+// SetCLITelemetryMode sets the user-global content-free CLI metrics policy.
+func (c *Config) SetCLITelemetryMode(mode string) error {
+	switch strings.ToLower(strings.TrimSpace(mode)) {
+	case "", "auto":
+		c.Telemetry.CLIMetrics = "auto"
+	case "on":
+		c.Telemetry.CLIMetrics = "on"
+	case "off":
+		c.Telemetry.CLIMetrics = "off"
+	default:
+		return fmt.Errorf("cli_metrics %q: must be auto|on|off", mode)
+	}
+	return nil
+}
+
 // SetDesktopConversationWidth sets the max transcript width preference.
 // standard = 960px fixed; full = 90% of the parent, with a 960px floor.
 // An empty value resets to standard.
