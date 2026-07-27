@@ -14,18 +14,21 @@ import "context"
 //     or reasoning traces).
 //   - Return zero-value slices (not nil) for empty result sets.
 type Store interface {
-	// ListTasks returns every task snapshot visible under projectDir,
-	// ordered by UpdatedAt descending (most-recently-active first).
 	ListTasks(ctx context.Context, projectDir string) ([]TaskSnapshot, error)
-
-	// GetTask returns the latest snapshot for taskID under projectDir.
-	// Returns nil, nil when the task is not found.
 	GetTask(ctx context.Context, projectDir string, taskID string) (*TaskSnapshot, error)
-
-	// ListEvents returns events for taskID under projectDir whose
-	// Sequence > afterSequence, ordered by Sequence ascending.
-	// Pass 0 for afterSequence to start from the beginning.
-	// When the task cannot be found, it returns an empty slice with
-	// no error.
 	ListEvents(ctx context.Context, projectDir string, taskID string, afterSequence int) ([]TaskEvent, error)
+}
+
+// WriteStore extends Store with atomic write operations for control
+// commands. It is used by ControlService to persist state changes with
+// version-based optimistic locking.
+type WriteStore interface {
+	Store
+
+	// SaveTask atomically persists snap. It must fail if a concurrent
+	// write has already changed the stored version.
+	SaveTask(ctx context.Context, projectDir string, snap TaskSnapshot) error
+
+	// SaveEvent appends an audit event for taskID.
+	SaveEvent(ctx context.Context, projectDir string, ev TaskEvent) error
 }

@@ -227,3 +227,35 @@ func (s *InMemoryStore) ListEvents(ctx context.Context, projectDir string, taskI
 	})
 	return result, nil
 }
+
+// SaveTask implements WriteStore.
+func (s *InMemoryStore) SaveTask(ctx context.Context, projectDir string, snap TaskSnapshot) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	existing, ok := s.tasks[snap.TaskID]
+	if !ok {
+		return fmt.Errorf("save task: task %s not found", snap.TaskID)
+	}
+	// Version must be strictly greater (CAS check)
+	if snap.Version <= existing.Version {
+		return fmt.Errorf("save task: version conflict: stored=%d, given=%d", existing.Version, snap.Version)
+	}
+	cp := snap
+	s.tasks[snap.TaskID] = &cp
+	s.byProj[projectDir][snap.TaskID] = struct{}{}
+	return nil
+}
+
+// SaveEvent implements WriteStore.
+func (s *InMemoryStore) SaveEvent(ctx context.Context, projectDir string, ev TaskEvent) error {
+	if err := ev.Validate(); err != nil {
+		return fmt.Errorf("save event: %w", err)
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.events[ev.TaskID] = append(s.events[ev.TaskID], ev)
+	return nil
+}

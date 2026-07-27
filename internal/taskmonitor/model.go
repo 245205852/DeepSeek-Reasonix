@@ -109,6 +109,7 @@ type TaskSnapshot struct {
 	TaskID        string    `json:"task_id"`
 	SessionID     string    `json:"session_id"`
 	State         TaskState `json:"state"`
+	Version       uint64    `json:"version"`
 	CreatedAt     time.Time `json:"created_at"`
 	UpdatedAt     time.Time `json:"updated_at"`
 	ErrorCode     string    `json:"error_code,omitempty"`

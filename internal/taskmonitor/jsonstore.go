@@ -188,3 +188,65 @@ func (s *FileStore) readEvents(taskDir string) ([]TaskEvent, error) {
 	}
 	return events, nil
 }
+
+// SaveTask implements WriteStore. It atomically writes the snapshot,
+// failing if a concurrent write has changed the version.
+func (s *FileStore) SaveTask(ctx context.Context, projectDir string, snap TaskSnapshot) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	id, err := safeTaskID(snap.TaskID)
+	if err != nil {
+		return err
+	}
+	root, err := s.taskRoot(projectDir)
+	if err != nil {
+		return err
+	}
+	taskDir := filepath.Join(root, id)
+	// Read current version for CAS
+	current, err := s.readSnapshot(taskDir)
+	if err == nil && snap.Version <= current.Version {
+		return fmt.Errorf("save task: version conflict: stored=%d, given=%d", current.Version, snap.Version)
+	}
+	// Ensure directory exists
+	if err := os.MkdirAll(taskDir, 0o755); err != nil {
+		return fmt.Errorf("save task: %w", err)
+	}
+	data, err := json.Marshal(snap)
+	if err != nil {
+		return fmt.Errorf("save task: marshal: %w", err)
+	}
+	return os.WriteFile(filepath.Join(taskDir, "snapshot.json"), data, 0o644)
+}
+
+// SaveEvent implements WriteStore.
+func (s *FileStore) SaveEvent(ctx context.Context, projectDir string, ev TaskEvent) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	id, err := safeTaskID(ev.TaskID)
+	if err != nil {
+		return err
+	}
+	root, err := s.taskRoot(projectDir)
+	if err != nil {
+		return err
+	}
+	taskDir := filepath.Join(root, id)
+	if err := os.MkdirAll(taskDir, 0o755); err != nil {
+		return fmt.Errorf("save event: %w", err)
+	}
+	data, err := json.Marshal(ev)
+	if err != nil {
+		return fmt.Errorf("save event: marshal: %w", err)
+	}
+	// Append JSONL line
+	f, err := os.OpenFile(filepath.Join(taskDir, "events.jsonl"), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+	if err != nil {
+		return fmt.Errorf("save event: %w", err)
+	}
+	defer f.Close()
+	_, err = fmt.Fprintln(f, string(data))
+	return err
+}
