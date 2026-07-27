@@ -145,7 +145,6 @@ func taskEventsCmd(store taskmonitor.Store, args []string) int {
 	defer cancel()
 
 	cursor := *after
-	first := true
 
 	for {
 		events, err := store.ListEvents(ctx, *dir, id, cursor)
@@ -191,9 +190,6 @@ func taskEventsCmd(store taskmonitor.Store, args []string) int {
 		if !*follow {
 			break
 		}
-		first = false
-		_ = first
-
 		// Check if task has reached a terminal state
 		snap, _ := store.GetTask(ctx, *dir, id)
 		if snap != nil && snap.State.Terminal() && len(events) == 0 {
