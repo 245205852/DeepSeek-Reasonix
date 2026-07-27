@@ -13,8 +13,9 @@ import (
 )
 
 // taskStore is the taskmonitor.Store used by the task CLI commands.
-// It is set by the main wiring (cli.go) and defaults to an in-memory
-// store for smoke-testing.  Tests override it with mock stores.
+// Tests override it with mock stores via SetTaskStore.  When nil, the
+// CLI defaults to a FileStore backed by .reasonix/tasks under the
+// project directory.
 var taskStore taskmonitor.Store
 
 // SetTaskStore replaces the Store used by the task subcommands.
@@ -27,7 +28,7 @@ func taskCommand(args []string) int {
 	}
 	store := taskStore
 	if store == nil {
-		store = taskmonitor.NewInMemoryStore()
+		store = taskmonitor.NewFileStore(".reasonix/tasks")
 	}
 	switch args[0] {
 	case "list":

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -434,5 +435,169 @@ func TestTaskCommand_UnknownSubcommand(t *testing.T) {
 	})
 	if exit != 2 {
 		t.Errorf("exit=%d, want 2", exit)
+	}
+}
+
+// --- FileStore integration tests (real filesystem) ---
+
+// writeTaskData creates a FileStore-compatible task tree in dir and resets
+// taskStore so the CLI uses the production FileStore path.
+func writeTaskData(t *testing.T, dir string) {
+	t.Helper()
+	taskDir := filepath.Join(dir, ".reasonix", "tasks", "task-1")
+	if err := os.MkdirAll(taskDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
+	snap := taskmonitor.TaskSnapshot{
+		SchemaVersion: 1, TaskID: "task-1", SessionID: "s1",
+		State: taskmonitor.TaskStateFailed, CreatedAt: now.Add(-time.Hour), UpdatedAt: now,
+		ErrorCode: "TIMEOUT", ErrorSummary: "deadline exceeded",
+	}
+	data, _ := json.Marshal(snap)
+	if err := os.WriteFile(filepath.Join(taskDir, "snapshot.json"), data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	events := `{"sequence":1,"timestamp":"2025-01-01T00:00:01Z","event_type":"state_change","task_id":"task-1","session_id":"s1","state":"queued"}
+{"sequence":2,"timestamp":"2025-01-01T00:00:02Z","event_type":"state_change","task_id":"task-1","session_id":"s1","state":"running"}
+{"sequence":3,"timestamp":"2025-01-01T00:00:03Z","event_type":"error","task_id":"task-1","session_id":"s1","state":"failed","error_code":"TIMEOUT"}
+`
+	if err := os.WriteFile(filepath.Join(taskDir, "events.jsonl"), []byte(events), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// Use nil so CLI falls back to FileStore (production path)
+	taskStore = nil
+}
+
+func TestFileStoreIntegration_ListTasks(t *testing.T) {
+	dir := t.TempDir()
+	writeTaskData(t, dir)
+
+	exit, out := captureOut(func() int {
+		return taskCommand([]string{"list", "--json", "--dir", dir})
+	})
+	if exit != 0 {
+		t.Fatalf("exit=%d", exit)
+	}
+	if !strings.Contains(out, `task-1`) {
+		t.Errorf("expected task-1 in output: %s", out)
+	}
+	if !strings.Contains(out, `"state"`) {
+		t.Errorf("expected state field: %s", out)
+	}
+	if !strings.Contains(out, `TIMEOUT`) {
+		t.Errorf("expected TIMEOUT error_code: %s", out)
+	}
+}
+
+func TestFileStoreIntegration_Status(t *testing.T) {
+	dir := t.TempDir()
+	writeTaskData(t, dir)
+
+	exit, out := captureOut(func() int {
+		return taskCommand([]string{"status", "--json", "--dir", dir, "task-1"})
+	})
+	if exit != 0 {
+		t.Fatalf("exit=%d", exit)
+	}
+	if !strings.Contains(out, `task-1`) {
+		t.Errorf("expected task-1: %s", out)
+	}
+	if !strings.Contains(out, `deadline exceeded`) {
+		t.Errorf("expected error_summary: %s", out)
+	}
+}
+
+func TestFileStoreIntegration_Status_NotFound(t *testing.T) {
+	dir := t.TempDir()
+
+	exit, out := captureOut(func() int {
+		return taskCommand([]string{"status", "--json", "--dir", dir, "ghost"})
+	})
+	if exit != 0 {
+		t.Fatalf("exit=%d", exit)
+	}
+	if !strings.Contains(out, `null`) {
+		t.Errorf("expected null task: %s", out)
+	}
+}
+
+func TestFileStoreIntegration_Events_JSON(t *testing.T) {
+	dir := t.TempDir()
+	writeTaskData(t, dir)
+
+	exit, out := captureOut(func() int {
+		return taskCommand([]string{"events", "--json", "--dir", dir, "task-1"})
+	})
+	if exit != 0 {
+		t.Fatalf("exit=%d", exit)
+	}
+	if !strings.Contains(out, `task-1`) {
+		t.Errorf("expected task_id: %s", out)
+	}
+	var v struct {
+		Events []taskmonitor.TaskEvent `json:"events"`
+	}
+	if err := json.Unmarshal([]byte(out), &v); err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if len(v.Events) != 3 {
+		t.Errorf("expected 3 events, got %d", len(v.Events))
+	}
+}
+
+func TestFileStoreIntegration_Events_JSONL(t *testing.T) {
+	dir := t.TempDir()
+	writeTaskData(t, dir)
+
+	exit, out := captureOut(func() int {
+		return taskCommand([]string{"events", "--jsonl", "--dir", dir, "task-1"})
+	})
+	if exit != 0 {
+		t.Fatalf("exit=%d", exit)
+	}
+	lines := strings.Split(strings.TrimSpace(out), "\n")
+	if len(lines) != 3 {
+		t.Fatalf("expected 3 JSONL lines, got %d: %s", len(lines), out)
+	}
+	for _, line := range lines {
+		var ev taskmonitor.TaskEvent
+		if err := json.Unmarshal([]byte(line), &ev); err != nil {
+			t.Errorf("invalid JSONL: %v — line: %s", err, line)
+		}
+	}
+}
+
+func TestFileStoreIntegration_Events_AfterCursor(t *testing.T) {
+	dir := t.TempDir()
+	writeTaskData(t, dir)
+
+	exit, out := captureOut(func() int {
+		return taskCommand([]string{"events", "--json", "--dir", dir, "--after", "1", "task-1"})
+	})
+	if exit != 0 {
+		t.Fatalf("exit=%d", exit)
+	}
+	var v struct {
+		Events []taskmonitor.TaskEvent `json:"events"`
+	}
+	json.Unmarshal([]byte(out), &v)
+	if len(v.Events) != 2 || v.Events[0].Sequence != 2 {
+		t.Errorf("expected 2 events seq≥2, got %d events", len(v.Events))
+	}
+}
+
+func TestFileStoreIntegration_ListTasks_Empty(t *testing.T) {
+	dir := t.TempDir()
+	taskStore = nil
+
+	exit, out := captureOut(func() int {
+		return taskCommand([]string{"list", "--json", "--dir", dir})
+	})
+	if exit != 0 {
+		t.Fatalf("exit=%d", exit)
+	}
+	if !strings.Contains(out, `"tasks"`) {
+		t.Errorf("expected tasks key: %s", out)
 	}
 }
