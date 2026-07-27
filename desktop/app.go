@@ -1693,15 +1693,15 @@ func (a *App) taskStore() taskmonitor.Store {
 	return taskmonitor.NewFileStore(filepath.Join(dir, ".reasonix", "tasks"))
 }
 
-// projectDir returns the controller's current project directory, or "." as a
-// safe fallback when the controller is not yet ready.
+// projectDir returns the current project directory (the working directory that
+// ensureWorkspace has already set to the project root). Returns "." as a safe
+// fallback when the working directory cannot be determined.
 func (a *App) projectDir() string {
-	a.mu.RLock()
-	defer a.mu.RUnlock()
-	if a.ctrl == nil {
+	wd, err := os.Getwd()
+	if err != nil || wd == "" {
 		return "."
 	}
-	return a.ctrl.SessionDir()
+	return wd
 }
 
 // ListTasks returns all background task snapshots for the current project.

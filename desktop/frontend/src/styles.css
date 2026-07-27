@@ -4586,3 +4586,144 @@ body {
   color: inherit;
   cursor: pointer;
 }
+
+/* ── Task Monitor Panel ────────────────────────────────────────────── */
+
+.taskmonitor {
+  border-top: 1px solid var(--border, #333);
+}
+
+.taskmonitor__head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  padding: 8px 12px;
+  background: none;
+  border: none;
+  color: inherit;
+  cursor: pointer;
+  font-size: 13px;
+}
+.taskmonitor__head:hover {
+  background: rgba(255,255,255,0.04);
+}
+.taskmonitor__title {
+  flex: 1;
+  text-align: left;
+  font-weight: 600;
+}
+.taskmonitor__count {
+  background: var(--muted, #555);
+  color: #fff;
+  border-radius: 10px;
+  padding: 0 6px;
+  font-size: 11px;
+  line-height: 18px;
+}
+.taskmonitor__refresh,
+.taskmonitor__close {
+  background: none;
+  border: none;
+  color: inherit;
+  cursor: pointer;
+  padding: 2px;
+  opacity: 0.5;
+}
+.taskmonitor__refresh:hover,
+.taskmonitor__close:hover {
+  opacity: 1;
+}
+
+.taskmonitor__body {
+  max-height: 360px;
+  overflow-y: auto;
+}
+
+.taskmonitor__state {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 16px;
+  font-size: 13px;
+  color: var(--muted, #888);
+}
+.taskmonitor__state--error {
+  color: #ef4444;
+}
+.taskmonitor__spinner {
+  animation: spin 1s linear infinite;
+}
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+.taskmonitor__task {
+  border-bottom: 1px solid var(--border, #2a2a2a);
+}
+.taskmonitor__task-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  padding: 6px 12px;
+  background: none;
+  border: none;
+  color: inherit;
+  cursor: pointer;
+  font-size: 12px;
+}
+.taskmonitor__task-head:hover {
+  background: rgba(255,255,255,0.03);
+}
+.taskmonitor__dot {
+  font-size: 10px;
+  width: 14px;
+  text-align: center;
+}
+.taskmonitor__id {
+  font-family: monospace;
+  font-size: 11px;
+  color: var(--muted, #888);
+}
+.taskmonitor__badge {
+  font-size: 10px;
+  padding: 1px 6px;
+  border-radius: 8px;
+  font-weight: 600;
+  text-transform: uppercase;
+}
+.taskmonitor__terminal {
+  color: #9ca3af;
+}
+.taskmonitor__time {
+  margin-left: auto;
+  font-size: 11px;
+  color: var(--muted, #666);
+}
+
+.taskmonitor__detail {
+  padding: 6px 12px 10px 32px;
+  font-size: 12px;
+}
+.taskmonitor__detail dl {
+  margin: 0;
+  display: grid;
+  grid-template-columns: 80px 1fr;
+  gap: 2px 8px;
+}
+.taskmonitor__detail dt {
+  color: var(--muted, #777);
+}
+.taskmonitor__detail dd {
+  margin: 0;
+  word-break: break-all;
+}
+.taskmonitor__err {
+  color: #ef4444;
+  font-family: monospace;
+  font-size: 11px;
+}
+.taskmonitor__err-summary {
+  color: #fbbf24;
+}
