@@ -231,7 +231,15 @@ func (s *FileStore) SaveTask(ctx context.Context, projectDir string, snap TaskSn
 		os.Remove(tmpName)
 		return fmt.Errorf("save task: %w", err)
 	}
-	tmp.Close()
+	if err := tmp.Sync(); err != nil {
+		tmp.Close()
+		os.Remove(tmpName)
+		return fmt.Errorf("save task: %w", err)
+	}
+	if err := tmp.Close(); err != nil {
+		os.Remove(tmpName)
+		return fmt.Errorf("save task: %w", err)
+	}
 	if err := os.Rename(tmpName, target); err != nil {
 		os.Remove(tmpName)
 		return fmt.Errorf("save task: %w", err)
