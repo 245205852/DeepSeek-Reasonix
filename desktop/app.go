@@ -27,6 +27,7 @@ import (
 	"reasonix/internal/plugin"
 	"reasonix/internal/provider"
 	"reasonix/internal/skill"
+	"reasonix/internal/taskmonitor"
 )
 
 // eventChannel is the Wails runtime event name the frontend subscribes to for the
@@ -1682,6 +1683,40 @@ func parseScope(s string) memory.Scope {
 	default:
 		return memory.ScopeProject
 	}
+}
+
+// taskStore is the Store backing the task monitor panel. It is initialised
+// lazily on first use so the desktop can open before the project directory is
+// fully resolved.
+func (a *App) taskStore() taskmonitor.Store {
+	dir := a.projectDir()
+	return taskmonitor.NewFileStore(filepath.Join(dir, ".reasonix", "tasks"))
+}
+
+// projectDir returns the controller's current project directory, or "." as a
+// safe fallback when the controller is not yet ready.
+func (a *App) projectDir() string {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	if a.ctrl == nil {
+		return "."
+	}
+	return a.ctrl.SessionDir()
+}
+
+// ListTasks returns all background task snapshots for the current project.
+func (a *App) ListTasks() ([]taskmonitor.TaskSnapshot, error) {
+	return a.taskStore().ListTasks(a.ctx, a.projectDir())
+}
+
+// GetTask returns the latest snapshot for a given task ID.
+func (a *App) GetTask(taskID string) (*taskmonitor.TaskSnapshot, error) {
+	return a.taskStore().GetTask(a.ctx, a.projectDir(), taskID)
+}
+
+// ListTaskEvents returns events for taskID whose Sequence > afterSequence.
+func (a *App) ListTaskEvents(taskID string, afterSequence int) ([]taskmonitor.TaskEvent, error) {
+	return a.taskStore().ListEvents(a.ctx, a.projectDir(), taskID, afterSequence)
 }
 
 // eventSink is the controller's event.Sink in desktop mode: it forwards every

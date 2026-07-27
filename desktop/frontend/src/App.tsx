@@ -11,6 +11,7 @@ import {
   PanelLeftOpen,
   PanelRightClose,
   PanelRightOpen,
+  ListTodo,
 } from "lucide-react";
 import logo from "./assets/logo.svg";
 import { useT } from "./lib/i18n";
@@ -25,6 +26,7 @@ import { MemoryPanel } from "./components/MemoryPanel";
 import { HistoryPanel } from "./components/HistoryPanel";
 import { SettingsPanel } from "./components/SettingsPanel";
 import { CapabilitiesPanel } from "./components/CapabilitiesPanel";
+import { TaskMonitorPanel } from "./components/TaskMonitorPanel";
 import { UpdateBanner } from "./components/UpdateBanner";
 import { WorkspacePanel } from "./components/WorkspacePanel";
 import { parseTodos } from "./lib/tools";
@@ -161,6 +163,7 @@ export default function App() {
   const [workspacePreviewModeActive, setWorkspacePreviewModeActive] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [capsOpen, setCapsOpen] = useState(false);
+  const [tasksOpen, setTasksOpen] = useState(false);
   const [pendingPlanRevision, setPendingPlanRevision] = useState<string | null>(null);
   const [viewportWidth, setViewportWidth] = useState(() => (typeof window === "undefined" ? 1440 : window.innerWidth));
   const [footerHeight, setFooterHeight] = useState(0);
@@ -632,6 +635,10 @@ export default function App() {
               <Blocks size={15} />
               <span>{t("caps.title")}</span>
             </button>
+            <button className="sidebar__navitem" onClick={() => setTasksOpen(true)} title="Tasks">
+              <ListTodo size={15} />
+              <span>Tasks</span>
+            </button>
             <button
               className="sidebar__navitem"
               onClick={() => setSettingsOpen(true)}
@@ -834,6 +841,7 @@ export default function App() {
       {settingsOpen && <SettingsPanel onClose={() => setSettingsOpen(false)} onChanged={() => void refreshMeta()} />}
 
       {capsOpen && <CapabilitiesPanel onClose={() => setCapsOpen(false)} />}
+      {tasksOpen && <TaskMonitorPanel onClose={() => setTasksOpen(false)} />}
     </div>
   );
 }

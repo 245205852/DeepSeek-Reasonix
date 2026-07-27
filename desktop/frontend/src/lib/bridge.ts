@@ -27,6 +27,8 @@ import type {
   SkillRootView,
   SkillView,
   SlashArgsResult,
+  TaskEvent,
+  TaskSnapshot,
   UpdateInfo,
   UpdateProgress,
   WireEvent,
@@ -70,6 +72,10 @@ export interface AppBindings {
   // Jobs lists the running background jobs (bash/task started in the background)
   // for the status-bar indicator.
   Jobs(): Promise<JobView[]>;
+  // Task Monitor: read-only background task observability.
+  ListTasks(): Promise<TaskSnapshot[]>;
+  GetTask(taskID: string): Promise<TaskSnapshot | null>;
+  ListTaskEvents(taskID: string, afterSequence: number): Promise<TaskEvent[]>;
   Meta(): Promise<Meta>;
   Commands(): Promise<CommandInfo[]>;
   // Capabilities feeds the MCP & Skills drawer: connected/failed servers + skills.
@@ -413,6 +419,15 @@ function makeMockApp(): AppBindings {
     },
     async Jobs() {
       return []; // browser dev mock has no background jobs
+    },
+    async ListTasks() {
+      return []; // browser dev mock has no background tasks
+    },
+    async GetTask(_taskID: string) {
+      return null;
+    },
+    async ListTaskEvents(_taskID: string, _afterSequence: number) {
+      return [];
     },
     async Meta() {
       return {

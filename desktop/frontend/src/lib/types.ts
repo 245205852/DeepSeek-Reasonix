@@ -338,3 +338,37 @@ export interface UpdateProgress {
   total: number;
   err?: string;
 }
+
+// Task Monitor panel types (internal/taskmonitor).
+
+export type TaskState =
+  | "queued"
+  | "running"
+  | "waiting"
+  | "succeeded"
+  | "failed"
+  | "cancelled"
+  | "stale"
+  | string; // forward-compat
+
+export interface TaskSnapshot {
+  schema_version: number;
+  task_id: string;
+  session_id: string;
+  state: TaskState;
+  created_at: string; // ISO 8601
+  updated_at: string; // ISO 8601
+  error_code?: string;
+  error_summary?: string;
+}
+
+export interface TaskEvent {
+  sequence: number;
+  timestamp: string; // ISO 8601
+  event_type: string;
+  task_id: string;
+  session_id: string;
+  state: TaskState;
+  error_code?: string;
+  error_summary?: string;
+}
