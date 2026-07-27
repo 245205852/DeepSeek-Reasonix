@@ -28,14 +28,14 @@ type CtrlError struct {
 
 // Stable error codes for control operations.
 const (
-	ErrTaskNotFound          = "task_not_found"
-	ErrTaskScopeMismatch     = "task_scope_mismatch"
-	ErrTaskVersionConflict   = "task_version_conflict"
-	ErrTaskInvalidTransition = "task_invalid_transition"
-	ErrTaskNotResumable      = "task_not_resumable"
-	ErrTaskAlreadyTerminal   = "task_already_terminal"
-	ErrTaskInProgress        = "task_operation_in_progress"
-	ErrTaskPermissionDenied  = "task_permission_denied"
+	ErrTaskNotFound            = "task_not_found"
+	ErrTaskScopeMismatch       = "task_scope_mismatch"
+	ErrTaskVersionConflict     = "task_version_conflict"
+	ErrTaskInvalidTransition   = "task_invalid_transition"
+	ErrTaskNotResumable        = "task_not_resumable"
+	ErrTaskAlreadyTerminal     = "task_already_terminal"
+	ErrTaskInProgress          = "task_operation_in_progress"
+	ErrTaskPermissionDenied    = "task_permission_denied"
 	ErrTaskIdempotencyConflict = "task_idempotency_conflict"
 )
 
@@ -172,7 +172,7 @@ func (cs *ControlService) controlOp(ctx context.Context, projectDir, taskID stri
 
 	// Record audit event
 	auditEv := TaskEvent{
-		Sequence:  0, // FileStore will append; InMemoryStore will auto-sequence
+		Sequence:  1, // audit events always start at 1
 		Timestamp: timeNow(),
 		EventType: "control_" + cmd,
 		TaskID:    taskID,

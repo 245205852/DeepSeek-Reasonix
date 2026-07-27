@@ -37,6 +37,14 @@ func taskCommand(args []string) int {
 		return taskStatusCmd(store, args[1:])
 	case "events":
 		return taskEventsCmd(store, args[1:])
+	case "stop":
+		return taskStopCmd(store, args[1:])
+	case "cancel":
+		return taskCancelCmd(store, args[1:])
+	case "resume":
+		return taskResumeCmd(store, args[1:])
+	case "open-session":
+		return taskOpenSessionCmd(store, args[1:])
 	default:
 		fmt.Fprintf(os.Stderr, "unknown task subcommand: %s\n", args[0])
 		return 2
@@ -202,6 +210,121 @@ func taskEventsCmd(store taskmonitor.Store, args []string) int {
 			return 0
 		case <-time.After(500 * time.Millisecond):
 		}
+	}
+	return 0
+}
+
+// --- control commands ---
+
+func taskStopCmd(store taskmonitor.Store, args []string) int {
+	fs := flag.NewFlagSet("task stop", flag.ContinueOnError)
+	jsonOut := fs.Bool("json", false, "output as JSON")
+	dir := fs.String("dir", "", "project directory scope")
+	expectedVersion := fs.Uint64("expected-version", 0, "expected task version for CAS")
+	reason := fs.String("reason", "", "reason for stopping")
+	idemKey := fs.String("idempotency-key", "", "idempotency key")
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	if !*jsonOut {
+		fmt.Fprintln(os.Stderr, "task stop requires --json")
+		return 2
+	}
+	id := fs.Arg(0)
+	if id == "" {
+		fmt.Fprintln(os.Stderr, "usage: reasonix task stop <id> --expected-version N --json")
+		return 2
+	}
+
+	cs := taskmonitor.NewControlService(taskmonitor.NewInMemoryStore())
+	res, err := cs.StopTask(context.Background(), *dir, id, *expectedVersion, *reason, *idemKey)
+	return outputControlResult(res, err)
+}
+
+func taskCancelCmd(store taskmonitor.Store, args []string) int {
+	fs := flag.NewFlagSet("task cancel", flag.ContinueOnError)
+	jsonOut := fs.Bool("json", false, "output as JSON")
+	dir := fs.String("dir", "", "project directory scope")
+	expectedVersion := fs.Uint64("expected-version", 0, "expected task version for CAS")
+	reason := fs.String("reason", "", "reason for cancelling")
+	idemKey := fs.String("idempotency-key", "", "idempotency key")
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	if !*jsonOut {
+		fmt.Fprintln(os.Stderr, "task cancel requires --json")
+		return 2
+	}
+	id := fs.Arg(0)
+	if id == "" {
+		fmt.Fprintln(os.Stderr, "usage: reasonix task cancel <id> --expected-version N --json")
+		return 2
+	}
+
+	cs := taskmonitor.NewControlService(taskmonitor.NewInMemoryStore())
+	res, err := cs.CancelTask(context.Background(), *dir, id, *expectedVersion, *reason, *idemKey)
+	return outputControlResult(res, err)
+}
+
+func taskResumeCmd(store taskmonitor.Store, args []string) int {
+	fs := flag.NewFlagSet("task resume", flag.ContinueOnError)
+	jsonOut := fs.Bool("json", false, "output as JSON")
+	dir := fs.String("dir", "", "project directory scope")
+	expectedVersion := fs.Uint64("expected-version", 0, "expected task version for CAS")
+	idemKey := fs.String("idempotency-key", "", "idempotency key")
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	if !*jsonOut {
+		fmt.Fprintln(os.Stderr, "task resume requires --json")
+		return 2
+	}
+	id := fs.Arg(0)
+	if id == "" {
+		fmt.Fprintln(os.Stderr, "usage: reasonix task resume <id> --expected-version N --json")
+		return 2
+	}
+
+	cs := taskmonitor.NewControlService(taskmonitor.NewInMemoryStore())
+	res, err := cs.ResumeTask(context.Background(), *dir, id, *expectedVersion, *idemKey)
+	return outputControlResult(res, err)
+}
+
+func taskOpenSessionCmd(store taskmonitor.Store, args []string) int {
+	fs := flag.NewFlagSet("task open-session", flag.ContinueOnError)
+	jsonOut := fs.Bool("json", false, "output as JSON")
+	dir := fs.String("dir", "", "project directory scope")
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	if !*jsonOut {
+		fmt.Fprintln(os.Stderr, "task open-session requires --json")
+		return 2
+	}
+	id := fs.Arg(0)
+	if id == "" {
+		fmt.Fprintln(os.Stderr, "usage: reasonix task open-session <id> --json")
+		return 2
+	}
+
+	cs := taskmonitor.NewControlService(taskmonitor.NewInMemoryStore())
+	res, err := cs.OpenTaskSession(context.Background(), *dir, id)
+	return outputControlResult(res, err)
+}
+
+func outputControlResult(res taskmonitor.ControlResult, err error) int {
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return 1
+	}
+	enc := json.NewEncoder(os.Stdout)
+	enc.SetIndent("", "  ")
+	if err := enc.Encode(res); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return 1
+	}
+	if !res.Accepted && !res.Idempotent {
+		return 1
 	}
 	return 0
 }
