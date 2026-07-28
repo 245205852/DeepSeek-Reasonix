@@ -190,6 +190,11 @@ interface State {
   retry?: { attempt: number; max: number; observedAt: number };
   seq: number;
   sessionGen: number;
+  // Per-session counter bumped after hydration ancillary data (context, effort,
+  // jobs) arrives. ContextPanel reads this (merged into refreshKey) so the
+  // right-side panel re-fetches after a session rebind instead of showing stale
+  // RequestCount / ElapsedMs / SessionCost from before the swap.
+  contextPanelSeq: number;
   // Monotonic count of usage events from ANY source (executor, subagent,
   // title…). Drives right-panel snapshot refreshes so sub-agent activity keeps
   // the session metrics live; state.usage stays executor-gated for the gauge.
@@ -226,6 +231,7 @@ export const initialState: State = {
   sessionCurrency: "¥",
   seq: 0,
   sessionGen: 0,
+  contextPanelSeq: 0,
   usageSeq: 0,
 };
 
@@ -494,7 +500,8 @@ type Action =
   | { type: "approval_drained"; ids: string[]; epoch: number }
   | { type: "submit_prompt_failed"; id: string; epoch: number }
   | { type: "controller_rebuilt" }
-  | { type: "reset" };
+  | { type: "reset" }
+  | { type: "context_panel_refresh" };
 
 function backendStatusFromRuntimeMeta(meta: RuntimeMetaSnapshot): Extract<Action, { type: "backend_status" }> {
   const foregroundRunning = foregroundRunningFromRuntimeMeta(meta);
@@ -1416,6 +1423,7 @@ export function reducer(s: State, a: Action): State {
     case "controller_rebuilt":
       return { ...s, promptEpoch: s.promptEpoch + 1, resolvedPromptId: undefined, promptArrivedId: undefined, promptArrivedAt: undefined };
     case "reset": return { ...initialState, meta: metaWithoutCanonicalTodos(s.meta), context: { used: 0, window: s.context.window, sessionTokens: 0, compactRatio: s.context.compactRatio }, balance: s.balance, effort: s.effort, jobs: s.jobs, hydrating: s.hydrating, hydrateReason: s.hydrateReason, hydrateError: s.hydrateError, hydrateHistoryLoaded: s.hydrateHistoryLoaded, hydratePlaceholderItems: s.hydratePlaceholderItems, backendActivationPending: s.backendActivationPending, sessionGen: s.sessionGen + 1, promptEpoch: s.promptEpoch + 1 };
+    case "context_panel_refresh": return { ...s, contextPanelSeq: s.contextPanelSeq + 1 };
     case "event": return applyEvent(s, a.e);
     default: return s;
   }
@@ -2038,13 +2046,14 @@ export function useController() {
         loadAncillary("context", () => app.ContextUsageForTab(tabId)),
       ]);
       if (!stillCurrent()) return;
-      if (!stillVisible()) {
-        addBreadcrumb("tab.hydrate", `ancillary ignored inactive ${reason} ${tabId}`);
-        return;
-      }
       if (effort !== undefined) dispatchTo(tabId, { type: "effort", effort });
       if (jobs !== undefined) dispatchTo(tabId, { type: "jobs", jobs: asArray(jobs) });
       if (context !== undefined) dispatchTo(tabId, { type: "context", context });
+      // Signal ContextPanel to re-fetch now that ancillary data (context,
+      // effort, jobs) has landed. Without this, the right-side panel keeps
+      // stale RequestCount / ElapsedMs / SessionCost from before a session
+      // rebind because its refreshKey (dockRefreshKey) only bumps on turn_done.
+      dispatchTo(tabId, { type: "context_panel_refresh" });
       await new Promise<void>((resolve) => window.setTimeout(resolve, 0));
       if (!stillCurrent()) return;
       if (!stillVisible()) {
@@ -2419,6 +2428,27 @@ export function useController() {
       if (timer !== undefined) window.clearTimeout(timer);
     };
   }, [activeTabId, activeState.meta?.ready, activeState.meta?.startupErr, activeState.backendActivationPending, refreshMetaOnlyForTab]);
+
+  // Fallback context fetch when activeTabId changes and the target tab's
+  // state.context is empty (e.g. the switch-tab ancillary ContextUsageForTab
+  // dispatch was skipped by a rapid A→B→A switch that invalidated stillVisible
+  // before the call returned). StatusBar reads state.context directly and has
+  // no self-fetching logic, so it would remain blank until the next turn_done
+  // without this catch-up path.
+  useEffect(() => {
+    const tabId = activeTabId;
+    if (!tabId) return;
+    const st = statesRef.current.get(tabId);
+    if (st?.context && (st.context.used > 0 || st.context.window > 0)) return;
+    let cancelled = false;
+    void app.ContextUsageForTab(tabId).then((context) => {
+      if (cancelled || activeTabIdRef.current !== tabId) return;
+      dispatchTo(tabId, { type: "context", context });
+    }).catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [activeTabId, dispatchTo]);
 
   // Stale-turn watchdog: if the frontend thinks the agent is running but the
   // turn stream has gone quiet, reconcile with the backend. This catches cases
