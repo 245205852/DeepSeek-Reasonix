@@ -808,6 +808,8 @@ export default function App() {
           onToggleMaximized={() => setWorkspacePanelMaximized((value) => !value)}
           onPreviewModeChange={handleWorkspacePreviewModeChange}
         />
+
+        {tasksOpen && <TaskMonitorPanel onClose={() => setTasksOpen(false)} />}
       </div>
 
       {state.ask && (
@@ -841,7 +843,6 @@ export default function App() {
       {settingsOpen && <SettingsPanel onClose={() => setSettingsOpen(false)} onChanged={() => void refreshMeta()} />}
 
       {capsOpen && <CapabilitiesPanel onClose={() => setCapsOpen(false)} />}
-      {tasksOpen && <TaskMonitorPanel onClose={() => setTasksOpen(false)} />}
     </div>
   );
 }

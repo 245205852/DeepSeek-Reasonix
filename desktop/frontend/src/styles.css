@@ -4590,7 +4590,14 @@ body {
 /* ── Task Monitor Panel ────────────────────────────────────────────── */
 
 .taskmonitor {
+  position: absolute;
+  left: var(--sidebar-width);
+  right: 0;
+  bottom: 0;
+  z-index: 20;
+  background: var(--bg, #111);
   border-top: 1px solid var(--border, #333);
+  box-shadow: 0 -6px 18px rgba(0, 0, 0, 0.28);
 }
 
 .taskmonitor__head {
