@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"sort"
 	"strings"
@@ -1332,6 +1333,17 @@ func loadSessionUnlocked(path string) (*Session, error) {
 		s.rawMessages = msgs
 	}
 	s.Messages = normalized
+	// Repair orphaned paste labels: a [Pasted text #N · M lines] token that
+	// was never expanded (its pastedBlock was lost during session reload)
+	// leaves a raw placeholder in the stored transcript.  When the session is
+	// resumed or the conversation history is replayed, the model receives an
+	// opaque token it cannot interpret.  Scan the same session's messages for
+	// a prior expansion (--- Begin/End ---) of the same label and inline it;
+	// labels with no recoverable content become a clear "[pasted content
+	// unavailable]" note so the model knows the reference is broken instead
+	// of hallucinating context.  This runs before markPersisted so a repaired
+	// session re-digests cleanly.
+	s.Messages = repairOrphanedPasteLabels(s.Messages)
 	if digest, err := digestSessionMessages(s.Messages); err == nil {
 		if meta, ok, metaErr := loadBranchMetaRetry(path); metaErr != nil {
 			// The sidecar exists but is unreadable even after retries (torn or
@@ -1350,6 +1362,98 @@ func loadSessionUnlocked(path string) (*Session, error) {
 		}
 	}
 	return s, nil
+}
+
+// orphanedPasteLabelRe matches [Pasted text #N · M lines] placeholders that
+// were never expanded because their in-memory pastedBlock was lost during a
+// session reload.  When such a label survives into the stored transcript, the
+// model sees an opaque token it cannot interpret.
+var orphanedPasteLabelRe = regexp.MustCompile(`\[Pasted text #\d+ · \d+ lines\]`)
+
+// repairOrphanedPasteLabels scans messages for unexpanded [Pasted text #N]
+// placeholders and inlines any content found elsewhere in the same transcript
+// (a prior submission that did expand it).  Labels with no recoverable content
+// are replaced with a clear note so the model knows the reference is broken
+// instead of hallucinating.  Fast path: if no message carries a paste label,
+// the slice is returned unchanged (no allocation).
+func repairOrphanedPasteLabels(msgs []provider.Message) []provider.Message {
+	// Fast path: no paste labels at all.
+	hasLabel := false
+	for i := range msgs {
+		if strings.Contains(msgs[i].Content, "[Pasted text #") {
+			hasLabel = true
+			break
+		}
+	}
+	if !hasLabel {
+		return msgs
+	}
+	// Build a lookup of expanded content per label from prior messages.
+	type expansion struct{ content string }
+	expanded := make(map[string]*expansion)
+	for i := range msgs {
+		c := msgs[i].Content
+		for {
+			idx := strings.Index(c, "--- Begin [Pasted text #")
+			if idx < 0 {
+				break
+			}
+			end := strings.Index(c[idx:], "] ---\n")
+			if end < 0 {
+				break
+			}
+			label := c[idx+11 : idx+end+1] // "--- Begin " is 11 chars
+			contentStart := idx + end + 6  // "] ---\n" is 6 chars
+			closeMarker := "--- End " + label + " ---"
+			contentEnd := strings.Index(c[contentStart:], closeMarker)
+			if contentEnd < 0 {
+				break
+			}
+			body := strings.TrimSpace(c[contentStart : contentStart+contentEnd])
+			if body != "" {
+				expanded[label] = &expansion{content: body}
+			}
+			c = c[contentStart+contentEnd+len(closeMarker):]
+		}
+	}
+	// Replace orphaned labels in each message.
+	out := msgs
+	repaired := false
+	for i := range msgs {
+		c := msgs[i].Content
+		if !strings.Contains(c, "[Pasted text #") {
+			continue
+		}
+		matches := orphanedPasteLabelRe.FindAllString(c, -1)
+		if len(matches) == 0 {
+			continue
+		}
+		changed := false
+		for _, label := range matches {
+			beginMarker := "--- Begin " + label + " ---"
+			// Already expanded in this message — skip.
+			if strings.Contains(c, beginMarker) {
+				continue
+			}
+			if exp, ok := expanded[label]; ok {
+				c = strings.ReplaceAll(c, label,
+					fmt.Sprintf("%s\n%s\n--- End %s ---", beginMarker, exp.content, label))
+				changed = true
+			} else {
+				c = strings.ReplaceAll(c, label, "[pasted content unavailable]")
+				changed = true
+			}
+		}
+		if changed {
+			if !repaired {
+				out = make([]provider.Message, len(msgs))
+				copy(out, msgs)
+				repaired = true
+			}
+			out[i].Content = c
+		}
+	}
+	return out
 }
 
 // SessionInfo summarises a saved session for the --resume picker: where it is on
