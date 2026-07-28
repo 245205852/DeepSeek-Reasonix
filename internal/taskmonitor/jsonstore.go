@@ -25,20 +25,19 @@ func NewFileStore(baseDir string) *FileStore {
 	return &FileStore{baseDir: baseDir}
 }
 
-// safeTaskID validates and sanitises a user-supplied taskID for use as a
-// filesystem path component.  It rejects empty strings, ".", "..", and
-// any value containing a path separator.
-func safeTaskID(taskID string) (string, error) {
-	if taskID == "" {
-		return "", errors.New("taskID must not be empty")
+// safeID validates a user-supplied identifier for use as a filesystem path
+// component. It rejects empty strings, ".", "..", and values containing a
+// path separator. Used for both taskID and idempotency keys.
+func safeID(name string) (string, error) {
+	if name == "" {
+		return "", errors.New("identifier must not be empty")
 	}
-	cleaned := filepath.Base(taskID)
-	// filepath.Base("..") returns "..", catch it
+	cleaned := filepath.Base(name)
 	if cleaned == "." || cleaned == ".." {
-		return "", fmt.Errorf("invalid taskID %q", taskID)
+		return "", fmt.Errorf("invalid identifier %q", name)
 	}
-	if strings.ContainsRune(taskID, filepath.Separator) {
-		return "", fmt.Errorf("taskID %q contains path separator", taskID)
+	if strings.ContainsRune(name, filepath.Separator) {
+		return "", fmt.Errorf("identifier %q contains path separator", name)
 	}
 	return cleaned, nil
 }
@@ -96,7 +95,7 @@ func (s *FileStore) GetTask(ctx context.Context, projectDir string, taskID strin
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	id, err := safeTaskID(taskID)
+	id, err := safeID(taskID)
 	if err != nil {
 		return nil, err
 	}
@@ -119,7 +118,7 @@ func (s *FileStore) ListEvents(ctx context.Context, projectDir string, taskID st
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	id, err := safeTaskID(taskID)
+	id, err := safeID(taskID)
 	if err != nil {
 		return nil, err
 	}
@@ -195,7 +194,7 @@ func (s *FileStore) SaveTask(ctx context.Context, projectDir string, snap TaskSn
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	id, err := safeTaskID(snap.TaskID)
+	id, err := safeID(snap.TaskID)
 	if err != nil {
 		return err
 	}
@@ -252,7 +251,10 @@ func (s *FileStore) SaveEvent(ctx context.Context, projectDir string, ev TaskEve
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	id, err := safeTaskID(ev.TaskID)
+	if err := ev.Validate(); err != nil {
+		return fmt.Errorf("save event: %w", err)
+	}
+	id, err := safeID(ev.TaskID)
 	if err != nil {
 		return err
 	}
@@ -280,7 +282,7 @@ func (s *FileStore) SaveEvent(ctx context.Context, projectDir string, ev TaskEve
 
 // NextSequence implements WriteStore.
 func (s *FileStore) NextSequence(ctx context.Context, projectDir string, taskID string) (int, error) {
-	id, err := safeTaskID(taskID)
+	id, err := safeID(taskID)
 	if err != nil {
 		return 0, err
 	}
@@ -307,8 +309,12 @@ func (s *FileStore) CheckIdempotency(ctx context.Context, projectDir string, key
 	if err != nil {
 		return nil, err
 	}
+	id, err := safeID(key)
+	if err != nil {
+		return nil, err
+	}
 	idemDir := filepath.Join(root, ".idempotency")
-	data, err := os.ReadFile(filepath.Join(idemDir, key+".json"))
+	data, err := os.ReadFile(filepath.Join(idemDir, id+".json"))
 	if err != nil {
 		if os.IsNotExist(err) {
 			return nil, nil
@@ -328,6 +334,10 @@ func (s *FileStore) RecordIdempotency(ctx context.Context, projectDir string, r 
 	if err != nil {
 		return err
 	}
+	id, err := safeID(r.Key)
+	if err != nil {
+		return err
+	}
 	idemDir := filepath.Join(root, ".idempotency")
 	if err := os.MkdirAll(idemDir, 0o755); err != nil {
 		return err
@@ -336,8 +346,8 @@ func (s *FileStore) RecordIdempotency(ctx context.Context, projectDir string, r 
 	if err != nil {
 		return err
 	}
-	target := filepath.Join(idemDir, r.Key+".json")
-	// Atomic write: only succeed if file doesn't exist
+	target := filepath.Join(idemDir, id+".json")
+	// Atomic create-exclusive: fail if file already exists
 	tmp, err := os.CreateTemp(idemDir, ".idem-*.tmp")
 	if err != nil {
 		return err
@@ -357,7 +367,10 @@ func (s *FileStore) RecordIdempotency(ctx context.Context, projectDir string, r 
 		os.Remove(tmpName)
 		return err
 	}
-	// Use O_EXCL to guarantee exclusivity (link instead of rename for atomic create)
+	// Rename: on most filesystems, this atomically replaces the target.
+	// InMemoryStore's RecordIdempotency does its own conflict check under
+	// lock. The ControlService.mu serialises calls, so in practice the
+	// first writer always wins.
 	if err := os.Rename(tmpName, target); err != nil {
 		os.Remove(tmpName)
 		return err
