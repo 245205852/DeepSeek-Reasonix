@@ -107,6 +107,38 @@ func TestResolveModelWithFallbackHonorsDefaultModel(t *testing.T) {
 	}
 }
 
+func TestResolveNewSessionChatModelSkipsNonChatProviders(t *testing.T) {
+	c := &Config{
+		DefaultModel: "keyless/chat",
+		Providers: []ProviderEntry{
+			{Name: "keyless", BaseURL: "https://keyless.example.com", Model: "chat", APIKeyEnv: "MISSING_KEY"},
+			{Name: "audio", BaseURL: "https://audio.example.com", Model: "tts-1", resolvedAPIKey: "sk-test"},
+			{Name: "embedding", BaseURL: "https://embedding.example.com", Model: "text-embedding-3-small", resolvedAPIKey: "sk-test"},
+			{Name: "visible", BaseURL: "https://visible.example.com", Models: []string{"text-embedding-3-small", "chat-model"}, Default: "text-embedding-3-small", resolvedAPIKey: "sk-test"},
+		},
+	}
+
+	got, fallback, ok := c.ResolveNewSessionChatModel()
+	if !ok || !fallback || got != "visible/chat-model" {
+		t.Fatalf("ResolveNewSessionChatModel() = (%q, %v, %v), want (visible/chat-model, true, true)", got, fallback, ok)
+	}
+}
+
+func TestResolveNewSessionChatModelIgnoresDesktopProviderAccess(t *testing.T) {
+	c := &Config{
+		DefaultModel: "visible/chat",
+		Desktop:      DesktopConfig{ProviderAccess: []string{}},
+		Providers: []ProviderEntry{
+			{Name: "visible", BaseURL: "https://visible.example.com", Model: "chat", resolvedAPIKey: "sk-test"},
+		},
+	}
+
+	got, fallback, ok := c.ResolveNewSessionChatModel()
+	if !ok || fallback || got != "visible/chat" {
+		t.Fatalf("ResolveNewSessionChatModel() = (%q, %v, %v), want (visible/chat, false, true)", got, fallback, ok)
+	}
+}
+
 func TestResolveDesktopNewSessionModelFiltersUnavailableAndNonChatProviders(t *testing.T) {
 	c := &Config{
 		DefaultModel: "hidden/chat",

@@ -828,16 +828,10 @@ func runServe(args []string) int {
 		}
 	}
 	*model = modelForResumePath(*model, *resume, cfg)
-	// Serve always uses the user's global default_model, ignoring any
-	// project-level override, so the model choice stays consistent across
-	// projects and matches the user's account-level preference.
-	if *model == "" {
-		if uc := config.UserConfigPath(); uc != "" {
-			if userCfg := config.LoadForEdit(uc); userCfg != nil && userCfg.DefaultModel != "" {
-				*model = userCfg.DefaultModel
-			}
-		}
-	}
+	// Serve always resolves an implicit model from the user-global config,
+	// ignoring project-level default_model overrides. Explicit flags and
+	// resumable session models remain strict and are preserved verbatim.
+	*model = resolveServeModel(*model)
 	ctrl, err := setupProfileWithOverrides(ctx, *model, *maxSteps, true, bc, profile, cliBuildOverrides{
 		OnSessionRecovered: cliSessionRecoveredHandler(leases),
 	})
@@ -1129,14 +1123,20 @@ func chatREPL(args []string, version string) int {
 
 	// Surface a missing-key warning inside the TUI banner so the first message
 	// failing is at least pre-announced; the user can still enter chat.
+	// resolveModelForCLI transparently falls through a keyless default to the
+	// next configured provider (issue #6996). Validating the final ref is a
+	// no-op for that configured fallback and preserves the warning when every
+	// eligible chat provider is still keyless.
 	missing := ""
 	if cfg, loadErr := config.Load(); loadErr == nil {
-		name := *model
-		if name == "" {
-			name = cfg.DefaultModel
-		}
-		if vErr := cfg.Validate(name); vErr != nil {
-			missing = vErr.Error()
+		name, _, err := resolveModelForCLI(*model, cfg)
+		switch {
+		case err != nil:
+			missing = err.Error()
+		case name != "":
+			if vErr := cfg.Validate(name); vErr != nil {
+				missing = vErr.Error()
+			}
 		}
 	}
 
@@ -1201,15 +1201,6 @@ func chatREPL(args []string, version string) int {
 	m.runtimeProfile = profile
 	if effortOverride != nil {
 		m.effortLevel = *effortOverride
-	}
-	if cfg, e := config.Load(); e == nil {
-		name := *model
-		if name == "" {
-			name = cfg.DefaultModel
-		}
-		if entry, ok := cfg.ResolveModel(name); ok {
-			m.modelRef = entry.Name + "/" + entry.Model
-		}
 	}
 	if effortOverride == nil {
 		m.refreshEffortStatus()

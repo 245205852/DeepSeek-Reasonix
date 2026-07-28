@@ -1836,30 +1836,38 @@ func (c *Config) ResolveModelWithFallback(ref string) (resolvedRef string, fallb
 	return "", false, false
 }
 
-// ResolveDesktopNewSessionModel selects the model for a newly-created desktop
-// session. Its provider must be available in the desktop catalog and expose a
-// chat model. Configured candidates win; if every eligible candidate is
-// keyless, the allowed default (or first allowed chat model) is preserved so
-// desktop can show the existing missing-key recovery UI. Provider order is
-// otherwise stable.
-func (c *Config) ResolveDesktopNewSessionModel() (resolvedRef string, fallback bool, ok bool) {
+// ResolveNewSessionChatModel selects the model for a newly-created chat
+// session. Configured candidates win; if every chat candidate is keyless, the
+// valid default (or first chat model) is preserved so callers can surface their
+// existing missing-key recovery UI. An unknown default is also preserved for
+// the CLI's actionable configuration error. Provider order is otherwise stable.
+func (c *Config) ResolveNewSessionChatModel() (resolvedRef string, fallback bool, ok bool) {
+	return c.resolveNewSessionChatModel(nil, true)
+}
+
+func (c *Config) resolveNewSessionChatModel(providerAllowed func(string) bool, preserveUnknownDefault bool) (resolvedRef string, fallback bool, ok bool) {
 	if c == nil {
 		return "", false, false
 	}
-	access := desktopProviderAccessMap(c.Desktop.ProviderAccess)
-	providerAllowed := func(name string) bool {
-		return c.Desktop.ProviderAccess == nil || access[strings.TrimSpace(name)]
+	if providerAllowed == nil {
+		providerAllowed = func(string) bool { return true }
 	}
 
 	def := strings.TrimSpace(c.DefaultModel)
 	keylessDefault := ""
 	if def != "" {
-		if entry, found := c.ResolveModel(def); found &&
-			providerAllowed(entry.Name) && IsLikelyChatModel(entry.Model) {
-			if entry.Configured() {
-				return def, false, true
+		if entry, found := c.ResolveModel(def); found {
+			if providerAllowed(entry.Name) && IsLikelyChatModel(entry.Model) {
+				if entry.Configured() {
+					return def, false, true
+				}
+				keylessDefault = def
 			}
-			keylessDefault = def
+		} else if preserveUnknownDefault {
+			// CLI/boot callers need the stale value intact so their existing
+			// unknown-model error can name it and explain the providers that
+			// replaced it. Desktop uses its recovery UI and does not preserve it.
+			return def, false, true
 		}
 	}
 
@@ -1895,6 +1903,19 @@ func (c *Config) ResolveDesktopNewSessionModel() (resolvedRef string, fallback b
 		return keylessFallback, true, true
 	}
 	return "", false, false
+}
+
+// ResolveDesktopNewSessionModel selects the model for a newly-created desktop
+// session. It shares the chat-model fallback policy with other frontends while
+// limiting candidates to providers exposed by the desktop access catalog.
+func (c *Config) ResolveDesktopNewSessionModel() (resolvedRef string, fallback bool, ok bool) {
+	if c == nil {
+		return "", false, false
+	}
+	access := desktopProviderAccessMap(c.Desktop.ProviderAccess)
+	return c.resolveNewSessionChatModel(func(name string) bool {
+		return c.Desktop.ProviderAccess == nil || access[strings.TrimSpace(name)]
+	}, false)
 }
 
 // APIKey resolves the entry's API key from its api_key_env.

@@ -210,9 +210,15 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 	secrets.SetFilterSubprocessEnv(cfg.Secrets.FilterSubprocessEnv)
 	secrets.SetProtectSensitiveFiles(cfg.Secrets.ProtectSensitiveFiles)
 	secrets.RegisterCredentialEnvKeys(cfg.CredentialEnvNames())
+	// Fall through a keyless default_model to the next configured chat model
+	// instead of hard-failing every command on "missing env X_API_KEY" (issue
+	// #6996). The fallback only kicks in when the caller did not pass an
+	// explicit opts.Model; explicit choices still fail loudly.
 	modelName := opts.Model
 	if modelName == "" {
-		modelName = cfg.DefaultModel
+		if resolved, _, ok := cfg.ResolveNewSessionChatModel(); ok {
+			modelName = resolved
+		}
 	}
 	config.NormalizeLegacyMimoCustomProvidersForRefs(cfg, modelName)
 	tokenMode := NormalizeTokenMode(opts.TokenMode)
