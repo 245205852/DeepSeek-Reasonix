@@ -1772,7 +1772,7 @@ func selectableDesktopModelRef(c *config.Config, ref string) (string, error) {
 	if !ok {
 		return "", fmt.Errorf("unknown model %q", ref)
 	}
-	if !modelProviderAccessAllowed(providerAccessSet(c.Desktop.ProviderAccess), entry.Name) {
+	if !modelProviderAccessAllowed(c.Desktop.ProviderAccess, entry.Name) {
 		return "", fmt.Errorf("model %q is not available because provider %q is not added", ref, entry.Name)
 	}
 	if !entry.Configured() {

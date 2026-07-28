@@ -50,6 +50,8 @@ type tabDisplayState struct {
 
 const displayPersistRetryLimit = 4
 
+var errNoDesktopChatModel = errors.New("no desktop chat model is available; add a chat-capable provider in Settings > Model > Access")
+
 type pendingDisplayWrite struct {
 	dir         string
 	sessionPath string
@@ -2559,7 +2561,7 @@ func (a *App) ensureBlankTab(scope, workspaceRoot, forcedTokenMode string) (TabM
 	if scope == "global" {
 		actualRoot = globalRoot
 	}
-	defaultModel, defaultToolApprovalMode := desktopNewSessionDefaults()
+	defaultModel, defaultToolApprovalMode := desktopNewSessionDefaults(scope, actualRoot)
 
 	a.mu.Lock()
 	for _, id := range a.orderedTabIDsLocked() {
@@ -3465,6 +3467,28 @@ func clearTabStartupError(tab *WorkspaceTab) {
 	tab.StartupErrLeaseHeld = false
 }
 
+func (a *App) recordTabStartupFailure(tab *WorkspaceTab, buildGeneration uint64, wailsCtx context.Context, err error) {
+	leaseHeld := false
+	a.mu.Lock()
+	if a.tabBuildSupersededLocked(tab, buildGeneration) {
+		a.mu.Unlock()
+		return
+	}
+	leaseHeld = setTabStartupError(tab, err)
+	tab.Ready = false
+	if leaseHeld {
+		a.setSessionRuntimePhaseLocked(tab, sessionRuntimeLeaseBlocked, err)
+	} else {
+		a.setSessionRuntimePhaseLocked(tab, sessionRuntimeFailed, err)
+	}
+	tab.releaseSessionLease()
+	a.mu.Unlock()
+	if leaseHeld {
+		a.scheduleDeferredStartupBuild(tab.ID)
+	}
+	a.emitReady(wailsCtx, tab.ID)
+}
+
 func (a *App) buildTabControllerWithContext(tab *WorkspaceTab, loadedSession loadedTabSession, buildCtx context.Context, buildGeneration uint64, buildCancel context.CancelFunc) {
 	a.runtimeAdmissionMu.RLock()
 	defer a.runtimeAdmissionMu.RUnlock()
@@ -3518,25 +3542,7 @@ func (a *App) buildTabControllerWithContextAdmissionHeld(tab *WorkspaceTab, load
 	_ = config.MigrateLegacyCredentialsForRoot(root)
 	cfg, err := config.LoadForRoot(root)
 	if err != nil {
-		leaseHeld := false
-		a.mu.Lock()
-		if a.tabBuildSupersededLocked(tab, buildGeneration) {
-			a.mu.Unlock()
-			return
-		}
-		leaseHeld = setTabStartupError(tab, err)
-		tab.Ready = false
-		if leaseHeld {
-			a.setSessionRuntimePhaseLocked(tab, sessionRuntimeLeaseBlocked, err)
-		} else {
-			a.setSessionRuntimePhaseLocked(tab, sessionRuntimeFailed, err)
-		}
-		tab.releaseSessionLease()
-		a.mu.Unlock()
-		if leaseHeld {
-			a.scheduleDeferredStartupBuild(tab.ID)
-		}
-		a.emitReady(wailsCtx, tab.ID)
+		a.recordTabStartupFailure(tab, buildGeneration, wailsCtx, err)
 		return
 	}
 
@@ -3598,7 +3604,12 @@ func (a *App) buildTabControllerWithContextAdmissionHeld(tab *WorkspaceTab, load
 		}
 	}
 	if model == "" {
-		model = cfg.DefaultModel
+		resolved, _, ok := cfg.ResolveDesktopNewSessionModel()
+		if !ok {
+			a.recordTabStartupFailure(tab, buildGeneration, wailsCtx, errNoDesktopChatModel)
+			return
+		}
+		model = resolved
 	}
 	config.NormalizeLegacyMimoCustomProvidersForRefs(cfg, model)
 	requestedModel := model

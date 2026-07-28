@@ -491,6 +491,12 @@ func mergeTOMLProviderAccess(paths []string) ([]string, bool, error) {
 		if !meta.IsDefined("desktop", "provider_access") {
 			continue
 		}
+		if !saw {
+			// Preserve declaration state even when the list is explicitly empty.
+			// A nil slice means legacy/undeclared access; a non-nil empty slice
+			// means the user intentionally removed every desktop provider.
+			merged = []string{}
+		}
 		saw = true
 		for _, name := range f.Desktop.ProviderAccess {
 			name = strings.TrimSpace(name)
