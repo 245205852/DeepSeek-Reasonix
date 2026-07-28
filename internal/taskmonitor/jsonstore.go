@@ -10,7 +10,6 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
-	"syscall"
 )
 
 // FileStore is a Store backed by a JSON file tree under a project-local
@@ -277,10 +276,10 @@ func (s *FileStore) AppendAuditEvent(ctx context.Context, projectDir string, ev 
 	defer f.Close()
 
 	// Exclusive lock for cross-process atomicity
-	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX); err != nil {
+	if err := lockTaskFile(f); err != nil {
 		return fmt.Errorf("append audit event: %w", err)
 	}
-	defer syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
+	defer unlockTaskFile(f)
 
 	// Read current events to compute next sequence (safe under lock)
 	if _, err := f.Seek(0, 0); err != nil {
