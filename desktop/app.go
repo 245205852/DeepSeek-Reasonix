@@ -1689,8 +1689,7 @@ func parseScope(s string) memory.Scope {
 // lazily on first use so the desktop can open before the project directory is
 // fully resolved.
 func (a *App) taskStore() taskmonitor.WriteStore {
-	dir := a.projectDir()
-	return taskmonitor.NewFileStore(filepath.Join(dir, ".reasonix", "tasks"))
+	return taskmonitor.NewFileStore(filepath.Join(".reasonix", "tasks"))
 }
 
 // projectDir returns the current project directory (the working directory that
