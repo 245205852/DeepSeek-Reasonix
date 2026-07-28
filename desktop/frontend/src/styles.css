@@ -4771,6 +4771,22 @@ body {
   cursor: wait;
   opacity: 0.5;
 }
+.taskmonitor__confirm {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding-top: 8px;
+  color: var(--fg-dim, #aaa);
+  font-size: 12px;
+}
+.taskmonitor__confirm button {
+  border: 1px solid var(--border, #333);
+  border-radius: 5px;
+  background: var(--panel, #1b1b25);
+  color: inherit;
+  cursor: pointer;
+  padding: 3px 8px;
+}
 .taskmonitor__events-head {
   display: flex;
   align-items: center;

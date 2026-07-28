@@ -78,6 +78,7 @@ export function TaskMonitorPanel({ onClose }: { onClose?: () => void }) {
   const [actionTask, setActionTask] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   const [actionMessage, setActionMessage] = useState<string | null>(null);
+  const [pendingAction, setPendingAction] = useState<{ task: TaskSnapshot; action: "stop" | "cancel" } | null>(null);
 
   // Per-task event state
   const [taskEvents, setTaskEvents] = useState<Map<string, TaskEvent[]>>(
@@ -175,7 +176,11 @@ export function TaskMonitorPanel({ onClose }: { onClose?: () => void }) {
   };
 
   const controlTask = async (task: TaskSnapshot, action: "stop" | "cancel" | "resume" | "open") => {
-    if ((action === "stop" || action === "cancel") && !window.confirm(`${action === "stop" ? "Stop" : "Cancel"} task ${task.task_id}?`)) return;
+    if ((action === "stop" || action === "cancel") && (!pendingAction || pendingAction.task.task_id !== task.task_id || pendingAction.action !== action)) {
+      setPendingAction({ task, action });
+      return;
+    }
+    setPendingAction(null);
     setActionTask(task.task_id);
     setActionError(null);
     setActionMessage(null);
@@ -420,6 +425,13 @@ export function TaskMonitorPanel({ onClose }: { onClose?: () => void }) {
                         )}
                         <button disabled={actionTask === t.task_id} onClick={() => void controlTask(t, "open")}>Open Session</button>
                       </div>
+                      {pendingAction?.task.task_id === t.task_id && (
+                        <div className="taskmonitor__confirm">
+                          <span>{pendingAction.action === "stop" ? "Stop" : "Cancel"} this task?</span>
+                          <button type="button" onClick={() => void controlTask(t, pendingAction.action)}>Confirm</button>
+                          <button type="button" onClick={() => setPendingAction(null)}>Keep</button>
+                        </div>
+                      )}
                     </div>
                   )}
                 </div>
