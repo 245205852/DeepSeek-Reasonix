@@ -1719,6 +1719,34 @@ func (a *App) ListTaskEvents(taskID string, afterSequence int) ([]taskmonitor.Ta
 	return a.taskStore().ListEvents(a.ctx, a.projectDir(), taskID, afterSequence)
 }
 
+// StopTask stops a running task. It uses the persisted store for state
+// and the session's jobs.Manager to kill the running process.
+func (a *App) StopTask(taskID string, expectedVersion uint64, reason, idemKey string) (taskmonitor.ControlResult, error) {
+	cs := taskmonitor.NewControlService(a.taskStore())
+	a.mu.RLock()
+	if a.ctrl != nil {
+		cs.SetJobKiller(ctrlJobKiller{a.ctrl})
+	}
+	a.mu.RUnlock()
+	return cs.StopTask(a.ctx, a.projectDir(), taskID, expectedVersion, reason, idemKey)
+}
+
+// CancelTask cancels a task through the control service.
+func (a *App) CancelTask(taskID string, expectedVersion uint64, reason, idemKey string) (taskmonitor.ControlResult, error) {
+	cs := taskmonitor.NewControlService(a.taskStore())
+	a.mu.RLock()
+	if a.ctrl != nil {
+		cs.SetJobKiller(ctrlJobKiller{a.ctrl})
+	}
+	a.mu.RUnlock()
+	return cs.CancelTask(a.ctx, a.projectDir(), taskID, expectedVersion, reason, idemKey)
+}
+
+// ctrlJobKiller adapts control.Controller.KillJob to taskmonitor.JobKiller.
+type ctrlJobKiller struct{ ctrl *control.Controller }
+
+func (k ctrlJobKiller) Kill(id string) bool { return k.ctrl.KillJob(id) }
+
 // eventSink is the controller's event.Sink in desktop mode: it forwards every
 // agent event to the webview as one runtime event, JSON-shaped by toWire. It is a
 // type distinct from App so App's bound method set stays the clean command surface

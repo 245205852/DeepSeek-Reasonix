@@ -1337,6 +1337,16 @@ func (c *Controller) Jobs() []jobs.View {
 	return c.jobs.Running()
 }
 
+// KillJob cancels a running background job by ID. Returns false if the job
+// was not found or has already finished. Used by the task monitor control
+// panel to stop/cancel tasks.
+func (c *Controller) KillJob(id string) bool {
+	if c.jobs == nil {
+		return false
+	}
+	return c.jobs.Kill(id)
+}
+
 // SetBypass turns YOLO/bypass mode on or off for the session: while on, every
 // approval prompt is auto-allowed (writers and bash run without asking). Deny
 // rules still block. Runtime-only — never written to config.
