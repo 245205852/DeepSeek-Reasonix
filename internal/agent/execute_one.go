@@ -109,6 +109,13 @@ func (a *Agent) parseToolCall(plan *toolCallPlan) (toolOutcome, bool) {
 			errMsg:  loopGuardBlockErrMsg,
 		}, true
 	}
+	if out, blocked := a.repeatedFailureBlock(plan.call, t); blocked {
+		return toolOutcome{
+			output:  out,
+			blocked: true,
+			errMsg:  loopGuardBlockErrMsg,
+		}, true
+	}
 	if out, blocked := a.staleAnchorEditBlock(plan.call); blocked {
 		return toolOutcome{
 			output:  out,
@@ -628,8 +635,12 @@ func (a *Agent) finishToolExecution(ctx context.Context, plan *toolCallPlan) too
 		if !json.Valid([]byte(call.Arguments)) {
 			detail = strings.TrimRight(detail, "\n") + "\nThe arguments were not valid JSON. Re-emit them exactly per this schema:\n" + string(t.Schema())
 		}
+		a.recordRepeatFailure(call, t, err)
 		body, truncMsg := truncateToolOutput(fmt.Sprintf("error: %v\n%s", err, detail))
 		return toolOutcome{output: body, errMsg: firstLine(err.Error()), truncated: truncMsg != "", truncMsg: truncMsg, recoveryGeneration: recoveryGen}
+	}
+	if mutates {
+		a.clearRepeatFailuresAfterMutation(evidenceName, evidenceArgs, readOnly)
 	}
 	a.recordRepeatSuccess(call, t)
 	// A foreground `task` sub-agent just finished — its result is the final answer.

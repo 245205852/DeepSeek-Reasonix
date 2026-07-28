@@ -121,6 +121,23 @@ func (a *Agent) beginRunTurn(ctx context.Context, input string) (rawInput string
 	// once; the user's raw text remains the classifier source above.
 	rawInput = withInterruptedRecovery(rawInput, a.pendingInterruptedRecovery())
 	a.repeatSuccessCounts = nil
+	if !scoped || a.repeatFailureScope != scope.ID {
+		a.repeatFailureCounts = nil
+	} else {
+		// Only stale-anchor failures have a side-effect-free state recheck.
+		// Ordinary write failures may recover between Runs after user action or
+		// an external state change, so do not carry their retry budget forward.
+		for sig, failure := range a.repeatFailureCounts {
+			if !failure.stateRecheck {
+				delete(a.repeatFailureCounts, sig)
+			}
+		}
+	}
+	if scoped {
+		a.repeatFailureScope = scope.ID
+	} else {
+		a.repeatFailureScope = ""
+	}
 	a.blockedTurnStreak = 0
 	a.loopGuardArmed = false
 	a.loopGuardReceiptMark = 0

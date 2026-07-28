@@ -535,6 +535,23 @@ type Agent struct {
 	// stormSig: a model keeps doing the same successful write, so there is no
 	// error for the failure-only storm breaker to see.
 	repeatSuccessCounts map[string]int
+
+	// repeatFailureCounts tracks semantically identical write-like calls that
+	// keep failing with the same failure class. Unlike stormSig, successful
+	// reads do not blindly clear this state: re-reading a file and then
+	// resending the same stale anchor is still zero progress. Stale-anchor
+	// records also survive target mutations until Preview proves the anchor is
+	// applicable again. Ordinary turns reset the map at Run start; Goal
+	// continuations retain it while their stable delivery scope is unchanged.
+	repeatFailureCounts map[string]repeatFailureRecord
+	repeatFailureScope  string
+}
+
+type repeatFailureRecord struct {
+	count        int
+	errClass     string
+	paths        []string
+	stateRecheck bool
 }
 
 // KeepPolicy is a bitmask controlling which messages are preserved beyond the
@@ -706,6 +723,8 @@ func (a *Agent) SetSession(s *Session) {
 	a.sessCacheHit.Store(0)
 	a.sessCacheMiss.Store(0)
 	a.warnedMissingToolCallReasoning = false
+	a.repeatFailureCounts = nil
+	a.repeatFailureScope = ""
 	if s != nil {
 		a.rebuildTodoState(s.Snapshot())
 	}
