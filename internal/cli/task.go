@@ -54,10 +54,94 @@ func taskCommand(args []string) int {
 		return taskResumeCmd(store, args[1:])
 	case "open-session":
 		return taskOpenSessionCmd(store, args[1:])
+	case "tmux":
+		return taskTmuxCmd(store, args[1:])
 	default:
 		fmt.Fprintf(os.Stderr, "unknown task subcommand: %s\n", args[0])
 		return 2
 	}
+}
+
+func taskTmuxCmd(store taskmonitor.Store, args []string) int {
+	if len(args) == 0 {
+		fmt.Fprintln(os.Stderr, "usage: reasonix task tmux <attach|status|open|detach>")
+		return 2
+	}
+	a := taskmonitor.NewTmuxAdapter(store, ".reasonix/tasks")
+	switch args[0] {
+	case "attach":
+		return taskTmuxAttachCmd(a, args[1:])
+	case "status":
+		return taskTmuxStatusCmd(a, args[1:])
+	case "open":
+		return taskTmuxOpenCmd(a, args[1:])
+	case "detach":
+		return taskTmuxDetachCmd(a, args[1:])
+	default:
+		fmt.Fprintf(os.Stderr, "unknown task tmux subcommand: %s\n", args[0])
+		return 2
+	}
+}
+
+func taskTmuxFlags(name string, args []string) (string, string, bool, *flag.FlagSet, int) {
+	fs := flag.NewFlagSet(name, flag.ContinueOnError)
+	dir := fs.String("dir", "", "project directory scope")
+	session := fs.String("session", "", "tmux session name")
+	jsonOut := fs.Bool("json", false, "output as JSON")
+	if err := fs.Parse(args); err != nil {
+		return "", "", false, fs, 2
+	}
+	return *dir, *session, *jsonOut, fs, 0
+}
+
+func printTmuxResult(r taskmonitor.TmuxResult, jsonOut bool) int {
+	if !jsonOut {
+		fmt.Fprintln(os.Stderr, "tmux task commands require --json")
+		return 2
+	}
+	if err := json.NewEncoder(os.Stdout).Encode(r); err != nil {
+		return 1
+	}
+	if r.Error != nil {
+		return 1
+	}
+	return 0
+}
+
+func taskTmuxAttachCmd(a *taskmonitor.TmuxAdapter, args []string) int {
+	dir, session, jsonOut, fs, code := taskTmuxFlags("task tmux attach", args)
+	if code != 0 || fs.Arg(0) == "" {
+		fmt.Fprintln(os.Stderr, "usage: reasonix task tmux attach <id> --json [--dir DIR] [--session NAME]")
+		return 2
+	}
+	return printTmuxResult(a.Attach(context.Background(), dir, fs.Arg(0), session), jsonOut)
+}
+
+func taskTmuxStatusCmd(a *taskmonitor.TmuxAdapter, args []string) int {
+	dir, _, jsonOut, fs, code := taskTmuxFlags("task tmux status", args)
+	if code != 0 || fs.Arg(0) == "" {
+		fmt.Fprintln(os.Stderr, "usage: reasonix task tmux status <id> --json [--dir DIR]")
+		return 2
+	}
+	return printTmuxResult(a.Status(context.Background(), dir, fs.Arg(0)), jsonOut)
+}
+
+func taskTmuxOpenCmd(a *taskmonitor.TmuxAdapter, args []string) int {
+	dir, _, jsonOut, fs, code := taskTmuxFlags("task tmux open", args)
+	if code != 0 || fs.Arg(0) == "" {
+		fmt.Fprintln(os.Stderr, "usage: reasonix task tmux open <id> --json [--dir DIR]")
+		return 2
+	}
+	return printTmuxResult(a.Open(context.Background(), dir, fs.Arg(0)), jsonOut)
+}
+
+func taskTmuxDetachCmd(a *taskmonitor.TmuxAdapter, args []string) int {
+	dir, _, jsonOut, fs, code := taskTmuxFlags("task tmux detach", args)
+	if code != 0 || fs.Arg(0) == "" {
+		fmt.Fprintln(os.Stderr, "usage: reasonix task tmux detach <id> --json [--dir DIR]")
+		return 2
+	}
+	return printTmuxResult(a.Detach(context.Background(), dir, fs.Arg(0)), jsonOut)
 }
 
 // --- list ---
