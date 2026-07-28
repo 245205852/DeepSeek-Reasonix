@@ -155,6 +155,7 @@ func runAgent(args []string) int {
 		return 1
 	}
 	defer ctrl.Close()
+	SetTaskJobKiller(ctrlKillerAdapter{ctrl})
 
 	runErr := ctrl.Run(ctx, prompt)
 	if metrics != nil {
@@ -268,6 +269,7 @@ func chatREPL(args []string) int {
 		fmt.Fprintln(os.Stderr, i18n.M.ErrorPrefix, err)
 		return 1
 	}
+	SetTaskJobKiller(ctrlKillerAdapter{ctrl})
 
 	// Decide where this conversation's auto-save lands. A resume reuses the
 	// file so closing/reopening keeps appending to the same history; a fresh
@@ -863,3 +865,8 @@ func welcome(version string) int {
 func usage() {
 	fmt.Print(i18n.M.UsageBody)
 }
+
+// ctrlKillerAdapter adapts control.Controller.KillJob to taskmonitor.JobKiller.
+type ctrlKillerAdapter struct{ ctrl *control.Controller }
+
+func (a ctrlKillerAdapter) Kill(id string) bool { return a.ctrl.KillJob(id) }

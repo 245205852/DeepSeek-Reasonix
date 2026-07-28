@@ -19,13 +19,15 @@ import (
 var taskStore taskmonitor.Store
 
 // taskJobKiller is an optional JobKiller for stopping running tasks.
-// It is injected by the main wiring.
+// It is injected by the main wiring or by cli.go when a controller is
+// available (Desktop or running session).  When nil, kill is a no-op.
 var taskJobKiller taskmonitor.JobKiller
 
 // SetTaskStore replaces the Store used by the task subcommands.
 func SetTaskStore(s taskmonitor.Store) { taskStore = s }
 
 // SetTaskJobKiller sets the JobKiller for control subcommands.
+// Called by the wiring when a controller with jobs.Manager is available.
 func SetTaskJobKiller(k taskmonitor.JobKiller) { taskJobKiller = k }
 
 func taskCommand(args []string) int {

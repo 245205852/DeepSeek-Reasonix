@@ -246,6 +246,9 @@ func (s *InMemoryStore) SaveTask(ctx context.Context, projectDir string, snap Ta
 	}
 	cp := snap
 	s.tasks[snap.TaskID] = &cp
+	if s.byProj[projectDir] == nil {
+		s.byProj[projectDir] = make(map[string]struct{})
+	}
 	s.byProj[projectDir][snap.TaskID] = struct{}{}
 	return nil
 }

@@ -5,10 +5,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
+	"syscall"
 )
 
 // FileStore is a Store backed by a JSON file tree under a project-local
@@ -265,15 +267,41 @@ func (s *FileStore) AppendAuditEvent(ctx context.Context, projectDir string, ev 
 	if err := os.MkdirAll(taskDir, 0o755); err != nil {
 		return fmt.Errorf("append audit event: %w", err)
 	}
-	// Read current events to compute next sequence
-	events, err := s.readEvents(taskDir)
-	if err != nil && !os.IsNotExist(err) {
+
+	// Cross-process atomic sequence via file lock on events.jsonl
+	eventsPath := filepath.Join(taskDir, "events.jsonl")
+	f, err := os.OpenFile(eventsPath, os.O_RDWR|os.O_CREATE, 0o644)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+
+	// Exclusive lock for cross-process atomicity
+	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX); err != nil {
+		return fmt.Errorf("append audit event: %w", err)
+	}
+	defer syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
+
+	// Read current events to compute next sequence (safe under lock)
+	if _, err := f.Seek(0, 0); err != nil {
+		return err
+	}
+	raw, err := io.ReadAll(f)
+	if err != nil {
 		return err
 	}
 	max := 0
-	for _, e := range events {
-		if e.Sequence > max {
-			max = e.Sequence
+	for _, line := range strings.Split(string(raw), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		var existing TaskEvent
+		if err := json.Unmarshal([]byte(line), &existing); err != nil {
+			continue
+		}
+		if existing.Sequence > max {
+			max = existing.Sequence
 		}
 	}
 	ev.Sequence = max + 1
@@ -284,13 +312,14 @@ func (s *FileStore) AppendAuditEvent(ctx context.Context, projectDir string, ev 
 	if err != nil {
 		return err
 	}
-	f, err := os.OpenFile(filepath.Join(taskDir, "events.jsonl"), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
-	if err != nil {
+	// Append at end of locked file
+	if _, err := f.Seek(0, 2); err != nil {
 		return err
 	}
-	defer f.Close()
-	_, err = fmt.Fprintln(f, string(data))
-	return err
+	if _, err := f.WriteString(string(data) + "\n"); err != nil {
+		return err
+	}
+	return nil
 }
 
 // ── deprecated: removed NextSequence, SaveEvent — use AppendAuditEvent ──

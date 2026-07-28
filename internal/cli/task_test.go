@@ -601,3 +601,68 @@ func TestFileStoreIntegration_ListTasks_Empty(t *testing.T) {
 		t.Errorf("expected tasks key: %s", out)
 	}
 }
+
+// --- CLI+JobKiller e2e tests ---
+
+// mockJobKiller is a thread-safe mock for JobKiller.
+type mockJobKiller struct {
+	called map[string]int
+}
+
+func newMockKiller() *mockJobKiller {
+	return &mockJobKiller{called: make(map[string]int)}
+}
+
+func (m *mockJobKiller) Kill(id string) bool {
+	m.called[id]++
+	return true
+}
+
+func TestCLI_StopCallsKill(t *testing.T) {
+	s := taskmonitor.NewInMemoryStore()
+	taskStore = s
+	taskJobKiller = newMockKiller()
+	defer func() { taskJobKiller = nil }()
+
+	mustUpsert(t, s, "/p", taskmonitor.TaskSnapshot{
+		SchemaVersion: 1, TaskID: "t1", SessionID: "s1",
+		State: taskmonitor.TaskStateRunning, Version: 1,
+		CreatedAt: time.Now(), UpdatedAt: time.Now(),
+	})
+
+	exit, out := captureOut(func() int {
+		ec := taskCommand([]string{"stop", "--json", "--expected-version", "1", "t1"})
+		return ec
+	})
+	if exit != 0 {
+		t.Fatalf("exit=%d out=%s", exit, out)
+	}
+	mk := taskJobKiller.(*mockJobKiller)
+	if mk.called["t1"] != 1 {
+		t.Errorf("expected Kill(t1) called once, got %v", mk.called)
+	}
+}
+
+func TestCLI_CancelCallsKill(t *testing.T) {
+	s := taskmonitor.NewInMemoryStore()
+	taskStore = s
+	taskJobKiller = newMockKiller()
+	defer func() { taskJobKiller = nil }()
+
+	mustUpsert(t, s, "/p", taskmonitor.TaskSnapshot{
+		SchemaVersion: 1, TaskID: "t1", SessionID: "s1",
+		State: taskmonitor.TaskStateRunning, Version: 1,
+		CreatedAt: time.Now(), UpdatedAt: time.Now(),
+	})
+
+	exit, out := captureOut(func() int {
+		return taskCommand([]string{"cancel", "--json", "--expected-version", "1", "t1"})
+	})
+	if exit != 0 {
+		t.Fatalf("exit=%d out=%s", exit, out)
+	}
+	mk := taskJobKiller.(*mockJobKiller)
+	if mk.called["t1"] != 1 {
+		t.Errorf("expected Kill(t1) called once, got %v", mk.called)
+	}
+}
