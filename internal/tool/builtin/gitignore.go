@@ -30,14 +30,16 @@ type ignoreFrame struct {
 // Stateful across one WalkDir: enter pushes a directory's cumulative frame before
 // its children are visited; skip pops frames once the walk leaves them.
 type walkIgnorer struct {
-	root     string
-	repoRoot string
-	disabled bool
-	frames   []ignoreFrame // shallow→deep; the deepest is the active matcher
+	root        string
+	repoRoot    string
+	disabled    bool
+	frames      []ignoreFrame // shallow→deep; the deepest is the active matcher
+	compiled    map[string]*ignore.GitIgnore
+	forbidRoots []string // directories the walk must never enter
 }
 
-func newWalkIgnorer(root string) *walkIgnorer {
-	ig := &walkIgnorer{root: absClean(root)}
+func newWalkIgnorer(root string, forbidRoots []string) *walkIgnorer {
+	ig := &walkIgnorer{root: absClean(root), compiled: map[string]*ignore.GitIgnore{}, forbidRoots: forbidRoots}
 	rr := findRepoRoot(ig.root)
 	if rr == "" {
 		return ig
@@ -91,7 +93,10 @@ func (ig *walkIgnorer) skip(path, name string, isDir bool) bool {
 	if isHiddenName(name) {
 		return true
 	}
-	if isDir && vendorDirs[name] {
+	if isDir && (vendorDirs[name] || isProtectedDir(abs)) {
+		return true
+	}
+	if isDir && skipForbidDir(abs, ig.forbidRoots) {
 		return true
 	}
 	return ig.ignored(abs, isDir)
@@ -132,7 +137,13 @@ func (ig *walkIgnorer) push(dir string, parent, add []string) {
 	pat := append(append([]string{}, parent...), add...)
 	var gi *ignore.GitIgnore
 	if len(pat) > 0 {
-		gi = ignore.CompileIgnoreLines(pat...)
+		key := strings.Join(pat, "\n")
+		if c, ok := ig.compiled[key]; ok {
+			gi = c
+		} else {
+			gi = ignore.CompileIgnoreLines(pat...)
+			ig.compiled[key] = gi
+		}
 	}
 	ig.frames = append(ig.frames, ignoreFrame{dir: dir, patterns: pat, gi: gi})
 }
@@ -162,9 +173,7 @@ func reanchorPattern(line, relDir string) string {
 		neg = "!"
 		line = line[1:]
 	}
-	if strings.HasPrefix(line, `\`) { // escaped leading '#' or '!'
-		line = line[1:]
-	}
+	line = strings.TrimPrefix(line, `\`) // escaped leading '#' or '!'
 	if relDir == "" || relDir == "." {
 		return neg + line
 	}
@@ -201,11 +210,11 @@ func relSlash(base, target string) string {
 }
 
 func readIgnoreLines(path string) []string {
-	b, err := os.ReadFile(path)
+	body, _, err := readFileEncoded(path)
 	if err != nil {
 		return nil
 	}
-	return strings.Split(string(b), "\n")
+	return strings.Split(body, "\n")
 }
 
 // ancestorsBetween returns the directories in (repoRoot, root], shallow-first.
@@ -295,12 +304,11 @@ func gitConfigPaths() []string {
 }
 
 func scanGitConfigExcludes(path string) string {
-	f, err := os.Open(path)
+	body, _, err := readFileEncoded(path)
 	if err != nil {
 		return ""
 	}
-	defer f.Close()
-	sc := bufio.NewScanner(f)
+	sc := bufio.NewScanner(strings.NewReader(body))
 	inCore := false
 	for sc.Scan() {
 		line := strings.TrimSpace(sc.Text())

@@ -40,6 +40,10 @@ func taskCommand(args []string) int {
 		store = taskmonitor.NewFileStore(".reasonix/tasks")
 	}
 	switch args[0] {
+	case "machine-list":
+		return runTaskCommand(append([]string{"list"}, args[1:]...), os.Stdout)
+	case "machine-show":
+		return runTaskCommand(append([]string{"show"}, args[1:]...), os.Stdout)
 	case "list":
 		return taskListCmd(store, args[1:])
 	case "status":

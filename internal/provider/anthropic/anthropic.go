@@ -9,9 +9,10 @@
 //     requires the *signed* thinking block be replayed on the next turn when a tool
 //     call followed thinking, so Message carries ReasoningSignature alongside
 //     ReasoningContent and this provider replays the signed block on the next
-//     request. Off by default because the field is Anthropic-specific — an
-//     OpenAI-compatible gateway (e.g. DeepSeek's) would reject it. (redacted_thinking
-//     blocks are not yet captured/replayed.)
+//     request. Some Anthropic-compatible gateways such as LongCat instead use
+//     thinking.type enabled|disabled; those values are passed through without
+//     Anthropic's display/output_config fields. Off by default because the field is
+//     provider-specific. (redacted_thinking blocks are not yet captured/replayed.)
 //   - No temperature/top_p. Current Claude models (Opus 4.8/4.7) reject sampling
 //     parameters with a 400; Anthropic steers behavior via prompting instead.
 package anthropic
@@ -21,16 +22,23 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
-	"io"
-	"math/rand"
 	"net/http"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 
+	"reasonix/internal/netclient"
 	"reasonix/internal/provider"
 )
+
+// defaultStreamIdleTimeout caps how long a started SSE stream may go silent before
+// it's treated as a dropped connection — a half-open TCP connection (proxy switched
+// mid-stream) sends no RST, so scanner.Scan() would block forever. Generous on
+// purpose; live streams emit far more often. Stored per-client (client.idleTimeout)
+// so a test can shorten it without a shared global that races other watchdogs.
+const defaultStreamIdleTimeout = 120 * time.Second
 
 const (
 	// anthropicVersion is the required API version header value.
@@ -63,117 +71,161 @@ func New(cfg provider.Config) (provider.Provider, error) {
 		baseURL = defaultBaseURL
 	}
 	keyEnv, _ := cfg.Extra["api_key_env"].(string) // for actionable auth errors
+	keySource, _ := cfg.Extra["api_key_source"].(string)
 	thinking, _ := cfg.Extra["thinking"].(string)
+	thinking = strings.ToLower(strings.TrimSpace(thinking))
 	effort, _ := cfg.Extra["effort"].(string)
+	effort = strings.ToLower(strings.TrimSpace(effort))
+	vision, _ := cfg.Extra["vision"].(bool)
+	headers, _ := cfg.Extra["headers"].(map[string]string)
+	authHeader, _ := cfg.Extra["auth_header"].(bool)
+	httpClient, err := newHTTPClient(cfg)
+	if err != nil {
+		return nil, fmt.Errorf("anthropic: network: %w", err)
+	}
+	// Anthropic's API surface is at {root}/v1/messages, so c.baseURL stores
+	// the *root* — without any trailing /v1. The setup wizard, however, lets
+	// users paste a full OpenAI-compatible URL (e.g.
+	// "https://proxy.example.com/v1") because that's what /models probes
+	// expect. Stripping the trailing /v1 here makes both forms land on the
+	// same endpoint without forcing users to remember Anthropic's quirky
+	// root-vs-versioned split. Without this, a user pasting
+	// "https://proxy.example.com/v1" would probe /v1/models successfully
+	// but get the chat client concatenating onto
+	// "https://proxy.example.com/v1/v1/messages" — a 404.
+	root := strings.TrimRight(baseURL, "/")
+	root = strings.TrimSuffix(root, "/v1")
+	if root == "" {
+		root = defaultBaseURL
+	}
 	return &client{
-		name:     name,
-		apiKey:   cfg.APIKey,
-		keyEnv:   keyEnv,
-		baseURL:  strings.TrimRight(baseURL, "/"),
-		model:    cfg.Model,
-		thinking: thinking,
-		effort:   effort,
-		http:     &http.Client{}, // no overall timeout; lifecycle is ctx-driven
+		name:        name,
+		apiKey:      cfg.APIKey,
+		keyEnv:      keyEnv,
+		keySource:   keySource,
+		baseURL:     root,
+		model:       cfg.Model,
+		thinking:    thinking,
+		effort:      effort,
+		vision:      vision,
+		mimo:        provider.IsMiMoEndpoint(root),
+		headers:     cleanCustomHeaders(headers),
+		authHeader:  authHeader,
+		http:        httpClient, // no overall timeout; lifecycle is ctx-driven
+		idleTimeout: defaultStreamIdleTimeout,
 	}, nil
 }
 
+func newHTTPClient(cfg provider.Config) (*http.Client, error) {
+	spec, _ := cfg.Extra["proxy_spec"].(netclient.ProxySpec)
+	return netclient.NewHTTPClient(spec, netclient.TransportOptions{})
+}
+
 type client struct {
-	name     string
-	apiKey   string
-	keyEnv   string // api_key_env name, surfaced in auth errors
-	baseURL  string
-	model    string
-	thinking string // "adaptive" enables extended thinking; "" = off (config-driven)
-	effort   string // output_config.effort: low|medium|high|xhigh|max; "" = provider default
-	http     *http.Client
+	name        string
+	apiKey      string
+	keyEnv      string // api_key_env name, surfaced in auth errors
+	keySource   string // source of keyEnv, surfaced in auth errors
+	baseURL     string
+	model       string
+	thinking    string // "adaptive" enables extended thinking; "" = off (config-driven)
+	effort      string // output_config.effort: low|medium|high|xhigh|max; "" = provider default
+	vision      bool   // model accepts image input — embed attached images as base64 image blocks
+	mimo        bool   // true for MiMo — upgrades legacy tuple schemas to Draft 2020-12
+	headers     map[string]string
+	authHeader  bool // send Authorization: Bearer instead of Anthropic's x-api-key header
+	http        *http.Client
+	idleTimeout time.Duration // SSE stall watchdog window; defaultStreamIdleTimeout unless a test overrides
+	authed      atomic.Bool   // a request has succeeded — gate transient-401 retry
 }
 
 func (c *client) Name() string { return c.name }
 
-func (c *client) Stream(ctx context.Context, req provider.Request) (<-chan provider.Chunk, error) {
-	body, err := json.Marshal(c.buildRequest(req))
-	if err != nil {
-		return nil, fmt.Errorf("%s: marshal request: %w", c.name, err)
+func (c *client) sendOpts() provider.SendOptions {
+	return provider.SendOptions{
+		Provider:   c.name,
+		KeyEnv:     c.keyEnv,
+		KeySource:  c.keySource,
+		KeyPresent: c.apiKey != "",
+		RetryAuth:  c.authed.Load(),
 	}
-
-	resp, err := c.sendWithRetry(ctx, body)
-	if err != nil {
-		return nil, err
-	}
-
-	out := make(chan provider.Chunk)
-	go c.readStream(resp, out)
-	return out, nil
 }
 
-// sendWithRetry POSTs the request and returns the streaming response, retrying the
-// connection+header phase on transient errors and retryable statuses (408, 429,
-// 5xx — which covers Anthropic's 529 overloaded) with exponential backoff + jitter.
-// Mid-stream failures are not retried (the model has already emitted tokens).
-func (c *client) sendWithRetry(ctx context.Context, body []byte) (*http.Response, error) {
-	const maxAttempts = 3
-	var lastErr error
-	for attempt := 0; attempt < maxAttempts; attempt++ {
-		if attempt > 0 {
-			delay := time.Duration(1<<(attempt-1))*500*time.Millisecond + time.Duration(rand.Intn(250))*time.Millisecond
-			select {
-			case <-ctx.Done():
-				return nil, ctx.Err()
-			case <-time.After(delay):
-			}
+func cleanCustomHeaders(in map[string]string) map[string]string {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(in))
+	for name, value := range in {
+		name = strings.TrimSpace(name)
+		if name == "" || reservedCustomHeader(name) {
+			continue
 		}
+		out[name] = strings.TrimSpace(value)
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
 
+func reservedCustomHeader(name string) bool {
+	switch strings.ToLower(strings.TrimSpace(name)) {
+	case "content-type", "accept", "x-api-key", "authorization", "anthropic-version":
+		return true
+	default:
+		return false
+	}
+}
+
+func applyCustomHeaders(h http.Header, headers map[string]string) {
+	for name, value := range cleanCustomHeaders(headers) {
+		h.Set(name, value)
+	}
+}
+
+// bufPool reuses byte buffers for JSON-marshalled request bodies, reducing GC
+// churn from repeated alloc/free of ~10-100KB buffers per turn.
+var bufPool = sync.Pool{
+	New: func() any { return new(bytes.Buffer) },
+}
+
+func (c *client) Stream(ctx context.Context, req provider.Request) (<-chan provider.Chunk, error) {
+	buf := bufPool.Get().(*bytes.Buffer)
+	buf.Reset()
+	if err := json.NewEncoder(buf).Encode(c.buildRequest(req)); err != nil {
+		bufPool.Put(buf)
+		return nil, fmt.Errorf("%s: marshal request: %w", c.name, err)
+	}
+	body := make([]byte, buf.Len())
+	copy(body, buf.Bytes())
+	bufPool.Put(buf)
+
+	newReq := func(ctx context.Context) (*http.Request, error) {
 		httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/v1/messages", bytes.NewReader(body))
 		if err != nil {
-			return nil, fmt.Errorf("%s: build request: %w", c.name, err)
+			return nil, err
 		}
 		httpReq.Header.Set("Content-Type", "application/json")
 		httpReq.Header.Set("Accept", "text/event-stream")
-		httpReq.Header.Set("x-api-key", c.apiKey)
+		if c.authHeader {
+			httpReq.Header.Set("Authorization", "Bearer "+c.apiKey)
+		} else {
+			httpReq.Header.Set("x-api-key", c.apiKey)
+		}
 		httpReq.Header.Set("anthropic-version", anthropicVersion)
-
-		resp, err := c.http.Do(httpReq)
-		if err != nil {
-			if !isTransientErr(err) {
-				return nil, fmt.Errorf("%s: request failed: %w", c.name, err)
-			}
-			lastErr = fmt.Errorf("%s: request failed: %w", c.name, err)
-			continue
-		}
-		if resp.StatusCode == http.StatusOK {
-			return resp, nil
-		}
-		msg, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-		_, _ = io.Copy(io.Discard, resp.Body)
-		resp.Body.Close()
-		// A rejected key is a configuration problem, not a transient one.
-		if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
-			return nil, &provider.AuthError{Provider: c.name, KeyEnv: c.keyEnv, Status: resp.StatusCode}
-		}
-		statusErr := fmt.Errorf("%s: status %d: %s", c.name, resp.StatusCode, strings.TrimSpace(string(msg)))
-		if !isRetryableStatus(resp.StatusCode) {
-			return nil, statusErr
-		}
-		lastErr = statusErr
+		applyCustomHeaders(httpReq.Header, c.headers)
+		return httpReq, nil
 	}
-	return nil, lastErr
-}
-
-// isRetryableStatus matches 408, 429, and 5xx (incl. Anthropic's 529 overloaded).
-func isRetryableStatus(s int) bool {
-	return s == http.StatusRequestTimeout || s == http.StatusTooManyRequests || (s >= 500 && s <= 599)
-}
-
-// isTransientErr never retries ctx cancellation/deadline (caller intent); retries
-// everything else (DNS, connection reset, abrupt EOF).
-func isTransientErr(err error) bool {
-	if err == nil {
-		return false
+	resp, err := provider.SendWithRetry(ctx, c.http, c.sendOpts(), newReq)
+	if err != nil {
+		return nil, provider.AnnotateToolSchemaError(err, req.Tools)
 	}
-	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-		return false
-	}
-	return true
+	c.authed.Store(true)
+
+	out := make(chan provider.Chunk)
+	go c.readStream(ctx, resp, out)
+	return out, nil
 }
 
 // buildRequest converts the transport-agnostic Request into the Messages API shape:
@@ -208,19 +260,32 @@ func (c *client) buildRequest(req provider.Request) anthRequest {
 			if m.Content != "" {
 				appendBlocks("user", contentBlock{Type: "text", Text: m.Content})
 			}
+			if c.vision {
+				for _, url := range m.Images {
+					if mt, data, ok := provider.ParseImageDataURL(url); ok {
+						appendBlocks("user", contentBlock{Type: "image", Source: &imageSource{Type: "base64", MediaType: mt, Data: data}})
+					}
+				}
+			}
 		case provider.RoleTool:
 			content := m.Content
 			if content == "" {
 				content = "(no output)" // tool_result content must be non-empty
 			}
-			appendBlocks("user", contentBlock{Type: "tool_result", ToolUseID: m.ToolCallID, Content: content})
+			block := contentBlock{Type: "tool_result", ToolUseID: m.ToolCallID, Content: content}
+			if c.vision {
+				if blocks := toolResultBlocks(content, m.Images); blocks != nil {
+					block.Content = blocks
+				}
+			}
+			appendBlocks("user", block)
 		case provider.RoleAssistant:
 			var blocks []contentBlock
 			// Replay the signed thinking block first (Anthropic requires it precede
 			// the tool_use it led to). Only when thinking is on and we have both the
 			// text and its signature — reasoning without a signature (e.g. from an
 			// openai-compatible provider) can't be replayed as a thinking block.
-			if c.thinking != "" && m.ReasoningContent != "" && m.ReasoningSignature != "" {
+			if c.thinking == "adaptive" && m.ReasoningContent != "" && m.ReasoningSignature != "" {
 				blocks = append(blocks, contentBlock{Type: "thinking", Thinking: m.ReasoningContent, Signature: m.ReasoningSignature})
 			}
 			if m.Content != "" {
@@ -242,6 +307,9 @@ func (c *client) buildRequest(req provider.Request) anthRequest {
 		schema := t.Parameters
 		if len(schema) == 0 {
 			schema = json.RawMessage(`{"type":"object","properties":{}}`)
+		}
+		if c.mimo {
+			schema = provider.NormalizeLegacyTupleItemsForDraft202012(schema)
 		}
 		tools = append(tools, anthTool{Name: t.Name, Description: t.Description, InputSchema: schema})
 	}
@@ -274,14 +342,21 @@ func (c *client) buildRequest(req provider.Request) anthRequest {
 		Tools:     tools,
 		Stream:    true,
 	}
-	// Extended thinking is opt-in and Anthropic-specific (a compatible gateway like
-	// DeepSeek's would reject the field). "summarized" display streams the reasoning
-	// text; the default omits it but still emits the signature we round-trip.
-	if c.thinking == "adaptive" {
+	// Extended thinking is opt-in and provider-specific. Anthropic proper uses
+	// type=adaptive plus display/output_config. LongCat-style compatible gateways
+	// use the simpler enabled|disabled knob and do not accept output_config.
+	switch c.thinking {
+	case "adaptive":
 		r.Thinking = &thinkingConfig{Type: "adaptive", Display: "summarized"}
 		if c.effort != "" {
 			r.OutputConfig = &outputConfig{Effort: c.effort}
 		}
+	case "enabled", "disabled":
+		t := c.thinking
+		if c.effort == "enabled" || c.effort == "disabled" {
+			t = c.effort
+		}
+		r.Thinking = &thinkingConfig{Type: t}
 	}
 	return r
 }
@@ -289,21 +364,83 @@ func (c *client) buildRequest(req provider.Request) anthRequest {
 // readStream parses the Messages API SSE stream into Chunks. Text deltas emit live;
 // each tool_use content block emits a ChunkToolCallStart when its id+name are known
 // and a complete ChunkToolCall when the block closes; usage is assembled from
-// message_start (input/cache) + message_delta (output + stop_reason) and emitted
-// once before ChunkDone.
-func (c *client) readStream(resp *http.Response, out chan<- provider.Chunk) {
+// message_start/message_delta usage (compatible gateways may put every counter
+// in the final delta) and emitted once before ChunkDone.
+func (c *client) readStream(ctx context.Context, resp *http.Response, out chan<- provider.Chunk) {
 	defer resp.Body.Close()
 	defer close(out)
 
+	// Close the body if the stream stalls past c.idleTimeout so scanner.Scan()
+	// unblocks instead of hanging on a half-open connection. The watchdog owns the
+	// timer; the read loop only pings the buffered activity channel (no Timer.Reset
+	// race). A context cancel already unblocks the scan via the transport.
+	idleTimeout := c.idleTimeout
+	if idleTimeout <= 0 { // zero-value client (constructed without New)
+		idleTimeout = defaultStreamIdleTimeout
+	}
+	done := make(chan struct{})
+	defer close(done)
+	activity := make(chan struct{}, 1)
+	var stalled atomic.Bool
+	go func() {
+		idle := time.NewTimer(idleTimeout)
+		defer idle.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				resp.Body.Close()
+				return
+			case <-idle.C:
+				stalled.Store(true)
+				resp.Body.Close()
+				return
+			case <-activity:
+				if !idle.Stop() {
+					select {
+					case <-idle.C:
+					default:
+					}
+				}
+				idle.Reset(idleTimeout)
+			case <-done:
+				return
+			}
+		}
+	}()
+
+	send := func(chunk provider.Chunk) bool {
+		return sendChunk(ctx, out, chunk)
+	}
+
 	tools := map[int]*provider.ToolCall{} // tool_use blocks, keyed by content index
+	argBuckets := map[int]int{}           // last emitted 2KB progress bucket per block
 	var inTok, outTok, cacheCreate, cacheRead int
 	var stopReason string
 	haveUsage := false
+	mergeUsage := func(usage *wireUsage) {
+		if usage == nil {
+			return
+		}
+		// The native Anthropic stream reports input/cache counters in
+		// message_start and output_tokens in message_delta. Compatible gateways
+		// such as LongCat report all counters in message_delta instead. Counters
+		// are cumulative and non-negative, so retaining the largest value also
+		// tolerates gateways that repeat partial usage in both events.
+		inTok = max(inTok, usage.InputTokens)
+		outTok = max(outTok, usage.OutputTokens)
+		cacheCreate = max(cacheCreate, usage.CacheCreationInputTokens)
+		cacheRead = max(cacheRead, usage.CacheReadInputTokens)
+		haveUsage = true
+	}
 
 	scanner := bufio.NewScanner(resp.Body)
 	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
 
 	for scanner.Scan() {
+		select { // ping the idle watchdog; non-blocking so a full buffer is fine
+		case activity <- struct{}{}:
+		default:
+		}
 		line := strings.TrimSpace(scanner.Text())
 		// SSE carries `event:` and `data:` lines; the data JSON's own `type` field
 		// is authoritative, so we only need the data payloads.
@@ -317,23 +454,22 @@ func (c *client) readStream(resp *http.Response, out chan<- provider.Chunk) {
 
 		var ev streamEvent
 		if err := json.Unmarshal([]byte(data), &ev); err != nil {
-			out <- provider.Chunk{Type: provider.ChunkError, Err: fmt.Errorf("%s: decode stream: %w", c.name, err)}
+			send(provider.Chunk{Type: provider.ChunkError, Err: fmt.Errorf("%s: decode stream: %w", c.name, err)})
 			return
 		}
 
 		switch ev.Type {
 		case "message_start":
 			if ev.Message != nil && ev.Message.Usage != nil {
-				inTok = ev.Message.Usage.InputTokens
-				cacheCreate = ev.Message.Usage.CacheCreationInputTokens
-				cacheRead = ev.Message.Usage.CacheReadInputTokens
-				haveUsage = true
+				mergeUsage(ev.Message.Usage)
 			}
 		case "content_block_start":
 			if ev.ContentBlock != nil && ev.ContentBlock.Type == "tool_use" {
 				tc := &provider.ToolCall{ID: ev.ContentBlock.ID, Name: ev.ContentBlock.Name}
 				tools[ev.Index] = tc
-				out <- provider.Chunk{Type: provider.ChunkToolCallStart, ToolCall: &provider.ToolCall{ID: tc.ID, Name: tc.Name}}
+				if !send(provider.Chunk{Type: provider.ChunkToolCallStart, ToolCall: &provider.ToolCall{ID: tc.ID, Name: tc.Name}}) {
+					return
+				}
 			}
 		case "content_block_delta":
 			if ev.Delta == nil {
@@ -342,34 +478,47 @@ func (c *client) readStream(resp *http.Response, out chan<- provider.Chunk) {
 			switch ev.Delta.Type {
 			case "text_delta":
 				if ev.Delta.Text != "" {
-					out <- provider.Chunk{Type: provider.ChunkText, Text: ev.Delta.Text}
+					if !send(provider.Chunk{Type: provider.ChunkText, Text: ev.Delta.Text}) {
+						return
+					}
 				}
 			case "thinking_delta":
 				if ev.Delta.Thinking != "" {
-					out <- provider.Chunk{Type: provider.ChunkReasoning, Text: ev.Delta.Thinking}
+					if !send(provider.Chunk{Type: provider.ChunkReasoning, Text: ev.Delta.Thinking}) {
+						return
+					}
 				}
 			case "signature_delta":
 				if ev.Delta.Signature != "" {
-					out <- provider.Chunk{Type: provider.ChunkReasoning, Signature: ev.Delta.Signature}
+					if !send(provider.Chunk{Type: provider.ChunkReasoning, Signature: ev.Delta.Signature}) {
+						return
+					}
 				}
 			case "input_json_delta":
 				if tc := tools[ev.Index]; tc != nil {
 					tc.Arguments += ev.Delta.PartialJSON
+					// Progress ticks for large streaming argument payloads, one
+					// per 2KB bucket (see the openai provider for rationale).
+					if bucket := len(tc.Arguments) / 2048; bucket > argBuckets[ev.Index] {
+						argBuckets[ev.Index] = bucket
+						if !send(provider.Chunk{Type: provider.ChunkToolCallArgsDelta, ToolCall: &provider.ToolCall{ID: tc.ID, Name: tc.Name}, ArgChars: len(tc.Arguments)}) {
+							return
+						}
+					}
 				}
 			}
 		case "content_block_stop":
 			if tc := tools[ev.Index]; tc != nil {
-				out <- provider.Chunk{Type: provider.ChunkToolCall, ToolCall: tc}
+				if !send(provider.Chunk{Type: provider.ChunkToolCall, ToolCall: tc}) {
+					return
+				}
 				delete(tools, ev.Index)
 			}
 		case "message_delta":
 			if ev.Delta != nil && ev.Delta.StopReason != "" {
 				stopReason = ev.Delta.StopReason
 			}
-			if ev.Usage != nil {
-				outTok = ev.Usage.OutputTokens
-				haveUsage = true
-			}
+			mergeUsage(ev.Usage)
 		case "message_stop":
 			// Stream complete; fall through to finalize below.
 		case "error":
@@ -377,27 +526,50 @@ func (c *client) readStream(resp *http.Response, out chan<- provider.Chunk) {
 			if ev.Error != nil && ev.Error.Message != "" {
 				msg = ev.Error.Message
 			}
-			out <- provider.Chunk{Type: provider.ChunkError, Err: fmt.Errorf("%s: %s", c.name, msg)}
+			send(provider.Chunk{Type: provider.ChunkError, Err: fmt.Errorf("%s: %s", c.name, msg)})
 			return
 		}
 	}
 
+	if ctx.Err() != nil {
+		return
+	}
+	if stalled.Load() {
+		send(provider.Chunk{Type: provider.ChunkError, Err: fmt.Errorf("%s: stream stalled — no data for %s, connection likely dropped", c.name, idleTimeout)})
+		return
+	}
 	if err := scanner.Err(); err != nil {
-		out <- provider.Chunk{Type: provider.ChunkError, Err: fmt.Errorf("%s: read stream: %w", c.name, err)}
+		send(provider.Chunk{Type: provider.ChunkError, Err: fmt.Errorf("%s: read stream: %w", c.name, err)})
 		return
 	}
 
 	if haveUsage {
-		out <- provider.Chunk{Type: provider.ChunkUsage, Usage: &provider.Usage{
+		if !send(provider.Chunk{Type: provider.ChunkUsage, Usage: &provider.Usage{
 			PromptTokens:     inTok + cacheCreate + cacheRead,
 			CompletionTokens: outTok,
 			TotalTokens:      inTok + cacheCreate + cacheRead + outTok,
 			CacheHitTokens:   cacheRead,
 			CacheMissTokens:  inTok + cacheCreate, // uncached input + cache writes (billed ≥1×)
 			FinishReason:     mapStopReason(stopReason),
-		}}
+		}}) {
+			return
+		}
 	}
-	out <- provider.Chunk{Type: provider.ChunkDone}
+	send(provider.Chunk{Type: provider.ChunkDone})
+}
+
+func sendChunk(ctx context.Context, out chan<- provider.Chunk, chunk provider.Chunk) bool {
+	select {
+	case out <- chunk:
+		return true
+	default:
+	}
+	select {
+	case <-ctx.Done():
+		return false
+	case out <- chunk:
+		return true
+	}
 }
 
 // mapStopReason translates Anthropic stop reasons to the OpenAI-style finish
@@ -466,8 +638,32 @@ type contentBlock struct {
 	Name         string          `json:"name,omitempty"`        // tool_use
 	Input        json.RawMessage `json:"input,omitempty"`       // tool_use
 	ToolUseID    string          `json:"tool_use_id,omitempty"` // tool_result
-	Content      string          `json:"content,omitempty"`     // tool_result
+	Content      any             `json:"content,omitempty"`     // tool_result: string, or []contentBlock when the result carries images
+	Source       *imageSource    `json:"source,omitempty"`      // image
 	CacheControl *cacheControl   `json:"cache_control,omitempty"`
+}
+
+type imageSource struct {
+	Type      string `json:"type"` // "base64"
+	MediaType string `json:"media_type"`
+	Data      string `json:"data"`
+}
+
+// toolResultBlocks builds array content for a tool_result whose message carries
+// images: the text first, then one image block per parseable data URL. It
+// returns nil when nothing parses, so text-only results keep plain string
+// content — byte-identical serialization to previous releases.
+func toolResultBlocks(text string, images []string) []contentBlock {
+	var imgs []contentBlock
+	for _, url := range images {
+		if mt, data, ok := provider.ParseImageDataURL(url); ok {
+			imgs = append(imgs, contentBlock{Type: "image", Source: &imageSource{Type: "base64", MediaType: mt, Data: data}})
+		}
+	}
+	if imgs == nil {
+		return nil
+	}
+	return append([]contentBlock{{Type: "text", Text: text}}, imgs...)
 }
 
 type anthTool struct {

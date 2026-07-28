@@ -3,8 +3,10 @@ package anthropic
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
@@ -97,6 +99,67 @@ func TestBuildRequestNoSystem(t *testing.T) {
 	}
 }
 
+func TestStreamAnnotatesIndexedToolSchemaError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`{"error":{"message":"Tool 1 function has invalid 'parameters' schema"}}`))
+	}))
+	defer srv.Close()
+
+	p, err := New(provider.Config{Name: "mimo-anthropic", BaseURL: srv.URL, Model: "mimo-v2.5-pro", APIKey: "k"})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	_, err = p.Stream(context.Background(), provider.Request{
+		Messages: []provider.Message{{Role: provider.RoleUser, Content: "hi"}},
+		Tools: []provider.ToolSchema{
+			{Name: "read_file", Parameters: json.RawMessage(`{"type":"object"}`)},
+			{Name: "mcp__files__search", Parameters: json.RawMessage(`{"type":"object"}`)},
+		},
+	})
+	var apiErr *provider.APIError
+	if !errors.As(err, &apiErr) || !strings.Contains(apiErr.ToolContext, `MCP server "files"`) {
+		t.Fatalf("Stream error = %v, want MCP tool source context", err)
+	}
+}
+
+func TestBuildRequestScopesLegacyTupleMigrationToMiMo(t *testing.T) {
+	legacy := json.RawMessage(`{"type":"object","properties":{"pair":{"type":"array","items":[{"type":"string"},{"type":"number"}]}}}`)
+	req := provider.Request{Tools: []provider.ToolSchema{{Name: "tuple", Parameters: legacy}}}
+
+	mimo := (&client{mimo: true}).buildRequest(req)
+	if got := string(mimo.Tools[0].InputSchema); !strings.Contains(got, `"prefixItems"`) || strings.Contains(got, `"items":[`) {
+		t.Fatalf("MiMo parameters = %s, want Draft 2020-12 tuple keywords", got)
+	}
+
+	other := (&client{}).buildRequest(req)
+	if got := string(other.Tools[0].InputSchema); got != string(legacy) {
+		t.Fatalf("non-MiMo parameters changed:\n got: %s\nwant: %s", got, legacy)
+	}
+}
+
+func TestNewDetectsMiMoSchemaDialect(t *testing.T) {
+	for _, tc := range []struct {
+		baseURL string
+		want    bool
+	}{
+		{"https://api.xiaomimimo.com/anthropic", true},
+		{"https://token-plan-cn.xiaomimimo.com/anthropic", true},
+		{"https://token-plan-sgp.xiaomimimo.com/anthropic", true},
+		{"https://token-plan-ams.xiaomimimo.com/anthropic", true},
+		{"https://api.anthropic.com", false},
+		{"https://api.minimaxi.com/anthropic", false},
+	} {
+		p, err := New(provider.Config{Name: "test", BaseURL: tc.baseURL, Model: "model"})
+		if err != nil {
+			t.Fatalf("New(%q): %v", tc.baseURL, err)
+		}
+		if got := p.(*client).mimo; got != tc.want {
+			t.Errorf("New(%q).mimo = %v, want %v", tc.baseURL, got, tc.want)
+		}
+	}
+}
+
 func TestMapStopReason(t *testing.T) {
 	cases := map[string]string{
 		"end_turn":      "stop",
@@ -154,7 +217,7 @@ func TestReadStream(t *testing.T) {
 	c := &client{name: "anthropic"}
 	resp := &http.Response{Body: io.NopCloser(strings.NewReader(sseFixture))}
 	ch := make(chan provider.Chunk)
-	go c.readStream(resp, ch)
+	go c.readStream(context.Background(), resp, ch)
 
 	var text strings.Builder
 	var started, full *provider.ToolCall
@@ -186,20 +249,62 @@ func TestReadStream(t *testing.T) {
 	if full == nil || full.Arguments != `{"city":"Paris"}` {
 		t.Fatalf("tool full = %+v", full)
 	}
-	if usage == nil {
+	switch {
+	case usage == nil:
 		t.Fatal("expected a usage chunk")
-	}
-	if usage.PromptTokens != 150 || usage.CompletionTokens != 25 || usage.TotalTokens != 175 {
+	case usage.PromptTokens != 150 || usage.CompletionTokens != 25 || usage.TotalTokens != 175:
 		t.Fatalf("usage tokens = %+v", usage)
-	}
-	if usage.CacheHitTokens != 50 || usage.CacheMissTokens != 100 {
+	case usage.CacheHitTokens != 50 || usage.CacheMissTokens != 100:
 		t.Fatalf("usage cache = hit %d miss %d", usage.CacheHitTokens, usage.CacheMissTokens)
-	}
-	if usage.FinishReason != "tool_calls" {
+	case usage.FinishReason != "tool_calls":
 		t.Fatalf("finish reason = %q", usage.FinishReason)
 	}
 	if !done {
 		t.Fatal("expected a done chunk")
+	}
+}
+
+// LongCat's Anthropic-compatible SSE stream can omit message_start.usage and
+// report the complete usage object in message_delta. Those input/cache counters
+// must not disappear from Reasonix metrics and billing estimates.
+func TestReadStreamUsageFromMessageDelta(t *testing.T) {
+	sse := `event: message_start
+data: {"type":"message_start","message":{"id":"msg_1"}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"OK"}}
+
+event: message_delta
+data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"input_tokens":13,"output_tokens":3,"cache_creation_input_tokens":5,"cache_read_input_tokens":7}}
+
+event: message_stop
+data: {"type":"message_stop"}
+`
+	c := &client{name: "longcat-anthropic"}
+	resp := &http.Response{Body: io.NopCloser(strings.NewReader(sse))}
+	ch := make(chan provider.Chunk)
+	go c.readStream(context.Background(), resp, ch)
+
+	var usage *provider.Usage
+	for ck := range ch {
+		if ck.Type == provider.ChunkError {
+			t.Fatalf("unexpected error chunk: %v", ck.Err)
+		}
+		if ck.Type == provider.ChunkUsage {
+			usage = ck.Usage
+		}
+	}
+	if usage == nil {
+		t.Fatal("expected a usage chunk")
+	}
+	if usage.PromptTokens != 25 || usage.CompletionTokens != 3 || usage.TotalTokens != 28 {
+		t.Fatalf("usage tokens = %+v", usage)
+	}
+	if usage.CacheHitTokens != 7 || usage.CacheMissTokens != 18 {
+		t.Fatalf("usage cache = hit %d miss %d", usage.CacheHitTokens, usage.CacheMissTokens)
+	}
+	if usage.FinishReason != "stop" {
+		t.Fatalf("finish reason = %q", usage.FinishReason)
 	}
 }
 
@@ -209,7 +314,7 @@ func TestReadStreamError(t *testing.T) {
 	c := &client{name: "anthropic"}
 	resp := &http.Response{Body: io.NopCloser(strings.NewReader(sse))}
 	ch := make(chan provider.Chunk)
-	go c.readStream(resp, ch)
+	go c.readStream(context.Background(), resp, ch)
 
 	var gotErr error
 	for ck := range ch {
@@ -253,6 +358,52 @@ func TestBuildRequestThinking(t *testing.T) {
 	}
 }
 
+func TestBuildRequestOmitsResolvedToolCallMetadata(t *testing.T) {
+	readOnly := false
+	c := &client{model: "claude-opus-4-8"}
+	req := c.buildRequest(provider.Request{Messages: []provider.Message{{
+		Role: provider.RoleAssistant,
+		ToolCalls: []provider.ToolCall{{
+			ID: "call_1", Name: "use_capability", Arguments: `{}`,
+			ResolvedName: "mcp__db__write", CapabilityID: "mcp-tool:db/write",
+			ResolvedReadOnly: &readOnly,
+		}},
+	}}})
+	b, err := json.Marshal(req.Messages)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	for _, forbidden := range []string{"resolved_name", "resolvedName", "capability_id", "capabilityId", "resolved_read_only", "resolvedReadOnly", "mcp__db__write"} {
+		if strings.Contains(string(b), forbidden) {
+			t.Fatalf("provider request leaked local tool metadata %q: %s", forbidden, b)
+		}
+	}
+	if !strings.Contains(string(b), `"name":"use_capability"`) {
+		t.Fatalf("provider request lost stable proxy name: %s", b)
+	}
+}
+
+func TestBuildRequestThinkingEnabledGateway(t *testing.T) {
+	c := &client{model: "LongCat-2.0", thinking: "enabled", effort: "disabled"}
+	r := c.buildRequest(provider.Request{
+		Messages: []provider.Message{
+			{Role: provider.RoleUser, Content: "hi"},
+			{Role: provider.RoleAssistant, Content: "ok", ReasoningContent: "signed reasoning", ReasoningSignature: "sig"},
+		},
+	})
+	if r.Thinking == nil || r.Thinking.Type != "disabled" || r.Thinking.Display != "" {
+		t.Fatalf("thinking config = %+v, want disabled without display", r.Thinking)
+	}
+	if r.OutputConfig != nil {
+		t.Fatalf("enabled/disabled gateway thinking must omit output_config: %+v", r.OutputConfig)
+	}
+	for _, block := range r.Messages[1].Content {
+		if block.Type == "thinking" {
+			t.Fatalf("enabled/disabled gateway must not replay Anthropic signed thinking blocks: %+v", r.Messages[1])
+		}
+	}
+}
+
 // TestBuildRequestThinkingOff is the default: no thinking field, and reasoning is
 // NOT replayed (even with a signature present) since the model wasn't asked to think.
 func TestBuildRequestThinkingOff(t *testing.T) {
@@ -268,6 +419,33 @@ func TestBuildRequestThinkingOff(t *testing.T) {
 		if b.Type == "thinking" {
 			t.Fatal("thinking block must not be replayed when thinking is off")
 		}
+	}
+}
+
+func TestBuildRequestDropsLocalMetadata(t *testing.T) {
+	c := &client{model: "claude-opus-4-8"}
+	r := c.buildRequest(provider.Request{Messages: []provider.Message{
+		{Role: provider.RoleUser, Content: "continue"},
+		{Role: provider.RoleUser, Content: "edited prompt", Edited: true, Original: "original prompt"},
+		{Role: provider.RoleAssistant, Content: "done", WorkDurationMs: 24_000, MemoryCitations: []provider.MemoryCitation{{
+			ID: "mem-1", Source: "MEMORY.md", LineStart: 116, LineEnd: 123, Note: "workflow",
+		}}},
+	}})
+	b, err := json.Marshal(r.Messages)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if strings.Contains(string(b), "memoryCitations") || strings.Contains(string(b), "MEMORY.md") {
+		t.Fatalf("local memory citations leaked into Anthropic request: %s", b)
+	}
+	if strings.Contains(string(b), "workDurationMs") || strings.Contains(string(b), "work_duration_ms") {
+		t.Fatalf("local work duration leaked into Anthropic request: %s", b)
+	}
+	if strings.Contains(string(b), "original prompt") || strings.Contains(string(b), `"edited"`) || strings.Contains(string(b), `"original"`) {
+		t.Fatalf("local edit metadata leaked into Anthropic request: %s", b)
+	}
+	if !strings.Contains(string(b), "done") {
+		t.Fatalf("assistant content was dropped with local metadata: %s", b)
 	}
 }
 
@@ -302,7 +480,7 @@ func TestReadStreamThinking(t *testing.T) {
 	c := &client{name: "anthropic"}
 	resp := &http.Response{Body: io.NopCloser(strings.NewReader(sseThinking))}
 	ch := make(chan provider.Chunk)
-	go c.readStream(resp, ch)
+	go c.readStream(context.Background(), resp, ch)
 
 	var reasoning, text strings.Builder
 	var sig string
@@ -325,6 +503,102 @@ func TestReadStreamThinking(t *testing.T) {
 	}
 	if text.String() != "Hi" {
 		t.Fatalf("text = %q", text.String())
+	}
+}
+
+// TestBaseURLNormalizedForV1Messages checks the URL-rewriting step in New().
+// Anthropic's Messages endpoint is {root}/v1/messages, but the setup wizard
+// accepts OpenAI-style URLs (e.g. "https://proxy.example.com/v1") because
+// /models probes expect that shape. Without the strip, the chat client would
+// concatenate /v1/messages onto an already-versioned root and the request
+// would go to https://proxy.example.com/v1/v1/messages — failing 404.
+func TestBaseURLNormalizedForV1Messages(t *testing.T) {
+	cases := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{"plain root (no /v1)", "https://api.anthropic.com", "https://api.anthropic.com"},
+		{"versioned v1 (OpenAI shape)", "https://proxy.example.com/v1", "https://proxy.example.com"},
+		{"versioned v1 with trailing slash", "https://proxy.example.com/v1/", "https://proxy.example.com"},
+		{"versioned v1 with path prefix", "https://gateway.example.com/api/v1", "https://gateway.example.com/api"},
+		{"trailing slash only", "https://api.anthropic.com/", "https://api.anthropic.com"},
+		{"empty falls back to default", "", "https://api.anthropic.com"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			p, err := New(provider.Config{
+				Name:    "test",
+				Model:   "claude-opus-4-8",
+				BaseURL: tc.in,
+			})
+			if err != nil {
+				t.Fatalf("New: %v", err)
+			}
+			c, ok := p.(*client)
+			if !ok {
+				t.Fatalf("provider type = %T, want *client", p)
+			}
+			if c.baseURL != tc.want {
+				t.Errorf("baseURL = %q, want %q", c.baseURL, tc.want)
+			}
+		})
+	}
+}
+
+func TestStreamSupportsBearerAuthHeaderAndCustomHeaders(t *testing.T) {
+	var gotAuth, gotAPIKey, gotVersion, gotUserAgent string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/messages" {
+			t.Errorf("path = %q, want /v1/messages", r.URL.Path)
+		}
+		gotAuth = r.Header.Get("Authorization")
+		gotAPIKey = r.Header.Get("x-api-key")
+		gotVersion = r.Header.Get("anthropic-version")
+		gotUserAgent = r.Header.Get("User-Agent")
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, "event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n")
+	}))
+	defer srv.Close()
+
+	p, err := New(provider.Config{
+		Name:    "gateway",
+		BaseURL: srv.URL,
+		Model:   "claude-sonnet-4-6",
+		APIKey:  "sk-test",
+		Extra: map[string]any{
+			"auth_header": true,
+			"headers": map[string]string{
+				"User-Agent":        "Reasonix",
+				"Authorization":     "Bearer wrong",
+				"x-api-key":         "wrong",
+				"anthropic-version": "bad",
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	ch, err := p.Stream(context.Background(), provider.Request{
+		Messages: []provider.Message{{Role: provider.RoleUser, Content: "hi"}},
+	})
+	if err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+	for range ch {
+	}
+
+	if gotAuth != "Bearer sk-test" {
+		t.Fatalf("Authorization = %q, want Bearer sk-test", gotAuth)
+	}
+	if gotAPIKey != "" {
+		t.Fatalf("x-api-key = %q, want omitted", gotAPIKey)
+	}
+	if gotVersion != anthropicVersion {
+		t.Fatalf("anthropic-version = %q, want %q", gotVersion, anthropicVersion)
+	}
+	if gotUserAgent != "Reasonix" {
+		t.Fatalf("User-Agent = %q, want Reasonix", gotUserAgent)
 	}
 }
 

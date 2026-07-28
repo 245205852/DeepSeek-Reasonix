@@ -180,7 +180,7 @@ func TestCacheHitPrefixStable(t *testing.T) {
 		}
 		t.Logf("turn %d: prompt=%d hit=%d miss=%d → 'cache %d%%' (hit/prompt=%d%%) | %s",
 			i, u.PromptTokens, u.CacheHitTokens, u.CacheMissTokens, hitRate(u), want,
-			strings.TrimSpace(FormatUsageLine(u, nil)))
+			strings.TrimSpace(FormatUsageLine(u, nil, nil)))
 		if u.CacheHitTokens+u.CacheMissTokens != u.PromptTokens {
 			t.Errorf("display denominator mismatch: hit+miss=%d != prompt=%d (status%% would read wrong)",
 				u.CacheHitTokens+u.CacheMissTokens, u.PromptTokens)
@@ -254,7 +254,7 @@ func TestCacheHitSurvivesTooSmallWindow(t *testing.T) {
 	paused := false
 	for _, n := range sink.notices {
 		t.Logf("notice: %s", n)
-		if strings.Contains(n, "Auto-compaction paused") {
+		if strings.Contains(n, "Automatic context cleanup paused") {
 			paused = true
 		}
 	}
@@ -352,6 +352,26 @@ func TestSessionAggregateCacheRate(t *testing.T) {
 	t.Logf("after %d turns: aggregate(session) = %d%%  vs  single(last turn) = %d%%", turns, agg, single)
 	if agg <= 0 || agg > 100 {
 		t.Errorf("aggregate rate out of range: %d%%", agg)
+	}
+}
+
+func TestSetSessionResetsSessionCache(t *testing.T) {
+	mock := &mockDeepSeek{t: t, reasoning: longReasoning}
+	srv := httptest.NewServer(http.HandlerFunc(mock.handler))
+	defer srv.Close()
+
+	a, _ := newAgent(t, srv.URL, mock.tools(), 0, 0)
+	if err := a.Run(context.Background(), strings.Repeat("please consider this requirement. ", 6)); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	hit, miss := a.SessionCache()
+	if hit+miss == 0 {
+		t.Fatalf("SessionCache()=%d/%d before reset, want telemetry to record the turn", hit, miss)
+	}
+	a.SetSession(NewSession("system"))
+	hit, miss = a.SessionCache()
+	if hit != 0 || miss != 0 {
+		t.Fatalf("SessionCache()=%d/%d after SetSession, want reset", hit, miss)
 	}
 }
 

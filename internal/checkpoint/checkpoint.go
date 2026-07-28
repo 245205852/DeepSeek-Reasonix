@@ -17,18 +17,27 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
-	"strings"
 	"sync"
 	"time"
 
 	"reasonix/internal/diff"
+	fileenc "reasonix/internal/fileutil/encoding"
 )
 
 // FileSnap is one file's state at the moment it was first touched in a turn.
 // Content == nil means the file did not exist then, so a restore deletes it.
 type FileSnap struct {
-	Path    string  `json:"path"`
-	Content *string `json:"content"`
+	Path     string        `json:"path"`
+	Content  *string       `json:"content"`
+	Encoding *fileenc.Kind `json:"encoding,omitempty"`
+}
+
+// FileState is the earliest pre-edit state recorded for a file in this
+// session. Content == nil means the file did not exist before the session's
+// first tracked edit.
+type FileState struct {
+	Content  *string
+	Encoding *fileenc.Kind
 }
 
 // Checkpoint anchors the pre-edit state of every distinct file touched during one
@@ -70,9 +79,6 @@ type Store struct {
 func New(dir, root string) *Store {
 	s := &Store{dir: dir, root: root, seen: map[string]bool{}}
 	if dir != "" {
-		if err := os.MkdirAll(dir, 0o755); err != nil {
-			slog.Warn("checkpoint: create dir failed, persistence disabled", "dir", dir, "err", err)
-		}
 		s.load()
 	}
 	return s
@@ -87,7 +93,7 @@ func (s *Store) load() {
 		if e.IsDir() || filepath.Ext(e.Name()) != ".json" {
 			continue
 		}
-		b, err := os.ReadFile(filepath.Join(s.dir, e.Name()))
+		b, err := fileenc.ReadFileUTF8(filepath.Join(s.dir, e.Name()))
 		if err != nil {
 			continue
 		}
@@ -132,9 +138,17 @@ func (s *Store) Bounds() map[int]int {
 // Only the first touch of a path in the current turn is kept (that is its
 // turn-start content). A no-op before the first Begin.
 func (s *Store) Snapshot(ch diff.Change) {
+	if ch.Path == "" {
+		return
+	}
+	var enc *fileenc.Kind
+	if ch.Kind != diff.Create {
+		enc = s.detectEncoding(ch.Path)
+	}
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.cur == nil || ch.Path == "" || s.seen[ch.Path] {
+	if s.cur == nil || s.seen[ch.Path] {
 		return
 	}
 	s.seen[ch.Path] = true
@@ -143,8 +157,21 @@ func (s *Store) Snapshot(ch diff.Change) {
 		old := ch.OldText
 		content = &old
 	}
-	s.cur.Files = append(s.cur.Files, FileSnap{Path: ch.Path, Content: content})
+	s.cur.Files = append(s.cur.Files, FileSnap{Path: ch.Path, Content: content, Encoding: enc})
 	s.persist(s.cur)
+}
+
+func (s *Store) detectEncoding(p string) *fileenc.Kind {
+	abs, err := safePath(s.root, p)
+	if err != nil {
+		return nil
+	}
+	b, err := os.ReadFile(abs)
+	if err != nil {
+		return nil
+	}
+	enc, _ := fileenc.Detect(b)
+	return &enc
 }
 
 func (s *Store) persist(c *Checkpoint) {
@@ -153,6 +180,10 @@ func (s *Store) persist(c *Checkpoint) {
 	}
 	b, err := json.Marshal(c)
 	if err != nil {
+		return
+	}
+	if err := os.MkdirAll(s.dir, 0o755); err != nil {
+		slog.Warn("checkpoint: create dir failed", "dir", s.dir, "err", err)
 		return
 	}
 	if err := os.WriteFile(filepath.Join(s.dir, fmt.Sprintf("turn-%d.json", c.Turn)), b, 0o644); err != nil {
@@ -193,6 +224,35 @@ func (s *Store) List() []Meta {
 	return out
 }
 
+// FileState returns the earliest pre-edit state recorded for p across the
+// session. Paths are compared after resolving them against the workspace root,
+// because older checkpoints may contain absolute paths while newer writers use
+// workspace-relative paths.
+func (s *Store) FileState(p string) (FileState, bool) {
+	want, err := safePath(s.root, p)
+	if err != nil {
+		return FileState{}, false
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, c := range s.all() {
+		for _, f := range c.Files {
+			got, err := safePath(s.root, f.Path)
+			if err != nil || got != want {
+				continue
+			}
+			state := FileState{Encoding: f.Encoding}
+			if f.Content != nil {
+				content := *f.Content
+				state.Content = &content
+			}
+			return state, true
+		}
+	}
+	return FileState{}, false
+}
+
 // all returns done + cur in turn order. Caller holds the lock.
 func (s *Store) all() []*Checkpoint {
 	cps := append([]*Checkpoint(nil), s.done...)
@@ -203,6 +263,43 @@ func (s *Store) all() []*Checkpoint {
 	return cps
 }
 
+// TruncateFrom discards checkpoints at or after fromTurn. Conversation rewind
+// removes those future turns from the transcript, so their file snapshots must
+// not remain visible or collide with newly-created checkpoints that reuse the
+// same turn numbers after the rewrite.
+func (s *Store) TruncateFrom(fromTurn int) {
+	s.mu.Lock()
+	done := s.done[:0]
+	deleteTurns := map[int]bool{}
+	for _, c := range s.done {
+		if c.Turn >= fromTurn {
+			deleteTurns[c.Turn] = true
+			continue
+		}
+		done = append(done, c)
+	}
+	for i := len(done); i < len(s.done); i++ {
+		s.done[i] = nil
+	}
+	s.done = done
+	if s.cur != nil && s.cur.Turn >= fromTurn {
+		deleteTurns[s.cur.Turn] = true
+		s.cur = nil
+		s.seen = map[string]bool{}
+	}
+	dir := s.dir
+	s.mu.Unlock()
+
+	if dir == "" || len(deleteTurns) == 0 {
+		return
+	}
+	for turn := range deleteTurns {
+		if err := os.Remove(filepath.Join(dir, fmt.Sprintf("turn-%d.json", turn))); err != nil && !os.IsNotExist(err) {
+			slog.Warn("checkpoint: truncate failed", "turn", turn, "err", err)
+		}
+	}
+}
+
 // RestoreCode reverts the workspace to its state at the start of turn `fromTurn`:
 // for every file touched in turn fromTurn or later, it writes back that file's
 // earliest recorded content (or deletes it when the earliest snapshot was nil).
@@ -210,7 +307,7 @@ func (s *Store) all() []*Checkpoint {
 func (s *Store) RestoreCode(fromTurn int) (written, deleted []string, err error) {
 	s.mu.Lock()
 	// earliest snapshot per path across checkpoints >= fromTurn (turn order → first wins).
-	earliest := map[string]*string{}
+	earliest := map[string]FileSnap{}
 	order := []string{}
 	for _, c := range s.all() {
 		if c.Turn < fromTurn {
@@ -220,7 +317,7 @@ func (s *Store) RestoreCode(fromTurn int) (written, deleted []string, err error)
 			if _, ok := earliest[f.Path]; ok {
 				continue
 			}
-			earliest[f.Path] = f.Content
+			earliest[f.Path] = f
 			order = append(order, f.Path)
 		}
 	}
@@ -233,8 +330,8 @@ func (s *Store) RestoreCode(fromTurn int) (written, deleted []string, err error)
 			err = gerr
 			continue
 		}
-		content := earliest[p]
-		if content == nil {
+		snap := earliest[p]
+		if snap.Content == nil {
 			if rmErr := os.Remove(abs); rmErr == nil {
 				deleted = append(deleted, p)
 			} else if !os.IsNotExist(rmErr) {
@@ -246,13 +343,28 @@ func (s *Store) RestoreCode(fromTurn int) (written, deleted []string, err error)
 			err = mkErr
 			continue
 		}
-		if wErr := os.WriteFile(abs, []byte(*content), 0o644); wErr != nil {
+		enc := fileenc.UTF8
+		if snap.Encoding != nil {
+			enc = *snap.Encoding
+		} else if current := detectCurrentEncoding(abs); current != nil {
+			enc = *current
+		}
+		if wErr := os.WriteFile(abs, fileenc.Encode(*snap.Content, enc), 0o644); wErr != nil {
 			err = wErr
 			continue
 		}
 		written = append(written, p)
 	}
 	return written, deleted, err
+}
+
+func detectCurrentEncoding(path string) *fileenc.Kind {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return nil
+	}
+	enc, _ := fileenc.Detect(b)
+	return &enc
 }
 
 // safePath resolves p against root and rejects anything escaping it — restore
@@ -266,7 +378,8 @@ func safePath(root, p string) (string, error) {
 	abs = filepath.Clean(abs)
 	if root != "" {
 		r := filepath.Clean(root)
-		if abs != r && !strings.HasPrefix(abs, r+string(os.PathSeparator)) {
+		rel, err := filepath.Rel(r, abs)
+		if err != nil || !filepath.IsLocal(rel) {
 			return "", fmt.Errorf("checkpoint path %q escapes workspace %q", p, root)
 		}
 	}

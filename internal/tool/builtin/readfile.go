@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"golang.org/x/text/transform"
@@ -26,9 +27,19 @@ const (
 func init() { tool.RegisterBuiltin(readFile{}) }
 
 // readFile reads a text file. workDir, when non-empty, is the directory a
-// relative path is resolved against (see resolveIn); the zero value registered
-// at init resolves against the process working directory.
-type readFile struct{ workDir string }
+// relative path is resolved against (see resolveIn). paths maps session-scoped
+// external read aliases to local roots without changing the model-visible tool
+// schema. forbidRoots lists directories the tool may not read from (resolved,
+// absolute paths).
+type readFile struct {
+	workDir     string
+	paths       *PathResolver
+	forbidRoots []string
+	// overlay, when non-nil, serves content from the host transport (unsaved
+	// editor buffers) before falling back to disk. Consulted only after path
+	// resolution and read confinement, and never for external alias paths.
+	overlay FileOverlay
+}
 
 const (
 	readFileDefaultLimit = 2000 // lines returned when limit is unset
@@ -54,6 +65,12 @@ func (readFile) Schema() json.RawMessage {
 
 func (readFile) ReadOnly() bool { return true }
 
+// SnipHint front-loads file content: the most relevant lines are near the top,
+// so keep a generous head and a short tail when an old read is shortened.
+func (readFile) SnipHint() tool.SnipHint {
+	return tool.SnipHint{Head: 120, Tail: 12, HeadChars: 12000, TailChars: 2000}
+}
+
 func (r readFile) Execute(ctx context.Context, args json.RawMessage) (string, error) {
 	var p struct {
 		Path   string `json:"path"`
@@ -66,7 +83,16 @@ func (r readFile) Execute(ctx context.Context, args json.RawMessage) (string, er
 	if p.Path == "" {
 		return "", fmt.Errorf("path is required")
 	}
-	p.Path = resolveIn(r.workDir, p.Path)
+	rp := resolveReadablePath(r.workDir, p.Path, r.paths)
+	p.Path = rp.Path
+	displayPath := rp.DisplayPath
+	if confineRead(r.forbidRoots, p.Path) {
+		err := &os.PathError{Op: "open", Path: p.Path, Err: os.ErrNotExist}
+		if rp.External {
+			return "", fmt.Errorf("read %s: %s", displayPath, rp.ErrorText(err))
+		}
+		return "", err
+	}
 	if p.Offset < 0 {
 		p.Offset = 0
 	}
@@ -74,16 +100,28 @@ func (r readFile) Execute(ctx context.Context, args json.RawMessage) (string, er
 		p.Limit = readFileDefaultLimit
 	}
 
+	// The host overlay (unsaved editor buffers) wins over the disk when it can
+	// serve the path. Content arrives already decoded as text, so the encoding
+	// and binary-detection pipeline below applies to the disk fallback only.
+	if r.overlay != nil && !rp.External && filepath.IsAbs(p.Path) {
+		if content, ok := r.overlay.ReadTextFile(ctx, p.Path); ok {
+			return r.scan(strings.NewReader(content), p.Offset, p.Limit)
+		}
+	}
+
 	// A directory can be os.Open'd but not read as text — catch it up front with
 	// an actionable message (and avoid the doubled "read X: read X:" the scanner's
 	// error would otherwise produce) so the model switches to the ls tool.
 	if info, err := os.Stat(p.Path); err == nil && info.IsDir() {
-		return "", fmt.Errorf("%s is a directory, not a file — use the ls tool to list it, or read a specific file inside it", p.Path)
+		return "", fmt.Errorf("%s is a directory, not a file — use the ls tool to list it, or read a specific file inside it", displayPath)
 	}
 
 	f, err := os.Open(p.Path)
 	if err != nil {
-		return "", fmt.Errorf("read %s: %w", p.Path, err)
+		if rp.External {
+			return "", fmt.Errorf("read %s: %s", displayPath, rp.ErrorText(err))
+		}
+		return "", fmt.Errorf("read %s: %w", displayPath, err)
 	}
 	defer f.Close()
 
@@ -103,7 +141,10 @@ func (r readFile) Execute(ctx context.Context, args json.RawMessage) (string, er
 		// buffer it fully (these files are rare and usually small).
 		rest, rerr := io.ReadAll(f)
 		if rerr != nil {
-			return "", fmt.Errorf("read %s: %w", p.Path, rerr)
+			if rp.External {
+				return "", fmt.Errorf("read %s: %s", displayPath, rp.ErrorText(rerr))
+			}
+			return "", fmt.Errorf("read %s: %w", displayPath, rerr)
 		}
 		all := append(peek, rest...)
 		bom := fileenc.DetectQuick(all)
@@ -117,8 +158,26 @@ func (r readFile) Execute(ctx context.Context, args json.RawMessage) (string, er
 		return r.scan(io.MultiReader(bytes.NewReader(body), f), p.Offset, p.Limit)
 	}
 
+	// BOM-less UTF-16 (Windows source files) has a NUL for every ASCII char but
+	// no BOM, so it reaches here; recognise it by its NUL pattern and decode it
+	// rather than rejecting it as binary.
+	if k, ok := fileenc.DetectUTF16NoBOM(peek); ok {
+		rest, rerr := io.ReadAll(f)
+		if rerr != nil {
+			if rp.External {
+				return "", fmt.Errorf("read %s: %s", displayPath, rp.ErrorText(rerr))
+			}
+			return "", fmt.Errorf("read %s: %w", displayPath, rerr)
+		}
+		all := append(peek, rest...)
+		return r.scan(bytes.NewReader(fileenc.Decode(all, k)), p.Offset, p.Limit)
+	}
+
 	if bytes.IndexByte(peek, 0) >= 0 {
-		return "", fmt.Errorf("binary file %s (NUL byte detected); use `bash hexdump` or another tool", p.Path)
+		if rp.External {
+			return "", fmt.Errorf("binary file %s (NUL byte detected); not shown by read_file", displayPath)
+		}
+		return "", fmt.Errorf("binary file %s (NUL byte detected); use `bash hexdump` or another tool", displayPath)
 	}
 
 	// Read up to a bounded sample for encoding detection, then stream the rest —
@@ -153,33 +212,33 @@ func (r readFile) Execute(ctx context.Context, args json.RawMessage) (string, er
 func (r readFile) scan(src io.Reader, offset, limit int) (string, error) {
 	scanner := bufio.NewScanner(src)
 	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
-	upTo := offset + limit + 1
 
 	var collected []string
 	lineNo := 0
+	hasMore := false
 	for scanner.Scan() {
 		lineNo++
-		if lineNo > offset && len(collected) < limit {
+		if lineNo <= offset {
+			continue
+		}
+		if len(collected) < limit {
 			collected = append(collected, scanner.Text())
+			continue
 		}
-		if lineNo >= upTo {
-			break
-		}
-	}
-	remaining := 0
-	for scanner.Scan() {
-		remaining++
+		// A line past the requested window exists — stop here rather than reading
+		// the rest of the file just to count the remainder.
+		hasMore = true
+		break
 	}
 	if err := scanner.Err(); err != nil {
 		return "", fmt.Errorf("scan: %w", err)
 	}
-	totalSeen := lineNo + remaining
 
-	if totalSeen == 0 {
+	if lineNo == 0 {
 		return "(empty file)", nil
 	}
 	if len(collected) == 0 {
-		return fmt.Sprintf("(offset %d is past EOF — file has %d lines)", offset, totalSeen), nil
+		return fmt.Sprintf("(offset %d is past EOF — file has %d lines)", offset, lineNo), nil
 	}
 
 	maxShown := offset + len(collected)
@@ -189,10 +248,8 @@ func (r readFile) scan(src io.Reader, offset, limit int) (string, error) {
 	for i, line := range collected {
 		fmt.Fprintf(&b, "%*d→%s\n", w, offset+i+1, line)
 	}
-	more := totalSeen - (offset + len(collected))
-	if more > 0 {
-		fmt.Fprintf(&b, "\n[%d more line(s); pass offset=%d to continue]\n",
-			more, offset+len(collected))
+	if hasMore {
+		fmt.Fprintf(&b, "\n[more lines below; pass offset=%d to continue]\n", offset+len(collected))
 	}
 	return b.String(), nil
 }

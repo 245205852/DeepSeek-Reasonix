@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"encoding/json"
 	"fmt"
 	"io"
 	"strings"
@@ -80,29 +81,34 @@ func (s *TextSink) Emit(e event.Event) {
 
 	case event.ToolDispatch:
 		// The early (Partial) dispatch carries no args — the full one prints the
-		// line. Without this the headless stream shows every call twice.
-		if e.Tool.Partial {
+		// line. A same-ID preview refresh is for upsert-capable frontends; this
+		// append-only stream ignores it so every tool still prints exactly once.
+		if e.Tool.Partial || e.Tool.Refreshed {
 			break
 		}
-		fmt.Fprintf(s.out, "  -> %s %s\n", e.Tool.Name, CompactArgs(e.Tool.Args))
+		fmt.Fprintf(s.out, "  -> %s\n", textSinkToolHead(e.Tool.Name, e.Tool.Args))
 		s.wroteAnything = true
 
 	case event.ToolResult:
 		// A successful result is silent (it only feeds the model); a blocked
 		// call surfaces the same "⊘ name <reason>" line the agent used to print.
 		if e.Tool.Err != "" {
-			fmt.Fprintf(s.out, "  ⊘ %s %s\n", e.Tool.Name, e.Tool.Err)
+			name := e.Tool.Name
+			if e.Tool.Name == "use_capability" {
+				name = textSinkToolHead(e.Tool.Name, e.Tool.Args)
+			}
+			fmt.Fprintf(s.out, "  ⊘ %s %s\n", name, e.Tool.Err)
 			s.wroteAnything = true
 		}
 
 	case event.Usage:
-		// Close a still-open raw text block (the planner path streams text with
-		// no Message redraw) before the usage line, matching the old Fprintln.
+		// Close a still-open raw text block before the usage line, matching the
+		// old Fprintln path for streams that do not emit a Message redraw.
 		if s.textWritten {
 			fmt.Fprintln(s.out)
 			s.textWritten = false
 		}
-		s.usageLine(e.Usage, e.Pricing)
+		s.usageLine(e.Usage, e.Pricing, e.CacheDiagnostics)
 
 	case event.Notice:
 		glyph := "·"
@@ -136,6 +142,27 @@ func (s *TextSink) Emit(e event.Event) {
 	}
 }
 
+func textSinkToolHead(name, args string) string {
+	if name != "use_capability" {
+		return name + " " + CompactArgs(args)
+	}
+	var call struct {
+		Action       string `json:"action"`
+		CapabilityID string `json:"capability_id"`
+	}
+	if json.Unmarshal([]byte(args), &call) != nil {
+		return "MCP"
+	}
+	subject := strings.TrimSpace(call.CapabilityID)
+	if subject == "" {
+		subject = strings.TrimSpace(call.Action)
+	}
+	if subject == "" {
+		return "MCP"
+	}
+	return "MCP(" + subject + ")"
+}
+
 // closeTextStream ends the streamed answer. With a renderer wired in and the
 // stream short enough to scroll back over, it moves the cursor to where text
 // began, clears to end of screen, and re-emits the styled markdown; otherwise
@@ -167,8 +194,8 @@ func (s *TextSink) closeTextStream(text, reasoning string) {
 }
 
 // usageLine writes the one-line token/cache summary; no-op when usage is unset.
-func (s *TextSink) usageLine(u *provider.Usage, p *provider.Pricing) {
-	if line := FormatUsageLine(u, p); line != "" {
+func (s *TextSink) usageLine(u *provider.Usage, p *provider.Pricing, d *event.CacheDiagnostics) {
+	if line := FormatUsageLine(u, p, d); line != "" {
 		fmt.Fprintln(s.out, line)
 		s.wroteAnything = true
 	}
@@ -182,7 +209,7 @@ func (s *TextSink) usageLine(u *provider.Usage, p *provider.Pricing) {
 // denominator just grew. Reasoning tokens (a subset of completion) show the
 // chain-of-thought cost. Shared by TextSink and the chat TUI so both frontends
 // render the line identically.
-func FormatUsageLine(u *provider.Usage, p *provider.Pricing) string {
+func FormatUsageLine(u *provider.Usage, p *provider.Pricing, d *event.CacheDiagnostics) string {
 	if u == nil || u.TotalTokens == 0 {
 		return ""
 	}
@@ -205,8 +232,16 @@ func FormatUsageLine(u *provider.Usage, p *provider.Pricing) string {
 	if p != nil {
 		cost = fmt.Sprintf(" · %s%.4f", p.Symbol(), p.Cost(u))
 	}
-	return fmt.Sprintf("  · %d tok · in %d%s · out %d%s%s",
-		u.TotalTokens, u.PromptTokens, cacheCol, u.CompletionTokens, reasoning, cost)
+	churn := ""
+	if d != nil && d.PrefixChanged {
+		reasons := strings.Join(d.PrefixChangeReasons, "+")
+		if reasons == "" {
+			reasons = "unknown"
+		}
+		churn = fmt.Sprintf(" · cache prefix changed: %s", reasons)
+	}
+	return fmt.Sprintf("  · %d tok · in %d%s · out %d%s%s%s",
+		u.TotalTokens, u.PromptTokens, cacheCol, u.CompletionTokens, reasoning, cost, churn)
 }
 
 // dimText wraps s in the ANSI dim SGR sequence so reasoning streams visually

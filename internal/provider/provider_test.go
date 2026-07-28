@@ -3,6 +3,7 @@ package provider
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"testing"
 )
 
@@ -91,10 +92,196 @@ func TestSanitizeToolPairingLeavesWellFormedUnchanged(t *testing.T) {
 	if len(out) != len(in) {
 		t.Fatalf("well-formed history changed length: %d -> %d", len(in), len(out))
 	}
+	if &out[0] != &in[0] {
+		t.Fatalf("well-formed history should return the input slice without allocating")
+	}
 	for i := range in {
 		if out[i].Role != in[i].Role || out[i].Content != in[i].Content || out[i].ToolCallID != in[i].ToolCallID {
 			t.Fatalf("well-formed message %d mutated: %+v -> %+v", i, in[i], out[i])
 		}
+	}
+}
+
+func TestModelMessagesAndSanitizeDropLocalOnlyInterruptedOutput(t *testing.T) {
+	local := Message{
+		Role: RoleTool, ToolCallID: LocalOnlyToolID, Name: LocalOnlyToolName,
+		Content: "partial answer", ReasoningContent: "partial reasoning", LocalOnly: true,
+		ToolCalls:       []ToolCall{{ID: "partial", Name: "write_file"}},
+		InterruptedTurn: &InterruptedTurnRecovery{Pending: true, InterruptedTools: []string{"write_file"}},
+	}
+	in := []Message{
+		{Role: RoleUser, Content: "task"},
+		local,
+		{Role: RoleUser, Content: "continue"},
+	}
+	model := ModelMessages(in)
+	if len(model) != 2 || model[0].Content != "task" || model[1].Content != "continue" {
+		t.Fatalf("ModelMessages leaked or reordered local-only record: %+v", model)
+	}
+	wire := SanitizeToolPairing(in)
+	if len(wire) != 2 || wire[0].Content != "task" || wire[1].Content != "continue" {
+		t.Fatalf("SanitizeToolPairing leaked local-only record: %+v", wire)
+	}
+	session := NormalizeSessionMessages(in)
+	if len(session) != len(in) || !session[1].LocalOnly || session[1].Content != local.Content {
+		t.Fatalf("session normalization did not preserve local display: %+v", session)
+	}
+}
+
+func TestLocalOnlySentinelIsSafeWhenNewFieldsAreIgnoredByLegacyReader(t *testing.T) {
+	legacyView := []Message{
+		{Role: RoleUser, Content: "task"},
+		{Role: RoleAssistant, ToolCalls: []ToolCall{{ID: "c1", Name: "read_file", Arguments: `{}`}}},
+		{Role: RoleTool, ToolCallID: "c1", Name: "read_file", Content: "ok"},
+		// Simulate an older binary: unknown local_only/interrupted_turn JSON fields
+		// were ignored, leaving only the orphan tool sentinel and partial content.
+		{Role: RoleTool, ToolCallID: LocalOnlyToolID, Name: LocalOnlyToolName, Content: "partial reasoning that must not leak"},
+		{Role: RoleUser, Content: "continue"},
+	}
+	wire := SanitizeToolPairing(legacyView)
+	if len(wire) != 4 {
+		t.Fatalf("legacy normalization kept local sentinel: %+v", wire)
+	}
+	for _, message := range wire {
+		if message.ToolCallID == LocalOnlyToolID || strings.Contains(message.Content, "must not leak") {
+			t.Fatalf("legacy normalization leaked display-only content: %+v", wire)
+		}
+	}
+}
+
+func TestNormalizeSessionMessagesPreservesStandaloneToolMessage(t *testing.T) {
+	in := []Message{
+		{Role: RoleSystem, Content: "sys"},
+		{Role: RoleUser, Content: "run it"},
+		{Role: RoleTool, ToolCallID: "c1", Name: "bash", Content: "large output"},
+	}
+	out := NormalizeSessionMessages(in)
+	if len(out) != len(in) {
+		t.Fatalf("session normalization changed length: %d -> %d", len(in), len(out))
+	}
+	if &out[0] != &in[0] {
+		t.Fatalf("session-safe orphan tool should keep the input slice unchanged")
+	}
+	if out[2].Role != RoleTool || out[2].Content != "large output" {
+		t.Fatalf("standalone tool message was not preserved: %+v", out)
+	}
+}
+
+func TestNormalizeSessionMessagesPreservesExtraToolResult(t *testing.T) {
+	in := []Message{
+		{Role: RoleAssistant, ToolCalls: []ToolCall{{ID: "c1", Name: "bash"}}},
+		{Role: RoleTool, ToolCallID: "c1", Name: "bash", Content: "ok"},
+		{Role: RoleTool, ToolCallID: "ghost", Name: "bash", Content: "saved extra output"},
+	}
+	out := NormalizeSessionMessages(in)
+	if len(out) != len(in) {
+		t.Fatalf("session normalization changed length: %d -> %d", len(in), len(out))
+	}
+	if out[2].ToolCallID != "ghost" || out[2].Content != "saved extra output" {
+		t.Fatalf("extra stored tool result was not preserved: %+v", out)
+	}
+	wire := SanitizeToolPairing(in)
+	if len(wire) != 2 {
+		t.Fatalf("wire sanitize should still drop the extra orphan result, got %+v", wire)
+	}
+}
+
+func TestSanitizeToolPairingClosesTruncatedArgs(t *testing.T) {
+	cases := []struct{ in, want string }{
+		{`{`, `{}`},
+		{`{"time": 2`, `{"time": 2}`},
+		{`{"command": "ls -la`, `{"command": "ls -la"}`},
+		{`{"a": 1,`, `{"a": 1}`},
+		{`{"a":`, `{"a":null}`},
+		{`{"path": "C:\\tmp\`, `{"path": "C:\\tmp"}`},
+		{`{"items": [1, 2`, `{"items": [1, 2]}`},
+		{`total garbage`, `{}`},
+		{`{"ok": true}`, `{"ok": true}`},
+		{``, ``},
+	}
+	for _, c := range cases {
+		in := []Message{
+			{Role: RoleAssistant, ToolCalls: []ToolCall{{ID: "c1", Name: "bash", Arguments: c.in}}},
+			{Role: RoleTool, ToolCallID: "c1", Content: "r"},
+		}
+		out := SanitizeToolPairing(in)
+		if got := out[0].ToolCalls[0].Arguments; got != c.want {
+			t.Errorf("args %q repaired to %q, want %q", c.in, got, c.want)
+		}
+		if in[0].ToolCalls[0].Arguments != c.in {
+			t.Errorf("stored history mutated for %q: %q", c.in, in[0].ToolCalls[0].Arguments)
+		}
+	}
+}
+
+func TestBackfillToolCallNamesByID(t *testing.T) {
+	calls := []ToolCall{{ID: "c1"}, {ID: "c2", Name: "grep"}}
+	results := []Message{
+		{Role: RoleTool, ToolCallID: "c2", Name: "grep"},
+		{Role: RoleTool, ToolCallID: "c1", Name: "ls"}, // returned out of call order
+	}
+	out := backfillToolCallNames(calls, results)
+	if out[0].Name != "ls" {
+		t.Fatalf("empty name not backfilled by id: got %q want ls", out[0].Name)
+	}
+	if out[1].Name != "grep" {
+		t.Fatalf("non-empty name clobbered: got %q want grep", out[1].Name)
+	}
+	if calls[0].Name != "" {
+		t.Fatalf("input slice mutated: %+v", calls)
+	}
+}
+
+func TestBackfillToolCallNamesPositional(t *testing.T) {
+	// Empty ids defeat idDistinct, so names pair by position instead.
+	calls := []ToolCall{{}, {}}
+	results := []Message{{Role: RoleTool, Name: "ls"}, {Role: RoleTool, Name: "cat"}}
+	out := backfillToolCallNames(calls, results)
+	if out[0].Name != "ls" || out[1].Name != "cat" {
+		t.Fatalf("positional backfill wrong: %+v", out)
+	}
+}
+
+func TestBackfillToolCallNamesUnpairedStaysEmpty(t *testing.T) {
+	out := backfillToolCallNames([]ToolCall{{ID: "c1"}}, nil)
+	if out[0].Name != "" {
+		t.Fatalf("unpaired call should keep its empty name, got %q", out[0].Name)
+	}
+}
+
+func TestBackfillToolCallNamesNoEmptyReturnsInput(t *testing.T) {
+	calls := []ToolCall{{ID: "c1", Name: "ls"}, {ID: "c2", Name: "grep"}}
+	out := backfillToolCallNames(calls, []Message{{Role: RoleTool, ToolCallID: "c1", Name: "x"}})
+	if &out[0] != &calls[0] {
+		t.Fatalf("no empty names: want the input slice back without copying")
+	}
+}
+
+func TestSanitizeToolPairingBackfillsEmptyName(t *testing.T) {
+	in := []Message{
+		{Role: RoleAssistant, ToolCalls: []ToolCall{{ID: "c1"}}}, // old session: name lost
+		{Role: RoleTool, ToolCallID: "c1", Name: "ls", Content: "main.go"},
+	}
+	out := SanitizeToolPairing(in)
+	if out[0].ToolCalls[0].Name != "ls" {
+		t.Fatalf("empty tool-call name not backfilled on replay: %+v", out[0].ToolCalls)
+	}
+	if in[0].ToolCalls[0].Name != "" {
+		t.Fatalf("stored history mutated: %+v", in[0].ToolCalls)
+	}
+}
+
+func TestSanitizeToolPairingBackfillsMissingToolResultName(t *testing.T) {
+	in := []Message{
+		{Role: RoleAssistant, ToolCalls: []ToolCall{{ID: "c1", Name: "ls"}}},
+		{Role: RoleTool, ToolCallID: "c1", Content: "main.go"},
+	}
+	out := SanitizeToolPairing(in)
+	if out[1].Name != "ls" {
+		t.Fatalf("missing tool result name not backfilled: %+v", out[1])
+	}
+	if in[1].Name != "" {
+		t.Fatalf("stored history mutated: %+v", in[1])
 	}
 }
 
@@ -140,6 +327,14 @@ func TestPricingCostCalculation(t *testing.T) {
 	}
 }
 
+func TestPricingCostFallsBackToPromptTokensAsMiss(t *testing.T) {
+	p := &Pricing{Input: 2.0, Output: 10.0}
+	u := &Usage{PromptTokens: 500_000, CompletionTokens: 100_000}
+	if got := p.Cost(u); got != 2.0 {
+		t.Errorf("Cost = %f, want 2.0", got)
+	}
+}
+
 func TestPricingCostZeroTokens(t *testing.T) {
 	p := &Pricing{Input: 2.0, Output: 10.0}
 	u := &Usage{}
@@ -171,6 +366,30 @@ func TestPricingSymbolCustom(t *testing.T) {
 	}
 }
 
+func TestPricingSymbolNormalizesCurrencyCodes(t *testing.T) {
+	cases := []struct {
+		currency string
+		want     string
+	}{
+		{currency: "USD", want: "$"},
+		{currency: "dollars", want: "$"},
+		{currency: "CNY", want: "¥"},
+		{currency: "￥", want: "¥"},
+		{currency: "EUR", want: "€"},
+		{currency: "₹", want: "₹"},
+		{currency: "aud", want: "AUD "},
+		{currency: "A$", want: "A$"},
+		{currency: "HK$", want: "HK$"},
+		{currency: "楼", want: "¥"},
+	}
+	for _, tc := range cases {
+		p := &Pricing{Currency: tc.currency}
+		if got := p.Symbol(); got != tc.want {
+			t.Errorf("Currency %q Symbol() = %q, want %q", tc.currency, got, tc.want)
+		}
+	}
+}
+
 // --- AuthError ---
 
 func TestAuthErrorWithKeyEnv(t *testing.T) {
@@ -180,6 +399,19 @@ func TestAuthErrorWithKeyEnv(t *testing.T) {
 		if !contains(msg, want) {
 			t.Errorf("AuthError.Error() missing %q: %s", want, msg)
 		}
+	}
+}
+
+func TestAuthErrorBodyStaysOutOfError(t *testing.T) {
+	// Body carries the server's reason for display layers to extract, but it
+	// must never leak into Error(): servers echo masked key fragments in auth
+	// bodies, and the ambient string flows into logs and traces.
+	e := &AuthError{Provider: "relay", Status: 401, Body: `{"error":{"message":"Your api key: ****ae54 has expired"}}`}
+	if e.Body == "" {
+		t.Fatal("Body should carry the server's reason")
+	}
+	if msg := e.Error(); contains(msg, "ae54") || contains(msg, "{") {
+		t.Errorf("AuthError.Error() must not include body content: %s", msg)
 	}
 }
 
@@ -269,7 +501,7 @@ func TestRoleConstants(t *testing.T) {
 // --- ChunkType constants ---
 
 func TestChunkTypeConstants(t *testing.T) {
-	types := []ChunkType{ChunkText, ChunkReasoning, ChunkToolCallStart, ChunkToolCall, ChunkUsage, ChunkDone, ChunkError}
+	types := []ChunkType{ChunkText, ChunkReasoning, ChunkToolCallStart, ChunkToolCallArgsDelta, ChunkToolCall, ChunkUsage, ChunkDone, ChunkError}
 	for i, ct := range types {
 		if int(ct) != i {
 			t.Errorf("ChunkType %d: got %d", i, int(ct))

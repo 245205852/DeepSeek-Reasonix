@@ -4,6 +4,7 @@ import (
 	"sync"
 	"testing"
 
+	"reasonix/internal/evidence"
 	"reasonix/internal/provider"
 )
 
@@ -59,6 +60,34 @@ func TestSyncTreatsTypedNilSinkAsDiscard(t *testing.T) {
 	var base *typedNilSink
 
 	Sync(base).Emit(Event{Kind: Text, Text: "hello"})
+}
+
+type readinessAuditRecorder struct {
+	events []evidence.ReadinessAudit
+}
+
+func (r *readinessAuditRecorder) Emit(Event) {}
+
+func (r *readinessAuditRecorder) RecordReadinessAudit(a evidence.ReadinessAudit) {
+	r.events = append(r.events, a)
+}
+
+func TestSyncForwardsReadinessAuditReceipts(t *testing.T) {
+	rec := &readinessAuditRecorder{}
+	sink := Sync(rec)
+
+	RecordReadinessAudit(sink, evidence.ReadinessAudit{
+		Result:                 evidence.ReadinessBlocked,
+		MissingProjectChecks:   1,
+		CommandMismatchMissing: 1,
+	})
+
+	if len(rec.events) != 1 {
+		t.Fatalf("readiness audit events = %d, want 1", len(rec.events))
+	}
+	if rec.events[0].Result != evidence.ReadinessBlocked || rec.events[0].MissingProjectChecks != 1 {
+		t.Fatalf("readiness audit not forwarded through Sync: %+v", rec.events[0])
+	}
 }
 
 // --- Discard ---
@@ -181,7 +210,7 @@ func TestChannelBackedSink(t *testing.T) {
 		{Kind: ToolDispatch, Tool: Tool{Name: "bash"}},
 		{Kind: ToolResult, Tool: Tool{Output: "ok"}},
 		{Kind: Usage, Usage: &provider.Usage{TotalTokens: 42}},
-		{Kind: Notice, Level: LevelWarn, Text: "heads up"},
+		{Kind: Notice, Level: LevelWarn, Text: "heads up", Detail: "diagnostics"},
 		{Kind: TurnDone},
 	}
 	for _, e := range events {
@@ -192,6 +221,9 @@ func TestChannelBackedSink(t *testing.T) {
 		got := <-ch
 		if got.Kind != want.Kind {
 			t.Errorf("event %d: Kind = %d, want %d", i, got.Kind, want.Kind)
+		}
+		if got.Detail != want.Detail {
+			t.Errorf("event %d: Detail = %q, want %q", i, got.Detail, want.Detail)
 		}
 	}
 }

@@ -28,8 +28,8 @@ func recentSessions(dir string) []agent.SessionInfo {
 	return sessions
 }
 
-// runResumeCommand handles "/resume": with no argument it lists the most recent
-// saved sessions (newest first, active one marked); "/resume <n>" loads that
+// runResumeCommand handles "/resume": with no argument it opens the recent
+// session picker; "/resume <n>" loads that
 // session into the running controller in place — keeping the current model and
 // replaying the transcript into scrollback.
 func (m *chatTUI) runResumeCommand(input string) {
@@ -41,7 +41,7 @@ func (m *chatTUI) runResumeCommand(input string) {
 
 	args := tokenizeArgs(input) // args[0] == "/resume"
 	if len(args) < 2 {
-		m.showSessions(sessions)
+		m.openResumePicker()
 		return
 	}
 	if m.ctrl.Running() {
@@ -64,32 +64,22 @@ func (m *chatTUI) runResumeCommand(input string) {
 		return
 	}
 	// Persist the conversation we're leaving so switching back later restores it.
+	// Snapshot before moving the lease: the outgoing session must be written
+	// while this process still owns it.
 	_ = m.ctrl.Snapshot()
+	m.followSessionLease()
+	if err := m.rebindSessionLease(target.Path); err != nil {
+		m.notice("resume: " + sessionLeaseHeldNotice(err))
+		return
+	}
 	m.ctrl.Resume(loaded, target.Path)
 	m.replayActiveBranch(i18n.M.ResumedTitle)
-}
-
-// showSessions renders the recent-session list with 1-based indices, timestamp,
-// turn count and preview, marking the one currently active.
-func (m *chatTUI) showSessions(sessions []agent.SessionInfo) {
-	active := m.ctrl.SessionPath()
-	var b strings.Builder
-	b.WriteString(dim("  · " + i18n.M.ResumeListHeader + "\n"))
-	for i, s := range sessions {
-		marker := "  "
-		if s.Path == active {
-			marker = accent("› ")
-		}
-		fmt.Fprintf(&b, "%s%d  %s  %s\n", marker, i+1,
-			s.ModTime.Local().Format("01-02 15:04"), dim(sessionSummary(s)))
-	}
-	m.notice(strings.TrimRight(b.String(), "\n"))
 }
 
 // resumeArgItems completes the index argument of "/resume <n>": once past the
 // command word it lists recent sessions, inserting the 1-based index and
 // showing timestamp + turn count + preview as the hint. Indices match
-// showSessions because both window through recentSessions.
+// the picker because both window through recentSessions.
 func (m *chatTUI) resumeArgItems(val string) ([]compItem, int, bool) {
 	cmdEnd := strings.IndexAny(val, " \t")
 	if cmdEnd < 0 || val[:cmdEnd] != "/resume" {
@@ -112,10 +102,17 @@ func (m *chatTUI) resumeArgItems(val string) ([]compItem, int, bool) {
 	return out, from, true
 }
 
-// sessionSummary is the "N turns · first message" line shared by the /resume
-// list and its argument completion.
+// sessionSummary is the "N turns · display title" line shared by the /resume
+// list and its argument completion. Explicit session renames win, then topic
+// titles, then the raw preview so the user can identify sessions at a glance.
 func sessionSummary(s agent.SessionInfo) string {
-	preview := s.Preview
+	preview := s.CustomTitle
+	if preview == "" {
+		preview = s.TopicTitle
+	}
+	if preview == "" {
+		preview = s.Preview
+	}
 	if preview == "" {
 		preview = "(no user message yet)"
 	}

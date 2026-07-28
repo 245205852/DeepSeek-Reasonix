@@ -9,11 +9,14 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"unicode/utf8"
+
+	"reasonix/internal/shellparse"
 )
 
 type diffOpts struct {
-	bin, model, repo, base, testCmd string
-	maxSteps, timeoutSec, attempts  int
+	bin, model, repo, base, testCmd, profile string
+	maxSteps, timeoutSec, attempts           int
 }
 
 type testRef struct{ name, pkg string }
@@ -34,7 +37,11 @@ type pinResult struct {
 func runDiff(o diffOpts) string {
 	srcFiles := changedGoFiles(o.repo, o.base, false)
 	if len(srcFiles) == 0 {
-		return "## 🤖 Reasonix e2e — diff test-gen\n\nNo Go source changes in this PR (excluding `_test.go`); nothing to generate tests for.\n"
+		profile := o.profile
+		if profile == "" {
+			profile = benchmarkProfileBaseline
+		}
+		return fmt.Sprintf("## 🤖 Reasonix e2e — diff test-gen (%s)\n\nNo Go source changes in this PR (excluding `_test.go`); nothing to generate tests for.\n", profile)
 	}
 	pkgs := packagesOf(srcFiles)
 	prompt := buildDiffPrompt(srcFiles, pkgs, truncate(gitOut(o.repo, "diff", o.base+"...HEAD", "--")))
@@ -77,11 +84,13 @@ func runOnce(o diffOpts, srcFiles, pkgs []string, prompt string) diffReport {
 	if o.model != "" {
 		args = append(args, "--model", o.model)
 	}
+	args = appendBenchmarkProfileArgs(args, o.profile)
 	args = append(args, prompt)
 	cmd := exec.CommandContext(ctx, o.bin, args...)
 	cmd.Dir = o.repo
 	cmd.Stdout = os.Stderr
 	cmd.Stderr = os.Stderr
+	cmd.WaitDelay = 10 * time.Second // bound the wait for a wedged child after ctx timeout
 	runErr := cmd.Run()
 
 	// The agent's new files are untracked, so `git diff HEAD` would miss them;
@@ -110,7 +119,7 @@ func runOnce(o diffOpts, srcFiles, pkgs []string, prompt string) diffReport {
 		newTests: refs, sourceTouched: sourceTouched, testsPass: testsPass,
 		pins: pins, mut: mut, covered: covered, coverTotal: coverTotal,
 		buildOK: buildOK, buildOut: buildOut, failing: failingTestNames(testOut),
-		passed: passed, m: m, runErr: runErr, testOut: testOut, testDiff: testDiff,
+		passed: passed, profile: o.profile, m: m, runErr: runErr, testOut: testOut, testDiff: testDiff,
 	}
 }
 
@@ -150,6 +159,7 @@ func resetTree(repo string) {
 func goBuildAll(repo string) (bool, string) {
 	cmd := exec.Command("go", "build", "./...")
 	cmd.Dir = repo
+	cmd.WaitDelay = 2 * time.Minute // bound the wait if `go build` hangs
 	out, err := cmd.CombinedOutput()
 	return err == nil, string(out)
 }
@@ -185,6 +195,7 @@ type diffReport struct {
 	buildOut            string
 	failing             []string
 	passed              bool
+	profile             string
 	attempt, attempts   int
 	m                   runMetrics
 	runErr              error
@@ -198,7 +209,11 @@ func renderDiff(r diffReport) string {
 	if r.passed {
 		result = "✅ pass"
 	}
-	fmt.Fprintf(&b, "## 🤖 Reasonix e2e — diff test-gen\n\n")
+	profile := r.profile
+	if profile == "" {
+		profile = benchmarkProfileBaseline
+	}
+	fmt.Fprintf(&b, "## 🤖 Reasonix e2e — diff test-gen (%s)\n\n", profile)
 	fmt.Fprintf(&b, "**Result:** %s · **%d** changed source file(s) across **%d** package(s)\n\n", result, len(r.srcFiles), len(r.pkgs))
 
 	pinned, byAssert := countPins(r.pins), countAssertionPins(r.pins)
@@ -218,6 +233,15 @@ func renderDiff(r diffReport) string {
 	fmt.Fprintf(&b, "| Tokens (prompt / completion) | %s / %s |\n", comma(r.m.PromptTokens), comma(r.m.CompletionTokens))
 	fmt.Fprintf(&b, "| Model calls | %d |\n", r.m.Steps)
 	fmt.Fprintf(&b, "| Cost | %s%.4f |\n", currencySym(r.m.Currency), r.m.Cost)
+	if r.m.CapabilityRoutes > 0 || r.m.CapabilitySkillInvocations > 0 || r.m.CapabilityMCPCall > 0 || r.m.ReadinessChecks > 0 {
+		fmt.Fprintf(&b, "| Capability routes (semantic) | %d (%d) |\n", r.m.CapabilityRoutes, r.m.CapabilitySemanticRoutes)
+		fmt.Fprintf(&b, "| Routed candidates (require / prefer / suggest / declined) | %d (%d / %d / %d / %d) |\n", r.m.CapabilityRoutedCandidates, r.m.CapabilityRoutedRequire, r.m.CapabilityRoutedPrefer, r.m.CapabilityRoutedSuggest, r.m.CapabilityDeclines)
+		fmt.Fprintf(&b, "| Skill invocations / MCP proxy calls | %d / %d |\n", r.m.CapabilitySkillInvocations, r.m.CapabilityMCPCall)
+		fmt.Fprintf(&b, "| Review blocks / readiness recoveries | %d / %d |\n", r.m.CapabilityReviewBlocks, r.m.ReadinessRecoveries)
+		if r.m.CapabilityRouterCost > 0 || r.m.CapabilityRouterLatencyMs > 0 {
+			fmt.Fprintf(&b, "| Capability-router cost / latency | %s%.4f / %dms |\n", currencySym(r.m.Currency), r.m.CapabilityRouterCost, r.m.CapabilityRouterLatencyMs)
+		}
+	}
 	if len(r.failing) > 0 {
 		fmt.Fprintf(&b, "| Failing tests | `%s` |\n", strings.Join(r.failing, "`, `"))
 	}
@@ -305,10 +329,22 @@ func differentialPerTest(repo, base string, srcFiles []string, refs []testRef) [
 			_ = os.Remove(filepath.Join(repo, filepath.FromSlash(f)))
 		}
 	}
+	// Restore source even on panic; a tree left on `base` would mask the PR for later steps.
+	restored := false
+	defer func() {
+		if restored {
+			return
+		}
+		for _, f := range srcFiles {
+			_ = exec.Command("git", "-C", repo, "checkout", "HEAD", "--", f).Run()
+		}
+	}()
+
 	out := make([]pinResult, 0, len(refs))
 	for _, r := range refs {
 		cmd := exec.Command("go", "test", "-run", "^"+r.name+"$", r.pkg)
 		cmd.Dir = repo
+		cmd.WaitDelay = 2 * time.Minute // bound the wait for a hung test
 		raw, err := cmd.CombinedOutput()
 		out = append(out, pinResult{
 			testRef:     r,
@@ -319,6 +355,7 @@ func differentialPerTest(repo, base string, srcFiles []string, refs []testRef) [
 	for _, f := range srcFiles {
 		_ = exec.Command("git", "-C", repo, "checkout", "HEAD", "--", f).Run()
 	}
+	restored = true
 	return out
 }
 
@@ -386,6 +423,11 @@ func parseCoverProfile(repo, path string) map[string][]coverBlock {
 // repoRelFromModulePath turns "reasonix/internal/agent/foo.go" into
 // "internal/agent/foo.go" by dropping the first path element (the module root).
 func repoRelFromModulePath(p string) string {
+	// Strip the full module prefix; a generic first-segment cut mis-strips a multi-segment module path.
+	prefix := "reasonix/"
+	if strings.HasPrefix(p, prefix) {
+		return p[len(prefix):]
+	}
 	if i := strings.IndexByte(p, '/'); i >= 0 {
 		return p[i+1:]
 	}
@@ -401,26 +443,31 @@ func changedLineSet(repo, base string, srcFiles []string) map[string]map[int]boo
 	file := ""
 	newLine := 0
 	for _, ln := range strings.Split(diff, "\n") {
+		// '-' (deletion) lines are intentionally unhandled: they don't advance the
+		// new-side line counter, so they fall through with no case.
 		switch {
 		case strings.HasPrefix(ln, "+++ b/"):
 			file = strings.TrimPrefix(ln, "+++ b/")
 			out[file] = map[int]bool{}
 		case strings.HasPrefix(ln, "@@"):
 			// @@ -a,b +c,d @@ — start collecting at new-side line c.
+			// Digit-only cut: malformed headers (e.g. `@@ +abc @@`) fail closed.
 			if plus := strings.Index(ln, "+"); plus >= 0 {
 				num := ln[plus+1:]
-				if sp := strings.IndexAny(num, ", "); sp >= 0 {
-					num = num[:sp]
+				end := len(num)
+				for i := 0; i < len(num); i++ {
+					if num[i] < '0' || num[i] > '9' {
+						end = i
+						break
+					}
 				}
-				fmt.Sscanf(num, "%d", &newLine)
+				_, _ = fmt.Sscanf(num[:end], "%d", &newLine)
 			}
 		case strings.HasPrefix(ln, "+") && !strings.HasPrefix(ln, "+++"):
 			if file != "" {
 				out[file][newLine] = true
 			}
 			newLine++
-		case strings.HasPrefix(ln, "-"):
-			// deletion: does not advance the new-side counter
 		}
 	}
 	return out
@@ -464,11 +511,26 @@ func parseNewTests(diff string) []testRef {
 			continue
 		}
 		sig := strings.TrimPrefix(body, "func ")
-		paren := strings.IndexByte(sig, '(')
-		if paren <= 0 {
-			continue
+		// Method form `(r T) Name(...)` starts with '('; parse the receiver out before the name.
+		var name string
+		if sig[0] == '(' {
+			close := strings.IndexByte(sig, ')')
+			if close < 0 {
+				continue
+			}
+			rest := strings.TrimSpace(sig[close+1:])
+			methodParen := strings.IndexByte(rest, '(')
+			if methodParen <= 0 {
+				continue
+			}
+			name = rest[:methodParen]
+		} else {
+			funcParen := strings.IndexByte(sig, '(')
+			if funcParen <= 0 {
+				continue
+			}
+			name = sig[:funcParen]
 		}
-		name := sig[:paren]
 		if strings.HasPrefix(name, "Test") || strings.HasPrefix(name, "Fuzz") || strings.HasPrefix(name, "Benchmark") {
 			refs = append(refs, testRef{name: name, pkg: pkg})
 		}
@@ -505,13 +567,21 @@ func failingTestNames(out string) []string {
 }
 
 func runTests(repo, testCmd string, pkgs []string) (bool, string) {
-	fields := strings.Fields(testCmd)
+	test, err := shellparse.ParseStaticCommand(testCmd, shellparse.StaticCommandPolicy{AllowEnvAssignments: true, AllowStderrToStdout: true})
+	if err != nil {
+		return false, "invalid test command: " + err.Error()
+	}
+	fields := test.Argv
 	if len(fields) == 0 {
 		fields = []string{"go", "test"}
 	}
 	args := append(fields[1:], pkgs...)
 	cmd := exec.Command(fields[0], args...)
 	cmd.Dir = repo
+	if len(test.Env) > 0 {
+		cmd.Env = append(os.Environ(), test.Env...)
+	}
+	cmd.WaitDelay = 5 * time.Minute // bound the wait if `go test` hangs
 	out, err := cmd.CombinedOutput()
 	return err == nil, string(out)
 }
@@ -561,10 +631,15 @@ func gitOut(repo string, args ...string) string {
 func truncate(s string) string { return truncateFor(s, 12000) }
 
 func truncateFor(s string, max int) string {
-	if len(s) <= max {
+	if max <= 0 || len(s) <= max {
 		return s
 	}
-	return s[:max] + "\n…(truncated)…"
+	// Back the cut up to a rune boundary so we don't split a multi-byte UTF-8 rune.
+	cut := max
+	for cut > 0 && !utf8.RuneStart(s[cut]) {
+		cut--
+	}
+	return s[:cut] + "\n…(truncated)…"
 }
 
 func tail(s string, n int) string {

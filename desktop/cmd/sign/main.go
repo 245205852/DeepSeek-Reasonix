@@ -35,7 +35,7 @@ import (
 // platforms are the manifest keys we publish. A built artifact is matched to a key
 // by substring (file names embed the key, e.g. Reasonix-darwin-arm64.zip), so the
 // generator and the updater agree on update.PlatformKey output.
-var platforms = []string{"darwin-arm64", "darwin-amd64", "windows-amd64", "linux-amd64"}
+var platforms = []string{"darwin-arm64", "darwin-amd64", "windows-amd64", "windows-arm64", "linux-amd64"}
 
 func main() {
 	if len(os.Args) < 2 {
@@ -164,15 +164,20 @@ func signFiles(files []string) error {
 // genManifest scans dir for the per-platform artifacts and writes dir/latest.json.
 // version is the semver compared by the updater (e.g. "v1.1.0"); tag is the GitHub
 // release tag used in download URLs (e.g. "desktop-v1.1.0").
+//
+// Portable updater channels land in platforms (tarballs/installers). Debian/Ubuntu
+// .deb packages land only in native_packages so older clients keep resolving the
+// tarball under platforms["linux-amd64"].
 func genManifest(dir, version, tag string) error {
 	repo := os.Getenv("GITHUB_REPOSITORY")
-	if repo == "" {
-		repo = "esengine/reasonix"
+	if repo == "" || repo == "esengine/reasonix" {
+		repo = "esengine/DeepSeek-Reasonix"
 	}
 	m := update.Manifest{
-		Version:      version,
-		DownloadPage: fmt.Sprintf("https://github.com/%s/releases/latest", repo),
-		Platforms:    map[string]update.Asset{},
+		Version:        version,
+		DownloadPage:   "https://reasonix.io/?download=desktop#start",
+		Platforms:      map[string]update.Asset{},
+		NativePackages: map[string]update.Asset{},
 	}
 	entries, err := os.ReadDir(dir)
 	if err != nil {
@@ -183,7 +188,7 @@ func genManifest(dir, version, tag string) error {
 		if e.IsDir() || strings.HasSuffix(name, ".minisig") || name == "latest.json" {
 			continue
 		}
-		key := matchPlatform(name)
+		key, kind := matchArtifact(name)
 		if key == "" {
 			continue
 		}
@@ -192,11 +197,21 @@ func genManifest(dir, version, tag string) error {
 			return err
 		}
 		url := fmt.Sprintf("https://github.com/%s/releases/download/%s/%s", repo, tag, name)
-		m.Platforms[key] = update.Asset{URL: url, Sig: url + ".minisig", Size: size, SHA256: sum}
-		fmt.Printf("manifest: %s -> %s (%d bytes)\n", key, name, size)
+		asset := update.Asset{URL: url, Sig: url + ".minisig", Size: size, SHA256: sum}
+		switch kind {
+		case artifactNative:
+			m.NativePackages[key] = asset
+			fmt.Printf("manifest native: %s -> %s (%d bytes)\n", key, name, size)
+		default:
+			m.Platforms[key] = asset
+			fmt.Printf("manifest: %s -> %s (%d bytes)\n", key, name, size)
+		}
 	}
 	if len(m.Platforms) == 0 {
 		return fmt.Errorf("manifest: no platform artifacts found in %s", dir)
+	}
+	if len(m.NativePackages) == 0 {
+		m.NativePackages = nil // omit empty map so older tooling sees a clean document
 	}
 	b, err := json.MarshalIndent(m, "", "  ")
 	if err != nil {
@@ -205,14 +220,35 @@ func genManifest(dir, version, tag string) error {
 	return os.WriteFile(filepath.Join(dir, "latest.json"), append(b, '\n'), 0o644)
 }
 
-// matchPlatform returns the platform key embedded in a file name, or "" if none.
-func matchPlatform(name string) string {
+const (
+	artifactPortable = "portable"
+	artifactNative   = "native"
+)
+
+// matchArtifact returns the platform key and channel kind embedded in a file name,
+// or ("", "") if the file is not a publishable updater/download artifact.
+func matchArtifact(name string) (key, kind string) {
+	// .deb is the Linux native package channel. Keep it out of platforms so the
+	// tarball remains the portable linux-amd64 key for older clients.
+	if strings.HasSuffix(name, ".deb") {
+		for _, p := range platforms {
+			if strings.Contains(name, p) {
+				return p, artifactNative
+			}
+		}
+		return "", ""
+	}
+	// The Windows updater channel is the per-arch -installer.exe; the portable .zip
+	// is a human download, so skip it or it would shadow the installer's key.
+	if strings.Contains(name, "windows-") && !strings.HasSuffix(name, "-installer.exe") {
+		return "", ""
+	}
 	for _, p := range platforms {
 		if strings.Contains(name, p) {
-			return p
+			return p, artifactPortable
 		}
 	}
-	return ""
+	return "", ""
 }
 
 // hashFile returns the size and lowercase-hex SHA-256 of a file, streaming it so

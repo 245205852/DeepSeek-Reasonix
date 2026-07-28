@@ -30,24 +30,26 @@ func connectorBlock(lines []string) string {
 
 // toolVerb maps a tool's snake_case id to the verb shown in its card.
 var toolVerb = map[string]string{
-	"bash":          "Bash",
-	"bash_output":   "Output",
-	"kill_shell":    "Kill",
-	"wait":          "Wait",
-	"read_file":     "Read",
-	"write_file":    "Write",
-	"edit_file":     "Update",
-	"multi_edit":    "Update",
-	"delete_range":  "Update",
-	"delete_symbol": "Update",
-	"notebook_edit": "Update",
-	"glob":          "Glob",
-	"grep":          "Search",
-	"ls":            "List",
-	"web_fetch":     "Fetch",
-	"web_search":    "Search",
-	"complete_step": "Step",
-	"task":          "Task",
+	"bash":           "Bash",
+	"bash_output":    "Output",
+	"kill_shell":     "Kill",
+	"wait":           "Wait",
+	"read_file":      "Read",
+	"write_file":     "Write",
+	"edit_file":      "Update",
+	"multi_edit":     "Update",
+	"move_file":      "Move",
+	"delete_range":   "Update",
+	"delete_symbol":  "Update",
+	"notebook_edit":  "Update",
+	"glob":           "Glob",
+	"grep":           "Search",
+	"ls":             "List",
+	"web_fetch":      "Fetch",
+	"web_search":     "Search",
+	"complete_step":  "Step",
+	"task":           "Task",
+	"use_capability": "MCP",
 }
 
 // toolArgKey is the JSON field shown in parentheses for each tool (wait is
@@ -60,6 +62,7 @@ var toolArgKey = map[string]string{
 	"write_file":    "path",
 	"edit_file":     "path",
 	"multi_edit":    "path",
+	"move_file":     "source_path",
 	"delete_range":  "path",
 	"delete_symbol": "name",
 	"notebook_edit": "path",
@@ -76,27 +79,27 @@ var toolArgKey = map[string]string{
 // can tell reads (cyan) from writes (green), shell (yellow), process control
 // (magenta), and everything else (copper) at a glance.
 func toolDot(name string) string {
-	var code string
+	var c cliColor
 	switch toolCategory[name] {
 	case "read":
-		code = ansiCyan
+		c = activeCLITheme.toolRead
 	case "write":
-		code = ansiGreen
+		c = activeCLITheme.success
 	case "exec":
-		code = ansiYellow
+		c = activeCLITheme.warn
 	case "proc":
-		code = ansiMagenta
+		c = activeCLITheme.toolProc
 	default:
-		code = ansiAccent
+		c = activeCLITheme.accent
 	}
-	return sgr(code, "●")
+	return themeFg(c, "●")
 }
 
 var toolCategory = map[string]string{
 	"read_file": "read", "ls": "read", "glob": "read", "grep": "read",
 	"web_fetch": "read", "web_search": "read", "bash_output": "read",
 	"write_file": "write", "edit_file": "write", "multi_edit": "write",
-	"delete_range": "write", "delete_symbol": "write", "notebook_edit": "write",
+	"move_file": "write", "delete_range": "write", "delete_symbol": "write", "notebook_edit": "write",
 	"bash": "exec",
 	"wait": "proc", "kill_shell": "proc",
 }
@@ -121,6 +124,15 @@ func toolArg(name, args string) string {
 	}
 	if name == "wait" {
 		return argList(m["job_ids"])
+	}
+	if name == "use_capability" {
+		if id, ok := m["capability_id"].(string); ok && strings.TrimSpace(id) != "" {
+			return strings.TrimSpace(id)
+		}
+		if action, ok := m["action"].(string); ok {
+			return strings.TrimSpace(action)
+		}
+		return ""
 	}
 	v, ok := m[toolArgKey[name]]
 	if !ok {

@@ -139,6 +139,35 @@ func TestSeatbeltProfileContainsRoots(t *testing.T) {
 	}
 }
 
+func TestMinimalWriteProfileOnlyAddsExplicitRootsAndDev(t *testing.T) {
+	root := t.TempDir()
+	dirs := writeAllowDirsForSpec(Spec{Mode: "enforce", WriteRoots: []string{root}, MinimalWrites: true})
+	if !containsDarwinPath(dirs, root) || !containsDarwinPath(dirs, "/dev") {
+		t.Fatalf("minimal write dirs = %v", dirs)
+	}
+	for _, forbidden := range []string{"/tmp", "/private/tmp", filepath.Join(os.Getenv("HOME"), ".npm"), filepath.Join(os.Getenv("HOME"), ".cache")} {
+		if forbidden != "" && containsDarwinPath(dirs, forbidden) {
+			t.Fatalf("minimal MCP profile unexpectedly allowed broad write root %q: %v", forbidden, dirs)
+		}
+	}
+}
+
+func containsDarwinPath(paths []string, want string) bool {
+	abs, err := filepath.Abs(want)
+	if err != nil {
+		return false
+	}
+	if real, err := filepath.EvalSymlinks(abs); err == nil {
+		abs = real
+	}
+	for _, path := range paths {
+		if path == abs {
+			return true
+		}
+	}
+	return false
+}
+
 func TestCommandUnwrappedWhenOff(t *testing.T) {
 	argv, wrapped := Command(Spec{Mode: "off"}, Shell{Kind: ShellBash, Path: "bash"}, "echo hi")
 	if wrapped {
@@ -150,19 +179,25 @@ func TestCommandUnwrappedWhenOff(t *testing.T) {
 }
 
 func TestProfileNetworkAndRoots(t *testing.T) {
-	with := seatbeltProfile(Spec{Mode: "enforce", WriteRoots: []string{"/work/proj"}, Network: true})
+	with := seatbeltProfile(Spec{Mode: "enforce", WriteRoots: []string{"/work/proj"}, ForbidReadRoots: []string{"/etc/ssh", "/home/user/.ssh"}, Network: true})
 	if strings.Contains(with, "(deny network*)") {
 		t.Error("network=true should not deny network")
 	}
-	if !strings.Contains(with, "(allow default)") || !strings.Contains(with, "(deny file-write*)") {
+	if !strings.Contains(with, "(allow default)") || !strings.Contains(with, "(deny file-write*)") || !strings.Contains(with, "(deny file-read* (subpath") {
 		t.Error("profile missing base allow/deny structure")
 	}
 	if !strings.Contains(with, `(subpath "/work/proj")`) {
 		t.Errorf("profile missing the write-root subpath:\n%s", with)
 	}
+	if !strings.Contains(with, `(subpath "/home/user/.ssh")`) {
+		t.Errorf("profile missing the forbid-read subpath:\n%s", with)
+	}
 	without := seatbeltProfile(Spec{Mode: "enforce", Network: false})
 	if !strings.Contains(without, "(deny network*)") {
 		t.Error("network=false should deny network")
+	}
+	if strings.Contains(without, "deny file-read") {
+		t.Error("profile should not contain file-read rules when forbid-read is empty")
 	}
 }
 

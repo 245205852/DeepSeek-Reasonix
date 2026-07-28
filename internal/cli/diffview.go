@@ -21,7 +21,9 @@ import (
 const tabWidth = 4
 
 const (
-	diffScrollbackMaxLines = 40
+	// diffFoldLimit is the max lines to show in a diff when folding is enabled
+	// (/diff-fold toggle). 0 means show all lines.
+	diffFoldLimit = 40
 
 	bgDiffAdd = "\033[48;5;22m"
 	bgDiffDel = "\033[48;5;52m"
@@ -101,10 +103,10 @@ func diffBody(d event.FileDiff, path string, width, maxLines int) []string {
 			}
 			hunks++
 		case '+':
-			rows = append(rows, diffBar('+', ln[1:], path, width, bgDiffAdd, fgDiffAdd, newNo, gw))
+			rows = append(rows, diffBar('+', ln[1:], path, width, bgSGR(activeCLITheme.diffAddBG), fgSGR(activeCLITheme.success), newNo, gw))
 			newNo++
 		case '-':
-			rows = append(rows, diffBar('-', ln[1:], path, width, bgDiffDel, fgDiffDel, oldNo, gw))
+			rows = append(rows, diffBar('-', ln[1:], path, width, bgSGR(activeCLITheme.diffDelBG), fgSGR(activeCLITheme.err), oldNo, gw))
 			oldNo++
 		case '\\':
 			rows = append(rows, "  "+dim(clampPlain(ln, width-2)))

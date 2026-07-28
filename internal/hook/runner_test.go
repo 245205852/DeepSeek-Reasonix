@@ -3,6 +3,10 @@ package hook
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -109,6 +113,98 @@ func TestRunnerPostToolUseWarn(t *testing.T) {
 	}
 }
 
+func TestRunnerPostToolUseFailurePreservesNativeObserver(t *testing.T) {
+	hooks := []ResolvedHook{
+		{HookConfig: HookConfig{Command: "claude-failure", PayloadFormat: "claude"}, Event: PostToolUseFailure},
+		{HookConfig: HookConfig{Command: "native-post"}, Event: PostToolUse},
+	}
+	var commands []string
+	r := NewRunner(hooks, "/tmp", func(_ context.Context, in SpawnInput) SpawnResult {
+		commands = append(commands, in.Command)
+		return SpawnResult{ExitCode: 0}
+	}, nil)
+	r.PostToolUseFailure(context.Background(), "bash", json.RawMessage(`{}`), "failed", errors.New("exit 1"))
+	if got := strings.Join(commands, ","); got != "claude-failure,native-post" {
+		t.Fatalf("failure observers = %q", got)
+	}
+}
+
+// --- Runner.PermissionRequest ---
+
+func TestRunnerPermissionRequestPayload(t *testing.T) {
+	hooks := []ResolvedHook{
+		{HookConfig: HookConfig{Command: "notify", Match: "bash"}, Event: PermissionRequest},
+	}
+	var got Payload
+	spawner := func(_ context.Context, in SpawnInput) SpawnResult {
+		if err := json.Unmarshal([]byte(in.Stdin), &got); err != nil {
+			t.Fatalf("payload json: %v", err)
+		}
+		return SpawnResult{ExitCode: 0}
+	}
+	args := json.RawMessage(`{"command":"go test ./..."}`)
+	r := NewRunner(hooks, "/tmp", spawner, nil)
+	r.PermissionRequest(context.Background(), "bash", "go test ./...", args)
+
+	if got.Event != PermissionRequest {
+		t.Errorf("Event = %q, want PermissionRequest", got.Event)
+	}
+	if got.ToolName != "bash" {
+		t.Errorf("ToolName = %q, want bash", got.ToolName)
+	}
+	if got.Subject != "go test ./..." {
+		t.Errorf("Subject = %q, want command subject", got.Subject)
+	}
+	if string(got.ToolArgs) != string(args) {
+		t.Errorf("ToolArgs = %s, want %s", got.ToolArgs, args)
+	}
+}
+
+func TestRunnerPermissionRequestWarnOnly(t *testing.T) {
+	hooks := []ResolvedHook{
+		{HookConfig: HookConfig{Command: "warn"}, Event: PermissionRequest},
+	}
+	spawner := func(_ context.Context, in SpawnInput) SpawnResult {
+		return SpawnResult{ExitCode: 2, Stderr: "notification failed"}
+	}
+	var notified string
+	r := NewRunner(hooks, "/tmp", spawner, func(msg string) { notified = msg })
+	decision, _ := r.PermissionRequest(context.Background(), "bash", "go test", nil)
+	if decision != nil {
+		t.Errorf("native PermissionRequest hook must stay advisory-only, got decision=%v", *decision)
+	}
+	if notified == "" {
+		t.Error("PermissionRequest warn should notify")
+	}
+}
+
+func TestRunnerPermissionRequestClaudeDecisions(t *testing.T) {
+	claudeHooks := []ResolvedHook{{HookConfig: HookConfig{Command: "guard", PayloadFormat: "claude"}, Event: PermissionRequest}}
+	spawnerReturning := func(stdout string) Spawner {
+		return func(_ context.Context, in SpawnInput) SpawnResult { return SpawnResult{ExitCode: 0, Stdout: stdout} }
+	}
+
+	denyJSON := `{"hookSpecificOutput":{"hookEventName":"PermissionRequest","decision":{"behavior":"deny"}}}`
+	r := NewRunner(claudeHooks, "/tmp", spawnerReturning(denyJSON), nil)
+	decision, _ := r.PermissionRequest(context.Background(), "bash", "rm -rf /", nil)
+	if decision == nil || *decision != false {
+		t.Fatalf("Claude deny decision = %v, want false", decision)
+	}
+
+	allowJSON := `{"hookSpecificOutput":{"hookEventName":"PermissionRequest","decision":{"behavior":"allow"}}}`
+	r = NewRunner(claudeHooks, "/tmp", spawnerReturning(allowJSON), nil)
+	decision, _ = r.PermissionRequest(context.Background(), "bash", "go test", nil)
+	if decision == nil || *decision != true {
+		t.Fatalf("Claude allow decision = %v, want true", decision)
+	}
+
+	r = NewRunner(claudeHooks, "/tmp", spawnerReturning(""), nil)
+	decision, _ = r.PermissionRequest(context.Background(), "bash", "go test", nil)
+	if decision != nil {
+		t.Fatalf("no opinion from the hook should return a nil decision, got %v", *decision)
+	}
+}
+
 // --- Runner.PromptSubmit ---
 
 func TestRunnerPromptSubmitBlock(t *testing.T) {
@@ -142,6 +238,125 @@ func TestRunnerStopWithHooks(t *testing.T) {
 	}
 	r := NewRunner(hooks, "/tmp", spawner, nil)
 	r.Stop(context.Background(), "done", 1)
+}
+
+func TestRunnerStopResultPreservesNativeStopObserver(t *testing.T) {
+	hooks := []ResolvedHook{
+		{HookConfig: HookConfig{Command: "claude-stop-failure", PayloadFormat: "claude"}, Event: StopFailure},
+		{HookConfig: HookConfig{Command: "native-stop"}, Event: Stop},
+	}
+	var commands []string
+	r := NewRunner(hooks, "/tmp", func(_ context.Context, in SpawnInput) SpawnResult {
+		commands = append(commands, in.Command)
+		return SpawnResult{ExitCode: 0}
+	}, nil)
+	r.StopResult(context.Background(), "partial", 1, errors.New("turn failed"))
+	if got := strings.Join(commands, ","); got != "claude-stop-failure,native-stop" {
+		t.Fatalf("stop failure observers = %q", got)
+	}
+}
+
+func TestRunnerSessionStartReturnsAdditionalContexts(t *testing.T) {
+	hooks := []ResolvedHook{
+		{HookConfig: HookConfig{Command: "plain"}, Event: SessionStart},
+		{HookConfig: HookConfig{Command: "json"}, Event: SessionStart},
+	}
+	spawner := func(_ context.Context, in SpawnInput) SpawnResult {
+		switch in.Command {
+		case "plain":
+			return SpawnResult{ExitCode: 0, Stdout: "Load notes."}
+		case "json":
+			return SpawnResult{ExitCode: 0, Stdout: `{"hookSpecificOutput":{"hookEventName":"SessionStart","additionalContext":"Use Superpowers."}}`}
+		default:
+			return SpawnResult{ExitCode: 1, Stderr: "unexpected"}
+		}
+	}
+	r := NewRunner(hooks, "/tmp", spawner, nil)
+	got := r.SessionStart(context.Background())
+	if len(got) != 2 || got[0] != "Load notes." || got[1] != "Use Superpowers." {
+		t.Fatalf("SessionStart contexts = %#v", got)
+	}
+}
+
+func TestRunnerSessionStartReadsContextFile(t *testing.T) {
+	dir := t.TempDir()
+	contextPath := filepath.Join(dir, "CLAUDE.md")
+	if err := os.WriteFile(contextPath, []byte("Use the packaged workflow."), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	calledSpawner := false
+	r := NewRunner([]ResolvedHook{{
+		HookConfig: HookConfig{ContextFile: contextPath, Description: "Plugin CLAUDE.md"},
+		Event:      SessionStart,
+		Scope:      ScopePlugin,
+	}}, dir, func(context.Context, SpawnInput) SpawnResult {
+		calledSpawner = true
+		return SpawnResult{ExitCode: 1}
+	}, nil)
+
+	got := r.SessionStart(context.Background())
+	if calledSpawner {
+		t.Fatal("context file hook should not invoke shell spawner")
+	}
+	if len(got) != 1 || got[0] != "Use the packaged workflow." {
+		t.Fatalf("SessionStart contexts = %#v", got)
+	}
+}
+
+func TestRunnerSessionStartWarnsOnInvalidJSON(t *testing.T) {
+	hooks := []ResolvedHook{{HookConfig: HookConfig{Command: "bad-json"}, Event: SessionStart}}
+	spawner := func(_ context.Context, in SpawnInput) SpawnResult {
+		return SpawnResult{ExitCode: 0, Stdout: `{"hookSpecificOutput":`}
+	}
+	var notified string
+	r := NewRunner(hooks, "/tmp", spawner, func(msg string) { notified = msg })
+	if got := r.SessionStart(context.Background()); len(got) != 0 {
+		t.Fatalf("SessionStart contexts = %#v, want none", got)
+	}
+	if !contains(notified, "invalid JSON") {
+		t.Fatalf("notify = %q, want invalid JSON warning", notified)
+	}
+}
+
+func TestRunnerClaudeLifecyclePayloadsShareSessionID(t *testing.T) {
+	events := []Event{SessionStart, PreCompact, Notification, SessionEnd}
+	hooks := make([]ResolvedHook, 0, len(events))
+	for _, event := range events {
+		hooks = append(hooks, ResolvedHook{
+			HookConfig: HookConfig{Command: string(event), PayloadFormat: "claude"},
+			Event:      event,
+		})
+	}
+	seen := map[Event]map[string]any{}
+	spawner := func(_ context.Context, in SpawnInput) SpawnResult {
+		var payload map[string]any
+		if err := json.Unmarshal([]byte(in.Stdin), &payload); err != nil {
+			t.Fatalf("payload JSON: %v", err)
+		}
+		seen[Event(payload["hook_event_name"].(string))] = payload
+		return SpawnResult{ExitCode: 0}
+	}
+	r := NewRunner(hooks, "/workspace", spawner, nil)
+	r.SetSessionID("session-42")
+	r.SessionStart(context.Background(), "resume")
+	r.PreCompact(context.Background(), "manual")
+	r.Notification(context.Background(), "approval needed", "permission_prompt")
+	r.SessionEnd(context.Background(), "clear")
+
+	for _, event := range events {
+		if seen[event]["session_id"] != "session-42" {
+			t.Fatalf("%s session_id = %#v", event, seen[event]["session_id"])
+		}
+	}
+	if seen[SessionStart]["source"] != "resume" || seen[PreCompact]["trigger"] != "manual" {
+		t.Fatalf("lifecycle details = %#v / %#v", seen[SessionStart], seen[PreCompact])
+	}
+	if seen[Notification]["notification_type"] != "permission_prompt" || seen[Notification]["message"] != "approval needed" {
+		t.Fatalf("notification payload = %#v", seen[Notification])
+	}
+	if seen[SessionEnd]["reason"] != "clear" {
+		t.Fatalf("session end payload = %#v", seen[SessionEnd])
+	}
 }
 
 // --- Runner.PostLLMCall ---
@@ -319,6 +534,9 @@ func TestIsBlocking(t *testing.T) {
 func TestDefaultTimeout(t *testing.T) {
 	if defaultTimeout(PreToolUse) != 5*time.Second {
 		t.Errorf("PreToolUse timeout = %v", defaultTimeout(PreToolUse))
+	}
+	if defaultTimeout(PermissionRequest) != 5*time.Second {
+		t.Errorf("PermissionRequest timeout = %v", defaultTimeout(PermissionRequest))
 	}
 	if defaultTimeout(PostToolUse) != 30*time.Second {
 		t.Errorf("PostToolUse timeout = %v", defaultTimeout(PostToolUse))

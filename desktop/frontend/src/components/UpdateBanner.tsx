@@ -6,19 +6,28 @@ const MB = 1024 * 1024;
 const mb = (n: number) => (n / MB).toFixed(1);
 
 // UpdateBanner checks for an update once on mount and, when one is available, shows
-// a dismissible top banner that drives the download → verify → install flow (or, on
-// macOS, links out to the download page). It renders nothing while idle, checking,
+// a dismissible top banner that drives the download → verify → restart/install flow
+// (or, on macOS manual builds, links out to the download page). It renders nothing while idle, checking,
 // or already current — a quiet auto-check that only surfaces when actionable. A
-// failed check is silent here too (network blips shouldn't nag); the Settings panel
-// is where a manual check shows errors.
-export function UpdateBanner() {
+// failed check can be dismissed here (network blips shouldn't pin the UI); the
+// Settings panel is where a manual check shows errors inline.
+export function UpdateBanner({
+  enabled = true,
+  onShowReleaseNotes,
+}: {
+  enabled?: boolean;
+  onShowReleaseNotes?: (version: string) => void;
+}) {
   const t = useT();
-  const { status, check, apply } = useUpdater();
+  const { status, check, download, install, openDownload, reset } = useUpdater();
   const [dismissed, setDismissed] = useState<string | null>(null);
 
   useEffect(() => {
+    if (!enabled) return;
     void check();
-  }, [check]);
+  }, [check, enabled]);
+
+  if (!enabled) return null;
 
   switch (status.kind) {
     case "available": {
@@ -27,10 +36,15 @@ export function UpdateBanner() {
       return (
         <div className="banner banner--update">
           <span className="banner__msg">{t("updater.available", { v: info.latest })}</span>
-          {!info.canSelfUpdate && <span className="banner__hint">{t("updater.macHint")}</span>}
+          {!info.canSelfUpdate && <span className="banner__hint">{info.manualReason || t("updater.macHint")}</span>}
           <span className="banner__spacer" />
-          <button className="btn btn--small btn--primary" onClick={() => apply(info)}>
-            {info.canSelfUpdate ? t("updater.installNow") : t("updater.goToDownload")}
+          {onShowReleaseNotes && (
+            <button className="btn btn--small" onClick={() => onShowReleaseNotes(info.latest)}>
+              {t("updater.releaseNotes")}
+            </button>
+          )}
+          <button className="btn btn--small btn--primary" onClick={() => download(info)}>
+            {info.canSelfUpdate ? t("updater.downloadUpdate") : t("updater.goToDownload")}
           </button>
           <button className="btn btn--small" onClick={() => setDismissed(info.latest)}>
             {t("updater.dismiss")}
@@ -52,20 +66,60 @@ export function UpdateBanner() {
     }
     case "verifying":
       return <div className="banner banner--update">{t("updater.verifying")}</div>;
-    case "applying":
-      return <div className="banner banner--update">{t("updater.applying")}</div>;
-    case "done":
-      return <div className="banner banner--update">{t("updater.done")}</div>;
-    case "error":
+    case "downloaded":
       return (
-        <div className="banner banner--error">
-          <span className="banner__msg">{t("updater.failed", { msg: status.message })}</span>
+        <div className="banner banner--update">
+          <span className="banner__msg">{t("updater.downloaded", { v: status.info.latest })}</span>
           <span className="banner__spacer" />
-          <button className="btn btn--small" onClick={() => void check()}>
-            {t("updater.retry")}
+          {onShowReleaseNotes && (
+            <button className="btn btn--small" onClick={() => onShowReleaseNotes(status.info.latest)}>
+              {t("updater.releaseNotes")}
+            </button>
+          )}
+          <button className="btn btn--small btn--primary" onClick={install}>
+            {status.info.requiresElevation || status.info.installMode === "deb"
+              ? t("updater.authorizeInstall")
+              : t("updater.restartInstall")}
+          </button>
+          <button className="btn btn--small" onClick={reset}>
+            {t("updater.dismiss")}
           </button>
         </div>
       );
+    case "authorizing":
+      return <div className="banner banner--update">{t("updater.authorizing")}</div>;
+    case "installing":
+      return (
+        <div className="banner banner--update">
+          {status.info?.requiresElevation || status.info?.installMode === "deb"
+            ? t("updater.installingPackage")
+            : t("updater.installing")}
+        </div>
+      );
+    case "done":
+      return <div className="banner banner--update">{t("updater.done")}</div>;
+    case "error": {
+      const failedMessage = t("updater.failed", { msg: status.message });
+      return (
+        <div className="banner banner--update banner--error banner--actionable">
+          <span className="banner__msg" title={failedMessage}>
+            {failedMessage}
+          </span>
+          <span className="banner__spacer" />
+          {status.manualHint && (
+            <button className="btn btn--small" onClick={openDownload}>
+              {t("updater.goToDownload")}
+            </button>
+          )}
+          <button className="btn btn--small btn--primary" onClick={() => void check()}>
+            {t("updater.retry")}
+          </button>
+          <button className="btn btn--small" onClick={reset}>
+            {t("updater.dismiss")}
+          </button>
+        </div>
+      );
+    }
     default:
       // idle | checking | upToDate — nothing to show.
       return null;

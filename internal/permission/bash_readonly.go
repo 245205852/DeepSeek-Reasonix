@@ -1,105 +1,65 @@
 package permission
 
-import "strings"
+import (
+	"encoding/json"
+	"strings"
 
-// readOnlyBashCommands is the set of commands considered read-only — they
-// don't modify filesystem state, network state, or process state. Each
-// entry is the first word of a bash command (lowercased). Commands not in
-// this set that might also be read-only (e.g. "git log") are handled
-// separately by isReadOnlyBashSubject.
-var readOnlyBashCommands = map[string]bool{
-	"cat": true, "head": true, "tail": true, "less": true, "more": true,
-	"ls": true, "find": true, "locate": true, "which": true, "whereis": true, "type": true,
-	"grep": true, "egrep": true, "fgrep": true, "rg": true,
-	"echo": true, "printf": true,
-	"pwd": true, "whoami": true, "id": true, "uname": true, "hostname": true,
-	"date": true, "env": true, "printenv": true,
-	"wc": true, "sort": true, "uniq": true, "cut": true, "tr": true,
-	"stat": true, "file": true, "du": true, "df": true,
-	"ps": true, "top": true, "htop": true,
-	"diff": true, "cmp": true, "comm": true,
-	"awk": true, "sed": true,
-	"man": true, "info": true, "help": true,
-	"true": true, "false": true, "test": true, "[": true,
-	"basename": true, "dirname": true, "realpath": true, "readlink": true,
+	"reasonix/internal/shellparse"
+	"reasonix/internal/shellsafe"
+)
+
+// BashCommandIsReadOnly reports whether a bash tool call is a known foreground
+// read-only command. Capability-restricted runners use this directly instead of
+// depending on Plan mode: Plan is a collaboration workflow, while this check is
+// an execution permission boundary.
+func BashCommandIsReadOnly(args json.RawMessage) bool {
+	var p struct {
+		Command                     string `json:"command"`
+		RunInBackground             bool   `json:"run_in_background"`
+		PreserveBackgroundProcesses bool   `json:"preserve_background_processes"`
+	}
+	if err := json.Unmarshal(args, &p); err != nil || strings.TrimSpace(p.Command) == "" {
+		return false
+	}
+	if p.RunInBackground || p.PreserveBackgroundProcesses {
+		return false
+	}
+	return isReadOnlyBashSubject(p.Command)
 }
 
-// readOnlyBashPrefixes are command prefixes where the second word
-// determines read-only status. Each maps to the set of read-only
-// subcommands.
-var readOnlyBashPrefixes = map[string]map[string]bool{
-	"git": {
-		"log": true, "status": true, "diff": true, "show": true,
-		"tag":   true,
-		"blame": true, "grep": true, "ls-files": true, "ls-tree": true,
-		"rev-parse": true, "rev-list": true, "describe": true, "reflog": true,
-		"shortlog": true, "whatchanged": true, "cherry": true,
-		"cat-file": true, "for-each-ref": true, "name-rev": true,
-	},
-	"go": {
-		"vet": true, "doc": true, "list": true,
-		"version": true, "env": true,
-	},
-	"npm": {
-		"ls": true, "list": true, "view": true, "info": true,
-		"outdated": true, "audit": true,
-	},
-	"cargo": {
-		"check": true, "doc": true, "search": true,
-	},
-	"docker": {
-		"ps": true, "images": true, "inspect": true, "logs": true,
-		"stats": true, "info": true, "version": true,
-	},
-	"kubectl": {
-		"get": true, "describe": true, "logs": true, "explain": true,
-		"api-resources": true, "api-versions": true,
-	},
-}
-
-// isReadOnlyBashSubject returns true when a bash command is a known
-// read-only operation. The subject is the JSON arg value extracted by
-// Subject() — for bash it is the raw command string.
+// isReadOnlyBashSubject returns true when a bash command is a known read-only
+// operation. The subject is the JSON arg value extracted by Subject() — for bash
+// it is the raw command string. Command membership comes from the shared
+// shellsafe tables (the shared command-classification source, #5341); the
+// argument rigor below is permission-specific.
 func isReadOnlyBashSubject(subject string) bool {
-	cmd := strings.TrimSpace(subject)
-	if cmd == "" {
+	if normalized, ok := normalizeBashSafeRedirectsForMatch(subject); ok {
+		subject = normalized
+	}
+	base, sub, ok := shellsafe.CommandIsReadOnly(subject)
+	if !ok {
 		return false
 	}
-	if containsShellSyntax(cmd) {
+	fields, malformed := shellparse.StaticFields(subject)
+	if malformed != "" {
 		return false
 	}
-	fields := strings.Fields(cmd)
-	if len(fields) == 0 {
-		return false
+	if sub == "" {
+		return !hasUnsafeReadOnlyArgs(base, fields[1:])
 	}
-	base := strings.ToLower(fields[0])
-
-	// Check single-word read-only commands.
-	if readOnlyBashCommands[base] {
-		if hasUnsafeReadOnlyArgs(base, fields[1:]) {
-			return false
-		}
-		return true
-	}
-
-	// Check prefix commands (git log, go vet, etc.).
-	if len(fields) > 1 {
-		if sub, ok := readOnlyBashPrefixes[base]; ok {
-			subcmd := strings.ToLower(fields[1])
-			return sub[subcmd] && !hasUnsafePrefixArgs(base, subcmd, fields[2:])
-		}
-	}
-	return false
+	return !hasUnsafePrefixArgs(base, sub, fields[2:])
 }
 
+// containsShellSyntax delegates to the shared classifier; retained for the other
+// permission call sites (permission.go).
 func containsShellSyntax(cmd string) bool {
-	return strings.ContainsAny(cmd, ";|&<>\n`") || strings.Contains(cmd, "$(")
+	return shellsafe.ContainsShellSyntax(cmd)
 }
 
 func hasUnsafeReadOnlyArgs(base string, args []string) bool {
 	switch base {
 	case "find":
-		return hasAnyArg(args, "-exec", "-execdir", "-delete")
+		return hasAnyArg(args, "-exec", "-execdir", "-delete", "-ok", "-okdir", "-fls", "-fprint", "-fprint0", "-fprintf")
 	case "sed":
 		for _, arg := range args {
 			if strings.HasPrefix(arg, "-i") || strings.HasPrefix(arg, "--in-place") {

@@ -16,6 +16,8 @@ import (
 	"time"
 
 	"github.com/BurntSushi/toml"
+
+	fileencoding "reasonix/internal/fileutil/encoding"
 )
 
 type task struct {
@@ -34,21 +36,53 @@ type runMetrics struct {
 	Steps            int     `json:"steps"`
 	Cost             float64 `json:"cost"`
 	Currency         string  `json:"currency"`
+	Compactions      int     `json:"compactions"`
+
+	// Optional Delivery capability counters (omitempty for baseline/old metrics).
+	ReadinessChecks            int     `json:"readiness_checks,omitempty"`
+	ReadinessRecoveries        int     `json:"readiness_recoveries,omitempty"`
+	CapabilityRoutes           int     `json:"capability_routes,omitempty"`
+	CapabilityRoutedCandidates int     `json:"capability_routed_candidates,omitempty"`
+	CapabilityRoutedRequire    int     `json:"capability_routed_require,omitempty"`
+	CapabilityRoutedPrefer     int     `json:"capability_routed_prefer,omitempty"`
+	CapabilityRoutedSuggest    int     `json:"capability_routed_suggest,omitempty"`
+	CapabilityDeclines         int     `json:"capability_declines,omitempty"`
+	CapabilitySemanticRoutes   int     `json:"capability_semantic_routes,omitempty"`
+	CapabilitySkillInvocations int     `json:"capability_skill_invocations,omitempty"`
+	CapabilityMCPCall          int     `json:"capability_mcp_call,omitempty"`
+	CapabilityReviewBlocks     int     `json:"capability_review_blocks,omitempty"`
+	CapabilityRouterCost       float64 `json:"capability_router_cost,omitempty"`
+	CapabilityRouterLatencyMs  int64   `json:"capability_router_latency_ms,omitempty"`
 }
 
 type result struct {
 	task
 	runMetrics
+	Profile string `json:"profile"`
 	Passed  bool
 	Skipped bool
 	Note    string
 }
 
 func main() {
+	flag.Usage = func() {
+		fmt.Fprintf(flag.CommandLine.Output(), "e2ebench — Reasonix end-to-end benchmark.\n\n")
+		fmt.Fprintf(flag.CommandLine.Output(), "Usage of %s:\n", flag.CommandLine.Name())
+		flag.PrintDefaults()
+		fmt.Fprintf(flag.CommandLine.Output(), "\nExamples:\n")
+		fmt.Fprintf(flag.CommandLine.Output(), "  # Run the committed suite:\n")
+		fmt.Fprintf(flag.CommandLine.Output(), "  %[1]s\n\n", strings.Replace(flag.CommandLine.Name(), "e2ebench", "go run ./cmd/e2ebench", 1))
+		fmt.Fprintf(flag.CommandLine.Output(), "  # Grade a PR's diff with a retry budget:\n")
+		fmt.Fprintf(flag.CommandLine.Output(), "  %[1]s -mode diff -base origin/main -repo . -attempts 3 -timeout 1800\n", strings.Replace(flag.CommandLine.Name(), "e2ebench", "go run ./cmd/e2ebench", 1))
+		fmt.Fprintf(flag.CommandLine.Output(), "\n  # Run the same suite with the delivery contract:\n")
+		fmt.Fprintf(flag.CommandLine.Output(), "  %[1]s -profile delivery\n", strings.Replace(flag.CommandLine.Name(), "e2ebench", "go run ./cmd/e2ebench", 1))
+	}
+
 	mode := flag.String("mode", "suite", "suite | diff (diff = generate tests for the PR diff and grade with the repo's tests)")
 	suite := flag.String("suite", "benchmarks/e2e", "suite root (contains tasks/<id>/)")
 	bin := flag.String("bin", "reasonix", "path to the reasonix binary")
 	model := flag.String("model", "", "provider/model name (default: config default)")
+	profileFlag := flag.String("profile", benchmarkProfileBaseline, "prompt profile: baseline | delivery")
 	outMD := flag.String("out", "", "write the markdown report here (default: stdout)")
 	outJSON := flag.String("json", "", "write the JSON report here (optional)")
 	budget := flag.Int("budget", 400_000, "abort once total tokens cross this (0 = no cap)")
@@ -60,11 +94,16 @@ func main() {
 	timeoutSec := flag.Int("timeout", 1200, "agent timeout in seconds (diff mode)")
 	attempts := flag.Int("attempts", 1, "diff mode: retry up to N times until a run passes (stochastic agent)")
 	flag.Parse()
+	profile, err := normalizeBenchmarkProfile(*profileFlag)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(2)
+	}
 
 	if *mode == "diff" {
 		report := runDiff(diffOpts{
 			bin: *bin, model: *model, repo: *repo, base: *base,
-			testCmd: *testCmd, maxSteps: *maxSteps, timeoutSec: *timeoutSec, attempts: *attempts,
+			testCmd: *testCmd, profile: profile, maxSteps: *maxSteps, timeoutSec: *timeoutSec, attempts: *attempts,
 		})
 		emit(report, *outMD, "")
 		return
@@ -76,7 +115,12 @@ func main() {
 		os.Exit(1)
 	}
 	if len(tasks) == 0 {
-		fmt.Fprintln(os.Stderr, "no tasks found under", filepath.Join(*suite, "tasks"))
+		dir := filepath.Join(*suite, "tasks")
+		if _, statErr := os.Stat(dir); statErr != nil {
+			fmt.Fprintf(os.Stderr, "no tasks found under %s: %v\n", dir, statErr)
+		} else {
+			fmt.Fprintf(os.Stderr, "no tasks found under %s (the directory exists but contains no task.toml files)\n", dir)
+		}
 		os.Exit(1)
 	}
 
@@ -84,10 +128,10 @@ func main() {
 	total := 0
 	for _, t := range tasks {
 		if *budget > 0 && total >= *budget {
-			results = append(results, result{task: t, Skipped: true, Note: "skipped: token budget reached"})
+			results = append(results, result{task: t, Profile: profile, Skipped: true, Note: "skipped: token budget reached"})
 			continue
 		}
-		r := runTask(*bin, *model, t)
+		r := runTask(*bin, *model, profile, t)
 		total += r.PromptTokens + r.CompletionTokens
 		results = append(results, r)
 	}
@@ -102,8 +146,15 @@ func main() {
 		fmt.Print(report)
 	}
 	if *outJSON != "" {
-		b, _ := json.MarshalIndent(results, "", "  ")
-		_ = os.WriteFile(*outJSON, b, 0o644)
+		b, err := json.MarshalIndent(results, "", "  ")
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "marshal json:", err)
+			os.Exit(1)
+		}
+		if err := os.WriteFile(*outJSON, b, 0o644); err != nil {
+			fmt.Fprintln(os.Stderr, "write json:", err)
+			os.Exit(1)
+		}
 	}
 }
 
@@ -131,7 +182,11 @@ func loadTasks(suite string) ([]task, error) {
 		}
 		dir := filepath.Join(tasksDir, e.Name())
 		var t task
-		if _, err := toml.DecodeFile(filepath.Join(dir, "task.toml"), &t); err != nil {
+		data, err := fileencoding.ReadFileUTF8(filepath.Join(dir, "task.toml"))
+		if err != nil {
+			return nil, fmt.Errorf("%s: %w", e.Name(), err)
+		}
+		if _, err := toml.Decode(string(data), &t); err != nil {
 			return nil, fmt.Errorf("%s: %w", e.Name(), err)
 		}
 		t.ID = e.Name()
@@ -148,8 +203,8 @@ func loadTasks(suite string) ([]task, error) {
 // runTask copies the task's seed workdir into a temp dir, runs the agent there,
 // then drops in verify.sh and runs it as the grader. The grader is added only
 // after the run so the agent can't read the answer key.
-func runTask(bin, model string, t task) result {
-	r := result{task: t}
+func runTask(bin, model, profile string, t task) result {
+	r := result{task: t, Profile: profile}
 
 	work, err := os.MkdirTemp("", "e2ebench-"+t.ID+"-")
 	if err != nil {
@@ -176,12 +231,14 @@ func runTask(bin, model string, t task) result {
 	if t.MaxSteps > 0 {
 		args = append(args, "--max-steps", fmt.Sprint(t.MaxSteps))
 	}
+	args = appendBenchmarkProfileArgs(args, profile)
 	args = append(args, t.Prompt)
 
 	cmd := exec.CommandContext(ctx, bin, args...)
 	cmd.Dir = work
 	cmd.Stdout = os.Stderr // stream the run to the job log, keep stdout clean for the report
 	cmd.Stderr = os.Stderr
+	cmd.WaitDelay = 10 * time.Second // bound the wait for a stuck child after ctx timeout
 	runErr := cmd.Run()
 
 	if m, err := readMetrics(metricsPath); err == nil {
@@ -215,7 +272,7 @@ func grade(work, taskDir string) bool {
 func render(results []result) string {
 	var b strings.Builder
 	passed, ran := 0, 0
-	var pTok, cTok, hit, miss int
+	var pTok, cTok, hit, miss, compacts int
 	var cost float64
 	currency := ""
 	for _, r := range results {
@@ -230,35 +287,40 @@ func render(results []result) string {
 		cTok += r.CompletionTokens
 		hit += r.CacheHitTokens
 		miss += r.CacheMissTokens
+		compacts += r.Compactions
 		cost += r.Cost
 		if r.Currency != "" {
 			currency = r.Currency
 		}
 	}
 
-	fmt.Fprintf(&b, "## 🤖 Reasonix e2e benchmark\n\n")
-	fmt.Fprintf(&b, "**Accuracy:** %d/%d (%s) · **Cache hit:** %s · **Tokens:** %s (prompt %s / completion %s) · **Cost:** %s%.4f\n\n",
+	profile := benchmarkProfileBaseline
+	if len(results) > 0 && results[0].Profile != "" {
+		profile = results[0].Profile
+	}
+	fmt.Fprintf(&b, "## 🤖 Reasonix e2e benchmark (%s)\n\n", profile)
+	fmt.Fprintf(&b, "**Accuracy:** %d/%d (%s) · **Cache hit:** %s · **Tokens:** %s (prompt %s / completion %s) · **Compactions:** %d · **Cost:** %s%.4f\n\n",
 		passed, ran, pct(passed, ran), pct(hit, hit+miss),
-		comma(pTok+cTok), comma(pTok), comma(cTok), currencySym(currency), cost)
+		comma(pTok+cTok), comma(pTok), comma(cTok), compacts, currencySym(currency), cost)
 
-	fmt.Fprintf(&b, "| Task | Result | Steps | Prompt | Completion | Cache hit | Cost |\n")
-	fmt.Fprintf(&b, "|------|--------|------:|-------:|-----------:|----------:|-----:|\n")
+	fmt.Fprintf(&b, "| Task | Result | Steps | Prompt | Completion | Cache hit | Compact | Cost |\n")
+	fmt.Fprintf(&b, "|------|--------|------:|-------:|-----------:|----------:|--------:|-----:|\n")
 	for _, r := range results {
 		switch {
 		case r.Skipped:
-			fmt.Fprintf(&b, "| `%s` | ⏭️ skipped | — | — | — | — | — |\n", r.ID)
+			fmt.Fprintf(&b, "| `%s` | ⏭️ skipped | — | — | — | — | — | — |\n", r.ID)
 		default:
 			res := "❌ fail"
 			if r.Passed {
 				res = "✅ pass"
 			}
-			fmt.Fprintf(&b, "| `%s` | %s | %d | %s | %s | %s | %s%.4f |\n",
+			fmt.Fprintf(&b, "| `%s` | %s | %d | %s | %s | %s | %d | %s%.4f |\n",
 				r.ID, res, r.Steps, comma(r.PromptTokens), comma(r.CompletionTokens),
 				pct(r.CacheHitTokens, r.CacheHitTokens+r.CacheMissTokens),
-				currencySym(r.Currency), r.Cost)
+				r.Compactions, currencySym(r.Currency), r.Cost)
 		}
 	}
-	fmt.Fprintf(&b, "\n<sub>Real provider run on the PR head. Cache-hit %% is cached prompt tokens / total prompt tokens.</sub>\n")
+	fmt.Fprintf(&b, "\n<sub>Real provider run. Cache-hit %% is cached prompt tokens / total prompt tokens.</sub>\n")
 
 	notes := false
 	for _, r := range results {
@@ -307,7 +369,7 @@ func currencySym(c string) string {
 
 func readMetrics(path string) (runMetrics, error) {
 	var m runMetrics
-	b, err := os.ReadFile(path)
+	b, err := fileencoding.ReadFileUTF8(path)
 	if err != nil {
 		return m, err
 	}
@@ -329,6 +391,10 @@ func copyDir(src, dst string) error {
 		if err != nil {
 			return err
 		}
+		// Skip symlinks so a seed link can't leak a file from outside the seed tree.
+		if info.Mode()&os.ModeSymlink != 0 {
+			return nil
+		}
 		rel, _ := filepath.Rel(src, p)
 		target := filepath.Join(dst, rel)
 		if info.IsDir() {
@@ -347,11 +413,18 @@ func copyFile(src, dst string) error {
 		return err
 	}
 	defer in.Close()
-	out, err := os.Create(dst)
+	info, err := in.Stat()
+	if err != nil {
+		return err
+	}
+	out, err := os.OpenFile(dst, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, info.Mode().Perm())
 	if err != nil {
 		return err
 	}
 	defer out.Close()
-	_, err = io.Copy(out, in)
-	return err
+	if _, err := io.Copy(out, in); err != nil {
+		return err
+	}
+	// Mirror the source mode so a seed's read-only / exec bit survives the copy.
+	return os.Chmod(dst, info.Mode().Perm())
 }

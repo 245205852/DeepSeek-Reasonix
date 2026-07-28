@@ -19,6 +19,8 @@ func init() { tool.RegisterBuiltin(deleteSymbol{}) }
 
 type deleteSymbol struct {
 	roots   []string
+	guard   SessionDataGuard
+	managed ManagedConfigPaths
 	workDir string
 }
 
@@ -71,7 +73,7 @@ func (d deleteSymbol) Execute(ctx context.Context, args json.RawMessage) (string
 		return "", fmt.Errorf("name is required")
 	}
 	p.Path = resolveIn(d.workDir, p.Path)
-	if err := confine(d.roots, p.Path); err != nil {
+	if err := confineWrite(ctx, d.roots, d.guard, d.managed, p.Path); err != nil {
 		return "", err
 	}
 
@@ -117,7 +119,7 @@ func (d deleteSymbol) Preview(args json.RawMessage) (diff.Change, error) {
 		return diff.Change{}, fmt.Errorf("name is required")
 	}
 	p.Path = resolveIn(d.workDir, p.Path)
-	if err := confine(d.roots, p.Path); err != nil {
+	if err := confinePreview(d.roots, d.guard, d.managed, p.Path); err != nil {
 		return diff.Change{}, err
 	}
 
@@ -188,11 +190,11 @@ func (d deleteSymbol) findSymbol(path, name, kind, parent string) (symbolMatch, 
 
 	if len(filtered) > 1 {
 		var b strings.Builder
-		b.WriteString(fmt.Sprintf("Multiple matches for %q — disambiguate with kind/parent:\n", name))
+		fmt.Fprintf(&b, "Multiple matches for %q — disambiguate with kind/parent:\n", name)
 		for _, m := range filtered {
-			b.WriteString(fmt.Sprintf("  line %d: %s %s", m.line, m.kind, m.name))
+			fmt.Fprintf(&b, "  line %d: %s %s", m.line, m.kind, m.name)
 			if m.parent != "" {
-				b.WriteString(fmt.Sprintf(" (on %s)", m.parent))
+				fmt.Fprintf(&b, " (on %s)", m.parent)
 			}
 			b.WriteString("\n")
 		}

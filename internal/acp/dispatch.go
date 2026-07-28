@@ -4,10 +4,16 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
+	"unicode/utf8"
 
+	"reasonix/internal/agent"
+	"reasonix/internal/control"
 	"reasonix/internal/event"
+	"reasonix/internal/permission"
 	"reasonix/internal/provider"
 )
 
@@ -43,17 +49,58 @@ const maxResultChars = 8000
 type updateSink struct {
 	conn      notifier
 	sessionID string
-	approve   func(id string, allow, session bool)
+	// cwd resolves relative tool-arg paths for tool_call locations. Set once
+	// via bindCwd before the sink receives events.
+	cwd     string
+	approve func(id string, allow, session, persist bool)
+	answer  func(id string, answers []event.AskAnswer)
+	mu      sync.Mutex
+	turnCtx context.Context
 }
 
 func newUpdateSink(conn notifier, sessionID string) *updateSink {
 	return &updateSink{conn: conn, sessionID: sessionID}
 }
 
+// bindCwd installs the session root used to absolutize tool_call locations.
+func (s *updateSink) bindCwd(cwd string) { s.cwd = cwd }
+
 // bindApprove installs the controller's Approve callback, called by the service
 // once the controller exists (the sink is built first, to hand to the Factory).
-func (s *updateSink) bindApprove(fn func(id string, allow, session bool)) {
+func (s *updateSink) bindApprove(fn func(id string, allow, session, persist bool)) {
+	if fn == nil {
+		s.approve = nil
+		return
+	}
 	s.approve = fn
+}
+
+// bindAnswer installs the controller's AnswerQuestion callback for AskRequest
+// events.
+func (s *updateSink) bindAnswer(fn func(id string, answers []event.AskAnswer)) {
+	s.answer = fn
+}
+
+func (s *updateSink) setTurnContext(ctx context.Context) {
+	s.mu.Lock()
+	s.turnCtx = ctx
+	s.mu.Unlock()
+}
+
+func (s *updateSink) clearTurnContext() {
+	s.mu.Lock()
+	s.turnCtx = nil
+	s.mu.Unlock()
+}
+
+func (s *updateSink) currentTurnContext() context.Context {
+	s.mu.Lock()
+	ctx := s.turnCtx
+	s.mu.Unlock()
+	if ctx == nil {
+		return context.Background()
+	}
+	return ctx
 }
 
 // Emit implements event.Sink. The agent calls it serially (see event.Sink), so no
@@ -73,10 +120,17 @@ func (s *updateSink) Emit(e event.Event) {
 		s.send(messageChunk{SessionUpdate: "agent_message_chunk", Content: textBlock(e.Text)})
 
 	case event.ToolDispatch:
-		// Skip the early (Partial) dispatch: it carries no args, and the full one
-		// that follows is the single pending tool_call the protocol expects.
-		if e.Tool.Partial {
+		// Skip the early (Partial) dispatch and later same-ID preview refresh: ACP
+		// expects one pending tool_call and has no file-diff update payload.
+		if e.Tool.Partial || e.Tool.Refreshed {
 			return
+		}
+		// todo_write is the agent's task list; mirror it as an ACP plan update so
+		// the client renders structured progress alongside the tool_call.
+		if e.Tool.Name == "todo_write" {
+			if entries, ok := planEntriesFromTodoArgs(e.Tool.Args); ok {
+				s.send(planUpdate{SessionUpdate: "plan", Entries: entries})
+			}
 		}
 		s.send(toolCall{
 			SessionUpdate: "tool_call",
@@ -85,6 +139,7 @@ func (s *updateSink) Emit(e event.Event) {
 			Kind:          toolKindFor(e.Tool.Name),
 			Status:        "pending",
 			RawInput:      rawJSON(e.Tool.Args),
+			Locations:     s.toolLocations(e.Tool.Name, e.Tool.Args),
 		})
 
 	case event.ToolResult:
@@ -125,7 +180,15 @@ func (s *updateSink) Emit(e event.Event) {
 		// The run loop is now blocked awaiting Approve(id, …). Do the
 		// client round-trip off the emit goroutine so Emit returns at once
 		// (the agent emits serially); the answer unblocks the loop.
-		go s.requestPermission(e.Approval)
+		turnCtx := s.currentTurnContext()
+		go s.requestPermission(turnCtx, e.Approval)
+
+	case event.AskRequest:
+		// ACP has no separate "ask the user a business question" method. Reuse
+		// the standard permission round-trip with the question options as choices;
+		// clients such as Zed already know how to render this interaction.
+		turnCtx := s.currentTurnContext()
+		go s.requestAsk(turnCtx, e.Ask)
 	}
 }
 
@@ -141,8 +204,12 @@ func (s *updateSink) replay(msgs []provider.Message) {
 	for _, m := range msgs {
 		switch m.Role {
 		case provider.RoleUser:
-			if m.Content != "" {
-				s.send(messageChunk{SessionUpdate: "user_message_chunk", Content: textBlock(m.Content)})
+			text := m.Content
+			if steer, ok := agent.SteerText(text); ok {
+				text = steer
+			}
+			if text != "" {
+				s.send(messageChunk{SessionUpdate: "user_message_chunk", Content: textBlock(text)})
 			}
 		case provider.RoleAssistant:
 			if m.ReasoningContent != "" {
@@ -159,7 +226,15 @@ func (s *updateSink) replay(msgs []provider.Message) {
 					Kind:          toolKindFor(tc.Name),
 					Status:        "completed",
 					RawInput:      rawJSON(tc.Arguments),
+					Locations:     s.toolLocations(tc.Name, tc.Arguments),
 				})
+				// Replaying the latest plan keeps the client's plan view in sync
+				// with the restored conversation; each update replaces the last.
+				if tc.Name == "todo_write" {
+					if entries, ok := planEntriesFromTodoArgs(tc.Arguments); ok {
+						s.send(planUpdate{SessionUpdate: "plan", Entries: entries})
+					}
+				}
 			}
 		case provider.RoleTool:
 			s.send(toolCallUpdateMsg{
@@ -176,7 +251,7 @@ func (s *updateSink) replay(msgs []provider.Message) {
 // session/request_permission round-trip and feeds the outcome back through
 // approve. Any transport failure or a cancelled/rejected outcome denies the call,
 // so the model gets a blocked result rather than the turn hanging.
-func (s *updateSink) requestPermission(a event.Approval) {
+func (s *updateSink) requestPermission(ctx context.Context, a event.Approval) {
 	if s.approve == nil {
 		return
 	}
@@ -184,6 +259,7 @@ func (s *updateSink) requestPermission(a event.Approval) {
 	if a.Subject != "" {
 		title = a.Tool + " " + a.Subject
 	}
+	options := approvalOptions(a.Tool, a.Subject, a.Fresh)
 	params := PermissionRequestParams{
 		SessionID: s.sessionID,
 		ToolCall: PermissionToolCall{
@@ -192,17 +268,11 @@ func (s *updateSink) requestPermission(a event.Approval) {
 			Kind:       toolKindFor(a.Tool),
 			Status:     "pending",
 		},
-		Options: []PermissionOption{
-			{OptionID: string(OptAllowOnce), Name: "Allow", Kind: OptAllowOnce},
-			{OptionID: string(OptAllowAlways), Name: "Allow for this session", Kind: OptAllowAlways},
-			{OptionID: string(OptRejectOnce), Name: "Reject", Kind: OptRejectOnce},
-		},
+		Options: options,
 	}
 
-	allow, session := false, false
-	// context.Background: Conn.Request also unblocks on connection close, so the
-	// round-trip can't outlive the wire even without a turn-scoped context here.
-	if raw, err := s.conn.Request(context.Background(), "session/request_permission", params); err == nil {
+	allow, session, persist := false, false, false
+	if raw, err := s.conn.Request(ctx, "session/request_permission", params); err == nil {
 		var res PermissionRequestResult
 		if json.Unmarshal(raw, &res) == nil && res.Outcome.Outcome == "selected" {
 			switch PermissionOptionKind(res.Outcome.OptionID) {
@@ -213,7 +283,110 @@ func (s *updateSink) requestPermission(a event.Approval) {
 			}
 		}
 	}
-	s.approve(a.ID, allow, session)
+	s.approve(a.ID, allow, session, persist)
+}
+
+func (s *updateSink) requestAsk(ctx context.Context, a event.Ask) {
+	if s.answer == nil {
+		return
+	}
+	answers := make([]event.AskAnswer, 0, len(a.Questions))
+	for _, q := range a.Questions {
+		selected, ok := s.requestAskQuestion(ctx, a.ID, q)
+		if !ok {
+			s.answer(a.ID, nil)
+			return
+		}
+		answers = append(answers, event.AskAnswer{QuestionID: q.ID, Selected: []string{selected}})
+	}
+	s.answer(a.ID, answers)
+}
+
+func (s *updateSink) requestAskQuestion(ctx context.Context, askID string, q event.AskQuestion) (string, bool) {
+	title := strings.TrimSpace(q.Prompt)
+	if title == "" {
+		title = strings.TrimSpace(q.Header)
+	}
+	if title == "" {
+		title = "Question"
+	}
+	content := []toolContent(nil)
+	if q.Header != "" && q.Header != title {
+		content = append(content, toolContent{Type: "content", Content: textBlock(q.Header)})
+	}
+	options := make([]PermissionOption, 0, len(q.Options)+1)
+	labelsByID := make(map[string]string, len(q.Options))
+	for i, opt := range q.Options {
+		id := fmt.Sprintf("%s:%d", q.ID, i+1)
+		name := strings.TrimSpace(opt.Label)
+		if strings.TrimSpace(opt.Description) != "" {
+			name += " - " + strings.TrimSpace(opt.Description)
+		}
+		options = append(options, PermissionOption{OptionID: id, Name: name, Kind: OptAllowOnce})
+		labelsByID[id] = opt.Label
+	}
+	options = append(options, PermissionOption{OptionID: q.ID + ":cancel", Name: "Cancel", Kind: OptRejectOnce})
+
+	rawInput, _ := json.Marshal(map[string]any{
+		"id":       q.ID,
+		"question": title,
+		"options":  q.Options,
+		"multi":    q.Multi,
+	})
+	params := PermissionRequestParams{
+		SessionID: s.sessionID,
+		ToolCall: PermissionToolCall{
+			ToolCallID: "ask-" + askID + "-" + q.ID,
+			Title:      title,
+			Kind:       "other",
+			Status:     "pending",
+			Content:    content,
+			RawInput:   rawInput,
+		},
+		Options: options,
+	}
+
+	raw, err := s.conn.Request(ctx, "session/request_permission", params)
+	if err != nil {
+		return "", false
+	}
+	var res PermissionRequestResult
+	if json.Unmarshal(raw, &res) != nil || res.Outcome.Outcome != "selected" {
+		return "", false
+	}
+	label, ok := labelsByID[res.Outcome.OptionID]
+	return label, ok
+}
+
+func approvalSessionOptionName(tool, subject string) string {
+	if tool == control.SandboxEscapeApprovalTool {
+		return "Use real environment for this session"
+	}
+	sessionRule := permission.SessionGrantRuleForScope(tool, subject)
+	return "Allow " + sessionRule + " for this session"
+}
+
+func approvalOptions(tool, subject string, fresh bool) []PermissionOption {
+	if fresh || control.RequiresFreshHumanApprovalTool(tool) {
+		if tool == control.SandboxEscapeApprovalTool {
+			return []PermissionOption{
+				{OptionID: string(OptAllowOnce), Name: "Allow", Kind: OptAllowOnce},
+				{OptionID: string(OptAllowAlways), Name: approvalSessionOptionName(tool, subject), Kind: OptAllowAlways},
+				{OptionID: string(OptRejectOnce), Name: "Reject", Kind: OptRejectOnce},
+			}
+		}
+		return []PermissionOption{
+			{OptionID: string(OptAllowOnce), Name: "Allow", Kind: OptAllowOnce},
+			{OptionID: string(OptRejectOnce), Name: "Reject", Kind: OptRejectOnce},
+		}
+	}
+	allowSessionName := approvalSessionOptionName(tool, subject)
+	options := []PermissionOption{
+		{OptionID: string(OptAllowOnce), Name: "Allow", Kind: OptAllowOnce},
+		{OptionID: string(OptAllowAlways), Name: allowSessionName, Kind: OptAllowAlways},
+		{OptionID: string(OptRejectOnce), Name: "Reject", Kind: OptRejectOnce},
+	}
+	return options
 }
 
 // textBlock builds a text content block.
@@ -233,8 +406,12 @@ func clip(text string) string {
 	if len(text) <= maxResultChars {
 		return text
 	}
-	return text[:maxResultChars] + "\n…(" +
-		strconv.Itoa(len(text)-maxResultChars) + " more chars truncated)"
+	end := maxResultChars
+	for end > 0 && !utf8.ValidString(text[:end]) {
+		end--
+	}
+	return text[:end] + "\n…(" +
+		strconv.Itoa(len(text)-end) + " more chars truncated)"
 }
 
 // toolKindFor maps a tool name to the ACP tool kind the host uses to categorize
@@ -247,9 +424,11 @@ func toolKindFor(name string) string {
 		return "read"
 	case "grep":
 		return "search"
-	case "edit_file", "multiedit", "write_file":
+	case "edit_file", "move_file", "multiedit", "write_file":
 		return "edit"
 	case "bash":
+		return "execute"
+	case control.SandboxEscapeApprovalTool:
 		return "execute"
 	}
 	n := strings.ToLower(name)
@@ -265,4 +444,86 @@ func toolKindFor(name string) string {
 	default:
 		return "other"
 	}
+}
+
+// locationTools names the builtin tools whose "path" argument is a real file
+// target worth a follow-along location. Search/list tools are excluded: their
+// path is a directory scope, not a file the user would want opened.
+var locationTools = map[string]bool{
+	"read_file":     true,
+	"write_file":    true,
+	"edit_file":     true,
+	"multi_edit":    true,
+	"notebook_edit": true,
+	"delete_range":  true,
+	"delete_symbol": true,
+	"code_index":    true,
+}
+
+// toolLocations derives the file location a tool call touches from its raw
+// args, so the client can follow along in the editor. Unknown tools and
+// path-less args yield nil.
+func (s *updateSink) toolLocations(name, rawArgs string) []ToolCallLocation {
+	if !locationTools[name] {
+		return nil
+	}
+	var p struct {
+		Path   string `json:"path"`
+		Offset int    `json:"offset"`
+	}
+	if json.Unmarshal([]byte(rawArgs), &p) != nil || strings.TrimSpace(p.Path) == "" {
+		return nil
+	}
+	loc := ToolCallLocation{Path: s.absPath(p.Path)}
+	// read_file's offset is a 0-based start line; surface it so the editor can
+	// jump to the region being read.
+	if name == "read_file" && p.Offset > 0 {
+		line := p.Offset + 1
+		loc.Line = &line
+	}
+	return []ToolCallLocation{loc}
+}
+
+func (s *updateSink) absPath(p string) string {
+	if filepath.IsAbs(p) || s.cwd == "" {
+		return p
+	}
+	return filepath.Join(s.cwd, p)
+}
+
+// planEntriesFromTodoArgs maps a todo_write argument payload onto ACP plan
+// entries. Phase items (level 0) rank high, sub-steps medium; unknown statuses
+// degrade to pending so a malformed item cannot poison the whole update.
+func planEntriesFromTodoArgs(rawArgs string) ([]PlanEntry, bool) {
+	var p struct {
+		Todos []struct {
+			Content string `json:"content"`
+			Status  string `json:"status"`
+			Level   int    `json:"level"`
+		} `json:"todos"`
+	}
+	if json.Unmarshal([]byte(rawArgs), &p) != nil || len(p.Todos) == 0 {
+		return nil, false
+	}
+	entries := make([]PlanEntry, 0, len(p.Todos))
+	for _, t := range p.Todos {
+		if strings.TrimSpace(t.Content) == "" {
+			continue
+		}
+		status := t.Status
+		switch status {
+		case "pending", "in_progress", "completed":
+		default:
+			status = "pending"
+		}
+		priority := "medium"
+		if t.Level == 0 {
+			priority = "high"
+		}
+		entries = append(entries, PlanEntry{Content: t.Content, Priority: priority, Status: status})
+	}
+	if len(entries) == 0 {
+		return nil, false
+	}
+	return entries, true
 }

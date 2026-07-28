@@ -11,8 +11,8 @@ changed and how to move over.
 | Language | TypeScript / Node | Go |
 | Branch | [`v1`](https://github.com/esengine/DeepSeek-Reasonix/tree/v1) (maintenance only) | `main-v2` (default, active) |
 | Versions | `0.x` (up to v0.54.x) | `1.0.0`+ |
-| Install | `npm i -g reasonix` (npm ships the TS build) | `npm i -g reasonix` too — the package wraps the Go binary; or a release archive / `go build` |
-| Code intelligence | embedding semantic search | bundled [CodeGraph](https://github.com/colbymchenry/codegraph) (symbol/call graph) |
+| Install | `npm i -g reasonix@0.53.2` (pin a `0.x` version) | `npm i -g reasonix` — `latest` points at the current `1.x` stable; or a release archive / `go build` |
+| Code intelligence | embedding semantic search + tree-sitter symbols | LSP-assisted code reading plus grep/read_file/glob; semantic index is not yet ported |
 
 "v1" and "v2" are **codebase generations**, not semver: the v1 line never reached
 1.0, so the Go rewrite takes the `1.x` major.
@@ -23,30 +23,67 @@ changed and how to move over.
 same way esbuild/biome ship native binaries via npm). The binary itself is a
 standalone Go executable; npm is only the installer, not a runtime dependency.
 
+**`npm i -g reasonix` installs the current `1.x` stable.** npm's `latest` tag
+moved to the Go line with `1.17.5` — the earlier "`latest` stays pinned to
+`0.x`" migration guard silently downgraded `npm update -g` users once 1.x went
+stable (#5822), so it was retired. Release candidates still ship under the
+`next` tag; `0.x` stays installable by pinning:
+
 ```sh
-npm i -g reasonix      # 1.0.0+ delivers the Go binary; 0.x is the legacy TS build
-reasonix chat
+npm i -g reasonix          # current 1.x stable
+npm i -g reasonix@next     # release candidate, when one is ahead of stable
+npm i -g reasonix@0.53.2   # pin the legacy TS build
 ```
 
-Prebuilt archives (`reasonix-<os>-<arch>.tar.gz` / `.zip`) are also attached to
-each GitHub release. Or build from source:
+Prebuilt archives (`reasonix-<os>-<arch>.tar.gz` / `.zip`) and the desktop
+installer are attached to each GitHub release. These are a **separate channel**
+from npm: the installer drops a standalone desktop/binary build and does not
+touch a CLI you installed with `npm i -g`, so the two coexist — an npm `0.53` in
+your shell alongside a `1.x` desktop app is expected, not a conflict. Or build
+from source:
 
 ```sh
 git clone https://github.com/esengine/DeepSeek-Reasonix   # default: main-v2 (Go)
-cd DeepSeek-Reasonix && make build                        # -> bin/reasonix
+cd DeepSeek-Reasonix && make build                        # -> bin/reasonix(.exe)
 ```
-
-Until `1.0.0` is published to npm, `npm i -g reasonix` still installs the `0.x`
-TypeScript build — build from source (above) for the Go version meanwhile.
 
 ## Configuration
 
 | Legacy | Reasonix 1.0 |
 |---|---|
-| TS config files | `reasonix.toml` (project) / `~/.config/reasonix/config.toml` (user) — see `reasonix.example.toml` |
-| env / API keys | `.env` or the environment (`DEEPSEEK_API_KEY`, `MIMO_API_KEY`, …) via `api_key_env` |
+| TS config files | `reasonix.toml` (project) / `config.toml` in Reasonix home (`~/.reasonix/` on macOS/Linux; `%AppData%\reasonix\` on Windows) from v1.8.1 — see `reasonix.example.toml` and [Configuration paths](./CONFIG_PATHS.md) |
+| env / API keys | Provider config keeps `api_key_env`; saved key values live in Reasonix home `.env` (`DEEPSEEK_API_KEY`, `MIMO_API_KEY`, …) |
 | project memory | `REASONIX.md` (+ auto-memory), Claude-Code-compatible |
 | MCP servers | `[[plugins]]` in `reasonix.toml`, or a Claude-Code `.mcp.json` (read as-is) |
+
+On first launch, v1.8.1+ runs a one-time, **non-destructive** import: it reads
+legacy config from `~/Library/Application Support/reasonix/config.toml`,
+`~/.config/reasonix/config.toml`, `~/.reasonix/reasonix.toml`, or v0.x
+`~/.reasonix/config.json` (API key, base URL, language, MCP servers), migrates
+legacy credentials into `<Reasonix home>/.env` when a key is missing there, and
+imports past sessions from legacy session directories. Old files are left
+untouched, and Reasonix prints a boot notice when it imports data. Each session lands in the
+workspace it belonged to (read from its v0.x sidecar meta, summary carried over
+as the title), so the desktop sidebar lists it under the right project; sessions
+whose workspace no longer exists land in the global session dir. Imported
+sessions resume with `--resume` or the history panel. The config import only
+runs when no v1.8.1+ config exists yet — if v1.8.1+ wrote its config before your
+legacy data was in place nothing is overwritten, so copy any missing values
+across by hand.
+
+If the automatic pass missed data because you opened a v1.8.1+ CLI/desktop build
+before the old paths were available, run `/migrate` from an interactive session.
+The command is available only in Go-based Reasonix builds that include it; if you
+see `unknown command`, upgrade first. It prints progress while it checks legacy
+config and credentials, scans legacy memory and session directories, imports
+memory files and sessions that were not previously imported, and summarizes the
+result. `/migrate` keeps the same safety rules as startup migration: it does not
+overwrite an existing `config.toml` or memory file, it respects session import
+markers, and it is not available in the legacy 0.x TypeScript line. If the old
+v0.x sessions are in a custom Windows install/data directory, use
+`/migrate --from "D:\OldReasonix"` to import sessions from that explicit source.
+See
+[Configuration paths](./CONFIG_PATHS.md) for the full path list and limitations.
 
 ## What's the same
 
@@ -56,12 +93,57 @@ and DeepSeek prefix-cache–oriented design.
 
 ## What's different
 
-- **Code intelligence**: embedding semantic search is replaced by **CodeGraph**
-  (`codegraph_*` tools) — a tree-sitter symbol/call graph, no embedding service or
-  API cost. Fetched into a local cache on first use (or `reasonix codegraph
-  install`); set `[codegraph].enabled = false` to opt out.
+- **Code intelligence**: the Go rewrite uses LSP-assisted code reading plus
+  `grep` / `read_file` / `glob` for local understanding. The legacy v1 semantic
+  search + tree-sitter symbol index is not bundled in v2 yet, and CodeGraph is no
+  longer shipped as an internal MCP server.
 - **Plan mode** + `complete_step` (evidence-backed step sign-off).
-- **No web dashboard** — the v2 line is terminal + desktop (Wails), by design.
+- **MCP project identity and schema-cache URLs are credential-aware**: userinfo
+  and credential query values (token, api_key, password, ...) do not enter the
+  project launch identity digest or schema cache key, so credential rotation
+  keeps the same project runtime/cache identity. User-installed servers do not
+  compute a project identity digest. Legacy launch/tool authorization receipts
+  are no longer required by configured MCP servers.
+- **MCP setup is now add-and-use.** Servers added by the user (Desktop, CLI,
+  user config, legacy user import, or a user-installed plugin package) are
+  trusted immediately and global installs persist to `config.toml`. Repository
+  `reasonix.toml` / `.mcp.json` servers stay project-scoped and are trusted
+  without a separate launch confirmation. Project entries override same-name
+  global entries; `reasonix.toml` overrides `.mcp.json` inside the project.
+  Treat opening an unfamiliar repository as opting into executable project
+  configuration: review `.reasonix/settings.json`, `reasonix.toml`, and
+  `.mcp.json` before starting Reasonix. If a repository causes unexpected MCP
+  or Hook behavior, restart in Safe Mode to disable those external integrations
+  while recovering.
+- **stdio MCP connections are persistent.** This fixes stateful servers that
+  lost browser/session state when writer calls received a fresh process.
+- **Plan mode and permission policy are now independent**: Plan directs the
+  model to plan first. Ordinary built-in and Bash calls still use the active
+  Ask/Auto/YOLO rules and Sandbox, while installed MCP and proxy-resolved MCP
+  writer/destructive targets plus readers from unauthorized servers stay hard-blocked for the
+  whole planning phase. Explicit execution-phase tools such as `complete_step` also
+  remain unavailable until plan approval. `plan_mode_read_only_commands` is
+  still parsed and round-tripped for old configs, but it no longer controls
+  main Plan availability. Installed or project-configured servers contribute their
+  non-destructive `readOnlyHint` tools to planner/read-only registries
+  automatically. Use `read_only_task` /
+  `read_only_skill` when a child must be technically restricted to read-only;
+  ordinary `task` / `run_skill` calls remain writer-capable and permission-gated
+  in Plan. Installed MCP tools use the server's `readOnlyHint` for ordinary
+  dispatch. Tools without the hint remain writer-classified. The retired
+  `default_tools_approval_mode`, `tools.<raw>.approval_mode`, and
+  `approvals_reviewer` fields are ignored and removed on the next save; installing
+  or explicitly authorizing a server now makes all of its tools directly usable.
+- **Read-only subagent research**: use `read_only_task` for generic isolated
+  research in plan mode, or `read_only_skill` when the work should follow an
+  existing skill. Both expose only read-only tools and safe foreground bash, do
+  not write resumable transcripts, and keep writer-capable `task` / `run_skill`
+  out of those explicitly read-only child registries. Ordinary writer-capable
+  delegation in Plan uses Permissions/Sandbox.
+- **Web dashboard remains available; desktop is recommended**: run
+  `reasonix serve` when a local browser UI is useful. For the primary visual
+  experience, prefer the Wails desktop app; CLI/TUI remains the terminal-native
+  path.
 - Some granular v1 tools are intentionally consolidated (e.g. file-management ops
   go through `bash`); a few v1 tools are not yet ported (tracked on Discussions).
 

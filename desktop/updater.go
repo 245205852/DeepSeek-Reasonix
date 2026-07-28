@@ -8,12 +8,16 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"time"
 
@@ -21,6 +25,8 @@ import (
 	"golang.org/x/mod/semver"
 
 	"reasonix/desktop/internal/update"
+	"reasonix/internal/config"
+	"reasonix/internal/netclient"
 )
 
 // updater.go is the transport-free core of the desktop auto-updater: manifest
@@ -28,42 +34,153 @@ import (
 // has no Wails dependency so the logic is unit-tested directly; updater_app.go is
 // the thin Wails binding that wires these into App methods and progress events.
 
-// Manifest endpoints — R2 CDN first (fast, especially in CN), GitHub releases as
-// fallback. Mirrors the v1 desktop's two-endpoint scheme.
+// Manifest endpoints — R2 CDN first (fast, especially in CN), then the crash
+// worker release gateway, then GitHub as the stable channel's last resort. The
+// selected update channel picks the rolling pointer; it is user-configurable and
+// independent from the build channel embedded for diagnostics/backcompat. The
+// gateway still avoids GitHub's repository-wide /releases/latest shortcut so the
+// app is not coupled to GitHub's homepage badge semantics.
 const (
-	manifestPrimary     = "https://pub-147fb53b9c1e4bbf891a257968619ea7.r2.dev/latest/latest.json"
-	manifestFallback    = "https://github.com/esengine/reasonix/releases/latest/download/latest.json"
-	defaultDownloadPage = "https://github.com/esengine/reasonix/releases/latest"
-	httpTimeout         = 15 * time.Second
+	r2Base                  = "https://dl.reasonix.io"
+	releaseGatewayBase      = "https://crash.reasonix.io/v1/desktop/releases"
+	downloadPageURL         = "https://reasonix.io/?download=desktop#start"
+	httpTimeout             = 15 * time.Second
+	manifestEndpointTimeout = 5 * time.Second
 )
+
+var fetchAttemptTimeout = 5 * time.Second
+
+// githubManifestFallback is the stable channel's last-resort manifest source.
+// dl.reasonix.io and crash.reasonix.io share one Cloudflare zone, so bot
+// protection that 403s a user's egress IP takes out both first-party endpoints
+// at once (#6005); GitHub is separate infrastructure. Stable desktop releases
+// own the repo-wide latest badge and publish latest.json directly, while
+// release.yml also keeps a desktop-manifest mirror attached to stable CLI
+// releases for older publishing windows. Preview has no GitHub release, so its
+// chain remains first-party only.
+const githubManifestFallback = "https://github.com/esengine/DeepSeek-Reasonix/releases/latest/download/latest.json"
+
+func normalizeUpdateChannel(ch string) string {
+	return config.NormalizeDesktopUpdateChannel(ch)
+}
+
+func configuredUpdateChannel() string {
+	cfg, err := config.Load()
+	if err != nil {
+		return "stable"
+	}
+	return cfg.DesktopUpdateChannel()
+}
+
+func targetUpdateChannel(selected string) string {
+	if strings.TrimSpace(selected) != "" {
+		return normalizeUpdateChannel(selected)
+	}
+	return configuredUpdateChannel()
+}
+
+func runningUpdateChannel() string {
+	return normalizeUpdateChannel(channel)
+}
+
+// manifestEndpoints returns the manifest URLs for the selected update channel,
+// in the order fetchManifest tries them.
+func manifestEndpoints(selected string) []string {
+	switch normalizeUpdateChannel(selected) {
+	case "preview":
+		return []string{
+			r2Base + "/preview/latest.json",
+			r2Base + "/canary/latest.json",
+			releaseGatewayBase + "/preview/latest.json",
+			releaseGatewayBase + "/canary/latest.json",
+		}
+	default:
+		return []string{
+			r2Base + "/latest/latest.json",
+			releaseGatewayBase + "/stable/latest.json",
+			githubManifestFallback,
+		}
+	}
+}
+
+// updaterUserAgent identifies updater traffic. Go's default Go-http-client UA
+// is exactly what edge bot protection scores worst (#6005); a descriptive UA
+// lets the release edge allowlist updater requests and makes them attributable
+// in server logs.
+func updaterUserAgent(selected string) string {
+	return fmt.Sprintf("Reasonix-Updater/%s (%s/%s; build=%s; update=%s)", version, runtime.GOOS, runtime.GOARCH, channel, normalizeUpdateChannel(selected))
+}
+
+// downloadPage is the human-facing releases page shown when self-update is
+// unavailable (macOS) or the manifest omits its own link.
+func downloadPage() string {
+	return downloadPageURL
+}
 
 // UpdateInfo is the CheckUpdate result that drives the frontend's update banner.
 type UpdateInfo struct {
-	Available     bool   `json:"available"`
-	Current       string `json:"current"`
-	Latest        string `json:"latest"`
-	Notes         string `json:"notes"`
-	CanSelfUpdate bool   `json:"canSelfUpdate"` // win/linux true; macOS false (unsigned → manual download)
-	DownloadURL   string `json:"downloadUrl"`   // human-facing releases page (macOS path / fallback link)
-	AssetSize     int64  `json:"assetSize"`     // running platform's artifact size, for the progress bar
-	Err           string `json:"err,omitempty"` // set when the check itself failed (both endpoints down)
+	Available         bool   `json:"available"`
+	Current           string `json:"current"`
+	Latest            string `json:"latest"`
+	Notes             string `json:"notes"`
+	Channel           string `json:"channel"`
+	CanSelfUpdate     bool   `json:"canSelfUpdate"` // win/linux true; macOS true only for signed/notarized builds
+	ManualOnly        bool   `json:"manualOnly,omitempty"`
+	ManualReason      string `json:"manualReason,omitempty"`
+	InstallMode       string `json:"installMode"`                 // portable | deb | manual
+	RequiresElevation bool   `json:"requiresElevation,omitempty"` // deb/Polkit path
+	Downloaded        bool   `json:"downloaded"`
+	DownloadURL       string `json:"downloadUrl"`   // human-facing releases page (macOS path / fallback link)
+	AssetSize         int64  `json:"assetSize"`     // running platform's artifact size, for the progress bar
+	Err               string `json:"err,omitempty"` // set when the check itself failed (both endpoints down)
+}
+
+// UpdateDownloadResult is returned after an artifact has been downloaded,
+// verified, and stored in the local updater cache.
+type UpdateDownloadResult struct {
+	Version string `json:"version"`
+	Channel string `json:"channel"`
+	Path    string `json:"path"`
+	Size    int64  `json:"size"`
+	SHA256  string `json:"sha256"`
 }
 
 // updateProgress is the payload of the "updater:progress" Wails event emitted
-// throughout ApplyUpdate.
+// throughout DownloadUpdate / InstallUpdate.
 type updateProgress struct {
-	Phase    string `json:"phase"` // downloading | verifying | applying | done | error
+	Phase    string `json:"phase"` // downloading | verifying | downloaded | authorizing | installing | done | error
 	Received int64  `json:"received"`
 	Total    int64  `json:"total"`
 	Err      string `json:"err,omitempty"`
 }
 
-func httpClient() *http.Client { return &http.Client{Timeout: httpTimeout} }
+func httpClient() (*http.Client, error) { return newHTTPClient(false) }
 
-// canSelfUpdate reports whether in-place update is possible. macOS is excluded:
-// without a Developer ID signature + notarization, swapping the .app and relaunching
-// trips Gatekeeper, so macOS falls back to a manual download.
-func canSelfUpdate() bool { return runtime.GOOS != "darwin" }
+// httpClientIPv4 pins the dialer to IPv4 — the download fallback when the default
+// (often IPv6-first) route to Cloudflare keeps resetting mid-transfer.
+func httpClientIPv4() (*http.Client, error) { return newHTTPClient(true) }
+
+func newHTTPClient(forceIPv4 bool) (*http.Client, error) {
+	cfg, err := config.Load()
+	if err != nil {
+		return nil, err
+	}
+	return netclient.NewHTTPClient(cfg.NetworkProxySpec(), netclient.TransportOptions{ForceIPv4: forceIPv4})
+}
+
+// canSelfUpdate reports whether in-place update is possible. Windows and Linux
+// can replace the verified artifact directly; macOS requires an explicitly
+// signed/notarized build flag so local or ad-hoc builds stay manual.
+func canSelfUpdate() bool {
+	return runtime.GOOS != "darwin" || macSelfUpdateAllowed()
+}
+
+func manualUpdateReason() string {
+	if runtime.GOOS == "darwin" && !macSelfUpdateAllowed() {
+		return "macOS automatic updates require a Developer ID signed and notarized build"
+	}
+	return ""
+}
 
 // normalizeVersion canonicalizes a version to semver "vX.Y.Z". It reports ok=false
 // for the un-injected "dev" build (and anything not valid semver), so a dev build
@@ -82,39 +199,119 @@ func normalizeVersion(v string) (string, bool) {
 	return semver.Canonical(v), true
 }
 
-// fetchManifest pulls latest.json from the primary endpoint, then the fallback,
-// and decodes it.
-func fetchManifest(ctx context.Context, c *http.Client) (*update.Manifest, error) {
-	var lastErr error
-	for _, url := range []string{manifestPrimary, manifestFallback} {
-		b, err := fetchBytes(ctx, c, url)
+// validateManifestChannel prevents compatibility fallbacks from crossing the
+// public channel boundary. In particular, the legacy canary/ pointer may still
+// contain an old test-signed vX.Y.Z-canary.N build until the first Preview
+// release mirrors over it; new Preview clients must skip that manifest.
+func validateManifestChannel(selected string, m *update.Manifest) error {
+	version, ok := normalizeVersion(m.Version)
+	if !ok {
+		return fmt.Errorf("%s manifest has invalid version %q", normalizeUpdateChannel(selected), m.Version)
+	}
+	prerelease := semver.Prerelease(version)
+	switch normalizeUpdateChannel(selected) {
+	case "preview":
+		if !strings.HasPrefix(prerelease, "-preview.") {
+			return fmt.Errorf("preview manifest has non-Preview version %q", m.Version)
+		}
+	default:
+		if prerelease != "" {
+			return fmt.Errorf("stable manifest has prerelease version %q", m.Version)
+		}
+	}
+	return nil
+}
+
+// fetchManifest pulls latest.json from each endpoint in order until one both
+// responds, decodes, and matches the selected public channel. Every endpoint's
+// failure is kept — a user staring at a gateway 403 (#6005) needs to see that
+// the R2 pointer failed too, not just whichever endpoint happened to die last.
+func fetchManifest(ctx context.Context, c, fallback *http.Client, selected string) (*update.Manifest, error) {
+	var errs []error
+	selected = normalizeUpdateChannel(selected)
+	for _, url := range manifestEndpoints(selected) {
+		endpointCtx, cancel := context.WithTimeout(ctx, manifestEndpointTimeout)
+		b, err := fetchManifestBytes(endpointCtx, c, fallback, selected, url)
+		cancel()
 		if err != nil {
-			lastErr = err
+			errs = append(errs, err)
 			continue
 		}
 		var m update.Manifest
 		if err := json.Unmarshal(b, &m); err != nil {
-			lastErr = err
+			errs = append(errs, fmt.Errorf("%s: %w", url, err))
+			continue
+		}
+		if err := validateManifestChannel(selected, &m); err != nil {
+			errs = append(errs, fmt.Errorf("%s: %w", url, err))
 			continue
 		}
 		return &m, nil
 	}
-	return nil, fmt.Errorf("update: fetch manifest: %w", lastErr)
+	return nil, fmt.Errorf("update: fetch manifest: %w", errors.Join(errs...))
 }
 
-// evaluate compares the running version against the manifest and builds the
-// frontend-facing result. Pure (no I/O) so the comparison is unit-tested.
-func evaluate(current string, m *update.Manifest) UpdateInfo {
+// fetchManifestBytes gives the default and IPv4 transports separate halves of
+// the endpoint budget. A stalled IPv6 dial must not consume the whole timeout
+// before the IPv4 fallback gets a chance to run (#6713).
+func fetchManifestBytes(ctx context.Context, c, fallback *http.Client, selected, url string) ([]byte, error) {
+	attemptTimeout := manifestEndpointTimeout / 2
+	attemptCtx, cancel := context.WithTimeout(ctx, attemptTimeout)
+	data, err := fetchBytesOnce(attemptCtx, c, selected, url)
+	cancel()
+	if err == nil || !isTransientFetchError(err) || fallback == nil {
+		return data, err
+	}
+	attemptCtx, cancel = context.WithTimeout(ctx, attemptTimeout)
+	fallbackData, fallbackErr := fetchBytesOnce(attemptCtx, fallback, selected, url)
+	cancel()
+	if fallbackErr == nil {
+		return fallbackData, nil
+	}
+	return nil, errors.Join(err, fallbackErr)
+}
+
+// evaluateForChannel compares the running version against the selected channel's
+// manifest and builds the frontend-facing result. I/O is limited to install-profile
+// detection and cache probes so tests can inject a fixed profile below.
+func evaluateForChannel(current, selected string, m *update.Manifest) UpdateInfo {
+	return evaluateWithProfileForChannel(current, selected, m, profileForManifest(detectInstallProfile(), m))
+}
+
+func evaluateWithProfile(current string, m *update.Manifest, profile installProfile) UpdateInfo {
+	return evaluateWithProfileForChannel(current, runningUpdateChannel(), m, profile)
+}
+
+// evaluateWithProfileForChannel is the pure comparison core once the install
+// profile and selected update channel are known.
+func evaluateWithProfileForChannel(current, selected string, m *update.Manifest, profile installProfile) UpdateInfo {
+	selected = normalizeUpdateChannel(selected)
 	page := m.DownloadPage
 	if page == "" {
-		page = defaultDownloadPage
+		page = downloadPage()
 	}
 	info := UpdateInfo{
-		Current:       current,
-		Latest:        m.Version,
-		Notes:         m.Notes,
-		CanSelfUpdate: canSelfUpdate(),
-		DownloadURL:   page,
+		Current:           current,
+		Latest:            m.Version,
+		Notes:             m.Notes,
+		Channel:           selected,
+		CanSelfUpdate:     profile.CanSelfUpdate,
+		ManualOnly:        !profile.CanSelfUpdate,
+		ManualReason:      profile.ManualReason,
+		InstallMode:       profile.Mode,
+		RequiresElevation: profile.RequiresElev,
+		DownloadURL:       page,
+	}
+	// Preserve the pre-existing macOS gate when profile detection would otherwise
+	// claim portable self-update on an unsigned build.
+	if runtime.GOOS == "darwin" && !canSelfUpdate() {
+		info.CanSelfUpdate = false
+		info.ManualOnly = true
+		info.RequiresElevation = false
+		info.InstallMode = installModeManual
+		if info.ManualReason == "" {
+			info.ManualReason = manualUpdateReason()
+		}
 	}
 	cur, okCur := normalizeVersion(current)
 	latest, okLatest := normalizeVersion(m.Version)
@@ -122,57 +319,431 @@ func evaluate(current string, m *update.Manifest) UpdateInfo {
 		info.Err = "manifest has no valid version"
 		return info
 	}
-	// A dev/invalid running version never auto-prompts.
-	if okCur && semver.Compare(latest, cur) > 0 {
-		info.Available = true
+	// A dev/invalid running version never auto-prompts. Within a channel, only a
+	// newer semver is an update. Across channels, a different target latest is an
+	// explicit channel switch, so allow installing stable over a newer preview.
+	if okCur {
+		if selected != runningUpdateChannel() {
+			info.Available = latest != cur
+		} else if semver.Compare(latest, cur) > 0 {
+			info.Available = true
+		}
 	}
-	if a, ok := m.Asset(); ok {
+	if a, kind, ok := selectUpdateAsset(m, profile); ok {
+		info.AssetSize = a.Size
+		info.Downloaded = cachedUpdateMatchesForChannel(selected, m.Version, a, kind)
+	} else if a, ok := m.Asset(); ok {
+		// Manual installs (or a missing native package) still surface the portable
+		// artifact size so the UI can show how large the download is on the page.
 		info.AssetSize = a.Size
 	}
 	return info
 }
 
-// fetchBytes GETs a URL fully into memory.
+type cachedUpdate struct {
+	Version       string `json:"version"`
+	Channel       string `json:"channel"`
+	Platform      string `json:"platform"`
+	Path          string `json:"path"`
+	Size          int64  `json:"size"`
+	SHA256        string `json:"sha256"`
+	DownloadedAt  string `json:"downloadedAt"`
+	ArtifactKind  string `json:"artifactKind,omitempty"`  // tarball | deb
+	SignaturePath string `json:"signaturePath,omitempty"` // required for deb
+}
+
+var updateCacheBaseDir = defaultUpdateCacheBaseDir
+
+func defaultUpdateCacheBaseDir() (string, error) {
+	if cd := config.CacheDir(); cd != "" {
+		return filepath.Join(cd, "updates"), nil
+	}
+	base, err := os.UserCacheDir()
+	if err != nil {
+		base = os.TempDir()
+	}
+	return filepath.Join(base, "Reasonix", "updates"), nil
+}
+
+func updateCacheDir() (string, error) {
+	dir, err := updateCacheBaseDir()
+	if err != nil {
+		return "", err
+	}
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return "", err
+	}
+	return dir, nil
+}
+
+func updateMetadataPath() (string, error) {
+	dir, err := updateCacheDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(dir, "downloaded.json"), nil
+}
+
+func assetFileName(asset update.Asset, version string) string {
+	if u, err := url.Parse(asset.URL); err == nil {
+		if base := filepath.Base(u.Path); base != "." && base != "/" {
+			return base
+		}
+	}
+	clean := strings.NewReplacer("/", "-", "\\", "-", ":", "-", " ", "-").Replace(version)
+	return "Reasonix-" + clean + "-" + update.CurrentPlatform() + ".update"
+}
+
+func writeAtomic(path string, data []byte, mode os.FileMode) error {
+	tmp, err := os.CreateTemp(filepath.Dir(path), "."+filepath.Base(path)+".tmp-*")
+	if err != nil {
+		return err
+	}
+	name := tmp.Name()
+	if _, err := tmp.Write(data); err != nil {
+		tmp.Close()
+		_ = os.Remove(name)
+		return err
+	}
+	if err := tmp.Chmod(mode); err != nil {
+		tmp.Close()
+		_ = os.Remove(name)
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		_ = os.Remove(name)
+		return err
+	}
+	if err := os.Rename(name, path); err != nil {
+		_ = os.Remove(name)
+		return err
+	}
+	return nil
+}
+
+func saveCachedUpdate(version string, asset update.Asset, data []byte, kind string, signature []byte) (*cachedUpdate, error) {
+	return saveCachedUpdateForChannel(runningUpdateChannel(), version, asset, data, kind, signature)
+}
+
+func saveCachedUpdateForChannel(selected, version string, asset update.Asset, data []byte, kind string, signature []byte) (*cachedUpdate, error) {
+	selected = normalizeUpdateChannel(selected)
+	if err := checkSHA256(data, asset.SHA256); err != nil {
+		return nil, err
+	}
+	kind = artifactKindFromMeta(kind)
+	dir, err := updateCacheDir()
+	if err != nil {
+		return nil, err
+	}
+	path := filepath.Join(dir, assetFileName(asset, version))
+	if err := writeAtomic(path, data, 0o600); err != nil {
+		return nil, err
+	}
+	meta := &cachedUpdate{
+		Version:      version,
+		Channel:      selected,
+		Platform:     update.CurrentPlatform(),
+		Path:         path,
+		Size:         int64(len(data)),
+		SHA256:       asset.SHA256,
+		DownloadedAt: time.Now().UTC().Format(time.RFC3339),
+		ArtifactKind: kind,
+	}
+	if kind == artifactKindDeb {
+		if len(signature) == 0 {
+			return nil, fmt.Errorf("update: deb cache requires a signature")
+		}
+		sigPath := path + ".minisig"
+		if err := writeAtomic(sigPath, signature, 0o600); err != nil {
+			return nil, err
+		}
+		meta.SignaturePath = sigPath
+	}
+	raw, err := json.MarshalIndent(meta, "", "  ")
+	if err != nil {
+		return nil, err
+	}
+	metadataPath, err := updateMetadataPath()
+	if err != nil {
+		return nil, err
+	}
+	if err := writeAtomic(metadataPath, append(raw, '\n'), 0o600); err != nil {
+		return nil, err
+	}
+	return meta, nil
+}
+
+func loadCachedUpdate() (*cachedUpdate, error) {
+	path, err := updateMetadataPath()
+	if err != nil {
+		return nil, err
+	}
+	raw, err := readFileUTF8(path)
+	if err != nil {
+		return nil, err
+	}
+	var meta cachedUpdate
+	if err := json.Unmarshal(raw, &meta); err != nil {
+		return nil, err
+	}
+	if meta.Version == "" || meta.Channel == "" || meta.Platform == "" || meta.Path == "" || meta.SHA256 == "" {
+		return nil, fmt.Errorf("update: cached metadata is incomplete")
+	}
+	return &meta, nil
+}
+
+func cachedUpdateMatches(version string, asset update.Asset, kind string) bool {
+	return cachedUpdateMatchesForChannel(runningUpdateChannel(), version, asset, kind)
+}
+
+func cachedUpdateMatchesForChannel(selected, version string, asset update.Asset, kind string) bool {
+	selected = normalizeUpdateChannel(selected)
+	meta, err := loadCachedUpdate()
+	if err != nil {
+		return false
+	}
+	kind = artifactKindFromMeta(kind)
+	metaKind := artifactKindFromMeta(meta.ArtifactKind)
+	// Legacy portable caches omit artifactKind and remain valid for tarball only.
+	// Deb installs never reuse a cache that lacks a matching signature file.
+	if kind == artifactKindDeb {
+		if metaKind != artifactKindDeb || meta.SignaturePath == "" {
+			return false
+		}
+		if _, err := os.Stat(meta.SignaturePath); err != nil {
+			return false
+		}
+	} else if metaKind != artifactKindTarball {
+		return false
+	}
+	return meta.Version == version &&
+		meta.Channel == selected &&
+		meta.Platform == update.CurrentPlatform() &&
+		strings.EqualFold(meta.SHA256, asset.SHA256) &&
+		meta.Size == asset.Size &&
+		fileSHA256Matches(meta.Path, meta.SHA256)
+}
+
+func fileSHA256Matches(path, want string) bool {
+	f, err := os.Open(path)
+	if err != nil {
+		return false
+	}
+	defer f.Close()
+	h := sha256.New()
+	if _, err := io.Copy(h, f); err != nil {
+		return false
+	}
+	return strings.EqualFold(hex.EncodeToString(h.Sum(nil)), want)
+}
+
+func readVerifiedCachedUpdate() (*cachedUpdate, []byte, error) {
+	return readVerifiedCachedUpdateForChannel(runningUpdateChannel())
+}
+
+func readVerifiedCachedUpdateForChannel(selected string) (*cachedUpdate, []byte, error) {
+	selected = normalizeUpdateChannel(selected)
+	meta, err := loadCachedUpdate()
+	if err != nil {
+		return nil, nil, err
+	}
+	if meta.Channel != selected {
+		return nil, nil, fmt.Errorf("update: cached update is for %s channel, selected channel is %s", meta.Channel, selected)
+	}
+	if meta.Platform != update.CurrentPlatform() {
+		return nil, nil, fmt.Errorf("update: cached update is for %s, current platform is %s", meta.Platform, update.CurrentPlatform())
+	}
+	data, err := os.ReadFile(meta.Path)
+	if err != nil {
+		return nil, nil, err
+	}
+	if err := checkSHA256(data, meta.SHA256); err != nil {
+		return nil, nil, err
+	}
+	meta.ArtifactKind = artifactKindFromMeta(meta.ArtifactKind)
+	if meta.ArtifactKind == artifactKindDeb {
+		if meta.SignaturePath == "" {
+			return nil, nil, fmt.Errorf("update: cached deb is missing its signature")
+		}
+		if _, err := os.Stat(meta.SignaturePath); err != nil {
+			return nil, nil, fmt.Errorf("update: cached deb signature is missing")
+		}
+	}
+	return meta, data, nil
+}
+
+// downloadAttempts caps how many times a transient transport failure (connection
+// reset, read timeout, gateway 5xx) is retried before the update gives up. CN IPv6
+// routes to Cloudflare reset mid-transfer often enough that a retry or two usually
+// completes the download instead of surfacing a "forcibly closed" error.
+const downloadAttempts = 3
+
+// retryBackoff is the pause before the Nth retry; a package var so tests shrink it.
+var retryBackoff = func(attempt int) time.Duration { return time.Duration(attempt) * 500 * time.Millisecond }
+
+// retryTransient runs attempt 1..downloadAttempts of fetch, pausing between tries,
+// until one succeeds. fetch receives the 1-based attempt number so a caller can
+// switch transports on a retry. It stops early when ctx is cancelled (window closed
+// / user cancelled). Only the transport is retried; the signature and sha256 checks
+// run downstream in downloadVerify and are not retried.
+func retryTransient(ctx context.Context, fetch func(attempt int) error) error {
+	var err error
+	for attempt := 1; attempt <= downloadAttempts; attempt++ {
+		if err = fetch(attempt); err == nil {
+			return nil
+		}
+		if !isTransientFetchError(err) {
+			break
+		}
+		if ctx.Err() != nil || attempt == downloadAttempts {
+			break
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(retryBackoff(attempt)):
+		}
+	}
+	return err
+}
+
+type httpStatusError struct {
+	url    string
+	status string
+	code   int
+}
+
+func (e *httpStatusError) Error() string { return fmt.Sprintf("GET %s: %s", e.url, e.status) }
+
+func isTransientFetchError(err error) bool {
+	var statusErr *httpStatusError
+	if !errors.As(err, &statusErr) {
+		return true
+	}
+	return statusErr.code == http.StatusRequestTimeout || statusErr.code == http.StatusTooManyRequests || statusErr.code >= 500
+}
+
+// fetchBytes GETs a URL fully into memory, retrying transient transport failures.
 func fetchBytes(ctx context.Context, c *http.Client, url string) ([]byte, error) {
+	return fetchBytesFallbackForChannel(ctx, c, nil, runningUpdateChannel(), url)
+}
+
+// fetchBytesFallback retries transport failures with the IPv4-pinned client.
+// This covers small manifest/signature requests as well as the artifact body;
+// previously only the large artifact download escaped a broken IPv6 route.
+func fetchBytesFallback(ctx context.Context, c, fallback *http.Client, url string) ([]byte, error) {
+	return fetchBytesFallbackForChannel(ctx, c, fallback, runningUpdateChannel(), url)
+}
+
+func fetchBytesFallbackForChannel(ctx context.Context, c, fallback *http.Client, selected, url string) ([]byte, error) {
+	selected = normalizeUpdateChannel(selected)
+	var data []byte
+	err := retryTransient(ctx, func(attempt int) error {
+		client := c
+		if attempt > 1 && fallback != nil {
+			client = fallback
+		}
+		var e error
+		attemptCtx, cancel := context.WithTimeout(ctx, fetchAttemptTimeout)
+		data, e = fetchBytesOnce(attemptCtx, client, selected, url)
+		cancel()
+		return e
+	})
+	return data, err
+}
+
+func fetchBytesOnce(ctx context.Context, c *http.Client, selected, url string) ([]byte, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return nil, err
 	}
+	req.Header.Set("User-Agent", updaterUserAgent(selected))
 	resp, err := c.Do(req)
 	if err != nil {
 		return nil, err
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("GET %s: %s", url, resp.Status)
+		return nil, &httpStatusError{url: url, status: resp.Status, code: resp.StatusCode}
 	}
 	return io.ReadAll(resp.Body)
 }
 
-// download fetches url into memory, invoking onProgress as bytes arrive. total is
-// the expected size for the progress denominator (overridden by Content-Length).
-func download(ctx context.Context, c *http.Client, url string, total int64, onProgress func(received, total int64)) ([]byte, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
-	if err != nil {
-		return nil, err
-	}
-	resp, err := c.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("GET %s: %s", url, resp.Status)
-	}
-	if resp.ContentLength > 0 {
-		total = resp.ContentLength
-	}
+// download fetches url into memory, invoking onProgress as bytes arrive. A transient
+// transport failure is retried; the retry resumes from the bytes already received
+// via a Range request instead of restarting, and switches to the IPv4 fallback
+// client (when provided) since a reset usually means the IPv6 route is the problem.
+// total is the expected size for the progress denominator (refined from the response).
+func download(ctx context.Context, c, fallback *http.Client, url string, total int64, onProgress func(received, total int64)) ([]byte, error) {
+	return downloadForChannel(ctx, c, fallback, runningUpdateChannel(), url, total, onProgress)
+}
+
+func downloadForChannel(ctx context.Context, c, fallback *http.Client, selected, url string, total int64, onProgress func(received, total int64)) ([]byte, error) {
+	selected = normalizeUpdateChannel(selected)
 	var buf bytes.Buffer
-	pr := &progressReader{r: resp.Body, total: total, onProgress: onProgress}
-	if _, err := io.Copy(&buf, pr); err != nil {
+	err := retryTransient(ctx, func(attempt int) error {
+		client := c
+		if attempt > 1 && fallback != nil {
+			client = fallback
+		}
+		return downloadInto(ctx, client, selected, url, &buf, &total, onProgress)
+	})
+	if err != nil {
 		return nil, err
 	}
 	return buf.Bytes(), nil
+}
+
+// downloadInto appends url's body to buf, resuming from buf's current length via a
+// Range request so a retry continues the partial download. A 206 carries the
+// remaining bytes; a 200 means the server ignored Range, so buf is reset and the
+// whole file re-downloaded. total is refined from the response for the progress
+// denominator (Content-Length on 200, the size field of Content-Range on 206).
+func downloadInto(ctx context.Context, c *http.Client, selected, url string, buf *bytes.Buffer, total *int64, onProgress func(received, total int64)) error {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("User-Agent", updaterUserAgent(selected))
+	if buf.Len() > 0 {
+		req.Header.Set("Range", fmt.Sprintf("bytes=%d-", buf.Len()))
+	}
+	resp, err := c.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	switch resp.StatusCode {
+	case http.StatusOK:
+		buf.Reset()
+		if resp.ContentLength > 0 {
+			*total = resp.ContentLength
+		}
+	case http.StatusPartialContent:
+		if t := totalFromContentRange(resp.Header.Get("Content-Range")); t > 0 {
+			*total = t
+		}
+	default:
+		return fmt.Errorf("GET %s: %s", url, resp.Status)
+	}
+	have := int64(buf.Len())
+	pr := &progressReader{r: resp.Body, received: have, lastEmit: have, total: *total, onProgress: onProgress}
+	_, err = io.Copy(buf, pr)
+	return err
+}
+
+// totalFromContentRange parses the total size out of a "bytes 200-999/1000" header,
+// returning 0 when it's absent or "*" (unknown).
+func totalFromContentRange(v string) int64 {
+	i := strings.LastIndex(v, "/")
+	if i < 0 {
+		return 0
+	}
+	n, err := strconv.ParseInt(strings.TrimSpace(v[i+1:]), 10, 64)
+	if err != nil {
+		return 0
+	}
+	return n
 }
 
 // progressReader reports cumulative bytes read, throttled so the event channel
@@ -235,35 +806,120 @@ func applyLinux(targz []byte) error {
 	if err != nil {
 		return err
 	}
-	return selfupdate.Apply(bytes.NewReader(bin), selfupdate.Options{})
-}
-
-// applyWindows writes the downloaded NSIS installer to a temp file and launches it.
-// The per-user installer needs no admin rights and its finish page relaunches the
-// app; the caller then exits so the installer can replace the running exe.
-func applyWindows(installer []byte) error {
-	f, err := os.CreateTemp("", "reasonix-update-*.exe")
+	guard, err := extractBinary(targz, "reasonix-guard")
 	if err != nil {
 		return err
 	}
-	name := f.Name()
-	if _, err := f.Write(installer); err != nil {
-		f.Close()
+	cli, err := extractBinary(targz, "reasonix")
+	if err != nil {
 		return err
 	}
-	if err := f.Close(); err != nil {
-		return err
+	exe := currentExecutablePath()
+	if exe == "" {
+		return fmt.Errorf("update: current executable path is unavailable")
 	}
-	return exec.Command(name).Start()
+	if err := writeAtomic(filepath.Join(filepath.Dir(exe), "reasonix"), cli, 0o700); err != nil {
+		return fmt.Errorf("update CLI sidecar: %w", err)
+	}
+	if err := writeAtomic(filepath.Join(filepath.Dir(exe), "reasonix-guard"), guard, 0o700); err != nil {
+		return fmt.Errorf("update Guard: %w", err)
+	}
+	return selfupdate.Apply(bytes.NewReader(bin), selfupdate.Options{})
 }
 
-// relaunch starts a fresh copy of the (just-replaced) executable.
-func relaunch() error {
+func applyWindowsFile(path, toVersion string) error {
+	return startWindowsUpdateHandoff(path, currentInstallDir(), currentLauncherPath(), toVersion)
+}
+
+func currentExecutablePath() string {
+	exe, err := os.Executable()
+	if err != nil {
+		return ""
+	}
+	if resolved, err := filepath.EvalSymlinks(exe); err == nil {
+		exe = resolved
+	}
+	return exe
+}
+
+// currentInstallDir is the directory of the running executable — the location a
+// Windows update must overwrite. Empty when it can't be resolved, in which case
+// the installer falls back to its own InstallDir logic.
+func currentInstallDir() string {
+	exe := currentExecutablePath()
+	if exe == "" {
+		return ""
+	}
+	return filepath.Dir(exe)
+}
+
+// updateSiblingArtifacts lists the packaged binaries an update replaces beside
+// the main executable, so PrepareFileUpdate can snapshot the complete release
+// unit. Paths that do not exist on disk are skipped by the backup.
+func updateSiblingArtifacts() []string {
+	dir := currentInstallDir()
+	if dir == "" {
+		return nil
+	}
+	names := updateSiblingNames(runtime.GOOS)
+	if len(names) == 0 {
+		return nil
+	}
+	paths := make([]string, 0, len(names))
+	for _, name := range names {
+		paths = append(paths, filepath.Join(dir, name))
+	}
+	return paths
+}
+
+func updateSiblingNames(goos string) []string {
+	switch goos {
+	case "windows":
+		return []string{"reasonix-guard.exe", "reasonix-launcher.exe", "reasonix-update-helper.exe", "reasonix-cli.exe", "Reasonix.exe"}
+	case "linux":
+		return []string{"reasonix-guard", "reasonix"}
+	default:
+		return nil
+	}
+}
+
+// relaunchThroughGuard starts the packaged launcher so the replacement build is
+// covered by the same crash-loop and rollback policy as a normal app launch.
+func relaunchThroughGuard() error {
 	exe, err := os.Executable()
 	if err != nil {
 		return err
 	}
-	cmd := exec.Command(exe)
+	launcher := filepath.Join(filepath.Dir(exe), "reasonix-guard")
+	if runtime.GOOS == "windows" {
+		launcher += ".exe"
+	}
+	if _, statErr := os.Stat(launcher); statErr != nil {
+		launcher = exe
+	}
+	cmd := exec.Command(launcher, "launch", "--detach")
 	cmd.Stdout, cmd.Stderr, cmd.Stdin = os.Stdout, os.Stderr, os.Stdin
 	return cmd.Start()
+}
+
+func currentLauncherPath() string {
+	exe := currentExecutablePath()
+	if exe == "" {
+		return ""
+	}
+	name := "reasonix-guard"
+	if runtime.GOOS == "windows" {
+		name = "reasonix-launcher.exe"
+	}
+	launcher := filepath.Join(filepath.Dir(exe), name)
+	if _, err := os.Stat(launcher); err == nil {
+		return launcher
+	}
+	if runtime.GOOS == "windows" {
+		guard := filepath.Join(filepath.Dir(exe), "reasonix-guard.exe")
+		if _, err := os.Stat(guard); err == nil {
+			return guard
+		}
+	}
+	return exe
 }
