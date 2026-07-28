@@ -347,7 +347,7 @@ func (s *FileStore) RecordIdempotency(ctx context.Context, projectDir string, r 
 		return err
 	}
 	target := filepath.Join(idemDir, id+".json")
-	// Atomic create-exclusive: fail if file already exists
+	// Atomic write via temp file + rename
 	tmp, err := os.CreateTemp(idemDir, ".idem-*.tmp")
 	if err != nil {
 		return err
