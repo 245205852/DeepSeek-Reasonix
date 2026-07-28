@@ -1741,6 +1741,18 @@ func (a *App) CancelTask(taskID string, expectedVersion uint64, reason, idemKey 
 	return cs.CancelTask(a.ctx, a.projectDir(), taskID, expectedVersion, reason, idemKey)
 }
 
+// ResumeTask resumes a recoverable task through the control service.
+func (a *App) ResumeTask(taskID string, expectedVersion uint64, idemKey string) (taskmonitor.ControlResult, error) {
+	cs := taskmonitor.NewControlService(a.taskStore())
+	return cs.ResumeTask(a.ctx, a.projectDir(), taskID, expectedVersion, idemKey)
+}
+
+// OpenTaskSession returns the session associated with a task.
+func (a *App) OpenTaskSession(taskID string) (taskmonitor.ControlResult, error) {
+	cs := taskmonitor.NewControlService(a.taskStore())
+	return cs.OpenTaskSession(a.ctx, a.projectDir(), taskID)
+}
+
 // ctrlJobKiller adapts control.Controller.KillJob to taskmonitor.JobKiller.
 type ctrlJobKiller struct{ ctrl *control.Controller }
 

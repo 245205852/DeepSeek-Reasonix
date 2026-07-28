@@ -356,10 +356,23 @@ export interface TaskSnapshot {
   task_id: string;
   session_id: string;
   state: TaskState;
+  version: number;
   created_at: string; // ISO 8601
   updated_at: string; // ISO 8601
   error_code?: string;
   error_summary?: string;
+}
+
+export interface ControlResult {
+  schema_version: number;
+  command: string;
+  task_id: string;
+  session_id?: string;
+  state?: TaskState;
+  version?: number;
+  accepted: boolean;
+  idempotent: boolean;
+  error?: { code: string; message: string };
 }
 
 export interface TaskEvent {

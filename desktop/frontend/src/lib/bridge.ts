@@ -10,6 +10,7 @@ import type {
   CapabilitiesView,
   CheckpointMeta,
   CommandInfo,
+  ControlResult,
   ContextInfo,
   DirEntry,
   FilePreview,
@@ -76,6 +77,10 @@ export interface AppBindings {
   ListTasks(): Promise<TaskSnapshot[]>;
   GetTask(taskID: string): Promise<TaskSnapshot | null>;
   ListTaskEvents(taskID: string, afterSequence: number): Promise<TaskEvent[]>;
+  StopTask(taskID: string, expectedVersion: number, reason: string, idemKey: string): Promise<ControlResult>;
+  CancelTask(taskID: string, expectedVersion: number, reason: string, idemKey: string): Promise<ControlResult>;
+  ResumeTask(taskID: string, expectedVersion: number, idemKey: string): Promise<ControlResult>;
+  OpenTaskSession(taskID: string): Promise<ControlResult>;
   Meta(): Promise<Meta>;
   Commands(): Promise<CommandInfo[]>;
   // Capabilities feeds the MCP & Skills drawer: connected/failed servers + skills.
@@ -429,6 +434,10 @@ function makeMockApp(): AppBindings {
     async ListTaskEvents(_taskID: string, _afterSequence: number) {
       return [];
     },
+    async StopTask() { return { schema_version: 1, command: "stop", task_id: "", accepted: false, idempotent: false, error: { code: "mock", message: "not available in browser mock" } }; },
+    async CancelTask() { return { schema_version: 1, command: "cancel", task_id: "", accepted: false, idempotent: false, error: { code: "mock", message: "not available in browser mock" } }; },
+    async ResumeTask() { return { schema_version: 1, command: "resume", task_id: "", accepted: false, idempotent: false, error: { code: "mock", message: "not available in browser mock" } }; },
+    async OpenTaskSession() { return { schema_version: 1, command: "open_session", task_id: "", accepted: false, idempotent: false, error: { code: "mock", message: "not available in browser mock" } }; },
     async Meta() {
       return {
         label: "mock model · browser dev",

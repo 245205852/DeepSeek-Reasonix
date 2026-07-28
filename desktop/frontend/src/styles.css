@@ -4749,6 +4749,28 @@ body {
   border-top: 1px solid var(--border, #2a2a2a);
   padding-top: 6px;
 }
+
+.taskmonitor__actions {
+  display: flex;
+  gap: 8px;
+  padding: 10px 0 0;
+}
+.taskmonitor__actions button {
+  border: 1px solid var(--border, #333);
+  border-radius: 5px;
+  background: var(--panel, #1b1b25);
+  color: inherit;
+  cursor: pointer;
+  padding: 4px 9px;
+  font-size: 12px;
+}
+.taskmonitor__actions button:hover:not(:disabled) {
+  border-color: var(--accent, #6ea8fe);
+}
+.taskmonitor__actions button:disabled {
+  cursor: wait;
+  opacity: 0.5;
+}
 .taskmonitor__events-head {
   display: flex;
   align-items: center;

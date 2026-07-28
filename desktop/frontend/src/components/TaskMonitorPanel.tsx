@@ -75,6 +75,9 @@ export function TaskMonitorPanel({ onClose }: { onClose?: () => void }) {
   const [error, setError] = useState<string | null>(null);
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [open, setOpen] = useState(false);
+  const [actionTask, setActionTask] = useState<string | null>(null);
+  const [actionError, setActionError] = useState<string | null>(null);
+  const [actionMessage, setActionMessage] = useState<string | null>(null);
 
   // Per-task event state
   const [taskEvents, setTaskEvents] = useState<Map<string, TaskEvent[]>>(
@@ -171,6 +174,34 @@ export function TaskMonitorPanel({ onClose }: { onClose?: () => void }) {
     });
   };
 
+  const controlTask = async (task: TaskSnapshot, action: "stop" | "cancel" | "resume" | "open") => {
+    if ((action === "stop" || action === "cancel") && !window.confirm(`${action === "stop" ? "Stop" : "Cancel"} task ${task.task_id}?`)) return;
+    setActionTask(task.task_id);
+    setActionError(null);
+    setActionMessage(null);
+    try {
+      const result = action === "stop"
+        ? await app.StopTask(task.task_id, task.version, "desktop request", `desktop-${action}-${task.task_id}-${task.version}`)
+        : action === "cancel"
+          ? await app.CancelTask(task.task_id, task.version, "desktop request", `desktop-${action}-${task.task_id}-${task.version}`)
+          : action === "resume"
+            ? await app.ResumeTask(task.task_id, task.version, `desktop-${action}-${task.task_id}-${task.version}`)
+            : await app.OpenTaskSession(task.task_id);
+      if (result.error) {
+        setActionError(`${result.error.code}: ${result.error.message}`);
+      } else if (action === "open") {
+        setActionMessage(`Session: ${result.session_id ?? "—"}`);
+      } else {
+        setActionMessage(result.idempotent ? "Already applied" : "Task updated");
+        await fetchTasks();
+      }
+    } catch (e) {
+      setActionError(String(e));
+    } finally {
+      setActionTask(null);
+    }
+  };
+
   const sorted = [...tasks].sort(
     (a, b) =>
       new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime(),
@@ -214,6 +245,8 @@ export function TaskMonitorPanel({ onClose }: { onClose?: () => void }) {
 
       {open && (
         <div className="taskmonitor__body">
+          {actionError && <div className="taskmonitor__state taskmonitor__state--error">{actionError}</div>}
+          {actionMessage && <div className="taskmonitor__state">{actionMessage}</div>}
           {loading && (
             <div className="taskmonitor__state">
               <Loader2 size={16} className="taskmonitor__spinner" />
@@ -374,6 +407,18 @@ export function TaskMonitorPanel({ onClose }: { onClose?: () => void }) {
                             ))}
                           </ul>
                         )}
+                      </div>
+                      <div className="taskmonitor__actions">
+                        {(t.state === "queued" || t.state === "running" || t.state === "waiting") && (
+                          <>
+                            <button disabled={actionTask === t.task_id} onClick={() => void controlTask(t, "stop")}>Stop</button>
+                            <button disabled={actionTask === t.task_id} onClick={() => void controlTask(t, "cancel")}>Cancel</button>
+                          </>
+                        )}
+                        {(t.state === "failed" || t.state === "stale") && (
+                          <button disabled={actionTask === t.task_id} onClick={() => void controlTask(t, "resume")}>Resume</button>
+                        )}
+                        <button disabled={actionTask === t.task_id} onClick={() => void controlTask(t, "open")}>Open Session</button>
                       </div>
                     </div>
                   )}
