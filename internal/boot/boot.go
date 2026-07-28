@@ -107,6 +107,11 @@ type Options struct {
 	// so each tab loads its own config/skills/hooks without changing the process
 	// cwd — enabling concurrent multi-project sessions.
 	WorkspaceRoot string
+	// AutoPricingCurrency supplies a frontend-resolved pricing region when the
+	// persisted desktop currency and language settings are all automatic. It is
+	// applied to the in-memory config only and never turns Auto into a persisted
+	// CNY/USD choice.
+	AutoPricingCurrency string
 	// ExtraPlugins are session-scoped MCP servers supplied by a host transport
 	// (for example ACP session/new). They are connected eagerly for this
 	// controller but are not persisted to reasonix.toml.
@@ -197,6 +202,7 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 	if err != nil {
 		return nil, err
 	}
+	applyRuntimeAutoPricingCurrency(cfg, opts.AutoPricingCurrency)
 	// Arm the credential-protection layers from the user-global [secrets]
 	// section before any tool, hook, or plugin subprocess can spawn. Package
 	// globals are correct here because [secrets] is user-global (project
@@ -1755,6 +1761,12 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 		ctrl.SetCapabilityProxyRouting(true)
 	}
 	return ctrl, nil
+}
+
+func applyRuntimeAutoPricingCurrency(cfg *config.Config, currency string) {
+	if cfg != nil {
+		cfg.ApplyRuntimeAutoPricingCurrency(currency)
+	}
 }
 
 func rememberPermissionRule(workspaceRoot, rule string) control.RememberResult {

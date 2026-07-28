@@ -158,6 +158,7 @@ type WorkspaceTab struct {
 	SharedHostKey       string             // opaque key for the shared plugin host (set by buildTabController)
 	TopicID             string             // topic within the project
 	TopicTitle          string             // display title
+	topicTitleSource    string             // auto or manual; controls localization at API boundaries
 	SessionPath         string             // exact .jsonl file this tab continues
 	ReadOnly            bool               // true for external channel transcripts opened for browsing
 	Ctrl                control.SessionAPI // nil while booting / on error
@@ -621,6 +622,7 @@ func cloneDetachedRuntimeTab(tab *WorkspaceTab, key, path string) *WorkspaceTab 
 		SharedHostKey:       tab.SharedHostKey,
 		TopicID:             tab.TopicID,
 		TopicTitle:          tab.TopicTitle,
+		topicTitleSource:    tab.topicTitleSource,
 		SessionPath:         canonicalTabSessionPath(path),
 		Ctrl:                tab.Ctrl,
 		Label:               tab.Label,
@@ -940,16 +942,172 @@ func (t *WorkspaceTab) recordUsage(e event.Event) {
 	src.CacheMissTokens += cacheMissTokens
 	src.RequestCount++
 	if e.Pricing != nil {
+		currency := e.Pricing.Symbol()
+		if existing := strings.TrimSpace(t.usageTelemetry.SessionCurrency); existing != "" && existing != currency {
+			// A scalar total cannot represent mixed currencies. Regional DeepSeek
+			// changes normally reprice prior usage; this fallback prevents custom
+			// or otherwise unmappable currencies from being summed together.
+			t.usageTelemetry.SessionCost = 0
+			t.usageTelemetry.SessionCostUsd = 0
+			for sourceName, sourceStats := range t.usageTelemetry.Sources {
+				sourceStats.SessionCost = 0
+				sourceStats.SessionCostUsd = 0
+				sourceStats.SessionCurrency = currency
+				t.usageTelemetry.Sources[sourceName] = sourceStats
+			}
+			src.SessionCost = 0
+			src.SessionCostUsd = 0
+		}
 		cost := e.Pricing.Cost(u)
 		t.usageTelemetry.SessionCost += cost
 		t.usageTelemetry.SessionCostUsd = t.usageTelemetry.SessionCost
-		t.usageTelemetry.SessionCurrency = e.Pricing.Symbol()
+		t.usageTelemetry.SessionCurrency = currency
 		src.SessionCost += cost
 		src.SessionCostUsd = src.SessionCost
-		src.SessionCurrency = e.Pricing.Symbol()
+		src.SessionCurrency = currency
 	}
 	t.usageTelemetry.Sources[source] = src
 	t.telemMu.Unlock()
+}
+
+func usageStatsAsProviderUsage(stats usageSourceStats) *provider.Usage {
+	return &provider.Usage{
+		PromptTokens:     stats.PromptTokens,
+		CompletionTokens: stats.CompletionTokens,
+		TotalTokens:      stats.TotalTokens,
+		ReasoningTokens:  stats.ReasoningTokens,
+		CacheHitTokens:   stats.CacheHitTokens,
+		CacheMissTokens:  stats.CacheMissTokens,
+	}
+}
+
+func sessionStatsAsProviderUsage(stats sessionUsageStats) *provider.Usage {
+	return &provider.Usage{
+		PromptTokens:     stats.PromptTokens,
+		CompletionTokens: stats.CompletionTokens,
+		TotalTokens:      stats.TotalTokens,
+		ReasoningTokens:  stats.ReasoningTokens,
+		CacheHitTokens:   stats.CacheHitTokens,
+		CacheMissTokens:  stats.CacheMissTokens,
+	}
+}
+
+// repriceUsage replaces the scalar cost total using per-source pricing. It
+// leaves telemetry untouched when any costed source cannot be mapped to one
+// currency.
+func (t *WorkspaceTab) repriceUsage(pricingBySource map[string]*provider.Pricing) bool {
+	if t == nil {
+		return false
+	}
+	t.telemMu.Lock()
+	defer t.telemMu.Unlock()
+	if t.usageTelemetry.SessionCost <= 0 {
+		return true
+	}
+	if len(t.usageTelemetry.Sources) == 0 {
+		pricing := pricingBySource[event.UsageSourceExecutor]
+		if pricing == nil {
+			return false
+		}
+		t.usageTelemetry.SessionCost = pricing.Cost(sessionStatsAsProviderUsage(t.usageTelemetry))
+		t.usageTelemetry.SessionCostUsd = t.usageTelemetry.SessionCost
+		t.usageTelemetry.SessionCurrency = pricing.Symbol()
+		return true
+	}
+
+	currency := ""
+	total := 0.0
+	repriced := make(map[string]usageSourceStats, len(t.usageTelemetry.Sources))
+	for source, stats := range t.usageTelemetry.Sources {
+		if stats.SessionCost <= 0 {
+			repriced[source] = stats
+			continue
+		}
+		pricing := pricingBySource[source]
+		if pricing == nil {
+			return false
+		}
+		symbol := pricing.Symbol()
+		if currency != "" && currency != symbol {
+			return false
+		}
+		currency = symbol
+		stats.SessionCost = pricing.Cost(usageStatsAsProviderUsage(stats))
+		stats.SessionCostUsd = stats.SessionCost
+		stats.SessionCurrency = symbol
+		total += stats.SessionCost
+		repriced[source] = stats
+	}
+	if currency == "" {
+		return true
+	}
+	t.usageTelemetry.Sources = repriced
+	t.usageTelemetry.SessionCost = total
+	t.usageTelemetry.SessionCostUsd = total
+	t.usageTelemetry.SessionCurrency = currency
+	return true
+}
+
+func resolveOfficialDeepSeekPricing(cfg *config.Config, ref string) *provider.Pricing {
+	if cfg == nil || strings.TrimSpace(ref) == "" {
+		return nil
+	}
+	entry, ok := cfg.ResolveModel(ref)
+	if !ok || !config.IsOfficialDeepSeekProvider(entry) || !config.IsKnownDeepSeekOfficialPricing(entry.Model, entry.Price) {
+		return nil
+	}
+	return entry.Price
+}
+
+func firstConfiguredModelRef(values ...string) string {
+	for _, value := range values {
+		if value = strings.TrimSpace(value); value != "" {
+			return value
+		}
+	}
+	return ""
+}
+
+func usagePricingBySource(cfg *config.Config, executorRef string) map[string]*provider.Pricing {
+	if cfg == nil {
+		return nil
+	}
+	executorPricing := resolveOfficialDeepSeekPricing(cfg, executorRef)
+	plannerRef := firstConfiguredModelRef(cfg.Agent.PlannerModel, executorRef)
+	subagentRef := firstConfiguredModelRef(cfg.Agent.SubagentModel, executorRef)
+	routerRef := firstConfiguredModelRef(cfg.Agent.SubagentModels[event.UsageSourceCapabilityRouter], subagentRef, executorRef)
+	recoveryRef := firstConfiguredModelRef(cfg.Agent.RecoveryModel, cfg.Agent.GuardianModel, executorRef)
+	return map[string]*provider.Pricing{
+		event.UsageSourceExecutor:         executorPricing,
+		event.UsageSourcePlanner:          resolveOfficialDeepSeekPricing(cfg, plannerRef),
+		event.UsageSourceSubagent:         resolveOfficialDeepSeekPricing(cfg, subagentRef),
+		event.UsageSourceCompaction:       executorPricing,
+		event.UsageSourceClassifier:       executorPricing,
+		event.UsageSourceTitle:            executorPricing,
+		event.UsageSourceCapabilityRouter: resolveOfficialDeepSeekPricing(cfg, routerRef),
+		event.UsageSourceRecoveryReviewer: resolveOfficialDeepSeekPricing(cfg, recoveryRef),
+	}
+}
+
+func (a *App) repriceTabUsageForCurrentCurrency(tab *WorkspaceTab) {
+	if a == nil || tab == nil {
+		return
+	}
+	a.mu.RLock()
+	root := tab.WorkspaceRoot
+	model := tab.model
+	a.mu.RUnlock()
+	cfg, err := config.LoadForRoot(root)
+	if err != nil {
+		return
+	}
+	cfg.ApplyRuntimeAutoPricingCurrency(a.desktopAutoPricingCurrency())
+	if !tab.repriceUsage(usagePricingBySource(cfg, model)) {
+		return
+	}
+	if path := tab.currentSessionPath(); path != "" {
+		_ = saveTelemetry(path+".telemetry.json", tab.telemetrySnapshot())
+	}
 }
 
 func (t *WorkspaceTab) telemetrySnapshot() tabTelemetrySnapshot {
@@ -2002,7 +2160,7 @@ func (a *App) tabMeta(tab *WorkspaceTab, active bool) TabMeta {
 		WorkspaceName:     workspaceName(tab.WorkspaceRoot),
 		WorkspacePath:     tab.WorkspaceRoot,
 		TopicID:           tab.TopicID,
-		TopicTitle:        tab.TopicTitle,
+		TopicTitle:        a.localizedTopicTitle(tab.TopicTitle, tab.topicTitleSource),
 		SessionPath:       tab.currentSessionPath(),
 		ReadOnly:          tab.ReadOnly,
 		Label:             tab.Label,
@@ -2223,13 +2381,14 @@ func (a *App) openTopicTabWithActivation(scope, workspaceRoot, topicID, sessionP
 	}
 	profile := loadTabSessionProfile(sessionPath)
 	tab := &WorkspaceTab{
-		ID:            tabID,
-		Scope:         scope,
-		WorkspaceRoot: actualRoot,
-		TopicID:       topicID,
-		TopicTitle:    topicTitle,
-		SessionPath:   sessionPath,
-		disabledMCP:   map[string]ServerView{},
+		ID:               tabID,
+		Scope:            scope,
+		WorkspaceRoot:    actualRoot,
+		TopicID:          topicID,
+		TopicTitle:       topicTitle,
+		topicTitleSource: loadTopicTitleSource(topicTitleRoot(scope, workspaceRoot), topicID),
+		SessionPath:      sessionPath,
+		disabledMCP:      map[string]ServerView{},
 	}
 	applyTabSessionProfile(tab, profile)
 	tab.sink = &tabEventSink{tabID: tabID, app: a}
@@ -2458,6 +2617,7 @@ func (a *App) ensureBlankTab(scope, workspaceRoot, forcedTokenMode string) (TabM
 			WorkspaceRoot:    actualRoot,
 			TopicID:          topicID,
 			TopicTitle:       topicTitle,
+			topicTitleSource: loadTopicTitleSource(topicTitleRoot(scope, workspaceRoot), topicID),
 			model:            inheritedModel,
 			effort:           inheritedEffort,
 			tokenMode:        inheritedTokenMode,
@@ -2507,6 +2667,7 @@ func (a *App) ensureBlankTab(scope, workspaceRoot, forcedTokenMode string) (TabM
 		WorkspaceRoot:    actualRoot,
 		TopicID:          topicID,
 		TopicTitle:       topicTitleForTab(scope, workspaceRoot, topicID),
+		topicTitleSource: topicTitleSourceAuto,
 		model:            inheritedModel,
 		effort:           inheritedEffort,
 		tokenMode:        inheritedTokenMode,
@@ -2634,6 +2795,7 @@ func resetReusableBlankTabTitle(tab *WorkspaceTab, scope, workspaceRoot string) 
 	}
 	_ = deleteTopicAutoTitleMeta(titleRoot, topicID)
 	tab.TopicTitle = defaultTopicTitle
+	tab.topicTitleSource = topicTitleSourceAuto
 	return nil
 }
 
@@ -2785,6 +2947,7 @@ func (a *App) SetActiveTab(tabID string) error {
 		a.emitReady(a.ctx, tabID)
 		a.emitRuntimeEvent("runtime:rebuilt", tabID)
 	}
+	a.kickDeferredRebuildRetry()
 	return nil
 }
 
@@ -3397,6 +3560,7 @@ func (a *App) buildTabControllerWithContextAdmissionHeld(tab *WorkspaceTab, load
 	if tabScope == "global" && topicID == "" && len(migratedGlobalTopics) > 0 {
 		topicID = migratedGlobalTopics[0]
 		topicTitle := topicTitleForTab("global", "", topicID)
+		topicSource := loadTopicTitleSource("", topicID)
 		a.mu.Lock()
 		if a.tabBuildSupersededLocked(tab, buildGeneration) {
 			a.mu.Unlock()
@@ -3405,6 +3569,7 @@ func (a *App) buildTabControllerWithContextAdmissionHeld(tab *WorkspaceTab, load
 		if strings.TrimSpace(tab.TopicID) == "" {
 			tab.TopicID = topicID
 			tab.TopicTitle = topicTitle
+			tab.topicTitleSource = topicSource
 			a.saveTabsLocked()
 		} else {
 			topicID = strings.TrimSpace(tab.TopicID)
@@ -3484,6 +3649,7 @@ func (a *App) buildTabControllerWithContextAdmissionHeld(tab *WorkspaceTab, load
 	ctrl, err := boot.Build(buildCtx, boot.Options{
 		Model:                    model,
 		RequireKey:               false,
+		AutoPricingCurrency:      a.desktopAutoPricingCurrency(),
 		Sink:                     sink,
 		WorkspaceRoot:            root,
 		SessionDir:               sessionDir,
@@ -3545,10 +3711,12 @@ func (a *App) buildTabControllerWithContextAdmissionHeld(tab *WorkspaceTab, load
 		if tabScope == "global" && tabTopicID == "" && len(migratedTopics) > 0 {
 			topicID := migratedTopics[0]
 			topicTitle := topicTitleForTab("global", "", topicID)
+			topicSource := loadTopicTitleSource("", topicID)
 			a.mu.Lock()
 			if !a.tabBuildSupersededLocked(tab, buildGeneration) && strings.TrimSpace(tab.TopicID) == "" {
 				tab.TopicID = topicID
 				tab.TopicTitle = topicTitle
+				tab.topicTitleSource = topicSource
 				tabTopicID = topicID
 				a.saveTabsLocked()
 			} else {
@@ -3794,6 +3962,10 @@ func (a *App) applySessionBindingToTab(tab *WorkspaceTab, binding sessionBinding
 	if topicTitle == "" && topicID != "" {
 		topicTitle = topicTitleForTab(scope, workspaceRoot, topicID)
 	}
+	topicSource := ""
+	if topicID != "" {
+		topicSource = loadTopicTitleSource(topicTitleRoot(scope, workspaceRoot), topicID)
+	}
 
 	a.mu.Lock()
 	current := a.tabs[tab.ID]
@@ -3815,6 +3987,7 @@ func (a *App) applySessionBindingToTab(tab *WorkspaceTab, binding sessionBinding
 	if topicID != "" {
 		changed = changed || tab.TopicID != topicID
 		tab.TopicID = topicID
+		tab.topicTitleSource = topicSource
 	}
 	if topicTitle != "" {
 		changed = changed || tab.TopicTitle != topicTitle
@@ -4177,7 +4350,7 @@ func (a *App) maybeAutoTitleTopic(tab *WorkspaceTab) bool {
 	if !updated {
 		return false
 	}
-	a.updateOpenTopicTitle(topicID, nextTitle)
+	a.updateOpenTopicTitle(topicID, nextTitle, topicTitleSourceAuto)
 	a.updateTopicSessionTitles(topicID, nextTitle)
 	a.emitProjectTreeChanged()
 	return true
@@ -4282,7 +4455,7 @@ func topicTitleFallbackForOpen(workspaceRoot, topicID, sessionPath string) (stri
 	storedTitle := strings.TrimSpace(loadTopicTitle(workspaceRoot, topicID))
 	storedSource := strings.TrimSpace(loadTopicTitleSource(workspaceRoot, topicID))
 	if storedTitle != "" {
-		if storedSource == topicTitleSourceManual || storedTitle != defaultTopicTitle {
+		if storedSource == topicTitleSourceManual || !isDefaultTopicTitle(storedTitle) {
 			return "", "", false
 		}
 	}
@@ -4404,7 +4577,7 @@ func topicTitleFromText(text string) string {
 	if len(runes) > maxRunes {
 		text = strings.TrimRightFunc(string(runes[:maxRunes]), unicode.IsPunct) + "…"
 	}
-	if text == defaultTopicTitle {
+	if isDefaultTopicTitle(text) {
 		return ""
 	}
 	return text
@@ -5288,9 +5461,69 @@ const (
 	topicCreatedAtsFile    = "desktop-topic-created-at.json"
 	topicAutoTitlesFile    = "desktop-topic-auto-title-meta.json"
 	defaultTopicTitle      = "新的会话"
+	defaultTopicTitleEn    = "New session"
+	defaultTopicTitleZhTW  = "新的會話"
 	topicTitleSourceAuto   = "auto"
 	topicTitleSourceManual = "manual"
 )
+
+const (
+	desktopLocaleUnknown int32 = iota
+	desktopLocaleEn
+	desktopLocaleZh
+	desktopLocaleZhTW
+)
+
+func (a *App) setDesktopLocale(locale string) {
+	normalized := strings.ToLower(strings.TrimSpace(locale))
+	switch {
+	case strings.HasPrefix(normalized, "zh-tw"), strings.HasPrefix(normalized, "zh-hant"):
+		a.desktopLocale.Store(desktopLocaleZhTW)
+	case strings.HasPrefix(normalized, "zh"):
+		a.desktopLocale.Store(desktopLocaleZh)
+	default:
+		a.desktopLocale.Store(desktopLocaleEn)
+	}
+}
+
+func (a *App) desktopAutoPricingCurrency() string {
+	if a != nil {
+		switch a.desktopLocale.Load() {
+		case desktopLocaleZh, desktopLocaleZhTW:
+			return "CNY"
+		}
+	}
+	return "USD"
+}
+
+func (a *App) localizedDefaultTopicTitle() string {
+	switch a.desktopLocale.Load() {
+	case desktopLocaleZh:
+		return defaultTopicTitle
+	case desktopLocaleZhTW:
+		return defaultTopicTitleZhTW
+	case desktopLocaleEn:
+		return defaultTopicTitleEn
+	default:
+		return defaultTopicTitle
+	}
+}
+
+func isDefaultTopicTitle(title string) bool {
+	switch strings.TrimSpace(title) {
+	case defaultTopicTitle, defaultTopicTitleEn, defaultTopicTitleZhTW:
+		return true
+	default:
+		return false
+	}
+}
+
+func (a *App) localizedTopicTitle(title, source string) string {
+	if strings.TrimSpace(source) == topicTitleSourceAuto && isDefaultTopicTitle(title) {
+		return a.localizedDefaultTopicTitle()
+	}
+	return title
+}
 
 func topicTitlesPath(workspaceRoot string) string {
 	if workspaceRoot == "" {
@@ -5579,13 +5812,23 @@ func topicTitleRoot(scope, workspaceRoot string) string {
 	return workspaceRoot
 }
 
-func forkTopicTitle(title string) string {
+func (a *App) forkTopicTitle(title string) string {
 	base := strings.TrimSpace(title)
-	if base == "" || base == defaultTopicTitle || base == "Global" {
-		return "分叉会话"
+	if base == "" || isDefaultTopicTitle(base) || base == "Global" {
+		switch a.desktopLocale.Load() {
+		case desktopLocaleEn:
+			return "Forked session"
+		case desktopLocaleZhTW:
+			return "分叉會話"
+		default:
+			return "分叉会话"
+		}
 	}
-	if strings.HasSuffix(base, " · 分叉") {
+	if strings.HasSuffix(base, " · 分叉") || strings.HasSuffix(base, " · fork") {
 		return base
+	}
+	if a.desktopLocale.Load() == desktopLocaleEn {
+		return base + " · fork"
 	}
 	return base + " · 分叉"
 }
@@ -5775,7 +6018,7 @@ func setTopicTitleWithSource(workspaceRoot, topicID, title, source string) error
 		return err
 	}
 	if strings.TrimSpace(source) == topicTitleSourceManual ||
-		(strings.TrimSpace(source) == topicTitleSourceAuto && strings.TrimSpace(title) == defaultTopicTitle) {
+		(strings.TrimSpace(source) == topicTitleSourceAuto && isDefaultTopicTitle(title)) {
 		_ = deleteTopicAutoTitleMeta(workspaceRoot, topicID)
 	}
 	return nil
@@ -6661,7 +6904,7 @@ func (a *App) CreateTopic(scope, workspaceRoot, title string) (TopicMeta, error)
 	// just created is immediately visible and selected in the sidebar.
 	_ = prependTopicInProjectsFile(workspaceRoot, topicID, workspaceRoot != "")
 	a.emitProjectTreeChanged()
-	return TopicMeta{ID: topicID, Title: trimmedTitle, CreatedAt: createdAt}, nil
+	return TopicMeta{ID: topicID, Title: a.localizedTopicTitle(trimmedTitle, titleSource), CreatedAt: createdAt}, nil
 }
 
 // RenameProject updates the sidebar-only display title for a project folder.
@@ -6789,7 +7032,7 @@ func (a *App) RenameTopic(topicID, title string) error {
 			if err := setTopicTitle(p.Root, topicID, trimmed); err != nil {
 				return err
 			}
-			a.updateOpenTopicTitle(topicID, trimmed)
+			a.updateOpenTopicTitle(topicID, trimmed, topicTitleSourceManual)
 			a.updateTopicSessionTitles(topicID, trimmed)
 			a.emitProjectTreeChanged()
 			return nil
@@ -6801,7 +7044,7 @@ func (a *App) RenameTopic(topicID, title string) error {
 		if err := setTopicTitle("", topicID, trimmed); err != nil {
 			return err
 		}
-		a.updateOpenTopicTitle(topicID, trimmed)
+		a.updateOpenTopicTitle(topicID, trimmed, topicTitleSourceManual)
 		a.updateTopicSessionTitles(topicID, trimmed)
 		a.emitProjectTreeChanged()
 		return nil
@@ -6810,7 +7053,7 @@ func (a *App) RenameTopic(topicID, title string) error {
 		if err := ensureTopicIndexed(scope, workspaceRoot, topicID, trimmed, topicTitleSourceManual); err != nil {
 			return err
 		}
-		a.updateOpenTopicTitle(topicID, trimmed)
+		a.updateOpenTopicTitle(topicID, trimmed, topicTitleSourceManual)
 		a.updateTopicSessionTitles(topicID, trimmed)
 		a.emitProjectTreeChanged()
 		return nil
@@ -6858,15 +7101,16 @@ func (a *App) findTopicLocation(topicID string) (string, string, bool) {
 	return "", "", false
 }
 
-func (a *App) updateOpenTopicTitle(topicID, title string) {
+func (a *App) updateOpenTopicTitle(topicID, title, source string) {
 	if strings.TrimSpace(topicID) == "" || strings.TrimSpace(title) == "" {
 		return
 	}
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	for _, tab := range a.tabs {
+	for _, tab := range a.runtimeTabsLocked() {
 		if tab != nil && tab.TopicID == topicID {
 			tab.TopicTitle = title
+			tab.topicTitleSource = source
 		}
 	}
 }
@@ -7230,6 +7474,7 @@ func (s topicSummary) displayTurns() int {
 type runtimeSessionStatus struct {
 	sessionPath      string
 	label            string
+	titleSource      string
 	turns            int
 	createdAt        int64
 	lastActivityAt   int64
@@ -7359,6 +7604,10 @@ func (a *App) ListProjectTree() []ProjectNode {
 		info := sessionInfos[sessionPath]
 		recovered := sessionInfoIsAutomaticRecovery(info) || isAutomaticRecoverySessionPath(sessionPath)
 		label := runtimeSessionTreeLabel(tab, info, sessionTitles[sessionPath])
+		titleSource := tab.topicTitleSource
+		if strings.TrimSpace(sessionTitles[sessionPath]) != "" {
+			titleSource = topicTitleSourceManual
+		}
 		status := activityStatusForTab(tab)
 		runtimeStatus := control.RuntimeStatus{}
 		if tab.Ctrl != nil {
@@ -7368,6 +7617,7 @@ func (a *App) ListProjectTree() []ProjectNode {
 		runtimeSessionsByTopic[topicSummaryKey(tab.Scope, tab.WorkspaceRoot, tab.TopicID)] = append(runtimeSessionsByTopic[topicSummaryKey(tab.Scope, tab.WorkspaceRoot, tab.TopicID)], runtimeSessionStatus{
 			sessionPath:      sessionPath,
 			label:            label,
+			titleSource:      titleSource,
 			turns:            info.Turns,
 			createdAt:        unixMilliOrZero(info.CreatedAt),
 			lastActivityAt:   unixMilliOrZero(info.LastActivityAt),
@@ -7420,7 +7670,7 @@ func (a *App) ListProjectTree() []ProjectNode {
 			nodes = append(nodes, ProjectNode{
 				Key:              projectSessionNodeKey(scope, session.sessionPath),
 				Kind:             kind,
-				Label:            session.label,
+				Label:            a.localizedTopicTitle(session.label, session.titleSource),
 				Root:             workspaceRoot,
 				TopicID:          topicID,
 				SessionPath:      session.sessionPath,
@@ -7442,6 +7692,7 @@ func (a *App) ListProjectTree() []ProjectNode {
 
 	// Global section.
 	globalTitleMap := loadTopicTitles("")
+	globalTitleSources := loadTopicTitleSources("")
 	globalCreatedMap := loadTopicCreatedAts("")
 	if len(globalTitleMap) > 0 || len(f.Projects) == 0 {
 		globalTitle := strings.TrimSpace(f.GlobalTitle)
@@ -7455,7 +7706,7 @@ func (a *App) ListProjectTree() []ProjectNode {
 			if deletedTopicSet[id] {
 				continue
 			}
-			title := globalTitleMap[id]
+			title := a.localizedTopicTitle(globalTitleMap[id], globalTitleSources[id])
 			summaryKey := topicSummaryKey("global", "", id)
 			summary := topicSummaries[summaryKey]
 			open, running, status := topicRuntimeStatus(summaryKey)
@@ -7493,6 +7744,7 @@ func (a *App) ListProjectTree() []ProjectNode {
 	type projectTopics struct {
 		project    desktopProject
 		titles     map[string]string
+		sources    map[string]string
 		createdAts map[string]int64
 	}
 	projectTopicResults := make([]projectTopics, len(f.Projects))
@@ -7505,6 +7757,7 @@ func (a *App) ListProjectTree() []ProjectNode {
 			projectTopicResults[i] = projectTopics{
 				project:    p,
 				titles:     loadTopicTitles(p.Root),
+				sources:    loadTopicTitleSources(p.Root),
 				createdAts: loadTopicCreatedAts(p.Root),
 			}
 		}()
@@ -7526,6 +7779,7 @@ func (a *App) ListProjectTree() []ProjectNode {
 
 		// Gather topics: explicit topic list + all known topic titles.
 		titleMap := loaded.titles
+		titleSources := loaded.sources
 		createdMap := loaded.createdAts
 		topicIDs := pinnedTopicIDs(orderedTopicIDs(p.Topics, titleMap), p.PinnedTopics)
 
@@ -7538,6 +7792,7 @@ func (a *App) ListProjectTree() []ProjectNode {
 			if topicTitle == "" {
 				topicTitle = defaultTopicTitle
 			}
+			topicTitle = a.localizedTopicTitle(topicTitle, titleSources[tid])
 			summaryKey := topicSummaryKey("project", p.Root, tid)
 			summary := topicSummaries[summaryKey]
 			open, running, status := topicRuntimeStatus(summaryKey)

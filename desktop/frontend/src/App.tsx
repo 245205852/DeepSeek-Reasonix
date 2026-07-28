@@ -4331,6 +4331,7 @@ export default function App() {
               showContextWindowRing={sidebarCreation}
               context={state.context}
               turnCost={state.turnCost}
+              currency={state.sessionCurrency}
               cacheHitTokens={state.usage?.cacheHitTokens}
               cacheMissTokens={state.usage?.cacheMissTokens}
               balance={state.balance}

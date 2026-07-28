@@ -394,6 +394,7 @@ export interface AppBindings {
   SetStatusBarStyle(style: string): Promise<void>;
   SetStatusBarItems(items: string[]): Promise<void>;
   SetDesktopLanguage(lang: string): Promise<void>;
+  SetDesktopCurrency(currency: string): Promise<void>;
   SetDesktopAppearance(theme: string, style: string): Promise<void>;
   ListThemePacks(): Promise<import("./themePack").ThemePackView[]>;
   GetActiveThemePack(): Promise<import("./themePack").ThemeActiveView>;
@@ -1516,6 +1517,7 @@ function makeMockApp(): AppBindings {
       ],
     },
     desktopLanguage: "",
+    desktopCurrency: "",
     desktopLayoutStyle: "workbench",
     desktopTheme: "auto",
     desktopThemeStyle: "graphite",
@@ -4002,6 +4004,9 @@ function makeMockApp(): AppBindings {
         },
         async SetDesktopLanguage(lang: string) {
           settings.desktopLanguage = lang === "en" || lang === "zh" ? lang : "";
+        },
+        async SetDesktopCurrency(currency: string) {
+          settings.desktopCurrency = currency === "CNY" || currency === "USD" ? currency : "";
         },
         async SetDesktopAppearance(theme: string, style: string) {
           settings.desktopTheme = theme === "auto" || theme === "light" ? theme : "dark";

@@ -275,8 +275,18 @@ func cliProfileBuildOptions(modelName string, maxStepsOverride int, requireKey b
 		PermissionAllow:      overrides.PermissionAllow,
 		AdditionalDirs:       overrides.AdditionalDirs,
 		HeadlessApprovalMode: overrides.HeadlessApprovalMode,
+		AutoPricingCurrency:  cliAutoPricingCurrency(),
 		Stderr:               overrides.Stderr,
 		OnSessionRecovered:   overrides.OnSessionRecovered,
+	}
+}
+
+func cliAutoPricingCurrency() string {
+	switch i18n.CurrentLanguage() {
+	case "zh", "zh-TW":
+		return "CNY"
+	default:
+		return "USD"
 	}
 }
 
@@ -2220,12 +2230,68 @@ func configCommand(args []string) int {
 		return configAutoPlanCompatibilityCommand(args[1:])
 	case "reasoning-language":
 		return configReasoningLanguageCommand(args[1:])
+	case "currency":
+		return configCurrencyCommand(args[1:])
 	case "telemetry":
 		return configTelemetryCommand(args[1:])
 	default:
 		configUsage()
 		return 2
 	}
+}
+
+func configCurrencyCommand(args []string) int {
+	fs := flag.NewFlagSet("config currency", flag.ContinueOnError)
+	local := fs.Bool("local", false, "unsupported; pricing currency is user-level only")
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	if *local {
+		fmt.Fprintln(os.Stderr, i18n.M.ErrorPrefix, "currency is user-level only; --local is not supported")
+		return 2
+	}
+	rest := fs.Args()
+	if len(rest) > 1 {
+		configCurrencyUsage()
+		return 2
+	}
+	if len(rest) == 0 {
+		cfg, err := config.LoadForRootReadOnly(".")
+		if err != nil {
+			fmt.Fprintln(os.Stderr, i18n.M.ErrorPrefix, err)
+			return 1
+		}
+		cfg.ApplyRuntimeAutoPricingCurrency(cliAutoPricingCurrency())
+		fmt.Printf("currency = %q (resolved: %s)\n", pricingCurrencyDisplay(cfg.DesktopCurrency()), cfg.DeepSeekOfficialPricingCurrency())
+		return 0
+	}
+	mode, err := parseCLIPricingCurrency(rest[0])
+	if err != nil {
+		fmt.Fprintln(os.Stderr, i18n.M.ErrorPrefix, err)
+		return 2
+	}
+	path := config.UserConfigPath()
+	if path == "" {
+		fmt.Fprintln(os.Stderr, i18n.M.ErrorPrefix, "cannot resolve user config path")
+		return 1
+	}
+	unlock := config.LockUserConfigEdits()
+	defer unlock()
+	cfg := config.LoadForEdit(path)
+	if err := cfg.SetDesktopCurrency(mode); err != nil {
+		fmt.Fprintln(os.Stderr, i18n.M.ErrorPrefix, err)
+		return 2
+	}
+	resolved := cfg.DeepSeekOfficialPricingCurrency()
+	if mode == "" && cfg.DesktopLanguage() == "" {
+		resolved = cliAutoPricingCurrency()
+	}
+	if err := cfg.SaveTo(path); err != nil {
+		fmt.Fprintln(os.Stderr, i18n.M.ErrorPrefix, err)
+		return 1
+	}
+	fmt.Printf("currency = %q (resolved: %s, %s)\n", pricingCurrencyDisplay(mode), resolved, displayPath(path))
+	return 0
 }
 
 var (
@@ -2395,6 +2461,7 @@ func configReasoningLanguageCommand(args []string) int {
 func configUsage() {
 	fmt.Print(`Usage:
   reasonix config reasoning-language [--local] [auto|zh|en]
+  reasonix config currency [auto|CNY|USD]
   reasonix config telemetry [auto|on|off]
 `)
 }
@@ -2475,5 +2542,11 @@ func configAutoPlanCompatibilityUsage() {
 func configReasoningLanguageUsage() {
 	fmt.Print(`Usage:
   reasonix config reasoning-language [--local] [auto|zh|en]
+`)
+}
+
+func configCurrencyUsage() {
+	fmt.Print(`Usage:
+  reasonix config currency [auto|CNY|USD]
 `)
 }

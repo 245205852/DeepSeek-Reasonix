@@ -175,6 +175,7 @@ type UIConfig struct {
 // language, terminal colours, or provider-visible prompt/request data.
 type DesktopConfig struct {
 	Language                string   `toml:"language"`                   // auto|en|zh; empty/auto = browser/OS auto-detect
+	Currency                string   `toml:"currency"`                   // user-global auto|CNY|USD pricing preference shared by desktop and CLI
 	LayoutStyle             string   `toml:"layout_style"`               // classic|workbench|creation; desktop layout style
 	Theme                   string   `toml:"theme"`                      // auto|dark|light; empty resolves to auto
 	ThemeStyle              string   `toml:"theme_style"`                // graphite|aurora|slate|carbon|nocturne|amber and legacy aliases
@@ -309,6 +310,23 @@ func (c *Config) DesktopLanguage() string {
 		return "en"
 	case "zh":
 		return "zh"
+	default:
+		return ""
+	}
+}
+
+// DesktopCurrency returns the explicit user-global pricing currency. The
+// persisted field keeps its original desktop namespace for compatibility;
+// empty means the pricing region follows the desktop/CLI language.
+func (c *Config) DesktopCurrency() string {
+	if c == nil {
+		return ""
+	}
+	switch strings.ToUpper(strings.TrimSpace(c.Desktop.Currency)) {
+	case "CNY", "RMB", "CNH":
+		return "CNY"
+	case "USD":
+		return "USD"
 	default:
 		return ""
 	}
@@ -1191,6 +1209,9 @@ type ProviderEntry struct {
 	ContextWindow  int                          `toml:"context_window"`
 	Price          *provider.Pricing            `toml:"price"`  // legacy/provider-wide fallback
 	Prices         map[string]*provider.Pricing `toml:"prices"` // optional per-model prices; keys are model ids
+
+	persistedOfficialCurrency string
+
 	// Thinking / Effort are provider-kind-specific knobs forwarded to the provider
 	// via Config.Extra. The anthropic provider reads Thinking="adaptive" to enable
 	// extended thinking and Effort ("low".."max") to tune depth. The
@@ -1710,8 +1731,8 @@ func Default() *Config {
 			Weixin:             WeixinBotConfig{AccountID: "default", TokenEnv: "WEIXIN_BOT_TOKEN", APIBase: "https://ilinkai.weixin.qq.com"},
 		},
 		Providers: []ProviderEntry{
-			{Name: "deepseek-flash", Kind: "openai", BaseURL: "https://api.deepseek.com", Model: "deepseek-v4-flash", APIKeyEnv: "DEEPSEEK_API_KEY", BalanceURL: "https://api.deepseek.com/user/balance", ContextWindow: 1_000_000, Price: deepSeekV4FlashPrice()},
-			{Name: "deepseek-pro", Kind: "openai", BaseURL: "https://api.deepseek.com", Model: "deepseek-v4-pro", APIKeyEnv: "DEEPSEEK_API_KEY", BalanceURL: "https://api.deepseek.com/user/balance", ContextWindow: 1_000_000, Price: deepSeekV4ProPrice()},
+			{Name: "deepseek-flash", Kind: "openai", BaseURL: "https://api.deepseek.com", Model: "deepseek-v4-flash", APIKeyEnv: "DEEPSEEK_API_KEY", BalanceURL: "https://api.deepseek.com/user/balance", ContextWindow: 1_000_000, Price: deepSeekV4FlashPriceUSD()},
+			{Name: "deepseek-pro", Kind: "openai", BaseURL: "https://api.deepseek.com", Model: "deepseek-v4-pro", APIKeyEnv: "DEEPSEEK_API_KEY", BalanceURL: "https://api.deepseek.com/user/balance", ContextWindow: 1_000_000, Price: deepSeekV4ProPriceUSD()},
 		},
 	}
 }
