@@ -675,7 +675,7 @@ func (s *Server) workspaceCatalog(p protocol.WorkspaceCatalogParams) (protocol.W
 			Ref: protocol.ModelRef(descriptor.Ref), Provider: providerName, Model: model,
 			Effort: protocol.EffortCatalog{
 				Supported: len(descriptor.Efforts) > 0, Default: descriptor.DefaultEffort,
-				Levels: append([]string(nil), descriptor.Efforts...),
+				Levels: append([]string{}, descriptor.Efforts...),
 			},
 		})
 	}

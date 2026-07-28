@@ -1371,6 +1371,84 @@ func TestRuntimeGitEmptyCollectionsEncodeAsArrays(t *testing.T) {
 	}
 }
 
+func TestWorkspaceCatalogEmptyEffortLevelsEncodeAsArray(t *testing.T) {
+	srv := New(Options{Workspace: t.TempDir(), Version: "test"})
+	hostSide, desktopSide := net.Pipe()
+	hostWire := rpcwire.NewConn(hostSide, hostSide, rpcwire.Options{
+		Name: "workspace-catalog-host", StrictJSONRPC: true,
+		MaxInboundBytes: protocol.FrameBytes, MaxOutboundBytes: protocol.FrameBytes,
+	})
+	desktopWire := rpcwire.NewConn(desktopSide, desktopSide, rpcwire.Options{
+		Name: "workspace-catalog-desktop", StrictJSONRPC: true,
+		MaxInboundBytes: protocol.FrameBytes, MaxOutboundBytes: protocol.FrameBytes,
+	})
+	desktopBroker, err := remotebroker.Attach(desktopWire, remotebroker.Options{
+		Catalog: func(context.Context, map[string]struct{}) ([]protocol.BrokerProviderDescriptor, error) {
+			return []protocol.BrokerProviderDescriptor{
+				{Ref: "local/basic", DisplayName: "Local", Model: "basic"},
+				{
+					Ref: "local/reasoning", DisplayName: "Local", Model: "reasoning",
+					SupportedEfforts: []string{"medium", "high"}, DefaultEffort: "high",
+				},
+			}, nil
+		},
+		Open: func(context.Context, string, string, provider.Request) (<-chan provider.Chunk, error) {
+			return nil, errors.New("unexpected provider open")
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := desktopBroker.Activate(); err != nil {
+		t.Fatal(err)
+	}
+	if err := srv.broker.Attach(hostWire, 1); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	t.Cleanup(func() {
+		cancel()
+		desktopBroker.Close()
+		_ = hostSide.Close()
+		_ = desktopSide.Close()
+	})
+	go desktopWire.Serve(ctx)
+	go hostWire.Serve(ctx)
+
+	result, err := srv.workspaceCatalog(protocol.WorkspaceCatalogParams{
+		ExpectedHostEpoch: srv.hostEpoch,
+		WorkspaceID:       srv.workspaceID,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Models) != 2 {
+		t.Fatalf("models = %#v, want two catalog entries", result.Models)
+	}
+	if levels := result.Models[0].Effort.Levels; levels == nil || len(levels) != 0 {
+		t.Fatalf("basic effort levels = %#v, want allocated empty slice", levels)
+	}
+	if levels := result.Models[1].Effort.Levels; len(levels) != 2 || levels[0] != "medium" || levels[1] != "high" {
+		t.Fatalf("reasoning effort levels = %#v, want [medium high]", levels)
+	}
+
+	raw, err := json.Marshal(result)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(raw, []byte(`"levels":[]`)) {
+		t.Fatalf("encoded workspace catalog = %s, want empty effort levels array", raw)
+	}
+	decoded, err := protocol.DecodeResult(protocol.MethodCatalogWorkspace, raw)
+	if err != nil {
+		t.Fatalf("decode workspace catalog: %v", err)
+	}
+	decodedCatalog := decoded.(protocol.WorkspaceCatalogResult)
+	if levels := decodedCatalog.Models[0].Effort.Levels; levels == nil || len(levels) != 0 {
+		t.Fatalf("decoded basic effort levels = %#v, want allocated empty slice", levels)
+	}
+}
+
 func TestRuntimeFilePreviewDoesNotDecodeBinary(t *testing.T) {
 	workspace := t.TempDir()
 	if err := os.WriteFile(filepath.Join(workspace, "blob.bin"), []byte{'a', 0, 'b'}, 0o600); err != nil {
