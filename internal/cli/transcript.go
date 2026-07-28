@@ -133,6 +133,29 @@ func renderAssistantMarkdown(raw string, contentWidth int) string {
 	return header + "\n\n" + indentTranscriptBlock(body, indent)
 }
 
+// renderAssistantMarkdownRaw mirrors renderAssistantMarkdown but uses
+// RenderRaw so LaTeX $...$ delimiters survive in the text returned for the
+// clipboard (selectedText / rawWrappedLines).
+func renderAssistantMarkdownRaw(raw string, contentWidth int) string {
+	contentWidth = max(contentWidth, 1)
+	indent := assistantTranscriptIndent
+	if contentWidth <= visibleWidth(indent) {
+		indent = ""
+	}
+	bodyWidth := max(contentWidth-visibleWidth(indent), 1)
+	renderer := newMarkdownRenderer(bodyWidth)
+	rendered := renderer.RenderRaw(raw)
+	if rendered == "" {
+		rendered = raw
+	}
+	body := strings.TrimRight(rendered, "\n")
+	header := indent + accent("◆") + " " + bold("Reasonix")
+	if body == "" {
+		return header
+	}
+	return header + "\n\n" + indentTranscriptBlock(body, indent)
+}
+
 func indentTranscriptBlock(block, indent string) string {
 	if indent == "" || block == "" {
 		return block
@@ -176,6 +199,27 @@ func (m *chatTUI) commitTranscriptSource(source transcriptSource) {
 	rendered := m.renderTranscriptSource(source, m.width)
 	*m.pendingCommit = append(*m.pendingCommit, rendered)
 	m.appendTranscriptBlock(rendered, source)
+}
+
+// buildRawTranscript joins the transcript sources into a single string rendered
+// with raw LaTeX markup so selectedText can restore the model's original math
+// source. It mirrors how transcript is joined from its blocks: each source
+// renders through its normal path except markdown uses RenderRaw.
+func (m *chatTUI) buildRawTranscript(contentWidth int) string {
+	var b strings.Builder
+	for i, source := range m.transcriptSources {
+		if i > 0 {
+			b.WriteByte('\n')
+		}
+		switch source.kind {
+		case transcriptSourceMarkdown:
+			b.WriteString(renderAssistantMarkdownRaw(source.raw, contentWidth))
+		default:
+			// Non-markdown sources reuse the already-rendered transcript block.
+			b.WriteString(m.transcript[i])
+		}
+	}
+	return b.String()
 }
 
 // transcriptResizeAnchor identifies the transcript block at the top of the
@@ -409,12 +453,20 @@ func selSpan(idx int, start, end selPos, cw int) (lo, hi int, ok bool) {
 }
 
 // selectedText is the plain (ANSI-stripped) text of the active selection, lines
-// joined with '\n', for the clipboard.
+// joined with '\n', for the clipboard. When rawWrappedLines are available and
+// have the same line count as wrappedLines (which is the common case), they are
+// used instead so LaTeX math expressions appear as original $...$ source rather
+// than the terminal-oriented Unicode approximation.
 func (m chatTUI) selectedText() string {
 	if !m.sel.active || m.sel.empty() {
 		return ""
 	}
+	// Use the raw-text mirror when it's in sync; fall back to display lines
+	// otherwise (e.g. a rare case where LaTeX source length changes wrapping).
 	lines := m.wrappedLines
+	if len(m.rawWrappedLines) == len(lines) {
+		lines = m.rawWrappedLines
+	}
 	start, end := m.sel.ordered()
 	var out []string
 	for idx := start.line; idx <= end.line && idx < len(lines); idx++ {

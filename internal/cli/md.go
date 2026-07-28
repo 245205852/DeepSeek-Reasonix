@@ -22,8 +22,9 @@ import (
 // for anything else. Word-wrapping respects CJK widths and skips over ANSI
 // SGR codes when counting columns.
 type mdRenderer struct {
-	md    goldmark.Markdown
-	width int
+	md      goldmark.Markdown
+	width   int
+	rawMath bool // when true, render math as raw LaTeX instead of Unicode
 }
 
 func newMarkdownRenderer(width int) *mdRenderer {
@@ -62,6 +63,30 @@ func (r *mdRenderer) Render(input string) string {
 	doc := r.md.Parser().Parse(text.NewReader(src))
 	var buf strings.Builder
 	r.renderBlocks(&buf, doc, src, 0)
+	out := strings.TrimRight(buf.String(), "\n")
+	if out == "" {
+		return ""
+	}
+	return out + "\n"
+}
+
+// RenderRaw is like Render but keeps original LaTeX $...$ / $$...$$ delimiters
+// intact so copy-paste preserves the model's raw markup instead of the
+// terminal-oriented Unicode approximation.
+func (r *mdRenderer) RenderRaw(input string) string {
+	if strings.TrimSpace(input) == "" {
+		return ""
+	}
+	// normalizeMath rewrites \(…\) → $…$ but does NOT run latexToUnicode;
+	// we skip the fixCJKEmphasis pass because the raw mode targets clipboard
+	// consumers that don't need CJK flanking space workarounds.
+	input = normalizeMath(input)
+	src := []byte(input)
+	doc := r.md.Parser().Parse(text.NewReader(src))
+	var buf strings.Builder
+	r.rawMath = true
+	r.renderBlocks(&buf, doc, src, 0)
+	r.rawMath = false
 	out := strings.TrimRight(buf.String(), "\n")
 	if out == "" {
 		return ""
@@ -346,7 +371,15 @@ func (r *mdRenderer) appendInline(b *strings.Builder, n ast.Node, src []byte) {
 		case *ast.RawHTML:
 			// drop — rare in chat output and would print as literal escapes
 		case *mathNode:
-			b.WriteString(italic(v.value))
+			if r.rawMath {
+				if v.display {
+					b.WriteString("$$" + v.source + "$$")
+				} else {
+					b.WriteString("$" + v.source + "$")
+				}
+			} else {
+				b.WriteString(italic(v.value))
+			}
 		case *ast.String:
 			b.Write(v.Value)
 		default:
