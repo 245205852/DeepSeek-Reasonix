@@ -164,15 +164,7 @@ func (cs *ControlService) controlOp(ctx context.Context, projectDir, taskID stri
 		}, nil
 	}
 
-	// ── record idempotency (before mutation) ──
-	if idemKey != "" {
-		rec := IdempotencyRecord{Key: idemKey, Op: cmd, TaskID: taskID, Version: expectedVersion}
-		if err := cs.store.RecordIdempotency(ctx, projectDir, rec); err != nil {
-			return ControlResult{}, fmt.Errorf("record idempotency: %w", err)
-		}
-	}
-
-	// ── apply ──
+	// ── 1. SaveTask (state mutation) ──
 	snap.Version++
 	snap.State = targetState
 	snap.UpdatedAt = timeNow()
@@ -181,13 +173,9 @@ func (cs *ControlService) controlOp(ctx context.Context, projectDir, taskID stri
 		return ControlResult{}, fmt.Errorf("save task: %w", err)
 	}
 
-	// ── audit event ──
-	seq, err := cs.store.NextSequence(ctx, projectDir, taskID)
-	if err != nil {
-		return ControlResult{}, fmt.Errorf("next sequence: %w", err)
-	}
+	// ── 2. AppendAuditEvent (atomic sequence + write) ──
 	auditEv := TaskEvent{
-		Sequence:  seq,
+		Sequence:  0, // assigned atomically by store
 		Timestamp: timeNow(),
 		EventType: "control_" + cmd,
 		TaskID:    taskID,
@@ -197,12 +185,21 @@ func (cs *ControlService) controlOp(ctx context.Context, projectDir, taskID stri
 	if reason != "" {
 		auditEv.ErrorSummary = reason
 	}
-	if err := cs.store.SaveEvent(ctx, projectDir, auditEv); err != nil {
-		// Audit failure is not idempotent — treat as hard error
+	if err := cs.store.AppendAuditEvent(ctx, projectDir, auditEv); err != nil {
+		// State is committed but audit is missing. This is a degraded
+		// but not silent state — the caller receives an error.
 		return ControlResult{
 			SchemaVersion: 1, Command: cmd, TaskID: taskID,
-			Error: &CtrlError{Code: ErrTaskAuditFailed, Message: "audit event write failed: state may be inconsistent"},
-		}, fmt.Errorf("save audit event: %w", err)
+			Error: &CtrlError{Code: ErrTaskAuditFailed, Message: "state saved but audit event failed"},
+		}, fmt.Errorf("append audit event: %w", err)
+	}
+
+	// ── 3. RecordIdempotency (claim key after successful mutation) ──
+	if idemKey != "" {
+		rec := IdempotencyRecord{Key: idemKey, Op: cmd, TaskID: taskID, Version: expectedVersion}
+		if err := cs.store.RecordIdempotency(ctx, projectDir, rec); err != nil {
+			return ControlResult{}, fmt.Errorf("record idempotency: %w", err)
+		}
 	}
 
 	// ── kill running job ──

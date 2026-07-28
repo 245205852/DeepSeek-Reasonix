@@ -250,29 +250,23 @@ func (s *InMemoryStore) SaveTask(ctx context.Context, projectDir string, snap Ta
 	return nil
 }
 
-// SaveEvent implements WriteStore.
-func (s *InMemoryStore) SaveEvent(ctx context.Context, projectDir string, ev TaskEvent) error {
-	if err := ev.Validate(); err != nil {
-		return fmt.Errorf("save event: %w", err)
-	}
+// AppendAuditEvent implements WriteStore.
+func (s *InMemoryStore) AppendAuditEvent(ctx context.Context, projectDir string, ev TaskEvent) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.events[ev.TaskID] = append(s.events[ev.TaskID], ev)
-	return nil
-}
-
-// NextSequence implements WriteStore.
-func (s *InMemoryStore) NextSequence(ctx context.Context, projectDir string, taskID string) (int, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	evs := s.events[taskID]
+	// Atomically assign next sequence
 	max := 0
-	for _, e := range evs {
+	for _, e := range s.events[ev.TaskID] {
 		if e.Sequence > max {
 			max = e.Sequence
 		}
 	}
-	return max + 1, nil
+	ev.Sequence = max + 1
+	if err := ev.Validate(); err != nil {
+		return fmt.Errorf("append audit event: %w", err)
+	}
+	s.events[ev.TaskID] = append(s.events[ev.TaskID], ev)
+	return nil
 }
 
 // CheckIdempotency implements WriteStore.

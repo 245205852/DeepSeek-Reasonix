@@ -10,7 +10,7 @@ type Store interface {
 }
 
 // IdempotencyRecord captures the binding between an idempotency key and the
-// operation it was used for. When a key is reused, all fields must match.
+// operation it was used for.
 type IdempotencyRecord struct {
 	Key     string `json:"key"`
 	Op      string `json:"op"`
@@ -20,24 +20,32 @@ type IdempotencyRecord struct {
 
 // WriteStore extends Store with atomic write operations for control
 // commands, persistent idempotency, and event sequencing.
+//
+// Transaction ordering for control operations:
+//  1. SaveTask        — persist state with version CAS
+//  2. AppendAuditEvent — atomically assign sequence + write event
+//  3. RecordIdempotency — atomically claim the idempotency key
+//
+// Steps 2-3 failures after a successful SaveTask leave the task in the new
+// state with a potentially incomplete audit log. This is acceptable for a
+// file-based store; a transactional store would provide stronger guarantees.
 type WriteStore interface {
 	Store
 
 	// SaveTask atomically persists snap with version-based CAS.
 	SaveTask(ctx context.Context, projectDir string, snap TaskSnapshot) error
 
-	// NextSequence returns the next monotonic sequence number for taskID's
-	// event log. Implementations must be thread-safe.
-	NextSequence(ctx context.Context, projectDir string, taskID string) (int, error)
-
-	// SaveEvent appends an audit event for taskID.
-	SaveEvent(ctx context.Context, projectDir string, ev TaskEvent) error
+	// AppendAuditEvent atomically assigns the next monotonic sequence
+	// number and appends the event to taskID's event log. Implementations
+	// must be safe for concurrent use across processes.
+	AppendAuditEvent(ctx context.Context, projectDir string, ev TaskEvent) error
 
 	// CheckIdempotency returns the recorded key if it exists, or nil.
-	// Implementations must persist records across restarts.
 	CheckIdempotency(ctx context.Context, projectDir string, key string) (*IdempotencyRecord, error)
 
-	// RecordIdempotency persists an idempotency record. Must be atomic
-	// so that a second call with a different record for the same key fails.
+	// RecordIdempotency atomically claims key for r. If key already exists
+	// with identical parameters, it is a no-op. If key exists with different
+	// parameters, it must return an error. Implementations must be safe
+	// across process restarts.
 	RecordIdempotency(ctx context.Context, projectDir string, r IdempotencyRecord) error
 }

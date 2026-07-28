@@ -18,8 +18,15 @@ import (
 // project directory.
 var taskStore taskmonitor.Store
 
+// taskJobKiller is an optional JobKiller for stopping running tasks.
+// It is injected by the main wiring.
+var taskJobKiller taskmonitor.JobKiller
+
 // SetTaskStore replaces the Store used by the task subcommands.
 func SetTaskStore(s taskmonitor.Store) { taskStore = s }
+
+// SetTaskJobKiller sets the JobKiller for control subcommands.
+func SetTaskJobKiller(k taskmonitor.JobKiller) { taskJobKiller = k }
 
 func taskCommand(args []string) int {
 	if len(args) == 0 {
@@ -242,6 +249,9 @@ func taskStopCmd(store taskmonitor.Store, args []string) int {
 		return 1
 	}
 	cs := taskmonitor.NewControlService(ws)
+	if taskJobKiller != nil {
+		cs.SetJobKiller(taskJobKiller)
+	}
 	res, err := cs.StopTask(context.Background(), *dir, id, *expectedVersion, *reason, *idemKey)
 	return outputControlResult(res, err)
 }
@@ -272,6 +282,9 @@ func taskCancelCmd(store taskmonitor.Store, args []string) int {
 		return 1
 	}
 	cs := taskmonitor.NewControlService(ws)
+	if taskJobKiller != nil {
+		cs.SetJobKiller(taskJobKiller)
+	}
 	res, err := cs.CancelTask(context.Background(), *dir, id, *expectedVersion, *reason, *idemKey)
 	return outputControlResult(res, err)
 }
@@ -301,6 +314,9 @@ func taskResumeCmd(store taskmonitor.Store, args []string) int {
 		return 1
 	}
 	cs := taskmonitor.NewControlService(ws)
+	if taskJobKiller != nil {
+		cs.SetJobKiller(taskJobKiller)
+	}
 	res, err := cs.ResumeTask(context.Background(), *dir, id, *expectedVersion, *idemKey)
 	return outputControlResult(res, err)
 }

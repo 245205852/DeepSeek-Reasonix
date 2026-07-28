@@ -247,12 +247,11 @@ func (s *FileStore) SaveTask(ctx context.Context, projectDir string, snap TaskSn
 }
 
 // SaveEvent implements WriteStore.
-func (s *FileStore) SaveEvent(ctx context.Context, projectDir string, ev TaskEvent) error {
+// AppendAuditEvent implements WriteStore. It atomically assigns the next
+// monotonic sequence number and appends the event to the JSONL file.
+func (s *FileStore) AppendAuditEvent(ctx context.Context, projectDir string, ev TaskEvent) error {
 	if err := ctx.Err(); err != nil {
 		return err
-	}
-	if err := ev.Validate(); err != nil {
-		return fmt.Errorf("save event: %w", err)
 	}
 	id, err := safeID(ev.TaskID)
 	if err != nil {
@@ -264,35 +263,12 @@ func (s *FileStore) SaveEvent(ctx context.Context, projectDir string, ev TaskEve
 	}
 	taskDir := filepath.Join(root, id)
 	if err := os.MkdirAll(taskDir, 0o755); err != nil {
-		return fmt.Errorf("save event: %w", err)
+		return fmt.Errorf("append audit event: %w", err)
 	}
-	data, err := json.Marshal(ev)
-	if err != nil {
-		return fmt.Errorf("save event: marshal: %w", err)
-	}
-	// Append JSONL line
-	f, err := os.OpenFile(filepath.Join(taskDir, "events.jsonl"), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
-	if err != nil {
-		return fmt.Errorf("save event: %w", err)
-	}
-	defer f.Close()
-	_, err = fmt.Fprintln(f, string(data))
-	return err
-}
-
-// NextSequence implements WriteStore.
-func (s *FileStore) NextSequence(ctx context.Context, projectDir string, taskID string) (int, error) {
-	id, err := safeID(taskID)
-	if err != nil {
-		return 0, err
-	}
-	root, err := s.taskRoot(projectDir)
-	if err != nil {
-		return 0, err
-	}
-	events, err := s.readEvents(filepath.Join(root, id))
+	// Read current events to compute next sequence
+	events, err := s.readEvents(taskDir)
 	if err != nil && !os.IsNotExist(err) {
-		return 0, err
+		return err
 	}
 	max := 0
 	for _, e := range events {
@@ -300,8 +276,24 @@ func (s *FileStore) NextSequence(ctx context.Context, projectDir string, taskID 
 			max = e.Sequence
 		}
 	}
-	return max + 1, nil
+	ev.Sequence = max + 1
+	if err := ev.Validate(); err != nil {
+		return fmt.Errorf("append audit event: %w", err)
+	}
+	data, err := json.Marshal(ev)
+	if err != nil {
+		return err
+	}
+	f, err := os.OpenFile(filepath.Join(taskDir, "events.jsonl"), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	_, err = fmt.Fprintln(f, string(data))
+	return err
 }
+
+// ── deprecated: removed NextSequence, SaveEvent — use AppendAuditEvent ──
 
 // CheckIdempotency implements WriteStore.
 func (s *FileStore) CheckIdempotency(ctx context.Context, projectDir string, key string) (*IdempotencyRecord, error) {
@@ -347,33 +339,30 @@ func (s *FileStore) RecordIdempotency(ctx context.Context, projectDir string, r 
 		return err
 	}
 	target := filepath.Join(idemDir, id+".json")
-	// Atomic write via temp file + rename
-	tmp, err := os.CreateTemp(idemDir, ".idem-*.tmp")
+	// Atomic claim via O_EXCL: fail if file already exists
+	f, err := os.OpenFile(target, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
 	if err != nil {
+		if os.IsExist(err) {
+			// File exists — read and compare
+			existing, rdErr := os.ReadFile(target)
+			if rdErr != nil {
+				return fmt.Errorf("idempotency conflict: cannot read existing record: %w", rdErr)
+			}
+			var prev IdempotencyRecord
+			if err := json.Unmarshal(existing, &prev); err != nil {
+				return fmt.Errorf("idempotency conflict: cannot parse existing record: %w", err)
+			}
+			if prev.Op != r.Op || prev.TaskID != r.TaskID || prev.Version != r.Version {
+				return fmt.Errorf("idempotency key conflict: different params")
+			}
+			return nil // idempotent
+		}
 		return err
 	}
-	tmpName := tmp.Name()
-	if _, err := tmp.Write(data); err != nil {
-		tmp.Close()
-		os.Remove(tmpName)
+	if _, err := f.Write(data); err != nil {
+		f.Close()
+		os.Remove(target)
 		return err
 	}
-	if err := tmp.Sync(); err != nil {
-		tmp.Close()
-		os.Remove(tmpName)
-		return err
-	}
-	if err := tmp.Close(); err != nil {
-		os.Remove(tmpName)
-		return err
-	}
-	// Rename: on most filesystems, this atomically replaces the target.
-	// InMemoryStore's RecordIdempotency does its own conflict check under
-	// lock. The ControlService.mu serialises calls, so in practice the
-	// first writer always wins.
-	if err := os.Rename(tmpName, target); err != nil {
-		os.Remove(tmpName)
-		return err
-	}
-	return nil
+	return f.Close()
 }
