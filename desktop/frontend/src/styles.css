@@ -35501,7 +35501,7 @@ body > .mermaid-diagram--fullscreen {
   background: var(--bg-elev-2);
 }
 /* Task Monitor panel */
-.taskmonitor { position:absolute; left:var(--sidebar-width); right:0; bottom:0; z-index:20; background:var(--bg,#111); border-top:1px solid var(--border,#333); box-shadow:0 -6px 18px rgba(0,0,0,.28); }
+.taskmonitor { position:absolute; left:var(--sidebar-width); right:0; bottom:0; z-index:var(--z-dock); background:var(--bg,#111); border-top:1px solid var(--border,#333); box-shadow:0 -6px 18px rgba(0,0,0,.28); }
 .taskmonitor__head { display:flex; align-items:center; gap:6px; width:100%; padding:8px 12px; font-size:13px; }
 .taskmonitor__toggle,.taskmonitor__refresh,.taskmonitor__close { background:none; border:0; color:inherit; cursor:pointer; }
 .taskmonitor__toggle { display:flex; padding:0; }
