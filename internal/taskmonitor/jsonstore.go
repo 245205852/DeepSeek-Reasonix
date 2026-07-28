@@ -37,7 +37,9 @@ func safeID(name string) (string, error) {
 	if cleaned == "." || cleaned == ".." {
 		return "", fmt.Errorf("invalid identifier %q", name)
 	}
-	if strings.ContainsRune(name, filepath.Separator) {
+	// Windows accepts both slash styles as path separators. Check both so
+	// validation has the same traversal behavior on every platform.
+	if strings.ContainsAny(name, `/\\`) {
 		return "", fmt.Errorf("identifier %q contains path separator", name)
 	}
 	return cleaned, nil
@@ -250,7 +252,7 @@ func (s *FileStore) SaveTask(ctx context.Context, projectDir string, snap TaskSn
 // SaveEvent implements WriteStore.
 // AppendAuditEvent implements WriteStore. It atomically assigns the next
 // monotonic sequence number and appends the event to the JSONL file.
-func (s *FileStore) AppendAuditEvent(ctx context.Context, projectDir string, ev TaskEvent) error {
+func (s *FileStore) AppendAuditEvent(ctx context.Context, projectDir string, ev TaskEvent) (retErr error) {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -279,7 +281,11 @@ func (s *FileStore) AppendAuditEvent(ctx context.Context, projectDir string, ev 
 	if err := lockTaskFile(f); err != nil {
 		return fmt.Errorf("append audit event: %w", err)
 	}
-	defer unlockTaskFile(f)
+	defer func() {
+		if unlockErr := unlockTaskFile(f); unlockErr != nil && retErr == nil {
+			retErr = fmt.Errorf("unlock task file: %w", unlockErr)
+		}
+	}()
 
 	// Read current events to compute next sequence (safe under lock)
 	if _, err := f.Seek(0, 0); err != nil {

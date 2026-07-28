@@ -60,12 +60,12 @@ func (s TaskState) Terminal() bool {
 }
 
 // ValidTransition reports whether moving from current to next is legitimate.
-func (current TaskState) ValidTransition(next TaskState) bool {
-	if current == next {
+func (s TaskState) ValidTransition(next TaskState) bool {
+	if s == next {
 		return false
 	}
 	// Terminal states cannot transition to anything, not even unknown states.
-	if current.Terminal() {
+	if s.Terminal() {
 		return false
 	}
 	// Unknown next states are allowed (forward-compat) provided current is
@@ -73,7 +73,7 @@ func (current TaskState) ValidTransition(next TaskState) bool {
 	if !next.IsKnown() {
 		return true
 	}
-	switch current {
+	switch s {
 	case TaskStateQueued:
 		return next == TaskStateRunning || next == TaskStateCancelled ||
 			next == TaskStateStale
