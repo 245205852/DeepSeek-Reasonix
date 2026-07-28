@@ -149,14 +149,15 @@ func (cs *ControlService) controlOp(ctx context.Context, projectDir, taskID stri
 			Error: &CtrlError{Code: ErrTaskVersionConflict, Message: "version mismatch"},
 		}, nil
 	}
-	if snap.State.Terminal() {
+	resumable := cmd == "resume" && (snap.State == TaskStateFailed || snap.State == TaskStateStale)
+	if snap.State.Terminal() && !resumable {
 		return ControlResult{
 			SchemaVersion: 1, Command: cmd, TaskID: taskID, SessionID: snap.SessionID,
 			State: snap.State, Version: snap.Version,
 			Error: &CtrlError{Code: ErrTaskAlreadyTerminal, Message: "task is terminal"},
 		}, nil
 	}
-	if !snap.State.ValidTransition(targetState) {
+	if !resumable && !snap.State.ValidTransition(targetState) {
 		return ControlResult{
 			SchemaVersion: 1, Command: cmd, TaskID: taskID, SessionID: snap.SessionID,
 			State: snap.State, Version: snap.Version,

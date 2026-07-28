@@ -72,6 +72,20 @@ func TestControlService_TerminalGuard(t *testing.T) {
 	}
 }
 
+func TestControlService_ResumeFailedTask(t *testing.T) {
+	s := NewInMemoryStore()
+	cs := NewControlService(s)
+	mustUpsertControl(t, s, "/p", TaskSnapshot{
+		SchemaVersion: 1, TaskID: "failed", SessionID: "s1",
+		State: TaskStateFailed, Version: 3,
+		CreatedAt: time.Now(), UpdatedAt: time.Now(),
+	})
+	res, err := cs.ResumeTask(context.Background(), "/p", "failed", 3, "resume-1")
+	if err != nil || !res.Accepted || res.State != TaskStateQueued || res.Version != 4 {
+		t.Fatalf("expected failed task to resume, got result=%+v err=%v", res, err)
+	}
+}
+
 func TestControlService_Idempotency(t *testing.T) {
 	s := NewInMemoryStore()
 	cs := NewControlService(s)
