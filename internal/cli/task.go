@@ -88,10 +88,41 @@ func taskTmuxFlags(name string, args []string) (string, string, bool, *flag.Flag
 	dir := fs.String("dir", "", "project directory scope")
 	session := fs.String("session", "", "tmux session name")
 	jsonOut := fs.Bool("json", false, "output as JSON")
-	if err := fs.Parse(args); err != nil {
+	if err := fs.Parse(reorderTaskID(args)); err != nil {
 		return "", "", false, fs, 2
 	}
 	return *dir, *session, *jsonOut, fs, 0
+}
+
+// reorderTaskID lets users place the positional task ID before or after flags.
+// The standard flag package stops parsing at the first positional argument.
+func reorderTaskID(args []string) []string {
+	var id string
+	flags := make([]string, 0, len(args))
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		if arg == "--dir" || arg == "--session" {
+			flags = append(flags, arg)
+			if i+1 < len(args) {
+				flags = append(flags, args[i+1])
+				i++
+			}
+			continue
+		}
+		if arg == "--json" {
+			flags = append(flags, arg)
+			continue
+		}
+		if id == "" {
+			id = arg
+		} else {
+			flags = append(flags, arg)
+		}
+	}
+	if id == "" {
+		return flags
+	}
+	return append(flags, id)
 }
 
 func printTmuxResult(r taskmonitor.TmuxResult, jsonOut bool) int {
