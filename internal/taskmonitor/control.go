@@ -2,13 +2,22 @@ package taskmonitor
 
 import (
 	"context"
+	"fmt"
+	"sync"
 	"time"
 )
+
+// JobKiller is an optional interface for stopping running jobs. ControlService
+// calls Kill to cancel a job's context when stop/cancel is requested. When nil,
+// only the persistent state is updated.
+type JobKiller interface {
+	Kill(jobID string) bool
+}
 
 // ControlResult is the unified response for all task control operations.
 type ControlResult struct {
 	SchemaVersion int        `json:"schema_version"`
-	Command       string     `json:"command"` // "stop" | "cancel" | "resume" | "open_session"
+	Command       string     `json:"command"`
 	TaskID        string     `json:"task_id"`
 	SessionID     string     `json:"session_id"`
 	State         TaskState  `json:"state"`
@@ -18,15 +27,12 @@ type ControlResult struct {
 	Error         *CtrlError `json:"error,omitempty"`
 }
 
-// CtrlError carries a stable machine-readable code and a human-readable
-// message. The message MUST NOT contain paths, credentials, prompt text,
-// or model responses.
+// CtrlError carries a stable machine-readable code and message.
 type CtrlError struct {
 	Code    string `json:"code"`
 	Message string `json:"message"`
 }
 
-// Stable error codes for control operations.
 const (
 	ErrTaskNotFound            = "task_not_found"
 	ErrTaskScopeMismatch       = "task_scope_mismatch"
@@ -37,46 +43,36 @@ const (
 	ErrTaskInProgress          = "task_operation_in_progress"
 	ErrTaskPermissionDenied    = "task_permission_denied"
 	ErrTaskIdempotencyConflict = "task_idempotency_conflict"
+	ErrTaskAuditFailed         = "task_audit_failed"
 )
 
-// ControlService provides atomic control operations on tasks. It is the
-// sole write authority: all state changes go through this service, which
-// enforces version-based optimistic locking, idempotency, and project
-// scope.
+// ControlService provides atomic control operations on tasks.
 type ControlService struct {
-	store   WriteStore
-	idemLog map[string]string // idempotencyKey → "taskID:version"
+	mu     sync.Mutex
+	store  WriteStore
+	killer JobKiller
 }
 
-// NewControlService returns a ControlService backed by the given WriteStore.
+// NewControlService returns a ControlService backed by store.
 func NewControlService(store WriteStore) *ControlService {
-	return &ControlService{
-		store:   store,
-		idemLog: make(map[string]string),
-	}
+	return &ControlService{store: store}
 }
 
-// StopTask requests a running or waiting task to stop. The caller must
-// supply the expected_version (the version it last read); the operation
-// fails with task_version_conflict if the stored version differs.
+// SetJobKiller sets an optional JobKiller for stopping running jobs.
+func (cs *ControlService) SetJobKiller(k JobKiller) { cs.killer = k }
+
 func (cs *ControlService) StopTask(ctx context.Context, projectDir, taskID string, expectedVersion uint64, reason, idemKey string) (ControlResult, error) {
 	return cs.controlOp(ctx, projectDir, taskID, expectedVersion, "stop", TaskStateCancelled, reason, idemKey)
 }
 
-// CancelTask cancels a non-terminal task. Terminal tasks return an
-// idempotent success.
 func (cs *ControlService) CancelTask(ctx context.Context, projectDir, taskID string, expectedVersion uint64, reason, idemKey string) (ControlResult, error) {
 	return cs.controlOp(ctx, projectDir, taskID, expectedVersion, "cancel", TaskStateCancelled, reason, idemKey)
 }
 
-// ResumeTask attempts to resume a task from a recoverable state. Returns
-// task_not_resumable if the task is not in a state that supports resume.
 func (cs *ControlService) ResumeTask(ctx context.Context, projectDir, taskID string, expectedVersion uint64, idemKey string) (ControlResult, error) {
 	return cs.controlOp(ctx, projectDir, taskID, expectedVersion, "resume", TaskStateQueued, "", idemKey)
 }
 
-// OpenTaskSession returns the session associated with a task. It is
-// read-only and does not modify state.
 func (cs *ControlService) OpenTaskSession(ctx context.Context, projectDir, taskID string) (ControlResult, error) {
 	snap, err := cs.store.GetTask(ctx, projectDir, taskID)
 	if err != nil {
@@ -84,20 +80,14 @@ func (cs *ControlService) OpenTaskSession(ctx context.Context, projectDir, taskI
 	}
 	if snap == nil {
 		return ControlResult{
-			SchemaVersion: 1,
-			Command:       "open_session",
-			TaskID:        taskID,
-			Error:         &CtrlError{Code: ErrTaskNotFound, Message: "task not found"},
+			SchemaVersion: 1, Command: "open_session", TaskID: taskID,
+			Error: &CtrlError{Code: ErrTaskNotFound, Message: "task not found"},
 		}, nil
 	}
 	return ControlResult{
-		SchemaVersion: 1,
-		Command:       "open_session",
-		TaskID:        snap.TaskID,
-		SessionID:     snap.SessionID,
-		State:         snap.State,
-		Version:       snap.Version,
-		Accepted:      true,
+		SchemaVersion: 1, Command: "open_session",
+		TaskID: snap.TaskID, SessionID: snap.SessionID,
+		State: snap.State, Version: snap.Version, Accepted: true,
 	}, nil
 }
 
@@ -106,6 +96,42 @@ func (cs *ControlService) controlOp(ctx context.Context, projectDir, taskID stri
 		return ControlResult{}, err
 	}
 
+	cs.mu.Lock()
+	defer cs.mu.Unlock()
+
+	// ── idempotency check (persisted) ──
+	if idemKey != "" {
+		rec, err := cs.store.CheckIdempotency(ctx, projectDir, idemKey)
+		if err != nil {
+			return ControlResult{}, fmt.Errorf("check idempotency: %w", err)
+		}
+		if rec != nil {
+			// Must match exactly
+			if rec.Op != cmd || rec.TaskID != taskID || rec.Version != expectedVersion {
+				return ControlResult{
+					SchemaVersion: 1, Command: cmd, TaskID: taskID,
+					Error: &CtrlError{Code: ErrTaskIdempotencyConflict, Message: "idempotency key reused with different parameters"},
+				}, nil
+			}
+			// Replay: fetch current state
+			snap, err := cs.store.GetTask(ctx, projectDir, taskID)
+			if err != nil {
+				return ControlResult{}, err
+			}
+			if snap == nil {
+				return ControlResult{
+					SchemaVersion: 1, Command: cmd, TaskID: taskID,
+					Error: &CtrlError{Code: ErrTaskNotFound, Message: "task not found"},
+				}, nil
+			}
+			return ControlResult{
+				SchemaVersion: 1, Command: cmd, TaskID: taskID, SessionID: snap.SessionID,
+				State: snap.State, Version: snap.Version, Accepted: true, Idempotent: true,
+			}, nil
+		}
+	}
+
+	// ── fetch + validate ──
 	snap, err := cs.store.GetTask(ctx, projectDir, taskID)
 	if err != nil {
 		return ControlResult{}, err
@@ -116,63 +142,52 @@ func (cs *ControlService) controlOp(ctx context.Context, projectDir, taskID stri
 			Error: &CtrlError{Code: ErrTaskNotFound, Message: "task not found"},
 		}, nil
 	}
-
-	// Idempotency check
-	if idemKey != "" {
-		if prevID, ok := cs.idemLog[idemKey]; ok {
-			if prevID == taskID {
-				return ControlResult{
-					SchemaVersion: 1, Command: cmd, TaskID: taskID, SessionID: snap.SessionID,
-					State: snap.State, Version: snap.Version, Accepted: true, Idempotent: true,
-				}, nil
-			}
-			return ControlResult{
-				SchemaVersion: 1, Command: cmd, TaskID: taskID,
-				Error: &CtrlError{Code: ErrTaskIdempotencyConflict, Message: "idempotency key reused for different task"},
-			}, nil
-		}
-	}
-
-	// Version check
 	if expectedVersion != snap.Version {
 		return ControlResult{
 			SchemaVersion: 1, Command: cmd, TaskID: taskID, SessionID: snap.SessionID,
 			State: snap.State, Version: snap.Version,
-			Error: &CtrlError{Code: ErrTaskVersionConflict, Message: "version mismatch: expected version has changed"},
+			Error: &CtrlError{Code: ErrTaskVersionConflict, Message: "version mismatch"},
 		}, nil
 	}
-
-	// Terminal guard
 	if snap.State.Terminal() {
 		return ControlResult{
 			SchemaVersion: 1, Command: cmd, TaskID: taskID, SessionID: snap.SessionID,
 			State: snap.State, Version: snap.Version,
-			Error: &CtrlError{Code: ErrTaskAlreadyTerminal, Message: "task is already in a terminal state"},
+			Error: &CtrlError{Code: ErrTaskAlreadyTerminal, Message: "task is terminal"},
 		}, nil
 	}
-
-	// Transition check
 	if !snap.State.ValidTransition(targetState) {
 		return ControlResult{
 			SchemaVersion: 1, Command: cmd, TaskID: taskID, SessionID: snap.SessionID,
 			State: snap.State, Version: snap.Version,
-			Error: &CtrlError{Code: ErrTaskInvalidTransition, Message: "invalid state transition"},
+			Error: &CtrlError{Code: ErrTaskInvalidTransition, Message: "invalid transition"},
 		}, nil
 	}
 
-	// Apply: increment version and set state
+	// ── record idempotency (before mutation) ──
+	if idemKey != "" {
+		rec := IdempotencyRecord{Key: idemKey, Op: cmd, TaskID: taskID, Version: expectedVersion}
+		if err := cs.store.RecordIdempotency(ctx, projectDir, rec); err != nil {
+			return ControlResult{}, fmt.Errorf("record idempotency: %w", err)
+		}
+	}
+
+	// ── apply ──
 	snap.Version++
 	snap.State = targetState
 	snap.UpdatedAt = timeNow()
 
-	// Persist
 	if err := cs.store.SaveTask(ctx, projectDir, *snap); err != nil {
-		return ControlResult{}, err
+		return ControlResult{}, fmt.Errorf("save task: %w", err)
 	}
 
-	// Record audit event
+	// ── audit event ──
+	seq, err := cs.store.NextSequence(ctx, projectDir, taskID)
+	if err != nil {
+		return ControlResult{}, fmt.Errorf("next sequence: %w", err)
+	}
 	auditEv := TaskEvent{
-		Sequence:  1, // audit events always start at 1
+		Sequence:  seq,
 		Timestamp: timeNow(),
 		EventType: "control_" + cmd,
 		TaskID:    taskID,
@@ -182,12 +197,17 @@ func (cs *ControlService) controlOp(ctx context.Context, projectDir, taskID stri
 	if reason != "" {
 		auditEv.ErrorSummary = reason
 	}
-	// Best-effort audit logging
-	cs.store.SaveEvent(ctx, projectDir, auditEv)
+	if err := cs.store.SaveEvent(ctx, projectDir, auditEv); err != nil {
+		// Audit failure is not idempotent — treat as hard error
+		return ControlResult{
+			SchemaVersion: 1, Command: cmd, TaskID: taskID,
+			Error: &CtrlError{Code: ErrTaskAuditFailed, Message: "audit event write failed: state may be inconsistent"},
+		}, fmt.Errorf("save audit event: %w", err)
+	}
 
-	// Record idempotency
-	if idemKey != "" {
-		cs.idemLog[idemKey] = taskID
+	// ── kill running job ──
+	if cs.killer != nil && (cmd == "stop" || cmd == "cancel") {
+		cs.killer.Kill(taskID)
 	}
 
 	return ControlResult{
@@ -196,5 +216,4 @@ func (cs *ControlService) controlOp(ctx context.Context, projectDir, taskID stri
 	}, nil
 }
 
-// timeNow is a package-level override for tests.
 var timeNow = func() time.Time { return time.Now() }

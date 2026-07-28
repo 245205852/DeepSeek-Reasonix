@@ -18,11 +18,12 @@ const defaultSchemaVersion = 1
 // limits).  It is NOT suitable for production use.  Production stores
 // must implement resource caps and persistence.
 type InMemoryStore struct {
-	mu      sync.RWMutex
-	tasks   map[string]*TaskSnapshot       // taskID → snapshot
-	events  map[string][]TaskEvent         // taskID → ordered events
-	byProj  map[string]map[string]struct{} // projectDir → set of taskIDs
-	lastSeq map[string]int                 // taskID → last seen sequence
+	mu       sync.RWMutex
+	tasks    map[string]*TaskSnapshot       // taskID → snapshot
+	events   map[string][]TaskEvent         // taskID → ordered events
+	byProj   map[string]map[string]struct{} // projectDir → set of taskIDs
+	lastSeq  map[string]int                 // taskID → last seen sequence
+	idemRecs map[string]*IdempotencyRecord  // key → record
 }
 
 // NewInMemoryStore returns a ready-to-use InMemoryStore.
@@ -257,5 +258,57 @@ func (s *InMemoryStore) SaveEvent(ctx context.Context, projectDir string, ev Tas
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.events[ev.TaskID] = append(s.events[ev.TaskID], ev)
+	return nil
+}
+
+// NextSequence implements WriteStore.
+func (s *InMemoryStore) NextSequence(ctx context.Context, projectDir string, taskID string) (int, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	evs := s.events[taskID]
+	max := 0
+	for _, e := range evs {
+		if e.Sequence > max {
+			max = e.Sequence
+		}
+	}
+	return max + 1, nil
+}
+
+// CheckIdempotency implements WriteStore.
+func (s *InMemoryStore) CheckIdempotency(ctx context.Context, projectDir string, key string) (*IdempotencyRecord, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	_ = projectDir
+	_ = ctx
+	if s.idemRecs == nil {
+		return nil, nil
+	}
+	rec, ok := s.idemRecs[key]
+	if !ok {
+		return nil, nil
+	}
+	cp := *rec
+	return &cp, nil
+}
+
+// RecordIdempotency implements WriteStore.
+func (s *InMemoryStore) RecordIdempotency(ctx context.Context, projectDir string, r IdempotencyRecord) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	_ = projectDir
+	_ = ctx
+	if s.idemRecs == nil {
+		s.idemRecs = make(map[string]*IdempotencyRecord)
+	}
+	// Reject if key already exists with different params
+	if existing, ok := s.idemRecs[r.Key]; ok {
+		if existing.Op != r.Op || existing.TaskID != r.TaskID || existing.Version != r.Version {
+			return fmt.Errorf("idempotency key conflict: different params")
+		}
+		return nil // already recorded, idempotent
+	}
+	cp := r
+	s.idemRecs[r.Key] = &cp
 	return nil
 }

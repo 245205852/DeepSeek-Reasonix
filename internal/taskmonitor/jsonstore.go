@@ -277,3 +277,90 @@ func (s *FileStore) SaveEvent(ctx context.Context, projectDir string, ev TaskEve
 	_, err = fmt.Fprintln(f, string(data))
 	return err
 }
+
+// NextSequence implements WriteStore.
+func (s *FileStore) NextSequence(ctx context.Context, projectDir string, taskID string) (int, error) {
+	id, err := safeTaskID(taskID)
+	if err != nil {
+		return 0, err
+	}
+	root, err := s.taskRoot(projectDir)
+	if err != nil {
+		return 0, err
+	}
+	events, err := s.readEvents(filepath.Join(root, id))
+	if err != nil && !os.IsNotExist(err) {
+		return 0, err
+	}
+	max := 0
+	for _, e := range events {
+		if e.Sequence > max {
+			max = e.Sequence
+		}
+	}
+	return max + 1, nil
+}
+
+// CheckIdempotency implements WriteStore.
+func (s *FileStore) CheckIdempotency(ctx context.Context, projectDir string, key string) (*IdempotencyRecord, error) {
+	root, err := s.taskRoot(projectDir)
+	if err != nil {
+		return nil, err
+	}
+	idemDir := filepath.Join(root, ".idempotency")
+	data, err := os.ReadFile(filepath.Join(idemDir, key+".json"))
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	var rec IdempotencyRecord
+	if err := json.Unmarshal(data, &rec); err != nil {
+		return nil, nil
+	}
+	return &rec, nil
+}
+
+// RecordIdempotency implements WriteStore.
+func (s *FileStore) RecordIdempotency(ctx context.Context, projectDir string, r IdempotencyRecord) error {
+	root, err := s.taskRoot(projectDir)
+	if err != nil {
+		return err
+	}
+	idemDir := filepath.Join(root, ".idempotency")
+	if err := os.MkdirAll(idemDir, 0o755); err != nil {
+		return err
+	}
+	data, err := json.Marshal(r)
+	if err != nil {
+		return err
+	}
+	target := filepath.Join(idemDir, r.Key+".json")
+	// Atomic write: only succeed if file doesn't exist
+	tmp, err := os.CreateTemp(idemDir, ".idem-*.tmp")
+	if err != nil {
+		return err
+	}
+	tmpName := tmp.Name()
+	if _, err := tmp.Write(data); err != nil {
+		tmp.Close()
+		os.Remove(tmpName)
+		return err
+	}
+	if err := tmp.Sync(); err != nil {
+		tmp.Close()
+		os.Remove(tmpName)
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		os.Remove(tmpName)
+		return err
+	}
+	// Use O_EXCL to guarantee exclusivity (link instead of rename for atomic create)
+	if err := os.Rename(tmpName, target); err != nil {
+		os.Remove(tmpName)
+		return err
+	}
+	return nil
+}
