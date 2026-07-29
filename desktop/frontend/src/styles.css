@@ -99,6 +99,9 @@
   --shadow-2: 0 14px 40px rgba(0, 0, 0, 0.28);
 
   /* z-index scale */
+  --z-transcript-scene-image: 0;
+  --z-transcript-scene-overlay: 1;
+  --z-transcript-content: 2;
   --z-theme-bg: 0;
   --z-app-content: 1;
   --z-local-raised: 2;
@@ -33601,6 +33604,111 @@ body > .mermaid-diagram--fullscreen {
 :root[data-theme-pack][data-theme-has-bg="true"] .app:not(.app--creation) .transcript,
 :root[data-theme-pack][data-theme-has-bg="true"] .app:not(.app--creation) .transcript-shell {
   background: transparent !important;
+}
+
+/*
+  WebView2 can retain stale raster pixels when children are removed from a
+  transparent scrolling layer (#6359, #7011). Scope the opaque backing to the
+  primary chat transcript: history previews already own an opaque card surface,
+  while Creation has its own repaint rule above.
+*/
+:root[data-platform="windows"] .app:not(.app--creation) .chat-pane > .main > .transcript-shell > .transcript {
+  position: relative;
+  isolation: isolate;
+  clip-path: inset(0);
+  background-color: Canvas !important;
+  background-image:
+    linear-gradient(var(--chat-bg, var(--bg)), var(--chat-bg, var(--bg))),
+    linear-gradient(var(--bg), var(--bg)) !important;
+  background-repeat: no-repeat, no-repeat !important;
+  background-size: 100% 100%, 100% 100% !important;
+}
+
+/*
+  Background packs normally show a fixed image through translucent panes. The
+  two fixed pseudo-layers preserve the existing .theme-bg geometry exactly:
+  the image keeps its viewport-relative -4% overscan and the wash stays
+  viewport-sized. clip-path confines those fixed layers to the transcript while
+  the real background remains opaque for WebView2's scrolling compositor.
+*/
+:root[data-platform="windows"][data-theme-pack][data-theme-has-bg="true"] .app:not(.app--creation) .chat-pane > .main > .transcript-shell > .transcript {
+  --windows-transcript-scene-image: var(--theme-bg-home-image, var(--theme-bg-image, none));
+  --windows-transcript-scene-focus-x: var(--theme-bg-home-focus-x, var(--theme-bg-focus-x, 50%));
+  --windows-transcript-scene-focus-y: var(--theme-bg-home-focus-y, var(--theme-bg-focus-y, 50%));
+  --windows-transcript-image-opacity: var(--theme-bg-home-opacity, 1);
+  --windows-transcript-pane-alpha: var(--theme-pane-alpha, 0.72);
+  --windows-transcript-scene-overlay: linear-gradient(transparent, transparent);
+  background-color: Canvas !important;
+  background-image: linear-gradient(var(--bg), var(--bg)) !important;
+  background-repeat: no-repeat !important;
+  background-size: 100% 100% !important;
+}
+
+:root[data-platform="windows"][data-theme-pack][data-theme-has-bg="true"] .app:not(.app--creation) .chat-pane > .main > .transcript-shell > .transcript::before {
+  content: "";
+  position: fixed;
+  inset: -4%;
+  z-index: var(--z-transcript-scene-image);
+  pointer-events: none;
+  background-image: var(--windows-transcript-scene-image);
+  background-repeat: no-repeat;
+  background-size: cover;
+  background-position: var(--windows-transcript-scene-focus-x) var(--windows-transcript-scene-focus-y);
+  opacity: var(--windows-transcript-image-opacity);
+}
+
+:root[data-platform="windows"][data-theme-pack][data-theme-has-bg="true"] .app:not(.app--creation) .chat-pane > .main > .transcript-shell > .transcript::after {
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: var(--z-transcript-scene-overlay);
+  pointer-events: none;
+  background-image:
+    linear-gradient(
+      color-mix(in srgb, var(--chat-bg, var(--bg)) calc(var(--windows-transcript-pane-alpha) * 100%), transparent),
+      color-mix(in srgb, var(--chat-bg, var(--bg)) calc(var(--windows-transcript-pane-alpha) * 100%), transparent)
+    ),
+    var(--windows-transcript-scene-overlay);
+  background-repeat: no-repeat, no-repeat;
+  background-position: center, center;
+  background-size: 100% 100%, 100% 100%;
+}
+
+:root[data-platform="windows"][data-theme-pack][data-theme-has-bg="true"] .app:not(.app--creation) .chat-pane > .main > .transcript-shell > .transcript > * {
+  position: relative;
+  z-index: var(--z-transcript-content);
+}
+
+:root[data-platform="windows"][data-theme-pack][data-theme-has-bg="true"][data-theme-scene="task"] .app:not(.app--creation) .chat-pane > .main > .transcript-shell > .transcript {
+  --windows-transcript-scene-image: var(--theme-bg-task-image, var(--theme-bg-home-image, var(--theme-bg-image, none)));
+  --windows-transcript-scene-focus-x: var(--theme-bg-task-focus-x, var(--theme-bg-focus-x, 50%));
+  --windows-transcript-scene-focus-y: var(--theme-bg-task-focus-y, var(--theme-bg-focus-y, 50%));
+  --windows-transcript-image-opacity: var(--theme-bg-task-opacity, 0.28);
+  --windows-transcript-pane-alpha: var(--theme-pane-task-alpha, 0.80);
+  --windows-transcript-scene-overlay: radial-gradient(
+    ellipse 70% 70% at 50% 45%,
+    color-mix(in srgb, var(--bg) calc(var(--theme-bg-task-overlay, var(--theme-bg-overlay, 0.62)) * 70%), transparent) 0%,
+    color-mix(in srgb, var(--bg) calc(var(--theme-bg-task-overlay, var(--theme-bg-overlay, 0.62)) * 40%), transparent) 55%,
+    transparent 100%
+  );
+}
+
+:root[data-platform="windows"][data-theme-pack][data-theme-has-bg="true"][data-theme-scene="task"][data-theme-safe-area="left"] .app:not(.app--creation) .chat-pane > .main > .transcript-shell > .transcript {
+  --windows-transcript-scene-overlay: linear-gradient(
+    90deg,
+    color-mix(in srgb, var(--bg) calc(var(--theme-bg-task-overlay, var(--theme-bg-overlay, 0.62)) * 100%), transparent) 0%,
+    color-mix(in srgb, var(--bg) calc(var(--theme-bg-task-overlay, var(--theme-bg-overlay, 0.62)) * 55%), transparent) 42%,
+    transparent 78%
+  );
+}
+
+:root[data-platform="windows"][data-theme-pack][data-theme-has-bg="true"][data-theme-scene="task"][data-theme-safe-area="right"] .app:not(.app--creation) .chat-pane > .main > .transcript-shell > .transcript {
+  --windows-transcript-scene-overlay: linear-gradient(
+    270deg,
+    color-mix(in srgb, var(--bg) calc(var(--theme-bg-task-overlay, var(--theme-bg-overlay, 0.62)) * 100%), transparent) 0%,
+    color-mix(in srgb, var(--bg) calc(var(--theme-bg-task-overlay, var(--theme-bg-overlay, 0.62)) * 55%), transparent) 42%,
+    transparent 78%
+  );
 }
 
 /* Density recipe consumers — pack overlay sets --theme-density-* / --theme-row-h */
