@@ -15,6 +15,7 @@ import (
 	"net/url"
 	"os"
 	"os/exec"
+	"path"
 	"path/filepath"
 	"regexp"
 	"runtime"
@@ -22,12 +23,12 @@ import (
 	"strings"
 	"time"
 
-	"github.com/minio/selfupdate"
 	"golang.org/x/mod/semver"
 
 	"reasonix/desktop/internal/update"
 	"reasonix/internal/config"
 	"reasonix/internal/netclient"
+	"reasonix/internal/repair"
 )
 
 // updater.go is the transport-free core of the desktop auto-updater: manifest
@@ -588,6 +589,11 @@ func writeAtomic(path string, data []byte, mode os.FileMode) error {
 		_ = os.Remove(name)
 		return err
 	}
+	if err := tmp.Sync(); err != nil {
+		tmp.Close()
+		_ = os.Remove(name)
+		return err
+	}
 	if err := tmp.Chmod(mode); err != nil {
 		tmp.Close()
 		_ = os.Remove(name)
@@ -1036,36 +1042,138 @@ func extractBinary(targz []byte, name string) ([]byte, error) {
 	return nil, fmt.Errorf("update: %q not found in archive", name)
 }
 
+func extractLinuxReleaseUnit(targz []byte) (map[string][]byte, error) {
+	const (
+		desktop = "reasonix-desktop"
+		guard   = "reasonix-guard"
+		cli     = "reasonix"
+	)
+	want := map[string]struct{}{desktop: {}, guard: {}, cli: {}}
+	found := make(map[string][]byte, len(want))
+	gz, err := gzip.NewReader(bytes.NewReader(targz))
+	if err != nil {
+		return nil, err
+	}
+	defer gz.Close()
+	tr := tar.NewReader(gz)
+	for {
+		h, err := tr.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return nil, err
+		}
+		name := path.Base(strings.TrimSpace(h.Name))
+		if _, ok := want[name]; !ok {
+			continue
+		}
+		if h.Typeflag != tar.TypeReg || h.Size < 0 {
+			return nil, fmt.Errorf("update: release member %q is not a regular file", name)
+		}
+		if _, duplicate := found[name]; duplicate {
+			return nil, fmt.Errorf("update: release member %q appears more than once", name)
+		}
+		body, err := io.ReadAll(tr)
+		if err != nil {
+			return nil, err
+		}
+		found[name] = body
+	}
+	if len(found) != len(want) {
+		for name := range want {
+			if _, ok := found[name]; !ok {
+				return nil, fmt.Errorf("update: release member %q not found in archive", name)
+			}
+		}
+	}
+	return found, nil
+}
+
 // applyLinux replaces the running binary with the one inside the downloaded
 // tar.gz; the caller relaunches afterwards.
-func applyLinux(targz []byte) error {
-	bin, err := extractBinary(targz, "reasonix-desktop")
+func applyLinux(targz []byte, prepared *repair.UpdateTransaction) error {
+	release, err := extractLinuxReleaseUnit(targz)
 	if err != nil {
 		return err
 	}
-	guard, err := extractBinary(targz, "reasonix-guard")
-	if err != nil {
-		return err
-	}
-	cli, err := extractBinary(targz, "reasonix")
-	if err != nil {
-		return err
-	}
-	exe := currentExecutablePath()
+	bin := release["reasonix-desktop"]
+	guard := release["reasonix-guard"]
+	cli := release["reasonix"]
+	exe := currentExecutablePathForLinux()
 	if exe == "" {
 		return fmt.Errorf("update: current executable path is unavailable")
 	}
-	if err := writeAtomic(filepath.Join(filepath.Dir(exe), "reasonix"), cli, 0o700); err != nil {
-		return fmt.Errorf("update CLI sidecar: %w", err)
+	releasePaths := releaseUnitPathsFor(filepath.Dir(exe), "linux")
+	if prepared == nil {
+		return fmt.Errorf("update: prepared transaction is unavailable")
 	}
-	if err := writeAtomic(filepath.Join(filepath.Dir(exe), "reasonix-guard"), guard, 0o700); err != nil {
-		return fmt.Errorf("update Guard: %w", err)
+	claimed, releaseClaim, err := repair.ClaimPendingFileUpdateExact(
+		prepared.ToVersion,
+		prepared.CreatedAt,
+		repair.UpdateTransactionID(prepared),
+		exe,
+		releasePaths,
+		2*time.Minute,
+	)
+	if err != nil {
+		return fmt.Errorf("update: claim prepared transaction: %w", err)
 	}
-	return selfupdate.Apply(bytes.NewReader(bin), selfupdate.Options{})
+	defer releaseClaim()
+	if err := repair.MarkUpdateApplyFailedExact(claimed, "Linux update publish did not complete"); err != nil {
+		return fmt.Errorf("update: record recovery intent: %w", err)
+	}
+	receipts, err := applyLinuxReleaseUnit(claimed, exe, bin, guard, cli)
+	if err != nil {
+		return err
+	}
+	if _, err := repair.RecordClaimedFileUpdateInstalled(claimed, receipts...); err != nil {
+		return fmt.Errorf("update: record installed release unit: %w", err)
+	}
+	// pending-update.json remains immutable; the transaction-unique sidecar now
+	// binds every installed member. A crash before marker cleanup is safe:
+	// startup correlates the exact transaction and rolls the release unit back.
+	_ = repair.ClearUpdateApplyFailureExact(claimed)
+	return nil
 }
 
-func applyWindowsFile(path, toVersion string) error {
-	return startWindowsUpdateHandoff(path, currentInstallDir(), currentLauncherPath(), toVersion)
+var currentExecutablePathForLinux = currentExecutablePath
+
+var applyLinuxReleaseUnit = func(
+	claimed *repair.UpdateTransaction,
+	exe string,
+	bin, guard, cli []byte,
+) ([]repair.FileUpdateInstallReceipt, error) {
+	receipts := make([]repair.FileUpdateInstallReceipt, 0, 3)
+	receipt, err := repair.PublishClaimedFileUpdateMemberExact(claimed, filepath.Join(filepath.Dir(exe), "reasonix"), cli, 0o700)
+	if err != nil {
+		return receipts, fmt.Errorf("update CLI sidecar: %w", err)
+	}
+	receipts = append(receipts, receipt)
+	receipt, err = repair.PublishClaimedFileUpdateMemberExact(claimed, filepath.Join(filepath.Dir(exe), "reasonix-guard"), guard, 0o700)
+	if err != nil {
+		return receipts, fmt.Errorf("update Guard: %w", err)
+	}
+	receipts = append(receipts, receipt)
+	receipt, err = repair.PublishClaimedFileUpdateMemberExact(claimed, exe, bin, 0o700)
+	if err != nil {
+		return receipts, fmt.Errorf("update desktop: %w", err)
+	}
+	receipts = append(receipts, receipt)
+	return receipts, nil
+}
+
+func applyWindowsFile(path, expectedSHA256 string, prepared *repair.UpdateTransaction) error {
+	if prepared == nil {
+		return fmt.Errorf("update: prepared transaction is unavailable")
+	}
+	return startWindowsUpdateHandoff(
+		path,
+		expectedSHA256,
+		currentInstallDir(),
+		currentLauncherPath(),
+		prepared,
+	)
 }
 
 func currentExecutablePath() string {
@@ -1098,11 +1206,28 @@ func updateSiblingArtifacts() []string {
 	if dir == "" {
 		return nil
 	}
-	names := updateSiblingNames(runtime.GOOS)
-	if len(names) == 0 {
+	paths := releaseUnitPathsFor(dir, runtime.GOOS)
+	if len(paths) <= 1 {
 		return nil
 	}
+	return paths[1:]
+}
+
+func releaseUnitPathsFor(dir, goos string) []string {
+	if dir == "" {
+		return nil
+	}
+	names := updateSiblingNames(goos)
 	paths := make([]string, 0, len(names))
+	switch goos {
+	case "linux":
+		paths = append(paths, filepath.Join(dir, "reasonix-desktop"))
+	case "windows":
+		paths = append(paths, filepath.Join(dir, "reasonix-desktop.exe"))
+	}
+	if len(names) == 0 {
+		return paths
+	}
 	for _, name := range names {
 		paths = append(paths, filepath.Join(dir, name))
 	}

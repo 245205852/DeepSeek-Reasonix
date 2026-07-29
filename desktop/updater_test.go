@@ -14,6 +14,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"reflect"
 	"runtime"
 	"strings"
@@ -22,6 +23,7 @@ import (
 	"time"
 
 	"reasonix/desktop/internal/update"
+	"reasonix/internal/repair"
 )
 
 func TestNormalizeVersion(t *testing.T) {
@@ -949,6 +951,146 @@ func TestExtractBinary(t *testing.T) {
 	}
 	if _, err := extractBinary(buf.Bytes(), "missing"); err == nil {
 		t.Error("missing entry should error")
+	}
+}
+
+func TestExtractLinuxReleaseUnitRejectsAmbiguousMembers(t *testing.T) {
+	makeArchive := func(t *testing.T, headers []tar.Header, bodies [][]byte) []byte {
+		t.Helper()
+		var buf bytes.Buffer
+		gz := gzip.NewWriter(&buf)
+		tw := tar.NewWriter(gz)
+		for i, header := range headers {
+			if err := tw.WriteHeader(&header); err != nil {
+				t.Fatal(err)
+			}
+			if i < len(bodies) {
+				if _, err := tw.Write(bodies[i]); err != nil {
+					t.Fatal(err)
+				}
+			}
+		}
+		if err := tw.Close(); err != nil {
+			t.Fatal(err)
+		}
+		if err := gz.Close(); err != nil {
+			t.Fatal(err)
+		}
+		return buf.Bytes()
+	}
+	base := func(name string, body []byte) tar.Header {
+		return tar.Header{Name: name, Mode: 0o755, Size: int64(len(body)), Typeflag: tar.TypeReg}
+	}
+	headers := []tar.Header{
+		base("reasonix-desktop", []byte("desktop")),
+		base("reasonix-guard", []byte("guard")),
+		base("reasonix", []byte("cli")),
+	}
+	bodies := [][]byte{[]byte("desktop"), []byte("guard"), []byte("cli")}
+	if got, err := extractLinuxReleaseUnit(makeArchive(t, headers, bodies)); err != nil ||
+		string(got["reasonix-desktop"]) != "desktop" {
+		t.Fatalf("complete release extraction = %v, %q", err, got["reasonix-desktop"])
+	}
+
+	duplicateHeaders := append(append([]tar.Header(nil), headers...), base("nested/reasonix", []byte("duplicate")))
+	duplicateBodies := append(append([][]byte(nil), bodies...), []byte("duplicate"))
+	if _, err := extractLinuxReleaseUnit(makeArchive(t, duplicateHeaders, duplicateBodies)); err == nil ||
+		!strings.Contains(err.Error(), "appears more than once") {
+		t.Fatalf("duplicate release member error = %v", err)
+	}
+
+	nonRegular := append([]tar.Header(nil), headers...)
+	nonRegular[1] = tar.Header{Name: "reasonix-guard", Typeflag: tar.TypeSymlink, Linkname: "outside"}
+	nonRegularBodies := [][]byte{bodies[0], nil, bodies[2]}
+	if _, err := extractLinuxReleaseUnit(makeArchive(t, nonRegular, nonRegularBodies)); err == nil ||
+		!strings.Contains(err.Error(), "not a regular file") {
+		t.Fatalf("non-regular release member error = %v", err)
+	}
+}
+
+func TestApplyLinuxHoldsReleaseUnitLockDuringReplace(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("REASONIX_HOME", t.TempDir())
+	exe := filepath.Join(dir, "reasonix-desktop")
+	releasePaths := releaseUnitPathsFor(dir, "linux")
+	for _, path := range releasePaths {
+		if err := os.WriteFile(path, []byte("old"), 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	prepared, err := repair.PrepareFileUpdate("v1", "v2", exe, releasePaths[1:]...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	originalPath := currentExecutablePathForLinux
+	originalApply := applyLinuxReleaseUnit
+	currentExecutablePathForLinux = func() string { return exe }
+	entered := make(chan struct{})
+	releaseReplace := make(chan struct{})
+	applyLinuxReleaseUnit = func(
+		tx *repair.UpdateTransaction,
+		exe string,
+		bin, guard, cli []byte,
+	) ([]repair.FileUpdateInstallReceipt, error) {
+		close(entered)
+		<-releaseReplace
+		return originalApply(tx, exe, bin, guard, cli)
+	}
+	t.Cleanup(func() {
+		currentExecutablePathForLinux = originalPath
+		applyLinuxReleaseUnit = originalApply
+	})
+
+	var buf bytes.Buffer
+	gz := gzip.NewWriter(&buf)
+	tw := tar.NewWriter(gz)
+	for _, name := range []string{"reasonix-desktop", "reasonix-guard", "reasonix"} {
+		body := []byte(name)
+		if err := tw.WriteHeader(&tar.Header{Name: name, Mode: 0o755, Size: int64(len(body)), Typeflag: tar.TypeReg}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := tw.Write(body); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := tw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := gz.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	applyDone := make(chan error, 1)
+	go func() { applyDone <- applyLinux(buf.Bytes(), prepared) }()
+	select {
+	case <-entered:
+	case err := <-applyDone:
+		t.Fatalf("applyLinux failed before replacement: %v", err)
+	}
+
+	lockDone := make(chan error, 1)
+	go func() {
+		unlock, err := repair.LockRepairMutations(releasePaths...)
+		if err == nil {
+			unlock()
+		}
+		lockDone <- err
+	}()
+	select {
+	case err := <-lockDone:
+		close(releaseReplace)
+		t.Fatalf("competing updater lock acquired during Linux replacement: %v", err)
+	case <-time.After(300 * time.Millisecond):
+	}
+	close(releaseReplace)
+	if err := <-applyDone; err != nil {
+		t.Fatalf("applyLinux: %v", err)
+	}
+	if err := <-lockDone; err != nil {
+		t.Fatalf("competing lock after replacement: %v", err)
+	}
+	if _, ok := repair.ReadUpdateApplyFailure(); ok {
+		t.Fatal("successful Linux release-unit publish left an interruption marker")
 	}
 }
 
