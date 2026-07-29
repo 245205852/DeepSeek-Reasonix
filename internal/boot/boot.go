@@ -210,9 +210,15 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 	secrets.SetFilterSubprocessEnv(cfg.Secrets.FilterSubprocessEnv)
 	secrets.SetProtectSensitiveFiles(cfg.Secrets.ProtectSensitiveFiles)
 	secrets.RegisterCredentialEnvKeys(cfg.CredentialEnvNames())
+	// Fall through a keyless default_model to the next configured chat model
+	// instead of hard-failing every command on "missing env X_API_KEY" (issue
+	// #6996). The fallback only kicks in when the caller did not pass an
+	// explicit opts.Model; explicit choices still fail loudly.
 	modelName := opts.Model
 	if modelName == "" {
-		modelName = cfg.DefaultModel
+		if resolved, _, ok := cfg.ResolveNewSessionChatModel(); ok {
+			modelName = resolved
+		}
 	}
 	config.NormalizeLegacyMimoCustomProvidersForRefs(cfg, modelName)
 	tokenMode := NormalizeTokenMode(opts.TokenMode)
@@ -413,6 +419,9 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 	// controller's transient turn-injection and fold in on the next session.
 	mem := &memory.Set{CWD: root}
 	if !cfg.SafeMode() {
+		if _, err := memory.StoreFor(config.MemoryUserDir(), root).MigrateV2(); err != nil {
+			sink.Emit(event.Event{Kind: event.Notice, Level: event.LevelWarn, Text: "Memory metadata migration did not complete.", Detail: err.Error()})
+		}
 		mem = memory.Load(memory.Options{CWD: root, UserDir: config.MemoryUserDir()})
 	}
 	projectChecks := instruction.ExtractHostChecks(mem.Docs)
@@ -848,11 +857,26 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 	// so task tools created later still receive the session-shared substrate.
 	var capRuntime *agent.MCPCapabilityRuntime
 	newTaskTool := func() *agent.TaskTool {
-		return agent.NewTaskTool(execProv, entry.Price, reg, maxSteps,
-			entry.ContextWindow, cfg.Agent.RecentKeep, cfg.Agent.SoftCompactRatio, cfg.Agent.ToolResultSnipRatio, cfg.Agent.CompactRatio, cfg.Agent.CompactForceRatio,
-			cfg.Agent.Temperature, config.ArchiveDir(), "", headlessGate,
-			keepPolicy,
-			taskModel, taskEffort, resolveSubagentProvider).
+		return agent.NewTaskToolWithOptions(agent.TaskToolOptions{
+			Provider:            execProv,
+			Pricing:             entry.Price,
+			ParentRegistry:      reg,
+			MaxSteps:            maxSteps,
+			ContextWindow:       entry.ContextWindow,
+			RecentKeep:          cfg.Agent.RecentKeep,
+			SoftCompactRatio:    cfg.Agent.SoftCompactRatio,
+			ToolResultSnipRatio: cfg.Agent.ToolResultSnipRatio,
+			CompactRatio:        cfg.Agent.CompactRatio,
+			CompactForceRatio:   cfg.Agent.CompactForceRatio,
+			Temperature:         cfg.Agent.Temperature,
+			ArchiveDir:          config.ArchiveDir(),
+			SysPrompt:           "",
+			Gate:                headlessGate,
+			KeepPolicy:          keepPolicy,
+			SubagentModel:       taskModel,
+			SubagentEffort:      taskEffort,
+			ResolveProvider:     resolveSubagentProvider,
+		}).
 			WithTranscripts(subagentStore, root, modelName, entry.Effort).
 			WithTranscriptIdentityResolver(subagentIdentity).
 			WithMaxSubagentDepth(maxSubagentDepth).
@@ -1820,10 +1844,20 @@ func rememberPermissionConfigPath(workspaceRoot string) string {
 func rememberPlanModeReadOnlyCommand(workspaceRoot, prefix string) control.PlanModeReadOnlyCommandTrustResult {
 	prefix = strings.TrimSpace(prefix)
 	path := rememberPermissionConfigPath(workspaceRoot)
-	edit := config.LoadForEdit(path)
 	result := control.PlanModeReadOnlyCommandTrustResult{Prefix: prefix, Path: path}
 	if prefix == "" {
 		result.Err = fmt.Errorf("empty plan-mode read-only command prefix")
+		return result
+	}
+	unlock, err := config.LockConfigFileEdits(path)
+	if err != nil {
+		result.Err = err
+		return result
+	}
+	defer unlock()
+	edit, err := config.LoadForEditReadOnlyStrict(path)
+	if err != nil {
+		result.Err = err
 		return result
 	}
 	if coveredBy := coveredPlanModeReadOnlyCommand(edit.Agent.PlanModeReadOnlyCommands, prefix); coveredBy != "" {

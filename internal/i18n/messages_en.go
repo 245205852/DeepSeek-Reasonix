@@ -244,7 +244,7 @@ var English = Messages{
 	CmdModel:            "switch model",
 	CmdStatus:           "show session status",
 	CmdWorkMode:         "switch work mode",
-	CmdMemory:           "show memory files",
+	CmdMemory:           "inspect instructions, memory, and recovery",
 	CmdMigrate:          "retry legacy data migration",
 	CmdGoal:             "set or clear the active goal",
 	CmdRemember:         "save a memory note",
@@ -561,7 +561,7 @@ Usage:
   reasonix hook list|status --json [--dir PATH]         inspect redacted hook state
   reasonix task list|show --json [--dir PATH]           inspect redacted task state
   reasonix bot start|doctor|weixin-login                multi-channel IM bot gateway
-  reasonix upgrade [--check] [--force]                   self-update to the latest release (also: reasonix update)
+  reasonix upgrade [stable|preview] [--check] [--force]  self-update on the saved channel (advanced: --channel; also: reasonix update)
   reasonix version
   reasonix help
 

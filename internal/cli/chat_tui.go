@@ -539,8 +539,9 @@ type clipboardImageMsg struct {
 
 // newChatTUI assembles the initial model. The controller has already been wired
 // with an event sink that feeds eventCh; the TUI issues commands to it and
-// renders the events it emits. Label, history, host, and commands are read from
-// the controller, so a resumed session pre-populates scrollback.
+// renders the events it emits. Model identity, label, history, host, and commands
+// are read from the controller, so explicit selections and resumed sessions stay
+// authoritative.
 func newChatTUI(ctrl control.SessionAPI, missing string, eventCh chan event.Event, termW int) chatTUI {
 	ti := textarea.New()
 	configureChatTextarea(&ti)
@@ -554,6 +555,7 @@ func newChatTUI(ctrl control.SessionAPI, missing string, eventCh chan event.Even
 	return chatTUI{
 		ctrl:                 ctrl,
 		label:                ctrl.Label(),
+		modelRef:             ctrl.ModelRef(),
 		missing:              missing,
 		nativeScrollback:     nativeScrollback,
 		mouseCaptureOff:      mouseCaptureOffByDefault(),
@@ -3548,17 +3550,28 @@ func (m chatTUI) modeTagText() string {
 
 func (m *chatTUI) toggleVerboseReasoning(notify bool) {
 	m.showReasoning = !m.showReasoning
+	var saveErr error
 	if m.cfg != nil {
 		_ = m.cfg.SetShowReasoning(m.showReasoning)
-		_ = m.cfg.Save()
+		path := config.SourcePath()
+		if path == "" {
+			path = "reasonix.toml"
+		}
+		saveErr = config.EditConfigFile(path, func(cfg *config.Config) error {
+			return cfg.SetShowReasoning(m.showReasoning)
+		})
 	}
 	if !notify {
 		return
 	}
+	suffix := ""
+	if saveErr != nil {
+		suffix = "\npreference was not saved: " + saveErr.Error()
+	}
 	if m.showReasoning {
-		m.notice("verbose on — thinking text will be shown")
+		m.notice("verbose on — thinking text will be shown" + suffix)
 	} else {
-		m.notice("verbose off — thinking text will stay collapsed")
+		m.notice("verbose off — thinking text will stay collapsed" + suffix)
 	}
 }
 
@@ -4058,7 +4071,7 @@ func (m *chatTUI) runSlashCommand(input string) tea.Cmd {
 		m.showHelp()
 	case "/memory":
 		m.echoLocalCommand(input)
-		m.showMemory()
+		m.showMemory(input)
 	case "/migrate", "/migration":
 		m.echoLocalCommand(input)
 		migration.RunLegacyRescueCommand(strings.TrimSpace(strings.TrimPrefix(input, typedCmd)), event.FuncSink(func(e event.Event) {

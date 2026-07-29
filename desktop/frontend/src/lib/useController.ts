@@ -3,12 +3,13 @@
 // states, and approvals when the user switches away and back. The active tab's state
 // is what components render.
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { asArray } from "./array";
 import { addBreadcrumb } from "./breadcrumbs";
 import { app, onEvent, onReady, onRuntimeRebuilt } from "./bridge";
 import { invalidateCache } from "./composerHistory";
 import { formatGuardianAssessmentNotice } from "./guardianEvents";
+import type { WorkbenchTargetToken } from "./goalSubmit";
 import { createRafBatch } from "./rafBatch";
 import { t, type DictKey } from "./i18n";
 import { sameTodoList } from "./todoVisibility";
@@ -50,6 +51,10 @@ export type LiveStream = {
   reasoningStartedAt?: number;
   reasoningCompletedAt?: number;
 };
+export type ControllerLiveStore = {
+  subscribe: (tabId: string | undefined, listener: () => void) => () => void;
+  getSnapshot: (tabId: string | undefined) => LiveStream | undefined;
+};
 export type MessageActionScope = "fork" | "summ-from" | "summ-upto" | "conversation" | "code" | "both";
 export type MessageActionState = { turn: number; scope: MessageActionScope };
 export type HydrateReason = "switch-tab" | "new-session" | "resume-session" | "open-topic" | "startup";
@@ -57,8 +62,17 @@ type SyncActiveTabOptions = {
   preserveCachedHistory?: boolean;
 };
 
+type ModelSwitchQueueResult = "applied" | "superseded";
+
+type ModelSwitchQueueRequest = {
+  name: string;
+  resolve: (result: ModelSwitchQueueResult) => void;
+  reject: (err: unknown) => void;
+};
+
 type ModelSwitchQueueState = {
-  tail: Promise<void>;
+  running: boolean;
+  pending?: ModelSwitchQueueRequest;
   fallbackBalance?: BalanceInfo;
 };
 
@@ -366,6 +380,16 @@ export function runtimeReadyForSubmit(meta?: Meta): boolean {
 
 export function acceptsRuntimeEventEpoch(acceptedEpoch: string | undefined, eventEpoch: string | undefined): boolean {
   return !eventEpoch || !acceptedEpoch || acceptedEpoch === eventEpoch;
+}
+
+export function composerProfileApplicationKey(
+  runtimeEpoch: string | undefined,
+  promptEpoch: number,
+  collaborationMode: CollaborationMode,
+  toolApprovalMode: ToolApprovalMode,
+  goal: string,
+): string {
+  return JSON.stringify([runtimeEpoch ?? "", promptEpoch, collaborationMode, toolApprovalMode, goal]);
 }
 
 function metaWithoutCanonicalTodos(meta?: Meta): Meta | undefined {
@@ -1769,12 +1793,17 @@ export function replayPendingPromptsForActiveTab(activeTabId: string | undefined
 
 export function useController() {
   const statesRef = useRef<TabStates>(new Map());
+  const liveListenersByTabRef = useRef(new Map<string, Set<() => void>>());
   const balanceRefreshSeqByTab = useRef(new Map<string, number>());
   const modelSwitchSeqByTab = useRef(new Map<string, number>());
   const modelSwitchSuccessVersionByTab = useRef(new Map<string, number>());
   const modelSwitchQueueByTab = useRef(new Map<string, ModelSwitchQueueState>());
   const lastTurnActivityAtByTab = useRef(new Map<string, number>());
   const runtimeEpochByTabRef = useRef(new Map<string, string>());
+  const appliedComposerProfileByTabRef = useRef(new Map<string, string>());
+  const composerProfileInFlightByTabRef = useRef(new Map<string, { key: string; promise: Promise<boolean> }>());
+  const composerProfileQueueByTabRef = useRef(new Map<string, Promise<void>>());
+  const composerProfileLifecycleByTabRef = useRef(new Map<string, number>());
   const cancelReconcileTimers = useRef(new Map<string, number>());
   const stalePromptReconcileTimers = useRef(new Map<string, number>());
   // Indirection so dispatchRuntimeStatusForTab (defined above reconcileTabRuntime)
@@ -1789,6 +1818,36 @@ export function useController() {
   // cause a re-render when that tab becomes active.
   const [, setVersion] = useState(0);
   const bump = useCallback(() => setVersion((v) => v + 1), []);
+  const notifyLiveListeners = useCallback((tabId: string) => {
+    for (const listener of liveListenersByTabRef.current.get(tabId) ?? []) listener();
+  }, []);
+  const disposeComposerProfileState = useCallback((tabId: string) => {
+    appliedComposerProfileByTabRef.current.delete(tabId);
+    composerProfileInFlightByTabRef.current.delete(tabId);
+    composerProfileQueueByTabRef.current.delete(tabId);
+    composerProfileLifecycleByTabRef.current.set(
+      tabId,
+      (composerProfileLifecycleByTabRef.current.get(tabId) ?? 0) + 1,
+    );
+  }, []);
+  const liveStore = useMemo<ControllerLiveStore>(() => ({
+    subscribe(tabId, listener) {
+      if (!tabId) return () => {};
+      let listeners = liveListenersByTabRef.current.get(tabId);
+      if (!listeners) {
+        listeners = new Set();
+        liveListenersByTabRef.current.set(tabId, listeners);
+      }
+      listeners.add(listener);
+      return () => {
+        listeners?.delete(listener);
+        if (listeners?.size === 0) liveListenersByTabRef.current.delete(tabId);
+      };
+    },
+    getSnapshot(tabId) {
+      return tabId ? statesRef.current.get(tabId)?.live : undefined;
+    },
+  }), []);
   const beginActiveNavigation = useCallback(() => {
     activeNavigationSeqRef.current += 1;
     return activeNavigationSeqRef.current;
@@ -1820,9 +1879,17 @@ export function useController() {
     const next = reducer(prev, action);
     if (prev !== next) {
       states.set(tabId, next);
-      bump();
+      notifyLiveListeners(tabId);
+      const streamDeltaOnly =
+        action.type === "event" &&
+        (action.e.kind === "text" || action.e.kind === "reasoning") &&
+        prev.items === next.items &&
+        prev.currentAssistant === next.currentAssistant &&
+        prev.pendingUser === next.pendingUser &&
+        prev.retry === next.retry;
+      if (!streamDeltaOnly) bump();
     }
-  }, [bump]);
+  }, [bump, notifyLiveListeners]);
 
   const clearBalanceForTab = useCallback((tabId: string): void => {
     const seq = (balanceRefreshSeqByTab.current.get(tabId) ?? 0) + 1;
@@ -2485,7 +2552,19 @@ export function useController() {
     replayPendingPromptsForActiveTab(activeTabId);
   }, [activeTabId]);
 
-  const sendToTab = useCallback(async (tabId: string, displayText: string, submitText = displayText, originalText?: string, structured?: import("./invocationDisplay").StructuredInvocationSubmit) => {
+  const sendToTab = useCallback(async (
+    tabId: string,
+    displayText: string,
+    submitText = displayText,
+    originalText?: string,
+    structured?: import("./invocationDisplay").StructuredInvocationSubmit,
+    initialGoal?: {
+      goal: string;
+      target: WorkbenchTargetToken;
+      collaborationMode: CollaborationMode;
+      toolApprovalMode: ToolApprovalMode;
+    },
+  ) => {
     if (!tabId) throw new Error(t("composer.workspaceStarting"));
     const currentState = getOrCreateState(statesRef.current, tabId);
     const runtime = currentState.meta?.runtime;
@@ -2493,17 +2572,37 @@ export function useController() {
       throw new Error(runtime?.issue?.message || currentState.meta.startupErr || t("composer.workspaceStarting"));
     }
     const seq = currentState.seq;
+    const promptEpoch = currentState.promptEpoch;
     const display = displayText.trim();
     const submit = submitText.trim();
     const original = originalText?.trim() ?? "";
     dispatchTo(tabId, { type: "user", text: displayText, submitText: display !== submit ? submit : undefined, seq });
     invalidateCache();
     try {
-      const submitPromise = structured
+      const submitPromise = initialGoal
+        ? app.SubmitInitialGoalToTab(
+            tabId,
+            initialGoal.goal,
+            structured?.display.trim() || display,
+            structured?.input.trim() || submit,
+            structured?.invocations ?? [],
+            initialGoal.collaborationMode,
+            initialGoal.toolApprovalMode,
+            initialGoal.target.kind,
+            initialGoal.target.identityGen,
+            initialGoal.target.requestSeq,
+          )
+        : structured
         ? app.SubmitInvocationsToTab(tabId, structured.display.trim(), structured.input.trim(), structured.invocations)
         : original
         ? app.SubmitEditedDisplayToTab(tabId, display, submit, original)
         : display !== submit ? app.SubmitDisplayToTab(tabId, display, submit) : app.SubmitToTab(tabId, submit);
+      if (initialGoal) {
+        const drained = await submitPromise;
+        const ids = Array.isArray(drained) ? drained : [];
+        if (ids.length) dispatchTo(tabId, { type: "approval_drained", ids, epoch: promptEpoch });
+        return;
+      }
       void submitPromise.catch((error) => {
         dispatchTo(tabId, { type: "send_failed", error: `Send failed: ${error instanceof Error ? error.message : String(error)}` });
       });
@@ -2697,10 +2796,77 @@ export function useController() {
     await setToolApprovalModeForTab(activeTabId, mode);
   }, [activeTabId, setToolApprovalModeForTab]);
 
+  const setComposerProfileForTab = useCallback(async (
+    tabId: string,
+    collaborationMode: CollaborationMode,
+    toolApprovalMode: ToolApprovalMode,
+    goal: string,
+    options?: { propagateError?: boolean },
+  ): Promise<boolean> => {
+    if (!tabId) return false;
+    const state = statesRef.current.get(tabId);
+    const promptEpoch = state?.promptEpoch ?? 0;
+    const key = composerProfileApplicationKey(
+      runtimeEpochByTabRef.current.get(tabId) ?? state?.meta?.runtime?.epoch,
+      promptEpoch,
+      collaborationMode,
+      toolApprovalMode,
+      goal,
+    );
+    if (appliedComposerProfileByTabRef.current.get(tabId) === key) return true;
+    const existing = composerProfileInFlightByTabRef.current.get(tabId);
+    if (existing?.key === key) return existing.promise;
+
+    const lifecycle = composerProfileLifecycleByTabRef.current.get(tabId) ?? 0;
+    const previous = composerProfileQueueByTabRef.current.get(tabId) ?? Promise.resolve();
+    const promise = previous.then(async () => {
+      if ((composerProfileLifecycleByTabRef.current.get(tabId) ?? 0) !== lifecycle) return false;
+      if (appliedComposerProfileByTabRef.current.get(tabId) === key) return true;
+      let drained: string[] | void;
+      try {
+        drained = await app.SetComposerProfileForTab(
+          tabId,
+          collaborationMode,
+          toolApprovalMode,
+          goal,
+        );
+      } catch (error) {
+        if ((composerProfileLifecycleByTabRef.current.get(tabId) ?? 0) === lifecycle) {
+          await refreshMetaForTab(tabId);
+        }
+        if (options?.propagateError) throw error;
+        return false;
+      }
+      if ((composerProfileLifecycleByTabRef.current.get(tabId) ?? 0) !== lifecycle) return false;
+      appliedComposerProfileByTabRef.current.set(tabId, key);
+      const ids = Array.isArray(drained) ? drained : [];
+      if (ids.length) dispatchTo(tabId, { type: "approval_drained", ids, epoch: promptEpoch });
+      await refreshMetaForTab(tabId);
+      return true;
+    });
+    const tail = promise.then(() => {}, () => {});
+    composerProfileQueueByTabRef.current.set(tabId, tail);
+    composerProfileInFlightByTabRef.current.set(tabId, { key, promise });
+    try {
+      return await promise;
+    } finally {
+      const current = composerProfileInFlightByTabRef.current.get(tabId);
+      if (current?.promise === promise) composerProfileInFlightByTabRef.current.delete(tabId);
+      if (composerProfileQueueByTabRef.current.get(tabId) === tail) {
+        composerProfileQueueByTabRef.current.delete(tabId);
+      }
+    }
+  }, [dispatchTo, refreshMetaForTab]);
+
   const setGoalForTab = useCallback(async (tabId: string, goal: string): Promise<void> => {
     if (!tabId) return;
-    await app.SetGoalForTab(tabId, goal).catch(() => {});
-    await refreshMetaForTab(tabId);
+    // Propagate activation failures so the first Goal turn (especially structured
+    // Skill submit) can abort instead of executing without an active Goal.
+    try {
+      await app.SetGoalForTab(tabId, goal);
+    } finally {
+      await refreshMetaForTab(tabId);
+    }
   }, [refreshMetaForTab]);
 
   const setGoal = useCallback(async (goal: string): Promise<void> => {
@@ -2710,8 +2876,11 @@ export function useController() {
 
   const clearGoalForTab = useCallback(async (tabId: string): Promise<void> => {
     if (!tabId) return;
-    await app.ClearGoalForTab(tabId).catch(() => {});
-    await refreshMetaForTab(tabId);
+    try {
+      await app.ClearGoalForTab(tabId);
+    } finally {
+      await refreshMetaForTab(tabId);
+    }
   }, [refreshMetaForTab]);
 
   const clearGoal = useCallback(async (): Promise<void> => {
@@ -2885,6 +3054,46 @@ export function useController() {
     void waitForTabReady(tabId).then(() => app.CompactForTab(tabId).catch(() => {}));
   }, [waitForTabReady]);
 
+  const enqueueModelSwitch = useCallback((tabId: string, name: string, fallbackBalance?: BalanceInfo) => {
+    let queue = modelSwitchQueueByTab.current.get(tabId);
+    if (!queue) {
+      queue = { running: false, fallbackBalance };
+      modelSwitchQueueByTab.current.set(tabId, queue);
+    }
+    const queueState = queue;
+
+    return new Promise<ModelSwitchQueueResult>((resolve, reject) => {
+      const request: ModelSwitchQueueRequest = { name, resolve, reject };
+      const run = (next: ModelSwitchQueueRequest) => {
+        queueState.running = true;
+        void Promise.resolve()
+          .then(() => app.SetModelForTab(tabId, next.name))
+          .then(
+            () => next.resolve("applied"),
+            (err) => next.reject(err),
+          )
+          .finally(() => {
+            if (modelSwitchQueueByTab.current.get(tabId) !== queueState) return;
+            const pending = queueState.pending;
+            queueState.pending = undefined;
+            if (pending) {
+              run(pending);
+              return;
+            }
+            queueState.running = false;
+            modelSwitchQueueByTab.current.delete(tabId);
+          });
+      };
+
+      if (queueState.running) {
+        queueState.pending?.resolve("superseded");
+        queueState.pending = request;
+        return;
+      }
+      run(request);
+    });
+  }, []);
+
   const setModel = useCallback(async (name: string) => {
     if (!activeTabId) return false;
     const tabId = activeTabId;
@@ -2902,13 +3111,9 @@ export function useController() {
     // switch. If the rebuild fails, the catch path re-queries the still-active
     // provider and restores its balance.
     clearBalanceForTab(tabId);
-    const previousSwitch = existingQueue?.tail ?? Promise.resolve();
-    const backendSwitch = previousSwitch.then(() => app.SetModelForTab(tabId, name));
-    const queueTail = backendSwitch.catch(() => {});
-    const queueState: ModelSwitchQueueState = { tail: queueTail, fallbackBalance };
-    modelSwitchQueueByTab.current.set(tabId, queueState);
     try {
-      await backendSwitch;
+      const result = await enqueueModelSwitch(tabId, name, fallbackBalance);
+      if (result === "superseded") return false;
       modelSwitchSuccessVersionByTab.current.set(
         tabId,
         (modelSwitchSuccessVersionByTab.current.get(tabId) ?? 0) + 1,
@@ -2930,16 +3135,12 @@ export function useController() {
       // to the provider that actually became active in the backend.
       if (olderSwitchSucceeded) await refreshMetaForTab(tabId);
       return false;
-    } finally {
-      if (modelSwitchQueueByTab.current.get(tabId) === queueState) {
-        modelSwitchQueueByTab.current.delete(tabId);
-      }
     }
     if (modelSwitchSeqByTab.current.get(tabId) !== switchSeq) return false;
     void refreshBalanceForTab(tabId);
     await refreshMetaForTab(tabId);
     return modelSwitchSeqByTab.current.get(tabId) === switchSeq;
-  }, [activeTabId, clearBalanceForTab, dispatchTo, refreshBalanceForTab, refreshMetaForTab]);
+  }, [activeTabId, clearBalanceForTab, dispatchTo, enqueueModelSwitch, refreshBalanceForTab, refreshMetaForTab]);
 
   const setEffort = useCallback(async (level: string) => {
     if (!activeTabId) return;
@@ -2965,7 +3166,11 @@ export function useController() {
   }, [activeTabId, dispatchTo, refreshMetaForTab]);
 
   const fetchMemory = useCallback((): Promise<MemoryView> =>
-    app.Memory().catch(() => ({ docs: [], facts: [], archives: [], scopes: [], storeDir: "", available: false })), []);
+    app.Memory().catch(() => ({
+      docs: [], facts: [], archives: [], scopes: [], instructionDiagnostics: [], conflicts: [],
+      lastRecall: { query: "", hits: [], omitted: 0, charBudget: 0, usedChars: 0 },
+      storeDir: "", available: false,
+    })), []);
   const remember = useCallback(async (scope: string, note: string) => { await app.Remember(scope, note).catch(() => {}); }, []);
   const forget = useCallback(async (name: string) => { await app.Forget(name).catch(() => {}); }, []);
   const saveDoc = useCallback(async (path: string, body: string) => { await app.SaveDoc(path, body).catch(() => {}); }, []);
@@ -3204,6 +3409,7 @@ export function useController() {
     for (const id of Array.from(statesRef.current.keys())) {
       if (id !== meta.id) {
         invalidateProviderStateForTab(id);
+        disposeComposerProfileState(id);
         statesRef.current.delete(id);
       }
     }
@@ -3216,7 +3422,7 @@ export function useController() {
       .then(() => reconcileTabRuntime(meta.id, { hydrateSessionData: false }))
       .catch(() => {});
     return meta;
-  }, [beginActiveNavigation, confirmBackendActiveTab, dispatchRuntimeStatusForTab, dispatchTo, invalidateProviderStateForTab, loadSessionDataForTab, navigationCompletionCurrent, reassertVisibleTabAfterStaleNavigation, reconcileTabRuntime]);
+  }, [beginActiveNavigation, confirmBackendActiveTab, dispatchRuntimeStatusForTab, dispatchTo, disposeComposerProfileState, invalidateProviderStateForTab, loadSessionDataForTab, navigationCompletionCurrent, reassertVisibleTabAfterStaleNavigation, reconcileTabRuntime]);
 
   // Ensure a blank tab exists for the given scope — reuses an existing one
   // or creates a new tab, then loads its session data.
@@ -3255,6 +3461,7 @@ export function useController() {
     for (const id of Array.from(statesRef.current.keys())) {
       if (id !== meta.id) {
         invalidateProviderStateForTab(id);
+        disposeComposerProfileState(id);
         statesRef.current.delete(id);
       }
     }
@@ -3267,7 +3474,7 @@ export function useController() {
       .then(() => reconcileTabRuntime(meta.id, { hydrateSessionData: false }))
       .catch(() => {});
     return meta;
-  }, [beginActiveNavigation, confirmBackendActiveTab, dispatchRuntimeStatusForTab, dispatchTo, invalidateProviderStateForTab, loadSessionDataForTab, navigationCompletionCurrent, reassertVisibleTabAfterStaleNavigation, reconcileTabRuntime]);
+  }, [beginActiveNavigation, confirmBackendActiveTab, dispatchRuntimeStatusForTab, dispatchTo, disposeComposerProfileState, invalidateProviderStateForTab, loadSessionDataForTab, navigationCompletionCurrent, reassertVisibleTabAfterStaleNavigation, reconcileTabRuntime]);
 
   const createDeliveryWorktree = useCallback(async (workspaceRoot: string, navigationIntentSeq?: number): Promise<DeliveryWorktreeOpenResult> => {
     const navigationSeq = navigationIntentSeq ?? beginActiveNavigation();
@@ -3295,11 +3502,13 @@ export function useController() {
     try {
       await app.CloseTab(tabId);
       invalidateProviderStateForTab(tabId);
+      disposeComposerProfileState(tabId);
       statesRef.current.delete(tabId);
+      notifyLiveListeners(tabId);
       bump();
       if (tabId === activeTabId) await syncActiveTabFromBackend(false);
     } catch { /* ignore */ }
-  }, [activeTabId, beginActiveNavigation, bump, invalidateProviderStateForTab, syncActiveTabFromBackend]);
+  }, [activeTabId, beginActiveNavigation, bump, disposeComposerProfileState, invalidateProviderStateForTab, notifyLiveListeners, syncActiveTabFromBackend]);
 
   const reorderTabs = useCallback(async (tabIds: string[]) => {
     try {
@@ -3309,9 +3518,10 @@ export function useController() {
 
   return {
     state: activeState,
+    liveStore,
     activeTabId,
     send, sendToTab, recoverDeliveryToTab, runShell, runShellForTab, steer, steerForTab, notice, cancel, approve, resolveRecovery, answerQuestion, setControllerMode,
-    setCollaborationMode, setCollaborationModeForTab, setToolApprovalMode, setToolApprovalModeForTab, setGoal, setGoalForTab, clearGoal, clearGoalForTab, resumeGoal, resumeGoalForTab,
+    setCollaborationMode, setCollaborationModeForTab, setToolApprovalMode, setToolApprovalModeForTab, setComposerProfileForTab, setGoal, setGoalForTab, clearGoal, clearGoalForTab, resumeGoal, resumeGoalForTab,
     newSession, clearSession, listSessions, listTrashedSessions, resumeSession, openChannelSession, previewSession, deleteSession, restoreSession, purgeTrashedSession, renameSession,
     loadOlderHistory,
     refreshMeta, pickWorkspace, switchWorkspace, compact, rewind, rewindForTab, setModel, setEffort, setTokenMode,
