@@ -224,6 +224,11 @@ type App struct {
 
 	runtimeEvents asyncRuntimeEmitter
 
+	// terminals owns local PTY/ConPTY sessions. It is intentionally separate
+	// from chat runtimes: terminal lifecycle must never acquire App.mu or the
+	// controller rebuild locks while process I/O is blocked.
+	terminals *terminalManager
+
 	// Remote SSH module: the manager is created lazily on the first remote
 	// binding call and closed on shutdown.
 	remoteMu        sync.Mutex
@@ -444,6 +449,7 @@ func NewApp() *App {
 		botInstalls:         map[string]*botInstallSession{},
 		botRuntime:          newDesktopBotRuntime(),
 	}
+	a.terminals = newTerminalManager(a)
 	a.botBridge = a.newBotBridge()
 	return a
 }
@@ -845,6 +851,12 @@ func (a *App) shutdown(context.Context) {
 	a.stopBotRuntime()
 	a.stopRemoteRuntime()
 	a.stopTray()
+	// Terminal process shutdown is independent from controller teardown. Do it
+	// before acquiring runtime lifecycle locks so a slow PTY cannot delay while
+	// holding locks used by Wails-bound chat calls.
+	if a.terminals != nil {
+		a.terminals.closeAll()
+	}
 	// Save window geometry synchronously from Go so it's persisted even if the
 	// frontend's beforeunload promise hasn't resolved yet.
 	a.saveWindowStateSync()
@@ -3835,12 +3847,35 @@ func (a *App) OpenChannelSessionPageForTab(tabID, path string, limit int) (Histo
 }
 
 func (a *App) setTabReadOnly(tabID string, readOnly bool) {
+	var terminalSessions []*terminalSession
 	a.mu.Lock()
-	if tab := a.tabs[tabID]; tab != nil && tab.ReadOnly != readOnly {
-		tab.ReadOnly = readOnly
-		a.saveTabsLocked()
+	tab := a.tabs[tabID]
+	if tab == nil || tab.ReadOnly == readOnly {
+		a.mu.Unlock()
+		return
 	}
+	if a.terminals != nil {
+		if readOnly {
+			// Close the creation gate and detach existing sessions before
+			// exposing the tab as read-only. The process I/O cleanup happens
+			// after App.mu is released.
+			terminalSessions = a.terminals.detachForTab(tabID)
+		} else {
+			// Reopen the terminal gate before exposing the tab as writable. A
+			// concurrent create must never observe writable App state while
+			// the terminal manager still treats this tab as closed.
+			a.terminals.reopenForTab(tabID)
+		}
+	}
+	tab.ReadOnly = readOnly
+	a.saveTabsLocked()
 	a.mu.Unlock()
+	if len(terminalSessions) > 0 {
+		// Existing shells can keep modifying the workspace without renderer
+		// input, so entering a read-only channel must terminate them as part of
+		// the same capability transition.
+		a.terminals.closeSessions(terminalSessions)
+	}
 }
 
 func (a *App) rebindTabToSessionPath(tab *WorkspaceTab, sessionPath string) error {
