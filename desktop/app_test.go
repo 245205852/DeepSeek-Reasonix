@@ -10031,7 +10031,11 @@ func startNonCooperativeSessionJob(t *testing.T, jm *jobs.Manager, sessionPath s
 
 func waitNotRunning(t *testing.T, ctrl control.SessionAPI) {
 	t.Helper()
-	deadline := time.Now().Add(time.Second)
+	// Windows release runners can take more than one second to schedule the
+	// controller's asynchronous completion while the full desktop suite is
+	// active. Keep a bounded responsiveness check without treating scheduler
+	// delay as a leaked controller.
+	deadline := time.Now().Add(5 * time.Second)
 	for ctrl.Running() {
 		if time.Now().After(deadline) {
 			t.Fatal("controller still running")
