@@ -51,6 +51,7 @@ import (
 	"reasonix/internal/pluginpkg"
 	"reasonix/internal/provider"
 	"reasonix/internal/remote/protocol"
+	"reasonix/internal/remote/workbench/target"
 	"reasonix/internal/repair"
 	"reasonix/internal/skill"
 	"reasonix/internal/store"
@@ -1221,12 +1222,29 @@ type InvocationRequest struct {
 	Offset int    `json:"offset"`
 }
 
-func (a *App) SubmitInvocationsToTab(tabID, display, input string, invocations []InvocationRequest) error {
-	remoteInvocations := make([]protocol.Invocation, 0, len(invocations))
+func protocolInvocationRequests(invocations []InvocationRequest) []protocol.Invocation {
+	out := make([]protocol.Invocation, 0, len(invocations))
 	for _, invocation := range invocations {
-		remoteInvocations = append(remoteInvocations, protocol.Invocation{Name: invocation.Name, Kind: protocol.InvocationKind(invocation.Kind)})
+		out = append(out, protocol.Invocation{
+			Name: invocation.Name,
+			Kind: protocol.InvocationKind(invocation.Kind),
+		})
 	}
-	if handled, err := a.workbenchSubmit(input, display, "", remoteInvocations, false); handled {
+	return out
+}
+
+func controlInvocationRequests(invocations []InvocationRequest) []control.InvocationRequest {
+	out := make([]control.InvocationRequest, 0, len(invocations))
+	for _, invocation := range invocations {
+		out = append(out, control.InvocationRequest{
+			Name: invocation.Name, Kind: invocation.Kind, Offset: invocation.Offset,
+		})
+	}
+	return out
+}
+
+func (a *App) SubmitInvocationsToTab(tabID, display, input string, invocations []InvocationRequest) error {
+	if handled, err := a.workbenchSubmit(input, display, "", protocolInvocationRequests(invocations), false); handled {
 		return err
 	}
 	admission, ctrl, err := a.beginTabTurn(tabID, true)
@@ -1236,15 +1254,123 @@ func (a *App) SubmitInvocationsToTab(tabID, display, input string, invocations [
 	defer admission.abort()
 	tab := admission.tab
 	a.ensureTabTopicIndexedForUserTurn(tab)
-	requests := make([]control.InvocationRequest, 0, len(invocations))
-	for _, invocation := range invocations {
-		requests = append(requests, control.InvocationRequest{
-			Name: invocation.Name, Kind: invocation.Kind, Offset: invocation.Offset,
-		})
-	}
-	ctrl.SubmitInvocationDisplay(display, input, requests)
+	ctrl.SubmitInvocationDisplay(display, input, controlInvocationRequests(invocations))
 	admission.finish(ctrl)
 	return nil
+}
+
+func workbenchTargetChangedErr() error {
+	return fmt.Errorf("Execution target changed before the Goal could start; retry from the intended tab")
+}
+
+func (a *App) submitInitialGoalToLocalTab(
+	tabID, toolApprovalMode, goal, display, input string,
+	invocations []InvocationRequest,
+) ([]string, error) {
+	admission, ctrl, err := a.beginTabTurn(tabID, true)
+	if err != nil {
+		return []string{}, err
+	}
+	defer admission.abort()
+
+	tab := admission.tab
+	toolApprovalMode = normalizeToolApprovalMode(toolApprovalMode)
+	goal = strings.TrimSpace(goal)
+	if goal == "" {
+		return []string{}, fmt.Errorf("goal is required")
+	}
+	a.mu.Lock()
+	if a.tabs[tab.ID] != tab {
+		a.mu.Unlock()
+		return []string{}, a.workspaceNotReadyErr(nil)
+	}
+	tab.toolApprovalMode = toolApprovalMode
+	tab.goal = goal
+	tab.mode = tabModeFromAxes(false, toolApprovalMode == control.ToolApprovalYolo)
+	a.saveTabsLocked()
+	a.mu.Unlock()
+
+	ctrl.SetPlanMode(false)
+	drained := applyTabToolApprovalModeToController(ctrl, toolApprovalMode)
+	syncTabGoalToController(ctrl, goal)
+	a.ensureTabTopicIndexedForUserTurn(tab)
+	if len(invocations) > 0 {
+		ctrl.SubmitInvocationDisplay(display, input, controlInvocationRequests(invocations))
+	} else {
+		ctrl.SubmitDisplay(display, input)
+	}
+	admission.finish(ctrl)
+	return drained, nil
+}
+
+// SubmitInitialGoalToTab keeps Goal activation and the first turn on the
+// workbench projection the user submitted from. Wails dispatches bound methods
+// on separate goroutines, so tabID alone cannot distinguish a stale Remote
+// projection from the Local controller underneath the same tab.
+func (a *App) SubmitInitialGoalToTab(
+	tabID, goal, display, input string,
+	invocations []InvocationRequest,
+	collaborationMode, toolApprovalMode string,
+	targetKind string,
+	targetIdentityGen, targetRequestSeq uint64,
+) ([]string, error) {
+	k := a.workbench()
+	k.transitionMu.Lock()
+	active, identityGen, requestSeq := k.targets.Active()
+	expectedKind := target.Kind(strings.TrimSpace(targetKind))
+	if (expectedKind != target.KindLocal && expectedKind != target.KindRemote) ||
+		active.Kind != expectedKind ||
+		identityGen != targetIdentityGen ||
+		requestSeq != targetRequestSeq {
+		k.transitionMu.Unlock()
+		return []string{}, workbenchTargetChangedErr()
+	}
+
+	if active.Kind == target.KindLocal {
+		drained, err := a.submitInitialGoalToLocalTab(
+			tabID, toolApprovalMode, goal, display, input, invocations,
+		)
+		k.transitionMu.Unlock()
+		return drained, err
+	}
+
+	cli, _, _, remoteTabID, ok := a.activeRemoteWorkbench()
+	if !ok || remoteTabID != tabID {
+		k.transitionMu.Unlock()
+		return []string{}, workbenchTargetChangedErr()
+	}
+	goal = strings.TrimSpace(goal)
+	input = strings.TrimSpace(input)
+	if goal == "" || input == "" {
+		k.transitionMu.Unlock()
+		return []string{}, fmt.Errorf("goal and input are required")
+	}
+	ctx, cancel := context.WithTimeout(a.bootContext(), 30*time.Second)
+	defer cancel()
+	remoteCollaboration := protocol.CollaborationMode(normalizeCollaborationMode(collaborationMode))
+	remoteApproval := protocol.ToolApprovalMode(normalizeToolApprovalMode(toolApprovalMode))
+	remoteGoal := goal
+	_, err := cli.Request(ctx, string(protocol.MethodSessionProfileSet), protocol.SessionProfileSetParams{
+		Patch: protocol.ProfilePatch{
+			CollaborationMode: &remoteCollaboration,
+			ToolApprovalMode:  &remoteApproval,
+			Goal:              &remoteGoal,
+		},
+	})
+	if err == nil {
+		_, err = cli.Request(ctx, string(protocol.MethodSessionSubmit), protocol.SessionSubmitParams{
+			Input: input, DisplayText: display, Invocations: protocolInvocationRequests(invocations),
+		})
+	}
+	generation := cli.Generation()
+	k.transitionMu.Unlock()
+	if err != nil {
+		a.warnForTab(remoteTabID, err.Error())
+		go a.workbenchRefreshSnapshot(generation, remoteTabID)
+		return []string{}, err
+	}
+	go a.workbenchRefreshSnapshot(generation, remoteTabID)
+	return []string{}, nil
 }
 
 func (a *App) SubmitEditedDisplayToTab(tabID, display, input, original string) error {
@@ -6633,11 +6759,16 @@ func (a *App) AutoResearchRecordEvidence(tabID, criterionID string, input AutoRe
 	})
 }
 
-func (a *App) SetGoal(goal string) {
-	a.SetGoalForTab("", goal)
+func (a *App) SetGoal(goal string) error {
+	return a.SetGoalForTab("", goal)
 }
 
-func (a *App) SetGoalForTab(tabID, goal string) {
+// SetGoalForTab activates or clears a Goal on the given tab.
+//
+// Failures must return error so the Wails Promise rejects: the first Goal turn
+// can submit a structured Skill without a /goal prose fallback, and the
+// frontend aborts that submit when activation fails.
+func (a *App) SetGoalForTab(tabID, goal string) error {
 	if cli, _, _, remoteTabID, ok := a.activeRemoteWorkbench(); ok {
 		var err error
 		if strings.TrimSpace(goal) == "" {
@@ -6647,14 +6778,14 @@ func (a *App) SetGoalForTab(tabID, goal string) {
 		}
 		if err != nil {
 			a.warnForTab(remoteTabID, err.Error())
-		} else {
-			a.workbenchRefreshSnapshot(cli.Generation(), remoteTabID)
+			return err
 		}
-		return
+		a.workbenchRefreshSnapshot(cli.Generation(), remoteTabID)
+		return nil
 	}
 	tab := a.tabByID(tabID)
 	if tab == nil {
-		return
+		return a.workspaceNotReadyErr(nil)
 	}
 	tab.turnStartMu.Lock()
 	defer tab.turnStartMu.Unlock()
@@ -6663,7 +6794,7 @@ func (a *App) SetGoalForTab(tabID, goal string) {
 	a.mu.Lock()
 	if a.tabs[tab.ID] != tab {
 		a.mu.Unlock()
-		return
+		return a.workspaceNotReadyErr(nil)
 	}
 	tab.goal = goal
 	if goal != "" {
@@ -6682,6 +6813,7 @@ func (a *App) SetGoalForTab(tabID, goal string) {
 		a.saveTabsLocked()
 	}
 	a.mu.Unlock()
+	return nil
 }
 
 // The composer re-syncs collaboration mode and Goal immediately before every
@@ -6699,12 +6831,12 @@ func syncTabGoalToController(ctrl control.SessionAPI, goal string) {
 	ctrl.SetGoal(goal)
 }
 
-func (a *App) ClearGoal() {
-	a.SetGoal("")
+func (a *App) ClearGoal() error {
+	return a.SetGoal("")
 }
 
-func (a *App) ClearGoalForTab(tabID string) {
-	a.SetGoalForTab(tabID, "")
+func (a *App) ClearGoalForTab(tabID string) error {
+	return a.SetGoalForTab(tabID, "")
 }
 
 // ResumeGoalForTab re-enters a blocked or stopped Goal while preserving its

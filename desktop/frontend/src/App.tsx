@@ -36,6 +36,7 @@ import {
   TerminalSquare,
 } from "lucide-react";
 import { useToast } from "./lib/toast";
+import { useGoalActionHandler } from "./lib/goalAction";
 import { useWailsResizeFix } from "./lib/useWailsResizeFix";
 import { asArray } from "./lib/array";
 import { createBoundedRefreshCoordinator, sameTabMetaLists, shouldRefreshTabMetaForEvent, TAB_META_MAX_IN_FLIGHT, tabMetaFallbackDelay } from "./lib/tabMetaRefresh";
@@ -194,6 +195,11 @@ import { useGlobalShortcut } from "./lib/keyboardShortcuts";
 import { topicShortcutIndexFromEvent, useTopicShortcuts, type TopicShortcutEntry } from "./lib/topicShortcuts";
 import { composerDraftKeyForTab } from "./lib/composerDraftKey";
 import { continueDelivery } from "./lib/deliveryContinue";
+import {
+  activateGoalAndSubmitOnTab,
+  workbenchTargetToken,
+  type WorkbenchTargetToken,
+} from "./lib/goalSubmit";
 import logoWordmark from "./assets/logo-wordmark.svg";
 
 function noticePreviewMockEnabled(): boolean {
@@ -1056,9 +1062,10 @@ export default function App() {
     setCollaborationMode: setControllerCollaborationMode,
     setToolApprovalMode: setControllerToolApprovalMode,
     setComposerProfileForTab: setControllerComposerProfileForTab,
-    setGoal: setControllerGoal,
+    setGoalForTab: setControllerGoalForTab,
     resumeGoalForTab: resumeControllerGoalForTab,
     clearGoal: clearControllerGoal,
+    clearGoalForTab: clearControllerGoalForTab,
     clearSession,
     listSessions,
     listTrashedSessions,
@@ -1125,6 +1132,7 @@ export default function App() {
   const remoteStatuses = useRemoteStore((s) => s.statuses);
   const [workbenchTarget, setWorkbenchTarget] = useState<WorkbenchActiveTarget>({ kind: "local" });
 	const { showToast } = useToast();
+  const { runGoalAction, handleGoalActionError } = useGoalActionHandler();
   const setRemoteHosts = useRemoteStore((s) => s.setHosts);
   const hydrateRemoteStatuses = useRemoteStore((s) => s.hydrateStatuses);
   const requestRemoteExplorer = useRemoteStore((s) => s.openExplorer);
@@ -1487,7 +1495,18 @@ export default function App() {
   const footerHeightRef = useRef(0);
   const footerRef = useRef<HTMLElement>(null);
   const activeTabIdRef = useRef(activeTabId);
-  const commitThenSendRef = useRef<(tabId: string, displayText: string, submitText?: string, structured?: StructuredInvocationSubmit) => Promise<void>>(async () => {});
+  const commitThenSendRef = useRef<(
+    tabId: string,
+    displayText: string,
+    submitText?: string,
+    structured?: StructuredInvocationSubmit,
+    initialGoal?: {
+      goal: string;
+      target: WorkbenchTargetToken;
+      collaborationMode: CollaborationMode;
+      toolApprovalMode: ToolApprovalMode;
+    },
+  ) => Promise<void>>(async () => {});
   const handleInvocationMetadataChange = useCallback((metadata: InvocationMetadataMap) => {
     const sourceTabId = activeTabIdRef.current;
     if (!sourceTabId) return;
@@ -1685,6 +1704,16 @@ export default function App() {
     },
     [activeTabId, composerProfile],
   );
+  const patchComposerProfileForTab = useCallback(
+    (tabId: string, patch: Partial<Omit<ComposerProfile, "pending">>, pendingFields: ComposerProfileField[]) => {
+      if (!tabId) return;
+      setComposerProfilesByTab((current) => {
+        const base = current[tabId] ?? composerProfileFromTab(tabMetas.find((tab) => tab.id === tabId));
+        return patchComposerProfile(current, tabId, base, patch, pendingFields);
+      });
+    },
+    [tabMetas],
+  );
   const topicbarEditing = Boolean(activeTab?.topicId && activeTab.topicId === renamingTopicId);
   const visibleTabId = activeTabId;
   const visibleTabs = useMemo(() => {
@@ -1759,14 +1788,15 @@ export default function App() {
   );
   const applyCollaborationMode = useCallback(
     async (m: CollaborationMode): Promise<void> => {
-      userPlanModeByTabRef.current = updateUserPlanModeIntent(userPlanModeByTabRef.current, activeTabId, m === "plan");
       if (m === "goal") {
+        userPlanModeByTabRef.current = updateUserPlanModeIntent(userPlanModeByTabRef.current, activeTabId, false);
         patchActiveComposerProfile({ collaborationMode: "normal", goalDraftMode: true, goal: "" }, ["collaborationMode", "goal"]);
         return setControllerCollaborationMode("normal");
       }
-      patchActiveComposerProfile({ collaborationMode: m, goalDraftMode: false, goal: "" }, ["collaborationMode", "goal"]);
       if (goal.trim()) await clearControllerGoal();
       await setControllerCollaborationMode(m);
+      userPlanModeByTabRef.current = updateUserPlanModeIntent(userPlanModeByTabRef.current, activeTabId, m === "plan");
+      patchActiveComposerProfile({ collaborationMode: m, goalDraftMode: false, goal: "" }, ["collaborationMode", "goal"]);
     },
     [activeTabId, clearControllerGoal, goal, patchActiveComposerProfile, setControllerCollaborationMode],
   );
@@ -1796,18 +1826,35 @@ export default function App() {
     }
     applyToolApprovalMode(next.mode);
   }, [activeTabId, applyToolApprovalMode, toolApprovalMode]);
-  const applyGoal = useCallback(
-    async (nextGoal: string): Promise<void> => {
-      userPlanModeByTabRef.current = updateUserPlanModeIntent(userPlanModeByTabRef.current, activeTabId, false);
+  const patchActivatedGoalForTab = useCallback(
+    (tabId: string, nextGoal: string): void => {
       const trimmed = nextGoal.trim();
-      patchActiveComposerProfile({
+      patchComposerProfileForTab(tabId, {
         collaborationMode: trimmed ? "goal" : "normal",
         goalDraftMode: false,
         goal: trimmed,
       }, ["collaborationMode", "goal"]);
-      await (trimmed ? setControllerGoal(trimmed) : clearControllerGoal());
+      userPlanModeByTabRef.current = updateUserPlanModeIntent(userPlanModeByTabRef.current, tabId, false);
     },
-    [activeTabId, clearControllerGoal, patchActiveComposerProfile, setControllerGoal],
+    [patchComposerProfileForTab],
+  );
+  const applyGoalForTab = useCallback(
+    async (tabId: string, nextGoal: string): Promise<void> => {
+      if (!tabId) return;
+      const trimmed = nextGoal.trim();
+      // Activate the backend Goal first. Only then patch the local profile so a
+      // failed SetGoalForTab cannot leave the Composer thinking a Goal is active.
+      await (trimmed ? setControllerGoalForTab(tabId, trimmed) : clearControllerGoalForTab(tabId));
+      patchActivatedGoalForTab(tabId, trimmed);
+    },
+    [clearControllerGoalForTab, patchActivatedGoalForTab, setControllerGoalForTab],
+  );
+  const applyGoal = useCallback(
+    async (nextGoal: string): Promise<void> => {
+      if (!activeTabId) return;
+      await applyGoalForTab(activeTabId, nextGoal);
+    },
+    [activeTabId, applyGoalForTab],
   );
   const applyTokenMode = useCallback(
     async (m: TokenMode): Promise<void> => {
@@ -1839,8 +1886,8 @@ export default function App() {
   // Shift+Tab toggles only the collaboration axis; Ctrl/Cmd+Y toggles YOLO on the
   // tool-permission axis while preserving the Ask/Auto base mode.
   const cycleMode = useCallback(() => {
-    applyCollaborationMode(collaborationMode === "plan" ? "normal" : "plan");
-  }, [applyCollaborationMode, collaborationMode]);
+    runGoalAction(() => applyCollaborationMode(collaborationMode === "plan" ? "normal" : "plan"));
+  }, [applyCollaborationMode, collaborationMode, runGoalAction]);
 
   // Switching models rebuilds the controller, which starts in normal mode — so
   // re-apply the current mode, or the pill would say plan/YOLO while the fresh
@@ -1855,6 +1902,7 @@ export default function App() {
         controllerComposerProfileCollaborationMode(composerProfile),
         toolApprovalMode,
         goal,
+        { propagateError: true },
       );
       return profileApplied;
     },
@@ -1867,13 +1915,16 @@ export default function App() {
   // SetBypass binding was a harmless no-op.
   useEffect(() => {
     if (!controllerReady || !activeTabId) return;
-    void setControllerComposerProfileForTab(
-      activeTabId,
-      controllerComposerProfileCollaborationMode(composerProfile),
-      toolApprovalMode,
-      goal,
-    );
-  }, [activeTabId, composerProfile, controllerReady, goal, setControllerComposerProfileForTab, toolApprovalMode]);
+    runGoalAction(async () => {
+      await setControllerComposerProfileForTab(
+        activeTabId,
+        controllerComposerProfileCollaborationMode(composerProfile),
+        toolApprovalMode,
+        goal,
+        { propagateError: true },
+      );
+    });
+  }, [activeTabId, composerProfile, controllerReady, goal, runGoalAction, setControllerComposerProfileForTab, toolApprovalMode]);
 
   // The live task list pinned above the composer comes from the most recent
   // successful top-level todo_write result; failed or still-running attempts do
@@ -2072,7 +2123,7 @@ export default function App() {
       }
       const model = /^\/model\s+(\S+)$/.exec(trimmed);
       if (model) {
-        void switchModel(model[1]);
+        await switchModel(model[1]);
         return;
       }
       if (trimmed === "/memory") {
@@ -2110,8 +2161,29 @@ export default function App() {
       }
       if (collaborationMode === "goal" && !goal.trim()) {
         if (!controllerReady) return;
-        await applyGoal(trimmed);
-        await commitThenSendRef.current(sourceTabId, trimmed, `/goal ${submitText.trim()}`);
+        const sourceTarget = workbenchTargetToken(workbenchTarget);
+        if (!sourceTarget) throw new Error(t("composer.workspaceStarting"));
+        await activateGoalAndSubmitOnTab({
+          tabId: sourceTabId,
+          target: sourceTarget,
+          displayText: trimmed,
+          submitText,
+          structured,
+          sendToTab: (tabId, nextGoal, display, routedSubmit, routedStructured, target) =>
+            commitThenSendRef.current(
+              tabId,
+              display,
+              routedSubmit,
+              routedStructured,
+              target ? {
+                goal: nextGoal,
+                target,
+                collaborationMode: controllerComposerProfileCollaborationMode(composerProfile),
+                toolApprovalMode,
+              } : undefined,
+            ),
+        });
+        patchActivatedGoalForTab(sourceTabId, trimmed);
         return;
       }
       const theme = /^\/theme(?:\s+(\S+))?$/.exec(trimmed);
@@ -2169,7 +2241,7 @@ export default function App() {
       await commitThenSendRef.current(sourceTabId, trimmed, submitText.trim(), structured);
     },
     [activeTabId, applyGoal, closeTransientOverlays, collaborationMode, composerProfile, controllerReady, goal, notice, runShellForTab,
-      setControllerComposerProfileForTab, switchModel, t, toolApprovalMode, showToast],
+      patchActivatedGoalForTab, setControllerComposerProfileForTab, switchModel, t, toolApprovalMode, showToast, workbenchTarget],
   );
 
   const handleSteer = useCallback(async (text: string, requestedTabId = activeTabId) => {
@@ -2177,6 +2249,21 @@ export default function App() {
     if (!sourceTabId) throw new Error(t("composer.workspaceStarting"));
     await steerForTab(sourceTabId, text.trim());
   }, [activeTabId, steerForTab, t]);
+
+  const setCollaborationModeFromUi = useCallback((mode: CollaborationMode) => {
+    runGoalAction(() => applyCollaborationMode(mode));
+  }, [applyCollaborationMode, runGoalAction]);
+  const clearGoalFromUi = useCallback(() => {
+    runGoalAction(() => applyGoal(""));
+  }, [applyGoal, runGoalAction]);
+  const switchModelFromUi = useCallback(async (name: string): Promise<boolean> => {
+    try {
+      return await switchModel(name);
+    } catch (error) {
+      handleGoalActionError(error);
+      return false;
+    }
+  }, [handleGoalActionError, switchModel]);
 
   const tabMetaRefreshCoordinatorRef = useRef<ReturnType<typeof createBoundedRefreshCoordinator<TabMeta[]>> | null>(null);
   if (!tabMetaRefreshCoordinatorRef.current) {
@@ -3005,7 +3092,18 @@ export default function App() {
   }, [state.items]);
 
   // send wrapper: commits any pending optimistic rewind before sending.
-  const commitThenSend = useCallback(async (sourceTabId: string, displayText: string, submitText?: string, structured?: StructuredInvocationSubmit) => {
+  const commitThenSend = useCallback(async (
+    sourceTabId: string,
+    displayText: string,
+    submitText?: string,
+    structured?: StructuredInvocationSubmit,
+    initialGoal?: {
+      goal: string;
+      target: WorkbenchTargetToken;
+      collaborationMode: CollaborationMode;
+      toolApprovalMode: ToolApprovalMode;
+    },
+  ) => {
     const sourceTab = tabMetas.find((tab) => tab.id === sourceTabId);
     if (!sourceTab) throw new Error(t("composer.workspaceStarting"));
     if (sourceTab.readOnly) throw new Error(t("composer.readOnlyChannel"));
@@ -3039,7 +3137,7 @@ export default function App() {
         setProjectRevision((v) => v + 1);
       }
     }
-    await sendToTab(sourceTabId, displayText, submitText, undefined, structured);
+    await sendToTab(sourceTabId, displayText, submitText, undefined, structured, initialGoal);
   }, [rewindForTab, sendToTab, setRewindCommittingForTab, setRewindStateForTab, t, tabMetas]);
 
   const handleTranscriptPrompt = useCallback((text: string) => {
@@ -4430,11 +4528,11 @@ export default function App() {
               onCancel={cancel}
               onCycleMode={cycleMode}
               onSetMode={applyMode}
-              onSetCollaborationMode={applyCollaborationMode}
+              onSetCollaborationMode={setCollaborationModeFromUi}
               onSetToolApprovalMode={applyToolApprovalMode}
               onToggleYoloApprovalMode={toggleYoloApprovalMode}
-              onClearGoal={() => applyGoal("")}
-              onSwitchModel={switchModel}
+              onClearGoal={clearGoalFromUi}
+              onSwitchModel={switchModelFromUi}
               onSetEffort={setEffort}
               onSetTokenMode={applyTokenMode}
               insertRequest={composerInsertRequest}

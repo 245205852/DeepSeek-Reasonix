@@ -617,7 +617,6 @@ export const zh: Record<DictKey, string> = {
   "composer.runtimeProfileDeliveryTooltipSummary": "强制验收，复查验证",
   "composer.goalInputPlaceholder": "请输入目标…",
   "composer.goalInputRequired": "请输入目标",
-  "composer.goalEntityBlocked": "请先用纯文本设定目标，/ 调用请在后续消息中使用",
   "composer.subagentTaskRequired": "请输入子智能体任务",
   "composer.planHint": "shift+tab",
   "composer.planHintExit": "shift+tab 退出",

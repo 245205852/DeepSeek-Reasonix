@@ -165,6 +165,18 @@ export interface AppBindings {
   SubmitDisplayToTab(tabID: string, display: string, input: string): Promise<void>;
   SubmitDeliveryRecoveryToTab(tabID: string, display: string, input: string): Promise<void>;
   SubmitInvocationsToTab(tabID: string, display: string, input: string, invocations: InvocationRequest[]): Promise<void>;
+  SubmitInitialGoalToTab(
+    tabID: string,
+    goal: string,
+    display: string,
+    input: string,
+    invocations: InvocationRequest[],
+    collaborationMode: string,
+    toolApprovalMode: string,
+    targetKind: string,
+    targetIdentityGen: number,
+    targetRequestSeq: number,
+  ): Promise<string[]>;
   SubmitEditedDisplayToTab(tabID: string, display: string, input: string, original: string): Promise<void>;
   RunShell(command: string): Promise<void>;
   RunShellForTab(tabID: string, command: string): Promise<void>;
@@ -2492,6 +2504,28 @@ function makeMockApp(): AppBindings {
         },
         async SubmitInvocationsToTab(_tabID, display, input, _invocations) {
           await withMockTabScope(_tabID, () => this.SubmitDisplay(display, input));
+        },
+        async SubmitInitialGoalToTab(
+          _tabID,
+          goal,
+          display,
+          input,
+          invocations,
+          _collaborationMode,
+          _toolApprovalMode,
+          _targetKind,
+          _targetIdentityGen,
+          _targetRequestSeq,
+        ) {
+          return await withMockTabScope(_tabID, async () => {
+            await this.SetGoalForTab(_tabID, goal);
+            if (invocations.length > 0) {
+              await this.SubmitInvocationsToTab(_tabID, display, input, invocations);
+              return [];
+            }
+            await this.SubmitDisplayToTab(_tabID, display, input);
+            return [];
+          });
         },
         async SubmitEditedDisplayToTab(_tabID, display, input, _original) {
           await withMockTabScope(_tabID, () => this.SubmitDisplay(display, input));
