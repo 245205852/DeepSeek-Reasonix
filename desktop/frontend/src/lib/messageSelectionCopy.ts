@@ -87,92 +87,140 @@ export function installMessageSelectionCopy(doc: Document = document): () => voi
   return () => doc.removeEventListener("copy", onCopy);
 }
 
-/**
- * restoreLatexInSelection returns the clipboard text for the current
- * selection.  When the selection touches any KaTeX-rendered math element,
- * the rendered Unicode glyphs are replaced by the original LaTeX source
- * from the element's data-latex-source attribute.  This way Ctrl+C on a
- * math formula copies "\alpha" instead of "α".
- *
- * Strategy: we read the browser's selection.toString() as the base text
- * and then, for every .katex / .katex-display in the ORIGINAL DOM that
- * intersects the range, we replace that element's visible textContent
- * with its LaTeX source (wrapped in $…$ or $$…$$).  Working at the
- * string level avoids all the fragility of cloneContents() losing
- * MathML-namespaced annotations or inner DOM structure.
- */
 function restoreLatexInSelection(selection: Selection | null): string {
   if (!selection || selection.isCollapsed || selection.rangeCount === 0) return "";
   const range = selection.getRangeAt(0);
   const baseText = selection.toString();
   if (baseText.trim() === "") return "";
 
-  // Locate the enclosing message body so we only walk relevant KaTeX.
-  const container = range.commonAncestorContainer;
-  const root =
-    container.nodeType === Node.ELEMENT_NODE
-      ? (container as Element)
-      : container.parentElement;
-  if (!root) return baseText;
-  const msgBody = root.closest(MESSAGE_SELECTION_SELECTOR);
-  if (!msgBody) return baseText;
+  const formulas = selectedKatexRoots(range);
+  if (formulas.length === 0) return baseText;
 
-  // Collect every katex block that overlaps the selection.
-  const allKatex =
-    msgBody.querySelectorAll<HTMLElement>(".katex, .katex-display");
-  interface KatexHit {
-    rendered: string; // visible textContent of this element
-    source: string;   // LaTeX to replace it with ($…$ or $$…$$)
-  }
-  const hits: KatexHit[] = [];
+  const doc = range.commonAncestorContainer.ownerDocument;
+  if (!doc) return baseText;
 
-  for (const el of allKatex) {
-    if (!range.intersectsNode(el)) continue;
-    // Skip a bare .katex that lives inside a .katex-display we already captured.
-    if (
-      el.classList.contains("katex") &&
-      el.closest(".katex-display")
-    ) {
-      const displayParent = el.closest(".katex-display") as HTMLElement;
-      if (range.intersectsNode(displayParent)) continue;
+  let cursorNode = range.startContainer;
+  let cursorOffset = range.startOffset;
+  let text = "";
+
+  for (const formula of formulas) {
+    const source = katexSource(formula);
+    if (source == null) continue;
+
+    const formulaRange = doc.createRange();
+    formulaRange.selectNode(formula);
+    if (comparePoints(
+      doc,
+      formulaRange.endContainer,
+      formulaRange.endOffset,
+      range.startContainer,
+      range.startOffset,
+    ) <= 0) continue;
+    if (comparePoints(
+      doc,
+      formulaRange.startContainer,
+      formulaRange.startOffset,
+      range.endContainer,
+      range.endOffset,
+    ) >= 0) break;
+
+    if (comparePoints(
+      doc,
+      cursorNode,
+      cursorOffset,
+      formulaRange.startContainer,
+      formulaRange.startOffset,
+    ) < 0) {
+      const before = doc.createRange();
+      before.setStart(cursorNode, cursorOffset);
+      before.setEnd(formulaRange.startContainer, formulaRange.startOffset);
+      text += before.toString();
     }
-    const tex = el.getAttribute("data-latex-source");
-    if (!tex) continue;
-    const isDisplay = el.classList.contains("katex-display");
-    const source = isDisplay ? `$$\n${tex}\n$$` : `$${tex}$`;
-    const rendered = (el.textContent ?? "").replace(/[\u200B\u200C\u200D\uFEFF]/g, "");
-    if (!rendered) continue;
-    hits.push({ rendered, source });
-  }
 
-  if (hits.length === 0) return baseText;
-
-  // Special case: the selection is entirely within a single katex block.
-  // Return just the complete LaTeX source (the "auto-lock" behavior).
-  if (hits.length === 1) {
-    const sel = baseText.replace(/[\u200B\u200C\u200D\uFEFF]/g, "").trim();
-    const renderedTrimmed = hits[0].rendered.trim();
-    if (sel === "" || renderedTrimmed.includes(sel) || sel.includes(renderedTrimmed)) {
-      return hits[0].source;
+    text += source;
+    if (comparePoints(
+      doc,
+      formulaRange.endContainer,
+      formulaRange.endOffset,
+      range.endContainer,
+      range.endOffset,
+    ) >= 0) {
+      return text;
     }
+    cursorNode = formulaRange.endContainer;
+    cursorOffset = formulaRange.endOffset;
   }
 
-  // General case: replace each katex block's visible text with its
-  // LaTeX source inside the base text.  We sort by length descending
-  // so a longer rendered string (display math) is matched before a
-  // shorter one that appears inside it.
-  let text = baseText.replace(/[\u200B\u200C\u200D\uFEFF]/g, "");
-  hits.sort((a, b) => b.rendered.length - a.rendered.length);
-  for (const hit of hits) {
-    // Escape the rendered string for use in a regex (math may contain
-    // characters that are special in regex like \, ^, $, etc.).
-    const escaped = hit.rendered.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-    text = text.replace(new RegExp(escaped, "g"), hit.source);
+  if (comparePoints(
+    doc,
+    cursorNode,
+    cursorOffset,
+    range.endContainer,
+    range.endOffset,
+  ) < 0) {
+    const after = doc.createRange();
+    after.setStart(cursorNode, cursorOffset);
+    after.setEnd(range.endContainer, range.endOffset);
+    text += after.toString();
   }
-  return text;
+  return text || baseText;
 }
 
-// ---- Text extraction (after KaTeX → source substitution) ----------------
+function selectedKatexRoots(range: Range): HTMLElement[] {
+  const common = elementFromNode(range.commonAncestorContainer);
+  if (!common) return [];
+
+  const roots = new Set<HTMLElement>();
+  const ancestor = katexRoot(common);
+  if (ancestor && rangeIntersectsNode(range, ancestor)) roots.add(ancestor);
+
+  const candidates = common.matches(".katex, .katex-display")
+    ? [common, ...Array.from(common.querySelectorAll(".katex, .katex-display"))]
+    : Array.from(common.querySelectorAll(".katex, .katex-display"));
+  for (const candidate of candidates) {
+    const root = katexRoot(candidate);
+    if (root && rangeIntersectsNode(range, root)) roots.add(root);
+  }
+
+  return Array.from(roots).sort((a, b) => {
+    if (a === b) return 0;
+    const position = a.compareDocumentPosition(b);
+    return position & Node.DOCUMENT_POSITION_FOLLOWING ? -1 : 1;
+  });
+}
+
+function katexRoot(node: Element): HTMLElement | null {
+  const display = node.closest<HTMLElement>(".katex-display");
+  if (display) return display;
+  return node.closest<HTMLElement>(".katex");
+}
+
+function katexSource(root: HTMLElement): string | null {
+  const annotation = root.querySelector<HTMLElement>(
+    'annotation[encoding="application/x-tex"]',
+  );
+  const tex = annotation?.textContent ?? root.getAttribute("data-latex-source");
+  if (!tex) return null;
+  return root.classList.contains("katex-display")
+    ? `$$\n${tex}\n$$`
+    : `$${tex}$`;
+}
+
+function comparePoints(
+  doc: Document,
+  leftNode: Node,
+  leftOffset: number,
+  rightNode: Node,
+  rightOffset: number,
+): number {
+  const left = doc.createRange();
+  left.setStart(leftNode, leftOffset);
+  left.collapse(true);
+  const right = doc.createRange();
+  right.setStart(rightNode, rightOffset);
+  right.collapse(true);
+  return left.compareBoundaryPoints(0, right);
+}
 
 function selectionIntersectsMessage(selection: Selection | null, root: ParentNode): boolean {
   if (selection == null || selection.rangeCount === 0 || selection.isCollapsed) return false;

@@ -208,12 +208,8 @@ type chatTUI struct {
 	// cards, and replay bundles are regenerated after a resize.
 	transcriptSources []transcriptSource
 	wrappedLines      []string // transcript wrapped to viewport width (rendered each frame)
-	// rawWrappedLines mirrors wrappedLines but keeps LaTeX math as $...$ source
-	// instead of the terminal-oriented Unicode approximation so copy-paste
-	// preserves the model's original markup.
-	rawWrappedLines []string
-	viewport        viewport.Model
-	sel             selection
+	viewport          viewport.Model
+	sel               selection
 	// autoScroll drives edge-drag scrolling: -1 up, +1 down, 0 off. dragX is the
 	// column the drag is held at, so the ticker can extend the selection head.
 	autoScroll int
@@ -837,13 +833,6 @@ func (m chatTUI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		wrapped := wrapTranscript(strings.Join(cm.transcript, "\n"), contentW)
 		cm.viewport.SetContent(wrapped)
 		cm.wrappedLines = strings.Split(wrapped, "\n")
-		// Build the raw-text mirror that keeps LaTeX $...$ delimiters instead of
-		// the terminal Unicode approximation so copy-paste restores the model's
-		// original markup. We only rebuild when the transcript or width changes
-		// because it requires re-rendering every markdown block.
-		raw := cm.buildRawTranscript(contentW)
-		rawWrapped := wrapTranscript(raw, contentW)
-		cm.rawWrappedLines = strings.Split(rawWrapped, "\n")
 		if wasAtBottom {
 			cm.viewport.GotoBottom() // tail-follow: stay pinned to newest output
 		} else if cm.width != prevWidth && resizeAnchor.valid {
@@ -1815,7 +1804,6 @@ func (m *chatTUI) clearTranscriptDisplay() {
 	m.transcript = nil
 	m.transcriptSources = nil
 	m.wrappedLines = nil
-	m.rawWrappedLines = nil
 	m.viewport.SetContent("")
 	m.shellOutputs = make(map[string]string)
 	m.shellExpanded = make(map[string]bool)
@@ -4087,7 +4075,10 @@ func (m *chatTUI) runSlashCommand(input string) tea.Cmd {
 		return m.runThemeSubcommand(input)
 	case "/language":
 		m.echoLocalCommand(input)
-		m.runLanguageSubcommand(input)
+		return m.runLanguageSubcommand(input)
+	case "/currency":
+		m.echoLocalCommand(input)
+		return m.runCurrencySubcommand(input)
 	case "/help":
 		m.echoLocalCommand(input)
 		m.showHelp()

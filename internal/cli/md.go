@@ -22,9 +22,11 @@ import (
 // for anything else. Word-wrapping respects CJK widths and skips over ANSI
 // SGR codes when counting columns.
 type mdRenderer struct {
-	md      goldmark.Markdown
-	width   int
-	rawMath bool // when true, render math as raw LaTeX instead of Unicode
+	md             goldmark.Markdown
+	width          int
+	copyMath       bool
+	copyMathPrefix string
+	nextCopyMathID int
 }
 
 func newMarkdownRenderer(width int) *mdRenderer {
@@ -70,23 +72,23 @@ func (r *mdRenderer) Render(input string) string {
 	return out + "\n"
 }
 
-// RenderRaw is like Render but keeps original LaTeX $...$ / $$...$$ delimiters
-// intact so copy-paste preserves the model's raw markup instead of the
-// terminal-oriented Unicode approximation.
-func (r *mdRenderer) RenderRaw(input string) string {
+// RenderCopy mirrors Render's visible output while surrounding math spans with
+// zero-width internal markers. The markers are consumed only when the user
+// copies a transcript selection, so display wrapping and selection coordinates
+// stay identical without maintaining a second raw transcript.
+func (r *mdRenderer) RenderCopy(input, prefix string) string {
 	if strings.TrimSpace(input) == "" {
 		return ""
 	}
-	// normalizeMath rewrites \(…\) → $…$ but does NOT run latexToUnicode;
-	// we skip the fixCJKEmphasis pass because the raw mode targets clipboard
-	// consumers that don't need CJK flanking space workarounds.
-	input = normalizeMath(input)
+	input = fixCJKEmphasis(normalizeMath(input))
 	src := []byte(input)
 	doc := r.md.Parser().Parse(text.NewReader(src))
 	var buf strings.Builder
-	r.rawMath = true
+	r.copyMath = true
+	r.copyMathPrefix = prefix
+	r.nextCopyMathID = 0
 	r.renderBlocks(&buf, doc, src, 0)
-	r.rawMath = false
+	r.copyMath = false
 	out := strings.TrimRight(buf.String(), "\n")
 	if out == "" {
 		return ""
@@ -371,15 +373,20 @@ func (r *mdRenderer) appendInline(b *strings.Builder, n ast.Node, src []byte) {
 		case *ast.RawHTML:
 			// drop — rare in chat output and would print as literal escapes
 		case *mathNode:
-			if r.rawMath {
-				if v.display {
-					b.WriteString("$$" + v.source + "$$")
-				} else {
-					b.WriteString("$" + v.source + "$")
-				}
-			} else {
-				b.WriteString(italic(v.value))
+			rendered := italic(v.value)
+			if !r.copyMath {
+				b.WriteString(rendered)
+				break
 			}
+			source := "$" + v.source + "$"
+			if v.display {
+				source = "$$" + v.source + "$$"
+			}
+			id := fmt.Sprintf("%s-%d", r.copyMathPrefix, r.nextCopyMathID)
+			r.nextCopyMathID++
+			b.WriteString(copyMathStartMarker(id, source))
+			b.WriteString(rendered)
+			b.WriteString(copyMathEndMarker(id))
 		case *ast.String:
 			b.Write(v.Value)
 		default:

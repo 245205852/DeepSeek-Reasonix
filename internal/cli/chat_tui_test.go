@@ -2312,7 +2312,7 @@ func TestLanguageCommandRefreshesCurrentController(t *testing.T) {
 		return control.New(control.Options{Label: "deepseek-flash"}), nil
 	}
 
-	cmd := m.runLanguageSubcommand("/language zh")
+	cmd := m.runSlashCommand("/language zh")
 	if cmd == nil {
 		t.Fatal("/language should queue a controller refresh")
 	}
@@ -2344,7 +2344,7 @@ func TestCurrencyCommandPersistsAndRefreshesCurrentController(t *testing.T) {
 		return control.New(control.Options{Label: "deepseek-flash"}), nil
 	}
 
-	cmd := m.runCurrencySubcommand("/currency CNY")
+	cmd := m.runSlashCommand("/currency CNY")
 	if cmd == nil {
 		t.Fatal("/currency should queue a controller refresh")
 	}
