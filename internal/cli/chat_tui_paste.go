@@ -127,36 +127,64 @@ func recoverOrphanedPasteLabelsFromHistory(sent string, knownBlocks []pastedBloc
 			continue
 		}
 		seen[label] = true
+		var recovered string
+		found := false
+		ambiguous := false
 		for i := len(history) - 1; i >= 0; i-- {
 			if history[i].Role != provider.RoleUser {
 				continue
 			}
-			if recovered, ok := expandedPasteBody(history[i].Content, label); ok {
-				sent = strings.ReplaceAll(sent, label, renderFoldedPasteBlock(pastedBlock{
-					label: label,
-					text:  recovered,
-				}))
+			for _, body := range expandedPasteBodies(history[i].Content, label) {
+				if !found {
+					recovered = body
+					found = true
+					continue
+				}
+				if recovered != body {
+					ambiguous = true
+					break
+				}
+			}
+			if ambiguous {
 				break
 			}
+		}
+		if found && !ambiguous {
+			sent = strings.ReplaceAll(sent, label, renderFoldedPasteBlock(pastedBlock{
+				label: label,
+				text:  recovered,
+			}))
 		}
 	}
 	return sent
 }
 
-func expandedPasteBody(content, label string) (string, bool) {
+func expandedPasteBodies(content, label string) []string {
 	beginMarker := "--- Begin " + label + " ---"
-	endMarker := "--- End " + label + " ---"
-	begin := strings.Index(content, beginMarker)
-	if begin < 0 {
-		return "", false
+	endMarker := "\n--- End " + label + " ---"
+	var bodies []string
+	for searchFrom := 0; searchFrom < len(content); {
+		beginOffset := strings.Index(content[searchFrom:], beginMarker)
+		if beginOffset < 0 {
+			break
+		}
+		bodyStart := searchFrom + beginOffset + len(beginMarker)
+		if bodyStart >= len(content) || content[bodyStart] != '\n' {
+			searchFrom = bodyStart
+			continue
+		}
+		bodyStart++
+		endOffset := strings.Index(content[bodyStart:], endMarker)
+		if endOffset < 0 {
+			break
+		}
+		bodyEnd := bodyStart + endOffset
+		if body := content[bodyStart:bodyEnd]; body != "" {
+			bodies = append(bodies, body)
+		}
+		searchFrom = bodyEnd + len(endMarker)
 	}
-	begin += len(beginMarker)
-	end := strings.Index(content[begin:], endMarker)
-	if end < 0 {
-		return "", false
-	}
-	body := strings.TrimSpace(content[begin : begin+end])
-	return body, body != ""
+	return bodies
 }
 
 // nextPasteIDForHistory prevents labels from being reused after resume or

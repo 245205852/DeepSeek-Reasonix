@@ -48,7 +48,24 @@ func TestRecoverOrphanedPasteLabelFromHistory(t *testing.T) {
 	}
 }
 
-func TestRecoverOrphanedPasteLabelUsesLatestUserExpansion(t *testing.T) {
+func TestRecoverOrphanedPasteLabelPreservesOriginalWhitespace(t *testing.T) {
+	block := pastedBlock{
+		label: "[Pasted text #5 · 5 lines]",
+		text:  "\n  first line\nsecond line  \n\n",
+	}
+	history := []provider.Message{{
+		Role:    provider.RoleUser,
+		Content: renderFoldedPasteBlock(block),
+	}}
+
+	got := recoverOrphanedPasteLabelsFromHistory(block.label, nil, history)
+	want := renderFoldedPasteBlock(block)
+	if got != want {
+		t.Fatalf("recovered paste = %q, want exact original %q", got, want)
+	}
+}
+
+func TestRecoverOrphanedPasteLabelLeavesConflictingExpansionsUnchanged(t *testing.T) {
 	label := "[Pasted text #4 · 2 lines]"
 	history := []provider.Message{
 		{Role: provider.RoleUser, Content: renderFoldedPasteBlock(pastedBlock{label: label, text: "old\nbody"})},
@@ -56,10 +73,24 @@ func TestRecoverOrphanedPasteLabelUsesLatestUserExpansion(t *testing.T) {
 		{Role: provider.RoleUser, Content: renderFoldedPasteBlock(pastedBlock{label: label, text: "new\nbody"})},
 	}
 
+	if got := recoverOrphanedPasteLabelsFromHistory(label, nil, history); got != label {
+		t.Fatalf("ambiguous paste = %q, want unchanged label %q", got, label)
+	}
+}
+
+func TestRecoverOrphanedPasteLabelAcceptsRepeatedIdenticalExpansion(t *testing.T) {
+	label := "[Pasted text #4 · 2 lines]"
+	block := pastedBlock{label: label, text: "same\nbody"}
+	history := []provider.Message{
+		{Role: provider.RoleUser, Content: renderFoldedPasteBlock(block)},
+		{Role: provider.RoleAssistant, Content: renderFoldedPasteBlock(pastedBlock{label: label, text: "untrusted\nbody"})},
+		{Role: provider.RoleUser, Content: renderFoldedPasteBlock(block)},
+	}
+
 	got := recoverOrphanedPasteLabelsFromHistory(label, nil, history)
-	want := renderFoldedPasteBlock(pastedBlock{label: label, text: "new\nbody"})
+	want := renderFoldedPasteBlock(block)
 	if got != want {
-		t.Fatalf("recovered paste = %q, want latest user expansion %q", got, want)
+		t.Fatalf("recovered paste = %q, want identical user expansion %q", got, want)
 	}
 }
 
