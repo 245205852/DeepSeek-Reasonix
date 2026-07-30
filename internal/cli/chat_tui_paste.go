@@ -91,7 +91,7 @@ func (m *chatTUI) expandPastedBlocks(displayed string) string {
 	return sent
 }
 
-var foldedPasteLabelRe = regexp.MustCompile(`\[Pasted text #(\d+) · \d+ lines\]`)
+var foldedPasteLabelRe = regexp.MustCompile(`\[Pasted text #(\d+) · (\d+) lines\]`)
 
 // recoverOrphanedPasteLabels restores paste content only at the explicit
 // resubmission boundary. Persisted history remains byte-stable for prefix-cache
@@ -159,6 +159,10 @@ func recoverOrphanedPasteLabelsFromHistory(sent string, knownBlocks []pastedBloc
 }
 
 func expandedPasteBodies(content, label string) []string {
+	expectedLines, ok := foldedPasteLineCount(label)
+	if !ok {
+		return nil
+	}
 	beginMarker := "--- Begin " + label + " ---"
 	endMarker := "\n--- End " + label + " ---"
 	var bodies []string
@@ -173,17 +177,40 @@ func expandedPasteBodies(content, label string) []string {
 			continue
 		}
 		bodyStart++
-		endOffset := strings.Index(content[bodyStart:], endMarker)
-		if endOffset < 0 {
+		endSearchFrom := bodyStart
+		foundEnd := false
+		for endSearchFrom < len(content) {
+			endOffset := strings.Index(content[endSearchFrom:], endMarker)
+			if endOffset < 0 {
+				break
+			}
+			bodyEnd := endSearchFrom + endOffset
+			searchFrom = bodyEnd + len(endMarker)
+			body := content[bodyStart:bodyEnd]
+			if body != "" && pastedLineCount(body) == expectedLines {
+				bodies = append(bodies, body)
+				foundEnd = true
+				break
+			}
+			endSearchFrom = searchFrom
+		}
+		if !foundEnd {
 			break
 		}
-		bodyEnd := bodyStart + endOffset
-		if body := content[bodyStart:bodyEnd]; body != "" {
-			bodies = append(bodies, body)
-		}
-		searchFrom = bodyEnd + len(endMarker)
 	}
 	return bodies
+}
+
+func foldedPasteLineCount(label string) (int, bool) {
+	match := foldedPasteLabelRe.FindStringSubmatch(label)
+	if len(match) < 3 || match[0] != label {
+		return 0, false
+	}
+	lines, err := strconv.Atoi(match[2])
+	if err != nil || lines < 1 {
+		return 0, false
+	}
+	return lines, true
 }
 
 // nextPasteIDForHistory prevents labels from being reused after resume or
@@ -216,6 +243,9 @@ func pasteIDStateForHistory(history []provider.Message) (int, map[int]struct{}) 
 }
 
 func (m *chatTUI) takeNextPasteID() int {
+	if m.ctrl != nil {
+		m.syncPasteIDStateFromHistory(m.ctrl.History())
+	}
 	candidate := m.nextPasteID
 	if candidate < 1 {
 		candidate = 1
@@ -238,6 +268,19 @@ func (m *chatTUI) takeNextPasteID() int {
 		} else {
 			candidate++
 		}
+	}
+}
+
+func (m *chatTUI) syncPasteIDStateFromHistory(history []provider.Message) {
+	next, used := pasteIDStateForHistory(history)
+	if m.usedPasteIDs == nil {
+		m.usedPasteIDs = make(map[int]struct{}, len(used))
+	}
+	for id := range used {
+		m.usedPasteIDs[id] = struct{}{}
+	}
+	if m.nextPasteID < 1 || next > m.nextPasteID {
+		m.nextPasteID = next
 	}
 }
 

@@ -12,7 +12,9 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 
+	"reasonix/internal/agent"
 	"reasonix/internal/control"
+	"reasonix/internal/event"
 	"reasonix/internal/provider"
 )
 
@@ -60,6 +62,24 @@ func TestRecoverOrphanedPasteLabelPreservesOriginalWhitespace(t *testing.T) {
 	}}
 
 	got := recoverOrphanedPasteLabelsFromHistory(block.label, nil, history)
+	want := renderFoldedPasteBlock(block)
+	if got != want {
+		t.Fatalf("recovered paste = %q, want exact original %q", got, want)
+	}
+}
+
+func TestRecoverOrphanedPasteLabelPreservesEmbeddedEndMarker(t *testing.T) {
+	label := "[Pasted text #4 · 3 lines]"
+	block := pastedBlock{
+		label: label,
+		text:  "first\n--- End " + label + " ---\nlast",
+	}
+	history := []provider.Message{{
+		Role:    provider.RoleUser,
+		Content: renderFoldedPasteBlock(block),
+	}}
+
+	got := recoverOrphanedPasteLabelsFromHistory(label, nil, history)
 	want := renderFoldedPasteBlock(block)
 	if got != want {
 		t.Fatalf("recovered paste = %q, want exact original %q", got, want)
@@ -164,6 +184,27 @@ func TestTakeNextPasteIDWrapsAfterMaxInt(t *testing.T) {
 	}
 	if got := m.takeNextPasteID(); got != 1 {
 		t.Fatalf("wrapped takeNextPasteID = %d, want 1", got)
+	}
+}
+
+func TestTakeNextPasteIDSynchronizesAdoptedControllerHistory(t *testing.T) {
+	first := pastedBlock{label: "[Pasted text #1 · 1 lines]", text: "first"}
+	session := agent.NewSession("system")
+	session.Add(provider.Message{Role: provider.RoleUser, Content: renderFoldedPasteBlock(first)})
+	executor := agent.New(nil, nil, session, agent.Options{}, event.Discard)
+	ctrl := control.New(control.Options{Executor: executor, Label: "review"})
+	t.Cleanup(ctrl.Close)
+
+	m := newChatTUI(ctrl, "", make(chan event.Event), 80)
+
+	second := pastedBlock{label: "[Pasted text #2 · 1 lines]", text: "second"}
+	adopted := agent.NewSession("system")
+	adopted.Add(provider.Message{Role: provider.RoleUser, Content: renderFoldedPasteBlock(first)})
+	adopted.Add(provider.Message{Role: provider.RoleUser, Content: renderFoldedPasteBlock(second)})
+	executor.SetSession(adopted)
+
+	if got := m.takeNextPasteID(); got != 3 {
+		t.Fatalf("takeNextPasteID after adopted history = %d, want 3", got)
 	}
 }
 
