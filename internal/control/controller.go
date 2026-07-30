@@ -1605,9 +1605,9 @@ func (c *Controller) runRefTurnWithResolverSync(ctx context.Context, input, refL
 		sent = "Referenced context:\n\n" + block + "\n\n" + input
 	}
 	if strings.TrimSpace(original) != "" {
-		return c.runEditedGoalLoopWithRawDisplay(ctx, sent, input, display, original)
+		return c.runEditedGoalLoopWithRawDisplay(ctx, sent, display, display, original)
 	}
-	return c.runGoalLoopWithRawDisplay(ctx, sent, input, display)
+	return c.runGoalLoopWithRawDisplay(ctx, sent, display, display)
 }
 
 // notice emits an informational Notice event.

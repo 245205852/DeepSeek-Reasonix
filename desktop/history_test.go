@@ -89,8 +89,8 @@ func TestHistoryMessagesPreferPersistedRawUserContent(t *testing.T) {
 	if len(got) != 1 || got[0].Content != raw {
 		t.Fatalf("history user content = %+v, want raw %q", got, raw)
 	}
-	if got[0].SubmitText != raw {
-		t.Fatalf("history submit text = %q, want raw %q", got[0].SubmitText, raw)
+	if got[0].SubmitText != rendered {
+		t.Fatalf("history submit text = %q, want rendered %q", got[0].SubmitText, rendered)
 	}
 	if strings.Contains(got[0].Content, "capability-route") {
 		t.Fatalf("provider-only wrapper leaked into history: %+v", got[0])

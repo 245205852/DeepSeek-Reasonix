@@ -1269,7 +1269,7 @@ func sessionDisplayResolverFromMap(displays sessionDisplayMap, sessionPath strin
 				return display
 			}
 		}
-		return control.StripComposePrefixes(content)
+		return control.StripReferencedContextPrefix(control.StripComposePrefixes(content))
 	}
 }
 

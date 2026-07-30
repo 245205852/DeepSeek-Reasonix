@@ -5601,7 +5601,7 @@ func historyMessagesWithPlannerDisplaysAndLookups(
 					hm.SubmitText = replay
 				}
 			} else if m.RawContent != "" {
-				hm.SubmitText = content
+				hm.SubmitText = m.Content
 			} else {
 				hm.SubmitText = m.Content
 			}
