@@ -4772,6 +4772,28 @@ a[href] {
 .md a:hover {
   text-decoration: underline;
 }
+.md .md-rich-link {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 3px;
+  max-width: 100%;
+  vertical-align: -0.12em;
+  white-space: normal;
+}
+.md .md-rich-link svg {
+  flex: 0 0 auto;
+}
+.md .md-rich-link__label {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.md .md-rich-link__label[data-display-label] {
+  font-size: 0;
+}
+.md .md-rich-link__label[data-display-label]::before {
+  content: attr(data-display-label);
+  font-size: var(--font-content);
+}
 .md blockquote {
   margin: 0 0 12px;
   padding: 2px 14px;
