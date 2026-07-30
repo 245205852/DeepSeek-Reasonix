@@ -51,6 +51,8 @@ type chatTUI struct {
 
 	width  int
 	height int
+	// themeSweep freezes the frame while a /theme switch wipes across it.
+	themeSweep *themeSweep
 	// nativeScrollback keeps Termux out of alt-screen mode so taps still focus
 	// the textarea and raise the soft keyboard.
 	nativeScrollback bool
@@ -1722,6 +1724,15 @@ func (m chatTUI) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.copyNoticeText = ""
 		}
 
+	case themeSweepTickMsg:
+		if m.themeSweep != nil {
+			if m.themeSweep.advance() {
+				cmds = append(cmds, themeSweepTick())
+			} else {
+				m.themeSweep = nil
+			}
+		}
+
 	case elapsedTickMsg:
 		if m.state == tuiRunning {
 			m.elapsed = int(time.Since(m.runStart).Seconds())
@@ -2805,6 +2816,18 @@ func (m chatTUI) runningWorkingLine(cancelRequested, styled bool) string {
 }
 
 func (m chatTUI) View() tea.View {
+	if m.themeSweep != nil {
+		v := tea.NewView(m.themeSweep.render())
+		if !m.nativeScrollback {
+			v.AltScreen = true
+			if m.mouseCaptureOff {
+				v.MouseMode = tea.MouseModeNone
+			} else {
+				v.MouseMode = tea.MouseModeCellMotion
+			}
+		}
+		return v
+	}
 	boxW := m.width
 	if boxW < 10 {
 		boxW = 10
@@ -4049,7 +4072,7 @@ func (m *chatTUI) runSlashCommand(input string) tea.Cmd {
 		}
 	case "/theme":
 		m.echoLocalCommand(input)
-		m.runThemeSubcommand(input)
+		return m.runThemeSubcommand(input)
 	case "/language":
 		m.echoLocalCommand(input)
 		return m.runLanguageSubcommand(input)

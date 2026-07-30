@@ -445,13 +445,14 @@ func applyTextareaTheme(ti *textarea.Model) {
 	ti.SetStyles(styles)
 }
 
-func (m *chatTUI) runThemeSubcommand(input string) {
+func (m *chatTUI) runThemeSubcommand(input string) tea.Cmd {
 	args := tokenizeArgs(input)
 	if len(args) < 2 {
 		m.notice(i18n.M.ThemeHeader + "\n" + describeCLIThemes() + "\n" + i18n.M.ThemeHint)
-		return
+		return nil
 	}
 	name := strings.ToLower(args[1])
+	previous := activeCLITheme
 	var theme cliPalette
 	switch name {
 	case "auto", "light", "dark":
@@ -460,7 +461,7 @@ func (m *chatTUI) runThemeSubcommand(input string) {
 		next, ok := setCLIThemeStyle(name)
 		if !ok {
 			m.notice(fmt.Sprintf(i18n.M.ThemeUnknownFmt, name) + "\n" + describeCLIThemes())
-			return
+			return nil
 		}
 		theme = next
 	}
@@ -469,6 +470,7 @@ func (m *chatTUI) runThemeSubcommand(input string) {
 
 	// Persist to user config so the choice survives restart.
 	m.persistTheme(name)
+	return m.startThemeSweep(previous, theme)
 }
 
 func (m *chatTUI) persistTheme(inputName string) {

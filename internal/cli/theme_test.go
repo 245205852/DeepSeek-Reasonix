@@ -7,6 +7,8 @@ import (
 
 	"github.com/charmbracelet/colorprofile"
 
+	"reasonix/internal/control"
+
 	"charm.land/bubbles/v2/textarea"
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
@@ -110,7 +112,10 @@ func TestRunThemeSubcommandSwitchesAccentAndTextarea(t *testing.T) {
 	configureCLIThemeWithStyle("dark", "graphite")
 
 	m := newTestChatTUI()
-	m.runThemeSubcommand("/theme aurora")
+	m.ctrl = control.New(control.Options{})
+	if cmd := m.runThemeSubcommand("/theme aurora"); cmd == nil {
+		t.Fatal("a real theme change should start the sweep")
+	}
 	if activeCLITheme.name != "dark" || activeCLITheme.style != "aurora" {
 		t.Fatalf("current theme = %s/%s, want dark/aurora", activeCLITheme.name, activeCLITheme.style)
 	}
