@@ -756,6 +756,26 @@ func TestGoalRepeatedBlockedStopsAfterThreeTurns(t *testing.T) {
 	}
 }
 
+func TestGoalBlockedSignalDoesNotTriggerIdleIntercept(t *testing.T) {
+	g := &goalMachine{
+		goal:      "wait for user review",
+		status:    GoalStatusRunning,
+		idleTurns: maxGoalIdleTurns - 1,
+	}
+
+	res := g.advance(goalAdvanceInput{
+		status: GoalStatusBlocked,
+		reason: "waiting for user review",
+	})
+
+	if !res.cont {
+		t.Fatal("first blocked signal should keep the goal audit running")
+	}
+	if msg, ok := g.takeIntercept(); ok {
+		t.Fatalf("blocked signal triggered idle intercept %q", msg)
+	}
+}
+
 func TestGoalRestartResetsBlockedAudit(t *testing.T) {
 	prov := &scriptedTurns{turns: [][]provider.Chunk{
 		textTurn("Blocked.\n\n[goal:blocked:needs credentials]"),
