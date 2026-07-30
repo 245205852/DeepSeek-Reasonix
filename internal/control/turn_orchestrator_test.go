@@ -16,6 +16,7 @@ import (
 	"reasonix/internal/evidence"
 	"reasonix/internal/hook"
 	"reasonix/internal/provider"
+	"reasonix/internal/skill"
 	"reasonix/internal/tool"
 )
 
@@ -272,6 +273,7 @@ func TestTurnOrchestratorStopHookIgnoresCanceledTurnContext(t *testing.T) {
 type recordingSessionRunner struct {
 	session *agent.Session
 	inputs  []string
+	raw     []string
 }
 
 type deliveryScopeErrorRunner struct {
@@ -369,6 +371,7 @@ func TestRecoveryPauseKeepsGoalRunningAndDeliveryScope(t *testing.T) {
 
 func (r *recordingSessionRunner) Run(ctx context.Context, input string) error {
 	r.inputs = append(r.inputs, input)
+	r.raw = append(r.raw, agent.RawUserInput(ctx, input))
 	r.session.Add(provider.Message{Role: provider.RoleUser, Content: input})
 	return nil
 }
@@ -509,6 +512,45 @@ func TestTurnOrchestratorRefTurnRecordsVisibleDisplay(t *testing.T) {
 	}
 	if gotContent != runner.inputs[0] {
 		t.Fatalf("display recorder content = %q, want persisted model input %q", gotContent, runner.inputs[0])
+	}
+}
+
+func TestTurnOrchestratorRefTurnPreservesExpandedPasteForRouting(t *testing.T) {
+	const label = "[Pasted text #1 · 2 lines]"
+	const display = "inspect\n\n" + label
+	const expanded = display + "\n\n--- Begin " + label + " ---\nroute-expanded-paste\nfunc main() {}\n--- End " + label + " ---"
+
+	sess := agent.NewSession("sys")
+	exec := agent.New(nil, nil, sess, agent.Options{}, event.Discard)
+	runner := &recordingSessionRunner{session: sess}
+	reg := tool.NewRegistry()
+	reg.Add(capabilityTestTool{name: "run_skill"})
+	c := New(Options{
+		Runner:   runner,
+		Executor: exec,
+		Registry: reg,
+		Skills: []skill.Skill{{
+			Name:        "paste-review",
+			Description: "review code",
+			Triggers:    []string{"route-expanded-paste"},
+			Scope:       skill.ScopeBuiltin,
+		}},
+	})
+	resolve := func(context.Context, string) (string, []string) {
+		return "<file path=\"notes.txt\">\nreference\n</file>", nil
+	}
+
+	if err := c.runRefTurnWithResolverSync(context.Background(), expanded, expanded, display, "", resolve); err != nil {
+		t.Fatal(err)
+	}
+	if len(runner.inputs) != 1 || !strings.Contains(runner.inputs[0], "Referenced context:") || !strings.Contains(runner.inputs[0], expanded) {
+		t.Fatalf("provider input = %+v, want resolved context and expanded paste", runner.inputs)
+	}
+	if !strings.Contains(runner.inputs[0], "skill:paste-review prefer") {
+		t.Fatalf("expanded pasted text did not drive capability routing:\n%s", runner.inputs[0])
+	}
+	if len(runner.raw) != 1 || runner.raw[0] != expanded {
+		t.Fatalf("persisted raw input = %+v, want complete user input %q", runner.raw, expanded)
 	}
 }
 
