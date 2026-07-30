@@ -4567,6 +4567,14 @@ func (m *chatTUI) runMCPPrompt(input string) tea.Cmd {
 // results remain quiet, while interrupted-turn reasoning and tool cards replay
 // from provider-excluded LocalOnly records so restart matches the live view.
 func replaySectionsFor(history []provider.Message, width int) []string {
+	return replaySectionsForWithAssistantRenderer(history, width, renderAssistantMarkdown)
+}
+
+func replaySectionsForWithAssistantRenderer(
+	history []provider.Message,
+	width int,
+	renderAssistant func(string, int) string,
+) []string {
 	var out []string
 	for _, m := range history {
 		if m.LocalOnly {
@@ -4574,7 +4582,7 @@ func replaySectionsFor(history []provider.Message, width int) []string {
 				out = append(out, dim("  ▎ "+i18n.M.ChatThinking)+"\n"+reasoningBlock(reasoning, width, 0)+"\n\n")
 			}
 			if body := strings.TrimSpace(m.Content); body != "" {
-				out = append(out, renderAssistantMarkdown(body, width)+"\n\n")
+				out = append(out, renderAssistant(body, width)+"\n\n")
 			}
 			for _, call := range m.ToolCalls {
 				out = append(out, toolCard(call.Name, "", width)+"\n\n")
@@ -4599,7 +4607,7 @@ func replaySectionsFor(history []provider.Message, width int) []string {
 			}
 			body := strings.TrimSpace(m.Content)
 			if body != "" {
-				out = append(out, renderAssistantMarkdown(body, width)+"\n\n")
+				out = append(out, renderAssistant(body, width)+"\n\n")
 			}
 			for _, call := range m.ToolCalls {
 				out = append(out, toolCard(call.Name, call.Arguments, width)+"\n\n")

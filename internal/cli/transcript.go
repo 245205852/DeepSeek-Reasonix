@@ -96,17 +96,42 @@ func (m *chatTUI) renderTranscriptSource(source transcriptSource, terminalWidth 
 	case transcriptSourceBanner:
 		return strings.TrimRight(renderTUIBanner(m.label, source.raw, contentWidth), "\n")
 	case transcriptSourceReplayBundle:
-		var b strings.Builder
-		b.WriteString(renderTUIBanner(m.label, source.raw, contentWidth))
-		for _, section := range replaySectionsFor(source.history, contentWidth) {
-			b.WriteString(section)
-		}
-		return strings.TrimRight(b.String(), "\n")
+		return m.renderReplayBundle(source, contentWidth, renderAssistantMarkdown)
 	case transcriptSourceTurnReceipt:
 		return renderTurnReceiptBand(source.raw, contentWidth)
 	default:
 		return ""
 	}
+}
+
+func (m chatTUI) renderReplayBundle(
+	source transcriptSource,
+	contentWidth int,
+	renderAssistant func(string, int) string,
+) string {
+	var b strings.Builder
+	b.WriteString(renderTUIBanner(m.label, source.raw, contentWidth))
+	for _, section := range replaySectionsForWithAssistantRenderer(
+		source.history,
+		contentWidth,
+		renderAssistant,
+	) {
+		b.WriteString(section)
+	}
+	return strings.TrimRight(b.String(), "\n")
+}
+
+func (m chatTUI) renderReplayBundleCopy(
+	source transcriptSource,
+	contentWidth int,
+	prefix string,
+) string {
+	assistantIndex := 0
+	return m.renderReplayBundle(source, contentWidth, func(raw string, width int) string {
+		messagePrefix := prefix + "-" + strconv.Itoa(assistantIndex)
+		assistantIndex++
+		return renderAssistantMarkdownCopy(raw, width, messagePrefix)
+	})
 }
 
 const assistantTranscriptIndent = "  "
@@ -233,6 +258,10 @@ func (m chatTUI) buildCopyTranscript(contentWidth int) (string, int, bool) {
 		switch source.kind {
 		case transcriptSourceMarkdown:
 			rendered := renderAssistantMarkdownCopy(source.raw, contentWidth, strconv.Itoa(i))
+			markers += strings.Count(rendered, copyMathStartPrefix)
+			b.WriteString(rendered)
+		case transcriptSourceReplayBundle:
+			rendered := m.renderReplayBundleCopy(source, contentWidth, strconv.Itoa(i))
 			markers += strings.Count(rendered, copyMathStartPrefix)
 			b.WriteString(rendered)
 		default:

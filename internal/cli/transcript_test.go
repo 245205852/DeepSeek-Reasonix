@@ -193,6 +193,79 @@ func TestSelectedTextRestoresMathWithoutReusingRawColumns(t *testing.T) {
 	}
 }
 
+func TestSelectedTextRestoresMathFromReplayBundle(t *testing.T) {
+	defer restoreThemeForTest(activeColorProfile, activeCLITheme)
+	activeColorProfile = colorprofile.NoTTY
+	configureCLITheme("dark")
+
+	m := newTestChatTUI()
+	m.width = 80
+	contentWidth := transcriptContentWidth(m.width, m.nativeScrollback)
+	m.viewport.SetWidth(contentWidth)
+	source := transcriptSource{
+		kind: transcriptSourceReplayBundle,
+		history: []provider.Message{
+			{Role: provider.RoleAssistant, Content: `before $\alpha$ after`},
+			{LocalOnly: true, Content: `local $\beta$ recovery`},
+		},
+	}
+	rendered := m.renderTranscriptSource(source, m.width)
+	m.transcript = []string{rendered}
+	m.transcriptSources = []transcriptSource{source}
+	m.wrappedLines = strings.Split(wrapTranscript(rendered, contentWidth), "\n")
+
+	lineIndex := -1
+	formulaCol := -1
+	for i, line := range m.wrappedLines {
+		plain := ansi.Strip(line)
+		formulaByte := strings.Index(plain, "α")
+		if formulaByte < 0 {
+			continue
+		}
+		lineIndex = i
+		formulaCol = ansi.StringWidth(plain[:formulaByte])
+		break
+	}
+	if lineIndex < 0 {
+		t.Fatalf("rendered replay bundle did not contain the formula:\n%s", ansi.Strip(rendered))
+	}
+
+	m.sel = selection{
+		active: true,
+		anchor: selPos{line: lineIndex, col: formulaCol},
+		head:   selPos{line: lineIndex, col: formulaCol + ansi.StringWidth("α")},
+	}
+	if got, want := m.selectedText(), `$\alpha$`; got != want {
+		t.Fatalf("replayed formula selection = %q, want %q", got, want)
+	}
+
+	copyLines, ok := m.copyTranscriptLines()
+	if !ok {
+		t.Fatal("copy rendition diverged from the displayed replay bundle")
+	}
+	sourcesByID := make(map[string]string)
+	for _, line := range copyLines {
+		for _, span := range line.math {
+			if source, exists := sourcesByID[span.id]; exists && source != span.source {
+				t.Fatalf("formula marker %q reused for %q and %q", span.id, source, span.source)
+			}
+			sourcesByID[span.id] = span.source
+		}
+	}
+	if len(sourcesByID) != 2 {
+		t.Fatalf("replay formula markers = %v, want two unique formulas", sourcesByID)
+	}
+	foundSources := make(map[string]bool)
+	for _, source := range sourcesByID {
+		foundSources[source] = true
+	}
+	for _, want := range []string{`$\alpha$`, `$\beta$`} {
+		if !foundSources[want] {
+			t.Fatalf("replay formula markers = %v, missing %q", sourcesByID, want)
+		}
+	}
+}
+
 func TestSelectedTextPreservesProseAroundMath(t *testing.T) {
 	defer restoreThemeForTest(activeColorProfile, activeCLITheme)
 	activeColorProfile = colorprofile.NoTTY
