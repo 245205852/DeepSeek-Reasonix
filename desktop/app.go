@@ -6475,6 +6475,7 @@ func (a *App) ContextUsageForTab(tabID string) ContextInfo {
 	a.mu.RUnlock()
 
 	var info ContextInfo
+	var snap tabTelemetrySnapshot
 	if tab != nil {
 		// Re-key first: a controller-side rotation (typed /new) may have
 		// swapped sessions without the App noticing, and the stale totals
@@ -6485,7 +6486,7 @@ func (a *App) ContextUsageForTab(tabID string) ContextInfo {
 				tab.syncTelemetryToSession(sp)
 			}
 		}
-		snap := tab.telemetrySnapshot()
+		snap = tab.telemetrySnapshot()
 		info.SessionTokens = snap.Usage.TotalTokens
 		info.SessionCost = snap.Usage.SessionCost
 		info.SessionCurrency = snap.Usage.SessionCurrency
@@ -6499,6 +6500,13 @@ func (a *App) ContextUsageForTab(tabID string) ContextInfo {
 	used, window := ctrl.ContextSnapshot()
 	info.Used = used
 	info.Window = window
+	// Session rebind (project-tree switch) rebuilds the controller: the fresh
+	// executor has no per-turn usage yet, so ContextSnapshot reports used=0.
+	// Fall back to the telemetry-persisted last-used value so the status bar
+	// shows the fill percentage from the last turn instead of 0%.
+	if used == 0 && snap.Usage.LastUsedTokens > 0 {
+		info.Used = snap.Usage.LastUsedTokens
+	}
 	info.CompactRatio = ctrl.CompactRatio()
 	return info
 }

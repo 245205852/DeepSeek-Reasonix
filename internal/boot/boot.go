@@ -2213,19 +2213,20 @@ func NewProviderWithProxy(e *config.ProviderEntry, proxy netclient.ProxySpec) (p
 		// provider-kind-specific knobs. EffectiveEffort applies a configured
 		// default_effort when the user has not explicitly selected /effort.
 		Extra: map[string]any{
-			"api_key_env":        e.APIKeyEnv,
-			"api_key_source":     e.APIKeySourceLabel(),
-			"thinking":           e.Thinking,
-			"effort":             config.EffectiveEffort(e),
-			"supported_efforts":  e.SupportedEfforts,
-			"reasoning_protocol": config.ReasoningProtocolForEntry(e),
-			"chat_url":           e.ChatURL,
-			"headers":            e.Headers,
-			"extra_body":         e.ExtraBody,
-			"auth_header":        e.AuthHeader,
-			"proxy_spec":         proxy,
-			"vision":             config.EffectiveVision(e),
-			"vision_detail":      e.VisionDetail,
+			"api_key_env":           e.APIKeyEnv,
+			"api_key_source":        e.APIKeySourceLabel(),
+			"thinking":              e.Thinking,
+			"effort":                config.EffectiveEffort(e),
+			"supported_efforts":     e.SupportedEfforts,
+			"reasoning_protocol":    config.ReasoningProtocolForEntry(e),
+			"chat_url":              e.ChatURL,
+			"headers":               e.Headers,
+			"extra_body":            e.ExtraBody,
+			"auth_header":           e.AuthHeader,
+			"proxy_spec":            proxy,
+			"vision":                config.EffectiveVision(e),
+			"vision_model_explicit": config.ExplicitModelVision(e),
+			"vision_detail":         e.VisionDetail,
 		},
 	})
 }

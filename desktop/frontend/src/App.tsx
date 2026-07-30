@@ -4681,7 +4681,7 @@ export default function App() {
                   turnCost={state.turnCost}
                   balance={state.balance}
                   sessionGen={state.sessionGen}
-                  refreshKey={dockRefreshKey}
+                  refreshKey={dockRefreshKey + state.contextPanelSeq}
                   usageSeq={state.usageSeq}
                 />
               ) : (

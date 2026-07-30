@@ -4,9 +4,9 @@ import type { Components } from "react-markdown";
 import rehypeKatex from "rehype-katex";
 import "katex/dist/katex.min.css";
 import { CodeViewer } from "./CodeViewer";
+import { RichMarkdownLink } from "./githubLink";
 import { normalizeMath } from "./mathNormalize";
 import { reasonixRemarkPlugins } from "./markdownRemarkPlugins";
-import { openExternal } from "../lib/bridge";
 import { markdownImageSource } from "../lib/markdownImage";
 
 const MermaidDiagram = lazy(() => import("./MermaidDiagram"));
@@ -108,24 +108,7 @@ function createComponents(plainStatusBlocks: boolean): Components {
       }
       return <code className="md-code">{children}</code>;
     },
-    a: ({ href, children }) => (
-      <a
-        href={href}
-        onClick={(e) => {
-          e.preventDefault();
-          if (href) openExternal(href);
-        }}
-        onAuxClick={(e) => {
-          e.preventDefault();
-          if (href) openExternal(href);
-        }}
-        onMouseDown={(e) => {
-          if (e.button === 1) e.preventDefault();
-        }}
-      >
-        {children}
-      </a>
-    ),
+    a: ({ href, children }) => <RichMarkdownLink href={href}>{children}</RichMarkdownLink>,
     img: ({ src, alt, title }) => (
       <img
         src={markdownImageSource(src)}

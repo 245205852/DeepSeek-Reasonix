@@ -79,12 +79,20 @@ func New(cfg provider.Config) (provider.Provider, error) {
 	headers, _ := cfg.Extra["headers"].(map[string]string)
 	extraBody, _ := cfg.Extra["extra_body"].(map[string]any)
 	vision, _ := cfg.Extra["vision"].(bool)
+	explicitModelVision, _ := cfg.Extra["vision_model_explicit"].(bool)
+	officialDeepSeek := IsDeepSeek(cfg.BaseURL)
+	// DeepSeek's official chat API accepts string message content only. Keep
+	// this provider-boundary guard even though config capability resolution
+	// normally prevents image attachments from reaching this layer. A positive
+	// model-scoped capability can opt in without letting stale provider-wide
+	// vision=true settings affect current text-only models.
+	vision = vision && (!officialDeepSeek || explicitModelVision)
 	visionDetail, _ := cfg.Extra["vision_detail"].(string)
 	visionDetail = strings.ToLower(strings.TrimSpace(visionDetail))
 	if visionDetail != "low" && visionDetail != "high" {
 		visionDetail = "" // auto — omit the field
 	}
-	deepseek := protocol == "deepseek" || (protocol == "" && IsDeepSeek(cfg.BaseURL))
+	deepseek := protocol == "deepseek" || (protocol == "" && officialDeepSeek)
 	minimax := protocol == "" && IsMiniMax(cfg.BaseURL)
 	zhipu := protocol == "" && IsZhipu(cfg.BaseURL)
 	longcat := protocol == "" && IsLongCat(cfg.BaseURL)
