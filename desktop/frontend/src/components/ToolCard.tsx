@@ -7,7 +7,6 @@ import { diffsFor, languageForToolArgs, subjectOf, summarize, summarizeFileDiff 
 import { useShellExpand } from "../lib/shellExpand";
 import { useGSAPCollapse } from "../lib/useGSAPCollapse";
 import type { Item } from "../lib/useController";
-import { isReadOnlyTool } from "../lib/useController";
 import { ReadOnlyBatch } from "./ReadOnlyBatch";
 
 type ToolItem = Extract<Item, { kind: "tool" }>;
@@ -232,7 +231,7 @@ export const ToolCard = memo(function ToolCard({ item, subcalls, tabId, displayN
                 roBatch.length = 0;
               };
               for (const c of nested) {
-                if (isReadOnlyTool(c.name) && c.name !== "todo_write") {
+                if (c.readOnly && c.name !== "todo_write") {
                   roBatch.push(c);
                   continue;
                 }

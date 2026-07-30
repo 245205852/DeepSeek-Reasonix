@@ -2,6 +2,16 @@ import { useMemo, type CSSProperties } from "react";
 import { themePackKind, type ThemePackView } from "../lib/themePack";
 import { baseStyleForPreview, themePreviewPalette } from "../lib/themePreviewPalette";
 
+export function themePreviewPaneAlpha(pack: ThemePackView | null, scene: "home" | "task"): number {
+  // Live pane transparency is guarded by data-theme-has-bg. Keep token-only
+  // and base previews opaque so the isolated preview matches the applied UI.
+  if (pack?.hasBackground !== true) return 1;
+  const paneAlpha = scene === "home"
+    ? pack.background?.paneOpacity ?? 0.50
+    : pack.taskBackground?.paneOpacity ?? pack.background?.paneOpacity ?? 0.68;
+  return Math.min(1, Math.max(0, paneAlpha));
+}
+
 /** Isolated mini Reasonix surface for gallery detail — does not touch :root. */
 export function ThemePreviewSurface({
   pack,
@@ -30,6 +40,8 @@ export function ThemePreviewSurface({
     const overlay = scene === "task"
       ? pack?.taskBackground?.overlayStrength ?? pack?.background?.overlayStrength ?? 0.62
       : pack?.background?.overlayStrength ?? 0.62;
+    const boundedPaneAlpha = themePreviewPaneAlpha(pack, scene);
+    const paneCardOffset = scene === "home" ? 0.26 : 0.14;
     return {
       ["--tp-bg" as string]: palette.bg,
       ["--tp-panel" as string]: palette.panel,
@@ -45,6 +57,8 @@ export function ThemePreviewSurface({
       ["--tp-focus-y" as string]: `${focusY * 100}%`,
       ["--tp-bg-opacity" as string]: String(opacity),
       ["--tp-overlay" as string]: String(overlay),
+      ["--tp-pane-shell-pct" as string]: `${Math.min((boundedPaneAlpha + 0.08) * 100, 100)}%`,
+      ["--tp-pane-card-pct" as string]: `${Math.min((boundedPaneAlpha + paneCardOffset) * 100, 100)}%`,
     } as CSSProperties;
   }, [pack, mode, scene]);
 

@@ -2,6 +2,8 @@ package cli
 
 import (
 	"fmt"
+	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"runtime"
@@ -11,6 +13,7 @@ import (
 	"github.com/atotto/clipboard"
 
 	"reasonix/internal/control"
+	"reasonix/internal/secrets"
 	"reasonix/internal/shellparse"
 )
 
@@ -149,6 +152,69 @@ func (m *chatTUI) beginClipboardImagePaste() tea.Cmd {
 	}
 	m.clipboardImagePending = true
 	return pasteClipboardImage()
+}
+
+var (
+	readTmuxPasteBuffer       = readTmuxBuffer
+	readPrimaryPasteSelection = readPrimarySelection
+	newPasteCommand           = exec.Command
+)
+
+// pasteMiddleClick returns a tea.Cmd that reads from the selection owner for the
+// current terminal environment and sends the result through the canonical paste
+// path. tmux normally owns middle-click and pastes its current buffer, but forwards
+// the event when an application enables mouse reporting; honor that same contract
+// here instead of unexpectedly switching to the desktop PRIMARY selection.
+func pasteMiddleClick() tea.Cmd {
+	return func() tea.Msg {
+		if os.Getenv("TMUX") != "" {
+			text, err := readTmuxPasteBuffer()
+			if err != nil || text == "" {
+				return nil
+			}
+			return tea.PasteMsg{Content: text}
+		}
+		if remoteClipboardSession() {
+			return clipboardTextPasteMsg{remote: true}
+		}
+		text, err := readPrimaryPasteSelection()
+		if err != nil || text == "" {
+			return nil
+		}
+		return tea.PasteMsg{Content: text}
+	}
+}
+
+// readTmuxBuffer retrieves the current tmux buffer verbatim. The inherited TMUX
+// environment variable identifies the correct server socket, just as the tmux
+// client command does for an interactive shell inside the pane.
+func readTmuxBuffer() (string, error) {
+	cmd := newPasteCommand("tmux", "save-buffer", "-")
+	cmd.Env = secrets.ProcessEnv()
+	out, err := cmd.Output()
+	if err != nil {
+		return "", fmt.Errorf("read tmux paste buffer: %w", err)
+	}
+	return string(out), nil
+}
+
+// readPrimarySelection attempts to retrieve text from the PRIMARY selection by
+// trying wl-paste (Wayland), xclip (X11), and xsel (X11) in order.
+func readPrimarySelection() (string, error) {
+	// Match the order used by SaveClipboardImage: Wayland tool first, then X11.
+	for _, args := range [][]string{
+		{"wl-paste", "--primary", "--type", "text", "--no-newline"},
+		{"xclip", "-selection", "primary", "-o"},
+		{"xsel", "--output", "--primary"},
+	} {
+		cmd := newPasteCommand(args[0], args[1:]...)
+		cmd.Env = secrets.ProcessEnv()
+		out, err := cmd.Output()
+		if err == nil {
+			return string(out), nil
+		}
+	}
+	return "", fmt.Errorf("no primary selection tool found (need wl-paste, xclip, or xsel)")
 }
 
 func (m *chatTUI) attachPastedImages(text string) bool {

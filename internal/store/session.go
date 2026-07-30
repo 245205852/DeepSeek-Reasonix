@@ -28,6 +28,16 @@ func IsSessionTranscriptName(name string) bool {
 		!strings.HasSuffix(name, ".guardian.jsonl")
 }
 
+// SessionRecoveryState is the persisted Auto-mode recovery checkpoint state
+// (<id>.recovery.json). It is a regular session-owned sidecar, not a transcript.
+func SessionRecoveryState(sessionPath string) string {
+	sessionPath = strings.TrimSpace(sessionPath)
+	if sessionPath == "" {
+		return ""
+	}
+	return sessionStem(sessionPath) + ".recovery.json"
+}
+
 // sessionStem strips the .jsonl suffix so a sidecar sits beside the session as
 // <id>.<kind> rather than <id>.jsonl.<kind>.
 func sessionStem(sessionPath string) string {
@@ -162,5 +172,6 @@ func SessionSidecarFiles(sessionPath string) []string {
 		SessionEventLogDamaged(sessionPath),
 		SessionEventIndex(sessionPath),
 		SessionConflictLog(sessionPath),
+		SessionRecoveryState(sessionPath),
 	}
 }

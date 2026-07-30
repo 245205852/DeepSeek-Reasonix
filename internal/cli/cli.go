@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"net/url"
 	"os"
 	"os/signal"
@@ -34,6 +35,7 @@ import (
 	"reasonix/internal/provider"
 	"reasonix/internal/provider/openai"
 	"reasonix/internal/serve"
+	"reasonix/internal/telemetry"
 
 	tea "charm.land/bubbletea/v2"
 	"github.com/spf13/pflag"
@@ -82,7 +84,7 @@ func Run(args []string, version string) int {
 	}
 
 	if len(args) == 0 && cliIsInteractive() {
-		return runInteractiveSession(nil)
+		return runInteractiveSession(nil, version)
 	}
 	if len(args) == 0 {
 		configureCLIThemeFromConfigForTTYOutput()
@@ -90,54 +92,69 @@ func Run(args []string, version string) int {
 		return 0
 	}
 	if cmd == "" {
-		return runInteractiveSession(args)
+		return runInteractiveSession(args, version)
 	}
 
 	rest := args[1:]
 	switch cmd {
 	case "run":
-		return runAgent(rest)
+		return runAgent(rest, version)
 	case "chat", "code": // "code" is the v0.x name for the interactive session
-		return runInteractiveSession(rest)
+		return runInteractiveSession(rest, version)
 	case "serve":
 		return runServe(rest)
 	case "setup":
 		configureCLIThemeFromConfigForTTYOutput()
 		return setupConfig(rest)
 	case "config":
-		configureCLIThemeFromConfigNoProbe()
+		configureCLIThemeFromConfig()
 		return configCommand(rest)
 	case "init":
 		// Project memory (AGENTS.md) is model-generated in-session — `/init` runs
 		// the codebase analysis. This CLI entry just points there (and to `setup`
 		// for config), so `reasonix init` isn't a dead end.
-		configureCLIThemeFromConfigNoProbe()
+		configureCLIThemeFromConfig()
 		return initHint()
 	case "acp":
-		configureCLIThemeFromConfigNoProbe()
+		configureCLIThemeFromConfig()
 		return acpCommand(rest, version)
 	case "mcp":
-		configureCLIThemeFromConfigNoProbe()
+		configureCLIThemeFromConfig()
 		return mcpCommand(rest)
+	case "remote":
+		configureCLIThemeFromConfig()
+		return remoteCommand(rest, version)
 	case "plugin":
-		configureCLIThemeFromConfigNoProbe()
+		configureCLIThemeFromConfig()
 		return pluginCommand(rest)
 	case "subagent":
 		configureCLIThemeFromConfigForTTYOutput()
 		return subagentCommand(rest)
 	case "doctor":
 		if !doctorRepair {
-			configureCLIThemeFromConfigNoProbe()
+			configureCLIThemeFromConfig()
 		}
 		return doctorCommand(rest, version)
+	case "report":
+		configureCLIThemeFromConfig()
+		return reportCommand(rest)
+	case "session":
+		configureCLIThemeFromConfig()
+		return sessionCommand(rest)
+	case "hook", "hooks":
+		configureCLIThemeFromConfig()
+		return hookCommand(rest)
+	case "task":
+		configureCLIThemeFromConfig()
+		return taskCommand(rest)
 	case "review":
-		configureCLIThemeFromConfigNoProbe()
+		configureCLIThemeFromConfig()
 		return reviewCommand(rest)
 	case "bot":
-		configureCLIThemeFromConfigNoProbe()
+		configureCLIThemeFromConfig()
 		return botCommand(rest, version)
 	case "upgrade", "update":
-		configureCLIThemeFromConfigNoProbe()
+		configureCLIThemeFromConfig()
 		return upgradeCommand(rest, version)
 	case "version", "--version", "-v":
 		fmt.Println("reasonix", version)
@@ -169,7 +186,7 @@ func isDefaultInteractiveFlag(arg string) bool {
 
 func shouldMigrateLegacyConfigForCLI(cmd string) bool {
 	switch cmd {
-	case "", "run", "chat", "code", "serve", "setup", "config", "init", "acp", "mcp", "plugin", "subagent", "doctor", "bot", "upgrade", "update":
+	case "", "run", "chat", "code", "serve", "setup", "config", "init", "acp", "mcp", "remote", "plugin", "subagent", "doctor", "bot", "upgrade", "update":
 		return true
 	default:
 		return false
@@ -205,14 +222,10 @@ func configureCLIThemeFromConfig() {
 
 func configureCLIThemeFromConfigForTTYOutput() {
 	if isTTY(os.Stdout) {
-		configureCLIThemeFromConfig()
+		withTerminalProbe(configureCLIThemeFromConfig)
 		return
 	}
-	configureCLIThemeFromConfigNoProbe()
-}
-
-func configureCLIThemeFromConfigNoProbe() {
-	withoutTerminalProbe(configureCLIThemeFromConfig)
+	configureCLIThemeFromConfig()
 }
 
 // setupProfile builds a ready-to-drive Controller from config via boot.Build.
@@ -235,11 +248,17 @@ type cliBuildOverrides struct {
 	AdditionalDirs       []string
 	WorkspaceRoot        string
 	HeadlessApprovalMode string
+	Stderr               io.Writer
+	OnSessionRecovered   func(control.SessionRecoveryInfo) error
 }
 
 func setupProfileWithOverrides(ctx context.Context, modelName string, maxStepsOverride int, requireKey bool, sink event.Sink, profile string, overrides cliBuildOverrides) (*control.Controller, error) {
 	migrateMCPConfigForCLIWorkspace()
-	return boot.Build(ctx, boot.Options{
+	return boot.Build(ctx, cliProfileBuildOptions(modelName, maxStepsOverride, requireKey, sink, profile, overrides))
+}
+
+func cliProfileBuildOptions(modelName string, maxStepsOverride int, requireKey bool, sink event.Sink, profile string, overrides cliBuildOverrides) boot.Options {
+	return boot.Options{
 		Model:                modelName,
 		MaxSteps:             maxStepsOverride,
 		MaxStepsKey:          "--max-steps",
@@ -252,7 +271,19 @@ func setupProfileWithOverrides(ctx context.Context, modelName string, maxStepsOv
 		PermissionAllow:      overrides.PermissionAllow,
 		AdditionalDirs:       overrides.AdditionalDirs,
 		HeadlessApprovalMode: overrides.HeadlessApprovalMode,
-	})
+		AutoPricingCurrency:  cliAutoPricingCurrency(),
+		Stderr:               overrides.Stderr,
+		OnSessionRecovered:   overrides.OnSessionRecovered,
+	}
+}
+
+func cliAutoPricingCurrency() string {
+	switch i18n.CurrentLanguage() {
+	case "zh", "zh-TW":
+		return "CNY"
+	default:
+		return "USD"
+	}
 }
 
 type cliPermissionMode struct {
@@ -306,24 +337,14 @@ func resolveCLISessionDir() string {
 	return config.SessionDir()
 }
 
-// setupQuietProfile is like setupProfile but suppresses plugin subprocess
-// stderr. Used during model switch inside a bubbletea session to prevent plugin
-// logs from corrupting the TUI's terminal raw mode.
+// setupQuietProfile is like setupProfile but guarantees plugin subprocess
+// stderr stays off the terminal. Interactive callers provide the private TUI
+// diagnostic writer; other callers fall back to io.Discard.
 func setupQuietProfile(ctx context.Context, modelName string, maxStepsOverride int, requireKey bool, sink event.Sink, profile string, overrides cliBuildOverrides) (*control.Controller, error) {
-	return boot.Build(ctx, boot.Options{
-		Model:           modelName,
-		MaxSteps:        maxStepsOverride,
-		MaxStepsKey:     "--max-steps",
-		RequireKey:      requireKey,
-		Sink:            sink,
-		Stderr:          io.Discard,
-		TokenMode:       profile,
-		SessionDir:      resolveCLISessionDir(),
-		WorkspaceRoot:   overrides.WorkspaceRoot,
-		EffortOverride:  overrides.Effort,
-		PermissionAllow: overrides.PermissionAllow,
-		AdditionalDirs:  overrides.AdditionalDirs,
-	})
+	if overrides.Stderr == nil {
+		overrides.Stderr = io.Discard
+	}
+	return boot.Build(ctx, cliProfileBuildOptions(modelName, maxStepsOverride, requireKey, sink, profile, overrides))
 }
 
 func parseRuntimeProfile(value string) (string, error) {
@@ -404,7 +425,7 @@ func withNotifications(sink event.Sink, cfg *config.Config) event.Sink {
 	return notify.NewSink(sink, newNotificationSender(), cfg.Notifications)
 }
 
-func runAgent(args []string) int {
+func runAgent(args []string, version string) int {
 	fs := pflag.NewFlagSet("run", pflag.ContinueOnError)
 	fs.SetInterspersed(true)
 	model := fs.String("model", "", "provider name (default: config default_model)")
@@ -420,6 +441,7 @@ func runAgent(args []string) int {
 	effort := fs.String("effort", "", "session reasoning effort override")
 	permissionMode := fs.String("permission-mode", "ask", "permission mode: manual | ask | auto | acceptEdits | dontAsk | plan | bypassPermissions")
 	printOnly := fs.BoolP("print", "p", false, "print only the final response")
+	eventsJSONL := fs.Bool("events-jsonl", false, "emit a redacted structured event stream as JSONL")
 	outputFormat := fs.String("output-format", "text", "output format: text | json | stream-json")
 	var additionalDirs []string
 	fs.StringArrayVar(&additionalDirs, "add-dir", nil, "allow tool access to an additional directory (repeatable)")
@@ -438,6 +460,13 @@ func runAgent(args []string) int {
 	if err != nil {
 		fmt.Fprintln(os.Stderr, i18n.M.ErrorPrefix, err)
 		return 2
+	}
+	if *eventsJSONL {
+		if fs.Changed("output-format") {
+			fmt.Fprintln(os.Stderr, i18n.M.ErrorPrefix, "--events-jsonl cannot be combined with --output-format")
+			return 2
+		}
+		format = runOutputEventsJSONL
 	}
 	profile, err := parseRuntimeProfile(*profileFlag)
 	if err != nil {
@@ -473,6 +502,14 @@ func runAgent(args []string) int {
 		fmt.Fprintln(os.Stderr, i18n.M.UsageRunHint)
 		return 2
 	}
+	var machineIdentityKey []byte
+	if format == runOutputEventsJSONL {
+		machineIdentityKey, err = loadMachineIdentityKey()
+		if err != nil {
+			fmt.Fprintln(os.Stderr, i18n.M.ErrorPrefix, "machine identity is unavailable")
+			return 1
+		}
+	}
 
 	// Resolve the resume target up front so --copy and the session lease can be
 	// handled before any heavy assembly. --resume takes precedence over
@@ -506,6 +543,11 @@ func runAgent(args []string) int {
 		}
 		resumePath = copied
 	}
+	sessionMode := cliTelemetrySessionMode(*cont, strings.TrimSpace(*resume) != "", *copySession)
+	reporter := startCLITelemetry(cfg, telemetry.Options{
+		Version: version, Interactive: false, CLIMode: "run", Profile: profile,
+		PermissionMode: *permissionMode, SessionMode: sessionMode,
+	})
 
 	// Own the session file for the lifetime of this run so a desktop window (or
 	// another CLI) writing the same session is refused up front instead of
@@ -561,6 +603,7 @@ func runAgent(args []string) int {
 		sink = metrics
 	}
 	sink = withNotifications(sink, cfg)
+	sink = reporter.Wrap(sink)
 	if resumePath != "" {
 		*model = modelForResumePath(*model, resumePath, cfg)
 	}
@@ -578,7 +621,14 @@ func runAgent(args []string) int {
 	// executor, not just the top-level one. Default/ask and acceptEdits already
 	// keep the default headless gate (ask decisions resolve to allow); only
 	// auto/dontAsk/yolo need the explicit contract.
-	overrides := cliBuildOverrides{Effort: effortOverride, PermissionAllow: allowedTools, AdditionalDirs: additionalDirs, WorkspaceRoot: workspaceRoot, HeadlessApprovalMode: permissions.approval}
+	overrides := cliBuildOverrides{
+		Effort:               effortOverride,
+		PermissionAllow:      allowedTools,
+		AdditionalDirs:       additionalDirs,
+		WorkspaceRoot:        workspaceRoot,
+		HeadlessApprovalMode: permissions.approval,
+		OnSessionRecovered:   cliSessionRecoveredHandler(leases),
+	}
 	ctrl, err := setupProfileWithOverrides(ctx, *model, *maxSteps, true, sink, profile, overrides)
 	if err != nil {
 		if resultOutput != nil && format != runOutputText {
@@ -591,9 +641,7 @@ func runAgent(args []string) int {
 		return 1
 	}
 	defer ctrl.Close()
-	if permissions.approval != control.ToolApprovalAsk {
-		ctrl.ApplyHeadlessApprovalMode(permissions.approval)
-	}
+	ctrl.ApplyHeadlessApprovalMode(permissions.approval)
 
 	// --resume: load a specific session file (non-interactive, meant for
 	// MCP/API callers that manage their own per-project session). Takes
@@ -603,7 +651,7 @@ func runAgent(args []string) int {
 		ctrl.Resume(resumeSession, resumePath)
 	}
 	if ctrl.SessionPath() == "" && ctrl.SessionDir() != "" {
-		ctrl.SetSessionPath(agent.NewSessionPath(ctrl.SessionDir(), ctrl.Label()))
+		ctrl.SetFreshSessionPath(agent.NewSessionPath(ctrl.SessionDir(), ctrl.Label()))
 	}
 	// Fresh sessions take the lease too (defensive: the path is brand new); a
 	// resumed path is already held, making this a no-op.
@@ -613,8 +661,14 @@ func runAgent(args []string) int {
 	}
 
 	runErr := ctrl.Run(ctx, prompt)
+	reporter.RecordRecovery(ctrl.DrainRecoveryMetrics())
+	completion := classifyRunCompletion(runErr)
 	if cfg != nil {
-		notify.SendEvent(newNotificationSender(), cfg.Notifications, event.Event{Kind: event.TurnDone, Err: runErr})
+		notify.SendEvent(newNotificationSender(), cfg.Notifications, event.Event{
+			Kind:    event.TurnDone,
+			Err:     runErr,
+			Outcome: completion.outcome,
+		})
 	}
 	if metrics != nil {
 		if exec := ctrl.Executor(); exec != nil {
@@ -637,18 +691,25 @@ func runAgent(args []string) int {
 		}
 	}
 	if resultOutput != nil {
-		if err := resultOutput.Finalize(agent.BranchID(ctrl.SessionPath()), started, runErr); err != nil {
+		sessionID := runOutputSessionID(format, agent.BranchID(ctrl.SessionPath()), machineIdentityKey)
+		if err := resultOutput.Finalize(sessionID, started, runErr); err != nil {
 			fmt.Fprintln(os.Stderr, i18n.M.ErrorPrefix, err)
 			return 1
 		}
 	}
 	if runErr != nil {
+		if !completion.isError {
+			if format == runOutputText {
+				fmt.Fprintln(os.Stderr, "\n"+runErr.Error())
+			}
+			return completion.exitCode
+		}
 		if resultOutput == nil {
 			fmt.Fprintln(os.Stderr, "\n"+i18n.M.ErrorPrefix, runErr)
 		}
-		return 1
+		return completion.exitCode
 	}
-	return 0
+	return completion.exitCode
 }
 
 // runServe exposes the controller over HTTP+SSE: events stream to the browser,
@@ -667,6 +728,9 @@ func runServe(args []string) int {
 	password := fs.String("password", "", "password for auth=password (use --hash-password to store a hash instead)")
 	hashPassword := fs.Bool("hash-password", false, "print a bcrypt hash of --password and exit")
 	behindProxy := fs.Bool("behind-proxy", false, "trust X-Forwarded-For / X-Forwarded-Proto headers from a reverse proxy")
+	portFile := fs.String("port-file", "", "write the actual bound listen address (host:port) to this file after binding")
+	tokenFile := fs.String("token-file", "", "read the auth=token pre-shared token from this file (overrides --token; keeps the secret out of argv)")
+	pidFile := fs.String("pid-file", "", "write the server process id to this file")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
@@ -702,6 +766,14 @@ func runServe(args []string) int {
 	}
 	if *token != "" {
 		serveCfg.Token = *token
+	}
+	if *tokenFile != "" {
+		tok, err := readServeTokenFile(*tokenFile)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, i18n.M.ErrorPrefix, err)
+			return 1
+		}
+		serveCfg.Token = tok
 	}
 	if *behindProxy {
 		serveCfg.BehindProxy = true
@@ -750,17 +822,13 @@ func runServe(args []string) int {
 		}
 	}
 	*model = modelForResumePath(*model, *resume, cfg)
-	// Serve always uses the user's global default_model, ignoring any
-	// project-level override, so the model choice stays consistent across
-	// projects and matches the user's account-level preference.
-	if *model == "" {
-		if uc := config.UserConfigPath(); uc != "" {
-			if userCfg := config.LoadForEdit(uc); userCfg != nil && userCfg.DefaultModel != "" {
-				*model = userCfg.DefaultModel
-			}
-		}
-	}
-	ctrl, err := setupProfile(ctx, *model, *maxSteps, true, bc, profile, "")
+	// Serve always resolves an implicit model from the user-global config,
+	// ignoring project-level default_model overrides. Explicit flags and
+	// resumable session models remain strict and are preserved verbatim.
+	*model = resolveServeModel(*model)
+	ctrl, err := setupProfileWithOverrides(ctx, *model, *maxSteps, true, bc, profile, cliBuildOverrides{
+		OnSessionRecovered: cliSessionRecoveredHandler(leases),
+	})
 	if err != nil {
 		fmt.Fprintln(os.Stderr, i18n.M.ErrorPrefix, err)
 		return 1
@@ -781,14 +849,55 @@ func runServe(args []string) int {
 
 	srv := serve.New(ctrl, bc, serveCfg)
 	srv.SetSessionLeases(leases)
-	fmt.Printf("reasonix serve — %s on http://%s\n", ctrl.Label(), *addr)
+
+	// With --port-file the supervisor needs the real bound port (--addr may be
+	// 127.0.0.1:0), so listen first, record the address, then serve on the
+	// existing listener.
+	var ln net.Listener
+	displayAddr := *addr
+	if *portFile != "" {
+		var lerr error
+		ln, lerr = net.Listen("tcp", *addr)
+		if lerr != nil {
+			fmt.Fprintln(os.Stderr, i18n.M.ErrorPrefix, lerr)
+			return 1
+		}
+		displayAddr = ln.Addr().String()
+		if err := writeServeAddrFile(*portFile, displayAddr); err != nil {
+			_ = ln.Close()
+			fmt.Fprintln(os.Stderr, i18n.M.ErrorPrefix, err)
+			return 1
+		}
+		defer os.Remove(*portFile)
+	}
+	if *pidFile != "" {
+		if err := writeServePidFile(*pidFile); err != nil {
+			if ln != nil {
+				_ = ln.Close()
+			}
+			fmt.Fprintln(os.Stderr, i18n.M.ErrorPrefix, err)
+			return 1
+		}
+		defer os.Remove(*pidFile)
+	}
+
+	fmt.Printf("reasonix serve — %s on http://%s\n", ctrl.Label(), displayAddr)
 	if srv.AuthMode() == "token" {
 		fmt.Printf("  auth: token\n")
-		fmt.Printf("  share: http://%s/?token=%s\n", *addr, srv.AuthToken())
+		// Under --port-file the process is supervised (e.g. remote bootstrap):
+		// stdout is redirected to a log, so printing the token here would leak it
+		// into a file readable by other same-machine users. The supervisor
+		// already holds the token (it wrote --token-file), so suppress the share
+		// URL and print only the token-file reference.
+		if *portFile != "" && *tokenFile != "" {
+			fmt.Printf("  share: http://%s/ (token in %s)\n", displayAddr, *tokenFile)
+		} else {
+			fmt.Printf("  share: http://%s/?token=%s\n", displayAddr, srv.AuthToken())
+		}
 	} else if srv.AuthMode() == "password" {
-		fmt.Printf("  auth: password (login at http://%s/login)\n", *addr)
+		fmt.Printf("  auth: password (login at http://%s/login)\n", displayAddr)
 	}
-	if warning := serve.PlainHTTPAuthWarning(serveCfg, *addr); warning != "" {
+	if warning := serve.PlainHTTPAuthWarning(serveCfg, displayAddr); warning != "" {
 		fmt.Fprintf(os.Stderr, "  %s\n", warning)
 	}
 	// Diagnostic: check whether balance endpoint is reachable
@@ -803,6 +912,13 @@ func runServe(args []string) int {
 	// Use graceful shutdown so SIGINT/SIGTERM drain active connections.
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	if ln != nil {
+		if err := srv.RunGracefulListener(ctx, ln); err != nil {
+			fmt.Fprintln(os.Stderr, i18n.M.ErrorPrefix, err)
+			return 1
+		}
+		return 0
+	}
 	if err := srv.RunGraceful(ctx, *addr); err != nil {
 		fmt.Fprintln(os.Stderr, i18n.M.ErrorPrefix, err)
 		return 1
@@ -813,7 +929,7 @@ func runServe(args []string) int {
 // chatREPL is an interactive session: a single persistent agent/session and a
 // prompt loop that keeps conversation context across turns. Exit with
 // 'exit'/'quit' or Ctrl-D.
-func chatREPL(args []string) int {
+func chatREPL(args []string, version string) int {
 	fs := pflag.NewFlagSet("reasonix", pflag.ContinueOnError)
 	fs.SetInterspersed(true)
 	model := fs.String("model", "", "provider name (default: config default_model)")
@@ -866,6 +982,11 @@ func chatREPL(args []string) int {
 		configureCLIThemeWithStyle(cfg.UITheme(), cfg.UIThemeStyle())
 		cliCursorShape = cfg.UICursorShape()
 	}
+	// Bubble Tea owns the terminal from the resume picker through controller
+	// shutdown. Route process logs and plugin stderr to a private, bounded file
+	// for that whole lifetime; user-facing warnings arrive as typed TUI events.
+	diagnostics := startTUIDiagnostics(config.ReasonixHomeDir())
+	defer diagnostics.Close()
 
 	// Decide whether we're starting fresh or resuming. --resume opens an
 	// interactive picker; --continue / -c jumps straight into the newest.
@@ -912,6 +1033,11 @@ func chatREPL(args []string) int {
 		fmt.Printf("continuing in a session copy: %s\n", copied)
 		resumePath = copied
 	}
+	sessionMode := cliTelemetrySessionMode(*cont, resumeValue != "", *copySession)
+	reporter := startCLITelemetry(cfg, telemetry.Options{
+		Version: version, Interactive: isInteractive(), CLIMode: "tui", Profile: profile,
+		PermissionMode: *permissionMode, SessionMode: sessionMode,
+	})
 
 	// Own the active session file for the TUI's lifetime; in-TUI switches
 	// (/resume, /switch, /new, ...) move the lease with the active path.
@@ -941,11 +1067,19 @@ func chatREPL(args []string) int {
 
 	var sink event.Sink = &eventSink{ch: eventCh}
 	sink = withNotifications(sink, cfg)
+	sink = reporter.Wrap(sink)
 	var effortOverride *string
 	if strings.TrimSpace(*effort) != "" {
 		effortOverride = effort
 	}
-	overrides := cliBuildOverrides{Effort: effortOverride, PermissionAllow: allowedTools, AdditionalDirs: additionalDirs, WorkspaceRoot: workspaceRoot}
+	overrides := cliBuildOverrides{
+		Effort:             effortOverride,
+		PermissionAllow:    allowedTools,
+		AdditionalDirs:     additionalDirs,
+		WorkspaceRoot:      workspaceRoot,
+		Stderr:             diagnostics.Writer(),
+		OnSessionRecovered: cliSessionRecoveredHandler(leases),
+	}
 	ctrl, err := setupProfileWithOverrides(ctx, *model, *maxSteps, false, sink, profile, overrides)
 	if err != nil && errors.Is(err, boot.ErrUnknownModel) && isInteractive() && config.SourcePath() == "" {
 		// True first run whose default model can't resolve: guide setup, then retry.
@@ -983,14 +1117,20 @@ func chatREPL(args []string) int {
 
 	// Surface a missing-key warning inside the TUI banner so the first message
 	// failing is at least pre-announced; the user can still enter chat.
+	// resolveModelForCLI transparently falls through a keyless default to the
+	// next configured provider (issue #6996). Validating the final ref is a
+	// no-op for that configured fallback and preserves the warning when every
+	// eligible chat provider is still keyless.
 	missing := ""
 	if cfg, loadErr := config.Load(); loadErr == nil {
-		name := *model
-		if name == "" {
-			name = cfg.DefaultModel
-		}
-		if vErr := cfg.Validate(name); vErr != nil {
-			missing = vErr.Error()
+		name, _, err := resolveModelForCLI(*model, cfg)
+		switch {
+		case err != nil:
+			missing = err.Error()
+		case name != "":
+			if vErr := cfg.Validate(name); vErr != nil {
+				missing = vErr.Error()
+			}
 		}
 	}
 
@@ -1056,15 +1196,6 @@ func chatREPL(args []string) int {
 	if effortOverride != nil {
 		m.effortLevel = *effortOverride
 	}
-	if cfg, e := config.Load(); e == nil {
-		name := *model
-		if name == "" {
-			name = cfg.DefaultModel
-		}
-		if entry, ok := cfg.ResolveModel(name); ok {
-			m.modelRef = entry.Name + "/" + entry.Model
-		}
-	}
 	if effortOverride == nil {
 		m.refreshEffortStatus()
 	}
@@ -1096,14 +1227,22 @@ func chatREPL(args []string) int {
 	// when executed while the TUI is alive.
 	if fm, ok := final.(chatTUI); ok {
 		for _, oc := range fm.oldControllers {
+			if c, ok := oc.(*control.Controller); ok {
+				reporter.RecordRecovery(c.DrainRecoveryMetrics())
+			}
 			oc.Close()
 		}
 		if fm.ctrl != nil {
+			if c, ok := fm.ctrl.(*control.Controller); ok {
+				reporter.RecordRecovery(c.DrainRecoveryMetrics())
+			}
 			fm.ctrl.Close()
 		} else {
+			reporter.RecordRecovery(ctrl.DrainRecoveryMetrics())
 			ctrl.Close()
 		}
 	} else {
+		reporter.RecordRecovery(ctrl.DrainRecoveryMetrics())
 		ctrl.Close()
 	}
 	if runErr != nil {
@@ -1243,6 +1382,19 @@ func confirmReconfigureExistingConfig(path string, in *bufio.Scanner, w io.Write
 }
 
 func writeDefaultConfig(path string) int {
+	unlock, err := config.LockConfigFileEdits(path)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, i18n.M.WriteConfigErr, err)
+		return 1
+	}
+	defer unlock()
+	if _, err := os.Lstat(path); err == nil {
+		fmt.Fprintf(os.Stderr, i18n.M.NotOverwritingFmt+"\n", path)
+		return 1
+	} else if !os.IsNotExist(err) {
+		fmt.Fprintln(os.Stderr, i18n.M.WriteConfigErr, err)
+		return 1
+	}
 	c := config.Default()
 	if err := c.SaveTo(path); err != nil {
 		fmt.Fprintln(os.Stderr, i18n.M.WriteConfigErr, err)
@@ -1269,7 +1421,11 @@ func interactiveSetup(configPath, envPath string) int {
 	// Seed from the existing config when reconfiguring, so a re-run to fix a key
 	// preserves the user's providers / agent settings instead of resetting to
 	// defaults. First run (no file) falls back to the built-in defaults.
-	cfg := config.LoadForEdit(configPath)
+	cfg, err := config.LoadForEditReadOnlyStrict(configPath)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, i18n.M.WriteConfigErr, err)
+		return 1
+	}
 	session := newProviderSetupSessionForPath(cfg, configPath)
 	lang, err := selectLanguage()
 	if err != nil {
@@ -1566,6 +1722,9 @@ func apiKeyEnvFromProviderName(name string) string {
 	stem = strings.Trim(stem, "_")
 	if stem == "" {
 		return "CUSTOM_" + fnv1a32Hex(name) + "_API_KEY"
+	}
+	if stem[0] >= '0' && stem[0] <= '9' {
+		stem = "CUSTOM_" + stem
 	}
 	return stem + "_API_KEY"
 }
@@ -1902,9 +2061,6 @@ func providersWithMissingKeys(cfg *config.Config) []config.ProviderEntry {
 		cfg.Agent.PlannerModel,
 		cfg.Agent.SubagentModel,
 	}
-	if !strings.EqualFold(strings.TrimSpace(cfg.Agent.AutoPlan), "off") {
-		refs = append(refs, cfg.Agent.AutoPlanClassifier)
-	}
 	if len(cfg.Agent.SubagentModels) > 0 {
 		keys := make([]string, 0, len(cfg.Agent.SubagentModels))
 		for key := range cfg.Agent.SubagentModels {
@@ -2073,18 +2229,145 @@ func configCommand(args []string) int {
 	}
 	switch args[0] {
 	case "auto-plan":
-		return configAutoPlanCommand(args[1:])
+		return configAutoPlanCompatibilityCommand(args[1:])
 	case "reasoning-language":
 		return configReasoningLanguageCommand(args[1:])
+	case "currency":
+		return configCurrencyCommand(args[1:])
+	case "telemetry":
+		return configTelemetryCommand(args[1:])
 	default:
 		configUsage()
 		return 2
 	}
 }
 
-func configAutoPlanCommand(args []string) int {
+func configCurrencyCommand(args []string) int {
+	fs := flag.NewFlagSet("config currency", flag.ContinueOnError)
+	local := fs.Bool("local", false, "unsupported; pricing currency is user-level only")
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	if *local {
+		fmt.Fprintln(os.Stderr, i18n.M.ErrorPrefix, "currency is user-level only; --local is not supported")
+		return 2
+	}
+	rest := fs.Args()
+	if len(rest) > 1 {
+		configCurrencyUsage()
+		return 2
+	}
+	if len(rest) == 0 {
+		cfg, err := config.LoadForRootReadOnly(".")
+		if err != nil {
+			fmt.Fprintln(os.Stderr, i18n.M.ErrorPrefix, err)
+			return 1
+		}
+		cfg.ApplyRuntimeAutoPricingCurrency(cliAutoPricingCurrency())
+		fmt.Printf("currency = %q (resolved: %s)\n", pricingCurrencyDisplay(cfg.DesktopCurrency()), cfg.DeepSeekOfficialPricingCurrency())
+		return 0
+	}
+	mode, err := parseCLIPricingCurrency(rest[0])
+	if err != nil {
+		fmt.Fprintln(os.Stderr, i18n.M.ErrorPrefix, err)
+		return 2
+	}
+	path := config.UserConfigPath()
+	if path == "" {
+		fmt.Fprintln(os.Stderr, i18n.M.ErrorPrefix, "cannot resolve user config path")
+		return 1
+	}
+	unlock := config.LockUserConfigEdits()
+	defer unlock()
+	cfg := config.LoadForEdit(path)
+	if err := cfg.SetDesktopCurrency(mode); err != nil {
+		fmt.Fprintln(os.Stderr, i18n.M.ErrorPrefix, err)
+		return 2
+	}
+	resolved := cfg.DeepSeekOfficialPricingCurrency()
+	if mode == "" && cfg.DesktopLanguage() == "" {
+		resolved = cliAutoPricingCurrency()
+	}
+	if err := cfg.SaveTo(path); err != nil {
+		fmt.Fprintln(os.Stderr, i18n.M.ErrorPrefix, err)
+		return 1
+	}
+	fmt.Printf("currency = %q (resolved: %s, %s)\n", pricingCurrencyDisplay(mode), resolved, displayPath(path))
+	return 0
+}
+
+var (
+	cleanupCLITelemetry        = telemetry.Cleanup
+	startCLITelemetryReporter  = telemetry.Start
+	persistCLITelemetryConsent = func(mode string) error {
+		path := config.UserConfigPath()
+		if strings.TrimSpace(path) == "" {
+			return errors.New("cannot resolve config path")
+		}
+		unlock := config.LockUserConfigEdits()
+		defer unlock()
+		cfg, err := config.LoadForEditReadOnlyStrict(path)
+		if err != nil {
+			return err
+		}
+		if err := cfg.SetCLITelemetryMode(mode); err != nil {
+			return err
+		}
+		return cfg.SaveTo(path)
+	}
+)
+
+func configTelemetryCommand(args []string) int {
+	fs := flag.NewFlagSet("config telemetry", flag.ContinueOnError)
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	rest := fs.Args()
+	if len(rest) > 1 {
+		configTelemetryUsage()
+		return 2
+	}
+	if len(rest) == 0 {
+		cfg, err := config.Load()
+		if err != nil {
+			fmt.Fprintln(os.Stderr, i18n.M.ErrorPrefix, err)
+			return 1
+		}
+		fmt.Printf("cli_metrics = %q\n", cfg.CLITelemetryMode())
+		return 0
+	}
+	path := config.UserConfigPath()
+	if path == "" {
+		fmt.Fprintln(os.Stderr, i18n.M.ErrorPrefix, "cannot resolve config path")
+		return 1
+	}
+	unlock := config.LockUserConfigEdits()
+	defer unlock()
+	cfg := config.LoadForEdit(path)
+	if err := cfg.SetCLITelemetryMode(rest[0]); err != nil {
+		fmt.Fprintln(os.Stderr, i18n.M.ErrorPrefix, err)
+		return 2
+	}
+	if err := cfg.SaveTo(path); err != nil {
+		fmt.Fprintln(os.Stderr, i18n.M.ErrorPrefix, err)
+		return 1
+	}
+	if cfg.CLITelemetryMode() == "off" {
+		if err := cleanupCLITelemetry(config.ReasonixHomeDir()); err != nil {
+			fmt.Fprintln(os.Stderr, i18n.M.ErrorPrefix, "telemetry disabled, but pending metrics could not be deleted:", err)
+			return 1
+		}
+	}
+	fmt.Printf("cli_metrics = %q (%s)\n", cfg.CLITelemetryMode(), displayPath(path))
+	return 0
+}
+
+// configAutoPlanCompatibilityCommand preserves the released shell interface
+// without restoring Automatic Plan Mode. Reading and writing "off" are safe
+// no-ops; every attempt to enable the retired feature is rejected.
+func configAutoPlanCompatibilityCommand(args []string) int {
 	fs := flag.NewFlagSet("config auto-plan", flag.ContinueOnError)
-	local := fs.Bool("local", false, "unsupported; auto-plan is user-level only")
+	local := fs.Bool("local", false, "unsupported; automatic plan mode is retired")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
@@ -2094,39 +2377,19 @@ func configAutoPlanCommand(args []string) int {
 	}
 	rest := fs.Args()
 	if len(rest) > 1 {
-		configAutoPlanUsage()
+		configAutoPlanCompatibilityUsage()
 		return 2
 	}
 	if len(rest) == 0 {
-		cfg, err := config.Load()
-		if err != nil {
-			fmt.Fprintln(os.Stderr, i18n.M.ErrorPrefix, err)
-			return 1
-		}
-		mode := cfg.Agent.AutoPlan
-		mode = cliAutoPlanMode(mode)
-		fmt.Printf("auto_plan = %q\n", mode)
+		fmt.Println(`auto_plan = "off"`)
 		return 0
 	}
-	path := config.UserConfigPath()
-	if path == "" {
-		fmt.Fprintln(os.Stderr, i18n.M.ErrorPrefix, "cannot resolve config path")
-		return 1
-	}
-	// Serialize the load-modify-save against other in-process user-config
-	// editors so concurrent writers don't drop each other's fields.
-	unlock := config.LockUserConfigEdits()
-	defer unlock()
-	cfg := config.LoadForEdit(path)
+	cfg := config.Default()
 	if err := cfg.SetAutoPlan(rest[0]); err != nil {
 		fmt.Fprintln(os.Stderr, i18n.M.ErrorPrefix, err)
 		return 2
 	}
-	if err := cfg.SaveTo(path); err != nil {
-		fmt.Fprintln(os.Stderr, i18n.M.ErrorPrefix, err)
-		return 1
-	}
-	fmt.Printf("auto_plan = %q (%s)\n", cfg.Agent.AutoPlan, displayPath(path))
+	fmt.Println(`auto_plan = "off"`)
 	return 0
 }
 
@@ -2163,6 +2426,12 @@ func configReasoningLanguageCommand(args []string) int {
 		fmt.Fprintln(os.Stderr, i18n.M.ErrorPrefix, "cannot resolve config path")
 		return 1
 	}
+	unlock, err := config.LockConfigFileEdits(path)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, i18n.M.ErrorPrefix, err)
+		return 1
+	}
+	defer unlock()
 	if *local {
 		if _, err := os.Stat(path); errors.Is(err, os.ErrNotExist) {
 			lang, err := config.SaveMinimalProjectReasoningLanguage(path, mode)
@@ -2177,14 +2446,11 @@ func configReasoningLanguageCommand(args []string) int {
 			return 1
 		}
 	}
-	if !*local {
-		// Non-local writes target the user config; serialize the
-		// load-modify-save against other in-process user-config editors.
-		// --local writes ./reasonix.toml and needs no user-config lock.
-		unlock := config.LockUserConfigEdits()
-		defer unlock()
+	cfg, err := config.LoadForEditReadOnlyStrict(path)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, i18n.M.ErrorPrefix, err)
+		return 1
 	}
-	cfg := config.LoadForEdit(path)
 	if err := cfg.SetReasoningLanguage(mode); err != nil {
 		fmt.Fprintln(os.Stderr, i18n.M.ErrorPrefix, err)
 		return 2
@@ -2199,19 +2465,93 @@ func configReasoningLanguageCommand(args []string) int {
 
 func configUsage() {
 	fmt.Print(`Usage:
-  reasonix config auto-plan [off|on]
   reasonix config reasoning-language [--local] [auto|zh|en]
+  reasonix config currency [auto|CNY|USD]
+  reasonix config telemetry [auto|on|off]
 `)
 }
 
-func configAutoPlanUsage() {
+func configTelemetryUsage() {
 	fmt.Print(`Usage:
-  reasonix config auto-plan [off|on]
+  reasonix config telemetry [auto|on|off]
+`)
+}
+
+func startCLITelemetry(cfg *config.Config, opts telemetry.Options) *telemetry.Reporter {
+	return startCLITelemetryWithIO(cfg, opts, os.Stdin, os.Stdout, os.Stderr)
+}
+
+func startCLITelemetryWithIO(cfg *config.Config, opts telemetry.Options, in io.Reader, out, errOut io.Writer) *telemetry.Reporter {
+	if cfg == nil {
+		cfg = config.Default()
+	}
+	opts.Mode = cfg.CLITelemetryMode()
+	opts.HomeDir = config.ReasonixHomeDir()
+	opts.SafeMode = cfg.SafeMode()
+	opts.Proxy = cfg.NetworkProxySpec()
+	opts.Language = cfg.Language
+
+	if cfg.CLITelemetryConfigured() || !telemetry.Enabled(opts.Mode, opts.Version, opts.Interactive, opts.SafeMode) {
+		return startCLITelemetryReporter(opts)
+	}
+
+	fmt.Fprintln(out, i18n.M.CLITelemetryConsentNotice)
+	scanner := bufio.NewScanner(in)
+	mode := ""
+	for mode == "" {
+		answer := strings.ToLower(strings.TrimSpace(ask(scanner, out, i18n.M.CLITelemetryConsentPrompt, "Y/n")))
+		switch answer {
+		case "y", "yes", "y/n":
+			mode = "auto"
+		case "n", "no":
+			mode = "off"
+		default:
+			fmt.Fprintln(out, i18n.M.CLITelemetryConsentInvalid)
+		}
+	}
+
+	if err := persistCLITelemetryConsent(mode); err != nil {
+		fmt.Fprintf(errOut, i18n.M.CLITelemetryConsentSaveFailedFmt+"\n", err)
+		return nil
+	}
+	cfg.Telemetry.CLIMetrics = mode
+	opts.Mode = mode
+	if mode == "off" {
+		if err := cleanupCLITelemetry(opts.HomeDir); err != nil {
+			fmt.Fprintf(errOut, i18n.M.CLITelemetryConsentCleanupFailedFmt+"\n", err)
+		}
+		return nil
+	}
+	return startCLITelemetryReporter(opts)
+}
+
+func cliTelemetrySessionMode(cont, resume, copySession bool) string {
+	switch {
+	case copySession:
+		return "copy"
+	case resume:
+		return "resume"
+	case cont:
+		return "continue"
+	default:
+		return "fresh"
+	}
+}
+
+func configAutoPlanCompatibilityUsage() {
+	fmt.Print(`Usage:
+  reasonix config auto-plan [off]
 `)
 }
 
 func configReasoningLanguageUsage() {
 	fmt.Print(`Usage:
   reasonix config reasoning-language [--local] [auto|zh|en]
+`)
+}
+
+func configCurrencyUsage() {
+	fmt.Print(`Usage:
+  reasonix config currency [auto|CNY|USD]
 `)
 }

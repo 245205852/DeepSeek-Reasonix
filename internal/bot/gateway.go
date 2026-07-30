@@ -17,6 +17,7 @@ import (
 	"reasonix/internal/config"
 	"reasonix/internal/control"
 	"reasonix/internal/event"
+	"reasonix/internal/secrets"
 )
 
 // GatewayConfig 是 BotGateway 的配置。
@@ -202,6 +203,7 @@ type botController interface {
 type sessionState struct {
 	ctrl             botController
 	sink             *sessionEventSink
+	leases           *control.SessionLeaseKeeper
 	platform         Platform
 	connectionID     string
 	model            string
@@ -643,6 +645,25 @@ func (gw *BotGateway) closeSessionState(state *sessionState) {
 	if state.ctrl != nil {
 		state.ctrl.Close()
 	}
+	if state.leases != nil {
+		state.leases.Release()
+	}
+}
+
+// unlinkAndCloseSessionState removes state from the live gateway before closing
+// it. It is used when a controller has already rotated its transcript but the
+// replacement lease could not be acquired: retaining that state would let the
+// next message reuse a controller that no longer owns its active session path.
+func (gw *BotGateway) unlinkAndCloseSessionState(key string, state *sessionState) {
+	if state == nil {
+		return
+	}
+	gw.mu.Lock()
+	if gw.controllers[key] == state {
+		delete(gw.controllers, key)
+	}
+	gw.mu.Unlock()
+	gw.closeSessionState(state)
 }
 
 func (gw *BotGateway) dispatchLoop(ctx context.Context, binding AdapterBinding) {
@@ -1112,12 +1133,18 @@ func chatUsesGroupAllowlist(chatType ChatType) bool {
 }
 
 func (gw *BotGateway) normalizeApprovalShortcut(key, text string) (string, bool) {
-	command, ok := approvalShortcutCommand(text)
-	if !ok {
-		return "", false
-	}
 	approvalID := gw.currentPendingApprovalID(key)
 	if approvalID == "" {
+		return "", false
+	}
+	if gw.pendingApprovalIsRecovery(key, approvalID) {
+		if command, ok := recoveryShortcutCommand(text, gw.pendingRecoveryCanGrantTask(key, approvalID)); ok {
+			return command + " " + approvalID, true
+		}
+		return "", false
+	}
+	command, ok := approvalShortcutCommand(text)
+	if !ok {
 		return "", false
 	}
 	return command + " " + approvalID, true
@@ -1132,6 +1159,52 @@ func approvalShortcutCommand(text string) (string, bool) {
 	default:
 		return "", false
 	}
+}
+
+func recoveryShortcutCommand(text string, canGrantTask bool) (string, bool) {
+	switch strings.ToLower(strings.TrimSpace(text)) {
+	case "1", "y", "yes", "ok", "继续", "继续此变更", "continue":
+		return "/recovery-continue", true
+	case "2", "a", "同类", "本任务允许", "allow similar":
+		if canGrantTask {
+			return "/recovery-continue-task", true
+		}
+		return "/recovery-revise", true
+	case "3":
+		if canGrantTask {
+			return "/recovery-revise", true
+		}
+		return "", false
+	case "修改", "修改方案", "换个办法", "revise":
+		return "/recovery-revise", true
+	default:
+		return "", false
+	}
+}
+
+func (gw *BotGateway) pendingRecoveryCanGrantTask(key, id string) bool {
+	gw.mu.Lock()
+	defer gw.mu.Unlock()
+	state, ok := gw.controllers[key]
+	if !ok || state.pendingApprovals == nil {
+		return false
+	}
+	a, ok := state.pendingApprovals[id]
+	return ok && a.Recovery != nil && a.Recovery.CanGrantTask
+}
+
+func (gw *BotGateway) pendingApprovalIsRecovery(key, id string) bool {
+	gw.mu.Lock()
+	defer gw.mu.Unlock()
+	state, ok := gw.controllers[key]
+	if !ok || state.pendingApprovals == nil {
+		return false
+	}
+	a, ok := state.pendingApprovals[id]
+	if !ok {
+		return false
+	}
+	return strings.EqualFold(strings.TrimSpace(a.Kind), "recovery") || a.Recovery != nil
 }
 
 func decisionShortcutCommand(text string) (string, bool) {
@@ -1266,6 +1339,28 @@ func (gw *BotGateway) handleSlashCommand(ctx context.Context, adapter Adapter, k
 				_ = gw.sendText(ctx, adapter, msg, "新会话创建失败，请稍后重试。")
 				return
 			}
+			if state.leases != nil {
+				if err := state.leases.Rebind(state.ctrl.SessionPath()); err != nil {
+					gw.logger.Warn("new session lease failed", "err", control.SessionInUseMessage(err))
+					gw.unlinkAndCloseSessionState(key, state)
+					gw.sessions.ForceRelease(key)
+					_ = gw.sendText(ctx, adapter, msg, "新会话创建失败：无法取得写入权限。请关闭其他 Reasonix 窗口或进程后重试。")
+					return
+				}
+			}
+			// /new leaves an attached transcript and continues in the freshly
+			// rotated path. Clear only the path pin while preserving any project
+			// override, otherwise the next message would rebuild the old attached
+			// transcript and silently undo the rotation.
+			gw.mu.Lock()
+			if gw.controllers[key] == state {
+				state.sessionPath = ""
+				if override, exists := gw.sessionOverrides[key]; exists && override.sessionPath != "" {
+					override.sessionPath = ""
+					gw.sessionOverrides[key] = override
+				}
+			}
+			gw.mu.Unlock()
 			gw.rememberSessionReady(msg, state.ctrl)
 		}
 		gw.sessions.ForceRelease(key)
@@ -1285,7 +1380,12 @@ func (gw *BotGateway) handleSlashCommand(ctx context.Context, adapter Adapter, k
 		state, ok := gw.controllers[key]
 		gw.mu.Unlock()
 		if ok && state.ctrl != nil {
-			state.ctrl.Approve(parts[1], true, false, false)
+			// Recovery cards map allow → continue for older clients that only know Approve.
+			if gw.pendingApprovalIsRecovery(key, parts[1]) {
+				_ = state.ctrl.ResolveRecovery(parts[1], agent.RecoveryActionContinue, "")
+			} else {
+				state.ctrl.Approve(parts[1], true, false, false)
+			}
 			gw.forgetPendingApproval(key, parts[1])
 			_ = gw.sendText(ctx, adapter, msg, "已批准。")
 		} else {
@@ -1305,11 +1405,110 @@ func (gw *BotGateway) handleSlashCommand(ctx context.Context, adapter Adapter, k
 		state, ok := gw.controllers[key]
 		gw.mu.Unlock()
 		if ok && state.ctrl != nil {
-			state.ctrl.Approve(parts[1], false, false, false)
+			if gw.pendingApprovalIsRecovery(key, parts[1]) {
+				_ = state.ctrl.ResolveRecovery(parts[1], agent.RecoveryActionRevise, "")
+			} else {
+				state.ctrl.Approve(parts[1], false, false, false)
+			}
 			gw.forgetPendingApproval(key, parts[1])
 			_ = gw.sendText(ctx, adapter, msg, "已拒绝。")
 		} else {
 			_ = gw.sendText(ctx, adapter, msg, "没有找到当前会话中的待审批操作，请重新触发一次操作。")
+		}
+
+	case strings.HasPrefix(msg.Text, "/recovery-continue-task"):
+		if !gw.requireCommandRole(ctx, adapter, msg, "approver") {
+			return
+		}
+		parts := strings.Fields(msg.Text)
+		if len(parts) < 2 {
+			_ = gw.sendText(ctx, adapter, msg, "用法: /recovery-continue-task <id>")
+			return
+		}
+		gw.mu.Lock()
+		state, ok := gw.controllers[key]
+		gw.mu.Unlock()
+		if ok && state.ctrl != nil {
+			if err := state.ctrl.ResolveRecovery(parts[1], agent.RecoveryActionContinueTask, ""); err != nil {
+				_ = gw.sendText(ctx, adapter, msg, "确认失败: "+err.Error())
+				return
+			}
+			gw.forgetPendingApproval(key, parts[1])
+			_ = gw.sendText(ctx, adapter, msg, "已继续；本任务内同类操作将自动执行，范围扩大或风险升级仍会确认。")
+		} else {
+			_ = gw.sendText(ctx, adapter, msg, "没有找到当前会话中的待确认操作。")
+		}
+
+	case strings.HasPrefix(msg.Text, "/recovery-continue"):
+		if !gw.requireCommandRole(ctx, adapter, msg, "approver") {
+			return
+		}
+		parts := strings.Fields(msg.Text)
+		if len(parts) < 2 {
+			_ = gw.sendText(ctx, adapter, msg, "用法: /recovery-continue <id>")
+			return
+		}
+		gw.mu.Lock()
+		state, ok := gw.controllers[key]
+		gw.mu.Unlock()
+		if ok && state.ctrl != nil {
+			if err := state.ctrl.ResolveRecovery(parts[1], agent.RecoveryActionContinue, ""); err != nil {
+				_ = gw.sendText(ctx, adapter, msg, "确认失败: "+err.Error())
+				return
+			}
+			gw.forgetPendingApproval(key, parts[1])
+			_ = gw.sendText(ctx, adapter, msg, "已继续。")
+		} else {
+			_ = gw.sendText(ctx, adapter, msg, "没有找到当前会话中的待确认操作。")
+		}
+
+	case strings.HasPrefix(msg.Text, "/recovery-revise"):
+		if !gw.requireCommandRole(ctx, adapter, msg, "approver") {
+			return
+		}
+		parts := strings.Fields(msg.Text)
+		if len(parts) < 2 {
+			_ = gw.sendText(ctx, adapter, msg, "用法: /recovery-revise <id> [补充要求]")
+			return
+		}
+		feedback := strings.TrimSpace(strings.Join(parts[2:], " "))
+		gw.mu.Lock()
+		state, ok := gw.controllers[key]
+		gw.mu.Unlock()
+		if ok && state.ctrl != nil {
+			if err := state.ctrl.ResolveRecovery(parts[1], agent.RecoveryActionRevise, feedback); err != nil {
+				_ = gw.sendText(ctx, adapter, msg, "修改方案失败: "+err.Error())
+				return
+			}
+			gw.forgetPendingApproval(key, parts[1])
+			_ = gw.sendText(ctx, adapter, msg, "已拒绝当前变更并注入修改要求。")
+		} else {
+			_ = gw.sendText(ctx, adapter, msg, "没有找到当前会话中的恢复检查点。")
+		}
+
+	case strings.HasPrefix(msg.Text, "/recovery-stop"):
+		// Backward compatibility for cards rendered by an older client: reject
+		// the proposed mutation but leave task cancellation to ordinary /stop.
+		if !gw.requireCommandRole(ctx, adapter, msg, "approver") {
+			return
+		}
+		parts := strings.Fields(msg.Text)
+		if len(parts) < 2 {
+			_ = gw.sendText(ctx, adapter, msg, "用法: /recovery-stop <id>")
+			return
+		}
+		gw.mu.Lock()
+		state, ok := gw.controllers[key]
+		gw.mu.Unlock()
+		if ok && state.ctrl != nil {
+			if err := state.ctrl.ResolveRecovery(parts[1], agent.RecoveryActionRevise, "cancel this proposed action"); err != nil {
+				_ = gw.sendText(ctx, adapter, msg, "取消变更失败: "+err.Error())
+				return
+			}
+			gw.forgetPendingApproval(key, parts[1])
+			_ = gw.sendText(ctx, adapter, msg, "已取消当前变更；如需停止整个任务，请使用 /stop。")
+		} else {
+			_ = gw.sendText(ctx, adapter, msg, "没有找到当前会话中的恢复检查点。")
 		}
 
 	case strings.HasPrefix(msg.Text, "/answer"):
@@ -1467,7 +1666,9 @@ func (gw *BotGateway) handleUseProjectCommand(key, text string) string {
 		return "用法: /use project <项目 id|名称|路径>，或 /use project default 恢复默认路由。"
 	}
 	if isDefaultBotSelector(selector) {
-		gw.setSessionRuntimeOverride(key, sessionRuntimeOverride{}, false)
+		if !gw.setSessionRuntimeOverride(key, sessionRuntimeOverride{}, false) {
+			return botRuntimeSwitchBusyText()
+		}
 		return "已恢复当前远端会话的默认项目路由。下一条消息会按 bot 配置重新选择 workspace。"
 	}
 	projects := gw.buildProjectIndex()
@@ -1478,10 +1679,12 @@ func (gw *BotGateway) handleUseProjectCommand(key, text string) string {
 		}
 		return "没有匹配的项目。可先用 /projects 查看当前索引。"
 	}
-	gw.setSessionRuntimeOverride(key, sessionRuntimeOverride{
+	if !gw.setSessionRuntimeOverride(key, sessionRuntimeOverride{
 		channel: ChannelConfig{WorkspaceRoot: project.Root},
 		label:   "project:" + project.ID,
-	}, true)
+	}, true) {
+		return botRuntimeSwitchBusyText()
+	}
 	return fmt.Sprintf("已将当前远端会话切到项目 %s %s。\n下一条消息将在 %s 中运行。", project.ID, project.Name, displayBotPath(project.Root))
 }
 
@@ -1539,11 +1742,13 @@ func (gw *BotGateway) handleAttachSessionCommand(key, text string) string {
 		project := botProjectForPath(projects, session.SessionPath)
 		workspaceRoot = project.Root
 	}
-	gw.setSessionRuntimeOverride(key, sessionRuntimeOverride{
+	if !gw.setSessionRuntimeOverride(key, sessionRuntimeOverride{
 		channel:     ChannelConfig{WorkspaceRoot: workspaceRoot},
 		sessionPath: session.SessionPath,
 		label:       "session:" + session.ID,
-	}, true)
+	}, true) {
+		return botRuntimeSwitchBusyText()
+	}
 	projectName := firstNonEmptyString(session.ProjectName, botProjectName(workspaceRoot), "global")
 	return fmt.Sprintf("已 attach 到会话 %s（%s）。\n下一条消息会从 %s 继续。", session.ID, projectName, displayBotPath(session.SessionPath))
 }
@@ -1571,23 +1776,57 @@ func (gw *BotGateway) handleProjectSearchCommand(ctx context.Context, text strin
 	return formatBotProjectSearchResults(results, botSearchListLimit)
 }
 
-func (gw *BotGateway) setSessionRuntimeOverride(key string, override sessionRuntimeOverride, enabled bool) {
-	var old *sessionState
-	gw.mu.Lock()
-	if state, ok := gw.controllers[key]; ok {
-		old = state
-		delete(gw.controllers, key)
+func botRuntimeSwitchBusyText() string {
+	return "当前会话仍有正在运行、等待确认或后台执行的任务。请先完成或停止这些任务，再切换项目或 attach 会话。"
+}
+
+func (gw *BotGateway) setSessionRuntimeOverride(key string, override sessionRuntimeOverride, enabled bool) bool {
+	return gw.sessions.runIfIdle(key, func() bool {
+		var old *sessionState
+		gw.mu.Lock()
+		if state, ok := gw.controllers[key]; ok {
+			if botSessionHasActiveWork(state) {
+				gw.mu.Unlock()
+				return false
+			}
+			old = state
+			delete(gw.controllers, key)
+		}
+		if enabled {
+			override.sessionPath = canonicalBotPath(override.sessionPath)
+			override.channel.WorkspaceRoot = canonicalBotPath(override.channel.WorkspaceRoot)
+			gw.sessionOverrides[key] = override
+		} else {
+			delete(gw.sessionOverrides, key)
+		}
+		gw.mu.Unlock()
+		gw.closeSessionState(old)
+		return true
+	})
+}
+
+func botSessionHasActiveWork(state *sessionState) bool {
+	if state == nil || state.ctrl == nil {
+		return false
 	}
-	if enabled {
-		override.sessionPath = canonicalBotPath(override.sessionPath)
-		override.channel.WorkspaceRoot = canonicalBotPath(override.channel.WorkspaceRoot)
-		gw.sessionOverrides[key] = override
-	} else {
-		delete(gw.sessionOverrides, key)
+	status, ok := safeBotControllerRuntimeStatus(state.ctrl)
+	if !ok {
+		return true
 	}
-	gw.mu.Unlock()
-	gw.closeSessionState(old)
-	gw.sessions.ForceRelease(key)
+	return status.Running || status.PendingPrompt || status.BackgroundJobs > 0
+}
+
+func safeBotControllerRuntimeStatus(ctrl botController) (status control.RuntimeStatus, ok bool) {
+	if ctrl == nil {
+		return control.RuntimeStatus{}, false
+	}
+	defer func() {
+		if recover() != nil {
+			status = control.RuntimeStatus{}
+			ok = false
+		}
+	}()
+	return ctrl.RuntimeStatus(), true
 }
 
 func (gw *BotGateway) sessionRuntimeOverrideForMessage(msg InboundMessage) (sessionRuntimeOverride, bool) {
@@ -1934,6 +2173,12 @@ func (gw *BotGateway) getOrCreateSession(ctx context.Context, key string, msg In
 	gw.mu.Lock()
 	if state, ok := gw.controllers[key]; ok {
 		if !sessionStateMatchesRuntime(state, profile) {
+			if botSessionHasActiveWork(state) {
+				gw.mu.Unlock()
+				safeBotSetToolApprovalMode(state.ctrl, profile.toolApprovalMode)
+				gw.logger.Warn("bot session runtime change deferred while work is active", "platform", msg.Platform, "chat_type", msg.ChatType, "chat", hashID(msg.ChatID), "session", key[:8])
+				return state
+			}
 			delete(gw.controllers, key)
 			stale = state
 			gw.mu.Unlock()
@@ -1964,13 +2209,21 @@ func (gw *BotGateway) getOrCreateSession(ctx context.Context, key string, msg In
 		ApprovalTimeout: gw.approvalTimeout(),
 	})
 	if err != nil {
-		gw.logger.Error("build controller failed", "err", err)
+		gw.logger.Error("build controller failed", "err", secrets.RedactError(err))
 		return nil
 	}
+	leases := control.NewSessionLeaseKeeper()
 	if profile.sessionPath != "" {
+		if err := leases.Rebind(profile.sessionPath); err != nil {
+			ctrl.Close()
+			leases.Release()
+			gw.logger.Error("attached bot session is in use", "err", control.SessionInUseMessage(err))
+			return nil
+		}
 		loaded, err := agent.LoadSession(profile.sessionPath)
 		if err != nil {
 			ctrl.Close()
+			leases.Release()
 			if os.IsNotExist(err) {
 				gw.logger.Error("attached bot session missing", "session_path", profile.sessionPath)
 			} else {
@@ -1983,6 +2236,12 @@ func (gw *BotGateway) getOrCreateSession(ctx context.Context, key string, msg In
 	ctrl.EnableInteractiveApproval()
 	ctrl.SetToolApprovalMode(profile.toolApprovalMode)
 	ctrl.EnsureSessionPath()
+	if err := leases.Rebind(ctrl.SessionPath()); err != nil {
+		ctrl.Close()
+		leases.Release()
+		gw.logger.Error("bot session lease failed", "err", control.SessionInUseMessage(err))
+		return nil
+	}
 
 	var replace *sessionState
 	gw.mu.Lock()
@@ -1994,6 +2253,7 @@ func (gw *BotGateway) getOrCreateSession(ctx context.Context, key string, msg In
 			updateSessionStateRuntime(existing, msg, profile)
 			gw.mu.Unlock()
 			ctrl.Close()
+			leases.Release()
 			safeBotSetToolApprovalMode(existing.ctrl, profile.toolApprovalMode)
 			gw.logger.Info("bot session built concurrently; discarding duplicate", "platform", msg.Platform, "chat", hashID(msg.ChatID), "session", key[:8])
 			return existing
@@ -2004,6 +2264,7 @@ func (gw *BotGateway) getOrCreateSession(ctx context.Context, key string, msg In
 	state := &sessionState{
 		ctrl:             ctrl,
 		sink:             sessionSink,
+		leases:           leases,
 		platform:         msg.Platform,
 		connectionID:     strings.TrimSpace(msg.ConnectionID),
 		model:            profile.model,

@@ -393,7 +393,7 @@ func TestChildMaxStepsSharedDefault(t *testing.T) {
 
 func TestTaskToolPropagatesDeliveryProfileToSubagents(t *testing.T) {
 	task := (&TaskTool{}).WithDeliveryProfile(true)
-	opts := task.subagentOptions(context.Background(), 0, nil, 0, 1)
+	opts := task.subagentOptions(context.Background(), 0, nil, 0, 1, "")
 	if !opts.DeliveryProfile {
 		t.Fatal("sub-agent options did not inherit delivery profile")
 	}
@@ -405,8 +405,18 @@ func TestTaskToolSharesWorkspaceLeaseWithSubagents(t *testing.T) {
 		t.Fatalf("New workspace lease: %v", err)
 	}
 	task := (&TaskTool{}).WithWorkspaceLease(owner)
-	opts := task.subagentOptions(context.Background(), 0, nil, 0, 1)
+	opts := task.subagentOptions(context.Background(), 0, nil, 0, 1, "")
 	if opts.WorkspaceLease != owner {
 		t.Fatal("sub-agent options did not share the parent's workspace lease owner")
+	}
+}
+
+func TestSubagentRecoveryTaskIDIsStableAndIsolated(t *testing.T) {
+	ctx := WithToolCallContext(context.Background(), "call-17", event.Discard, nil, false)
+	if got := subagentRecoveryTaskID(ctx, ""); got != "subagent:call-17" {
+		t.Fatalf("call-scoped recovery task id = %q", got)
+	}
+	if got := subagentRecoveryTaskID(ctx, "ref-abc"); got != "subagent:ref-abc" {
+		t.Fatalf("transcript-scoped recovery task id = %q", got)
 	}
 }

@@ -8,6 +8,18 @@ branch.
 
 ### Added
 
+- Added a **Remote SSH** module (VS Code Remote-SSH style): a user-global
+  `[remote]` host config, `reasonix remote` CLI (add/list/remove/import/test/
+  connect/status/forward/serve/fs) and `/remote` slash command, an SSH transport
+  with trust-on-first-use host-key verification, keepalive + exponential-backoff
+  reconnect, `-L`/`-R` port forwarding, and SFTP file access. `connect`
+  bootstraps a persistent `reasonix serve` on the remote host and tunnels its
+  loopback port so the full agent runs remotely. The desktop app adds a
+  **Settings -> Remote SSH** host manager, a remote file browser/editor, a
+  port-forwarding panel, and a status-bar connection chip. Linux/macOS remotes.
+- Added `reasonix serve --port-file/--token-file/--pid-file` so a supervised
+  headless serve can bind an ephemeral port and read its auth token from a file
+  (keeping it out of `ps`).
 - Added Claude Code-style searchable CLI pickers for models, providers, and
   sessions, with arrow, Vim, and `Ctrl+P` / `Ctrl+N` navigation.
 - Added `-p` / `--print`, `text`, `json`, and `stream-json` output modes for
@@ -20,6 +32,10 @@ branch.
 
 ### Changed
 
+- Automatic Plan Mode has been retired. Plan Mode is now always entered through
+  an explicit user choice, and the one-time config v5 upgrade removes legacy
+  `agent.auto_plan` and `agent.auto_plan_classifier` values so upgraded users
+  receive the same behavior as new users.
 - `Shift+Tab` now cycles CLI safe modes from Ask to Auto to Plan, while YOLO
   remains an independent `Ctrl+Y` toggle.
 - Model, provider, resume, and approval menus now use consistent row selection;
@@ -53,15 +69,43 @@ branch.
 
 ### Fixed
 
+- Hardened Bash permission reuse for dynamic and indirect execution. Parameter/arithmetic expansions,
+  assignments, redirects, heredocs, and globs can only be remembered as exact
+  `Bash=<literal>` rules, while still using Auto's normal fallback. Nested or
+  indirect execution now requires a human in interactive Ask/Auto and fails
+  closed in headless Ask/Auto/DontAsk. Broad Bash rules, Guardian/hook allows,
+  and the approved-plan window can no longer silently authorize that stricter
+  class; YOLO remains the explicit full-access bypass and sandbox enforcement
+  is unchanged.
+- Fixed Desktop sessions incorrectly locking themselves during Goal + Delivery
+  mode changes, controller rebuilds, duplicate-tab restore, and background
+  reattachment. Desktop now keeps one process-local runtime owner per canonical
+  session, fences stale controller events by runtime epoch, blocks sends until
+  that runtime is ready, and scopes single-instance ownership to
+  `REASONIX_HOME` instead of the executable path. Switching saved sessions is
+  now transactional: a target build, restore, or lease failure leaves the
+  current controller, lease, path, mode profile, and runtime epoch untouched.
+- Stabilized the desktop rich composer caret after skill and plugin invocation
+  tags. DOM→model and model→DOM selection mapping now treat invocation chips as
+  zero-length atoms while still counting user text that lands inside the NBSP
+  caret anchor (common on Windows WebView2), restore both selection ends, and
+  recover the insertion point from a `beforeinput` snapshot when the browser
+  temporarily loses selection — so mid-text edits no longer jump to the end.
+- Isolated the Windows desktop WebView2 shell from stale system proxies, so an
+  exited proxy client cannot leave the embedded UI hidden during startup. If
+  WebView2 still does not reach DOM-ready within 15 seconds, Reasonix now shows
+  the native window with a recovery prompt instead of appearing not to launch.
+  Remote Markdown images are fetched by the backend with Reasonix's proxy
+  configuration instead of bypassing that proxy through the isolated WebView.
 - Restored captured-mouse right-click text paste, made composer drag selection
   copy through the verified native clipboard path, and kept non-Git footer
   telemetry left-aligned without reserving an empty data band.
-- Restored stateful MCP behavior after the v1.17.13 regression: compatible
-  trust receipts migrate instead of prompting again, user-added servers work
-  without extra trust settings (including delivery-mode on-demand calls), and
+- Restored stateful MCP behavior after the v1.17.13 regression: user-added
+  servers work without extra trust settings (including delivery-mode on-demand
+  calls), repository-provided servers use one exact launch confirmation, and
   stdio tools reuse one persistent process so browser sessions survive across
-  calls without repeated startup latency. Authorized project servers keep a
-  revoke entry in the desktop server details page.
+  calls without repeated startup latency. The former trust/reverify/catalog
+  management UI and CLI are removed.
 - Localized persistent-footer labels and displayed work-mode values in English,
   Simplified Chinese, and Traditional Chinese, while keeping command arguments
   stable.

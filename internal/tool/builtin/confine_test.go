@@ -12,8 +12,19 @@ import (
 	"reasonix/internal/config"
 	"reasonix/internal/sandbox"
 	"reasonix/internal/secrets"
+	"reasonix/internal/testenv"
 	"reasonix/internal/tool"
 )
+
+func isolateBuiltinTestUserState(t *testing.T) string {
+	t.Helper()
+	cleanup, err := testenv.IsolateUserState()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(cleanup)
+	return os.Getenv("HOME")
+}
 
 func TestWithin(t *testing.T) {
 	root := filepath.FromSlash("/work/proj")
@@ -163,11 +174,7 @@ func TestWriteFileConfinement(t *testing.T) {
 }
 
 func TestWriteFileDefaultRootsDenyUserConfigUnlessAllowed(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-	t.Setenv("USERPROFILE", home)
-	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
-	t.Setenv("AppData", filepath.Join(home, "AppData", "Roaming"))
+	home := isolateBuiltinTestUserState(t)
 
 	project := filepath.Join(home, "project")
 	if err := os.MkdirAll(project, 0o755); err != nil {
@@ -212,11 +219,7 @@ func (s *stubConfigWriteApprover) ApproveManagedConfigWrite(_ context.Context, r
 }
 
 func TestManagedConfigWriteFailsClosedWithoutApprover(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-	t.Setenv("USERPROFILE", home)
-	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
-	t.Setenv("AppData", filepath.Join(home, "AppData", "Roaming"))
+	home := isolateBuiltinTestUserState(t)
 
 	project := filepath.Join(home, "project")
 	if err := os.MkdirAll(project, 0o755); err != nil {
@@ -243,11 +246,7 @@ func TestManagedConfigWriteFailsClosedWithoutApprover(t *testing.T) {
 }
 
 func TestManagedConfigWriteGatedOnApprover(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-	t.Setenv("USERPROFILE", home)
-	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
-	t.Setenv("AppData", filepath.Join(home, "AppData", "Roaming"))
+	home := isolateBuiltinTestUserState(t)
 
 	project := filepath.Join(home, "project")
 	if err := os.MkdirAll(project, 0o755); err != nil {

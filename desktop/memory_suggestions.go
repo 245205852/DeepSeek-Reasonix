@@ -33,6 +33,7 @@ type MemorySuggestion struct {
 	Title       string   `json:"title"`
 	Description string   `json:"description"`
 	Type        string   `json:"type"`
+	Scope       string   `json:"scope"`
 	Body        string   `json:"body"`
 	Reason      string   `json:"reason"`
 	Evidence    []string `json:"evidence"`
@@ -83,10 +84,9 @@ func (a *App) MemorySuggestions() MemorySuggestionsView {
 // MemorySuggestionsForTab scans recent local history for the selected tab's
 // session directory and workspace, instead of whichever tab is currently active.
 func (a *App) MemorySuggestionsForTab(tabID string) MemorySuggestionsView {
-	view := MemorySuggestionsView{
-		Memories:    []MemorySuggestion{},
-		Skills:      []SkillSuggestion{},
-		GeneratedAt: time.Now().UTC().Format(time.RFC3339),
+	view := emptyMemorySuggestionsView()
+	if a.activeWorkbenchTargetIsRemote() {
+		return view
 	}
 
 	a.mu.RLock()
@@ -121,6 +121,14 @@ func (a *App) MemorySuggestionsForTab(tabID string) MemorySuggestionsView {
 	return view
 }
 
+func emptyMemorySuggestionsView() MemorySuggestionsView {
+	return MemorySuggestionsView{
+		Memories:    []MemorySuggestion{},
+		Skills:      []SkillSuggestion{},
+		GeneratedAt: time.Now().UTC().Format(time.RFC3339),
+	}
+}
+
 // AcceptMemorySuggestion persists a previously previewed memory candidate.
 func (a *App) AcceptMemorySuggestion(in MemorySuggestion) (string, error) {
 	return a.AcceptMemorySuggestionForTab("", in)
@@ -129,6 +137,9 @@ func (a *App) AcceptMemorySuggestion(in MemorySuggestion) (string, error) {
 // AcceptMemorySuggestionForTab persists a memory candidate into the selected
 // tab's memory store, matching the tab used to generate suggestions.
 func (a *App) AcceptMemorySuggestionForTab(tabID string, in MemorySuggestion) (string, error) {
+	if a.activeWorkbenchTargetIsRemote() {
+		return "", remoteMemoryUnavailableErr()
+	}
 	ctrl := a.ctrlByTabID(tabID)
 	if ctrl == nil {
 		return "", nil
@@ -144,6 +155,7 @@ func (a *App) AcceptMemorySuggestionForTab(tabID string, in MemorySuggestion) (s
 		Title:       oneLine(in.Title),
 		Description: desc,
 		Type:        memory.NormalizeType(in.Type),
+		Scope:       memory.NormalizeFactScope(in.Scope),
 		Body:        body,
 	})
 }
@@ -158,6 +170,9 @@ func (a *App) AcceptSkillSuggestion(in SkillSuggestion) (string, error) {
 // AcceptSkillSuggestionForTab writes a skill candidate into the selected tab's
 // workspace/global skill store, matching the tab used to generate suggestions.
 func (a *App) AcceptSkillSuggestionForTab(tabID string, in SkillSuggestion) (string, error) {
+	if a.activeWorkbenchTargetIsRemote() {
+		return "", remoteMemoryUnavailableErr()
+	}
 	a.mu.RLock()
 	tab := a.tabByIDLocked(tabID)
 	workspaceRoot := ""
@@ -225,7 +240,7 @@ func suggestMemories(set *memory.Set, sessions []suggestionSession) []MemorySugg
 			if msg.Role != provider.RoleUser {
 				continue
 			}
-			statement, reason := extractMemoryStatement(msg.Content)
+			statement, reason := extractMemoryStatement(agent.UserMessageText(msg))
 			if statement == "" {
 				continue
 			}
@@ -243,6 +258,7 @@ func suggestMemories(set *memory.Set, sessions []suggestionSession) []MemorySugg
 				Title:       title,
 				Description: oneLine(statement),
 				Type:        string(typ),
+				Scope:       string(memory.FactScopeProject),
 				Body:        memoryCandidateBody(statement, reason, sess),
 				Reason:      reason,
 				Evidence:    []string{sessionEvidence(sess, statement)},
@@ -295,7 +311,7 @@ func existingMemoryText(set *memory.Set) []string {
 	for _, d := range set.Docs {
 		out = append(out, normalizeSuggestionKey(d.Body))
 	}
-	for _, f := range set.Store.List() {
+	for _, f := range set.Store.ListAll() {
 		out = append(out, normalizeSuggestionKey(strings.Join([]string{f.Name, f.Title, f.Description, f.Body}, " ")))
 	}
 	return out
@@ -439,7 +455,7 @@ func workflowEvidence(cat workflowCategory, sessions []suggestionSession) []stri
 			if msg.Role != provider.RoleUser {
 				continue
 			}
-			text := oneLine(msg.Content)
+			text := oneLine(agent.UserMessageText(msg))
 			if text == "" || !hasAny(strings.ToLower(text), cat.Keywords...) {
 				continue
 			}

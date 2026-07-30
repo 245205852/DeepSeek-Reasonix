@@ -2,6 +2,7 @@ package hook
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -19,18 +20,14 @@ var windowsHookBash struct {
 	err  error
 }
 
-// windowsPOSIXShellInvocation preserves explicit `sh -c` / `bash -c` hook
-// contracts on Windows. Git for Windows normally ships a real Bash outside the
-// cmd.exe PATH, so reuse the same hardened discovery path as the shell tool
-// instead of asking cmd.exe to find an executable it cannot see.
-func windowsPOSIXShellInvocation(command string) (string, []string, bool, error) {
-	return windowsPOSIXShellInvocationWith(command, cachedWindowsHookBash)
+var windowsDefaultHookShell struct {
+	sync.Once
+	shell sandbox.Shell
+	err   error
 }
 
-func windowsPOSIXShellArgvInvocation(command string, args []string) (string, []string, bool, error) {
-	return windowsPOSIXShellArgvInvocationWith(command, args, cachedWindowsHookBash)
-}
-
+// These helpers preserve explicit `sh -c` / `bash -c` hook contracts on
+// Windows while allowing the caller to supply the effective configured Bash.
 func windowsPOSIXShellArgvInvocationWith(command string, args []string, resolve func() (string, error)) (string, []string, bool, error) {
 	if !isBarePOSIXShellWord(command) || !hasCommandStringFlag(args) {
 		return "", nil, false, nil
@@ -52,6 +49,106 @@ func windowsPOSIXShellInvocationWith(command string, resolve func() (string, err
 		return "", nil, true, err
 	}
 	return path, append([]string(nil), fields[1:]...), true, nil
+}
+
+// windowsBatchCommandLine builds the cmd.exe command line for a shell-form .cmd
+// or .bat hook whose executable is already quoted. Go's default Windows
+// argument encoder follows CommandLineToArgvW, but cmd.exe has different quote
+// rules: passing a command string that starts with a quoted executable can leave
+// the quotes escaped into the command name. Preserve the original argument tail
+// byte-for-byte so valid batch syntax is not reinterpreted.
+func windowsBatchCommandLine(command string) (string, bool) {
+	command = strings.TrimSpace(command)
+	if len(command) < 2 || command[0] != '"' {
+		return "", false
+	}
+	closingQuote := strings.IndexByte(command[1:], '"')
+	if closingQuote < 0 {
+		return "", false
+	}
+	closingQuote++
+	executable := normalizeWindowsBatchExecutable(command[1:closingQuote])
+	if !isWindowsBatchExecutable(executable) {
+		return "", false
+	}
+	tail := command[closingQuote+1:]
+	if tail != "" && !isShellWhitespace(tail[0]) {
+		return "", false
+	}
+	if !isSimpleWindowsBatchTail(tail) {
+		return "", false
+	}
+	// /s strips the first and last quotes around the /c string, leaving the
+	// quoted executable and its untouched argument tail for cmd.exe to parse.
+	return `cmd.exe /d /s /c ""` + executable + `"` + tail + `"`, true
+}
+
+func windowsBatchArgvCommandLine(command string, args []string) (string, bool) {
+	executable := normalizeWindowsBatchExecutable(command)
+	if !isWindowsBatchExecutable(executable) || strings.ContainsAny(executable, "\"%!\r\n") {
+		return "", false
+	}
+
+	var b strings.Builder
+	b.WriteString(`cmd.exe /d /s /c ""`)
+	b.WriteString(executable)
+	b.WriteByte('"')
+	for _, arg := range args {
+		rendered, ok := renderWindowsBatchArg(arg)
+		if !ok {
+			return "", false
+		}
+		b.WriteByte(' ')
+		b.WriteString(rendered)
+	}
+	b.WriteByte('"')
+	return b.String(), true
+}
+
+// windowsCmdCommandLine wraps a raw shell-form script without tokenizing or
+// re-rendering it. cmd.exe owns all quote, variable, pipeline, and chaining
+// semantics inside the /c string.
+func windowsCmdCommandLine(command string) string {
+	return `cmd.exe /d /s /c "` + command + `"`
+}
+
+func normalizeWindowsBatchExecutable(executable string) string {
+	return strings.ReplaceAll(strings.TrimSpace(executable), "/", `\`)
+}
+
+func isWindowsBatchExecutable(executable string) bool {
+	lower := strings.ToLower(executable)
+	return strings.HasSuffix(lower, ".cmd") || strings.HasSuffix(lower, ".bat")
+}
+
+func isSimpleWindowsBatchTail(tail string) bool {
+	quoted := false
+	for i := 0; i < len(tail); i++ {
+		switch tail[i] {
+		case '\r', '\n':
+			return false
+		case '"':
+			quoted = !quoted
+		case '&', '|', ';', '<', '>', '(', ')':
+			if !quoted {
+				return false
+			}
+		}
+	}
+	return !quoted
+}
+
+func renderWindowsBatchArg(arg string) (string, bool) {
+	// cmd.exe expands percent variables even inside quotes, and delayed
+	// expansion can do the same for exclamation marks. Keep argv-form support
+	// deliberately narrow instead of silently changing a literal argument.
+	if strings.ContainsAny(arg, "\"%!\r\n") {
+		return "", false
+	}
+	if arg == "" || strings.ContainsAny(arg, " \t&|;<>()^[]{}=' +,`~") {
+		return `"` + arg + `"`, true
+	}
+	return arg, true
 }
 
 func isBarePOSIXShellWord(word string) bool {
@@ -106,29 +203,58 @@ func bashLongOptionNeedsOperand(name string) bool {
 
 func cachedWindowsHookBash() (string, error) {
 	windowsHookBash.Do(func() {
-		shell := sandbox.ResolveShell("bash", "", nil)
-		if shell.Kind != sandbox.ShellBash {
-			windowsHookBash.err = missingWindowsHookBashError()
-			return
-		}
-		path := strings.TrimSpace(shell.Path)
-		if path == "" {
-			windowsHookBash.err = missingWindowsHookBashError()
-			return
-		}
-		if resolved, err := exec.LookPath(path); err == nil {
-			windowsHookBash.path = resolved
-			return
-		}
-		if filepath.IsAbs(path) {
-			if info, err := os.Stat(path); err == nil && !info.IsDir() {
-				windowsHookBash.path = path
-				return
-			}
-		}
-		windowsHookBash.err = missingWindowsHookBashError()
+		windowsHookBash.path, windowsHookBash.err = discoverWindowsHookBash("")
 	})
 	return windowsHookBash.path, windowsHookBash.err
+}
+
+func resolveWindowsHookBash(preferredPath string) (string, error) {
+	if strings.TrimSpace(preferredPath) == "" {
+		return cachedWindowsHookBash()
+	}
+	return discoverWindowsHookBash(preferredPath)
+}
+
+func discoverWindowsHookBash(preferredPath string) (string, error) {
+	shell := sandbox.ResolveShell("bash", preferredPath, nil)
+	if shell.Kind != sandbox.ShellBash {
+		return "", missingWindowsHookBashError()
+	}
+	path, err := resolvedHookShellPath(shell)
+	if err != nil {
+		return "", missingWindowsHookBashError()
+	}
+	return path, nil
+}
+
+func cachedWindowsDefaultHookShell() (sandbox.Shell, error) {
+	windowsDefaultHookShell.Do(func() {
+		sh := sandbox.ResolveShell("", "", nil)
+		path, err := resolvedHookShellPath(sh)
+		if err != nil {
+			windowsDefaultHookShell.err = errors.New("hook requires a shell on Windows, but neither Git Bash nor PowerShell is usable")
+			return
+		}
+		sh.Path = path
+		windowsDefaultHookShell.shell = sh
+	})
+	return windowsDefaultHookShell.shell, windowsDefaultHookShell.err
+}
+
+func resolvedHookShellPath(shell sandbox.Shell) (string, error) {
+	path := strings.TrimSpace(shell.Path)
+	if path == "" {
+		path = shell.Kind.String()
+	}
+	if resolved, err := exec.LookPath(path); err == nil {
+		return resolved, nil
+	}
+	if filepath.IsAbs(path) {
+		if info, err := os.Stat(path); err == nil && !info.IsDir() {
+			return path, nil
+		}
+	}
+	return "", fmt.Errorf("hook shell %q is not executable", path)
 }
 
 func missingWindowsHookBashError() error {

@@ -75,6 +75,9 @@ type TurnControl interface {
 // posture (ask/auto/yolo). It mirrors the approvalManager surface.
 type Approvals interface {
 	Approve(id string, allow, session, persist bool)
+	// ResolveRecovery answers an Auto Guard card: continue|continue_task|revise. Revise
+	// refuses the mutation and steers feedback.
+	ResolveRecovery(id string, action agent.RecoveryAction, feedback string) error
 	AnswerQuestion(id string, answers []event.AskAnswer)
 	Ask(ctx context.Context, questions []event.AskQuestion) ([]event.AskAnswer, error)
 	ReplayPendingPrompts()
@@ -102,17 +105,16 @@ type Goals interface {
 	AutoResearchList() ([]autoresearch.Summary, bool)
 	AutoResearchFindings(limit int) ([]autoresearch.Finding, bool)
 	RecordAutoResearchEvidence(criterionID string, input AutoResearchEvidenceInput) error
-	AutoStartResearchGoal(input string) (string, bool)
 	ResetPlannerSession()
 	PlanMode() bool
 	SetPlanMode(v bool)
-	SetAutoPlan(mode string)
 }
 
 // SessionHistory covers checkpoint/rewind, branch/fork, and the log-restructuring
 // operations (compact, summarize).
 type SessionHistory interface {
 	Checkpoints() []checkpoint.Meta
+	CheckpointFileState(path string) (checkpoint.FileState, bool)
 	CheckpointTurnsByMessageIndex() map[int]int
 	CheckpointHasBoundary(turn int) bool
 	Rewind(turn int, scope RewindScope) error
@@ -137,6 +139,10 @@ type MemoryControl interface {
 	SaveMemory(m memory.Memory) (string, error)
 	ForgetMemory(name string) error
 	QueueMemory(note string)
+	MemoryRevisions(ref string) []memory.Memory
+	RestoreMemory(ref string, revision int) (memory.Memory, error)
+	RestoreArchivedMemory(archivePath string) (memory.Memory, error)
+	LastMemoryRecall() memory.RecallResult
 }
 
 // Capabilities covers the session's pluggable surface — MCP servers, skills,
@@ -160,6 +166,7 @@ type Capabilities interface {
 	RunSkill(input string) (sent string, found bool)
 	AddMCPServer(e config.PluginEntry) (int, error)
 	ConnectMCPServer(e config.PluginEntry) (int, error)
+	RegisterMCPServerOnDemand(e config.PluginEntry) (int, error)
 	ConnectConfiguredMCPServer(name string) (int, error)
 	DisconnectMCPServer(name string) bool
 	RemoveMCPServer(name string) (disconnected bool, err error)
@@ -182,6 +189,7 @@ type Status interface {
 // state.
 type SessionPersistence interface {
 	Snapshot() error
+	SnapshotForShutdown() error
 	SnapshotActivity() error
 	SessionCache() (hit, miss int)
 	BeginDestroySession(sessionPath string) SessionDestroyHandle

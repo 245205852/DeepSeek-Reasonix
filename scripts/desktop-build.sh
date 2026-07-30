@@ -9,12 +9,12 @@
 #            Reasonix-darwin-universal.dmg               (drag-to-install; human download)
 #   Windows: Reasonix-windows-<arch>-installer.exe       (NSIS per-user installer; updater channel)
 #            Reasonix-windows-<arch>.zip                 (portable human download)
-#   Linux:   Reasonix-linux-<arch>.tar.gz                (bare binary; updater channel)
-#            Reasonix-linux-<arch>.deb                   (Debian/Ubuntu package; human download)
+#   Linux:   Reasonix-linux-<arch>.tar.gz                (desktop + guard + CLI; portable updater)
+#            Reasonix-linux-<arch>.deb                   (Debian/Ubuntu package; native updater)
 #
 # Usage: scripts/desktop-build.sh <os/arch> <version> [channel]
 #   e.g. scripts/desktop-build.sh darwin/arm64 v1.1.0
-#        scripts/desktop-build.sh darwin/arm64 v1.5.0-canary.20260608.42 canary
+#        scripts/desktop-build.sh darwin/arm64 v1.5.0-preview.42 preview
 set -euo pipefail
 
 PLATFORM="${1:?usage: desktop-build.sh <os/arch> <version> [channel]}"
@@ -27,9 +27,21 @@ arch="${PLATFORM#*/}"
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 APPNAME="Reasonix"            # wails.json productName -> Reasonix.app
 BINNAME="reasonix-desktop"    # wails.json outputfilename -> linux binary name
+CLINAME="reasonix"            # bundled CLI sidecar used for remote serve upload
+WINDOWS_CLINAME="reasonix-cli" # Windows cannot store Reasonix.exe and reasonix.exe separately
 GUARDNAME="reasonix-guard"
 LAUNCHERNAME="reasonix-launcher"
 windows_resource_tool_dir=""
+
+# desktop/ is a nested Go module, so the Go toolchain cannot discover the
+# repository VCS revision for the Wails binary. Link the same source identity
+# into both Desktop and its CLI sidecar before this script mutates packaging
+# metadata such as wails.json.
+SOURCE_REVISION="$(git -C "$ROOT" rev-parse --verify HEAD)"
+if ! git -C "$ROOT" diff-index --quiet HEAD --; then
+	SOURCE_REVISION="$SOURCE_REVISION+dirty"
+fi
+source_revision_ldflag="-X reasonix/internal/remote/protocol.linkedSourceRevision=$SOURCE_REVISION"
 
 cleanup() {
 	if [ -n "$windows_resource_tool_dir" ]; then
@@ -51,6 +63,20 @@ build_guard() {
 		rm -rf "$guard_tmp"
 	else
 		(cd "$ROOT" && GOOS="$os" GOARCH="$arch" CGO_ENABLED=0 go build -trimpath -ldflags="-s -w -X main.version=$VERSION" -o "$guard_out" ./cmd/reasonix-guard)
+	fi
+}
+
+build_cli() {
+	echo "==> go build Reasonix CLI sidecar"
+	mkdir -p "$(dirname "$cli_out")"
+	if [ "$arch" = universal ]; then
+		cli_tmp=$(mktemp -d)
+		(cd "$ROOT" && GOOS=darwin GOARCH=amd64 CGO_ENABLED=0 go build -trimpath -ldflags="-s -w -X main.version=$VERSION $source_revision_ldflag" -o "$cli_tmp/amd64" ./cmd/reasonix)
+		(cd "$ROOT" && GOOS=darwin GOARCH=arm64 CGO_ENABLED=0 go build -trimpath -ldflags="-s -w -X main.version=$VERSION $source_revision_ldflag" -o "$cli_tmp/arm64" ./cmd/reasonix)
+		lipo -create "$cli_tmp/amd64" "$cli_tmp/arm64" -output "$cli_out"
+		rm -rf "$cli_tmp"
+	else
+		(cd "$ROOT" && GOOS="$os" GOARCH="$arch" CGO_ENABLED=0 go build -trimpath -ldflags="-s -w -X main.version=$VERSION $source_revision_ldflag" -o "$cli_out" ./cmd/reasonix)
 	fi
 }
 
@@ -77,7 +103,7 @@ numver="${VERSION#v}"; numver="${numver%%-*}"
 node -e 'const fs=require("fs"),f="wails.json",j=JSON.parse(fs.readFileSync(f,"utf8"));j.info.productVersion=process.argv[1];fs.writeFileSync(f,JSON.stringify(j,null,2)+"\n")' "$numver"
 
 # NSIS installer is Windows-only (Wails requires a single windows target for -nsis).
-ldflags="-X main.version=$VERSION -X main.channel=$CHANNEL"
+ldflags="-X main.version=$VERSION -X main.channel=$CHANNEL $source_revision_ldflag"
 [ "$os" = "darwin" ] && [ "${HAS_APPLE_CERT:-}" = "true" ] && ldflags="$ldflags -X main.macSelfUpdate=true"
 UPDATE_HELPER="reasonix-update-helper.exe"
 if [ "$os" = windows ]; then
@@ -97,6 +123,12 @@ if [ "$os" = windows ]; then
 	GOOS=windows GOARCH="$arch" go build -trimpath -ldflags="-s -w" \
 		-o "build/windows/installer/$UPDATE_HELPER" ./cmd/update-helper
 	stamp_windows_executable "build/windows/installer/$UPDATE_HELPER" "Reasonix Update Helper" "reasonix-update-helper" "$UPDATE_HELPER"
+	cli_out="$ROOT/desktop/build/windows/installer/$WINDOWS_CLINAME.exe"
+	build_cli
+	stamp_windows_executable "$cli_out" "Reasonix CLI" "$WINDOWS_CLINAME" "$WINDOWS_CLINAME.exe"
+	# The first NSIS pass must regenerate this release's uninstaller; a stale
+	# preserved file must never enter the signing payload.
+	rm -f "build/windows/installer/reasonix-uninstall.exe"
 fi
 build_args=()
 [ "${DESKTOP_BUILD_CLEAN:-1}" != "0" ] && build_args+=(-clean)
@@ -111,6 +143,8 @@ wails build "${build_args[@]}"
 if [ "$os" != windows ]; then
 	guard_out="$ROOT/desktop/build/bin/$GUARDNAME"
 	build_guard
+	cli_out="$ROOT/desktop/build/bin/$CLINAME"
+	build_cli
 fi
 
 mkdir -p "$ROOT/dist"
@@ -123,9 +157,13 @@ darwin)
 	app="$staging/${APPNAME}.app"
 	cp -R "build/bin/reasonix-desktop.app" "$app"
 	cp "$guard_out" "$app/Contents/MacOS/$GUARDNAME"
-	/usr/libexec/PlistBuddy -c "Set :CFBundleExecutable $GUARDNAME" "$app/Contents/Info.plist"
+	cp "$cli_out" "$app/Contents/MacOS/$CLINAME"
 	bundle_executable=$(/usr/libexec/PlistBuddy -c "Print :CFBundleExecutable" "$app/Contents/Info.plist")
-	[ "$bundle_executable" = "$GUARDNAME" ] || { echo "macOS bundle executable is $bundle_executable, want $GUARDNAME" >&2; exit 1; }
+	# LaunchServices must own the Wails/AppKit process directly. Making Guard the
+	# bundle executable leaves the Dock attached to a non-UI parent process, so
+	# clicking the icon cannot reliably reactivate the desktop window. Guard and
+	# the CLI remain bundled as independent recovery sidecars.
+	[ "$bundle_executable" = "$BINNAME" ] || { echo "macOS bundle executable is $bundle_executable, want $BINNAME" >&2; exit 1; }
 	bundle_icon=$(/usr/libexec/PlistBuddy -c "Print :CFBundleIconFile" "$app/Contents/Info.plist")
 	case "$bundle_icon" in
 	*.icns) ;;
@@ -203,26 +241,19 @@ darwin)
 	rm -rf "$staging"
 	;;
 windows)
-	# `wails build -nsis` writes the installer under build/bin; its exact name
-	# varies, so glob for it and copy to a stable, platform-keyed name.
-	installer=$(ls build/bin/*installer*.exe 2>/dev/null | head -n1 || true)
-	[ -n "$installer" ] || { echo "no NSIS installer found in build/bin" >&2; exit 1; }
-	cp "$installer" "$ROOT/dist/${APPNAME}-windows-${arch}-installer.exe"
-	portable=$(find build/bin -maxdepth 1 -type f -name "*.exe" ! -name "*installer*.exe" | head -n1 || true)
-	[ -n "$portable" ] || { echo "no portable Windows exe found in build/bin" >&2; exit 1; }
-	staging=$(mktemp -d)
-	cp "$portable" "$staging/$BINNAME.exe"
-	helper="build/windows/installer/$UPDATE_HELPER"
-	if [ -f "$helper" ]; then
-		cp "$helper" "$staging/$UPDATE_HELPER"
-	fi
-	cp "$launcher_out" "$staging/${APPNAME}.exe"
-	cp "$launcher_out" "$staging/$LAUNCHERNAME.exe"
-	cp "$guard_out" "$staging/$GUARDNAME.exe"
-	staging_win=$(cygpath -w "$staging")
-	zip_win=$(cygpath -w "$ROOT/dist/${APPNAME}-windows-${arch}.zip")
-	powershell.exe -NoProfile -Command "Compress-Archive -Force -Path '$staging_win\\*' -DestinationPath '$zip_win'"
-	rm -rf "$staging"
+	# Keep one canonical flat payload for SignPath. The release workflow signs
+	# these files, then calls package-windows-desktop.sh again so both the
+	# portable archive and the files embedded by NSIS carry Authenticode.
+	payload_dir="$ROOT/desktop/build/windows/signing-payload"
+	rm -rf -- "$payload_dir"
+	mkdir -p "$payload_dir"
+	cp "build/bin/$BINNAME.exe" "$payload_dir/$BINNAME.exe"
+	cp "build/windows/installer/$UPDATE_HELPER" "$payload_dir/$UPDATE_HELPER"
+	cp "$launcher_out" "$payload_dir/$LAUNCHERNAME.exe"
+	cp "$guard_out" "$payload_dir/$GUARDNAME.exe"
+	cp "build/windows/installer/$WINDOWS_CLINAME.exe" "$payload_dir/$WINDOWS_CLINAME.exe"
+	cp "build/windows/installer/reasonix-uninstall.exe" "$payload_dir/reasonix-uninstall.exe"
+	"$ROOT/scripts/package-windows-desktop.sh" "$arch" "$payload_dir"
 	;;
 linux)
 	for desktop_contract in \
@@ -231,14 +262,35 @@ linux)
 		'StartupWMClass=reasonix-desktop'; do
 		grep -F -x -q "$desktop_contract" build/linux/reasonix.desktop || { echo "Linux desktop entry missing: $desktop_contract" >&2; exit 1; }
 	done
-	tar -czf "$ROOT/dist/${APPNAME}-linux-${arch}.tar.gz" -C build/bin "$BINNAME" "$GUARDNAME"
-	# Also build a .deb for Debian/Ubuntu users (goreleaser/nfpm; see
-	# desktop/build/linux/nfpm.yaml). Human-download only: the Linux updater channel
-	# stays the tarball and cmd/sign's manifest skips .deb files. nfpm reads
-	# $DEB_VERSION/$DEB_ARCH — dpkg wants a strict numeric version, so reuse numver.
-	DEB_VERSION="$numver" DEB_ARCH="$arch" \
+	tar -czf "$ROOT/dist/${APPNAME}-linux-${arch}.tar.gz" -C build/bin "$BINNAME" "$GUARDNAME" "$CLINAME"
+	# Build the privileged update helper shipped inside the .deb. Portable tarball
+	# installs do not need it; only the dpkg package installs helper + Polkit policy.
+	echo "==> go build reasonix-update-helper"
+	GOOS=linux GOARCH="$arch" CGO_ENABLED=0 go build -trimpath -ldflags="-s -w -X main.version=$VERSION" \
+		-o "build/bin/reasonix-update-helper" ./cmd/update-helper
+	# .deb for Debian/Ubuntu. Portable updater still uses the tarball under
+	# platforms[]; .deb is published under native_packages. Debian versions use
+	# "~" for prereleases so 1.18.0~rc.1 < 1.18.0 (policy version ordering).
+	# Extra "-" inside the prerelease label becomes "." (Debian policy).
+	ver_body="${VERSION#v}"
+	if [[ "$ver_body" == *-* ]]; then
+		deb_base="${ver_body%%-*}"
+		deb_pre="${ver_body#*-}"
+		deb_pre="${deb_pre//-/.}"
+		deb_version="${deb_base}~${deb_pre}"
+	else
+		deb_version="$ver_body"
+	fi
+	DEB_VERSION="$deb_version" DEB_ARCH="$arch" \
 		nfpm package --config build/linux/nfpm.yaml --packager deb \
 		--target "$ROOT/dist/${APPNAME}-linux-${arch}.deb"
+	# Contract smoke: helper, policy, package identity, and pkexec dependency.
+	deb_path="$ROOT/dist/${APPNAME}-linux-${arch}.deb"
+	dpkg-deb --field "$deb_path" Package | grep -x 'reasonix-desktop' >/dev/null
+	dpkg-deb --field "$deb_path" Version | grep -x "$deb_version" >/dev/null
+	dpkg-deb --field "$deb_path" Depends | grep -F 'pkexec' >/dev/null
+	dpkg-deb --contents "$deb_path" | grep -E 'usr/lib/reasonix/reasonix-update-helper' >/dev/null
+	dpkg-deb --contents "$deb_path" | grep -E 'usr/share/polkit-1/actions/io.reasonix.desktop.update.policy' >/dev/null
 	;;
 *)
 	echo "unsupported os: $os" >&2

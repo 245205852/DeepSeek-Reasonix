@@ -48,11 +48,13 @@ type Messages struct {
 	HelpFooter     string // dim footer linking to reasonix help
 
 	// chat REPL
-	ChatTip           string // tip line under the chat banner
-	TurnCancelled     string // shown when Ctrl-C aborts the in-flight turn but the chat keeps running
-	NoSessionToResume string // shown when --continue / --resume finds nothing
-	ResumeRequiresTTY string // shown when --resume runs piped instead of on a terminal
-	PickSessionLabel  string // header on the --resume picker
+	ChatTip             string // tip line under the chat banner
+	TurnCancelled       string // shown when Ctrl-C aborts the in-flight turn but the chat keeps running
+	InterruptedRecovery string // replay notice for a durable interrupted turn
+	RecoveryPaused      string // controlled Auto retry pause; user can continue in the next message
+	NoSessionToResume   string // shown when --continue / --resume finds nothing
+	ResumeRequiresTTY   string // shown when --resume runs piped instead of on a terminal
+	PickSessionLabel    string // header on the --resume picker
 
 	// in-chat /resume command
 	ResumeListHeader    string // header above the /resume session list
@@ -91,12 +93,19 @@ type Messages struct {
 	ChatStatusCacheAvgFmt                  string // cache status tag, "%s" = session-average hit rate with percent sign
 	ChatStatusPlanApproval                 string // shortcuts hint while a plan is pending
 	PlanApprovalPrompt                     string // one-line "plan above is ready" banner shown above the input
+	PlanApprovalChoices                    string // start / revise / exit-without-executing choice list
 	ChatStatusToolApproval                 string // shortcuts hint while a tool call awaits approval
 	ToolApprovalPromptFmt                  string // approval banner — tool, subject suffix, source/intent detail, choices
 	ToolApprovalChoices                    string // standard approval choice list
 	BashPrefixChoices                      string // approval choice list when a bash prefix can be granted
 	PlanModeReadOnlyCommandChoices         string // approval choice list for plan-mode read-only command trust
 	FreshHumanApprovalChoices              string // approval choice list for prompts that cannot be remembered
+	RecoveryApprovalChoices                string // one-shot Auto Guard decision list
+	RecoveryPlanChangeChoices              string // material Auto plan transition decision list
+	RecoveryPlanDecisionPrompt             string // neutral title for a material Auto plan transition
+	RecoveryPlanBeforeFmt                  string // compact previous-plan line, one %s
+	RecoveryPlanAfterFmt                   string // compact proposed-plan line, one %s
+	RecoveryTaskGrantChoices               string // Auto Guard list with a current-task semantic grant
 	SandboxEscapeApprovalChoices           string // approval choice list for OS sandbox escape prompts
 	ApprovalNeededFmt                      string // notification text for a pending approval, tool only
 	ApprovalNeededWithSubjectFmt           string // notification text for a pending approval with subject
@@ -117,11 +126,6 @@ type Messages struct {
 	MemoryApprovalSaveUpdate               string // subject prefix for remember approval
 	MemoryApprovalBodyLabel                string // label before the body excerpt in remember approval
 	MemoryApprovalArchiveFmt               string // subject for forget approval, %q = memory name
-	MCPDestructiveSubjectFmt               string // subject for destructive MCP approval, target
-	MCPDestructiveReason                   string // reason for destructive MCP approval
-	MCPDestructiveDeclined                 string // model-facing denial after destructive MCP rejection
-	MCPReviewerUnavailableReason           string // reason for fresh approval when auto_review is unavailable
-	MCPReviewerUnavailableDeclined         string // model-facing denial after reviewer-unavailable rejection
 	PlanModeBashTrustSubjectFmt            string // subject for bash read-only prefix trust approval, prefix + command
 	PlanModeBashTrustReason                string // reason for bash read-only prefix trust approval
 	PlanModeBashTrustDeclined              string // model-facing denial after bash read-only prefix rejection
@@ -156,16 +160,21 @@ type Messages struct {
 	AskSubmitHint      string // submit-tab keyboard hint
 
 	// output style listing (/output-style).
-	OutputStyleNone    string // no styles available
-	OutputStyleHeader  string // header above the listing
-	OutputStyleHint    string // how to select one
-	ThemeHeader        string // header above the /theme listing
-	ThemeHint          string // how to select a theme
-	ThemeChangedFmt    string // "/theme <name>" succeeded
-	ThemeUnknownFmt    string // "/theme <name>" unknown
-	LanguageHeader     string // header above the /language listing
-	LanguageHint       string // how to select a language
-	LanguageChangedFmt string // "/language <tag>" succeeded, %s = saved tag, %s = resolved tag
+	OutputStyleNone           string // no styles available
+	OutputStyleHeader         string // header above the listing
+	OutputStyleHint           string // how to select one
+	ThemeHeader               string // header above the /theme listing
+	ThemeHint                 string // how to select a theme
+	ThemeChangedFmt           string // "/theme <name>" succeeded
+	ThemeUnknownFmt           string // "/theme <name>" unknown
+	LanguageHeader            string // header above the /language listing
+	LanguageHint              string // how to select a language
+	LanguageChangedFmt        string // "/language <tag>" succeeded, %s = saved tag, %s = resolved tag
+	CurrencyHeader            string // header above the /currency listing
+	CurrencyHint              string // how to select a pricing currency
+	CurrencyChangedFmt        string // "/currency <mode>" succeeded, %s = saved mode, %s = resolved currency
+	RuntimeRefreshBusy        string // runtime-affecting setting cannot change while work is active
+	RuntimeRefreshUnavailable string // current session cannot rebuild after a runtime-affecting setting change
 
 	// context compaction card (CompactionStarted / CompactionDone events).
 	CompactionWorking string // shown while the summarizer runs
@@ -195,7 +204,7 @@ type Messages struct {
 	MouseCopiedHint              string // transient status-line hint after a mouse/Ctrl+C selection copy
 	ClipboardCopyOSC52Hint       string // copy was sent through OSC 52 because the session is remote
 	ClipboardCopyFallbackHint    string // native clipboard failed and copy fell back to OSC 52
-	ClipboardTextPasteRemoteHint string // right-click paste cannot read the user's local clipboard over SSH
+	ClipboardTextPasteRemoteHint string // mouse paste cannot read the user's local clipboard/PRIMARY selection over SSH
 	ClipboardTextPasteFailedFmt  string // text clipboard read failed, one %v
 	ClipboardImagePastingHint    string // shown while an image is being read from the system clipboard
 	ClipboardImagePasteFailedFmt string // image clipboard read failed, one %v
@@ -230,12 +239,14 @@ type Messages struct {
 	CmdRemember         string // /remember
 	CmdForget           string // /forget
 	CmdMcp              string // /mcp
+	CmdRemote           string // /remote
 	CmdHooks            string // /hooks
 	CmdPlugins          string // /plugins
 	CmdPasteImage       string // /paste-image
 	CmdOutputStyle      string // /output-style
 	CmdTheme            string // /theme
 	CmdLanguage         string // /language
+	CmdCurrency         string // /currency
 	CmdSkill            string // /skills
 	CmdVerbose          string // /verbose
 	CmdReloadCmd        string // /reload-cmd
@@ -243,7 +254,6 @@ type Messages struct {
 	CmdSandbox          string // /sandbox
 	CmdEffort           string // /effort
 	CmdMouse            string // /mouse
-	CmdAutoPlan         string // /auto-plan
 	CmdReasonLang       string // /reasoning-language
 	CmdHelp             string // /help
 	CmdTodo             string // /todo
@@ -264,7 +274,6 @@ type Messages struct {
 	ArgMcpList          string // /mcp list
 	ArgMcpConnected     string // /mcp remove <server> tag
 	ArgHooksList        string // /hooks list
-	ArgHooksTrust       string // /hooks trust
 	ArgModelCurrent     string // /model <ref> active tag
 	ArgEffortAuto       string // /effort auto
 	ArgEffortLow        string // /effort low
@@ -476,6 +485,19 @@ type Messages struct {
 	AnthropicFetchModelsFailedFmt  string // "Failed to fetch models for %s: %v"
 	AnthropicSelectModelsLabel     string // "Select models to enable for %s"
 
+	// remote SSH module
+	RemoteConnectingFmt       string // "connecting to %s…"
+	RemoteConnectedFmt        string // "connected to %s"
+	RemoteReconnectingFmt     string // "reconnecting to %s (attempt %d)…"
+	RemoteDegradedFmt         string // "connected to %s but some forwards are down"
+	RemoteDisconnected        string // "disconnected"
+	RemoteServeReadyFmt       string // "remote serve ready: %s"
+	RemoteHostKeyPromptFmt    string // "host %s key (%s): %s"
+	RemotePassphrasePromptFmt string // "passphrase for %s:"
+	RemotePasswordPromptFmt   string // "password for %s:"
+	RemoteBootstrapStepFmt    string // "remote serve: %s %s"
+	RemoteNoHostsHint         string // "no remote hosts configured; add one with `reasonix remote add`"
+
 	// top-level / runAgent
 	UnknownCommandFmt         string // "unknown command %q"
 	UsageRunHint              string // "usage: reasonix run [--model NAME] <task>"
@@ -490,6 +512,8 @@ type Messages struct {
 	ProviderErrAuthRejected        string // 401 — a key was sent but the server rejected it
 	ProviderErrInsufficientBalance string // 402
 	ProviderErrUnprocessable       string // 422
+	ProviderErrInputSensitive      string // MiniMax 1026
+	ProviderErrOutputSensitive     string // MiniMax 1027
 	ProviderErrRateLimited         string // 429
 	ProviderErrServer              string // 500
 	ProviderErrServerBusy          string // 503
@@ -529,6 +553,28 @@ type Messages struct {
 	UpgradeApplyFailed         string // "failed to apply update: %v"
 	UpgradeSuccessFmt          string // "Updated %s → %s"
 
+	// `reasonix report` — local CLI crash review and explicit upload
+	ReportNoPending           string
+	ReportHeaderFmt           string
+	ReportCapturedFmt         string
+	ReportPreviewOnlyFmt      string
+	ReportSendPrompt          string
+	ReportKept                string
+	ReportDeletedFmt          string
+	ReportSentFmt             string
+	ReportSafeModeBlocked     string
+	ReportConfigFailedFmt     string
+	ReportUploadFailedFmt     string
+	ReportSentDeleteFailedFmt string
+	ReportUsageBody           string
+
+	// First eligible interactive CLI telemetry consent.
+	CLITelemetryConsentNotice           string
+	CLITelemetryConsentPrompt           string
+	CLITelemetryConsentInvalid          string
+	CLITelemetryConsentSaveFailedFmt    string
+	CLITelemetryConsentCleanupFailedFmt string
+
 	// usage / help
 	UsageBody string // full multi-line help text
 }
@@ -557,7 +603,17 @@ func (m Messages) ProviderStatusMessage(status int) string {
 
 // M is the active catalogue. DetectLanguage replaces it; English is the
 // default so any code path that runs before detection still has text.
-var M = English
+var (
+	M               = English
+	currentLanguage = "en"
+)
+
+// CurrentLanguage returns the language tag installed by the latest
+// DetectLanguage call. It lets frontends reuse the resolved locale without
+// re-reading the environment and accidentally ignoring an explicit override.
+func CurrentLanguage() string {
+	return currentLanguage
+}
 
 // DetectLanguage selects a catalogue from override (e.g. cfg.Language) or the
 // environment and installs it as M. Returns the resolved tag ("en", "zh") so
@@ -586,14 +642,15 @@ func setLanguage(tag string) string {
 	switch tag {
 	case "zh-tw", "zh-TW":
 		M = ChineseTraditional
-		return "zh-TW"
+		currentLanguage = "zh-TW"
 	case "zh":
 		M = Chinese
-		return "zh"
+		currentLanguage = "zh"
 	default:
 		M = English
-		return "en"
+		currentLanguage = "en"
 	}
+	return currentLanguage
 }
 
 // normalize maps a locale string (e.g. "zh_CN.UTF-8", "zh-Hans-CN", "Chinese

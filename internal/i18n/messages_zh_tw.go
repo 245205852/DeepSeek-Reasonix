@@ -25,11 +25,13 @@ var ChineseTraditional = Messages{
 	StepRunDesc:    "執行單次任務",
 	HelpFooter:     "reasonix help · 檢視全部命令",
 
-	ChatTip:           "對話上下文將跨輪保留。輸入 'exit' 或按 Ctrl-D 退出。",
-	TurnCancelled:     "已取消 — 回到提示符",
-	NoSessionToResume: "沒有可恢復的會話 — 用 `reasonix` 開一個新的",
-	ResumeRequiresTTY: "--resume 需要互動式終端；用 --continue 直接恢復最近一次",
-	PickSessionLabel:  "恢復哪個會話？",
+	ChatTip:             "對話上下文將跨輪保留。輸入 'exit' 或按 Ctrl-D 退出。",
+	TurnCancelled:       "已取消 — 回到提示符",
+	InterruptedRecovery: "本輪已中斷。部分輸出會永久保留供查看；只有完整工具呼叫及結果和有界恢復摘要會進入模型下一輪。繼續或回復前請先檢查目前工作區。",
+	RecoveryPaused:      "已暫停自動重試。Reasonix 已停止重複嘗試，並保留已完成的工作。傳送「繼續」即可開始新一輪，也可以補充要求來調整方向。",
+	NoSessionToResume:   "沒有可恢復的會話 — 用 `reasonix` 開一個新的",
+	ResumeRequiresTTY:   "--resume 需要互動式終端；用 --continue 直接恢復最近一次",
+	PickSessionLabel:    "恢復哪個會話？",
 
 	ResumeListHeader:    "會話（/resume <n> 切換）",
 	ResumeBusy:          "請先完成或取消當前這一輪再恢復會話",
@@ -60,8 +62,9 @@ var ChineseTraditional = Messages{
 	ChatStatusBalanceLabel:                 "餘額",
 	ChatStatusCacheNowFmt:                  "本次命中 %s",
 	ChatStatusCacheAvgFmt:                  "平均 %s",
-	ChatStatusPlanApproval:                 "Enter/y 核准並執行 · n/Esc 繼續規劃 · PgUp/PgDn 捲動",
-	PlanApprovalPrompt:                     "計畫已生成（見上方）— Enter/y 核准執行,n/Esc 繼續規劃",
+	ChatStatusPlanApproval:                 "1 開始執行 · 2 修改計畫 · 3 暫不執行並退出 · n/Esc 繼續規劃 · PgUp/PgDn 捲動",
+	PlanApprovalPrompt:                     "計畫已生成（見上方）— 請選擇下一步操作",
+	PlanApprovalChoices:                    "1. 開始執行\n2. 修改計畫（繼續規劃）\n3. 暫不執行，退出計畫模式\n選擇 [1/2/3]（y 開始執行；n/Esc 繼續規劃）",
 	ChatStatusToolApproval:                 "1 本次允許 · 2 本會話允許此範圍 · 提供時 3/4 為前綴或儲存 · n/Esc 拒絕 · Ctrl-C 取消本輪",
 	AskTypeSomething:                       "自己輸入",
 	AskTypingHint:                          "輸入後按 Enter 確認",
@@ -76,6 +79,12 @@ var ChineseTraditional = Messages{
 	BashPrefixChoices:                      "1. 本次允許\n2. 本會話允許 %s\n3. 總是允許 %s（儲存到設定）\n4. 拒絕\n選擇 [1/2/3/4]（相容 y/a/p/n）",
 	PlanModeReadOnlyCommandChoices:         "1. 本次信任\n2. 本會話信任此前綴\n3. 總是在計劃模式信任此前綴（儲存到設定）\n4. 拒絕\n選擇 [1/2/3/4]（相容 y/a/p/n）",
 	FreshHumanApprovalChoices:              "1. 本次允許\n2. 拒絕\n選擇 [1/2]（相容 y/n）",
+	RecoveryApprovalChoices:                "1. 繼續一次\n2. 換個方案",
+	RecoveryPlanChangeChoices:              "1. 採用新計畫並繼續\n2. 不採用，讓 Auto 調整",
+	RecoveryPlanDecisionPrompt:             "執行計畫需要你的決定",
+	RecoveryPlanBeforeFmt:                  "原計畫：%s",
+	RecoveryPlanAfterFmt:                   "新計畫：%s",
+	RecoveryTaskGrantChoices:               "1. 繼續一次\n2. 繼續，並在本任務內允許同類操作\n3. 換個方案",
 	SandboxEscapeApprovalChoices:           "1. 允許一次\n2. 本會話使用真實環境\n3. 拒絕\n選擇 [1/2/3]（相容 y/a/n）",
 	ApprovalNeededFmt:                      "需要核准：%s",
 	ApprovalNeededWithSubjectFmt:           "需要核准：%s %s",
@@ -96,11 +105,6 @@ var ChineseTraditional = Messages{
 	MemoryApprovalSaveUpdate:               "儲存/更新記憶",
 	MemoryApprovalBodyLabel:                "正文",
 	MemoryApprovalArchiveFmt:               "封存記憶 %q",
-	MCPDestructiveSubjectFmt:               "MCP %s 宣告包含破壞性副作用",
-	MCPDestructiveReason:                   "這個已安裝的 MCP 工具宣告包含破壞性副作用。允許前請核對目標和參數；自動/YOLO 核准不能代答這個決定。",
-	MCPDestructiveDeclined:                 "使用者拒絕了這個破壞性 MCP 工具呼叫；不要重試，請詢問使用者希望如何繼續。",
-	MCPReviewerUnavailableReason:           "設定的自動核准 reviewer 不可用或未給出結論。這次呼叫需要使用者當場決定；自動/YOLO 核准與工作階段授權不能代答。",
-	MCPReviewerUnavailableDeclined:         "自動 reviewer 不可用後，使用者拒絕了這個 MCP 工具呼叫；不要重試，請詢問使用者希望如何繼續。",
 	PlanModeBashTrustSubjectFmt:            "在計劃模式中信任 %q 為唯讀命令前綴\n命令：%s",
 	PlanModeBashTrustReason:                "這條 bash 命令不在 Reasonix 內建唯讀集合中。只有在確認這個精確前綴用於計劃和研究時是唯讀的，才應核准。自動/YOLO 核准不能回答這個信任提示。",
 	PlanModeBashTrustDeclined:              "使用者拒絕將這條 bash 命令信任為計劃模式唯讀命令；不要重試它，請繼續使用其他已信任的唯讀工具，或詢問使用者希望如何繼續。",
@@ -122,16 +126,21 @@ var ChineseTraditional = Messages{
 	PlanModeReadOnlyCommandTrustFailedFmt:  "儲存計劃模式唯讀命令信任 %s 失敗：%v",
 	DiffFoldedFmt:                          "… 還有 %d 行",
 
-	OutputStyleNone:    "沒有可用的輸出風格",
-	OutputStyleHeader:  "輸出風格：",
-	OutputStyleHint:    "在 reasonix.toml 設定 agent.output_style 即可啟用（下次會話生效）",
-	ThemeHeader:        "主題：",
-	ThemeHint:          "使用 /theme <auto|light|dark|style> 切換",
-	ThemeChangedFmt:    "已切換主題為 %s / %s",
-	ThemeUnknownFmt:    "未知主題 %q",
-	LanguageHeader:     "語言：",
-	LanguageHint:       "使用 /language <auto|en|zh|zh-TW> 切換",
-	LanguageChangedFmt: "語言已設為 %s（當前解析為：%s）",
+	OutputStyleNone:           "沒有可用的輸出風格",
+	OutputStyleHeader:         "輸出風格：",
+	OutputStyleHint:           "在 reasonix.toml 設定 agent.output_style 即可啟用（下次會話生效）",
+	ThemeHeader:               "主題：",
+	ThemeHint:                 "使用 /theme <auto|light|dark|style> 切換",
+	ThemeChangedFmt:           "已切換主題為 %s / %s",
+	ThemeUnknownFmt:           "未知主題 %q",
+	LanguageHeader:            "語言：",
+	LanguageHint:              "使用 /language <auto|en|zh|zh-TW> 切換",
+	LanguageChangedFmt:        "語言已設為 %s（當前解析為：%s）",
+	CurrencyHeader:            "計價貨幣：",
+	CurrencyHint:              "使用 /currency <auto|CNY|USD> 切換",
+	CurrencyChangedFmt:        "計價貨幣已設為 %s（目前解析為：%s）",
+	RuntimeRefreshBusy:        "請先完成或取消目前工作，並停止背景任務後再修改此設定",
+	RuntimeRefreshUnavailable: "本會話不支援重新整理執行階段",
 
 	CompactionWorking: "正在壓縮對話…",
 	CompactionTitle:   "上下文已壓縮",
@@ -200,7 +209,7 @@ var ChineseTraditional = Messages{
 	MouseCopiedHint:              "已複製到剪貼簿",
 	ClipboardCopyOSC52Hint:       "已透過 OSC 52 請求複製 — 可能需要終端授權",
 	ClipboardCopyFallbackHint:    "系統剪貼簿無法使用 — 已改用 OSC 52",
-	ClipboardTextPasteRemoteHint: "SSH 下右鍵貼上無法讀取本機剪貼簿 — 請使用終端貼上快捷鍵或 /mouse",
+	ClipboardTextPasteRemoteHint: "SSH 下滑鼠貼上無法讀取本機剪貼簿或 PRIMARY 選取區 — 請使用終端貼上快捷鍵或 /mouse",
 	ClipboardTextPasteFailedFmt:  "貼上文字失敗：%v",
 	ClipboardImagePastingHint:    "正在貼上圖片…",
 	ClipboardImagePasteFailedFmt: "貼上圖片失敗：%v",
@@ -224,24 +233,25 @@ var ChineseTraditional = Messages{
 	CmdModel:            "切換模型",
 	CmdStatus:           "顯示工作階段狀態",
 	CmdWorkMode:         "切換工作模式",
-	CmdMemory:           "檢視記憶檔案",
+	CmdMemory:           "檢視指令、記憶與復原狀態",
 	CmdMigrate:          "重試舊資料遷移",
 	CmdRemember:         "儲存一條記憶",
 	CmdForget:           "刪除一條已存記憶",
 	CmdMcp:              "MCP 伺服器",
+	CmdRemote:           "遠端 SSH 主機",
 	CmdHooks:            "管理 hooks",
 	CmdPlugins:          "管理插件包",
 	CmdPasteImage:       "貼上剪貼簿圖片",
 	CmdOutputStyle:      "列出輸出風格",
 	CmdTheme:            "切換 CLI 主題",
 	CmdLanguage:         "切換 CLI 語言",
+	CmdCurrency:         "切換計價貨幣",
 	CmdSkill:            "管理 skills",
 	CmdVerbose:          "切換 thinking 原文顯示",
 	CmdReloadCmd:        "重載自定義命令",
 	CmdSandbox:          "檢視沙箱狀態",
 	CmdEffort:           "設定推理強度",
 	CmdMouse:            "切換滑鼠接管（關閉後由終端原生處理選取/右鍵）",
-	CmdAutoPlan:         "設定自動計畫模式",
 	CmdReasonLang:       "設定可見思考語言",
 	CmdHelp:             "檢視命令列表",
 	CmdTodo:             "清除任務清單",
@@ -262,7 +272,6 @@ var ChineseTraditional = Messages{
 	ArgMcpList:          "顯示已設定的伺服器",
 	ArgMcpConnected:     "已連線",
 	ArgHooksList:        "列出生效的 hooks",
-	ArgHooksTrust:       "信任本專案的 hooks",
 	ArgModelCurrent:     "當前",
 	ArgEffortAuto:       "使用模型預設值",
 	ArgEffortLow:        "較輕推理",
@@ -282,7 +291,7 @@ var ChineseTraditional = Messages{
 	ListSkillsHeaderFmt: "skills（%d 個）",
 	ListSkillsNone:      "暫無 skill — 呼叫內建的（如 /init），或用 install_skill 建立一個",
 	ListHooksHeaderFmt:  "hooks（生效 %d 個）",
-	ListHooksNone:       "無生效 hooks — 在 .reasonix/settings.json（專案，需信任後）或 <Reasonix home>/settings.json（全域）設定",
+	ListHooksNone:       "無生效 hooks — 在 .reasonix/settings.json（專案）或 <Reasonix home>/settings.json（全域）設定",
 	ListMcpHeader:       "MCP 伺服器",
 	ListMcpNone:         "未連線 MCP 伺服器 — 在 reasonix.toml（[[plugins]]）或專案 .mcp.json 中新增",
 
@@ -296,7 +305,7 @@ var ChineseTraditional = Messages{
 	QuickRememberEmpty:        "沒有要記錄的內容",
 	QuickRememberDoneFmt:      "已記住 → %s",
 	ModelSwitchUnavailable:    "本會話不支援切換模型",
-	ModelSwitchBusy:           "請先完成或取消當前這一輪再切換模型",
+	ModelSwitchBusy:           "請先完成或取消目前工作，並停止背景任務後再切換模型",
 	ModelAlreadyOnFmt:         "已經在使用 %s",
 	ModelSwitchingFmt:         "正在切換到 %s…",
 	ModelSwitchedFmt:          "已切換到 %s（會保留當前對話，但提示詞快取會重新計算）",
@@ -419,6 +428,18 @@ var ChineseTraditional = Messages{
 	AnthropicFetchModelsFailedFmt:  "取得 %s 模型失敗: %v",
 	AnthropicSelectModelsLabel:     "選擇要啟用的 %s 模型",
 
+	RemoteConnectingFmt:       "正在連線 %s…",
+	RemoteConnectedFmt:        "已連線到 %s",
+	RemoteReconnectingFmt:     "正在重新連線 %s(第 %d 次)…",
+	RemoteDegradedFmt:         "已連線到 %s,但部分連接埠轉送未建立",
+	RemoteDisconnected:        "已中斷(遠端 serve 仍在執行)",
+	RemoteServeReadyFmt:       "遠端 serve 就緒:%s",
+	RemoteHostKeyPromptFmt:    "未知的主機金鑰 %s\n  類型:  %s\n  指紋:  %s",
+	RemotePassphrasePromptFmt: "%s 的金鑰通關密語:",
+	RemotePasswordPromptFmt:   "%s 的登入密碼:",
+	RemoteBootstrapStepFmt:    "遠端 serve:%s %s",
+	RemoteNoHostsHint:         "尚未設定遠端主機;用 `reasonix remote add <名稱> [user@]host` 新增",
+
 	UnknownCommandFmt:         "未知命令 %q",
 	UsageRunHint:              "用法：reasonix -p [--model NAME] <task>",
 	ErrorPrefix:               "錯誤：",
@@ -430,6 +451,8 @@ var ChineseTraditional = Messages{
 	ProviderErrAuth:                "認證失敗 (HTTP 401)：API key 缺失、錯誤或已過期。請檢查 .env 中的金鑰，或執行 `reasonix setup`。",
 	ProviderErrInsufficientBalance: "餘額不足 (HTTP 402)：帳戶餘額不足，請前往儲值後重試。",
 	ProviderErrUnprocessable:       "參數錯誤 (HTTP 422)：某個請求參數被拒絕，通常是程式缺陷。若持續出現請回報。",
+	ProviderErrInputSensitive:      "輸入被 MiniMax 內容審查拒絕（錯誤碼 1026）。審查對象可能包含對話歷史和工具結果；請調整相關內容，或建立新對話只保留必要上下文。原樣重試通常無效。",
+	ProviderErrOutputSensitive:     "MiniMax 產生的內容被內容審查拒絕（錯誤碼 1027）。請調整請求內容後重試；若持續出現，可改用其他服務商。",
 	ProviderErrRateLimited:         "請求速率達到上限 (HTTP 429)：請求過於頻繁 (TPM/RPM)。已退避重試，請放慢速率或稍後再試。",
 	ProviderErrServer:              "伺服器故障 (HTTP 500)：服務端內部錯誤。已退避重試；若持續失敗請稍後再試。",
 	ProviderErrServerBusy:          "伺服器繁忙 (HTTP 503)：服務端負載過高。已退避重試，請稍後再試。",
@@ -437,25 +460,57 @@ var ChineseTraditional = Messages{
 	SelectOneHint:  "(↑/↓ · Enter · q 取消)",
 	SelectManyHint: "(↑/↓ · Space · Enter · q)",
 
+	ReportNoPending:           "沒有待處理的 CLI 當機報告。",
+	ReportHeaderFmt:           "CLI 當機報告 %s",
+	ReportCapturedFmt:         "擷取時間：%s",
+	ReportPreviewOnlyFmt:      "目前僅預覽。執行 `reasonix report send %s` 可傳送這份報告。",
+	ReportSendPrompt:          "將這份已脫敏報告傳送到 crash.reasonix.io？",
+	ReportKept:                "報告已保留在本機。",
+	ReportDeletedFmt:          "已刪除 CLI 當機報告 %s。",
+	ReportSentFmt:             "已傳送 CLI 當機報告 %s。",
+	ReportSafeModeBlocked:     "Safe Mode 下不能傳送當機報告；本機報告已保留",
+	ReportConfigFailedFmt:     "無法載入網路設定：%v",
+	ReportUploadFailedFmt:     "報告上傳失敗；本機報告已保留：%v",
+	ReportSentDeleteFailedFmt: "報告已傳送，但無法刪除本機副本：%v",
+	ReportUsageBody: `用法：
+  reasonix report                 預覽最新本機報告並確認是否傳送
+  reasonix report list            列出本機 CLI 當機報告
+  reasonix report show [ID]       預覽報告（省略 ID 時使用最新一份）
+  reasonix report send [ID]       傳送已審閱報告，成功後刪除本機副本
+  reasonix report delete [ID]     不傳送，直接刪除本機報告`,
+
+	CLITelemetryConsentNotice:           "Reasonix 可以向 crash.reasonix.io 傳送匿名、完全不含內容的 CLI 使用統計：隨機安裝 ID、版本、作業系統和固定品質分桶。絕不會傳送 prompt、回答、程式碼、路徑、模型或工具內容、環境變數。之後可執行 `reasonix config telemetry off` 關閉。",
+	CLITelemetryConsentPrompt:           "允許傳送匿名 CLI 使用統計嗎？",
+	CLITelemetryConsentInvalid:          "請輸入 y 或 n。",
+	CLITelemetryConsentSaveFailedFmt:    "由於無法儲存偏好設定，CLI 使用統計仍維持關閉：%v",
+	CLITelemetryConsentCleanupFailedFmt: "CLI 使用統計已關閉，但無法刪除待傳送統計：%v",
+
 	UsageBody: `reasonix — 由設定和插件驅動的 coding agent（多模型）
 
 用法：
   reasonix [--model NAME] [-c|--continue] [-r|--resume [QUERY]] [--permission-mode MODE] [--effort LEVEL] [--add-dir PATH]   互動式會話
   reasonix -p|--print [--model NAME] [--output-format text|json|stream-json] [--allowed-tools RULES] [--add-dir PATH] <task>
   reasonix run [--model NAME] [--max-steps N] [-c|--continue] [--resume PATH] [--copy] [--output-format FORMAT] <task>
+  reasonix run --events-jsonl [--model NAME] <task>      輸出脫敏結構化事件 JSONL
   reasonix review [--base BRANCH] [--commit SHA] [--model NAME]  AI 程式碼審查（基於本機 diff）
   reasonix serve [--model NAME] [--addr HOST:PORT] [--auth none|token|password] [--token STR] [--password STR] [--hash-password]  透過 HTTP+SSE 提供服務（支援可選認證）
   reasonix acp [--model NAME]                           透過 stdio 提供 Agent Client Protocol（也可用：reasonix --acp）
   reasonix setup [path]                                 互動式設定精靈；生成 reasonix.toml（及 .env）
-  reasonix config auto-plan [off|on]                    設定自動計畫模式
   reasonix config reasoning-language [auto|zh|en]        設定可見思考語言
+  reasonix config telemetry [auto|on|off]                設定不含內容的 CLI 使用統計
+  reasonix report [list|show|send|delete] [ID]           審閱並明確傳送本機 CLI 當機報告
   reasonix mcp <add|remove|list|import>                 管理 reasonix.toml 裡的 MCP 伺服器
   reasonix subagent <list|create|edit|delete|try|run>   管理和執行隔離子智慧體 profile
   reasonix init                                         查看如何產生專案記憶（AGENTS.md）
   reasonix doctor [--json]                              輸出脫敏的本機診斷資訊
   reasonix doctor session <branch-id> [--zip] [--out PATH]  匯出會話衝突診斷 zip
+  reasonix session list --json [--dir PATH]             為機器客戶列出脫敏會話
+  reasonix session show|status <machine-session-id> --json [--dir PATH]  查詢單一脫敏會話
+  reasonix session recovery [<machine-session-id>] --json [--dir PATH]  查詢脫敏復原狀態
+  reasonix hook list|status --json [--dir PATH]         檢視脫敏 Hook 狀態
+  reasonix task list|show --json [--dir PATH]           檢視脫敏 Task 狀態
   reasonix bot start|doctor|weixin-login                多管道 IM bot 閘道
-  reasonix upgrade [--check] [--force]                   自更新至最新版本（也可用：reasonix update）
+  reasonix upgrade [stable|preview] [--check] [--force]  按已儲存渠道自更新（進階用法：--channel；別名：reasonix update）
   reasonix version
   reasonix help
 

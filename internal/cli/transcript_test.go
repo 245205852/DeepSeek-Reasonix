@@ -5,14 +5,16 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/charmbracelet/colorprofile"
+
 	"github.com/charmbracelet/x/ansi"
 
 	"reasonix/internal/provider"
 )
 
 func TestAssistantMarkdownHasIdentityAndIndentedBody(t *testing.T) {
-	defer restoreThemeForTest(colorEnabled, activeCLITheme)
-	colorEnabled = false
+	defer restoreThemeForTest(activeColorProfile, activeCLITheme)
+	activeColorProfile = colorprofile.NoTTY
 	configureCLITheme("dark")
 
 	rendered := renderAssistantMarkdown("A concise answer that wraps across the available width.", 32)
@@ -37,8 +39,8 @@ func TestAssistantMarkdownHasIdentityAndIndentedBody(t *testing.T) {
 }
 
 func TestReplaySectionsKeepAssistantIdentity(t *testing.T) {
-	defer restoreThemeForTest(colorEnabled, activeCLITheme)
-	colorEnabled = false
+	defer restoreThemeForTest(activeColorProfile, activeCLITheme)
+	activeColorProfile = colorprofile.NoTTY
 	configureCLITheme("dark")
 
 	sections := replaySectionsFor([]provider.Message{
@@ -50,6 +52,28 @@ func TestReplaySectionsKeepAssistantIdentity(t *testing.T) {
 	}
 	if plain := ansi.Strip(sections[1]); !strings.HasPrefix(plain, "  ◆ Reasonix\n\n  Version 1.2.3") {
 		t.Fatalf("replayed assistant answer lost its identity: %q", plain)
+	}
+}
+
+func TestReplaySectionsRestoreInterruptedLocalOutput(t *testing.T) {
+	defer restoreThemeForTest(activeColorProfile, activeCLITheme)
+	activeColorProfile = colorprofile.NoTTY
+	configureCLITheme("dark")
+
+	sections := replaySectionsFor([]provider.Message{
+		{Role: provider.RoleUser, Content: "change config"},
+		{
+			Role: provider.RoleTool, ToolCallID: provider.LocalOnlyToolID, Name: provider.LocalOnlyToolName,
+			LocalOnly: true, Content: "partial answer", ReasoningContent: "checking config",
+			ToolCalls:       []provider.ToolCall{{ID: "p1", Name: "write_file"}},
+			InterruptedTurn: &provider.InterruptedTurnRecovery{Pending: true},
+		},
+	}, 64)
+	plain := ansi.Strip(strings.Join(sections, ""))
+	for _, want := range []string{"change config", "checking config", "partial answer", "Write", "bounded recovery summary"} {
+		if !strings.Contains(plain, want) {
+			t.Fatalf("replayed interrupted history missing %q:\n%s", want, plain)
+		}
 	}
 }
 

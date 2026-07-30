@@ -4,12 +4,15 @@ import { readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
+  applyConfiguredBaseAppearance,
   applyThemePack,
   applyThemeScene,
   beginThemePreview,
   cancelThemePreview,
   clearThemePack,
   draftPackView,
+  getActiveThemePack,
+  getBaseAppearance,
   isSafeBackgroundURL,
   isSafeHex,
   isThemeTokenKey,
@@ -19,6 +22,15 @@ import {
 } from "../lib/themePack";
 import { applyTheme, getThemeStyle } from "../lib/theme";
 import { BASE_STYLE_PREVIEW_PALETTES, themePreviewPalette } from "../lib/themePreviewPalette";
+import { themePreviewPaneAlpha } from "../components/ThemePreviewSurface";
+import {
+  activateThemePack,
+  applyExperienceToDOM,
+  cancelGlobalPreview,
+  configuredBaseStyleForSync,
+  isPreviewActive,
+  startGlobalPreview,
+} from "../lib/themeExperience";
 
 const testDir = dirname(fileURLToPath(import.meta.url));
 const packSource = readFileSync(resolve(testDir, "../lib/themePack.ts"), "utf8");
@@ -146,9 +158,20 @@ const draft = draftPackView({
     homeOpacity: 1,
     taskOpacity: 0.2,
     overlayStrength: 0.5,
+    paneOpacity: 0.50,
   },
   backgroundUrl: "/__reasonix_theme_asset/preview-pack/deadbeef/background.png",
 });
+
+const tokenOnlyPreview = draftPackView({
+  id: "token-only-preview",
+  name: "Token Only Preview",
+  baseStyle: "graphite",
+  tokens: { dark: { accent: "#ff0000" } },
+  recipes: { density: "comfortable", corners: "soft" },
+});
+ok(themePreviewPaneAlpha(tokenOnlyPreview, "home") === 1, "token-only preview keeps opaque panes");
+ok(themePreviewPaneAlpha(draft, "home") === 0.5, "background preview applies configured pane opacity");
 
 applyThemePack(draft);
 ok(attrs.get("data-theme-pack") === "preview-pack", "sets data-theme-pack");
@@ -159,13 +182,26 @@ ok((styleEl as { textContent: string }).textContent.includes("--r:14px"), "appli
 
 const twoSceneDraft = draftPackView({
   ...draft,
-  taskBackground: { focusX: 0.8, focusY: 0.3, safeArea: "right", opacity: 0.35, overlayStrength: 0.7 },
+  taskBackground: { focusX: 0.8, focusY: 0.3, safeArea: "right", opacity: 0.35, overlayStrength: 0.7, paneOpacity: 0.68 },
   taskBackgroundUrl: "/__reasonix_theme_asset/preview-pack/deadbeef/background-task.png",
 });
 applyThemePack(twoSceneDraft);
 ok(styleProps.get("--theme-bg-task-image")?.includes("background-task.png") === true, "sets independent task image var");
 ok(styleProps.get("--theme-bg-task-opacity") === "0.35", "sets independent task opacity");
+ok(styleProps.get("--theme-pane-card-pct") === "76%", "computes home card pane opacity");
+ok(styleProps.get("--theme-pane-task-card-pct") === "82%", "computes task card pane opacity");
 ok(attrs.get("data-theme-safe-area") === "right", "task background controls safe area");
+
+// Older shells and partial mocks can expose the independent task scene without
+// the newly added paneOpacity field. It must inherit the home pane value rather
+// than falling through clamp01(undefined)'s generic midpoint.
+const legacyTaskPaneDraft = draftPackView({
+  ...twoSceneDraft,
+  taskBackground: { ...twoSceneDraft.taskBackground! },
+});
+delete (legacyTaskPaneDraft.taskBackground as { paneOpacity?: number }).paneOpacity;
+applyThemePack(legacyTaskPaneDraft);
+ok(styleProps.get("--theme-pane-task-alpha") === "0.5", "legacy task scene inherits home pane opacity");
 
 applyThemeScene("task");
 ok(attrs.get("data-theme-scene") === "task", "scene task on root");
@@ -179,6 +215,49 @@ beginThemePreview(draft);
 ok(attrs.get("data-theme-pack") === "preview-pack", "preview applies pack");
 cancelThemePreview();
 ok(!attrs.has("data-theme-pack"), "cancel restores cleared pack");
+
+// A failed persistent activation must keep the preview snapshot reversible.
+clearThemePack();
+applyTheme("dark", "graphite", { persist: false });
+startGlobalPreview(draft);
+const testWindow = window as unknown as {
+  go?: { main?: { App?: { ActivateThemePack: (id: string) => Promise<void> } } };
+};
+testWindow.go = {
+  main: {
+    App: {
+      async ActivateThemePack() {
+        throw new Error("activation failed");
+      },
+    },
+  },
+};
+let activationRejected = false;
+try {
+  await activateThemePack(draft.id);
+} catch {
+  activationRejected = true;
+}
+ok(activationRejected, "activation failure surfaces to caller");
+ok(isPreviewActive(), "activation failure keeps preview reversible");
+cancelGlobalPreview();
+ok(!attrs.has("data-theme-pack") && getThemeStyle() === "graphite", "cancel restores appearance after activation failure");
+delete testWindow.go;
+
+// Save-and-apply must commit the preview before editor unmount cleanup can
+// restore the old snapshot while the gallery reload is in flight.
+const saveEditorStart = gallerySource.indexOf("const saveEditor = async");
+const saveEditorEnd = gallerySource.indexOf("if (immersive && selectedPack)", saveEditorStart);
+const saveEditorSource = gallerySource.slice(saveEditorStart, saveEditorEnd);
+ok(saveEditorSource.includes("activate: false"), "save-and-apply defers persistent activation to the experience controller");
+ok(
+  (saveEditorSource.match(/activateThemePack\(saved\.id\)/g) || []).length === 1,
+  "save-and-apply persists activation exactly once",
+);
+ok(
+  saveEditorSource.indexOf("await activateThemePack(saved.id)") < saveEditorSource.indexOf("setEditor(null)"),
+  "save-and-apply activates before editor unmount",
+);
 
 // Restore-default must restore config baseStyle, not leave pack baseStyle.
 setBaseAppearance("dark", "graphite");
@@ -196,6 +275,39 @@ ok(getThemeStyle() === "aurora", "pack switches live style to aurora");
 clearThemePack();
 ok(!attrs.has("data-theme-pack"), "clear removes data-theme-pack");
 ok(getThemeStyle() === "graphite", "clear restores config graphite style");
+
+// Generic settings refreshes must update the configured restore target without
+// replacing an active pack's effective style in the live DOM.
+applyThemePack(aurora);
+applyConfiguredBaseAppearance("light", "slate");
+ok(getActiveThemePack()?.id === "aurora", "settings refresh preserves the active pack");
+ok(attrs.get("data-theme-pack") === "aurora", "settings refresh preserves the pack DOM marker");
+ok(getThemeStyle() === "aurora", "settings refresh preserves the pack effective style");
+ok(
+  getBaseAppearance()?.theme === "light" && getBaseAppearance()?.style === "slate",
+  "settings refresh updates the configured restore appearance",
+);
+clearThemePack();
+ok(getThemeStyle() === "slate", "clear restores the configured appearance after settings refresh");
+
+// React owners must not replace the configured base style with a pack's
+// effective style. Direct reset entry points depend on this restore snapshot.
+const activeAuroraExperience = {
+  themeMode: "dark" as const,
+  baseStyle: "graphite" as const,
+  effectiveStyle: "aurora" as const,
+  activeThemeId: aurora.id,
+  activePack: aurora,
+  safeMode: false,
+};
+applyExperienceToDOM(activeAuroraExperience);
+ok(configuredBaseStyleForSync(activeAuroraExperience) === null, "active pack effective style is not mirrored as configured base");
+clearThemePack();
+ok(getThemeStyle() === "graphite", "direct reset still restores configured base after experience sync");
+ok(
+  configuredBaseStyleForSync({ ...activeAuroraExperience, activeThemeId: undefined, activePack: null, baseStyle: "slate", effectiveStyle: "slate" }) === "slate",
+  "inactive experience still synchronizes a newly selected base style",
+);
 
 // Density recipe must land in overlay CSS and have stylesheet consumers.
 ok((styleEl as { textContent: string }).textContent.includes("--theme-density-pad") || packSource.includes("--theme-density-pad:6px"), "compact density vars defined in pack builder");
@@ -215,10 +327,20 @@ ok(stylesSource.includes("--list-row-height: var(--theme-row-h)"), "density maps
 
 // Layout must go transparent when a background is active so theme-bg is visible.
 ok(
-  stylesSource.includes(':root[data-theme-has-bg="true"] .layout') &&
-    /data-theme-has-bg="true"\]\s*\.layout\s*\{[^}]*background:\s*transparent/s.test(stylesSource),
+  /data-theme-has-bg="true"\][^}]*\.layout\s*\{[^}]*background:\s*transparent/s.test(stylesSource),
   "layout background transparent when theme has background",
 );
+const transparencyStart = stylesSource.indexOf("Extended pane transparency");
+const transparencyEnd = stylesSource.indexOf("Density recipe consumers", transparencyStart);
+const transparencySlice = stylesSource.slice(transparencyStart, transparencyEnd);
+const unguardedTransparencySelectors = transparencySlice
+  .split("\n")
+  .filter((line) => line.includes(":root[data-theme-pack]") && !line.includes('[data-theme-has-bg="true"]'));
+ok(unguardedTransparencySelectors.length === 0, "token-only packs keep opaque layout surfaces");
+ok(stylesSource.includes("var(--theme-pane-card-pct, 88%)"), "home cards consume pane opacity tier");
+ok(stylesSource.includes("var(--theme-pane-task-card-pct, 88%)"), "task cards consume pane opacity tier");
+ok(stylesSource.includes("var(--tp-pane-card-pct, 88%)"), "preview cards consume the same pane opacity tier");
+ok(stylesSource.includes(':root[data-theme-has-bg="true"] .theme-bg'), "background layer only displays for packs with backgrounds");
 
 // Unmount must cancel preview.
 ok(librarySource.includes("cancelThemePreview()"), "ThemeLibrary cleanup cancels preview");
@@ -256,7 +378,7 @@ ok(
 ok(themeBgSlice.includes(".theme-bg__overlay"), "overlay wash element styled");
 ok(appSource.includes("applyThemeScene"), "App wires scene from session content");
 ok(appSource.includes("ThemeBackground"), "App mounts background layer");
-ok(appSource.includes("setBaseAppearance"), "App seeds base appearance from config");
+ok(appSource.includes("applyConfiguredBaseAppearance"), "App applies configured appearance without replacing an active pack");
 ok(appSource.includes("ResetThemePack") || appSource.includes("theme reset") || appSource.includes('arg === "reset"'), "reset entry exists");
 
 console.log("\nofficial themes (kind/grouping/i18n)");
@@ -394,9 +516,16 @@ ok((bridgeSource.match(/kind: "base"/g) || []).length === 6, "mock has 6 base pa
 ok((bridgeSource.match(/kind: "official"/g) || []).length === 8, "mock has 8 official packs");
 ok((bridgeSource.match(/previewUrl: new URL\("\.\.\/\.\.\/\.\.\/themes\/official\//g) || []).length === 8, "browser mock has 8 real official previews");
 ok((bridgeSource.match(/backgroundUrl: new URL\("\.\.\/\.\.\/\.\.\/themes\/official\//g) || []).length === 8, "browser mock has 8 real official backgrounds");
+ok((bridgeSource.match(/paneOpacity:\s*0\.50/g) || []).length === 8, "browser mock gives every official theme the product pane opacity");
 ok(viteSource.includes('resolve(configDir, "../themes/official")'), "Vite dev server permits only the official theme asset directory");
 ok(stylesSource.includes("container: theme-gallery / inline-size"), "gallery establishes its own responsive container");
 ok(stylesSource.includes("@container theme-gallery (max-width: 760px)"), "gallery collapses from its content width");
+ok(gallerySource.includes('import { createPortal } from "react-dom"') && gallerySource.includes("document.body"), "theme editor escapes settings containing blocks through a body portal");
+ok(gallerySource.includes('role="dialog"') && gallerySource.includes("aria-labelledby={titleId}"), "theme editor portal retains accessible dialog semantics");
+ok(stylesSource.includes("container: theme-editor / inline-size"), "theme editor establishes an independent responsive container");
+ok(stylesSource.includes("@container theme-editor (max-width: 920px)"), "theme editor collapses from its own width");
+ok(stylesSource.includes(".theme-editor__setting-row .set-seg__btn { flex: 1; min-width: 0; }"), "all editor segmented setting buttons share available width");
+ok(stylesSource.includes("grid-template-columns: repeat(3, minmax(0, 1fr))"), "base appearance options wrap at narrow editor widths");
 ok(stylesSource.includes(".theme-gallery__preview-control"), "preview dimensions have labeled layout styling");
 ok(gallerySource.includes("settings.themeGallery.scenePreviewHint") && gallerySource.includes("theme-gallery__preview-help"), "scene preview explains home and workspace behavior");
 ok(localeZh.includes('"settings.themeGallery.sceneHome": "首页展示"') && localeZh.includes('"settings.themeGallery.sceneTask": "工作区展示"'), "scene options use explicit Chinese labels");

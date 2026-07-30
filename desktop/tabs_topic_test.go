@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -14,6 +15,15 @@ import (
 	"reasonix/internal/config"
 	"reasonix/internal/control"
 )
+
+type runtimeStatusSessionController struct {
+	control.SessionAPI
+	status control.RuntimeStatus
+}
+
+func (c *runtimeStatusSessionController) RuntimeStatus() control.RuntimeStatus {
+	return c.status
+}
 
 func waitForTabReady(t *testing.T, app *App, tabID string) *WorkspaceTab {
 	t.Helper()
@@ -122,7 +132,7 @@ func TestSessionListCacheRefillsAfterInvalidate(t *testing.T) {
 	first := []agent.SessionInfo{{Path: filepath.Join(dir, "first.jsonl")}}
 	second := []agent.SessionInfo{{Path: filepath.Join(dir, "second.jsonl")}}
 
-	token := cache.versionToken()
+	token := cache.versionToken(dir)
 	cache.put(dir, first, map[string]string{"first.jsonl": "First"}, token)
 	if infos, titles, ok := cache.get(dir); !ok || len(infos) != 1 || filepath.Base(infos[0].Path) != "first.jsonl" || titles["first.jsonl"] != "First" {
 		t.Fatalf("initial cache entry = %+v, %+v, %v", infos, titles, ok)
@@ -137,10 +147,152 @@ func TestSessionListCacheRefillsAfterInvalidate(t *testing.T) {
 		t.Fatalf("stale token repopulated cache after invalidate")
 	}
 
-	token = cache.versionToken()
+	token = cache.versionToken(dir)
 	cache.put(dir, second, map[string]string{"second.jsonl": "Second"}, token)
 	if infos, titles, ok := cache.get(dir); !ok || len(infos) != 1 || filepath.Base(infos[0].Path) != "second.jsonl" || titles["second.jsonl"] != "Second" {
 		t.Fatalf("refilled cache entry = %+v, %+v, %v", infos, titles, ok)
+	}
+}
+
+func TestSessionListCacheInvalidatesOnlyChangedDirectory(t *testing.T) {
+	cache := &sessionListCache{byDir: map[string]sessionListCacheEntry{}}
+	changedDir := filepath.Join(t.TempDir(), "changed")
+	untouchedDir := filepath.Join(t.TempDir(), "untouched")
+	changedToken := cache.versionToken(changedDir)
+	untouchedToken := cache.versionToken(untouchedDir)
+	cache.put(changedDir, []agent.SessionInfo{{Path: filepath.Join(changedDir, "old.jsonl")}}, nil, changedToken)
+	cache.put(untouchedDir, []agent.SessionInfo{{Path: filepath.Join(untouchedDir, "keep.jsonl")}}, nil, untouchedToken)
+
+	if !cache.invalidateDirs(changedDir) {
+		t.Fatal("invalidateDirs reported no changed directory")
+	}
+	if _, _, ok := cache.get(changedDir); ok {
+		t.Fatal("changed directory survived scoped invalidation")
+	}
+	if infos, _, ok := cache.get(untouchedDir); !ok || len(infos) != 1 || filepath.Base(infos[0].Path) != "keep.jsonl" {
+		t.Fatalf("unrelated directory was invalidated: %+v, %v", infos, ok)
+	}
+
+	cache.put(changedDir, []agent.SessionInfo{{Path: filepath.Join(changedDir, "stale.jsonl")}}, nil, changedToken)
+	if _, _, ok := cache.get(changedDir); ok {
+		t.Fatal("stale directory token repopulated cache after scoped invalidation")
+	}
+
+	equivalentDir := filepath.Join(untouchedDir, ".")
+	if !cache.invalidateDirs(equivalentDir) {
+		t.Fatal("invalidateDirs rejected an equivalent cleaned directory")
+	}
+	if _, _, ok := cache.get(untouchedDir); ok {
+		t.Fatal("equivalent directory spelling did not invalidate the absolute cache key")
+	}
+	if got := sessionListCacheDirForPath(""); got != "" {
+		t.Fatalf("empty session path resolved to cache directory %q", got)
+	}
+}
+
+func TestSessionListCacheExpiresForExternalProcessReconciliation(t *testing.T) {
+	cache := &sessionListCache{byDir: map[string]sessionListCacheEntry{}}
+	dir := t.TempDir()
+	token := cache.versionToken(dir)
+	cache.put(dir, []agent.SessionInfo{{Path: filepath.Join(dir, "old.jsonl")}}, nil, token)
+
+	key := sessionListCacheDirKey(dir)
+	cache.mu.Lock()
+	entry := cache.byDir[key]
+	entry.cachedAt = time.Now().Add(-sessionListCacheTTL)
+	cache.byDir[key] = entry
+	cache.mu.Unlock()
+
+	if _, _, ok := cache.get(dir); ok {
+		t.Fatal("expired directory listing remained cached")
+	}
+	if _, exists := cache.byDir[key]; exists {
+		t.Fatal("expired directory listing was not removed")
+	}
+}
+
+func TestProjectTreeMetadataChangePreservesSessionListings(t *testing.T) {
+	oldProjectCache := projectSessionCache
+	projectSessionCache = &sessionListCache{byDir: map[string]sessionListCacheEntry{}}
+	t.Cleanup(func() {
+		projectSessionCache = oldProjectCache
+	})
+
+	dir := t.TempDir()
+	projectSessionCache.put(dir, []agent.SessionInfo{{Path: filepath.Join(dir, "keep.jsonl")}}, nil, projectSessionCache.versionToken(dir))
+	emitted := 0
+	app := NewApp()
+	app.projectTreeChangedHook = func() { emitted++ }
+	app.emitProjectTreeMetadataChanged()
+
+	if _, _, ok := projectSessionCache.get(dir); !ok {
+		t.Fatal("metadata-only project tree change invalidated session listing")
+	}
+	if emitted != 1 {
+		t.Fatalf("project tree hook calls = %d, want 1", emitted)
+	}
+}
+
+func TestSessionListCacheForgetRejectsInFlightFillAndReadd(t *testing.T) {
+	cache := &sessionListCache{byDir: map[string]sessionListCacheEntry{}}
+	dir := t.TempDir()
+	staleToken := cache.versionToken(dir)
+	cache.put(dir, []agent.SessionInfo{{Path: filepath.Join(dir, "old.jsonl")}}, nil, staleToken)
+
+	if !cache.forgetDirs(dir) {
+		t.Fatal("forgetDirs reported no removed directory")
+	}
+	if _, _, ok := cache.get(dir); ok {
+		t.Fatal("forgotten directory remained cached")
+	}
+	cache.mu.Lock()
+	_, versionRetained := cache.dirVersions[sessionListCacheDirKey(dir)]
+	cache.mu.Unlock()
+	if versionRetained {
+		t.Fatal("forgotten directory retained lifecycle metadata")
+	}
+
+	cache.put(dir, []agent.SessionInfo{{Path: filepath.Join(dir, "stale.jsonl")}}, nil, staleToken)
+	if _, _, ok := cache.get(dir); ok {
+		t.Fatal("in-flight pre-removal fill repopulated forgotten directory")
+	}
+
+	readdToken := cache.versionToken(dir)
+	if readdToken.dirVersion == staleToken.dirVersion {
+		t.Fatal("re-added directory reused its pre-removal token")
+	}
+	cache.put(dir, []agent.SessionInfo{{Path: filepath.Join(dir, "fresh.jsonl")}}, nil, readdToken)
+	infos, _, ok := cache.get(dir)
+	if !ok || len(infos) != 1 || filepath.Base(infos[0].Path) != "fresh.jsonl" {
+		t.Fatalf("re-added directory did not accept fresh listing: %+v, %v", infos, ok)
+	}
+}
+
+func TestRemoveWorkspaceForgetsProjectSessionCache(t *testing.T) {
+	isolateDesktopUserDirs(t)
+	oldProjectCache := projectSessionCache
+	projectSessionCache = &sessionListCache{byDir: map[string]sessionListCacheEntry{}}
+	t.Cleanup(func() { projectSessionCache = oldProjectCache })
+
+	projectRoot := t.TempDir()
+	if err := addProject(projectRoot, "Cached Project"); err != nil {
+		t.Fatalf("add project: %v", err)
+	}
+	dir := desktopSessionDir(projectRoot)
+	staleToken := projectSessionCache.versionToken(dir)
+	projectSessionCache.put(dir, []agent.SessionInfo{{Path: filepath.Join(dir, "old.jsonl")}}, nil, staleToken)
+
+	app := NewApp()
+	if err := app.RemoveWorkspace(projectRoot); err != nil {
+		t.Fatalf("RemoveWorkspace: %v", err)
+	}
+	if _, _, ok := projectSessionCache.get(dir); ok {
+		t.Fatal("removed workspace session listing remained cached")
+	}
+
+	projectSessionCache.put(dir, []agent.SessionInfo{{Path: filepath.Join(dir, "stale.jsonl")}}, nil, staleToken)
+	if _, _, ok := projectSessionCache.get(dir); ok {
+		t.Fatal("removed workspace accepted an in-flight stale cache fill")
 	}
 }
 
@@ -153,6 +305,7 @@ func TestRenameSessionInvalidatesProjectTreeCache(t *testing.T) {
 	})
 
 	dir := t.TempDir()
+	otherDir := t.TempDir()
 	sessionPath := filepath.Join(dir, "rename-me.jsonl")
 	if err := os.WriteFile(sessionPath, []byte(`{"role":"user","content":"hello"}`+"\n"), 0o644); err != nil {
 		t.Fatalf("write session: %v", err)
@@ -162,8 +315,9 @@ func TestRenameSessionInvalidatesProjectTreeCache(t *testing.T) {
 	app := NewApp()
 	app.setTestCtrl(ctrl, "")
 
-	token := projectSessionCache.versionToken()
+	token := projectSessionCache.versionToken(dir)
 	projectSessionCache.put(dir, []agent.SessionInfo{{Path: sessionPath}}, map[string]string{"rename-me.jsonl": "old"}, token)
+	projectSessionCache.put(otherDir, []agent.SessionInfo{{Path: filepath.Join(otherDir, "keep.jsonl")}}, nil, projectSessionCache.versionToken(otherDir))
 	if _, _, ok := projectSessionCache.get(dir); !ok {
 		t.Fatalf("expected primed project tree cache")
 	}
@@ -172,6 +326,53 @@ func TestRenameSessionInvalidatesProjectTreeCache(t *testing.T) {
 	}
 	if _, _, ok := projectSessionCache.get(dir); ok {
 		t.Fatalf("RenameSession should invalidate project tree cache")
+	}
+	if _, _, ok := projectSessionCache.get(otherDir); !ok {
+		t.Fatalf("RenameSession invalidated an unrelated session directory")
+	}
+}
+
+func TestArchiveAndRestoreSessionInvalidateOnlyOwningDirectory(t *testing.T) {
+	isolateDesktopUserDirs(t)
+	oldProjectCache := projectSessionCache
+	projectSessionCache = &sessionListCache{byDir: map[string]sessionListCacheEntry{}}
+	t.Cleanup(func() {
+		projectSessionCache = oldProjectCache
+	})
+
+	dir := config.SessionDir()
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("mkdir sessions: %v", err)
+	}
+	path := writeLegacySession(t, dir, "scoped-cache.jsonl", "cache scope", time.Now())
+	otherDir := t.TempDir()
+	prime := func(cacheDir, sessionPath string) {
+		projectSessionCache.put(cacheDir, []agent.SessionInfo{{Path: sessionPath}}, nil, projectSessionCache.versionToken(cacheDir))
+	}
+	prime(dir, path)
+	prime(otherDir, filepath.Join(otherDir, "keep.jsonl"))
+
+	app := NewApp()
+	if err := app.DeleteSession(path); err != nil {
+		t.Fatalf("DeleteSession: %v", err)
+	}
+	if _, _, ok := projectSessionCache.get(dir); ok {
+		t.Fatal("DeleteSession kept the owning directory cached")
+	}
+	if _, _, ok := projectSessionCache.get(otherDir); !ok {
+		t.Fatal("DeleteSession invalidated an unrelated directory")
+	}
+
+	trashPath := filepath.Join(dir, sessionTrashDir, "scoped-cache.jsonl", "scoped-cache.jsonl")
+	prime(dir, path)
+	if err := app.RestoreSession(trashPath); err != nil {
+		t.Fatalf("RestoreSession: %v", err)
+	}
+	if _, _, ok := projectSessionCache.get(dir); ok {
+		t.Fatal("RestoreSession kept the owning directory cached")
+	}
+	if _, _, ok := projectSessionCache.get(otherDir); !ok {
+		t.Fatal("RestoreSession invalidated an unrelated directory")
 	}
 }
 
@@ -2856,7 +3057,7 @@ func TestTrashTopicMovesOpenSessionToTrash(t *testing.T) {
 	}
 }
 
-func TestTrashTopicCancelsRunningSessionRuntime(t *testing.T) {
+func TestTrashTopicRejectsRunningSessionRuntime(t *testing.T) {
 	isolateDesktopUserDirs(t)
 
 	projectRoot := t.TempDir()
@@ -2903,22 +3104,237 @@ func TestTrashTopicCancelsRunningSessionRuntime(t *testing.T) {
 
 	ctrl.Submit("long turn")
 	<-runner.started
-	if err := app.TrashTopic(topicID); err != nil {
-		t.Fatalf("trash topic: %v", err)
+	defer close(runner.release)
+	if err := app.TrashTopic(topicID); !errors.Is(err, errTopicHasActiveWork) {
+		t.Fatalf("trash running topic error = %v, want %v", err, errTopicHasActiveWork)
 	}
-	waitNotRunning(t, ctrl)
-	if _, ok := app.tabs["running"]; ok {
-		t.Fatalf("running topic runtime should be removed")
+	if !ctrl.Running() {
+		t.Fatal("rejected archive should leave the controller running")
 	}
-	if got := app.activeTabID; got != "keep" {
-		t.Fatalf("active tab = %q, want keep", got)
+	if _, ok := app.tabs["running"]; !ok {
+		t.Fatal("rejected archive should keep the running topic tab")
 	}
-	if _, err := os.Stat(sessionPath); !os.IsNotExist(err) {
-		t.Fatalf("running topic session should be moved out of active history, stat err = %v", err)
+	if got := app.activeTabID; got != "running" {
+		t.Fatalf("active tab = %q, want running", got)
+	}
+	if _, err := os.Stat(sessionPath); err != nil {
+		t.Fatalf("rejected archive should preserve the live session: %v", err)
 	}
 	trashPath := filepath.Join(dir, sessionTrashDir, "running-trash.jsonl", "running-trash.jsonl")
-	if _, err := os.Stat(trashPath); err != nil {
-		t.Fatalf("running topic session should be moved to trash: %v", err)
+	if _, err := os.Stat(trashPath); !os.IsNotExist(err) {
+		t.Fatalf("rejected archive created a trash entry, stat err = %v", err)
+	}
+	if got := loadTopicTitle(projectRoot, topicID); got != "Running trash" {
+		t.Fatalf("rejected archive topic title = %q, want Running trash", got)
+	}
+}
+
+func TestTrashTopicRejectsRunningDetachedRuntime(t *testing.T) {
+	isolateDesktopUserDirs(t)
+
+	projectRoot := t.TempDir()
+	topicID := "topic_detached_running_trash"
+	if err := addProject(projectRoot, ""); err != nil {
+		t.Fatalf("add project: %v", err)
+	}
+	if err := setTopicTitle(projectRoot, topicID, "Detached running trash"); err != nil {
+		t.Fatalf("set topic title: %v", err)
+	}
+	dir := config.SessionDir()
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("mkdir sessions: %v", err)
+	}
+	sessionPath := writeTopicSession(t, dir, "detached-running-trash.jsonl", topicID, "Detached running trash", projectRoot)
+	runner := &blockingRunner{started: make(chan struct{}), release: make(chan struct{})}
+	ctrl := control.New(control.Options{Runner: runner, SessionDir: dir, SessionPath: sessionPath, Label: "test", WorkspaceRoot: projectRoot})
+	defer ctrl.Close()
+	defer close(runner.release)
+	detachedKey := sessionRuntimeKey(sessionPath)
+	detached := &WorkspaceTab{
+		ID:            detachedRuntimeTabID(detachedKey),
+		Scope:         "project",
+		WorkspaceRoot: projectRoot,
+		TopicID:       topicID,
+		TopicTitle:    "Detached running trash",
+		SessionPath:   sessionPath,
+		Ctrl:          ctrl,
+		Ready:         true,
+		disabledMCP:   map[string]ServerView{},
+	}
+	app := &App{
+		tabs:             map[string]*WorkspaceTab{},
+		detachedSessions: map[string]*WorkspaceTab{detachedKey: detached},
+	}
+
+	ctrl.Submit("long detached turn")
+	<-runner.started
+	if err := app.TrashTopic(topicID); !errors.Is(err, errTopicHasActiveWork) {
+		t.Fatalf("trash detached running topic error = %v, want %v", err, errTopicHasActiveWork)
+	}
+	if !ctrl.Running() {
+		t.Fatal("rejected archive should leave the detached controller running")
+	}
+	if got := app.detachedSessions[detachedKey]; got != detached {
+		t.Fatalf("rejected archive detached runtime = %p, want %p", got, detached)
+	}
+	if _, err := os.Stat(sessionPath); err != nil {
+		t.Fatalf("rejected archive should preserve the detached session: %v", err)
+	}
+	trashPath := filepath.Join(dir, sessionTrashDir, "detached-running-trash.jsonl", "detached-running-trash.jsonl")
+	if _, err := os.Stat(trashPath); !os.IsNotExist(err) {
+		t.Fatalf("rejected archive created a trash entry, stat err = %v", err)
+	}
+	if got := loadTopicTitle(projectRoot, topicID); got != "Detached running trash" {
+		t.Fatalf("rejected archive topic title = %q, want Detached running trash", got)
+	}
+}
+
+func TestTrashTopicWaitsForConcurrentTurnAdmission(t *testing.T) {
+	isolateDesktopUserDirs(t)
+
+	topicID := "topic_concurrent_turn_trash"
+	if err := setTopicTitle("", topicID, "Concurrent turn trash"); err != nil {
+		t.Fatalf("set topic title: %v", err)
+	}
+	dir := config.SessionDir()
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("mkdir sessions: %v", err)
+	}
+	sessionPath := writeTopicSessionWithPrompt(
+		t, dir, "concurrent-turn-trash.jsonl", topicID, "Concurrent turn trash", "", "existing turn", time.Now(),
+	)
+	runner := &blockingRunner{started: make(chan struct{}), release: make(chan struct{})}
+	ctrl := control.New(control.Options{Runner: runner, SessionDir: dir, SessionPath: sessionPath, Label: "test"})
+	defer ctrl.Close()
+	defer close(runner.release)
+	tab := &WorkspaceTab{
+		ID:            "concurrent",
+		Scope:         "global",
+		WorkspaceRoot: globalTabWorkspaceRoot(),
+		TopicID:       topicID,
+		TopicTitle:    "Concurrent turn trash",
+		SessionPath:   sessionPath,
+		Ctrl:          ctrl,
+		Ready:         true,
+		disabledMCP:   map[string]ServerView{},
+	}
+	app := &App{
+		tabs:        map[string]*WorkspaceTab{tab.ID: tab},
+		tabOrder:    []string{tab.ID},
+		activeTabID: tab.ID,
+	}
+
+	// Hold the per-tab gate so SubmitToTab owns the shared admission lock but
+	// cannot make the controller observably busy yet.
+	tab.turnStartMu.Lock()
+	turnGateHeld := true
+	defer func() {
+		if turnGateHeld {
+			tab.turnStartMu.Unlock()
+		}
+	}()
+	submitDone := make(chan error, 1)
+	go func() { submitDone <- app.SubmitToTab(tab.ID, "concurrent turn") }()
+
+	deadline := time.Now().Add(5 * time.Second)
+	for app.runtimeAdmissionMu.TryLock() {
+		app.runtimeAdmissionMu.Unlock()
+		if time.Now().After(deadline) {
+			t.Fatal("concurrent turn never acquired the runtime admission read lock")
+		}
+		time.Sleep(time.Millisecond)
+	}
+
+	trashEntered := make(chan struct{})
+	var trashEnteredOnce sync.Once
+	app.runtimeMutationBeforeLockHook = func(operation string) {
+		if operation == "trash-topic" {
+			trashEnteredOnce.Do(func() { close(trashEntered) })
+		}
+	}
+	trashDone := make(chan error, 1)
+	go func() { trashDone <- app.TrashTopic(topicID) }()
+	select {
+	case <-trashEntered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("TrashTopic did not reach the runtime mutation barrier")
+	}
+
+	// Wait until TrashTopic owns runtimeRebuildMu and is queued on the admission
+	// writer. Releasing the turn gate now must let SubmitToTab publish Running
+	// before TrashTopic can re-check active work.
+	deadline = time.Now().Add(5 * time.Second)
+	for app.runtimeRebuildMu.TryLock() {
+		app.runtimeRebuildMu.Unlock()
+		if time.Now().After(deadline) {
+			t.Fatal("TrashTopic never acquired the runtime rebuild lock")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	tab.turnStartMu.Unlock()
+	turnGateHeld = false
+
+	if err := <-submitDone; err != nil {
+		t.Fatalf("SubmitToTab: %v", err)
+	}
+	<-runner.started
+	if err := <-trashDone; !errors.Is(err, errTopicHasActiveWork) {
+		t.Fatalf("concurrent TrashTopic error = %v, want %v", err, errTopicHasActiveWork)
+	}
+	if !ctrl.Running() {
+		t.Fatal("rejected archive should leave the concurrently admitted turn running")
+	}
+	if got := app.tabs[tab.ID]; got != tab {
+		t.Fatalf("rejected archive tab = %p, want %p", got, tab)
+	}
+	if _, err := os.Stat(sessionPath); err != nil {
+		t.Fatalf("rejected archive should preserve the concurrently active session: %v", err)
+	}
+	trashPath := filepath.Join(dir, sessionTrashDir, "concurrent-turn-trash.jsonl", "concurrent-turn-trash.jsonl")
+	if _, err := os.Stat(trashPath); !os.IsNotExist(err) {
+		t.Fatalf("rejected archive created a trash entry, stat err = %v", err)
+	}
+	if got := loadTopicTitle("", topicID); got != "Concurrent turn trash" {
+		t.Fatalf("rejected archive topic title = %q, want Concurrent turn trash", got)
+	}
+}
+
+func TestTrashTopicRejectsPendingPrompt(t *testing.T) {
+	isolateDesktopUserDirs(t)
+
+	projectRoot := t.TempDir()
+	topicID := "topic_pending_trash"
+	if err := addProject(projectRoot, ""); err != nil {
+		t.Fatalf("add project: %v", err)
+	}
+	if err := setTopicTitle(projectRoot, topicID, "Pending trash"); err != nil {
+		t.Fatalf("set topic title: %v", err)
+	}
+	app := &App{
+		tabs: map[string]*WorkspaceTab{
+			"pending": {
+				ID:            "pending",
+				Scope:         "project",
+				WorkspaceRoot: projectRoot,
+				TopicID:       topicID,
+				TopicTitle:    "Pending trash",
+				Ctrl:          &runtimeStatusSessionController{status: control.RuntimeStatus{PendingPrompt: true}},
+				Ready:         true,
+				disabledMCP:   map[string]ServerView{},
+			},
+		},
+		tabOrder:    []string{"pending"},
+		activeTabID: "pending",
+	}
+
+	if err := app.TrashTopic(topicID); !errors.Is(err, errTopicHasActiveWork) {
+		t.Fatalf("trash pending topic error = %v, want %v", err, errTopicHasActiveWork)
+	}
+	if _, ok := app.tabs["pending"]; !ok {
+		t.Fatal("rejected archive should keep the pending topic tab")
+	}
+	if got := loadTopicTitle(projectRoot, topicID); got != "Pending trash" {
+		t.Fatalf("rejected archive topic title = %q, want Pending trash", got)
 	}
 }
 
@@ -3217,7 +3633,7 @@ func TestCloseTabKeepsIndexedBlankSession(t *testing.T) {
 	}
 }
 
-func TestTrashTopicTrashConflictKeepsRunningRuntime(t *testing.T) {
+func TestTrashTopicTrashConflictAllowsIdleRuntime(t *testing.T) {
 	isolateDesktopUserDirs(t)
 
 	projectRoot := t.TempDir()
@@ -3236,13 +3652,12 @@ func TestTrashTopicTrashConflictKeepsRunningRuntime(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(dir, sessionTrashDir, filepath.Base(sessionPath)), 0o755); err != nil {
 		t.Fatalf("create trash conflict: %v", err)
 	}
-	runner := &blockingRunner{started: make(chan struct{}), release: make(chan struct{})}
-	ctrl := control.New(control.Options{Runner: runner, SessionDir: dir, SessionPath: sessionPath, Label: "test", WorkspaceRoot: projectRoot})
+	ctrl := control.New(control.Options{SessionDir: dir, SessionPath: sessionPath, Label: "test", WorkspaceRoot: projectRoot})
 	defer ctrl.Close()
 	app := &App{
 		tabs: map[string]*WorkspaceTab{
-			"running": {
-				ID:            "running",
+			"idle": {
+				ID:            "idle",
 				Scope:         "project",
 				WorkspaceRoot: projectRoot,
 				TopicID:       topicID,
@@ -3252,12 +3667,10 @@ func TestTrashTopicTrashConflictKeepsRunningRuntime(t *testing.T) {
 				disabledMCP:   map[string]ServerView{},
 			},
 		},
-		tabOrder:    []string{"running"},
-		activeTabID: "running",
+		tabOrder:    []string{"idle"},
+		activeTabID: "idle",
 	}
 
-	ctrl.Submit("long turn")
-	<-runner.started
 	err := app.TrashTopic(topicID)
 	if err != nil {
 		t.Fatalf("TrashTopic should succeed after cleaning empty trash dir: %v", err)
@@ -3265,9 +3678,6 @@ func TestTrashTopicTrashConflictKeepsRunningRuntime(t *testing.T) {
 	if _, err := os.Stat(sessionPath); !os.IsNotExist(err) {
 		t.Fatalf("session file should be moved to trash, stat err = %v", err)
 	}
-
-	close(runner.release)
-	waitNotRunning(t, ctrl)
 }
 
 func TestTrashTopicValidTrashRemovesEmptyLiveStub(t *testing.T) {

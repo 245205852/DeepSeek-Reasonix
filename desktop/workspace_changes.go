@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"io"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"sort"
@@ -12,7 +14,9 @@ import (
 	"time"
 
 	"reasonix/internal/control"
+	"reasonix/internal/diff"
 	"reasonix/internal/proc"
+	"reasonix/internal/remote/protocol"
 )
 
 type gitStatusEntry struct {
@@ -27,7 +31,12 @@ type workspaceChangeAccumulator struct {
 	hasGit     bool
 }
 
-const workspaceGitBranchCacheTTL = 2 * time.Second
+const (
+	workspaceGitBranchCacheTTL = 2 * time.Second
+	// Bound both decoded file contents and rendered patches before they cross
+	// the Wails bridge; generated files must not turn a preview click into OOM.
+	workspaceChangeDetailLimit = 2 * 1024 * 1024
+)
 
 type workspaceGitBranchCacheEntry struct {
 	branch     string
@@ -43,6 +52,30 @@ var workspaceGitBranchCache = struct {
 var workspaceGitBranchForMetaProbe = workspaceGitBranch
 
 func (a *App) WorkspaceChanges(tabID string) WorkspaceChangesView {
+	if _, _, _, _, ok := a.activeRemoteWorkbench(); ok {
+		raw, err := a.workbenchRequest(protocol.MethodWorkspaceChanges, protocol.WorkspaceChangesParams{})
+		if err != nil {
+			return WorkspaceChangesView{Files: []WorkspaceChangeView{}, GitErr: err.Error()}
+		}
+		decoded, err := protocol.DecodeResult(protocol.MethodWorkspaceChanges, raw)
+		if err != nil {
+			return WorkspaceChangesView{Files: []WorkspaceChangeView{}, GitErr: err.Error()}
+		}
+		result := decoded.(protocol.WorkspaceChangesResult)
+		out := WorkspaceChangesView{Files: make([]WorkspaceChangeView, 0, len(result.Files)), GitAvailable: result.GitAvailable, GitBranch: result.GitBranch}
+		for _, file := range result.Files {
+			sources := make([]string, 0, len(file.Sources))
+			for _, source := range file.Sources {
+				sources = append(sources, string(source))
+			}
+			view := WorkspaceChangeView{Path: file.Path, OldPath: file.OldPath, Sources: sources, GitStatus: file.GitStatus, Turns: append([]int(nil), file.Turns...), LatestPrompt: file.LatestPrompt}
+			if file.LatestTimeMs != nil {
+				view.LatestTime = *file.LatestTimeMs
+			}
+			out.Files = append(out.Files, view)
+		}
+		return out
+	}
 	out := WorkspaceChangesView{Files: []WorkspaceChangeView{}, GitAvailable: true}
 	tabID = strings.TrimSpace(tabID)
 
@@ -150,6 +183,224 @@ func (a *App) workspaceBaseForTab(tabID string) (string, error) {
 		return "", fmt.Errorf("tab %q not found", tabID)
 	}
 	return workspaceBaseFromRoot(workspaceRoot)
+}
+
+// WorkspaceChangeDetail returns the current patch for one file in the
+// requested tab. Git is authoritative when available because HEAD -> worktree
+// includes both staged and unstaged edits. Session checkpoints provide a
+// git-free fallback and cover files edited by Reasonix before Git notices them.
+func (a *App) WorkspaceChangeDetail(tabID, path string) (WorkspaceChangeDetailView, error) {
+	if _, _, _, _, ok := a.activeRemoteWorkbench(); ok {
+		raw, err := a.workbenchRequest(protocol.MethodWorkspaceChangeDetail, protocol.WorkspaceChangeDetailParams{Path: path})
+		if err != nil {
+			return WorkspaceChangeDetailView{}, err
+		}
+		decoded, err := protocol.DecodeResult(protocol.MethodWorkspaceChangeDetail, raw)
+		if err != nil {
+			return WorkspaceChangeDetailView{}, err
+		}
+		result := decoded.(protocol.WorkspaceChangeDetailResult)
+		out := WorkspaceChangeDetailView{
+			Diff: result.Diff, Added: result.Added, Removed: result.Removed,
+			Binary: result.Binary, Truncated: result.Truncated,
+		}
+		if result.Source != nil {
+			out.Source = string(*result.Source)
+		}
+		return out, nil
+	}
+	workspaceRoot, ctrl, ok := a.workspaceChangesTarget(strings.TrimSpace(tabID))
+	if !ok {
+		return WorkspaceChangeDetailView{}, fmt.Errorf("tab %q not found", tabID)
+	}
+	base, err := workspaceBaseFromRoot(workspaceRoot)
+	if err != nil {
+		return WorkspaceChangeDetailView{}, err
+	}
+	rel := normalizeWorkspaceRelPath(base, path)
+	if rel == "" {
+		return WorkspaceChangeDetailView{}, os.ErrInvalid
+	}
+	if _, ok, err := workspacePathForBase(base, filepath.FromSlash(rel)); err != nil || !ok {
+		if err != nil {
+			return WorkspaceChangeDetailView{}, err
+		}
+		return WorkspaceChangeDetailView{}, os.ErrInvalid
+	}
+
+	if detail, found := workspaceGitChangeDetail(base, rel); found {
+		return detail, nil
+	}
+	if ctrl != nil {
+		if state, found := ctrl.CheckpointFileState(rel); found {
+			return workspaceCheckpointChangeDetail(base, rel, state.Content)
+		}
+	}
+	return WorkspaceChangeDetailView{}, nil
+}
+
+func workspaceGitChangeDetail(base, rel string) (WorkspaceChangeDetailView, bool) {
+	entries, err := workspaceGitStatus(base)
+	if err != nil {
+		return WorkspaceChangeDetailView{}, false
+	}
+	var entry *gitStatusEntry
+	for i := range entries {
+		if entries[i].Path == rel {
+			entry = &entries[i]
+			break
+		}
+	}
+	if entry == nil {
+		return WorkspaceChangeDetailView{}, false
+	}
+
+	// Untracked files are omitted by git diff. In an unborn repository HEAD is
+	// absent as well, so synthesize the same create/delete patch from disk.
+	if entry.Status == "??" || !workspaceGitHasHead(base) {
+		detail, err := workspaceCheckpointChangeDetail(base, rel, nil)
+		if err != nil {
+			return WorkspaceChangeDetailView{}, false
+		}
+		detail.Source = "git"
+		return detail, true
+	}
+
+	args := []string{"-C", base, "diff", "--no-ext-diff", "--no-textconv", "--relative", "HEAD", "--", filepath.FromSlash(rel)}
+	if entry.OldPath != "" && entry.OldPath != rel {
+		args = append(args, filepath.FromSlash(entry.OldPath))
+	}
+	raw, truncated, err := workspaceGitDiffOutput(args...)
+	if err != nil {
+		return WorkspaceChangeDetailView{}, false
+	}
+	if truncated {
+		return WorkspaceChangeDetailView{Source: "git", Truncated: true}, true
+	}
+	patch := strings.TrimSpace(string(raw))
+	if patch == "" {
+		return WorkspaceChangeDetailView{}, false
+	}
+	added, removed := tallyUnifiedPatch(patch)
+	binary := strings.Contains(patch, "Binary files ") || strings.Contains(patch, "GIT binary patch")
+	return WorkspaceChangeDetailView{Diff: &patch, Source: "git", Added: added, Removed: removed, Binary: binary}, true
+}
+
+func workspaceGitHasHead(base string) bool {
+	return workspaceGit("-C", base, "rev-parse", "--verify", "HEAD").Run() == nil
+}
+
+func workspaceGitDiffOutput(args ...string) ([]byte, bool, error) {
+	cmd := workspaceGit(args...)
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		return nil, false, err
+	}
+	cmd.Stderr = io.Discard
+	if err := cmd.Start(); err != nil {
+		_ = stdout.Close()
+		return nil, false, err
+	}
+	raw, readErr := io.ReadAll(io.LimitReader(stdout, workspaceChangeDetailLimit+1))
+	if readErr != nil {
+		_ = stdout.Close()
+		if cmd.Process != nil {
+			_ = cmd.Process.Kill()
+		}
+		_ = cmd.Wait()
+		return nil, false, readErr
+	}
+	if len(raw) > workspaceChangeDetailLimit {
+		_ = stdout.Close()
+		if cmd.Process != nil {
+			_ = cmd.Process.Kill()
+		}
+		_ = cmd.Wait()
+		return nil, true, nil
+	}
+	waitErr := cmd.Wait()
+	if waitErr != nil {
+		return nil, false, waitErr
+	}
+	return raw, false, nil
+}
+
+func workspaceCheckpointChangeDetail(base, rel string, old *string) (WorkspaceChangeDetailView, error) {
+	path, ok, err := workspacePathForBase(base, filepath.FromSlash(rel))
+	if err != nil || !ok {
+		return WorkspaceChangeDetailView{}, err
+	}
+	oldText := ""
+	if old != nil {
+		if len(*old) > workspaceChangeDetailLimit {
+			return WorkspaceChangeDetailView{Source: "session", Truncated: true}, nil
+		}
+		oldText = *old
+	}
+	newText, exists, truncated, err := workspaceCurrentText(path)
+	if err != nil {
+		return WorkspaceChangeDetailView{}, err
+	}
+	if truncated {
+		return WorkspaceChangeDetailView{Source: "session", Truncated: true}, nil
+	}
+	kind := diff.Modify
+	if old == nil {
+		kind = diff.Create
+	} else if !exists {
+		kind = diff.Delete
+	}
+	change := diff.Build(rel, oldText, newText, kind)
+	if len(change.Diff) > workspaceChangeDetailLimit {
+		return WorkspaceChangeDetailView{Source: "session", Truncated: true}, nil
+	}
+	if change.Diff == "" && !change.Binary {
+		return WorkspaceChangeDetailView{Source: "session"}, nil
+	}
+	patch := change.Diff
+	return WorkspaceChangeDetailView{
+		Diff:    &patch,
+		Source:  "session",
+		Added:   change.Added,
+		Removed: change.Removed,
+		Binary:  change.Binary,
+	}, nil
+}
+
+func workspaceCurrentText(path string) (string, bool, bool, error) {
+	info, err := os.Lstat(path)
+	if os.IsNotExist(err) {
+		return "", false, false, nil
+	}
+	if err != nil {
+		return "", false, false, err
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		target, err := os.Readlink(path)
+		return target, true, false, err
+	}
+	if !info.Mode().IsRegular() {
+		return "", true, false, fmt.Errorf("workspace change path %q is not a regular file", path)
+	}
+	raw, truncated, err := readFileUTF8Limit(path, workspaceChangeDetailLimit)
+	return string(raw), true, truncated, err
+}
+
+func tallyUnifiedPatch(patch string) (added, removed int) {
+	inHunk := false
+	for _, line := range strings.Split(patch, "\n") {
+		switch {
+		case strings.HasPrefix(line, "@@"):
+			inHunk = true
+		case strings.HasPrefix(line, "diff --git "):
+			inHunk = false
+		case inHunk && strings.HasPrefix(line, "+"):
+			added++
+		case inHunk && strings.HasPrefix(line, "-"):
+			removed++
+		}
+	}
+	return added, removed
 }
 
 // workspaceGit builds a console-hidden git probe: CREATE_NO_WINDOW so git's own
@@ -333,6 +584,9 @@ func workspaceGitBranch(base string) string {
 
 // GitBranches returns all local git branches for the active workspace's repo.
 func (a *App) GitBranches() ([]string, error) {
+	if _, _, _, _, ok := a.activeRemoteWorkbench(); ok {
+		return nil, fmt.Errorf("CAPABILITY_UNAVAILABLE: Remote Workbench does not expose Git branch mutation")
+	}
 	base, err := a.activeWorkspaceBase()
 	if err != nil {
 		return nil, err
@@ -349,6 +603,9 @@ func (a *App) GitBranches() ([]string, error) {
 // GitCheckout switches the active workspace's git branch and returns the
 // current branch name, or an error when git is unavailable.
 func (a *App) GitCheckout(branch string) error {
+	if _, _, _, _, ok := a.activeRemoteWorkbench(); ok {
+		return fmt.Errorf("CAPABILITY_UNAVAILABLE: Remote Workbench does not expose Git branch mutation")
+	}
 	base, err := a.activeWorkspaceBase()
 	if err != nil {
 		return err
@@ -377,6 +634,22 @@ type GitCommitDetailView struct {
 }
 
 func (a *App) WorkspaceGitHistory(tabID string, path string) ([]GitCommitView, error) {
+	if _, _, _, _, ok := a.activeRemoteWorkbench(); ok {
+		raw, err := a.workbenchRequest(protocol.MethodGitHistory, protocol.GitHistoryParams{Path: filepath.ToSlash(strings.TrimSpace(path))})
+		if err != nil {
+			return nil, err
+		}
+		decoded, err := protocol.DecodeResult(protocol.MethodGitHistory, raw)
+		if err != nil {
+			return nil, err
+		}
+		result := decoded.(protocol.GitHistoryResult)
+		out := make([]GitCommitView, 0, len(result.Commits))
+		for _, commit := range result.Commits {
+			out = append(out, GitCommitView{Hash: commit.Hash, Author: commit.Author, Date: commit.Date, Message: commit.Message})
+		}
+		return out, nil
+	}
 	base, err := a.workspaceBaseForTab(tabID)
 	if err != nil {
 		return nil, err
@@ -408,6 +681,30 @@ func (a *App) WorkspaceGitHistory(tabID string, path string) ([]GitCommitView, e
 }
 
 func (a *App) WorkspaceGitCommitDetail(tabID string, hash string, path string) (GitCommitDetailView, error) {
+	if _, _, _, _, ok := a.activeRemoteWorkbench(); ok {
+		limit := protocol.PageMaxItems
+		raw, err := a.workbenchRequest(protocol.MethodGitCommitDetail, protocol.GitCommitDetailParams{
+			Hash: strings.TrimSpace(hash), Path: filepath.ToSlash(strings.TrimSpace(path)), Limit: &limit,
+		})
+		if err != nil {
+			return GitCommitDetailView{}, err
+		}
+		decoded, err := protocol.DecodeResult(protocol.MethodGitCommitDetail, raw)
+		if err != nil {
+			return GitCommitDetailView{}, err
+		}
+		result := decoded.(protocol.GitCommitDetailResult)
+		if result.Kind == protocol.GitDetailPatch {
+			return GitCommitDetailView{Diff: result.Body}, nil
+		}
+		files := make([]string, 0)
+		if result.Files != nil {
+			for _, file := range *result.Files {
+				files = append(files, file.Path)
+			}
+		}
+		return GitCommitDetailView{Files: files}, nil
+	}
 	base, err := a.workspaceBaseForTab(tabID)
 	if err != nil {
 		return GitCommitDetailView{}, err

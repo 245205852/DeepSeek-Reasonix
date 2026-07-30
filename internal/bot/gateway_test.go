@@ -189,6 +189,36 @@ func (c *queueTestController) wasCanceled() bool {
 	return c.canceled
 }
 
+type rotatingBotController struct {
+	botController
+	path     string
+	newPath  string
+	newCalls int
+	closed   bool
+}
+
+func (c *rotatingBotController) Running() bool { return false }
+func (c *rotatingBotController) NewSession() error {
+	c.newCalls++
+	c.path = c.newPath
+	return nil
+}
+func (c *rotatingBotController) SessionPath() string { return c.path }
+func (c *rotatingBotController) Close()              { c.closed = true }
+
+type runtimeStatusBotController struct {
+	botController
+	status        control.RuntimeStatus
+	workspaceRoot string
+	sessionPath   string
+	closed        bool
+}
+
+func (c *runtimeStatusBotController) RuntimeStatus() control.RuntimeStatus { return c.status }
+func (c *runtimeStatusBotController) WorkspaceRoot() string                { return c.workspaceRoot }
+func (c *runtimeStatusBotController) SessionPath() string                  { return c.sessionPath }
+func (c *runtimeStatusBotController) Close()                               { c.closed = true }
+
 type blockingApprovalController struct {
 	botController
 	emit     func(event.Event)
@@ -639,6 +669,28 @@ func TestGatewayNormalizesNumericApprovalShortcutsOnlyWhenPending(t *testing.T) 
 	}
 }
 
+func TestGatewayNormalizesTaskGrantRecoveryShortcuts(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	gw := NewGateway(GatewayConfig{}, nil, logger)
+	key := "recovery-key"
+	gw.controllers[key] = &sessionState{
+		pendingApprovals: map[string]event.Approval{
+			"r1": {ID: "r1", Kind: "recovery", Recovery: &event.RecoveryApproval{CanGrantTask: true}},
+		},
+		lastApprovalID: "r1",
+	}
+	for input, want := range map[string]string{
+		"1": "/recovery-continue r1",
+		"2": "/recovery-continue-task r1",
+		"3": "/recovery-revise r1",
+	} {
+		got, ok := gw.normalizeApprovalShortcut(key, input)
+		if !ok || got != want {
+			t.Fatalf("normalize %q = %q,%v; want %q,true", input, got, ok, want)
+		}
+	}
+}
+
 func TestGatewayNormalizesAskShortcutForPendingAsk(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	gw := NewGateway(GatewayConfig{}, nil, logger)
@@ -788,7 +840,11 @@ func TestGatewayNewSessionRemembersRotatedSessionPath(t *testing.T) {
 	oldPath := agent.NewSessionPath(sessionDir, "old-model")
 	exec := agent.New(gatewayFakeProvider{}, tool.NewRegistry(), agent.NewSession("system"), agent.Options{}, event.Discard)
 	ctrl := control.New(control.Options{Executor: exec, SessionDir: sessionDir, SessionPath: oldPath, Label: "fake-model"})
-	gw.controllers[key] = &sessionState{ctrl: ctrl}
+	leases := control.NewSessionLeaseKeeper()
+	if err := leases.Rebind(oldPath); err != nil {
+		t.Fatalf("bind old session lease: %v", err)
+	}
+	gw.controllers[key] = &sessionState{ctrl: ctrl, leases: leases, sessionPath: oldPath}
 
 	gw.handleSlashCommand(context.Background(), adapter, key, msg)
 
@@ -801,6 +857,97 @@ func TestGatewayNewSessionRemembersRotatedSessionPath(t *testing.T) {
 	if ctrl.SessionPath() == oldPath {
 		t.Fatalf("controller session path was not rotated")
 	}
+	if got := leases.HeldPath(); got != agent.CanonicalSessionPath(ctrl.SessionPath()) {
+		t.Fatalf("held lease = %q, want rotated path %q", got, agent.CanonicalSessionPath(ctrl.SessionPath()))
+	}
+	oldLease, err := agent.TryAcquireSessionLease(oldPath)
+	if err != nil {
+		t.Fatalf("old session lease was not released: %v", err)
+	}
+	oldLease.Release()
+	gw.closeSessions()
+}
+
+func TestGatewayNewSessionLeaseFailureRetiresSession(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	readyCalls := 0
+	gw := NewGateway(GatewayConfig{
+		OnSessionReady: func(InboundMessage, string) error {
+			readyCalls++
+			return nil
+		},
+	}, nil, logger)
+	adapter := newFakeAdapter(PlatformWeixin, "fake-weixin")
+	msg := InboundMessage{
+		Platform:     PlatformWeixin,
+		ConnectionID: "weixin-weixin",
+		Domain:       "weixin",
+		ChatType:     ChatDM,
+		ChatID:       "chat",
+		UserID:       "user",
+		Text:         "/new",
+	}
+	key := BuildSessionKey(msg.Session())
+	sessionDir := t.TempDir()
+	oldPath := filepath.Join(sessionDir, "old.jsonl")
+	newPath := filepath.Join(sessionDir, "new.jsonl")
+	ctrl := &rotatingBotController{path: oldPath, newPath: newPath}
+	leases := control.NewSessionLeaseKeeper()
+	if err := leases.Rebind(oldPath); err != nil {
+		t.Fatalf("bind old session lease: %v", err)
+	}
+	blocker, err := agent.TryAcquireSessionLease(newPath)
+	if err != nil {
+		t.Fatalf("hold rotated session lease: %v", err)
+	}
+	defer blocker.Release()
+	gw.controllers[key] = &sessionState{ctrl: ctrl, leases: leases, sessionPath: oldPath}
+
+	gw.handleSlashCommand(context.Background(), adapter, key, msg)
+
+	gw.mu.Lock()
+	_, exists := gw.controllers[key]
+	gw.mu.Unlock()
+	if exists {
+		t.Fatal("lease-failed session remains registered")
+	}
+	if ctrl.newCalls != 1 || !ctrl.closed {
+		t.Fatalf("controller lifecycle = new calls %d closed %v, want 1/true", ctrl.newCalls, ctrl.closed)
+	}
+	if got := leases.HeldPath(); got != "" {
+		t.Fatalf("old lease remained held after retirement: %q", got)
+	}
+	oldLease, err := agent.TryAcquireSessionLease(oldPath)
+	if err != nil {
+		t.Fatalf("old session lease was not released after retirement: %v", err)
+	}
+	oldLease.Release()
+	if readyCalls != 0 {
+		t.Fatalf("session-ready callback ran %d times after failed creation", readyCalls)
+	}
+	sent := adapter.sentMessages()
+	if len(sent) != 1 || !strings.Contains(sent[0].Text, "新会话创建失败") || strings.Contains(sent[0].Text, "已开始新会话") {
+		t.Fatalf("sent messages = %+v, want a single creation-failed response", sent)
+	}
+}
+
+func TestGatewayCloseSessionStateReleasesSessionLease(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	gw := NewGateway(GatewayConfig{}, nil, logger)
+	path := filepath.Join(t.TempDir(), "session.jsonl")
+	leases := control.NewSessionLeaseKeeper()
+	if err := leases.Rebind(path); err != nil {
+		t.Fatalf("bind session lease: %v", err)
+	}
+	ctrl := control.New(control.Options{})
+
+	gw.closeSessionState(&sessionState{ctrl: ctrl, leases: leases})
+
+	lease, err := agent.TryAcquireSessionLease(path)
+	if err != nil {
+		t.Fatalf("session lease was not released after controller close: %v", err)
+	}
+	lease.Release()
 }
 
 func TestGatewayYoloCommandUpdatesCurrentSessionAndConnectionDefault(t *testing.T) {
@@ -1188,6 +1335,68 @@ func TestGatewaySessionsSearchAndAttachSessionOverride(t *testing.T) {
 	}
 	if canonicalBotPath(profile.workspaceRoot) != canonicalBotPath(projectRoot) {
 		t.Fatalf("attached workspace root = %q, want %q", profile.workspaceRoot, projectRoot)
+	}
+}
+
+func TestGatewayRuntimeOverridePreservesControllersWithActiveWork(t *testing.T) {
+	tests := []struct {
+		name         string
+		status       control.RuntimeStatus
+		admittedTurn bool
+	}{
+		{name: "foreground turn", status: control.RuntimeStatus{Running: true}},
+		{name: "pending prompt", status: control.RuntimeStatus{PendingPrompt: true}},
+		{name: "background job", status: control.RuntimeStatus{BackgroundJobs: 1}},
+		{name: "admitted turn", admittedTurn: true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+			gw := NewGateway(GatewayConfig{}, nil, logger)
+			msg := InboundMessage{Platform: PlatformFeishu, ChatType: ChatDM, ChatID: "chat", UserID: "user"}
+			key := BuildSessionKey(msg.Session())
+			ctrl := &runtimeStatusBotController{status: tc.status, workspaceRoot: "/old"}
+			state := &sessionState{ctrl: ctrl, workspaceRoot: "/old"}
+			gw.controllers[key] = state
+			gw.sessionOverrides[key] = sessionRuntimeOverride{channel: ChannelConfig{WorkspaceRoot: "/old"}, label: "project:old"}
+			if tc.admittedTurn {
+				if result := gw.sessions.TryAcquireWithQueue(key, msg, QueueOptions{}); !result.Acquired {
+					t.Fatalf("admit turn: %+v", result)
+				}
+			}
+
+			text := gw.handleUseProjectCommand(key, "/use project default")
+			if !strings.Contains(text, "请先完成或停止") {
+				t.Fatalf("busy response = %q", text)
+			}
+			if ctrl.closed || gw.controllers[key] != state {
+				t.Fatalf("active controller was replaced or closed: closed=%v installed=%v", ctrl.closed, gw.controllers[key] == state)
+			}
+			if override, ok := gw.sessionOverrides[key]; !ok || override.label != "project:old" {
+				t.Fatalf("active override changed: %+v, present=%v", override, ok)
+			}
+		})
+	}
+}
+
+func TestGatewayDefersProfileMismatchWhileBackgroundWorkIsActive(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	newRoot := t.TempDir()
+	gw := NewGateway(GatewayConfig{WorkspaceRoot: newRoot}, nil, logger)
+	msg := InboundMessage{Platform: PlatformFeishu, ChatType: ChatDM, ChatID: "chat", UserID: "user"}
+	key := BuildSessionKey(msg.Session())
+	ctrl := &runtimeStatusBotController{
+		status: control.RuntimeStatus{BackgroundJobs: 1}, workspaceRoot: t.TempDir(),
+	}
+	state := &sessionState{ctrl: ctrl, workspaceRoot: ctrl.workspaceRoot}
+	gw.controllers[key] = state
+
+	got := gw.getOrCreateSession(context.Background(), key, msg)
+	if got != state || gw.controllers[key] != state || ctrl.closed {
+		t.Fatalf("profile mismatch canceled active work: gotOld=%v installed=%v closed=%v", got == state, gw.controllers[key] == state, ctrl.closed)
+	}
+	if state.workspaceRoot == newRoot {
+		t.Fatalf("deferred runtime change mutated the live profile to %q", state.workspaceRoot)
 	}
 }
 

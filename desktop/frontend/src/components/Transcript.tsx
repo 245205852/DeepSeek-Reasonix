@@ -1,5 +1,5 @@
-import { createContext, memo, type CSSProperties, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent, type ReactNode, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import type { Item, LiveStream } from "../lib/useController";
+import { createContext, memo, type CSSProperties, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent, type ReactNode, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
+import type { ControllerLiveStore, Item, LiveStream } from "../lib/useController";
 import type { CheckpointMeta } from "../lib/types";
 import type { InvocationMetadataMap } from "../lib/invocationDisplay";
 import { useT } from "../lib/i18n";
@@ -12,7 +12,7 @@ import { ReadOnlyBatch } from "./ReadOnlyBatch";
 import { ToolGroup, isCreationGroupableTool, toolGroupKind, type ToolGroupKind } from "./ToolGroup";
 import { getDisplayMode, onDisplayModeChange, type DisplayMode } from "../lib/displayMode";
 import { getProcessFoldPreference, onProcessFoldPreferenceChange, type ProcessFoldPreference } from "../lib/processFoldPreference";
-import { STEER_NOTICE_PREFIX, isReadOnlyTool, isSteerNoticeText } from "../lib/useController";
+import { STEER_NOTICE_PREFIX, isSteerNoticeText } from "../lib/useController";
 import { useGSAPCollapse } from "../lib/useGSAPCollapse";
 import { useEntranceAnimation } from "../lib/useEntranceAnimation";
 import { useScrollManager } from "../lib/useScrollManager";
@@ -262,7 +262,8 @@ function partitionTurnItems(
 
 export function Transcript({
   items,
-  live,
+  live: liveProp,
+  liveStore,
   tabId,
   footerHeight = 0,
   onPrompt,
@@ -289,6 +290,7 @@ export function Transcript({
 }: {
   items: Item[];
   live?: LiveStream;
+  liveStore?: ControllerLiveStore;
   tabId?: string;
   footerHeight?: number;
   onPrompt: (text: string) => void;
@@ -314,6 +316,15 @@ export function Transcript({
   invocationMetadata?: InvocationMetadataMap;
 }) {
   const t = useT();
+  const subscribeLive = useCallback(
+    (listener: () => void) => liveStore?.subscribe(tabId, listener) ?? (() => {}),
+    [liveStore, tabId],
+  );
+  const getLiveSnapshot = useCallback(
+    () => liveStore?.getSnapshot(tabId) ?? liveProp,
+    [liveProp, liveStore, tabId],
+  );
+  const live = useSyncExternalStore(subscribeLive, getLiveSnapshot, getLiveSnapshot);
   const {
     scrollRef,
     stick,
@@ -1477,7 +1488,7 @@ function TurnCollapse({ items, durationMs, mode, subcalls, tabId, creationMode =
       flushToolBatch();
       flushRO();
     }
-    if (!creationMode && it.kind === "tool" && !it.parentId && it.name !== "todo_write" && it.name !== "exit_plan_mode" && it.status !== "running" && isReadOnlyTool(it.name)) {
+    if (!creationMode && it.kind === "tool" && !it.parentId && it.name !== "todo_write" && it.name !== "exit_plan_mode" && it.status !== "running" && it.readOnly) {
       roBatch.push(it as ToolItem);
       continue;
     }

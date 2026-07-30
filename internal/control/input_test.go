@@ -2,7 +2,6 @@ package control
 
 import (
 	"context"
-	"errors"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -20,18 +19,6 @@ import (
 	"reasonix/internal/skill"
 	"reasonix/internal/tool"
 )
-
-type fakeAutoPlanClassifier struct {
-	needsPlan bool
-	reason    string
-	err       error
-	calls     int
-}
-
-func (f *fakeAutoPlanClassifier) NeedsPlan(ctx context.Context, input string, score int) (bool, string, error) {
-	f.calls++
-	return f.needsPlan, f.reason, f.err
-}
 
 type fakeTurnRunner struct {
 	inputs []string
@@ -233,6 +220,77 @@ func TestSubmitInvocationDisplayExecutesStructuredEntitiesInVisualOrder(t *testi
 	}
 }
 
+func TestSubmitInvocationDisplayPreparesPluginSubagentBindings(t *testing.T) {
+	home := t.TempDir()
+	pluginRoot := t.TempDir()
+	writeControlSkill(t, pluginRoot, "helper/SKILL.md", "---\ndescription: Plugin helper\nrunAs: subagent\n---\nCall search.")
+	store := skill.New(skill.Options{
+		HomeDir: home, CustomPaths: []string{pluginRoot},
+		PluginPaths: map[string][]string{pluginRoot: {"search-plugin"}}, DisableBuiltins: true,
+	})
+	store.ConfigureToolBindings(func(skill.Skill) []tool.MCPBinding {
+		return []tool.MCPBinding{{
+			Package: "search-plugin", Server: "search", RawName: "search",
+			VisibleName: "search", CallableName: "mcp__search__search", CapabilityID: "mcp-tool:search/search",
+		}}
+	})
+
+	sess := agent.NewSession("parent system")
+	exec := agent.New(nil, tool.NewRegistry(), sess, agent.Options{}, event.Discard)
+	events := make(chan event.Event, 12)
+	var got skill.Skill
+	c := New(Options{
+		Executor: exec, SkillStore: store, Skills: store.List(),
+		Sink: event.FuncSink(func(e event.Event) { events <- e }),
+		SkillRunner: func(_ context.Context, sk skill.Skill, _ string, _ skill.SubagentRunOptions) (string, error) {
+			got = sk
+			return "done", nil
+		},
+	})
+	defer c.Close()
+
+	c.SubmitInvocationDisplay("inspect", "inspect", []InvocationRequest{{Name: "search-plugin:helper", Kind: "subagent"}})
+	waitForTurnEvents(t, events)
+	waitIdle(t, c)
+	if !strings.Contains(got.Body, "## Runtime MCP tool bindings") || !strings.Contains(got.Body, "`mcp__search__search`") {
+		t.Fatalf("structured plugin subagent was not prepared: %q", got.Body)
+	}
+}
+
+func TestRunSubagentProfilePreparesPluginBindings(t *testing.T) {
+	home := t.TempDir()
+	pluginRoot := t.TempDir()
+	writeControlSkill(t, pluginRoot, "helper/SKILL.md", "---\ndescription: Plugin helper\nrunAs: subagent\n---\nCall search.")
+	store := skill.New(skill.Options{
+		HomeDir: home, CustomPaths: []string{pluginRoot},
+		PluginPaths: map[string][]string{pluginRoot: {"search-plugin"}}, DisableBuiltins: true,
+	})
+	store.ConfigureToolBindings(func(skill.Skill) []tool.MCPBinding {
+		return []tool.MCPBinding{{
+			Package: "search-plugin", Server: "search", RawName: "search",
+			VisibleName: "search", CallableName: "mcp__search__search", CapabilityID: "mcp-tool:search/search",
+		}}
+	})
+
+	var got skill.Skill
+	c := New(Options{
+		SkillStore: store, Skills: store.List(),
+		SkillRunner: func(_ context.Context, sk skill.Skill, _ string, _ skill.SubagentRunOptions) (string, error) {
+			got = sk
+			return "done", nil
+		},
+	})
+	defer c.Close()
+
+	answer, err := c.RunSubagentProfile(context.Background(), "search-plugin:helper", "inspect", false)
+	if err != nil || answer != "done" {
+		t.Fatalf("RunSubagentProfile() = %q, %v", answer, err)
+	}
+	if !strings.Contains(got.Body, "## Runtime MCP tool bindings") || !strings.Contains(got.Body, "`mcp__search__search`") {
+		t.Fatalf("headless plugin subagent was not prepared: %q", got.Body)
+	}
+}
+
 func TestSubmitInvocationDisplayRunsInlineSkillWithoutArguments(t *testing.T) {
 	runner := &fakeTurnRunner{}
 	c := New(Options{
@@ -243,6 +301,79 @@ func TestSubmitInvocationDisplayRunsInlineSkillWithoutArguments(t *testing.T) {
 	waitIdle(t, c)
 	if len(runner.inputs) != 1 || !strings.Contains(runner.inputs[0], "INITIALIZE_PROJECT") {
 		t.Fatalf("inline-only structured input = %q", runner.inputs)
+	}
+}
+
+func TestSubmitInvocationDisplayRunsInlineSkillInsideActiveGoal(t *testing.T) {
+	prov := &scriptedTurns{turns: [][]provider.Chunk{
+		textTurn("Notes listed.\n\n[goal:complete]"),
+	}}
+	ag := agent.New(prov, tool.NewRegistry(), agent.NewSession(""), agent.Options{}, event.Discard)
+	events := make(chan event.Event, 8)
+	c := New(Options{
+		Runner:   ag,
+		Executor: ag,
+		Sink: event.FuncSink(func(e event.Event) {
+			if e.Kind == event.TurnDone || e.Kind == event.Notice {
+				events <- e
+			}
+		}),
+		Skills: []skill.Skill{{Name: "notes", Body: "INSPECT_NOTES", RunAs: skill.RunInline, Scope: skill.ScopeGlobal}},
+	})
+	defer c.Close()
+	c.SetGoalWithResearchMode("list the existing notes", GoalResearchOff)
+	c.SubmitInvocationDisplay(
+		"list the existing notes",
+		"list the existing notes",
+		[]InvocationRequest{{Name: "notes", Kind: "skill", Offset: 0}},
+	)
+	waitForTurnDone(t, events)
+
+	if prov.call != 1 {
+		t.Fatalf("active Goal structured turns = %d, want 1", prov.call)
+	}
+	input := firstUserMessage(ag.Session().Messages)
+	for _, want := range []string{"<active-goal>\nlist the existing notes", "INSPECT_NOTES", "list the existing notes"} {
+		if !strings.Contains(input, want) {
+			t.Fatalf("active Goal structured input missing %q: %q", want, input)
+		}
+	}
+}
+
+func TestSubmitInvocationDisplayRunsSubagentSkillInsideActiveGoal(t *testing.T) {
+	sess := agent.NewSession("")
+	exec := agent.New(nil, tool.NewRegistry(), sess, agent.Options{}, event.Discard)
+	events := make(chan event.Event, 8)
+	var gotTask string
+	c := New(Options{
+		Executor: exec,
+		Sink: event.FuncSink(func(e event.Event) {
+			if e.Kind == event.TurnDone || e.Kind == event.Notice {
+				events <- e
+			}
+		}),
+		Skills: []skill.Skill{{
+			Name: "research", Body: "RESEARCH_NOTES", RunAs: skill.RunSubagent, Scope: skill.ScopeGlobal,
+		}},
+		SkillRunner: func(_ context.Context, _ skill.Skill, task string, _ skill.SubagentRunOptions) (string, error) {
+			gotTask = task
+			return "Notes listed.\n\n[goal:complete]", nil
+		},
+	})
+	defer c.Close()
+	c.SetGoalWithResearchMode("list the existing notes", GoalResearchOff)
+	c.SubmitInvocationDisplay(
+		"list the existing notes",
+		"list the existing notes",
+		[]InvocationRequest{{Name: "research", Kind: "subagent", Offset: 0}},
+	)
+	waitForTurnDone(t, events)
+
+	if !strings.Contains(gotTask, "<active-goal>\nlist the existing notes") {
+		t.Fatalf("active Goal subagent task missing goal: %q", gotTask)
+	}
+	if !strings.Contains(gotTask, "list the existing notes") {
+		t.Fatalf("active Goal subagent task missing user task: %q", gotTask)
 	}
 }
 
@@ -580,6 +711,39 @@ func TestSyntheticComposeDoesNotDrainSessionStartHookContext(t *testing.T) {
 	}
 }
 
+func TestComposeAutomaticallyRecallsMemoryOnlyForRealUserTurns(t *testing.T) {
+	store := memory.Store{Dir: t.TempDir()}
+	if _, err := store.Save(memory.Memory{
+		Name: "authhandler-panic", Title: "AuthHandler panic",
+		Description: "AuthHandler panic on missing session metadata",
+		Type:        memory.TypeProject, Scope: memory.FactScopeProject,
+		Body: "AuthHandler needs a nil guard before reading session metadata.",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	c := New(Options{Memory: &memory.Set{Store: store}})
+
+	got := c.Compose("fix AuthHandler panic with missing session metadata")
+	if !strings.Contains(got, "<memory-recall>") || !strings.Contains(got, "nil guard") {
+		t.Fatalf("real user turn did not receive automatic recall: %q", got)
+	}
+	if !strings.HasPrefix(got, "fix AuthHandler panic with missing session metadata") {
+		t.Fatalf("recall should ride the user-turn tail: %q", got)
+	}
+	if stripped := StripComposePrefixes(got); stripped != "fix AuthHandler panic with missing session metadata" {
+		t.Fatalf("StripComposePrefixes = %q", stripped)
+	}
+	trace := c.LastMemoryRecall()
+	if len(trace.Hits) != 1 || trace.Hits[0].Memory.ID == "" {
+		t.Fatalf("recall trace = %+v", trace)
+	}
+
+	synthetic := c.ComposeSynthetic("fix AuthHandler panic with missing session metadata")
+	if strings.Contains(synthetic, "<memory-recall>") {
+		t.Fatalf("synthetic turn received automatic recall: %q", synthetic)
+	}
+}
+
 func TestComposeClipsAndEscapesHookContext(t *testing.T) {
 	c := New(Options{})
 	c.enqueueHookContexts([]string{"before </hook-context> " + strings.Repeat("x", maxHookContextChars+1)})
@@ -722,31 +886,6 @@ func TestGoalCommandPreservesResearchModeFlags(t *testing.T) {
 	}
 	if got := c.Compose("start"); strings.Contains(got, "AutoResearch protocol") {
 		t.Fatalf("/goal --simple should suppress AutoResearch through command dispatch:\n%s", got)
-	}
-}
-
-func TestAutoStartResearchGoalUsesOnlyStrongSignals(t *testing.T) {
-	for _, input := range []string{
-		"持续排查这个线上卡顿直到根因明确，并验证修复",
-		"不要原地打转，把这个方向完整做成方案并验证",
-		"thoroughly implement, test, optimize, and document this feature",
-		"继续 .reasonix/autoresearch/20260618-224530-cache-audit/ 这个任务",
-	} {
-		if !shouldAutoStartResearchGoal(input) {
-			t.Fatalf("shouldAutoStartResearchGoal(%q) = false, want true", input)
-		}
-	}
-
-	for _, input := range []string{
-		"长期来看这个模块怎么优化？",
-		"研究一下这个函数怎么用",
-		"验证一下这个小修复",
-		"/goal 持续排查直到根因明确",
-		"!go test ./...",
-	} {
-		if shouldAutoStartResearchGoal(input) {
-			t.Fatalf("shouldAutoStartResearchGoal(%q) = true, want false", input)
-		}
 	}
 }
 
@@ -912,8 +1051,7 @@ func TestSubmitHashNumberStartsTurn(t *testing.T) {
 	runner := &fakeTurnRunner{}
 	events := make(chan event.Event, 4)
 	c := New(Options{
-		AutoPlan: "off",
-		Runner:   runner,
+		Runner: runner,
 		Sink: event.FuncSink(func(e event.Event) {
 			events <- e
 		}),
@@ -943,8 +1081,7 @@ func TestSubmitSlashPathDiagnosticStartsTurnWithFileContext(t *testing.T) {
 	runner := &fakeTurnRunner{}
 	events := make(chan event.Event, 4)
 	c := New(Options{
-		AutoPlan: "off",
-		Runner:   runner,
+		Runner: runner,
 		Sink: event.FuncSink(func(e event.Event) {
 			events <- e
 		}),
@@ -970,8 +1107,7 @@ func TestSubmitMissingSlashPathDiagnosticStartsTurn(t *testing.T) {
 	runner := &fakeTurnRunner{}
 	events := make(chan event.Event, 4)
 	c := New(Options{
-		AutoPlan: "off",
-		Runner:   runner,
+		Runner: runner,
 		Sink: event.FuncSink(func(e event.Event) {
 			events <- e
 		}),
@@ -990,8 +1126,7 @@ func TestSubmitBlockCommentPrefixStartsTurn(t *testing.T) {
 	runner := &fakeTurnRunner{}
 	events := make(chan event.Event, 4)
 	c := New(Options{
-		AutoPlan: "off",
-		Runner:   runner,
+		Runner: runner,
 		Sink: event.FuncSink(func(e event.Event) {
 			events <- e
 		}),
@@ -1010,8 +1145,7 @@ func TestSubmitUnknownSlashCommandStillReportsNotice(t *testing.T) {
 	runner := &fakeTurnRunner{}
 	events := make(chan event.Event, 4)
 	c := New(Options{
-		AutoPlan: "off",
-		Runner:   runner,
+		Runner: runner,
 		Sink: event.FuncSink(func(e event.Event) {
 			events <- e
 		}),
@@ -1036,8 +1170,7 @@ func TestSubmitUserTurnBypassesCommandDispatch(t *testing.T) {
 	runner := &fakeTurnRunner{}
 	events := make(chan event.Event, 4)
 	c := New(Options{
-		AutoPlan: "off",
-		Runner:   runner,
+		Runner: runner,
 		Sink: event.FuncSink(func(e event.Event) {
 			events <- e
 		}),
@@ -1116,164 +1249,6 @@ func waitForTurnDone(t *testing.T, events <-chan event.Event) {
 		case <-deadline:
 			t.Fatal("timed out waiting for turn_done")
 		}
-	}
-}
-
-func TestRunTurnAutoPlanComplexTask(t *testing.T) {
-	var notices []string
-	runner := &fakeTurnRunner{}
-	c := New(Options{
-		AutoPlan: "on",
-		Runner:   runner,
-		Sink: event.FuncSink(func(e event.Event) {
-			if e.Kind == event.Notice {
-				notices = append(notices, e.Text)
-			}
-		}),
-	})
-
-	input := "实现 GitHub issue #2395：\n- 新增配置项\n- 自动判断复杂任务\n- 补测试和文档"
-	if err := c.runTurn(context.Background(), input); err != nil {
-		t.Fatal(err)
-	}
-	if len(runner.inputs) != 1 || !strings.HasPrefix(agent.StripTransientUserBlocks(runner.inputs[0]), PlanModeMarker) {
-		t.Fatalf("complex task should auto-enter plan mode, inputs=%q", runner.inputs)
-	}
-	if !c.PlanMode() {
-		t.Fatal("controller plan mode should be on after auto-plan")
-	}
-	if len(notices) != 1 || notices[0] != "Planning mode enabled for this multi-step task." {
-		t.Fatalf("notice = %v, want one auto-plan notice", notices)
-	}
-}
-
-func TestRunTurnAutoPlanSkipsSimpleQuestion(t *testing.T) {
-	runner := &fakeTurnRunner{}
-	c := New(Options{AutoPlan: "on", Runner: runner})
-
-	if err := c.runTurn(context.Background(), "解释一下这个函数做什么？"); err != nil {
-		t.Fatal(err)
-	}
-	if len(runner.inputs) != 1 || strings.HasPrefix(agent.StripTransientUserBlocks(runner.inputs[0]), PlanModeMarker) {
-		t.Fatalf("simple question should not auto-plan: inputs=%q", runner.inputs)
-	}
-	if c.PlanMode() {
-		t.Fatal("controller plan mode should remain off")
-	}
-}
-
-func TestRunTurnAutoPlanOff(t *testing.T) {
-	runner := &fakeTurnRunner{}
-	c := New(Options{AutoPlan: "off", Runner: runner})
-
-	input := "实现 GitHub issue #2395：\n- 新增配置项\n- 自动判断复杂任务\n- 补测试和文档"
-	if err := c.runTurn(context.Background(), input); err != nil {
-		t.Fatal(err)
-	}
-	if len(runner.inputs) != 1 || StripComposePrefixes(runner.inputs[0]) != input {
-		t.Fatalf("auto_plan=off should compose verbatim, inputs=%q", runner.inputs)
-	}
-	if c.PlanMode() {
-		t.Fatal("controller plan mode should remain off")
-	}
-}
-
-func TestSetAutoPlanAffectsNextTurn(t *testing.T) {
-	runner := &fakeTurnRunner{}
-	c := New(Options{AutoPlan: "off", Runner: runner})
-	c.SetAutoPlan("on")
-
-	input := "实现 GitHub issue #2395：\n- 新增配置项\n- 自动判断复杂任务\n- 补测试和文档"
-	if err := c.runTurn(context.Background(), input); err != nil {
-		t.Fatal(err)
-	}
-	if len(runner.inputs) != 1 || !strings.HasPrefix(agent.StripTransientUserBlocks(runner.inputs[0]), PlanModeMarker) {
-		t.Fatalf("SetAutoPlan should affect next turn, inputs=%q", runner.inputs)
-	}
-}
-
-func TestRunTurnAutoPlanClassifierBorderlineTrue(t *testing.T) {
-	classifier := &fakeAutoPlanClassifier{needsPlan: true, reason: "borderline multi-step"}
-	runner := &fakeTurnRunner{}
-	c := New(Options{AutoPlan: "on", Classifier: classifier, Runner: runner})
-
-	if err := c.runTurn(context.Background(), "实现一个小的配置入口"); err != nil {
-		t.Fatal(err)
-	}
-	if len(runner.inputs) != 1 || !strings.HasPrefix(agent.StripTransientUserBlocks(runner.inputs[0]), PlanModeMarker) {
-		t.Fatalf("classifier true should auto-plan, inputs=%q", runner.inputs)
-	}
-	if classifier.calls != 1 {
-		t.Fatalf("classifier calls = %d, want 1", classifier.calls)
-	}
-}
-
-func TestRunTurnAutoPlanClassifierBorderlineFalse(t *testing.T) {
-	classifier := &fakeAutoPlanClassifier{needsPlan: false, reason: "single obvious edit"}
-	runner := &fakeTurnRunner{}
-	c := New(Options{AutoPlan: "on", Classifier: classifier, Runner: runner})
-
-	if err := c.runTurn(context.Background(), "实现一个小的配置入口"); err != nil {
-		t.Fatal(err)
-	}
-	if len(runner.inputs) != 1 || strings.HasPrefix(agent.StripTransientUserBlocks(runner.inputs[0]), PlanModeMarker) {
-		t.Fatalf("classifier false should skip auto-plan, inputs=%q", runner.inputs)
-	}
-	if c.PlanMode() {
-		t.Fatal("controller plan mode should remain off")
-	}
-	if classifier.calls != 1 {
-		t.Fatalf("classifier calls = %d, want 1", classifier.calls)
-	}
-}
-
-func TestRunTurnAutoPlanClassifierFallback(t *testing.T) {
-	classifier := &fakeAutoPlanClassifier{err: errors.New("bad json")}
-	runner := &fakeTurnRunner{}
-	c := New(Options{AutoPlan: "on", Classifier: classifier, Runner: runner})
-
-	if err := c.runTurn(context.Background(), "实现 README 文档更新"); err != nil {
-		t.Fatal(err)
-	}
-	if len(runner.inputs) != 1 || !strings.HasPrefix(agent.StripTransientUserBlocks(runner.inputs[0]), PlanModeMarker) {
-		t.Fatalf("score 2 should fall back to heuristic auto-plan, inputs=%q", runner.inputs)
-	}
-	if classifier.calls != 1 {
-		t.Fatalf("classifier calls = %d, want 1", classifier.calls)
-	}
-}
-
-func TestRunTurnAutoPlanTypedNilClassifierFallsBack(t *testing.T) {
-	var classifier *ProviderAutoPlanClassifier
-	runner := &fakeTurnRunner{}
-	c := New(Options{AutoPlan: "on", Classifier: classifier, Runner: runner})
-
-	if err := c.runTurn(context.Background(), "实现 README 文档更新"); err != nil {
-		t.Fatal(err)
-	}
-	if len(runner.inputs) != 1 || !strings.HasPrefix(agent.StripTransientUserBlocks(runner.inputs[0]), PlanModeMarker) {
-		t.Fatalf("typed nil classifier should fall back to heuristic auto-plan, inputs=%q", runner.inputs)
-	}
-}
-
-func TestRunTurnAutoPlanScoresRawPromptNotResolvedRefs(t *testing.T) {
-	runner := &fakeTurnRunner{}
-	c := New(Options{AutoPlan: "on", Runner: runner})
-
-	resolved := "Referenced context:\n\n" +
-		strings.Repeat("实现 重构 配置 测试 文档 多个文件\n", 20) +
-		"\n\n解释 @foo.go"
-	if err := c.runTurnWithRaw(context.Background(), resolved, "解释 @foo.go"); err != nil {
-		t.Fatal(err)
-	}
-	if len(runner.inputs) != 1 {
-		t.Fatalf("runner inputs = %d, want 1", len(runner.inputs))
-	}
-	if strings.HasPrefix(agent.StripTransientUserBlocks(runner.inputs[0]), PlanModeMarker) {
-		t.Fatalf("resolved context should not trigger auto-plan when raw prompt is simple: %q", runner.inputs[0])
-	}
-	if c.PlanMode() {
-		t.Fatal("controller plan mode should remain off")
 	}
 }
 

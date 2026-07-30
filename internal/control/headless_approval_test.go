@@ -2,12 +2,12 @@ package control
 
 import (
 	"context"
-	"strings"
 	"testing"
 	"time"
 
 	"reasonix/internal/agent"
 	"reasonix/internal/event"
+	"reasonix/internal/memory"
 	"reasonix/internal/permission"
 	"reasonix/internal/provider"
 	"reasonix/internal/tool"
@@ -97,27 +97,6 @@ func TestApplyHeadlessApprovalModeYoloBypassesAskRule(t *testing.T) {
 	}
 }
 
-func TestHeadlessYoloOnlyBypassesAutoMCPPolicy(t *testing.T) {
-	policy := permission.New("ask", nil, []string{"mcp__srv__write"}, nil)
-	yolo := BuildHeadlessApprovalGate(policy, ToolApprovalYolo)
-	allow, _, err := yolo.CheckMCP(context.Background(), "mcp__srv__write", "srv/write", nil, false, false, "auto", "auto_review")
-	if err != nil || !allow {
-		t.Fatalf("YOLO auto MCP result = (%v,%v), want bypass", allow, err)
-	}
-	for _, tc := range []struct {
-		mode        string
-		destructive bool
-	}{
-		{mode: "prompt"},
-		{mode: "approve", destructive: true},
-	} {
-		allow, reason, err := yolo.CheckMCP(context.Background(), "mcp__srv__write", "srv/write", nil, false, tc.destructive, tc.mode, "auto_review")
-		if err != nil || allow || !strings.Contains(reason, "non-interactive") {
-			t.Fatalf("mode=%s destructive=%v result=(%v,%q,%v), want fail closed", tc.mode, tc.destructive, allow, reason, err)
-		}
-	}
-}
-
 // TestApplyHeadlessApprovalModeDontAskDeniesWithoutPrompting checks that dontAsk
 // denies a would-ask tool through the non-blocking deny approver rather than
 // emitting a prompt or hanging.
@@ -162,6 +141,55 @@ func TestApplyHeadlessApprovalModeDontAskDeniesWithoutPrompting(t *testing.T) {
 	defer writer.mu.Unlock()
 	if len(writer.paths) != 0 {
 		t.Fatalf("executed writes = %v, want none (dontAsk must deny)", writer.paths)
+	}
+}
+
+func TestApplyHeadlessApprovalModeAllowsOnlyLowRiskProjectMemoryCreate(t *testing.T) {
+	safeArgs := `{"name":"release-target","description":"Project release target","type":"reference","scope":"project","body":"Release from main-v2."}`
+	for _, tc := range []struct {
+		name       string
+		args       string
+		policy     permission.Policy
+		wantMemory bool
+	}{
+		{name: "safe project create", args: safeArgs, policy: permission.New("ask", nil, nil, nil), wantMemory: true},
+		{name: "explicit deny wins", args: safeArgs, policy: permission.New("ask", nil, nil, []string{"remember"})},
+		{name: "global create", args: `{"name":"release-target","description":"Release target","type":"reference","scope":"global","body":"Release from main-v2."}`, policy: permission.New("ask", nil, nil, nil)},
+		{name: "user preference", args: `{"name":"preferred-editor","description":"Preferred editor","type":"user","scope":"project","body":"Use Vim."}`, policy: permission.New("ask", nil, nil, nil)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			store := memory.Store{Dir: t.TempDir(), GlobalDir: t.TempDir()}
+			reg := tool.NewRegistry()
+			reg.Add(memory.NewRememberTool(store))
+			prov := &scriptedTurns{turns: [][]provider.Chunk{
+				toolCallTurn("c1", "remember", tc.args),
+				textTurn("Done."),
+			}}
+			ag := agent.New(prov, reg, agent.NewSession(""), agent.Options{}, event.Discard)
+			prompts := 0
+			c := New(Options{
+				Runner:   ag,
+				Executor: ag,
+				Memory:   &memory.Set{Store: store},
+				Policy:   tc.policy,
+				Sink: event.FuncSink(func(e event.Event) {
+					if e.Kind == event.ApprovalRequest {
+						prompts++
+					}
+				}),
+			})
+			c.ApplyHeadlessApprovalMode(ToolApprovalAsk)
+			if err := c.runTurnWithRaw(context.Background(), "remember", "remember"); err != nil {
+				t.Fatalf("runTurnWithRaw: %v", err)
+			}
+			if prompts != 0 {
+				t.Fatalf("approval prompts = %d, want 0 for headless run", prompts)
+			}
+			_, saved := store.Read("release-target")
+			if saved != tc.wantMemory {
+				t.Fatalf("saved = %v, want %v", saved, tc.wantMemory)
+			}
+		})
 	}
 }
 

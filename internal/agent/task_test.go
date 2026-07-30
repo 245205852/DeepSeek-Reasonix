@@ -652,8 +652,8 @@ func TestTaskToolFailedForegroundContinuationPersistsAndRejectsReuse(t *testing.
 		t.Fatalf("LoadSession: %v", err)
 	}
 	msgs := loaded.Snapshot()
-	if len(msgs) != 4 || !strings.HasSuffix(msgs[1].Content, "first task") || msgs[2].Content != "first answer" || !strings.HasSuffix(msgs[3].Content, "second task") {
-		t.Fatalf("failed continuation transcript = %+v, want first task/answer plus second task", msgs)
+	if len(msgs) != 5 || !strings.HasSuffix(msgs[1].Content, "first task") || msgs[2].Content != "first answer" || !strings.HasSuffix(msgs[3].Content, "second task") || !msgs[4].LocalOnly {
+		t.Fatalf("failed continuation transcript = %+v, want tasks plus provider-excluded failure recovery", msgs)
 	}
 	if _, err := task.Execute(testTaskContext(), []byte(`{"prompt":"third task","continue_from":"`+ref+`"}`)); err == nil || !strings.Contains(err.Error(), "failed and cannot be continued") {
 		t.Fatalf("reuse error = %v, want failed ref rejection", err)
@@ -1157,8 +1157,15 @@ func TestTaskToolCarriesRecentKeepIntoSubsessions(t *testing.T) {
 
 func newTestTaskTool(t *testing.T, prov provider.Provider, reg *tool.Registry, sysPrompt, subagentModel, subagentEffort string, resolve func(string, string) (provider.Provider, *provider.Pricing, int, error)) *TaskTool {
 	t.Helper()
-	return NewTaskTool(prov, nil, reg, 20, 0, 0, 0, 0, 0, 0, 0.0, "", sysPrompt, nil, 0, subagentModel, subagentEffort, resolve).
-		WithTranscripts(NewSubagentStore(t.TempDir()), t.TempDir(), "base-model", "base-effort")
+	return NewTaskToolWithOptions(TaskToolOptions{
+		Provider:        prov,
+		ParentRegistry:  reg,
+		MaxSteps:        20,
+		SysPrompt:       sysPrompt,
+		SubagentModel:   subagentModel,
+		SubagentEffort:  subagentEffort,
+		ResolveProvider: resolve,
+	}).WithTranscripts(NewSubagentStore(t.TempDir()), t.TempDir(), "base-model", "base-effort")
 }
 
 type panicProvider struct{ name string }

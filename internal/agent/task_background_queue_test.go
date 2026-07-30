@@ -29,7 +29,9 @@ func TestBackgroundTaskReturnsBeforeSlotFrees(t *testing.T) {
 	started := make(chan struct{})
 	prov := &blockingProvider{started: started}
 	jm := jobs.NewManager(event.Discard)
+	defer jm.Close()
 	ctx := jobs.WithManager(withCallContext(context.Background(), "bg", event.Discard, nil, false), jm)
+	ctx = jobs.WithSession(ctx, "sess-bg")
 	ctx = WithParentSession(ctx, "sess-bg")
 
 	task := NewTaskTool(prov, nil, tool.NewRegistry(), 20, 0, 0, 0, 0, 0, 0, 0.0, "", "sys", nil, 0, "", "", nil).
@@ -46,6 +48,7 @@ func TestBackgroundTaskReturnsBeforeSlotFrees(t *testing.T) {
 		done <- out
 	}()
 
+	var jobID string
 	select {
 	case out := <-done:
 		if !strings.Contains(out, "Started background task") {
@@ -53,6 +56,10 @@ func TestBackgroundTaskReturnsBeforeSlotFrees(t *testing.T) {
 		}
 		if !strings.Contains(out, "queue") {
 			t.Fatalf("want queue note in background start message, got %q", out)
+		}
+		jobID = extractJobID(out)
+		if jobID == "" {
+			t.Fatalf("no background job id in output: %q", out)
 		}
 	case <-time.After(500 * time.Millisecond):
 		t.Fatal("background task blocked on concurrency slot instead of returning a job id")
@@ -65,8 +72,10 @@ func TestBackgroundTaskReturnsBeforeSlotFrees(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("background job never acquired slot / started provider")
 	}
-	// Drain job manager briefly.
-	time.Sleep(50 * time.Millisecond)
+	result := jm.WaitForSession(context.Background(), "sess-bg", []string{jobID}, 5)
+	if len(result) != 1 || result[0].Status != jobs.Done {
+		t.Fatalf("background job result = %+v, want one completed job", result)
+	}
 }
 
 type blockingProvider struct {

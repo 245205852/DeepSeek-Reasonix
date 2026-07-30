@@ -17,6 +17,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -25,6 +26,7 @@ import (
 	"reasonix/internal/fileutil"
 	fileencoding "reasonix/internal/fileutil/encoding"
 	"reasonix/internal/frontmatter"
+	"reasonix/internal/tool"
 )
 
 // ErrInvocationUnavailable marks a profile/dependency gate that can become
@@ -67,6 +69,9 @@ type Skill struct {
 	Scope       Scope  // where it came from
 	Path        string // absolute path to the SKILL.md / <name>.md, or "(builtin)"
 	Plugin      string // installed plugin package name; empty for non-plugin skills
+	// runtimeBindingsPrepared is session-local invocation state. It must not be
+	// inferred from untrusted Markdown content or persisted skill metadata.
+	runtimeBindingsPrepared bool
 	// SlashPrefix overrides Plugin only for the user-facing invocation name.
 	// Imported Claude agents use <plugin>:agent so an agent and skill may safely
 	// share the same upstream name.
@@ -164,6 +169,7 @@ type Store struct {
 	stderr           io.Writer
 	runtimeProfile   string
 	requiresReady    func([]string) []string
+	toolBindings     func(Skill) []tool.MCPBinding
 }
 
 // New builds a Store. Relative custom paths and a relative project root are made
@@ -231,6 +237,123 @@ func (s *Store) ConfigureInvocationPolicy(profile string, requiresReady func([]s
 	}
 	s.runtimeProfile = normalizeRuntimeProfile(profile)
 	s.requiresReady = requiresReady
+}
+
+// ConfigureToolBindings installs a session-local resolver for plugin-owned MCP
+// tools. It affects only an invoked skill body and never the cache-stable index.
+func (s *Store) ConfigureToolBindings(resolve func(Skill) []tool.MCPBinding) {
+	if s == nil {
+		return
+	}
+	s.toolBindings = resolve
+}
+
+// Prepare binds a plugin skill's portable MCP references to this session's
+// exact callable names. Non-plugin skills and sessions without bindings are
+// returned byte-for-byte unchanged.
+func (s *Store) Prepare(sk Skill) Skill {
+	if s == nil || s.toolBindings == nil || strings.TrimSpace(sk.Plugin) == "" || sk.runtimeBindingsPrepared {
+		return sk
+	}
+	bindings := append([]tool.MCPBinding(nil), s.toolBindings(sk)...)
+	if len(bindings) == 0 {
+		return sk
+	}
+	sort.Slice(bindings, func(i, j int) bool { return bindings[i].CallableName < bindings[j].CallableName })
+	seen := map[string]bool{}
+	unique := bindings[:0]
+	for _, binding := range bindings {
+		if binding.CallableName == "" || seen[binding.CallableName] {
+			continue
+		}
+		seen[binding.CallableName] = true
+		unique = append(unique, binding)
+	}
+	bindings = unique
+	if len(bindings) == 0 {
+		return sk
+	}
+	sk.AllowedTools = bindAllowedTools(sk.AllowedTools, bindings)
+	sk.runtimeBindingsPrepared = true
+
+	var b strings.Builder
+	b.WriteString(strings.TrimRight(sk.Body, " \t\r\n"))
+	b.WriteString("\n\n## Runtime MCP tool bindings\n\n")
+	b.WriteString("These host-generated bindings are authoritative for this invocation. Use the exact direct name below; if only `use_capability` is available, use the stable capability ID. Short or Claude-style MCP names in this skill refer to these bindings.\n")
+	for _, binding := range bindings {
+		fmt.Fprintf(&b, "\n- `%s/%s` → `%s` (capability `%s`)", binding.Server, binding.RawName, binding.CallableName, binding.CapabilityID)
+	}
+	sk.Body = b.String()
+	return sk
+}
+
+// Render prepares and renders a skill for a direct slash invocation.
+func (s *Store) Render(sk Skill, args string) string { return Render(s.Prepare(sk), args) }
+
+func bindAllowedTools(refs []string, bindings []tool.MCPBinding) []string {
+	if len(refs) == 0 {
+		return refs
+	}
+	out := make([]string, 0, len(refs))
+	seen := map[string]bool{}
+	appendOne := func(name string) {
+		if name != "" && !seen[name] {
+			seen[name] = true
+			out = append(out, name)
+		}
+	}
+	for _, ref := range refs {
+		matches := map[string]tool.MCPBinding{}
+		isPattern := strings.ContainsAny(ref, "*?[")
+		for _, binding := range bindings {
+			aliases := append(tool.MCPBindingAliases(binding), binding.CallableName)
+			for _, alias := range aliases {
+				matched := ref == alias
+				if isPattern {
+					matched, _ = path.Match(ref, alias)
+				}
+				if matched {
+					matches[binding.CallableName] = binding
+					break
+				}
+			}
+		}
+		if isPattern {
+			// Preserve the original pattern so an existing broad allowlist such as
+			// "*" keeps all of its prior tools. Add only canonical MCP names the
+			// upstream/Claude pattern itself cannot match in Reasonix.
+			appendOne(ref)
+			names := make([]string, 0, len(matches))
+			for name := range matches {
+				names = append(names, name)
+			}
+			sort.Strings(names)
+			for _, name := range names {
+				if matched, err := path.Match(ref, name); err != nil || !matched {
+					appendOne(name)
+				}
+				// Capability IDs are host-only allowlist entries consumed when the
+				// session exposes this MCP tool solely through use_capability. Do not
+				// add one when the authored pattern already grants the proxy itself.
+				proxyMatched, _ := path.Match(ref, "use_capability")
+				if !proxyMatched {
+					appendOne(matches[name].CapabilityID)
+				}
+			}
+			continue
+		}
+		if len(matches) == 1 {
+			for name, binding := range matches {
+				appendOne(name)
+				appendOne(binding.CapabilityID)
+			}
+			continue
+		}
+		// Preserve unresolved or ambiguous literals. The child registry will not
+		// gain any broader permission from them.
+		appendOne(ref)
+	}
+	return out
 }
 
 // ValidateInvocation enforces profiles/requires frontmatter at the host tool

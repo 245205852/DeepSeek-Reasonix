@@ -117,6 +117,9 @@ eq(finalDeclaration(".provider-template-grid", "grid-auto-rows"), "92px", "provi
 eq(finalDeclaration(".provider-template-card", "height"), "100%", "provider preset cards stretch to the grid row height");
 eq(finalDeclaration(".provider-template-card strong", "-webkit-line-clamp"), "1", "provider preset card titles clamp to one line");
 eq(finalDeclaration(".provider-template-card span", "-webkit-line-clamp"), "2", "provider preset card descriptions clamp to two lines");
+eq(finalDeclaration(".provider-model-draft__list", "grid-auto-rows"), "min-content", "provider model rows grow with their content");
+eq(finalDeclaration(".provider-model-draft__option", "min-height"), undefined, "provider model cards do not force undersized rows");
+eq(finalDeclaration(".provider-model-draft__option", "overflow"), "hidden", "provider model cards contain overflowing controls");
 
 eq(finalDeclaration(".statusbar", "white-space"), "nowrap", "status bar keeps metrics on one row");
 eq(finalDeclaration(".statusbar", "overflow"), "hidden", "status bar clips instead of overflowing");
@@ -175,6 +178,10 @@ eq(finalDeclaration(".composer-meta__divider", "height"), "18px", "execution pol
 ok(
   /@container \(max-width: 560px\)\s*\{[\s\S]*?\.composer-meta__control--more\s*\{[\s\S]*?flex-basis:\s*38px;/.test(styles),
   "composer enters icon-only mode before model and effort controls overlap",
+);
+ok(
+  /@container \(max-width: 760px\)\s*\{[\s\S]*?\.composer-meta__control--approval \.composer-modebar--approval\s*\{[^}]*flex:\s*1 1 auto;[^}]*width:\s*100%;[^}]*min-width:\s*0;[^}]*max-width:\s*100%;/.test(styles),
+  "approval mode switcher shrinks with its compact composer container",
 );
 eq(finalDeclaration(".composer-modebar--approval", "--composer-modebar-active-bg"), "var(--mode-auto-bg)", "ask approval restores the solid semantic fill");
 eq(finalDeclaration('.composer-modebar--approval[data-mode="auto"]', "--composer-modebar-active-fg"), "#fff", "auto approval keeps high-contrast text on its solid fill");
@@ -237,6 +244,13 @@ eq(
 );
 eq(finalDeclaration(".code", "font-family"), "var(--font-code-family)", "code blocks keep the regional code font");
 eq(finalDeclaration(".md-code", "font-family"), "var(--font-code-family)", "inline code keeps the regional code font");
+eq(finalDeclaration(".code code", "font-family"), "inherit", "nested code text inherits the regional code font");
+eq(finalDeclaration(".code-line-text", "font-family"), "inherit", "line-numbered code text inherits its viewer font");
+eq(
+  finalDeclaration(".code-lines-wrap", "font-family"),
+  "var(--typography-code-font, var(--font-mono))",
+  "line-numbered code viewers use the regional code font",
+);
 eq(
   finalDeclaration(".diff", "font-size"),
   "var(--typography-code-size, calc(12.5px * var(--global-font-scale)))",

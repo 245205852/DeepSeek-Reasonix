@@ -16,6 +16,7 @@ import (
 
 	"reasonix/internal/config"
 	"reasonix/internal/event"
+	"reasonix/internal/recovery"
 )
 
 // metrics_app.go is the aggregate desktop-metrics flush: anonymous (signal,
@@ -30,6 +31,7 @@ const metricsPendingFile = "metrics-pending.json"
 const metricsPostTimeout = 8 * time.Second
 
 var statusCodePattern = regexp.MustCompile(`status (\d{3})`)
+var metricsPendingMu sync.Mutex
 
 type counters map[string]map[string]int // signal -> bucket -> count
 
@@ -230,7 +232,6 @@ func (m *metricsAggregator) observeSettingsSnapshot(c *config.Config) {
 	m.inc("settings_theme_style", themeStyle)
 	m.inc("settings_close_behavior", c.DesktopCloseBehavior())
 	m.inc("settings_display_mode", c.DesktopDisplayMode())
-	m.inc("settings_auto_plan", desktopAutoPlanMode(c.Agent.AutoPlan))
 	m.inc("settings_status_bar_style", c.DesktopStatusBarStyle())
 	m.inc("settings_status_bar_items_count", statusBarItemsCountBucket(len(c.DesktopStatusBarItems())))
 	m.inc("settings_check_updates", boolBucket(c.DesktopCheckUpdates()))
@@ -280,6 +281,24 @@ func (a *App) recordSettingsMetricsSnapshot(c *config.Config) {
 	m.persist()
 }
 
+// recordDiagnosticMetric persists one bounded operational signal even when the
+// native event arrives before Wails OnStartup installs the session aggregator.
+func (a *App) recordDiagnosticMetric(signal, bucket string) {
+	if version == "dev" {
+		return
+	}
+	m := a.metrics.Load()
+	if m == nil {
+		cfg, err := config.Load()
+		if err != nil || !cfg.DesktopMetrics() {
+			return
+		}
+		m = newMetricsAggregator(config.MemoryUserDir())
+	}
+	m.inc(signal, metricBucket(bucket))
+	m.persist()
+}
+
 // observe maps one event to counter increments, reading only enumerated facts
 // (finish reason, error class, cache-hit bucket) — never message text.
 func (m *metricsAggregator) observe(e event.Event) {
@@ -296,7 +315,7 @@ func (m *metricsAggregator) observe(e event.Event) {
 		}
 	case event.TurnDone:
 		m.inc("turns", "total")
-		if e.Err != nil {
+		if e.Err != nil && e.Outcome != event.TurnOutcomeRecoveryPaused {
 			m.inc("provider_error", errorClass(e.Err.Error()))
 		}
 	case event.ToolResult:
@@ -345,6 +364,16 @@ func errorClass(msg string) string {
 	}
 	low := strings.ToLower(msg)
 	switch {
+	case strings.Contains(low, "authorization cancelled"):
+		return "authorization_cancelled"
+	case strings.Contains(low, "authorization failed"):
+		return "authorization_failed"
+	case strings.Contains(low, "package manager busy"):
+		return "package_manager_busy"
+	case strings.Contains(low, "package install failed"):
+		return "package_install_failed"
+	case strings.Contains(low, "package verify failed"), strings.Contains(low, "signature verification failed"):
+		return "package_verify_failed"
 	case strings.Contains(low, "reset"), strings.Contains(low, "interrupt"), strings.Contains(low, "eof"):
 		return "stream_interrupted"
 	case strings.Contains(low, "timeout"), strings.Contains(low, "deadline"):
@@ -361,12 +390,59 @@ func toolErrorClass(msg string) string {
 		return "permission"
 	case strings.Contains(low, "plan mode"):
 		return "planmode"
+	case strings.Contains(low, "recovery"):
+		return "recovery"
 	case strings.Contains(low, "hook"):
 		return "hook"
 	case strings.Contains(low, "timeout"), strings.Contains(low, "deadline"):
 		return "timeout"
 	default:
 		return "exec"
+	}
+}
+
+// observeRecoveryMetrics merges content-free recovery counters from a controller
+// (failure events, rule/review continues, human prompts/actions, reviewer errors).
+func (m *metricsAggregator) observeRecoveryMetrics(stats recovery.Metrics) {
+	if m == nil {
+		return
+	}
+	add := func(signal string, n int64) {
+		for i := int64(0); i < n; i++ {
+			m.inc(signal, "total")
+		}
+	}
+	add("recovery_failure", stats.FailureEvents)
+	add("recovery_rule_continue", stats.RuleContinues)
+	add("recovery_review_continue", stats.ReviewContinues)
+	add("recovery_human_prompt", stats.HumanPrompts)
+	add("recovery_human_continue", stats.HumanContinues)
+	add("recovery_human_revise", stats.HumanRevises)
+	add("recovery_review_error", stats.ReviewErrors)
+	add("recovery_repeat_prompt", stats.RepeatPrompts)
+	if stats.ReviewLatencyCount > 0 {
+		avg := stats.ReviewLatencyMsSum / stats.ReviewLatencyCount
+		switch {
+		case avg < 500:
+			m.inc("recovery_review_latency", "lt_500ms")
+		case avg < 2000:
+			m.inc("recovery_review_latency", "lt_2s")
+		case avg < 10000:
+			m.inc("recovery_review_latency", "lt_10s")
+		default:
+			m.inc("recovery_review_latency", "gte_10s")
+		}
+	}
+}
+
+func observeControllerRecoveryMetrics(m *metricsAggregator, ctrl any) {
+	if m == nil || ctrl == nil {
+		return
+	}
+	if drainer, ok := ctrl.(interface {
+		DrainRecoveryMetrics() recovery.Metrics
+	}); ok {
+		m.observeRecoveryMetrics(drainer.DrainRecoveryMetrics())
 	}
 }
 
@@ -382,9 +458,11 @@ func (m *metricsAggregator) persist() {
 	m.c = counters{}
 	m.mu.Unlock()
 
+	metricsPendingMu.Lock()
 	pending := readCounters(m.path)
 	pending.merge(delta)
 	writeCounters(m.path, pending)
+	metricsPendingMu.Unlock()
 }
 
 func readCounters(path string) counters {
@@ -443,9 +521,12 @@ func (a *App) flushMetrics() {
 	}
 	path := filepath.Join(config.MemoryUserDir(), metricsPendingFile)
 	temp := path + ".sending"
+	metricsPendingMu.Lock()
 	if os.Rename(path, temp) != nil {
+		metricsPendingMu.Unlock()
 		return // nothing pending
 	}
+	metricsPendingMu.Unlock()
 	flat := flatten(readCounters(temp))
 	payload := metricsPayload{Version: version, OS: runtime.GOOS, Counters: flat}
 	if id, err := installID(); err == nil {
@@ -455,9 +536,11 @@ func (a *App) flushMetrics() {
 		_ = os.Remove(temp)
 		return
 	}
+	metricsPendingMu.Lock()
 	pending := readCounters(path)
 	pending.merge(readCounters(temp))
 	writeCounters(path, pending)
+	metricsPendingMu.Unlock()
 	_ = os.Remove(temp)
 }
 

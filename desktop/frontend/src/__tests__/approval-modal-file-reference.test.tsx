@@ -7,7 +7,7 @@ import { createRoot } from "react-dom/client";
 import gsap from "gsap";
 import { ApprovalModal } from "../components/ApprovalModal";
 import { activeFileReferenceToken, pickInlineFileReference } from "../components/FileReferenceMenu";
-import { LocaleProvider } from "../lib/i18n";
+import { LocaleProvider, preloadDetectedLocale } from "../lib/i18n";
 import type { AppBindings } from "../lib/bridge";
 import type { WireApproval } from "../lib/types";
 
@@ -95,6 +95,7 @@ function mockApp(methods: Partial<AppBindings>) {
 }
 
 async function renderApproval(props: Partial<Parameters<typeof ApprovalModal>[0]> = {}) {
+  await preloadDetectedLocale();
   const rootEl = document.getElementById("root");
   if (!rootEl) throw new Error("missing root");
   const root = createRoot(rootEl);
@@ -156,6 +157,13 @@ async function selectAndConfirm(label: string) {
   });
 }
 
+async function clickImmediateAction(label: string) {
+  await act(async () => {
+    actionButton(label).click();
+    await flushTimers();
+  });
+}
+
 console.log("\napproval modal file references");
 
 {
@@ -180,7 +188,7 @@ console.log("\napproval modal file references");
   });
   const { root, revisions, rerender } = await renderApproval();
 
-  await selectAndConfirm("Revise plan");
+  await clickImmediateAction("Revise plan");
 
   const textarea = document.querySelector(".plan-revision__input") as HTMLTextAreaElement | null;
   if (!textarea) throw new Error("plan revision textarea did not render");
@@ -327,9 +335,47 @@ console.log("\napproval modal file references");
     ListDir: async () => [],
     SearchFileRefs: async () => [],
   });
+  const { root, rerender } = await renderApproval();
+
+  await clickImmediateAction("Revise plan");
+
+  const textarea = document.querySelector(".plan-revision__input") as HTMLTextAreaElement | null;
+  if (!textarea) throw new Error("plan revision textarea did not render");
+  ok(textarea === document.activeElement, "opening plan revision focuses its textarea once");
+
+  const transcriptText = document.createElement("p");
+  transcriptText.tabIndex = -1;
+  transcriptText.textContent = "copy this plan text";
+  document.body.appendChild(transcriptText);
+  transcriptText.focus();
+  const range = document.createRange();
+  range.selectNodeContents(transcriptText);
+  const selection = document.getSelection();
+  selection?.removeAllRanges();
+  selection?.addRange(range);
+
+  // App refreshes tab metadata periodically; emulate callback churn from a parent rerender.
+  await rerender({ onRevisionActiveChange: () => undefined });
+
+  ok(document.activeElement === transcriptText, "parent rerender does not return focus to plan revision");
+  eq(document.getSelection()?.toString(), "copy this plan text", "parent rerender preserves transcript text selection");
+
+  transcriptText.remove();
+  await act(async () => {
+    root.unmount();
+  });
+  dom.window.close();
+}
+
+{
+  const dom = installDom();
+  mockApp({
+    ListDir: async () => [],
+    SearchFileRefs: async () => [],
+  });
   const { root, activeStates, rerender } = await renderApproval();
 
-  await selectAndConfirm("Revise plan");
+  await clickImmediateAction("Revise plan");
 
   const textarea = document.querySelector(".plan-revision__input") as HTMLTextAreaElement | null;
   if (!textarea) throw new Error("plan revision textarea did not render");
@@ -559,7 +605,7 @@ console.log("\napproval modal file references");
   });
   const { root, rerender } = await renderApproval({ workspaceScopeKey: "session-a" });
 
-  await selectAndConfirm("Revise plan");
+  await clickImmediateAction("Revise plan");
   await rerender({ insertRequest: { id: 20, text: "inspect @" } });
   await waitFor("initial approval session scope request", () => pending.length === 1);
   await rerender({ workspaceScopeKey: "session-b" });

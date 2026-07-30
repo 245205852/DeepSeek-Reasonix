@@ -76,11 +76,13 @@ func TestDesktopWireEventTypeCoversSharedPayloadFields(t *testing.T) {
 	ts := readDesktopTypes(t)
 	for _, want := range []string{
 		"detail?: string;",
-		`outcome?: "final_readiness";`,
+		`outcome?: "final_readiness" | "recovery_paused";`,
 		"retryAttempt?: number;",
 		"retryMax?: number;",
 		"memoryCitations?: MemoryCitation[];",
 		"export interface MemoryCitation",
+		"resolvedName?: string;",
+		"capabilityId?: string;",
 		"cacheDiagnostics?: WireCacheDiagnostics;",
 		"export interface WireCacheDiagnostics",
 		"prefixHash: string;",
@@ -106,6 +108,27 @@ func TestToWireNoticeDetail(t *testing.T) {
 	for _, want := range []string{`"kind":"notice"`, `"text":"short"`, `"detail":"diagnostics"`, `"level":"warn"`} {
 		if !strings.Contains(string(b), want) {
 			t.Fatalf("notice JSON = %s, want it to contain %s", string(b), want)
+		}
+	}
+}
+
+func TestToWireToolCarriesResolvedCapabilityMetadata(t *testing.T) {
+	w := ToWire(event.Event{Kind: event.ToolDispatch, Tool: event.Tool{
+		ID: "c1", Name: "use_capability",
+		Args:         `{"action":"call","capability_id":"mcp-tool:db/write"}`,
+		ResolvedName: "mcp__db__write", CapabilityID: "mcp-tool:db/write",
+		ReadOnly: false, Refreshed: true,
+	}})
+	b, err := json.Marshal(w)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	for _, want := range []string{
+		`"name":"use_capability"`, `"resolvedName":"mcp__db__write"`,
+		`"capabilityId":"mcp-tool:db/write"`, `"readOnly":false`, `"refreshed":true`,
+	} {
+		if !strings.Contains(string(b), want) {
+			t.Fatalf("tool JSON = %s, want %s", b, want)
 		}
 	}
 }
@@ -257,20 +280,31 @@ func TestToWireInteractionAndLifecyclePayloads(t *testing.T) {
 			want: []string{`"kind":"approval_request"`, `"tool":"mcp__srv__wipe"`, `"fresh":true`},
 		},
 		{
-			name: "MCP trust approval payload",
+			name: "recovery task grant",
 			in: event.Event{Kind: event.ApprovalRequest, Approval: event.Approval{
-				ID: "a3", Tool: "mcp__srv__write", Subject: "srv/write",
-				MCPTrust: &event.MCPTrust{
-					Server: "srv", TrustState: "workspace", TrustSource: "user", TrustScope: "workspace",
-					IsolationState: "unavailable_unconfined", IsolationReason: "sandbox backend unavailable",
-					ChangedTools: []string{"write"}, ToolChanges: []event.MCPToolChange{{Name: "write", Kind: "schema_changed"}},
-					Readers: []string{"search"}, Writers: []string{"write"}, Destructive: []string{},
+				ID: "r1", Tool: "bash", Subject: "git push origin feature", Fresh: true, Kind: "recovery",
+				Recovery: &event.RecoveryApproval{
+					NextAction: "git push origin feature", CanGrantTask: true,
+					TaskGrantScope: "git push origin → feature",
 				},
 			}},
-			want: []string{`"mcpTrust":{"server":"srv"`, `"trustState":"workspace"`, `"trustSource":"user"`,
-				`"isolationState":"unavailable_unconfined"`, `"changedTools":["write"]`,
-				`"toolChanges":[{"name":"write","kind":"schema_changed"}]`, `"readers":["search"]`,
-				`"writers":["write"]`, `"destructive":[]`},
+			want: []string{
+				`"kind":"recovery"`, `"next_action":"git push origin feature"`, `"can_grant_task":true`,
+				`"task_grant_scope":"git push origin → feature"`,
+			},
+		},
+		{
+			name: "recovery plan transition",
+			in: event.Event{Kind: event.ApprovalRequest, Approval: event.Approval{
+				ID: "r-plan", Tool: "todo_write", Subject: "Update the active execution plan", Fresh: true, Kind: "recovery",
+				Recovery: &event.RecoveryApproval{
+					ChangeKind: "scope", PlanBefore: "1. Keep API", PlanAfter: "1. Replace API",
+				},
+			}},
+			want: []string{
+				`"kind":"recovery"`, `"change_kind":"scope"`,
+				`"plan_before":"1. Keep API"`, `"plan_after":"1. Replace API"`,
+			},
 		},
 		{
 			name: "ask",

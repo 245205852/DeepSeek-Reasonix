@@ -10,9 +10,11 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
 	"runtime"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -22,6 +24,7 @@ import (
 	"reasonix/internal/agent"
 	"reasonix/internal/agent/testutil"
 	"reasonix/internal/config"
+	"reasonix/internal/control"
 	"reasonix/internal/event"
 	"reasonix/internal/memory"
 	"reasonix/internal/netclient"
@@ -30,6 +33,7 @@ import (
 	"reasonix/internal/provider"
 	"reasonix/internal/sandbox"
 	"reasonix/internal/secrets"
+	"reasonix/internal/skill"
 	"reasonix/internal/tool"
 	"reasonix/internal/tool/builtin"
 
@@ -47,6 +51,45 @@ func TestAgentKeepPolicyFromConfig(t *testing.T) {
 	}
 	if got := agentKeepPolicy([]string{"errors", "user_marked"}); got != agent.KeepErrors|agent.KeepUserMarked {
 		t.Fatalf("combined keep policy = %v, want errors|user_marked", got)
+	}
+}
+
+func TestApplyRuntimeAutoPricingCurrency(t *testing.T) {
+	tests := []struct {
+		name            string
+		runtimeCurrency string
+		desktopCurrency string
+		desktopLanguage string
+		language        string
+		wantCurrency    string
+		wantOutput      float64
+	}{
+		{name: "auto Chinese locale", runtimeCurrency: "CNY", wantCurrency: "¥", wantOutput: 2},
+		{name: "auto English locale", runtimeCurrency: "USD", wantCurrency: "$", wantOutput: 0.28},
+		{name: "explicit USD wins", runtimeCurrency: "CNY", desktopCurrency: "USD", wantCurrency: "$", wantOutput: 0.28},
+		{name: "explicit CNY wins", runtimeCurrency: "USD", desktopCurrency: "CNY", wantCurrency: "¥", wantOutput: 2},
+		{name: "desktop language wins", runtimeCurrency: "USD", desktopLanguage: "zh", wantCurrency: "¥", wantOutput: 2},
+		{name: "CLI language wins", runtimeCurrency: "USD", language: "zh", wantCurrency: "¥", wantOutput: 2},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := config.Default()
+			cfg.Desktop.Currency = tt.desktopCurrency
+			cfg.Desktop.Language = tt.desktopLanguage
+			cfg.Language = tt.language
+			cfg.ApplyDeepSeekOfficialDefaultPricing()
+
+			applyRuntimeAutoPricingCurrency(cfg, tt.runtimeCurrency)
+
+			deepseek, ok := cfg.Provider("deepseek-flash")
+			if !ok {
+				t.Fatal("default DeepSeek provider is missing")
+			}
+			price := deepseek.PriceForModel("deepseek-v4-flash")
+			if price == nil || price.Currency != tt.wantCurrency || price.Output != tt.wantOutput {
+				t.Fatalf("flash price = %#v, want currency %q output %v", price, tt.wantCurrency, tt.wantOutput)
+			}
+		})
 	}
 }
 
@@ -484,8 +527,9 @@ model = "x"
 		t.Fatalf("LoadSession: %v", err)
 	}
 	msgs := sess.Snapshot()
-	if len(msgs) != 4 || !strings.HasSuffix(msgs[1].Content, "first skill task") || msgs[2].Content != "first skill answer" || msgs[3].Content != "second skill task" {
-		t.Fatalf("failed skill transcript = %+v, want first task/answer plus second task", msgs)
+	modelMessages := provider.ModelMessages(msgs)
+	if len(msgs) != 5 || len(modelMessages) != 4 || !strings.HasSuffix(modelMessages[1].Content, "first skill task") || modelMessages[2].Content != "first skill answer" || modelMessages[3].Content != "second skill task" || !msgs[4].LocalOnly {
+		t.Fatalf("failed skill transcript = %+v, want tasks plus provider-excluded failure recovery", msgs)
 	}
 }
 
@@ -1056,6 +1100,75 @@ model = "x"
 	}
 }
 
+// TestBuildIgnoresRetiredAutoRecoveryKillSwitch freezes the contract that the
+// short-lived global and project keys no longer disable built-in Auto Guard.
+func TestBuildIgnoresRetiredAutoRecoveryKillSwitch(t *testing.T) {
+	isolateConfigHome(t)
+	userCfg := config.UserConfigPath()
+	if err := os.MkdirAll(filepath.Dir(userCfg), 0o755); err != nil {
+		t.Fatalf("mkdir user config: %v", err)
+	}
+	if err := os.WriteFile(userCfg, []byte(`
+default_model = "test-model"
+
+[agent]
+auto_recovery_checkpoint = "on"
+system_prompt = "GLOBAL"
+
+[[providers]]
+name = "test-model"
+kind = "openai"
+base_url = "https://example.invalid"
+model = "x"
+api_key_env = "REASONIX_TEST_KEY_UNSET"
+`), 0o644); err != nil {
+		t.Fatalf("write user config: %v", err)
+	}
+
+	dir := robustTempDir(t)
+	writeFile(t, dir, "reasonix.toml", `
+default_model = "test-model"
+
+[agent]
+auto_recovery_checkpoint = "off"
+system_prompt = "PROJECT"
+
+[[providers]]
+name = "test-model"
+kind = "openai"
+base_url = "https://example.invalid"
+model = "x"
+api_key_env = "REASONIX_TEST_KEY_UNSET"
+`)
+
+	ctrl, err := Build(context.Background(), Options{WorkspaceRoot: dir, Sink: event.Discard})
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	defer ctrl.Close()
+	// Retired keys do not block construction or fresh-session rotation.
+	fresh := filepath.Join(dir, "fresh-session.jsonl")
+	ctrl.SetFreshSessionPath(fresh)
+	if got := ctrl.SessionPath(); got != fresh {
+		t.Fatalf("fresh session path = %q, want %q", got, fresh)
+	}
+}
+
+func TestRecoveryHeadlessModeUsesExplicitFrontendCapability(t *testing.T) {
+	if recoveryHeadlessMode(Options{}) {
+		t.Fatal("interactive frontend without HeadlessApprovalMode must remain answerable")
+	}
+	if recoveryHeadlessMode(Options{ApprovalTimeout: time.Minute}) {
+		t.Fatal("a bounded bot approval timeout must not make recovery headless")
+	}
+	if !recoveryHeadlessMode(Options{HeadlessApprovalMode: control.ToolApprovalAuto}) {
+		t.Fatal("reasonix run Auto mode must fail closed instead of waiting for a card")
+	}
+	if !recoveryHeadlessMode(Options{HeadlessApprovalMode: control.ToolApprovalAsk}) {
+		t.Fatal("all explicit headless permission modes must use the non-waiting recovery path")
+	}
+}
+
 // TestBuildInteractiveApprovalModeSwitchPropagatesToTaskSubagentGate pins the
 // interactive counterpart of TestBuildHeadlessApprovalModePropagatesToTaskSubagentGate:
 // boot.Build with no HeadlessApprovalMode — the interactive REPL's boot path,
@@ -1211,6 +1324,92 @@ func TestNewProviderAppliesConfiguredDefaultEffort(t *testing.T) {
 	}
 	if got := gotReq["reasoning_effort"]; got != "medium" {
 		t.Fatalf("reasoning_effort = %#v, want medium from default_effort", got)
+	}
+}
+
+func TestNewProviderPreservesExplicitlySupportedKimiK3Efforts(t *testing.T) {
+	var gotReq map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&gotReq); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"ok\"}}]}\n\ndata: [DONE]\n\n"))
+	}))
+	defer srv.Close()
+
+	p, err := NewProvider(&config.ProviderEntry{
+		Name:              "opencode-go",
+		Kind:              "openai",
+		BaseURL:           srv.URL,
+		Model:             "kimi-k3",
+		ReasoningProtocol: config.ReasoningProtocolOpenAI,
+		SupportedEfforts:  []string{"high", "max"},
+		DefaultEffort:     "max",
+	})
+	if err != nil {
+		t.Fatalf("NewProvider: %v", err)
+	}
+	ch, err := p.Stream(context.Background(), provider.Request{
+		Messages: []provider.Message{{Role: provider.RoleUser, Content: "hi"}},
+	})
+	if err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+	for chunk := range ch {
+		if chunk.Type == provider.ChunkError {
+			t.Fatalf("stream error: %v", chunk.Err)
+		}
+	}
+	if got := gotReq["reasoning_effort"]; got != "max" {
+		t.Fatalf("reasoning_effort = %#v, want explicitly supported max", got)
+	}
+}
+
+func TestNewProviderAppliesOfficialKimiK3RequestContract(t *testing.T) {
+	var gotReq map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&gotReq); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"ok\"}}]}\n\ndata: [DONE]\n\n"))
+	}))
+	defer srv.Close()
+
+	p, err := NewProvider(&config.ProviderEntry{
+		Name:              "kimi-cn",
+		Kind:              "openai",
+		BaseURL:           "https://api.moonshot.cn/v1",
+		ChatURL:           srv.URL,
+		Model:             "kimi-k3",
+		ReasoningProtocol: config.ReasoningProtocolOpenAI,
+		SupportedEfforts:  []string{"low", "high", "max"},
+		DefaultEffort:     "max",
+	})
+	if err != nil {
+		t.Fatalf("NewProvider: %v", err)
+	}
+	ch, err := p.Stream(context.Background(), provider.Request{
+		Messages:    []provider.Message{{Role: provider.RoleUser, Content: "hi"}},
+		Temperature: provider.TemperaturePtr(0),
+		MaxTokens:   2000,
+	})
+	if err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+	for chunk := range ch {
+		if chunk.Type == provider.ChunkError {
+			t.Fatalf("stream error: %v", chunk.Err)
+		}
+	}
+	if gotReq["reasoning_effort"] != "max" || gotReq["max_completion_tokens"] != float64(2000) {
+		t.Fatalf("official Kimi K3 request = %+v, want max effort and max_completion_tokens", gotReq)
+	}
+	for _, field := range []string{"temperature", "max_tokens"} {
+		if _, ok := gotReq[field]; ok {
+			t.Fatalf("official Kimi K3 request must omit %q: %+v", field, gotReq)
+		}
 	}
 }
 
@@ -1577,6 +1776,72 @@ model = "x"
 	}
 	if requestMessageContains(fullReq.Messages, provider.RoleUser, "<delivery-runtime>") {
 		t.Fatal("full profile unexpectedly received the delivery runtime contract")
+	}
+}
+
+func TestBuildBalancedDualModelAddsStableProxyToExecutor(t *testing.T) {
+	isolateConfigHome(t)
+	dir := robustTempDir(t)
+	t.Chdir(dir)
+	registerBootTokenProfileTestProvider()
+	prov := testutil.NewMock("balanced-dual-proxy")
+	setBootTokenProfileTestProvider(t, prov)
+
+	writeConfig := func(planner bool) {
+		plannerLine := ""
+		plannerProvider := ""
+		if planner {
+			plannerLine = `planner_model = "planner"`
+			plannerProvider = `
+
+[[providers]]
+name = "planner"
+kind = "boot-token-profile-test"
+model = "planner-model"`
+		}
+		writeFile(t, dir, "reasonix.toml", fmt.Sprintf(`
+default_model = "executor"
+
+[agent]
+system_prompt = "BASE"
+%s
+
+[[providers]]
+name = "executor"
+kind = "boot-token-profile-test"
+model = "executor-model"%s
+`, plannerLine, plannerProvider))
+	}
+
+	writeConfig(false)
+	single, err := Build(context.Background(), Options{Sink: event.Discard})
+	if err != nil {
+		t.Fatal(err)
+	}
+	singleEntries := single.ToolContractEntries()
+	single.Close()
+	if slices.Contains(contractEntryNames(singleEntries), "use_capability") {
+		t.Fatal("single-model Balanced must keep its existing executor prefix")
+	}
+
+	writeConfig(true)
+	dual, err := Build(context.Background(), Options{Sink: event.Discard})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer dual.Close()
+	dualEntries := dual.ToolContractEntries()
+	dualNames := contractEntryNames(dualEntries)
+	if !slices.Contains(dualNames, "use_capability") {
+		t.Fatalf("dual-model Balanced executor missing stable capability proxy: %v", dualNames)
+	}
+	if len(dualEntries) != len(singleEntries)+1 {
+		t.Fatalf("dual-model executor contract = %d tools, want single-model(%d)+use_capability", len(dualEntries), len(singleEntries))
+	}
+	for _, entry := range singleEntries {
+		if !slices.Contains(dualNames, entry.Name) {
+			t.Fatalf("dual-model executor dropped existing tool %q", entry.Name)
+		}
 	}
 }
 
@@ -2435,7 +2700,7 @@ env = { GO_WANT_HELPER_PROCESS = "1" }
 	}
 }
 
-func TestBuildTokenEconomyPlanModeKeepsLegacyMCPReadOnlyOverride(t *testing.T) {
+func TestBuildTokenEconomyPlanModeUsesInstalledMCPReaderHint(t *testing.T) {
 	isolateConfigHome(t)
 	dir := robustTempDir(t)
 	t.Chdir(dir)
@@ -2466,8 +2731,7 @@ model = "x"
 name = "mockmcp"
 command = %q
 args = ["-test.run=TestHelperProcess", "--"]
-env = { GO_WANT_HELPER_PROCESS = "1" }
-trusted_read_only_tools = ["echo"]
+env = { GO_WANT_HELPER_PROCESS = "1", GO_WANT_HELPER_READ_ONLY = "1" }
 `, os.Args[0]))
 
 	ctrl, err := Build(context.Background(), Options{Sink: event.Discard, TokenMode: TokenModeEconomy})
@@ -2476,7 +2740,7 @@ trusted_read_only_tools = ["echo"]
 	}
 	defer ctrl.Close()
 	ctrl.SetPlanMode(true)
-	if err := ctrl.Run(context.Background(), "connect trusted mcp while planning"); err != nil {
+	if err := ctrl.Run(context.Background(), "connect declared mcp reader while planning"); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
 
@@ -2485,11 +2749,11 @@ trusted_read_only_tools = ["echo"]
 		t.Fatalf("requests = %d, want 2", len(reqs))
 	}
 	if !requestHasTool(reqs[1], "mcp__mockmcp__echo") {
-		t.Fatalf("second request should expose MCP source with a legacy read-only override; tools=%v", toolSchemaNames(reqs[1].Tools))
+		t.Fatalf("second request should expose the installed MCP reader; tools=%v", toolSchemaNames(reqs[1].Tools))
 	}
 	for _, msg := range ctrl.History() {
 		if msg.Role == provider.RoleTool && msg.Name == "connect_tool_source" && strings.Contains(msg.Content, "blocked:") {
-			t.Fatalf("connect_tool_source should not block MCP with a legacy override in plan mode, got:\n%s", msg.Content)
+			t.Fatalf("connect_tool_source should not block an installed MCP reader in plan mode, got:\n%s", msg.Content)
 		}
 	}
 }
@@ -2669,47 +2933,6 @@ model = "x"
 	}
 	if !requestHasTool(reqs[3], "todo_write") {
 		t.Fatalf("todo_write should stay enabled after plan mode; tools=%v", toolSchemaNames(reqs[3].Tools))
-	}
-}
-
-func TestBuildLegacyPlanModeAllowedToolsDoesNotEmitGateWarning(t *testing.T) {
-	isolateConfigHome(t)
-	dir := robustTempDir(t)
-	t.Chdir(dir)
-
-	registerBootTokenProfileTestProvider()
-	prov := testutil.NewMock("plan-mode-allowed-tools", testutil.Turn{Text: "done"})
-	setBootTokenProfileTestProvider(t, prov)
-	writeFile(t, dir, "reasonix.toml", `
-default_model = "test-model"
-
-[agent]
-system_prompt = "BASE"
-plan_mode_allowed_tools = ["bash", "custom_reader"]
-
-[[providers]]
-name = "test-model"
-kind = "boot-token-profile-test"
-model = "x"
-`)
-
-	var notices []event.Event
-	sink := event.FuncSink(func(e event.Event) {
-		if e.Kind == event.Notice {
-			notices = append(notices, e)
-		}
-	})
-
-	ctrl, err := Build(context.Background(), Options{Sink: sink})
-	if err != nil {
-		t.Fatalf("Build: %v", err)
-	}
-	defer ctrl.Close()
-
-	for _, notice := range notices {
-		if strings.Contains(notice.Text, "plan-mode tool") || strings.Contains(notice.Detail, "plan_mode_allowed_tools") {
-			t.Fatalf("legacy Plan setting emitted obsolete gate warning: %+v", notice)
-		}
 	}
 }
 
@@ -3237,6 +3460,255 @@ allow = ["Bash(workspace*)"]
 	}
 }
 
+func TestRememberPermissionRulePreservesPermissionPolicyAndComments(t *testing.T) {
+	workspace := robustTempDir(t)
+	writeFile(t, workspace, "reasonix.toml", `
+[permissions]
+# Keep this rationale with the policy.
+mode = "deny"
+allow = ["Bash(existing)"] # Keep this allow rationale.
+ask = ["Edit(*.env)"]
+deny = ["Bash(rm:*)"]
+future_policy = "keep"
+
+[desktop]
+legacy_preference = "keep"
+`)
+
+	const rule = "Edit(src/app.go)"
+	result := rememberPermissionRule(workspace, rule)
+	if result.Err != nil || !result.Saved {
+		t.Fatalf("remember result = %+v, want saved without error", result)
+	}
+
+	path := filepath.Join(workspace, "reasonix.toml")
+	got := config.LoadForEdit(path)
+	if got.Permissions.Mode != "deny" {
+		t.Errorf("permissions.mode = %q, want deny", got.Permissions.Mode)
+	}
+	if !reflect.DeepEqual(got.Permissions.Ask, []string{"Edit(*.env)"}) {
+		t.Errorf("permissions.ask = %v, want existing ask policy", got.Permissions.Ask)
+	}
+	if !reflect.DeepEqual(got.Permissions.Deny, []string{"Bash(rm:*)"}) {
+		t.Errorf("permissions.deny = %v, want existing deny policy", got.Permissions.Deny)
+	}
+	if !hasPermissionRule(got.Permissions.Allow, "Bash(existing)") || !hasPermissionRule(got.Permissions.Allow, rule) {
+		t.Errorf("permissions.allow = %v, want existing and remembered rules", got.Permissions.Allow)
+	}
+
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := string(raw)
+	for _, want := range []string{
+		"# Keep this rationale with the policy.",
+		"# Keep this allow rationale.",
+		`future_policy = "keep"`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("permissions content %q was not preserved:\n%s", want, body)
+		}
+	}
+	if !strings.Contains(body, "[desktop]\nlegacy_preference = \"keep\"") {
+		t.Errorf("unrelated section was not preserved:\n%s", body)
+	}
+}
+
+func TestRememberPermissionRuleIgnoresTOMLExampleInMultilineSystemPrompt(t *testing.T) {
+	workspace := robustTempDir(t)
+	writeFile(t, workspace, "reasonix.toml", `[agent]
+system_prompt = """
+Example only:
+[permissions]
+allow = ["Bash(example)"]
+"""
+
+[permissions]
+mode = "ask"
+allow = ["Bash(existing)"]
+deny = ["Bash(rm:*)"]
+`)
+
+	const rule = "Edit(src/app.go)"
+	result := rememberPermissionRule(workspace, rule)
+	if result.Err != nil || !result.Saved {
+		t.Fatalf("remember result = %+v, want saved without error", result)
+	}
+
+	path := filepath.Join(workspace, "reasonix.toml")
+	got, err := config.LoadForEditReadOnlyStrict(path)
+	if err != nil {
+		t.Fatalf("updated config does not parse: %v", err)
+	}
+	if !reflect.DeepEqual(got.Permissions.Allow, []string{"Bash(existing)", rule}) {
+		t.Fatalf("permissions.allow = %v", got.Permissions.Allow)
+	}
+	if !strings.Contains(got.Agent.SystemPrompt, "[permissions]\nallow = [\"Bash(example)\"]") {
+		t.Fatalf("system prompt example changed: %q", got.Agent.SystemPrompt)
+	}
+}
+
+func TestRememberPermissionRuleRejectsMalformedConfigWithoutWriting(t *testing.T) {
+	workspace := robustTempDir(t)
+	path := filepath.Join(workspace, "reasonix.toml")
+	original := []byte("[permissions]\nmode = \"deny\"\nallow = [\n")
+	if err := os.WriteFile(path, original, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	result := rememberPermissionRule(workspace, "Edit(src/app.go)")
+	if result.Err == nil || result.Saved {
+		t.Fatalf("remember result = %+v, want parse error without save", result)
+	}
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(got, original) {
+		t.Fatalf("malformed config changed:\ngot:\n%s\nwant:\n%s", got, original)
+	}
+}
+
+func TestRememberPermissionRuleSerializesConcurrentWriters(t *testing.T) {
+	workspace := robustTempDir(t)
+	writeFile(t, workspace, "reasonix.toml", "[permissions]\nallow = []\n")
+
+	const writers = 32
+	start := make(chan struct{})
+	results := make(chan control.RememberResult, writers)
+	var wg sync.WaitGroup
+	for i := 0; i < writers; i++ {
+		wg.Add(1)
+		go func(n int) {
+			defer wg.Done()
+			<-start
+			results <- rememberPermissionRule(workspace, fmt.Sprintf("Edit(file-%02d)", n))
+		}(i)
+	}
+	close(start)
+	wg.Wait()
+	close(results)
+	for result := range results {
+		if result.Err != nil || !result.Saved {
+			t.Errorf("remember result = %+v, want saved without error", result)
+		}
+	}
+
+	got := config.LoadForEdit(filepath.Join(workspace, "reasonix.toml"))
+	for i := 0; i < writers; i++ {
+		rule := fmt.Sprintf("Edit(file-%02d)", i)
+		if !hasPermissionRule(got.Permissions.Allow, rule) {
+			t.Errorf("permissions.allow missing %q: %v", rule, got.Permissions.Allow)
+		}
+	}
+}
+
+func TestRememberPermissionRuleSerializesCrossProcessWriters(t *testing.T) {
+	workspace := robustTempDir(t)
+	writeFile(t, workspace, "reasonix.toml", "[permissions]\nallow = []\n")
+	readyDir := robustTempDir(t)
+	startPath := filepath.Join(readyDir, "start")
+
+	const workers = 4
+	const rulesPerWorker = 8
+	commands := make([]*exec.Cmd, 0, workers)
+	outputs := make([]bytes.Buffer, workers)
+	for worker := 0; worker < workers; worker++ {
+		cmd := exec.Command(os.Args[0], "-test.run=^TestRememberPermissionRuleProcessHelper$")
+		cmd.Stdout = &outputs[worker]
+		cmd.Stderr = &outputs[worker]
+		cmd.Env = append(os.Environ(),
+			"REASONIX_PERMISSION_HELPER=1",
+			"REASONIX_PERMISSION_WORKSPACE="+workspace,
+			"REASONIX_PERMISSION_READY_DIR="+readyDir,
+			"REASONIX_PERMISSION_START="+startPath,
+			fmt.Sprintf("REASONIX_PERMISSION_WORKER=%d", worker),
+			fmt.Sprintf("REASONIX_PERMISSION_RULES=%d", rulesPerWorker),
+		)
+		if err := cmd.Start(); err != nil {
+			t.Fatal(err)
+		}
+		commands = append(commands, cmd)
+	}
+	t.Cleanup(func() {
+		for _, cmd := range commands {
+			if cmd.ProcessState == nil {
+				_ = cmd.Process.Kill()
+				_, _ = cmd.Process.Wait()
+			}
+		}
+	})
+
+	deadline := time.Now().Add(5 * time.Second)
+	for worker := 0; worker < workers; {
+		if _, err := os.Stat(filepath.Join(readyDir, fmt.Sprintf("ready-%d", worker))); err == nil {
+			worker++
+			continue
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("permission helper processes did not become ready")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if err := os.WriteFile(startPath, []byte("start"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for i, cmd := range commands {
+		if err := cmd.Wait(); err != nil {
+			t.Fatalf("permission helper failed: %v\n%s", err, outputs[i].String())
+		}
+	}
+
+	got := config.LoadForEdit(filepath.Join(workspace, "reasonix.toml"))
+	for worker := 0; worker < workers; worker++ {
+		for n := 0; n < rulesPerWorker; n++ {
+			rule := fmt.Sprintf("Edit(process-%d-file-%02d)", worker, n)
+			if !hasPermissionRule(got.Permissions.Allow, rule) {
+				t.Errorf("permissions.allow missing %q: %v", rule, got.Permissions.Allow)
+			}
+		}
+	}
+}
+
+func TestRememberPermissionRuleProcessHelper(t *testing.T) {
+	if os.Getenv("REASONIX_PERMISSION_HELPER") != "1" {
+		return
+	}
+	workspace := os.Getenv("REASONIX_PERMISSION_WORKSPACE")
+	readyDir := os.Getenv("REASONIX_PERMISSION_READY_DIR")
+	startPath := os.Getenv("REASONIX_PERMISSION_START")
+	t.Setenv("REASONIX_CACHE_HOME", readyDir)
+	worker, err := strconv.Atoi(os.Getenv("REASONIX_PERMISSION_WORKER"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	rules, err := strconv.Atoi(os.Getenv("REASONIX_PERMISSION_RULES"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(readyDir, fmt.Sprintf("ready-%d", worker)), []byte("ready"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		if _, err := os.Stat(startPath); err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("timed out waiting for permission helper start")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	for n := 0; n < rules; n++ {
+		rule := fmt.Sprintf("Edit(process-%d-file-%02d)", worker, n)
+		result := rememberPermissionRule(workspace, rule)
+		if result.Err != nil || !result.Saved {
+			t.Fatalf("remember result = %+v, want saved without error", result)
+		}
+	}
+}
+
 func TestRememberPermissionRuleCreatesWorkspaceConfigOverUserConfig(t *testing.T) {
 	home := robustTempDir(t)
 	t.Setenv("HOME", home)
@@ -3311,6 +3783,39 @@ allow = ["Bash(go test:*)"]
 	cfg := config.LoadForEdit(filepath.Join(workspace, "reasonix.toml"))
 	if len(cfg.Permissions.Allow) != 1 || cfg.Permissions.Allow[0] != "Bash(go test:*)" {
 		t.Fatalf("allow rules = %v, want only existing prefix", cfg.Permissions.Allow)
+	}
+}
+
+func TestRememberDynamicBashLiteralIsNotCoveredByBroadRule(t *testing.T) {
+	workspace := robustTempDir(t)
+	writeFile(t, workspace, "reasonix.toml", `
+[permissions]
+allow = ["Bash(git*)"]
+`)
+
+	const literal = "Bash=git status $(touch /tmp/reasonix-dynamic-approval)"
+	res := rememberPermissionRule(workspace, literal)
+	if !res.Saved || res.CoveredBy != "" || res.Err != nil {
+		t.Fatalf("remember dynamic literal = %+v, want newly saved rule", res)
+	}
+	cfg := config.LoadForEdit(filepath.Join(workspace, "reasonix.toml"))
+	if !hasPermissionRule(cfg.Permissions.Allow, "Bash(git*)") || !hasPermissionRule(cfg.Permissions.Allow, literal) {
+		t.Fatalf("allow rules = %v, want broad rule and dynamic literal", cfg.Permissions.Allow)
+	}
+
+	res = rememberPermissionRule(workspace, literal)
+	if res.Saved || res.CoveredBy != literal || res.Err != nil {
+		t.Fatalf("remember duplicate dynamic literal = %+v, want exact deduplication", res)
+	}
+	cfg = config.LoadForEdit(filepath.Join(workspace, "reasonix.toml"))
+	count := 0
+	for _, rule := range cfg.Permissions.Allow {
+		if rule == literal {
+			count++
+		}
+	}
+	if count != 1 {
+		t.Fatalf("dynamic literal count = %d in %v, want 1", count, cfg.Permissions.Allow)
 	}
 }
 
@@ -3715,16 +4220,18 @@ func TestBuildSkipsLegacySessionMigrationWhenIsolated(t *testing.T) {
 }
 
 // isolateConfigHome redirects os.UserConfigDir() (and the cache subtree under
-// it) at a per-test temp dir by overriding the env vars Go's stdlib reads —
-// HOME on darwin, XDG_CONFIG_HOME on linux. Without this, Build's plugin path
-// would persist startup stats and cached schemas into the developer's real
-// ~/Library/Application Support tree and bleed state across tests. Mirrors the
-// withTempCache helper in internal/plugin/stats_test.go.
+// it) at a per-test temp dir by overriding the env vars Go's stdlib reads on
+// macOS, Linux, and Windows. Without this, Build's config, plugin stats, and
+// cached schemas can bleed across tests. Mirrors the withTempCache helper in
+// internal/plugin/stats_test.go.
 func isolateConfigHome(t *testing.T) string {
 	t.Helper()
 	dir := robustTempDir(t)
 	t.Setenv("HOME", dir)
+	t.Setenv("USERPROFILE", dir)
 	t.Setenv("XDG_CONFIG_HOME", dir)
+	t.Setenv("AppData", filepath.Join(dir, "AppData"))
+	t.Setenv("LocalAppData", filepath.Join(dir, "LocalAppData"))
 	t.Setenv("REASONIX_CREDENTIALS_STORE", "file")
 	return dir
 }
@@ -3748,36 +4255,6 @@ func TestPartitionByTier(t *testing.T) {
 	}
 	if len(bg) != 3 || bg[0].Name != "l1" || bg[1].Name != "b1" || bg[2].Name != "default" {
 		t.Fatalf("background bucket = %+v, want [l1, b1, default] preserving input order", bg)
-	}
-}
-
-func TestPluginSpecsTrustKnownCodeGraphReadTools(t *testing.T) {
-	specs := PluginSpecs([]config.PluginEntry{{Name: "codegraph"}})
-	if len(specs) != 1 {
-		t.Fatalf("PluginSpecs returned %d specs, want 1", len(specs))
-	}
-	for _, name := range []string{"codegraph_context", "codegraph_search", "context", "search"} {
-		if !specs[0].ReadOnlyToolNames[name] {
-			t.Fatalf("codegraph spec missing read-only override for %q: %+v", name, specs[0].ReadOnlyToolNames)
-		}
-	}
-}
-
-func TestPluginSpecsTrustConfiguredReadOnlyTools(t *testing.T) {
-	specs := PluginSpecs([]config.PluginEntry{{
-		Name:                 "github",
-		TrustedReadOnlyTools: []string{"issue_read", " pull_request_read ", ""},
-	}})
-	if len(specs) != 1 {
-		t.Fatalf("PluginSpecs returned %d specs, want 1", len(specs))
-	}
-	for _, name := range []string{"issue_read", "pull_request_read"} {
-		if !specs[0].ReadOnlyToolNames[name] {
-			t.Fatalf("configured trusted read-only tool %q missing: %+v", name, specs[0].ReadOnlyToolNames)
-		}
-	}
-	if specs[0].ReadOnlyToolNames[""] {
-		t.Fatalf("empty trusted read-only tool name should be ignored: %+v", specs[0].ReadOnlyToolNames)
 	}
 }
 
@@ -3812,54 +4289,81 @@ func TestPluginSpecsMapConfiguredCallTimeouts(t *testing.T) {
 	}
 }
 
-func TestPluginSpecsMapMCPApprovalPolicy(t *testing.T) {
-	specs := PluginSpecs([]config.PluginEntry{{
-		Name:                     "admin",
-		DefaultToolsApprovalMode: "writes",
-		Tools: map[string]config.MCPToolPolicy{
-			"wipe": {ApprovalMode: "prompt"},
-		},
-		ApprovalsReviewer: "auto_review",
-	}})
-	if len(specs) != 1 || specs[0].DefaultToolsApprovalMode != "writes" ||
-		specs[0].ToolApprovalModes["wipe"] != "prompt" || specs[0].ApprovalsReviewer != "auto_review" {
-		t.Fatalf("mapped MCP approval policy = %+v", specs)
-	}
-}
-
 func TestPluginSpecsMapMCPSourceDefaults(t *testing.T) {
-	specs := PluginSpecsForRootWithOptions([]config.PluginEntry{
-		{Name: "user", Source: config.MCPSourceUserConfig},
-		{Name: "project", Source: config.MCPSourceProjectConfig},
-	}, "/workspace", PluginSpecOptions{ConfigSource: "workspace_config"})
-	if len(specs) != 2 {
-		t.Fatalf("spec count = %d", len(specs))
+	tests := []struct {
+		name           string
+		source         config.MCPConfigSource
+		wantAuthorized bool
+		wantApproval   bool
+	}{
+		{name: "user config", source: config.MCPSourceUserConfig, wantAuthorized: true},
+		{name: "legacy user config", source: config.MCPSourceLegacyUser, wantAuthorized: true},
+		{name: "plugin package", source: config.MCPSourcePluginPackage, wantAuthorized: true},
+		{name: "project config", source: config.MCPSourceProjectConfig, wantAuthorized: true},
+		{name: "project mcp json", source: config.MCPSourceProjectMCPJSON, wantAuthorized: true},
+		{name: "unknown"},
 	}
-	if !specs[0].AutoTrust || !specs[0].ImplicitApproval || specs[0].RequireLaunchApproval || specs[0].ConfigSource != string(config.MCPSourceUserConfig) {
-		t.Fatalf("user source defaults = %+v", specs[0])
-	}
-	if specs[1].AutoTrust || specs[1].ImplicitApproval || !specs[1].RequireLaunchApproval || specs[1].ConfigSource != string(config.MCPSourceProjectConfig) {
-		t.Fatalf("project source defaults = %+v", specs[1])
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			specs := PluginSpecsForRootWithOptions([]config.PluginEntry{{
+				Name:   "server",
+				Source: tc.source,
+			}}, "/workspace", PluginSpecOptions{ConfigSource: "workspace_config"})
+			if len(specs) != 1 {
+				t.Fatalf("spec count = %d", len(specs))
+			}
+			if specs[0].Authorized != tc.wantAuthorized || specs[0].RequireLaunchApproval != tc.wantApproval {
+				t.Fatalf("source defaults = %+v, want authorized=%v approval=%v", specs[0], tc.wantAuthorized, tc.wantApproval)
+			}
+			wantSource := string(tc.source)
+			if wantSource == "" {
+				wantSource = "workspace_config"
+			}
+			if specs[0].ConfigSource != wantSource {
+				t.Fatalf("ConfigSource = %q, want %q", specs[0].ConfigSource, wantSource)
+			}
+		})
 	}
 }
 
-func TestOfficialMCPTrustRequiresMatchingTransport(t *testing.T) {
-	entry := config.PluginEntry{Name: "official", Type: "http", URL: "https://example.com/mcp"}
-	official := OfficialMCPTrust{
-		CatalogEntryID: "official@1", PackageDigest: "digest", Readers: []string{"read"}, Transport: "stdio",
-	}
-	specs := PluginSpecsForRootWithOptions([]config.PluginEntry{entry}, "/workspace", PluginSpecOptions{
-		OfficialServers: map[string]OfficialMCPTrust{"official": official},
+func TestPluginSpecsCarryPluginPackageProvenance(t *testing.T) {
+	specs := PluginSpecsForRootWithOptions([]config.PluginEntry{{Name: "figma"}}, "/workspace", PluginSpecOptions{
+		PackageOwners: map[string]string{"figma": "design-plugin"},
 	})
-	if len(specs) != 1 || specs[0].OfficialCatalogEntryID != "" {
-		t.Fatalf("mismatched transport received official trust: %+v", specs)
+	if len(specs) != 1 || specs[0].Package != "design-plugin" {
+		t.Fatalf("plugin package provenance = %+v, want design-plugin", specs)
 	}
-	official.Transport = "streamable-http"
-	specs = PluginSpecsForRootWithOptions([]config.PluginEntry{entry}, "/workspace", PluginSpecOptions{
-		OfficialServers: map[string]OfficialMCPTrust{"official": official},
-	})
-	if len(specs) != 1 || specs[0].OfficialCatalogEntryID != "official@1" {
-		t.Fatalf("equivalent HTTP transport did not receive official trust: %+v", specs)
+}
+
+func TestSkillMCPBindingsUseOnlyValidOwnedCache(t *testing.T) {
+	specs := []plugin.Spec{
+		{Name: "figma", Package: "design-plugin", StripRawPrefix: "figma_"},
+		{Name: "other", Package: "other-plugin"},
+	}
+	cached := map[string][]plugin.CachedTool{
+		"figma": {{Name: "figma_get_design_context"}},
+		"other": {{Name: "search"}},
+	}
+	got := skillMCPBindings(skill.Skill{Plugin: "design-plugin"}, nil, specs, cached, map[string]bool{"figma": true, "other": true})
+	if len(got) != 1 || got[0].VisibleName != "get_design_context" || got[0].CallableName != plugin.ModelToolName("figma", "get_design_context") || got[0].CapabilityID != "mcp-tool:figma/figma_get_design_context" {
+		t.Fatalf("cached skill bindings = %+v", got)
+	}
+	if stale := skillMCPBindings(skill.Skill{Plugin: "design-plugin"}, nil, specs, cached, map[string]bool{"figma": false}); len(stale) != 0 {
+		t.Fatalf("stale cache supplied skill bindings: %+v", stale)
+	}
+
+	reg := tool.NewRegistry()
+	host := plugin.NewHost()
+	t.Cleanup(host.Close)
+	liveTools := plugin.LazyToolset(specs[0], &plugin.CachedSchema{Tools: []plugin.CachedTool{{Name: "figma_current_tool"}}}, host, reg, context.Background(), false)
+	for _, live := range liveTools {
+		reg.Add(live)
+	}
+	oldCache := map[string][]plugin.CachedTool{"figma": {{Name: "figma_removed_tool"}}}
+	got = skillMCPBindings(skill.Skill{Plugin: "design-plugin"}, reg, specs, oldCache, map[string]bool{"figma": true})
+	if len(got) != 1 || got[0].RawName != "figma_current_tool" {
+		t.Fatalf("live registry did not supersede stale boot cache: %+v", got)
 	}
 }
 
@@ -3876,32 +4380,6 @@ func TestApplyDefaultMCPCallTimeoutPreservesConfiguredDefault(t *testing.T) {
 	}
 }
 
-func TestPluginSpecsTrustPlanModeAllowedMCPTools(t *testing.T) {
-	specs := PluginSpecsForRootWithPlanModeAllowedTools(
-		[]config.PluginEntry{{Name: "github"}, {Name: "linear"}},
-		"",
-		[]string{
-			"mcp__github__issue_read",
-			"mcp__linear__issue_read",
-			"mcp__github__",
-			"read_file",
-			"mcp__other__issue_read",
-		},
-	)
-	if len(specs) != 2 {
-		t.Fatalf("PluginSpecsForRootWithPlanModeAllowedTools returned %d specs, want 2", len(specs))
-	}
-	if !specs[0].ReadOnlyModelToolNames["mcp__github__issue_read"] {
-		t.Fatalf("github allowed MCP tool missing from model trust map: %+v", specs[0].ReadOnlyModelToolNames)
-	}
-	if specs[0].ReadOnlyModelToolNames["mcp__github__"] || specs[0].ReadOnlyModelToolNames["mcp__other__issue_read"] {
-		t.Fatalf("github trust map accepted non-concrete or other-server tools: %+v", specs[0].ReadOnlyModelToolNames)
-	}
-	if !specs[1].ReadOnlyModelToolNames["mcp__linear__issue_read"] {
-		t.Fatalf("linear allowed MCP tool missing from model trust map: %+v", specs[1].ReadOnlyModelToolNames)
-	}
-}
-
 func TestPluginSpecsForRootPinsCodeGraphToWorkspace(t *testing.T) {
 	specs := PluginSpecsForRoot([]config.PluginEntry{{Name: "codegraph"}}, "/workspace")
 	if len(specs) != 1 {
@@ -3909,6 +4387,9 @@ func TestPluginSpecsForRootPinsCodeGraphToWorkspace(t *testing.T) {
 	}
 	if specs[0].Dir != "/workspace" {
 		t.Fatalf("codegraph Dir = %q, want workspace root", specs[0].Dir)
+	}
+	if specs[0].WorkspaceRoot != "/workspace" {
+		t.Fatalf("codegraph WorkspaceRoot = %q, want /workspace", specs[0].WorkspaceRoot)
 	}
 }
 
@@ -3920,15 +4401,8 @@ func TestPluginSpecsForRootDoesNotPinHTTPCodeGraph(t *testing.T) {
 	if specs[0].Dir != "" {
 		t.Fatalf("http codegraph Dir = %q, want empty", specs[0].Dir)
 	}
-}
-
-func TestPluginSpecsDoNotTrustCodeGraphToolsForOtherServers(t *testing.T) {
-	specs := PluginSpecs([]config.PluginEntry{{Name: "not-codegraph"}})
-	if len(specs) != 1 {
-		t.Fatalf("PluginSpecs returned %d specs, want 1", len(specs))
-	}
-	if specs[0].ReadOnlyToolNames["codegraph_context"] {
-		t.Fatalf("non-codegraph spec should not receive codegraph read-only overrides: %+v", specs[0].ReadOnlyToolNames)
+	if specs[0].WorkspaceRoot != "/workspace" {
+		t.Fatalf("http codegraph WorkspaceRoot = %q, want /workspace", specs[0].WorkspaceRoot)
 	}
 }
 
@@ -4271,7 +4745,11 @@ model = "x"
 		testutil.Turn{Text: "done"},
 	)
 	setBootTokenProfileTestProvider(t, prov)
-	ctrl, err := Build(context.Background(), Options{Sink: event.Discard, AdditionalDirs: []string{extra}})
+	ctrl, err := Build(context.Background(), Options{
+		Sink:                 event.Discard,
+		AdditionalDirs:       []string{extra},
+		HeadlessApprovalMode: control.ToolApprovalYolo,
+	})
 	if err != nil {
 		t.Fatalf("Build: %v", err)
 	}
@@ -4366,6 +4844,57 @@ func waitForMCPFailure(t *testing.T, h *plugin.Host, name string, timeout time.D
 	}
 }
 
+// TestBuildExtraPluginProbeKeepsSessionProcessAlive pins the lifecycle split
+// used by host-supplied ACP/session MCP servers. The five-second readiness
+// context is cancelled before Build returns; a successful stdio child must
+// still live on the session context and accept its first real tool call.
+func TestBuildExtraPluginProbeKeepsSessionProcessAlive(t *testing.T) {
+	isolateConfigHome(t)
+	workspace := robustTempDir(t)
+	t.Chdir(workspace)
+
+	sessionCtx, cancelSession := context.WithCancel(context.Background())
+	defer cancelSession()
+	ctrl, err := Build(sessionCtx, Options{
+		SessionDir: filepath.Join(t.TempDir(), "sessions"),
+		Sink:       event.Discard,
+		ExtraPlugins: []plugin.Spec{{
+			Name:    "acp-extra",
+			Command: os.Args[0],
+			Args:    []string{"-test.run=TestHelperProcess", "--"},
+			Env:     map[string]string{"GO_WANT_HELPER_PROCESS": "1"},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	defer ctrl.Close()
+
+	tools, err := ctrl.Host().ToolsFor(sessionCtx, "acp-extra")
+	if err != nil {
+		t.Fatalf("ToolsFor: %v", err)
+	}
+	var echo tool.Tool
+	for _, candidate := range tools {
+		if candidate.Name() == "mcp__acp-extra__echo" {
+			echo = candidate
+			break
+		}
+	}
+	if echo == nil {
+		t.Fatalf("extra plugin echo tool missing from %d tools", len(tools))
+	}
+	callCtx, cancelCall := context.WithTimeout(sessionCtx, 5*time.Second)
+	defer cancelCall()
+	out, err := echo.Execute(callCtx, json.RawMessage(`{"msg":"after-probe"}`))
+	if err != nil {
+		t.Fatalf("Execute after readiness context cancellation: %v", err)
+	}
+	if out != "echo: after-probe" {
+		t.Fatalf("Execute result = %q, want %q", out, "echo: after-probe")
+	}
+}
+
 // TestHelperProcess is invoked as a subprocess by TestBuildEagerStartsAtBoot
 // and TestBuildLazyDoesNotConnectAtBoot. It mirrors the minimal MCP stdio
 // server in internal/plugin/plugin_test.go so the boot package can drive an
@@ -4411,7 +4940,7 @@ func TestHelperProcess(t *testing.T) {
 				"capabilities":    map[string]any{},
 			}
 		case "tools/list":
-			result = map[string]any{"tools": []map[string]any{{
+			echo := map[string]any{
 				"name":        "echo",
 				"description": "Echo back the message.",
 				"inputSchema": map[string]any{
@@ -4419,7 +4948,21 @@ func TestHelperProcess(t *testing.T) {
 					"properties": map[string]any{"msg": map[string]any{"type": "string"}},
 					"required":   []string{"msg"},
 				},
-			}}}
+			}
+			if os.Getenv("GO_WANT_HELPER_READ_ONLY") == "1" {
+				echo["annotations"] = map[string]any{"readOnlyHint": true}
+			}
+			result = map[string]any{"tools": []map[string]any{echo}}
+		case "tools/call":
+			var p struct {
+				Arguments struct {
+					Msg string `json:"msg"`
+				} `json:"arguments"`
+			}
+			_ = json.Unmarshal(req.Params, &p)
+			result = map[string]any{"content": []map[string]any{
+				{"type": "text", "text": "echo: " + p.Arguments.Msg},
+			}}
 		}
 
 		resp := map[string]any{"jsonrpc": "2.0", "id": *req.ID, "result": result}

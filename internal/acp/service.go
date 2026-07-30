@@ -125,6 +125,7 @@ func Serve(ctx context.Context, r io.Reader, w io.Writer, factory Factory, info 
 	conn.Handle("session/load", svc.sessionLoad)
 	conn.Handle("session/resume", svc.sessionResume)
 	conn.Handle("session/prompt", svc.sessionPrompt)
+	conn.Handle(sessionSteerMethod, svc.sessionSteer)
 	conn.Handle("session/set_config_option", svc.sessionSetConfigOption)
 	conn.Handle("session/set_model", svc.sessionSetModel)
 	conn.Handle("session/set_mode", svc.sessionSetMode)
@@ -149,6 +150,22 @@ type service struct {
 	// terminals). Zero until initialize arrives; sessions opened later bind a
 	// clientIO built from it.
 	clientCaps ClientCapabilities
+}
+
+// afterResponse wraps a result with work that must run after the transport has
+// successfully written that result. Session-opening notifications use this so a
+// client can register the returned session before receiving its first update.
+type afterResponse struct {
+	result any
+	after  func()
+}
+
+func (r afterResponse) Response() any { return r.result }
+
+func (r afterResponse) AfterResponse() {
+	if r.after != nil {
+		r.after()
+	}
 }
 
 func (s *service) setClientCapabilities(caps ClientCapabilities) {
@@ -187,6 +204,7 @@ func (s *service) bindClientIO(p *SessionParams, sessionID string) {
 type acpController interface {
 	control.Lifecycle
 	control.TurnControl
+	TrySteer(text string) bool
 	control.Approvals
 	control.Capabilities
 	control.SessionPersistence
@@ -533,6 +551,11 @@ func (s *service) initialize(_ context.Context, raw json.RawMessage) (any, error
 				EmbeddedContext: true,
 			},
 			MCPCapabilities: MCPCapabilities{HTTP: true, SSE: false},
+			Meta: map[string]any{
+				"reasonix.io": ReasonixExtensionCapabilities{
+					SessionSteer: &SessionSteerCapability{Method: sessionSteerMethod},
+				},
+			},
 		},
 		AgentInfo:   Implementation{Name: s.info.Name, Version: s.info.Version},
 		AuthMethods: []AuthMethod{reasonixSetupAuthMethod()},
@@ -638,19 +661,21 @@ func (s *service) sessionNew(ctx context.Context, raw json.RawMessage) (any, err
 			return nil, sessionLeaseBindError("session/new", err)
 		}
 		sess.lease = lease
-		ctrl.SetSessionPath(sess.transcript)
+		ctrl.SetFreshSessionPath(sess.transcript)
 	}
 
 	s.mu.Lock()
 	s.sessions[id] = sess
 	s.mu.Unlock()
-	s.sendAvailableCommands(sess)
 
-	return SessionNewResult{
-		SessionID:     id,
-		Models:        cfgState.Models,
-		Modes:         sessionModesState(sessionModeNormal),
-		ConfigOptions: cfgState.ConfigOptions,
+	return afterResponse{
+		result: SessionNewResult{
+			SessionID:     id,
+			Models:        cfgState.Models,
+			Modes:         sessionModesState(sessionModeNormal),
+			ConfigOptions: cfgState.ConfigOptions,
+		},
+		after: func() { s.sendAvailableCommands(sess) },
 	}, nil
 }
 
@@ -784,7 +809,10 @@ func (s *service) sessionLoad(ctx context.Context, raw json.RawMessage) (any, er
 	if err != nil {
 		return nil, err
 	}
-	return SessionLoadResult{Models: cfgState.Models, Modes: s.sessionModesFor(p.SessionID), ConfigOptions: cfgState.ConfigOptions}, nil
+	return afterResponse{
+		result: SessionLoadResult{Models: cfgState.Models, Modes: s.sessionModesFor(p.SessionID), ConfigOptions: cfgState.ConfigOptions},
+		after:  func() { s.sendAvailableCommands(s.session(p.SessionID)) },
+	}, nil
 }
 
 // sessionModesFor reports the modes state for a just-opened session. A live
@@ -808,7 +836,10 @@ func (s *service) sessionResume(ctx context.Context, raw json.RawMessage) (any, 
 	if err != nil {
 		return nil, err
 	}
-	return SessionResumeResult{Models: cfgState.Models, Modes: s.sessionModesFor(p.SessionID), ConfigOptions: cfgState.ConfigOptions}, nil
+	return afterResponse{
+		result: SessionResumeResult{Models: cfgState.Models, Modes: s.sessionModesFor(p.SessionID), ConfigOptions: cfgState.ConfigOptions},
+		after:  func() { s.sendAvailableCommands(s.session(p.SessionID)) },
+	}, nil
 }
 
 func (s *service) openExistingSession(ctx context.Context, method, id, cwdParam string, servers []MCPServerSpec, replay bool) (SessionConfigState, error) {
@@ -965,7 +996,6 @@ func (s *service) openExistingSession(ctx context.Context, method, id, cwdParam 
 	s.mu.Lock()
 	s.sessions[id] = sess
 	s.mu.Unlock()
-	s.sendAvailableCommands(sess)
 
 	if replay {
 		sink.replay(ctrl.History())
@@ -1064,6 +1094,27 @@ func (s *service) sessionPrompt(ctx context.Context, raw json.RawMessage) (any, 
 		res.TranscriptPath = &sess.transcript
 	}
 	return res, nil
+}
+
+// sessionSteer injects user guidance into an active turn and acknowledges once
+// the agent has queued it for the next safe loop boundary.
+func (s *service) sessionSteer(_ context.Context, raw json.RawMessage) (any, error) {
+	var p SessionSteerParams
+	if err := json.Unmarshal(raw, &p); err != nil {
+		return nil, &RPCError{Code: ErrInvalidParams, Message: sessionSteerMethod + ": " + err.Error()}
+	}
+	sess := s.session(p.SessionID)
+	if sess == nil {
+		return nil, &RPCError{Code: ErrInvalidParams, Message: sessionSteerMethod + ": unknown session " + p.SessionID}
+	}
+	text := FlattenPrompt(p.Prompt)
+	if text == "" {
+		return nil, &RPCError{Code: ErrInvalidParams, Message: sessionSteerMethod + ": empty prompt"}
+	}
+	if !sess.currentCtrl().TrySteer(text) {
+		return nil, &RPCError{Code: ErrInvalidRequest, Message: sessionSteerMethod + ": session has no active prompt"}
+	}
+	return SessionSteerResult{}, nil
 }
 
 // finishTurn reconciles controller-side drift and drains any config switch
@@ -2527,23 +2578,26 @@ func mcpSpecs(in []MCPServerSpec, cwd string) ([]plugin.Spec, error) {
 			if strings.TrimSpace(m.Command) == "" {
 				return nil, fmt.Errorf("MCP server %q command is required", m.Name)
 			}
-		case "http", "streamable-http", "streamable_http":
+		case "http", "streamable-http", "streamable_http", "sse":
 			if strings.TrimSpace(m.URL) == "" {
 				return nil, fmt.Errorf("MCP server %q url is required", m.Name)
 			}
-			typ = "http"
+			if typ != "sse" {
+				typ = "http"
+			}
 		default:
 			return nil, fmt.Errorf("MCP server %q uses unsupported transport %q", m.Name, m.Type)
 		}
 		out = append(out, plugin.Spec{
-			Name:    strings.TrimSpace(m.Name),
-			Type:    typ,
-			Command: strings.TrimSpace(m.Command),
-			Args:    append([]string(nil), m.Args...),
-			Env:     mapString(m.Env),
-			URL:     strings.TrimSpace(m.URL),
-			Headers: mapString(m.Headers),
-			Dir:     cwd,
+			Name:          strings.TrimSpace(m.Name),
+			Type:          typ,
+			Command:       strings.TrimSpace(m.Command),
+			Args:          append([]string(nil), m.Args...),
+			Env:           mapString(m.Env),
+			URL:           strings.TrimSpace(m.URL),
+			Headers:       mapString(m.Headers),
+			Dir:           cwd,
+			WorkspaceRoot: cwd,
 		})
 	}
 	return out, nil

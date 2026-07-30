@@ -174,6 +174,10 @@ func credentialEnvNamesFromConfig(cfg *Config) []string {
 		add(conn.Credential.AppSecretEnv)
 		add(conn.Credential.TokenEnv)
 	}
+	for _, h := range cfg.Remote.Hosts {
+		add(h.PassphraseEnv)
+		add(h.PasswordEnv)
+	}
 	sort.Strings(out)
 	return out
 }

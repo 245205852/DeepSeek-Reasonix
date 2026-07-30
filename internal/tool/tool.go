@@ -85,14 +85,6 @@ type PlanModeClassifier interface {
 	PlanModeSafe() bool
 }
 
-// PlanModeUntrustedReadOnly marks a tool whose ReadOnly classification comes
-// only from an external MCP server hint. The main Plan workflow may use that
-// hint for ordinary permission classification, while planner/read-only subagent
-// registries must not treat it as local trust.
-type PlanModeUntrustedReadOnly interface {
-	PlanModeUntrustedReadOnly() bool
-}
-
 // ReadOnlyExecutionHostMutation marks a target that is logically read-only but
 // must first mutate host state to become executable, such as starting an
 // on-demand MCP process. Strict read-only agents reject these targets even when
@@ -110,11 +102,35 @@ type ReadOnlyExecutionBlockReason interface {
 
 // MCPMetadata exposes the original MCP identity behind a model-visible
 // "mcp__<server>__<tool>" adapter. The model name may be normalized for provider
-// function-name rules; config such as trusted_read_only_tools must use the raw
-// server-local tool name.
+// function-name rules; host policy and diagnostics use the raw server-local
+// tool name.
 type MCPMetadata interface {
 	MCPServerName() string
 	MCPRawToolName() string
+}
+
+// MCPVisibleMetadata exposes the server-local name after any host-configured
+// prefix stripping. It is the short name authors usually write in skills.
+type MCPVisibleMetadata interface {
+	MCPVisibleToolName() string
+}
+
+// MCPPackageMetadata identifies the plugin package that contributed an MCP
+// server. Empty means the server came from ordinary user/workspace config.
+type MCPPackageMetadata interface {
+	MCPPackageName() string
+}
+
+// MCPBinding describes one stable MCP capability and the exact provider-visible
+// name currently bound to it. Bindings are host metadata only: they never add
+// aliases to provider schemas or alter schema ordering.
+type MCPBinding struct {
+	Package      string
+	Server       string
+	RawName      string
+	VisibleName  string
+	CallableName string
+	CapabilityID string
 }
 
 // MCPAnnotations exposes safety-relevant annotations reported by an installed
@@ -124,20 +140,11 @@ type MCPAnnotations interface {
 	MCPDestructiveHint() bool
 }
 
-// MCPCapabilityFingerprint exposes the host-local security fingerprint used to
-// reject a cached-to-live schema drift before tools/call. It is deliberately
-// separate from Schema(), so it cannot perturb provider cache prefixes.
-type MCPCapabilityFingerprint interface {
-	MCPCapabilityFingerprint() string
-}
-
-// ReadOnlyExecutionTrustAuthority reports whether an MCP-backed tool's reader
-// classification is backed by a real host trust store (receipts), rather than
-// a server hint or legacy config compatibility. Strict read-only execution
-// requires positive authority; direct library embedders without a TrustManager
-// keep their historical behavior outside that boundary.
-type ReadOnlyExecutionTrustAuthority interface {
-	ReadOnlyExecutionTrustAuthority() bool
+// MCPServerAuthorization reports whether the user installed this MCP server or
+// authorized its exact project identity. Authorization belongs to the server,
+// not to individual tools; readOnly/destructive metadata is checked separately.
+type MCPServerAuthorization interface {
+	MCPServerAuthorized() bool
 }
 
 // readerExecutionIntentKey carries a per-call, immutable authorization basis:
@@ -147,67 +154,57 @@ type ReadOnlyExecutionTrustAuthority interface {
 // error instead of executing.
 type readerExecutionIntentKey struct{}
 
-// ReaderExecutionIntent pins what the authorization decision saw.
-type ReaderExecutionIntent struct {
-	// CapabilityFingerprint, when non-empty, must still match the live tool's
-	// security fingerprint at dispatch time.
-	CapabilityFingerprint string
-}
+// nonDestructiveMCPExecutionIntentKey carries a per-call, immutable
+// authorization basis for Planner-trusted MCP: the server is authorized and the
+// live tool is non-destructive, even when it lacks readOnlyHint. The MCP
+// dispatcher re-checks authorization and destructiveHint before tools/call;
+// drift returns a retryable error with zero execution.
+type nonDestructiveMCPExecutionIntentKey struct{}
+
+// planReplacementAuthorizationKey carries a one-call authorization from the
+// host's Auto plan gate. It lets todo_write replace the current in_progress
+// step after the plan transition has been reviewed, without weakening ordinary
+// todo continuity or exposing an authorization bit in the model-visible schema.
+type planReplacementAuthorizationKey struct{}
 
 // WithReaderExecutionIntent marks ctx as a reader-authorized MCP invocation.
-func WithReaderExecutionIntent(ctx context.Context, capabilityFingerprint string) context.Context {
-	return context.WithValue(ctx, readerExecutionIntentKey{}, ReaderExecutionIntent{CapabilityFingerprint: capabilityFingerprint})
+func WithReaderExecutionIntent(ctx context.Context) context.Context {
+	return context.WithValue(ctx, readerExecutionIntentKey{}, true)
 }
 
-// ReaderExecutionIntentFrom returns the pinned reader authorization, if any.
-func ReaderExecutionIntentFrom(ctx context.Context) (ReaderExecutionIntent, bool) {
-	intent, ok := ctx.Value(readerExecutionIntentKey{}).(ReaderExecutionIntent)
-	return intent, ok
+// HasReaderExecutionIntent reports whether this call entered through the
+// non-destructive reader lane.
+func HasReaderExecutionIntent(ctx context.Context) bool {
+	intent, _ := ctx.Value(readerExecutionIntentKey{}).(bool)
+	return intent
 }
 
-const (
-	MCPApprovalAuto    = "auto"
-	MCPApprovalPrompt  = "prompt"
-	MCPApprovalWrites  = "writes"
-	MCPApprovalApprove = "approve"
-
-	MCPApprovalReviewerUser       = "user"
-	MCPApprovalReviewerAutoReview = "auto_review"
-)
-
-// MCPApprovalPolicy exposes local execution policy for one MCP tool. These
-// values are intentionally not part of Schema(), so changing approval policy
-// does not alter the provider-visible tool contract or prompt-cache prefix.
-type MCPApprovalPolicy interface {
-	MCPApprovalMode() string
-	MCPApprovalReviewer() string
+// WithNonDestructiveMCPExecutionIntent marks ctx as a Planner-trusted MCP
+// invocation: authorized server, non-destructive live tool. Unlike the reader
+// lane it does not require readOnlyHint.
+func WithNonDestructiveMCPExecutionIntent(ctx context.Context) context.Context {
+	return context.WithValue(ctx, nonDestructiveMCPExecutionIntentKey{}, true)
 }
 
-// NormalizeMCPApprovalMode returns the conservative effective MCP approval
-// mode. Empty keeps annotation-driven behavior; unknown values force a prompt.
-func NormalizeMCPApprovalMode(mode string) string {
-	switch strings.ToLower(strings.TrimSpace(mode)) {
-	case "":
-		return MCPApprovalAuto
-	case MCPApprovalAuto, MCPApprovalPrompt, MCPApprovalWrites, MCPApprovalApprove:
-		return strings.ToLower(strings.TrimSpace(mode))
-	default:
-		return MCPApprovalPrompt
-	}
+// HasNonDestructiveMCPExecutionIntent reports whether this call entered through
+// the Planner non-destructive MCP lane.
+func HasNonDestructiveMCPExecutionIntent(ctx context.Context) bool {
+	intent, _ := ctx.Value(nonDestructiveMCPExecutionIntentKey{}).(bool)
+	return intent
 }
 
-// NormalizeMCPApprovalReviewer returns the configured reviewer. Empty preserves
-// legacy behavior at the controller boundary; unknown values fail back to the
-// human reviewer rather than silently enabling automatic review.
-func NormalizeMCPApprovalReviewer(reviewer string) string {
-	switch strings.ToLower(strings.TrimSpace(reviewer)) {
-	case "":
-		return ""
-	case MCPApprovalReviewerAutoReview, "guardian":
-		return MCPApprovalReviewerAutoReview
-	default:
-		return MCPApprovalReviewerUser
-	}
+// WithPlanReplacementAuthorization marks one reviewed todo_write invocation as
+// allowed to replace its current step. Callers must not reuse the returned
+// context for unrelated tool calls.
+func WithPlanReplacementAuthorization(ctx context.Context) context.Context {
+	return context.WithValue(ctx, planReplacementAuthorizationKey{}, true)
+}
+
+// HasPlanReplacementAuthorization reports whether the host approved replacing
+// the active step for this exact tool invocation.
+func HasPlanReplacementAuthorization(ctx context.Context) bool {
+	authorized, _ := ctx.Value(planReplacementAuthorizationKey{}).(bool)
+	return authorized
 }
 
 // SnipHint describes how context maintenance should shorten a stale, oversized
@@ -384,6 +381,124 @@ func (r *Registry) Get(name string) (Tool, bool) {
 
 	t, ok := r.tools[name]
 	return t, ok
+}
+
+// MCPBindings returns live MCP capability bindings in canonical-name order.
+func (r *Registry) MCPBindings() []MCPBinding {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	out := make([]MCPBinding, 0, len(r.tools))
+	for _, t := range r.tools {
+		if b, ok := mcpBinding(t); ok {
+			out = append(out, b)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].CallableName < out[j].CallableName })
+	return out
+}
+
+// ResolveCall resolves an exact provider-visible name or a unique portable MCP
+// reference. Exact names always win. Ambiguous aliases return their canonical
+// candidates and are never executed.
+func (r *Registry) ResolveCall(name string) (resolved Tool, canonical string, candidates []string) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	if t, ok := r.tools[name]; ok {
+		return t, name, nil
+	}
+	matches := map[string]Tool{}
+	for canonicalName, t := range r.tools {
+		b, ok := mcpBinding(t)
+		if !ok {
+			continue
+		}
+		for _, alias := range mcpBindingAliases(b) {
+			if name == alias {
+				matches[canonicalName] = t
+				break
+			}
+		}
+	}
+	if len(matches) == 1 {
+		for canonicalName, t := range matches {
+			return t, canonicalName, nil
+		}
+	}
+	if len(matches) > 1 {
+		candidates = make([]string, 0, len(matches))
+		for canonicalName := range matches {
+			candidates = append(candidates, canonicalName)
+		}
+		sort.Strings(candidates)
+	}
+	return nil, "", candidates
+}
+
+func mcpBinding(t Tool) (MCPBinding, bool) {
+	meta, ok := t.(MCPMetadata)
+	if !ok {
+		return MCPBinding{}, false
+	}
+	server := strings.TrimSpace(meta.MCPServerName())
+	raw := strings.TrimSpace(meta.MCPRawToolName())
+	if server == "" || raw == "" {
+		return MCPBinding{}, false
+	}
+	visible := raw
+	if v, ok := t.(MCPVisibleMetadata); ok && strings.TrimSpace(v.MCPVisibleToolName()) != "" {
+		visible = strings.TrimSpace(v.MCPVisibleToolName())
+	}
+	pkg := ""
+	if p, ok := t.(MCPPackageMetadata); ok {
+		pkg = strings.TrimSpace(p.MCPPackageName())
+	}
+	return MCPBinding{
+		Package:      pkg,
+		Server:       server,
+		RawName:      raw,
+		VisibleName:  visible,
+		CallableName: t.Name(),
+		CapabilityID: "mcp-tool:" + server + "/" + raw,
+	}, true
+}
+
+func mcpBindingAliases(b MCPBinding) []string {
+	aliases := []string{
+		b.RawName,
+		b.VisibleName,
+		b.Server + "/" + b.RawName,
+		b.Server + "/" + b.VisibleName,
+		b.CapabilityID,
+		"mcp-tool:" + b.Server + "/" + b.VisibleName,
+		"mcp__" + portableMCPPart(b.Server) + "__" + portableMCPPart(b.RawName),
+		"mcp__" + portableMCPPart(b.Server) + "__" + portableMCPPart(b.VisibleName),
+	}
+	if b.Package != "" {
+		prefix := "mcp__plugin_" + portableMCPPart(b.Package) + "_" + portableMCPPart(b.Server) + "__"
+		aliases = append(aliases, prefix+portableMCPPart(b.RawName), prefix+portableMCPPart(b.VisibleName))
+	}
+	return aliases
+}
+
+// MCPBindingAliases returns accepted portable references for a binding. The
+// canonical provider-visible name remains MCPBinding.CallableName.
+func MCPBindingAliases(b MCPBinding) []string {
+	return append([]string(nil), mcpBindingAliases(b)...)
+}
+
+func portableMCPPart(s string) string {
+	var b strings.Builder
+	for _, r := range s {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9', r == '_', r == '-':
+			b.WriteRune(r)
+		default:
+			b.WriteByte('_')
+		}
+	}
+	return b.String()
 }
 
 // Len returns the number of registered tools.

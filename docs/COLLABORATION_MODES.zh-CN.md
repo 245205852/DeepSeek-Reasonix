@@ -67,8 +67,8 @@ Goal 模式会把这些部分当作任务边界；除非下一步涉及不可逆
 - 如果目标过大或边界不清，Reasonix 可能需要更多探索轮次，也会消耗更多 token。
 - AutoResearch 是 Goal 的自动持久化策略，不是独立的后台 daemon，也不是 Settings 里的全局 skill。
   可以用 `/goal --research <目标>` 强制启用，或用 `/goal --simple <目标>` 强制保持轻量 Goal。
-- 普通聊天里命中非常强的长周期信号时，Reasonix 会自动升级为 Goal + AutoResearch；弱表达
-  如“长期来看”“优化一下”“研究一下”不会触发。
+- 普通聊天不会因为目标文本看起来复杂或长周期而自动切换模式。只有明确选择“目标”或使用
+  `/goal` 后，Reasonix 才会进入 Goal，并在 Goal 内判断是否采用 AutoResearch。
 - 目标模式和计划模式是同一协作轴。切到计划模式时，会退出目标草稿/目标显示状态；运行模式不会因此改变。
 
 ## 运行模式
@@ -98,7 +98,7 @@ Balanced 是默认档，对应旧版本持久化值 `full`。它一次性提供�
 
 ### 交付优先 · 完整验证（Delivery）
 
-Delivery 使用与 Balanced 相同的完整工具面，额外增加稳定的能力代理工具 `use_capability`（inspect/call/decline，用于按需调用含 `auto_start=false` 的 MCP，且不把动态工具写入主 Registry），并增加稳定的交付合约：明确验收标准；条件允许时先复现；检查项目规则和相关代码；修复根因；运行聚焦验证；复审 diff 与相邻行为；没有证据时不宣称成功，并明确标注未验证项或假设。
+Delivery 使用与 Balanced 相同的完整工具面，额外增加稳定的能力代理工具 `use_capability`（list/inspect/call/decline，用于按需调用含 `auto_start=false` 的 MCP，且不把动态工具写入主 Registry），并增加稳定的交付合约：明确验收标准；条件允许时先复现；检查项目规则和相关代码；修复根因；运行聚焦验证；复审 diff 与相邻行为；没有证据时不宣称成功，并明确标注未验证项或假设。配置了独立 `planner_model` 时，Balanced 会为 Planner 与 Executor 分别挂载固定代理 frontend（ledger/audit 隔离、Host 共享），使规划阶段发现的 MCP capability 能在 handoff 后按同一 ID 直接执行。
 
 - 适合编码、修 bug、跨文件实现和需要可靠交付证据的任务。
 - 通常会使用更多模型调用和 token，耗时也可能更长。
@@ -107,7 +107,7 @@ Delivery 使用与 Balanced 相同的完整工具面，额外增加稳定的能�
 - 对明确要求实现、修复或修改的任务，如果没有观察到真实变更，宿主会拒绝“已经完成”的纯文本声明；只读分析仍可凭读取/检查证据正常结束。
 - Skill/MCP 的 `require`/`prefer` 路由由宿主门禁强制：`require` 必须成功调用（宿主确认不可用时可带真实 blocker 结束），`prefer` 缺失会提醒一次，之后必须调用或 `use_capability(action="decline")` 提交非空理由。
 - 中/高风险改动会强制运行结构化 `review` / `security_review`（通过审查子 Agent 的 `review_report`）；`task`/`run_skill` 等元工具本身不算 mutation，子 Agent 的真实写入会回传父级证据账本。
-- Delivery 的 system contract 与 `use_capability` Schema 是每个该 Profile 会话固定的 provider 前缀；按需连接 MCP 不会改变主 Registry Schema。Balanced 同样在同版本、同配置下保持提示词与工具 Schema 稳定。升级到本版本或从其他 Profile 切换过来会产生一次新的缓存前缀。
+- Delivery 的 system contract 与 `use_capability` Schema 是每个该 Profile 会话固定的 provider 前缀；按需连接 MCP 不会改变该固定代理 Schema。Balanced 双模型中的 Planner 代理同样稳定；Executor 刻意保留直接 `mcp__*` 工具，因此这些直接工具安装、连接或刷新时，Executor 的整体 provider 前缀仍可能变化。升级到本版本或从其他 Profile 切换过来会产生一次新的缓存前缀。
 
 ### 怎么选择
 

@@ -3,6 +3,7 @@ import { Check, Copy, Images, LockKeyhole, Minus, Plus, RotateCcw } from "lucide
 import { app } from "../lib/bridge";
 import { useT, type DictKey } from "../lib/i18n";
 import { THEME_STYLES, type Theme, type ThemeStyle, isThemeStyle } from "../lib/theme";
+import type { ConversationWidth } from "../lib/conversationWidth";
 import { TEXT_SIZES, type TextSize } from "../lib/textSize";
 import { type FontFamily, type MonoFontFamily } from "../lib/fontFamily";
 import { DEFAULT_ZOOM, MIN_ZOOM, MAX_ZOOM, ZOOM_STEP, zoomToPercent, type ZoomLevel } from "../lib/dpiScale";
@@ -12,6 +13,7 @@ import {
   activateBaseStyle,
   applyExperienceToDOM,
   cancelGlobalPreview,
+  configuredBaseStyleForSync,
   disableThemePack,
   loadThemeExperience,
   restoreGraphiteAppearance,
@@ -83,6 +85,7 @@ function monoFontFamilyLabel(font: MonoFontFamily, t: ReturnType<typeof useT>): 
 export function AppearanceOverview({
   theme,
   themeStyle,
+  conversationWidth,
   textSize,
   showDisplayZoom,
   zoomPct,
@@ -92,6 +95,7 @@ export function AppearanceOverview({
   customMonoFontName,
   onTheme,
   onThemeStyle,
+  onConversationWidth,
   onTextSize,
   onRestartZoom,
   onFontFamily,
@@ -101,6 +105,7 @@ export function AppearanceOverview({
 }: {
   theme: Theme;
   themeStyle: ThemeStyle;
+  conversationWidth: ConversationWidth;
   textSize: TextSize;
   showDisplayZoom: boolean;
   zoomPct: number;
@@ -110,6 +115,7 @@ export function AppearanceOverview({
   customMonoFontName: string;
   onTheme: (t: Theme) => void;
   onThemeStyle: (style: ThemeStyle) => void;
+  onConversationWidth: (width: ConversationWidth) => void;
   onTextSize: (size: TextSize) => void;
   onRestartZoom: (zoom: ZoomLevel) => Promise<void>;
   onFontFamily: (font: FontFamily) => void;
@@ -258,10 +264,11 @@ export function AppearanceOverview({
         initialCreateBaseStyle={galleryIntent === "copy-base" ? baseStyle : undefined}
         onExperienceChange={(exp) => {
           setExperience(exp);
-          if (isThemeStyle(exp.baseStyle)) onThemeStyle(exp.baseStyle);
-          if (exp.themeMode === "auto" || exp.themeMode === "light" || exp.themeMode === "dark") {
-            onTheme(exp.themeMode);
-          }
+          // Keep the configured base style separate from an active pack's live
+          // effective style. applyExperienceToDOM already owns the pack override;
+          // mirroring it through onThemeStyle would corrupt the restore snapshot.
+          const configuredStyle = configuredBaseStyleForSync(exp);
+          if (configuredStyle) onThemeStyle(configuredStyle);
         }}
         onBack={() => {
           cancelGlobalPreview();
@@ -378,6 +385,36 @@ export function AppearanceOverview({
                 {t("settings.themeGallery.baseLockedByPack")}
               </span>
             ) : null}
+          </div>
+        </div>
+
+        <div className="appearance-overview__row">
+          <div id="appearance-conversation-width-label" className="appearance-overview__row-label">
+            {t("settings.conversationWidth")}
+          </div>
+          <div
+            className="set-seg appearance-overview__segmented"
+            role="radiogroup"
+            aria-labelledby="appearance-conversation-width-label"
+          >
+            <button
+              type="button"
+              role="radio"
+              aria-checked={conversationWidth === "standard"}
+              className={`set-seg__btn${conversationWidth === "standard" ? " set-seg__btn--on" : ""}`}
+              onClick={() => onConversationWidth("standard")}
+            >
+              {t("settings.conversationWidthStandard")} (960px)
+            </button>
+            <button
+              type="button"
+              role="radio"
+              aria-checked={conversationWidth === "full"}
+              className={`set-seg__btn${conversationWidth === "full" ? " set-seg__btn--on" : ""}`}
+              onClick={() => onConversationWidth("full")}
+            >
+              {t("settings.conversationWidthFull")} (90%)
+            </button>
           </div>
         </div>
 

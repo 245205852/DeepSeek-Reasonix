@@ -358,6 +358,31 @@ func TestBuildRequestThinking(t *testing.T) {
 	}
 }
 
+func TestBuildRequestOmitsResolvedToolCallMetadata(t *testing.T) {
+	readOnly := false
+	c := &client{model: "claude-opus-4-8"}
+	req := c.buildRequest(provider.Request{Messages: []provider.Message{{
+		Role: provider.RoleAssistant,
+		ToolCalls: []provider.ToolCall{{
+			ID: "call_1", Name: "use_capability", Arguments: `{}`,
+			ResolvedName: "mcp__db__write", CapabilityID: "mcp-tool:db/write",
+			ResolvedReadOnly: &readOnly,
+		}},
+	}}})
+	b, err := json.Marshal(req.Messages)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	for _, forbidden := range []string{"resolved_name", "resolvedName", "capability_id", "capabilityId", "resolved_read_only", "resolvedReadOnly", "mcp__db__write"} {
+		if strings.Contains(string(b), forbidden) {
+			t.Fatalf("provider request leaked local tool metadata %q: %s", forbidden, b)
+		}
+	}
+	if !strings.Contains(string(b), `"name":"use_capability"`) {
+		t.Fatalf("provider request lost stable proxy name: %s", b)
+	}
+}
+
 func TestBuildRequestThinkingEnabledGateway(t *testing.T) {
 	c := &client{model: "LongCat-2.0", thinking: "enabled", effort: "disabled"}
 	r := c.buildRequest(provider.Request{

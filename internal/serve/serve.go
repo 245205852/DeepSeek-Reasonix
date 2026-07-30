@@ -13,6 +13,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -94,6 +95,16 @@ func (s *Server) ctl() control.SessionAPI {
 // Call it before serving; a nil keeper leaves lease gating off.
 func (s *Server) SetSessionLeases(k *control.SessionLeaseKeeper) {
 	s.leases = k
+	if ctrl, ok := s.ctl().(*control.Controller); ok {
+		ctrl.SetOnSessionRecovered(sessionLeaseRecoveryHandler(k))
+	}
+}
+
+func sessionLeaseRecoveryHandler(k *control.SessionLeaseKeeper) func(control.SessionRecoveryInfo) error {
+	if k == nil {
+		return nil
+	}
+	return k.HandleSessionRecovered
 }
 
 // rebindSessionLease moves the server's session lease to path. A nil keeper
@@ -175,8 +186,8 @@ func (s *Server) switchModel(ctx context.Context, ref string) error {
 
 	// Snapshot the current controller under a short read of s.mu only.
 	cur := s.ctl()
-	if cur.Running() {
-		return fmt.Errorf("cannot switch model while a turn is running")
+	if controllerHasActiveRuntimeWork(cur) {
+		return fmt.Errorf("cannot switch model while active work or background jobs are running")
 	}
 
 	// Off-lock: snapshot, carry history, and build the replacement. None of these
@@ -227,6 +238,20 @@ func (s *Server) switchModel(ctx context.Context, ref string) error {
 		}
 	}
 
+	// Acquire the replacement controller's actual post-snapshot path before
+	// publishing it. Its initial snapshot can itself recover onto a new branch;
+	// binding the pre-snapshot newPath would leave that branch unguarded.
+	activePath := newCtrl.SessionPath()
+	if err := s.rebindSessionLease(activePath); err != nil {
+		newCtrl.Close()
+		if errors.Is(err, agent.ErrSessionLeaseHeld) {
+			return fmt.Errorf("switch model: %s", sessionInUseError(err))
+		}
+		slog.Error("serve: bind replacement session lease", "err", err)
+		return fmt.Errorf("switch model: unable to secure replacement session")
+	}
+	newCtrl.SetOnSessionRecovered(sessionLeaseRecoveryHandler(s.leases))
+
 	// Publish the swap under a short write lock. bindMu already serializes
 	// switches — today the only writer of s.ctrl — so the identity re-check is
 	// defensive: it keeps a future controller-swapping path (or a test doing so)
@@ -235,20 +260,16 @@ func (s *Server) switchModel(ctx context.Context, ref string) error {
 	s.mu.Lock()
 	if s.ctrl != cur {
 		s.mu.Unlock()
+		if restoreErr := s.rebindSessionLease(cur.SessionPath()); restoreErr != nil {
+			newCtrl.Close()
+			slog.Error("serve: restore outgoing session lease after aborted model switch", "err", restoreErr)
+			return fmt.Errorf("switch model: session changed during switch; unable to restore outgoing session ownership")
+		}
 		newCtrl.Close()
 		return fmt.Errorf("switch model: session changed during switch")
 	}
 	s.ctrl = newCtrl
 	s.mu.Unlock()
-
-	// The lease follows the active session file. Rebind is a no-op for the
-	// common carried case (newPath == held path); it moves when a previously
-	// file-less session got a fresh path here, or when the pre-switch snapshot
-	// recovered onto a recovery branch. Both targets are fresh files created
-	// by this process, so failure is theoretical.
-	if err := s.rebindSessionLease(newPath); err != nil {
-		slog.Warn("serve: session lease after model switch", "err", err)
-	}
 
 	// Off-lock: tear down the old controller. Close can block up to 15s.
 	cur.Close()
@@ -272,8 +293,8 @@ func (s *Server) build(ctx context.Context, ref string) (*control.Controller, er
 // rebuilds via switchModel (which serializes on bindMu).
 func (s *Server) switchEffort(ctx context.Context, level string) error {
 	cur := s.ctl()
-	if cur.Running() {
-		return fmt.Errorf("cannot change effort while a turn is running")
+	if controllerHasActiveRuntimeWork(cur) {
+		return fmt.Errorf("cannot change effort while active work or background jobs are running")
 	}
 	cfg, err := config.Load()
 	if err != nil {
@@ -312,6 +333,14 @@ func (s *Server) switchEffort(ctx context.Context, level string) error {
 		return err
 	}
 	return s.switchModel(ctx, entry.Name+"/"+entry.Model)
+}
+
+func controllerHasActiveRuntimeWork(ctrl control.SessionAPI) bool {
+	if ctrl == nil {
+		return false
+	}
+	status := ctrl.RuntimeStatus()
+	return status.Running || status.PendingPrompt || status.BackgroundJobs > 0
 }
 
 // applyEffortEdit writes effort onto entry within edit, mirroring CLI/desktop
@@ -414,19 +443,32 @@ func (s *Server) Run(addr string) error {
 // the provided context and drains active connections for up to 10 seconds
 // before returning.
 func (s *Server) RunGraceful(ctx context.Context, addr string) error {
+	ln, err := net.Listen("tcp", addr)
+	if err != nil {
+		return err
+	}
+	return s.RunGracefulListener(ctx, ln)
+}
+
+// RunGracefulListener is RunGraceful over a caller-supplied listener. Callers
+// that need the real bound address (e.g. --addr 127.0.0.1:0 with --port-file)
+// listen first, record ln.Addr(), then hand the listener here.
+func (s *Server) RunGracefulListener(ctx context.Context, ln net.Listener) error {
 	s.ctl().EnableInteractiveApproval()
 	srv := &http.Server{
-		Addr:              addr,
 		Handler:           s.Handler(),
 		ReadHeaderTimeout: 10 * time.Second,
 		IdleTimeout:       120 * time.Second,
 	}
 	errCh := make(chan error, 1)
 	go func() {
-		errCh <- srv.ListenAndServe()
+		errCh <- srv.Serve(ln)
 	}()
 	select {
 	case err := <-errCh:
+		if errors.Is(err, http.ErrServerClosed) {
+			return nil
+		}
 		return err
 	case <-ctx.Done():
 		slog.Info("serve: shutting down gracefully")
@@ -435,7 +477,11 @@ func (s *Server) RunGraceful(ctx context.Context, addr string) error {
 		if err := srv.Shutdown(shutdownCtx); err != nil {
 			slog.Warn("serve: graceful shutdown failed", "err", err)
 		}
-		return <-errCh
+		err := <-errCh
+		if errors.Is(err, http.ErrServerClosed) {
+			return nil
+		}
+		return err
 	}
 }
 
@@ -1144,7 +1190,7 @@ func (s *Server) status(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, sess)
 }
 
-const titlePrompt = `Generate a very short title (3-5 words max) for this conversation based on the user's first message. Reply with ONLY the title, no quotes, no punctuation at the end.`
+const titlePrompt = `Generate a very short title (3-5 words max) for this conversation based on the user's first message. Use the same language as the user's message. Reply with ONLY the title, no quotes, no punctuation at the end.`
 
 // generateTitle calls a lightweight LLM to produce a short session title.
 // Returns empty string on any error — callers should fall back to a preview.

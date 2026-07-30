@@ -43,15 +43,27 @@ const (
 )
 
 var (
-	sessionSaveLocks            sync.Map
+	sessionSaveLocks sync.Map
+	// sessionFileLockWait bounds cross-process save-lock acquisition. Session
+	// leases normally prevent competing writers, but CLI/legacy writers and a
+	// stalled process can still hold the compatibility .lock file. Navigation
+	// and desktop shutdown snapshot synchronously; waiting forever here wedges
+	// the UI and keeps the session lease (and WebView) alive indefinitely.
+	// Package vars let focused tests shorten the wait without slowing the suite.
+	sessionFileLockWait         = 5 * time.Second
+	sessionFileLockPollInterval = 25 * time.Millisecond
 	ErrSessionSnapshotConflict  = errors.New("session snapshot conflicts with newer transcript")
 	ErrSessionRecoveryNotNeeded = errors.New("session recovery not needed")
+	// ErrSessionFileLockHeld reports that another process kept the
+	// compatibility save lock for the full bounded acquisition window. Callers
+	// that are about to terminate can use this sentinel to persist a recovery
+	// branch without waiting on the same stalled file again.
+	ErrSessionFileLockHeld = errors.New("session file lock held")
 	// ErrSessionRecoveryDepthExceeded refuses a recovery fork whose parent is
 	// already SessionRecoveryMaxDepth recovery forks deep. A chain that deep
 	// means saves keep conflicting on branches this runtime itself created;
 	// forking further multiplies session files without converging (#5993).
 	ErrSessionRecoveryDepthExceeded = errors.New("session recovery chain depth exceeded")
-	errSessionFileLockHeld          = errors.New("session file lock held")
 	sessionWriterID                 = newSessionWriterID()
 )
 
@@ -560,6 +572,24 @@ func snapshotConflict(path string, existing, next []provider.Message, baseRevisi
 }
 
 func (s *Session) SaveRecoveryBranch(opts RecoveryBranchOptions) (RecoveryBranchInfo, error) {
+	return s.saveRecoveryBranch(opts, false)
+}
+
+// SaveShutdownRecoveryBranch persists the current transcript to a distinct
+// recovery branch after the normal shutdown snapshot failed with
+// ErrSessionFileLockHeld. It deliberately does not re-lock or inspect the
+// original session file: doing so would repeat the same bounded timeout and
+// let process teardown discard the only remaining in-memory copy.
+//
+// The recovery filename includes this process writer ID, so a stalled writer
+// on the digest-deduplicated conflict path cannot block the emergency copy too.
+// The result still uses the normal session, event-log, and branch-meta formats
+// and is therefore discoverable and resumable through existing flows.
+func (s *Session) SaveShutdownRecoveryBranch(opts RecoveryBranchOptions) (RecoveryBranchInfo, error) {
+	return s.saveRecoveryBranch(opts, true)
+}
+
+func (s *Session) saveRecoveryBranch(opts RecoveryBranchOptions, shutdown bool) (RecoveryBranchInfo, error) {
 	originalPath := strings.TrimSpace(opts.OriginalPath)
 	if originalPath == "" {
 		return RecoveryBranchInfo{}, fmt.Errorf("empty original session path")
@@ -575,44 +605,46 @@ func (s *Session) SaveRecoveryBranch(opts RecoveryBranchOptions) (RecoveryBranch
 	}
 	digestText := digestString(digest)
 
-	unlockOriginal := lockSessionSavePath(originalPath)
-	unlockOriginalFile, lockErr := lockSessionFile(originalPath)
-	if lockErr != nil {
+	if !shutdown {
+		unlockOriginal := lockSessionSavePath(originalPath)
+		unlockOriginalFile, lockErr := lockSessionFile(originalPath)
+		if lockErr != nil {
+			unlockOriginal()
+			return RecoveryBranchInfo{}, fmt.Errorf("lock original session file: %w", lockErr)
+		}
+		current, loadErr := loadSessionUnlocked(originalPath)
+		unlockOriginalFile()
 		unlockOriginal()
-		return RecoveryBranchInfo{}, fmt.Errorf("lock original session file: %w", lockErr)
-	}
-	current, err := loadSessionUnlocked(originalPath)
-	unlockOriginalFile()
-	unlockOriginal()
-	if err != nil && !os.IsNotExist(err) {
-		return RecoveryBranchInfo{}, err
-	}
-	if err == nil && current != nil {
-		existing := current.Snapshot()
-		existingDigest, digestErr := digestSessionMessages(existing)
-		if digestErr != nil {
-			return RecoveryBranchInfo{}, digestErr
+		if loadErr != nil && !os.IsNotExist(loadErr) {
+			return RecoveryBranchInfo{}, loadErr
 		}
-		covered := bytes.Equal(existingDigest[:], digest[:]) ||
-			messagesHavePrefix(existing, msgs) ||
-			messagesHavePrefixWithCompatibleSystem(existing, msgs)
-		if !covered && current.normalizedDirty && len(current.rawMessages) > 0 {
-			// Judge coverage against the pre-repair transcript too, for the
-			// same reason as checkSnapshotWrite: load-time normalization can
-			// reshape what is actually stored, and a recovery fork is only
-			// warranted when the stored bytes themselves fail to cover this
-			// snapshot.
-			raw := current.rawMessages
-			rawDigest, rawErr := digestSessionMessages(raw)
-			if rawErr != nil {
-				return RecoveryBranchInfo{}, rawErr
+		if loadErr == nil && current != nil {
+			existing := current.Snapshot()
+			existingDigest, digestErr := digestSessionMessages(existing)
+			if digestErr != nil {
+				return RecoveryBranchInfo{}, digestErr
 			}
-			covered = bytes.Equal(rawDigest[:], digest[:]) ||
-				messagesHavePrefix(raw, msgs) ||
-				messagesHavePrefixWithCompatibleSystem(raw, msgs)
-		}
-		if covered {
-			return RecoveryBranchInfo{}, ErrSessionRecoveryNotNeeded
+			covered := bytes.Equal(existingDigest[:], digest[:]) ||
+				messagesHavePrefix(existing, msgs) ||
+				messagesHavePrefixWithCompatibleSystem(existing, msgs)
+			if !covered && current.normalizedDirty && len(current.rawMessages) > 0 {
+				// Judge coverage against the pre-repair transcript too, for the
+				// same reason as checkSnapshotWrite: load-time normalization can
+				// reshape what is actually stored, and a recovery fork is only
+				// warranted when the stored bytes themselves fail to cover this
+				// snapshot.
+				raw := current.rawMessages
+				rawDigest, rawErr := digestSessionMessages(raw)
+				if rawErr != nil {
+					return RecoveryBranchInfo{}, rawErr
+				}
+				covered = bytes.Equal(rawDigest[:], digest[:]) ||
+					messagesHavePrefix(raw, msgs) ||
+					messagesHavePrefixWithCompatibleSystem(raw, msgs)
+			}
+			if covered {
+				return RecoveryBranchInfo{}, ErrSessionRecoveryNotNeeded
+			}
 		}
 	}
 
@@ -627,12 +659,23 @@ func (s *Session) SaveRecoveryBranch(opts RecoveryBranchOptions) (RecoveryBranch
 			parentDepth = 1
 		}
 	}
-	if parentDepth >= SessionRecoveryMaxDepth {
+	if parentDepth >= SessionRecoveryMaxDepth && !shutdown {
 		return RecoveryBranchInfo{}, fmt.Errorf("%w: %s is already %d recovery forks deep",
 			ErrSessionRecoveryDepthExceeded, originalPath, parentDepth)
 	}
+	recoveryDepth := parentDepth + 1
+	if recoveryDepth > SessionRecoveryMaxDepth {
+		// A shutdown copy is allowed even when the ordinary conflict chain is
+		// capped because losing the only in-memory transcript is worse than one
+		// additional branch. Keep the saturated depth so later ordinary saves
+		// still enforce the existing anti-cascade policy.
+		recoveryDepth = SessionRecoveryMaxDepth
+	}
 
 	recoveryPath := recoverySessionPath(originalPath, digest)
+	if shutdown {
+		recoveryPath = shutdownRecoverySessionPath(originalPath, digest)
+	}
 	unlockRecovery := lockSessionSavePath(recoveryPath)
 	defer unlockRecovery()
 	unlockRecoveryFile, err := lockSessionFile(recoveryPath)
@@ -646,7 +689,7 @@ func (s *Session) SaveRecoveryBranch(opts RecoveryBranchOptions) (RecoveryBranch
 			return RecoveryBranchInfo{}, digestErr
 		}
 		if bytes.Equal(existingDigest[:], digest[:]) {
-			meta, err := s.saveRecoveryBranchMeta(recoveryPath, opts, preview, turns, digestText, parentDepth+1)
+			meta, err := s.saveRecoveryBranchMeta(recoveryPath, opts, preview, turns, digestText, recoveryDepth)
 			if err != nil {
 				return RecoveryBranchInfo{}, err
 			}
@@ -675,7 +718,7 @@ func (s *Session) SaveRecoveryBranch(opts RecoveryBranchOptions) (RecoveryBranch
 	if err := writeSessionMessages(recoveryPath, msgs); err != nil {
 		return RecoveryBranchInfo{}, err
 	}
-	meta, err := s.saveRecoveryBranchMeta(recoveryPath, opts, preview, turns, digestText, parentDepth+1)
+	meta, err := s.saveRecoveryBranchMeta(recoveryPath, opts, preview, turns, digestText, recoveryDepth)
 	if err != nil {
 		return RecoveryBranchInfo{}, err
 	}
@@ -734,6 +777,13 @@ func (s *Session) saveRecoveryBranchMeta(path string, opts RecoveryBranchOptions
 func recoverySessionPath(originalPath string, digest [sha256.Size]byte) string {
 	parent := recoveryParentStem(BranchID(originalPath))
 	return filepath.Join(filepath.Dir(originalPath), fmt.Sprintf("%s-recovery-%x.jsonl", parent, digest[:8]))
+}
+
+func shutdownRecoverySessionPath(originalPath string, digest [sha256.Size]byte) string {
+	parent := recoveryParentStem(BranchID(originalPath))
+	writerDigest := sha256.Sum256([]byte(SessionWriterID()))
+	return filepath.Join(filepath.Dir(originalPath),
+		fmt.Sprintf("%s-recovery-%x-%x.jsonl", parent, digest[:8], writerDigest[:6]))
 }
 
 func recoveryParentStem(parent string) string {
@@ -1132,6 +1182,37 @@ func lockSessionSavePath(path string) func() {
 	return mu.Unlock
 }
 
+// lockSessionFile waits briefly for the cross-process compatibility save lock.
+// A short overlap with a legitimate writer is allowed to settle, but an
+// stalled or indefinitely held lock fails the save instead of freezing tab
+// switching or application shutdown. The caller keeps its in-memory transcript
+// and can retry through the existing autosave/recovery paths.
+func lockSessionFile(path string) (func(), error) {
+	wait := sessionFileLockWait
+	poll := sessionFileLockPollInterval
+	if poll <= 0 {
+		poll = time.Millisecond
+	}
+	deadline := time.Now().Add(wait)
+	for {
+		unlock, err := tryLockSessionFile(path)
+		if err == nil {
+			return unlock, nil
+		}
+		if !errors.Is(err, ErrSessionFileLockHeld) {
+			return nil, err
+		}
+		remaining := time.Until(deadline)
+		if wait <= 0 || remaining <= 0 {
+			return nil, ErrSessionFileLockHeld
+		}
+		if poll > remaining {
+			poll = remaining
+		}
+		time.Sleep(poll)
+	}
+}
+
 // LockSessionMetaPath serializes a read-modify-write cycle on a session's
 // sidecar metadata with every other writer in this process (Save, the
 // UpdateSessionMeta family). Callers outside this package that load, mutate,
@@ -1145,10 +1226,41 @@ func canonicalSessionSavePath(path string) string {
 	if abs, err := filepath.Abs(key); err == nil {
 		key = abs
 	}
+	// Resolve physical identity, not just spelling. Otherwise a symlink or
+	// junction alias can acquire a second sidecar lock for the same transcript.
+	key = resolvePathThroughExistingAncestor(key)
 	if runtime.GOOS == "windows" {
+		if strings.HasPrefix(strings.ToUpper(key), `\\?\UNC\`) {
+			key = `\\` + key[len(`\\?\UNC\`):]
+		} else {
+			key = strings.TrimPrefix(key, `\\?\`)
+		}
 		key = strings.ToLower(key)
 	}
 	return key
+}
+
+// resolvePathThroughExistingAncestor resolves the deepest existing ancestor
+// and appends every still-missing component. Fresh sessions can be nested under
+// directories that have not been created yet; resolving only the immediate
+// parent leaves aliases above that directory split into different lease keys.
+func resolvePathThroughExistingAncestor(path string) string {
+	current := filepath.Clean(path)
+	missing := make([]string, 0, 4)
+	for {
+		if resolved, err := filepath.EvalSymlinks(current); err == nil {
+			for i := len(missing) - 1; i >= 0; i-- {
+				resolved = filepath.Join(resolved, missing[i])
+			}
+			return resolved
+		}
+		parent := filepath.Dir(current)
+		if parent == current {
+			return path
+		}
+		missing = append(missing, filepath.Base(current))
+		current = parent
+	}
 }
 
 // CanonicalSessionPath is the identity key of a session path: cleaned,
@@ -1196,6 +1308,7 @@ func loadSessionUnlocked(path string) (*Session, error) {
 	// slice headers: when NormalizeSession allocated a new backing array, the
 	// session is marked dirty so the next Save persists the fix.
 	normalized := NormalizeSession(s.Messages)
+	normalized = migrateLegacyProviderContent(normalized)
 	if len(normalized) != len(s.Messages) || (len(s.Messages) > 0 && &normalized[0] != &s.Messages[0]) {
 		s.normalizedDirty = true
 		// Keep the pre-repair transcript: checkSnapshotWrite must be able to
@@ -1464,7 +1577,7 @@ func removeStaleSessionLockSidecar(basePath, sidecarPath string) error {
 	}
 	lock, err := tryTakeSessionLockFile(sidecarPath)
 	if err != nil {
-		if errors.Is(err, errSessionFileLockHeld) {
+		if errors.Is(err, ErrSessionFileLockHeld) {
 			return nil
 		}
 		return err
@@ -1485,7 +1598,7 @@ func removeStaleSessionLeaseLockSidecar(basePath, sidecarPath string) error {
 	}
 	lock, err := tryTakeSessionLockFile(sidecarPath)
 	if err != nil {
-		if errors.Is(err, errSessionFileLockHeld) {
+		if errors.Is(err, ErrSessionFileLockHeld) {
 			return nil
 		}
 		return err
@@ -1629,7 +1742,7 @@ func renameOverlongSession(oldPath string) (string, error) {
 	if sessionLockSidecarFits(oldPath) {
 		lock, err := tryTakeSessionLockFile(oldPath + ".lock")
 		if err != nil {
-			if errors.Is(err, errSessionFileLockHeld) {
+			if errors.Is(err, ErrSessionFileLockHeld) {
 				return "", nil
 			}
 			return "", err
@@ -1694,6 +1807,7 @@ func migrateSessionSidecars(oldPath, newPath, newID string) error {
 		{store.SessionEventLogDamaged(oldPath), store.SessionEventLogDamaged(newPath)},
 		{store.SessionEventIndex(oldPath), store.SessionEventIndex(newPath)},
 		{store.SessionConflictLog(oldPath), store.SessionConflictLog(newPath)},
+		{store.SessionRecoveryState(oldPath), store.SessionRecoveryState(newPath)},
 		{store.SessionCheckpointDir(oldPath), store.SessionCheckpointDir(newPath)},
 		{store.SessionJobsDir(oldPath), store.SessionJobsDir(newPath)},
 	} {
@@ -1894,10 +2008,10 @@ func SessionPreviewFromMessages(msgs []provider.Message) (string, int) {
 	first := ""
 	turns := 0
 	for _, m := range msgs {
-		if m.Role == provider.RoleUser && IsUserAuthoredTurn(m.Content) {
+		if m.Role == provider.RoleUser && IsUserAuthoredTurn(UserMessageText(m)) {
 			turns++
 			if first == "" {
-				first = truncatePreview(UserPreviewText(m.Content))
+				first = truncatePreview(UserMessageText(m))
 			}
 		}
 	}
@@ -1915,10 +2029,10 @@ func previewSession(path string) (string, int) {
 	first := ""
 	turns := 0
 	for _, m := range msgs {
-		if m.Role == provider.RoleUser && IsUserAuthoredTurn(m.Content) {
+		if m.Role == provider.RoleUser && IsUserAuthoredTurn(UserMessageText(m)) {
 			turns++
 			if first == "" {
-				first = truncatePreview(UserPreviewText(m.Content))
+				first = truncatePreview(UserMessageText(m))
 			}
 		}
 	}

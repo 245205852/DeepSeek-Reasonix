@@ -489,20 +489,17 @@ func TestSlashArgCompletionLanguage(t *testing.T) {
 	}
 }
 
-func TestSlashArgCompletionAutoPlan(t *testing.T) {
+func TestSlashArgCompletionCurrency(t *testing.T) {
 	m := newTestChatTUI()
-	m.input.SetValue("/auto-plan ")
+	m.input.SetValue("/currency ")
 	m.updateCompletion()
 	if !m.completion.active || m.completion.kind != compSlashArg {
-		t.Fatalf("/auto-plan should open arg completion: %+v", m.completion)
+		t.Fatalf("/currency should open arg completion: %+v", m.completion)
 	}
-	for _, want := range []string{"off", "on"} {
+	for _, want := range []string{"auto", "CNY", "USD"} {
 		if !hasLabel(m.completion.items, want) {
-			t.Fatalf("/auto-plan completion missing %q: %v", want, labels(m.completion.items))
+			t.Fatalf("/currency completion missing %q: %v", want, labels(m.completion.items))
 		}
-	}
-	if hasLabel(m.completion.items, "ask") {
-		t.Fatalf("/auto-plan completion should not include legacy ask: %v", labels(m.completion.items))
 	}
 }
 

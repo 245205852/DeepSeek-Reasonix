@@ -101,6 +101,7 @@ func (t *runSkillTool) Execute(ctx context.Context, args json.RawMessage) (strin
 	if err := t.store.ValidateInvocation(sk); err != nil {
 		return "", fmt.Errorf("run_skill: %w", err)
 	}
+	sk = t.store.Prepare(sk)
 	rawArgs := strings.TrimSpace(p.Arguments)
 	opts := SubagentRunOptions{ContinueFrom: strings.TrimSpace(p.Continue), ForkFrom: strings.TrimSpace(p.Fork)}
 	if opts.ContinueFrom != "" && opts.ForkFrom != "" {
@@ -209,6 +210,7 @@ func (t *readOnlySkillTool) Execute(ctx context.Context, args json.RawMessage) (
 	if err := t.store.ValidateInvocation(sk); err != nil {
 		return "", fmt.Errorf("read_only_skill: %w", err)
 	}
+	sk = t.store.Prepare(sk)
 	rawArgs := strings.TrimSpace(p.Arguments)
 	if sk.RunAs == RunSubagent {
 		if t.runner == nil {
@@ -306,6 +308,7 @@ func (t *readSkillTool) Execute(_ context.Context, args json.RawMessage) (string
 	if err := t.store.ValidateInvocation(sk); err != nil {
 		return "", fmt.Errorf("read_skill: %w", err)
 	}
+	sk = t.store.Prepare(sk)
 	if sk.RunAs == RunSubagent {
 		return "", fmt.Errorf("read_skill: skill %q is a subagent and must be executed, not read — use run_skill (or the dedicated %s tool)", name, name)
 	}
@@ -353,6 +356,7 @@ func (t *subagentSkillTool) Execute(ctx context.Context, args json.RawMessage) (
 	if err := t.store.ValidateInvocation(sk); err != nil {
 		return "", fmt.Errorf("%s: %w", t.toolName, err)
 	}
+	sk = t.store.Prepare(sk)
 	// A user file overriding the built-in name with runAs:inline would lose
 	// isolation if dispatched here — bounce to run_skill where inline is defined.
 	if sk.RunAs != RunSubagent {

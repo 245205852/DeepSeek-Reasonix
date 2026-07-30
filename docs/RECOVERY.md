@@ -17,15 +17,19 @@ reasonix-guard undo [--json]
 reasonix-guard launch [--app PATH] [--safe-mode] [--detach]
 reasonix-guard recover [--root PATH] [--project]
 reasonix-guard assist [--model PROVIDER/MODEL] [--apply] [--allow-project]
-reasonix-guard apply-plan --file PLAN.json [--yes] [--allow-project]
+reasonix-guard apply-plan --file PLAN.json [--preview-id ID] [--yes] [--allow-project]
 reasonix doctor repair [--root PATH] [--apply] [--project] [--json]
 ```
 
-Packaged desktop shortcuts and application bundles start through Guard. Running
-`reasonix-guard` without a subcommand therefore launches the sibling desktop
-executable; use the explicit `check` command for a read-only configuration check.
-Windows packages use the same Guard code in a GUI-subsystem launcher for shortcuts
-and retain `reasonix-guard.exe` as the terminal-oriented command.
+Windows and Linux packaged desktop shortcuts start through Guard. The macOS
+application bundle starts the Wails desktop directly so LaunchServices, the Dock,
+and the application window have the same native process identity; it runs the
+same startup recovery preflight before creating WebView. Guard remains bundled
+as an independent recovery command. Running `reasonix-guard` without a subcommand
+launches the sibling desktop executable; use the explicit `check` command for a
+read-only configuration check. Windows packages use the same Guard code in a
+GUI-subsystem launcher for shortcuts and retain `reasonix-guard.exe` as the
+terminal-oriented command.
 Windows and Linux shortcuts detach after starting the desktop; an explicit
 terminal `reasonix-guard launch` waits by default unless `--detach` is supplied.
 
@@ -59,25 +63,35 @@ it.
 
 The desktop records `starting`, `ready`, `healthy`, and `clean-exit` under the
 Reasonix state directory. `ready` begins a 30-second probation period. On the
-third incomplete startup within five minutes, Guard opens a native recovery
-dialog that does not depend on WebView. Safe Mode uses built-in configuration,
-does not restore saved tabs, and disables external integrations for that run. It
-does not rewrite the user's configuration.
+third incomplete startup within five minutes, Guard (or the macOS desktop
+preflight) opens a native recovery dialog that does not depend on WebView. Safe
+Mode uses built-in configuration, does not restore saved tabs, and disables
+external integrations for that run. It does not rewrite the user's configuration.
 
 ## Update rollback
 
-Before an automatic update, Reasonix retains the complete installed release
+Before an automatic **portable** update (Windows installer path, Linux `.tar.gz`,
+or a macOS app-bundle replace), Reasonix retains the complete installed release
 unit — the desktop executable plus the Guard/launcher binaries the installer
-also replaces (Windows and Linux) — or the application bundle (macOS). The
-backups remain until the replacement build reaches `healthy` or exits cleanly.
-If the replacement enters the startup failure threshold, Guard verifies every
-backup hash and restores all recorded binaries together before launching, so a
-rollback never produces a mixed-version install. When the Windows installer
-itself fails after the desktop has exited, the update helper records the
-failure and relaunches Guard, which performs the same full rollback immediately
-instead of waiting for a crash loop. Update metadata and hashes are stored
-under the Reasonix repair state; arbitrary backup or target paths are rejected,
-and unhashed backups are refused.
+also replaces — or the application bundle (macOS). The backups remain until the
+replacement build reaches `healthy` or exits cleanly. If the replacement enters
+the startup failure threshold, Guard (or the macOS desktop preflight) verifies
+every backup hash and restores the complete release unit before relaunching, so
+a rollback never produces a mixed-version install. When the Windows installer
+itself fails after the desktop has exited, the update helper records the failure
+and relaunches Guard, which performs the same full rollback immediately instead
+of waiting for a crash loop. Update metadata and hashes are stored under the
+Reasonix repair state; arbitrary backup or target paths are rejected, and
+unhashed backups are refused.
+
+**Debian/Ubuntu `.deb` installs** do not use Guard file-level rollback for
+upgrades. In-app updates authorize a root helper via Polkit and install with
+`apt-get --only-upgrade`. On failure the running process stays up, the verified
+download remains cached for retry, and package state is left to apt/dpkg.
+Successful installs are managed by the system package manager and are not
+auto-downgraded by Reasonix. Users on an older `.deb` without the helper should
+overwrite-install the bootstrap package once:
+`sudo apt install ./Reasonix-linux-amd64.deb` (no uninstall required).
 
 ## Optional AI assistance
 
@@ -92,6 +106,33 @@ verified snapshot restore, derived-state rebuild, and pending-update rollback.
 The host displays an operation preview and unified configuration diff, asks for
 confirmation, and executes only those built-in operations. A plan cannot run a
 shell command, edit credentials or session content, or name an arbitrary path.
+Machine-readable assist output includes a `planId` and a `previewId`. Hosts
+that confirm a dry-run later must pass the same `previewId` to `apply-plan`;
+the guard re-computes the preview before writing and refuses when the plan,
+action list, filesystem-derived diff, derived-state input, or pending-update
+transaction changed. Non-interactive `apply-plan --yes` requires
+`--preview-id`; interactive confirmation binds the preview displayed in that
+same invocation. Direct package callers that own their own approval boundary
+remain source compatible and can opt into the same check with
+`ApplyPlanOptions.ExpectedPreviewID`.
 
-All state files are additive and optional. Older Reasonix releases ignore them;
-missing new fields decode to their safe zero values.
+Confirmed configuration, snapshot, and derived-state mutations are serialized
+across Reasonix processes. Repair transaction bookkeeping and undo are
+serialized before per-target locks, so disjoint repairs cannot exchange or lose
+undo records. After taking the target lock, Guard re-checks the confirmed action
+and its inputs, then verifies the node moved by the final rename. A process that
+recreates the target during repair wins: Guard does not overwrite the new file
+and reports that the confirmed state was moved aside. Pending-update rollback
+uses the complete confirmed transaction identity, not only its version or
+timestamp. File updates keep `pending-update.json` immutable and record the
+complete installed release unit in a transaction-unique, create-only sidecar,
+so a crash cannot hide the rollback transaction between two state-file
+replacements.
+
+New fields and sidecars are additive. Older Reasonix releases ignore unknown
+data, and current releases can still read legacy transactions with missing
+bindings. A missing binding is a safe zero value, not destructive
+authorization: automatic handoff, healthy commit, or app-bundle rollback fails
+closed when it cannot prove ownership. A legacy app-bundle backup without a
+tree digest can be restored only through an explicitly confirmed repair-plan
+preview that binds that exact backup.

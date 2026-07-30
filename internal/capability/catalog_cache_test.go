@@ -11,29 +11,29 @@ import (
 
 func boolPtr(b bool) *bool { return &b }
 
-func TestLoadCachedToolsForSpecsHonorsFingerprint(t *testing.T) {
+func TestLoadCachedToolsForSpecsHonorsSchemaCacheKey(t *testing.T) {
 	t.Setenv("REASONIX_CACHE_HOME", t.TempDir())
 	fresh := plugin.Spec{Name: "gh", Type: "stdio", Command: "gh-mcp"}
 	if err := plugin.SaveCachedSchema("gh", plugin.CachedSchema{
-		SpecHash: plugin.SpecFingerprint(fresh),
+		CacheKey: plugin.SchemaCacheKey(fresh),
 		Tools:    []plugin.CachedTool{{Name: "search_issues", Description: "search", ReadOnly: true}},
 	}); err != nil {
 		t.Fatal(err)
 	}
 	stale := plugin.Spec{Name: "old", Type: "stdio", Command: "old-mcp"}
 	if err := plugin.SaveCachedSchema("old", plugin.CachedSchema{
-		SpecHash: "some-other-fingerprint",
+		CacheKey: "some-other-cache-key",
 		Tools:    []plugin.CachedTool{{Name: "do_thing"}},
 	}); err != nil {
 		t.Fatal(err)
 	}
 
-	cached, hashOK := LoadCachedToolsForSpecs([]plugin.Spec{fresh, stale, {Name: "absent"}})
-	if len(cached["gh"]) != 1 || !hashOK["gh"] {
-		t.Fatalf("fresh cache: tools=%v hashOK=%v", cached["gh"], hashOK["gh"])
+	cached, keyOK := LoadCachedToolsForSpecs([]plugin.Spec{fresh, stale, {Name: "absent"}})
+	if len(cached["gh"]) != 1 || !keyOK["gh"] {
+		t.Fatalf("fresh cache: tools=%v keyOK=%v", cached["gh"], keyOK["gh"])
 	}
-	if len(cached["old"]) != 1 || hashOK["old"] {
-		t.Fatalf("stale cache must load with hashOK=false: tools=%v hashOK=%v", cached["old"], hashOK["old"])
+	if len(cached["old"]) != 1 || keyOK["old"] {
+		t.Fatalf("stale cache must load with keyOK=false: tools=%v keyOK=%v", cached["old"], keyOK["old"])
 	}
 	if _, ok := cached["absent"]; ok {
 		t.Fatal("server without cache must be absent")
@@ -45,7 +45,7 @@ func TestBuildCatalogSurfacesCachedToolsForAutoStartFalse(t *testing.T) {
 		"gh":  {{Name: "search_issues", Description: "search", ReadOnly: true}},
 		"old": {{Name: "do_thing"}},
 	}
-	hashOK := map[string]bool{"gh": true, "old": false}
+	keyOK := map[string]bool{"gh": true, "old": false}
 	cat := BuildCatalog(CatalogOptions{
 		Plugins: []config.PluginEntry{
 			{Name: "gh", AutoStart: boolPtr(false)},
@@ -53,7 +53,7 @@ func TestBuildCatalogSurfacesCachedToolsForAutoStartFalse(t *testing.T) {
 		},
 		Profile:     ProfileDelivery,
 		CachedTools: cached,
-		CacheHashOK: hashOK,
+		CacheKeyOK:  keyOK,
 	})
 	byID := map[string]Entry{}
 	for _, e := range cat.Entries {
@@ -67,7 +67,7 @@ func TestBuildCatalogSurfacesCachedToolsForAutoStartFalse(t *testing.T) {
 		t.Fatalf("cached tool entry lost metadata: %+v", toolEntry)
 	}
 	if server := byID["mcp-server:old"]; server.Status != StatusStale {
-		t.Fatalf("fingerprint-mismatched cache should mark the server stale, got %q", server.Status)
+		t.Fatalf("cache-key-mismatched schema should mark the server stale, got %q", server.Status)
 	}
 	if staleTool, ok := byID["mcp-tool:old/do_thing"]; !ok {
 		t.Fatal("stale cached tools should still appear as candidates")
@@ -134,6 +134,38 @@ func TestDeliveryRouteRenderKeepsCapabilityIDAndProxyInstruction(t *testing.T) {
 	out = RenderTransientBlock(d)
 	if !strings.Contains(out, "connect_tool_source") {
 		t.Fatalf("non-delivery render lost connect_tool_source:\n%s", out)
+	}
+}
+
+func TestCapabilityProxyRouteRenderKeepsConcreteMCPIDs(t *testing.T) {
+	for _, entry := range []Entry{
+		{ID: "mcp-tool:gh/search_issues", Kind: KindMCPTool, Name: "gh/search_issues", Status: StatusConfigured, ConnectSource: "mcp", ConnectName: "gh"},
+		{ID: "mcp-server:gh", Kind: KindMCPServer, Name: "gh", Status: StatusConfigured, ConnectSource: "mcp", ConnectName: "gh"},
+	} {
+		out := RenderTransientBlock(RouteDecision{
+			CapabilityProxy: true,
+			Candidates:      []RouteCandidate{{Entry: entry, Policy: AutoUsePrefer, Reason: "matches task"}},
+		})
+		if !strings.Contains(out, "- "+entry.ID+" ") {
+			t.Fatalf("capability proxy route must lead with the concrete id %q:\n%s", entry.ID, out)
+		}
+		if strings.Contains(out, "source:mcp/gh") {
+			t.Fatalf("capability proxy route rewrote %q to an unusable source target:\n%s", entry.ID, out)
+		}
+		if !strings.Contains(out, `use_capability(action="call", capability_id="`+entry.ID+`"`) {
+			t.Fatalf("capability proxy route lost the concrete call instruction for %q:\n%s", entry.ID, out)
+		}
+	}
+
+	// CapabilityProxy only replaces the MCP connector. Other configured
+	// capability kinds still use their ordinary source routing.
+	skill := Entry{ID: "skill:review", Kind: KindSkill, Name: "review", Status: StatusConfigured, ConnectSource: "skills"}
+	out := RenderTransientBlock(RouteDecision{
+		CapabilityProxy: true,
+		Candidates:      []RouteCandidate{{Entry: skill, Policy: AutoUseSuggest, Reason: "matches task"}},
+	})
+	if !strings.Contains(out, "source:skills") || !strings.Contains(out, "connect_tool_source") {
+		t.Fatalf("MCP proxy routing changed the ordinary skill connector:\n%s", out)
 	}
 }
 

@@ -29,7 +29,7 @@ Legacy 迁移、OS home 约定目录扫描以及其他 fallback 路径都会跳�
 | 全局斜杠命令 | `<Reasonix home>/commands/` |
 | 全局 skills | `<Reasonix home>/skills/` |
 | 全局 hooks | `<Reasonix home>/settings.json` |
-| hooks 信任状态 | `<Reasonix home>/trust.json` |
+| 远程 SSH 托管 known_hosts | `<Reasonix home>/remote/known_hosts` |
 | 会话 | `<state root>/sessions/` |
 | 归档 | `<state root>/archive/` |
 | 记忆 | `<state root>/memory/` 与 `<state root>/projects/` |
@@ -66,9 +66,6 @@ cursor_shape = "bar"         # CLI/TUI 输入光标：underline|block|bar
 [desktop]
 provider_access = ["deepseek"]
 
-[agent]
-auto_plan = "off"
-
 [[providers]]
 name        = "deepseek"
 kind        = "openai"
@@ -97,7 +94,8 @@ CJK 双宽字符；如果偏好其它形状，可以设为 `block` 或 `underlin
 Reasonix 会根据 provider 名称生成默认值。能规范化成 ASCII 的名称会得到可读的
 env 名，例如 `LOCAL_GATEWAY_API_KEY`；如果名称全部由中文等非 ASCII 字符组成，则会
 生成带稳定 hash 后缀的名称，例如 `CUSTOM_d39b9067_API_KEY`，避免多个中文 provider
-都共用 `CUSTOM_API_KEY`。
+都共用 `CUSTOM_API_KEY`。如果名称以数字开头，则会添加 `CUSTOM_` 前缀以保证生成的
+环境变量名合法；例如 `9router` 会生成 `CUSTOM_9ROUTER_API_KEY`。
 
 CLI 的自定义 provider 向导会先根据 base URL 生成 provider 名称，再套用同一套
 provider-name 规则。例如 `https://token.sensenova.cn/v1` 会生成 provider 名

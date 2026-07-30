@@ -17,12 +17,14 @@ reasonix-guard undo [--json]
 reasonix-guard launch [--app PATH] [--safe-mode] [--detach]
 reasonix-guard recover [--root PATH] [--project]
 reasonix-guard assist [--model PROVIDER/MODEL] [--apply] [--allow-project]
-reasonix-guard apply-plan --file PLAN.json [--yes] [--allow-project]
+reasonix-guard apply-plan --file PLAN.json [--preview-id ID] [--yes] [--allow-project]
 reasonix doctor repair [--root PATH] [--apply] [--project] [--json]
 ```
 
-安装后的桌面快捷方式和应用 Bundle 默认先启动 Guard。因此直接运行
-`reasonix-guard` 会启动同目录的桌面程序；只读检查请显式使用 `check`。
+Windows/Linux 安装后的桌面快捷方式默认先启动 Guard。macOS 应用 Bundle 则直接
+启动 Wails 桌面进程，让 LaunchServices、Dock 图标和应用窗口拥有同一个原生进程身份；
+它会在创建 WebView 前执行同等的启动恢复预检。Guard 仍作为独立恢复命令随包提供。
+直接运行 `reasonix-guard` 会启动同目录的桌面程序；只读检查请显式使用 `check`。
 Windows 安装包的快捷方式使用同一套 Guard 代码编译出的无终端窗口启动器，同时保留
 `reasonix-guard.exe` 供命令行诊断使用。
 Windows/Linux 快捷方式启动桌面后会退出启动器；终端中显式执行
@@ -49,18 +51,26 @@ Guard 保留最近 5 个健康的全局配置快照。每个快照都有 SHA-256
 
 桌面端会在 Reasonix 状态目录记录 `starting`、`ready`、`healthy` 和
 `clean-exit`。`ready` 后还有 30 秒稳定观察期。五分钟内连续三次未完成启动时，
-Guard 会显示不依赖 WebView 的系统原生恢复对话框。安全模式使用内置配置、不恢复
-上次标签页，并在本次运行中禁用外部集成；它不会改写用户配置。
+Guard（macOS 上为桌面启动预检）会显示不依赖 WebView 的系统原生恢复对话框。
+安全模式使用内置配置、不恢复上次标签页，并在本次运行中禁用外部集成；它不会改写
+用户配置。
 
 ## 更新回滚
 
-自动更新前，Reasonix 会完整保留安装的发布单元——桌面可执行文件以及安装器同样会
-替换的 Guard/启动器二进制（Windows/Linux），或整个应用 Bundle（macOS）。只有新
-版本进入 `healthy` 或干净退出后才清理备份。新版本达到启动失败阈值时，Guard 会先
-校验全部备份哈希，再把记录的所有二进制一起恢复后启动，回滚不会留下新旧混装。
-Windows 安装器在桌面退出后执行失败时，更新 helper 会记录失败并重新拉起 Guard，
-Guard 启动时立即执行同样的完整回滚，而不是等待崩溃循环。更新元数据和哈希位于
-Reasonix 修复状态目录；任何任意目标路径、目录外备份或缺失哈希的备份都会被拒绝。
+自动 **便携版** 更新前（Windows 安装器路径、Linux `.tar.gz`、或 macOS 应用 Bundle
+替换），Reasonix 会完整保留安装的发布单元——桌面可执行文件以及安装器同样会替换的
+Guard/启动器二进制，或整个应用 Bundle（macOS）。只有新版本进入 `healthy` 或干净
+退出后才清理备份。新版本达到启动失败阈值时，Guard（macOS 上为桌面启动预检）会先
+校验全部备份哈希，再恢复完整发布单元并重新启动，回滚不会留下新旧混装。Windows
+安装器在桌面退出后执行失败时，更新 helper 会记录失败并重新拉起 Guard，Guard 启动时
+立即执行同样的完整回滚，而不是等待崩溃循环。更新元数据和哈希位于 Reasonix 修复状态
+目录；任何任意目标路径、目录外备份或缺失哈希的备份都会被拒绝。
+
+**Debian/Ubuntu `.deb` 安装** 的升级不走 Guard 文件级回滚。应用内更新通过 Polkit
+授权 root helper，并以 `apt-get --only-upgrade` 安装。失败时旧进程保持运行、已验证
+的下载缓存可重试，包状态交由 apt/dpkg 处理。安装成功后由系统包管理器管理，Reasonix
+不会自动降级。尚未包含 helper 的旧 `.deb` 用户需手动覆盖安装一次 bootstrap 包：
+`sudo apt install ./Reasonix-linux-amd64.deb`（无需卸载）。
 
 ## 可选 AI 辅助
 
@@ -74,5 +84,22 @@ Reasonix 修复状态目录；任何任意目标路径、目录外备份或缺�
 预览和配置统一 diff，再要求用户确认。计划不能运行 shell、修改凭据或会话正文，也不能
 指定任意文件路径。
 
-所有新增状态文件都是可选且向后兼容的；旧版 Reasonix 会直接忽略，缺失新字段时按安全
-零值处理。
+机器可读的 `assist` 输出包含 `planId` 和 `previewId`。Host 在 dry-run 后延迟确认时，
+必须把同一个 `previewId` 传给 `apply-plan`；Guard 会在写入前重新计算预览，并在计划、
+动作列表、文件 diff、派生状态输入或待回滚更新事务发生变化时拒绝执行。非交互式
+`apply-plan --yes` 必须同时提供 `--preview-id`；交互式确认则自动绑定同一次调用中展示
+的预览。自行管理确认边界的 Go 包调用方保持源码兼容，并可通过
+`ApplyPlanOptions.ExpectedPreviewID` 启用相同校验。
+
+已确认的配置、快照和派生状态变更会在 Reasonix 进程间串行化。修复事务记录与撤销会先于
+各目标锁串行化，因此不同目标的并发修复不会交换或丢失撤销记录。Guard 获取目标锁后会
+重新校验已确认的动作及其输入，并核对最终重命名实际移走的节点。如果其他进程在修复期间
+重新创建目标文件，该进程的写入优先：Guard 不会覆盖新文件，并会报告已确认状态被移到的
+隔离位置。待确认更新的回滚绑定完整事务身份，而不只比较版本号或时间戳。文件更新保持
+`pending-update.json` 不可变，并把完整的已安装 release unit 写入当前事务专属、仅创建一次
+的 sidecar；因此进程崩溃不会在两个状态文件替换之间隐藏回滚事务。
+
+新增字段和 sidecar 都是增量数据：旧版 Reasonix 会忽略未知数据，当前版本也仍能读取缺少
+新绑定的旧事务。缺失绑定只表示安全零值，不构成破坏性操作授权；无法证明节点归属时，
+自动 handoff、健康提交或 app-bundle 回滚都会 fail closed。旧 app-bundle 备份没有目录树
+摘要时，只有显式确认且绑定该备份的修复计划预览才能执行恢复。
