@@ -5600,8 +5600,6 @@ func historyMessagesWithPlannerDisplaysAndLookups(
 				if replay := control.StripComposePrefixes(m.Content); strings.HasPrefix(strings.TrimSpace(replay), "/") && replay != content {
 					hm.SubmitText = replay
 				}
-			} else if m.RawContent != "" {
-				hm.SubmitText = m.Content
 			} else {
 				hm.SubmitText = m.Content
 			}
