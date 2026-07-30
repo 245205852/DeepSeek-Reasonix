@@ -677,7 +677,7 @@ func TestEffectiveVisionDoesNotInferCustomMimoProxy(t *testing.T) {
 	}
 }
 
-func TestEffectiveVisionRejectsOfficialDeepSeekButPreservesCustomGateways(t *testing.T) {
+func TestEffectiveVisionDefaultsOfficialDeepSeekToTextOnlyButAllowsExplicitModels(t *testing.T) {
 	for _, baseURL := range []string{
 		"https://api.deepseek.com",
 		"https://api.deepseek.com/v1",
@@ -694,6 +694,38 @@ func TestEffectiveVisionRejectsOfficialDeepSeekButPreservesCustomGateways(t *tes
 		if EffectiveVision(official) {
 			t.Fatalf("official DeepSeek endpoint %q must remain text-only", baseURL)
 		}
+		if ExplicitModelVision(official) {
+			t.Fatalf("provider-wide vision must not count as an explicit model capability for %q", baseURL)
+		}
+	}
+
+	future := &ProviderEntry{
+		Name:         "deepseek",
+		Kind:         "openai",
+		BaseURL:      "https://api.deepseek.com",
+		Model:        "deepseek-v5-vision",
+		VisionModels: []string{"deepseek-v5-vision"},
+	}
+	if !EffectiveVision(future) || !ExplicitModelVision(future) {
+		t.Fatal("model listed in vision_models must opt in on the official DeepSeek endpoint")
+	}
+
+	visionOn := true
+	cfg := &Config{Providers: []ProviderEntry{{
+		Name:    "deepseek",
+		Kind:    "openai",
+		BaseURL: "https://api.deepseek.com",
+		Models:  []string{"deepseek-v5-override"},
+		ModelOverrides: map[string]ProviderModelOverride{
+			"deepseek-v5-override": {Vision: &visionOn},
+		},
+	}}}
+	overridden, ok := cfg.ResolveModel("deepseek/deepseek-v5-override")
+	if !ok {
+		t.Fatal("ResolveModel did not find explicit future DeepSeek model")
+	}
+	if !EffectiveVision(overridden) || !ExplicitModelVision(overridden) {
+		t.Fatal("model_overrides vision=true must opt in on the official DeepSeek endpoint")
 	}
 
 	custom := &ProviderEntry{

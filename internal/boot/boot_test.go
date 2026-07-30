@@ -1327,6 +1327,61 @@ func TestNewProviderAppliesModelReasoningProtocol(t *testing.T) {
 	}
 }
 
+func TestNewProviderAllowsExplicitOfficialDeepSeekVisionModel(t *testing.T) {
+	var gotReq map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&gotReq); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"ok\"}}]}\n\ndata: [DONE]\n\n"))
+	}))
+	defer srv.Close()
+
+	p, err := NewProvider(&config.ProviderEntry{
+		Name:         "deepseek",
+		Kind:         "openai",
+		BaseURL:      "https://api.deepseek.com",
+		ChatURL:      srv.URL,
+		Model:        "deepseek-v5-vision",
+		VisionModels: []string{"deepseek-v5-vision"},
+	})
+	if err != nil {
+		t.Fatalf("NewProvider: %v", err)
+	}
+	ch, err := p.Stream(context.Background(), provider.Request{
+		Messages: []provider.Message{{
+			Role: provider.RoleUser, Content: "describe",
+			Images: []string{"data:image/png;base64,AAAA"},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+	for chunk := range ch {
+		if chunk.Type == provider.ChunkError {
+			t.Fatalf("stream error: %v", chunk.Err)
+		}
+	}
+
+	messages, ok := gotReq["messages"].([]any)
+	if !ok || len(messages) != 1 {
+		t.Fatalf("messages = %#v, want one message", gotReq["messages"])
+	}
+	message, ok := messages[0].(map[string]any)
+	if !ok {
+		t.Fatalf("message = %#v, want object", messages[0])
+	}
+	parts, ok := message["content"].([]any)
+	if !ok || len(parts) != 2 {
+		t.Fatalf("content = %#v, want [text, image_url]", message["content"])
+	}
+	imagePart, ok := parts[1].(map[string]any)
+	if !ok || imagePart["type"] != "image_url" {
+		t.Fatalf("image part = %#v, want image_url", parts[1])
+	}
+}
+
 func TestBuildHonorsSessionDirOverride(t *testing.T) {
 	dir := t.TempDir()
 	home := t.TempDir()
