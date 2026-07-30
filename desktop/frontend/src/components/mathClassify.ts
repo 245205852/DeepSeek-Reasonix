@@ -22,10 +22,11 @@ const NUMERIC_MATH_AFTER =
 /**
  * Decide how an `inlineMath` node produced by remark-math should render.
  *
- * Dollar delimiters are treated as an explicit math signal by default. The
- * only numeric exception is a high-confidence currency context, where a
- * paired input such as `costs $5$ today` is repaired to the prose currency
- * token `$5`. Non-math word-like content is restored verbatim as text.
+ * Pure-number spans remain literal unless their surrounding source provides
+ * positive mathematical context (for example a range endpoint or scientific
+ * unit). High-confidence currency context repairs paired input such as
+ * `costs $5$ today` to the prose token `$5`. Other non-math content is
+ * restored verbatim as text.
  */
 export function classifyInlineMath(
   math: string,
