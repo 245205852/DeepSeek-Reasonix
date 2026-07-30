@@ -2,6 +2,7 @@ package cli
 
 import (
 	"fmt"
+	"math"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -51,8 +52,7 @@ func (m *chatTUI) shouldFoldPaste(s string) bool {
 
 func (m *chatTUI) insertFoldedPaste(s string) {
 	m.deleteComposerSelection()
-	label := foldedPasteLabel(m.nextPasteID, pastedLineCount(s))
-	m.nextPasteID++
+	label := foldedPasteLabel(m.takeNextPasteID(), pastedLineCount(s))
 	m.pastedBlocks = append(m.pastedBlocks, pastedBlock{label: label, text: s})
 	m.input.InsertString(label + " ")
 }
@@ -62,8 +62,7 @@ func (m *chatTUI) insertFoldedPaste(s string) {
 // edited and removed like any other text, not stranded in a separate tray.
 func (m *chatTUI) insertImageRef(path string) {
 	m.deleteComposerSelection()
-	label := fmt.Sprintf("[image #%d]", m.nextPasteID)
-	m.nextPasteID++
+	label := fmt.Sprintf("[image #%d]", m.takeNextPasteID())
 	m.pastedBlocks = append(m.pastedBlocks, pastedBlock{label: label, text: "@" + path, image: true})
 	m.input.InsertString(label + " ")
 	m.growInputToFit()
@@ -191,19 +190,55 @@ func expandedPasteBodies(content, label string) []string {
 // restart. Older sessions may contain duplicate legacy IDs; starting above the
 // maximum keeps every newly created label unambiguous.
 func nextPasteIDForHistory(history []provider.Message) int {
+	next, _ := pasteIDStateForHistory(history)
+	return next
+}
+
+func pasteIDStateForHistory(history []provider.Message) (int, map[int]struct{}) {
 	next := 1
+	used := make(map[int]struct{})
 	for _, msg := range history {
 		for _, match := range foldedPasteLabelRe.FindAllStringSubmatch(msg.Content, -1) {
 			if len(match) < 2 {
 				continue
 			}
 			id, err := strconv.Atoi(match[1])
-			if err == nil && id >= next {
+			if err != nil || id < 1 {
+				continue
+			}
+			used[id] = struct{}{}
+			if id >= next && id < math.MaxInt {
 				next = id + 1
 			}
 		}
 	}
-	return next
+	return next, used
+}
+
+func (m *chatTUI) takeNextPasteID() int {
+	candidate := m.nextPasteID
+	if candidate < 1 {
+		candidate = 1
+	}
+	if m.usedPasteIDs == nil {
+		m.usedPasteIDs = make(map[int]struct{})
+	}
+	for {
+		if _, used := m.usedPasteIDs[candidate]; !used {
+			m.usedPasteIDs[candidate] = struct{}{}
+			if candidate == math.MaxInt {
+				m.nextPasteID = 1
+			} else {
+				m.nextPasteID = candidate + 1
+			}
+			return candidate
+		}
+		if candidate == math.MaxInt {
+			candidate = 1
+		} else {
+			candidate++
+		}
+	}
 }
 
 func (m *chatTUI) pasteLabelsIn(s string) []string {

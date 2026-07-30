@@ -2,6 +2,7 @@ package cli
 
 import (
 	"encoding/base64"
+	"math"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -126,6 +127,43 @@ func TestNextPasteIDForHistoryContinuesAcrossReload(t *testing.T) {
 	}
 	if got := nextPasteIDForHistory(nil); got != 1 {
 		t.Fatalf("nextPasteIDForHistory(nil) = %d, want 1", got)
+	}
+}
+
+func TestNextPasteIDForHistoryDoesNotOverflow(t *testing.T) {
+	history := []provider.Message{{
+		Role:    provider.RoleAssistant,
+		Content: foldedPasteLabel(math.MaxInt, 1),
+	}}
+	if got := nextPasteIDForHistory(history); got != 1 {
+		t.Fatalf("nextPasteIDForHistory = %d, want 1", got)
+	}
+}
+
+func TestTakeNextPasteIDSkipsUsedIDsAcrossWrap(t *testing.T) {
+	history := []provider.Message{
+		{Role: provider.RoleUser, Content: foldedPasteLabel(1, 1)},
+		{Role: provider.RoleAssistant, Content: foldedPasteLabel(math.MaxInt-1, 1)},
+		{Role: provider.RoleAssistant, Content: foldedPasteLabel(math.MaxInt, 1)},
+	}
+	next, used := pasteIDStateForHistory(history)
+	m := &chatTUI{nextPasteID: next, usedPasteIDs: used}
+
+	if got := m.takeNextPasteID(); got != 2 {
+		t.Fatalf("takeNextPasteID = %d, want first unused ID 2", got)
+	}
+	if m.nextPasteID != 3 {
+		t.Fatalf("nextPasteID = %d, want 3", m.nextPasteID)
+	}
+}
+
+func TestTakeNextPasteIDWrapsAfterMaxInt(t *testing.T) {
+	m := &chatTUI{nextPasteID: math.MaxInt}
+	if got := m.takeNextPasteID(); got != math.MaxInt {
+		t.Fatalf("first takeNextPasteID = %d, want %d", got, math.MaxInt)
+	}
+	if got := m.takeNextPasteID(); got != 1 {
+		t.Fatalf("wrapped takeNextPasteID = %d, want 1", got)
 	}
 }
 
