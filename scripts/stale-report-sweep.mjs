@@ -40,6 +40,23 @@ export function isStaleVersion(version, cutoffMinor = CUTOFF_MINOR, released = n
   return version.major < 1 || (version.major === 1 && version.minor < cutoffMinor);
 }
 
+// The form's version field is whatever the reporter typed there, and they get
+// it wrong in both directions: a dropped digit, or the default left in place
+// while the real build is named further down the body. A report cannot be older
+// than the newest release it mentions anywhere, so that is what age is measured
+// from. Filtering to published versions keeps Node versions and timestamps out.
+export function highestMentionedVersion(body, released) {
+  let best = null;
+  for (const m of (body || "").matchAll(/(\d+)\.(\d+)\.(\d+)/g)) {
+    const v = { major: Number(m[1]), minor: Number(m[2]), patch: Number(m[3]), raw: m[0] };
+    if (released && !released.has(`${v.major}.${v.minor}.${v.patch}`)) continue;
+    if (!best || v.major > best.major || (v.major === best.major && (v.minor > best.minor || (v.minor === best.minor && v.patch > best.patch)))) {
+      best = v;
+    }
+  }
+  return best;
+}
+
 export function releasedVersions(tags) {
   const out = new Set();
   for (const tag of tags) {
@@ -58,6 +75,9 @@ export function findAsk(comments = []) {
 }
 
 export function shouldAsk(issue, { cutoffMinor = CUTOFF_MINOR, released = null } = {}) {
+  // "does it still reproduce" is a question only a defect report can answer; a
+  // feature request does not go stale because the version moved on.
+  if (!(issue.labels || []).includes("bug")) return false;
   if (!isStaleVersion(issue.version, cutoffMinor, released)) return false;
   if ((issue.labels || []).some((l) => SEVERITY_LABELS.includes(l))) return false;
   if (hasMaintainerReply(issue.comments)) return false;
@@ -123,7 +143,7 @@ async function main() {
     "--json", "number,body,labels,comments",
   ]).map((i) => ({
     number: i.number,
-    version: parseReportedVersion(i.body),
+    version: highestMentionedVersion(i.body, released),
     labels: (i.labels || []).map((l) => l.name),
     comments: (i.comments || []).map((c) => ({
       body: c.body,
