@@ -3841,6 +3841,7 @@ export default function App() {
           sidebarWorkbench ? "layout--workbench" : "",
           workbenchChromeHidden ? "layout--workbench-chrome-hidden" : "",
           sidebarCreation ? "layout--creation-chrome-hidden" : "",
+          sidebarImDetailConnection ? "layout--statusbar-hidden" : "",
           sidebarCollapsed ? "layout--sidebar-collapsed" : "",
           sidebarResizing ? "layout--resizing layout--sidebar-resizing" : "",
           workspacePanelGridOpen ? "layout--workspace-open" : "",
@@ -4714,7 +4715,7 @@ export default function App() {
           </aside>
         )}
 
-          {!sidebarImDetailConnection && (
+        {!sidebarImDetailConnection && (
           <StatusBar
             context={state.context}
             usage={state.usage}
@@ -4729,9 +4730,9 @@ export default function App() {
             modelLabel={state.meta?.label}
             labelStyle={statusBarStyle}
             items={statusBarItems}
-	              workspacePath={state.meta?.workspacePath || state.meta?.workspaceRoot || state.meta?.cwd}
-	              workspaceName={state.meta?.workspaceName}
-	              gitBranch={state.meta?.gitBranch}
+            workspacePath={state.meta?.workspacePath || state.meta?.workspaceRoot || state.meta?.cwd}
+            workspaceName={state.meta?.workspaceName}
+            gitBranch={state.meta?.gitBranch}
             onConnectRemote={connectAndOpenRemoteWorkspace}
             onDisconnectRemote={(hostId) => void app.DisconnectRemoteHost(hostId).catch(() => {})}
             onManageRemote={() => setSettingsTarget("remote")}
@@ -4746,7 +4747,7 @@ export default function App() {
                 .catch((err) => showToast(err instanceof Error ? err.message : String(err), "error"));
             }}
           />
-          )}
+        )}
 
       </div>
 
