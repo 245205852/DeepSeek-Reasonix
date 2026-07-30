@@ -723,20 +723,30 @@ func TestOfficialMimoAPITemplateRemoved(t *testing.T) {
 	}
 }
 
-func TestOfficialDeepSeekTemplateDefaultsToRMBPricing(t *testing.T) {
-	entries, keyEnv, err := officialProviderTemplate("deepseek", "en")
-	if err != nil {
-		t.Fatalf("officialProviderTemplate: %v", err)
-	}
-	if keyEnv != "DEEPSEEK_API_KEY" || len(entries) != 1 {
-		t.Fatalf("template = %v/%q, want one DEEPSEEK_API_KEY entry", entries, keyEnv)
-	}
-	got := entries[0]
-	if got.Prices["deepseek-v4-flash"] == nil || got.Prices["deepseek-v4-flash"].Currency != "¥" || got.Prices["deepseek-v4-flash"].Output != 2 {
-		t.Fatalf("deepseek-v4-flash price = %+v, want RMB pricing", got.Prices["deepseek-v4-flash"])
-	}
-	if got.Prices["deepseek-v4-pro"] == nil || got.Prices["deepseek-v4-pro"].Currency != "¥" || got.Prices["deepseek-v4-pro"].Output != 6 {
-		t.Fatalf("deepseek-v4-pro price = %+v, want RMB pricing", got.Prices["deepseek-v4-pro"])
+func TestOfficialDeepSeekTemplateUsesRegionalPricing(t *testing.T) {
+	for _, tt := range []struct {
+		language    string
+		currency    string
+		flashOutput float64
+		proOutput   float64
+	}{
+		{language: "en", currency: "$", flashOutput: 0.28, proOutput: 0.87},
+		{language: "zh", currency: "¥", flashOutput: 2, proOutput: 6},
+	} {
+		entries, keyEnv, err := officialProviderTemplate("deepseek", tt.language)
+		if err != nil {
+			t.Fatalf("officialProviderTemplate(%s): %v", tt.language, err)
+		}
+		if keyEnv != "DEEPSEEK_API_KEY" || len(entries) != 1 {
+			t.Fatalf("template = %v/%q, want one DEEPSEEK_API_KEY entry", entries, keyEnv)
+		}
+		got := entries[0]
+		if price := got.Prices["deepseek-v4-flash"]; price == nil || price.Currency != tt.currency || price.Output != tt.flashOutput {
+			t.Fatalf("%s deepseek-v4-flash price = %+v", tt.language, price)
+		}
+		if price := got.Prices["deepseek-v4-pro"]; price == nil || price.Currency != tt.currency || price.Output != tt.proOutput {
+			t.Fatalf("%s deepseek-v4-pro price = %+v", tt.language, price)
+		}
 	}
 }
 
@@ -828,6 +838,25 @@ func TestSetDesktopLanguagePersistsResponseLanguageAndUpdatesLiveTabs(t *testing
 	projectComposed := projectCtrl.Compose("explain this function")
 	if !strings.Contains(projectComposed, "use Simplified Chinese") {
 		t.Fatalf("project controller Compose = %q, want project zh response language", projectComposed)
+	}
+}
+
+func TestSetDesktopCurrencyPersistsRegionalOfficialPricing(t *testing.T) {
+	isolateDesktopUserDirs(t)
+
+	app := NewApp()
+	if err := app.SetDesktopCurrency("CNY"); err != nil {
+		t.Fatalf("SetDesktopCurrency: %v", err)
+	}
+
+	view := app.Settings()
+	if view.DesktopCurrency != "CNY" {
+		t.Fatalf("Settings().DesktopCurrency = %q, want CNY", view.DesktopCurrency)
+	}
+	cfg := config.LoadForEdit(config.UserConfigPath())
+	flash, ok := cfg.Provider("deepseek-flash")
+	if !ok || flash.Price == nil || flash.Price.Output != 2 || flash.Price.Currency != "¥" {
+		t.Fatalf("saved DeepSeek flash price = %+v, want CNY official price", flash)
 	}
 }
 
@@ -926,6 +955,29 @@ func TestSetDesktopCheckUpdatesPersistsToUserConfig(t *testing.T) {
 	}
 	if cfg.DesktopCheckUpdates() {
 		t.Fatal("DesktopCheckUpdates() = true, want false")
+	}
+}
+
+func TestSetDesktopUpdateChannelPersistsToUserConfig(t *testing.T) {
+	isolateDesktopUserDirs(t)
+
+	app := NewApp()
+	if got := app.Settings().UpdateChannel; got != "stable" {
+		t.Fatalf("Settings().UpdateChannel default = %q, want stable", got)
+	}
+	if err := app.SetDesktopUpdateChannel("canary"); err != nil {
+		t.Fatalf("SetDesktopUpdateChannel: %v", err)
+	}
+	view := app.Settings()
+	if view.UpdateChannel != "preview" {
+		t.Fatalf("Settings().UpdateChannel = %q, want preview", view.UpdateChannel)
+	}
+	cfg := config.LoadForEdit(config.UserConfigPath())
+	if cfg.Desktop.UpdateChannel != "preview" {
+		t.Fatalf("desktop.update_channel = %q, want preview", cfg.Desktop.UpdateChannel)
+	}
+	if cfg.DesktopUpdateChannel() != "preview" {
+		t.Fatalf("DesktopUpdateChannel() = %q, want preview", cfg.DesktopUpdateChannel())
 	}
 }
 
@@ -1134,7 +1186,7 @@ func TestSaveHooksSettingsNormalizesQuotedNodeEvalHookCommand(t *testing.T) {
 	}
 }
 
-func TestProjectHooksSettingsUseActiveWorkspaceRootAndTrust(t *testing.T) {
+func TestProjectHooksSettingsUseActiveWorkspaceRootAndLoadByDefault(t *testing.T) {
 	isolateDesktopUserDirs(t)
 	project := t.TempDir()
 	app := NewApp()
@@ -1150,12 +1202,6 @@ func TestProjectHooksSettingsUseActiveWorkspaceRootAndTrust(t *testing.T) {
 	}}); err != nil {
 		t.Fatalf("SaveHooksSettings(project): %v", err)
 	}
-	if err := app.TrustProjectHooks(); err != nil {
-		t.Fatalf("TrustProjectHooks: %v", err)
-	}
-	if !hook.IsTrusted(project, "") {
-		t.Fatal("project hooks were not trusted")
-	}
 	view := app.HooksSettings("project")
 	if view.Scope != "project" || view.ProjectRoot != project || !view.Trusted {
 		t.Fatalf("project hook view metadata = %+v", view)
@@ -1166,27 +1212,20 @@ func TestProjectHooksSettingsUseActiveWorkspaceRootAndTrust(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(project, ".reasonix", "settings.json")); err != nil {
 		t.Fatalf("project hooks settings file missing: %v", err)
 	}
+	loaded := hook.Load(hook.LoadOptions{ProjectRoot: project})
+	if len(loaded) != 1 || loaded[0].Scope != hook.ScopeProject || loaded[0].Event != hook.Stop {
+		t.Fatalf("project hooks should load by default: %+v", loaded)
+	}
 }
 
-func TestTrustProjectHooksForRootUsesDisplayedProjectRoot(t *testing.T) {
+func TestLegacyTrustProjectHooksMethodsAreNoOps(t *testing.T) {
 	isolateDesktopUserDirs(t)
-	projectA := t.TempDir()
-	projectB := t.TempDir()
 	app := NewApp()
-	app.tabs = map[string]*WorkspaceTab{
-		"a": {ID: "a", Scope: "project", WorkspaceRoot: projectA, Ready: true},
-		"b": {ID: "b", Scope: "project", WorkspaceRoot: projectB, Ready: true},
+	if err := app.TrustProjectHooks(); err != nil {
+		t.Fatalf("TrustProjectHooks compatibility call: %v", err)
 	}
-	app.activeTabID = "b"
-
-	if err := app.TrustProjectHooksForRoot(projectA); err != nil {
-		t.Fatalf("TrustProjectHooksForRoot: %v", err)
-	}
-	if !hook.IsTrusted(projectA, "") {
-		t.Fatal("displayed project root was not trusted")
-	}
-	if hook.IsTrusted(projectB, "") {
-		t.Fatal("active project root was trusted instead of displayed project root")
+	if err := app.TrustProjectHooksForRoot(t.TempDir()); err != nil {
+		t.Fatalf("TrustProjectHooksForRoot compatibility call: %v", err)
 	}
 }
 

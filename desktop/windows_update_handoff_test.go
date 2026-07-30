@@ -8,7 +8,7 @@ import (
 
 func TestInstallerCommandLineUsesVisibleUpdateModeAndKeepsDFlagLast(t *testing.T) {
 	got := installerCommandLine(`C:\Temp\Reasonix Installer.exe`, `D:\Tools\Reasonix App`)
-	want := `"C:\Temp\Reasonix Installer.exe" /REASONIXUPDATE=1 /D=D:\Tools\Reasonix App`
+	want := `"C:\Temp\Reasonix Installer.exe" /REASONIXUPDATE=1 /REASONIXSTAGE=1 /D=D:\Tools\Reasonix App`
 	if got != want {
 		t.Fatalf("installerCommandLine = %q, want %q", got, want)
 	}
@@ -24,14 +24,20 @@ func TestWindowsUpdateHandoffArgsCarryParentInstallAndRelaunch(t *testing.T) {
 	got := windowsUpdateHandoffArgs(
 		4242,
 		`C:\Users\Jane Doe\AppData\Local\Reasonix\updates\Reasonix-windows-amd64-installer.exe`,
+		strings.Repeat("a", 64),
 		`D:\Tools\Reasonix App`,
 		`D:\Tools\Reasonix App\reasonix-desktop.exe`,
 		"v1.6.0",
+		"2026-07-29T00:00:00Z",
+		"transaction-1",
 	)
 	want := []string{
 		"--parent-pid", "4242",
 		"--installer", `C:\Users\Jane Doe\AppData\Local\Reasonix\updates\Reasonix-windows-amd64-installer.exe`,
+		"--installer-sha256", strings.Repeat("a", 64),
 		"--to-version", "v1.6.0",
+		"--created-at", "2026-07-29T00:00:00Z",
+		"--transaction-id", "transaction-1",
 		"--install-dir", `D:\Tools\Reasonix App`,
 		"--relaunch", `D:\Tools\Reasonix App\reasonix-desktop.exe`,
 	}
@@ -52,8 +58,12 @@ func TestWindowsInstallerScriptWaitsBeforeCopyingExecutable(t *testing.T) {
 		`!define REASONIX_LAUNCHER "reasonix-launcher.exe"`,
 		`!define REASONIX_CLI "reasonix-cli.exe"`,
 		`!define REASONIX_PORTABLE_ENTRY "Reasonix.exe"`,
+		`!define REASONIX_PAYLOAD_MANIFEST "reasonix-payload.json"`,
+		`!define REASONIX_PAYLOAD_SIGNATURE "reasonix-payload.json.minisig"`,
 		"Var ReasonixUpdateMode",
+		"Var ReasonixStageMode",
 		`${GetOptions} $R0 "/REASONIXUPDATE=" $R1`,
+		`${GetOptions} $R0 "/REASONIXSTAGE=" $R2`,
 		"Function reasonix.skipSetupPageForUpdate",
 		"Function reasonix.showUpdateProgress",
 		`!define MUI_PAGE_CUSTOMFUNCTION_PRE reasonix.skipFinishPageForUpdate`,
@@ -78,6 +88,8 @@ func TestWindowsInstallerScriptWaitsBeforeCopyingExecutable(t *testing.T) {
 		`File "/oname=${REASONIX_UPDATE_HELPER}" "${REASONIX_UPDATE_HELPER}"`,
 		`File "/oname=${REASONIX_CLI}" "${REASONIX_CLI}"`,
 		`File "/oname=${REASONIX_PORTABLE_ENTRY}" "${REASONIX_LAUNCHER}"`,
+		`File "/oname=${REASONIX_PAYLOAD_MANIFEST}" "${REASONIX_PAYLOAD_MANIFEST}"`,
+		`File "/oname=${REASONIX_PAYLOAD_SIGNATURE}" "${REASONIX_PAYLOAD_SIGNATURE}"`,
 		`Delete "$INSTDIR\${REASONIX_UPDATE_HELPER}"`,
 		`Delete "$INSTDIR\${REASONIX_CLI}"`,
 	} {
@@ -95,6 +107,18 @@ func TestWindowsInstallerScriptWaitsBeforeCopyingExecutable(t *testing.T) {
 	if wait < 0 || copyFiles < 0 || wait > copyFiles {
 		t.Fatalf("installer must wait for the running exe to unlock before wails.files (wait=%d copy=%d)", wait, copyFiles)
 	}
+	stageBranch := strings.Index(script, "StrCmp $ReasonixStageMode \"1\" reasonix_copy_payload")
+	if stageBranch < 0 || stageBranch > copyFiles {
+		t.Fatalf("staging mode must bypass live executable unlock before payload extraction (branch=%d copy=%d)", stageBranch, copyFiles)
+	}
+	if !strings.Contains(script, "StrCmp $ReasonixStageMode \"1\" reasonix_section_done") {
+		t.Fatal("staging mode must skip registry, shortcuts, associations, and uninstaller")
+	}
+	metadataBranch := strings.Index(script, `StrCmp $ReasonixStageMode "1" 0 reasonix_payload_metadata_done`)
+	metadataFile := strings.Index(script, `File "/oname=${REASONIX_PAYLOAD_MANIFEST}"`)
+	if metadataBranch < 0 || metadataFile < 0 || metadataBranch > metadataFile {
+		t.Fatalf("payload manifest must be extracted only in staging mode (branch=%d file=%d)", metadataBranch, metadataFile)
+	}
 }
 
 func TestDesktopBuildScriptCompilesAndPackagesWindowsUpdateHelper(t *testing.T) {
@@ -110,11 +134,25 @@ func TestDesktopBuildScriptCompilesAndPackagesWindowsUpdateHelper(t *testing.T) 
 		`./cmd/update-helper`,
 		`build/windows/installer/$UPDATE_HELPER`,
 		`stamp_windows_executable "build/windows/installer/$UPDATE_HELPER"`,
-		`cp "$helper" "$staging/$UPDATE_HELPER"`,
-		`"$ROOT/scripts/verify-windows-portable.sh" "$staging"`,
+		`cp "build/windows/installer/$UPDATE_HELPER" "$payload_dir/$UPDATE_HELPER"`,
 	} {
 		if !strings.Contains(script, want) {
 			t.Fatalf("desktop-build.sh missing %q", want)
+		}
+	}
+
+	packageData, err := os.ReadFile("../scripts/package-windows-desktop.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	packager := string(packageData)
+	for _, want := range []string{
+		`cp "$PAYLOAD/$UPDATE_HELPER" "$INSTALLER_DIR/$UPDATE_HELPER"`,
+		`cp "$PAYLOAD/$UPDATE_HELPER" "$portable_staging/$UPDATE_HELPER"`,
+		`"$ROOT/scripts/verify-windows-portable.sh" "$portable_staging"`,
+	} {
+		if !strings.Contains(packager, want) {
+			t.Fatalf("package-windows-desktop.sh missing %q", want)
 		}
 	}
 }

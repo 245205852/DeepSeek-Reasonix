@@ -40,7 +40,11 @@ func RenderText(r Report) string {
 	// Instructions
 	fmt.Fprintf(&b, "Instructions (%d)\n", len(r.Instructions.Docs))
 	for _, d := range r.Instructions.Docs {
-		fmt.Fprintf(&b, "  %d. [%s] %s\n", d.Order, d.Scope, d.Path)
+		fmt.Fprintf(&b, "  %d. [%s depth=%d] %s", d.Order, d.Scope, d.Depth, d.Path)
+		if d.Directory != "" {
+			fmt.Fprintf(&b, " (applies to %s)", d.Directory)
+		}
+		b.WriteByte('\n')
 	}
 	if len(r.Instructions.Docs) == 0 {
 		b.WriteString("  (none)\n")
@@ -50,8 +54,8 @@ func RenderText(r Report) string {
 	writeAsset(&b, "Skills", r.Skills)
 	writeAsset(&b, "Commands", r.Commands)
 
-	fmt.Fprintf(&b, "Hooks (trusted_project=%v project_defines=%v entries=%d)\n",
-		r.Hooks.TrustedProject, r.Hooks.ProjectDefines, len(r.Hooks.Entries))
+	fmt.Fprintf(&b, "Hooks (project_defines=%v entries=%d)\n",
+		r.Hooks.ProjectDefines, len(r.Hooks.Entries))
 	for _, s := range r.Hooks.Sources {
 		fmt.Fprintf(&b, "  source [%s] %s status=%s hooks=%d\n", s.Scope, s.Path, s.Status, s.HookCount)
 	}

@@ -64,13 +64,14 @@ func Collect(opts Options) Report {
 
 	disp := func(p string) string { return displayPath(p, root, home) }
 
-	instr := collectInstructions(root, home, disp)
+	instr, instructionIssues := collectInstructions(root, home, disp)
 	skillsR, skillIssues := collectSkills(root, home, reasonixHome, cfg, disp)
 	cmdsR, cmdIssues := collectCommands(root, disp)
-	hooksR, hookIssues := collectHooks(root, home, reasonixHome, disp)
+	hooksR, hookIssues := collectHooks(root, home, reasonixHome, cfg, disp)
 	pluginsR, pluginIssues := collectPlugins(reasonixHome, disp)
 	mcpR, mcpIssues := collectMCP(cfg, root, home, disp)
 
+	issues = append(issues, instructionIssues...)
 	issues = append(issues, skillIssues...)
 	issues = append(issues, cmdIssues...)
 	issues = append(issues, hookIssues...)
@@ -141,7 +142,7 @@ func buildSummary(r Report) Summary {
 	return s
 }
 
-func collectInstructions(root, home string, disp func(string) string) InstructionsReport {
+func collectInstructions(root, home string, disp func(string) string) (InstructionsReport, []Issue) {
 	userDir := config.MemoryUserDir()
 	if home != "" && (userDir == "" || strings.Contains(userDir, home)) {
 		// Prefer explicit test home when Reasonix home is under it.
@@ -154,16 +155,28 @@ func collectInstructions(root, home string, disp func(string) string) Instructio
 	set := memory.Load(memory.Options{CWD: root, UserDir: userDir})
 	out := InstructionsReport{Docs: []InstructionDoc{}}
 	if set == nil {
-		return out
+		return out, nil
 	}
 	for i, d := range set.Docs {
 		out.Docs = append(out.Docs, InstructionDoc{
-			Path:  disp(d.Path),
-			Scope: string(d.Scope),
-			Order: i + 1,
+			Path: disp(d.Path), Scope: string(d.Scope), Directory: disp(d.Directory),
+			Depth: d.Depth, Order: i + 1,
 		})
 	}
-	return out
+	issues := make([]Issue, 0, len(set.InstructionDiagnostics))
+	for _, diagnostic := range set.InstructionDiagnostics {
+		source := diagnostic.SourcePath
+		if source == "" {
+			source = diagnostic.Path
+		}
+		issues = append(issues, Issue{
+			Severity: "warning", Code: "instruction." + diagnostic.Code, Subsystem: "instructions",
+			Source: disp(source), Message: diagnostic.Message,
+			Remediation: "Fix or remove the referenced instruction import, then start a new session",
+			SettingsTab: "memory",
+		})
+	}
+	return out, issues
 }
 
 func collectSkills(root, home, reasonixHome string, cfg *config.Config, disp func(string) string) (AssetReport, []Issue) {
@@ -272,21 +285,25 @@ func collectCommands(root string, disp func(string) string) (AssetReport, []Issu
 	return rep, issues
 }
 
-func collectHooks(root, home, reasonixHome string, disp func(string) string) (HookReport, []Issue) {
+func collectHooks(root, home, reasonixHome string, cfg *config.Config, disp func(string) string) (HookReport, []Issue) {
 	var issues []Issue
-	// Prefer explicit home for trust/settings when tests isolate HOME.
+	// Prefer explicit home for settings when tests isolate HOME.
 	homeDir := home
 	if reasonixHome != "" && home == "" {
 		homeDir = filepath.Dir(reasonixHome)
 	}
-	trusted := hook.IsTrusted(root, homeDir)
 	insp := hook.Inspect(hook.LoadOptions{
 		ProjectRoot: root,
 		HomeDir:     homeDir,
-		Trusted:     trusted,
 	})
+	runtimeOptions := hook.RuntimeOptions{}
+	if cfg != nil {
+		runtimeOptions = hook.RuntimeOptionsForShell(cfg.Tools.Shell.Prefer, cfg.Tools.Shell.Path)
+	}
 	rep := HookReport{
-		TrustedProject: insp.TrustedProject || trusted,
+		// Retained in schema v1 for compatibility; project hooks are enabled by
+		// default whenever a project root is present.
+		TrustedProject: insp.TrustedProject,
 		ProjectDefines: insp.ProjectDefines,
 		Sources:        []HookSource{},
 		Entries:        []HookEntry{},
@@ -305,15 +322,6 @@ func collectHooks(root, home, reasonixHome string, disp func(string) string) (Ho
 				SettingsTab: "hooks",
 			})
 		}
-		if s.Status == "untrusted_skipped" && insp.ProjectDefines {
-			issues = append(issues, Issue{
-				Severity: "warning", Code: "hook.untrusted_project", Subsystem: "hooks",
-				Source:      disp(s.Path),
-				Message:     "project defines hooks but the workspace is not trusted",
-				Remediation: "Trust this project in Settings → Hooks (or CLI trust flow) before project hooks run",
-				SettingsTab: "hooks",
-			})
-		}
 	}
 	for _, e := range insp.Entries {
 		rep.Entries = append(rep.Entries, HookEntry{
@@ -329,6 +337,9 @@ func collectHooks(root, home, reasonixHome string, disp func(string) string) (Ho
 				Remediation: "Set command or contextFile for the hook entry",
 				SettingsTab: "hooks",
 			})
+		}
+		if issue, ok := hookRuntimeIssue(e, hook.CheckEntryRuntime(e, runtimeOptions), disp); ok {
+			issues = append(issues, issue)
 		}
 		if e.ContextFile != "" {
 			if !hook.ContextFileUsable(e.ContextFile) {
@@ -361,6 +372,19 @@ func collectHooks(root, home, reasonixHome string, disp func(string) string) (Ho
 		}
 	}
 	return rep, issues
+}
+
+func hookRuntimeIssue(entry hook.Entry, err error, disp func(string) string) (Issue, bool) {
+	if err == nil {
+		return Issue{}, false
+	}
+	return Issue{
+		Severity: "error", Code: "hook.shell_unavailable", Subsystem: "hooks",
+		Name: string(entry.Event), Source: disp(entry.Source),
+		Message:     sanitizeErrText(err.Error()),
+		Remediation: "Install Git for Windows, or configure [tools.shell] prefer=\"bash\" and path to a usable bash.exe, then re-run doctor capabilities",
+		SettingsTab: "hooks",
+	}, true
 }
 
 func collectPlugins(reasonixHome string, disp func(string) string) (PluginPackageReport, []Issue) {

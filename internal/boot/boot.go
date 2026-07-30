@@ -97,9 +97,9 @@ type Options struct {
 	// access to extra directories without changing persisted sandbox config.
 	AdditionalDirs []string
 	// Stderr is the writer for diagnostic warnings and plugin subprocess
-	// stderr output. When nil, defaults to os.Stderr. Set to io.Discard
-	// during model switch inside a bubbletea session to prevent any output
-	// from corrupting the TUI's terminal raw mode.
+	// stderr output. When nil, defaults to os.Stderr. Interactive terminal
+	// frontends must provide a private diagnostic writer (or io.Discard) so
+	// background output cannot corrupt the TUI's terminal raw mode.
 	Stderr io.Writer
 	// WorkspaceRoot is the project root directory for config, skills, memory,
 	// commands, hooks, and tool confinement. When empty, the current working
@@ -107,6 +107,11 @@ type Options struct {
 	// so each tab loads its own config/skills/hooks without changing the process
 	// cwd — enabling concurrent multi-project sessions.
 	WorkspaceRoot string
+	// AutoPricingCurrency supplies a frontend-resolved pricing region when the
+	// persisted desktop currency and language settings are all automatic. It is
+	// applied to the in-memory config only and never turns Auto into a persisted
+	// CNY/USD choice.
+	AutoPricingCurrency string
 	// ExtraPlugins are session-scoped MCP servers supplied by a host transport
 	// (for example ACP session/new). They are connected eagerly for this
 	// controller but are not persisted to reasonix.toml.
@@ -197,6 +202,7 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 	if err != nil {
 		return nil, err
 	}
+	applyRuntimeAutoPricingCurrency(cfg, opts.AutoPricingCurrency)
 	// Arm the credential-protection layers from the user-global [secrets]
 	// section before any tool, hook, or plugin subprocess can spawn. Package
 	// globals are correct here because [secrets] is user-global (project
@@ -204,9 +210,15 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 	secrets.SetFilterSubprocessEnv(cfg.Secrets.FilterSubprocessEnv)
 	secrets.SetProtectSensitiveFiles(cfg.Secrets.ProtectSensitiveFiles)
 	secrets.RegisterCredentialEnvKeys(cfg.CredentialEnvNames())
+	// Fall through a keyless default_model to the next configured chat model
+	// instead of hard-failing every command on "missing env X_API_KEY" (issue
+	// #6996). The fallback only kicks in when the caller did not pass an
+	// explicit opts.Model; explicit choices still fail loudly.
 	modelName := opts.Model
 	if modelName == "" {
-		modelName = cfg.DefaultModel
+		if resolved, _, ok := cfg.ResolveNewSessionChatModel(); ok {
+			modelName = resolved
+		}
 	}
 	config.NormalizeLegacyMimoCustomProvidersForRefs(cfg, modelName)
 	tokenMode := NormalizeTokenMode(opts.TokenMode)
@@ -407,6 +419,9 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 	// controller's transient turn-injection and fold in on the next session.
 	mem := &memory.Set{CWD: root}
 	if !cfg.SafeMode() {
+		if _, err := memory.StoreFor(config.MemoryUserDir(), root).MigrateV2(); err != nil {
+			sink.Emit(event.Event{Kind: event.Notice, Level: event.LevelWarn, Text: "Memory metadata migration did not complete.", Detail: err.Error()})
+		}
 		mem = memory.Load(memory.Options{CWD: root, UserDir: config.MemoryUserDir()})
 	}
 	projectChecks := instruction.ExtractHostChecks(mem.Docs)
@@ -733,27 +748,22 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 		WithSessionAllow(opts.PermissionAllow)
 	headlessGate := control.NewSharedHeadlessGate(policy, opts.HeadlessApprovalMode)
 
-	// Hooks: load the global settings.json plus the project's (only when trusted —
-	// project hooks run arbitrary shell commands, so cloning a repo must not
-	// silently execute them). Non-blocking hook output is surfaced to the user as
-	// a Notice through the shared sink. The runner fires PreToolUse/PostToolUse in
-	// the agent loop and PermissionRequest/UserPromptSubmit/Stop at the controller
-	// boundary.
-	hooksTrusted := !cfg.SafeMode() && hook.IsTrusted(root, "")
+	// Hooks: load the global settings.json plus the project's. Non-blocking hook
+	// output is surfaced to the user as a Notice through the shared sink. The
+	// runner fires PreToolUse/PostToolUse in the agent loop and
+	// PermissionRequest/UserPromptSubmit/Stop at the controller boundary.
 	var resolvedHooks []hook.ResolvedHook
 	if !cfg.SafeMode() {
-		resolvedHooks = hook.Load(hook.LoadOptions{ProjectRoot: root, Trusted: hooksTrusted})
+		resolvedHooks = hook.Load(hook.LoadOptions{ProjectRoot: root})
+	}
+	hookRuntime := hook.RuntimeOptions{}
+	if shell.Kind == sandbox.ShellBash {
+		hookRuntime.BashPath = shell.Path
 	}
 	hookRunner := hook.NewRunner(
-		resolvedHooks,
-		root, nil,
+		resolvedHooks, root, hook.NewDefaultSpawner(hookRuntime),
 		func(msg string) { sink.Emit(event.Event{Kind: event.Notice, Level: event.LevelWarn, Text: msg}) },
 	)
-	if !cfg.SafeMode() && hook.ProjectDefinesHooks(root) && !hooksTrusted {
-		sink.Emit(event.Event{Kind: event.Notice, Level: event.LevelInfo,
-			Text: "this project defines hooks but they are not trusted — run /hooks trust to enable them"})
-	}
-
 	// The `task` tool spawns sub-agents that reuse the parent's provider and
 	// tool registry. Wired here after the built-ins / plugins are loaded so
 	// sub-agents inherit the full tool set (minus `task` itself, to keep
@@ -847,11 +857,26 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 	// so task tools created later still receive the session-shared substrate.
 	var capRuntime *agent.MCPCapabilityRuntime
 	newTaskTool := func() *agent.TaskTool {
-		return agent.NewTaskTool(execProv, entry.Price, reg, maxSteps,
-			entry.ContextWindow, cfg.Agent.RecentKeep, cfg.Agent.SoftCompactRatio, cfg.Agent.ToolResultSnipRatio, cfg.Agent.CompactRatio, cfg.Agent.CompactForceRatio,
-			cfg.Agent.Temperature, config.ArchiveDir(), "", headlessGate,
-			keepPolicy,
-			taskModel, taskEffort, resolveSubagentProvider).
+		return agent.NewTaskToolWithOptions(agent.TaskToolOptions{
+			Provider:            execProv,
+			Pricing:             entry.Price,
+			ParentRegistry:      reg,
+			MaxSteps:            maxSteps,
+			ContextWindow:       entry.ContextWindow,
+			RecentKeep:          cfg.Agent.RecentKeep,
+			SoftCompactRatio:    cfg.Agent.SoftCompactRatio,
+			ToolResultSnipRatio: cfg.Agent.ToolResultSnipRatio,
+			CompactRatio:        cfg.Agent.CompactRatio,
+			CompactForceRatio:   cfg.Agent.CompactForceRatio,
+			Temperature:         cfg.Agent.Temperature,
+			ArchiveDir:          config.ArchiveDir(),
+			SysPrompt:           "",
+			Gate:                headlessGate,
+			KeepPolicy:          keepPolicy,
+			SubagentModel:       taskModel,
+			SubagentEffort:      taskEffort,
+			ResolveProvider:     resolveSubagentProvider,
+		}).
 			WithTranscripts(subagentStore, root, modelName, entry.Effort).
 			WithTranscriptIdentityResolver(subagentIdentity).
 			WithMaxSubagentDepth(maxSubagentDepth).
@@ -1613,7 +1638,7 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 				CapabilityLedger:         plannerLedger,
 				CapabilityAudit:          plannerAudit,
 			}
-			runner = agent.NewCoordinator(plannerProv, plannerSess, pe.Price, plannerTools, plannerOpts, executor, cfg.Agent.Temperature, sink, control.NewPlannerGate())
+			runner = agent.NewCoordinatorWithPlannerPolicy(plannerProv, plannerSess, pe.Price, plannerTools, plannerOpts, executor, cfg.Agent.Temperature, sink, control.NewPlannerPolicy())
 			label = entry.Model + " + planner " + pe.Model
 		}
 	}
@@ -1762,6 +1787,12 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 	return ctrl, nil
 }
 
+func applyRuntimeAutoPricingCurrency(cfg *config.Config, currency string) {
+	if cfg != nil {
+		cfg.ApplyRuntimeAutoPricingCurrency(currency)
+	}
+}
+
 func rememberPermissionRule(workspaceRoot, rule string) control.RememberResult {
 	path := rememberPermissionConfigPath(workspaceRoot)
 	result := control.RememberResult{Rule: strings.TrimSpace(rule), Path: path}
@@ -1813,10 +1844,20 @@ func rememberPermissionConfigPath(workspaceRoot string) string {
 func rememberPlanModeReadOnlyCommand(workspaceRoot, prefix string) control.PlanModeReadOnlyCommandTrustResult {
 	prefix = strings.TrimSpace(prefix)
 	path := rememberPermissionConfigPath(workspaceRoot)
-	edit := config.LoadForEdit(path)
 	result := control.PlanModeReadOnlyCommandTrustResult{Prefix: prefix, Path: path}
 	if prefix == "" {
 		result.Err = fmt.Errorf("empty plan-mode read-only command prefix")
+		return result
+	}
+	unlock, err := config.LockConfigFileEdits(path)
+	if err != nil {
+		result.Err = err
+		return result
+	}
+	defer unlock()
+	edit, err := config.LoadForEditReadOnlyStrict(path)
+	if err != nil {
+		result.Err = err
 		return result
 	}
 	if coveredBy := coveredPlanModeReadOnlyCommand(edit.Agent.PlanModeReadOnlyCommands, prefix); coveredBy != "" {
@@ -2176,6 +2217,7 @@ func NewProviderWithProxy(e *config.ProviderEntry, proxy netclient.ProxySpec) (p
 			"api_key_source":        e.APIKeySourceLabel(),
 			"thinking":              e.Thinking,
 			"effort":                config.EffectiveEffort(e),
+			"supported_efforts":     e.SupportedEfforts,
 			"reasoning_protocol":    config.ReasoningProtocolForEntry(e),
 			"chat_url":              e.ChatURL,
 			"headers":               e.Headers,
@@ -2313,23 +2355,25 @@ func pluginSpecFromEntryWithOptions(e config.PluginEntry, workspaceRoot string, 
 		configSource = opts.ConfigSource
 	}
 	spec := plugin.ApplyKnownOverrides(plugin.Spec{
-		Name:                  e.Name,
-		Package:               strings.TrimSpace(opts.PackageOwners[e.Name]),
-		Type:                  e.Type,
-		Command:               e.Command,
-		Args:                  e.Args,
-		Env:                   e.Env,
-		URL:                   e.URL,
-		Headers:               e.Headers,
-		DefaultCallTimeout:    opts.DefaultCallTimeout,
-		CallTimeout:           secondsDuration(e.CallTimeoutSeconds),
-		ToolTimeouts:          toolTimeoutDurations(e.ToolTimeoutSeconds),
-		WorkspaceRoot:         strings.TrimSpace(workspaceRoot),
-		LaunchManager:         opts.LaunchManager,
-		ConfigSource:          configSource,
-		Authorized:            e.Source.UserAuthorized(),
-		RequireLaunchApproval: e.Source.RequiresLaunchApproval(),
+		Name:               e.Name,
+		Package:            strings.TrimSpace(opts.PackageOwners[e.Name]),
+		Type:               e.Type,
+		Command:            e.Command,
+		Args:               e.Args,
+		Env:                e.Env,
+		URL:                e.URL,
+		Headers:            e.Headers,
+		DefaultCallTimeout: opts.DefaultCallTimeout,
+		CallTimeout:        secondsDuration(e.CallTimeoutSeconds),
+		ToolTimeouts:       toolTimeoutDurations(e.ToolTimeoutSeconds),
+		WorkspaceRoot:      strings.TrimSpace(workspaceRoot),
+		LaunchManager:      opts.LaunchManager,
+		ConfigSource:       configSource,
+		Authorized:         e.Source.UserAuthorized(),
 	}, workspaceRoot)
+	if e.Source.ProjectScoped() && strings.TrimSpace(spec.Dir) == "" {
+		spec.Dir = workspaceRoot
+	}
 	applyMCPIsolation(&spec, workspaceRoot, opts)
 	return spec
 }

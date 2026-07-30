@@ -160,19 +160,13 @@ interface (`call` / `notify` / `close`) abstracts that, so the MCP-level logic
   process uses the server's process sandbox because process confinement cannot
   change per RPC; read-only eligibility and destructive filtering remain local
   workflow gates rather than separate process sandboxes.
-- Configuration provenance is runtime metadata. Explicit installation from the
-  user config, Desktop, `/mcp add`, or `install_source` is authorization: the
-  host connects the server immediately when installation happens in a live
-  session, records a durable exact command/endpoint launch grant for
-  project-scoped installs, and runs authorized calls directly.
-  Project `reasonix.toml` and `.mcp.json` servers that are only
-  discovered from the repository require one durable launch confirmation before
-  any process or network transport is created. Confirmation records the exact
-  identity without a temporary initialize/tools-list preflight, so the normal
-  runtime starts the server only once; matching grants reconnect automatically
-  and identity changes require confirmation again. During the compatibility
-  window, an exact old workspace receipt may migrate only into this launch
-  grant; its former tool-level authority is ignored.
+- Configuration provenance is runtime metadata and determines persistence scope.
+  Desktop and CLI installs write the user-global `config.toml`; project
+  `reasonix.toml` and `.mcp.json` entries remain in their owning project file.
+  Every configured source is trusted without a separate launch-confirmation
+  step. Project entries override same-name global entries, and project
+  `reasonix.toml` overrides `.mcp.json`. Editing writes to the effective entry's
+  source; removing it reveals the next lower-priority declaration.
 - Each remote tool is adapted to the `Tool` interface and injected into the run
   registry, namespaced `mcp__<server>__<tool>` (spaces normalised to `_`) to
   match Claude Code and avoid clashes.
@@ -209,11 +203,37 @@ prefix cache-stable:
 
 - The **planner** (low-frequency) runs in its own session with the same standing
   memory context plus a filtered read-only research tool set, then produces a
-  concise plan. It can inspect files/docs before planning, but writer and
-  workflow tools are not exposed to it. It has no user-configured total-round
-  cap; caller cancellation and context safeguards remain available.
+  concise plan. A deterministic host policy chooses executor-only, light
+  planning, full planning, plan-for-approval, or explicit plan-only from
+  pristine user text plus trusted turn metadata. It does not call a classifier
+  model and does not infer host state from controller-authored prompt blocks.
+  Explicit Plan Mode, synthetic turns, short contextual replies, atomic edits,
+  and bounded read-only actions avoid a second planner; cross-surface,
+  structured, ambiguous, and high-risk work uses the full contract. Active Goal
+  and Delivery turns upgrade non-atomic mutation work, while bounded read-only
+  actions remain executor-only. The privacy-safe
+  route/depth/reason decision is emitted in phase detail.
+- Light plans use a small per-turn research-round budget and return a compact
+  objective, 1-4 ordered steps, likely touchpoints, and primary verification.
+  Full plans use a larger bounded budget and distinguish verified from candidate
+  touchpoints, with risks, acceptance criteria, command-level verification, and
+  rollback when relevant. The depth contract stays in one stable system prompt;
+  only a small host-authored `<planner-turn>` block changes per user turn. If
+  the planner still does not finalize after the bounded research and grace
+  round, plan-and-execute falls back to the executor with the pristine task;
+  plan-only and plan-for-approval remain fail-closed. The incomplete planner
+  turn is rolled back rather than exposed as a broken manual continuation.
+- A bare plan-first route hands the completed plan directly to the executor.
+  Plan-for-approval is reserved for an explicit request to wait for
+  confirmation; the host enforces that boundary even if the planner omits its
+  marker, then hands the approved plan to the executor. A headless host persists
+  the plan so a later turn can continue. Explicit plan-only requests persist the
+  plan and end the current turn without execution. A planner failure on either
+  execution boundary cannot fall back to the executor. These directives may
+  appear after the task clause; quoted examples do not change the route.
 - The plan is handed off as structured text to the **executor** — a full
-  tool-using `Agent` in its own session — which carries it out.
+  tool-using `Agent` in its own session — which validates candidate assumptions
+  and carries it out.
 - The sessions never mix, so neither model's prefix is disturbed by the other's
   turns; both grow prepend-only and stay cache-friendly. This reconciles
   "cache-first" with "two-model collaboration": switching models *inside one
@@ -264,13 +284,22 @@ Long tasks eventually fill the model's context window. Reasonix manages this wit
   TUI, desktop panel) but are excluded from active-memory retrieval. Memory
   search uses the same relative BM25 floor and guides the agent to fall back to
   history when exact original wording or tool output matters.
-- Agent-initiated `remember` and `forget` calls require a fresh human approval
-  each time, even when tool auto-approval or YOLO/full-access mode is enabled.
-  Guardian/safety review cannot answer these prompts on the user's behalf. In
-  non-interactive headless runs or sub-agents, these tools are refused rather
-  than auto-approved. The approval request includes a compact preview of the
-  memory being saved or archived, while external notification hooks only receive
-  the tool name.
+- Before each real user turn, bounded BM25 recall selects relevant active facts
+  from the raw user message and appends them as a low-authority user-turn suffix.
+  Generic turns are suppressed, project facts override equivalent global
+  fallbacks, stale facts are down-ranked, and recall is bounded by result/character
+  budgets. This never mutates the stable system prompt or tool schemas.
+- The owning controller may auto-allow only a bounded, non-sensitive,
+  create-only project/reference `remember`, including in a top-level headless
+  run. Global facts, preferences, feedback,
+  updates, duplicates, sensitive/oversized content, and every `forget` require a
+  fresh human approval even under Auto or YOLO. Guardian/safety review cannot
+  answer these prompts on the user's behalf. Sub-agents and headless surfaces
+  without the owning scoped controller fail closed. The approval request includes a compact preview, while
+  external notification hooks only receive the tool name.
+- Facts carry immutable IDs, monotonic revisions, timestamps, type, and scope.
+  Updates snapshot the previous revision; restore and archive recovery create a
+  higher revision and reject path escapes, symlinks, collisions, and overwrites.
   User-initiated memory edits in the local UI are already explicit user actions.
   See [`SESSION_MEMORY_RETRIEVAL.md`](SESSION_MEMORY_RETRIEVAL.md) for the
   detailed implementation contract.
@@ -313,8 +342,10 @@ func (p Policy) Decide(toolName string, readOnly bool, args json.RawMessage) Dec
   Bash and file mutation approvals use Claude Code-style families such as
   `Bash(npm run build)`, `Bash(npm run test:*)`, and `Edit(docs/**)`. Built-in
   file mutations include writes, edits, notebook edits, symbol/range deletes,
-  and `move_file` renames/moves. Legacy
-  lowercase tool IDs and `tool=literal` rules still load for compatibility. The
+  and `move_file` renames/moves. Legacy lowercase tool IDs still load for
+  compatibility. `Bash=<literal>` is the exact-command form: metacharacters in
+  the literal are ordinary characters and only the identical complete command
+  matches. The
   `:*` suffix marks a Bash command-prefix approval; generated prefix rules also
   reject later commands that introduce shell operators, so `Bash(go test:*)`
   does not cover `go test ./... && rm -rf tmp`.
@@ -324,6 +355,16 @@ func (p Policy) Decide(toolName string, readOnly bool, args json.RawMessage) Dec
   known keys — `command` (bash), `path` / `file_path` (file tools), `pattern`
   (grep/glob) — so tools need not change. A rule whose subject the args don't
   expose only matches in its bare `Tool` form.
+- **Dynamic Bash.** Parameter/arithmetic expansions, assignments, heredocs, unproved
+  redirects, and shell globs cannot reuse bare Bash, prefix, or glob allows;
+  remembered approvals are exact `Bash=<literal>` rules. They still follow the
+  normal posture fallback, so Auto and an approved-plan window may execute them
+  without prompting. Nested or indirect execution is stricter: command and
+  process substitution, a dynamic command name, parse failures, `eval`,
+  `source`, shell `-c`, PowerShell/cmd command strings, and runtime inline-code
+  flags require a human in interactive Ask/Auto. Guardian, allowing hooks, and
+  the approved-plan window cannot answer that decision; only an identical exact
+  grant or YOLO can bypass it.
 - **Precedence.** `deny` > `ask` > `allow` > fallback. Fallback is `Allow` for
   read-only tools and `Mode` (default `Ask`) for writers. `deny` always wins, so
   a broad `allow = ["Bash"]` can still be carved by `deny = ["Bash(rm -rf*)"]`;
@@ -339,14 +380,16 @@ func (p Policy) Decide(toolName string, readOnly bool, args json.RawMessage) Dec
   built-in file-mutating tools share it. A
   non-interactive run
   (`reasonix run`, a sub-agent, anything with no TTY / no approver) cannot prompt, so
-  it resolves `Ask` to **allow** — preserving autonomous behaviour. A `Deny` is a
+  ordinary `Ask` resolves to **allow** — preserving autonomous behaviour. Nested
+  or indirect Bash is the exception: headless Ask/Auto/DontAsk reject it unless
+  an identical literal grant exists; only YOLO may bypass that human requirement. A `Deny` is a
   hard block in *every* mode: the tool never executes and the model receives a
   "blocked" result it can adapt to (the same shape as a plan-mode refusal).
 - **MCP authorization.** Installing an MCP server authorizes all of its tools;
   there is no second server, raw-tool, writer, or destructive approval policy.
-  Explicit global deny rules still win. Repository-declared servers require one
-  exact identity confirmation before startup and require confirmation again only
-  if that identity changes. `readOnlyHint` and `destructiveHint` remain internal
+  Project configuration is trusted the same way and requires no separate launch
+  confirmation. Explicit global deny rules still win. `readOnlyHint` and
+  `destructiveHint` remain internal
   facts for scheduling, Plan/read-only restrictions, and cached-to-live safety
   reclassification. Strict read-only sub-agent registries expose only
   authorized tools with `readOnlyHint: true` and no `destructiveHint`. The
@@ -372,7 +415,7 @@ func (p Policy) Decide(toolName string, readOnly bool, args json.RawMessage) Dec
   `ask`/`deny`, and Sandbox path as Standard mode. A third-party MCP
   `readOnlyHint` affects dispatch classification and strict-child eligibility,
   but not the dedicated Planner's non-destructive trust path. Once the server is
-  installed or its exact project identity is confirmed, all non-destructive
+  installed or declared in project configuration, all non-destructive
   capabilities enter the dedicated Planner proxy; only hinted readers enter
   strict read-only sub-agent execution. `plan_mode_read_only_commands` is
   retained for config/session round trips and does not grant or revoke calls in
@@ -386,7 +429,12 @@ func (p Policy) Decide(toolName string, readOnly bool, args json.RawMessage) Dec
   `yolo` ("Yolo批准"). `auto` lets the permission policy auto-approve the writer
   fallback while preserving explicit ask/deny rules; `yolo` skips ordinary tool
   permission prompts for approval-gated tools such as writers and Bash. Explicit
-  deny rules and forced fresh reviews still apply.
+  deny rules and forced fresh reviews still apply. Nested or indirect Bash
+  commands require a human in interactive Ask/Auto even during the approved-plan
+  window; ordinary expansions, assignments, redirects, and globs continue under
+  Auto fallback but cannot inherit reusable Bash rules. YOLO is the sole mode
+  bypass for the human-required class, while an identical exact literal remains
+  an ordinary explicit authorization.
   Neither posture answers `ask` questions or approves `exit_plan_mode` plans.
   Plan Mode is entered only through an explicit user choice and remains
   independent of the active tool-approval posture. After a user approves a
@@ -608,6 +656,9 @@ default_model = "deepseek"   # provider name (→ its default model) or "provide
 # shortcut_layout = "desktop"       # classic|desktop; compatibility setting
 # cursor_shape = "bar"              # CLI/TUI textarea cursor: underline|block|bar
 
+[cli]                               # user/global only; project reasonix.toml cannot override
+update_channel = "stable"           # stable|preview; missing/unknown values resolve to stable
+
 [agent]
 system_prompt = "You are Reasonix, a coding agent..."  # or system_prompt_file = "..."
 temperature       = 0.0
@@ -686,6 +737,11 @@ args    = []
 # url     = "https://mcp.stripe.com"
 # headers = { Authorization = "Bearer ${STRIPE_KEY}" }   # ${VAR} / ${VAR:-default} expanded
 ```
+
+The native CLI update channel is persisted in the user config. `reasonix
+upgrade` follows it, while `reasonix upgrade stable|preview` changes it and
+updates the same installed binary. The advanced `--channel` flag is a one-off
+override for automation and does not change the saved value.
 
 The executor tracks an adaptive progress lease while a todo is active. A new
 completion, unique successful read, command, or mutation renews the lease;

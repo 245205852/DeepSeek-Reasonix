@@ -20,6 +20,12 @@ import (
 	"reasonix/internal/provider"
 )
 
+func TestTitlePromptRequiresUserMessageLanguage(t *testing.T) {
+	if !strings.Contains(titlePrompt, "same language as the user's message") {
+		t.Fatalf("title prompt does not preserve the user's language: %q", titlePrompt)
+	}
+}
+
 // fakeRunner stands in for an agent.Runner: it records the composed input and
 // returns without emitting model events, so the controller's TurnDone is the
 // observable signal.
@@ -325,9 +331,9 @@ func TestServeIndexPresentsRecoveryPauseAsNotice(t *testing.T) {
 	html := string(indexHTML)
 	for _, want := range []string{
 		"e.outcome==='recovery_paused'",
-		"showNotice('⏸ '+(e.err||__('recovery_paused')))",
-		"'recovery_paused': 'Automatic recovery paused. Completed work is kept; send more requirements or reply continue.'",
-		"'recovery_paused': '自动恢复已暂停。已完成的工作会保留；可补充要求或直接回复“继续”。'",
+		"showNotice('⏸ '+__('recovery_paused'))",
+		"'recovery_paused': 'Automatic retries paused. Reasonix stopped repeated attempts and kept completed work. Send “Continue” to start a fresh attempt, or add instructions to change direction.'",
+		"'recovery_paused': '已暂停自动重试。Reasonix 已停止重复尝试，并保留已完成的工作。发送“继续”即可开始新一轮，也可以补充要求来调整方向。'",
 	} {
 		if !strings.Contains(html, want) {
 			t.Fatalf("serve index missing recovery pause support %q", want)

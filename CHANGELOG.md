@@ -69,6 +69,22 @@ branch.
 
 ### Fixed
 
+- Hardened Bash permission reuse for dynamic and indirect execution. Parameter/arithmetic expansions,
+  assignments, redirects, heredocs, and globs can only be remembered as exact
+  `Bash=<literal>` rules, while still using Auto's normal fallback. Nested or
+  indirect execution now requires a human in interactive Ask/Auto and fails
+  closed in headless Ask/Auto/DontAsk. Broad Bash rules, Guardian/hook allows,
+  and the approved-plan window can no longer silently authorize that stricter
+  class; YOLO remains the explicit full-access bypass and sandbox enforcement
+  is unchanged.
+- Fixed Desktop sessions incorrectly locking themselves during Goal + Delivery
+  mode changes, controller rebuilds, duplicate-tab restore, and background
+  reattachment. Desktop now keeps one process-local runtime owner per canonical
+  session, fences stale controller events by runtime epoch, blocks sends until
+  that runtime is ready, and scopes single-instance ownership to
+  `REASONIX_HOME` instead of the executable path. Switching saved sessions is
+  now transactional: a target build, restore, or lease failure leaves the
+  current controller, lease, path, mode profile, and runtime epoch untouched.
 - Stabilized the desktop rich composer caret after skill and plugin invocation
   tags. DOM→model and model→DOM selection mapping now treat invocation chips as
   zero-length atoms while still counting user text that lands inside the NBSP

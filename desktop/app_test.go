@@ -28,6 +28,7 @@ import (
 	"reasonix/internal/control"
 	"reasonix/internal/event"
 	"reasonix/internal/evidence"
+	"reasonix/internal/instruction"
 	"reasonix/internal/jobs"
 	"reasonix/internal/mcplaunch"
 	"reasonix/internal/memory"
@@ -473,7 +474,9 @@ func TestMetaForTabIncludesWorkspaceContext(t *testing.T) {
 	if strings.Contains(string(raw), "sandboxPath") || strings.Contains(string(raw), configuredSandboxRoot) {
 		t.Fatalf("meta should not expose configured sandbox root as sandboxPath: %s", raw)
 	}
-	deadline := time.Now().Add(time.Second)
+	// The first git process launch can be noticeably slower on Windows runners
+	// while MetaForTab intentionally keeps the caller path non-blocking.
+	deadline := time.Now().Add(5 * time.Second)
 	for {
 		if got = app.MetaForTab("tab-1"); got.GitBranch == "feature/meta" {
 			break
@@ -596,17 +599,77 @@ func TestMemoryViewReturnsNonNilArraysBeforeStartup(t *testing.T) {
 	isolateDesktopUserDirs(t)
 
 	view := NewApp().Memory()
-	if view.Docs == nil || view.Facts == nil || view.Archives == nil || view.Scopes == nil {
+	if view.Docs == nil || view.Facts == nil || view.Archives == nil || view.Scopes == nil || view.InstructionDiagnostics == nil || view.Conflicts == nil || view.LastRecall.Hits == nil {
 		t.Fatalf("Memory() arrays must be non-nil before startup: %+v", view)
 	}
 	raw, err := json.Marshal(view)
 	if err != nil {
 		t.Fatalf("marshal Memory(): %v", err)
 	}
-	for _, bad := range []string{`"docs":null`, `"facts":null`, `"archives":null`, `"scopes":null`} {
+	for _, bad := range []string{`"docs":null`, `"facts":null`, `"archives":null`, `"scopes":null`, `"instructionDiagnostics":null`, `"conflicts":null`, `"hits":null`} {
 		if strings.Contains(string(raw), bad) {
 			t.Fatalf("Memory() JSON contains %s; frontend expects []: %s", bad, raw)
 		}
+	}
+	if revisions := NewApp().MemoryRevisions("missing"); revisions == nil {
+		t.Fatal("MemoryRevisions must return [] before startup, not nil")
+	}
+}
+
+func TestMemoryViewIncludesRecallFreshnessAndOverrides(t *testing.T) {
+	isolateDesktopUserDirs(t)
+	root := t.TempDir()
+	store := memory.Store{Dir: filepath.Join(root, "project"), GlobalDir: filepath.Join(root, "global")}
+	if _, err := (memory.Store{Dir: store.GlobalDir}).Save(memory.Memory{
+		Name: "deploy-target", Title: "Deploy target", Description: "legacy deployment target", Scope: memory.FactScopeGlobal, Type: memory.TypeProject, Body: "Deploy payments to the legacy cluster.",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := (memory.Store{Dir: store.Dir}).Save(memory.Memory{
+		Name: "deploy-target", Title: "Deploy target", Description: "current deployment target", Scope: memory.FactScopeProject, Type: memory.TypeProject, Body: "Deploy payments to the green cluster.",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	ctrl := control.New(control.Options{Memory: &memory.Set{Store: store}})
+	ctrl.Compose("deploy payments target cluster")
+	app := NewApp()
+	app.setTestCtrl(ctrl, "test-model")
+
+	view := app.Memory()
+	if len(view.Facts) != 2 || view.Facts[0].Freshness == "" || view.Facts[1].Freshness == "" {
+		t.Fatalf("facts with freshness = %+v", view.Facts)
+	}
+	if len(view.Conflicts) != 1 || view.Conflicts[0].Resolution != "project_over_global" {
+		t.Fatalf("conflicts = %+v", view.Conflicts)
+	}
+	if view.LastRecall.Query != "deploy payments target cluster" || len(view.LastRecall.Hits) != 1 || view.LastRecall.Hits[0].Scope != "project" {
+		t.Fatalf("last recall = %+v", view.LastRecall)
+	}
+}
+
+func TestMemoryRevisionAPIRestoresSelectedRevision(t *testing.T) {
+	isolateDesktopUserDirs(t)
+	store := memory.Store{Dir: t.TempDir()}
+	first, err := store.SaveWithOptions(memory.Memory{Name: "fact", Description: "one", Body: "v1"}, memory.SaveOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.SaveWithOptions(memory.Memory{ID: first.Memory.ID, Name: "fact", Description: "two", Body: "v2"}, memory.SaveOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	app := NewApp()
+	app.setTestCtrl(control.New(control.Options{Memory: &memory.Set{Store: store}}), "test-model")
+
+	revisions := app.MemoryRevisions(first.Memory.ID)
+	if len(revisions) != 1 || revisions[0].Revision != 1 {
+		t.Fatalf("revisions = %+v", revisions)
+	}
+	restored, err := app.RestoreMemoryRevision(first.Memory.ID, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if restored.Revision != 3 || restored.Body != "v1" {
+		t.Fatalf("restored = %+v", restored)
 	}
 }
 
@@ -638,10 +701,12 @@ func TestMemoryViewIncludesActiveAndArchivedFacts(t *testing.T) {
 
 	app := NewApp()
 	app.setTestCtrl(control.New(control.Options{Memory: &memory.Set{
-		Docs:    []memory.Source{{Path: filepath.Join(cwd, "AGENTS.md"), Scope: memory.ScopeProject, Body: "Project instructions"}},
-		Store:   store,
-		CWD:     cwd,
-		UserDir: userDir,
+		Docs: []memory.Source{{
+			Path: filepath.Join(cwd, "AGENTS.md"), Scope: memory.ScopeProject, Directory: cwd,
+			Body: "Project instructions", Imports: []instruction.Import{{Path: filepath.Join(cwd, "shared.md"), SourcePath: filepath.Join(cwd, "AGENTS.md")}},
+		}},
+		InstructionDiagnostics: []instruction.Diagnostic{{Code: "import_cycle", Path: "shared.md", SourcePath: filepath.Join(cwd, "AGENTS.md"), Line: 3, Message: "cycle"}},
+		Store:                  store, CWD: cwd, UserDir: userDir,
 	}}), "test-model")
 
 	view := app.Memory()
@@ -651,15 +716,54 @@ func TestMemoryViewIncludesActiveAndArchivedFacts(t *testing.T) {
 	if len(view.Docs) != 1 || view.Docs[0].Scope != "project" || !strings.Contains(view.Docs[0].Body, "Project instructions") {
 		t.Fatalf("Memory() docs = %+v", view.Docs)
 	}
-	if len(view.Facts) != 1 || view.Facts[0].Name != "active-fact" || view.Facts[0].Type != "project" {
+	if view.Docs[0].Directory != cwd || len(view.Docs[0].Imports) != 1 || len(view.InstructionDiagnostics) != 1 || view.InstructionDiagnostics[0].Code != "import_cycle" {
+		t.Fatalf("Memory() instruction provenance = docs %+v diagnostics %+v", view.Docs, view.InstructionDiagnostics)
+	}
+	if len(view.Facts) != 1 || view.Facts[0].Name != "active-fact" || view.Facts[0].Type != "project" || view.Facts[0].Scope != "project" {
 		t.Fatalf("Memory() active facts = %+v", view.Facts)
 	}
-	if len(view.Archives) != 1 || view.Archives[0].Name != "archived-fact" || view.Archives[0].Type != "feedback" ||
+	if view.Facts[0].ID == "" || view.Facts[0].Revision != 1 || view.Facts[0].CreatedAt == "" || view.Facts[0].UpdatedAt == "" {
+		t.Fatalf("Memory() active fact metadata = %+v", view.Facts[0])
+	}
+	if len(view.Archives) != 1 || view.Archives[0].Name != "archived-fact" || view.Archives[0].Type != "feedback" || view.Archives[0].Scope != "project" ||
 		view.Archives[0].Path == "" || view.Archives[0].ArchivedAt == "" {
 		t.Fatalf("Memory() archived facts = %+v", view.Archives)
 	}
+	if view.Archives[0].ID == "" || view.Archives[0].Revision != 1 || view.Archives[0].CreatedAt == "" || view.Archives[0].UpdatedAt == "" {
+		t.Fatalf("Memory() archived fact metadata = %+v", view.Archives[0])
+	}
 	if len(view.Scopes) != 3 {
 		t.Fatalf("Memory() scopes = %+v, want user/project/local", view.Scopes)
+	}
+}
+
+func TestRestoreArchivedMemoryRecoversFactForCurrentSession(t *testing.T) {
+	isolateDesktopUserDirs(t)
+	userDir := t.TempDir()
+	cwd := t.TempDir()
+	store := memory.StoreFor(userDir, cwd)
+	first, err := store.SaveWithOptions(memory.Memory{
+		Name: "restorable-fact", Description: "recover me", Body: "Recovered guidance.",
+	}, memory.SaveOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	archivePath, err := store.Archive(first.Memory.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	app := NewApp()
+	app.setTestCtrl(control.New(control.Options{Memory: &memory.Set{Store: store, CWD: cwd, UserDir: userDir}}), "test-model")
+	if _, err := app.RestoreArchivedMemory(archivePath); err != nil {
+		t.Fatal(err)
+	}
+	view := app.Memory()
+	if len(view.Facts) != 1 || view.Facts[0].ID != first.Memory.ID || view.Facts[0].Revision != 2 {
+		t.Fatalf("restored memory view = %+v", view)
+	}
+	if len(view.Archives) != 0 {
+		t.Fatalf("restored archive remained visible: %+v", view.Archives)
 	}
 }
 
@@ -942,6 +1046,9 @@ func TestDesktopStartupSettingsUsesUserDesktopPreferencesWithoutFullSettingsPayl
 	if err := userCfg.SetDesktopCheckUpdates(false); err != nil {
 		t.Fatalf("set desktop check updates: %v", err)
 	}
+	if err := userCfg.SetDesktopUpdateChannel("preview"); err != nil {
+		t.Fatalf("set desktop update channel: %v", err)
+	}
 	userCfg.Bot.Enabled = true
 	userCfg.Bot.Allowlist.Enabled = true
 	userCfg.Bot.Allowlist.QQUsers = []string{"alice"}
@@ -950,7 +1057,7 @@ func TestDesktopStartupSettingsUsesUserDesktopPreferencesWithoutFullSettingsPayl
 	}
 
 	got := NewApp().DesktopStartupSettings()
-	if got.DesktopLanguage != "en" || got.DesktopLayoutStyle != "classic" || got.DesktopTheme != "dark" || got.DesktopThemeStyle != "graphite" || got.DisplayMode != "standard" || got.StatusBarStyle != "icon" || got.CheckUpdates {
+	if got.DesktopLanguage != "en" || got.DesktopLayoutStyle != "classic" || got.DesktopTheme != "dark" || got.DesktopThemeStyle != "graphite" || got.DisplayMode != "standard" || got.StatusBarStyle != "icon" || got.CheckUpdates || got.UpdateChannel != "preview" {
 		t.Fatalf("DesktopStartupSettings desktop prefs = %+v, want user-level startup prefs", got)
 	}
 	if want := []string{"workspace", "git_branch", "model"}; !reflect.DeepEqual(got.StatusBarItems, want) {
@@ -2844,6 +2951,21 @@ func TestModelsForTabOnlyListsProviderAccessWhenConfigured(t *testing.T) {
 	}
 }
 
+func TestModelsForTabListsNothingWhenProviderAccessExplicitlyEmpty(t *testing.T) {
+	isolateDesktopUserDirs(t)
+	setDesktopTestCredential(t, "DEEPSEEK_API_KEY", "sk-test")
+
+	cfg := config.Default()
+	cfg.Desktop.ProviderAccess = []string{}
+	if err := cfg.SaveTo(config.UserConfigPath()); err != nil {
+		t.Fatalf("save config: %v", err)
+	}
+
+	if models := NewApp().Models(); len(models) != 0 {
+		t.Fatalf("Models() = %+v, want no models when provider access is explicitly empty", models)
+	}
+}
+
 func TestModelsForTabListsCustomMultiModelProviderWithoutMetadata(t *testing.T) {
 	isolateDesktopUserDirs(t)
 	setDesktopTestCredential(t, "LOCAL_API_KEY", "sk-test")
@@ -3099,6 +3221,8 @@ func TestSetModelForTabRefreshesCarriedSystemPromptWithoutChangingDefaults(t *te
 	app.tabs = map[string]*WorkspaceTab{tab.ID: tab, sibling.ID: sibling}
 	app.tabOrder = []string{tab.ID, sibling.ID}
 	app.activeTabID = tab.ID
+	var switchTiming modelSwitchTiming
+	app.modelSwitchTimingHook = func(timing modelSwitchTiming) { switchTiming = timing }
 	t.Cleanup(func() {
 		if tab.Ctrl != nil {
 			tab.Ctrl.Close()
@@ -3126,6 +3250,12 @@ func TestSetModelForTabRefreshesCarriedSystemPromptWithoutChangingDefaults(t *te
 	}
 	if sibling.model != "old/old-model" {
 		t.Fatalf("sibling tab model after session switch = %q, want old/old-model", sibling.model)
+	}
+	if switchTiming.Outcome != "ok" || switchTiming.Total <= 0 {
+		t.Fatalf("model switch timing = %+v, want successful non-zero observation", switchTiming)
+	}
+	if switchTiming.Build <= 0 || switchTiming.LeaseAndResume <= 0 || switchTiming.SwapAndPersist <= 0 {
+		t.Fatalf("model switch stage timing incomplete: %+v", switchTiming)
 	}
 }
 
@@ -5274,6 +5404,10 @@ func TestSetTokenModeLeaseHeldKeepsCurrentController(t *testing.T) {
 	if got := currentTabTokenMode(tab); got != "full" {
 		t.Fatalf("token mode = %q, want full", got)
 	}
+	meta := app.MetaForTab(tab.ID)
+	if !meta.Ready || meta.Runtime.Phase != sessionRuntimeReady {
+		t.Fatalf("failed switch disabled current runtime: ready=%v phase=%q", meta.Ready, meta.Runtime.Phase)
+	}
 }
 
 func TestSetTokenModeMigratesStaleOfficialDeepSeekTabModel(t *testing.T) {
@@ -7199,7 +7333,7 @@ func TestCapabilitiesIncludesInstalledPlugins(t *testing.T) {
 	}
 }
 
-func TestDesktopSharedHostProjectMCPWaitsForLaunchApproval(t *testing.T) {
+func TestDesktopSharedHostProjectMCPConnectsWithoutLaunchApproval(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping background MCP boot integration test in short mode")
 	}
@@ -7235,15 +7369,16 @@ url = %q
 	defer ctrl.Close()
 
 	deadline := time.Now().Add(3 * time.Second)
-	for len(sharedHost.Failures()) == 0 && time.Now().Before(deadline) {
+	for !sharedHost.HasClient("h") && time.Now().Before(deadline) {
 		time.Sleep(25 * time.Millisecond)
 	}
-	if sharedHost.HasClient("h") {
-		t.Fatal("project MCP connected before launch approval")
+	if !sharedHost.HasClient("h") {
+		t.Fatalf("project MCP did not connect automatically; failures=%+v", sharedHost.Failures())
 	}
-	failures := sharedHost.Failures()
-	if len(failures) != 1 || !failures[0].RequiresLaunchApproval || !strings.Contains(failures[0].Error, "until the user authorizes") {
-		t.Fatalf("project MCP failure = %+v", failures)
+	for _, failure := range sharedHost.Failures() {
+		if failure.Name == "h" && failure.RequiresLaunchApproval {
+			t.Fatalf("project MCP unexpectedly requested launch approval: %+v", failure)
+		}
 	}
 
 	app := NewApp()
@@ -7261,12 +7396,12 @@ url = %q
 	app.activeTabID = "test"
 
 	view := app.MCPServers()
-	if len(view) != 1 || view[0].Name != "h" || view[0].Status != "failed" || view[0].RuntimeState != "issue" || !view[0].RequiresLaunchApproval {
-		t.Fatalf("MCPServers() = %+v, want project h awaiting launch approval", view)
+	if len(view) != 1 || view[0].Name != "h" || view[0].Status != "connected" || view[0].RuntimeState != "ready" || view[0].RequiresLaunchApproval {
+		t.Fatalf("MCPServers() = %+v, want trusted connected project h", view)
 	}
 }
 
-func TestProjectMCPLaunchApprovalViewOnlyShowsWhileBlocked(t *testing.T) {
+func TestProjectMCPViewIsTrustedAndKeepsProjectSource(t *testing.T) {
 	entry := config.PluginEntry{Name: "project", Source: config.MCPSourceProjectConfig}
 	connected := withPluginConfig(ServerView{Name: entry.Name, Status: "connected"}, entry)
 	if connected.RequiresLaunchApproval {
@@ -7275,14 +7410,20 @@ func TestProjectMCPLaunchApprovalViewOnlyShowsWhileBlocked(t *testing.T) {
 	blocked := withPluginConfig(ServerView{
 		Name: entry.Name, Status: "failed", RequiresLaunchApproval: true,
 	}, entry)
-	if !blocked.RequiresLaunchApproval {
-		t.Fatalf("blocked project MCP lost launch approval action: %+v", blocked)
+	if blocked.RequiresLaunchApproval {
+		t.Fatalf("project MCP exposed obsolete launch approval action: %+v", blocked)
+	}
+	if blocked.Source != "project" || blocked.ConfigSource != "reasonix.toml" {
+		t.Fatalf("blocked project MCP source = %q/%q, want project/reasonix.toml", blocked.Source, blocked.ConfigSource)
 	}
 
 	user := withPluginConfig(ServerView{Name: "user", Status: "connected"},
 		config.PluginEntry{Name: "user", Source: config.MCPSourceUserConfig})
 	if user.RequiresLaunchApproval {
 		t.Fatalf("user-config MCP must not be launch-gate governed: %+v", user)
+	}
+	if user.Source != "user" || user.ConfigSource != "config.toml" {
+		t.Fatalf("user MCP source = %q/%q, want user/config.toml", user.Source, user.ConfigSource)
 	}
 }
 
@@ -8574,6 +8715,71 @@ args = ["serve"]
 	}
 }
 
+func TestRemoveProjectMCPRevealsAndRegistersGlobalFallback(t *testing.T) {
+	isolateDesktopUserDirs(t)
+	dir := robustTempDir(t)
+	t.Chdir(dir)
+	userCfg := config.LoadForEdit(config.UserConfigPath())
+	userCfg.Plugins = []config.PluginEntry{{Name: "docs", Command: "global-docs"}}
+	if err := userCfg.SaveTo(config.UserConfigPath()); err != nil {
+		t.Fatal(err)
+	}
+	projectPath := filepath.Join(dir, "reasonix.toml")
+	if err := os.WriteFile(projectPath, []byte(`
+[[plugins]]
+name = "docs"
+command = "project-docs"
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	reg := tool.NewRegistry()
+	var configured []plugin.Spec
+	ctrl := control.New(control.Options{
+		Host:          plugin.NewHost(),
+		Registry:      reg,
+		WorkspaceRoot: dir,
+		MCPConfigureSpec: func(spec *plugin.Spec) {
+			configured = append(configured, *spec)
+		},
+	})
+	defer ctrl.Close()
+	projectEntry, found, err := desktopEffectiveMCPServer(dir, "docs")
+	if err != nil || !found {
+		t.Fatalf("load project docs: entry=%+v found=%v err=%v", projectEntry, found, err)
+	}
+	if _, err := ctrl.RegisterMCPServerOnDemand(projectEntry); err != nil {
+		t.Fatalf("register project docs: %v", err)
+	}
+
+	app := NewApp()
+	app.setTestCtrl(ctrl, "")
+	app.activeTab().WorkspaceRoot = dir
+	if err := app.RemoveMCPServer("docs"); err != nil {
+		t.Fatalf("RemoveMCPServer(docs): %v", err)
+	}
+
+	projectCfg := config.LoadForEdit(projectPath)
+	if _, found := findPluginEntry(projectCfg.Plugins, "docs"); found {
+		t.Fatalf("project docs still configured after removal: %+v", projectCfg.Plugins)
+	}
+	globalCfg := config.LoadForEdit(config.UserConfigPath())
+	globalEntry, found := findPluginEntry(globalCfg.Plugins, "docs")
+	if !found || globalEntry.Command != "global-docs" {
+		t.Fatalf("global docs fallback = %+v, found=%v", globalEntry, found)
+	}
+	effective, found, err := desktopEffectiveMCPServer(dir, "docs")
+	if err != nil || !found || effective.Source != config.MCPSourceUserConfig || effective.Command != "global-docs" {
+		t.Fatalf("effective docs fallback = %+v, found=%v err=%v", effective, found, err)
+	}
+	if len(configured) < 2 || configured[len(configured)-1].Command != "global-docs" {
+		t.Fatalf("registered specs = %+v, want global fallback registered last", configured)
+	}
+	if _, found := reg.Get("mcp__docs__connect"); !found {
+		t.Fatalf("global fallback connect surface missing; names=%v", reg.Names())
+	}
+}
+
 func TestRemoveMCPServerClearsRecordedStartupFailure(t *testing.T) {
 	isolateDesktopUserDirs(t)
 	dir := robustTempDir(t)
@@ -8796,6 +9002,59 @@ func TestUpdateMCPServerEditsProjectMCPJSONEntry(t *testing.T) {
 	}
 	if _, ok := findPluginEntry(config.LoadForEdit(config.UserConfigPath()).Plugins, "codegraph"); ok {
 		t.Fatalf(".mcp.json update should not create a user config shadow entry")
+	}
+}
+
+func TestUpdateMCPServerPreservesProjectTOMLSourceAndGlobalShadow(t *testing.T) {
+	isolateDesktopUserDirs(t)
+	dir := robustTempDir(t)
+	t.Chdir(dir)
+	userCfg := config.LoadForEdit(config.UserConfigPath())
+	userCfg.Plugins = []config.PluginEntry{{Name: "docs", Command: "global-docs"}}
+	if err := userCfg.SaveTo(config.UserConfigPath()); err != nil {
+		t.Fatal(err)
+	}
+	projectPath := filepath.Join(dir, "reasonix.toml")
+	if err := os.WriteFile(projectPath, []byte(`
+[[plugins]]
+name = "docs"
+command = "project-docs"
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	app := NewApp()
+	app.setTestCtrl(control.New(control.Options{Host: plugin.NewHost(), WorkspaceRoot: dir}), "")
+	defer app.activeCtrl().Close()
+	app.activeTab().WorkspaceRoot = dir
+	entry, ok, err := desktopEffectiveMCPServer(dir, "docs")
+	if err != nil || !ok || entry.Source != config.MCPSourceProjectConfig {
+		t.Fatalf("load project docs entry: entry=%+v found=%v err=%v", entry, ok, err)
+	}
+	if err := config.DefaultMCPActivationStore().SetServerEnabled(entry, dir, false); err != nil {
+		t.Fatal(err)
+	}
+	app.activeTab().disabledMCP["docs"] = ServerView{}
+
+	if err := app.UpdateMCPServer("docs", MCPServerInput{
+		Name: "docs", Transport: "stdio", Command: "project-docs-updated",
+	}); err != nil {
+		t.Fatalf("UpdateMCPServer(project reasonix.toml docs): %v", err)
+	}
+
+	projectCfg := config.LoadForEdit(projectPath)
+	projectEntry, found := findPluginEntry(projectCfg.Plugins, "docs")
+	if !found || projectEntry.Command != "project-docs-updated" {
+		t.Fatalf("project docs entry = %+v, found=%v", projectEntry, found)
+	}
+	globalCfg := config.LoadForEdit(config.UserConfigPath())
+	globalEntry, found := findPluginEntry(globalCfg.Plugins, "docs")
+	if !found || globalEntry.Command != "global-docs" {
+		t.Fatalf("global shadow changed while editing project entry: %+v, found=%v", globalEntry, found)
+	}
+	effective, found, err := desktopEffectiveMCPServer(dir, "docs")
+	if err != nil || !found || effective.Source != config.MCPSourceProjectConfig || effective.Command != "project-docs-updated" {
+		t.Fatalf("effective docs after edit = %+v, found=%v err=%v", effective, found, err)
 	}
 }
 
@@ -9199,7 +9458,7 @@ tier = "lazy"
 	t.Fatalf("figma MCP missing from Capabilities: %+v", view.Servers)
 }
 
-func TestUpdateMCPServerMigratesLegacyTierToBackground(t *testing.T) {
+func TestUpdateMCPServerMigratesLegacyTierInProjectSource(t *testing.T) {
 	isolateDesktopUserDirs(t)
 	dir := robustTempDir(t)
 	t.Chdir(dir)
@@ -9249,19 +9508,19 @@ tier = "lazy"
 		t.Fatalf("env TOKEN = %q, want preserved env", got)
 	}
 	userCfg := config.LoadForEdit(config.UserConfigPath())
-	userPlugin, ok := findPluginEntry(userCfg.Plugins, "playwright")
-	if !ok {
-		t.Fatalf("playwright should be migrated to user config: %+v", userCfg.Plugins)
-	}
-	if userPlugin.Command != "node" || userPlugin.Env["TOKEN"] != "${PLAYWRIGHT_TOKEN}" {
-		t.Fatalf("user plugin after migration = %+v", userPlugin)
-	}
-	if userPlugin.Tier != "" {
-		t.Fatalf("user plugin tier = %q, want migrated empty", userPlugin.Tier)
+	if _, ok := findPluginEntry(userCfg.Plugins, "playwright"); ok {
+		t.Fatalf("project plugin should not be copied to user config: %+v", userCfg.Plugins)
 	}
 	projectCfg := config.LoadForEdit(filepath.Join(dir, "reasonix.toml"))
-	if _, ok := findPluginEntry(projectCfg.Plugins, "playwright"); ok {
-		t.Fatalf("project plugin should be removed after desktop migration: %+v", projectCfg.Plugins)
+	projectPlugin, ok := findPluginEntry(projectCfg.Plugins, "playwright")
+	if !ok {
+		t.Fatalf("playwright should remain in project config: %+v", projectCfg.Plugins)
+	}
+	if projectPlugin.Command != "node" || projectPlugin.Env["TOKEN"] != "${PLAYWRIGHT_TOKEN}" {
+		t.Fatalf("project plugin after update = %+v", projectPlugin)
+	}
+	if projectPlugin.Tier != "" {
+		t.Fatalf("project plugin tier = %q, want migrated empty", projectPlugin.Tier)
 	}
 	view := app.Capabilities()
 	for _, s := range view.Servers {
@@ -9424,7 +9683,7 @@ name = "codegraph"
 	t.Fatalf("codegraph missing after reconnect: %+v", view.Servers)
 }
 
-func TestSetMCPServerTierRecordsConnectFailure(t *testing.T) {
+func TestSetMCPServerTierPreservesProjectSourceAndRecordsConnectFailure(t *testing.T) {
 	isolateDesktopUserDirs(t)
 	dir := robustTempDir(t)
 	t.Chdir(dir)
@@ -9456,16 +9715,16 @@ tier = "lazy"
 		t.Fatalf("saved tier = %q, want migrated empty", got)
 	}
 	userCfg := config.LoadForEdit(config.UserConfigPath())
-	userPlugin, ok := findPluginEntry(userCfg.Plugins, "broken")
-	if !ok {
-		t.Fatalf("broken should be migrated to user config: %+v", userCfg.Plugins)
-	}
-	if userPlugin.Tier != "" {
-		t.Fatalf("user plugin tier = %q, want migrated empty", userPlugin.Tier)
+	if _, ok := findPluginEntry(userCfg.Plugins, "broken"); ok {
+		t.Fatalf("project plugin should not be copied to user config: %+v", userCfg.Plugins)
 	}
 	projectCfg := config.LoadForEdit(filepath.Join(dir, "reasonix.toml"))
-	if _, ok := findPluginEntry(projectCfg.Plugins, "broken"); ok {
-		t.Fatalf("project plugin should be removed after desktop migration: %+v", projectCfg.Plugins)
+	projectPlugin, ok := findPluginEntry(projectCfg.Plugins, "broken")
+	if !ok {
+		t.Fatalf("broken should remain in project config: %+v", projectCfg.Plugins)
+	}
+	if projectPlugin.Tier != "" {
+		t.Fatalf("project plugin tier = %q, want migrated empty", projectPlugin.Tier)
 	}
 	if !mcpFailed(app.activeCtrl(), "broken") {
 		t.Fatalf("Host.Failures() = %+v, want broken failure recorded", app.activeCtrl().Host().Failures())
@@ -9772,7 +10031,11 @@ func startNonCooperativeSessionJob(t *testing.T, jm *jobs.Manager, sessionPath s
 
 func waitNotRunning(t *testing.T, ctrl control.SessionAPI) {
 	t.Helper()
-	deadline := time.Now().Add(time.Second)
+	// Windows release runners can take more than one second to schedule the
+	// controller's asynchronous completion while the full desktop suite is
+	// active. Keep a bounded responsiveness check without treating scheduler
+	// delay as a leaked controller.
+	deadline := time.Now().Add(5 * time.Second)
 	for ctrl.Running() {
 		if time.Now().After(deadline) {
 			t.Fatal("controller still running")
