@@ -4,6 +4,7 @@ import {
   ASK_MARKER,
   CUTOFF_MINOR,
   WINDOW_DAYS,
+  highestMentionedVersion,
   isStaleVersion,
   parseReportedVersion,
   releasedVersions,
@@ -40,15 +41,38 @@ test("a version that was never released is a typo, not an old release", () => {
   assert.equal(isStaleVersion(typo), true);
 });
 
+test("a version named elsewhere in the body outranks a wrong form field", () => {
+  const released = releasedVersions(["desktop-v1.0.0", "desktop-v1.17.13", "desktop-v1.18.0"]);
+  // real shape: the form field kept its default while the true build is in prose
+  const body = "### Exact version\n\n1.0.0\n\n### Steps to reproduce\n\nwin64 vscode, 软件版本 v1.17.13";
+  assert.equal(parseReportedVersion(body).raw, "1.0.0");
+  assert.equal(highestMentionedVersion(body, released).raw, "1.17.13");
+  assert.equal(isStaleVersion(highestMentionedVersion(body, released), CUTOFF_MINOR, released), false);
+});
+
+test("unreleased numbers in the body are ignored, so Node versions cannot age a report", () => {
+  const released = releasedVersions(["desktop-v1.8.1", "desktop-v1.18.0"]);
+  const body = "### Exact version\n\n1.8.1\n\n**Node**: v26.3.1\n**Terminal size**: 65.0.0";
+  assert.equal(highestMentionedVersion(body, released).raw, "1.8.1");
+  assert.equal(highestMentionedVersion("no versions here", released), null);
+});
+
 test("released versions are collected across every tag series", () => {
   const released = releasedVersions(["v1.18.0", "desktop-v1.17.21", "npm-v1.17.21", "not-a-tag", "desktop-v1.7.0"]);
   assert.deepEqual([...released].sort(), ["1.17.21", "1.18.0", "1.7.0"]);
 });
 
+test("only defect reports are swept — a feature request cannot answer the question", () => {
+  const base = { version: { major: 1, minor: 2, patch: 0, raw: "1.2.0" }, comments: [] };
+  assert.equal(shouldAsk({ ...base, labels: ["enhancement", "desktop"] }), false);
+  assert.equal(shouldAsk({ ...base, labels: [] }), false);
+  assert.equal(shouldAsk({ ...base, labels: ["bug", "enhancement"] }), true);
+});
+
 test("severity labels are never swept, however old the report", () => {
   const base = { version: { major: 1, minor: 2, patch: 0, raw: "1.2.0" }, comments: [] };
   for (const label of ["data-loss", "security", "crash"]) {
-    assert.equal(shouldAsk({ ...base, labels: [label] }), false, label);
+    assert.equal(shouldAsk({ ...base, labels: ["bug", label] }), false, label);
   }
   assert.equal(shouldAsk({ ...base, labels: ["bug", "windows"] }), true);
 });
