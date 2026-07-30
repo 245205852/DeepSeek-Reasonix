@@ -126,16 +126,21 @@ var ChineseTraditional = Messages{
 	PlanModeReadOnlyCommandTrustFailedFmt:  "儲存計劃模式唯讀命令信任 %s 失敗：%v",
 	DiffFoldedFmt:                          "… 還有 %d 行",
 
-	OutputStyleNone:    "沒有可用的輸出風格",
-	OutputStyleHeader:  "輸出風格：",
-	OutputStyleHint:    "在 reasonix.toml 設定 agent.output_style 即可啟用（下次會話生效）",
-	ThemeHeader:        "主題：",
-	ThemeHint:          "使用 /theme <auto|light|dark|style> 切換",
-	ThemeChangedFmt:    "已切換主題為 %s / %s",
-	ThemeUnknownFmt:    "未知主題 %q",
-	LanguageHeader:     "語言：",
-	LanguageHint:       "使用 /language <auto|en|zh|zh-TW> 切換",
-	LanguageChangedFmt: "語言已設為 %s（當前解析為：%s）",
+	OutputStyleNone:           "沒有可用的輸出風格",
+	OutputStyleHeader:         "輸出風格：",
+	OutputStyleHint:           "在 reasonix.toml 設定 agent.output_style 即可啟用（下次會話生效）",
+	ThemeHeader:               "主題：",
+	ThemeHint:                 "使用 /theme <auto|light|dark|style> 切換",
+	ThemeChangedFmt:           "已切換主題為 %s / %s",
+	ThemeUnknownFmt:           "未知主題 %q",
+	LanguageHeader:            "語言：",
+	LanguageHint:              "使用 /language <auto|en|zh|zh-TW> 切換",
+	LanguageChangedFmt:        "語言已設為 %s（當前解析為：%s）",
+	CurrencyHeader:            "計價貨幣：",
+	CurrencyHint:              "使用 /currency <auto|CNY|USD> 切換",
+	CurrencyChangedFmt:        "計價貨幣已設為 %s（目前解析為：%s）",
+	RuntimeRefreshBusy:        "請先完成或取消目前工作，並停止背景任務後再修改此設定",
+	RuntimeRefreshUnavailable: "本會話不支援重新整理執行階段",
 
 	CompactionWorking: "正在壓縮對話…",
 	CompactionTitle:   "上下文已壓縮",
@@ -228,7 +233,7 @@ var ChineseTraditional = Messages{
 	CmdModel:            "切換模型",
 	CmdStatus:           "顯示工作階段狀態",
 	CmdWorkMode:         "切換工作模式",
-	CmdMemory:           "檢視記憶檔案",
+	CmdMemory:           "檢視指令、記憶與復原狀態",
 	CmdMigrate:          "重試舊資料遷移",
 	CmdRemember:         "儲存一條記憶",
 	CmdForget:           "刪除一條已存記憶",
@@ -240,6 +245,7 @@ var ChineseTraditional = Messages{
 	CmdOutputStyle:      "列出輸出風格",
 	CmdTheme:            "切換 CLI 主題",
 	CmdLanguage:         "切換 CLI 語言",
+	CmdCurrency:         "切換計價貨幣",
 	CmdSkill:            "管理 skills",
 	CmdVerbose:          "切換 thinking 原文顯示",
 	CmdReloadCmd:        "重載自定義命令",
@@ -504,7 +510,7 @@ var ChineseTraditional = Messages{
   reasonix hook list|status --json [--dir PATH]         檢視脫敏 Hook 狀態
   reasonix task list|show --json [--dir PATH]           檢視脫敏 Task 狀態
   reasonix bot start|doctor|weixin-login                多管道 IM bot 閘道
-  reasonix upgrade [--check] [--force]                   自更新至最新版本（也可用：reasonix update）
+  reasonix upgrade [stable|preview] [--check] [--force]  按已儲存渠道自更新（進階用法：--channel；別名：reasonix update）
   reasonix version
   reasonix help
 

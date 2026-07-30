@@ -50,9 +50,11 @@ func runAssist(args []string) int {
 	}
 	if *jsonOut {
 		if code := printJSON(struct {
-			Plan    repair.RepairPlan          `json:"plan"`
-			Preview []repair.RepairPlanPreview `json:"preview"`
-		}{plan, preview}); code != 0 {
+			Plan      repair.RepairPlan          `json:"plan"`
+			PlanID    string                     `json:"planId"`
+			Preview   []repair.RepairPlanPreview `json:"preview"`
+			PreviewID string                     `json:"previewId"`
+		}{plan, repair.RepairPlanID(plan), preview, repair.RepairPlanPreviewID(plan, preview)}); code != 0 {
 			return code
 		}
 	} else {
@@ -65,6 +67,7 @@ func runAssist(args []string) int {
 		fmt.Println("repair plan not applied")
 		return 0
 	}
+	opts.ExpectedPreviewID = repair.RepairPlanPreviewID(plan, preview)
 	result, err := repair.ApplyRepairPlan(plan, opts)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
@@ -85,6 +88,7 @@ func runApplyPlan(args []string) int {
 	file := fs.String("file", "", "RepairPlan JSON file")
 	yes := fs.Bool("yes", false, "confirm plan application non-interactively")
 	allowProject := fs.Bool("allow-project", false, "allow project reasonix.toml repair")
+	previewID := fs.String("preview-id", "", "expected preview ID from a prior dry-run")
 	jsonOut := fs.Bool("json", false, "print JSON")
 	if err := fs.Parse(args); err != nil || fs.NArg() != 0 || strings.TrimSpace(*file) == "" {
 		return 2
@@ -108,10 +112,21 @@ func runApplyPlan(args []string) int {
 	if !*jsonOut {
 		printPlanPreview(plan, preview)
 	}
+	actualPreviewID := repair.RepairPlanPreviewID(plan, preview)
+	expectedPreviewID := strings.TrimSpace(*previewID)
+	if *yes && expectedPreviewID == "" {
+		fmt.Fprintln(os.Stderr, "error: --preview-id is required with --yes; preview the plan and confirm its current previewId first")
+		return 2
+	}
+	if expectedPreviewID != "" && expectedPreviewID != actualPreviewID {
+		fmt.Fprintf(os.Stderr, "error: repair plan preview changed since confirmation; re-preview and re-confirm (expected %s, got %s)\n", expectedPreviewID, actualPreviewID)
+		return 1
+	}
 	if !*yes && !confirmPlan() {
 		fmt.Println("repair plan not applied")
 		return 0
 	}
+	opts.ExpectedPreviewID = actualPreviewID
 	result, err := repair.ApplyRepairPlan(plan, opts)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)

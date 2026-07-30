@@ -107,54 +107,54 @@ func Run(args []string, version string) int {
 		configureCLIThemeFromConfigForTTYOutput()
 		return setupConfig(rest)
 	case "config":
-		configureCLIThemeFromConfigNoProbe()
+		configureCLIThemeFromConfig()
 		return configCommand(rest)
 	case "init":
 		// Project memory (AGENTS.md) is model-generated in-session — `/init` runs
 		// the codebase analysis. This CLI entry just points there (and to `setup`
 		// for config), so `reasonix init` isn't a dead end.
-		configureCLIThemeFromConfigNoProbe()
+		configureCLIThemeFromConfig()
 		return initHint()
 	case "acp":
-		configureCLIThemeFromConfigNoProbe()
+		configureCLIThemeFromConfig()
 		return acpCommand(rest, version)
 	case "mcp":
-		configureCLIThemeFromConfigNoProbe()
+		configureCLIThemeFromConfig()
 		return mcpCommand(rest)
 	case "remote":
-		configureCLIThemeFromConfigNoProbe()
+		configureCLIThemeFromConfig()
 		return remoteCommand(rest, version)
 	case "plugin":
-		configureCLIThemeFromConfigNoProbe()
+		configureCLIThemeFromConfig()
 		return pluginCommand(rest)
 	case "subagent":
 		configureCLIThemeFromConfigForTTYOutput()
 		return subagentCommand(rest)
 	case "doctor":
 		if !doctorRepair {
-			configureCLIThemeFromConfigNoProbe()
+			configureCLIThemeFromConfig()
 		}
 		return doctorCommand(rest, version)
 	case "report":
-		configureCLIThemeFromConfigNoProbe()
+		configureCLIThemeFromConfig()
 		return reportCommand(rest)
 	case "session":
-		configureCLIThemeFromConfigNoProbe()
+		configureCLIThemeFromConfig()
 		return sessionCommand(rest)
 	case "hook", "hooks":
-		configureCLIThemeFromConfigNoProbe()
+		configureCLIThemeFromConfig()
 		return hookCommand(rest)
 	case "task":
-		configureCLIThemeFromConfigNoProbe()
+		configureCLIThemeFromConfig()
 		return taskCommand(rest)
 	case "review":
-		configureCLIThemeFromConfigNoProbe()
+		configureCLIThemeFromConfig()
 		return reviewCommand(rest)
 	case "bot":
-		configureCLIThemeFromConfigNoProbe()
+		configureCLIThemeFromConfig()
 		return botCommand(rest, version)
 	case "upgrade", "update":
-		configureCLIThemeFromConfigNoProbe()
+		configureCLIThemeFromConfig()
 		return upgradeCommand(rest, version)
 	case "version", "--version", "-v":
 		fmt.Println("reasonix", version)
@@ -222,14 +222,10 @@ func configureCLIThemeFromConfig() {
 
 func configureCLIThemeFromConfigForTTYOutput() {
 	if isTTY(os.Stdout) {
-		configureCLIThemeFromConfig()
+		withTerminalProbe(configureCLIThemeFromConfig)
 		return
 	}
-	configureCLIThemeFromConfigNoProbe()
-}
-
-func configureCLIThemeFromConfigNoProbe() {
-	withoutTerminalProbe(configureCLIThemeFromConfig)
+	configureCLIThemeFromConfig()
 }
 
 // setupProfile builds a ready-to-drive Controller from config via boot.Build.
@@ -275,8 +271,18 @@ func cliProfileBuildOptions(modelName string, maxStepsOverride int, requireKey b
 		PermissionAllow:      overrides.PermissionAllow,
 		AdditionalDirs:       overrides.AdditionalDirs,
 		HeadlessApprovalMode: overrides.HeadlessApprovalMode,
+		AutoPricingCurrency:  cliAutoPricingCurrency(),
 		Stderr:               overrides.Stderr,
 		OnSessionRecovered:   overrides.OnSessionRecovered,
+	}
+}
+
+func cliAutoPricingCurrency() string {
+	switch i18n.CurrentLanguage() {
+	case "zh", "zh-TW":
+		return "CNY"
+	default:
+		return "USD"
 	}
 }
 
@@ -635,9 +641,7 @@ func runAgent(args []string, version string) int {
 		return 1
 	}
 	defer ctrl.Close()
-	if permissions.approval != control.ToolApprovalAsk {
-		ctrl.ApplyHeadlessApprovalMode(permissions.approval)
-	}
+	ctrl.ApplyHeadlessApprovalMode(permissions.approval)
 
 	// --resume: load a specific session file (non-interactive, meant for
 	// MCP/API callers that manage their own per-project session). Takes
@@ -818,16 +822,10 @@ func runServe(args []string) int {
 		}
 	}
 	*model = modelForResumePath(*model, *resume, cfg)
-	// Serve always uses the user's global default_model, ignoring any
-	// project-level override, so the model choice stays consistent across
-	// projects and matches the user's account-level preference.
-	if *model == "" {
-		if uc := config.UserConfigPath(); uc != "" {
-			if userCfg := config.LoadForEdit(uc); userCfg != nil && userCfg.DefaultModel != "" {
-				*model = userCfg.DefaultModel
-			}
-		}
-	}
+	// Serve always resolves an implicit model from the user-global config,
+	// ignoring project-level default_model overrides. Explicit flags and
+	// resumable session models remain strict and are preserved verbatim.
+	*model = resolveServeModel(*model)
 	ctrl, err := setupProfileWithOverrides(ctx, *model, *maxSteps, true, bc, profile, cliBuildOverrides{
 		OnSessionRecovered: cliSessionRecoveredHandler(leases),
 	})
@@ -1119,14 +1117,20 @@ func chatREPL(args []string, version string) int {
 
 	// Surface a missing-key warning inside the TUI banner so the first message
 	// failing is at least pre-announced; the user can still enter chat.
+	// resolveModelForCLI transparently falls through a keyless default to the
+	// next configured provider (issue #6996). Validating the final ref is a
+	// no-op for that configured fallback and preserves the warning when every
+	// eligible chat provider is still keyless.
 	missing := ""
 	if cfg, loadErr := config.Load(); loadErr == nil {
-		name := *model
-		if name == "" {
-			name = cfg.DefaultModel
-		}
-		if vErr := cfg.Validate(name); vErr != nil {
-			missing = vErr.Error()
+		name, _, err := resolveModelForCLI(*model, cfg)
+		switch {
+		case err != nil:
+			missing = err.Error()
+		case name != "":
+			if vErr := cfg.Validate(name); vErr != nil {
+				missing = vErr.Error()
+			}
 		}
 	}
 
@@ -1191,15 +1195,6 @@ func chatREPL(args []string, version string) int {
 	m.runtimeProfile = profile
 	if effortOverride != nil {
 		m.effortLevel = *effortOverride
-	}
-	if cfg, e := config.Load(); e == nil {
-		name := *model
-		if name == "" {
-			name = cfg.DefaultModel
-		}
-		if entry, ok := cfg.ResolveModel(name); ok {
-			m.modelRef = entry.Name + "/" + entry.Model
-		}
 	}
 	if effortOverride == nil {
 		m.refreshEffortStatus()
@@ -1387,6 +1382,19 @@ func confirmReconfigureExistingConfig(path string, in *bufio.Scanner, w io.Write
 }
 
 func writeDefaultConfig(path string) int {
+	unlock, err := config.LockConfigFileEdits(path)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, i18n.M.WriteConfigErr, err)
+		return 1
+	}
+	defer unlock()
+	if _, err := os.Lstat(path); err == nil {
+		fmt.Fprintf(os.Stderr, i18n.M.NotOverwritingFmt+"\n", path)
+		return 1
+	} else if !os.IsNotExist(err) {
+		fmt.Fprintln(os.Stderr, i18n.M.WriteConfigErr, err)
+		return 1
+	}
 	c := config.Default()
 	if err := c.SaveTo(path); err != nil {
 		fmt.Fprintln(os.Stderr, i18n.M.WriteConfigErr, err)
@@ -1413,7 +1421,11 @@ func interactiveSetup(configPath, envPath string) int {
 	// Seed from the existing config when reconfiguring, so a re-run to fix a key
 	// preserves the user's providers / agent settings instead of resetting to
 	// defaults. First run (no file) falls back to the built-in defaults.
-	cfg := config.LoadForEdit(configPath)
+	cfg, err := config.LoadForEditReadOnlyStrict(configPath)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, i18n.M.WriteConfigErr, err)
+		return 1
+	}
 	session := newProviderSetupSessionForPath(cfg, configPath)
 	lang, err := selectLanguage()
 	if err != nil {
@@ -2220,12 +2232,68 @@ func configCommand(args []string) int {
 		return configAutoPlanCompatibilityCommand(args[1:])
 	case "reasoning-language":
 		return configReasoningLanguageCommand(args[1:])
+	case "currency":
+		return configCurrencyCommand(args[1:])
 	case "telemetry":
 		return configTelemetryCommand(args[1:])
 	default:
 		configUsage()
 		return 2
 	}
+}
+
+func configCurrencyCommand(args []string) int {
+	fs := flag.NewFlagSet("config currency", flag.ContinueOnError)
+	local := fs.Bool("local", false, "unsupported; pricing currency is user-level only")
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	if *local {
+		fmt.Fprintln(os.Stderr, i18n.M.ErrorPrefix, "currency is user-level only; --local is not supported")
+		return 2
+	}
+	rest := fs.Args()
+	if len(rest) > 1 {
+		configCurrencyUsage()
+		return 2
+	}
+	if len(rest) == 0 {
+		cfg, err := config.LoadForRootReadOnly(".")
+		if err != nil {
+			fmt.Fprintln(os.Stderr, i18n.M.ErrorPrefix, err)
+			return 1
+		}
+		cfg.ApplyRuntimeAutoPricingCurrency(cliAutoPricingCurrency())
+		fmt.Printf("currency = %q (resolved: %s)\n", pricingCurrencyDisplay(cfg.DesktopCurrency()), cfg.DeepSeekOfficialPricingCurrency())
+		return 0
+	}
+	mode, err := parseCLIPricingCurrency(rest[0])
+	if err != nil {
+		fmt.Fprintln(os.Stderr, i18n.M.ErrorPrefix, err)
+		return 2
+	}
+	path := config.UserConfigPath()
+	if path == "" {
+		fmt.Fprintln(os.Stderr, i18n.M.ErrorPrefix, "cannot resolve user config path")
+		return 1
+	}
+	unlock := config.LockUserConfigEdits()
+	defer unlock()
+	cfg := config.LoadForEdit(path)
+	if err := cfg.SetDesktopCurrency(mode); err != nil {
+		fmt.Fprintln(os.Stderr, i18n.M.ErrorPrefix, err)
+		return 2
+	}
+	resolved := cfg.DeepSeekOfficialPricingCurrency()
+	if mode == "" && cfg.DesktopLanguage() == "" {
+		resolved = cliAutoPricingCurrency()
+	}
+	if err := cfg.SaveTo(path); err != nil {
+		fmt.Fprintln(os.Stderr, i18n.M.ErrorPrefix, err)
+		return 1
+	}
+	fmt.Printf("currency = %q (resolved: %s, %s)\n", pricingCurrencyDisplay(mode), resolved, displayPath(path))
+	return 0
 }
 
 var (
@@ -2358,6 +2426,12 @@ func configReasoningLanguageCommand(args []string) int {
 		fmt.Fprintln(os.Stderr, i18n.M.ErrorPrefix, "cannot resolve config path")
 		return 1
 	}
+	unlock, err := config.LockConfigFileEdits(path)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, i18n.M.ErrorPrefix, err)
+		return 1
+	}
+	defer unlock()
 	if *local {
 		if _, err := os.Stat(path); errors.Is(err, os.ErrNotExist) {
 			lang, err := config.SaveMinimalProjectReasoningLanguage(path, mode)
@@ -2372,14 +2446,11 @@ func configReasoningLanguageCommand(args []string) int {
 			return 1
 		}
 	}
-	if !*local {
-		// Non-local writes target the user config; serialize the
-		// load-modify-save against other in-process user-config editors.
-		// --local writes ./reasonix.toml and needs no user-config lock.
-		unlock := config.LockUserConfigEdits()
-		defer unlock()
+	cfg, err := config.LoadForEditReadOnlyStrict(path)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, i18n.M.ErrorPrefix, err)
+		return 1
 	}
-	cfg := config.LoadForEdit(path)
 	if err := cfg.SetReasoningLanguage(mode); err != nil {
 		fmt.Fprintln(os.Stderr, i18n.M.ErrorPrefix, err)
 		return 2
@@ -2395,6 +2466,7 @@ func configReasoningLanguageCommand(args []string) int {
 func configUsage() {
 	fmt.Print(`Usage:
   reasonix config reasoning-language [--local] [auto|zh|en]
+  reasonix config currency [auto|CNY|USD]
   reasonix config telemetry [auto|on|off]
 `)
 }
@@ -2475,5 +2547,11 @@ func configAutoPlanCompatibilityUsage() {
 func configReasoningLanguageUsage() {
 	fmt.Print(`Usage:
   reasonix config reasoning-language [--local] [auto|zh|en]
+`)
+}
+
+func configCurrencyUsage() {
+	fmt.Print(`Usage:
+  reasonix config currency [auto|CNY|USD]
 `)
 }

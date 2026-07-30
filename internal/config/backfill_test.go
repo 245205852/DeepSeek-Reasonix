@@ -31,8 +31,8 @@ func TestBackfillDeepSeekProRestoresPro(t *testing.T) {
 	pro := hasModel(c, "deepseek-v4-pro")
 	if pro == nil {
 		t.Fatal("deepseek-v4-pro not restored")
-	} else if pro.Price == nil || pro.Price.Output != 6 || pro.Price.Currency != "¥" {
-		t.Errorf("pro price not the preset: %+v", pro.Price)
+	} else if pro.Price == nil || pro.Price.Output != 0.87 || pro.Price.Currency != "$" {
+		t.Errorf("pro price = %+v, want default USD preset", pro.Price)
 	}
 }
 
@@ -153,7 +153,7 @@ func TestNormalizeLegacyStepFunBaseURLsMigratesPresetProviders(t *testing.T) {
 	}
 }
 
-func TestLoadForEditPersistsLegacyStepFunBaseURLMigration(t *testing.T) {
+func TestLoadForEditKeepsLegacyStepFunMigrationInMemoryUntilSave(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.toml")
 	cfg := Default()
 	stepfun, ok := CuratedProviderPreset("stepfun")
@@ -184,7 +184,17 @@ func TestLoadForEditPersistsLegacyStepFunBaseURLMigration(t *testing.T) {
 
 	var disk Config
 	if _, err := toml.DecodeFile(path, &disk); err != nil {
-		t.Fatalf("decode persisted config: %v", err)
+		t.Fatalf("decode config after read-only load: %v", err)
+	}
+	if got, _ := disk.Provider("stepfun"); got == nil || got.BaseURL != legacyStepFunOpenAIBaseURL {
+		t.Fatalf("read-only LoadForEdit rewrote stepfun = %+v, want legacy base URL preserved on disk", got)
+	}
+	if err := loaded.SaveTo(path); err != nil {
+		t.Fatalf("explicit SaveTo: %v", err)
+	}
+	disk = Config{}
+	if _, err := toml.DecodeFile(path, &disk); err != nil {
+		t.Fatalf("decode explicitly saved config: %v", err)
 	}
 	if got, _ := disk.Provider("stepfun"); got == nil || got.BaseURL != officialStepFunOpenAIBaseURL {
 		t.Fatalf("persisted stepfun = %+v, want official base URL", got)
@@ -500,7 +510,7 @@ func TestNormalizeLegacyKimiK3CatalogPreservesVisionChoices(t *testing.T) {
 	}
 }
 
-func TestLoadForEditPersistsLegacyKimiK3CatalogMigration(t *testing.T) {
+func TestLoadForEditKeepsLegacyKimiK3CatalogMigrationInMemoryUntilSave(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.toml")
 	cfg := Default()
 	preset, ok := CuratedProviderPreset("kimi-cn")
@@ -523,15 +533,26 @@ func TestLoadForEditPersistsLegacyKimiK3CatalogMigration(t *testing.T) {
 	}
 	var disk Config
 	if _, err := toml.DecodeFile(path, &disk); err != nil {
-		t.Fatalf("decode persisted config: %v", err)
+		t.Fatalf("decode config after read-only load: %v", err)
 	}
 	persisted, ok := disk.Provider("kimi-cn")
+	if !ok || persisted.HasModel("kimi-k3") {
+		t.Fatalf("read-only LoadForEdit rewrote kimi-cn = %+v, want legacy catalog preserved on disk", persisted)
+	}
+	if err := loaded.SaveTo(path); err != nil {
+		t.Fatalf("explicit SaveTo: %v", err)
+	}
+	disk = Config{}
+	if _, err := toml.DecodeFile(path, &disk); err != nil {
+		t.Fatalf("decode explicitly saved config: %v", err)
+	}
+	persisted, ok = disk.Provider("kimi-cn")
 	if !ok || !persisted.HasModel("kimi-k3") || persisted.ModelOverrides["kimi-k3"].DefaultEffort != "max" {
 		t.Fatalf("persisted kimi-cn = %+v, want K3 defaults", persisted)
 	}
 }
 
-func TestLoadForEditPersistsLegacyOpenCodeGoKimiK3CatalogMigration(t *testing.T) {
+func TestLoadForEditKeepsLegacyOpenCodeGoKimiK3CatalogMigrationInMemoryUntilSave(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.toml")
 	cfg := Default()
 	preset, ok := CuratedProviderPreset("opencode-go")
@@ -559,9 +580,20 @@ func TestLoadForEditPersistsLegacyOpenCodeGoKimiK3CatalogMigration(t *testing.T)
 
 	var disk Config
 	if _, err := toml.DecodeFile(path, &disk); err != nil {
-		t.Fatalf("decode persisted config: %v", err)
+		t.Fatalf("decode config after read-only load: %v", err)
 	}
 	persisted, ok := disk.Provider("opencode-go")
+	if !ok || persisted.HasModel("kimi-k3") {
+		t.Fatalf("read-only LoadForEdit rewrote opencode-go = %+v, want legacy catalog preserved on disk", persisted)
+	}
+	if err := loaded.SaveTo(path); err != nil {
+		t.Fatalf("explicit SaveTo: %v", err)
+	}
+	disk = Config{}
+	if _, err := toml.DecodeFile(path, &disk); err != nil {
+		t.Fatalf("decode explicitly saved config: %v", err)
+	}
+	persisted, ok = disk.Provider("opencode-go")
 	if !ok || !persisted.HasModel("kimi-k3") || !persisted.HasVisionModel("kimi-k3") {
 		t.Fatalf("persisted opencode-go = %+v, want Kimi K3 catalog", persisted)
 	}
@@ -819,8 +851,8 @@ func TestBackfillDeepSeekOfficialPrices(t *testing.T) {
 	if !ok {
 		t.Fatal("deepseek provider missing")
 	}
-	if p.Prices["deepseek-v4-flash"].Output != 2 || p.Prices["deepseek-v4-pro"].Output != 6 {
-		t.Fatalf("deepseek prices = %+v, want current V4 flash/pro prices", p.Prices)
+	if p.Prices["deepseek-v4-flash"].Output != 0.28 || p.Prices["deepseek-v4-flash"].Currency != "$" || p.Prices["deepseek-v4-pro"].Output != 0.87 || p.Prices["deepseek-v4-pro"].Currency != "$" {
+		t.Fatalf("deepseek prices = %+v, want default USD flash/pro prices", p.Prices)
 	}
 }
 
@@ -917,6 +949,193 @@ func TestApplyDeepSeekOfficialDefaultPricingKeepsCustomPrice(t *testing.T) {
 	}
 }
 
+func TestLoadForEditAutoCurrencyKeepsPersistedOfficialUSDPrice(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.toml")
+	body := `language = "zh"
+
+[[providers]]
+name = "deepseek-flash"
+kind = "openai"
+base_url = "https://api.deepseek.com"
+model = "deepseek-v4-flash"
+price = { cache_hit = 0.0028, input = 0.14, output = 0.28, currency = "$" }
+`
+	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	c := LoadForEdit(path)
+	flash, ok := c.Provider("deepseek-flash")
+	if !ok {
+		t.Fatal("deepseek-flash provider missing")
+	}
+	if flash.Price == nil || flash.Price.Output != 0.28 || flash.Price.Currency != "$" {
+		t.Fatalf("flash price = %+v, want persisted USD preset", flash.Price)
+	}
+
+	if err := c.SetDesktopCurrency("CNY"); err != nil {
+		t.Fatalf("SetDesktopCurrency CNY: %v", err)
+	}
+	if flash.Price == nil || flash.Price.Output != 2 || flash.Price.Currency != "¥" {
+		t.Fatalf("flash price = %+v, want explicit CNY preset", flash.Price)
+	}
+}
+
+func TestLoadForRootAutoCurrencyKeepsPersistedOfficialUSDPrice(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("REASONIX_HOME", home)
+	t.Setenv("REASONIX_CREDENTIALS_STORE", "file")
+	body := `language = "zh"
+
+[[providers]]
+name = "deepseek-flash"
+kind = "openai"
+base_url = "https://api.deepseek.com"
+model = "deepseek-v4-flash"
+price = { cache_hit = 0.0028, input = 0.14, output = 0.28, currency = "$" }
+`
+	if err := os.WriteFile(filepath.Join(home, "config.toml"), []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	c, err := LoadForRoot(t.TempDir())
+	if err != nil {
+		t.Fatalf("LoadForRoot: %v", err)
+	}
+	flash, ok := c.Provider("deepseek-flash")
+	if !ok {
+		t.Fatal("deepseek-flash provider missing")
+	}
+	if flash.Price == nil || flash.Price.Output != 0.28 || flash.Price.Currency != "$" {
+		t.Fatalf("flash price = %+v, want persisted USD preset", flash.Price)
+	}
+}
+
+func TestRuntimeAutoCurrencyKeepsPersistedOfficialUSDPrice(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.toml")
+	body := `[[providers]]
+name = "deepseek-flash"
+kind = "openai"
+base_url = "https://api.deepseek.com"
+model = "deepseek-v4-flash"
+price = { cache_hit = 0.0028, input = 0.14, output = 0.28, currency = "$" }
+`
+	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	c := LoadForEdit(path)
+	c.ApplyRuntimeAutoPricingCurrency("CNY")
+	flash, ok := c.Provider("deepseek-flash")
+	if !ok {
+		t.Fatal("deepseek-flash provider missing")
+	}
+	if flash.Price == nil || flash.Price.Output != 0.28 || flash.Price.Currency != "$" {
+		t.Fatalf("flash price = %+v, want persisted USD preset", flash.Price)
+	}
+}
+
+func TestLoadForRootAutoCurrencyDoesNotMixPartialOfficialPrices(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("REASONIX_HOME", home)
+	t.Setenv("REASONIX_CREDENTIALS_STORE", "file")
+	body := `language = "zh"
+
+[[providers]]
+name = "deepseek"
+kind = "openai"
+base_url = "https://api.deepseek.com"
+models = ["deepseek-v4-flash", "deepseek-v4-pro"]
+default = "deepseek-v4-flash"
+
+[providers.prices]
+deepseek-v4-flash = { cache_hit = 0.0028, input = 0.14, output = 0.28, currency = "$" }
+`
+	if err := os.WriteFile(filepath.Join(home, "config.toml"), []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	c, err := LoadForRoot(t.TempDir())
+	if err != nil {
+		t.Fatalf("LoadForRoot: %v", err)
+	}
+	p, ok := c.Provider("deepseek")
+	if !ok {
+		t.Fatal("deepseek provider missing")
+	}
+	for _, model := range p.Models {
+		price := p.Prices[model]
+		if price == nil || price.Currency != "¥" {
+			t.Fatalf("price for %q = %+v, want consistent CNY table", model, price)
+		}
+	}
+}
+
+func TestDeepSeekOfficialPricingCurrencyResolution(t *testing.T) {
+	for _, tt := range []struct {
+		name     string
+		language string
+		desktop  DesktopConfig
+		want     string
+	}{
+		{name: "old config defaults to USD", want: "USD"},
+		{name: "English auto", desktop: DesktopConfig{Language: "en"}, want: "USD"},
+		{name: "Chinese auto", desktop: DesktopConfig{Language: "zh"}, want: "CNY"},
+		{name: "CLI Chinese fallback", language: "zh", want: "CNY"},
+		{name: "explicit USD wins over Chinese", language: "zh", desktop: DesktopConfig{Language: "zh", Currency: "USD"}, want: "USD"},
+		{name: "explicit CNY wins over English", language: "en", desktop: DesktopConfig{Language: "en", Currency: "CNY"}, want: "CNY"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			c := &Config{Language: tt.language, Desktop: tt.desktop}
+			if got := c.DeepSeekOfficialPricingCurrency(); got != tt.want {
+				t.Fatalf("pricing currency = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestLoadForRootKeepsPricingRegionUserGlobal(t *testing.T) {
+	home := t.TempDir()
+	project := t.TempDir()
+	t.Setenv("REASONIX_HOME", home)
+	t.Setenv("REASONIX_CREDENTIALS_STORE", "file")
+	if err := os.WriteFile(filepath.Join(home, "config.toml"), []byte("[desktop]\nlanguage = \"en\"\ncurrency = \"USD\"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(project, "reasonix.toml"), []byte("[desktop]\nlanguage = \"zh\"\ncurrency = \"CNY\"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := LoadForRoot(project)
+	if err != nil {
+		t.Fatalf("LoadForRoot: %v", err)
+	}
+	if got := cfg.DesktopCurrency(); got != "USD" {
+		t.Fatalf("project config overrode user pricing currency: got %q, want USD", got)
+	}
+	if got := cfg.DesktopLanguage(); got != "en" {
+		t.Fatalf("project config overrode user desktop language: got %q, want en", got)
+	}
+}
+
+func TestApplyDeepSeekOfficialDefaultPricingExplicitCurrencyWins(t *testing.T) {
+	c := Default()
+	c.Desktop.Language = "zh"
+	c.Desktop.Currency = "USD"
+	applyDeepSeekOfficialDefaultPricing(c)
+	flash, _ := c.Provider("deepseek-flash")
+	if flash.Price == nil || flash.Price.Output != 0.28 || flash.Price.Currency != "$" {
+		t.Fatalf("flash price = %+v, want explicit USD preset", flash.Price)
+	}
+
+	c.Desktop.Language = "en"
+	c.Desktop.Currency = "CNY"
+	applyDeepSeekOfficialDefaultPricing(c)
+	if flash.Price == nil || flash.Price.Output != 2 || flash.Price.Currency != "¥" {
+		t.Fatalf("flash price = %+v, want explicit CNY preset", flash.Price)
+	}
+}
+
 func TestResetOfficialProviderPricingOnUpgradeRunsOnce(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "reasonix.toml")
 	c := &Config{
@@ -968,11 +1187,11 @@ func TestResetOfficialProviderPricingOnUpgradeRunsOnce(t *testing.T) {
 	if deepseek.Price != nil {
 		t.Fatalf("deepseek provider-wide price = %+v, want nil after reset", deepseek.Price)
 	}
-	if p := deepseek.Prices["deepseek-v4-flash"]; p == nil || p.Currency != "¥" || p.Output != 2 {
-		t.Fatalf("deepseek flash price = %+v, want RMB default", p)
+	if p := deepseek.Prices["deepseek-v4-flash"]; p == nil || p.Currency != "$" || p.Output != 0.28 {
+		t.Fatalf("deepseek flash price = %+v, want USD default", p)
 	}
-	if p := deepseek.Prices["deepseek-v4-pro"]; p == nil || p.Currency != "¥" || p.Output != 6 {
-		t.Fatalf("deepseek pro price = %+v, want RMB default", p)
+	if p := deepseek.Prices["deepseek-v4-pro"]; p == nil || p.Currency != "$" || p.Output != 0.87 {
+		t.Fatalf("deepseek pro price = %+v, want USD default", p)
 	}
 	mimo, ok := got.Provider("mimo-api")
 	if !ok {

@@ -131,16 +131,21 @@ var English = Messages{
 	DiffFoldEnabledFmt:                     "diff folded to %d lines (/diff-fold to expand)",
 	DiffFoldDisabled:                       "diff expanded — showing all lines (/diff-fold to fold)",
 
-	OutputStyleNone:    "no output styles available",
-	OutputStyleHeader:  "output styles:",
-	OutputStyleHint:    "set agent.output_style in reasonix.toml to apply one (takes effect next session)",
-	ThemeHeader:        "themes:",
-	ThemeHint:          "switch with /theme <auto|light|dark|style>",
-	ThemeChangedFmt:    "theme switched to %s / %s",
-	ThemeUnknownFmt:    "unknown theme %q",
-	LanguageHeader:     "languages:",
-	LanguageHint:       "switch with /language <auto|en|zh>",
-	LanguageChangedFmt: "language set to %s (resolved: %s)",
+	OutputStyleNone:           "no output styles available",
+	OutputStyleHeader:         "output styles:",
+	OutputStyleHint:           "set agent.output_style in reasonix.toml to apply one (takes effect next session)",
+	ThemeHeader:               "themes:",
+	ThemeHint:                 "switch with /theme <auto|light|dark|style>",
+	ThemeChangedFmt:           "theme switched to %s / %s",
+	ThemeUnknownFmt:           "unknown theme %q",
+	LanguageHeader:            "languages:",
+	LanguageHint:              "switch with /language <auto|en|zh>",
+	LanguageChangedFmt:        "language set to %s (resolved: %s)",
+	CurrencyHeader:            "pricing currency:",
+	CurrencyHint:              "switch with /currency <auto|CNY|USD>",
+	CurrencyChangedFmt:        "pricing currency set to %s (resolved: %s)",
+	RuntimeRefreshBusy:        "finish or cancel active work and stop background jobs before changing this setting",
+	RuntimeRefreshUnavailable: "runtime refresh is unavailable in this session",
 
 	CompactionWorking: "compacting conversation…",
 	CompactionTitle:   "Context compacted",
@@ -239,7 +244,7 @@ var English = Messages{
 	CmdModel:            "switch model",
 	CmdStatus:           "show session status",
 	CmdWorkMode:         "switch work mode",
-	CmdMemory:           "show memory files",
+	CmdMemory:           "inspect instructions, memory, and recovery",
 	CmdMigrate:          "retry legacy data migration",
 	CmdGoal:             "set or clear the active goal",
 	CmdRemember:         "save a memory note",
@@ -252,6 +257,7 @@ var English = Messages{
 	CmdOutputStyle:      "list output styles",
 	CmdTheme:            "switch CLI theme",
 	CmdLanguage:         "switch CLI language",
+	CmdCurrency:         "switch pricing currency",
 	CmdSkill:            "manage skills",
 	CmdVerbose:          "toggle thinking text",
 	CmdReloadCmd:        "reload custom commands",
@@ -555,7 +561,7 @@ Usage:
   reasonix hook list|status --json [--dir PATH]         inspect redacted hook state
   reasonix task list|show --json [--dir PATH]           inspect redacted task state
   reasonix bot start|doctor|weixin-login                multi-channel IM bot gateway
-  reasonix upgrade [--check] [--force]                   self-update to the latest release (also: reasonix update)
+  reasonix upgrade [stable|preview] [--check] [--force]  self-update on the saved channel (advanced: --channel; also: reasonix update)
   reasonix version
   reasonix help
 
