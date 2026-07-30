@@ -1,16 +1,13 @@
 import { lazy, memo, Suspense, useMemo, useRef } from "react";
-import type { ReactNode } from "react";
 import ReactMarkdown from "react-markdown";
 import type { Components } from "react-markdown";
-import { ExternalLink, Mail } from "lucide-react";
 import remarkGfm from "remark-gfm";
 import remarkMath from "remark-math";
 import rehypeKatex from "rehype-katex";
 import "katex/dist/katex.min.css";
 import { CodeViewer } from "./CodeViewer";
-import { classifyLinkIcon, parseGitHubLink, type GitHubLinkInfo, type LinkIconKind } from "./githubLink";
+import { RichMarkdownLink } from "./githubLink";
 import { normalizeMath } from "./mathNormalize";
-import { openExternal } from "../lib/bridge";
 import { markdownImageSource } from "../lib/markdownImage";
 
 const MermaidDiagram = lazy(() => import("./MermaidDiagram"));
@@ -29,39 +26,6 @@ const STATUS_MARKER_RE = /(?:✅|☑|☒|✔️?|✓|\[[xX ]\])/;
 const STATUS_MARKER_GLOBAL_RE = /(?:✅|☑|☒|✔️?|✓|\[[xX ]\])/g;
 const BULLET_RE = /^[-*•]\s+\S/;
 const DIVIDER_RE = /^[\s\-_=─━—]+$/;
-
-function markdownLinkLabel(children: ReactNode, href: string | undefined, info: GitHubLinkInfo | null) {
-  if (!info) return children;
-  const childText = Array.isArray(children) ? children.join("") : typeof children === "string" ? children : "";
-  return childText === href ? info.compactLabel : children;
-}
-
-function GitHubMark() {
-  return (
-    <svg
-      aria-hidden="true"
-      fill="none"
-      height="13"
-      viewBox="0 0 24 24"
-      width="13"
-    >
-      <path
-        d="M15 22v-4a4.8 4.8 0 0 0-1-3.5c3.3-.4 6.8-1.6 6.8-7A5.4 5.4 0 0 0 19.4 4 5 5 0 0 0 19.3.5S18.2.1 15 1.8a13.4 13.4 0 0 0-7 0C4.8.1 3.7.5 3.7.5A5 5 0 0 0 3.6 4a5.4 5.4 0 0 0-1.4 3.7c0 5.4 3.5 6.6 6.8 7A4.8 4.8 0 0 0 8 18v4"
-        stroke="currentColor"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-        strokeWidth="2"
-      />
-      <path d="M8 19c-3 .9-3-1.5-4-2" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" />
-    </svg>
-  );
-}
-
-function LinkMark({ kind }: { kind: LinkIconKind }) {
-  if (kind === "github") return <GitHubMark />;
-  if (kind === "mail") return <Mail aria-hidden="true" size={13} strokeWidth={2} />;
-  return <ExternalLink aria-hidden="true" size={13} strokeWidth={2} />;
-}
 
 function splitStatusLine(line: string): string[] {
   const parts = (line.match(STATUS_MARKER_GLOBAL_RE) ?? []).length > 1
@@ -146,35 +110,7 @@ function createComponents(plainStatusBlocks: boolean): Components {
       }
       return <code className="md-code">{children}</code>;
     },
-    a: ({ href, children }) => {
-      const github = parseGitHubLink(href);
-      const iconKind = classifyLinkIcon(href);
-      const label = markdownLinkLabel(children, href, github);
-      const title = github
-        ? `${github.owner}/${github.repo} ${github.kind} ${github.value}`
-        : undefined;
-      return (
-        <a
-          className={iconKind ? `md-rich-link md-rich-link--${iconKind}` : undefined}
-          href={href}
-          title={title}
-          onClick={(e) => {
-            e.preventDefault();
-            if (href) openExternal(href);
-          }}
-          onAuxClick={(e) => {
-            e.preventDefault();
-            if (href) openExternal(href);
-          }}
-          onMouseDown={(e) => {
-            if (e.button === 1) e.preventDefault();
-          }}
-        >
-          {iconKind && <LinkMark kind={iconKind} />}
-          <span>{label}</span>
-        </a>
-      );
-    },
+    a: ({ href, children }) => <RichMarkdownLink href={href}>{children}</RichMarkdownLink>,
     img: ({ src, alt, title }) => (
       <img
         src={markdownImageSource(src)}
