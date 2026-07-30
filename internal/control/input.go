@@ -138,13 +138,31 @@ func (c *Controller) Compose(text string) string {
 }
 
 func (c *Controller) compose(text, source string, includeHookContext bool) string {
+	goal, goalStatus, goalResearchMode, autoResearchTaskID := c.goals.snapshot()
+	return c.composeWithGoal(
+		text,
+		source,
+		includeHookContext,
+		goal,
+		goalStatus,
+		goalResearchMode,
+		autoResearchTaskID,
+	)
+}
+
+func (c *Controller) composeWithGoal(
+	text, source string,
+	includeHookContext bool,
+	goal, goalStatus string,
+	goalResearchMode GoalResearchMode,
+	autoResearchTaskID string,
+) string {
 	c.mu.Lock()
 	plan := c.planMode
 	responseLanguage := c.responseLanguage
 	reasoningLanguage := c.reasoningLanguage
 	c.mu.Unlock()
 	notes := c.memory.drainPending()
-	goal, goalStatus, goalResearchMode, autoResearchTaskID := c.goals.snapshot()
 
 	if strings.TrimSpace(goal) != "" && goalStatus == GoalStatusRunning {
 		prefix := activeGoalBlock(goal, goalResearchMode)

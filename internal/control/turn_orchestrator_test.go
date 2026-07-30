@@ -24,6 +24,25 @@ type plannerMetadataRunner struct {
 	input string
 }
 
+type goalReplacingRunner struct {
+	c        *Controller
+	executor *agent.Agent
+	calls    int
+}
+
+func (r *goalReplacingRunner) Run(context.Context, string) error {
+	r.calls++
+	if r.calls == 1 {
+		r.c.SetGoal("replacement goal")
+		r.executor.ReplaceTodoState(nil)
+		r.executor.Session().Add(provider.Message{
+			Role:    provider.RoleAssistant,
+			Content: "Old Goal turn finished.\n\n[goal:complete]",
+		})
+	}
+	return nil
+}
+
 func (r *plannerMetadataRunner) Run(ctx context.Context, input string) error {
 	r.meta, _ = plannerTurnMetadataFromContext(ctx)
 	r.input = input
@@ -99,6 +118,120 @@ func TestTurnOrchestratorTypedSyntheticTurnDoesNotDependOnPrefix(t *testing.T) {
 	}
 	if strings.HasPrefix(runner.inputs[0], PlanModeMarker) {
 		t.Fatalf("typed synthetic turn should remain a plain turn, got %q", runner.inputs[0])
+	}
+}
+
+func TestGoalTurnOutputCannotAdvanceReplacementGoal(t *testing.T) {
+	executor := agent.New(nil, tool.NewRegistry(), agent.NewSession("system"), agent.Options{}, event.Discard)
+	runner := &goalReplacingRunner{executor: executor}
+	c := New(Options{
+		Runner:     runner,
+		Executor:   executor,
+		SessionDir: t.TempDir(),
+	})
+	runner.c = c
+	c.SetGoal("old goal")
+
+	if err := newTurnOrchestrator(c).runGoalLoopWithRawDisplay(
+		context.Background(),
+		"work on the old goal",
+		"work on the old goal",
+		"",
+	); err != nil {
+		t.Fatal(err)
+	}
+	if runner.calls != 1 {
+		t.Fatalf("runner calls = %d, want 1 old-Goal turn", runner.calls)
+	}
+	if got := c.Goal(); got != "replacement goal" {
+		t.Fatalf("Goal() = %q, want replacement Goal to remain active", got)
+	}
+	if got := c.GoalStatus(); got != GoalStatusRunning {
+		t.Fatalf("GoalStatus() = %q, want replacement Goal to remain running", got)
+	}
+}
+
+func TestGoalContinuationNoticeCannotMoveOldInterceptIntoReplacementGoal(t *testing.T) {
+	runner := &fakeTurnRunner{}
+	session := agent.NewSession("")
+	session.Add(provider.Message{
+		Role:    provider.RoleAssistant,
+		Content: "All done.\n\n[goal:complete]",
+	})
+	executor := agent.New(nil, tool.NewRegistry(), session, agent.Options{}, event.Discard)
+	executor.SeedTodoState([]evidence.TodoItem{{
+		Content: "unfinished work from old goal",
+		Status:  "in_progress",
+	}})
+
+	var c *Controller
+	replaced := false
+	c = New(Options{
+		Runner:   runner,
+		Executor: executor,
+		Sink: event.FuncSink(func(e event.Event) {
+			if replaced ||
+				e.Kind != event.Notice ||
+				!strings.Contains(e.Text, "Goal still has unfinished task state") {
+				return
+			}
+			replaced = true
+			c.SetGoal("replacement goal")
+		}),
+	})
+	c.SetGoal("old goal")
+
+	if err := newTurnOrchestrator(c).continueGoal(
+		context.Background(),
+		c.goals.continuationToken(),
+	); err != nil {
+		t.Fatal(err)
+	}
+	if !replaced {
+		t.Fatal("test setup: Notice callback did not replace the active Goal")
+	}
+	if got := c.Goal(); got != "replacement goal" {
+		t.Fatalf("Goal() = %q, want replacement goal", got)
+	}
+	if len(runner.inputs) != 0 {
+		t.Fatalf("stale continuation reached runner with input %q", runner.inputs[0])
+	}
+}
+
+func TestGoalContinuationOutputCannotAdvanceReplacementGoal(t *testing.T) {
+	session := agent.NewSession("system")
+	session.Add(provider.Message{
+		Role:    provider.RoleAssistant,
+		Content: "All done.\n\n[goal:complete]",
+	})
+	executor := agent.New(nil, tool.NewRegistry(), session, agent.Options{}, event.Discard)
+	executor.SeedTodoState([]evidence.TodoItem{{
+		Content: "unfinished work from old goal",
+		Status:  "in_progress",
+	}})
+	runner := &goalReplacingRunner{executor: executor}
+	c := New(Options{
+		Runner:     runner,
+		Executor:   executor,
+		SessionDir: t.TempDir(),
+	})
+	runner.c = c
+	c.SetGoal("old goal")
+
+	if err := newTurnOrchestrator(c).continueGoal(
+		context.Background(),
+		c.goals.continuationToken(),
+	); err != nil {
+		t.Fatal(err)
+	}
+	if runner.calls != 1 {
+		t.Fatalf("runner calls = %d, want 1 old-Goal continuation", runner.calls)
+	}
+	if got := c.Goal(); got != "replacement goal" {
+		t.Fatalf("Goal() = %q, want replacement Goal to remain active", got)
+	}
+	if got := c.GoalStatus(); got != GoalStatusRunning {
+		t.Fatalf("GoalStatus() = %q, want replacement Goal to remain running", got)
 	}
 }
 
