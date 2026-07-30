@@ -2429,27 +2429,6 @@ export function useController() {
     };
   }, [activeTabId, activeState.meta?.ready, activeState.meta?.startupErr, activeState.backendActivationPending, refreshMetaOnlyForTab]);
 
-  // Fallback context fetch when activeTabId changes and the target tab's
-  // state.context is empty (e.g. the switch-tab ancillary ContextUsageForTab
-  // dispatch was skipped by a rapid A→B→A switch that invalidated stillVisible
-  // before the call returned). StatusBar reads state.context directly and has
-  // no self-fetching logic, so it would remain blank until the next turn_done
-  // without this catch-up path.
-  useEffect(() => {
-    const tabId = activeTabId;
-    if (!tabId) return;
-    const st = statesRef.current.get(tabId);
-    if (st?.context && (st.context.used > 0 || st.context.window > 0)) return;
-    let cancelled = false;
-    void app.ContextUsageForTab(tabId).then((context) => {
-      if (cancelled || activeTabIdRef.current !== tabId) return;
-      dispatchTo(tabId, { type: "context", context });
-    }).catch(() => {});
-    return () => {
-      cancelled = true;
-    };
-  }, [activeTabId, dispatchTo]);
-
   // Stale-turn watchdog: if the frontend thinks the agent is running but the
   // turn stream has gone quiet, reconcile with the backend. This catches cases
   // where the Wails event channel silently drops turn_done after the final

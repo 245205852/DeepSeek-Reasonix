@@ -255,15 +255,15 @@ type sessionUsageStats struct {
 	// from the most recent turn. It is persisted so the status bar / context
 	// panel can show a meaningful fill percentage after a session rebind
 	// rebuilds the controller (which resets the in-memory executor state).
-	LastUsedTokens int `json:"lastUsedTokens"`
+	LastUsedTokens int `json:"lastUsedTokens,omitempty"`
 	// Per-turn token breakdown from the most recent turn. Persisted separately
 	// from the cumulative totals above so the context-panel donut chart and
 	// type breakdown survive a session rebind (which resets executor.LastUsage).
-	LastPromptTokens     int                         `json:"lastPromptTokens"`
-	LastCompletionTokens int                         `json:"lastCompletionTokens"`
-	LastReasoningTokens  int                         `json:"lastReasoningTokens"`
-	LastCacheHitTokens   int                         `json:"lastCacheHitTokens"`
-	LastCacheMissTokens  int                         `json:"lastCacheMissTokens"`
+	LastPromptTokens     int                         `json:"lastPromptTokens,omitempty"`
+	LastCompletionTokens int                         `json:"lastCompletionTokens,omitempty"`
+	LastReasoningTokens  int                         `json:"lastReasoningTokens,omitempty"`
+	LastCacheHitTokens   int                         `json:"lastCacheHitTokens,omitempty"`
+	LastCacheMissTokens  int                         `json:"lastCacheMissTokens,omitempty"`
 	RequestCount         int                         `json:"requestCount"`
 	ElapsedMs            int64                       `json:"elapsedMs"`
 	SessionCost          float64                     `json:"sessionCost,omitempty"`
@@ -943,12 +943,14 @@ func (t *WorkspaceTab) recordUsage(e event.Event) {
 	t.usageTelemetry.CacheHitTokens += cacheHitTokens
 	t.usageTelemetry.CacheMissTokens += cacheMissTokens
 	t.usageTelemetry.RequestCount++
-	t.usageTelemetry.LastUsedTokens = u.PromptTokens + u.CompletionTokens
-	t.usageTelemetry.LastPromptTokens = u.PromptTokens
-	t.usageTelemetry.LastCompletionTokens = u.CompletionTokens
-	t.usageTelemetry.LastReasoningTokens = u.ReasoningTokens
-	t.usageTelemetry.LastCacheHitTokens = cacheHitTokens
-	t.usageTelemetry.LastCacheMissTokens = cacheMissTokens
+	if source == event.UsageSourceExecutor {
+		t.usageTelemetry.LastUsedTokens = u.PromptTokens + u.CompletionTokens
+		t.usageTelemetry.LastPromptTokens = u.PromptTokens
+		t.usageTelemetry.LastCompletionTokens = u.CompletionTokens
+		t.usageTelemetry.LastReasoningTokens = u.ReasoningTokens
+		t.usageTelemetry.LastCacheHitTokens = cacheHitTokens
+		t.usageTelemetry.LastCacheMissTokens = cacheMissTokens
+	}
 	if t.usageTelemetry.Sources == nil {
 		t.usageTelemetry.Sources = map[string]usageSourceStats{}
 	}
