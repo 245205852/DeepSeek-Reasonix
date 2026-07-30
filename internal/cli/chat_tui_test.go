@@ -10,6 +10,8 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+
+	"github.com/charmbracelet/colorprofile"
 	"time"
 
 	tea "charm.land/bubbletea/v2"
@@ -1325,9 +1327,9 @@ func TestUserBubbleEchoedImmediately(t *testing.T) {
 }
 
 func TestUserBubbleIsLightweightTranscriptLine(t *testing.T) {
-	prevColor := colorEnabled
-	colorEnabled = true
-	defer func() { colorEnabled = prevColor }()
+	prevColor := activeColorProfile
+	activeColorProfile = colorprofile.ANSI256
+	defer func() { activeColorProfile = prevColor }()
 
 	got := renderUserBubble("hello world", 80, false)
 	plain := ansi.Strip(got)
