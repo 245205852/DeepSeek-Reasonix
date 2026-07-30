@@ -274,6 +274,7 @@ transcript concurrently.
 ```sh
 reasonix --permission-mode plan
 reasonix --permission-mode acceptEdits
+reasonix run -y "apply the requested changes"
 reasonix -p "run the focused tests" --allowed-tools "Bash(go test ./...)"
 reasonix --allowed-tools "Bash(git *) Edit"
 reasonix --allowed-tools "Bash(go test ./...)" --allowed-tools read_file
@@ -293,10 +294,10 @@ filter. Rules may be comma- or space-separated, and the flag is repeatable.
 Configured deny rules always win over command-line allow rules.
 
 In non-interactive runs (`reasonix run` / `-p`) there is no prompt to answer, so
-each mode resolves without blocking: `ask`, `manual`, and `acceptEdits` keep run
-autonomy and let ordinary approval decisions proceed; `auto` still auto-approves
-the normal fallback but denies a command that matches an explicit ask rule rather
-than running it unattended; `dontAsk` denies; and `bypassPermissions` runs
+`ask`, `manual`, and `acceptEdits` fail closed when an ordinary writer needs
+approval. `-y` / `--auto` is the short opt-in for `--permission-mode auto`,
+which auto-approves normal fallback operations but still denies commands that
+match explicit ask or deny rules. `dontAsk` denies; `bypassPermissions` runs
 everything except tools that always require fresh human approval (memory, plan,
 sandbox escape, managed config write). In every mode, the owning top-level
 controller may still create a bounded, non-sensitive, create-only project or

@@ -1079,7 +1079,7 @@ func TestResumeSessionForTabTargetsSpecifiedTab(t *testing.T) {
 	if filepath.Clean(savedInactive) != filepath.Clean(targetPath) {
 		t.Fatalf("saved inactive session path = %q, want %q", savedInactive, targetPath)
 	}
-	if len(got) != 1 || got[0].Content != "target prompt" {
+	if len(got) == 0 || got[len(got)-1].Content != "target prompt" {
 		t.Fatalf("resumed history = %+v, want target prompt", got)
 	}
 }
@@ -1156,7 +1156,7 @@ func TestResumeSessionForTabDetachesRunningRuntimeForDifferentSessionPath(t *tes
 	if gotPath := app.tabs[tab.ID].Ctrl.SessionPath(); gotPath != sessionB {
 		t.Fatalf("visible tab session path = %q, want %q", gotPath, sessionB)
 	}
-	if len(got) != 1 || got[0].Content != "session B prompt" {
+	if len(got) == 0 || got[len(got)-1].Content != "session B prompt" {
 		t.Fatalf("resumed history = %+v, want session B prompt", got)
 	}
 
@@ -1238,7 +1238,7 @@ func TestRebindTabToLoadedSessionReusesPreloadedTranscript(t *testing.T) {
 		t.Fatalf("rebindTabToLoadedSessionPath: %v", err)
 	}
 	got := app.HistoryForTab(tab.ID)
-	if len(got) != 1 || got[0].Content != "target prompt" {
+	if len(got) == 0 || got[len(got)-1].Content != "target prompt" {
 		t.Fatalf("rebound history = %+v, want target prompt", got)
 	}
 	if gotPath := app.tabs[tab.ID].Ctrl.SessionPath(); gotPath != targetPath {

@@ -633,7 +633,9 @@ them without an extra prompt. Command/process substitution, a dynamic command
 name, `eval`, `source`, shell `-c`, inline runtime code, and unparseable forms
 require a human in interactive Ask/Auto. Headless Ask/Auto/DontAsk reject that
 nested/indirect class unless an exact literal exists; YOLO may bypass it.
-`reasonix run` otherwise stays autonomous and always honours `deny`.
+Headless `reasonix run` defaults to Ask and fails closed when an ordinary writer
+needs approval. Use `-y`, `--auto`, or `--permission-mode auto` to opt into
+unattended ordinary writes; explicit `ask` and `deny` rules still apply.
 
 Ask is not read-only: after approval, a writer can still run. Permissions decide
 whether to allow or prompt; the Sandbox is the enforced capability boundary.

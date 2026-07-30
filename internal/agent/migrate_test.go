@@ -281,7 +281,7 @@ const v1MessageSession = `{"role":"user","content":"recovered after downgrade"}
 {"role":"assistant","content":"ok"}
 `
 
-func TestMigratedJsonlSessionPersistsNewTurns(t *testing.T) {
+func TestMigratedJsonlStoragePersistsDirectSnapshot(t *testing.T) {
 	src := t.TempDir()
 	dest := t.TempDir()
 	if err := os.WriteFile(filepath.Join(src, "desktop-legacy.jsonl"), []byte(v1MessageSession), 0o644); err != nil {

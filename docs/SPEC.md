@@ -484,9 +484,11 @@ func (p Policy) Decide(toolName string, readOnly bool, args json.RawMessage) Dec
 | YOLO approval / `yolo` | Ordinary prompts auto-allowed; deny rules and fresh reviews remain | Waits for user | Waits for user |
 | Approved-plan execution window | Approved plan's writer fallback is auto-allowed; explicit `ask` / `deny` rules remain | Future plans still wait | Waits for user |
 
-Out of the box (`mode = "ask"`, no rules) `reasonix run` behaves exactly as before
-(writers resolve `Ask`→allow with no TTY), while `reasonix` now prompts before
-each writer/bash call. `deny` rules harden both modes.
+Out of the box (`mode = "ask"`, no rules), headless `reasonix run` fails closed
+when a writer resolves to `Ask`, because no approval UI exists. Use
+`reasonix run -y`, `reasonix run --auto`, or `--permission-mode auto` to opt into
+unattended ordinary writes; explicit `ask` and `deny` rules still apply.
+Interactive `reasonix` prompts before each writer/bash call.
 
 ### 3.8 Slash commands (`internal/command`)
 
