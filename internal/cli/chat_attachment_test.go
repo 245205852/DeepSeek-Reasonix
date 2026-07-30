@@ -12,6 +12,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 
 	"reasonix/internal/control"
+	"reasonix/internal/provider"
 )
 
 func TestExpandPastedBlocksImage(t *testing.T) {
@@ -27,6 +28,73 @@ func TestExpandPastedBlocksImage(t *testing.T) {
 	}
 	if displayLineForImageRefs(got) != "look at [image1] and "+renderFoldedPasteBlock(m.pastedBlocks[1]) {
 		t.Fatalf("image ref should collapse to a label in the bubble: %q", displayLineForImageRefs(got))
+	}
+}
+
+func TestRecoverOrphanedPasteLabelFromHistory(t *testing.T) {
+	block := pastedBlock{
+		label: "[Pasted text #4 · 2 lines]",
+		text:  "old\nbody",
+	}
+	history := []provider.Message{{
+		Role:    provider.RoleUser,
+		Content: renderFoldedPasteBlock(block),
+	}}
+
+	got := recoverOrphanedPasteLabelsFromHistory("repeat "+block.label, nil, history)
+	want := "repeat " + renderFoldedPasteBlock(block)
+	if got != want {
+		t.Fatalf("recovered paste = %q, want %q", got, want)
+	}
+}
+
+func TestRecoverOrphanedPasteLabelUsesLatestUserExpansion(t *testing.T) {
+	label := "[Pasted text #4 · 2 lines]"
+	history := []provider.Message{
+		{Role: provider.RoleUser, Content: renderFoldedPasteBlock(pastedBlock{label: label, text: "old\nbody"})},
+		{Role: provider.RoleAssistant, Content: renderFoldedPasteBlock(pastedBlock{label: label, text: "untrusted\nbody"})},
+		{Role: provider.RoleUser, Content: renderFoldedPasteBlock(pastedBlock{label: label, text: "new\nbody"})},
+	}
+
+	got := recoverOrphanedPasteLabelsFromHistory(label, nil, history)
+	want := renderFoldedPasteBlock(pastedBlock{label: label, text: "new\nbody"})
+	if got != want {
+		t.Fatalf("recovered paste = %q, want latest user expansion %q", got, want)
+	}
+}
+
+func TestRecoverOrphanedPasteLabelLeavesUnverifiedTextUnchanged(t *testing.T) {
+	sent := "explain [Pasted text #9 · 10 lines] syntax"
+	history := []provider.Message{{
+		Role:    provider.RoleAssistant,
+		Content: renderFoldedPasteBlock(pastedBlock{label: "[Pasted text #9 · 10 lines]", text: "assistant\ncontent"}),
+	}}
+
+	if got := recoverOrphanedPasteLabelsFromHistory(sent, nil, history); got != sent {
+		t.Fatalf("unverified label = %q, want unchanged %q", got, sent)
+	}
+}
+
+func TestRecoverOrphanedPasteLabelDoesNotReexpandRenderedBlock(t *testing.T) {
+	block := pastedBlock{label: "[Pasted text #4 · 2 lines]", text: "old\nbody"}
+	rendered := renderFoldedPasteBlock(block)
+	history := []provider.Message{{Role: provider.RoleUser, Content: rendered}}
+
+	if got := recoverOrphanedPasteLabelsFromHistory(rendered, nil, history); got != rendered {
+		t.Fatalf("rendered block = %q, want unchanged %q", got, rendered)
+	}
+}
+
+func TestNextPasteIDForHistoryContinuesAcrossReload(t *testing.T) {
+	history := []provider.Message{
+		{Role: provider.RoleUser, Content: "[Pasted text #2 · 4 lines]"},
+		{Role: provider.RoleAssistant, Content: "--- Begin [Pasted text #7 · 3 lines] ---"},
+	}
+	if got := nextPasteIDForHistory(history); got != 8 {
+		t.Fatalf("nextPasteIDForHistory = %d, want 8", got)
+	}
+	if got := nextPasteIDForHistory(nil); got != 1 {
+		t.Fatalf("nextPasteIDForHistory(nil) = %d, want 1", got)
 	}
 }
 

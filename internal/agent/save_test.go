@@ -1522,7 +1522,7 @@ func TestSaveRewriteRejectsForeignStampForUnattributedBytes(t *testing.T) {
 	}
 }
 
-func TestSaveSnapshotRejectsOwnedNonPrefixRewrite(t *testing.T) {
+func TestSaveSnapshotAllowsOwnedNonPrefixRewrite(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "session.jsonl")
 	s := NewSession("sys")
 	s.Add(provider.Message{Role: provider.RoleUser, Content: "first"})
@@ -1535,14 +1535,11 @@ func TestSaveSnapshotRejectsOwnedNonPrefixRewrite(t *testing.T) {
 		{Role: provider.RoleSystem, Content: "sys"},
 		{Role: provider.RoleUser, Content: "summarized first"},
 	})
-	// Future-tense: when the revision ledger proves the same runtime still owns
-	// the session, SaveSnapshot allows the write (via full rewrite) even though
-	// the content is not a byte-exact prefix of disk.  The revision CAS vouches
-	// that no external writer intervened; the byte-level mismatch is internal
-	// (normalisation, local-only metadata, or an intentional in-place mutation).
-	// Ref: #6027 Phase 3, Agda PR #8611.
+	// The persisted digest, revision, and ledger digest still describe the
+	// exact bytes this Session wrote, so a non-prefix snapshot may safely use
+	// the full-rewrite path without creating a recovery branch.
 	if err := s.SaveSnapshot(path); err != nil {
-		t.Fatalf("SaveSnapshot owned non-prefix rewrite with same-revision CAS: %v", err)
+		t.Fatalf("SaveSnapshot owned non-prefix rewrite: %v", err)
 	}
 
 	loaded, err := LoadSession(path)
@@ -1554,6 +1551,53 @@ func TestSaveSnapshotRejectsOwnedNonPrefixRewrite(t *testing.T) {
 	}
 	if got := loaded.Messages[1].Content; got != "summarized first" {
 		t.Fatalf("rewritten content = %q, want %q", got, "summarized first")
+	}
+}
+
+func TestSaveSnapshotRejectsInterruptedForeignWriteAtSameRevision(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "session.jsonl")
+	base := NewSession("sys")
+	base.Add(provider.Message{Role: provider.RoleUser, Content: "base"})
+	if err := base.Save(path); err != nil {
+		t.Fatalf("Save base: %v", err)
+	}
+
+	stale, err := LoadSession(path)
+	if err != nil {
+		t.Fatalf("LoadSession stale: %v", err)
+	}
+	revision, _, err := sessionContentRevision(path)
+	if err != nil {
+		t.Fatalf("sessionContentRevision: %v", err)
+	}
+
+	foreignMessages := append(stale.Snapshot(),
+		provider.Message{Role: provider.RoleAssistant, Content: "foreign writer tail"})
+	foreignDigest, err := digestSessionMessages(foreignMessages)
+	if err != nil {
+		t.Fatalf("digest foreign messages: %v", err)
+	}
+	if err := appendSessionReplaceEvent(path, foreignMessages, foreignDigest, revision, "snapshot"); err != nil {
+		t.Fatalf("append interrupted foreign event: %v", err)
+	}
+	if err := writeSessionMessages(path, foreignMessages); err != nil {
+		t.Fatalf("write interrupted foreign checkpoint: %v", err)
+	}
+	// Simulate a crash before recordSessionContentRevision: the transcript and
+	// event log changed, but the revision still equals stale's baseline.
+
+	stale.Add(provider.Message{Role: provider.RoleAssistant, Content: "stale writer tail"})
+	err = stale.SaveSnapshot(path)
+	if !errors.Is(err, ErrSessionSnapshotConflict) {
+		t.Fatalf("SaveSnapshot err = %v, want ErrSessionSnapshotConflict", err)
+	}
+
+	loaded, err := LoadSession(path)
+	if err != nil {
+		t.Fatalf("LoadSession final: %v", err)
+	}
+	if got := loaded.Messages[len(loaded.Messages)-1].Content; got != "foreign writer tail" {
+		t.Fatalf("foreign tail after rejected snapshot = %q, want preserved", got)
 	}
 }
 
@@ -1935,14 +1979,14 @@ func TestSaveRecoveryBranchDoesNotCascadeRecoveryFilename(t *testing.T) {
 	}
 }
 
-// TestSaveSnapshotSameRevisionAllowsNonPrefixAppend reproduces the scenario from
+// TestSaveSnapshotSameRevisionAllowsOwnedNonPrefixAppend reproduces the scenario from
 // #6948: a recovery branch whose snapshot saves systematically diverged because
 // checkSnapshotWrite's byte-level prefix comparison failed on messages carrying
 // local-only metadata (LocalOnly + interrupted_turn) that survived JSON round-trip
-// with subtle differences.  After the future-tense fix, same-revision CAS proves
-// same-runtime ownership and the save proceeds as a full rewrite instead of
+// with subtle differences. The persisted digest proves that the disk still holds
+// this Session's baseline, so the save proceeds as a full rewrite instead of
 // forking another recovery branch.
-func TestSaveSnapshotSameRevisionAllowsNonPrefixAppend(t *testing.T) {
+func TestSaveSnapshotSameRevisionAllowsOwnedNonPrefixAppend(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "session.jsonl")
 
@@ -1970,9 +2014,8 @@ func TestSaveSnapshotSameRevisionAllowsNonPrefixAppend(t *testing.T) {
 	}
 
 	// Simulate recovery: load the saved transcript into a new session, then
-	// add more messages.  Every subsequent SaveSnapshot must succeed (no
-	// diverged conflict) because the revision ledger proves same-runtime
-	// ownership.
+	// add more messages. Every subsequent SaveSnapshot must succeed without a
+	// diverged conflict while the persisted digest still proves ownership.
 	for turn := 0; turn < 5; turn++ {
 		s, err := LoadSession(path)
 		if err != nil {

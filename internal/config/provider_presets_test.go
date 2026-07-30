@@ -163,6 +163,19 @@ func TestCuratedProviderPresetReturnsDeepCopy(t *testing.T) {
 	if got := fresh.Entries[0].PresetID; got != "minimax-cn-api" {
 		t.Fatalf("fresh minimax preset_id = %q, want minimax-cn-api", got)
 	}
+
+	qwen, ok := CuratedProviderPreset("qwen-cn")
+	if !ok {
+		t.Fatal("missing qwen-cn preset")
+	}
+	qwen.Entries[0].ModelOverrides["glm-5"] = ProviderModelOverride{ContextWindow: 1}
+	freshQwen, ok := CuratedProviderPreset("qwen-cn")
+	if !ok {
+		t.Fatal("missing fresh qwen-cn preset")
+	}
+	if got := freshQwen.Entries[0].ModelOverrides["glm-5"].ContextWindow; got != 202_752 {
+		t.Fatalf("fresh qwen glm-5 context window = %d, want 202752", got)
+	}
 }
 
 func TestCuratedProviderPresetCapabilities(t *testing.T) {
@@ -420,6 +433,35 @@ func TestCuratedProviderPresetCapabilities(t *testing.T) {
 	}
 	if qwenPlanGlobal.NoProxy || !qwenPlanGlobal.HasModel("qwen3.6-plus") || qwenPlanGlobal.BaseURL != "https://coding-intl.dashscope.aliyuncs.com/v1" {
 		t.Fatalf("qwen-coding-plan-global capability mismatch: %+v", qwenPlanGlobal)
+	}
+	qwenProviders := []string{
+		"qwen-cn",
+		"qwen-global",
+		"qwen-coding-plan-cn",
+		"qwen-coding-plan-cn-anthropic",
+		"qwen-coding-plan-global",
+		"qwen-coding-plan-global-anthropic",
+	}
+	qwenContextWindows := map[string]int{
+		"qwen3.7-plus":         1_000_000,
+		"qwen3-coder-plus":     1_000_000,
+		"qwen3-max-2026-01-23": 262_144,
+		"qwen3-coder-next":     262_144,
+		"MiniMax-M2.5":         196_608,
+		"glm-5":                202_752,
+		"glm-4.7":              202_752,
+		"kimi-k2.5":            262_144,
+	}
+	for _, providerID := range qwenProviders {
+		for model, want := range qwenContextWindows {
+			resolved, ok := cfg.ResolveModel(providerID + "/" + model)
+			if !ok {
+				t.Fatalf("resolve %s/%s failed", providerID, model)
+			}
+			if got := resolved.ContextWindow; got != want {
+				t.Fatalf("%s/%s context window = %d, want %d", providerID, model, got, want)
+			}
+		}
 	}
 
 	gmi, ok := cfg.Provider("gmi")

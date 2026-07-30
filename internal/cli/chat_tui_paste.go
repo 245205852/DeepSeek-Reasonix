@@ -7,12 +7,14 @@ import (
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"strconv"
 	"strings"
 
 	tea "charm.land/bubbletea/v2"
 	"github.com/atotto/clipboard"
 
 	"reasonix/internal/control"
+	"reasonix/internal/provider"
 	"reasonix/internal/secrets"
 	"reasonix/internal/shellparse"
 )
@@ -85,74 +87,95 @@ func (m *chatTUI) expandPastedBlocks(displayed string) string {
 	// [Pasted text #N · M lines]; the original content was expanded into the
 	// transcript the last time it was submitted.  Scan the conversation
 	// history for a prior user message carrying the matching Begin/End block
-	// and re-expand from there.  Labels with no recoverable content are
-	// stripped so the model never sees a raw placeholder.
+	// and re-expand from there. Labels with no verified content remain literal.
 	sent = m.recoverOrphanedPasteLabels(sent)
 	return sent
 }
 
-var orphanedPasteLabelRe = regexp.MustCompile(`\[Pasted text #(\d+) · \d+ lines\]`)
+var foldedPasteLabelRe = regexp.MustCompile(`\[Pasted text #(\d+) · \d+ lines\]`)
 
-// recoverOrphanedPasteLabels restores paste content for labels whose
-// pastedBlock was lost (typically after a session reload cleared the in-memory
-// pastedBlocks slice).  It scans the conversation history for a prior
-// submission that contains the expanded block and reconstructs it.
+// recoverOrphanedPasteLabels restores paste content only at the explicit
+// resubmission boundary. Persisted history remains byte-stable for prefix-cache
+// reuse; labels that cannot be proven to belong to a prior expanded user
+// message are left unchanged rather than rewriting literal user text.
 func (m *chatTUI) recoverOrphanedPasteLabels(sent string) string {
+	var history []provider.Message
+	if m.ctrl != nil {
+		history = m.ctrl.History()
+	}
+	return recoverOrphanedPasteLabelsFromHistory(sent, m.pastedBlocks, history)
+}
+
+func recoverOrphanedPasteLabelsFromHistory(sent string, knownBlocks []pastedBlock, history []provider.Message) string {
 	// Fast path: no label-like tokens at all.
 	if !strings.Contains(sent, "[Pasted text #") {
 		return sent
 	}
-	matches := orphanedPasteLabelRe.FindAllStringSubmatchIndex(sent, -1)
+	matches := foldedPasteLabelRe.FindAllString(sent, -1)
 	if len(matches) == 0 {
 		return sent
 	}
 	// Collect the labels we already know about so we only attempt recovery
 	// for genuinely orphaned ones.
-	known := make(map[string]bool, len(m.pastedBlocks))
-	for _, b := range m.pastedBlocks {
+	known := make(map[string]bool, len(knownBlocks))
+	for _, b := range knownBlocks {
 		known[b.label] = true
 	}
-	// Scan conversation history once for all orphaned labels.
-	var history []string
-	for _, idx := range matches {
-		label := sent[idx[0]:idx[1]]
-		if known[label] {
+	seen := make(map[string]bool, len(matches))
+	for _, label := range matches {
+		if known[label] || seen[label] || strings.Contains(sent, "--- Begin "+label+" ---") {
 			continue
 		}
-		if history == nil {
-			for _, msg := range m.ctrl.History() {
-				if msg.Role == "user" || msg.Role == "assistant" {
-					history = append(history, msg.Content)
-				}
-			}
-		}
-		beginMarker := "--- Begin " + label + " ---"
-		endMarker := "--- End " + label + " ---"
-		recovered := ""
-		for _, h := range history {
-			bi := strings.Index(h, beginMarker)
-			if bi < 0 {
+		seen[label] = true
+		for i := len(history) - 1; i >= 0; i-- {
+			if history[i].Role != provider.RoleUser {
 				continue
 			}
-			bi += len(beginMarker)
-			ei := strings.Index(h[bi:], endMarker)
-			if ei < 0 {
-				continue
+			if recovered, ok := expandedPasteBody(history[i].Content, label); ok {
+				sent = strings.ReplaceAll(sent, label, renderFoldedPasteBlock(pastedBlock{
+					label: label,
+					text:  recovered,
+				}))
+				break
 			}
-			recovered = strings.TrimSpace(h[bi : bi+ei])
-			break
-		}
-		if recovered != "" {
-			sent = strings.ReplaceAll(sent, label,
-				fmt.Sprintf("%s\n\n--- Begin %s ---\n%s\n--- End %s ---", label, label, recovered, label))
-		} else {
-			// Content not recoverable — strip the raw placeholder so the model
-			// does not receive an unexpanded token it cannot interpret.
-			sent = strings.ReplaceAll(sent, label, "")
-			sent = strings.TrimSpace(sent)
 		}
 	}
 	return sent
+}
+
+func expandedPasteBody(content, label string) (string, bool) {
+	beginMarker := "--- Begin " + label + " ---"
+	endMarker := "--- End " + label + " ---"
+	begin := strings.Index(content, beginMarker)
+	if begin < 0 {
+		return "", false
+	}
+	begin += len(beginMarker)
+	end := strings.Index(content[begin:], endMarker)
+	if end < 0 {
+		return "", false
+	}
+	body := strings.TrimSpace(content[begin : begin+end])
+	return body, body != ""
+}
+
+// nextPasteIDForHistory prevents labels from being reused after resume or
+// restart. Older sessions may contain duplicate legacy IDs; starting above the
+// maximum keeps every newly created label unambiguous.
+func nextPasteIDForHistory(history []provider.Message) int {
+	next := 1
+	for _, msg := range history {
+		for _, match := range foldedPasteLabelRe.FindAllStringSubmatch(msg.Content, -1) {
+			if len(match) < 2 {
+				continue
+			}
+			id, err := strconv.Atoi(match[1])
+			if err == nil && id >= next {
+				next = id + 1
+			}
+		}
+	}
+	return next
 }
 
 func (m *chatTUI) pasteLabelsIn(s string) []string {

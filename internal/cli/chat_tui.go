@@ -551,6 +551,7 @@ func newChatTUI(ctrl control.SessionAPI, missing string, eventCh chan event.Even
 
 	commitBuf := []string{}
 	nativeScrollback := detectTermuxTerminal()
+	history := ctrl.History()
 	return chatTUI{
 		ctrl:                 ctrl,
 		label:                ctrl.Label(),
@@ -561,7 +562,7 @@ func newChatTUI(ctrl control.SessionAPI, missing string, eventCh chan event.Even
 		spinner:              sp,
 		submittedInputCursor: -1,
 		queueEditCursor:      -1,
-		nextPasteID:          1,
+		nextPasteID:          nextPasteIDForHistory(history),
 		reasoningLineIdx:     -1,
 		reasoningTextIdx:     -1,
 		answerIdx:            -1,
@@ -576,7 +577,7 @@ func newChatTUI(ctrl control.SessionAPI, missing string, eventCh chan event.Even
 		shellTranscriptIdx:   make(map[string]int),
 		toolLineCountByID:    make(map[string]int),
 		eventCh:              eventCh,
-		history:              ctrl.History(),
+		history:              history,
 		host:                 ctrl.Host(),
 		commands:             ctrl.Commands(),
 		skills:               ctrl.SlashSkills(),
