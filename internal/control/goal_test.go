@@ -771,8 +771,8 @@ func TestGoalBlockedSignalDoesNotTriggerIdleIntercept(t *testing.T) {
 	if !res.cont {
 		t.Fatal("first blocked signal should keep the goal audit running")
 	}
-	if msg, ok := g.takeIntercept(); ok {
-		t.Fatalf("blocked signal triggered idle intercept %q", msg)
+	if res.intercept != "" {
+		t.Fatalf("blocked signal triggered idle intercept %q", res.intercept)
 	}
 }
 

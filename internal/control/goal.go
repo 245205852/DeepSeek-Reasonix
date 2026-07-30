@@ -115,6 +115,16 @@ type goalAdvanceResult struct {
 	ok                bool
 }
 
+// goalContinuationSnapshot binds a continuation to the exact Goal lifecycle
+// state admitted for its synthetic turn. The orchestrator uses these captured
+// fields throughout the turn instead of re-reading a possibly replaced Goal.
+type goalContinuationSnapshot struct {
+	goal               string
+	researchMode       GoalResearchMode
+	autoResearchTaskID string
+	scopeID            string
+}
+
 // goalStatePath derives a session's persisted goal-state sidecar.
 func goalStatePath(sessionPath string) string {
 	return store.SessionGoalState(sessionPath)
@@ -292,10 +302,9 @@ func (g *goalMachine) deliveryState() evidence.DeliveryCheckpoint {
 	return g.deliveryCheckpoint
 }
 
-// acceptContinuation verifies that an advance result still belongs to the
-// machine state that produced it. Goal lifecycle changes and newer advance
-// calls invalidate older results so stale intercepts cannot cross into a
-// replacement or resumed goal.
+// acceptContinuation checks an advance result before the orchestrator surfaces
+// its notice. admitContinuation revalidates after synchronous notice callbacks
+// and captures the Goal state at the synthetic-turn admission boundary.
 func (g *goalMachine) acceptContinuation(res goalAdvanceResult) (string, bool) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
@@ -306,6 +315,30 @@ func (g *goalMachine) acceptContinuation(res goalAdvanceResult) (string, bool) {
 		return "", false
 	}
 	return res.intercept, true
+}
+
+// admitContinuation atomically validates an advance result and captures the
+// Goal state used to compose and scope its synthetic turn. Keeping validation
+// and capture in one critical section prevents a stale intercept from being
+// paired with a replacement Goal between those operations.
+func (g *goalMachine) admitContinuation(res goalAdvanceResult) (goalContinuationSnapshot, bool) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if !res.cont ||
+		res.continuationEpoch != g.continuationEpoch ||
+		strings.TrimSpace(g.goal) == "" ||
+		g.status != GoalStatusRunning {
+		return goalContinuationSnapshot{}, false
+	}
+	if g.scopeID == "" {
+		g.scopeID = newGoalScopeID()
+	}
+	return goalContinuationSnapshot{
+		goal:               g.goal,
+		researchMode:       g.researchMode,
+		autoResearchTaskID: g.autoResearchTaskID,
+		scopeID:            g.scopeID,
+	}, true
 }
 
 // advance runs one continuation step of the goal FSM from already-gathered

@@ -25,11 +25,12 @@ type turnOrchestrator struct {
 }
 
 type orchestratedTurn struct {
-	input          string
-	raw            string
-	display        string
-	editedOriginal string
-	synthetic      bool
+	input            string
+	raw              string
+	display          string
+	editedOriginal   string
+	synthetic        bool
+	goalContinuation *goalContinuationSnapshot
 }
 
 func newTurnOrchestrator(c *Controller) *turnOrchestrator {
@@ -46,6 +47,25 @@ func (o *turnOrchestrator) runEditedTurnWithRawDisplay(ctx context.Context, inpu
 
 func (o *turnOrchestrator) runSyntheticTurnWithRawDisplay(ctx context.Context, input, raw, display string) error {
 	return o.runOrchestratedTurn(ctx, orchestratedTurn{input: input, raw: raw, display: display, synthetic: true})
+}
+
+func (o *turnOrchestrator) runGoalContinuationTurnWithRawDisplay(
+	ctx context.Context,
+	input, raw, display string,
+	res goalAdvanceResult,
+) (bool, error) {
+	snapshot, ok := o.c.goals.admitContinuation(res)
+	if !ok {
+		return false, nil
+	}
+	err := o.runOrchestratedTurn(ctx, orchestratedTurn{
+		input:            input,
+		raw:              raw,
+		display:          display,
+		synthetic:        true,
+		goalContinuation: &snapshot,
+	})
+	return true, err
 }
 
 func (o *turnOrchestrator) runComposedSyntheticTurn(ctx context.Context, text string) error {
@@ -163,7 +183,21 @@ func (o *turnOrchestrator) runOrchestratedTurn(ctx context.Context, turn orchest
 	userImages := c.inputImages(turn.input)
 	ctx = agent.WithUserImages(ctx, userImages)
 	ctx = agent.WithRawUserInput(ctx, turn.raw)
-	input := c.compose(turn.input, turn.raw, !turn.synthetic)
+	continuation := turn.goalContinuation
+	var input string
+	if continuation != nil {
+		input = c.composeWithGoal(
+			turn.input,
+			turn.raw,
+			false,
+			continuation.goal,
+			GoalStatusRunning,
+			continuation.researchMode,
+			continuation.autoResearchTaskID,
+		)
+	} else {
+		input = c.compose(turn.input, turn.raw, !turn.synthetic)
+	}
 	startMessages := c.messageCount()
 	defer c.snapshotActivityIfChanged(startMessages)
 	defer c.recordDisplayForNewUser(startMessages, turn.display)
@@ -195,14 +229,24 @@ func (o *turnOrchestrator) runOrchestratedTurn(ctx context.Context, turn orchest
 		defer func() { c.hooks.StopResult(context.Background(), lastAssistantText(c.History()), turn, err) }()
 	}
 	c.markInFlightTurn(startMessages, !turn.synthetic && !IsSyntheticUserMessage(turn.raw))
-	autoResearchTaskID := c.goals.currentAutoResearchTaskID()
+	var autoResearchTaskID string
+	if continuation != nil {
+		autoResearchTaskID = continuation.autoResearchTaskID
+	} else {
+		autoResearchTaskID = c.goals.currentAutoResearchTaskID()
+	}
 	autoResearchAcceptedBefore := c.autoResearchAcceptedEvidenceIDs(autoResearchTaskID)
 	c.appendAutoResearchHeartbeat(autoResearchTaskID, autoresearch.HeartbeatStartingTurn, "")
 	modelInput := input
 	if !turn.synthetic {
 		modelInput = c.withCapabilityRoute(input, turn.raw)
 	}
-	if scopeID, task, ok := c.goals.deliveryScope(); ok {
+	if continuation != nil {
+		ctx = agent.WithDeliveryExecutionScope(ctx, agent.DeliveryExecutionScope{
+			ID:       continuation.scopeID,
+			TaskText: continuation.goal,
+		})
+	} else if scopeID, task, ok := c.goals.deliveryScope(); ok {
 		ctx = agent.WithDeliveryExecutionScope(ctx, agent.DeliveryExecutionScope{ID: scopeID, TaskText: task})
 	}
 	ctx = c.withPlannerTurnMetadata(ctx, turn.raw, turn.synthetic, startMessages)
@@ -359,11 +403,15 @@ func (o *turnOrchestrator) continueGoal(ctx context.Context) error {
 				c.noticeDetail("Goal still has unfinished task state; continuing the remaining work.", intercept)
 			}
 		}
-		if err := o.runSyntheticTurnWithRawDisplay(ctx, turn, turn, ""); err != nil {
+		admitted, err := o.runGoalContinuationTurnWithRawDisplay(ctx, turn, turn, "", res)
+		if err != nil {
 			if ctx.Err() != nil {
 				c.stopGoal(GoalStatusStopped)
 			}
 			return err
+		}
+		if !admitted {
+			return nil
 		}
 	}
 }

@@ -102,6 +102,50 @@ func TestTurnOrchestratorTypedSyntheticTurnDoesNotDependOnPrefix(t *testing.T) {
 	}
 }
 
+func TestGoalContinuationNoticeCannotMoveOldInterceptIntoReplacementGoal(t *testing.T) {
+	runner := &fakeTurnRunner{}
+	session := agent.NewSession("")
+	session.Add(provider.Message{
+		Role:    provider.RoleAssistant,
+		Content: "All done.\n\n[goal:complete]",
+	})
+	executor := agent.New(nil, tool.NewRegistry(), session, agent.Options{}, event.Discard)
+	executor.SeedTodoState([]evidence.TodoItem{{
+		Content: "unfinished work from old goal",
+		Status:  "in_progress",
+	}})
+
+	var c *Controller
+	replaced := false
+	c = New(Options{
+		Runner:   runner,
+		Executor: executor,
+		Sink: event.FuncSink(func(e event.Event) {
+			if replaced ||
+				e.Kind != event.Notice ||
+				!strings.Contains(e.Text, "Goal still has unfinished task state") {
+				return
+			}
+			replaced = true
+			c.SetGoal("replacement goal")
+		}),
+	})
+	c.SetGoal("old goal")
+
+	if err := newTurnOrchestrator(c).continueGoal(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if !replaced {
+		t.Fatal("test setup: Notice callback did not replace the active Goal")
+	}
+	if got := c.Goal(); got != "replacement goal" {
+		t.Fatalf("Goal() = %q, want replacement goal", got)
+	}
+	if len(runner.inputs) != 0 {
+		t.Fatalf("stale continuation reached runner with input %q", runner.inputs[0])
+	}
+}
+
 func TestTurnOrchestratorStopHookIgnoresCanceledTurnContext(t *testing.T) {
 	runCtx, cancel := context.WithCancel(context.Background())
 	var stopCalls int
