@@ -1,6 +1,7 @@
-// Pre-pass that converts LLM-typical math delimiters into the $/$$ syntax
-// that remark-math expects, and runs KaTeX-specific normalisations on each
-// recognised math source.
+// Deterministic pre-pass that repairs LLM-typical math syntax before
+// remark-math parses Markdown. Semantic inline classification lives in
+// remarkMathPolicy, where code boundaries and surrounding AST context are
+// already known.
 //
 //   1. Protect Markdown code spans/fences from all math rewrites.
 //   2. Protect LaTeX line-break spacing (\\[...]) from the LLM-delimiter rewrite.
@@ -10,12 +11,10 @@
 //      `$…$` and macros already inside math just substitute.
 //   5. Inline `$$` glued to prose gets a blank line inserted before it
 //      (CommonMark requires that block math be paragraph-separated).
-//   6. $$…$$ → display placeholders, $…$ → inline placeholders, gated by
-//      isLikelyInlineMath; currency / env-var tokens become &#36; entities.
-//   7. Each recognised math source is run through latexNormalizeForKatex
-//      (text-mode escapes, |→\vert, %→\%).
+//   6. Restore placeholders for remark-math. Inline math is normalised later
+//      by the AST policy; display math is normalised while its structure is
+//      repaired here.
 
-import { isLikelyInlineMath } from "./mathClassify";
 import { latexNormalizeForKatex } from "./latexNormalize";
 import { expandYoungDiagrams } from "./youngDiagrams";
 
@@ -30,7 +29,6 @@ const DM = "__REASONIX_MATH_DISPLAY__";
 const IM = "__REASONIX_MATH_INLINE__";
 const LB = "__REASONIX_LATEX_LINEBREAK__";
 const ED_BASE = "REASONIXESCAPEDDOLLAR";
-const DOLLAR = "&#36;";
 
 export function normalizeMath(s: string): string {
   const protectedCode = protectMarkdownCode(s);
@@ -62,8 +60,8 @@ function normalizeMathText(s: string): string {
   r = expandYoungDiagrams(r);
 
   // Escaped dollars are literal prose dollars, not math delimiters. Hide them
-  // before the $...$ classifier passes so they cannot pair with inserted Young
-  // macro wrappers.
+  // while the structural dollar scans below run, then restore them before
+  // remark-math parses the result.
   const escapedDollarToken = unusedEscapedDollarToken(r);
   r = r.split("\\$").join(escapedDollarToken);
 
@@ -77,23 +75,13 @@ function normalizeMathText(s: string): string {
 
   // Step 5: $\cmd{...}$ pairs where the body may contain a stray $
   // (e.g. $\text{price is $5}$). Recognised first so the inner $ doesn't
-  // terminate a plain $...$ match; latexNormalizeForKatex then escapes
+  // terminate this structural $...$ match; latexNormalizeForKatex then escapes
   // the inner $ to \textdollar{}.
   r = r.replace(TEXT_MODE_PAIR, (_match, m) => {
-    if (!isLikelyInlineMath(m.trim())) return `${DOLLAR}${m}${DOLLAR}`;
     return `${IM}${latexNormalizeForKatex(m)}${IM}`;
   });
 
-  // Step 6: remaining $…$ → classifier-gated inline math. remark-math
-  // parses any literal $…$ it sees, so non-math pairs (currency $5,
-  // env vars $PATH$) are wrapped in &#36; entities — remark-math never
-  // sees a $, and the decoded entity still renders as a literal dollar.
-  r = r.replace(/\$([^$\n]+)\$/g, (_m, m) => {
-    if (!isLikelyInlineMath(m.trim())) return `${DOLLAR}${m}${DOLLAR}`;
-    return `${IM}${latexNormalizeForKatex(m)}${IM}`;
-  });
-
-  // Step 7: restore standard $/$$ delimiters for remark-math to parse.
+  // Step 6: restore standard $/$$ delimiters for remark-math to parse.
   return r
     .replace(new RegExp(DM, "g"), () => "$$")
     .replace(new RegExp(IM, "g"), "$")

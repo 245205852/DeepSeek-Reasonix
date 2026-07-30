@@ -9,12 +9,11 @@
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import ReactMarkdown from "react-markdown";
-import remarkGfm from "remark-gfm";
-import remarkMath from "remark-math";
 import rehypeKatex from "rehype-katex";
 import katex from "katex";
 import { latexNormalizeForKatex, stripMathDelimiters } from "../components/latexNormalize";
-import { isLikelyInlineMath } from "../components/mathClassify";
+import { classifyInlineMath, isLikelyInlineMath } from "../components/mathClassify";
+import { reasonixRemarkPlugins } from "../components/markdownRemarkPlugins";
 import { normalizeMath } from "../components/mathNormalize";
 import { expandYoungDiagrams } from "../components/youngDiagrams";
 
@@ -144,11 +143,17 @@ check("$p = +\\alpha$", () => isLikelyInlineMath("p = +\\alpha") === true);
 check("$+$", () => isLikelyInlineMath("+") === true);
 check("$=$", () => isLikelyInlineMath("=") === true);
 
-console.log("\nisLikelyInlineMath — currency/link (NOT math)");
-check("$5", () => isLikelyInlineMath("5") === false);
-check("$10", () => isLikelyInlineMath("10") === false);
-check("$10.50", () => isLikelyInlineMath("10.50") === false);
-check("$100%", () => isLikelyInlineMath("100%") === false);
+console.log("\nisLikelyInlineMath — numeric syntax and contextual currency");
+check("$5 defaults to math", () => isLikelyInlineMath("5") === true);
+check("$10 defaults to math", () => isLikelyInlineMath("10") === true);
+check("$10.50 defaults to math", () => isLikelyInlineMath("10.50") === true);
+check("$100% defaults to math", () => isLikelyInlineMath("100%") === true);
+check("costs $5$ is contextual currency", () =>
+  classifyInlineMath("5", { before: "it costs ", after: " today" }) === "currency");
+check("price is $10.50$ each is contextual currency", () =>
+  classifyInlineMath("10.50", { before: "price is ", after: " each" }) === "currency");
+check("10–$20$ MeV remains math", () =>
+  classifyInlineMath("20", { before: "10–", after: " MeV" }) === "math");
 check("URL", () => isLikelyInlineMath("https://example.com") === false);
 check("prose text", () => isLikelyInlineMath("hello world today") === false);
 check("prose $x y z$ (spaces)", () => isLikelyInlineMath("x y z") === false);
@@ -176,10 +181,10 @@ check("$[\\mathbf{56}]$ → math", () => isLikelyInlineMath("[\\mathbf{56}]") ==
 console.log("\nisLikelyInlineMath — minimal LaTeX patterns (regression)");
 // LLMs frequently emit minimal LaTeX in math contexts that the older
 // classifier rejected as currency / word tokens. These tests pin down the
-// deliberately-permissive rules for common math patterns while keeping pure
-// numeric dollar pairs literal because they are common in prose prices.
-check("single-digit $1$, $2$, $5$ → NOT math (currency-shaped)", () => isLikelyInlineMath("1") === false);
-check("multi-digit $42$ → NOT math (currency-shaped)", () => isLikelyInlineMath("42") === false);
+// deliberately-permissive rules for common math patterns while requiring
+// surrounding prose context before a paired pure number is treated as currency.
+check("single-digit $1$, $2$, $5$ → math unless currency context says otherwise", () => isLikelyInlineMath("1") === true);
+check("multi-digit $42$ → math", () => isLikelyInlineMath("42") === true);
 check("$2.5x$ is math (number with variable)", () => isLikelyInlineMath("2.5x") === true);
 check("$10\%$ is math (percentage with LaTeX)", () => isLikelyInlineMath("10\\%") === true);
 check("$2.5x dollars$ → NOT math (prefix-only numeric variable)", () => isLikelyInlineMath("2.5x dollars") === false);
@@ -200,6 +205,9 @@ check("one-sided comparison $< B$ → math", () => isLikelyInlineMath("< B") ===
 check("one-sided comparison $<= 0$ → math", () => isLikelyInlineMath("<= 0") === true);
 check("one-sided comparison $> 5$ → math", () => isLikelyInlineMath("> 5") === true);
 check("one-sided comparison $A <$ → math", () => isLikelyInlineMath("A <") === true);
+check("one-sided equality $=1$ → math", () => isLikelyInlineMath("=1") === true);
+check("one-sided signed equality $=-1$ → math", () => isLikelyInlineMath("=-1") === true);
+check("one-sided equality is fully anchored", () => isLikelyInlineMath("=1 dollar") === false);
 check("$< B$ with surrounding prose", () => {
   return normalizeMath("A 的每个元素 $< B$ 的每个元素") === "A 的每个元素 $< B$ 的每个元素";
 });
@@ -247,8 +255,8 @@ console.log("\nnormalizeMath — \\slashed conversion (regression)");
 eq(normalizeMath("$\\slashed{p}$"), "$\\not{p}$", "\\slashed{p} → \\not{p}");
 eq(normalizeMath("$\\slashed{\\partial}$"), "$\\not{\\partial}$", "\\slashed{\\partial} → \\not{\\partial}");
 eq(normalizeMath("The momentum $\\slashed{p}$ is conserved"), "The momentum $\\not{p}$ is conserved", "\\slashed in prose");
-eq(normalizeMath("$\\slashed\\epsilon(0)$"), "$\\not{\\epsilon(0)}$", "\\slashed\\epsilon(0) → \\not{\\epsilon(0)} (unbraced fn)");
-eq(normalizeMath("$\\slashed a$"), "$\\not a$", "\\slashed a → \\not a (unbraced letter)");
+eq(normalizeMath("$\\slashed\\epsilon(0)$"), "$\\slashed\\epsilon(0)$", "unbraced \\slashed normalisation deferred to AST policy");
+eq(normalizeMath("$\\slashed a$"), "$\\slashed a$", "unbraced \\slashed letter normalisation deferred to AST policy");
 
 console.log("\nnormalizeMath — inline $$ glued to prose (regression)");
 // User-reported: "…decomposes as$$\n\mathbf{6}…" — block math glued to prose.
@@ -307,14 +315,14 @@ eq(
   "multiple display blocks on one line are all normalised",
 );
 
-console.log("\nnormalizeMath — non-math dollar filtering");
-eq(normalizeMath("costs $1$ today"), "costs &#36;1&#36; today", "$1$ not math");
-eq(normalizeMath("env $PATH$ here"), "env &#36;PATH&#36; here", "$PATH$ not math (env var → &#36; entities so remark-math leaves it literal)");
+console.log("\nnormalizeMath — semantic dollar decisions deferred to AST policy");
+eq(normalizeMath("costs $1$ today"), "costs $1$ today", "$1$ preserved for contextual classification");
+eq(normalizeMath("env $PATH$ here"), "env $PATH$ here", "$PATH$ preserved for AST literal restoration");
 eq(normalizeMath("solve $x^2 + y^2 = z^2$ please"), "solve $x^2 + y^2 = z^2$ please", "$x^2+y^2$ is math");
 eq(normalizeMath("$\\alpha + \\beta$"), "$\\alpha + \\beta$", "$\\alpha+\\beta$ is math");
-eq(normalizeMath("price is $10.50$ each"), "price is &#36;10.50&#36; each", "$10.50$ not math");
+eq(normalizeMath("price is $10.50$ each"), "price is $10.50$ each", "$10.50$ preserved for contextual classification");
 eq(normalizeMath("$I$ think"), "$I$ think", "$I$ is math (uppercase single letter)");
-eq(normalizeMath("it costs $5 and $10 total"), "it costs &#36;5 and &#36;10 total", "multiple prose $ → &#36; entities (dollars preserved, not parsed as math)");
+eq(normalizeMath("it costs $5 and $10 total"), "it costs $5 and $10 total", "multiple prose dollars preserved for parser-aware policy");
 
 console.log("\nnormalizeMath — Markdown code regions stay literal");
 eq(normalizeMath("`$PATH$`"), "`$PATH$`", "inline code with env token");
@@ -372,7 +380,7 @@ check("$\\text{abc}$ simple text-mode (no trailing)", () => {
 
 console.log("\nnormalizeMath — pipe handling");
 check("$|x+1|$ absolute value", () => {
-  return normalizeMath("$|x+1|$") === "$\\vert x+1\\vert$";
+  return normalizeMath("$|x+1|$") === "$|x+1|$";
 });
 check("$\\|x\\|$ norm preserved (no \\vert mangling)", () => {
   return normalizeMath("$\\|x\\|$") === "$\\|x\\|$";
@@ -383,8 +391,8 @@ check("$\\|x\\|$ norm preserved (no \\vert mangling)", () => {
 // truncating `$x = 50%$` to `$x = 50$`. Top-level % must be escaped.
 
 console.log("\nnormalizeMath — % in math");
-eq(normalizeMath("$x = 50%$"), "$x = 50\\%$", "trailing % escaped");
-eq(normalizeMath("$100%$"), "&#36;100%&#36;", "pure percentage stays literal");
+eq(normalizeMath("$x = 50%$"), "$x = 50%$", "trailing % escape deferred to AST policy");
+eq(normalizeMath("$100%$"), "$100%$", "pure percentage preserved for AST math policy");
 eq(normalizeMath("$10\\%$"), "$10\\%$", "already-escaped \\% left alone");
 
 // ── normalizeMath — end-to-end KaTeX render of common LLM outputs ──────────────
@@ -449,7 +457,7 @@ for (const [src, label] of e2e) {
 console.log("\nnormalizeMath — non-math inputs pass through");
 type Passthrough = { src: string; expected: string; label: string };
 const passthrough: Passthrough[] = [
-  { src: "costs $100$ today", expected: "costs &#36;100&#36; today", label: "multi-digit currency stays literal" },
+  { src: "costs $100$ today", expected: "costs $100$ today", label: "multi-digit currency preserved for AST policy" },
   { src: "line break \\\\[4pt] here", expected: "line break \\\\[4pt] here", label: "LaTeX line-break spacing" },
   { src: "hello world", expected: "hello world", label: "plain text" },
 ];
@@ -458,18 +466,16 @@ for (const { src, expected, label } of passthrough) {
 }
 
 // ── remark-math render boundary ────────────────────────────────────────────────
-// A literal $…$ in normalizeMath output is NOT enough to keep a non-math token
-// out of KaTeX: remark-math parses any $…$ it sees, so the classifier's reject
-// verdict only holds when the $ is hidden as a &#36; entity. These render through
-// the real react-markdown + remark-math + rehype-katex path; the normalizeMath-only
-// golden cases above never cross the prose→parser boundary.
+// These cases cross the real react-markdown → remark-math → Reasonix AST
+// policy → rehype-katex boundary. The policy restores literal nodes after
+// parsing, so rejected content cannot be reparsed as math.
 
 console.log("\nnormalizeMath → remark-math render boundary");
 
 function renderHtml(src: string): string {
   return renderToStaticMarkup(
     createElement(ReactMarkdown, {
-      remarkPlugins: [remarkGfm, remarkMath],
+      remarkPlugins: reasonixRemarkPlugins,
       rehypePlugins: [rehypeKatex],
       children: normalizeMath(src),
     }),
@@ -480,9 +486,45 @@ check("currency '$5 and $6' renders as literal dollars, not math", () => {
   const html = renderHtml("These two apples cost $5 and $6");
   return !html.includes("katex") && html.includes("$5") && html.includes("$6");
 });
+check("paired currency 'costs $1$ today' drops the spurious closing delimiter", () => {
+  const html = renderHtml("costs $1$ today");
+  return !html.includes("katex") && html.includes("$1 today") && !html.includes("$1$");
+});
+check("paired decimal currency uses surrounding price context", () => {
+  const html = renderHtml("price is $10.50$ each");
+  return !html.includes("katex") && html.includes("$10.50 each") && !html.includes("$10.50$");
+});
 check("env var $PATH$ renders as literal, not math", () => {
   const html = renderHtml("env $PATH$ here");
   return !html.includes("katex") && html.includes("$PATH$");
+});
+check("range endpoint 10–$20$ MeV renders numeric math", () => {
+  const html = renderHtml("10–$20$ MeV");
+  return html.includes("katex") && html.includes("<mn>20</mn>");
+});
+check("standalone $42$ renders numeric math", () => {
+  const html = renderHtml("$42$ elements");
+  return html.includes("katex") && html.includes("<mn>42</mn>");
+});
+check("one-sided equality $=1$ renders as math", () => {
+  const html = renderHtml("set $=1$ here");
+  return html.includes("katex") && html.includes("<mo>=</mo>");
+});
+check("one-sided equality does not prefix-match prose", () => {
+  const html = renderHtml("set $=1 dollar$ here");
+  return !html.includes("katex") && html.includes("$=1 dollar$");
+});
+check("inline code remains outside math policy", () => {
+  const html = renderHtml("code `$42$` and env `$PATH$`");
+  return !html.includes("katex") && html.includes("<code>$42$</code>") && html.includes("<code>$PATH$</code>");
+});
+check("AST policy applies KaTeX percent normalisation", () => {
+  const html = renderHtml("$x = 50%$");
+  return html.includes("katex") && html.includes("x = 50\\%");
+});
+check("AST policy applies unbraced slashed normalisation", () => {
+  const html = renderHtml("$\\slashed a$");
+  return html.includes("katex") && html.includes("\\not a");
 });
 check("real inline math $x^2$ still renders as KaTeX", () => {
   const html = renderHtml("the value $x^2$ here");
