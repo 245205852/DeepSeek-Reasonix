@@ -16,6 +16,7 @@ import (
 	"reasonix/internal/evidence"
 	"reasonix/internal/hook"
 	"reasonix/internal/provider"
+	"reasonix/internal/skill"
 	"reasonix/internal/tool"
 )
 
@@ -381,15 +382,27 @@ func TestTurnOrchestratorRefTurnRecordsVisibleDisplay(t *testing.T) {
 	}
 }
 
-func TestTurnOrchestratorRefTurnPersistsCompactPasteDisplay(t *testing.T) {
+func TestTurnOrchestratorRefTurnPreservesExpandedPasteForRouting(t *testing.T) {
 	const label = "[Pasted text #1 · 2 lines]"
 	const display = "inspect\n\n" + label
-	const expanded = display + "\n\n--- Begin " + label + " ---\none\ntwo\n--- End " + label + " ---"
+	const expanded = display + "\n\n--- Begin " + label + " ---\nroute-expanded-paste\nfunc main() {}\n--- End " + label + " ---"
 
 	sess := agent.NewSession("sys")
 	exec := agent.New(nil, nil, sess, agent.Options{}, event.Discard)
 	runner := &recordingSessionRunner{session: sess}
-	c := New(Options{Runner: runner, Executor: exec})
+	reg := tool.NewRegistry()
+	reg.Add(capabilityTestTool{name: "run_skill"})
+	c := New(Options{
+		Runner:   runner,
+		Executor: exec,
+		Registry: reg,
+		Skills: []skill.Skill{{
+			Name:        "paste-review",
+			Description: "review code",
+			Triggers:    []string{"route-expanded-paste"},
+			Scope:       skill.ScopeBuiltin,
+		}},
+	})
 	resolve := func(context.Context, string) (string, []string) {
 		return "<file path=\"notes.txt\">\nreference\n</file>", nil
 	}
@@ -400,8 +413,11 @@ func TestTurnOrchestratorRefTurnPersistsCompactPasteDisplay(t *testing.T) {
 	if len(runner.inputs) != 1 || !strings.Contains(runner.inputs[0], "Referenced context:") || !strings.Contains(runner.inputs[0], expanded) {
 		t.Fatalf("provider input = %+v, want resolved context and expanded paste", runner.inputs)
 	}
-	if len(runner.raw) != 1 || runner.raw[0] != display {
-		t.Fatalf("persisted raw input = %+v, want compact display %q", runner.raw, display)
+	if !strings.Contains(runner.inputs[0], "skill:paste-review prefer") {
+		t.Fatalf("expanded pasted text did not drive capability routing:\n%s", runner.inputs[0])
+	}
+	if len(runner.raw) != 1 || runner.raw[0] != expanded {
+		t.Fatalf("persisted raw input = %+v, want complete user input %q", runner.raw, expanded)
 	}
 }
 

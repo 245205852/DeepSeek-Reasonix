@@ -113,12 +113,20 @@ func TestHistoryMessagesRecoverLegacyExpandedPasteWithoutSidecar(t *testing.T) {
 	}
 }
 
-func TestHistoryMessagesPreferLegacySidecarDisplay(t *testing.T) {
+func TestHistoryMessagesExpandedRawSupportsSidecarAndPreviousClients(t *testing.T) {
 	const label = "[Pasted text #1 · 2 lines]"
 	const display = "inspect\n\n" + label
 	const expanded = display + "\n\n--- Begin " + label + " ---\none\ntwo\n--- End " + label + " ---"
 	const rendered = "<capability-route version=\"1\">\nuse review\n</capability-route>\n\n" + expanded
 	msgs := []provider.Message{{Role: provider.RoleUser, Content: rendered, RawContent: expanded}}
+
+	// Previous desktop releases use RawContent as their replay source. Keeping
+	// the expanded markers there lets them reconstruct the same inline card
+	// instead of rendering an opaque label with no accessible payload.
+	previousReplay := agent.UserMessageText(msgs[0])
+	if !strings.Contains(previousReplay, "--- Begin "+label+" ---") || !strings.Contains(previousReplay, "--- End "+label+" ---") {
+		t.Fatalf("previous-client replay lost pasted payload markers: %q", previousReplay)
+	}
 
 	got := historyMessages(msgs, func(content string) string {
 		if content != rendered {
