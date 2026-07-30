@@ -31,9 +31,17 @@ grep -Eq "workflow_id: 'release-desktop\.yml'" \
 	"$repo_root/.github/workflows/release-desktop-trigger.yml"
 grep -Fq 'Desktop Preview must be dispatched without a Git tag' \
 	"$repo_root/.github/workflows/release-desktop-trigger.yml"
-grep -Eq "workflow_id: 'release\.yml'" \
+grep -Fq "workflow_id: preview ? 'release-preview.yml' : 'release.yml'" \
 	"$repo_root/.github/workflows/release-cli-trigger.yml"
 grep -Eq "preview\\\\\." "$repo_root/.github/workflows/release-cli-trigger.yml"
+grep -Eq '^name: Release preview$' "$repo_root/.github/workflows/release-preview.yml"
+grep -Eq '^    environment: canary$' "$repo_root/.github/workflows/release-preview.yml"
+grep -Eq '^  signpath-preflight:$' "$repo_root/.github/workflows/release-preview.yml"
+grep -Eq 'signing_preflight: true' "$repo_root/.github/workflows/release-preview.yml"
+grep -Eq 'signing_preflight_verified: true' "$repo_root/.github/workflows/release-preview.yml"
+[ "$(grep -Ec 'needs: \[authorize, signpath-preflight\]' "$repo_root/.github/workflows/release-preview.yml")" = "3" ]
+grep -Eq 'release-event\.mjs generate' "$repo_root/.github/workflows/release-preview.yml"
+grep -Eq 'gh workflow run pages\.yml' "$repo_root/.github/workflows/release-preview.yml"
 grep -Eq 'release-cli-trigger\.yml' "$repo_root/.github/workflows/ci.yml"
 if grep -Eq '^  push:$' "$repo_root/.github/workflows/release-stable.yml" ||
 	grep -Eq '^  push:$' "$repo_root/.github/workflows/release.yml" ||
@@ -46,7 +54,7 @@ for workflow in release.yml release-npm.yml release-desktop.yml; do
 	grep -Eq 'github\.ref_protected' "$repo_root/.github/workflows/$workflow"
 	grep -Eq 'inputs\.approved_sha' "$repo_root/.github/workflows/$workflow"
 	grep -Eq 'verify-release-tag\.sh' "$repo_root/.github/workflows/$workflow"
-	grep -Eq 'release-stable\.yml' "$repo_root/.github/workflows/$workflow"
+	grep -Eq 'release-\{1\}\.yml' "$repo_root/.github/workflows/$workflow"
 	grep -Eq "needs\.cache-guard\.result == 'success'" "$repo_root/.github/workflows/$workflow"
 done
 grep -Eq 'options: \[stable, preview\]' "$repo_root/.github/workflows/release.yml"
@@ -163,7 +171,9 @@ desktop_r2_upload_line="$(
 grep -Eq '^  postflight:$' "$repo_root/.github/workflows/release-stable.yml"
 grep -Eq 'verify-stable-release-artifacts\.sh' "$repo_root/.github/workflows/release-stable.yml"
 grep -Eq 'name: Upload reviewed release notes' "$repo_root/.github/workflows/release-stable.yml"
-grep -Eq 'name: stable-reviewed-release-notes' "$repo_root/.github/workflows/release-stable.yml"
+grep -Eq 'name: orchestrator-reviewed-release-notes' "$repo_root/.github/workflows/release-stable.yml"
+grep -Eq 'name: Upload reviewed release notes' "$repo_root/.github/workflows/release-preview.yml"
+grep -Eq 'name: orchestrator-reviewed-release-notes' "$repo_root/.github/workflows/release-preview.yml"
 for channel in cli npm desktop; do
 	grep -Eq '^      publish_'"$channel"':' "$repo_root/.github/workflows/release-stable.yml"
 	grep -Eq "inputs\.publish_$channel" "$repo_root/.github/workflows/release-stable.yml"
@@ -177,7 +187,7 @@ grep -Eq '^v1:[0-9a-f]{64}$' <<<"$contract_fingerprint"
 grep -Eq 'public postflight will still verify it' "$repo_root/.github/workflows/release-stable.yml"
 for workflow in release.yml release-desktop.yml; do
 	grep -Eq 'name: Download orchestrator-reviewed release notes' "$repo_root/.github/workflows/$workflow"
-	grep -Eq 'name: stable-reviewed-release-notes' "$repo_root/.github/workflows/$workflow"
+	grep -Eq 'name: orchestrator-reviewed-release-notes' "$repo_root/.github/workflows/$workflow"
 	grep -Eq 'if: \$\{\{ !inputs\.orchestrated' "$repo_root/.github/workflows/$workflow"
 done
 
@@ -277,6 +287,7 @@ jq -n \
 		tag_name: $tag,
 		prerelease: false,
 		html_url: ("https://github.com/" + $repo + "/releases/tag/" + $tag),
+		release_notes_url: ("https://reasonix.io/changelog/" + $tag + "/"),
 		assets: [
 			$names[] as $name |
 			{
@@ -634,6 +645,7 @@ write_desktop_manifest() {
 		{
 			version: $version,
 			download_page: "https://reasonix.io/?download=desktop#start",
+			release_notes_url: ("https://reasonix.io/changelog/" + $version + "/"),
 			platforms: {
 				"darwin-arm64": asset("Reasonix-darwin-arm64.zip"),
 				"darwin-amd64": asset("Reasonix-darwin-amd64.zip"),
@@ -782,10 +794,16 @@ git clone -q "$test_root/remote.git" "$test_root/repo"
 	git tag v1.2.3
 	git tag npm-v1.2.3
 	git tag -a desktop-v1.2.3 -m "desktop release"
-	git push -q origin v1.2.3 npm-v1.2.3 desktop-v1.2.3
+	git tag v1.3.0-preview.42
+	git push -q origin v1.2.3 npm-v1.2.3 desktop-v1.2.3 v1.3.0-preview.42
 	GITHUB_OUTPUT="$test_root/stable.out" RELEASE_TAG=v1.2.3 "$repo_root/scripts/resolve-stable-release.sh"
 	grep -Eq '^version=1\.2\.3$' "$test_root/stable.out"
 	grep -Eq '^desktop_tag=desktop-v1\.2\.3$' "$test_root/stable.out"
+	GITHUB_OUTPUT="$test_root/preview.out" RELEASE_TAG=v1.3.0-preview.42 \
+		"$repo_root/scripts/resolve-preview-release.sh"
+	grep -Eq '^version=1\.3\.0-preview\.42$' "$test_root/preview.out"
+	grep -Eq '^desktop_tag=desktop-v1\.3\.0-preview\.42$' "$test_root/preview.out"
+	grep -Eq '^npm_version=1\.3\.0-canary\.42$' "$test_root/preview.out"
 	approved_sha="$(git rev-parse HEAD)"
 	GITHUB_OUTPUT="$test_root/desktop-stable-candidate.out" \
 		RELEASE_CHANNEL=stable RELEASE_TAG=desktop-v1.2.3 \
@@ -831,6 +849,12 @@ git clone -q "$test_root/remote.git" "$test_root/repo"
 		CALLER_EVENT_NAME=push CALLER_REF=refs/tags/v1.2.3 CALLER_REF_PROTECTED=true \
 		CALLER_WORKFLOW_SHA="$approved_sha" CALLER_SHA="$approved_sha" \
 		APPROVED_CLI_TAG=v1.2.3 APPROVED_SHA="$approved_sha" \
+		"$repo_root/scripts/verify-release-authorization.sh"
+	ACTUAL_CALLER_WORKFLOW_REF='example/reasonix/.github/workflows/release-preview.yml@refs/heads/main-v2' \
+		EXPECTED_CALLER_WORKFLOW_REF='example/reasonix/.github/workflows/release-preview.yml@refs/heads/main-v2' \
+		CALLER_EVENT_NAME=workflow_dispatch CALLER_REF=refs/heads/main-v2 CALLER_REF_PROTECTED=true \
+		CALLER_WORKFLOW_SHA="$approved_sha" CALLER_SHA="$approved_sha" \
+		APPROVED_CHANNEL=preview APPROVED_CLI_TAG=v1.3.0-preview.42 APPROVED_SHA="$approved_sha" \
 		"$repo_root/scripts/verify-release-authorization.sh"
 	RELEASE_TAG=desktop-v1.2.3 APPROVED_SHA="$approved_sha" \
 		"$repo_root/scripts/verify-release-tag.sh"
@@ -1004,7 +1028,7 @@ EVENT_NAME=push IN_CHANNEL='' IN_TAG='' REF_NAME=v1.3.0-preview.42 \
 grep -Eq '^tag=v1\.3\.0-preview\.42$' "$test_root/cli-preview-push.out"
 grep -Eq '^version=1\.3\.0-preview\.42$' "$test_root/cli-preview-push.out"
 grep -Eq '^base_version=1\.3\.0$' "$test_root/cli-preview-push.out"
-grep -Eq '^notes_version=v1\.3\.0$' "$test_root/cli-preview-push.out"
+grep -Eq '^notes_version=v1\.3\.0-preview\.42$' "$test_root/cli-preview-push.out"
 grep -Eq '^channel=preview$' "$test_root/cli-preview-push.out"
 grep -Eq '^prerelease=true$' "$test_root/cli-preview-push.out"
 

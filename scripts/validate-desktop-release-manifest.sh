@@ -80,6 +80,10 @@ jq -e \
 	(type == "object") and
 	(.version == $version) and
 	(.download_page == "https://reasonix.io/?download=desktop#start") and
+	(if $legacy
+		then (.release_notes_url == null or .release_notes_url == ("https://reasonix.io/changelog/" + $version + "/"))
+		else (.release_notes_url == ("https://reasonix.io/changelog/" + $version + "/"))
+	end) and
 	(.platforms | exact_keys([
 		"darwin-arm64",
 		"darwin-amd64",

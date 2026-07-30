@@ -63,6 +63,16 @@ on:
         required: false
         default: false
         type: boolean
+      orchestrator:
+        description: "Trusted release orchestrator: stable or preview"
+        required: false
+        default: stable
+        type: string
+      preview_number:
+        description: "Canonical Preview ordinal supplied by release-preview.yml"
+        required: false
+        default: ""
+        type: string
 
 permissions:
   contents: read
@@ -82,7 +92,7 @@ jobs:
       - name: Verify caller and approved release ref
         env:
           ACTUAL_CALLER_WORKFLOW_REF: ${{ github.workflow_ref }}
-          EXPECTED_CALLER_WORKFLOW_REF: ${{ format('{0}/.github/workflows/release-stable.yml@{1}', github.repository, github.ref) }}
+          EXPECTED_CALLER_WORKFLOW_REF: ${{ format('{0}/.github/workflows/release-{1}.yml@{2}', github.repository, inputs.orchestrator, github.ref) }}
           CALLER_EVENT_NAME: ${{ github.event_name }}
           CALLER_REF: ${{ github.ref }}
           CALLER_REF_PROTECTED: ${{ github.ref_protected }}
@@ -90,7 +100,8 @@ jobs:
           CALLER_SHA: ${{ github.sha }}
           APPROVED_CLI_TAG: ${{ inputs.approved_cli_tag }}
           APPROVED_SHA: ${{ inputs.approved_sha }}
-          RELEASE_TAG: ${{ inputs.tag }}
+          APPROVED_CHANNEL: ${{ inputs.orchestrator }}
+          RELEASE_TAG: ${{ inputs.approved_cli_tag }}
           VERIFY_RELEASE_CHECKOUT: false
         run: |
           bash scripts/verify-release-authorization.sh
@@ -154,11 +165,12 @@ jobs:
           IN_TAG: ${{ inputs.tag }}
           REF_NAME: ${{ github.ref_name }}
           RUN_NUMBER: ${{ github.run_number }}
+          IN_PREVIEW_NUMBER: ${{ inputs.preview_number }}
         run: bash scripts/resolve-npm-release.sh
       - name: Revalidate approved release ref
         if: ${{ inputs.orchestrated }}
         env:
-          RELEASE_TAG: ${{ inputs.tag }}
+          RELEASE_TAG: ${{ inputs.approved_cli_tag }}
           APPROVED_SHA: ${{ inputs.approved_sha }}
         run: bash scripts/verify-release-tag.sh
       - env:

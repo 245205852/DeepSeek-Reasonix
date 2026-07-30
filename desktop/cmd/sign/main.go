@@ -211,11 +211,12 @@ func genManifest(dir, version, tag string) error {
 		repo = "esengine/DeepSeek-Reasonix"
 	}
 	m := update.Manifest{
-		Version:        version,
-		DownloadPage:   "https://reasonix.io/?download=desktop#start",
-		Platforms:      map[string]update.Asset{},
-		NativePackages: map[string]update.Asset{},
-		Downloads:      map[string]update.Asset{},
+		Version:         version,
+		DownloadPage:    "https://reasonix.io/?download=desktop#start",
+		ReleaseNotesURL: "https://reasonix.io/changelog/" + version + "/",
+		Platforms:       map[string]update.Asset{},
+		NativePackages:  map[string]update.Asset{},
+		Downloads:       map[string]update.Asset{},
 	}
 	entries, err := os.ReadDir(dir)
 	if err != nil {

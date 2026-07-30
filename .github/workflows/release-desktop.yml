@@ -74,6 +74,16 @@ on:
         required: false
         default: false
         type: boolean
+      orchestrator:
+        description: "Trusted release orchestrator: stable or preview"
+        required: false
+        default: stable
+        type: string
+      preview_number:
+        description: "Canonical Preview ordinal supplied by release-preview.yml"
+        required: false
+        default: ""
+        type: string
       signing_preflight:
         description: "Verify both Windows signing stages without publishing"
         required: false
@@ -121,6 +131,7 @@ jobs:
           IN_BASE_VERSION: ${{ inputs.base_version }}
           REF_NAME: ${{ github.ref_name }}
           RUN_NUMBER: ${{ github.run_number }}
+          IN_PREVIEW_NUMBER: ${{ inputs.preview_number }}
         run: bash scripts/resolve-desktop-release.sh
 
       - name: Resolve immutable candidate
@@ -152,7 +163,7 @@ jobs:
       - name: Verify caller and approved release ref
         env:
           ACTUAL_CALLER_WORKFLOW_REF: ${{ github.workflow_ref }}
-          EXPECTED_CALLER_WORKFLOW_REF: ${{ format('{0}/.github/workflows/release-stable.yml@{1}', github.repository, github.ref) }}
+          EXPECTED_CALLER_WORKFLOW_REF: ${{ format('{0}/.github/workflows/release-{1}.yml@{2}', github.repository, inputs.orchestrator, github.ref) }}
           CALLER_EVENT_NAME: ${{ github.event_name }}
           CALLER_REF: ${{ github.ref }}
           CALLER_REF_PROTECTED: ${{ github.ref_protected }}
@@ -160,7 +171,8 @@ jobs:
           CALLER_SHA: ${{ github.sha }}
           APPROVED_CLI_TAG: ${{ inputs.approved_cli_tag }}
           APPROVED_SHA: ${{ inputs.approved_sha }}
-          RELEASE_TAG: ${{ inputs.tag }}
+          APPROVED_CHANNEL: ${{ inputs.orchestrator }}
+          RELEASE_TAG: ${{ inputs.approved_cli_tag }}
           VERIFY_RELEASE_CHECKOUT: false
         run: |
           bash scripts/verify-release-authorization.sh
@@ -598,14 +610,14 @@ jobs:
         if: ${{ inputs.orchestrated && needs.resolve.outputs.channel != 'preview' }}
         uses: actions/download-artifact@v8
         with:
-          name: stable-reviewed-release-notes
-          path: /tmp/stable-reviewed-release-notes
+          name: orchestrator-reviewed-release-notes
+          path: /tmp/orchestrator-reviewed-release-notes
 
       - name: Use orchestrator-reviewed release notes
         if: ${{ inputs.orchestrated && needs.resolve.outputs.channel != 'preview' }}
         run: |
-          test -s /tmp/stable-reviewed-release-notes/release-notes.md
-          cp /tmp/stable-reviewed-release-notes/release-notes.md /tmp/release-notes.md
+          test -s /tmp/orchestrator-reviewed-release-notes/release-notes.md
+          cp /tmp/orchestrator-reviewed-release-notes/release-notes.md /tmp/release-notes.md
 
       # Preview never appears on the GitHub releases page; the mirror job picks up
       # the signed dist via the preview-dist artifact below. Stable publishes a
@@ -617,7 +629,7 @@ jobs:
       - name: Revalidate approved release ref
         if: ${{ inputs.orchestrated }}
         env:
-          RELEASE_TAG: ${{ inputs.tag }}
+          RELEASE_TAG: ${{ inputs.approved_cli_tag }}
           APPROVED_SHA: ${{ inputs.approved_sha }}
         run: bash scripts/verify-release-tag.sh
 

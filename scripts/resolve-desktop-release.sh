@@ -27,7 +27,12 @@ if [ "${IN_CHANNEL:-stable}" = "preview" ] || [ "${IN_CHANNEL:-stable}" = "canar
 		echo "::error::preview base version must be MAJOR.MINOR.PATCH, got: $base" >&2
 		exit 1
 	fi
-	version="v${base}-preview.${RUN_NUMBER}"
+	preview_number="${IN_PREVIEW_NUMBER:-${RUN_NUMBER:-}}"
+	if [[ ! "$preview_number" =~ ^(0|[1-9][0-9]*)$ ]]; then
+		echo "::error::preview number must be a non-negative integer, got: $preview_number" >&2
+		exit 1
+	fi
+	version="v${base}-preview.${preview_number}"
 	tag="desktop-${version}"
 	channel="preview"
 	prerelease="true"

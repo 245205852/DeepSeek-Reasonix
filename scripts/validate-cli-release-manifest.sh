@@ -65,6 +65,7 @@ jq -e \
 		else (.prerelease == ($expected_prerelease == "true"))
 	end) and
 	(.html_url == ("https://github.com/" + $repository + "/releases/tag/" + $tag)) and
+	(.release_notes_url == ("https://reasonix.io/changelog/" + $tag + "/")) and
 	(.assets | type == "array") and
 	(.assets | length == ($required | length)) and
 	((.assets | map(.name) | sort) == ($required | sort)) and

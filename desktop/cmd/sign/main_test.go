@@ -89,6 +89,9 @@ func TestGenManifest(t *testing.T) {
 	if m.DownloadPage != "https://reasonix.io/?download=desktop#start" {
 		t.Fatalf("download_page = %q, want official install page", m.DownloadPage)
 	}
+	if m.ReleaseNotesURL != "https://reasonix.io/changelog/v1.2.0/" {
+		t.Fatalf("release_notes_url = %q, want exact version history", m.ReleaseNotesURL)
+	}
 	if len(m.Platforms) != 5 {
 		t.Fatalf("want 5 platforms, got %d: %v", len(m.Platforms), m.Platforms)
 	}

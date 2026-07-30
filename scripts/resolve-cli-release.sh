@@ -36,7 +36,7 @@ esac
 
 if [[ "$tag" =~ $preview_semver_re ]]; then
 	channel="preview"
-	notes_version="v${BASH_REMATCH[1]}.${BASH_REMATCH[2]}.${BASH_REMATCH[3]}"
+	notes_version="$tag"
 else
 	case "$tag" in
 	v*-preview*)

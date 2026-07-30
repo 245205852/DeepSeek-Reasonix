@@ -45,6 +45,11 @@ on:
         required: false
         default: false
         type: boolean
+      orchestrator:
+        description: "Trusted release orchestrator: stable or preview"
+        required: false
+        default: stable
+        type: string
 
 permissions:
   contents: write # create the release and upload archives
@@ -124,7 +129,7 @@ jobs:
       - name: Verify caller and approved release ref
         env:
           ACTUAL_CALLER_WORKFLOW_REF: ${{ github.workflow_ref }}
-          EXPECTED_CALLER_WORKFLOW_REF: ${{ format('{0}/.github/workflows/release-stable.yml@{1}', github.repository, github.ref) }}
+          EXPECTED_CALLER_WORKFLOW_REF: ${{ format('{0}/.github/workflows/release-{1}.yml@{2}', github.repository, inputs.orchestrator, github.ref) }}
           CALLER_EVENT_NAME: ${{ github.event_name }}
           CALLER_REF: ${{ github.ref }}
           CALLER_REF_PROTECTED: ${{ github.ref_protected }}
@@ -132,6 +137,7 @@ jobs:
           CALLER_SHA: ${{ github.sha }}
           APPROVED_CLI_TAG: ${{ inputs.approved_cli_tag }}
           APPROVED_SHA: ${{ inputs.approved_sha }}
+          APPROVED_CHANNEL: ${{ inputs.orchestrator }}
           RELEASE_TAG: ${{ inputs.tag }}
           VERIFY_RELEASE_CHECKOUT: false
         run: |
@@ -189,13 +195,13 @@ jobs:
         if: ${{ inputs.orchestrated }}
         uses: actions/download-artifact@v8
         with:
-          name: stable-reviewed-release-notes
-          path: /tmp/stable-reviewed-release-notes
+          name: orchestrator-reviewed-release-notes
+          path: /tmp/orchestrator-reviewed-release-notes
       - name: Use orchestrator-reviewed release notes
         if: ${{ inputs.orchestrated }}
         run: |
-          test -s /tmp/stable-reviewed-release-notes/release-notes.md
-          cp /tmp/stable-reviewed-release-notes/release-notes.md /tmp/release-notes.md
+          test -s /tmp/orchestrator-reviewed-release-notes/release-notes.md
+          cp /tmp/orchestrator-reviewed-release-notes/release-notes.md /tmp/release-notes.md
       - name: Render reviewed release notes
         if: ${{ !inputs.orchestrated }}
         env:
@@ -270,6 +276,7 @@ jobs:
               tag_name: $release.tag_name,
               prerelease: $release.prerelease,
               html_url: $release.html_url,
+              release_notes_url: ("https://reasonix.io/changelog/" + $tag + "/"),
               assets: [
                 $required[] as $name |
                 $assets[$name] |
