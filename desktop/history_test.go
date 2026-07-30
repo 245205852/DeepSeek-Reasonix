@@ -911,6 +911,29 @@ func TestPreviewSessionMessagesUpgradesLegacyExpandedPaste(t *testing.T) {
 	}
 }
 
+func TestPreviewSessionMessagesUpgradesContentOnlyExpandedPaste(t *testing.T) {
+	const label = "[Pasted text #1 · 2 lines]"
+	const display = "inspect this\n\n" + label
+	const expanded = display + "\n\n--- Begin " + label + " ---\none\ntwo\n--- End " + label + " ---"
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "content-only.jsonl")
+	session := agent.NewSession("")
+	// Releases before Context Engine v2 persisted user turns without RawContent.
+	session.Add(provider.Message{Role: provider.RoleUser, Content: expanded})
+	if err := session.Save(path); err != nil {
+		t.Fatalf("Save content-only session: %v", err)
+	}
+
+	got, err := previewSessionMessages(dir, path)
+	if err != nil {
+		t.Fatalf("previewSessionMessages: %v", err)
+	}
+	if len(got) != 1 || got[0].Content != display || got[0].SubmitText != expanded {
+		t.Fatalf("upgraded content-only preview = %+v, want display %q and expanded replay", got, display)
+	}
+}
+
 func TestPreviewSessionMessagesIncludesProcessEvents(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "events.jsonl")

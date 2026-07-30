@@ -5510,9 +5510,10 @@ func historyReplayUserContent(content string) string {
 	return control.StripReferencedContextPrefix(control.StripComposePrefixes(content))
 }
 
-// collapseLegacyExpandedPasteDisplay repairs sessions saved before RawContent
-// stored the compact pasted-text label. The expanded block remains in SubmitText
-// so edit replay can still reconstruct the card and recover its full payload.
+// collapseLegacyExpandedPasteDisplay repairs sessions whose user-authored replay
+// source still contains an expanded pasted-text block. This includes transcripts
+// written before RawContent existed. The expanded block remains in SubmitText so
+// edit replay can still reconstruct the card and recover its full payload.
 func collapseLegacyExpandedPasteDisplay(content string) string {
 	const beginPrefix = "--- Begin "
 	for scan := 0; scan < len(content); {
@@ -5555,16 +5556,16 @@ func collapseLegacyExpandedPasteDisplay(content string) string {
 // Comparing it with the deterministic fallback distinguishes a sidecar hit
 // without changing the resolver API used throughout history pagination.
 func historyUserDisplayContent(msg provider.Message, resolveUserContent func(string) string) string {
-	if msg.RawContent == "" {
-		return resolveUserContent(msg.Content)
-	}
-	raw := agent.UserMessageText(msg)
 	resolved := strings.TrimSpace(resolveUserContent(msg.Content))
 	fallback := strings.TrimSpace(historyReplayUserContent(msg.Content))
 	if resolved != "" && resolved != fallback {
 		return resolved
 	}
-	return collapseLegacyExpandedPasteDisplay(raw)
+	replaySource := agent.UserMessageText(msg)
+	if msg.RawContent == "" {
+		replaySource = fallback
+	}
+	return collapseLegacyExpandedPasteDisplay(replaySource)
 }
 
 func historyCheckpointTurns(msgs []provider.Message, resolveUserContent func(string) string, checkpointTurns map[int]int) []int {
