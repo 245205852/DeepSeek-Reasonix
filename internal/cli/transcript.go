@@ -524,7 +524,6 @@ func parseCopyTranscript(wrapped string) ([]copyTranscriptLine, int, bool) {
 				chunk := raw[position:]
 				clean.WriteString(chunk)
 				column += ansi.StringWidth(chunk)
-				position = len(raw)
 				break
 			}
 
