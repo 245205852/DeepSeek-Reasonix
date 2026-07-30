@@ -174,11 +174,11 @@ eq(
   true,
   "terminal drawer stays visible on narrow viewports",
 );
-eq(
-  /\.layout--terminal-open \.workbench-dock \{[\s\S]*?padding-bottom: var\(--statusbar-height\)/.test(stylesSource),
-  true,
-  "terminal drawer reserves the fixed status bar safe area",
-);
+	eq(
+	  /\.layout--terminal-open \{[\s\S]*?grid-template-rows: var\(--app-chrome-height\) minmax\(0, 1fr\) minmax\(220px, min\(42vh, 440px\)\) var\(--statusbar-dock-height\)/.test(stylesSource),
+	  true,
+	  "terminal-open layout reserves a grid row for the status bar below the terminal drawer",
+	);
 eq(
   /\.layout--terminal-open \.workbench-dock__tools \{\s*display: none;\s*\}/.test(stylesSource),
   true,

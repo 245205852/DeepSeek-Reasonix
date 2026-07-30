@@ -2016,17 +2016,17 @@ a[href] {
   --workspace-width: 420px;
   --workspace-resizer-width: 8px;
   --app-chrome-height: 38px;
-  --topicbar-height: 56px;
-  --statusbar-height: 0px;
-  --chrome-toggle-size: 42px;
+	  --topicbar-height: 56px;
+	  --statusbar-height: var(--statusbar-dock-height);
+	  --chrome-toggle-size: 42px;
   --chrome-left-safe-offset: 0px;
   --chrome-left-toggle-offset: max(var(--sidebar-width), var(--chrome-left-safe-offset));
   --chrome-right-toggle-offset: 0px;
   position: relative;
   display: grid;
   justify-content: start;
-  grid-template-rows: var(--app-chrome-height) minmax(0, 1fr);
-  grid-template-columns: var(--sidebar-width) minmax(0, 1fr);
+	  grid-template-rows: var(--app-chrome-height) minmax(0, 1fr) var(--statusbar-dock-height);
+	  grid-template-columns: var(--sidebar-width) minmax(0, 1fr);
   height: 100%;
   min-height: 0;
   width: 100%;
@@ -2085,36 +2085,42 @@ a[href] {
 }
 .layout--terminal-open {
   grid-template-columns: var(--sidebar-expanded-width) minmax(0, 1fr);
-  grid-template-rows: var(--app-chrome-height) minmax(0, 1fr) minmax(220px, min(42vh, 440px));
+	  grid-template-rows: var(--app-chrome-height) minmax(0, 1fr) minmax(220px, min(42vh, 440px)) var(--statusbar-dock-height);
 }
 .layout--terminal-open.layout--sidebar-collapsed {
   grid-template-columns: 0px minmax(0, 1fr);
 }
 .layout--terminal-open .workbench-dock {
-  grid-row: 3;
-  grid-column: 2;
-  width: 100%;
-  height: auto;
-  max-width: none;
-  padding-bottom: var(--statusbar-height);
-  border-top: 1px solid var(--border-soft);
-  border-left: 0;
-}
+	  grid-row: 3;
+	  grid-column: 2;
+	  width: 100%;
+	  height: auto;
+	  max-width: none;
+	  border-top: 1px solid var(--border-soft);
+	  border-left: 0;
+	}
 .layout--terminal-open .workbench-dock__tools {
   display: none;
 }
 .layout--terminal-open .workspace-panel-resizer {
-  display: none;
-}
+	  display: none;
+	}
+	.layout--terminal-open .statusbar {
+	  grid-row: 4;
+	}
 .layout--workbench-chrome-hidden.layout--terminal-open {
-  grid-template-rows: minmax(0, 1fr) minmax(220px, min(42vh, 440px));
-}
-.layout--workbench-chrome-hidden.layout--terminal-open .workbench-dock {
-  grid-row: 2;
-}
-.app--creation .layout--creation-chrome-hidden.layout--terminal-open {
-  grid-template-rows: minmax(0, 1fr) minmax(220px, min(42vh, 440px));
-}
+	  grid-template-rows: minmax(0, 1fr) minmax(220px, min(42vh, 440px)) var(--statusbar-dock-height);
+	}
+	.layout--workbench-chrome-hidden.layout--terminal-open .workbench-dock {
+	  grid-row: 2;
+	}
+	
+	.layout--workbench-chrome-hidden.layout--terminal-open .statusbar {
+	  grid-row: 3;
+	}
+	.app--creation .layout--creation-chrome-hidden.layout--terminal-open {
+	  grid-template-rows: minmax(0, 1fr) minmax(220px, min(42vh, 440px));
+	}
 .app--creation .layout--creation-chrome-hidden.layout--terminal-open .workbench-dock {
   grid-row: 2;
 }
@@ -2126,18 +2132,22 @@ a[href] {
 }
 
 .layout--workbench-chrome-hidden {
-  --app-chrome-height: 0px;
-  grid-template-rows: minmax(0, 1fr);
-  background: var(--bg);
-}
-
-.layout--workbench-chrome-hidden .sidebar,
-.layout--workbench-chrome-hidden .chat-pane,
-.layout--workbench-chrome-hidden .workspace-panel-resizer,
-.layout--workbench-chrome-hidden .context-inspector,
-.layout--workbench-chrome-hidden .workbench-dock {
-  grid-row: 1;
-}
+	  --app-chrome-height: 0px;
+	  grid-template-rows: minmax(0, 1fr) var(--statusbar-dock-height);
+	  background: var(--bg);
+	}
+	
+	.layout--workbench-chrome-hidden .sidebar,
+	.layout--workbench-chrome-hidden .chat-pane,
+	.layout--workbench-chrome-hidden .workspace-panel-resizer,
+	.layout--workbench-chrome-hidden .context-inspector,
+	.layout--workbench-chrome-hidden .workbench-dock {
+	  grid-row: 1;
+	}
+	
+	.layout--workbench-chrome-hidden .statusbar {
+	  grid-row: 2;
+	}
 
 .app--darwin .layout--workbench-chrome-hidden.layout--sidebar-collapsed .topicbar {
   padding-left: 96px;
@@ -2148,15 +2158,15 @@ a[href] {
 }
 
 .sidebar {
-  --sidebar-entry-content-inset: 12px;
-  grid-row: 2;
-  grid-column: 1;
-  display: flex;
-  flex-direction: column;
-  min-width: 0;
-  padding: 12px 10px calc(12px + var(--statusbar-height));
-  background: var(--sidebar-bg);
-  border-right: 1px solid var(--border-soft);
+	  --sidebar-entry-content-inset: 12px;
+	  grid-row: 2;
+	  grid-column: 1;
+	  display: flex;
+	  flex-direction: column;
+	  min-width: 0;
+	  padding: 12px 10px 12px;
+	  background: var(--sidebar-bg);
+	  border-right: 1px solid var(--border-soft);
   --wails-draggable: drag;
   user-select: none;
   overflow: hidden;
@@ -2609,11 +2619,11 @@ a[href] {
   justify-self: start;
   width: 1px;
   min-width: 1px;
-  height: calc(100% - var(--statusbar-height));
-  padding: 0;
-  border: 0;
-  background: var(--border-soft);
-  cursor: col-resize;
+	  height: 100%;
+	  padding: 0;
+	  border: 0;
+	  background: var(--border-soft);
+	  cursor: col-resize;
   touch-action: none;
   z-index: var(--z-layout-resizer-active);
 }
@@ -5845,11 +5855,13 @@ body > .mermaid-diagram--fullscreen {
 
 /* ── footer: composer + status line ──────────────────────────────────────── */
 .footer {
-  flex: 0 0 auto;
-  border-top: 1px solid var(--border-soft);
-  background: var(--chat-bg);
-  padding: 12px 32px 10px;
-}
+			  flex: 0 0 auto;
+			  max-height: calc(100% - var(--topicbar-height));
+			  overflow-y: auto;
+			  border-top: 1px solid var(--border-soft);
+			  background: var(--chat-bg);
+			  padding: 12px 32px 10px;
+			}
 
 /* ── undo-rewind banner (above composer after a rewind) ─────────────── */
 .undo-rewind {
@@ -7354,8 +7366,10 @@ body > .mermaid-diagram--fullscreen {
 }
 
 .statusbar {
-  max-width: var(--maxw);
-  margin: 7px auto 0;
+	  grid-row: 3;
+	  grid-column: 1 / -1;
+	  max-width: var(--maxw);
+	  margin: 7px auto 0;
   display: flex;
   align-items: center;
   gap: 0;
@@ -23680,17 +23694,16 @@ body > .mermaid-diagram--fullscreen {
 
 .context-inspector,
 .workbench-dock {
-  grid-row: 2;
-  grid-column: 3;
-  min-width: 0;
-  height: 100%;
-  display: flex;
-  flex-direction: column;
-  padding-bottom: var(--statusbar-height);
-  background: var(--workspace-files-bg);
-  border-left: 1px solid var(--border-soft);
-  overflow: hidden;
-}
+	  grid-row: 2;
+	  grid-column: 3;
+	  min-width: 0;
+	  height: 100%;
+	  display: flex;
+	  flex-direction: column;
+	  background: var(--workspace-files-bg);
+	  border-left: 1px solid var(--border-soft);
+	  overflow: hidden;
+	}
 
 .workbench-dock {
   justify-self: stretch;
@@ -25242,9 +25255,9 @@ body > .mermaid-diagram--fullscreen {
 }
 
 .sidebar {
-  padding: 12px 10px calc(12px + var(--statusbar-height));
-  background: var(--sidebar-bg);
-  border-right-color: var(--border-soft);
+	  padding: 12px 10px 12px;
+	  background: var(--sidebar-bg);
+	  border-right-color: var(--border-soft);
 }
 
 .sidebar__brand {
@@ -25597,9 +25610,9 @@ body > .mermaid-diagram--fullscreen {
 }
 
 .workbench-dock {
-  background: color-mix(in srgb, var(--bg-elev) 60%, var(--chat-bg));
-  border-left: 1px solid var(--border-soft);
-}
+	  background: color-mix(in srgb, var(--bg-elev) 60%, var(--chat-bg));
+	  border-left: 1px solid var(--border-soft);
+	}
 
 .workbench-dock__tools {
   height: 52px;
@@ -25721,12 +25734,12 @@ body > .mermaid-diagram--fullscreen {
 }
 
 :root[data-theme-style] .layout--workbench-chrome-hidden {
-  --app-chrome-height: 0px;
-  grid-template-rows: minmax(0, 1fr);
-  background: var(--bg);
-}
-
-:root[data-theme-style] .app--darwin .layout {
+	  --app-chrome-height: 0px;
+	  grid-template-rows: minmax(0, 1fr) var(--statusbar-dock-height);
+	  background: var(--bg);
+	}
+	
+	:root[data-theme-style] .app--darwin .layout {
   --app-chrome-height: 46px;
 }
 
@@ -26234,10 +26247,10 @@ body > .mermaid-diagram--fullscreen {
 }
 
 :root[data-theme-style] .sidebar {
-  padding: 14px 12px calc(8px + var(--statusbar-height));
-  background: var(--sidebar-bg);
-  border-right: 1px solid var(--border-soft);
-}
+		  padding: 14px 12px 8px;
+		  background: var(--sidebar-bg);
+		  border-right: 1px solid var(--border-soft);
+		}
 
 :root[data-theme-style] .sidebar__nav {
   padding-bottom: 0;
@@ -27006,10 +27019,10 @@ body > .mermaid-diagram--fullscreen {
 }
 
 :root[data-theme-style] .footer {
-  padding: 12px 16px 38px;
-  background: color-mix(in srgb, var(--chat-bg) 96%, var(--bg-elev));
-  border-top: 1px solid var(--border-soft);
-}
+	  padding: 12px 16px 10px;
+	  background: color-mix(in srgb, var(--chat-bg) 96%, var(--bg-elev));
+	  border-top: 1px solid var(--border-soft);
+	}
 
 :root[data-theme-style] .composer-wrap {
   width: 100%;
@@ -27168,25 +27181,20 @@ body > .mermaid-diagram--fullscreen {
 }
 
 :root[data-theme-style] .statusbar {
-  position: fixed;
-  left: 0;
-  right: 0;
-  bottom: 0;
-  z-index: var(--z-dock);
-  max-width: none;
-  width: auto;
-  height: var(--statusbar-dock-height);
-  min-height: var(--statusbar-dock-height);
-  margin: 0;
-  padding: 0 16px;
-  gap: 0;
-  border-top: 1px solid var(--border);
-  background: var(--panel);
-  box-sizing: border-box;
-  color: var(--fg-faint);
-  font-size: var(--font-status);
-  justify-content: flex-start;
-}
+	  width: 100%;
+	  max-width: none;
+	  height: var(--statusbar-dock-height);
+	  min-height: var(--statusbar-dock-height);
+	  margin: 0;
+	  padding: 0 16px;
+	  gap: 0;
+	  border-top: 1px solid var(--border);
+	  background: var(--panel);
+	  box-sizing: border-box;
+	  color: var(--fg-faint);
+	  font-size: var(--font-status);
+	  justify-content: flex-start;
+	}
 
 :root[data-theme-style] .statusbar__group + .statusbar__group {
   margin-left: 12px;
@@ -29098,10 +29106,14 @@ body > .mermaid-diagram--fullscreen {
      --scrollbar-size) — override them scoped to .app--creation if needed.
    ========================================================================== */
 .app--creation .layout--creation-chrome-hidden {
-  --app-chrome-height: 0px;
-  --statusbar-height: 0px;
-  grid-template-rows: minmax(0, 1fr);
-}
+	  --app-chrome-height: 0px;
+	  --statusbar-height: 0px;
+	  grid-template-rows: minmax(0, 1fr);
+	}
+	
+	.app--creation .statusbar {
+	  display: none;
+	}
 
 .app--creation .settings-modal-backdrop,
 :root[data-theme-style] .app--creation .settings-modal-backdrop {
@@ -33159,12 +33171,12 @@ body > .mermaid-diagram--fullscreen {
   :root[data-theme-style] .app .layout--terminal-open .workbench-dock {
     display: flex !important;
     grid-column: 1 !important;
-    grid-row: 3;
+    grid-row: 2;
   }
 
   .app .layout--workbench-chrome-hidden.layout--terminal-open,
   :root[data-theme-style] .app .layout--workbench-chrome-hidden.layout--terminal-open {
-    grid-template-rows: minmax(0, 1fr) minmax(220px, min(42vh, 440px));
+    grid-template-rows: minmax(0, 1fr) minmax(220px, min(42vh, 440px)) var(--statusbar-dock-height);
   }
 
   .app .layout--workbench-chrome-hidden.layout--terminal-open .workbench-dock,

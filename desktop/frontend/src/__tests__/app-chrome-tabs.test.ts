@@ -608,7 +608,7 @@ for (const selector of [
 ]) {
   ok(
     finalDeclaration(selector, "--app-chrome-height") === "0px" &&
-      finalDeclaration(selector, "grid-template-rows") === "minmax(0, 1fr)" &&
+	      finalDeclaration(selector, "grid-template-rows") === "minmax(0, 1fr) var(--statusbar-dock-height)" &&
       finalDeclaration(selector, "background") === "var(--bg)",
     `${selector} removes the workbench chrome row`,
   );
