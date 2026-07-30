@@ -282,7 +282,10 @@ func TestHistoryPageFromProviderMessagesWindowsVisibleUsers(t *testing.T) {
 		{Role: provider.RoleAssistant, Content: "hidden continuation"},
 		{Role: provider.RoleUser, Content: "second"},
 		{Role: provider.RoleAssistant, Content: "two"},
-		{Role: provider.RoleUser, Content: agent.MidTurnSteerPrefix + "\nupdate the plan"},
+		{
+			Role: provider.RoleTool, Content: agent.MidTurnSteerPrefix + "\nupdate the plan",
+			ToolCallID: provider.LocalOnlyToolID, Name: provider.LocalOnlyToolName, LocalOnly: true,
+		},
 		{Role: provider.RoleUser, Content: "third"},
 		{Role: provider.RoleAssistant, Content: "three"},
 	}

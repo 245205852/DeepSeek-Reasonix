@@ -34,9 +34,8 @@ func (t *steerThenCancelTool) Execute(context.Context, json.RawMessage) (string,
 }
 
 // TestRunFlushesUnconsumedSteersOnCancel proves a steer that is still queued
-// when the turn is cancelled survives into the session (history + next turn's
-// context) and emits its Steer event, instead of being silently dropped
-// (#6238: queued guidance vanished from both the model and the transcript).
+// when the turn is cancelled survives in local history but not the next model
+// context, and emits its Steer event instead of being silently dropped.
 func TestRunFlushesUnconsumedSteersOnCancel(t *testing.T) {
 	mp := testutil.NewMock("m",
 		testutil.Turn{ToolCalls: []provider.ToolCall{{ID: "call-1", Name: "steer_then_cancel", Arguments: `{}`}}},
@@ -66,16 +65,24 @@ func TestRunFlushesUnconsumedSteersOnCancel(t *testing.T) {
 	}
 
 	var persisted []string
+	var localOnly bool
 	for _, m := range a.Session().Messages {
-		if m.Role != provider.RoleUser {
-			continue
-		}
 		if text, ok := SteerText(m.Content); ok {
 			persisted = append(persisted, text)
+			localOnly = m.LocalOnly && m.Role == provider.RoleTool &&
+				m.ToolCallID == provider.LocalOnlyToolID && m.Name == provider.LocalOnlyToolName
 		}
 	}
 	if len(persisted) != 1 || persisted[0] != "use plan B" {
 		t.Fatalf("unconsumed steer should be persisted once and round-trip through SteerText, got %v", persisted)
+	}
+	if !localOnly {
+		t.Fatal("unconsumed steer must use the provider-excluded local-only sentinel")
+	}
+	for _, m := range provider.ModelMessages(a.Session().Snapshot()) {
+		if text, ok := SteerText(m.Content); ok {
+			t.Fatalf("unconsumed steer %q leaked into the next model context", text)
+		}
 	}
 	if len(steerEvents) != 1 || steerEvents[0] != "use plan B" {
 		t.Fatalf("flushed steer should emit its Steer event, got %v", steerEvents)

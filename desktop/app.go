@@ -5768,6 +5768,12 @@ func historyMessagesWithPlannerDisplaysAndLookups(
 	plannerByUserHash := plannerTurnsByUserHash(plannerTurns)
 	suppressCanonicalTurn := false
 	for index, m := range msgs {
+		if m.LocalOnly {
+			if steerText, isSteer := agent.SteerText(agent.UserMessageText(m)); isSteer {
+				out = append(out, HistoryMessage{Role: "notice", Content: "↪ " + steerText})
+				continue
+			}
+		}
 		if suppressCanonicalTurn {
 			if m.Role != provider.RoleUser || !agent.IsUserAuthoredTurn(agent.UserMessageText(m)) {
 				continue

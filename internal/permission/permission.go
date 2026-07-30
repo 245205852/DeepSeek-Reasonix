@@ -92,7 +92,42 @@ func ParseRule(s string) (Rule, bool) {
 		}
 		return Rule{Tool: tool, Subject: s[i+1 : len(s)-1]}, true
 	}
+	// Settings users commonly enter a PowerShell cmdlet when the UI asks for a
+	// command prefix (for example Set-Content). Treat that unambiguous cmdlet
+	// shape as Bash(cmdlet:*) so existing bare deny rules protect shell calls
+	// instead of looking for a nonexistent tool named Set-Content (#6950).
+	if isPowerShellCmdletName(s) {
+		return Rule{Tool: "Bash", Subject: s + ":*"}, true
+	}
 	return Rule{Tool: s}, true
+}
+
+func isPowerShellCmdletName(s string) bool {
+	verb, noun, ok := strings.Cut(s, "-")
+	if !ok || verb == "" || noun == "" || strings.Contains(noun, "-") {
+		return false
+	}
+	switch strings.ToLower(verb) {
+	case "add", "clear", "close", "convertfrom", "convertto", "copy", "disable",
+		"enable", "enter", "exit", "export", "find", "format", "get", "grant",
+		"group", "import", "install", "invoke", "join", "lock", "measure",
+		"move", "new", "open", "optimize", "out", "publish", "read", "receive",
+		"register", "remove", "rename", "reset", "resize", "resolve", "restart",
+		"restore", "resume", "revoke", "save", "search", "select", "send", "set",
+		"show", "split", "start", "stop", "submit", "suspend", "sync", "test",
+		"trace", "unblock", "uninstall", "unlock", "unpublish", "unregister",
+		"update", "use", "wait", "watch", "write":
+	default:
+		return false
+	}
+	for _, part := range []string{verb, noun} {
+		for _, r := range part {
+			if (r < 'A' || r > 'Z') && (r < 'a' || r > 'z') {
+				return false
+			}
+		}
+	}
+	return true
 }
 
 func parseRules(ss []string) []Rule {
@@ -328,7 +363,8 @@ func rawBashPrefixMatches(base, subject string) bool {
 		if features, ok := shellparse.AnalyzeApprovalFeatures(subject); ok && len(features.CommandPrefix) >= len(baseFields) {
 			matched := true
 			for i, want := range baseFields {
-				if features.CommandPrefix[i] != want {
+				got := features.CommandPrefix[i]
+				if got != want && !(i == 0 && isPowerShellCmdletName(want) && strings.EqualFold(got, want)) {
 					matched = false
 					break
 				}
@@ -340,10 +376,17 @@ func rawBashPrefixMatches(base, subject string) bool {
 	}
 	base = strings.TrimSpace(base)
 	subject = strings.TrimSpace(subject)
-	if subject == base {
+	if subject == base || (isPowerShellCmdletName(base) && strings.EqualFold(subject, base)) {
 		return true
 	}
-	if len(subject) <= len(base) || !strings.HasPrefix(subject, base) {
+	if len(subject) <= len(base) {
+		return false
+	}
+	prefixMatches := strings.HasPrefix(subject, base)
+	if isPowerShellCmdletName(base) {
+		prefixMatches = strings.EqualFold(subject[:len(base)], base)
+	}
+	if !prefixMatches {
 		return false
 	}
 	switch subject[len(base)] {
