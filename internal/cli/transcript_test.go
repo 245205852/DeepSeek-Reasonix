@@ -5,14 +5,16 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/charmbracelet/colorprofile"
+
 	"github.com/charmbracelet/x/ansi"
 
 	"reasonix/internal/provider"
 )
 
 func TestAssistantMarkdownHasIdentityAndIndentedBody(t *testing.T) {
-	defer restoreThemeForTest(colorEnabled, activeCLITheme)
-	colorEnabled = false
+	defer restoreThemeForTest(activeColorProfile, activeCLITheme)
+	activeColorProfile = colorprofile.NoTTY
 	configureCLITheme("dark")
 
 	rendered := renderAssistantMarkdown("A concise answer that wraps across the available width.", 32)
@@ -37,8 +39,8 @@ func TestAssistantMarkdownHasIdentityAndIndentedBody(t *testing.T) {
 }
 
 func TestReplaySectionsKeepAssistantIdentity(t *testing.T) {
-	defer restoreThemeForTest(colorEnabled, activeCLITheme)
-	colorEnabled = false
+	defer restoreThemeForTest(activeColorProfile, activeCLITheme)
+	activeColorProfile = colorprofile.NoTTY
 	configureCLITheme("dark")
 
 	sections := replaySectionsFor([]provider.Message{
@@ -54,8 +56,8 @@ func TestReplaySectionsKeepAssistantIdentity(t *testing.T) {
 }
 
 func TestReplaySectionsRestoreInterruptedLocalOutput(t *testing.T) {
-	defer restoreThemeForTest(colorEnabled, activeCLITheme)
-	colorEnabled = false
+	defer restoreThemeForTest(activeColorProfile, activeCLITheme)
+	activeColorProfile = colorprofile.NoTTY
 	configureCLITheme("dark")
 
 	sections := replaySectionsFor([]provider.Message{
