@@ -347,6 +347,7 @@ func (g *goalMachine) advance(in goalAdvanceInput) goalAdvanceResult {
 		g.block = ""
 		notice = goalCompleteNotice
 	case GoalStatusBlocked:
+		g.idleTurns = 0
 		reason := cleanGoalBlockReason(in.reason)
 		if reason == "" {
 			reason = "blocked"
