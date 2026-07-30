@@ -18,6 +18,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	goruntime "runtime"
 	"sort"
 	"strconv"
@@ -5501,6 +5502,71 @@ func (a *App) HistoryCheckpointTurnsForTab(tabID string) []int {
 	)
 }
 
+var pastedTextDisplayLabelPattern = regexp.MustCompile(`^\[(?:已粘贴文本|已貼上文字|Pasted text) #[0-9]+ · [0-9]+ (?:行|lines)\]$`)
+
+// historyReplayUserContent keeps only user-authored replay data. Provider-facing
+// capability, goal, hook, and resolved-reference context must not be resubmitted.
+func historyReplayUserContent(content string) string {
+	return control.StripReferencedContextPrefix(control.StripComposePrefixes(content))
+}
+
+// collapseLegacyExpandedPasteDisplay repairs sessions saved before RawContent
+// stored the compact pasted-text label. The expanded block remains in SubmitText
+// so edit replay can still reconstruct the card and recover its full payload.
+func collapseLegacyExpandedPasteDisplay(content string) string {
+	const beginPrefix = "--- Begin "
+	for scan := 0; scan < len(content); {
+		beginOffset := strings.Index(content[scan:], beginPrefix)
+		if beginOffset < 0 {
+			break
+		}
+		begin := scan + beginOffset
+		labelStart := begin + len(beginPrefix)
+		labelEndOffset := strings.Index(content[labelStart:], " ---")
+		if labelEndOffset < 0 {
+			break
+		}
+		labelEnd := labelStart + labelEndOffset
+		label := content[labelStart:labelEnd]
+		beginEnd := labelEnd + len(" ---")
+		if !pastedTextDisplayLabelPattern.MatchString(label) {
+			scan = beginEnd
+			continue
+		}
+		endMarker := "--- End " + label + " ---"
+		endOffset := strings.Index(content[beginEnd:], endMarker)
+		if endOffset < 0 {
+			scan = beginEnd
+			continue
+		}
+		labelCopy := strings.LastIndex(content[:begin], label)
+		if labelCopy < 0 || strings.TrimSpace(content[labelCopy+len(label):begin]) != "" {
+			scan = beginEnd
+			continue
+		}
+		end := beginEnd + endOffset + len(endMarker)
+		content = content[:labelCopy+len(label)] + content[end:]
+		scan = labelCopy + len(label)
+	}
+	return strings.TrimSpace(content)
+}
+
+// historyUserDisplayContent prefers a persisted display sidecar when one exists.
+// Comparing it with the deterministic fallback distinguishes a sidecar hit
+// without changing the resolver API used throughout history pagination.
+func historyUserDisplayContent(msg provider.Message, resolveUserContent func(string) string) string {
+	if msg.RawContent == "" {
+		return resolveUserContent(msg.Content)
+	}
+	raw := agent.UserMessageText(msg)
+	resolved := strings.TrimSpace(resolveUserContent(msg.Content))
+	fallback := strings.TrimSpace(historyReplayUserContent(msg.Content))
+	if resolved != "" && resolved != fallback {
+		return resolved
+	}
+	return collapseLegacyExpandedPasteDisplay(raw)
+}
+
 func historyCheckpointTurns(msgs []provider.Message, resolveUserContent func(string) string, checkpointTurns map[int]int) []int {
 	out := make([]int, 0)
 	for index, msg := range msgs {
@@ -5511,9 +5577,7 @@ func historyCheckpointTurns(msgs []provider.Message, resolveUserContent func(str
 		if _, isSteer := agent.SteerText(content); isSteer {
 			continue
 		}
-		if msg.RawContent == "" {
-			content = resolveUserContent(msg.Content)
-		}
+		content = historyUserDisplayContent(msg, resolveUserContent)
 		if control.IsSyntheticUserMessage(content) {
 			continue
 		}
@@ -5567,11 +5631,7 @@ func historyMessagesWithPlannerDisplaysAndLookups(
 				out = append(out, HistoryMessage{Role: "notice", Content: "↪ " + steerText})
 				continue
 			}
-			if m.RawContent != "" {
-				content = agent.UserMessageText(m)
-			} else {
-				content = resolveUserContent(m.Content)
-			}
+			content = historyUserDisplayContent(m, resolveUserContent)
 			if control.IsSyntheticUserMessage(content) {
 				continue
 			}
@@ -5593,15 +5653,16 @@ func historyMessagesWithPlannerDisplaysAndLookups(
 			hm.MemoryCitations = append([]provider.MemoryCitation(nil), m.MemoryCitations...)
 		}
 		if m.Role == provider.RoleUser && content != m.Content {
+			replay := historyReplayUserContent(m.Content)
 			if agent.ContainsMemoryCompilerExecution(m.Content) {
 				// Never expose the compiler contract itself. A safely unwrapped
 				// slash invocation is useful display metadata, though: it lets the
 				// frontend restore the selected skill/subagent in history and trash.
-				if replay := control.StripComposePrefixes(m.Content); strings.HasPrefix(strings.TrimSpace(replay), "/") && replay != content {
+				if strings.HasPrefix(strings.TrimSpace(replay), "/") && replay != content {
 					hm.SubmitText = replay
 				}
-			} else {
-				hm.SubmitText = m.Content
+			} else if replay != content {
+				hm.SubmitText = replay
 			}
 		}
 		if (m.Role == provider.RoleAssistant || m.LocalOnly) && len(m.ToolCalls) > 0 {
@@ -5708,9 +5769,7 @@ func isVisibleHistoryUser(msg provider.Message, resolveUserContent func(string) 
 	if _, isSteer := agent.SteerText(content); isSteer {
 		return false
 	}
-	if msg.RawContent == "" {
-		content = resolveUserContent(msg.Content)
-	}
+	content = historyUserDisplayContent(msg, resolveUserContent)
 	return !control.IsSyntheticUserMessage(content)
 }
 

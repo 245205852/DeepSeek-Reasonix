@@ -82,18 +82,69 @@ func TestHistoryMessagesPreferPersistedRawUserContent(t *testing.T) {
 	const rendered = "<capability-route version=\"1\">\nuse review\n</capability-route>\n\nfix the bug"
 	msgs := []provider.Message{{Role: provider.RoleUser, Content: rendered, RawContent: raw}}
 
-	got := historyMessages(msgs, func(string) string {
-		t.Fatal("raw_content should make provider wrapper parsing unnecessary")
-		return ""
-	})
+	got := historyMessages(msgs, historyReplayUserContent)
 	if len(got) != 1 || got[0].Content != raw {
 		t.Fatalf("history user content = %+v, want raw %q", got, raw)
 	}
-	if got[0].SubmitText != rendered {
-		t.Fatalf("history submit text = %q, want rendered %q", got[0].SubmitText, rendered)
+	if got[0].SubmitText != "" {
+		t.Fatalf("provider-only wrapper should not become replay text, got %q", got[0].SubmitText)
 	}
-	if strings.Contains(got[0].Content, "capability-route") {
+	if strings.Contains(got[0].Content, "capability-route") || strings.Contains(got[0].SubmitText, "capability-route") {
 		t.Fatalf("provider-only wrapper leaked into history: %+v", got[0])
+	}
+}
+
+func TestHistoryMessagesRecoverLegacyExpandedPasteWithoutSidecar(t *testing.T) {
+	const label = "[已粘贴文本 #1 · 3 行]"
+	const display = "review this\n\n" + label
+	const expanded = display + "\n\n--- Begin " + label + " ---\nfirst\nsecond\nthird\n--- End " + label + " ---"
+	const rendered = "<active-goal>\nship the release\n</active-goal>\n\n" + expanded
+	msgs := []provider.Message{{Role: provider.RoleUser, Content: rendered, RawContent: expanded}}
+
+	got := historyMessages(msgs, historyReplayUserContent)
+	if len(got) != 1 || got[0].Content != display {
+		t.Fatalf("legacy pasted display = %+v, want %q", got, display)
+	}
+	if got[0].SubmitText != expanded {
+		t.Fatalf("legacy pasted replay = %q, want expanded user input", got[0].SubmitText)
+	}
+	if strings.Contains(got[0].SubmitText, "<active-goal>") {
+		t.Fatalf("transient goal leaked into legacy replay: %+v", got[0])
+	}
+}
+
+func TestHistoryMessagesPreferLegacySidecarDisplay(t *testing.T) {
+	const label = "[Pasted text #1 · 2 lines]"
+	const display = "inspect\n\n" + label
+	const expanded = display + "\n\n--- Begin " + label + " ---\none\ntwo\n--- End " + label + " ---"
+	const rendered = "<capability-route version=\"1\">\nuse review\n</capability-route>\n\n" + expanded
+	msgs := []provider.Message{{Role: provider.RoleUser, Content: rendered, RawContent: expanded}}
+
+	got := historyMessages(msgs, func(content string) string {
+		if content != rendered {
+			t.Fatalf("sidecar resolver content = %q, want rendered content", content)
+		}
+		return display
+	})
+	if len(got) != 1 || got[0].Content != display || got[0].SubmitText != expanded {
+		t.Fatalf("legacy sidecar history = %+v, want display %q and expanded replay", got, display)
+	}
+	if strings.Contains(got[0].SubmitText, "capability-route") {
+		t.Fatalf("provider-only wrapper leaked into sidecar replay: %+v", got[0])
+	}
+}
+
+func TestHistoryMessagesLegacyReferenceReplayExcludesResolvedContext(t *testing.T) {
+	const raw = "@src/main.go explain the entrypoint"
+	const rendered = "<capability-route version=\"1\">\nuse review\n</capability-route>\n\nReferenced context:\n\n<file path=\"src/main.go\">\npackage main\n</file>\n\n" + raw
+	msgs := []provider.Message{{Role: provider.RoleUser, Content: rendered, RawContent: raw}}
+
+	got := historyMessages(msgs, historyReplayUserContent)
+	if len(got) != 1 || got[0].Content != raw || got[0].SubmitText != "" {
+		t.Fatalf("legacy reference history = %+v, want compact raw replay", got)
+	}
+	if strings.Contains(got[0].Content, "<file") || strings.Contains(got[0].SubmitText, "<file") {
+		t.Fatalf("resolved reference leaked into editable history: %+v", got[0])
 	}
 }
 
@@ -820,6 +871,35 @@ func TestPreviewSessionMessagesLoadsWithoutResuming(t *testing.T) {
 	}
 	if got[1].Reasoning != "saved reasoning" {
 		t.Fatalf("preview reasoning = %q, want saved reasoning", got[1].Reasoning)
+	}
+}
+
+func TestPreviewSessionMessagesUpgradesLegacyExpandedPaste(t *testing.T) {
+	const label = "[Pasted text #1 · 2 lines]"
+	const display = "inspect this\n\n" + label
+	const expanded = display + "\n\n--- Begin " + label + " ---\none\ntwo\n--- End " + label + " ---"
+	const rendered = "<capability-route version=\"1\">\nuse review\n</capability-route>\n\n" + expanded
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "legacy.jsonl")
+	session := agent.NewSession("")
+	session.Add(provider.Message{Role: provider.RoleUser, Content: rendered, RawContent: expanded})
+	if err := session.Save(path); err != nil {
+		t.Fatalf("Save legacy session: %v", err)
+	}
+	if err := recordSessionDisplay(dir, path, rendered, display); err != nil {
+		t.Fatalf("record legacy display: %v", err)
+	}
+
+	got, err := previewSessionMessages(dir, path)
+	if err != nil {
+		t.Fatalf("previewSessionMessages: %v", err)
+	}
+	if len(got) != 1 || got[0].Content != display || got[0].SubmitText != expanded {
+		t.Fatalf("upgraded legacy preview = %+v, want display %q and expanded replay", got, display)
+	}
+	if strings.Contains(got[0].SubmitText, "capability-route") {
+		t.Fatalf("provider-only wrapper leaked after session restart: %+v", got[0])
 	}
 }
 
