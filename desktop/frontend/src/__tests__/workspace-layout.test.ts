@@ -160,9 +160,9 @@ eq(
   "opening the dock persists the expanded preference for the next launch",
 );
 eq(
-  /rightDockMode === "terminal"[\s\S]*?workspacePanelRenderWidth >= rightDockMinRenderWidth/.test(appSource),
+  /terminalPanelOpen[\s\S]*?terminal-drawer/.test(appSource),
   true,
-  "terminal remains renderable when a narrow viewport cannot fit the side dock",
+  "terminal drawer is an independent panel, not a workspace dock mode",
 );
 eq(
   /const addTerminalOutputToComposer = useCallback\(async \(sessionId: string\) => \{[\s\S]*?app\.TerminalOutputForTab\(activeTabId, sessionId\)[\s\S]*?addWorkspaceTextToComposer\(/.test(appSource),
@@ -170,19 +170,19 @@ eq(
   "terminal output reaches chat only through the explicit add-output action",
 );
 eq(
-  /@media \(max-width: 820px\) \{[\s\S]*?\.layout--terminal-open \.workbench-dock[\s\S]*?display: flex !important/.test(stylesSource),
+  /@media \(max-width: 820px\) \{[\s\S]*?\.layout--terminal-drawer-open \.terminal-drawer[\s\S]*?display: flex !important/.test(stylesSource),
   true,
   "terminal drawer stays visible on narrow viewports",
 );
 eq(
-  /\.layout--terminal-open \{[\s\S]*?grid-template-rows: var\(--app-chrome-height\) minmax\(0, 1fr\) minmax\(220px, min\(42vh, 440px\)\) var\(--statusbar-height\)/.test(stylesSource),
+  /\.layout--terminal-drawer-open \{[\s\S]*?grid-template-rows: var\(--app-chrome-height\) minmax\(0, 1fr\) var\(--terminal-height, 280px\) var\(--statusbar-height\)/.test(stylesSource),
   true,
-  "terminal-open layout reserves a grid row for the status bar below the terminal drawer",
+  "terminal-drawer-open layout reserves a grid row for the status bar below the terminal drawer",
 );
 eq(
-  /@media \(max-width: 820px\) \{[\s\S]*?\.layout--terminal-open \.workbench-dock,[\s\S]*?grid-row: 3;[\s\S]*?\.layout--workbench-chrome-hidden\.layout--terminal-open \.workbench-dock,[\s\S]*?grid-row: 2;/.test(stylesSource),
+  /@media \(max-width: 820px\) \{[\s\S]*?\.layout--terminal-drawer-open \.terminal-drawer[\s\S]*?display: flex !important[\s\S]*?\.layout--workbench-chrome-hidden\.layout--terminal-drawer-open[\s\S]*?minmax\(0, 1fr\) var\(--terminal-height, 280px\) var\(--statusbar-height\)/.test(stylesSource),
   true,
-  "narrow classic terminal stays below chat while chrome-hidden terminal uses row two",
+  "narrow viewport shows terminal drawer with status bar row below",
 );
 eq(
   /sidebarImDetailConnection \? "layout--statusbar-hidden" : ""/.test(appSource)
@@ -191,19 +191,23 @@ eq(
   "IM detail collapses the status bar row when the bar is not rendered",
 );
 eq(
+  /\.layout--terminal-drawer-expanded \.terminal-drawer \{[\s\S]*?border-top: 1px solid var\(--border-soft\)/.test(stylesSource),
+  true,
+  "terminal drawer has a top border only when expanded, avoiding a collapsed artifact line",
+);
+eq(
   /\.sidebar--workbench \{[\s\S]*?padding: 16px 16px 10px;/.test(stylesSource)
     && /\.app--darwin \.sidebar--workbench,\s*\.sidebar--workbench \{[\s\S]*?padding: 14px 12px 10px;/.test(stylesSource),
   true,
   "workbench sidebar does not reserve the docked status bar twice",
 );
 eq(
-  /\.layout--terminal-open \.workbench-dock__tools \{\s*display: none;\s*\}/.test(stylesSource),
+  /workbench-dock__tab[\s\S]*?terminalPanelOpen/.test(appSource),
   true,
-  "terminal drawer hides the redundant workspace tab strip",
+  "terminal tab in workspace dock toggles the independent terminal panel, not rightDockMode",
 );
 eq(
-  /\.app--creation \.layout--creation-chrome-hidden\.layout--terminal-open \{[\s\S]*?grid-template-rows: minmax\(0, 1fr\) minmax\(220px, min\(42vh, 440px\)\)/.test(stylesSource)
-    && /\.app--creation \.layout--creation-chrome-hidden\.layout--terminal-open \.workbench-dock \{[\s\S]*?grid-row: 2/.test(stylesSource),
+  /\.app--creation \.layout\.layout--creation-chrome-hidden\.layout--terminal-drawer-open \{[\s\S]*?grid-template-rows: minmax\(0, 1fr\) var\(--terminal-height, 280px\)/.test(stylesSource),
   true,
   "creation style keeps the terminal drawer below the chat pane",
 );

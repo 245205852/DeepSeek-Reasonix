@@ -250,6 +250,7 @@ export const en = {
   "terminal.loading": "Loading terminal…",
   "terminal.retry": "Retry",
   "terminal.dismissError": "Dismiss terminal error",
+  "terminal.resize": "Resize terminal height",
   "terminal.empty": "Start a shell in this workspace.",
   "terminal.readOnly": "This channel is read-only.",
   "terminal.addOutput": "Add terminal output to chat",
