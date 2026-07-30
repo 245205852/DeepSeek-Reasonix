@@ -107,54 +107,54 @@ func Run(args []string, version string) int {
 		configureCLIThemeFromConfigForTTYOutput()
 		return setupConfig(rest)
 	case "config":
-		configureCLIThemeFromConfigNoProbe()
+		configureCLIThemeFromConfig()
 		return configCommand(rest)
 	case "init":
 		// Project memory (AGENTS.md) is model-generated in-session — `/init` runs
 		// the codebase analysis. This CLI entry just points there (and to `setup`
 		// for config), so `reasonix init` isn't a dead end.
-		configureCLIThemeFromConfigNoProbe()
+		configureCLIThemeFromConfig()
 		return initHint()
 	case "acp":
-		configureCLIThemeFromConfigNoProbe()
+		configureCLIThemeFromConfig()
 		return acpCommand(rest, version)
 	case "mcp":
-		configureCLIThemeFromConfigNoProbe()
+		configureCLIThemeFromConfig()
 		return mcpCommand(rest)
 	case "remote":
-		configureCLIThemeFromConfigNoProbe()
+		configureCLIThemeFromConfig()
 		return remoteCommand(rest, version)
 	case "plugin":
-		configureCLIThemeFromConfigNoProbe()
+		configureCLIThemeFromConfig()
 		return pluginCommand(rest)
 	case "subagent":
 		configureCLIThemeFromConfigForTTYOutput()
 		return subagentCommand(rest)
 	case "doctor":
 		if !doctorRepair {
-			configureCLIThemeFromConfigNoProbe()
+			configureCLIThemeFromConfig()
 		}
 		return doctorCommand(rest, version)
 	case "report":
-		configureCLIThemeFromConfigNoProbe()
+		configureCLIThemeFromConfig()
 		return reportCommand(rest)
 	case "session":
-		configureCLIThemeFromConfigNoProbe()
+		configureCLIThemeFromConfig()
 		return sessionCommand(rest)
 	case "hook", "hooks":
-		configureCLIThemeFromConfigNoProbe()
+		configureCLIThemeFromConfig()
 		return hookCommand(rest)
 	case "task":
-		configureCLIThemeFromConfigNoProbe()
+		configureCLIThemeFromConfig()
 		return taskCommand(rest)
 	case "review":
-		configureCLIThemeFromConfigNoProbe()
+		configureCLIThemeFromConfig()
 		return reviewCommand(rest)
 	case "bot":
-		configureCLIThemeFromConfigNoProbe()
+		configureCLIThemeFromConfig()
 		return botCommand(rest, version)
 	case "upgrade", "update":
-		configureCLIThemeFromConfigNoProbe()
+		configureCLIThemeFromConfig()
 		return upgradeCommand(rest, version)
 	case "version", "--version", "-v":
 		fmt.Println("reasonix", version)
@@ -222,14 +222,10 @@ func configureCLIThemeFromConfig() {
 
 func configureCLIThemeFromConfigForTTYOutput() {
 	if isTTY(os.Stdout) {
-		configureCLIThemeFromConfig()
+		withTerminalProbe(configureCLIThemeFromConfig)
 		return
 	}
-	configureCLIThemeFromConfigNoProbe()
-}
-
-func configureCLIThemeFromConfigNoProbe() {
-	withoutTerminalProbe(configureCLIThemeFromConfig)
+	configureCLIThemeFromConfig()
 }
 
 // setupProfile builds a ready-to-drive Controller from config via boot.Build.

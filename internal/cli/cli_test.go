@@ -264,10 +264,8 @@ func hasPluginNamed(cfg *config.Config, name string) bool {
 }
 
 func TestMetadataCommandsDoNotProbeTerminalTheme(t *testing.T) {
-	defer func(prev func() (terminalRGB, bool)) {
-		queryTerminalBackgroundForTheme = prev
-	}(queryTerminalBackgroundForTheme)
-	queryTerminalBackgroundForTheme = func() (terminalRGB, bool) {
+	defer func(prev func() (terminalRGB, bool)) { terminalProbe = prev }(terminalProbe)
+	terminalProbe = func() (terminalRGB, bool) {
 		t.Fatal("metadata command should not query terminal background")
 		return terminalRGB{}, false
 	}

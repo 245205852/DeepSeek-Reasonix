@@ -51,6 +51,8 @@ type chatTUI struct {
 
 	width  int
 	height int
+	// themeSweep freezes the frame while a /theme switch wipes across it.
+	themeSweep *themeSweep
 	// nativeScrollback keeps Termux out of alt-screen mode so taps still focus
 	// the textarea and raise the soft keyboard.
 	nativeScrollback bool
@@ -1722,6 +1724,15 @@ func (m chatTUI) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.copyNoticeText = ""
 		}
 
+	case themeSweepTickMsg:
+		if m.themeSweep != nil {
+			if m.themeSweep.advance() {
+				cmds = append(cmds, themeSweepTick())
+			} else {
+				m.themeSweep = nil
+			}
+		}
+
 	case elapsedTickMsg:
 		if m.state == tuiRunning {
 			m.elapsed = int(time.Since(m.runStart).Seconds())
@@ -2805,6 +2816,18 @@ func (m chatTUI) runningWorkingLine(cancelRequested, styled bool) string {
 }
 
 func (m chatTUI) View() tea.View {
+	if m.themeSweep != nil {
+		v := tea.NewView(m.themeSweep.render())
+		if !m.nativeScrollback {
+			v.AltScreen = true
+			if m.mouseCaptureOff {
+				v.MouseMode = tea.MouseModeNone
+			} else {
+				v.MouseMode = tea.MouseModeCellMotion
+			}
+		}
+		return v
+	}
 	boxW := m.width
 	if boxW < 10 {
 		boxW = 10
@@ -2816,36 +2839,26 @@ func (m chatTUI) View() tea.View {
 	if !hideComposer {
 		style := inputBoxStyle.Width(boxW)
 		if shellMode {
-			style = style.BorderForeground(lipgloss.Color(statusShellColor.hex))
+			style = withThemeBorderFG(style, statusShellColor)
 		}
 		box = style.Render(m.renderComposerInput())
 	}
 
 	var modeTag string
 	if shellMode {
-		modeTag = lipgloss.NewStyle().
-			Background(lipgloss.Color(statusShellColor.hex)).
-			Foreground(lipgloss.Color("#ffffff")).
-			Bold(true).
-			Padding(0, 1).
-			Render("Shell")
+		modeTag = modeTagStyle(statusShellColor, modeTagLight).Render("Shell")
 	} else {
-		color := statusAutoColor
-		foreground := "#111827"
+		background := statusAutoColor
+		foreground := modeTagDark
 		switch {
 		case m.ctrl.AutoApproveTools():
-			color = statusYoloColor
-			foreground = "#ffffff"
+			background = statusYoloColor
+			foreground = modeTagLight
 		case m.planMode:
-			color = statusPlanColor
-			foreground = "#ffffff"
+			background = statusPlanColor
+			foreground = modeTagLight
 		}
-		modeTag = lipgloss.NewStyle().
-			Background(lipgloss.Color(color.hex)).
-			Foreground(lipgloss.Color(foreground)).
-			Bold(true).
-			Padding(0, 1).
-			Render(m.modeTagText())
+		modeTag = modeTagStyle(background, foreground).Render(m.modeTagText())
 	}
 
 	primaryStatus := m.primaryStatusLine(modeTag, shellMode, cancelRequested)
@@ -4059,7 +4072,7 @@ func (m *chatTUI) runSlashCommand(input string) tea.Cmd {
 		}
 	case "/theme":
 		m.echoLocalCommand(input)
-		m.runThemeSubcommand(input)
+		return m.runThemeSubcommand(input)
 	case "/language":
 		m.echoLocalCommand(input)
 		return m.runLanguageSubcommand(input)
@@ -4629,7 +4642,7 @@ func renderUserBubble(line string, width int, planMode bool) string {
 	if planMode {
 		prefix = "› [plan] "
 	}
-	if !colorEnabled {
+	if !colorOn() {
 		return "│ " + prefix + line
 	}
 	return "  " + accent(prefix+line)
