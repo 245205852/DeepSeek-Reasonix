@@ -24,6 +24,38 @@ function siblingText(parent: ParentWithChildren, index: number, offset: -1 | 1):
   return offset < 0 ? sibling.value.slice(-120) : sibling.value.slice(0, 120);
 }
 
+function stripAdjacentMarkdown(text: string, side: -1 | 1): string {
+  let current = text;
+  while (true) {
+    const next = side < 0
+      ? current.replace(/(?:[*_~]{1,3}|\[)\s*$/, "")
+      : current.replace(/^\s*(?:[*_~]{1,3}|\])/, "");
+    if (next === current) return current;
+    current = next;
+  }
+}
+
+function inlineMathContext(
+  node: InlineMath,
+  file: VFileLike,
+  parent: ParentWithChildren,
+  index: number,
+): { before: string; after: string } {
+  const source = String(file.value ?? "");
+  const start = node.position?.start.offset;
+  const end = node.position?.end.offset;
+  if (typeof start === "number" && typeof end === "number") {
+    return {
+      before: stripAdjacentMarkdown(source.slice(Math.max(0, start - 120), start), -1),
+      after: stripAdjacentMarkdown(source.slice(end, end + 120), 1),
+    };
+  }
+  return {
+    before: siblingText(parent, index, -1),
+    after: siblingText(parent, index, 1),
+  };
+}
+
 function originalSource(node: InlineMath, file: VFileLike): string {
   const source = String(file.value ?? "");
   const start = node.position?.start.offset;
@@ -70,10 +102,10 @@ export function remarkMathPolicy() {
 
       const typedNode = node as InlineMath;
       const typedParent = parent as ParentWithChildren;
-      const decision = classifyInlineMath(typedNode.value, {
-        before: siblingText(typedParent, index, -1),
-        after: siblingText(typedParent, index, 1),
-      });
+      const decision = classifyInlineMath(
+        typedNode.value,
+        inlineMathContext(typedNode, file, typedParent, index),
+      );
 
       if (decision === "math") {
         setMathValue(typedNode, latexNormalizeForKatex(typedNode.value));

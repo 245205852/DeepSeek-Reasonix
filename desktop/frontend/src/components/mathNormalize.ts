@@ -11,9 +11,10 @@
 //      `$…$` and macros already inside math just substitute.
 //   5. Inline `$$` glued to prose gets a blank line inserted before it
 //      (CommonMark requires that block math be paragraph-separated).
-//   6. Restore placeholders for remark-math. Inline math is normalised later
-//      by the AST policy; display math is normalised while its structure is
-//      repaired here.
+//   6. Protect pipes inside inline math before GFM table tokenisation.
+//   7. Restore placeholders for remark-math. Remaining inline normalisation
+//      is handled by the AST policy; display math is normalised while its
+//      structure is repaired here.
 
 import { latexNormalizeForKatex } from "./latexNormalize";
 import { expandYoungDiagrams } from "./youngDiagrams";
@@ -81,11 +82,24 @@ function normalizeMathText(s: string): string {
     return `${IM}${latexNormalizeForKatex(m)}${IM}`;
   });
 
-  // Step 6: restore standard $/$$ delimiters for remark-math to parse.
+  // Step 6: GFM identifies table cells before remark plugins can transform the
+  // AST. Normalise only inline spans containing pipes at this syntax boundary
+  // so formulas such as `$|x|$` cannot be split into separate cells. A pipe is
+  // already an explicit math signal in the semantic classifier; all other
+  // inline decisions remain deferred to remarkMathPolicy.
+  r = protectInlineMathPipesForGfm(r);
+
+  // Step 7: restore standard $/$$ delimiters for remark-math to parse.
   return r
     .replace(new RegExp(DM, "g"), () => "$$")
     .replace(new RegExp(IM, "g"), "$")
     .split(escapedDollarToken).join("\\$");
+}
+
+function protectInlineMathPipesForGfm(s: string): string {
+  return s.replace(/\$([^$\n]+)\$/g, (match, math: string) => {
+    return math.includes("|") ? `$${latexNormalizeForKatex(math)}$` : match;
+  });
 }
 
 function unusedEscapedDollarToken(s: string): string {

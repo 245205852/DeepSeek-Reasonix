@@ -144,9 +144,9 @@ check("$+$", () => isLikelyInlineMath("+") === true);
 check("$=$", () => isLikelyInlineMath("=") === true);
 
 console.log("\nisLikelyInlineMath — numeric syntax and contextual currency");
-check("$5 defaults to math", () => isLikelyInlineMath("5") === true);
-check("$10 defaults to math", () => isLikelyInlineMath("10") === true);
-check("$10.50 defaults to math", () => isLikelyInlineMath("10.50") === true);
+check("$5 defaults to literal without math context", () => isLikelyInlineMath("5") === false);
+check("$10 defaults to literal without math context", () => isLikelyInlineMath("10") === false);
+check("$10.50 defaults to literal without math context", () => isLikelyInlineMath("10.50") === false);
 check("$100% defaults to math", () => isLikelyInlineMath("100%") === true);
 check("costs $5$ is contextual currency", () =>
   classifyInlineMath("5", { before: "it costs ", after: " today" }) === "currency");
@@ -154,6 +154,10 @@ check("price is $10.50$ each is contextual currency", () =>
   classifyInlineMath("10.50", { before: "price is ", after: " each" }) === "currency");
 check("10–$20$ MeV remains math", () =>
   classifyInlineMath("20", { before: "10–", after: " MeV" }) === "math");
+check("$20$ MeV uses a scientific unit as positive math context", () =>
+  classifyInlineMath("20", { after: " MeV" }) === "math");
+check("x = $2$ uses an operator as positive math context", () =>
+  classifyInlineMath("2", { before: "x = " }) === "math");
 check("URL", () => isLikelyInlineMath("https://example.com") === false);
 check("prose text", () => isLikelyInlineMath("hello world today") === false);
 check("prose $x y z$ (spaces)", () => isLikelyInlineMath("x y z") === false);
@@ -181,10 +185,10 @@ check("$[\\mathbf{56}]$ → math", () => isLikelyInlineMath("[\\mathbf{56}]") ==
 console.log("\nisLikelyInlineMath — minimal LaTeX patterns (regression)");
 // LLMs frequently emit minimal LaTeX in math contexts that the older
 // classifier rejected as currency / word tokens. These tests pin down the
-// deliberately-permissive rules for common math patterns while requiring
-// surrounding prose context before a paired pure number is treated as currency.
-check("single-digit $1$, $2$, $5$ → math unless currency context says otherwise", () => isLikelyInlineMath("1") === true);
-check("multi-digit $42$ → math", () => isLikelyInlineMath("42") === true);
+// deliberately-permissive rules for common math patterns while keeping
+// context-free pure numbers literal until the AST policy sees a math signal.
+check("single-digit $1$, $2$, $5$ → literal without context", () => isLikelyInlineMath("1") === false);
+check("multi-digit $42$ → literal without context", () => isLikelyInlineMath("42") === false);
 check("$2.5x$ is math (number with variable)", () => isLikelyInlineMath("2.5x") === true);
 check("$10\%$ is math (percentage with LaTeX)", () => isLikelyInlineMath("10\\%") === true);
 check("$2.5x dollars$ → NOT math (prefix-only numeric variable)", () => isLikelyInlineMath("2.5x dollars") === false);
@@ -380,7 +384,7 @@ check("$\\text{abc}$ simple text-mode (no trailing)", () => {
 
 console.log("\nnormalizeMath — pipe handling");
 check("$|x+1|$ absolute value", () => {
-  return normalizeMath("$|x+1|$") === "$|x+1|$";
+  return normalizeMath("$|x+1|$") === "$\\vert x+1\\vert$";
 });
 check("$\\|x\\|$ norm preserved (no \\vert mangling)", () => {
   return normalizeMath("$\\|x\\|$") === "$\\|x\\|$";
@@ -494,6 +498,30 @@ check("paired decimal currency uses surrounding price context", () => {
   const html = renderHtml("price is $10.50$ each");
   return !html.includes("katex") && html.includes("$10.50 each") && !html.includes("$10.50$");
 });
+check("Chinese paired currency uses localized price context", () => {
+  const html = renderHtml("价格是$5$");
+  return !html.includes("katex") && html.includes("价格是$5") && !html.includes("$5$");
+});
+check("full-width punctuation keeps paired currency literal", () => {
+  const html = renderHtml("价格：$5$");
+  return !html.includes("katex") && html.includes("价格：$5") && !html.includes("$5$");
+});
+check("cash context keeps paired currency literal", () => {
+  const html = renderHtml("I have $5$ in cash");
+  return !html.includes("katex") && html.includes("$5 in cash") && !html.includes("$5$");
+});
+check("bold markup does not hide preceding currency context", () => {
+  const html = renderHtml("costs **$5$** today");
+  return !html.includes("katex") && html.includes("<strong>$5</strong>");
+});
+check("emphasis does not hide surrounding currency context", () => {
+  const html = renderHtml("price is *$10.50$* each");
+  return !html.includes("katex") && html.includes("<em>$10.50</em>");
+});
+check("ambiguous paired numbers remain literal without positive math context", () => {
+  const html = renderHtml("from $5$ to $10$");
+  return !html.includes("katex") && html.includes("$5$") && html.includes("$10$");
+});
 check("env var $PATH$ renders as literal, not math", () => {
   const html = renderHtml("env $PATH$ here");
   return !html.includes("katex") && html.includes("$PATH$");
@@ -502,9 +530,13 @@ check("range endpoint 10–$20$ MeV renders numeric math", () => {
   const html = renderHtml("10–$20$ MeV");
   return html.includes("katex") && html.includes("<mn>20</mn>");
 });
-check("standalone $42$ renders numeric math", () => {
+check("standalone $42$ remains literal without positive math context", () => {
   const html = renderHtml("$42$ elements");
-  return html.includes("katex") && html.includes("<mn>42</mn>");
+  return !html.includes("katex") && html.includes("$42$ elements");
+});
+check("scientific unit makes a paired number mathematical", () => {
+  const html = renderHtml("$20$ MeV");
+  return html.includes("katex") && html.includes("<mn>20</mn>");
 });
 check("one-sided equality $=1$ renders as math", () => {
   const html = renderHtml("set $=1$ here");
@@ -529,6 +561,13 @@ check("AST policy applies unbraced slashed normalisation", () => {
 check("real inline math $x^2$ still renders as KaTeX", () => {
   const html = renderHtml("the value $x^2$ here");
   return html.includes("katex");
+});
+check("GFM table preserves inline absolute-value math and every cell", () => {
+  const html = renderHtml("| Expr | Value |\n| --- | --- |\n| $|x|$ | abs |");
+  return html.includes("<table>")
+    && html.includes("katex")
+    && html.includes("<td>abs</td>")
+    && (html.match(/<td>/g) ?? []).length === 2;
 });
 check("blockquote display math does not swallow following inline math", () => {
   const html = renderHtml("> theorem\n> $$E=mc^2$$\n> after $x$");
