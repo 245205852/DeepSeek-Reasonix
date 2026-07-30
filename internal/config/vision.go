@@ -3,6 +3,8 @@ package config
 import (
 	"net/url"
 	"strings"
+
+	"reasonix/internal/provider/openai"
 )
 
 var mimoVisionModels = map[string]bool{
@@ -64,6 +66,14 @@ func modelTokenSeparator(r rune) bool {
 // arbitrary OpenAI-compatible proxies do not get image payloads unexpectedly.
 func EffectiveVision(e *ProviderEntry) bool {
 	if e == nil {
+		return false
+	}
+	// DeepSeek's official chat API accepts string message content only. Treat
+	// the endpoint as text-only even when an old or hand-edited config enables
+	// vision, so frontends reject image attachments before a request can 400.
+	// Custom gateways remain user-configurable because they may preprocess
+	// images before forwarding a DeepSeek-model request.
+	if isOpenAIProviderKind(e) && openai.IsDeepSeek(e.BaseURL) {
 		return false
 	}
 	if e.visionOverride != nil {

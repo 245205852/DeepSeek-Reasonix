@@ -75,12 +75,17 @@ func New(cfg provider.Config) (provider.Provider, error) {
 	headers, _ := cfg.Extra["headers"].(map[string]string)
 	extraBody, _ := cfg.Extra["extra_body"].(map[string]any)
 	vision, _ := cfg.Extra["vision"].(bool)
+	officialDeepSeek := IsDeepSeek(cfg.BaseURL)
+	// DeepSeek's official chat API accepts string message content only. Keep
+	// this provider-boundary guard even though config capability resolution
+	// normally prevents image attachments from reaching this layer.
+	vision = vision && !officialDeepSeek
 	visionDetail, _ := cfg.Extra["vision_detail"].(string)
 	visionDetail = strings.ToLower(strings.TrimSpace(visionDetail))
 	if visionDetail != "low" && visionDetail != "high" {
 		visionDetail = "" // auto — omit the field
 	}
-	deepseek := protocol == "deepseek" || (protocol == "" && IsDeepSeek(cfg.BaseURL))
+	deepseek := protocol == "deepseek" || (protocol == "" && officialDeepSeek)
 	minimax := protocol == "" && IsMiniMax(cfg.BaseURL)
 	zhipu := protocol == "" && IsZhipu(cfg.BaseURL)
 	longcat := protocol == "" && IsLongCat(cfg.BaseURL)
@@ -504,19 +509,12 @@ func (c *client) buildRequest(req provider.Request) chatRequest {
 		}
 		switch {
 		case c.vision && m.Role == provider.RoleUser && len(m.Images) > 0:
-			if c.deepseek {
-				// DeepSeek API rejects image_url content parts (#6682).
-				// Convert images to text references so the model at least
-				// knows images were attached.
-				cm.Content = deepseekImageText(m.Content, m.Images)
-			} else {
-				cm.Content = imageContentParts(m.Content, m.Images, c.visionDetail)
-			}
+			cm.Content = imageContentParts(m.Content, m.Images, c.visionDetail)
 		case m.Role != provider.RoleAssistant || len(cm.ToolCalls) == 0 || m.Content != "":
 			cm.Content = m.Content
 		}
 		msgs = append(msgs, cm)
-		if c.vision && !c.deepseek && m.Role == provider.RoleTool {
+		if c.vision && m.Role == provider.RoleTool {
 			pendingToolImages = append(pendingToolImages, m.Images...)
 		}
 	}
@@ -922,33 +920,6 @@ func imageContentParts(text string, images []string, detail string) []chatConten
 		parts = append(parts, chatContentPart{Type: "image_url", ImageURL: &chatImageURL{URL: url, Detail: detail}})
 	}
 	return parts
-}
-
-// deepseekImageText converts image attachments to a text-only form for
-// DeepSeek models that reject image_url content parts (#6682).
-func deepseekImageText(text string, images []string) string {
-	if len(images) == 0 {
-		return text
-	}
-	var b strings.Builder
-	if text != "" {
-		b.WriteString(text)
-	}
-	for i, img := range images {
-		if i > 0 || text != "" {
-			b.WriteByte('\n')
-		}
-		name := img
-		if idx := strings.LastIndexByte(img, '/'); idx >= 0 {
-			name = img[idx+1:]
-		} else if idx := strings.LastIndexByte(img, '\\'); idx >= 0 {
-			name = img[idx+1:]
-		}
-		b.WriteString("[Attached image: ")
-		b.WriteString(name)
-		b.WriteByte(']')
-	}
-	return b.String()
 }
 
 type chatTool struct {
