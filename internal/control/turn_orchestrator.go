@@ -338,21 +338,25 @@ func goalShouldBlockOnError(err error) bool {
 func (o *turnOrchestrator) continueGoal(ctx context.Context) error {
 	c := o.c
 	for {
-		cont := o.advanceGoalAfterTurn()
-		if !cont {
+		res := o.advanceGoalAfterTurn()
+		if !res.cont {
 			return nil
 		}
 		if err := ctx.Err(); err != nil {
 			c.stopGoal(GoalStatusStopped)
 			return err
 		}
+		intercept, ok := c.goals.acceptContinuation(res)
+		if !ok {
+			return nil
+		}
 		turn := goalContinueTurn
-		if msg, ok := c.goals.takeIntercept(); ok {
-			turn = msg
-			if strings.Contains(msg, "AutoResearch readiness check failed") {
-				c.noticeDetail("Goal is not ready to complete yet; continuing the remaining work.", msg)
+		if intercept != "" {
+			turn = intercept
+			if strings.Contains(intercept, "AutoResearch readiness check failed") {
+				c.noticeDetail("Goal is not ready to complete yet; continuing the remaining work.", intercept)
 			} else {
-				c.noticeDetail("Goal still has unfinished task state; continuing the remaining work.", msg)
+				c.noticeDetail("Goal still has unfinished task state; continuing the remaining work.", intercept)
 			}
 		}
 		if err := o.runSyntheticTurnWithRawDisplay(ctx, turn, turn, ""); err != nil {
@@ -364,7 +368,7 @@ func (o *turnOrchestrator) continueGoal(ctx context.Context) error {
 	}
 }
 
-func (o *turnOrchestrator) advanceGoalAfterTurn() bool {
+func (o *turnOrchestrator) advanceGoalAfterTurn() goalAdvanceResult {
 	c := o.c
 	// Gather every input the FSM needs off the goal lock: parse the marker,
 	// snapshot the executor's todos + readiness, and check tool activity. None
@@ -389,9 +393,6 @@ func (o *turnOrchestrator) advanceGoalAfterTurn() bool {
 		todos:      c.goalTodos(),
 		readiness:  readiness,
 	})
-	if res.intercept != "" {
-		c.goals.setIntercept(res.intercept)
-	}
 	c.persistGoalState(res.path, res.data, res.ok)
 	if res.notice != "" {
 		c.finalizeAutoResearchTask(autoResearchTaskID, res.notice)
@@ -400,7 +401,7 @@ func (o *turnOrchestrator) advanceGoalAfterTurn() bool {
 	if res.notice == goalCompleteNotice && c.executor != nil {
 		c.completeRemainingGoalTodos()
 	}
-	return res.cont
+	return res
 }
 
 func (c *Controller) finalizeAutoResearchTask(taskID, notice string) {

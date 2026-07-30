@@ -46,11 +46,11 @@ type goalMachine struct {
 	turns              int
 	blocks             int
 	block              string
-	interceptMsg       string
 	intercepts         int
 	strict             bool
 	selfCheckDone      bool
 	idleTurns          int
+	continuationEpoch  uint64
 
 	// statePath is the persisted goal-state sidecar; empty disables persistence.
 	statePath string
@@ -86,7 +86,6 @@ type goalMachineSnapshot struct {
 	turns              int
 	blocks             int
 	block              string
-	interceptMsg       string
 	intercepts         int
 	strict             bool
 	selfCheckDone      bool
@@ -107,12 +106,13 @@ type goalAdvanceInput struct {
 // state to persist (built under mu when something changed); notice is surfaced
 // to the user; cont reports whether the goal loop should continue.
 type goalAdvanceResult struct {
-	notice    string
-	intercept string
-	cont      bool
-	path      string
-	data      []byte
-	ok        bool
+	notice            string
+	intercept         string
+	cont              bool
+	continuationEpoch uint64
+	path              string
+	data              []byte
+	ok                bool
 }
 
 // goalStatePath derives a session's persisted goal-state sidecar.
@@ -133,7 +133,7 @@ func (g *goalMachine) capture() goalMachineSnapshot {
 		goal: g.goal, status: g.status, researchMode: g.researchMode,
 		autoResearchTaskID: g.autoResearchTaskID, scopeID: g.scopeID,
 		deliveryCheckpoint: g.deliveryCheckpoint, turns: g.turns,
-		blocks: g.blocks, block: g.block, interceptMsg: g.interceptMsg,
+		blocks: g.blocks, block: g.block,
 		intercepts: g.intercepts, strict: g.strict,
 		selfCheckDone: g.selfCheckDone, idleTurns: g.idleTurns,
 	}
@@ -145,8 +145,9 @@ func (g *goalMachine) restore(snapshot goalMachineSnapshot) {
 	g.autoResearchTaskID, g.scopeID = snapshot.autoResearchTaskID, snapshot.scopeID
 	g.deliveryCheckpoint, g.turns = snapshot.deliveryCheckpoint, snapshot.turns
 	g.blocks, g.block = snapshot.blocks, snapshot.block
-	g.interceptMsg, g.intercepts = snapshot.interceptMsg, snapshot.intercepts
+	g.intercepts = snapshot.intercepts
 	g.strict, g.selfCheckDone, g.idleTurns = snapshot.strict, snapshot.selfCheckDone, snapshot.idleTurns
+	g.continuationEpoch++
 	g.mu.Unlock()
 }
 
@@ -219,8 +220,9 @@ func (g *goalMachine) set(goal string, mode GoalResearchMode, autoResearchTaskID
 	if goal != "" && g.goal == goal && g.status == GoalStatusRunning && g.researchMode == mode && g.autoResearchTaskID == autoResearchTaskID {
 		return "", nil, false
 	}
+	g.continuationEpoch++
 	g.turns, g.blocks, g.block = 0, 0, ""
-	g.interceptMsg, g.intercepts = "", 0
+	g.intercepts = 0
 	g.selfCheckDone, g.idleTurns, g.strict = false, 0, false
 	if goal == "" {
 		g.goal, g.status, g.researchMode, g.autoResearchTaskID = "", GoalStatusStopped, GoalResearchAuto, ""
@@ -246,10 +248,10 @@ func (g *goalMachine) setStrict(strict bool, todos []evidence.TodoItem) (string,
 func (g *goalMachine) stop(status string, todos []evidence.TodoItem) (string, []byte, bool) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
+	g.continuationEpoch++
 	if strings.TrimSpace(g.goal) != "" && g.status == GoalStatusRunning {
 		g.status = status
 	}
-	g.interceptMsg = ""
 	g.intercepts = 0
 	g.selfCheckDone = false
 	g.idleTurns = 0
@@ -262,9 +264,10 @@ func (g *goalMachine) resume(todos []evidence.TodoItem) (path string, data []byt
 	if strings.TrimSpace(g.goal) == "" || g.status == GoalStatusComplete {
 		return "", nil, false, false
 	}
+	g.continuationEpoch++
 	g.status = GoalStatusRunning
 	g.blocks, g.block = 0, ""
-	g.interceptMsg, g.intercepts = "", 0
+	g.intercepts = 0
 	g.selfCheckDone, g.idleTurns = false, 0
 	if g.scopeID == "" {
 		g.scopeID = newGoalScopeID()
@@ -289,26 +292,20 @@ func (g *goalMachine) deliveryState() evidence.DeliveryCheckpoint {
 	return g.deliveryCheckpoint
 }
 
-// takeIntercept consumes a pending continuation-turn override, if any.
-func (g *goalMachine) takeIntercept() (string, bool) {
+// acceptContinuation verifies that an advance result still belongs to the
+// machine state that produced it. Goal lifecycle changes and newer advance
+// calls invalidate older results so stale intercepts cannot cross into a
+// replacement or resumed goal.
+func (g *goalMachine) acceptContinuation(res goalAdvanceResult) (string, bool) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	if g.interceptMsg == "" {
+	if !res.cont ||
+		res.continuationEpoch != g.continuationEpoch ||
+		strings.TrimSpace(g.goal) == "" ||
+		g.status != GoalStatusRunning {
 		return "", false
 	}
-	msg := g.interceptMsg
-	g.interceptMsg = ""
-	return msg, true
-}
-
-// setIntercept stores a continuation-turn override for the next loop
-// iteration. advance() returns the intercept via goalAdvanceResult and the
-// caller (advanceGoalAfterTurn) stores it here so takeIntercept can consume
-// it in the next synthetic turn.
-func (g *goalMachine) setIntercept(msg string) {
-	g.mu.Lock()
-	defer g.mu.Unlock()
-	g.interceptMsg = msg
+	return res.intercept, true
 }
 
 // advance runs one continuation step of the goal FSM from already-gathered
@@ -320,6 +317,7 @@ func (g *goalMachine) advance(in goalAdvanceInput) goalAdvanceResult {
 	if strings.TrimSpace(g.goal) == "" || g.status != GoalStatusRunning {
 		return goalAdvanceResult{cont: false}
 	}
+	g.continuationEpoch++
 	g.turns++
 	var notice string
 	var intercept string
@@ -389,11 +387,15 @@ func (g *goalMachine) advance(in goalAdvanceInput) goalAdvanceResult {
 		g.block = "goal continuation limit reached"
 		g.intercepts = 0
 		g.selfCheckDone = false
-		g.interceptMsg = ""
 		g.idleTurns = 0
 		notice = g.block
 	}
-	res := goalAdvanceResult{notice: notice, intercept: intercept, cont: notice == ""}
+	res := goalAdvanceResult{
+		notice:            notice,
+		intercept:         intercept,
+		cont:              notice == "",
+		continuationEpoch: g.continuationEpoch,
+	}
 	if notice != "" {
 		res.path, res.data, res.ok = g.buildStateLocked(in.todos)
 	}
@@ -541,8 +543,9 @@ func (g *goalMachine) restoreFromState(sessionPath string) {
 	g.blocks = state.Blocks
 	g.block = state.Block
 	g.strict = state.Strict
-	g.interceptMsg, g.intercepts = "", 0
+	g.intercepts = 0
 	g.selfCheckDone, g.idleTurns = false, 0
+	g.continuationEpoch++
 }
 
 // formatIncompleteTodos renders the reminder shown when [goal:complete] arrives
