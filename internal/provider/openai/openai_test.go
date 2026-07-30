@@ -1489,61 +1489,69 @@ func TestBuildRequestDefaultsEmptyToolParameters(t *testing.T) {
 	}
 }
 
+func TestNormaliseUsageAnthropicStyleFallback(t *testing.T) {
+	tests := []struct {
+		name string
+		json string
+		want provider.Usage
+	}{
+		{
+			name: "cache hit",
+			json: `{"usage":{"input_tokens":21,"output_tokens":393,"cache_creation_input_tokens":0,"cache_read_input_tokens":188086}}`,
+			want: provider.Usage{
+				PromptTokens:     188107,
+				CompletionTokens: 393,
+				TotalTokens:      188500,
+				CacheHitTokens:   188086,
+				CacheMissTokens:  21,
+			},
+		},
+		{
+			name: "cache creation",
+			json: `{"usage":{"input_tokens":21,"output_tokens":393,"cache_creation_input_tokens":188086,"cache_read_input_tokens":0}}`,
+			want: provider.Usage{
+				PromptTokens:     188107,
+				CompletionTokens: 393,
+				TotalTokens:      188500,
+				CacheMissTokens:  188107,
+			},
+		},
+		{
+			name: "DeepSeek fields take priority",
+			json: `{"usage":{"prompt_tokens":100,"completion_tokens":50,"total_tokens":150,"prompt_cache_hit_tokens":30,"prompt_cache_miss_tokens":70,"input_tokens":1,"output_tokens":2,"cache_creation_input_tokens":888,"cache_read_input_tokens":999}}`,
+			want: provider.Usage{
+				PromptTokens:     100,
+				CompletionTokens: 50,
+				TotalTokens:      150,
+				CacheHitTokens:   30,
+				CacheMissTokens:  70,
+			},
+		},
+		{
+			name: "OpenAI nested fields take priority",
+			json: `{"usage":{"prompt_tokens":100,"completion_tokens":50,"total_tokens":150,"prompt_tokens_details":{"cached_tokens":40},"input_tokens":1,"output_tokens":2,"cache_creation_input_tokens":888,"cache_read_input_tokens":999}}`,
+			want: provider.Usage{
+				PromptTokens:     100,
+				CompletionTokens: 50,
+				TotalTokens:      150,
+				CacheHitTokens:   40,
+				CacheMissTokens:  60,
+			},
+		},
+	}
 
-// TestNormaliseUsageMiniMax verifies that normaliseUsage correctly reads
-// Anthropic-style cache fields returned by MiniMax on its OpenAI-compatible
-// endpoint (input_tokens / output_tokens / cache_read_input_tokens /
-// cache_creation_input_tokens).
-func TestNormaliseUsageMiniMax(t *testing.T) {
-	// MiniMax cache-hit response (OpenAI-compatible endpoint)
-	hit := normaliseUsage(&wireUsage{
-		InputTokens:          21,
-		OutputTokens:         393,
-		CacheCreationInputTokens: 0,
-		CacheReadInputTokens: 188086,
-	})
-	if hit.PromptTokens != 21 {
-		t.Errorf("PromptTokens = %d, want 21", hit.PromptTokens)
-	}
-	if hit.CompletionTokens != 393 {
-		t.Errorf("CompletionTokens = %d, want 393", hit.CompletionTokens)
-	}
-	if hit.CacheHitTokens != 188086 {
-		t.Errorf("CacheHitTokens = %d, want 188086", hit.CacheHitTokens)
-	}
-	if hit.CacheMissTokens != 0 {
-		t.Errorf("CacheMissTokens = %d, want 0", hit.CacheMissTokens)
-	}
-
-	// MiniMax cache-creation response
-	creation := normaliseUsage(&wireUsage{
-		InputTokens:          21,
-		OutputTokens:         393,
-		CacheCreationInputTokens: 188086,
-		CacheReadInputTokens: 0,
-	})
-	if creation.CacheHitTokens != 0 {
-		t.Errorf("CacheHitTokens = %d, want 0", creation.CacheHitTokens)
-	}
-	if creation.CacheMissTokens != 188086 {
-		t.Errorf("CacheMissTokens = %d, want 188086", creation.CacheMissTokens)
-	}
-
-	// DeepSeek-style fields should still take priority
-	deepseek := normaliseUsage(&wireUsage{
-		PromptTokens:          100,
-		CompletionTokens:      50,
-		PromptCacheHitTokens:  30,
-		PromptCacheMissTokens: 70,
-		CacheReadInputTokens:  999, // should be ignored
-	})
-	if deepseek.PromptTokens != 100 {
-		t.Errorf("PromptTokens = %d, want 100", deepseek.PromptTokens)
-	}
-	if deepseek.CacheHitTokens != 30 {
-		t.Errorf("CacheHitTokens = %d, want 30", deepseek.CacheHitTokens)
-	}
-	if deepseek.CacheMissTokens != 70 {
-		t.Errorf("CacheMissTokens = %d, want 70", deepseek.CacheMissTokens)
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			var response streamResponse
+			if err := json.Unmarshal([]byte(tc.json), &response); err != nil {
+				t.Fatalf("unmarshal usage fixture: %v", err)
+			}
+			if response.Usage == nil {
+				t.Fatal("usage fixture did not decode usage")
+			}
+			if got := normaliseUsage(response.Usage); got == nil || *got != tc.want {
+				t.Fatalf("normaliseUsage() = %+v, want %+v", got, tc.want)
+			}
+		})
 	}
 }

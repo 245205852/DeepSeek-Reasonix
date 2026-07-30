@@ -12,7 +12,7 @@
   "info": {
     "companyName": "Reasonix",
     "productName": "Reasonix",
-    "productVersion": "1.17.21",
+    "productVersion": "0.0.0",
     "copyright": "Copyright © 2026 Reasonix Contributors",
     "comments": "Reasonix desktop — a Wails shell around the Go kernel."
   }
