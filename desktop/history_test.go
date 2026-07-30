@@ -1182,6 +1182,119 @@ func TestRebindTabToLoadedSessionPersistsAndRestoresSessionProfile(t *testing.T)
 	}
 }
 
+func TestRebindTabToDetachedSessionPreservesRunningSourceRuntime(t *testing.T) {
+	isolateDesktopUserDirs(t)
+	root := globalTabWorkspaceRoot()
+	dir := desktopSessionDir(root)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("mkdir session dir: %v", err)
+	}
+
+	sourcePath := filepath.Join(dir, "running-source.jsonl")
+	targetPath := filepath.Join(dir, "detached-target.jsonl")
+	writeHistoryTestSession(t, sourcePath, "source prompt")
+	writeHistoryTestSession(t, targetPath, "target prompt")
+	loaded, err := agent.LoadSession(targetPath)
+	if err != nil {
+		t.Fatalf("load target: %v", err)
+	}
+
+	app := NewApp()
+	app.ctx = context.Background()
+	app.readyHook = func() {}
+
+	sourceRunner := &blockingRunner{started: make(chan struct{}), release: make(chan struct{})}
+	sourceSink := &tabEventSink{tabID: "visible", app: app, ctx: app.ctx}
+	targetSink := &tabEventSink{tabID: "detached", app: app}
+	installNoopRuntimeEvents(app, sourceSink, targetSink)
+	sourceCtrl := control.New(control.Options{
+		Runner: sourceRunner, SessionDir: dir, SessionPath: sourcePath,
+		Label: "source", Sink: sourceSink,
+	})
+	targetCtrl := control.New(control.Options{
+		SessionDir: dir, SessionPath: targetPath, Label: "target", Sink: targetSink,
+	})
+	tab := &WorkspaceTab{
+		ID: "visible", Scope: "global", WorkspaceRoot: root,
+		SessionPath: sourcePath, Ctrl: sourceCtrl, Ready: true, sink: sourceSink,
+		disabledMCP: map[string]ServerView{},
+	}
+	app.tabs[tab.ID] = tab
+	app.tabOrder = []string{tab.ID}
+	app.activeTabID = tab.ID
+	if err := tab.ensureSessionLease(sourcePath); err != nil {
+		t.Fatalf("lease source: %v", err)
+	}
+	app.mu.Lock()
+	app.newSessionRuntimeLocked(tab, sessionRuntimeKey(sourcePath))
+	app.advanceSessionRuntimeEpochLocked(tab)
+	app.mu.Unlock()
+
+	targetLease, err := agent.TryAcquireSessionLease(targetPath)
+	if err != nil {
+		t.Fatalf("lease target: %v", err)
+	}
+	detachedTarget := &WorkspaceTab{
+		ID: detachedRuntimeTabID(sessionRuntimeKey(targetPath)), Scope: "global",
+		WorkspaceRoot: root, SessionPath: targetPath, Ctrl: targetCtrl,
+		Ready: true, sink: targetSink, disabledMCP: map[string]ServerView{},
+	}
+	detachedTarget.adoptSessionLease(targetLease)
+	app.mu.Lock()
+	app.detachedSessions[sessionRuntimeKey(targetPath)] = detachedTarget
+	app.newSessionRuntimeLocked(detachedTarget, sessionRuntimeKey(targetPath))
+	app.advanceSessionRuntimeEpochLocked(detachedTarget)
+	app.mu.Unlock()
+	sourceReleased := false
+	t.Cleanup(func() {
+		if !sourceReleased {
+			close(sourceRunner.release)
+		}
+		sourceCtrl.Close()
+		targetCtrl.Close()
+		tab.releaseSessionLease()
+		app.mu.RLock()
+		detachedSource := app.detachedSessions[sessionRuntimeKey(sourcePath)]
+		app.mu.RUnlock()
+		if detachedSource != nil {
+			detachedSource.releaseSessionLease()
+		}
+	})
+
+	sourceCtrl.Submit("keep source running")
+	select {
+	case <-sourceRunner.started:
+	case <-time.After(5 * time.Second):
+		t.Fatal("source turn did not start")
+	}
+
+	if err := app.rebindTabToLoadedSessionPath(tab, targetPath, loaded); err != nil {
+		t.Fatalf("reattach target: %v", err)
+	}
+	if tab.Ctrl != targetCtrl || tab.sessionLeaseRuntimeKey() != sessionRuntimeKey(targetPath) {
+		t.Fatalf("visible target runtime = ctrl %p lease %q, want %p/%q",
+			tab.Ctrl, tab.sessionLeaseRuntimeKey(), targetCtrl, sessionRuntimeKey(targetPath))
+	}
+	if !sourceCtrl.Running() {
+		t.Fatal("reattaching the target cancelled the running source controller")
+	}
+	app.mu.RLock()
+	detachedSource := app.detachedSessions[sessionRuntimeKey(sourcePath)]
+	targetStillDetached := app.detachedSessions[sessionRuntimeKey(targetPath)]
+	app.mu.RUnlock()
+	if detachedSource == nil || detachedSource.Ctrl != sourceCtrl ||
+		detachedSource.sessionLeaseRuntimeKey() != sessionRuntimeKey(sourcePath) {
+		t.Fatalf("running source was not preserved as detached runtime: %#v", detachedSource)
+	}
+	if targetStillDetached != nil {
+		t.Fatalf("target remained detached after reattach: %#v", targetStillDetached)
+	}
+
+	close(sourceRunner.release)
+	sourceReleased = true
+	waitNotRunning(t, sourceCtrl)
+}
+
 func newAtomicRebindTestApp(t *testing.T) (*App, *WorkspaceTab, control.SessionAPI, string, string, *agent.Session) {
 	t.Helper()
 	isolateDesktopUserDirs(t)

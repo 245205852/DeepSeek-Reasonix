@@ -3851,16 +3851,13 @@ func (a *App) rebindTabToLoadedSessionPath(tab *WorkspaceTab, sessionPath string
 			a.runtimeAdmissionMu.Unlock()
 			return fmt.Errorf("tab changed while reattaching session; retry")
 		}
-		oldCtrl := tab.Ctrl
-		oldSink := tab.sink
-		oldLease := tab.takeSessionLease()
 		a.mu.Unlock()
 
-		attached := a.attachExistingSessionRuntime(tab, sessionPath, a.ctx)
+		detachSource := controllerHasActiveRuntimeWork(source.ctrl)
+		oldCtrl, oldSink, oldLease, attached := a.reattachDetachedSessionRuntimeForRebind(
+			tab, source, sessionPath, detachSource,
+		)
 		if !attached {
-			if oldLease != nil {
-				tab.adoptSessionLease(oldLease)
-			}
 			tab.turnStartMu.Unlock()
 			a.runtimeAdmissionMu.Unlock()
 			return fmt.Errorf("failed to reattach detached session runtime")
@@ -4040,6 +4037,75 @@ func (a *App) rebindTabToLoadedSessionPath(tab *WorkspaceTab, sessionPath string
 	a.notifyTabRuntimeRebuiltAtEpoch(tab, newEpoch)
 	a.emitReady(a.ctx, tab.ID)
 	return nil
+}
+
+// reattachDetachedSessionRuntimeForRebind atomically replaces tab with the
+// already-running detached target. If the visible source is still active, its
+// controller, sink, lease, and runtime registry entry move to detachedSessions
+// in the same App.mu transaction; an idle source is returned for off-lock
+// teardown. The caller must hold runtimeRebuildMu, runtimeAdmissionMu, and
+// tab.turnStartMu so detachSource cannot become stale through new turn admission.
+func (a *App) reattachDetachedSessionRuntimeForRebind(
+	tab *WorkspaceTab,
+	source tabRuntimeSnapshot,
+	sessionPath string,
+	detachSource bool,
+) (control.SessionAPI, *tabEventSink, *agent.SessionLease, bool) {
+	key := sessionRuntimeKey(sessionPath)
+	if tab == nil || key == "" {
+		return nil, nil, nil, false
+	}
+
+	a.mu.Lock()
+	if tab.removed || a.tabs[tab.ID] != tab || tab.Ctrl != source.ctrl {
+		a.mu.Unlock()
+		return nil, nil, nil, false
+	}
+	detached := a.detachedSessions[key]
+	if detached == nil || detached.Ctrl == nil {
+		a.mu.Unlock()
+		return nil, nil, nil, false
+	}
+	if rt := a.runtimeForTabLocked(detached); rt != nil {
+		if rt.Phase != sessionRuntimeReady {
+			a.mu.Unlock()
+			return nil, nil, nil, false
+		}
+	} else if !detached.Ready {
+		// Compatibility for detached runtimes created before the process-local
+		// registry existed.
+		a.mu.Unlock()
+		return nil, nil, nil, false
+	}
+
+	oldCtrl := tab.Ctrl
+	oldSink := tab.sink
+	var oldLease *agent.SessionLease
+	if detachSource {
+		if !a.detachRuntimeForReplacementLocked(tab) {
+			a.mu.Unlock()
+			return nil, nil, nil, false
+		}
+		// Ownership moved to the detached clone. Nothing from the source may be
+		// closed or released after the target becomes visible.
+		oldCtrl = nil
+		oldSink = nil
+	} else {
+		// Prevent applyRuntimeTab from releasing the source lease under App.mu;
+		// teardown remains outside the app lock as on the normal rebuild path.
+		oldLease = tab.takeSessionLease()
+	}
+
+	delete(a.detachedSessions, key)
+	applyRuntimeTab(tab, detached, sessionPath, a.ctx, a)
+	a.saveTabsLocked()
+	attachedCtrl := tab.Ctrl
+	a.mu.Unlock()
+
+	if attachedCtrl != nil {
+		attachedCtrl.ReplayPendingPrompts()
+	}
+	return oldCtrl, oldSink, oldLease, true
 }
 
 type sessionRebindCandidate struct {
