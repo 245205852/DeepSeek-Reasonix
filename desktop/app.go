@@ -3854,7 +3854,7 @@ func (a *App) rebindTabToLoadedSessionPath(tab *WorkspaceTab, sessionPath string
 		a.mu.Unlock()
 
 		detachSource := controllerHasActiveRuntimeWork(source.ctrl)
-		oldCtrl, oldSink, oldLease, attached := a.reattachDetachedSessionRuntimeForRebind(
+		oldCtrl, oldSink, oldLease, oldHostKey, attached := a.reattachDetachedSessionRuntimeForRebind(
 			tab, source, sessionPath, detachSource,
 		)
 		if !attached {
@@ -3869,6 +3869,9 @@ func (a *App) rebindTabToLoadedSessionPath(tab *WorkspaceTab, sessionPath string
 		}
 		if oldCtrl != nil {
 			oldCtrl.Close()
+		}
+		if oldHostKey != "" {
+			a.releaseSharedHost(oldHostKey)
 		}
 		if oldLease != nil {
 			oldLease.Release()
@@ -4050,50 +4053,53 @@ func (a *App) reattachDetachedSessionRuntimeForRebind(
 	source tabRuntimeSnapshot,
 	sessionPath string,
 	detachSource bool,
-) (control.SessionAPI, *tabEventSink, *agent.SessionLease, bool) {
+) (control.SessionAPI, *tabEventSink, *agent.SessionLease, string, bool) {
 	key := sessionRuntimeKey(sessionPath)
 	if tab == nil || key == "" {
-		return nil, nil, nil, false
+		return nil, nil, nil, "", false
 	}
 
 	a.mu.Lock()
 	if tab.removed || a.tabs[tab.ID] != tab || tab.Ctrl != source.ctrl {
 		a.mu.Unlock()
-		return nil, nil, nil, false
+		return nil, nil, nil, "", false
 	}
 	detached := a.detachedSessions[key]
 	if detached == nil || detached.Ctrl == nil {
 		a.mu.Unlock()
-		return nil, nil, nil, false
+		return nil, nil, nil, "", false
 	}
 	if rt := a.runtimeForTabLocked(detached); rt != nil {
 		if rt.Phase != sessionRuntimeReady {
 			a.mu.Unlock()
-			return nil, nil, nil, false
+			return nil, nil, nil, "", false
 		}
 	} else if !detached.Ready {
 		// Compatibility for detached runtimes created before the process-local
 		// registry existed.
 		a.mu.Unlock()
-		return nil, nil, nil, false
+		return nil, nil, nil, "", false
 	}
 
 	oldCtrl := tab.Ctrl
 	oldSink := tab.sink
 	var oldLease *agent.SessionLease
+	oldHostKey := ""
 	if detachSource {
 		if !a.detachRuntimeForReplacementLocked(tab) {
 			a.mu.Unlock()
-			return nil, nil, nil, false
+			return nil, nil, nil, "", false
 		}
 		// Ownership moved to the detached clone. Nothing from the source may be
 		// closed or released after the target becomes visible.
 		oldCtrl = nil
 		oldSink = nil
 	} else {
-		// Prevent applyRuntimeTab from releasing the source lease under App.mu;
-		// teardown remains outside the app lock as on the normal rebuild path.
+		// Prevent applyRuntimeTab from overwriting resources owned by the idle
+		// source. Teardown remains outside the app lock as on the normal rebuild
+		// path; the detached target already owns a separate shared-host ref.
 		oldLease = tab.takeSessionLease()
+		oldHostKey = takeTabSharedHostKey(tab)
 	}
 
 	delete(a.detachedSessions, key)
@@ -4105,7 +4111,7 @@ func (a *App) reattachDetachedSessionRuntimeForRebind(
 	if attachedCtrl != nil {
 		attachedCtrl.ReplayPendingPrompts()
 	}
-	return oldCtrl, oldSink, oldLease, true
+	return oldCtrl, oldSink, oldLease, oldHostKey, true
 }
 
 type sessionRebindCandidate struct {

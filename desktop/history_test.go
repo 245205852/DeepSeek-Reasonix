@@ -1295,6 +1295,98 @@ func TestRebindTabToDetachedSessionPreservesRunningSourceRuntime(t *testing.T) {
 	waitNotRunning(t, sourceCtrl)
 }
 
+func TestRebindTabToDetachedSessionReleasesIdleSourceSharedHost(t *testing.T) {
+	isolateDesktopUserDirs(t)
+	root := globalTabWorkspaceRoot()
+	dir := desktopSessionDir(root)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("mkdir session dir: %v", err)
+	}
+
+	sourcePath := filepath.Join(dir, "idle-source.jsonl")
+	targetPath := filepath.Join(dir, "detached-target.jsonl")
+	writeHistoryTestSession(t, sourcePath, "source prompt")
+	writeHistoryTestSession(t, targetPath, "target prompt")
+	loaded, err := agent.LoadSession(targetPath)
+	if err != nil {
+		t.Fatalf("load target: %v", err)
+	}
+
+	app := NewApp()
+	app.ctx = context.Background()
+	app.readyHook = func() {}
+	hostKey := root
+	sharedHost := app.acquireSharedHost(hostKey)
+	if got := app.acquireSharedHost(hostKey); got != sharedHost {
+		t.Fatal("source and detached target did not share one plugin host")
+	}
+
+	sourceSink := &tabEventSink{tabID: "visible", app: app, ctx: app.ctx}
+	targetSink := &tabEventSink{tabID: "detached", app: app}
+	installNoopRuntimeEvents(app, sourceSink, targetSink)
+	sourceCtrl := control.New(control.Options{
+		SessionDir: dir, SessionPath: sourcePath, Label: "source",
+		Sink: sourceSink, Host: sharedHost,
+	})
+	targetCtrl := control.New(control.Options{
+		SessionDir: dir, SessionPath: targetPath, Label: "target",
+		Sink: targetSink, Host: sharedHost,
+	})
+	tab := &WorkspaceTab{
+		ID: "visible", Scope: "global", WorkspaceRoot: root,
+		SessionPath: sourcePath, Ctrl: sourceCtrl, Ready: true, sink: sourceSink,
+		SharedHostKey: hostKey, disabledMCP: map[string]ServerView{},
+	}
+	app.tabs[tab.ID] = tab
+	app.tabOrder = []string{tab.ID}
+	app.activeTabID = tab.ID
+	if err := tab.ensureSessionLease(sourcePath); err != nil {
+		t.Fatalf("lease source: %v", err)
+	}
+	app.mu.Lock()
+	app.newSessionRuntimeLocked(tab, sessionRuntimeKey(sourcePath))
+	app.advanceSessionRuntimeEpochLocked(tab)
+	app.mu.Unlock()
+
+	targetLease, err := agent.TryAcquireSessionLease(targetPath)
+	if err != nil {
+		t.Fatalf("lease target: %v", err)
+	}
+	detachedTarget := &WorkspaceTab{
+		ID: detachedRuntimeTabID(sessionRuntimeKey(targetPath)), Scope: "global",
+		WorkspaceRoot: root, SessionPath: targetPath, Ctrl: targetCtrl,
+		Ready: true, sink: targetSink, SharedHostKey: hostKey,
+		disabledMCP: map[string]ServerView{},
+	}
+	detachedTarget.adoptSessionLease(targetLease)
+	app.mu.Lock()
+	app.detachedSessions[sessionRuntimeKey(targetPath)] = detachedTarget
+	app.newSessionRuntimeLocked(detachedTarget, sessionRuntimeKey(targetPath))
+	app.advanceSessionRuntimeEpochLocked(detachedTarget)
+	app.mu.Unlock()
+	t.Cleanup(func() {
+		sourceCtrl.Close()
+		targetCtrl.Close()
+		tab.releaseSessionLease()
+		detachedTarget.releaseSessionLease()
+		app.closeAllSharedHosts()
+	})
+
+	if refs, ok := sharedHostRefsForTest(t, app, hostKey); !ok || refs != 2 {
+		t.Fatalf("shared host refs before reattach = %d, present=%v, want 2/true", refs, ok)
+	}
+	if err := app.rebindTabToLoadedSessionPath(tab, targetPath, loaded); err != nil {
+		t.Fatalf("reattach target: %v", err)
+	}
+	if tab.Ctrl != targetCtrl || tab.SharedHostKey != hostKey {
+		t.Fatalf("visible target runtime = ctrl %p host %q, want %p/%q",
+			tab.Ctrl, tab.SharedHostKey, targetCtrl, hostKey)
+	}
+	if refs, ok := sharedHostRefsForTest(t, app, hostKey); !ok || refs != 1 {
+		t.Fatalf("shared host refs after reattach = %d, present=%v, want 1/true", refs, ok)
+	}
+}
+
 func newAtomicRebindTestApp(t *testing.T) (*App, *WorkspaceTab, control.SessionAPI, string, string, *agent.Session) {
 	t.Helper()
 	isolateDesktopUserDirs(t)
