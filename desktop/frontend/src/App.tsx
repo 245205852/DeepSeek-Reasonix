@@ -3841,6 +3841,7 @@ export default function App() {
           sidebarWorkbench ? "layout--workbench" : "",
           workbenchChromeHidden ? "layout--workbench-chrome-hidden" : "",
           sidebarCreation ? "layout--creation-chrome-hidden" : "",
+          sidebarImDetailConnection ? "layout--statusbar-hidden" : "",
           sidebarCollapsed ? "layout--sidebar-collapsed" : "",
           sidebarResizing ? "layout--resizing layout--sidebar-resizing" : "",
           workspacePanelGridOpen ? "layout--workspace-open" : "",
@@ -4565,37 +4566,6 @@ export default function App() {
               balance={state.balance}
             />
             </div>
-            <StatusBar
-              context={state.context}
-              usage={state.usage}
-              balance={state.balance}
-              running={state.running || rewindCommitting}
-              sessionTurns={sessionTurns}
-              sessionTokens={state.sessionTokens}
-              turnTokens={state.turnTotalTokens}
-              turnCost={state.turnCost}
-              cost={state.sessionCost}
-              currency={state.sessionCurrency}
-              modelLabel={state.meta?.label}
-              labelStyle={statusBarStyle}
-              items={statusBarItems}
-	              workspacePath={state.meta?.workspacePath || state.meta?.workspaceRoot || state.meta?.cwd}
-	              workspaceName={state.meta?.workspaceName}
-	              gitBranch={state.meta?.gitBranch}
-              onConnectRemote={connectAndOpenRemoteWorkspace}
-              onDisconnectRemote={(hostId) => void app.DisconnectRemoteHost(hostId).catch(() => {})}
-              onManageRemote={() => setSettingsTarget("remote")}
-              onOpenRemote={requestRemoteExplorer}
-              onOpenRemoteWorkspace={openRemoteWorkspaceFromStatus}
-              remoteHosts={remoteHosts}
-              remoteStatuses={remoteStatuses}
-              workbenchTarget={workbenchTarget}
-              onSwitchLocal={() => {
-                void app.WorkbenchSwitchLocal()
-                  .then(setWorkbenchTarget)
-                  .catch((err) => showToast(err instanceof Error ? err.message : String(err), "error"));
-              }}
-            />
           </footer>
           )}
           </>
@@ -4744,6 +4714,41 @@ export default function App() {
             </div>
           </aside>
         )}
+
+        {!sidebarImDetailConnection && (
+          <StatusBar
+            context={state.context}
+            usage={state.usage}
+            balance={state.balance}
+            running={state.running || rewindCommitting}
+            sessionTurns={sessionTurns}
+            sessionTokens={state.sessionTokens}
+            turnTokens={state.turnTotalTokens}
+            turnCost={state.turnCost}
+            cost={state.sessionCost}
+            currency={state.sessionCurrency}
+            modelLabel={state.meta?.label}
+            labelStyle={statusBarStyle}
+            items={statusBarItems}
+            workspacePath={state.meta?.workspacePath || state.meta?.workspaceRoot || state.meta?.cwd}
+            workspaceName={state.meta?.workspaceName}
+            gitBranch={state.meta?.gitBranch}
+            onConnectRemote={connectAndOpenRemoteWorkspace}
+            onDisconnectRemote={(hostId) => void app.DisconnectRemoteHost(hostId).catch(() => {})}
+            onManageRemote={() => setSettingsTarget("remote")}
+            onOpenRemote={requestRemoteExplorer}
+            onOpenRemoteWorkspace={openRemoteWorkspaceFromStatus}
+            remoteHosts={remoteHosts}
+            remoteStatuses={remoteStatuses}
+            workbenchTarget={workbenchTarget}
+            onSwitchLocal={() => {
+              void app.WorkbenchSwitchLocal()
+                .then(setWorkbenchTarget)
+                .catch((err) => showToast(err instanceof Error ? err.message : String(err), "error"));
+            }}
+          />
+        )}
+
       </div>
 
       {histView !== null && (
