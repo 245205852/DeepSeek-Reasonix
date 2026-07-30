@@ -95,11 +95,12 @@ type goalMachineSnapshot struct {
 // goalAdvanceInput carries everything the FSM needs for one continuation step,
 // gathered by the caller off the machine's lock.
 type goalAdvanceInput struct {
-	status     string // parsed marker status ("" when the turn carried no marker)
-	reason     string // blocked reason from the marker, if any
-	toolCalled bool   // whether the last turn made any tool call
-	todos      []evidence.TodoItem
-	readiness  string // executor.GoalReadinessFailure()
+	status        string // parsed marker status ("" when the turn carried no marker)
+	reason        string // blocked reason from the marker, if any
+	toolCalled    bool   // whether the last turn made any tool call
+	todos         []evidence.TodoItem
+	readiness     string  // executor.GoalReadinessFailure()
+	expectedEpoch *uint64 // owning turn's lifecycle; nil for direct FSM calls
 }
 
 // goalAdvanceResult reports the FSM step's outcome. data/path/ok describe the
@@ -181,6 +182,15 @@ func (g *goalMachine) currentAutoResearchTaskID() string {
 		return ""
 	}
 	return g.autoResearchTaskID
+}
+
+// continuationToken captures the Goal lifecycle that owns an outgoing turn.
+// The matching assistant output may advance the FSM only while this epoch is
+// still current.
+func (g *goalMachine) continuationToken() uint64 {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return g.continuationEpoch
 }
 
 func (g *goalMachine) deliveryScope() (id, task string, ok bool) {
@@ -347,6 +357,9 @@ func (g *goalMachine) admitContinuation(res goalAdvanceResult) (goalContinuation
 func (g *goalMachine) advance(in goalAdvanceInput) goalAdvanceResult {
 	g.mu.Lock()
 	defer g.mu.Unlock()
+	if in.expectedEpoch != nil && *in.expectedEpoch != g.continuationEpoch {
+		return goalAdvanceResult{cont: false}
+	}
 	if strings.TrimSpace(g.goal) == "" || g.status != GoalStatusRunning {
 		return goalAdvanceResult{cont: false}
 	}

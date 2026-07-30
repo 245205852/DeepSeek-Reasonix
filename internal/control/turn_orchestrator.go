@@ -83,13 +83,14 @@ func (o *turnOrchestrator) runSubagentSkillGoalLoop(ctx context.Context, sk skil
 }
 
 func (o *turnOrchestrator) runSubagentSkillTurnsGoalLoop(ctx context.Context, skills []skill.Skill, task, raw, display string, runner skill.SubagentRunner, planMode bool) error {
+	expectedContinuationEpoch := o.c.goals.continuationToken()
 	if err := o.runSubagentSkillTurns(ctx, skills, task, raw, display, runner, planMode); err != nil {
 		if ctx.Err() != nil {
 			o.c.stopGoal(GoalStatusStopped)
 		}
 		return err
 	}
-	return o.continueGoal(ctx)
+	return o.continueGoal(ctx, expectedContinuationEpoch)
 }
 
 // runSubagentSkillTurns records the composed user task and distilled child
@@ -346,6 +347,7 @@ func (o *turnOrchestrator) runOrchestratedTurn(ctx context.Context, turn orchest
 }
 
 func (o *turnOrchestrator) runGoalLoopWithRawDisplay(ctx context.Context, input, raw, display string) error {
+	expectedContinuationEpoch := o.c.goals.continuationToken()
 	if err := o.runTurnWithRawDisplay(ctx, input, raw, display); err != nil {
 		if ctx.Err() != nil {
 			o.c.stopGoal(GoalStatusStopped)
@@ -354,10 +356,11 @@ func (o *turnOrchestrator) runGoalLoopWithRawDisplay(ctx context.Context, input,
 		}
 		return err
 	}
-	return o.continueGoal(ctx)
+	return o.continueGoal(ctx, expectedContinuationEpoch)
 }
 
 func (o *turnOrchestrator) runEditedGoalLoopWithRawDisplay(ctx context.Context, input, raw, display, original string) error {
+	expectedContinuationEpoch := o.c.goals.continuationToken()
 	if err := o.runEditedTurnWithRawDisplay(ctx, input, raw, display, original); err != nil {
 		if ctx.Err() != nil {
 			o.c.stopGoal(GoalStatusStopped)
@@ -366,7 +369,7 @@ func (o *turnOrchestrator) runEditedGoalLoopWithRawDisplay(ctx context.Context, 
 		}
 		return err
 	}
-	return o.continueGoal(ctx)
+	return o.continueGoal(ctx, expectedContinuationEpoch)
 }
 
 // goalShouldBlockOnError reports host pauses that permanently block a Goal
@@ -379,10 +382,10 @@ func goalShouldBlockOnError(err error) bool {
 	return errors.As(err, &readiness)
 }
 
-func (o *turnOrchestrator) continueGoal(ctx context.Context) error {
+func (o *turnOrchestrator) continueGoal(ctx context.Context, expectedContinuationEpoch uint64) error {
 	c := o.c
 	for {
-		res := o.advanceGoalAfterTurn()
+		res := o.advanceGoalAfterTurn(expectedContinuationEpoch)
 		if !res.cont {
 			return nil
 		}
@@ -413,10 +416,11 @@ func (o *turnOrchestrator) continueGoal(ctx context.Context) error {
 		if !admitted {
 			return nil
 		}
+		expectedContinuationEpoch = res.continuationEpoch
 	}
 }
 
-func (o *turnOrchestrator) advanceGoalAfterTurn() goalAdvanceResult {
+func (o *turnOrchestrator) advanceGoalAfterTurn(expectedContinuationEpoch uint64) goalAdvanceResult {
 	c := o.c
 	// Gather every input the FSM needs off the goal lock: parse the marker,
 	// snapshot the executor's todos + readiness, and check tool activity. None
@@ -435,11 +439,12 @@ func (o *turnOrchestrator) advanceGoalAfterTurn() goalAdvanceResult {
 		}
 	}
 	res := c.goals.advance(goalAdvanceInput{
-		status:     status,
-		reason:     reason,
-		toolCalled: c.toolWasCalledLastTurn(),
-		todos:      c.goalTodos(),
-		readiness:  readiness,
+		status:        status,
+		reason:        reason,
+		toolCalled:    c.toolWasCalledLastTurn(),
+		todos:         c.goalTodos(),
+		readiness:     readiness,
+		expectedEpoch: &expectedContinuationEpoch,
 	})
 	c.persistGoalState(res.path, res.data, res.ok)
 	if res.notice != "" {
