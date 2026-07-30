@@ -151,7 +151,17 @@ Reasonix 通过低频 compaction 保持 cache-first：
 
 tool result 的 snip/prune 不删除消息，确保 assistant `tool_calls` 与 tool result 配对。摘要只折叠 assistant/tool 工作；正常大小的用户回合和既有 digest 原样保留。被移除的原文归档到 `reasonix/archive/<timestamp>.jsonl`。
 
-`history` tool 支持对 session 与归档进行 BM25 搜索；`memory` tool 用于检索自动记忆，`remember` 与 `forget` 负责写入和归档。智能体发起的记忆写操作每次都需要人工确认，不能由 YOLO、自动审查或子智能体代为批准。详细约定见 `SESSION_MEMORY_RETRIEVAL.md`。
+`history` tool 支持对 session 与归档进行 BM25 搜索；`memory` tool 用于检索自动记忆，
+`remember` 与 `forget` 负责写入和归档。每个真实用户回合前，Reasonix 会用原始用户消息执行
+有预算的 BM25 自动召回，把命中作为低权限 user-turn 后缀追加；泛化请求会被抑制，等价事实优先
+项目级版本，stale 内容会降权。这不会修改稳定 system prompt 或工具 schema。
+
+拥有当前项目 store 的父 controller（包括顶层 headless）只有在新事实有界、非敏感、纯创建，且明确属于 project/reference 时才能
+免确认保存。全局事实、偏好、feedback、更新、重复项、敏感/超长内容和所有 `forget` 仍需
+新鲜人工确认，Auto、YOLO、Guardian、permission hook 或子智能体都不能代为批准；子智能体和
+不拥有该作用域 controller 的 headless surface 会 fail closed。事实带有不变 ID、单调 revision、时间、type 与 scope；更新先快照旧版本，
+restore 与 archive recovery 会创建更高 revision，并拒绝路径逃逸、符号链接、冲突和覆盖。
+详细约定见 [`SESSION_MEMORY_RETRIEVAL.zh-CN.md`](SESSION_MEMORY_RETRIEVAL.zh-CN.md)。
 
 ### 3.7 权限
 
@@ -217,6 +227,9 @@ flag > ./reasonix.toml > 用户 config.toml > 内置默认值
 ```toml
 default_model = "deepseek"
 
+[cli]                          # 仅用户全局生效，项目 reasonix.toml 不能覆盖
+update_channel = "stable"      # stable|preview；缺失或未知值回退到 stable
+
 [agent]
 temperature = 0.0
 reasoning_language = "auto"
@@ -248,6 +261,10 @@ allow = ["Bash(go test:*)", "Bash(git status:*)"]
 [serve]
 auth_mode = "none"
 ```
+
+原生 CLI 更新渠道保存在用户配置中。`reasonix upgrade` 跟随已保存渠道，
+`reasonix upgrade stable|preview` 会切换渠道并更新同一个已安装二进制文件。高级参数
+`--channel` 只供自动化做单次覆盖，不改变保存值。
 
 `[sandbox]` 是权限策略之下的强制执行层。file writer 默认限制在 workspace root、Reasonix 用户配置目录和 `allow_write`；`forbid_read` 可阻止读取敏感路径。macOS 使用 Seatbelt，Linux 使用 bubblewrap；若声明 enforce 但平台 backend 不可用，Bash 应拒绝执行而不是静默降级。Windows 当前没有 OS 级 Bash sandbox，file tool 的路径限制仍然生效。
 

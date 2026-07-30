@@ -38,6 +38,32 @@ reasonix --dir /path/to/project
 
 适用时，参数可以放在 prompt 前面或后面。
 
+## 更新原生 CLI
+
+```sh
+reasonix upgrade                  # 按已保存渠道更新（初始为正式版）
+reasonix upgrade preview          # 切换到预览版、记住选择并更新
+reasonix upgrade stable           # 切回正式版、记住选择并更新
+```
+
+所选渠道是用户全局设置，保存在 Reasonix 用户配置的 `[cli].update_channel` 中。全新
+或旧版配置默认使用 Stable，项目内的 `reasonix.toml` 不能覆盖这个选择。Stable 与
+Preview 会替换同一个原生 CLI 二进制文件，不会并行安装。
+
+Preview 只接受受保护的 `vX.Y.Z-preview.N` 发布；内部 RC 不属于任何公开渠道。
+切换渠道时允许安装版本号更低的目标，这样较新的 Preview 才能返回当前 Stable。
+
+自动化脚本仍可使用 `--channel stable|preview` 做一次性覆盖，不改变已保存渠道：
+
+```sh
+reasonix upgrade preview --check          # 保存 Preview，只检查目标版本
+reasonix upgrade --channel preview        # 脚本单次升级到 Preview
+reasonix upgrade --channel stable --force # 单次重装 Stable
+```
+
+`--check` 只报告目标而不安装，`--force` 重新安装目标渠道的当前版本。别名
+`reasonix update` 的行为完全相同。
+
 ## 配置供应商
 
 ```sh
@@ -244,7 +270,8 @@ reasonix --allowed-tools "Bash(go test ./...)" --allowed-tools read_file
 `ask`、`manual`、`acceptEdits` 保留 run 自主性，放行普通审批决策；`auto` 仍自动批准
 普通 fallback，但对命中显式 ask 规则的命令改为拒绝，而不是无人值守地执行；`dontAsk`
 拒绝；`bypassPermissions` 执行一切，仅始终需要人工新鲜批准的工具（记忆、plan、沙箱
-逃逸、受管配置写入）除外。
+逃逸、受管配置写入）除外。在所有模式下，拥有当前项目 store 的顶层 controller 仍可创建
+有界、非敏感、create-only 的 project/reference 记忆；其他记忆变更在无人确认时仍会被拒绝。
 
 ## 附加目录
 
@@ -314,9 +341,30 @@ SSH 下远端进程无法读取本机剪贴板，请使用终端粘贴快捷键�
 | `/verbose` | 切换详细 reasoning 显示。 |
 | `/sandbox` | 查看沙盒状态。 |
 | `/goal` | 启动、查看或清除长周期 Goal。 |
-| `/mcp`、`/skills`、`/hooks`、`/memory` | 查看和管理扩展或记忆。 |
+| `/mcp`、`/skills`、`/hooks` | 查看和管理扩展。 |
+| `/remember <note>` | 把常驻 note 追加到项目指令文档；`# <note>` 是快捷方式。 |
+| `/memory [subcommand]` | 查看指令、记忆 provenance、召回、revision 与恢复。 |
 | `/rewind` | 把对话和/或代码恢复到更早的 turn。 |
 | `/tree`、`/branch`、`/switch` | 查看或切换会话分支。 |
 
 切换模型、effort 或工作模式会重建运行时，同时保留当前对话、会话级权限覆盖、附加目录
 访问权限和 session ownership。
+
+### 记忆诊断与恢复
+
+直接运行 `/memory` 会显示全部 project/global active facts，不会隐藏跨 scope 的同名条目。
+每条事实包含稳定 ID、revision、scope、type、freshness 和 description。斜杠补全会提供
+可用子命令、active ID/name，以及当前 store 拥有的 archive path。
+
+| 命令 | 用途 |
+| --- | --- |
+| `/memory instructions` | 显示解析后的指令 precedence、目录、imports 和 diagnostics。 |
+| `/memory recall` | 解释最近一次自动召回的 query、hits、score、原因、freshness 和预算。 |
+| `/memory revisions <id-or-name>` | 显示 active revision 与不可变历史。 |
+| `/memory restore <id-or-name> <revision>` | 把旧内容恢复为一个单调递增的新 revision。 |
+| `/memory archived` | 列出 archive facts 及其受管路径。 |
+| `/memory recover <archive-path>` | 不覆盖 active data，把 archive 恢复为新 revision。 |
+
+这些命令始终作用于当前 session controller。Remote Workbench 使用远程 memory catalog，
+绝不回退读取桌面本机记忆。权限、自动召回、写入确认和迁移行为见
+[Context Engine v2](./SESSION_MEMORY_RETRIEVAL.zh-CN.md)。

@@ -62,6 +62,7 @@ import type {
   MCPInstallResult,
   MCPMarketplaceView,
   MCPToolView,
+  MemoryFact,
   MemorySuggestion,
   MemorySuggestionsView,
   MemoryView,
@@ -89,6 +90,8 @@ import type {
   SlashArgsResult,
   SubagentProfileInput,
   TabMeta,
+  TerminalSessionView,
+  TerminalWorkspaceView,
   TopicMeta,
   ToolApprovalMode,
   UpdateDownloadResult,
@@ -162,6 +165,18 @@ export interface AppBindings {
   SubmitDisplayToTab(tabID: string, display: string, input: string): Promise<void>;
   SubmitDeliveryRecoveryToTab(tabID: string, display: string, input: string): Promise<void>;
   SubmitInvocationsToTab(tabID: string, display: string, input: string, invocations: InvocationRequest[]): Promise<void>;
+  SubmitInitialGoalToTab(
+    tabID: string,
+    goal: string,
+    display: string,
+    input: string,
+    invocations: InvocationRequest[],
+    collaborationMode: string,
+    toolApprovalMode: string,
+    targetKind: string,
+    targetIdentityGen: number,
+    targetRequestSeq: number,
+  ): Promise<string[]>;
   SubmitEditedDisplayToTab(tabID: string, display: string, input: string, original: string): Promise<void>;
   RunShell(command: string): Promise<void>;
   RunShellForTab(tabID: string, command: string): Promise<void>;
@@ -192,6 +207,9 @@ export interface AppBindings {
   SetToolApprovalMode(mode: string): Promise<void>;
   // Same drained-prompt-id contract as SetModeForTab.
   SetToolApprovalModeForTab(tabID: string, mode: string): Promise<string[] | void>;
+  // Atomically applies the controller-facing composer profile and reports any
+  // approval prompts drained by the resulting tool-approval posture.
+  SetComposerProfileForTab(tabID: string, collaborationMode: string, toolApprovalMode: string, goal: string): Promise<string[] | void>;
   SetGoal(goal: string): Promise<void>;
   SetGoalForTab(tabID: string, goal: string): Promise<void>;
   ResumeGoalForTab(tabID: string): Promise<boolean>;
@@ -336,6 +354,10 @@ export interface AppBindings {
   AcceptMemorySuggestion(suggestion: MemorySuggestion): Promise<string>;
   AcceptSkillSuggestion(suggestion: SkillSuggestion): Promise<string>;
   MemoryForTab(tabID: string): Promise<MemoryView>;
+  MemoryRevisions(ref: string): Promise<MemoryFact[]>;
+  MemoryRevisionsForTab(tabID: string, ref: string): Promise<MemoryFact[]>;
+  RestoreMemoryRevision(ref: string, revision: number): Promise<MemoryFact>;
+  RestoreMemoryRevisionForTab(tabID: string, ref: string, revision: number): Promise<MemoryFact>;
   MemorySuggestionsForTab(tabID: string): Promise<MemorySuggestionsView>;
   AcceptMemorySuggestionForTab(tabID: string, suggestion: MemorySuggestion): Promise<string>;
   AcceptSkillSuggestionForTab(tabID: string, suggestion: SkillSuggestion): Promise<string>;
@@ -343,6 +365,8 @@ export interface AppBindings {
   RememberForTab(tabID: string, scope: string, note: string): Promise<string>;
   Forget(name: string): Promise<void>;
   ForgetForTab(tabID: string, name: string): Promise<void>;
+  RestoreArchivedMemory(archivePath: string): Promise<MemoryFact>;
+  RestoreArchivedMemoryForTab(tabID: string, archivePath: string): Promise<MemoryFact>;
   SaveDoc(path: string, body: string): Promise<string>;
   SaveDocForTab(tabID: string, path: string, body: string): Promise<string>;
   DesktopStartupSettings(): Promise<DesktopStartupSettingsView>;
@@ -432,7 +456,9 @@ export interface AppBindings {
   Version(): Promise<string>;
   CheckUpdate(channel: string): Promise<UpdateInfo | null>;
   DownloadUpdate(channel: string): Promise<UpdateDownloadResult | null>;
+  DownloadUpdateRequest(channel: string, expectedVersion: string, requestId: string): Promise<UpdateDownloadResult | null>;
   InstallUpdate(channel: string): Promise<void>;
+  InstallUpdateRequest(channel: string, expectedVersion: string, requestId: string): Promise<void>;
   ApplyUpdate(): Promise<void>;
   OpenDownloadPage(): Promise<void>;
   NeedsOnboarding(): Promise<boolean>;
@@ -452,6 +478,13 @@ export interface AppBindings {
   SetActiveTab(tabID: string): Promise<void>;
   ReorderTabs(tabIDs: string[]): Promise<void>;
   CloseTab(tabID: string): Promise<void>;
+  TerminalWorkspaceForTab(tabID: string): Promise<TerminalWorkspaceView>;
+  TerminalOutputForTab(tabID: string, sessionID: string): Promise<string>;
+  CreateTerminalForTab(tabID: string, relativePath: string, shellID: string): Promise<TerminalSessionView>;
+  WriteTerminalForTab(tabID: string, sessionID: string, data: string): Promise<void>;
+  ResizeTerminalForTab(tabID: string, sessionID: string, cols: number, rows: number): Promise<void>;
+  CloseTerminalForTab(tabID: string, sessionID: string): Promise<void>;
+  RenameTerminalForTab(tabID: string, sessionID: string, title: string): Promise<void>;
   ListProjectTree(): Promise<ProjectNode[]>;
   RenameProject(workspaceRoot: string, title: string): Promise<void>;
   SetProjectColor(workspaceRoot: string, color: string): Promise<void>;
@@ -575,6 +608,55 @@ export function onEvent(cb: (e: WireEvent) => void): () => void {
     return window.runtime.EventsOn(EVENT_CHANNEL, (payload) => cb(payload as WireEvent));
   }
   return mockSubscribe(cb);
+}
+
+export interface TerminalOutputEvent {
+  id: string;
+  data: string;
+}
+
+export interface TerminalExitEvent {
+  id: string;
+  exitCode: number;
+  removed?: boolean;
+}
+
+function terminalEventPayload<T>(payload: unknown): T | null {
+  if (!payload || typeof payload !== "object") return null;
+  return payload as T;
+}
+
+export function onTerminalOutput(cb: (event: TerminalOutputEvent) => void): () => void {
+  if (realApp() && typeof window !== "undefined" && window.runtime) {
+    return window.runtime.EventsOn("terminal:output", (payload) => {
+      const event = terminalEventPayload<TerminalOutputEvent>(payload);
+      if (event?.id && typeof event.data === "string") cb(event);
+    });
+  }
+  mockTerminalOutputListeners.add(cb);
+  return () => mockTerminalOutputListeners.delete(cb);
+}
+
+export function onTerminalExit(cb: (event: TerminalExitEvent) => void): () => void {
+  if (realApp() && typeof window !== "undefined" && window.runtime) {
+    return window.runtime.EventsOn("terminal:exit", (payload) => {
+      const event = terminalEventPayload<TerminalExitEvent>(payload);
+      if (event?.id && typeof event.exitCode === "number") cb(event);
+    });
+  }
+  mockTerminalExitListeners.add(cb);
+  return () => mockTerminalExitListeners.delete(cb);
+}
+
+const mockTerminalOutputListeners = new Set<(event: TerminalOutputEvent) => void>();
+const mockTerminalExitListeners = new Set<(event: TerminalExitEvent) => void>();
+
+export function __emitMockTerminalOutput(event: TerminalOutputEvent): void {
+  mockTerminalOutputListeners.forEach((listener) => listener(event));
+}
+
+export function __emitMockTerminalExit(event: TerminalExitEvent): void {
+  mockTerminalExitListeners.forEach((listener) => listener(event));
 }
 
 // onUpdaterProgress subscribes to the auto-updater's progress events (a separate
@@ -809,7 +891,7 @@ function bridgeBreadcrumb(method: string): string {
     return `settings ${method}`;
   if (/^(SaveProvider|AddOfficialProviderAccess|AddProviderPresetAccess|ResetProviderPresetAccess|RemoveProviderAccess|DeleteProvider|SaveProviderKey|SetProviderKey|ClearProviderKey|FetchProviderModels|ConnectKey)/.test(method))
     return `provider ${method}`;
-  if (/^(CheckUpdate|DownloadUpdate|InstallUpdate|ApplyUpdate|OpenDownloadPage)/.test(method)) return `update ${method}`;
+  if (/^(CheckUpdate|DownloadUpdate|DownloadUpdateRequest|InstallUpdate|InstallUpdateRequest|ApplyUpdate|OpenDownloadPage)/.test(method)) return `update ${method}`;
   if (/^(AddMCPServer|InstallMCPServer|UpdateMCPServer|RemoveMCPServer|AuthorizeAndConnectMCPServer|ReconnectMCPServer|ClearMCPServerAuthentication|SetMCPServer)/.test(method))
     return `mcp ${method}`;
   if (/^(AddSkillPath|RemoveSkillPath|RefreshSkills|SetSkillEnabled|AcceptSkillSuggestion|AvailableSubagentTools|CreateSubagentProfile|UpdateSubagentProfile|DeleteSubagentProfile|SetSubagentProfileModel|SetSubagentProfileEffort|TrySubagentProfile|CancelTrySubagentProfile)/.test(method))
@@ -1561,7 +1643,7 @@ function makeMockApp(): AppBindings {
     provider.apiKeyEnv === "DEEPSEEK_API_KEY" ? { ...provider, keySet: !freshMock } : provider,
   );
   if (freshMock) {
-    settings.configPath = "~/.config/reasonix/config.toml";
+    settings.configPath = "~/.reasonix/config.toml";
   }
   const mockNow = Date.now();
   const mockProjectTree: ProjectNode[] = freshMock ? [] : [
@@ -2029,6 +2111,13 @@ function makeMockApp(): AppBindings {
   };
   const mockModelLabel = (ref: string): string => mockModelCatalog.find((model) => model.ref === mockModelRef(ref))?.model ?? ref.split("/").pop() ?? ref;
   const mockTabModelRef = (tab?: TabMeta): string => mockModelRef(tab?.label ?? "");
+  let mockTerminalSessions: TerminalSessionView[] = [];
+  const mockTerminalOutput = new Map<string, string>();
+  const mockTerminalTabIDs = new Map<string, string>();
+  const mockTerminalBytes = (text: string): string => {
+    if (typeof btoa === "function") return btoa(unescape(encodeURIComponent(text)));
+    return "";
+  };
   const setMockTabModel = (tabID: string | undefined, name: string) => {
     const ref = mockModelRef(name);
     const label = mockModelLabel(ref);
@@ -2418,6 +2507,28 @@ function makeMockApp(): AppBindings {
         async SubmitInvocationsToTab(_tabID, display, input, _invocations) {
           await withMockTabScope(_tabID, () => this.SubmitDisplay(display, input));
         },
+        async SubmitInitialGoalToTab(
+          _tabID,
+          goal,
+          display,
+          input,
+          invocations,
+          _collaborationMode,
+          _toolApprovalMode,
+          _targetKind,
+          _targetIdentityGen,
+          _targetRequestSeq,
+        ) {
+          return await withMockTabScope(_tabID, async () => {
+            await this.SetGoalForTab(_tabID, goal);
+            if (invocations.length > 0) {
+              await this.SubmitInvocationsToTab(_tabID, display, input, invocations);
+              return [];
+            }
+            await this.SubmitDisplayToTab(_tabID, display, input);
+            return [];
+          });
+        },
         async SubmitEditedDisplayToTab(_tabID, display, input, _original) {
           await withMockTabScope(_tabID, () => this.SubmitDisplay(display, input));
         },
@@ -2565,6 +2676,26 @@ function makeMockApp(): AppBindings {
               : tab,
           );
           return drainMockApprovalPreviews(next);
+        },
+        async SetComposerProfileForTab(tabID, collaborationMode, toolApprovalMode, goal) {
+          const nextCollaboration = normalizeCollaborationMode(collaborationMode);
+          const nextToolApproval = normalizeToolApprovalMode(toolApprovalMode);
+          const nextGoal = goal.trim();
+          settings.autoApproveTools = nextToolApproval === "yolo";
+          settings.bypass = nextToolApproval === "yolo";
+          mockTabs = mockTabs.map((tab) => {
+            if (tab.id !== tabID) return tab;
+            const plan = !nextGoal && nextCollaboration === "plan";
+            return {
+              ...tab,
+              collaborationMode: nextGoal ? "goal" : plan ? "plan" : "normal",
+              toolApprovalMode: nextToolApproval,
+              goal: nextGoal,
+              goalStatus: nextGoal ? "running" : "stopped",
+              mode: modeWithAutoApproveTools(modeWithPlan(normalizeMode(tab.mode), plan), nextToolApproval === "yolo"),
+            };
+          });
+          return drainMockApprovalPreviews(nextToolApproval);
         },
         async SetGoal(goal) {
           const active = mockTabs.find((tab) => tab.active);
@@ -3021,7 +3152,7 @@ function makeMockApp(): AppBindings {
           plugins: capPlugins.length,
           mcp_servers: capServers.length,
         },
-        instructions: { docs: [{ path: "<workspace>/AGENTS.md", scope: "project", order: 1 }] },
+        instructions: { docs: [{ path: "<workspace>/AGENTS.md", scope: "project", directory: "<workspace>", depth: 0, order: 1 }] },
         skills: {
           roots: [{ path: "<workspace>/.reasonix/skills", scope: "project", status: "ok" }],
           entries: capSkills.map((s) => ({
@@ -3598,26 +3729,38 @@ function makeMockApp(): AppBindings {
     async Memory() {
       return {
         available: true,
-        storeDir: "~/.config/reasonix/projects/-mock/memory",
-        storeGlobalDir: "~/.config/reasonix/memory/global",
+        storeDir: "~/.reasonix/projects/-mock/memory",
+        storeGlobalDir: "~/.reasonix/memory/global",
         docs: [
           {
             path: "REASONIX.md",
             scope: "project",
+            directory: ".",
             body: "# Reasonix project memory\n\nMock doc shown in the browser dev seam.\n\n## Notes\n\n- prefers concise replies",
+            imports: [],
+            depth: 0,
+            order: 0,
+            precedence: 0,
           },
           {
-            path: "~/.config/reasonix/REASONIX.md",
+            path: "~/.reasonix/REASONIX.md",
             scope: "user",
             body: t("mock.memoryBody"),
+            imports: [],
+            depth: -1,
+            order: 1,
+            precedence: 1,
           },
         ],
+        instructionDiagnostics: [],
         facts: [
           {
             name: "prefers-tabs",
             description: "User prefers tabs",
             type: "user",
+            scope: "project",
             body: "Indent with tabs.",
+            freshness: "fresh",
           },
         ],
         archives: [
@@ -3625,16 +3768,27 @@ function makeMockApp(): AppBindings {
             name: "old-plan",
             description: "Superseded planning note",
             type: "project",
+            scope: "project",
             body: "This plan was archived after the implementation changed.",
-            path: "~/.config/reasonix/projects/-mock/memory/.archive/20260612-021500.000-old-plan.md",
+            path: "~/.reasonix/projects/-mock/memory/.archive/20260612-021500.000-old-plan.md",
             archivedAt: "2026-06-12T02:15:00Z",
+            freshness: "current",
           },
         ],
         scopes: [
-          { scope: "user", path: "~/.config/reasonix/REASONIX.md" },
+          { scope: "user", path: "~/.reasonix/REASONIX.md" },
           { scope: "project", path: "REASONIX.md" },
           { scope: "local", path: "REASONIX.local.md" },
         ],
+        conflicts: [],
+        lastRecall: {
+          query: "",
+          hits: [],
+          omitted: 0,
+          charBudget: 2400,
+          usedChars: 0,
+          suppressed: "no user turn yet",
+        },
       };
     },
     async MemorySuggestions() {
@@ -3646,6 +3800,7 @@ function makeMockApp(): AppBindings {
             title: "Prefers concise replies",
             description: "User prefers concise replies unless detail is requested.",
             type: "user",
+            scope: "project",
             body: "User prefers concise replies unless detail is requested.\n\n**Why:** Suggested from recent local history.\n**How to apply:** Keep answers brief by default.",
             reason: "future-facing preference",
             evidence: ["mock-session: always keep replies concise"],
@@ -3687,6 +3842,28 @@ function makeMockApp(): AppBindings {
     async MemoryForTab(_tabID: string) {
       return this.Memory();
     },
+    async MemoryRevisions(_ref: string) {
+      return [];
+    },
+    async MemoryRevisionsForTab(_tabID: string, ref: string) {
+      return this.MemoryRevisions(ref);
+    },
+    async RestoreMemoryRevision(ref: string, revision: number) {
+      emit({ kind: "notice", level: "info", text: `restored revision → ${ref}@${revision}` });
+      return {
+        id: ref,
+        revision: revision + 1,
+        name: ref,
+        description: "Restored memory revision",
+        type: "project",
+        scope: "project",
+        body: "Restored guidance.",
+        freshness: "fresh",
+      };
+    },
+    async RestoreMemoryRevisionForTab(_tabID: string, ref: string, revision: number) {
+      return this.RestoreMemoryRevision(ref, revision);
+    },
     async Remember(_scope: string, _note: string) {
       emit({ kind: "notice", level: "info", text: `remembered → ${_scope}` });
       return `${_scope} REASONIX.md (mock): ${_note}`;
@@ -3699,6 +3876,22 @@ function makeMockApp(): AppBindings {
     },
     async ForgetForTab(_tabID: string, name: string) {
       return this.Forget(name);
+    },
+    async RestoreArchivedMemory(archivePath: string) {
+      emit({ kind: "notice", level: "info", text: `restored → ${archivePath}` });
+      return {
+        id: "mock-restored-memory",
+        revision: 2,
+        name: "restored-memory",
+        description: "Recovered archived memory",
+        type: "project",
+        scope: "project",
+        body: "Recovered guidance.",
+        freshness: "fresh",
+      };
+    },
+    async RestoreArchivedMemoryForTab(_tabID: string, archivePath: string) {
+      return this.RestoreArchivedMemory(archivePath);
     },
     async SaveDoc(_path: string, _body: string) {
       emit({ kind: "notice", level: "info", text: `saved → ${_path}` });
@@ -4195,7 +4388,7 @@ function makeMockApp(): AppBindings {
     },
     async CheckUpdate(channel: string) {
       // Keep the default browser preview focused on the primary product surface.
-      // DownloadUpdate/InstallUpdate remain mocked for explicit updater-flow tests.
+      // Updater methods remain mocked for explicit updater-flow tests.
       return {
         available: false,
         current: "v1.0.0",
@@ -4212,26 +4405,36 @@ function makeMockApp(): AppBindings {
       };
     },
     async DownloadUpdate(channel: string) {
+      const expectedVersion = channel === "preview" ? "v1.1.0-preview.1" : "v1.1.0";
+      return this.DownloadUpdateRequest(channel, expectedVersion, "mock-legacy-download");
+    },
+    async DownloadUpdateRequest(channel: string, expectedVersion: string, requestId: string) {
+      const selectedChannel = channel === "preview" ? "preview" : "stable";
       const total = 12_345_678;
       for (let r = 0; r <= total; r += 1_800_000) {
-        emitUpdater({ phase: "downloading", received: Math.min(r, total), total });
+        emitUpdater({ requestId, version: expectedVersion, channel: selectedChannel, phase: "downloading", received: Math.min(r, total), total });
         await delay(120);
       }
-      emitUpdater({ phase: "verifying", received: total, total });
+      emitUpdater({ requestId, version: expectedVersion, channel: selectedChannel, phase: "verifying", received: total, total });
       await delay(500);
-      emitUpdater({ phase: "downloaded", received: total, total });
-      return { version: "v1.1.0", channel: channel === "preview" ? "preview" : "stable", path: "/tmp/reasonix-update", size: total, sha256: "mock" };
+      emitUpdater({ requestId, version: expectedVersion, channel: selectedChannel, phase: "downloaded", received: total, total });
+      return { requestId, version: expectedVersion, channel: selectedChannel, path: "/tmp/reasonix-update", size: total, sha256: "mock" };
     },
-    async InstallUpdate(_channel: string) {
+    async InstallUpdate(channel: string) {
+      const expectedVersion = channel === "preview" ? "v1.1.0-preview.1" : "v1.1.0";
+      await this.InstallUpdateRequest(channel, expectedVersion, "mock-legacy-install");
+    },
+    async InstallUpdateRequest(channel: string, expectedVersion: string, requestId: string) {
+      const selectedChannel = channel === "preview" ? "preview" : "stable";
       const total = 12_345_678;
-      emitUpdater({ phase: "installing", received: total, total });
+      emitUpdater({ requestId, version: expectedVersion, channel: selectedChannel, phase: "installing", received: total, total });
       await delay(500);
-      emitUpdater({ phase: "done", received: total, total });
+      emitUpdater({ requestId, version: expectedVersion, channel: selectedChannel, phase: "done", received: total, total });
       // The real shell relaunches here; the mock just stops.
     },
     async ApplyUpdate() {
-      await this.DownloadUpdate("");
-      await this.InstallUpdate("");
+      await this.DownloadUpdateRequest("stable", "v1.1.0", "mock-apply-download");
+      await this.InstallUpdateRequest("stable", "v1.1.0", "mock-apply-install");
     },
     async OpenDownloadPage() {
       if (typeof window !== "undefined") {
@@ -4395,11 +4598,72 @@ function makeMockApp(): AppBindings {
     },
     async CloseTab(_tabID: string) {
       if (mockTabs.length <= 1) return;
+      const terminalIDs = mockTerminalSessions
+        .filter((session) => mockTerminalTabIDs.get(session.id) === _tabID)
+        .map((session) => session.id);
+      mockTerminalSessions = mockTerminalSessions.filter((session) => !terminalIDs.includes(session.id));
+      terminalIDs.forEach((id) => {
+        mockTerminalOutput.delete(id);
+        mockTerminalTabIDs.delete(id);
+        __emitMockTerminalExit({ id, exitCode: 0, removed: true });
+      });
       const wasActive = mockTabs.some((tab) => tab.id === _tabID && tab.active);
       mockTabs = mockTabs.filter((tab) => tab.id !== _tabID);
       if (wasActive && mockTabs.length > 0 && !mockTabs.some((tab) => tab.active)) {
         mockTabs[mockTabs.length - 1] = { ...mockTabs[mockTabs.length - 1], active: true };
       }
+    },
+    async TerminalWorkspaceForTab(tabID: string) {
+      const tab = mockTabs.find((candidate) => candidate.id === tabID) ?? mockTabs.find((candidate) => candidate.active);
+      const sessions = tab ? mockTerminalSessions.filter((session) => mockTerminalTabIDs.get(session.id) === tab.id) : [];
+      return {
+        available: true,
+        readOnly: Boolean(tab?.readOnly),
+        sessions: sessions.map((session) => ({ ...session })),
+        shells: [
+          { id: "default", label: "Default shell" },
+          { id: "bash", label: "bash" },
+          { id: "zsh", label: "zsh" },
+        ],
+      };
+    },
+    async TerminalOutputForTab(tabID: string, sessionID: string) {
+      if (mockTerminalTabIDs.get(sessionID) !== tabID) return "";
+      return mockTerminalOutput.get(sessionID) ?? "";
+    },
+    async CreateTerminalForTab(tabID: string, relativePath: string, shellID: string) {
+      const tab = mockTabs.find((candidate) => candidate.id === tabID) ?? mockTabs.find((candidate) => candidate.active);
+      if (tab?.readOnly) throw new Error("channel session is read-only");
+      const id = `term-mock-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+      const session: TerminalSessionView = {
+        id,
+        title: shellID || "Default shell",
+        shell: shellID || "default",
+        cwd: `${tab?.cwd || cwd}/${relativePath || "."}`.replace(/\/\.\/?$/, ""),
+        createdAt: Date.now(),
+        running: true,
+      };
+      mockTerminalSessions = [...mockTerminalSessions, session];
+      mockTerminalOutput.set(id, "Reasonix terminal ready\r\n");
+      mockTerminalTabIDs.set(id, tabID);
+      window.setTimeout(() => __emitMockTerminalOutput({ id, data: mockTerminalBytes("Reasonix terminal ready\r\n") }), 0);
+      return { ...session };
+    },
+    async WriteTerminalForTab(_tabID: string, sessionID: string, data: string) {
+      const session = mockTerminalSessions.find((candidate) => candidate.id === sessionID);
+      if (!session?.running) throw new Error("terminal session has exited");
+      mockTerminalOutput.set(sessionID, `${mockTerminalOutput.get(sessionID) ?? ""}${data}`);
+      window.setTimeout(() => __emitMockTerminalOutput({ id: sessionID, data: mockTerminalBytes(data) }), 0);
+    },
+    async ResizeTerminalForTab() {},
+    async CloseTerminalForTab(_tabID: string, sessionID: string) {
+      mockTerminalSessions = mockTerminalSessions.filter((session) => session.id !== sessionID);
+      mockTerminalOutput.delete(sessionID);
+      mockTerminalTabIDs.delete(sessionID);
+      __emitMockTerminalExit({ id: sessionID, exitCode: 0, removed: true });
+    },
+    async RenameTerminalForTab(_tabID: string, sessionID: string, title: string) {
+      mockTerminalSessions = mockTerminalSessions.map((session) => session.id === sessionID ? { ...session, title } : session);
     },
     async ListProjectTree() {
       return cloneProjectTree();

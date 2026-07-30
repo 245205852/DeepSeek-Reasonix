@@ -39,6 +39,38 @@ Running `reasonix` without a subcommand starts the interactive terminal UI. Use
 
 Flags may appear before or after the prompt where applicable.
 
+## Update the native CLI
+
+```sh
+reasonix upgrade                  # update on the saved channel (Stable initially)
+reasonix upgrade preview          # switch to Preview, remember it, and update
+reasonix upgrade stable           # switch back to Stable, remember it, and update
+```
+
+The selected channel is user-global and is stored as
+`[cli].update_channel` in the Reasonix user config. A fresh or older config
+defaults to Stable, and a project's `reasonix.toml` cannot override this choice.
+Stable and Preview replace the same native CLI binary; they are not installed
+side by side.
+
+Preview accepts only protected `vX.Y.Z-preview.N` releases; internal RCs are
+excluded from both public channels. Switching channels may install a
+numerically older target, which is required when returning from a newer Preview
+to the current Stable release.
+
+For automation, `--channel stable|preview` remains a one-off override and does
+not change the saved channel:
+
+```sh
+reasonix upgrade preview --check          # save Preview, only check its target
+reasonix upgrade --channel preview        # one-off Preview update for a script
+reasonix upgrade --channel stable --force # one-off Stable reinstall
+```
+
+`--check` reports the target without installing it, while `--force` reinstalls
+the target channel's current release. The `reasonix update` alias behaves the
+same way.
+
 ## Configure providers
 
 ```sh
@@ -266,7 +298,9 @@ autonomy and let ordinary approval decisions proceed; `auto` still auto-approves
 the normal fallback but denies a command that matches an explicit ask rule rather
 than running it unattended; `dontAsk` denies; and `bypassPermissions` runs
 everything except tools that always require fresh human approval (memory, plan,
-sandbox escape, managed config write).
+sandbox escape, managed config write). In every mode, the owning top-level
+controller may still create a bounded, non-sensitive, create-only project or
+reference memory; all other memory mutations remain denied without a human.
 
 ## Additional directories
 
@@ -349,10 +383,33 @@ the displayed list matches the commands the TUI accepts.
 | `/verbose` | Toggle expanded reasoning display. |
 | `/sandbox` | Inspect sandbox status. |
 | `/goal` | Start, inspect, or clear a long-running goal. |
-| `/mcp`, `/skills`, `/hooks`, `/memory` | Inspect and manage extensions or memory. |
+| `/mcp`, `/skills`, `/hooks` | Inspect and manage extensions. |
+| `/remember <note>` | Append a standing note to the project instruction document; `# <note>` is a shortcut. |
+| `/memory [subcommand]` | Inspect instructions, memory provenance, recall, revisions, and recovery. |
 | `/rewind` | Restore conversation and/or code to an earlier turn. |
 | `/tree`, `/branch`, `/switch` | Inspect or navigate conversation branches. |
 
 Switching model, effort, or work mode rebuilds the runtime while preserving the
 active conversation, session-scoped permission overrides, additional directory
 access, and session ownership.
+
+### Memory diagnostics and recovery
+
+Bare `/memory` shows all active project/global facts without hiding same-name
+entries. Facts include their stable ID, revision, scope, type, freshness, and
+description. Slash completion offers the available subcommands, active IDs and
+names, and owned archive paths.
+
+| Command | Purpose |
+| --- | --- |
+| `/memory instructions` | Show resolved instruction precedence, directories, imports, and diagnostics. |
+| `/memory recall` | Explain the latest automatic recall query, hits, scores, reasons, freshness, and budget. |
+| `/memory revisions <id-or-name>` | Show the active revision and immutable history. |
+| `/memory restore <id-or-name> <revision>` | Restore old content as a new monotonic revision. |
+| `/memory archived` | List archived facts and their owned paths. |
+| `/memory recover <archive-path>` | Recover an archive as a new revision without overwriting active data. |
+
+These commands run against the active session controller. In a Remote Workbench
+they use the remote memory catalog and never fall back to local desktop memory.
+See [Context Engine v2](./SESSION_MEMORY_RETRIEVAL.md) for authority, automatic
+recall, write confirmation, and migration behavior.

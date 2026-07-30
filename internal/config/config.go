@@ -14,7 +14,6 @@ import (
 	"runtime"
 	"strings"
 
-	"reasonix/internal/fileutil"
 	fileencoding "reasonix/internal/fileutil/encoding"
 	"reasonix/internal/netclient"
 	"reasonix/internal/provider"
@@ -44,6 +43,7 @@ type Config struct {
 	Language         string              `toml:"language"` // ui/model language tag (e.g. "zh"); empty = auto-detect from $LANG / $REASONIX_LANG
 	CredentialsStore string              `toml:"credentials_store"`
 	UI               UIConfig            `toml:"ui"`
+	CLI              CLIConfig           `toml:"cli"`
 	Desktop          DesktopConfig       `toml:"desktop"`
 	Telemetry        TelemetryConfig     `toml:"telemetry"`
 	Notifications    NotificationsConfig `toml:"notifications"`
@@ -72,6 +72,7 @@ type Config struct {
 	pluginPackageSkillOwners   map[string][]string
 	pluginPackageAgentOwners   map[string][]string
 	safeMode                   bool
+	editLoadErr                error
 }
 
 // TelemetryConfig controls content-free CLI usage metrics. It is user-global:
@@ -168,6 +169,13 @@ type UIConfig struct {
 	CloseBehavior  string `toml:"close_behavior"`  // legacy desktop close behavior; prefer desktop.close_behavior
 	ShowReasoning  bool   `toml:"show_reasoning"`  // Ctrl+O / /verbose: show thinking text in CLI; false = collapsed
 	CursorShape    string `toml:"cursor_shape"`    // block|underline|bar; empty defaults to bar
+}
+
+// CLIConfig controls user-global native CLI behavior. It is separate from
+// project runtime settings so a repository cannot change the installed
+// binary's update channel.
+type CLIConfig struct {
+	UpdateChannel string `toml:"update_channel"` // stable|preview; empty and unknown values resolve to stable
 }
 
 // DesktopConfig controls desktop-only UI preferences. It is intentionally
@@ -498,6 +506,23 @@ func (c *Config) DesktopCheckUpdates() bool {
 		return true
 	}
 	return *c.Desktop.CheckUpdates
+}
+
+// NormalizeCLIUpdateChannel returns the canonical native CLI update channel.
+// Missing and unknown values fail closed to Stable.
+func NormalizeCLIUpdateChannel(ch string) string {
+	if strings.EqualFold(strings.TrimSpace(ch), "preview") {
+		return "preview"
+	}
+	return "stable"
+}
+
+// CLIUpdateChannel returns the user-global native CLI update channel.
+func (c *Config) CLIUpdateChannel() string {
+	if c == nil {
+		return "stable"
+	}
+	return NormalizeCLIUpdateChannel(c.CLI.UpdateChannel)
 }
 
 // NormalizeDesktopUpdateChannel returns the canonical desktop update channel.
@@ -1742,7 +1767,7 @@ func Default() *Config {
 // main config into an unparseable state that leaves the app with no usable
 // models (#4615, #4708).
 func (c *Config) WriteFile(path string) error {
-	return fileutil.AtomicWriteFile(path, []byte(RenderTOMLForScope(c, renderScopeForPath(path))), configFilePerm(path))
+	return atomicWriteToConfigFile(path, RenderTOMLForScope(c, renderScopeForPath(path)), configFilePerm(path))
 }
 
 // Provider returns the named provider entry.
@@ -1834,6 +1859,88 @@ func (c *Config) ResolveModelWithFallback(ref string) (resolvedRef string, fallb
 		return p.Name + "/" + p.DefaultModel(), true, true
 	}
 	return "", false, false
+}
+
+// ResolveNewSessionChatModel selects the model for a newly-created chat
+// session. Configured candidates win; if every chat candidate is keyless, the
+// valid default (or first chat model) is preserved so callers can surface their
+// existing missing-key recovery UI. An unknown default is also preserved for
+// the CLI's actionable configuration error. Provider order is otherwise stable.
+func (c *Config) ResolveNewSessionChatModel() (resolvedRef string, fallback bool, ok bool) {
+	return c.resolveNewSessionChatModel(nil, true)
+}
+
+func (c *Config) resolveNewSessionChatModel(providerAllowed func(string) bool, preserveUnknownDefault bool) (resolvedRef string, fallback bool, ok bool) {
+	if c == nil {
+		return "", false, false
+	}
+	if providerAllowed == nil {
+		providerAllowed = func(string) bool { return true }
+	}
+
+	def := strings.TrimSpace(c.DefaultModel)
+	keylessDefault := ""
+	if def != "" {
+		if entry, found := c.ResolveModel(def); found {
+			if providerAllowed(entry.Name) && IsLikelyChatModel(entry.Model) {
+				if entry.Configured() {
+					return def, false, true
+				}
+				keylessDefault = def
+			}
+		} else if preserveUnknownDefault {
+			// CLI/boot callers need the stale value intact so their existing
+			// unknown-model error can name it and explain the providers that
+			// replaced it. Desktop uses its recovery UI and does not preserve it.
+			return def, false, true
+		}
+	}
+
+	keylessFallback := ""
+	for i := range c.Providers {
+		p := &c.Providers[i]
+		if !providerAllowed(p.Name) {
+			continue
+		}
+		chatModels := p.ChatModelList()
+		if len(chatModels) == 0 {
+			continue
+		}
+		model := chatModels[0]
+		for _, candidate := range chatModels {
+			if candidate == p.DefaultModel() {
+				model = candidate
+				break
+			}
+		}
+		resolved := p.Name + "/" + model
+		if p.Configured() {
+			return resolved, true, true
+		}
+		if keylessFallback == "" {
+			keylessFallback = resolved
+		}
+	}
+	if keylessDefault != "" {
+		return keylessDefault, false, true
+	}
+	if keylessFallback != "" {
+		return keylessFallback, true, true
+	}
+	return "", false, false
+}
+
+// ResolveDesktopNewSessionModel selects the model for a newly-created desktop
+// session. It shares the chat-model fallback policy with other frontends while
+// limiting candidates to providers exposed by the desktop access catalog.
+func (c *Config) ResolveDesktopNewSessionModel() (resolvedRef string, fallback bool, ok bool) {
+	if c == nil {
+		return "", false, false
+	}
+	access := desktopProviderAccessMap(c.Desktop.ProviderAccess)
+	return c.resolveNewSessionChatModel(func(name string) bool {
+		return c.Desktop.ProviderAccess == nil || access[strings.TrimSpace(name)]
+	}, false)
 }
 
 // APIKey resolves the entry's API key from its api_key_env.

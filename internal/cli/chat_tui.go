@@ -51,6 +51,8 @@ type chatTUI struct {
 
 	width  int
 	height int
+	// themeSweep freezes the frame while a /theme switch wipes across it.
+	themeSweep *themeSweep
 	// nativeScrollback keeps Termux out of alt-screen mode so taps still focus
 	// the textarea and raise the soft keyboard.
 	nativeScrollback bool
@@ -543,8 +545,9 @@ type clipboardImageMsg struct {
 
 // newChatTUI assembles the initial model. The controller has already been wired
 // with an event sink that feeds eventCh; the TUI issues commands to it and
-// renders the events it emits. Label, history, host, and commands are read from
-// the controller, so a resumed session pre-populates scrollback.
+// renders the events it emits. Model identity, label, history, host, and commands
+// are read from the controller, so explicit selections and resumed sessions stay
+// authoritative.
 func newChatTUI(ctrl control.SessionAPI, missing string, eventCh chan event.Event, termW int) chatTUI {
 	ti := textarea.New()
 	configureChatTextarea(&ti)
@@ -558,6 +561,7 @@ func newChatTUI(ctrl control.SessionAPI, missing string, eventCh chan event.Even
 	return chatTUI{
 		ctrl:                 ctrl,
 		label:                ctrl.Label(),
+		modelRef:             ctrl.ModelRef(),
 		missing:              missing,
 		nativeScrollback:     nativeScrollback,
 		mouseCaptureOff:      mouseCaptureOffByDefault(),
@@ -1731,6 +1735,15 @@ func (m chatTUI) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.copyNoticeText = ""
 		}
 
+	case themeSweepTickMsg:
+		if m.themeSweep != nil {
+			if m.themeSweep.advance() {
+				cmds = append(cmds, themeSweepTick())
+			} else {
+				m.themeSweep = nil
+			}
+		}
+
 	case elapsedTickMsg:
 		if m.state == tuiRunning {
 			m.elapsed = int(time.Since(m.runStart).Seconds())
@@ -2815,6 +2828,18 @@ func (m chatTUI) runningWorkingLine(cancelRequested, styled bool) string {
 }
 
 func (m chatTUI) View() tea.View {
+	if m.themeSweep != nil {
+		v := tea.NewView(m.themeSweep.render())
+		if !m.nativeScrollback {
+			v.AltScreen = true
+			if m.mouseCaptureOff {
+				v.MouseMode = tea.MouseModeNone
+			} else {
+				v.MouseMode = tea.MouseModeCellMotion
+			}
+		}
+		return v
+	}
 	boxW := m.width
 	if boxW < 10 {
 		boxW = 10
@@ -2826,36 +2851,26 @@ func (m chatTUI) View() tea.View {
 	if !hideComposer {
 		style := inputBoxStyle.Width(boxW)
 		if shellMode {
-			style = style.BorderForeground(lipgloss.Color(statusShellColor.hex))
+			style = withThemeBorderFG(style, statusShellColor)
 		}
 		box = style.Render(m.renderComposerInput())
 	}
 
 	var modeTag string
 	if shellMode {
-		modeTag = lipgloss.NewStyle().
-			Background(lipgloss.Color(statusShellColor.hex)).
-			Foreground(lipgloss.Color("#ffffff")).
-			Bold(true).
-			Padding(0, 1).
-			Render("Shell")
+		modeTag = modeTagStyle(statusShellColor, modeTagLight).Render("Shell")
 	} else {
-		color := statusAutoColor
-		foreground := "#111827"
+		background := statusAutoColor
+		foreground := modeTagDark
 		switch {
 		case m.ctrl.AutoApproveTools():
-			color = statusYoloColor
-			foreground = "#ffffff"
+			background = statusYoloColor
+			foreground = modeTagLight
 		case m.planMode:
-			color = statusPlanColor
-			foreground = "#ffffff"
+			background = statusPlanColor
+			foreground = modeTagLight
 		}
-		modeTag = lipgloss.NewStyle().
-			Background(lipgloss.Color(color.hex)).
-			Foreground(lipgloss.Color(foreground)).
-			Bold(true).
-			Padding(0, 1).
-			Render(m.modeTagText())
+		modeTag = modeTagStyle(background, foreground).Render(m.modeTagText())
 	}
 
 	primaryStatus := m.primaryStatusLine(modeTag, shellMode, cancelRequested)
@@ -3560,17 +3575,28 @@ func (m chatTUI) modeTagText() string {
 
 func (m *chatTUI) toggleVerboseReasoning(notify bool) {
 	m.showReasoning = !m.showReasoning
+	var saveErr error
 	if m.cfg != nil {
 		_ = m.cfg.SetShowReasoning(m.showReasoning)
-		_ = m.cfg.Save()
+		path := config.SourcePath()
+		if path == "" {
+			path = "reasonix.toml"
+		}
+		saveErr = config.EditConfigFile(path, func(cfg *config.Config) error {
+			return cfg.SetShowReasoning(m.showReasoning)
+		})
 	}
 	if !notify {
 		return
 	}
+	suffix := ""
+	if saveErr != nil {
+		suffix = "\npreference was not saved: " + saveErr.Error()
+	}
 	if m.showReasoning {
-		m.notice("verbose on — thinking text will be shown")
+		m.notice("verbose on — thinking text will be shown" + suffix)
 	} else {
-		m.notice("verbose off — thinking text will stay collapsed")
+		m.notice("verbose off — thinking text will stay collapsed" + suffix)
 	}
 }
 
@@ -4058,7 +4084,7 @@ func (m *chatTUI) runSlashCommand(input string) tea.Cmd {
 		}
 	case "/theme":
 		m.echoLocalCommand(input)
-		m.runThemeSubcommand(input)
+		return m.runThemeSubcommand(input)
 	case "/language":
 		m.echoLocalCommand(input)
 		m.runLanguageSubcommand(input)
@@ -4067,7 +4093,7 @@ func (m *chatTUI) runSlashCommand(input string) tea.Cmd {
 		m.showHelp()
 	case "/memory":
 		m.echoLocalCommand(input)
-		m.showMemory()
+		m.showMemory(input)
 	case "/migrate", "/migration":
 		m.echoLocalCommand(input)
 		migration.RunLegacyRescueCommand(strings.TrimSpace(strings.TrimPrefix(input, typedCmd)), event.FuncSink(func(e event.Event) {
@@ -4625,7 +4651,7 @@ func renderUserBubble(line string, width int, planMode bool) string {
 	if planMode {
 		prefix = "› [plan] "
 	}
-	if !colorEnabled {
+	if !colorOn() {
 		return "│ " + prefix + line
 	}
 	return "  " + accent(prefix+line)

@@ -1,4 +1,4 @@
-import { lazy, memo, Suspense, useEffect, useMemo, useRef } from "react";
+import { lazy, memo, Suspense, useMemo, useRef } from "react";
 import ReactMarkdown from "react-markdown";
 import type { Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -143,57 +143,25 @@ function createComponents(plainStatusBlocks: boolean): Components {
 const MarkdownRenderer = memo(function MarkdownRenderer({
   text,
   plainStatusBlocks = false,
+  bare = false,
 }: {
   text: string;
   plainStatusBlocks?: boolean;
+  bare?: boolean;
 }) {
   const containerRef = useRef<HTMLDivElement>(null);
   const mathContent = useMemo(() => normalizeMath(text), [text]);
   const components = useMemo(() => createComponents(plainStatusBlocks), [plainStatusBlocks]);
-
-  // After react-markdown + rehype-katex renders, annotate every .katex /
-  // .katex-display with a data-latex-source attribute so the copy handler
-  // (messageSelectionCopy.ts) can restore the original $ / $$ markup even
-  // when cloneContents() strips the MathML-namespaced <annotation> element.
-  // We schedule the annotation pass in a microtask to guarantee the DOM is
-  // up to date before the copy handler ever fires.
-  useEffect(() => {
-    const root = containerRef.current;
-    if (!root) return;
-
-    const katexEls = root.querySelectorAll<HTMLElement>(
-      ".katex, .katex-display",
-    );
-    for (const el of katexEls) {
-      if (el.hasAttribute("data-latex-source")) continue;
-      const ann = el.querySelector<HTMLElement>(
-        'annotation[encoding="application/x-tex"]',
-      );
-      if (ann?.textContent) {
-        const tex = ann.textContent;
-        el.setAttribute("data-latex-source", tex);
-        // Also annotate the visible rendering container so selections
-        // that capture only the rendered glyphs (without the outer
-        // .katex wrapper) still find the LaTeX source.
-        const htmlEl = el.querySelector<HTMLElement>(".katex-html");
-        if (htmlEl && !htmlEl.hasAttribute("data-latex-source")) {
-          htmlEl.setAttribute("data-latex-source", tex);
-        }
-      }
-    }
-  }, [text]);
-
-  return (
-    <div className="md" ref={containerRef}>
-      <ReactMarkdown
-        remarkPlugins={[remarkGfm, remarkMath]}
-        rehypePlugins={[rehypeKatex]}
-        components={components}
-      >
-        {mathContent}
-      </ReactMarkdown>
-    </div>
+  const content = (
+    <ReactMarkdown
+      remarkPlugins={[remarkGfm, remarkMath]}
+      rehypePlugins={[rehypeKatex]}
+      components={components}
+    >
+      {mathContent}
+    </ReactMarkdown>
   );
+  return bare ? content : <div className="md" ref={containerRef}>{content}</div>;
 });
 
 export default MarkdownRenderer;
