@@ -187,6 +187,34 @@ func TestRestoreStatusNormalizesLegacyPresentationPhase(t *testing.T) {
 	}
 }
 
+func TestRestoreStatusMarksInterruptedTurnPaused(t *testing.T) {
+	restored := restoreStatusTelemetry(&persistedStatusTelemetry{
+		Sequence:    7,
+		State:       "running",
+		Phase:       "implementing",
+		TurnOutcome: ReasonixTurnOutcome{Kind: "none"},
+		FinalReadiness: ReasonixFinalReadiness{
+			ReadyForReview: true,
+			Risks:          []string{},
+		},
+		TurnUsage:  persistedUsageAccumulator{PromptTokens: 3, Events: 1},
+		Cumulative: persistedUsageAccumulator{PromptTokens: 11, Events: 2},
+	})
+	snapshot := restored.snapshot()
+	if snapshot.state != "idle" || snapshot.phase != "recovery_paused" {
+		t.Fatalf("restored interrupted state = state:%q phase:%q, want idle/recovery_paused", snapshot.state, snapshot.phase)
+	}
+	if snapshot.sequence != 8 || snapshot.turnOutcome.Kind != "paused" || snapshot.turnOutcome.Reason != "previous turn interrupted" {
+		t.Fatalf("restored interrupted outcome = sequence:%d outcome:%+v", snapshot.sequence, snapshot.turnOutcome)
+	}
+	if snapshot.finalReadiness.ReadyForReview {
+		t.Fatal("interrupted turn remained ready for review")
+	}
+	if snapshot.turnUsage.PromptTokens != 3 || snapshot.cumulative.PromptTokens != 11 {
+		t.Fatalf("interrupted usage was lost: turn=%+v cumulative=%+v", snapshot.turnUsage, snapshot.cumulative)
+	}
+}
+
 func TestStatusRecomputesPlannerModeAfterWorkModeSwitch(t *testing.T) {
 	factory := &runtimeTrackingFactory{configurableFactory: &configurableFactory{}}
 	client, stop := startServer(t, factory)
@@ -269,5 +297,42 @@ func TestStatusSnapshotSurvivesSessionResume(t *testing.T) {
 	after := getStatus(t, reconnected, sessionID)
 	if after.Sequence != telemetry.snapshot().sequence || after.Usage.Cumulative.PromptTokens != 8 || after.State != "idle" || after.FinalReadiness.Summary != "persisted summary" {
 		t.Fatalf("recovered status = %+v", after)
+	}
+}
+
+func TestStatusInterruptedSnapshotResumesPaused(t *testing.T) {
+	dir := t.TempDir()
+	cwd := t.TempDir()
+	sessionID := "status-interrupted"
+	telemetry := newStatusTelemetry()
+	telemetry.beginTurn()
+	telemetry.onEvent(event.Event{Kind: event.Usage, Usage: &provider.Usage{
+		PromptTokens: 5, CompletionTokens: 1,
+	}, UsageSource: event.UsageSourceExecutor})
+	path := filepath.Join(dir, sessionID+".jsonl")
+	if err := agent.NewSession("system").Save(path); err != nil {
+		t.Fatalf("save transcript: %v", err)
+	}
+	if err := saveACPMeta(path, acpSessionMeta{
+		SessionID: sessionID, Cwd: cwd, Model: "fast", RuntimeProfile: "balanced",
+		Status: telemetry.persisted(),
+	}); err != nil {
+		t.Fatalf("save ACP metadata: %v", err)
+	}
+
+	factory := &statusFactory{configurableFactory: &configurableFactory{dir: dir}}
+	client, stop := startServer(t, factory)
+	defer stop()
+	client.call(t, "initialize", InitializeParams{ProtocolVersion: 1})
+	resume := client.call(t, "session/resume", SessionResumeParams{SessionID: sessionID, Cwd: cwd})
+	if resume.Error != nil {
+		t.Fatalf("session/resume: %+v", resume.Error)
+	}
+	after := getStatus(t, client, sessionID)
+	if after.State != "idle" || after.Phase != "recovery_paused" || after.TurnOutcome.Kind != "paused" {
+		t.Fatalf("resumed interrupted status = %+v", after)
+	}
+	if after.Sequence != telemetry.snapshot().sequence+1 || after.Usage.Turn.PromptTokens != 5 || after.Usage.Cumulative.PromptTokens != 5 {
+		t.Fatalf("resumed interrupted sequence/usage = %+v", after)
 	}
 }

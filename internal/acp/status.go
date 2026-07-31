@@ -404,11 +404,12 @@ func restoreStatusTelemetry(saved *persistedStatusTelemetry) *statusTelemetry {
 	if saved == nil {
 		return t
 	}
+	interrupted := saved.State == "running"
 	t.sequence = saved.Sequence
-	t.state = saved.State
-	if t.state != "running" {
-		t.state = "idle"
-	}
+	// A restored process never owns the turn that wrote a running snapshot.
+	// Publish a new, terminal recovery state instead of leaving supervisors
+	// waiting on work that no longer exists in this runtime.
+	t.state = "idle"
 	t.phase = normalizePersistedStatusPhase(saved.Phase)
 	t.turnOutcome = saved.TurnOutcome
 	if t.turnOutcome.Kind == "" {
@@ -422,6 +423,12 @@ func restoreStatusTelemetry(saved *persistedStatusTelemetry) *statusTelemetry {
 	t.turnUsage = restoreUsage(saved.TurnUsage)
 	t.cumulative = restoreUsage(saved.Cumulative)
 	t.goalOverride = saved.GoalOverride
+	if interrupted {
+		t.sequence++
+		t.phase = "recovery_paused"
+		t.turnOutcome = ReasonixTurnOutcome{Kind: "paused", Reason: "previous turn interrupted"}
+		t.finalReadiness.ReadyForReview = false
+	}
 	return t
 }
 
