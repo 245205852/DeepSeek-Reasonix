@@ -35,6 +35,11 @@ grep -Fq "workflow_id: preview ? 'release-preview.yml' : 'release.yml'" \
 	"$repo_root/.github/workflows/release-cli-trigger.yml"
 grep -Eq "preview\\\\\." "$repo_root/.github/workflows/release-cli-trigger.yml"
 grep -Eq '^name: Release preview$' "$repo_root/.github/workflows/release-preview.yml"
+grep -Eq '^  group: preview-release$' "$repo_root/.github/workflows/release-preview.yml"
+if grep -Fq 'group: preview-release-${{ inputs.tag }}' "$repo_root/.github/workflows/release-preview.yml"; then
+	echo "Preview releases must serialize across versions" >&2
+	exit 1
+fi
 grep -Eq '^    environment: canary$' "$repo_root/.github/workflows/release-preview.yml"
 grep -Eq '^  signpath-preflight:$' "$repo_root/.github/workflows/release-preview.yml"
 grep -Eq 'signing_preflight: true' "$repo_root/.github/workflows/release-preview.yml"
@@ -57,11 +62,10 @@ for workflow in release.yml release-npm.yml release-desktop.yml; do
 	grep -Eq 'release-\{1\}\.yml' "$repo_root/.github/workflows/$workflow"
 	grep -Eq "needs\.cache-guard\.result == 'success'" "$repo_root/.github/workflows/$workflow"
 done
-grep -Eq 'options: \[stable, preview\]' "$repo_root/.github/workflows/release.yml"
+grep -Eq 'options: \[stable\]' "$repo_root/.github/workflows/release.yml"
 grep -A6 -E '^      channel:' "$repo_root/.github/workflows/release.yml" |
 	grep -Eq 'default: stable'
-grep -Eq "needs\.resolve\.outputs\.channel == 'preview'.*'canary'.*'release'" \
-	"$repo_root/.github/workflows/release.yml"
+grep -Eq '^    environment: release$' "$repo_root/.github/workflows/release.yml"
 grep -Eq 'GORELEASER_CURRENT_TAG:.*needs\.resolve\.outputs\.tag' \
 	"$repo_root/.github/workflows/release.yml"
 grep -Eq 'bash scripts/resolve-cli-release\.sh' "$repo_root/.github/workflows/release.yml"
@@ -98,6 +102,20 @@ if grep -Fq 'ref: ${{ inputs.approved_sha || inputs.tag || github.ref }}' \
 fi
 grep -Fq "group: release-desktop-\${{ (inputs.channel == 'preview' || inputs.channel == 'canary') && 'preview' || 'stable' }}" \
 	"$repo_root/.github/workflows/release-desktop.yml"
+grep -Eq 'IN_PRODUCTION_SIGNING_SMOKE:.*inputs\.production_signing_smoke' \
+	"$repo_root/.github/workflows/release-desktop.yml"
+grep -Eq 'IN_SIGNING_PREFLIGHT:.*inputs\.signing_preflight' \
+	"$repo_root/.github/workflows/release-desktop.yml"
+grep -Fq "group: release-npm-\${{ inputs.channel || 'next' }}" \
+	"$repo_root/.github/workflows/release-npm.yml"
+sed -n '/^  workflow_dispatch:/,/^  workflow_call:/p' "$repo_root/.github/workflows/release-npm.yml" |
+	grep -Eq 'default: stable'
+if sed -n '/^  workflow_dispatch:/,/^  workflow_call:/p' "$repo_root/.github/workflows/release-npm.yml" |
+	grep -Eq '^          - canary$'; then
+	echo "Standalone npm dispatch must not expose public Canary publication" >&2
+	exit 1
+fi
+grep -Fq 'if: ${{ !inputs.orchestrated }}' "$repo_root/.github/workflows/release-npm.yml"
 grep -Eq 'signing-policy-slug: release-signing' "$repo_root/.github/workflows/release-desktop.yml"
 if grep -Eq 'signing-policy-slug:.*test-signing' "$repo_root/.github/workflows/release-desktop.yml"; then
 	echo "public desktop workflow must not use the SignPath test certificate" >&2
@@ -1072,14 +1090,15 @@ grep -Eq '^tag=desktop-v1\.2\.3$' "$test_root/desktop-stable.out"
 grep -Eq '^version=v1\.2\.3$' "$test_root/desktop-stable.out"
 grep -Eq '^notes_version=v1\.2\.3$' "$test_root/desktop-stable.out"
 
-EVENT_NAME=workflow_dispatch IN_CHANNEL=preview IN_BASE_VERSION=1.3.0 IN_TAG='' REF_NAME=main-v2 RUN_NUMBER=42 \
+EVENT_NAME=workflow_call IN_ORCHESTRATED=true IN_CHANNEL=preview IN_BASE_VERSION=1.3.0 \
+	IN_TAG='' REF_NAME=main-v2 RUN_NUMBER=999 IN_PREVIEW_NUMBER=42 \
 	GITHUB_OUTPUT="$test_root/desktop-preview.out" bash "$repo_root/scripts/resolve-desktop-release.sh"
 grep -Eq '^version=v1\.3\.0-preview\.42$' "$test_root/desktop-preview.out"
 grep -Eq '^tag=desktop-v1\.3\.0-preview\.42$' "$test_root/desktop-preview.out"
 grep -Eq '^channel=preview$' "$test_root/desktop-preview.out"
 grep -Eq '^notes_version=v1\.3\.0-preview\.42$' "$test_root/desktop-preview.out"
 
-if EVENT_NAME=workflow_dispatch IN_CHANNEL=preview IN_BASE_VERSION=1.3.0 \
+if EVENT_NAME=workflow_call IN_ORCHESTRATED=true IN_CHANNEL=preview IN_BASE_VERSION=1.3.0 \
 	IN_TAG=desktop-v1.3.0-preview.42 REF_NAME=main-v2 RUN_NUMBER=42 \
 	GITHUB_OUTPUT="$test_root/desktop-preview-tagged.out" \
 	bash "$repo_root/scripts/resolve-desktop-release.sh" \
@@ -1090,13 +1109,30 @@ fi
 grep -Eq 'Desktop Preview versions are synthesized from protected main-v2' \
 	"$test_root/desktop-preview-tagged.log"
 
-# Legacy automation may still dispatch `canary`; normalize it to Preview without
-# exposing a third user-facing release channel.
-EVENT_NAME=workflow_dispatch IN_CHANNEL=canary IN_BASE_VERSION=1.3.0 IN_TAG='' REF_NAME=main-v2 RUN_NUMBER=43 \
+# Legacy signing automation may still dispatch `canary`; normalize it to Preview
+# without exposing a third public release path.
+EVENT_NAME=workflow_dispatch IN_ORCHESTRATED=false IN_SIGNING_PREFLIGHT=true \
+	IN_CHANNEL=canary IN_BASE_VERSION=1.3.0 IN_TAG='' REF_NAME=main-v2 RUN_NUMBER=43 \
 	GITHUB_OUTPUT="$test_root/desktop-canary-compat.out" bash "$repo_root/scripts/resolve-desktop-release.sh"
 grep -Eq '^version=v1\.3\.0-preview\.43$' "$test_root/desktop-canary-compat.out"
 grep -Eq '^tag=desktop-v1\.3\.0-preview\.43$' "$test_root/desktop-canary-compat.out"
 grep -Eq '^channel=preview$' "$test_root/desktop-canary-compat.out"
+
+EVENT_NAME=workflow_dispatch IN_ORCHESTRATED=false IN_PRODUCTION_SIGNING_SMOKE=true \
+	IN_CHANNEL=preview IN_BASE_VERSION=1.3.0 IN_TAG='' REF_NAME=main-v2 RUN_NUMBER=44 \
+	GITHUB_OUTPUT="$test_root/desktop-preview-smoke.out" bash "$repo_root/scripts/resolve-desktop-release.sh"
+grep -Eq '^version=v1\.3\.0-preview\.44$' "$test_root/desktop-preview-smoke.out"
+
+if EVENT_NAME=workflow_dispatch IN_ORCHESTRATED=false IN_CHANNEL=preview \
+	IN_BASE_VERSION=1.3.0 IN_TAG='' REF_NAME=main-v2 RUN_NUMBER=45 \
+	GITHUB_OUTPUT="$test_root/desktop-preview-direct.out" \
+	bash "$repo_root/scripts/resolve-desktop-release.sh" \
+	>"$test_root/desktop-preview-direct.log" 2>&1; then
+	echo "standalone public Desktop Preview unexpectedly passed" >&2
+	exit 1
+fi
+grep -Eq 'public Desktop Preview releases must be dispatched by release-preview.yml' \
+	"$test_root/desktop-preview-direct.log"
 
 EVENT_NAME=push IN_CHANNEL='' IN_TAG='' REF_NAME=desktop-v1.4.0-rc.1 RUN_NUMBER=50 \
 	GITHUB_OUTPUT="$test_root/desktop-rc.out" bash "$repo_root/scripts/resolve-desktop-release.sh"
@@ -1121,20 +1157,26 @@ if EVENT_NAME=workflow_dispatch IN_CHANNEL=stable IN_TAG='' REF_NAME=main-v2 RUN
 fi
 grep -Eq 'stable dispatch requires tag' "$test_root/desktop-missing-tag.log"
 
-EVENT_NAME=push IN_CHANNEL='' IN_TAG='' REF_NAME=v1.3.0-preview.42 \
-	GITHUB_OUTPUT="$test_root/cli-preview-push.out" bash "$repo_root/scripts/resolve-cli-release.sh"
-grep -Eq '^tag=v1\.3\.0-preview\.42$' "$test_root/cli-preview-push.out"
-grep -Eq '^version=1\.3\.0-preview\.42$' "$test_root/cli-preview-push.out"
-grep -Eq '^base_version=1\.3\.0$' "$test_root/cli-preview-push.out"
-grep -Eq '^notes_version=v1\.3\.0-preview\.42$' "$test_root/cli-preview-push.out"
-grep -Eq '^channel=preview$' "$test_root/cli-preview-push.out"
-grep -Eq '^prerelease=true$' "$test_root/cli-preview-push.out"
+EVENT_NAME=workflow_call IN_ORCHESTRATED=true IN_CHANNEL=preview IN_TAG=v1.3.0-preview.42 \
+	REF_NAME=main-v2 GITHUB_OUTPUT="$test_root/cli-preview-call.out" \
+	bash "$repo_root/scripts/resolve-cli-release.sh"
+grep -Eq '^tag=v1\.3\.0-preview\.42$' "$test_root/cli-preview-call.out"
+grep -Eq '^version=1\.3\.0-preview\.42$' "$test_root/cli-preview-call.out"
+grep -Eq '^base_version=1\.3\.0$' "$test_root/cli-preview-call.out"
+grep -Eq '^notes_version=v1\.3\.0-preview\.42$' "$test_root/cli-preview-call.out"
+grep -Eq '^channel=preview$' "$test_root/cli-preview-call.out"
+grep -Eq '^prerelease=true$' "$test_root/cli-preview-call.out"
 
-EVENT_NAME=workflow_dispatch IN_ORCHESTRATED=false IN_CHANNEL=preview \
+if EVENT_NAME=workflow_dispatch IN_ORCHESTRATED=false IN_CHANNEL=preview \
 	IN_TAG=v1.3.0-preview.42 REF_NAME=main-v2 CALLER_REF=refs/heads/main-v2 \
 	CALLER_REF_PROTECTED=true GITHUB_OUTPUT="$test_root/cli-preview-dispatch.out" \
-	bash "$repo_root/scripts/resolve-cli-release.sh"
-grep -Eq '^channel=preview$' "$test_root/cli-preview-dispatch.out"
+	bash "$repo_root/scripts/resolve-cli-release.sh" \
+	>"$test_root/cli-preview-dispatch.log" 2>&1; then
+	echo "standalone public CLI Preview unexpectedly passed" >&2
+	exit 1
+fi
+grep -Eq 'public CLI Preview releases must be dispatched by release-preview.yml' \
+	"$test_root/cli-preview-dispatch.log"
 
 EVENT_NAME=push IN_CHANNEL='' IN_TAG='' REF_NAME=v1.3.0-rc.1 \
 	GITHUB_OUTPUT="$test_root/cli-rc.out" bash "$repo_root/scripts/resolve-cli-release.sh"
@@ -1177,6 +1219,21 @@ EVENT_NAME=push IN_ORCHESTRATED=true IN_CHANNEL=stable IN_BASE_VERSION=1.5.0 \
 	IN_TAG=npm-v1.5.0 REF_NAME=v1.5.0 RUN_NUMBER=51 GITHUB_OUTPUT="$test_root/npm-stable.out" \
 	bash "$repo_root/scripts/resolve-npm-release.sh"
 grep -Eq '^arg=v1\.5\.0$' "$test_root/npm-stable.out"
+
+EVENT_NAME=workflow_call IN_ORCHESTRATED=true IN_CHANNEL=canary IN_BASE_VERSION=1.5.0 \
+	IN_TAG='' REF_NAME=main-v2 RUN_NUMBER=999 IN_PREVIEW_NUMBER=42 \
+	GITHUB_OUTPUT="$test_root/npm-canary.out" bash "$repo_root/scripts/resolve-npm-release.sh"
+grep -Eq '^arg=v1\.5\.0-canary\.42$' "$test_root/npm-canary.out"
+
+if EVENT_NAME=workflow_dispatch IN_ORCHESTRATED=false IN_CHANNEL=canary IN_BASE_VERSION=1.5.0 \
+	IN_TAG='' REF_NAME=main-v2 RUN_NUMBER=52 GITHUB_OUTPUT="$test_root/npm-canary-direct.out" \
+	bash "$repo_root/scripts/resolve-npm-release.sh" \
+	>"$test_root/npm-canary-direct.log" 2>&1; then
+	echo "standalone public npm Canary unexpectedly passed" >&2
+	exit 1
+fi
+grep -Eq 'public npm Canary releases must be dispatched by release-preview.yml' \
+	"$test_root/npm-canary-direct.log"
 
 if EVENT_NAME=workflow_dispatch IN_ORCHESTRATED=false IN_CHANNEL=stable IN_BASE_VERSION=1.5.0 \
 	IN_TAG=npm-v1.5.1 REF_NAME=main-v2 RUN_NUMBER=52 GITHUB_OUTPUT="$test_root/npm-mismatch.out" \

@@ -12,13 +12,11 @@ name: Release desktop
 # release and mirrored to R2 (the updater reads R2 first, then the crash worker
 # release gateway; stable desktop releases own GitHub's repository-wide "latest").
 #
-# The same build/sign/manifest pipeline serves two channels. An orchestrated
-# `desktop-v*` tag (or manual stable recovery) publishes a GitHub release and
-# moves R2's latest/ pointer. A manual `channel: preview` dispatch builds with
-# -X main.channel=preview
-# and uploads only to R2's preview/ pointer — no GitHub release, so Preview never
-# shows on the releases page and never touches latest/. The legacy canary/
-# pointer is mirrored for clients released before the channel rename.
+# The same build/sign/manifest pipeline serves two channels. Approved
+# orchestrators publish Stable or Preview, while manual dispatch supports
+# Stable/RC recovery and non-publishing Preview signing checks. Preview advances
+# only R2's preview/ pointer and never appears on the GitHub releases page. The
+# legacy canary/ pointer is mirrored for clients released before the rename.
 on:
   workflow_dispatch:
     inputs:
@@ -32,7 +30,7 @@ on:
         required: false
         type: string
       base_version:
-        description: "preview: intended next stable version, e.g. 1.5.0"
+        description: "Preview signing checks: intended next stable version, e.g. 1.5.0"
         required: false
         type: string
       production_signing_smoke:
@@ -70,7 +68,7 @@ on:
         required: true
         type: string
       orchestrated:
-        description: "True only when called by release-stable.yml after approval"
+        description: "True only when called by an approved release orchestrator"
         required: false
         default: false
         type: boolean
@@ -127,9 +125,12 @@ jobs:
         id: release
         env:
           EVENT_NAME: ${{ github.event_name }}
+          IN_ORCHESTRATED: ${{ inputs.orchestrated }}
           IN_CHANNEL: ${{ inputs.channel }}
           IN_TAG: ${{ inputs.tag }}
           IN_BASE_VERSION: ${{ inputs.base_version }}
+          IN_PRODUCTION_SIGNING_SMOKE: ${{ inputs.production_signing_smoke }}
+          IN_SIGNING_PREFLIGHT: ${{ inputs.signing_preflight }}
           REF_NAME: ${{ github.ref_name }}
           RUN_NUMBER: ${{ github.run_number }}
           IN_PREVIEW_NUMBER: ${{ inputs.preview_number }}
@@ -186,9 +187,8 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
-    # Keep Preview fast, but do not make its public, formally signed binaries an
-    # unreviewed path. The `canary` environment must use the same required
-    # reviewers as `release`.
+    # Standalone Preview is limited to non-publishing signing checks, but still
+    # exercises the production policy behind the protected `canary` environment.
     environment: ${{ needs.resolve.outputs.channel == 'preview' && 'canary' || 'release' }}
     steps:
       - env:
@@ -533,10 +533,9 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
-    # The stable caller has already passed the single GitHub release approval.
-    # Direct prereleases, manual stable recovery, and Preview all pass the
-    # appropriate release gate. The SignPath CI identity records each payload
-    # and installer approval after that GitHub gate.
+    # Approved orchestrators have already passed the matching GitHub environment.
+    # Direct prereleases and manual Stable recovery pass release-gate above. The
+    # SignPath CI identity records each payload and installer approval after it.
     steps:
       - uses: actions/checkout@v7
         with:

@@ -213,6 +213,12 @@ strict separation from repository writers is required.
   npm, and Desktop tags to remain aligned on an ancestor of current `main-v2`,
   then uses the same single approval and postflight. Never move or recreate the
   published tags to pick up a workflow fix.
+- Recover an interrupted Preview release by rerunning **Release preview** from
+  protected `main-v2` with the existing `vX.Y.Z-preview.N` tag. Do not dispatch
+  the CLI, Desktop, or npm publisher directly: those paths cannot create the
+  all-surface `release-event.json` marker and are blocked from public Preview
+  publication. Standalone Desktop Preview dispatch remains available only for
+  non-publishing SignPath preflight and production-signing smoke checks.
 - Windows release signing uses SignPath trusted-build, origin verification, and
   malware scanning. Keep the checked-in `windows-payload` and
   `windows-installer-v2` artifact configurations synchronized with the matching

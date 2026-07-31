@@ -1,24 +1,22 @@
 name: Release
 
-# Native CLI binary line. Stable releases are called by release-stable.yml after
-# its single GitHub `release`-environment approval. Preview uses immutable
-# vX.Y.Z-preview.N tags, publishes a GitHub prerelease behind the same `canary`
-# gate as Desktop Preview, and never moves Homebrew or GitHub Latest. Other
-# standalone prereleases remain internal stable-channel checkpoints behind the
-# `release` gate.
+# Native CLI binary line. Stable and Preview releases are called by their
+# approved all-surface orchestrators. Manual dispatch remains available only for
+# Stable/RC recovery; standalone prereleases remain internal stable-channel
+# checkpoints behind the `release` gate.
 on:
   workflow_dispatch:
     inputs:
       channel:
-        description: "Native CLI release channel"
+        description: "Standalone CLI recovery channel"
         required: true
-        # Preserve existing tag-only recovery dispatches as Stable. Preview must
-        # be an explicit operator choice or arrive through the tag relay.
+        # Public Preview recovery reruns release-preview.yml so every surface and
+        # its immutable release-event marker stay aligned.
         default: stable
         type: choice
-        options: [stable, preview]
+        options: [stable]
       tag:
-        description: "Existing protected CLI tag (Preview: v1.18.0-preview.1; Stable/RC: v1.18.0-rc.1)"
+        description: "Existing protected Stable/RC CLI tag (for example v1.18.0 or v1.18.0-rc.1)"
         required: true
         type: string
   workflow_call:
@@ -41,7 +39,7 @@ on:
         required: true
         type: string
       orchestrated:
-        description: "True only when called by release-stable.yml after approval"
+        description: "True only when called by an approved release orchestrator"
         required: false
         default: false
         type: boolean
@@ -149,7 +147,7 @@ jobs:
     needs: resolve
     if: ${{ !inputs.orchestrated }}
     runs-on: ubuntu-latest
-    environment: ${{ needs.resolve.outputs.channel == 'preview' && 'canary' || 'release' }}
+    environment: release
     steps:
       - env:
           RELEASE_TAG: ${{ needs.resolve.outputs.tag }}

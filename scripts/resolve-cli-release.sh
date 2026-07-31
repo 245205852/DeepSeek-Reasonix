@@ -66,6 +66,11 @@ if [ -n "$requested_channel" ]; then
 	fi
 fi
 
+if [ "$channel" = "preview" ] && [ "${IN_ORCHESTRATED:-false}" != "true" ]; then
+	echo "::error::public CLI Preview releases must be dispatched by release-preview.yml" >&2
+	exit 1
+fi
+
 {
 	echo "tag=$tag"
 	echo "version=$version"

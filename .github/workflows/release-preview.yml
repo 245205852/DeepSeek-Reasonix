@@ -13,7 +13,9 @@ on:
         type: string
 
 concurrency:
-  group: preview-release-${{ inputs.tag }}
+  # Every Preview version advances the same public CLI, Desktop, and npm
+  # channels. Keep the whole all-surface event serialized across versions.
+  group: preview-release
   cancel-in-progress: false
 
 permissions:
