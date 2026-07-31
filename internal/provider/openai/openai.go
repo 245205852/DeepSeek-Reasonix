@@ -76,6 +76,7 @@ func New(cfg provider.Config) (provider.Provider, error) {
 		effort = ""
 	}
 	supportedEfforts, _ := cfg.Extra["supported_efforts"].([]string)
+	explicitLowEffort := supportsEffort(supportedEfforts, "low")
 	explicitMaxEffort := supportsEffort(supportedEfforts, "max")
 	protocol, _ := cfg.Extra["reasoning_protocol"].(string)
 	protocol = normalizeReasoningProtocol(protocol)
@@ -99,6 +100,7 @@ func New(cfg provider.Config) (provider.Provider, error) {
 		visionDetail = "" // auto — omit the field
 	}
 	deepseek := protocol == "deepseek" || (protocol == "" && officialDeepSeek)
+	deepseekV4Flash := strings.EqualFold(strings.TrimSpace(cfg.Model), "deepseek-v4-flash")
 	minimax := protocol == "" && IsMiniMax(cfg.BaseURL)
 	zhipu := protocol == "" && IsZhipu(cfg.BaseURL)
 	longcat := protocol == "" && IsLongCat(cfg.BaseURL)
@@ -129,9 +131,13 @@ func New(cfg provider.Config) (provider.Provider, error) {
 			// drop the depth hint so the wire carries thinking.type=disabled only.
 			effort = ""
 			thinkingType = "disabled"
+		case "low":
+			if !deepseekV4Flash && !explicitLowEffort {
+				return nil, fmt.Errorf("openai: provider %q uses DeepSeek thinking; effort low requires deepseek-v4-flash or explicit supported_efforts", name)
+			}
 		case "high", "max":
 		default:
-			return nil, fmt.Errorf("openai: provider %q uses DeepSeek thinking; effort must be high, max, or disabled", name)
+			return nil, fmt.Errorf("openai: provider %q uses DeepSeek thinking; effort must be low, high, max, or disabled", name)
 		}
 	case minimax:
 		// M3's knob is binary. The config effort layer normalises user input
@@ -208,7 +214,7 @@ func New(cfg provider.Config) (provider.Provider, error) {
 		prefixChatURL: prefixChatURL,
 		headers:       cleanCustomHeaders(headers),
 		extraBody:     cleanExtraBody(extraBody),
-		model:         cfg.Model,
+		model:         normalizeModelID(cfg.BaseURL, cfg.Model),
 		deepseek:      deepseek,
 		minimax:       minimax,
 		zhipu:         zhipu,
@@ -664,6 +670,15 @@ func (c *client) buildRequest(req provider.Request) chatRequest {
 			wire := chatToolCall{ID: tc.ID, Type: "function"}
 			wire.Function.Name = tc.Name
 			wire.Function.Arguments = tc.Arguments
+			if tc.ThoughtSignature != "" && usesGeminiThoughtSignatures(c.baseURL, c.model) {
+				// Gemini's current OpenAI compatibility schema carries the
+				// opaque signature beside the function payload. Keep the
+				// legacy function.thought_signature field decode-only below so
+				// older gateways remain readable without sending an unknown
+				// function parameter to current Google endpoints.
+				wire.ExtraContent = &chatToolCallExtraContent{}
+				wire.ExtraContent.Google.ThoughtSignature = tc.ThoughtSignature
+			}
 			cm.ToolCalls = append(cm.ToolCalls, wire)
 		}
 		switch {
@@ -914,6 +929,19 @@ func (c *client) readStream(ctx context.Context, resp *http.Response, out chan<-
 				cur.Name = tc.Function.Name
 			}
 			cur.Arguments += tc.Function.Arguments
+			thoughtSignature := ""
+			if tc.ExtraContent != nil {
+				thoughtSignature = tc.ExtraContent.Google.ThoughtSignature
+			}
+			if thoughtSignature == "" {
+				// Early Gemini OpenAI-compatible responses placed the field in
+				// function. Accept that shape when replaying older sessions and
+				// when talking to compatibility gateways that still emit it.
+				thoughtSignature = tc.Function.ThoughtSignature
+			}
+			if thoughtSignature != "" {
+				cur.ThoughtSignature = thoughtSignature
+			}
 			// Signal the call's start the moment its name is known, so a frontend
 			// can show the tool card immediately rather than only after its
 			// (possibly large) arguments finish streaming.
@@ -1162,13 +1190,23 @@ type chatFunction struct {
 }
 
 type chatToolCall struct {
-	Index    int    `json:"index,omitempty"`
-	ID       string `json:"id,omitempty"`
-	Type     string `json:"type,omitempty"`
-	Function struct {
+	Index        int                       `json:"index,omitempty"`
+	ID           string                    `json:"id,omitempty"`
+	Type         string                    `json:"type,omitempty"`
+	ExtraContent *chatToolCallExtraContent `json:"extra_content,omitempty"`
+	Function     struct {
 		Name      string `json:"name"`
 		Arguments string `json:"arguments"`
+		// Decode compatibility for the early Gemini OpenAI shape. New requests
+		// use extra_content.google.thought_signature.
+		ThoughtSignature string `json:"thought_signature,omitempty"`
 	} `json:"function"`
+}
+
+type chatToolCallExtraContent struct {
+	Google struct {
+		ThoughtSignature string `json:"thought_signature,omitempty"`
+	} `json:"google"`
 }
 
 type streamResponse struct {

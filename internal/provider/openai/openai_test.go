@@ -986,6 +986,57 @@ func TestBuildRequestForwardsReasoningEffort(t *testing.T) {
 	}
 }
 
+func TestNewDeepSeekV4FlashForwardsLowEffort(t *testing.T) {
+	p, err := New(provider.Config{
+		Name:    "deepseek",
+		BaseURL: "https://api.deepseek.com",
+		Model:   "deepseek-v4-flash",
+		APIKey:  "test",
+		Extra: map[string]any{
+			"effort":             "low",
+			"reasoning_protocol": "deepseek",
+		},
+	})
+	if err != nil {
+		t.Fatalf("New Flash low: %v", err)
+	}
+	if got := p.(*client).buildRequest(provider.Request{}).ReasoningEffort; got != "low" {
+		t.Fatalf("Flash reasoning_effort = %q, want low", got)
+	}
+
+	_, err = New(provider.Config{
+		Name:    "deepseek",
+		BaseURL: "https://api.deepseek.com",
+		Model:   "deepseek-v4-pro",
+		APIKey:  "test",
+		Extra: map[string]any{
+			"effort":             "low",
+			"reasoning_protocol": "deepseek",
+		},
+	})
+	if err == nil || !strings.Contains(err.Error(), "requires deepseek-v4-flash") {
+		t.Fatalf("New Pro low error = %v, want model-scoped rejection", err)
+	}
+
+	custom, err := New(provider.Config{
+		Name:    "custom-deepseek",
+		BaseURL: "https://gateway.example.com/v1",
+		Model:   "custom-flash",
+		APIKey:  "test",
+		Extra: map[string]any{
+			"effort":             "low",
+			"reasoning_protocol": "deepseek",
+			"supported_efforts":  []string{"low", "high", "max"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("New explicit custom low: %v", err)
+	}
+	if got := custom.(*client).buildRequest(provider.Request{}).ReasoningEffort; got != "low" {
+		t.Fatalf("custom reasoning_effort = %q, want explicit low", got)
+	}
+}
+
 func TestBuildRequestTemperatureSerialization(t *testing.T) {
 	c := &client{model: "m"}
 
@@ -1825,6 +1876,127 @@ func TestBuildRequestDefaultsEmptyToolParameters(t *testing.T) {
 	}
 	if got, want := string(fn["parameters"]), `{"properties":{},"type":"object"}`; got != want {
 		t.Fatalf("nil parameters should default to %s, got %s in %s", want, got, body)
+	}
+}
+
+func TestStreamReadsGeminiThoughtSignature(t *testing.T) {
+	tests := []struct {
+		name     string
+		toolCall string
+	}{
+		{
+			name:     "current extra_content shape",
+			toolCall: `{"index":0,"id":"call_abc123","type":"function","extra_content":{"google":{"thought_signature":"gemini_sig_xyz789"}},"function":{"name":"write_file"}}`,
+		},
+		{
+			name:     "legacy function shape",
+			toolCall: `{"index":0,"id":"call_abc123","type":"function","function":{"name":"write_file","thought_signature":"gemini_sig_xyz789"}}`,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "text/event-stream")
+				_, _ = io.WriteString(w,
+					"data: {\"choices\":[{\"delta\":{\"tool_calls\":["+tc.toolCall+"]}}]}\n\n"+
+						"data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\"{\\\"path\\\":\\\"test.txt\\\"}\"}}]},\"finish_reason\":\"tool_calls\"}]}\n\n"+
+						"data: [DONE]\n\n")
+			}))
+			defer srv.Close()
+
+			p, err := New(provider.Config{Name: "gemini", BaseURL: srv.URL, Model: "gemini-3.6-flash"})
+			if err != nil {
+				t.Fatalf("New: %v", err)
+			}
+
+			ch, err := p.Stream(context.Background(), provider.Request{})
+			if err != nil {
+				t.Fatalf("Stream: %v", err)
+			}
+
+			var got *provider.ToolCall
+			for chunk := range ch {
+				if chunk.Type == provider.ChunkToolCall {
+					got = chunk.ToolCall
+				}
+			}
+			if got == nil {
+				t.Fatal("expected ChunkToolCall but none received")
+			}
+			if got.ThoughtSignature != "gemini_sig_xyz789" {
+				t.Errorf("ThoughtSignature = %q, want %q", got.ThoughtSignature, "gemini_sig_xyz789")
+			}
+			if got.Arguments != `{"path":"test.txt"}` {
+				t.Errorf("Arguments = %q, want complete streamed arguments", got.Arguments)
+			}
+		})
+	}
+}
+
+func TestBuildRequestScopesGeminiThoughtSignature(t *testing.T) {
+	req := provider.Request{
+		Messages: []provider.Message{{
+			Role: provider.RoleAssistant,
+			ToolCalls: []provider.ToolCall{{
+				ID:               "call_abc123",
+				Name:             "write_file",
+				Arguments:        `{"path":"test.txt"}`,
+				ThoughtSignature: "gemini_sig_xyz789",
+			}},
+		}},
+	}
+
+	for _, tc := range []struct {
+		name          string
+		baseURL       string
+		model         string
+		wantSignature string
+	}{
+		{"official Gemini endpoint", "https://generativelanguage.googleapis.com/v1beta/openai", "custom-alias", "gemini_sig_xyz789"},
+		{"Gemini-compatible gateway", "https://openrouter.ai/api/v1", "google/gemini-3.1-pro", "gemini_sig_xyz789"},
+		{"same history after provider switch", "https://api.deepseek.com/v1", "deepseek-chat", ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			c := &client{name: tc.name, baseURL: tc.baseURL, model: tc.model}
+			body, err := json.Marshal(c.buildRequest(req))
+			if err != nil {
+				t.Fatalf("marshal request: %v", err)
+			}
+			var wire struct {
+				Messages []struct {
+					ToolCalls []struct {
+						ExtraContent *struct {
+							Google struct {
+								ThoughtSignature string `json:"thought_signature"`
+							} `json:"google"`
+						} `json:"extra_content"`
+						Function struct {
+							ThoughtSignature string `json:"thought_signature"`
+						} `json:"function"`
+					} `json:"tool_calls"`
+				} `json:"messages"`
+			}
+			if err := json.Unmarshal(body, &wire); err != nil {
+				t.Fatalf("unmarshal request: %v", err)
+			}
+			if len(wire.Messages) == 0 || len(wire.Messages[0].ToolCalls) != 1 {
+				t.Fatalf("unexpected request shape: %s", body)
+			}
+			toolCall := wire.Messages[0].ToolCalls[0]
+			gotSignature := ""
+			if toolCall.ExtraContent != nil {
+				gotSignature = toolCall.ExtraContent.Google.ThoughtSignature
+			}
+			if gotSignature != tc.wantSignature {
+				t.Errorf("thought_signature = %q, want %q", gotSignature, tc.wantSignature)
+			}
+			if tc.wantSignature == "" && toolCall.ExtraContent != nil {
+				t.Errorf("non-Gemini request should omit extra_content: %s", body)
+			}
+			if got := toolCall.Function.ThoughtSignature; got != "" {
+				t.Errorf("legacy function.thought_signature should not be sent, got %q", got)
+			}
+		})
 	}
 }
 

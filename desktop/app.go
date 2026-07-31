@@ -1479,7 +1479,9 @@ func (a *App) Steer(text string) error {
 	return a.SteerForTab("", text)
 }
 
-// SteerForTab sends mid-turn guidance to a specific tab's agent.
+// SteerForTab sends mid-turn guidance to a specific tab's active agent turn.
+// A rejected steer is returned to the frontend so its guidance shelf retains
+// the text and submits it as a regular follow-up after the turn completes.
 func (a *App) SteerForTab(tabID, text string) error {
 	if cli, snapshot, _, _, ok := a.activeRemoteWorkbench(); ok {
 		turnID := cli.State().CurrentTurnID
@@ -1503,7 +1505,13 @@ func (a *App) SteerForTab(tabID, text string) error {
 	if ctrl == nil {
 		return a.workspaceNotReadyErr(tab)
 	}
-	ctrl.Steer(text)
+	steerer, ok := ctrl.(interface{ TrySteer(string) bool })
+	if !ok {
+		return fmt.Errorf("this runtime cannot accept mid-turn guidance")
+	}
+	if !steerer.TrySteer(text) {
+		return fmt.Errorf("the turn ended before guidance could be applied; it will remain queued for the next turn")
+	}
 	return nil
 }
 
@@ -5807,7 +5815,12 @@ func historyMessagesWithPlannerDisplaysAndLookups(
 	for index, m := range msgs {
 		if m.LocalOnly {
 			if steerText, isSteer := agent.SteerText(agent.UserMessageText(m)); isSteer {
-				out = append(out, HistoryMessage{Role: "notice", Content: "↪ " + steerText})
+				out = append(out, HistoryMessage{
+					Role:    "notice",
+					Content: agent.UnappliedSteerNotice(steerText),
+					Code:    event.NoticeCodeUnappliedSteer,
+					Level:   "warn",
+				})
 				continue
 			}
 		}

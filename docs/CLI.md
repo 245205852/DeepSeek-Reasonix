@@ -276,6 +276,7 @@ transcript concurrently.
 ```sh
 reasonix --permission-mode plan
 reasonix --permission-mode acceptEdits
+reasonix run -y "apply the requested changes"
 reasonix -p "run the focused tests" --allowed-tools "Bash(go test ./...)"
 reasonix --allowed-tools "Bash(git *) Edit"
 reasonix --allowed-tools "Bash(go test ./...)" --allowed-tools read_file
@@ -303,7 +304,8 @@ approval modes resolve without blocking. The default `ask` / `manual` posture
 fails closed for explicit Ask decisions and ordinary writer fallback; readers
 still run. `acceptEdits` allows its named file-edit tools, while other Ask
 decisions fail closed. `auto` allows ordinary writer fallback but still denies
-an explicit ask rule. `dontAsk` denies unapproved writers.
+an explicit ask rule; select it with `--permission-mode auto`, `--auto`, or
+`-y`. `dontAsk` denies unapproved writers.
 `bypassPermissions` runs ordinary calls despite ask rules and writer fallback,
 but configured deny rules, the sandbox, and tools that require fresh human
 approval (memory, plan, sandbox escape, managed config write) still apply. In

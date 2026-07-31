@@ -107,6 +107,7 @@ func BuildHeadlessApprovalGate(policy permission.Policy, mode string) *freshHuma
 		policy.Mode = permission.Deny
 		return &freshHumanHeadlessGate{gate: permission.NewGate(policy, denyPermissionApprover{})}
 	default:
+		policy.Mode = permission.Ask
 		return &freshHumanHeadlessGate{gate: permission.NewGate(policy, denyPermissionApprover{})}
 	}
 }
