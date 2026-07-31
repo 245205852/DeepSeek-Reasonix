@@ -15,6 +15,7 @@ import (
 	"reasonix/internal/command"
 	"reasonix/internal/config"
 	"reasonix/internal/control"
+	"reasonix/internal/permission"
 	"reasonix/internal/skill"
 )
 
@@ -501,6 +502,22 @@ func TestTrySubagentProfileRequiresTaskAndPrompt(t *testing.T) {
 	}
 }
 
+func TestTrySubagentProfilePermissionGateFailsClosedOnAsk(t *testing.T) {
+	gate := trySubagentPermissionGate(permission.New("ask", nil, nil, nil))
+	allow, reason, err := gate.Check(context.Background(), "write_file", json.RawMessage(`{"path":"result.txt"}`), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if allow || !strings.Contains(reason, "user declined") {
+		t.Fatalf("headless Ask gate = (%v, %q), want fail-closed denial", allow, reason)
+	}
+
+	allow, reason, err = gate.Check(context.Background(), "read_file", json.RawMessage(`{"path":"input.txt"}`), true)
+	if err != nil || !allow || reason != "" {
+		t.Fatalf("read-only call = (%v, %q, %v), want allow", allow, reason, err)
+	}
+}
+
 func TestTrySubagentProfileRejectsUnknownModel(t *testing.T) {
 	isolateDesktopUserDirs(t)
 	a := NewApp()
@@ -516,7 +533,9 @@ func TestTrySubagentProfileRejectsUnknownModel(t *testing.T) {
 func TestTrySubagentPermissionGateFailsClosedOnAsk(t *testing.T) {
 	cfg := config.Default()
 	cfg.Permissions.Ask = []string{"read_file"}
-	gate := trySubagentPermissionGate(cfg)
+	policy := permission.New(cfg.Permissions.Mode, cfg.Permissions.Allow, cfg.Permissions.Ask, cfg.Permissions.Deny).
+		WithAllowDynamicBashFallback(cfg.Permissions.AllowDynamicBash)
+	gate := trySubagentPermissionGate(policy)
 
 	allow, reason, err := gate.Check(context.Background(), "read_file", json.RawMessage(`{"path":"README.md"}`), true)
 	if err != nil {
@@ -528,7 +547,9 @@ func TestTrySubagentPermissionGateFailsClosedOnAsk(t *testing.T) {
 	}
 
 	cfg.Permissions.Ask = nil
-	allow, reason, err = trySubagentPermissionGate(cfg).Check(context.Background(), "read_file", json.RawMessage(`{"path":"README.md"}`), true)
+	policy = permission.New(cfg.Permissions.Mode, cfg.Permissions.Allow, cfg.Permissions.Ask, cfg.Permissions.Deny).
+		WithAllowDynamicBashFallback(cfg.Permissions.AllowDynamicBash)
+	allow, reason, err = trySubagentPermissionGate(policy).Check(context.Background(), "read_file", json.RawMessage(`{"path":"README.md"}`), true)
 	if err != nil || !allow {
 		t.Fatalf("ordinary read-only fallback allow=%v reason=%q err=%v, want allowed", allow, reason, err)
 	}

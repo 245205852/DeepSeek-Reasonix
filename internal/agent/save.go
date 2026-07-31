@@ -477,6 +477,21 @@ func (s *Session) checkSnapshotWrite(path string, next []provider.Message, nextD
 			repairPending = false
 		}
 	}
+	if !appendShaped && baseState.ok && baseState.revisionKnown &&
+		baseState.revision == currentRevision && !contentUnchanged {
+		// Revision equality alone is not ownership proof: another writer can
+		// land transcript/event-log bytes and crash before advancing the
+		// ledger. Require the current bytes to still match this Session's
+		// persisted digest (or its pre-normalization raw form) before treating
+		// an internally reshaped snapshot as a safe full rewrite.
+		owned := s.ownsPersistedState(path, existingDigest, currentRevision, currentLedgerDigest, nextVersion)
+		if !owned && rawDiffers {
+			owned = s.ownsPersistedState(path, rawDigest, currentRevision, currentLedgerDigest, nextVersion)
+		}
+		if owned {
+			appendShaped = true
+		}
+	}
 	if appendShaped {
 		// An unknown-revision baseline (meta sidecar unreadable at load) cannot
 		// vouch for revision equality; the digest/prefix checks above already

@@ -359,12 +359,17 @@ func (a *App) TrySubagentProfile(input SubagentProfileInput, task string) (strin
 
 	reg := trySubagentToolRegistry(cfg, root, input.AllowedTools)
 
+	// The headless gate enforces the user's configured permission rules. A
+	// subagent has no UI to answer an Ask decision, so deny and ask both block.
+	policy := permission.New(cfg.Permissions.Mode, cfg.Permissions.Allow, cfg.Permissions.Ask, cfg.Permissions.Deny).
+		WithAllowDynamicBashFallback(cfg.Permissions.AllowDynamicBash)
+
 	result, err := agent.RunReadOnlySubAgentWithSession(runCtx, prov, reg, agent.NewSession(prompt), task, agent.Options{
 		MaxSteps:      12,
 		Temperature:   cfg.Agent.Temperature,
 		Pricing:       me.Price,
 		ContextWindow: me.ContextWindow,
-		Gate:          trySubagentPermissionGate(cfg),
+		Gate:          trySubagentPermissionGate(policy),
 	}, event.Discard)
 	if err != nil {
 		return "", err
@@ -372,12 +377,11 @@ func (a *App) TrySubagentProfile(input SubagentProfileInput, task string) (strin
 	return result, nil
 }
 
-// trySubagentPermissionGate is explicitly fail-closed for Ask decisions. The
-// settings preview has no approval UI, so the legacy nil-approver bootstrap
-// gate would silently allow explicit Ask rules, including read-only tools.
-func trySubagentPermissionGate(cfg *config.Config) agent.Gate {
-	policy := permission.New(cfg.Permissions.Mode, cfg.Permissions.Allow, cfg.Permissions.Ask, cfg.Permissions.Deny).
-		WithAllowDynamicBashFallback(cfg.Permissions.AllowDynamicBash)
+// trySubagentPermissionGate pins the settings-page try runner to an explicit
+// non-interactive Ask posture. Unlike the legacy bootstrap gate, this fails
+// closed when a configured rule or writer fallback needs approval: the try
+// runner has no approval UI that could answer such a request.
+func trySubagentPermissionGate(policy permission.Policy) agent.Gate {
 	return control.BuildHeadlessApprovalGate(policy, control.ToolApprovalAsk)
 }
 

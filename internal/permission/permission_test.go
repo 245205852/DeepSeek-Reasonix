@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strings"
 	"testing"
 )
 
@@ -27,7 +28,10 @@ func TestParseRule(t *testing.T) {
 		{"bash=echo (hi)", "bash", "echo (hi)", true, true},               // '=' before '(' → literal, parens kept
 		{"bash(make FOO=*)", "bash", "make FOO=*", false, true},           // '(' before '=' → still a glob
 		{"get-user", "get-user", "", false, true},
-		{"Set-Content", "Set-Content", "", false, true},
+		{"Set-Content", "Bash", "Set-Content:*", false, true},   // bare PowerShell cmdlet → shell prefix
+		{"set-content", "Bash", "set-content:*", false, true},   // PowerShell cmdlets are case-insensitive at match time
+		{"git", "git", "", false, true},                         // ordinary bare command names remain tool rules
+		{"Get-CustomThing", "Get-CustomThing", "", false, true}, // preserve existing custom Verb-Noun tool rules
 		{"", "", "", false, false},
 		{"(noTool)", "", "", false, false},
 	}
@@ -43,7 +47,7 @@ func TestParseRule(t *testing.T) {
 	}
 }
 
-func TestPowerShellLikeBareToolNamesKeepGenericRuleSemantics(t *testing.T) {
+func TestBareToolAndLegacyPowerShellRuleSemantics(t *testing.T) {
 	p := New("ask",
 		[]string{"get-user"},
 		[]string{"write-report"},
@@ -62,16 +66,13 @@ func TestPowerShellLikeBareToolNamesKeepGenericRuleSemantics(t *testing.T) {
 		t.Fatalf("hyphenated command inherited a bare tool allow = %v, want Ask", got)
 	}
 	cmdletAllow := New("ask", []string{"Set-Content"}, nil, nil)
-	if got := cmdletAllow.DecideSubject("Set-Content", false, ""); got != Allow {
-		t.Fatalf("bare cmdlet allow tool rule = %v, want Allow", got)
+	if got := cmdletAllow.DecideSubject("Set-Content", false, ""); got != Ask {
+		t.Fatalf("legacy cmdlet rule matched a custom tool = %v, want Ask", got)
 	}
-	if got := cmdletAllow.DecideSubject("bash", false, "Set-Content app.go"); got != Ask {
-		t.Fatalf("bare cmdlet allow leaked into Bash = %v, want Ask", got)
+	if got := cmdletAllow.DecideSubject("bash", false, "Set-Content app.go"); got != Allow {
+		t.Fatalf("legacy cmdlet allow did not migrate to Bash = %v, want Allow", got)
 	}
 	legacy := New("allow", nil, nil, []string{"Set-Content"})
-	if got := legacy.DecideSubject("Set-Content", true, ""); got != Deny {
-		t.Fatalf("legacy cmdlet exact tool deny = %v, want Deny", got)
-	}
 	if got := legacy.DecideSubject("bash", false, "set-content app.go"); got != Deny {
 		t.Fatalf("legacy cmdlet Bash deny = %v, want Deny", got)
 	}
@@ -255,6 +256,52 @@ type stubApprover struct {
 func (s *stubApprover) Approve(ctx context.Context, tool, subject string, args json.RawMessage) (bool, bool, error) {
 	s.calls++
 	return s.allow, s.remember, s.err
+}
+
+type policyReasonApprover struct {
+	reason string
+}
+
+func (a *policyReasonApprover) Approve(context.Context, string, string, json.RawMessage) (bool, bool, error) {
+	return true, false, nil
+}
+
+func (a *policyReasonApprover) ApproveWithPolicyReason(_ context.Context, _, _ string, _ json.RawMessage, reason string) (bool, bool, string, error) {
+	a.reason = reason
+	return true, false, "", nil
+}
+
+func TestGateReportsMatchedPermissionRule(t *testing.T) {
+	args := json.RawMessage(`{"command":"git status && git push origin main"}`)
+	approver := &policyReasonApprover{}
+	askGate := NewGate(New("allow", nil, []string{"Bash(git push:*)"}, nil), approver)
+	if allow, _, err := askGate.Check(context.Background(), "bash", args, false); err != nil || !allow {
+		t.Fatalf("ask-gated call = allow %v, err %v", allow, err)
+	}
+	if got, want := approver.reason, "Matched permission rule: ask Bash(git push:*)"; got != want {
+		t.Fatalf("approval reason = %q, want %q", got, want)
+	}
+
+	denyGate := NewGate(New("allow", nil, nil, []string{"Bash(git push:*)"}), nil)
+	allow, reason, err := denyGate.Check(context.Background(), "bash", args, false)
+	if err != nil || allow {
+		t.Fatalf("deny-gated call = allow %v, err %v", allow, err)
+	}
+	if !strings.Contains(reason, "Matched permission rule: deny Bash(git push:*)") {
+		t.Fatalf("deny reason = %q, want matched rule", reason)
+	}
+}
+
+func TestMatchedRuleDoesNotReportAskRuleOverriddenForOneEndpoint(t *testing.T) {
+	p := New("ask", nil, []string{"Edit(src/**)"}, nil).
+		WithSessionAllow([]string{"Edit(src/**)"})
+	args := json.RawMessage(`{"source_path":"src/old.go","destination_path":"generated/new.go"}`)
+	if got := p.Decide("move_file", false, args); got != Ask {
+		t.Fatalf("move decision = %v, want Ask from uncovered destination fallback", got)
+	}
+	if rule, ok := p.MatchedRule("move_file", Ask, args); ok {
+		t.Fatalf("MatchedRule = %q, want no rule provenance for fallback Ask", rule)
+	}
 }
 
 func TestGateHeadlessAllowsAsk(t *testing.T) {
