@@ -1231,6 +1231,55 @@ console.log("\ncomposer goal toggle");
 }
 
 {
+  // A backend steer rejection means the turn crossed its final admission
+  // boundary. Keep the guidance item, then submit it as a normal follow-up
+  // after TurnDone instead of treating the rejected call as consumed.
+  const dom = installDom();
+  let steerAttempts = 0;
+  const { root, calls, rerender } = await renderComposer({
+    running: true,
+    onSteer: async () => {
+      steerAttempts += 1;
+      throw new Error("turn ended before guidance could be applied");
+    },
+    onSend: (displayText, submitText) => {
+      calls.send.push(displayText);
+      calls.submit.push(submitText);
+      return Promise.resolve();
+    },
+  });
+
+  await rerender({ insertRequest: { id: 71, text: "preserve this late guidance", mode: "replace" } });
+  const sendButton = document.querySelector(".composer__btn--send") as HTMLButtonElement | null;
+  if (!sendButton) throw new Error("running composer send button did not render");
+  await act(async () => {
+    sendButton.click();
+    await flushTimers();
+  });
+  const guidanceItem = document.querySelector(".composer-guidance-item") as HTMLElement | null;
+  const guideButton = guidanceItem?.querySelector(".composer-guidance-item__guide") as HTMLButtonElement | null;
+  if (!guideButton) throw new Error("late guidance guide button did not render");
+  await act(async () => {
+    guideButton.click();
+    await flushTimers();
+  });
+
+  eq(steerAttempts, 1, "late guidance attempts one strict steer admission");
+  eq(calls.send.length, 0, "rejected steer does not open a provider turn");
+  ok(document.querySelector(".composer-guidance-item") !== null, "rejected steer remains queued");
+
+  await rerender({ running: false });
+  await waitFor("rejected steer sent as follow-up", () => calls.send.length === 1);
+  eq(calls.send[0], "preserve this late guidance", "late guidance becomes the next explicit user turn");
+  ok(document.querySelector(".composer-guidance-item") === null, "follow-up clears only after successful send");
+
+  await act(async () => {
+    root.unmount();
+  });
+  dom.window.close();
+}
+
+{
   // Reproduces #6210: a message queued while a turn is running, without the
   // explicit "guide" steer click, must not vanish when the turn ends on its
   // own — it is the user's next turn, so it should send automatically.

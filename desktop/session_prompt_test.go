@@ -3,9 +3,11 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 
 	"reasonix/internal/agent"
@@ -155,6 +157,129 @@ func TestMigratedSessionWithoutSystemPromptPersistsThroughDesktopSwitch(t *testi
 	}
 	if matches, err := filepath.Glob(filepath.Join(dest, "*-recovery-*.jsonl")); err != nil || len(matches) != 0 {
 		t.Fatalf("recovery branches after migrated switch = %v err=%v, want none", matches, err)
+	}
+}
+
+func TestParallelDesktopTabsPersistCompleteTranscriptsAcrossReload(t *testing.T) {
+	isolateDesktopUserDirs(t)
+	const (
+		tabCount    = 12
+		turnsPerTab = 6
+		systemText  = "stable desktop system prompt"
+	)
+	dir := t.TempDir()
+	tabs := make(map[string]*WorkspaceTab, tabCount)
+	tabOrder := make([]string, 0, tabCount)
+	controllers := make([]*control.Controller, 0, tabCount)
+
+	for tabIndex := 0; tabIndex < tabCount; tabIndex++ {
+		id := fmt.Sprintf("parallel-%02d", tabIndex)
+		path := filepath.Join(dir, id+".jsonl")
+		prov := &capturingProvider{}
+		exec := agent.New(prov, tool.NewRegistry(), agent.NewSession(systemText), agent.Options{}, event.Discard)
+		ctrl := control.New(control.Options{
+			Runner:       exec,
+			Executor:     exec,
+			SystemPrompt: systemText,
+			SessionDir:   dir,
+			SessionPath:  path,
+			Label:        id,
+			Sink:         event.Discard,
+		})
+		controllers = append(controllers, ctrl)
+		tabOrder = append(tabOrder, id)
+		tabs[id] = &WorkspaceTab{
+			ID:          id,
+			Ctrl:        ctrl,
+			Scope:       "global",
+			SessionPath: path,
+			Ready:       true,
+			disabledMCP: map[string]ServerView{},
+		}
+	}
+	app := &App{
+		tabs:        tabs,
+		tabOrder:    tabOrder,
+		activeTabID: tabOrder[0],
+	}
+
+	start := make(chan struct{})
+	errs := make(chan error, tabCount+1)
+	var wg sync.WaitGroup
+	for tabIndex, ctrl := range controllers {
+		tabIndex, ctrl := tabIndex, ctrl
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			for turn := 0; turn < turnsPerTab; turn++ {
+				input := fmt.Sprintf("tab-%02d-turn-%02d", tabIndex, turn)
+				if err := ctrl.RunTurn(context.Background(), input); err != nil {
+					errs <- fmt.Errorf("%s: %w", input, err)
+					return
+				}
+			}
+		}()
+	}
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		<-start
+		for round := 0; round < 3; round++ {
+			for _, id := range tabOrder {
+				if err := app.SetActiveTab(id); err != nil {
+					errs <- fmt.Errorf("switch to %s: %w", id, err)
+					return
+				}
+			}
+		}
+	}()
+
+	close(start)
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		t.Error(err)
+	}
+	if t.Failed() {
+		for _, ctrl := range controllers {
+			ctrl.Close()
+		}
+		return
+	}
+
+	for _, ctrl := range controllers {
+		if err := ctrl.Snapshot(); err != nil {
+			t.Fatalf("final snapshot %s: %v", ctrl.Label(), err)
+		}
+		ctrl.Close()
+	}
+
+	for tabIndex, id := range tabOrder {
+		path := tabs[id].SessionPath
+		reloaded, err := agent.LoadSession(path)
+		if err != nil {
+			t.Fatalf("LoadSession %s: %v", id, err)
+		}
+		msgs := reloaded.Snapshot()
+		wantMessages := 1 + turnsPerTab*2
+		if len(msgs) != wantMessages {
+			t.Fatalf("%s message count = %d, want %d: %+v", id, len(msgs), wantMessages, msgs)
+		}
+		if msgs[0].Role != provider.RoleSystem || msgs[0].Content != systemText {
+			t.Fatalf("%s system message = %+v", id, msgs[0])
+		}
+		for turn := 0; turn < turnsPerTab; turn++ {
+			user := msgs[1+turn*2]
+			assistant := msgs[2+turn*2]
+			wantUser := fmt.Sprintf("tab-%02d-turn-%02d", tabIndex, turn)
+			if user.Role != provider.RoleUser || user.Content != wantUser {
+				t.Fatalf("%s turn %d user = %+v, want %q", id, turn, user, wantUser)
+			}
+			if assistant.Role != provider.RoleAssistant || assistant.Content != "ok" {
+				t.Fatalf("%s turn %d assistant = %+v, want ok", id, turn, assistant)
+			}
+		}
 	}
 }
 

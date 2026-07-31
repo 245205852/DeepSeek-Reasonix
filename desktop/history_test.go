@@ -310,8 +310,12 @@ func TestHistoryPageFromProviderMessagesWindowsVisibleUsers(t *testing.T) {
 	if latest.Messages[0].CheckpointTurn == nil || *latest.Messages[0].CheckpointTurn != 2 {
 		t.Fatalf("second user checkpoint = %v, want 2", latest.Messages[0].CheckpointTurn)
 	}
-	if latest.Messages[2].Role != "notice" || !strings.Contains(latest.Messages[2].Content, "update the plan") {
-		t.Fatalf("steer message = %+v, want notice in second turn window", latest.Messages[2])
+	if latest.Messages[2].Role != "notice" ||
+		latest.Messages[2].Code != event.NoticeCodeUnappliedSteer ||
+		latest.Messages[2].Level != "warn" ||
+		!strings.Contains(latest.Messages[2].Content, "not applied") ||
+		!strings.Contains(latest.Messages[2].Content, "update the plan") {
+		t.Fatalf("steer message = %+v, want explicit unapplied notice in second turn window", latest.Messages[2])
 	}
 	if latest.Messages[3].Role != "user" || latest.Messages[3].Content != "third" {
 		t.Fatalf("third latest message = %+v, want third user", latest.Messages[3])
