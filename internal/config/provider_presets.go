@@ -448,7 +448,6 @@ var curatedProviderPresets = []ProviderPreset{
 			Name:             "deepseek-responses",
 			Kind:             "responses",
 			BaseURL:          "https://api.deepseek.com",
-			ModelsURL:        "https://api.deepseek.com/models",
 			Models:           deepSeekResponsesModels,
 			Default:          "deepseek-v4-flash",
 			APIKeyEnv:        "DEEPSEEK_API_KEY",

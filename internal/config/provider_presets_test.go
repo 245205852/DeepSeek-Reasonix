@@ -88,6 +88,9 @@ func TestDeepSeekResponsesPresetMatchesOfficialSupport(t *testing.T) {
 	if len(entry.Models) != 1 || entry.Models[0] != "deepseek-v4-flash" || entry.Default != "deepseek-v4-flash" {
 		t.Fatalf("deepseek responses models = %v default=%q", entry.Models, entry.Default)
 	}
+	if entry.ModelsURL != "" {
+		t.Fatalf("deepseek responses models URL = %q, want static supported-model list", entry.ModelsURL)
+	}
 }
 
 func TestCuratedProviderPresetsDisplayOrder(t *testing.T) {

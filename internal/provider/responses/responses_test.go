@@ -276,6 +276,9 @@ func TestStatefulContinuationValidatesConversationPrefix(t *testing.T) {
 	if bodies[1]["previous_response_id"] != "resp_1" || bodies[1]["input"] != "two" {
 		t.Fatalf("valid continuation = %#v", bodies[1])
 	}
+	if bodies[1]["instructions"] != "sys" {
+		t.Fatalf("valid continuation instructions = %#v, want %q", bodies[1]["instructions"], "sys")
+	}
 	if _, ok := bodies[2]["previous_response_id"]; ok {
 		t.Fatalf("session switch reused previous response: %#v", bodies[2])
 	}

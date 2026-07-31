@@ -236,6 +236,10 @@ func (c *client) buildRequestBody(req provider.Request) (map[string]any, bool, [
 		}
 		body["tools"] = tools
 	}
+	instructions, rest := splitInstructions(messages)
+	if instructions != "" {
+		body["instructions"] = instructions
+	}
 
 	c.mu.Lock()
 	previousID, expectedDigest := c.lastResponseID, c.expectedPrefixDigest
@@ -248,10 +252,6 @@ func (c *client) buildRequestBody(req provider.Request) (map[string]any, bool, [
 		return body, true, messages
 	}
 
-	instructions, rest := splitInstructions(messages)
-	if instructions != "" {
-		body["instructions"] = instructions
-	}
 	body["input"] = messagesToInput(rest)
 	return body, false, messages
 }
