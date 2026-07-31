@@ -1,13 +1,18 @@
 package main
 
 import (
+	"context"
 	"errors"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
 	"reasonix/internal/agent"
+	"reasonix/internal/control"
+	"reasonix/internal/event"
 	"reasonix/internal/provider"
+	"reasonix/internal/tool"
 )
 
 type promptResumeCtrl struct {
@@ -64,6 +69,92 @@ func TestSessionWithFreshSystemPromptPreservesLoadedRewriteBaseline(t *testing.T
 	}
 	if matches, err := filepath.Glob(filepath.Join(filepath.Dir(path), "*-recovery-*.jsonl")); err != nil || len(matches) != 0 {
 		t.Fatalf("recovery branches after owned resume rewrite = %v err=%v, want none", matches, err)
+	}
+}
+
+func TestMigratedSessionWithoutSystemPromptPersistsThroughDesktopSwitch(t *testing.T) {
+	isolateDesktopUserDirs(t)
+	src := t.TempDir()
+	dest := t.TempDir()
+	const legacy = `{"role":"user","content":"recovered after downgrade"}
+{"role":"assistant","content":"legacy answer"}
+`
+	if err := os.WriteFile(filepath.Join(src, "desktop-legacy.jsonl"), []byte(legacy), 0o644); err != nil {
+		t.Fatalf("write legacy session: %v", err)
+	}
+	if n, err := agent.MigrateLegacySessions(src, dest, nil); err != nil || n != 1 {
+		t.Fatalf("MigrateLegacySessions: n=%d err=%v", n, err)
+	}
+
+	path := filepath.Join(dest, "desktop-legacy.jsonl")
+	loaded, err := agent.LoadSession(path)
+	if err != nil {
+		t.Fatalf("LoadSession migrated: %v", err)
+	}
+	const freshSystem = "current deterministic system prompt"
+	prov := &capturingProvider{}
+	exec := agent.New(prov, tool.NewRegistry(), agent.NewSession(freshSystem), agent.Options{}, event.Discard)
+	ctrl := control.New(control.Options{
+		Runner:       exec,
+		Executor:     exec,
+		SystemPrompt: freshSystem,
+		SessionDir:   dest,
+		SessionPath:  path,
+		Label:        "migrated",
+		Sink:         event.Discard,
+	})
+	defer ctrl.Close()
+	resumeLoadedSessionAndGoal(ctrl, loaded, path, "")
+
+	if history := ctrl.History(); len(history) == 0 || history[0].Role != provider.RoleSystem || history[0].Content != freshSystem {
+		t.Fatalf("resumed history does not start with the fresh system prompt: %+v", history)
+	}
+	if err := ctrl.RunTurn(context.Background(), "new desktop turn"); err != nil {
+		t.Fatalf("RunTurn: %v", err)
+	}
+
+	active := &WorkspaceTab{
+		ID:          "legacy",
+		Ctrl:        ctrl,
+		Scope:       "global",
+		SessionPath: path,
+		Ready:       true,
+		disabledMCP: map[string]ServerView{},
+	}
+	target := &WorkspaceTab{
+		ID:          "target",
+		Scope:       "global",
+		Ready:       true,
+		disabledMCP: map[string]ServerView{},
+	}
+	app := &App{
+		tabs:        map[string]*WorkspaceTab{"legacy": active, "target": target},
+		tabOrder:    []string{"legacy", "target"},
+		activeTabID: "legacy",
+	}
+	if err := app.SetActiveTab("target"); err != nil {
+		t.Fatalf("SetActiveTab: %v", err)
+	}
+
+	reloaded, err := agent.LoadSession(path)
+	if err != nil {
+		t.Fatalf("LoadSession after switch: %v", err)
+	}
+	got := reloaded.Snapshot()
+	if len(got) != 5 {
+		t.Fatalf("reloaded message count = %d, want 5: %+v", len(got), got)
+	}
+	if got[0].Role != provider.RoleSystem || got[0].Content != freshSystem {
+		t.Fatalf("reloaded system prompt = %+v, want %q", got[0], freshSystem)
+	}
+	if got[3].Role != provider.RoleUser || got[3].Content != "new desktop turn" {
+		t.Fatalf("reloaded new user turn = %+v", got[3])
+	}
+	if got[4].Role != provider.RoleAssistant || got[4].Content != "ok" {
+		t.Fatalf("reloaded assistant turn = %+v", got[4])
+	}
+	if matches, err := filepath.Glob(filepath.Join(dest, "*-recovery-*.jsonl")); err != nil || len(matches) != 0 {
+		t.Fatalf("recovery branches after migrated switch = %v err=%v, want none", matches, err)
 	}
 }
 
