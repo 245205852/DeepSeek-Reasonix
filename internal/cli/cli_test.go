@@ -264,10 +264,8 @@ func hasPluginNamed(cfg *config.Config, name string) bool {
 }
 
 func TestMetadataCommandsDoNotProbeTerminalTheme(t *testing.T) {
-	defer func(prev func() (terminalRGB, bool)) {
-		queryTerminalBackgroundForTheme = prev
-	}(queryTerminalBackgroundForTheme)
-	queryTerminalBackgroundForTheme = func() (terminalRGB, bool) {
+	defer func(prev func() (terminalRGB, bool)) { terminalProbe = prev }(terminalProbe)
+	terminalProbe = func() (terminalRGB, bool) {
 		t.Fatal("metadata command should not query terminal background")
 		return terminalRGB{}, false
 	}
@@ -437,6 +435,18 @@ func TestParsePermissionModeClaudeAliases(t *testing.T) {
 		if err != nil || !reflect.DeepEqual(got, want) {
 			t.Errorf("parsePermissionMode(%q) = (%+v, %v), want %+v", input, got, err, want)
 		}
+	}
+}
+
+func TestResolveRunPermissionModeRequiresExplicitAuto(t *testing.T) {
+	if got, err := resolveRunPermissionMode("ask", false, false); err != nil || got != "ask" {
+		t.Fatalf("default run permission mode = (%q, %v), want ask", got, err)
+	}
+	if got, err := resolveRunPermissionMode("ask", true, false); err != nil || got != "auto" {
+		t.Fatalf("-y run permission mode = (%q, %v), want auto", got, err)
+	}
+	if got, err := resolveRunPermissionMode("dontAsk", true, true); err == nil || got != "" {
+		t.Fatalf("combined permission flags = (%q, %v), want conflict", got, err)
 	}
 }
 

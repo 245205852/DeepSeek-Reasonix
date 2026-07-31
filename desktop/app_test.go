@@ -3847,10 +3847,8 @@ func newStaleWorkspaceBindingFixtureWithLayout(t *testing.T, suffix, layoutStyle
 	isolateDesktopUserDirs(t)
 	setDesktopTestCredential(t, "TEST_MODEL_KEY", "sk-test")
 
-	// Steers and idle-steer fallbacks start real provider turns (they are no
-	// longer command-interpreted), so the fixture's provider must complete
-	// instantly instead of pointing at an unreachable host — otherwise every
-	// steer leaves the controller running for the rest of the test.
+	// Submitted turns use a real provider, so the fixture must complete them
+	// instantly instead of pointing at an unreachable host.
 	providerStub := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.WriteHeader(http.StatusOK)
@@ -4059,16 +4057,13 @@ func TestDescribeSessionBindingWorkspaceKeepsWindowsPathReadable(t *testing.T) {
 	}
 }
 
-func TestSteerForTabReconcilesStaleWorkspaceBeforeIdleFallback(t *testing.T) {
+func TestSteerForTabReconcilesStaleWorkspaceBeforeRejectingIdleGuidance(t *testing.T) {
 	f := newStaleWorkspaceBindingFixture(t, "steer_idle_fallback")
 
-	// The idle fallback submits the steer text verbatim as a provider turn
-	// (steers are never command-interpreted); the fixture's provider stub
-	// completes it instantly.
-	if err := f.app.SteerForTab(f.tab.ID, "steer guidance"); err != nil {
-		t.Fatalf("SteerForTab: %v", err)
+	err := f.app.SteerForTab(f.tab.ID, "steer guidance")
+	if err == nil || !strings.Contains(err.Error(), "remain queued") {
+		t.Fatalf("SteerForTab error = %v, want explicit rejected-guidance result", err)
 	}
-	waitNotRunning(t, f.tab.Ctrl)
 	assertTabRebuiltToPinnedWorkspace(t, f)
 }
 
@@ -4242,12 +4237,12 @@ func runQuickClickWorkspaceReconcileTest(t *testing.T, layoutStyle string) {
 	wg.Wait()
 	close(errs)
 	for err := range errs {
-		// The steer action holds a real provider turn now, so racing quick
-		// clicks may legitimately observe a busy controller. This test
-		// asserts workspace-rebuild serialization, not that every
-		// concurrent action wins the turn.
+		// Racing quick clicks may legitimately observe a busy controller or an
+		// already-ended steer target. This test asserts workspace-rebuild
+		// serialization, not that every concurrent action wins admission.
 		if strings.Contains(err.Error(), "turn already running") ||
-			strings.Contains(err.Error(), "cannot compact while a turn is running") {
+			strings.Contains(err.Error(), "cannot compact while a turn is running") ||
+			strings.Contains(err.Error(), "remain queued") {
 			continue
 		}
 		t.Error(err)
@@ -6958,6 +6953,46 @@ func TestUserTriggeredCommandsReturnErrorsWhenUnavailable(t *testing.T) {
 				t.Fatalf("error = %q, want to contain %q", err, tt.want)
 			}
 		})
+	}
+}
+
+func TestSubmitEntryPointsRejectEmptyProviderInput(t *testing.T) {
+	app := NewApp()
+	for _, tt := range []struct {
+		name string
+		call func() error
+	}{
+		{name: "plain", call: func() error { return app.SubmitToTab("missing", " \n\t ") }},
+		{name: "display", call: func() error { return app.SubmitDisplayToTab("missing", "visible prompt", " ") }},
+		{name: "delivery recovery", call: func() error {
+			return app.SubmitDeliveryRecoveryToTab("missing", "visible prompt", "")
+		}},
+		{name: "invocations", call: func() error {
+			return app.SubmitInvocationsToTab("missing", "/skill visible", "", nil)
+		}},
+		{name: "edited display", call: func() error {
+			return app.SubmitEditedDisplayToTab("missing", "visible prompt", "\n", "original prompt")
+		}},
+		{name: "initial goal", call: func() error {
+			_, err := app.SubmitInitialGoalToTab("missing", "goal", "visible prompt", "", nil, "normal", "auto", "local", 0, 0)
+			return err
+		}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			if err := tt.call(); !errors.Is(err, errEmptyTurnInput) {
+				t.Fatalf("error = %v, want errEmptyTurnInput", err)
+			}
+		})
+	}
+}
+
+func TestInvocationEntryPointsAllowEmptyExplicitTaskForSkillOnlyTurn(t *testing.T) {
+	invocations := []InvocationRequest{{Name: "skill", Kind: "skill"}}
+	if err := validateInvocationTurnInput("", invocations); err != nil {
+		t.Fatalf("skill-only invocation input rejected: %v", err)
+	}
+	if err := validateInvocationTurnInput("", nil); !errors.Is(err, errEmptyTurnInput) {
+		t.Fatalf("empty input without invocations = %v, want errEmptyTurnInput", err)
 	}
 }
 

@@ -590,6 +590,7 @@ await act(async () => {
   await contextDGate.promise;
   await flushPromises();
 });
+eq(contextDCalls, 1, "open topic hydration issues one context request");
 ok(controller?.state.items.some((item) => item.kind === "user" && item.text === "history D") ?? false, "topic history replaces the hydration placeholder");
 eq(controller?.state.hydratePlaceholderItems?.length ?? 0, 0, "topic history clears the hydration placeholder");
 

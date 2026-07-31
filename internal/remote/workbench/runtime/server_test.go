@@ -33,9 +33,11 @@ import (
 )
 
 type fakeController struct {
-	model   string
-	history []provider.Message
-	status  control.RuntimeStatus
+	model         string
+	history       []provider.Message
+	status        control.RuntimeStatus
+	steerAccepted bool
+	steers        []string
 }
 
 type blockingController struct {
@@ -298,6 +300,13 @@ func (c *fakeController) RuntimeStatus() control.RuntimeStatus {
 func (c *fakeController) Submit(input string) {
 	c.history = append(c.history, provider.Message{Role: provider.RoleUser, Content: input})
 }
+func (c *fakeController) TrySteer(text string) bool {
+	if !c.steerAccepted {
+		return false
+	}
+	c.steers = append(c.steers, text)
+	return true
+}
 func (c *fakeController) Cancel()               {}
 func (c *fakeController) Close()                {}
 func (c *fakeController) SessionPath() string   { return "" }
@@ -502,6 +511,44 @@ func TestRuntimeMutationRequestIDConflictPrecedesEpochChecks(t *testing.T) {
 	var remoteErr *protocol.RemoteError
 	if !errors.As(err, &remoteErr) || remoteErr.Code != protocol.ErrRequestIDConflict {
 		t.Fatalf("conflicting request error = %v, want REQUEST_ID_CONFLICT", err)
+	}
+}
+
+func TestRuntimeSteerReportsTurnExitRaceInsteadOfFalseAcceptance(t *testing.T) {
+	srv := New(Options{Workspace: t.TempDir(), Version: "test"})
+	ctrl := &fakeController{model: "local/stub"}
+	target := srv.installTestSession(ctrl)
+	turnID := protocol.TurnID("turn_test")
+	srv.mu.Lock()
+	srv.sessions[target.SessionID].currentTurn = turnID
+	srv.mu.Unlock()
+	params := protocol.TurnSteerParams{
+		SessionMutation: protocol.SessionMutation{
+			RequestID:            "request-steer",
+			ExpectedHostEpoch:    srv.hostEpoch,
+			Target:               target,
+			ExpectedRuntimeEpoch: "runtime_test",
+		},
+		ExpectedTurnID: turnID,
+		Text:           "use plan B",
+	}
+
+	if _, err := srv.steer(params); err == nil {
+		t.Fatal("rejected steer returned false acceptance")
+	} else {
+		var remoteErr *protocol.RemoteError
+		if !errors.As(err, &remoteErr) || remoteErr.Code != protocol.ErrTurnNotActive {
+			t.Fatalf("rejected steer error = %v, want TURN_NOT_ACTIVE", err)
+		}
+	}
+
+	ctrl.steerAccepted = true
+	result, err := srv.steer(params)
+	if err != nil {
+		t.Fatalf("accepted steer: %v", err)
+	}
+	if !result.Accepted || result.TurnID != turnID || len(ctrl.steers) != 1 || ctrl.steers[0] != params.Text {
+		t.Fatalf("accepted steer result=%+v steers=%v", result, ctrl.steers)
 	}
 }
 
@@ -1749,6 +1796,84 @@ func TestRuntimeGitEmptyCollectionsEncodeAsArrays(t *testing.T) {
 	encodedDetail, err := json.Marshal(detail)
 	if err != nil || !bytes.Contains(encodedDetail, []byte(`"files":[]`)) {
 		t.Fatalf("encoded empty commit detail = %s err=%v", encodedDetail, err)
+	}
+}
+
+func TestWorkspaceCatalogEmptyEffortLevelsEncodeAsArray(t *testing.T) {
+	srv := New(Options{Workspace: t.TempDir(), Version: "test"})
+	hostSide, desktopSide := net.Pipe()
+	hostWire := rpcwire.NewConn(hostSide, hostSide, rpcwire.Options{
+		Name: "workspace-catalog-host", StrictJSONRPC: true,
+		MaxInboundBytes: protocol.FrameBytes, MaxOutboundBytes: protocol.FrameBytes,
+	})
+	desktopWire := rpcwire.NewConn(desktopSide, desktopSide, rpcwire.Options{
+		Name: "workspace-catalog-desktop", StrictJSONRPC: true,
+		MaxInboundBytes: protocol.FrameBytes, MaxOutboundBytes: protocol.FrameBytes,
+	})
+	desktopBroker, err := remotebroker.Attach(desktopWire, remotebroker.Options{
+		Catalog: func(context.Context, map[string]struct{}) ([]protocol.BrokerProviderDescriptor, error) {
+			return []protocol.BrokerProviderDescriptor{
+				{Ref: "local/basic", DisplayName: "Local", Model: "basic"},
+				{
+					Ref: "local/reasoning", DisplayName: "Local", Model: "reasoning",
+					SupportedEfforts: []string{"medium", "high"}, DefaultEffort: "high",
+				},
+			}, nil
+		},
+		Open: func(context.Context, string, string, provider.Request) (<-chan provider.Chunk, error) {
+			return nil, errors.New("unexpected provider open")
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := desktopBroker.Activate(); err != nil {
+		t.Fatal(err)
+	}
+	if err := srv.broker.Attach(hostWire, 1); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	t.Cleanup(func() {
+		cancel()
+		desktopBroker.Close()
+		_ = hostSide.Close()
+		_ = desktopSide.Close()
+	})
+	go desktopWire.Serve(ctx)
+	go hostWire.Serve(ctx)
+
+	result, err := srv.workspaceCatalog(protocol.WorkspaceCatalogParams{
+		ExpectedHostEpoch: srv.hostEpoch,
+		WorkspaceID:       srv.workspaceID,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Models) != 2 {
+		t.Fatalf("models = %#v, want two catalog entries", result.Models)
+	}
+	if levels := result.Models[0].Effort.Levels; levels == nil || len(levels) != 0 {
+		t.Fatalf("basic effort levels = %#v, want allocated empty slice", levels)
+	}
+	if levels := result.Models[1].Effort.Levels; len(levels) != 2 || levels[0] != "medium" || levels[1] != "high" {
+		t.Fatalf("reasoning effort levels = %#v, want [medium high]", levels)
+	}
+
+	raw, err := json.Marshal(result)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(raw, []byte(`"levels":[]`)) {
+		t.Fatalf("encoded workspace catalog = %s, want empty effort levels array", raw)
+	}
+	decoded, err := protocol.DecodeResult(protocol.MethodCatalogWorkspace, raw)
+	if err != nil {
+		t.Fatalf("decode workspace catalog: %v", err)
+	}
+	decodedCatalog := decoded.(protocol.WorkspaceCatalogResult)
+	if levels := decodedCatalog.Models[0].Effort.Levels; levels == nil || len(levels) != 0 {
+		t.Fatalf("decoded basic effort levels = %#v, want allocated empty slice", levels)
 	}
 }
 

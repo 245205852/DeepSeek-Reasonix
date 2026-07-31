@@ -79,12 +79,20 @@ func New(cfg provider.Config) (provider.Provider, error) {
 	headers, _ := cfg.Extra["headers"].(map[string]string)
 	extraBody, _ := cfg.Extra["extra_body"].(map[string]any)
 	vision, _ := cfg.Extra["vision"].(bool)
+	explicitModelVision, _ := cfg.Extra["vision_model_explicit"].(bool)
+	officialDeepSeek := IsDeepSeek(cfg.BaseURL)
+	// DeepSeek's official chat API accepts string message content only. Keep
+	// this provider-boundary guard even though config capability resolution
+	// normally prevents image attachments from reaching this layer. A positive
+	// model-scoped capability can opt in without letting stale provider-wide
+	// vision=true settings affect current text-only models.
+	vision = vision && (!officialDeepSeek || explicitModelVision)
 	visionDetail, _ := cfg.Extra["vision_detail"].(string)
 	visionDetail = strings.ToLower(strings.TrimSpace(visionDetail))
 	if visionDetail != "low" && visionDetail != "high" {
 		visionDetail = "" // auto — omit the field
 	}
-	deepseek := protocol == "deepseek" || (protocol == "" && IsDeepSeek(cfg.BaseURL))
+	deepseek := protocol == "deepseek" || (protocol == "" && officialDeepSeek)
 	minimax := protocol == "" && IsMiniMax(cfg.BaseURL)
 	zhipu := protocol == "" && IsZhipu(cfg.BaseURL)
 	longcat := protocol == "" && IsLongCat(cfg.BaseURL)
@@ -844,28 +852,55 @@ func (c *client) readStream(ctx context.Context, resp *http.Response, out chan<-
 	return emitted, nil
 }
 
-// normaliseUsage folds the two cache-hit shapes the OpenAI-compatible ecosystem
-// uses into a single Usage: DeepSeek puts prompt_cache_{hit,miss}_tokens at the
-// top of usage; OpenAI and MiMo put it nested under prompt_tokens_details.
-// Whichever side reports non-zero wins; miss is derived when only hit is given.
+// normaliseUsage folds the cache shapes used by OpenAI-compatible providers into
+// a single Usage. DeepSeek reports prompt_cache_{hit,miss}_tokens at the top of
+// usage; OpenAI and MiMo put cache hits under prompt_tokens_details; some
+// compatible gateways return Anthropic-style input/cache counters instead.
 // Reasoning tokens land in completion_tokens_details on thinking-mode models.
 func normaliseUsage(u *wireUsage) *provider.Usage {
+	prompt := u.PromptTokens
+	anthropicPrompt := prompt == 0 &&
+		(u.InputTokens != 0 || u.CacheCreationInputTokens != 0 || u.CacheReadInputTokens != 0)
+	if anthropicPrompt {
+		// Anthropic-style input_tokens excludes both cache reads and cache
+		// writes, while Reasonix PromptTokens represents the complete input.
+		prompt = u.InputTokens + u.CacheCreationInputTokens + u.CacheReadInputTokens
+	}
+	completion := u.CompletionTokens
+	if completion == 0 {
+		completion = u.OutputTokens
+	}
+	total := u.TotalTokens
+	if total == 0 && (prompt != 0 || completion != 0) {
+		total = prompt + completion
+	}
+
 	hit := u.PromptCacheHitTokens
 	miss := u.PromptCacheMissTokens
 	if hit == 0 && u.PromptTokensDetails != nil {
 		hit = u.PromptTokensDetails.CachedTokens
 	}
-	if miss == 0 && hit > 0 && u.PromptTokens > hit {
-		miss = u.PromptTokens - hit
+	if hit == 0 {
+		hit = u.CacheReadInputTokens
+	}
+	if miss == 0 {
+		switch {
+		case anthropicPrompt:
+			// Cache writes are still uncached input for Reasonix pricing and
+			// cache-ratio accounting.
+			miss = u.InputTokens + u.CacheCreationInputTokens
+		case hit > 0 && prompt > hit:
+			miss = prompt - hit
+		}
 	}
 	reasoning := 0
 	if u.CompletionTokensDetails != nil {
 		reasoning = u.CompletionTokensDetails.ReasoningTokens
 	}
 	return &provider.Usage{
-		PromptTokens:     u.PromptTokens,
-		CompletionTokens: u.CompletionTokens,
-		TotalTokens:      u.TotalTokens,
+		PromptTokens:     prompt,
+		CompletionTokens: completion,
+		TotalTokens:      total,
 		CacheHitTokens:   hit,
 		CacheMissTokens:  miss,
 		ReasoningTokens:  reasoning,
@@ -1014,16 +1049,19 @@ type streamResponse struct {
 	} `json:"error"`
 }
 
-// wireUsage covers both DeepSeek's top-level cache fields and the
-// OpenAI/MiMo nested details — normaliseUsage chooses whichever side
-// reports values.
+// wireUsage covers DeepSeek's top-level cache fields, OpenAI/MiMo's nested
+// details, and Anthropic-style fallbacks returned by compatible gateways.
 type wireUsage struct {
-	PromptTokens          int `json:"prompt_tokens"`
-	CompletionTokens      int `json:"completion_tokens"`
-	TotalTokens           int `json:"total_tokens"`
-	PromptCacheHitTokens  int `json:"prompt_cache_hit_tokens"`
-	PromptCacheMissTokens int `json:"prompt_cache_miss_tokens"`
-	PromptTokensDetails   *struct {
+	PromptTokens             int `json:"prompt_tokens"`
+	CompletionTokens         int `json:"completion_tokens"`
+	TotalTokens              int `json:"total_tokens"`
+	InputTokens              int `json:"input_tokens"`
+	OutputTokens             int `json:"output_tokens"`
+	PromptCacheHitTokens     int `json:"prompt_cache_hit_tokens"`
+	PromptCacheMissTokens    int `json:"prompt_cache_miss_tokens"`
+	CacheCreationInputTokens int `json:"cache_creation_input_tokens"`
+	CacheReadInputTokens     int `json:"cache_read_input_tokens"`
+	PromptTokensDetails      *struct {
 		CachedTokens int `json:"cached_tokens"`
 	} `json:"prompt_tokens_details"`
 	CompletionTokensDetails *struct {

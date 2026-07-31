@@ -72,6 +72,9 @@ func TestDynamicBashRequiresInteractiveHumanInAutoAndApprovedPlan(t *testing.T) 
 			if approval.Fresh {
 				t.Fatal("dynamic Bash must keep the ordinary four-choice approval UI")
 			}
+			if approval.Reason != dynamicBashApprovalReason {
+				t.Fatalf("dynamic Bash approval reason = %q, want actionable classification", approval.Reason)
+			}
 			assertDynamicApprovalPending(t, done)
 			c.Approve(approval.ID, true, false, false)
 			select {
@@ -285,7 +288,7 @@ func TestHeadlessExactOnlyBashApprovalModes(t *testing.T) {
 		mode string
 		want bool
 	}{
-		{mode: ToolApprovalAsk, want: true},
+		{mode: ToolApprovalAsk},
 		{mode: ToolApprovalAuto, want: true},
 		{mode: ToolApprovalDontAsk},
 		{mode: ToolApprovalYolo, want: true},

@@ -107,54 +107,54 @@ func Run(args []string, version string) int {
 		configureCLIThemeFromConfigForTTYOutput()
 		return setupConfig(rest)
 	case "config":
-		configureCLIThemeFromConfigNoProbe()
+		configureCLIThemeFromConfig()
 		return configCommand(rest)
 	case "init":
 		// Project memory (AGENTS.md) is model-generated in-session — `/init` runs
 		// the codebase analysis. This CLI entry just points there (and to `setup`
 		// for config), so `reasonix init` isn't a dead end.
-		configureCLIThemeFromConfigNoProbe()
+		configureCLIThemeFromConfig()
 		return initHint()
 	case "acp":
-		configureCLIThemeFromConfigNoProbe()
+		configureCLIThemeFromConfig()
 		return acpCommand(rest, version)
 	case "mcp":
-		configureCLIThemeFromConfigNoProbe()
+		configureCLIThemeFromConfig()
 		return mcpCommand(rest)
 	case "remote":
-		configureCLIThemeFromConfigNoProbe()
+		configureCLIThemeFromConfig()
 		return remoteCommand(rest, version)
 	case "plugin":
-		configureCLIThemeFromConfigNoProbe()
+		configureCLIThemeFromConfig()
 		return pluginCommand(rest)
 	case "subagent":
 		configureCLIThemeFromConfigForTTYOutput()
 		return subagentCommand(rest)
 	case "doctor":
 		if !doctorRepair {
-			configureCLIThemeFromConfigNoProbe()
+			configureCLIThemeFromConfig()
 		}
 		return doctorCommand(rest, version)
 	case "report":
-		configureCLIThemeFromConfigNoProbe()
+		configureCLIThemeFromConfig()
 		return reportCommand(rest)
 	case "session":
-		configureCLIThemeFromConfigNoProbe()
+		configureCLIThemeFromConfig()
 		return sessionCommand(rest)
 	case "hook", "hooks":
-		configureCLIThemeFromConfigNoProbe()
+		configureCLIThemeFromConfig()
 		return hookCommand(rest)
 	case "task":
-		configureCLIThemeFromConfigNoProbe()
+		configureCLIThemeFromConfig()
 		return taskCommand(rest)
 	case "review":
-		configureCLIThemeFromConfigNoProbe()
+		configureCLIThemeFromConfig()
 		return reviewCommand(rest)
 	case "bot":
-		configureCLIThemeFromConfigNoProbe()
+		configureCLIThemeFromConfig()
 		return botCommand(rest, version)
 	case "upgrade", "update":
-		configureCLIThemeFromConfigNoProbe()
+		configureCLIThemeFromConfig()
 		return upgradeCommand(rest, version)
 	case "version", "--version", "-v":
 		fmt.Println("reasonix", version)
@@ -222,14 +222,10 @@ func configureCLIThemeFromConfig() {
 
 func configureCLIThemeFromConfigForTTYOutput() {
 	if isTTY(os.Stdout) {
-		configureCLIThemeFromConfig()
+		withTerminalProbe(configureCLIThemeFromConfig)
 		return
 	}
-	configureCLIThemeFromConfigNoProbe()
-}
-
-func configureCLIThemeFromConfigNoProbe() {
-	withoutTerminalProbe(configureCLIThemeFromConfig)
+	configureCLIThemeFromConfig()
 }
 
 // setupProfile builds a ready-to-drive Controller from config via boot.Build.
@@ -317,6 +313,16 @@ func parsePermissionMode(value string) (cliPermissionMode, error) {
 	default:
 		return cliPermissionMode{}, fmt.Errorf("unknown permission mode %q (want manual, ask, auto, acceptEdits, dontAsk, plan, or bypassPermissions)", value)
 	}
+}
+
+func resolveRunPermissionMode(value string, auto, modeExplicit bool) (string, error) {
+	if !auto {
+		return value, nil
+	}
+	if modeExplicit {
+		return "", errors.New("--auto/-y cannot be combined with --permission-mode")
+	}
+	return "auto", nil
 }
 
 func applyPermissionMode(ctrl *control.Controller, mode cliPermissionMode) {
@@ -444,6 +450,7 @@ func runAgent(args []string, version string) int {
 	copySession := fs.Bool("copy", false, "with --resume/--continue: duplicate the session and continue in the copy (escape hatch when the original is held by another Reasonix process)")
 	effort := fs.String("effort", "", "session reasoning effort override")
 	permissionMode := fs.String("permission-mode", "ask", "permission mode: manual | ask | auto | acceptEdits | dontAsk | plan | bypassPermissions")
+	autoApprove := fs.BoolP("auto", "y", false, "explicitly auto-approve ordinary writer fallbacks (alias for --permission-mode auto)")
 	printOnly := fs.BoolP("print", "p", false, "print only the final response")
 	eventsJSONL := fs.Bool("events-jsonl", false, "emit a redacted structured event stream as JSONL")
 	outputFormat := fs.String("output-format", "text", "output format: text | json | stream-json")
@@ -455,6 +462,12 @@ func runAgent(args []string, version string) int {
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
+	resolvedPermissionMode, err := resolveRunPermissionMode(*permissionMode, *autoApprove, fs.Changed("permission-mode"))
+	if err != nil {
+		fmt.Fprintln(os.Stderr, i18n.M.ErrorPrefix, err)
+		return 2
+	}
+	*permissionMode = resolvedPermissionMode
 	allowedTools, err := splitAllowedToolRules(allowedToolValues)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, i18n.M.ErrorPrefix, err)
@@ -622,9 +635,9 @@ func runAgent(args []string, version string) int {
 	// non-blocking headless gate instead — passed into boot.Build so every
 	// headless-only gate it constructs (task/read_only_task, writer-capable
 	// skill sub-agents, the planner runner) gets the same contract as the parent
-	// executor, not just the top-level one. Default/ask and acceptEdits already
-	// keep the default headless gate (ask decisions resolve to allow); only
-	// auto/dontAsk/yolo need the explicit contract.
+	// executor, not just the top-level one. Default/ask fails closed because no
+	// UI can answer; unattended writes require explicit --auto/-y,
+	// --permission-mode auto, or yolo.
 	overrides := cliBuildOverrides{
 		Effort:               effortOverride,
 		PermissionAllow:      allowedTools,

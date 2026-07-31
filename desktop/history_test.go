@@ -82,18 +82,77 @@ func TestHistoryMessagesPreferPersistedRawUserContent(t *testing.T) {
 	const rendered = "<capability-route version=\"1\">\nuse review\n</capability-route>\n\nfix the bug"
 	msgs := []provider.Message{{Role: provider.RoleUser, Content: rendered, RawContent: raw}}
 
-	got := historyMessages(msgs, func(string) string {
-		t.Fatal("raw_content should make provider wrapper parsing unnecessary")
-		return ""
-	})
+	got := historyMessages(msgs, historyReplayUserContent)
 	if len(got) != 1 || got[0].Content != raw {
 		t.Fatalf("history user content = %+v, want raw %q", got, raw)
 	}
-	if got[0].SubmitText != raw {
-		t.Fatalf("history submit text = %q, want raw %q", got[0].SubmitText, raw)
+	if got[0].SubmitText != "" {
+		t.Fatalf("provider-only wrapper should not become replay text, got %q", got[0].SubmitText)
 	}
-	if strings.Contains(got[0].Content, "capability-route") {
+	if strings.Contains(got[0].Content, "capability-route") || strings.Contains(got[0].SubmitText, "capability-route") {
 		t.Fatalf("provider-only wrapper leaked into history: %+v", got[0])
+	}
+}
+
+func TestHistoryMessagesRecoverLegacyExpandedPasteWithoutSidecar(t *testing.T) {
+	const label = "[已粘贴文本 #1 · 3 行]"
+	const display = "review this\n\n" + label
+	const expanded = display + "\n\n--- Begin " + label + " ---\nfirst\nsecond\nthird\n--- End " + label + " ---"
+	const rendered = "<active-goal>\nship the release\n</active-goal>\n\n" + expanded
+	msgs := []provider.Message{{Role: provider.RoleUser, Content: rendered, RawContent: expanded}}
+
+	got := historyMessages(msgs, historyReplayUserContent)
+	if len(got) != 1 || got[0].Content != display {
+		t.Fatalf("legacy pasted display = %+v, want %q", got, display)
+	}
+	if got[0].SubmitText != expanded {
+		t.Fatalf("legacy pasted replay = %q, want expanded user input", got[0].SubmitText)
+	}
+	if strings.Contains(got[0].SubmitText, "<active-goal>") {
+		t.Fatalf("transient goal leaked into legacy replay: %+v", got[0])
+	}
+}
+
+func TestHistoryMessagesExpandedRawSupportsSidecarAndPreviousClients(t *testing.T) {
+	const label = "[Pasted text #1 · 2 lines]"
+	const display = "inspect\n\n" + label
+	const expanded = display + "\n\n--- Begin " + label + " ---\none\ntwo\n--- End " + label + " ---"
+	const rendered = "<capability-route version=\"1\">\nuse review\n</capability-route>\n\n" + expanded
+	msgs := []provider.Message{{Role: provider.RoleUser, Content: rendered, RawContent: expanded}}
+
+	// Previous desktop releases use RawContent as their replay source. Keeping
+	// the expanded markers there lets them reconstruct the same inline card
+	// instead of rendering an opaque label with no accessible payload.
+	previousReplay := agent.UserMessageText(msgs[0])
+	if !strings.Contains(previousReplay, "--- Begin "+label+" ---") || !strings.Contains(previousReplay, "--- End "+label+" ---") {
+		t.Fatalf("previous-client replay lost pasted payload markers: %q", previousReplay)
+	}
+
+	got := historyMessages(msgs, func(content string) string {
+		if content != rendered {
+			t.Fatalf("sidecar resolver content = %q, want rendered content", content)
+		}
+		return display
+	})
+	if len(got) != 1 || got[0].Content != display || got[0].SubmitText != expanded {
+		t.Fatalf("legacy sidecar history = %+v, want display %q and expanded replay", got, display)
+	}
+	if strings.Contains(got[0].SubmitText, "capability-route") {
+		t.Fatalf("provider-only wrapper leaked into sidecar replay: %+v", got[0])
+	}
+}
+
+func TestHistoryMessagesLegacyReferenceReplayExcludesResolvedContext(t *testing.T) {
+	const raw = "@src/main.go explain the entrypoint"
+	const rendered = "<capability-route version=\"1\">\nuse review\n</capability-route>\n\nReferenced context:\n\n<file path=\"src/main.go\">\npackage main\n</file>\n\n" + raw
+	msgs := []provider.Message{{Role: provider.RoleUser, Content: rendered, RawContent: raw}}
+
+	got := historyMessages(msgs, historyReplayUserContent)
+	if len(got) != 1 || got[0].Content != raw || got[0].SubmitText != "" {
+		t.Fatalf("legacy reference history = %+v, want compact raw replay", got)
+	}
+	if strings.Contains(got[0].Content, "<file") || strings.Contains(got[0].SubmitText, "<file") {
+		t.Fatalf("resolved reference leaked into editable history: %+v", got[0])
 	}
 }
 
@@ -223,7 +282,10 @@ func TestHistoryPageFromProviderMessagesWindowsVisibleUsers(t *testing.T) {
 		{Role: provider.RoleAssistant, Content: "hidden continuation"},
 		{Role: provider.RoleUser, Content: "second"},
 		{Role: provider.RoleAssistant, Content: "two"},
-		{Role: provider.RoleUser, Content: agent.MidTurnSteerPrefix + "\nupdate the plan"},
+		{
+			Role: provider.RoleTool, Content: agent.MidTurnSteerPrefix + "\nupdate the plan",
+			ToolCallID: provider.LocalOnlyToolID, Name: provider.LocalOnlyToolName, LocalOnly: true,
+		},
 		{Role: provider.RoleUser, Content: "third"},
 		{Role: provider.RoleAssistant, Content: "three"},
 	}
@@ -248,8 +310,12 @@ func TestHistoryPageFromProviderMessagesWindowsVisibleUsers(t *testing.T) {
 	if latest.Messages[0].CheckpointTurn == nil || *latest.Messages[0].CheckpointTurn != 2 {
 		t.Fatalf("second user checkpoint = %v, want 2", latest.Messages[0].CheckpointTurn)
 	}
-	if latest.Messages[2].Role != "notice" || !strings.Contains(latest.Messages[2].Content, "update the plan") {
-		t.Fatalf("steer message = %+v, want notice in second turn window", latest.Messages[2])
+	if latest.Messages[2].Role != "notice" ||
+		latest.Messages[2].Code != event.NoticeCodeUnappliedSteer ||
+		latest.Messages[2].Level != "warn" ||
+		!strings.Contains(latest.Messages[2].Content, "not applied") ||
+		!strings.Contains(latest.Messages[2].Content, "update the plan") {
+		t.Fatalf("steer message = %+v, want explicit unapplied notice in second turn window", latest.Messages[2])
 	}
 	if latest.Messages[3].Role != "user" || latest.Messages[3].Content != "third" {
 		t.Fatalf("third latest message = %+v, want third user", latest.Messages[3])
@@ -823,6 +889,58 @@ func TestPreviewSessionMessagesLoadsWithoutResuming(t *testing.T) {
 	}
 }
 
+func TestPreviewSessionMessagesUpgradesLegacyExpandedPaste(t *testing.T) {
+	const label = "[Pasted text #1 · 2 lines]"
+	const display = "inspect this\n\n" + label
+	const expanded = display + "\n\n--- Begin " + label + " ---\none\ntwo\n--- End " + label + " ---"
+	const rendered = "<capability-route version=\"1\">\nuse review\n</capability-route>\n\n" + expanded
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "legacy.jsonl")
+	session := agent.NewSession("")
+	session.Add(provider.Message{Role: provider.RoleUser, Content: rendered, RawContent: expanded})
+	if err := session.Save(path); err != nil {
+		t.Fatalf("Save legacy session: %v", err)
+	}
+	if err := recordSessionDisplay(dir, path, rendered, display); err != nil {
+		t.Fatalf("record legacy display: %v", err)
+	}
+
+	got, err := previewSessionMessages(dir, path)
+	if err != nil {
+		t.Fatalf("previewSessionMessages: %v", err)
+	}
+	if len(got) != 1 || got[0].Content != display || got[0].SubmitText != expanded {
+		t.Fatalf("upgraded legacy preview = %+v, want display %q and expanded replay", got, display)
+	}
+	if strings.Contains(got[0].SubmitText, "capability-route") {
+		t.Fatalf("provider-only wrapper leaked after session restart: %+v", got[0])
+	}
+}
+
+func TestPreviewSessionMessagesUpgradesContentOnlyExpandedPaste(t *testing.T) {
+	const label = "[Pasted text #1 · 2 lines]"
+	const display = "inspect this\n\n" + label
+	const expanded = display + "\n\n--- Begin " + label + " ---\none\ntwo\n--- End " + label + " ---"
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "content-only.jsonl")
+	session := agent.NewSession("")
+	// Releases before Context Engine v2 persisted user turns without RawContent.
+	session.Add(provider.Message{Role: provider.RoleUser, Content: expanded})
+	if err := session.Save(path); err != nil {
+		t.Fatalf("Save content-only session: %v", err)
+	}
+
+	got, err := previewSessionMessages(dir, path)
+	if err != nil {
+		t.Fatalf("previewSessionMessages: %v", err)
+	}
+	if len(got) != 1 || got[0].Content != display || got[0].SubmitText != expanded {
+		t.Fatalf("upgraded content-only preview = %+v, want display %q and expanded replay", got, display)
+	}
+}
+
 func TestPreviewSessionMessagesIncludesProcessEvents(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "events.jsonl")
@@ -965,7 +1083,7 @@ func TestResumeSessionForTabTargetsSpecifiedTab(t *testing.T) {
 	if filepath.Clean(savedInactive) != filepath.Clean(targetPath) {
 		t.Fatalf("saved inactive session path = %q, want %q", savedInactive, targetPath)
 	}
-	if len(got) != 1 || got[0].Content != "target prompt" {
+	if len(got) == 0 || got[len(got)-1].Content != "target prompt" {
 		t.Fatalf("resumed history = %+v, want target prompt", got)
 	}
 }
@@ -1042,7 +1160,7 @@ func TestResumeSessionForTabDetachesRunningRuntimeForDifferentSessionPath(t *tes
 	if gotPath := app.tabs[tab.ID].Ctrl.SessionPath(); gotPath != sessionB {
 		t.Fatalf("visible tab session path = %q, want %q", gotPath, sessionB)
 	}
-	if len(got) != 1 || got[0].Content != "session B prompt" {
+	if len(got) == 0 || got[len(got)-1].Content != "session B prompt" {
 		t.Fatalf("resumed history = %+v, want session B prompt", got)
 	}
 
@@ -1124,7 +1242,7 @@ func TestRebindTabToLoadedSessionReusesPreloadedTranscript(t *testing.T) {
 		t.Fatalf("rebindTabToLoadedSessionPath: %v", err)
 	}
 	got := app.HistoryForTab(tab.ID)
-	if len(got) != 1 || got[0].Content != "target prompt" {
+	if len(got) == 0 || got[len(got)-1].Content != "target prompt" {
 		t.Fatalf("rebound history = %+v, want target prompt", got)
 	}
 	if gotPath := app.tabs[tab.ID].Ctrl.SessionPath(); gotPath != targetPath {
@@ -1199,6 +1317,211 @@ func TestRebindTabToLoadedSessionPersistsAndRestoresSessionProfile(t *testing.T)
 	}
 	if got := currentTabToolApprovalMode(tab); got != control.ToolApprovalYolo {
 		t.Fatalf("rebound tool approval = %q, want yolo", got)
+	}
+}
+
+func TestRebindTabToDetachedSessionPreservesRunningSourceRuntime(t *testing.T) {
+	isolateDesktopUserDirs(t)
+	root := globalTabWorkspaceRoot()
+	dir := desktopSessionDir(root)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("mkdir session dir: %v", err)
+	}
+
+	sourcePath := filepath.Join(dir, "running-source.jsonl")
+	targetPath := filepath.Join(dir, "detached-target.jsonl")
+	writeHistoryTestSession(t, sourcePath, "source prompt")
+	writeHistoryTestSession(t, targetPath, "target prompt")
+	loaded, err := agent.LoadSession(targetPath)
+	if err != nil {
+		t.Fatalf("load target: %v", err)
+	}
+
+	app := NewApp()
+	app.ctx = context.Background()
+	app.readyHook = func() {}
+
+	sourceRunner := &blockingRunner{started: make(chan struct{}), release: make(chan struct{})}
+	sourceSink := &tabEventSink{tabID: "visible", app: app, ctx: app.ctx}
+	targetSink := &tabEventSink{tabID: "detached", app: app}
+	installNoopRuntimeEvents(app, sourceSink, targetSink)
+	sourceCtrl := control.New(control.Options{
+		Runner: sourceRunner, SessionDir: dir, SessionPath: sourcePath,
+		Label: "source", Sink: sourceSink,
+	})
+	targetCtrl := control.New(control.Options{
+		SessionDir: dir, SessionPath: targetPath, Label: "target", Sink: targetSink,
+	})
+	tab := &WorkspaceTab{
+		ID: "visible", Scope: "global", WorkspaceRoot: root,
+		SessionPath: sourcePath, Ctrl: sourceCtrl, Ready: true, sink: sourceSink,
+		disabledMCP: map[string]ServerView{},
+	}
+	app.tabs[tab.ID] = tab
+	app.tabOrder = []string{tab.ID}
+	app.activeTabID = tab.ID
+	if err := tab.ensureSessionLease(sourcePath); err != nil {
+		t.Fatalf("lease source: %v", err)
+	}
+	app.mu.Lock()
+	app.newSessionRuntimeLocked(tab, sessionRuntimeKey(sourcePath))
+	app.advanceSessionRuntimeEpochLocked(tab)
+	app.mu.Unlock()
+
+	targetLease, err := agent.TryAcquireSessionLease(targetPath)
+	if err != nil {
+		t.Fatalf("lease target: %v", err)
+	}
+	detachedTarget := &WorkspaceTab{
+		ID: detachedRuntimeTabID(sessionRuntimeKey(targetPath)), Scope: "global",
+		WorkspaceRoot: root, SessionPath: targetPath, Ctrl: targetCtrl,
+		Ready: true, sink: targetSink, disabledMCP: map[string]ServerView{},
+	}
+	detachedTarget.adoptSessionLease(targetLease)
+	app.mu.Lock()
+	app.detachedSessions[sessionRuntimeKey(targetPath)] = detachedTarget
+	app.newSessionRuntimeLocked(detachedTarget, sessionRuntimeKey(targetPath))
+	app.advanceSessionRuntimeEpochLocked(detachedTarget)
+	app.mu.Unlock()
+	sourceReleased := false
+	t.Cleanup(func() {
+		if !sourceReleased {
+			close(sourceRunner.release)
+		}
+		sourceCtrl.Close()
+		targetCtrl.Close()
+		tab.releaseSessionLease()
+		app.mu.RLock()
+		detachedSource := app.detachedSessions[sessionRuntimeKey(sourcePath)]
+		app.mu.RUnlock()
+		if detachedSource != nil {
+			detachedSource.releaseSessionLease()
+		}
+	})
+
+	sourceCtrl.Submit("keep source running")
+	select {
+	case <-sourceRunner.started:
+	case <-time.After(5 * time.Second):
+		t.Fatal("source turn did not start")
+	}
+
+	if err := app.rebindTabToLoadedSessionPath(tab, targetPath, loaded); err != nil {
+		t.Fatalf("reattach target: %v", err)
+	}
+	if tab.Ctrl != targetCtrl || tab.sessionLeaseRuntimeKey() != sessionRuntimeKey(targetPath) {
+		t.Fatalf("visible target runtime = ctrl %p lease %q, want %p/%q",
+			tab.Ctrl, tab.sessionLeaseRuntimeKey(), targetCtrl, sessionRuntimeKey(targetPath))
+	}
+	if !sourceCtrl.Running() {
+		t.Fatal("reattaching the target cancelled the running source controller")
+	}
+	app.mu.RLock()
+	detachedSource := app.detachedSessions[sessionRuntimeKey(sourcePath)]
+	targetStillDetached := app.detachedSessions[sessionRuntimeKey(targetPath)]
+	app.mu.RUnlock()
+	if detachedSource == nil || detachedSource.Ctrl != sourceCtrl ||
+		detachedSource.sessionLeaseRuntimeKey() != sessionRuntimeKey(sourcePath) {
+		t.Fatalf("running source was not preserved as detached runtime: %#v", detachedSource)
+	}
+	if targetStillDetached != nil {
+		t.Fatalf("target remained detached after reattach: %#v", targetStillDetached)
+	}
+
+	close(sourceRunner.release)
+	sourceReleased = true
+	waitNotRunning(t, sourceCtrl)
+}
+
+func TestRebindTabToDetachedSessionReleasesIdleSourceSharedHost(t *testing.T) {
+	isolateDesktopUserDirs(t)
+	root := globalTabWorkspaceRoot()
+	dir := desktopSessionDir(root)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("mkdir session dir: %v", err)
+	}
+
+	sourcePath := filepath.Join(dir, "idle-source.jsonl")
+	targetPath := filepath.Join(dir, "detached-target.jsonl")
+	writeHistoryTestSession(t, sourcePath, "source prompt")
+	writeHistoryTestSession(t, targetPath, "target prompt")
+	loaded, err := agent.LoadSession(targetPath)
+	if err != nil {
+		t.Fatalf("load target: %v", err)
+	}
+
+	app := NewApp()
+	app.ctx = context.Background()
+	app.readyHook = func() {}
+	hostKey := root
+	sharedHost := app.acquireSharedHost(hostKey)
+	if got := app.acquireSharedHost(hostKey); got != sharedHost {
+		t.Fatal("source and detached target did not share one plugin host")
+	}
+
+	sourceSink := &tabEventSink{tabID: "visible", app: app, ctx: app.ctx}
+	targetSink := &tabEventSink{tabID: "detached", app: app}
+	installNoopRuntimeEvents(app, sourceSink, targetSink)
+	sourceCtrl := control.New(control.Options{
+		SessionDir: dir, SessionPath: sourcePath, Label: "source",
+		Sink: sourceSink, Host: sharedHost,
+	})
+	targetCtrl := control.New(control.Options{
+		SessionDir: dir, SessionPath: targetPath, Label: "target",
+		Sink: targetSink, Host: sharedHost,
+	})
+	tab := &WorkspaceTab{
+		ID: "visible", Scope: "global", WorkspaceRoot: root,
+		SessionPath: sourcePath, Ctrl: sourceCtrl, Ready: true, sink: sourceSink,
+		SharedHostKey: hostKey, disabledMCP: map[string]ServerView{},
+	}
+	app.tabs[tab.ID] = tab
+	app.tabOrder = []string{tab.ID}
+	app.activeTabID = tab.ID
+	if err := tab.ensureSessionLease(sourcePath); err != nil {
+		t.Fatalf("lease source: %v", err)
+	}
+	app.mu.Lock()
+	app.newSessionRuntimeLocked(tab, sessionRuntimeKey(sourcePath))
+	app.advanceSessionRuntimeEpochLocked(tab)
+	app.mu.Unlock()
+
+	targetLease, err := agent.TryAcquireSessionLease(targetPath)
+	if err != nil {
+		t.Fatalf("lease target: %v", err)
+	}
+	detachedTarget := &WorkspaceTab{
+		ID: detachedRuntimeTabID(sessionRuntimeKey(targetPath)), Scope: "global",
+		WorkspaceRoot: root, SessionPath: targetPath, Ctrl: targetCtrl,
+		Ready: true, sink: targetSink, SharedHostKey: hostKey,
+		disabledMCP: map[string]ServerView{},
+	}
+	detachedTarget.adoptSessionLease(targetLease)
+	app.mu.Lock()
+	app.detachedSessions[sessionRuntimeKey(targetPath)] = detachedTarget
+	app.newSessionRuntimeLocked(detachedTarget, sessionRuntimeKey(targetPath))
+	app.advanceSessionRuntimeEpochLocked(detachedTarget)
+	app.mu.Unlock()
+	t.Cleanup(func() {
+		sourceCtrl.Close()
+		targetCtrl.Close()
+		tab.releaseSessionLease()
+		detachedTarget.releaseSessionLease()
+		app.closeAllSharedHosts()
+	})
+
+	if refs, ok := sharedHostRefsForTest(t, app, hostKey); !ok || refs != 2 {
+		t.Fatalf("shared host refs before reattach = %d, present=%v, want 2/true", refs, ok)
+	}
+	if err := app.rebindTabToLoadedSessionPath(tab, targetPath, loaded); err != nil {
+		t.Fatalf("reattach target: %v", err)
+	}
+	if tab.Ctrl != targetCtrl || tab.SharedHostKey != hostKey {
+		t.Fatalf("visible target runtime = ctrl %p host %q, want %p/%q",
+			tab.Ctrl, tab.SharedHostKey, targetCtrl, hostKey)
+	}
+	if refs, ok := sharedHostRefsForTest(t, app, hostKey); !ok || refs != 1 {
+		t.Fatalf("shared host refs after reattach = %d, present=%v, want 1/true", refs, ok)
 	}
 }
 
