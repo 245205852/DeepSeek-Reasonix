@@ -1355,7 +1355,7 @@ export const zh: Record<DictKey, string> = {
   "remote.host.useSSHConfig": "使用 ~/.ssh/config 补全未设置的连接参数",
   "remote.host.proxyJump": "跳板",
   "remote.host.defaultWorkspace": "默认工作区",
-  "remote.host.serveInstall": "serve 安装方式",
+  "remote.host.serveInstall": "远端 CLI 安装方式",
   "remote.host.save": "保存",
   "remote.host.cancel": "取消",
   "remote.host.edit": "编辑",

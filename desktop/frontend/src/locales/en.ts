@@ -1353,7 +1353,7 @@ export const en = {
   "remote.host.useSSHConfig": "Use ~/.ssh/config for unset connection options",
   "remote.host.proxyJump": "Proxy jump",
   "remote.host.defaultWorkspace": "Default workspace",
-  "remote.host.serveInstall": "Serve install",
+  "remote.host.serveInstall": "Remote CLI install",
   "remote.host.save": "Save",
   "remote.host.cancel": "Cancel",
   "remote.host.edit": "Edit",

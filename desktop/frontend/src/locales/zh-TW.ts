@@ -1027,7 +1027,7 @@ export const zhTW: Record<DictKey, string> = {
   "remote.host.useSSHConfig": "使用 ~/.ssh/config 補齊未設定的連線參數",
   "remote.host.proxyJump": "跳板",
   "remote.host.defaultWorkspace": "預設工作區",
-  "remote.host.serveInstall": "serve 安裝方式",
+  "remote.host.serveInstall": "遠端 CLI 安裝方式",
   "remote.host.save": "儲存",
   "remote.host.cancel": "取消",
   "remote.host.edit": "編輯",
