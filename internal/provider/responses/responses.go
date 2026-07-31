@@ -497,7 +497,6 @@ func (c *client) readStream(ctx context.Context, resp *http.Response, out chan<-
 					return
 				}
 			}
-			break
 		}
 		if terminal {
 			break
