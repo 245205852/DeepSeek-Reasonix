@@ -282,6 +282,75 @@ func TestStreamContinuesDeepSeekLengthWithAssistantPrefix(t *testing.T) {
 	}
 }
 
+func TestStreamContinuesReasoningOnlyDeepSeekLength(t *testing.T) {
+	var requests int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		body, _ := io.ReadAll(r.Body)
+		w.Header().Set("Content-Type", "text/event-stream")
+		switch r.URL.Path {
+		case "/chat/completions":
+			_, _ = io.WriteString(w, "data: {\"choices\":[{\"delta\":{\"reasoning_content\":\"think one. \"},\"finish_reason\":\"length\"}]}\n\n")
+			_, _ = io.WriteString(w, "data: {\"choices\":[],\"usage\":{\"prompt_tokens\":10,\"completion_tokens\":3,\"total_tokens\":13,\"completion_tokens_details\":{\"reasoning_tokens\":3}}}\n\n")
+			_, _ = io.WriteString(w, "data: [DONE]\n\n")
+		case "/beta/chat/completions":
+			var decoded struct {
+				Messages []map[string]json.RawMessage `json:"messages"`
+			}
+			if err := json.Unmarshal(body, &decoded); err != nil {
+				t.Errorf("decode continuation request: %v", err)
+				http.Error(w, "invalid continuation request", http.StatusBadRequest)
+				return
+			}
+			last := decoded.Messages[len(decoded.Messages)-1]
+			if string(last["role"]) != `"assistant"` || string(last["content"]) != `""` || string(last["prefix"]) != `true` {
+				t.Errorf("reasoning-only continuation tail = %s", last)
+			}
+			if string(last["reasoning_content"]) != `"think one. "` {
+				t.Errorf("continuation reasoning_content = %s", last["reasoning_content"])
+			}
+			_, _ = io.WriteString(w, "data: {\"choices\":[{\"delta\":{\"reasoning_content\":\"think two. \"}}]}\n\n")
+			_, _ = io.WriteString(w, "data: {\"choices\":[{\"delta\":{\"content\":\"answer\"},\"finish_reason\":\"stop\"}]}\n\n")
+			_, _ = io.WriteString(w, "data: {\"choices\":[],\"usage\":{\"prompt_tokens\":20,\"completion_tokens\":4,\"total_tokens\":24,\"completion_tokens_details\":{\"reasoning_tokens\":2}}}\n\n")
+			_, _ = io.WriteString(w, "data: [DONE]\n\n")
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	c := &client{
+		name: "deepseek", apiKey: "k", baseURL: srv.URL, chatURL: srv.URL + "/chat/completions",
+		prefixChatURL: srv.URL + "/beta/chat/completions", model: "deepseek-v4-flash", deepseek: true,
+		effort: "high", http: srv.Client(), idleTimeout: defaultStreamIdleTimeout,
+	}
+	ch, err := c.Stream(context.Background(), provider.Request{Messages: []provider.Message{{Role: provider.RoleUser, Content: "write"}}})
+	if err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+	var text, reasoning strings.Builder
+	var usage *provider.Usage
+	for chunk := range ch {
+		switch chunk.Type {
+		case provider.ChunkText:
+			text.WriteString(chunk.Text)
+		case provider.ChunkReasoning:
+			reasoning.WriteString(chunk.Text)
+		case provider.ChunkUsage:
+			usage = chunk.Usage
+		case provider.ChunkError:
+			t.Fatalf("automatic reasoning-only continuation errored: %v", chunk.Err)
+		}
+	}
+	if requests != 2 || text.String() != "answer" || reasoning.String() != "think one. think two. " {
+		t.Fatalf("requests=%d text=%q reasoning=%q", requests, text.String(), reasoning.String())
+	}
+	if usage == nil || usage.PromptTokens != 30 || usage.CompletionTokens != 7 || usage.TotalTokens != 37 ||
+		usage.ReasoningTokens != 5 || usage.FinishReason != "stop" {
+		t.Fatalf("merged usage = %+v", usage)
+	}
+}
+
 func TestStreamKeepsTruncatedAnswerWhenDeepSeekBetaFails(t *testing.T) {
 	var requests int
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

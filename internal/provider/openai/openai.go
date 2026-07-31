@@ -513,7 +513,8 @@ func (c *client) streamWithPrefixContinuation(ctx context.Context, req provider.
 		totalUsage = mergeUsage(totalUsage, currentUsage)
 		if continuations >= maxPrefixContinuations ||
 			currentUsage == nil || currentUsage.FinishReason != "length" ||
-			currentHadTool || fullText.Len() == 0 {
+			currentHadTool ||
+			(fullText.Len() == 0 && (c.thinkingType == "disabled" || fullReasoning.Len() == 0)) {
 			emitUsageAndDone(ctx, out, totalUsage)
 			return
 		}
