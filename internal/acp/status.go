@@ -13,6 +13,7 @@ import (
 	"reasonix/internal/control"
 	"reasonix/internal/event"
 	"reasonix/internal/provider"
+	"reasonix/internal/secrets"
 )
 
 const (
@@ -38,6 +39,7 @@ type SessionStatusParams struct {
 type SessionSandboxState struct {
 	Mode           string   `json:"mode"`
 	Engine         string   `json:"engine"`
+	Available      bool     `json:"available"`
 	WorkspaceRoot  string   `json:"workspaceRoot"`
 	WriteRoots     []string `json:"writeRoots"`
 	NetworkEnabled bool     `json:"networkEnabled"`
@@ -50,10 +52,19 @@ type SessionRuntimeState struct {
 	Sandbox     SessionSandboxState `json:"sandbox"`
 }
 
+// SessionRuntimeStateParams identifies the exact controller configuration whose
+// effective policy is being reported. Model/profile switches rebuild the
+// controller, so status must be recomputed from the same resolved inputs.
+type SessionRuntimeStateParams struct {
+	Cwd            string
+	Model          string
+	RuntimeProfile string
+}
+
 // SessionRuntimeStateProvider exposes effective process/session policy without
 // coupling the ACP adapter to Reasonix configuration internals.
 type SessionRuntimeStateProvider interface {
-	SessionRuntimeState(ctx context.Context, cwd string) (SessionRuntimeState, error)
+	SessionRuntimeState(ctx context.Context, p SessionRuntimeStateParams) (SessionRuntimeState, error)
 }
 
 type ReasonixStatusGoal struct {
@@ -235,9 +246,7 @@ func (t *statusTelemetry) onEvent(e event.Event) (string, bool) {
 	switch e.Kind {
 	case event.Phase:
 		t.mutate(func(t *statusTelemetry) {
-			if phase := strings.TrimSpace(e.Text); phase != "" {
-				t.phase = phase
-			}
+			t.phase = normalizeStatusPhase(e)
 		})
 		return "phase", true
 	case event.Usage:
@@ -295,7 +304,7 @@ func (t *statusTelemetry) finishTurn(runErr error, cancelled bool, goalStatus, s
 			case errors.As(runErr, &readinessErr):
 				t.phase = "readiness_paused"
 				t.turnOutcome = ReasonixTurnOutcome{Kind: "paused", Reason: clipStatusText(readinessErr.Error(), 2_048)}
-				t.finalReadiness.Risks = append([]string(nil), readinessErr.Missing...)
+				t.finalReadiness.Risks = redactStatusTexts(readinessErr.Missing, 2_048)
 				eventName = "pause"
 			case errors.As(runErr, &recoveryPause):
 				t.phase = "recovery_paused"
@@ -382,8 +391,8 @@ func (t *statusTelemetry) persisted() *persistedStatusTelemetry {
 		TurnOutcome: t.turnOutcome,
 		FinalReadiness: ReasonixFinalReadiness{
 			ReadyForReview: t.finalReadiness.ReadyForReview,
-			Summary:        t.finalReadiness.Summary,
-			Risks:          append([]string(nil), t.finalReadiness.Risks...),
+			Summary:        clipStatusText(t.finalReadiness.Summary, 16_384),
+			Risks:          redactStatusTexts(t.finalReadiness.Risks, 2_048),
 		},
 		TurnUsage: persistUsage(t.turnUsage), Cumulative: persistUsage(t.cumulative),
 		GoalOverride: t.goalOverride,
@@ -400,18 +409,15 @@ func restoreStatusTelemetry(saved *persistedStatusTelemetry) *statusTelemetry {
 	if t.state != "running" {
 		t.state = "idle"
 	}
-	t.phase = saved.Phase
+	t.phase = normalizePersistedStatusPhase(saved.Phase)
 	t.turnOutcome = saved.TurnOutcome
 	if t.turnOutcome.Kind == "" {
 		t.turnOutcome.Kind = "none"
 	}
 	t.finalReadiness = ReasonixFinalReadiness{
 		ReadyForReview: saved.FinalReadiness.ReadyForReview,
-		Summary:        saved.FinalReadiness.Summary,
-		Risks:          append([]string(nil), saved.FinalReadiness.Risks...),
-	}
-	if t.finalReadiness.Risks == nil {
-		t.finalReadiness.Risks = []string{}
+		Summary:        clipStatusText(saved.FinalReadiness.Summary, 16_384),
+		Risks:          redactStatusTexts(saved.FinalReadiness.Risks, 2_048),
 	}
 	t.turnUsage = restoreUsage(saved.TurnUsage)
 	t.cumulative = restoreUsage(saved.Cumulative)
@@ -423,14 +429,20 @@ func (t *statusTelemetry) snapshot() statusTelemetrySnapshot {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	return statusTelemetrySnapshot{
-		sequence:       t.sequence,
-		state:          t.state,
-		phase:          t.phase,
-		turnOutcome:    t.turnOutcome,
-		finalReadiness: ReasonixFinalReadiness{ReadyForReview: t.finalReadiness.ReadyForReview, Summary: t.finalReadiness.Summary, Risks: append([]string(nil), t.finalReadiness.Risks...)},
-		turnUsage:      t.turnUsage.wire(),
-		cumulative:     t.cumulative.wire(),
-		goalOverride:   t.goalOverride,
+		sequence: t.sequence,
+		state:    t.state,
+		phase:    t.phase,
+		turnOutcome: ReasonixTurnOutcome{
+			Kind: t.turnOutcome.Kind, Reason: clipStatusText(t.turnOutcome.Reason, 2_048),
+		},
+		finalReadiness: ReasonixFinalReadiness{
+			ReadyForReview: t.finalReadiness.ReadyForReview,
+			Summary:        clipStatusText(t.finalReadiness.Summary, 16_384),
+			Risks:          redactStatusTexts(t.finalReadiness.Risks, 2_048),
+		},
+		turnUsage:    t.turnUsage.wire(),
+		cumulative:   t.cumulative.wire(),
+		goalOverride: t.goalOverride,
 	}
 }
 
@@ -444,6 +456,7 @@ func defaultSessionRuntimeState(cwd string) SessionRuntimeState {
 		Sandbox: SessionSandboxState{
 			Mode:          "enforce",
 			Engine:        engine,
+			Available:     true,
 			WorkspaceRoot: cwd,
 			WriteRoots:    []string{cwd},
 		},
@@ -467,18 +480,60 @@ func normalizeGoalStatus(value string) string {
 }
 
 func clipStatusText(value string, limit int) string {
-	value = strings.TrimSpace(value)
+	value = strings.TrimSpace(secrets.Redact(value))
 	if len(value) <= limit {
 		return value
 	}
 	return value[:limit]
 }
 
-func (s *service) sessionRuntimeState(ctx context.Context, cwd string) (SessionRuntimeState, error) {
+func redactStatusTexts(values []string, limit int) []string {
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		out = append(out, clipStatusText(value, limit))
+	}
+	return out
+}
+
+func normalizeStatusPhase(e event.Event) string {
+	switch strings.TrimSpace(e.Source) {
+	case event.UsageSourcePlanner:
+		return "planning"
+	case event.UsageSourceExecutor:
+		return "implementing"
+	}
+	lower := strings.ToLower(strings.TrimSpace(e.Text))
+	switch {
+	case strings.Contains(lower, "planning"):
+		return "planning"
+	case strings.Contains(lower, "executing"), strings.Contains(lower, "implementing"):
+		return "implementing"
+	default:
+		return "working"
+	}
+}
+
+func normalizePersistedStatusPhase(value string) string {
+	value = strings.TrimSpace(value)
+	switch value {
+	case "idle", "starting", "planning", "working", "implementing",
+		"waiting_permission", "waiting_input", "checking_readiness",
+		"cancelled", "review_ready", "completed", "paused",
+		"readiness_paused", "recovery_paused", "error":
+		return value
+	default:
+		return normalizeStatusPhase(event.Event{Kind: event.Phase, Text: value})
+	}
+}
+
+func (s *service) sessionRuntimeState(ctx context.Context, p SessionRuntimeStateParams) (SessionRuntimeState, error) {
 	if provider, ok := s.factory.(SessionRuntimeStateProvider); ok {
-		state, err := provider.SessionRuntimeState(ctx, cwd)
+		state, err := provider.SessionRuntimeState(ctx, p)
 		if err != nil {
 			return SessionRuntimeState{}, err
+		}
+		if strings.EqualFold(strings.TrimSpace(p.RuntimeProfile), "economy") {
+			state.PlannerMode = "off"
 		}
 		if strings.TrimSpace(state.PlannerMode) == "" {
 			state.PlannerMode = "on"
@@ -488,7 +543,11 @@ func (s *service) sessionRuntimeState(ctx context.Context, cwd string) (SessionR
 		}
 		return state, nil
 	}
-	return defaultSessionRuntimeState(cwd), nil
+	state := defaultSessionRuntimeState(p.Cwd)
+	if strings.EqualFold(strings.TrimSpace(p.RuntimeProfile), "economy") {
+		state.PlannerMode = "off"
+	}
+	return state, nil
 }
 
 func (s *service) bindStatusEvents(sess *acpSession) {

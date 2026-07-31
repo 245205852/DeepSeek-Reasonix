@@ -278,7 +278,6 @@ func (s *updateSink) requestPermission(ctx context.Context, a event.Approval) {
 			Status:     "pending",
 			RawInput:   rawJSON(string(a.RawInput)),
 			Locations:  s.toolLocations(a.Tool, string(a.RawInput)),
-			Reason:     a.Reason,
 			Meta:       s.permissionMeta(a),
 		},
 		Options: options,
@@ -310,6 +309,9 @@ func (s *updateSink) permissionMeta(a event.Approval) map[string]any {
 		"tool":       a.Tool,
 		"subject":    a.Subject,
 		"fresh":      a.Fresh,
+	}
+	if reason := strings.TrimSpace(a.Reason); reason != "" {
+		reasonix["reason"] = reason
 	}
 	if a.Tool == "bash" && strings.TrimSpace(s.cwd) != "" {
 		var input struct {

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"reasonix/internal/agent"
@@ -16,12 +17,26 @@ type statusFactory struct {
 	*configurableFactory
 }
 
-func (f *statusFactory) SessionRuntimeState(_ context.Context, cwd string) (SessionRuntimeState, error) {
+type runtimeTrackingFactory struct {
+	*configurableFactory
+}
+
+func (f *statusFactory) SessionRuntimeState(_ context.Context, p SessionRuntimeStateParams) (SessionRuntimeState, error) {
 	return SessionRuntimeState{
 		PlannerMode: "off",
 		Sandbox: SessionSandboxState{
-			Mode: "enforce", Engine: "bubblewrap", WorkspaceRoot: cwd,
-			WriteRoots: []string{cwd}, NetworkEnabled: false,
+			Mode: "enforce", Engine: "bubblewrap", Available: true, WorkspaceRoot: p.Cwd,
+			WriteRoots: []string{p.Cwd}, NetworkEnabled: false,
+		},
+	}, nil
+}
+
+func (f *runtimeTrackingFactory) SessionRuntimeState(_ context.Context, p SessionRuntimeStateParams) (SessionRuntimeState, error) {
+	return SessionRuntimeState{
+		PlannerMode: "on",
+		Sandbox: SessionSandboxState{
+			Mode: "enforce", Engine: "bubblewrap", Available: true, WorkspaceRoot: p.Cwd,
+			WriteRoots: []string{p.Cwd},
 		},
 	}, nil
 }
@@ -55,7 +70,7 @@ func getStatus(t *testing.T, client *rpcClient, sessionID string) ReasonixSessio
 func TestStatusExtensionTracksMultipleSessionsAndUsage(t *testing.T) {
 	factory := &statusFactory{configurableFactory: &configurableFactory{
 		behavior: func(_ context.Context, sink event.Sink, input string, _ SessionParams) error {
-			sink.Emit(event.Event{Kind: event.Phase, Text: "executor · implementing"})
+			sink.Emit(event.Event{Kind: event.Phase, Source: event.UsageSourceExecutor, Text: "executor · implementing"})
 			sink.Emit(event.Event{Kind: event.Usage, Usage: &provider.Usage{
 				PromptTokens: 10, CompletionTokens: 4, ReasoningTokens: 2,
 				CacheHitTokens: 7, CacheMissTokens: 3,
@@ -122,6 +137,85 @@ func TestStatusExtensionTracksMultipleSessionsAndUsage(t *testing.T) {
 	}
 	if !sawPhase || !sawUsage || !sawCompletion {
 		t.Fatalf("status events phase=%v usage=%v completion=%v", sawPhase, sawUsage, sawCompletion)
+	}
+}
+
+func TestStatusNormalizesPhaseAndRedactsPublicText(t *testing.T) {
+	telemetry := newStatusTelemetry()
+	telemetry.beginTurn()
+	telemetry.onEvent(event.Event{Kind: event.Phase, Source: event.UsageSourcePlanner, Text: "planner · private stage label"})
+	if got := telemetry.snapshot().phase; got != "planning" {
+		t.Fatalf("planner phase = %q, want planning", got)
+	}
+	telemetry.onEvent(event.Event{Kind: event.Phase, Text: "provider-specific handoff"})
+	if got := telemetry.snapshot().phase; got != "working" {
+		t.Fatalf("unknown phase = %q, want working", got)
+	}
+	telemetry.finishTurn(&agent.FinalReadinessError{
+		Attempts: 1,
+		Reason:   "token=secret-reason",
+		Missing:  []string{"api_key=secret-risk"},
+	}, false, "running", "authorization: bearer secret-summary")
+	snapshot := telemetry.snapshot()
+	encoded, err := json.Marshal(snapshot.finalReadiness)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(encoded), "secret-") || !strings.Contains(string(encoded), "[redacted]") {
+		t.Fatalf("status text was not redacted: %s", encoded)
+	}
+	if strings.Contains(snapshot.turnOutcome.Reason, "secret-") {
+		t.Fatalf("turn outcome was not redacted: %q", snapshot.turnOutcome.Reason)
+	}
+
+	empty, err := json.Marshal(newStatusTelemetry().snapshot().finalReadiness)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(empty), `"risks":[]`) {
+		t.Fatalf("empty risks must encode as [], got %s", empty)
+	}
+}
+
+func TestRestoreStatusNormalizesLegacyPresentationPhase(t *testing.T) {
+	restored := restoreStatusTelemetry(&persistedStatusTelemetry{
+		Phase:          "executor · implementing local patch",
+		FinalReadiness: ReasonixFinalReadiness{},
+	})
+	if got := restored.snapshot().phase; got != "implementing" {
+		t.Fatalf("restored phase = %q, want implementing", got)
+	}
+}
+
+func TestStatusRecomputesPlannerModeAfterWorkModeSwitch(t *testing.T) {
+	factory := &runtimeTrackingFactory{configurableFactory: &configurableFactory{}}
+	client, stop := startServer(t, factory)
+	defer stop()
+	client.call(t, "initialize", InitializeParams{ProtocolVersion: 1})
+	sessionID := openStatusSession(t, client, t.TempDir())
+	if status := getStatus(t, client, sessionID); status.WorkMode != "balanced" || status.PlannerMode != "on" {
+		t.Fatalf("initial runtime status = %+v", status)
+	}
+
+	for _, tc := range []struct {
+		profile string
+		planner string
+	}{
+		{profile: "economy", planner: "off"},
+		{profile: "delivery", planner: "on"},
+	} {
+		resp := client.call(t, "session/set_config_option", SetSessionConfigOptionParams{
+			SessionID: sessionID,
+			ConfigID:  "work_mode",
+			Value:     tc.profile,
+		})
+		if resp.Error != nil {
+			t.Fatalf("set work mode %q: %+v", tc.profile, resp.Error)
+		}
+		status := getStatus(t, client, sessionID)
+		if status.WorkMode != tc.profile || status.PlannerMode != tc.planner {
+			t.Fatalf("runtime status after %q = %+v", tc.profile, status)
+		}
 	}
 }
 

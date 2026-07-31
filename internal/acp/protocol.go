@@ -688,7 +688,6 @@ type PermissionToolCall struct {
 	Content    []toolContent      `json:"content,omitempty"`
 	RawInput   json.RawMessage    `json:"rawInput,omitempty"`
 	Locations  []ToolCallLocation `json:"locations,omitempty"`
-	Reason     string             `json:"reason,omitempty"`
 	Meta       map[string]any     `json:"_meta,omitempty"`
 }
 

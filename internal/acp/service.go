@@ -614,12 +614,11 @@ func (s *service) sessionNew(ctx context.Context, raw json.RawMessage) (any, err
 		return nil, &RPCError{Code: ErrInternal, Message: "session/new: " + err.Error()}
 	}
 	cfgState = withToolApprovalConfig(cfgState, control.ToolApprovalAsk)
-	runtimeState, err := s.sessionRuntimeState(ctx, cwd)
+	runtimeState, err := s.sessionRuntimeState(ctx, SessionRuntimeStateParams{
+		Cwd: cwd, Model: cfgState.Model, RuntimeProfile: cfgState.RuntimeProfile,
+	})
 	if err != nil {
 		return nil, &RPCError{Code: ErrInternal, Message: "session/new: " + err.Error()}
-	}
-	if cfgState.RuntimeProfile == "economy" {
-		runtimeState.PlannerMode = "off"
 	}
 
 	id, err := newSessionID()
@@ -915,12 +914,11 @@ func (s *service) openExistingSession(ctx context.Context, method, id, cwdParam 
 	if err != nil {
 		return SessionConfigState{}, &RPCError{Code: ErrInternal, Message: method + ": " + err.Error()}
 	}
-	runtimeState, err := s.sessionRuntimeState(ctx, cwd)
+	runtimeState, err := s.sessionRuntimeState(ctx, SessionRuntimeStateParams{
+		Cwd: cwd, Model: cfgState.Model, RuntimeProfile: cfgState.RuntimeProfile,
+	})
 	if err != nil {
 		return SessionConfigState{}, &RPCError{Code: ErrInternal, Message: method + ": " + err.Error()}
-	}
-	if cfgState.RuntimeProfile == "economy" {
-		runtimeState.PlannerMode = "off"
 	}
 
 	sink := newUpdateSink(s.conn, id)
@@ -1544,6 +1542,13 @@ func (s *service) rebuildSessionLocked(ctx context.Context, sess *acpSession, cf
 		return &RPCError{Code: ErrInternal, Message: "session config: " + err.Error()}
 	}
 	newCtrl.EnableInteractiveApproval()
+	runtimeState, err := s.sessionRuntimeState(ctx, SessionRuntimeStateParams{
+		Cwd: cwd, Model: cfgState.Model, RuntimeProfile: cfgState.RuntimeProfile,
+	})
+	if err != nil {
+		newCtrl.ReleaseResources()
+		return &RPCError{Code: ErrInternal, Message: "session config: runtime state: " + err.Error()}
+	}
 	// The freshly built controller's own leading system message carries the
 	// target profile's contract (see boot/token_profile.go); AdoptHistory below
 	// replaces the whole history with carried, so splice that message in first
@@ -1609,6 +1614,7 @@ func (s *service) rebuildSessionLocked(ctx context.Context, sess *acpSession, cf
 	sess.effortOverride = cloneStringPtr(cfgState.EffortOverride)
 	sess.runtimeProfile = cfgState.RuntimeProfile
 	sess.toolApprovalMode = toolApprovalMode
+	sess.runtimeState = runtimeState
 	sess.modeID = modeID
 	sess.goalDraftMode = goalDraftMode
 	if sess.transcript != "" && sessionFileExists(sess.transcript) {

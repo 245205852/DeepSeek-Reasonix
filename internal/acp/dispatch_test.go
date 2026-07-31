@@ -287,12 +287,20 @@ func TestUpdateSinkPermissionCarriesStructuredContext(t *testing.T) {
 		if len(p.ToolCall.Locations) != 1 || !strings.HasSuffix(filepath.ToSlash(p.ToolCall.Locations[0].Path), "/src/main.go") {
 			t.Fatalf("locations = %+v", p.ToolCall.Locations)
 		}
-		if p.ToolCall.Reason != "write requested by the active goal" {
-			t.Fatalf("reason = %q", p.ToolCall.Reason)
-		}
 		meta, ok := p.ToolCall.Meta["reasonix.io"].(map[string]any)
-		if !ok || meta["tool"] != "write_file" || meta["approvalId"] != "structured" {
+		if !ok || meta["tool"] != "write_file" || meta["approvalId"] != "structured" || meta["reason"] != "write requested by the active goal" {
 			t.Fatalf("metadata = %#v", p.ToolCall.Meta)
+		}
+		var wire map[string]any
+		if err := json.Unmarshal(raw, &wire); err != nil {
+			t.Fatalf("permission wire shape: %v", err)
+		}
+		toolCall, ok := wire["toolCall"].(map[string]any)
+		if !ok {
+			t.Fatalf("toolCall wire shape = %#v", wire["toolCall"])
+		}
+		if _, present := toolCall["reason"]; present {
+			t.Fatalf("ACP v1 toolCall has non-standard root reason: %#v", toolCall)
 		}
 		res, _ := json.Marshal(PermissionRequestResult{Outcome: PermissionOutcome{Outcome: "selected", OptionID: string(OptRejectOnce)}})
 		return res, nil

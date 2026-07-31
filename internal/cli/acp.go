@@ -78,7 +78,7 @@ func acpCommand(args []string, version string) int {
 	factory := &acpFactory{
 		model: *model, profile: profile, plannerOff: plannerMode == "off",
 		networkOverride: networkOverride, workspaceOnly: *workspaceOnly,
-		bashOverride: bashMode,
+		bashOverride: bashMode, requireSandbox: bashMode == "enforce",
 	}
 	info := acp.AgentInfo{Name: "reasonix", Version: version}
 	if err := acp.Serve(ctx, os.Stdin, os.Stdout, factory, info); err != nil {
@@ -93,12 +93,14 @@ func acpCommand(args []string, version string) int {
 // desktop, and serve assembly while still adding the host-supplied MCP servers
 // for this session only.
 type acpFactory struct {
-	model           string
-	profile         string
-	plannerOff      bool
-	networkOverride *bool
-	bashOverride    string
-	workspaceOnly   bool
+	model            string
+	profile          string
+	plannerOff       bool
+	networkOverride  *bool
+	bashOverride     string
+	workspaceOnly    bool
+	requireSandbox   bool
+	sandboxAvailable func() bool
 }
 
 func (f *acpFactory) SessionDir() string {
@@ -141,22 +143,15 @@ func (f *acpFactory) NewSession(ctx context.Context, p acp.SessionParams) (*cont
 	})
 }
 
-func (f *acpFactory) SessionRuntimeState(_ context.Context, cwd string) (acp.SessionRuntimeState, error) {
-	cfg, err := config.LoadForRoot(cwd)
+func (f *acpFactory) SessionRuntimeState(_ context.Context, p acp.SessionRuntimeStateParams) (acp.SessionRuntimeState, error) {
+	cfg, err := config.LoadForRoot(p.Cwd)
 	if err != nil {
 		return acp.SessionRuntimeState{}, err
 	}
-	engine := "bubblewrap"
-	if runtime.GOOS == "darwin" {
-		engine = "seatbelt"
-	}
-	plannerMode := "off"
-	if !f.plannerOff && strings.TrimSpace(cfg.Agent.PlannerModel) != "" {
-		plannerMode = "on"
-	}
-	writeRoots := cfg.WriteRootsForRoot(cwd)
+	plannerMode := effectiveACPPlannerMode(cfg, f.plannerOff, p.Model, p.RuntimeProfile)
+	writeRoots := cfg.WriteRootsForRoot(p.Cwd)
 	if f.workspaceOnly {
-		writeRoots = []string{cwd}
+		writeRoots = []string{p.Cwd}
 	}
 	networkEnabled := cfg.Sandbox.Network
 	if f.networkOverride != nil {
@@ -166,19 +161,65 @@ func (f *acpFactory) SessionRuntimeState(_ context.Context, cwd string) (acp.Ses
 	if f.bashOverride == "enforce" {
 		effectiveBash = "enforce"
 	}
-	if effectiveBash == "enforce" && !sandbox.Available() {
+	sandboxAvailable := true
+	if effectiveBash == "enforce" {
+		sandboxAvailable = f.isSandboxAvailable()
+	} else {
+		// Without an OS sandbox the shell is intentionally unconfined, including
+		// network access; report the actual posture rather than the inert config bit.
+		networkEnabled = true
+	}
+	if f.requireSandbox && !sandboxAvailable {
 		return acp.SessionRuntimeState{}, fmt.Errorf("effective bash sandbox unavailable: %s", sandbox.UnavailableMessage())
 	}
 	return acp.SessionRuntimeState{
 		PlannerMode: plannerMode,
 		Sandbox: acp.SessionSandboxState{
 			Mode:           effectiveBash,
-			Engine:         engine,
-			WorkspaceRoot:  cwd,
+			Engine:         acpSandboxEngine(effectiveBash),
+			Available:      sandboxAvailable,
+			WorkspaceRoot:  p.Cwd,
 			WriteRoots:     writeRoots,
 			NetworkEnabled: networkEnabled,
 		},
 	}, nil
+}
+
+func (f *acpFactory) isSandboxAvailable() bool {
+	if f.sandboxAvailable != nil {
+		return f.sandboxAvailable()
+	}
+	return sandbox.Available()
+}
+
+func effectiveACPPlannerMode(cfg *config.Config, disabled bool, model, profile string) string {
+	if cfg == nil || disabled || acpRuntimeProfile(profile) == "economy" {
+		return "off"
+	}
+	plannerRef := strings.TrimSpace(cfg.Agent.PlannerModel)
+	if plannerRef == "" {
+		return "off"
+	}
+	planner, plannerOK := cfg.ResolveModel(plannerRef)
+	executor, executorOK := cfg.ResolveModel(strings.TrimSpace(model))
+	if !plannerOK || !executorOK || planner.Model == executor.Model {
+		return "off"
+	}
+	return "on"
+}
+
+func acpSandboxEngine(mode string) string {
+	if mode != "enforce" {
+		return "none"
+	}
+	switch runtime.GOOS {
+	case "darwin":
+		return "seatbelt"
+	case "linux":
+		return "bubblewrap"
+	default:
+		return "none"
+	}
 }
 
 func (f *acpFactory) SessionConfigState(_ context.Context, p acp.SessionConfigStateParams) (acp.SessionConfigState, error) {
