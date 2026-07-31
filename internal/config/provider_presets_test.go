@@ -95,6 +95,7 @@ func TestDeepSeekResponsesPresetMatchesOfficialSupport(t *testing.T) {
 
 func TestCuratedProviderPresetsDisplayOrder(t *testing.T) {
 	wantPrefix := []string{
+		"deepseek-responses",
 		"glm-cn",
 		"zai-global",
 		"glm-coding-plan-cn",
