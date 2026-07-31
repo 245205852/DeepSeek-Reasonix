@@ -1750,10 +1750,7 @@ func deliveryTaskIsAdvisory(input string) bool {
 	// signals above still win, and affirmative mixed-intent clauses are handled
 	// by deliveryTaskNeedsMutation before this function is consulted.
 	_, negatedMutation := deliveryTaskMutationIntent(normalized)
-	if negatedMutation {
-		return true
-	}
-	return false
+	return negatedMutation
 }
 
 func deliveryTaskClauses(input string) []string {
