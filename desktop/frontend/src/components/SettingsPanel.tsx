@@ -1,10 +1,11 @@
-import { lazy, memo, Suspense, useCallback, useEffect, useId, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent as ReactMouseEvent, type PointerEvent, type ReactNode } from "react";
+import { lazy, memo, Suspense, startTransition, useCallback, useDeferredValue, useEffect, useId, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent as ReactMouseEvent, type PointerEvent, type ReactNode } from "react";
 import { Bot as BotIcon, Check, CheckCircle2, ChevronDown, ChevronUp, Clipboard, ExternalLink, GripVertical, KeyRound, Loader2, MessageCircle, Play, QrCode, RefreshCw, Send } from "lucide-react";
 import { asArray } from "../lib/array";
 import { useDeferredClose } from "../lib/useMountTransition";
 import { app, openExternal } from "../lib/bridge";
 import { normalizeLangPref, useI18n, useT, type DictKey, type LangPref } from "../lib/i18n";
 import { apiKeyEnvFromProviderName, inferredVisionModels, mergedFetchedProviderModels, mergeProviderModelContextWindows, providerApiKeyEnvForSave, providerDefaultModel, providerIsConfigured, providerModelCandidates, providerModelContextWindowDrafts, providerModelContextWindowIsSmall, providerRequiresKey } from "../lib/providerModels";
+import { cachedFetchProviderModels, shouldSkipAutoRefresh } from "../lib/providerModelCache";
 import { switchUpdaterChannel, useUpdater } from "../lib/useUpdater";
 import {
   applyTheme,
@@ -4054,17 +4055,34 @@ function ModelsSection({ s, busy, apply, backgroundApply, initialFocus }: Models
       .filter((item): item is { group: ProviderAccessGroup; provider: ProviderView } => Boolean(item));
     const refreshKey = candidates.map(({ group, provider }) => `${group.id}:${provider.apiKeyEnv || provider.name}:${provider.baseUrl}`).join("|");
     if (!refreshKey || autoRefreshKeyRef.current === refreshKey) return;
+
+    // Session-level cooldown: skip auto-refresh if the panel was opened
+    // within the last 30 s (survives unmount/remount of the SettingsPanel).
+    const lastAutoRefresh = sessionStorage.getItem("settings-auto-refresh-at");
+    if (lastAutoRefresh && Date.now() - Number(lastAutoRefresh) < 30_000) return;
+
+    // Respect slow network hints; background model-list refresh can wait.
+    if (shouldSkipAutoRefresh()) return;
+
     autoRefreshKeyRef.current = refreshKey;
+    sessionStorage.setItem("settings-auto-refresh-at", String(Date.now()));
 
     void backgroundApply(async () => {
+      // Batch-fetch models for all candidates in one round-trip.
+      const providersToFetch = candidates.map((c) => c.provider).filter((p) => p.models && p.models.length > 0);
+      let batchResults: Record<string, string[]> = {};
+      try {
+        batchResults = await app.FetchAllProviderModels(providersToFetch) as Record<string, string[]>;
+      } catch {
+        // Batch failed entirely — fall back to per-provider cached calls below.
+      }
+
       for (const { provider } of candidates) {
-        // Background auto-refresh only protects a user-curated model list.
-        // If the user hasn't specified any models, don't silently populate
-        // the provider with every model from the API.
         if (!provider.models || provider.models.length === 0) continue;
         try {
-          const fetched = await app.FetchProviderModels(provider);
-          if (fetched.length === 0) continue;
+          const fetched = batchResults[provider.name]
+            ?? await cachedFetchProviderModels((p: any) => app.FetchProviderModels(p), provider);
+          if (!fetched || fetched.length === 0) continue;
           const models = mergedFetchedProviderModels(provider.models, fetched, { preserveCurated: true });
           const currentDefault = providerDefaultModel(provider.default, models);
           const visionModels = provider.visionModels.filter((model) => models.includes(model));
@@ -4562,7 +4580,7 @@ function ProvidersSection({ s, busy, apply }: SectionProps) {
     try {
       let fetched: string[];
       try {
-        fetched = await app.FetchProviderModels(p);
+        fetched = await cachedFetchProviderModels((p: any) => app.FetchProviderModels(p), p);
       } catch (e) {
         setGroupFetchResult(group.id, {
           kind: "warn",
@@ -4578,10 +4596,12 @@ function ProvidersSection({ s, busy, apply }: SectionProps) {
         return;
       }
       const draft = modelDraftForFetch(p, fetched);
-      setGroupModelDraft(group.id, draft);
-      setGroupFetchResult(group.id, {
-        kind: "ok",
-        text: t("settings.fetchModelsReadyForProvider", { provider: group.label, n: draft.candidates.length }),
+      startTransition(() => {
+        setGroupModelDraft(group.id, draft);
+        setGroupFetchResult(group.id, {
+          kind: "ok",
+          text: t("settings.fetchModelsReadyForProvider", { provider: group.label, n: draft.candidates.length }),
+        });
       });
     } finally {
       setFetchingProvider(null);
@@ -4604,7 +4624,7 @@ function ProvidersSection({ s, busy, apply }: SectionProps) {
       await apply(async () => {
         await app.SaveProviderKey(apiKeyEnv, value);
         try {
-          const fetched = await app.FetchProviderModels({ ...probe, apiKeyEnv });
+          const fetched = await cachedFetchProviderModels((p: any) => app.FetchProviderModels(p), { ...probe, apiKeyEnv });
           if (fetched.length > 0) {
             const draft = modelDraftForFetch({ ...probe, apiKeyEnv }, fetched);
             setGroupModelDraft(group.id, draft);
@@ -5340,9 +5360,11 @@ function ProviderModelDraftPicker({
   const selected = new Set(draft.selected);
   const vision = new Set(draft.visionModels);
   const q = debouncedQuery.trim().toLowerCase();
-  const visibleCandidates = q
-    ? draft.candidates.filter((model) => model.toLowerCase().includes(q))
-    : draft.candidates;
+  const visibleCandidates = useMemo(
+    () => (q ? draft.candidates.filter((model) => model.toLowerCase().includes(q)) : draft.candidates),
+    [draft.candidates, q],
+  );
+  const deferredCandidates = useDeferredValue(visibleCandidates);
   const disabled = busy || fetching;
 
   return (
@@ -5369,10 +5391,10 @@ function ProviderModelDraftPicker({
         onChange={(e) => setQuery(e.target.value)}
       />
       <div className="provider-model-draft__list" role="list" aria-label={t("settings.modelCandidates")}>
-        {visibleCandidates.length > 0 ? visibleCandidates.map((model) => {
+        {deferredCandidates.length > 0 ? deferredCandidates.map((model) => {
           const enabled = selected.has(model);
           return (
-            <div className="provider-model-draft__option" key={model}>
+            <div className="provider-model-draft__option" key={model} style={{ contentVisibility: "auto", containIntrinsicSize: "auto 48px" }}>
               <label className="provider-model-draft__model">
                 <input
                   type="checkbox"
@@ -5577,6 +5599,7 @@ const ProviderEditorModelPicker = memo(function ProviderEditorModelPicker({
   const visibleCandidates = q
     ? candidates.filter((model) => model.toLowerCase().includes(q))
     : candidates;
+  const deferredCandidates = useDeferredValue(visibleCandidates);
   return (
     <div className="provider-model-draft provider-model-draft--inline">
       <div className="provider-model-draft__head">
@@ -5604,10 +5627,10 @@ const ProviderEditorModelPicker = memo(function ProviderEditorModelPicker({
         />
       )}
       <div className="provider-model-draft__list" role="list" aria-label={t("settings.modelCandidates")}>
-        {visibleCandidates.length > 0 ? visibleCandidates.map((model) => {
+        {deferredCandidates.length > 0 ? deferredCandidates.map((model) => {
           const enabled = selected.has(model);
           return (
-            <div className="provider-model-draft__option" key={model}>
+            <div className="provider-model-draft__option" key={model} style={{ contentVisibility: "auto", containIntrinsicSize: "auto 48px" }}>
               <label className="provider-model-draft__model">
                 <input
                   type="checkbox"
@@ -5752,7 +5775,7 @@ function ProviderEditor({
       const effectiveApiKeyEnv = providerApiKeyEnvForSave(name, apiKeyEnv, keyDraft);
       if (!apiKeyEnv.trim()) setApiKeyEnv(effectiveApiKeyEnv);
       if (keyDraft.trim()) await app.SaveProviderKey(effectiveApiKeyEnv, keyDraft.trim());
-      const fetched = await app.FetchProviderModels({
+      const fetched = await cachedFetchProviderModels((p: any) => app.FetchProviderModels(p), {
         name: name.trim() || t("settings.newProviderDraftName"),
         builtIn: initial?.builtIn ?? false,
         added: initial?.added ?? true,

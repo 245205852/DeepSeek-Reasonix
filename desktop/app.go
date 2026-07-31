@@ -11644,3 +11644,22 @@ func (a *App) ConnectKey(apiKey string) (string, error) {
 	}
 	return warning, nil
 }
+
+// emitRebuildDone sends a settings:rebuild-* event to the webview frontend so
+// the UI can transition out of the "saving..." state. Called from the async
+// rebuild goroutine in applyConfigChangeWithWarning.
+func (a *App) emitRebuildDone(setting string, err error) {
+	if a.ctx == nil {
+		return
+	}
+	if err != nil {
+		runtime.EventsEmit(a.ctx, "settings:rebuild-failed", map[string]any{
+			"setting": setting,
+			"error":   err.Error(),
+		})
+	} else {
+		runtime.EventsEmit(a.ctx, "settings:rebuild-complete", map[string]any{
+			"setting": setting,
+		})
+	}
+}

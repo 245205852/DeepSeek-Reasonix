@@ -10,7 +10,10 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"time"
+
+	"golang.org/x/sync/errgroup"
 
 	"reasonix/internal/agent"
 	"reasonix/internal/boot"
@@ -1149,12 +1152,17 @@ func (a *App) applyConfigChangeWithWarning(setting string, mutate func(*config.C
 	}(); err != nil {
 		return "", err
 	}
-	if err := a.rebuildSetting(setting); err != nil {
-		if warning, ok := a.deferredRebuildWarning(setting, err); ok {
-			return warning, nil
+	// Persist config and return immediately. The rebuild is slow work
+	// (snapshot + teardown + reconstruction of the active tab's chat runtime)
+	// and must not block the binding response. Serialize via runtimeRebuildMu
+	// inside rebuildSetting; emit settings:rebuild-* when done.
+	go func() {
+		if err := a.rebuildSetting(setting); err != nil {
+			a.emitRebuildDone(setting, err)
+		} else {
+			a.emitRebuildDone(setting, nil)
 		}
-		return "", err
-	}
+	}()
 	return "", nil
 }
 
@@ -2326,6 +2334,45 @@ func (a *App) FetchProviderModels(p ProviderView) ([]string, error) {
 		return []string{}, err
 	}
 	return nonNil(chatProviderModels(models)), nil
+}
+
+// FetchAllProviderModels fetches model lists for all providers in a single
+// batch. Models are fetched concurrently (up to 4 parallel requests) and
+// returned as a map keyed by provider name. Errors for individual providers
+// are recorded as nil entries; callers should handle missing keys.
+func (a *App) FetchAllProviderModels(providers []ProviderView) map[string][]string {
+	results := make(map[string][]string, len(providers))
+	var mu sync.Mutex
+	g, ctx := errgroup.WithContext(a.reqCtx())
+	g.SetLimit(4)
+	for i := range providers {
+		p := providers[i]
+		g.Go(func() error {
+			e := config.ProviderEntry{
+				Name:       p.Name,
+				Kind:       p.Kind,
+				BaseURL:    p.BaseURL,
+				ModelsURL:  strings.TrimSpace(p.ModelsURL),
+				APIKeyEnv:  p.APIKeyEnv,
+				Headers:    p.Headers,
+				AuthHeader: p.AuthHeader,
+			}
+			e.ResolveAPIKeyForRoot(a.activeWorkspaceRoot())
+			ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
+			defer cancel()
+			models, err := e.FetchModels(ctx)
+			mu.Lock()
+			defer mu.Unlock()
+			if err != nil {
+				results[p.Name] = nil
+			} else {
+				results[p.Name] = nonNil(chatProviderModels(models))
+			}
+			return nil
+		})
+	}
+	_ = g.Wait()
+	return results
 }
 
 // DeleteProvider removes a provider and retargets open idle tabs that used it.
