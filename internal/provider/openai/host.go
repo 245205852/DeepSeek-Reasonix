@@ -38,6 +38,28 @@ func IsDeepSeek(baseURL string) bool {
 	return matchesVendorHost(baseURL, "deepseek.com", "api.deepseek.com")
 }
 
+// IsGeminiAPI reports whether baseURL points at Google's Gemini Developer API.
+// Keep this exact-host: other googleapis.com services do not share Gemini's
+// model resource-name compatibility quirk.
+func IsGeminiAPI(baseURL string) bool {
+	u, err := url.Parse(baseURL)
+	if err != nil {
+		return false
+	}
+	return strings.EqualFold(u.Hostname(), "generativelanguage.googleapis.com")
+}
+
+// normalizeModelID converts Gemini's resource-form model names returned by some
+// /models responses into the bare IDs required by OpenAI-compatible chat calls.
+// Other providers and already-normalized Gemini IDs pass through unchanged.
+func normalizeModelID(baseURL, model string) string {
+	model = strings.TrimSpace(model)
+	if IsGeminiAPI(baseURL) {
+		model = strings.TrimPrefix(model, "models/")
+	}
+	return model
+}
+
 // IsMiniMax reports whether baseURL points at MiniMax's OpenAI-compatible
 // endpoint (api.minimaxi.com or any *.minimaxi.com subdomain).
 //

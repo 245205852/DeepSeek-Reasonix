@@ -37,6 +37,22 @@ func TestIsDeepSeek(t *testing.T) {
 	}
 }
 
+func TestGeminiAPIModelNormalization(t *testing.T) {
+	for _, tc := range []struct {
+		baseURL string
+		model   string
+		want    string
+	}{
+		{"https://generativelanguage.googleapis.com/v1beta/openai/", "models/gemini-3.6-flash", "gemini-3.6-flash"},
+		{"https://generativelanguage.googleapis.com/v1beta/openai", "gemini-3.6-flash", "gemini-3.6-flash"},
+		{"https://api.example.com/v1", "models/gemini-3.6-flash", "models/gemini-3.6-flash"},
+	} {
+		if got := normalizeModelID(tc.baseURL, tc.model); got != tc.want {
+			t.Errorf("normalizeModelID(%q, %q) = %q, want %q", tc.baseURL, tc.model, got, tc.want)
+		}
+	}
+}
+
 // TestIsMiniMax pins the host-matching rule for MiniMax. The spelling is
 // `minimaxi`, not `minimax` — the latter is reserved for any future
 // minimax-branded gateway so the two never collide.

@@ -1489,6 +1489,110 @@ func TestBuildRequestDefaultsEmptyToolParameters(t *testing.T) {
 	}
 }
 
+func TestStreamReadsGeminiThoughtSignature(t *testing.T) {
+	tests := []struct {
+		name     string
+		toolCall string
+	}{
+		{
+			name:     "current extra_content shape",
+			toolCall: `{"index":0,"id":"call_abc123","type":"function","extra_content":{"google":{"thought_signature":"gemini_sig_xyz789"}},"function":{"name":"write_file"}}`,
+		},
+		{
+			name:     "legacy function shape",
+			toolCall: `{"index":0,"id":"call_abc123","type":"function","function":{"name":"write_file","thought_signature":"gemini_sig_xyz789"}}`,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "text/event-stream")
+				_, _ = io.WriteString(w,
+					"data: {\"choices\":[{\"delta\":{\"tool_calls\":["+tc.toolCall+"]}}]}\n\n"+
+						"data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\"{\\\"path\\\":\\\"test.txt\\\"}\"}}]},\"finish_reason\":\"tool_calls\"}]}\n\n"+
+						"data: [DONE]\n\n")
+			}))
+			defer srv.Close()
+
+			p, err := New(provider.Config{Name: "gemini", BaseURL: srv.URL, Model: "gemini-3.6-flash"})
+			if err != nil {
+				t.Fatalf("New: %v", err)
+			}
+
+			ch, err := p.Stream(context.Background(), provider.Request{})
+			if err != nil {
+				t.Fatalf("Stream: %v", err)
+			}
+
+			var got *provider.ToolCall
+			for chunk := range ch {
+				if chunk.Type == provider.ChunkToolCall {
+					got = chunk.ToolCall
+				}
+			}
+			if got == nil {
+				t.Fatal("expected ChunkToolCall but none received")
+			}
+			if got.ThoughtSignature != "gemini_sig_xyz789" {
+				t.Errorf("ThoughtSignature = %q, want %q", got.ThoughtSignature, "gemini_sig_xyz789")
+			}
+			if got.Arguments != `{"path":"test.txt"}` {
+				t.Errorf("Arguments = %q, want complete streamed arguments", got.Arguments)
+			}
+		})
+	}
+}
+
+func TestBuildRequestRoundTripsGeminiThoughtSignature(t *testing.T) {
+	c := &client{
+		name:    "gemini",
+		baseURL: "https://generativelanguage.googleapis.com/v1beta",
+		model:   "gemini-3.5-flash",
+	}
+	req := provider.Request{
+		Messages: []provider.Message{{
+			Role: provider.RoleAssistant,
+			ToolCalls: []provider.ToolCall{{
+				ID:               "call_abc123",
+				Name:             "write_file",
+				Arguments:        `{"path":"test.txt"}`,
+				ThoughtSignature: "gemini_sig_xyz789",
+			}},
+		}},
+	}
+
+	body, err := json.Marshal(c.buildRequest(req))
+	if err != nil {
+		t.Fatalf("marshal request: %v", err)
+	}
+	var wire struct {
+		Messages []struct {
+			ToolCalls []struct {
+				ExtraContent struct {
+					Google struct {
+						ThoughtSignature string `json:"thought_signature"`
+					} `json:"google"`
+				} `json:"extra_content"`
+				Function struct {
+					ThoughtSignature string `json:"thought_signature"`
+				} `json:"function"`
+			} `json:"tool_calls"`
+		} `json:"messages"`
+	}
+	if err := json.Unmarshal(body, &wire); err != nil {
+		t.Fatalf("unmarshal request: %v", err)
+	}
+	if len(wire.Messages) == 0 || len(wire.Messages[0].ToolCalls) != 1 {
+		t.Fatalf("unexpected request shape: %s", body)
+	}
+	if got := wire.Messages[0].ToolCalls[0].ExtraContent.Google.ThoughtSignature; got != "gemini_sig_xyz789" {
+		t.Errorf("thought_signature = %q, want %q", got, "gemini_sig_xyz789")
+	}
+	if got := wire.Messages[0].ToolCalls[0].Function.ThoughtSignature; got != "" {
+		t.Errorf("legacy function.thought_signature should not be sent, got %q", got)
+	}
+}
+
 func TestNormaliseUsageAnthropicStyleFallback(t *testing.T) {
 	tests := []struct {
 		name string
