@@ -1,8 +1,9 @@
 import type { ProviderView } from "./types";
 
 // Provider model cache with single-flight deduplication and time-based
-// exponential backoff. The cache identity mirrors every ProviderView field that
-// can change model discovery or credential resolution without storing secrets.
+// exponential backoff. The memory-only cache identity mirrors every ProviderView
+// field that can change model discovery or credential resolution; persistent
+// cooldowns use the backend's opaque fingerprint instead.
 
 type CacheEntry = { at: number; models: string[] };
 type BackoffEntry = { delay: number; retryAt: number; error: unknown };
@@ -32,6 +33,7 @@ function cacheKey(p: ProviderView): string {
     normalizedHeaders(p.headers),
     (p.keySource ?? "").trim(),
     (p.keySourcePath ?? "").trim(),
+    (p.modelCatalogFingerprint ?? "").trim(),
   ]);
 }
 

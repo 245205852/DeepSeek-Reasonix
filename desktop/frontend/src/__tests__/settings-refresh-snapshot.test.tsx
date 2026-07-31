@@ -538,7 +538,7 @@ providerRaceSettings.providers = [{
   modelsUrl: "",
   default: "missing-default",
   apiKeyEnv: "RACE_PROVIDER_API_KEY",
-  headers: {},
+  headers: { "X-Gateway-Token": "private-gateway-secret" },
   extraBody: {},
   authHeader: false,
   keySet: true,
@@ -586,6 +586,9 @@ await act(async () => {
   await flushPromises();
 });
 await waitFor("provider background discovery", () => providerBatchCalls === 1);
+const providerRefreshStorageKeys = Array.from({ length: sessionStorage.length }, (_, index) => sessionStorage.key(index) ?? "");
+ok(providerRefreshStorageKeys.some((key) => key.includes("old-fingerprint")), "provider auto-refresh cooldown uses the opaque catalog fingerprint");
+ok(providerRefreshStorageKeys.every((key) => !key.includes("private-gateway-secret")), "provider auto-refresh cooldown does not persist header secrets");
 const accessModelsButton = Array.from(providerRaceRootEl.querySelectorAll(".settings-subtab")).find(
   (button) => button.textContent?.trim() === "Access",
 ) as HTMLButtonElement | undefined;

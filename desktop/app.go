@@ -176,6 +176,10 @@ type App struct {
 	// boundaries without weakening the production lock order. Set it before
 	// starting a rebind and never mutate it until that rebind returns.
 	rebindCandidateHook func(string) error
+	// providerCatalogBeforeCredentialLockHook is test-only. It pauses catalog
+	// compare-and-apply after its optimistic credential snapshot but before the
+	// shared credential lock and authoritative re-read.
+	providerCatalogBeforeCredentialLockHook func(string)
 
 	// tryRunMu guards tryRunCancel — the cancel handle for the single
 	// in-flight settings-page subagent try run (TrySubagentProfile /

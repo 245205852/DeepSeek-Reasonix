@@ -647,6 +647,65 @@ func TestSaveProviderModelCatalogsRejectsStaleCredentialSnapshot(t *testing.T) {
 	}
 }
 
+func TestSaveProviderModelCatalogsRejectsOverlappingCredentialRotation(t *testing.T) {
+	isolateDesktopUserDirs(t)
+
+	app := NewApp()
+	const keyEnv = "CREDENTIAL_OVERLAP_API_KEY"
+	if err := app.SaveProvider(ProviderView{
+		Name: "credential-overlap", Kind: "openai", BaseURL: "https://credential.example.com/v1",
+		Models: []string{"current-model"}, APIKeyEnv: keyEnv,
+	}); err != nil {
+		t.Fatalf("SaveProvider: %v", err)
+	}
+	if _, err := app.SaveProviderKey(keyEnv, "old-key"); err != nil {
+		t.Fatalf("SaveProviderKey(old): %v", err)
+	}
+	cfg := config.LoadForEdit(config.UserConfigPath())
+	provider, _ := cfg.Provider("credential-overlap")
+	oldFingerprint := providerModelCatalogFingerprint(*provider)
+
+	snapshotRead := make(chan struct{})
+	releaseApply := make(chan struct{})
+	app.providerCatalogBeforeCredentialLockHook = func(string) {
+		close(snapshotRead)
+		<-releaseApply
+	}
+	type result struct {
+		applied []string
+		err     error
+	}
+	catalogDone := make(chan result, 1)
+	go func() {
+		applied, err := app.SaveProviderModelCatalogs([]ProviderModelCatalogUpdate{{
+			Name: "credential-overlap", ExpectedFingerprint: oldFingerprint,
+			Models: []string{"current-model", "stale-key-model"}, Default: "stale-key-model",
+		}})
+		catalogDone <- result{applied: applied, err: err}
+	}()
+	<-snapshotRead
+
+	// Keep the replacement the same length as the old value: revision safety
+	// must come from credential contents and locking, not size or mtime luck.
+	if _, err := app.SaveProviderKey(keyEnv, "new-key"); err != nil {
+		t.Fatalf("SaveProviderKey(new): %v", err)
+	}
+	close(releaseApply)
+	gotResult := <-catalogDone
+	if gotResult.err != nil {
+		t.Fatalf("SaveProviderModelCatalogs: %v", gotResult.err)
+	}
+	if len(gotResult.applied) != 0 {
+		t.Fatalf("credential-stale update applied providers %v, want none", gotResult.applied)
+	}
+
+	cfg = config.LoadForEdit(config.UserConfigPath())
+	provider, _ = cfg.Provider("credential-overlap")
+	if !reflect.DeepEqual(provider.ChatModelList(), []string{"current-model"}) {
+		t.Fatalf("overlapping credential rotation persisted stale models: %v", provider.ChatModelList())
+	}
+}
+
 func TestSaveProviderPersistsThinkingOverride(t *testing.T) {
 	isolateDesktopUserDirs(t)
 

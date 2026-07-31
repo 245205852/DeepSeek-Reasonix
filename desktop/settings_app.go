@@ -353,12 +353,7 @@ func nonNilAnyMap(m map[string]any) map[string]any {
 }
 
 func providerCredentialsRevision() string {
-	if path := config.UserCredentialsPath(); path != "" {
-		if info, err := os.Stat(path); err == nil {
-			return fmt.Sprintf("%d:%d", info.Size(), info.ModTime().UnixNano())
-		}
-	}
-	return "missing"
+	return config.CredentialStoreRevision()
 }
 
 var providerModelCatalogFingerprintKey = func() []byte {
@@ -2278,6 +2273,18 @@ func (a *App) SaveProviderModelCatalogs(updates []ProviderModelCatalogUpdate) ([
 		if err != nil {
 			return err
 		}
+		observedCredentialsRevision := providerCredentialsRevision()
+		if a.providerCatalogBeforeCredentialLockHook != nil {
+			a.providerCatalogBeforeCredentialLockHook(observedCredentialsRevision)
+		}
+		unlockCredentials, err := config.LockUserCredentialEdits()
+		if err != nil {
+			return err
+		}
+		defer unlockCredentials()
+		// Re-read while holding the same lock as every Reasonix credential
+		// writer, then keep that lock through the config commit. A rotation that
+		// won the race therefore invalidates the request fingerprint.
 		credentialsRevision := providerCredentialsRevision()
 		for _, update := range updates {
 			changed, err := applyProviderModelCatalogUpdate(cfg, update, credentialsRevision)

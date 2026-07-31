@@ -157,6 +157,20 @@ try {
   }, provider({ modelsUrl: "https://example.test/alternate/models", headers: { "X-A": "1", "X-B": "2" } }));
   ok(calls === 2 && otherEndpoint[0] === "other-endpoint", "separates different modelsUrl endpoints");
 
+  clearModelCache();
+  calls = 0;
+  const oldFingerprint = provider({ modelCatalogFingerprint: "catalog-revision-old" });
+  const newFingerprint = provider({ modelCatalogFingerprint: "catalog-revision-new" });
+  await cachedFetchProviderModels(async () => {
+    calls += 1;
+    return ["old-catalog"];
+  }, oldFingerprint);
+  const afterExternalCredentialChange = await cachedFetchProviderModels(async () => {
+    calls += 1;
+    return ["new-catalog"];
+  }, newFingerprint);
+  ok(calls === 2 && afterExternalCredentialChange[0] === "new-catalog", "refetches when the opaque catalog fingerprint changes");
+
   invalidateProviderCacheByAPIKeyEnv("CUSTOM_API_KEY");
   const afterCredentialChange = await cachedFetchProviderModels(async () => {
     calls += 1;

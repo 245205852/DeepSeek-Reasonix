@@ -4058,15 +4058,14 @@ function ModelsSection({ s, busy, apply, backgroundApply, initialFocus }: Models
         return provider ? { group, provider } : null;
       })
       .filter((item): item is { group: ProviderAccessGroup; provider: ProviderView } => Boolean(item));
+    // The backend token covers provider identity, current catalog, headers,
+    // and credential revision without persisting sensitive header values in
+    // sessionStorage. Older payloads without the token simply skip this
+    // opportunistic background refresh; manual refresh remains available.
+    if (candidates.some(({ provider }) => !provider.modelCatalogFingerprint?.trim())) return;
     const refreshKey = candidates.map(({ group, provider }) => JSON.stringify([
       group.id,
-      provider.name,
-      provider.kind,
-      provider.apiKeyEnv,
-      provider.baseUrl,
-      provider.modelsUrl,
-      Boolean(provider.authHeader),
-      Object.entries(provider.headers ?? {}).sort(([a], [b]) => a.localeCompare(b)),
+      provider.modelCatalogFingerprint!.trim(),
     ])).join("|");
     if (!refreshKey || autoRefreshKeyRef.current === refreshKey) return;
 
