@@ -513,6 +513,27 @@ func TestTrySubagentProfileRejectsUnknownModel(t *testing.T) {
 	}
 }
 
+func TestTrySubagentPermissionGateFailsClosedOnAsk(t *testing.T) {
+	cfg := config.Default()
+	cfg.Permissions.Ask = []string{"read_file"}
+	gate := trySubagentPermissionGate(cfg)
+
+	allow, reason, err := gate.Check(context.Background(), "read_file", json.RawMessage(`{"path":"README.md"}`), true)
+	if err != nil {
+		t.Fatalf("ask decision returned an error instead of a denial: %v", err)
+	}
+	if allow || (!strings.Contains(strings.ToLower(reason), "denied") &&
+		!strings.Contains(strings.ToLower(reason), "declined")) {
+		t.Fatalf("explicit Ask decision allow=%v reason=%q, want fail-closed denial", allow, reason)
+	}
+
+	cfg.Permissions.Ask = nil
+	allow, reason, err = trySubagentPermissionGate(cfg).Check(context.Background(), "read_file", json.RawMessage(`{"path":"README.md"}`), true)
+	if err != nil || !allow {
+		t.Fatalf("ordinary read-only fallback allow=%v reason=%q err=%v, want allowed", allow, reason, err)
+	}
+}
+
 func TestDeleteSubagentProfileRemovesIt(t *testing.T) {
 	a := newTestSubagentApp(t)
 	if _, err := a.CreateSubagentProfile(SubagentProfileInput{

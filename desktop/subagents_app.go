@@ -359,21 +359,25 @@ func (a *App) TrySubagentProfile(input SubagentProfileInput, task string) (strin
 
 	reg := trySubagentToolRegistry(cfg, root, input.AllowedTools)
 
-	// The headless gate enforces the user's configured permission rules. A
-	// subagent has no UI to answer an Ask decision, so deny and ask both block.
-	policy := permission.New(cfg.Permissions.Mode, cfg.Permissions.Allow, cfg.Permissions.Ask, cfg.Permissions.Deny)
-
 	result, err := agent.RunReadOnlySubAgentWithSession(runCtx, prov, reg, agent.NewSession(prompt), task, agent.Options{
 		MaxSteps:      12,
 		Temperature:   cfg.Agent.Temperature,
 		Pricing:       me.Price,
 		ContextWindow: me.ContextWindow,
-		Gate:          control.NewHeadlessPermissionGate(policy),
+		Gate:          trySubagentPermissionGate(cfg),
 	}, event.Discard)
 	if err != nil {
 		return "", err
 	}
 	return result, nil
+}
+
+// trySubagentPermissionGate is explicitly fail-closed for Ask decisions. The
+// settings preview has no approval UI, so the legacy nil-approver bootstrap
+// gate would silently allow explicit Ask rules, including read-only tools.
+func trySubagentPermissionGate(cfg *config.Config) agent.Gate {
+	policy := permission.New(cfg.Permissions.Mode, cfg.Permissions.Allow, cfg.Permissions.Ask, cfg.Permissions.Deny)
+	return control.BuildHeadlessApprovalGate(policy, control.ToolApprovalAsk)
 }
 
 // CancelTrySubagentProfile aborts the in-flight settings-page try run, if

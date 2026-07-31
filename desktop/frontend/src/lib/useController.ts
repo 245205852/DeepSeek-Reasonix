@@ -1544,6 +1544,11 @@ const noticeCodeKeys: Record<string, DictKey> = {
 // localizedNoticeText localizes a notice's main copy by its stable code first,
 // then falls back to English-text matching for codeless payloads.
 export function localizedNoticeText(text: string, code?: string): string {
+  if (code === "unapplied_steer") {
+    const separator = text.indexOf("\n");
+    const guidance = separator >= 0 ? text.slice(separator + 1) : text;
+    return t("notice.unappliedSteer", { guidance });
+  }
   const key = code ? noticeCodeKeys[code] : undefined;
   if (key) return t(key);
   return localizedBackendNoticeText(text);
@@ -1828,7 +1833,7 @@ export function useController() {
   const bump = useCallback(() => setVersion((v) => v + 1), []);
   const notifyLiveListeners = useCallback((tabId: string) => {
     for (const listener of liveListenersByTabRef.current.get(tabId) ?? []) listener();
-  }, []);
+  }, [t]);
   const disposeComposerProfileState = useCallback((tabId: string) => {
     appliedComposerProfileByTabRef.current.delete(tabId);
     composerProfileInFlightByTabRef.current.delete(tabId);
@@ -2679,14 +2684,11 @@ export function useController() {
     if (!tabId) throw new Error(t("composer.workspaceStarting"));
     // No optimistic user bubble: rewind/fork map turns by counting user items,
     // and a steer is not a backend turn — the Steer event's ↪ notice is the
-    // visible confirmation (#3660).
-    try {
-      await app.SteerForTab(tabId, text);
-    } catch (error) {
-      dispatchTo(tabId, { type: "local_notice", level: "warn", text: `Steer failed: ${error instanceof Error ? error.message : String(error)}` });
-      throw error;
-    }
-  }, [dispatchTo]);
+    // visible confirmation (#3660). Keep backend rejection as a rejected
+    // promise: Composer retains the guidance item until TurnDone, then sends it
+    // as a normal follow-up instead of clearing running state prematurely.
+    await app.SteerForTab(tabId, text);
+  }, []);
 
   const steer = useCallback(async (text: string) => {
     if (!activeTabId) throw new Error(t("composer.workspaceStarting"));
