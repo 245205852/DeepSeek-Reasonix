@@ -19,6 +19,13 @@ const NUMERIC_MATH_BEFORE =
 const NUMERIC_MATH_AFTER =
   /^\s*(?:[-–—−]\s*\d|(?:[fpnumµmkMGT]?eV|[fpnumµmkMGT]?Hz|[fpnumµmkMGT]?[mgsWVAJNTK]|mol|Pa|bar|Ω|ohms?|bits?|bytes?)\b|°[CF]\b)/i;
 
+function currencyContext(context: InlineMathContext): Required<InlineMathContext> {
+  return {
+    before: (context.before ?? "").replace(/[\s()[\]{}"'“”‘’（）【】《》〈〉「」『』]+$/u, ""),
+    after: (context.after ?? "").replace(/^[\s()[\]{}"'“”‘’（）【】《》〈〉「」『』,;:，；：。、—–-]+/u, ""),
+  };
+}
+
 /**
  * Decide how an `inlineMath` node produced by remark-math should render.
  *
@@ -36,7 +43,8 @@ export function classifyInlineMath(
   if (math.includes("://") || math.includes("](")) return "literal";
 
   if (PURE_NUMBER.test(math)) {
-    if (CURRENCY_BEFORE.test(context.before ?? "") || CURRENCY_AFTER.test(context.after ?? "")) {
+    const currency = currencyContext(context);
+    if (CURRENCY_BEFORE.test(currency.before) || CURRENCY_AFTER.test(currency.after)) {
       return "currency";
     }
     if (NUMERIC_MATH_BEFORE.test(context.before ?? "") || NUMERIC_MATH_AFTER.test(context.after ?? "")) {

@@ -9,12 +9,11 @@
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import ReactMarkdown from "react-markdown";
-import rehypeKatex from "rehype-katex";
 import katex from "katex";
 import { latexNormalizeForKatex, stripMathDelimiters } from "../components/latexNormalize";
 import { classifyInlineMath, isLikelyInlineMath } from "../components/mathClassify";
-import { reasonixRemarkPlugins } from "../components/markdownRemarkPlugins";
-import { normalizeMath } from "../components/mathNormalize";
+import { reasonixRehypePlugins, reasonixRemarkPlugins } from "../components/markdownRemarkPlugins";
+import { normalizeMath, restoreProtectedInlineMathSource } from "../components/mathNormalize";
 import { expandYoungDiagrams } from "../components/youngDiagrams";
 
 let passed = 0;
@@ -255,10 +254,15 @@ eq(normalizeMath("\\[E=mc^2\\]"), "$$\nE=mc^2\n$$", "\\[…\\] → $$…$$");
 eq(normalizeMath("\\\\[4pt]"), "\\\\[4pt]", "\\\\[ line-break spacing protected");
 
 console.log("\nnormalizeMath — \\slashed conversion (regression)");
-// KaTeX has no \slashed (Feynman slash notation); it is rewritten to \not.
-eq(normalizeMath("$\\slashed{p}$"), "$\\not{p}$", "\\slashed{p} → \\not{p}");
-eq(normalizeMath("$\\slashed{\\partial}$"), "$\\not{\\partial}$", "\\slashed{\\partial} → \\not{\\partial}");
-eq(normalizeMath("The momentum $\\slashed{p}$ is conserved"), "The momentum $\\not{p}$ is conserved", "\\slashed in prose");
+// KaTeX has no \slashed (Feynman slash notation). The pre-pass preserves it
+// verbatim; the AST policy rewrites it to \not only for rendering.
+eq(normalizeMath("$\\slashed{p}$"), "$\\slashed{p}$", "\\slashed{p} deferred to AST policy");
+eq(normalizeMath("$\\slashed{\\partial}$"), "$\\slashed{\\partial}$", "\\slashed{\\partial} deferred to AST policy");
+eq(
+  normalizeMath("The momentum $\\slashed{p}$ is conserved"),
+  "The momentum $\\slashed{p}$ is conserved",
+  "\\slashed in prose deferred to AST policy",
+);
 eq(normalizeMath("$\\slashed\\epsilon(0)$"), "$\\slashed\\epsilon(0)$", "unbraced \\slashed normalisation deferred to AST policy");
 eq(normalizeMath("$\\slashed a$"), "$\\slashed a$", "unbraced \\slashed letter normalisation deferred to AST policy");
 
@@ -337,22 +341,21 @@ eq(normalizeMath("Code: `r.replace(/\\$\\$/, ...)`"), "Code: `r.replace(/\\$\\$/
 eq(normalizeMath("```javascript\nr = r.replace(/\\$\\$([\\s\\S]*?)\\$\\$/g, ...);\n```"), "```javascript\nr = r.replace(/\\$\\$([\\s\\S]*?)\\$\\$/g, ...);\n```", "regex patterns with $ in code blocks stay literal");
 eq(normalizeMath("Code: `` `${DOLLAR}${m}${DOLLAR}` ``"), "Code: `` `${DOLLAR}${m}${DOLLAR}` ``", "template literals with $ in inline code stay literal");
 
-// ── normalizeMath — text-mode escapes (regression for PR #3287) ───────────────
-// The whole point of running latexNormalizeForKatex inside normalizeMath is
-// that LLM output like "$\text{price is $5}$" reaches KaTeX with the inner
-// $ escaped to \textdollar{}. Before this fix it errored.
+// ── normalizeMath — text-mode source protection (regression for PR #3287) ─────
+// A stray inner $ must be hidden until remark-math establishes the outer
+// boundary, while the AST policy retains the exact source for copying.
 
 console.log("\nnormalizeMath — text-mode escapes (regression)");
-check("$\\text{cost is $5}$ inner $ escaped", () => {
+check("$\\text{cost is $5}$ inner $ is parser-safe and reversible", () => {
   const out = normalizeMath("$\\text{cost is $5}$");
-  // After normalisation the inner $ becomes \textdollar{} so KaTeX can render.
-  return out.includes("\\textdollar{}") && out === "$\\text{cost is \\textdollar{}5}$";
+  return !out.slice(1, -1).includes("$")
+    && restoreProtectedInlineMathSource(out.slice(1, -1)) === "\\text{cost is $5}";
 });
-check("$\\text{baryon #}$ # escaped", () => {
-  return normalizeMath("$\\text{baryon #}$") === "$\\text{baryon \\#}$";
+check("$\\text{baryon #}$ # escape is deferred to AST policy", () => {
+  return normalizeMath("$\\text{baryon #}$") === "$\\text{baryon #}$";
 });
-check("$\\text{a & b}$ & escaped", () => {
-  return normalizeMath("$\\text{a & b}$") === "$\\text{a \\& b}$";
+check("$\\text{a & b}$ & escape is deferred to AST policy", () => {
+  return normalizeMath("$\\text{a & b}$") === "$\\text{a & b}$";
 });
 check("$\\text{cost is \\$5}$ escaped dollar stays literal", () => {
   return normalizeMath("$\\text{cost is \\$5}$") === "$\\text{cost is \\$5}$";
@@ -370,21 +373,23 @@ check("$\\sqrt{x}$ non-text command preserved", () => {
 console.log("\nnormalizeMath — TEXT_MODE_PAIR trailing content");
 check("$\\text{cost is $5} + x^2$ inner $ escaped with trailing", () => {
   const out = normalizeMath("$\\text{cost is $5} + x^2$");
-  return out.includes("\\textdollar{}") && out.includes("+ x^2");
+  return restoreProtectedInlineMathSource(out.slice(1, -1))
+    === "\\text{cost is $5} + x^2";
 });
 check("$\\text{a} | b$ pipe after text command", () => {
   const out = normalizeMath("$\\text{a} | b$");
-  return out.includes("\\vert") && out === "$\\text{a} \\vert b$";
+  return restoreProtectedInlineMathSource(out.slice(1, -1)) === "\\text{a} | b";
 });
 check("$\\text{abc}$ simple text-mode (no trailing)", () => {
   return normalizeMath("$\\text{abc}$") === "$\\text{abc}$";
 });
 
-// ── normalizeMath — pipe handling (| to \vert, \\| preserved) ──────────────────
+// ── normalizeMath — GFM pipe protection (raw | marked, \\| preserved) ──────────
 
 console.log("\nnormalizeMath — pipe handling");
 check("$|x+1|$ absolute value", () => {
-  return normalizeMath("$|x+1|$") === "$\\vert x+1\\vert$";
+  const out = normalizeMath("$|x+1|$");
+  return restoreProtectedInlineMathSource(out.slice(1, -1)) === "|x+1|";
 });
 check("$\\|x\\|$ norm preserved (no \\vert mangling)", () => {
   return normalizeMath("$\\|x\\|$") === "$\\|x\\|$";
@@ -399,7 +404,7 @@ eq(normalizeMath("$x = 50%$"), "$x = 50%$", "trailing % escape deferred to AST p
 eq(normalizeMath("$100%$"), "$100%$", "pure percentage preserved for AST math policy");
 eq(normalizeMath("$10\\%$"), "$10\\%$", "already-escaped \\% left alone");
 
-// ── normalizeMath — end-to-end KaTeX render of common LLM outputs ──────────────
+// ── normalizer + AST policy — end-to-end KaTeX render of common LLM outputs ───
 
 console.log("\nnormalizeMath → KaTeX end-to-end");
 function katexOf(normalized: string, display: boolean): boolean {
@@ -413,7 +418,11 @@ function katexOf(normalized: string, display: boolean): boolean {
     return false; // no math delimiters — nothing for KaTeX to render
   }
   try {
-    katex.renderToString(inner, { throwOnError: true, displayMode: display });
+    const source = restoreProtectedInlineMathSource(inner);
+    katex.renderToString(latexNormalizeForKatex(source), {
+      throwOnError: true,
+      displayMode: display,
+    });
     return true;
   } catch {
     return false;
@@ -480,7 +489,7 @@ function renderHtml(src: string): string {
   return renderToStaticMarkup(
     createElement(ReactMarkdown, {
       remarkPlugins: reasonixRemarkPlugins,
-      rehypePlugins: [rehypeKatex],
+      rehypePlugins: reasonixRehypePlugins,
       children: normalizeMath(src),
     }),
   );
@@ -505,6 +514,30 @@ check("Chinese paired currency uses localized price context", () => {
 check("full-width punctuation keeps paired currency literal", () => {
   const html = renderHtml("价格：$5$");
   return !html.includes("katex") && html.includes("价格：$5") && !html.includes("$5$");
+});
+check("parentheses do not hide preceding currency context", () => {
+  const html = renderHtml("The price ($5$) includes tax.");
+  return !html.includes("katex") && html.includes("The price ($5) includes tax.");
+});
+check("braces do not hide preceding currency context", () => {
+  const html = renderHtml("The price {$5$} includes tax.");
+  return !html.includes("katex") && html.includes("The price {$5} includes tax.");
+});
+check("curly quotes do not hide preceding currency context", () => {
+  const html = renderHtml("The price ‘$5$’ includes tax.");
+  return !html.includes("katex") && html.includes("The price ‘$5’ includes tax.");
+});
+check("full-width parentheses do not hide Chinese currency context", () => {
+  const html = renderHtml("价格（$5$）含税。");
+  return !html.includes("katex") && html.includes("价格（$5）含税。");
+});
+check("parenthesized suffix currency unit repairs paired dollars", () => {
+  const html = renderHtml("It is $5$ (USD).");
+  return !html.includes("katex") && html.includes("It is $5 (USD).");
+});
+check("dash-separated cash suffix repairs paired dollars", () => {
+  const html = renderHtml("It is $5$—cash.");
+  return !html.includes("katex") && html.includes("It is $5—cash.");
 });
 check("cash context keeps paired currency literal", () => {
   const html = renderHtml("I have $5$ in cash");
@@ -538,6 +571,14 @@ check("scientific unit makes a paired number mathematical", () => {
   const html = renderHtml("$20$ MeV");
   return html.includes("katex") && html.includes("<mn>20</mn>");
 });
+check("parenthesized scientific quantity remains mathematical", () => {
+  const html = renderHtml("A vector ($5$ m) long.");
+  return html.includes("katex") && html.includes("<mn>5</mn>");
+});
+check("parenthesized ambiguous value retains mathematical wrapper context", () => {
+  const html = renderHtml("The value ($5$) is exact.");
+  return html.includes("katex") && html.includes("<mn>5</mn>");
+});
 check("one-sided equality $=1$ renders as math", () => {
   const html = renderHtml("set $=1$ here");
   return html.includes("katex") && html.includes("<mo>=</mo>");
@@ -552,11 +593,31 @@ check("inline code remains outside math policy", () => {
 });
 check("AST policy applies KaTeX percent normalisation", () => {
   const html = renderHtml("$x = 50%$");
-  return html.includes("katex") && html.includes("x = 50\\%");
+  return html.includes("katex")
+    && !html.includes("katex-error")
+    && html.includes('data-latex-source="x = 50%"')
+    && html.includes('encoding="application/x-tex">x = 50%</annotation>');
 });
 check("AST policy applies unbraced slashed normalisation", () => {
   const html = renderHtml("$\\slashed a$");
-  return html.includes("katex") && html.includes("\\not a");
+  return html.includes("katex")
+    && !html.includes("katex-error")
+    && html.includes('data-latex-source="\\slashed a"')
+    && html.includes('encoding="application/x-tex">\\slashed a</annotation>');
+});
+check("AST policy preserves braced slashed source after rendering", () => {
+  const html = renderHtml("$\\slashed{p}$");
+  return html.includes("katex")
+    && !html.includes("katex-error")
+    && html.includes('data-latex-source="\\slashed{p}"')
+    && html.includes('encoding="application/x-tex">\\slashed{p}</annotation>');
+});
+check("parser-safe text-mode math restores the exact copy source", () => {
+  const html = renderHtml("$\\text{cost is $5}$");
+  return html.includes("katex")
+    && !html.includes("katex-error")
+    && html.includes('data-latex-source="\\text{cost is $5}"')
+    && html.includes('encoding="application/x-tex">\\text{cost is $5}</annotation>');
 });
 check("real inline math $x^2$ still renders as KaTeX", () => {
   const html = renderHtml("the value $x^2$ here");
@@ -566,8 +627,22 @@ check("GFM table preserves inline absolute-value math and every cell", () => {
   const html = renderHtml("| Expr | Value |\n| --- | --- |\n| $|x|$ | abs |");
   return html.includes("<table>")
     && html.includes("katex")
+    && html.includes('data-latex-source="|x|"')
+    && html.includes('encoding="application/x-tex">|x|</annotation>')
     && html.includes("<td>abs</td>")
     && (html.match(/<td>/g) ?? []).length === 2;
+});
+check("display math preserves original TeX in the KaTeX root and annotation", () => {
+  const html = renderHtml("$$|x|$$");
+  return html.includes('class="katex-display" data-latex-source="|x|"')
+    && html.includes('encoding="application/x-tex">|x|</annotation>');
+});
+check("multiple formulas restore their own source without cross-assignment", () => {
+  const html = renderHtml("$|x|$ then $x = 50%$");
+  const annotations = html.match(/<annotation encoding="application\/x-tex">.*?<\/annotation>/g) ?? [];
+  return annotations.length === 2
+    && annotations[0].includes(">|x|</annotation>")
+    && annotations[1].includes(">x = 50%</annotation>");
 });
 check("blockquote display math does not swallow following inline math", () => {
   const html = renderHtml("> theorem\n> $$E=mc^2$$\n> after $x$");

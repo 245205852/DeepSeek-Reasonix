@@ -1,12 +1,11 @@
 import { lazy, memo, Suspense, useMemo, useRef } from "react";
 import ReactMarkdown from "react-markdown";
 import type { Components } from "react-markdown";
-import rehypeKatex from "rehype-katex";
 import "katex/dist/katex.min.css";
 import { CodeViewer } from "./CodeViewer";
 import { RichMarkdownLink } from "./githubLink";
 import { normalizeMath } from "./mathNormalize";
-import { reasonixRemarkPlugins } from "./markdownRemarkPlugins";
+import { reasonixRehypePlugins, reasonixRemarkPlugins } from "./markdownRemarkPlugins";
 import { markdownImageSource } from "../lib/markdownImage";
 
 const MermaidDiagram = lazy(() => import("./MermaidDiagram"));
@@ -136,7 +135,7 @@ const MarkdownRenderer = memo(function MarkdownRenderer({
   const content = (
     <ReactMarkdown
       remarkPlugins={reasonixRemarkPlugins}
-      rehypePlugins={[rehypeKatex]}
+      rehypePlugins={reasonixRehypePlugins}
       components={components}
     >
       {mathContent}

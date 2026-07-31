@@ -12,11 +12,9 @@
 //   5. Inline `$$` glued to prose gets a blank line inserted before it
 //      (CommonMark requires that block math be paragraph-separated).
 //   6. Protect pipes inside inline math before GFM table tokenisation.
-//   7. Restore placeholders for remark-math. Remaining inline normalisation
-//      is handled by the AST policy; display math is normalised while its
-//      structure is repaired here.
+//   7. Restore placeholders for remark-math. KaTeX-specific normalisation is
+//      handled by the AST policy after parsing.
 
-import { latexNormalizeForKatex } from "./latexNormalize";
 import { expandYoungDiagrams } from "./youngDiagrams";
 
 // Matches $\cmd{...}...$ where the body may contain $ and one level of nested
@@ -30,6 +28,7 @@ const DM = "__REASONIX_MATH_DISPLAY__";
 const IM = "__REASONIX_MATH_INLINE__";
 const LB = "__REASONIX_LATEX_LINEBREAK__";
 const ED_BASE = "REASONIXESCAPEDDOLLAR";
+const INLINE_SOURCE_PREFIX = "\\reasonixInternalSourceV1{";
 
 export function normalizeMath(s: string): string {
   const protectedCode = protectMarkdownCode(s);
@@ -66,20 +65,19 @@ function normalizeMathText(s: string): string {
   const escapedDollarToken = unusedEscapedDollarToken(r);
   r = r.split("\\$").join(escapedDollarToken);
 
-  // Step 3+4: normalise display $$ blocks and run KaTeX-specific
-  // normalisation on each recognised display source. remark-math requires
+  // Step 3+4: normalise display $$ block structure. remark-math requires
   // opening and closing $$ to sit on their own lines; LLMs often emit
   // single-line displays, opening fences glued to prose, and adjacent display
   // blocks separated by prose. A line parser avoids the old cross-block regex
   // capture that swallowed prose between two display blocks.
   r = normaliseDisplayBlocks(r);
 
-  // Step 5: $\cmd{...}$ pairs where the body may contain a stray $
-  // (e.g. $\text{price is $5}$). Recognised first so the inner $ doesn't
-  // terminate this structural $...$ match; latexNormalizeForKatex then escapes
-  // the inner $ to \textdollar{}.
-  r = r.replace(TEXT_MODE_PAIR, (_match, m) => {
-    return `${IM}${latexNormalizeForKatex(m)}${IM}`;
+  // Step 5: preserve the complete source of $\cmd{...}$ pairs containing a
+  // stray inner $ (e.g. $\text{price is $5}$) in a parser-safe marker. The
+  // AST policy restores and normalises it after remark-math has established
+  // the real formula boundary.
+  r = r.replace(TEXT_MODE_PAIR, (match, math: string) => {
+    return math.includes("$") ? `${IM}${protectInlineMathSource(math)}${IM}` : match;
   });
 
   // Step 6: GFM identifies table cells before remark plugins can transform the
@@ -98,8 +96,31 @@ function normalizeMathText(s: string): string {
 
 function protectInlineMathPipesForGfm(s: string): string {
   return s.replace(/\$([^$\n]+)\$/g, (match, math: string) => {
-    return math.includes("|") ? `$${latexNormalizeForKatex(math)}$` : match;
+    let hasUnescapedPipe = false;
+    let backslashes = 0;
+    for (const char of math) {
+      if (char === "|" && backslashes % 2 === 0) {
+        hasUnescapedPipe = true;
+        break;
+      }
+      backslashes = char === "\\" ? backslashes + 1 : 0;
+    }
+    return hasUnescapedPipe ? `$${protectInlineMathSource(math)}$` : match;
   });
+}
+
+function protectInlineMathSource(source: string): string {
+  return `${INLINE_SOURCE_PREFIX}${encodeURIComponent(source)}}`;
+}
+
+export function restoreProtectedInlineMathSource(source: string): string {
+  if (!source.startsWith(INLINE_SOURCE_PREFIX) || !source.endsWith("}")) return source;
+  const encoded = source.slice(INLINE_SOURCE_PREFIX.length, -1);
+  try {
+    return decodeURIComponent(encoded);
+  } catch {
+    return source;
+  }
 }
 
 function unusedEscapedDollarToken(s: string): string {
@@ -248,7 +269,7 @@ function normaliseDisplayBlocks(s: string): string {
         const quote = blockquotePrefix(m[1]);
         pushDisplayBefore(out, m[1]);
         out.push(DM);
-        out.push(latexNormalizeForKatex(m[2]));
+        out.push(m[2]);
         out.push(DM);
         if (m[3]) out.push(normaliseDisplayBlocks(quote ? quote + m[3].trimStart() : m[3]));
         i += 1;
@@ -278,7 +299,7 @@ function normaliseDisplayBlocks(s: string): string {
           if (formulaPart) formulaLines.push(formulaPart);
           const formula = formulaLines.join("\n");
           out.push(DM);
-          out.push(latexNormalizeForKatex(formula));
+          out.push(formula);
           out.push(DM);
           if (afterClose) out.push(quote ? quote + afterClose.trimStart() : afterClose);
           i = j + 1;

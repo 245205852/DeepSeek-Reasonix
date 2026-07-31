@@ -3,11 +3,17 @@ import type { InlineMath } from "mdast-util-math";
 import { visit } from "unist-util-visit";
 import { classifyInlineMath } from "./mathClassify";
 import { latexNormalizeForKatex } from "./latexNormalize";
+import { restoreProtectedInlineMathSource } from "./mathNormalize";
 
 type HastLikeNode = {
   type: string;
   value?: string;
   children?: HastLikeNode[];
+};
+
+type MathNodeData = {
+  hChildren?: HastLikeNode[];
+  hProperties?: Record<string, unknown>;
 };
 
 type ParentWithChildren = {
@@ -61,20 +67,26 @@ function originalSource(node: InlineMath, file: VFileLike): string {
   const start = node.position?.start.offset;
   const end = node.position?.end.offset;
   if (typeof start === "number" && typeof end === "number") {
-    return source.slice(start, end);
+    return restoreProtectedInlineMathSource(source.slice(start, end));
   }
-  return `$${node.value}$`;
+  return `$${restoreProtectedInlineMathSource(node.value)}$`;
 }
 
 function setMathValue(
   node: { value: string; data?: unknown },
+  source: string,
   value: string,
 ): void {
   node.value = value;
 
   // mdast-util-math caches hast children while parsing. Keep that rendering
-  // payload in sync with node.value when a later remark plugin normalises it.
-  const data = node.data as { hChildren?: HastLikeNode[] } | undefined;
+  // payload in sync with node.value when a later remark plugin normalises it,
+  // while carrying the unnormalised TeX through to the rehype stage.
+  const data = node.data as MathNodeData | undefined;
+  if (data) {
+    data.hProperties ??= {};
+    data.hProperties.dataLatexSource = source;
+  }
   const hChildren = data?.hChildren;
   const updateFirstText = (children: HastLikeNode[] | undefined): boolean => {
     if (!children) return false;
@@ -102,24 +114,26 @@ export function remarkMathPolicy() {
 
       const typedNode = node as InlineMath;
       const typedParent = parent as ParentWithChildren;
+      const source = restoreProtectedInlineMathSource(typedNode.value);
       const decision = classifyInlineMath(
-        typedNode.value,
+        source,
         inlineMathContext(typedNode, file, typedParent, index),
       );
 
       if (decision === "math") {
-        setMathValue(typedNode, latexNormalizeForKatex(typedNode.value));
+        setMathValue(typedNode, source, latexNormalizeForKatex(source));
         return;
       }
 
       const value = decision === "currency"
-        ? `$${typedNode.value}`
+        ? `$${source}`
         : originalSource(typedNode, file);
       typedParent.children[index] = { type: "text", value } satisfies Text;
     });
 
     visit(tree, "math", (node) => {
-      setMathValue(node, latexNormalizeForKatex(node.value));
+      const source = node.value;
+      setMathValue(node, source, latexNormalizeForKatex(source));
     });
   };
 }
