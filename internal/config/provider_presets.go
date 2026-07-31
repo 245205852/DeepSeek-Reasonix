@@ -144,7 +144,7 @@ var curatedProviderPresets = []ProviderPreset{
 			ContextWindow: 1_000_000,
 			Prices:        deepSeekV4PricesUSD(),
 			ModelOverrides: map[string]ProviderModelOverride{
-				"deepseek-v4-flash": {SupportedEfforts: []string{"disabled", "high", "max"}, DefaultEffort: "high"},
+				"deepseek-v4-flash": {SupportedEfforts: []string{"disabled", "low", "high", "max"}, DefaultEffort: "high"},
 				"deepseek-v4-pro":   {SupportedEfforts: []string{"disabled", "high", "max"}, DefaultEffort: "high"},
 			},
 		}},

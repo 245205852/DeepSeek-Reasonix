@@ -36,10 +36,13 @@ DeepSeek thinking blocks from historical tool-call turns, omits unsupported
 images, and relies on DeepSeek's automatic prefix cache instead of ignored
 `cache_control` markers.
 
-The preset exposes `auto`, `disabled`, `high`, and `max`: unlike the
-Chat Completions Flash path above, the Anthropic-compatible endpoint currently
-documents only `high|max` effort on the wire. Compatibility inputs reaching the
-provider normalize `low`/`medium` to `high` and `xhigh` to `max`.
+The preset exposes the current model-specific effort scales: Flash supports
+`auto`, `disabled`, `low`, `high`, and `max`, while Pro exposes `auto`,
+`disabled`, `high`, and `max` because its current `low` input maps to `high`.
+The Anthropic-compatible endpoint accepts `low|high|max` on the wire. Legacy
+`medium` normalizes to `high`; legacy `xhigh` normalizes to `high` for Flash and
+`max` for Pro. Claude Opus aliases use the Pro mapping, while Sonnet/Haiku and
+unsupported model names follow DeepSeek's documented Flash fallback.
 
 ## Everything else (standard `reasoning_effort`)
 

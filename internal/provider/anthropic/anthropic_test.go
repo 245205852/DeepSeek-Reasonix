@@ -509,14 +509,20 @@ func TestBuildRequestDeepSeekReplaysOnlyToolCallReasoningFromHistory(t *testing.
 
 func TestBuildRequestDeepSeekThinkingModes(t *testing.T) {
 	for _, tc := range []struct {
-		name, input, want string
+		name, model, input, want string
 	}{
-		{name: "legacy low", input: "low", want: "high"},
-		{name: "legacy medium", input: "medium", want: "high"},
-		{name: "legacy xhigh", input: "xhigh", want: "max"},
+		{name: "Flash low", model: "deepseek-v4-flash", input: "low", want: "low"},
+		{name: "Flash legacy medium", model: "deepseek-v4-flash", input: "medium", want: "high"},
+		{name: "Flash legacy xhigh", model: "deepseek-v4-flash", input: "xhigh", want: "high"},
+		{name: "Pro low", model: "deepseek-v4-pro", input: "low", want: "high"},
+		{name: "Pro legacy medium", model: "deepseek-v4-pro", input: "medium", want: "high"},
+		{name: "Pro legacy xhigh", model: "deepseek-v4-pro", input: "xhigh", want: "max"},
+		{name: "Sonnet alias uses Flash", model: "claude-sonnet-4-6", input: "low", want: "low"},
+		{name: "Opus alias uses Pro", model: "claude-opus-4-8", input: "xhigh", want: "max"},
+		{name: "unknown model falls back to Flash", model: "unknown-model", input: "xhigh", want: "high"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			r := (&client{model: "deepseek-v4-flash", deepseek: true, effort: tc.input}).buildRequest(provider.Request{})
+			r := (&client{model: tc.model, deepseek: true, effort: tc.input}).buildRequest(provider.Request{})
 			if r.Thinking == nil || r.Thinking.Type != "enabled" || r.OutputConfig == nil || r.OutputConfig.Effort != tc.want {
 				t.Fatalf("DeepSeek thinking = %+v / %+v, want enabled/%s", r.Thinking, r.OutputConfig, tc.want)
 			}
@@ -545,6 +551,33 @@ func TestBuildRequestDeepSeekThinkingModes(t *testing.T) {
 			t.Fatalf("reasoning-only assistant should be omitted when thinking is disabled: %+v", r.Messages)
 		}
 	})
+}
+
+func TestBuildRequestDeepSeekPreservesCallerTemperature(t *testing.T) {
+	zero := provider.TemperaturePtr(0)
+	r := (&client{model: "deepseek-v4-flash", deepseek: true}).buildRequest(provider.Request{Temperature: zero})
+	if r.Temperature == nil || *r.Temperature != 0 {
+		t.Fatalf("DeepSeek temperature = %v, want explicit zero", r.Temperature)
+	}
+	b, err := json.Marshal(r)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if !strings.Contains(string(b), `"temperature":0`) {
+		t.Fatalf("DeepSeek request omitted explicit temperature: %s", b)
+	}
+
+	native := (&client{model: "claude-opus-4-8"}).buildRequest(provider.Request{Temperature: provider.TemperaturePtr(0.5)})
+	if native.Temperature != nil {
+		t.Fatalf("native Anthropic temperature = %v, want omitted", native.Temperature)
+	}
+	b, err = json.Marshal(native)
+	if err != nil {
+		t.Fatalf("marshal native: %v", err)
+	}
+	if strings.Contains(string(b), `"temperature"`) {
+		t.Fatalf("native Anthropic request must omit temperature: %s", b)
+	}
 }
 
 // TestBuildRequestThinkingOff is the default: no thinking field, and reasoning is

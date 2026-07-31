@@ -14,8 +14,10 @@
 //     tools must replay all provider reasoning. Some other compatible gateways such
 //     as LongCat use the binary toggle without output_config. (redacted_thinking
 //     blocks are not yet captured/replayed.)
-//   - No temperature/top_p. Current Claude models (Opus 4.8/4.7) reject sampling
-//     parameters with a 400; Anthropic steers behavior via prompting instead.
+//   - Native Anthropic requests omit temperature/top_p. Current Claude models
+//     (Opus 4.8/4.7) reject sampling parameters with a 400; Anthropic steers
+//     behavior via prompting instead. DeepSeek's compatible endpoint accepts the
+//     caller's temperature, so that field is preserved only for DeepSeek.
 package anthropic
 
 import (
@@ -147,6 +149,35 @@ func (c *client) Name() string { return c.name }
 
 func (c *client) deepSeekThinkingEnabled() bool {
 	return c != nil && c.deepseek && c.thinking != "disabled" && c.effort != "disabled"
+}
+
+// deepSeekAnthropicUsesProEffortMapping mirrors DeepSeek's model routing for the
+// Anthropic endpoint. Opus aliases route to V4 Pro; Sonnet/Haiku aliases and
+// unsupported model names route to V4 Flash.
+func deepSeekAnthropicUsesProEffortMapping(model string) bool {
+	model = strings.ToLower(strings.TrimSpace(model))
+	return model == "deepseek-v4-pro" || strings.HasPrefix(model, "claude-opus")
+}
+
+func normalizeDeepSeekAnthropicEffort(model, effort string) string {
+	switch effort {
+	case "low":
+		if deepSeekAnthropicUsesProEffortMapping(model) {
+			return "high"
+		}
+		return "low"
+	case "medium":
+		return "high"
+	case "xhigh":
+		if deepSeekAnthropicUsesProEffortMapping(model) {
+			return "max"
+		}
+		return "high"
+	case "high", "max":
+		return effort
+	default:
+		return ""
+	}
 }
 
 func (c *client) RequiresToolCallReasoning() bool {
@@ -370,6 +401,7 @@ func (c *client) buildRequest(req provider.Request) anthRequest {
 	// uses type=adaptive plus display/output_config. LongCat-style compatible
 	// gateways use the simpler enabled|disabled knob and reject output_config.
 	if c.deepseek {
+		r.Temperature = req.Temperature
 		t := c.thinking
 		if t != "disabled" {
 			t = "enabled"
@@ -379,15 +411,9 @@ func (c *client) buildRequest(req provider.Request) anthRequest {
 		}
 		r.Thinking = &thinkingConfig{Type: t}
 		if t != "disabled" {
-			effort := c.effort
+			effort := normalizeDeepSeekAnthropicEffort(c.model, c.effort)
 			switch effort {
-			case "low", "medium":
-				effort = "high"
-			case "xhigh":
-				effort = "max"
-			}
-			switch effort {
-			case "high", "max":
+			case "low", "high", "max":
 				r.OutputConfig = &outputConfig{Effort: effort}
 			}
 		}
@@ -649,6 +675,7 @@ type anthRequest struct {
 	System       []textBlock     `json:"system,omitempty"`
 	Messages     []anthMessage   `json:"messages"`
 	Tools        []anthTool      `json:"tools,omitempty"`
+	Temperature  *float64        `json:"temperature,omitempty"`
 	Thinking     *thinkingConfig `json:"thinking,omitempty"`
 	OutputConfig *outputConfig   `json:"output_config,omitempty"`
 	Stream       bool            `json:"stream"`
@@ -660,7 +687,7 @@ type thinkingConfig struct {
 }
 
 type outputConfig struct {
-	Effort string `json:"effort,omitempty"` // low | medium | high | xhigh | max
+	Effort string `json:"effort,omitempty"` // low | high | max
 }
 
 type textBlock struct {
