@@ -160,6 +160,25 @@ func TestNewDetectsMiMoSchemaDialect(t *testing.T) {
 	}
 }
 
+func TestNewDetectsOfficialDeepSeekEndpoint(t *testing.T) {
+	for _, tc := range []struct {
+		baseURL string
+		want    bool
+	}{
+		{"https://api.deepseek.com/anthropic", true},
+		{"https://api.deepseek.com/anthropic/v1", true},
+		{"https://proxy.example.com/anthropic", false},
+	} {
+		p, err := New(provider.Config{Name: "test", BaseURL: tc.baseURL, Model: "deepseek-v4-flash"})
+		if err != nil {
+			t.Fatalf("New(%q): %v", tc.baseURL, err)
+		}
+		if got := p.(*client).deepseek; got != tc.want {
+			t.Errorf("New(%q).deepseek = %v, want %v", tc.baseURL, got, tc.want)
+		}
+	}
+}
+
 func TestMapStopReason(t *testing.T) {
 	cases := map[string]string{
 		"end_turn":      "stop",
@@ -402,6 +421,84 @@ func TestBuildRequestThinkingEnabledGateway(t *testing.T) {
 			t.Fatalf("enabled/disabled gateway must not replay Anthropic signed thinking blocks: %+v", r.Messages[1])
 		}
 	}
+}
+
+func TestBuildRequestDeepSeekThinking(t *testing.T) {
+	c := &client{model: "deepseek-v4-flash", deepseek: true, thinking: "enabled", effort: "max"}
+	r := c.buildRequest(provider.Request{
+		Messages: []provider.Message{
+			{Role: provider.RoleSystem, Content: "stable system"},
+			{Role: provider.RoleUser, Content: "weather?"},
+			{Role: provider.RoleAssistant, ReasoningContent: "I should call the tool.",
+				ToolCalls: []provider.ToolCall{{ID: "t1", Name: "get_weather", Arguments: `{"city":"Paris"}`}}},
+			{Role: provider.RoleTool, ToolCallID: "t1", Content: "sunny"},
+		},
+		Tools: []provider.ToolSchema{{Name: "get_weather", Parameters: json.RawMessage(`{"type":"object"}`)}},
+	})
+
+	if !provider.RequiresToolCallReasoning(c) || !provider.RequiresReasoningRoundTrip(c) {
+		t.Fatal("DeepSeek thinking must retain and replay provider reasoning")
+	}
+	if r.Thinking == nil || r.Thinking.Type != "enabled" || r.Thinking.Display != "" {
+		t.Fatalf("thinking config = %+v, want enabled without Anthropic display", r.Thinking)
+	}
+	if r.OutputConfig == nil || r.OutputConfig.Effort != "max" {
+		t.Fatalf("output_config = %+v, want max", r.OutputConfig)
+	}
+	asst := r.Messages[1]
+	if len(asst.Content) != 2 || asst.Content[0].Type != "thinking" || asst.Content[0].Thinking != "I should call the tool." || asst.Content[0].Signature != "" || asst.Content[1].Type != "tool_use" {
+		t.Fatalf("DeepSeek assistant blocks = %+v, want unsigned thinking before tool_use", asst.Content)
+	}
+	if r.System[0].CacheControl != nil || r.Tools[0].CacheControl != nil {
+		t.Fatal("DeepSeek ignores cache_control; system/tools must omit it")
+	}
+	for _, message := range r.Messages {
+		for _, block := range message.Content {
+			if block.CacheControl != nil {
+				t.Fatalf("DeepSeek message block unexpectedly carries cache_control: %+v", block)
+			}
+		}
+	}
+}
+
+func TestBuildRequestDeepSeekThinkingModes(t *testing.T) {
+	for _, tc := range []struct {
+		name, input, want string
+	}{
+		{name: "legacy low", input: "low", want: "high"},
+		{name: "legacy medium", input: "medium", want: "high"},
+		{name: "legacy xhigh", input: "xhigh", want: "max"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := (&client{model: "deepseek-v4-flash", deepseek: true, effort: tc.input}).buildRequest(provider.Request{})
+			if r.Thinking == nil || r.Thinking.Type != "enabled" || r.OutputConfig == nil || r.OutputConfig.Effort != tc.want {
+				t.Fatalf("DeepSeek thinking = %+v / %+v, want enabled/%s", r.Thinking, r.OutputConfig, tc.want)
+			}
+		})
+	}
+	t.Run("provider default", func(t *testing.T) {
+		r := (&client{model: "deepseek-v4-flash", deepseek: true}).buildRequest(provider.Request{})
+		if r.Thinking == nil || r.Thinking.Type != "enabled" || r.OutputConfig != nil {
+			t.Fatalf("default DeepSeek thinking = %+v / %+v, want enabled/provider-default effort", r.Thinking, r.OutputConfig)
+		}
+	})
+
+	t.Run("disabled", func(t *testing.T) {
+		c := &client{model: "deepseek-v4-flash", deepseek: true, thinking: "enabled", effort: "disabled"}
+		r := c.buildRequest(provider.Request{
+			Messages: []provider.Message{{Role: provider.RoleAssistant, ReasoningContent: "do not replay"}},
+			Tools:    []provider.ToolSchema{{Name: "tool"}},
+		})
+		if r.Thinking == nil || r.Thinking.Type != "disabled" || r.OutputConfig != nil {
+			t.Fatalf("disabled DeepSeek thinking = %+v / %+v", r.Thinking, r.OutputConfig)
+		}
+		if provider.RequiresToolCallReasoning(c) || provider.RequiresReasoningRoundTrip(c) {
+			t.Fatal("disabled DeepSeek thinking must not retain reasoning for replay")
+		}
+		if len(r.Messages) != 0 {
+			t.Fatalf("reasoning-only assistant should be omitted when thinking is disabled: %+v", r.Messages)
+		}
+	})
 }
 
 // TestBuildRequestThinkingOff is the default: no thinking field, and reasoning is
