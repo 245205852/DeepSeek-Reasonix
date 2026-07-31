@@ -319,6 +319,138 @@ func TestLoadForEditAppliesLegacyLongCatContextWindowMigration(t *testing.T) {
 	}
 }
 
+func TestNormalizeLegacyQwenContextWindowsMigratesOnlyOfficialPresets(t *testing.T) {
+	qwenIDs := []string{
+		"qwen-cn",
+		"qwen-global",
+		"qwen-coding-plan-cn",
+		"qwen-coding-plan-cn-anthropic",
+		"qwen-coding-plan-global",
+		"qwen-coding-plan-global-anthropic",
+	}
+	c := &Config{}
+	for _, id := range qwenIDs {
+		preset, ok := CuratedProviderPreset(id)
+		if !ok || len(preset.Entries) != 1 {
+			t.Fatalf("missing %s preset", id)
+		}
+		entry := preset.Entries[0]
+		entry.ContextWindow = 0
+		entry.ModelOverrides = nil
+		c.Providers = append(c.Providers, entry)
+	}
+
+	preset, _ := CuratedProviderPreset("qwen-cn")
+	customWindow := preset.Entries[0]
+	customWindow.Name = "qwen-custom-window"
+	customWindow.ContextWindow = 131_072
+	customWindow.ModelOverrides = nil
+	customEndpoint := preset.Entries[0]
+	customEndpoint.Name = "qwen-custom-endpoint"
+	customEndpoint.BaseURL = "https://gateway.example.com/v1"
+	customEndpoint.ContextWindow = 0
+	customEndpoint.ModelOverrides = nil
+	customCatalog := preset.Entries[0]
+	customCatalog.Name = "qwen-custom-catalog"
+	customCatalog.Models = append(customCatalog.Models, "private-model")
+	customCatalog.ContextWindow = 0
+	customCatalog.ModelOverrides = nil
+	customOverride := preset.Entries[0]
+	customOverride.Name = "qwen-custom-override"
+	customOverride.ContextWindow = 0
+	customOverride.VisionModels = []string{}
+	customOverride.ModelOverrides = map[string]ProviderModelOverride{
+		"GLM-5": {
+			ReasoningProtocol: ReasoningProtocolNone,
+			ContextWindow:     123_456,
+		},
+	}
+	c.Providers = append(c.Providers, customWindow, customEndpoint, customCatalog, customOverride)
+
+	if !normalizeLegacyQwenContextWindows(c) {
+		t.Fatal("legacy Qwen context-window migration did not report a change")
+	}
+	wantOverrides := qwenModelContextOverrides()
+	for i, id := range qwenIDs {
+		got := &c.Providers[i]
+		if got.ContextWindow != 1_000_000 {
+			t.Fatalf("%s context_window = %d, want 1000000", id, got.ContextWindow)
+		}
+		for model, want := range wantOverrides {
+			if got.ModelOverrides[model].ContextWindow != want.ContextWindow {
+				t.Fatalf("%s/%s context_window = %d, want %d", id, model, got.ModelOverrides[model].ContextWindow, want.ContextWindow)
+			}
+		}
+	}
+
+	if got := c.Providers[len(qwenIDs)]; got.ContextWindow != 131_072 || got.ModelOverrides != nil {
+		t.Fatalf("custom provider-wide context changed: %+v", got)
+	}
+	if got := c.Providers[len(qwenIDs)+1]; got.ContextWindow != 0 || got.ModelOverrides != nil {
+		t.Fatalf("custom endpoint changed: %+v", got)
+	}
+	if got := c.Providers[len(qwenIDs)+2]; got.ContextWindow != 0 || got.ModelOverrides != nil {
+		t.Fatalf("custom catalog changed: %+v", got)
+	}
+	gotCustom := c.Providers[len(qwenIDs)+3]
+	if gotCustom.ContextWindow != 1_000_000 || gotCustom.ModelOverrides["GLM-5"].ContextWindow != 123_456 {
+		t.Fatalf("custom model override changed: %+v", gotCustom)
+	}
+	if _, duplicate := gotCustom.ModelOverrides["glm-5"]; duplicate {
+		t.Fatal("migration added a duplicate case-insensitive GLM-5 override")
+	}
+	if got := gotCustom.ModelOverrides["MiniMax-M2.5"].ContextWindow; got != 196_608 {
+		t.Fatalf("missing MiniMax override was not backfilled: %d", got)
+	}
+	if gotCustom.VisionModels == nil || len(gotCustom.VisionModels) != 0 {
+		t.Fatalf("custom vision models changed: %#v", gotCustom.VisionModels)
+	}
+}
+
+func TestLoadForEditAppliesLegacyQwenContextWindowMigration(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.toml")
+	cfg := Default()
+	preset, ok := CuratedProviderPreset("qwen-cn")
+	if !ok || len(preset.Entries) != 1 {
+		t.Fatal("missing qwen-cn preset")
+	}
+	entry := preset.Entries[0]
+	entry.ContextWindow = 0
+	entry.ModelOverrides = nil
+	cfg.Providers = append(cfg.Providers, entry)
+	if err := cfg.SaveTo(path); err != nil {
+		t.Fatalf("SaveTo: %v", err)
+	}
+
+	loaded := LoadForEditWithoutCredentials(path)
+	got, ok := loaded.Provider("qwen-cn")
+	if !ok || got.ContextWindow != 1_000_000 {
+		t.Fatalf("loaded qwen-cn = %+v, want context_window 1000000", got)
+	}
+	if resolved, ok := loaded.ResolveModel("qwen-cn/glm-5"); !ok || resolved.ContextWindow != 202_752 {
+		t.Fatalf("resolved qwen-cn/glm-5 = %+v/%v, want context_window 202752", resolved, ok)
+	}
+
+	var disk Config
+	if _, err := toml.DecodeFile(path, &disk); err != nil {
+		t.Fatalf("decode config after read-only load: %v", err)
+	}
+	if persisted, _ := disk.Provider("qwen-cn"); persisted == nil || persisted.ContextWindow != 0 {
+		t.Fatalf("read-only load rewrote qwen-cn = %+v, want legacy config preserved on disk", persisted)
+	}
+	if err := EditConfigFileWithoutCredentials(path, func(*Config) error { return nil }); err != nil {
+		t.Fatalf("EditConfigFileWithoutCredentials: %v", err)
+	}
+	disk = Config{}
+	if _, err := toml.DecodeFile(path, &disk); err != nil {
+		t.Fatalf("decode config after edit: %v", err)
+	}
+	persisted, ok := disk.Provider("qwen-cn")
+	if !ok || persisted.ContextWindow != 1_000_000 || persisted.ModelOverrides["glm-5"].ContextWindow != 202_752 {
+		t.Fatalf("persisted qwen-cn = %+v, want migrated context defaults", persisted)
+	}
+}
+
 func TestNormalizeLegacyOpenCodeGoKimiK3CatalogMigratesOnlyUntouchedPreset(t *testing.T) {
 	legacyEntry := ProviderEntry{
 		Name:          "opencode-go",

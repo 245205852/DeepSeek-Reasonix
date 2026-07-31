@@ -177,6 +177,7 @@ func loadForRoot(root string, migrateOnDisk bool) (*Config, error) {
 	normalizeLegacyMCPTiers(cfg)
 	normalizeLegacyStepFunBaseURLs(cfg)
 	normalizeLegacyLongCatContextWindows(cfg)
+	normalizeLegacyQwenContextWindows(cfg)
 	normalizeLegacyKimiK3Catalog(cfg)
 	normalizeLegacyOpenCodeGoKimiK3Catalog(cfg)
 	normalizeLegacyMimoCustomProviders(cfg)
@@ -699,6 +700,7 @@ func normalizeConfigForEdit(cfg *Config) bool {
 	normalizeLegacyMCPTiers(cfg)
 	changed = normalizeLegacyStepFunBaseURLs(cfg) || changed
 	changed = normalizeLegacyLongCatContextWindows(cfg) || changed
+	changed = normalizeLegacyQwenContextWindows(cfg) || changed
 	changed = normalizeLegacyKimiK3Catalog(cfg) || changed
 	changed = normalizeLegacyOpenCodeGoKimiK3Catalog(cfg) || changed
 	changed = normalizeLegacyMimoCustomProviders(cfg) || changed
@@ -1195,6 +1197,83 @@ func normalizeLegacyLongCatContextWindows(c *Config) bool {
 		changed = true
 	}
 	return changed
+}
+
+// normalizeLegacyQwenContextWindows upgrades only installed official Qwen
+// presets that still carry the old zero context window and untouched model
+// catalog. Custom endpoints, catalogs, provider-wide windows, and existing
+// per-model override values remain user-owned.
+func normalizeLegacyQwenContextWindows(c *Config) bool {
+	if c == nil {
+		return false
+	}
+	changed := false
+	for i := range c.Providers {
+		p := &c.Providers[i]
+		if p.ContextWindow != 0 {
+			continue
+		}
+		presetID := qwenPresetIDForMigration(*p)
+		if presetID == "" {
+			continue
+		}
+		preset, ok := CuratedProviderPreset(presetID)
+		if !ok || len(preset.Entries) != 1 {
+			continue
+		}
+		canonical := preset.Entries[0]
+		if !strings.EqualFold(strings.TrimSpace(p.Kind), strings.TrimSpace(canonical.Kind)) ||
+			normalizedBaseURLForMigration(p.BaseURL) != normalizedBaseURLForMigration(canonical.BaseURL) ||
+			!stringSlicesEqual(p.Models, canonical.Models) ||
+			strings.TrimSpace(p.Model) != "" {
+			continue
+		}
+		p.ContextWindow = canonical.ContextWindow
+		mergeMissingQwenContextOverrides(p, canonical.ModelOverrides)
+		changed = true
+	}
+	return changed
+}
+
+func qwenPresetIDForMigration(p ProviderEntry) string {
+	presetID := strings.TrimSpace(p.PresetID)
+	if presetID == "" {
+		presetID = strings.TrimSpace(p.Name)
+	}
+	switch presetID {
+	case "qwen-cn",
+		"qwen-global",
+		"qwen-coding-plan-cn",
+		"qwen-coding-plan-cn-anthropic",
+		"qwen-coding-plan-global",
+		"qwen-coding-plan-global-anthropic":
+		return presetID
+	default:
+		return ""
+	}
+}
+
+func mergeMissingQwenContextOverrides(p *ProviderEntry, defaults map[string]ProviderModelOverride) {
+	if p == nil || len(defaults) == 0 {
+		return
+	}
+	if p.ModelOverrides == nil {
+		p.ModelOverrides = make(map[string]ProviderModelOverride, len(defaults))
+	}
+	for defaultKey, defaultOverride := range defaults {
+		overrideKey := defaultKey
+		for key := range p.ModelOverrides {
+			if strings.EqualFold(strings.TrimSpace(key), defaultKey) {
+				overrideKey = key
+				break
+			}
+		}
+		override := p.ModelOverrides[overrideKey]
+		if override.ContextWindow == 0 {
+			override.ContextWindow = defaultOverride.ContextWindow
+			p.ModelOverrides[overrideKey] = override
+		}
+	}
 }
 
 // normalizeLegacyKimiK3Catalog upgrades only untouched Kimi direct-API model
