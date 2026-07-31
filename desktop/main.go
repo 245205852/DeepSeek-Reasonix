@@ -26,6 +26,7 @@ import (
 	"reasonix/internal/config"
 	_ "reasonix/internal/provider/anthropic"
 	_ "reasonix/internal/provider/openai"
+	_ "reasonix/internal/provider/responses"
 	"reasonix/internal/repair"
 	_ "reasonix/internal/tool/builtin"
 )
