@@ -80,6 +80,7 @@ type chatTUI struct {
 	submittedInputDraft  string
 	pastedBlocks         []pastedBlock
 	nextPasteID          int
+	usedPasteIDs         map[int]struct{}
 
 	state    tuiState
 	runStart time.Time
@@ -554,6 +555,8 @@ func newChatTUI(ctrl control.SessionAPI, missing string, eventCh chan event.Even
 
 	commitBuf := []string{}
 	nativeScrollback := detectTermuxTerminal()
+	history := ctrl.History()
+	nextPasteID, usedPasteIDs := pasteIDStateForHistory(history)
 	return chatTUI{
 		ctrl:                 ctrl,
 		label:                ctrl.Label(),
@@ -565,7 +568,8 @@ func newChatTUI(ctrl control.SessionAPI, missing string, eventCh chan event.Even
 		spinner:              sp,
 		submittedInputCursor: -1,
 		queueEditCursor:      -1,
-		nextPasteID:          1,
+		nextPasteID:          nextPasteID,
+		usedPasteIDs:         usedPasteIDs,
 		reasoningLineIdx:     -1,
 		reasoningTextIdx:     -1,
 		answerIdx:            -1,
@@ -580,7 +584,7 @@ func newChatTUI(ctrl control.SessionAPI, missing string, eventCh chan event.Even
 		shellTranscriptIdx:   make(map[string]int),
 		toolLineCountByID:    make(map[string]int),
 		eventCh:              eventCh,
-		history:              ctrl.History(),
+		history:              history,
 		host:                 ctrl.Host(),
 		commands:             ctrl.Commands(),
 		skills:               ctrl.SlashSkills(),
