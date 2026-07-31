@@ -1142,13 +1142,6 @@ func normalizeLegacyStepFunBaseURLs(c *Config) bool {
 	return false
 }
 
-func isLegacyStepFunPresetProvider(p ProviderEntry, id, kind string) bool {
-	if !strings.EqualFold(strings.TrimSpace(p.Kind), kind) {
-		return false
-	}
-	return strings.TrimSpace(p.Name) == id || strings.TrimSpace(p.PresetID) == id
-}
-
 func normalizedBaseURLForMigration(raw string) string {
 	return strings.TrimRight(strings.TrimSpace(raw), "/")
 }
