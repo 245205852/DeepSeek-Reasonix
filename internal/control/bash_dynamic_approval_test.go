@@ -280,6 +280,12 @@ func TestHeadlessDynamicBashApprovalModes(t *testing.T) {
 	if err != nil || !allow || reason != "" {
 		t.Fatalf("headless exact literal = (%v,%q,%v), want allow", allow, reason, err)
 	}
+
+	optIn := permission.New("ask", nil, nil, nil).WithAllowDynamicBashFallback(true)
+	allow, reason, err = BuildHeadlessApprovalGate(optIn, ToolApprovalAuto).Check(context.Background(), "bash", args, false)
+	if err != nil || !allow || reason != "" {
+		t.Fatalf("headless dynamic fallback opt-in = (%v,%q,%v), want allow", allow, reason, err)
+	}
 }
 
 func TestHeadlessExactOnlyBashApprovalModes(t *testing.T) {

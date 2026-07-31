@@ -227,19 +227,31 @@ func (a *approvalManager) preApprovedForRequiredHuman(tool, subject string) bool
 // register allocates an approval ID, records the pending prompt, and returns the
 // reply channel the resolve path will signal.
 func (a *approvalManager) register(tool, subject, reason string) (string, chan approvalReply) {
-	return a.registerDecision(tool, subject, reason, false, false)
+	return a.registerWithInput(tool, subject, reason, nil)
+}
+
+func (a *approvalManager) registerWithInput(tool, subject, reason string, rawInput json.RawMessage) (string, chan approvalReply) {
+	return a.registerDecisionWithInput(tool, subject, reason, rawInput, false, false)
 }
 
 // registerDecision allocates an approval ID for either an ordinary tool
 // permission or a fresh user decision. Fresh decisions are not auto-drained when
 // the user switches to auto/yolo tool approval while the prompt is visible.
 func (a *approvalManager) registerDecision(tool, subject, reason string, fresh, requireHuman bool) (string, chan approvalReply) {
-	return a.registerDecisionKind(tool, subject, reason, fresh, requireHuman, "", nil)
+	return a.registerDecisionWithInput(tool, subject, reason, nil, fresh, requireHuman)
+}
+
+func (a *approvalManager) registerDecisionWithInput(tool, subject, reason string, rawInput json.RawMessage, fresh, requireHuman bool) (string, chan approvalReply) {
+	return a.registerDecisionKindWithInput(tool, subject, reason, rawInput, fresh, requireHuman, "", nil)
 }
 
 // registerDecisionKind is registerDecision with optional Kind/Recovery payload
 // so Auto Guard cards survive ReplayPendingPrompts.
 func (a *approvalManager) registerDecisionKind(tool, subject, reason string, fresh, requireHuman bool, kind string, rec *event.RecoveryApproval) (string, chan approvalReply) {
+	return a.registerDecisionKindWithInput(tool, subject, reason, nil, fresh, requireHuman, kind, rec)
+}
+
+func (a *approvalManager) registerDecisionKindWithInput(tool, subject, reason string, rawInput json.RawMessage, fresh, requireHuman bool, kind string, rec *event.RecoveryApproval) (string, chan approvalReply) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	a.nextID++
@@ -250,7 +262,7 @@ func (a *approvalManager) registerDecisionKind(tool, subject, reason string, fre
 		autoDrain = a.autoApprovalWouldAllowLocked(tool, subject)
 	}
 	a.approvals[id] = pendingApproval{
-		tool: tool, subject: subject, reason: reason, fresh: fresh, requireHuman: requireHuman,
+		tool: tool, subject: subject, reason: reason, rawInput: append(json.RawMessage(nil), rawInput...), fresh: fresh, requireHuman: requireHuman,
 		autoDrain: autoDrain, kind: kind, recovery: rec, reply: reply,
 	}
 	return id, reply
@@ -438,7 +450,7 @@ func (a *approvalManager) snapshotPrompts() ([]event.Approval, []event.Ask) {
 	approvals := make([]event.Approval, 0, len(a.approvals))
 	for id, p := range a.approvals {
 		approvals = append(approvals, event.Approval{
-			ID: id, Tool: p.tool, Subject: p.subject, Reason: p.reason, Fresh: p.fresh,
+			ID: id, Tool: p.tool, Subject: p.subject, Reason: p.reason, RawInput: append(json.RawMessage(nil), p.rawInput...), Fresh: p.fresh,
 			Kind: p.kind, Recovery: p.recovery,
 		})
 	}

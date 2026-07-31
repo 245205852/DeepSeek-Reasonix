@@ -633,6 +633,9 @@ them without an extra prompt. Command/process substitution, a dynamic command
 name, `eval`, `source`, shell `-c`, inline runtime code, and unparseable forms
 require a human in interactive Ask/Auto. Headless Ask/Auto/DontAsk reject that
 nested/indirect class unless an exact literal exists; YOLO may bypass it.
+Advanced users can set `[permissions] allow_dynamic_bash = true` to let an
+Allow fallback, including Auto, cover that class; explicit `ask` and `deny`
+rules still take precedence.
 Because a headless run has no approval UI, the default Ask posture also fails
 closed on ordinary writer fallback and explicit ask rules. Use
 `reasonix run --auto ...`, `-y`, or `--permission-mode auto` when unattended

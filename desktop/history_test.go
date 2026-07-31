@@ -1083,8 +1083,9 @@ func TestResumeSessionForTabTargetsSpecifiedTab(t *testing.T) {
 	if filepath.Clean(savedInactive) != filepath.Clean(targetPath) {
 		t.Fatalf("saved inactive session path = %q, want %q", savedInactive, targetPath)
 	}
-	if len(got) == 0 || got[len(got)-1].Content != "target prompt" {
-		t.Fatalf("resumed history = %+v, want target prompt", got)
+	if len(got) != 2 || got[0].Role != string(provider.RoleSystem) || strings.TrimSpace(got[0].Content) == "" ||
+		got[1].Role != string(provider.RoleUser) || got[1].Content != "target prompt" {
+		t.Fatalf("resumed history = %+v, want fresh system prompt and target prompt", got)
 	}
 }
 
@@ -1160,8 +1161,9 @@ func TestResumeSessionForTabDetachesRunningRuntimeForDifferentSessionPath(t *tes
 	if gotPath := app.tabs[tab.ID].Ctrl.SessionPath(); gotPath != sessionB {
 		t.Fatalf("visible tab session path = %q, want %q", gotPath, sessionB)
 	}
-	if len(got) == 0 || got[len(got)-1].Content != "session B prompt" {
-		t.Fatalf("resumed history = %+v, want session B prompt", got)
+	if len(got) != 2 || got[0].Role != string(provider.RoleSystem) || strings.TrimSpace(got[0].Content) == "" ||
+		got[1].Role != string(provider.RoleUser) || got[1].Content != "session B prompt" {
+		t.Fatalf("resumed history = %+v, want fresh system prompt and session B prompt", got)
 	}
 
 	visible := app.tabs[tab.ID]
@@ -1242,8 +1244,9 @@ func TestRebindTabToLoadedSessionReusesPreloadedTranscript(t *testing.T) {
 		t.Fatalf("rebindTabToLoadedSessionPath: %v", err)
 	}
 	got := app.HistoryForTab(tab.ID)
-	if len(got) == 0 || got[len(got)-1].Content != "target prompt" {
-		t.Fatalf("rebound history = %+v, want target prompt", got)
+	if len(got) != 2 || got[0].Role != string(provider.RoleSystem) || strings.TrimSpace(got[0].Content) == "" ||
+		got[1].Role != string(provider.RoleUser) || got[1].Content != "target prompt" {
+		t.Fatalf("rebound history = %+v, want fresh system prompt and target prompt", got)
 	}
 	if gotPath := app.tabs[tab.ID].Ctrl.SessionPath(); gotPath != targetPath {
 		t.Fatalf("rebound session path = %q, want %q", gotPath, targetPath)
