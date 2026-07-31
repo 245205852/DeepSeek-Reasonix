@@ -1401,6 +1401,15 @@ export interface ProviderView {
   supportedEfforts: string[]; // custom /effort levels; empty = use built-in Kind/BaseURL default
   defaultEffort: string; // /effort level when user picks "auto" or unset; "" = supportedEfforts[0]
   modelOverrides?: ProviderModelOverrideView[] | null;
+  modelCatalogFingerprint?: string; // opaque compare-and-apply token for background model discovery
+}
+
+export interface ProviderModelCatalogUpdate {
+  name: string;
+  expectedFingerprint: string;
+  models: string[];
+  default: string;
+  visionModels: string[];
 }
 
 export interface ProviderPresetView {

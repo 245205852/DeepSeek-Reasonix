@@ -53,7 +53,7 @@ import {
   shortcutDefinitions,
   type ShortcutAction,
 } from "../lib/keyboardShortcuts";
-import type { BotAccessView, BotAllowlistView, BotConnectionDiagnostic, BotConnectionView, BotInstallStartResult, BotRouteView, BotSettingsView, HookConfigView, HooksSettingsView, NetworkView, ProviderPresetView, ProviderView, SettingsTab, SettingsView } from "../lib/types";
+import type { BotAccessView, BotAllowlistView, BotConnectionDiagnostic, BotConnectionView, BotInstallStartResult, BotRouteView, BotSettingsView, HookConfigView, HooksSettingsView, NetworkView, ProviderModelCatalogUpdate, ProviderPresetView, ProviderView, SettingsTab, SettingsView } from "../lib/types";
 import { AppearanceOverview } from "./AppearanceOverview";
 import { applyConfiguredBaseAppearance, setBaseAppearance } from "../lib/themePack";
 import { InlineConfirmButton } from "./InlineConfirmButton";
@@ -1277,6 +1277,7 @@ function normalizeProviderView(p: ProviderView): ProviderView {
     configured: providerIsConfigured({ ...p, requiresKey }),
     keySource: p.keySource ?? "",
     keySourcePath: p.keySourcePath ?? "",
+    modelCatalogFingerprint: p.modelCatalogFingerprint ?? "",
   };
 }
 
@@ -4023,6 +4024,7 @@ function ModelsSection({ s, busy, apply, backgroundApply, initialFocus }: Models
     initialFocus?.target === "model-access" ? "access" : "usage",
   );
   const autoRefreshKeyRef = useRef("");
+  const autoRefreshGenerationRef = useRef(0);
   const refs = useMemo(() => allRefs(s), [s.providers]);
   const defaultRef = toRef(s.defaultModel, s);
   const plannerRef = toRef(s.plannerModel, s);
@@ -4045,6 +4047,9 @@ function ModelsSection({ s, busy, apply, backgroundApply, initialFocus }: Models
     : Math.min(3, subagentConcurrency);
 
   useEffect(() => {
+    const generation = ++autoRefreshGenerationRef.current;
+    let cancelled = false;
+    const stale = () => cancelled || autoRefreshGenerationRef.current !== generation;
     if (subtab !== "usage") return;
     const groups = providerAccessGroups(s.providers.filter((p) => p.added), t);
     const candidates = groups
@@ -4086,32 +4091,42 @@ function ModelsSection({ s, busy, apply, backgroundApply, initialFocus }: Models
       } catch {
         // Batch failed entirely — fall back to per-provider cached calls below.
       }
+      if (stale()) return;
 
-      const updates: ProviderView[] = [];
+      const updates: ProviderModelCatalogUpdate[] = [];
       for (const { provider } of candidates) {
+        if (stale()) return;
         if (!provider.models || provider.models.length === 0) continue;
         try {
           const fetched = batchResults[provider.name]
             ?? await cachedFetchProviderModels((p) => app.FetchProviderModels(p), provider);
+          if (stale()) return;
           if (!fetched || fetched.length === 0) continue;
           const models = mergedFetchedProviderModels(provider.models, fetched, { preserveCurated: true });
           const currentDefault = providerDefaultModel(provider.default, models);
           const visionModels = provider.visionModels.filter((model) => models.includes(model));
           if (sameStringList(provider.models, models) && provider.default === currentDefault && sameStringList(provider.visionModels, visionModels)) continue;
-          updates.push({ ...provider, models, default: currentDefault, visionModels });
+          const expectedFingerprint = provider.modelCatalogFingerprint?.trim() ?? "";
+          if (!expectedFingerprint) continue;
+          updates.push({ name: provider.name, expectedFingerprint, models, default: currentDefault, visionModels });
         } catch {
           // Background discovery is opportunistic; manual refresh shows errors.
         }
       }
       if (updates.length > 0) {
         try {
-          // Persist every catalog update in one transaction and rebuild once.
-          await app.SaveProviders(updates);
+          if (stale()) return;
+          // Compare and apply narrow catalog updates in one transaction.
+          await app.SaveProviderModelCatalogs(updates);
         } catch {
           // Background discovery is opportunistic; explicit edits show errors.
         }
       }
     });
+    return () => {
+      cancelled = true;
+      if (autoRefreshGenerationRef.current === generation) autoRefreshGenerationRef.current += 1;
+    };
   }, [backgroundApply, s.providers, subtab, t]);
 
   return (

@@ -75,6 +75,7 @@ import type {
   ProjectNode,
   PromptHistoryEntry,
   PromptHistoryResult,
+  ProviderModelCatalogUpdate,
   ProviderPresetView,
   ProviderView,
   QuestionAnswer,
@@ -388,7 +389,7 @@ export interface AppBindings {
   SetDefaultAutoRecoveryCheckpoint(enabled: boolean): Promise<void>;
 
   SaveProvider(p: ProviderView): Promise<void>;
-  SaveProviders(providers: ProviderView[]): Promise<void>;
+  SaveProviderModelCatalogs(updates: ProviderModelCatalogUpdate[]): Promise<string[]>;
   SaveProviderWithKey(p: ProviderView, key: string): Promise<string>;
   AddOfficialProviderAccess(kind: string, key: string): Promise<string>;
   AddProviderPresetAccess(id: string, key: string): Promise<string>;
@@ -891,7 +892,7 @@ function bridgeBreadcrumb(method: string): string {
     return `model ${method}`;
   if (/^(SetDesktop|SetCloseBehavior|SetDisplayMode|SetStatusBar|SetExpandThinking|SetAutoPlan|SetDefaultToolApprovalMode|SetReasoningLanguage)/.test(method))
     return `settings ${method}`;
-  if (/^(SaveProvider|SaveProviders|AddOfficialProviderAccess|AddProviderPresetAccess|ResetProviderPresetAccess|RemoveProviderAccess|DeleteProvider|SaveProviderKey|SetProviderKey|ClearProviderKey|FetchProviderModels|FetchAllProviderModels|ConnectKey)/.test(method))
+  if (/^(SaveProvider|SaveProviderModelCatalogs|AddOfficialProviderAccess|AddProviderPresetAccess|ResetProviderPresetAccess|RemoveProviderAccess|DeleteProvider|SaveProviderKey|SetProviderKey|ClearProviderKey|FetchProviderModels|FetchAllProviderModels|ConnectKey)/.test(method))
     return `provider ${method}`;
   if (/^(CheckUpdate|DownloadUpdate|DownloadUpdateRequest|InstallUpdate|InstallUpdateRequest|ApplyUpdate|OpenDownloadPage)/.test(method)) return `update ${method}`;
   if (/^(AddMCPServer|InstallMCPServer|UpdateMCPServer|RemoveMCPServer|AuthorizeAndConnectMCPServer|ReconnectMCPServer|ClearMCPServerAuthentication|SetMCPServer)/.test(method))
@@ -3979,8 +3980,23 @@ function makeMockApp(): AppBindings {
       if (i >= 0) settings.providers[i] = p;
       else settings.providers.push(p);
     },
-    async SaveProviders(providers: ProviderView[]) {
-      for (const p of providers) await this.SaveProvider(p);
+    async SaveProviderModelCatalogs(updates: ProviderModelCatalogUpdate[]) {
+      const applied: string[] = [];
+      for (const update of updates) {
+        const i = settings.providers.findIndex((provider) => provider.name === update.name);
+        if (i < 0) continue;
+        const current = settings.providers[i];
+        if (!update.expectedFingerprint || current.modelCatalogFingerprint !== update.expectedFingerprint) continue;
+        settings.providers[i] = {
+          ...current,
+          models: [...update.models],
+          default: update.default,
+          visionModels: [...update.visionModels],
+          modelCatalogFingerprint: `${update.expectedFingerprint}:updated`,
+        };
+        applied.push(update.name);
+      }
+      return applied;
     },
     async SaveProviderWithKey(p: ProviderView, key: string) {
       p.added = true;

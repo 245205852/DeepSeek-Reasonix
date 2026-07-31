@@ -497,38 +497,153 @@ func TestSaveProviderFiltersNonChatModels(t *testing.T) {
 	}
 }
 
-func TestSaveProvidersPersistsBatchAtomically(t *testing.T) {
+func TestSaveProviderModelCatalogsPersistsFreshBatchAtomically(t *testing.T) {
 	isolateDesktopUserDirs(t)
 
 	app := NewApp()
 	providers := []ProviderView{
-		{Name: "batch-a", Kind: "openai", BaseURL: "https://a.example.com/v1", Models: []string{"model-a"}, APIKeyEnv: "BATCH_A_API_KEY"},
+		{Name: "batch-a", Kind: "openai", BaseURL: "https://a.example.com/v1", Models: []string{"model-a"}, APIKeyEnv: "BATCH_A_API_KEY", Headers: map[string]string{"X-Tenant": "a"}},
 		{Name: "batch-b", Kind: "openai", BaseURL: "https://b.example.com/v1", Models: []string{"model-b"}, APIKeyEnv: "BATCH_B_API_KEY"},
 	}
-	if err := app.SaveProviders(providers); err != nil {
-		t.Fatalf("SaveProviders: %v", err)
+	for _, provider := range providers {
+		if err := app.SaveProvider(provider); err != nil {
+			t.Fatalf("SaveProvider(%s): %v", provider.Name, err)
+		}
 	}
 
 	cfg := config.LoadForEdit(config.UserConfigPath())
-	for _, want := range providers {
-		got, ok := cfg.Provider(want.Name)
-		if !ok {
-			t.Fatalf("saved provider %q not found", want.Name)
-		}
-		if got.DefaultModel() != want.Models[0] {
-			t.Fatalf("provider %q default = %q, want %q", want.Name, got.DefaultModel(), want.Models[0])
-		}
+	a, _ := cfg.Provider("batch-a")
+	b, _ := cfg.Provider("batch-b")
+	updates := []ProviderModelCatalogUpdate{
+		{Name: "batch-a", ExpectedFingerprint: providerModelCatalogFingerprint(*a), Models: []string{"model-a", "model-a-new"}, Default: "model-a-new"},
+		{Name: "batch-b", ExpectedFingerprint: providerModelCatalogFingerprint(*b), Models: []string{"model-b", "model-b-new"}, Default: "model-b-new"},
+	}
+	applied, err := app.SaveProviderModelCatalogs(updates)
+	if err != nil {
+		t.Fatalf("SaveProviderModelCatalogs: %v", err)
+	}
+	if !reflect.DeepEqual(applied, []string{"batch-a", "batch-b"}) {
+		t.Fatalf("applied = %v, want both providers", applied)
 	}
 
-	if err := app.SaveProviders([]ProviderView{
-		{Name: "must-not-persist", Kind: "openai", BaseURL: "https://valid.example.com/v1", Models: []string{"valid"}},
-		{Name: "", Kind: "openai", BaseURL: "https://invalid.example.com/v1", Models: []string{"invalid"}},
+	cfg = config.LoadForEdit(config.UserConfigPath())
+	a, _ = cfg.Provider("batch-a")
+	b, _ = cfg.Provider("batch-b")
+	if a.DefaultModel() != "model-a-new" || b.DefaultModel() != "model-b-new" {
+		t.Fatalf("catalog defaults = %q/%q, want model-a-new/model-b-new", a.DefaultModel(), b.DefaultModel())
+	}
+	if a.BaseURL != providers[0].BaseURL || a.APIKeyEnv != providers[0].APIKeyEnv || a.Headers["X-Tenant"] != "a" {
+		t.Fatalf("narrow catalog update changed provider identity: %+v", *a)
+	}
+
+	aFingerprint := providerModelCatalogFingerprint(*a)
+	bFingerprint := providerModelCatalogFingerprint(*b)
+	if _, err := app.SaveProviderModelCatalogs([]ProviderModelCatalogUpdate{
+		{Name: "batch-a", ExpectedFingerprint: aFingerprint, Models: []string{"must-not-persist"}},
+		{Name: "batch-b", ExpectedFingerprint: bFingerprint, Models: []string{"text-embedding-3-small"}},
 	}); err == nil {
-		t.Fatal("SaveProviders invalid batch returned nil error")
+		t.Fatal("SaveProviderModelCatalogs invalid batch returned nil error")
 	}
 	cfg = config.LoadForEdit(config.UserConfigPath())
-	if _, ok := cfg.Provider("must-not-persist"); ok {
-		t.Fatal("SaveProviders persisted a partial invalid batch")
+	a, _ = cfg.Provider("batch-a")
+	if a.DefaultModel() == "must-not-persist" {
+		t.Fatal("SaveProviderModelCatalogs persisted a partial invalid batch")
+	}
+}
+
+func TestSaveProviderModelCatalogsRejectsStaleCompletion(t *testing.T) {
+	isolateDesktopUserDirs(t)
+
+	app := NewApp()
+	if err := app.SaveProvider(ProviderView{
+		Name: "race-provider", Kind: "openai", BaseURL: "https://old.example.com/v1",
+		Models: []string{"old-model"}, Default: "old-model", APIKeyEnv: "OLD_API_KEY",
+		Headers: map[string]string{"X-Version": "old"},
+	}); err != nil {
+		t.Fatalf("SaveProvider(old): %v", err)
+	}
+	cfg := config.LoadForEdit(config.UserConfigPath())
+	old, _ := cfg.Provider("race-provider")
+	oldFingerprint := providerModelCatalogFingerprint(*old)
+
+	started := make(chan struct{})
+	release := make(chan struct{})
+	type result struct {
+		applied []string
+		err     error
+	}
+	done := make(chan result, 1)
+	go func() {
+		close(started)
+		<-release
+		applied, err := app.SaveProviderModelCatalogs([]ProviderModelCatalogUpdate{{
+			Name: "race-provider", ExpectedFingerprint: oldFingerprint,
+			Models: []string{"old-model", "stale-fetched-model"}, Default: "stale-fetched-model",
+		}})
+		done <- result{applied: applied, err: err}
+	}()
+	<-started
+
+	if err := app.SaveProvider(ProviderView{
+		Name: "race-provider", Kind: "openai", BaseURL: "https://new.example.com/v1",
+		Models: []string{"new-model"}, Default: "new-model", APIKeyEnv: "NEW_API_KEY",
+		Headers: map[string]string{"X-Version": "new"},
+	}); err != nil {
+		t.Fatalf("SaveProvider(new): %v", err)
+	}
+	close(release)
+	gotResult := <-done
+	if gotResult.err != nil {
+		t.Fatalf("stale SaveProviderModelCatalogs: %v", gotResult.err)
+	}
+	if len(gotResult.applied) != 0 {
+		t.Fatalf("stale update applied providers %v, want none", gotResult.applied)
+	}
+
+	cfg = config.LoadForEdit(config.UserConfigPath())
+	got, _ := cfg.Provider("race-provider")
+	if got.BaseURL != "https://new.example.com/v1" || got.APIKeyEnv != "NEW_API_KEY" || got.Headers["X-Version"] != "new" {
+		t.Fatalf("stale completion overwrote provider identity: %+v", *got)
+	}
+	if !reflect.DeepEqual(got.ChatModelList(), []string{"new-model"}) || got.DefaultModel() != "new-model" {
+		t.Fatalf("stale completion overwrote model selection: models=%v default=%q", got.ChatModelList(), got.DefaultModel())
+	}
+}
+
+func TestSaveProviderModelCatalogsRejectsStaleCredentialSnapshot(t *testing.T) {
+	isolateDesktopUserDirs(t)
+
+	app := NewApp()
+	if err := app.SaveProvider(ProviderView{
+		Name: "credential-race", Kind: "openai", BaseURL: "https://credential.example.com/v1",
+		Models: []string{"current-model"}, APIKeyEnv: "CREDENTIAL_RACE_API_KEY",
+	}); err != nil {
+		t.Fatalf("SaveProvider: %v", err)
+	}
+	if _, err := app.SaveProviderKey("CREDENTIAL_RACE_API_KEY", "old-key"); err != nil {
+		t.Fatalf("SaveProviderKey(old): %v", err)
+	}
+	cfg := config.LoadForEdit(config.UserConfigPath())
+	provider, _ := cfg.Provider("credential-race")
+	oldFingerprint := providerModelCatalogFingerprint(*provider)
+
+	if _, err := app.SaveProviderKey("CREDENTIAL_RACE_API_KEY", "new-key-with-different-length"); err != nil {
+		t.Fatalf("SaveProviderKey(new): %v", err)
+	}
+	applied, err := app.SaveProviderModelCatalogs([]ProviderModelCatalogUpdate{{
+		Name: "credential-race", ExpectedFingerprint: oldFingerprint,
+		Models: []string{"current-model", "stale-key-model"}, Default: "stale-key-model",
+	}})
+	if err != nil {
+		t.Fatalf("SaveProviderModelCatalogs: %v", err)
+	}
+	if len(applied) != 0 {
+		t.Fatalf("credential-stale update applied providers %v, want none", applied)
+	}
+	cfg = config.LoadForEdit(config.UserConfigPath())
+	provider, _ = cfg.Provider("credential-race")
+	if !reflect.DeepEqual(provider.ChatModelList(), []string{"current-model"}) {
+		t.Fatalf("credential-stale update overwrote models: %v", provider.ChatModelList())
 	}
 }
 
