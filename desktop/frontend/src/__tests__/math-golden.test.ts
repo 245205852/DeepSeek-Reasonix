@@ -13,7 +13,11 @@ import katex from "katex";
 import { latexNormalizeForKatex, stripMathDelimiters } from "../components/latexNormalize";
 import { classifyInlineMath, isLikelyInlineMath } from "../components/mathClassify";
 import { reasonixRehypePlugins, reasonixRemarkPlugins } from "../components/markdownRemarkPlugins";
-import { normalizeMath, restoreProtectedInlineMathSource } from "../components/mathNormalize";
+import {
+  normalizeMath,
+  resolveProtectedInlineMathSource,
+  restoreProtectedInlineMathSource,
+} from "../components/mathNormalize";
 import { expandYoungDiagrams } from "../components/youngDiagrams";
 
 let passed = 0;
@@ -155,6 +159,12 @@ check("10–$20$ MeV remains math", () =>
   classifyInlineMath("20", { before: "10–", after: " MeV" }) === "math");
 check("$20$ MeV uses a scientific unit as positive math context", () =>
   classifyInlineMath("20", { after: " MeV" }) === "math");
+check("$5$ cm uses an SI-prefixed unit as positive math context", () =>
+  classifyInlineMath("5", { after: " cm" }) === "math");
+check("$2$ L uses a scientific unit symbol as positive math context", () =>
+  classifyInlineMath("2", { after: " L" }) === "math");
+check("$3$ dB uses a common scientific unit as positive math context", () =>
+  classifyInlineMath("3", { after: " dB" }) === "math");
 check("x = $2$ uses an operator as positive math context", () =>
   classifyInlineMath("2", { before: "x = " }) === "math");
 check("URL", () => isLikelyInlineMath("https://example.com") === false);
@@ -571,6 +581,18 @@ check("scientific unit makes a paired number mathematical", () => {
   const html = renderHtml("$20$ MeV");
   return html.includes("katex") && html.includes("<mn>20</mn>");
 });
+check("centimetres make a paired number mathematical", () => {
+  const html = renderHtml("$5$ cm");
+  return html.includes("katex") && html.includes("<mn>5</mn>");
+});
+check("litres make a paired number mathematical", () => {
+  const html = renderHtml("$2$ L");
+  return html.includes("katex") && html.includes("<mn>2</mn>");
+});
+check("decibels make a paired number mathematical", () => {
+  const html = renderHtml("$3$ dB");
+  return html.includes("katex") && html.includes("<mn>3</mn>");
+});
 check("parenthesized scientific quantity remains mathematical", () => {
   const html = renderHtml("A vector ($5$ m) long.");
   return html.includes("katex") && html.includes("<mn>5</mn>");
@@ -623,6 +645,18 @@ check("real inline math $x^2$ still renders as KaTeX", () => {
   const html = renderHtml("the value $x^2$ here");
   return html.includes("katex");
 });
+check("inline math with asymmetric delimiter padding still renders", () => {
+  const html = renderHtml("before $\\alpha $ after");
+  return html.includes("katex")
+    && html.includes('data-latex-source="\\alpha "')
+    && html.includes('encoding="application/x-tex">\\alpha </annotation>');
+});
+check("inline math with multiple delimiter spaces still renders", () => {
+  const html = renderHtml("before $  x  $ after");
+  return html.includes("katex")
+    && html.includes('data-latex-source="  x  "')
+    && html.includes('encoding="application/x-tex">  x  </annotation>');
+});
 check("GFM table preserves inline absolute-value math and every cell", () => {
   const html = renderHtml("| Expr | Value |\n| --- | --- |\n| $|x|$ | abs |");
   return html.includes("<table>")
@@ -636,6 +670,31 @@ check("display math preserves original TeX in the KaTeX root and annotation", ()
   const html = renderHtml("$$|x|$$");
   return html.includes('class="katex-display" data-latex-source="|x|"')
     && html.includes('encoding="application/x-tex">|x|</annotation>');
+});
+check("inline Young diagrams preserve their authored macro source", () => {
+  const html = renderHtml("before $V=\\yng(2,1)$ after");
+  return html.includes("katex")
+    && !html.includes("katex-error")
+    && !html.includes("reasonixInternal")
+    && html.includes('data-latex-source="V=\\yng(2,1)"')
+    && html.includes('encoding="application/x-tex">V=\\yng(2,1)</annotation>');
+});
+check("display Young tableaux preserve their authored macro source", () => {
+  const html = renderHtml("$$\\young(ab,c)$$");
+  return html.includes("katex-display")
+    && !html.includes("katex-error")
+    && !html.includes("reasonixInternal")
+    && html.includes('data-latex-source="\\young(ab,c)"')
+    && html.includes('encoding="application/x-tex">\\young(ab,c)</annotation>');
+});
+check("Young source survives nested pipe protection without cross-assignment", () => {
+  const html = renderHtml("$V=\\yng(2,1) | x + \\young(ab,c)$");
+  const source = "V=\\yng(2,1) | x + \\young(ab,c)";
+  return html.includes("katex")
+    && !html.includes("katex-error")
+    && !html.includes("reasonixInternal")
+    && html.includes(`data-latex-source="${source}"`)
+    && html.includes(`encoding="application/x-tex">${source}</annotation>`);
 });
 check("multiple formulas restore their own source without cross-assignment", () => {
   const html = renderHtml("$|x|$ then $x = 50%$");
@@ -677,46 +736,61 @@ check("\\yng(2,1) in prose (no $ delimiters) gets wrapped and rendered", () => {
   // translator wraps bare \\yng in `$…$` so remark-math sees it as
   // inline math and katex renders the diagram.
   const html = renderHtml("The partition \\yng(2,1) is symmetric.");
-  return html.includes("katex") && !html.includes("katex-error") && !html.includes("\\yng");
+  return html.includes("katex")
+    && !html.includes("katex-error")
+    && !html.includes("reasonixInternal")
+    && html.includes('data-latex-source="\\yng(2,1)"');
 });
 check("\\yng inside \\(...\\) does not get double-wrapped", () => {
-  const out = normalizeMath("\\(\\yng(2,1)\\)");
-  return out === "$\\begin{array}{l}\\square \\! \\square \\\\[-0.525em] \\square\\end{array}$";
+  const out = resolveProtectedInlineMathSource(normalizeMath("\\(\\yng(2,1)\\)"));
+  return out.source === "$\\yng(2,1)$"
+    && out.rendered === "$\\begin{array}{l}\\square \\! \\square \\\\[-0.525em] \\square\\end{array}$";
 });
 check("\\yng inside \\[...\\] stays display math without triple dollars", () => {
-  const out = normalizeMath("\\[\\yng(2,1)\\]");
-  return out.startsWith("$$\n\\begin{array}{l}")
-    && out.endsWith("$$")
-    && !out.includes("$$$");
+  const out = resolveProtectedInlineMathSource(normalizeMath("\\[\\yng(2,1)\\]"));
+  return out.source === "$$\n\\yng(2,1)\n$$"
+    && out.rendered.startsWith("$$\n\\begin{array}{l}")
+    && out.rendered.endsWith("$$")
+    && !out.rendered.includes("$$$");
 });
 check("escaped dollar before bare \\yng does not suppress wrapping", () => {
   const src = String.raw`Price is \$5; shape \yng(2,1)`;
   const expected = String.raw`Price is \$5; shape $\begin{array}{l}\square \! \square \\[-0.525em] \square\end{array}$`;
-  return normalizeMath(src) === expected;
+  const out = resolveProtectedInlineMathSource(normalizeMath(src));
+  return out.source === String.raw`Price is \$5; shape $\yng(2,1)$`
+    && out.rendered === expected;
 });
 check("digit-starting inline math with \\yng does not get nested wrappers", () => {
-  const out = normalizeMath("$3\\,\\yng(2,1)$");
-  return out === "$3\\,\\begin{array}{l}\\square \\! \\square \\\\[-0.525em] \\square\\end{array}$";
+  const out = resolveProtectedInlineMathSource(normalizeMath("$3\\,\\yng(2,1)$"));
+  return out.source === "$3\\,\\yng(2,1)$"
+    && out.rendered === "$3\\,\\begin{array}{l}\\square \\! \\square \\\\[-0.525em] \\square\\end{array}$";
 });
 check("digit-starting inline math with \\young does not get nested wrappers", () => {
-  const out = normalizeMath("$2 + \\young(ab,c)$");
-  return out === "$2 + \\begin{array}{l}\\boxed{a} \\! \\boxed{b} \\\\[-0.525em] \\boxed{c}\\end{array}$";
+  const out = resolveProtectedInlineMathSource(normalizeMath("$2 + \\young(ab,c)$"));
+  return out.source === "$2 + \\young(ab,c)$"
+    && out.rendered === "$2 + \\begin{array}{l}\\boxed{a} \\! \\boxed{b} \\\\[-0.525em] \\boxed{c}\\end{array}$";
 });
 check("display math ending in digit closes before following bare \\yng", () => {
-  const out = normalizeMath("$$x^2$$ \\yng(1)");
-  return out === "$$\nx^2\n$$\n $\\begin{array}{l}\\square\\end{array}$";
+  const out = resolveProtectedInlineMathSource(normalizeMath("$$x^2$$ \\yng(1)"));
+  return out.source === "$$\nx^2\n$$\n $\\yng(1)$"
+    && out.rendered === "$$\nx^2\n$$\n $\\begin{array}{l}\\square\\end{array}$";
 });
 check("bare \\yng after inline math is separated from adjacent dollars", () => {
-  const out = normalizeMath("$x$\\yng(1)");
-  return out === "$x$ $\\begin{array}{l}\\square\\end{array}$";
+  const out = resolveProtectedInlineMathSource(normalizeMath("$x$\\yng(1)"));
+  return out.source === "$x$ $\\yng(1)$"
+    && out.rendered === "$x$ $\\begin{array}{l}\\square\\end{array}$";
 });
 check("bare \\yng before inline math is separated from adjacent dollars", () => {
-  const out = normalizeMath("\\yng(1)$x$");
-  return out === "$\\begin{array}{l}\\square\\end{array}$ $x$";
+  const out = resolveProtectedInlineMathSource(normalizeMath("\\yng(1)$x$"));
+  return out.source === "$\\yng(1)$ $x$"
+    && out.rendered === "$\\begin{array}{l}\\square\\end{array}$ $x$";
 });
 check("\\yng (2,1) with a space before parens gets wrapped and rendered", () => {
   const html = renderHtml("The partition \\yng (2,1) is symmetric.");
-  return html.includes("katex") && !html.includes("katex-error") && !html.includes("\\yng");
+  return html.includes("katex")
+    && !html.includes("katex-error")
+    && !html.includes("reasonixInternal")
+    && html.includes('data-latex-source="\\yng (2,1)"');
 });
 check("\\yng(3,2,1) renders as (3,2,1) Young diagram", () => {
   const html = renderHtml("$$\\yng(3,2,1)$$");
@@ -734,7 +808,8 @@ check("\\young(ab,c) labelled youngtab syntax renders labels", () => {
   const html = renderHtml("$$\\young(ab,c)$$");
   return html.includes("katex-display")
     && !html.includes("katex-error")
-    && !html.includes("\\young")
+    && !html.includes("reasonixInternal")
+    && html.includes('data-latex-source="\\young(ab,c)"')
     && ["a", "b", "c"].every((label) => html.includes(label));
 });
 check("\\young(ab,c) labelled cells keep boxes", () => {

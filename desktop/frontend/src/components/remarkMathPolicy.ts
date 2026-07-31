@@ -3,7 +3,10 @@ import type { InlineMath } from "mdast-util-math";
 import { visit } from "unist-util-visit";
 import { classifyInlineMath } from "./mathClassify";
 import { latexNormalizeForKatex } from "./latexNormalize";
-import { restoreProtectedInlineMathSource } from "./mathNormalize";
+import {
+  resolveProtectedInlineMathSource,
+  restoreProtectedInlineMathSource,
+} from "./mathNormalize";
 
 type HastLikeNode = {
   type: string;
@@ -67,9 +70,31 @@ function originalSource(node: InlineMath, file: VFileLike): string {
   const start = node.position?.start.offset;
   const end = node.position?.end.offset;
   if (typeof start === "number" && typeof end === "number") {
-    return restoreProtectedInlineMathSource(source.slice(start, end));
+    const span = source.slice(start, end);
+    if (span.startsWith("$") && span.endsWith("$")) {
+      return `$${restoreProtectedInlineMathSource(span.slice(1, -1))}$`;
+    }
+    return restoreProtectedInlineMathSource(span);
   }
   return `$${restoreProtectedInlineMathSource(node.value)}$`;
+}
+
+function inlineMathSources(node: InlineMath, file: VFileLike): {
+  source: string;
+  rendered: string;
+} {
+  const parsed = resolveProtectedInlineMathSource(node.value);
+  const fileSource = String(file.value ?? "");
+  const start = node.position?.start.offset;
+  const end = node.position?.end.offset;
+  if (typeof start !== "number" || typeof end !== "number") return parsed;
+
+  const span = fileSource.slice(start, end);
+  if (!span.startsWith("$") || !span.endsWith("$")) return parsed;
+  return {
+    source: resolveProtectedInlineMathSource(span.slice(1, -1)).source,
+    rendered: parsed.rendered,
+  };
 }
 
 function setMathValue(
@@ -114,26 +139,27 @@ export function remarkMathPolicy() {
 
       const typedNode = node as InlineMath;
       const typedParent = parent as ParentWithChildren;
-      const source = restoreProtectedInlineMathSource(typedNode.value);
+      const { source, rendered } = inlineMathSources(typedNode, file);
+      const classificationSource = source.trim();
       const decision = classifyInlineMath(
-        source,
+        classificationSource,
         inlineMathContext(typedNode, file, typedParent, index),
       );
 
       if (decision === "math") {
-        setMathValue(typedNode, source, latexNormalizeForKatex(source));
+        setMathValue(typedNode, source, latexNormalizeForKatex(rendered));
         return;
       }
 
       const value = decision === "currency"
-        ? `$${source}`
+        ? `$${classificationSource}`
         : originalSource(typedNode, file);
       typedParent.children[index] = { type: "text", value } satisfies Text;
     });
 
     visit(tree, "math", (node) => {
-      const source = node.value;
-      setMathValue(node, source, latexNormalizeForKatex(source));
+      const { source, rendered } = resolveProtectedInlineMathSource(node.value);
+      setMathValue(node, source, latexNormalizeForKatex(rendered));
     });
   };
 }

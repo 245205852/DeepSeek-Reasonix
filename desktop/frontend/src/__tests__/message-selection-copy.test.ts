@@ -211,5 +211,51 @@ function inlineKatex(source: string, rendered: string): string {
   );
 }
 
+{
+  const rendered = renderToStaticMarkup(
+    createElement(ReactMarkdown, {
+      remarkPlugins: reasonixRemarkPlugins,
+      rehypePlugins: reasonixRehypePlugins,
+      children: normalizeMath("before $\\alpha $ then $  x  $ after"),
+    }),
+  );
+  const dom = new JSDOM(`<div class="msg__body" id="message">${rendered}</div>`);
+  installDOMGlobals(dom);
+  const doc = dom.window.document;
+  const message = doc.getElementById("message")!;
+  const range = doc.createRange();
+  range.selectNodeContents(message);
+  const selection = dom.window.getSelection()!;
+  selection.addRange(range);
+  eq(
+    messageSelectionContextText(doc, message),
+    "before $\\alpha $ then $  x  $ after",
+    "preserves authored delimiter padding through real Markdown rendering",
+  );
+}
+
+{
+  const rendered = renderToStaticMarkup(
+    createElement(ReactMarkdown, {
+      remarkPlugins: reasonixRemarkPlugins,
+      rehypePlugins: reasonixRehypePlugins,
+      children: normalizeMath("before $V=\\yng(2,1) | x$ then $$\\young(ab,c)$$ after"),
+    }),
+  );
+  const dom = new JSDOM(`<div class="msg__body" id="message">${rendered}</div>`);
+  installDOMGlobals(dom);
+  const doc = dom.window.document;
+  const message = doc.getElementById("message")!;
+  const range = doc.createRange();
+  range.selectNodeContents(message);
+  const selection = dom.window.getSelection()!;
+  selection.addRange(range);
+  eq(
+    messageSelectionContextText(doc, message),
+    "before $V=\\yng(2,1) | x$ then\n$$\n\\young(ab,c)\n$$\nafter",
+    "copies authored Young macros through nested pipe protection",
+  );
+}
+
 console.log(`\n${passed} passed, ${failed} failed`);
 if (failed > 0) process.exit(1);

@@ -16,8 +16,13 @@ const CURRENCY_AFTER =
 const NUMERIC_MATH_BEFORE =
   /(?:\d(?:,\d{3})*(?:\.\d+)?\s*[-–—−]\s*|(?:[=<>≤≥≈≃~+*/^(,[{]|\\(?:approx|sim|le|ge|lt|gt))\s*)$/;
 
-const NUMERIC_MATH_AFTER =
-  /^\s*(?:[-–—−]\s*\d|(?:[fpnumµmkMGT]?eV|[fpnumµmkMGT]?Hz|[fpnumµmkMGT]?[mgsWVAJNTK]|mol|Pa|bar|Ω|ohms?|bits?|bytes?)\b|°[CF]\b)/i;
+const SCIENTIFIC_UNIT_PREFIX = String.raw`(?:da|[qryzafpnumcdhkMGTPEZYRQµμ])?`;
+const SCIENTIFIC_UNIT_SYMBOL = String.raw`(?:${SCIENTIFIC_UNIT_PREFIX}(?:eV|Hz|mol|cd|Pa|Wb|lm|lx|Bq|Gy|Sv|kat|Wh|Da|bar|m|g|s|A|K|N|J|W|C|V|F|S|T|H|L)|dB|atm|Torr|rpm|bps|Ω|ohms?|bits?|bytes?|minutes?|hours?|min|hr)`;
+const SCIENTIFIC_UNIT_BOUNDARY = String.raw`(?=$|[\s,.;:!?()[\]{}\/·⋅×^²³⁴⁵⁶⁷⁸⁹⁰-])`;
+const NUMERIC_MATH_AFTER = new RegExp(
+  String.raw`^\s*(?:[-–—−]\s*\d|${SCIENTIFIC_UNIT_SYMBOL}${SCIENTIFIC_UNIT_BOUNDARY}|°[CFK]${SCIENTIFIC_UNIT_BOUNDARY})`,
+  "i",
+);
 
 function currencyContext(context: InlineMathContext): Required<InlineMathContext> {
   return {

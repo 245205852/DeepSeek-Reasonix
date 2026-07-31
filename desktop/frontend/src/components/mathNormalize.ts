@@ -29,6 +29,8 @@ const IM = "__REASONIX_MATH_INLINE__";
 const LB = "__REASONIX_LATEX_LINEBREAK__";
 const ED_BASE = "REASONIXESCAPEDDOLLAR";
 const INLINE_SOURCE_PREFIX = "\\reasonixInternalSourceV1{";
+const INLINE_RENDER_SOURCE_PREFIX = "\\reasonixInternalRenderV1";
+const INLINE_RENDER_SOURCE_RE = /\\reasonixInternalRenderV1\{([^}]*)\}\{([^}]*)\}/g;
 
 export function normalizeMath(s: string): string {
   const protectedCode = protectMarkdownCode(s);
@@ -57,7 +59,9 @@ function normalizeMathText(s: string): string {
   // Step 2.5: expand \yng/\young macros to KaTeX-compatible \boxed{array}
   // forms after LLM-native delimiters have been converted, so macros inside
   // \(...\) or \[...\] are correctly recognised as already being in math.
-  r = expandYoungDiagrams(r);
+  r = expandYoungDiagrams(r, ({ source, rendered }) => {
+    return protectInlineMathRenderSource(source, rendered);
+  });
 
   // Escaped dollars are literal prose dollars, not math delimiters. Hide them
   // while the structural dollar scans below run, then restore them before
@@ -113,14 +117,47 @@ function protectInlineMathSource(source: string): string {
   return `${INLINE_SOURCE_PREFIX}${encodeURIComponent(source)}}`;
 }
 
-export function restoreProtectedInlineMathSource(source: string): string {
-  if (!source.startsWith(INLINE_SOURCE_PREFIX) || !source.endsWith("}")) return source;
-  const encoded = source.slice(INLINE_SOURCE_PREFIX.length, -1);
-  try {
-    return decodeURIComponent(encoded);
-  } catch {
-    return source;
+function protectInlineMathRenderSource(source: string, rendered: string): string {
+  return `${INLINE_RENDER_SOURCE_PREFIX}{${encodeURIComponent(source)}}{${encodeURIComponent(rendered)}}`;
+}
+
+export interface ResolvedInlineMathSource {
+  source: string;
+  rendered: string;
+}
+
+export function resolveProtectedInlineMathSource(value: string): ResolvedInlineMathSource {
+  let payload = value;
+  if (payload.startsWith(INLINE_SOURCE_PREFIX) && payload.endsWith("}")) {
+    const encoded = payload.slice(INLINE_SOURCE_PREFIX.length, -1);
+    try {
+      payload = decodeURIComponent(encoded);
+    } catch {
+      payload = value;
+    }
   }
+
+  const replaceRenderSource = (part: "source" | "rendered"): string => {
+    return payload.replace(
+      INLINE_RENDER_SOURCE_RE,
+      (match, encodedSource: string, encodedRendered: string) => {
+        try {
+          return decodeURIComponent(part === "source" ? encodedSource : encodedRendered);
+        } catch {
+          return match;
+        }
+      },
+    );
+  };
+
+  return {
+    source: replaceRenderSource("source"),
+    rendered: replaceRenderSource("rendered"),
+  };
+}
+
+export function restoreProtectedInlineMathSource(source: string): string {
+  return resolveProtectedInlineMathSource(source).source;
 }
 
 function unusedEscapedDollarToken(s: string): string {
