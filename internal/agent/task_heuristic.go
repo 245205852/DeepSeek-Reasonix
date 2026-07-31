@@ -45,10 +45,16 @@ func heuristicInputIsTask(input string) bool {
 		}
 	}
 
-	// File references are a strong task signal.
-	if strings.Contains(trimmed, "@") || strings.Contains(trimmed, ".go") ||
-		strings.Contains(trimmed, ".js") || strings.Contains(trimmed, ".py") ||
-		strings.Contains(trimmed, ".ts") {
+	// File references and concrete commands are strong task signals. Shared
+	// parsing keeps email addresses and remote product names from accidentally
+	// arming the delivery gate while covering ordinary repository file types.
+	if deliveryTaskHasFileReference(trimmed) || deliveryTaskHasCommand(trimmed) {
+		return true
+	}
+	// Mutation intent has a richer, negation-aware vocabulary than this generic
+	// task heuristic. Reuse it so short requests such as "push the branch" do not
+	// bypass delivery gates merely because the two keyword lists drift apart.
+	if deliveryTaskNeedsMutation(trimmed) {
 		return true
 	}
 
@@ -70,10 +76,13 @@ func heuristicInputIsTask(input string) bool {
 	actionNeedles := []string{
 		"fix", "debug", "repair", "resolve", "reproduce",
 		"create", "add", "write", "edit", "update", "change", "delete", "remove", "rename",
-		"review", "inspect", "analyze", "check", "test", "run", "build", "implement", "refactor",
+		"review", "inspect", "analyze", "check", "audit", "verify", "test", "run", "build", "implement", "refactor", "modify", "patch", "replace",
+		"configure", "upgrade", "downgrade", "enable", "disable", "merge", "make changes", "make a change", "make the changes",
+		"make the requested changes", "make the necessary changes", "make these changes", "make those changes", "make code changes",
 		"continue work", "continue the", "continue this",
 		"修复", "调试", "解决", "复现", "创建", "新建", "添加", "编写", "编辑", "修改", "更新",
-		"删除", "移除", "重命名", "评审", "检查", "分析", "测试", "运行", "构建", "实现", "重构", "继续处理",
+		"删除", "移除", "重命名", "评审", "检查", "分析", "审计", "验证", "测试", "运行", "构建", "实现", "重构", "继续处理",
+		"调整", "替换", "移动", "升级", "降级", "启用", "禁用", "合并", "改动", "打补丁",
 		"看看", "看下", "帮我看", "帮我看下", "处理下", "处理一下", "排查", "定位",
 	}
 

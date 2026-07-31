@@ -1678,8 +1678,16 @@ func deliveryTaskNeedsEvidence(input string) bool {
 var deliveryMutationNeedles = []string{
 	"fix", "repair", "resolve", "create", "add", "write", "edit", "update", "change", "delete", "remove", "rename",
 	"implement", "refactor", "apply", "install", "publish", "commit", "push", "continue work",
+	"modify", "patch", "replace", "move", "configure", "upgrade", "downgrade", "bump", "enable", "disable", "merge",
+	"make changes", "make a change", "make the changes", "make the requested changes", "make the necessary changes", "make these changes", "make those changes", "make code changes",
 	"修复", "解决", "创建", "新建", "添加", "编写", "编辑", "修改", "更新", "删除", "移除", "重命名", "实现", "重构",
-	"实施", "落地", "安装", "发布", "提交", "继续处理",
+	"实施", "落地", "安装", "发布", "提交", "继续处理", "调整", "替换", "移动", "升级", "降级", "启用", "禁用", "合并", "改动", "打补丁",
+}
+
+var deliveryAdvisoryPhrases = []string{
+	"what's wrong", "what is wrong", "why", "what should i do", "what can i do", "how should i", "how do i", "how can i",
+	"can you explain", "could you explain", "give me advice", "any advice", "help me understand",
+	"为什么", "怎么回事", "怎么办", "怎么", "怎样", "如何", "是什么问题", "什么原因", "的原因", "给我建议", "有什么建议",
 }
 
 func deliveryTaskNeedsMutation(input string) bool {
@@ -1690,15 +1698,22 @@ func deliveryTaskNeedsMutation(input string) bool {
 func deliveryTaskMutationIntent(input string) (affirmative, negated bool) {
 	normalized := strings.ToLower(strings.TrimSpace(input))
 	for _, clause := range deliveryTaskClauses(normalized) {
+		clauseAffirmative := false
+		clauseNegated := false
 		if deliveryMutationClauseNegated(clause) {
-			negated = true
-			continue
+			clauseNegated = true
 		}
 		for _, needle := range deliveryMutationNeedles {
 			hasAffirmative, hasNegated := deliveryMutationNeedleIntent(clause, needle)
-			affirmative = affirmative || hasAffirmative
-			negated = negated || hasNegated
+			clauseAffirmative = clauseAffirmative || hasAffirmative
+			clauseNegated = clauseNegated || hasNegated
 		}
+		if clauseAffirmative && deliveryTaskClauseIsAdvisory(clause) && !deliveryTaskAdvisoryClauseRequestsMutation(clause) {
+			clauseAffirmative = false
+			clauseNegated = true
+		}
+		affirmative = affirmative || clauseAffirmative
+		negated = negated || clauseNegated
 	}
 	return affirmative, negated
 }
@@ -1706,51 +1721,321 @@ func deliveryTaskMutationIntent(input string) (affirmative, negated bool) {
 func deliveryTaskIsAdvisory(input string) bool {
 	normalized := strings.ToLower(strings.TrimSpace(input))
 
-	// Concrete host-observable work wins over question wording. A request such
-	// as "why does go test fail?" still requires running or inspecting it.
+	// Concrete targets and commands always remain host-observable, including
+	// when the request is phrased as a "why" question.
+	if deliveryTaskHasHostAnchor(normalized) || deliveryTaskHasCommand(normalized) {
+		return false
+	}
+
+	// Question wording is scoped per clause. This keeps remote troubleshooting
+	// such as "analyze why WPS won't open" advisory, while a separate imperative
+	// clause such as "reproduce the crash" still requires observable work.
+	sawAdvisory := false
+	for _, clause := range deliveryTaskClauses(normalized) {
+		if deliveryTaskClauseIsAdvisory(clause) {
+			sawAdvisory = true
+			continue
+		}
+		if deliveryTaskClauseHasObservableWork(clause) {
+			return false
+		}
+	}
+	if sawAdvisory {
+		return true
+	}
+
+	// A standalone refusal, inability, or constraint around a mutation verb is
+	// advisory rather than work Reasonix can perform. Affirmative mixed intent is
+	// handled by deliveryTaskNeedsMutation before this function is consulted.
+	_, negatedMutation := deliveryTaskMutationIntent(normalized)
+	return negatedMutation
+}
+
+func deliveryTaskHasHostAnchor(input string) bool {
+	for _, anchor := range []string{
+		"this repo", "this repository", "current repository", "codebase", "workspace", "pull request", "this pr", "ci job",
+		"/pull/", "actions/runs/",
+		"当前仓库", "这个仓库", "当前项目", "这个项目", "代码库", "工作区", "这个 pr", "这个pr", "此 pr", "此pr",
+	} {
+		if strings.Contains(input, anchor) {
+			return true
+		}
+	}
+	return deliveryTaskHasFileReference(input)
+}
+
+func deliveryTaskHasFileReference(input string) bool {
+	previous := rune(0)
+	for index, current := range input {
+		if current == '@' && index+1 < len(input) &&
+			(index == 0 || strings.ContainsRune(" \t\r\n([{<,:;（【《，。；：", previous)) {
+			next, _ := utf8.DecodeRuneInString(input[index+1:])
+			if !strings.ContainsRune(" \t\r\n", next) {
+				return true
+			}
+		}
+		previous = current
+	}
+
+	for _, raw := range strings.FieldsFunc(input, func(r rune) bool {
+		switch r {
+		case ' ', '\t', '\r', '\n', '`', '\'', '"', '(', ')', '[', ']', '{', '}', '<', '>', ',', '，', ';', '；', '!', '！', '?', '？':
+			return true
+		default:
+			return false
+		}
+	}) {
+		token := strings.ToLower(strings.TrimSpace(raw))
+		if token == "" || strings.Contains(token, "://") {
+			continue
+		}
+		if strings.HasPrefix(token, "./") || strings.HasPrefix(token, "../") ||
+			strings.HasPrefix(token, "/") || strings.Contains(token, `\`) {
+			return true
+		}
+		base := token
+		if slash := strings.LastIndexByte(base, '/'); slash >= 0 {
+			base = base[slash+1:]
+		}
+		switch base {
+		case "dockerfile", "makefile", "cmakelists.txt", "justfile", "license", "readme", "changelog":
+			return true
+		}
+		dot := strings.LastIndexByte(base, '.')
+		if dot < 0 {
+			continue
+		}
+		switch base[dot:] {
+		case ".go", ".mod", ".sum", ".js", ".jsx", ".ts", ".tsx", ".py", ".rs", ".java", ".kt", ".swift",
+			".c", ".cc", ".cpp", ".h", ".hpp", ".cs", ".rb", ".php", ".sh", ".zsh", ".fish", ".ps1",
+			".md", ".json", ".yaml", ".yml", ".toml", ".xml", ".sql", ".proto", ".html", ".css", ".scss",
+			".vue", ".svelte", ".txt", ".log", ".csv", ".pdf", ".env", ".ini", ".conf", ".lock":
+			return true
+		}
+	}
+	return false
+}
+
+func deliveryTaskHasCommand(input string) bool {
+	for rest := input; ; {
+		start := strings.IndexByte(rest, '`')
+		if start < 0 {
+			break
+		}
+		rest = rest[start+1:]
+		end := strings.IndexByte(rest, '`')
+		if end < 0 {
+			break
+		}
+		candidate := strings.TrimSpace(rest[:end])
+		if fields, malformed := shellparse.StaticFields(candidate); malformed == "" && len(fields) > 0 {
+			return true
+		}
+		rest = rest[end+1:]
+	}
+
+	tokens := strings.FieldsFunc(strings.ToLower(input), func(r rune) bool {
+		asciiWord := r >= 'a' && r <= 'z' || r >= '0' && r <= '9'
+		return !asciiWord && r != '_' && r != '-' && r != '.' && r != '/' && r != '\\' && r != ':'
+	})
+	for i := range tokens {
+		if deliveryCommandStartsAt(tokens, i) {
+			return true
+		}
+	}
+	return false
+}
+
+func deliveryCommandStartsAt(tokens []string, index int) bool {
+	command := strings.TrimSpace(tokens[index])
+	if command == "" {
+		return false
+	}
+	if strings.HasPrefix(command, "./") || strings.HasPrefix(command, "../") ||
+		strings.HasPrefix(command, "/") || strings.Contains(command, `\`) {
+		return true
+	}
+	next := ""
+	if index+1 < len(tokens) {
+		next = tokens[index+1]
+	}
+	if next != "--" && len(next) > 1 && strings.HasPrefix(next, "-") {
+		return true
+	}
+	previous := ""
+	if index > 0 {
+		previous = tokens[index-1]
+	}
+	switch command {
+	case "go":
+		switch next {
+		case "build", "clean", "doc", "env", "fmt", "generate", "get", "install", "list", "mod", "run", "test", "tool", "version", "vet", "work":
+			return true
+		}
+	case "git", "npm", "npx", "pnpm", "yarn", "bun", "deno", "cargo", "rustc", "python", "python3",
+		"bash", "sh", "zsh", "fish", "powershell", "pwsh", "docker", "docker-compose", "kubectl", "helm", "terraform",
+		"gradle", "gradlew", "mvn", "dotnet", "xcodebuild", "gcc", "g++", "clang", "clang++":
+		return deliveryCommandHasExplicitCue(previous) || deliveryCommandHasSubcommand(next)
+	case "node":
+		return deliveryCommandHasExplicitCue(previous) || next == "inspect" || next == "test"
+	case "swift":
+		return next == "build" || next == "package" || next == "run" || next == "test"
+	case "make", "just":
+		switch next {
+		case "all", "build", "check", "clean", "fail", "failed", "failing", "install", "lint", "test":
+			return true
+		}
+	case "pytest", "cmake", "ninja", "eslint", "tsc", "vitest", "jest":
+		return deliveryCommandHasExplicitCue(previous) || next == "fail" || next == "failed" || next == "failing"
+	}
+	return false
+}
+
+func deliveryCommandHasExplicitCue(previous string) bool {
+	switch previous {
+	case "command", "execute", "executing", "run", "running", "using", "with":
+		return true
+	default:
+		return false
+	}
+}
+
+func deliveryCommandHasSubcommand(next string) bool {
+	switch next {
+	case "add", "apply", "branch", "build", "check", "checkout", "clean", "clone", "commit", "config", "container",
+		"deploy", "describe", "destroy", "dev", "diff", "down", "env", "exec", "fetch", "fmt", "generate", "get", "image",
+		"init", "install", "lint", "list", "log", "logs", "login", "logout", "merge", "mod", "package", "plan", "ps", "publish",
+		"pull", "push", "rebase", "remote", "remove", "reset", "restore", "run", "serve", "show", "start", "stash", "status",
+		"switch", "tag", "test", "tool", "uninstall", "up", "update", "upgrade", "version", "vet", "work", "worktree":
+		return true
+	default:
+		return false
+	}
+}
+
+func deliveryTaskClauseHasObservableWork(clause string) bool {
 	for _, needle := range []string{
 		"review", "inspect", "analyze", "check", "reproduce", "audit", "verify",
 		"评审", "审查", "检查", "分析", "复现", "审计", "验证",
 	} {
-		if containsTaskNeedle(normalized, needle) {
-			return false
-		}
-	}
-	for _, anchor := range []string{
-		"this repo", "this repository", "current repository", "codebase", "workspace", "pull request", "ci job",
-		"当前仓库", "这个仓库", "当前项目", "这个项目", "代码库", "工作区", "这个 pr", "这个pr",
-	} {
-		if strings.Contains(normalized, anchor) {
-			return false
-		}
-	}
-	if strings.Contains(input, "@") || strings.Contains(input, ".go") ||
-		strings.Contains(input, ".js") || strings.Contains(input, ".py") || strings.Contains(input, ".ts") {
-		return false
-	}
-	for _, command := range []string{
-		"go test", "npm test", "pnpm test", "yarn test", "pytest", "cargo test", "run tests", "run the tests", "test suite",
-		"运行测试", "执行测试", "运行命令", "执行命令",
-	} {
-		if strings.Contains(normalized, command) {
-			return false
-		}
-	}
-
-	for _, phrase := range []string{
-		"what's wrong", "what is wrong", "why", "what should i do", "how should i", "can you explain", "give me advice",
-		"为什么", "怎么回事", "怎么办", "是什么问题", "什么原因", "的原因", "给我建议", "有什么建议",
-	} {
-		if strings.Contains(normalized, phrase) {
+		if containsTaskNeedle(clause, needle) {
 			return true
 		}
 	}
-	// A standalone refusal, inability, or constraint around a mutation verb is
-	// advisory rather than work Reasonix can perform. Concrete review/file/test
-	// signals above still win, and affirmative mixed-intent clauses are handled
-	// by deliveryTaskNeedsMutation before this function is consulted.
-	_, negatedMutation := deliveryTaskMutationIntent(normalized)
-	return negatedMutation
+	return false
+}
+
+func deliveryTaskClauseIsAdvisory(clause string) bool {
+	for _, phrase := range deliveryAdvisoryPhrases {
+		if strings.Contains(clause, phrase) {
+			return true
+		}
+	}
+	return false
+}
+
+func deliveryTaskAdvisoryClauseRequestsMutation(clause string) bool {
+	advisoryIndex := len(clause)
+	for _, phrase := range deliveryAdvisoryPhrases {
+		if index := strings.Index(clause, phrase); index >= 0 && index < advisoryIndex {
+			advisoryIndex = index
+		}
+	}
+	if advisoryIndex == len(clause) {
+		return false
+	}
+	if deliveryTaskStartsWithMutation(clause[:advisoryIndex]) {
+		return true
+	}
+
+	for _, cue := range []string{" please ", " then ", " so ", " therefore ", "然后", "所以", "而是", "转而"} {
+		for rest := clause[advisoryIndex:]; ; {
+			index := strings.Index(rest, cue)
+			if index < 0 {
+				break
+			}
+			rest = rest[index+len(cue):]
+			if deliveryTaskStartsWithMutation(rest) {
+				return true
+			}
+		}
+	}
+	for rest, offset := clause[advisoryIndex:], advisoryIndex; ; {
+		index := strings.Index(rest, "请")
+		if index < 0 {
+			break
+		}
+		absolute := offset + index
+		after := clause[absolute+len("请"):]
+		requestWord := strings.HasSuffix(clause[:absolute], "申") || strings.HasPrefix(after, "求")
+		if !requestWord && deliveryTaskStartsWithMutation(after) {
+			return true
+		}
+		offset = absolute + len("请")
+		rest = clause[offset:]
+	}
+
+	for _, cue := range []string{" and ", "并且", "并"} {
+		if index := strings.LastIndex(clause[advisoryIndex:], cue); index >= 0 {
+			cueStart := advisoryIndex + index
+			tail := clause[cueStart+len(cue):]
+			if !deliveryTaskClauseHasNegation(clause[:cueStart]) && deliveryTaskStartsWithMutation(tail) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func deliveryTaskStartsWithMutation(input string) bool {
+	input = strings.TrimSpace(input)
+	for {
+		stripped := false
+		for _, prefix := range []string{"please ", "can you ", "could you ", "would you ", "you should ", "帮我", "请你", "直接", "继续", "再"} {
+			if strings.HasPrefix(input, prefix) {
+				input = strings.TrimSpace(strings.TrimPrefix(input, prefix))
+				stripped = true
+				break
+			}
+		}
+		if !stripped {
+			break
+		}
+	}
+	for _, needle := range deliveryMutationNeedles {
+		if containsTaskNeedle(input, needle) {
+			if containsNonASCII(needle) {
+				return strings.HasPrefix(input, needle)
+			}
+			tokens := strings.FieldsFunc(input, func(r rune) bool {
+				return !(r >= 'a' && r <= 'z') && !(r >= '0' && r <= '9') && r != '_' && r != '\''
+			})
+			needleTokens := strings.Fields(needle)
+			if len(tokens) >= len(needleTokens) {
+				matches := true
+				for i := range needleTokens {
+					matches = matches && tokens[i] == needleTokens[i]
+				}
+				if matches {
+					return true
+				}
+			}
+		}
+	}
+	return false
+}
+
+func deliveryTaskClauseHasNegation(clause string) bool {
+	clause = strings.ReplaceAll(clause, "’", "'")
+	for _, phrase := range []string{
+		" not ", " never ", " without ", "cannot", "can't", " cant ", "don't", " dont ", "won't", " wont ", "unable",
+		"不要", "别", "勿", "不能", "无法", "不想", "不敢", "无需", "不需要", "不可", "没法", "没有", "禁止", "拒绝",
+	} {
+		if strings.Contains(" "+clause+" ", phrase) {
+			return true
+		}
+	}
+	return false
 }
 
 func deliveryTaskClauses(input string) []string {
@@ -1793,18 +2078,7 @@ func deliveryMutationNeedleIntent(clause, needle string) (affirmative, negated b
 			}
 			index := offset + relative
 			prefix := []rune(clause[:index])
-			if len(prefix) > 8 {
-				prefix = prefix[len(prefix)-8:]
-			}
-			window := string(prefix)
-			isNegated := false
-			for _, marker := range []string{"不要", "别", "不能", "无法", "不想", "不敢", "无需", "不需要", "不可", "没法", "没有", "禁止", "拒绝"} {
-				if strings.Contains(window, marker) {
-					isNegated = true
-					break
-				}
-			}
-			if isNegated {
+			if deliveryMutationRunesNegated(prefix) {
 				negated = true
 			} else {
 				affirmative = true
@@ -1843,6 +2117,16 @@ func deliveryMutationTokensNegated(prefix []string) bool {
 	if len(prefix) > 6 {
 		prefix = prefix[len(prefix)-6:]
 	}
+	boundary := -1
+	for i, token := range prefix {
+		switch token {
+		case "but", "however", "nevertheless", "instead", "so", "then", "therefore", "please":
+			boundary = i
+		}
+	}
+	if boundary >= 0 {
+		prefix = prefix[boundary+1:]
+	}
 	for i, token := range prefix {
 		if token == "not" && i+1 < len(prefix) && prefix[i+1] == "only" {
 			continue
@@ -1854,6 +2138,43 @@ func deliveryMutationTokensNegated(prefix []string) bool {
 			if i+1 < len(prefix) && prefix[i+1] == "need" {
 				return true
 			}
+		}
+	}
+	return false
+}
+
+func deliveryMutationRunesNegated(prefix []rune) bool {
+	if len(prefix) > 12 {
+		prefix = prefix[len(prefix)-12:]
+	}
+	window := string(prefix)
+	scopeStart := 0
+	for _, boundary := range []string{"所以", "然后", "而是", "转而", "改为"} {
+		if index := strings.LastIndex(window, boundary); index >= 0 {
+			end := index + len(boundary)
+			if end > scopeStart {
+				scopeStart = end
+			}
+		}
+	}
+	if index := strings.LastIndex(window, "请"); index >= 0 {
+		before, after := window[:index], window[index+len("请"):]
+		requestWord := strings.HasSuffix(before, "申") || strings.HasPrefix(after, "求")
+		negatedRequest := false
+		for _, marker := range []string{"不要", "不能", "无法", "不想", "不敢", "无需", "不需要", "不可", "没法", "禁止", "拒绝"} {
+			if strings.HasSuffix(before, marker) || strings.Contains(after, marker) {
+				negatedRequest = true
+				break
+			}
+		}
+		if !requestWord && !negatedRequest && index+len("请") > scopeStart {
+			scopeStart = index + len("请")
+		}
+	}
+	window = window[scopeStart:]
+	for _, marker := range []string{"不要", "别", "勿", "不能", "无法", "不想", "不敢", "无需", "不需要", "不可", "没法", "没有", "禁止", "拒绝"} {
+		if strings.Contains(window, marker) {
+			return true
 		}
 	}
 	return false
