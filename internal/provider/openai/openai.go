@@ -539,7 +539,7 @@ func (c *client) buildRequest(req provider.Request) chatRequest {
 			wire := chatToolCall{ID: tc.ID, Type: "function"}
 			wire.Function.Name = tc.Name
 			wire.Function.Arguments = tc.Arguments
-			if tc.ThoughtSignature != "" {
+			if tc.ThoughtSignature != "" && usesGeminiThoughtSignatures(c.baseURL, c.model) {
 				// Gemini's current OpenAI compatibility schema carries the
 				// opaque signature beside the function payload. Keep the
 				// legacy function.thought_signature field decode-only below so

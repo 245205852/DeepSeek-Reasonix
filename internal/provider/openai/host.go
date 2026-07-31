@@ -49,6 +49,26 @@ func IsGeminiAPI(baseURL string) bool {
 	return strings.EqualFold(u.Hostname(), "generativelanguage.googleapis.com")
 }
 
+// usesGeminiThoughtSignatures reports whether the current endpoint/model speaks
+// Gemini's OpenAI-compatible thought-signature extension. The official endpoint
+// is authoritative even when a custom model alias is used; compatible gateways
+// are detected from the model ID they route (for example google/gemini-3-pro).
+// Keeping this decision on the current client prevents a Gemini-authored history
+// from leaking extra_content.google fields after a same-session provider switch.
+func usesGeminiThoughtSignatures(baseURL, model string) bool {
+	if IsGeminiAPI(baseURL) {
+		return true
+	}
+	for _, segment := range strings.FieldsFunc(strings.ToLower(strings.TrimSpace(model)), func(r rune) bool {
+		return r == '/' || r == ':'
+	}) {
+		if segment == "gemini" || strings.HasPrefix(segment, "gemini-") || strings.HasPrefix(segment, "gemini_") {
+			return true
+		}
+	}
+	return false
+}
+
 // normalizeModelID converts Gemini's resource-form model names returned by some
 // /models responses into the bare IDs required by OpenAI-compatible chat calls.
 // Other providers and already-normalized Gemini IDs pass through unchanged.

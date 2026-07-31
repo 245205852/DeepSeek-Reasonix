@@ -1543,12 +1543,7 @@ func TestStreamReadsGeminiThoughtSignature(t *testing.T) {
 	}
 }
 
-func TestBuildRequestRoundTripsGeminiThoughtSignature(t *testing.T) {
-	c := &client{
-		name:    "gemini",
-		baseURL: "https://generativelanguage.googleapis.com/v1beta",
-		model:   "gemini-3.5-flash",
-	}
+func TestBuildRequestScopesGeminiThoughtSignature(t *testing.T) {
 	req := provider.Request{
 		Messages: []provider.Message{{
 			Role: provider.RoleAssistant,
@@ -1561,35 +1556,57 @@ func TestBuildRequestRoundTripsGeminiThoughtSignature(t *testing.T) {
 		}},
 	}
 
-	body, err := json.Marshal(c.buildRequest(req))
-	if err != nil {
-		t.Fatalf("marshal request: %v", err)
-	}
-	var wire struct {
-		Messages []struct {
-			ToolCalls []struct {
-				ExtraContent struct {
-					Google struct {
-						ThoughtSignature string `json:"thought_signature"`
-					} `json:"google"`
-				} `json:"extra_content"`
-				Function struct {
-					ThoughtSignature string `json:"thought_signature"`
-				} `json:"function"`
-			} `json:"tool_calls"`
-		} `json:"messages"`
-	}
-	if err := json.Unmarshal(body, &wire); err != nil {
-		t.Fatalf("unmarshal request: %v", err)
-	}
-	if len(wire.Messages) == 0 || len(wire.Messages[0].ToolCalls) != 1 {
-		t.Fatalf("unexpected request shape: %s", body)
-	}
-	if got := wire.Messages[0].ToolCalls[0].ExtraContent.Google.ThoughtSignature; got != "gemini_sig_xyz789" {
-		t.Errorf("thought_signature = %q, want %q", got, "gemini_sig_xyz789")
-	}
-	if got := wire.Messages[0].ToolCalls[0].Function.ThoughtSignature; got != "" {
-		t.Errorf("legacy function.thought_signature should not be sent, got %q", got)
+	for _, tc := range []struct {
+		name          string
+		baseURL       string
+		model         string
+		wantSignature string
+	}{
+		{"official Gemini endpoint", "https://generativelanguage.googleapis.com/v1beta/openai", "custom-alias", "gemini_sig_xyz789"},
+		{"Gemini-compatible gateway", "https://openrouter.ai/api/v1", "google/gemini-3.1-pro", "gemini_sig_xyz789"},
+		{"same history after provider switch", "https://api.deepseek.com/v1", "deepseek-chat", ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			c := &client{name: tc.name, baseURL: tc.baseURL, model: tc.model}
+			body, err := json.Marshal(c.buildRequest(req))
+			if err != nil {
+				t.Fatalf("marshal request: %v", err)
+			}
+			var wire struct {
+				Messages []struct {
+					ToolCalls []struct {
+						ExtraContent *struct {
+							Google struct {
+								ThoughtSignature string `json:"thought_signature"`
+							} `json:"google"`
+						} `json:"extra_content"`
+						Function struct {
+							ThoughtSignature string `json:"thought_signature"`
+						} `json:"function"`
+					} `json:"tool_calls"`
+				} `json:"messages"`
+			}
+			if err := json.Unmarshal(body, &wire); err != nil {
+				t.Fatalf("unmarshal request: %v", err)
+			}
+			if len(wire.Messages) == 0 || len(wire.Messages[0].ToolCalls) != 1 {
+				t.Fatalf("unexpected request shape: %s", body)
+			}
+			toolCall := wire.Messages[0].ToolCalls[0]
+			gotSignature := ""
+			if toolCall.ExtraContent != nil {
+				gotSignature = toolCall.ExtraContent.Google.ThoughtSignature
+			}
+			if gotSignature != tc.wantSignature {
+				t.Errorf("thought_signature = %q, want %q", gotSignature, tc.wantSignature)
+			}
+			if tc.wantSignature == "" && toolCall.ExtraContent != nil {
+				t.Errorf("non-Gemini request should omit extra_content: %s", body)
+			}
+			if got := toolCall.Function.ThoughtSignature; got != "" {
+				t.Errorf("legacy function.thought_signature should not be sent, got %q", got)
+			}
+		})
 	}
 }
 

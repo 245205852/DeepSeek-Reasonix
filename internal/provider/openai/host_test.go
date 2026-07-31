@@ -53,6 +53,26 @@ func TestGeminiAPIModelNormalization(t *testing.T) {
 	}
 }
 
+func TestUsesGeminiThoughtSignatures(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		baseURL string
+		model   string
+		want    bool
+	}{
+		{"official endpoint", "https://generativelanguage.googleapis.com/v1beta/openai", "custom-alias", true},
+		{"compatible gateway", "https://openrouter.ai/api/v1", "google/gemini-3.1-pro", true},
+		{"different provider", "https://api.deepseek.com/v1", "deepseek-chat", false},
+		{"incidental model text", "https://api.example.com/v1", "not-gemini-compatible", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := usesGeminiThoughtSignatures(tc.baseURL, tc.model); got != tc.want {
+				t.Fatalf("usesGeminiThoughtSignatures(%q, %q) = %v, want %v", tc.baseURL, tc.model, got, tc.want)
+			}
+		})
+	}
+}
+
 // TestIsMiniMax pins the host-matching rule for MiniMax. The spelling is
 // `minimaxi`, not `minimax` — the latter is reserved for any future
 // minimax-branded gateway so the two never collide.
