@@ -13,7 +13,8 @@ name: Release npm
 # build.mjs decides the dist-tag: a `-canary.` build is `canary`, any other
 # prerelease is `next`, and a stable version is `latest` (#5822 — the old
 # "promote latest by hand" rule left it pinned at 0.53.2 and downgraded
-# `npm update -g` users). The verify step below asserts the tag actually landed.
+# `npm update -g` users). The publisher verifies every immutable package and
+# advances each public dist-tag only when the candidate is newer.
 on:
   push:
     tags: ['npm-v*-*']
@@ -177,34 +178,8 @@ jobs:
           RELEASE_TAG: ${{ inputs.approved_cli_tag }}
           APPROVED_SHA: ${{ inputs.approved_sha }}
         run: bash scripts/verify-release-tag.sh
-      - env:
+      - name: Publish or recover immutable npm packages
+        env:
           VERSION_ARG: ${{ steps.ver.outputs.arg }}
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: node npm/build.mjs "$VERSION_ARG" --publish
-      # Assert the dist-tag landed where build.mjs aimed it. This is the guard
-      # that #5822 lacked: `latest` sat on 0.53.2 for months while stables went
-      # to `next`, and nothing noticed until users got downgraded. The registry
-      # applies tags asynchronously after publish, hence the poll.
-      - name: Verify dist-tags
-        env:
-          VERSION_ARG: ${{ steps.ver.outputs.arg }}
-        run: |
-          set -euo pipefail
-          version="$VERSION_ARG"
-          version="${version#npm-}"; version="${version#v}"
-          case "$version" in
-            *-canary.*) tag=canary ;;
-            *-*)        tag=next ;;
-            *)          tag=latest ;;
-          esac
-          for attempt in 1 2 3 4 5 6; do
-            got="$(npm view reasonix dist-tags."$tag" 2>/dev/null || true)"
-            if [ "$got" = "$version" ]; then
-              echo "dist-tag $tag -> $got"
-              exit 0
-            fi
-            echo "dist-tag $tag -> ${got:-<unset>}, want $version (attempt $attempt)"
-            sleep 10
-          done
-          echo "::error::npm dist-tag '$tag' never landed on $version"
-          exit 1

@@ -116,6 +116,8 @@ if sed -n '/^  workflow_dispatch:/,/^  workflow_call:/p' "$repo_root/.github/wor
 	exit 1
 fi
 grep -Fq 'if: ${{ !inputs.orchestrated }}' "$repo_root/.github/workflows/release-npm.yml"
+grep -Fq 'Publish or recover immutable npm packages' "$repo_root/.github/workflows/release-npm.yml"
+grep -Fq 'publishPackages' "$repo_root/npm/build.mjs"
 grep -Eq 'signing-policy-slug: release-signing' "$repo_root/.github/workflows/release-desktop.yml"
 if grep -Eq 'signing-policy-slug:.*test-signing' "$repo_root/.github/workflows/release-desktop.yml"; then
 	echo "public desktop workflow must not use the SignPath test certificate" >&2
@@ -1242,5 +1244,7 @@ if EVENT_NAME=workflow_dispatch IN_ORCHESTRATED=false IN_CHANNEL=stable IN_BASE_
 	exit 1
 fi
 grep -Eq 'does not match requested version' "$test_root/npm-mismatch.log"
+
+node --test "$repo_root/npm/publish.test.mjs"
 
 echo "release workflow contract tests: PASS"

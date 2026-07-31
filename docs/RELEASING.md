@@ -217,8 +217,11 @@ strict separation from repository writers is required.
   protected `main-v2` with the existing `vX.Y.Z-preview.N` tag. Do not dispatch
   the CLI, Desktop, or npm publisher directly: those paths cannot create the
   all-surface `release-event.json` marker and are blocked from public Preview
-  publication. Standalone Desktop Preview dispatch remains available only for
-  non-publishing SignPath preflight and production-signing smoke checks.
+  publication. npm recovery verifies and reuses packages already published from
+  the approved candidate, fills only missing packages, and never rolls `canary`
+  back when a newer Preview is already public. Standalone Desktop Preview
+  dispatch remains available only for non-publishing SignPath preflight and
+  production-signing smoke checks.
 - Windows release signing uses SignPath trusted-build, origin verification, and
   malware scanning. Keep the checked-in `windows-payload` and
   `windows-installer-v2` artifact configurations synchronized with the matching
