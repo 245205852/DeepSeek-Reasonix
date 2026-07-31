@@ -1665,6 +1665,13 @@ func registryHasWriterTools(reg *tool.Registry) bool {
 }
 
 func deliveryTaskNeedsEvidence(input string) bool {
+	// Only require host-observable work evidence when the task expects mutations.
+	// Diagnostic/troubleshooting conversations (where the user is asking "what's
+	// wrong" or "why isn't this working") naturally complete when advice is given
+	// — there is no file to change or command to run on the host.
+	if !deliveryTaskNeedsMutation(input) {
+		return false
+	}
 	return heuristicInputIsTask(input)
 }
 
@@ -1673,6 +1680,8 @@ func deliveryTaskNeedsMutation(input string) bool {
 	for _, phrase := range []string{
 		"do not fix", "don't fix", "without changing", "without modifying", "analysis only", "review only",
 		"不要修复", "不要修改", "不要改动", "只分析", "仅分析", "只检查", "仅检查", "只评审", "仅评审",
+		// Negation: user explicitly says they do NOT want to perform this action.
+		"不敢重新安装", "不敢安装", "不敢修改", "不想安装", "不想修改",
 	} {
 		if strings.Contains(normalized, phrase) {
 			return false

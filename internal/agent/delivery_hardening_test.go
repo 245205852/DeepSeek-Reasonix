@@ -417,3 +417,60 @@ func TestPreviewStripsDeliveryMarkerAndSyntheticTurns(t *testing.T) {
 		t.Fatal("readiness retry not detected as synthetic")
 	}
 }
+
+func TestDeliveryTaskNeedsEvidenceSkipsDiagnosticConversations(t *testing.T) {
+	// Diagnostic/troubleshooting conversations ask "what's wrong" or "why"
+	// without requesting code changes. They must not demand host-observable
+	// work — the agent can only give advice, not mutate files.
+	diagnostic := []string{
+		"what's wrong with my wifi",
+		"为什么wps导入zetero参考文献报错",
+		"帮我看看这是什么问题",
+		"排查一下zotero连接问题，我不敢重新安装",
+		"诊断数据库连接失败的原因",
+		"这软件打不开了，怎么回事",
+	}
+	for _, input := range diagnostic {
+		if deliveryTaskNeedsEvidence(input) {
+			t.Errorf("diagnostic input %q incorrectly classified as needing evidence", input)
+		}
+	}
+
+	// Mutation-worded tasks still require evidence.
+	taskInputs := []string{
+		"fix the crash in a.go",
+		"帮我修复wps的崩溃问题",
+		"create a new login endpoint",
+		"添加一个单元测试",
+	}
+	for _, input := range taskInputs {
+		if !deliveryTaskNeedsEvidence(input) {
+			t.Errorf("mutation task %q incorrectly classified as NOT needing evidence", input)
+		}
+	}
+}
+
+func TestDeliveryDiagnosticConversationCompletes(t *testing.T) {
+	// End-to-end: a diagnostic troubleshooting conversation with no mutation
+	// keywords must complete without a FinalReadinessError — the agent can
+	// give advice but can't write files on the user's machine.
+	reg := tool.NewRegistry()
+	reg.Add(fakeReadFileTool{})
+	reg.Add(fakeWriterTool{})
+	// The model gives advice text (no tool calls) — a diagnostic response.
+	advice := []provider.Chunk{
+		{Type: provider.ChunkText, Text: "请尝试以下步骤：1. 检查端口监听 2. 重新注册插件"},
+		{Type: provider.ChunkDone},
+	}
+	prov := &scriptedProvider{name: "p", turns: [][]provider.Chunk{advice}}
+	a := New(prov, reg, NewSession("sys"), Options{DeliveryProfile: true}, event.Discard)
+	// Input: a real-world Chinese diagnostic question about Zotero + WPS.
+	err := a.Run(context.Background(),
+		"为什么wps导入zetero参考文献报错，请你帮我诊断一下")
+	if err != nil {
+		t.Fatalf("diagnostic conversation deadlocked: %v", err)
+	}
+	if prov.call != 1 {
+		t.Fatalf("diagnostic conversation had %d provider calls, want 1 (no readiness retries)", prov.call)
+	}
+}
