@@ -424,7 +424,14 @@ func TestDeliveryTaskNeedsEvidenceSkipsDiagnosticConversations(t *testing.T) {
 	// work — the agent can only give advice, not mutate files.
 	diagnostic := []string{
 		"what's wrong with my wifi",
+		"I don't want to install dependencies",
+		"please don't install any dependencies",
+		"why can't I install the plugin?",
+		"why can't I run WPS?",
 		"为什么wps导入zetero参考文献报错",
+		"为什么无法安装插件",
+		"为什么不能安装插件",
+		"为什么 WPS 不能运行",
 		"帮我看看这是什么问题",
 		"为什么zotero连接不上，我不敢重新安装",
 		"诊断数据库连接失败的原因",
@@ -454,6 +461,8 @@ func TestDeliveryTaskNeedsEvidenceKeepsReadOnlyTechnicalWork(t *testing.T) {
 	inputs := []string{
 		"review this pull request and report whether it is correct",
 		"run go test ./... and tell me why it fails",
+		"why does go test fail?",
+		"why can't I run main.go?",
 		"reproduce the crash and identify the root cause",
 		"inspect main.go for security vulnerabilities",
 		"诊断当前项目的数据库连接失败原因",
@@ -471,7 +480,9 @@ func TestDeliveryTaskNeedsEvidenceKeepsReadOnlyTechnicalWork(t *testing.T) {
 func TestDeliveryTaskNeedsMutationHandlesMixedIntent(t *testing.T) {
 	mutationInputs := []string{
 		"I don't want to install dependencies, but update the existing config",
+		"I can't install dependencies; please edit the existing config instead",
 		"我不想安装新依赖，请修改现有配置修复这个问题",
+		"我无法安装新依赖，但请修改现有配置",
 	}
 	for _, input := range mutationInputs {
 		if !deliveryTaskNeedsMutation(input) {
@@ -481,7 +492,12 @@ func TestDeliveryTaskNeedsMutationHandlesMixedIntent(t *testing.T) {
 
 	readOnlyInputs := []string{
 		"review only; do not fix anything",
+		"I don't want to install dependencies",
+		"please don't install any dependencies",
+		"why can't I install the plugin?",
 		"只分析，不要修改代码",
+		"为什么无法安装插件",
+		"为什么不能安装插件",
 		"为什么zotero连接不上，我不敢重新安装",
 	}
 	for _, input := range readOnlyInputs {

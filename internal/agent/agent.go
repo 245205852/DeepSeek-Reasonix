@@ -1675,24 +1675,32 @@ func deliveryTaskNeedsEvidence(input string) bool {
 	return deliveryTaskNeedsMutation(input) || !deliveryTaskIsAdvisory(input)
 }
 
+var deliveryMutationNeedles = []string{
+	"fix", "repair", "resolve", "create", "add", "write", "edit", "update", "change", "delete", "remove", "rename",
+	"implement", "refactor", "apply", "install", "publish", "commit", "push", "continue work",
+	"修复", "解决", "创建", "新建", "添加", "编写", "编辑", "修改", "更新", "删除", "移除", "重命名", "实现", "重构",
+	"实施", "落地", "安装", "发布", "提交", "继续处理",
+}
+
 func deliveryTaskNeedsMutation(input string) bool {
+	affirmative, _ := deliveryTaskMutationIntent(input)
+	return affirmative
+}
+
+func deliveryTaskMutationIntent(input string) (affirmative, negated bool) {
 	normalized := strings.ToLower(strings.TrimSpace(input))
 	for _, clause := range deliveryTaskClauses(normalized) {
 		if deliveryMutationClauseNegated(clause) {
+			negated = true
 			continue
 		}
-		for _, needle := range []string{
-			"fix", "repair", "resolve", "create", "add", "write", "edit", "update", "change", "delete", "remove", "rename",
-			"implement", "refactor", "apply", "install", "publish", "commit", "push", "continue work",
-			"修复", "解决", "创建", "新建", "添加", "编写", "编辑", "修改", "更新", "删除", "移除", "重命名", "实现", "重构",
-			"实施", "落地", "安装", "发布", "提交", "继续处理",
-		} {
-			if containsTaskNeedle(clause, needle) {
-				return true
-			}
+		for _, needle := range deliveryMutationNeedles {
+			hasAffirmative, hasNegated := deliveryMutationNeedleIntent(clause, needle)
+			affirmative = affirmative || hasAffirmative
+			negated = negated || hasNegated
 		}
 	}
-	return false
+	return affirmative, negated
 }
 
 func deliveryTaskIsAdvisory(input string) bool {
@@ -1701,8 +1709,8 @@ func deliveryTaskIsAdvisory(input string) bool {
 	// Concrete host-observable work wins over question wording. A request such
 	// as "why does go test fail?" still requires running or inspecting it.
 	for _, needle := range []string{
-		"review", "inspect", "analyze", "check", "test", "run", "reproduce", "audit", "verify",
-		"评审", "审查", "检查", "分析", "测试", "运行", "复现", "审计", "验证",
+		"review", "inspect", "analyze", "check", "reproduce", "audit", "verify",
+		"评审", "审查", "检查", "分析", "复现", "审计", "验证",
 	} {
 		if containsTaskNeedle(normalized, needle) {
 			return false
@@ -1720,6 +1728,14 @@ func deliveryTaskIsAdvisory(input string) bool {
 		strings.Contains(input, ".js") || strings.Contains(input, ".py") || strings.Contains(input, ".ts") {
 		return false
 	}
+	for _, command := range []string{
+		"go test", "npm test", "pnpm test", "yarn test", "pytest", "cargo test", "run tests", "run the tests", "test suite",
+		"运行测试", "执行测试", "运行命令", "执行命令",
+	} {
+		if strings.Contains(normalized, command) {
+			return false
+		}
+	}
 
 	for _, phrase := range []string{
 		"what's wrong", "what is wrong", "why", "what should i do", "how should i", "can you explain", "give me advice",
@@ -1728,6 +1744,14 @@ func deliveryTaskIsAdvisory(input string) bool {
 		if strings.Contains(normalized, phrase) {
 			return true
 		}
+	}
+	// A standalone refusal, inability, or constraint around a mutation verb is
+	// advisory rather than work Reasonix can perform. Concrete review/file/test
+	// signals above still win, and affirmative mixed-intent clauses are handled
+	// by deliveryTaskNeedsMutation before this function is consulted.
+	_, negatedMutation := deliveryTaskMutationIntent(normalized)
+	if negatedMutation {
+		return true
 	}
 	return false
 }
@@ -1753,12 +1777,86 @@ func deliveryTaskClauses(input string) []string {
 
 func deliveryMutationClauseNegated(clause string) bool {
 	for _, phrase := range []string{
-		"do not fix", "don't fix", "without changing", "without modifying", "analysis only", "review only",
-		"不要修复", "不要修改", "不要改动", "只分析", "仅分析", "只检查", "仅检查", "只评审", "仅评审",
-		"不敢重新安装", "不敢安装", "不敢修改", "不想安装", "不想修改",
+		"without changing", "without modifying", "analysis only", "review only",
+		"不要改动", "只分析", "仅分析", "只检查", "仅检查", "只评审", "仅评审",
 	} {
 		if strings.Contains(clause, phrase) {
 			return true
+		}
+	}
+	return false
+}
+
+func deliveryMutationNeedleIntent(clause, needle string) (affirmative, negated bool) {
+	if containsNonASCII(needle) {
+		for offset := 0; offset < len(clause); {
+			relative := strings.Index(clause[offset:], needle)
+			if relative < 0 {
+				break
+			}
+			index := offset + relative
+			prefix := []rune(clause[:index])
+			if len(prefix) > 8 {
+				prefix = prefix[len(prefix)-8:]
+			}
+			window := string(prefix)
+			isNegated := false
+			for _, marker := range []string{"不要", "别", "不能", "无法", "不想", "不敢", "无需", "不需要", "不可", "没法", "没有", "禁止", "拒绝"} {
+				if strings.Contains(window, marker) {
+					isNegated = true
+					break
+				}
+			}
+			if isNegated {
+				negated = true
+			} else {
+				affirmative = true
+			}
+			offset = index + len(needle)
+		}
+		return affirmative, negated
+	}
+
+	clause = strings.ReplaceAll(clause, "’", "'")
+	tokens := strings.FieldsFunc(clause, func(r rune) bool {
+		return !(r >= 'a' && r <= 'z') && !(r >= '0' && r <= '9') && r != '_' && r != '\''
+	})
+	needleTokens := strings.Fields(needle)
+	for i := 0; i+len(needleTokens) <= len(tokens); i++ {
+		matches := true
+		for j, token := range needleTokens {
+			if tokens[i+j] != token {
+				matches = false
+				break
+			}
+		}
+		if !matches {
+			continue
+		}
+		if deliveryMutationTokensNegated(tokens[:i]) {
+			negated = true
+		} else {
+			affirmative = true
+		}
+	}
+	return affirmative, negated
+}
+
+func deliveryMutationTokensNegated(prefix []string) bool {
+	if len(prefix) > 6 {
+		prefix = prefix[len(prefix)-6:]
+	}
+	for i, token := range prefix {
+		if token == "not" && i+1 < len(prefix) && prefix[i+1] == "only" {
+			continue
+		}
+		switch token {
+		case "not", "never", "without", "cannot", "can't", "cant", "don't", "dont", "won't", "wont", "unable", "avoid", "avoiding", "afraid", "refuse", "refusing", "needn't":
+			return true
+		case "no":
+			if i+1 < len(prefix) && prefix[i+1] == "need" {
+				return true
+			}
 		}
 	}
 	return false
