@@ -436,8 +436,8 @@ func TestBuildRequestDeepSeekThinking(t *testing.T) {
 		Tools: []provider.ToolSchema{{Name: "get_weather", Parameters: json.RawMessage(`{"type":"object"}`)}},
 	})
 
-	if !provider.RequiresToolCallReasoning(c) || !provider.RequiresReasoningRoundTrip(c) {
-		t.Fatal("DeepSeek thinking must retain and replay provider reasoning")
+	if !provider.RequiresToolCallReasoning(c) || provider.RequiresReasoningRoundTrip(c) {
+		t.Fatal("DeepSeek thinking must preserve tool-call reasoning without retaining ordinary-turn reasoning")
 	}
 	if r.Thinking == nil || r.Thinking.Type != "enabled" || r.Thinking.Display != "" {
 		t.Fatalf("thinking config = %+v, want enabled without Anthropic display", r.Thinking)

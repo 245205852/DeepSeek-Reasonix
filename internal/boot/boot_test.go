@@ -1474,7 +1474,7 @@ func TestNewProviderBuildsDeepSeekAnthropicPreset(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewProvider: %v", err)
 	}
-	if p.Name() != "deepseek-anthropic" || !provider.RequiresToolCallReasoning(p) || !provider.RequiresReasoningRoundTrip(p) {
+	if p.Name() != "deepseek-anthropic" || !provider.RequiresToolCallReasoning(p) || provider.RequiresReasoningRoundTrip(p) {
 		t.Fatalf("assembled DeepSeek Anthropic provider = %T/%q policies=%v/%v", p, p.Name(), provider.RequiresToolCallReasoning(p), provider.RequiresReasoningRoundTrip(p))
 	}
 }

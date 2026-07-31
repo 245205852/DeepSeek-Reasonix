@@ -4828,6 +4828,10 @@ function providerTemplateConflictProviderName(choice: ProviderTemplateChoice): s
 
 function providerPresetDescription(preset: ProviderPresetView, t: ReturnType<typeof useT>): string {
   switch (preset.id) {
+    case "deepseek-responses":
+      return t("settings.addProvider.preset.deepseekResponsesDesc");
+    case "deepseek-anthropic":
+      return t("settings.addProvider.preset.deepseekAnthropicDesc");
     case "longcat-openai":
       return t("settings.addProvider.preset.longcatOpenAIDesc");
     case "longcat-anthropic":

@@ -51,6 +51,10 @@ func CuratedProviderPreset(id string) (ProviderPreset, bool) {
 
 func providerPresetDisplayRank(id string) int {
 	switch {
+	case id == "deepseek-responses":
+		return -1
+	case id == "deepseek-anthropic":
+		return 0
 	case id == "glm-cn" || id == "zai-global" || strings.HasPrefix(id, "glm-coding-plan-") || strings.HasPrefix(id, "zai-coding-plan-"):
 		return 0
 	case strings.HasPrefix(id, "longcat-"):
@@ -78,6 +82,7 @@ var (
 
 	minimaxMSeriesModels       = []string{"MiniMax-M3", "MiniMax-M2.7", "MiniMax-M2.7-highspeed"}
 	minimaxMSeriesVisionModels = []string{"MiniMax-M3"}
+	deepSeekResponsesModels    = []string{"deepseek-v4-flash"}
 
 	glmAPIModels       = []string{"glm-5.2", "glm-5.1", "glm-5", "glm-5-turbo", "glm-5v-turbo", "glm-4.7", "glm-4.7-flash", "glm-4.7-flashx", "glm-4.6", "glm-4.5", "glm-4.5-air", "glm-4.5-flash"}
 	glmAPIVisionModels = []string{"glm-5v-turbo"}
@@ -460,6 +465,26 @@ var curatedProviderPresets = []ProviderPreset{
 			APIKeyEnv:     "MINIMAX_API_KEY",
 			AuthHeader:    true,
 			ContextWindow: 1048576,
+		}},
+	},
+	{
+		ID:          "deepseek-responses",
+		Label:       "DeepSeek Responses API",
+		Description: "DeepSeek official stateless Responses API for deepseek-v4-flash.",
+		KeyEnv:      "DEEPSEEK_API_KEY",
+		Entries: []ProviderEntry{{
+			Name:             "deepseek-responses",
+			Kind:             "responses",
+			BaseURL:          "https://api.deepseek.com",
+			Models:           deepSeekResponsesModels,
+			Default:          "deepseek-v4-flash",
+			APIKeyEnv:        "DEEPSEEK_API_KEY",
+			BalanceURL:       "https://api.deepseek.com/user/balance",
+			ContextWindow:    1_000_000,
+			Price:            deepSeekV4FlashPriceUSD(),
+			ResponsesMode:    "stateless",
+			SupportedEfforts: []string{"low", "high", "max"},
+			DefaultEffort:    "high",
 		}},
 	},
 	{

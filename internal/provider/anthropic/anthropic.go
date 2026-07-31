@@ -184,10 +184,6 @@ func (c *client) RequiresToolCallReasoning() bool {
 	return c.deepSeekThinkingEnabled()
 }
 
-func (c *client) RequiresReasoningRoundTrip() bool {
-	return c.deepSeekThinkingEnabled()
-}
-
 func (c *client) sendOpts() provider.SendOptions {
 	return provider.SendOptions{
 		Provider:   c.name,

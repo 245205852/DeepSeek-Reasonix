@@ -22,6 +22,7 @@ func TestCuratedProviderPresetsCoverRequestedProviders(t *testing.T) {
 		"minimax-global-api",
 		"minimax-cn-anthropic",
 		"minimax-global-anthropic",
+		"deepseek-responses",
 		"glm-cn",
 		"zai-global",
 		"glm-coding-plan-cn",
@@ -108,8 +109,27 @@ func TestDeepSeekAnthropicPresetIsOptionalAndModelScoped(t *testing.T) {
 	}
 }
 
+func TestDeepSeekResponsesPresetMatchesOfficialSupport(t *testing.T) {
+	preset, ok := CuratedProviderPreset("deepseek-responses")
+	if !ok || len(preset.Entries) != 1 {
+		t.Fatalf("deepseek responses preset = %+v, found=%v", preset, ok)
+	}
+	entry := preset.Entries[0]
+	if entry.Kind != "responses" || entry.BaseURL != "https://api.deepseek.com" || entry.ResponsesMode != "stateless" {
+		t.Fatalf("deepseek responses endpoint = %+v", entry)
+	}
+	if len(entry.Models) != 1 || entry.Models[0] != "deepseek-v4-flash" || entry.Default != "deepseek-v4-flash" {
+		t.Fatalf("deepseek responses models = %v default=%q", entry.Models, entry.Default)
+	}
+	if entry.ModelsURL != "" {
+		t.Fatalf("deepseek responses models URL = %q, want static supported-model list", entry.ModelsURL)
+	}
+}
+
 func TestCuratedProviderPresetsDisplayOrder(t *testing.T) {
 	wantPrefix := []string{
+		"deepseek-responses",
+		"deepseek-anthropic",
 		"glm-cn",
 		"zai-global",
 		"glm-coding-plan-cn",

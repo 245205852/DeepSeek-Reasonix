@@ -243,7 +243,7 @@ host          = "203.0.113.7"
 user          = "dev"
 identity_file = "~/.ssh/id_ed25519"
 workspace     = "~/projects/app"
-serve_install = "auto"            # auto | npm | upload | never
+serve_install = "auto"            # 远端 CLI：auto | npm | upload | never
 
 [[remote.hosts.forwards]]
 type   = "local"                  # local (-L) | remote (-R)
