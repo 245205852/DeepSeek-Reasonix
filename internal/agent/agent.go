@@ -1817,23 +1817,6 @@ func deliveryTaskHasFileReference(input string) bool {
 }
 
 func deliveryTaskHasCommand(input string) bool {
-	for rest := input; ; {
-		start := strings.IndexByte(rest, '`')
-		if start < 0 {
-			break
-		}
-		rest = rest[start+1:]
-		end := strings.IndexByte(rest, '`')
-		if end < 0 {
-			break
-		}
-		candidate := strings.TrimSpace(rest[:end])
-		if fields, malformed := shellparse.StaticFields(candidate); malformed == "" && len(fields) > 0 {
-			return true
-		}
-		rest = rest[end+1:]
-	}
-
 	tokens := strings.FieldsFunc(strings.ToLower(input), func(r rune) bool {
 		asciiWord := r >= 'a' && r <= 'z' || r >= '0' && r <= '9'
 		return !asciiWord && r != '_' && r != '-' && r != '.' && r != '/' && r != '\\' && r != ':'

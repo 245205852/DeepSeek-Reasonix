@@ -434,6 +434,8 @@ func TestDeliveryTaskNeedsEvidenceSkipsDiagnosticConversations(t *testing.T) {
 		"can you explain why install keeps failing?",
 		"why does this make a difference?",
 		"why does the node selection matter?",
+		"why is `Python` popular?",
+		"what does `context.Context` mean?",
 		"why can't I open github.com/?",
 		"为什么wps导入zetero参考文献报错",
 		"为什么无法安装插件",
@@ -466,6 +468,8 @@ func TestDeliveryTaskNeedsEvidenceSkipsDiagnosticConversations(t *testing.T) {
 		"make the requested changes",
 		"调整现有配置",
 		"替换旧接口",
+		"thanks for fixing that, now update the tests",
+		"谢谢你，请继续修改配置",
 	}
 	for _, input := range taskInputs {
 		if !deliveryTaskNeedsEvidence(input) {
@@ -617,6 +621,7 @@ func TestDeliveryDiagnosticConversationCompletes(t *testing.T) {
 		"为什么wps导入zetero参考文献报错，请你帮我诊断一下",
 		"分析一下为什么 WPS 不能运行",
 		"why can't I check my email in Outlook?",
+		"what does `context.Context` mean?",
 	}
 	for _, input := range inputs {
 		t.Run(input, func(t *testing.T) {

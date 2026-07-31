@@ -1,6 +1,9 @@
 package agent
 
-import "strings"
+import (
+	"strings"
+	"unicode/utf8"
+)
 
 // heuristicInputIsTask reports whether a user input reads as an actionable
 // task rather than conversational chat. The delivery evidence gate uses it to
@@ -40,21 +43,38 @@ func heuristicInputIsTask(input string) bool {
 		"谢谢你", "辛苦了",
 	}
 	for _, phrase := range chatPhrases {
-		if strings.Contains(normalized, phrase) {
-			return false
+		index := strings.Index(normalized, phrase)
+		if index < 0 {
+			continue
 		}
+		// Acknowledgement wording only short-circuits a purely conversational
+		// turn. Preserve a real task before it or after an explicit transition,
+		// e.g. "thanks for fixing that; now update the tests".
+		if prefix := strings.TrimSpace(normalized[:index]); prefix != "" && heuristicInputHasStrongTaskSignal(prefix) {
+			return true
+		}
+		if deliveryTaskHasFollowUpAfterChat(normalized[index+len(phrase):]) {
+			return true
+		}
+		return false
 	}
+	// Default for ambiguous input: a false negative (task treated as chat)
+	// disarms delivery gates, so only short ambiguous inputs stay conversational.
+	return heuristicInputHasStrongTaskSignal(normalized) || len(words) > 5
+}
 
+func heuristicInputHasStrongTaskSignal(input string) bool {
+	normalized := strings.ToLower(strings.TrimSpace(input))
 	// File references and concrete commands are strong task signals. Shared
 	// parsing keeps email addresses and remote product names from accidentally
 	// arming the delivery gate while covering ordinary repository file types.
-	if deliveryTaskHasFileReference(trimmed) || deliveryTaskHasCommand(trimmed) {
+	if deliveryTaskHasFileReference(normalized) || deliveryTaskHasCommand(normalized) {
 		return true
 	}
 	// Mutation intent has a richer, negation-aware vocabulary than this generic
 	// task heuristic. Reuse it so short requests such as "push the branch" do not
 	// bypass delivery gates merely because the two keyword lists drift apart.
-	if deliveryTaskNeedsMutation(trimmed) {
+	if deliveryTaskNeedsMutation(normalized) {
 		return true
 	}
 
@@ -92,10 +112,36 @@ func heuristicInputIsTask(input string) bool {
 		}
 	}
 
-	// Default for ambiguous input: a false negative (task treated as chat)
-	// disarms the delivery gates, which is worse than a false positive, so
-	// short ambiguous inputs read as chat and longer ones as tasks.
-	return len(words) > 5
+	return false
+}
+
+func deliveryTaskHasFollowUpAfterChat(input string) bool {
+	for index, current := range input {
+		switch current {
+		case '.', ',', ';', '!', '?', '。', '，', '；', '！', '？':
+			candidate := strings.TrimSpace(input[index+utf8.RuneLen(current):])
+			if candidate != "" && heuristicInputHasStrongTaskSignal(candidate) {
+				return true
+			}
+		}
+	}
+	for _, cue := range []string{
+		" but ", " however ", " nevertheless ", " now ", " then ", " and ", " please ", " so ", " therefore ",
+		"但是", "但请", "不过", "现在", "然后", "所以", "请", "继续", "再",
+	} {
+		for rest := input; ; {
+			index := strings.Index(rest, cue)
+			if index < 0 {
+				break
+			}
+			candidate := strings.TrimSpace(rest[index+len(cue):])
+			if candidate != "" && heuristicInputHasStrongTaskSignal(candidate) {
+				return true
+			}
+			rest = rest[index+len(cue):]
+		}
+	}
+	return false
 }
 
 func containsTaskNeedle(input, needle string) bool {

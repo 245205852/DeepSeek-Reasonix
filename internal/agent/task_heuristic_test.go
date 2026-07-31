@@ -45,6 +45,9 @@ func TestHeuristicInputIsTask(t *testing.T) {
 		{"test later", "I'll test it later", false},
 		{"test was helpful", "that test was helpful", false},
 		{"辛苦了", "辛苦了", false},
+		{"thanks then update", "thanks for fixing that, now update the tests", true},
+		{"chinese thanks then update", "谢谢你，请继续修改配置", true},
+		{"task before thanks", "review this PR; thanks for the help", true},
 
 		// Actionable problem descriptions without imperative verbs.
 		{"auth not working", "the auth isn't working", true},
