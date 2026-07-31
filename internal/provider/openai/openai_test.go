@@ -171,8 +171,7 @@ func TestBuildPrefixRequestAppendsWireOnlyAssistantTail(t *testing.T) {
 		t.Fatal("buildPrefixRequest mutated the caller's persisted message slice")
 	}
 
-	disabled := *c
-	disabled.thinkingType = "disabled"
+	disabled := &client{model: c.model, deepseek: true, effort: c.effort, thinkingType: "disabled"}
 	disabledBody, err := json.Marshal(disabled.buildPrefixRequest(req, "partial answer", "must stay local"))
 	if err != nil {
 		t.Fatalf("marshal disabled prefix request: %v", err)
