@@ -2660,6 +2660,7 @@ export const en = {
   "notice.loopGuard": "The assistant is not making progress; asking it to reassess the current step.",
   "notice.workspaceLease": "Another Delivery session is writing to this workspace; this session will continue automatically when it is safe.",
   "notice.cancelledTurnDisplay": "This turn was interrupted. Partial output is kept for reference; only completed tool pairs and a bounded recovery summary enter the next model turn. Inspect the workspace before continuing or reverting changes.",
+  "notice.unappliedSteer": "Guidance was not applied because the turn ended before it could be processed. Send it again if it is still needed:\n{guidance}",
   "notice.contextLarge": "Context is getting large; preserving cache until cleanup is needed.",
   "notice.contextCleanupSkipped": "Context cleanup skipped for now.",
   "notice.contextCleanupPaused": "Automatic context cleanup paused because the context window is too small.",

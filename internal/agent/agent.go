@@ -840,11 +840,25 @@ func (a *Agent) consumeSteer() (string, bool) {
 	return t, true
 }
 
+// closeSteerIntakeIfIdle atomically closes the normal-completion race between
+// the final queue check and Run returning. A steer accepted before this check
+// keeps the loop alive; one arriving after it is rejected so the host can keep
+// the user's draft and retry it as a regular follow-up.
+func (a *Agent) closeSteerIntakeIfIdle() bool {
+	a.steerMu.Lock()
+	defer a.steerMu.Unlock()
+	if len(a.steerQueue) > 0 {
+		return false
+	}
+	a.steerRunActive = false
+	return true
+}
+
 // flushSteerQueue ends the turn's steer intake. Guidance that arrived too late
 // to be consumed is persisted for transcript visibility but marked local-only:
 // replaying it to the model on the next unrelated user turn can execute a stale
-// historical task (#7045). The Steer event keeps the transcript honest without
-// silently dropping the user's words (#6238).
+// historical task (#7045). An explicit warning keeps the transcript honest
+// without presenting the text as successfully applied guidance (#6238).
 func (a *Agent) flushSteerQueue() {
 	a.steerMu.Lock()
 	pending := a.steerQueue
@@ -857,6 +871,12 @@ func (a *Agent) flushSteerQueue() {
 	for _, text := range pending {
 		a.RecordUnappliedSteer(text)
 	}
+}
+
+// UnappliedSteerNotice returns the durable warning shown for guidance that was
+// accepted during an abnormal turn exit but never reached a provider request.
+func UnappliedSteerNotice(text string) string {
+	return "Guidance was not applied because the turn ended before it could be processed. Send it again if it is still needed:\n" + text
 }
 
 // RecordUnappliedSteer stores guidance that could not affect its intended
@@ -874,7 +894,12 @@ func (a *Agent) RecordUnappliedSteer(text string) {
 		Name:       provider.LocalOnlyToolName,
 		LocalOnly:  true,
 	})
-	a.sink.Emit(event.Event{Kind: event.Steer, Text: text})
+	a.sink.Emit(event.Event{
+		Kind:  event.Notice,
+		Level: event.LevelWarn,
+		Code:  event.NoticeCodeUnappliedSteer,
+		Text:  UnappliedSteerNotice(text),
+	})
 }
 
 func (a *Agent) steerQueueLen() int {

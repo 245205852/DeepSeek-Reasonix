@@ -489,8 +489,9 @@ func (p Policy) Decide(toolName string, readOnly bool, args json.RawMessage) Dec
 Out of the box (`mode = "ask"`, no rules), interactive `reasonix` prompts before
 each writer/bash call and `reasonix run` fails closed on those calls because it
 has no approver. Use `reasonix run --auto ...` / `-y` to allow ordinary writer
-fallback in unattended automation. Explicit `ask` rules still fail closed under
-Auto, and `deny` rules harden every posture.
+fallback in unattended automation; `--permission-mode auto` is equivalent.
+Explicit `ask` rules still fail closed under Auto, and `deny` rules harden every
+posture.
 
 ### 3.8 Slash commands (`internal/command`)
 

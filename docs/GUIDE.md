@@ -635,8 +635,9 @@ require a human in interactive Ask/Auto. Headless Ask/Auto/DontAsk reject that
 nested/indirect class unless an exact literal exists; YOLO may bypass it.
 Because a headless run has no approval UI, the default Ask posture also fails
 closed on ordinary writer fallback and explicit ask rules. Use
-`reasonix run --auto ...` / `-y` when unattended automation should allow ordinary
-writer fallback; configured `deny` rules always remain authoritative.
+`reasonix run --auto ...`, `-y`, or `--permission-mode auto` when unattended
+automation should allow ordinary writer fallback; configured `ask` and `deny`
+rules always remain authoritative.
 
 Ask is not read-only: after approval, a writer can still run. Permissions decide
 whether to allow or prompt; the Sandbox is the enforced capability boundary.

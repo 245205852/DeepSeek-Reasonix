@@ -2663,6 +2663,7 @@ export const zh: Record<DictKey, string> = {
   "notice.loopGuard": "助手没有取得有效进展，已要求它重新评估当前步骤。",
   "notice.workspaceLease": "另一个交付会话正在写入此工作区；安全后本会话会自动继续。",
   "notice.cancelledTurnDisplay": "本轮已中断。上方的部分输出会永久保留供查看；只有完整工具调用及结果和有界恢复摘要会进入模型下一轮。继续或回滚前请先检查当前工作区。",
+  "notice.unappliedSteer": "本条引导未能应用，因为当前回合在处理它之前已结束。如仍需要，请重新发送：\n{guidance}",
   "notice.contextLarge": "上下文正在变大，暂时保留缓存，等需要时再清理。",
   "notice.contextCleanupSkipped": "本次暂未清理上下文。",
   "notice.contextCleanupPaused": "自动上下文清理已暂停：当前上下文窗口太小。",

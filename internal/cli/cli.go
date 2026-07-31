@@ -315,6 +315,16 @@ func parsePermissionMode(value string) (cliPermissionMode, error) {
 	}
 }
 
+func resolveRunPermissionMode(value string, auto, modeExplicit bool) (string, error) {
+	if !auto {
+		return value, nil
+	}
+	if modeExplicit {
+		return "", errors.New("--auto/-y cannot be combined with --permission-mode")
+	}
+	return "auto", nil
+}
+
 func applyPermissionMode(ctrl *control.Controller, mode cliPermissionMode) {
 	if ctrl == nil {
 		return
@@ -452,13 +462,12 @@ func runAgent(args []string, version string) int {
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
-	if *autoApprove {
-		if fs.Changed("permission-mode") {
-			fmt.Fprintln(os.Stderr, i18n.M.ErrorPrefix, "--auto/-y cannot be combined with --permission-mode")
-			return 2
-		}
-		*permissionMode = "auto"
+	resolvedPermissionMode, err := resolveRunPermissionMode(*permissionMode, *autoApprove, fs.Changed("permission-mode"))
+	if err != nil {
+		fmt.Fprintln(os.Stderr, i18n.M.ErrorPrefix, err)
+		return 2
 	}
+	*permissionMode = resolvedPermissionMode
 	allowedTools, err := splitAllowedToolRules(allowedToolValues)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, i18n.M.ErrorPrefix, err)

@@ -1815,6 +1815,7 @@ export const zhTW: Record<DictKey, string> = {
   "notice.loopGuard": "助手沒有取得有效進展，已要求它重新評估目前步驟。",
   "notice.workspaceLease": "另一個交付會話正在寫入此工作區；安全後本會話會自動繼續。",
   "notice.cancelledTurnDisplay": "本輪已中斷。上方的部分輸出會永久保留供查看；只有完整工具呼叫及結果和有界恢復摘要會進入模型下一輪。繼續或回復前請先檢查目前工作區。",
+  "notice.unappliedSteer": "本條引導未能套用，因為目前回合在處理它之前已結束。如仍需要，請重新傳送：\n{guidance}",
   "notice.contextLarge": "上下文正在變大，暫時保留快取，等需要時再清理。",
   "notice.contextCleanupSkipped": "本次暫未清理上下文。",
   "notice.contextCleanupPaused": "自動上下文清理已暫停：目前上下文視窗太小。",

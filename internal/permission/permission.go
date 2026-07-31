@@ -93,61 +93,47 @@ func ParseRule(s string) (Rule, bool) {
 		}
 		return Rule{Tool: tool, Subject: s[i+1 : len(s)-1]}, true
 	}
-	// Settings users saved these PowerShell file-writer cmdlets before the UI
-	// explained Bash(command:*) syntax. Migrate only that legacy set to shell
-	// prefixes so existing deny rules protect the real Bash call (#6950).
-	if isLegacyBarePowerShellRule(s) {
-		return Rule{Tool: "Bash", Subject: s + ":*"}, true
-	}
 	return Rule{Tool: s}, true
 }
 
-// isLegacyBarePowerShellRule is intentionally limited to the three rules users
-// reported saving through Settings before Bash(command:*) syntax was explained
-// there (#6950). Reinterpreting every Verb-Noun string would silently change
-// existing custom-tool rules in persisted configs.
-func isLegacyBarePowerShellRule(s string) bool {
+func legacyBarePowerShellDenyCmdlet(s string) (string, bool) {
 	switch strings.ToLower(strings.TrimSpace(s)) {
-	case "set-content", "add-content", "out-file":
-		return true
+	case "set-content":
+		return "Set-Content", true
+	case "add-content":
+		return "Add-Content", true
+	case "out-file":
+		return "Out-File", true
 	default:
-		return false
+		return "", false
 	}
 }
-
-func isPowerShellCmdletName(s string) bool {
-	verb, noun, ok := strings.Cut(s, "-")
-	if !ok || verb == "" || noun == "" || strings.Contains(noun, "-") {
-		return false
-	}
-	switch strings.ToLower(verb) {
-	case "add", "clear", "close", "convertfrom", "convertto", "copy", "disable",
-		"enable", "enter", "exit", "export", "find", "format", "get", "grant",
-		"group", "import", "install", "invoke", "join", "lock", "measure",
-		"move", "new", "open", "optimize", "out", "publish", "read", "receive",
-		"register", "remove", "rename", "reset", "resize", "resolve", "restart",
-		"restore", "resume", "revoke", "save", "search", "select", "send", "set",
-		"show", "split", "start", "stop", "submit", "suspend", "sync", "test",
-		"trace", "unblock", "uninstall", "unlock", "unpublish", "unregister",
-		"update", "use", "wait", "watch", "write":
-	default:
-		return false
-	}
-	for _, part := range []string{verb, noun} {
-		for _, r := range part {
-			if (r < 'A' || r > 'Z') && (r < 'a' || r > 'z') {
-				return false
-			}
-		}
-	}
-	return true
-}
-
 func parseRules(ss []string) []Rule {
 	var out []Rule
 	for _, s := range ss {
 		if r, ok := ParseRule(s); ok {
 			out = append(out, r)
+		}
+	}
+	return out
+}
+
+func parseDenyRules(ss []string) []Rule {
+	var out []Rule
+	for _, s := range ss {
+		r, ok := ParseRule(s)
+		if !ok {
+			continue
+		}
+		// Preserve the generic ToolName meaning while also recognizing the three
+		// bare PowerShell write cmdlets accepted by older Desktop settings as
+		// command prefixes. The compatibility expansion is deny-only and
+		// additive, so it cannot broaden an allow or weaken an exact tool deny.
+		out = append(out, r)
+		if r.Subject == "" {
+			if cmdlet, ok := legacyBarePowerShellDenyCmdlet(r.Tool); ok {
+				out = append(out, Rule{Tool: "Bash", Subject: cmdlet + ":*"})
+			}
 		}
 	}
 	return out
@@ -182,7 +168,7 @@ func New(mode string, allow, ask, deny []string) Policy {
 		Mode:  ParseDecision(mode),
 		Allow: parseRules(allow),
 		Ask:   parseRules(ask),
-		Deny:  parseRules(deny),
+		Deny:  parseDenyRules(deny),
 	}
 }
 
@@ -452,7 +438,7 @@ func rawBashPrefixMatches(base, subject string) bool {
 			matched := true
 			for i, want := range baseFields {
 				got := features.CommandPrefix[i]
-				if got != want && !(i == 0 && isPowerShellCmdletName(want) && strings.EqualFold(got, want)) {
+				if got != want && !(i == 0 && isCaseInsensitivePowerShellCmdlet(want) && strings.EqualFold(got, want)) {
 					matched = false
 					break
 				}
@@ -464,14 +450,14 @@ func rawBashPrefixMatches(base, subject string) bool {
 	}
 	base = strings.TrimSpace(base)
 	subject = strings.TrimSpace(subject)
-	if subject == base || (isPowerShellCmdletName(base) && strings.EqualFold(subject, base)) {
+	if subject == base || (isCaseInsensitivePowerShellCmdlet(base) && strings.EqualFold(subject, base)) {
 		return true
 	}
 	if len(subject) <= len(base) {
 		return false
 	}
 	prefixMatches := strings.HasPrefix(subject, base)
-	if isPowerShellCmdletName(base) {
+	if isCaseInsensitivePowerShellCmdlet(base) {
 		prefixMatches = strings.EqualFold(subject[:len(base)], base)
 	}
 	if !prefixMatches {
@@ -483,6 +469,11 @@ func rawBashPrefixMatches(base, subject string) bool {
 	default:
 		return false
 	}
+}
+
+func isCaseInsensitivePowerShellCmdlet(s string) bool {
+	_, ok := legacyBarePowerShellDenyCmdlet(s)
+	return ok
 }
 
 func matchAnyExact(rules []Rule, toolName, subject string) bool {
