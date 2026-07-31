@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"crypto/hmac"
+	"crypto/rand"
 	"crypto/sha256"
 	"errors"
 	"fmt"
@@ -359,12 +361,22 @@ func providerCredentialsRevision() string {
 	return "missing"
 }
 
+var providerModelCatalogFingerprintKey = func() []byte {
+	key := make([]byte, 32)
+	if _, err := rand.Read(key); err != nil {
+		panic(fmt.Sprintf("initialize provider catalog fingerprint key: %v", err))
+	}
+	return key
+}()
+
 func providerModelCatalogFingerprint(p config.ProviderEntry) string {
 	return providerModelCatalogFingerprintForCredentials(p, providerCredentialsRevision())
 }
 
 func providerModelCatalogFingerprintForCredentials(p config.ProviderEntry, credentialsRevision string) string {
-	h := sha256.New()
+	// This token crosses the Wails boundary, so key the digest instead of exposing
+	// a reusable hash of header or credential-store metadata to the frontend.
+	h := hmac.New(sha256.New, providerModelCatalogFingerprintKey)
 	write := func(value string) {
 		_, _ = fmt.Fprintf(h, "%d:", len(value))
 		_, _ = h.Write([]byte(value))
