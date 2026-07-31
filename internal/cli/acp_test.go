@@ -123,7 +123,9 @@ func TestACPSupervisorRuntimeStateDegradesWhenSandboxIsUnavailable(t *testing.T)
 	unavailable := func() bool { return false }
 	params := acp.SessionRuntimeStateParams{Cwd: project, RuntimeProfile: "balanced"}
 
-	state, err := (&acpFactory{sandboxAvailable: unavailable}).SessionRuntimeState(context.Background(), params)
+	state, err := (&acpFactory{
+		bashOverride: "enforce", sandboxAvailable: unavailable,
+	}).SessionRuntimeState(context.Background(), params)
 	if err != nil {
 		t.Fatalf("default ACP startup must report unavailable sandbox instead of failing: %v", err)
 	}
@@ -131,7 +133,9 @@ func TestACPSupervisorRuntimeStateDegradesWhenSandboxIsUnavailable(t *testing.T)
 		t.Fatalf("degraded sandbox state = %+v", state.Sandbox)
 	}
 
-	_, err = (&acpFactory{requireSandbox: true, sandboxAvailable: unavailable}).SessionRuntimeState(context.Background(), params)
+	_, err = (&acpFactory{
+		bashOverride: "enforce", requireSandbox: true, sandboxAvailable: unavailable,
+	}).SessionRuntimeState(context.Background(), params)
 	if err == nil || !strings.Contains(err.Error(), "sandbox unavailable") {
 		t.Fatalf("explicit enforce must fail closed, got %v", err)
 	}
