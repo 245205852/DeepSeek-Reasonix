@@ -14,7 +14,7 @@ import (
 const legacyEventLog = `{"type":"model.turn.started","id":1,"ts":"t","turn":0,"model":"deepseek"}
 {"type":"user.message","id":2,"ts":"t","turn":0,"text":"list the files"}
 {"type":"model.delta","id":3,"ts":"t","turn":0,"channel":"content","text":"sure"}
-{"type":"model.final","id":4,"ts":"t","turn":0,"content":"On it.","toolCalls":[{"id":"call_1","type":"function","function":{"name":"ls","arguments":"{\"path\":\".\"}"}}],"usage":{},"costUsd":0}
+{"type":"model.final","id":4,"ts":"t","turn":0,"content":"On it.","toolCalls":[{"id":"call_1","type":"function","function":{"name":"ls","arguments":"{\"path\":\".\"}","thought_signature":"gemini-event-signed"}}],"usage":{},"costUsd":0}
 {"type":"tool.result","id":5,"ts":"t","turn":0,"callId":"call_1","ok":true,"output":"a.go\nb.go","durationMs":3}
 {"type":"model.final","id":6,"ts":"t","turn":0,"content":"There are two files.","toolCalls":[],"usage":{},"costUsd":0}
 `
@@ -46,7 +46,8 @@ func TestMigrateLegacySessionsReconstructsConversation(t *testing.T) {
 		t.Errorf("msg0 = %+v, want user 'list the files'", got[0])
 	}
 	if got[1].Role != provider.RoleAssistant || len(got[1].ToolCalls) != 1 ||
-		got[1].ToolCalls[0].ID != "call_1" || got[1].ToolCalls[0].Name != "ls" {
+		got[1].ToolCalls[0].ID != "call_1" || got[1].ToolCalls[0].Name != "ls" ||
+		got[1].ToolCalls[0].ThoughtSignature != "gemini-event-signed" {
 		t.Errorf("msg1 = %+v, want assistant with ls tool call call_1", got[1])
 	}
 	if got[2].Role != provider.RoleTool || got[2].ToolCallID != "call_1" ||
@@ -1040,7 +1041,7 @@ func TestMigrateLegacySessionsJsonlPassRunsForExistingUpgrader(t *testing.T) {
 // legacyNestedFunctionLog uses the OpenAI-style nested-function tool-call format
 // that the TS version wrote: name and arguments live under "function".
 const legacyNestedFunctionLog = `{"role":"user","content":"read the file"}
-{"role":"assistant","content":"","tool_calls":[{"id":"call_1","type":"function","function":{"name":"read_file","arguments":"{\"path\":\"main.go\"}"}}],"reasoning_content":"need to read it"}
+{"role":"assistant","content":"","tool_calls":[{"id":"call_1","type":"function","function":{"name":"read_file","arguments":"{\"path\":\"main.go\"}","thought_signature":"gemini-jsonl-signed"}}],"reasoning_content":"need to read it"}
 {"role":"tool","tool_call_id":"call_1","name":"read_file","content":"package main\nfunc main() {}"}
 {"role":"assistant","content":"Found the main function."}
 `
@@ -1081,6 +1082,9 @@ func TestTransformAndCopyJsonlFlattensNestedToolCalls(t *testing.T) {
 	}
 	if tc.Arguments != `{"path":"main.go"}` {
 		t.Errorf("tool call arguments = %q, want {\"path\":\"main.go\"}", tc.Arguments)
+	}
+	if tc.ThoughtSignature != "gemini-jsonl-signed" {
+		t.Errorf("tool call thought_signature = %q, want gemini-jsonl-signed", tc.ThoughtSignature)
 	}
 	// Message 2: tool result.
 	if msgs[2].Role != provider.RoleTool || msgs[2].ToolCallID != "call_1" || msgs[2].Name != "read_file" {
