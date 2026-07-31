@@ -334,6 +334,12 @@ func RenderTOMLForScope(c *Config, scope RenderScope) string {
 			if p.AuthHeader {
 				b.WriteString("auth_header = true   # Anthropic-compatible: send Authorization: Bearer <api_key> instead of x-api-key\n")
 			}
+			if p.ResponsesMode != "" {
+				fmt.Fprintf(&b, "responses_mode = %q   # responses provider: stateless|stateful\n", p.ResponsesMode)
+			}
+			if p.ResponsesStateful != nil {
+				fmt.Fprintf(&b, "responses_stateful = %t   # legacy responses mode switch\n", *p.ResponsesStateful)
+			}
 			if p.BalanceURL != "" {
 				fmt.Fprintf(&b, "balance_url = %q   # optional; wallet-balance endpoint shown in the status bar\n", p.BalanceURL)
 			}
@@ -1004,6 +1010,12 @@ func RenderTOMLProjectDelta(c *Config) string {
 			}
 			if p.AuthHeader {
 				b.WriteString("auth_header = true\n")
+			}
+			if p.ResponsesMode != "" {
+				fmt.Fprintf(&b, "responses_mode = %q\n", p.ResponsesMode)
+			}
+			if p.ResponsesStateful != nil {
+				fmt.Fprintf(&b, "responses_stateful = %t\n", *p.ResponsesStateful)
 			}
 			if p.BalanceURL != "" {
 				fmt.Fprintf(&b, "balance_url = %q\n", p.BalanceURL)
