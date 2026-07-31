@@ -707,6 +707,70 @@ func TestEffectiveVisionDoesNotInferCustomMimoProxy(t *testing.T) {
 	}
 }
 
+func TestEffectiveVisionDefaultsOfficialDeepSeekToTextOnlyButAllowsExplicitModels(t *testing.T) {
+	for _, baseURL := range []string{
+		"https://api.deepseek.com",
+		"https://api.deepseek.com/v1",
+		"https://eu.deepseek.com/v1",
+	} {
+		official := &ProviderEntry{
+			Name:              "deepseek",
+			Kind:              "openai",
+			BaseURL:           baseURL,
+			Model:             "deepseek-v4-pro",
+			Vision:            true,
+			ReasoningProtocol: ReasoningProtocolDeepSeek,
+		}
+		if EffectiveVision(official) {
+			t.Fatalf("official DeepSeek endpoint %q must remain text-only", baseURL)
+		}
+		if ExplicitModelVision(official) {
+			t.Fatalf("provider-wide vision must not count as an explicit model capability for %q", baseURL)
+		}
+	}
+
+	future := &ProviderEntry{
+		Name:         "deepseek",
+		Kind:         "openai",
+		BaseURL:      "https://api.deepseek.com",
+		Model:        "deepseek-v5-vision",
+		VisionModels: []string{"deepseek-v5-vision"},
+	}
+	if !EffectiveVision(future) || !ExplicitModelVision(future) {
+		t.Fatal("model listed in vision_models must opt in on the official DeepSeek endpoint")
+	}
+
+	visionOn := true
+	cfg := &Config{Providers: []ProviderEntry{{
+		Name:    "deepseek",
+		Kind:    "openai",
+		BaseURL: "https://api.deepseek.com",
+		Models:  []string{"deepseek-v5-override"},
+		ModelOverrides: map[string]ProviderModelOverride{
+			"deepseek-v5-override": {Vision: &visionOn},
+		},
+	}}}
+	overridden, ok := cfg.ResolveModel("deepseek/deepseek-v5-override")
+	if !ok {
+		t.Fatal("ResolveModel did not find explicit future DeepSeek model")
+	}
+	if !EffectiveVision(overridden) || !ExplicitModelVision(overridden) {
+		t.Fatal("model_overrides vision=true must opt in on the official DeepSeek endpoint")
+	}
+
+	custom := &ProviderEntry{
+		Name:              "deepseek-gateway",
+		Kind:              "openai",
+		BaseURL:           "https://gateway.example/v1",
+		Model:             "deepseek-v4-pro",
+		Vision:            true,
+		ReasoningProtocol: ReasoningProtocolDeepSeek,
+	}
+	if !EffectiveVision(custom) {
+		t.Fatal("explicit vision=true must remain available for custom DeepSeek gateways")
+	}
+}
+
 func TestEffectiveVisionUsesPerModelVisionList(t *testing.T) {
 	c := &Config{Providers: []ProviderEntry{{
 		Name:         "custom",

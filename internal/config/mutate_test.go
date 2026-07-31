@@ -450,6 +450,9 @@ func TestAcquireConfigEditLockRejectsSymlinkRegistry(t *testing.T) {
 }
 
 func TestAcquireConfigEditLockSecuresRegistryPermissions(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows protects the per-user lock registry through inherited ACLs, not Unix permission bits")
+	}
 	dir := filepath.Join(t.TempDir(), "locks")
 	if err := os.Mkdir(dir, 0o755); err != nil {
 		t.Fatal(err)

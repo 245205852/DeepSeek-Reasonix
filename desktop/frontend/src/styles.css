@@ -99,6 +99,9 @@
   --shadow-2: 0 14px 40px rgba(0, 0, 0, 0.28);
 
   /* z-index scale */
+  --z-transcript-scene-image: 0;
+  --z-transcript-scene-overlay: 1;
+  --z-transcript-content: 2;
   --z-theme-bg: 0;
   --z-app-content: 1;
   --z-local-raised: 2;
@@ -2014,7 +2017,7 @@ a[href] {
   --workspace-resizer-width: 8px;
   --app-chrome-height: 38px;
   --topicbar-height: 56px;
-  --statusbar-height: 0px;
+  --statusbar-height: var(--statusbar-dock-height);
   --chrome-toggle-size: 42px;
   --chrome-left-safe-offset: 0px;
   --chrome-left-toggle-offset: max(var(--sidebar-width), var(--chrome-left-safe-offset));
@@ -2022,13 +2025,18 @@ a[href] {
   position: relative;
   display: grid;
   justify-content: start;
-  grid-template-rows: var(--app-chrome-height) minmax(0, 1fr);
+  grid-template-rows: var(--app-chrome-height) minmax(0, 1fr) var(--statusbar-height);
   grid-template-columns: var(--sidebar-width) minmax(0, 1fr);
   height: 100%;
   min-height: 0;
   width: 100%;
   background: var(--bg);
   transition: grid-template-columns 0.16s ease, min-width 0.16s ease;
+}
+
+.layout.layout--statusbar-hidden,
+:root[data-theme-style] .layout.layout--statusbar-hidden {
+  --statusbar-height: 0px;
 }
 
 .app--darwin .layout {
@@ -2082,7 +2090,7 @@ a[href] {
 }
 .layout--terminal-open {
   grid-template-columns: var(--sidebar-expanded-width) minmax(0, 1fr);
-  grid-template-rows: var(--app-chrome-height) minmax(0, 1fr) minmax(220px, min(42vh, 440px));
+  grid-template-rows: var(--app-chrome-height) minmax(0, 1fr) minmax(220px, min(42vh, 440px)) var(--statusbar-height);
 }
 .layout--terminal-open.layout--sidebar-collapsed {
   grid-template-columns: 0px minmax(0, 1fr);
@@ -2093,7 +2101,6 @@ a[href] {
   width: 100%;
   height: auto;
   max-width: none;
-  padding-bottom: var(--statusbar-height);
   border-top: 1px solid var(--border-soft);
   border-left: 0;
 }
@@ -2103,11 +2110,18 @@ a[href] {
 .layout--terminal-open .workspace-panel-resizer {
   display: none;
 }
+.layout--terminal-open .statusbar {
+  grid-row: 4;
+}
 .layout--workbench-chrome-hidden.layout--terminal-open {
-  grid-template-rows: minmax(0, 1fr) minmax(220px, min(42vh, 440px));
+  grid-template-rows: minmax(0, 1fr) minmax(220px, min(42vh, 440px)) var(--statusbar-height);
 }
 .layout--workbench-chrome-hidden.layout--terminal-open .workbench-dock {
   grid-row: 2;
+}
+
+.layout--workbench-chrome-hidden.layout--terminal-open .statusbar {
+  grid-row: 3;
 }
 .app--creation .layout--creation-chrome-hidden.layout--terminal-open {
   grid-template-rows: minmax(0, 1fr) minmax(220px, min(42vh, 440px));
@@ -2124,7 +2138,7 @@ a[href] {
 
 .layout--workbench-chrome-hidden {
   --app-chrome-height: 0px;
-  grid-template-rows: minmax(0, 1fr);
+  grid-template-rows: minmax(0, 1fr) var(--statusbar-height);
   background: var(--bg);
 }
 
@@ -2134,6 +2148,10 @@ a[href] {
 .layout--workbench-chrome-hidden .context-inspector,
 .layout--workbench-chrome-hidden .workbench-dock {
   grid-row: 1;
+}
+
+.layout--workbench-chrome-hidden .statusbar {
+  grid-row: 2;
 }
 
 .app--darwin .layout--workbench-chrome-hidden.layout--sidebar-collapsed .topicbar {
@@ -2151,7 +2169,7 @@ a[href] {
   display: flex;
   flex-direction: column;
   min-width: 0;
-  padding: 12px 10px calc(12px + var(--statusbar-height));
+  padding: 12px 10px 12px;
   background: var(--sidebar-bg);
   border-right: 1px solid var(--border-soft);
   --wails-draggable: drag;
@@ -2606,7 +2624,7 @@ a[href] {
   justify-self: start;
   width: 1px;
   min-width: 1px;
-  height: calc(100% - var(--statusbar-height));
+  height: 100%;
   padding: 0;
   border: 0;
   background: var(--border-soft);
@@ -4754,6 +4772,28 @@ a[href] {
 .md a:hover {
   text-decoration: underline;
 }
+.md .md-rich-link {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 3px;
+  max-width: 100%;
+  vertical-align: -0.12em;
+  white-space: normal;
+}
+.md .md-rich-link svg {
+  flex: 0 0 auto;
+}
+.md .md-rich-link__label {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.md .md-rich-link__label[data-display-label] {
+  font-size: 0;
+}
+.md .md-rich-link__label[data-display-label]::before {
+  content: attr(data-display-label);
+  font-size: var(--font-content);
+}
 .md blockquote {
   margin: 0 0 12px;
   padding: 2px 14px;
@@ -5843,6 +5883,8 @@ body > .mermaid-diagram--fullscreen {
 /* ── footer: composer + status line ──────────────────────────────────────── */
 .footer {
   flex: 0 0 auto;
+  max-height: calc(100% - var(--topicbar-height));
+  overflow-y: auto;
   border-top: 1px solid var(--border-soft);
   background: var(--chat-bg);
   padding: 12px 32px 10px;
@@ -7351,6 +7393,8 @@ body > .mermaid-diagram--fullscreen {
 }
 
 .statusbar {
+  grid-row: 3;
+  grid-column: 1 / -1;
   max-width: var(--maxw);
   margin: 7px auto 0;
   display: flex;
@@ -23683,7 +23727,6 @@ body > .mermaid-diagram--fullscreen {
   height: 100%;
   display: flex;
   flex-direction: column;
-  padding-bottom: var(--statusbar-height);
   background: var(--workspace-files-bg);
   border-left: 1px solid var(--border-soft);
   overflow: hidden;
@@ -25239,7 +25282,7 @@ body > .mermaid-diagram--fullscreen {
 }
 
 .sidebar {
-  padding: 12px 10px calc(12px + var(--statusbar-height));
+  padding: 12px 10px 12px;
   background: var(--sidebar-bg);
   border-right-color: var(--border-soft);
 }
@@ -25719,7 +25762,7 @@ body > .mermaid-diagram--fullscreen {
 
 :root[data-theme-style] .layout--workbench-chrome-hidden {
   --app-chrome-height: 0px;
-  grid-template-rows: minmax(0, 1fr);
+  grid-template-rows: minmax(0, 1fr) var(--statusbar-height);
   background: var(--bg);
 }
 
@@ -26231,7 +26274,7 @@ body > .mermaid-diagram--fullscreen {
 }
 
 :root[data-theme-style] .sidebar {
-  padding: 14px 12px calc(8px + var(--statusbar-height));
+  padding: 14px 12px 8px;
   background: var(--sidebar-bg);
   border-right: 1px solid var(--border-soft);
 }
@@ -27003,7 +27046,7 @@ body > .mermaid-diagram--fullscreen {
 }
 
 :root[data-theme-style] .footer {
-  padding: 12px 16px 38px;
+  padding: 12px 16px 10px;
   background: color-mix(in srgb, var(--chat-bg) 96%, var(--bg-elev));
   border-top: 1px solid var(--border-soft);
 }
@@ -27165,13 +27208,8 @@ body > .mermaid-diagram--fullscreen {
 }
 
 :root[data-theme-style] .statusbar {
-  position: fixed;
-  left: 0;
-  right: 0;
-  bottom: 0;
-  z-index: var(--z-dock);
+  width: 100%;
   max-width: none;
-  width: auto;
   height: var(--statusbar-dock-height);
   min-height: var(--statusbar-dock-height);
   margin: 0;
@@ -28184,12 +28222,12 @@ body > .mermaid-diagram--fullscreen {
   --sidebar-workbench-fill-strong: color-mix(in srgb, var(--bg-elev) 88%, var(--sidebar-bg));
   --sidebar-workbench-active: color-mix(in srgb, var(--accent) 12%, var(--bg-elev));
   --sidebar-workbench-active-border: color-mix(in srgb, var(--accent) 28%, transparent);
-  padding: 16px 16px calc(10px + var(--statusbar-height));
+  padding: 16px 16px 10px;
 }
 
 .app--darwin .sidebar--workbench,
 .sidebar--workbench {
-  padding: 14px 12px calc(10px + var(--statusbar-height));
+  padding: 14px 12px 10px;
 }
 
 .app--darwin .layout--workbench-chrome-hidden .sidebar--workbench {
@@ -29098,6 +29136,10 @@ body > .mermaid-diagram--fullscreen {
   --app-chrome-height: 0px;
   --statusbar-height: 0px;
   grid-template-rows: minmax(0, 1fr);
+}
+
+.app--creation .statusbar {
+  display: none;
 }
 
 .app--creation .settings-modal-backdrop,
@@ -33161,7 +33203,7 @@ body > .mermaid-diagram--fullscreen {
 
   .app .layout--workbench-chrome-hidden.layout--terminal-open,
   :root[data-theme-style] .app .layout--workbench-chrome-hidden.layout--terminal-open {
-    grid-template-rows: minmax(0, 1fr) minmax(220px, min(42vh, 440px));
+    grid-template-rows: minmax(0, 1fr) minmax(220px, min(42vh, 440px)) var(--statusbar-height);
   }
 
   .app .layout--workbench-chrome-hidden.layout--terminal-open .workbench-dock,
@@ -33601,6 +33643,111 @@ body > .mermaid-diagram--fullscreen {
 :root[data-theme-pack][data-theme-has-bg="true"] .app:not(.app--creation) .transcript,
 :root[data-theme-pack][data-theme-has-bg="true"] .app:not(.app--creation) .transcript-shell {
   background: transparent !important;
+}
+
+/*
+  WebView2 can retain stale raster pixels when children are removed from a
+  transparent scrolling layer (#6359, #7011). Scope the opaque backing to the
+  primary chat transcript: history previews already own an opaque card surface,
+  while Creation has its own repaint rule above.
+*/
+:root[data-platform="windows"] .app:not(.app--creation) .chat-pane > .main > .transcript-shell > .transcript {
+  position: relative;
+  isolation: isolate;
+  clip-path: inset(0);
+  background-color: Canvas !important;
+  background-image:
+    linear-gradient(var(--chat-bg, var(--bg)), var(--chat-bg, var(--bg))),
+    linear-gradient(var(--bg), var(--bg)) !important;
+  background-repeat: no-repeat, no-repeat !important;
+  background-size: 100% 100%, 100% 100% !important;
+}
+
+/*
+  Background packs normally show a fixed image through translucent panes. The
+  two fixed pseudo-layers preserve the existing .theme-bg geometry exactly:
+  the image keeps its viewport-relative -4% overscan and the wash stays
+  viewport-sized. clip-path confines those fixed layers to the transcript while
+  the real background remains opaque for WebView2's scrolling compositor.
+*/
+:root[data-platform="windows"][data-theme-pack][data-theme-has-bg="true"] .app:not(.app--creation) .chat-pane > .main > .transcript-shell > .transcript {
+  --windows-transcript-scene-image: var(--theme-bg-home-image, var(--theme-bg-image, none));
+  --windows-transcript-scene-focus-x: var(--theme-bg-home-focus-x, var(--theme-bg-focus-x, 50%));
+  --windows-transcript-scene-focus-y: var(--theme-bg-home-focus-y, var(--theme-bg-focus-y, 50%));
+  --windows-transcript-image-opacity: var(--theme-bg-home-opacity, 1);
+  --windows-transcript-pane-alpha: var(--theme-pane-alpha, 0.72);
+  --windows-transcript-scene-overlay: linear-gradient(transparent, transparent);
+  background-color: Canvas !important;
+  background-image: linear-gradient(var(--bg), var(--bg)) !important;
+  background-repeat: no-repeat !important;
+  background-size: 100% 100% !important;
+}
+
+:root[data-platform="windows"][data-theme-pack][data-theme-has-bg="true"] .app:not(.app--creation) .chat-pane > .main > .transcript-shell > .transcript::before {
+  content: "";
+  position: fixed;
+  inset: -4%;
+  z-index: var(--z-transcript-scene-image);
+  pointer-events: none;
+  background-image: var(--windows-transcript-scene-image);
+  background-repeat: no-repeat;
+  background-size: cover;
+  background-position: var(--windows-transcript-scene-focus-x) var(--windows-transcript-scene-focus-y);
+  opacity: var(--windows-transcript-image-opacity);
+}
+
+:root[data-platform="windows"][data-theme-pack][data-theme-has-bg="true"] .app:not(.app--creation) .chat-pane > .main > .transcript-shell > .transcript::after {
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: var(--z-transcript-scene-overlay);
+  pointer-events: none;
+  background-image:
+    linear-gradient(
+      color-mix(in srgb, var(--chat-bg, var(--bg)) calc(var(--windows-transcript-pane-alpha) * 100%), transparent),
+      color-mix(in srgb, var(--chat-bg, var(--bg)) calc(var(--windows-transcript-pane-alpha) * 100%), transparent)
+    ),
+    var(--windows-transcript-scene-overlay);
+  background-repeat: no-repeat, no-repeat;
+  background-position: center, center;
+  background-size: 100% 100%, 100% 100%;
+}
+
+:root[data-platform="windows"][data-theme-pack][data-theme-has-bg="true"] .app:not(.app--creation) .chat-pane > .main > .transcript-shell > .transcript > * {
+  position: relative;
+  z-index: var(--z-transcript-content);
+}
+
+:root[data-platform="windows"][data-theme-pack][data-theme-has-bg="true"][data-theme-scene="task"] .app:not(.app--creation) .chat-pane > .main > .transcript-shell > .transcript {
+  --windows-transcript-scene-image: var(--theme-bg-task-image, var(--theme-bg-home-image, var(--theme-bg-image, none)));
+  --windows-transcript-scene-focus-x: var(--theme-bg-task-focus-x, var(--theme-bg-focus-x, 50%));
+  --windows-transcript-scene-focus-y: var(--theme-bg-task-focus-y, var(--theme-bg-focus-y, 50%));
+  --windows-transcript-image-opacity: var(--theme-bg-task-opacity, 0.28);
+  --windows-transcript-pane-alpha: var(--theme-pane-task-alpha, 0.80);
+  --windows-transcript-scene-overlay: radial-gradient(
+    ellipse 70% 70% at 50% 45%,
+    color-mix(in srgb, var(--bg) calc(var(--theme-bg-task-overlay, var(--theme-bg-overlay, 0.62)) * 70%), transparent) 0%,
+    color-mix(in srgb, var(--bg) calc(var(--theme-bg-task-overlay, var(--theme-bg-overlay, 0.62)) * 40%), transparent) 55%,
+    transparent 100%
+  );
+}
+
+:root[data-platform="windows"][data-theme-pack][data-theme-has-bg="true"][data-theme-scene="task"][data-theme-safe-area="left"] .app:not(.app--creation) .chat-pane > .main > .transcript-shell > .transcript {
+  --windows-transcript-scene-overlay: linear-gradient(
+    90deg,
+    color-mix(in srgb, var(--bg) calc(var(--theme-bg-task-overlay, var(--theme-bg-overlay, 0.62)) * 100%), transparent) 0%,
+    color-mix(in srgb, var(--bg) calc(var(--theme-bg-task-overlay, var(--theme-bg-overlay, 0.62)) * 55%), transparent) 42%,
+    transparent 78%
+  );
+}
+
+:root[data-platform="windows"][data-theme-pack][data-theme-has-bg="true"][data-theme-scene="task"][data-theme-safe-area="right"] .app:not(.app--creation) .chat-pane > .main > .transcript-shell > .transcript {
+  --windows-transcript-scene-overlay: linear-gradient(
+    270deg,
+    color-mix(in srgb, var(--bg) calc(var(--theme-bg-task-overlay, var(--theme-bg-overlay, 0.62)) * 100%), transparent) 0%,
+    color-mix(in srgb, var(--bg) calc(var(--theme-bg-task-overlay, var(--theme-bg-overlay, 0.62)) * 55%), transparent) 42%,
+    transparent 78%
+  );
 }
 
 /* Density recipe consumers — pack overlay sets --theme-density-* / --theme-row-h */

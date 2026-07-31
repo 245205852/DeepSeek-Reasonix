@@ -1488,3 +1488,70 @@ func TestBuildRequestDefaultsEmptyToolParameters(t *testing.T) {
 		t.Fatalf("nil parameters should default to %s, got %s in %s", want, got, body)
 	}
 }
+
+func TestNormaliseUsageAnthropicStyleFallback(t *testing.T) {
+	tests := []struct {
+		name string
+		json string
+		want provider.Usage
+	}{
+		{
+			name: "cache hit",
+			json: `{"usage":{"input_tokens":21,"output_tokens":393,"cache_creation_input_tokens":0,"cache_read_input_tokens":188086}}`,
+			want: provider.Usage{
+				PromptTokens:     188107,
+				CompletionTokens: 393,
+				TotalTokens:      188500,
+				CacheHitTokens:   188086,
+				CacheMissTokens:  21,
+			},
+		},
+		{
+			name: "cache creation",
+			json: `{"usage":{"input_tokens":21,"output_tokens":393,"cache_creation_input_tokens":188086,"cache_read_input_tokens":0}}`,
+			want: provider.Usage{
+				PromptTokens:     188107,
+				CompletionTokens: 393,
+				TotalTokens:      188500,
+				CacheMissTokens:  188107,
+			},
+		},
+		{
+			name: "DeepSeek fields take priority",
+			json: `{"usage":{"prompt_tokens":100,"completion_tokens":50,"total_tokens":150,"prompt_cache_hit_tokens":30,"prompt_cache_miss_tokens":70,"input_tokens":1,"output_tokens":2,"cache_creation_input_tokens":888,"cache_read_input_tokens":999}}`,
+			want: provider.Usage{
+				PromptTokens:     100,
+				CompletionTokens: 50,
+				TotalTokens:      150,
+				CacheHitTokens:   30,
+				CacheMissTokens:  70,
+			},
+		},
+		{
+			name: "OpenAI nested fields take priority",
+			json: `{"usage":{"prompt_tokens":100,"completion_tokens":50,"total_tokens":150,"prompt_tokens_details":{"cached_tokens":40},"input_tokens":1,"output_tokens":2,"cache_creation_input_tokens":888,"cache_read_input_tokens":999}}`,
+			want: provider.Usage{
+				PromptTokens:     100,
+				CompletionTokens: 50,
+				TotalTokens:      150,
+				CacheHitTokens:   40,
+				CacheMissTokens:  60,
+			},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			var response streamResponse
+			if err := json.Unmarshal([]byte(tc.json), &response); err != nil {
+				t.Fatalf("unmarshal usage fixture: %v", err)
+			}
+			if response.Usage == nil {
+				t.Fatal("usage fixture did not decode usage")
+			}
+			if got := normaliseUsage(response.Usage); got == nil || *got != tc.want {
+				t.Fatalf("normaliseUsage() = %+v, want %+v", got, tc.want)
+			}
+		})
+	}
+}

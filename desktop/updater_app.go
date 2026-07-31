@@ -331,23 +331,26 @@ func (a *App) installDebUpdate(requestID string, meta *cachedUpdate) error {
 
 func (a *App) installPortableUpdate(requestID string, meta *cachedUpdate, data []byte) error {
 	a.emitProgress(requestID, meta.Channel, meta.Version, "installing", meta.Size, meta.Size, "")
+	var preparedUpdate *repair.UpdateTransaction
 	if runtime.GOOS == "windows" || runtime.GOOS == "linux" {
 		// Back up the complete release unit (main binary + Guard/launcher
 		// siblings the installer also replaces) so rollback never leaves a
 		// mixed-version install. Deb installs deliberately skip this — Guard
 		// cannot rewrite /usr/bin and would corrupt dpkg state.
-		if _, err := repair.PrepareFileUpdate(version, meta.Version, currentExecutablePath(), updateSiblingArtifacts()...); err != nil {
+		var err error
+		preparedUpdate, err = repair.PrepareFileUpdate(version, meta.Version, currentExecutablePath(), updateSiblingArtifacts()...)
+		if err != nil {
 			return a.failUpdate(requestID, meta.Channel, meta.Version, err)
 		}
 	}
 	var err error
 	switch runtime.GOOS {
 	case "windows":
-		err = applyWindowsFile(meta.Path, meta.Version)
+		err = applyWindowsFile(meta.Path, meta.SHA256, preparedUpdate)
 	case "darwin":
 		err = applyMac(meta.Path, meta.Version)
 	case "linux":
-		err = applyLinux(data)
+		err = applyLinux(data, preparedUpdate)
 	default:
 		err = fmt.Errorf("self-update unsupported on %s", runtime.GOOS)
 	}
@@ -359,14 +362,27 @@ func (a *App) installPortableUpdate(requestID string, meta *cachedUpdate, data [
 			// discarding the rollback metadata; if the restore itself fails,
 			// keep the pending transaction so Guard can retry the rollback on
 			// the next launch.
-			if _, rollbackErr := repair.RollbackPendingUpdate(); rollbackErr != nil {
-				a.recordUpdateError(rollbackErr)
+			if preparedUpdate != nil {
+				if _, rollbackErr := repair.RollbackPendingUpdateExact(preparedUpdate); rollbackErr != nil {
+					err = errors.Join(err, fmt.Errorf("restore prepared release unit: %w", rollbackErr))
+				} else if clearErr := repair.ClearUpdateApplyFailureExact(preparedUpdate); clearErr != nil {
+					err = errors.Join(err, fmt.Errorf("clear update recovery marker: %w", clearErr))
+				}
 			}
-		} else {
-			// Windows hands off to an installer process and macOS cancels its
-			// own transaction inside applyMac: a failure here means nothing
-			// was replaced yet, so just drop the pending transaction.
-			_ = repair.CancelPendingUpdate(meta.Version)
+		} else if runtime.GOOS == "windows" {
+			// The helper may fail to start after another same-version attempt
+			// has prepared a newer transaction. Cancel only this attempt.
+			if preparedUpdate != nil {
+				if cancelErr := repair.CancelPendingUpdateExact(preparedUpdate); cancelErr != nil {
+					err = errors.Join(err, fmt.Errorf("cancel prepared update: %w", cancelErr))
+				}
+			}
+		} else if runtime.GOOS != "darwin" {
+			if preparedUpdate != nil {
+				if cancelErr := repair.CancelPendingUpdateExact(preparedUpdate); cancelErr != nil {
+					err = errors.Join(err, fmt.Errorf("cancel prepared update: %w", cancelErr))
+				}
+			}
 		}
 		return a.failUpdate(requestID, meta.Channel, meta.Version, err)
 	}

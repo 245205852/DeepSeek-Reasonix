@@ -10,6 +10,8 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+
+	"github.com/charmbracelet/colorprofile"
 	"time"
 
 	tea "charm.land/bubbletea/v2"
@@ -1325,9 +1327,9 @@ func TestUserBubbleEchoedImmediately(t *testing.T) {
 }
 
 func TestUserBubbleIsLightweightTranscriptLine(t *testing.T) {
-	prevColor := colorEnabled
-	colorEnabled = true
-	defer func() { colorEnabled = prevColor }()
+	prevColor := activeColorProfile
+	activeColorProfile = colorprofile.ANSI256
+	defer func() { activeColorProfile = prevColor }()
 
 	got := renderUserBubble("hello world", 80, false)
 	plain := ansi.Strip(got)
@@ -2310,7 +2312,7 @@ func TestLanguageCommandRefreshesCurrentController(t *testing.T) {
 		return control.New(control.Options{Label: "deepseek-flash"}), nil
 	}
 
-	cmd := m.runLanguageSubcommand("/language zh")
+	cmd := m.runSlashCommand("/language zh")
 	if cmd == nil {
 		t.Fatal("/language should queue a controller refresh")
 	}
@@ -2342,7 +2344,7 @@ func TestCurrencyCommandPersistsAndRefreshesCurrentController(t *testing.T) {
 		return control.New(control.Options{Label: "deepseek-flash"}), nil
 	}
 
-	cmd := m.runCurrencySubcommand("/currency CNY")
+	cmd := m.runSlashCommand("/currency CNY")
 	if cmd == nil {
 		t.Fatal("/currency should queue a controller refresh")
 	}

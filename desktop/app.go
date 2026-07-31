@@ -18,6 +18,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	goruntime "runtime"
 	"sort"
 	"strconv"
@@ -260,6 +261,11 @@ type App struct {
 
 	startupTracker *repair.StartupTracker
 	previousRun    repair.PreviousRunObservation
+	// Healthy-update identity is captured before Wails starts. A process only
+	// commits the complete probationary transaction it booted from, never a
+	// rewritten or later same-version retry.
+	healthyUpdateCreatedAt     string
+	healthyUpdateTransactionID string
 	// startupReady records that the window reached domReady. The shutdown path
 	// treats an exit before this point as an incomplete start: it must neither
 	// reset the crash-loop counter nor bless a probationary update, or a build
@@ -917,7 +923,7 @@ func (a *App) shutdown(context.Context) {
 		// recovery threshold and the update backups stay rollback-ready.
 		_ = a.startupTracker.MarkClean()
 		if !config.SafeModeRequested() {
-			_ = repair.MarkUpdateHealthy(version)
+			_ = repair.MarkUpdateHealthyExact(version, a.healthyUpdateCreatedAt, a.healthyUpdateTransactionID)
 			_ = repair.RecordHealthyConfig(version)
 		}
 	}
@@ -1003,7 +1009,7 @@ func (a *App) domReady(_ context.Context) {
 				return
 			}
 			if !config.SafeModeRequested() {
-				if err := repair.MarkUpdateHealthy(version); err != nil {
+				if err := repair.MarkUpdateHealthyExact(version, a.healthyUpdateCreatedAt, a.healthyUpdateTransactionID); err != nil {
 					slog.Warn("desktop: commit healthy update", "err", err)
 				}
 				if err := repair.RecordHealthyConfig(version); err != nil {
@@ -3658,6 +3664,9 @@ func (a *App) openTransientBlankRuntime(scope, workspaceRoot string) error {
 	if err != nil {
 		return err
 	}
+	if err := pinNewEmptySessionBranchMeta(sessionPath, scope, actualRoot, "", defaultTopicTitle); err != nil {
+		return err
+	}
 	tab := &WorkspaceTab{
 		Scope:            scope,
 		WorkspaceRoot:    actualRoot,
@@ -4079,6 +4088,86 @@ func (a *App) rebindTabToLoadedSessionPath(tab *WorkspaceTab, sessionPath string
 	source := snapshotTabRuntimeLocked(tab)
 	a.mu.Unlock()
 
+	// If the target session has a detached runtime (from a recent running-session
+	// detach), reattach it instead of building a new controller. This avoids the
+	// Windows LockFileEx/LOCKFILE_EXCLUSIVE_LOCK conflict where a second handle
+	// from the same process cannot lock a file already held by the detached
+	// controller's fd (#6955).
+	targetKey := sessionRuntimeKey(sessionPath)
+	a.mu.Lock()
+	detached := a.detachedSessions[targetKey]
+	hasDetached := detached != nil && detached.Ctrl != nil
+	a.mu.Unlock()
+
+	if hasDetached {
+		a.runtimeAdmissionMu.Lock()
+		tab.turnStartMu.Lock()
+
+		a.mu.Lock()
+		if tab.removed || a.tabs[tab.ID] != tab || tab.Ctrl != source.ctrl {
+			a.mu.Unlock()
+			tab.turnStartMu.Unlock()
+			a.runtimeAdmissionMu.Unlock()
+			return fmt.Errorf("tab changed while reattaching session; retry")
+		}
+		a.mu.Unlock()
+
+		if source.ctrl != nil {
+			if err := a.snapshotTabForAction(tab, "switching sessions"); err != nil {
+				tab.turnStartMu.Unlock()
+				a.runtimeAdmissionMu.Unlock()
+				return err
+			}
+			if oldPath := a.reconciledSessionPathForTab(tab); oldPath != "" {
+				if err := a.saveTabSessionMeta(tab, oldPath); err != nil {
+					tab.turnStartMu.Unlock()
+					a.runtimeAdmissionMu.Unlock()
+					return fmt.Errorf("save current session metadata before switching sessions: %w", err)
+				}
+			}
+		}
+
+		a.mu.Lock()
+		if tab.removed || a.tabs[tab.ID] != tab || tab.Ctrl != source.ctrl {
+			a.mu.Unlock()
+			tab.turnStartMu.Unlock()
+			a.runtimeAdmissionMu.Unlock()
+			return fmt.Errorf("tab changed while reattaching session; retry")
+		}
+		a.mu.Unlock()
+
+		detachSource := controllerHasActiveRuntimeWork(source.ctrl)
+		oldCtrl, oldSink, oldLease, oldHostKey, attached := a.reattachDetachedSessionRuntimeForRebind(
+			tab, source, sessionPath, detachSource,
+		)
+		if !attached {
+			tab.turnStartMu.Unlock()
+			a.runtimeAdmissionMu.Unlock()
+			return fmt.Errorf("failed to reattach detached session runtime")
+		}
+
+		if oldSink != nil {
+			oldSink.setBinding("", nil)
+			oldSink.clearContext()
+		}
+		if oldCtrl != nil {
+			oldCtrl.Close()
+		}
+		if oldHostKey != "" {
+			a.releaseSharedHost(oldHostKey)
+		}
+		if oldLease != nil {
+			oldLease.Release()
+		}
+
+		a.clearDeferredRebuild(tab.ID)
+		a.emitReady(a.ctx, tab.ID)
+
+		tab.turnStartMu.Unlock()
+		a.runtimeAdmissionMu.Unlock()
+		return nil
+	}
+
 	a.runtimeAdmissionMu.Lock()
 	defer a.runtimeAdmissionMu.Unlock()
 	tab.turnStartMu.Lock()
@@ -4234,6 +4323,78 @@ func (a *App) rebindTabToLoadedSessionPath(tab *WorkspaceTab, sessionPath string
 	a.notifyTabRuntimeRebuiltAtEpoch(tab, newEpoch)
 	a.emitReady(a.ctx, tab.ID)
 	return nil
+}
+
+// reattachDetachedSessionRuntimeForRebind atomically replaces tab with the
+// already-running detached target. If the visible source is still active, its
+// controller, sink, lease, and runtime registry entry move to detachedSessions
+// in the same App.mu transaction; an idle source is returned for off-lock
+// teardown. The caller must hold runtimeRebuildMu, runtimeAdmissionMu, and
+// tab.turnStartMu so detachSource cannot become stale through new turn admission.
+func (a *App) reattachDetachedSessionRuntimeForRebind(
+	tab *WorkspaceTab,
+	source tabRuntimeSnapshot,
+	sessionPath string,
+	detachSource bool,
+) (control.SessionAPI, *tabEventSink, *agent.SessionLease, string, bool) {
+	key := sessionRuntimeKey(sessionPath)
+	if tab == nil || key == "" {
+		return nil, nil, nil, "", false
+	}
+
+	a.mu.Lock()
+	if tab.removed || a.tabs[tab.ID] != tab || tab.Ctrl != source.ctrl {
+		a.mu.Unlock()
+		return nil, nil, nil, "", false
+	}
+	detached := a.detachedSessions[key]
+	if detached == nil || detached.Ctrl == nil {
+		a.mu.Unlock()
+		return nil, nil, nil, "", false
+	}
+	if rt := a.runtimeForTabLocked(detached); rt != nil {
+		if rt.Phase != sessionRuntimeReady {
+			a.mu.Unlock()
+			return nil, nil, nil, "", false
+		}
+	} else if !detached.Ready {
+		// Compatibility for detached runtimes created before the process-local
+		// registry existed.
+		a.mu.Unlock()
+		return nil, nil, nil, "", false
+	}
+
+	oldCtrl := tab.Ctrl
+	oldSink := tab.sink
+	var oldLease *agent.SessionLease
+	oldHostKey := ""
+	if detachSource {
+		if !a.detachRuntimeForReplacementLocked(tab) {
+			a.mu.Unlock()
+			return nil, nil, nil, "", false
+		}
+		// Ownership moved to the detached clone. Nothing from the source may be
+		// closed or released after the target becomes visible.
+		oldCtrl = nil
+		oldSink = nil
+	} else {
+		// Prevent applyRuntimeTab from overwriting resources owned by the idle
+		// source. Teardown remains outside the app lock as on the normal rebuild
+		// path; the detached target already owns a separate shared-host ref.
+		oldLease = tab.takeSessionLease()
+		oldHostKey = takeTabSharedHostKey(tab)
+	}
+
+	delete(a.detachedSessions, key)
+	applyRuntimeTab(tab, detached, sessionPath, a.ctx, a)
+	a.saveTabsLocked()
+	attachedCtrl := tab.Ctrl
+	a.mu.Unlock()
+
+	if attachedCtrl != nil {
+		attachedCtrl.ReplayPendingPrompts()
+	}
+	return oldCtrl, oldSink, oldLease, oldHostKey, true
 }
 
 type sessionRebindCandidate struct {
@@ -5501,6 +5662,72 @@ func (a *App) HistoryCheckpointTurnsForTab(tabID string) []int {
 	)
 }
 
+var pastedTextDisplayLabelPattern = regexp.MustCompile(`^\[(?:已粘贴文本|已貼上文字|Pasted text) #[0-9]+ · [0-9]+ (?:行|lines)\]$`)
+
+// historyReplayUserContent keeps only user-authored replay data. Provider-facing
+// capability, goal, hook, and resolved-reference context must not be resubmitted.
+func historyReplayUserContent(content string) string {
+	return control.StripReferencedContextPrefix(control.StripComposePrefixes(content))
+}
+
+// collapseLegacyExpandedPasteDisplay repairs sessions whose user-authored replay
+// source still contains an expanded pasted-text block. This includes transcripts
+// written before RawContent existed. The expanded block remains in SubmitText so
+// edit replay can still reconstruct the card and recover its full payload.
+func collapseLegacyExpandedPasteDisplay(content string) string {
+	const beginPrefix = "--- Begin "
+	for scan := 0; scan < len(content); {
+		beginOffset := strings.Index(content[scan:], beginPrefix)
+		if beginOffset < 0 {
+			break
+		}
+		begin := scan + beginOffset
+		labelStart := begin + len(beginPrefix)
+		labelEndOffset := strings.Index(content[labelStart:], " ---")
+		if labelEndOffset < 0 {
+			break
+		}
+		labelEnd := labelStart + labelEndOffset
+		label := content[labelStart:labelEnd]
+		beginEnd := labelEnd + len(" ---")
+		if !pastedTextDisplayLabelPattern.MatchString(label) {
+			scan = beginEnd
+			continue
+		}
+		endMarker := "--- End " + label + " ---"
+		endOffset := strings.Index(content[beginEnd:], endMarker)
+		if endOffset < 0 {
+			scan = beginEnd
+			continue
+		}
+		labelCopy := strings.LastIndex(content[:begin], label)
+		if labelCopy < 0 || strings.TrimSpace(content[labelCopy+len(label):begin]) != "" {
+			scan = beginEnd
+			continue
+		}
+		end := beginEnd + endOffset + len(endMarker)
+		content = content[:labelCopy+len(label)] + content[end:]
+		scan = labelCopy + len(label)
+	}
+	return strings.TrimSpace(content)
+}
+
+// historyUserDisplayContent prefers a persisted display sidecar when one exists.
+// Comparing it with the deterministic fallback distinguishes a sidecar hit
+// without changing the resolver API used throughout history pagination.
+func historyUserDisplayContent(msg provider.Message, resolveUserContent func(string) string) string {
+	resolved := strings.TrimSpace(resolveUserContent(msg.Content))
+	fallback := strings.TrimSpace(historyReplayUserContent(msg.Content))
+	if resolved != "" && resolved != fallback {
+		return resolved
+	}
+	replaySource := agent.UserMessageText(msg)
+	if msg.RawContent == "" {
+		replaySource = fallback
+	}
+	return collapseLegacyExpandedPasteDisplay(replaySource)
+}
+
 func historyCheckpointTurns(msgs []provider.Message, resolveUserContent func(string) string, checkpointTurns map[int]int) []int {
 	out := make([]int, 0)
 	for index, msg := range msgs {
@@ -5511,9 +5738,7 @@ func historyCheckpointTurns(msgs []provider.Message, resolveUserContent func(str
 		if _, isSteer := agent.SteerText(content); isSteer {
 			continue
 		}
-		if msg.RawContent == "" {
-			content = resolveUserContent(msg.Content)
-		}
+		content = historyUserDisplayContent(msg, resolveUserContent)
 		if control.IsSyntheticUserMessage(content) {
 			continue
 		}
@@ -5567,11 +5792,7 @@ func historyMessagesWithPlannerDisplaysAndLookups(
 				out = append(out, HistoryMessage{Role: "notice", Content: "↪ " + steerText})
 				continue
 			}
-			if m.RawContent != "" {
-				content = agent.UserMessageText(m)
-			} else {
-				content = resolveUserContent(m.Content)
-			}
+			content = historyUserDisplayContent(m, resolveUserContent)
 			if control.IsSyntheticUserMessage(content) {
 				continue
 			}
@@ -5593,17 +5814,16 @@ func historyMessagesWithPlannerDisplaysAndLookups(
 			hm.MemoryCitations = append([]provider.MemoryCitation(nil), m.MemoryCitations...)
 		}
 		if m.Role == provider.RoleUser && content != m.Content {
+			replay := historyReplayUserContent(m.Content)
 			if agent.ContainsMemoryCompilerExecution(m.Content) {
 				// Never expose the compiler contract itself. A safely unwrapped
 				// slash invocation is useful display metadata, though: it lets the
 				// frontend restore the selected skill/subagent in history and trash.
-				if replay := control.StripComposePrefixes(m.Content); strings.HasPrefix(strings.TrimSpace(replay), "/") && replay != content {
+				if strings.HasPrefix(strings.TrimSpace(replay), "/") && replay != content {
 					hm.SubmitText = replay
 				}
-			} else if m.RawContent != "" {
-				hm.SubmitText = content
-			} else {
-				hm.SubmitText = m.Content
+			} else if replay != content {
+				hm.SubmitText = replay
 			}
 		}
 		if (m.Role == provider.RoleAssistant || m.LocalOnly) && len(m.ToolCalls) > 0 {
@@ -5710,9 +5930,7 @@ func isVisibleHistoryUser(msg provider.Message, resolveUserContent func(string) 
 	if _, isSteer := agent.SteerText(content); isSteer {
 		return false
 	}
-	if msg.RawContent == "" {
-		content = resolveUserContent(msg.Content)
-	}
+	content = historyUserDisplayContent(msg, resolveUserContent)
 	return !control.IsSyntheticUserMessage(content)
 }
 
@@ -6320,6 +6538,7 @@ func (a *App) ContextUsageForTab(tabID string) ContextInfo {
 	a.mu.RUnlock()
 
 	var info ContextInfo
+	var snap tabTelemetrySnapshot
 	if tab != nil {
 		// Re-key first: a controller-side rotation (typed /new) may have
 		// swapped sessions without the App noticing, and the stale totals
@@ -6330,7 +6549,7 @@ func (a *App) ContextUsageForTab(tabID string) ContextInfo {
 				tab.syncTelemetryToSession(sp)
 			}
 		}
-		snap := tab.telemetrySnapshot()
+		snap = tab.telemetrySnapshot()
 		info.SessionTokens = snap.Usage.TotalTokens
 		info.SessionCost = snap.Usage.SessionCost
 		info.SessionCurrency = snap.Usage.SessionCurrency
@@ -6344,6 +6563,13 @@ func (a *App) ContextUsageForTab(tabID string) ContextInfo {
 	used, window := ctrl.ContextSnapshot()
 	info.Used = used
 	info.Window = window
+	// Session rebind (project-tree switch) rebuilds the controller: the fresh
+	// executor has no per-turn usage yet, so ContextSnapshot reports used=0.
+	// Fall back to the telemetry-persisted last-used value so the status bar
+	// shows the fill percentage from the last turn instead of 0%.
+	if used == 0 && snap.Usage.LastUsedTokens > 0 {
+		info.Used = snap.Usage.LastUsedTokens
+	}
 	info.CompactRatio = ctrl.CompactRatio()
 	return info
 }
@@ -9405,6 +9631,11 @@ func (a *App) canReclaimCurrentProcessSessionLease(tab *WorkspaceTab, path strin
 		if candidate.Ctrl != nil && sessionRuntimeKey(candidate.currentSessionPath()) == key {
 			return false
 		}
+	}
+	// A detached runtime's controller still holds the OS lock; refuse reclaim
+	// even when PID matches (#6955).
+	if detached := a.detachedSessions[key]; detached != nil && detached.Ctrl != nil {
+		return false
 	}
 	return true
 }
