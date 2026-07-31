@@ -3,6 +3,7 @@ package bootstrap
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"strings"
 	"testing"
@@ -37,7 +38,7 @@ func TestEnsureWorkbenchCLIAutoDownloadsCrossPlatformRelease(t *testing.T) {
 			}
 			return ok("\n")
 		case strings.Contains(cmd, "command -v reasonix"):
-			return ok("\n")
+			return ok("bin/reasonix\n" + string(encoded) + "\n")
 		default:
 			return ok("")
 		}
@@ -89,6 +90,31 @@ func TestEnsureWorkbenchCLIReusesExactPATHBuild(t *testing.T) {
 	}
 }
 
+func TestEnsureWorkbenchCLIReusesExactPATHBuildWithoutSFTP(t *testing.T) {
+	skipOnWindows(t)
+	root := t.TempDir()
+	expected := testWorkbenchBuild(t)
+	encoded, _ := json.Marshal(expected)
+	conn := newFakeConn(t, root, func(cmd string) (remote.ExecResult, error) {
+		if strings.Contains(cmd, "command -v reasonix") {
+			return ok("/usr/local/bin/reasonix\n" + string(encoded) + "\n")
+		}
+		return ok("\n")
+	})
+	conn.sftpErr = errors.New("SFTP subsystem is disabled")
+
+	result, err := EnsureWorkbenchCLI(context.Background(), conn, WorkbenchOptions{Install: InstallNever, ExpectedBuild: expected})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Path != "/usr/local/bin/reasonix" || result.Installed {
+		t.Fatalf("result = %+v", result)
+	}
+	if conn.ranContaining("uname -sm") {
+		t.Fatal("exact PATH reuse unexpectedly probed the remote platform")
+	}
+}
+
 func TestEnsureWorkbenchCLIRejectsStalePATHBuildWhenInstallNever(t *testing.T) {
 	skipOnWindows(t)
 	root := t.TempDir()
@@ -107,6 +133,24 @@ func TestEnsureWorkbenchCLIRejectsStalePATHBuildWhenInstallNever(t *testing.T) {
 	})
 	_, err := EnsureWorkbenchCLI(context.Background(), conn, WorkbenchOptions{Install: InstallNever, ExpectedBuild: expected})
 	if err == nil || !strings.Contains(err.Error(), "serve_install = never") || !strings.Contains(err.Error(), "incompatible") {
+		t.Fatalf("error = %v", err)
+	}
+}
+
+func TestEnsureWorkbenchCLIRejectsRelativePATHBuild(t *testing.T) {
+	skipOnWindows(t)
+	root := t.TempDir()
+	expected := testWorkbenchBuild(t)
+	encoded, _ := json.Marshal(expected)
+	conn := newFakeConn(t, root, func(cmd string) (remote.ExecResult, error) {
+		if strings.Contains(cmd, "command -v reasonix") {
+			return ok("bin/reasonix\n" + string(encoded) + "\n")
+		}
+		return ok("\n")
+	})
+
+	_, err := EnsureWorkbenchCLI(context.Background(), conn, WorkbenchOptions{Install: InstallNever, ExpectedBuild: expected})
+	if err == nil || !strings.Contains(err.Error(), "serve_install = never") || !strings.Contains(err.Error(), "non-absolute path") {
 		t.Fatalf("error = %v", err)
 	}
 }

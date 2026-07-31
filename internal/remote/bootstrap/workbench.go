@@ -51,6 +51,13 @@ func EnsureWorkbenchCLI(ctx context.Context, conn Conn, opts WorkbenchOptions) (
 	if err := opts.ExpectedBuild.Validate(); err != nil {
 		return WorkbenchCLI{}, fmt.Errorf("workbench bootstrap: invalid expected build: %w", err)
 	}
+	opts.progress("detect", "")
+	pathBinary, pathErr := probeWorkbenchCLI(ctx, conn, "", opts.ExpectedBuild)
+	if pathBinary != "" {
+		opts.progress("reuse", pathBinary)
+		return WorkbenchCLI{Path: pathBinary}, nil
+	}
+
 	fs, err := conn.SFTP()
 	if err != nil {
 		return WorkbenchCLI{}, err
@@ -59,28 +66,14 @@ func EnsureWorkbenchCLI(ctx context.Context, conn Conn, opts WorkbenchOptions) (
 	if err != nil {
 		return WorkbenchCLI{}, fmt.Errorf("workbench bootstrap: resolve remote home: %w", err)
 	}
-	opts.progress("detect", "")
-	platform, err := conn.Exec(ctx, "uname -sm")
-	if err != nil {
-		return WorkbenchCLI{}, fmt.Errorf("workbench bootstrap: uname: %w", err)
-	}
-	goos, goarch, err := ParseUname(string(platform.Stdout))
-	if err != nil {
-		return WorkbenchCLI{}, err
-	}
 	managedPath := workbenchBinPath(home, opts.ExpectedBuild)
 
-	// Prefer a previously provisioned immutable build, then an exact compatible
-	// CLI already on PATH. A stale system CLI is never allowed to answer the
-	// strict initialize handshake by accident.
+	// Reuse a previously provisioned immutable build when PATH does not already
+	// provide an exact match. A stale CLI is never allowed to answer the strict
+	// initialize handshake by accident.
 	if bin, _ := probeWorkbenchCLI(ctx, conn, managedPath, opts.ExpectedBuild); bin != "" {
 		opts.progress("reuse", bin)
 		return WorkbenchCLI{Path: bin}, nil
-	}
-	pathBinary, pathErr := probeWorkbenchCLI(ctx, conn, "", opts.ExpectedBuild)
-	if pathBinary != "" {
-		opts.progress("reuse", pathBinary)
-		return WorkbenchCLI{Path: pathBinary}, nil
 	}
 
 	strategy := strings.ToLower(strings.TrimSpace(opts.Install))
@@ -91,6 +84,14 @@ func EnsureWorkbenchCLI(ctx context.Context, conn Conn, opts WorkbenchOptions) (
 		return WorkbenchCLI{}, fmt.Errorf("workbench bootstrap: no compatible remote Reasonix CLI and serve_install = never: %w", pathErr)
 	}
 	opts.progress("install", strategy)
+	platform, err := conn.Exec(ctx, "uname -sm")
+	if err != nil {
+		return WorkbenchCLI{}, fmt.Errorf("workbench bootstrap: uname: %w", err)
+	}
+	goos, goarch, err := ParseUname(string(platform.Stdout))
+	if err != nil {
+		return WorkbenchCLI{}, err
+	}
 
 	var attempts []error
 	tryUpload := func(binary []byte, source string) (WorkbenchCLI, bool) {
@@ -207,7 +208,11 @@ func probeWorkbenchCLI(ctx context.Context, conn Conn, candidate string, expecte
 	if err := protocol.CompareBuildID(expected, actual); err != nil {
 		return "", fmt.Errorf("remote reasonix is incompatible: %w", err)
 	}
-	return strings.TrimSpace(lines[0]), nil
+	binary := strings.TrimSpace(lines[0])
+	if !path.IsAbs(binary) || path.Clean(binary) != binary {
+		return "", fmt.Errorf("remote reasonix resolved to non-absolute path %q", binary)
+	}
+	return binary, nil
 }
 
 // WorkbenchProbeCommand prints the resolved binary path followed by its strict

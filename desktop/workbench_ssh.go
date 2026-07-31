@@ -21,13 +21,9 @@ import (
 	"reasonix/internal/remote/workbench/transport"
 )
 
-// newWorkbenchSSHFactory returns a transport factory for the workbench path.
+// newWorkbenchSSHFactoryForBinary returns a transport factory for the workbench path.
 // Windows uses system OpenSSH + AskPass + Job Object; other platforms use Go SSH
 // stdio running `reasonix remote attach-workspace --stdio`.
-func newWorkbenchSSHFactory(entry config.RemoteHostEntry, askPassHandler RemoteAskPassHandler) (transport.Factory, error) {
-	return newWorkbenchSSHFactoryForBinary(entry, "", askPassHandler)
-}
-
 func newWorkbenchSSHFactoryForBinary(entry config.RemoteHostEntry, remoteBinary string, askPassHandler RemoteAskPassHandler) (transport.Factory, error) {
 	binary, err := validateRemoteWorkbenchBinary(remoteBinary)
 	if err != nil {
@@ -63,10 +59,6 @@ type windowsWorkbenchSSHFactory struct {
 	handler    RemoteAskPassHandler
 	mu         sync.Mutex
 	transport  *RemoteSSHTransport
-}
-
-func newWindowsWorkbenchSSHFactory(entry config.RemoteHostEntry, handler RemoteAskPassHandler) (transport.Factory, error) {
-	return newWindowsWorkbenchSSHFactoryForBinary(entry, "reasonix", handler)
 }
 
 func newWindowsWorkbenchSSHFactoryForBinary(entry config.RemoteHostEntry, binary string, handler RemoteAskPassHandler) (transport.Factory, error) {
@@ -176,10 +168,6 @@ type goSSHWorkbenchFactory struct {
 type workbenchPeerIdentity struct {
 	KeyType     string
 	Fingerprint string
-}
-
-func newGoSSHWorkbenchFactory(entry config.RemoteHostEntry, handler RemoteAskPassHandler) (*goSSHWorkbenchFactory, error) {
-	return newGoSSHWorkbenchFactoryForBinary(entry, "reasonix", handler)
 }
 
 func newGoSSHWorkbenchFactoryForBinary(entry config.RemoteHostEntry, binary string, handler RemoteAskPassHandler) (*goSSHWorkbenchFactory, error) {
