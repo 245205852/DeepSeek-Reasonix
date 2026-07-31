@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strings"
 	"testing"
 )
 
@@ -28,6 +29,9 @@ func TestParseRule(t *testing.T) {
 		{"bash(make FOO=*)", "bash", "make FOO=*", false, true},           // '(' before '=' → still a glob
 		{"get-user", "get-user", "", false, true},
 		{"Set-Content", "Set-Content", "", false, true},
+		{"set-content", "set-content", "", false, true},
+		{"git", "git", "", false, true},
+		{"Get-CustomThing", "Get-CustomThing", "", false, true},
 		{"", "", "", false, false},
 		{"(noTool)", "", "", false, false},
 	}
@@ -255,6 +259,52 @@ type stubApprover struct {
 func (s *stubApprover) Approve(ctx context.Context, tool, subject string, args json.RawMessage) (bool, bool, error) {
 	s.calls++
 	return s.allow, s.remember, s.err
+}
+
+type policyReasonApprover struct {
+	reason string
+}
+
+func (a *policyReasonApprover) Approve(context.Context, string, string, json.RawMessage) (bool, bool, error) {
+	return true, false, nil
+}
+
+func (a *policyReasonApprover) ApproveWithPolicyReason(_ context.Context, _, _ string, _ json.RawMessage, reason string) (bool, bool, string, error) {
+	a.reason = reason
+	return true, false, "", nil
+}
+
+func TestGateReportsMatchedPermissionRule(t *testing.T) {
+	args := json.RawMessage(`{"command":"git status && git push origin main"}`)
+	approver := &policyReasonApprover{}
+	askGate := NewGate(New("allow", nil, []string{"Bash(git push:*)"}, nil), approver)
+	if allow, _, err := askGate.Check(context.Background(), "bash", args, false); err != nil || !allow {
+		t.Fatalf("ask-gated call = allow %v, err %v", allow, err)
+	}
+	if got, want := approver.reason, "Matched permission rule: ask Bash(git push:*)"; got != want {
+		t.Fatalf("approval reason = %q, want %q", got, want)
+	}
+
+	denyGate := NewGate(New("allow", nil, nil, []string{"Bash(git push:*)"}), nil)
+	allow, reason, err := denyGate.Check(context.Background(), "bash", args, false)
+	if err != nil || allow {
+		t.Fatalf("deny-gated call = allow %v, err %v", allow, err)
+	}
+	if !strings.Contains(reason, "Matched permission rule: deny Bash(git push:*)") {
+		t.Fatalf("deny reason = %q, want matched rule", reason)
+	}
+}
+
+func TestMatchedRuleDoesNotReportAskRuleOverriddenForOneEndpoint(t *testing.T) {
+	p := New("ask", nil, []string{"Edit(src/**)"}, nil).
+		WithSessionAllow([]string{"Edit(src/**)"})
+	args := json.RawMessage(`{"source_path":"src/old.go","destination_path":"generated/new.go"}`)
+	if got := p.Decide("move_file", false, args); got != Ask {
+		t.Fatalf("move decision = %v, want Ask from uncovered destination fallback", got)
+	}
+	if rule, ok := p.MatchedRule("move_file", Ask, args); ok {
+		t.Fatalf("MatchedRule = %q, want no rule provenance for fallback Ask", rule)
+	}
 }
 
 func TestGateHeadlessAllowsAsk(t *testing.T) {

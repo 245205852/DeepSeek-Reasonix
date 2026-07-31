@@ -8,6 +8,7 @@ package permission
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"strings"
 
 	"reasonix/internal/shellparse"
@@ -107,7 +108,6 @@ func legacyBarePowerShellDenyCmdlet(s string) (string, bool) {
 		return "", false
 	}
 }
-
 func parseRules(ss []string) []Rule {
 	var out []Rule
 	for _, s := range ss {
@@ -342,6 +342,81 @@ func matchAnyRaw(rules []Rule, toolName, subject string) bool {
 		}
 	}
 	return false
+}
+
+func firstMatchingRule(rules []Rule, toolName, subject string, raw bool) (Rule, bool) {
+	for _, rule := range rules {
+		if !ruleToolMatches(rule.Tool, toolName) {
+			continue
+		}
+		if rule.Subject == "" {
+			return rule, true
+		}
+		if subject == "" {
+			continue
+		}
+		matches := ruleSubjectMatches(rule, subject)
+		if raw {
+			matches = rawRuleSubjectMatches(rule, subject)
+		}
+		if matches {
+			return rule, true
+		}
+	}
+	return Rule{}, false
+}
+
+func ruleConfigString(rule Rule) string {
+	if rule.Subject == "" {
+		return rule.Tool
+	}
+	if rule.Literal {
+		return rule.Tool + "=" + rule.Subject
+	}
+	return rule.Tool + "(" + rule.Subject + ")"
+}
+
+// MatchedRule reports the configured rule responsible for an explicit Ask or
+// Deny decision. Fallback-mode and dynamic-safety decisions intentionally have
+// no rule provenance. Compound Bash commands are inspected segment by segment
+// using the same raw-prefix semantics as DecideSubject.
+func (p Policy) MatchedRule(toolName string, decision Decision, args json.RawMessage) (string, bool) {
+	var rules []Rule
+	switch decision {
+	case Ask:
+		rules = p.Ask
+	case Deny:
+		rules = p.Deny
+	default:
+		return "", false
+	}
+	subjects := Subjects(args)
+	if len(subjects) == 0 {
+		subjects = []string{""}
+	}
+	raw := canonicalRuleTool(toolName) == "bash"
+	for _, subject := range subjects {
+		candidates := []string{subject}
+		if raw {
+			if parts := DecomposeBashCommand(subject); parts != nil {
+				candidates = append(candidates, parts...)
+			}
+		}
+		for _, candidate := range candidates {
+			// A matching configured rule is provenance only when that candidate's
+			// actual decision has the same outcome. SessionAllow may override an
+			// Ask rule on one endpoint while a different endpoint falls back to
+			// Ask; reporting the overridden rule would misstate why the call was
+			// stopped.
+			if p.DecideSubject(toolName, false, candidate) != decision {
+				continue
+			}
+			if rule, ok := firstMatchingRule(rules, toolName, candidate, raw); ok {
+				return ruleConfigString(rule), true
+			}
+		}
+	}
+	return "", false
 }
 
 func rawRuleSubjectMatches(rule Rule, subject string) bool {
@@ -586,6 +661,13 @@ type ReasonedApprover interface {
 	ApproveWithReason(ctx context.Context, toolName, subject string, args json.RawMessage) (allow, remember bool, reason string, err error)
 }
 
+// PolicyReasonedApprover receives the explicit permission-rule provenance that
+// caused an Ask decision. Frontends can display it without duplicating Policy
+// matching logic; older Approver implementations remain source-compatible.
+type PolicyReasonedApprover interface {
+	ApproveWithPolicyReason(ctx context.Context, toolName, subject string, args json.RawMessage, policyReason string) (allow, remember bool, reason string, err error)
+}
+
 // Gate is what the agent consults at execute time: a Policy plus an optional
 // Approver. It satisfies the agent's Gate interface structurally.
 type Gate struct {
@@ -609,15 +691,24 @@ func (g *Gate) Check(ctx context.Context, toolName string, args json.RawMessage,
 			readOnly = true
 		}
 	}
-	switch g.Policy.Decide(toolName, readOnly, args) {
+	decision := g.Policy.Decide(toolName, readOnly, args)
+	ruleReason := ""
+	if rule, ok := g.Policy.MatchedRule(toolName, decision, args); ok {
+		ruleReason = fmt.Sprintf("Matched permission rule: %s %s", decision, rule)
+	}
+	switch decision {
 	case Deny:
-		return false, "denied by permission policy — this tool/command is on the deny list. Do not retry it; choose another approach or stop and explain.", nil
+		reason := "denied by permission policy — this tool/command is on the deny list. Do not retry it; choose another approach or stop and explain."
+		if ruleReason != "" {
+			reason = ruleReason + "\n" + reason
+		}
+		return false, reason, nil
 	case Ask:
 		if g.Approver == nil {
 			return true, "", nil // non-interactive: preserve autonomy
 		}
 		subject := Subject(args)
-		allow, remember, approverReason, err := g.approve(ctx, toolName, subject, args)
+		allow, remember, approverReason, err := g.approve(ctx, toolName, subject, args, ruleReason)
 		if err != nil {
 			return false, "approval aborted", err
 		}
@@ -655,7 +746,10 @@ func (g *Gate) ExplicitlyDenies(toolName string, args json.RawMessage) bool {
 	return g.Policy.ExplicitlyDenies(toolName, args)
 }
 
-func (g *Gate) approve(ctx context.Context, toolName, subject string, args json.RawMessage) (bool, bool, string, error) {
+func (g *Gate) approve(ctx context.Context, toolName, subject string, args json.RawMessage, policyReason string) (bool, bool, string, error) {
+	if a, ok := g.Approver.(PolicyReasonedApprover); ok {
+		return a.ApproveWithPolicyReason(ctx, toolName, subject, args, policyReason)
+	}
 	if a, ok := g.Approver.(ReasonedApprover); ok {
 		return a.ApproveWithReason(ctx, toolName, subject, args)
 	}
