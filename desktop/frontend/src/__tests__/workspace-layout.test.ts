@@ -9,6 +9,10 @@ import {
   resolveWorkspacePanelWidth,
   workspacePanelAriaMinWidth,
 } from "../lib/workspaceLayout";
+import {
+  clampTerminalHeight,
+  terminalMaxHeight,
+} from "../store/layout";
 
 let passed = 0;
 let failed = 0;
@@ -149,6 +153,10 @@ eq(
   212,
   "live sidebar drag recomputes dock width from the dragged sidebar width",
 );
+eq(terminalMaxHeight(480), 240, "terminal maximum follows half of the current viewport height");
+eq(terminalMaxHeight(180), 120, "terminal maximum never falls below the accessible minimum");
+eq(clampTerminalHeight(680, 480), 240, "restored terminal height clamps after the window shrinks");
+eq(clampTerminalHeight(80, 720), 120, "terminal height clamps to its minimum");
 eq(
   /const closeWorkspacePanel = useCallback\(\(\) => \{[\s\S]*?setLiveWorkspacePanelRenderWidth\(null\);[\s\S]*?setWorkspacePanelOpen\(false\);[\s\S]*?saveWorkspacePanelOpen\(false\);/.test(appSource),
   true,
@@ -180,9 +188,28 @@ eq(
   "terminal-drawer-open layout reserves a grid row for the status bar below the terminal drawer",
 );
 eq(
-  /@media \(max-width: 820px\) \{[\s\S]*?\.layout--terminal-drawer-open \.terminal-drawer[\s\S]*?display: flex !important[\s\S]*?\.layout--workbench-chrome-hidden\.layout--terminal-drawer-open[\s\S]*?minmax\(0, 1fr\) var\(--terminal-height, 280px\) var\(--statusbar-height\)/.test(stylesSource),
+  /@media \(max-width: 820px\) \{[\s\S]*?\.layout--terminal-drawer-open \.terminal-drawer-resizer[\s\S]*?grid-column: 1 !important[\s\S]*?\.layout--workbench-chrome-hidden\.layout--terminal-drawer-open \.terminal-drawer[\s\S]*?grid-row: 2;[\s\S]*?\.layout--workbench-chrome-hidden\.layout--terminal-drawer-open[\s\S]*?minmax\(0, 1fr\) var\(--terminal-height, 280px\) var\(--statusbar-height\)/.test(stylesSource),
   true,
-  "narrow viewport shows terminal drawer with status bar row below",
+  "narrow viewport keeps the resizer and drawer in the content column above the status bar",
+);
+eq(
+  /const terminalRenderHeight = clampTerminalHeight\(terminalHeight, viewportHeight\)/.test(appSource)
+    && /"--terminal-height": `\$\{liveTerminalHeight \?\? \(terminalPanelOpen \? terminalRenderHeight : 0\)\}px`/.test(appSource),
+  true,
+  "terminal render height re-clamps whenever the viewport changes",
+);
+eq(
+  /aria-hidden=\{!terminalPanelOpen\}/.test(appSource)
+    && /tabIndex=\{terminalPanelOpen \? 0 : -1\}/.test(appSource)
+    && /onKeyDown=\{resizeTerminalWithKeyboard\}/.test(appSource),
+  true,
+  "closed terminal resizer leaves the tab order and open resizer supports keyboard adjustment",
+);
+eq(
+  /terminalPanelOpen && !sidebarCreation \? "footer--compact" : ""/.test(appSource)
+    && !/\.layout\.layout--terminal-drawer-open \.footer/.test(stylesSource),
+  true,
+  "footer compaction applies only while the terminal is expanded outside Creation mode",
 );
 eq(
   /sidebarImDetailConnection \? "layout--statusbar-hidden" : ""/.test(appSource)

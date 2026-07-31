@@ -2100,11 +2100,6 @@ a[href] {
 .layout--terminal-resizing.layout--terminal-drawer-open {
   transition: grid-template-columns 0.16s ease, min-width 0.16s ease;
 }
-/* When the terminal occupies the bottom, the status bar sits between the
-   composer and the terminal — reduce only the footer bottom padding. */
-.layout.layout--terminal-drawer-open .footer {
-  padding-bottom: 4px;
-}
 .layout--terminal-drawer-open .terminal-drawer-resizer {
   grid-row: 2;
   grid-column: 2;
@@ -33313,6 +33308,18 @@ body > .mermaid-diagram--fullscreen {
     display: flex !important;
     grid-column: 1 !important;
     grid-row: 3;
+  }
+
+  .app .layout--terminal-drawer-open .terminal-drawer-resizer,
+  :root[data-theme-style] .app .layout--terminal-drawer-open .terminal-drawer-resizer {
+    grid-column: 1 !important;
+  }
+
+  .app .layout--workbench-chrome-hidden.layout--terminal-drawer-open .terminal-drawer,
+  :root[data-theme-style] .app .layout--workbench-chrome-hidden.layout--terminal-drawer-open .terminal-drawer,
+  .app--creation .layout--creation-chrome-hidden.layout--terminal-drawer-open .terminal-drawer,
+  :root[data-theme-style] .app--creation .layout--creation-chrome-hidden.layout--terminal-drawer-open .terminal-drawer {
+    grid-row: 2;
   }
 
   .app .layout--workbench-chrome-hidden.layout--terminal-drawer-open,

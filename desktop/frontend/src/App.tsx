@@ -170,6 +170,7 @@ import {
   saveSidebarWidth,
   saveTerminalHeight,
   saveTerminalPanelOpen,
+  terminalMaxHeight,
   saveWorkspacePanelOpen,
   useLayoutStore,
 } from "./store/layout";
@@ -1193,6 +1194,7 @@ export default function App() {
   const [sidebarResizing, setSidebarResizing] = useState(false);
   const [liveSidebarWidth, setLiveSidebarWidth] = useState<number | null>(null);
   const [viewportWidth, setViewportWidth] = useState(() => (typeof window === "undefined" ? 1440 : window.innerWidth));
+  const [viewportHeight, setViewportHeight] = useState(() => (typeof window === "undefined" ? 720 : window.innerHeight));
   const workspacePanelOpen = useLayoutStore((s) => s.workspacePanelOpen);
   const setWorkspacePanelOpen = useLayoutStore((s) => s.setWorkspacePanelOpen);
   const rightDockTreeWidth = useLayoutStore((s) => s.rightDockTreeWidth);
@@ -1495,7 +1497,10 @@ export default function App() {
   }, [closeTransientOverlays]);
   useEffect(() => {
     if (typeof window === "undefined") return;
-    const onResize = () => setViewportWidth(window.innerWidth);
+    const onResize = () => {
+      setViewportWidth(window.innerWidth);
+      setViewportHeight(window.innerHeight);
+    };
     window.addEventListener("resize", onResize);
     return () => window.removeEventListener("resize", onResize);
   }, []);
@@ -2694,6 +2699,17 @@ export default function App() {
     [rightDockDetailActive, rightDockTreeMinWidth, setSavedWorkspacePanelWidth, workspacePanelRenderWidth],
   );
 
+  const terminalRenderHeight = clampTerminalHeight(terminalHeight, viewportHeight);
+  const terminalResizeMaxHeight = terminalMaxHeight(viewportHeight);
+  const setSavedTerminalHeight = useCallback(
+    (height: number) => {
+      const next = clampTerminalHeight(height, viewportHeight);
+      setTerminalHeight(next);
+      saveTerminalHeight(next);
+    },
+    [setTerminalHeight, viewportHeight],
+  );
+
   const startTerminalResize = useCallback(
     (event: ReactPointerEvent<HTMLButtonElement>) => {
       if (!terminalPanelOpen) return;
@@ -2702,8 +2718,7 @@ export default function App() {
       event.preventDefault();
       closeTransientOverlays();
       const startY = event.clientY;
-      const startHeight = terminalHeight;
-      const viewportHeight = window.innerHeight;
+      const startHeight = terminalRenderHeight;
       let nextHeight = startHeight;
       const liveResize = createRafResizeUpdater({
         target: layout,
@@ -2719,8 +2734,7 @@ export default function App() {
       const onDone = () => {
         liveResize.flush();
         setLiveTerminalHeight(null);
-        setTerminalHeight(nextHeight);
-        saveTerminalHeight(nextHeight);
+        setSavedTerminalHeight(nextHeight);
         window.removeEventListener("pointermove", onMove);
         window.removeEventListener("pointerup", onDone);
         window.removeEventListener("pointercancel", onDone);
@@ -2733,7 +2747,24 @@ export default function App() {
       window.addEventListener("pointerup", onDone);
       window.addEventListener("pointercancel", onDone);
     },
-    [closeTransientOverlays, setLiveTerminalHeight, setTerminalHeight, terminalHeight, terminalPanelOpen],
+    [closeTransientOverlays, setLiveTerminalHeight, setSavedTerminalHeight, terminalPanelOpen, terminalRenderHeight, viewportHeight],
+  );
+
+  const resizeTerminalWithKeyboard = useCallback(
+    (event: KeyboardEvent<HTMLButtonElement>) => {
+      if (!terminalPanelOpen) return;
+      if (event.key === "ArrowUp" || event.key === "ArrowDown") {
+        event.preventDefault();
+        setSavedTerminalHeight(terminalRenderHeight + (event.key === "ArrowUp" ? 16 : -16));
+      } else if (event.key === "Home") {
+        event.preventDefault();
+        setSavedTerminalHeight(TERMINAL_MIN_HEIGHT);
+      } else if (event.key === "End") {
+        event.preventDefault();
+        setSavedTerminalHeight(terminalResizeMaxHeight);
+      }
+    },
+    [setSavedTerminalHeight, terminalPanelOpen, terminalRenderHeight, terminalResizeMaxHeight],
   );
 
   // Manage terminal content visibility for open/close animation.
@@ -2938,9 +2969,9 @@ export default function App() {
         "--chat-min-width": `${chatReservedWidth}px`,
         "--workspace-width": `${workspacePanelRenderWidth}px`,
         "--workspace-resizer-width": `${WORKSPACE_RESIZER_WIDTH}px`,
-        "--terminal-height": `${liveTerminalHeight ?? (terminalPanelOpen ? terminalHeight : 0)}px`,
+        "--terminal-height": `${liveTerminalHeight ?? (terminalPanelOpen ? terminalRenderHeight : 0)}px`,
       }) as CSSProperties,
-    [chatReservedWidth, liveTerminalHeight, sidebarRenderWidth, terminalHeight, terminalPanelOpen, workspacePanelRenderWidth],
+    [chatReservedWidth, liveTerminalHeight, sidebarRenderWidth, terminalPanelOpen, terminalRenderHeight, workspacePanelRenderWidth],
   );
 
   const setWorkspacePanel = useCallback((open: boolean) => {
@@ -4813,12 +4844,14 @@ export default function App() {
             aria-orientation="horizontal"
             aria-label={t("terminal.resize")}
             aria-valuemin={TERMINAL_MIN_HEIGHT}
-            aria-valuemax={Math.floor(window.innerHeight * 0.5)}
-            aria-valuenow={terminalHeight}
+            aria-valuemax={terminalResizeMaxHeight}
+            aria-valuenow={liveTerminalHeight ?? terminalRenderHeight}
+            aria-hidden={!terminalPanelOpen}
+            tabIndex={terminalPanelOpen ? 0 : -1}
             onPointerDown={startTerminalResize}
+            onKeyDown={resizeTerminalWithKeyboard}
             onDoubleClick={() => {
-              setTerminalHeight(TERMINAL_DEFAULT_HEIGHT);
-              saveTerminalHeight(TERMINAL_DEFAULT_HEIGHT);
+              setSavedTerminalHeight(TERMINAL_DEFAULT_HEIGHT);
             }}
           />
         </>

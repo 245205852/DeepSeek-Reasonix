@@ -193,8 +193,12 @@ export function saveTerminalHeight(height: number): void {
   }
 }
 
+export function terminalMaxHeight(viewportHeight: number): number {
+  return Math.max(TERMINAL_MIN_HEIGHT, Math.floor(Math.max(0, viewportHeight) * TERMINAL_MAX_HEIGHT_RATIO));
+}
+
 export function clampTerminalHeight(height: number, viewportHeight: number): number {
-  const max = Math.floor(viewportHeight * TERMINAL_MAX_HEIGHT_RATIO);
+  const max = terminalMaxHeight(viewportHeight);
   return Math.min(max, Math.max(TERMINAL_MIN_HEIGHT, Math.round(height)));
 }
 
