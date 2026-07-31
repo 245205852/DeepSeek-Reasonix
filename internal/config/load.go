@@ -1136,22 +1136,10 @@ const (
 )
 
 func normalizeLegacyStepFunBaseURLs(c *Config) bool {
-	if c == nil {
-		return false
-	}
-	changed := false
-	for i := range c.Providers {
-		p := &c.Providers[i]
-		switch {
-		case isLegacyStepFunPresetProvider(*p, "stepfun", "openai") && normalizedBaseURLForMigration(p.BaseURL) == legacyStepFunOpenAIBaseURL:
-			p.BaseURL = officialStepFunOpenAIBaseURL
-			changed = true
-		case isLegacyStepFunPresetProvider(*p, "stepfun-anthropic", "anthropic") && normalizedBaseURLForMigration(p.BaseURL) == legacyStepFunAnthropicBaseURL:
-			p.BaseURL = officialStepFunAnthropicBaseURL
-			changed = true
-		}
-	}
-	return changed
+	// Both stepfun.ai (global) and stepfun.com (China) are official endpoints.
+	// BaseURL is user-owned provider configuration, so neither runtime loading
+	// nor an unrelated settings save may infer a region and rewrite it.
+	return false
 }
 
 func isLegacyStepFunPresetProvider(p ProviderEntry, id, kind string) bool {

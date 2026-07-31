@@ -1690,7 +1690,7 @@ func TestSettingsMarksPresetWithChangedCoreConfigAsModified(t *testing.T) {
 	}
 }
 
-func TestSettingsMigratesLegacyStepFunPresetBaseURLs(t *testing.T) {
+func TestSettingsPreservesStepFunRegionalPresetBaseURLs(t *testing.T) {
 	isolateDesktopUserDirs(t)
 
 	cfg := config.Default()
@@ -1715,25 +1715,25 @@ func TestSettingsMigratesLegacyStepFunPresetBaseURLs(t *testing.T) {
 	view := NewApp().Settings()
 	for _, id := range []string{"stepfun", "stepfun-anthropic"} {
 		presetView := providerPresetViewByID(t, view, id)
-		if !presetView.Added || presetView.Status != providerPresetStatusInstalled {
-			t.Fatalf("%s preset view = %+v, want installed after migration", id, presetView)
+		if !presetView.Added || presetView.Status != providerPresetStatusInstalledModified {
+			t.Fatalf("%s preset view = %+v, want installed-modified for a preserved regional endpoint", id, presetView)
 		}
 	}
 
-	migrated := config.LoadForEdit(config.UserConfigPath())
-	stepfunEntryView, ok := migrated.Provider("stepfun")
+	loaded := config.LoadForEdit(config.UserConfigPath())
+	stepfunEntryView, ok := loaded.Provider("stepfun")
 	if !ok {
-		t.Fatal("stepfun provider missing after migration")
+		t.Fatal("stepfun provider missing after load")
 	}
-	if got := stepfunEntryView.BaseURL; got != "https://api.stepfun.com/step_plan/v1" {
-		t.Fatalf("stepfun base_url = %q, want official URL", got)
+	if got := stepfunEntryView.BaseURL; got != "https://api.stepfun.ai/step_plan/v1" {
+		t.Fatalf("stepfun base_url = %q, want preserved regional URL", got)
 	}
-	stepfunAnthropicEntryView, ok := migrated.Provider("stepfun-anthropic")
+	stepfunAnthropicEntryView, ok := loaded.Provider("stepfun-anthropic")
 	if !ok {
-		t.Fatal("stepfun-anthropic provider missing after migration")
+		t.Fatal("stepfun-anthropic provider missing after load")
 	}
-	if got := stepfunAnthropicEntryView.BaseURL; got != "https://api.stepfun.com/step_plan" {
-		t.Fatalf("stepfun-anthropic base_url = %q, want official URL", got)
+	if got := stepfunAnthropicEntryView.BaseURL; got != "https://api.stepfun.ai/step_plan" {
+		t.Fatalf("stepfun-anthropic base_url = %q, want preserved regional URL", got)
 	}
 }
 

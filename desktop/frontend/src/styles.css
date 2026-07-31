@@ -6629,6 +6629,7 @@ body > .mermaid-diagram--fullscreen {
   flex: 0 1 auto;
   min-width: 216px;
   max-width: min(420px, 48vw);
+  margin-inline-start: 2px;
   display: flex;
   align-items: center;
   gap: 6px;
@@ -6742,7 +6743,7 @@ body > .mermaid-diagram--fullscreen {
 
 .composer-modebar__item:hover:not(:disabled) {
   color: var(--fg);
-  transform: translateY(-1px);
+  transform: none;
 }
 
 .composer-modebar__item:focus-visible {
@@ -6804,7 +6805,7 @@ body > .mermaid-diagram--fullscreen {
   color: var(--fg);
   border-color: var(--border-soft);
   background: var(--bg-soft);
-  transform: translateY(-1px);
+  transform: none;
 }
 
 .composer-task-mode-trigger:disabled {
@@ -6880,7 +6881,7 @@ body > .mermaid-diagram--fullscreen {
   color: var(--fg);
   border-color: var(--border-soft);
   background: var(--bg-soft);
-  transform: translateY(-1px);
+  transform: none;
 }
 
 .composer-profile-trigger:disabled {
@@ -21589,6 +21590,8 @@ body > .mermaid-diagram--fullscreen {
 }
 
 .topicbar {
+  position: relative;
+  z-index: var(--z-inline-sticky);
   flex: 0 0 auto;
   container-type: inline-size;
   display: flex;
@@ -27147,7 +27150,7 @@ body > .mermaid-diagram--fullscreen {
   color: var(--fg);
   border-color: var(--app-graphite-hairline-strong);
   background: var(--bg-elev);
-  transform: translateY(-1px);
+  transform: none;
 }
 
 :root[data-theme-style] .composer-task-mode-trigger:focus-visible,
@@ -27189,7 +27192,7 @@ body > .mermaid-diagram--fullscreen {
 :root[data-theme-style] .composer-modebar__item:hover:not(:disabled) {
   color: var(--text-2);
   background: transparent;
-  transform: translateY(-1px);
+  transform: none;
 }
 
 :root[data-theme-style] .composer-modebar__item--active,

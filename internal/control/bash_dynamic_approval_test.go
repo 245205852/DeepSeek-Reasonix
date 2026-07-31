@@ -285,7 +285,7 @@ func TestHeadlessExactOnlyBashApprovalModes(t *testing.T) {
 		mode string
 		want bool
 	}{
-		{mode: ToolApprovalAsk, want: true},
+		{mode: ToolApprovalAsk},
 		{mode: ToolApprovalAuto, want: true},
 		{mode: ToolApprovalDontAsk},
 		{mode: ToolApprovalYolo, want: true},

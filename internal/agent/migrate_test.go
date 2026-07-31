@@ -281,6 +281,36 @@ const v1MessageSession = `{"role":"user","content":"recovered after downgrade"}
 {"role":"assistant","content":"ok"}
 `
 
+func TestMigratedJsonlSessionPersistsNewTurns(t *testing.T) {
+	src := t.TempDir()
+	dest := t.TempDir()
+	if err := os.WriteFile(filepath.Join(src, "desktop-legacy.jsonl"), []byte(v1MessageSession), 0o644); err != nil {
+		t.Fatalf("write legacy session: %v", err)
+	}
+	if n, err := MigrateLegacySessions(src, dest, nil); err != nil || n != 1 {
+		t.Fatalf("MigrateLegacySessions: n=%d err=%v", n, err)
+	}
+
+	path := filepath.Join(dest, "desktop-legacy.jsonl")
+	loaded, err := LoadSession(path)
+	if err != nil {
+		t.Fatalf("LoadSession migrated: %v", err)
+	}
+	loaded.Add(provider.Message{Role: provider.RoleUser, Content: "new turn"})
+	loaded.Add(provider.Message{Role: provider.RoleAssistant, Content: "persisted"})
+	if err := loaded.SaveSnapshot(path); err != nil {
+		t.Fatalf("SaveSnapshot migrated: %v", err)
+	}
+
+	reloaded, err := LoadSession(path)
+	if err != nil {
+		t.Fatalf("LoadSession after switch: %v", err)
+	}
+	if got := reloaded.Messages[len(reloaded.Messages)-1].Content; got != "persisted" {
+		t.Fatalf("migrated session tail = %q, want persisted", got)
+	}
+}
+
 // stampMigrated marks src/dest as already through the one-time passes, with the
 // routing watermark set to `at`. It mirrors what a completed migration leaves
 // behind so the re-home pass (not the full passes) handles the next run.

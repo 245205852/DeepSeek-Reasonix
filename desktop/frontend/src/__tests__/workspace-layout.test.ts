@@ -202,6 +202,20 @@ eq(
   "terminal drawer hides the redundant workspace tab strip",
 );
 eq(
+  /\.topicbar \{\s*position: relative;\s*z-index: var\(--z-inline-sticky\);/.test(stylesSource)
+    && /\.external-opener__menu \{[\s\S]*?z-index: var\(--z-topicbar-menu\);/.test(stylesSource),
+  true,
+  "topic bar establishes a raised stacking context for external-opener menus",
+);
+eq(
+  /\.composer-meta__control--approval \{[\s\S]*?margin-inline-start: 2px;/.test(stylesSource)
+    && /\.composer-modebar__item:hover:not\(:disabled\) \{[\s\S]*?transform: none;/.test(stylesSource)
+    && /\.composer-task-mode-trigger:hover:not\(:disabled\),[\s\S]*?\.composer-task-mode-trigger--open \{[\s\S]*?transform: none;/.test(stylesSource)
+    && /\.composer-profile-trigger:hover:not\(:disabled\),[\s\S]*?\.composer-profile-trigger--open \{[\s\S]*?transform: none;/.test(stylesSource),
+  true,
+  "composer mode controls keep spacing and icon baselines stable on hover",
+);
+eq(
   /\.app--creation \.layout--creation-chrome-hidden\.layout--terminal-open \{[\s\S]*?grid-template-rows: minmax\(0, 1fr\) minmax\(220px, min\(42vh, 440px\)\)/.test(stylesSource)
     && /\.app--creation \.layout--creation-chrome-hidden\.layout--terminal-open \.workbench-dock \{[\s\S]*?grid-row: 2/.test(stylesSource),
   true,

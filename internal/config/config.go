@@ -1547,10 +1547,11 @@ type ShellConfig struct {
 // fall back to allow. Allow/Ask/Deny are rule lists of the form "ToolName" or
 // "ToolName(glob)". Precedence: deny > ask > allow > fallback.
 type PermissionsConfig struct {
-	Mode  string   `toml:"mode"`
-	Allow []string `toml:"allow"`
-	Ask   []string `toml:"ask"`
-	Deny  []string `toml:"deny"`
+	Mode             string   `toml:"mode"`
+	Allow            []string `toml:"allow"`
+	Ask              []string `toml:"ask"`
+	Deny             []string `toml:"deny"`
+	AllowDynamicBash bool     `toml:"allow_dynamic_bash"`
 }
 
 // MCPConfigSource records where a merged MCP entry came from. It is runtime
