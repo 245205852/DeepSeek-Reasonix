@@ -47,6 +47,11 @@ import (
 // would race other streams' watchdogs.
 const defaultStreamIdleTimeout = 120 * time.Second
 
+// maxPrefixContinuations keeps automatic recovery bounded. A second length
+// finish is surfaced through the existing truncation notice instead of opening
+// an unbounded (and billable) continuation loop against the Beta endpoint.
+const maxPrefixContinuations = 1
+
 func init() {
 	provider.Register("openai", New)
 }
@@ -77,6 +82,7 @@ func New(cfg provider.Config) (provider.Provider, error) {
 	protocol = normalizeReasoningProtocol(protocol)
 	chatURL, _ := cfg.Extra["chat_url"].(string)
 	chatURL = normalizeChatURL(cfg.BaseURL, chatURL)
+	prefixChatURL := deepSeekPrefixChatURL(chatURL)
 	headers, _ := cfg.Extra["headers"].(map[string]string)
 	extraBody, _ := cfg.Extra["extra_body"].(map[string]any)
 	vision, _ := cfg.Extra["vision"].(bool)
@@ -199,27 +205,28 @@ func New(cfg provider.Config) (provider.Provider, error) {
 		return nil, fmt.Errorf("openai: network: %w", err)
 	}
 	return &client{
-		name:         name,
-		apiKey:       cfg.APIKey,
-		keyEnv:       keyEnv,
-		keySource:    keySource,
-		baseURL:      strings.TrimRight(cfg.BaseURL, "/"),
-		chatURL:      chatURL,
-		headers:      cleanCustomHeaders(headers),
-		extraBody:    cleanExtraBody(extraBody),
-		model:        normalizeModelID(cfg.BaseURL, cfg.Model),
-		deepseek:     deepseek,
-		minimax:      minimax,
-		zhipu:        zhipu,
-		longcat:      longcat,
-		kimiK3:       kimiK3,
-		mimo:         IsMiMo(cfg.BaseURL),
-		thinkingType: thinkingType,
-		vision:       vision,
-		visionDetail: visionDetail,
-		effort:       effort,
-		http:         httpClient,
-		idleTimeout:  defaultStreamIdleTimeout,
+		name:          name,
+		apiKey:        cfg.APIKey,
+		keyEnv:        keyEnv,
+		keySource:     keySource,
+		baseURL:       strings.TrimRight(cfg.BaseURL, "/"),
+		chatURL:       chatURL,
+		prefixChatURL: prefixChatURL,
+		headers:       cleanCustomHeaders(headers),
+		extraBody:     cleanExtraBody(extraBody),
+		model:         normalizeModelID(cfg.BaseURL, cfg.Model),
+		deepseek:      deepseek,
+		minimax:       minimax,
+		zhipu:         zhipu,
+		longcat:       longcat,
+		kimiK3:        kimiK3,
+		mimo:          IsMiMo(cfg.BaseURL),
+		thinkingType:  thinkingType,
+		vision:        vision,
+		visionDetail:  visionDetail,
+		effort:        effort,
+		http:          httpClient,
+		idleTimeout:   defaultStreamIdleTimeout,
 	}, nil
 }
 
@@ -244,28 +251,29 @@ func newHTTPClient(cfg provider.Config) (*http.Client, error) {
 }
 
 type client struct {
-	name         string
-	apiKey       string
-	keyEnv       string // api_key_env name, surfaced in auth errors
-	keySource    string // source of keyEnv, surfaced in auth errors
-	baseURL      string
-	chatURL      string
-	headers      map[string]string
-	extraBody    map[string]any
-	model        string
-	http         *http.Client
-	deepseek     bool
-	minimax      bool          // true for api.minimaxi.com — emits MiniMax-M3's thinking knob instead of reasoning_effort
-	zhipu        bool          // true for Zhipu GLM (bigmodel.cn / z.ai) — gates thinking via thinking.type, ignores reasoning_effort
-	longcat      bool          // true for LongCat — gates thinking via thinking.type, ignores reasoning_effort
-	kimiK3       bool          // true only for kimi-k3 on Moonshot's official direct API hosts
-	mimo         bool          // true for MiMo — upgrades legacy tuple schemas to Draft 2020-12
-	thinkingType string        // explicit `thinking` config override (enabled|disabled); "" = no override
-	vision       bool          // model accepts image input — embed attached images as image_url parts
-	visionDetail string        // image_url detail hint (low|high); "" = auto/omit
-	effort       string        // reasoning_effort for OpenAI; thinking.type for MiniMax; "" = auto/provider default
-	idleTimeout  time.Duration // SSE stall watchdog window; defaultStreamIdleTimeout unless a test overrides
-	authed       atomic.Bool   // a request has succeeded — gate transient-401 retry
+	name          string
+	apiKey        string
+	keyEnv        string // api_key_env name, surfaced in auth errors
+	keySource     string // source of keyEnv, surfaced in auth errors
+	baseURL       string
+	chatURL       string
+	prefixChatURL string // official DeepSeek Beta endpoint; empty for custom gateways
+	headers       map[string]string
+	extraBody     map[string]any
+	model         string
+	http          *http.Client
+	deepseek      bool
+	minimax       bool          // true for api.minimaxi.com — emits MiniMax-M3's thinking knob instead of reasoning_effort
+	zhipu         bool          // true for Zhipu GLM (bigmodel.cn / z.ai) — gates thinking via thinking.type, ignores reasoning_effort
+	longcat       bool          // true for LongCat — gates thinking via thinking.type, ignores reasoning_effort
+	kimiK3        bool          // true only for kimi-k3 on Moonshot's official direct API hosts
+	mimo          bool          // true for MiMo — upgrades legacy tuple schemas to Draft 2020-12
+	thinkingType  string        // explicit `thinking` config override (enabled|disabled); "" = no override
+	vision        bool          // model accepts image input — embed attached images as image_url parts
+	visionDetail  string        // image_url detail hint (low|high); "" = auto/omit
+	effort        string        // reasoning_effort for OpenAI; thinking.type for MiniMax; "" = auto/provider default
+	idleTimeout   time.Duration // SSE stall watchdog window; defaultStreamIdleTimeout unless a test overrides
+	authed        atomic.Bool   // a request has succeeded — gate transient-401 retry
 }
 
 func (c *client) Name() string { return c.name }
@@ -404,9 +412,23 @@ var bufPool = sync.Pool{
 }
 
 func (c *client) Stream(ctx context.Context, req provider.Request) (<-chan provider.Chunk, error) {
+	stream, err := c.openStream(ctx, c.chatURL, c.buildRequest(req), req.Tools)
+	if err != nil {
+		return nil, err
+	}
+	if c.prefixChatURL == "" {
+		return stream, nil
+	}
+
+	out := make(chan provider.Chunk)
+	go c.streamWithPrefixContinuation(ctx, req, stream, out)
+	return out, nil
+}
+
+func (c *client) openStream(ctx context.Context, targetURL string, wireReq chatRequest, tools []provider.ToolSchema) (<-chan provider.Chunk, error) {
 	buf := bufPool.Get().(*bytes.Buffer)
 	buf.Reset()
-	if err := json.NewEncoder(buf).Encode(c.buildRequest(req)); err != nil {
+	if err := json.NewEncoder(buf).Encode(wireReq); err != nil {
 		bufPool.Put(buf)
 		return nil, fmt.Errorf("%s: marshal request: %w", c.name, err)
 	}
@@ -415,7 +437,7 @@ func (c *client) Stream(ctx context.Context, req provider.Request) (<-chan provi
 	bufPool.Put(buf)
 
 	newReq := func(ctx context.Context) (*http.Request, error) {
-		httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, c.chatURL, bytes.NewReader(body))
+		httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, targetURL, bytes.NewReader(body))
 		if err != nil {
 			return nil, err
 		}
@@ -427,13 +449,116 @@ func (c *client) Stream(ctx context.Context, req provider.Request) (<-chan provi
 	}
 	resp, err := provider.SendWithRetry(ctx, c.http, c.sendOpts(), newReq)
 	if err != nil {
-		return nil, provider.AnnotateToolSchemaError(err, req.Tools)
+		return nil, provider.AnnotateToolSchemaError(err, tools)
 	}
 	c.authed.Store(true)
 
 	out := make(chan provider.Chunk)
 	go c.streamWithReconnect(ctx, resp, newReq, out)
 	return out, nil
+}
+
+// streamWithPrefixContinuation makes a DeepSeek Beta continuation look like one
+// ordinary provider stream. Text/reasoning stays live, while usage is folded
+// across both requests so cost and cache accounting remain truthful. If the
+// Beta request fails before emitting anything, the original truncated response
+// is kept and its finish_reason=length reaches the agent's existing warning.
+func (c *client) streamWithPrefixContinuation(ctx context.Context, req provider.Request, current <-chan provider.Chunk, out chan<- provider.Chunk) {
+	defer close(out)
+
+	var fullText, fullReasoning strings.Builder
+	var totalUsage *provider.Usage
+	continuations := 0
+
+	for {
+		var currentUsage *provider.Usage
+		currentHadTool := false
+		currentEmitted := false
+
+		for chunk := range current {
+			switch chunk.Type {
+			case provider.ChunkText:
+				fullText.WriteString(chunk.Text)
+				currentEmitted = currentEmitted || chunk.Text != ""
+				if !sendChunk(ctx, out, chunk) {
+					return
+				}
+			case provider.ChunkReasoning:
+				fullReasoning.WriteString(chunk.Text)
+				currentEmitted = currentEmitted || chunk.Text != ""
+				if !sendChunk(ctx, out, chunk) {
+					return
+				}
+			case provider.ChunkToolCallStart, provider.ChunkToolCallArgsDelta, provider.ChunkToolCall:
+				currentHadTool = true
+				currentEmitted = true
+				if !sendChunk(ctx, out, chunk) {
+					return
+				}
+			case provider.ChunkUsage:
+				currentUsage = mergeUsage(currentUsage, chunk.Usage)
+			case provider.ChunkDone:
+				// The wrapper emits one final Done after any continuation.
+			case provider.ChunkError:
+				// A Beta failure before any continuation bytes is a safe fallback:
+				// the already-streamed first response remains visible and its
+				// length finish reason triggers the normal truncation warning.
+				if continuations > 0 && !currentEmitted && ctx.Err() == nil {
+					emitUsageAndDone(ctx, out, totalUsage)
+					return
+				}
+				_ = sendChunk(ctx, out, chunk)
+				return
+			default:
+				if !sendChunk(ctx, out, chunk) {
+					return
+				}
+			}
+		}
+
+		totalUsage = mergeUsage(totalUsage, currentUsage)
+		if continuations >= maxPrefixContinuations ||
+			currentUsage == nil || currentUsage.FinishReason != "length" ||
+			currentHadTool ||
+			(fullText.Len() == 0 && (c.thinkingType == "disabled" || fullReasoning.Len() == 0)) {
+			emitUsageAndDone(ctx, out, totalUsage)
+			return
+		}
+
+		prefixReq := c.buildPrefixRequest(req, fullText.String(), fullReasoning.String())
+		next, err := c.openStream(ctx, c.prefixChatURL, prefixReq, req.Tools)
+		if err != nil {
+			emitUsageAndDone(ctx, out, totalUsage)
+			return
+		}
+		continuations++
+		current = next
+	}
+}
+
+func emitUsageAndDone(ctx context.Context, out chan<- provider.Chunk, usage *provider.Usage) {
+	if usage != nil && !sendChunk(ctx, out, provider.Chunk{Type: provider.ChunkUsage, Usage: usage}) {
+		return
+	}
+	_ = sendChunk(ctx, out, provider.Chunk{Type: provider.ChunkDone})
+}
+
+func mergeUsage(total, next *provider.Usage) *provider.Usage {
+	if next == nil {
+		return total
+	}
+	if total == nil {
+		clone := *next
+		return &clone
+	}
+	total.PromptTokens += next.PromptTokens
+	total.CompletionTokens += next.CompletionTokens
+	total.TotalTokens += next.TotalTokens
+	total.CacheHitTokens += next.CacheHitTokens
+	total.CacheMissTokens += next.CacheMissTokens
+	total.ReasoningTokens += next.ReasoningTokens
+	total.FinishReason = next.FinishReason
+	return total
 }
 
 // maxStreamReconnects bounds how many times a mid-stream connection drop is
@@ -655,6 +780,16 @@ func (c *client) buildRequest(req provider.Request) chatRequest {
 		// is left untouched for backends that also honour it.
 		out.Thinking = &thinkingMode{Type: c.thinkingType}
 	}
+	return out
+}
+
+func (c *client) buildPrefixRequest(req provider.Request, content, reasoning string) chatRequest {
+	out := c.buildRequest(req)
+	prefix := chatMessage{Role: "assistant", Content: content, Prefix: true}
+	if c.deepseek && c.thinkingType != "disabled" {
+		prefix.ReasoningContent = &reasoning
+	}
+	out.Messages = append(out.Messages, prefix)
 	return out
 }
 
@@ -1008,6 +1143,9 @@ type chatMessage struct {
 	// (empty included — null is rejected by some backends for a tool message);
 	// and a []chatContentPart array for a vision user turn carrying images.
 	Content any `json:"content"`
+	// Prefix is wire-only and is set exclusively on an automatically recovered
+	// DeepSeek assistant tail. omitempty keeps every ordinary request byte-stable.
+	Prefix bool `json:"prefix,omitempty"`
 	// A pointer so the field can serialize as an empty string: DeepSeek thinking
 	// mode requires the reasoning_content key to be PRESENT on assistant
 	// tool_calls turns (an empty value passes; a missing key 400s), while every

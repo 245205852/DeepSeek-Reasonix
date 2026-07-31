@@ -38,6 +38,25 @@ func IsDeepSeek(baseURL string) bool {
 	return matchesVendorHost(baseURL, "deepseek.com", "api.deepseek.com")
 }
 
+// deepSeekPrefixChatURL returns the official Beta chat endpoint that enables
+// assistant-prefix completion. Derive it only from a URL already hosted by
+// DeepSeek: custom gateways may opt into the DeepSeek reasoning wire shape, but
+// must never be bypassed by an automatic request to the vendor's direct API.
+func deepSeekPrefixChatURL(chatURL string) string {
+	if !IsDeepSeek(chatURL) {
+		return ""
+	}
+	u, err := url.Parse(strings.TrimSpace(chatURL))
+	if err != nil || u.Scheme == "" || u.Host == "" {
+		return ""
+	}
+	u.Path = "/beta/chat/completions"
+	u.RawPath = ""
+	u.RawQuery = ""
+	u.Fragment = ""
+	return u.String()
+}
+
 // IsGeminiAPI reports whether baseURL points at Google's Gemini Developer API.
 // Keep this exact-host: other googleapis.com services do not share Gemini's
 // model resource-name compatibility quirk.

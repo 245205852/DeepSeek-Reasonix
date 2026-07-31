@@ -37,6 +37,27 @@ func TestIsDeepSeek(t *testing.T) {
 	}
 }
 
+func TestDeepSeekPrefixChatURL(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		in   string
+		want string
+	}{
+		{name: "canonical", in: "https://api.deepseek.com/chat/completions", want: "https://api.deepseek.com/beta/chat/completions"},
+		{name: "v1 and query", in: "https://api.deepseek.com/v1/chat/completions?trace=1", want: "https://api.deepseek.com/beta/chat/completions"},
+		{name: "regional port", in: "https://sg.deepseek.com:8443/v1/chat/completions", want: "https://sg.deepseek.com:8443/beta/chat/completions"},
+		{name: "custom gateway", in: "https://gateway.example/v1/chat/completions", want: ""},
+		{name: "apex", in: "https://deepseek.com/chat/completions", want: ""},
+		{name: "garbage", in: "not-a-url", want: ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := deepSeekPrefixChatURL(tc.in); got != tc.want {
+				t.Fatalf("deepSeekPrefixChatURL(%q) = %q, want %q", tc.in, got, tc.want)
+			}
+		})
+	}
+}
+
 func TestGeminiAPIModelNormalization(t *testing.T) {
 	for _, tc := range []struct {
 		baseURL string
