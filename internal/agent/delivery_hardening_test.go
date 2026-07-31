@@ -426,7 +426,7 @@ func TestDeliveryTaskNeedsEvidenceSkipsDiagnosticConversations(t *testing.T) {
 		"what's wrong with my wifi",
 		"为什么wps导入zetero参考文献报错",
 		"帮我看看这是什么问题",
-		"排查一下zotero连接问题，我不敢重新安装",
+		"为什么zotero连接不上，我不敢重新安装",
 		"诊断数据库连接失败的原因",
 		"这软件打不开了，怎么回事",
 	}
@@ -447,6 +447,70 @@ func TestDeliveryTaskNeedsEvidenceSkipsDiagnosticConversations(t *testing.T) {
 		if !deliveryTaskNeedsEvidence(input) {
 			t.Errorf("mutation task %q incorrectly classified as NOT needing evidence", input)
 		}
+	}
+}
+
+func TestDeliveryTaskNeedsEvidenceKeepsReadOnlyTechnicalWork(t *testing.T) {
+	inputs := []string{
+		"review this pull request and report whether it is correct",
+		"run go test ./... and tell me why it fails",
+		"reproduce the crash and identify the root cause",
+		"inspect main.go for security vulnerabilities",
+		"诊断当前项目的数据库连接失败原因",
+	}
+	for _, input := range inputs {
+		if !deliveryTaskNeedsEvidence(input) {
+			t.Errorf("read-only technical task %q did not require host-observable evidence", input)
+		}
+		if deliveryTaskNeedsMutation(input) {
+			t.Errorf("read-only technical task %q incorrectly required a mutation", input)
+		}
+	}
+}
+
+func TestDeliveryTaskNeedsMutationHandlesMixedIntent(t *testing.T) {
+	mutationInputs := []string{
+		"I don't want to install dependencies, but update the existing config",
+		"我不想安装新依赖，请修改现有配置修复这个问题",
+	}
+	for _, input := range mutationInputs {
+		if !deliveryTaskNeedsMutation(input) {
+			t.Errorf("mixed-intent input %q did not require a mutation", input)
+		}
+	}
+
+	readOnlyInputs := []string{
+		"review only; do not fix anything",
+		"只分析，不要修改代码",
+		"为什么zotero连接不上，我不敢重新安装",
+	}
+	for _, input := range readOnlyInputs {
+		if deliveryTaskNeedsMutation(input) {
+			t.Errorf("read-only input %q incorrectly required a mutation", input)
+		}
+	}
+}
+
+func TestDeliveryReadOnlyTechnicalTaskRequiresEvidence(t *testing.T) {
+	reg := tool.NewRegistry()
+	reg.Add(fakeReadFileTool{})
+	reg.Add(fakeWriterTool{})
+	answer := []provider.Chunk{
+		{Type: provider.ChunkText, Text: "Reviewed; everything is correct."},
+		{Type: provider.ChunkDone},
+	}
+	prov := &scriptedProvider{name: "p", turns: [][]provider.Chunk{answer, answer, answer}}
+	a := New(prov, reg, NewSession("sys"), Options{DeliveryProfile: true}, event.Discard)
+	err := a.Run(context.Background(), "review this pull request and report whether it is correct")
+	var readinessErr *FinalReadinessError
+	if !errors.As(err, &readinessErr) {
+		t.Fatalf("text-only technical review escaped the evidence gate: %v", err)
+	}
+	if !strings.Contains(readinessErr.Reason, "host-observable work") {
+		t.Fatalf("readiness reason = %q, want missing host-observable work", readinessErr.Reason)
+	}
+	if strings.Contains(readinessErr.Reason, "state change") {
+		t.Fatalf("read-only review incorrectly required a mutation: %q", readinessErr.Reason)
 	}
 }
 

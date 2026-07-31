@@ -1665,35 +1665,99 @@ func registryHasWriterTools(reg *tool.Registry) bool {
 }
 
 func deliveryTaskNeedsEvidence(input string) bool {
-	// Only require host-observable work evidence when the task expects mutations.
-	// Diagnostic/troubleshooting conversations (where the user is asking "what's
-	// wrong" or "why isn't this working") naturally complete when advice is given
-	// — there is no file to change or command to run on the host.
-	if !deliveryTaskNeedsMutation(input) {
+	if !heuristicInputIsTask(input) {
 		return false
 	}
-	return heuristicInputIsTask(input)
+	// Mutations always need evidence. Read-only technical tasks still need it
+	// when the user names work Reasonix can observe (reviewing a PR, reading a
+	// file, running tests, or reproducing a failure). Only explicit advisory
+	// questions may finish with an explanation alone.
+	return deliveryTaskNeedsMutation(input) || !deliveryTaskIsAdvisory(input)
 }
 
 func deliveryTaskNeedsMutation(input string) bool {
 	normalized := strings.ToLower(strings.TrimSpace(input))
-	for _, phrase := range []string{
-		"do not fix", "don't fix", "without changing", "without modifying", "analysis only", "review only",
-		"不要修复", "不要修改", "不要改动", "只分析", "仅分析", "只检查", "仅检查", "只评审", "仅评审",
-		// Negation: user explicitly says they do NOT want to perform this action.
-		"不敢重新安装", "不敢安装", "不敢修改", "不想安装", "不想修改",
+	for _, clause := range deliveryTaskClauses(normalized) {
+		if deliveryMutationClauseNegated(clause) {
+			continue
+		}
+		for _, needle := range []string{
+			"fix", "repair", "resolve", "create", "add", "write", "edit", "update", "change", "delete", "remove", "rename",
+			"implement", "refactor", "apply", "install", "publish", "commit", "push", "continue work",
+			"修复", "解决", "创建", "新建", "添加", "编写", "编辑", "修改", "更新", "删除", "移除", "重命名", "实现", "重构",
+			"实施", "落地", "安装", "发布", "提交", "继续处理",
+		} {
+			if containsTaskNeedle(clause, needle) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func deliveryTaskIsAdvisory(input string) bool {
+	normalized := strings.ToLower(strings.TrimSpace(input))
+
+	// Concrete host-observable work wins over question wording. A request such
+	// as "why does go test fail?" still requires running or inspecting it.
+	for _, needle := range []string{
+		"review", "inspect", "analyze", "check", "test", "run", "reproduce", "audit", "verify",
+		"评审", "审查", "检查", "分析", "测试", "运行", "复现", "审计", "验证",
 	} {
-		if strings.Contains(normalized, phrase) {
+		if containsTaskNeedle(normalized, needle) {
 			return false
 		}
 	}
-	for _, needle := range []string{
-		"fix", "repair", "resolve", "create", "add", "write", "edit", "update", "change", "delete", "remove", "rename",
-		"implement", "refactor", "apply", "install", "publish", "commit", "push", "continue work",
-		"修复", "解决", "创建", "新建", "添加", "编写", "编辑", "修改", "更新", "删除", "移除", "重命名", "实现", "重构",
-		"实施", "落地", "安装", "发布", "提交", "继续处理",
+	for _, anchor := range []string{
+		"this repo", "this repository", "current repository", "codebase", "workspace", "pull request", "ci job",
+		"当前仓库", "这个仓库", "当前项目", "这个项目", "代码库", "工作区", "这个 pr", "这个pr",
 	} {
-		if containsTaskNeedle(normalized, needle) {
+		if strings.Contains(normalized, anchor) {
+			return false
+		}
+	}
+	if strings.Contains(input, "@") || strings.Contains(input, ".go") ||
+		strings.Contains(input, ".js") || strings.Contains(input, ".py") || strings.Contains(input, ".ts") {
+		return false
+	}
+
+	for _, phrase := range []string{
+		"what's wrong", "what is wrong", "why", "what should i do", "how should i", "can you explain", "give me advice",
+		"为什么", "怎么回事", "怎么办", "是什么问题", "什么原因", "的原因", "给我建议", "有什么建议",
+	} {
+		if strings.Contains(normalized, phrase) {
+			return true
+		}
+	}
+	return false
+}
+
+func deliveryTaskClauses(input string) []string {
+	input = strings.NewReplacer(
+		" but ", "\n",
+		" however ", "\n",
+		" nevertheless ", "\n",
+		"但请", "\n请",
+		"但是", "\n",
+		"不过", "\n",
+	).Replace(input)
+	return strings.FieldsFunc(input, func(r rune) bool {
+		switch r {
+		case '\n', '\r', '.', '。', ',', '，', ';', '；', '!', '！', '?', '？':
+			return true
+		default:
+			return false
+		}
+	})
+}
+
+func deliveryMutationClauseNegated(clause string) bool {
+	for _, phrase := range []string{
+		"do not fix", "don't fix", "without changing", "without modifying", "analysis only", "review only",
+		"不要修复", "不要修改", "不要改动", "只分析", "仅分析", "只检查", "仅检查", "只评审", "仅评审",
+		"不敢重新安装", "不敢安装", "不敢修改", "不想安装", "不想修改",
+	} {
+		if strings.Contains(clause, phrase) {
 			return true
 		}
 	}
