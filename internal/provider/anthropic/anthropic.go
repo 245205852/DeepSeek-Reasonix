@@ -298,10 +298,11 @@ func (c *client) buildRequest(req provider.Request) anthRequest {
 		case provider.RoleAssistant:
 			var blocks []contentBlock
 			// Replay provider reasoning before the tool_use it led to. DeepSeek uses
-			// unsigned thinking blocks and requires every reasoning block to be
-			// returned when tools are present. Anthropic proper requires a signature,
-			// so reasoning without one cannot be replayed on that endpoint.
-			if c.deepSeekThinkingEnabled() && len(req.Tools) > 0 && m.ReasoningContent != "" {
+			// unsigned thinking blocks and requires the reasoning from a tool-call
+			// turn in every subsequent request, even if the current request no longer
+			// declares tools or has since disabled thinking. Anthropic proper requires
+			// a signature, so reasoning without one cannot be replayed on that endpoint.
+			if c.deepseek && len(m.ToolCalls) > 0 && m.ReasoningContent != "" {
 				blocks = append(blocks, contentBlock{Type: "thinking", Thinking: m.ReasoningContent})
 			} else if c.thinking == "adaptive" && m.ReasoningContent != "" && m.ReasoningSignature != "" {
 				blocks = append(blocks, contentBlock{Type: "thinking", Thinking: m.ReasoningContent, Signature: m.ReasoningSignature})

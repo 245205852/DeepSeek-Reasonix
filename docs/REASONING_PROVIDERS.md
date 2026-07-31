@@ -13,7 +13,8 @@ get a tailored request shape automatically — no extra config needed.
 
 | Provider | Base URL | Reasoning control | `/effort` levels | Notes |
 |----------|----------|-------------------|------------------|-------|
-| DeepSeek V4 Flash/Pro | `api.deepseek.com`, `*.deepseek.com` | `thinking.type` + `reasoning_effort` (depth) | `auto`, `disabled`, `high`, `max` | Thinking on by default; `disabled` turns it off via `thinking.type=disabled`. Compatibility inputs `low`/`medium` normalize to `high`, while `xhigh` normalizes to `max`. |
+| DeepSeek V4 Flash | `api.deepseek.com`, `*.deepseek.com` | `thinking.type` + `reasoning_effort` (depth) | `auto`, `disabled`, `low`, `high`, `max` | Thinking on by default; `disabled` turns it off via `thinking.type=disabled`. Compatibility input `medium` normalizes to `high`, while `xhigh` normalizes to `high`. |
+| DeepSeek V4 Pro | `api.deepseek.com`, `*.deepseek.com` | `thinking.type` + `reasoning_effort` (depth) | `auto`, `disabled`, `high`, `max` | Thinking on by default; `disabled` turns it off via `thinking.type=disabled`. Compatibility inputs `low`/`medium` normalize to `high`, while `xhigh` normalizes to `max`. |
 | MiniMax M3 | `api.minimaxi.com`, `*.minimaxi.com` | `thinking.type` (`adaptive`\|`disabled`) | `auto`, `adaptive`, `disabled` | No depth scale; `reasoning_effort` is omitted. |
 | Zhipu GLM | `open.bigmodel.cn` / `*.bigmodel.cn`, `api.z.ai` / `*.z.ai` | `thinking.type` (`enabled`\|`disabled`) | `auto`, `enabled`, `disabled` | **`reasoning_effort` is silently ignored** by the endpoint, so reasoning is driven purely through `thinking.type`. |
 
@@ -31,9 +32,14 @@ The optional `deepseek-anthropic` preset targets
 provider as Reasonix's default, but provides a native Messages API path for
 compatibility testing and Anthropic-oriented clients. Reasonix emits
 `thinking.type=enabled|disabled` with `output_config.effort`, replays unsigned
-DeepSeek thinking blocks whenever tools are present, omits unsupported images,
-and relies on DeepSeek's automatic prefix cache instead of ignored
+DeepSeek thinking blocks from historical tool-call turns, omits unsupported
+images, and relies on DeepSeek's automatic prefix cache instead of ignored
 `cache_control` markers.
+
+The preset exposes `auto`, `disabled`, `high`, and `max`: unlike the
+Chat Completions Flash path above, the Anthropic-compatible endpoint currently
+documents only `high|max` effort on the wire. Compatibility inputs reaching the
+provider normalize `low`/`medium` to `high` and `xhigh` to `max`.
 
 ## Everything else (standard `reasoning_effort`)
 

@@ -461,6 +461,52 @@ func TestBuildRequestDeepSeekThinking(t *testing.T) {
 	}
 }
 
+func TestBuildRequestDeepSeekReplaysOnlyToolCallReasoningFromHistory(t *testing.T) {
+	toolTurn := []provider.Message{
+		{Role: provider.RoleUser, Content: "weather?"},
+		{Role: provider.RoleAssistant, ReasoningContent: "I should call the tool.",
+			ToolCalls: []provider.ToolCall{{ID: "t1", Name: "get_weather", Arguments: `{"city":"Paris"}`}}},
+		{Role: provider.RoleTool, ToolCallID: "t1", Content: "sunny"},
+	}
+	for _, tc := range []struct {
+		name     string
+		thinking string
+		effort   string
+	}{
+		{name: "current request has no tools", thinking: "enabled", effort: "high"},
+		{name: "thinking disabled after tool call", thinking: "enabled", effort: "disabled"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			c := &client{model: "deepseek-v4-flash", deepseek: true, thinking: tc.thinking, effort: tc.effort}
+			r := c.buildRequest(provider.Request{Messages: toolTurn})
+			if len(r.Tools) != 0 {
+				t.Fatalf("current request tools = %+v, want none", r.Tools)
+			}
+			if len(r.Messages) != 3 {
+				t.Fatalf("messages = %+v, want user/assistant/user", r.Messages)
+			}
+			blocks := r.Messages[1].Content
+			if len(blocks) != 2 || blocks[0].Type != "thinking" || blocks[0].Thinking != "I should call the tool." || blocks[1].Type != "tool_use" {
+				t.Fatalf("assistant blocks = %+v, want historical thinking before tool_use", blocks)
+			}
+		})
+	}
+
+	t.Run("reasoning without a tool call stays omitted", func(t *testing.T) {
+		c := &client{model: "deepseek-v4-flash", deepseek: true, thinking: "enabled", effort: "high"}
+		r := c.buildRequest(provider.Request{
+			Messages: []provider.Message{
+				{Role: provider.RoleUser, Content: "hello"},
+				{Role: provider.RoleAssistant, Content: "hi", ReasoningContent: "private scratchpad"},
+			},
+			Tools: []provider.ToolSchema{{Name: "get_weather"}},
+		})
+		if len(r.Messages) != 2 || len(r.Messages[1].Content) != 1 || r.Messages[1].Content[0].Type != "text" {
+			t.Fatalf("non-tool assistant blocks = %+v, want visible text only", r.Messages)
+		}
+	})
+}
+
 func TestBuildRequestDeepSeekThinkingModes(t *testing.T) {
 	for _, tc := range []struct {
 		name, input, want string
