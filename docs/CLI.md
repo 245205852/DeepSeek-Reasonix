@@ -295,6 +295,11 @@ For unattended execution with ordinary writer fallback enabled, use
 `reasonix run --auto ...` (or `-y`). The alias cannot be combined with an
 explicit `--permission-mode` value.
 
+`[permissions] allow_dynamic_bash = true` is an advanced opt-in that lets an
+Allow fallback, including Auto, cover command/process substitution, dynamic
+command names, shell `-c`, and other nested/indirect Bash forms. The default is
+`false`; explicit `ask` and `deny` rules still take precedence.
+
 `--allowed-tools` is a session permission override, not a provider tool-schema
 filter. Rules may be comma- or space-separated, and the flag is repeatable.
 Configured deny rules always win over command-line allow rules.

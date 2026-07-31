@@ -227,9 +227,10 @@ func TestRenderTOMLRoundTrips(t *testing.T) {
 	orig.Tools.Shell.Prefer = "bash"
 	orig.Tools.Shell.Path = "/usr/local/bin/bash"
 	orig.Permissions = PermissionsConfig{
-		Mode:  "deny",
-		Deny:  []string{"Bash(rm -rf*)"},
-		Allow: []string{"Bash(go test:*)", "read_file"},
+		Mode:             "deny",
+		Deny:             []string{"Bash(rm -rf*)"},
+		Allow:            []string{"Bash(go test:*)", "read_file"},
+		AllowDynamicBash: true,
 	}
 	orig.Network = NetworkConfig{
 		ProxyMode: "custom",
