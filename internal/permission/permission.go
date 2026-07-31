@@ -152,12 +152,23 @@ type Policy struct {
 	// Code's --allowed-tools. Deny rules still win, while these rules override
 	// configured Ask entries for the current process only.
 	SessionAllow []Rule
+	// AllowDynamicBash lets the writer fallback Mode cover command
+	// substitution and interpreter -c/-e forms. It is deliberately opt-in:
+	// broad Bash allow rules alone must not re-open nested-command bypasses.
+	AllowDynamicBash bool
 }
 
 // WithSessionAllow returns a copy of p with additional ephemeral allow rules.
 // Malformed entries are ignored consistently with New.
 func (p Policy) WithSessionAllow(rules []string) Policy {
 	p.SessionAllow = append(append([]Rule(nil), p.SessionAllow...), parseRules(rules)...)
+	return p
+}
+
+// WithAllowDynamicBashFallback enables the explicit advanced override for
+// dynamic shell shapes. Deny, ask, and exact allow rules retain precedence.
+func (p Policy) WithAllowDynamicBashFallback(enabled bool) Policy {
+	p.AllowDynamicBash = enabled
 	return p
 }
 
@@ -224,6 +235,8 @@ func (p Policy) DecideSubject(toolName string, readOnly bool, subject string) De
 		switch {
 		case requiresHuman && p.Mode == Deny:
 			return Deny
+		case requiresHuman && p.AllowDynamicBash && p.Mode == Allow:
+			return Allow
 		case requiresHuman:
 			return Ask
 		case requiresExact && readOnly:
