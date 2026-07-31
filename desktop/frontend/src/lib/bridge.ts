@@ -388,6 +388,7 @@ export interface AppBindings {
   SetDefaultAutoRecoveryCheckpoint(enabled: boolean): Promise<void>;
 
   SaveProvider(p: ProviderView): Promise<void>;
+  SaveProviders(providers: ProviderView[]): Promise<void>;
   SaveProviderWithKey(p: ProviderView, key: string): Promise<string>;
   AddOfficialProviderAccess(kind: string, key: string): Promise<string>;
   AddProviderPresetAccess(id: string, key: string): Promise<string>;
@@ -890,7 +891,7 @@ function bridgeBreadcrumb(method: string): string {
     return `model ${method}`;
   if (/^(SetDesktop|SetCloseBehavior|SetDisplayMode|SetStatusBar|SetExpandThinking|SetAutoPlan|SetDefaultToolApprovalMode|SetReasoningLanguage)/.test(method))
     return `settings ${method}`;
-  if (/^(SaveProvider|AddOfficialProviderAccess|AddProviderPresetAccess|ResetProviderPresetAccess|RemoveProviderAccess|DeleteProvider|SaveProviderKey|SetProviderKey|ClearProviderKey|FetchProviderModels|FetchAllProviderModels|ConnectKey)/.test(method))
+  if (/^(SaveProvider|SaveProviders|AddOfficialProviderAccess|AddProviderPresetAccess|ResetProviderPresetAccess|RemoveProviderAccess|DeleteProvider|SaveProviderKey|SetProviderKey|ClearProviderKey|FetchProviderModels|FetchAllProviderModels|ConnectKey)/.test(method))
     return `provider ${method}`;
   if (/^(CheckUpdate|DownloadUpdate|DownloadUpdateRequest|InstallUpdate|InstallUpdateRequest|ApplyUpdate|OpenDownloadPage)/.test(method)) return `update ${method}`;
   if (/^(AddMCPServer|InstallMCPServer|UpdateMCPServer|RemoveMCPServer|AuthorizeAndConnectMCPServer|ReconnectMCPServer|ClearMCPServerAuthentication|SetMCPServer)/.test(method))
@@ -3977,6 +3978,9 @@ function makeMockApp(): AppBindings {
       const i = settings.providers.findIndex((x) => x.name === p.name);
       if (i >= 0) settings.providers[i] = p;
       else settings.providers.push(p);
+    },
+    async SaveProviders(providers: ProviderView[]) {
+      for (const p of providers) await this.SaveProvider(p);
     },
     async SaveProviderWithKey(p: ProviderView, key: string) {
       p.added = true;

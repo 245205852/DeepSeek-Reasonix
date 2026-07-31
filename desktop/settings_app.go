@@ -1152,17 +1152,12 @@ func (a *App) applyConfigChangeWithWarning(setting string, mutate func(*config.C
 	}(); err != nil {
 		return "", err
 	}
-	// Persist config and return immediately. The rebuild is slow work
-	// (snapshot + teardown + reconstruction of the active tab's chat runtime)
-	// and must not block the binding response. Serialize via runtimeRebuildMu
-	// inside rebuildSetting; emit settings:rebuild-* when done.
-	go func() {
-		if err := a.rebuildSetting(setting); err != nil {
-			a.emitRebuildDone(setting, err)
-		} else {
-			a.emitRebuildDone(setting, nil)
+	if err := a.rebuildSetting(setting); err != nil {
+		if warning, ok := a.deferredRebuildWarning(setting, err); ok {
+			return warning, nil
 		}
-	}()
+		return "", err
+	}
 	return "", nil
 }
 
@@ -2110,6 +2105,23 @@ func (a *App) SaveProvider(p ProviderView) error {
 	})
 }
 
+// SaveProviders applies background model-catalog updates in one config
+// transaction and rebuilds the active runtime once after every provider is
+// persisted. Manual provider edits continue to use SaveProvider.
+func (a *App) SaveProviders(providers []ProviderView) error {
+	if len(providers) == 0 {
+		return nil
+	}
+	return a.applyConfigChange(func(c *config.Config) error {
+		for _, p := range providers {
+			if err := saveProviderConfig(c, p); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+}
+
 // SaveProviderWithKey saves a custom provider and its credential as one settings
 // transaction, then rebuilds once after both are visible to the runtime.
 func (a *App) SaveProviderWithKey(p ProviderView, key string) (string, error) {
@@ -2345,6 +2357,7 @@ func (a *App) FetchAllProviderModels(providers []ProviderView) map[string][]stri
 	var mu sync.Mutex
 	g, ctx := errgroup.WithContext(a.reqCtx())
 	g.SetLimit(4)
+	root := a.activeWorkspaceRoot()
 	for i := range providers {
 		p := providers[i]
 		g.Go(func() error {
@@ -2357,17 +2370,18 @@ func (a *App) FetchAllProviderModels(providers []ProviderView) map[string][]stri
 				Headers:    p.Headers,
 				AuthHeader: p.AuthHeader,
 			}
-			e.ResolveAPIKeyForRoot(a.activeWorkspaceRoot())
+			e.ResolveAPIKeyForRoot(root)
 			ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
 			defer cancel()
 			models, err := e.FetchModels(ctx)
+			if err != nil {
+				// Omit failed providers so the frontend can retry them through
+				// the cached single-provider path without emitting JSON null.
+				return nil
+			}
 			mu.Lock()
 			defer mu.Unlock()
-			if err != nil {
-				results[p.Name] = nil
-			} else {
-				results[p.Name] = nonNil(chatProviderModels(models))
-			}
+			results[p.Name] = nonNil(chatProviderModels(models))
 			return nil
 		})
 	}

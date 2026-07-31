@@ -1,110 +1,153 @@
-// Provider model cache with single-flight deduplication and exponential
-// backoff. Wraps the Wails-bound FetchProviderModels to avoid redundant
-// network requests when the Settings > Model panel mounts or re-renders.
-//
-// Cache keyed by apiKeyEnv | baseUrl | modelsURL, TTL 60 s.
+import type { ProviderView } from "./types";
+
+// Provider model cache with single-flight deduplication and time-based
+// exponential backoff. The cache identity mirrors every ProviderView field that
+// can change model discovery or credential resolution without storing secrets.
 
 type CacheEntry = { at: number; models: string[] };
+type BackoffEntry = { delay: number; retryAt: number; error: unknown };
 
 const cache = new Map<string, CacheEntry>();
 const inflight = new Map<string, Promise<string[]>>();
-const backoff = new Map<string, number>();
+const backoff = new Map<string, BackoffEntry>();
+const generations = new Map<string, number>();
 
 const TTL = 60_000;
-const BACKOFF_INITIAL = 1000;
+const BACKOFF_INITIAL = 1_000;
 const BACKOFF_CAP = 60_000;
+let cacheEpoch = 0;
 
-function cacheKey(p: { apiKeyEnv?: string; baseUrl?: string; modelsURL?: string }): string {
-  return [
-    (p.apiKeyEnv ?? "").trim(),
-    (p.baseUrl ?? "").trim(),
-    (p.modelsURL ?? "").trim(),
-  ].join("|");
+function normalizedHeaders(headers?: Record<string, string> | null): [string, string][] {
+  return Object.entries(headers ?? {}).sort(([a], [b]) => a.localeCompare(b));
 }
 
-function currentBackoff(key: string): number {
-  const d = backoff.get(key) ?? BACKOFF_INITIAL;
-  return d;
+function cacheKey(p: ProviderView): string {
+  return JSON.stringify([
+    p.apiKeyEnv.trim(),
+    p.name.trim(),
+    p.kind.trim(),
+    p.baseUrl.trim(),
+    p.modelsUrl.trim(),
+    Boolean(p.authHeader),
+    normalizedHeaders(p.headers),
+    (p.keySource ?? "").trim(),
+    (p.keySourcePath ?? "").trim(),
+  ]);
 }
 
-function increaseBackoff(key: string): void {
-  backoff.set(key, Math.min(currentBackoff(key) * 2, BACKOFF_CAP));
+function cacheKeyAPIKeyEnv(key: string): string {
+  try {
+    const parsed = JSON.parse(key) as unknown[];
+    return typeof parsed[0] === "string" ? parsed[0] : "";
+  } catch {
+    return "";
+  }
 }
 
-function resetBackoff(key: string): void {
+function generation(key: string): number {
+  return generations.get(key) ?? 0;
+}
+
+function invalidateKey(key: string): void {
+  generations.set(key, generation(key) + 1);
+  cache.delete(key);
   backoff.delete(key);
+  // Do not cancel an active request, but stop new callers from joining it.
+  // Its generation guard prevents a stale result from repopulating the cache.
+  inflight.delete(key);
+}
+
+function knownKeys(): Set<string> {
+  return new Set([
+    ...cache.keys(),
+    ...inflight.keys(),
+    ...backoff.keys(),
+    ...generations.keys(),
+  ]);
 }
 
 export async function cachedFetchProviderModels(
-  fetchFn: (provider: any) => Promise<string[]>,
-  provider: any,
+  fetchFn: (provider: ProviderView) => Promise<string[]>,
+  provider: ProviderView,
   force = false,
 ): Promise<string[]> {
   const key = cacheKey(provider);
+  const now = Date.now();
 
-  // Cache hit (skip if forced refresh)
   if (!force) {
     const hit = cache.get(key);
-    if (hit && Date.now() - hit.at < TTL) return hit.models;
+    if (hit && now - hit.at < TTL) return [...hit.models];
   }
 
-  // Single-flight: reuse in-flight promise
   const pending = inflight.get(key);
   if (pending) return pending;
 
-  // Check backoff — if we're in a cool-down window, resolve empty
-  const delay = currentBackoff(key);
-  if (backoff.has(key) && delay >= BACKOFF_INITIAL * 2) {
-    // At least one prior failure; skip eager retry and return empty
-    return [];
+  const cooldown = backoff.get(key);
+  if (!force && cooldown && now < cooldown.retryAt) {
+    throw cooldown.error;
   }
 
-  const p = fetchFn(provider)
+  const requestEpoch = cacheEpoch;
+  const requestGeneration = generation(key);
+  let request: Promise<string[]>;
+  request = fetchFn(provider)
     .then((models) => {
-      cache.set(key, { at: Date.now(), models });
-      resetBackoff(key);
+      if (cacheEpoch === requestEpoch && generation(key) === requestGeneration) {
+        cache.set(key, { at: Date.now(), models: [...models] });
+        backoff.delete(key);
+      }
       return models;
     })
-    .catch((err) => {
-      increaseBackoff(key);
-      throw err;
+    .catch((error) => {
+      if (cacheEpoch === requestEpoch && generation(key) === requestGeneration) {
+        const previous = backoff.get(key);
+        const delay = previous ? Math.min(previous.delay * 2, BACKOFF_CAP) : BACKOFF_INITIAL;
+        backoff.set(key, { delay, retryAt: Date.now() + delay, error });
+      }
+      throw error;
     })
     .finally(() => {
-      inflight.delete(key);
+      if (inflight.get(key) === request) inflight.delete(key);
     });
 
-  inflight.set(key, p);
-  return p;
+  inflight.set(key, request);
+  return request;
 }
 
-/** Tell the caller whether this provider is in backoff. */
-export function isBackingOff(provider: any): boolean {
-  return backoff.has(cacheKey(provider));
+/** Tell the caller whether this provider is still inside its retry window. */
+export function isBackingOff(provider: ProviderView): boolean {
+  const state = backoff.get(cacheKey(provider));
+  return Boolean(state && Date.now() < state.retryAt);
 }
 
-/** Clear cache for a single provider (e.g. after key change). */
-export function invalidateProviderCache(provider: any): void {
-  const key = cacheKey(provider);
-  cache.delete(key);
-  resetBackoff(key);
+/** Clear cache/backoff for one exact provider request identity. */
+export function invalidateProviderCache(provider: ProviderView): void {
+  invalidateKey(cacheKey(provider));
 }
 
-/** Clear the entire model cache. */
+/** Clear every provider identity that resolves credentials through this env. */
+export function invalidateProviderCacheByAPIKeyEnv(apiKeyEnv: string): void {
+  const normalized = apiKeyEnv.trim();
+  if (!normalized) return;
+  for (const key of knownKeys()) {
+    if (cacheKeyAPIKeyEnv(key) === normalized) invalidateKey(key);
+  }
+}
+
+/** Clear the entire model cache without allowing stale inflight writes back in. */
 export function clearModelCache(): void {
+  cacheEpoch += 1;
   cache.clear();
+  inflight.clear();
   backoff.clear();
-  // inflight promises are left to resolve naturally
+  generations.clear();
 }
 
-/**
- * Return true when the network connection is too slow for background
- * model-list refreshes.
- */
+/** Return true when the network is too slow for background model discovery. */
 export function shouldSkipAutoRefresh(): boolean {
-  const nav = navigator as any;
+  const nav = navigator as Navigator & {
+    connection?: { saveData?: boolean; effectiveType?: string };
+  };
   const conn = nav.connection;
-  if (!conn) return false;
-  if (conn.saveData) return true;
-  if (conn.effectiveType === "slow-2g" || conn.effectiveType === "2g") return true;
-  return false;
+  return Boolean(conn?.saveData || conn?.effectiveType === "slow-2g" || conn?.effectiveType === "2g");
 }

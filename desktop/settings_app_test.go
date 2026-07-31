@@ -405,6 +405,38 @@ func TestFetchProviderModelsUsesSavedCredentialBeforeEnvironment(t *testing.T) {
 	}
 }
 
+func TestFetchAllProviderModelsOmitsFailuresWithoutJSONNulls(t *testing.T) {
+	good := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"object": "list",
+			"data":   []map[string]string{{"id": "model-a", "object": "model"}},
+		})
+	}))
+	defer good.Close()
+	bad := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, `{"error":"temporary"}`, http.StatusServiceUnavailable)
+	}))
+	defer bad.Close()
+
+	got := NewApp().FetchAllProviderModels([]ProviderView{
+		{Name: "good", Kind: "openai", BaseURL: good.URL},
+		{Name: "bad", Kind: "openai", BaseURL: bad.URL},
+	})
+	if want := []string{"model-a"}; !reflect.DeepEqual(got["good"], want) {
+		t.Fatalf("good provider models = %v, want %v", got["good"], want)
+	}
+	if _, ok := got["bad"]; ok {
+		t.Fatalf("failed provider unexpectedly present: %#v", got)
+	}
+	raw, err := json.Marshal(got)
+	if err != nil {
+		t.Fatalf("marshal batch result: %v", err)
+	}
+	if strings.Contains(string(raw), "null") {
+		t.Fatalf("batch result contains JSON null: %s", raw)
+	}
+}
+
 func TestSaveProviderFiltersNonChatModels(t *testing.T) {
 	isolateDesktopUserDirs(t)
 
@@ -462,6 +494,41 @@ func TestSaveProviderFiltersNonChatModels(t *testing.T) {
 	}
 	if !strings.Contains(block, `vision_models = ["mimo-v2.5-pro"]`) {
 		t.Fatalf("saved provider block did not persist filtered vision_models:\n%s", block)
+	}
+}
+
+func TestSaveProvidersPersistsBatchAtomically(t *testing.T) {
+	isolateDesktopUserDirs(t)
+
+	app := NewApp()
+	providers := []ProviderView{
+		{Name: "batch-a", Kind: "openai", BaseURL: "https://a.example.com/v1", Models: []string{"model-a"}, APIKeyEnv: "BATCH_A_API_KEY"},
+		{Name: "batch-b", Kind: "openai", BaseURL: "https://b.example.com/v1", Models: []string{"model-b"}, APIKeyEnv: "BATCH_B_API_KEY"},
+	}
+	if err := app.SaveProviders(providers); err != nil {
+		t.Fatalf("SaveProviders: %v", err)
+	}
+
+	cfg := config.LoadForEdit(config.UserConfigPath())
+	for _, want := range providers {
+		got, ok := cfg.Provider(want.Name)
+		if !ok {
+			t.Fatalf("saved provider %q not found", want.Name)
+		}
+		if got.DefaultModel() != want.Models[0] {
+			t.Fatalf("provider %q default = %q, want %q", want.Name, got.DefaultModel(), want.Models[0])
+		}
+	}
+
+	if err := app.SaveProviders([]ProviderView{
+		{Name: "must-not-persist", Kind: "openai", BaseURL: "https://valid.example.com/v1", Models: []string{"valid"}},
+		{Name: "", Kind: "openai", BaseURL: "https://invalid.example.com/v1", Models: []string{"invalid"}},
+	}); err == nil {
+		t.Fatal("SaveProviders invalid batch returned nil error")
+	}
+	cfg = config.LoadForEdit(config.UserConfigPath())
+	if _, ok := cfg.Provider("must-not-persist"); ok {
+		t.Fatal("SaveProviders persisted a partial invalid batch")
 	}
 }
 

@@ -5,7 +5,7 @@ import { useDeferredClose } from "../lib/useMountTransition";
 import { app, openExternal } from "../lib/bridge";
 import { normalizeLangPref, useI18n, useT, type DictKey, type LangPref } from "../lib/i18n";
 import { apiKeyEnvFromProviderName, inferredVisionModels, mergedFetchedProviderModels, mergeProviderModelContextWindows, providerApiKeyEnvForSave, providerDefaultModel, providerIsConfigured, providerModelCandidates, providerModelContextWindowDrafts, providerModelContextWindowIsSmall, providerRequiresKey } from "../lib/providerModels";
-import { cachedFetchProviderModels, shouldSkipAutoRefresh } from "../lib/providerModelCache";
+import { cachedFetchProviderModels, invalidateProviderCacheByAPIKeyEnv, shouldSkipAutoRefresh } from "../lib/providerModelCache";
 import { switchUpdaterChannel, useUpdater } from "../lib/useUpdater";
 import {
   applyTheme,
@@ -4053,19 +4053,29 @@ function ModelsSection({ s, busy, apply, backgroundApply, initialFocus }: Models
         return provider ? { group, provider } : null;
       })
       .filter((item): item is { group: ProviderAccessGroup; provider: ProviderView } => Boolean(item));
-    const refreshKey = candidates.map(({ group, provider }) => `${group.id}:${provider.apiKeyEnv || provider.name}:${provider.baseUrl}`).join("|");
+    const refreshKey = candidates.map(({ group, provider }) => JSON.stringify([
+      group.id,
+      provider.name,
+      provider.kind,
+      provider.apiKeyEnv,
+      provider.baseUrl,
+      provider.modelsUrl,
+      Boolean(provider.authHeader),
+      Object.entries(provider.headers ?? {}).sort(([a], [b]) => a.localeCompare(b)),
+    ])).join("|");
     if (!refreshKey || autoRefreshKeyRef.current === refreshKey) return;
 
-    // Session-level cooldown: skip auto-refresh if the panel was opened
-    // within the last 30 s (survives unmount/remount of the SettingsPanel).
-    const lastAutoRefresh = sessionStorage.getItem("settings-auto-refresh-at");
+    // Session-level cooldown per provider set: reopening the panel does not
+    // refetch the same providers, while a changed set refreshes immediately.
+    const autoRefreshStorageKey = `settings-auto-refresh-at:${refreshKey}`;
+    const lastAutoRefresh = sessionStorage.getItem(autoRefreshStorageKey);
     if (lastAutoRefresh && Date.now() - Number(lastAutoRefresh) < 30_000) return;
 
     // Respect slow network hints; background model-list refresh can wait.
     if (shouldSkipAutoRefresh()) return;
 
     autoRefreshKeyRef.current = refreshKey;
-    sessionStorage.setItem("settings-auto-refresh-at", String(Date.now()));
+    sessionStorage.setItem(autoRefreshStorageKey, String(Date.now()));
 
     void backgroundApply(async () => {
       // Batch-fetch models for all candidates in one round-trip.
@@ -4077,19 +4087,28 @@ function ModelsSection({ s, busy, apply, backgroundApply, initialFocus }: Models
         // Batch failed entirely — fall back to per-provider cached calls below.
       }
 
+      const updates: ProviderView[] = [];
       for (const { provider } of candidates) {
         if (!provider.models || provider.models.length === 0) continue;
         try {
           const fetched = batchResults[provider.name]
-            ?? await cachedFetchProviderModels((p: any) => app.FetchProviderModels(p), provider);
+            ?? await cachedFetchProviderModels((p) => app.FetchProviderModels(p), provider);
           if (!fetched || fetched.length === 0) continue;
           const models = mergedFetchedProviderModels(provider.models, fetched, { preserveCurated: true });
           const currentDefault = providerDefaultModel(provider.default, models);
           const visionModels = provider.visionModels.filter((model) => models.includes(model));
           if (sameStringList(provider.models, models) && provider.default === currentDefault && sameStringList(provider.visionModels, visionModels)) continue;
-          await app.SaveProvider({ ...provider, models, default: currentDefault, visionModels });
+          updates.push({ ...provider, models, default: currentDefault, visionModels });
         } catch {
           // Background discovery is opportunistic; manual refresh shows errors.
+        }
+      }
+      if (updates.length > 0) {
+        try {
+          // Persist every catalog update in one transaction and rebuild once.
+          await app.SaveProviders(updates);
+        } catch {
+          // Background discovery is opportunistic; explicit edits show errors.
         }
       }
     });
@@ -4580,7 +4599,7 @@ function ProvidersSection({ s, busy, apply }: SectionProps) {
     try {
       let fetched: string[];
       try {
-        fetched = await cachedFetchProviderModels((p: any) => app.FetchProviderModels(p), p);
+        fetched = await cachedFetchProviderModels((provider) => app.FetchProviderModels(provider), p, true);
       } catch (e) {
         setGroupFetchResult(group.id, {
           kind: "warn",
@@ -4623,8 +4642,9 @@ function ProvidersSection({ s, busy, apply }: SectionProps) {
     try {
       await apply(async () => {
         await app.SaveProviderKey(apiKeyEnv, value);
+        invalidateProviderCacheByAPIKeyEnv(apiKeyEnv);
         try {
-          const fetched = await cachedFetchProviderModels((p: any) => app.FetchProviderModels(p), { ...probe, apiKeyEnv });
+          const fetched = await cachedFetchProviderModels((provider) => app.FetchProviderModels(provider), { ...probe, apiKeyEnv });
           if (fetched.length > 0) {
             const draft = modelDraftForFetch({ ...probe, apiKeyEnv }, fetched);
             setGroupModelDraft(group.id, draft);
@@ -4654,12 +4674,28 @@ function ProvidersSection({ s, busy, apply }: SectionProps) {
     if (!apiKeyEnv) return;
     setGroupFetchResult(group.id, null);
     setGroupModelDraft(group.id, null);
-    await apply(() => app.SetProviderKey(apiKeyEnv, value));
+    await apply(async () => {
+      const warning = await app.SetProviderKey(apiKeyEnv, value);
+      invalidateProviderCacheByAPIKeyEnv(apiKeyEnv);
+      return warning;
+    });
   };
 
   const clearProviderKey = async (apiKeyEnv: string) => {
     if (!apiKeyEnv) return;
-    await apply(() => app.ClearProviderKey(apiKeyEnv));
+    await apply(async () => {
+      await app.ClearProviderKey(apiKeyEnv);
+      invalidateProviderCacheByAPIKeyEnv(apiKeyEnv);
+    });
+  };
+
+  const saveProvider = async (provider: ProviderView, key: string) => {
+    if (key) {
+      const warning = await app.SaveProviderWithKey(provider, key);
+      invalidateProviderCacheByAPIKeyEnv(provider.apiKeyEnv);
+      return warning;
+    }
+    await app.SaveProvider(provider);
   };
 
   const saveModelDraft = async (group: ProviderAccessGroup) => {
@@ -4728,7 +4764,7 @@ function ProvidersSection({ s, busy, apply }: SectionProps) {
               setAdding(null);
             }}
             onResetPreset={(id) => apply(() => app.ResetProviderPresetAccess(id)).then(() => setAdding(null))}
-            onAddCustom={(pv, key) => apply(() => key ? app.SaveProviderWithKey(pv, key) : app.SaveProvider(pv)).then(() => setAdding(null))}
+            onAddCustom={(pv, key) => apply(() => saveProvider(pv, key ?? "")).then(() => setAdding(null))}
           />
         )}
         {adding === null && groups.map((group) => (
@@ -4744,7 +4780,7 @@ function ProvidersSection({ s, busy, apply }: SectionProps) {
             kinds={s.providerKinds}
             onEdit={setEditing}
             onCancelEdit={() => setEditing(null)}
-            onSave={(pv, key) => apply(() => key ? app.SaveProviderWithKey(pv, key) : app.SaveProvider(pv)).then(() => {
+            onSave={(pv, key) => apply(() => saveProvider(pv, key ?? "")).then(() => {
               setEditing(null);
               setGroupModelDraft(group.id, null);
             })}
@@ -5774,8 +5810,11 @@ function ProviderEditor({
     try {
       const effectiveApiKeyEnv = providerApiKeyEnvForSave(name, apiKeyEnv, keyDraft);
       if (!apiKeyEnv.trim()) setApiKeyEnv(effectiveApiKeyEnv);
-      if (keyDraft.trim()) await app.SaveProviderKey(effectiveApiKeyEnv, keyDraft.trim());
-      const fetched = await cachedFetchProviderModels((p: any) => app.FetchProviderModels(p), {
+      if (keyDraft.trim()) {
+        await app.SaveProviderKey(effectiveApiKeyEnv, keyDraft.trim());
+        invalidateProviderCacheByAPIKeyEnv(effectiveApiKeyEnv);
+      }
+      const fetched = await cachedFetchProviderModels((provider) => app.FetchProviderModels(provider), {
         name: name.trim() || t("settings.newProviderDraftName"),
         builtIn: initial?.builtIn ?? false,
         added: initial?.added ?? true,
@@ -5799,7 +5838,7 @@ function ProviderEditor({
         supportedEfforts: cleanedSupportedEfforts,
         defaultEffort: cleanDefaultEffort,
         modelOverrides: mergeProviderModelContextWindows(initial?.modelOverrides, parseProviderListInput(models), modelContextWindows),
-      });
+      }, true);
       if (fetched.length === 0) {
         setFetchFallback(t("settings.fetchModelsManualFallbackEmpty"));
         return;
