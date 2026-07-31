@@ -157,6 +157,27 @@ func TestGenManifest(t *testing.T) {
 	}
 }
 
+func TestGenManifestCanReuseStableNotesForStandaloneRC(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "Reasonix-linux-amd64.tar.gz"), []byte("rc"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := genManifest(dir, "v1.3.0-rc.1", "desktop-v1.3.0-rc.1", "v1.3.0"); err != nil {
+		t.Fatalf("genManifest: %v", err)
+	}
+	raw, err := os.ReadFile(filepath.Join(dir, "latest.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var m update.Manifest
+	if err := json.Unmarshal(raw, &m); err != nil {
+		t.Fatal(err)
+	}
+	if m.ReleaseNotesURL != "https://reasonix.io/changelog/v1.3.0/" {
+		t.Fatalf("release_notes_url = %q, want stable base history", m.ReleaseNotesURL)
+	}
+}
+
 // TestGenManifestIgnoresUnknownNativePackages ensures a .deb without a known
 // platform key is skipped rather than inventing a native_packages entry.
 func TestGenManifestIgnoresUnknownNativePackages(t *testing.T) {

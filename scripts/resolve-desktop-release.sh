@@ -36,6 +36,7 @@ if [ "${IN_CHANNEL:-stable}" = "preview" ] || [ "${IN_CHANNEL:-stable}" = "canar
 	tag="desktop-${version}"
 	channel="preview"
 	prerelease="true"
+	notes_version="$version"
 else
 	if [ -n "${IN_TAG:-}" ]; then
 		tag="${IN_TAG}"
@@ -56,8 +57,14 @@ else
 	fi
 	channel="stable"
 	case "$version" in
-	*-*) prerelease="true" ;;
-	*) prerelease="false" ;;
+	*-*)
+		prerelease="true"
+		notes_version="${version%%-*}"
+		;;
+	*)
+		prerelease="false"
+		notes_version="$version"
+		;;
 	esac
 fi
 
@@ -66,6 +73,7 @@ fi
 	echo "version=$version"
 	echo "channel=$channel"
 	echo "prerelease=$prerelease"
+	echo "notes_version=$notes_version"
 } >>"$GITHUB_OUTPUT"
 
 echo "resolved: tag=$tag version=$version channel=$channel prerelease=$prerelease"

@@ -40,7 +40,9 @@ publish the public Preview pointer.
 An RC is not a third user-facing channel. If a weekly candidate needs a freeze,
 use a surface-specific `vX.Y.Z-rc.N` or `desktop-vX.Y.Z-rc.N` tag as an
 internal candidate checkpoint. Neither moves a rolling pointer or Homebrew.
-npm retains its separate `next` and `canary` dist-tags.
+CLI and Desktop RCs reuse the reviewed `X.Y.Z` Stable notes instead of creating
+a third public changelog identity, so prepare and merge that Stable record
+before cutting the RC. npm retains its separate `next` and `canary` dist-tags.
 
 ### Desktop channel compatibility
 
@@ -60,7 +62,7 @@ npm retains its separate `next` and `canary` dist-tags.
 |---|---|---|
 | **Ship Preview** | release-tag creator + configured reviewer | prepare notes for the exact `X.Y.Z-preview.N` version, then create and push its protected CLI tag; a minimal relay dispatches **Release preview** on protected `main-v2`, which pauses once on `canary` and publishes aligned CLI, Desktop, npm, and changelog identities |
 | **Ship stable** | release-tag creators + one configured reviewer | atomically push the three stable tags; a minimal tag relay dispatches **Release stable** on protected `main-v2`, which requests one GitHub `release`-environment approval before every channel publishes |
-| **Ship a standalone RC** | release-tag creators + one configured reviewer | push the surface-specific prerelease tag; a minimal relay dispatches the standalone workflow on protected `main-v2`, which requests one `release` approval |
+| **Ship a standalone RC** | release-tag creators + one configured reviewer | prepare the reviewed `X.Y.Z` Stable notes, then push the surface-specific prerelease tag; a minimal relay dispatches the standalone workflow on protected `main-v2`, reuses those notes, and requests one `release` approval |
 
 Preview remains operationally fast, but its public artifacts are not an
 unreviewed or test-certificate path. The unified Preview event pauses once at
@@ -105,7 +107,9 @@ strict separation from repository writers is required.
    (`X.Y.Z` for Stable or `X.Y.Z-preview.N` for Preview), the previous release
    tag when needed, and the number of an existing release-bound PR when one is
    available. Every exact Stable and Preview identity gets its own reviewed
-   catalog record. The reusable PR must be open, target `main-v2`, come from a
+   catalog record. Do not create an `X.Y.Z-rc.N` catalog record: standalone
+   CLI/Desktop RCs are internal checkpoints and reuse the `X.Y.Z` Stable
+   record. The reusable PR must be open, target `main-v2`, come from a
    branch in this repository, and already include the latest `main-v2`. The
    workflow commits the generated notes onto that branch, so product changes and
    their release copy share one PR and one review surface. The added commit still

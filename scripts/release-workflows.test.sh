@@ -137,6 +137,7 @@ if grep -Eq 'gh release create .*dist/' "$repo_root/.github/workflows/release-de
 fi
 grep -Fq 'scripts/decide-desktop-pointer-update.sh' "$repo_root/.github/workflows/release-desktop.yml"
 grep -Fq 'scripts/verify-desktop-release-directory.sh' "$repo_root/.github/workflows/release-desktop.yml"
+grep -Fq 'scripts/compare-desktop-release-manifests.sh' "$repo_root/.github/workflows/release-desktop.yml"
 grep -Fq 'download_optional "preview/latest.json"' "$repo_root/.github/workflows/release-desktop.yml"
 grep -Fq 'download_optional "canary/latest.json"' "$repo_root/.github/workflows/release-desktop.yml"
 grep -Fq 'publish_pointer canary' "$repo_root/.github/workflows/release-desktop.yml"
@@ -201,8 +202,8 @@ grep -Fq 'cli/${channel}/latest.json' "$cli_release_workflow"
 grep -Fq "group: release-cli-\${{ inputs.channel || 'stable' }}" "$cli_release_workflow"
 grep -Fq 'scripts/decide-cli-pointer-update.sh' "$cli_release_workflow"
 grep -Fq 'scripts/validate-cli-release-manifest.sh' "$cli_release_workflow"
+grep -Fq 'scripts/compare-cli-release-manifests.sh' "$cli_release_workflow"
 grep -Fq 'immutable CLI release metadata for $TAG already exists with different content' "$cli_release_workflow"
-grep -Fq 'cmp -s /tmp/cli-release.json /tmp/cli-release.immutable.json' "$cli_release_workflow"
 grep -Fq 'cmp -s /tmp/cli-release.json /tmp/cli-release.pointer.json' "$cli_release_workflow"
 grep -Eq 'internal CLI release .*Stable and Preview pointers remain unchanged' "$cli_release_workflow"
 cli_public_validation_line="$(
@@ -266,7 +267,9 @@ for asset in \
 	grep -Fq "\"$asset\"" "$cli_release_workflow"
 done
 manifest_validator="$repo_root/scripts/validate-cli-release-manifest.sh"
+manifest_comparator="$repo_root/scripts/compare-cli-release-manifests.sh"
 test -x "$manifest_validator"
+test -x "$manifest_comparator"
 manifest_assets='[
 	"reasonix-darwin-amd64.tar.gz",
 	"reasonix-darwin-arm64.tar.gz",
@@ -301,6 +304,45 @@ jq -n \
 ' >"$manifest_file"
 bash "$manifest_validator" stable "$manifest_tag" "$manifest_repo" "$manifest_file"
 bash "$manifest_validator" any "$manifest_tag" "$manifest_repo" "$manifest_file"
+
+legacy_manifest="$test_root/cli-release-manifest-legacy.json"
+jq 'del(.release_notes_url)' "$manifest_file" >"$legacy_manifest"
+bash "$manifest_validator" legacy-stable "$manifest_tag" "$manifest_repo" "$legacy_manifest"
+bash "$manifest_comparator" "$manifest_file" "$legacy_manifest"
+if bash "$manifest_validator" stable "$manifest_tag" "$manifest_repo" "$legacy_manifest" >/dev/null 2>&1; then
+	echo "strict CLI manifest validator accepted a legacy manifest" >&2
+	exit 1
+fi
+wrong_legacy_notes="$test_root/cli-release-manifest-wrong-legacy-notes.json"
+jq '.release_notes_url = "https://reasonix.io/changelog/v9.9.9/"' \
+	"$manifest_file" >"$wrong_legacy_notes"
+if bash "$manifest_validator" legacy-stable "$manifest_tag" "$manifest_repo" \
+	"$wrong_legacy_notes" >/dev/null 2>&1; then
+	echo "legacy CLI manifest validator accepted a mismatched release-notes URL" >&2
+	exit 1
+fi
+if bash "$manifest_comparator" "$manifest_file" "$wrong_legacy_notes" >/dev/null 2>&1; then
+	echo "CLI manifest comparator ignored a non-legacy difference" >&2
+	exit 1
+fi
+
+rc_manifest_tag="v1.2.4-rc.1"
+rc_notes_tag="v1.2.4"
+rc_manifest="$test_root/cli-release-manifest-rc.json"
+jq \
+	--arg repo "$manifest_repo" \
+	--arg tag "$rc_manifest_tag" \
+	--arg notes_tag "$rc_notes_tag" '
+	.tag_name = $tag |
+	.prerelease = true |
+	.html_url = ("https://github.com/" + $repo + "/releases/tag/" + $tag) |
+	.release_notes_url = ("https://reasonix.io/changelog/" + $notes_tag + "/") |
+	.assets |= map(
+		.browser_download_url =
+			("https://github.com/" + $repo + "/releases/download/" + $tag + "/" + .name)
+	)
+' "$manifest_file" >"$rc_manifest"
+bash "$manifest_validator" any "$rc_manifest_tag" "$manifest_repo" "$rc_manifest" "$rc_notes_tag"
 
 expect_invalid_cli_manifest() {
 	local description="$1"
@@ -441,6 +483,34 @@ cp "$candidate_directory/a" "$existing_directory/a"
 printf 'unexpected\n' >"$existing_directory/unexpected"
 if bash "$desktop_directory_verifier" --allow-missing "$candidate_directory" "$existing_directory" >/dev/null 2>&1; then
 	echo "Desktop release directory verifier accepted an unexpected immutable object" >&2
+	exit 1
+fi
+
+legacy_candidate_directory="$test_root/desktop-directory-legacy-candidate"
+legacy_existing_directory="$test_root/desktop-directory-legacy-existing"
+mkdir -p "$legacy_candidate_directory" "$legacy_existing_directory"
+printf 'asset\n' >"$legacy_candidate_directory/artifact"
+cp "$legacy_candidate_directory/artifact" "$legacy_existing_directory/artifact"
+jq -n '{
+	version: "v1.2.3",
+	release_notes_url: "https://reasonix.io/changelog/v1.2.3/",
+	platforms: {"darwin-arm64": {size: 42}}
+}' >"$legacy_candidate_directory/latest.json"
+jq 'del(.release_notes_url)' "$legacy_candidate_directory/latest.json" \
+	>"$legacy_existing_directory/latest.json"
+bash "$desktop_directory_verifier" --allow-legacy-manifest \
+	"$legacy_candidate_directory" "$legacy_existing_directory"
+if bash "$desktop_directory_verifier" \
+	"$legacy_candidate_directory" "$legacy_existing_directory" >/dev/null 2>&1; then
+	echo "Desktop release directory verifier accepted a legacy manifest without opt-in" >&2
+	exit 1
+fi
+jq '.platforms["darwin-arm64"].size = 99' "$legacy_existing_directory/latest.json" \
+	>"$legacy_existing_directory/latest-conflict.json"
+mv "$legacy_existing_directory/latest-conflict.json" "$legacy_existing_directory/latest.json"
+if bash "$desktop_directory_verifier" --allow-legacy-manifest \
+	"$legacy_candidate_directory" "$legacy_existing_directory" >/dev/null 2>&1; then
+	echo "Desktop release directory verifier ignored a non-legacy manifest difference" >&2
 	exit 1
 fi
 
@@ -630,12 +700,16 @@ if PATH="$fake_gh_bin:$PATH" FAKE_GH_STATE="$fake_gh_state" \
 fi
 
 desktop_validator="$repo_root/scripts/validate-desktop-release-manifest.sh"
+desktop_manifest_comparator="$repo_root/scripts/compare-desktop-release-manifests.sh"
 test -x "$desktop_validator"
+test -x "$desktop_manifest_comparator"
 write_desktop_manifest() {
 	local version="$1"
 	local base="$2"
 	local output="$3"
-	jq -n --arg version "$version" --arg base "$base" --arg sha "$(printf 'a%.0s' {1..64})" '
+	local notes_version="${4:-$version}"
+	jq -n --arg version "$version" --arg notes_version "$notes_version" \
+		--arg base "$base" --arg sha "$(printf 'a%.0s' {1..64})" '
 		def asset($name): {
 			url: ($base + $name),
 			sig: ($base + $name + ".minisig"),
@@ -645,7 +719,7 @@ write_desktop_manifest() {
 		{
 			version: $version,
 			download_page: "https://reasonix.io/?download=desktop#start",
-			release_notes_url: ("https://reasonix.io/changelog/" + $version + "/"),
+			release_notes_url: ("https://reasonix.io/changelog/" + $notes_version + "/"),
 			platforms: {
 				"darwin-arm64": asset("Reasonix-darwin-arm64.zip"),
 				"darwin-amd64": asset("Reasonix-darwin-amd64.zip"),
@@ -682,10 +756,31 @@ write_desktop_manifest "$desktop_preview_version" "$desktop_preview_base" "$desk
 bash "$desktop_validator" preview "$desktop_preview_version" "$desktop_preview_base" "$desktop_preview_manifest"
 
 desktop_rc_version="v1.3.0-rc.1"
+desktop_rc_notes_version="v1.3.0"
 desktop_rc_base="https://dl.reasonix.io/desktop-${desktop_rc_version}/"
 desktop_rc_manifest="$test_root/desktop-rc.json"
-write_desktop_manifest "$desktop_rc_version" "$desktop_rc_base" "$desktop_rc_manifest"
-bash "$desktop_validator" any "$desktop_rc_version" "$desktop_rc_base" "$desktop_rc_manifest"
+write_desktop_manifest "$desktop_rc_version" "$desktop_rc_base" "$desktop_rc_manifest" \
+	"$desktop_rc_notes_version"
+bash "$desktop_validator" any "$desktop_rc_version" "$desktop_rc_base" \
+	"$desktop_rc_manifest" "$desktop_rc_notes_version"
+
+desktop_legacy_notes_manifest="$test_root/desktop-stable-legacy-notes.json"
+jq 'del(.release_notes_url)' "$desktop_stable_manifest" >"$desktop_legacy_notes_manifest"
+bash "$desktop_validator" legacy-stable "$desktop_stable_version" \
+	"$desktop_stable_base" "$desktop_legacy_notes_manifest"
+bash "$desktop_manifest_comparator" "$desktop_stable_manifest" "$desktop_legacy_notes_manifest"
+if bash "$desktop_validator" stable "$desktop_stable_version" "$desktop_stable_base" \
+	"$desktop_legacy_notes_manifest" >/dev/null 2>&1; then
+	echo "strict Desktop manifest validator accepted a legacy release-notes manifest" >&2
+	exit 1
+fi
+jq '.release_notes_url = "https://reasonix.io/changelog/v9.9.9/"' \
+	"$desktop_stable_manifest" >"$test_root/desktop-wrong-legacy-notes.json"
+if bash "$desktop_manifest_comparator" "$desktop_stable_manifest" \
+	"$test_root/desktop-wrong-legacy-notes.json" >/dev/null 2>&1; then
+	echo "Desktop manifest comparator ignored a non-legacy difference" >&2
+	exit 1
+fi
 
 expect_invalid_desktop_manifest() {
 	local description="$1"
@@ -975,12 +1070,14 @@ EVENT_NAME=push IN_CHANNEL=stable IN_TAG=desktop-v1.2.3 REF_NAME=v1.2.3 RUN_NUMB
 	GITHUB_OUTPUT="$test_root/desktop-stable.out" bash "$repo_root/scripts/resolve-desktop-release.sh"
 grep -Eq '^tag=desktop-v1\.2\.3$' "$test_root/desktop-stable.out"
 grep -Eq '^version=v1\.2\.3$' "$test_root/desktop-stable.out"
+grep -Eq '^notes_version=v1\.2\.3$' "$test_root/desktop-stable.out"
 
 EVENT_NAME=workflow_dispatch IN_CHANNEL=preview IN_BASE_VERSION=1.3.0 IN_TAG='' REF_NAME=main-v2 RUN_NUMBER=42 \
 	GITHUB_OUTPUT="$test_root/desktop-preview.out" bash "$repo_root/scripts/resolve-desktop-release.sh"
 grep -Eq '^version=v1\.3\.0-preview\.42$' "$test_root/desktop-preview.out"
 grep -Eq '^tag=desktop-v1\.3\.0-preview\.42$' "$test_root/desktop-preview.out"
 grep -Eq '^channel=preview$' "$test_root/desktop-preview.out"
+grep -Eq '^notes_version=v1\.3\.0-preview\.42$' "$test_root/desktop-preview.out"
 
 if EVENT_NAME=workflow_dispatch IN_CHANNEL=preview IN_BASE_VERSION=1.3.0 \
 	IN_TAG=desktop-v1.3.0-preview.42 REF_NAME=main-v2 RUN_NUMBER=42 \
@@ -1004,6 +1101,7 @@ grep -Eq '^channel=preview$' "$test_root/desktop-canary-compat.out"
 EVENT_NAME=push IN_CHANNEL='' IN_TAG='' REF_NAME=desktop-v1.4.0-rc.1 RUN_NUMBER=50 \
 	GITHUB_OUTPUT="$test_root/desktop-rc.out" bash "$repo_root/scripts/resolve-desktop-release.sh"
 grep -Eq '^prerelease=true$' "$test_root/desktop-rc.out"
+grep -Eq '^notes_version=v1\.4\.0$' "$test_root/desktop-rc.out"
 
 if EVENT_NAME=workflow_dispatch IN_CHANNEL=stable IN_TAG=desktop-v1.4.0-preview.1 \
 	REF_NAME=main-v2 RUN_NUMBER=50 GITHUB_OUTPUT="$test_root/desktop-preview-as-stable.out" \
@@ -1042,6 +1140,7 @@ EVENT_NAME=push IN_CHANNEL='' IN_TAG='' REF_NAME=v1.3.0-rc.1 \
 	GITHUB_OUTPUT="$test_root/cli-rc.out" bash "$repo_root/scripts/resolve-cli-release.sh"
 grep -Eq '^channel=stable$' "$test_root/cli-rc.out"
 grep -Eq '^prerelease=true$' "$test_root/cli-rc.out"
+grep -Eq '^notes_version=v1\.3\.0$' "$test_root/cli-rc.out"
 
 if EVENT_NAME=workflow_dispatch IN_ORCHESTRATED=false IN_CHANNEL=stable \
 	IN_TAG=v1.3.0-preview.42 REF_NAME=main-v2 CALLER_REF=refs/heads/main-v2 \

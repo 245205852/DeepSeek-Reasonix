@@ -234,6 +234,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ needs.resolve.outputs.tag }}
+          NOTES_TAG: ${{ needs.resolve.outputs.notes_version }}
           HAS_R2: ${{ secrets.R2_ACCESS_KEY_ID != '' && secrets.R2_SECRET_ACCESS_KEY != '' && secrets.R2_ACCOUNT_ID != '' && secrets.R2_BUCKET != '' }}
           AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
           AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
@@ -266,7 +267,7 @@ jobs:
             "SHA256SUMS"
           ]'
           gh api "repos/${{ github.repository }}/releases/tags/$TAG" > /tmp/cli-release.raw.json
-          jq --arg tag "$TAG" --argjson required "$required_assets" '
+          jq --arg tag "$TAG" --arg notes_tag "$NOTES_TAG" --argjson required "$required_assets" '
             if .tag_name != $tag then error("release tag mismatch") else . end |
             if .draft then error("draft release cannot be published") else . end |
             . as $release |
@@ -276,7 +277,7 @@ jobs:
               tag_name: $release.tag_name,
               prerelease: $release.prerelease,
               html_url: $release.html_url,
-              release_notes_url: ("https://reasonix.io/changelog/" + $tag + "/"),
+              release_notes_url: ("https://reasonix.io/changelog/" + $notes_tag + "/"),
               assets: [
                 $required[] as $name |
                 $assets[$name] |
@@ -292,10 +293,10 @@ jobs:
           ' /tmp/cli-release.raw.json > /tmp/cli-release.json
           if [ -n "$channel" ]; then
             bash scripts/validate-cli-release-manifest.sh \
-              "$channel" "$TAG" "${{ github.repository }}" /tmp/cli-release.json
+              "$channel" "$TAG" "${{ github.repository }}" /tmp/cli-release.json "$NOTES_TAG"
           else
             bash scripts/validate-cli-release-manifest.sh \
-              any "$TAG" "${{ github.repository }}" /tmp/cli-release.json
+              any "$TAG" "${{ github.repository }}" /tmp/cli-release.json "$NOTES_TAG"
           fi
 
           endpoint="https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com"
@@ -305,9 +306,10 @@ jobs:
           if aws s3 cp "s3://${R2_BUCKET}/${immutable_key}" /tmp/cli-release.immutable.json \
             --endpoint-url "$endpoint" 2>"$immutable_error"; then
             bash scripts/validate-cli-release-manifest.sh \
-              "$validation_channel" "$TAG" "${{ github.repository }}" \
-              /tmp/cli-release.immutable.json
-            if ! cmp -s /tmp/cli-release.json /tmp/cli-release.immutable.json; then
+              "legacy-${validation_channel}" "$TAG" "${{ github.repository }}" \
+              /tmp/cli-release.immutable.json "$NOTES_TAG"
+            if ! bash scripts/compare-cli-release-manifests.sh \
+              /tmp/cli-release.json /tmp/cli-release.immutable.json; then
               echo "::error::immutable CLI release metadata for $TAG already exists with different content"
               exit 1
             fi
@@ -326,9 +328,10 @@ jobs:
           aws s3 cp "s3://${R2_BUCKET}/${immutable_key}" /tmp/cli-release.immutable.json \
             --endpoint-url "$endpoint"
           bash scripts/validate-cli-release-manifest.sh \
-            "$validation_channel" "$TAG" "${{ github.repository }}" \
-            /tmp/cli-release.immutable.json
-          cmp -s /tmp/cli-release.json /tmp/cli-release.immutable.json
+            "legacy-${validation_channel}" "$TAG" "${{ github.repository }}" \
+            /tmp/cli-release.immutable.json "$NOTES_TAG"
+          bash scripts/compare-cli-release-manifests.sh \
+            /tmp/cli-release.json /tmp/cli-release.immutable.json
 
           if [ -z "$channel" ]; then
             echo "internal CLI release $TAG; Stable and Preview pointers remain unchanged"
@@ -341,7 +344,8 @@ jobs:
             --endpoint-url "$endpoint" 2>"$pointer_error"; then
             current_tag="$(jq -er '.tag_name | strings' /tmp/cli-release.pointer.json)"
             bash scripts/validate-cli-release-manifest.sh \
-              "$channel" "$current_tag" "${{ github.repository }}" /tmp/cli-release.pointer.json
+              "legacy-${channel}" "$current_tag" "${{ github.repository }}" \
+              /tmp/cli-release.pointer.json "$current_tag"
           elif grep -Eiq '404|NoSuchKey|Not Found' "$pointer_error"; then
             echo "CLI $channel pointer does not exist yet"
           else
@@ -370,7 +374,8 @@ jobs:
           aws s3 cp "s3://${R2_BUCKET}/cli/${channel}/latest.json" /tmp/cli-release.pointer.json \
             --endpoint-url "$endpoint"
           bash scripts/validate-cli-release-manifest.sh \
-            "$channel" "$TAG" "${{ github.repository }}" /tmp/cli-release.pointer.json
+            "$channel" "$TAG" "${{ github.repository }}" \
+            /tmp/cli-release.pointer.json "$NOTES_TAG"
           cmp -s /tmp/cli-release.json /tmp/cli-release.pointer.json
           echo "CLI $channel pointer -> $TAG"
 

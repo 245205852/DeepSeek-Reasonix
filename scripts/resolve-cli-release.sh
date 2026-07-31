@@ -45,7 +45,10 @@ else
 		;;
 	esac
 	channel="stable"
-	notes_version="$tag"
+	case "$version" in
+	*-*) notes_version="v${base_version}" ;;
+	*) notes_version="$tag" ;;
+	esac
 fi
 
 requested_channel="${IN_CHANNEL:-}"
