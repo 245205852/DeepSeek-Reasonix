@@ -260,6 +260,18 @@ func TestGateReportsMatchedPermissionRule(t *testing.T) {
 	}
 }
 
+func TestMatchedRuleDoesNotReportAskRuleOverriddenForOneEndpoint(t *testing.T) {
+	p := New("ask", nil, []string{"Edit(src/**)"}, nil).
+		WithSessionAllow([]string{"Edit(src/**)"})
+	args := json.RawMessage(`{"source_path":"src/old.go","destination_path":"generated/new.go"}`)
+	if got := p.Decide("move_file", false, args); got != Ask {
+		t.Fatalf("move decision = %v, want Ask from uncovered destination fallback", got)
+	}
+	if rule, ok := p.MatchedRule("move_file", Ask, args); ok {
+		t.Fatalf("MatchedRule = %q, want no rule provenance for fallback Ask", rule)
+	}
+}
+
 func TestGateHeadlessAllowsAsk(t *testing.T) {
 	// No approver → Ask resolves to allow (autonomy preserved), deny still blocks.
 	g := NewGate(New("ask", nil, nil, []string{"bash(rm*)"}), nil)

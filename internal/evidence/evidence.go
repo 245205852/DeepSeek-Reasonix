@@ -1775,6 +1775,13 @@ func npxSegmentIsVerification(args []string) bool {
 	}
 	for _, arg := range args[1:] {
 		name := strings.ToLower(arg)
+		if i := strings.IndexByte(name, '='); i >= 0 {
+			name = name[:i]
+		}
+		switch name {
+		case "--update", "-u", "--updatesnapshot":
+			return false
+		}
 		if name == "--coverage" || strings.HasPrefix(name, "--coverage=") || strings.HasPrefix(name, "--coverage.") {
 			return false
 		}

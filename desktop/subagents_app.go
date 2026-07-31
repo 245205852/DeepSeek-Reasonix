@@ -368,12 +368,20 @@ func (a *App) TrySubagentProfile(input SubagentProfileInput, task string) (strin
 		Temperature:   cfg.Agent.Temperature,
 		Pricing:       me.Price,
 		ContextWindow: me.ContextWindow,
-		Gate:          control.NewHeadlessPermissionGate(policy),
+		Gate:          trySubagentPermissionGate(policy),
 	}, event.Discard)
 	if err != nil {
 		return "", err
 	}
 	return result, nil
+}
+
+// trySubagentPermissionGate pins the settings-page try runner to an explicit
+// non-interactive Ask posture. Unlike the legacy bootstrap gate, this fails
+// closed when a configured rule or writer fallback needs approval: the try
+// runner has no approval UI that could answer such a request.
+func trySubagentPermissionGate(policy permission.Policy) agent.Gate {
+	return control.BuildHeadlessApprovalGate(policy, control.ToolApprovalAsk)
 }
 
 // CancelTrySubagentProfile aborts the in-flight settings-page try run, if

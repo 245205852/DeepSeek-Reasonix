@@ -15,6 +15,7 @@ import (
 	"reasonix/internal/command"
 	"reasonix/internal/config"
 	"reasonix/internal/control"
+	"reasonix/internal/permission"
 	"reasonix/internal/skill"
 )
 
@@ -498,6 +499,22 @@ func TestTrySubagentProfileRequiresTaskAndPrompt(t *testing.T) {
 	}
 	if _, err := a.TrySubagentProfile(SubagentProfileInput{}, "do something"); err == nil {
 		t.Error("expected an error for a missing system prompt")
+	}
+}
+
+func TestTrySubagentProfilePermissionGateFailsClosedOnAsk(t *testing.T) {
+	gate := trySubagentPermissionGate(permission.New("ask", nil, nil, nil))
+	allow, reason, err := gate.Check(context.Background(), "write_file", json.RawMessage(`{"path":"result.txt"}`), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if allow || !strings.Contains(reason, "user declined") {
+		t.Fatalf("headless Ask gate = (%v, %q), want fail-closed denial", allow, reason)
+	}
+
+	allow, reason, err = gate.Check(context.Background(), "read_file", json.RawMessage(`{"path":"input.txt"}`), true)
+	if err != nil || !allow || reason != "" {
+		t.Fatalf("read-only call = (%v, %q, %v), want allow", allow, reason, err)
 	}
 }
 

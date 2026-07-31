@@ -417,6 +417,14 @@ func (p Policy) MatchedRule(toolName string, decision Decision, args json.RawMes
 			}
 		}
 		for _, candidate := range candidates {
+			// A matching configured rule is provenance only when that candidate's
+			// actual decision has the same outcome. SessionAllow may override an
+			// Ask rule on one endpoint while a different endpoint falls back to
+			// Ask; reporting the overridden rule would misstate why the call was
+			// stopped.
+			if p.DecideSubject(toolName, false, candidate) != decision {
+				continue
+			}
 			if rule, ok := firstMatchingRule(rules, toolName, candidate, raw); ok {
 				return ruleConfigString(rule), true
 			}
