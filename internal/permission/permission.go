@@ -8,6 +8,7 @@ package permission
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"strings"
 
 	"reasonix/internal/shellparse"
@@ -92,7 +93,54 @@ func ParseRule(s string) (Rule, bool) {
 		}
 		return Rule{Tool: tool, Subject: s[i+1 : len(s)-1]}, true
 	}
+	// Settings users saved these PowerShell file-writer cmdlets before the UI
+	// explained Bash(command:*) syntax. Migrate only that legacy set to shell
+	// prefixes so existing deny rules protect the real Bash call (#6950).
+	if isLegacyBarePowerShellRule(s) {
+		return Rule{Tool: "Bash", Subject: s + ":*"}, true
+	}
 	return Rule{Tool: s}, true
+}
+
+// isLegacyBarePowerShellRule is intentionally limited to the three rules users
+// reported saving through Settings before Bash(command:*) syntax was explained
+// there (#6950). Reinterpreting every Verb-Noun string would silently change
+// existing custom-tool rules in persisted configs.
+func isLegacyBarePowerShellRule(s string) bool {
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case "set-content", "add-content", "out-file":
+		return true
+	default:
+		return false
+	}
+}
+
+func isPowerShellCmdletName(s string) bool {
+	verb, noun, ok := strings.Cut(s, "-")
+	if !ok || verb == "" || noun == "" || strings.Contains(noun, "-") {
+		return false
+	}
+	switch strings.ToLower(verb) {
+	case "add", "clear", "close", "convertfrom", "convertto", "copy", "disable",
+		"enable", "enter", "exit", "export", "find", "format", "get", "grant",
+		"group", "import", "install", "invoke", "join", "lock", "measure",
+		"move", "new", "open", "optimize", "out", "publish", "read", "receive",
+		"register", "remove", "rename", "reset", "resize", "resolve", "restart",
+		"restore", "resume", "revoke", "save", "search", "select", "send", "set",
+		"show", "split", "start", "stop", "submit", "suspend", "sync", "test",
+		"trace", "unblock", "uninstall", "unlock", "unpublish", "unregister",
+		"update", "use", "wait", "watch", "write":
+	default:
+		return false
+	}
+	for _, part := range []string{verb, noun} {
+		for _, r := range part {
+			if (r < 'A' || r > 'Z') && (r < 'a' || r > 'z') {
+				return false
+			}
+		}
+	}
+	return true
 }
 
 func parseRules(ss []string) []Rule {
@@ -310,6 +358,73 @@ func matchAnyRaw(rules []Rule, toolName, subject string) bool {
 	return false
 }
 
+func firstMatchingRule(rules []Rule, toolName, subject string, raw bool) (Rule, bool) {
+	for _, rule := range rules {
+		if !ruleToolMatches(rule.Tool, toolName) {
+			continue
+		}
+		if rule.Subject == "" {
+			return rule, true
+		}
+		if subject == "" {
+			continue
+		}
+		matches := ruleSubjectMatches(rule, subject)
+		if raw {
+			matches = rawRuleSubjectMatches(rule, subject)
+		}
+		if matches {
+			return rule, true
+		}
+	}
+	return Rule{}, false
+}
+
+func ruleConfigString(rule Rule) string {
+	if rule.Subject == "" {
+		return rule.Tool
+	}
+	if rule.Literal {
+		return rule.Tool + "=" + rule.Subject
+	}
+	return rule.Tool + "(" + rule.Subject + ")"
+}
+
+// MatchedRule reports the configured rule responsible for an explicit Ask or
+// Deny decision. Fallback-mode and dynamic-safety decisions intentionally have
+// no rule provenance. Compound Bash commands are inspected segment by segment
+// using the same raw-prefix semantics as DecideSubject.
+func (p Policy) MatchedRule(toolName string, decision Decision, args json.RawMessage) (string, bool) {
+	var rules []Rule
+	switch decision {
+	case Ask:
+		rules = p.Ask
+	case Deny:
+		rules = p.Deny
+	default:
+		return "", false
+	}
+	subjects := Subjects(args)
+	if len(subjects) == 0 {
+		subjects = []string{""}
+	}
+	raw := canonicalRuleTool(toolName) == "bash"
+	for _, subject := range subjects {
+		candidates := []string{subject}
+		if raw {
+			if parts := DecomposeBashCommand(subject); parts != nil {
+				candidates = append(candidates, parts...)
+			}
+		}
+		for _, candidate := range candidates {
+			if rule, ok := firstMatchingRule(rules, toolName, candidate, raw); ok {
+				return ruleConfigString(rule), true
+			}
+		}
+	}
+	return "", false
+}
+
 func rawRuleSubjectMatches(rule Rule, subject string) bool {
 	if rule.Literal {
 		return rule.Subject == subject
@@ -328,7 +443,8 @@ func rawBashPrefixMatches(base, subject string) bool {
 		if features, ok := shellparse.AnalyzeApprovalFeatures(subject); ok && len(features.CommandPrefix) >= len(baseFields) {
 			matched := true
 			for i, want := range baseFields {
-				if features.CommandPrefix[i] != want {
+				got := features.CommandPrefix[i]
+				if got != want && !(i == 0 && isPowerShellCmdletName(want) && strings.EqualFold(got, want)) {
 					matched = false
 					break
 				}
@@ -340,10 +456,17 @@ func rawBashPrefixMatches(base, subject string) bool {
 	}
 	base = strings.TrimSpace(base)
 	subject = strings.TrimSpace(subject)
-	if subject == base {
+	if subject == base || (isPowerShellCmdletName(base) && strings.EqualFold(subject, base)) {
 		return true
 	}
-	if len(subject) <= len(base) || !strings.HasPrefix(subject, base) {
+	if len(subject) <= len(base) {
+		return false
+	}
+	prefixMatches := strings.HasPrefix(subject, base)
+	if isPowerShellCmdletName(base) {
+		prefixMatches = strings.EqualFold(subject[:len(base)], base)
+	}
+	if !prefixMatches {
 		return false
 	}
 	switch subject[len(base)] {
@@ -539,6 +662,13 @@ type ReasonedApprover interface {
 	ApproveWithReason(ctx context.Context, toolName, subject string, args json.RawMessage) (allow, remember bool, reason string, err error)
 }
 
+// PolicyReasonedApprover receives the explicit permission-rule provenance that
+// caused an Ask decision. Frontends can display it without duplicating Policy
+// matching logic; older Approver implementations remain source-compatible.
+type PolicyReasonedApprover interface {
+	ApproveWithPolicyReason(ctx context.Context, toolName, subject string, args json.RawMessage, policyReason string) (allow, remember bool, reason string, err error)
+}
+
 // Gate is what the agent consults at execute time: a Policy plus an optional
 // Approver. It satisfies the agent's Gate interface structurally.
 type Gate struct {
@@ -562,15 +692,24 @@ func (g *Gate) Check(ctx context.Context, toolName string, args json.RawMessage,
 			readOnly = true
 		}
 	}
-	switch g.Policy.Decide(toolName, readOnly, args) {
+	decision := g.Policy.Decide(toolName, readOnly, args)
+	ruleReason := ""
+	if rule, ok := g.Policy.MatchedRule(toolName, decision, args); ok {
+		ruleReason = fmt.Sprintf("Matched permission rule: %s %s", decision, rule)
+	}
+	switch decision {
 	case Deny:
-		return false, "denied by permission policy — this tool/command is on the deny list. Do not retry it; choose another approach or stop and explain.", nil
+		reason := "denied by permission policy — this tool/command is on the deny list. Do not retry it; choose another approach or stop and explain."
+		if ruleReason != "" {
+			reason = ruleReason + "\n" + reason
+		}
+		return false, reason, nil
 	case Ask:
 		if g.Approver == nil {
 			return true, "", nil // non-interactive: preserve autonomy
 		}
 		subject := Subject(args)
-		allow, remember, approverReason, err := g.approve(ctx, toolName, subject, args)
+		allow, remember, approverReason, err := g.approve(ctx, toolName, subject, args, ruleReason)
 		if err != nil {
 			return false, "approval aborted", err
 		}
@@ -608,7 +747,10 @@ func (g *Gate) ExplicitlyDenies(toolName string, args json.RawMessage) bool {
 	return g.Policy.ExplicitlyDenies(toolName, args)
 }
 
-func (g *Gate) approve(ctx context.Context, toolName, subject string, args json.RawMessage) (bool, bool, string, error) {
+func (g *Gate) approve(ctx context.Context, toolName, subject string, args json.RawMessage, policyReason string) (bool, bool, string, error) {
+	if a, ok := g.Approver.(PolicyReasonedApprover); ok {
+		return a.ApproveWithPolicyReason(ctx, toolName, subject, args, policyReason)
+	}
 	if a, ok := g.Approver.(ReasonedApprover); ok {
 		return a.ApproveWithReason(ctx, toolName, subject, args)
 	}

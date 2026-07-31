@@ -1025,7 +1025,19 @@ func (a *App) Submit(input string) error {
 	return a.SubmitToTab("", input)
 }
 
+var errEmptyTurnInput = errors.New("message cannot be empty")
+
+func validateTurnInput(input string) error {
+	if strings.TrimSpace(input) == "" {
+		return errEmptyTurnInput
+	}
+	return nil
+}
+
 func (a *App) SubmitToTab(tabID, input string) error {
+	if err := validateTurnInput(input); err != nil {
+		return err
+	}
 	if handled, err := a.workbenchSubmit(input, input, "", nil, false); handled {
 		return err
 	}
@@ -1196,6 +1208,9 @@ func (a *App) SubmitDisplay(display, input string) error {
 }
 
 func (a *App) SubmitDisplayToTab(tabID, display, input string) error {
+	if err := validateTurnInput(input); err != nil {
+		return err
+	}
 	if handled, err := a.workbenchSubmit(input, display, "", nil, false); handled {
 		return err
 	}
@@ -1212,6 +1227,9 @@ func (a *App) SubmitDisplayToTab(tabID, display, input string) error {
 }
 
 func (a *App) SubmitDeliveryRecoveryToTab(tabID, display, input string) error {
+	if err := validateTurnInput(input); err != nil {
+		return err
+	}
 	if handled, err := a.workbenchSubmit(input, display, "", nil, true); handled {
 		return err
 	}
@@ -1256,6 +1274,9 @@ func controlInvocationRequests(invocations []InvocationRequest) []control.Invoca
 }
 
 func (a *App) SubmitInvocationsToTab(tabID, display, input string, invocations []InvocationRequest) error {
+	if err := validateInvocationTurnInput(input, invocations); err != nil {
+		return err
+	}
 	if handled, err := a.workbenchSubmit(input, display, "", protocolInvocationRequests(invocations), false); handled {
 		return err
 	}
@@ -1269,6 +1290,16 @@ func (a *App) SubmitInvocationsToTab(tabID, display, input string, invocations [
 	ctrl.SubmitInvocationDisplay(display, input, controlInvocationRequests(invocations))
 	admission.finish(ctrl)
 	return nil
+}
+
+func validateInvocationTurnInput(input string, invocations []InvocationRequest) error {
+	// A skill-only turn legitimately has no explicit task: the resolved
+	// invocation content becomes the provider input. Without an invocation,
+	// keep the same empty-input protection as every other submit path.
+	if len(invocations) > 0 {
+		return nil
+	}
+	return validateTurnInput(input)
 }
 
 func workbenchTargetChangedErr() error {
@@ -1326,6 +1357,9 @@ func (a *App) SubmitInitialGoalToTab(
 	targetKind string,
 	targetIdentityGen, targetRequestSeq uint64,
 ) ([]string, error) {
+	if err := validateInvocationTurnInput(input, invocations); err != nil {
+		return []string{}, err
+	}
 	k := a.workbench()
 	k.transitionMu.Lock()
 	active, identityGen, requestSeq := k.targets.Active()
@@ -1386,6 +1420,9 @@ func (a *App) SubmitInitialGoalToTab(
 }
 
 func (a *App) SubmitEditedDisplayToTab(tabID, display, input, original string) error {
+	if err := validateTurnInput(input); err != nil {
+		return err
+	}
 	if handled, err := a.workbenchSubmit(input, display, original, nil, false); handled {
 		return err
 	}
@@ -5768,6 +5805,12 @@ func historyMessagesWithPlannerDisplaysAndLookups(
 	plannerByUserHash := plannerTurnsByUserHash(plannerTurns)
 	suppressCanonicalTurn := false
 	for index, m := range msgs {
+		if m.LocalOnly {
+			if steerText, isSteer := agent.SteerText(agent.UserMessageText(m)); isSteer {
+				out = append(out, HistoryMessage{Role: "notice", Content: "↪ " + steerText})
+				continue
+			}
+		}
 		if suppressCanonicalTurn {
 			if m.Role != provider.RoleUser || !agent.IsUserAuthoredTurn(agent.UserMessageText(m)) {
 				continue

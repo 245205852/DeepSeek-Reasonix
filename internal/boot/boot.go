@@ -142,8 +142,8 @@ type Options struct {
 	// (control.ToolApprovalAuto/DontAsk/Yolo) applied to every headless-only gate
 	// this boot constructs: the top-level executor, task/read_only_task,
 	// writer-capable skill sub-agents, and the planner runner. Empty (or "ask")
-	// keeps the default headless gate, which resolves ordinary ask decisions to
-	// allow. Callers that later call Controller.ApplyHeadlessApprovalMode with a
+	// keeps the default fail-closed headless gate. Callers that later call
+	// Controller.ApplyHeadlessApprovalMode with a
 	// different mode than they passed here should also pass it here, or
 	// sub-agent gates will not match the parent executor's mode.
 	HeadlessApprovalMode string
@@ -732,16 +732,12 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 	}
 
 	// Permission policy gates every tool call. With no HeadlessApprovalMode
-	// (interactive default), the headless gate resolves ordinary "ask" decisions
-	// to allow — preserving `reasonix run` autonomy — while deny rules and
-	// fresh-human approval tools hard-block. Interactive frontends (chat,
-	// desktop) swap in an interactive gate later via
-	// Controller.EnableInteractiveApproval. When the caller selects a headless
-	// approval mode (`reasonix run --permission-mode auto/dontAsk/yolo`), this
-	// gate is built with that mode's contract instead — the same contract
-	// ApplyHeadlessApprovalMode installs on the parent executor — so the
-	// mode-vs-explicit-ask-rule boundary is not weaker for sub-agents than for
-	// the parent.
+	// (interactive bootstrap), the temporary gate preserves the legacy behavior
+	// until chat/desktop installs an interactive gate. A real headless caller
+	// such as `reasonix run` always supplies a mode: Ask fails closed, Auto
+	// allows ordinary writer fallbacks, and DontAsk denies them (#6927).
+	// The selected contract is also applied to sub-agents, so they cannot be a
+	// weaker path around the parent gate.
 	// Sub-agents always run headless: they have no UI to answer a prompt, so they
 	// inherit this same gate.
 	policy := permission.New(cfg.Permissions.Mode, cfg.Permissions.Allow, cfg.Permissions.Ask, cfg.Permissions.Deny).
