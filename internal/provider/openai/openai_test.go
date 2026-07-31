@@ -647,6 +647,57 @@ func TestBuildRequestForwardsReasoningEffort(t *testing.T) {
 	}
 }
 
+func TestNewDeepSeekV4FlashForwardsLowEffort(t *testing.T) {
+	p, err := New(provider.Config{
+		Name:    "deepseek",
+		BaseURL: "https://api.deepseek.com",
+		Model:   "deepseek-v4-flash",
+		APIKey:  "test",
+		Extra: map[string]any{
+			"effort":             "low",
+			"reasoning_protocol": "deepseek",
+		},
+	})
+	if err != nil {
+		t.Fatalf("New Flash low: %v", err)
+	}
+	if got := p.(*client).buildRequest(provider.Request{}).ReasoningEffort; got != "low" {
+		t.Fatalf("Flash reasoning_effort = %q, want low", got)
+	}
+
+	_, err = New(provider.Config{
+		Name:    "deepseek",
+		BaseURL: "https://api.deepseek.com",
+		Model:   "deepseek-v4-pro",
+		APIKey:  "test",
+		Extra: map[string]any{
+			"effort":             "low",
+			"reasoning_protocol": "deepseek",
+		},
+	})
+	if err == nil || !strings.Contains(err.Error(), "requires deepseek-v4-flash") {
+		t.Fatalf("New Pro low error = %v, want model-scoped rejection", err)
+	}
+
+	custom, err := New(provider.Config{
+		Name:    "custom-deepseek",
+		BaseURL: "https://gateway.example.com/v1",
+		Model:   "custom-flash",
+		APIKey:  "test",
+		Extra: map[string]any{
+			"effort":             "low",
+			"reasoning_protocol": "deepseek",
+			"supported_efforts":  []string{"low", "high", "max"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("New explicit custom low: %v", err)
+	}
+	if got := custom.(*client).buildRequest(provider.Request{}).ReasoningEffort; got != "low" {
+		t.Fatalf("custom reasoning_effort = %q, want explicit low", got)
+	}
+}
+
 func TestBuildRequestTemperatureSerialization(t *testing.T) {
 	c := &client{model: "m"}
 
