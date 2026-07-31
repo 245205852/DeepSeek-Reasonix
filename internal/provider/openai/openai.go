@@ -71,6 +71,7 @@ func New(cfg provider.Config) (provider.Provider, error) {
 		effort = ""
 	}
 	supportedEfforts, _ := cfg.Extra["supported_efforts"].([]string)
+	explicitLowEffort := supportsEffort(supportedEfforts, "low")
 	explicitMaxEffort := supportsEffort(supportedEfforts, "max")
 	protocol, _ := cfg.Extra["reasoning_protocol"].(string)
 	protocol = normalizeReasoningProtocol(protocol)
@@ -93,6 +94,7 @@ func New(cfg provider.Config) (provider.Provider, error) {
 		visionDetail = "" // auto — omit the field
 	}
 	deepseek := protocol == "deepseek" || (protocol == "" && officialDeepSeek)
+	deepseekV4Flash := strings.EqualFold(strings.TrimSpace(cfg.Model), "deepseek-v4-flash")
 	minimax := protocol == "" && IsMiniMax(cfg.BaseURL)
 	zhipu := protocol == "" && IsZhipu(cfg.BaseURL)
 	longcat := protocol == "" && IsLongCat(cfg.BaseURL)
@@ -123,9 +125,13 @@ func New(cfg provider.Config) (provider.Provider, error) {
 			// drop the depth hint so the wire carries thinking.type=disabled only.
 			effort = ""
 			thinkingType = "disabled"
+		case "low":
+			if !deepseekV4Flash && !explicitLowEffort {
+				return nil, fmt.Errorf("openai: provider %q uses DeepSeek thinking; effort low requires deepseek-v4-flash or explicit supported_efforts", name)
+			}
 		case "high", "max":
 		default:
-			return nil, fmt.Errorf("openai: provider %q uses DeepSeek thinking; effort must be high, max, or disabled", name)
+			return nil, fmt.Errorf("openai: provider %q uses DeepSeek thinking; effort must be low, high, max, or disabled", name)
 		}
 	case minimax:
 		// M3's knob is binary. The config effort layer normalises user input
