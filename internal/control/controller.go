@@ -2055,13 +2055,9 @@ func (c *Controller) Steer(text string) {
 }
 
 // submitSteerFallback records steer text that no active turn accepted as
-// unapplied guidance, not as a new task. Steers are the user's own words, so admission parks the body
-// while another turn is running or finishing rather than dropping it — the
-// window between a turn's steer-queue flush and running=false would
-// otherwise lose the text silently. Keeping the stable steer wrapper and
-// local-only record prevents a stale historical steer from opening a model
-// turn, checkpoint, recovery episode, or capability route and being executed
-// as the user's current request (#7045).
+// unapplied guidance, not as a new task. This compatibility path deliberately
+// never opens a provider turn: replaying stale historical guidance as the
+// user's current request caused unintended code changes (#7045).
 func (c *Controller) submitSteerFallback(text string) admissionResult {
 	return c.runGuardedOrPark(func(context.Context) error {
 		if c.executor != nil {

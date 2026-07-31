@@ -28,10 +28,10 @@ func TestParseRule(t *testing.T) {
 		{"bash=echo (hi)", "bash", "echo (hi)", true, true},               // '=' before '(' → literal, parens kept
 		{"bash(make FOO=*)", "bash", "make FOO=*", false, true},           // '(' before '=' → still a glob
 		{"get-user", "get-user", "", false, true},
-		{"Set-Content", "Bash", "Set-Content:*", false, true},   // bare PowerShell cmdlet → shell prefix
-		{"set-content", "Bash", "set-content:*", false, true},   // PowerShell cmdlets are case-insensitive at match time
-		{"git", "git", "", false, true},                         // ordinary bare command names remain tool rules
-		{"Get-CustomThing", "Get-CustomThing", "", false, true}, // preserve existing custom Verb-Noun tool rules
+		{"Set-Content", "Set-Content", "", false, true},
+		{"set-content", "set-content", "", false, true},
+		{"git", "git", "", false, true},
+		{"Get-CustomThing", "Get-CustomThing", "", false, true},
 		{"", "", "", false, false},
 		{"(noTool)", "", "", false, false},
 	}
@@ -47,7 +47,7 @@ func TestParseRule(t *testing.T) {
 	}
 }
 
-func TestBareToolAndLegacyPowerShellRuleSemantics(t *testing.T) {
+func TestPowerShellLikeBareToolNamesKeepGenericRuleSemantics(t *testing.T) {
 	p := New("ask",
 		[]string{"get-user"},
 		[]string{"write-report"},
@@ -66,13 +66,16 @@ func TestBareToolAndLegacyPowerShellRuleSemantics(t *testing.T) {
 		t.Fatalf("hyphenated command inherited a bare tool allow = %v, want Ask", got)
 	}
 	cmdletAllow := New("ask", []string{"Set-Content"}, nil, nil)
-	if got := cmdletAllow.DecideSubject("Set-Content", false, ""); got != Ask {
-		t.Fatalf("legacy cmdlet rule matched a custom tool = %v, want Ask", got)
+	if got := cmdletAllow.DecideSubject("Set-Content", false, ""); got != Allow {
+		t.Fatalf("bare cmdlet allow tool rule = %v, want Allow", got)
 	}
-	if got := cmdletAllow.DecideSubject("bash", false, "Set-Content app.go"); got != Allow {
-		t.Fatalf("legacy cmdlet allow did not migrate to Bash = %v, want Allow", got)
+	if got := cmdletAllow.DecideSubject("bash", false, "Set-Content app.go"); got != Ask {
+		t.Fatalf("bare cmdlet allow leaked into Bash = %v, want Ask", got)
 	}
 	legacy := New("allow", nil, nil, []string{"Set-Content"})
+	if got := legacy.DecideSubject("Set-Content", true, ""); got != Deny {
+		t.Fatalf("legacy cmdlet exact tool deny = %v, want Deny", got)
+	}
 	if got := legacy.DecideSubject("bash", false, "set-content app.go"); got != Deny {
 		t.Fatalf("legacy cmdlet Bash deny = %v, want Deny", got)
 	}

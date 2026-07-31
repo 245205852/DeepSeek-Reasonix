@@ -1847,7 +1847,7 @@ export function useController() {
   const bump = useCallback(() => setVersion((v) => v + 1), []);
   const notifyLiveListeners = useCallback((tabId: string) => {
     for (const listener of liveListenersByTabRef.current.get(tabId) ?? []) listener();
-  }, []);
+  }, [t]);
   const disposeComposerProfileState = useCallback((tabId: string) => {
     appliedComposerProfileByTabRef.current.delete(tabId);
     composerProfileInFlightByTabRef.current.delete(tabId);
