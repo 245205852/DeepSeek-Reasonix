@@ -56,6 +56,26 @@ func TestBashSubjectRequiresExplicitApproval(t *testing.T) {
 	}
 }
 
+func TestPowerShellCmdletDenyPrefixIsCaseInsensitive(t *testing.T) {
+	p := New("allow", nil, nil, []string{
+		"Set-Content",
+		"Bash(Add-Content:*)",
+		"Bash(Out-File:*)",
+	})
+	for _, command := range []string{
+		`set-content -LiteralPath app.go -Value bad`,
+		`ADD-CONTENT -LiteralPath app.go -Value bad`,
+		`out-file -FilePath app.go`,
+	} {
+		if got := p.DecideSubject("bash", false, command); got != Deny {
+			t.Fatalf("DecideSubject(%q) = %v, want Deny", command, got)
+		}
+	}
+	if got := p.DecideSubject("bash", false, `Set-Location src`); got != Allow {
+		t.Fatalf("unrelated PowerShell command = %v, want Allow", got)
+	}
+}
+
 func TestPolicyDynamicBashRequiresExplicitApproval(t *testing.T) {
 	const command = "git status $(touch /tmp/reasonix-permission-bypass)"
 

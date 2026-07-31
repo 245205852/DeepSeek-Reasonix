@@ -71,10 +71,10 @@ func newApprovalManager(policy permission.Policy, mode string, timeout time.Dura
 	}
 }
 
-// NewHeadlessPermissionGate builds the non-interactive gate used during boot and
-// by sub-agents. It preserves headless autonomy for ordinary Ask decisions, but
-// refuses fresh-human tools unless the owning Controller later installs a
-// scoped low-risk evaluator on the parent executor.
+// NewHeadlessPermissionGate builds the legacy bootstrap gate used before a
+// frontend declares its approval posture. Interactive frontends replace it
+// before running; callers that are actually headless must pass a non-empty mode
+// through BuildHeadlessApprovalGate.
 func NewHeadlessPermissionGate(policy permission.Policy) *freshHumanHeadlessGate {
 	return &freshHumanHeadlessGate{gate: permission.NewGate(policy, nil)}
 }
@@ -86,10 +86,16 @@ func NewHeadlessPermissionGate(policy permission.Policy) *freshHumanHeadlessGate
 // the `task`/`read_only_task` sub-agent, writer-capable skill sub-agents
 // (run_skill/install_skill), and the planner runner — so all of them share the
 // CLI-selected headless approval mode instead of only the parent executor
-// getting it while the rest silently keep the mode-unaware default (ask
-// resolves to allow), which let a task sub-agent run a write an explicit ask
+// getting it while the rest silently keep the mode-unaware default, which let
+// a task sub-agent run a write an explicit ask
 // rule was supposed to deny under auto.
 func BuildHeadlessApprovalGate(policy permission.Policy, mode string) *freshHumanHeadlessGate {
+	// An empty mode is the boot-time placeholder used by interactive frontends
+	// before they install their real gate. Keep that compatibility path distinct
+	// from an explicit headless Ask posture, which has nobody to approve it.
+	if strings.TrimSpace(mode) == "" {
+		return NewHeadlessPermissionGate(policy)
+	}
 	switch normalizeToolApprovalMode(mode) {
 	case ToolApprovalYolo:
 		policy.Mode = permission.Allow
@@ -101,7 +107,7 @@ func BuildHeadlessApprovalGate(policy permission.Policy, mode string) *freshHuma
 		policy.Mode = permission.Deny
 		return &freshHumanHeadlessGate{gate: permission.NewGate(policy, denyPermissionApprover{})}
 	default:
-		return NewHeadlessPermissionGate(policy)
+		return &freshHumanHeadlessGate{gate: permission.NewGate(policy, denyPermissionApprover{})}
 	}
 }
 

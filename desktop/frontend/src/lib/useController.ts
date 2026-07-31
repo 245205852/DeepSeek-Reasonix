@@ -384,6 +384,20 @@ export function runtimeReadyForSubmit(meta?: Meta): boolean {
   return !meta.runtime || meta.runtime.phase === "ready";
 }
 
+// normalizeTurnSubmit is the final frontend boundary before optimistic
+// transcript state is created. Display text may intentionally be shorter than
+// the provider input, but a visible-only message must never start an empty model
+// turn (#6869).
+export function normalizeTurnSubmit(displayText: string, submitText: string): {
+  display: string;
+  submit: string;
+} {
+  const display = displayText.trim();
+  const submit = submitText.trim();
+  if (!submit) throw new Error("Message cannot be empty.");
+  return { display, submit };
+}
+
 export function acceptsRuntimeEventEpoch(acceptedEpoch: string | undefined, eventEpoch: string | undefined): boolean {
   return !eventEpoch || !acceptedEpoch || acceptedEpoch === eventEpoch;
 }
@@ -2582,8 +2596,7 @@ export function useController() {
     }
     const seq = currentState.seq;
     const promptEpoch = currentState.promptEpoch;
-    const display = displayText.trim();
-    const submit = submitText.trim();
+    const { display, submit } = normalizeTurnSubmit(displayText, submitText);
     const original = originalText?.trim() ?? "";
     dispatchTo(tabId, { type: "user", text: displayText, submitText: display !== submit ? submit : undefined, seq });
     invalidateCache();

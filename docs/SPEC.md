@@ -379,10 +379,12 @@ func (p Policy) Decide(toolName string, readOnly bool, args json.RawMessage) Dec
   grant is path-scoped when a path is available, stored as `Edit(<path>)` so all
   built-in file-mutating tools share it. A
   non-interactive run
-  (`reasonix run`, a sub-agent, anything with no TTY / no approver) cannot prompt, so
-  ordinary `Ask` resolves to **allow** — preserving autonomous behaviour. Nested
-  or indirect Bash is the exception: headless Ask/Auto/DontAsk reject it unless
-  an identical literal grant exists; only YOLO may bypass that human requirement. A `Deny` is a
+  (`reasonix run`, a sub-agent, anything with no TTY / no approver) cannot prompt.
+  Its explicit posture therefore resolves without blocking: Ask/manual fails
+  closed, Auto allows only ordinary writer fallback, and YOLO may bypass ordinary
+  Ask decisions. Nested or indirect Bash remains stricter: headless
+  Ask/Auto/DontAsk reject it unless an identical literal grant exists; only YOLO
+  may bypass that human requirement. A `Deny` is a
   hard block in *every* mode: the tool never executes and the model receives a
   "blocked" result it can adapt to (the same shape as a plan-mode refusal).
 - **MCP authorization.** Installing an MCP server authorizes all of its tools;
@@ -484,9 +486,11 @@ func (p Policy) Decide(toolName string, readOnly bool, args json.RawMessage) Dec
 | YOLO approval / `yolo` | Ordinary prompts auto-allowed; deny rules and fresh reviews remain | Waits for user | Waits for user |
 | Approved-plan execution window | Approved plan's writer fallback is auto-allowed; explicit `ask` / `deny` rules remain | Future plans still wait | Waits for user |
 
-Out of the box (`mode = "ask"`, no rules) `reasonix run` behaves exactly as before
-(writers resolve `Ask`→allow with no TTY), while `reasonix` now prompts before
-each writer/bash call. `deny` rules harden both modes.
+Out of the box (`mode = "ask"`, no rules), interactive `reasonix` prompts before
+each writer/bash call and `reasonix run` fails closed on those calls because it
+has no approver. Use `reasonix run --auto ...` / `-y` to allow ordinary writer
+fallback in unattended automation. Explicit `ask` rules still fail closed under
+Auto, and `deny` rules harden every posture.
 
 ### 3.8 Slash commands (`internal/command`)
 

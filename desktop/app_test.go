@@ -6961,6 +6961,46 @@ func TestUserTriggeredCommandsReturnErrorsWhenUnavailable(t *testing.T) {
 	}
 }
 
+func TestSubmitEntryPointsRejectEmptyProviderInput(t *testing.T) {
+	app := NewApp()
+	for _, tt := range []struct {
+		name string
+		call func() error
+	}{
+		{name: "plain", call: func() error { return app.SubmitToTab("missing", " \n\t ") }},
+		{name: "display", call: func() error { return app.SubmitDisplayToTab("missing", "visible prompt", " ") }},
+		{name: "delivery recovery", call: func() error {
+			return app.SubmitDeliveryRecoveryToTab("missing", "visible prompt", "")
+		}},
+		{name: "invocations", call: func() error {
+			return app.SubmitInvocationsToTab("missing", "/skill visible", "", nil)
+		}},
+		{name: "edited display", call: func() error {
+			return app.SubmitEditedDisplayToTab("missing", "visible prompt", "\n", "original prompt")
+		}},
+		{name: "initial goal", call: func() error {
+			_, err := app.SubmitInitialGoalToTab("missing", "goal", "visible prompt", "", nil, "normal", "auto", "local", 0, 0)
+			return err
+		}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			if err := tt.call(); !errors.Is(err, errEmptyTurnInput) {
+				t.Fatalf("error = %v, want errEmptyTurnInput", err)
+			}
+		})
+	}
+}
+
+func TestInvocationEntryPointsAllowEmptyExplicitTaskForSkillOnlyTurn(t *testing.T) {
+	invocations := []InvocationRequest{{Name: "skill", Kind: "skill"}}
+	if err := validateInvocationTurnInput("", invocations); err != nil {
+		t.Fatalf("skill-only invocation input rejected: %v", err)
+	}
+	if err := validateInvocationTurnInput("", nil); !errors.Is(err, errEmptyTurnInput) {
+		t.Fatalf("empty input without invocations = %v, want errEmptyTurnInput", err)
+	}
+}
+
 func TestCloseReadOnlyChannelTabDoesNotSnapshotTranscript(t *testing.T) {
 	isolateDesktopUserDirs(t)
 
