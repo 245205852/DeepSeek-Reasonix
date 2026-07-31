@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 
@@ -34,7 +35,35 @@ func acpCommand(args []string, version string) int {
 	fs := flag.NewFlagSet("acp", flag.ContinueOnError)
 	model := fs.String("model", "", "provider name (default: config default_model)")
 	profileFlag := fs.String("profile", "balanced", "runtime profile: economy | balanced | delivery")
+	plannerFlag := fs.String("planner", "auto", "planner policy: auto | off")
+	networkFlag := fs.String("sandbox-network", "auto", "sandbox network policy: auto | on | off")
+	bashFlag := fs.String("sandbox-bash", "auto", "bash sandbox policy: auto | enforce")
+	workspaceOnly := fs.Bool("workspace-only", false, "ignore configured extra write roots and confine writes to the session cwd")
 	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	plannerMode := strings.ToLower(strings.TrimSpace(*plannerFlag))
+	if plannerMode != "auto" && plannerMode != "off" {
+		fmt.Fprintln(os.Stderr, i18n.M.ErrorPrefix, "planner must be auto or off")
+		return 2
+	}
+	networkMode := strings.ToLower(strings.TrimSpace(*networkFlag))
+	var networkOverride *bool
+	switch networkMode {
+	case "auto":
+	case "on":
+		on := true
+		networkOverride = &on
+	case "off":
+		off := false
+		networkOverride = &off
+	default:
+		fmt.Fprintln(os.Stderr, i18n.M.ErrorPrefix, "sandbox-network must be auto, on, or off")
+		return 2
+	}
+	bashMode := strings.ToLower(strings.TrimSpace(*bashFlag))
+	if bashMode != "auto" && bashMode != "enforce" {
+		fmt.Fprintln(os.Stderr, i18n.M.ErrorPrefix, "sandbox-bash must be auto or enforce")
 		return 2
 	}
 	profile, err := parseRuntimeProfile(*profileFlag)
@@ -46,7 +75,11 @@ func acpCommand(args []string, version string) int {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
 
-	factory := &acpFactory{model: *model, profile: profile}
+	factory := &acpFactory{
+		model: *model, profile: profile, plannerOff: plannerMode == "off",
+		networkOverride: networkOverride, workspaceOnly: *workspaceOnly,
+		bashOverride: bashMode,
+	}
 	info := acp.AgentInfo{Name: "reasonix", Version: version}
 	if err := acp.Serve(ctx, os.Stdin, os.Stdout, factory, info); err != nil {
 		fmt.Fprintln(os.Stderr, i18n.M.ErrorPrefix, err)
@@ -60,8 +93,12 @@ func acpCommand(args []string, version string) int {
 // desktop, and serve assembly while still adding the host-supplied MCP servers
 // for this session only.
 type acpFactory struct {
-	model   string
-	profile string
+	model           string
+	profile         string
+	plannerOff      bool
+	networkOverride *bool
+	bashOverride    string
+	workspaceOnly   bool
 }
 
 func (f *acpFactory) SessionDir() string {
@@ -80,6 +117,10 @@ func (f *acpFactory) NewSession(ctx context.Context, p acp.SessionParams) (*cont
 	if root != "" && !filepath.IsAbs(root) {
 		return nil, fmt.Errorf("session cwd must be an absolute path: %s", root)
 	}
+	bashOverride := ""
+	if f.bashOverride == "enforce" {
+		bashOverride = "enforce"
+	}
 	return boot.Build(ctx, boot.Options{
 		Model:                    firstNonEmpty(p.Model, f.model),
 		TokenMode:                firstNonEmpty(p.RuntimeProfile, f.profile),
@@ -93,7 +134,51 @@ func (f *acpFactory) NewSession(ctx context.Context, p acp.SessionParams) (*cont
 		OnSessionRecovered:       p.OnSessionRecovered,
 		FileOverlay:              p.FileOverlay,
 		TerminalRunner:           p.Terminal,
+		DisablePlanner:           f.plannerOff,
+		SandboxNetworkOverride:   f.networkOverride,
+		SandboxBashOverride:      bashOverride,
+		WorkspaceOnly:            f.workspaceOnly,
 	})
+}
+
+func (f *acpFactory) SessionRuntimeState(_ context.Context, cwd string) (acp.SessionRuntimeState, error) {
+	cfg, err := config.LoadForRoot(cwd)
+	if err != nil {
+		return acp.SessionRuntimeState{}, err
+	}
+	engine := "bubblewrap"
+	if runtime.GOOS == "darwin" {
+		engine = "seatbelt"
+	}
+	plannerMode := "off"
+	if !f.plannerOff && strings.TrimSpace(cfg.Agent.PlannerModel) != "" {
+		plannerMode = "on"
+	}
+	writeRoots := cfg.WriteRootsForRoot(cwd)
+	if f.workspaceOnly {
+		writeRoots = []string{cwd}
+	}
+	networkEnabled := cfg.Sandbox.Network
+	if f.networkOverride != nil {
+		networkEnabled = *f.networkOverride
+	}
+	effectiveBash := cfg.BashMode()
+	if f.bashOverride == "enforce" {
+		effectiveBash = "enforce"
+	}
+	if effectiveBash == "enforce" && !sandbox.Available() {
+		return acp.SessionRuntimeState{}, fmt.Errorf("effective bash sandbox unavailable: %s", sandbox.UnavailableMessage())
+	}
+	return acp.SessionRuntimeState{
+		PlannerMode: plannerMode,
+		Sandbox: acp.SessionSandboxState{
+			Mode:           effectiveBash,
+			Engine:         engine,
+			WorkspaceRoot:  cwd,
+			WriteRoots:     writeRoots,
+			NetworkEnabled: networkEnabled,
+		},
+	}, nil
 }
 
 func (f *acpFactory) SessionConfigState(_ context.Context, p acp.SessionConfigStateParams) (acp.SessionConfigState, error) {

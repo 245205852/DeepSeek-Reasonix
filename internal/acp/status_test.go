@@ -1,0 +1,179 @@
+package acp
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"path/filepath"
+	"testing"
+
+	"reasonix/internal/agent"
+	"reasonix/internal/event"
+	"reasonix/internal/provider"
+)
+
+type statusFactory struct {
+	*configurableFactory
+}
+
+func (f *statusFactory) SessionRuntimeState(_ context.Context, cwd string) (SessionRuntimeState, error) {
+	return SessionRuntimeState{
+		PlannerMode: "off",
+		Sandbox: SessionSandboxState{
+			Mode: "enforce", Engine: "bubblewrap", WorkspaceRoot: cwd,
+			WriteRoots: []string{cwd}, NetworkEnabled: false,
+		},
+	}, nil
+}
+
+func openStatusSession(t *testing.T, client *rpcClient, cwd string) string {
+	t.Helper()
+	resp := client.call(t, "session/new", SessionNewParams{Cwd: cwd})
+	if resp.Error != nil {
+		t.Fatalf("session/new: %+v", resp.Error)
+	}
+	var opened SessionNewResult
+	if err := json.Unmarshal(resp.Result, &opened); err != nil {
+		t.Fatalf("session/new result: %v", err)
+	}
+	return opened.SessionID
+}
+
+func getStatus(t *testing.T, client *rpcClient, sessionID string) ReasonixSessionStatus {
+	t.Helper()
+	resp := client.call(t, sessionStatusMethod, SessionStatusParams{SessionID: sessionID})
+	if resp.Error != nil {
+		t.Fatalf("session/status: %+v", resp.Error)
+	}
+	var status ReasonixSessionStatus
+	if err := json.Unmarshal(resp.Result, &status); err != nil {
+		t.Fatalf("session/status result: %v", err)
+	}
+	return status
+}
+
+func TestStatusExtensionTracksMultipleSessionsAndUsage(t *testing.T) {
+	factory := &statusFactory{configurableFactory: &configurableFactory{
+		behavior: func(_ context.Context, sink event.Sink, input string, _ SessionParams) error {
+			sink.Emit(event.Event{Kind: event.Phase, Text: "executor · implementing"})
+			sink.Emit(event.Event{Kind: event.Usage, Usage: &provider.Usage{
+				PromptTokens: 10, CompletionTokens: 4, ReasoningTokens: 2,
+				CacheHitTokens: 7, CacheMissTokens: 3,
+			}, Pricing: &provider.Pricing{CacheHit: 0.1, Input: 1, Output: 2, Currency: "USD"}, UsageSource: event.UsageSourceExecutor})
+			sink.Emit(event.Event{Kind: event.Usage, Usage: &provider.Usage{
+				PromptTokens: 5, CompletionTokens: 1, CacheMissTokens: 5,
+			}, Pricing: &provider.Pricing{CacheHit: 0.1, Input: 1, Output: 2, Currency: "USD"}, UsageSource: event.UsageSourceCompaction})
+			sink.Emit(event.Event{Kind: event.Text, Text: input})
+			return nil
+		},
+	}}
+	client, stop := startServer(t, factory)
+	defer stop()
+	client.call(t, "initialize", InitializeParams{ProtocolVersion: 1})
+	first := openStatusSession(t, client, t.TempDir())
+	second := openStatusSession(t, client, t.TempDir())
+
+	initialSecond := getStatus(t, client, second)
+	prompt := client.callAsync("session/prompt", SessionPromptParams{SessionID: first, Prompt: []ContentBlock{{Type: "text", Text: "ship"}}})
+	notifications, response := drainPrompt(t, client, prompt)
+	if response.Error != nil {
+		t.Fatalf("session/prompt: %+v", response.Error)
+	}
+
+	firstStatus := getStatus(t, client, first)
+	if firstStatus.Sequence == 0 || firstStatus.State != "idle" || firstStatus.TurnOutcome.Kind != "completed" {
+		t.Fatalf("first status = %+v", firstStatus)
+	}
+	if firstStatus.PlannerMode != "off" || firstStatus.Sandbox.WorkspaceRoot == "" || len(firstStatus.Sandbox.WriteRoots) != 1 {
+		t.Fatalf("effective runtime status = %+v", firstStatus)
+	}
+	usage := firstStatus.Usage.Cumulative
+	if usage.PromptTokens != 15 || usage.CompletionTokens != 5 || usage.ReasoningTokens != 2 || usage.CacheHitTokens != 7 || usage.CacheMissTokens != 8 {
+		t.Fatalf("cumulative usage = %+v", usage)
+	}
+	if usage.UsageSource != "mixed" || usage.CacheHitRatio == nil || usage.EstimatedCost == nil || usage.Currency == nil || *usage.Currency != "USD" {
+		t.Fatalf("usage metadata = %+v", usage)
+	}
+	secondStatus := getStatus(t, client, second)
+	if secondStatus.Sequence != initialSecond.Sequence || secondStatus.Usage.Cumulative.PromptTokens != 0 {
+		t.Fatalf("second session telemetry leaked: before=%+v after=%+v", initialSecond, secondStatus)
+	}
+
+	var sawPhase, sawUsage, sawCompletion bool
+	for _, notification := range notifications {
+		if notification.Method != sessionStatusUpdateMethod {
+			continue
+		}
+		var update ReasonixStatusUpdate
+		if err := json.Unmarshal(notification.Params, &update); err != nil {
+			t.Fatalf("status update: %v", err)
+		}
+		if update.Sequence != update.Status.Sequence || update.SessionID != first {
+			t.Fatalf("status update correlation = %+v", update)
+		}
+		switch update.Event {
+		case "phase":
+			sawPhase = true
+		case "usage":
+			sawUsage = true
+		case "completion":
+			sawCompletion = true
+		}
+	}
+	if !sawPhase || !sawUsage || !sawCompletion {
+		t.Fatalf("status events phase=%v usage=%v completion=%v", sawPhase, sawUsage, sawCompletion)
+	}
+}
+
+func TestStatusClassifiesPauseAndError(t *testing.T) {
+	telemetry := newStatusTelemetry()
+	telemetry.beginTurn()
+	pauseEvent := telemetry.finishTurn(&agent.FinalReadinessError{Attempts: 3, Reason: "missing verification", Missing: []string{"verify"}}, false, "running", "partial")
+	paused := telemetry.snapshot()
+	if pauseEvent != "pause" || paused.turnOutcome.Kind != "paused" || len(paused.finalReadiness.Risks) != 1 {
+		t.Fatalf("pause classification = event %q snapshot %+v", pauseEvent, paused)
+	}
+
+	telemetry.beginTurn()
+	errorEvent := telemetry.finishTurn(errors.New("provider failed"), false, "running", "")
+	failed := telemetry.snapshot()
+	if errorEvent != "error" || failed.turnOutcome.Kind != "error" || failed.goalOverride != "failed" {
+		t.Fatalf("error classification = event %q snapshot %+v", errorEvent, failed)
+	}
+}
+
+func TestStatusSnapshotSurvivesSessionResume(t *testing.T) {
+	dir := t.TempDir()
+	cwd := t.TempDir()
+	sessionID := "status-reconnect"
+	telemetry := newStatusTelemetry()
+	telemetry.beginTurn()
+	telemetry.onEvent(event.Event{Kind: event.Usage, Usage: &provider.Usage{
+		PromptTokens: 8, CompletionTokens: 2, CacheHitTokens: 6, CacheMissTokens: 2,
+	}, UsageSource: event.UsageSourceExecutor})
+	telemetry.finishTurn(nil, false, "", "persisted summary")
+	path := filepath.Join(dir, sessionID+".jsonl")
+	if err := agent.NewSession("system").Save(path); err != nil {
+		t.Fatalf("save transcript: %v", err)
+	}
+	if err := saveACPMeta(path, acpSessionMeta{
+		SessionID: sessionID, Cwd: cwd, Model: "fast", RuntimeProfile: "delivery",
+		Status: telemetry.persisted(),
+	}); err != nil {
+		t.Fatalf("save ACP metadata: %v", err)
+	}
+	factory := &statusFactory{configurableFactory: &configurableFactory{
+		dir: dir,
+	}}
+	reconnected, stopReconnected := startServer(t, factory)
+	defer stopReconnected()
+	reconnected.call(t, "initialize", InitializeParams{ProtocolVersion: 1})
+	resume := reconnected.call(t, "session/resume", SessionResumeParams{SessionID: sessionID, Cwd: cwd})
+	if resume.Error != nil {
+		t.Fatalf("session/resume: %+v", resume.Error)
+	}
+	after := getStatus(t, reconnected, sessionID)
+	if after.Sequence != telemetry.snapshot().sequence || after.Usage.Cumulative.PromptTokens != 8 || after.State != "idle" || after.FinalReadiness.Summary != "persisted summary" {
+		t.Fatalf("recovered status = %+v", after)
+	}
+}

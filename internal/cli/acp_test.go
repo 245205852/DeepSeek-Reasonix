@@ -69,6 +69,49 @@ func TestACPInitializesWithoutAPIKey(t *testing.T) {
 	}
 }
 
+func TestACPRejectsInvalidSupervisorFlags(t *testing.T) {
+	for _, args := range [][]string{
+		{"--planner=maybe"},
+		{"--sandbox-network=maybe"},
+		{"--sandbox-bash=maybe"},
+	} {
+		if rc := acpCommand(args, "test-version"); rc != 2 {
+			t.Fatalf("acpCommand(%v) rc = %d, want 2", args, rc)
+		}
+	}
+}
+
+func TestACPSupervisorRuntimeStateUsesHardOverrides(t *testing.T) {
+	isolateCLIConfigHome(t)
+	project := t.TempDir()
+	if err := os.WriteFile(filepath.Join(project, "reasonix.toml"), []byte(`
+[agent]
+planner_model = "configured-planner"
+
+[sandbox]
+network = true
+bash = "off"
+
+allow_write = ["../outside"]
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	off := false
+	factory := &acpFactory{
+		plannerOff: true, networkOverride: &off, bashOverride: "enforce", workspaceOnly: true,
+	}
+	state, err := factory.SessionRuntimeState(context.Background(), project)
+	if err != nil {
+		t.Fatalf("SessionRuntimeState: %v", err)
+	}
+	if state.PlannerMode != "off" || state.Sandbox.Mode != "enforce" || state.Sandbox.NetworkEnabled {
+		t.Fatalf("runtime overrides = %+v", state)
+	}
+	if len(state.Sandbox.WriteRoots) != 1 || state.Sandbox.WriteRoots[0] != project || state.Sandbox.WorkspaceRoot != project {
+		t.Fatalf("workspace confinement = %+v", state.Sandbox)
+	}
+}
+
 func TestACPFactoryLoadsSessionCwdProjectConfig(t *testing.T) {
 	home := isolateCLIConfigHome(t)
 	if _, err := config.SetCredential("REASONIX_TEST_KEY", "test-key"); err != nil {

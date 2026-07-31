@@ -260,6 +260,7 @@ type pendingApproval struct {
 	tool         string
 	subject      string
 	reason       string
+	rawInput     json.RawMessage
 	fresh        bool
 	requireHuman bool
 	autoDrain    bool
@@ -5996,12 +5997,12 @@ func (c *Controller) requestApprovalDecisionWithOptions(ctx context.Context, too
 	var id string
 	var reply chan approvalReply
 	if opts.fresh || opts.requireHuman {
-		id, reply = c.approval.registerDecision(tool, subject, reason, opts.fresh, opts.requireHuman)
+		id, reply = c.approval.registerDecisionWithInput(tool, subject, reason, args, opts.fresh, opts.requireHuman)
 	} else {
-		id, reply = c.approval.register(tool, subject, reason)
+		id, reply = c.approval.registerWithInput(tool, subject, reason, args)
 	}
 
-	c.sink.Emit(c.approvalRequestEvent(event.Approval{ID: id, Tool: tool, Subject: subject, Reason: reason, Fresh: opts.fresh}))
+	c.sink.Emit(c.approvalRequestEvent(event.Approval{ID: id, Tool: tool, Subject: subject, Reason: reason, RawInput: append(json.RawMessage(nil), args...), Fresh: opts.fresh}))
 	// The agent now needs the user's attention; a Notification hook can ping an
 	// external channel (desktop notice, phone) while the run blocks on the reply.
 	go c.hooks.Notification(ctx, approvalNotificationText(tool, subject), "permission_prompt")
