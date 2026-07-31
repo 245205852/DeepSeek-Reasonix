@@ -161,6 +161,15 @@ type Options struct {
 	// catalog. Remote Workbench injects a Broker resolver so no credential or
 	// provider endpoint has to exist on the Host. Nil preserves local behavior.
 	ProviderResolver provider.Resolver
+	// DisablePlanner is a process-local hard override used by supervised ACP
+	// workers. It wins over user/project planner_model configuration without
+	// mutating config or changing the provider-visible prompt/tool surface.
+	DisablePlanner bool
+	// SandboxNetworkOverride and WorkspaceOnly are process-local hard bounds for
+	// supervised ACP workers. Nil/false preserve normal Reasonix config.
+	SandboxNetworkOverride *bool
+	SandboxBashOverride    string
+	WorkspaceOnly          bool
 }
 
 func recoveryHeadlessMode(opts Options) bool {
@@ -459,6 +468,17 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 	reg := tool.NewRegistry()
 	writeRoots := cfg.WriteRootsForRoot(root)
 	writeRoots = appendUniquePaths(writeRoots, additionalDirs...)
+	if opts.WorkspaceOnly {
+		writeRoots = []string{root}
+	}
+	networkEnabled := cfg.Sandbox.Network
+	if opts.SandboxNetworkOverride != nil {
+		networkEnabled = *opts.SandboxNetworkOverride
+	}
+	bashMode := cfg.BashMode()
+	if override := strings.TrimSpace(opts.SandboxBashOverride); override != "" {
+		bashMode = override
+	}
 	forbidReadRoots := RuntimeForbidReadRoots(cfg, root)
 	// managedConfig names the Reasonix-owned config FILES (config.toml,
 	// compatibility TOMLs, legacy v0.x config.json) the file-writers may repair
@@ -466,12 +486,16 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 	// OS-sandbox write roots deliberately stay unwidened: config repair goes
 	// through the approval-gated file tools, not raw shell writes.
 	managedConfig := builtin.NewManagedConfigPaths(config.ReasonixManagedConfigPaths())
-	bashSpec := sandbox.Spec{Mode: cfg.BashMode(), WriteRoots: writeRoots, ForbidReadRoots: forbidReadRoots, Network: cfg.Sandbox.Network}
+	bashSpec := sandbox.Spec{Mode: bashMode, WriteRoots: writeRoots, ForbidReadRoots: forbidReadRoots, Network: networkEnabled}
 	bashSpec.Shell = shell
 	// The session-data guard blocks agent writes into Reasonix's own session
 	// stores (they race the app's saves and surface as conflict-copy loops);
 	// explicit allow_write entries stay a sanctioned escape hatch.
-	sessionGuard := builtin.NewSessionDataGuard(config.MemoryUserDir(), cfg.AllowWriteRoots())
+	allowWriteRoots := cfg.AllowWriteRoots()
+	if opts.WorkspaceOnly {
+		allowWriteRoots = nil
+	}
+	sessionGuard := builtin.NewSessionDataGuard(config.MemoryUserDir(), allowWriteRoots)
 	if bashSpec.Mode == "enforce" && !sandbox.Available() {
 		fmt.Fprintln(stderr, "warning: "+sandbox.UnavailableMessage())
 	}
@@ -510,7 +534,7 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 		StateHome:          config.ReasonixHomeDir(),
 		WriterRoots:        writeRoots,
 		ForbidReadRoots:    forbidReadRoots,
-		Network:            cfg.Sandbox.Network,
+		Network:            networkEnabled,
 		PackageOwners:      pluginPackageOwners(cfg),
 	}
 	autoStartEntries := cfg.EnabledPlugins(root, config.DefaultMCPActivationStore())
@@ -1475,7 +1499,7 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 	// use_capability surface to both Planner and Executor. Their frontends keep
 	// independent ledgers/audits while sharing the session MCP runtime.
 	dualModelPlanner := false
-	if pm := cfg.Agent.PlannerModel; pm != "" && !tokenEconomy {
+	if pm := effectivePlannerModel(cfg, opts, tokenEconomy); pm != "" {
 		if pe, ok := resolveOptionalEntry(opts, cfg, pm); ok && pe.Model != entry.Model {
 			dualModelPlanner = true
 		}
@@ -1595,7 +1619,7 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 	// Coordinator with its own session, kept separate for cache stability. The
 	// planner gets the same standing memory context and a filtered read-only
 	// research tool set, so it can inspect rules/code without side effects.
-	if pm := cfg.Agent.PlannerModel; pm != "" && !tokenEconomy {
+	if pm := effectivePlannerModel(cfg, opts, tokenEconomy); pm != "" {
 		pe, ok := resolveOptionalEntry(opts, cfg, pm)
 		if !ok {
 			return nil, fmt.Errorf("planner_model %q is not a configured provider", pm)
@@ -1782,6 +1806,16 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 		ctrl.SetCapabilityProxyRouting(true)
 	}
 	return ctrl, nil
+}
+
+// effectivePlannerModel centralizes planner precedence. The explicit ACP hard
+// override is checked before user/project config and cannot be reversed by a
+// later assembly branch.
+func effectivePlannerModel(cfg *config.Config, opts Options, tokenEconomy bool) string {
+	if cfg == nil || opts.DisablePlanner || tokenEconomy {
+		return ""
+	}
+	return strings.TrimSpace(cfg.Agent.PlannerModel)
 }
 
 func applyRuntimeAutoPricingCurrency(cfg *config.Config, currency string) {
