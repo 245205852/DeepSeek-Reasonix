@@ -437,6 +437,62 @@ func TestSetSessionRearmsMissingToolCallReasoningWarn(t *testing.T) {
 	}
 }
 
+// TestMissingReasoningWarnNoticePersistsAcrossSessions: when boot supplies a
+// shared state dir, the missing-tool-call-reasoning notice fires exactly once
+// per provider across sessions and agents instead of once per session
+// (#7059). A resumed session on the same agent and a brand-new agent sharing
+// the dir must both stay silent for a provider that already got its notice.
+func TestMissingReasoningWarnNoticePersistsAcrossSessions(t *testing.T) {
+	stateDir := t.TempDir()
+	mockTurns := func() *testutil.MockProvider {
+		return testutil.NewMock("deepseek-proxy",
+			testutil.Turn{ToolCalls: []provider.ToolCall{{ID: "c1", Name: "echo", Arguments: `{"text":"hi"}`}}},
+			testutil.Turn{Text: "done"},
+			testutil.Turn{ToolCalls: []provider.ToolCall{{ID: "c2", Name: "echo", Arguments: `{"text":"hi"}`}}},
+			testutil.Turn{Text: "done again"},
+		)
+	}
+	warnCount := func(sink *recordSink) int {
+		var n int
+		for _, e := range sink.kinds(event.Notice) {
+			if e.Level == event.LevelWarn && strings.Contains(e.Text, "without reasoning_content") {
+				n++
+			}
+		}
+		return n
+	}
+
+	// First agent, first session: the provider gets its single notice.
+	mp := mockTurns()
+	sink1 := &recordSink{}
+	a1 := New(toolCallReasoningRequiredProvider{mp}, echoRegistry(), NewSession(""), Options{MissingReasoningWarnStateDir: stateDir}, sink1)
+	if err := a1.Run(context.Background(), "go"); err != nil {
+		t.Fatalf("first Run: %v", err)
+	}
+	if got := warnCount(sink1); got != 1 {
+		t.Fatalf("first session warn notices = %d, want 1", got)
+	}
+
+	// Swapped-in conversation on the same agent: persisted state keeps it silent.
+	a1.SetSession(NewSession(""))
+	if err := a1.Run(context.Background(), "go"); err != nil {
+		t.Fatalf("second Run: %v", err)
+	}
+	if got := warnCount(sink1); got != 1 {
+		t.Fatalf("warn notices after SetSession = %d, want still 1", got)
+	}
+
+	// Brand-new agent (fresh process equivalent) sharing the state dir: silent.
+	sink2 := &recordSink{}
+	a2 := New(toolCallReasoningRequiredProvider{mockTurns()}, echoRegistry(), NewSession(""), Options{MissingReasoningWarnStateDir: stateDir}, sink2)
+	if err := a2.Run(context.Background(), "go"); err != nil {
+		t.Fatalf("third Run: %v", err)
+	}
+	if got := warnCount(sink2); got != 0 {
+		t.Fatalf("fresh agent warn notices = %d, want 0 (persisted per-provider)", got)
+	}
+}
+
 func TestRunPreservesOriginalRequiredToolCallReasoningAcrossHook(t *testing.T) {
 	mp := testutil.NewMock("deepseek-proxy",
 		testutil.Turn{
