@@ -2130,6 +2130,7 @@ export const zhTW: Record<DictKey, string> = {
   "terminal.loading": "正在載入終端機…",
   "terminal.retry": "重試",
   "terminal.dismissError": "關閉終端機錯誤提示",
+  "terminal.resize": "調整終端機高度",
   "terminal.empty": "在目前工作區啟動 shell。",
   "terminal.readOnly": "此頻道為唯讀。",
   "terminal.addOutput": "將終端機輸出加入聊天",
