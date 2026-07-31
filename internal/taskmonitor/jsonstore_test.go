@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -148,5 +149,117 @@ func TestFileStore_RejectsDotDotTaskID(t *testing.T) {
 	_, err := store.GetTask(context.Background(), dir, "..")
 	if err == nil || !strings.Contains(err.Error(), "invalid") {
 		t.Fatalf("expected rejection for '..', got %v", err)
+	}
+}
+
+func TestFileStore_SaveTask_VersionConflict(t *testing.T) {
+	dir := t.TempDir()
+	store := NewFileStore(".reasonix/tasks")
+	ctx := context.Background()
+	now := time.Now().Truncate(time.Second)
+	v1 := TaskSnapshot{
+		SchemaVersion: 1, TaskID: "t1", SessionID: "s1",
+		State: TaskStateRunning, Version: 1, CreatedAt: now, UpdatedAt: now,
+	}
+	if err := store.SaveTask(ctx, dir, v1); err != nil {
+		t.Fatalf("SaveTask v1: %v", err)
+	}
+	// Same version must conflict.
+	if err := store.SaveTask(ctx, dir, v1); err == nil || !strings.Contains(err.Error(), "version conflict") {
+		t.Fatalf("expected version conflict, got %v", err)
+	}
+	// Higher version wins.
+	v2 := v1
+	v2.Version = 2
+	v2.State = TaskStateSucceeded
+	if err := store.SaveTask(ctx, dir, v2); err != nil {
+		t.Fatalf("SaveTask v2: %v", err)
+	}
+	got, err := store.GetTask(ctx, dir, "t1")
+	if err != nil || got == nil || got.Version != 2 {
+		t.Fatalf("read back: %+v, %v", got, err)
+	}
+}
+
+// TestFileStore_SaveTask_ConcurrentCAS races two independent FileStore
+// instances (production: CLI and Desktop processes) advancing the same task
+// from version 1 to version 2. The per-task lock must guarantee exactly one
+// winner; the loser observes the version conflict instead of silently
+// overwriting (the pre-fix TOCTOU).
+func TestFileStore_SaveTask_ConcurrentCAS(t *testing.T) {
+	dir := t.TempDir()
+	ctx := context.Background()
+	now := time.Now().Truncate(time.Second)
+	seed := NewFileStore(".reasonix/tasks")
+	v1 := TaskSnapshot{
+		SchemaVersion: 1, TaskID: "t1", SessionID: "s1",
+		State: TaskStateRunning, Version: 1, CreatedAt: now, UpdatedAt: now,
+	}
+	if err := seed.SaveTask(ctx, dir, v1); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	write := func(v uint64) error {
+		snap := v1
+		snap.Version = v
+		snap.State = TaskStateSucceeded
+		return NewFileStore(".reasonix/tasks").SaveTask(ctx, dir, snap)
+	}
+
+	start := make(chan struct{})
+	errs := make([]error, 2)
+	var wg sync.WaitGroup
+	for i := range 2 {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			<-start
+			errs[i] = write(2)
+		}(i)
+	}
+	close(start)
+	wg.Wait()
+
+	ok, conflict := 0, 0
+	for _, err := range errs {
+		switch {
+		case err == nil:
+			ok++
+		case strings.Contains(err.Error(), "version conflict"):
+			conflict++
+		default:
+			t.Fatalf("unexpected error: %v", err)
+		}
+	}
+	if ok != 1 || conflict != 1 {
+		t.Fatalf("want exactly one winner and one conflict, got ok=%d conflict=%d (%v)", ok, conflict, errs)
+	}
+	got, err := seed.GetTask(ctx, dir, "t1")
+	if err != nil || got == nil || got.Version != 2 {
+		t.Fatalf("final state: %+v, %v", got, err)
+	}
+}
+
+// TestFileStore_SaveTask_CorruptSnapshotRejected guards the CAS gate: a
+// corrupt snapshot.json must fail loudly instead of silently bypassing the
+// version check and being overwritten.
+func TestFileStore_SaveTask_CorruptSnapshotRejected(t *testing.T) {
+	dir := t.TempDir()
+	store := NewFileStore(".reasonix/tasks")
+	ctx := context.Background()
+	taskDir := filepath.Join(dir, ".reasonix", "tasks", "t1")
+	if err := os.MkdirAll(taskDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(taskDir, "snapshot.json"), []byte("{not json"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	snap := TaskSnapshot{
+		SchemaVersion: 1, TaskID: "t1", SessionID: "s1",
+		State: TaskStateRunning, Version: 1, CreatedAt: time.Now(), UpdatedAt: time.Now(),
+	}
+	err := store.SaveTask(ctx, dir, snap)
+	if err == nil || !strings.Contains(err.Error(), "read current snapshot") {
+		t.Fatalf("expected corrupt-snapshot rejection, got %v", err)
 	}
 }

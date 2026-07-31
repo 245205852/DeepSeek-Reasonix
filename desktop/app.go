@@ -114,6 +114,10 @@ type PromptHistoryResult struct {
 type App struct {
 	ctx context.Context
 
+	// taskCtrl is the process-wide task-monitor control service (lazy; see
+	// taskControl). One instance serializes control operations in-process.
+	taskCtrl *taskmonitor.ControlService
+
 	// mu protects the tab map, tabOrder, activeTabID, and per-tab fields that are read
 	// from bound methods. All bound methods that touch a controller use activeCtrl().
 	mu          sync.RWMutex
@@ -11526,6 +11530,17 @@ func (a *App) taskStore() taskmonitor.WriteStore {
 	return taskmonitor.NewFileStore(filepath.Join(".reasonix", "tasks"))
 }
 
+// taskControl returns the process-wide ControlService backing the task
+// monitor panel. A single instance keeps control operations serialized within
+// this process (across processes the FileStore's per-task lock still
+// arbitrates), and avoids re-creating the service on every Wails call.
+func (a *App) taskControl() *taskmonitor.ControlService {
+	if a.taskCtrl == nil {
+		a.taskCtrl = taskmonitor.NewControlService(a.taskStore())
+	}
+	return a.taskCtrl
+}
+
 func (a *App) projectDir() string {
 	wd, err := os.Getwd()
 	if err != nil || wd == "" {
@@ -11547,7 +11562,7 @@ func (a *App) ListTaskEvents(taskID string, afterSequence int) ([]taskmonitor.Ta
 }
 
 func (a *App) StopTask(taskID string, expectedVersion uint64, reason, idemKey string) (taskmonitor.ControlResult, error) {
-	cs := taskmonitor.NewControlService(a.taskStore())
+	cs := a.taskControl()
 	if _, ctrl := a.activeTabAndCtrl(); ctrl != nil {
 		if killer, ok := ctrl.(interface{ KillJob(string) bool }); ok {
 			cs.SetJobKiller(ctrlJobKiller{killer})
@@ -11557,7 +11572,7 @@ func (a *App) StopTask(taskID string, expectedVersion uint64, reason, idemKey st
 }
 
 func (a *App) CancelTask(taskID string, expectedVersion uint64, reason, idemKey string) (taskmonitor.ControlResult, error) {
-	cs := taskmonitor.NewControlService(a.taskStore())
+	cs := a.taskControl()
 	if _, ctrl := a.activeTabAndCtrl(); ctrl != nil {
 		if killer, ok := ctrl.(interface{ KillJob(string) bool }); ok {
 			cs.SetJobKiller(ctrlJobKiller{killer})
@@ -11567,11 +11582,11 @@ func (a *App) CancelTask(taskID string, expectedVersion uint64, reason, idemKey 
 }
 
 func (a *App) ResumeTask(taskID string, expectedVersion uint64, idemKey string) (taskmonitor.ControlResult, error) {
-	return taskmonitor.NewControlService(a.taskStore()).ResumeTask(a.ctx, a.projectDir(), taskID, expectedVersion, idemKey)
+	return a.taskControl().ResumeTask(a.ctx, a.projectDir(), taskID, expectedVersion, idemKey)
 }
 
 func (a *App) OpenTaskSession(taskID string) (taskmonitor.ControlResult, error) {
-	return taskmonitor.NewControlService(a.taskStore()).OpenTaskSession(a.ctx, a.projectDir(), taskID)
+	return a.taskControl().OpenTaskSession(a.ctx, a.projectDir(), taskID)
 }
 
 type ctrlJobKiller struct {

@@ -193,7 +193,7 @@ func (s *FileStore) readEvents(taskDir string) ([]TaskEvent, error) {
 
 // SaveTask implements WriteStore. It atomically writes the snapshot,
 // failing if a concurrent write has changed the version.
-func (s *FileStore) SaveTask(ctx context.Context, projectDir string, snap TaskSnapshot) error {
+func (s *FileStore) SaveTask(ctx context.Context, projectDir string, snap TaskSnapshot) (retErr error) {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -210,11 +210,35 @@ func (s *FileStore) SaveTask(ctx context.Context, projectDir string, snap TaskSn
 		return fmt.Errorf("save task: %w", err)
 	}
 
+	// Cross-process CAS: hold the per-task lock while reading the current
+	// version and replacing snapshot.json, so two writers (CLI + Desktop,
+	// or two control operations) cannot both pass the version check and
+	// clobber each other. A dedicated lock file is used — never snapshot.json
+	// itself, since rename swaps the inode and would orphan the lock.
+	lockPath := filepath.Join(taskDir, "task.lock")
+	lf, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0o644)
+	if err != nil {
+		return fmt.Errorf("save task: open lock: %w", err)
+	}
+	defer lf.Close()
+	if err := lockTaskFile(lf); err != nil {
+		return fmt.Errorf("save task: lock: %w", err)
+	}
+	defer func() {
+		if unlockErr := unlockTaskFile(lf); unlockErr != nil && retErr == nil {
+			retErr = fmt.Errorf("save task: unlock: %w", unlockErr)
+		}
+	}()
+
 	target := filepath.Join(taskDir, "snapshot.json")
-	// Read current version for CAS check
+	// Read current version for CAS check (inside the lock).
 	current, err := s.readSnapshot(taskDir)
-	if err == nil && snap.Version <= current.Version {
+	switch {
+	case err == nil && snap.Version <= current.Version:
 		return fmt.Errorf("save task: version conflict: stored=%d, given=%d", current.Version, snap.Version)
+	case err != nil && !os.IsNotExist(err):
+		// A corrupt snapshot must fail loudly, never bypass the CAS check.
+		return fmt.Errorf("save task: read current snapshot: %w", err)
 	}
 
 	data, err := json.Marshal(snap)
@@ -269,23 +293,31 @@ func (s *FileStore) AppendAuditEvent(ctx context.Context, projectDir string, ev 
 		return fmt.Errorf("append audit event: %w", err)
 	}
 
-	// Cross-process atomic sequence via file lock on events.jsonl
+	// Cross-process atomicity: take the per-task lock (shared with SaveTask)
+	// so sequence assignment and snapshot writes never interleave. The
+	// events file itself is never renamed, so a dedicated task.lock is
+	// sufficient and keeps exactly one lock per task directory.
+	lockPath := filepath.Join(taskDir, "task.lock")
+	lf, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0o644)
+	if err != nil {
+		return fmt.Errorf("append audit event: open lock: %w", err)
+	}
+	defer lf.Close()
+	if err := lockTaskFile(lf); err != nil {
+		return fmt.Errorf("append audit event: lock: %w", err)
+	}
+	defer func() {
+		if unlockErr := unlockTaskFile(lf); unlockErr != nil && retErr == nil {
+			retErr = fmt.Errorf("append audit event: unlock: %w", unlockErr)
+		}
+	}()
+
 	eventsPath := filepath.Join(taskDir, "events.jsonl")
 	f, err := os.OpenFile(eventsPath, os.O_RDWR|os.O_CREATE, 0o644)
 	if err != nil {
 		return err
 	}
 	defer f.Close()
-
-	// Exclusive lock for cross-process atomicity
-	if err := lockTaskFile(f); err != nil {
-		return fmt.Errorf("append audit event: %w", err)
-	}
-	defer func() {
-		if unlockErr := unlockTaskFile(f); unlockErr != nil && retErr == nil {
-			retErr = fmt.Errorf("unlock task file: %w", unlockErr)
-		}
-	}()
 
 	// Read current events to compute next sequence (safe under lock)
 	if _, err := f.Seek(0, 0); err != nil {

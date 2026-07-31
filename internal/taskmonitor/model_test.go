@@ -136,7 +136,6 @@ func TestTaskSnapshotValidate_MissingFields(t *testing.T) {
 		want string
 	}{
 		{"no TaskID", TaskSnapshot{SessionID: "s", State: TaskStateQueued, SchemaVersion: 1}, "TaskID"},
-		{"no SessionID", TaskSnapshot{TaskID: "t", State: TaskStateQueued, SchemaVersion: 1}, "SessionID"},
 		{"no State", TaskSnapshot{TaskID: "t", SessionID: "s", SchemaVersion: 1}, "State"},
 		{"bad SchemaVersion", TaskSnapshot{TaskID: "t", SessionID: "s", State: TaskStateQueued, SchemaVersion: 0, CreatedAt: time.Now(), UpdatedAt: time.Now()}, "SchemaVersion"},
 	}
@@ -240,7 +239,6 @@ func TestTaskEventValidate_MissingFields(t *testing.T) {
 	}{
 		{"zero Sequence", TaskEvent{Timestamp: time.Now(), EventType: "e", TaskID: "t", SessionID: "s", State: TaskStateQueued}, "Sequence"},
 		{"no TaskID", TaskEvent{Sequence: 1, Timestamp: time.Now(), EventType: "e", SessionID: "s", State: TaskStateQueued}, "TaskID"},
-		{"no SessionID", TaskEvent{Sequence: 1, Timestamp: time.Now(), EventType: "e", TaskID: "t", State: TaskStateQueued}, "SessionID"},
 		{"no EventType", TaskEvent{Sequence: 1, Timestamp: time.Now(), TaskID: "t", SessionID: "s", State: TaskStateQueued}, "EventType"},
 		{"no State", TaskEvent{Sequence: 1, Timestamp: time.Now(), EventType: "e", TaskID: "t", SessionID: "s"}, "State"},
 		{"no Timestamp", TaskEvent{Sequence: 1, EventType: "e", TaskID: "t", SessionID: "s", State: TaskStateQueued}, "Timestamp"},
@@ -645,5 +643,20 @@ func mustAppend(t *testing.T, store *InMemoryStore, proj string, ev TaskEvent) {
 	t.Helper()
 	if err := store.AppendEvent(proj, ev); err != nil {
 		t.Fatalf("mustAppend: %v", err)
+	}
+}
+
+func TestTaskSnapshotValidate_SessionIDOptional(t *testing.T) {
+	now := time.Now()
+	snap := TaskSnapshot{SchemaVersion: 1, TaskID: "t", State: TaskStateQueued, CreatedAt: now, UpdatedAt: now}
+	if err := snap.Validate(); err != nil {
+		t.Fatalf("empty SessionID should be valid, got %v", err)
+	}
+}
+
+func TestTaskEventValidate_SessionIDOptional(t *testing.T) {
+	ev := TaskEvent{Sequence: 1, Timestamp: time.Now(), EventType: "e", TaskID: "t", State: TaskStateQueued}
+	if err := ev.Validate(); err != nil {
+		t.Fatalf("empty SessionID should be valid, got %v", err)
 	}
 }

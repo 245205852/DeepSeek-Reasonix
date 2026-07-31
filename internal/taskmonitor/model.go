@@ -105,15 +105,17 @@ func (s *TaskState) UnmarshalJSON(data []byte) error {
 // TaskSnapshot is a sanitised snapshot of a single task.  It intentionally
 // omits prompt text, tool arguments, tool results, and reasoning traces.
 type TaskSnapshot struct {
-	SchemaVersion int       `json:"schema_version"`
-	TaskID        string    `json:"task_id"`
-	SessionID     string    `json:"session_id"`
-	State         TaskState `json:"state"`
-	Version       uint64    `json:"version"`
-	CreatedAt     time.Time `json:"created_at"`
-	UpdatedAt     time.Time `json:"updated_at"`
-	ErrorCode     string    `json:"error_code,omitempty"`
-	ErrorSummary  string    `json:"error_summary,omitempty"`
+	SchemaVersion int    `json:"schema_version"`
+	TaskID        string `json:"task_id"`
+	// SessionID is the session the task was created in; it may be empty when
+	// the recorder attached before a session path was resolved.
+	SessionID    string    `json:"session_id"`
+	State        TaskState `json:"state"`
+	Version      uint64    `json:"version"`
+	CreatedAt    time.Time `json:"created_at"`
+	UpdatedAt    time.Time `json:"updated_at"`
+	ErrorCode    string    `json:"error_code,omitempty"`
+	ErrorSummary string    `json:"error_summary,omitempty"`
 }
 
 // Validate returns a non-nil error if required fields are missing or
@@ -121,9 +123,6 @@ type TaskSnapshot struct {
 func (ts TaskSnapshot) Validate() error {
 	if ts.TaskID == "" {
 		return fmt.Errorf("TaskSnapshot.TaskID is required")
-	}
-	if ts.SessionID == "" {
-		return fmt.Errorf("TaskSnapshot.SessionID is required")
 	}
 	if ts.State == "" {
 		return fmt.Errorf("TaskSnapshot.State is required")
@@ -177,9 +176,6 @@ func (te TaskEvent) Validate() error {
 	}
 	if te.TaskID == "" {
 		return fmt.Errorf("TaskEvent.TaskID is required")
-	}
-	if te.SessionID == "" {
-		return fmt.Errorf("TaskEvent.SessionID is required")
 	}
 	if te.State == "" {
 		return fmt.Errorf("TaskEvent.State is required")
