@@ -334,8 +334,8 @@ func RemoteKnownHostsPath() string {
 	return filepath.Join(dir, "known_hosts")
 }
 
-// MissingReasoningWarnStateDir is the shared directory for once-per-provider
-// notices such as the missing tool-call reasoning warning (#7059):
+// MissingReasoningWarnStateDir is the shared directory for rate-limited
+// provider diagnostics such as the missing tool-call thinking warning (#7059):
 // <Reasonix home>/state. Routed through the home resolver so REASONIX_HOME
 // isolation holds.
 func MissingReasoningWarnStateDir() string {

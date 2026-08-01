@@ -1,155 +1,235 @@
 package agent
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"os"
 	"path/filepath"
+	"runtime"
+	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 )
 
-func TestMissingReasoningWarnStatePersistsAcrossInstances(t *testing.T) {
-	dir := t.TempDir()
-	s := newMissingReasoningWarnState(dir)
-	if !s.claim("deepseek") {
-		t.Fatal("fresh provider must claim its first notice")
-	}
-	if s.claim("deepseek") {
-		t.Fatal("same instance must not claim an already warned provider")
-	}
+func warningFingerprint(label string) string {
+	digest := sha256.Sum256([]byte(label))
+	return hex.EncodeToString(digest[:])
+}
 
-	// A fresh instance over the same dir sees the persisted set.
-	s2 := newMissingReasoningWarnState(dir)
-	if s2.claim("deepseek") {
-		t.Fatal("fresh instance must not claim a persisted provider")
+func TestMissingReasoningWarnStatePersistsCurrentIncidentAcrossInstances(t *testing.T) {
+	dir := t.TempDir()
+	fingerprint := warningFingerprint("openai\x00deepseek\x00v4-pro")
+	observedAt := time.Unix(1_800_000_000, 0)
+	if !newMissingReasoningWarnState(dir).claimAt(fingerprint, observedAt) {
+		t.Fatal("fresh configuration must claim its first incident notice")
+	}
+	if newMissingReasoningWarnState(dir).claimAt(fingerprint, observedAt.Add(time.Minute)) {
+		t.Fatal("fresh instance must suppress the same current incident")
 	}
 
 	b, err := os.ReadFile(filepath.Join(dir, missingReasoningWarnStateFilename))
 	if err != nil {
 		t.Fatalf("state file missing after claim: %v", err)
 	}
-	if got := string(b); got != `{"providers":["deepseek"]}` {
-		t.Fatalf("state file = %s, want sorted single-provider JSON", got)
+	want := `{"version":2,"incidents":[{"fingerprint":"` + fingerprint + `","warnedAtUnixMs":1800000000000,"lastMissingAtUnixMs":1800000060000}]}`
+	if got := string(b); got != want {
+		t.Fatalf("state file = %s, want %s", got, want)
+	}
+	if strings.Contains(string(b), "deepseek") || strings.Contains(string(b), "v4-pro") {
+		t.Fatalf("state file exposed raw provider configuration: %s", b)
 	}
 }
 
-func TestMissingReasoningWarnStateSortsProviders(t *testing.T) {
+func TestMissingReasoningWarnStateSeparatesConfigurationFingerprints(t *testing.T) {
 	dir := t.TempDir()
 	s := newMissingReasoningWarnState(dir)
-	if !s.claim("zebra") || !s.claim("alpha") {
-		t.Fatal("fresh providers must claim their notices")
+	now := time.Unix(1_800_000_000, 0)
+	if !s.claimAt(warningFingerprint("endpoint-a\x00model-a"), now) {
+		t.Fatal("first configuration must warn")
 	}
-	b, err := os.ReadFile(filepath.Join(dir, missingReasoningWarnStateFilename))
-	if err != nil {
-		t.Fatalf("state file missing: %v", err)
+	if !s.claimAt(warningFingerprint("endpoint-a\x00model-b"), now) {
+		t.Fatal("model change must re-arm the warning")
 	}
-	if got := string(b); got != `{"providers":["alpha","zebra"]}` {
-		t.Fatalf("state file = %s, want providers sorted for stable diffs", got)
+	if !s.claimAt(warningFingerprint("endpoint-b\x00model-a"), now) {
+		t.Fatal("endpoint change must re-arm the warning")
 	}
 }
 
-func TestMissingReasoningWarnStateCorruptFileTreatedAsEmpty(t *testing.T) {
+func TestMissingReasoningWarnStateExpiresCooldown(t *testing.T) {
+	s := newMissingReasoningWarnState(t.TempDir())
+	fingerprint := warningFingerprint("config")
+	now := time.Unix(1_800_000_000, 0)
+	if !s.claimAt(fingerprint, now) {
+		t.Fatal("fresh incident must warn")
+	}
+	if s.claimAt(fingerprint, now.Add(missingReasoningWarnStateCooldown-time.Second)) {
+		t.Fatal("incident inside cooldown must stay silent")
+	}
+	if !s.claimAt(fingerprint, now.Add(missingReasoningWarnStateCooldown)) {
+		t.Fatal("incident at cooldown boundary must warn again")
+	}
+}
+
+func TestMissingReasoningWarnStateHealthyTurnRearmsRegression(t *testing.T) {
+	s := newMissingReasoningWarnState(t.TempDir())
+	fingerprint := warningFingerprint("config")
+	now := time.Unix(1_800_000_000, 0)
+	if !s.claimAt(fingerprint, now) {
+		t.Fatal("fresh incident must warn")
+	}
+	s.resolveAt(fingerprint, now.Add(time.Minute))
+	if !s.claimAt(fingerprint, now.Add(2*time.Minute)) {
+		t.Fatal("regression after a healthy turn must warn again")
+	}
+}
+
+func TestMissingReasoningWarnStateStaleHealthCannotClearNewerFailure(t *testing.T) {
+	s := newMissingReasoningWarnState(t.TempDir())
+	fingerprint := warningFingerprint("config")
+	now := time.Unix(1_800_000_000, 0)
+	if !s.claimAt(fingerprint, now) {
+		t.Fatal("fresh incident must warn")
+	}
+	if s.claimAt(fingerprint, now.Add(2*time.Millisecond)) {
+		t.Fatal("newer observation inside cooldown must stay silent")
+	}
+	// Simulate an older healthy observation acquiring the lock after the newer
+	// missing observation. It must not erase the newer incident.
+	s.resolveAt(fingerprint, now.Add(time.Millisecond))
+	if s.claimAt(fingerprint, now.Add(3*time.Millisecond)) {
+		t.Fatal("stale healthy observation erased a newer incident")
+	}
+}
+
+func TestMissingReasoningWarnStateLegacyPreviewRearmsAndMigrates(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, missingReasoningWarnStateFilename)
+	if err := os.WriteFile(path, []byte(`{"providers":["deepseek"]}`), 0o600); err != nil {
+		t.Fatalf("seed legacy state: %v", err)
+	}
+	s := newMissingReasoningWarnState(dir)
+	if !s.claimAt(warningFingerprint("deepseek-current-config"), time.Unix(1_800_000_000, 0)) {
+		t.Fatal("legacy provider-name marker must not suppress a configuration-scoped incident")
+	}
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(b), `"providers"`) || !strings.Contains(string(b), `"version":2`) {
+		t.Fatalf("legacy state was not migrated to v2: %s", b)
+	}
+}
+
+func TestMissingReasoningWarnStateCorruptFileSelfHeals(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, missingReasoningWarnStateFilename)
 	if err := os.WriteFile(path, []byte("{not json"), 0o644); err != nil {
 		t.Fatalf("seed corrupt file: %v", err)
 	}
+	fingerprint := warningFingerprint("config")
 	s := newMissingReasoningWarnState(dir)
-	if !s.claim("deepseek") {
-		t.Fatal("corrupt file must be treated as an empty set")
+	now := time.Unix(1_800_000_000, 0)
+	if !s.claimAt(fingerprint, now) {
+		t.Fatal("corrupt state must re-arm the incident")
 	}
-	s2 := newMissingReasoningWarnState(dir)
-	if s2.claim("deepseek") {
-		t.Fatal("claim must rewrite a corrupt state file")
+	if s.claimAt(fingerprint, now.Add(time.Minute)) {
+		t.Fatal("rewritten state did not retain the incident")
 	}
 }
 
-func TestMissingReasoningWarnStateMissingFileTreatedAsEmpty(t *testing.T) {
-	dir := t.TempDir()
+func TestMissingReasoningWarnStateUsesOwnerOnlyPermissions(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "state")
 	s := newMissingReasoningWarnState(dir)
-	if !s.claim("deepseek") {
-		t.Fatal("missing file must be treated as an empty set")
+	if !s.claimAt(warningFingerprint("config"), time.Unix(1_800_000_000, 0)) {
+		t.Fatal("fresh incident must warn")
 	}
-	if _, err := os.Stat(filepath.Join(dir, missingReasoningWarnStateFilename)); err != nil {
-		t.Fatalf("claim must create the state file: %v", err)
-	}
-}
-
-func TestMissingReasoningWarnStateEmptyDirIsNoop(t *testing.T) {
-	s := newMissingReasoningWarnState("")
-	if !s.claim("deepseek") {
-		t.Fatal("empty dir must preserve once-per-session behavior at the caller")
-	}
-	if !s.claim("deepseek") {
-		t.Fatal("empty dir must preserve once-per-session behavior at the caller")
-	}
-	if s2 := newMissingReasoningWarnState(""); !s2.claim("deepseek") {
-		t.Fatal("empty dir must not persist state across instances")
-	}
-}
-
-func TestMissingReasoningWarnStateClaimsAcrossSharedInstances(t *testing.T) {
-	dir := t.TempDir()
-	first := newMissingReasoningWarnState(dir)
-	second := newMissingReasoningWarnState(dir)
-
-	if !first.claim("deepseek") {
-		t.Fatal("first instance must claim the fresh provider")
-	}
-	if second.claim("deepseek") {
-		t.Fatal("second instance must observe the first instance's claim")
-	}
-}
-
-func TestMissingReasoningWarnStatePreservesClaimsFromSharedInstances(t *testing.T) {
-	dir := t.TempDir()
-	first := newMissingReasoningWarnState(dir)
-	second := newMissingReasoningWarnState(dir)
-
-	if !first.claim("alpha") || !second.claim("zebra") {
-		t.Fatal("fresh providers must claim their notices")
-	}
-
-	fresh := newMissingReasoningWarnState(dir)
-	if fresh.claim("alpha") || fresh.claim("zebra") {
-		t.Fatal("claims from separate instances must be retained together")
-	}
-	b, err := os.ReadFile(filepath.Join(dir, missingReasoningWarnStateFilename))
+	dirInfo, err := os.Stat(dir)
 	if err != nil {
-		t.Fatalf("state file missing: %v", err)
+		t.Fatal(err)
 	}
-	if got := string(b); got != `{"providers":["alpha","zebra"]}` {
-		t.Fatalf("state file = %s, want merged sorted providers", got)
+	if got := dirInfo.Mode().Perm(); runtime.GOOS != "windows" && got != 0o700 {
+		t.Fatalf("state directory mode = %o, want 700", got)
+	}
+	fileInfo, err := os.Stat(filepath.Join(dir, missingReasoningWarnStateFilename))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := fileInfo.Mode().Perm(); runtime.GOOS != "windows" && got != 0o600 {
+		t.Fatalf("state file mode = %o, want 600", got)
 	}
 }
 
-func TestMissingReasoningWarnStateConcurrentClaimsKeepEveryProvider(t *testing.T) {
+func TestMissingReasoningWarnStateIOFailureFallsBackVisible(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "not-a-directory")
+	if err := os.WriteFile(path, []byte("occupied"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if !newMissingReasoningWarnState(path).claimAt(warningFingerprint("config"), time.Unix(1_800_000_000, 0)) {
+		t.Fatal("state I/O failure must keep the diagnostic visible")
+	}
+}
+
+func TestMissingReasoningWarnStateEmptyDirFallsBackVisible(t *testing.T) {
+	s := newMissingReasoningWarnState("")
+	fingerprint := warningFingerprint("config")
+	if !s.claim(fingerprint) {
+		t.Fatal("first empty-dir claim must stay visible")
+	}
+	if !s.claim(fingerprint) {
+		t.Fatal("repeated empty-dir claim must stay visible")
+	}
+}
+
+func TestMissingReasoningWarnStateConcurrentSameIncidentWarnsOnce(t *testing.T) {
 	dir := t.TempDir()
-	providers := []string{"alpha", "bravo", "charlie", "delta"}
+	fingerprint := warningFingerprint("shared-config")
+	now := time.Unix(1_800_000_000, 0)
 	start := make(chan struct{})
+	var warned atomic.Int64
 	var wg sync.WaitGroup
-	errs := make(chan string, len(providers))
-	for _, provider := range providers {
-		provider := provider
+	for range 8 {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
 			<-start
-			if !newMissingReasoningWarnState(dir).claim(provider) {
-				errs <- provider
+			if newMissingReasoningWarnState(dir).claimAt(fingerprint, now) {
+				warned.Add(1)
 			}
 		}()
 	}
 	close(start)
 	wg.Wait()
-	close(errs)
-	for provider := range errs {
-		t.Errorf("fresh provider %q did not claim its notice", provider)
+	if got := warned.Load(); got != 1 {
+		t.Fatalf("concurrent first warnings = %d, want 1", got)
 	}
+}
+
+func TestMissingReasoningWarnStateConcurrentClaimsKeepEveryConfiguration(t *testing.T) {
+	dir := t.TempDir()
+	now := time.Unix(1_800_000_000, 0)
+	labels := []string{"alpha", "bravo", "charlie", "delta"}
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+	for _, label := range labels {
+		fingerprint := warningFingerprint(label)
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			if !newMissingReasoningWarnState(dir).claimAt(fingerprint, now) {
+				t.Errorf("fresh configuration %q did not claim its notice", label)
+			}
+		}()
+	}
+	close(start)
+	wg.Wait()
 
 	fresh := newMissingReasoningWarnState(dir)
-	for _, provider := range providers {
-		if fresh.claim(provider) {
-			t.Errorf("provider %q was lost after concurrent claims", provider)
+	for _, label := range labels {
+		if fresh.claimAt(warningFingerprint(label), now.Add(time.Minute)) {
+			t.Errorf("configuration %q was lost after concurrent claims", label)
 		}
 	}
 }

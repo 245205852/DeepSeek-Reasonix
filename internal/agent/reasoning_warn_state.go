@@ -1,21 +1,14 @@
 package agent
 
-// reasoning_warn_state.go — once-per-provider persistence for the missing
-// tool-call reasoning notice (#7059).
+// reasoning_warn_state.go rate-limits the missing tool-call thinking notice
+// across sessions and processes (#7059).
 //
-// Some provider endpoints can omit reasoning_content on tool_calls turns. The
-// historical notice scope was once per session, so a new session (or
-// `--resume`) re-emitted the warning even though its text promised a single
-// showing. This state records which providers have already received the notice,
-// in a shared directory supplied by boot, so the warning fires exactly once per
-// provider across sessions.
-//
-// The state is best-effort by design: every read/write failure degrades to
-// the historical once-per-session behavior instead of failing the agent loop.
-// Claims are serialized with a bounded cross-process file lock and the state
-// file is atomically replaced, so concurrent agents cannot lose one another's
-// updates. A torn or unreadable file is treated as an empty set and overwritten
-// on the next notice.
+// DeepSeek's thinking-mode contract requires provider-issued thinking content
+// to accompany tool calls and be replayed on later requests. Missing content is
+// therefore a compatibility incident, not a permanent provider characteristic.
+// State is keyed by an opaque configuration fingerprint, expires after a bounded
+// cooldown, and is cleared after a healthy tool-call turn so a future regression
+// becomes visible again.
 
 import (
 	"context"
@@ -30,30 +23,40 @@ import (
 	"reasonix/internal/fileutil"
 )
 
-// missingReasoningWarnStateFilename is the state file name inside the
-// MissingReasoningWarnStateDir directory.
 const missingReasoningWarnStateFilename = "tool-call-reasoning-warning.json"
 
 const (
 	missingReasoningWarnStateLockFilename = "tool-call-reasoning-warning.lock"
-	// A warning must never make a turn wait indefinitely behind another process.
-	// On contention or IO failure, claim falls back to the historical
-	// once-per-session behavior.
+	missingReasoningWarnStateVersion      = 2
+	missingReasoningWarnStateCooldown     = 24 * time.Hour
+	missingReasoningWarnStateMaxIncidents = 256
+	// A diagnostic must never make a turn wait indefinitely behind another
+	// process. On contention or I/O failure, callers emit the warning rather
+	// than silently losing it.
 	missingReasoningWarnStateLockTimeout = 200 * time.Millisecond
 )
 
-// missingReasoningWarnState persists the set of provider names that have
-// already been shown the missing tool-call reasoning notice.
+type missingReasoningIncident struct {
+	Fingerprint       string `json:"fingerprint"`
+	WarnedAtUnixMs    int64  `json:"warnedAtUnixMs"`
+	LastMissingUnixMs int64  `json:"lastMissingAtUnixMs"`
+}
+
+type missingReasoningWarnDocument struct {
+	Version   int                        `json:"version"`
+	Incidents []missingReasoningIncident `json:"incidents,omitempty"`
+	// Providers reads the unreleased v1 preview schema. Provider names cannot
+	// safely identify endpoint/model/protocol changes and have no timestamp, so
+	// they deliberately re-arm once and are omitted on the next v2 write.
+	Providers []string `json:"providers,omitempty"`
+}
+
 type missingReasoningWarnState struct {
 	dir string
 }
 
-// newMissingReasoningWarnState returns a state rooted at dir. An empty dir
-// makes claim a no-op, preserving the historical once-per-session scope.
 func newMissingReasoningWarnState(dir string) *missingReasoningWarnState {
-	return &missingReasoningWarnState{
-		dir: strings.TrimSpace(dir),
-	}
+	return &missingReasoningWarnState{dir: strings.TrimSpace(dir)}
 }
 
 func (s *missingReasoningWarnState) path() string {
@@ -64,71 +67,150 @@ func (s *missingReasoningWarnState) lockPath() string {
 	return filepath.Join(s.dir, missingReasoningWarnStateLockFilename)
 }
 
-// load reads the complete persisted set. Missing or corrupt files are treated
-// as empty, so the next successful claim self-heals them.
-func (s *missingReasoningWarnState) load() map[string]bool {
-	seen := map[string]bool{}
-	b, err := os.ReadFile(s.path())
-	if err != nil {
-		return seen
+func validMissingReasoningFingerprint(fingerprint string) bool {
+	if len(fingerprint) != 64 {
+		return false
 	}
-	var doc struct {
-		Providers []string `json:"providers"`
-	}
-	if json.Unmarshal(b, &doc) != nil {
-		return seen
-	}
-	for _, p := range doc.Providers {
-		if p = strings.TrimSpace(p); p != "" {
-			seen[p] = true
+	for _, r := range fingerprint {
+		if (r < '0' || r > '9') && (r < 'a' || r > 'f') {
+			return false
 		}
 	}
-	return seen
+	return true
 }
 
-func (s *missingReasoningWarnState) save(seen map[string]bool) error {
-	names := make([]string, 0, len(seen))
-	for p := range seen {
-		names = append(names, p)
+// load returns only current v2 incidents. Missing, corrupt, legacy, expired, or
+// future-dated entries are treated as absent and self-heal on the next write.
+func (s *missingReasoningWarnState) load(now time.Time) map[string]missingReasoningIncident {
+	incidents := map[string]missingReasoningIncident{}
+	b, err := os.ReadFile(s.path())
+	if err != nil {
+		return incidents
 	}
-	sort.Strings(names)
-	b, err := json.Marshal(struct {
-		Providers []string `json:"providers"`
-	}{Providers: names})
+	var doc missingReasoningWarnDocument
+	if json.Unmarshal(b, &doc) != nil || doc.Version != missingReasoningWarnStateVersion {
+		return incidents
+	}
+	for _, incident := range doc.Incidents {
+		incident.Fingerprint = strings.TrimSpace(incident.Fingerprint)
+		warnedAt := time.UnixMilli(incident.WarnedAtUnixMs)
+		age := now.Sub(warnedAt)
+		if !validMissingReasoningFingerprint(incident.Fingerprint) || age < 0 || age >= missingReasoningWarnStateCooldown {
+			continue
+		}
+		if incident.LastMissingUnixMs < incident.WarnedAtUnixMs {
+			incident.LastMissingUnixMs = incident.WarnedAtUnixMs
+		}
+		if previous, ok := incidents[incident.Fingerprint]; !ok || previous.LastMissingUnixMs < incident.LastMissingUnixMs {
+			incidents[incident.Fingerprint] = incident
+		}
+	}
+	return incidents
+}
+
+func (s *missingReasoningWarnState) save(incidents map[string]missingReasoningIncident) error {
+	ordered := make([]missingReasoningIncident, 0, len(incidents))
+	for _, incident := range incidents {
+		ordered = append(ordered, incident)
+	}
+	if len(ordered) > missingReasoningWarnStateMaxIncidents {
+		sort.Slice(ordered, func(i, j int) bool {
+			return ordered[i].LastMissingUnixMs > ordered[j].LastMissingUnixMs
+		})
+		ordered = ordered[:missingReasoningWarnStateMaxIncidents]
+	}
+	sort.Slice(ordered, func(i, j int) bool {
+		return ordered[i].Fingerprint < ordered[j].Fingerprint
+	})
+	b, err := json.Marshal(missingReasoningWarnDocument{
+		Version:   missingReasoningWarnStateVersion,
+		Incidents: ordered,
+	})
 	if err != nil {
 		return err
 	}
 	return fileutil.AtomicWriteFile(s.path(), b, 0o600)
 }
 
-// claim atomically records provider as warned and reports whether this caller
-// should emit the notice. The read-check-write transaction is serialized across
-// every agent and Reasonix process sharing the state directory. If persistence
-// is unavailable, it deliberately returns true so callers keep the historical
-// once-per-session warning behavior instead of losing the notice.
-func (s *missingReasoningWarnState) claim(provider string) bool {
-	provider = strings.TrimSpace(provider)
-	if s == nil || s.dir == "" || provider == "" {
-		return true
-	}
+func (s *missingReasoningWarnState) acquire() (func(), error) {
 	if err := os.MkdirAll(s.dir, 0o700); err != nil {
-		return true
+		return nil, err
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), missingReasoningWarnStateLockTimeout)
-	defer cancel()
 	release, err := filelock.Acquire(ctx, s.lockPath())
+	if err != nil {
+		cancel()
+		return nil, err
+	}
+	return func() {
+		release()
+		cancel()
+	}, nil
+}
+
+func normalizeMissingReasoningObservedAt(observedAt time.Time) time.Time {
+	if observedAt.IsZero() {
+		return time.Now()
+	}
+	return observedAt
+}
+
+// claimAt records the latest missing-reasoning observation and reports whether
+// this active incident should emit a warning. The lock covers read-check-write
+// across every process sharing the Reasonix home. Persistence failure returns
+// true so diagnostics fail visible rather than fail silent.
+func (s *missingReasoningWarnState) claimAt(fingerprint string, observedAt time.Time) bool {
+	fingerprint = strings.TrimSpace(fingerprint)
+	if s == nil || s.dir == "" || !validMissingReasoningFingerprint(fingerprint) {
+		return true
+	}
+	observedAt = normalizeMissingReasoningObservedAt(observedAt)
+	release, err := s.acquire()
 	if err != nil {
 		return true
 	}
 	defer release()
 
-	seen := s.load()
-	if seen[provider] {
-		return false
+	incidents := s.load(observedAt)
+	incident, exists := incidents[fingerprint]
+	shouldWarn := !exists
+	if shouldWarn {
+		incident = missingReasoningIncident{Fingerprint: fingerprint, WarnedAtUnixMs: observedAt.UnixMilli()}
 	}
-	seen[provider] = true
-	if err := s.save(seen); err != nil {
+	if observed := observedAt.UnixMilli(); incident.LastMissingUnixMs < observed {
+		incident.LastMissingUnixMs = observed
+	}
+	incidents[fingerprint] = incident
+	if err := s.save(incidents); err != nil {
 		return true
 	}
-	return true
+	return shouldWarn
+}
+
+func (s *missingReasoningWarnState) claim(fingerprint string) bool {
+	return s.claimAt(fingerprint, time.Now())
+}
+
+// resolveAt clears an incident after a healthy tool-call turn. A health result
+// observed before a newer missing result cannot delete that newer incident,
+// even if lock acquisition completes in the opposite order.
+func (s *missingReasoningWarnState) resolveAt(fingerprint string, observedAt time.Time) {
+	fingerprint = strings.TrimSpace(fingerprint)
+	if s == nil || s.dir == "" || !validMissingReasoningFingerprint(fingerprint) {
+		return
+	}
+	observedAt = normalizeMissingReasoningObservedAt(observedAt)
+	release, err := s.acquire()
+	if err != nil {
+		return
+	}
+	defer release()
+
+	incidents := s.load(observedAt)
+	incident, exists := incidents[fingerprint]
+	if !exists || incident.LastMissingUnixMs > observedAt.UnixMilli() {
+		return
+	}
+	delete(incidents, fingerprint)
+	_ = s.save(incidents)
 }

@@ -18,6 +18,16 @@ type toolCallReasoningRequiredProvider struct {
 
 func (p toolCallReasoningRequiredProvider) RequiresToolCallReasoning() bool { return true }
 
+type configuredToolCallReasoningProvider struct {
+	*testutil.MockProvider
+	identity string
+}
+
+func (p configuredToolCallReasoningProvider) RequiresToolCallReasoning() bool { return true }
+func (p configuredToolCallReasoningProvider) MissingToolCallReasoningWarningIdentity() string {
+	return p.identity
+}
+
 func echoRegistry() *tool.Registry {
 	reg := tool.NewRegistry()
 	reg.Add(echoTool{})
@@ -369,11 +379,10 @@ func TestRunWellFormedToolLoopRoundTrips(t *testing.T) {
 // TestRunWarnsAndContinuesOnMissingToolCallReasoning: a DeepSeek thinking-mode
 // tool_calls turn arriving without reasoning is a quality degradation, not a
 // failure — the turn is saved, the loop continues to completion, and the user
-// sees a single warn notice. Missing reasoning tends to repeat on every round
-// once it starts (endpoint-conditional behavior, seen on the official API too),
-// so later rounds with the same shape must stay silent instead of flooding the
-// transcript (#6259). The wire layer keeps the replay valid by always
-// serializing the reasoning_content key on such turns.
+// sees a single warn notice. Missing reasoning often repeats after an endpoint
+// or gateway loses the field, so later rounds in the same active incident stay
+// silent instead of flooding the transcript (#6259). The wire layer keeps the
+// replay structurally valid by always serializing the reasoning_content key.
 func TestRunWarnsAndContinuesOnMissingToolCallReasoning(t *testing.T) {
 	mp := testutil.NewMock("deepseek-proxy",
 		testutil.Turn{ToolCalls: []provider.ToolCall{{ID: "c1", Name: "echo", Arguments: `{"text":"hi"}`}}},
@@ -397,7 +406,7 @@ func TestRunWarnsAndContinuesOnMissingToolCallReasoning(t *testing.T) {
 	}
 	var warns int
 	for _, e := range sink.kinds(event.Notice) {
-		if e.Level == event.LevelWarn && strings.Contains(e.Text, "without reasoning_content") {
+		if e.Level == event.LevelWarn && strings.Contains(e.Text, "without replayable thinking content") {
 			warns++
 		}
 	}
@@ -428,7 +437,7 @@ func TestSetSessionRearmsMissingToolCallReasoningWarn(t *testing.T) {
 	}
 	var warns int
 	for _, e := range sink.kinds(event.Notice) {
-		if e.Level == event.LevelWarn && strings.Contains(e.Text, "without reasoning_content") {
+		if e.Level == event.LevelWarn && strings.Contains(e.Text, "without replayable thinking content") {
 			warns++
 		}
 	}
@@ -437,12 +446,10 @@ func TestSetSessionRearmsMissingToolCallReasoningWarn(t *testing.T) {
 	}
 }
 
-// TestMissingReasoningWarnNoticePersistsAcrossSessions: when boot supplies a
-// shared state dir, the missing-tool-call-reasoning notice fires exactly once
-// per provider across sessions and agents instead of once per session
-// (#7059). A resumed session on the same agent and a brand-new agent sharing
-// the dir must both stay silent for a provider that already got its notice.
-func TestMissingReasoningWarnNoticePersistsAcrossSessions(t *testing.T) {
+// TestMissingReasoningWarnNoticeRateLimitsActiveIncidentAcrossSessions: when
+// boot supplies a shared state dir, the same provider configuration stays
+// silent across sessions while its compatibility incident remains active.
+func TestMissingReasoningWarnNoticeRateLimitsActiveIncidentAcrossSessions(t *testing.T) {
 	stateDir := t.TempDir()
 	mockTurns := func() *testutil.MockProvider {
 		return testutil.NewMock("deepseek-proxy",
@@ -455,14 +462,14 @@ func TestMissingReasoningWarnNoticePersistsAcrossSessions(t *testing.T) {
 	warnCount := func(sink *recordSink) int {
 		var n int
 		for _, e := range sink.kinds(event.Notice) {
-			if e.Level == event.LevelWarn && strings.Contains(e.Text, "without reasoning_content") {
+			if e.Level == event.LevelWarn && strings.Contains(e.Text, "without replayable thinking content") {
 				n++
 			}
 		}
 		return n
 	}
 
-	// First agent, first session: the provider gets its single notice.
+	// First agent, first session: the active incident gets its notice.
 	mp := mockTurns()
 	sink1 := &recordSink{}
 	a1 := New(toolCallReasoningRequiredProvider{mp}, echoRegistry(), NewSession(""), Options{MissingReasoningWarnStateDir: stateDir}, sink1)
@@ -473,7 +480,7 @@ func TestMissingReasoningWarnNoticePersistsAcrossSessions(t *testing.T) {
 		t.Fatalf("first session warn notices = %d, want 1", got)
 	}
 
-	// Swapped-in conversation on the same agent: persisted state keeps it silent.
+	// Swapped-in conversation on the same configuration stays silent.
 	a1.SetSession(NewSession(""))
 	if err := a1.Run(context.Background(), "go"); err != nil {
 		t.Fatalf("second Run: %v", err)
@@ -489,7 +496,71 @@ func TestMissingReasoningWarnNoticePersistsAcrossSessions(t *testing.T) {
 		t.Fatalf("third Run: %v", err)
 	}
 	if got := warnCount(sink2); got != 0 {
-		t.Fatalf("fresh agent warn notices = %d, want 0 (persisted per-provider)", got)
+		t.Fatalf("fresh agent warn notices = %d, want 0 (active incident is rate-limited)", got)
+	}
+}
+
+func TestMissingReasoningWarnNoticeSeparatesProviderConfigurations(t *testing.T) {
+	stateDir := t.TempDir()
+	warnCount := func(identity string) int {
+		mp := testutil.NewMock("deepseek-proxy",
+			testutil.Turn{ToolCalls: []provider.ToolCall{{ID: "c1", Name: "echo", Arguments: `{"text":"hi"}`}}},
+			testutil.Turn{Text: "done"},
+		)
+		sink := &recordSink{}
+		a := New(configuredToolCallReasoningProvider{MockProvider: mp, identity: identity}, echoRegistry(), NewSession(""), Options{MissingReasoningWarnStateDir: stateDir}, sink)
+		if err := a.Run(context.Background(), "go"); err != nil {
+			t.Fatalf("Run(%q): %v", identity, err)
+		}
+		var count int
+		for _, e := range sink.kinds(event.Notice) {
+			if e.Level == event.LevelWarn && strings.Contains(e.Text, "without replayable thinking content") {
+				count++
+			}
+		}
+		return count
+	}
+	if got := warnCount("openai\x00endpoint-a\x00deepseek-v4-pro"); got != 1 {
+		t.Fatalf("first configuration warnings = %d, want 1", got)
+	}
+	if got := warnCount("openai\x00endpoint-a\x00deepseek-v4-pro"); got != 0 {
+		t.Fatalf("same configuration warnings = %d, want 0", got)
+	}
+	if got := warnCount("openai\x00endpoint-b\x00deepseek-v4-pro"); got != 1 {
+		t.Fatalf("changed endpoint warnings = %d, want 1", got)
+	}
+	if got := warnCount("openai\x00endpoint-a\x00deepseek-v4-flash"); got != 1 {
+		t.Fatalf("changed model warnings = %d, want 1", got)
+	}
+}
+
+func TestHealthyToolCallReasoningRearmsFutureRegression(t *testing.T) {
+	stateDir := t.TempDir()
+	run := func(turn testutil.Turn) int {
+		mp := testutil.NewMock("deepseek-proxy", turn, testutil.Turn{Text: "done"})
+		sink := &recordSink{}
+		a := New(toolCallReasoningRequiredProvider{mp}, echoRegistry(), NewSession(""), Options{MissingReasoningWarnStateDir: stateDir}, sink)
+		if err := a.Run(context.Background(), "go"); err != nil {
+			t.Fatalf("Run: %v", err)
+		}
+		var count int
+		for _, e := range sink.kinds(event.Notice) {
+			if e.Level == event.LevelWarn && strings.Contains(e.Text, "without replayable thinking content") {
+				count++
+			}
+		}
+		return count
+	}
+	missing := testutil.Turn{ToolCalls: []provider.ToolCall{{ID: "c1", Name: "echo", Arguments: `{"text":"hi"}`}}}
+	healthy := testutil.Turn{Reasoning: "call echo", ToolCalls: []provider.ToolCall{{ID: "c2", Name: "echo", Arguments: `{"text":"hi"}`}}}
+	if got := run(missing); got != 1 {
+		t.Fatalf("first incident warnings = %d, want 1", got)
+	}
+	if got := run(healthy); got != 0 {
+		t.Fatalf("healthy turn warnings = %d, want 0", got)
+	}
+	if got := run(missing); got != 1 {
+		t.Fatalf("post-recovery regression warnings = %d, want 1", got)
 	}
 }
 
