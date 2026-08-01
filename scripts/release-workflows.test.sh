@@ -193,6 +193,10 @@ if [ -z "$manifest_adoption_line" ] || [ -z "$authenticated_compare_line" ] ||
 fi
 grep -Fq 'download_optional "preview/latest.json"' "$repo_root/.github/workflows/release-desktop.yml"
 grep -Fq 'download_optional "canary/latest.json"' "$repo_root/.github/workflows/release-desktop.yml"
+grep -Fq '"legacy-${current_channel}" "$current_version" "$current_base"' \
+	"$repo_root/.github/workflows/release-desktop.yml"
+grep -Fq 'legacy-preview "$current_version" "$legacy_preview_base"' \
+	"$repo_root/.github/workflows/release-desktop.yml"
 grep -Fq 'publish_pointer canary' "$repo_root/.github/workflows/release-desktop.yml"
 grep -Fq 'publish_pointer preview' "$repo_root/.github/workflows/release-desktop.yml"
 grep -Fq 'cmp -s /tmp/reasonix-desktop-canary-latest.json /tmp/reasonix-desktop-preview-latest.json' \
@@ -1074,6 +1078,10 @@ jq 'del(.release_notes_url, .downloads)' "$desktop_preview_manifest" \
 	>"$test_root/desktop-legacy-preview-immutable.json"
 bash "$desktop_validator" legacy-preview "$desktop_preview_version" \
 	"$desktop_preview_base" "$test_root/desktop-legacy-preview-immutable.json"
+jq '.release_notes_url = null' "$desktop_preview_manifest" \
+	>"$test_root/desktop-null-legacy-preview-immutable.json"
+bash "$desktop_validator" legacy-preview "$desktop_preview_version" \
+	"$desktop_preview_base" "$test_root/desktop-null-legacy-preview-immutable.json"
 jq 'del(.downloads)' "$desktop_stable_manifest" >"$test_root/desktop-legacy-stable.json"
 bash "$desktop_validator" legacy-stable "$desktop_stable_version" \
 	"$desktop_stable_base" "$test_root/desktop-legacy-stable.json"
