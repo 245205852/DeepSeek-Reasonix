@@ -24,10 +24,15 @@ func TestVerificationCommandSummaryRecommendationsAreRecognized(t *testing.T) {
 	}
 }
 
-func TestGoBuildVerificationRejectsWorkspaceBinaryOutput(t *testing.T) {
+func TestGoBuildVerificationRequiresSafeAllPackageOperands(t *testing.T) {
 	for _, command := range []string{
 		"go build ./...",
 		"go build -tags integration ./...",
+		"go build -tags=integration ./...",
+		"go build -race -trimpath ./...",
+		"go build -p 2 -mod=readonly ./...",
+		"go build -buildvcs ./...",
+		"go build -buildvcs=auto -- ./...",
 	} {
 		if !IsDeliveryVerificationCommand(command) {
 			t.Errorf("%q should remain recognized all-package verification", command)
@@ -41,16 +46,27 @@ func TestGoBuildVerificationRejectsWorkspaceBinaryOutput(t *testing.T) {
 		"go build .",
 		"go build ./cmd/reasonix",
 		"go build -race ./cmd/reasonix",
+		"go build -tags ./... ./cmd/reasonix",
+		"go build -coverpkg ./... ./cmd/reasonix",
+		"go build -pkgdir ./... ./cmd/reasonix",
+		"go build -pkgdir=./... ./cmd/reasonix",
+		"go build -o reasonix ./...",
+		"go build -o=reasonix ./...",
+		"go build -mod=mod ./...",
+		"go build -n ./...",
+		"go build -work ./...",
+		"go build -future-flag ./...",
+		"go build ./... -o reasonix",
 	} {
 		if IsDeliveryVerificationCommand(command) {
-			t.Errorf("%q can create a workspace binary and must not count as non-mutating verification", command)
+			t.Errorf("%q must not count as non-mutating verification", command)
 		}
 		args, err := json.Marshal(map[string]string{"command": command})
 		if err != nil {
 			t.Fatal(err)
 		}
 		if !ToolCallMutates("bash", args, false) {
-			t.Errorf("%q can create a workspace binary and must be classified as a mutation", command)
+			t.Errorf("%q must be classified as a mutation", command)
 		}
 	}
 	if strings.Contains(VerificationCommandSummary(), "go build") {

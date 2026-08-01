@@ -1770,8 +1770,10 @@ func bashSegmentIsVerification(fields []string) bool {
 		}
 		// A direct single-package build writes a binary into the workspace for
 		// main packages. Keep only the conventional all-package pattern, whose
-		// outputs are discarded, as non-mutating verification evidence.
-		return args[0] == "build" && hasCommandArg(args[1:], "./...")
+		// outputs are discarded, as non-mutating verification evidence. Parse
+		// build flags before looking for that pattern so a flag value such as
+		// `-pkgdir ./...` cannot masquerade as a package operand.
+		return args[0] == "build" && goBuildIsVerification(args[1:])
 	case "git":
 		return len(args) > 1 && args[0] == "diff" && hasCommandArg(args[1:], "--check")
 	case "pytest", "py.test", "gotestsum", "staticcheck", "golangci-lint", "tsc":
@@ -1802,6 +1804,128 @@ func bashSegmentIsVerification(fields []string) bool {
 		return len(args) > 0 && hasCommandArg(args, "test", "check", "verify")
 	}
 	return false
+}
+
+type goBuildFlagPolicy uint8
+
+const (
+	goBuildBoolFlag goBuildFlagPolicy = iota
+	goBuildValueFlag
+	goBuildVCSFlag
+	goBuildModFlag
+	goBuildRejectedFlag
+)
+
+// goBuildFlags mirrors the flags documented by `go help build`. Safe flags
+// are parsed so their values cannot be confused with package operands. Flags
+// that can write output, change the working directory, preserve build files,
+// or inject toolchain commands fail closed, as do unknown future flags.
+var goBuildFlags = map[string]goBuildFlagPolicy{
+	"a":             goBuildBoolFlag,
+	"asan":          goBuildBoolFlag,
+	"buildvcs":      goBuildVCSFlag,
+	"compiler":      goBuildValueFlag,
+	"cover":         goBuildBoolFlag,
+	"covermode":     goBuildValueFlag,
+	"coverpkg":      goBuildValueFlag,
+	"installsuffix": goBuildValueFlag,
+	"json":          goBuildBoolFlag,
+	"linkshared":    goBuildBoolFlag,
+	"mod":           goBuildModFlag,
+	"modcacherw":    goBuildBoolFlag,
+	"msan":          goBuildBoolFlag,
+	"overlay":       goBuildValueFlag,
+	"p":             goBuildValueFlag,
+	"pgo":           goBuildValueFlag,
+	"race":          goBuildBoolFlag,
+	"tags":          goBuildValueFlag,
+	"trimpath":      goBuildBoolFlag,
+	"v":             goBuildBoolFlag,
+	"x":             goBuildBoolFlag,
+
+	"C":          goBuildRejectedFlag,
+	"asmflags":   goBuildRejectedFlag,
+	"buildmode":  goBuildRejectedFlag,
+	"gccgoflags": goBuildRejectedFlag,
+	"gcflags":    goBuildRejectedFlag,
+	"ldflags":    goBuildRejectedFlag,
+	"modfile":    goBuildRejectedFlag,
+	"n":          goBuildRejectedFlag,
+	"o":          goBuildRejectedFlag,
+	"pkgdir":     goBuildRejectedFlag,
+	"toolexec":   goBuildRejectedFlag,
+	"work":       goBuildRejectedFlag,
+}
+
+func goBuildIsVerification(args []string) bool {
+	operands, ok := goBuildPackageOperands(args)
+	if !ok {
+		return false
+	}
+	return hasCommandArg(operands, "./...")
+}
+
+// goBuildPackageOperands separates build flags and their values from package
+// operands. The go command stops parsing flags at the first operand; accepting
+// a later flag-looking token would describe an invalid command and could hide
+// an output-affecting option on a future implementation, so reject it.
+func goBuildPackageOperands(args []string) ([]string, bool) {
+	var operands []string
+	parsingFlags := true
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		if parsingFlags && arg == "--" {
+			parsingFlags = false
+			continue
+		}
+		if parsingFlags && strings.HasPrefix(arg, "-") && arg != "-" {
+			nameValue := strings.TrimLeft(arg, "-")
+			name, value, hasValue := nameValue, "", false
+			if eq := strings.IndexByte(nameValue, '='); eq >= 0 {
+				name, value, hasValue = nameValue[:eq], nameValue[eq+1:], true
+			}
+			policy, known := goBuildFlags[name]
+			if !known || policy == goBuildRejectedFlag {
+				return nil, false
+			}
+			switch policy {
+			case goBuildBoolFlag:
+				if hasValue {
+					if _, err := strconv.ParseBool(value); err != nil {
+						return nil, false
+					}
+				}
+			case goBuildVCSFlag:
+				// -buildvcs is a boolean flag with one extra inline value,
+				// "auto". Like other Go boolean flags, its bare form does not
+				// consume the following token.
+				if hasValue && value != "auto" {
+					if _, err := strconv.ParseBool(value); err != nil {
+						return nil, false
+					}
+				}
+			case goBuildValueFlag, goBuildModFlag:
+				if !hasValue {
+					i++
+					if i >= len(args) {
+						return nil, false
+					}
+					value = args[i]
+				}
+				if policy == goBuildModFlag && value != "readonly" && value != "vendor" {
+					return nil, false
+				}
+			}
+			continue
+		}
+
+		parsingFlags = false
+		if strings.HasPrefix(arg, "-") {
+			return nil, false
+		}
+		operands = append(operands, arg)
+	}
+	return operands, len(operands) > 0
 }
 
 // npxSegmentIsVerification unwraps only known test runners invoked directly,
