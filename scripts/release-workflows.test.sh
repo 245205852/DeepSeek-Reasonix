@@ -182,6 +182,15 @@ grep -Fq 'cp "$signature" "assets/$relative"' "$repo_root/.github/workflows/rele
 grep -Fq 'verify-desktop-release-manifest-assets.sh' "$repo_root/.github/workflows/release-desktop.yml"
 grep -Fq 'verify_signature_directory "$published_directory"' \
 	"$repo_root/.github/workflows/release-desktop.yml"
+manifest_adoption_line="$(grep -nF 'cp "$existing_directory/latest.json" assets/latest.json' \
+	"$repo_root/.github/workflows/release-desktop.yml" | cut -d: -f1)"
+authenticated_compare_line="$(grep -nF -- '--allow-authenticated-payload-differences assets "$existing_directory"' \
+	"$repo_root/.github/workflows/release-desktop.yml" | cut -d: -f1)"
+if [ -z "$manifest_adoption_line" ] || [ -z "$authenticated_compare_line" ] ||
+	[ "$manifest_adoption_line" -ge "$authenticated_compare_line" ]; then
+	echo "Desktop recovery must adopt a validated existing manifest before directory comparison" >&2
+	exit 1
+fi
 grep -Fq 'download_optional "preview/latest.json"' "$repo_root/.github/workflows/release-desktop.yml"
 grep -Fq 'download_optional "canary/latest.json"' "$repo_root/.github/workflows/release-desktop.yml"
 grep -Fq 'publish_pointer canary' "$repo_root/.github/workflows/release-desktop.yml"
@@ -653,6 +662,28 @@ if bash "$desktop_directory_verifier" --allow-missing "$candidate_directory" "$e
 	echo "Desktop release directory verifier accepted an unexpected immutable object" >&2
 	exit 1
 fi
+
+recovery_candidate_directory="$test_root/desktop-directory-recovery-candidate"
+recovery_existing_directory="$test_root/desktop-directory-recovery-existing"
+mkdir -p "$recovery_candidate_directory" "$recovery_existing_directory"
+printf 'candidate-payload\n' >"$recovery_candidate_directory/artifact"
+printf 'candidate-signature\n' >"$recovery_candidate_directory/artifact.minisig"
+printf 'existing-payload\n' >"$recovery_existing_directory/artifact"
+printf 'existing-signature\n' >"$recovery_existing_directory/artifact.minisig"
+printf '{"version":"v1.2.3","release_notes_url":"https://reasonix.io/changelog/v1.2.3/","marker":"candidate"}\n' \
+	>"$recovery_candidate_directory/latest.json"
+printf '{"version":"v1.2.3","release_notes_url":"https://reasonix.io/changelog/v1.2.3/","marker":"existing"}\n' \
+	>"$recovery_existing_directory/latest.json"
+if bash "$desktop_directory_verifier" --allow-missing --allow-legacy-manifest \
+	--allow-authenticated-payload-differences \
+	"$recovery_candidate_directory" "$recovery_existing_directory" >/dev/null 2>&1; then
+	echo "Desktop recovery accepted a conflicting manifest before validated adoption" >&2
+	exit 1
+fi
+cp "$recovery_existing_directory/latest.json" "$recovery_candidate_directory/latest.json"
+bash "$desktop_directory_verifier" --allow-missing --allow-legacy-manifest \
+	--allow-authenticated-payload-differences \
+	"$recovery_candidate_directory" "$recovery_existing_directory"
 
 legacy_candidate_directory="$test_root/desktop-directory-legacy-candidate"
 legacy_existing_directory="$test_root/desktop-directory-legacy-existing"

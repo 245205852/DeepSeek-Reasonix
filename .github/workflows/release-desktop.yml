@@ -898,9 +898,6 @@ jobs:
             aws s3 cp "s3://${R2_BUCKET}/${TAG}/" "$existing_directory/" \
               --recursive --endpoint-url "$ENDPOINT"
             verify_signature_directory "$existing_directory"
-            bash release-control/scripts/verify-desktop-release-directory.sh \
-              --allow-missing --allow-legacy-manifest \
-              --allow-authenticated-payload-differences assets "$existing_directory"
             if [ -f "$existing_directory/latest.json" ]; then
               existing_manifest=true
               bash release-control/scripts/validate-desktop-release-manifest.sh \
@@ -910,6 +907,9 @@ jobs:
                 "$existing_directory/latest.json" "$existing_directory"
               cp "$existing_directory/latest.json" assets/latest.json
             fi
+            bash release-control/scripts/verify-desktop-release-directory.sh \
+              --allow-missing --allow-legacy-manifest \
+              --allow-authenticated-payload-differences assets "$existing_directory"
 
             # Preserve every already-published authenticated payload/signature
             # pair. Platform signing and packaging are non-deterministic, so a
