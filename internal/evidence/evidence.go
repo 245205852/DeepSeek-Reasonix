@@ -1717,7 +1717,7 @@ func verificationCommandRecommendations() []verificationCommandRecommendation {
 		{label: "cargo test|check|clippy", examples: []string{"cargo test", "cargo check", "cargo clippy"}},
 		{label: "node --check|--test", examples: []string{"node --check index.js", "node --test"}},
 		{label: "make|just test|check|lint|verify|ci", examples: []string{"make test", "just verify"}},
-		{label: "python -m pytest|unittest|compileall", examples: []string{"python -m pytest", "python -m unittest", "python -m compileall ."}},
+		{label: "python -m pytest|unittest", examples: []string{"python -m pytest", "python -m unittest"}},
 		{label: "dotnet test", examples: []string{"dotnet test"}},
 		{label: "mvn|gradle test|check|verify", examples: []string{"mvn test", "gradle check"}},
 	}
@@ -1798,7 +1798,7 @@ func bashSegmentIsVerification(fields []string) bool {
 	case "make", "just":
 		return len(args) > 0 && hasCommandArg(args[:1], "test", "check", "lint", "verify", "ci")
 	case "python", "python3":
-		return len(args) > 1 && args[0] == "-m" && hasCommandArg(args[1:2], "pytest", "unittest", "compileall")
+		return len(args) > 1 && args[0] == "-m" && hasCommandArg(args[1:2], "pytest", "unittest")
 	case "dotnet":
 		return len(args) > 0 && args[0] == "test"
 	case "mvn", "mvnw", "gradle", "gradlew":
@@ -1814,6 +1814,9 @@ func bashSegmentIsVerification(fields []string) bool {
 func tscSegmentIsVerification(args []string) bool {
 	noEmit := false
 	for i, arg := range args {
+		if tscFlagWritesFile(arg) {
+			return false
+		}
 		switch strings.ToLower(arg) {
 		case "--noemit":
 			if i+1 < len(args) && strings.EqualFold(args[i+1], "false") {
@@ -1827,6 +1830,23 @@ func tscSegmentIsVerification(args []string) bool {
 		}
 	}
 	return noEmit
+}
+
+// tscFlagWritesFile rejects diagnostics and incremental-cache destinations
+// that write to a caller-selected path even when JavaScript/declaration emit is
+// disabled. Default incremental metadata remains conventional verifier cache;
+// explicit output destinations must fail closed as workspace mutations.
+func tscFlagWritesFile(arg string) bool {
+	name := strings.ToLower(arg)
+	if i := strings.IndexByte(name, '='); i >= 0 {
+		name = name[:i]
+	}
+	switch name {
+	case "--tsbuildinfofile", "--generatetrace", "--generatecpuprofile":
+		return true
+	default:
+		return false
+	}
 }
 
 // npxSegmentIsVerification unwraps only known test runners invoked directly,
@@ -1845,21 +1865,35 @@ func npxSegmentIsVerification(args []string) bool {
 	if i := strings.LastIndexByte(runner, '@'); i > 0 {
 		runner = runner[:i]
 	}
+	runnerArgs := args[1:]
 	switch runner {
-	case "vitest", "jest":
+	case "vitest", "jest", "mocha", "ava", "eslint":
+		// Known test/lint runners are verification unless an argument asks them
+		// to update snapshots, collect coverage, or write a report.
+	case "prettier":
+		// Prettier without an explicit check mode formats to stdout and is not a
+		// project verification receipt. Keep only its read-only check forms.
+		if !hasCommandArg(runnerArgs, "--check", "-c", "--list-different") {
+			return false
+		}
+	case "tsc":
+		return tscSegmentIsVerification(runnerArgs)
 	default:
+		// Playwright/Cypress produce project reports, screenshots, or videos by
+		// default; tsx/ts-node execute source. They remain mutations.
 		return false
 	}
-	for _, arg := range args[1:] {
+	for _, arg := range runnerArgs {
 		name := strings.ToLower(arg)
 		if i := strings.IndexByte(name, '='); i >= 0 {
 			name = name[:i]
 		}
 		switch name {
-		case "--update", "-u", "--updatesnapshot":
+		case "--update", "-u", "--updatesnapshot", "--update-snapshots",
+			"--output-file", "-o", "--cache-location":
 			return false
 		}
-		if name == "--coverage" || strings.HasPrefix(name, "--coverage=") || strings.HasPrefix(name, "--coverage.") {
+		if name == "--coverage" || strings.HasPrefix(name, "--coverage.") {
 			return false
 		}
 	}

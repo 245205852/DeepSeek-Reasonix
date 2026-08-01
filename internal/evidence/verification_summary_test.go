@@ -91,6 +91,12 @@ func TestTSCVerificationRequiresExplicitNoEmit(t *testing.T) {
 		"tsc --noEmit=false",
 		"tsc --noEmit false",
 		"tsc --noEmit=true --noEmit=false",
+		"tsc --noEmit --incremental --tsBuildInfoFile victim.ts",
+		"tsc --noEmit --incremental --tsBuildInfoFile=victim.ts",
+		"tsc --noEmit --generateTrace trace-dir",
+		"tsc --noEmit --generateTrace=trace-dir",
+		"tsc --noEmit --generateCpuProfile profile.cpuprofile",
+		"tsc --noEmit --generateCpuProfile=profile.cpuprofile",
 	} {
 		if IsDeliveryVerificationCommand(command) {
 			t.Errorf("%q may emit compiler output and must not count as verification", command)
@@ -106,6 +112,83 @@ func TestTSCVerificationRequiresExplicitNoEmit(t *testing.T) {
 
 	if !strings.Contains(VerificationCommandSummary(), "tsc --noEmit") {
 		t.Fatal("recovery summary must render the concrete no-emit TypeScript command")
+	}
+}
+
+func TestPythonCompileallAlwaysCountsAsMutation(t *testing.T) {
+	for _, command := range []string{
+		"python -m compileall .",
+		"python3 -m compileall -q src/",
+		"python -m compileall -b package.py",
+	} {
+		if IsDeliveryVerificationCommand(command) {
+			t.Errorf("%q writes bytecode and must not count as verification", command)
+		}
+		args, err := json.Marshal(map[string]string{"command": command})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !ToolCallMutates("bash", args, false) {
+			t.Errorf("%q writes bytecode and must be classified as a mutation", command)
+		}
+	}
+	if strings.Contains(VerificationCommandSummary(), "compileall") {
+		t.Fatal("recovery summary must not recommend bytecode-emitting compileall")
+	}
+}
+
+func TestNpxVerificationUsesSafeKnownRunners(t *testing.T) {
+	for _, command := range []string{
+		"npx vitest run src/lib/foo.test.ts",
+		"npx jest src/lib/foo.test.ts",
+		"npx mocha test/",
+		"npx ava",
+		"npx eslint src/",
+		"npx prettier --check .",
+		"npx prettier --list-different src/",
+		"npx tsc --noEmit",
+		"npx mocha test/ 2>&1 | tail -40",
+	} {
+		if !IsDeliveryVerificationCommand(command) {
+			t.Errorf("%q should be recognized as a known read-only npx verifier", command)
+		}
+		args, err := json.Marshal(map[string]string{"command": command})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if ToolCallMutates("bash", args, false) {
+			t.Errorf("%q should remain non-mutating verification", command)
+		}
+	}
+
+	for _, command := range []string{
+		"npx --yes vitest run",
+		"npx playwright test",
+		"npx cypress run",
+		"npx tsx check.ts",
+		"npx ts-node check.ts",
+		"npx eslint src/ --fix",
+		"npx eslint src/ --output-file report.txt",
+		"npx prettier --write .",
+		"npx prettier .",
+		"npx tsc",
+		"npx tsc --noEmit --tsBuildInfoFile victim.ts",
+		"npx tsc --noEmit --generateTrace trace-dir",
+	} {
+		if IsDeliveryVerificationCommand(command) {
+			t.Errorf("%q can install, execute, or write output and must fail closed", command)
+		}
+		args, err := json.Marshal(map[string]string{"command": command})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !ToolCallMutates("bash", args, false) {
+			t.Errorf("%q must remain a mutation", command)
+		}
+	}
+
+	if strings.Contains(VerificationCommandSummary(), "npx") {
+		t.Fatal("self-installing npx commands must not be first-line recovery recommendations")
 	}
 }
 
