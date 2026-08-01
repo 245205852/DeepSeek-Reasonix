@@ -1476,16 +1476,18 @@ func clonePricing(p *provider.Pricing) *provider.Pricing {
 
 // ToolsConfig selects which built-in tools are enabled. Empty means all of them.
 type ToolsConfig struct {
-	Enabled               []string             `toml:"enabled"`
-	BashTimeoutSeconds    *int                 `toml:"bash_timeout_seconds"`
-	MCPCallTimeoutSeconds *int                 `toml:"mcp_call_timeout_seconds"`
-	BackgroundJobs        BackgroundJobsConfig `toml:"background_jobs"`
-	Search                SearchConfig         `toml:"search"`
-	Shell                 ShellConfig          `toml:"shell"`
+	Enabled                  []string             `toml:"enabled"`
+	BashTimeoutSeconds       *int                 `toml:"bash_timeout_seconds"`
+	MCPStartupTimeoutSeconds *int                 `toml:"mcp_startup_timeout_seconds"`
+	MCPCallTimeoutSeconds    *int                 `toml:"mcp_call_timeout_seconds"`
+	BackgroundJobs           BackgroundJobsConfig `toml:"background_jobs"`
+	Search                   SearchConfig         `toml:"search"`
+	Shell                    ShellConfig          `toml:"shell"`
 }
 
 const (
 	defaultBashTimeoutSeconds             = 120
+	defaultMCPStartupTimeoutSeconds       = 30
 	defaultMCPCallTimeoutSeconds          = 300
 	defaultBackgroundJobStalledWarningSec = 900
 	maxBackgroundJobStalledWarningSec     = 86400
@@ -1510,6 +1512,17 @@ func (c *Config) MCPCallTimeoutSeconds() int {
 		return defaultMCPCallTimeoutSeconds
 	}
 	return *c.Tools.MCPCallTimeoutSeconds
+}
+
+// MCPStartupTimeoutSeconds returns the background initialize + tools/list
+// safety cap. Omitted, zero, and negative values keep the built-in default so
+// a slow but healthy MCP can outlive the short interactive wait without running
+// indefinitely.
+func (c *Config) MCPStartupTimeoutSeconds() int {
+	if c.Tools.MCPStartupTimeoutSeconds == nil || *c.Tools.MCPStartupTimeoutSeconds <= 0 {
+		return defaultMCPStartupTimeoutSeconds
+	}
+	return *c.Tools.MCPStartupTimeoutSeconds
 }
 
 // BackgroundJobsConfig tunes parent-created background jobs.
@@ -1607,6 +1620,9 @@ type PluginEntry struct {
 	Env     map[string]string `toml:"env"`
 	URL     string            `toml:"url"`
 	Headers map[string]string `toml:"headers"`
+	// StartupTimeoutSeconds overrides [tools].mcp_startup_timeout_seconds for
+	// initialize + tools/list. Zero keeps the global/default cap.
+	StartupTimeoutSeconds int `toml:"startup_timeout_seconds"`
 	// CallTimeoutSeconds overrides the default per-call deadline for this MCP
 	// server. Zero falls back to [tools].mcp_call_timeout_seconds.
 	CallTimeoutSeconds int `toml:"call_timeout_seconds"`
