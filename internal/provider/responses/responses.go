@@ -271,8 +271,14 @@ func messagesToInput(messages []provider.Message) []map[string]any {
 			input = append(input, map[string]any{"role": string(message.Role), "content": message.Content})
 		case provider.RoleAssistant:
 			if message.ReasoningContent != "" {
+				// DashScope's Responses API requires a `summary` list on
+				// reasoning items (OpenAI's format only needs `content`).
+				// Without it the server rejects with
+				// "Invalid 'summary': summary is required and must be a list
+				// for reasoning."
 				input = append(input, map[string]any{
 					"type":    "reasoning",
+					"summary": []map[string]string{{"type": "summary_text", "text": message.ReasoningContent}},
 					"content": []map[string]string{{"type": "reasoning_text", "text": message.ReasoningContent}},
 				})
 			}
