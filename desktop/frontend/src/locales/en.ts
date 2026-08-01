@@ -2374,6 +2374,7 @@ export const en = {
   "settings.addProvider.official.deepseek": "DeepSeek Official",
   "settings.addProvider.official.deepseekDesc": "Official API key access with DeepSeek V4 Flash / Pro.",
   "settings.addProvider.preset.deepseekResponsesDesc": "DeepSeek official stateless Responses API for deepseek-v4-flash.",
+  "settings.addProvider.preset.deepseekAnthropicDesc": "Optional official DeepSeek Anthropic-compatible endpoint for Flash and Pro; Chat Completions remains the default.",
   "settings.addProvider.preset.longcatOpenAIDesc": "LongCat Platform OpenAI-compatible endpoint with LongCat-2.0 default.",
   "settings.addProvider.preset.longcatAnthropicDesc": "LongCat Platform Anthropic-compatible Messages endpoint using Bearer auth.",
   "settings.addProvider.preset.kimiCnDesc": "Kimi China API via Moonshot CN endpoint with K2 vision models.",

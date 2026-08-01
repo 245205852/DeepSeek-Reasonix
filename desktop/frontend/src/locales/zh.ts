@@ -2377,6 +2377,7 @@ export const zh: Record<DictKey, string> = {
   "settings.addProvider.official.deepseek": "DeepSeek 官方",
   "settings.addProvider.official.deepseekDesc": "官方 API Key 接入，可用 DeepSeek V4 Flash / Pro。",
   "settings.addProvider.preset.deepseekResponsesDesc": "DeepSeek 官方无状态 Responses API，适用于 deepseek-v4-flash。",
+  "settings.addProvider.preset.deepseekAnthropicDesc": "DeepSeek 官方可选 Anthropic 兼容端点，支持 Flash 与 Pro；默认仍使用 Chat Completions。",
   "settings.addProvider.preset.longcatOpenAIDesc": "LongCat 开放平台 OpenAI-compatible 端点，默认 LongCat-2.0。",
   "settings.addProvider.preset.longcatAnthropicDesc": "LongCat 开放平台 Anthropic-compatible Messages 端点，使用 Bearer 认证。",
   "settings.addProvider.preset.kimiCnDesc": "Kimi 国内 API，走 Moonshot CN 端点，预置 K2 视觉模型。",
