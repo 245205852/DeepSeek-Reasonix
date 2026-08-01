@@ -2786,6 +2786,7 @@ export const en = {
   "updater.downloading": "Downloading… {done} MB / {total} MB ({pct}%)",
   "updater.verifying": "Verifying signature…",
   "updater.authorizing": "Waiting for administrator authorization…",
+  "updater.recovering": "Finishing recovery from the previous update…",
   "updater.installing": "Installing — Reasonix will restart…",
   "updater.installingPackage": "Installing via the system package manager…",
   "updater.applying": "Installing…",
