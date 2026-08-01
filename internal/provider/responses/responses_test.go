@@ -375,3 +375,105 @@ func TestFailedEventSurfacesAuthenticationError(t *testing.T) {
 	}
 	t.Fatal("missing error chunk")
 }
+
+func TestCompletedResponseDefaultsFinishReasonToStop(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		// No finish_reason anywhere in the completed event: the client must
+		// synthesize FinishReason="stop" for a normally completed response.
+		writeEvents(w, `{"type":"response.completed","response":{"id":"resp_1","usage":{"input_tokens":2,"output_tokens":3,"total_tokens":5}}}`)
+	}))
+	defer server.Close()
+	chunks := collect(t, New(Config{Name: "test", APIKey: "key", BaseURL: server.URL, Model: "m", Mode: "stateful"}), provider.Request{Messages: []provider.Message{{Role: provider.RoleUser, Content: "hi"}}})
+	for _, chunk := range chunks {
+		if chunk.Type == provider.ChunkUsage {
+			if chunk.Usage.FinishReason != "stop" {
+				t.Fatalf("finish reason = %q, want \"stop\"", chunk.Usage.FinishReason)
+			}
+			return
+		}
+	}
+	t.Fatal("missing usage chunk")
+}
+
+func TestMessagesToInputIncludesSummaryOnReasoningItems(t *testing.T) {
+	client := New(Config{Name: "test", BaseURL: "https://api.deepseek.com", Model: "deepseek-v4-flash"}).(*client)
+	body, _, _ := client.buildRequestBody(provider.Request{Messages: []provider.Message{
+		{Role: provider.RoleUser, Content: "run"},
+		{Role: provider.RoleAssistant, ReasoningContent: "think step by step", Content: "answer"},
+	}})
+	items := body["input"].([]map[string]any)
+	var reasoning map[string]any
+	for _, item := range items {
+		if item["type"] == "reasoning" {
+			reasoning = item
+			break
+		}
+	}
+	if reasoning == nil {
+		t.Fatal("missing reasoning item in input")
+	}
+	// DashScope requires summary as a list, not a scalar; OpenAI format only
+	// needs content. The serialized input must carry both.
+	summary, ok := reasoning["summary"].([]map[string]string)
+	if !ok {
+		t.Fatalf("reasoning summary = %#v, want []map[string]string list", reasoning["summary"])
+	}
+	if len(summary) != 1 || summary[0]["type"] != "summary_text" || summary[0]["text"] != "think step by step" {
+		t.Fatalf("reasoning summary = %#v", summary)
+	}
+	content, ok := reasoning["content"].([]map[string]string)
+	if !ok || len(content) != 1 || content[0]["type"] != "reasoning_text" || content[0]["text"] != "think step by step" {
+		t.Fatalf("reasoning content = %#v", reasoning["content"])
+	}
+}
+
+func TestCompletedResponseDefaultsFinishReasonToStop(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		// No finish_reason anywhere in the completed event: the client must
+		// synthesize FinishReason="stop" for a normally completed response.
+		writeEvents(w, `{"type":"response.completed","response":{"id":"resp_1","usage":{"input_tokens":2,"output_tokens":3,"total_tokens":5}}}`)
+	}))
+	defer server.Close()
+	chunks := collect(t, New(Config{Name: "test", APIKey: "key", BaseURL: server.URL, Model: "m", Mode: "stateful"}), provider.Request{Messages: []provider.Message{{Role: provider.RoleUser, Content: "hi"}}})
+	for _, chunk := range chunks {
+		if chunk.Type == provider.ChunkUsage {
+			if chunk.Usage.FinishReason != "stop" {
+				t.Fatalf("finish reason = %q, want \"stop\"", chunk.Usage.FinishReason)
+			}
+			return
+		}
+	}
+	t.Fatal("missing usage chunk")
+}
+
+func TestMessagesToInputIncludesSummaryOnReasoningItems(t *testing.T) {
+	client := New(Config{Name: "test", BaseURL: "https://api.deepseek.com", Model: "deepseek-v4-flash"}).(*client)
+	body, _, _ := client.buildRequestBody(provider.Request{Messages: []provider.Message{
+		{Role: provider.RoleUser, Content: "run"},
+		{Role: provider.RoleAssistant, ReasoningContent: "think step by step", Content: "answer"},
+	}})
+	items := body["input"].([]map[string]any)
+	var reasoning map[string]any
+	for _, item := range items {
+		if item["type"] == "reasoning" {
+			reasoning = item
+			break
+		}
+	}
+	if reasoning == nil {
+		t.Fatal("missing reasoning item in input")
+	}
+	// DashScope requires summary as a list, not a scalar; OpenAI format only
+	// needs content. The serialized input must carry both.
+	summary, ok := reasoning["summary"].([]map[string]string)
+	if !ok {
+		t.Fatalf("reasoning summary = %#v, want []map[string]string list", reasoning["summary"])
+	}
+	if len(summary) != 1 || summary[0]["type"] != "summary_text" || summary[0]["text"] != "think step by step" {
+		t.Fatalf("reasoning summary = %#v", summary)
+	}
+	content, ok := reasoning["content"].([]map[string]string)
+	if !ok || len(content) != 1 || content[0]["type"] != "reasoning_text" || content[0]["text"] != "think step by step" {
+		t.Fatalf("reasoning content = %#v", reasoning["content"])
+	}
+}
