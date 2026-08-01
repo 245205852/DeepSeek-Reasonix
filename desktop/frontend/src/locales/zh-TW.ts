@@ -1926,6 +1926,7 @@ export const zhTW: Record<DictKey, string> = {
   "updater.downloading": "下載中… {done} MB / {total} MB（{pct}%）",
   "updater.verifying": "正在驗證簽章…",
   "updater.authorizing": "等待管理員授權…",
+  "updater.recovering": "正在復原上次未完成的更新…",
   "updater.installing": "正在安裝，應用程式即將重新啟動…",
   "updater.installingPackage": "正在透過系統套件管理員安裝…",
   "updater.applying": "正在安裝…",

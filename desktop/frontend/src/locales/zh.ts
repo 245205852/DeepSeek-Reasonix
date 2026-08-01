@@ -2789,6 +2789,7 @@ export const zh: Record<DictKey, string> = {
   "updater.downloading": "下载中… {done} MB / {total} MB（{pct}%）",
   "updater.verifying": "正在验证签名…",
   "updater.authorizing": "等待管理员授权…",
+  "updater.recovering": "正在恢复上次未完成的更新…",
   "updater.installing": "正在安装，应用即将重启…",
   "updater.installingPackage": "正在通过系统包管理器安装…",
   "updater.applying": "正在安装…",

@@ -77,6 +77,34 @@ grep -Eq 'CLI Preview must tag current main-v2' "$repo_root/.github/workflows/re
 grep -Fq 'ALLOW_PREVIEW_RECOVERY: ${{ inputs.allow_preview_recovery }}' "$repo_root/.github/workflows/release.yml"
 grep -Eq 'Preview recovery requires the approved Preview orchestrator' "$repo_root/.github/workflows/release.yml"
 grep -Eq "channel == 'stable'.*HOMEBREW_TAP_TOKEN" "$repo_root/.github/workflows/release.yml"
+grep -Fq 'name: Isolate release-control checkout from product git state' \
+	"$repo_root/.github/workflows/release.yml"
+grep -Fq "grep -qxF '/release-control/'" "$repo_root/.github/workflows/release.yml"
+grep -Fq 'git check-ignore -q release-control/' "$repo_root/.github/workflows/release.yml"
+release_control_isolation_line="$(
+	grep -n -m1 'name: Isolate release-control checkout from product git state' \
+		"$repo_root/.github/workflows/release.yml" | cut -d: -f1
+)"
+goreleaser_action_line="$(
+	grep -n -m1 'uses: goreleaser/goreleaser-action@' \
+		"$repo_root/.github/workflows/release.yml" | cut -d: -f1
+)"
+[ "$release_control_isolation_line" -lt "$goreleaser_action_line" ]
+
+# A protected control-plane checkout must remain available to the workflow
+# without making the immutable product checkout dirty for GoReleaser.
+mkdir -p "$test_root/product-checkout/release-control"
+git init -q "$test_root/product-checkout"
+printf 'control plane\n' >"$test_root/product-checkout/release-control/marker"
+[ "$(git -C "$test_root/product-checkout" status --porcelain --untracked-files=all)" = \
+	'?? release-control/marker' ]
+product_git_common_dir="$(
+	git -C "$test_root/product-checkout" rev-parse --path-format=absolute --git-common-dir
+)"
+product_exclude="$product_git_common_dir/info/exclude"
+printf '%s\n' '/release-control/' >>"$product_exclude"
+git -C "$test_root/product-checkout" check-ignore -q release-control/
+[ -z "$(git -C "$test_root/product-checkout" status --porcelain --untracked-files=all)" ]
 grep -Eq "needs\.build\.result == 'success'" "$repo_root/.github/workflows/release-desktop.yml"
 grep -Eq "needs\.publish\.result == 'success'" "$repo_root/.github/workflows/release-desktop.yml"
 grep -Eq 'options: \[stable, preview\]' "$repo_root/.github/workflows/release-desktop.yml"
@@ -175,13 +203,28 @@ grep -Fq 'go -C release-control/desktop build -o "$signature_verifier" ./cmd/sig
 grep -Fq 'verify_signature_directory assets' "$repo_root/.github/workflows/release-desktop.yml"
 grep -Fq 'verify_signature_directory "$existing_directory"' \
 	"$repo_root/.github/workflows/release-desktop.yml"
-grep -Fq -- '--allow-signature-differences' \
+grep -Fq -- '--allow-authenticated-payload-differences' \
 	"$repo_root/.github/workflows/release-desktop.yml"
+grep -Fq 'cp "$payload" "assets/$payload_relative"' "$repo_root/.github/workflows/release-desktop.yml"
 grep -Fq 'cp "$signature" "assets/$relative"' "$repo_root/.github/workflows/release-desktop.yml"
+grep -Fq 'verify-desktop-release-manifest-assets.sh' "$repo_root/.github/workflows/release-desktop.yml"
 grep -Fq 'verify_signature_directory "$published_directory"' \
 	"$repo_root/.github/workflows/release-desktop.yml"
+manifest_adoption_line="$(grep -nF 'cp "$existing_directory/latest.json" assets/latest.json' \
+	"$repo_root/.github/workflows/release-desktop.yml" | cut -d: -f1)"
+authenticated_compare_line="$(grep -nF -- '--allow-authenticated-payload-differences assets "$existing_directory"' \
+	"$repo_root/.github/workflows/release-desktop.yml" | cut -d: -f1)"
+if [ -z "$manifest_adoption_line" ] || [ -z "$authenticated_compare_line" ] ||
+	[ "$manifest_adoption_line" -ge "$authenticated_compare_line" ]; then
+	echo "Desktop recovery must adopt a validated existing manifest before directory comparison" >&2
+	exit 1
+fi
 grep -Fq 'download_optional "preview/latest.json"' "$repo_root/.github/workflows/release-desktop.yml"
 grep -Fq 'download_optional "canary/latest.json"' "$repo_root/.github/workflows/release-desktop.yml"
+grep -Fq '"legacy-${current_channel}" "$current_version" "$current_base"' \
+	"$repo_root/.github/workflows/release-desktop.yml"
+grep -Fq 'legacy-preview "$current_version" "$legacy_preview_base"' \
+	"$repo_root/.github/workflows/release-desktop.yml"
 grep -Fq 'publish_pointer canary' "$repo_root/.github/workflows/release-desktop.yml"
 grep -Fq 'publish_pointer preview' "$repo_root/.github/workflows/release-desktop.yml"
 grep -Fq 'cmp -s /tmp/reasonix-desktop-canary-latest.json /tmp/reasonix-desktop-preview-latest.json' \
@@ -614,6 +657,25 @@ if bash "$desktop_directory_verifier" "$candidate_directory" "$existing_director
 fi
 bash "$desktop_directory_verifier" --allow-signature-differences \
 	"$candidate_directory" "$existing_directory"
+printf 'candidate-payload\n' >"$candidate_directory/signed"
+printf 'existing-payload\n' >"$existing_directory/signed"
+printf 'candidate-signature\n' >"$candidate_directory/signed.minisig"
+printf 'existing-signature\n' >"$existing_directory/signed.minisig"
+if bash "$desktop_directory_verifier" --allow-signature-differences \
+	"$candidate_directory" "$existing_directory" >/dev/null 2>&1; then
+	echo "Desktop release directory verifier accepted a byte-distinct payload without authenticated-payload opt-in" >&2
+	exit 1
+fi
+bash "$desktop_directory_verifier" --allow-authenticated-payload-differences \
+	"$candidate_directory" "$existing_directory"
+printf '' >"$existing_directory/signed.minisig"
+if bash "$desktop_directory_verifier" --allow-authenticated-payload-differences \
+	"$candidate_directory" "$existing_directory" >/dev/null 2>&1; then
+	echo "Desktop release directory verifier accepted a byte-distinct payload with an empty signature" >&2
+	exit 1
+fi
+cp "$candidate_directory/signed" "$existing_directory/signed"
+cp "$candidate_directory/signed.minisig" "$existing_directory/signed.minisig"
 printf '' >"$existing_directory/a.minisig"
 if bash "$desktop_directory_verifier" --allow-signature-differences \
 	"$candidate_directory" "$existing_directory" >/dev/null 2>&1; then
@@ -632,6 +694,28 @@ if bash "$desktop_directory_verifier" --allow-missing "$candidate_directory" "$e
 	echo "Desktop release directory verifier accepted an unexpected immutable object" >&2
 	exit 1
 fi
+
+recovery_candidate_directory="$test_root/desktop-directory-recovery-candidate"
+recovery_existing_directory="$test_root/desktop-directory-recovery-existing"
+mkdir -p "$recovery_candidate_directory" "$recovery_existing_directory"
+printf 'candidate-payload\n' >"$recovery_candidate_directory/artifact"
+printf 'candidate-signature\n' >"$recovery_candidate_directory/artifact.minisig"
+printf 'existing-payload\n' >"$recovery_existing_directory/artifact"
+printf 'existing-signature\n' >"$recovery_existing_directory/artifact.minisig"
+printf '{"version":"v1.2.3","release_notes_url":"https://reasonix.io/changelog/v1.2.3/","marker":"candidate"}\n' \
+	>"$recovery_candidate_directory/latest.json"
+printf '{"version":"v1.2.3","release_notes_url":"https://reasonix.io/changelog/v1.2.3/","marker":"existing"}\n' \
+	>"$recovery_existing_directory/latest.json"
+if bash "$desktop_directory_verifier" --allow-missing --allow-legacy-manifest \
+	--allow-authenticated-payload-differences \
+	"$recovery_candidate_directory" "$recovery_existing_directory" >/dev/null 2>&1; then
+	echo "Desktop recovery accepted a conflicting manifest before validated adoption" >&2
+	exit 1
+fi
+cp "$recovery_existing_directory/latest.json" "$recovery_candidate_directory/latest.json"
+bash "$desktop_directory_verifier" --allow-missing --allow-legacy-manifest \
+	--allow-authenticated-payload-differences \
+	"$recovery_candidate_directory" "$recovery_existing_directory"
 
 legacy_candidate_directory="$test_root/desktop-directory-legacy-candidate"
 legacy_existing_directory="$test_root/desktop-directory-legacy-existing"
@@ -658,6 +742,38 @@ mv "$legacy_existing_directory/latest-conflict.json" "$legacy_existing_directory
 if bash "$desktop_directory_verifier" --allow-legacy-manifest \
 	"$legacy_candidate_directory" "$legacy_existing_directory" >/dev/null 2>&1; then
 	echo "Desktop release directory verifier ignored a non-legacy manifest difference" >&2
+	exit 1
+fi
+
+desktop_manifest_asset_verifier="$repo_root/scripts/verify-desktop-release-manifest-assets.sh"
+test -x "$desktop_manifest_asset_verifier"
+manifest_asset_directory="$test_root/desktop-manifest-assets"
+mkdir -p "$manifest_asset_directory"
+printf 'manifest-bound-payload\n' >"$manifest_asset_directory/payload.zip"
+printf 'manifest-bound-native\n' >"$manifest_asset_directory/payload.deb"
+manifest_asset_sha="$(shasum -a 256 "$manifest_asset_directory/payload.zip" | awk '{print $1}')"
+manifest_asset_size="$(wc -c <"$manifest_asset_directory/payload.zip" | tr -d '[:space:]')"
+manifest_native_sha="$(shasum -a 256 "$manifest_asset_directory/payload.deb" | awk '{print $1}')"
+manifest_native_size="$(wc -c <"$manifest_asset_directory/payload.deb" | tr -d '[:space:]')"
+jq -n \
+	--arg url "https://dl.reasonix.io/desktop-v1.2.3/payload.zip" \
+	--arg sha "$manifest_asset_sha" \
+	--argjson size "$manifest_asset_size" \
+	--arg native_url "https://dl.reasonix.io/desktop-v1.2.3/payload.deb" \
+	--arg native_sha "$manifest_native_sha" \
+	--argjson native_size "$manifest_native_size" \
+	'{
+		platforms: {test: {url: $url, sha256: $sha, size: $size}},
+		native_packages: {test: {url: $native_url, sha256: $native_sha, size: $native_size}},
+		downloads: {}
+	}' \
+	>"$manifest_asset_directory/latest.json"
+bash "$desktop_manifest_asset_verifier" \
+	"$manifest_asset_directory/latest.json" "$manifest_asset_directory"
+printf 'corrupted-payload\n' >"$manifest_asset_directory/payload.zip"
+if bash "$desktop_manifest_asset_verifier" \
+	"$manifest_asset_directory/latest.json" "$manifest_asset_directory" >/dev/null 2>&1; then
+	echo "Desktop release manifest asset verifier accepted a mismatched payload" >&2
 	exit 1
 fi
 
@@ -990,6 +1106,10 @@ jq 'del(.release_notes_url, .downloads)' "$desktop_preview_manifest" \
 	>"$test_root/desktop-legacy-preview-immutable.json"
 bash "$desktop_validator" legacy-preview "$desktop_preview_version" \
 	"$desktop_preview_base" "$test_root/desktop-legacy-preview-immutable.json"
+jq '.release_notes_url = null' "$desktop_preview_manifest" \
+	>"$test_root/desktop-null-legacy-preview-immutable.json"
+bash "$desktop_validator" legacy-preview "$desktop_preview_version" \
+	"$desktop_preview_base" "$test_root/desktop-null-legacy-preview-immutable.json"
 jq 'del(.downloads)' "$desktop_stable_manifest" >"$test_root/desktop-legacy-stable.json"
 bash "$desktop_validator" legacy-stable "$desktop_stable_version" \
 	"$desktop_stable_base" "$test_root/desktop-legacy-stable.json"

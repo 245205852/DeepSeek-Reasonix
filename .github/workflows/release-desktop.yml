@@ -869,7 +869,18 @@ jobs:
               "$signature_verifier" verify "$payload"
             done < <(find "$directory" -type f -name '*.minisig' -print0)
           }
+          require_signature_coverage() {
+            local directory="$1"
+            local payload
+            while IFS= read -r -d '' payload; do
+              if [ ! -s "$payload.minisig" ]; then
+                echo "::error::Desktop payload has no non-empty signature: $payload"
+                return 1
+              fi
+            done < <(find "$directory" -type f ! -name '*.minisig' ! -name 'latest.json' -print0)
+          }
           verify_signature_directory assets
+          require_signature_coverage assets
 
           # A version directory is immutable once written. Recovery may fill an
           # incomplete candidate subset, but it may never replace conflicting or
@@ -887,24 +898,28 @@ jobs:
             aws s3 cp "s3://${R2_BUCKET}/${TAG}/" "$existing_directory/" \
               --recursive --endpoint-url "$ENDPOINT"
             verify_signature_directory "$existing_directory"
-            bash release-control/scripts/verify-desktop-release-directory.sh \
-              --allow-missing --allow-legacy-manifest \
-              --allow-signature-differences assets "$existing_directory"
             if [ -f "$existing_directory/latest.json" ]; then
               existing_manifest=true
               bash release-control/scripts/validate-desktop-release-manifest.sh \
                 "legacy-${validation_channel}" "$VERSION" "$asset_base" \
                 "$existing_directory/latest.json" "$NOTES_VERSION"
-              bash release-control/scripts/compare-desktop-release-manifests.sh \
-                assets/latest.json "$existing_directory/latest.json"
+              bash release-control/scripts/verify-desktop-release-manifest-assets.sh \
+                "$existing_directory/latest.json" "$existing_directory"
+              cp "$existing_directory/latest.json" assets/latest.json
             fi
+            bash release-control/scripts/verify-desktop-release-directory.sh \
+              --allow-missing --allow-legacy-manifest \
+              --allow-authenticated-payload-differences assets "$existing_directory"
 
-            # Preserve already-published valid signature bytes. Minisign
-            # signatures are intentionally non-deterministic, so a recovery
-            # may fill missing signatures but must not replace existing ones.
+            # Preserve every already-published authenticated payload/signature
+            # pair. Platform signing and packaging are non-deterministic, so a
+            # recovery may fill missing pairs but must not replace valid ones.
             while IFS= read -r -d '' signature; do
               relative="${signature#"$existing_directory"/}"
+              payload="${signature%.minisig}"
+              payload_relative="${payload#"$existing_directory"/}"
               mkdir -p "assets/$(dirname "$relative")"
+              cp "$payload" "assets/$payload_relative"
               cp "$signature" "assets/$relative"
             done < <(find "$existing_directory" -type f -name '*.minisig' -print0)
           fi
@@ -926,6 +941,9 @@ jobs:
           bash release-control/scripts/verify-desktop-release-directory.sh \
             --allow-legacy-manifest assets "$published_directory"
           verify_signature_directory "$published_directory"
+          require_signature_coverage "$published_directory"
+          bash release-control/scripts/verify-desktop-release-manifest-assets.sh \
+            "$published_directory/latest.json" "$published_directory"
 
           aws s3 cp "s3://${R2_BUCKET}/${TAG}/latest.json" \
             /tmp/reasonix-desktop-tag-latest.json --endpoint-url "$ENDPOINT"
@@ -954,14 +972,22 @@ jobs:
               return 0
             fi
 
-            local legacy_base="$current_base"
-            if [ "$current_channel" = "preview" ]; then
-              legacy_base="https://dl.reasonix.io/desktop-preview/"
-            fi
             if bash release-control/scripts/validate-desktop-release-manifest.sh \
-              "legacy-${current_channel}" "$current_version" "$legacy_base" \
+              "legacy-${current_channel}" "$current_version" "$current_base" \
               "$current_file"; then
-              echo "using legacy $current_channel manifest $current_version only as the monotonic migration baseline"
+              echo "using legacy $current_channel manifest $current_version at its immutable base only as the monotonic migration baseline"
+              return 0
+            fi
+
+            # Early Preview pointers referenced the mutable desktop-preview/
+            # directory. Try that layout only after the immutable legacy layout
+            # so later legacy pointers retain their version-bound asset URLs.
+            local legacy_preview_base="https://dl.reasonix.io/desktop-preview/"
+            if [ "$current_channel" = "preview" ] && \
+              bash release-control/scripts/validate-desktop-release-manifest.sh \
+                legacy-preview "$current_version" "$legacy_preview_base" \
+                "$current_file"; then
+              echo "using legacy Preview manifest $current_version at the rolling base only as the monotonic migration baseline"
               return 0
             fi
             echo "::error::existing Desktop $current_channel pointer is invalid"
