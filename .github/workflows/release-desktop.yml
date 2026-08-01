@@ -869,7 +869,18 @@ jobs:
               "$signature_verifier" verify "$payload"
             done < <(find "$directory" -type f -name '*.minisig' -print0)
           }
+          require_signature_coverage() {
+            local directory="$1"
+            local payload
+            while IFS= read -r -d '' payload; do
+              if [ ! -s "$payload.minisig" ]; then
+                echo "::error::Desktop payload has no non-empty signature: $payload"
+                return 1
+              fi
+            done < <(find "$directory" -type f ! -name '*.minisig' ! -name 'latest.json' -print0)
+          }
           verify_signature_directory assets
+          require_signature_coverage assets
 
           # A version directory is immutable once written. Recovery may fill an
           # incomplete candidate subset, but it may never replace conflicting or
@@ -889,22 +900,26 @@ jobs:
             verify_signature_directory "$existing_directory"
             bash release-control/scripts/verify-desktop-release-directory.sh \
               --allow-missing --allow-legacy-manifest \
-              --allow-signature-differences assets "$existing_directory"
+              --allow-authenticated-payload-differences assets "$existing_directory"
             if [ -f "$existing_directory/latest.json" ]; then
               existing_manifest=true
               bash release-control/scripts/validate-desktop-release-manifest.sh \
                 "legacy-${validation_channel}" "$VERSION" "$asset_base" \
                 "$existing_directory/latest.json" "$NOTES_VERSION"
-              bash release-control/scripts/compare-desktop-release-manifests.sh \
-                assets/latest.json "$existing_directory/latest.json"
+              bash release-control/scripts/verify-desktop-release-manifest-assets.sh \
+                "$existing_directory/latest.json" "$existing_directory"
+              cp "$existing_directory/latest.json" assets/latest.json
             fi
 
-            # Preserve already-published valid signature bytes. Minisign
-            # signatures are intentionally non-deterministic, so a recovery
-            # may fill missing signatures but must not replace existing ones.
+            # Preserve every already-published authenticated payload/signature
+            # pair. Platform signing and packaging are non-deterministic, so a
+            # recovery may fill missing pairs but must not replace valid ones.
             while IFS= read -r -d '' signature; do
               relative="${signature#"$existing_directory"/}"
+              payload="${signature%.minisig}"
+              payload_relative="${payload#"$existing_directory"/}"
               mkdir -p "assets/$(dirname "$relative")"
+              cp "$payload" "assets/$payload_relative"
               cp "$signature" "assets/$relative"
             done < <(find "$existing_directory" -type f -name '*.minisig' -print0)
           fi
@@ -926,6 +941,9 @@ jobs:
           bash release-control/scripts/verify-desktop-release-directory.sh \
             --allow-legacy-manifest assets "$published_directory"
           verify_signature_directory "$published_directory"
+          require_signature_coverage "$published_directory"
+          bash release-control/scripts/verify-desktop-release-manifest-assets.sh \
+            "$published_directory/latest.json" "$published_directory"
 
           aws s3 cp "s3://${R2_BUCKET}/${TAG}/latest.json" \
             /tmp/reasonix-desktop-tag-latest.json --endpoint-url "$ENDPOINT"

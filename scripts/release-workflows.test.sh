@@ -175,9 +175,11 @@ grep -Fq 'go -C release-control/desktop build -o "$signature_verifier" ./cmd/sig
 grep -Fq 'verify_signature_directory assets' "$repo_root/.github/workflows/release-desktop.yml"
 grep -Fq 'verify_signature_directory "$existing_directory"' \
 	"$repo_root/.github/workflows/release-desktop.yml"
-grep -Fq -- '--allow-signature-differences' \
+grep -Fq -- '--allow-authenticated-payload-differences' \
 	"$repo_root/.github/workflows/release-desktop.yml"
+grep -Fq 'cp "$payload" "assets/$payload_relative"' "$repo_root/.github/workflows/release-desktop.yml"
 grep -Fq 'cp "$signature" "assets/$relative"' "$repo_root/.github/workflows/release-desktop.yml"
+grep -Fq 'verify-desktop-release-manifest-assets.sh' "$repo_root/.github/workflows/release-desktop.yml"
 grep -Fq 'verify_signature_directory "$published_directory"' \
 	"$repo_root/.github/workflows/release-desktop.yml"
 grep -Fq 'download_optional "preview/latest.json"' "$repo_root/.github/workflows/release-desktop.yml"
@@ -614,6 +616,25 @@ if bash "$desktop_directory_verifier" "$candidate_directory" "$existing_director
 fi
 bash "$desktop_directory_verifier" --allow-signature-differences \
 	"$candidate_directory" "$existing_directory"
+printf 'candidate-payload\n' >"$candidate_directory/signed"
+printf 'existing-payload\n' >"$existing_directory/signed"
+printf 'candidate-signature\n' >"$candidate_directory/signed.minisig"
+printf 'existing-signature\n' >"$existing_directory/signed.minisig"
+if bash "$desktop_directory_verifier" --allow-signature-differences \
+	"$candidate_directory" "$existing_directory" >/dev/null 2>&1; then
+	echo "Desktop release directory verifier accepted a byte-distinct payload without authenticated-payload opt-in" >&2
+	exit 1
+fi
+bash "$desktop_directory_verifier" --allow-authenticated-payload-differences \
+	"$candidate_directory" "$existing_directory"
+printf '' >"$existing_directory/signed.minisig"
+if bash "$desktop_directory_verifier" --allow-authenticated-payload-differences \
+	"$candidate_directory" "$existing_directory" >/dev/null 2>&1; then
+	echo "Desktop release directory verifier accepted a byte-distinct payload with an empty signature" >&2
+	exit 1
+fi
+cp "$candidate_directory/signed" "$existing_directory/signed"
+cp "$candidate_directory/signed.minisig" "$existing_directory/signed.minisig"
 printf '' >"$existing_directory/a.minisig"
 if bash "$desktop_directory_verifier" --allow-signature-differences \
 	"$candidate_directory" "$existing_directory" >/dev/null 2>&1; then
@@ -658,6 +679,38 @@ mv "$legacy_existing_directory/latest-conflict.json" "$legacy_existing_directory
 if bash "$desktop_directory_verifier" --allow-legacy-manifest \
 	"$legacy_candidate_directory" "$legacy_existing_directory" >/dev/null 2>&1; then
 	echo "Desktop release directory verifier ignored a non-legacy manifest difference" >&2
+	exit 1
+fi
+
+desktop_manifest_asset_verifier="$repo_root/scripts/verify-desktop-release-manifest-assets.sh"
+test -x "$desktop_manifest_asset_verifier"
+manifest_asset_directory="$test_root/desktop-manifest-assets"
+mkdir -p "$manifest_asset_directory"
+printf 'manifest-bound-payload\n' >"$manifest_asset_directory/payload.zip"
+printf 'manifest-bound-native\n' >"$manifest_asset_directory/payload.deb"
+manifest_asset_sha="$(shasum -a 256 "$manifest_asset_directory/payload.zip" | awk '{print $1}')"
+manifest_asset_size="$(wc -c <"$manifest_asset_directory/payload.zip" | tr -d '[:space:]')"
+manifest_native_sha="$(shasum -a 256 "$manifest_asset_directory/payload.deb" | awk '{print $1}')"
+manifest_native_size="$(wc -c <"$manifest_asset_directory/payload.deb" | tr -d '[:space:]')"
+jq -n \
+	--arg url "https://dl.reasonix.io/desktop-v1.2.3/payload.zip" \
+	--arg sha "$manifest_asset_sha" \
+	--argjson size "$manifest_asset_size" \
+	--arg native_url "https://dl.reasonix.io/desktop-v1.2.3/payload.deb" \
+	--arg native_sha "$manifest_native_sha" \
+	--argjson native_size "$manifest_native_size" \
+	'{
+		platforms: {test: {url: $url, sha256: $sha, size: $size}},
+		native_packages: {test: {url: $native_url, sha256: $native_sha, size: $native_size}},
+		downloads: {}
+	}' \
+	>"$manifest_asset_directory/latest.json"
+bash "$desktop_manifest_asset_verifier" \
+	"$manifest_asset_directory/latest.json" "$manifest_asset_directory"
+printf 'corrupted-payload\n' >"$manifest_asset_directory/payload.zip"
+if bash "$desktop_manifest_asset_verifier" \
+	"$manifest_asset_directory/latest.json" "$manifest_asset_directory" >/dev/null 2>&1; then
+	echo "Desktop release manifest asset verifier accepted a mismatched payload" >&2
 	exit 1
 fi
 
