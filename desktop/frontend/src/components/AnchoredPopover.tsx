@@ -16,24 +16,6 @@ function clamp(value: number, min: number, max: number): number {
   return Math.min(Math.max(value, min), max);
 }
 
-// Fallback rect used when layout is not ready yet (e.g. the portal content has
-// not been measured by the local WebKit renderer). A zero-size rect keeps the
-// popover visible inside the viewport instead of leaving `position` unset,
-// which used to hide the popover and park it off-screen at -9999 until the
-// next scroll/resize event happened to recompute it ("appears only after
-// hovering/moving the mouse").
-const EMPTY_RECT: DOMRect = {
-  left: 0,
-  top: 0,
-  right: 0,
-  bottom: 0,
-  width: 0,
-  height: 0,
-  x: 0,
-  y: 0,
-  toJSON: () => ({}),
-} as DOMRect;
-
 function samePosition(a: PopoverPosition | null, b: PopoverPosition): boolean {
   return !!a && Math.abs(a.left - b.left) < 0.5 && Math.abs(a.top - b.top) < 0.5;
 }
@@ -118,11 +100,12 @@ export function AnchoredPopover({
     let frame: number | null = null;
     const updatePosition = () => {
       frame = null;
-      const anchor = anchorRef.current?.getBoundingClientRect() ?? EMPTY_RECT;
-      const menu = popoverRef.current?.getBoundingClientRect() ?? EMPTY_RECT;
-      // Never bail out: a zero-size rect clamps to a visible in-viewport
-      // position, so the popover always renders and is repositioned as soon
-      // as layout is ready (ResizeObserver / scroll / rAF).
+      const anchor = anchorRef.current?.getBoundingClientRect();
+      const menu = popoverRef.current?.getBoundingClientRect();
+      // Keep an existing valid position while either element is temporarily
+      // unavailable. Before the first measurement, the render fallback below
+      // keeps the popover visible without pretending layout is ready.
+      if (!anchor || !menu) return;
       const next = calculatePosition(anchor, menu, align, offset, placement);
       setPosition((current) => (samePosition(current, next) ? current : next));
     };
@@ -191,7 +174,7 @@ export function AnchoredPopover({
         ...style,
         left: position?.left ?? EDGE_GAP,
         top: position?.top ?? EDGE_GAP,
-        visibility: position ? "visible" : "hidden",
+        visibility: "visible",
       }}
       onMouseDown={(event) => {
         event.stopPropagation();
