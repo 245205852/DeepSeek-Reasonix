@@ -1285,13 +1285,12 @@ func (a *Agent) warnMissingToolCallReasoning(calls []provider.ToolCall, reasonin
 		return
 	}
 	if s := a.missingReasoningWarnState; s != nil {
-		if s.warned(a.prov.Name()) {
+		if !s.claim(a.prov.Name()) {
 			// Already shown for this provider in a previous session; stay
 			// silent for the remainder of this one too.
 			a.warnedMissingToolCallReasoning = true
 			return
 		}
-		s.markWarned(a.prov.Name())
 	}
 	a.warnedMissingToolCallReasoning = true
 	a.sink.Emit(event.Event{Kind: event.Notice, Level: event.LevelWarn,
