@@ -84,6 +84,12 @@ grep -Fq 'bash scripts/resolve-desktop-candidate.sh' "$repo_root/.github/workflo
 [ "$(grep -Fc 'path: release-control' "$repo_root/.github/workflows/release-desktop.yml")" = "2" ]
 [ "$(grep -Fc 'ref: ${{ github.workflow_sha }}' "$repo_root/.github/workflows/release-desktop.yml")" -ge 2 ]
 [ "$(grep -Fc 'bash release-control/scripts/resolve-desktop-candidate.sh' "$repo_root/.github/workflows/release-desktop.yml")" = "2" ]
+[ "$(grep -Fc 'RELEASE_TAG: ${{ inputs.approved_cli_tag }}' "$repo_root/.github/workflows/release-desktop.yml")" = "3" ]
+if sed -n '/^  mirror:/,$p' "$repo_root/.github/workflows/release-desktop.yml" |
+	grep -Fq 'RELEASE_TAG: ${{ inputs.tag }}'; then
+	echo "Desktop mirror must revalidate the orchestrator-approved CLI tag" >&2
+	exit 1
+fi
 if sed -n '/name: publish release/,/name: mirror to R2/p' \
 	"$repo_root/.github/workflows/release-desktop.yml" |
 	grep -Eq 'bash scripts/(resolve-desktop-candidate|validate-desktop-release-manifest|publish-desktop-github-release)\.sh'; then
