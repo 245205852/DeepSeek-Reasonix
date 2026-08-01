@@ -114,6 +114,9 @@ eq(popover.style.top, "8px", "unmeasured popover uses the visible vertical fallb
 eq(popover.style.visibility, "visible", "unmeasured popover remains visible");
 eq(popover.dataset.ready, "false", "fallback position does not pretend layout is ready");
 
+// Exhaust the first scheduled measurement while the anchor is unavailable.
+await nextFrame();
+
 await act(async () => {
   root.render(<Harness />);
 });
