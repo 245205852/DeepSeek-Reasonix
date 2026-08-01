@@ -76,7 +76,10 @@ func TestMissingReasoningWarnStateMissingFileTreatedAsEmpty(t *testing.T) {
 
 func TestMissingReasoningWarnStateEmptyDirIsNoop(t *testing.T) {
 	s := newMissingReasoningWarnState("")
-	if !s.claim("deepseek") || !s.claim("deepseek") {
+	if !s.claim("deepseek") {
+		t.Fatal("empty dir must preserve once-per-session behavior at the caller")
+	}
+	if !s.claim("deepseek") {
 		t.Fatal("empty dir must preserve once-per-session behavior at the caller")
 	}
 	if s2 := newMissingReasoningWarnState(""); !s2.claim("deepseek") {
