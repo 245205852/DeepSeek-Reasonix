@@ -476,6 +476,10 @@ func (c *client) readStream(ctx context.Context, resp *http.Response, out chan<-
 					default:
 						usage.FinishReason = "incomplete"
 					}
+				} else if event.Type == "response.completed" && usage.FinishReason == "" {
+					// A completed response finished normally (stop). Preserve any
+					// vendor-specific reason already set by usageFromResponse.
+					usage.FinishReason = "stop"
 				}
 				if event.Response.Usage != nil || usage.FinishReason != "" {
 					if !sendChunk(ctx, out, provider.Chunk{Type: provider.ChunkUsage, Usage: usage}) {
