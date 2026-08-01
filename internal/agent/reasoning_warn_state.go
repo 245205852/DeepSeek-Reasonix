@@ -76,6 +76,14 @@ var missingReasoningWarnClaimFlights = struct {
 	flights map[string]*missingReasoningWarnClaimFlight
 }{flights: map[string]*missingReasoningWarnClaimFlight{}}
 
+// missingReasoningWarnProcessLocks serializes transactions for one state file
+// before they enter filelock.Acquire. The file lock's short deadline is meant
+// to bound waits on another process, not make distinct local incidents lose
+// persistence while queued behind a slower Windows atomic write. Reasonix uses
+// one state path per home, so retaining these few mutexes for the process
+// lifetime is bounded in normal operation.
+var missingReasoningWarnProcessLocks sync.Map
+
 func newMissingReasoningWarnState(dir string) *missingReasoningWarnState {
 	return &missingReasoningWarnState{dir: strings.TrimSpace(dir)}
 }
@@ -88,7 +96,7 @@ func (s *missingReasoningWarnState) lockPath() string {
 	return filepath.Join(s.dir, missingReasoningWarnStateLockFilename)
 }
 
-func (s *missingReasoningWarnState) claimFlightKey(fingerprint string) string {
+func (s *missingReasoningWarnState) processLockKey() string {
 	path, err := filepath.Abs(s.path())
 	if err != nil {
 		path = s.path()
@@ -97,7 +105,16 @@ func (s *missingReasoningWarnState) claimFlightKey(fingerprint string) string {
 	if runtime.GOOS == "windows" {
 		path = strings.ToLower(filepath.ToSlash(path))
 	}
-	return path + "\x00" + fingerprint
+	return path
+}
+
+func (s *missingReasoningWarnState) processLock() *sync.Mutex {
+	lock, _ := missingReasoningWarnProcessLocks.LoadOrStore(s.processLockKey(), &sync.Mutex{})
+	return lock.(*sync.Mutex)
+}
+
+func (s *missingReasoningWarnState) claimFlightKey(fingerprint string) string {
+	return s.processLockKey() + "\x00" + fingerprint
 }
 
 func validMissingReasoningFingerprint(fingerprint string) bool {
@@ -192,6 +209,10 @@ func normalizeMissingReasoningObservedAt(observedAt time.Time) time.Time {
 // Persistence failure returns true so diagnostics fail visible rather than
 // fail silent.
 func (s *missingReasoningWarnState) persistClaimAt(fingerprint string, observedAt time.Time) bool {
+	processLock := s.processLock()
+	processLock.Lock()
+	defer processLock.Unlock()
+
 	release, err := s.acquire()
 	if err != nil {
 		return true
@@ -274,6 +295,10 @@ func (s *missingReasoningWarnState) resolveAt(fingerprint string, observedAt tim
 		return
 	}
 	observedAt = normalizeMissingReasoningObservedAt(observedAt)
+	processLock := s.processLock()
+	processLock.Lock()
+	defer processLock.Unlock()
+
 	release, err := s.acquire()
 	if err != nil {
 		return
