@@ -15,8 +15,10 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"reasonix/internal/filelock"
@@ -55,6 +57,25 @@ type missingReasoningWarnState struct {
 	dir string
 }
 
+// missingReasoningWarnClaimFlights coalesces concurrent observations of the
+// same incident inside one process. filelock.Acquire intentionally has a short
+// deadline so a diagnostic cannot stall a turn behind another process. On a
+// slower filesystem (notably Windows CI), several local callers can otherwise
+// exhaust that deadline while queued behind the first atomic write and each
+// take the fail-visible path, producing duplicate warnings.
+//
+// Followers update the latest observation timestamp and let the leader persist
+// it before the flight is removed. This preserves resolveAt's stale-health
+// ordering guarantee instead of merely suppressing duplicate return values.
+type missingReasoningWarnClaimFlight struct {
+	latestObservedAt time.Time
+}
+
+var missingReasoningWarnClaimFlights = struct {
+	sync.Mutex
+	flights map[string]*missingReasoningWarnClaimFlight
+}{flights: map[string]*missingReasoningWarnClaimFlight{}}
+
 func newMissingReasoningWarnState(dir string) *missingReasoningWarnState {
 	return &missingReasoningWarnState{dir: strings.TrimSpace(dir)}
 }
@@ -65,6 +86,18 @@ func (s *missingReasoningWarnState) path() string {
 
 func (s *missingReasoningWarnState) lockPath() string {
 	return filepath.Join(s.dir, missingReasoningWarnStateLockFilename)
+}
+
+func (s *missingReasoningWarnState) claimFlightKey(fingerprint string) string {
+	path, err := filepath.Abs(s.path())
+	if err != nil {
+		path = s.path()
+	}
+	path = filepath.Clean(path)
+	if runtime.GOOS == "windows" {
+		path = strings.ToLower(filepath.ToSlash(path))
+	}
+	return path + "\x00" + fingerprint
 }
 
 func validMissingReasoningFingerprint(fingerprint string) bool {
@@ -155,16 +188,10 @@ func normalizeMissingReasoningObservedAt(observedAt time.Time) time.Time {
 	return observedAt
 }
 
-// claimAt records the latest missing-reasoning observation and reports whether
-// this active incident should emit a warning. The lock covers read-check-write
-// across every process sharing the Reasonix home. Persistence failure returns
-// true so diagnostics fail visible rather than fail silent.
-func (s *missingReasoningWarnState) claimAt(fingerprint string, observedAt time.Time) bool {
-	fingerprint = strings.TrimSpace(fingerprint)
-	if s == nil || s.dir == "" || !validMissingReasoningFingerprint(fingerprint) {
-		return true
-	}
-	observedAt = normalizeMissingReasoningObservedAt(observedAt)
+// persistClaimAt performs one cross-process read-check-write transaction.
+// Persistence failure returns true so diagnostics fail visible rather than
+// fail silent.
+func (s *missingReasoningWarnState) persistClaimAt(fingerprint string, observedAt time.Time) bool {
 	release, err := s.acquire()
 	if err != nil {
 		return true
@@ -185,6 +212,53 @@ func (s *missingReasoningWarnState) claimAt(fingerprint string, observedAt time.
 		return true
 	}
 	return shouldWarn
+}
+
+// claimAt records the latest missing-reasoning observation and reports whether
+// this active incident should emit a warning. Concurrent observations of the
+// same incident in this process share one leader; the file lock covers the
+// leader's read-check-write transactions against other processes sharing the
+// Reasonix home.
+func (s *missingReasoningWarnState) claimAt(fingerprint string, observedAt time.Time) bool {
+	fingerprint = strings.TrimSpace(fingerprint)
+	if s == nil || s.dir == "" || !validMissingReasoningFingerprint(fingerprint) {
+		return true
+	}
+	observedAt = normalizeMissingReasoningObservedAt(observedAt)
+	key := s.claimFlightKey(fingerprint)
+
+	missingReasoningWarnClaimFlights.Lock()
+	if flight := missingReasoningWarnClaimFlights.flights[key]; flight != nil {
+		if observedAt.After(flight.latestObservedAt) {
+			flight.latestObservedAt = observedAt
+		}
+		missingReasoningWarnClaimFlights.Unlock()
+		return false
+	}
+	flight := &missingReasoningWarnClaimFlight{latestObservedAt: observedAt}
+	missingReasoningWarnClaimFlights.flights[key] = flight
+	missingReasoningWarnClaimFlights.Unlock()
+
+	processedAt := time.Time{}
+	shouldWarn := false
+	for {
+		missingReasoningWarnClaimFlights.Lock()
+		nextObservedAt := flight.latestObservedAt
+		missingReasoningWarnClaimFlights.Unlock()
+
+		if nextObservedAt.After(processedAt) {
+			shouldWarn = s.persistClaimAt(fingerprint, nextObservedAt) || shouldWarn
+			processedAt = nextObservedAt
+		}
+
+		missingReasoningWarnClaimFlights.Lock()
+		if !flight.latestObservedAt.After(processedAt) {
+			delete(missingReasoningWarnClaimFlights.flights, key)
+			missingReasoningWarnClaimFlights.Unlock()
+			return shouldWarn
+		}
+		missingReasoningWarnClaimFlights.Unlock()
+	}
 }
 
 func (s *missingReasoningWarnState) claim(fingerprint string) bool {

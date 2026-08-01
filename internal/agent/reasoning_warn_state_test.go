@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"os"
@@ -11,6 +12,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"reasonix/internal/filelock"
 )
 
 func warningFingerprint(label string) string {
@@ -203,6 +206,63 @@ func TestMissingReasoningWarnStateConcurrentSameIncidentWarnsOnce(t *testing.T) 
 	wg.Wait()
 	if got := warned.Load(); got != 1 {
 		t.Fatalf("concurrent first warnings = %d, want 1", got)
+	}
+}
+
+func TestMissingReasoningWarnStateConcurrentFollowerPersistsLatestObservation(t *testing.T) {
+	dir := t.TempDir()
+	s := newMissingReasoningWarnState(dir)
+	fingerprint := warningFingerprint("shared-config")
+	firstObservedAt := time.Unix(1_800_000_000, 0)
+	latestObservedAt := firstObservedAt.Add(2 * time.Millisecond)
+
+	releaseLock, err := filelock.Acquire(context.Background(), s.lockPath())
+	if err != nil {
+		t.Fatalf("hold state lock: %v", err)
+	}
+	released := false
+	defer func() {
+		if !released {
+			releaseLock()
+		}
+	}()
+
+	leaderResult := make(chan bool, 1)
+	go func() {
+		leaderResult <- s.claimAt(fingerprint, firstObservedAt)
+	}()
+
+	key := s.claimFlightKey(fingerprint)
+	deadline := time.Now().Add(missingReasoningWarnStateLockTimeout / 2)
+	for {
+		missingReasoningWarnClaimFlights.Lock()
+		flightPresent := missingReasoningWarnClaimFlights.flights[key] != nil
+		missingReasoningWarnClaimFlights.Unlock()
+		if flightPresent {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("leader did not register its claim flight")
+		}
+		time.Sleep(time.Millisecond)
+	}
+
+	if s.claimAt(fingerprint, latestObservedAt) {
+		t.Fatal("concurrent follower must not emit a duplicate warning")
+	}
+	releaseLock()
+	released = true
+	if !<-leaderResult {
+		t.Fatal("leader must keep the first incident warning visible")
+	}
+
+	incidents := s.load(latestObservedAt)
+	incident, ok := incidents[fingerprint]
+	if !ok || len(incidents) != 1 {
+		t.Fatalf("persisted incidents = %#v, want only %q", incidents, fingerprint)
+	}
+	if got, want := incident.LastMissingUnixMs, latestObservedAt.UnixMilli(); got != want {
+		t.Fatalf("last missing timestamp = %d, want %d", got, want)
 	}
 }
 
