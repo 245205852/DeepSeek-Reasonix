@@ -198,3 +198,23 @@ func TestFinalReadinessRetryMessageKeepsUserChoicesInteractive(t *testing.T) {
 		}
 	}
 }
+
+// TestFinalReadinessRetryMessageIncludesVerifierSummary guards the deadlock
+// fix: the retry message must tell the model which commands actually count as
+// verification, so it does not guess (python -c is blocked, grep is not
+// classified) and burn retries in a loop until the loop guard or an
+// interrupted turn ends the session.
+func TestFinalReadinessRetryMessageIncludesVerifierSummary(t *testing.T) {
+	msg := finalReadinessRetryMessage("run relevant verification after the latest mutation")
+	for _, want := range []string{
+		"recognized verification commands",
+		"node --check",
+		"python -m pytest",
+		"NOT verification",
+		"blocked in delivery mode",
+	} {
+		if !strings.Contains(msg, want) {
+			t.Fatalf("finalReadinessRetryMessage() missing verifier summary %q:\n%s", want, msg)
+		}
+	}
+}

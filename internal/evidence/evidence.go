@@ -1691,6 +1691,32 @@ func IsDeliveryVerificationCommand(command string) bool {
 	return bashCommandIsVerification(command)
 }
 
+// VerificationCommandSummary returns a compact, model-readable list of the
+// command families recognized as delivery verification evidence. The
+// final-readiness retry message embeds this summary so a model that missed
+// the sign-off gate can pick a verifier on the first retry instead of
+// guessing. Guessing is what turns a single readiness miss into a deadlock
+// loop: opaque inline interpreters (node -e, python -c) are blocked before
+// execution, and read-only inspection commands (grep, find, wc, ...) run but
+// are never classified as verification — so a model that only knows those
+// two shapes can never produce a verifier.
+//
+// Keep the listed families in sync with bashSegmentIsVerification; the
+// TestVerificationCommandSummaryConsistentWithClassifier test enforces that
+// every command named here is actually accepted by the classifier.
+func VerificationCommandSummary() string {
+	return "recognized verification commands: " +
+		"go test|vet|build (no -o), git diff --check, pytest/py.test, gotestsum, staticcheck, " +
+		"golangci-lint, tsc, mypy (no report flag), npm|pnpm|yarn|bun test|check|lint, " +
+		"npm run test|check|lint|typecheck, cargo test|check|clippy, npx vitest|jest " +
+		"(no --update/--coverage), node --check|--test, make|just test|check|lint|verify|ci, " +
+		"python -m pytest|unittest|compileall, dotnet test, mvn|gradle test|check|verify. " +
+		"Read-only inspection commands (grep/find/cat/wc/head/tail) are NOT verification; " +
+		"inline interpreters (node -e, python -c) are blocked in delivery mode. " +
+		"A read-only extraction pipeline ending in a recognized verifier " +
+		"(e.g. tail -n +1 file | node --check -) is accepted."
+}
+
 func bashSegmentIsVerification(fields []string) bool {
 	if len(fields) == 0 {
 		return false
