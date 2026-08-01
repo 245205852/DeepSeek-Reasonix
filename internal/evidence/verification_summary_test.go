@@ -8,15 +8,14 @@ import (
 
 // TestVerificationCommandSummaryRecommendationsAreRecognized guards the
 // single structured source used to render the summary and exercise the
-// classifier. Every advertised family must render and every example attached
-// to that family must remain accepted.
+// classifier. Every concrete example must render and remain accepted.
 func TestVerificationCommandSummaryRecommendationsAreRecognized(t *testing.T) {
 	summary := VerificationCommandSummary()
 	for _, recommendation := range verificationCommandRecommendations() {
-		if !strings.Contains(summary, recommendation.label) {
-			t.Errorf("summary missing recommended family %q: %s", recommendation.label, summary)
-		}
 		for _, command := range recommendation.examples {
+			if !strings.Contains(summary, command) {
+				t.Errorf("summary family %q missing concrete example %q: %s", recommendation.label, command, summary)
+			}
 			if !IsDeliveryVerificationCommand(command) {
 				t.Errorf("summary family %q advertises %q, but classifier rejects it", recommendation.label, command)
 			}
@@ -24,8 +23,15 @@ func TestVerificationCommandSummaryRecommendationsAreRecognized(t *testing.T) {
 	}
 }
 
-func TestGoBuildVerificationRequiresSafeAllPackageOperands(t *testing.T) {
+func TestGoBuildAlwaysCountsAsMutation(t *testing.T) {
+	// Even ./... can expand to one main package and write a root executable.
+	// The static classifier cannot know package expansion or inherited GOFLAGS,
+	// so every go build form must fail closed as a mutation.
 	for _, command := range []string{
+		"go build",
+		"go build .",
+		"go build ./cmd/reasonix",
+		"go build -race ./cmd/reasonix",
 		"go build ./...",
 		"go build -tags integration ./...",
 		"go build -tags=integration ./...",
@@ -33,19 +39,6 @@ func TestGoBuildVerificationRequiresSafeAllPackageOperands(t *testing.T) {
 		"go build -p 2 -mod=readonly ./...",
 		"go build -buildvcs ./...",
 		"go build -buildvcs=auto -- ./...",
-	} {
-		if !IsDeliveryVerificationCommand(command) {
-			t.Errorf("%q should remain recognized all-package verification", command)
-		}
-	}
-	if ToolCallMutates("bash", json.RawMessage(`{"command":"go build ./..."}`), false) {
-		t.Fatal("go build ./... should remain non-mutating all-package verification")
-	}
-	for _, command := range []string{
-		"go build",
-		"go build .",
-		"go build ./cmd/reasonix",
-		"go build -race ./cmd/reasonix",
 		"go build -tags ./... ./cmd/reasonix",
 		"go build -coverpkg ./... ./cmd/reasonix",
 		"go build -pkgdir ./... ./cmd/reasonix",
@@ -71,6 +64,48 @@ func TestGoBuildVerificationRequiresSafeAllPackageOperands(t *testing.T) {
 	}
 	if strings.Contains(VerificationCommandSummary(), "go build") {
 		t.Fatal("recovery summary must not recommend go build as a first-line verifier")
+	}
+}
+
+func TestTSCVerificationRequiresExplicitNoEmit(t *testing.T) {
+	for _, command := range []string{
+		"tsc --noEmit",
+		"tsc --noEmit=true",
+		"tsc --project tsconfig.json --noEmit",
+	} {
+		if !IsDeliveryVerificationCommand(command) {
+			t.Errorf("%q should be recognized as an explicit no-emit type check", command)
+		}
+		args, err := json.Marshal(map[string]string{"command": command})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if ToolCallMutates("bash", args, false) {
+			t.Errorf("%q should remain a non-mutating verification", command)
+		}
+	}
+
+	for _, command := range []string{
+		"tsc",
+		"tsc --outDir dist",
+		"tsc --noEmit=false",
+		"tsc --noEmit false",
+		"tsc --noEmit=true --noEmit=false",
+	} {
+		if IsDeliveryVerificationCommand(command) {
+			t.Errorf("%q may emit compiler output and must not count as verification", command)
+		}
+		args, err := json.Marshal(map[string]string{"command": command})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !ToolCallMutates("bash", args, false) {
+			t.Errorf("%q may emit compiler output and must be classified as a mutation", command)
+		}
+	}
+
+	if !strings.Contains(VerificationCommandSummary(), "tsc --noEmit") {
+		t.Fatal("recovery summary must render the concrete no-emit TypeScript command")
 	}
 }
 
