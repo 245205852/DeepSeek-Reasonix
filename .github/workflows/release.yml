@@ -48,6 +48,11 @@ on:
         required: false
         default: stable
         type: string
+      allow_preview_recovery:
+        description: "Allow an approved Preview tag from main-v2 history"
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: write # create the release and upload archives
@@ -92,6 +97,9 @@ jobs:
         env:
           RELEASE_TAG: ${{ steps.release.outputs.tag }}
           RELEASE_CHANNEL: ${{ steps.release.outputs.channel }}
+          IN_ORCHESTRATED: ${{ inputs.orchestrated }}
+          IN_ORCHESTRATOR: ${{ inputs.orchestrator }}
+          ALLOW_PREVIEW_RECOVERY: ${{ inputs.allow_preview_recovery }}
         run: |
           set -euo pipefail
           git fetch origin main-v2
@@ -100,9 +108,14 @@ jobs:
             echo "::error::$RELEASE_TAG points to $sha, which is not on main-v2 history"
             exit 1
           fi
-          if [ "$RELEASE_CHANNEL" = "preview" ] && [ "$sha" != "$(git rev-parse origin/main-v2)" ]; then
-            echo "::error::CLI Preview must tag current main-v2; $RELEASE_TAG points to $sha"
-            exit 1
+          if [ "$ALLOW_PREVIEW_RECOVERY" = "true" ]; then
+            if [ "$IN_ORCHESTRATED" != "true" ] || [ "$IN_ORCHESTRATOR" != "preview" ] || [ "$RELEASE_CHANNEL" != "preview" ]; then
+              echo "::error::Preview recovery requires the approved Preview orchestrator"
+              exit 1
+            fi
+          elif [ "$RELEASE_CHANNEL" = "preview" ] && [ "$sha" != "$(git rev-parse origin/main-v2)" ]; then
+              echo "::error::CLI Preview must tag current main-v2; $RELEASE_TAG points to $sha"
+              exit 1
           fi
           echo "sha=$sha" >> "$GITHUB_OUTPUT"
       - name: Verify existing protected tag

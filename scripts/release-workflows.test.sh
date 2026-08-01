@@ -41,6 +41,9 @@ if grep -Fq 'group: preview-release-${{ inputs.tag }}' "$repo_root/.github/workf
 	exit 1
 fi
 grep -Eq '^    environment: canary$' "$repo_root/.github/workflows/release-preview.yml"
+grep -Eq '^      recovery:$' "$repo_root/.github/workflows/release-preview.yml"
+grep -Fq 'ALLOW_PREVIEW_RECOVERY: ${{ inputs.recovery }}' "$repo_root/.github/workflows/release-preview.yml"
+grep -Fq 'allow_preview_recovery: ${{ inputs.recovery }}' "$repo_root/.github/workflows/release-preview.yml"
 grep -Eq '^  signpath-preflight:$' "$repo_root/.github/workflows/release-preview.yml"
 grep -Eq 'signing_preflight: true' "$repo_root/.github/workflows/release-preview.yml"
 grep -Eq 'signing_preflight_verified: true' "$repo_root/.github/workflows/release-preview.yml"
@@ -71,6 +74,8 @@ grep -Eq 'GORELEASER_CURRENT_TAG:.*needs\.resolve\.outputs\.tag' \
 grep -Eq 'bash scripts/resolve-cli-release\.sh' "$repo_root/.github/workflows/release.yml"
 grep -Eq 'git merge-base --is-ancestor.*origin/main-v2' "$repo_root/.github/workflows/release.yml"
 grep -Eq 'CLI Preview must tag current main-v2' "$repo_root/.github/workflows/release.yml"
+grep -Fq 'ALLOW_PREVIEW_RECOVERY: ${{ inputs.allow_preview_recovery }}' "$repo_root/.github/workflows/release.yml"
+grep -Eq 'Preview recovery requires the approved Preview orchestrator' "$repo_root/.github/workflows/release.yml"
 grep -Eq "channel == 'stable'.*HOMEBREW_TAP_TOKEN" "$repo_root/.github/workflows/release.yml"
 grep -Eq "needs\.build\.result == 'success'" "$repo_root/.github/workflows/release-desktop.yml"
 grep -Eq "needs\.publish\.result == 'success'" "$repo_root/.github/workflows/release-desktop.yml"
@@ -998,6 +1003,22 @@ git clone -q "$test_root/remote.git" "$test_root/repo"
 	git commit --allow-empty -q -m "release workflow fix"
 	git push -q origin main-v2
 	recovery_workflow_sha="$(git rev-parse HEAD)"
+	if RELEASE_TAG=v1.3.0-preview.42 \
+		"$repo_root/scripts/resolve-preview-release.sh" >"$test_root/stale-preview.log" 2>&1; then
+		echo "stale Preview tag unexpectedly passed normal release resolution" >&2
+		exit 1
+	fi
+	grep -Eq 'must point to current .*main-v2' "$test_root/stale-preview.log"
+	GITHUB_OUTPUT="$test_root/preview-recovery.out" ALLOW_PREVIEW_RECOVERY=true \
+		RELEASE_TAG=v1.3.0-preview.42 "$repo_root/scripts/resolve-preview-release.sh"
+	grep -Eq '^sha='"$approved_sha"'$' "$test_root/preview-recovery.out"
+	if ALLOW_PREVIEW_RECOVERY=invalid RELEASE_TAG=v1.3.0-preview.42 \
+		"$repo_root/scripts/resolve-preview-release.sh" >"$test_root/invalid-preview-recovery.log" 2>&1; then
+		echo "invalid Preview recovery mode unexpectedly passed" >&2
+		exit 1
+	fi
+	grep -Eq 'ALLOW_PREVIEW_RECOVERY must be true or false' \
+		"$test_root/invalid-preview-recovery.log"
 	if GITHUB_OUTPUT="$test_root/desktop-stale-preview-candidate.out" \
 		RELEASE_CHANNEL=preview RELEASE_TAG=desktop-v1.3.0-preview.42 \
 		IN_ORCHESTRATED=false CALLER_EVENT_NAME=workflow_dispatch \
