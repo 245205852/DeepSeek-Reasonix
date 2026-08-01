@@ -236,7 +236,14 @@ grep -Fq 'scripts/decide-cli-pointer-update.sh' "$cli_release_workflow"
 grep -Fq 'scripts/validate-cli-release-manifest.sh' "$cli_release_workflow"
 grep -Fq 'scripts/compare-cli-release-manifests.sh' "$cli_release_workflow"
 grep -Eq 'name: Decide whether CLI artifacts need publication' "$cli_release_workflow"
-grep -Fq 'scripts/decide-cli-release-publication.sh' "$cli_release_workflow"
+grep -Fq 'path: release-control' "$cli_release_workflow"
+grep -Fq 'ref: ${{ github.workflow_sha }}' "$cli_release_workflow"
+grep -Fq 'release-control/scripts/decide-cli-release-publication.sh' "$cli_release_workflow"
+if sed -n '/^  goreleaser:/,$p' "$cli_release_workflow" |
+	grep -Fq 'bash scripts/decide-cli-release-publication.sh'; then
+	echo "CLI recovery uses candidate-controlled publication policy" >&2
+	exit 1
+fi
 grep -Fq "if: \${{ steps.publication.outputs.decision == 'publish' }}" "$cli_release_workflow"
 grep -Fq 'immutable CLI release metadata for $TAG already exists with different content' "$cli_release_workflow"
 grep -Fq 'cmp -s /tmp/cli-release.json /tmp/cli-release.pointer.json' "$cli_release_workflow"

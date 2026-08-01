@@ -195,6 +195,14 @@ jobs:
         with:
           fetch-depth: 0
           ref: ${{ needs.resolve.outputs.sha }}
+      # Recovery may build an immutable tag that predates the current recovery
+      # policy. Keep product sources pinned above, but execute publication
+      # decisions from the protected workflow commit.
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          path: release-control
+          ref: ${{ github.workflow_sha }}
       - uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
@@ -244,14 +252,14 @@ jobs:
             gh release download "$TAG" -R "${{ github.repository }}" \
               --pattern SHA256SUMS --output "$checksums"
             decision="$(
-              bash scripts/decide-cli-release-publication.sh \
+              bash release-control/scripts/decide-cli-release-publication.sh \
                 "$validation_channel" "$TAG" "${{ github.repository }}" \
                 "$release_json" "$checksums"
             )"
             echo "existing CLI release $TAG is complete and checksum-bound; reusing it"
           elif grep -Eiq 'HTTP 404|Not Found' "$release_error"; then
             decision="$(
-              bash scripts/decide-cli-release-publication.sh \
+              bash release-control/scripts/decide-cli-release-publication.sh \
                 "$validation_channel" "$TAG" "${{ github.repository }}" - -
             )"
             echo "CLI release $TAG does not exist; GoReleaser will publish it"
