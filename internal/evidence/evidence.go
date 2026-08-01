@@ -1858,12 +1858,9 @@ func npxSegmentIsVerification(args []string) bool {
 	if len(args) == 0 || strings.HasPrefix(args[0], "-") {
 		return false
 	}
-	runner := strings.ToLower(filepath.Base(args[0]))
-	if strings.HasPrefix(runner, "@") {
+	runner, ok := npxRunnerName(args[0])
+	if !ok {
 		return false
-	}
-	if i := strings.LastIndexByte(runner, '@'); i > 0 {
-		runner = runner[:i]
 	}
 	runnerArgs := args[1:]
 	switch runner {
@@ -1894,6 +1891,44 @@ func npxSegmentIsVerification(args []string) bool {
 			return false
 		}
 		if name == "--coverage" || strings.HasPrefix(name, "--coverage.") {
+			return false
+		}
+	}
+	return true
+}
+
+// npxRunnerName accepts only a bare package name with an optional ordinary
+// version or dist-tag suffix. Paths and package protocols such as
+// eslint@npm:other-package must not inherit a known runner's trust boundary.
+func npxRunnerName(spec string) (string, bool) {
+	if spec == "" || strings.ContainsAny(spec, `/\`) {
+		return "", false
+	}
+	name := strings.ToLower(spec)
+	if strings.HasPrefix(name, "@") {
+		return "", false
+	}
+	if i := strings.LastIndexByte(name, '@'); i >= 0 {
+		if i == 0 || !plainNpxVersion(name[i+1:]) {
+			return "", false
+		}
+		name = name[:i]
+	}
+	return name, true
+}
+
+func plainNpxVersion(version string) bool {
+	if version == "" {
+		return false
+	}
+	for _, r := range version {
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') {
+			continue
+		}
+		switch r {
+		case '.', '-', '+', '_', '~', '^', '*':
+			continue
+		default:
 			return false
 		}
 	}

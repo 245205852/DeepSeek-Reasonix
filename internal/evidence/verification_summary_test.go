@@ -140,6 +140,7 @@ func TestPythonCompileallAlwaysCountsAsMutation(t *testing.T) {
 func TestNpxVerificationUsesSafeKnownRunners(t *testing.T) {
 	for _, command := range []string{
 		"npx vitest run src/lib/foo.test.ts",
+		"npx vitest@1.6.0 run src/lib/foo.test.ts",
 		"npx jest src/lib/foo.test.ts",
 		"npx mocha test/",
 		"npx ava",
@@ -163,6 +164,10 @@ func TestNpxVerificationUsesSafeKnownRunners(t *testing.T) {
 
 	for _, command := range []string{
 		"npx --yes vitest run",
+		"npx eslint@npm:evil src/",
+		"npx vitest@file:../fake run",
+		"npx ./eslint src/",
+		"npx /tmp/eslint src/",
 		"npx playwright test",
 		"npx cypress run",
 		"npx tsx check.ts",
