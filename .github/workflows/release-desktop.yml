@@ -972,14 +972,22 @@ jobs:
               return 0
             fi
 
-            local legacy_base="$current_base"
-            if [ "$current_channel" = "preview" ]; then
-              legacy_base="https://dl.reasonix.io/desktop-preview/"
-            fi
             if bash release-control/scripts/validate-desktop-release-manifest.sh \
-              "legacy-${current_channel}" "$current_version" "$legacy_base" \
+              "legacy-${current_channel}" "$current_version" "$current_base" \
               "$current_file"; then
-              echo "using legacy $current_channel manifest $current_version only as the monotonic migration baseline"
+              echo "using legacy $current_channel manifest $current_version at its immutable base only as the monotonic migration baseline"
+              return 0
+            fi
+
+            # Early Preview pointers referenced the mutable desktop-preview/
+            # directory. Try that layout only after the immutable legacy layout
+            # so later legacy pointers retain their version-bound asset URLs.
+            local legacy_preview_base="https://dl.reasonix.io/desktop-preview/"
+            if [ "$current_channel" = "preview" ] && \
+              bash release-control/scripts/validate-desktop-release-manifest.sh \
+                legacy-preview "$current_version" "$legacy_preview_base" \
+                "$current_file"; then
+              echo "using legacy Preview manifest $current_version at the rolling base only as the monotonic migration baseline"
               return 0
             fi
             echo "::error::existing Desktop $current_channel pointer is invalid"
