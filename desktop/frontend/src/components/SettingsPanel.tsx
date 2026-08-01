@@ -6802,6 +6802,7 @@ function UpdatesSection({
     status.kind === "downloading" ||
     status.kind === "verifying" ||
     status.kind === "authorizing" ||
+    status.kind === "recovering" ||
     status.kind === "installing";
   const updateStatus =
     status.kind === "checking" ? t("updater.checking") :
@@ -6815,6 +6816,7 @@ function UpdatesSection({
     status.kind === "verifying" ? t("updater.verifying") :
     status.kind === "downloaded" ? t("updater.downloaded", { v: status.info.latest }) :
     status.kind === "authorizing" ? t("updater.authorizing") :
+    status.kind === "recovering" ? t("updater.recovering") :
     status.kind === "installing" ? (
       status.info?.requiresElevation || status.info?.installMode === "deb"
         ? t("updater.installingPackage")
