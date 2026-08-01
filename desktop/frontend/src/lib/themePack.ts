@@ -3,6 +3,7 @@
 // resources — only semantic tokens, recipe enums, and local background images.
 
 import { applyTheme, getTheme, getThemeStyle, isThemeStyle, type Theme, type ThemeStyle } from "./theme";
+import { codeReadabilityDecls, deriveCodeReadabilityPalette } from "./codeReadability";
 
 export type ThemePackTokens = {
   light?: Record<string, string>;
@@ -362,8 +363,16 @@ function removePackStyleElement(): void {
 }
 
 function buildPackOverlayCSS(pack: ThemePackView): string {
-  const light = tokensToDecls(pack.tokens?.light);
-  const dark = tokensToDecls(pack.tokens?.dark);
+  const lightTokens = pack.tokens?.light || {};
+  const darkTokens = pack.tokens?.dark || {};
+  const light = joinDecls(
+    tokensToDecls(lightTokens),
+    codeReadabilityDecls(deriveCodeReadabilityPalette("light", pack.baseStyle, lightTokens)),
+  );
+  const dark = joinDecls(
+    tokensToDecls(darkTokens),
+    codeReadabilityDecls(deriveCodeReadabilityPalette("dark", pack.baseStyle, darkTokens)),
+  );
   const recipes = recipeDecls(pack.recipes);
   const chunks: string[] = [];
 
@@ -398,6 +407,10 @@ function buildPackOverlayCSS(pack: ThemePackView): string {
   }
 
   return chunks.join("\n");
+}
+
+function joinDecls(...groups: string[]): string {
+  return groups.filter(Boolean).join(";");
 }
 
 function tokensToDecls(tokens?: Record<string, string>): string {

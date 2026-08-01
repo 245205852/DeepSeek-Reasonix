@@ -1,4 +1,5 @@
 import { useMemo, type CSSProperties } from "react";
+import { deriveCodeReadabilityPalette } from "../lib/codeReadability";
 import { themePackKind, type ThemePackView } from "../lib/themePack";
 import { baseStyleForPreview, themePreviewPalette } from "../lib/themePreviewPalette";
 
@@ -29,6 +30,12 @@ export function ThemePreviewSurface({
   const style = useMemo(() => {
     const palette = themePreviewPalette(pack, mode);
     const tokens = mode === "light" ? pack?.tokens?.light : pack?.tokens?.dark;
+    const code = deriveCodeReadabilityPalette(mode, baseStyle, {
+      ...tokens,
+      bg: tokens?.bg || palette.bg,
+      bgSoft: tokens?.bgSoft || palette.bgSoft,
+      fg: tokens?.fg || palette.fg,
+    });
     const chat = tokens?.chat || palette.bg;
     const sceneBackground = scene === "task" ? pack?.taskBackground || pack?.background : pack?.background;
     const focusX = sceneBackground?.focusX ?? 0.72;
@@ -53,6 +60,17 @@ export function ThemePreviewSurface({
       ["--tp-border" as string]: palette.border,
       ["--tp-radius" as string]: palette.radius,
       ["--tp-chat" as string]: chat,
+      ["--tp-code-bg" as string]: code.background,
+      ["--tp-code-border" as string]: code.border,
+      ["--tp-code-fg" as string]: code.foreground,
+      ["--tp-hl-keyword" as string]: code.keyword,
+      ["--tp-hl-string" as string]: code.string,
+      ["--tp-hl-number" as string]: code.number,
+      ["--tp-hl-comment" as string]: code.comment,
+      ["--tp-hl-func" as string]: code.function,
+      ["--tp-hl-type" as string]: code.type,
+      ["--tp-add-fg" as string]: code.addition,
+      ["--tp-del-fg" as string]: code.deletion,
       ["--tp-focus-x" as string]: `${focusX * 100}%`,
       ["--tp-focus-y" as string]: `${focusY * 100}%`,
       ["--tp-bg-opacity" as string]: String(opacity),
@@ -105,6 +123,25 @@ export function ThemePreviewSurface({
             <div className="theme-preview-surface__line theme-preview-surface__line--short" />
             <div className="theme-preview-surface__cta" />
           </div>
+          {variant === "full" ? (
+            <div className="theme-preview-surface__code-island">
+              <div className="theme-preview-surface__code-label">CODE + DIFF</div>
+              <code className="theme-preview-surface__code-line">
+                <span className="theme-preview-surface__syntax--keyword">const</span>{" "}
+                <span className="theme-preview-surface__syntax--func">optimize</span>{" = "}
+                <span className="theme-preview-surface__syntax--type">async</span>{" ("}
+                <span className="theme-preview-surface__syntax--number">3</span>{") => "}
+                <span className="theme-preview-surface__syntax--string">&quot;clear&quot;</span>
+                <span className="theme-preview-surface__syntax--comment"> // readable</span>
+              </code>
+              <div className="theme-preview-surface__diff-line theme-preview-surface__diff-line--del">
+                <span>−</span><span>opacity: 0.32</span>
+              </div>
+              <div className="theme-preview-surface__diff-line theme-preview-surface__diff-line--add">
+                <span>+</span><span>codeBg: opaque</span>
+              </div>
+            </div>
+          ) : null}
         </main>
       </div>
     </div>

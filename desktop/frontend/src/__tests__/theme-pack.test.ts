@@ -21,6 +21,10 @@ import {
   themePackKind,
 } from "../lib/themePack";
 import { applyTheme, getThemeStyle } from "../lib/theme";
+import {
+  codeReadabilityRatios,
+  deriveCodeReadabilityPalette,
+} from "../lib/codeReadability";
 import { BASE_STYLE_PREVIEW_PALETTES, themePreviewPalette } from "../lib/themePreviewPalette";
 import { themePreviewPaneAlpha } from "../components/ThemePreviewSurface";
 import {
@@ -38,6 +42,7 @@ const stylesSource = readFileSync(resolve(testDir, "../styles.css"), "utf8");
 const appSource = readFileSync(resolve(testDir, "../App.tsx"), "utf8");
 const librarySource = readFileSync(resolve(testDir, "../components/ThemeLibrary.tsx"), "utf8");
 const gallerySource = readFileSync(resolve(testDir, "../components/ThemeGallery.tsx"), "utf8");
+const previewSurfaceSource = readFileSync(resolve(testDir, "../components/ThemePreviewSurface.tsx"), "utf8");
 const confirmDialogSource = readFileSync(resolve(testDir, "../components/ConfirmDialog.tsx"), "utf8");
 const overviewSource = readFileSync(resolve(testDir, "../components/AppearanceOverview.tsx"), "utf8");
 const settingsSource = readFileSync(resolve(testDir, "../components/SettingsPanel.tsx"), "utf8");
@@ -137,6 +142,21 @@ ok(!isSafeHex("url(x)"), "rejects url()");
 ok(!isSafeHex("linear-gradient(red,blue)"), "rejects gradient");
 ok(isThemeTokenKey("accent") && !isThemeTokenKey("hack"), "token whitelist");
 
+const translucentCodePalette = deriveCodeReadabilityPalette("dark", "graphite", {
+  bg: "#102030",
+  bgSoft: "#ffffff33",
+  fg: "#f4f5f7",
+  borderSoft: "#ffffff22",
+});
+ok(/^#[0-9a-f]{6}$/.test(translucentCodePalette.background), "code background is flattened to an opaque color");
+ok(translucentCodePalette.background === "#404d59", "transparent bgSoft is composited over the theme background");
+ok(
+  Object.values(codeReadabilityRatios(translucentCodePalette)).every((ratio) => ratio >= 4.5),
+  "every code and diff text role reaches WCAG AA on the derived background",
+);
+const invertedDarkPack = deriveCodeReadabilityPalette("dark", "graphite", { bg: "#ffffff", bgSoft: "#fafafa" });
+ok(invertedDarkPack.keyword === "#cf222e", "syntax direction follows final code luminance instead of global dark mode");
+
 ok(isSafeBackgroundURL("/__reasonix_theme_asset/my-theme/abc/background.png"), "asset URL allowed");
 ok(isSafeBackgroundURL("data:image/png;base64,aaa"), "data URL allowed");
 ok(!isSafeBackgroundURL("https://evil.example/bg.png"), "remote URL rejected");
@@ -178,6 +198,8 @@ ok(attrs.get("data-theme-pack") === "preview-pack", "sets data-theme-pack");
 ok(attrs.get("data-theme-has-bg") === "true", "marks background present");
 ok(styleProps.has("--theme-bg-image"), "sets background image var");
 ok((styleEl as { textContent: string }).textContent.includes("--accent:#ff0000"), "injects dark accent override");
+ok((styleEl as { textContent: string }).textContent.includes("--code-bg:#101115"), "injects an opaque code readability island");
+ok((styleEl as { textContent: string }).textContent.includes("--hl-comment:"), "injects contrast-checked syntax roles");
 ok((styleEl as { textContent: string }).textContent.includes("--r:14px"), "applies round corners recipe");
 
 const twoSceneDraft = draftPackView({
@@ -423,6 +445,7 @@ ok(experienceSource.includes("ActivateBaseStyle") || experienceSource.includes("
 ok(experienceSource.includes("selectedThemeId") || gallerySource.includes("selected"), "selection is frontend state");
 ok(gallerySource.includes("loading=\"lazy\"") || gallerySource.includes('loading="lazy"'), "gallery thumbs lazy-load");
 ok(gallerySource.includes("ThemePreviewSurface") || gallerySource.includes("theme-preview-surface"), "isolated detail preview");
+ok(previewSurfaceSource.includes("theme-preview-surface__code-island"), "theme preview includes real code and diff samples");
 ok(gallerySource.includes('themePackKind(pack) === "base"') && gallerySource.includes('variant="thumbnail"'), "base gallery cards render semantic UI thumbnails");
 ok(gallerySource.includes('themePackKind(p) === "base"'), "immersive rail renders base-style thumbnails");
 for (const style of ["graphite", "aurora", "slate", "carbon", "nocturne", "amber"] as const) {
@@ -546,6 +569,7 @@ ok(stylesSource.includes(".theme-gallery__detail-user-actions") && stylesSource.
 ok(stylesSource.includes(".theme-gallery__rail-section-head") && stylesSource.includes(".theme-gallery__rail-section-items"), "immersive rail groups have lightweight headings and item stacks");
 ok(stylesSource.includes(".theme-gallery__detail-status"), "active status has dedicated non-button styling");
 ok(stylesSource.includes(".theme-editor__setting-hint"), "content-area guidance has dedicated responsive styling");
+ok(stylesSource.includes("background: var(--code-bg, var(--bg-soft))"), "code and diff surfaces consume the opaque code background");
 ok(localeZh.includes('"settings.themeEditor.safeArea": "界面内容区域"') && localeZh.includes('"settings.themeEditor.safeAreaHint": "选择文字和卡片主要显示的位置；建议避开图片主体。"'), "Chinese content-area copy explains foreground placement");
 
 // Pack overlay stays at :root — Workbench/Creation element-scoped auto-light
