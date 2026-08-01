@@ -712,6 +712,12 @@ jobs:
           path: release-control
           ref: ${{ github.workflow_sha }}
 
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: release-control/desktop/go.mod
+          cache: true
+          cache-dependency-path: release-control/desktop/go.sum
+
       - name: Revalidate immutable Desktop candidate
         env:
           RELEASE_CHANNEL: ${{ needs.resolve.outputs.channel }}
@@ -849,6 +855,22 @@ jobs:
           asset_base="https://dl.reasonix.io/${TAG}/"
           existing_manifest=false
 
+          signature_verifier=/tmp/reasonix-desktop-sign
+          go -C release-control/desktop build -o "$signature_verifier" ./cmd/sign
+          verify_signature_directory() {
+            local directory="$1"
+            local signature payload
+            while IFS= read -r -d '' signature; do
+              payload="${signature%.minisig}"
+              if [ ! -f "$payload" ]; then
+                echo "::error::Desktop signature has no matching payload: $signature"
+                return 1
+              fi
+              "$signature_verifier" verify "$payload"
+            done < <(find "$directory" -type f -name '*.minisig' -print0)
+          }
+          verify_signature_directory assets
+
           # A version directory is immutable once written. Recovery may fill an
           # incomplete candidate subset, but it may never replace conflicting or
           # unexpected content, including an already-written latest.json.
@@ -864,8 +886,10 @@ jobs:
           if [ -n "$existing_keys" ] && [ "$existing_keys" != "None" ]; then
             aws s3 cp "s3://${R2_BUCKET}/${TAG}/" "$existing_directory/" \
               --recursive --endpoint-url "$ENDPOINT"
+            verify_signature_directory "$existing_directory"
             bash release-control/scripts/verify-desktop-release-directory.sh \
-              --allow-missing --allow-legacy-manifest assets "$existing_directory"
+              --allow-missing --allow-legacy-manifest \
+              --allow-signature-differences assets "$existing_directory"
             if [ -f "$existing_directory/latest.json" ]; then
               existing_manifest=true
               bash release-control/scripts/validate-desktop-release-manifest.sh \
@@ -874,6 +898,15 @@ jobs:
               bash release-control/scripts/compare-desktop-release-manifests.sh \
                 assets/latest.json "$existing_directory/latest.json"
             fi
+
+            # Preserve already-published valid signature bytes. Minisign
+            # signatures are intentionally non-deterministic, so a recovery
+            # may fill missing signatures but must not replace existing ones.
+            while IFS= read -r -d '' signature; do
+              relative="${signature#"$existing_directory"/}"
+              mkdir -p "assets/$(dirname "$relative")"
+              cp "$signature" "assets/$relative"
+            done < <(find "$existing_directory" -type f -name '*.minisig' -print0)
           fi
 
           aws s3 cp assets/ "s3://${R2_BUCKET}/${TAG}/" \
@@ -892,6 +925,7 @@ jobs:
             --recursive --endpoint-url "$ENDPOINT"
           bash release-control/scripts/verify-desktop-release-directory.sh \
             --allow-legacy-manifest assets "$published_directory"
+          verify_signature_directory "$published_directory"
 
           aws s3 cp "s3://${R2_BUCKET}/${TAG}/latest.json" \
             /tmp/reasonix-desktop-tag-latest.json --endpoint-url "$ENDPOINT"
