@@ -154,7 +154,7 @@ func TestReconcilePendingUpdateRejectsTransactionRewrittenBeforeCancelLock(t *te
 	}()
 	<-attempted
 	changed := *tx
-	changed.FromVersion = "rewritten"
+	changed.ToVersion = "v3"
 	if err := overwritePendingUpdateForTest(&changed); err != nil {
 		t.Fatal(err)
 	}

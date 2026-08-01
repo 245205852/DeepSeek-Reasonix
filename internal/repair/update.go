@@ -1658,9 +1658,22 @@ func ReconcilePendingUpdate(runningVersion string) (PendingUpdateReconcileResult
 	// requires every prepared target and no installed-state sidecar. A failed
 	// cancel never mutates the transaction or release unit.
 	if cancelErr := CancelPendingUpdateExact(tx); cancelErr == nil {
-		result.Cleared = true
-		cleanupPendingUpdateStaging(tx)
-		return result, nil
+		// Exact cancellation historically treats a different target version or
+		// creation time as an inert success. Re-check the public postcondition so
+		// reconciliation never reports a newer transaction as cleared.
+		current, currentErr := ReadPendingUpdate()
+		if os.IsNotExist(currentErr) {
+			result.Cleared = true
+			cleanupPendingUpdateStaging(tx)
+			return result, nil
+		}
+		if currentErr != nil {
+			return result, fmt.Errorf("reconcile pending update: verify cancellation: %w", currentErr)
+		}
+		if !reflect.DeepEqual(tx, current) {
+			return result, fmt.Errorf("reconcile pending update: pending transaction changed during cancellation")
+		}
+		return result, fmt.Errorf("reconcile pending update: transaction remained after cancellation")
 	}
 
 	rollback, rollbackErr := RollbackPendingUpdateExact(tx)
