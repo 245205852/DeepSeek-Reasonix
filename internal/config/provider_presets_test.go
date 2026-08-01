@@ -407,7 +407,7 @@ func TestCuratedProviderPresetCapabilities(t *testing.T) {
 	if !ok {
 		t.Fatal("glm-coding-plan-cn-anthropic provider missing")
 	}
-	if glmPlanAnthropic.Kind != "anthropic" || !glmPlanAnthropic.AuthHeader || glmPlanAnthropic.DefaultModel() != "glm-5.2[1m]" {
+	if glmPlanAnthropic.Kind != "anthropic" || !glmPlanAnthropic.AuthHeader || glmPlanAnthropic.DefaultModel() != "glm-5.2" || glmPlanAnthropic.ContextWindow != 1000000 {
 		t.Fatalf("glm-coding-plan-cn-anthropic capability mismatch: %+v", glmPlanAnthropic)
 	}
 	zaiPlanGlobal, ok := cfg.Provider("zai-coding-plan-global")
@@ -421,7 +421,7 @@ func TestCuratedProviderPresetCapabilities(t *testing.T) {
 	if !ok {
 		t.Fatal("zai-coding-plan-global-anthropic provider missing")
 	}
-	if zaiPlanAnthropic.Kind != "anthropic" || !zaiPlanAnthropic.AuthHeader || zaiPlanAnthropic.BaseURL != "https://api.z.ai/api/anthropic" {
+	if zaiPlanAnthropic.Kind != "anthropic" || !zaiPlanAnthropic.AuthHeader || zaiPlanAnthropic.BaseURL != "https://api.z.ai/api/anthropic" || zaiPlanAnthropic.DefaultModel() != "glm-5.2" || zaiPlanAnthropic.ContextWindow != 1000000 {
 		t.Fatalf("zai-coding-plan-global-anthropic capability mismatch: %+v", zaiPlanAnthropic)
 	}
 
