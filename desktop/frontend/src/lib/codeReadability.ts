@@ -14,11 +14,14 @@ export type CodeReadabilityPalette = {
   meta: string;
   addition: string;
   deletion: string;
+  additionBackground: string;
+  deletionBackground: string;
 };
 
 type RGB = { r: number; g: number; b: number; a: number };
 
 const MIN_CODE_CONTRAST = 4.5;
+const DIFF_TINT_ALPHA = 0.12;
 
 const BASE_SURFACES: Record<string, Record<CodeReadabilityMode, { bg: string; code: string; fg: string }>> = {
   graphite: {
@@ -98,6 +101,10 @@ export function deriveCodeReadabilityPalette(
   const border = rawBorder
     ? flattenHex(rawBorder, background)
     : mixHex(background, foreground, 0.16);
+  const rawAddition = flattenHex(tokens.ok || syntax.addition, background);
+  const rawDeletion = flattenHex(tokens.err || syntax.deletion, background);
+  const additionBackground = mixHex(background, rawAddition, DIFF_TINT_ALPHA);
+  const deletionBackground = mixHex(background, rawDeletion, DIFF_TINT_ALPHA);
 
   return {
     background,
@@ -111,9 +118,17 @@ export function deriveCodeReadabilityPalette(
     type: ensureContrast(syntax.type, background),
     builtin: ensureContrast(syntax.builtin, background),
     meta: ensureContrast(syntax.meta, background),
-    addition: ensureContrast(tokens.ok || syntax.addition, background),
-    deletion: ensureContrast(tokens.err || syntax.deletion, background),
+    addition: ensureContrastAgainst(rawAddition, [background, additionBackground]),
+    deletion: ensureContrastAgainst(rawDeletion, [background, deletionBackground]),
+    additionBackground,
+    deletionBackground,
   };
+}
+
+export function deriveCreationCodeReadabilityPalette(mode: CodeReadabilityMode): CodeReadabilityPalette {
+  return deriveCodeReadabilityPalette(mode, "graphite", mode === "light"
+    ? { bg: "#f6f4f1", bgSoft: "#f0eeeb", fg: "#18181b", borderSoft: "#18181b14" }
+    : { bg: "#090c10", bgSoft: "#0b0e12", fg: "#e4e6ea", borderSoft: "#ffffff12" });
 }
 
 export function codeReadabilityDecls(palette: CodeReadabilityPalette): string {
@@ -131,14 +146,47 @@ export function codeReadabilityDecls(palette: CodeReadabilityPalette): string {
     `--hl-meta:${palette.meta}`,
     `--add-fg:${palette.addition}`,
     `--del-fg:${palette.deletion}`,
+    `--code-add-bg:${palette.additionBackground}`,
+    `--code-del-bg:${palette.deletionBackground}`,
   ].join(";");
 }
 
 export function codeReadabilityRatios(palette: CodeReadabilityPalette): Record<string, number> {
   return Object.fromEntries(
     ["foreground", "keyword", "string", "number", "comment", "function", "type", "builtin", "meta", "addition", "deletion"]
-      .map((key) => [key, contrastRatio(palette[key as keyof CodeReadabilityPalette], palette.background)]),
+      .map((key) => {
+        const foreground = palette[key as keyof CodeReadabilityPalette];
+        const backgrounds = key === "addition"
+          ? [palette.background, palette.additionBackground]
+          : key === "deletion"
+            ? [palette.background, palette.deletionBackground]
+            : [palette.background];
+        return [key, Math.min(...backgrounds.map((background) => contrastRatio(foreground, background)))];
+      }),
   );
+}
+
+/**
+ * Install complete code palettes for every built-in style before any optional
+ * theme-pack overlay. Creation intentionally uses its own neutral surface, so
+ * it receives a complete local palette instead of overriding only --code-bg.
+ */
+export function baseCodeReadabilityStylesheet(styles: readonly string[]): string {
+  const rules: string[] = [];
+  for (const style of styles) {
+    const darkDecls = codeReadabilityDecls(deriveCodeReadabilityPalette("dark", style));
+    const lightDecls = codeReadabilityDecls(deriveCodeReadabilityPalette("light", style));
+    rules.push(`:root[data-theme-style="${style}"]{${darkDecls}}`);
+    rules.push(`:root[data-theme="light"][data-theme-style="${style}"]{${lightDecls}}`);
+    rules.push(`@media (prefers-color-scheme: light){:root:not([data-theme])[data-theme-style="${style}"]{${lightDecls}}}`);
+  }
+
+  const creationDark = codeReadabilityDecls(deriveCreationCodeReadabilityPalette("dark"));
+  const creationLight = codeReadabilityDecls(deriveCreationCodeReadabilityPalette("light"));
+  rules.push(`:root[data-theme-style] .app--creation{${creationDark}}`);
+  rules.push(`:root[data-theme="light"][data-theme-style] .app--creation{${creationLight}}`);
+  rules.push(`@media (prefers-color-scheme: light){:root:not([data-theme])[data-theme-style] .app--creation{${creationLight}}}`);
+  return rules.join("\n");
 }
 
 export function contrastRatio(a: string, b: string): number {
@@ -148,16 +196,24 @@ export function contrastRatio(a: string, b: string): number {
 }
 
 function ensureContrast(color: string, background: string): string {
-  const opaque = flattenHex(color, background);
-  if (contrastRatio(opaque, background) >= MIN_CODE_CONTRAST) return opaque;
-  const target = contrastRatio("#ffffff", background) >= contrastRatio("#000000", background)
+  return ensureContrastAgainst(color, [background]);
+}
+
+function ensureContrastAgainst(color: string, backgrounds: string[]): string {
+  const primaryBackground = backgrounds[0] || "#000000";
+  const opaque = flattenHex(color, primaryBackground);
+  const minimumRatio = (candidate: string) => Math.min(
+    ...backgrounds.map((background) => contrastRatio(candidate, background)),
+  );
+  if (minimumRatio(opaque) >= MIN_CODE_CONTRAST) return opaque;
+  const target = minimumRatio("#ffffff") >= minimumRatio("#000000")
     ? "#ffffff"
     : "#000000";
   let low = 0;
   let high = 1;
   for (let i = 0; i < 16; i += 1) {
     const middle = (low + high) / 2;
-    if (contrastRatio(mixHex(opaque, target, middle), background) >= MIN_CODE_CONTRAST) high = middle;
+    if (minimumRatio(mixHex(opaque, target, middle)) >= MIN_CODE_CONTRAST) high = middle;
     else low = middle;
   }
   return mixHex(opaque, target, high);

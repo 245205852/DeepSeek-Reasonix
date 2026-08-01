@@ -5645,10 +5645,10 @@ body > .mermaid-diagram--fullscreen {
   white-space: pre;
 }
 .diff__row--add {
-  --diff-row-bg: linear-gradient(var(--add-bg), var(--add-bg)), var(--code-bg, var(--bg-soft));
+  --diff-row-bg: var(--code-add-bg, var(--code-bg, var(--bg-soft)));
 }
 .diff__row--del {
-  --diff-row-bg: linear-gradient(var(--del-bg), var(--del-bg)), var(--code-bg, var(--bg-soft));
+  --diff-row-bg: var(--code-del-bg, var(--code-bg, var(--bg-soft)));
 }
 .diff__gutter {
   position: sticky;
@@ -20775,10 +20775,10 @@ body > .mermaid-diagram--fullscreen {
   width: 100%;
 }
 .inline-diff__row--add {
-  --inline-diff-row-bg: linear-gradient(var(--add-bg), var(--add-bg)), var(--code-bg, var(--bg-soft));
+  --inline-diff-row-bg: var(--code-add-bg, var(--code-bg, var(--bg-soft)));
 }
 .inline-diff__row--del {
-  --inline-diff-row-bg: linear-gradient(var(--del-bg), var(--del-bg)), var(--code-bg, var(--bg-soft));
+  --inline-diff-row-bg: var(--code-del-bg, var(--code-bg, var(--bg-soft)));
 }
 .inline-diff__gutter {
   position: sticky;
@@ -33736,8 +33736,6 @@ body > .mermaid-diagram--fullscreen {
 :root[data-theme-pack][data-theme-has-bg="true"][data-theme-scene="home"] .app:not(.app--creation) .context-panel__view-switch,
 :root[data-theme-pack][data-theme-has-bg="true"][data-theme-scene="home"] .app:not(.app--creation) .mermaid-diagram,
 :root[data-theme-pack][data-theme-has-bg="true"][data-theme-scene="home"] .app:not(.app--creation) .md th,
-:root[data-theme-pack][data-theme-has-bg="true"][data-theme-scene="home"] .app:not(.app--creation) .diff,
-:root[data-theme-pack][data-theme-has-bg="true"][data-theme-scene="home"] .app:not(.app--creation) .code,
 :root[data-theme-pack][data-theme-has-bg="true"][data-theme-scene="home"] .app:not(.app--creation) .md-code,
 :root[data-theme-pack][data-theme-has-bg="true"][data-theme-scene="home"] .app:not(.app--creation) .copybtn,
 :root[data-theme-pack][data-theme-has-bg="true"][data-theme-scene="home"] .app:not(.app--creation) .msg-meta__btn,
@@ -33864,8 +33862,6 @@ body > .mermaid-diagram--fullscreen {
 :root[data-theme-pack][data-theme-has-bg="true"][data-theme-scene="task"] .app:not(.app--creation) .context-panel__view-switch,
 :root[data-theme-pack][data-theme-has-bg="true"][data-theme-scene="task"] .app:not(.app--creation) .mermaid-diagram,
 :root[data-theme-pack][data-theme-has-bg="true"][data-theme-scene="task"] .app:not(.app--creation) .md th,
-:root[data-theme-pack][data-theme-has-bg="true"][data-theme-scene="task"] .app:not(.app--creation) .diff,
-:root[data-theme-pack][data-theme-has-bg="true"][data-theme-scene="task"] .app:not(.app--creation) .code,
 :root[data-theme-pack][data-theme-has-bg="true"][data-theme-scene="task"] .app:not(.app--creation) .md-code,
 :root[data-theme-pack][data-theme-has-bg="true"][data-theme-scene="task"] .app:not(.app--creation) .copybtn,
 :root[data-theme-pack][data-theme-has-bg="true"][data-theme-scene="task"] .app:not(.app--creation) .msg-meta__btn,
@@ -33989,8 +33985,6 @@ body > .mermaid-diagram--fullscreen {
 :root[data-theme-pack][data-theme-has-bg="true"] .app:not(.app--creation) .context-panel__view-switch,
 :root[data-theme-pack][data-theme-has-bg="true"] .app:not(.app--creation) .mermaid-diagram,
 :root[data-theme-pack][data-theme-has-bg="true"] .app:not(.app--creation) .md th,
-:root[data-theme-pack][data-theme-has-bg="true"] .app:not(.app--creation) .diff,
-:root[data-theme-pack][data-theme-has-bg="true"] .app:not(.app--creation) .code,
 :root[data-theme-pack][data-theme-has-bg="true"] .app:not(.app--creation) .md-code,
 :root[data-theme-pack][data-theme-has-bg="true"] .app:not(.app--creation) .copybtn,
 :root[data-theme-pack][data-theme-has-bg="true"] .app:not(.app--creation) .msg-meta__btn,
@@ -35319,11 +35313,11 @@ body > .mermaid-diagram--fullscreen {
   color: var(--tp-code-fg);
 }
 .theme-preview-surface__diff-line--add {
-  background: color-mix(in srgb, var(--tp-add-fg) 12%, var(--tp-code-bg));
+  background: var(--tp-code-add-bg);
   color: var(--tp-add-fg);
 }
 .theme-preview-surface__diff-line--del {
-  background: color-mix(in srgb, var(--tp-del-fg) 12%, var(--tp-code-bg));
+  background: var(--tp-code-del-bg);
   color: var(--tp-del-fg);
 }
 .theme-preview-surface[data-preview-kind="base"] .theme-preview-surface__card {

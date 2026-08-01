@@ -1,5 +1,5 @@
 import { useMemo, type CSSProperties } from "react";
-import { deriveCodeReadabilityPalette } from "../lib/codeReadability";
+import { deriveCodeReadabilityPalette, type CodeReadabilityPalette } from "../lib/codeReadability";
 import { themePackKind, type ThemePackView } from "../lib/themePack";
 import { baseStyleForPreview, themePreviewPalette } from "../lib/themePreviewPalette";
 
@@ -11,6 +11,14 @@ export function themePreviewPaneAlpha(pack: ThemePackView | null, scene: "home" 
     ? pack.background?.paneOpacity ?? 0.50
     : pack.taskBackground?.paneOpacity ?? pack.background?.paneOpacity ?? 0.68;
   return Math.min(1, Math.max(0, paneAlpha));
+}
+
+export function themePreviewCodePalette(
+  pack: ThemePackView | null,
+  mode: "light" | "dark",
+): CodeReadabilityPalette {
+  const tokens = mode === "light" ? pack?.tokens?.light : pack?.tokens?.dark;
+  return deriveCodeReadabilityPalette(mode, baseStyleForPreview(pack), tokens || {});
 }
 
 /** Isolated mini Reasonix surface for gallery detail — does not touch :root. */
@@ -30,12 +38,7 @@ export function ThemePreviewSurface({
   const style = useMemo(() => {
     const palette = themePreviewPalette(pack, mode);
     const tokens = mode === "light" ? pack?.tokens?.light : pack?.tokens?.dark;
-    const code = deriveCodeReadabilityPalette(mode, baseStyle, {
-      ...tokens,
-      bg: tokens?.bg || palette.bg,
-      bgSoft: tokens?.bgSoft || palette.bgSoft,
-      fg: tokens?.fg || palette.fg,
-    });
+    const code = themePreviewCodePalette(pack, mode);
     const chat = tokens?.chat || palette.bg;
     const sceneBackground = scene === "task" ? pack?.taskBackground || pack?.background : pack?.background;
     const focusX = sceneBackground?.focusX ?? 0.72;
@@ -71,6 +74,8 @@ export function ThemePreviewSurface({
       ["--tp-hl-type" as string]: code.type,
       ["--tp-add-fg" as string]: code.addition,
       ["--tp-del-fg" as string]: code.deletion,
+      ["--tp-code-add-bg" as string]: code.additionBackground,
+      ["--tp-code-del-bg" as string]: code.deletionBackground,
       ["--tp-focus-x" as string]: `${focusX * 100}%`,
       ["--tp-focus-y" as string]: `${focusY * 100}%`,
       ["--tp-bg-opacity" as string]: String(opacity),

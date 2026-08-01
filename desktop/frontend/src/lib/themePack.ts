@@ -347,7 +347,8 @@ function ensurePackStyleElement(): HTMLStyleElement {
   if (!el) {
     el = document.createElement("style");
     el.id = PACK_STYLE_ID;
-    // Append last so pack overrides win over stylesheets and Creation locals.
+    // Append last so pack root overrides win over the base stylesheets.
+    // Element-scoped Creation code palettes intentionally remain local.
     document.head.appendChild(el);
   } else if (el.parentElement === document.head) {
     document.head.appendChild(el);
@@ -528,6 +529,12 @@ function clearBackgroundCSSVars(root: HTMLElement): void {
   root.style.removeProperty("--theme-pane-task-shell-pct");
   root.style.removeProperty("--theme-pane-card-pct");
   root.style.removeProperty("--theme-pane-task-card-pct");
+  root.style.removeProperty("--theme-pane-session-hover-pct");
+  root.style.removeProperty("--theme-pane-child-pct");
+  root.style.removeProperty("--theme-pane-interact-pct");
+  root.style.removeProperty("--theme-pane-task-session-hover-pct");
+  root.style.removeProperty("--theme-pane-task-child-pct");
+  root.style.removeProperty("--theme-pane-task-interact-pct");
   root.removeAttribute("data-theme-safe-area");
   root.removeAttribute("data-theme-has-bg");
 }
