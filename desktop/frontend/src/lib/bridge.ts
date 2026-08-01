@@ -75,6 +75,7 @@ import type {
   ProjectNode,
   PromptHistoryEntry,
   PromptHistoryResult,
+  ProviderModelCatalogUpdate,
   ProviderPresetView,
   ProviderView,
   QuestionAnswer,
@@ -388,11 +389,13 @@ export interface AppBindings {
   SetDefaultAutoRecoveryCheckpoint(enabled: boolean): Promise<void>;
 
   SaveProvider(p: ProviderView): Promise<void>;
+  SaveProviderModelCatalogs(updates: ProviderModelCatalogUpdate[]): Promise<string[]>;
   SaveProviderWithKey(p: ProviderView, key: string): Promise<string>;
   AddOfficialProviderAccess(kind: string, key: string): Promise<string>;
   AddProviderPresetAccess(id: string, key: string): Promise<string>;
   ResetProviderPresetAccess(id: string): Promise<void>;
   FetchProviderModels(p: ProviderView): Promise<string[]>;
+  FetchAllProviderModels(providers: ProviderView[]): Promise<Record<string, string[]>>;
   DeleteProvider(name: string): Promise<void>;
   RemoveProviderAccess(name: string): Promise<void>;
   SaveProviderKey(apiKeyEnv: string, value: string): Promise<string>;
@@ -889,7 +892,7 @@ function bridgeBreadcrumb(method: string): string {
     return `model ${method}`;
   if (/^(SetDesktop|SetCloseBehavior|SetDisplayMode|SetStatusBar|SetExpandThinking|SetAutoPlan|SetDefaultToolApprovalMode|SetReasoningLanguage)/.test(method))
     return `settings ${method}`;
-  if (/^(SaveProvider|AddOfficialProviderAccess|AddProviderPresetAccess|ResetProviderPresetAccess|RemoveProviderAccess|DeleteProvider|SaveProviderKey|SetProviderKey|ClearProviderKey|FetchProviderModels|ConnectKey)/.test(method))
+  if (/^(SaveProvider|SaveProviderModelCatalogs|AddOfficialProviderAccess|AddProviderPresetAccess|ResetProviderPresetAccess|RemoveProviderAccess|DeleteProvider|SaveProviderKey|SetProviderKey|ClearProviderKey|FetchProviderModels|FetchAllProviderModels|ConnectKey)/.test(method))
     return `provider ${method}`;
   if (/^(CheckUpdate|DownloadUpdate|DownloadUpdateRequest|InstallUpdate|InstallUpdateRequest|ApplyUpdate|OpenDownloadPage)/.test(method)) return `update ${method}`;
   if (/^(AddMCPServer|InstallMCPServer|UpdateMCPServer|RemoveMCPServer|AuthorizeAndConnectMCPServer|ReconnectMCPServer|ClearMCPServerAuthentication|SetMCPServer)/.test(method))
@@ -3979,6 +3982,24 @@ function makeMockApp(): AppBindings {
       if (i >= 0) settings.providers[i] = p;
       else settings.providers.push(p);
     },
+    async SaveProviderModelCatalogs(updates: ProviderModelCatalogUpdate[]) {
+      const applied: string[] = [];
+      for (const update of updates) {
+        const i = settings.providers.findIndex((provider) => provider.name === update.name);
+        if (i < 0) continue;
+        const current = settings.providers[i];
+        if (!update.expectedFingerprint || current.modelCatalogFingerprint !== update.expectedFingerprint) continue;
+        settings.providers[i] = {
+          ...current,
+          models: [...update.models],
+          default: update.default,
+          visionModels: [...update.visionModels],
+          modelCatalogFingerprint: `${update.expectedFingerprint}:updated`,
+        };
+        applied.push(update.name);
+      }
+      return applied;
+    },
     async SaveProviderWithKey(p: ProviderView, key: string) {
       p.added = true;
       p.keySet = Boolean(key.trim()) || p.keySet;
@@ -4040,6 +4061,17 @@ function makeMockApp(): AppBindings {
       if (p.baseUrl.includes("token-plan")) return ["mimo-v2.5", "mimo-v2.5-pro"];
       if (p.baseUrl.includes("xiaomimimo")) return ["mimo-v2.5-pro", "mimo-v2.5"];
       return ["gpt-5", "gpt-5-mini", "qwen3-coder"];
+    },
+    async FetchAllProviderModels(providers: ProviderView[]) {
+      const out: Record<string, string[]> = {};
+      for (const p of providers) {
+        try {
+          out[p.name] = await this.FetchProviderModels(p);
+        } catch {
+          out[p.name] = [];
+        }
+      }
+      return out;
     },
     async DeleteProvider(name: string) {
       settings.providers = settings.providers.filter((p) => p.name !== name);
