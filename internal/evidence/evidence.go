@@ -1691,26 +1691,49 @@ func IsDeliveryVerificationCommand(command string) bool {
 	return bashCommandIsVerification(command)
 }
 
-// VerificationCommandSummary returns a compact, model-readable list of the
-// command families recognized as delivery verification evidence. The
-// final-readiness retry message embeds this summary so a model that missed
-// the sign-off gate can pick a verifier on the first retry instead of
-// guessing. Guessing is what turns a single readiness miss into a deadlock
-// loop: opaque inline interpreters (node -e, python -c) are blocked before
-// execution, and read-only inspection commands (grep, find, wc, ...) run but
-// are never classified as verification — so a model that only knows those
-// two shapes can never produce a verifier.
-//
-// Keep the listed families in sync with bashSegmentIsVerification; the
-// TestVerificationCommandSummaryConsistentWithClassifier test enforces that
-// every command named here is actually accepted by the classifier.
+type verificationCommandRecommendation struct {
+	label    string
+	examples []string
+}
+
+// verificationCommandRecommendations is the single source for the
+// model-readable family labels and the classifier examples that guard them.
+// It is intentionally a safe recommended subset rather than an exhaustive
+// rendering of bashSegmentIsVerification: accepted commands that may install
+// dependencies or create workspace outputs should not be suggested as the
+// first recovery action.
+func verificationCommandRecommendations() []verificationCommandRecommendation {
+	return []verificationCommandRecommendation{
+		{label: "go test|vet", examples: []string{"go test ./...", "go vet ./..."}},
+		{label: "git diff --check", examples: []string{"git diff --check"}},
+		{label: "pytest/py.test", examples: []string{"pytest tests/", "py.test tests/"}},
+		{label: "gotestsum", examples: []string{"gotestsum"}},
+		{label: "staticcheck", examples: []string{"staticcheck ./..."}},
+		{label: "golangci-lint", examples: []string{"golangci-lint run"}},
+		{label: "tsc", examples: []string{"tsc --noEmit"}},
+		{label: "mypy (no report flag)", examples: []string{"mypy src/"}},
+		{label: "npm|pnpm|yarn|bun test|check|lint", examples: []string{"npm test", "pnpm check", "yarn lint", "bun test"}},
+		{label: "npm run test|check|lint|typecheck", examples: []string{"npm run typecheck"}},
+		{label: "cargo test|check|clippy", examples: []string{"cargo test", "cargo check", "cargo clippy"}},
+		{label: "node --check|--test", examples: []string{"node --check index.js", "node --test"}},
+		{label: "make|just test|check|lint|verify|ci", examples: []string{"make test", "just verify"}},
+		{label: "python -m pytest|unittest|compileall", examples: []string{"python -m pytest", "python -m unittest", "python -m compileall ."}},
+		{label: "dotnet test", examples: []string{"dotnet test"}},
+		{label: "mvn|gradle test|check|verify", examples: []string{"mvn test", "gradle check"}},
+	}
+}
+
+// VerificationCommandSummary returns compact, model-readable recovery
+// guidance. It lists only recommended command families that the classifier
+// accepts, while omitting known self-installing and direct workspace-output
+// command forms from first-line guidance.
 func VerificationCommandSummary() string {
-	return "recognized verification commands: " +
-		"go test|vet|build (no -o), git diff --check, pytest/py.test, gotestsum, staticcheck, " +
-		"golangci-lint, tsc, mypy (no report flag), npm|pnpm|yarn|bun test|check|lint, " +
-		"npm run test|check|lint|typecheck, cargo test|check|clippy, npx vitest|jest " +
-		"(no --update/--coverage), node --check|--test, make|just test|check|lint|verify|ci, " +
-		"python -m pytest|unittest|compileall, dotnet test, mvn|gradle test|check|verify. " +
+	recommendations := verificationCommandRecommendations()
+	labels := make([]string, 0, len(recommendations))
+	for _, recommendation := range recommendations {
+		labels = append(labels, recommendation.label)
+	}
+	return "recommended recognized verification commands: " + strings.Join(labels, ", ") + ". " +
 		"Read-only inspection commands (grep/find/cat/wc/head/tail) are NOT verification; " +
 		"inline interpreters (node -e, python -c) are blocked in delivery mode. " +
 		"A read-only extraction pipeline ending in a recognized verifier " +
@@ -1745,7 +1768,10 @@ func bashSegmentIsVerification(fields []string) bool {
 			}
 			return true
 		}
-		return args[0] == "build" && !hasCommandArg(args, "-o")
+		// A direct single-package build writes a binary into the workspace for
+		// main packages. Keep only the conventional all-package pattern, whose
+		// outputs are discarded, as non-mutating verification evidence.
+		return args[0] == "build" && hasCommandArg(args[1:], "./...")
 	case "git":
 		return len(args) > 1 && args[0] == "diff" && hasCommandArg(args[1:], "--check")
 	case "pytest", "py.test", "gotestsum", "staticcheck", "golangci-lint", "tsc":

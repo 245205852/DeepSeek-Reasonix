@@ -1,52 +1,60 @@
 package evidence
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 )
 
-// TestVerificationCommandSummaryConsistentWithClassifier guards against drift
-// between the model-readable summary embedded in final-readiness messages and
-// the classifier that actually decides whether a command counts as
-// verification. Every command family named in the summary must be accepted by
-// IsDeliveryVerificationCommand; if the classifier grows or shrinks, this test
-// forces the summary to be updated in the same change.
-func TestVerificationCommandSummaryConsistentWithClassifier(t *testing.T) {
-	accepted := []string{
-		"go test ./...",
-		"go vet ./...",
-		"go build ./cmd/reasonix",
-		"git diff --check",
-		"pytest tests/",
-		"gotestsum",
-		"staticcheck ./...",
-		"golangci-lint run",
-		"tsc --noEmit",
-		"mypy src/",
-		"npm test",
-		"pnpm check",
-		"yarn lint",
-		"bun test",
-		"npm run typecheck",
-		"cargo test",
-		"cargo clippy",
-		"npx vitest run",
-		"npx jest --runInBand",
-		"node --check index.js",
-		"node --test",
-		"make test",
-		"just verify",
-		"python -m pytest",
-		"python -m unittest",
-		"python -m compileall .",
-		"dotnet test",
-		"mvn test",
-		"gradle check",
-	}
-	for _, cmd := range accepted {
-		if !IsDeliveryVerificationCommand(cmd) {
-			t.Errorf("summary claims %q is recognized verification, but classifier rejects it", cmd)
+// TestVerificationCommandSummaryRecommendationsAreRecognized guards the
+// single structured source used to render the summary and exercise the
+// classifier. Every advertised family must render and every example attached
+// to that family must remain accepted.
+func TestVerificationCommandSummaryRecommendationsAreRecognized(t *testing.T) {
+	summary := VerificationCommandSummary()
+	for _, recommendation := range verificationCommandRecommendations() {
+		if !strings.Contains(summary, recommendation.label) {
+			t.Errorf("summary missing recommended family %q: %s", recommendation.label, summary)
 		}
+		for _, command := range recommendation.examples {
+			if !IsDeliveryVerificationCommand(command) {
+				t.Errorf("summary family %q advertises %q, but classifier rejects it", recommendation.label, command)
+			}
+		}
+	}
+}
+
+func TestGoBuildVerificationRejectsWorkspaceBinaryOutput(t *testing.T) {
+	for _, command := range []string{
+		"go build ./...",
+		"go build -tags integration ./...",
+	} {
+		if !IsDeliveryVerificationCommand(command) {
+			t.Errorf("%q should remain recognized all-package verification", command)
+		}
+	}
+	if ToolCallMutates("bash", json.RawMessage(`{"command":"go build ./..."}`), false) {
+		t.Fatal("go build ./... should remain non-mutating all-package verification")
+	}
+	for _, command := range []string{
+		"go build",
+		"go build .",
+		"go build ./cmd/reasonix",
+		"go build -race ./cmd/reasonix",
+	} {
+		if IsDeliveryVerificationCommand(command) {
+			t.Errorf("%q can create a workspace binary and must not count as non-mutating verification", command)
+		}
+		args, err := json.Marshal(map[string]string{"command": command})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !ToolCallMutates("bash", args, false) {
+			t.Errorf("%q can create a workspace binary and must be classified as a mutation", command)
+		}
+	}
+	if strings.Contains(VerificationCommandSummary(), "go build") {
+		t.Fatal("recovery summary must not recommend go build as a first-line verifier")
 	}
 }
 
