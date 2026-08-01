@@ -670,6 +670,90 @@
       }
     },
     {
+      "version": "1.19.0-preview.2",
+      "date": "2026-08-01",
+      "channel": "prerelease",
+      "title": {
+        "en": "Preview Desktop Orchestrator Authorization Fix",
+        "zh": "预览版 Desktop 编排授权修复"
+      },
+      "summary": {
+        "en": "This preview release fixes an authorization issue that blocked the Preview Desktop orchestrator from approving its candidates.",
+        "zh": "此预览版修复了一个授权问题，该问题阻止了预览版 Desktop 编排器批准其候选版本。"
+      },
+      "surfaces": [
+        "desktop"
+      ],
+      "guides": [],
+      "highlights": [
+        {
+          "kind": "fixed",
+          "title": {
+            "en": "Fixed Preview Desktop orchestrator authorization",
+            "zh": "修复了预览版 Desktop 编排授权"
+          },
+          "body": {
+            "en": "The Preview orchestrator can now authorize its approved immutable SHA while preserving ancestry, tag, workflow-ref, and checkout checks. Previously, the candidate resolver treated every orchestrated call as Stable, causing failures.",
+            "zh": "预览版编排器现在可以授权其批准的不可变 SHA，同时保留祖先、标签、工作流引用和检出检查。此前，候选解析器将所有编排调用视为稳定版，导致失败。"
+          },
+          "refs": [
+            7118
+          ]
+        }
+      ],
+      "changes": {
+        "new": [],
+        "improved": [],
+        "fixed": [
+          {
+            "title": {
+              "en": "Forward trusted orchestrator identity in Desktop candidate resolution",
+              "zh": "在 Desktop 候选解析中转发受信任的编排器身份"
+            },
+            "body": {
+              "en": "The trusted `stable|preview` orchestrator identity is now forwarded into every Desktop candidate resolution step.",
+              "zh": "现在，受信任的 `stable|preview` 编排器身份会被转发到每个 Desktop 候选解析步骤中。"
+            },
+            "refs": [
+              7118
+            ]
+          },
+          {
+            "title": {
+              "en": "Allow Preview orchestrator to authorize approved immutable SHA",
+              "zh": "允许预览版编排器授权批准的不可变 SHA"
+            },
+            "body": {
+              "en": "The protected Preview orchestrator can now authorize its approved immutable SHA while preserving ancestry, tag, workflow-ref, and checkout checks.",
+              "zh": "受保护的预览版编排器现在可以授权其批准的不可变 SHA，同时保留祖先、标签、工作流引用和检出检查。"
+            },
+            "refs": [
+              7118
+            ]
+          }
+        ]
+      },
+      "upgrade": [],
+      "risks": [],
+      "contributors": [
+        "SivanCola"
+      ],
+      "links": {
+        "github": "https://github.com/esengine/DeepSeek-Reasonix/releases/tag/v1.19.0-preview.2",
+        "compare": "https://github.com/esengine/DeepSeek-Reasonix/compare/v1.19.0-preview.1...v1.19.0-preview.2",
+        "download": "https://reasonix.io/?download=desktop&channel=preview#start"
+      },
+      "releaseId": "1.19.0-preview.2",
+      "baseVersion": "1.19.0",
+      "status": "reviewed",
+      "previousRelease": "1.19.0-preview.1",
+      "builds": {
+        "cli": "v1.19.0-preview.2",
+        "desktop": "v1.19.0-preview.2",
+        "npm": "1.19.0-canary.2"
+      }
+    },
+    {
       "version": "1.19.0-preview.1",
       "date": "2026-08-01",
       "channel": "prerelease",
