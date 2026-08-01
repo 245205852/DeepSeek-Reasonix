@@ -78,6 +78,7 @@ grep -Eq 'options: \[stable, preview\]' "$repo_root/.github/workflows/release-de
 grep -Eq '^  resolve:$' "$repo_root/.github/workflows/release-desktop.yml"
 grep -Eq 'sha:.*steps\.candidate\.outputs\.sha' "$repo_root/.github/workflows/release-desktop.yml"
 grep -Fq 'bash scripts/resolve-desktop-candidate.sh' "$repo_root/.github/workflows/release-desktop.yml"
+[ "$(grep -Fc 'IN_ORCHESTRATOR: ${{ inputs.orchestrator }}' "$repo_root/.github/workflows/release-desktop.yml")" = "3" ]
 [ "$(grep -Fc 'name: Revalidate immutable Desktop candidate' "$repo_root/.github/workflows/release-desktop.yml")" = "2" ]
 [ "$(grep -Fc 'ref: ${{ needs.resolve.outputs.sha }}' "$repo_root/.github/workflows/release-desktop.yml")" -ge 4 ]
 [ "$(grep -Fc 'path: release-control' "$repo_root/.github/workflows/release-desktop.yml")" = "2" ]
@@ -934,6 +935,20 @@ git clone -q "$test_root/remote.git" "$test_root/repo"
 		CALLER_SHA="$approved_sha" CALLER_WORKFLOW_SHA="$approved_sha" \
 		"$desktop_candidate_resolver"
 	grep -Eq '^sha='"$approved_sha"'$' "$test_root/desktop-preview-candidate.out"
+	GITHUB_OUTPUT="$test_root/desktop-orchestrated-preview-candidate.out" \
+		RELEASE_CHANNEL=preview RELEASE_TAG=desktop-v1.3.0-preview.42 \
+		IN_ORCHESTRATED=true IN_ORCHESTRATOR=preview APPROVED_SHA="$approved_sha" \
+		"$desktop_candidate_resolver"
+	grep -Eq '^sha='"$approved_sha"'$' "$test_root/desktop-orchestrated-preview-candidate.out"
+	if GITHUB_OUTPUT="$test_root/desktop-wrong-orchestrator-candidate.out" \
+		RELEASE_CHANNEL=preview RELEASE_TAG=desktop-v1.3.0-preview.42 \
+		IN_ORCHESTRATED=true IN_ORCHESTRATOR=stable APPROVED_SHA="$approved_sha" \
+		"$desktop_candidate_resolver" >"$test_root/desktop-wrong-orchestrator-candidate.log" 2>&1; then
+		echo "stable orchestrator unexpectedly authorized a Desktop Preview candidate" >&2
+		exit 1
+	fi
+	grep -Eq 'stable orchestrator cannot authorize a Desktop preview candidate' \
+		"$test_root/desktop-wrong-orchestrator-candidate.log"
 	if GITHUB_OUTPUT="$test_root/desktop-unprotected-candidate.out" \
 		RELEASE_CHANNEL=preview RELEASE_TAG=desktop-v1.3.0-preview.42 \
 		IN_ORCHESTRATED=false CALLER_EVENT_NAME=workflow_dispatch \
@@ -988,6 +1003,12 @@ git clone -q "$test_root/remote.git" "$test_root/repo"
 	fi
 	grep -Eq 'Desktop Preview must use current main-v2' \
 		"$test_root/desktop-stale-preview-candidate.log"
+	GITHUB_OUTPUT="$test_root/desktop-orchestrated-preview-recovery-candidate.out" \
+		RELEASE_CHANNEL=preview RELEASE_TAG=desktop-v1.3.0-preview.42 \
+		IN_ORCHESTRATED=true IN_ORCHESTRATOR=preview APPROVED_SHA="$approved_sha" \
+		"$desktop_candidate_resolver"
+	grep -Eq '^sha='"$approved_sha"'$' \
+		"$test_root/desktop-orchestrated-preview-recovery-candidate.out"
 	GITHUB_OUTPUT="$test_root/desktop-stable-recovery-candidate.out" \
 		RELEASE_CHANNEL=stable RELEASE_TAG=desktop-v1.2.3 \
 		IN_ORCHESTRATED=false CALLER_EVENT_NAME=workflow_dispatch \
