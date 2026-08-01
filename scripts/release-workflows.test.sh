@@ -86,7 +86,7 @@ grep -Fq 'bash scripts/resolve-desktop-candidate.sh' "$repo_root/.github/workflo
 [ "$(grep -Fc 'IN_ORCHESTRATOR: ${{ inputs.orchestrator }}' "$repo_root/.github/workflows/release-desktop.yml")" = "3" ]
 [ "$(grep -Fc 'name: Revalidate immutable Desktop candidate' "$repo_root/.github/workflows/release-desktop.yml")" = "2" ]
 [ "$(grep -Fc 'ref: ${{ needs.resolve.outputs.sha }}' "$repo_root/.github/workflows/release-desktop.yml")" -ge 4 ]
-[ "$(grep -Fc 'path: release-control' "$repo_root/.github/workflows/release-desktop.yml")" = "2" ]
+[ "$(grep -Ec '^          path: release-control$' "$repo_root/.github/workflows/release-desktop.yml")" = "2" ]
 [ "$(grep -Fc 'ref: ${{ github.workflow_sha }}' "$repo_root/.github/workflows/release-desktop.yml")" -ge 2 ]
 [ "$(grep -Fc 'bash release-control/scripts/resolve-desktop-candidate.sh' "$repo_root/.github/workflows/release-desktop.yml")" = "2" ]
 [ "$(grep -Fc 'RELEASE_TAG: ${{ inputs.approved_cli_tag }}' "$repo_root/.github/workflows/release-desktop.yml")" = "3" ]
@@ -170,6 +170,16 @@ fi
 grep -Fq 'scripts/decide-desktop-pointer-update.sh' "$repo_root/.github/workflows/release-desktop.yml"
 grep -Fq 'scripts/verify-desktop-release-directory.sh' "$repo_root/.github/workflows/release-desktop.yml"
 grep -Fq 'scripts/compare-desktop-release-manifests.sh' "$repo_root/.github/workflows/release-desktop.yml"
+grep -Fq 'go -C release-control/desktop build -o "$signature_verifier" ./cmd/sign' \
+	"$repo_root/.github/workflows/release-desktop.yml"
+grep -Fq 'verify_signature_directory assets' "$repo_root/.github/workflows/release-desktop.yml"
+grep -Fq 'verify_signature_directory "$existing_directory"' \
+	"$repo_root/.github/workflows/release-desktop.yml"
+grep -Fq -- '--allow-signature-differences' \
+	"$repo_root/.github/workflows/release-desktop.yml"
+grep -Fq 'cp "$signature" "assets/$relative"' "$repo_root/.github/workflows/release-desktop.yml"
+grep -Fq 'verify_signature_directory "$published_directory"' \
+	"$repo_root/.github/workflows/release-desktop.yml"
 grep -Fq 'download_optional "preview/latest.json"' "$repo_root/.github/workflows/release-desktop.yml"
 grep -Fq 'download_optional "canary/latest.json"' "$repo_root/.github/workflows/release-desktop.yml"
 grep -Fq 'publish_pointer canary' "$repo_root/.github/workflows/release-desktop.yml"
@@ -236,7 +246,14 @@ grep -Fq 'scripts/decide-cli-pointer-update.sh' "$cli_release_workflow"
 grep -Fq 'scripts/validate-cli-release-manifest.sh' "$cli_release_workflow"
 grep -Fq 'scripts/compare-cli-release-manifests.sh' "$cli_release_workflow"
 grep -Eq 'name: Decide whether CLI artifacts need publication' "$cli_release_workflow"
-grep -Fq 'scripts/decide-cli-release-publication.sh' "$cli_release_workflow"
+grep -Fq 'path: release-control' "$cli_release_workflow"
+grep -Fq 'ref: ${{ github.workflow_sha }}' "$cli_release_workflow"
+grep -Fq 'release-control/scripts/decide-cli-release-publication.sh' "$cli_release_workflow"
+if sed -n '/^  goreleaser:/,$p' "$cli_release_workflow" |
+	grep -Fq 'bash scripts/decide-cli-release-publication.sh'; then
+	echo "CLI recovery uses candidate-controlled publication policy" >&2
+	exit 1
+fi
 grep -Fq "if: \${{ steps.publication.outputs.decision == 'publish' }}" "$cli_release_workflow"
 grep -Fq 'immutable CLI release metadata for $TAG already exists with different content' "$cli_release_workflow"
 grep -Fq 'cmp -s /tmp/cli-release.json /tmp/cli-release.pointer.json' "$cli_release_workflow"
@@ -589,6 +606,21 @@ if bash "$desktop_directory_verifier" "$candidate_directory" "$existing_director
 fi
 cp "$candidate_directory/b" "$existing_directory/b"
 bash "$desktop_directory_verifier" "$candidate_directory" "$existing_directory"
+printf 'candidate-signature\n' >"$candidate_directory/a.minisig"
+printf 'existing-signature\n' >"$existing_directory/a.minisig"
+if bash "$desktop_directory_verifier" "$candidate_directory" "$existing_directory" >/dev/null 2>&1; then
+	echo "Desktop release directory verifier accepted a byte-distinct signature without opt-in" >&2
+	exit 1
+fi
+bash "$desktop_directory_verifier" --allow-signature-differences \
+	"$candidate_directory" "$existing_directory"
+printf '' >"$existing_directory/a.minisig"
+if bash "$desktop_directory_verifier" --allow-signature-differences \
+	"$candidate_directory" "$existing_directory" >/dev/null 2>&1; then
+	echo "Desktop release directory verifier accepted an empty recovered signature" >&2
+	exit 1
+fi
+cp "$candidate_directory/a.minisig" "$existing_directory/a.minisig"
 printf 'conflict\n' >"$existing_directory/a"
 if bash "$desktop_directory_verifier" --allow-missing "$candidate_directory" "$existing_directory" >/dev/null 2>&1; then
 	echo "Desktop release directory verifier accepted conflicting immutable content" >&2
