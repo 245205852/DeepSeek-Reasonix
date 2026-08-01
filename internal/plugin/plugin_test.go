@@ -862,6 +862,52 @@ func TestEnsureConnectedInBackgroundSurvivesShortCallerWait(t *testing.T) {
 	}
 }
 
+func TestEnsureConnectedInBackgroundRemoveDoesNotResurrectServer(t *testing.T) {
+	lifeCtx, cancelLife := context.WithCancel(context.Background())
+	defer cancelLife()
+	host := NewHost()
+	defer host.Close()
+	spec := Spec{
+		Name:           "removed-background",
+		Command:        os.Args[0],
+		Args:           []string{"-test.run=TestHelperProcess", "--"},
+		StartupTimeout: 2 * time.Second,
+		Env: map[string]string{
+			"GO_WANT_HELPER_PROCESS": "1",
+			"GO_WANT_HELPER_INIT_MS": "500",
+		},
+	}
+	result := host.EnsureConnectedInBackground(lifeCtx, spec)
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		connecting := host.ConnectingServers()
+		if len(connecting) > 0 {
+			if len(connecting) != 1 || connecting[0] != spec.Name {
+				t.Fatalf("ConnectingServers = %v, want exact configured name %q", connecting, spec.Name)
+			}
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("background startup never entered the in-flight state")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if _, found := host.Remove(spec.Name); !found {
+		t.Fatal("Host.Remove did not cancel the background generation")
+	}
+	select {
+	case got := <-result:
+		if got.Err == nil {
+			t.Fatalf("removed background startup unexpectedly succeeded: %+v", got)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("removed background startup did not settle")
+	}
+	if host.HasClient(spec.Name) || len(host.ServerNames()) != 0 {
+		t.Fatalf("removed background server was resurrected: %v", host.ServerNames())
+	}
+}
+
 func TestStdioUsesConfiguredPATHForCommandLookup(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()

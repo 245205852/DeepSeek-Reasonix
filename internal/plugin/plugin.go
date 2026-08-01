@@ -779,8 +779,16 @@ func (h *Host) Failures() []Failure {
 func (h *Host) ConnectingServers() []string {
 	h.spawningMu.Lock()
 	defer h.spawningMu.Unlock()
-	out := make([]string, 0, len(h.spawning))
-	for name := range h.spawning {
+	names := make(map[string]struct{}, len(h.spawning))
+	for key, attempt := range h.spawning {
+		name := key
+		if attempt != nil && strings.TrimSpace(attempt.server) != "" {
+			name = attempt.server
+		}
+		names[name] = struct{}{}
+	}
+	out := make([]string, 0, len(names))
+	for name := range names {
 		out = append(out, name)
 	}
 	sort.Strings(out)
@@ -882,9 +890,10 @@ func (h *Host) endDeferredSpawn() {
 var ErrSpawningInFlight = errors.New("server spawn already in progress")
 
 type spawnAttempt struct {
-	done  chan struct{}
-	tools []tool.Tool
-	err   error
+	server string
+	done   chan struct{}
+	tools  []tool.Tool
+	err    error
 }
 
 // ConnectionResult is the eventual result of a session-owned background MCP
@@ -902,7 +911,7 @@ type ConnectionResult struct {
 func (h *Host) EnsureConnectedInBackground(lifeCtx context.Context, s Spec) <-chan ConnectionResult {
 	result := make(chan ConnectionResult, 1)
 	startupBase, cancelStartupBase := context.WithCancel(lifeCtx)
-	h.registerDeferredCancel(s.Name, cancelStartupBase)
+	generation := h.registerDeferredCancel(s.Name, cancelStartupBase)
 	if !h.beginDeferredSpawn() {
 		cancelStartupBase()
 		result <- ConnectionResult{Err: fmt.Errorf("plugin host is closed")}
@@ -913,7 +922,7 @@ func (h *Host) EnsureConnectedInBackground(lifeCtx context.Context, s Spec) <-ch
 		defer cancelStartupBase()
 		started := time.Now()
 		startupCtx, cancelStartup := context.WithTimeout(startupBase, s.startupTimeout())
-		tools, err := h.EnsureConnectedWithLifecycle(lifeCtx, startupCtx, s, 0)
+		tools, err := h.EnsureConnectedWithLifecycle(lifeCtx, startupCtx, s, generation)
 		cancelStartup()
 		if err != nil {
 			err = newStartupFailure("connect", started, "", err)
@@ -930,17 +939,17 @@ func (h *Host) EnsureConnectedInBackground(lifeCtx context.Context, s Spec) <-ch
 // Returns owner=true if the caller should proceed. When another caller is
 // already spawning the same server, owner=false and done is closed when that
 // spawn finishes.
-func (h *Host) beginSpawn(name string) (*spawnAttempt, bool) {
+func (h *Host) beginSpawn(key, server string) (*spawnAttempt, bool) {
 	h.spawningMu.Lock()
 	defer h.spawningMu.Unlock()
 	if h.spawning == nil {
 		h.spawning = make(map[string]*spawnAttempt)
 	}
-	if attempt, ok := h.spawning[name]; ok {
+	if attempt, ok := h.spawning[key]; ok {
 		return attempt, false
 	}
-	attempt := &spawnAttempt{done: make(chan struct{})}
-	h.spawning[name] = attempt
+	attempt := &spawnAttempt{server: server, done: make(chan struct{})}
+	h.spawning[key] = attempt
 	return attempt, true
 }
 
@@ -1226,7 +1235,7 @@ func (h *Host) addWithLifecycle(lifeCtx, callCtx context.Context, s Spec, deferr
 	if deferredGeneration != 0 {
 		spawnKey = fmt.Sprintf("%s#%d", s.Name, deferredGeneration)
 	}
-	attempt, owner := h.beginSpawn(spawnKey)
+	attempt, owner := h.beginSpawn(spawnKey, s.Name)
 	if !owner {
 		select {
 		case <-attempt.done:
