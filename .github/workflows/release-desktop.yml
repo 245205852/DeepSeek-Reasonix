@@ -142,6 +142,7 @@ jobs:
           RELEASE_CHANNEL: ${{ steps.release.outputs.channel }}
           RELEASE_TAG: ${{ steps.release.outputs.tag }}
           IN_ORCHESTRATED: ${{ inputs.orchestrated }}
+          IN_ORCHESTRATOR: ${{ inputs.orchestrator }}
           APPROVED_SHA: ${{ inputs.approved_sha }}
           CALLER_EVENT_NAME: ${{ github.event_name }}
           CALLER_REF: ${{ github.ref }}
@@ -557,6 +558,7 @@ jobs:
           RELEASE_CHANNEL: ${{ needs.resolve.outputs.channel }}
           RELEASE_TAG: ${{ needs.resolve.outputs.tag }}
           IN_ORCHESTRATED: ${{ inputs.orchestrated }}
+          IN_ORCHESTRATOR: ${{ inputs.orchestrator }}
           APPROVED_SHA: ${{ needs.resolve.outputs.sha }}
           CALLER_EVENT_NAME: ${{ github.event_name }}
           CALLER_REF: ${{ github.ref }}
@@ -715,6 +717,7 @@ jobs:
           RELEASE_CHANNEL: ${{ needs.resolve.outputs.channel }}
           RELEASE_TAG: ${{ needs.resolve.outputs.tag }}
           IN_ORCHESTRATED: ${{ inputs.orchestrated }}
+          IN_ORCHESTRATOR: ${{ inputs.orchestrator }}
           APPROVED_SHA: ${{ needs.resolve.outputs.sha }}
           CALLER_EVENT_NAME: ${{ github.event_name }}
           CALLER_REF: ${{ github.ref }}
