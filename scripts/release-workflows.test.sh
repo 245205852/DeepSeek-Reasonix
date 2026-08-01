@@ -235,6 +235,9 @@ grep -Fq "group: release-cli-\${{ inputs.channel || 'stable' }}" "$cli_release_w
 grep -Fq 'scripts/decide-cli-pointer-update.sh' "$cli_release_workflow"
 grep -Fq 'scripts/validate-cli-release-manifest.sh' "$cli_release_workflow"
 grep -Fq 'scripts/compare-cli-release-manifests.sh' "$cli_release_workflow"
+grep -Eq 'name: Decide whether CLI artifacts need publication' "$cli_release_workflow"
+grep -Fq 'scripts/decide-cli-release-publication.sh' "$cli_release_workflow"
+grep -Fq "if: \${{ steps.publication.outputs.decision == 'publish' }}" "$cli_release_workflow"
 grep -Fq 'immutable CLI release metadata for $TAG already exists with different content' "$cli_release_workflow"
 grep -Fq 'cmp -s /tmp/cli-release.json /tmp/cli-release.pointer.json' "$cli_release_workflow"
 grep -Eq 'internal CLI release .*Stable and Preview pointers remain unchanged' "$cli_release_workflow"
@@ -298,6 +301,86 @@ for asset in \
 	SHA256SUMS; do
 	grep -Fq "\"$asset\"" "$cli_release_workflow"
 done
+publication_decider="$repo_root/scripts/decide-cli-release-publication.sh"
+test -x "$publication_decider"
+[ "$(bash "$publication_decider" stable v1.2.3 esengine/DeepSeek-Reasonix - -)" = "publish" ]
+publication_checksums="$test_root/cli-publication-SHA256SUMS"
+publication_release="$test_root/cli-publication-release.json"
+publication_hash="0000000000000000000000000000000000000000000000000000000000000000"
+publication_assets='[
+	"reasonix-darwin-amd64.tar.gz",
+	"reasonix-darwin-arm64.tar.gz",
+	"reasonix-linux-amd64.tar.gz",
+	"reasonix-linux-arm64.tar.gz",
+	"reasonix-windows-amd64.zip",
+	"reasonix-windows-arm64.zip",
+	"SHA256SUMS"
+]'
+for asset in \
+	reasonix-darwin-amd64.tar.gz \
+	reasonix-darwin-arm64.tar.gz \
+	reasonix-linux-amd64.tar.gz \
+	reasonix-linux-arm64.tar.gz \
+	reasonix-windows-amd64.zip \
+	reasonix-windows-arm64.zip; do
+	printf '%s  %s\n' "$publication_hash" "$asset"
+done >"$publication_checksums"
+publication_checksum_hash="$(shasum -a 256 "$publication_checksums" | awk '{print $1}')"
+jq -n \
+	--arg repo "esengine/DeepSeek-Reasonix" \
+	--arg tag "v1.2.3" \
+	--arg archive_hash "$publication_hash" \
+	--arg checksum_hash "$publication_checksum_hash" \
+	--argjson names "$publication_assets" '
+	{
+		tag_name: $tag,
+		draft: false,
+		prerelease: false,
+		html_url: ("https://github.com/" + $repo + "/releases/tag/" + $tag),
+		assets: [
+			$names[] as $name |
+			{
+				name: $name,
+				state: "uploaded",
+				size: 1,
+				browser_download_url:
+					("https://github.com/" + $repo + "/releases/download/" + $tag + "/" + $name),
+				digest: ("sha256:" + (if $name == "SHA256SUMS" then $checksum_hash else $archive_hash end))
+			}
+		]
+	}
+' >"$publication_release"
+[ "$(bash "$publication_decider" stable v1.2.3 esengine/DeepSeek-Reasonix \
+	"$publication_release" "$publication_checksums")" = "reuse" ]
+publication_preview="$test_root/cli-publication-preview-release.json"
+jq '.tag_name = "v1.2.3-preview.4" | .prerelease = true |
+	.html_url = "https://github.com/esengine/DeepSeek-Reasonix/releases/tag/v1.2.3-preview.4" |
+	.assets |= map(.browser_download_url |= sub("/v1.2.3/"; "/v1.2.3-preview.4/"))' \
+	"$publication_release" >"$publication_preview"
+[ "$(bash "$publication_decider" preview v1.2.3-preview.4 esengine/DeepSeek-Reasonix \
+	"$publication_preview" "$publication_checksums")" = "reuse" ]
+publication_rc="$test_root/cli-publication-rc-release.json"
+jq '.tag_name = "v1.2.3-rc.1" | .prerelease = true |
+	.html_url = "https://github.com/esengine/DeepSeek-Reasonix/releases/tag/v1.2.3-rc.1" |
+	.assets |= map(.browser_download_url |= sub("/v1.2.3/"; "/v1.2.3-rc.1/"))' \
+	"$publication_release" >"$publication_rc"
+[ "$(bash "$publication_decider" any v1.2.3-rc.1 esengine/DeepSeek-Reasonix \
+	"$publication_rc" "$publication_checksums")" = "reuse" ]
+publication_partial="$test_root/cli-publication-partial-release.json"
+jq '.assets |= map(select(.name != "reasonix-linux-arm64.tar.gz"))' \
+	"$publication_release" >"$publication_partial"
+if bash "$publication_decider" stable v1.2.3 esengine/DeepSeek-Reasonix \
+	"$publication_partial" "$publication_checksums" >/dev/null 2>&1; then
+	echo "CLI publication decider accepted a partial existing release" >&2
+	exit 1
+fi
+publication_bad_checksums="$test_root/cli-publication-bad-SHA256SUMS"
+sed '1s/^0/1/' "$publication_checksums" >"$publication_bad_checksums"
+if bash "$publication_decider" stable v1.2.3 esengine/DeepSeek-Reasonix \
+	"$publication_release" "$publication_bad_checksums" >/dev/null 2>&1; then
+	echo "CLI publication decider accepted mismatched checksums" >&2
+	exit 1
+fi
 manifest_validator="$repo_root/scripts/validate-cli-release-manifest.sh"
 manifest_comparator="$repo_root/scripts/compare-cli-release-manifests.sh"
 test -x "$manifest_validator"
@@ -871,6 +954,10 @@ jq 'del(.downloads)' "$test_root/desktop-rolling-preview.json" \
 	>"$test_root/desktop-legacy-preview.json"
 bash "$desktop_validator" legacy-preview "$desktop_preview_version" \
 	"https://dl.reasonix.io/desktop-preview/" "$test_root/desktop-legacy-preview.json"
+jq 'del(.release_notes_url, .downloads)' "$desktop_preview_manifest" \
+	>"$test_root/desktop-legacy-preview-immutable.json"
+bash "$desktop_validator" legacy-preview "$desktop_preview_version" \
+	"$desktop_preview_base" "$test_root/desktop-legacy-preview-immutable.json"
 jq 'del(.downloads)' "$desktop_stable_manifest" >"$test_root/desktop-legacy-stable.json"
 bash "$desktop_validator" legacy-stable "$desktop_stable_version" \
 	"$desktop_stable_base" "$test_root/desktop-legacy-stable.json"

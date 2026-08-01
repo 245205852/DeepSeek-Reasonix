@@ -223,7 +223,46 @@ jobs:
           RELEASE_TAG: ${{ needs.resolve.outputs.tag }}
           APPROVED_SHA: ${{ needs.resolve.outputs.sha }}
         run: bash scripts/verify-release-tag.sh
+      - name: Decide whether CLI artifacts need publication
+        id: publication
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.resolve.outputs.tag }}
+          CHANNEL: ${{ needs.resolve.outputs.channel }}
+          PRERELEASE: ${{ needs.resolve.outputs.prerelease }}
+        run: |
+          set -euo pipefail
+          validation_channel="$CHANNEL"
+          if [ "$CHANNEL" = "stable" ] && [ "$PRERELEASE" = "true" ]; then
+            validation_channel=any
+          fi
+          release_json=/tmp/existing-cli-release.json
+          release_error=/tmp/existing-cli-release.error
+          checksums=/tmp/existing-cli-release-SHA256SUMS
+          if gh api "repos/${{ github.repository }}/releases/tags/$TAG" \
+            >"$release_json" 2>"$release_error"; then
+            gh release download "$TAG" -R "${{ github.repository }}" \
+              --pattern SHA256SUMS --output "$checksums"
+            decision="$(
+              bash scripts/decide-cli-release-publication.sh \
+                "$validation_channel" "$TAG" "${{ github.repository }}" \
+                "$release_json" "$checksums"
+            )"
+            echo "existing CLI release $TAG is complete and checksum-bound; reusing it"
+          elif grep -Eiq 'HTTP 404|Not Found' "$release_error"; then
+            decision="$(
+              bash scripts/decide-cli-release-publication.sh \
+                "$validation_channel" "$TAG" "${{ github.repository }}" - -
+            )"
+            echo "CLI release $TAG does not exist; GoReleaser will publish it"
+          else
+            cat "$release_error" >&2
+            exit 1
+          fi
+          test "$decision" = "publish" -o "$decision" = "reuse"
+          echo "decision=$decision" >> "$GITHUB_OUTPUT"
       - uses: goreleaser/goreleaser-action@v7
+        if: ${{ steps.publication.outputs.decision == 'publish' }}
         with:
           version: '~> v2'
           args: release --clean
