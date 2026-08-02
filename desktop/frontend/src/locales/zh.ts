@@ -923,6 +923,8 @@ export const zh: Record<DictKey, string> = {
   "status.jobStopping": "正在停止…",
   "status.jobStopFailed": "停止后台任务失败。",
   "status.jobOpenTask": "打开任务",
+  "status.runtimeRunning": "回合运行中",
+  "status.runtimePendingPrompt": "等待用户输入",
   "runtime.workspaceConflictTitle": "当前工作区正在被写入",
   "runtime.workspaceConflictBadge": "交付写入",
   "runtime.workspaceConflictLocal": "“{title}”当前正在写入这个工作区。",

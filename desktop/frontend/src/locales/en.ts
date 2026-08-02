@@ -922,6 +922,8 @@ export const en = {
   "status.jobStopping": "Stopping…",
   "status.jobStopFailed": "Failed to stop the background job.",
   "status.jobOpenTask": "Open task",
+  "status.runtimeRunning": "Turn running",
+  "status.runtimePendingPrompt": "Waiting for input",
   "runtime.workspaceConflictTitle": "This workspace is busy",
   "runtime.workspaceConflictBadge": "Delivery writer",
   "runtime.workspaceConflictLocal": "{title} is currently writing to this workspace.",

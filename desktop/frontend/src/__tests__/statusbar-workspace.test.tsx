@@ -137,6 +137,18 @@ console.log("\nstatus bar workspace");
 }
 
 {
+  const html = renderStatusBar({
+    items: ["model"],
+    backgroundRuntimes: [{
+      tabId: "running-1", title: "Detached delivery", detached: true,
+      running: true, pendingPrompt: false, jobs: [],
+    }],
+  });
+  ok(html.includes("Background jobs"), "a running detached task remains visible without child jobs");
+  ok(html.includes("<b>1</b>"), "a jobless active runtime contributes to the recovery count");
+}
+
+{
   const defaultItems = DEFAULT_STATUS_BAR_ITEMS as readonly string[];
   ok(!defaultItems.includes("autoresearch"), "autoresearch is not a configurable status bar UI item");
 }
@@ -212,6 +224,60 @@ console.log("\nstatus bar workspace");
   await act(async () => { globalStop?.click(); openTask?.click(); await Promise.resolve(); });
   ok(routed === "detached-1:go-1", "global jobs route Stop to the owning detached task");
   ok(revealed === "detached-1", "global jobs can reopen the exact detached task");
+
+  revealed = "";
+  await act(async () => {
+    root.render(
+      <LocaleProvider>
+        <StatusBar
+          context={{ used: 0, window: 0, sessionTokens: 0 }}
+          running={false}
+          backgroundRuntimes={[
+            {
+              tabId: "prompt-1", title: "Waiting delivery", detached: true,
+              running: false, pendingPrompt: true, jobs: [],
+            },
+          ]}
+          onRevealRuntime={async (tabID) => { revealed = tabID; }}
+        />
+      </LocaleProvider>,
+    );
+  });
+  const promptJobsButton = rootEl.querySelector<HTMLButtonElement>(".statusbar__jobs-trigger");
+  if (promptJobsButton?.getAttribute("aria-expanded") !== "true") {
+    await act(async () => { promptJobsButton?.click(); });
+  }
+  ok(document.body.textContent?.includes("Waiting for input") === true, "pending-prompt runtime explains why it remains active");
+  const promptOpenTask = document.body.querySelector<HTMLButtonElement>(".jobs-popover__runtime-header button");
+  await act(async () => { promptOpenTask?.click(); await Promise.resolve(); });
+  ok(revealed === "prompt-1", "a pending-prompt runtime can be reopened without child jobs");
+
+  await act(async () => {
+    root.render(
+      <LocaleProvider>
+        <StatusBar
+          context={{ used: 0, window: 0, sessionTokens: 0 }}
+          running={false}
+          workbenchTarget={{ kind: "ssh", hostId: "remote-1" }}
+          jobs={[{ id: "remote-job", kind: "bash", label: "remote build", status: "running", startedAt: 1 }]}
+          backgroundRuntimes={[
+            {
+              tabId: "local-1", title: "Local delivery", detached: true,
+              running: false, pendingPrompt: false,
+              jobs: [{ id: "local-job", kind: "go", label: "local test", status: "running", startedAt: 1 }],
+            },
+          ]}
+        />
+      </LocaleProvider>,
+    );
+  });
+  const mixedJobsButton = rootEl.querySelector<HTMLButtonElement>(".statusbar__jobs-trigger");
+  ok(mixedJobsButton?.textContent?.includes("2") === true, "local and active Remote Workbench jobs share the total count");
+  if (mixedJobsButton?.getAttribute("aria-expanded") !== "true") {
+    await act(async () => { mixedJobsButton?.click(); });
+  }
+  ok(document.body.textContent?.includes("local test") === true, "local background jobs remain visible in Remote Workbench");
+  ok(document.body.textContent?.includes("remote build") === true, "active Remote Workbench jobs remain visible beside local jobs");
   await act(async () => { root.unmount(); });
   dom.window.close();
 }

@@ -694,6 +694,8 @@ export const zhTW: Record<DictKey, string> = {
   "status.jobStopping": "正在停止…",
   "status.jobStopFailed": "停止背景任務失敗。",
   "status.jobOpenTask": "開啟任務",
+  "status.runtimeRunning": "回合執行中",
+  "status.runtimePendingPrompt": "等待使用者輸入",
   "runtime.workspaceConflictTitle": "目前工作區正在被寫入",
   "runtime.workspaceConflictBadge": "交付寫入",
   "runtime.workspaceConflictLocal": "「{title}」目前正在寫入這個工作區。",

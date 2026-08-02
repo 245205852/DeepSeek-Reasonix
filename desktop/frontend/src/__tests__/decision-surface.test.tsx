@@ -10,6 +10,7 @@ import { createRoot } from "react-dom/client";
 import gsap from "gsap";
 import { ApprovalModal } from "../components/ApprovalModal";
 import { ClearContextCard } from "../components/ClearContextCard";
+import { RuntimeDecisionCard } from "../components/RuntimeDecisionCard";
 import { LocaleProvider } from "../lib/i18n";
 import type { WireApproval } from "../lib/types";
 
@@ -612,6 +613,83 @@ console.log("\ndecision surface");
     await flushTimers(220);
   });
 	eq(JSON.stringify(answers[0]), JSON.stringify([true, false, false]), "fresh dynamic-tool decision is one-shot");
+
+  await act(async () => {
+    root.unmount();
+  });
+  dom.window.close();
+}
+
+// Runtime decisions expose direct actions, so their displayed number keys must
+// invoke the same callbacks while preserving normal typing behavior.
+{
+  const dom = installDom();
+  const root = createRoot(document.getElementById("root")!);
+  const selected: string[] = [];
+  let cancelled = 0;
+
+  await act(async () => {
+    root.render(
+      <LocaleProvider>
+        <RuntimeDecisionCard
+          id="runtime-shortcuts"
+          title="Choose runtime action"
+          badge="Runtime"
+          meta="Select an action"
+          actions={["1", "2", "3"].map((key) => ({
+            key,
+            label: `Action ${key}`,
+            description: `Run action ${key}`,
+            onClick: () => selected.push(key),
+          }))}
+          onCancel={() => { cancelled += 1; }}
+        />
+      </LocaleProvider>,
+    );
+    await flushTimers();
+  });
+
+  await act(async () => {
+    document.dispatchEvent(new window.KeyboardEvent("keydown", { key: "1", bubbles: true }));
+    document.dispatchEvent(new window.KeyboardEvent("keydown", { key: "2", bubbles: true }));
+    document.dispatchEvent(new window.KeyboardEvent("keydown", { key: "3", bubbles: true }));
+    await flushTimers();
+  });
+  eq(selected.join(","), "1,2,3", "runtime decision number keys invoke their displayed actions");
+
+  await act(async () => {
+    root.render(
+      <LocaleProvider>
+        <RuntimeDecisionCard
+          id="runtime-shortcuts"
+          title="Choose runtime action"
+          badge="Runtime"
+          meta="Select an action"
+          actions={[{
+            key: "2", label: "Unavailable action", description: "Cannot run yet",
+            disabled: true, onClick: () => selected.push("disabled"),
+          }]}
+          onCancel={() => { cancelled += 1; }}
+        />
+      </LocaleProvider>,
+    );
+    await flushTimers();
+  });
+  await act(async () => {
+    document.dispatchEvent(new window.KeyboardEvent("keydown", { key: "2", bubbles: true }));
+    await flushTimers();
+  });
+  eq(selected.join(","), "1,2,3", "runtime decision shortcuts do not invoke disabled actions");
+
+  const input = document.createElement("input");
+  document.body.append(input);
+  await act(async () => {
+    input.dispatchEvent(new window.KeyboardEvent("keydown", { key: "1", bubbles: true }));
+    document.dispatchEvent(new window.KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+    await flushTimers();
+  });
+  eq(selected.join(","), "1,2,3", "runtime decision shortcuts ignore editable fields");
+  eq(cancelled, 1, "Escape cancels the runtime decision");
 
   await act(async () => {
     root.unmount();

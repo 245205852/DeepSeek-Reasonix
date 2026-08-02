@@ -28,19 +28,32 @@ export function RuntimeDecisionCard({
   onCancel: () => void;
 }) {
   const shelfRef = useRef<HTMLDivElement | null>(null);
+  const actionsRef = useRef(actions);
+  const onCancelRef = useRef(onCancel);
+  actionsRef.current = actions;
+  onCancelRef.current = onCancel;
 
   useEffect(() => {
     shelfRef.current?.focus();
     const onKeyDown = (event: globalThis.KeyboardEvent) => {
-      if (event.key !== "Escape") return;
-      const target = event.target instanceof HTMLElement ? event.target : null;
-      if (target?.matches("input, textarea, [contenteditable=true]")) return;
+      const target = event.target instanceof Element ? event.target : null;
+      const tag = target?.tagName.toLowerCase();
+      if (tag === "input" || tag === "textarea" || (target instanceof HTMLElement && target.isContentEditable)) return;
+
+      if (event.key === "Escape") {
+        event.preventDefault();
+        onCancelRef.current();
+        return;
+      }
+      if (event.repeat || event.metaKey || event.ctrlKey || event.altKey) return;
+      const action = actionsRef.current.find((candidate) => candidate.key === event.key);
+      if (!action || action.disabled) return;
       event.preventDefault();
-      onCancel();
+      action.onClick();
     };
     document.addEventListener("keydown", onKeyDown);
     return () => document.removeEventListener("keydown", onKeyDown);
-  }, [onCancel]);
+  }, []);
 
   return (
     <PromptShelf

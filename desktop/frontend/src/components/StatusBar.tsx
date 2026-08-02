@@ -371,6 +371,7 @@ export function StatusBar({
         />
         <JobsStatusBarChip
           jobs={jobs}
+          activeJobsRemote={workbenchTarget?.kind === "ssh"}
           onCancelJob={onCancelJob}
           runtimes={backgroundRuntimes}
           onCancelRuntimeJob={onCancelRuntimeJob}
@@ -388,12 +389,14 @@ export function StatusBar({
 
 function JobsStatusBarChip({
   jobs,
+  activeJobsRemote,
   onCancelJob,
   runtimes,
   onCancelRuntimeJob,
   onRevealRuntime,
 }: {
   jobs: JobView[];
+  activeJobsRemote: boolean;
   onCancelJob?: (jobID: string) => Promise<boolean>;
   runtimes: BackgroundRuntimeView[];
   onCancelRuntimeJob?: (tabID: string, jobID: string) => Promise<boolean>;
@@ -403,17 +406,21 @@ function JobsStatusBarChip({
   const [open, setOpen] = useState(false);
   const [stopping, setStopping] = useState<Set<string>>(() => new Set());
   const triggerRef = useRef<HTMLButtonElement>(null);
-  const groups = runtimes.some((runtime) => runtime.jobs.length > 0)
-    ? runtimes.filter((runtime) => runtime.jobs.length > 0)
-    : jobs.length > 0
-      ? [{ tabId: "", title: "", detached: false, running: false, pendingPrompt: false, jobs }]
-      : [];
-  const totalJobs = groups.reduce((total, runtime) => total + runtime.jobs.length, 0);
+  const groups = runtimes.filter((runtime) => runtime.running || runtime.pendingPrompt || runtime.jobs.length > 0);
+  // BackgroundRuntimes is process-local, while active Remote Workbench jobs
+  // arrive through the active controller snapshot. Keep both sources visible.
+  if (jobs.length > 0 && (activeJobsRemote || !groups.some((runtime) => runtime.jobs.length > 0))) {
+    groups.push({ tabId: "", title: "", detached: false, running: false, pendingPrompt: false, jobs });
+  }
+  const totalActivity = groups.reduce(
+    (total, runtime) => total + Math.max(1, runtime.jobs.length),
+    0,
+  );
 
   useEffect(() => {
-    if (totalJobs === 0) setOpen(false);
-  }, [totalJobs]);
-  if (totalJobs === 0) return null;
+    if (totalActivity === 0) setOpen(false);
+  }, [totalActivity]);
+  if (totalActivity === 0) return null;
 
   const stop = async (tabID: string, jobID: string) => {
     const key = `${tabID}:${jobID}`;
@@ -438,14 +445,14 @@ function JobsStatusBarChip({
         ref={triggerRef}
         type="button"
         className="statusbar__jobs-trigger"
-        aria-label={`${t("status.jobsTitle")}: ${t("status.jobs", { n: totalJobs })}`}
+        aria-label={`${t("status.jobsTitle")}: ${t("status.jobs", { n: totalActivity })}`}
         aria-expanded={open}
         aria-haspopup="dialog"
         title={t("status.jobsTitle")}
         onClick={() => setOpen((value) => !value)}
       >
         <Activity size={12} aria-hidden="true" />
-        <b>{totalJobs}</b>
+        <b>{totalActivity}</b>
       </button>
       <AnchoredPopover open={open} anchorRef={triggerRef} onClose={() => setOpen(false)} className="jobs-popover" align="start">
         <section role="dialog" aria-label={t("status.jobsTitle")}>
@@ -453,14 +460,21 @@ function JobsStatusBarChip({
           <div className="jobs-popover__list">
             {groups.map((runtime) => (
               <div className="jobs-popover__runtime" key={runtime.tabId || "active"}>
-                {runtime.title && (
+                {runtime.tabId && (
                   <div className="jobs-popover__runtime-header">
-                    <strong>{runtime.title}</strong>
-                    {runtime.tabId && onRevealRuntime && (
+                    <strong>{runtime.title || t("runtime.unknownTask")}</strong>
+                    {onRevealRuntime && (
                       <button type="button" className="btn btn--small" onClick={() => void onRevealRuntime(runtime.tabId)}>
                         {t("status.jobOpenTask")}
                       </button>
                     )}
+                  </div>
+                )}
+                {runtime.jobs.length === 0 && (
+                  <div className="jobs-popover__job">
+                    <span className="jobs-popover__copy">
+                      <strong>{runtime.pendingPrompt ? t("status.runtimePendingPrompt") : t("status.runtimeRunning")}</strong>
+                    </span>
                   </div>
                 )}
                 {runtime.jobs.map((job) => {
