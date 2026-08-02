@@ -14,7 +14,7 @@ func TestIsNonTurnHTTPInput(t *testing.T) {
 		{"/compact", true},       // slash command
 		{"/model qwen3", true},   // management verb
 		{"/new", true},           // slash command
-		{"!ls", false},           // shell-ish input is not a slash command
+		{"!ls", true},            // shell commands rejected by submitHTTP (403) before any turn
 		{"hello", false},         // ordinary turn
 		{"explain this code", false},
 	} {

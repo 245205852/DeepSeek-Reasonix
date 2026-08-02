@@ -1049,6 +1049,11 @@ func isNonTurnHTTPInput(input string) bool {
 	if _, ok := RememberCommandNote(trimmed); ok {
 		return true
 	}
+	// "!" shell commands are rejected by submitHTTP before the turn loop
+	// (403 over HTTP); a format attached to them would never be consumed.
+	if strings.HasPrefix(trimmed, "!") {
+		return true
+	}
 	// Slash commands are management verbs (/compact /new /clear /model ...)
 	// or notices, not completion turns.
 	if strings.HasPrefix(trimmed, "/") {
