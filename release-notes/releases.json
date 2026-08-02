@@ -2,6 +2,240 @@
   "schemaVersion": 1,
   "releases": [
     {
+      "version": "1.19.2",
+      "date": "2026-08-02",
+      "channel": "stable",
+      "title": {
+        "en": "Reasonix v1.19.2",
+        "zh": "Reasonix 1.19.2"
+      },
+      "summary": {
+        "en": "Unified update channel, adaptive syntax highlighting, and agent reliability fixes.",
+        "zh": "统一更新通道、自适应语法高亮以及多项代理可靠性修复。"
+      },
+      "surfaces": [
+        "desktop",
+        "cli",
+        "agent",
+        "mcp"
+      ],
+      "guides": [
+        {
+          "title": {
+            "en": "Capability Diagnostics Guide",
+            "zh": "能力诊断指南"
+          },
+          "body": {
+            "en": "Comprehensive documentation for diagnosing and understanding capability states.",
+            "zh": "有关诊断和理解能力状态的全面文档。"
+          },
+          "href": "https://github.com/esengine/DeepSeek-Reasonix/blob/f72874d49b56610edca9e6968816b12988386bb9/docs/CAPABILITY_DIAGNOSTICS.md"
+        },
+        {
+          "title": {
+            "en": "User Guide",
+            "zh": "用户指南"
+          },
+          "body": {
+            "en": "General user guide for Reasonix.",
+            "zh": "Reasonix 通用用户指南。"
+          },
+          "href": "https://github.com/esengine/DeepSeek-Reasonix/blob/f72874d49b56610edca9e6968816b12988386bb9/docs/GUIDE.md"
+        },
+        {
+          "title": {
+            "en": "Specification",
+            "zh": "规范"
+          },
+          "body": {
+            "en": "Technical specification for Reasonix.",
+            "zh": "Reasonix 技术规范。"
+          },
+          "href": "https://github.com/esengine/DeepSeek-Reasonix/blob/f72874d49b56610edca9e6968816b12988386bb9/docs/SPEC.md"
+        }
+      ],
+      "highlights": [
+        {
+          "kind": "improved",
+          "title": {
+            "en": "Unified update channel",
+            "zh": "统一更新通道"
+          },
+          "body": {
+            "en": "All clients now use a single official release channel, removing channel-specific controls and simplifying updates. Legacy channel values are mapped to the official release with a deprecation notice.",
+            "zh": "所有客户端现在使用单一的官方发布通道，消除特定于通道的控制，简化更新。旧通道值映射到官方发布并带有弃用提示。"
+          },
+          "refs": [
+            7201
+          ]
+        },
+        {
+          "kind": "improved",
+          "title": {
+            "en": "Adaptive syntax highlighting",
+            "zh": "自适应语法高亮"
+          },
+          "body": {
+            "en": "Code and diff blocks now adapt to light and dark themes with WCAG-compliant contrast, improving readability across all themes.",
+            "zh": "代码和差异块现在适应浅色和深色主题，具有符合 WCAG 的对比度，提高在所有主题下的可读性。"
+          },
+          "refs": [
+            7159
+          ]
+        },
+        {
+          "kind": "fixed",
+          "title": {
+            "en": "Reduced agent warning noise",
+            "zh": "减少代理警告噪音"
+          },
+          "body": {
+            "en": "Missing reasoning content warnings for DeepSeek thinking mode are now rate-limited to avoid repeated notifications.",
+            "zh": "DeepSeek 思考模式缺少推理内容警告现在被限频，以避免重复通知。"
+          },
+          "refs": [
+            7109
+          ]
+        },
+        {
+          "kind": "fixed",
+          "title": {
+            "en": "Improved delivery readiness recovery",
+            "zh": "改进交付就绪验证恢复"
+          },
+          "body": {
+            "en": "The agent now provides concrete safe verification commands when the model gets stuck in delivery readiness, reducing failed preparation attempts.",
+            "zh": "当模型在交付就绪中卡住时，代理现在提供具体的安全验证命令，减少失败的准备尝试。"
+          },
+          "refs": [
+            7146
+          ]
+        },
+        {
+          "kind": "fixed",
+          "title": {
+            "en": "MCP server cold start resilience",
+            "zh": "MCP 服务器冷启动弹性"
+          },
+          "body": {
+          "en": "Slow-starting MCP servers no longer enter restart loops; they continue initializing in the background, and users receive a retry-later prompt.",
+            "zh": "启动缓慢的 MCP 服务器不再陷入重启循环；它们在后台继续初始化，用户会收到稍后重试的提示。"
+          },
+          "refs": [
+            7164
+          ]
+        }
+      ],
+      "changes": {
+        "new": [],
+        "improved": [
+          {
+            "title": {
+              "en": "Update channel unification",
+              "zh": "更新通道统一"
+            },
+            "body": {
+            "en": "Clients now normalize all legacy channel values to the official release. Deprecated options remain compatible and show a notice.",
+              "zh": "客户端现在将所有旧通道值规范化为官方发布。已弃用的选项保持兼容并显示提示。"
+            },
+            "refs": [
+              7201
+            ]
+          },
+          {
+            "title": {
+              "en": "Theme-adaptive code highlighting",
+              "zh": "主题自适应代码高亮"
+            },
+            "body": {
+              "en": "Code interfaces in desktop and CLI now follow the active theme, with safe contrast on all surfaces, including diffs.",
+              "zh": "桌面和命令行中的代码界面现在遵循活动主题，所有表面（包括差异）上都有安全的对比度。"
+            },
+            "refs": [
+              7159
+            ]
+          }
+        ],
+        "fixed": [
+          {
+            "title": {
+              "en": "Rate-limit missing reasoning warnings",
+              "zh": "限频缺失推理警告"
+            },
+            "body": {
+              "en": "The warning for missing tool-call reasoning content in DeepSeek thinking mode is now rate-limited to once per 24-hour incident.",
+              "zh": "DeepSeek 思考模式下缺失工具调用推理内容的警告现在被限频为每个事件每 24 小时一次。"
+            },
+            "refs": [
+              7109
+            ]
+          },
+          {
+            "title": {
+              "en": "Delivery readiness verification recovery",
+              "zh": "交付就绪验证恢复"
+            },
+            "body": {
+              "en": "The agent now guides the model with safe verification commands when it struggles with readiness, reducing retries.",
+              "zh": "当模型在准备就绪上遇到困难时，代理现在用安全的验证命令引导模型，减少重试。"
+            },
+            "refs": [
+              7146
+            ]
+          },
+          {
+            "title": {
+              "en": "MCP cold start backgrounding",
+              "zh": "MCP 冷启动后台化"
+            },
+            "body": {
+              "en": "MCP servers that start slowly continue in the background; users get a retry-later error instead of repeated restarts.",
+              "zh": "启动缓慢的 MCP 服务器在后台继续；用户会收到稍后重试的错误，而不是重复重启。"
+            },
+            "refs": [
+              7164
+            ]
+          }
+        ]
+      },
+      "upgrade": [
+        {
+          "level": "info",
+          "title": {
+            "en": "Update channel migration",
+            "zh": "更新通道迁移"
+          },
+          "body": {
+            "en": "Legacy update channels (stable, preview) have been unified into the official release channel. The old `--channel` option and `reasonix upgrade stable/preview` commands are still accepted but deprecated and will show a notice.",
+            "zh": "旧更新通道（stable、preview）已统一为官方发布通道。旧的 `--channel` 选项以及 `reasonix upgrade stable/preview` 命令仍然可用，但已被弃用并会显示提示。"
+          },
+          "refs": [
+            7201
+          ]
+        }
+      ],
+      "risks": [],
+      "contributors": [
+        "SivanCola",
+        "sudoviber",
+        "Q1hangL"
+      ],
+      "links": {
+        "github": "https://github.com/esengine/DeepSeek-Reasonix/releases/tag/desktop-v1.19.2",
+        "compare": "https://github.com/esengine/DeepSeek-Reasonix/compare/v1.19.1...desktop-v1.19.2",
+        "download": "https://reasonix.io/?download=desktop&channel=stable#start"
+      },
+      "releaseId": "1.19.2",
+      "baseVersion": "1.19.2",
+      "status": "reviewed",
+      "previousRelease": "1.19.1",
+      "builds": {
+        "cli": "v1.19.2",
+        "desktop": "v1.19.2",
+        "npm": "1.19.2"
+      }
+    },
+    {
       "version": "1.19.2-preview.1",
       "date": "2026-08-02",
       "channel": "prerelease",
