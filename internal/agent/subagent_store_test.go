@@ -2,6 +2,7 @@ package agent
 
 import (
 	"bufio"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -682,6 +683,44 @@ func TestSubagentStoreCleanupStaleRunningSkipsMissingParentProof(t *testing.T) {
 	}
 	if meta.Status != SubagentRunning {
 		t.Fatalf("status = %q without parent proof, want running", meta.Status)
+	}
+}
+
+func TestSubagentStoreCleanupStaleRunningSkipsCorruptMeta(t *testing.T) {
+	store := NewSubagentStore(t.TempDir())
+	spec := testSubagentSpec(t, "review")
+	run, err := store.PrepareFresh(spec)
+	if err != nil {
+		t.Fatalf("PrepareFresh: %v", err)
+	}
+	if err := store.MarkRunning(run); err != nil {
+		t.Fatalf("MarkRunning: %v", err)
+	}
+	ref := run.Ref
+	run.Release()
+
+	// Corrupt metadata files (truncated JSON and empty) must be skipped,
+	// not abort the whole startup cleanup.
+	for i, corrupt := range []string{`{"status":"running"`, ""} {
+		corruptRef := fmt.Sprintf("sa_corrupt_%d", i)
+		if err := os.WriteFile(filepath.Join(store.dir, corruptRef+".meta.json"), []byte(corrupt), 0o600); err != nil {
+			t.Fatalf("write corrupt meta %d: %v", i, err)
+		}
+	}
+
+	cleaned, err := store.CleanupStaleRunning()
+	if err != nil {
+		t.Fatalf("CleanupStaleRunning should skip corrupt meta: %v", err)
+	}
+	if cleaned != 1 {
+		t.Fatalf("cleaned = %d, want 1 (corrupt metas skipped, running meta interrupted)", cleaned)
+	}
+	meta, err := store.LoadMeta(ref)
+	if err != nil {
+		t.Fatalf("LoadMeta: %v", err)
+	}
+	if meta.Status != SubagentInterrupted {
+		t.Fatalf("status = %q, want interrupted", meta.Status)
 	}
 }
 

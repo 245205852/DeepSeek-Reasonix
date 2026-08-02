@@ -228,6 +228,16 @@ func (s *SubagentStore) CleanupStaleRunning() (int, error) {
 		}
 		meta, err := s.LoadMeta(ref)
 		if err != nil {
+			// A corrupt metadata file (truncated write, killed process) must
+			// not abort startup: skip it. ListSubagentsByParent tolerates any
+			// undecodable entry; here the tolerance is deliberately narrower —
+			// only JSON decode failures are skipped, while genuine I/O errors
+			// still fail so storage problems stay visible.
+			var syntaxErr *json.SyntaxError
+			var typeErr *json.UnmarshalTypeError
+			if errors.As(err, &syntaxErr) || errors.As(err, &typeErr) {
+				continue
+			}
 			return 0, err
 		}
 		if meta.Status != SubagentRunning {
