@@ -39,13 +39,7 @@ func validateUpdaterRequest(requestID, selectedChannel, expectedVersion string) 
 	}
 	selectedChannel = targetUpdateChannel(selectedChannel)
 	expectedVersion = strings.TrimSpace(expectedVersion)
-	var valid bool
-	if selectedChannel == "preview" {
-		valid = previewDesktopVersionRE.MatchString(expectedVersion)
-	} else {
-		valid = stableDesktopVersionRE.MatchString(expectedVersion)
-	}
-	if !valid {
+	if !stableDesktopVersionRE.MatchString(expectedVersion) {
 		return "", "", "", fmt.Errorf("update: invalid %s version %q", selectedChannel, expectedVersion)
 	}
 	return requestID, selectedChannel, expectedVersion, nil

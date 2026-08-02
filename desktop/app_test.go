@@ -1057,7 +1057,7 @@ func TestDesktopStartupSettingsUsesUserDesktopPreferencesWithoutFullSettingsPayl
 	}
 
 	got := NewApp().DesktopStartupSettings()
-	if got.DesktopLanguage != "en" || got.DesktopLayoutStyle != "classic" || got.DesktopTheme != "dark" || got.DesktopThemeStyle != "graphite" || got.DisplayMode != "standard" || got.StatusBarStyle != "icon" || got.CheckUpdates || got.UpdateChannel != "preview" {
+	if got.DesktopLanguage != "en" || got.DesktopLayoutStyle != "classic" || got.DesktopTheme != "dark" || got.DesktopThemeStyle != "graphite" || got.DisplayMode != "standard" || got.StatusBarStyle != "icon" || got.CheckUpdates || got.UpdateChannel != "stable" {
 		t.Fatalf("DesktopStartupSettings desktop prefs = %+v, want user-level startup prefs", got)
 	}
 	if want := []string{"workspace", "git_branch", "model"}; !reflect.DeepEqual(got.StatusBarItems, want) {
