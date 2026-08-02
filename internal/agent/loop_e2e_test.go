@@ -3,6 +3,8 @@ package agent
 import (
 	"context"
 	"errors"
+	"os"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -561,6 +563,50 @@ func TestHealthyToolCallReasoningRearmsFutureRegression(t *testing.T) {
 	}
 	if got := run(missing); got != 1 {
 		t.Fatalf("post-recovery regression warnings = %d, want 1", got)
+	}
+}
+
+func TestHealthyToolCallReasoningRetriesTransientStateWriteFailure(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("chmod permissions are not portable to Windows")
+	}
+	stateDir := t.TempDir()
+	sink := &recordSink{}
+	prov := toolCallReasoningRequiredProvider{testutil.NewMock("deepseek-proxy")}
+	a := New(prov, echoRegistry(), NewSession(""), Options{MissingReasoningWarnStateDir: stateDir}, sink)
+	calls := []provider.ToolCall{{ID: "c1", Name: "echo", Arguments: `{"text":"hi"}`}}
+	warnCount := func() int {
+		var count int
+		for _, e := range sink.kinds(event.Notice) {
+			if e.Level == event.LevelWarn && strings.Contains(e.Text, "without replayable thinking content") {
+				count++
+			}
+		}
+		return count
+	}
+
+	a.warnMissingToolCallReasoning(calls, "")
+	if got := warnCount(); got != 1 {
+		t.Fatalf("initial warnings = %d, want 1", got)
+	}
+	if err := os.Chmod(stateDir, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	permissionsRestored := false
+	defer func() {
+		if !permissionsRestored {
+			_ = os.Chmod(stateDir, 0o700)
+		}
+	}()
+	a.warnMissingToolCallReasoning(calls, "healthy reasoning")
+	if err := os.Chmod(stateDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	permissionsRestored = true
+
+	a.warnMissingToolCallReasoning(calls, "")
+	if got := warnCount(); got != 2 {
+		t.Fatalf("warnings after transient healthy-state write failure = %d, want 2", got)
 	}
 }
 

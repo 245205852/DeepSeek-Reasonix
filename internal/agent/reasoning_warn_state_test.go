@@ -4,6 +4,8 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -21,10 +23,14 @@ func warningFingerprint(label string) string {
 	return hex.EncodeToString(digest[:])
 }
 
+func missingReasoningTestNow() time.Time {
+	return time.Now().Add(-time.Hour).Truncate(time.Millisecond)
+}
+
 func TestMissingReasoningWarnStatePersistsCurrentIncidentAcrossInstances(t *testing.T) {
 	dir := t.TempDir()
 	fingerprint := warningFingerprint("openai\x00deepseek\x00v4-pro")
-	observedAt := time.Unix(1_800_000_000, 0)
+	observedAt := missingReasoningTestNow()
 	if !newMissingReasoningWarnState(dir).claimAt(fingerprint, observedAt) {
 		t.Fatal("fresh configuration must claim its first incident notice")
 	}
@@ -36,7 +42,9 @@ func TestMissingReasoningWarnStatePersistsCurrentIncidentAcrossInstances(t *test
 	if err != nil {
 		t.Fatalf("state file missing after claim: %v", err)
 	}
-	want := `{"version":2,"incidents":[{"fingerprint":"` + fingerprint + `","warnedAtUnixMs":1800000000000,"lastMissingAtUnixMs":1800000060000}]}`
+	latestObservedAt := observedAt.Add(time.Minute)
+	want := fmt.Sprintf(`{"version":2,"incidents":[{"fingerprint":"%s","warnedAtUnixMs":%d,"lastMissingAtUnixMs":%d,"lastMissingAtUnixNano":%d}]}`,
+		fingerprint, observedAt.UnixMilli(), latestObservedAt.UnixMilli(), latestObservedAt.UnixNano())
 	if got := string(b); got != want {
 		t.Fatalf("state file = %s, want %s", got, want)
 	}
@@ -48,7 +56,7 @@ func TestMissingReasoningWarnStatePersistsCurrentIncidentAcrossInstances(t *test
 func TestMissingReasoningWarnStateSeparatesConfigurationFingerprints(t *testing.T) {
 	dir := t.TempDir()
 	s := newMissingReasoningWarnState(dir)
-	now := time.Unix(1_800_000_000, 0)
+	now := missingReasoningTestNow()
 	if !s.claimAt(warningFingerprint("endpoint-a\x00model-a"), now) {
 		t.Fatal("first configuration must warn")
 	}
@@ -63,7 +71,7 @@ func TestMissingReasoningWarnStateSeparatesConfigurationFingerprints(t *testing.
 func TestMissingReasoningWarnStateExpiresCooldown(t *testing.T) {
 	s := newMissingReasoningWarnState(t.TempDir())
 	fingerprint := warningFingerprint("config")
-	now := time.Unix(1_800_000_000, 0)
+	now := missingReasoningTestNow()
 	if !s.claimAt(fingerprint, now) {
 		t.Fatal("fresh incident must warn")
 	}
@@ -78,7 +86,7 @@ func TestMissingReasoningWarnStateExpiresCooldown(t *testing.T) {
 func TestMissingReasoningWarnStateHealthyTurnRearmsRegression(t *testing.T) {
 	s := newMissingReasoningWarnState(t.TempDir())
 	fingerprint := warningFingerprint("config")
-	now := time.Unix(1_800_000_000, 0)
+	now := missingReasoningTestNow()
 	if !s.claimAt(fingerprint, now) {
 		t.Fatal("fresh incident must warn")
 	}
@@ -91,7 +99,7 @@ func TestMissingReasoningWarnStateHealthyTurnRearmsRegression(t *testing.T) {
 func TestMissingReasoningWarnStateStaleHealthCannotClearNewerFailure(t *testing.T) {
 	s := newMissingReasoningWarnState(t.TempDir())
 	fingerprint := warningFingerprint("config")
-	now := time.Unix(1_800_000_000, 0)
+	now := missingReasoningTestNow()
 	if !s.claimAt(fingerprint, now) {
 		t.Fatal("fresh incident must warn")
 	}
@@ -106,6 +114,56 @@ func TestMissingReasoningWarnStateStaleHealthCannotClearNewerFailure(t *testing.
 	}
 }
 
+func TestMissingReasoningWarnStateDelayedFailureCannotReviveResolvedIncident(t *testing.T) {
+	s := newMissingReasoningWarnState(t.TempDir())
+	fingerprint := warningFingerprint("config")
+	now := time.Now()
+	firstMissingAt := now.Add(-4 * time.Millisecond)
+	delayedMissingAt := now.Add(-2 * time.Millisecond)
+	healthyAt := now.Add(-time.Millisecond)
+
+	if !s.persistClaimAt(fingerprint, firstMissingAt) {
+		t.Fatal("fresh incident must warn")
+	}
+	s.resolveAt(fingerprint, healthyAt)
+	// Simulate a missing observation that happened before the healthy result but
+	// completed its cross-process transaction afterward.
+	if s.persistClaimAt(fingerprint, delayedMissingAt) {
+		t.Fatal("delayed pre-recovery failure revived a resolved incident")
+	}
+	if !s.claimAt(fingerprint, now) {
+		t.Fatal("healthy result did not re-arm a later regression")
+	}
+}
+
+func TestMissingReasoningWarnStateFutureLastMissingSelfHeals(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, missingReasoningWarnStateFilename)
+	fingerprint := warningFingerprint("config")
+	now := time.Now().Truncate(time.Millisecond)
+	doc := missingReasoningWarnDocument{
+		Version: missingReasoningWarnStateVersion,
+		Incidents: []missingReasoningIncident{{
+			Fingerprint:       fingerprint,
+			WarnedAtUnixMs:    now.UnixMilli(),
+			LastMissingUnixMs: now.Add(time.Hour).UnixMilli(),
+		}},
+	}
+	b, err := json.Marshal(doc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, b, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	s := newMissingReasoningWarnState(dir)
+	s.resolveAt(fingerprint, now.Add(time.Minute))
+	if !s.claimAt(fingerprint, now.Add(2*time.Minute)) {
+		t.Fatal("future last-missing timestamp suppressed a re-armed regression")
+	}
+}
+
 func TestMissingReasoningWarnStateLegacyPreviewRearmsAndMigrates(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, missingReasoningWarnStateFilename)
@@ -113,7 +171,7 @@ func TestMissingReasoningWarnStateLegacyPreviewRearmsAndMigrates(t *testing.T) {
 		t.Fatalf("seed legacy state: %v", err)
 	}
 	s := newMissingReasoningWarnState(dir)
-	if !s.claimAt(warningFingerprint("deepseek-current-config"), time.Unix(1_800_000_000, 0)) {
+	if !s.claimAt(warningFingerprint("deepseek-current-config"), missingReasoningTestNow()) {
 		t.Fatal("legacy provider-name marker must not suppress a configuration-scoped incident")
 	}
 	b, err := os.ReadFile(path)
@@ -125,6 +183,23 @@ func TestMissingReasoningWarnStateLegacyPreviewRearmsAndMigrates(t *testing.T) {
 	}
 }
 
+func TestMissingReasoningWarnStateLoadsV2IncidentWithoutNanosecondField(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, missingReasoningWarnStateFilename)
+	fingerprint := warningFingerprint("config")
+	now := missingReasoningTestNow()
+	doc := fmt.Sprintf(`{"version":2,"incidents":[{"fingerprint":"%s","warnedAtUnixMs":%d,"lastMissingAtUnixMs":%d}]}`,
+		fingerprint, now.UnixMilli(), now.UnixMilli())
+	if err := os.WriteFile(path, []byte(doc), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	s := newMissingReasoningWarnState(dir)
+	if s.claimAt(fingerprint, now.Add(time.Minute)) {
+		t.Fatal("v2 incident without nanosecond fields did not retain its active warning")
+	}
+}
+
 func TestMissingReasoningWarnStateCorruptFileSelfHeals(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, missingReasoningWarnStateFilename)
@@ -133,7 +208,7 @@ func TestMissingReasoningWarnStateCorruptFileSelfHeals(t *testing.T) {
 	}
 	fingerprint := warningFingerprint("config")
 	s := newMissingReasoningWarnState(dir)
-	now := time.Unix(1_800_000_000, 0)
+	now := missingReasoningTestNow()
 	if !s.claimAt(fingerprint, now) {
 		t.Fatal("corrupt state must re-arm the incident")
 	}
@@ -145,7 +220,7 @@ func TestMissingReasoningWarnStateCorruptFileSelfHeals(t *testing.T) {
 func TestMissingReasoningWarnStateUsesOwnerOnlyPermissions(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "state")
 	s := newMissingReasoningWarnState(dir)
-	if !s.claimAt(warningFingerprint("config"), time.Unix(1_800_000_000, 0)) {
+	if !s.claimAt(warningFingerprint("config"), missingReasoningTestNow()) {
 		t.Fatal("fresh incident must warn")
 	}
 	dirInfo, err := os.Stat(dir)
@@ -169,8 +244,50 @@ func TestMissingReasoningWarnStateIOFailureFallsBackVisible(t *testing.T) {
 	if err := os.WriteFile(path, []byte("occupied"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if !newMissingReasoningWarnState(path).claimAt(warningFingerprint("config"), time.Unix(1_800_000_000, 0)) {
+	if !newMissingReasoningWarnState(path).claimAt(warningFingerprint("config"), missingReasoningTestNow()) {
 		t.Fatal("state I/O failure must keep the diagnostic visible")
+	}
+}
+
+func TestMissingReasoningWarnStateReadFailureDoesNotOverwriteExistingIncidents(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("chmod permissions are not portable to Windows")
+	}
+	dir := t.TempDir()
+	path := filepath.Join(dir, missingReasoningWarnStateFilename)
+	s := newMissingReasoningWarnState(dir)
+	now := missingReasoningTestNow()
+	existingFingerprint := warningFingerprint("existing")
+	newFingerprint := warningFingerprint("new")
+	if !s.claimAt(existingFingerprint, now) {
+		t.Fatal("fresh existing incident must warn")
+	}
+	if err := os.Chmod(path, 0); err != nil {
+		t.Fatal(err)
+	}
+	permissionsRestored := false
+	defer func() {
+		if !permissionsRestored {
+			_ = os.Chmod(path, 0o600)
+		}
+	}()
+	if !s.claimAt(newFingerprint, now.Add(time.Minute)) {
+		t.Fatal("state read failure must keep the new diagnostic visible")
+	}
+	if err := os.Chmod(path, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	permissionsRestored = true
+
+	incidents, err := s.load(now.Add(2 * time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := incidents[existingFingerprint]; !ok {
+		t.Fatal("state read failure overwrote the existing incident")
+	}
+	if _, ok := incidents[newFingerprint]; ok {
+		t.Fatal("new incident was unexpectedly persisted from a partial read")
 	}
 }
 
@@ -188,7 +305,7 @@ func TestMissingReasoningWarnStateEmptyDirFallsBackVisible(t *testing.T) {
 func TestMissingReasoningWarnStateConcurrentSameIncidentWarnsOnce(t *testing.T) {
 	dir := t.TempDir()
 	fingerprint := warningFingerprint("shared-config")
-	now := time.Unix(1_800_000_000, 0)
+	now := missingReasoningTestNow()
 	start := make(chan struct{})
 	var warned atomic.Int64
 	var wg sync.WaitGroup
@@ -213,7 +330,7 @@ func TestMissingReasoningWarnStateConcurrentFollowerPersistsLatestObservation(t 
 	dir := t.TempDir()
 	s := newMissingReasoningWarnState(dir)
 	fingerprint := warningFingerprint("shared-config")
-	firstObservedAt := time.Unix(1_800_000_000, 0)
+	firstObservedAt := missingReasoningTestNow()
 	latestObservedAt := firstObservedAt.Add(2 * time.Millisecond)
 
 	releaseLock, err := filelock.Acquire(context.Background(), s.lockPath())
@@ -256,7 +373,10 @@ func TestMissingReasoningWarnStateConcurrentFollowerPersistsLatestObservation(t 
 		t.Fatal("leader must keep the first incident warning visible")
 	}
 
-	incidents := s.load(latestObservedAt)
+	incidents, err := s.load(latestObservedAt)
+	if err != nil {
+		t.Fatal(err)
+	}
 	incident, ok := incidents[fingerprint]
 	if !ok || len(incidents) != 1 {
 		t.Fatalf("persisted incidents = %#v, want only %q", incidents, fingerprint)
@@ -268,7 +388,7 @@ func TestMissingReasoningWarnStateConcurrentFollowerPersistsLatestObservation(t 
 
 func TestMissingReasoningWarnStateConcurrentClaimsKeepEveryConfiguration(t *testing.T) {
 	dir := t.TempDir()
-	now := time.Unix(1_800_000_000, 0)
+	now := missingReasoningTestNow()
 	labels := []string{"alpha", "bravo", "charlie", "delta"}
 	start := make(chan struct{})
 	var wg sync.WaitGroup

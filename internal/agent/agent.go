@@ -300,6 +300,10 @@ type Agent struct {
 	// healthy tool-call turn. It resets with the session so the first healthy
 	// observation can clear an incident persisted by an earlier process.
 	missingReasoningWarnStateChecked bool
+	// missingReasoningWarnPendingResolveAt keeps a healthy observation retryable
+	// when its state write fails. The next missing turn retries that watermark
+	// before consulting the persisted incident and otherwise fails visible.
+	missingReasoningWarnPendingResolveAt time.Time
 
 	// missingReasoningWarnState rate-limits incidents across sessions/processes
 	// by an opaque provider-configuration fingerprint (#7059). nil (no dir in
@@ -1277,25 +1281,48 @@ func (a *Agent) warnMissingToolCallReasoning(calls []provider.ToolCall, reasonin
 	if strings.TrimSpace(reasoning) != "" {
 		shouldResolve := !a.missingReasoningWarnStateChecked || a.warnedMissingToolCallReasoning
 		a.warnedMissingToolCallReasoning = false
-		if s := a.missingReasoningWarnState; s != nil && shouldResolve {
-			s.resolveAt(fingerprint, observedAt)
+		if shouldResolve {
+			resolved := true
+			if s := a.missingReasoningWarnState; s != nil {
+				resolved = s.resolveAt(fingerprint, observedAt)
+			}
+			if resolved {
+				a.missingReasoningWarnPendingResolveAt = time.Time{}
+				a.missingReasoningWarnStateChecked = true
+			} else {
+				if observedAt.After(a.missingReasoningWarnPendingResolveAt) {
+					a.missingReasoningWarnPendingResolveAt = observedAt
+				}
+				a.missingReasoningWarnStateChecked = false
+			}
 		}
-		a.missingReasoningWarnStateChecked = true
 		return
 	}
 	if a.warnedMissingToolCallReasoning {
 		return
 	}
 	if s := a.missingReasoningWarnState; s != nil {
-		if !s.claimAt(fingerprint, observedAt) {
+		stateReady := true
+		if pending := a.missingReasoningWarnPendingResolveAt; !pending.IsZero() {
+			stateReady = s.resolveAt(fingerprint, pending)
+			if stateReady {
+				a.missingReasoningWarnPendingResolveAt = time.Time{}
+			}
+		}
+		if stateReady && !s.claimAt(fingerprint, observedAt) {
 			// This exact configuration already reported the active incident.
 			a.warnedMissingToolCallReasoning = true
 			a.missingReasoningWarnStateChecked = true
 			return
 		}
+		if !stateReady {
+			a.missingReasoningWarnStateChecked = false
+		}
 	}
 	a.warnedMissingToolCallReasoning = true
-	a.missingReasoningWarnStateChecked = true
+	if a.missingReasoningWarnPendingResolveAt.IsZero() {
+		a.missingReasoningWarnStateChecked = true
+	}
 	a.sink.Emit(event.Event{Kind: event.Notice, Level: event.LevelWarn,
 		Text:   fmt.Sprintf("%s returned tool calls without replayable thinking content; continuing with degraded reasoning (shown once for this incident)", a.prov.Name()),
 		Detail: fmt.Sprintf("this round carried %d tool call(s), but the endpoint omitted the thinking content DeepSeek requires clients to replay. Check the selected model, endpoint, and reasoning protocol. Repeated broken rounds are rate-limited for this exact provider configuration for up to 24 hours; a healthy tool-call turn re-arms future regressions.", len(calls))})
