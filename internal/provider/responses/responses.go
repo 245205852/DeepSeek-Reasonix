@@ -355,6 +355,11 @@ func messagesToInput(messages []provider.Message, vision, summary bool) []map[st
 					"type":    "reasoning",
 					"content": []map[string]string{{"type": "reasoning_text", "text": message.ReasoningContent}},
 				}
+				if message.ReasoningID != "" {
+					// OpenAI Responses schema marks Reasoning.id required;
+					// round-trip the provider-issued id when we captured one.
+					item["id"] = message.ReasoningID
+				}
 				if summary {
 					item["summary"] = []map[string]string{{"type": "summary_text", "text": message.ReasoningContent}}
 				}
@@ -448,6 +453,7 @@ func (c *client) readStream(ctx context.Context, resp *http.Response, out chan<-
 	textDeltas := make(map[string]bool)
 	reasoningDeltas := make(map[string]bool)
 	var text, reasoning strings.Builder
+	reasoningID := ""
 	terminal := false
 	failed := false
 	completedResponseID := ""
@@ -499,12 +505,22 @@ func (c *client) readStream(ctx context.Context, resp *http.Response, out chan<-
 				}
 			}
 		case "response.output_item.added":
-			if event.Item != nil && event.Item.Type == "function_call" {
-				call := callForItem(event.Item.ID)
-				call.id = event.Item.CallID
-				call.name = event.Item.Name
-				if !sendChunk(ctx, out, provider.Chunk{Type: provider.ChunkToolCallStart, ToolCall: &provider.ToolCall{ID: call.id, Name: call.name}}) {
-					return
+			if event.Item != nil {
+				switch event.Item.Type {
+				case "function_call":
+					call := callForItem(event.Item.ID)
+					call.id = event.Item.CallID
+					call.name = event.Item.Name
+					if !sendChunk(ctx, out, provider.Chunk{Type: provider.ChunkToolCallStart, ToolCall: &provider.ToolCall{ID: call.id, Name: call.name}}) {
+						return
+					}
+				case "reasoning":
+					// Capture the provider-issued reasoning item id so the
+					// next turn's input reasoning item can carry it (the
+					// OpenAI Responses schema marks Reasoning.id required).
+					if event.Item.ID != "" {
+						reasoningID = event.Item.ID
+					}
 				}
 			}
 		case "response.function_call_arguments.delta":
@@ -602,7 +618,7 @@ func (c *client) readStream(ctx context.Context, resp *http.Response, out chan<-
 		return
 	}
 	if completedResponseID != "" {
-		assistant := provider.Message{Role: provider.RoleAssistant, Content: text.String(), ReasoningContent: reasoning.String()}
+		assistant := provider.Message{Role: provider.RoleAssistant, Content: text.String(), ReasoningContent: reasoning.String(), ReasoningID: reasoningID}
 		for _, itemID := range callOrder {
 			call := calls[itemID]
 			if call.completed {

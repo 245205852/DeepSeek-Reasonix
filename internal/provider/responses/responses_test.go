@@ -503,6 +503,51 @@ func TestMissingToolCallReasoningWarningFingerprintTracksResponsesConfiguration(
 	}
 }
 
+func TestReasoningIDRoundTripsThroughInput(t *testing.T) {
+	// The OpenAI Responses schema marks Reasoning.id required. A message
+	// carrying a captured ReasoningID must echo it back on the input
+	// reasoning item (and omit it when absent).
+	p := New(Config{Name: "mimo", APIKey: "key", BaseURL: "https://api.xiaomimimo.com/v1", Model: "mimo-v2.5"}).(*client)
+	p.vendor = "mimo"
+	p.caps = capabilitiesFor("mimo")
+
+	body, _, _ := p.buildRequestBody(provider.Request{Messages: []provider.Message{
+		{Role: provider.RoleUser, Content: "continue"},
+		{Role: provider.RoleAssistant, ReasoningContent: "think hard", ReasoningID: "rs_item_1"},
+	}})
+	items := body["input"].([]map[string]any)
+	var reasoningItem map[string]any
+	for _, item := range items {
+		if item["type"] == "reasoning" {
+			reasoningItem = item
+			break
+		}
+	}
+	if reasoningItem == nil {
+		t.Fatal("missing reasoning item in second-turn input")
+	}
+	if reasoningItem["id"] != "rs_item_1" {
+		t.Fatalf("reasoning id = %#v, want rs_item_1", reasoningItem["id"])
+	}
+	// content must still be the only other key.
+	if _, has := reasoningItem["summary"]; has {
+		t.Fatalf("mimo must not serialize summary, got %#v", reasoningItem["summary"])
+	}
+
+	// Without a captured id the key stays absent.
+	body2, _, _ := p.buildRequestBody(provider.Request{Messages: []provider.Message{
+		{Role: provider.RoleAssistant, ReasoningContent: "think hard"},
+	}})
+	items2 := body2["input"].([]map[string]any)
+	for _, item := range items2 {
+		if item["type"] == "reasoning" {
+			if _, has := item["id"]; has {
+				t.Fatalf("reasoning id must be omitted when not captured, got %#v", item["id"])
+			}
+		}
+	}
+}
+
 func TestWarnOnMissingToolCallReasoningIsModelScoped(t *testing.T) {
 	// DeepSeek pro-tier: warns (endpoint reliably emits tool-call reasoning).
 	pro := New(Config{Name: "deepseek", BaseURL: "https://api.deepseek.com", Model: "deepseek-v4-pro"})

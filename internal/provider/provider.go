@@ -52,6 +52,11 @@ type Message struct {
 	ProviderContent  string   `json:"provider_content,omitempty"`
 	Images           []string `json:"images,omitempty"`            // data URLs (data:<mime>;base64,…) on user (attachments) and tool (MCP image results) messages; embedded only for vision-capable models
 	ReasoningContent string   `json:"reasoning_content,omitempty"` // assistant: thinking-mode chain-of-thought, round-tripped on multi-turn
+	// ReasoningID is the provider-issued identifier of the reasoning item
+	// (OpenAI Responses schema: Reasoning.id is required on input items).
+	// Captured from the streamed output item and round-tripped back into
+	// the input on subsequent turns, matching the wire schema.
+	ReasoningID string `json:"reasoning_id,omitempty"`
 	// ReasoningSignature is an opaque, provider-issued proof that ReasoningContent
 	// is genuine model output. Anthropic requires the signed thinking block be
 	// replayed on the next turn when a tool call followed thinking; providers
