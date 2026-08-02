@@ -167,6 +167,87 @@ func TestCancelDuringStuckProviderStreamReturnsPromptly(t *testing.T) {
 	}
 }
 
+type activeReasoningUntilCancelProvider struct{}
+
+func (activeReasoningUntilCancelProvider) Name() string { return "active-reasoning" }
+
+func (p activeReasoningUntilCancelProvider) Stream(ctx context.Context, _ provider.Request) (<-chan provider.Chunk, error) {
+	ch := make(chan provider.Chunk)
+	go func() {
+		defer close(ch)
+		for offset := 224; ; offset += 4 {
+			select {
+			case <-ctx.Done():
+				return
+			case ch <- provider.Chunk{Type: provider.ChunkReasoning, Text: fmt.Sprintf("%d unknown\n", offset)}:
+			}
+		}
+	}()
+	return ch, nil
+}
+
+func TestRunawayReasoningStopsAtAgentSideGuard(t *testing.T) {
+	sink := &recordSink{}
+	a := New(activeReasoningUntilCancelProvider{}, tool.NewRegistry(), NewSession(""), Options{ReasoningCharLimit: 64}, sink)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	defer cancel()
+
+	err := a.Run(ctx, "parse this binary by offset")
+	if !errors.Is(err, errReasoningLimitExceeded) {
+		t.Fatalf("Run error = %v, want reasoning limit guard", err)
+	}
+	if got := len(sink.kinds(event.Reasoning)); got == 0 {
+		t.Fatal("no reasoning chunks emitted; repro did not exercise the active-output path")
+	}
+	usages := sink.kinds(event.Usage)
+	if len(usages) != 1 {
+		t.Fatalf("usage events = %d, want one best-effort usage event", len(usages))
+	}
+	if u := usages[0].Usage; u == nil || u.FinishReason != "length" || u.TotalTokens <= 0 || u.ReasoningTokens <= 0 {
+		t.Fatalf("usage = %+v, want length finish with estimated reasoning tokens", u)
+	}
+}
+
+func TestInterruptedReasoningEmitsBestEffortUsage(t *testing.T) {
+	sink := &recordSink{}
+	a := New(activeReasoningUntilCancelProvider{}, tool.NewRegistry(), NewSession(""), Options{}, sink)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		done <- a.Run(ctx, "parse this binary by offset")
+	}()
+
+	deadline := time.After(500 * time.Millisecond)
+	for len(sink.kinds(event.Reasoning)) == 0 {
+		select {
+		case <-deadline:
+			t.Fatal("timed out waiting for streamed reasoning")
+		default:
+			time.Sleep(time.Millisecond)
+		}
+	}
+	cancel()
+
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("Run error = %v, want context cancellation", err)
+		}
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("Run did not return after cancellation")
+	}
+
+	usages := sink.kinds(event.Usage)
+	if len(usages) != 1 {
+		t.Fatalf("usage events = %d, want one best-effort usage event", len(usages))
+	}
+	if u := usages[0].Usage; u == nil || u.FinishReason != "interrupted" || u.TotalTokens <= 0 || u.ReasoningTokens <= 0 {
+		t.Fatalf("usage = %+v, want interrupted finish with estimated reasoning tokens", u)
+	}
+}
+
 // TestCancelDuringToolExecutionBreaksOutPromptly verifies that when the context
 // is cancelled while tools are executing, the agent loop breaks out immediately
 // rather than continuing to execute remaining tools.

@@ -48,6 +48,10 @@ const maxEmptyFinalBlocks = 3
 const maxStreamRecoveries = 3
 const maxExecutorHandoffNudges = 1
 
+const defaultReasoningCharLimit = 128 * 1024
+
+var errReasoningLimitExceeded = errors.New("reasoning output exceeded limit")
+
 // DeliveryRuntimeMarker is the delivery-mode contract block appended to user
 // turns (withTurnPreferences). Exported as the single source of truth for the
 // byte-exact suffix strip in preview derivation and for cross-package tests;
@@ -252,12 +256,13 @@ type ToolHooks interface {
 // Agent drives a single task: a Provider, a tool Registry, and a Session wired
 // into the main loop.
 type Agent struct {
-	prov        provider.Provider
-	tools       *tool.Registry
-	session     *Session
-	sessMu      sync.Mutex // guards the session pointer for external Session()/SetSession
-	maxSteps    int
-	maxStepsKey string
+	prov               provider.Provider
+	tools              *tool.Registry
+	session            *Session
+	sessMu             sync.Mutex // guards the session pointer for external Session()/SetSession
+	maxSteps           int
+	maxStepsKey        string
+	reasoningCharLimit int
 	// executorHandoffGuard is enabled by Coordinator for the executor agent. The
 	// per-turn marker check in Run keeps ordinary single-model turns unaffected.
 	executorHandoffGuard bool
@@ -926,9 +931,13 @@ type Options struct {
 	// MaxStepsKey names the explicit runtime control shown when the MaxSteps guard
 	// is hit. Empty defaults to the generic max_steps tool/runtime parameter.
 	MaxStepsKey string
-	Temperature float64
-	Pricing     *provider.Pricing // optional, for per-turn cost display
-	UsageSource string            // optional billable usage source; default executor
+	// ReasoningCharLimit bounds a single stream's hidden reasoning output. Zero
+	// uses the default guard; a negative value disables this guard for tests or
+	// explicit host-owned runs.
+	ReasoningCharLimit int
+	Temperature        float64
+	Pricing            *provider.Pricing // optional, for per-turn cost display
+	UsageSource        string            // optional billable usage source; default executor
 
 	// Gate is the per-call permission gate. nil disables gating.
 	Gate Gate
@@ -1099,12 +1108,17 @@ func New(prov provider.Provider, tools *tool.Registry, session *Session, opts Op
 	if subagentDepth < 0 {
 		subagentDepth = 0
 	}
+	reasoningCharLimit := opts.ReasoningCharLimit
+	if reasoningCharLimit == 0 {
+		reasoningCharLimit = defaultReasoningCharLimit
+	}
 	a := &Agent{
 		prov:                  prov,
 		tools:                 tools,
 		session:               session,
 		maxSteps:              opts.MaxSteps,
 		maxStepsKey:           maxStepsKey,
+		reasoningCharLimit:    reasoningCharLimit,
 		temperature:           opts.Temperature,
 		pricing:               opts.Pricing,
 		usageSource:           usageSourceOrDefault(opts.UsageSource, event.UsageSourceExecutor),
@@ -2615,11 +2629,13 @@ func (a *Agent) stream(ctx context.Context, turn int) (string, string, string, [
 		select {
 		case <-ctx.Done():
 			stored, _ := finishReasoning()
+			usage = bestEffortStreamUsage(usage, text.Len(), reasoning.Len(), "interrupted")
 			return text.String(), stored, signature, calls, usage, false, partialToolStarted, partialCalls, ctx.Err()
 		case c, ok := <-ch:
 			if !ok {
 				if err := ctx.Err(); err != nil {
 					stored, _ := finishReasoning()
+					usage = bestEffortStreamUsage(usage, text.Len(), reasoning.Len(), "interrupted")
 					return text.String(), stored, signature, calls, usage, false, partialToolStarted, partialCalls, err
 				}
 				stored, display := finishReasoning()
@@ -2642,6 +2658,12 @@ func (a *Agent) stream(ctx context.Context, turn int) (string, string, string, [
 			}
 			if chunk.Text != "" && !transformReasoning {
 				a.sink.Emit(event.Event{Kind: event.Reasoning, Text: chunk.Text})
+			}
+			if a.reasoningCharLimit > 0 && reasoning.Len() > a.reasoningCharLimit {
+				stored, _ := finishReasoning()
+				usage = bestEffortStreamUsage(usage, text.Len(), reasoning.Len(), "length")
+				a.lastUsage.Store(usage)
+				return text.String(), stored, signature, calls, usage, false, partialToolStarted, partialCalls, errReasoningLimitExceeded
 			}
 		case provider.ChunkText:
 			text.WriteString(chunk.Text)
@@ -2685,12 +2707,56 @@ func (a *Agent) stream(ctx context.Context, turn int) (string, string, string, [
 		case provider.ChunkError:
 			if provider.IsStreamInterrupted(chunk.Err) {
 				stored, _ := finishReasoning()
+				usage = bestEffortStreamUsage(usage, text.Len(), reasoning.Len(), "interrupted")
 				return text.String(), stored, signature, calls, usage, true, partialToolStarted, partialCalls, chunk.Err
 			}
 			stored, _ := finishReasoning()
+			if errors.Is(chunk.Err, context.Canceled) || errors.Is(chunk.Err, context.DeadlineExceeded) {
+				usage = bestEffortStreamUsage(usage, text.Len(), reasoning.Len(), "interrupted")
+			}
 			return text.String(), stored, signature, calls, usage, false, partialToolStarted, partialCalls, chunk.Err
 		}
 	}
+}
+
+func bestEffortStreamUsage(current *provider.Usage, textBytes, reasoningBytes int, finishReason string) *provider.Usage {
+	if current == nil && textBytes == 0 && reasoningBytes == 0 {
+		return nil
+	}
+	var usage provider.Usage
+	if current != nil {
+		usage = *current
+	}
+	if finishReason != "" {
+		usage.FinishReason = finishReason
+	}
+	reasoningTokens := estimateTokensFromBytes(reasoningBytes)
+	textTokens := estimateTokensFromBytes(textBytes)
+	completionTokens := reasoningTokens + textTokens
+	if usage.ReasoningTokens < reasoningTokens {
+		usage.ReasoningTokens = reasoningTokens
+	}
+	if usage.CompletionTokens < completionTokens {
+		usage.CompletionTokens = completionTokens
+	}
+	if minTotal := usage.PromptTokens + usage.CompletionTokens; usage.TotalTokens < minTotal {
+		usage.TotalTokens = minTotal
+	}
+	return &usage
+}
+
+func estimateTokensFromBytes(n int) int {
+	if n <= 0 {
+		return 0
+	}
+	tokens := n / 4
+	if n%4 != 0 {
+		tokens++
+	}
+	if tokens <= 0 {
+		return 1
+	}
+	return tokens
 }
 
 func upsertPartialToolCall(calls []provider.ToolCall, call provider.ToolCall) []provider.ToolCall {
