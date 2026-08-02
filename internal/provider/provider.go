@@ -169,6 +169,17 @@ type Request struct {
 	Tools       []ToolSchema
 	Temperature *float64 // nil = omit; non-nil = send the value, including 0
 	MaxTokens   int
+	// ResponseFormat, when non-nil, asks the endpoint for structured JSON
+	// output (Responses: text.format.type=json_object). Nil omits the field
+	// entirely — the common path must stay byte-stable for prompt caching.
+	ResponseFormat *ResponseFormat
+}
+
+// ResponseFormat asks a provider to constrain its output shape.
+type ResponseFormat struct {
+	// Type is the structured format: "json_object" is the only shape the
+	// Responses endpoints currently define (MiMo/DashScope/OpenAI).
+	Type string
 }
 
 // DefaultReasoningOutputTokens is the conservative provider-side budget used

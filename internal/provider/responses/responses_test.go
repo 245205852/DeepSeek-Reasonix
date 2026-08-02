@@ -3,6 +3,7 @@ package responses
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -503,8 +504,7 @@ func TestMissingToolCallReasoningWarningFingerprintTracksResponsesConfiguration(
 	}
 }
 
-func TestReasoningIDRoundTripsThroughInput(t *testing.T) {
-	// The OpenAI Responses schema marks Reasoning.id required. A message
+func TestReasoningIDRoundTripsThroughInput(t *testing.T) { // The OpenAI Responses schema marks Reasoning.id required. A message
 	// carrying a captured ReasoningID must echo it back on the input
 	// reasoning item (and omit it when absent).
 	p := New(Config{Name: "mimo", APIKey: "key", BaseURL: "https://api.xiaomimimo.com/v1", Model: "mimo-v2.5"}).(*client)
@@ -769,5 +769,38 @@ func TestMessagesToInputEmbedsImagesAsInputImageParts(t *testing.T) {
 	items2 := body2["input"].([]map[string]any)
 	if got, ok := items2[0]["content"].(string); !ok || got != "what is this" {
 		t.Fatalf("vision-off user content = %#v, want string", items2[0]["content"])
+	}
+}
+
+func TestResponseFormatJSONObjectOnWire(t *testing.T) {
+	// text.format.type=json_object must be serialized when requested, and
+	// the request body must stay byte-identical without it (cache stability).
+	var gotText any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		var reqBody map[string]any
+		_ = json.Unmarshal(body, &reqBody)
+		gotText = reqBody["text"]
+		writeEvents(w, `{"type":"response.completed","response":{"id":"resp","usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}}`)
+	}))
+	defer server.Close()
+
+	p := New(Config{Name: "mimo", APIKey: "key", BaseURL: server.URL, Model: "mimo-v2.5"}).(*client)
+	p.vendor = "mimo"
+	p.caps = capabilitiesFor("mimo")
+	collect(t, p, provider.Request{
+		Messages:       []provider.Message{{Role: provider.RoleUser, Content: "give json"}},
+		ResponseFormat: &provider.ResponseFormat{Type: "json_object"},
+	})
+	want := map[string]any{"format": map[string]any{"type": "json_object"}}
+	if fmt.Sprintf("%v", gotText) != fmt.Sprintf("%v", want) {
+		t.Fatalf("text = %#v, want %#v", gotText, want)
+	}
+
+	// Nil format leaves the wire without the key.
+	plain := New(Config{Name: "openai", APIKey: "key", BaseURL: "https://example.com", Model: "m"}).(*client)
+	req, _, _ := plain.buildRequestBody(provider.Request{Messages: []provider.Message{{Role: provider.RoleUser, Content: "hi"}}})
+	if _, ok := req["text"]; ok {
+		t.Fatalf("text must be omitted without ResponseFormat, got %#v", req["text"])
 	}
 }

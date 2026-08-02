@@ -274,6 +274,14 @@ func (c *client) buildRequestBody(req provider.Request) (map[string]any, bool, [
 	if maxOutputTokens > 0 {
 		body["max_output_tokens"] = maxOutputTokens
 	}
+	if req.ResponseFormat != nil && req.ResponseFormat.Type != "" {
+		// Structured output: Responses text.format. MiMo/DashScope/OpenAI
+		// all accept {"text":{"format":{"type":"json_object"}}}. The model
+		// only emits JSON when the instructions also demand it.
+		body["text"] = map[string]any{
+			"format": map[string]any{"type": req.ResponseFormat.Type},
+		}
+	}
 	if req.Temperature != nil && !c.caps.ignoresTemperature {
 		body["temperature"] = *req.Temperature
 	}
@@ -591,8 +599,16 @@ func (c *client) readStream(ctx context.Context, resp *http.Response, out chan<-
 					default:
 						usage.FinishReason = "incomplete"
 					}
+				} else if event.Response.Usage != nil && usage.FinishReason == "" {
+					// 正常完成的响应：合成 stop（上游测试要求；DeepSeek/MiMo
+					// 的 completed 事件常缺 finish_reason）。
+					usage.FinishReason = "stop"
 				}
-				if event.Response.Usage != nil || usage.FinishReason != "" {
+				// all-zero usage 无会计价值：仅在真实数据或异常终止时上报
+				// （spurious zero records 抑制）。
+				hasReal := event.Response.Usage != nil &&
+					(usage.TotalTokens > 0 || usage.PromptTokens > 0 || usage.CompletionTokens > 0)
+				if hasReal || (usage.FinishReason != "" && usage.FinishReason != "stop") {
 					if !sendChunk(ctx, out, provider.Chunk{Type: provider.ChunkUsage, Usage: usage}) {
 						return
 					}

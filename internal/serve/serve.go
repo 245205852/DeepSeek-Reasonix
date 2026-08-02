@@ -560,9 +560,12 @@ func (s *Server) events(w http.ResponseWriter, r *http.Request) {
 
 // submit runs raw user input as a turn (slash commands and @-references
 // resolved by the controller). Returns 202 — output arrives on the event stream.
+// An optional "format":"json_object" asks the model for structured JSON output
+// on this turn (text.format on the wire).
 func (s *Server) submit(w http.ResponseWriter, r *http.Request) {
 	var body struct {
-		Input string `json:"input"`
+		Input  string `json:"input"`
+		Format string `json:"format"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.Input == "" {
 		http.Error(w, "missing input", http.StatusBadRequest)
@@ -598,7 +601,7 @@ func (s *Server) submit(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	s.ctl().SubmitHTTP(body.Input)
+	s.ctl().SubmitHTTPFormat(body.Input, body.Format)
 	w.WriteHeader(http.StatusAccepted)
 }
 
