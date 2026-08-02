@@ -122,10 +122,7 @@ type Controller struct {
 	// pendingResponseFormat is a one-shot structured-output request from the
 	// HTTP frontend (/v1/chat with "format"), consumed by the next turn.
 	// Guarded by mu.
-	pendingResponseFormat string
-	// testCacheColdAfter overrides cacheColdAfter() in tests. Zero uses the
-	// vendor-aware resolution from config.
-	testCacheColdAfter                time.Duration
+	pendingResponseFormat             string
 	shell                             sandbox.Shell                    // interpreter for user-invoked "!" commands; zero = auto
 	startedOnce                       bool                             // guards the one-shot SessionStart hook on first turn
 	closeOnce                         sync.Once                        // makes close idempotent under racing teardown paths
