@@ -96,3 +96,24 @@ func TestValidateVersionName(t *testing.T) {
 		}
 	}
 }
+
+
+func TestResolveInstallRootFromVersionedDesktop(t *testing.T) {
+	root := t.TempDir()
+	version := "v1.20.0"
+	dir := filepath.Join(root, "versions", version)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	desktop := filepath.Join(dir, DesktopBinaryName())
+	if err := os.WriteFile(desktop, []byte("x"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := WriteCurrent(root, CurrentPointer{SchemaVersion: 1, ActiveVersion: version, ActiveDir: VersionDirRelative(version)}); err != nil {
+		t.Fatal(err)
+	}
+	got, err := ResolveInstallRoot(desktop)
+	if err != nil || got != root {
+		t.Fatalf("got %q err=%v want %q", got, err, root)
+	}
+}

@@ -21,8 +21,18 @@ import (
 
 	"golang.org/x/sys/windows"
 
+	"reasonix/internal/installlayout"
 	"reasonix/internal/repair"
 )
+
+// resolveWindowsUpdateHelperSource finds the on-disk helper for the running
+// install: versioned active dir first, then the flat InstallRoot layout.
+func resolveWindowsUpdateHelperSource(installDir string) string {
+	if path, err := installlayout.ActiveUpdateHelperPath(installDir); err == nil {
+		return path
+	}
+	return filepath.Join(installDir, windowsUpdateHelperFileName)
+}
 
 const windowsUpdateHelperFileName = "reasonix-update-helper.exe"
 
@@ -89,9 +99,10 @@ func preparedWindowsUpdateHelperSHA256(prepared *repair.UpdateTransaction, insta
 	if prepared == nil || prepared.TargetKind != "file" || repair.UpdateTransactionID(prepared) == "" {
 		return "", fmt.Errorf("prepare Windows update helper: transaction identity is incomplete")
 	}
-	helperPath := filepath.Clean(filepath.Join(installDir, windowsUpdateHelperFileName))
+	// Match by basename so versioned layouts (versions/<ver>/helper) and flat
+	// layouts (InstallRoot/helper) share one prepare path.
 	for _, file := range prepared.Files {
-		if !strings.EqualFold(filepath.Clean(file.TargetPath), helperPath) {
+		if !strings.EqualFold(filepath.Base(file.TargetPath), windowsUpdateHelperFileName) {
 			continue
 		}
 		if file.MissingBefore || !validWindowsSHA256(file.SHA256) {
@@ -99,6 +110,7 @@ func preparedWindowsUpdateHelperSHA256(prepared *repair.UpdateTransaction, insta
 		}
 		return strings.TrimSpace(file.SHA256), nil
 	}
+	_ = installDir
 	return "", fmt.Errorf("prepare Windows update helper: helper is outside the prepared release unit")
 }
 
@@ -112,7 +124,7 @@ func validWindowsSHA256(value string) bool {
 }
 
 func prepareWindowsUpdateHelper(installDir, preparedSHA256 string) (string, [sha256.Size]byte, error) {
-	src := filepath.Join(installDir, windowsUpdateHelperFileName)
+	src := resolveWindowsUpdateHelperSource(installDir)
 	data, err := os.ReadFile(src)
 	if err != nil {
 		return "", [sha256.Size]byte{}, err

@@ -77,6 +77,8 @@ func TestDesktopPackagesPreserveNativePlatformLaunchers(t *testing.T) {
 		`CLINAME="reasonix"`,
 		`WINDOWS_CLINAME="reasonix-cli"`,
 		`./cmd/reasonix`,
+		`./cmd/reasonix-legacy-migrator`,
+		`./cmd/reasonix-launcher`,
 		`cp "$guard_out" "$app/Contents/MacOS/$GUARDNAME"`,
 		`cp "$cli_out" "$app/Contents/MacOS/$CLINAME"`,
 		`[ "$bundle_executable" = "$BINNAME" ]`,
@@ -86,8 +88,9 @@ func TestDesktopPackagesPreserveNativePlatformLaunchers(t *testing.T) {
 		`cmp -s "$darwin_icon" "$app/Contents/Resources/$bundle_icon"`,
 		`Contents/Resources/$bundle_icon`,
 		`-H windowsgui`,
-		`stamp_windows_executable "$guard_out" "Reasonix Guard"`,
+		`stamp_windows_executable "$guard_out" "Reasonix Legacy Migrator"`,
 		`stamp_windows_executable "$launcher_out" "Reasonix Launcher"`,
+		`Exec=reasonix-launcher`,
 		`stamp_windows_executable "build/windows/installer/$UPDATE_HELPER" "Reasonix Update Helper"`,
 		`payload_dir="$ROOT/desktop/build/windows/signing-payload"`,
 		`cp "build/bin/$BINNAME.exe" "$payload_dir/$BINNAME.exe"`,
@@ -207,11 +210,17 @@ func TestDesktopPackagesPreserveNativePlatformLaunchers(t *testing.T) {
 		`File "/oname=${REASONIX_CLI}" "${REASONIX_CLI}"`,
 		`!uninstfinalize 'cmd.exe /C copy /Y "%1" "reasonix-uninstall.exe" >NUL'`,
 		`File "/oname=uninstall.exe" "${ARG_REASONIX_SIGNED_UNINSTALLER}"`,
-		`CreateShortcut "$SMPROGRAMS\${INFO_PRODUCTNAME}.lnk" "$INSTDIR\${REASONIX_LAUNCHER}" "launch --detach" "$INSTDIR\${PRODUCT_EXECUTABLE}" 0`,
-		`CreateShortCut "$DESKTOP\${INFO_PRODUCTNAME}.lnk" "$INSTDIR\${REASONIX_LAUNCHER}" "launch --detach" "$INSTDIR\${PRODUCT_EXECUTABLE}" 0`,
+		// Normal install writes versioned-v1 layout + thin launcher shortcuts.
+		`CreateDirectory "$INSTDIR\versions\v${INFO_PRODUCTVERSION}"`,
+		`FileWrite $0 '  "schemaVersion": 1,$\r$\n'`,
+		`CreateShortcut "$SMPROGRAMS\${INFO_PRODUCTNAME}.lnk" "$INSTDIR\${REASONIX_LAUNCHER}" "" "$INSTDIR\versions\v${INFO_PRODUCTVERSION}\${PRODUCT_EXECUTABLE}" 0`,
+		`CreateShortCut "$DESKTOP\${INFO_PRODUCTNAME}.lnk" "$INSTDIR\${REASONIX_LAUNCHER}" "" "$INSTDIR\versions\v${INFO_PRODUCTVERSION}\${PRODUCT_EXECUTABLE}" 0`,
+		// STAGE mode still ships the six-member flat payload for old helpers.
+		`StrCmp $ReasonixStageMode "1" reasonix_stage_payload`,
+		`File "/oname=${REASONIX_GUARD}" "${REASONIX_GUARD}"`,
 	} {
 		if !strings.Contains(windows, want) {
-			t.Errorf("Windows installer missing guard shortcut contract %q", want)
+			t.Errorf("Windows installer missing versioned-layout contract %q", want)
 		}
 	}
 }

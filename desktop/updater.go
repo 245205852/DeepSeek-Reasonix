@@ -1203,13 +1203,16 @@ func currentExecutablePath() string {
 	return exe
 }
 
-// currentInstallDir is the directory of the running executable — the location a
-// Windows update must overwrite. Empty when it can't be resolved, in which case
-// the installer falls back to its own InstallDir logic.
+// currentInstallDir is the InstallRoot for updates. For the versioned layout it
+// is the directory that owns current.json (not versions/<ver>/). For flat
+// installs it is the directory of the running executable.
 func currentInstallDir() string {
 	exe := currentExecutablePath()
 	if exe == "" {
 		return ""
+	}
+	if root, err := installlayout.ResolveInstallRoot(exe); err == nil && root != "" {
+		return root
 	}
 	return filepath.Dir(exe)
 }
@@ -1233,8 +1236,27 @@ func releaseUnitPathsFor(dir, goos string) []string {
 	if dir == "" {
 		return nil
 	}
+	// Versioned-v1 layout: primary is the active desktop under versions/.
+	if goos == "windows" && installlayout.HasCurrent(dir) {
+		paths := make([]string, 0, 6)
+		if desktop, err := installlayout.ActiveDesktopPath(dir); err == nil {
+			paths = append(paths, desktop)
+		} else {
+			paths = append(paths, filepath.Join(dir, "reasonix-desktop.exe"))
+		}
+		if helper, err := installlayout.ActiveUpdateHelperPath(dir); err == nil {
+			paths = append(paths, helper)
+		}
+		if cli, err := installlayout.ActiveCLIPath(dir); err == nil {
+			paths = append(paths, cli)
+		}
+		for _, name := range []string{"reasonix-launcher.exe", "reasonix-cli.exe", "Reasonix.exe"} {
+			paths = append(paths, filepath.Join(dir, name))
+		}
+		return paths
+	}
 	names := updateSiblingNames(goos)
-	paths := make([]string, 0, len(names))
+	paths := make([]string, 0, len(names)+1)
 	switch goos {
 	case "linux":
 		paths = append(paths, filepath.Join(dir, "reasonix-desktop"))
@@ -1253,6 +1275,8 @@ func releaseUnitPathsFor(dir, goos string) []string {
 func updateSiblingNames(goos string) []string {
 	switch goos {
 	case "windows":
+		// Legacy flat release unit. reasonix-guard.exe may still exist on disk
+		// during migration from 1.18–1.19.1; the new layout omits it.
 		return []string{"reasonix-guard.exe", "reasonix-launcher.exe", "reasonix-update-helper.exe", "reasonix-cli.exe", "Reasonix.exe"}
 	case "linux":
 		return []string{"reasonix-guard", "reasonix"}
@@ -1261,21 +1285,40 @@ func updateSiblingNames(goos string) []string {
 	}
 }
 
-// relaunchThroughGuard starts the packaged launcher so the replacement build is
-// covered by the same crash-loop and rollback policy as a normal app launch.
+// relaunchThroughGuard starts the permanent thin launcher (or falls back to the
+// running executable). The function name is historical; Guard recovery policy
+// is gone as of v1.20.
 func relaunchThroughGuard() error {
 	exe, err := os.Executable()
 	if err != nil {
 		return err
 	}
-	launcher := filepath.Join(filepath.Dir(exe), "reasonix-guard")
+	root := filepath.Dir(exe)
+	if resolved, err := installlayout.ResolveInstallRoot(exe); err == nil && resolved != "" {
+		root = resolved
+	}
+	candidates := []string{
+		filepath.Join(root, "reasonix-launcher"),
+		filepath.Join(root, "Reasonix.exe"),
+		filepath.Join(root, "reasonix-guard"), // migration window only
+	}
 	if runtime.GOOS == "windows" {
-		launcher += ".exe"
+		candidates[0] += ".exe"
+		candidates[2] += ".exe"
 	}
-	if _, statErr := os.Stat(launcher); statErr != nil {
-		launcher = exe
+	launcher := exe
+	for _, path := range candidates {
+		if _, err := os.Stat(path); err == nil {
+			launcher = path
+			break
+		}
 	}
-	cmd := exec.Command(launcher, "launch", "--detach")
+	args := []string{}
+	// Only legacy guard understands "launch --detach"; the thin launcher strips it.
+	if strings.Contains(strings.ToLower(filepath.Base(launcher)), "guard") {
+		args = []string{"launch", "--detach"}
+	}
+	cmd := exec.Command(launcher, args...)
 	cmd.Stdout, cmd.Stderr, cmd.Stdin = os.Stdout, os.Stderr, os.Stdin
 	return cmd.Start()
 }
@@ -1285,14 +1328,26 @@ func currentLauncherPath() string {
 	if exe == "" {
 		return ""
 	}
-	name := "reasonix-guard"
-	if runtime.GOOS == "windows" {
-		name = "reasonix-launcher.exe"
+	root := filepath.Dir(exe)
+	if resolved, err := installlayout.ResolveInstallRoot(exe); err == nil && resolved != "" {
+		root = resolved
 	}
-	launcher := filepath.Join(filepath.Dir(exe), name)
-	if _, err := os.Stat(launcher); err == nil {
-		return launcher
+	for _, name := range []string{"reasonix-launcher.exe", "Reasonix.exe", "reasonix-launcher", "reasonix-guard.exe", "reasonix-guard"} {
+		if runtime.GOOS != "windows" && strings.HasSuffix(name, ".exe") {
+			continue
+		}
+		if runtime.GOOS == "windows" && !strings.HasSuffix(name, ".exe") && name != "Reasonix.exe" {
+			// Unix names on Windows are unused.
+			if !strings.HasSuffix(name, ".exe") {
+				continue
+			}
+		}
+		path := filepath.Join(root, name)
+		if _, err := os.Stat(path); err == nil {
+			return path
+		}
 	}
+	// Fall through to previous flat-dir behavior for incomplete installs.
 	if runtime.GOOS == "windows" {
 		guard := filepath.Join(filepath.Dir(exe), "reasonix-guard.exe")
 		if _, err := os.Stat(guard); err == nil {

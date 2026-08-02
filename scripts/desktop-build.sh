@@ -267,7 +267,7 @@ windows)
 	;;
 linux)
 	for desktop_contract in \
-		'Exec=reasonix-guard launch --detach' \
+		'Exec=reasonix-launcher' \
 		'Icon=reasonix-desktop' \
 		'StartupWMClass=reasonix-desktop'; do
 		grep -F -x -q "$desktop_contract" build/linux/reasonix.desktop || { echo "Linux desktop entry missing: $desktop_contract" >&2; exit 1; }

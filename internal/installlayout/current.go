@@ -306,3 +306,74 @@ func HasCurrent(installRoot string) bool {
 	_, err := ReadCurrent(installRoot)
 	return err == nil
 }
+
+// ResolveInstallRoot walks upward from path (usually the running executable)
+// and returns the InstallRoot that owns current.json. Flat installs return the
+// directory containing the executable when no pointer is found.
+func ResolveInstallRoot(fromPath string) (string, error) {
+	fromPath = filepath.Clean(strings.TrimSpace(fromPath))
+	if fromPath == "" {
+		return "", fmt.Errorf("installlayout: empty path")
+	}
+	info, err := os.Lstat(fromPath)
+	if err != nil {
+		return "", err
+	}
+	dir := fromPath
+	if !info.IsDir() {
+		dir = filepath.Dir(fromPath)
+	}
+	cur := dir
+	for {
+		if HasCurrent(cur) {
+			return cur, nil
+		}
+		parent := filepath.Dir(cur)
+		if parent == cur {
+			// No versioned layout found: treat the original directory as the
+			// flat install root.
+			return dir, nil
+		}
+		// Stop climbing out of a versions tree once we pass InstallRoot.
+		base := filepath.Base(cur)
+		if base == VersionsDirName {
+			// parent is InstallRoot even without current.json yet (migration).
+			return parent, nil
+		}
+		cur = parent
+	}
+}
+
+// ActiveUpdateHelperPath resolves the active update helper binary.
+func ActiveUpdateHelperPath(installRoot string) (string, error) {
+	ptr, err := ReadCurrent(installRoot)
+	if err != nil {
+		return "", err
+	}
+	dir := filepath.Join(installRoot, filepath.FromSlash(ptr.ActiveDir))
+	path := filepath.Join(dir, UpdateHelperBinaryName())
+	info, err := os.Lstat(path)
+	if err != nil {
+		return "", fmt.Errorf("installlayout: active update helper: %w", err)
+	}
+	if !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 {
+		return "", fmt.Errorf("installlayout: active update helper is not a regular file")
+	}
+	return path, nil
+}
+
+// LauncherBinaryName is the permanent thin launcher at InstallRoot.
+func LauncherBinaryName() string {
+	if runtime.GOOS == "windows" {
+		return "reasonix-launcher.exe"
+	}
+	return "reasonix-launcher"
+}
+
+// PortableAliasName is the Windows portable entry (Reasonix.exe).
+func PortableAliasName() string {
+	if runtime.GOOS == "windows" {
+		return "Reasonix.exe"
+	}
+	return ""
+}
