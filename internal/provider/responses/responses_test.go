@@ -45,6 +45,7 @@ func TestDetectVendorAndModeDefaults(t *testing.T) {
 	tests := []struct{ url, vendor, mode string }{
 		{"https://api.deepseek.com", "deepseek", "stateless"},
 		{"https://eu.deepseek.com/v1", "deepseek", "stateless"},
+		{"https://api.xiaomimimo.com/v1", "mimo", "stateless"},
 		{"https://dashscope.aliyuncs.com/compatible-mode/v1", "dashscope", "stateful"},
 		{"https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1", "dashscope", "stateful"},
 		{"https://api.deepseek.com.attacker.example/v1", "", "stateful"},
@@ -398,14 +399,18 @@ func TestDashScopeCacheHeaderIsVendorScoped(t *testing.T) {
 	}
 }
 
-func TestRequiresToolCallReasoningOnlyForDeepSeek(t *testing.T) {
+func TestRequiresToolCallReasoningForStatelessVendors(t *testing.T) {
 	deepseek := New(Config{Name: "deepseek", BaseURL: "https://api.deepseek.com", Model: "deepseek-v4-flash"})
 	if !provider.RequiresToolCallReasoning(deepseek) {
 		t.Fatal("DeepSeek Responses provider must preserve tool-call reasoning")
 	}
+	mimo := New(Config{Name: "mimo", BaseURL: "https://api.xiaomimimo.com/v1", Model: "mimo-v2.5-pro"})
+	if !provider.RequiresToolCallReasoning(mimo) {
+		t.Fatal("MiMo Responses provider must preserve tool-call reasoning (documented requirement)")
+	}
 	other := New(Config{Name: "other", BaseURL: "https://example.com", Model: "m"})
 	if provider.RequiresToolCallReasoning(other) {
-		t.Fatal("unknown Responses endpoint unexpectedly requires DeepSeek reasoning")
+		t.Fatal("unknown Responses endpoint unexpectedly requires tool-call reasoning")
 	}
 }
 
