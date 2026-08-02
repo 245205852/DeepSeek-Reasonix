@@ -1022,14 +1022,39 @@ func (c *Controller) SubmitHTTP(input string) {
 
 // SubmitHTTPFormat is SubmitHTTP with an optional structured-output format
 // ("json_object") applied to the turn's completion requests. Empty format
-// behaves exactly like SubmitHTTP.
+// behaves exactly like SubmitHTTP. A format attached to a slash command or
+// other non-turn input is discarded (nothing consumes it; see
+// takePendingResponseFormat).
 func (c *Controller) SubmitHTTPFormat(input, format string) {
-	if strings.TrimSpace(format) != "" {
+	if strings.TrimSpace(format) != "" && !isNonTurnHTTPInput(input) {
 		c.mu.Lock()
 		c.pendingResponseFormat = strings.TrimSpace(format)
 		c.mu.Unlock()
 	}
 	c.submitHTTP(input, "")
+}
+
+// isNonTurnHTTPInput reports inputs that never reach the agent turn loop, so a
+// structured-output request attached to them would otherwise leak into the
+// next real turn (the format slot is consumed only by runGoalLoopWithRawDisplay).
+func isNonTurnHTTPInput(input string) bool {
+	trimmed := strings.TrimSpace(input)
+	if trimmed == "" {
+		return true
+	}
+	// Memory quick-add / remember shortcuts and goal commands bypass turns.
+	if _, ok := MemoryQuickAddNote(trimmed); ok {
+		return true
+	}
+	if _, ok := RememberCommandNote(trimmed); ok {
+		return true
+	}
+	// Slash commands are management verbs (/compact /new /clear /model ...)
+	// or notices, not completion turns.
+	if strings.HasPrefix(trimmed, "/") {
+		return true
+	}
+	return false
 }
 
 // SubmitDisplay runs input as a turn while remembering the user-facing display
