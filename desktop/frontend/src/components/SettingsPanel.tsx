@@ -17,6 +17,12 @@ import {
   type ThemeStyle,
 } from "../lib/theme";
 import {
+  applyTerminalThemePreference,
+  getTerminalThemePreference,
+  normalizeTerminalThemePreference,
+  type TerminalThemePreference,
+} from "../lib/terminalTheme";
+import {
   applyConversationWidth,
   getCachedConversationWidth,
   normalizeConversationWidth,
@@ -109,6 +115,7 @@ export function SettingsPanel({
   const [warning, setWarning] = useState<string | null>(null);
   const [theme, setThemeState] = useState<Theme>(getTheme());
   const [themeStyle, setThemeStyleState] = useState<ThemeStyle>(() => getThemeStyle(getTheme()));
+  const [terminalTheme, setTerminalThemeState] = useState<TerminalThemePreference>(getTerminalThemePreference());
   const [conversationWidth, setConversationWidth] = useState<ConversationWidth>(() => getCachedConversationWidth());
   const [textSize, setTextSizeState] = useState<TextSize>(getTextSize());
   const [zoomPct, setZoomPct] = useState<number>(zoomToPercent(getRestartZoom()));
@@ -153,8 +160,9 @@ export function SettingsPanel({
     const nextStyle = normalizeThemeStyleForTheme(s.desktopThemeStyle, nextTheme);
     setThemeState(nextTheme);
     setThemeStyleState(nextStyle);
+    setTerminalThemeState(applyTerminalThemePreference(s.desktopTerminalTheme));
     setConversationWidth(applyConversationWidth(s.conversationWidth));
-  }, [s?.conversationWidth, s?.desktopTheme, s?.desktopThemeStyle]);
+  }, [s?.conversationWidth, s?.desktopTheme, s?.desktopThemeStyle, s?.desktopTerminalTheme]);
   useEffect(() => {
     if (desktopPlatform !== "windows") return;
     let cancelled = false;
@@ -296,6 +304,7 @@ export function SettingsPanel({
                     <AppearanceOverview
                       theme={theme}
                       themeStyle={themeStyle}
+                      terminalTheme={terminalTheme}
                       conversationWidth={conversationWidth}
                       textSize={textSize}
                       showDisplayZoom={desktopPlatform === "windows"}
@@ -320,6 +329,11 @@ export function SettingsPanel({
                         applyTheme(getTheme(), style, { persist: false });
                         setThemeStyleState(style);
                         setBaseAppearance(getTheme(), style);
+                      }}
+                      onTerminalTheme={(nextTerminalTheme) => {
+                        applyTerminalThemePreference(nextTerminalTheme);
+                        setTerminalThemeState(nextTerminalTheme);
+                        void apply(() => app.SetDesktopTerminalTheme(nextTerminalTheme));
                       }}
                       onTextSize={(size) => {
                         applyTextSize(size);
@@ -1359,6 +1373,7 @@ function normalizeSettingsView(view: SettingsView | null | undefined): SettingsV
     desktopLayoutStyle: normalizeDesktopLayoutStyle(view.desktopLayoutStyle),
     desktopTheme: normalizeThemePreference(view.desktopTheme),
     desktopThemeStyle: normalizeThemeStyleForTheme(view.desktopThemeStyle, normalizeThemePreference(view.desktopTheme)),
+    desktopTerminalTheme: normalizeTerminalThemePreference(view.desktopTerminalTheme),
     closeBehavior: normalizeCloseBehavior(view.closeBehavior),
     displayMode: normalizeDisplayMode(view.displayMode),
     statusBarStyle: normalizeStatusBarStyle(view.statusBarStyle),
