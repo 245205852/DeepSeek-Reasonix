@@ -263,6 +263,8 @@ export interface AppBindings {
   BalanceForTab(tabID: string): Promise<BalanceInfo>;
   Jobs(): Promise<JobView[]>;
   JobsForTab(tabID: string): Promise<JobView[]>;
+  CancelJob(jobID: string): Promise<boolean>;
+  CancelJobForTab(tabID: string, jobID: string): Promise<boolean>;
   ToolResultForTab(tabID: string, toolID: string): Promise<{ args: string; output: string } | null>;
   Meta(): Promise<Meta>;
   MetaForTab(tabID: string): Promise<Meta>;
@@ -2934,6 +2936,12 @@ function makeMockApp(): AppBindings {
         },
         async JobsForTab() {
           return this.Jobs();
+        },
+        async CancelJob() {
+          return false;
+        },
+        async CancelJobForTab(_tabID, jobID) {
+          return this.CancelJob(jobID);
         },
         async ToolResultForTab() {
           return null;
