@@ -6703,7 +6703,8 @@ func (a *App) Jobs() []JobView {
 }
 
 func (a *App) JobsForTab(tabID string) []JobView {
-	if _, _, _, _, ok := a.activeRemoteWorkbench(); ok {
+	_, _, _, remoteTabID, remoteActive := a.activeRemoteWorkbench()
+	if remoteActive && (tabID == "" || tabID == remoteTabID) {
 		raw, err := a.workbenchRequest(protocol.MethodJobList, protocol.JobListParams{})
 		if err != nil {
 			return []JobView{}
@@ -6731,10 +6732,22 @@ func (a *App) CancelJobForTab(tabID, jobID string) (bool, error) {
 	if jobID == "" {
 		return false, fmt.Errorf("job id is required")
 	}
-	if cli, _, _, remoteTabID, ok := a.activeRemoteWorkbench(); ok {
-		if tabID != "" && tabID != remoteTabID {
+	cli, _, _, remoteTabID, remoteActive := a.activeRemoteWorkbench()
+	// An explicit non-remote tab id identifies a process-local runtime even
+	// while Remote Workbench owns the visible surface. Resolve that owner before
+	// falling back to the active remote target so the global jobs popover can
+	// stop local and remote work side by side.
+	if tabID != "" && (!remoteActive || tabID != remoteTabID) {
+		ctrl := a.ctrlForRuntimeTabID(tabID)
+		if ctrl != nil {
+			return cancelJobForController(ctrl, jobID)
+		}
+		if remoteActive {
 			return false, fmt.Errorf("tab %q changed before stopping background job; retry", tabID)
 		}
+		return false, nil
+	}
+	if remoteActive {
 		ctx, cancel := context.WithTimeout(a.bootContext(), 30*time.Second)
 		defer cancel()
 		raw, err := cli.Request(ctx, string(protocol.MethodJobCancel), protocol.JobCancelParams{JobID: protocol.JobID(jobID)})
@@ -6747,7 +6760,10 @@ func (a *App) CancelJobForTab(tabID, jobID string) (bool, error) {
 		}
 		return decoded.(protocol.JobCancelResult).Disposition == protocol.JobCancelled, nil
 	}
-	ctrl := a.ctrlForRuntimeTabID(tabID)
+	return cancelJobForController(a.ctrlForRuntimeTabID(tabID), jobID)
+}
+
+func cancelJobForController(ctrl control.SessionAPI, jobID string) (bool, error) {
 	if ctrl == nil {
 		return false, nil
 	}

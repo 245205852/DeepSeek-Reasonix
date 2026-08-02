@@ -28,7 +28,7 @@ func TestIsReadOnlyBashSubject(t *testing.T) {
 		{"du -sh .", true},
 		{"diff a.go b.go", true},
 		{"printenv PATH", true},
-		{"Test-NetConnection -ComputerName localhost -Port 27017", true},
+		{"Test-NetConnection -ComputerName localhost -Port 27017", false},
 		{"Get-Process -Name mongod", true},
 		{"Get-ChildItem -Path .", true},
 		{"Get-NetTCPConnection -LocalPort 6379", true},

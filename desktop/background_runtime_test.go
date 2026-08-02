@@ -5,6 +5,7 @@ import (
 
 	"reasonix/internal/control"
 	"reasonix/internal/jobs"
+	"reasonix/internal/remote/workbench/client"
 	"reasonix/internal/workspacelease"
 )
 
@@ -80,6 +81,46 @@ func TestBackgroundRuntimeAPIsKeepDetachedJobsActionable(t *testing.T) {
 	}
 	if !foundDetached {
 		t.Fatalf("detached runtime missing from %+v", runtimes)
+	}
+}
+
+func TestCancelJobForLocalRuntimeWhileRemoteWorkbenchIsActive(t *testing.T) {
+	localCtrl := &backgroundRuntimeController{
+		status: control.RuntimeStatus{BackgroundJobs: 1},
+		jobs:   []jobs.View{{ID: "job-local", Kind: "bash", Status: "running"}},
+	}
+	app := &App{
+		tabs:        map[string]*WorkspaceTab{"local": {ID: "local", Ctrl: localCtrl}},
+		tabOrder:    []string{"local"},
+		activeTabID: "local",
+	}
+	kernel := app.workbench()
+	_, generation, err := kernel.targets.BeginRemoteConnect("remote-host", "/srv/work")
+	if err != nil {
+		t.Fatalf("BeginRemoteConnect: %v", err)
+	}
+	if err := kernel.targets.MarkRemoteConnected(generation); err != nil {
+		t.Fatalf("MarkRemoteConnected: %v", err)
+	}
+	if _, _, _, err := kernel.targets.ActivateRemote(generation); err != nil {
+		t.Fatalf("ActivateRemote: %v", err)
+	}
+	kernel.mu.Lock()
+	kernel.remote = &client.Client{}
+	kernel.remoteGen = generation
+	kernel.remoteTabID = "remote"
+	kernel.mu.Unlock()
+
+	listed := app.JobsForTab("local")
+	if len(listed) != 1 || listed[0].ID != "job-local" {
+		t.Fatalf("JobsForTab(local) = %+v, want local job while Remote Workbench is active", listed)
+	}
+	cancelled, err := app.CancelJobForTab("local", "job-local")
+	if err != nil {
+		t.Fatalf("CancelJobForTab(local): %v", err)
+	}
+	if !cancelled || len(localCtrl.cancelled) != 1 || localCtrl.cancelled[0] != "job-local" {
+		t.Fatalf("local cancellation = %t, calls=%v; want local job cancelled", cancelled, localCtrl.cancelled)
 	}
 }
 
