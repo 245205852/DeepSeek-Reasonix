@@ -182,8 +182,32 @@ ok(
     contrastRatio(translucentCodePalette.deletion, translucentCodePalette.deletionBackground) >= 4.5,
   "diff semantic text reaches WCAG AA on the final tinted row",
 );
+const adversarialMidtonePalette = deriveCodeReadabilityPalette("dark", "graphite", {
+  bg: "#3fcd1c",
+  bgSoft: "#cd1ce4",
+  fg: "#3fcd1c",
+  ok: "#15803d",
+  err: "#dc2626",
+});
+ok(
+  Object.values(codeReadabilityRatios(adversarialMidtonePalette)).every((ratio) => ratio >= 4.5),
+  "midtone custom themes keep every syntax role readable on plain and tinted diff rows",
+);
+let generatedPaletteMinimum = Number.POSITIVE_INFINITY;
+for (let index = 0; index < 512; index += 1) {
+  const sample = ((index * 2654435761) >>> 0).toString(16).padStart(8, "0");
+  const palette = deriveCodeReadabilityPalette(index % 2 === 0 ? "dark" : "light", "graphite", {
+    bg: `#${sample.slice(0, 6)}`,
+    bgSoft: `#${sample.slice(2, 8)}`,
+    fg: `#${sample.slice(0, 6)}`,
+    ok: `#${sample.slice(1, 7)}`,
+    err: `#${sample.slice(2, 8)}`,
+  });
+  generatedPaletteMinimum = Math.min(generatedPaletteMinimum, ...Object.values(codeReadabilityRatios(palette)));
+}
+ok(generatedPaletteMinimum >= 4.5, "generated custom palettes preserve WCAG AA across every rendered code surface");
 const invertedDarkPack = deriveCodeReadabilityPalette("dark", "graphite", { bg: "#ffffff", bgSoft: "#fafafa" });
-ok(invertedDarkPack.keyword === "#cf222e", "syntax direction follows final code luminance instead of global dark mode");
+ok(invertedDarkPack.string === "#0a3069", "syntax direction follows final code luminance instead of global dark mode");
 
 const baseReadabilityCSS = baseCodeReadabilityStylesheet(THEME_STYLES);
 for (const style of THEME_STYLES) {

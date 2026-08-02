@@ -90,36 +90,38 @@ export function deriveCodeReadabilityPalette(
   const baseBackground = flattenHex(tokens.bg || fallback.bg, fallback.bg);
   const background = flattenHex(tokens.bgSoft || fallback.code, baseBackground);
   const rawForeground = flattenHex(tokens.fg || fallback.fg, background);
-  const foreground = ensureContrast(rawForeground, background);
 
   // Palette direction follows the final, opaque code surface rather than the
   // global theme switch. This covers intentionally inverted custom themes.
   const syntax = contrastRatio("#f1f1ef", background) >= contrastRatio("#111827", background)
     ? DARK_SYNTAX
     : LIGHT_SYNTAX;
+  const rawAddition = flattenHex(tokens.ok || syntax.addition, background);
+  const rawDeletion = flattenHex(tokens.err || syntax.deletion, background);
+  const contrastTarget = preferredContrastTarget([background]);
+  const additionBackground = readableTintBackground(background, rawAddition, contrastTarget);
+  const deletionBackground = readableTintBackground(background, rawDeletion, contrastTarget);
+  const renderedBackgrounds = [background, additionBackground, deletionBackground];
+  const foreground = ensureContrastAgainst(rawForeground, renderedBackgrounds);
   const rawBorder = tokens.borderSoft || tokens.border;
   const border = rawBorder
     ? flattenHex(rawBorder, background)
     : mixHex(background, foreground, 0.16);
-  const rawAddition = flattenHex(tokens.ok || syntax.addition, background);
-  const rawDeletion = flattenHex(tokens.err || syntax.deletion, background);
-  const additionBackground = mixHex(background, rawAddition, DIFF_TINT_ALPHA);
-  const deletionBackground = mixHex(background, rawDeletion, DIFF_TINT_ALPHA);
 
   return {
     background,
     border,
     foreground,
-    keyword: ensureContrast(syntax.keyword, background),
-    string: ensureContrast(syntax.string, background),
-    number: ensureContrast(syntax.number, background),
-    comment: ensureContrast(syntax.comment, background),
-    function: ensureContrast(syntax.function, background),
-    type: ensureContrast(syntax.type, background),
-    builtin: ensureContrast(syntax.builtin, background),
-    meta: ensureContrast(syntax.meta, background),
-    addition: ensureContrastAgainst(rawAddition, [background, additionBackground]),
-    deletion: ensureContrastAgainst(rawDeletion, [background, deletionBackground]),
+    keyword: ensureContrastAgainst(syntax.keyword, renderedBackgrounds),
+    string: ensureContrastAgainst(syntax.string, renderedBackgrounds),
+    number: ensureContrastAgainst(syntax.number, renderedBackgrounds),
+    comment: ensureContrastAgainst(syntax.comment, renderedBackgrounds),
+    function: ensureContrastAgainst(syntax.function, renderedBackgrounds),
+    type: ensureContrastAgainst(syntax.type, renderedBackgrounds),
+    builtin: ensureContrastAgainst(syntax.builtin, renderedBackgrounds),
+    meta: ensureContrastAgainst(syntax.meta, renderedBackgrounds),
+    addition: ensureContrastAgainst(rawAddition, renderedBackgrounds),
+    deletion: ensureContrastAgainst(rawDeletion, renderedBackgrounds),
     additionBackground,
     deletionBackground,
   };
@@ -152,15 +154,11 @@ export function codeReadabilityDecls(palette: CodeReadabilityPalette): string {
 }
 
 export function codeReadabilityRatios(palette: CodeReadabilityPalette): Record<string, number> {
+  const backgrounds = [palette.background, palette.additionBackground, palette.deletionBackground];
   return Object.fromEntries(
     ["foreground", "keyword", "string", "number", "comment", "function", "type", "builtin", "meta", "addition", "deletion"]
       .map((key) => {
         const foreground = palette[key as keyof CodeReadabilityPalette];
-        const backgrounds = key === "addition"
-          ? [palette.background, palette.additionBackground]
-          : key === "deletion"
-            ? [palette.background, palette.deletionBackground]
-            : [palette.background];
         return [key, Math.min(...backgrounds.map((background) => contrastRatio(foreground, background)))];
       }),
   );
@@ -195,10 +193,6 @@ export function contrastRatio(a: string, b: string): number {
   return (Math.max(la, lb) + 0.05) / (Math.min(la, lb) + 0.05);
 }
 
-function ensureContrast(color: string, background: string): string {
-  return ensureContrastAgainst(color, [background]);
-}
-
 function ensureContrastAgainst(color: string, backgrounds: string[]): string {
   const primaryBackground = backgrounds[0] || "#000000";
   const opaque = flattenHex(color, primaryBackground);
@@ -206,9 +200,7 @@ function ensureContrastAgainst(color: string, backgrounds: string[]): string {
     ...backgrounds.map((background) => contrastRatio(candidate, background)),
   );
   if (minimumRatio(opaque) >= MIN_CODE_CONTRAST) return opaque;
-  const target = minimumRatio("#ffffff") >= minimumRatio("#000000")
-    ? "#ffffff"
-    : "#000000";
+  const target = preferredContrastTarget(backgrounds);
   let low = 0;
   let high = 1;
   for (let i = 0; i < 16; i += 1) {
@@ -217,6 +209,28 @@ function ensureContrastAgainst(color: string, backgrounds: string[]): string {
     else low = middle;
   }
   return mixHex(opaque, target, high);
+}
+
+function preferredContrastTarget(backgrounds: string[]): "#ffffff" | "#000000" {
+  const minimumRatio = (candidate: string) => Math.min(
+    ...backgrounds.map((background) => contrastRatio(candidate, background)),
+  );
+  return minimumRatio("#ffffff") >= minimumRatio("#000000") ? "#ffffff" : "#000000";
+}
+
+/**
+ * Keep as much semantic diff tint as possible without crossing the contrast
+ * direction selected by the opaque code surface. The zero-tint candidate is
+ * always safe, so every syntax role can share one palette across plain, added,
+ * and deleted rows instead of requiring row-specific token colors.
+ */
+function readableTintBackground(background: string, tint: string, foreground: string): string {
+  const steps = 24;
+  for (let step = steps; step >= 0; step -= 1) {
+    const candidate = mixHex(background, tint, DIFF_TINT_ALPHA * (step / steps));
+    if (contrastRatio(foreground, candidate) >= MIN_CODE_CONTRAST) return candidate;
+  }
+  return background;
 }
 
 function flattenHex(color: string, backdrop: string): string {
