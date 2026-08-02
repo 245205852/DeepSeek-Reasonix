@@ -4374,7 +4374,8 @@ function makeMockApp(): AppBindings {
           settings.checkUpdates = enabled;
         },
         async SetDesktopUpdateChannel(channel: string) {
-          settings.updateChannel = channel === "preview" ? "preview" : "stable";
+          void channel;
+          settings.updateChannel = "stable";
         },
         async SetDesktopTelemetry(enabled: boolean) {
           settings.telemetry = enabled;
@@ -4420,6 +4421,7 @@ function makeMockApp(): AppBindings {
       return "v1.0.0 (browser dev)";
     },
     async CheckUpdate(channel: string) {
+      void channel;
       // Keep the default browser preview focused on the primary product surface.
       // Updater methods remain mocked for explicit updater-flow tests.
       return {
@@ -4427,7 +4429,7 @@ function makeMockApp(): AppBindings {
         current: "v1.0.0",
         latest: "v1.0.0",
         notes: "",
-        channel: channel === "preview" ? "preview" : "stable",
+        channel: "stable",
         canSelfUpdate: false,
         manualOnly: true,
         installMode: "manual",
@@ -4438,7 +4440,8 @@ function makeMockApp(): AppBindings {
       };
     },
     async ApplyUpdateRequest(channel: string, expectedVersion: string, requestId: string) {
-      const selectedChannel = channel === "preview" ? "preview" : "stable";
+      void channel;
+      const selectedChannel = "stable";
       const total = 12_345_678;
       for (let r = 0; r <= total; r += 1_800_000) {
         emitUpdater({ requestId, version: expectedVersion, channel: selectedChannel, phase: "downloading", received: Math.min(r, total), total });

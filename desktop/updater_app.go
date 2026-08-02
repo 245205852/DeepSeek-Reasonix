@@ -39,13 +39,7 @@ func validateUpdaterRequest(requestID, selectedChannel, expectedVersion string) 
 	}
 	selectedChannel = targetUpdateChannel(selectedChannel)
 	expectedVersion = strings.TrimSpace(expectedVersion)
-	var valid bool
-	if selectedChannel == "preview" {
-		valid = previewDesktopVersionRE.MatchString(expectedVersion)
-	} else {
-		valid = stableDesktopVersionRE.MatchString(expectedVersion)
-	}
-	if !valid {
+	if !stableDesktopVersionRE.MatchString(expectedVersion) {
 		return "", "", "", fmt.Errorf("update: invalid %s version %q", selectedChannel, expectedVersion)
 	}
 	return requestID, selectedChannel, expectedVersion, nil
@@ -310,7 +304,7 @@ func (a *App) installDebUpdate(requestID string, meta *cachedUpdate) error {
 	a.emitProgress(requestID, meta.Channel, meta.Version, "installing", meta.Size, meta.Size, "")
 	a.emitProgress(requestID, meta.Channel, meta.Version, "done", meta.Size, meta.Size, "")
 	a.shutdown(a.ctx)
-	_ = relaunchThroughGuard()
+	_ = relaunchThroughLauncher()
 	os.Exit(0)
 	return nil
 }
@@ -320,10 +314,10 @@ func (a *App) installPortableUpdate(requestID string, meta *cachedUpdate, data [
 	var preparedUpdate *repair.UpdateTransaction
 	versionedPortable := (runtime.GOOS == "windows" || runtime.GOOS == "linux") && installlayout.HasCurrent(currentInstallDir())
 	if (runtime.GOOS == "windows" || runtime.GOOS == "linux") && !versionedPortable {
-		// Back up the complete release unit (main binary + Guard/launcher
-		// siblings the installer also replaces) so rollback never leaves a
-		// mixed-version install. Deb installs deliberately skip this — Guard
-		// cannot rewrite /usr/bin and would corrupt dpkg state.
+		// Back up the complete legacy release unit (main binary plus launcher
+		// and migration siblings) so rollback never leaves a mixed-version
+		// install. Deb installs deliberately skip this because package-manager
+		// state owns /usr/bin.
 		var err error
 		preparedUpdate, err = repair.PrepareFileUpdate(version, meta.Version, currentExecutablePath(), updateSiblingArtifacts()...)
 		if err != nil {
@@ -347,12 +341,10 @@ func (a *App) installPortableUpdate(requestID string, meta *cachedUpdate, data [
 	}
 	if err != nil {
 		if runtime.GOOS == "linux" {
-			// applyLinux replaces the Guard binary before the main-binary
-			// swap, so a failure here can already have produced a mixed
-			// install. Restore the recorded release unit instead of
-			// discarding the rollback metadata; if the restore itself fails,
-			// keep the pending transaction so Guard can retry the rollback on
-			// the next launch.
+			// applyLinux replaces the legacy migration member before the main
+			// binary swap, so a failure can already have produced a mixed
+			// install. Restore the recorded release unit immediately; if that
+			// fails, retain the transaction for explicit repair/reconciliation.
 			if preparedUpdate != nil {
 				if _, rollbackErr := repair.RollbackPendingUpdateExact(preparedUpdate); rollbackErr != nil {
 					err = errors.Join(err, fmt.Errorf("restore prepared release unit: %w", rollbackErr))
@@ -385,7 +377,7 @@ func (a *App) installPortableUpdate(requestID string, meta *cachedUpdate, data [
 	// macOS the installer/helper we launched takes over once we exit.
 	a.shutdown(a.ctx)
 	if runtime.GOOS == "linux" {
-		_ = relaunchThroughGuard()
+		_ = relaunchThroughLauncher()
 	}
 	os.Exit(0)
 	return nil

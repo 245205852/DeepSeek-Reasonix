@@ -371,8 +371,8 @@ func TestRenderTOMLRoundTrips(t *testing.T) {
 	if got.Desktop.CheckUpdates == nil || *got.Desktop.CheckUpdates {
 		t.Errorf("desktop.check_updates = %+v, want false", got.Desktop.CheckUpdates)
 	}
-	if got.DesktopUpdateChannel() != "preview" {
-		t.Errorf("desktop.update_channel = %q, want preview", got.DesktopUpdateChannel())
+	if got.DesktopUpdateChannel() != "stable" {
+		t.Errorf("desktop.update_channel = %q, want stable", got.DesktopUpdateChannel())
 	}
 	if got.Agent.RecoveryModel != "mimo-pro" || got.Agent.RecoveryTemperature != 0 {
 		t.Errorf("agent recovery settings not preserved: %+v", got.Agent)
@@ -783,10 +783,13 @@ func TestScopedRenderSeparatesUserAndProjectConfig(t *testing.T) {
 	c.Agent.RecoveryTemperature = 0.2
 
 	user := RenderTOMLForScope(c, RenderScopeUser)
-	for _, want := range []string{"config_version = 5", "[desktop]", `currency = "CNY"`, `theme = "dark"`, `close_behavior = "background"`, `status_bar_style = "text"`, `default_tool_approval_mode = "auto"`, `check_updates = false`, `update_channel = "preview"`, `recovery_model = "deepseek-pro"`, "[notifications]", "[tools.shell]"} {
+	for _, want := range []string{"config_version = 5", "[desktop]", `currency = "CNY"`, `theme = "dark"`, `close_behavior = "background"`, `status_bar_style = "text"`, `default_tool_approval_mode = "auto"`, `check_updates = false`, `recovery_model = "deepseek-pro"`, "[notifications]", "[tools.shell]"} {
 		if !strings.Contains(user, want) {
 			t.Fatalf("user render missing %q:\n%s", want, user)
 		}
+	}
+	if strings.Contains(user, "update_channel") || strings.Contains(user, "[cli]") {
+		t.Fatalf("user render retained retired update channel:\n%s", user)
 	}
 
 	project := RenderTOMLForScope(c, RenderScopeProject)

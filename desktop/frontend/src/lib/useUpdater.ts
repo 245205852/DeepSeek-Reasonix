@@ -22,21 +22,11 @@ export type UpdateStatus =
 
 export interface Updater {
   status: UpdateStatus;
-  check: (channel?: string) => Promise<void>;
+  check: () => Promise<void>;
   /** Single-action update: download + verify + install + relaunch. */
   apply: (info: UpdateInfo) => void;
   openDownload: () => void;
-  reset: (channel?: "stable" | "preview") => void;
-}
-
-export async function switchUpdaterChannel(
-  channel: "stable" | "preview",
-  invalidate: (channel: "stable" | "preview") => void,
-  save: (channel: "stable" | "preview") => Promise<boolean>,
-  check: (channel: string) => Promise<void>,
-): Promise<void> {
-  invalidate(channel);
-  if (await save(channel)) await check(channel);
+  reset: () => void;
 }
 
 function errMsg(e: unknown): string {
@@ -190,11 +180,11 @@ function useUpdaterInternal(): Updater {
     });
   }, []);
 
-  const check = useCallback(async (channel = "") => {
-    const operation = beginOperation(channel, "checking");
+  const check = useCallback(async () => {
+    const operation = beginOperation("stable", "checking");
     setStatus({ kind: "checking" });
     try {
-      const info = await app.CheckUpdate(channel);
+      const info = await app.CheckUpdate("stable");
       if (!isCurrentOperation(operation)) return;
       if (!info) {
         completeOperation(operation);
@@ -231,6 +221,10 @@ function useUpdaterInternal(): Updater {
 
   const apply = useCallback((info: UpdateInfo) => {
     const selectedChannel = normalizedChannel(info.channel);
+    if (selectedChannel !== "stable") {
+      setStatus({ kind: "error", message: "update check returned a retired release channel" });
+      return;
+    }
     const active = operationRef.current;
     if (isBusyOperation(active.kind) || (active.channel && active.channel !== selectedChannel)) return;
     if (!info.canSelfUpdate) {
@@ -255,12 +249,12 @@ function useUpdaterInternal(): Updater {
     void app.OpenDownloadPage();
   }, []);
 
-  const reset = useCallback((channel?: "stable" | "preview") => {
+  const reset = useCallback(() => {
     const epoch = operationRef.current.epoch + 1;
     operationRef.current = {
       epoch,
       requestId: nextUpdaterRequestId(epoch),
-      channel: channel ? normalizedChannel(channel) : "",
+      channel: "",
       expectedVersion: "",
       kind: "idle",
     };

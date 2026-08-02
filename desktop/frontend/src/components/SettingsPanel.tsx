@@ -6,7 +6,7 @@ import { app, openExternal } from "../lib/bridge";
 import { normalizeLangPref, useI18n, useT, type DictKey, type LangPref } from "../lib/i18n";
 import { apiKeyEnvFromProviderName, inferredVisionModels, mergedFetchedProviderModels, mergeProviderModelContextWindows, providerApiKeyEnvForSave, providerDefaultModel, providerIsConfigured, providerModelCandidates, providerModelContextWindowDrafts, providerModelContextWindowIsSmall, providerRequiresKey } from "../lib/providerModels";
 import { cachedFetchProviderModels, invalidateProviderCacheByAPIKeyEnv, shouldSkipAutoRefresh } from "../lib/providerModelCache";
-import { switchUpdaterChannel, useUpdater } from "../lib/useUpdater";
+import { useUpdater } from "../lib/useUpdater";
 import {
   applyTheme,
   getTheme,
@@ -352,7 +352,6 @@ export function SettingsPanel({
                     <UpdatesSection
                       configPath={s.configPath}
                       checkUpdates={s.checkUpdates}
-                      updateChannel={s.updateChannel}
                       telemetry={s.telemetry !== false}
                       metrics={s.metrics !== false}
                       settingsBusy={busy}
@@ -1366,7 +1365,7 @@ function normalizeSettingsView(view: SettingsView | null | undefined): SettingsV
     statusBarItems: normalizeStatusBarItems(view.statusBarItems),
     conversationWidth: normalizeConversationWidth(view.conversationWidth),
     checkUpdates: view.checkUpdates !== false,
-    updateChannel: view.updateChannel === "preview" ? "preview" : "stable",
+    updateChannel: "stable",
   };
 }
 
@@ -6775,7 +6774,6 @@ const mb = (n: number) => (n / MB).toFixed(1);
 function UpdatesSection({
   configPath,
   checkUpdates,
-  updateChannel,
   telemetry,
   metrics,
   settingsBusy,
@@ -6783,15 +6781,13 @@ function UpdatesSection({
 }: {
   configPath: string;
   checkUpdates: boolean;
-  updateChannel: string;
   telemetry: boolean;
   metrics: boolean;
   settingsBusy: boolean;
   applySettings: (fn: () => Promise<void>) => Promise<boolean>;
 }) {
   const t = useT();
-  const { status, check, apply: applyUpdate, openDownload, reset: resetUpdater } = useUpdater();
-  const selectedChannel = updateChannel === "preview" ? "preview" : "stable";
+  const { status, check, apply: applyUpdate, openDownload } = useUpdater();
   const [version, setVersion] = useState("");
   useEffect(() => {
     app.Version().then(setVersion).catch(() => {});
@@ -6852,35 +6848,13 @@ function UpdatesSection({
         }
       >
         <div className="updates-control__controls">
-          <div className="provider-add-segmented" role="group" aria-label={t("updater.channelSettingLabel")}>
-            {(["stable", "preview"] as const).map((nextChannel) => (
-              <button
-                key={nextChannel}
-                type="button"
-                disabled={settingsBusy || updaterBusy}
-                className={selectedChannel === nextChannel ? "provider-add-segmented__item provider-add-segmented__item--active" : "provider-add-segmented__item"}
-                aria-pressed={selectedChannel === nextChannel}
-                onClick={() => {
-                  if (nextChannel === selectedChannel) return;
-                  void switchUpdaterChannel(
-                    nextChannel,
-                    resetUpdater,
-                    () => applySettings(() => app.SetDesktopUpdateChannel(nextChannel)),
-                    check,
-                  );
-                }}
-              >
-                {nextChannel === "stable" ? t("updater.channelStable") : t("updater.channelPreview")}
-              </button>
-            ))}
-          </div>
           <Tooltip label={t("updater.checkButton")}>
             <button
               className="chip chip--icon"
               type="button"
               disabled={settingsBusy || updaterBusy}
               aria-label={t("updater.checkButton")}
-              onClick={() => void check(selectedChannel)}
+              onClick={() => void check()}
             >
               <RefreshCw className={status.kind === "checking" ? "updates-control__spinner" : undefined} size={14} aria-hidden="true" />
             </button>
@@ -6888,17 +6862,11 @@ function UpdatesSection({
         </div>
       </SettingsField>
       <div className="updates-control__hint">
-        <div>{t("updater.channelSettingHint")}</div>
-        <div>{t("updater.channelAutoCheckHint")}</div>
+        <div>{t("updater.officialReleaseHint")}</div>
       </div>
       {status.kind === "available" && (
         <div className="updates-control__action">
           <div className="updates-control__action-copy">
-            <div>
-              {t("updater.channelLabel", {
-                channel: status.info.channel === "preview" ? t("updater.channelPreview") : t("updater.channelStable"),
-              })}
-            </div>
             {!status.info.canSelfUpdate && <div>{status.info.manualReason || t("updater.macHint")}</div>}
           </div>
           <button
