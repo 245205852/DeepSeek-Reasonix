@@ -2696,7 +2696,6 @@ export const en = {
   "notice.mcpServersFailed": "Some MCP servers failed to start; run /mcp for details.",
   "notice.guardianModelMissing": "Guardian was disabled because its model was not found.",
   "notice.guardianStartFailed": "Guardian was disabled because it could not start.",
-  "guard.safeMode": "Reasonix started in Safe Mode. Plugins, MCP servers, hooks, bots, automations, and saved tabs are disabled for this run.",
   "questionNav.label": "Question navigation",
   "questionNav.progress": "Question {current} / {total}",
   "questionNav.jump": "Jump to question {n}",
@@ -2770,6 +2769,10 @@ export const en = {
   "tool.noOutput": "no output",
 
   // software update
+  "config.loadWarning": "Configuration issue: {msg}",
+  "config.openConfig": "Open config",
+  "config.reloadConfig": "Reload",
+  "config.doctorHint": "Or run: reasonix doctor repair",
   "updater.title": "Software update",
   "updater.autoCheckLabel": "Check for updates on startup",
   "updater.autoCheckHint": "When off, Reasonix won't check automatically when it opens. You can still check manually here.",
@@ -2785,6 +2788,7 @@ export const en = {
   "updater.available": "A new version is available: {v}",
   "updater.releaseNotes": "Release notes",
   "updater.downloadUpdate": "Download update",
+  "updater.updateAndRestart": "Update and restart",
   "updater.downloaded": "Update {v} has been downloaded.",
   "updater.restartInstall": "Install and restart",
   "updater.authorizeInstall": "Authorize install and restart",

@@ -332,8 +332,11 @@ type DesktopStartupSettingsView struct {
 	StatusBarItems     []string        `json:"statusBarItems"`
 	CheckUpdates       bool            `json:"checkUpdates"`
 	UpdateChannel      string          `json:"updateChannel"`
-	SafeMode           bool            `json:"safeMode,omitempty"`
 	ConversationWidth  string          `json:"conversationWidth,omitempty"`
+	// ConfigWarnings are non-blocking notices when user/project config was
+	// recovered in memory (last-known-good or defaults) without rewriting files.
+	ConfigWarnings []string `json:"configWarnings,omitempty"`
+	ConfigPath     string   `json:"configPath,omitempty"`
 }
 
 func nonNil(s []string) []string {
@@ -880,8 +883,9 @@ func desktopStartupSettingsFromConfig(cfg *config.Config) DesktopStartupSettings
 		StatusBarItems:     cfg.DesktopStatusBarItems(),
 		CheckUpdates:       cfg.DesktopCheckUpdates(),
 		UpdateChannel:      cfg.DesktopUpdateChannel(),
-		SafeMode:           cfg.SafeMode(),
 		ConversationWidth:  cfg.DesktopConversationWidth(),
+		ConfigWarnings:     cfg.LoadWarnings(),
+		ConfigPath:         config.UserConfigPath(),
 	}
 }
 
@@ -889,15 +893,45 @@ func desktopStartupSettingsFromConfig(cfg *config.Config) DesktopStartupSettings
 // app startup. Keep provider/key status in Settings(), where the Settings panel
 // actually needs it.
 func (a *App) DesktopStartupSettings() DesktopStartupSettingsView {
-	cfg, _, err := a.loadDesktopUserConfigForView()
+	// Prefer the resilient workspace load so config warnings surface on first paint.
+	if cfg, err := config.LoadForRootReadOnly(a.activeWorkspaceRoot()); err == nil {
+		view := desktopStartupSettingsFromConfig(cfg)
+		view.ConfigWarnings = cfg.LoadWarnings()
+		view.ConfigPath = config.UserConfigPath()
+		return view
+	}
+	cfg, path, err := a.loadDesktopUserConfigForView()
 	if err != nil {
 		view := desktopStartupSettingsFromConfig(nil)
-		view.SafeMode = config.SafeModeRequested()
+		view.ConfigWarnings = []string{
+			"user configuration could not be loaded; using built-in defaults. Run: reasonix doctor repair",
+		}
+		view.ConfigPath = config.UserConfigPath()
 		return view
 	}
 	view := desktopStartupSettingsFromConfig(cfg)
-	view.SafeMode = config.SafeModeRequested()
+	view.ConfigPath = path
 	return view
+}
+
+// OpenUserConfigPath reveals the user config file in the system file manager.
+func (a *App) OpenUserConfigPath() error {
+	path := config.UserConfigPath()
+	if path == "" {
+		return fmt.Errorf("user config path is unavailable")
+	}
+	// Reveal the parent directory when the file does not exist yet so the user
+	// can still find where config.toml should live.
+	if _, err := os.Stat(path); err != nil {
+		return a.RevealPath(filepath.Dir(path))
+	}
+	return a.RevealPath(path)
+}
+
+// ReloadUserConfig reloads configuration for the active workspace after the
+// user fixes a broken file. Non-fatal load warnings remain visible when present.
+func (a *App) ReloadUserConfig() (DesktopStartupSettingsView, error) {
+	return a.DesktopStartupSettings(), nil
 }
 
 // Settings returns the current configuration for the Settings panel.

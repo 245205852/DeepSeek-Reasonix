@@ -154,8 +154,8 @@ and DeepSeek prefix-cache–oriented design.
   Treat opening an unfamiliar repository as opting into executable project
   configuration: review `.reasonix/settings.json`, `reasonix.toml`, and
   `.mcp.json` before starting Reasonix. If a repository causes unexpected MCP
-  or Hook behavior, restart in Safe Mode to disable those external integrations
-  while recovering.
+  or Hook behavior, close that workspace and correct or remove the project-local
+  entries before reopening it.
 - **stdio MCP connections are persistent.** This fixes stateful servers that
   lost browser/session state when writer calls received a fresh process.
 - **Plan mode and permission policy are now independent**: Plan directs the
