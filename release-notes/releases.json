@@ -14,7 +14,10 @@
         "zh": "统一更新通道、自适应语法高亮以及多项代理可靠性修复。"
       },
       "surfaces": [
-        "desktop"
+        "desktop",
+        "cli",
+        "agent",
+        "mcp"
       ],
       "guides": [
         {
