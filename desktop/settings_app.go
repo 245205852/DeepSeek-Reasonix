@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"math"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -156,6 +157,10 @@ type AgentView struct {
 	SystemPrompt           string  `json:"systemPrompt"`
 	ColdResumePrune        bool    `json:"coldResumePrune"`
 	ReasoningLanguage      string  `json:"reasoningLanguage"`
+	CompactRatio           float64 `json:"compactRatio,omitempty"`
+	EffectiveCompactRatio  float64 `json:"effectiveCompactRatio,omitempty"`
+	CompactRatioOverridden bool    `json:"compactRatioOverridden,omitempty"`
+	CompactRatioRemote     bool    `json:"compactRatioRemote,omitempty"`
 }
 
 type BotAllowlistView struct {
@@ -918,6 +923,8 @@ func (a *App) Settings() SettingsView {
 				MaxParallelWriters:     agent.DefaultMaxParallelWriters,
 				ColdResumePrune:        true,
 				ReasoningLanguage:      "auto",
+				CompactRatio:           config.Default().Agent.CompactRatio,
+				EffectiveCompactRatio:  config.Default().Agent.CompactRatio,
 			},
 			Bot:                     botSettingsView(config.BotConfig{}),
 			AutoPlan:                "off",
@@ -993,6 +1000,8 @@ func (a *App) Settings() SettingsView {
 			SystemPrompt:           cfg.Agent.SystemPrompt,
 			ColdResumePrune:        cfg.ColdResumePruneEnabled(),
 			ReasoningLanguage:      cfg.ReasoningLanguage(),
+			CompactRatio:           cfg.Agent.CompactRatio,
+			EffectiveCompactRatio:  cfg.Agent.CompactRatio,
 		},
 		Bot:                     botSettingsView(cfg.Bot),
 		DesktopLanguage:         cfg.DesktopLanguage(),
@@ -1016,6 +1025,13 @@ func (a *App) Settings() SettingsView {
 		AutoApproveTools:        ctrl != nil && ctrl.AutoApproveTools(),
 		Bypass:                  ctrl != nil && ctrl.AutoApproveTools(),
 	}
+	if ctrl != nil {
+		if effective := ctrl.CompactRatio(); effective > 0 {
+			v.Agent.EffectiveCompactRatio = effective
+			v.Agent.CompactRatioOverridden = math.Abs(effective-v.Agent.CompactRatio) > 0.0001
+		}
+	}
+	v.Agent.CompactRatioRemote = a.activeWorkbenchTargetIsRemote()
 	added := providerAccessSet(cfg.Desktop.ProviderAccess)
 	resolver := config.NewCredentialResolverForRoot(root)
 	credentialsRevision := providerCredentialsRevision()
@@ -3517,6 +3533,13 @@ func (a *App) SetAgentParams(temperature float64, maxSteps int, plannerMaxSteps 
 
 func (a *App) SetColdResumePrune(enabled bool) error {
 	return a.applyConfigChange(func(c *config.Config) error { return c.SetColdResumePrune(enabled) })
+}
+
+func (a *App) SetCompactRatio(ratio float64) error {
+	_, err := a.applyConfigChangeWithWarning("context compaction threshold", func(c *config.Config) error {
+		return c.SetCompactRatio(ratio)
+	})
+	return err
 }
 
 func (a *App) SetReasoningLanguage(lang string) error {

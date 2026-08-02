@@ -780,6 +780,11 @@ const PROXY_MODES = ["auto", "custom", "off"] as const;
 // The settings UI uses it for subagent defaults; provider-specific levels are
 // inferred by the backend or edited in TOML for rare gateways.
 export const EFFORT_PRESETS: readonly string[] = ["low", "medium", "high", "xhigh", "max"];
+const COMPACT_RATIO_PRESETS = [
+  { ratio: 0.7, labelKey: "settings.compactRatioPreset.70" },
+  { ratio: 0.8, labelKey: "settings.compactRatioPreset.80" },
+  { ratio: 0.85, labelKey: "settings.compactRatioPreset.85" },
+] as const;
 const REASONING_PROTOCOLS: readonly string[] = ["", "deepseek", "openai", "none"];
 const THINKING_MODES: readonly string[] = ["", "enabled", "disabled", "adaptive"];
 const PROXY_TYPES = ["http", "https", "socks5", "socks5h"] as const;
@@ -1320,11 +1325,17 @@ function normalizeSettingsView(view: SettingsView | null | undefined): SettingsV
     noProxy: "",
     proxy: { type: "socks5", server: "", port: 0, username: "", password: "" },
   };
-  const agent = view.agent ?? { temperature: 0, maxSteps: 0, plannerMaxSteps: 0, maxSubagentDepth: 2, maxSubagentConcurrency: 6, maxParallelWriters: 3, systemPrompt: "", coldResumePrune: true, reasoningLanguage: "auto" };
+  const agent = view.agent ?? { temperature: 0, maxSteps: 0, plannerMaxSteps: 0, maxSubagentDepth: 2, maxSubagentConcurrency: 6, maxParallelWriters: 3, systemPrompt: "", coldResumePrune: true, reasoningLanguage: "auto", compactRatio: 0.8 };
   agent.plannerMaxSteps = Number.isFinite(agent.plannerMaxSteps) ? Math.max(0, Math.trunc(agent.plannerMaxSteps)) : 0;
   agent.maxSteps = Number.isFinite(agent.maxSteps) ? Math.max(0, Math.trunc(agent.maxSteps)) : 0;
   agent.maxSubagentDepth = Number.isFinite(agent.maxSubagentDepth) && agent.maxSubagentDepth <= 1 ? 1 : 2;
   agent.reasoningLanguage = normalizeReasoningLanguage(agent.reasoningLanguage);
+  agent.compactRatio = Number.isFinite(agent.compactRatio) && Number(agent.compactRatio) > 0 ? Number(agent.compactRatio) : 0.8;
+  agent.effectiveCompactRatio = Number.isFinite(agent.effectiveCompactRatio) && Number(agent.effectiveCompactRatio) > 0
+    ? Number(agent.effectiveCompactRatio)
+    : agent.compactRatio;
+  agent.compactRatioOverridden = Boolean(agent.compactRatioOverridden);
+  agent.compactRatioRemote = Boolean(agent.compactRatioRemote);
   return {
     ...view,
     providers: asArray(view.providers).map(normalizeProviderView),
@@ -4036,7 +4047,18 @@ function ModelsSection({ s, busy, apply, backgroundApply, initialFocus }: Models
     : !providerIsConfigured(defaultProviderView)
       ? t("settings.modelNeedsKey", { provider: modelProviderLabel(defaultProvider, defaultProviderView, t) })
       : "";
-  const agent = s.agent ?? { temperature: 0, maxSteps: 0, plannerMaxSteps: 0, maxSubagentDepth: 2, maxSubagentConcurrency: 6, maxParallelWriters: 3, systemPrompt: "", coldResumePrune: true, reasoningLanguage: "auto" };
+  const agent = s.agent ?? { temperature: 0, maxSteps: 0, plannerMaxSteps: 0, maxSubagentDepth: 2, maxSubagentConcurrency: 6, maxParallelWriters: 3, systemPrompt: "", coldResumePrune: true, reasoningLanguage: "auto", compactRatio: 0.8 };
+  const compactRatio = Number.isFinite(agent.compactRatio) && Number(agent.compactRatio) > 0 ? Number(agent.compactRatio) : 0.8;
+  const defaultModel = defaultRef.startsWith(`${defaultProvider}/`) ? defaultRef.slice(defaultProvider.length + 1) : "";
+  const modelContextWindow = defaultProviderView?.modelOverrides?.find((override) => override.model === defaultModel)?.contextWindow ?? 0;
+  const effectiveContextWindow = modelContextWindow > 0 ? modelContextWindow : (defaultProviderView?.contextWindow ?? 0);
+  const compactTokens = effectiveContextWindow > 0 ? Math.round(effectiveContextWindow * compactRatio) : 0;
+  const compactRatioHint = compactTokens > 0
+    ? t("settings.compactRatioHintWithTokens", { percent: Math.round(compactRatio * 100), tokens: compactTokens.toLocaleString() })
+    : t("settings.compactRatioHint", { percent: Math.round(compactRatio * 100) });
+  const compactRatioOverrideHint = agent.compactRatioOverridden
+    ? t("settings.compactRatioProjectOverride", { percent: Math.round(Number(agent.effectiveCompactRatio) * 100) })
+    : "";
   const subagentDepth = Number.isFinite(agent.maxSubagentDepth) && agent.maxSubagentDepth <= 1 ? 1 : 2;
   const subagentConcurrency = Number.isFinite(agent.maxSubagentConcurrency) && agent.maxSubagentConcurrency > 0
     ? Math.max(1, Math.min(32, Math.floor(agent.maxSubagentConcurrency)))
@@ -4280,6 +4302,36 @@ function ModelsSection({ s, busy, apply, backgroundApply, initialFocus }: Models
                 ))}
               </div>
             </SettingsField>
+            <details className="provider-editor-advanced">
+              <summary>
+                <span className="provider-editor-advanced__title">
+                  <ChevronDown className="provider-editor-advanced__icon" size={16} aria-hidden="true" />
+                  {t("settings.contextManagementAdvanced")}
+                </span>
+                <span className="provider-editor-advanced__hint">{t("settings.contextManagementAdvancedHint")}</span>
+              </summary>
+              <div className="provider-editor-advanced__body">
+                <SettingsField label={t("settings.compactRatio")} hint={compactRatioHint} stacked>
+                  <div className="set-seg" role="group" aria-label={t("settings.compactRatio")}>
+                    {COMPACT_RATIO_PRESETS.map(({ ratio, labelKey }) => (
+                      <button
+                        key={ratio}
+                        type="button"
+                        className={`set-seg__btn${Math.abs(compactRatio - ratio) < 0.0001 ? " set-seg__btn--on" : ""}`}
+                        disabled={busy}
+                        aria-pressed={Math.abs(compactRatio - ratio) < 0.0001}
+                        title={t(labelKey)}
+                        onClick={() => void apply(() => app.SetCompactRatio(ratio))}
+                      >
+                        {t(labelKey)}
+                      </button>
+                    ))}
+                  </div>
+                </SettingsField>
+                {compactRatioOverrideHint && <div className="provider-fetch-banner provider-fetch-banner--warn">{compactRatioOverrideHint}</div>}
+                {agent.compactRatioRemote && <div className="provider-fetch-banner provider-fetch-banner--warn">{t("settings.compactRatioRemote")}</div>}
+              </div>
+            </details>
           </SettingsSection>
         </>
       ) : (

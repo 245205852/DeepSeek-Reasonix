@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -397,6 +398,26 @@ func (c *Config) SetCLIUpdateChannel(channel string) error {
 // SetColdResumePrune toggles auto-elision of stale tool results on cold resume.
 func (c *Config) SetColdResumePrune(enabled bool) error {
 	c.Agent.ColdResumePrune = &enabled
+	return nil
+}
+
+// SetCompactRatio updates the advanced Desktop auto-compaction preference.
+// Keep the UI-owned range inside the default snip/force guard rails so lowering
+// the threshold cannot accidentally turn normal cache growth into constant
+// compaction, while higher values still retain context-exhaustion headroom.
+func (c *Config) SetCompactRatio(ratio float64) error {
+	if math.IsNaN(ratio) || math.IsInf(ratio, 0) || ratio < 0.65 || ratio > 0.85 {
+		return fmt.Errorf("compact ratio %v: must be between 0.65 and 0.85", ratio)
+	}
+	snip := c.Agent.ToolResultSnipRatio
+	force := c.Agent.CompactForceRatio
+	if snip > 0 && ratio <= snip {
+		return fmt.Errorf("compact ratio %.2f: must be greater than tool result snip ratio %.2f", ratio, snip)
+	}
+	if force > 0 && ratio >= force {
+		return fmt.Errorf("compact ratio %.2f: must be less than force ratio %.2f", ratio, force)
+	}
+	c.Agent.CompactRatio = ratio
 	return nil
 }
 

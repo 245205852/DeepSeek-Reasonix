@@ -83,7 +83,7 @@ function baseSettings(displayMode: "standard" | "compact" = "standard"): Setting
     permissions: { mode: "ask", allow: [], ask: [], deny: [] },
     sandbox: { bash: "enforce", network: false, workspaceRoot: "", allowWrite: [], effectiveWorkspaceRoot: "/work", effectiveWriteRoots: ["/work"], shell: "auto" },
     network: { proxyMode: "auto", proxyUrl: "", noProxy: "", proxy: { type: "socks5", server: "", port: 0, username: "", password: "" } },
-    agent: { temperature: 0, maxSteps: 0, plannerMaxSteps: 0, maxSubagentDepth: 2, maxSubagentConcurrency: 6, maxParallelWriters: 3, systemPrompt: "", coldResumePrune: true, reasoningLanguage: "auto" },
+    agent: { temperature: 0, maxSteps: 0, plannerMaxSteps: 0, maxSubagentDepth: 2, maxSubagentConcurrency: 6, maxParallelWriters: 3, systemPrompt: "", coldResumePrune: true, reasoningLanguage: "auto", compactRatio: 0.8 },
     bot: {
       enabled: false,
       model: "",
@@ -272,6 +272,86 @@ ok(onChangedSettings?.displayMode === "compact", "onChanged receives the post-sa
 
 await act(async () => {
   root.unmount();
+});
+
+// Models > Agent runtime: the advanced compaction preference shows the
+// effective token threshold and reloads the persisted Settings snapshot.
+const compactRootEl = document.createElement("div");
+document.body.appendChild(compactRootEl);
+const compactRoot = createRoot(compactRootEl);
+let compactSettings = baseSettings("standard");
+delete compactSettings.agent.compactRatio; // Old backends omit the additive field.
+compactSettings.agent.effectiveCompactRatio = 0.75;
+compactSettings.agent.compactRatioOverridden = true;
+compactSettings.agent.compactRatioRemote = true;
+compactSettings.defaultModel = "context-provider/context-model";
+compactSettings.providers = [{
+  name: "context-provider",
+  builtIn: false,
+  added: true,
+  kind: "openai",
+  baseUrl: "https://context.example.com/v1",
+  chatUrl: "",
+  models: ["context-model"],
+  visionModels: [],
+  visionModelsConfigured: false,
+  modelsUrl: "",
+  default: "context-model",
+  apiKeyEnv: "",
+  keySet: false,
+  requiresKey: false,
+  configured: true,
+  balanceUrl: "",
+  contextWindow: 100_000,
+  reasoningProtocol: "",
+  thinking: "",
+  supportedEfforts: [],
+  defaultEffort: "",
+  modelOverrides: [],
+}];
+let compactRatioCalls: number[] = [];
+window.go = {
+  main: {
+    App: {
+      Settings: async () => compactSettings,
+      FetchAllProviderModels: async () => ({}),
+      SetCompactRatio: async (ratio: number) => {
+        compactRatioCalls.push(ratio);
+        compactSettings = { ...compactSettings, agent: { ...compactSettings.agent, compactRatio: ratio } };
+      },
+    } as Partial<AppBindings> as AppBindings,
+  },
+};
+
+await act(async () => {
+  compactRoot.render(
+    <LocaleProvider>
+      <SettingsPanel initialTab="models" desktopPlatform="linux" onClose={() => {}} onChanged={() => {}} />
+    </LocaleProvider>,
+  );
+  await flushPromises();
+});
+const contextAdvanced = Array.from(compactRootEl.querySelectorAll("summary")).find((summary) => summary.textContent?.includes("Advanced context management")) as HTMLElement | undefined;
+if (!contextAdvanced) throw new Error("advanced context management did not render");
+await act(async () => {
+  contextAdvanced.click();
+  await flushPromises();
+});
+ok(compactRootEl.textContent?.includes("80,000 tokens") === true, "compact ratio shows the default model token threshold");
+ok(compactRootEl.textContent?.includes("effective threshold is 75%") === true, "project override shows the active effective threshold");
+ok(compactRootEl.textContent?.includes("changes the local default only") === true, "remote workbench scope is explicit");
+const earlierCompactButton = Array.from(compactRootEl.querySelectorAll("button")).find((button) => button.textContent?.includes("70% · Earlier")) as HTMLButtonElement | undefined;
+if (!earlierCompactButton) throw new Error("earlier compaction preset did not render");
+await act(async () => {
+  earlierCompactButton.click();
+  await flushPromises();
+});
+eq(compactRatioCalls.length, 1, "compact ratio mutation is invoked once");
+eq(compactRatioCalls[0], 0.7, "compact ratio preset sends the expected fraction");
+ok(earlierCompactButton.getAttribute("aria-pressed") === "true", "saved compact ratio is selected after Settings reload");
+
+await act(async () => {
+  compactRoot.unmount();
 });
 
 const retryRootEl = document.createElement("div");
