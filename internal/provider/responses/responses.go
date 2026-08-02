@@ -70,6 +70,9 @@ type Config struct {
 	// SessionCache controls DashScope's opt-in header. The header is never sent
 	// to non-DashScope endpoints even when this value is true.
 	SessionCache *bool
+	// Extra carries kind-specific options; "vision" (bool) enables embedding
+	// attached Images as input_image parts on user turns.
+	Extra map[string]any
 }
 
 func (c Config) mode() string {
@@ -99,6 +102,7 @@ type client struct {
 	caps                            vendorCapabilities
 	sessionCache                    bool
 	maxOutputTokens                 int
+	vision                          bool // model accepts image input; embed Images as input_image parts
 	http                            *http.Client
 	idleTimeout                     time.Duration
 	authed                          atomic.Bool
@@ -120,6 +124,7 @@ func New(cfg Config) provider.Provider {
 	if cfg.SessionCache != nil {
 		sessionCache = *cfg.SessionCache
 	}
+	vision, _ := cfg.Extra["vision"].(bool)
 	httpClient := &http.Client{Timeout: 300 * time.Second}
 	if built, err := netclient.NewHTTPClient(cfg.Proxy, netclient.TransportOptions{
 		DialTimeout: 30 * time.Second, KeepAlive: 30 * time.Second,
@@ -131,7 +136,8 @@ func New(cfg Config) provider.Provider {
 		name: cfg.Name, apiKey: cfg.APIKey, keyEnv: cfg.KeyEnv, keySource: cfg.KeySource,
 		baseURL: strings.TrimRight(cfg.BaseURL, "/"), model: cfg.Model, effort: cfg.Effort,
 		vendor: vendor, caps: cap, mode: cfg.mode(), sessionCache: sessionCache, maxOutputTokens: maxOutputTokens,
-		http: httpClient, idleTimeout: defaultStreamIdleTimeout,
+		vision: vision,
+		http:   httpClient, idleTimeout: defaultStreamIdleTimeout,
 	}
 }
 
@@ -298,7 +304,7 @@ func (c *client) buildRequestBody(req provider.Request) (map[string]any, bool, [
 		return body, true, messages
 	}
 
-	body["input"] = messagesToInput(rest)
+	body["input"] = messagesToInput(rest, c.vision)
 	return body, false, messages
 }
 
@@ -309,12 +315,29 @@ func splitInstructions(messages []provider.Message) (string, []provider.Message)
 	return messages[0].Content, messages[1:]
 }
 
-func messagesToInput(messages []provider.Message) []map[string]any {
+func messagesToInput(messages []provider.Message, vision bool) []map[string]any {
 	input := make([]map[string]any, 0, len(messages)*2)
 	for _, message := range messages {
 		switch message.Role {
 		case provider.RoleSystem, provider.RoleUser:
-			input = append(input, map[string]any{"role": string(message.Role), "content": message.Content})
+			// Text-only turns keep the documented TextInput string shape.
+			// Vision-capable user turns with attached images switch to the
+			// InputItemList array form ({type:input_text} + {type:input_image})
+			// so the text and every image ride the same message, matching the
+			// MiMo/DashScope multimodal example. The system message is always
+			// plain text: images only attach to user turns.
+			if vision && message.Role == provider.RoleUser && len(message.Images) > 0 {
+				parts := make([]map[string]string, 0, len(message.Images)+1)
+				if message.Content != "" {
+					parts = append(parts, map[string]string{"type": "input_text", "text": message.Content})
+				}
+				for _, url := range message.Images {
+					parts = append(parts, map[string]string{"type": "input_image", "image_url": url})
+				}
+				input = append(input, map[string]any{"role": "user", "content": parts})
+			} else {
+				input = append(input, map[string]any{"role": string(message.Role), "content": message.Content})
+			}
 		case provider.RoleAssistant:
 			if message.ReasoningContent != "" {
 				input = append(input, map[string]any{
@@ -345,7 +368,7 @@ func conversationDigest(messages []provider.Message) string {
 	payload, _ := json.Marshal(struct {
 		Instructions string           `json:"instructions,omitempty"`
 		Input        []map[string]any `json:"input"`
-	}{Instructions: instructions, Input: messagesToInput(rest)})
+	}{Instructions: instructions, Input: messagesToInput(rest, false)})
 	sum := sha256.Sum256(payload)
 	return hex.EncodeToString(sum[:])
 }
