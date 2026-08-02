@@ -14,7 +14,10 @@
         "zh": "统一更新通道、自适应语法高亮以及多项代理可靠性修复。"
       },
       "surfaces": [
-        "desktop"
+        "desktop",
+        "cli",
+        "agent",
+        "mcp"
       ],
       "guides": [
         {
@@ -115,7 +118,7 @@
             "zh": "MCP 服务器冷启动弹性"
           },
           "body": {
-            "en": "Slow-starting MCP servers no longer restart loop; they continue initializing in the background, and users receive a retry-later prompt.",
+          "en": "Slow-starting MCP servers no longer enter restart loops; they continue initializing in the background, and users receive a retry-later prompt.",
             "zh": "启动缓慢的 MCP 服务器不再陷入重启循环；它们在后台继续初始化，用户会收到稍后重试的提示。"
           },
           "refs": [
@@ -132,7 +135,7 @@
               "zh": "更新通道统一"
             },
             "body": {
-              "en": "Clients now normalize all legacy channel values to the official release. Deprecated options remain compatible and show a prompt.",
+            "en": "Clients now normalize all legacy channel values to the official release. Deprecated options remain compatible and show a notice.",
               "zh": "客户端现在将所有旧通道值规范化为官方发布。已弃用的选项保持兼容并显示提示。"
             },
             "refs": [
