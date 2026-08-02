@@ -46,21 +46,27 @@ Do not rerun Notes generation merely because PR creation was denied.
 `scripts/release-stable.sh` fails before creating any public ref unless:
 
 - the version is canonical `MAJOR.MINOR.PATCH`;
-- remote `main-v2` contains a complete, reviewed Stable catalog record;
+- remote `main-v2` is the commit that introduces or updates the complete,
+  reviewed Stable catalog record;
 - exact-commit `main-v2` CI completed successfully;
 - `vX.Y.Z`, `npm-vX.Y.Z`, and `desktop-vX.Y.Z` are all absent.
 
-It then pushes all three lightweight tags with one atomic Git transaction and
-reads them back from the remote. A partial tag set is therefore not a normal
-failure mode. The `vX.Y.Z` event starts the existing protected Stable relay;
-maintainers do not dispatch child CLI, npm, or Desktop publishers.
+It then pushes a no-op guard for that exact `main-v2` SHA and all three
+lightweight tags with one atomic Git transaction. If `main-v2` advanced while
+CI was running, the complete transaction is rejected and no version tag is
+consumed. A partial tag set is therefore not a normal failure mode. The
+`vX.Y.Z` event starts the existing protected Stable relay; maintainers do not
+dispatch child CLI, npm, or Desktop publishers.
 
 ## Publication and approval
 
-The protected Stable workflow re-resolves all three tags to one SHA, validates
-the reviewed Notes, and runs the cache guard before requesting the sole human
-approval. After approval it performs a no-publication SignPath preflight, then
-runs CLI, npm, and Desktop publishers against the immutable candidate.
+The protected Stable workflow re-resolves all three tags to one SHA on
+`main-v2` history, revalidates that normal candidates introduced their reviewed
+Notes and passed exact-SHA push CI, and runs the cache guard before requesting
+the sole human approval. `main-v2` may safely advance after the atomic tag
+transaction without invalidating that candidate. After approval it performs a
+no-publication SignPath preflight, then runs CLI, npm, and Desktop publishers
+against the immutable candidate.
 
 The npm publisher advances `latest`, `canary`, and `next` to the same official
 version. `canary` and `next` remain only so historical scripts continue to

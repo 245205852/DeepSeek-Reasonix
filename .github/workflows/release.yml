@@ -1,7 +1,7 @@
 name: Release
 
 # Native CLI binary line. Official releases are called by the protected Stable
-# orchestrator. Manual dispatch remains available only for Stable/RC recovery;
+# orchestrator. Manual dispatch remains available only for official recovery;
 # historical Preview inputs below are workflow-call compatibility, not a public
 # publication entrypoint.
 on:
@@ -14,7 +14,7 @@ on:
         type: choice
         options: [stable]
       tag:
-        description: "Existing protected Stable/RC CLI tag (for example v1.18.0 or v1.18.0-rc.1)"
+        description: "Existing official CLI tag (for example v1.18.0)"
         required: true
         type: string
   workflow_call:
@@ -185,9 +185,9 @@ jobs:
     needs: [resolve, cache-guard]
     if: ${{ always() && !cancelled() && needs.cache-guard.result == 'success' }}
     runs-on: ubuntu-latest
-    # The stable caller has already passed the single GitHub release approval.
-    # Standalone prereleases pass release-gate above. This job therefore must not
-    # add a second GitHub environment approval.
+    # The Stable caller has already passed the single GitHub release approval.
+    # Official standalone recovery passes release-gate above. This job therefore
+    # must not add a second GitHub environment approval.
     steps:
       - uses: actions/checkout@v7
         with:

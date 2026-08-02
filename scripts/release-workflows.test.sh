@@ -26,6 +26,14 @@ grep -Eq "allow_recovery: 'false'" \
 	"$repo_root/.github/workflows/release-stable-trigger.yml"
 grep -Eq 'ALLOW_STABLE_RECOVERY:.*inputs\.allow_recovery' \
 	"$repo_root/.github/workflows/release-stable.yml"
+grep -Fq 'bash scripts/validate-stable-candidate.sh "$RELEASE_VERSION" "$RELEASE_SHA"' \
+	"$repo_root/.github/workflows/release-stable.yml"
+grep -Fq 'bash scripts/verify-release-push-ci.sh "$RELEASE_SHA"' \
+	"$repo_root/.github/workflows/release-stable.yml"
+grep -Fq 'if: ${{ !inputs.allow_recovery }}' \
+	"$repo_root/.github/workflows/release-stable.yml"
+test -x "$repo_root/scripts/validate-stable-candidate.sh"
+test -x "$repo_root/scripts/verify-release-push-ci.sh"
 for retired in release-preview.yml release-cli-trigger.yml release-desktop-trigger.yml; do
 	test ! -e "$repo_root/.github/workflows/$retired"
 done
@@ -1268,14 +1276,9 @@ git clone -q "$test_root/remote.git" "$test_root/repo"
 		CALLER_SHA="$recovery_workflow_sha" CALLER_WORKFLOW_SHA="$recovery_workflow_sha" \
 		"$desktop_candidate_resolver"
 	grep -Eq '^sha='"$approved_sha"'$' "$test_root/desktop-stable-recovery-candidate.out"
-	if RELEASE_TAG=v1.2.3 "$repo_root/scripts/resolve-stable-release.sh" >"$test_root/stale-main.log" 2>&1; then
-		echo "old stable tag unexpectedly passed normal release resolution" >&2
-		exit 1
-	fi
-	if ! grep -Eq 'points to .*expected' "$test_root/stale-main.log"; then
-		sed -n '1,20p' "$test_root/stale-main.log" >&2
-		exit 1
-	fi
+	GITHUB_OUTPUT="$test_root/stale-main.out" RELEASE_TAG=v1.2.3 \
+		"$repo_root/scripts/resolve-stable-release.sh"
+	grep -Eq '^sha='"$approved_sha"'$' "$test_root/stale-main.out"
 	GITHUB_OUTPUT="$test_root/recovery.out" ALLOW_STABLE_RECOVERY=true RELEASE_TAG=v1.2.3 \
 		"$repo_root/scripts/resolve-stable-release.sh"
 	grep -Eq '^sha='"$approved_sha"'$' "$test_root/recovery.out"
@@ -1414,6 +1417,17 @@ EVENT_NAME=push IN_CHANNEL='' IN_TAG='' REF_NAME=desktop-v1.4.0-rc.1 RUN_NUMBER=
 grep -Eq '^prerelease=true$' "$test_root/desktop-rc.out"
 grep -Eq '^notes_version=v1\.4\.0$' "$test_root/desktop-rc.out"
 
+if EVENT_NAME=workflow_dispatch IN_ORCHESTRATED=false IN_CHANNEL=stable \
+	IN_TAG=desktop-v1.4.0-rc.1 REF_NAME=main-v2 RUN_NUMBER=50 \
+	GITHUB_OUTPUT="$test_root/desktop-rc-dispatch.out" \
+	bash "$repo_root/scripts/resolve-desktop-release.sh" \
+	>"$test_root/desktop-rc-dispatch.log" 2>&1; then
+	echo "manual Desktop RC recovery unexpectedly passed" >&2
+	exit 1
+fi
+grep -Eq 'manual Desktop recovery accepts only desktop-vMAJOR.MINOR.PATCH' \
+	"$test_root/desktop-rc-dispatch.log"
+
 if EVENT_NAME=workflow_dispatch IN_CHANNEL=stable IN_TAG=desktop-v1.4.0-preview.1 \
 	REF_NAME=main-v2 RUN_NUMBER=50 GITHUB_OUTPUT="$test_root/desktop-preview-as-stable.out" \
 	bash "$repo_root/scripts/resolve-desktop-release.sh" \
@@ -1450,7 +1464,7 @@ if EVENT_NAME=workflow_dispatch IN_ORCHESTRATED=false IN_CHANNEL=preview \
 	echo "standalone public CLI Preview unexpectedly passed" >&2
 	exit 1
 fi
-grep -Eq 'public CLI Preview releases must be dispatched by release-preview.yml' \
+grep -Eq 'manual CLI recovery accepts only vMAJOR.MINOR.PATCH' \
 	"$test_root/cli-preview-dispatch.log"
 
 EVENT_NAME=push IN_CHANNEL='' IN_TAG='' REF_NAME=v1.3.0-rc.1 \
@@ -1460,13 +1474,24 @@ grep -Eq '^prerelease=true$' "$test_root/cli-rc.out"
 grep -Eq '^notes_version=v1\.3\.0$' "$test_root/cli-rc.out"
 
 if EVENT_NAME=workflow_dispatch IN_ORCHESTRATED=false IN_CHANNEL=stable \
+	IN_TAG=v1.3.0-rc.1 REF_NAME=main-v2 CALLER_REF=refs/heads/main-v2 \
+	CALLER_REF_PROTECTED=true GITHUB_OUTPUT="$test_root/cli-rc-dispatch.out" \
+	bash "$repo_root/scripts/resolve-cli-release.sh" \
+	>"$test_root/cli-rc-dispatch.log" 2>&1; then
+	echo "manual CLI RC recovery unexpectedly passed" >&2
+	exit 1
+fi
+grep -Eq 'manual CLI recovery accepts only vMAJOR.MINOR.PATCH' \
+	"$test_root/cli-rc-dispatch.log"
+
+if EVENT_NAME=workflow_dispatch IN_ORCHESTRATED=false IN_CHANNEL=stable \
 	IN_TAG=v1.3.0-preview.42 REF_NAME=main-v2 CALLER_REF=refs/heads/main-v2 \
 	CALLER_REF_PROTECTED=true GITHUB_OUTPUT="$test_root/cli-channel-mismatch.out" \
 	bash "$repo_root/scripts/resolve-cli-release.sh" >"$test_root/cli-channel-mismatch.log" 2>&1; then
 	echo "CLI Preview tag unexpectedly passed as Stable" >&2
 	exit 1
 fi
-grep -Eq 'belongs to preview, not requested channel stable' "$test_root/cli-channel-mismatch.log"
+grep -Eq 'manual CLI recovery accepts only vMAJOR.MINOR.PATCH' "$test_root/cli-channel-mismatch.log"
 
 if EVENT_NAME=push IN_CHANNEL='' IN_TAG='' REF_NAME=v1.3.0-preview.latest \
 	GITHUB_OUTPUT="$test_root/cli-invalid-preview.out" bash "$repo_root/scripts/resolve-cli-release.sh" \
