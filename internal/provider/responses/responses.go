@@ -487,7 +487,16 @@ func (c *client) readStream(ctx context.Context, resp *http.Response, out chan<-
 					// vendor-specific reason already set by usageFromResponse.
 					usage.FinishReason = "stop"
 				}
-				if event.Response.Usage != nil || usage.FinishReason != "" {
+				// DashScope occasionally reports a completed event whose usage
+				// object exists but is all zeros (server-side reporting gap; the
+				// tokens were actually billed). Emitting that as ChunkUsage
+				// would corrupt cache-ratio and cost accounting with a spurious
+				// zero record, so only emit when there is real data or a reason.
+				// Zero-token usage records carry no accounting value; suppress
+				// them even when FinishReason was synthesized to "stop". An
+				// abnormal termination reason (length/content_filter/...) is
+				// still surfaced so the agent can report the truncation.
+				if usage.TotalTokens > 0 || (usage.FinishReason != "" && usage.FinishReason != "stop") {
 					if !sendChunk(ctx, out, provider.Chunk{Type: provider.ChunkUsage, Usage: usage}) {
 						return
 					}
