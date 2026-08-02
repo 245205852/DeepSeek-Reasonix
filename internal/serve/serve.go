@@ -571,6 +571,14 @@ func (s *Server) submit(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "missing input", http.StatusBadRequest)
 		return
 	}
+	body.Format = strings.TrimSpace(body.Format)
+	switch body.Format {
+	case "", "json_object":
+		// Supported: empty = default text output, json_object = structured.
+	default:
+		http.Error(w, `unsupported format (supported: "json_object")`, http.StatusBadRequest)
+		return
+	}
 	trimmed := strings.TrimSpace(body.Input)
 	if strings.HasPrefix(trimmed, "!") {
 		http.Error(w, "shell commands are unavailable over HTTP", http.StatusForbidden)
