@@ -7611,6 +7611,29 @@ body > .mermaid-diagram--fullscreen {
   flex-direction: column;
   gap: 4px;
 }
+.jobs-popover__runtime {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.jobs-popover__runtime + .jobs-popover__runtime {
+  margin-top: 6px;
+  padding-top: 6px;
+  border-top: 1px solid var(--border);
+}
+.jobs-popover__runtime-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 2px 4px;
+}
+.jobs-popover__runtime-header strong {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .jobs-popover__job {
   display: flex;
   align-items: center;

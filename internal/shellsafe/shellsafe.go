@@ -28,6 +28,14 @@ var ReadOnlyCommands = map[string]bool{
 	"man": true, "info": true, "help": true,
 	"true": true, "false": true, "test": true, "[": true,
 	"basename": true, "dirname": true, "realpath": true, "readlink": true,
+	// PowerShell inspection cmdlets. Keep this list intentionally narrow: only
+	// cmdlets whose verb is intrinsically observational belong here. The parser
+	// still rejects pipelines, substitutions, redirections, and command chains.
+	"get-childitem": true, "get-content": true, "get-item": true,
+	"get-location": true, "get-process": true, "get-command": true,
+	"get-nettcpconnection": true, "test-netconnection": true,
+	"resolve-path": true, "select-string": true, "measure-object": true,
+	"compare-object": true,
 }
 
 // ReadOnlyPrefixes maps a base command to the set of subcommands (the second

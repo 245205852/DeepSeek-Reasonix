@@ -3553,17 +3553,23 @@ export function useController() {
     return result;
   }, [beginActiveNavigation, confirmBackendActiveTab, dispatchRuntimeStatusForTab, dispatchTo, loadSessionDataForTab, navigationCompletionCurrent, reassertVisibleTabAfterStaleNavigation, reconcileTabRuntime]);
 
-  const closeTab = useCallback(async (tabId: string) => {
+  const closeTab = useCallback(async (
+    tabId: string,
+    policy: "keep_running" | "stop_and_close" = "keep_running",
+  ): Promise<boolean> => {
     if (tabId === activeTabIdRef.current) beginActiveNavigation();
     try {
-      await app.CloseTab(tabId);
+      await app.CloseTabWithPolicy(tabId, policy);
       invalidateProviderStateForTab(tabId);
       disposeComposerProfileState(tabId);
       statesRef.current.delete(tabId);
       notifyLiveListeners(tabId);
       bump();
       if (tabId === activeTabId) await syncActiveTabFromBackend(false);
-    } catch { /* ignore */ }
+      return true;
+    } catch {
+      return false;
+    }
   }, [activeTabId, beginActiveNavigation, bump, disposeComposerProfileState, invalidateProviderStateForTab, notifyLiveListeners, syncActiveTabFromBackend]);
 
   const reorderTabs = useCallback(async (tabIds: string[]) => {

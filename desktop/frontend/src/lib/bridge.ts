@@ -57,6 +57,10 @@ import type {
   HookConfigView,
   HooksSettingsView,
   JobView,
+  ActiveWorkView,
+  BackgroundRuntimeView,
+  JobCancelBatchView,
+  WorkspaceConflictView,
   MCPMarketplaceEntry,
   MCPServerInput,
   MCPInstallResult,
@@ -265,6 +269,13 @@ export interface AppBindings {
   JobsForTab(tabID: string): Promise<JobView[]>;
   CancelJob(jobID: string): Promise<boolean>;
   CancelJobForTab(tabID: string, jobID: string): Promise<boolean>;
+  CancelJobsForTab(tabID: string, jobIDs: string[]): Promise<JobCancelBatchView>;
+  ActiveWorkForTab(tabID: string): Promise<ActiveWorkView>;
+  BackgroundRuntimes(): Promise<BackgroundRuntimeView[]>;
+  RevealBackgroundRuntime(tabID: string): Promise<TabMeta>;
+  WorkspaceConflictForTab(tabID: string): Promise<WorkspaceConflictView>;
+  RevealWorkspaceWriterForTab(tabID: string): Promise<TabMeta>;
+  CloseTabWithPolicy(tabID: string, policy: "keep_running" | "stop_and_close"): Promise<void>;
   ToolResultForTab(tabID: string, toolID: string): Promise<{ args: string; output: string } | null>;
   Meta(): Promise<Meta>;
   MetaForTab(tabID: string): Promise<Meta>;
@@ -2942,6 +2953,30 @@ function makeMockApp(): AppBindings {
         },
         async CancelJobForTab(_tabID, jobID) {
           return this.CancelJob(jobID);
+        },
+        async CancelJobsForTab(_tabID, jobIDs) {
+          return { cancelled: [], notRunning: [...jobIDs] };
+        },
+        async ActiveWorkForTab() {
+          return { running: false, pendingPrompt: false, cancellable: false, jobs: [] };
+        },
+        async BackgroundRuntimes() {
+          return [];
+        },
+        async RevealBackgroundRuntime() {
+          throw new Error("background runtime is unavailable in browser preview");
+        },
+        async WorkspaceConflictForTab() {
+          return {
+            state: "none", ownerWork: { running: false, pendingPrompt: false, cancellable: false, jobs: [] },
+            canReveal: false, canCreateWorktree: false,
+          };
+        },
+        async RevealWorkspaceWriterForTab() {
+          throw new Error("workspace writer is unavailable in browser preview");
+        },
+        async CloseTabWithPolicy(tabID) {
+          return this.CloseTab(tabID);
         },
         async ToolResultForTab() {
           return null;

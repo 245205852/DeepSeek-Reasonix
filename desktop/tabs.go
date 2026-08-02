@@ -3056,6 +3056,10 @@ func (a *App) ReorderTabs(tabIDs []string) error {
 // background work, the controller is detached so closing a view does not destroy
 // the session runtime.
 func (a *App) CloseTab(tabID string) error {
+	return a.closeTab(tabID, true)
+}
+
+func (a *App) closeTab(tabID string, allowDetach bool) error {
 	defer a.lockRuntimeMutation("close-tab")()
 	a.sessionRemovalMu.Lock()
 	defer a.sessionRemovalMu.Unlock()
@@ -3105,6 +3109,10 @@ func (a *App) CloseTab(tabID string) error {
 		a.mu.Unlock()
 		return fmt.Errorf("cannot close the last tab")
 	}
+	if !allowDetach && tab.hasActiveRuntimeWork() {
+		a.mu.Unlock()
+		return fmt.Errorf("task still has active work")
+	}
 	if tab.Ctrl == nil || !tab.hasActiveRuntimeWork() {
 		a.markTabRemovedLocked(tab)
 	}
@@ -3146,7 +3154,7 @@ func (a *App) CloseTab(tabID string) error {
 	// before the tab binding was removed.
 	discardPath, discardTransientBlank := a.transientBlankSessionArtifactPath(tab)
 	if closeCtrl != nil {
-		if controllerHasActiveRuntimeWork(closeCtrl) && a.detachSessionRuntime(tab) {
+		if allowDetach && controllerHasActiveRuntimeWork(closeCtrl) && a.detachSessionRuntime(tab) {
 			// Detached runtimes keep running and must keep saving: do not
 			// clear the path or drain for them.
 			return nil

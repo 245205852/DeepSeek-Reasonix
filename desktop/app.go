@@ -6715,7 +6715,7 @@ func (a *App) JobsForTab(tabID string) []JobView {
 		return workbenchJobs(decoded.(protocol.JobListResult).Jobs)
 	}
 	out := []JobView{}
-	ctrl := a.ctrlByTabID(tabID)
+	ctrl := a.ctrlForRuntimeTabID(tabID)
 	return a.jobsForCtrl(ctrl, out)
 }
 
@@ -6747,7 +6747,7 @@ func (a *App) CancelJobForTab(tabID, jobID string) (bool, error) {
 		}
 		return decoded.(protocol.JobCancelResult).Disposition == protocol.JobCancelled, nil
 	}
-	ctrl := a.ctrlByTabID(tabID)
+	ctrl := a.ctrlForRuntimeTabID(tabID)
 	if ctrl == nil {
 		return false, nil
 	}

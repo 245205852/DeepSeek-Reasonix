@@ -18,6 +18,10 @@ func TestCommandIsReadOnly(t *testing.T) {
 		"npm view react version", "npm outdated", "cargo check",
 		"docker ps", "docker images", "kubectl get pods",
 		"node -v", "node --version", "python --version", "python3 --version",
+		// PowerShell inspection commands must not wait for the Delivery writer.
+		`Test-NetConnection -ComputerName localhost -Port 27017`,
+		`Get-Process -Name mongod`, `Get-ChildItem -Path .`,
+		`Get-NetTCPConnection -LocalPort 6379`, `Resolve-Path .`,
 	}
 	for _, c := range readOnly {
 		if _, _, ok := CommandIsReadOnly(c); !ok {
@@ -36,6 +40,9 @@ func TestCommandIsReadOnly(t *testing.T) {
 		"git status > out.txt", "ls; rm x", "git log `whoami`", "echo $HOME",
 		// unknown command.
 		"frobnicate --all",
+		// PowerShell mutators stay fail-closed.
+		`Start-Process mongod`, `Stop-Process -Name mongod`,
+		`Set-Content style.css bad`, `Remove-Item style.css`,
 	}
 	for _, c := range notReadOnly {
 		if _, _, ok := CommandIsReadOnly(c); ok {

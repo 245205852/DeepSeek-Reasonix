@@ -1456,6 +1456,36 @@ export interface JobView {
   startedAt: number; // unix milliseconds
 }
 
+export interface ActiveWorkView {
+  running: boolean;
+  pendingPrompt: boolean;
+  cancellable: boolean;
+  jobs: JobView[];
+}
+
+export interface JobCancelBatchView {
+  cancelled: string[];
+  notRunning: string[];
+}
+
+export interface BackgroundRuntimeView {
+  tabId: string;
+  title: string;
+  detached: boolean;
+  running: boolean;
+  pendingPrompt: boolean;
+  jobs: JobView[];
+}
+
+export interface WorkspaceConflictView {
+  state: "none" | "local" | "external";
+  ownerTabId?: string;
+  ownerTitle?: string;
+  ownerWork: ActiveWorkView;
+  canReveal: boolean;
+  canCreateWorktree: boolean;
+}
+
 export interface PermissionsView {
   mode: string; // "ask" | "allow" | "deny"
   allow: string[];

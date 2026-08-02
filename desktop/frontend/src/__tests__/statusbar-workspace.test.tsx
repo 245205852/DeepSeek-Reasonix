@@ -181,6 +181,37 @@ console.log("\nstatus bar workspace");
   const stopButton = document.body.querySelector<HTMLButtonElement>(".jobs-popover__stop");
   await act(async () => { stopButton?.click(); await Promise.resolve(); });
   ok(stopped === "bash-1", "background jobs popover routes Stop to the selected job");
+
+  let routed = "";
+  let revealed = "";
+  await act(async () => {
+    root.render(
+      <LocaleProvider>
+        <StatusBar
+          context={{ used: 0, window: 0, sessionTokens: 0 }}
+          running={false}
+          backgroundRuntimes={[
+            {
+              tabId: "detached-1", title: "Detached delivery", detached: true,
+              running: false, pendingPrompt: false,
+              jobs: [{ id: "go-1", kind: "go", label: "go test", status: "running", startedAt: 1 }],
+            },
+          ]}
+          onCancelRuntimeJob={async (tabID, jobID) => { routed = `${tabID}:${jobID}`; return true; }}
+          onRevealRuntime={async (tabID) => { revealed = tabID; }}
+        />
+      </LocaleProvider>,
+    );
+  });
+  const globalJobsButton = rootEl.querySelector<HTMLButtonElement>(".statusbar__jobs-trigger");
+  if (globalJobsButton?.getAttribute("aria-expanded") !== "true") {
+    await act(async () => { globalJobsButton?.click(); });
+  }
+  const globalStop = document.body.querySelector<HTMLButtonElement>(".jobs-popover__stop");
+  const openTask = Array.from(document.body.querySelectorAll<HTMLButtonElement>(".jobs-popover__runtime-header button"))[0];
+  await act(async () => { globalStop?.click(); openTask?.click(); await Promise.resolve(); });
+  ok(routed === "detached-1:go-1", "global jobs route Stop to the owning detached task");
+  ok(revealed === "detached-1", "global jobs can reopen the exact detached task");
   await act(async () => { root.unmount(); });
   dom.window.close();
 }

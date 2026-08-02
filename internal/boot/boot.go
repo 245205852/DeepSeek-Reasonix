@@ -1696,6 +1696,7 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 		BalanceKey:            entry.APIKey(),
 		BalanceClient:         balanceClient,
 		Jobs:                  jm,
+		WorkspaceLease:        workspaceLease,
 		Registry:              reg,
 		PluginCtx:             ctx,
 		MCPDefaultCallTimeout: pluginSpecOptions.DefaultCallTimeout,
