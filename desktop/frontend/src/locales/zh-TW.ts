@@ -1837,7 +1837,6 @@ export const zhTW: Record<DictKey, string> = {
   "notice.mcpServersFailed": "部分 MCP 服務啟動失敗，可執行 /mcp 查看詳情。",
   "notice.guardianModelMissing": "Guardian 已停用：未找到對應模型。",
   "notice.guardianStartFailed": "Guardian 啟動失敗，已停用。",
-  "guard.safeMode": "Reasonix 已進入安全模式。本次執行已停用外掛、MCP、Hooks、機器人、自動化和上次儲存的分頁。",
   "questionNav.label": "問題導航",
   "questionNav.progress": "問題 {current} / {total}",
   "questionNav.jump": "跳轉到問題 {n}",
@@ -1908,6 +1907,10 @@ export const zhTW: Record<DictKey, string> = {
   "tool.noOutput": "無輸出",
 
   // 軟體更新
+  "config.loadWarning": "設定問題：{msg}",
+  "config.openConfig": "開啟設定",
+  "config.reloadConfig": "重新載入",
+  "config.doctorHint": "或執行：reasonix doctor repair",
   "updater.title": "軟體更新",
   "updater.currentVersion": "當前版本：{v}",
   "updater.checkButton": "檢查更新",
@@ -1916,6 +1919,7 @@ export const zhTW: Record<DictKey, string> = {
   "updater.available": "發現新版本：{v}",
   "updater.releaseNotes": "更新說明",
   "updater.downloadUpdate": "下載更新",
+  "updater.updateAndRestart": "更新並重新啟動",
   "updater.downloaded": "更新 {v} 已下載。",
   "updater.restartInstall": "安裝並重新啟動",
   "updater.authorizeInstall": "授權安裝並重新啟動",

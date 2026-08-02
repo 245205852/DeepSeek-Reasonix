@@ -521,7 +521,6 @@ var Chinese = Messages{
 	ReportKept:                "报告已保留在本地。",
 	ReportDeletedFmt:          "已删除 CLI 崩溃报告 %s。",
 	ReportSentFmt:             "已发送 CLI 崩溃报告 %s。",
-	ReportSafeModeBlocked:     "Safe Mode 下不能发送崩溃报告；本地报告已保留",
 	ReportConfigFailedFmt:     "无法加载网络配置：%v",
 	ReportUploadFailedFmt:     "报告上传失败；本地报告已保留：%v",
 	ReportSentDeleteFailedFmt: "报告已发送，但无法删除本地副本：%v",

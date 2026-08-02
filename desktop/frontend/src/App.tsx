@@ -1126,8 +1126,8 @@ export default function App() {
   const settingsFocus = useOverlayStore((s) => s.settingsFocus);
   const setSettingsFocus = useOverlayStore((s) => s.setSettingsFocus);
   const [desktopLayoutStyle, setDesktopLayoutStyle] = useState<DesktopLayoutStyle>("workbench");
-  const [safeMode, setSafeMode] = useState(false);
   const singleSurfaceLayout = desktopLayoutStyle === "workbench" || desktopLayoutStyle === "creation";
+  const [configLoadWarnings, setConfigLoadWarnings] = useState<string[]>([]);
   const [startupUpdateChecksEnabled, setStartupUpdateChecksEnabled] = useState<boolean | null>(null);
   const [histView, setHistView] = useState<HistoryViewState | null>(null);
   const paletteOpen = useOverlayStore((s) => s.paletteOpen);
@@ -1445,14 +1445,16 @@ export default function App() {
       ]);
       if (cancelled) return;
       applyDesktopPreferences(settings);
-      setSafeMode(settings.safeMode === true);
+      setConfigLoadWarnings(
+        Array.isArray(settings.configWarnings)
+          ? settings.configWarnings.filter((w): w is string => typeof w === "string" && w.trim() !== "")
+          : [],
+      );
       hydrateDisplayMode(settings.displayMode);
       setSidebarImConnections(sidebarImConnectionsFromBot(settings.bot, t, runtimeStatus));
       setImTopicSources(sidebarImTopicSourcesFromBot(settings.bot, t));
       // Load unified theme experience after base appearance so pack tokens win.
-      if (settings.safeMode === true) {
-        clearThemePack();
-      } else {
+      {
         try {
           const { loadThemeExperience, applyExperienceToDOM } = await import("./lib/themeExperience");
           const exp = await loadThemeExperience();
@@ -4466,8 +4468,41 @@ export default function App() {
           {state.meta?.startupErr && (
             <div className="banner banner--error">{t("topbar.startupError", { msg: state.meta.startupErr })}</div>
           )}
-          {safeMode && (
-            <div className="banner banner--warning">{t("guard.safeMode")}</div>
+          {configLoadWarnings.length > 0 && (
+            <div className="banner banner--warning banner--actionable">
+              <span className="banner__msg" title={configLoadWarnings.join("\n")}>
+                {t("config.loadWarning", { msg: configLoadWarnings[0] })}
+              </span>
+              <span className="banner__spacer" />
+              <button
+                type="button"
+                className="btn btn--small"
+                onClick={() => void app.OpenUserConfigPath?.().catch(() => {})}
+              >
+                {t("config.openConfig")}
+              </button>
+              <button
+                type="button"
+                className="btn btn--small"
+                onClick={() => {
+                  void (async () => {
+                    try {
+                      const view = await app.ReloadUserConfig?.();
+                      if (view?.configWarnings) setConfigLoadWarnings(view.configWarnings);
+                      else setConfigLoadWarnings([]);
+                    } catch {
+                      /* keep banner */
+                    }
+                  })();
+                }}
+              >
+                {t("config.reloadConfig")}
+              </button>
+              <span className="banner__hint">{t("config.doctorHint")}</span>
+              <button type="button" className="btn btn--small" onClick={() => setConfigLoadWarnings([])}>
+                {t("updater.dismiss")}
+              </button>
+            </div>
           )}
           {providerSetupNeeded && !needsOnboarding && (
             <div className="banner banner--warning banner--actionable">

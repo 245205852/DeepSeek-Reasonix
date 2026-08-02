@@ -4808,13 +4808,6 @@ func (a *App) saveTabsCollectLocked() (string, []desktopTabEntry, string, uint64
 // writes must be serialized because every save uses the same destination and
 // fixed .tmp path.
 func (a *App) saveTabsWrite(dir string, entries []desktopTabEntry, activeID string, version uint64) {
-	// Safe Mode runs on a temporary tab set that must never persist: writing it
-	// would replace desktop-tabs.json and destroy the saved layout the next
-	// normal boot restores. This is the single choke point every tab-snapshot
-	// write funnels through, so gating here covers build, close, and GC paths.
-	if config.SafeModeRequested() {
-		return
-	}
 	a.tabsSaveMu.Lock()
 	defer a.tabsSaveMu.Unlock()
 	if version < a.tabsLastWrittenVersion {

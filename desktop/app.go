@@ -258,17 +258,9 @@ type App struct {
 
 	heartbeat *HeartbeatEngine // scheduled heartbeat tasks; nil until startup
 
-	startupTracker *repair.StartupTracker
-	previousRun    repair.PreviousRunObservation
-	// Healthy-update identity is captured before Wails starts. A process only
-	// commits the complete probationary transaction it booted from, never a
-	// rewritten or later same-version retry.
-	healthyUpdateCreatedAt     string
-	healthyUpdateTransactionID string
-	// startupReady records that the window reached domReady. The shutdown path
-	// treats an exit before this point as an incomplete start: it must neither
-	// reset the crash-loop counter nor bless a probationary update, or a build
-	// that boots but never paints would defeat the Guard rollback safety net.
+	previousRun repair.PreviousRunObservation
+	// startupReady records that the window reached domReady so LKG config
+	// snapshots are only written after a real UI boot.
 	startupReady atomic.Bool
 }
 
@@ -502,24 +494,17 @@ func (a *App) startup(ctx context.Context) {
 	a.observeIncompleteWindowRestore()
 	a.startMainThreadWatchdog()
 
-	if !config.SafeModeRequested() {
-		a.heartbeat = newHeartbeatEngine(a)
-		a.heartbeat.Start()
-	}
+	a.heartbeat = newHeartbeatEngine(a)
+	a.heartbeat.Start()
 
 	a.mu.Lock()
 	a.tabsRestored = make(chan struct{})
 	a.mu.Unlock()
 	go a.restoreOrBuildTabs()
-	if !config.SafeModeRequested() {
-		a.goSafe("refreshBotRuntime", a.refreshBotRuntime)
-		a.goSafe("sendStartupPing", a.sendStartupPing)
-		// Pending metrics/crash payloads stay on disk in Safe Mode: whether to
-		// send or drop them depends on the user's real telemetry preference,
-		// which a Safe Mode boot cannot read. The next normal boot decides.
-		a.goSafe("flushMetrics", a.flushMetrics)
-		a.goSafe("flushPendingCrash", a.flushPendingCrash)
-	}
+	a.goSafe("refreshBotRuntime", a.refreshBotRuntime)
+	a.goSafe("sendStartupPing", a.sendStartupPing)
+	a.goSafe("flushMetrics", a.flushMetrics)
+	a.goSafe("flushPendingCrash", a.flushPendingCrash)
 	// After restoreOrBuildTabs is launched: the GC's first sweep waits on
 	// tabsRestored so it never observes the pre-restore empty tab map.
 	a.startRecoveryGC()
@@ -537,7 +522,10 @@ func (a *App) beforeClose(ctx context.Context) bool {
 		if !a.backgroundCloseHasRestorePath() {
 			return false
 		}
-		a.backgroundMaximised.Store(runtime.WindowIsMaximised(ctx))
+		// Never query native maximise state here: during close the Win32 DPI
+		// path can report 0 and panic inside Wails ScaleToDefaultDPI. Use the
+		// last frontend-reported geometry instead.
+		a.backgroundMaximised.Store(a.lastKnownMaximised())
 		a.saveWindowStateSync()
 		a.snapshotAllTabs()
 		hideForBackground(ctx)
@@ -705,14 +693,11 @@ func (a *App) restoreOrBuildTabs() {
 	// Run legacy config migration before the first config load so the
 	// freshly written config (including the user's default_model) is
 	// picked up by Load instead of falling back to built-in defaults.
-	f := desktopTabsFile{}
-	if !config.SafeModeRequested() {
-		_, _ = config.MigrateLegacyIfNeeded()
-		f = loadTabsFile()
-		_, _ = recoverLegacyProjectSidebarRoots(f)
-		_, _ = config.ApplyUserConfigUpgradesOnStartup(config.UserConfigPath())
-		_, _ = config.MigrateMCPToUserConfigOnUpgrade(desktopMCPMigrationRoots(f))
-	}
+	_, _ = config.MigrateLegacyIfNeeded()
+	f := loadTabsFile()
+	_, _ = recoverLegacyProjectSidebarRoots(f)
+	_, _ = config.ApplyUserConfigUpgradesOnStartup(config.UserConfigPath())
+	_, _ = config.MigrateMCPToUserConfigOnUpgrade(desktopMCPMigrationRoots(f))
 
 	// Load i18n from the first available config.
 	// Prefer DesktopLanguage (desktop UI setting) over Language (CLI setting),
@@ -914,17 +899,10 @@ func (a *App) shutdown(context.Context) {
 		a.releaseSessionRuntimeLocked(it.tab)
 		a.mu.Unlock()
 	}
-	if a.startupTracker != nil && a.startupReady.Load() {
-		// Only a run whose window actually became ready may reset the crash-loop
-		// counter and bless a probationary update. A clean quit before domReady
-		// (e.g. Dock-quitting a build that boots but never paints) keeps the
-		// incomplete startup record, so repeated attempts still reach the Guard
-		// recovery threshold and the update backups stay rollback-ready.
-		_ = a.startupTracker.MarkClean()
-		if !config.SafeModeRequested() {
-			_ = repair.MarkUpdateHealthyExact(version, a.healthyUpdateCreatedAt, a.healthyUpdateTransactionID)
-			_ = repair.RecordHealthyConfig(version)
-		}
+	if a.startupReady.Load() {
+		// Independent last-known-good config snapshot after a successful UI
+		// session. Does not participate in startup decisions.
+		_ = repair.RecordHealthyConfig(version)
 	}
 }
 
@@ -941,28 +919,21 @@ func (a *App) domReady(_ context.Context) {
 	if ok {
 		// Validate saved position against current screens. Wails v2 doesn't
 		// expose per-screen origin (x,y offsets) so we can only do a basic
-		// sanity check: ensure the window origin falls within a generous
-		// estimate of the screen area. If the user unplugged an external
-		// display, negative or out-of-bounds coordinates are caught here.
-		valid := state.X >= 0 && state.Y >= 0
-		if valid {
-			screens, err := runtime.ScreenGetAll(a.ctx)
-			if err == nil && len(screens) > 0 {
-				maxW, maxH := 0, 0
-				for _, sc := range screens {
-					if sc.Size.Width > maxW {
-						maxW = sc.Size.Width
-					}
-					if sc.Size.Height > maxH {
-						maxH = sc.Size.Height
-					}
+		// sanity check. Windows border insets (commonly x=-8,y=-8) are legal;
+		// large off-screen positions (unplugged external display) re-center.
+		maxW, maxH := 0, 0
+		screens, err := runtime.ScreenGetAll(a.ctx)
+		if err == nil {
+			for _, sc := range screens {
+				if sc.Size.Width > maxW {
+					maxW = sc.Size.Width
 				}
-				if state.X > maxW*2 || state.Y > maxH*2 {
-					valid = false
+				if sc.Size.Height > maxH {
+					maxH = sc.Size.Height
 				}
 			}
 		}
-		if valid {
+		if windowPositionRestorable(state, maxW, maxH) {
 			runtime.WindowSetPosition(a.ctx, state.X, state.Y)
 		} else {
 			runtime.WindowCenter(a.ctx)
@@ -977,46 +948,26 @@ func (a *App) domReady(_ context.Context) {
 
 	runtime.WindowShow(a.ctx)
 	a.startupReady.Store(true)
-	if a.startupTracker != nil {
-		_ = a.startupTracker.MarkReady()
-		tracker := a.startupTracker
-		ctx := a.ctx
-		a.goSafe("startupHeartbeat", func() {
-			ticker := time.NewTicker(30 * time.Second)
-			defer ticker.Stop()
-			for {
-				select {
-				case <-ctx.Done():
-					return
-				case <-ticker.C:
-					if err := tracker.Heartbeat(); err != nil {
-						slog.Debug("desktop: update startup heartbeat", "err", err)
-					}
-				}
-			}
-		})
-		a.goSafe("confirmStartupHealth", func() {
-			timer := time.NewTimer(repair.StartupHealthDelay)
-			defer timer.Stop()
-			select {
-			case <-timer.C:
-			case <-ctx.Done():
-				return
-			}
-			if err := tracker.MarkHealthy(); err != nil {
-				slog.Warn("desktop: mark startup healthy", "err", err)
-				return
-			}
-			if !config.SafeModeRequested() {
-				if err := repair.MarkUpdateHealthyExact(version, a.healthyUpdateCreatedAt, a.healthyUpdateTransactionID); err != nil {
-					slog.Warn("desktop: commit healthy update", "err", err)
-				}
-				if err := repair.RecordHealthyConfig(version); err != nil {
-					slog.Warn("desktop: record last-known-good config", "err", err)
-				}
-			}
-		})
-	}
+	// Record last-known-good config after the UI is actually visible. This is
+	// independent of any startup health probation or crash-loop policy.
+	ctx := a.ctx
+	a.goSafe("recordHealthyConfig", func() {
+		timer := time.NewTimer(2 * time.Second)
+		defer timer.Stop()
+		select {
+		case <-timer.C:
+		case <-ctx.Done():
+			return
+		}
+		if err := repair.RecordHealthyConfig(version); err != nil {
+			slog.Debug("desktop: record last-known-good config", "err", err)
+		}
+		if archived, err := archiveSupersededLegacyUpdateAfterReady(); err != nil {
+			slog.Warn("desktop: retire superseded legacy update", "err", err)
+		} else if archived {
+			slog.Info("desktop: archived superseded legacy update transaction")
+		}
+	})
 }
 
 // --- bound command surface (frontend → controller) ---

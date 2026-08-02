@@ -109,7 +109,7 @@ func TestWindowsReleaseSignsPayloadBeforeRepackaging(t *testing.T) {
 	packager := readTestFile(t, "../scripts/package-windows-desktop.sh")
 	copyMain := strings.Index(packager, `cp "$PAYLOAD/$BINNAME.exe" "$BIN_DIR/$BINNAME.exe"`)
 	makeNSIS := strings.Index(packager, "makensis \\\n")
-	portable := strings.Index(packager, `cp "$PAYLOAD/$BINNAME.exe" "$portable_staging/$BINNAME.exe"`)
+	portable := strings.Index(packager, `cp "$PAYLOAD/$BINNAME.exe" "$portable_staging/versions/$version_label/$BINNAME.exe"`)
 	bundle := strings.Index(packager, `installer_bundle="$DESKTOP/build/windows/installer-signing-bundle"`)
 	if copyMain < 0 || makeNSIS < 0 || portable < 0 || bundle < 0 {
 		t.Fatal("Windows packager is missing the signed-payload packaging stages")
