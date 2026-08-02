@@ -5,8 +5,8 @@ run-name: Release stable ${{ inputs.tag || github.ref_name }}
 # npm, and desktop tags atomically; release-stable-trigger.yml relays the vX.Y.Z
 # tag to this workflow on protected main-v2. Preflight verifies that all three
 # tags point to the current main-v2 commit, and one GitHub approval releases
-# every channel. After approval, a zero-publication Windows preflight verifies
-# both architectures and signing stages before any public channel starts.
+# every surface. After approval, a zero-publication Windows preflight verifies
+# both architectures and signing stages before any public surface starts.
 # Keeping the control-plane ref on main-v2 lets SignPath restrict
 # production signing to that one protected origin instead of trusting wildcard
 # tag-like branch names. Manual recovery uses the same fixed control plane while

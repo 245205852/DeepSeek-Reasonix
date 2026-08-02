@@ -14,43 +14,27 @@ trap cleanup EXIT
 # Stable tags have one entrypoint and one protected environment. Reusable
 # publishers must verify that only that entrypoint can claim prior approval.
 [ "$(grep -Ec '^    environment: release$' "$repo_root/.github/workflows/release-stable.yml")" = "1" ]
-for relay in release-stable-trigger.yml release-cli-trigger.yml release-desktop-trigger.yml; do
-	grep -Eq 'actions: write' "$repo_root/.github/workflows/$relay"
-	grep -Eq "CONTROL_PLANE_REF.*default_branch" "$repo_root/.github/workflows/$relay"
-	grep -Eq "CONTROL_PLANE_REF !== 'main-v2'" "$repo_root/.github/workflows/$relay"
-	grep -Eq 'createWorkflowDispatch' "$repo_root/.github/workflows/$relay"
-	grep -Eq 'ref: process\.env\.CONTROL_PLANE_REF' "$repo_root/.github/workflows/$relay"
-done
+relay="$repo_root/.github/workflows/release-stable-trigger.yml"
+grep -Eq 'actions: write' "$relay"
+grep -Eq "CONTROL_PLANE_REF.*default_branch" "$relay"
+grep -Eq "CONTROL_PLANE_REF !== 'main-v2'" "$relay"
+grep -Eq 'createWorkflowDispatch' "$relay"
+grep -Eq 'ref: process\.env\.CONTROL_PLANE_REF' "$relay"
 grep -Eq "workflow_id: 'release-stable\.yml'" \
 	"$repo_root/.github/workflows/release-stable-trigger.yml"
 grep -Eq "allow_recovery: 'false'" \
 	"$repo_root/.github/workflows/release-stable-trigger.yml"
 grep -Eq 'ALLOW_STABLE_RECOVERY:.*inputs\.allow_recovery' \
 	"$repo_root/.github/workflows/release-stable.yml"
-grep -Eq "workflow_id: 'release-desktop\.yml'" \
-	"$repo_root/.github/workflows/release-desktop-trigger.yml"
-grep -Fq 'Desktop Preview must be dispatched without a Git tag' \
-	"$repo_root/.github/workflows/release-desktop-trigger.yml"
-grep -Fq "workflow_id: preview ? 'release-preview.yml' : 'release.yml'" \
-	"$repo_root/.github/workflows/release-cli-trigger.yml"
-grep -Eq "preview\\\\\." "$repo_root/.github/workflows/release-cli-trigger.yml"
-grep -Eq '^name: Release preview$' "$repo_root/.github/workflows/release-preview.yml"
-grep -Eq '^  group: preview-release$' "$repo_root/.github/workflows/release-preview.yml"
-if grep -Fq 'group: preview-release-${{ inputs.tag }}' "$repo_root/.github/workflows/release-preview.yml"; then
-	echo "Preview releases must serialize across versions" >&2
-	exit 1
-fi
-grep -Eq '^    environment: canary$' "$repo_root/.github/workflows/release-preview.yml"
-grep -Eq '^      recovery:$' "$repo_root/.github/workflows/release-preview.yml"
-grep -Fq 'ALLOW_PREVIEW_RECOVERY: ${{ inputs.recovery }}' "$repo_root/.github/workflows/release-preview.yml"
-grep -Fq 'allow_preview_recovery: ${{ inputs.recovery }}' "$repo_root/.github/workflows/release-preview.yml"
-grep -Eq '^  signpath-preflight:$' "$repo_root/.github/workflows/release-preview.yml"
-grep -Eq 'signing_preflight: true' "$repo_root/.github/workflows/release-preview.yml"
-grep -Eq 'signing_preflight_verified: true' "$repo_root/.github/workflows/release-preview.yml"
-[ "$(grep -Ec 'needs: \[authorize, signpath-preflight\]' "$repo_root/.github/workflows/release-preview.yml")" = "3" ]
-grep -Eq 'release-event\.mjs generate' "$repo_root/.github/workflows/release-preview.yml"
-grep -Eq 'gh workflow run pages\.yml' "$repo_root/.github/workflows/release-preview.yml"
-grep -Eq 'release-cli-trigger\.yml' "$repo_root/.github/workflows/ci.yml"
+for retired in release-preview.yml release-cli-trigger.yml release-desktop-trigger.yml; do
+	test ! -e "$repo_root/.github/workflows/$retired"
+done
+! sed -n '/^on:/,/^permissions:/p' "$repo_root/.github/workflows/release-npm.yml" |
+	grep -Eq 'push:|npm-v\*-\*'
+grep -Eq '^name: Prepare release$' "$repo_root/.github/workflows/prepare-release-notes.yml"
+[ "$(sed -n '/workflow_dispatch:/,/permissions:/p' "$repo_root/.github/workflows/prepare-release-notes.yml" | grep -Ec '^      [a-z_]+:$')" = "1" ]
+grep -Fq 'GitHub Actions could not open the PR; the reviewed branch is preserved.' \
+	"$repo_root/.github/workflows/prepare-release-notes.yml"
 if grep -Eq '^  push:$' "$repo_root/.github/workflows/release-stable.yml" ||
 	grep -Eq '^  push:$' "$repo_root/.github/workflows/release.yml" ||
 	grep -Eq '^  push:$' "$repo_root/.github/workflows/release-desktop.yml"; then
@@ -107,7 +91,12 @@ git -C "$test_root/product-checkout" check-ignore -q release-control/
 [ -z "$(git -C "$test_root/product-checkout" status --porcelain --untracked-files=all)" ]
 grep -Eq "needs\.build\.result == 'success'" "$repo_root/.github/workflows/release-desktop.yml"
 grep -Eq "needs\.publish\.result == 'success'" "$repo_root/.github/workflows/release-desktop.yml"
-grep -Eq 'options: \[stable, preview\]' "$repo_root/.github/workflows/release-desktop.yml"
+grep -Eq 'options: \[stable\]' "$repo_root/.github/workflows/release-desktop.yml"
+if sed -n '/^  workflow_dispatch:/,/^  workflow_call:/p' "$repo_root/.github/workflows/release-desktop.yml" |
+	grep -Eqi 'preview|canary'; then
+	echo "Standalone Desktop dispatch must not expose a Preview or Canary choice" >&2
+	exit 1
+fi
 grep -Eq '^  resolve:$' "$repo_root/.github/workflows/release-desktop.yml"
 grep -Eq 'sha:.*steps\.candidate\.outputs\.sha' "$repo_root/.github/workflows/release-desktop.yml"
 grep -Fq 'bash scripts/resolve-desktop-candidate.sh' "$repo_root/.github/workflows/release-desktop.yml"
@@ -258,8 +247,6 @@ grep -Eq '^  postflight:$' "$repo_root/.github/workflows/release-stable.yml"
 grep -Eq 'verify-stable-release-artifacts\.sh' "$repo_root/.github/workflows/release-stable.yml"
 grep -Eq 'name: Upload reviewed release notes' "$repo_root/.github/workflows/release-stable.yml"
 grep -Eq 'name: orchestrator-reviewed-release-notes' "$repo_root/.github/workflows/release-stable.yml"
-grep -Eq 'name: Upload reviewed release notes' "$repo_root/.github/workflows/release-preview.yml"
-grep -Eq 'name: orchestrator-reviewed-release-notes' "$repo_root/.github/workflows/release-preview.yml"
 for channel in cli npm desktop; do
 	grep -Eq '^      publish_'"$channel"':' "$repo_root/.github/workflows/release-stable.yml"
 	grep -Eq "inputs\.publish_$channel" "$repo_root/.github/workflows/release-stable.yml"
@@ -1131,17 +1118,16 @@ expect_invalid_desktop_manifest "a Preview manifest as Stable" stable "$desktop_
 expect_invalid_desktop_manifest "a non-official asset base" preview "$desktop_preview_version" \
 	"https://cdn.invalid/desktop-${desktop_preview_version}/" "$desktop_preview_manifest"
 
-# Release notes should normally reuse an existing release-bound PR instead of
-# opening one PR per version. Fork PRs and stale branches must fail closed, and
-# the dedicated release-notes PR remains the explicit fallback.
+# Release notes use one deterministic branch per official version. Failure to
+# open the PR must preserve that branch and print an exact manual handoff.
 prepare_notes="$repo_root/.github/workflows/prepare-release-notes.yml"
-grep -Eq '^      target_pr:$' "$prepare_notes"
-grep -Eq 'isCrossRepository' "$prepare_notes"
-grep -Eq 'target_pr comes from a fork' "$prepare_notes"
-grep -Eq 'git merge-base --is-ancestor origin/main-v2 HEAD' "$prepare_notes"
-grep -Eq 'RELEASE_NOTES_PR=\$TARGET_PR' "$prepare_notes"
-grep -Eq 'Updated existing release-bound PR' "$prepare_notes"
-grep -Eq 'release-notes/v\$\{VERSION#v\}' "$prepare_notes"
+if grep -Eq '^      (target_pr|from_tag):$' "$prepare_notes"; then
+	echo "Prepare release must expose only the official version input" >&2
+	exit 1
+fi
+grep -Fq 'branch="release-notes/v${VERSION}"' "$prepare_notes"
+grep -Fq 'GitHub Actions could not open the PR; the reviewed branch is preserved.' "$prepare_notes"
+grep -Fq 'gh pr create --repo ${{ github.repository }} --base main-v2 --head $RELEASE_NOTES_BRANCH --fill' "$prepare_notes"
 grep -Eq 'GITHUB_STEP_SUMMARY' "$prepare_notes"
 
 desktop_candidate_resolver="$repo_root/scripts/resolve-desktop-candidate.sh"
@@ -1534,5 +1520,6 @@ grep -Eq 'does not match requested version' "$test_root/npm-mismatch.log"
 
 node --test "$repo_root/npm/publish.test.mjs"
 node --test "$repo_root/scripts/finalize-npm-official-release.test.mjs"
+bash "$repo_root/scripts/release-stable.test.sh"
 
 echo "release workflow contract tests: PASS"

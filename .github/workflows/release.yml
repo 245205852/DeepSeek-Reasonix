@@ -1,17 +1,15 @@
 name: Release
 
-# Native CLI binary line. Stable and Preview releases are called by their
-# approved all-surface orchestrators. Manual dispatch remains available only for
-# Stable/RC recovery; standalone prereleases remain internal stable-channel
-# checkpoints behind the `release` gate.
+# Native CLI binary line. Official releases are called by the protected Stable
+# orchestrator. Manual dispatch remains available only for Stable/RC recovery;
+# historical Preview inputs below are workflow-call compatibility, not a public
+# publication entrypoint.
 on:
   workflow_dispatch:
     inputs:
       channel:
         description: "Standalone CLI recovery channel"
         required: true
-        # Public Preview recovery reruns release-preview.yml so every surface and
-        # its immutable release-event marker stay aligned.
         default: stable
         type: choice
         options: [stable]
@@ -44,12 +42,12 @@ on:
         default: false
         type: boolean
       orchestrator:
-        description: "Trusted release orchestrator: stable or preview"
+        description: "Trusted release orchestrator (legacy Preview calls remain readable)"
         required: false
         default: stable
         type: string
       allow_preview_recovery:
-        description: "Allow an approved Preview tag from main-v2 history"
+        description: "Legacy compatibility for already-created Preview runs"
         required: false
         default: false
         type: boolean
