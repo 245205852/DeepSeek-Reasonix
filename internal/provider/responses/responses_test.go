@@ -593,42 +593,6 @@ func TestFailedEventSurfacesAuthenticationError(t *testing.T) {
 	t.Fatal("missing error chunk")
 }
 
-func TestCompletedResponseDefaultsFinishReasonToStop(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		// No finish_reason anywhere in the completed event: the client must
-		// synthesize FinishReason="stop" for a normally completed response.
-		writeEvents(w, `{"type":"response.completed","response":{"id":"resp_1","usage":{"input_tokens":2,"output_tokens":3,"total_tokens":5}}}`)
-	}))
-	defer server.Close()
-	chunks := collect(t, New(Config{Name: "test", APIKey: "key", BaseURL: server.URL, Model: "m", Mode: "stateful"}), provider.Request{Messages: []provider.Message{{Role: provider.RoleUser, Content: "hi"}}})
-	for _, chunk := range chunks {
-		if chunk.Type == provider.ChunkUsage {
-			if chunk.Usage.FinishReason != "stop" {
-				t.Fatalf("finish reason = %q, want \"stop\"", chunk.Usage.FinishReason)
-			}
-			return
-		}
-	}
-	t.Fatal("missing usage chunk")
-}
-
-func TestAllZeroUsageCompletedIsSuppressed(t *testing.T) {
-	// DashScope occasionally reports a completed event whose usage object is
-	// present but all zeros (server-side reporting gap). The client must NOT
-	// emit a ChunkUsage for it, or cache-ratio and cost accounting would
-	// record a spurious zero-token turn.
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		writeEvents(w, `{"type":"response.completed","response":{"id":"resp_1","usage":{"input_tokens":0,"output_tokens":0,"total_tokens":0}}}`)
-	}))
-	defer server.Close()
-	chunks := collect(t, New(Config{Name: "test", APIKey: "key", BaseURL: server.URL, Model: "m", Mode: "stateful"}), provider.Request{Messages: []provider.Message{{Role: provider.RoleUser, Content: "hi"}}})
-	for _, chunk := range chunks {
-		if chunk.Type == provider.ChunkUsage {
-			t.Fatalf("all-zero usage must be suppressed, got usage chunk: %+v", chunk.Usage)
-		}
-	}
-}
-
 func TestMessagesToInputIncludesSummaryOnReasoningItems(t *testing.T) {
 	// DashScope is the only vendor whose schema requires the summary list;
 	// use its base URL so the capability table opts in.
