@@ -400,13 +400,13 @@ func Start(ctx context.Context, specs []Spec, p StartPolicy) (*Host, []tool.Tool
 			ts, err := c.listTools(callCtx)
 			if err != nil {
 				phaseADur := recordedPhaseADur()
-				err = newStartupFailure("tools/list", phaseAStart, c.startupStderr(), err)
 				cancelStartup()
 				if !p.SkipPersistence {
 					h.bgWrites.Add(1)
 					go func() { defer h.bgWrites.Done(); _ = RecordStartup(spec.Name, phaseADur) }()
 				}
 				c.close()
+				err = newStartupFailure("tools/list", phaseAStart, c.startupStderr(), err)
 				ch <- result{idx: idx, spec: spec, err: fmt.Errorf("list tools from %q: %w", spec.Name, err)}
 				return
 			}
@@ -1281,8 +1281,8 @@ func (h *Host) addConnectedWithLifecycle(lifeCtx, callCtx context.Context, s Spe
 	}
 	ts, err := c.listTools(callCtx)
 	if err != nil {
-		err = newStartupFailure("tools/list", startupStarted, c.startupStderr(), err)
 		c.close()
+		err = newStartupFailure("tools/list", startupStarted, c.startupStderr(), err)
 		return nil, fmt.Errorf("list tools: %w", err)
 	}
 	c.toolCount = len(ts)
@@ -1416,8 +1416,8 @@ func start(lifeCtx, callCtx context.Context, s Spec) (*Client, error) {
 	}
 	c := &Client{name: s.Name, t: t, spec: s, transport: tt}
 	if err := c.initialize(callCtx); err != nil {
-		err = newStartupFailure("initialize", started, c.startupStderr(), err)
 		c.close()
+		err = newStartupFailure("initialize", started, c.startupStderr(), err)
 		return nil, err
 	}
 	return c, nil
