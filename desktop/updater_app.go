@@ -426,8 +426,36 @@ func (a *App) installPortableUpdate(requestID string, meta *cachedUpdate, data [
 	return nil
 }
 
-// ApplyUpdate is kept for older frontend bindings and tests. New UI code uses the
-// explicit download → install split.
+// ApplyUpdateRequest downloads, verifies, installs, and relaunches the exact
+// version bound to a frontend request. This is the v1.20+ single-action update
+// path ("更新并重启"); there is no durable cross-restart pending state when the
+// operation fails — the user simply retries.
+func (a *App) ApplyUpdateRequest(selectedChannel, expectedVersion, requestID string) error {
+	requestID, selectedChannel, expectedVersion, err := validateUpdaterRequest(requestID, selectedChannel, expectedVersion)
+	if err != nil {
+		return err
+	}
+	finish, err := a.beginUpdaterOperation(requestID)
+	if err != nil {
+		return err
+	}
+	// InstallUpdateRequest acquires the same mutex; release before chaining so
+	// the install half can take ownership of this request id.
+	finish()
+
+	if _, err := a.DownloadUpdateRequest(selectedChannel, expectedVersion, requestID); err != nil {
+		return err
+	}
+	a.emitProgress(requestID, selectedChannel, expectedVersion, "installing", 0, 0, "")
+	if err := a.InstallUpdateRequest(selectedChannel, expectedVersion, requestID); err != nil {
+		return err
+	}
+	a.emitProgress(requestID, selectedChannel, expectedVersion, "relaunching", 0, 0, "")
+	return nil
+}
+
+// ApplyUpdate is kept for older frontend bindings and tests. New UI code uses
+// ApplyUpdateRequest as the single "update and restart" action.
 func (a *App) ApplyUpdate() error {
 	selectedChannel := targetUpdateChannel("")
 	info, err := a.CheckUpdate(selectedChannel)
@@ -438,10 +466,7 @@ func (a *App) ApplyUpdate() error {
 		return fmt.Errorf("update: no checked update is available")
 	}
 	requestID := fmt.Sprintf("legacy-%d", time.Now().UnixNano())
-	if _, err := a.DownloadUpdateRequest(selectedChannel, info.Latest, requestID+"-download"); err != nil {
-		return err
-	}
-	return a.InstallUpdateRequest(selectedChannel, info.Latest, requestID+"-install")
+	return a.ApplyUpdateRequest(selectedChannel, info.Latest, requestID)
 }
 
 // downloadVerify downloads the asset (streaming progress), verifies its minisign

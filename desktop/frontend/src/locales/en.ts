@@ -2777,6 +2777,7 @@ export const en = {
   "updater.available": "A new version is available: {v}",
   "updater.releaseNotes": "Release notes",
   "updater.downloadUpdate": "Download update",
+  "updater.updateAndRestart": "Update and restart",
   "updater.downloaded": "Update {v} has been downloaded.",
   "updater.restartInstall": "Install and restart",
   "updater.authorizeInstall": "Authorize install and restart",

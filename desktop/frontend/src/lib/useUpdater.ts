@@ -3,8 +3,9 @@ import { app, onUpdaterProgress } from "./bridge";
 import type { UpdateInfo } from "./types";
 
 // useUpdater drives the auto-update state machine shared by the top banner and the
-// Settings panel: check, download/verify, then a separate restart/install action.
-// Deb installs add an "authorizing" phase (Polkit) before the package manager runs.
+// Settings panel. v1.20+ uses a single "update and restart" action that downloads,
+// verifies, installs, and relaunches. There is no durable cross-restart pending
+// state: failures leave the current version running and the user simply retries.
 
 export type UpdateStatus =
   | { kind: "idle" }
@@ -13,18 +14,17 @@ export type UpdateStatus =
   | { kind: "available"; info: UpdateInfo }
   | { kind: "downloading"; received: number; total: number; info: UpdateInfo }
   | { kind: "verifying"; info: UpdateInfo }
-  | { kind: "downloaded"; info: UpdateInfo }
   | { kind: "authorizing"; info?: UpdateInfo }
-  | { kind: "recovering"; info?: UpdateInfo }
   | { kind: "installing"; info?: UpdateInfo }
+  | { kind: "relaunching"; info?: UpdateInfo }
   | { kind: "done" }
   | { kind: "error"; message: string; info?: UpdateInfo; manualHint?: boolean };
 
 export interface Updater {
   status: UpdateStatus;
   check: (channel?: string) => Promise<void>;
-  download: (info: UpdateInfo) => void;
-  install: () => void;
+  /** Single-action update: download + verify + install + relaunch. */
+  apply: (info: UpdateInfo) => void;
   openDownload: () => void;
   reset: (channel?: "stable" | "preview") => void;
 }
@@ -56,7 +56,7 @@ function offersManualFallback(message: string): boolean {
 
 const UpdaterContext = createContext<Updater | null>(null);
 
-type UpdaterOperationKind = "idle" | "checking" | "ready" | "downloading" | "installing";
+type UpdaterOperationKind = "idle" | "checking" | "ready" | "applying";
 
 interface UpdaterOperation {
   epoch: number;
@@ -79,7 +79,7 @@ function normalizedChannel(channel: string): "stable" | "preview" {
 }
 
 function isBusyOperation(kind: UpdaterOperationKind): boolean {
-  return kind === "checking" || kind === "downloading" || kind === "installing";
+  return kind === "checking" || kind === "applying";
 }
 
 function useUpdaterInternal(): Updater {
@@ -123,9 +123,9 @@ function useUpdaterInternal(): Updater {
     }
   }, [isCurrentOperation]);
 
-  // A single long-lived subscription advances the state machine through the apply
-  // phases. Channel and operation-kind checks prevent a superseded native
-  // download/install from publishing into a newly selected channel.
+  // A single long-lived subscription advances the state machine through apply
+  // phases. Channel and operation-kind checks prevent a superseded native call
+  // from publishing into a newly selected channel.
   useEffect(() => {
     return onUpdaterProgress((p) => {
       const operation = operationRef.current;
@@ -138,12 +138,21 @@ function useUpdaterInternal(): Updater {
         p.version !== operation.expectedVersion
       ) return;
       const accepted =
-        ((p.phase === "downloading" || p.phase === "verifying") && operation.kind === "downloading") ||
-        (p.phase === "downloaded" && (operation.kind === "downloading" || operation.kind === "installing")) ||
-        ((p.phase === "authorizing" || p.phase === "recovering" || p.phase === "installing" || p.phase === "done") && operation.kind === "installing") ||
-        (p.phase === "error" && (operation.kind === "downloading" || operation.kind === "installing"));
+        operation.kind === "applying" &&
+        (
+          p.phase === "downloading" ||
+          p.phase === "verifying" ||
+          p.phase === "authorizing" ||
+          p.phase === "installing" ||
+          p.phase === "relaunching" ||
+          p.phase === "done" ||
+          p.phase === "error" ||
+          // Tolerate legacy backend phases during the migration window.
+          p.phase === "downloaded" ||
+          p.phase === "recovering"
+        );
       if (!accepted) return;
-      if (p.phase === "downloaded" || p.phase === "done" || p.phase === "error") {
+      if (p.phase === "done" || p.phase === "error") {
         operationRef.current = { ...operation, kind: "ready" };
       }
       setStatus((cur) => {
@@ -155,15 +164,16 @@ function useUpdaterInternal(): Updater {
           case "verifying":
             return info ? { kind: "verifying", info } : cur;
           case "downloaded":
-            // Also used when the user cancels Polkit authorization so the UI
-            // returns to "downloaded" and the install button can be clicked again.
-            return info ? { kind: "downloaded", info: { ...info, downloaded: true } } : cur;
+            // Intermediate cache-ready signal: keep showing verifying/installing
+            // rather than a separate user action.
+            return info ? { kind: "installing", info } : cur;
           case "authorizing":
             return { kind: "authorizing", info };
           case "recovering":
-            return { kind: "recovering", info };
           case "installing":
             return { kind: "installing", info };
+          case "relaunching":
+            return { kind: "relaunching", info };
           case "done":
             return { kind: "done" };
           case "error":
@@ -211,7 +221,7 @@ function useUpdaterInternal(): Updater {
         setStatus({ kind: "upToDate", current: info.current });
         return;
       }
-      setStatus(info.downloaded ? { kind: "downloaded", info } : { kind: "available", info });
+      setStatus({ kind: "available", info });
     } catch (e) {
       if (!isCurrentOperation(operation)) return;
       completeOperation(operation);
@@ -219,7 +229,7 @@ function useUpdaterInternal(): Updater {
     }
   }, [beginOperation, completeOperation, isCurrentOperation]);
 
-  const download = useCallback((info: UpdateInfo) => {
+  const apply = useCallback((info: UpdateInfo) => {
     const selectedChannel = normalizedChannel(info.channel);
     const active = operationRef.current;
     if (isBusyOperation(active.kind) || (active.channel && active.channel !== selectedChannel)) return;
@@ -227,49 +237,24 @@ function useUpdaterInternal(): Updater {
       void app.OpenDownloadPage();
       return;
     }
-    const operation = beginOperation(selectedChannel, "downloading", info.latest);
-    setStatus({ kind: "downloading", received: 0, total: info.assetSize, info });
-    void app.DownloadUpdateRequest(selectedChannel, info.latest, operation.requestId)
-      .then((result) => {
-        if (!isCurrentOperation(operation)) return;
-        if (
-          !result ||
-          result.requestId !== operation.requestId ||
-          result.version !== info.latest ||
-          normalizedChannel(result.channel) !== selectedChannel
-        ) {
-          completeOperation(operation);
-          setStatus({ kind: "available", info });
-          return;
-        }
-        completeOperation(operation);
-        setStatus({ kind: "downloaded", info: { ...info, downloaded: true } });
-      })
-      .catch((e) => {
-        if (!isCurrentOperation(operation)) return;
-        completeOperation(operation);
-        setStatus({ kind: "error", message: errMsg(e), info });
+    const operation = beginOperation(selectedChannel, "applying", info.latest);
+    setStatus(
+      info.requiresElevation || info.installMode === "deb"
+        ? { kind: "authorizing", info }
+        : { kind: "downloading", received: 0, total: info.assetSize, info },
+    );
+    const applyFn = app.ApplyUpdateRequest
+      ?? (async (channel: string, expectedVersion: string, requestId: string) => {
+        await app.DownloadUpdateRequest(channel, expectedVersion, requestId);
+        await app.InstallUpdateRequest(channel, expectedVersion, requestId);
       });
-  }, [beginOperation, completeOperation, isCurrentOperation]);
-
-  const install = useCallback(() => {
-    const info = "info" in status ? status.info : undefined;
-    if (!info) return;
-    const selectedChannel = normalizedChannel(info.channel);
-    const active = operationRef.current;
-    if (isBusyOperation(active.kind) || (active.channel && active.channel !== selectedChannel)) return;
-    const operation = beginOperation(selectedChannel, "installing", info.latest);
-    // Deb installs start in authorizing; portable/other go straight to installing.
-    setStatus(info.requiresElevation || info.installMode === "deb"
-      ? { kind: "authorizing", info }
-      : { kind: "installing", info });
-    void app.InstallUpdateRequest(selectedChannel, info.latest, operation.requestId).catch((e) => {
+    void applyFn(selectedChannel, info.latest, operation.requestId).catch((e) => {
       if (!isCurrentOperation(operation)) return;
       const message = errMsg(e);
       completeOperation(operation);
       setStatus({ kind: "error", message, info, manualHint: offersManualFallback(message) });
     });
-  }, [beginOperation, completeOperation, isCurrentOperation, status]);
+  }, [beginOperation, completeOperation, isCurrentOperation]);
 
   const openDownload = useCallback(() => {
     void app.OpenDownloadPage();
@@ -287,7 +272,7 @@ function useUpdaterInternal(): Updater {
     setStatus({ kind: "idle" });
   }, []);
 
-  return { status, check, download, install, openDownload, reset };
+  return { status, check, apply, openDownload, reset };
 }
 
 export function UpdaterProvider({ children }: { children: ReactNode }) {

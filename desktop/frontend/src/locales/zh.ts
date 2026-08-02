@@ -2780,6 +2780,7 @@ export const zh: Record<DictKey, string> = {
   "updater.available": "发现新版本：{v}",
   "updater.releaseNotes": "更新说明",
   "updater.downloadUpdate": "下载更新",
+  "updater.updateAndRestart": "更新并重启",
   "updater.downloaded": "更新 {v} 已下载。",
   "updater.restartInstall": "安装并重启",
   "updater.authorizeInstall": "授权安装并重启",

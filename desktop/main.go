@@ -23,7 +23,6 @@ import (
 
 	// Blank imports wire compile-time built-ins into their registries, exactly as
 	// cmd/reasonix does — boot.Build resolves providers/tools from these registries.
-	"reasonix/internal/config"
 	_ "reasonix/internal/provider/anthropic"
 	_ "reasonix/internal/provider/openai"
 	_ "reasonix/internal/provider/responses"
@@ -109,26 +108,15 @@ func main() {
 	capturePreviousFatalCrash()
 	installFatalCrashOutput()
 
-	launch := parseDesktopLaunchArgs(os.Args[1:])
-	if config.SafeModeRequested() {
-		launch.SafeMode = true
-	}
+	// Accept and strip legacy launch tokens from old shortcuts
+	// (launch --detach --safe-mode). They produce no product behavior.
+	_ = parseDesktopLaunchArgs(os.Args[1:])
 
+	// Startup tracking remains for diagnostics/crash reports only. It must not
+	// force Safe Mode, disable plugins, or select a previous binary.
 	tracker := repair.NewStartupTracker("")
 	previousRun := tracker.ObservePreviousRun()
-	var continueLaunch bool
-	launch.SafeMode, continueLaunch = preparePackagedStartupRecovery(tracker, tracker.SafeModeRecommended(), launch.SafeMode)
-	if !continueLaunch {
-		return
-	}
-	if launch.SafeMode {
-		_ = os.Setenv("REASONIX_SAFE_MODE", "1")
-	}
-	// Begin runs before the Wails single-instance gate, but it refuses to
-	// overwrite the recorded state while its owner PID is alive, so a duplicate
-	// launch — which Wails terminates via os.Exit without OnShutdown — never
-	// counts as a crash toward the Safe Mode threshold.
-	startupState, _ := tracker.Begin(version, launch.SafeMode)
+	startupState, _ := tracker.Begin(version, false)
 	trackerOwned := startupState.PID == os.Getpid()
 	installProfile := telemetryInstallProfile()
 	updateFrom, updateTo, healthyUpdateCreatedAt, healthyUpdateTransactionID := "", "", "", ""
@@ -142,11 +130,9 @@ func main() {
 	if trackerOwned {
 		_ = tracker.MarkLaunchContext(installProfile, updateFrom, updateTo)
 	}
-	// Keep WebKit acceleration enabled during normal Linux launches. If the
-	// startup tracker selects Safe Mode after a crash loop (or the user requests
-	// it explicitly), NVIDIA systems use the broader renderer fallback before
-	// Wails creates the WebKit process. Other platforms provide a no-op.
-	configureWebKitRendererRecovery(launch.SafeMode)
+	// Always boot the normal WebKit path. Renderer recovery no longer depends
+	// on a global Safe Mode product switch.
+	configureWebKitRendererRecovery(false)
 
 	app := NewApp()
 	app.previousRun = previousRun
@@ -256,15 +242,22 @@ func main() {
 	}
 }
 
+// desktopLaunchOptions captures legacy argv that old installers/shortcuts may
+// still pass. Fields are accepted and ignored so migration never crashes on
+// unknown product switches.
 type desktopLaunchOptions struct {
-	SafeMode bool
+	// LegacySafeModeArg is true when --safe-mode was present. v1.20+ ignores it.
+	LegacySafeModeArg bool
 }
 
 func parseDesktopLaunchArgs(args []string) desktopLaunchOptions {
 	var out desktopLaunchOptions
 	for _, arg := range args {
-		if arg == "--safe-mode" {
-			out.SafeMode = true
+		switch arg {
+		case "--safe-mode", "-safe-mode", "launch", "--detach":
+			if arg == "--safe-mode" || arg == "-safe-mode" {
+				out.LegacySafeModeArg = true
+			}
 		}
 	}
 	return out

@@ -46,9 +46,6 @@ func LoadForRootReadOnly(root string) (*Config, error) {
 // Host-owned features that may execute a configured binary should use this
 // instead of LoadForRoot so an untrusted checkout cannot choose the process.
 func LoadUserConfigReadOnly() (*Config, error) {
-	if SafeModeRequested() {
-		return loadSafeModeForRoot("."), nil
-	}
 	cfg := Default()
 	if path := userConfigLoadPath(); path != "" {
 		if err := mergeFile(cfg, path); err != nil {
@@ -61,9 +58,6 @@ func LoadUserConfigReadOnly() (*Config, error) {
 
 func loadForRoot(root string, migrateOnDisk bool) (*Config, error) {
 	root = resolveRoot(root)
-	if SafeModeRequested() {
-		return loadSafeModeForRoot(root), nil
-	}
 	expansionEnv := loadDotEnvForRoot(root)
 	cfg := Default()
 	cfg.setExpansionEnv(expansionEnv)
@@ -197,21 +191,20 @@ func loadForRoot(root string, migrateOnDisk bool) (*Config, error) {
 	return cfg, nil
 }
 
-// SafeModeRequested reports whether this process should ignore user/project
-// runtime extensions and boot from built-in defaults. The environment switch is
-// intentionally process-local; it never rewrites user configuration.
-func SafeModeRequested() bool {
-	switch strings.ToLower(strings.TrimSpace(os.Getenv("REASONIX_SAFE_MODE"))) {
-	case "1", "true", "yes", "on":
-		return true
-	default:
-		return false
-	}
-}
+// SafeModeRequested always returns false as of v1.20.0. Product Safe Mode and
+// the REASONIX_SAFE_MODE / --safe-mode startup contract are removed: crash
+// records and pending-update state no longer change the next launch mode.
+// Callers that need built-in-only defaults for diagnostics must use
+// LoadBuiltinDefaultsForRoot explicitly.
+func SafeModeRequested() bool { return false }
 
-func loadSafeModeForRoot(root string) *Config {
+// LoadBuiltinDefaultsForRoot returns a read-only built-in-only configuration
+// without reading or migrating user/project TOML. Diagnostic and recovery tools
+// use it when configuration is malformed; it does not put the process into any
+// degraded product "mode". Provider credentials still resolve only from
+// Reasonix's global credential store.
+func LoadBuiltinDefaultsForRoot(root string) *Config {
 	cfg := Default()
-	cfg.safeMode = true
 	cfg.Plugins = nil
 	cfg.Skills = SkillsConfig{}
 	cfg.Bot.Enabled = false
@@ -219,29 +212,22 @@ func loadSafeModeForRoot(root string) *Config {
 	cfg.Bot.Routes = nil
 	cfg.Statusline.Command = ""
 	cfg.LSP.Enabled = false
-	cfg.Desktop.CheckUpdates = safeModeBoolPtr(false)
-	// A Safe Mode boot never reads the user's config, so it cannot see (and
-	// must not override) a telemetry/metrics opt-out recorded there. Force
-	// every reporting path off instead of inheriting the enabled defaults.
-	cfg.Desktop.Telemetry = safeModeBoolPtr(false)
-	cfg.Desktop.Metrics = safeModeBoolPtr(false)
-	cfg.Telemetry.CLIMetrics = "off"
 	cfg.setExpansionEnv(nil)
 	cfg.CredentialsStore = credentialsStoreMode()
 	resolveProviderCredentialsForRoot(root, cfg)
 	return cfg
 }
 
-// LoadRecoveryDefaultsForRoot returns the same built-in-only configuration used
-// by Safe Mode without reading or migrating user/project TOML. Recovery tools use
-// it to reach an explicitly selected built-in provider when configuration is
-// malformed; provider credentials still resolve only from Reasonix's global
-// credential store.
+// LoadRecoveryDefaultsForRoot is retained as an alias of LoadBuiltinDefaultsForRoot
+// for older recovery call sites.
 func LoadRecoveryDefaultsForRoot(root string) *Config {
-	return loadSafeModeForRoot(root)
+	return LoadBuiltinDefaultsForRoot(root)
 }
 
-func safeModeBoolPtr(v bool) *bool { return &v }
+// Deprecated: loadSafeModeForRoot is an alias kept for transitional tests.
+func loadSafeModeForRoot(root string) *Config {
+	return LoadBuiltinDefaultsForRoot(root)
+}
 
 func (c *Config) setExpansionEnv(env map[string]string) {
 	if c == nil {

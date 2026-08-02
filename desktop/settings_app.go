@@ -875,8 +875,10 @@ func desktopStartupSettingsFromConfig(cfg *config.Config) DesktopStartupSettings
 		StatusBarItems:     cfg.DesktopStatusBarItems(),
 		CheckUpdates:       cfg.DesktopCheckUpdates(),
 		UpdateChannel:      cfg.DesktopUpdateChannel(),
-		SafeMode:           cfg.SafeMode(),
-		ConversationWidth:  cfg.DesktopConversationWidth(),
+		// SafeMode is retained in the JSON contract as always-false so older
+		// frontends deserialize cleanly; v1.20+ never enters product Safe Mode.
+		SafeMode:          false,
+		ConversationWidth: cfg.DesktopConversationWidth(),
 	}
 }
 
@@ -886,13 +888,9 @@ func desktopStartupSettingsFromConfig(cfg *config.Config) DesktopStartupSettings
 func (a *App) DesktopStartupSettings() DesktopStartupSettingsView {
 	cfg, _, err := a.loadDesktopUserConfigForView()
 	if err != nil {
-		view := desktopStartupSettingsFromConfig(nil)
-		view.SafeMode = config.SafeModeRequested()
-		return view
+		return desktopStartupSettingsFromConfig(nil)
 	}
-	view := desktopStartupSettingsFromConfig(cfg)
-	view.SafeMode = config.SafeModeRequested()
-	return view
+	return desktopStartupSettingsFromConfig(cfg)
 }
 
 // Settings returns the current configuration for the Settings panel.

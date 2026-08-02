@@ -2,13 +2,10 @@
 // persists it via SaveWindowState so the next launch restores the same size and
 // position. No-op in browser dev (no window.runtime).
 //
-// The Go shutdown hook (app.saveWindowStateSync) provides the authoritative
-// final save; this hook covers moves/resizes during the session.
-//
-// NOTE: navigator.sendBeacon or a sync XHR would let us block beforeunload,
-// but Wails bindings are async (Go IPC). We accept that the very last resize
-// event may not land; the 5s poll and the Go shutdown hook make this unlikely
-// to matter.
+// The frontend is the sole source of geometry: resize (debounced), a 5s poll,
+// and beforeunload. Go never reads WindowGetSize/Position/IsMaximised during
+// beforeClose or shutdown (those paths can panic on Windows when DPI reports
+// 0). The Go shutdown hook only re-persists the last frontend-reported state.
 
 import { useEffect, useRef } from "react";
 import { app } from "./bridge";
@@ -55,8 +52,8 @@ export function useWindowStatePersistence() {
     // Periodic poll every 5s for moves/maximise that don't trigger resize.
     timer = setInterval(save, 5000);
 
-    // Best-effort save before the page unloads. The Go shutdown hook
-    // (saveWindowStateSync) is the authoritative final persist.
+    // Best-effort save before the page unloads. Go re-persists the last
+    // accepted report during shutdown without querying the native window.
     window.addEventListener("beforeunload", save);
 
     return () => {

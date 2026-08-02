@@ -1917,6 +1917,7 @@ export const zhTW: Record<DictKey, string> = {
   "updater.available": "發現新版本：{v}",
   "updater.releaseNotes": "更新說明",
   "updater.downloadUpdate": "下載更新",
+  "updater.updateAndRestart": "更新並重新啟動",
   "updater.downloaded": "更新 {v} 已下載。",
   "updater.restartInstall": "安裝並重新啟動",
   "updater.authorizeInstall": "授權安裝並重新啟動",

@@ -6770,8 +6770,8 @@ const mb = (n: number) => (n / MB).toFixed(1);
 
 // UpdatesSection is the manual side of the auto-updater: it shows the startup
 // check preference, running version, and a Check button, then the same state
-// machine the top banner uses (useUpdater) — available → download → install, with
-// progress and errors inline.
+// machine the top banner uses (useUpdater) — a single "update and restart"
+// action with inline progress and errors.
 function UpdatesSection({
   configPath,
   checkUpdates,
@@ -6790,7 +6790,7 @@ function UpdatesSection({
   applySettings: (fn: () => Promise<void>) => Promise<boolean>;
 }) {
   const t = useT();
-  const { status, check, download: downloadUpdate, install: installUpdate, openDownload, reset: resetUpdater } = useUpdater();
+  const { status, check, apply: applyUpdate, openDownload, reset: resetUpdater } = useUpdater();
   const selectedChannel = updateChannel === "preview" ? "preview" : "stable";
   const [version, setVersion] = useState("");
   useEffect(() => {
@@ -6802,8 +6802,8 @@ function UpdatesSection({
     status.kind === "downloading" ||
     status.kind === "verifying" ||
     status.kind === "authorizing" ||
-    status.kind === "recovering" ||
-    status.kind === "installing";
+    status.kind === "installing" ||
+    status.kind === "relaunching";
   const updateStatus =
     status.kind === "checking" ? t("updater.checking") :
     status.kind === "upToDate" ? t("updater.upToDate") :
@@ -6814,22 +6814,20 @@ function UpdatesSection({
       pct: status.total > 0 ? Math.round((status.received / status.total) * 100) : 0,
     }) :
     status.kind === "verifying" ? t("updater.verifying") :
-    status.kind === "downloaded" ? t("updater.downloaded", { v: status.info.latest }) :
     status.kind === "authorizing" ? t("updater.authorizing") :
-    status.kind === "recovering" ? t("updater.recovering") :
     status.kind === "installing" ? (
       status.info?.requiresElevation || status.info?.installMode === "deb"
         ? t("updater.installingPackage")
         : t("updater.installing")
     ) :
-    status.kind === "done" ? t("updater.done") :
+    status.kind === "relaunching" || status.kind === "done" ? t("updater.done") :
     status.kind === "error" ? t("updater.failed", { msg: status.message }) :
     "";
   const updateStatusTone =
     status.kind === "error" ? "error" :
     status.kind === "available" ? "available" :
     status.kind === "checking" || updaterBusy ? "busy" :
-    status.kind === "upToDate" || status.kind === "done" ? "success" :
+    status.kind === "upToDate" || status.kind === "done" || status.kind === "relaunching" ? "success" :
     "neutral";
 
   return (
@@ -6893,38 +6891,34 @@ function UpdatesSection({
         <div>{t("updater.channelSettingHint")}</div>
         <div>{t("updater.channelAutoCheckHint")}</div>
       </div>
-      {(status.kind === "available" || status.kind === "downloaded") && (
+      {status.kind === "available" && (
         <div className="updates-control__action">
           <div className="updates-control__action-copy">
-            {status.kind === "available" && (
-              <div>
-                {t("updater.channelLabel", {
-                  channel: status.info.channel === "preview" ? t("updater.channelPreview") : t("updater.channelStable"),
-                })}
-              </div>
-            )}
-            {status.kind === "available" && !status.info.canSelfUpdate && <div>{status.info.manualReason || t("updater.macHint")}</div>}
+            <div>
+              {t("updater.channelLabel", {
+                channel: status.info.channel === "preview" ? t("updater.channelPreview") : t("updater.channelStable"),
+              })}
+            </div>
+            {!status.info.canSelfUpdate && <div>{status.info.manualReason || t("updater.macHint")}</div>}
           </div>
-          {status.kind === "available" && (
-            <button
-              className="btn btn--primary btn--small"
-              disabled={settingsBusy || updaterBusy}
-              onClick={() => downloadUpdate(status.info)}
-            >
-              {status.info.canSelfUpdate ? t("updater.downloadUpdate") : t("updater.goToDownload")}
-            </button>
-          )}
-          {status.kind === "downloaded" && (
-            <button
-              className="btn btn--primary btn--small"
-              disabled={settingsBusy || updaterBusy}
-              onClick={installUpdate}
-            >
-              {status.info.requiresElevation || status.info.installMode === "deb"
-                ? t("updater.authorizeInstall")
-                : t("updater.restartInstall")}
-            </button>
-          )}
+          <button
+            className="btn btn--primary btn--small"
+            disabled={settingsBusy || updaterBusy}
+            onClick={() => applyUpdate(status.info)}
+          >
+            {status.info.canSelfUpdate ? t("updater.updateAndRestart") : t("updater.goToDownload")}
+          </button>
+        </div>
+      )}
+      {status.kind === "error" && status.info && (
+        <div className="updates-control__action">
+          <button
+            className="btn btn--primary btn--small"
+            disabled={settingsBusy || updaterBusy}
+            onClick={() => applyUpdate(status.info!)}
+          >
+            {t("updater.retry")}
+          </button>
         </div>
       )}
       <SettingsField

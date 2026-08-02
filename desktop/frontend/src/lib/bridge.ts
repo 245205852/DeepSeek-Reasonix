@@ -463,6 +463,8 @@ export interface AppBindings {
   InstallUpdate(channel: string): Promise<void>;
   InstallUpdateRequest(channel: string, expectedVersion: string, requestId: string): Promise<void>;
   ApplyUpdate(): Promise<void>;
+  /** v1.20+ single-action update: download, verify, install, relaunch. */
+  ApplyUpdateRequest?(channel: string, expectedVersion: string, requestId: string): Promise<void>;
   OpenDownloadPage(): Promise<void>;
   NeedsOnboarding(): Promise<boolean>;
   ConnectKey(apiKey: string): Promise<string>;
@@ -894,7 +896,7 @@ function bridgeBreadcrumb(method: string): string {
     return `settings ${method}`;
   if (/^(SaveProvider|SaveProviderModelCatalogs|AddOfficialProviderAccess|AddProviderPresetAccess|ResetProviderPresetAccess|RemoveProviderAccess|DeleteProvider|SaveProviderKey|SetProviderKey|ClearProviderKey|FetchProviderModels|FetchAllProviderModels|ConnectKey)/.test(method))
     return `provider ${method}`;
-  if (/^(CheckUpdate|DownloadUpdate|DownloadUpdateRequest|InstallUpdate|InstallUpdateRequest|ApplyUpdate|OpenDownloadPage)/.test(method)) return `update ${method}`;
+  if (/^(CheckUpdate|DownloadUpdate|DownloadUpdateRequest|InstallUpdate|InstallUpdateRequest|ApplyUpdate|ApplyUpdateRequest|OpenDownloadPage)/.test(method)) return `update ${method}`;
   if (/^(AddMCPServer|InstallMCPServer|UpdateMCPServer|RemoveMCPServer|AuthorizeAndConnectMCPServer|ReconnectMCPServer|ClearMCPServerAuthentication|SetMCPServer)/.test(method))
     return `mcp ${method}`;
   if (/^(AddSkillPath|RemoveSkillPath|RefreshSkills|SetSkillEnabled|AcceptSkillSuggestion|AvailableSubagentTools|CreateSubagentProfile|UpdateSubagentProfile|DeleteSubagentProfile|SetSubagentProfileModel|SetSubagentProfileEffort|TrySubagentProfile|CancelTrySubagentProfile)/.test(method))
@@ -4469,8 +4471,13 @@ function makeMockApp(): AppBindings {
       // The real shell relaunches here; the mock just stops.
     },
     async ApplyUpdate() {
-      await this.DownloadUpdateRequest("stable", "v1.1.0", "mock-apply-download");
-      await this.InstallUpdateRequest("stable", "v1.1.0", "mock-apply-install");
+      await this.ApplyUpdateRequest("stable", "v1.1.0", "mock-apply");
+    },
+    async ApplyUpdateRequest(channel: string, expectedVersion: string, requestId: string) {
+      await this.DownloadUpdateRequest(channel, expectedVersion, requestId);
+      emitUpdater({ requestId, version: expectedVersion, channel: channel === "preview" ? "preview" : "stable", phase: "installing", received: 0, total: 0 });
+      await this.InstallUpdateRequest(channel, expectedVersion, requestId);
+      emitUpdater({ requestId, version: expectedVersion, channel: channel === "preview" ? "preview" : "stable", phase: "relaunching", received: 0, total: 0 });
     },
     async OpenDownloadPage() {
       if (typeof window !== "undefined") {

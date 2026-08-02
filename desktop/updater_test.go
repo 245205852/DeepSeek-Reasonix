@@ -79,6 +79,18 @@ func TestValidateUpdaterRequestBindsChannelVersionAndID(t *testing.T) {
 	}
 }
 
+func TestValidateAssetInstallLayout(t *testing.T) {
+	if err := validateAssetInstallLayout(""); err != nil {
+		t.Fatalf("empty layout must remain accepted for legacy assets: %v", err)
+	}
+	if err := validateAssetInstallLayout("versioned-v1"); err != nil {
+		t.Fatalf("versioned-v1 must be accepted: %v", err)
+	}
+	if err := validateAssetInstallLayout("unknown-layout"); err == nil {
+		t.Fatal("unknown install_layout must be rejected")
+	}
+}
+
 func TestUpdaterWailsMethodContracts(t *testing.T) {
 	appType := reflect.TypeOf((*App)(nil))
 	tests := []struct {
@@ -86,6 +98,7 @@ func TestUpdaterWailsMethodContracts(t *testing.T) {
 		numIn  int
 		numOut int
 	}{
+		{name: "ApplyUpdateRequest", numIn: 4, numOut: 1},
 		{name: "DownloadUpdate", numIn: 2, numOut: 2},
 		{name: "InstallUpdate", numIn: 2, numOut: 1},
 		{name: "DownloadUpdateRequest", numIn: 4, numOut: 2},

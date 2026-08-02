@@ -27,6 +27,7 @@ import (
 
 	"reasonix/desktop/internal/update"
 	"reasonix/internal/config"
+	"reasonix/internal/installlayout"
 	"reasonix/internal/netclient"
 	"reasonix/internal/repair"
 )
@@ -359,7 +360,22 @@ func validateManifestAsset(selected, version, filename string, asset update.Asse
 	if !sha256RE.MatchString(asset.SHA256) {
 		return "", fmt.Errorf("asset %s has invalid SHA-256 %q", filename, asset.SHA256)
 	}
+	if err := validateAssetInstallLayout(asset.InstallLayout); err != nil {
+		return "", err
+	}
 	return base, nil
+}
+
+// validateAssetInstallLayout accepts the pre-v1.20 empty layout (flat install)
+// and the v1.20+ versioned-v1 layout. Unknown values must fail closed so a new
+// client never partially installs an unrecognized package shape.
+func validateAssetInstallLayout(layout string) error {
+	switch strings.TrimSpace(layout) {
+	case "", installlayout.InstallLayoutVersionedV1:
+		return nil
+	default:
+		return fmt.Errorf("unsupported install_layout %q (keeping current version)", layout)
+	}
 }
 
 func validateDesktopManifest(selected string, m *update.Manifest) error {
