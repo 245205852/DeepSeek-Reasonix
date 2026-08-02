@@ -2686,7 +2686,6 @@ export const zh: Record<DictKey, string> = {
   "notice.mcpServersFailed": "部分 MCP 服务启动失败，可运行 /mcp 查看详情。",
   "notice.guardianModelMissing": "Guardian 已停用：未找到对应模型。",
   "notice.guardianStartFailed": "Guardian 启动失败，已停用。",
-  "guard.safeMode": "Reasonix 已进入安全模式。本次运行已禁用插件、MCP、Hooks、机器人、自动化和上次保存的标签页。",
   "questionNav.label": "问题导航",
   "questionNav.progress": "问题 {current} / {total}",
   "questionNav.jump": "跳转到问题 {n}",

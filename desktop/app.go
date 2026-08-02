@@ -693,9 +693,8 @@ func (a *App) restoreOrBuildTabs() {
 	// Run legacy config migration before the first config load so the
 	// freshly written config (including the user's default_model) is
 	// picked up by Load instead of falling back to built-in defaults.
-	f := desktopTabsFile{}
 	_, _ = config.MigrateLegacyIfNeeded()
-	f = loadTabsFile()
+	f := loadTabsFile()
 	_, _ = recoverLegacyProjectSidebarRoots(f)
 	_, _ = config.ApplyUserConfigUpgradesOnStartup(config.UserConfigPath())
 	_, _ = config.MigrateMCPToUserConfigOnUpgrade(desktopMCPMigrationRoots(f))

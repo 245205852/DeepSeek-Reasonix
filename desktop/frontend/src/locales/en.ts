@@ -2683,7 +2683,6 @@ export const en = {
   "notice.mcpServersFailed": "Some MCP servers failed to start; run /mcp for details.",
   "notice.guardianModelMissing": "Guardian was disabled because its model was not found.",
   "notice.guardianStartFailed": "Guardian was disabled because it could not start.",
-  "guard.safeMode": "Reasonix started in Safe Mode. Plugins, MCP servers, hooks, bots, automations, and saved tabs are disabled for this run.",
   "questionNav.label": "Question navigation",
   "questionNav.progress": "Question {current} / {total}",
   "questionNav.jump": "Jump to question {n}",

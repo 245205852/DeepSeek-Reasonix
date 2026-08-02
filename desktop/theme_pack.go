@@ -166,7 +166,8 @@ type ThemeContrastWarning struct {
 type ThemeActiveView struct {
 	ActiveThemeID string         `json:"activeThemeId,omitempty"`
 	Pack          *ThemePackView `json:"pack,omitempty"`
-	SafeMode      bool           `json:"safeMode"`
+	// SafeMode is retained as an always-false compatibility field for older frontends.
+	SafeMode bool `json:"safeMode"`
 }
 
 // ThemeExperienceView is the unified appearance state for the redesigned
@@ -178,7 +179,8 @@ type ThemeExperienceView struct {
 	EffectiveStyle string         `json:"effectiveStyle"`          // pack.baseStyle when pack active, else baseStyle
 	ActiveThemeID  string         `json:"activeThemeId,omitempty"` // official/user only; never a base id
 	ActivePack     *ThemePackView `json:"activePack,omitempty"`
-	SafeMode       bool           `json:"safeMode"`
+	// SafeMode is retained as an always-false compatibility field for older frontends.
+	SafeMode bool `json:"safeMode"`
 }
 
 // ThemeSaveInput is the editor payload for creating/updating a user theme.

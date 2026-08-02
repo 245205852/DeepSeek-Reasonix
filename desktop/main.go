@@ -115,8 +115,6 @@ func main() {
 	// Observe previous run for crash diagnostics only. Startup tracking must
 	// never force Safe Mode, disable plugins, or select a previous binary.
 	previousRun := repair.NewStartupTracker("").ObservePreviousRun()
-	// Always boot the normal WebKit path.
-	configureWebKitRendererRecovery(false)
 
 	app := NewApp()
 	app.previousRun = previousRun
