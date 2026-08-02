@@ -51,6 +51,10 @@ type BrokerProviderRequest struct {
 	Tools       []provider.ToolSchema `json:"tools"`
 	Temperature *float64              `json:"temperature,omitempty"`
 	MaxTokens   int                   `json:"maxTokens" validate:"min=0"`
+	// ResponseFormat carries a structured-output request ("json_object")
+	// across the Host↔Desktop boundary. Omitted when unset so the wire
+	// shape stays backward-compatible.
+	ResponseFormat *provider.ResponseFormat `json:"responseFormat,omitempty"`
 }
 
 // BrokerProviderRequestFromProvider copies a provider request into its stable
@@ -65,20 +69,30 @@ func BrokerProviderRequestFromProvider(request provider.Request) BrokerProviderR
 	if tools == nil {
 		tools = []provider.ToolSchema{}
 	}
+	format := request.ResponseFormat
+	if format != nil && format.Type == "" {
+		format = nil
+	}
 	return BrokerProviderRequest{
 		Messages: messages, Tools: tools, Temperature: request.Temperature,
-		MaxTokens: request.MaxTokens,
+		MaxTokens:      request.MaxTokens,
+		ResponseFormat: format,
 	}
 }
 
 // ProviderRequest reconstructs the local Provider input without serializing it
 // through an unversioned opaque JSON blob.
 func (request BrokerProviderRequest) ProviderRequest() provider.Request {
+	format := request.ResponseFormat
+	if format != nil && format.Type == "" {
+		format = nil
+	}
 	return provider.Request{
-		Messages:    append([]provider.Message(nil), request.Messages...),
-		Tools:       append([]provider.ToolSchema(nil), request.Tools...),
-		Temperature: request.Temperature,
-		MaxTokens:   request.MaxTokens,
+		Messages:       append([]provider.Message(nil), request.Messages...),
+		Tools:          append([]provider.ToolSchema(nil), request.Tools...),
+		Temperature:    request.Temperature,
+		MaxTokens:      request.MaxTokens,
+		ResponseFormat: format,
 	}
 }
 

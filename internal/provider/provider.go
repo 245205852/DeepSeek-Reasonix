@@ -179,7 +179,7 @@ type Request struct {
 type ResponseFormat struct {
 	// Type is the structured format: "json_object" is the only shape the
 	// Responses endpoints currently define (MiMo/DashScope/OpenAI).
-	Type string
+	Type string `json:"type"`
 }
 
 // DefaultReasoningOutputTokens is the conservative provider-side budget used
