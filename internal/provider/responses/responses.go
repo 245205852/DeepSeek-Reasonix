@@ -14,7 +14,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"net/url"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -84,35 +83,20 @@ func (c Config) mode() string {
 		}
 		return "stateless"
 	}
-	if DetectVendor(c.BaseURL) == "deepseek" || DetectVendor(c.BaseURL) == "mimo" {
+	if capabilitiesFor(DetectVendor(c.BaseURL)).stateless {
 		return "stateless"
 	}
 	return "stateful"
 }
 
-// DetectVendor identifies endpoint behavior that affects the Responses wire.
-func DetectVendor(baseURL string) string {
-	u, err := url.Parse(strings.TrimSpace(baseURL))
-	if err != nil {
-		return ""
-	}
-	host := strings.ToLower(u.Hostname())
-	switch {
-	case host == "dashscope.aliyuncs.com", strings.HasSuffix(host, ".dashscope.aliyuncs.com"), strings.HasSuffix(host, ".maas.aliyuncs.com"):
-		return "dashscope"
-	case host == "api.deepseek.com", strings.HasSuffix(host, ".deepseek.com"):
-		return "deepseek"
-	case strings.Contains(u, "api.xiaomimimo.com"):
-		return "mimo"
-	default:
-		return ""
-	}
-}
+// DetectVendor lives in vendor.go (capabilities table): it covers dashscope/
+// deepseek (incl. eu.deepseek.com) / mimo via substring matching.
 
 type client struct {
 	name, apiKey, keyEnv, keySource string
 	baseURL, model, effort          string
 	vendor, mode                    string
+	caps                            vendorCapabilities
 	sessionCache                    bool
 	maxOutputTokens                 int
 	http                            *http.Client
@@ -127,11 +111,12 @@ type client struct {
 // New creates a Responses API provider.
 func New(cfg Config) provider.Provider {
 	vendor := DetectVendor(cfg.BaseURL)
+	cap := capabilitiesFor(vendor)
 	maxOutputTokens := cfg.MaxOutputTokens
 	if maxOutputTokens == 0 && vendor == "deepseek" && !responsesReasoningDisabled(cfg.Effort) {
 		maxOutputTokens = provider.DefaultReasoningOutputTokens
 	}
-	sessionCache := vendor == "dashscope"
+	sessionCache := cap.sessionCacheHeader
 	if cfg.SessionCache != nil {
 		sessionCache = *cfg.SessionCache
 	}
@@ -145,7 +130,7 @@ func New(cfg Config) provider.Provider {
 	return &client{
 		name: cfg.Name, apiKey: cfg.APIKey, keyEnv: cfg.KeyEnv, keySource: cfg.KeySource,
 		baseURL: strings.TrimRight(cfg.BaseURL, "/"), model: cfg.Model, effort: cfg.Effort,
-		vendor: vendor, mode: cfg.mode(), sessionCache: sessionCache, maxOutputTokens: maxOutputTokens,
+		vendor: vendor, caps: cap, mode: cfg.mode(), sessionCache: sessionCache, maxOutputTokens: maxOutputTokens,
 		http: httpClient, idleTimeout: defaultStreamIdleTimeout,
 	}
 }
@@ -161,12 +146,11 @@ func responsesReasoningDisabled(effort string) bool {
 
 func (c *client) Name() string { return c.name }
 
-// RequiresToolCallReasoning tells the agent to preserve DeepSeek/MiMo
-// reasoning on assistant tool-call turns so the stateless follow-up can
-// replay it. Both vendors' Responses APIs are stateless and document that
-// multi-turn tool calls must retain historical reasoning in the input.
+// RequiresToolCallReasoning tells the agent to preserve stateless vendors'
+// reasoning on assistant tool-call turns so the follow-up can replay it.
+// DeepSeek and MiMo document this requirement for multi-turn tool calls.
 func (c *client) RequiresToolCallReasoning() bool {
-	return c.vendor == "deepseek" || c.vendor == "mimo"
+	return c.caps.toolCallReasoning
 }
 
 func (c *client) MissingToolCallReasoningWarningIdentity() string {
@@ -223,7 +207,7 @@ func (c *client) send(ctx context.Context, body map[string]any) (*http.Response,
 		}
 		req.Header.Set("Content-Type", "application/json")
 		req.Header.Set("Authorization", "Bearer "+c.apiKey)
-		if c.vendor == "dashscope" && c.sessionCache {
+		if c.caps.sessionCacheHeader && c.sessionCache {
 			req.Header.Set("x-dashscope-session-cache", "enable")
 		}
 		return req, nil
@@ -263,7 +247,7 @@ func (c *client) buildRequestBody(req provider.Request) (map[string]any, bool, [
 	if maxOutputTokens > 0 {
 		body["max_output_tokens"] = maxOutputTokens
 	}
-	if req.Temperature != nil {
+	if req.Temperature != nil && !c.caps.ignoresTemperature {
 		body["temperature"] = *req.Temperature
 	}
 	if len(req.Tools) > 0 {

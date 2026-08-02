@@ -3,6 +3,7 @@ package responses
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -388,14 +389,85 @@ func TestDashScopeCacheHeaderIsVendorScoped(t *testing.T) {
 	defer server.Close()
 	p := New(Config{Name: "test", APIKey: "key", BaseURL: server.URL, Model: "m", Mode: "stateless", SessionCache: boolPtr(true)}).(*client)
 	p.vendor = "deepseek"
+	p.caps = capabilitiesFor("deepseek")
 	collect(t, p, provider.Request{Messages: []provider.Message{{Role: provider.RoleUser, Content: "hi"}}})
 	if got != "" {
 		t.Fatalf("DeepSeek request leaked DashScope header %q", got)
 	}
 	p.vendor = "dashscope"
+	p.caps = capabilitiesFor("dashscope")
 	collect(t, p, provider.Request{Messages: []provider.Message{{Role: provider.RoleUser, Content: "hi"}}})
 	if got != "enable" {
 		t.Fatalf("DashScope header = %q", got)
+	}
+}
+
+func TestVendorCapabilityTableCoversKnownEndpoints(t *testing.T) {
+	tests := []struct {
+		url, vendor          string
+		stateless, reasoning bool
+		ignoresTemp          bool
+	}{
+		{"https://api.deepseek.com", "deepseek", true, true, false},
+		{"https://api.xiaomimimo.com/v1", "mimo", true, true, true},
+		{"https://dashscope.aliyuncs.com/compatible-mode/v1", "dashscope", false, false, false},
+		{"https://example.com/v1", "", false, false, false},
+	}
+	for _, test := range tests {
+		vendor := DetectVendor(test.url)
+		if vendor != test.vendor {
+			t.Errorf("DetectVendor(%q) = %q, want %q", test.url, vendor, test.vendor)
+		}
+		caps := capabilitiesFor(vendor)
+		if caps.stateless != test.stateless {
+			t.Errorf("capabilities(%q).stateless = %v, want %v", vendor, caps.stateless, test.stateless)
+		}
+		if caps.toolCallReasoning != test.reasoning {
+			t.Errorf("capabilities(%q).toolCallReasoning = %v, want %v", vendor, caps.toolCallReasoning, test.reasoning)
+		}
+		if caps.ignoresTemperature != test.ignoresTemp {
+			t.Errorf("capabilities(%q).ignoresTemperature = %v, want %v", vendor, caps.ignoresTemperature, test.ignoresTemp)
+		}
+	}
+}
+
+func TestMiMoOmitsTemperatureFromRequestBody(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		var reqBody map[string]any
+		if err := json.Unmarshal(body, &reqBody); err != nil {
+			t.Fatalf("decode request body: %v", err)
+		}
+		if _, ok := reqBody["temperature"]; ok {
+			t.Fatalf("MiMo request must not carry temperature (vendor forces 1.0 in thinking mode), got %#v", reqBody["temperature"])
+		}
+		writeEvents(w, `{"type":"response.completed","response":{"id":"resp","usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}}`)
+	}))
+	defer server.Close()
+
+	temp := 0.3
+	p := New(Config{Name: "mimo", APIKey: "key", BaseURL: server.URL, Model: "mimo-v2.5-pro"}).(*client)
+	p.vendor = "mimo"
+	p.caps = capabilitiesFor("mimo")
+	if !p.caps.ignoresTemperature {
+		t.Fatal("MiMo capability must ignore temperature")
+	}
+	collect(t, p, provider.Request{Messages: []provider.Message{{Role: provider.RoleUser, Content: "hi"}}, Temperature: &temp})
+
+	// Control: an unknown endpoint still sends temperature.
+	var gotTemp any
+	control := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		var reqBody map[string]any
+		_ = json.Unmarshal(body, &reqBody)
+		gotTemp = reqBody["temperature"]
+		writeEvents(w, `{"type":"response.completed","response":{"id":"resp","usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}}`)
+	}))
+	defer control.Close()
+	p2 := New(Config{Name: "openai", APIKey: "key", BaseURL: control.URL, Model: "m"}).(*client)
+	collect(t, p2, provider.Request{Messages: []provider.Message{{Role: provider.RoleUser, Content: "hi"}}, Temperature: &temp})
+	if gotTemp == nil {
+		t.Fatal("unknown endpoint must still send temperature")
 	}
 }
 
