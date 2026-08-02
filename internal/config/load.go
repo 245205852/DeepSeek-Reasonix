@@ -219,13 +219,6 @@ func loadForRoot(root string, migrateOnDisk bool) (*Config, error) {
 	return cfg, nil
 }
 
-// SafeModeRequested always returns false as of v1.20.0. Product Safe Mode and
-// the REASONIX_SAFE_MODE / --safe-mode startup contract are removed: crash
-// records and pending-update state no longer change the next launch mode.
-// The environment variable is intentionally ignored (not read) so old
-// launchers/shortcuts cannot re-enable a global degraded mode.
-func SafeModeRequested() bool { return false }
-
 // LoadBuiltinDefaultsForRoot returns a read-only built-in-only configuration
 // without reading or migrating user/project TOML. Diagnostic and recovery tools
 // use it when configuration is malformed; it does not put the process into any

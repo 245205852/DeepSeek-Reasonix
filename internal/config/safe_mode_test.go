@@ -6,13 +6,6 @@ import (
 	"testing"
 )
 
-func TestSafeModeRequestedAlwaysFalse(t *testing.T) {
-	t.Setenv("REASONIX_SAFE_MODE", "1")
-	if SafeModeRequested() {
-		t.Fatal("v1.20+ must ignore REASONIX_SAFE_MODE")
-	}
-}
-
 func TestBuiltinDefaultsDoNotReadOrRewriteMalformedConfig(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("REASONIX_HOME", home)
@@ -22,8 +15,8 @@ func TestBuiltinDefaultsDoNotReadOrRewriteMalformedConfig(t *testing.T) {
 		t.Fatal(err)
 	}
 	cfg := LoadBuiltinDefaultsForRoot(t.TempDir())
-	if cfg == nil || cfg.SafeMode() || len(cfg.Providers) == 0 {
-		t.Fatalf("builtin defaults = %+v (safeMode must be false)", cfg)
+	if cfg == nil || len(cfg.Providers) == 0 {
+		t.Fatalf("builtin defaults = %+v", cfg)
 	}
 	got, err := os.ReadFile(path)
 	if err != nil {
@@ -38,7 +31,7 @@ func TestRecoveryDefaultsAliasBuiltin(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("REASONIX_HOME", home)
 	cfg := LoadRecoveryDefaultsForRoot(t.TempDir())
-	if cfg == nil || cfg.SafeMode() {
-		t.Fatalf("recovery defaults must not set SafeMode: %+v", cfg)
+	if cfg == nil {
+		t.Fatal("recovery defaults must return a configuration")
 	}
 }

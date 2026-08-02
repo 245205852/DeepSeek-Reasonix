@@ -115,11 +115,6 @@ func (c *Config) CLITelemetryMode() string {
 	}
 }
 
-// SafeMode always reports false as of v1.20.0. Product Safe Mode is removed.
-func (c *Config) SafeMode() bool {
-	return false
-}
-
 // LoadWarnings returns non-fatal config load issues (corrupt files recovered in
 // memory). The returned slice is a copy.
 func (c *Config) LoadWarnings() []string {

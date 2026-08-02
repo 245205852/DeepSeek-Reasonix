@@ -468,7 +468,6 @@ var ChineseTraditional = Messages{
 	ReportKept:                "報告已保留在本機。",
 	ReportDeletedFmt:          "已刪除 CLI 當機報告 %s。",
 	ReportSentFmt:             "已傳送 CLI 當機報告 %s。",
-	ReportSafeModeBlocked:     "Safe Mode 下不能傳送當機報告；本機報告已保留",
 	ReportConfigFailedFmt:     "無法載入網路設定：%v",
 	ReportUploadFailedFmt:     "報告上傳失敗；本機報告已保留：%v",
 	ReportSentDeleteFailedFmt: "報告已傳送，但無法刪除本機副本：%v",

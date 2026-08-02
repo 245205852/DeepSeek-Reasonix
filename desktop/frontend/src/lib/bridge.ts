@@ -4258,7 +4258,7 @@ function makeMockApp(): AppBindings {
           const pack = mockActiveThemeId && !["graphite","aurora","slate","carbon","nocturne","amber"].includes(mockActiveThemeId)
             ? mockThemePacks.find((p) => p.id === mockActiveThemeId)
             : null;
-          return { activeThemeId: pack ? mockActiveThemeId : "", pack: pack ? { ...pack, active: true } : null, safeMode: false };
+          return { activeThemeId: pack ? mockActiveThemeId : "", pack: pack ? { ...pack, active: true } : null };
         },
         async GetThemeExperience() {
           const pack = mockActiveThemeId && !["graphite","aurora","slate","carbon","nocturne","amber"].includes(mockActiveThemeId)
@@ -4270,7 +4270,6 @@ function makeMockApp(): AppBindings {
             effectiveStyle: pack?.baseStyle || mockBaseStyle,
             activeThemeId: pack ? mockActiveThemeId : "",
             activePack: pack ? { ...pack, active: true } : null,
-            safeMode: false,
           };
         },
         async ActivateThemePack(id: string) {

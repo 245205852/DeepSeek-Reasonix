@@ -141,7 +141,7 @@ For advanced CLI usage and configuration, see the **[CLI reference](./docs/CLI.m
 - **Features & troubleshooting:** [Subagent profiles](./docs/SUBAGENT_PROFILES.md) ·
   [Context Engine v2](./docs/SESSION_MEMORY_RETRIEVAL.md) ·
   [Capability diagnostics](./docs/CAPABILITY_DIAGNOSTICS.md) ·
-  [Recovery and Safe Mode](./docs/RECOVERY.md) · [Bot guide](./docs/BOT_GUIDE.md) ·
+  [Recovery and updates](./docs/RECOVERY.md) · [Bot guide](./docs/BOT_GUIDE.md) ·
   [Checkpoints & rewind](./docs/CHECKPOINTS.md)
 - **Engineering & migration:** [Spec](./docs/SPEC.md) ·
   [Task contracts & pause policy](./docs/TASK_CONTRACT.md) ·

@@ -562,7 +562,6 @@ type Messages struct {
 	ReportKept                string
 	ReportDeletedFmt          string
 	ReportSentFmt             string
-	ReportSafeModeBlocked     string
 	ReportConfigFailedFmt     string
 	ReportUploadFailedFmt     string
 	ReportSentDeleteFailedFmt string

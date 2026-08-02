@@ -126,22 +126,3 @@ func TestEnvironmentOptOutRemovesPendingQueue(t *testing.T) {
 		t.Fatalf("environment opt-out did not remove pending queue: %v", err)
 	}
 }
-
-func TestSafeModeDoesNotDeletePendingQueue(t *testing.T) {
-	clearPolicyEnv(t)
-	home := t.TempDir()
-	if err := appendPending(home, pendingPayload{
-		Version: "v1.20.0", OS: "linux", Counters: []Counter{{Signal: "turns", Bucket: "count", Count: 1}},
-	}); err != nil {
-		t.Fatal(err)
-	}
-	if reporter := Start(Options{
-		Mode: "off", Version: "v1.20.0", HomeDir: home, Interactive: true, SafeMode: true,
-	}); reporter != nil {
-		t.Fatal("Safe Mode unexpectedly started telemetry")
-	}
-	entries, err := os.ReadDir(filepath.Join(home, pendingDirName))
-	if err != nil || len(entries) != 1 {
-		t.Fatalf("Safe Mode changed pending queue: entries=%d err=%v", len(entries), err)
-	}
-}

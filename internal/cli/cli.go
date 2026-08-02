@@ -2504,11 +2504,10 @@ func startCLITelemetryWithIO(cfg *config.Config, opts telemetry.Options, in io.R
 	}
 	opts.Mode = cfg.CLITelemetryMode()
 	opts.HomeDir = config.ReasonixHomeDir()
-	opts.SafeMode = cfg.SafeMode()
 	opts.Proxy = cfg.NetworkProxySpec()
 	opts.Language = cfg.Language
 
-	if cfg.CLITelemetryConfigured() || !telemetry.Enabled(opts.Mode, opts.Version, opts.Interactive, opts.SafeMode) {
+	if cfg.CLITelemetryConfigured() || !telemetry.Enabled(opts.Mode, opts.Version, opts.Interactive) {
 		return startCLITelemetryReporter(opts)
 	}
 

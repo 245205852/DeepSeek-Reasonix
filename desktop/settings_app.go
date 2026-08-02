@@ -327,7 +327,6 @@ type DesktopStartupSettingsView struct {
 	StatusBarItems     []string        `json:"statusBarItems"`
 	CheckUpdates       bool            `json:"checkUpdates"`
 	UpdateChannel      string          `json:"updateChannel"`
-	SafeMode           bool            `json:"safeMode,omitempty"`
 	ConversationWidth  string          `json:"conversationWidth,omitempty"`
 	// ConfigWarnings are non-blocking notices when user/project config was
 	// recovered in memory (last-known-good or defaults) without rewriting files.
@@ -879,12 +878,9 @@ func desktopStartupSettingsFromConfig(cfg *config.Config) DesktopStartupSettings
 		StatusBarItems:     cfg.DesktopStatusBarItems(),
 		CheckUpdates:       cfg.DesktopCheckUpdates(),
 		UpdateChannel:      cfg.DesktopUpdateChannel(),
-		// SafeMode is retained in the JSON contract as always-false so older
-		// frontends deserialize cleanly; v1.20+ never enters product Safe Mode.
-		SafeMode:          false,
-		ConversationWidth: cfg.DesktopConversationWidth(),
-		ConfigWarnings:    cfg.LoadWarnings(),
-		ConfigPath:        config.UserConfigPath(),
+		ConversationWidth:  cfg.DesktopConversationWidth(),
+		ConfigWarnings:     cfg.LoadWarnings(),
+		ConfigPath:         config.UserConfigPath(),
 	}
 }
 

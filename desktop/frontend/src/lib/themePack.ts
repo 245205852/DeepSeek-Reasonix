@@ -82,7 +82,6 @@ export function themePackKind(pack: Pick<ThemePackView, "kind" | "builtin">): Th
 export type ThemeActiveView = {
   activeThemeId?: string;
   pack?: ThemePackView | null;
-  safeMode: boolean;
 };
 
 export type ThemeSaveInput = {

@@ -1035,7 +1035,7 @@ func TestConfiguredCLITelemetryDoesNotPromptAgain(t *testing.T) {
 	startCalls := 0
 	startCLITelemetryReporter = func(opts telemetry.Options) *telemetry.Reporter {
 		startCalls++
-		if telemetry.Enabled(opts.Mode, opts.Version, opts.Interactive, opts.SafeMode) {
+		if telemetry.Enabled(opts.Mode, opts.Version, opts.Interactive) {
 			return want
 		}
 		return nil
@@ -1116,12 +1116,7 @@ func TestLegacySafeModeEnvDoesNotAlterConfiguredCLITelemetry(t *testing.T) {
 	previousStart := startCLITelemetryReporter
 	t.Cleanup(func() { startCLITelemetryReporter = previousStart })
 	want := &telemetry.Reporter{}
-	startCLITelemetryReporter = func(opts telemetry.Options) *telemetry.Reporter {
-		if opts.SafeMode {
-			t.Fatal("legacy REASONIX_SAFE_MODE still changed telemetry behavior")
-		}
-		return want
-	}
+	startCLITelemetryReporter = func(telemetry.Options) *telemetry.Reporter { return want }
 	if got := startCLITelemetryWithIO(cfg, telemetry.Options{
 		Version: "v1.20.0", Interactive: true, CLIMode: "tui",
 	}, strings.NewReader(""), io.Discard, io.Discard); got != want {

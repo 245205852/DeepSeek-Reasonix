@@ -21,7 +21,6 @@ type Options struct {
 	Version        string
 	HomeDir        string
 	Interactive    bool
-	SafeMode       bool
 	Proxy          netclient.ProxySpec
 	CLIMode        string
 	Profile        string
@@ -38,8 +37,8 @@ type Reporter struct {
 }
 
 func Start(opts Options) *Reporter {
-	if !Enabled(opts.Mode, opts.Version, opts.Interactive, opts.SafeMode) {
-		if (strings.EqualFold(strings.TrimSpace(opts.Mode), "off") && !opts.SafeMode) || envOptOut() {
+	if !Enabled(opts.Mode, opts.Version, opts.Interactive) {
+		if strings.EqualFold(strings.TrimSpace(opts.Mode), "off") || envOptOut() {
 			_ = Cleanup(opts.HomeDir)
 		}
 		return nil

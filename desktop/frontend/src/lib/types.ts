@@ -1755,7 +1755,6 @@ export interface DesktopStartupSettingsView {
   statusBarItems: string[]; // ordered visible status bar item ids
   checkUpdates: boolean; // check for new versions on startup
   updateChannel: string; // "stable" | "preview"
-  safeMode?: boolean; // always false in v1.20+; retained for older payloads
   conversationWidth?: string; // "standard" | "full"; absent from older Wails payloads
   configWarnings?: string[]; // non-blocking load recovery notices
   configPath?: string;

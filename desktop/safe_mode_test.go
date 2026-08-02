@@ -6,14 +6,6 @@ import (
 	"testing"
 )
 
-func TestDesktopStartupSettingsNeverExposeSafeMode(t *testing.T) {
-	t.Setenv("REASONIX_SAFE_MODE", "1")
-	view := NewApp().DesktopStartupSettings()
-	if view.SafeMode {
-		t.Fatalf("startup settings must not enable product Safe Mode: %+v", view)
-	}
-}
-
 func TestSaveTabsWriteNoLongerSkippedBySafeModeEnv(t *testing.T) {
 	// v1.20+ ignores REASONIX_SAFE_MODE: tab persistence stays available.
 	isolateDesktopUserDirs(t)
