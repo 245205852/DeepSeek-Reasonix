@@ -30,6 +30,17 @@ type vendorCapabilities struct {
 	// calls (DeepSeek, MiMo).
 	toolCallReasoning bool
 
+	// singleSegmentReasoning marks endpoints whose thinking is one
+	// uninterruptible segment per turn: the server emits reasoning and the
+	// final answer atomically, and a new reasoning segment only starts on a
+	// brand-new turn — never mid-turn after a tool call. MiMo documents this
+	// ("reasoning.effort: low/medium/high all enable reasoning, no strength
+	// differentiation"; tool-call turns carry one segment). DeepSeek, by
+	// contrast, can emit several reasoning segments across a turn's tool
+	// loop. Callers must not expect a multi-segment chain-of-thought from
+	// single-segment vendors.
+	singleSegmentReasoning bool
+
 	// ignoresTemperature marks vendors that force temperature/top_p to their
 	// defaults in thinking mode, so sending them is a no-op (MiMo forces
 	// 1.0 / 0.95). Keeps the wire request lean for such endpoints.
@@ -38,22 +49,25 @@ type vendorCapabilities struct {
 
 var vendorTable = map[string]vendorCapabilities{
 	"dashscope": {
-		stateless:          false,
-		sessionCacheHeader: true,
-		toolCallReasoning:  false,
-		ignoresTemperature: false,
+		stateless:              false,
+		sessionCacheHeader:     true,
+		toolCallReasoning:      false,
+		singleSegmentReasoning: false,
+		ignoresTemperature:     false,
 	},
 	"deepseek": {
-		stateless:          true,
-		sessionCacheHeader: false,
-		toolCallReasoning:  true,
-		ignoresTemperature: false,
+		stateless:              true,
+		sessionCacheHeader:     false,
+		toolCallReasoning:      true,
+		singleSegmentReasoning: false,
+		ignoresTemperature:     false,
 	},
 	"mimo": {
-		stateless:          true,
-		sessionCacheHeader: false,
-		toolCallReasoning:  true,
-		ignoresTemperature: true,
+		stateless:              true,
+		sessionCacheHeader:     false,
+		toolCallReasoning:      true,
+		singleSegmentReasoning: true,
+		ignoresTemperature:     true,
 	},
 	// "" (unknown OpenAI-compatible endpoint) → zero value = default behavior.
 }

@@ -407,11 +407,12 @@ func TestVendorCapabilityTableCoversKnownEndpoints(t *testing.T) {
 		url, vendor          string
 		stateless, reasoning bool
 		ignoresTemp          bool
+		singleSegment        bool
 	}{
-		{"https://api.deepseek.com", "deepseek", true, true, false},
-		{"https://api.xiaomimimo.com/v1", "mimo", true, true, true},
-		{"https://dashscope.aliyuncs.com/compatible-mode/v1", "dashscope", false, false, false},
-		{"https://example.com/v1", "", false, false, false},
+		{"https://api.deepseek.com", "deepseek", true, true, false, false},
+		{"https://api.xiaomimimo.com/v1", "mimo", true, true, true, true},
+		{"https://dashscope.aliyuncs.com/compatible-mode/v1", "dashscope", false, false, false, false},
+		{"https://example.com/v1", "", false, false, false, false},
 	}
 	for _, test := range tests {
 		vendor := DetectVendor(test.url)
@@ -427,6 +428,9 @@ func TestVendorCapabilityTableCoversKnownEndpoints(t *testing.T) {
 		}
 		if caps.ignoresTemperature != test.ignoresTemp {
 			t.Errorf("capabilities(%q).ignoresTemperature = %v, want %v", vendor, caps.ignoresTemperature, test.ignoresTemp)
+		}
+		if caps.singleSegmentReasoning != test.singleSegment {
+			t.Errorf("capabilities(%q).singleSegmentReasoning = %v, want %v", vendor, caps.singleSegmentReasoning, test.singleSegment)
 		}
 	}
 }
