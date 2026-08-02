@@ -75,20 +75,14 @@ func activateVersionedWindowsFromStaging(claimed *repair.UpdateTransaction, stag
 			{Name: "reasonix-cli.exe", Path: cliSrc, Mode: 0o700},
 			{Name: "reasonix-update-helper.exe", Path: helperSrc, Mode: 0o700},
 		},
+		RootMembers: []installlayout.Member{
+			{Name: "reasonix-launcher.exe", Path: launcherSrc, Mode: 0o700},
+			{Name: "Reasonix.exe", Path: launcherSrc, Mode: 0o700},
+			{Name: "reasonix-cli.exe", Path: cliSrc, Mode: 0o700},
+		},
+		RequiredRootNames: []string{"reasonix-launcher.exe", "Reasonix.exe", "reasonix-cli.exe"},
 	}); err != nil {
 		return err
-	}
-
-	// Root entry points: thin launcher + portable alias + CLI forward copy.
-	if err := copyRegularFile(launcherSrc, filepath.Join(installRoot, "reasonix-launcher.exe"), 0o700); err != nil {
-		return fmt.Errorf("versioned activate: install launcher: %w", err)
-	}
-	// Always refresh Reasonix.exe as the portable/start-menu alias of the launcher.
-	if err := copyRegularFile(launcherSrc, filepath.Join(installRoot, "Reasonix.exe"), 0o700); err != nil {
-		return fmt.Errorf("versioned activate: install portable alias: %w", err)
-	}
-	if err := copyRegularFile(cliSrc, filepath.Join(installRoot, "reasonix-cli.exe"), 0o700); err != nil {
-		return fmt.Errorf("versioned activate: install CLI entry: %w", err)
 	}
 
 	// Remove flat release-unit leftovers so the install root is the thin layout.
@@ -103,22 +97,6 @@ func activateVersionedWindowsFromStaging(claimed *repair.UpdateTransaction, stag
 	// Best-effort retention GC of older version trees.
 	_ = installlayout.RetainPreviousVersions(installRoot, 0)
 	_ = installlayout.CleanupStaleStaging(installRoot, 0)
-	return nil
-}
-
-func copyRegularFile(src, dst string, mode os.FileMode) error {
-	data, err := os.ReadFile(src)
-	if err != nil {
-		return err
-	}
-	tmp := dst + ".tmp-activate"
-	if err := os.WriteFile(tmp, data, mode); err != nil {
-		return err
-	}
-	if err := os.Rename(tmp, dst); err != nil {
-		_ = os.Remove(tmp)
-		return err
-	}
 	return nil
 }
 

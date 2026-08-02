@@ -1072,23 +1072,18 @@ func TestUndecidedCLITelemetryDoesNotPromptOrUploadWhenIneligible(t *testing.T) 
 		interactive bool
 		envKey      string
 		envValue    string
-		safeMode    bool
 	}{
 		{name: "noninteractive", version: "v1.20.0"},
 		{name: "development", version: "dev", interactive: true},
 		{name: "CI", version: "v1.20.0", interactive: true, envKey: "CI", envValue: "1"},
 		{name: "do not track", version: "v1.20.0", interactive: true, envKey: "DO_NOT_TRACK", envValue: "1"},
 		{name: "environment opt out", version: "v1.20.0", interactive: true, envKey: "REASONIX_TELEMETRY", envValue: "0"},
-		{name: "Safe Mode", version: "v1.20.0", interactive: true, safeMode: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			isolateCLIConfigHome(t)
 			clearCLITelemetryPolicyEnv(t)
 			if tc.envKey != "" {
 				t.Setenv(tc.envKey, tc.envValue)
-			}
-			if tc.safeMode {
-				t.Setenv("REASONIX_SAFE_MODE", "1")
 			}
 			cfg, err := config.LoadForRootReadOnly(".")
 			if err != nil {
@@ -1107,6 +1102,30 @@ func TestUndecidedCLITelemetryDoesNotPromptOrUploadWhenIneligible(t *testing.T) 
 				t.Fatalf("ineligible invocation wrote config: %v", err)
 			}
 		})
+	}
+}
+
+func TestLegacySafeModeEnvDoesNotAlterConfiguredCLITelemetry(t *testing.T) {
+	isolateCLIConfigHome(t)
+	clearCLITelemetryPolicyEnv(t)
+	t.Setenv("REASONIX_SAFE_MODE", "1")
+	cfg := config.Default()
+	if err := cfg.SetCLITelemetryMode("auto"); err != nil {
+		t.Fatal(err)
+	}
+	previousStart := startCLITelemetryReporter
+	t.Cleanup(func() { startCLITelemetryReporter = previousStart })
+	want := &telemetry.Reporter{}
+	startCLITelemetryReporter = func(opts telemetry.Options) *telemetry.Reporter {
+		if opts.SafeMode {
+			t.Fatal("legacy REASONIX_SAFE_MODE still changed telemetry behavior")
+		}
+		return want
+	}
+	if got := startCLITelemetryWithIO(cfg, telemetry.Options{
+		Version: "v1.20.0", Interactive: true, CLIMode: "tui",
+	}, strings.NewReader(""), io.Discard, io.Discard); got != want {
+		t.Fatalf("telemetry reporter = %p, want %p", got, want)
 	}
 }
 

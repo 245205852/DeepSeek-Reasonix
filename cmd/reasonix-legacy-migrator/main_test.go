@@ -59,3 +59,27 @@ func TestMigrateRefusesWithoutFlatUnit(t *testing.T) {
 		t.Fatal("expected failure without flat desktop")
 	}
 }
+
+func TestMigrateRefusesCorruptCurrentPointerWithoutOverwritingIt(t *testing.T) {
+	root := t.TempDir()
+	corrupt := []byte(`{"schemaVersion":99}`)
+	current := filepath.Join(root, installlayout.CurrentFileName)
+	if err := os.WriteFile(current, corrupt, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range installlayout.AllowedVersionMembers() {
+		if err := os.WriteFile(filepath.Join(root, name), []byte("stale-"+name), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := migrate(root, "v1.20.0"); err == nil {
+		t.Fatal("corrupt current.json was treated as an absent pointer")
+	}
+	got, err := os.ReadFile(current)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != string(corrupt) {
+		t.Fatalf("corrupt pointer was overwritten: %q", got)
+	}
+}

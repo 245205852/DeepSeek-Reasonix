@@ -758,6 +758,14 @@ func mergeFile(cfg *Config, path string) error {
 	if !exists {
 		return nil
 	}
+	// BurntSushi/toml decodes struct fields incrementally and can leave earlier
+	// fields mutated when a later value has the wrong type. Validate the complete
+	// file against a disposable Config before merging it into the active object.
+	// This makes user LKG fallback and project-level isolation transactional.
+	var validated Config
+	if _, err := decodeTOMLFileResolved(resolved, &validated); err != nil {
+		return fmt.Errorf("config %s: %w", path, err)
+	}
 	meta, err := decodeTOMLFileResolved(resolved, cfg)
 	if err != nil {
 		return fmt.Errorf("config %s: %w", path, err)

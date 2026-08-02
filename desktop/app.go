@@ -963,6 +963,11 @@ func (a *App) domReady(_ context.Context) {
 		if err := repair.RecordHealthyConfig(version); err != nil {
 			slog.Debug("desktop: record last-known-good config", "err", err)
 		}
+		if archived, err := archiveSupersededLegacyUpdateAfterReady(); err != nil {
+			slog.Warn("desktop: retire superseded legacy update", "err", err)
+		} else if archived {
+			slog.Info("desktop: archived superseded legacy update transaction")
+		}
 	})
 }
 

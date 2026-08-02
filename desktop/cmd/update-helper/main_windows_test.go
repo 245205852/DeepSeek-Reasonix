@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"reasonix/internal/installlayout"
 	"reasonix/internal/repair"
 )
 
@@ -69,6 +70,82 @@ func TestRunRequiresTargetVersionBeforeStartingInstaller(t *testing.T) {
 		"--installer-sha256", testInstallerSHA256,
 	}); code != 2 {
 		t.Fatalf("run without --to-version = %d, want 2", code)
+	}
+}
+
+func TestRunVersionedLayoutDoesNotReadOrClaimLegacyPending(t *testing.T) {
+	installDir := t.TempDir()
+	seed := t.TempDir()
+	for _, name := range []string{"reasonix-desktop.exe", "reasonix-cli.exe", "reasonix-update-helper.exe"} {
+		if err := os.WriteFile(filepath.Join(seed, name), []byte("old-"+name), 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := installlayout.ActivateVersion(installlayout.ActivationRequest{
+		InstallRoot: installDir,
+		Version:     "v1.20.0",
+		RequestID:   "seed-windows-helper",
+		Members: []installlayout.Member{
+			{Name: "reasonix-desktop.exe", Path: filepath.Join(seed, "reasonix-desktop.exe")},
+			{Name: "reasonix-cli.exe", Path: filepath.Join(seed, "reasonix-cli.exe")},
+			{Name: "reasonix-update-helper.exe", Path: filepath.Join(seed, "reasonix-update-helper.exe")},
+		},
+		RequiredNames: []string{"reasonix-desktop.exe", "reasonix-cli.exe", "reasonix-update-helper.exe"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	originalInstaller := runInstallerFn
+	originalRelaunch := startRelaunchFn
+	originalClaim := claimPendingFileUpdateFn
+	originalStageInstaller := stageInstallerFn
+	originalClaimInstallerExecution := claimInstallerExecutionFn
+	t.Cleanup(func() {
+		runInstallerFn = originalInstaller
+		startRelaunchFn = originalRelaunch
+		claimPendingFileUpdateFn = originalClaim
+		stageInstallerFn = originalStageInstaller
+		claimInstallerExecutionFn = originalClaimInstallerExecution
+	})
+	legacyClaimed := false
+	claimPendingFileUpdateFn = func(string, string, string, string, []string, time.Duration) (*repair.UpdateTransaction, func(), error) {
+		legacyClaimed = true
+		return nil, func() {}, errors.New("legacy claim must not run")
+	}
+	stageInstallerFn = func(path, _ string) (string, func() error, error) {
+		return path, func() error { return nil }, nil
+	}
+	claimInstallerExecutionFn = func(string, string) (func(), error) { return func() {}, nil }
+	runInstallerFn = func(_ string, staging string) error {
+		for _, name := range []string{"reasonix-desktop.exe", "reasonix-cli.exe", "reasonix-update-helper.exe", "reasonix-launcher.exe"} {
+			if err := os.WriteFile(filepath.Join(staging, name), []byte("new-"+name), 0o700); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+	relaunched := false
+	startRelaunchFn = func(string, string) error { relaunched = true; return nil }
+
+	if code := run([]string{
+		"--installer", filepath.Join(installDir, "installer.exe"),
+		"--installer-sha256", testInstallerSHA256,
+		"--install-dir", installDir,
+		"--relaunch", filepath.Join(installDir, "reasonix-launcher.exe"),
+		"--to-version", "v1.20.1",
+		"--install-layout", "versioned-v1",
+	}); code != 0 {
+		t.Fatalf("run exit code = %d", code)
+	}
+	if legacyClaimed {
+		t.Fatal("versioned update claimed legacy pending transaction")
+	}
+	if !relaunched {
+		t.Fatal("versioned update did not relaunch")
+	}
+	ptr, err := installlayout.ReadCurrent(installDir)
+	if err != nil || ptr.ActiveVersion != "v1.20.1" {
+		t.Fatalf("pointer=%+v err=%v", ptr, err)
 	}
 }
 

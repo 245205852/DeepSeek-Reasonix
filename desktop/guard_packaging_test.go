@@ -133,6 +133,22 @@ func TestDesktopPackagesPreserveNativePlatformLaunchers(t *testing.T) {
 		}
 	}
 
+	desktopEntry, err := os.ReadFile("build/linux/reasonix.desktop")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(desktopEntry), "Exec=reasonix-launcher") || strings.Contains(string(desktopEntry), "reasonix-guard") {
+		t.Fatal("Linux desktop entry must launch the permanent launcher without Guard")
+	}
+	nfpmData, err := os.ReadFile("build/linux/nfpm.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	nfpm := string(nfpmData)
+	if !strings.Contains(nfpm, "dst: /usr/bin/reasonix-launcher") || strings.Contains(nfpm, "dst: /usr/bin/reasonix-guard") {
+		t.Fatal("Linux deb must install the permanent launcher and must not persist Guard")
+	}
+
 	windowsData, err := os.ReadFile("build/windows/installer/project.nsi")
 	if err != nil {
 		t.Fatal(err)

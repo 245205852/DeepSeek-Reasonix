@@ -1153,7 +1153,57 @@ func applyLinux(targz []byte, prepared *repair.UpdateTransaction) error {
 	return nil
 }
 
+// applyLinuxVersioned publishes a verified compatibility tarball into a new
+// version directory and swaps current.json last. The tar still contains the
+// one-shot reasonix-guard member for v1.18-v1.19 updaters, but v1.20+ ignores
+// that member and never persists it again.
+func applyLinuxVersioned(targz []byte, targetVersion string) error {
+	release, err := extractLinuxReleaseUnit(targz)
+	if err != nil {
+		return err
+	}
+	root := currentInstallDirForLinuxUpdate()
+	if _, err := installlayout.ReadCurrent(root); err != nil {
+		return fmt.Errorf("update: resolve active Linux layout: %w", err)
+	}
+	targetVersion = strings.TrimSpace(targetVersion)
+	if !strings.HasPrefix(targetVersion, "v") {
+		targetVersion = "v" + targetVersion
+	}
+	if err := installlayout.ValidateVersionName(targetVersion); err != nil {
+		return err
+	}
+	staging, err := os.MkdirTemp(root, ".reasonix-linux-update-*")
+	if err != nil {
+		return fmt.Errorf("update: create Linux version staging: %w", err)
+	}
+	defer os.RemoveAll(staging)
+	desktopPath := filepath.Join(staging, installlayout.DesktopBinaryName())
+	cliPath := filepath.Join(staging, installlayout.CLIBinaryName())
+	if err := os.WriteFile(desktopPath, release["reasonix-desktop"], 0o700); err != nil {
+		return fmt.Errorf("update: stage Linux desktop: %w", err)
+	}
+	if err := os.WriteFile(cliPath, release["reasonix"], 0o700); err != nil {
+		return fmt.Errorf("update: stage Linux CLI: %w", err)
+	}
+	if err := installlayout.ActivateVersion(installlayout.ActivationRequest{
+		InstallRoot: root,
+		Version:     targetVersion,
+		RequestID:   "linux-" + targetVersion,
+		Members: []installlayout.Member{
+			{Name: installlayout.DesktopBinaryName(), Path: desktopPath, Mode: 0o700},
+			{Name: installlayout.CLIBinaryName(), Path: cliPath, Mode: 0o700},
+		},
+		RequiredNames: []string{installlayout.DesktopBinaryName(), installlayout.CLIBinaryName()},
+	}); err != nil {
+		return fmt.Errorf("update: activate Linux version: %w", err)
+	}
+	_ = installlayout.RetainPreviousVersions(root, 0)
+	return nil
+}
+
 var currentExecutablePathForLinux = currentExecutablePath
+var currentInstallDirForLinuxUpdate = currentInstallDir
 
 var applyLinuxReleaseUnit = func(
 	claimed *repair.UpdateTransaction,
@@ -1179,14 +1229,24 @@ var applyLinuxReleaseUnit = func(
 	return receipts, nil
 }
 
-func applyWindowsFile(path, expectedSHA256 string, prepared *repair.UpdateTransaction) error {
+func applyWindowsFile(path, expectedSHA256, targetVersion string, prepared *repair.UpdateTransaction) error {
+	installDir := currentInstallDir()
+	if installlayout.HasCurrent(installDir) {
+		return startWindowsVersionedUpdateHandoff(
+			path,
+			expectedSHA256,
+			installDir,
+			currentLauncherPath(),
+			targetVersion,
+		)
+	}
 	if prepared == nil {
 		return fmt.Errorf("update: prepared transaction is unavailable")
 	}
 	return startWindowsUpdateHandoff(
 		path,
 		expectedSHA256,
-		currentInstallDir(),
+		installDir,
 		currentLauncherPath(),
 		prepared,
 	)
@@ -1215,6 +1275,38 @@ func currentInstallDir() string {
 		return root
 	}
 	return filepath.Dir(exe)
+}
+
+// archiveSupersededLegacyUpdateAfterReady retires a valid older flat-layout
+// transaction only after the newer versioned desktop has shown its UI. This
+// lets a signed recovery installer heal users already blocked by a v1.18-v1.19
+// health marker without deleting repair state or trusting a foreign install.
+func archiveSupersededLegacyUpdateAfterReady() (bool, error) {
+	exe := currentExecutablePath()
+	if exe == "" || version == "" || version == "dev" {
+		return false, nil
+	}
+	root, err := installlayout.ResolveInstallRoot(exe)
+	if err != nil {
+		return false, err
+	}
+	ptr, err := installlayout.ReadCurrent(root)
+	if err != nil {
+		// Package-managed and legacy flat installs have no versioned pointer and
+		// therefore are not authorized to retire a transaction.
+		if os.IsNotExist(err) {
+			return false, nil
+		}
+		return false, err
+	}
+	running := strings.TrimSpace(version)
+	if !strings.HasPrefix(running, "v") {
+		running = "v" + running
+	}
+	if ptr.ActiveVersion != running {
+		return false, fmt.Errorf("active install version %s does not match running version %s", ptr.ActiveVersion, running)
+	}
+	return repair.ArchiveSupersededPendingFileUpdate(running, root)
 }
 
 // updateSiblingArtifacts lists the packaged binaries an update replaces beside

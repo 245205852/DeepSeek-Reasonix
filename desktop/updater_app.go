@@ -12,6 +12,7 @@ import (
 	wruntime "github.com/wailsapp/wails/v2/pkg/runtime"
 
 	"reasonix/desktop/internal/update"
+	"reasonix/internal/installlayout"
 	"reasonix/internal/repair"
 )
 
@@ -154,12 +155,6 @@ func (a *App) downloadUpdateRequest(selectedChannel, expectedVersion, requestID 
 	if err != nil {
 		return nil, err
 	}
-	finish, err := a.beginUpdaterOperation(requestID)
-	if err != nil {
-		return nil, err
-	}
-	defer finish()
-
 	profile := detectInstallProfile()
 	if !profile.CanSelfUpdate || !canSelfUpdate() {
 		return nil, a.requireManualUpdate(requestID, selectedChannel, expectedVersion, profile)
@@ -213,12 +208,6 @@ func (a *App) installUpdateRequest(selectedChannel, expectedVersion, requestID s
 	if err != nil {
 		return err
 	}
-	finish, err := a.beginUpdaterOperation(requestID)
-	if err != nil {
-		return err
-	}
-	defer finish()
-
 	profile := detectInstallProfile()
 	if !profile.CanSelfUpdate || !canSelfUpdate() {
 		return a.requireManualUpdate(requestID, selectedChannel, expectedVersion, profile)
@@ -329,7 +318,8 @@ func (a *App) installDebUpdate(requestID string, meta *cachedUpdate) error {
 func (a *App) installPortableUpdate(requestID string, meta *cachedUpdate, data []byte) error {
 	a.emitProgress(requestID, meta.Channel, meta.Version, "installing", meta.Size, meta.Size, "")
 	var preparedUpdate *repair.UpdateTransaction
-	if runtime.GOOS == "windows" || runtime.GOOS == "linux" {
+	versionedPortable := (runtime.GOOS == "windows" || runtime.GOOS == "linux") && installlayout.HasCurrent(currentInstallDir())
+	if (runtime.GOOS == "windows" || runtime.GOOS == "linux") && !versionedPortable {
 		// Back up the complete release unit (main binary + Guard/launcher
 		// siblings the installer also replaces) so rollback never leaves a
 		// mixed-version install. Deb installs deliberately skip this — Guard
@@ -343,11 +333,15 @@ func (a *App) installPortableUpdate(requestID string, meta *cachedUpdate, data [
 	var err error
 	switch runtime.GOOS {
 	case "windows":
-		err = applyWindowsFile(meta.Path, meta.SHA256, preparedUpdate)
+		err = applyWindowsFile(meta.Path, meta.SHA256, meta.Version, preparedUpdate)
 	case "darwin":
 		err = applyMac(meta.Path, meta.Version)
 	case "linux":
-		err = applyLinux(data, preparedUpdate)
+		if versionedPortable {
+			err = applyLinuxVersioned(data, meta.Version)
+		} else {
+			err = applyLinux(data, preparedUpdate)
+		}
 	default:
 		err = fmt.Errorf("self-update unsupported on %s", runtime.GOOS)
 	}
@@ -410,8 +404,9 @@ func (a *App) ApplyUpdateRequest(selectedChannel, expectedVersion, requestID str
 	if err != nil {
 		return err
 	}
-	// download/install each re-acquire the mutex; release before chaining.
-	finish()
+	// One owner covers the complete download -> verify -> install -> relaunch
+	// sequence, so another request cannot slip into the former phase gap.
+	defer finish()
 
 	if _, err := a.downloadUpdateRequest(selectedChannel, expectedVersion, requestID); err != nil {
 		return err

@@ -96,6 +96,62 @@ func TestActivateVersionKeepsOldPointerOnMissingMember(t *testing.T) {
 	}
 }
 
+func TestActivateVersionRollsBackVersionAndRootEntriesBeforePointerCommit(t *testing.T) {
+	root := t.TempDir()
+	src := t.TempDir()
+	seedMembers := make([]Member, 0, len(AllowedVersionMembers()))
+	for _, name := range AllowedVersionMembers() {
+		seedMembers = append(seedMembers, Member{Name: name, Path: writeTempMember(t, src, "old-"+name, "old-"+name)})
+	}
+	if err := ActivateVersion(ActivationRequest{
+		InstallRoot: root,
+		Version:     "v1.19.1",
+		RequestID:   "seed-root-rollback",
+		Members:     seedMembers,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	oldLauncher := filepath.Join(root, LauncherBinaryName())
+	if err := os.WriteFile(oldLauncher, []byte("old-launcher"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	blockedAlias := filepath.Join(root, "blocked-alias")
+	if err := os.Mkdir(blockedAlias, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	newMembers := make([]Member, 0, len(AllowedVersionMembers()))
+	for _, name := range AllowedVersionMembers() {
+		newMembers = append(newMembers, Member{Name: name, Path: writeTempMember(t, src, "new-"+name, "new-"+name)})
+	}
+	newLauncher := writeTempMember(t, src, "new-launcher", "new-launcher")
+	err := ActivateVersion(ActivationRequest{
+		InstallRoot: root,
+		Version:     "v1.20.0",
+		RequestID:   "root-rollback",
+		Members:     newMembers,
+		RootMembers: []Member{
+			{Name: LauncherBinaryName(), Path: newLauncher},
+			{Name: "blocked-alias", Path: newLauncher},
+		},
+		RequiredRootNames: []string{LauncherBinaryName(), "blocked-alias"},
+	})
+	if err == nil {
+		t.Fatal("expected root entry publication failure")
+	}
+	ptr, readErr := ReadCurrent(root)
+	if readErr != nil || ptr.ActiveVersion != "v1.19.1" {
+		t.Fatalf("pointer=%+v err=%v", ptr, readErr)
+	}
+	body, readErr := os.ReadFile(oldLauncher)
+	if readErr != nil || string(body) != "old-launcher" {
+		t.Fatalf("launcher=%q err=%v", body, readErr)
+	}
+	if _, statErr := os.Stat(filepath.Join(root, VersionsDirName, "v1.20.0")); !os.IsNotExist(statErr) {
+		t.Fatalf("uncommitted version survived: %v", statErr)
+	}
+}
+
 func TestActivateVersionRejectsExtraAndPathTraversalNames(t *testing.T) {
 	root := t.TempDir()
 	src := t.TempDir()

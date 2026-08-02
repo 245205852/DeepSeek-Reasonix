@@ -6826,8 +6826,8 @@ function UpdatesSection({
   const updateStatusTone =
     status.kind === "error" ? "error" :
     status.kind === "available" ? "available" :
-    status.kind === "checking" || updaterBusy ? "busy" :
     status.kind === "upToDate" || status.kind === "done" || status.kind === "relaunching" ? "success" :
+    status.kind === "checking" || updaterBusy ? "busy" :
     "neutral";
 
   return (

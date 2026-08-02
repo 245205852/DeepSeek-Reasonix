@@ -19,6 +19,7 @@ import (
 
 	"golang.org/x/sys/windows"
 
+	"reasonix/internal/installlayout"
 	"reasonix/internal/repair"
 )
 
@@ -42,7 +43,7 @@ func main() {
 
 func run(args []string) int {
 	var parentPID uint
-	var installer, installerSHA256, installDir, relaunch, toVersion, createdAt, transactionID string
+	var installer, installerSHA256, installDir, relaunch, toVersion, createdAt, transactionID, installLayout string
 	fs := flag.NewFlagSet("reasonix-update-helper", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
 	fs.UintVar(&parentPID, "parent-pid", 0, "Reasonix process id to wait for before installing")
@@ -53,6 +54,7 @@ func run(args []string) int {
 	fs.StringVar(&toVersion, "to-version", "", "Reasonix version being installed")
 	fs.StringVar(&createdAt, "created-at", "", "pending update creation timestamp")
 	fs.StringVar(&transactionID, "transaction-id", "", "complete pending update identity")
+	fs.StringVar(&installLayout, "install-layout", "", "installation layout contract")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
@@ -69,11 +71,15 @@ func run(args []string) int {
 		logger.Print("missing --to-version")
 		return 2
 	}
-	if createdAt == "" {
+	if installLayout != "" && installLayout != installlayout.InstallLayoutVersionedV1 {
+		logger.Printf("unsupported --install-layout %q", installLayout)
+		return 2
+	}
+	if installLayout != installlayout.InstallLayoutVersionedV1 && createdAt == "" {
 		logger.Print("missing --created-at")
 		return 2
 	}
-	if transactionID == "" {
+	if installLayout != installlayout.InstallLayoutVersionedV1 && transactionID == "" {
 		logger.Print("missing --transaction-id")
 		return 2
 	}
@@ -86,6 +92,9 @@ func run(args []string) int {
 			logger.Printf("wait for parent process %d: %v", parentPID, err)
 			return 1
 		}
+	}
+	if installLayout == installlayout.InstallLayoutVersionedV1 {
+		return runVersionedWindowsUpdate(logger, installer, installerSHA256, installDir, relaunch, toVersion)
 	}
 	// Resolve claim targets from the prepared pending transaction so versioned
 	// layouts (desktop under versions/<ver>/) and flat layouts share one path.
@@ -215,6 +224,74 @@ func run(args []string) int {
 	if relaunch != "" {
 		if err := startRelaunchFn(preferRelaunchPath(relaunch, installDir), installDir); err != nil {
 			logger.Printf("relaunch: %v", err)
+			return 1
+		}
+	}
+	return 0
+}
+
+func runVersionedWindowsUpdate(logger *log.Logger, installer, installerSHA256, installDir, relaunch, toVersion string) int {
+	if _, err := installlayout.ReadCurrent(installDir); err != nil {
+		logger.Printf("read versioned install pointer: %v", err)
+		return 1
+	}
+	recoverExisting := func() int {
+		if relaunch != "" {
+			if err := startRelaunchFn(preferRelaunchPath(relaunch, installDir), installDir); err != nil {
+				logger.Printf("relaunch after versioned update failure: %v", err)
+			}
+		}
+		return 1
+	}
+	claimedInstaller, cleanupInstaller, err := stageInstallerFn(installer, installerSHA256)
+	if err != nil {
+		logger.Printf("bind versioned update installer: %v", err)
+		return recoverExisting()
+	}
+	defer func() {
+		if cleanupErr := cleanupInstaller(); cleanupErr != nil {
+			logger.Printf("preserving update installer staging: %v", cleanupErr)
+		}
+	}()
+	stagingDir, err := os.MkdirTemp("", "reasonix-update-stage-*")
+	if err != nil {
+		logger.Printf("create versioned update staging: %v", err)
+		return recoverExisting()
+	}
+	stagingOwner, err := lstatUpdateStagingFn(stagingDir)
+	if err != nil {
+		logger.Printf("bind versioned update staging: %v", err)
+		return recoverExisting()
+	}
+	defer func() {
+		if cleanupErr := cleanupOwnedWindowsUpdateDirectory(stagingDir, stagingOwner); cleanupErr != nil {
+			logger.Printf("preserving update staging: %v", cleanupErr)
+		}
+	}()
+	releaseInstallerExecution, err := claimInstallerExecutionFn(claimedInstaller, installerSHA256)
+	if err != nil {
+		logger.Printf("recheck staged versioned installer: %v", err)
+		return recoverExisting()
+	}
+	installerErr := runInstallerFn(claimedInstaller, stagingDir)
+	releaseInstallerExecution()
+	if installerErr != nil {
+		logger.Printf("extract versioned installer payload: %v", installerErr)
+		return recoverExisting()
+	}
+	claimed := &repair.UpdateTransaction{
+		SchemaVersion: 1,
+		ToVersion:     toVersion,
+		TargetKind:    "file",
+		TargetPath:    filepath.Join(installDir, "reasonix-desktop.exe"),
+	}
+	if err := activateVersionedWindowsFromStaging(claimed, stagingDir); err != nil {
+		logger.Printf("activate versioned release: %v", err)
+		return recoverExisting()
+	}
+	if relaunch != "" {
+		if err := startRelaunchFn(preferRelaunchPath(relaunch, installDir), installDir); err != nil {
+			logger.Printf("relaunch versioned release: %v", err)
 			return 1
 		}
 	}

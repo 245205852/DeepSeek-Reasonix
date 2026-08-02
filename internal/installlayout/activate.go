@@ -1,8 +1,10 @@
 package installlayout
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -10,7 +12,11 @@ import (
 	"runtime"
 	"strings"
 	"time"
+
+	"reasonix/internal/filelock"
 )
+
+const activationLockName = ".reasonix-activate.lock"
 
 // Member is one file to publish into a version directory.
 type Member struct {
@@ -34,6 +40,12 @@ type ActivationRequest struct {
 	// RequiredNames, when non-empty, is the exact member whitelist. Defaults to
 	// the platform desktop release unit.
 	RequiredNames []string
+	// RootMembers are stable entry points published at InstallRoot before the
+	// current.json commit. They are rolled back if any later step fails.
+	RootMembers []Member
+	// RequiredRootNames is the exact root-entry whitelist when RootMembers is
+	// non-empty. Callers must provide it explicitly.
+	RequiredRootNames []string
 }
 
 // AllowedVersionMembers returns the default files inside versions/<version>/.
@@ -72,6 +84,24 @@ func ActivateVersion(req ActivationRequest) error {
 	if err := validateMembers(req.Members, required); err != nil {
 		return err
 	}
+	if len(req.RootMembers) > 0 {
+		if len(req.RequiredRootNames) == 0 {
+			return fmt.Errorf("installlayout: root member whitelist is required")
+		}
+		if err := validateMembers(req.RootMembers, req.RequiredRootNames); err != nil {
+			return fmt.Errorf("installlayout: root entries: %w", err)
+		}
+	} else if len(req.RequiredRootNames) > 0 {
+		return fmt.Errorf("installlayout: root member whitelist provided without root members")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	unlock, err := filelock.Acquire(ctx, filepath.Join(installRoot, activationLockName))
+	if err != nil {
+		return fmt.Errorf("installlayout: acquire activation lock: %w", err)
+	}
+	defer unlock()
 
 	versionsRoot := filepath.Join(installRoot, VersionsDirName)
 	if err := os.MkdirAll(versionsRoot, 0o755); err != nil {
@@ -87,16 +117,19 @@ func ActivateVersion(req ActivationRequest) error {
 	}
 	stagingName := StagingDirName(req.Version, nonce)
 	stagingPath := filepath.Join(versionsRoot, stagingName)
+	rootStagingPath := filepath.Join(versionsRoot, ".root-"+stagingName)
 	// Always start clean for this request id/nonce.
 	_ = os.RemoveAll(stagingPath)
+	_ = os.RemoveAll(rootStagingPath)
 	if err := os.Mkdir(stagingPath, 0o755); err != nil {
 		return fmt.Errorf("installlayout: create staging dir: %w", err)
 	}
-	stagingOK := false
+	committed := false
 	defer func() {
-		if !stagingOK {
+		if !committed {
 			_ = os.RemoveAll(stagingPath)
 		}
+		_ = os.RemoveAll(rootStagingPath)
 	}()
 
 	for _, m := range req.Members {
@@ -115,32 +148,58 @@ func ActivateVersion(req ActivationRequest) error {
 			return fmt.Errorf("installlayout: staged member %s is not a regular file", name)
 		}
 	}
+	if len(req.RootMembers) > 0 {
+		if err := os.Mkdir(rootStagingPath, 0o755); err != nil {
+			return fmt.Errorf("installlayout: create root staging dir: %w", err)
+		}
+		for _, m := range req.RootMembers {
+			if err := publishMember(rootStagingPath, m); err != nil {
+				return fmt.Errorf("installlayout: stage root entry: %w", err)
+			}
+		}
+	}
 
 	finalRel := VersionDirRelative(req.Version)
 	finalPath := filepath.Join(installRoot, filepath.FromSlash(finalRel))
+	var versionBackup string
 	if _, err := os.Lstat(finalPath); err == nil {
 		// A previous partial publish of the same version is replaced only from
 		// staging after validation. Never swap current.json first.
-		backup := finalPath + ".replaced-" + nonce
-		if err := os.Rename(finalPath, backup); err != nil {
+		versionBackup = finalPath + ".replaced-" + nonce
+		_ = os.RemoveAll(versionBackup)
+		if err := os.Rename(finalPath, versionBackup); err != nil {
 			return fmt.Errorf("installlayout: displace existing version dir: %w", err)
 		}
-		defer func() {
-			if !stagingOK {
-				_ = os.Rename(backup, finalPath)
-			} else {
-				_ = os.RemoveAll(backup)
-			}
-		}()
 	} else if !os.IsNotExist(err) {
 		return fmt.Errorf("installlayout: inspect version dir: %w", err)
 	}
 
 	if err := os.Rename(stagingPath, finalPath); err != nil {
+		if versionBackup != "" {
+			_ = os.Rename(versionBackup, finalPath)
+		}
 		return fmt.Errorf("installlayout: publish version directory: %w", err)
 	}
-	// Staging was renamed; do not delete finalPath on later failure.
-	stagingOK = true
+	rollbackVersion := func() error {
+		var rollbackErr error
+		if err := os.RemoveAll(finalPath); err != nil {
+			rollbackErr = errors.Join(rollbackErr, err)
+		}
+		if versionBackup != "" {
+			if err := os.Rename(versionBackup, finalPath); err != nil {
+				rollbackErr = errors.Join(rollbackErr, err)
+			}
+		}
+		return rollbackErr
+	}
+
+	rollbackRoots, commitRoots, err := publishRootEntries(installRoot, rootStagingPath, req.RootMembers)
+	if err != nil {
+		if rollbackErr := rollbackVersion(); rollbackErr != nil {
+			return errors.Join(err, fmt.Errorf("installlayout: restore version after root publish failure: %w", rollbackErr))
+		}
+		return err
+	}
 
 	ptr := CurrentPointer{
 		SchemaVersion: CurrentSchemaVersion,
@@ -148,11 +207,87 @@ func ActivateVersion(req ActivationRequest) error {
 		ActiveDir:     finalRel,
 	}
 	if err := WriteCurrent(installRoot, ptr); err != nil {
-		// Pointer swap failed: leave the newly published directory in place but
-		// do not claim it as active. The previous current.json (if any) remains.
-		return fmt.Errorf("installlayout: write current.json: %w", err)
+		rootErr := rollbackRoots()
+		versionErr := rollbackVersion()
+		return errors.Join(
+			fmt.Errorf("installlayout: write current.json: %w", err),
+			wrapRollbackError("restore root entries", rootErr),
+			wrapRollbackError("restore version directory", versionErr),
+		)
+	}
+	committed = true
+	commitRoots()
+	if versionBackup != "" {
+		_ = os.RemoveAll(versionBackup)
 	}
 	return nil
+}
+
+func publishRootEntries(installRoot, stagingRoot string, members []Member) (rollback func() error, commit func(), err error) {
+	if len(members) == 0 {
+		return func() error { return nil }, func() {}, nil
+	}
+	backupRoot := filepath.Join(stagingRoot, ".backups")
+	if err := os.MkdirAll(backupRoot, 0o700); err != nil {
+		return nil, nil, fmt.Errorf("installlayout: create root backup staging: %w", err)
+	}
+	type replacement struct {
+		destination string
+		backup      string
+		hadOriginal bool
+	}
+	replacements := make([]replacement, 0, len(members))
+	rollbackFn := func() error {
+		var rollbackErr error
+		for i := len(replacements) - 1; i >= 0; i-- {
+			r := replacements[i]
+			if err := os.Remove(r.destination); err != nil && !os.IsNotExist(err) {
+				rollbackErr = errors.Join(rollbackErr, err)
+			}
+			if r.hadOriginal {
+				if err := os.Rename(r.backup, r.destination); err != nil {
+					rollbackErr = errors.Join(rollbackErr, err)
+				}
+			}
+		}
+		return rollbackErr
+	}
+	for _, m := range members {
+		name := filepath.Base(m.Name)
+		source := filepath.Join(stagingRoot, name)
+		destination := filepath.Join(installRoot, name)
+		r := replacement{destination: destination, backup: filepath.Join(backupRoot, name)}
+		if info, statErr := os.Lstat(destination); statErr == nil {
+			if !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 {
+				_ = rollbackFn()
+				return nil, nil, fmt.Errorf("installlayout: root entry %s is not a regular file", name)
+			}
+			if err := os.Rename(destination, r.backup); err != nil {
+				_ = rollbackFn()
+				return nil, nil, fmt.Errorf("installlayout: back up root entry %s: %w", name, err)
+			}
+			r.hadOriginal = true
+		} else if !os.IsNotExist(statErr) {
+			_ = rollbackFn()
+			return nil, nil, fmt.Errorf("installlayout: inspect root entry %s: %w", name, statErr)
+		}
+		replacements = append(replacements, r)
+		if err := os.Rename(source, destination); err != nil {
+			rollbackErr := rollbackFn()
+			return nil, nil, errors.Join(
+				fmt.Errorf("installlayout: publish root entry %s: %w", name, err),
+				wrapRollbackError("restore root entries", rollbackErr),
+			)
+		}
+	}
+	return rollbackFn, func() { _ = os.RemoveAll(backupRoot) }, nil
+}
+
+func wrapRollbackError(label string, err error) error {
+	if err == nil {
+		return nil
+	}
+	return fmt.Errorf("installlayout: %s: %w", label, err)
 }
 
 func validateMembers(members []Member, required []string) error {

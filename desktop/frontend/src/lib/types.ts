@@ -1807,7 +1807,7 @@ export interface UpdateProgress {
   requestId: string;
   version: string;
   channel: "stable" | "preview" | string;
-  phase: "downloading" | "verifying" | "downloaded" | "authorizing" | "recovering" | "installing" | "done" | "error";
+  phase: "downloading" | "verifying" | "downloaded" | "authorizing" | "recovering" | "installing" | "relaunching" | "done" | "error";
   received: number;
   total: number;
   err?: string;

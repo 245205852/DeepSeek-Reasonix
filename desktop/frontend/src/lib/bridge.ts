@@ -95,7 +95,6 @@ import type {
   TerminalWorkspaceView,
   TopicMeta,
   ToolApprovalMode,
-  UpdateDownloadResult,
   UpdateInfo,
   UpdateProgress,
   WireEvent,

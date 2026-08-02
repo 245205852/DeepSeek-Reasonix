@@ -23,6 +23,7 @@ import (
 	"time"
 
 	"reasonix/desktop/internal/update"
+	"reasonix/internal/installlayout"
 	"reasonix/internal/repair"
 )
 
@@ -1067,6 +1068,75 @@ func TestExtractLinuxReleaseUnitRejectsAmbiguousMembers(t *testing.T) {
 	if _, err := extractLinuxReleaseUnit(makeArchive(t, nonRegular, nonRegularBodies)); err == nil ||
 		!strings.Contains(err.Error(), "not a regular file") {
 		t.Fatalf("non-regular release member error = %v", err)
+	}
+}
+
+func TestApplyLinuxVersionedActivatesWithoutPersistingGuard(t *testing.T) {
+	root := t.TempDir()
+	source := t.TempDir()
+	for _, name := range []string{installlayout.DesktopBinaryName(), installlayout.CLIBinaryName()} {
+		if err := os.WriteFile(filepath.Join(source, name), []byte("old-"+name), 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := installlayout.ActivateVersion(installlayout.ActivationRequest{
+		InstallRoot: root,
+		Version:     "v1.20.0",
+		RequestID:   "seed-linux",
+		Members: []installlayout.Member{
+			{Name: installlayout.DesktopBinaryName(), Path: filepath.Join(source, installlayout.DesktopBinaryName())},
+			{Name: installlayout.CLIBinaryName(), Path: filepath.Join(source, installlayout.CLIBinaryName())},
+		},
+		RequiredNames: []string{installlayout.DesktopBinaryName(), installlayout.CLIBinaryName()},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	originalRoot := currentInstallDirForLinuxUpdate
+	currentInstallDirForLinuxUpdate = func() string { return root }
+	t.Cleanup(func() { currentInstallDirForLinuxUpdate = originalRoot })
+
+	var archive bytes.Buffer
+	gz := gzip.NewWriter(&archive)
+	tw := tar.NewWriter(gz)
+	for _, name := range []string{"reasonix-desktop", "reasonix-guard", "reasonix"} {
+		body := []byte("new-" + name)
+		if err := tw.WriteHeader(&tar.Header{Name: name, Mode: 0o755, Size: int64(len(body)), Typeflag: tar.TypeReg}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := tw.Write(body); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := tw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := gz.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := applyLinuxVersioned(archive.Bytes(), "1.20.1"); err != nil {
+		t.Fatal(err)
+	}
+	ptr, err := installlayout.ReadCurrent(root)
+	if err != nil || ptr.ActiveVersion != "v1.20.1" {
+		t.Fatalf("pointer=%+v err=%v", ptr, err)
+	}
+	activeDesktop, err := installlayout.ActiveDesktopPath(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(activeDesktop)
+	if err != nil || string(data) != "new-reasonix-desktop" {
+		t.Fatalf("active desktop=%q err=%v", data, err)
+	}
+	for _, guardPath := range []string{
+		filepath.Join(root, "reasonix-guard"),
+		filepath.Join(root, "versions", "v1.20.1", "reasonix-guard"),
+	} {
+		if _, err := os.Lstat(guardPath); !os.IsNotExist(err) {
+			t.Fatalf("Guard persisted at %s: %v", guardPath, err)
+		}
 	}
 }
 

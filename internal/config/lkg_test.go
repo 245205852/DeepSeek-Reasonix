@@ -65,6 +65,26 @@ func TestLoadForRootUsesDefaultsWhenNoLKG(t *testing.T) {
 	}
 }
 
+func TestLoadForRootTypeErrorDoesNotPartiallyApplyUserConfig(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("REASONIX_HOME", home)
+	body := "default_model = \"must-not-survive\"\n[ui]\nshow_reasoning = \"not-a-bool\"\n"
+	if err := os.WriteFile(filepath.Join(home, "config.toml"), []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	want := Default().DefaultModel
+	cfg, err := LoadForRoot(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.DefaultModel != want {
+		t.Fatalf("partially decoded user model=%q want default %q", cfg.DefaultModel, want)
+	}
+	if !cfg.HasLoadWarnings() {
+		t.Fatal("expected user config warning")
+	}
+}
+
 func TestLoadForRootIsolatesBrokenProjectConfig(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("REASONIX_HOME", home)
@@ -84,5 +104,28 @@ func TestLoadForRootIsolatesBrokenProjectConfig(t *testing.T) {
 	}
 	if !cfg.HasLoadWarnings() {
 		t.Fatal("expected project warning")
+	}
+}
+
+func TestLoadForRootTypeErrorDoesNotPartiallyApplyProjectConfig(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("REASONIX_HOME", home)
+	if err := os.WriteFile(filepath.Join(home, "config.toml"), []byte("default_model = \"user-model\"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	project := t.TempDir()
+	body := "default_model = \"project-model\"\n[ui]\nshow_reasoning = \"not-a-bool\"\n"
+	if err := os.WriteFile(filepath.Join(project, "reasonix.toml"), []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := LoadForRoot(project)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.DefaultModel != "user-model" {
+		t.Fatalf("partially decoded project model=%q", cfg.DefaultModel)
+	}
+	if !cfg.HasLoadWarnings() {
+		t.Fatal("expected project config warning")
 	}
 }

@@ -19,8 +19,10 @@ import (
 	"strings"
 	"time"
 
+	"reasonix/internal/desktoplauncher"
 	"reasonix/internal/fileutil"
 	"reasonix/internal/installlayout"
+	"reasonix/internal/repair"
 )
 
 var version = "dev"
@@ -28,6 +30,9 @@ var version = "dev"
 const migrationLockName = ".reasonix-layout-migrate.lock"
 
 func main() {
+	if runningAsLauncher() {
+		os.Exit(desktoplauncher.Run(os.Args[1:], version))
+	}
 	os.Exit(run(os.Args[1:]))
 }
 
@@ -45,6 +50,7 @@ func run(args []string) int {
 
 	installRoot := ""
 	activeVersion := strings.TrimSpace(version)
+	relaunch := true
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
 		case "--install-root":
@@ -63,6 +69,9 @@ func run(args []string) int {
 			activeVersion = args[i]
 		case "launch", "--detach", "--safe-mode":
 			// Accept legacy argv from old shortcuts; no product behavior.
+			continue
+		case "--no-relaunch":
+			relaunch = false
 			continue
 		case "--app":
 			if i+1 < len(args) {
@@ -85,7 +94,7 @@ func run(args []string) int {
 	}
 	installRoot = filepath.Clean(installRoot)
 
-	if err := migrate(installRoot, activeVersion); err != nil {
+	if err := migrateWithRelaunch(installRoot, activeVersion, relaunch); err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
 		return 1
 	}
@@ -93,6 +102,10 @@ func run(args []string) int {
 }
 
 func migrate(installRoot, activeVersion string) error {
+	return migrateWithRelaunch(installRoot, activeVersion, true)
+}
+
+func migrateWithRelaunch(installRoot, activeVersion string, relaunch bool) error {
 	if err := installlayout.ValidateVersionName(activeVersion); err != nil {
 		// Accept bare "dev" builds in development only.
 		if activeVersion == "" || activeVersion == "dev" {
@@ -117,11 +130,26 @@ func migrate(installRoot, activeVersion string) error {
 	defer unlock()
 
 	// Pointer already committed: only cleanup, never overwrite the active version.
-	if installlayout.HasCurrent(installRoot) {
+	// A present but corrupt pointer is fatal; treating it like an absent pointer
+	// could overwrite evidence of a partial activation and migrate stale files.
+	currentPath := filepath.Join(installRoot, installlayout.CurrentFileName)
+	if _, statErr := os.Lstat(currentPath); statErr == nil {
+		ptr, err := installlayout.ReadCurrent(installRoot)
+		if err != nil {
+			return err
+		}
+		if err := finalizeLegacyPendingUpdate(installRoot, ptr.ActiveVersion); err != nil {
+			return err
+		}
 		_ = cleanupLegacyFlatFiles(installRoot)
-		_ = archiveLegacyRepairState(installRoot)
-		_ = startLauncher(installRoot) // best-effort; layout already committed
+		_ = archiveInstallRootLegacyMarkers(installRoot)
+		if relaunch {
+			_ = startLauncher(installRoot) // best-effort; layout already committed
+			selfDelete()
+		}
 		return nil
+	} else if !os.IsNotExist(statErr) {
+		return fmt.Errorf("migrate: inspect current.json: %w", statErr)
 	}
 
 	desktopName := installlayout.DesktopBinaryName()
@@ -143,33 +171,59 @@ func migrate(installRoot, activeVersion string) error {
 		// last-resort placeholder is forbidden; fail closed.
 		return fmt.Errorf("migrate: flat CLI binary %s is required", cliName)
 	}
-	if p := optionalRegular(filepath.Join(installRoot, helperName)); p != "" {
-		members = append(members, installlayout.Member{Name: helperName, Path: p})
-	} else {
-		return fmt.Errorf("migrate: flat update helper %s is required", helperName)
+	requiredNames := []string{desktopName, cliName}
+	if runtime.GOOS == "windows" {
+		requiredNames = append(requiredNames, helperName)
+		if p := optionalRegular(filepath.Join(installRoot, helperName)); p != "" {
+			members = append(members, installlayout.Member{Name: helperName, Path: p})
+		} else {
+			return fmt.Errorf("migrate: flat update helper %s is required", helperName)
+		}
+	}
+
+	// Old Linux updaters only publish desktop, CLI, and the compatibility
+	// migrator. On Unix the migrator is also a thin-launcher multicall binary,
+	// so it can create the permanent entry point without another payload member.
+	if err := ensureLauncherEntry(installRoot); err != nil {
+		return err
+	}
+	// v1.18-v1.19 helpers leave an installed transaction awaiting Guard health.
+	// The flat release unit is still intact here, so commit that exact verified
+	// transaction before moving its files into the version directory.
+	if err := finalizeLegacyPendingUpdate(installRoot, activeVersion); err != nil {
+		return err
 	}
 
 	if err := installlayout.ActivateVersion(installlayout.ActivationRequest{
-		InstallRoot: installRoot,
-		Version:     activeVersion,
-		RequestID:   "legacy-migrate",
-		Members:     members,
+		InstallRoot:   installRoot,
+		Version:       activeVersion,
+		RequestID:     "legacy-migrate",
+		Members:       members,
+		RequiredNames: requiredNames,
 	}); err != nil {
 		return fmt.Errorf("migrate: activate versioned layout: %w", err)
 	}
 
-	if err := ensureLauncherEntry(installRoot); err != nil {
-		return err
-	}
 	_ = cleanupLegacyFlatFiles(installRoot)
-	_ = archiveLegacyRepairState(installRoot)
-	// Launcher start is best-effort: layout activation is the commit point.
-	if err := startLauncher(installRoot); err != nil {
-		fmt.Fprintln(os.Stderr, "warning: start launcher after migrate:", err)
+	_ = archiveInstallRootLegacyMarkers(installRoot)
+	if relaunch {
+		// Launcher start is best-effort: layout activation is the commit point.
+		if err := startLauncher(installRoot); err != nil {
+			fmt.Fprintln(os.Stderr, "warning: start launcher after migrate:", err)
+		}
+		// Unix can unlink the running migrator. On Windows the parent thin launcher
+		// removes it after this process exits.
+		selfDelete()
 	}
-	// Best-effort self-delete after the launcher is started.
-	selfDelete()
 	return nil
+}
+
+func runningAsLauncher() bool {
+	exe, err := os.Executable()
+	if err != nil {
+		return false
+	}
+	return strings.EqualFold(filepath.Base(exe), installlayout.LauncherBinaryName())
 }
 
 func optionalRegular(path string) string {
@@ -205,15 +259,12 @@ func acquireMigrationLock(installRoot string) (func(), error) {
 }
 
 func ensureLauncherEntry(installRoot string) error {
-	// Prefer an already-present thin launcher; otherwise leave a marker file so
-	// packaging/installers can place one. During in-place migration from a flat
-	// tree that only has reasonix-launcher.exe built from the old guard, keep it.
-	launcher := "reasonix-launcher"
-	if runtime.GOOS == "windows" {
-		launcher += ".exe"
-	}
+	launcher := installlayout.LauncherBinaryName()
 	path := filepath.Join(installRoot, launcher)
-	if _, err := os.Lstat(path); err == nil {
+	if info, err := os.Lstat(path); err == nil {
+		if !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 {
+			return fmt.Errorf("migrate: thin launcher %s is not a regular file", launcher)
+		}
 		return nil
 	}
 	// On Windows also accept Reasonix.exe as the alias.
@@ -221,8 +272,74 @@ func ensureLauncherEntry(installRoot string) error {
 		if _, err := os.Lstat(filepath.Join(installRoot, "Reasonix.exe")); err == nil {
 			return nil
 		}
+		return fmt.Errorf("migrate: thin launcher %s is missing; install a signed package", launcher)
 	}
-	return fmt.Errorf("migrate: thin launcher %s is missing; install a signed package", launcher)
+
+	// Legacy Linux archives cannot deliver a fourth member through the old
+	// updater. Copy this signed multicall migrator as the permanent thin launcher.
+	exe, err := os.Executable()
+	if err != nil {
+		return fmt.Errorf("migrate: resolve migrator executable: %w", err)
+	}
+	info, err := os.Lstat(exe)
+	if err != nil || !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("migrate: migrator executable is not a regular file")
+	}
+	body, err := os.ReadFile(exe)
+	if err != nil {
+		return fmt.Errorf("migrate: read launcher source: %w", err)
+	}
+	if err := fileutil.AtomicWriteFile(path, body, 0o755); err != nil {
+		return fmt.Errorf("migrate: install thin launcher: %w", err)
+	}
+	return nil
+}
+
+func finalizeLegacyPendingUpdate(installRoot, activeVersion string) error {
+	tx, err := repair.ReadPendingUpdate()
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("migrate: read legacy pending update: %w", err)
+	}
+	if tx.TargetKind != "file" {
+		return fmt.Errorf("migrate: legacy pending update target kind %q is not supported", tx.TargetKind)
+	}
+	if strings.TrimSpace(tx.ToVersion) != strings.TrimSpace(activeVersion) {
+		return fmt.Errorf("migrate: pending update targets %s, not %s", tx.ToVersion, activeVersion)
+	}
+	for _, target := range append([]repair.UpdateTransactionFile{{TargetPath: tx.TargetPath}}, tx.Files...) {
+		if !pathWithinInstallRoot(installRoot, target.TargetPath) {
+			return fmt.Errorf("migrate: pending update target escapes install root")
+		}
+	}
+	id := repair.UpdateTransactionID(tx)
+	if err := repair.MarkUpdateHealthyExact(activeVersion, tx.CreatedAt, id); err != nil {
+		return fmt.Errorf("migrate: commit legacy pending update: %w", err)
+	}
+	if current, err := repair.ReadPendingUpdate(); err == nil {
+		if repair.UpdateTransactionID(current) == id {
+			return fmt.Errorf("migrate: legacy pending update remained after commit")
+		}
+		return fmt.Errorf("migrate: pending update changed during commit")
+	} else if !os.IsNotExist(err) {
+		return fmt.Errorf("migrate: verify legacy pending update commit: %w", err)
+	}
+	return nil
+}
+
+func pathWithinInstallRoot(installRoot, target string) bool {
+	root := filepath.Clean(strings.TrimSpace(installRoot))
+	target = filepath.Clean(strings.TrimSpace(target))
+	if root == "" || target == "" || !filepath.IsAbs(root) || !filepath.IsAbs(target) {
+		return false
+	}
+	rel, err := filepath.Rel(root, target)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(os.PathSeparator)) || filepath.IsAbs(rel) {
+		return false
+	}
+	return true
 }
 
 func cleanupLegacyFlatFiles(installRoot string) error {
@@ -249,10 +366,9 @@ func cleanupLegacyFlatFiles(installRoot string) error {
 	return nil
 }
 
-func archiveLegacyRepairState(installRoot string) error {
-	// Legacy repair state lives under the user Reasonix home, not install root.
-	// Migrator only archives install-root markers; user-home archival is done by
-	// the desktop on first successful versioned boot.
+func archiveInstallRootLegacyMarkers(installRoot string) error {
+	// Very old portable builds wrote markers beside the binary. Current repair
+	// state under Reasonix home is finalized through repair transaction APIs.
 	markers := []string{
 		"pending-update.json",
 		"startup-state.json",

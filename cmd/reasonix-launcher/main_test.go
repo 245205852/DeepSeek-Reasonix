@@ -77,19 +77,12 @@ func TestResolveDesktopPathRejectsCorruptPointer(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(root, installlayout.CurrentFileName), []byte(`{"schemaVersion":99}`), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	// Even with a flat sibling, corrupt pointer must not be ignored silently
-	// when HasCurrent would be false — Decode fails so HasCurrent is false.
-	// Create sibling; missing valid pointer with invalid file should fail Read.
-	_ = os.WriteFile(filepath.Join(root, installlayout.DesktopBinaryName()), []byte("x"), 0o755)
-	// Invalid schema means ReadCurrent fails; HasCurrent is false; fallback allowed.
-	path, err := resolveDesktopPath(root)
-	if err != nil {
-		// Acceptable: refuse to start when pointer is unreadable garbage.
-		return
+	// Even with a flat sibling, a corrupt pointer must fail closed. Falling back
+	// would silently run a stale executable after a partially observed update.
+	if err := os.WriteFile(filepath.Join(root, installlayout.DesktopBinaryName()), []byte("x"), 0o755); err != nil {
+		t.Fatal(err)
 	}
-	// Fallback to sibling is acceptable only when the pointer file is absent or
-	// completely unusable as a layout pointer; document the chosen path.
-	if path == "" {
-		t.Fatal("empty path")
+	if path, err := resolveDesktopPath(root); err == nil {
+		t.Fatalf("corrupt current.json resolved stale flat desktop %q", path)
 	}
 }
