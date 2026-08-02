@@ -274,8 +274,8 @@ await act(async () => {
   root.unmount();
 });
 
-// Models > Agent runtime: the advanced compaction preference shows the
-// effective token threshold and reloads the persisted Settings snapshot.
+// Models > Agent runtime: the compaction preference is directly visible, shows
+// the effective token threshold, and reloads the persisted Settings snapshot.
 const compactRootEl = document.createElement("div");
 document.body.appendChild(compactRootEl);
 const compactRoot = createRoot(compactRootEl);
@@ -331,12 +331,8 @@ await act(async () => {
   );
   await flushPromises();
 });
-const contextAdvanced = Array.from(compactRootEl.querySelectorAll("summary")).find((summary) => summary.textContent?.includes("Advanced context management")) as HTMLElement | undefined;
-if (!contextAdvanced) throw new Error("advanced context management did not render");
-await act(async () => {
-  contextAdvanced.click();
-  await flushPromises();
-});
+ok(compactRootEl.textContent?.includes("Advanced context management") === false, "compaction preference has no redundant advanced disclosure");
+ok(compactRootEl.textContent?.includes("Automatic compaction threshold") === true, "compaction preference is visible without expanding a disclosure");
 ok(compactRootEl.textContent?.includes("80,000 tokens") === true, "compact ratio shows the default model token threshold");
 ok(compactRootEl.textContent?.includes("effective threshold is 75%") === true, "project override shows the active effective threshold");
 ok(compactRootEl.textContent?.includes("changes the local default only") === true, "remote workbench scope is explicit");

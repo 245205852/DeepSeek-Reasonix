@@ -4328,75 +4328,64 @@ function ModelsSection({ s, busy, apply, backgroundApply, initialFocus }: Models
                 ))}
               </div>
             </SettingsField>
-            <details className="provider-editor-advanced">
-              <summary>
-                <span className="provider-editor-advanced__title">
-                  <ChevronDown className="provider-editor-advanced__icon" size={16} aria-hidden="true" />
-                  {t("settings.contextManagementAdvanced")}
-                </span>
-                <span className="provider-editor-advanced__hint">{t("settings.contextManagementAdvancedHint")}</span>
-              </summary>
-              <div className="provider-editor-advanced__body">
-                <SettingsField label={t("settings.compactRatio")} hint={compactRatioHint} stacked>
-                  <div className="compact-ratio-controls">
-                    <div className="set-seg" role="group" aria-label={t("settings.compactRatio")}>
-                      {COMPACT_RATIO_PRESETS.map(({ ratio, labelKey }) => (
-                        <button
-                          key={ratio}
-                          type="button"
-                          className={`set-seg__btn${Math.abs(compactRatio - ratio) < 0.0001 ? " set-seg__btn--on" : ""}`}
-                          disabled={busy}
-                          aria-pressed={Math.abs(compactRatio - ratio) < 0.0001}
-                          title={t(labelKey)}
-                          onClick={() => void persistCompactRatio(ratio)}
-                        >
-                          {t(labelKey)}
-                        </button>
-                      ))}
-                    </div>
-                    <div className="settings-inline-controls compact-ratio-custom">
-                      <label className="set-label" htmlFor="settings-compact-ratio-custom">{t("settings.compactRatioCustom")}</label>
-                      <input
-                        id="settings-compact-ratio-custom"
-                        className="mem-input set-narrow"
-                        type="number"
-                        min={65}
-                        max={85}
-                        step={0.1}
-                        inputMode="decimal"
-                        value={compactRatioDraft}
-                        disabled={busy}
-                        aria-label={t("settings.compactRatioCustomAria")}
-                        aria-describedby="settings-compact-ratio-custom-hint"
-                        aria-invalid={!compactRatioDraftValid}
-                        onInput={(event) => setCompactRatioDraft(event.currentTarget.value)}
-                        onKeyDown={(event) => {
-                          if (event.key === "Enter") saveCompactRatioDraft();
-                          if (event.key === "Escape") setCompactRatioDraft(String(compactRatioPercent));
-                        }}
-                      />
-                      <span className="compact-ratio-custom__suffix" aria-hidden="true">%</span>
-                      <button
-                        type="button"
-                        className="btn btn--primary btn--small"
-                        disabled={busy || !compactRatioDraftValid || !compactRatioDraftDirty}
-                        onClick={saveCompactRatioDraft}
-                      >
-                        {t("common.save")}
-                      </button>
-                    </div>
-                    <div
-                      id="settings-compact-ratio-custom-hint"
-                      className={`compact-ratio-custom__hint${compactRatioDraftValid ? "" : " compact-ratio-custom__hint--invalid"}`}
+            <SettingsField label={t("settings.compactRatio")} hint={compactRatioHint} stacked>
+              <div className="compact-ratio-controls">
+                <div className="set-seg" role="group" aria-label={t("settings.compactRatio")}>
+                  {COMPACT_RATIO_PRESETS.map(({ ratio, labelKey }) => (
+                    <button
+                      key={ratio}
+                      type="button"
+                      className={`set-seg__btn${Math.abs(compactRatio - ratio) < 0.0001 ? " set-seg__btn--on" : ""}`}
+                      disabled={busy}
+                      aria-pressed={Math.abs(compactRatio - ratio) < 0.0001}
+                      title={t(labelKey)}
+                      onClick={() => void persistCompactRatio(ratio)}
                     >
-                      {t("settings.compactRatioCustomHint")}
-                    </div>
-                  </div>
-                </SettingsField>
-                {compactRatioOverrideHint && <div className="provider-fetch-banner provider-fetch-banner--warn">{compactRatioOverrideHint}</div>}
-                {agent.compactRatioRemote && <div className="provider-fetch-banner provider-fetch-banner--warn">{t("settings.compactRatioRemote")}</div>}
+                      {t(labelKey)}
+                    </button>
+                  ))}
+                </div>
+                <div className="settings-inline-controls compact-ratio-custom">
+                  <label className="set-label" htmlFor="settings-compact-ratio-custom">{t("settings.compactRatioCustom")}</label>
+                  <input
+                    id="settings-compact-ratio-custom"
+                    className="mem-input set-narrow"
+                    type="number"
+                    min={65}
+                    max={85}
+                    step={0.1}
+                    inputMode="decimal"
+                    value={compactRatioDraft}
+                    disabled={busy}
+                    aria-label={t("settings.compactRatioCustomAria")}
+                    aria-describedby="settings-compact-ratio-custom-hint"
+                    aria-invalid={!compactRatioDraftValid}
+                    onInput={(event) => setCompactRatioDraft(event.currentTarget.value)}
+                    onKeyDown={(event) => {
+                      if (event.key === "Enter") saveCompactRatioDraft();
+                      if (event.key === "Escape") setCompactRatioDraft(String(compactRatioPercent));
+                    }}
+                  />
+                  <span className="compact-ratio-custom__suffix" aria-hidden="true">%</span>
+                  <button
+                    type="button"
+                    className="btn btn--primary btn--small"
+                    disabled={busy || !compactRatioDraftValid || !compactRatioDraftDirty}
+                    onClick={saveCompactRatioDraft}
+                  >
+                    {t("common.save")}
+                  </button>
+                </div>
+                <div
+                  id="settings-compact-ratio-custom-hint"
+                  className={`compact-ratio-custom__hint${compactRatioDraftValid ? "" : " compact-ratio-custom__hint--invalid"}`}
+                >
+                  {t("settings.compactRatioCustomHint")}
+                </div>
               </div>
-            </details>
+            </SettingsField>
+            {compactRatioOverrideHint && <div className="provider-fetch-banner provider-fetch-banner--warn">{compactRatioOverrideHint}</div>}
+            {agent.compactRatioRemote && <div className="provider-fetch-banner provider-fetch-banner--warn">{t("settings.compactRatioRemote")}</div>}
           </SettingsSection>
         </>
       ) : (
