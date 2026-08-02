@@ -54,9 +54,10 @@ import { ApprovalModal } from "./components/ApprovalModal";
 import { AskCard } from "./components/AskCard";
 import { UndoRewindBanner } from "./components/UndoRewindBanner";
 import { ClearContextCard } from "./components/ClearContextCard";
+import { RuntimeDecisionCard } from "./components/RuntimeDecisionCard";
 
-/** Footer decision surface kinds. Priority: tool/plan approval > ask > clear context. */
-type DecisionSurfaceKind = "tool_approval" | "plan_approval" | "ask" | "clear_context";
+/** Footer decision surface kinds. Runtime blockers are explicit recovery choices. */
+type DecisionSurfaceKind = "tool_approval" | "plan_approval" | "ask" | "workspace_conflict" | "mode_jobs" | "close_active" | "clear_context";
 import { StatusBar } from "./components/StatusBar";
 import { RemoteHostKeyDialog } from "./components/RemoteHostKeyDialog";
 import { RemoteSecretDialog } from "./components/RemoteSecretDialog";
@@ -98,6 +99,8 @@ import {
   type BotConnectionView,
   type BotRuntimeStatusView,
   type BotSettingsView,
+  type ActiveWorkView,
+  type BackgroundRuntimeView,
   type CollaborationMode,
   type ComposerInsertRequest,
   type DesktopStartupSettingsView,
@@ -110,6 +113,7 @@ import {
   type TabMeta,
   type TokenMode,
   type ToolApprovalMode,
+  type WorkspaceConflictView,
 } from "./lib/types";
 import type { InvocationMetadataMap, StructuredInvocationSubmit } from "./lib/invocationDisplay";
 import { formatSelectionReference, type SelectedTextInsertRequest } from "./lib/selectedTextContext";
@@ -1090,6 +1094,7 @@ export default function App() {
     setModel,
     setEffort,
     setTokenMode,
+    cancelJob,
     switchTab,
     openProjectTab,
     createDeliveryWorktree,
@@ -1295,6 +1300,16 @@ export default function App() {
   const [sidebarTogglePressed, setSidebarTogglePressed] = useState(false);
   const [workspaceTogglePressed, setWorkspaceTogglePressed] = useState(false);
   const [clearContextPending, setClearContextPending] = useState(false);
+  const [backgroundRuntimes, setBackgroundRuntimes] = useState<BackgroundRuntimeView[]>([]);
+  const [workspaceConflict, setWorkspaceConflict] = useState<WorkspaceConflictView | null>(null);
+  const [pendingModeSwitch, setPendingModeSwitch] = useState<{
+    tabId: string;
+    target: TokenMode;
+    previous: TokenMode;
+    work: ActiveWorkView;
+    stopping: boolean;
+  } | null>(null);
+  const [pendingClose, setPendingClose] = useState<{ tabId: string; work: ActiveWorkView; stopping: boolean } | null>(null);
   const topicRenameSkipCommitRef = useRef(false);
   const prevDecisionSurfaceRef = useRef<DecisionSurfaceKind | null>(null);
   const decisionSurfaceRef = useRef<DecisionSurfaceKind | null>(null);
@@ -1310,6 +1325,55 @@ export default function App() {
   useEffect(() => {
     document.documentElement.setAttribute("data-platform", desktopPlatform);
   }, [desktopPlatform]);
+
+  const refreshBackgroundRuntimes = useCallback(async () => {
+    try {
+      setBackgroundRuntimes(await app.BackgroundRuntimes());
+    } catch {
+      // The global recovery entry is supplementary; the active-tab job list
+      // remains available if an older Remote Workbench does not implement it.
+    }
+  }, []);
+
+  useEffect(() => {
+    let disposed = false;
+    const refresh = async () => {
+      if (disposed) return;
+      await refreshBackgroundRuntimes();
+    };
+    void refresh();
+    const timer = window.setInterval(() => void refresh(), 1000);
+    return () => {
+      disposed = true;
+      window.clearInterval(timer);
+    };
+  }, [refreshBackgroundRuntimes]);
+
+  useEffect(() => {
+    if (!activeTabId || !state.running) {
+      setWorkspaceConflict(null);
+      return;
+    }
+    let disposed = false;
+    const inspect = async () => {
+      try {
+        const conflict = await app.WorkspaceConflictForTab(activeTabId);
+        if (!disposed) setWorkspaceConflict(conflict.state === "none" ? null : conflict);
+      } catch {
+        if (!disposed) setWorkspaceConflict(null);
+      }
+    };
+    void inspect();
+    const timer = window.setInterval(() => void inspect(), 500);
+    return () => {
+      disposed = true;
+      window.clearInterval(timer);
+    };
+  }, [activeTabId, state.running]);
+
+  useEffect(() => {
+    if (pendingModeSwitch && pendingModeSwitch.tabId !== activeTabId) setPendingModeSwitch(null);
+  }, [activeTabId, pendingModeSwitch]);
 
   const closeTransientOverlays = useCallback(() => {
     setTransientOverlayDismissSignal((signal) => signal + 1);
@@ -1690,9 +1754,12 @@ export default function App() {
       return state.approval.tool === "exit_plan_mode" ? "plan_approval" : "tool_approval";
     }
     if (state.ask) return "ask";
+    if (workspaceConflict) return "workspace_conflict";
+    if (pendingModeSwitch) return "mode_jobs";
+    if (pendingClose) return "close_active";
     if (clearContextPending) return "clear_context";
     return null;
-  }, [clearContextPending, state.approval, state.ask]);
+  }, [clearContextPending, pendingClose, pendingModeSwitch, state.approval, state.ask, workspaceConflict]);
   decisionSurfaceRef.current = decisionSurface;
   useEffect(() => {
     // Close composer menus/popovers when a decision takes over the footer.
@@ -1874,21 +1941,19 @@ export default function App() {
     },
     [activeTabId, applyGoalForTab],
   );
-  const applyTokenMode = useCallback(
-    async (m: TokenMode): Promise<void> => {
-      const tabId = activeTabId;
-      if (!tabId || runtimeTransitionTabsRef.current.has(tabId) || m === composerProfile.tokenMode) return;
-      const previous = composerProfile.tokenMode;
+  const commitTokenModeSwitch = useCallback(
+    async (tabId: string, m: TokenMode, previous: TokenMode, profile: ComposerProfile): Promise<void> => {
+      if (!tabId || activeTabIdRef.current !== tabId || runtimeTransitionTabsRef.current.has(tabId)) return;
       runtimeTransitionTabsRef.current.add(tabId);
       setRuntimeTransitionsByTab((current) => ({ ...current, [tabId]: true }));
-      setComposerProfilesByTab((current) => patchComposerProfile(current, tabId, composerProfile, { tokenMode: m }, ["tokenMode"]));
+      setComposerProfilesByTab((current) => patchComposerProfile(current, tabId, profile, { tokenMode: m }, ["tokenMode"]));
       const switched = await setTokenMode(m);
       if (!switched) {
         setComposerProfilesByTab((current) => {
-          const profile = current[tabId] ?? composerProfile;
-          const pending = { ...profile.pending };
+          const currentProfile = current[tabId] ?? profile;
+          const pending = { ...currentProfile.pending };
           delete pending.tokenMode;
-          return { ...current, [tabId]: { ...profile, tokenMode: previous, pending } };
+          return { ...current, [tabId]: { ...currentProfile, tokenMode: previous, pending } };
         });
       }
       runtimeTransitionTabsRef.current.delete(tabId);
@@ -1899,8 +1964,64 @@ export default function App() {
         return next;
       });
     },
-    [activeTabId, composerProfile, setTokenMode],
+    [setTokenMode],
   );
+  const applyTokenMode = useCallback(
+    async (m: TokenMode): Promise<void> => {
+      const tabId = activeTabId;
+      if (!tabId || runtimeTransitionTabsRef.current.has(tabId) || m === composerProfile.tokenMode) return;
+      const previous = composerProfile.tokenMode;
+      try {
+        const work = await app.ActiveWorkForTab(tabId);
+        if (work.jobs.length > 0) {
+          setPendingModeSwitch({ tabId, target: m, previous, work, stopping: false });
+          return;
+        }
+      } catch {
+        // The atomic backend guard remains authoritative on older runtimes.
+      }
+      await commitTokenModeSwitch(tabId, m, previous, composerProfile);
+    },
+    [activeTabId, commitTokenModeSwitch, composerProfile],
+  );
+  const stopJobsAndSwitchMode = useCallback(async () => {
+    const request = pendingModeSwitch;
+    if (!request || request.stopping) return;
+    setPendingModeSwitch({ ...request, stopping: true });
+    try {
+      await app.CancelJobsForTab(request.tabId, request.work.jobs.map((job) => job.id));
+      const deadline = Date.now() + 15_000;
+      let work = await app.ActiveWorkForTab(request.tabId);
+      while (work.jobs.length > 0 && Date.now() < deadline) {
+        setPendingModeSwitch((current) => current?.tabId === request.tabId ? { ...current, work } : current);
+        await new Promise((resolve) => window.setTimeout(resolve, 150));
+        work = await app.ActiveWorkForTab(request.tabId);
+      }
+      if (work.jobs.length > 0) {
+        setPendingModeSwitch((current) => current?.tabId === request.tabId ? { ...current, work, stopping: false } : current);
+        showToast(t("status.jobStopFailed"), "error");
+        return;
+      }
+      setPendingModeSwitch(null);
+      await refreshBackgroundRuntimes();
+      if (activeTabIdRef.current === request.tabId) {
+        await commitTokenModeSwitch(request.tabId, request.target, request.previous, composerProfile);
+      }
+    } catch (err) {
+      setPendingModeSwitch((current) => current?.tabId === request.tabId ? { ...current, stopping: false } : current);
+      showToast(err instanceof Error ? err.message : String(err), "error");
+    }
+  }, [commitTokenModeSwitch, composerProfile, pendingModeSwitch, refreshBackgroundRuntimes, showToast, t]);
+  const cancelRuntimeJob = useCallback(async (tabId: string, jobId: string): Promise<boolean> => {
+    try {
+      const cancelled = await app.CancelJobForTab(tabId, jobId);
+      await refreshBackgroundRuntimes();
+      return cancelled;
+    } catch (err) {
+      showToast(err instanceof Error ? err.message : String(err), "error");
+      return false;
+    }
+  }, [refreshBackgroundRuntimes, showToast]);
   // Shift+Tab toggles only the collaboration axis; Ctrl/Cmd+Y toggles YOLO on the
   // tool-permission axis while preserving the Ask/Auto base mode.
   const cycleMode = useCallback(() => {
@@ -3078,6 +3199,16 @@ export default function App() {
     [isNavigationIntentCurrent, noteNavigationIntent, refreshTabMetas, switchTab],
   );
 
+  const revealBackgroundRuntime = useCallback(async (tabId: string): Promise<void> => {
+    try {
+      const meta = await app.RevealBackgroundRuntime(tabId);
+      await switchTab(meta.id, meta);
+      await refreshTabMetas(undefined, { afterMutation: true });
+    } catch (err) {
+      showToast(err instanceof Error ? err.message : String(err), "error");
+    }
+  }, [refreshTabMetas, showToast, switchTab]);
+
   const handleTabChange = useCallback((id: string) => {
     closeTransientOverlays();
     const selected = tabMetas.find((tab) => tab.id === id);
@@ -3086,8 +3217,16 @@ export default function App() {
     setTabRevealSignal((signal) => signal + 1);
   }, [closeTransientOverlays, enqueueTabSwitch, tabMetas]);
 
-  const handleTabClose = useCallback(async (id: string) => {
+  const finishTabClose = useCallback(async (
+    id: string,
+    policy: "keep_running" | "stop_and_close",
+  ): Promise<boolean> => {
     closeTransientOverlays();
+    const closed = await closeTab(id, policy);
+    if (!closed) {
+      showToast(t("runtime.closeFailed"), "error");
+      return false;
+    }
     setComposerProfilesByTab((current) => {
       if (!(id in current)) return current;
       const next = { ...current };
@@ -3105,10 +3244,58 @@ export default function App() {
       const nextActiveId = remaining[nextIndex]?.id;
       return remaining.map((tab) => ({ ...tab, active: tab.id === nextActiveId }));
     });
-    await closeTab(id);
     await refreshTabMetas(undefined, { afterMutation: true });
+    await refreshBackgroundRuntimes();
     setTabRevealSignal((signal) => signal + 1);
-  }, [activeTabId, closeTab, closeTransientOverlays, refreshTabMetas]);
+    return true;
+  }, [activeTabId, closeTab, closeTransientOverlays, refreshBackgroundRuntimes, refreshTabMetas, showToast, t]);
+
+  const handleTabClose = useCallback(async (id: string) => {
+    try {
+      const work = await app.ActiveWorkForTab(id);
+      if (work.running || work.pendingPrompt || work.jobs.length > 0) {
+        setPendingClose({ tabId: id, work, stopping: false });
+        return;
+      }
+    } catch {
+      // CloseTabWithPolicy re-checks the controller state atomically.
+    }
+    await finishTabClose(id, "stop_and_close");
+  }, [finishTabClose]);
+
+  const resolvePendingClose = useCallback(async (policy: "keep_running" | "stop_and_close") => {
+    const request = pendingClose;
+    if (!request || request.stopping) return;
+    if (policy === "stop_and_close") setPendingClose({ ...request, stopping: true });
+    const closed = await finishTabClose(request.tabId, policy);
+    if (closed) setPendingClose(null);
+    else setPendingClose((current) => current?.tabId === request.tabId ? { ...current, stopping: false } : current);
+  }, [finishTabClose, pendingClose]);
+
+  const revealWorkspaceWriter = useCallback(async () => {
+    if (!activeTabId) return;
+    try {
+      const meta = await app.RevealWorkspaceWriterForTab(activeTabId);
+      setWorkspaceConflict(null);
+      await switchTab(meta.id, meta);
+      await refreshTabMetas(undefined, { afterMutation: true });
+    } catch (err) {
+      showToast(err instanceof Error ? err.message : String(err), "error");
+    }
+  }, [activeTabId, refreshTabMetas, showToast, switchTab]);
+
+  const continueInDeliveryWorktree = useCallback(async () => {
+    const root = state.meta?.workspaceRoot || state.meta?.workspacePath || state.meta?.cwd;
+    if (!root) return;
+    cancel();
+    setWorkspaceConflict(null);
+    try {
+      await createDeliveryWorktree(root);
+      await refreshTabMetas(undefined, { afterMutation: true });
+    } catch (err) {
+      showToast(err instanceof Error ? err.message : String(err), "error");
+    }
+  }, [cancel, createDeliveryWorktree, refreshTabMetas, showToast, state.meta?.cwd, state.meta?.workspacePath, state.meta?.workspaceRoot]);
 
   const handleTabsClose = useCallback(async (ids: string[], nextActiveTabId?: string) => {
     closeTransientOverlays();
@@ -3116,7 +3303,15 @@ export default function App() {
     const targets = ids.filter((id, index) => currentIds.includes(id) && ids.indexOf(id) === index);
     if (targets.length === 0) return;
     for (const id of targets) {
-      await closeTab(id);
+      let work: ActiveWorkView | null = null;
+      try {
+        work = await app.ActiveWorkForTab(id);
+      } catch { /* the close path remains authoritative */ }
+      if (work && (work.running || work.pendingPrompt || work.jobs.length > 0)) {
+        setPendingClose({ tabId: id, work, stopping: false });
+        return;
+      }
+      await finishTabClose(id, "stop_and_close");
     }
     if (nextActiveTabId && currentIds.includes(nextActiveTabId)) {
       const selected = tabMetas.find((tab) => tab.id === nextActiveTabId);
@@ -3125,7 +3320,7 @@ export default function App() {
     }
     await refreshTabMetas(undefined, { afterMutation: true });
     setTabRevealSignal((signal) => signal + 1);
-  }, [closeTab, closeTransientOverlays, enqueueTabSwitch, refreshTabMetas, tabMetas]);
+  }, [closeTransientOverlays, enqueueTabSwitch, finishTabClose, refreshTabMetas, tabMetas]);
 
   const handleTabsReorder = useCallback(async (ids: string[]) => {
     setTabOrderIds(ids);
@@ -4643,6 +4838,81 @@ export default function App() {
                 }}
               />
               )
+            : decisionSurface === "workspace_conflict" && workspaceConflict ? (
+              <RuntimeDecisionCard
+                id="workspace-conflict"
+                title={t("runtime.workspaceConflictTitle")}
+                badge={t("runtime.workspaceConflictBadge")}
+                meta={workspaceConflict.state === "local"
+                  ? t("runtime.workspaceConflictLocal", { title: workspaceConflict.ownerTitle || t("runtime.unknownTask") })
+                  : t("runtime.workspaceConflictExternal")}
+                note={t("runtime.workspaceConflictNote")}
+                onCancel={() => {
+                  cancel();
+                  setWorkspaceConflict(null);
+                }}
+                actions={[
+                  ...(workspaceConflict.canReveal ? [{
+                    key: "1", label: t("runtime.revealWriter"), description: t("runtime.revealWriterDesc"),
+                    onClick: () => void revealWorkspaceWriter(),
+                  }] : []),
+                  ...(workspaceConflict.canCreateWorktree ? [{
+                    key: "2", label: t("runtime.openWorktree"), description: t("runtime.openWorktreeDesc"),
+                    onClick: () => void continueInDeliveryWorktree(),
+                  }] : []),
+                  {
+                    key: "Esc", label: t("runtime.cancelWait"), description: t("runtime.cancelWaitDesc"),
+                    onClick: () => { cancel(); setWorkspaceConflict(null); }, danger: true,
+                  },
+                ]}
+              />
+            )
+            : decisionSurface === "mode_jobs" && pendingModeSwitch ? (
+              <RuntimeDecisionCard
+                id="mode-jobs"
+                title={t("runtime.modeJobsTitle")}
+                badge={t("status.jobs", { n: pendingModeSwitch.work.jobs.length })}
+                meta={t("runtime.modeJobsMeta")}
+                note={pendingModeSwitch.work.jobs.map((job) => job.label || job.kind).join(" · ")}
+                onCancel={() => setPendingModeSwitch(null)}
+                actions={[
+                  {
+                    key: "1", label: t("common.cancel"), description: t("runtime.keepModeDesc"),
+                    onClick: () => setPendingModeSwitch(null), disabled: pendingModeSwitch.stopping,
+                  },
+                  {
+                    key: "2", label: pendingModeSwitch.stopping ? t("status.jobStopping") : t("runtime.stopAndSwitch"),
+                    description: t("runtime.stopAndSwitchDesc"), onClick: () => void stopJobsAndSwitchMode(),
+                    danger: true, disabled: pendingModeSwitch.stopping,
+                  },
+                ]}
+              />
+            )
+            : decisionSurface === "close_active" && pendingClose ? (
+              <RuntimeDecisionCard
+                id="close-active"
+                title={t("runtime.closeTitle")}
+                badge={t("runtime.closeBadge")}
+                meta={t("runtime.closeMeta", { n: pendingClose.work.jobs.length })}
+                note={t("runtime.closeNote")}
+                onCancel={() => setPendingClose(null)}
+                actions={[
+                  {
+                    key: "1", label: t("common.cancel"), description: t("runtime.closeCancelDesc"),
+                    onClick: () => setPendingClose(null), disabled: pendingClose.stopping,
+                  },
+                  {
+                    key: "2", label: t("runtime.keepRunning"), description: t("runtime.keepRunningDesc"),
+                    onClick: () => void resolvePendingClose("keep_running"), disabled: pendingClose.stopping,
+                  },
+                  {
+                    key: "3", label: pendingClose.stopping ? t("status.jobStopping") : t("runtime.stopAndClose"),
+                    description: t("runtime.stopAndCloseDesc"), onClick: () => void resolvePendingClose("stop_and_close"),
+                    danger: true, disabled: pendingClose.stopping,
+                  },
+                ]}
+              />
+            )
             : decisionSurface === "clear_context" ? (
               <ClearContextCard
                 onCancel={cancelClearContext}
@@ -4897,6 +5167,11 @@ export default function App() {
             usage={state.usage}
             balance={state.balance}
             running={state.running || rewindCommitting}
+            jobs={state.jobs}
+            onCancelJob={cancelJob}
+            backgroundRuntimes={backgroundRuntimes}
+            onCancelRuntimeJob={cancelRuntimeJob}
+            onRevealRuntime={revealBackgroundRuntime}
             sessionTurns={sessionTurns}
             sessionTokens={state.sessionTokens}
             turnTokens={state.turnTotalTokens}
