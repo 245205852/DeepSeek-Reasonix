@@ -2,6 +2,330 @@
   "schemaVersion": 1,
   "releases": [
     {
+      "version": "1.19.3",
+      "date": "2026-08-02",
+      "channel": "stable",
+      "title": {
+        "en": "Reasonix Desktop 1.19.3: Atomic updates, recovery improvements, and a unified stable release",
+        "zh": "Reasonix Desktop 1.19.3：原子更新、恢复优化及统一稳定版本"
+      },
+      "summary": {
+        "en": "This release introduces atomic desktop updates with a permanent launcher, removes Guard and Safe Mode, adds recovery actions for blocked Delivery workspaces, simplifies the release path to a single stable channel, and adds a GitHub link to the website.",
+        "zh": "此版本引入带永久启动器的原子桌面更新，移除 Guard 和安全模式，为受阻的 Delivery 工作区添加恢复操作，将发布路径简化为单一稳定频道，并在网站上添加了 GitHub 链接。"
+      },
+      "surfaces": [
+        "desktop"
+      ],
+      "guides": [
+        {
+          "title": {
+            "en": "User Guide",
+            "zh": "用户指南"
+          },
+          "body": {
+            "en": "Comprehensive guide for using Reasonix.",
+            "zh": "Reasonix 使用综合指南。"
+          },
+          "href": "https://github.com/esengine/DeepSeek-Reasonix/blob/427fba0f27078da287dfdb2baca1ff417ecbb0a5/docs/GUIDE.md"
+        },
+        {
+          "title": {
+            "en": "User Guide (Simplified Chinese)",
+            "zh": "用户指南（简体中文）"
+          },
+          "body": {
+            "en": "Comprehensive guide for using Reasonix in Simplified Chinese.",
+            "zh": "Reasonix 使用综合指南（简体中文）。"
+          },
+          "href": "https://github.com/esengine/DeepSeek-Reasonix/blob/427fba0f27078da287dfdb2baca1ff417ecbb0a5/docs/GUIDE.zh-CN.md"
+        },
+        {
+          "title": {
+            "en": "CLI Guide",
+            "zh": "CLI 指南"
+          },
+          "body": {
+            "en": "Documentation for the Reasonix command-line interface.",
+            "zh": "Reasonix 命令行界面文档。"
+          },
+          "href": "https://github.com/esengine/DeepSeek-Reasonix/blob/427fba0f27078da287dfdb2baca1ff417ecbb0a5/docs/CLI.md"
+        },
+        {
+          "title": {
+            "en": "CLI Guide (Simplified Chinese)",
+            "zh": "CLI 指南（简体中文）"
+          },
+          "body": {
+            "en": "Documentation for the Reasonix command-line interface in Simplified Chinese.",
+            "zh": "Reasonix 命令行界面文档（简体中文）。"
+          },
+          "href": "https://github.com/esengine/DeepSeek-Reasonix/blob/427fba0f27078da287dfdb2baca1ff417ecbb0a5/docs/CLI.zh-CN.md"
+        },
+        {
+          "title": {
+            "en": "Migration Guide",
+            "zh": "迁移指南"
+          },
+          "body": {
+            "en": "Instructions for migrating from older versions.",
+            "zh": "从旧版本迁移的说明。"
+          },
+          "href": "https://github.com/esengine/DeepSeek-Reasonix/blob/427fba0f27078da287dfdb2baca1ff417ecbb0a5/docs/MIGRATING.md"
+        },
+        {
+          "title": {
+            "en": "Migration Guide (Simplified Chinese)",
+            "zh": "迁移指南（简体中文）"
+          },
+          "body": {
+            "en": "Instructions for migrating from older versions in Simplified Chinese.",
+            "zh": "从旧版本迁移的说明（简体中文）。"
+          },
+          "href": "https://github.com/esengine/DeepSeek-Reasonix/blob/427fba0f27078da287dfdb2baca1ff417ecbb0a5/docs/MIGRATING.zh-CN.md"
+        },
+        {
+          "title": {
+            "en": "Recovery Guide",
+            "zh": "恢复指南"
+          },
+          "body": {
+            "en": "Steps to recover from installation or update issues.",
+            "zh": "解决安装或更新问题的步骤。"
+          },
+          "href": "https://github.com/esengine/DeepSeek-Reasonix/blob/427fba0f27078da287dfdb2baca1ff417ecbb0a5/docs/RECOVERY.md"
+        },
+        {
+          "title": {
+            "en": "Recovery Guide (Simplified Chinese)",
+            "zh": "恢复指南（简体中文）"
+          },
+          "body": {
+            "en": "Steps to recover from installation or update issues in Simplified Chinese.",
+            "zh": "解决安装或更新问题的步骤（简体中文）。"
+          },
+          "href": "https://github.com/esengine/DeepSeek-Reasonix/blob/427fba0f27078da287dfdb2baca1ff417ecbb0a5/docs/RECOVERY.zh-CN.md"
+        }
+      ],
+      "highlights": [
+        {
+          "kind": "new",
+          "title": {
+            "en": "Atomic Desktop Updates",
+            "zh": "原子桌面更新"
+          },
+          "body": {
+            "en": "Desktop updates are now atomic with a versioned install layout and a permanent thin launcher. This eliminates partial updates and simplifies recovery.",
+            "zh": "桌面更新现在采用版本化安装布局和永久精简启动器实现原子更新，消除部分更新问题并简化恢复。"
+          },
+          "refs": [
+            7199
+          ]
+        },
+        {
+          "kind": "improved",
+          "title": {
+            "en": "Guard and Safe Mode Removed",
+            "zh": "Guard 和安全模式已移除"
+          },
+          "body": {
+            "en": "The Guard crash-loop and Safe Mode product behavior have been eliminated, providing a simpler, zero-configuration startup experience.",
+            "zh": "Guard 崩溃循环和安全模式产品行为已被消除，提供更简单、零配置的启动体验。"
+          },
+          "refs": [
+            7199
+          ]
+        },
+        {
+          "kind": "new",
+          "title": {
+            "en": "Workspace Writer Contention Recovery",
+            "zh": "工作区写入冲突恢复"
+          },
+          "body": {
+            "en": "When a Delivery workspace is blocked by another writer, Reasonix now shows a recovery dialog: reveal the local owner, continue in an isolated worktree, or cancel the waiting turn.",
+            "zh": "当 Delivery 工作区被另一个写入者阻塞时，Reasonix 现在会显示恢复对话框：显示本地所有者、在独立工作树中继续或取消等待。"
+          },
+          "refs": [
+            7198
+          ]
+        },
+        {
+          "kind": "improved",
+          "title": {
+            "en": "Single Stable Release Channel",
+            "zh": "单一稳定发布频道"
+          },
+          "body": {
+            "en": "Public preview and canary channels have been retired. All users now receive only the official stable release, reducing confusion and ensuring consistency.",
+            "zh": "公开预览和 canary 频道已退役。所有用户现在仅接收官方稳定版本，减少混淆并确保一致性。"
+          },
+          "refs": [
+            7227
+          ]
+        },
+        {
+          "kind": "new",
+          "title": {
+            "en": "GitHub Link in Website Header",
+            "zh": "网站页头添加 GitHub 链接"
+          },
+          "body": {
+            "en": "A GitHub repository link has been added to the marketing header, making it easy to access the source code.",
+            "zh": "营销页头添加了 GitHub 仓库链接，方便访问源代码。"
+          },
+          "refs": [
+            7226
+          ]
+        }
+      ],
+      "changes": {
+        "new": [
+          {
+            "title": {
+              "en": "Atomic Desktop Updates",
+              "zh": "原子桌面更新"
+            },
+            "body": {
+              "en": "Updates are now atomic with a versioned install layout, permanent thin launcher, and isolated staging. Fresh installs and upgrades from v1.18+ are handled transparently.",
+              "zh": "更新现在采用版本化安装布局、永久精简启动器和独立暂存区实现原子更新。全新安装和从 v1.18+ 升级均可透明处理。"
+            },
+            "refs": [
+              7199
+            ]
+          },
+          {
+            "title": {
+              "en": "Workspace Writer Contention Recovery Options",
+              "zh": "工作区写入冲突恢复选项"
+            },
+            "body": {
+              "en": "New UI actions to reveal the local owner, continue in an isolated worktree, or cancel the waiting turn when a Delivery workspace is blocked.",
+              "zh": "当 Delivery 工作区被阻塞时，新增 UI 操作以显示本地所有者、在独立工作树中继续或取消等待。"
+            },
+            "refs": [
+              7198
+            ]
+          },
+          {
+            "title": {
+              "en": "GitHub Link in Website Header",
+              "zh": "网站页头 GitHub 链接"
+            },
+            "body": {
+              "en": "An accessible GitHub repository link has been added to the marketing header, visible on wide screens.",
+              "zh": "营销页头新增可访问的 GitHub 仓库链接，在宽屏幕上可见。"
+            },
+            "refs": [
+              7226
+            ]
+          }
+        ],
+        "improved": [
+          {
+            "title": {
+              "en": "Guard and Safe Mode Removed",
+              "zh": "Guard 和安全模式已移除"
+            },
+            "body": {
+              "en": "The Guard crash-loop and Safe Mode have been completely removed, eliminating unnecessary complexity and potential confusion for users.",
+              "zh": "Guard 崩溃循环和安全模式已被完全移除，消除不必要的复杂性和用户潜在困惑。"
+            },
+            "refs": [
+              7199
+            ]
+          },
+          {
+            "title": {
+              "en": "Background Jobs Manageable During Remote Workbench",
+              "zh": "远程工作台期间可管理后台任务"
+            },
+            "body": {
+              "en": "Local background jobs can now be listed and cancelled while the Remote Workbench is active, improving multitasking.",
+              "zh": "远程工作台激活时，现在可以列出和取消本地后台任务，改善多任务处理。"
+            },
+            "refs": [
+              7198
+            ]
+          },
+          {
+            "title": {
+              "en": "Single Stable Release Channel",
+              "zh": "单一稳定发布频道"
+            },
+            "body": {
+              "en": "All public release channels have been unified into one stable channel, removing preview and canary options from the website, changelog, and docs.",
+              "zh": "所有公开发布频道已统一为一个稳定频道，从网站、变更日志和文档中移除预览和 canary 选项。"
+            },
+            "refs": [
+              7227
+            ]
+          }
+        ],
+        "fixed": [
+          {
+            "title": {
+              "en": "Windows Shutdown Crash",
+              "zh": "Windows 关机崩溃"
+            },
+            "body": {
+              "en": "Fixed a crash that occurred when querying Wails window geometry during shutdown.",
+              "zh": "修复了在关机期间查询 Wails 窗口几何结构时发生的崩溃。"
+            },
+            "refs": [
+              7199
+            ]
+          },
+          {
+            "title": {
+              "en": "Blocked Delivery Runtimes Recovery",
+              "zh": "受阻 Delivery 运行时恢复"
+            },
+            "body": {
+              "en": "Fixed an issue where blocked Delivery runtimes could not be recovered, now providing actionable options to unblock.",
+              "zh": "修复了受阻 Delivery 运行时无法恢复的问题，现在提供可操作的解阻选项。"
+            },
+            "refs": [
+              7198
+            ]
+          }
+        ]
+      },
+      "upgrade": [
+        {
+          "level": "info",
+          "title": {
+            "en": "Automatic Migration from v1.18.x / v1.19.x",
+            "zh": "从 v1.18.x / v1.19.x 自动迁移"
+          },
+          "body": {
+            "en": "When upgrading from v1.18.0, v1.19.0, or v1.19.1, the update will automatically migrate your installation to the new atomic layout. No manual intervention is needed.",
+            "zh": "从 v1.18.0、v1.19.0 或 v1.19.1 升级时，更新将自动将您的安装迁移至新的原子布局。无需手动干预。"
+          },
+          "refs": [
+            7199
+          ]
+        }
+      ],
+      "risks": [],
+      "contributors": [
+        "SivanCola"
+      ],
+      "links": {
+        "github": "https://github.com/esengine/DeepSeek-Reasonix/releases/tag/desktop-v1.19.3",
+        "compare": "https://github.com/esengine/DeepSeek-Reasonix/compare/desktop-v1.19.2...desktop-v1.19.3",
+        "download": "https://reasonix.io/?download=desktop&channel=stable#start"
+      },
+      "releaseId": "1.19.3",
+      "baseVersion": "1.19.3",
+      "status": "reviewed",
+      "previousRelease": "1.19.2",
+      "builds": {
+        "cli": "v1.19.3",
+        "desktop": "v1.19.3",
+        "npm": "1.19.3"
+      }
+    },
+    {
       "version": "1.19.2",
       "date": "2026-08-02",
       "channel": "stable",
@@ -118,7 +442,7 @@
             "zh": "MCP 服务器冷启动弹性"
           },
           "body": {
-          "en": "Slow-starting MCP servers no longer enter restart loops; they continue initializing in the background, and users receive a retry-later prompt.",
+            "en": "Slow-starting MCP servers no longer enter restart loops; they continue initializing in the background, and users receive a retry-later prompt.",
             "zh": "启动缓慢的 MCP 服务器不再陷入重启循环；它们在后台继续初始化，用户会收到稍后重试的提示。"
           },
           "refs": [
@@ -135,7 +459,7 @@
               "zh": "更新通道统一"
             },
             "body": {
-            "en": "Clients now normalize all legacy channel values to the official release. Deprecated options remain compatible and show a notice.",
+              "en": "Clients now normalize all legacy channel values to the official release. Deprecated options remain compatible and show a notice.",
               "zh": "客户端现在将所有旧通道值规范化为官方发布。已弃用的选项保持兼容并显示提示。"
             },
             "refs": [
