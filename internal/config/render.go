@@ -91,11 +91,6 @@ func RenderTOMLForScope(c *Config, scope RenderScope) string {
 	}
 
 	if scope != RenderScopeProject {
-		b.WriteString("[cli]   # native CLI preferences; user/global only, ./reasonix.toml cannot override\n")
-		fmt.Fprintf(&b, "update_channel = %q   # stable|preview; used by `reasonix upgrade`\n\n", c.CLIUpdateChannel())
-	}
-
-	if scope != RenderScopeProject {
 		b.WriteString("[desktop]\n")
 		if lang := c.DesktopLanguage(); lang != "" {
 			fmt.Fprintf(&b, "language = %q   # desktop UI language; empty/auto = browser/OS auto-detect\n", lang)
@@ -124,7 +119,6 @@ func RenderTOMLForScope(c *Config, scope RenderScope) string {
 		fmt.Fprintf(&b, "status_bar_items = %s   # desktop: ordered visible bottom status bar items\n", renderStringArray(c.DesktopStatusBarItems()))
 		fmt.Fprintf(&b, "default_tool_approval_mode = %q   # desktop: Ask/Auto/YOLO default for newly-created sessions\n", c.DesktopDefaultToolApprovalMode())
 		fmt.Fprintf(&b, "check_updates = %v   # desktop: check for new versions on startup\n", c.DesktopCheckUpdates())
-		fmt.Fprintf(&b, "update_channel = %q   # desktop updater channel: stable|preview\n", c.DesktopUpdateChannel())
 		fmt.Fprintf(&b, "telemetry = %v   # desktop: anonymous launch ping + scrubbed next-launch native crash diagnostics; never content\n", c.DesktopTelemetry())
 		fmt.Fprintf(&b, "metrics = %v   # desktop: aggregate quality/lifecycle metrics (anonymous signal/bucket counts); never content\n", c.DesktopMetrics())
 		// A non-nil empty slice is intentional: provider_access = [] means the

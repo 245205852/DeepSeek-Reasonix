@@ -2,6 +2,258 @@
   "schemaVersion": 1,
   "releases": [
     {
+      "version": "1.19.2-preview.1",
+      "date": "2026-08-02",
+      "channel": "prerelease",
+      "title": {
+        "en": "Reasonix 1.19.2 Preview 1",
+        "zh": "Reasonix 1.19.2 预览版 1"
+      },
+      "summary": {
+        "en": "Unified update channel, adaptive syntax highlighting, and multiple agent reliability fixes.",
+        "zh": "统一更新通道、自适应语法高亮以及多项代理可靠性修复。"
+      },
+      "surfaces": [
+        "desktop",
+        "cli",
+        "agent",
+        "mcp"
+      ],
+      "guides": [
+        {
+          "title": {
+            "en": "Capability Diagnostics Guide",
+            "zh": "能力诊断指南"
+          },
+          "body": {
+            "en": "Documentation on diagnosing and understanding capability status.",
+            "zh": "有关诊断和理解能力状态的文档。"
+          },
+          "href": "https://github.com/esengine/DeepSeek-Reasonix/blob/ede7ceef0011f8cf389d269c83fc16d9cfefd827/docs/CAPABILITY_DIAGNOSTICS.md"
+        },
+        {
+          "title": {
+            "en": "Capability Diagnostics Guide (Chinese)",
+            "zh": "能力诊断指南（中文）"
+          },
+          "body": {
+            "en": "Documentation on diagnosing and understanding capability status (Chinese).",
+            "zh": "有关诊断和理解能力状态的文档（中文）。"
+          },
+          "href": "https://github.com/esengine/DeepSeek-Reasonix/blob/ede7ceef0011f8cf389d269c83fc16d9cfefd827/docs/CAPABILITY_DIAGNOSTICS.zh-CN.md"
+        },
+        {
+          "title": {
+            "en": "User Guide",
+            "zh": "用户指南"
+          },
+          "body": {
+            "en": "General user guide for Reasonix.",
+            "zh": "Reasonix 通用用户指南。"
+          },
+          "href": "https://github.com/esengine/DeepSeek-Reasonix/blob/ede7ceef0011f8cf389d269c83fc16d9cfefd827/docs/GUIDE.md"
+        },
+        {
+          "title": {
+            "en": "User Guide (Chinese)",
+            "zh": "用户指南（中文）"
+          },
+          "body": {
+            "en": "General user guide for Reasonix (Chinese).",
+            "zh": "Reasonix 通用用户指南（中文）。"
+          },
+          "href": "https://github.com/esengine/DeepSeek-Reasonix/blob/ede7ceef0011f8cf389d269c83fc16d9cfefd827/docs/GUIDE.zh-CN.md"
+        },
+        {
+          "title": {
+            "en": "Specification",
+            "zh": "规范"
+          },
+          "body": {
+            "en": "Technical specification for Reasonix.",
+            "zh": "Reasonix 技术规范。"
+          },
+          "href": "https://github.com/esengine/DeepSeek-Reasonix/blob/ede7ceef0011f8cf389d269c83fc16d9cfefd827/docs/SPEC.md"
+        },
+        {
+          "title": {
+            "en": "Specification (Chinese)",
+            "zh": "规范（中文）"
+          },
+          "body": {
+            "en": "Technical specification for Reasonix (Chinese).",
+            "zh": "Reasonix 技术规范（中文）。"
+          },
+          "href": "https://github.com/esengine/DeepSeek-Reasonix/blob/ede7ceef0011f8cf389d269c83fc16d9cfefd827/docs/SPEC.zh-CN.md"
+        }
+      ],
+      "highlights": [
+        {
+          "kind": "improved",
+          "title": {
+            "en": "Unified update channel",
+            "zh": "统一更新通道"
+          },
+          "body": {
+            "en": "All clients now use a single official release channel, eliminating channel-specific controls and simplifying updates.",
+            "zh": "所有客户端现在使用单一的官方发布通道，消除特定于通道的控制，简化更新。"
+          },
+          "refs": [
+            7201
+          ]
+        },
+        {
+          "kind": "improved",
+          "title": {
+            "en": "Adaptive syntax highlighting",
+            "zh": "自适应语法高亮"
+          },
+          "body": {
+            "en": "Code and diff blocks now adapt to light/dark themes with WCAG-compliant contrast for improved readability.",
+            "zh": "代码和差异块现在适应浅色/深色主题，具有符合 WCAG 的对比度，以提高可读性。"
+          },
+          "refs": [
+            7159
+          ]
+        },
+        {
+          "kind": "fixed",
+          "title": {
+            "en": "Reduced agent warning noise",
+            "zh": "减少代理警告噪音"
+          },
+          "body": {
+            "en": "Rate-limited missing reasoning content warnings for DeepSeek thinking mode to avoid repetitive notices.",
+            "zh": "对 DeepSeek 思考模式的缺失推理内容警告进行频率限制，以避免重复通知。"
+          },
+          "refs": [
+            7109
+          ]
+        },
+        {
+          "kind": "fixed",
+          "title": {
+            "en": "Improved delivery verification recovery",
+            "zh": "改进交付验证恢复"
+          },
+          "body": {
+            "en": "The agent now guides the model to run safe verification commands, reducing failed readiness attempts.",
+            "zh": "代理现在引导模型运行安全的验证命令，减少失败的准备尝试。"
+          },
+          "refs": [
+            7146
+          ]
+        },
+        {
+          "kind": "fixed",
+          "title": {
+            "en": "MCP server cold-start resilience",
+            "zh": "MCP 服务器冷启动弹性"
+          },
+          "body": {
+            "en": "Slow-starting MCP servers no longer enter restart loops; they continue initializing in the background and the user receives a retry-later prompt.",
+            "zh": "启动缓慢的 MCP 服务器不再陷入重启循环；它们在后台继续初始化，用户会收到稍后重试的提示。"
+          },
+          "refs": [
+            7164
+          ]
+        }
+      ],
+      "changes": {
+        "new": [],
+        "improved": [
+          {
+            "title": {
+              "en": "Update channel unification",
+              "zh": "更新通道统一"
+            },
+            "body": {
+              "en": "Legacy channel values are mapped to the official release; deprecated options remain compatible with notices.",
+              "zh": "旧的通道值映射到官方发布；已弃用的选项保持兼容并带有提示。"
+            },
+            "refs": [
+              7201
+            ]
+          },
+          {
+            "title": {
+              "en": "Theme-adaptive code highlighting",
+              "zh": "主题自适应代码高亮"
+            },
+            "body": {
+              "en": "Code surfaces in Desktop and CLI now follow the active theme with proper contrast and opaque backgrounds.",
+              "zh": "桌面和命令行中的代码界面现在遵循活动主题，具有适当的对比度和不透明背景。"
+            },
+            "refs": [
+              7159
+            ]
+          }
+        ],
+        "fixed": [
+          {
+            "title": {
+              "en": "Tool-call reasoning warning rate-limit",
+              "zh": "工具调用推理警告限频"
+            },
+            "body": {
+              "en": "Noisy repeated warnings for missing reasoning content are now suppressed after the first notice for 24 hours.",
+              "zh": "首次通知后 24 小时内，抑制缺失推理内容的重复警告。"
+            },
+            "refs": [
+              7109
+            ]
+          },
+          {
+            "title": {
+              "en": "Delivery final-answer readiness guidance",
+              "zh": "交付最终答案准备指导"
+            },
+            "body": {
+              "en": "Retry messages now include safe verification commands, preventing endless guessing loops.",
+              "zh": "重试消息现在包含安全的验证命令，防止无限猜测循环。"
+            },
+            "refs": [
+              7146
+            ]
+          },
+          {
+            "title": {
+              "en": "MCP background startup with timeout",
+              "zh": "MCP 后台启动及超时"
+            },
+            "body": {
+              "en": "MCP server initialization persists beyond the interactive wait, with a configurable startup timeout (default 30s).",
+              "zh": "MCP 服务器初始化在交互等待后持续进行，具有可配置的启动超时（默认 30 秒）。"
+            },
+            "refs": [
+              7164
+            ]
+          }
+        ]
+      },
+      "upgrade": [],
+      "risks": [],
+      "contributors": [
+        "SivanCola",
+        "sudoviber",
+        "Q1hangL"
+      ],
+      "links": {
+        "github": "https://github.com/esengine/DeepSeek-Reasonix/releases/tag/v1.19.2-preview.1",
+        "compare": "https://github.com/esengine/DeepSeek-Reasonix/compare/v1.19.1...v1.19.2-preview.1",
+        "download": "https://reasonix.io/?download=desktop&channel=preview#start"
+      },
+      "releaseId": "1.19.2-preview.1",
+      "baseVersion": "1.19.2",
+      "status": "reviewed",
+      "previousRelease": "1.19.1",
+      "builds": {
+        "cli": "v1.19.2-preview.1",
+        "desktop": "v1.19.2-preview.1",
+        "npm": "1.19.2-canary.1"
+      }
+    },
+    {
       "version": "1.19.1",
       "date": "2026-08-01",
       "channel": "stable",
