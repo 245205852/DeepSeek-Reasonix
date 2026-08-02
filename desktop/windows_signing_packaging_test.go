@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/xml"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -235,7 +236,6 @@ func TestProductionSigningRunsOnlyFromProtectedControlPlane(t *testing.T) {
 
 	for _, path := range []string{
 		"../.github/workflows/release-stable-trigger.yml",
-		"../.github/workflows/release-desktop-trigger.yml",
 	} {
 		relay := readTestFile(t, path)
 		for _, want := range []string{
@@ -248,6 +248,16 @@ func TestProductionSigningRunsOnlyFromProtectedControlPlane(t *testing.T) {
 			if !strings.Contains(relay, want) {
 				t.Errorf("%s is missing protected control-plane contract %q", path, want)
 			}
+		}
+	}
+
+	for _, path := range []string{
+		"../.github/workflows/release-preview.yml",
+		"../.github/workflows/release-cli-trigger.yml",
+		"../.github/workflows/release-desktop-trigger.yml",
+	} {
+		if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
+			t.Errorf("retired public prerelease workflow %s still exists or cannot be checked: %v", path, err)
 		}
 	}
 }

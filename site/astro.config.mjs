@@ -5,5 +5,8 @@ import sitemap from '@astrojs/sitemap';
 export default defineConfig({
   site: 'https://reasonix.io',
   build: { assets: 'static' },
-  integrations: [sitemap()],
+  integrations: [sitemap({
+    filter: (page) => !/\/changelog\/(?:stable|preview)\/?$/.test(page) &&
+      !/\/changelog\/v\d+\.\d+\.\d+-/.test(page),
+  })],
 });
