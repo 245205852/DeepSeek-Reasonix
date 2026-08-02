@@ -252,11 +252,6 @@ func LoadRecoveryDefaultsForRoot(root string) *Config {
 	return LoadBuiltinDefaultsForRoot(root)
 }
 
-// Deprecated: loadSafeModeForRoot is an alias kept for transitional tests.
-func loadSafeModeForRoot(root string) *Config {
-	return LoadBuiltinDefaultsForRoot(root)
-}
-
 func (c *Config) setExpansionEnv(env map[string]string) {
 	if c == nil {
 		return

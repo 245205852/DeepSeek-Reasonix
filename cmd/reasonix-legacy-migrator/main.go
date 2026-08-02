@@ -78,10 +78,6 @@ func run(args []string) int {
 				i++
 			}
 			continue
-		default:
-			if strings.HasPrefix(args[i], "--app=") {
-				continue
-			}
 		}
 	}
 	if installRoot == "" {

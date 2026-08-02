@@ -71,7 +71,6 @@ type Config struct {
 	pluginPackageOwners        map[string]string
 	pluginPackageSkillOwners   map[string][]string
 	pluginPackageAgentOwners   map[string][]string
-	safeMode                   bool
 	editLoadErr                error
 	// loadWarnings are non-fatal issues observed while loading config (corrupt
 	// user/project files recovered via last-known-good or defaults). They never
