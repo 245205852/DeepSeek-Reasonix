@@ -1,0 +1,29 @@
+name: Migrate npm release aliases
+run-name: Align npm aliases to v1.19.2
+
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: official-release
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  migrate:
+    name: align latest, canary, and next
+    runs-on: ubuntu-latest
+    environment: release
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "22"
+          registry-url: https://registry.npmjs.org
+      - name: Verify provenance and align compatibility aliases
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          EXPECTED_SHA: c46e3af1c2732fe2b3dedb0bd47eb39a629357d2
+        run: node scripts/finalize-npm-official-release.mjs 1.19.2

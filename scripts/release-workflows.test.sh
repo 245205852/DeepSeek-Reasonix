@@ -1533,5 +1533,6 @@ fi
 grep -Eq 'does not match requested version' "$test_root/npm-mismatch.log"
 
 node --test "$repo_root/npm/publish.test.mjs"
+node --test "$repo_root/scripts/finalize-npm-official-release.test.mjs"
 
 echo "release workflow contract tests: PASS"
