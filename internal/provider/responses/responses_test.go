@@ -499,6 +499,31 @@ func TestMissingToolCallReasoningWarningFingerprintTracksResponsesConfiguration(
 	}
 }
 
+func TestWarnOnMissingToolCallReasoningIsModelScoped(t *testing.T) {
+	// DeepSeek pro-tier: warns (endpoint reliably emits tool-call reasoning).
+	pro := New(Config{Name: "deepseek", BaseURL: "https://api.deepseek.com", Model: "deepseek-v4-pro"})
+	if !provider.WarnOnMissingToolCallReasoning(pro) {
+		t.Fatal("DeepSeek pro must warn on missing tool-call reasoning")
+	}
+	// DeepSeek flash-tier: no warning (flash does not emit tool-call reasoning).
+	flash := New(Config{Name: "deepseek", BaseURL: "https://api.deepseek.com", Model: "deepseek-v4-flash"})
+	if provider.WarnOnMissingToolCallReasoning(flash) {
+		t.Fatal("DeepSeek flash must not warn on missing tool-call reasoning")
+	}
+	// MiMo: preserves reasoning on replay but does not guarantee it every
+	// round — a missing chain-of-thought is endpoint-conditional, not a
+	// degradation worth a warning (observed: mimo-v2.5-pro tool-call turn
+	// with empty reasoning).
+	mimo := New(Config{Name: "mimo", BaseURL: "https://api.xiaomimimo.com/v1", Model: "mimo-v2.5-pro"})
+	if provider.WarnOnMissingToolCallReasoning(mimo) {
+		t.Fatal("MiMo must not warn on missing tool-call reasoning (endpoint-conditional)")
+	}
+	other := New(Config{Name: "other", BaseURL: "https://example.com", Model: "m"})
+	if provider.WarnOnMissingToolCallReasoning(other) {
+		t.Fatal("unknown Responses endpoint must not warn on missing tool-call reasoning")
+	}
+}
+
 func TestFailedEventSurfacesAuthenticationError(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		writeEvents(w, `{"type":"response.failed","response":{"id":"resp","error":{"code":"invalid_api_key","message":"bad API key"}}}`)

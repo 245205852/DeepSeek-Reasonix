@@ -163,6 +163,24 @@ func (c *client) MissingToolCallReasoningWarningIdentity() string {
 	}, "\x00")
 }
 
+// WarnOnMissingToolCallReasoning reports a tool_calls turn that arrived
+// without reasoning only for vendors whose endpoint reliably emits it.
+// DeepSeek's official API emits tool-call reasoning for its pro-tier models,
+// so a missing chain-of-thought there is a real degradation worth one warning.
+// MiMo documents reasoning alongside tool calls but does not guarantee it on
+// every round (observed: mimo-v2.5-pro tool-call turn with empty reasoning),
+// so a missing chain-of-thought is endpoint-conditional, not a degradation
+// signal — silence the warning. This mirrors openai.go's model-scoped gate.
+func (c *client) WarnOnMissingToolCallReasoning() bool {
+	if c.vendor != "deepseek" {
+		return false
+	}
+	model := strings.ToLower(strings.TrimSpace(c.model))
+	// Flash-tier DeepSeek models do not emit tool-call reasoning (same carve
+	// as openai.go expectsDeepSeekToolCallReasoning).
+	return !strings.Contains(model, "flash")
+}
+
 func (c *client) sendOpts() provider.SendOptions {
 	return provider.SendOptions{Provider: c.name, KeyEnv: c.keyEnv, KeySource: c.keySource, KeyPresent: c.apiKey != "", RetryAuth: c.authed.Load()}
 }
