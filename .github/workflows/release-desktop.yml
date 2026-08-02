@@ -493,12 +493,26 @@ jobs:
         if: runner.os == 'Windows' && env.HAS_SIGNPATH == 'true'
         run: cp signed-installer/*installer*.exe dist/
 
+      # Recovery builds intentionally check out the immutable product SHA,
+      # which can predate a verifier repair. Fetch only the verifier from the
+      # protected workflow commit so recovery can validate old immutable
+      # artifacts without rebuilding them from a moving product branch.
+      - name: Checkout protected release verifier
+        if: runner.os == 'Windows' && env.HAS_SIGNPATH == 'true'
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.sha }}
+          path: release-control
+          sparse-checkout: scripts/verify-windows-authenticode.ps1
+          sparse-checkout-cone-mode: false
+          persist-credentials: false
+
       - name: Verify Windows Authenticode release contract
         if: runner.os == 'Windows' && env.HAS_SIGNPATH == 'true'
         shell: pwsh
         run: |
           $arch = if ("${{ matrix.platform }}" -eq "windows/arm64") { "arm64" } else { "amd64" }
-          ./scripts/verify-windows-authenticode.ps1 `
+          ./release-control/scripts/verify-windows-authenticode.ps1 `
             -PayloadDirectory signed-payload `
             -InstallerPath "dist/Reasonix-windows-$arch-installer.exe" `
             -PortableArchivePath "dist/Reasonix-windows-$arch.zip" `
