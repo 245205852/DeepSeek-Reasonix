@@ -309,7 +309,7 @@ func (c *client) buildRequestBody(req provider.Request) (map[string]any, bool, [
 	c.mu.Unlock()
 	if c.mode == "stateful" && previousID != "" && len(messages) > 0 &&
 		messages[len(messages)-1].Role == provider.RoleUser &&
-		conversationDigest(messages[:len(messages)-1]) == expectedDigest {
+		c.conversationDigest(messages[:len(messages)-1]) == expectedDigest {
 		body["input"] = messages[len(messages)-1].Content
 		body["previous_response_id"] = previousID
 		return body, true, messages
@@ -394,12 +394,16 @@ func messagesToInput(messages []provider.Message, vision, summary bool) []map[st
 	return input
 }
 
-func conversationDigest(messages []provider.Message) string {
+func (c *client) conversationDigest(messages []provider.Message) string {
 	instructions, rest := splitInstructions(messages)
+	// Digest must mirror the wire exactly: the stateful fast path compares
+	// this against the previous request's input, so a mismatch would skip
+	// previous_response_id and force a full replay (cache-hit loss). Use the
+	// same vision/summary knobs as buildRequestBody.
 	payload, _ := json.Marshal(struct {
 		Instructions string           `json:"instructions,omitempty"`
 		Input        []map[string]any `json:"input"`
-	}{Instructions: instructions, Input: messagesToInput(rest, false, false)})
+	}{Instructions: instructions, Input: messagesToInput(rest, c.vision, c.caps.summaryRequired)})
 	sum := sha256.Sum256(payload)
 	return hex.EncodeToString(sum[:])
 }
@@ -659,7 +663,7 @@ func (c *client) readStream(ctx context.Context, resp *http.Response, out chan<-
 		expected := append(append([]provider.Message(nil), requestMessages...), assistant)
 		c.mu.Lock()
 		c.lastResponseID = completedResponseID
-		c.expectedPrefixDigest = conversationDigest(expected)
+		c.expectedPrefixDigest = c.conversationDigest(expected)
 		c.mu.Unlock()
 	} else {
 		c.ResetContext()

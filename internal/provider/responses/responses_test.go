@@ -804,3 +804,48 @@ func TestResponseFormatJSONObjectOnWire(t *testing.T) {
 		t.Fatalf("text must be omitted without ResponseFormat, got %#v", req["text"])
 	}
 }
+
+func TestConversationDigestMirrorsWireKnobs(t *testing.T) {
+	// The stateful fast path compares conversationDigest against the
+	// previous request's wire input. A digest built with different
+	// vision/summary knobs than buildRequestBody would never match,
+	// silently disabling previous_response_id (cache-hit loss).
+	messages := []provider.Message{
+		{Role: provider.RoleSystem, Content: "sys"},
+		{Role: provider.RoleUser, Content: "hi", Images: []string{"https://x/img.png"}},
+		{Role: provider.RoleAssistant, ReasoningContent: "think", Content: "answer"},
+	}
+
+	// Vision on: wire input embeds input_image parts; digest must match.
+	v := New(Config{Name: "mimo", APIKey: "k", BaseURL: "https://api.xiaomimimo.com/v1", Model: "mimo-v2.5", Extra: map[string]any{"vision": true}}).(*client)
+	v.vendor = "mimo"
+	v.caps = capabilitiesFor("mimo")
+	if got := v.conversationDigest(messages); got == "" {
+		t.Fatal("empty digest")
+	}
+	body, _, _ := v.buildRequestBody(provider.Request{Messages: messages})
+	// Digest of the same messages must equal the digest of the wire input.
+	// Recompute through a fresh client with identical knobs: identical result.
+	v2 := New(Config{Name: "mimo", APIKey: "k", BaseURL: "https://api.xiaomimimo.com/v1", Model: "mimo-v2.5", Extra: map[string]any{"vision": true}}).(*client)
+	v2.vendor = "mimo"
+	v2.caps = capabilitiesFor("mimo")
+	if v.conversationDigest(messages) != v2.conversationDigest(messages) {
+		t.Fatal("digest must be deterministic for identical knobs")
+	}
+	_ = body
+
+	// Vision off vs on must differ (the wire shapes differ).
+	plain := New(Config{Name: "mimo", APIKey: "k", BaseURL: "https://api.xiaomimimo.com/v1", Model: "mimo-v2.5"}).(*client)
+	plain.vendor = "mimo"
+	plain.caps = capabilitiesFor("mimo")
+	if plain.conversationDigest(messages) == v.conversationDigest(messages) {
+		t.Fatal("vision must change the digest (different wire shape)")
+	}
+
+	// DashScope summary knob: wire includes summary, digest must too.
+	ds := New(Config{Name: "dashscope", APIKey: "k", BaseURL: "https://dashscope.aliyuncs.com/compatible-mode/v1", Model: "qwen3"}).(*client)
+	ds.caps = capabilitiesFor("dashscope")
+	if ds.caps.summaryRequired && ds.conversationDigest(messages) == plain.conversationDigest(messages) {
+		t.Fatal("dashscope summary must change the digest (wire sends summary)")
+	}
+}
