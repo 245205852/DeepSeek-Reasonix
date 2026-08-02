@@ -360,6 +360,9 @@ func messagesToInput(messages []provider.Message, vision, summary bool) []map[st
 					// round-trip the provider-issued id when we captured one.
 					item["id"] = message.ReasoningID
 				}
+				if message.ReasoningStatus != "" {
+					item["status"] = message.ReasoningStatus
+				}
 				if summary {
 					item["summary"] = []map[string]string{{"type": "summary_text", "text": message.ReasoningContent}}
 				}
@@ -454,6 +457,7 @@ func (c *client) readStream(ctx context.Context, resp *http.Response, out chan<-
 	reasoningDeltas := make(map[string]bool)
 	var text, reasoning strings.Builder
 	reasoningID := ""
+	reasoningStatus := ""
 	terminal := false
 	failed := false
 	completedResponseID := ""
@@ -542,21 +546,32 @@ func (c *client) readStream(ctx context.Context, resp *http.Response, out chan<-
 				}
 			}
 		case "response.output_item.done":
-			if event.Item != nil && event.Item.Type == "function_call" {
-				call := callForItem(event.Item.ID)
-				if event.Item.CallID != "" {
-					call.id = event.Item.CallID
-				}
-				if event.Item.Name != "" {
-					call.name = event.Item.Name
-				}
-				if event.Item.Arguments != "" {
-					call.arguments = event.Item.Arguments
-				}
-				if !call.completed {
-					call.completed = true
-					if !sendChunk(ctx, out, provider.Chunk{Type: provider.ChunkToolCall, ToolCall: &provider.ToolCall{ID: call.id, Name: call.name, Arguments: call.arguments}}) {
-						return
+			if event.Item != nil {
+				switch event.Item.Type {
+				case "function_call":
+					call := callForItem(event.Item.ID)
+					if event.Item.CallID != "" {
+						call.id = event.Item.CallID
+					}
+					if event.Item.Name != "" {
+						call.name = event.Item.Name
+					}
+					if event.Item.Arguments != "" {
+						call.arguments = event.Item.Arguments
+					}
+					if !call.completed {
+						call.completed = true
+						if !sendChunk(ctx, out, provider.Chunk{Type: provider.ChunkToolCall, ToolCall: &provider.ToolCall{ID: call.id, Name: call.name, Arguments: call.arguments}}) {
+							return
+						}
+					}
+				case "reasoning":
+					// The done event carries the final item status
+					// ("completed" after the thinking stream finishes);
+					// round-trip it with the reasoning item so the input
+					// matches the wire schema.
+					if event.Item.Status != "" {
+						reasoningStatus = event.Item.Status
 					}
 				}
 			}
@@ -618,7 +633,7 @@ func (c *client) readStream(ctx context.Context, resp *http.Response, out chan<-
 		return
 	}
 	if completedResponseID != "" {
-		assistant := provider.Message{Role: provider.RoleAssistant, Content: text.String(), ReasoningContent: reasoning.String(), ReasoningID: reasoningID}
+		assistant := provider.Message{Role: provider.RoleAssistant, Content: text.String(), ReasoningContent: reasoning.String(), ReasoningID: reasoningID, ReasoningStatus: reasoningStatus}
 		for _, itemID := range callOrder {
 			call := calls[itemID]
 			if call.completed {
@@ -703,7 +718,7 @@ type sseEvent struct {
 }
 
 type sseItem struct {
-	ID, Type, CallID, Name, Arguments string
+	ID, Type, CallID, Name, Arguments, Status string
 }
 
 func (i *sseItem) UnmarshalJSON(data []byte) error {
@@ -713,11 +728,12 @@ func (i *sseItem) UnmarshalJSON(data []byte) error {
 		CallID    string `json:"call_id"`
 		Name      string `json:"name"`
 		Arguments string `json:"arguments"`
+		Status    string `json:"status"`
 	}
 	if err := json.Unmarshal(data, &wire); err != nil {
 		return err
 	}
-	*i = sseItem{ID: wire.ID, Type: wire.Type, CallID: wire.CallID, Name: wire.Name, Arguments: wire.Arguments}
+	*i = sseItem{ID: wire.ID, Type: wire.Type, CallID: wire.CallID, Name: wire.Name, Arguments: wire.Arguments, Status: wire.Status}
 	return nil
 }
 

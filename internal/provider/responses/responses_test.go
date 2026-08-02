@@ -513,7 +513,7 @@ func TestReasoningIDRoundTripsThroughInput(t *testing.T) {
 
 	body, _, _ := p.buildRequestBody(provider.Request{Messages: []provider.Message{
 		{Role: provider.RoleUser, Content: "continue"},
-		{Role: provider.RoleAssistant, ReasoningContent: "think hard", ReasoningID: "rs_item_1"},
+		{Role: provider.RoleAssistant, ReasoningContent: "think hard", ReasoningID: "rs_item_1", ReasoningStatus: "completed"},
 	}})
 	items := body["input"].([]map[string]any)
 	var reasoningItem map[string]any
@@ -528,6 +528,9 @@ func TestReasoningIDRoundTripsThroughInput(t *testing.T) {
 	}
 	if reasoningItem["id"] != "rs_item_1" {
 		t.Fatalf("reasoning id = %#v, want rs_item_1", reasoningItem["id"])
+	}
+	if reasoningItem["status"] != "completed" {
+		t.Fatalf("reasoning status = %#v, want completed", reasoningItem["status"])
 	}
 	// content must still be the only other key.
 	if _, has := reasoningItem["summary"]; has {
