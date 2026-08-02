@@ -1807,14 +1807,15 @@ func bashSegmentIsVerification(fields []string) bool {
 	return false
 }
 
-// tscSegmentIsVerification accepts only explicit no-emit type checks. Bare tsc
-// commands may emit JavaScript, declarations, and source maps according to the
-// project configuration. Any explicit false value wins conservatively even if
-// another no-emit flag appears in the same command.
+// tscSegmentIsVerification accepts only one-shot, explicit no-emit type checks.
+// Bare tsc commands may emit JavaScript, declarations, and source maps; control
+// modes may write config, skip checking, exit after printing metadata, or watch
+// indefinitely. Any explicit false value wins conservatively even if another
+// no-emit flag appears in the same command.
 func tscSegmentIsVerification(args []string) bool {
 	noEmit := false
 	for i, arg := range args {
-		if tscFlagWritesFile(arg) {
+		if tscFlagDisqualifiesVerification(arg) {
 			return false
 		}
 		switch strings.ToLower(arg) {
@@ -1832,17 +1833,20 @@ func tscSegmentIsVerification(args []string) bool {
 	return noEmit
 }
 
-// tscFlagWritesFile rejects diagnostics and incremental-cache destinations
-// that write to a caller-selected path even when JavaScript/declaration emit is
-// disabled. Default incremental metadata remains conventional verifier cache;
-// explicit output destinations must fail closed as workspace mutations.
-func tscFlagWritesFile(arg string) bool {
+// tscFlagDisqualifiesVerification rejects modes that do not perform a bounded
+// type check and destinations that write independently of JavaScript/declaration
+// emit. Default incremental metadata remains conventional verifier cache;
+// explicit output destinations and control modes fail closed as mutations.
+func tscFlagDisqualifiesVerification(arg string) bool {
 	name := strings.ToLower(arg)
 	if i := strings.IndexByte(name, '='); i >= 0 {
 		name = name[:i]
 	}
 	switch name {
-	case "--tsbuildinfofile", "--generatetrace", "--generatecpuprofile":
+	case "--tsbuildinfofile", "--generatetrace", "--generatecpuprofile",
+		"--init", "--help", "-h", "-?", "--all", "--version", "-v",
+		"--showconfig", "--listfilesonly", "--nocheck", "--watch", "-w",
+		"--build", "-b", "--clean":
 		return true
 	default:
 		return false

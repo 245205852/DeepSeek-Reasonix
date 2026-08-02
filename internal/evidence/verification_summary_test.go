@@ -72,6 +72,8 @@ func TestTSCVerificationRequiresExplicitNoEmit(t *testing.T) {
 		"tsc --noEmit",
 		"tsc --noEmit=true",
 		"tsc --project tsconfig.json --noEmit",
+		"tsc --noEmit --listFiles",
+		"tsc --noEmit --pretty false",
 	} {
 		if !IsDeliveryVerificationCommand(command) {
 			t.Errorf("%q should be recognized as an explicit no-emit type check", command)
@@ -97,16 +99,31 @@ func TestTSCVerificationRequiresExplicitNoEmit(t *testing.T) {
 		"tsc --noEmit --generateTrace=trace-dir",
 		"tsc --noEmit --generateCpuProfile profile.cpuprofile",
 		"tsc --noEmit --generateCpuProfile=profile.cpuprofile",
+		"tsc --noEmit --init",
+		"tsc --noEmit --help",
+		"tsc --noEmit -h",
+		"tsc --noEmit -?",
+		"tsc --noEmit --all",
+		"tsc --noEmit --version",
+		"tsc --noEmit -v",
+		"tsc --noEmit --showConfig",
+		"tsc --noEmit --listFilesOnly",
+		"tsc --noEmit --noCheck",
+		"tsc --noEmit --watch",
+		"tsc --noEmit -w",
+		"tsc --build --noEmit",
+		"tsc -b --noEmit",
+		"tsc --build --clean --noEmit",
 	} {
 		if IsDeliveryVerificationCommand(command) {
-			t.Errorf("%q may emit compiler output and must not count as verification", command)
+			t.Errorf("%q is not a bounded no-emit type check and must not count as verification", command)
 		}
 		args, err := json.Marshal(map[string]string{"command": command})
 		if err != nil {
 			t.Fatal(err)
 		}
 		if !ToolCallMutates("bash", args, false) {
-			t.Errorf("%q may emit compiler output and must be classified as a mutation", command)
+			t.Errorf("%q must fail closed as a mutation", command)
 		}
 	}
 
@@ -148,6 +165,7 @@ func TestNpxVerificationUsesSafeKnownRunners(t *testing.T) {
 		"npx prettier --check .",
 		"npx prettier --list-different src/",
 		"npx tsc --noEmit",
+		"npx tsc --project tsconfig.json --noEmit",
 		"npx mocha test/ 2>&1 | tail -40",
 	} {
 		if !IsDeliveryVerificationCommand(command) {
@@ -179,6 +197,12 @@ func TestNpxVerificationUsesSafeKnownRunners(t *testing.T) {
 		"npx tsc",
 		"npx tsc --noEmit --tsBuildInfoFile victim.ts",
 		"npx tsc --noEmit --generateTrace trace-dir",
+		"npx tsc --noEmit --init",
+		"npx tsc --noEmit --showConfig",
+		"npx tsc --noEmit --listFilesOnly",
+		"npx tsc --noEmit --noCheck",
+		"npx tsc --noEmit --watch",
+		"npx tsc --build --noEmit",
 	} {
 		if IsDeliveryVerificationCommand(command) {
 			t.Errorf("%q can install, execute, or write output and must fail closed", command)
