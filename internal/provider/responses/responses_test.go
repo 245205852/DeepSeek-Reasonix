@@ -82,6 +82,17 @@ func TestDeepSeekEffortUsesResponsesReasoningShape(t *testing.T) {
 	}
 }
 
+func TestRequestSerializesExplicitMaxOutputTokens(t *testing.T) {
+	client := New(Config{Name: "responses", BaseURL: "https://example.com", Model: "model"}).(*client)
+	body, _, _ := client.buildRequestBody(provider.Request{
+		Messages:  []provider.Message{{Role: provider.RoleUser, Content: "hi"}},
+		MaxTokens: 32 * 1024,
+	})
+	if got := body["max_output_tokens"]; got != 32*1024 {
+		t.Fatalf("max_output_tokens = %#v, want 32768", got)
+	}
+}
+
 func TestFactoryPreservesUnsetLegacyStatefulForVendorDetection(t *testing.T) {
 	p, err := newFromConfig(provider.Config{
 		Name: "deepseek", BaseURL: "https://api.deepseek.com", Model: "deepseek-v4-flash",

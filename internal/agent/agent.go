@@ -48,9 +48,11 @@ const maxEmptyFinalBlocks = 3
 const maxStreamRecoveries = 3
 const maxExecutorHandoffNudges = 1
 
-const defaultReasoningCharLimit = 128 * 1024
+const defaultReasoningByteLimit = 128 * 1024
 
-var errReasoningLimitExceeded = errors.New("reasoning output exceeded limit")
+const finishReasonClientReasoningLimit = "client_reasoning_limit"
+
+var errReasoningByteLimitExceeded = errors.New("reasoning output exceeded client byte limit")
 
 // DeliveryRuntimeMarker is the delivery-mode contract block appended to user
 // turns (withTurnPreferences). Exported as the single source of truth for the
@@ -262,7 +264,7 @@ type Agent struct {
 	sessMu             sync.Mutex // guards the session pointer for external Session()/SetSession
 	maxSteps           int
 	maxStepsKey        string
-	reasoningCharLimit int
+	reasoningByteLimit int
 	// executorHandoffGuard is enabled by Coordinator for the executor agent. The
 	// per-turn marker check in Run keeps ordinary single-model turns unaffected.
 	executorHandoffGuard bool
@@ -943,10 +945,10 @@ type Options struct {
 	// MaxStepsKey names the explicit runtime control shown when the MaxSteps guard
 	// is hit. Empty defaults to the generic max_steps tool/runtime parameter.
 	MaxStepsKey string
-	// ReasoningCharLimit bounds a single stream's hidden reasoning output. Zero
-	// uses the default guard; a negative value disables this guard for tests or
-	// explicit host-owned runs.
-	ReasoningCharLimit int
+	// ReasoningByteLimit bounds a single stream's hidden reasoning bytes. Zero
+	// uses the default guard; a negative value disables both this client guard
+	// and its derived provider-side max output token budget.
+	ReasoningByteLimit int
 	Temperature        float64
 	Pricing            *provider.Pricing // optional, for per-turn cost display
 	UsageSource        string            // optional billable usage source; default executor
@@ -1126,9 +1128,9 @@ func New(prov provider.Provider, tools *tool.Registry, session *Session, opts Op
 	if subagentDepth < 0 {
 		subagentDepth = 0
 	}
-	reasoningCharLimit := opts.ReasoningCharLimit
-	if reasoningCharLimit == 0 {
-		reasoningCharLimit = defaultReasoningCharLimit
+	reasoningByteLimit := opts.ReasoningByteLimit
+	if reasoningByteLimit == 0 {
+		reasoningByteLimit = defaultReasoningByteLimit
 	}
 	a := &Agent{
 		prov:                      prov,
@@ -1136,7 +1138,7 @@ func New(prov provider.Provider, tools *tool.Registry, session *Session, opts Op
 		session:                   session,
 		maxSteps:                  opts.MaxSteps,
 		maxStepsKey:               maxStepsKey,
-		reasoningCharLimit:        reasoningCharLimit,
+		reasoningByteLimit:        reasoningByteLimit,
 		temperature:               opts.Temperature,
 		pricing:                   opts.Pricing,
 		usageSource:               usageSourceOrDefault(opts.UsageSource, event.UsageSourceExecutor),
@@ -2655,6 +2657,7 @@ func (a *Agent) stream(ctx context.Context, turn int) (string, string, string, [
 	ch, err := a.prov.Stream(ctx, provider.Request{
 		Messages:    requestMessages,
 		Tools:       a.tools.Schemas(),
+		MaxTokens:   estimateTokensFromBytes(a.reasoningByteLimit),
 		Temperature: provider.OptionalTemperature(a.temperature),
 	})
 	if err != nil {
@@ -2724,11 +2727,11 @@ func (a *Agent) stream(ctx context.Context, turn int) (string, string, string, [
 			if chunk.Text != "" && !transformReasoning {
 				a.sink.Emit(event.Event{Kind: event.Reasoning, Text: chunk.Text})
 			}
-			if a.reasoningCharLimit > 0 && reasoning.Len() > a.reasoningCharLimit {
+			if a.reasoningByteLimit > 0 && reasoning.Len() > a.reasoningByteLimit {
 				stored, _ := finishReasoning()
-				usage = bestEffortStreamUsage(usage, text.Len(), reasoning.Len(), "length")
+				usage = bestEffortStreamUsage(usage, text.Len(), reasoning.Len(), finishReasonClientReasoningLimit)
 				a.lastUsage.Store(usage)
-				return text.String(), stored, signature, calls, usage, false, partialToolStarted, partialCalls, errReasoningLimitExceeded
+				return text.String(), stored, signature, calls, usage, false, partialToolStarted, partialCalls, errReasoningByteLimitExceeded
 			}
 		case provider.ChunkText:
 			text.WriteString(chunk.Text)
@@ -2800,12 +2803,15 @@ func bestEffortStreamUsage(current *provider.Usage, textBytes, reasoningBytes in
 	completionTokens := reasoningTokens + textTokens
 	if usage.ReasoningTokens < reasoningTokens {
 		usage.ReasoningTokens = reasoningTokens
+		usage.Estimated = true
 	}
 	if usage.CompletionTokens < completionTokens {
 		usage.CompletionTokens = completionTokens
+		usage.Estimated = true
 	}
 	if minTotal := usage.PromptTokens + usage.CompletionTokens; usage.TotalTokens < minTotal {
 		usage.TotalTokens = minTotal
+		usage.Estimated = true
 	}
 	return &usage
 }
@@ -4040,6 +4046,8 @@ func finishReasonMessage(u *provider.Usage) (string, bool) {
 	switch u.FinishReason {
 	case "length":
 		return "response truncated: hit max output tokens", true
+	case finishReasonClientReasoningLimit:
+		return "response stopped: hit the client reasoning safety limit", true
 	case "content_filter":
 		return "response blocked by content filter", true
 	case "repetition_truncation":

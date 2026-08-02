@@ -186,15 +186,15 @@ func (p activeReasoningUntilCancelProvider) Stream(ctx context.Context, _ provid
 	return ch, nil
 }
 
-func TestRunawayReasoningStopsAtAgentSideGuard(t *testing.T) {
+func TestRunawayReasoningStopsAtAgentSideByteGuard(t *testing.T) {
 	sink := &recordSink{}
-	a := New(activeReasoningUntilCancelProvider{}, tool.NewRegistry(), NewSession(""), Options{ReasoningCharLimit: 64}, sink)
+	a := New(activeReasoningUntilCancelProvider{}, tool.NewRegistry(), NewSession(""), Options{ReasoningByteLimit: 64}, sink)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
 	defer cancel()
 
 	err := a.Run(ctx, "parse this binary by offset")
-	if !errors.Is(err, errReasoningLimitExceeded) {
+	if !errors.Is(err, errReasoningByteLimitExceeded) {
 		t.Fatalf("Run error = %v, want reasoning limit guard", err)
 	}
 	if got := len(sink.kinds(event.Reasoning)); got == 0 {
@@ -204,8 +204,8 @@ func TestRunawayReasoningStopsAtAgentSideGuard(t *testing.T) {
 	if len(usages) != 1 {
 		t.Fatalf("usage events = %d, want one best-effort usage event", len(usages))
 	}
-	if u := usages[0].Usage; u == nil || u.FinishReason != "length" || u.TotalTokens <= 0 || u.ReasoningTokens <= 0 {
-		t.Fatalf("usage = %+v, want length finish with estimated reasoning tokens", u)
+	if u := usages[0].Usage; u == nil || u.FinishReason != "client_reasoning_limit" || !u.Estimated || u.TotalTokens <= 0 || u.ReasoningTokens <= 0 {
+		t.Fatalf("usage = %+v, want client reasoning limit with estimated reasoning tokens", u)
 	}
 }
 
@@ -243,8 +243,71 @@ func TestInterruptedReasoningEmitsBestEffortUsage(t *testing.T) {
 	if len(usages) != 1 {
 		t.Fatalf("usage events = %d, want one best-effort usage event", len(usages))
 	}
-	if u := usages[0].Usage; u == nil || u.FinishReason != "interrupted" || u.TotalTokens <= 0 || u.ReasoningTokens <= 0 {
+	if u := usages[0].Usage; u == nil || u.FinishReason != "interrupted" || !u.Estimated || u.TotalTokens <= 0 || u.ReasoningTokens <= 0 {
 		t.Fatalf("usage = %+v, want interrupted finish with estimated reasoning tokens", u)
+	}
+}
+
+func TestReasoningByteGuardSetsStableProviderOutputBudget(t *testing.T) {
+	tests := []struct {
+		name      string
+		limit     int
+		wantToken int
+	}{
+		{name: "default", wantToken: 32 * 1024},
+		{name: "custom", limit: 65, wantToken: 17},
+		{name: "disabled", limit: -1, wantToken: 0},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			prov := testutil.NewMock("m", testutil.Turn{Text: "done"})
+			a := New(prov, tool.NewRegistry(), NewSession(""), Options{ReasoningByteLimit: tt.limit}, event.Discard)
+			if err := a.Run(context.Background(), "go"); err != nil {
+				t.Fatal(err)
+			}
+			req := prov.LastRequest()
+			if req == nil || req.MaxTokens != tt.wantToken {
+				t.Fatalf("request = %+v, want max_tokens=%d", req, tt.wantToken)
+			}
+		})
+	}
+
+	t.Run("stable across tool loop", func(t *testing.T) {
+		prov := testutil.NewMock("m",
+			testutil.Turn{ToolCalls: []provider.ToolCall{{ID: "call-1", Name: "read", Arguments: `{}`}}},
+			testutil.Turn{Text: "done"},
+		)
+		registry := tool.NewRegistry()
+		registry.Add(fakeTool{name: "read", readOnly: true})
+		a := New(prov, registry, NewSession(""), Options{}, event.Discard)
+		if err := a.Run(context.Background(), "go"); err != nil {
+			t.Fatal(err)
+		}
+		requests := prov.Requests()
+		if len(requests) != 2 {
+			t.Fatalf("requests = %d, want two provider turns", len(requests))
+		}
+		for i, req := range requests {
+			if req.MaxTokens != 32*1024 {
+				t.Fatalf("request %d max_tokens = %d, want stable 32768", i+1, req.MaxTokens)
+			}
+		}
+	})
+}
+
+func TestBestEffortStreamUsageMarksOnlySyntheticCountsEstimated(t *testing.T) {
+	exact := &provider.Usage{PromptTokens: 10, CompletionTokens: 20, TotalTokens: 30, ReasoningTokens: 15}
+	got := bestEffortStreamUsage(exact, 4, 4, "interrupted")
+	if got.Estimated {
+		t.Fatalf("usage = %+v, exact counts should remain exact", got)
+	}
+	if got.FinishReason != "interrupted" {
+		t.Fatalf("finish reason = %q, want interrupted", got.FinishReason)
+	}
+
+	got = bestEffortStreamUsage(exact, 200, 400, "interrupted")
+	if !got.Estimated || got.CompletionTokens != 150 || got.ReasoningTokens != 100 || got.TotalTokens != 160 {
+		t.Fatalf("usage = %+v, want byte-derived estimates", got)
 	}
 }
 

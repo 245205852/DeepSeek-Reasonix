@@ -6564,6 +6564,7 @@ type ContextInfo struct {
 	SessionCurrency string                      `json:"sessionCurrency,omitempty"`
 	CacheHitTokens  int                         `json:"cacheHitTokens,omitempty"`
 	CacheMissTokens int                         `json:"cacheMissTokens,omitempty"`
+	Estimated       bool                        `json:"estimated,omitempty"`
 	Sources         map[string]usageSourceStats `json:"sources,omitempty"`
 }
 
@@ -6610,6 +6611,7 @@ func (a *App) ContextUsageForTab(tabID string) ContextInfo {
 		info.SessionCurrency = snap.Usage.SessionCurrency
 		info.CacheHitTokens = snap.Usage.CacheHitTokens
 		info.CacheMissTokens = snap.Usage.CacheMissTokens
+		info.Estimated = snap.Usage.Estimated
 		info.Sources = snap.Usage.Sources
 	}
 	if ctrl == nil {
