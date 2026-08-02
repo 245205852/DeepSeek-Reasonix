@@ -268,6 +268,9 @@ func (c *client) buildRequestBody(req provider.Request) (map[string]any, bool, [
 	if maxOutputTokens == 0 {
 		maxOutputTokens = c.maxOutputTokens
 	}
+	if maxOutputTokens == 0 {
+		maxOutputTokens = c.caps.defaultMaxOutputTokens
+	}
 	if maxOutputTokens > 0 {
 		body["max_output_tokens"] = maxOutputTokens
 	}

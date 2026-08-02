@@ -45,6 +45,16 @@ type vendorCapabilities struct {
 	// defaults in thinking mode, so sending them is a no-op (MiMo forces
 	// 1.0 / 0.95). Keeps the wire request lean for such endpoints.
 	ignoresTemperature bool
+
+	// defaultMaxOutputTokens is the max_output_tokens sent when the caller
+	// did not request one (req.MaxTokens == 0). Zero means "leave unset and
+	// let the server use its own default". MiMo's server default (32768)
+	// covers reasoning + visible output, and its thinking mode can spend a
+	// large chunk of that budget on reasoning before the visible answer —
+	// truncating tool calls mid-JSON on long turns. Raise it to the next
+	// documented tier (65536, within the allowed [1, 131072] range) so the
+	// answer survives long reasoning.
+	defaultMaxOutputTokens int
 }
 
 var vendorTable = map[string]vendorCapabilities{
@@ -68,6 +78,7 @@ var vendorTable = map[string]vendorCapabilities{
 		toolCallReasoning:      true,
 		singleSegmentReasoning: true,
 		ignoresTemperature:     true,
+		defaultMaxOutputTokens: 65536,
 	},
 	// "" (unknown OpenAI-compatible endpoint) → zero value = default behavior.
 }
