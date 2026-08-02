@@ -58,6 +58,7 @@ func TestWindowsReleaseSignsPayloadBeforeRepackaging(t *testing.T) {
 		"name: Submit installer for Authenticode signing",
 		"name: Approve and download signed Windows installer",
 		"name: Replace installer with signed build",
+		"name: Checkout protected release verifier",
 		"name: Verify Windows Authenticode release contract",
 		"name: Sign artifacts (minisign)",
 	}
@@ -92,6 +93,9 @@ func TestWindowsReleaseSignsPayloadBeforeRepackaging(t *testing.T) {
 		`go run ./cmd/sign sign ../signed-payload/reasonix-payload.json`,
 		`go run ./cmd/sign verify ../signed-payload/reasonix-payload.json`,
 		`REASONIX_REQUIRE_PAYLOAD_MANIFEST: "1"`,
+		`ref: ${{ github.sha }}`,
+		`path: release-control`,
+		`./release-control/scripts/verify-windows-authenticode.ps1`,
 	} {
 		if !strings.Contains(workflow, want) {
 			t.Errorf("desktop release workflow is missing signing contract %q", want)
@@ -142,6 +146,10 @@ func TestWindowsReleaseSignsPayloadBeforeRepackaging(t *testing.T) {
 		"$signature.SignerCertificate",
 		"$signature.Status -ne \"Valid\"",
 		"Expand-Archive",
+		`Get-ChildItem -LiteralPath $extractRoot -Recurse -File -Filter "*.exe"`,
+		`$activeDir.Replace("\", "/") -ne "versions/$activeVersion"`,
+		`Portable = (Join-Path $activeDir "reasonix-desktop.exe")`,
+		`Portable = "reasonix-desktop.exe"`,
 		"Portable archive must contain exactly 6 executables",
 		"Get-FileHash -Algorithm SHA256",
 	} {
