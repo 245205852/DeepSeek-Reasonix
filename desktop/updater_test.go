@@ -99,10 +99,14 @@ func TestUpdaterWailsMethodContracts(t *testing.T) {
 		numOut int
 	}{
 		{name: "ApplyUpdateRequest", numIn: 4, numOut: 1},
-		{name: "DownloadUpdate", numIn: 2, numOut: 2},
-		{name: "InstallUpdate", numIn: 2, numOut: 1},
-		{name: "DownloadUpdateRequest", numIn: 4, numOut: 2},
-		{name: "InstallUpdateRequest", numIn: 4, numOut: 1},
+		{name: "CheckUpdate", numIn: 2, numOut: 2},
+		{name: "OpenDownloadPage", numIn: 1, numOut: 0},
+	}
+	// Legacy Download/Install split bindings must stay deleted (v1.20+).
+	for _, removed := range []string{"DownloadUpdate", "InstallUpdate", "DownloadUpdateRequest", "InstallUpdateRequest", "ApplyUpdate"} {
+		if _, ok := appType.MethodByName(removed); ok {
+			t.Fatalf("App.%s must be removed from the Wails surface", removed)
+		}
 	}
 	for _, tt := range tests {
 		method, ok := appType.MethodByName(tt.name)

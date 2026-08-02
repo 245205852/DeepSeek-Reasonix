@@ -1127,6 +1127,7 @@ export default function App() {
   const setSettingsFocus = useOverlayStore((s) => s.setSettingsFocus);
   const [desktopLayoutStyle, setDesktopLayoutStyle] = useState<DesktopLayoutStyle>("workbench");
   const singleSurfaceLayout = desktopLayoutStyle === "workbench" || desktopLayoutStyle === "creation";
+  const [configLoadWarnings, setConfigLoadWarnings] = useState<string[]>([]);
   const [startupUpdateChecksEnabled, setStartupUpdateChecksEnabled] = useState<boolean | null>(null);
   const [histView, setHistView] = useState<HistoryViewState | null>(null);
   const paletteOpen = useOverlayStore((s) => s.paletteOpen);
@@ -1444,6 +1445,11 @@ export default function App() {
       ]);
       if (cancelled) return;
       applyDesktopPreferences(settings);
+      setConfigLoadWarnings(
+        Array.isArray(settings.configWarnings)
+          ? settings.configWarnings.filter((w): w is string => typeof w === "string" && w.trim() !== "")
+          : [],
+      );
       hydrateDisplayMode(settings.displayMode);
       setSidebarImConnections(sidebarImConnectionsFromBot(settings.bot, t, runtimeStatus));
       setImTopicSources(sidebarImTopicSourcesFromBot(settings.bot, t));
@@ -4461,6 +4467,42 @@ export default function App() {
 
           {state.meta?.startupErr && (
             <div className="banner banner--error">{t("topbar.startupError", { msg: state.meta.startupErr })}</div>
+          )}
+          {configLoadWarnings.length > 0 && (
+            <div className="banner banner--warning banner--actionable">
+              <span className="banner__msg" title={configLoadWarnings.join("\n")}>
+                {t("config.loadWarning", { msg: configLoadWarnings[0] })}
+              </span>
+              <span className="banner__spacer" />
+              <button
+                type="button"
+                className="btn btn--small"
+                onClick={() => void app.OpenUserConfigPath?.().catch(() => {})}
+              >
+                {t("config.openConfig")}
+              </button>
+              <button
+                type="button"
+                className="btn btn--small"
+                onClick={() => {
+                  void (async () => {
+                    try {
+                      const view = await app.ReloadUserConfig?.();
+                      if (view?.configWarnings) setConfigLoadWarnings(view.configWarnings);
+                      else setConfigLoadWarnings([]);
+                    } catch {
+                      /* keep banner */
+                    }
+                  })();
+                }}
+              >
+                {t("config.reloadConfig")}
+              </button>
+              <span className="banner__hint">{t("config.doctorHint")}</span>
+              <button type="button" className="btn btn--small" onClick={() => setConfigLoadWarnings([])}>
+                {t("updater.dismiss")}
+              </button>
+            </div>
           )}
           {providerSetupNeeded && !needsOnboarding && (
             <div className="banner banner--warning banner--actionable">

@@ -2760,6 +2760,10 @@ export const zh: Record<DictKey, string> = {
   "tool.noOutput": "无输出",
 
   // 软件更新
+  "config.loadWarning": "配置问题：{msg}",
+  "config.openConfig": "打开配置",
+  "config.reloadConfig": "重新加载",
+  "config.doctorHint": "或运行：reasonix doctor repair",
   "updater.title": "软件更新",
   "updater.autoCheckLabel": "启动时检测新版本",
   "updater.autoCheckHint": "关闭后，Reasonix 打开时不会自动检查更新；你仍可在此页手动检查。",

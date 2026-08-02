@@ -2757,6 +2757,10 @@ export const en = {
   "tool.noOutput": "no output",
 
   // software update
+  "config.loadWarning": "Configuration issue: {msg}",
+  "config.openConfig": "Open config",
+  "config.reloadConfig": "Reload",
+  "config.doctorHint": "Or run: reasonix doctor repair",
   "updater.title": "Software update",
   "updater.autoCheckLabel": "Check for updates on startup",
   "updater.autoCheckHint": "When off, Reasonix won't check automatically when it opens. You can still check manually here.",

@@ -258,17 +258,9 @@ type App struct {
 
 	heartbeat *HeartbeatEngine // scheduled heartbeat tasks; nil until startup
 
-	startupTracker *repair.StartupTracker
-	previousRun    repair.PreviousRunObservation
-	// Healthy-update identity is captured before Wails starts. A process only
-	// commits the complete probationary transaction it booted from, never a
-	// rewritten or later same-version retry.
-	healthyUpdateCreatedAt     string
-	healthyUpdateTransactionID string
-	// startupReady records that the window reached domReady. The shutdown path
-	// treats an exit before this point as an incomplete start: it must neither
-	// reset the crash-loop counter nor bless a probationary update, or a build
-	// that boots but never paints would defeat the Guard rollback safety net.
+	previousRun repair.PreviousRunObservation
+	// startupReady records that the window reached domReady so LKG config
+	// snapshots are only written after a real UI boot.
 	startupReady atomic.Bool
 }
 
@@ -908,11 +900,9 @@ func (a *App) shutdown(context.Context) {
 		a.releaseSessionRuntimeLocked(it.tab)
 		a.mu.Unlock()
 	}
-	if a.startupTracker != nil && a.startupReady.Load() {
-		// Diagnostic-only: reset the crash counter for reasonix doctor. No
-		// Guard recovery threshold or automatic rollback remains.
-		_ = a.startupTracker.MarkClean()
-		_ = repair.MarkUpdateHealthyExact(version, a.healthyUpdateCreatedAt, a.healthyUpdateTransactionID)
+	if a.startupReady.Load() {
+		// Independent last-known-good config snapshot after a successful UI
+		// session. Does not participate in startup decisions.
 		_ = repair.RecordHealthyConfig(version)
 	}
 }
@@ -959,46 +949,21 @@ func (a *App) domReady(_ context.Context) {
 
 	runtime.WindowShow(a.ctx)
 	a.startupReady.Store(true)
-	if a.startupTracker != nil {
-		_ = a.startupTracker.MarkReady()
-		tracker := a.startupTracker
-		ctx := a.ctx
-		a.goSafe("startupHeartbeat", func() {
-			ticker := time.NewTicker(30 * time.Second)
-			defer ticker.Stop()
-			for {
-				select {
-				case <-ctx.Done():
-					return
-				case <-ticker.C:
-					if err := tracker.Heartbeat(); err != nil {
-						slog.Debug("desktop: update startup heartbeat", "err", err)
-					}
-				}
-			}
-		})
-		a.goSafe("confirmStartupHealth", func() {
-			timer := time.NewTimer(repair.StartupHealthDelay)
-			defer timer.Stop()
-			select {
-			case <-timer.C:
-			case <-ctx.Done():
-				return
-			}
-			if err := tracker.MarkHealthy(); err != nil {
-				slog.Warn("desktop: mark startup healthy", "err", err)
-				return
-			}
-			// Health markers remain useful for diagnostics and update telemetry.
-			// They must not trigger product Safe Mode or automatic rollback.
-			if err := repair.MarkUpdateHealthyExact(version, a.healthyUpdateCreatedAt, a.healthyUpdateTransactionID); err != nil {
-				slog.Warn("desktop: commit healthy update", "err", err)
-			}
-			if err := repair.RecordHealthyConfig(version); err != nil {
-				slog.Warn("desktop: record last-known-good config", "err", err)
-			}
-		})
-	}
+	// Record last-known-good config after the UI is actually visible. This is
+	// independent of any startup health probation or crash-loop policy.
+	ctx := a.ctx
+	a.goSafe("recordHealthyConfig", func() {
+		timer := time.NewTimer(2 * time.Second)
+		defer timer.Stop()
+		select {
+		case <-timer.C:
+		case <-ctx.Done():
+			return
+		}
+		if err := repair.RecordHealthyConfig(version); err != nil {
+			slog.Debug("desktop: record last-known-good config", "err", err)
+		}
+	})
 }
 
 // --- bound command surface (frontend → controller) ---

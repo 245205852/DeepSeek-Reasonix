@@ -144,8 +144,16 @@ build_args+=(-platform "$PLATFORM" -ldflags "$ldflags")
 echo "==> wails build ${build_args[*]}"
 wails build "${build_args[@]}"
 if [ "$os" != windows ]; then
-	guard_out="$ROOT/desktop/build/bin/$GUARDNAME"
-	build_guard
+	# Linux still ships a one-shot migrator named reasonix-guard in the portable
+	# tarball so 1.18–1.19.1 updaters can hand off. macOS does not bundle Guard.
+	if [ "$os" = linux ]; then
+		guard_out="$ROOT/desktop/build/bin/$GUARDNAME"
+		build_guard
+		launcher_out="$ROOT/desktop/build/bin/$LAUNCHERNAME"
+		echo "==> go build Linux thin launcher"
+		(cd "$ROOT" && GOOS=linux GOARCH="$arch" CGO_ENABLED=0 go build -trimpath \
+			-ldflags="-s -w -X main.version=$VERSION" -o "$launcher_out" ./cmd/reasonix-launcher)
+	fi
 	cli_out="$ROOT/desktop/build/bin/$CLINAME"
 	build_cli
 fi
@@ -159,14 +167,15 @@ darwin)
 	staging=$(mktemp -d)
 	app="$staging/${APPNAME}.app"
 	cp -R "build/bin/reasonix-desktop.app" "$app"
-	cp "$guard_out" "$app/Contents/MacOS/$GUARDNAME"
+	# v1.20+: no Guard in the App bundle. CLI remains a sibling helper for
+	# terminal workflows; LaunchServices must own the Wails process directly.
 	cp "$cli_out" "$app/Contents/MacOS/$CLINAME"
 	bundle_executable=$(/usr/libexec/PlistBuddy -c "Print :CFBundleExecutable" "$app/Contents/Info.plist")
-	# LaunchServices must own the Wails/AppKit process directly. Making Guard the
-	# bundle executable leaves the Dock attached to a non-UI parent process, so
-	# clicking the icon cannot reliably reactivate the desktop window. Guard and
-	# the CLI remain bundled as independent recovery sidecars.
 	[ "$bundle_executable" = "$BINNAME" ] || { echo "macOS bundle executable is $bundle_executable, want $BINNAME" >&2; exit 1; }
+	if [ -e "$app/Contents/MacOS/$GUARDNAME" ]; then
+		echo "macOS bundle must not include $GUARDNAME" >&2
+		exit 1
+	fi
 	bundle_icon=$(/usr/libexec/PlistBuddy -c "Print :CFBundleIconFile" "$app/Contents/Info.plist")
 	case "$bundle_icon" in
 	*.icns) ;;
@@ -272,7 +281,10 @@ linux)
 		'StartupWMClass=reasonix-desktop'; do
 		grep -F -x -q "$desktop_contract" build/linux/reasonix.desktop || { echo "Linux desktop entry missing: $desktop_contract" >&2; exit 1; }
 	done
-	tar -czf "$ROOT/dist/${APPNAME}-linux-${arch}.tar.gz" -C build/bin "$BINNAME" "$GUARDNAME" "$CLINAME"
+	# Portable Linux tarball: desktop + thin launcher + one-shot migrator
+	# (compat name reasonix-guard) + CLI. After migrator runs, Guard self-deletes.
+	tar -czf "$ROOT/dist/${APPNAME}-linux-${arch}.tar.gz" -C build/bin \
+		"$BINNAME" "$LAUNCHERNAME" "$GUARDNAME" "$CLINAME"
 	# Build the privileged update helper shipped inside the .deb. Portable tarball
 	# installs do not need it; only the dpkg package installs helper + Polkit policy.
 	echo "==> go build reasonix-update-helper"

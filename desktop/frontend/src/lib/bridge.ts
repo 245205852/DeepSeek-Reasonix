@@ -458,14 +458,11 @@ export interface AppBindings {
   SetBypass(on: boolean): Promise<void>;
   Version(): Promise<string>;
   CheckUpdate(channel: string): Promise<UpdateInfo | null>;
-  DownloadUpdate(channel: string): Promise<UpdateDownloadResult | null>;
-  DownloadUpdateRequest(channel: string, expectedVersion: string, requestId: string): Promise<UpdateDownloadResult | null>;
-  InstallUpdate(channel: string): Promise<void>;
-  InstallUpdateRequest(channel: string, expectedVersion: string, requestId: string): Promise<void>;
-  ApplyUpdate(): Promise<void>;
   /** v1.20+ single-action update: download, verify, install, relaunch. */
-  ApplyUpdateRequest?(channel: string, expectedVersion: string, requestId: string): Promise<void>;
+  ApplyUpdateRequest(channel: string, expectedVersion: string, requestId: string): Promise<void>;
   OpenDownloadPage(): Promise<void>;
+  OpenUserConfigPath?(): Promise<void>;
+  ReloadUserConfig?(): Promise<{ configWarnings?: string[]; configPath?: string } | null>;
   NeedsOnboarding(): Promise<boolean>;
   ConnectKey(apiKey: string): Promise<string>;
   // Crash overlay "Send report" (desktop/crash_app.go): scrubs user paths, attaches
@@ -896,7 +893,7 @@ function bridgeBreadcrumb(method: string): string {
     return `settings ${method}`;
   if (/^(SaveProvider|SaveProviderModelCatalogs|AddOfficialProviderAccess|AddProviderPresetAccess|ResetProviderPresetAccess|RemoveProviderAccess|DeleteProvider|SaveProviderKey|SetProviderKey|ClearProviderKey|FetchProviderModels|FetchAllProviderModels|ConnectKey)/.test(method))
     return `provider ${method}`;
-  if (/^(CheckUpdate|DownloadUpdate|DownloadUpdateRequest|InstallUpdate|InstallUpdateRequest|ApplyUpdate|ApplyUpdateRequest|OpenDownloadPage)/.test(method)) return `update ${method}`;
+  if (/^(CheckUpdate|ApplyUpdateRequest|OpenDownloadPage|OpenUserConfigPath|ReloadUserConfig)/.test(method)) return `update ${method}`;
   if (/^(AddMCPServer|InstallMCPServer|UpdateMCPServer|RemoveMCPServer|AuthorizeAndConnectMCPServer|ReconnectMCPServer|ClearMCPServerAuthentication|SetMCPServer)/.test(method))
     return `mcp ${method}`;
   if (/^(AddSkillPath|RemoveSkillPath|RefreshSkills|SetSkillEnabled|AcceptSkillSuggestion|AvailableSubagentTools|CreateSubagentProfile|UpdateSubagentProfile|DeleteSubagentProfile|SetSubagentProfileModel|SetSubagentProfileEffort|TrySubagentProfile|CancelTrySubagentProfile)/.test(method))
@@ -4442,11 +4439,7 @@ function makeMockApp(): AppBindings {
         assetSize: 0,
       };
     },
-    async DownloadUpdate(channel: string) {
-      const expectedVersion = channel === "preview" ? "v1.1.0-preview.1" : "v1.1.0";
-      return this.DownloadUpdateRequest(channel, expectedVersion, "mock-legacy-download");
-    },
-    async DownloadUpdateRequest(channel: string, expectedVersion: string, requestId: string) {
+    async ApplyUpdateRequest(channel: string, expectedVersion: string, requestId: string) {
       const selectedChannel = channel === "preview" ? "preview" : "stable";
       const total = 12_345_678;
       for (let r = 0; r <= total; r += 1_800_000) {
@@ -4454,35 +4447,19 @@ function makeMockApp(): AppBindings {
         await delay(120);
       }
       emitUpdater({ requestId, version: expectedVersion, channel: selectedChannel, phase: "verifying", received: total, total });
-      await delay(500);
-      emitUpdater({ requestId, version: expectedVersion, channel: selectedChannel, phase: "downloaded", received: total, total });
-      return { requestId, version: expectedVersion, channel: selectedChannel, path: "/tmp/reasonix-update", size: total, sha256: "mock" };
-    },
-    async InstallUpdate(channel: string) {
-      const expectedVersion = channel === "preview" ? "v1.1.0-preview.1" : "v1.1.0";
-      await this.InstallUpdateRequest(channel, expectedVersion, "mock-legacy-install");
-    },
-    async InstallUpdateRequest(channel: string, expectedVersion: string, requestId: string) {
-      const selectedChannel = channel === "preview" ? "preview" : "stable";
-      const total = 12_345_678;
+      await delay(300);
       emitUpdater({ requestId, version: expectedVersion, channel: selectedChannel, phase: "installing", received: total, total });
-      await delay(500);
-      emitUpdater({ requestId, version: expectedVersion, channel: selectedChannel, phase: "done", received: total, total });
-      // The real shell relaunches here; the mock just stops.
-    },
-    async ApplyUpdate() {
-      await this.ApplyUpdateRequest("stable", "v1.1.0", "mock-apply");
-    },
-    async ApplyUpdateRequest(channel: string, expectedVersion: string, requestId: string) {
-      await this.DownloadUpdateRequest(channel, expectedVersion, requestId);
-      emitUpdater({ requestId, version: expectedVersion, channel: channel === "preview" ? "preview" : "stable", phase: "installing", received: 0, total: 0 });
-      await this.InstallUpdateRequest(channel, expectedVersion, requestId);
-      emitUpdater({ requestId, version: expectedVersion, channel: channel === "preview" ? "preview" : "stable", phase: "relaunching", received: 0, total: 0 });
+      await delay(300);
+      emitUpdater({ requestId, version: expectedVersion, channel: selectedChannel, phase: "relaunching", received: 0, total: 0 });
     },
     async OpenDownloadPage() {
       if (typeof window !== "undefined") {
         window.open("https://reasonix.io/?download=desktop#start", "_blank", "noopener");
       }
+    },
+    async OpenUserConfigPath() {},
+    async ReloadUserConfig() {
+      return { configWarnings: [], configPath: "" };
     },
     // Dev seam: match the backend's provider-agnostic onboarding predicate.
     async NeedsOnboarding() {

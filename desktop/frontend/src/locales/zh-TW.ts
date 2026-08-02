@@ -1908,6 +1908,10 @@ export const zhTW: Record<DictKey, string> = {
   "tool.noOutput": "無輸出",
 
   // 軟體更新
+  "config.loadWarning": "設定問題：{msg}",
+  "config.openConfig": "開啟設定",
+  "config.reloadConfig": "重新載入",
+  "config.doctorHint": "或執行：reasonix doctor repair",
   "updater.title": "軟體更新",
   "updater.currentVersion": "當前版本：{v}",
   "updater.channelLabel": "更新渠道：{channel}",

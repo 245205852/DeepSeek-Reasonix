@@ -370,30 +370,15 @@ func installStagedWindowsReleaseUnit(
 	claimed *repair.UpdateTransaction,
 	stagingDir string,
 ) (bool, []repair.FileUpdateInstallReceipt, error) {
-	// Prefer the v1.20+ versioned layout. On success receipts are nil and the
-	// caller clears the pending transaction without flat-file publish records.
-	if preferVersionedWindowsActivation(stagingDir) {
-		if err := activateVersionedWindowsFromStaging(claimed, stagingDir); err != nil {
-			return false, nil, fmt.Errorf("versioned activate: %w", err)
-		}
-		return true, nil, nil
+	// v1.20+: versioned-v1 is the only publish path. Incomplete staged payloads
+	// fail closed without mutating the live install or leaving flat pending state.
+	if !preferVersionedWindowsActivation(stagingDir) {
+		return false, nil, fmt.Errorf("staged payload is incomplete for versioned-v1 activation")
 	}
-
-	// Legacy flat release-unit path for incomplete staged payloads.
-	members, err := loadWindowsStagedReleaseUnit(claimed, stagingDir)
-	if err != nil {
-		return false, nil, err
+	if err := activateVersionedWindowsFromStaging(claimed, stagingDir); err != nil {
+		return false, nil, fmt.Errorf("versioned activate: %w", err)
 	}
-	// Persist recovery intent before the first live rename so a mid-publish
-	// crash can be reconciled from the pending transaction.
-	if err := repair.MarkUpdateApplyFailedExact(claimed, "Windows update publish did not complete"); err != nil {
-		return false, nil, fmt.Errorf("record update recovery intent: %w", err)
-	}
-	receipts, err := publishLoadedFileUpdateReleaseUnit(claimed, members, repair.PublishClaimedFileUpdateMemberExact)
-	if err != nil {
-		return true, receipts, err
-	}
-	return true, receipts, nil
+	return true, nil, nil
 }
 
 func windowsReleaseUnitPaths(installDir string) []string {

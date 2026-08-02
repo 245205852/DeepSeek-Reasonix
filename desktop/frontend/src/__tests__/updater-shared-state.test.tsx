@@ -107,25 +107,6 @@ window.go = {
         checkedChannels.push(channel);
         return { ...debInfo, channel: channel === "preview" ? "preview" : "stable" };
       },
-      async DownloadUpdateRequest(channel: string, expectedVersion: string, requestId: string) {
-        return {
-          requestId,
-          version: expectedVersion,
-          channel: channel === "preview" ? "preview" : "stable",
-          path: "/tmp/update.deb",
-          size: 42,
-          sha256: "abc",
-        };
-      },
-      InstallUpdateRequest(channel: string, expectedVersion: string, requestId: string) {
-        return new Promise<void>((resolve, reject) => applyAttempts.push({
-          requestId,
-          version: expectedVersion,
-          channel,
-          resolve,
-          reject,
-        }));
-      },
       ApplyUpdateRequest(channel: string, expectedVersion: string, requestId: string) {
         return new Promise<void>((resolve, reject) => applyAttempts.push({
           requestId,

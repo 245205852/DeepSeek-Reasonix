@@ -243,12 +243,7 @@ function useUpdaterInternal(): Updater {
         ? { kind: "authorizing", info }
         : { kind: "downloading", received: 0, total: info.assetSize, info },
     );
-    const applyFn = app.ApplyUpdateRequest
-      ?? (async (channel: string, expectedVersion: string, requestId: string) => {
-        await app.DownloadUpdateRequest(channel, expectedVersion, requestId);
-        await app.InstallUpdateRequest(channel, expectedVersion, requestId);
-      });
-    void applyFn(selectedChannel, info.latest, operation.requestId).catch((e) => {
+    void app.ApplyUpdateRequest(selectedChannel, info.latest, operation.requestId).catch((e) => {
       if (!isCurrentOperation(operation)) return;
       const message = errMsg(e);
       completeOperation(operation);

@@ -112,35 +112,14 @@ func main() {
 	// (launch --detach --safe-mode). They produce no product behavior.
 	_ = parseDesktopLaunchArgs(os.Args[1:])
 
-	// Startup tracking remains for diagnostics/crash reports only. It must not
-	// force Safe Mode, disable plugins, or select a previous binary.
-	tracker := repair.NewStartupTracker("")
-	previousRun := tracker.ObservePreviousRun()
-	startupState, _ := tracker.Begin(version, false)
-	trackerOwned := startupState.PID == os.Getpid()
-	installProfile := telemetryInstallProfile()
-	updateFrom, updateTo, healthyUpdateCreatedAt, healthyUpdateTransactionID := "", "", "", ""
-	if tx, err := repair.ReadPendingUpdate(); err == nil {
-		updateFrom, updateTo = tx.FromVersion, tx.ToVersion
-		if strings.TrimSpace(tx.ToVersion) == strings.TrimSpace(version) {
-			healthyUpdateCreatedAt = tx.CreatedAt
-			healthyUpdateTransactionID = repair.UpdateTransactionID(tx)
-		}
-	}
-	if trackerOwned {
-		_ = tracker.MarkLaunchContext(installProfile, updateFrom, updateTo)
-	}
-	// Always boot the normal WebKit path. Renderer recovery no longer depends
-	// on a global Safe Mode product switch.
+	// Observe previous run for crash diagnostics only. Startup tracking must
+	// never force Safe Mode, disable plugins, or select a previous binary.
+	previousRun := repair.NewStartupTracker("").ObservePreviousRun()
+	// Always boot the normal WebKit path.
 	configureWebKitRendererRecovery(false)
 
 	app := NewApp()
 	app.previousRun = previousRun
-	app.healthyUpdateCreatedAt = healthyUpdateCreatedAt
-	app.healthyUpdateTransactionID = healthyUpdateTransactionID
-	if trackerOwned {
-		app.startupTracker = tracker
-	}
 	title := "Reasonix"
 	singleInstance := singleInstanceLock(app)
 	appMenu := app.createAppMenu()
@@ -235,9 +214,6 @@ func main() {
 		},
 	})
 	if err != nil {
-		if trackerOwned {
-			_ = tracker.MarkFailed(err)
-		}
 		println("Error:", err.Error())
 	}
 }
