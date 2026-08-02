@@ -528,14 +528,15 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 	// a single background catalog discovery. First real tool call uses
 	// EnsureConnected so parent/child/tab runtimes share one process.
 	pluginSpecOptions := PluginSpecOptions{
-		DefaultCallTimeout: time.Duration(cfg.MCPCallTimeoutSeconds()) * time.Second,
-		LaunchManager:      mcplaunch.ForWorkspace(config.ReasonixHomeDir(), root),
-		ConfigSource:       "workspace_config",
-		StateHome:          config.ReasonixHomeDir(),
-		WriterRoots:        writeRoots,
-		ForbidReadRoots:    forbidReadRoots,
-		Network:            networkEnabled,
-		PackageOwners:      pluginPackageOwners(cfg),
+		DefaultStartupTimeout: time.Duration(cfg.MCPStartupTimeoutSeconds()) * time.Second,
+		DefaultCallTimeout:    time.Duration(cfg.MCPCallTimeoutSeconds()) * time.Second,
+		LaunchManager:         mcplaunch.ForWorkspace(config.ReasonixHomeDir(), root),
+		ConfigSource:          "workspace_config",
+		StateHome:             config.ReasonixHomeDir(),
+		WriterRoots:           writeRoots,
+		ForbidReadRoots:       forbidReadRoots,
+		Network:               networkEnabled,
+		PackageOwners:         pluginPackageOwners(cfg),
 	}
 	autoStartEntries := cfg.EnabledPlugins(root, config.DefaultMCPActivationStore())
 	enabledMCPNames := make(map[string]bool, len(autoStartEntries))
@@ -555,9 +556,12 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 		// plugins, so a recovery boot never starts external processes.
 		extraPlugins = nil
 	}
-	extraSpecs := applyDefaultMCPCallTimeout(
-		applyKnownPluginOverrides(extraPlugins, root),
-		pluginSpecOptions.DefaultCallTimeout,
+	extraSpecs := applyDefaultMCPStartupTimeout(
+		applyDefaultMCPCallTimeout(
+			applyKnownPluginOverrides(extraPlugins, root),
+			pluginSpecOptions.DefaultCallTimeout,
+		),
+		pluginSpecOptions.DefaultStartupTimeout,
 	)
 	for i := range extraSpecs {
 		if strings.TrimSpace(extraSpecs[i].WorkspaceRoot) == "" {
@@ -1701,6 +1705,9 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 			if strings.TrimSpace(spec.ConfigSource) == "" {
 				spec.ConfigSource = pluginSpecOptions.ConfigSource
 			}
+			if spec.DefaultStartupTimeout <= 0 {
+				spec.DefaultStartupTimeout = pluginSpecOptions.DefaultStartupTimeout
+			}
 			applyMCPIsolation(spec, root, pluginSpecOptions)
 		},
 		CapabilityRuntime:      capRuntime,
@@ -2363,14 +2370,15 @@ func PluginSpecsForRoot(entries []config.PluginEntry, workspaceRoot string) []pl
 // PluginSpecOptions carries runtime policy that is not stored on each plugin
 // entry but still needs to reach plugin.Spec.
 type PluginSpecOptions struct {
-	DefaultCallTimeout time.Duration
-	LaunchManager      *mcplaunch.Manager
-	ConfigSource       string
-	StateHome          string
-	WriterRoots        []string
-	ForbidReadRoots    []string
-	Network            bool
-	PackageOwners      map[string]string
+	DefaultStartupTimeout time.Duration
+	DefaultCallTimeout    time.Duration
+	LaunchManager         *mcplaunch.Manager
+	ConfigSource          string
+	StateHome             string
+	WriterRoots           []string
+	ForbidReadRoots       []string
+	Network               bool
+	PackageOwners         map[string]string
 }
 
 // PluginSpecsForRootWithOptions maps configured plugin entries to plugin.Spec
@@ -2390,21 +2398,23 @@ func pluginSpecFromEntryWithOptions(e config.PluginEntry, workspaceRoot string, 
 		configSource = opts.ConfigSource
 	}
 	spec := plugin.ApplyKnownOverrides(plugin.Spec{
-		Name:               e.Name,
-		Package:            strings.TrimSpace(opts.PackageOwners[e.Name]),
-		Type:               e.Type,
-		Command:            e.Command,
-		Args:               e.Args,
-		Env:                e.Env,
-		URL:                e.URL,
-		Headers:            e.Headers,
-		DefaultCallTimeout: opts.DefaultCallTimeout,
-		CallTimeout:        secondsDuration(e.CallTimeoutSeconds),
-		ToolTimeouts:       toolTimeoutDurations(e.ToolTimeoutSeconds),
-		WorkspaceRoot:      strings.TrimSpace(workspaceRoot),
-		LaunchManager:      opts.LaunchManager,
-		ConfigSource:       configSource,
-		Authorized:         e.Source.UserAuthorized(),
+		Name:                  e.Name,
+		Package:               strings.TrimSpace(opts.PackageOwners[e.Name]),
+		Type:                  e.Type,
+		Command:               e.Command,
+		Args:                  e.Args,
+		Env:                   e.Env,
+		URL:                   e.URL,
+		Headers:               e.Headers,
+		DefaultStartupTimeout: opts.DefaultStartupTimeout,
+		StartupTimeout:        secondsDuration(e.StartupTimeoutSeconds),
+		DefaultCallTimeout:    opts.DefaultCallTimeout,
+		CallTimeout:           secondsDuration(e.CallTimeoutSeconds),
+		ToolTimeouts:          toolTimeoutDurations(e.ToolTimeoutSeconds),
+		WorkspaceRoot:         strings.TrimSpace(workspaceRoot),
+		LaunchManager:         opts.LaunchManager,
+		ConfigSource:          configSource,
+		Authorized:            e.Source.UserAuthorized(),
 	}, workspaceRoot)
 	if e.Source.ProjectScoped() && strings.TrimSpace(spec.Dir) == "" {
 		spec.Dir = workspaceRoot
@@ -2540,6 +2550,20 @@ func applyDefaultMCPCallTimeout(specs []plugin.Spec, timeout time.Duration) []pl
 		out[i] = spec
 		if out[i].DefaultCallTimeout <= 0 {
 			out[i].DefaultCallTimeout = timeout
+		}
+	}
+	return out
+}
+
+func applyDefaultMCPStartupTimeout(specs []plugin.Spec, timeout time.Duration) []plugin.Spec {
+	if len(specs) == 0 || timeout <= 0 {
+		return specs
+	}
+	out := make([]plugin.Spec, len(specs))
+	for i, spec := range specs {
+		out[i] = spec
+		if out[i].DefaultStartupTimeout <= 0 {
+			out[i].DefaultStartupTimeout = timeout
 		}
 	}
 	return out
