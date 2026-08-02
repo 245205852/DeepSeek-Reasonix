@@ -96,8 +96,6 @@ func TestValidateVersionName(t *testing.T) {
 		}
 	}
 }
-
-
 func TestResolveInstallRootFromVersionedDesktop(t *testing.T) {
 	root := t.TempDir()
 	version := "v1.20.0"

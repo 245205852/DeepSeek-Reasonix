@@ -43,13 +43,14 @@ func run(args []string) int {
 			fmt.Println("reasonix-legacy-migrator", version)
 			return 0
 		case "help", "--help", "-h":
-			fmt.Println("usage: reasonix-legacy-migrator [--install-root PATH] [--version VERSION]")
+			fmt.Println("usage: reasonix-legacy-migrator [--install-root PATH] [--version VERSION] [--activate-staging PATH]")
 			return 0
 		}
 	}
 
 	installRoot := ""
 	activeVersion := strings.TrimSpace(version)
+	activateStaging := ""
 	relaunch := true
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
@@ -67,6 +68,13 @@ func run(args []string) int {
 			}
 			i++
 			activeVersion = args[i]
+		case "--activate-staging":
+			if i+1 >= len(args) {
+				fmt.Fprintln(os.Stderr, "error: --activate-staging requires a path")
+				return 2
+			}
+			i++
+			activateStaging = args[i]
 		case "launch", "--detach", "--safe-mode":
 			// Accept legacy argv from old shortcuts; no product behavior.
 			continue
@@ -89,6 +97,21 @@ func run(args []string) int {
 		installRoot = filepath.Dir(exe)
 	}
 	installRoot = filepath.Clean(installRoot)
+	if activateStaging != "" {
+		activeVersion, err := normalizeActiveVersion(activeVersion)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "error:", err)
+			return 1
+		}
+		if err := activateInstallerStaging(installRoot, activeVersion, activateStaging); err != nil {
+			fmt.Fprintln(os.Stderr, "error:", err)
+			return 1
+		}
+		if relaunch {
+			_ = startLauncher(installRoot)
+		}
+		return 0
+	}
 
 	if err := migrateWithRelaunch(installRoot, activeVersion, relaunch); err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
@@ -102,21 +125,10 @@ func migrate(installRoot, activeVersion string) error {
 }
 
 func migrateWithRelaunch(installRoot, activeVersion string, relaunch bool) error {
-	if err := installlayout.ValidateVersionName(activeVersion); err != nil {
-		// Accept bare "dev" builds in development only.
-		if activeVersion == "" || activeVersion == "dev" {
-			activeVersion = "v0.0.0-dev"
-			if err := installlayout.ValidateVersionName(activeVersion); err != nil {
-				return err
-			}
-		} else if !strings.HasPrefix(activeVersion, "v") {
-			activeVersion = "v" + activeVersion
-			if err := installlayout.ValidateVersionName(activeVersion); err != nil {
-				return err
-			}
-		} else {
-			return err
-		}
+	var err error
+	activeVersion, err = normalizeActiveVersion(activeVersion)
+	if err != nil {
+		return err
 	}
 
 	unlock, err := acquireMigrationLock(installRoot)
@@ -210,6 +222,77 @@ func migrateWithRelaunch(installRoot, activeVersion string, relaunch bool) error
 		// Unix can unlink the running migrator. On Windows the parent thin launcher
 		// removes it after this process exits.
 		selfDelete()
+	}
+	return nil
+}
+
+func normalizeActiveVersion(activeVersion string) (string, error) {
+	if err := installlayout.ValidateVersionName(activeVersion); err != nil {
+		// Accept bare "dev" builds in development only.
+		if activeVersion == "" || activeVersion == "dev" {
+			activeVersion = "v0.0.0-dev"
+			if err := installlayout.ValidateVersionName(activeVersion); err != nil {
+				return "", err
+			}
+		} else if !strings.HasPrefix(activeVersion, "v") {
+			activeVersion = "v" + activeVersion
+			if err := installlayout.ValidateVersionName(activeVersion); err != nil {
+				return "", err
+			}
+		} else {
+			return "", err
+		}
+	}
+	return activeVersion, nil
+}
+
+func activateInstallerStaging(installRoot, activeVersion, stagingRoot string) error {
+	installRoot = filepath.Clean(strings.TrimSpace(installRoot))
+	stagingRoot = filepath.Clean(strings.TrimSpace(stagingRoot))
+	if !pathWithinInstallRoot(installRoot, stagingRoot) || stagingRoot == installRoot {
+		return fmt.Errorf("installer staging must be inside the install root")
+	}
+	info, err := os.Lstat(stagingRoot)
+	if err != nil {
+		return fmt.Errorf("inspect installer staging: %w", err)
+	}
+	if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("installer staging must be a real directory")
+	}
+
+	desktopName := installlayout.DesktopBinaryName()
+	cliName := installlayout.CLIBinaryName()
+	requiredNames := []string{desktopName, cliName}
+	if runtime.GOOS == "windows" {
+		requiredNames = append(requiredNames, installlayout.UpdateHelperBinaryName())
+	}
+	members := make([]installlayout.Member, 0, len(requiredNames))
+	for _, name := range requiredNames {
+		members = append(members, installlayout.Member{Name: name, Path: filepath.Join(stagingRoot, name)})
+	}
+
+	launcherName := installlayout.LauncherBinaryName()
+	launcherSource := filepath.Join(stagingRoot, launcherName)
+	rootMembers := []installlayout.Member{
+		{Name: launcherName, Path: launcherSource},
+		{Name: cliName, Path: filepath.Join(stagingRoot, cliName)},
+	}
+	requiredRootNames := []string{launcherName, cliName}
+	if alias := installlayout.PortableAliasName(); alias != "" {
+		rootMembers = append(rootMembers, installlayout.Member{Name: alias, Path: launcherSource})
+		requiredRootNames = append(requiredRootNames, alias)
+	}
+
+	if err := installlayout.ActivateVersion(installlayout.ActivationRequest{
+		InstallRoot:       installRoot,
+		Version:           activeVersion,
+		RequestID:         "signed-installer-" + activeVersion,
+		Members:           members,
+		RequiredNames:     requiredNames,
+		RootMembers:       rootMembers,
+		RequiredRootNames: requiredRootNames,
+	}); err != nil {
+		return fmt.Errorf("activate signed installer staging: %w", err)
 	}
 	return nil
 }

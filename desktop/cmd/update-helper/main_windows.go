@@ -96,24 +96,22 @@ func run(args []string) int {
 	if installLayout == installlayout.InstallLayoutVersionedV1 {
 		return runVersionedWindowsUpdate(logger, installer, installerSHA256, installDir, relaunch, toVersion)
 	}
-	// Resolve claim targets from the prepared pending transaction so versioned
-	// layouts (desktop under versions/<ver>/) and flat layouts share one path.
-	pending, err := repair.ReadPendingUpdate()
-	if err != nil {
-		logger.Printf("read pending update: %v", err)
+	recoverExisting := func(reason string) int {
+		if relaunch != "" {
+			if relaunchErr := startRelaunchFn(preferRelaunchPath(relaunch, installDir), installDir); relaunchErr != nil {
+				logger.Printf("relaunch after %s: %v", reason, relaunchErr)
+			}
+		}
 		return 1
 	}
-	if strings.TrimSpace(pending.ToVersion) != strings.TrimSpace(toVersion) ||
-		strings.TrimSpace(pending.CreatedAt) != strings.TrimSpace(createdAt) ||
-		repair.UpdateTransactionID(pending) != strings.TrimSpace(transactionID) {
-		logger.Print("pending update identity does not match helper arguments")
-		return 1
-	}
-	claimTargets := make([]string, 0, len(pending.Files)+1)
-	claimTargets = append(claimTargets, pending.TargetPath)
-	for _, f := range pending.Files {
-		claimTargets = append(claimTargets, f.TargetPath)
-	}
+	// The detached helper runs from the update cache, so a plain
+	// repair.ReadPendingUpdate would validate the transaction against the cache
+	// directory and reject every legitimate flat install. Claim through the
+	// explicit install-local launcher path instead; the repair package validates
+	// the complete transaction identity and exact release-unit path set while it
+	// acquires the pending + target locks.
+	claimTargets := windowsReleaseUnitPaths(installDir)
+	claimLauncher := filepath.Join(installDir, "reasonix-desktop.exe")
 	// The old desktop may acquire the pending lock during its normal shutdown.
 	// Wait for that exact process first, then claim the transaction and hold both
 	// pending and target locks across the installer replacement window.
@@ -121,13 +119,13 @@ func run(args []string) int {
 		toVersion,
 		createdAt,
 		transactionID,
-		pending.TargetPath,
+		claimLauncher,
 		claimTargets,
 		parentExitTimeout,
 	)
 	if err != nil {
 		logger.Printf("claim pending update: %v", err)
-		return 1
+		return recoverExisting("pending update claim failure")
 	}
 	defer releaseClaim()
 	recoverUnstarted := func() int {
@@ -231,10 +229,6 @@ func run(args []string) int {
 }
 
 func runVersionedWindowsUpdate(logger *log.Logger, installer, installerSHA256, installDir, relaunch, toVersion string) int {
-	if _, err := installlayout.ReadCurrent(installDir); err != nil {
-		logger.Printf("read versioned install pointer: %v", err)
-		return 1
-	}
 	recoverExisting := func() int {
 		if relaunch != "" {
 			if err := startRelaunchFn(preferRelaunchPath(relaunch, installDir), installDir); err != nil {
@@ -242,6 +236,10 @@ func runVersionedWindowsUpdate(logger *log.Logger, installer, installerSHA256, i
 			}
 		}
 		return 1
+	}
+	if _, err := installlayout.ReadCurrent(installDir); err != nil {
+		logger.Printf("read versioned install pointer: %v", err)
+		return recoverExisting()
 	}
 	claimedInstaller, cleanupInstaller, err := stageInstallerFn(installer, installerSHA256)
 	if err != nil {

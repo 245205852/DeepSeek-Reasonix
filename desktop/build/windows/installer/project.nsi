@@ -100,6 +100,7 @@ OutFile "..\..\bin\${INFO_PROJECTNAME}-${ARCH}-installer.exe" # Name of the inst
 !define REASONIX_LAUNCHER "reasonix-launcher.exe"
 !define REASONIX_CLI "reasonix-cli.exe"
 !define REASONIX_PORTABLE_ENTRY "Reasonix.exe"
+!define REASONIX_LAYOUT_INSTALLER "reasonix-layout-installer.exe"
 !define REASONIX_PAYLOAD_MANIFEST "reasonix-payload.json"
 !define REASONIX_PAYLOAD_SIGNATURE "reasonix-payload.json.minisig"
 !define REASONIX_UNLOCK_RETRIES 60
@@ -213,9 +214,18 @@ Function reasonix.waitForExecutableUnlock
    StrCpy $0 0
 
 retry:
-   IfFileExists "$INSTDIR\${PRODUCT_EXECUTABLE}" 0 check_guard
+   IfFileExists "$INSTDIR\${PRODUCT_EXECUTABLE}" 0 check_versioned_target
    ClearErrors
    FileOpen $1 "$INSTDIR\${PRODUCT_EXECUTABLE}" a
+   IfErrors locked
+   FileClose $1
+
+check_versioned_target:
+   ; A same-version recovery install replaces this directory transactionally.
+   ; Detect the running active binary before asking the Go activator to rename it.
+   IfFileExists "$INSTDIR\versions\v${INFO_PRODUCTVERSION}\${PRODUCT_EXECUTABLE}" 0 check_guard
+   ClearErrors
+   FileOpen $1 "$INSTDIR\versions\v${INFO_PRODUCTVERSION}\${PRODUCT_EXECUTABLE}" a
    IfErrors locked
    FileClose $1
 
@@ -308,9 +318,17 @@ reasonix_stage_payload:
     Goto reasonix_section_done
 
 reasonix_normal_install:
-    ; Versioned layout: InstallRoot/{launcher,cli,current.json,versions/vX/...}
-    CreateDirectory "$INSTDIR\versions\v${INFO_PRODUCTVERSION}"
-    SetOutPath "$INSTDIR\versions\v${INFO_PRODUCTVERSION}"
+    ; Extract into an install-local temporary directory, then let the signed Go
+    ; activator validate the complete release unit, transactionally publish the
+    ; version/root entries, and strictly atomically replace current.json last.
+    ; The normal/recovery installer therefore shares the same commit protocol as
+    ; automatic updates instead of writing live files or current.json in place.
+    System::Call 'kernel32::GetCurrentProcessId() i .R8'
+    CreateDirectory "$INSTDIR\versions"
+    StrCpy $R9 "$INSTDIR\versions\.installer-v${INFO_PRODUCTVERSION}-$R8"
+    RMDir /r "$R9"
+    CreateDirectory "$R9"
+    SetOutPath "$R9"
     !insertmacro wails.files
     !if /FileExists "${REASONIX_UPDATE_HELPER}"
     File "/oname=${REASONIX_UPDATE_HELPER}" "${REASONIX_UPDATE_HELPER}"
@@ -322,24 +340,26 @@ reasonix_normal_install:
     !else
     !warning "${REASONIX_CLI} was not found; remote upload installation will be unavailable."
     !endif
-
-    SetOutPath $INSTDIR
     !if /FileExists "${REASONIX_LAUNCHER}"
     File "/oname=${REASONIX_LAUNCHER}" "${REASONIX_LAUNCHER}"
-    File "/oname=${REASONIX_PORTABLE_ENTRY}" "${REASONIX_LAUNCHER}"
     !endif
-    !if /FileExists "${REASONIX_CLI}"
-    File "/oname=${REASONIX_CLI}" "${REASONIX_CLI}"
+
+    SetOutPath "$PLUGINSDIR"
+    !if /FileExists "${REASONIX_GUARD}"
+    File "/oname=${REASONIX_LAYOUT_INSTALLER}" "${REASONIX_GUARD}"
+    !else
+    !error "${REASONIX_GUARD} was not found; normal installs require the signed layout activator."
     !endif
-    ; current.json schema 1 — activeVersion uses the numeric product version
-    ; with a leading v, matching installlayout.ValidateVersionName.
-    FileOpen $0 "$INSTDIR\current.json" w
-    FileWrite $0 "{$\r$\n"
-    FileWrite $0 '  "schemaVersion": 1,$\r$\n'
-    FileWrite $0 '  "activeVersion": "v${INFO_PRODUCTVERSION}",$\r$\n'
-    FileWrite $0 '  "activeDir": "versions/v${INFO_PRODUCTVERSION}"$\r$\n'
-    FileWrite $0 "}$\r$\n"
-    FileClose $0
+    ExecWait '"$PLUGINSDIR\${REASONIX_LAYOUT_INSTALLER}" --install-root "$INSTDIR" --version "v${INFO_PRODUCTVERSION}" --activate-staging "$R9" --no-relaunch' $0
+    StrCmp $0 "0" reasonix_layout_activated
+    DetailPrint "Reasonix layout activation failed with exit code $0; the previous version remains active."
+    RMDir /r "$R9"
+    SetErrorLevel 1
+    Abort "Reasonix could not activate the verified release. The previous version was left unchanged."
+
+reasonix_layout_activated:
+    RMDir /r "$R9"
+    SetOutPath "$INSTDIR"
 
     ; Remove flat leftovers from prior 1.18–1.19 installs when overwriting.
     Delete "$INSTDIR\${PRODUCT_EXECUTABLE}"

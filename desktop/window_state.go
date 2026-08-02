@@ -39,9 +39,10 @@ const (
 )
 
 var (
-	windowStateMu     sync.Mutex
-	lastKnownWindow   DesktopWindowState
-	lastKnownWindowOK bool
+	windowStateMu        sync.Mutex
+	windowStatePersistMu sync.Mutex
+	lastKnownWindow      DesktopWindowState
+	lastKnownWindowOK    bool
 )
 
 func windowStatePath() string {
@@ -146,6 +147,8 @@ func (a *App) SaveWindowState(state DesktopWindowState) error {
 	if err := validateWindowState(state); err != nil {
 		return err
 	}
+	windowStatePersistMu.Lock()
+	defer windowStatePersistMu.Unlock()
 	rememberWindowState(state)
 	return writeWindowState(state)
 }
@@ -167,6 +170,8 @@ func writeWindowState(state DesktopWindowState) error {
 // Wails shutdown those paths can hit ScaleToDefaultDPI with DPI=0 and panic.
 // If no frontend report has landed yet, this is a no-op (first-launch quit).
 func (a *App) saveWindowStateSync() {
+	windowStatePersistMu.Lock()
+	defer windowStatePersistMu.Unlock()
 	state, ok := lastKnownWindowState()
 	if !ok {
 		return

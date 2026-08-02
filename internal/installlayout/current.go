@@ -123,7 +123,10 @@ func WriteCurrent(installRoot string, ptr CurrentPointer) error {
 		return err
 	}
 	body = append(body, '\n')
-	return fileutil.AtomicWriteFile(filepath.Join(installRoot, CurrentFileName), body, 0o644)
+	// current.json is the layout commit point. Never use AtomicWriteFile's
+	// cross-device copy fallback here: truncating this file can make every
+	// installed version unreachable through the launcher.
+	return fileutil.AtomicWriteFileStrict(filepath.Join(installRoot, CurrentFileName), body, 0o644)
 }
 
 // ValidateVersionName rejects empty, absolute, or traversal-prone version labels.

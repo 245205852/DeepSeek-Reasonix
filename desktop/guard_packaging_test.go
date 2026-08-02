@@ -158,8 +158,9 @@ func TestDesktopPackagesPreserveNativePlatformLaunchers(t *testing.T) {
 		`File "/oname=${REASONIX_CLI}" "${REASONIX_CLI}"`,
 		`!uninstfinalize 'cmd.exe /C copy /Y "%1" "reasonix-uninstall.exe" >NUL'`,
 		`File "/oname=uninstall.exe" "${ARG_REASONIX_SIGNED_UNINSTALLER}"`,
-		`CreateDirectory "$INSTDIR\versions\v${INFO_PRODUCTVERSION}"`,
-		`FileWrite $0 '  "schemaVersion": 1,$\r$\n'`,
+		`StrCpy $R9 "$INSTDIR\versions\.installer-v${INFO_PRODUCTVERSION}-$R8"`,
+		`File "/oname=${REASONIX_LAYOUT_INSTALLER}" "${REASONIX_GUARD}"`,
+		`--activate-staging "$R9" --no-relaunch`,
 		`CreateShortcut "$SMPROGRAMS\${INFO_PRODUCTNAME}.lnk" "$INSTDIR\${REASONIX_LAUNCHER}" "" "$INSTDIR\versions\v${INFO_PRODUCTVERSION}\${PRODUCT_EXECUTABLE}" 0`,
 		`CreateShortCut "$DESKTOP\${INFO_PRODUCTNAME}.lnk" "$INSTDIR\${REASONIX_LAUNCHER}" "" "$INSTDIR\versions\v${INFO_PRODUCTVERSION}\${PRODUCT_EXECUTABLE}" 0`,
 		`StrCmp $ReasonixStageMode "1" reasonix_stage_payload`,
@@ -168,5 +169,9 @@ func TestDesktopPackagesPreserveNativePlatformLaunchers(t *testing.T) {
 		if !strings.Contains(windows, want) {
 			t.Errorf("Windows installer missing versioned-layout contract %q", want)
 		}
+	}
+	if strings.Contains(windows, `FileOpen $0 "$INSTDIR\current.json" w`) ||
+		strings.Contains(windows, `SetOutPath "$INSTDIR\versions\v${INFO_PRODUCTVERSION}"`) {
+		t.Fatal("normal Windows installer must not write the live version or current.json in place")
 	}
 }

@@ -86,6 +86,7 @@ func TestWindowsInstallerScriptWaitsBeforeCopyingExecutable(t *testing.T) {
 		`!define REASONIX_LAUNCHER "reasonix-launcher.exe"`,
 		`!define REASONIX_CLI "reasonix-cli.exe"`,
 		`!define REASONIX_PORTABLE_ENTRY "Reasonix.exe"`,
+		`!define REASONIX_LAYOUT_INSTALLER "reasonix-layout-installer.exe"`,
 		`!define REASONIX_PAYLOAD_MANIFEST "reasonix-payload.json"`,
 		`!define REASONIX_PAYLOAD_SIGNATURE "reasonix-payload.json.minisig"`,
 		"Var ReasonixUpdateMode",
@@ -107,6 +108,7 @@ func TestWindowsInstallerScriptWaitsBeforeCopyingExecutable(t *testing.T) {
 		`LangString reasonixUpdateSubtitle ${LANG_TRADCHINESE} "正在安裝已驗證的更新，完成後 Reasonix 將自動重新啟動。"`,
 		"Function reasonix.waitForExecutableUnlock",
 		`FileOpen $1 "$INSTDIR\${PRODUCT_EXECUTABLE}" a`,
+		`FileOpen $1 "$INSTDIR\versions\v${INFO_PRODUCTVERSION}\${PRODUCT_EXECUTABLE}" a`,
 		`FileOpen $1 "$INSTDIR\${REASONIX_GUARD}" a`,
 		`FileOpen $1 "$INSTDIR\${REASONIX_LAUNCHER}" a`,
 		`FileOpen $1 "$INSTDIR\${REASONIX_CLI}" a`,
@@ -115,7 +117,8 @@ func TestWindowsInstallerScriptWaitsBeforeCopyingExecutable(t *testing.T) {
 		"Call reasonix.waitForExecutableUnlock",
 		`File "/oname=${REASONIX_UPDATE_HELPER}" "${REASONIX_UPDATE_HELPER}"`,
 		`File "/oname=${REASONIX_CLI}" "${REASONIX_CLI}"`,
-		`File "/oname=${REASONIX_PORTABLE_ENTRY}" "${REASONIX_LAUNCHER}"`,
+		`File "/oname=${REASONIX_LAYOUT_INSTALLER}" "${REASONIX_GUARD}"`,
+		`--activate-staging "$R9" --no-relaunch`,
 		`File "/oname=${REASONIX_PAYLOAD_MANIFEST}" "${REASONIX_PAYLOAD_MANIFEST}"`,
 		`File "/oname=${REASONIX_PAYLOAD_SIGNATURE}" "${REASONIX_PAYLOAD_SIGNATURE}"`,
 		`Delete "$INSTDIR\${REASONIX_UPDATE_HELPER}"`,
@@ -141,6 +144,9 @@ func TestWindowsInstallerScriptWaitsBeforeCopyingExecutable(t *testing.T) {
 	}
 	if !strings.Contains(script, "Goto reasonix_section_done") {
 		t.Fatal("staging mode must skip registry, shortcuts, associations, and uninstaller")
+	}
+	if strings.Contains(script, `FileOpen $0 "$INSTDIR\current.json" w`) {
+		t.Fatal("normal installer must delegate the current.json commit to the atomic Go activator")
 	}
 	metadataBranch := strings.Index(script, `reasonix_stage_payload:`)
 	metadataFile := strings.Index(script, `File "/oname=${REASONIX_PAYLOAD_MANIFEST}"`)
