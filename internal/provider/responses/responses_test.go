@@ -582,7 +582,9 @@ func TestAllZeroUsageCompletedIsSuppressed(t *testing.T) {
 }
 
 func TestMessagesToInputIncludesSummaryOnReasoningItems(t *testing.T) {
-	client := New(Config{Name: "test", BaseURL: "https://api.deepseek.com", Model: "deepseek-v4-flash"}).(*client)
+	// DashScope is the only vendor whose schema requires the summary list;
+	// use its base URL so the capability table opts in.
+	client := New(Config{Name: "dashscope", BaseURL: "https://dashscope.aliyuncs.com/compatible-mode/v1", Model: "qwen3"}).(*client)
 	body, _, _ := client.buildRequestBody(provider.Request{Messages: []provider.Message{
 		{Role: provider.RoleUser, Content: "run"},
 		{Role: provider.RoleAssistant, ReasoningContent: "think step by step", Content: "answer"},
@@ -610,6 +612,45 @@ func TestMessagesToInputIncludesSummaryOnReasoningItems(t *testing.T) {
 	content, ok := reasoning["content"].([]map[string]string)
 	if !ok || len(content) != 1 || content[0]["type"] != "reasoning_text" || content[0]["text"] != "think step by step" {
 		t.Fatalf("reasoning content = %#v", reasoning["content"])
+	}
+}
+
+func TestMessagesToInputOmitsSummaryForNonDashScope(t *testing.T) {
+	// MiMo/DeepSeek/unknown endpoints do not define `summary` in their
+	// reasoning-item schema; sending it leaks the reasoning text into an
+	// extra field the server may echo back into the model context (the
+	// chain-of-thought doubling that truncates long tool loops). Only
+	// `content` must be serialized.
+	for _, tc := range []struct {
+		name, baseURL, model string
+	}{
+		{"mimo", "https://api.xiaomimimo.com/v1", "mimo-v2.5"},
+		{"deepseek", "https://api.deepseek.com", "deepseek-v4-flash"},
+		{"unknown", "https://example.com", "m"},
+	} {
+		client := New(Config{Name: tc.name, BaseURL: tc.baseURL, Model: tc.model}).(*client)
+		body, _, _ := client.buildRequestBody(provider.Request{Messages: []provider.Message{
+			{Role: provider.RoleUser, Content: "run"},
+			{Role: provider.RoleAssistant, ReasoningContent: "think step by step", Content: "answer"},
+		}})
+		items := body["input"].([]map[string]any)
+		var reasoning map[string]any
+		for _, item := range items {
+			if item["type"] == "reasoning" {
+				reasoning = item
+				break
+			}
+		}
+		if reasoning == nil {
+			t.Fatalf("%s: missing reasoning item in input", tc.name)
+		}
+		if _, has := reasoning["summary"]; has {
+			t.Fatalf("%s: must not serialize summary (not in vendor schema), got %#v", tc.name, reasoning["summary"])
+		}
+		content, ok := reasoning["content"].([]map[string]string)
+		if !ok || len(content) != 1 || content[0]["type"] != "reasoning_text" || content[0]["text"] != "think step by step" {
+			t.Fatalf("%s: reasoning content = %#v", tc.name, reasoning["content"])
+		}
 	}
 }
 

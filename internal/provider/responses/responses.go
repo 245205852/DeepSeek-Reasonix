@@ -307,7 +307,7 @@ func (c *client) buildRequestBody(req provider.Request) (map[string]any, bool, [
 		return body, true, messages
 	}
 
-	body["input"] = messagesToInput(rest, c.vision)
+	body["input"] = messagesToInput(rest, c.vision, c.caps.summaryRequired)
 	return body, false, messages
 }
 
@@ -318,7 +318,7 @@ func splitInstructions(messages []provider.Message) (string, []provider.Message)
 	return messages[0].Content, messages[1:]
 }
 
-func messagesToInput(messages []provider.Message, vision bool) []map[string]any {
+func messagesToInput(messages []provider.Message, vision, summary bool) []map[string]any {
 	input := make([]map[string]any, 0, len(messages)*2)
 	for _, message := range messages {
 		switch message.Role {
@@ -343,10 +343,22 @@ func messagesToInput(messages []provider.Message, vision bool) []map[string]any 
 			}
 		case provider.RoleAssistant:
 			if message.ReasoningContent != "" {
-				input = append(input, map[string]any{
+				// Reasoning items: the OpenAI base format only needs
+				// `content`. DashScope additionally requires a `summary`
+				// list ("Invalid 'summary': summary is required and must be
+				// a list for reasoning."). Other vendors (MiMo) do not
+				// define summary in their schema; sending it leaks the
+				// reasoning text into an extra field the server may echo
+				// back into the model context, doubling chain-of-thought
+				// each turn — so only send it where the wire demands it.
+				item := map[string]any{
 					"type":    "reasoning",
 					"content": []map[string]string{{"type": "reasoning_text", "text": message.ReasoningContent}},
-				})
+				}
+				if summary {
+					item["summary"] = []map[string]string{{"type": "summary_text", "text": message.ReasoningContent}}
+				}
+				input = append(input, item)
 			}
 			if message.Content != "" || len(message.ToolCalls) == 0 {
 				input = append(input, map[string]any{"role": "assistant", "content": message.Content})
@@ -371,7 +383,7 @@ func conversationDigest(messages []provider.Message) string {
 	payload, _ := json.Marshal(struct {
 		Instructions string           `json:"instructions,omitempty"`
 		Input        []map[string]any `json:"input"`
-	}{Instructions: instructions, Input: messagesToInput(rest, false)})
+	}{Instructions: instructions, Input: messagesToInput(rest, false, false)})
 	sum := sha256.Sum256(payload)
 	return hex.EncodeToString(sum[:])
 }

@@ -55,6 +55,16 @@ type vendorCapabilities struct {
 	// documented tier (65536, within the allowed [1, 131072] range) so the
 	// answer survives long reasoning.
 	defaultMaxOutputTokens int
+
+	// summaryRequired marks vendors whose Responses API requires the
+	// `summary` list on input reasoning items (DashScope; without it the
+	// server rejects with "Invalid 'summary': summary is required..."). The
+	// OpenAI base format only needs `content`. Sending `summary` to vendors
+	// that do not define it (MiMo) leaks the reasoning text into an extra
+	// field the server may fold back into the model context, doubling the
+	// chain-of-thought echoed each turn and inflating reasoning output
+	// until truncation. Only send it where the wire demands it.
+	summaryRequired bool
 }
 
 var vendorTable = map[string]vendorCapabilities{
@@ -64,6 +74,7 @@ var vendorTable = map[string]vendorCapabilities{
 		toolCallReasoning:      false,
 		singleSegmentReasoning: false,
 		ignoresTemperature:     false,
+		summaryRequired:        true,
 	},
 	"deepseek": {
 		stateless:              true,
