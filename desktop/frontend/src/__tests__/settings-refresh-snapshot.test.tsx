@@ -340,14 +340,44 @@ await act(async () => {
 ok(compactRootEl.textContent?.includes("80,000 tokens") === true, "compact ratio shows the default model token threshold");
 ok(compactRootEl.textContent?.includes("effective threshold is 75%") === true, "project override shows the active effective threshold");
 ok(compactRootEl.textContent?.includes("changes the local default only") === true, "remote workbench scope is explicit");
+const customCompactInput = compactRootEl.querySelector('input[aria-label="Custom compaction threshold percentage"]') as HTMLInputElement | null;
+if (!customCompactInput) throw new Error("custom compaction threshold input did not render");
+eq(customCompactInput.value, "80", "custom compaction threshold defaults older backends to 80 percent");
+const customCompactSave = customCompactInput.closest(".compact-ratio-custom")?.querySelector("button") as HTMLButtonElement | null;
+if (!customCompactSave) throw new Error("custom compaction threshold save action did not render");
+const inputValueSetter = Object.getOwnPropertyDescriptor(dom.window.HTMLInputElement.prototype, "value")?.set;
+const setCustomCompactInput = (value: string) => {
+  const previous = customCompactInput.value;
+  inputValueSetter?.call(customCompactInput, value);
+  (customCompactInput as HTMLInputElement & { _valueTracker?: { setValue: (next: string) => void } })._valueTracker?.setValue(previous);
+  customCompactInput.dispatchEvent(new Event("input", { bubbles: true }));
+  customCompactInput.dispatchEvent(new Event("change", { bubbles: true }));
+};
+await act(async () => {
+  setCustomCompactInput("64");
+  await flushPromises();
+});
+ok(customCompactSave.disabled, "out-of-range custom compact ratio cannot be saved");
+eq(compactRatioCalls.length, 0, "editing a custom compact ratio does not save eagerly");
+await act(async () => {
+  setCustomCompactInput("75");
+  await flushPromises();
+});
+ok(!customCompactSave.disabled, "valid custom compact ratio enables explicit save");
+await act(async () => {
+  customCompactSave.click();
+  await flushPromises();
+});
+eq(compactRatioCalls.length, 1, "custom compact ratio mutation is invoked once after save");
+eq(compactRatioCalls[0], 0.75, "custom compact ratio converts percentage to fraction");
 const earlierCompactButton = Array.from(compactRootEl.querySelectorAll("button")).find((button) => button.textContent?.includes("70% · Earlier")) as HTMLButtonElement | undefined;
 if (!earlierCompactButton) throw new Error("earlier compaction preset did not render");
 await act(async () => {
   earlierCompactButton.click();
   await flushPromises();
 });
-eq(compactRatioCalls.length, 1, "compact ratio mutation is invoked once");
-eq(compactRatioCalls[0], 0.7, "compact ratio preset sends the expected fraction");
+eq(compactRatioCalls.length, 2, "compact ratio preset adds one mutation");
+eq(compactRatioCalls[1], 0.7, "compact ratio preset sends the expected fraction");
 ok(earlierCompactButton.getAttribute("aria-pressed") === "true", "saved compact ratio is selected after Settings reload");
 
 await act(async () => {
