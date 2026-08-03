@@ -26,6 +26,7 @@ import (
 	"context"
 	"os/exec"
 	"runtime"
+	"slices"
 
 	"reasonix/internal/proc"
 	"reasonix/internal/secrets"
@@ -49,7 +50,9 @@ func Args(dir string, extraConfig []string, args ...string) []string {
 }
 
 func argsFor(goos, dir string, extraConfig []string, args ...string) []string {
-	out := make([]string, 0, 2*(len(baseConfig)+len(extraConfig)+1)+len(args)+4)
+	// No capacity hint: these lists are a handful of entries, and computing one
+	// from the input lengths buys nothing measurable.
+	var out []string
 	for _, cfg := range baseConfig {
 		out = append(out, "-c", cfg)
 	}
@@ -76,23 +79,13 @@ func hardenSubcommand(args []string) []string {
 	if len(args) == 0 || args[0] != "diff" {
 		return args
 	}
-	out := make([]string, 0, len(args)+2)
-	out = append(out, args[0])
+	out := []string{args[0]}
 	for _, flag := range []string{"--no-ext-diff", "--no-textconv"} {
-		if !contains(args, flag) {
+		if !slices.Contains(args, flag) {
 			out = append(out, flag)
 		}
 	}
 	return append(out, args[1:]...)
-}
-
-func contains(list []string, want string) bool {
-	for _, item := range list {
-		if item == want {
-			return true
-		}
-	}
-	return false
 }
 
 // Command builds a hardened git command rooted at dir (empty runs in the
