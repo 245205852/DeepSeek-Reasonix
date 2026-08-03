@@ -15536,6 +15536,16 @@ body > .mermaid-diagram--fullscreen {
   margin: 0;
 }
 
+/* Project-name selector + suggestion button travel together as one unit, so a
+   wrapping flex line can never separate them on narrow screens. */
+.memory-tabs-row__tail {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+  flex: 0 1 auto;
+}
+
 .memory-suggestion-tab {
   --wails-draggable: no-drag;
   flex: 0 0 auto;
@@ -15807,12 +15817,33 @@ body > .mermaid-diagram--fullscreen {
   }
 
   .memory-tabs-row {
-    align-items: stretch;
-    flex-direction: column;
+    align-items: center;
+    flex-direction: row;
+    flex-wrap: wrap;
+    gap: 10px 12px;
+  }
+
+  .memory-tabs-row__tail {
+    flex: 0 1 100%;
+  }
+
+  .memory-tabs-row__spacer {
+    display: none;
   }
 
   .memory-suggestion-tab {
-    align-self: flex-start;
+    margin-left: 0;
+  }
+
+  .mem-ws-select {
+    flex: 1 1 auto;
+    min-width: 0;
+  }
+
+  .mem-ws-select__label {
+    max-width: none;
+    white-space: normal;
+    overflow-wrap: anywhere;
   }
 
   .settings-subtab {
