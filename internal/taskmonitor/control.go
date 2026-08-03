@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"sync"
 	"time"
+
+	"reasonix/internal/secrets"
 )
 
 // JobKiller routes a control request to the runtime that owns a task. SessionID
@@ -247,7 +249,7 @@ func (cs *ControlService) controlOp(ctx context.Context, projectDir, taskID stri
 		RuntimeState: snap.RuntimeState,
 	}
 	if reason != "" {
-		auditEv.ErrorSummary = reason
+		auditEv.ErrorSummary = secrets.RedactCredentials(reason)
 	}
 	if err := cs.store.AppendAuditEvent(ctx, projectDir, auditEv); err != nil {
 		// State is committed but audit is missing. This is a degraded

@@ -77,6 +77,25 @@ func TestTaskRecorder_TruncatesLongError(t *testing.T) {
 	}
 }
 
+func TestTaskRecorder_RedactsCredentialFromErrorSummary(t *testing.T) {
+	dir := t.TempDir()
+	r, store := newRecorderForTest(t, dir)
+	ctx := context.Background()
+	secret := "sk-real-secret-value-123456"
+	r.RecordStart("credential-error", "task", "")
+	r.RecordDone("credential-error", jobs.Failed, fmt.Errorf("provider rejected DEEPSEEK_API_KEY=%s", secret))
+	snap, err := store.GetTask(ctx, dir, monitorTaskID("sess-1", "credential-error"))
+	if err != nil || snap == nil {
+		t.Fatalf("snapshot = %+v, err=%v", snap, err)
+	}
+	if strings.Contains(snap.ErrorSummary, secret) {
+		t.Fatalf("error summary leaked credential: %q", snap.ErrorSummary)
+	}
+	if !strings.Contains(snap.ErrorSummary, "****") {
+		t.Fatalf("error summary was not redacted: %q", snap.ErrorSummary)
+	}
+}
+
 func TestTaskRecorder_KilledAndInterruptedMapToCancelled(t *testing.T) {
 	dir := t.TempDir()
 	r, store := newRecorderForTest(t, dir)

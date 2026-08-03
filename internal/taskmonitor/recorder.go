@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"reasonix/internal/jobs"
+	"reasonix/internal/secrets"
 )
 
 // TaskRecorder bridges jobs.Manager lifecycle events into the Task Store. It
@@ -180,7 +181,7 @@ func (r *TaskRecorder) RecordDone(id string, st jobs.Status, jobErr error) {
 		cur.UpdatedAt = now
 		if jobErr != nil {
 			cur.ErrorCode = "job_failed"
-			cur.ErrorSummary = truncateSummary(jobErr.Error())
+			cur.ErrorSummary = truncateSummary(secrets.RedactError(jobErr))
 		}
 		if serr := r.store.SaveTask(ctx, r.projectDir, *cur); serr != nil {
 			if errors.Is(serr, ErrStoreVersionConflict) {

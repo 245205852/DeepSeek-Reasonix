@@ -57,7 +57,87 @@ func (s *FileStore) taskRoot(projectDir string) (string, error) {
 		return "", fmt.Errorf("projectDir %q escapes the intended root", projectDir)
 	}
 	cleaned := filepath.Clean(projectDir)
-	return filepath.Join(cleaned, s.baseDir), nil
+	root := filepath.Join(cleaned, s.baseDir)
+	if err := rejectStoreParents(cleaned, root); err != nil {
+		return "", err
+	}
+	return root, nil
+}
+
+func rejectSymlink(path string) error {
+	info, err := os.Lstat(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("task store path %q is a symlink", path)
+	}
+	return nil
+}
+
+// rejectSymlinkChain rejects symlinks in the store path itself and all of its
+// descendants up to target. This keeps a project-local task id from redirecting
+// reads or writes outside the project through an intermediate directory.
+func rejectSymlinkChain(root, target string) error {
+	rel, err := filepath.Rel(root, target)
+	if err != nil {
+		return err
+	}
+	cur := root
+	if err := rejectSymlink(cur); err != nil {
+		return err
+	}
+	if rel == "." {
+		return nil
+	}
+	for _, part := range strings.Split(rel, string(filepath.Separator)) {
+		cur = filepath.Join(cur, part)
+		if err := rejectSymlink(cur); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func rejectStoreParents(projectDir, root string) error {
+	rel, err := filepath.Rel(projectDir, root)
+	if err != nil {
+		return err
+	}
+	cur := projectDir
+	for _, part := range strings.Split(rel, string(filepath.Separator)) {
+		if part == "." || part == "" {
+			continue
+		}
+		cur = filepath.Join(cur, part)
+		if err := rejectSymlink(cur); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func prepareTaskDir(root, id string) (string, error) {
+	taskDir := filepath.Join(root, id)
+	if err := rejectSymlinkChain(root, taskDir); err != nil {
+		return "", err
+	}
+	if err := os.MkdirAll(root, 0o700); err != nil {
+		return "", err
+	}
+	if err := os.Chmod(root, 0o700); err != nil {
+		return "", err
+	}
+	if err := os.MkdirAll(taskDir, 0o700); err != nil {
+		return "", err
+	}
+	if err := os.Chmod(taskDir, 0o700); err != nil {
+		return "", err
+	}
+	return taskDir, nil
 }
 
 // ListTasks implements Store.
@@ -67,6 +147,9 @@ func (s *FileStore) ListTasks(ctx context.Context, projectDir string) ([]TaskSna
 	}
 	root, err := s.taskRoot(projectDir)
 	if err != nil {
+		return nil, err
+	}
+	if err := rejectSymlink(root); err != nil {
 		return nil, err
 	}
 	entries, err := os.ReadDir(root)
@@ -81,7 +164,11 @@ func (s *FileStore) ListTasks(ctx context.Context, projectDir string) ([]TaskSna
 		if !e.IsDir() {
 			continue
 		}
-		snap, err := s.readSnapshot(filepath.Join(root, e.Name()))
+		taskDir := filepath.Join(root, e.Name())
+		if err := rejectSymlinkChain(root, taskDir); err != nil {
+			continue
+		}
+		snap, err := s.readSnapshot(taskDir)
 		if err != nil {
 			continue // skip corrupt entries
 		}
@@ -107,6 +194,9 @@ func (s *FileStore) GetTask(ctx context.Context, projectDir string, taskID strin
 	if err != nil {
 		return nil, err
 	}
+	if err := rejectSymlinkChain(root, filepath.Join(root, id)); err != nil {
+		return nil, err
+	}
 	snap, err := s.readSnapshot(filepath.Join(root, id))
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -129,6 +219,9 @@ func (s *FileStore) ListEvents(ctx context.Context, projectDir string, taskID st
 	}
 	root, err := s.taskRoot(projectDir)
 	if err != nil {
+		return nil, err
+	}
+	if err := rejectSymlinkChain(root, filepath.Join(root, id)); err != nil {
 		return nil, err
 	}
 	events, err := s.readEvents(filepath.Join(root, id))
@@ -208,7 +301,7 @@ func (s *FileStore) SaveTask(ctx context.Context, projectDir string, snap TaskSn
 		return err
 	}
 	taskDir := filepath.Join(root, id)
-	if err := os.MkdirAll(taskDir, 0o755); err != nil {
+	if taskDir, err = prepareTaskDir(root, id); err != nil {
 		return fmt.Errorf("save task: %w", err)
 	}
 
@@ -218,7 +311,10 @@ func (s *FileStore) SaveTask(ctx context.Context, projectDir string, snap TaskSn
 	// clobber each other. A dedicated lock file is used — never snapshot.json
 	// itself, since rename swaps the inode and would orphan the lock.
 	lockPath := filepath.Join(taskDir, "task.lock")
-	lf, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0o644)
+	if err := rejectSymlink(lockPath); err != nil {
+		return fmt.Errorf("save task: %w", err)
+	}
+	lf, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0o600)
 	if err != nil {
 		return fmt.Errorf("save task: open lock: %w", err)
 	}
@@ -226,6 +322,7 @@ func (s *FileStore) SaveTask(ctx context.Context, projectDir string, snap TaskSn
 	if err := lockTaskFile(lf); err != nil {
 		return fmt.Errorf("save task: lock: %w", err)
 	}
+	_ = lf.Chmod(0o600)
 	defer func() {
 		if unlockErr := unlockTaskFile(lf); unlockErr != nil && retErr == nil {
 			retErr = fmt.Errorf("save task: unlock: %w", unlockErr)
@@ -272,6 +369,7 @@ func (s *FileStore) SaveTask(ctx context.Context, projectDir string, snap TaskSn
 		os.Remove(tmpName)
 		return fmt.Errorf("save task: %w", err)
 	}
+	_ = os.Chmod(target, 0o600)
 	return nil
 }
 
@@ -291,7 +389,7 @@ func (s *FileStore) AppendAuditEvent(ctx context.Context, projectDir string, ev 
 		return err
 	}
 	taskDir := filepath.Join(root, id)
-	if err := os.MkdirAll(taskDir, 0o755); err != nil {
+	if taskDir, err = prepareTaskDir(root, id); err != nil {
 		return fmt.Errorf("append audit event: %w", err)
 	}
 
@@ -300,7 +398,10 @@ func (s *FileStore) AppendAuditEvent(ctx context.Context, projectDir string, ev 
 	// events file itself is never renamed, so a dedicated task.lock is
 	// sufficient and keeps exactly one lock per task directory.
 	lockPath := filepath.Join(taskDir, "task.lock")
-	lf, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0o644)
+	if err := rejectSymlink(lockPath); err != nil {
+		return fmt.Errorf("append audit event: %w", err)
+	}
+	lf, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0o600)
 	if err != nil {
 		return fmt.Errorf("append audit event: open lock: %w", err)
 	}
@@ -315,11 +416,15 @@ func (s *FileStore) AppendAuditEvent(ctx context.Context, projectDir string, ev 
 	}()
 
 	eventsPath := filepath.Join(taskDir, "events.jsonl")
-	f, err := os.OpenFile(eventsPath, os.O_RDWR|os.O_CREATE, 0o644)
+	if err := rejectSymlink(eventsPath); err != nil {
+		return fmt.Errorf("append audit event: %w", err)
+	}
+	f, err := os.OpenFile(eventsPath, os.O_RDWR|os.O_CREATE, 0o600)
 	if err != nil {
 		return err
 	}
 	defer f.Close()
+	_ = f.Chmod(0o600)
 
 	// Read current events to compute next sequence (safe under lock)
 	if _, err := f.Seek(0, 0); err != nil {
@@ -374,6 +479,12 @@ func (s *FileStore) CheckIdempotency(ctx context.Context, projectDir string, key
 		return nil, err
 	}
 	idemDir := filepath.Join(root, ".idempotency")
+	if err := rejectSymlink(idemDir); err != nil {
+		return nil, err
+	}
+	if err := rejectSymlink(filepath.Join(idemDir, id+".json")); err != nil {
+		return nil, err
+	}
 	data, err := os.ReadFile(filepath.Join(idemDir, id+".json"))
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -399,7 +510,13 @@ func (s *FileStore) RecordIdempotency(ctx context.Context, projectDir string, r 
 		return err
 	}
 	idemDir := filepath.Join(root, ".idempotency")
-	if err := os.MkdirAll(idemDir, 0o755); err != nil {
+	if err := rejectSymlink(idemDir); err != nil {
+		return err
+	}
+	if err := os.MkdirAll(idemDir, 0o700); err != nil {
+		return err
+	}
+	if err := os.Chmod(idemDir, 0o700); err != nil {
 		return err
 	}
 	data, err := json.Marshal(r)
@@ -407,8 +524,11 @@ func (s *FileStore) RecordIdempotency(ctx context.Context, projectDir string, r 
 		return err
 	}
 	target := filepath.Join(idemDir, id+".json")
+	if err := rejectSymlink(target); err != nil {
+		return err
+	}
 	// Atomic claim via O_EXCL: fail if file already exists
-	f, err := os.OpenFile(target, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
+	f, err := os.OpenFile(target, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
 	if err != nil {
 		if os.IsExist(err) {
 			// File exists — read and compare

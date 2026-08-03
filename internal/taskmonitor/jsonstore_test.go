@@ -153,6 +153,69 @@ func TestFileStore_RejectsDotDotTaskID(t *testing.T) {
 	}
 }
 
+func TestFileStore_RejectsSymlinkTaskDirectory(t *testing.T) {
+	project := t.TempDir()
+	outside := t.TempDir()
+	root := filepath.Join(project, ".reasonix", "tasks")
+	if err := os.MkdirAll(root, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, filepath.Join(root, "evil")); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+	snap := TaskSnapshot{SchemaVersion: 1, TaskID: "evil", SessionID: "s", Version: 1, State: TaskStateRunning, CreatedAt: time.Now(), UpdatedAt: time.Now()}
+	if err := NewFileStore(".reasonix/tasks").SaveTask(context.Background(), project, snap); err == nil {
+		t.Fatal("expected symlink task directory to be rejected")
+	}
+	if _, err := os.Stat(filepath.Join(outside, "snapshot.json")); !os.IsNotExist(err) {
+		t.Fatalf("write escaped through symlink: stat err=%v", err)
+	}
+}
+
+func TestFileStore_RejectsSymlinkStoreParent(t *testing.T) {
+	project := t.TempDir()
+	outside := t.TempDir()
+	if err := os.Symlink(outside, filepath.Join(project, ".reasonix")); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+	snap := TaskSnapshot{SchemaVersion: 1, TaskID: "t1", SessionID: "s", Version: 1, State: TaskStateRunning, CreatedAt: time.Now(), UpdatedAt: time.Now()}
+	if err := NewFileStore(".reasonix/tasks").SaveTask(context.Background(), project, snap); err == nil {
+		t.Fatal("expected symlink store parent to be rejected")
+	}
+	if _, err := os.Stat(filepath.Join(outside, "tasks", "t1", "snapshot.json")); !os.IsNotExist(err) {
+		t.Fatalf("write escaped through parent symlink: stat err=%v", err)
+	}
+}
+
+func TestFileStore_WritablePathsUsePrivateModes(t *testing.T) {
+	project := t.TempDir()
+	store := NewFileStore(".reasonix/tasks")
+	now := time.Now()
+	snap := TaskSnapshot{SchemaVersion: 1, TaskID: "t1", SessionID: "s", Version: 1, State: TaskStateRunning, CreatedAt: now, UpdatedAt: now}
+	if err := store.SaveTask(context.Background(), project, snap); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.AppendAuditEvent(context.Background(), project, TaskEvent{TaskID: "t1", SessionID: "s", EventType: "state_change", State: TaskStateRunning, Timestamp: now}); err != nil {
+		t.Fatal(err)
+	}
+	checks := map[string]os.FileMode{
+		filepath.Join(project, ".reasonix", "tasks"):                        0o700,
+		filepath.Join(project, ".reasonix", "tasks", "t1"):                  0o700,
+		filepath.Join(project, ".reasonix", "tasks", "t1", "snapshot.json"): 0o600,
+		filepath.Join(project, ".reasonix", "tasks", "t1", "events.jsonl"):  0o600,
+		filepath.Join(project, ".reasonix", "tasks", "t1", "task.lock"):     0o600,
+	}
+	for path, want := range checks {
+		info, err := os.Stat(path)
+		if err != nil {
+			t.Fatalf("stat %s: %v", path, err)
+		}
+		if got := info.Mode().Perm(); got != want {
+			t.Errorf("mode %s = %o, want %o", path, got, want)
+		}
+	}
+}
+
 func TestFileStore_SaveTask_VersionConflict(t *testing.T) {
 	dir := t.TempDir()
 	store := NewFileStore(".reasonix/tasks")
