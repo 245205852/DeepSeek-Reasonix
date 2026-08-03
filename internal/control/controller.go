@@ -166,6 +166,10 @@ type Controller struct {
 	// (stage 8a), or nil when no v1 runtime packages started. Installed via
 	// SetExtensionUI before serving and never swapped; readers take c.mu.
 	extensionUI *uihub.Hub
+	// providerResolver is the build's merged provider catalog (extension
+	// sidecar providers over the config/broker base), or nil when no sidecar
+	// declared providers. Immutable after New; ProviderCatalog reads it.
+	providerResolver provider.Resolver
 
 	// Capability routing (Delivery hybrid route + dual-model Planner proxy).
 	// Not part of the provider-visible prefix; only seeds the turn-scoped ledger
@@ -485,6 +489,11 @@ type Options struct {
 	// therefore the dispatcher) only exist after snapshot assembly, which runs
 	// after New.
 	Extensions *dispatch.Dispatcher
+	// ProviderResolver is the build's merged provider catalog — extension
+	// sidecar providers folded over the config/broker base (stage 7). Nil when
+	// no v1 runtime sidecar declared providers; ProviderCatalog then returns
+	// nil and frontends enumerate providers from config alone, as before.
+	ProviderResolver provider.Resolver
 }
 
 // New builds a Controller. A nil Sink is replaced with event.Discard.
@@ -545,6 +554,7 @@ func New(opts Options) *Controller {
 		runtimeProfile:                    runtimeProfile,
 		workspaceRoot:                     opts.WorkspaceRoot,
 		externalFolderToolRefs:            opts.ExternalFolderToolRefs,
+		providerResolver:                  opts.ProviderResolver,
 		approval:                          newApprovalManager(opts.Policy, ToolApprovalAsk, opts.ApprovalTimeout),
 	}
 	if strings.TrimSpace(opts.WorkspaceRoot) != "" {
@@ -666,6 +676,18 @@ func (c *Controller) ToolContractEntries() []tool.ContractEntry {
 		return nil
 	}
 	return reg.ContractEntries()
+}
+
+// ProviderCatalog returns the session's merged provider catalog: the config
+// (or broker) base plus every provider a live extension sidecar declared,
+// keyed by ref — extension refs carry their plugin/<plugin>/<provider>/<model>
+// namespace. Nil when no sidecar declared providers, so frontends can tell
+// "enumerate config only" apart from "the extension catalog is empty".
+func (c *Controller) ProviderCatalog() []provider.Descriptor {
+	if c == nil || c.providerResolver == nil {
+		return nil
+	}
+	return c.providerResolver.Catalog()
 }
 
 func (c *Controller) recordDisplayForNewUser(startMessages int, display string) {

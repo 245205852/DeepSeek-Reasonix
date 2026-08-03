@@ -46,18 +46,28 @@ import (
 //	REASONIX_BOOT_FAKE_UI_PUBLISH       when "1", publish one credential-bearing
 //	                                    status surface through host/ui/publish after
 //	                                    the handshake completes
+//
+// Process-lifecycle steering for the failure-cleanup tests:
+//
+//	REASONIX_BOOT_FAKE_PID_FILE         write the sidecar PID to this file on start,
+//	                                    so the parent can poll for a leaked process
+//	REASONIX_BOOT_FAKE_EXIT_IMMEDIATELY when "1", write the PID file (if set) and
+//	                                    exit 0 at once — a sidecar that dies before
+//	                                    answering the handshake
 const (
-	bootFakeEnvEnable        = "REASONIX_BOOT_FAKE_SIDECAR"
-	bootFakeEnvInitResult    = "REASONIX_BOOT_FAKE_INIT_RESULT"
-	bootFakeEnvMode          = "REASONIX_BOOT_FAKE_MODE"
-	bootFakeEnvBlockEvent    = "REASONIX_BOOT_FAKE_BLOCK_EVENT"
-	bootFakeEnvInvalidEvent  = "REASONIX_BOOT_FAKE_INVALID_EVENT"
-	bootFakeEnvReplacePrompt = "REASONIX_BOOT_FAKE_REPLACE_PROMPT"
-	bootFakeEnvReplaceInput  = "REASONIX_BOOT_FAKE_REPLACE_INPUT"
-	bootFakeEnvEventLog      = "REASONIX_BOOT_FAKE_EVENT_LOG"
-	bootFakeEnvPluginName    = "REASONIX_BOOT_FAKE_PLUGIN_NAME"
-	bootFakeEnvProvider      = "REASONIX_BOOT_FAKE_PROVIDER"
-	bootFakeEnvUIPublish     = "REASONIX_BOOT_FAKE_UI_PUBLISH"
+	bootFakeEnvEnable          = "REASONIX_BOOT_FAKE_SIDECAR"
+	bootFakeEnvInitResult      = "REASONIX_BOOT_FAKE_INIT_RESULT"
+	bootFakeEnvMode            = "REASONIX_BOOT_FAKE_MODE"
+	bootFakeEnvBlockEvent      = "REASONIX_BOOT_FAKE_BLOCK_EVENT"
+	bootFakeEnvInvalidEvent    = "REASONIX_BOOT_FAKE_INVALID_EVENT"
+	bootFakeEnvReplacePrompt   = "REASONIX_BOOT_FAKE_REPLACE_PROMPT"
+	bootFakeEnvReplaceInput    = "REASONIX_BOOT_FAKE_REPLACE_INPUT"
+	bootFakeEnvEventLog        = "REASONIX_BOOT_FAKE_EVENT_LOG"
+	bootFakeEnvPluginName      = "REASONIX_BOOT_FAKE_PLUGIN_NAME"
+	bootFakeEnvProvider        = "REASONIX_BOOT_FAKE_PROVIDER"
+	bootFakeEnvUIPublish       = "REASONIX_BOOT_FAKE_UI_PUBLISH"
+	bootFakeEnvPIDFile         = "REASONIX_BOOT_FAKE_PID_FILE"
+	bootFakeEnvExitImmediately = "REASONIX_BOOT_FAKE_EXIT_IMMEDIATELY"
 )
 
 // TestExtensionFakeSidecarHelperProcess is the re-exec entry point; it skips
@@ -71,6 +81,12 @@ func TestExtensionFakeSidecarHelperProcess(t *testing.T) {
 }
 
 func runBootFakeSidecar(stdin io.Reader, stdout io.Writer) {
+	if pidFile := strings.TrimSpace(os.Getenv(bootFakeEnvPIDFile)); pidFile != "" {
+		_ = os.WriteFile(pidFile, []byte(fmt.Sprintf("%d", os.Getpid())), 0o644)
+	}
+	if os.Getenv(bootFakeEnvExitImmediately) == "1" {
+		os.Exit(0)
+	}
 	out := bufio.NewWriter(stdout)
 	var writeMu sync.Mutex
 	write := func(format string, args ...any) {

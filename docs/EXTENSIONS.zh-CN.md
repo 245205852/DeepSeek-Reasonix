@@ -41,7 +41,9 @@ reasonix plugin doctor <name>                                      # 校验
   争用会令运行时构建失败并列出来源。
 - **流式 Provider**——新模型以 `plugin/<plugin>/<provider>/<model>`
   出现在模型选择器中，流式语义（text/reasoning/工具调用/usage）与
-  内置 Provider 一致。
+  内置 Provider 一致。该 ref 可用于任何内置 ref 可用之处：
+  `default_model`、`--model`、CLI/Desktop/ACP 模型选择器以及会话中的
+  模型切换——包括首次启动。
 - **结构化 UI**——status、card、form、notification 在 CLI transcript、
   Desktop 与 ACP 客户端中原生渲染（不支持时退化为文本），action 同时
   出现在 `/<plugin>:<action>` 斜杠菜单、Desktop 命令面板和 ACP 可发现

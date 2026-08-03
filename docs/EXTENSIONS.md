@@ -47,6 +47,9 @@ install runtimes you trust completely.
 - **Streaming providers** — new models appear as
   `plugin/<plugin>/<provider>/<model>` in the model picker, streamed with
   the same text/reasoning/tool-call/usage semantics as built-in providers.
+  The ref works everywhere a built-in ref does: `default_model`, `--model`,
+  the CLI/Desktop/ACP pickers, and mid-session model switches — including on
+  the very first boot.
 - **Structured UI** — status entries, cards, forms, and notifications
   rendered natively in the CLI transcript, the Desktop app, and ACP clients
   (with text fallbacks), plus `/<plugin>:<action>` actions in the slash

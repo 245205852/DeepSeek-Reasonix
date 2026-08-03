@@ -72,20 +72,11 @@ func (r *LocalProviderResolver) Resolve(selection provider.Selection) (provider.
 	return NewProviderWithProxy(entry, r.proxy)
 }
 
-func resolveProvider(opts Options, cfg *config.Config, proxy netclient.ProxySpec, selection provider.Selection) (provider.Provider, error) {
-	if opts.ProviderResolver != nil {
-		return opts.ProviderResolver.Resolve(selection)
+func resolveProvider(resolver provider.Resolver, cfg *config.Config, proxy netclient.ProxySpec, selection provider.Selection) (provider.Provider, error) {
+	if resolver != nil {
+		return resolver.Resolve(selection)
 	}
 	return NewLocalProviderResolver(cfg, proxy).Resolve(selection)
-}
-
-// snapshotReplacements returns the frozen replacement-slot ownership table
-// from a snapshot that may be nil (a degraded assembly).
-func snapshotReplacements(snap *extension.RuntimeSnapshot) map[extension.Slot]extension.ContributionSource {
-	if snap == nil {
-		return nil
-	}
-	return snap.Replacements()
 }
 
 // mergeSidecarProviders wraps the build's resolver with the extension-hosted
@@ -139,12 +130,14 @@ func modelRefFromEntry(e *config.ProviderEntry) string {
 	return e.Name + "/" + e.Model
 }
 
-// resolveModelEntry synthesizes only non-secret metadata from the Broker
-// catalog. A caller-owned resolver is authoritative even when the credential-
-// free Host happens to contain a provider with the same ref.
-func resolveModelEntry(opts Options, cfg *config.Config, modelName string) (*config.ProviderEntry, string, error) {
-	if opts.ProviderResolver != nil {
-		entry := syntheticEntryFromResolver(opts.ProviderResolver, modelName)
+// resolveModelEntry synthesizes only non-secret metadata from the resolver
+// catalog. A caller-owned (or extension-merged) resolver is authoritative even
+// when the credential-free Host happens to contain a provider with the same
+// ref. The unknown-model error names every ref the session could have used,
+// including plugin-namespaced refs a merged extension resolver serves.
+func resolveModelEntry(resolver provider.Resolver, cfg *config.Config, modelName string) (*config.ProviderEntry, string, error) {
+	if resolver != nil {
+		entry := syntheticEntryFromResolver(resolver, modelName)
 		if strings.TrimSpace(entry.Name) != "" {
 			return entry, modelRefFromEntry(entry), nil
 		}
@@ -152,12 +145,35 @@ func resolveModelEntry(opts Options, cfg *config.Config, modelName string) (*con
 	if entry, ok := cfg.ResolveModel(modelName); ok {
 		return entry, modelRefFromEntry(entry), nil
 	}
-	return nil, "", fmt.Errorf("%w %q (configured: %s); note: defining [[providers]] replaces the built-in presets, so add a [[providers]] entry for it or use a configured name, or run `reasonix setup` to reconfigure", ErrUnknownModel, modelName, providerNames(cfg))
+	available := providerNames(cfg)
+	if pluginRefs := extensionCatalogRefs(resolver); len(pluginRefs) > 0 {
+		if available != "" {
+			available += "/"
+		}
+		available += strings.Join(pluginRefs, "/")
+	}
+	return nil, "", fmt.Errorf("%w %q (configured: %s); note: defining [[providers]] replaces the built-in presets, so add a [[providers]] entry for it or use a configured name, or run `reasonix setup` to reconfigure", ErrUnknownModel, modelName, available)
 }
 
-func resolveOptionalEntry(opts Options, cfg *config.Config, ref string) (*config.ProviderEntry, bool) {
-	if opts.ProviderResolver != nil {
-		entry := syntheticEntryFromResolver(opts.ProviderResolver, ref)
+// extensionCatalogRefs returns the plugin-namespaced refs a resolver's catalog
+// serves, for error messages and pickers that merge extension providers with
+// the config's own. Nil-safe: no resolver (or no plugin refs) → nil.
+func extensionCatalogRefs(resolver provider.Resolver) []string {
+	if resolver == nil {
+		return nil
+	}
+	var out []string
+	for _, d := range resolver.Catalog() {
+		if providerext.PluginRefOwner(d.Ref) != "" {
+			out = append(out, d.Ref)
+		}
+	}
+	return out
+}
+
+func resolveOptionalEntry(resolver provider.Resolver, cfg *config.Config, ref string) (*config.ProviderEntry, bool) {
+	if resolver != nil {
+		entry := syntheticEntryFromResolver(resolver, ref)
 		if strings.TrimSpace(entry.Name) != "" {
 			return entry, true
 		}

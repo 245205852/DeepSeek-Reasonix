@@ -179,6 +179,11 @@ type Capabilities interface {
 	// error; the stage-8b slash dispatch resolves these.
 	ExtensionActions() []ExtensionActionView
 	InvokeExtensionAction(ctx context.Context, name string, args map[string]string) (string, error)
+	// ProviderCatalog is the session's merged provider catalog — config/broker
+	// base plus sidecar-declared extension providers (plugin/... refs). Nil
+	// when no extension declared providers; frontends merge it into their
+	// model pickers and skip nil.
+	ProviderCatalog() []provider.Descriptor
 }
 
 // Status covers read-only run/usage/billing telemetry and task list state.

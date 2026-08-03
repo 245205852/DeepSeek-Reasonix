@@ -302,7 +302,8 @@ Protocol（基于 stdio 的 JSON-RPC 2.0，方法索引见
 - `capabilities` 按能力族授权：`interceptors`、`strategies`、`providers`、
   `ui`。Sidecar 在握手时声明的任何超出 Manifest 的能力都会被拒绝。
 - 扩展提供的模型以 `plugin/<plugin>/<provider>/<model>` 形式出现在模型
-  选择器中。
+  选择器中；该 ref 同样可用作 `default_model`（包括首次启动），并可
+  在 `/model`、Desktop 与 ACP 的模型切换中使用。
 
 **完全信任（Full trust）。** 代码型扩展运行在 Sandbox 之外，继承未过滤
 的完整环境：它可以读取完整会话与环境、绕过权限、直接操作本机；扩展在

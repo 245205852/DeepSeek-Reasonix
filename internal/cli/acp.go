@@ -15,6 +15,7 @@ import (
 	"reasonix/internal/boot"
 	"reasonix/internal/config"
 	"reasonix/internal/control"
+	"reasonix/internal/extension/providerext"
 	"reasonix/internal/i18n"
 	"reasonix/internal/netclient"
 	"reasonix/internal/provider"
@@ -283,29 +284,41 @@ func (f *acpFactory) SessionConfigState(_ context.Context, p acp.SessionConfigSt
 	if strings.TrimSpace(ref) == "" {
 		return acp.SessionConfigState{}, fmt.Errorf("no default_model configured")
 	}
+	// Plugin-namespaced refs belong to extension sidecars: they never resolve
+	// through the config catalog, so their configured/current handling keys off
+	// the ref itself and boot's merged resolver is the gate.
+	pluginRef := providerext.PluginRefOwner(ref) != ""
 	entry, ok := cfg.ResolveModel(ref)
-	if !ok {
+	if !ok && !pluginRef {
 		return acp.SessionConfigState{}, fmt.Errorf("unknown model %q", ref)
 	}
-	if !entry.Configured() {
+	if ok && !entry.Configured() {
 		return acp.SessionConfigState{}, fmt.Errorf("model %q is not configured", ref)
 	}
-	currentModel := entry.Name + "/" + entry.Model
+	currentModel := ref
+	entryDescription := ""
+	if ok {
+		currentModel = entry.Name + "/" + entry.Model
+		entryDescription = entry.Name
+	}
 	modelOptions, modelInfos := acpModelOptions(cfg)
 	if !hasModelOption(modelOptions, currentModel) {
 		modelOptions = append(modelOptions, acp.SessionConfigSelectOption{
 			Value:       currentModel,
 			Name:        currentModel,
-			Description: entry.Name,
+			Description: entryDescription,
 		})
 		modelInfos = append(modelInfos, acp.ModelInfo{
 			ModelID:     currentModel,
 			Name:        currentModel,
-			Description: entry.Name,
+			Description: entryDescription,
 		})
 	}
 
-	effortEntry := *entry
+	effortEntry := config.ProviderEntry{}
+	if ok {
+		effortEntry = *entry
+	}
 	effortOverride := cloneStringPtr(p.EffortOverride)
 	hadEffortOverride := effortOverride != nil
 	if effortOverride != nil {

@@ -333,7 +333,9 @@ see `docs/EXTENSION_PROTOCOL.generated.md` for the method index and
   `providers`, `ui`. Anything the sidecar announces beyond the manifest is
   rejected during the handshake.
 - Provider models contributed by an extension appear as
-  `plugin/<plugin>/<provider>/<model>` in the model picker.
+  `plugin/<plugin>/<provider>/<model>` in the model picker; the ref also
+  works as `default_model` (including on first boot) and in `/model`,
+  Desktop, and ACP model switches.
 
 **Full trust.** A code extension runs outside the sandbox with the
 unfiltered inherited environment. It can read the full session and

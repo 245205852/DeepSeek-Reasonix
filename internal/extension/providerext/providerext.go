@@ -231,7 +231,7 @@ func (r *Resolver) Resolve(selection provider.Selection) (provider.Provider, err
 	if ref == "" {
 		return nil, fmt.Errorf("provider selection ref is required")
 	}
-	pluginID := pluginRefOwner(ref)
+	pluginID := PluginRefOwner(ref)
 	if pluginID == "" {
 		return r.base.Resolve(selection)
 	}
@@ -254,19 +254,11 @@ func (r *Resolver) Resolve(selection provider.Selection) (provider.Provider, err
 	return nil, fmt.Errorf("unknown provider ref %q: extension plugin %q is not running", ref, pluginID)
 }
 
-// pluginRefOwner extracts the plugin ID from a plugin-namespaced ref
-// (plugin/<pluginID>/<rest...>). Anything else — including the two-segment
-// "plugin/<model>" shape, which stays an ordinary base ref — returns "".
-func pluginRefOwner(ref string) string {
-	rest, ok := strings.CutPrefix(ref, "plugin/")
-	if !ok {
-		return ""
-	}
-	pluginID, remainder, ok := strings.Cut(rest, "/")
-	if !ok || pluginID == "" || remainder == "" {
-		return ""
-	}
-	return pluginID
+// PluginRefOwner extracts the plugin ID from a plugin-namespaced ref
+// (plugin/<pluginID>/<rest...>). It re-exports the protocol package's
+// canonical namespace helper; see protocol.PluginRefOwner.
+func PluginRefOwner(ref string) string {
+	return protocol.PluginRefOwner(ref)
 }
 
 // declaredDescriptor finds the plugin's handshake declaration for ref: an

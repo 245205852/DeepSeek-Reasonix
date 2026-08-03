@@ -33,6 +33,24 @@ type ProviderDescriptor struct {
 	WarnOnMissingToolCallReasoning bool     `json:"warnOnMissingToolCallReasoning,omitempty"`
 }
 
+// PluginRefOwner extracts the plugin ID from a plugin-namespaced provider ref
+// (plugin/<pluginID>/<rest...>) — the namespace every extension-hosted
+// provider ref carries. Anything else — including the two-segment
+// "plugin/<model>" shape, which stays an ordinary host ref — returns "".
+// Host layers (boot, config validation, frontends) use it to route plugin
+// refs away from config-backed catalogs they can never appear in.
+func PluginRefOwner(ref string) string {
+	rest, ok := strings.CutPrefix(ref, "plugin/")
+	if !ok {
+		return ""
+	}
+	pluginID, remainder, ok := strings.Cut(rest, "/")
+	if !ok || pluginID == "" || remainder == "" {
+		return ""
+	}
+	return pluginID
+}
+
 // ProviderMessage is the public copy of provider.Message. It keeps the same
 // JSON field names (snake_case) so transcripts read identically, and drops
 // the local-only UI metadata fields that never belong on the wire.
