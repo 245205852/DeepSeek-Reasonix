@@ -55,6 +55,18 @@ jobs:
         with:
           python-version: '3.12'
 
+      - name: Install and verify Linux sandbox backend
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y bubblewrap
+          if sysctl -n kernel.unprivileged_userns_clone >/dev/null 2>&1; then
+            sudo sysctl -w kernel.unprivileged_userns_clone=1
+          fi
+          if sysctl -n kernel.apparmor_restrict_unprivileged_userns >/dev/null 2>&1; then
+            sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          fi
+          bwrap --ro-bind / / --dev /dev --proc /proc -- true
+
       - name: Build harness + fallback agent from the default branch
         # Harness (e2ebench) and suite always come from main-v2 so a PR can't weaken
         # its own grader or tests. The agent is rebuilt from the PR head below; this
