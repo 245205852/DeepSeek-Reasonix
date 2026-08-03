@@ -93,6 +93,28 @@ func TestRequestSerializesExplicitMaxOutputTokens(t *testing.T) {
 	}
 }
 
+func TestRequestUsesOnlySafeProviderOutputDefaults(t *testing.T) {
+	message := []provider.Message{{Role: provider.RoleUser, Content: "hi"}}
+
+	deepseek := New(Config{Name: "deepseek", BaseURL: "https://api.deepseek.com", Model: "deepseek-v4-flash"}).(*client)
+	deepseekBody, _, _ := deepseek.buildRequestBody(provider.Request{Messages: message})
+	if got := deepseekBody["max_output_tokens"]; got != provider.DefaultReasoningOutputTokens {
+		t.Fatalf("DeepSeek max_output_tokens = %#v, want %d", got, provider.DefaultReasoningOutputTokens)
+	}
+
+	unknown := New(Config{Name: "responses", BaseURL: "https://example.com", Model: "model"}).(*client)
+	unknownBody, _, _ := unknown.buildRequestBody(provider.Request{Messages: message})
+	if _, exists := unknownBody["max_output_tokens"]; exists {
+		t.Fatalf("unknown Responses endpoint received an inferred output budget: %#v", unknownBody)
+	}
+
+	disabled := New(Config{Name: "deepseek", BaseURL: "https://api.deepseek.com", Model: "deepseek-v4-flash", MaxOutputTokens: -1}).(*client)
+	disabledBody, _, _ := disabled.buildRequestBody(provider.Request{Messages: message})
+	if _, exists := disabledBody["max_output_tokens"]; exists {
+		t.Fatalf("disabled DeepSeek Responses budget remained present: %#v", disabledBody)
+	}
+}
+
 func TestFactoryPreservesUnsetLegacyStatefulForVendorDetection(t *testing.T) {
 	p, err := newFromConfig(provider.Config{
 		Name: "deepseek", BaseURL: "https://api.deepseek.com", Model: "deepseek-v4-flash",

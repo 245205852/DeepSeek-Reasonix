@@ -157,7 +157,7 @@ and deletes pending counters. After the choice is saved, enabled reporting is
 silent and the prompt is not shown again. If the preference cannot be saved,
 nothing is uploaded.
 
-Reporting is always disabled in CI, Safe Mode, development builds, and when
+Reporting is always disabled in CI, development builds, and when
 `DO_NOT_TRACK` is set or `REASONIX_TELEMETRY=0`. Under `auto`, redirected/piped
 or otherwise non-interactive sessions do not report. When no choice has been
 saved yet, these ineligible sessions neither prompt nor report. Network failures
@@ -196,8 +196,7 @@ reasonix report delete [ID]     # delete without sending
 ```
 
 Piped or redirected `reasonix report` calls only preview and never prompt or
-send. Safe Mode also blocks sending while leaving the local report available for
-review or deletion. The CLI telemetry setting does not auto-send or auto-delete
+send. The CLI telemetry setting does not auto-send or auto-delete
 these separately reviewed reports. Runtime fatal throws, operating-system kills,
 and panics in unwrapped background goroutines cannot be recovered by Go and do
 not produce this local report.

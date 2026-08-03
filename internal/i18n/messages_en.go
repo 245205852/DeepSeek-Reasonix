@@ -520,7 +520,6 @@ var English = Messages{
 	ReportKept:                "Report kept locally.",
 	ReportDeletedFmt:          "Deleted CLI crash report %s.",
 	ReportSentFmt:             "Sent CLI crash report %s.",
-	ReportSafeModeBlocked:     "crash reports cannot be sent in Safe Mode; the local report was kept",
 	ReportConfigFailedFmt:     "cannot load network configuration: %v",
 	ReportUploadFailedFmt:     "report upload failed; the local report was kept: %v",
 	ReportSentDeleteFailedFmt: "report was sent but the local copy could not be deleted: %v",

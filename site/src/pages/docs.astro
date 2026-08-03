@@ -254,10 +254,9 @@ reasonix run "&lt;task&gt;"     <span class="c"># headless Ask; writers fail clo
 reasonix run -y "&lt;task&gt;"  <span class="c"># opt into unattended ordinary writes</span>
 reasonix serve            <span class="c"># browser UI at 127.0.0.1:8787</span>
 reasonix bot doctor       <span class="c"># check saved IM bot connections</span></div>
-      <p><span class="l-en">Run <code>reasonix upgrade</code> to update on the saved channel. Use <code>reasonix upgrade preview</code> or <code>reasonix upgrade stable</code> to switch channels, remember the choice globally, and update the same native CLI binary. Fresh and older configs start on Stable; project config cannot change the channel.</span><span class="l-zh">运行 <code>reasonix upgrade</code> 会按已保存渠道更新。使用 <code>reasonix upgrade preview</code> 或 <code>reasonix upgrade stable</code> 可切换渠道、全局记住选择，并更新同一个原生 CLI 二进制文件。全新和旧版配置默认使用正式版，项目配置不能更改此渠道。</span></p>
+      <p><span class="l-en">Run <code>reasonix upgrade</code> to install the latest official release. Legacy channel arguments and saved channel settings remain accepted during the 1.x compatibility period, but they resolve to the same official release and are removed when configuration is saved.</span><span class="l-zh">运行 <code>reasonix upgrade</code> 安装最新正式版。1.x 兼容期内仍接受旧渠道参数与已保存设置，但它们都会解析为同一正式版，并在下次保存配置时移除。</span></p>
       <div class="codeblock">reasonix upgrade
-reasonix upgrade preview
-reasonix upgrade stable</div>
+reasonix upgrade</div>
       <p><span class="l-en">Inside a session, slash commands run locally — <code>/help</code> lists them all:</span><span class="l-zh">会话中,斜杠命令在本地运行——<code>/help</code> 列出全部:</span></p>
       <div class="codeblock">/compact   /new      /clear    /rewind   /tree
 /branch    /switch   /todo     /model    /mouse   /mcp
@@ -279,9 +278,6 @@ default_model = "deepseek-flash"
 
 [ui]
 shortcut_layout = "desktop"        <span class="c"># optional compatibility setting</span>
-
-[cli]
-update_channel = "stable"          <span class="c"># user-global native CLI channel</span>
 
 [agent]
 reasoning_language = "auto"        <span class="c"># auto|zh|en</span>

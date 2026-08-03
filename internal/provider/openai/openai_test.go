@@ -1157,6 +1157,45 @@ func TestBuildRequestKimiK3OfficialWireShape(t *testing.T) {
 	}
 }
 
+func TestBuildRequestUsesProviderSpecificOutputBudget(t *testing.T) {
+	newClient := func(t *testing.T, baseURL, model string, maxOutputTokens int) *client {
+		t.Helper()
+		p, err := New(provider.Config{
+			Name: "test", BaseURL: baseURL, Model: model,
+			Extra: map[string]any{"max_output_tokens": maxOutputTokens},
+		})
+		if err != nil {
+			t.Fatalf("New: %v", err)
+		}
+		return p.(*client)
+	}
+
+	deepseek := newClient(t, "https://api.deepseek.com", "deepseek-v4-flash", 0).buildRequest(provider.Request{})
+	if deepseek.MaxTokens != provider.DefaultReasoningOutputTokens || deepseek.MaxCompletionTokens != 0 {
+		t.Fatalf("DeepSeek output budget = max_tokens %d, max_completion_tokens %d", deepseek.MaxTokens, deepseek.MaxCompletionTokens)
+	}
+
+	disabledDeepSeek := newClient(t, "https://api.deepseek.com", "deepseek-v4-flash", -1).buildRequest(provider.Request{})
+	if disabledDeepSeek.MaxTokens != 0 || disabledDeepSeek.MaxCompletionTokens != 0 {
+		t.Fatalf("disabled DeepSeek output budget = %+v", disabledDeepSeek)
+	}
+
+	officialOpenAI := newClient(t, "https://api.openai.com/v1", "o3", 8192).buildRequest(provider.Request{})
+	if officialOpenAI.MaxTokens != 0 || officialOpenAI.MaxCompletionTokens != 8192 {
+		t.Fatalf("official OpenAI output budget = max_tokens %d, max_completion_tokens %d", officialOpenAI.MaxTokens, officialOpenAI.MaxCompletionTokens)
+	}
+
+	gateway := newClient(t, "https://gateway.example/v1", "plain-chat", 8192).buildRequest(provider.Request{})
+	if gateway.MaxTokens != 8192 || gateway.MaxCompletionTokens != 0 {
+		t.Fatalf("compatible gateway output budget = max_tokens %d, max_completion_tokens %d", gateway.MaxTokens, gateway.MaxCompletionTokens)
+	}
+
+	unspecifiedGateway := newClient(t, "https://gateway.example/v1", "plain-chat", 0).buildRequest(provider.Request{})
+	if unspecifiedGateway.MaxTokens != 0 || unspecifiedGateway.MaxCompletionTokens != 0 {
+		t.Fatalf("unspecified compatible gateway received a budget: %+v", unspecifiedGateway)
+	}
+}
+
 func TestBuildRequestDeepSeekThinking(t *testing.T) {
 	for _, tc := range []struct {
 		name          string

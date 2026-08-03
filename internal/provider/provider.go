@@ -162,6 +162,12 @@ type Request struct {
 	MaxTokens   int
 }
 
+// DefaultReasoningOutputTokens is the conservative provider-side budget used
+// for official reasoning APIs whose documented contract safely accepts 32K.
+// Unknown compatible gateways must opt in through configuration instead of
+// inheriting this value merely because they implement an OpenAI-shaped wire.
+const DefaultReasoningOutputTokens = 32 * 1024
+
 // TemperaturePtr wraps v in a pointer so callers that explicitly want a
 // specific temperature, including 0 for deterministic output, can distinguish
 // that intent from "not set, use the provider default".

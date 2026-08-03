@@ -3064,6 +3064,10 @@ func (a *App) ReorderTabs(tabIDs []string) error {
 // background work, the controller is detached so closing a view does not destroy
 // the session runtime.
 func (a *App) CloseTab(tabID string) error {
+	return a.closeTab(tabID, true)
+}
+
+func (a *App) closeTab(tabID string, allowDetach bool) error {
 	defer a.lockRuntimeMutation("close-tab")()
 	a.sessionRemovalMu.Lock()
 	defer a.sessionRemovalMu.Unlock()
@@ -3113,6 +3117,10 @@ func (a *App) CloseTab(tabID string) error {
 		a.mu.Unlock()
 		return fmt.Errorf("cannot close the last tab")
 	}
+	if !allowDetach && tab.hasActiveRuntimeWork() {
+		a.mu.Unlock()
+		return fmt.Errorf("task still has active work")
+	}
 	if tab.Ctrl == nil || !tab.hasActiveRuntimeWork() {
 		a.markTabRemovedLocked(tab)
 	}
@@ -3154,7 +3162,7 @@ func (a *App) CloseTab(tabID string) error {
 	// before the tab binding was removed.
 	discardPath, discardTransientBlank := a.transientBlankSessionArtifactPath(tab)
 	if closeCtrl != nil {
-		if controllerHasActiveRuntimeWork(closeCtrl) && a.detachSessionRuntime(tab) {
+		if allowDetach && controllerHasActiveRuntimeWork(closeCtrl) && a.detachSessionRuntime(tab) {
 			// Detached runtimes keep running and must keep saving: do not
 			// clear the path or drain for them.
 			return nil
@@ -4816,13 +4824,6 @@ func (a *App) saveTabsCollectLocked() (string, []desktopTabEntry, string, uint64
 // writes must be serialized because every save uses the same destination and
 // fixed .tmp path.
 func (a *App) saveTabsWrite(dir string, entries []desktopTabEntry, activeID string, version uint64) {
-	// Safe Mode runs on a temporary tab set that must never persist: writing it
-	// would replace desktop-tabs.json and destroy the saved layout the next
-	// normal boot restores. This is the single choke point every tab-snapshot
-	// write funnels through, so gating here covers build, close, and GC paths.
-	if config.SafeModeRequested() {
-		return
-	}
 	a.tabsSaveMu.Lock()
 	defer a.tabsSaveMu.Unlock()
 	if version < a.tabsLastWrittenVersion {

@@ -32,8 +32,8 @@ contents:
     dst: /usr/bin/reasonix-desktop
     file_info:
       mode: 0755
-  - src: ./build/bin/reasonix-guard
-    dst: /usr/bin/reasonix-guard
+  - src: ./build/bin/reasonix-launcher
+    dst: /usr/bin/reasonix-launcher
     file_info:
       mode: 0755
   - src: ./build/bin/reasonix

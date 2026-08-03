@@ -37,6 +37,23 @@ func TestIsDeepSeek(t *testing.T) {
 	}
 }
 
+func TestIsOpenAI(t *testing.T) {
+	for _, tc := range []struct {
+		baseURL string
+		want    bool
+	}{
+		{"https://api.openai.com/v1", true},
+		{"https://API.OPENAI.COM/v1", true},
+		{"https://platform.openai.com/v1", false},
+		{"https://gateway.example/v1", false},
+		{"not-a-url", false},
+	} {
+		if got := IsOpenAI(tc.baseURL); got != tc.want {
+			t.Errorf("IsOpenAI(%q) = %v, want %v", tc.baseURL, got, tc.want)
+		}
+	}
+}
+
 func TestDeepSeekPrefixChatURL(t *testing.T) {
 	for _, tc := range []struct {
 		name string

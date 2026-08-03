@@ -248,15 +248,14 @@ func TestInterruptedReasoningEmitsBestEffortUsage(t *testing.T) {
 	}
 }
 
-func TestReasoningByteGuardSetsStableProviderOutputBudget(t *testing.T) {
+func TestReasoningByteGuardDoesNotSetProviderOutputBudget(t *testing.T) {
 	tests := []struct {
-		name      string
-		limit     int
-		wantToken int
+		name  string
+		limit int
 	}{
-		{name: "default", wantToken: 32 * 1024},
-		{name: "custom", limit: 65, wantToken: 17},
-		{name: "disabled", limit: -1, wantToken: 0},
+		{name: "default"},
+		{name: "custom", limit: 65},
+		{name: "disabled", limit: -1},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -266,8 +265,8 @@ func TestReasoningByteGuardSetsStableProviderOutputBudget(t *testing.T) {
 				t.Fatal(err)
 			}
 			req := prov.LastRequest()
-			if req == nil || req.MaxTokens != tt.wantToken {
-				t.Fatalf("request = %+v, want max_tokens=%d", req, tt.wantToken)
+			if req == nil || req.MaxTokens != 0 {
+				t.Fatalf("request = %+v, reasoning bytes must not become a total output budget", req)
 			}
 		})
 	}
@@ -279,7 +278,7 @@ func TestReasoningByteGuardSetsStableProviderOutputBudget(t *testing.T) {
 		)
 		registry := tool.NewRegistry()
 		registry.Add(fakeTool{name: "read", readOnly: true})
-		a := New(prov, registry, NewSession(""), Options{}, event.Discard)
+		a := New(prov, registry, NewSession(""), Options{MaxOutputTokens: 8192}, event.Discard)
 		if err := a.Run(context.Background(), "go"); err != nil {
 			t.Fatal(err)
 		}
@@ -288,8 +287,8 @@ func TestReasoningByteGuardSetsStableProviderOutputBudget(t *testing.T) {
 			t.Fatalf("requests = %d, want two provider turns", len(requests))
 		}
 		for i, req := range requests {
-			if req.MaxTokens != 32*1024 {
-				t.Fatalf("request %d max_tokens = %d, want stable 32768", i+1, req.MaxTokens)
+			if req.MaxTokens != 8192 {
+				t.Fatalf("request %d max_tokens = %d, want stable 8192", i+1, req.MaxTokens)
 			}
 		}
 	})

@@ -265,6 +265,7 @@ type Agent struct {
 	maxSteps           int
 	maxStepsKey        string
 	reasoningByteLimit int
+	maxOutputTokens    int
 	// executorHandoffGuard is enabled by Coordinator for the executor agent. The
 	// per-turn marker check in Run keeps ordinary single-model turns unaffected.
 	executorHandoffGuard bool
@@ -946,12 +947,16 @@ type Options struct {
 	// is hit. Empty defaults to the generic max_steps tool/runtime parameter.
 	MaxStepsKey string
 	// ReasoningByteLimit bounds a single stream's hidden reasoning bytes. Zero
-	// uses the default guard; a negative value disables both this client guard
-	// and its derived provider-side max output token budget.
+	// uses the default guard; a negative value disables only this client guard.
+	// Provider output budgets are a separate protocol/model capability.
 	ReasoningByteLimit int
-	Temperature        float64
-	Pricing            *provider.Pricing // optional, for per-turn cost display
-	UsageSource        string            // optional billable usage source; default executor
+	// MaxOutputTokens overrides the provider's configured/default total output
+	// budget. Zero delegates to the provider; a negative value asks optional
+	// protocols to omit the budget (Anthropic still requires max_tokens).
+	MaxOutputTokens int
+	Temperature     float64
+	Pricing         *provider.Pricing // optional, for per-turn cost display
+	UsageSource     string            // optional billable usage source; default executor
 
 	// Gate is the per-call permission gate. nil disables gating.
 	Gate Gate
@@ -1139,6 +1144,7 @@ func New(prov provider.Provider, tools *tool.Registry, session *Session, opts Op
 		maxSteps:                  opts.MaxSteps,
 		maxStepsKey:               maxStepsKey,
 		reasoningByteLimit:        reasoningByteLimit,
+		maxOutputTokens:           opts.MaxOutputTokens,
 		temperature:               opts.Temperature,
 		pricing:                   opts.Pricing,
 		usageSource:               usageSourceOrDefault(opts.UsageSource, event.UsageSourceExecutor),
@@ -2657,7 +2663,7 @@ func (a *Agent) stream(ctx context.Context, turn int) (string, string, string, [
 	ch, err := a.prov.Stream(ctx, provider.Request{
 		Messages:    requestMessages,
 		Tools:       a.tools.Schemas(),
-		MaxTokens:   estimateTokensFromBytes(a.reasoningByteLimit),
+		MaxTokens:   a.maxOutputTokens,
 		Temperature: provider.OptionalTemperature(a.temperature),
 	})
 	if err != nil {

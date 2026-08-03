@@ -816,6 +816,7 @@ func TestResolveModelAppliesModelOverrides(t *testing.T) {
 		Models:            []string{"deepseek-v4-flash", "plain-chat"},
 		Default:           "plain-chat",
 		ContextWindow:     131_072,
+		MaxOutputTokens:   8_192,
 		ReasoningProtocol: ReasoningProtocolOpenAI,
 		SupportedEfforts:  []string{"low", "medium", "high"},
 		ModelOverrides: map[string]ProviderModelOverride{
@@ -825,6 +826,7 @@ func TestResolveModelAppliesModelOverrides(t *testing.T) {
 				DefaultEffort:     "max",
 				Vision:            &visionOff,
 				ContextWindow:     1_000_000,
+				MaxOutputTokens:   32_768,
 			},
 		},
 	}}}
@@ -846,6 +848,9 @@ func TestResolveModelAppliesModelOverrides(t *testing.T) {
 	if deepseek.ContextWindow != 1_000_000 {
 		t.Fatalf("deepseek context window = %d, want per-model override", deepseek.ContextWindow)
 	}
+	if deepseek.MaxOutputTokens != 32_768 {
+		t.Fatalf("deepseek max output tokens = %d, want per-model override", deepseek.MaxOutputTokens)
+	}
 
 	plain, ok := c.ResolveModel("gateway/plain-chat")
 	if !ok {
@@ -856,6 +861,9 @@ func TestResolveModelAppliesModelOverrides(t *testing.T) {
 	}
 	if plain.ContextWindow != 131_072 {
 		t.Fatalf("plain context window = %d, want inherited provider value", plain.ContextWindow)
+	}
+	if plain.MaxOutputTokens != 8_192 {
+		t.Fatalf("plain max output tokens = %d, want inherited provider value", plain.MaxOutputTokens)
 	}
 }
 

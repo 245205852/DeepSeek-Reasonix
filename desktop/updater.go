@@ -27,6 +27,7 @@ import (
 
 	"reasonix/desktop/internal/update"
 	"reasonix/internal/config"
+	"reasonix/internal/installlayout"
 	"reasonix/internal/netclient"
 	"reasonix/internal/repair"
 )
@@ -333,7 +334,22 @@ func validateManifestAsset(selected, version, filename string, asset update.Asse
 	if !sha256RE.MatchString(asset.SHA256) {
 		return "", fmt.Errorf("asset %s has invalid SHA-256 %q", filename, asset.SHA256)
 	}
+	if err := validateAssetInstallLayout(asset.InstallLayout); err != nil {
+		return "", err
+	}
 	return base, nil
+}
+
+// validateAssetInstallLayout accepts the pre-v1.20 empty layout (flat install)
+// and the v1.20+ versioned-v1 layout. Unknown values must fail closed so a new
+// client never partially installs an unrecognized package shape.
+func validateAssetInstallLayout(layout string) error {
+	switch strings.TrimSpace(layout) {
+	case "", installlayout.InstallLayoutVersionedV1:
+		return nil
+	default:
+		return fmt.Errorf("unsupported install_layout %q (keeping current version)", layout)
+	}
 }
 
 func validateDesktopManifest(selected string, m *update.Manifest) error {
@@ -1110,7 +1126,57 @@ func applyLinux(targz []byte, prepared *repair.UpdateTransaction) error {
 	return nil
 }
 
+// applyLinuxVersioned publishes a verified compatibility tarball into a new
+// version directory and swaps current.json last. The tar still contains the
+// one-shot reasonix-guard member for v1.18-v1.19 updaters, but v1.20+ ignores
+// that member and never persists it again.
+func applyLinuxVersioned(targz []byte, targetVersion string) error {
+	release, err := extractLinuxReleaseUnit(targz)
+	if err != nil {
+		return err
+	}
+	root := currentInstallDirForLinuxUpdate()
+	if _, err := installlayout.ReadCurrent(root); err != nil {
+		return fmt.Errorf("update: resolve active Linux layout: %w", err)
+	}
+	targetVersion = strings.TrimSpace(targetVersion)
+	if !strings.HasPrefix(targetVersion, "v") {
+		targetVersion = "v" + targetVersion
+	}
+	if err := installlayout.ValidateVersionName(targetVersion); err != nil {
+		return err
+	}
+	staging, err := os.MkdirTemp(root, ".reasonix-linux-update-*")
+	if err != nil {
+		return fmt.Errorf("update: create Linux version staging: %w", err)
+	}
+	defer os.RemoveAll(staging)
+	desktopPath := filepath.Join(staging, installlayout.DesktopBinaryName())
+	cliPath := filepath.Join(staging, installlayout.CLIBinaryName())
+	if err := os.WriteFile(desktopPath, release["reasonix-desktop"], 0o700); err != nil {
+		return fmt.Errorf("update: stage Linux desktop: %w", err)
+	}
+	if err := os.WriteFile(cliPath, release["reasonix"], 0o700); err != nil {
+		return fmt.Errorf("update: stage Linux CLI: %w", err)
+	}
+	if err := installlayout.ActivateVersion(installlayout.ActivationRequest{
+		InstallRoot: root,
+		Version:     targetVersion,
+		RequestID:   "linux-" + targetVersion,
+		Members: []installlayout.Member{
+			{Name: installlayout.DesktopBinaryName(), Path: desktopPath, Mode: 0o700},
+			{Name: installlayout.CLIBinaryName(), Path: cliPath, Mode: 0o700},
+		},
+		RequiredNames: []string{installlayout.DesktopBinaryName(), installlayout.CLIBinaryName()},
+	}); err != nil {
+		return fmt.Errorf("update: activate Linux version: %w", err)
+	}
+	_ = installlayout.RetainPreviousVersions(root, 0)
+	return nil
+}
+
 var currentExecutablePathForLinux = currentExecutablePath
+var currentInstallDirForLinuxUpdate = currentInstallDir
 
 var applyLinuxReleaseUnit = func(
 	claimed *repair.UpdateTransaction,
@@ -1136,14 +1202,24 @@ var applyLinuxReleaseUnit = func(
 	return receipts, nil
 }
 
-func applyWindowsFile(path, expectedSHA256 string, prepared *repair.UpdateTransaction) error {
+func applyWindowsFile(path, expectedSHA256, targetVersion string, prepared *repair.UpdateTransaction) error {
+	installDir := currentInstallDir()
+	if installlayout.HasCurrent(installDir) {
+		return startWindowsVersionedUpdateHandoff(
+			path,
+			expectedSHA256,
+			installDir,
+			currentLauncherPath(),
+			targetVersion,
+		)
+	}
 	if prepared == nil {
 		return fmt.Errorf("update: prepared transaction is unavailable")
 	}
 	return startWindowsUpdateHandoff(
 		path,
 		expectedSHA256,
-		currentInstallDir(),
+		installDir,
 		currentLauncherPath(),
 		prepared,
 	)
@@ -1160,15 +1236,50 @@ func currentExecutablePath() string {
 	return exe
 }
 
-// currentInstallDir is the directory of the running executable — the location a
-// Windows update must overwrite. Empty when it can't be resolved, in which case
-// the installer falls back to its own InstallDir logic.
+// currentInstallDir is the InstallRoot for updates. For the versioned layout it
+// is the directory that owns current.json (not versions/<ver>/). For flat
+// installs it is the directory of the running executable.
 func currentInstallDir() string {
 	exe := currentExecutablePath()
 	if exe == "" {
 		return ""
 	}
+	if root, err := installlayout.ResolveInstallRoot(exe); err == nil && root != "" {
+		return root
+	}
 	return filepath.Dir(exe)
+}
+
+// archiveSupersededLegacyUpdateAfterReady retires a valid older flat-layout
+// transaction only after the newer versioned desktop has shown its UI. This
+// lets a signed recovery installer heal users already blocked by a v1.18-v1.19
+// health marker without deleting repair state or trusting a foreign install.
+func archiveSupersededLegacyUpdateAfterReady() (bool, error) {
+	exe := currentExecutablePath()
+	if exe == "" || version == "" || version == "dev" {
+		return false, nil
+	}
+	root, err := installlayout.ResolveInstallRoot(exe)
+	if err != nil {
+		return false, err
+	}
+	ptr, err := installlayout.ReadCurrent(root)
+	if err != nil {
+		// Package-managed and legacy flat installs have no versioned pointer and
+		// therefore are not authorized to retire a transaction.
+		if os.IsNotExist(err) {
+			return false, nil
+		}
+		return false, err
+	}
+	running := strings.TrimSpace(version)
+	if !strings.HasPrefix(running, "v") {
+		running = "v" + running
+	}
+	if ptr.ActiveVersion != running {
+		return false, fmt.Errorf("active install version %s does not match running version %s", ptr.ActiveVersion, running)
+	}
+	return repair.ArchiveSupersededPendingFileUpdate(running, root)
 }
 
 // updateSiblingArtifacts lists the packaged binaries an update replaces beside
@@ -1190,8 +1301,27 @@ func releaseUnitPathsFor(dir, goos string) []string {
 	if dir == "" {
 		return nil
 	}
+	// Versioned-v1 layout: primary is the active desktop under versions/.
+	if goos == "windows" && installlayout.HasCurrent(dir) {
+		paths := make([]string, 0, 6)
+		if desktop, err := installlayout.ActiveDesktopPath(dir); err == nil {
+			paths = append(paths, desktop)
+		} else {
+			paths = append(paths, filepath.Join(dir, "reasonix-desktop.exe"))
+		}
+		if helper, err := installlayout.ActiveUpdateHelperPath(dir); err == nil {
+			paths = append(paths, helper)
+		}
+		if cli, err := installlayout.ActiveCLIPath(dir); err == nil {
+			paths = append(paths, cli)
+		}
+		for _, name := range []string{"reasonix-launcher.exe", "reasonix-cli.exe", "Reasonix.exe"} {
+			paths = append(paths, filepath.Join(dir, name))
+		}
+		return paths
+	}
 	names := updateSiblingNames(goos)
-	paths := make([]string, 0, len(names))
+	paths := make([]string, 0, len(names)+1)
 	switch goos {
 	case "linux":
 		paths = append(paths, filepath.Join(dir, "reasonix-desktop"))
@@ -1210,6 +1340,8 @@ func releaseUnitPathsFor(dir, goos string) []string {
 func updateSiblingNames(goos string) []string {
 	switch goos {
 	case "windows":
+		// Legacy flat release unit. reasonix-guard.exe may still exist on disk
+		// during migration from 1.18–1.19.1; the new layout omits it.
 		return []string{"reasonix-guard.exe", "reasonix-launcher.exe", "reasonix-update-helper.exe", "reasonix-cli.exe", "Reasonix.exe"}
 	case "linux":
 		return []string{"reasonix-guard", "reasonix"}
@@ -1218,21 +1350,40 @@ func updateSiblingNames(goos string) []string {
 	}
 }
 
-// relaunchThroughGuard starts the packaged launcher so the replacement build is
-// covered by the same crash-loop and rollback policy as a normal app launch.
-func relaunchThroughGuard() error {
+// relaunchThroughLauncher starts the permanent thin launcher (or falls back to
+// the running executable). A legacy Guard binary is considered only as a
+// one-release migration fallback for flat 1.18-1.19.1 installations.
+func relaunchThroughLauncher() error {
 	exe, err := os.Executable()
 	if err != nil {
 		return err
 	}
-	launcher := filepath.Join(filepath.Dir(exe), "reasonix-guard")
+	root := filepath.Dir(exe)
+	if resolved, err := installlayout.ResolveInstallRoot(exe); err == nil && resolved != "" {
+		root = resolved
+	}
+	candidates := []string{
+		filepath.Join(root, "reasonix-launcher"),
+		filepath.Join(root, "Reasonix.exe"),
+		filepath.Join(root, "reasonix-guard"), // migration window only
+	}
 	if runtime.GOOS == "windows" {
-		launcher += ".exe"
+		candidates[0] += ".exe"
+		candidates[2] += ".exe"
 	}
-	if _, statErr := os.Stat(launcher); statErr != nil {
-		launcher = exe
+	launcher := exe
+	for _, path := range candidates {
+		if _, err := os.Stat(path); err == nil {
+			launcher = path
+			break
+		}
 	}
-	cmd := exec.Command(launcher, "launch", "--detach")
+	args := []string{}
+	// Only legacy guard understands "launch --detach"; the thin launcher strips it.
+	if strings.Contains(strings.ToLower(filepath.Base(launcher)), "guard") {
+		args = []string{"launch", "--detach"}
+	}
+	cmd := exec.Command(launcher, args...)
 	cmd.Stdout, cmd.Stderr, cmd.Stdin = os.Stdout, os.Stderr, os.Stdin
 	return cmd.Start()
 }
@@ -1242,14 +1393,26 @@ func currentLauncherPath() string {
 	if exe == "" {
 		return ""
 	}
-	name := "reasonix-guard"
-	if runtime.GOOS == "windows" {
-		name = "reasonix-launcher.exe"
+	root := filepath.Dir(exe)
+	if resolved, err := installlayout.ResolveInstallRoot(exe); err == nil && resolved != "" {
+		root = resolved
 	}
-	launcher := filepath.Join(filepath.Dir(exe), name)
-	if _, err := os.Stat(launcher); err == nil {
-		return launcher
+	for _, name := range []string{"reasonix-launcher.exe", "Reasonix.exe", "reasonix-launcher", "reasonix-guard.exe", "reasonix-guard"} {
+		if runtime.GOOS != "windows" && strings.HasSuffix(name, ".exe") {
+			continue
+		}
+		if runtime.GOOS == "windows" && !strings.HasSuffix(name, ".exe") && name != "Reasonix.exe" {
+			// Unix names on Windows are unused.
+			if !strings.HasSuffix(name, ".exe") {
+				continue
+			}
+		}
+		path := filepath.Join(root, name)
+		if _, err := os.Stat(path); err == nil {
+			return path
+		}
 	}
+	// Fall through to previous flat-dir behavior for incomplete installs.
 	if runtime.GOOS == "windows" {
 		guard := filepath.Join(filepath.Dir(exe), "reasonix-guard.exe")
 		if _, err := os.Stat(guard); err == nil {

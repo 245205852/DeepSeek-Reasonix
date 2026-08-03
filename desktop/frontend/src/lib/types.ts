@@ -1461,6 +1461,36 @@ export interface JobView {
   startedAt: number; // unix milliseconds
 }
 
+export interface ActiveWorkView {
+  running: boolean;
+  pendingPrompt: boolean;
+  cancellable: boolean;
+  jobs: JobView[];
+}
+
+export interface JobCancelBatchView {
+  cancelled: string[];
+  notRunning: string[];
+}
+
+export interface BackgroundRuntimeView {
+  tabId: string;
+  title: string;
+  detached: boolean;
+  running: boolean;
+  pendingPrompt: boolean;
+  jobs: JobView[];
+}
+
+export interface WorkspaceConflictView {
+  state: "none" | "local" | "external";
+  ownerTabId?: string;
+  ownerTitle?: string;
+  ownerWork: ActiveWorkView;
+  canReveal: boolean;
+  canCreateWorktree: boolean;
+}
+
 export interface PermissionsView {
   mode: string; // "ask" | "allow" | "deny"
   allow: string[];
@@ -1760,8 +1790,9 @@ export interface DesktopStartupSettingsView {
   statusBarItems: string[]; // ordered visible status bar item ids
   checkUpdates: boolean; // check for new versions on startup
   updateChannel: string; // compatibility field; always "stable"
-  safeMode?: boolean; // recovery startup with external integrations disabled
   conversationWidth?: string; // "standard" | "full"; absent from older Wails payloads
+  configWarnings?: string[]; // non-blocking load recovery notices
+  configPath?: string;
 }
 
 export type ExternalOpenerKind = "file-manager" | "editor" | "terminal";
@@ -1810,7 +1841,7 @@ export interface UpdateProgress {
   requestId: string;
   version: string;
   channel: "stable" | "preview" | string;
-  phase: "downloading" | "verifying" | "downloaded" | "authorizing" | "recovering" | "installing" | "done" | "error";
+  phase: "downloading" | "verifying" | "downloaded" | "authorizing" | "recovering" | "installing" | "relaunching" | "done" | "error";
   received: number;
   total: number;
   err?: string;

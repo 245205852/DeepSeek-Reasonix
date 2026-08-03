@@ -43,10 +43,11 @@ func newFromConfig(cfg provider.Config) (provider.Provider, error) {
 	proxy, _ := cfg.Extra["proxy_spec"].(netclient.ProxySpec)
 	keyEnv, _ := cfg.Extra["api_key_env"].(string)
 	keySource, _ := cfg.Extra["api_key_source"].(string)
+	maxOutputTokens, _ := cfg.Extra["max_output_tokens"].(int)
 	return New(Config{
 		Name: cfg.Name, APIKey: cfg.APIKey, BaseURL: cfg.BaseURL, Model: cfg.Model,
 		Effort: effort, Mode: mode, Stateful: stateful, Proxy: proxy,
-		KeyEnv: keyEnv, KeySource: keySource,
+		KeyEnv: keyEnv, KeySource: keySource, MaxOutputTokens: maxOutputTokens,
 	}), nil
 }
 
@@ -62,6 +63,10 @@ type Config struct {
 	Proxy     netclient.ProxySpec
 	KeyEnv    string
 	KeySource string
+	// MaxOutputTokens is the total provider output budget. Zero enables the
+	// official DeepSeek 32K safety default and otherwise omits the field;
+	// negative always omits it.
+	MaxOutputTokens int
 	// SessionCache controls DashScope's opt-in header. The header is never sent
 	// to non-DashScope endpoints even when this value is true.
 	SessionCache *bool
@@ -102,6 +107,7 @@ type client struct {
 	baseURL, model, effort          string
 	vendor, mode                    string
 	sessionCache                    bool
+	maxOutputTokens                 int
 	http                            *http.Client
 	idleTimeout                     time.Duration
 	authed                          atomic.Bool
@@ -114,6 +120,10 @@ type client struct {
 // New creates a Responses API provider.
 func New(cfg Config) provider.Provider {
 	vendor := DetectVendor(cfg.BaseURL)
+	maxOutputTokens := cfg.MaxOutputTokens
+	if maxOutputTokens == 0 && vendor == "deepseek" {
+		maxOutputTokens = provider.DefaultReasoningOutputTokens
+	}
 	sessionCache := vendor == "dashscope"
 	if cfg.SessionCache != nil {
 		sessionCache = *cfg.SessionCache
@@ -128,7 +138,7 @@ func New(cfg Config) provider.Provider {
 	return &client{
 		name: cfg.Name, apiKey: cfg.APIKey, keyEnv: cfg.KeyEnv, keySource: cfg.KeySource,
 		baseURL: strings.TrimRight(cfg.BaseURL, "/"), model: cfg.Model, effort: cfg.Effort,
-		vendor: vendor, mode: cfg.mode(), sessionCache: sessionCache,
+		vendor: vendor, mode: cfg.mode(), sessionCache: sessionCache, maxOutputTokens: maxOutputTokens,
 		http: httpClient, idleTimeout: defaultStreamIdleTimeout,
 	}
 }
@@ -226,8 +236,12 @@ func (c *client) buildRequestBody(req provider.Request) (map[string]any, bool, [
 	if effort != "" {
 		body["reasoning"] = map[string]any{"effort": effort}
 	}
-	if req.MaxTokens > 0 {
-		body["max_output_tokens"] = req.MaxTokens
+	maxOutputTokens := req.MaxTokens
+	if maxOutputTokens == 0 {
+		maxOutputTokens = c.maxOutputTokens
+	}
+	if maxOutputTokens > 0 {
+		body["max_output_tokens"] = maxOutputTokens
 	}
 	if req.Temperature != nil {
 		body["temperature"] = *req.Temperature

@@ -73,6 +73,7 @@ func New(kind string, cfg Config) (Provider, error)
 - OpenAI-compatible vendor 只是 `kind = "openai"` 的不同配置实例，通过 `base_url`、`model`、`api_key_env` 区分；新增兼容模型通常只需改配置。
 - 一个 provider 表示一个 vendor endpoint，可通过 `models` 暴露多个模型，并以 `default` 指定默认项。`default_model`、`--model` 和桌面端模型选择器都经 `Config.ResolveModel` 解析，可接受 provider 名、裸模型名或 `provider/model`。
 - `context_window` 是 provider 级默认值；`model_overrides.<model>.context_window` 可覆盖单个模型。
+- `max_output_tokens` 是独立的总输出预算，不由客户端 reasoning 字节上限换算。0 表示使用 provider 安全默认值，正数表示显式上限，负数表示在协议允许时省略；混合网关可用 `model_overrides.<model>.max_output_tokens` 覆盖单个模型。Anthropic 因协议要求仍会提供 `max_tokens` 默认值。
 - streaming tool-call delta 在 provider 内按 index 聚合，只向上层发出完整 `ToolCall`。
 
 ### 3.2 Tool 与 registry（`internal/tool`）
@@ -228,9 +229,6 @@ flag > ./reasonix.toml > 用户 config.toml > 内置默认值
 ```toml
 default_model = "deepseek"
 
-[cli]                          # 仅用户全局生效，项目 reasonix.toml 不能覆盖
-update_channel = "stable"      # stable|preview；缺失或未知值回退到 stable
-
 [agent]
 temperature = 0.0
 reasoning_language = "auto"
@@ -243,6 +241,7 @@ models         = ["deepseek-v4-flash", "deepseek-v4-pro"]
 default        = "deepseek-v4-flash"
 api_key_env    = "DEEPSEEK_API_KEY"
 context_window = 1000000
+max_output_tokens = 32768  # 正文、reasoning 与工具调用共用的总输出预算；0 使用 provider 默认值
 
 [tools]
 enabled = []
@@ -264,9 +263,8 @@ allow = ["Bash(go test:*)", "Bash(git status:*)"]
 auth_mode = "none"
 ```
 
-原生 CLI 更新渠道保存在用户配置中。`reasonix upgrade` 跟随已保存渠道，
-`reasonix upgrade stable|preview` 会切换渠道并更新同一个已安装二进制文件。高级参数
-`--channel` 只供自动化做单次覆盖，不改变保存值。
+原生 CLI 更新器始终安装最新的严格 `vX.Y.Z` 正式版。1.x 期间仍解析旧渠道配置与
+参数，但统一指向正式版，并在后续保存配置时省略这些字段。
 
 `[sandbox]` 是权限策略之下的强制执行层。file writer 默认限制在 workspace root、Reasonix 用户配置目录和 `allow_write`；`forbid_read` 可阻止读取敏感路径。macOS 使用 Seatbelt，Linux 使用 bubblewrap；若声明 enforce 但平台 backend 不可用，Bash 应拒绝执行而不是静默降级。Windows 当前没有 OS 级 Bash sandbox，file tool 的路径限制仍然生效。
 

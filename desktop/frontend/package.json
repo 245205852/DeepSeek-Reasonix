@@ -20,7 +20,8 @@
     "test:typecheck": "tsc --noEmit -p tsconfig.test.json",
     "test:delivery-worktree": "tsx src/__tests__/delivery-worktree.test.ts",
     "test:updater": "tsx src/__tests__/updater-shared-state.test.tsx",
-    "test:all": "pnpm test:typecheck && pnpm test:updater && pnpm test && pnpm test:remote && pnpm test:performance"
+    "test:window-state": "tsx src/__tests__/window-state-ordering.test.ts",
+    "test:all": "pnpm test:typecheck && pnpm test:updater && pnpm test:window-state && pnpm test && pnpm test:remote && pnpm test:performance"
   },
   "dependencies": {
     "@gsap/react": "^2.1.2",
