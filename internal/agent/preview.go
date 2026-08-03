@@ -178,6 +178,17 @@ func UserPreviewText(content string) string {
 	return strings.TrimSpace(s)
 }
 
+// pasteDisplayLabelPattern matches the standalone label desktop prepends to a
+// pasted-text turn. It is UI chrome rather than user intent, so title and
+// preview derivation may remove it without touching inline label mentions.
+var pasteDisplayLabelPattern = regexp.MustCompile(`^\[(?:已粘贴文本|已貼上文字|Pasted text) #[0-9]+ · [0-9]+ (?:行|lines)\][ \t]*(?:\r?\n)?`)
+
+// StripPasteDisplayLabel removes one leading desktop pasted-text label while
+// preserving the remainder byte-for-byte.
+func StripPasteDisplayLabel(content string) string {
+	return pasteDisplayLabelPattern.ReplaceAllString(content, "")
+}
+
 // UserMessageText returns the best user-authored view of a persisted user turn.
 // New sessions carry the exact raw text explicitly; older sessions fall back to
 // deterministic wrapper stripping.
@@ -241,6 +252,7 @@ func hasLegacyProviderWrapper(content string) bool {
 // sites in internal/agent/agent.go, internal/agent/compact.go, and
 // internal/control (plan approval, goal loop).
 var SyntheticUserPrefixes = []string{
+	"<reasoning-language>",
 	"Plan approved — plan mode is off",
 	"Host final-answer readiness check failed",
 	"You are already in the executor phase",
@@ -274,6 +286,9 @@ func IsSyntheticUserText(content string) bool {
 // steer. Preview/title/turn-count derivations share this so a delivery
 // readiness nudge can never become a session title or inflate turn counts.
 func IsUserAuthoredTurn(content string) bool {
+	if strings.TrimSpace(StripTransientUserBlocks(content)) == "" {
+		return false
+	}
 	if IsSyntheticUserText(content) {
 		return false
 	}
