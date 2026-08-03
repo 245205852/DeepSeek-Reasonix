@@ -8,7 +8,36 @@ import (
 	"reasonix/internal/provider"
 )
 
-var reTransientUserBlock = regexp.MustCompile(`(?s)^\s*<(?:response-language|reasoning-language|memory-update|background-jobs|active-goal|hook-context|capability-route|interrupted-turn-recovery)(?:\s+[^>]*)?>.*?</(?:response-language|reasoning-language|memory-update|background-jobs|active-goal|hook-context|capability-route|interrupted-turn-recovery)>\s*\n?`)
+// TransientUserBlockTags names every block the host prepends to a user turn as
+// runtime context rather than something the user typed. Previews, titles, and
+// the rewind picker strip them; a tag missing from this list leaks raw markup
+// into the UI, which is how <autoresearch-runtime> surfaced in session titles.
+//
+// This is the single source of truth: the strip regex is built from it, and
+// hasLeadingInjectedBlock walks it. Anything that starts prepending a new block
+// to user turns belongs here.
+var TransientUserBlockTags = []string{
+	"response-language",
+	"reasoning-language",
+	"memory-update",
+	"background-jobs",
+	"active-goal",
+	"autoresearch-runtime",
+	"hook-context",
+	"capability-route",
+	"interrupted-turn-recovery",
+}
+
+var reTransientUserBlock = buildTransientUserBlockRE(TransientUserBlockTags)
+
+// buildTransientUserBlockRE matches one leading transient block: an open tag
+// (with optional attributes), its content, and its own closing tag. The
+// alternation is generated so the open and close lists cannot drift apart —
+// spelling them out twice by hand is what let tags go missing from one side.
+func buildTransientUserBlockRE(tags []string) *regexp.Regexp {
+	alt := strings.Join(tags, "|")
+	return regexp.MustCompile(`(?s)^\s*<(?:` + alt + `)(?:\s+[^>]*)?>.*?</(?:` + alt + `)>\s*\n?`)
+}
 
 // stripTrailingDeliveryRuntime removes the exact delivery-runtime marker the
 // agent appends to user turns in delivery mode (agent.go DeliveryRuntimeMarker).

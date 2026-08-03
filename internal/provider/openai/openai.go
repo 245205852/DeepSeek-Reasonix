@@ -139,8 +139,9 @@ func New(cfg provider.Config) (provider.Provider, error) {
 			thinkingType = "disabled"
 		default:
 			if hasExplicitEfforts {
-				// Compatible gateways can use DeepSeek's thinking request shape with
-				// an effort scale that differs from the official endpoint.
+				// A provider that declares supported_efforts defines the endpoint's
+				// complete effort vocabulary. Honor that list for compatible DeepSeek
+				// request shapes instead of applying the built-in official scale.
 				if !supportsEffort(supportedEfforts, effort) {
 					return nil, fmt.Errorf("openai: provider %q: effort %q is not listed in supported_efforts: %v", name, effort, supportedEfforts)
 				}
