@@ -5140,7 +5140,10 @@ export default function App() {
         )}
         {tasksOpen && (
           <Suspense fallback={null}>
-            <TaskMonitorPanel onClose={() => setTasksOpen(false)} />
+            <TaskMonitorPanel
+              key={activeTab?.workspaceRoot || "global"}
+              onClose={() => setTasksOpen(false)}
+            />
           </Suspense>
         )}
 

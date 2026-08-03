@@ -95,3 +95,16 @@ func TestDesktopTaskJobKillerRefusesLegacyTaskWithoutSession(t *testing.T) {
 		t.Fatalf("legacy task unexpectedly killed %d runtime(s)", ctrl.killCount())
 	}
 }
+
+func TestTaskMonitorUsesActiveWorkspaceRoot(t *testing.T) {
+	root := t.TempDir()
+	app := &App{
+		tabs: map[string]*WorkspaceTab{
+			"active": {ID: "active", Scope: "project", WorkspaceRoot: root},
+		},
+		activeTabID: "active",
+	}
+	if got := app.projectDir(); got != root {
+		t.Fatalf("projectDir = %q, want active workspace %q", got, root)
+	}
+}

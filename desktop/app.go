@@ -11885,11 +11885,7 @@ func (a *App) taskControl() *taskmonitor.ControlService {
 }
 
 func (a *App) projectDir() string {
-	wd, err := os.Getwd()
-	if err != nil || wd == "" {
-		return "."
-	}
-	return wd
+	return a.activeWorkspaceRoot()
 }
 
 func (a *App) ListTasks() ([]taskmonitor.TaskSnapshot, error) {
