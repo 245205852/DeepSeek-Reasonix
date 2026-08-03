@@ -741,10 +741,8 @@ export function Composer({
   const profileCloseTimerRef = useRef<number | null>(null);
   const moreCloseTimerRef = useRef<number | null>(null);
   // Creation chrome: hover-open task/profile menus (same pattern as ContextWindowRing).
-  const intentHoverEnterTimerRef = useRef<number | null>(null);
-  const intentHoverLeaveTimerRef = useRef<number | null>(null);
-  const profileHoverEnterTimerRef = useRef<number | null>(null);
-  const profileHoverLeaveTimerRef = useRef<number | null>(null);
+  const intentHoverTimerRef = useRef<number | null>(null);
+  const profileHoverTimerRef = useRef<number | null>(null);
   const creationChrome = showContextWindowRing;
   const wasRunningByDraftRef = useRef<Record<string, boolean>>({ [draftKey]: running });
   const composingRef = useRef(false);
@@ -1865,32 +1863,16 @@ export function Composer({
   }, []);
 
   // Hover timers only touch refs — no useCallback cross-deps (avoids TDZ on HMR).
-  const clearIntentHoverTimers = () => {
-    if (intentHoverEnterTimerRef.current != null) {
-      window.clearTimeout(intentHoverEnterTimerRef.current);
-      intentHoverEnterTimerRef.current = null;
-    }
-    if (intentHoverLeaveTimerRef.current != null) {
-      window.clearTimeout(intentHoverLeaveTimerRef.current);
-      intentHoverLeaveTimerRef.current = null;
-    }
-  };
-
-  const clearProfileHoverTimers = () => {
-    if (profileHoverEnterTimerRef.current != null) {
-      window.clearTimeout(profileHoverEnterTimerRef.current);
-      profileHoverEnterTimerRef.current = null;
-    }
-    if (profileHoverLeaveTimerRef.current != null) {
-      window.clearTimeout(profileHoverLeaveTimerRef.current);
-      profileHoverLeaveTimerRef.current = null;
-    }
+  const clearHoverTimer = (timerRef: { current: number | null }) => {
+    if (timerRef.current == null) return;
+    window.clearTimeout(timerRef.current);
+    timerRef.current = null;
   };
 
   const openIntentMenu = useCallback(() => {
     clearIntentCloseTimer();
-    clearIntentHoverTimers();
-    clearProfileHoverTimers();
+    clearHoverTimer(intentHoverTimerRef);
+    clearHoverTimer(profileHoverTimerRef);
     if (profileCloseTimerRef.current != null) {
       window.clearTimeout(profileCloseTimerRef.current);
       profileCloseTimerRef.current = null;
@@ -1906,7 +1888,7 @@ export function Composer({
 
   const closeIntentMenu = useCallback((afterClose?: () => void) => {
     clearIntentCloseTimer();
-    clearIntentHoverTimers();
+    clearHoverTimer(intentHoverTimerRef);
     setIntentMenuClosing(true);
     window.requestAnimationFrame(() => setIntentMenuOpen(false));
     const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
@@ -1919,8 +1901,8 @@ export function Composer({
 
   const openProfileMenu = useCallback(() => {
     clearProfileCloseTimer();
-    clearProfileHoverTimers();
-    clearIntentHoverTimers();
+    clearHoverTimer(profileHoverTimerRef);
+    clearHoverTimer(intentHoverTimerRef);
     if (intentCloseTimerRef.current != null) {
       window.clearTimeout(intentCloseTimerRef.current);
       intentCloseTimerRef.current = null;
@@ -1936,7 +1918,7 @@ export function Composer({
 
   const closeProfileMenu = useCallback((afterClose?: () => void) => {
     clearProfileCloseTimer();
-    clearProfileHoverTimers();
+    clearHoverTimer(profileHoverTimerRef);
     setProfileMenuClosing(true);
     window.requestAnimationFrame(() => setProfileMenuOpen(false));
     const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
@@ -1949,57 +1931,57 @@ export function Composer({
 
   useEffect(() => () => {
     clearIntentCloseTimer();
-    clearIntentHoverTimers();
+    clearHoverTimer(intentHoverTimerRef);
     clearProfileCloseTimer();
-    clearProfileHoverTimers();
+    clearHoverTimer(profileHoverTimerRef);
   }, [clearIntentCloseTimer, clearProfileCloseTimer]);
 
   const onIntentHoverEnter = useCallback(() => {
     if (!creationChrome || disabled || running) return;
-    clearIntentHoverTimers();
-    intentHoverEnterTimerRef.current = window.setTimeout(() => {
-      intentHoverEnterTimerRef.current = null;
+    clearHoverTimer(intentHoverTimerRef);
+    intentHoverTimerRef.current = window.setTimeout(() => {
+      intentHoverTimerRef.current = null;
       openIntentMenu();
     }, 120);
   }, [creationChrome, disabled, openIntentMenu, running]);
 
   const onIntentHoverLeave = useCallback(() => {
     if (!creationChrome) return;
-    clearIntentHoverTimers();
+    clearHoverTimer(intentHoverTimerRef);
     if (!intentMenuOpen && !intentMenuClosing) return;
-    intentHoverLeaveTimerRef.current = window.setTimeout(() => {
-      intentHoverLeaveTimerRef.current = null;
+    intentHoverTimerRef.current = window.setTimeout(() => {
+      intentHoverTimerRef.current = null;
       closeIntentMenu();
     }, 140);
   }, [closeIntentMenu, creationChrome, intentMenuClosing, intentMenuOpen]);
 
   const onIntentPopoverEnter = useCallback(() => {
     if (!creationChrome) return;
-    clearIntentHoverTimers();
+    clearHoverTimer(intentHoverTimerRef);
   }, [creationChrome]);
 
   const onProfileHoverEnter = useCallback(() => {
     if (!creationChrome || disabled || running) return;
-    clearProfileHoverTimers();
-    profileHoverEnterTimerRef.current = window.setTimeout(() => {
-      profileHoverEnterTimerRef.current = null;
+    clearHoverTimer(profileHoverTimerRef);
+    profileHoverTimerRef.current = window.setTimeout(() => {
+      profileHoverTimerRef.current = null;
       openProfileMenu();
     }, 120);
   }, [creationChrome, disabled, openProfileMenu, running]);
 
   const onProfileHoverLeave = useCallback(() => {
     if (!creationChrome) return;
-    clearProfileHoverTimers();
+    clearHoverTimer(profileHoverTimerRef);
     if (!profileMenuOpen && !profileMenuClosing) return;
-    profileHoverLeaveTimerRef.current = window.setTimeout(() => {
-      profileHoverLeaveTimerRef.current = null;
+    profileHoverTimerRef.current = window.setTimeout(() => {
+      profileHoverTimerRef.current = null;
       closeProfileMenu();
     }, 140);
   }, [closeProfileMenu, creationChrome, profileMenuClosing, profileMenuOpen]);
 
   const onProfilePopoverEnter = useCallback(() => {
     if (!creationChrome) return;
-    clearProfileHoverTimers();
+    clearHoverTimer(profileHoverTimerRef);
   }, [creationChrome]);
 
   const clearMoreCloseTimer = useCallback(() => {
