@@ -1,5 +1,7 @@
 import type { ReactNode, RefObject } from "react";
 
+export { PromptAction, PromptDescriptionToggle } from "./PromptAction";
+
 export function PromptShelf({
   className,
   cardClassName,
@@ -118,78 +120,6 @@ export function PromptHeaderAction({
       disabled={disabled}
     >
       {children}
-    </button>
-  );
-}
-
-export function PromptAction({
-  keyLabel,
-  label,
-  description,
-  onClick,
-  ariaLabel,
-  title,
-  onHoverChange,
-  primary = false,
-  selected = false,
-  // Keyboard cursor without implying a committed answer (multi-select).
-  active = false,
-  quiet = false,
-  disabled = false,
-  tone = "default",
-  role = "option",
-}: {
-  keyLabel: string;
-  label?: ReactNode;
-  description?: ReactNode;
-  onClick: () => void;
-  ariaLabel?: string;
-  // Native tooltip fallback for truncated descriptions.
-  title?: string;
-  // Fires on mouse enter/focus (true) and mouse leave/blur (false) so the
-  // parent can drive a focus-following detail preview.
-  onHoverChange?: (hovering: boolean) => void;
-  primary?: boolean;
-  selected?: boolean;
-  active?: boolean;
-  quiet?: boolean;
-  disabled?: boolean;
-  // Danger options (deny / clear) use semantic color but are never default-selected.
-  tone?: "default" | "danger";
-  role?: "option" | "button";
-}) {
-  const hasCopy = description != null || (label != null && label !== "");
-  return (
-    <button
-      type="button"
-      role={role}
-      aria-selected={role === "option" ? selected : undefined}
-      data-active={active ? "true" : undefined}
-      className={[
-        "prompt-action",
-        primary || selected ? " prompt-action--selected" : "",
-        active ? " prompt-action--active" : "",
-        quiet ? " prompt-action--quiet" : "",
-        description ? " prompt-action--descriptive" : "",
-        !hasCopy ? " prompt-action--key-only" : "",
-        tone === "danger" ? " prompt-action--danger" : "",
-      ].join("")}
-      onClick={onClick}
-      disabled={disabled}
-      aria-label={ariaLabel}
-      title={title}
-      onMouseEnter={onHoverChange ? () => onHoverChange(true) : undefined}
-      onMouseLeave={onHoverChange ? () => onHoverChange(false) : undefined}
-      onFocus={onHoverChange ? () => onHoverChange(true) : undefined}
-      onBlur={onHoverChange ? () => onHoverChange(false) : undefined}
-    >
-      {keyLabel && <span className="prompt-action__key">{keyLabel}</span>}
-      {hasCopy && (
-        <span className="prompt-action__copy">
-          {label != null && label !== "" && <span className="prompt-action__label">{label}</span>}
-          {description && <span className="prompt-action__desc">{description}</span>}
-        </span>
-      )}
     </button>
   );
 }
