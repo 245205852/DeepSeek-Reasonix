@@ -148,6 +148,21 @@ func TestDesktopPackagesPreserveNativePlatformLaunchers(t *testing.T) {
 	if !strings.Contains(nfpm, "dst: /usr/bin/reasonix-launcher") || strings.Contains(nfpm, "dst: /usr/bin/reasonix-guard") {
 		t.Fatal("Linux deb must install the permanent launcher and must not persist Guard")
 	}
+	if !strings.Contains(nfpm, "postinstall: ./build/linux/postinstall.sh") {
+		t.Fatal("Linux deb must refresh native desktop icon caches after install and upgrade")
+	}
+	if !strings.Contains(nfpm, "dst: /usr/share/applications/reasonix.desktop") {
+		t.Fatal("Linux deb must install the Reasonix desktop entry")
+	}
+	postInstall, err := os.ReadFile("build/linux/postinstall.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"gtk-update-icon-cache", "update-desktop-database"} {
+		if !strings.Contains(string(postInstall), want) {
+			t.Errorf("Linux post-install icon repair missing %q", want)
+		}
+	}
 
 	windowsData, err := os.ReadFile("build/windows/installer/project.nsi")
 	if err != nil {
@@ -161,8 +176,8 @@ func TestDesktopPackagesPreserveNativePlatformLaunchers(t *testing.T) {
 		`StrCpy $R9 "$INSTDIR\versions\.installer-v${INFO_PRODUCTVERSION}-$R8"`,
 		`File "/oname=${REASONIX_LAYOUT_INSTALLER}" "${REASONIX_GUARD}"`,
 		`--activate-staging "$R9" --no-relaunch`,
-		`CreateShortcut "$SMPROGRAMS\${INFO_PRODUCTNAME}.lnk" "$INSTDIR\${REASONIX_LAUNCHER}" "" "$INSTDIR\versions\v${INFO_PRODUCTVERSION}\${PRODUCT_EXECUTABLE}" 0`,
-		`CreateShortCut "$DESKTOP\${INFO_PRODUCTNAME}.lnk" "$INSTDIR\${REASONIX_LAUNCHER}" "" "$INSTDIR\versions\v${INFO_PRODUCTVERSION}\${PRODUCT_EXECUTABLE}" 0`,
+		`CreateShortcut "$SMPROGRAMS\${INFO_PRODUCTNAME}.lnk" "$INSTDIR\${REASONIX_LAUNCHER}" "" "$INSTDIR\${REASONIX_LAUNCHER}" 0`,
+		`CreateShortCut "$DESKTOP\${INFO_PRODUCTNAME}.lnk" "$INSTDIR\${REASONIX_LAUNCHER}" "" "$INSTDIR\${REASONIX_LAUNCHER}" 0`,
 		`StrCmp $ReasonixStageMode "1" reasonix_stage_payload`,
 		`File "/oname=${REASONIX_GUARD}" "${REASONIX_GUARD}"`,
 	} {
@@ -173,5 +188,9 @@ func TestDesktopPackagesPreserveNativePlatformLaunchers(t *testing.T) {
 	if strings.Contains(windows, `FileOpen $0 "$INSTDIR\current.json" w`) ||
 		strings.Contains(windows, `SetOutPath "$INSTDIR\versions\v${INFO_PRODUCTVERSION}"`) {
 		t.Fatal("normal Windows installer must not write the live version or current.json in place")
+	}
+	if strings.Contains(windows, `CreateShortcut "$SMPROGRAMS\${INFO_PRODUCTNAME}.lnk" "$INSTDIR\${REASONIX_LAUNCHER}" "" "$INSTDIR\versions\v${INFO_PRODUCTVERSION}\${PRODUCT_EXECUTABLE}" 0`) ||
+		strings.Contains(windows, `CreateShortCut "$DESKTOP\${INFO_PRODUCTNAME}.lnk" "$INSTDIR\${REASONIX_LAUNCHER}" "" "$INSTDIR\versions\v${INFO_PRODUCTVERSION}\${PRODUCT_EXECUTABLE}" 0`) {
+		t.Fatal("Windows shortcut icon must not point into a version directory that retention removes")
 	}
 }
