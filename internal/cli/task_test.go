@@ -396,28 +396,28 @@ func TestTaskCommand_Dispatch(t *testing.T) {
 	s := testStore(t)
 	taskStore = s
 
-	// list
+	// monitor list
 	exit, out := captureOut(func() int {
-		return taskCommand([]string{"list", "--json"})
+		return taskCommand([]string{"monitor", "list", "--json"})
 	})
 	if exit != 0 || !strings.Contains(out, "task_id") {
-		t.Errorf("task list failed: exit=%d out=%s", exit, out)
+		t.Errorf("task monitor list failed: exit=%d out=%s", exit, out)
 	}
 
-	// status
+	// monitor status
 	exit, out = captureOut(func() int {
-		return taskCommand([]string{"status", "--json", "a1"})
+		return taskCommand([]string{"monitor", "status", "--json", "a1"})
 	})
 	if exit != 0 || !strings.Contains(out, "a1") {
-		t.Errorf("task status failed: exit=%d out=%s", exit, out)
+		t.Errorf("task monitor status failed: exit=%d out=%s", exit, out)
 	}
 
-	// events
+	// monitor events
 	exit, out = captureOut(func() int {
-		return taskCommand([]string{"events", "--json", "a1"})
+		return taskCommand([]string{"monitor", "events", "--json", "a1"})
 	})
 	if exit != 0 || !strings.Contains(out, "event_type") {
-		t.Errorf("task events failed: exit=%d out=%s", exit, out)
+		t.Errorf("task monitor events failed: exit=%d out=%s", exit, out)
 	}
 
 	// unknown subcommand
@@ -426,6 +426,15 @@ func TestTaskCommand_Dispatch(t *testing.T) {
 	})
 	if exit == 0 {
 		t.Error("expected non-zero for unknown subcommand")
+	}
+}
+
+func TestTaskCommand_PreservesMachineShowRoute(t *testing.T) {
+	exit, out := captureOut(func() int {
+		return taskCommand([]string{"show", "--json"})
+	})
+	if exit == 0 || !strings.Contains(out, `"command":"task.show"`) {
+		t.Fatalf("legacy task show route changed: exit=%d out=%s", exit, out)
 	}
 }
 
@@ -474,7 +483,7 @@ func TestFileStoreIntegration_ListTasks(t *testing.T) {
 	writeTaskData(t, dir)
 
 	exit, out := captureOut(func() int {
-		return taskCommand([]string{"list", "--json", "--dir", dir})
+		return taskCommand([]string{"monitor", "list", "--json", "--dir", dir})
 	})
 	if exit != 0 {
 		t.Fatalf("exit=%d", exit)
@@ -495,7 +504,7 @@ func TestFileStoreIntegration_Status(t *testing.T) {
 	writeTaskData(t, dir)
 
 	exit, out := captureOut(func() int {
-		return taskCommand([]string{"status", "--json", "--dir", dir, "task-1"})
+		return taskCommand([]string{"monitor", "status", "--json", "--dir", dir, "task-1"})
 	})
 	if exit != 0 {
 		t.Fatalf("exit=%d", exit)
@@ -512,7 +521,7 @@ func TestFileStoreIntegration_Status_NotFound(t *testing.T) {
 	dir := t.TempDir()
 
 	exit, out := captureOut(func() int {
-		return taskCommand([]string{"status", "--json", "--dir", dir, "ghost"})
+		return taskCommand([]string{"monitor", "status", "--json", "--dir", dir, "ghost"})
 	})
 	if exit != 0 {
 		t.Fatalf("exit=%d", exit)
@@ -527,7 +536,7 @@ func TestFileStoreIntegration_Events_JSON(t *testing.T) {
 	writeTaskData(t, dir)
 
 	exit, out := captureOut(func() int {
-		return taskCommand([]string{"events", "--json", "--dir", dir, "task-1"})
+		return taskCommand([]string{"monitor", "events", "--json", "--dir", dir, "task-1"})
 	})
 	if exit != 0 {
 		t.Fatalf("exit=%d", exit)
@@ -551,7 +560,7 @@ func TestFileStoreIntegration_Events_JSONL(t *testing.T) {
 	writeTaskData(t, dir)
 
 	exit, out := captureOut(func() int {
-		return taskCommand([]string{"events", "--jsonl", "--dir", dir, "task-1"})
+		return taskCommand([]string{"monitor", "events", "--jsonl", "--dir", dir, "task-1"})
 	})
 	if exit != 0 {
 		t.Fatalf("exit=%d", exit)
@@ -573,7 +582,7 @@ func TestFileStoreIntegration_Events_AfterCursor(t *testing.T) {
 	writeTaskData(t, dir)
 
 	exit, out := captureOut(func() int {
-		return taskCommand([]string{"events", "--json", "--dir", dir, "--after", "1", "task-1"})
+		return taskCommand([]string{"monitor", "events", "--json", "--dir", dir, "--after", "1", "task-1"})
 	})
 	if exit != 0 {
 		t.Fatalf("exit=%d", exit)
@@ -592,7 +601,7 @@ func TestFileStoreIntegration_ListTasks_Empty(t *testing.T) {
 	taskStore = nil
 
 	exit, out := captureOut(func() int {
-		return taskCommand([]string{"list", "--json", "--dir", dir})
+		return taskCommand([]string{"monitor", "list", "--json", "--dir", dir})
 	})
 	if exit != 0 {
 		t.Fatalf("exit=%d", exit)

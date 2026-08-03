@@ -32,7 +32,7 @@ func SetTaskJobKiller(k taskmonitor.JobKiller) { taskJobKiller = k }
 
 func taskCommand(args []string) int {
 	if len(args) == 0 {
-		fmt.Fprintln(os.Stderr, "usage: reasonix task <list|status|events|stop|cancel|requeue|open-session|tmux> [flags]")
+		fmt.Fprintln(os.Stderr, "usage: reasonix task <list|show|monitor|status|events|stop|cancel|requeue|open-session|tmux> [flags]")
 		return 2
 	}
 	store := taskStore
@@ -40,12 +40,19 @@ func taskCommand(args []string) int {
 		store = taskmonitor.NewFileStore(".reasonix/tasks")
 	}
 	switch args[0] {
+	case "list":
+		// Keep the pre-task-monitor machine contract intact.  New monitor
+		// commands live below `task monitor` so existing callers do not see a
+		// different schema or task identity model under the same command.
+		return runTaskCommand(args, os.Stdout)
+	case "show":
+		return runTaskCommand(args, os.Stdout)
+	case "monitor":
+		return taskMonitorCommand(store, args[1:])
 	case "machine-list":
 		return runTaskCommand(append([]string{"list"}, args[1:]...), os.Stdout)
 	case "machine-show":
 		return runTaskCommand(append([]string{"show"}, args[1:]...), os.Stdout)
-	case "list":
-		return taskListCmd(store, args[1:])
 	case "status":
 		return taskStatusCmd(store, args[1:])
 	case "events":
@@ -62,6 +69,32 @@ func taskCommand(args []string) int {
 		return taskTmuxCmd(store, args[1:])
 	default:
 		fmt.Fprintf(os.Stderr, "unknown task subcommand: %s\n", args[0])
+		return 2
+	}
+}
+
+func taskMonitorCommand(store taskmonitor.Store, args []string) int {
+	if len(args) == 0 {
+		fmt.Fprintln(os.Stderr, "usage: reasonix task monitor <list|status|events|stop|cancel|requeue|open-session> [flags]")
+		return 2
+	}
+	switch args[0] {
+	case "list":
+		return taskListCmd(store, args[1:])
+	case "status":
+		return taskStatusCmd(store, args[1:])
+	case "events":
+		return taskEventsCmd(store, args[1:])
+	case "stop":
+		return taskStopCmd(store, args[1:])
+	case "cancel":
+		return taskCancelCmd(store, args[1:])
+	case "requeue":
+		return taskRequeueCmd(store, args[1:])
+	case "open-session":
+		return taskOpenSessionCmd(store, args[1:])
+	default:
+		fmt.Fprintf(os.Stderr, "unknown task monitor subcommand: %s\n", args[0])
 		return 2
 	}
 }
