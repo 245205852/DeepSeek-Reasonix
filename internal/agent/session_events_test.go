@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -293,6 +294,113 @@ func TestReplayRejectsUnsupportedSchemaVersion(t *testing.T) {
 	}
 	if _, err := replaySessionEventLog(logPath); err == nil {
 		t.Fatal("replay of future schema succeeded, want hard error (no silent truncation of newer writers)")
+	}
+}
+
+func TestReplaySessionEventLogEnforcesResourceBudgetsWithoutMutation(t *testing.T) {
+	dir := t.TempDir()
+	logPath := filepath.Join(dir, "bounded.events.jsonl")
+	replace := `{"schema_version":1,"type":"replace","messages":[{"role":"system","content":"sys"},{"role":"user","content":"prompt"}]}` + "\n"
+	appendEvent := `{"schema_version":1,"type":"append","message_index":2,"messages":[{"role":"assistant","content":"reply"}]}` + "\n"
+	contents := replace + appendEvent
+	if err := os.WriteFile(logPath, []byte(contents), 0o600); err != nil {
+		t.Fatalf("write event log: %v", err)
+	}
+
+	tests := []struct {
+		name     string
+		limits   sessionReplayLimits
+		resource string
+	}{
+		{
+			name: "encoded bytes",
+			limits: sessionReplayLimits{
+				maxBytes: int64(len(contents) - 1), maxRecords: 10, maxMessages: 10,
+			},
+			resource: "encoded_bytes",
+		},
+		{
+			name: "event records",
+			limits: sessionReplayLimits{
+				maxBytes: int64(len(contents) + 1), maxRecords: 1, maxMessages: 10,
+			},
+			resource: "event_records",
+		},
+		{
+			name: "messages",
+			limits: sessionReplayLimits{
+				maxBytes: int64(len(contents) + 1), maxRecords: 10, maxMessages: 1,
+			},
+			resource: "messages",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, err := replaySessionEventLogWithLimits(logPath, tc.limits); !errors.Is(err, ErrSessionReplayLimitExceeded) {
+				t.Fatalf("replay error = %v, want ErrSessionReplayLimitExceeded", err)
+			} else {
+				var limitErr *SessionReplayLimitError
+				if !errors.As(err, &limitErr) || limitErr.Resource != tc.resource {
+					t.Fatalf("limit error = %#v, want resource %q", limitErr, tc.resource)
+				}
+				if strings.Contains(err.Error(), logPath) {
+					t.Fatalf("user-facing error leaked local path: %q", err)
+				}
+			}
+			got, err := os.ReadFile(logPath)
+			if err != nil {
+				t.Fatalf("read event log after rejection: %v", err)
+			}
+			if string(got) != contents {
+				t.Fatal("resource-budget rejection modified the event log")
+			}
+		})
+	}
+}
+
+func TestLoadSessionMessagesDoesNotFallbackAfterEventReplayBudget(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "session.jsonl")
+	checkpoint := `{"role":"system","content":"older checkpoint"}` + "\n"
+	if err := os.WriteFile(path, []byte(checkpoint), 0o600); err != nil {
+		t.Fatalf("write checkpoint: %v", err)
+	}
+	logPath := store.SessionEventLog(path)
+	events := `{"schema_version":1,"type":"replace","messages":[{"role":"system","content":"newer event state"},{"role":"user","content":"must not disappear"}]}` + "\n"
+	if err := os.WriteFile(logPath, []byte(events), 0o600); err != nil {
+		t.Fatalf("write event log: %v", err)
+	}
+
+	msgs, fromEvents, damaged, err := loadSessionMessagesWithLimits(path, sessionReplayLimits{
+		maxBytes: int64(len(events) + 1), maxRecords: 10, maxMessages: 1,
+	})
+	if !errors.Is(err, ErrSessionReplayLimitExceeded) {
+		t.Fatalf("load error = %v, want ErrSessionReplayLimitExceeded", err)
+	}
+	if msgs != nil || !fromEvents || damaged {
+		t.Fatalf("load result = msgs:%v fromEvents:%v damaged:%v, want hard event-log refusal", msgs, fromEvents, damaged)
+	}
+	if got, readErr := os.ReadFile(path); readErr != nil || string(got) != checkpoint {
+		t.Fatalf("checkpoint changed after refusal: bytes=%q err=%v", got, readErr)
+	}
+	if got, readErr := os.ReadFile(logPath); readErr != nil || string(got) != events {
+		t.Fatalf("event log changed after refusal: bytes=%q err=%v", got, readErr)
+	}
+}
+
+func TestProbeSessionEventLogReadsOnlyNativeHeader(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "session.jsonl")
+	logPath := store.SessionEventLog(path)
+	largeRecord := `{"schema_version":1,"type":"replace","messages":[{"role":"user","content":"` +
+		strings.Repeat("x", int(sessionEventProbeMaxBytes*2)) + `"}]}` + "\n"
+	if err := os.WriteFile(logPath, []byte(largeRecord), 0o600); err != nil {
+		t.Fatalf("write event log: %v", err)
+	}
+	probe, err := probeSessionEventLog(path)
+	if err != nil {
+		t.Fatalf("probe: %v", err)
+	}
+	if !probe.native || probe.size != int64(len(largeRecord)) {
+		t.Fatalf("probe = %+v, want native size %d", probe, len(largeRecord))
 	}
 }
 
