@@ -4,8 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"os"
-	"path/filepath"
+	"log/slog"
 	"sync/atomic"
 
 	"reasonix/internal/checkpoint"
@@ -257,18 +256,12 @@ func (c *Controller) Rewind(turn int, scope RewindScope) error {
 	defer c.endRotation()
 
 	boundary, hasBound := c.checkpoints.boundary(turn)
-	return c.rewindLocked(turn, scope, boundary, hasBound)
-}
-
-func (c *Controller) rewindLocked(turn int, scope RewindScope, boundary int, hasBound bool) error {
-	// Conversation precheck first for both/conversation.
-	var msgs []provider.Message
 	var forward []byte
 	if scope == RewindConversation || scope == RewindBoth {
 		if !hasBound {
 			return c.rewindFail(fmt.Errorf("conversation rewind unavailable for turn %d (resumed session)", turn))
 		}
-		msgs = c.executor.Session().Snapshot()
+		msgs := c.executor.Session().Snapshot()
 		if boundary > len(msgs) {
 			return c.rewindFail(fmt.Errorf("conversation rewind unavailable for turn %d: the conversation was compacted past this point", turn))
 		}
@@ -278,87 +271,54 @@ func (c *Controller) rewindLocked(turn int, scope RewindScope, boundary int, has
 			return c.rewindFail(err)
 		}
 	}
-
-	type fileFwd struct {
-		abs     string
-		existed bool
-		data    []byte
-		mode    os.FileMode
+	store := c.checkpoints.storeRef()
+	if store == nil {
+		return c.rewindFail(fmt.Errorf("checkpoints unavailable"))
 	}
-	var fwds []fileFwd
-
-	if scope == RewindCode || scope == RewindBoth {
-		// Snapshot current file contents for paths that will be restored.
-		store := c.checkpoints.storeRef()
-		if store != nil {
-			plan, _ := store.PrepareRewind(turn, checkpoint.RewindCode, atomic.LoadInt64(&c.sessionRevision), boundary, hasBound)
-			for _, p := range plan.Files {
-				abs, err := safeWorkspacePath(c.workspaceRoot, p)
-				if err != nil {
-					continue
-				}
-				f := fileFwd{abs: abs}
-				if st, err := os.Lstat(abs); err == nil {
-					f.existed = true
-					f.mode = st.Mode().Perm()
-					if data, rerr := os.ReadFile(abs); rerr == nil {
-						f.data = data
-					}
-				}
-				fwds = append(fwds, f)
-			}
-			// Drop the plan so it doesn't linger.
-			_ = plan
-		}
-		written, deleted, err := c.checkpoints.restoreCode(turn)
+	if obs := c.mutationObserver; obs != nil {
+		store.SetActiveWriters(obs.ActiveWriters())
+	}
+	rev := atomic.LoadInt64(&c.sessionRevision)
+	plan, err := store.PrepareRewind(turn, checkpoint.RewindScope(scope), rev, boundary, hasBound)
+	if err != nil {
+		return c.rewindFail(err)
+	}
+	if (scope == RewindCode || scope == RewindBoth) && !plan.CanFiles {
+		return c.rewindFail(fmt.Errorf("%s", plan.DisabledReason))
+	}
+	if (scope == RewindConversation || scope == RewindBoth) && !plan.CanConversation {
+		return c.rewindFail(fmt.Errorf("%s", plan.DisabledReason))
+	}
+	if forward == nil {
+		forward, err = json.Marshal(c.executor.Session().Snapshot())
 		if err != nil {
-			return c.rewindFail(fmt.Errorf("rewind code: %w", err))
-		}
-		if len(written) > 0 || len(deleted) > 0 {
-			c.sink.Emit(event.Event{Kind: event.Notice, Level: event.LevelInfo,
-				Text: fmt.Sprintf("rewound code to turn %d — %d file(s) restored, %d removed", turn, len(written), len(deleted))})
+			return c.rewindFail(err)
 		}
 	}
-
-	if scope == RewindConversation || scope == RewindBoth {
-		s := c.executor.Session()
-		s.Rewrite(msgs[:boundary])
-		c.checkpoints.truncateFrom(turn)
-		if err := c.SnapshotRewrite(); err != nil {
-			// Compensate conversation + files.
-			s.Rewrite(msgs)
-			_ = c.SnapshotRewrite()
-			for i := len(fwds) - 1; i >= 0; i-- {
-				f := fwds[i]
-				if f.existed {
-					_ = os.WriteFile(f.abs, f.data, f.mode)
-				} else {
-					_ = os.Remove(f.abs)
-				}
-			}
-			return c.rewindFail(fmt.Errorf("persist conversation after rewind: %w", err))
-		}
+	result, err := store.CommitRewindWithForward(plan.PlanID, forward, conversationApplier{c: c}, nil)
+	if err != nil {
+		return c.rewindFail(err)
+	}
+	if len(result.Written) > 0 || len(result.Deleted) > 0 {
+		c.sink.Emit(event.Event{Kind: event.Notice, Level: event.LevelInfo,
+			Text: fmt.Sprintf("rewound code to turn %d — %d file(s) restored, %d removed", turn, len(result.Written), len(result.Deleted))})
+	}
+	if result.ConversationOK {
 		c.sink.Emit(event.Event{Kind: event.Notice, Level: event.LevelInfo,
 			Text: fmt.Sprintf("rewound conversation to turn %d", turn)})
-		_ = forward
 	}
+	atomic.AddInt64(&c.sessionRevision, 1)
 	return nil
 }
 
-func safeWorkspacePath(root, p string) (string, error) {
-	abs := p
-	if !filepath.IsAbs(abs) {
-		abs = filepath.Join(root, p)
+func (c *Controller) recoverCheckpointTransactions() {
+	store := c.checkpoints.storeRef()
+	if store == nil || c.executor == nil {
+		return
 	}
-	abs = filepath.Clean(abs)
-	if root != "" {
-		r := filepath.Clean(root)
-		rel, err := filepath.Rel(r, abs)
-		if err != nil || !filepath.IsLocal(rel) {
-			return "", fmt.Errorf("path escapes workspace")
-		}
+	for _, note := range store.RecoverTransactionsWithApplier(conversationApplier{c: c}) {
+		slog.Info("controller: checkpoint transaction recovery", "result", note)
 	}
-	return abs, nil
 }
 
 // wireMutationObserver installs the v2 observer on the executor.

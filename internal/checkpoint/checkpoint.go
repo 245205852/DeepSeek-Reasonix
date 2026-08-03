@@ -15,6 +15,7 @@ package checkpoint
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -222,6 +223,19 @@ func (s *Store) SetActiveWriters(writers []ActiveWriter) {
 		s.recomputeCoverageLocked(s.cur)
 		s.persist(s.cur)
 	}
+}
+
+func (s *Store) activeWriterConflicts() []RewindConflict {
+	if s == nil {
+		return nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	conflicts := make([]RewindConflict, 0, len(s.activeWriters))
+	for range s.activeWriters {
+		conflicts = append(conflicts, RewindConflict{Reason: ConflictBusyWriter})
+	}
+	return conflicts
 }
 
 // LastUndoTransactionID returns the committed transaction id available for undo.
@@ -919,8 +933,8 @@ func (s *Store) RestoreCode(fromTurn int) (written, deleted []string, err error)
 	return result.Written, result.Deleted, nil
 }
 
-func detectCurrentEncoding(path string) *fileenc.Kind {
-	b, err := os.ReadFile(path)
+func (s *Store) detectCurrentEncoding(path string) *fileenc.Kind {
+	b, err := secureReadFile(s.root, path)
 	if err != nil {
 		return nil
 	}
@@ -938,11 +952,88 @@ func safePath(root, p string) (string, error) {
 	}
 	abs = filepath.Clean(abs)
 	if root != "" {
-		r := filepath.Clean(root)
-		rel, err := filepath.Rel(r, abs)
-		if err != nil || !filepath.IsLocal(rel) {
-			return "", fmt.Errorf("checkpoint path %q escapes workspace %q", p, root)
+		if err := validateWorkspacePath(root, abs); err != nil {
+			return "", err
 		}
 	}
 	return abs, nil
+}
+
+var errSymlinkPath = errors.New("workspace path contains symbolic link")
+
+func workspaceRelative(root, abs string) (string, error) {
+	if root == "" {
+		return filepath.Clean(abs), nil
+	}
+	r := filepath.Clean(root)
+	rel, err := filepath.Rel(r, filepath.Clean(abs))
+	if err != nil || !filepath.IsLocal(rel) {
+		return "", fmt.Errorf("checkpoint path %q escapes workspace %q", abs, root)
+	}
+	return rel, nil
+}
+
+func splitLocalPath(rel string) []string {
+	var parts []string
+	for rel != "." && rel != "" {
+		dir, base := filepath.Split(rel)
+		if base != "" {
+			parts = append([]string{base}, parts...)
+		}
+		rel = filepath.Clean(dir)
+		if rel == string(filepath.Separator) {
+			break
+		}
+	}
+	return parts
+}
+
+func validateWorkspacePath(root, abs string) error {
+	rel, err := workspaceRelative(root, abs)
+	if err != nil {
+		return err
+	}
+	cur := filepath.Clean(root)
+	for _, part := range splitLocalPath(rel) {
+		cur = filepath.Join(cur, part)
+		info, statErr := os.Lstat(cur)
+		if os.IsNotExist(statErr) {
+			return nil
+		}
+		if statErr != nil {
+			return statErr
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			return fmt.Errorf("%w: %s", errSymlinkPath, cur)
+		}
+	}
+	return nil
+}
+
+func writeNewFile(path string, data []byte, mode os.FileMode) error {
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, mode)
+	if err != nil {
+		return err
+	}
+	remove := true
+	defer func() {
+		_ = file.Close()
+		if remove {
+			_ = os.Remove(path)
+		}
+	}()
+	if _, err := file.Write(data); err != nil {
+		return err
+	}
+	if err := file.Sync(); err != nil {
+		return err
+	}
+	if err := file.Close(); err != nil {
+		return err
+	}
+	remove = false
+	return nil
 }

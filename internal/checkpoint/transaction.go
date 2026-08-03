@@ -17,7 +17,8 @@ import (
 // InjectFail is a test seam. When set, CommitRewind fails at the named phase
 // after optionally publishing the first N files. Empty = disabled.
 //
-// Known phases: "publish_file", "delete_file", "conversation", "truncate", "finalize".
+// Known phases: "publish_file", "delete_file", "conversation", "truncate",
+// "after_conversation_before_finalize", "finalize".
 type InjectFail struct {
 	Phase      string
 	AfterFiles int // fail after successfully handling this many file targets
@@ -97,7 +98,11 @@ func (s *Store) PrepareRewind(turn int, scope RewindScope, sessionRev int64, bou
 	}
 
 	if wantFiles {
-		if cov == CoverageNone {
+		if len(files) == 0 && scope == RewindBoth {
+			// The file half of a combined rewind is an atomic no-op when this
+			// conversation range never touched a tracked file.
+			plan.CanFiles = true
+		} else if cov == CoverageNone {
 			plan.CanFiles = false
 			plan.DisabledReason = "no file captures"
 		} else if expired {
@@ -202,10 +207,15 @@ func (s *Store) CommitRewind(planID string, applier ConversationApplier, inject 
 	}
 
 	// Workspace exclusive barrier.
-	if err := s.barrier.EnterExclusive(); err != nil {
-		return RewindResult{OK: false, Error: err.Error()}, err
+	if !s.barrier.TryEnterExclusive() {
+		err := fmt.Errorf("workspace mutation in progress")
+		return RewindResult{OK: false, Error: err.Error(), Conflicts: []RewindConflict{{Reason: ConflictBusyWriter}}}, err
 	}
 	defer s.barrier.ExitExclusive()
+	if conflicts := s.activeWriterConflicts(); len(conflicts) > 0 {
+		err := fmt.Errorf("active background writer")
+		return RewindResult{OK: false, Error: err.Error(), Conflicts: conflicts, Coverage: plan.Coverage}, err
+	}
 
 	if plan.Scope == RewindCode || plan.Scope == RewindBoth {
 		if plan.WorkspaceToken != fmt.Sprintf("%d", s.barrier.Generation()) {
@@ -239,10 +249,15 @@ func (s *Store) UndoRewind(transactionID string, applier ConversationApplier) (R
 		return RewindResult{OK: false, Error: "undo not available"}, fmt.Errorf("undo not available for %q", transactionID)
 	}
 
-	if err := s.barrier.EnterExclusive(); err != nil {
-		return RewindResult{OK: false, Error: err.Error()}, err
+	if !s.barrier.TryEnterExclusive() {
+		err := fmt.Errorf("workspace mutation in progress")
+		return RewindResult{OK: false, Error: err.Error(), Conflicts: []RewindConflict{{Reason: ConflictBusyWriter}}}, err
 	}
 	defer s.barrier.ExitExclusive()
+	if conflicts := s.activeWriterConflicts(); len(conflicts) > 0 {
+		err := fmt.Errorf("active background writer")
+		return RewindResult{OK: false, Error: err.Error(), Conflicts: conflicts}, err
+	}
 
 	// Precheck that current disk still matches what we published (targets' restore state).
 	for _, t := range last.Targets {
@@ -329,7 +344,7 @@ func (s *Store) UndoRewind(transactionID string, applier ConversationApplier) (R
 		if t.RestoreMode != 0 {
 			mode = os.FileMode(t.RestoreMode)
 		}
-		if err := writePublishTemp(t.PublishTmp, data, mode); err != nil {
+		if err := s.writePublishTemp(t.PublishTmp, data, mode); err != nil {
 			_ = s.abortTransaction(undo, err)
 			return RewindResult{OK: false, Error: err.Error()}, err
 		}
@@ -541,7 +556,7 @@ func (s *Store) prepareTransaction(plan RewindPlan, applier ConversationApplier)
 					enc := fileenc.UTF8
 					if rev.Encoding != nil {
 						enc = *rev.Encoding
-					} else if current := detectCurrentEncoding(abs); current != nil {
+					} else if current := s.detectCurrentEncoding(abs); current != nil {
 						enc = *current
 					}
 					data = fileenc.Encode(*rev.Content, enc)
@@ -562,7 +577,7 @@ func (s *Store) prepareTransaction(plan RewindPlan, applier ConversationApplier)
 					t.RestoreInline = clonePayload(data)
 				}
 				t.PublishTmp, t.BackupPath = transactionSiblingPaths(abs, tx.ID, targetIndex)
-				if err := writePublishTemp(t.PublishTmp, data, mode); err != nil {
+				if err := s.writePublishTemp(t.PublishTmp, data, mode); err != nil {
 					return nil, err
 				}
 			} else {
@@ -605,31 +620,10 @@ func transactionSiblingPaths(absPath, transactionID string, index int) (publish,
 	return filepath.Join(dir, prefix+".tmp"), filepath.Join(dir, prefix+".bak")
 }
 
-func writePublishTemp(path string, data []byte, mode os.FileMode) error {
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return err
-	}
-	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, mode)
-	if err != nil {
+func (s *Store) writePublishTemp(path string, data []byte, mode os.FileMode) error {
+	if err := secureWriteNew(s.root, path, data, mode); err != nil {
 		return fmt.Errorf("create publish temp: %w", err)
 	}
-	remove := true
-	defer func() {
-		_ = file.Close()
-		if remove {
-			_ = os.Remove(path)
-		}
-	}()
-	if _, err := file.Write(data); err != nil {
-		return err
-	}
-	if err := file.Sync(); err != nil {
-		return err
-	}
-	if err := file.Close(); err != nil {
-		return err
-	}
-	remove = false
 	return nil
 }
 
@@ -770,6 +764,15 @@ func (s *Store) commitTransaction(tx *TransactionManifest, applier ConversationA
 		result.Files = stages
 		return result, err
 	}
+	if inject != nil && inject.Phase == "after_conversation_before_finalize" {
+		// Simulate process death after both conversation mutations are durable but
+		// before the transaction can be marked committed. Startup must restore the
+		// forward transcript/checkpoints before compensating files.
+		err := fmt.Errorf("injected crash after conversation before finalize")
+		result.Error = err.Error()
+		result.Files = stages
+		return result, err
+	}
 
 	tx.State = TxCommitted
 	tx.UpdatedAt = time.Now()
@@ -850,10 +853,15 @@ func (s *Store) CommitRewindWithForward(planID string, forward []byte, applier C
 		return RewindResult{OK: false, Error: plan.DisabledReason}, fmt.Errorf("%s", plan.DisabledReason)
 	}
 
-	if err := s.barrier.EnterExclusive(); err != nil {
-		return RewindResult{OK: false, Error: err.Error()}, err
+	if !s.barrier.TryEnterExclusive() {
+		err := fmt.Errorf("workspace mutation in progress")
+		return RewindResult{OK: false, Error: err.Error(), Conflicts: []RewindConflict{{Reason: ConflictBusyWriter}}}, err
 	}
 	defer s.barrier.ExitExclusive()
+	if conflicts := s.activeWriterConflicts(); len(conflicts) > 0 {
+		err := fmt.Errorf("active background writer")
+		return RewindResult{OK: false, Error: err.Error(), Conflicts: conflicts, Coverage: plan.Coverage}, err
+	}
 
 	if plan.Scope == RewindCode || plan.Scope == RewindBoth {
 		if plan.WorkspaceToken != fmt.Sprintf("%d", s.barrier.Generation()) {
@@ -880,20 +888,21 @@ func (s *Store) publishTarget(t *TransactionTarget) error {
 	if t.BackupPath == "" {
 		return fmt.Errorf("missing transaction backup path for %s", t.Path)
 	}
-	if err := os.MkdirAll(filepath.Dir(t.AbsPath), 0o755); err != nil {
+	backupExists, err := securePathExists(s.root, t.BackupPath)
+	if err != nil {
 		return err
 	}
-	if _, err := os.Lstat(t.BackupPath); err == nil {
+	if backupExists {
 		return fmt.Errorf("transaction backup already exists for %s", t.Path)
-	} else if !os.IsNotExist(err) {
+	}
+	targetExists, err := securePathExists(s.root, t.AbsPath)
+	if err != nil {
 		return err
 	}
-	if _, err := os.Lstat(t.AbsPath); err == nil {
-		if err := os.Rename(t.AbsPath, t.BackupPath); err != nil {
+	if targetExists {
+		if err := secureRename(s.root, t.AbsPath, t.BackupPath); err != nil {
 			return fmt.Errorf("backup %s: %w", t.Path, err)
 		}
-	} else if !os.IsNotExist(err) {
-		return err
 	}
 	if t.Action == "delete" {
 		return nil
@@ -901,15 +910,15 @@ func (s *Store) publishTarget(t *TransactionTarget) error {
 	if t.PublishTmp == "" {
 		return fmt.Errorf("missing publish tmp for %s", t.Path)
 	}
-	if err := os.Rename(t.PublishTmp, t.AbsPath); err != nil {
+	if err := secureRename(s.root, t.PublishTmp, t.AbsPath); err != nil {
 		restoreErr := error(nil)
-		if _, statErr := os.Lstat(t.BackupPath); statErr == nil {
-			restoreErr = os.Rename(t.BackupPath, t.AbsPath)
+		if exists, statErr := securePathExists(s.root, t.BackupPath); statErr == nil && exists {
+			restoreErr = secureRename(s.root, t.BackupPath, t.AbsPath)
 		}
 		return errors.Join(fmt.Errorf("publish %s: %w", t.Path, err), restoreErr)
 	}
 	if t.RestoreMode != 0 {
-		if err := os.Chmod(t.AbsPath, os.FileMode(t.RestoreMode)); err != nil {
+		if err := secureChmod(s.root, t.AbsPath, os.FileMode(t.RestoreMode)); err != nil {
 			return fmt.Errorf("chmod restored %s: %w", t.Path, err)
 		}
 	}
@@ -936,7 +945,7 @@ func (s *Store) compensatePublished(targets []TransactionTarget, stages []FileSt
 			continue
 		} else if fingerprintMatches(cur, t.ForwardExisted, t.ForwardSHA, t.ForwardMode) {
 			if t.PublishTmp != "" {
-				_ = os.Remove(t.PublishTmp)
+				_ = secureRemove(s.root, t.PublishTmp)
 			}
 			markCompensationStage(stages, t.Path, nil)
 			continue
@@ -944,7 +953,7 @@ func (s *Store) compensatePublished(targets []TransactionTarget, stages []FileSt
 		if t.ForwardExisted {
 			data, lerr := s.loadBlobOrInline(t.ForwardBlob, t.ForwardInline)
 			if lerr != nil && t.BackupPath != "" {
-				data, lerr = os.ReadFile(t.BackupPath)
+				data, lerr = secureReadFile(s.root, t.BackupPath)
 			}
 			if !fingerprintMatches(cur, t.RestoreExisted, t.RestoreSHA, t.RestoreMode) {
 				if lerr == nil {
@@ -956,17 +965,17 @@ func (s *Store) compensatePublished(targets []TransactionTarget, stages []FileSt
 						suffix = "unknown"
 					}
 					recov := t.AbsPath + ".reasonix-recovery-" + suffix
-					_ = os.WriteFile(recov, data, os.FileMode(t.ForwardMode))
+					_ = secureWriteNew(s.root, recov, data, os.FileMode(t.ForwardMode))
 					err = fmt.Errorf("external modification after publish; recovery copy at %s", recov)
 				} else {
 					err = lerr
 				}
-			} else if _, backupErr := os.Lstat(t.BackupPath); backupErr == nil {
+			} else if backupExists, backupErr := securePathExists(s.root, t.BackupPath); backupErr == nil && backupExists {
 				if cur.Existed {
-					err = os.Remove(t.AbsPath)
+					err = secureRemove(s.root, t.AbsPath)
 				}
 				if err == nil {
-					err = os.Rename(t.BackupPath, t.AbsPath)
+					err = secureRename(s.root, t.BackupPath, t.AbsPath)
 				}
 			} else if lerr != nil {
 				err = lerr
@@ -975,21 +984,17 @@ func (s *Store) compensatePublished(targets []TransactionTarget, stages []FileSt
 				if t.ForwardMode != 0 {
 					mode = os.FileMode(t.ForwardMode)
 				}
-				if werr := os.MkdirAll(filepath.Dir(t.AbsPath), 0o755); werr != nil {
-					err = werr
-				} else {
-					if cur.Existed {
-						if werr := os.Remove(t.AbsPath); werr != nil {
-							err = werr
-						}
-					}
-					tmp, _ := transactionSiblingPaths(t.AbsPath, newID("compensate"), 0)
-					if werr := writePublishTemp(tmp, data, mode); werr != nil {
+				if cur.Existed {
+					if werr := secureRemove(s.root, t.AbsPath); werr != nil {
 						err = werr
-					} else if err == nil {
-						if werr := os.Rename(tmp, t.AbsPath); werr != nil {
-							err = werr
-						}
+					}
+				}
+				tmp, _ := transactionSiblingPaths(t.AbsPath, newID("compensate"), 0)
+				if werr := s.writePublishTemp(tmp, data, mode); werr != nil {
+					err = werr
+				} else if err == nil {
+					if werr := secureRename(s.root, tmp, t.AbsPath); werr != nil {
+						err = werr
 					}
 				}
 			}
@@ -1000,7 +1005,7 @@ func (s *Store) compensatePublished(targets []TransactionTarget, stages []FileSt
 				// for compensate of delete action inverse: leave it.
 				err = fmt.Errorf("external modification; not removing %s", t.AbsPath)
 			} else {
-				err = os.Remove(t.AbsPath)
+				err = secureRemove(s.root, t.AbsPath)
 				if os.IsNotExist(err) {
 					err = nil
 				}
@@ -1076,9 +1081,23 @@ func (s *Store) txManifestPath(id string) string {
 	return filepath.Join(s.txDir(), id+".json")
 }
 
-// RecoverTransactions scans for incomplete transactions and compensates them.
-// Call on store load / app startup.
+// RecoverTransactions scans for incomplete file-only transactions. Conversation
+// transactions are intentionally deferred until the controller has installed the
+// resumed session and can provide a ConversationApplier.
 func (s *Store) RecoverTransactions() []string {
+	return s.recoverTransactions(nil)
+}
+
+// RecoverTransactionsWithApplier finishes startup recovery after the resumed
+// conversation is live. A committing rewind first restores its forward
+// transcript/checkpoints, then compensates files; a committing undo first
+// reapplies its parent rewind, then compensates files. The manifest remains
+// committing if either side fails so a later startup can retry idempotently.
+func (s *Store) RecoverTransactionsWithApplier(applier ConversationApplier) []string {
+	return s.recoverTransactions(applier)
+}
+
+func (s *Store) recoverTransactions(applier ConversationApplier) []string {
 	if s == nil || s.dir == "" {
 		return nil
 	}
@@ -1111,7 +1130,7 @@ func (s *Store) RecoverTransactions() []string {
 			// Never published — safe to discard.
 			for _, target := range tx.Targets {
 				if target.PublishTmp != "" {
-					_ = os.Remove(target.PublishTmp)
+					_ = secureRemove(s.root, target.PublishTmp)
 				}
 			}
 			tx.State = TxAborted
@@ -1120,6 +1139,31 @@ func (s *Store) RecoverTransactions() []string {
 			_ = s.persistTransaction(&tx)
 			notes = append(notes, fmt.Sprintf("aborted prepared %s", tx.ID))
 		case TxCommitting:
+			needsConversation := tx.Scope == RewindConversation || tx.Scope == RewindBoth
+			if needsConversation && applier == nil {
+				notes = append(notes, fmt.Sprintf("deferred conversation recovery %s", tx.ID))
+				continue
+			}
+			if needsConversation {
+				var restoreErr error
+				if tx.Kind != "undo" && tx.HasBoundary && len(tx.ConversationForward) == 0 {
+					restoreErr = fmt.Errorf("missing forward conversation payload")
+				} else if tx.Kind == "undo" {
+					if tx.HasBoundary {
+						restoreErr = errors.Join(restoreErr, applier.ApplyConversationTruncate(tx.BoundaryIndex, tx.ConversationForward))
+					}
+					restoreErr = errors.Join(restoreErr, applier.TruncateCheckpoints(tx.TruncateFrom))
+				} else {
+					restoreErr = s.restoreTransactionConversation(&tx, applier)
+				}
+				if restoreErr != nil {
+					notes = append(notes, fmt.Sprintf("conversation recovery %s pending: %v", tx.ID, restoreErr))
+					tx.Error = fmt.Sprintf("crash recovery conversation compensation pending: %v", restoreErr)
+					tx.UpdatedAt = time.Now()
+					_ = s.persistTransaction(&tx)
+					continue
+				}
+			}
 			// Compensate published files back to forward images.
 			stages := make([]FileStage, len(tx.Targets))
 			for i, t := range tx.Targets {
@@ -1472,10 +1516,15 @@ func (s *Store) CommitFileRevert(planID string, resolution ConflictResolution) (
 		}
 		return RewindResult{OK: false, Error: "conflict requires explicit resolution", Conflicts: plan.Conflicts}, fmt.Errorf("conflict requires explicit resolution")
 	}
-	if err := s.barrier.EnterExclusive(); err != nil {
-		return RewindResult{OK: false, Error: err.Error()}, err
+	if !s.barrier.TryEnterExclusive() {
+		err := fmt.Errorf("workspace mutation in progress")
+		return RewindResult{OK: false, Error: err.Error(), Conflicts: []RewindConflict{{Path: plan.Path, Reason: ConflictBusyWriter}}}, err
 	}
 	defer s.barrier.ExitExclusive()
+	if conflicts := s.activeWriterConflicts(); len(conflicts) > 0 {
+		err := fmt.Errorf("active background writer")
+		return RewindResult{OK: false, Error: err.Error(), Conflicts: conflicts}, err
+	}
 	if plan.WorkspaceToken != fmt.Sprintf("%d", s.barrier.Generation()) {
 		conflict := RewindConflict{Path: plan.Path, Reason: ConflictStalePlan}
 		return RewindResult{OK: false, Error: "workspace changed since preview", Conflicts: []RewindConflict{conflict}}, fmt.Errorf("workspace changed since preview")
@@ -1539,7 +1588,7 @@ func (s *Store) CommitFileRevert(planID string, resolution ConflictResolution) (
 			enc := fileenc.UTF8
 			if rev.Encoding != nil {
 				enc = *rev.Encoding
-			} else if current := detectCurrentEncoding(abs); current != nil {
+			} else if current := s.detectCurrentEncoding(abs); current != nil {
 				enc = *current
 			}
 			data = fileenc.Encode(*rev.Content, enc)
@@ -1561,7 +1610,7 @@ func (s *Store) CommitFileRevert(planID string, resolution ConflictResolution) (
 		} else if t.RestoreBlob == "" {
 			t.RestoreInline = clonePayload(data)
 		}
-		if err := writePublishTemp(t.PublishTmp, data, mode); err != nil {
+		if err := s.writePublishTemp(t.PublishTmp, data, mode); err != nil {
 			return RewindResult{OK: false, Error: err.Error()}, err
 		}
 	} else {

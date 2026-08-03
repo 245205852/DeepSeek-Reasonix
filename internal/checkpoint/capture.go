@@ -1,6 +1,7 @@
 package checkpoint
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -55,15 +56,19 @@ func CapturePath(path string, opts CaptureOptions) (Fingerprint, *CoverageGap, e
 
 	if opts.WorkspaceRoot != "" {
 		if _, err := safePath(opts.WorkspaceRoot, abs); err != nil {
+			reason := GapOutsideWorkspace
+			if errors.Is(err, errSymlinkPath) {
+				reason = GapSymlink
+			}
 			return Fingerprint{}, &CoverageGap{
-				Reason: GapOutsideWorkspace,
+				Reason: reason,
 				Detail: err.Error(),
 				Path:   path,
 			}, err
 		}
 	}
 
-	fi, err := os.Lstat(abs)
+	f, err := secureOpenWorkspaceFile(opts.WorkspaceRoot, abs)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return Fingerprint{AbsPath: abs, Existed: false}, nil, nil
@@ -74,6 +79,11 @@ func CapturePath(path string, opts CaptureOptions) (Fingerprint, *CoverageGap, e
 			Path:   path,
 		}, err
 	}
+	defer f.Close()
+	fi, err := f.Stat()
+	if err != nil {
+		return Fingerprint{}, &CoverageGap{Reason: GapUnreadable, Detail: err.Error(), Path: path}, err
+	}
 
 	fp := Fingerprint{
 		AbsPath: abs,
@@ -81,14 +91,6 @@ func CapturePath(path string, opts CaptureOptions) (Fingerprint, *CoverageGap, e
 		IsDir:   fi.IsDir(),
 		Mode:    uint32(fi.Mode().Perm()),
 		Size:    fi.Size(),
-	}
-	if fi.Mode()&os.ModeSymlink != 0 {
-		fp.IsSymlink = true
-		return fp, &CoverageGap{
-			Reason: GapSymlink,
-			Detail: "symbolic links are not snapshotted",
-			Path:   path,
-		}, fmt.Errorf("symlink not supported: %s", abs)
 	}
 	if nlink := fileNlink(fi); nlink > 1 {
 		fp.Nlink = nlink
@@ -115,16 +117,6 @@ func CapturePath(path string, opts CaptureOptions) (Fingerprint, *CoverageGap, e
 			Path:   path,
 		}, fmt.Errorf("file too large: %s", abs)
 	}
-
-	f, err := os.Open(abs)
-	if err != nil {
-		return fp, &CoverageGap{
-			Reason: GapUnreadable,
-			Detail: err.Error(),
-			Path:   path,
-		}, err
-	}
-	defer f.Close()
 
 	data, err := io.ReadAll(io.LimitReader(f, maxBytes+1))
 	if err != nil {

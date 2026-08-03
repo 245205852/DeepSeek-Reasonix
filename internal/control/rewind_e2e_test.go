@@ -2,15 +2,122 @@ package control
 
 import (
 	"context"
+	"encoding/json"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	"reasonix/internal/agent"
+	"reasonix/internal/checkpoint"
 	"reasonix/internal/event"
 	"reasonix/internal/provider"
 	"reasonix/internal/tool"
 )
+
+func TestResumeRecoversCommittingCombinedRewind(t *testing.T) {
+	dir := t.TempDir()
+	root := t.TempDir()
+	sessionPath := filepath.Join(dir, "session.jsonl")
+	filePath := filepath.Join(root, "a.txt")
+	if err := os.WriteFile(filePath, []byte("before"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	fullMessages := []provider.Message{
+		{Role: provider.RoleSystem, Content: "sys"},
+		{Role: provider.RoleUser, Content: "first"},
+		{Role: provider.RoleAssistant, Content: "answer"},
+		{Role: provider.RoleUser, Content: "second"},
+		{Role: provider.RoleAssistant, Content: "later"},
+	}
+	saved := agent.NewSession("")
+	saved.Replace(fullMessages[:3])
+	if err := saved.Save(sessionPath); err != nil {
+		t.Fatal(err)
+	}
+	forward, err := json.Marshal(fullMessages)
+	if err != nil {
+		t.Fatal(err)
+	}
+	checkpointBackup, err := json.Marshal([]*checkpoint.Checkpoint{{
+		SchemaVersion: checkpoint.SchemaV2,
+		Turn:          1,
+		Prompt:        "second",
+		MsgIndex:      3,
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	checkpointDir := ckptDir(sessionPath)
+	if err := os.MkdirAll(filepath.Join(checkpointDir, "transactions"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	tx := checkpoint.TransactionManifest{
+		SchemaVersion:       checkpoint.SchemaV2,
+		ID:                  "tx-resume-recovery",
+		WorkspaceRoot:       root,
+		State:               checkpoint.TxCommitting,
+		Kind:                "rewind",
+		Turn:                1,
+		Scope:               checkpoint.RewindBoth,
+		HasBoundary:         true,
+		BoundaryIndex:       3,
+		TruncateFrom:        1,
+		ConversationForward: forward,
+		CheckpointBackup:    checkpointBackup,
+		Targets: []checkpoint.TransactionTarget{{
+			Path: "a.txt", AbsPath: filePath, Action: "write", Published: true,
+			RestoreExisted: true, RestoreSHA: checkpoint.Digest([]byte("before")), RestoreMode: 0o644,
+			ForwardExisted: true, ForwardSHA: checkpoint.Digest([]byte("after")), ForwardMode: 0o644,
+			ForwardInline: []byte("after"), BackupPath: filepath.Join(root, ".a.txt.reasonix-recovery.bak"),
+		}},
+	}
+	raw, err := json.Marshal(tx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	manifestPath := filepath.Join(checkpointDir, "transactions", tx.ID+".json")
+	if err := os.WriteFile(manifestPath, raw, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	loaded, err := agent.LoadSession(sessionPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ag := agent.New(nil, tool.NewRegistry(), agent.NewSession("sys"), agent.Options{}, event.Discard)
+	c := New(Options{Executor: ag, Runner: ag, SessionDir: dir, WorkspaceRoot: root})
+	c.Resume(loaded, sessionPath)
+	if got := ag.Session().Snapshot(); len(got) != len(fullMessages) || got[len(got)-1].Content != "later" {
+		t.Fatalf("recovered conversation = %#v, want full forward transcript", got)
+	}
+	data, err := os.ReadFile(filePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != "after" {
+		t.Fatalf("recovered file = %q, want after", data)
+	}
+	if got := c.Checkpoints(); len(got) != 1 || got[0].Turn != 1 {
+		t.Fatalf("recovered checkpoints = %+v, want turn 1", got)
+	}
+	if err := json.Unmarshal(mustReadFile(t, manifestPath), &tx); err != nil {
+		t.Fatal(err)
+	}
+	if tx.State != checkpoint.TxAborted {
+		t.Fatalf("transaction state = %s, want aborted", tx.State)
+	}
+}
+
+func mustReadFile(t *testing.T, path string) []byte {
+	t.Helper()
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return b
+}
 
 func runTwoTurns(t *testing.T) (*Controller, *agent.Agent, *[]event.Event) {
 	t.Helper()

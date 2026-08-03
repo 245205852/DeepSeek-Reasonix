@@ -3299,6 +3299,7 @@ func (c *Controller) Resume(s *agent.Session, path string) {
 	c.loadGuardianSession()
 	c.loadRecoveryState(path)
 	c.snapshotMu.Unlock()
+	c.recoverCheckpointTransactions()
 	c.recoverInterruptedTurn(path)
 	c.maybeColdResumePrune(path)
 }
@@ -4321,7 +4322,6 @@ func (c *Controller) SetFreshSessionPath(p string) {
 func (c *Controller) setSessionPath(p string, fresh bool) {
 	// See snapshotMu: the swap must not interleave with an in-flight save.
 	c.snapshotMu.Lock()
-	defer c.snapshotMu.Unlock()
 	c.mu.Lock()
 	c.sessionPath = p
 	c.guardianPath = guardian.PathFor(p)
@@ -4332,6 +4332,10 @@ func (c *Controller) setSessionPath(p string, fresh bool) {
 		c.resetRecoveryForNewSession(p)
 	} else {
 		c.loadRecoveryState(p)
+	}
+	c.snapshotMu.Unlock()
+	if !fresh {
+		c.recoverCheckpointTransactions()
 	}
 }
 

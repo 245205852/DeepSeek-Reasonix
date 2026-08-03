@@ -156,6 +156,9 @@ func (f *FleetTool) Execute(ctx context.Context, args json.RawMessage) (string, 
 	}
 
 	if params.RunInBackground {
+		for i := range specs {
+			specs[i].BackgroundWriter = !specs[i].ReadOnly
+		}
 		jm, ok := jobs.FromContext(ctx)
 		if !ok {
 			return "", fmt.Errorf("background execution is not available in this context")

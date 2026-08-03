@@ -856,9 +856,12 @@ func (t *TaskTool) RunProfileSpec(ctx context.Context, spec ProfileExecSpec) (st
 		var mutationObserver *checkpoint.MutationObserver
 		if t.mutationObserver != nil {
 			turn := t.mutationObserver.OwnershipTurn()
-			mutationObserver = t.mutationObserver.CloneForSubagent(recoveryTaskID, turn, spec.RunInBackground)
-			if spec.RunInBackground && !spec.ReadOnly {
-				mutationObserver.RegisterWriter(recoveryTaskID, "background_subagent", turn)
+			backgroundWriter := spec.RunInBackground || spec.BackgroundWriter
+			mutationObserver = t.mutationObserver.CloneForSubagent(recoveryTaskID, turn, backgroundWriter)
+			if backgroundWriter && !spec.ReadOnly {
+				if err := mutationObserver.RegisterWriter(recoveryTaskID, "background_subagent", turn); err != nil {
+					return "", err
+				}
 				defer mutationObserver.UnregisterWriter(recoveryTaskID)
 			}
 		}

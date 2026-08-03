@@ -1,6 +1,8 @@
 package checkpoint
 
 import (
+	"fmt"
+	"sort"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -11,8 +13,9 @@ import (
 // writerRegistry is shared across parent/child observers so background writer
 // registration is race-free under a single mutex.
 type writerRegistry struct {
-	mu      sync.Mutex
-	writers map[string]ActiveWriter
+	mu          sync.Mutex
+	writers     map[string]ActiveWriter
+	barrierHeld map[string]bool
 }
 
 // MutationObserver is the host-side unified file mutation observer that replaces
@@ -57,7 +60,8 @@ func NewMutationObserver(opts ObserverOptions) *MutationObserver {
 	return &MutationObserver{
 		store: opts.Store,
 		reg: &writerRegistry{
-			writers: map[string]ActiveWriter{},
+			writers:     map[string]ActiveWriter{},
+			barrierHeld: map[string]bool{},
 		},
 		ownershipTurn: opts.OwnershipTurn,
 		writerID:      opts.WriterID,
@@ -112,20 +116,33 @@ func (o *MutationObserver) OwnershipTurn() int {
 
 // RegisterWriter marks a background writer as active. Rollback precheck returns
 // busy while any writer is registered.
-func (o *MutationObserver) RegisterWriter(id, kind string, turn int) {
+func (o *MutationObserver) RegisterWriter(id, kind string, turn int) error {
 	if o == nil || id == "" || o.reg == nil {
-		return
+		return nil
 	}
 	o.reg.mu.Lock()
+	defer o.reg.mu.Unlock()
 	if o.reg.writers == nil {
 		o.reg.writers = map[string]ActiveWriter{}
 	}
+	if o.reg.barrierHeld == nil {
+		o.reg.barrierHeld = map[string]bool{}
+	}
+	if o.reg.barrierHeld[id] {
+		return nil
+	}
 	o.reg.writers[id] = ActiveWriter{ID: id, Turn: turn, StartedAt: time.Now(), Kind: kind}
 	snap := o.snapshotWritersLocked()
-	o.reg.mu.Unlock()
 	if o.store != nil {
 		o.store.SetActiveWriters(snap)
+		if err := o.store.Barrier().EnterWrite(); err != nil {
+			delete(o.reg.writers, id)
+			o.store.SetActiveWriters(o.snapshotWritersLocked())
+			return fmt.Errorf("register background writer: %w", err)
+		}
 	}
+	o.reg.barrierHeld[id] = true
+	return nil
 }
 
 // UnregisterWriter removes a background writer.
@@ -134,12 +151,16 @@ func (o *MutationObserver) UnregisterWriter(id string) {
 		return
 	}
 	o.reg.mu.Lock()
+	defer o.reg.mu.Unlock()
 	delete(o.reg.writers, id)
 	snap := o.snapshotWritersLocked()
-	o.reg.mu.Unlock()
 	if o.store != nil {
 		o.store.SetActiveWriters(snap)
+		if o.reg.barrierHeld[id] {
+			o.store.Barrier().ExitWrite()
+		}
 	}
+	delete(o.reg.barrierHeld, id)
 }
 
 // ActiveWriters returns a copy of currently registered writers.
@@ -161,6 +182,7 @@ func (o *MutationObserver) snapshotWritersLocked() []ActiveWriter {
 	for _, w := range o.reg.writers {
 		out = append(out, w)
 	}
+	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
 	return out
 }
 

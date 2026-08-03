@@ -12,7 +12,80 @@ import (
 	"reasonix/internal/checkpoint"
 	"reasonix/internal/control"
 	"reasonix/internal/event"
+	"reasonix/internal/provider"
 )
+
+func TestDesktopRewindCommitAndUndoUseAuthoritativeControllerState(t *testing.T) {
+	dir := t.TempDir()
+	root := t.TempDir()
+	sessionPath := filepath.Join(dir, "s.jsonl")
+	ckptDir := sessionPath[:len(sessionPath)-len(".jsonl")] + ".ckpt"
+	if err := os.MkdirAll(ckptDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	filePath := filepath.Join(root, "a.txt")
+	if err := os.WriteFile(filePath, []byte("after"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	before := "before"
+	afterExists := true
+	seedCheckpoint(t, ckptDir, checkpoint.Checkpoint{
+		SchemaVersion: checkpoint.SchemaV2, Turn: 1, Time: time.Now(), Prompt: "edit", MsgIndex: 3,
+		Coverage: checkpoint.CoverageComplete,
+		Files: []checkpoint.FileSnap{{
+			Path: "a.txt", Content: &before, SHA256: checkpoint.Digest([]byte(before)), Mode: 0o644,
+			AfterExisted: &afterExists, AfterSHA256: checkpoint.Digest([]byte("after")), AfterMode: 0o644,
+			CaptureSource: checkpoint.CaptureBeforeMutation,
+		}},
+	})
+	session := agent.NewSession("")
+	session.Replace([]provider.Message{
+		{Role: provider.RoleSystem, Content: "sys"},
+		{Role: provider.RoleUser, Content: "first"},
+		{Role: provider.RoleAssistant, Content: "answer"},
+		{Role: provider.RoleUser, Content: "edit"},
+		{Role: provider.RoleAssistant, Content: "done"},
+	})
+	if err := session.Save(sessionPath); err != nil {
+		t.Fatal(err)
+	}
+	ag := agent.New(nil, nil, session, agent.Options{}, event.Discard)
+	ctrl := control.New(control.Options{Executor: ag, Runner: ag, SessionDir: dir, SessionPath: sessionPath, WorkspaceRoot: root, Label: "test"})
+	app := &App{}
+	app.setTestCtrl(ctrl, "test")
+
+	plan := app.PreviewRewindForTab("test", 1, "both")
+	if !plan.OK || !plan.CanFiles || !plan.CanConversation {
+		t.Fatalf("preview = %+v", plan)
+	}
+	result := app.CommitRewindForTab("test", plan.PlanID, 1, "both")
+	if !result.OK || !result.UndoAvailable || result.TransactionID == "" {
+		t.Fatalf("commit = %+v", result)
+	}
+	if got, err := os.ReadFile(filePath); err != nil || string(got) != before {
+		t.Fatalf("file after commit = %q err=%v", got, err)
+	}
+	if got := ctrl.History(); len(got) != 3 {
+		t.Fatalf("controller history after commit = %d, want 3", len(got))
+	}
+	if got := app.HistoryForTab("test"); len(got) != 3 {
+		t.Fatalf("desktop history after commit = %d, want 3", len(got))
+	}
+
+	undo := app.UndoRewindForTab("test", result.TransactionID)
+	if !undo.OK {
+		t.Fatalf("undo = %+v", undo)
+	}
+	if got, err := os.ReadFile(filePath); err != nil || string(got) != "after" {
+		t.Fatalf("file after undo = %q err=%v", got, err)
+	}
+	if got := ctrl.History(); len(got) != 5 {
+		t.Fatalf("controller history after undo = %d, want 5", len(got))
+	}
+	if got := app.HistoryForTab("test"); len(got) != 5 {
+		t.Fatalf("desktop history after undo = %d, want 5", len(got))
+	}
+}
 
 func seedCheckpoint(t *testing.T, ckptDir string, c checkpoint.Checkpoint) {
 	t.Helper()
