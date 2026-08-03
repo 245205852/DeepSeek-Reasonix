@@ -358,6 +358,13 @@ func KindNames() []string {
 	return names
 }
 
+// KindName returns the stable wire name of one event kind, or false for a
+// kind outside the known set.
+func KindName(kind event.Kind) (string, bool) {
+	name, ok := kindNames[kind]
+	return name, ok
+}
+
 var kindNames = map[event.Kind]string{
 	event.TurnStarted:        "turn_started",
 	event.Reasoning:          "reasoning",

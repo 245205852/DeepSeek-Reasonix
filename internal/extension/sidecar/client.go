@@ -417,6 +417,10 @@ func (c *Client) readyErr() error {
 // PluginID returns the installed plugin package name this client serves.
 func (c *Client) PluginID() string { return c.pluginID }
 
+// Required reports whether the plugin's manifest marked its runtime
+// required:true — the dispatcher treats such extensions as required-class.
+func (c *Client) Required() bool { return c.rt.Required }
+
 // Handshake returns the sidecar's validated initialize result — its declared
 // subscriptions, replacements, providers, and UI actions.
 func (c *Client) Handshake() protocol.InitializeResult {
@@ -464,7 +468,10 @@ func (c *Client) TimeoutFor(point extension.InterceptorPoint) time.Duration {
 
 // Intercept makes the blocking extension/intercept call. A late answer maps
 // to the frozen intercept_timeout error; a crashed or closed sidecar fails
-// fast with the provider_interrupted family instead of waiting.
+// fast with the provider_interrupted family instead of waiting. A payload
+// above protocol.ExternalizeFieldBytes moves into this connection's content
+// store and travels as a content-ref envelope; an externalized replacement in
+// the answer is paged back and verified before the caller's strict decode.
 func (c *Client) Intercept(ctx context.Context, event protocol.InterceptEvent, payload json.RawMessage, timeout time.Duration) (protocol.InterceptResult, error) {
 	if err := c.readyErr(); err != nil {
 		return protocol.InterceptResult{}, err
@@ -474,12 +481,16 @@ func (c *Client) Intercept(ctx context.Context, event protocol.InterceptEvent, p
 	}
 	tctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
-	raw, err := c.conn.Request(tctx, string(protocol.MethodExtensionIntercept), protocol.InterceptParams{
+	params := protocol.InterceptParams{
 		Event:         event,
 		Seq:           c.seq.Add(1),
 		Payload:       payload,
 		TimeoutMillis: int(timeout.Milliseconds()),
-	})
+	}
+	if err := c.externalizeInterceptParams(&params); err != nil {
+		return protocol.InterceptResult{}, err
+	}
+	raw, err := c.conn.Request(tctx, string(protocol.MethodExtensionIntercept), params)
 	if err != nil {
 		if errors.Is(tctx.Err(), context.DeadlineExceeded) && ctx.Err() == nil {
 			return protocol.InterceptResult{}, &protocol.ProtocolError{
@@ -493,15 +504,24 @@ func (c *Client) Intercept(ctx context.Context, event protocol.InterceptEvent, p
 	if err != nil {
 		return protocol.InterceptResult{}, &protocol.ProtocolError{Reason: protocol.ErrProtocolError, Message: "invalid intercept result: " + err.Error()}
 	}
-	return decoded.(protocol.InterceptResult), nil
+	result := decoded.(protocol.InterceptResult)
+	if err := c.resolveExternalizedReplacement(&result); err != nil {
+		return protocol.InterceptResult{}, err
+	}
+	return result, nil
 }
 
-// NotifyEvent sends the fire-and-forget extension/event observation.
+// NotifyEvent sends the fire-and-forget extension/event observation. The
+// payload follows the same content-ref rule as extension/intercept.
 func (c *Client) NotifyEvent(event protocol.InterceptEvent, payload json.RawMessage) error {
 	if err := c.readyErr(); err != nil {
 		return err
 	}
-	return c.conn.Notify(string(protocol.MethodExtensionEvent), protocol.EventParams{Event: event, Payload: payload})
+	params := protocol.EventParams{Event: event, Payload: payload}
+	if err := c.externalizeEventParams(&params); err != nil {
+		return err
+	}
+	return c.conn.Notify(string(protocol.MethodExtensionEvent), params)
 }
 
 // NotifyResourcesChanged sends extension/resources/changed.

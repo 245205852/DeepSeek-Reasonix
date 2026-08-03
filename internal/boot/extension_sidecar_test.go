@@ -25,11 +25,22 @@ import (
 // REASONIX_BOOT_FAKE_SIDECAR=1 and speaks Extension Protocol v1 over
 // stdin/stdout. REASONIX_BOOT_FAKE_INIT_RESULT overrides the initialize
 // result; REASONIX_BOOT_FAKE_MODE=ignore_shutdown keeps the process alive
-// through extension/shutdown.
+// through extension/shutdown. Intercept steering for the dispatch tests:
+//
+//	REASONIX_BOOT_FAKE_BLOCK_EVENT      answer block at this event
+//	REASONIX_BOOT_FAKE_INVALID_EVENT    answer a DTO-violating replace at this event
+//	REASONIX_BOOT_FAKE_REPLACE_PROMPT   answer system_prompt.build replace with this prompt
+//	REASONIX_BOOT_FAKE_REPLACE_INPUT    answer input.receive replace with this text
+//	REASONIX_BOOT_FAKE_EVENT_LOG        append one "event payload" line per extension/event
 const (
-	bootFakeEnvEnable     = "REASONIX_BOOT_FAKE_SIDECAR"
-	bootFakeEnvInitResult = "REASONIX_BOOT_FAKE_INIT_RESULT"
-	bootFakeEnvMode       = "REASONIX_BOOT_FAKE_MODE"
+	bootFakeEnvEnable        = "REASONIX_BOOT_FAKE_SIDECAR"
+	bootFakeEnvInitResult    = "REASONIX_BOOT_FAKE_INIT_RESULT"
+	bootFakeEnvMode          = "REASONIX_BOOT_FAKE_MODE"
+	bootFakeEnvBlockEvent    = "REASONIX_BOOT_FAKE_BLOCK_EVENT"
+	bootFakeEnvInvalidEvent  = "REASONIX_BOOT_FAKE_INVALID_EVENT"
+	bootFakeEnvReplacePrompt = "REASONIX_BOOT_FAKE_REPLACE_PROMPT"
+	bootFakeEnvReplaceInput  = "REASONIX_BOOT_FAKE_REPLACE_INPUT"
+	bootFakeEnvEventLog      = "REASONIX_BOOT_FAKE_EVENT_LOG"
 )
 
 // TestExtensionFakeSidecarHelperProcess is the re-exec entry point; it skips
@@ -56,6 +67,7 @@ func runBootFakeSidecar(stdin io.Reader, stdout io.Writer) {
 			var frame struct {
 				ID     json.RawMessage `json:"id"`
 				Method string          `json:"method"`
+				Params json.RawMessage `json:"params"`
 			}
 			if json.Unmarshal(line, &frame) == nil && frame.Method != "" {
 				var result string
@@ -63,7 +75,10 @@ func runBootFakeSidecar(stdin io.Reader, stdout io.Writer) {
 				case "extension/initialize":
 					result = initResult
 				case "extension/intercept":
-					result = `{"decision":"continue"}`
+					result = bootFakeInterceptAnswer(frame.Params)
+				case "extension/event":
+					bootFakeLogEvent(frame.Params)
+					continue // notification: never answer
 				case "extension/shutdown":
 					if ignoreShutdown {
 						continue
@@ -83,6 +98,64 @@ func runBootFakeSidecar(stdin io.Reader, stdout io.Writer) {
 			return
 		}
 	}
+}
+
+// bootFakeInterceptAnswer computes the steered ruling for one
+// extension/intercept call from the env knobs.
+func bootFakeInterceptAnswer(rawParams json.RawMessage) string {
+	var params struct {
+		Event   string          `json:"event"`
+		Payload json.RawMessage `json:"payload"`
+	}
+	_ = json.Unmarshal(rawParams, &params)
+	switch {
+	case params.Event != "" && params.Event == os.Getenv(bootFakeEnvBlockEvent):
+		return `{"decision":"block","reason":"boot fake block"}`
+	case params.Event != "" && params.Event == os.Getenv(bootFakeEnvInvalidEvent):
+		// A replacement that fails the point's DTO: the host must treat it as
+		// a contract violation, not apply it.
+		return `{"decision":"replace","replacement":{"bogus":true}}`
+	case params.Event == "system_prompt.build" && os.Getenv(bootFakeEnvReplacePrompt) != "":
+		// Echo the incoming workspaceRoot back so the replacement passes the
+		// payload DTO validation.
+		var payload struct {
+			WorkspaceRoot string `json:"workspaceRoot"`
+		}
+		_ = json.Unmarshal(params.Payload, &payload)
+		replacement, _ := json.Marshal(map[string]string{
+			"prompt":        os.Getenv(bootFakeEnvReplacePrompt),
+			"workspaceRoot": payload.WorkspaceRoot,
+		})
+		return fmt.Sprintf(`{"decision":"replace","replacement":%s}`, string(replacement))
+	case params.Event == "input.receive" && os.Getenv(bootFakeEnvReplaceInput) != "":
+		replacement, _ := json.Marshal(map[string]string{"text": os.Getenv(bootFakeEnvReplaceInput)})
+		return fmt.Sprintf(`{"decision":"replace","replacement":%s}`, string(replacement))
+	default:
+		return `{"decision":"continue"}`
+	}
+}
+
+// bootFakeLogEvent appends one "event payload" line per extension/event
+// notification to the env-named log file, so the parent test can assert what
+// observers received.
+func bootFakeLogEvent(rawParams json.RawMessage) {
+	logPath := os.Getenv(bootFakeEnvEventLog)
+	if logPath == "" {
+		return
+	}
+	var params struct {
+		Event   string          `json:"event"`
+		Payload json.RawMessage `json:"payload"`
+	}
+	if json.Unmarshal(rawParams, &params) != nil {
+		return
+	}
+	f, err := os.OpenFile(logPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+	if err != nil {
+		return
+	}
+	defer f.Close()
+	fmt.Fprintf(f, "%s %s\n", params.Event, string(params.Payload))
 }
 
 // installBootFakePlugin installs an enabled v1 runtime package (the

@@ -7,6 +7,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"sync"
 	"time"
@@ -23,12 +24,7 @@ const storeMaxEntries = 64
 // field metadata: when an externalizable payload exceeds
 // protocol.ExternalizeFieldBytes it travels as a content ref, and this
 // descriptor tells the extension where to page the real bytes back from.
-type ExternalizedField struct {
-	JSONPointer string `json:"jsonPointer"`
-	ContentRef  string `json:"contentRef"`
-	TotalBytes  int64  `json:"totalBytes"`
-	SHA256      string `json:"sha256"`
-}
+type ExternalizedField = protocol.ExternalizedField
 
 type contentObject struct {
 	data      []byte
@@ -80,6 +76,34 @@ func (s *Store) Put(data []byte) (ref string, digest string, totalBytes int64, e
 	return ref, digest, int64(len(data)), nil
 }
 
+// Read pages one chunk of at most protocol.ContentRefChunkBytes from ref at
+// offset, returning the chunk, the next offset (nil at end of object), the
+// total byte count, and the object's SHA-256. Unknown refs and out-of-range
+// offsets answer the frozen content_ref_expired error. This is the in-process
+// form of ReadHandler: the host uses it to resolve content refs a peer hands
+// back (e.g. an externalized intercept replacement) with the exact
+// host/content/read chunking rules.
+func (s *Store) Read(ref string, offset int64) (chunk []byte, next *int64, totalBytes int64, digest string, err error) {
+	s.mu.Lock()
+	object, ok := s.contents[ref]
+	s.mu.Unlock()
+	if !ok {
+		return nil, nil, 0, "", protocol.MustProtocolError(protocol.ErrContentRefExpired)
+	}
+	if offset < 0 || offset > int64(len(object.data)) {
+		return nil, nil, 0, "", protocol.MustProtocolError(protocol.ErrContentRefExpired)
+	}
+	end := offset + protocol.ContentRefChunkBytes
+	if end > int64(len(object.data)) {
+		end = int64(len(object.data))
+	}
+	if end < int64(len(object.data)) {
+		value := end
+		next = &value
+	}
+	return object.data[offset:end], next, int64(len(object.data)), object.sha256, nil
+}
+
 // ReadHandler answers host/content/read: one page of at most
 // protocol.ContentRefChunkBytes starting at the exact requested offset. The
 // final chunk omits NextOffset. Unknown refs and out-of-range offsets answer
@@ -90,29 +114,18 @@ func (s *Store) ReadHandler(_ context.Context, raw json.RawMessage) (any, error)
 		return nil, protocol.MustProtocolError(protocol.ErrInvalidParams).RPCError()
 	}
 	p := decoded.(protocol.ContentReadParams)
-
-	s.mu.Lock()
-	object, ok := s.contents[p.ContentRef]
-	s.mu.Unlock()
-	if !ok {
-		return nil, protocol.MustProtocolError(protocol.ErrContentRefExpired).RPCError()
-	}
-	if p.Offset < 0 || p.Offset > int64(len(object.data)) {
-		return nil, protocol.MustProtocolError(protocol.ErrContentRefExpired).RPCError()
-	}
-	end := p.Offset + protocol.ContentRefChunkBytes
-	if end > int64(len(object.data)) {
-		end = int64(len(object.data))
-	}
-	var next *int64
-	if end < int64(len(object.data)) {
-		value := end
-		next = &value
+	chunk, next, totalBytes, digest, err := s.Read(p.ContentRef, p.Offset)
+	if err != nil {
+		var protocolErr *protocol.ProtocolError
+		if errors.As(err, &protocolErr) {
+			return nil, protocolErr.RPCError()
+		}
+		return nil, err
 	}
 	return protocol.ContentReadResult{
 		ContentRef: p.ContentRef, Offset: p.Offset,
-		DataBase64: base64.StdEncoding.EncodeToString(object.data[p.Offset:end]), NextOffset: next,
-		TotalBytes: int64(len(object.data)), SHA256: object.sha256, Encoding: protocol.ContentUTF8,
+		DataBase64: base64.StdEncoding.EncodeToString(chunk), NextOffset: next,
+		TotalBytes: totalBytes, SHA256: digest, Encoding: protocol.ContentUTF8,
 	}, nil
 }
 

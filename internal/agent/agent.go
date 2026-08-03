@@ -18,6 +18,7 @@ import (
 	"reasonix/internal/diff"
 	"reasonix/internal/event"
 	"reasonix/internal/evidence"
+	"reasonix/internal/extension/dispatch"
 	"reasonix/internal/instruction"
 	"reasonix/internal/jobs"
 	"reasonix/internal/memory"
@@ -331,6 +332,12 @@ type Agent struct {
 	// Plan workflows. nil disables gating entirely.
 	gate Gate
 
+	// extensions, when non-nil, is the frozen Extension Protocol v1 dispatcher
+	// for this controller generation. The run loop consults it at the
+	// agent-side intercept points (see extensions.go); nil means no v1 runtime
+	// packages are installed and every point passes through byte-identically.
+	extensions *dispatch.Dispatcher
+
 	// recoveryGate, when non-nil, is the Auto Guard boundary for Auto mode.
 	// Shared by root and sub-agents for the same controller task. nil disables
 	// recovery checks (Ask/YOLO, headless without wiring, or feature off).
@@ -616,6 +623,17 @@ func (a *Agent) SetGate(g Gate) {
 		g = nil
 	}
 	a.gate = g
+}
+
+// SetExtensions installs the extension dispatcher after construction. Boot
+// uses it because sidecars — and therefore the dispatcher — only exist after
+// snapshot assembly, which runs after the agent is built. Safe to call before
+// the run loop starts; nil disables interception.
+func (a *Agent) SetExtensions(d *dispatch.Dispatcher) {
+	if a == nil {
+		return
+	}
+	a.extensions = d
 }
 
 // SetRecoveryGate installs Auto Guard. Safe to call before the run loop starts;
@@ -1055,6 +1073,13 @@ type Options struct {
 	// depth 0; child subagents are depth 1. MaxSubagentDepth caps delegation.
 	SubagentDepth    int
 	MaxSubagentDepth int
+
+	// Extensions is the frozen extension dispatcher for this agent's controller
+	// generation (Extension Protocol v1). Nil means no v1 runtime packages are
+	// installed; the run loop then passes every intercept point through
+	// byte-identically. Boot installs it with SetExtensions once sidecars are
+	// live (they start after the agent is constructed).
+	Extensions *dispatch.Dispatcher
 }
 
 // New constructs an Agent. MaxSteps <= 0 means no cap — the run loop continues
@@ -1128,6 +1153,7 @@ func New(prov provider.Provider, tools *tool.Registry, session *Session, opts Op
 		usageSource:               usageSourceOrDefault(opts.UsageSource, event.UsageSourceExecutor),
 		sink:                      sink,
 		gate:                      gate,
+		extensions:                opts.Extensions,
 		recoveryGate:              opts.RecoveryGate,
 		recoveryAgentID:           strings.TrimSpace(opts.RecoveryAgentID),
 		recoveryTaskID:            strings.TrimSpace(opts.RecoveryTaskID),
@@ -1257,6 +1283,12 @@ func (a *Agent) Run(ctx context.Context, input string) (runErr error) {
 		defer func() { a.updateDeliveryCheckpoint(runErr) }()
 	}
 	defer a.activeTurnCreatedAt.Store(0)
+
+	// agent.before_start: an extension may abort the run before the user turn
+	// is appended. The redacted reason surfaces like a normal run error.
+	if err := a.interceptAgentStart(ctx); err != nil {
+		return err
+	}
 
 	_, state := a.beginRunTurn(ctx, input)
 	state.runMaxSteps = runMaxSteps
@@ -2638,11 +2670,26 @@ func (a *Agent) stream(ctx context.Context, turn int) (string, string, string, [
 	for i := range requestMessages {
 		requestMessages[i].CreatedAt = 0
 	}
-	ch, err := a.prov.Stream(ctx, provider.Request{
+	// context.prepare: extensions may rewrite the message copy feeding THIS
+	// request. The session log is never touched — the replacement is
+	// ephemeral, so the next request starts from the unmodified history and
+	// the prompt-cache prefix stays intact across turns.
+	requestMessages, err := a.interceptContextPrepare(ctx, requestMessages)
+	if err != nil {
+		return "", "", "", nil, nil, false, false, nil, err
+	}
+	req := provider.Request{
 		Messages:    requestMessages,
 		Tools:       a.tools.Schemas(),
 		Temperature: provider.OptionalTemperature(a.temperature),
-	})
+	}
+	// provider.request: the fully assembled request gets one last ruling
+	// (revalidated by the payload registry) before it goes on the wire.
+	req, err = a.interceptProviderRequest(ctx, req)
+	if err != nil {
+		return "", "", "", nil, nil, false, false, nil, err
+	}
+	ch, err := a.prov.Stream(ctx, req)
 	if err != nil {
 		return "", "", "", nil, nil, false, false, nil, err
 	}
@@ -2688,14 +2735,28 @@ func (a *Agent) stream(ctx context.Context, turn int) (string, string, string, [
 					return text.String(), stored, signature, calls, usage, false, partialToolStarted, partialCalls, err
 				}
 				stored, display := finishReasoning()
-				if text.Len() > 0 || display != "" {
+				// provider.response: extensions rule on the assembled terminal
+				// response before it is persisted. A replacement becomes the
+				// visible assistant turn (the user's transcript); a block fails
+				// the turn.
+				finalText, finalReasoning, signature, calls, usage, err := a.interceptProviderResponse(
+					ctx, text.String(), stored, signature, calls, usage)
+				if err != nil {
+					return "", "", "", nil, nil, false, partialToolStarted, partialCalls, err
+				}
+				if finalReasoning != stored {
+					// The extension replaced the reasoning: what is persisted
+					// and what the closing Message event re-renders must agree.
+					display = finalReasoning
+				}
+				if finalText != "" || display != "" {
 					a.sink.Emit(event.Event{
 						Kind:      event.Message,
-						Text:      StripGoalMarkers(text.String()),
+						Text:      StripGoalMarkers(finalText),
 						Reasoning: display,
 					})
 				}
-				return text.String(), stored, signature, calls, usage, false, false, partialCalls, nil
+				return finalText, finalReasoning, signature, calls, usage, false, false, partialCalls, nil
 			}
 			chunk = c
 		}

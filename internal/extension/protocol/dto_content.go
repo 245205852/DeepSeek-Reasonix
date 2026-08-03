@@ -4,6 +4,19 @@ package protocol
 // externalizable payloads travel as content refs; the extension pages them
 // through host/content/read.
 
+// ExternalizedField is the envelope descriptor for one externalizable field
+// whose inline value exceeded ExternalizeFieldBytes: the field travels as null
+// in its owner document and this descriptor names the content ref holding the
+// real bytes. It is an optional addition to the owner DTOs that carry
+// externalizable fields (InterceptParams, InterceptResult, EventParams), so
+// peers predating it simply never externalize.
+type ExternalizedField struct {
+	JSONPointer string `json:"jsonPointer" validate:"nonempty"`
+	ContentRef  string `json:"contentRef" validate:"nonempty"`
+	TotalBytes  int64  `json:"totalBytes" validate:"min=0"`
+	SHA256      string `json:"sha256" validate:"sha256"`
+}
+
 // ContentReadParams pages one content ref. Offset is a byte position; the
 // host answers with at most ContentRefChunkBytes of Base64-decoded data.
 type ContentReadParams struct {

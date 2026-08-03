@@ -8,18 +8,23 @@ import "encoding/json"
 
 // InterceptParams asks the extension to rule on one intercepted event. Seq
 // is the host's monotonic intercept sequence for this session so both peers
-// can detect drops and reordering.
+// can detect drops and reordering. When Payload exceeds ExternalizeFieldBytes
+// it travels as null and Externalized carries its content-ref descriptor.
 type InterceptParams struct {
-	Event         InterceptEvent  `json:"event"`
-	Seq           uint64          `json:"seq" validate:"min=1"`
-	Payload       json.RawMessage `json:"payload" externalizable:"true"`
-	TimeoutMillis int             `json:"timeoutMillis" validate:"min=0"`
+	Event         InterceptEvent      `json:"event"`
+	Seq           uint64              `json:"seq" validate:"min=1"`
+	Payload       json.RawMessage     `json:"payload" externalizable:"true"`
+	TimeoutMillis int                 `json:"timeoutMillis" validate:"min=0"`
+	Externalized  []ExternalizedField `json:"externalized,omitempty"`
 }
 
 // InterceptResult is the extension's ruling. Replacement carries the new
-// payload when Decision is "replace" and is absent otherwise.
+// payload when Decision is "replace" and is absent otherwise; when the
+// replacement exceeds ExternalizeFieldBytes it travels as null and
+// Externalized carries its content-ref descriptor instead.
 type InterceptResult struct {
-	Decision    InterceptDecision `json:"decision"`
-	Reason      string            `json:"reason,omitempty"`
-	Replacement json.RawMessage   `json:"replacement,omitempty" externalizable:"true"`
+	Decision     InterceptDecision   `json:"decision"`
+	Reason       string              `json:"reason,omitempty"`
+	Replacement  json.RawMessage     `json:"replacement,omitempty" externalizable:"true"`
+	Externalized []ExternalizedField `json:"externalized,omitempty"`
 }

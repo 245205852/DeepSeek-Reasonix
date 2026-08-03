@@ -70,10 +70,13 @@ type ShutdownResult struct {
 
 // EventParams is the fire-and-forget observation of one of the 17 hook
 // points. Unlike extension/intercept, the extension's answer (if any) is
-// discarded and cannot change host behavior.
+// discarded and cannot change host behavior. When Payload exceeds
+// ExternalizeFieldBytes it travels as null and Externalized carries its
+// content-ref descriptor.
 type EventParams struct {
-	Event   InterceptEvent  `json:"event"`
-	Payload json.RawMessage `json:"payload" externalizable:"true"`
+	Event        InterceptEvent      `json:"event"`
+	Payload      json.RawMessage     `json:"payload" externalizable:"true"`
+	Externalized []ExternalizedField `json:"externalized,omitempty"`
 }
 
 // ResourcesChangedParams notifies the extension that watched resources

@@ -8,6 +8,7 @@ import (
 	"reasonix/internal/command"
 	"reasonix/internal/control"
 	"reasonix/internal/extension"
+	"reasonix/internal/extension/dispatch"
 	"reasonix/internal/extension/protocol"
 	"reasonix/internal/extension/sidecar"
 	"reasonix/internal/hook"
@@ -32,6 +33,11 @@ type BuildResult struct {
 	// runtime package is installed). Its lifecycle belongs to Runtime; the
 	// field exists so later stages (and tests) can reach the live clients.
 	Extensions *sidecar.Manager
+	// Dispatcher is the frozen interceptor dispatcher for this runtime
+	// generation (nil when no sidecar started, or when snapshot assembly
+	// degraded). It is immutable and safe for concurrent turns; the
+	// controller receives it through SetExtensions right after assembly.
+	Dispatcher *dispatch.Dispatcher
 }
 
 // runtimeGeneration is the process-wide build generation counter. The first
@@ -113,23 +119,43 @@ func (p extensionBoot) warn(msg string) {
 // the catalog from a live handshake, and required-runtime failures must fail
 // the build, which the activator seam (post-freeze) could only do after the
 // catalog already settled. The Manager is registered into the RuntimeSet at
-// activation, so it still dies with its controller generation; the sidecar
-// contributions are declaration-level only (dispatch wiring is stages 6-8).
+// activation, so it still dies with its controller generation.
+//
+// Dispatch wiring (stage 6b1): with live sidecars the boot also runs the
+// system_prompt.build strategy BEFORE the freeze, so the frozen snapshot's
+// SystemPrompt and CacheHash cover the final (possibly replaced) prompt —
+// the hash honestly attributes the prompt the session was built with rather
+// than a pre-strategy draft. A strategy failure fails the build because the
+// slot owner is required-class by definition. After the freeze the boot
+// builds the generation's Dispatcher from the snapshot's frozen chain and
+// replacements, and broadcasts the system_prompt.build event with the final
+// prompt to every observer. The replaced prompt lands in the snapshot; the
+// build's tail (stage 6b2) swaps the live executor session to the same final
+// prompt when it differs from the host-composed one the session was built
+// with, so snapshot and session describe the same session before any turn.
 // With zero runtime packages installed the path is byte-identical to the
-// pre-sidecar one: no processes, no contributions, an empty runtime set.
-func assembleLegacySnapshot(ctx context.Context, in legacyAssembly, generation uint64, ext extensionBoot) (*extension.RuntimeSnapshot, *extension.RuntimeSet, *sidecar.Manager, error) {
+// pre-sidecar one: no processes, no contributions, no dispatcher, an empty
+// runtime set.
+func assembleLegacySnapshot(ctx context.Context, in legacyAssembly, generation uint64, ext extensionBoot) (*extension.RuntimeSnapshot, *extension.RuntimeSet, *sidecar.Manager, *dispatch.Dispatcher, error) {
+	legacy := legacyContributions(in)
 	b := extension.NewBuilder().
-		WithSystemPrompt(in.systemPrompt).
 		WithGeneration(generation).
 		WithConflictPolicy(extension.ConflictCollect).
 		AddContributor(extension.ContributorFunc{
 			ContributorName: "boot-legacy",
 			Fn: func(context.Context) ([]extension.Contribution, error) {
-				return legacyContributions(in), nil
+				return legacy, nil
 			},
 		})
 
+	prompt := in.systemPrompt
 	var mgr *sidecar.Manager
+	var dispatcher *dispatch.Dispatcher
+	// postFreeze runs after a successful b.Build when sidecars are live: it
+	// builds the generation's dispatcher from the snapshot's own frozen chain
+	// and replacements, then broadcasts system_prompt.build with the final
+	// prompt so observers see exactly what froze.
+	var postFreeze func(snap *extension.RuntimeSnapshot)
 	if strings.TrimSpace(ext.home) != "" {
 		var warnings []string
 		var err error
@@ -141,14 +167,15 @@ func assembleLegacySnapshot(ctx context.Context, in legacyAssembly, generation u
 			// A required runtime failed: the Manager already shut down
 			// whatever started. The call site treats *RequiredStartError as
 			// fatal.
-			return nil, nil, nil, err
+			return nil, nil, nil, nil, err
 		}
 		if len(mgr.Clients()) > 0 {
 			managed := mgr
+			sidecarContribs := managed.Contributions()
 			b.AddContributor(extension.ContributorFunc{
 				ContributorName: "boot-extension-runtimes",
 				Fn: func(context.Context) ([]extension.Contribution, error) {
-					return managed.Contributions(), nil
+					return sidecarContribs, nil
 				},
 			})
 			b.WithActivator(func(_ context.Context, snap *extension.RuntimeSnapshot) (*extension.RuntimeSet, error) {
@@ -156,6 +183,39 @@ func assembleLegacySnapshot(ctx context.Context, in legacyAssembly, generation u
 				rs.Add(managed)
 				return rs, nil
 			})
+
+			// Resolve replacement-slot claims over the exact contribution set
+			// the builder will see, mirroring the kernel's claim pass, so a
+			// conflict fails BEFORE any strategy runs and the winning claims
+			// drive the pre-freeze strategy below.
+			claims, err := resolveReplacementClaims(legacy, sidecarContribs)
+			if err != nil {
+				_ = managed.Close()
+				return nil, nil, nil, nil, err
+			}
+			required := requiredRuntimeSet(managed)
+			clients := sidecarClientResolver(managed)
+			dispatchOpts := dispatch.Options{Warn: ext.warn}
+			// system_prompt.build strategy: the slot's owner rules on the
+			// composed prompt before the snapshot freezes. The dispatcher used
+			// here needs no chain — RunStrategy consults only the replacements
+			// and clients.
+			if _, owned := claims[extension.SlotSystemPrompt]; owned {
+				strategyDispatcher := dispatch.New(nil, claims, clients, required, dispatchOpts)
+				payload := dispatch.SystemPromptPayload{Prompt: prompt, WorkspaceRoot: ext.session.WorkspaceRoot}
+				if err := strategyDispatcher.RunStrategy(ctx, extension.SlotSystemPrompt, extension.PointSystemPromptBuild, &payload); err != nil {
+					_ = managed.Close()
+					return nil, nil, nil, nil, err
+				}
+				prompt = payload.Prompt
+			}
+
+			postFreeze = func(snap *extension.RuntimeSnapshot) {
+				dispatcher = dispatch.New(snap.InterceptorChain(), snap.Replacements(), clients, required, dispatchOpts)
+				dispatcher.Event(extension.PointSystemPromptBuild, dispatch.SystemPromptPayload{
+					Prompt: prompt, WorkspaceRoot: ext.session.WorkspaceRoot,
+				})
+			}
 		} else {
 			// No runtime packages (or every optional one failed): the build
 			// takes the pre-sidecar path byte-identically, with an empty
@@ -165,14 +225,63 @@ func assembleLegacySnapshot(ctx context.Context, in legacyAssembly, generation u
 		}
 	}
 
+	b.WithSystemPrompt(prompt)
 	snap, runtimeSet, err := b.Build(ctx)
 	if err != nil {
 		if mgr != nil {
 			_ = mgr.Close()
 		}
-		return nil, nil, nil, err
+		return nil, nil, nil, nil, err
 	}
-	return snap, runtimeSet, mgr, nil
+	if postFreeze != nil {
+		postFreeze(snap)
+	}
+	return snap, runtimeSet, mgr, dispatcher, nil
+}
+
+// resolveReplacementClaims replays the kernel's slot-claim pass (see
+// resolveContributions) over the contribution set before the builder freezes:
+// claims come from every contribution's SlotClaimer payload, winners and
+// losers alike, and a second claimant is a *SlotConflictError.
+func resolveReplacementClaims(groups ...[]extension.Contribution) (map[extension.Slot]extension.ContributionSource, error) {
+	claims := extension.NewReplaceClaims()
+	for _, group := range groups {
+		for _, ct := range group {
+			claimer, ok := ct.Payload.(extension.SlotClaimer)
+			if !ok {
+				continue
+			}
+			for _, slot := range claimer.ReplacementSlots() {
+				if err := claims.Claim(slot, ct.Source); err != nil {
+					return nil, err
+				}
+			}
+		}
+	}
+	return claims.Claims(), nil
+}
+
+// requiredRuntimeSet marks every started sidecar whose manifest declared the
+// runtime required:true, the dispatcher's required-class input.
+func requiredRuntimeSet(mgr *sidecar.Manager) map[string]bool {
+	clients := mgr.Clients()
+	out := make(map[string]bool, len(clients))
+	for _, client := range clients {
+		out[client.PluginID()] = client.Required()
+	}
+	return out
+}
+
+// sidecarClientResolver adapts the Manager to the dispatcher's client lookup.
+// The dispatcher requires an untyped nil for missing clients; Manager.Client
+// returns a typed *sidecar.Client.
+func sidecarClientResolver(mgr *sidecar.Manager) func(pluginID string) dispatch.Client {
+	return func(pluginID string) dispatch.Client {
+		if client := mgr.Client(pluginID); client != nil {
+			return client
+		}
+		return nil
+	}
 }
 
 // legacyContributions maps the assembled runtime resources to kernel

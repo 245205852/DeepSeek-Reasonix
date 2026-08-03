@@ -29,6 +29,7 @@ import (
 	"reasonix/internal/environment"
 	"reasonix/internal/event"
 	"reasonix/internal/extension"
+	"reasonix/internal/extension/dispatch"
 	"reasonix/internal/extension/protocol"
 	"reasonix/internal/extension/sidecar"
 	"reasonix/internal/guardian"
@@ -1796,7 +1797,7 @@ func build(ctx context.Context, opts Options) (*BuildResult, error) {
 	if sessionID == "" {
 		sessionID = fmt.Sprintf("boot-%d", generation)
 	}
-	snap, runtimeSet, extensionMgr, snapErr := assembleLegacySnapshot(ctx, legacyAssembly{
+	snap, runtimeSet, extensionMgr, extensionDispatcher, snapErr := assembleLegacySnapshot(ctx, legacyAssembly{
 		systemPrompt: sysPrompt,
 		registry:     reg,
 		skills:       skills,
@@ -1813,14 +1814,20 @@ func build(ctx context.Context, opts Options) (*BuildResult, error) {
 		},
 	})
 	if snapErr != nil {
-		// Two assembly failures are fatal rather than degradable: a required
-		// extension runtime that cannot start, and two runtimes claiming the
-		// same replacement slot (the kernel's ReplaceClaims verdict). Both
-		// mean the extension contract the user installed cannot be honored;
-		// booting without it would silently change what the session is.
+		// These assembly failures are fatal rather than degradable: a required
+		// extension runtime that cannot start, two runtimes claiming the same
+		// replacement slot (the kernel's ReplaceClaims verdict), and a failed
+		// system_prompt.build strategy ruling (the slot owner is required-class,
+		// so dispatch surfaces its failure as one of these types). All mean the
+		// extension contract the user installed cannot be honored; booting
+		// without it would silently change what the session is.
 		var requiredErr *sidecar.RequiredStartError
 		var slotErr *extension.SlotConflictError
-		if errors.As(snapErr, &requiredErr) || errors.As(snapErr, &slotErr) {
+		var blockErr *dispatch.BlockError
+		var failureErr *dispatch.FailureError
+		var violationErr *dispatch.ViolationError
+		if errors.As(snapErr, &requiredErr) || errors.As(snapErr, &slotErr) ||
+			errors.As(snapErr, &blockErr) || errors.As(snapErr, &failureErr) || errors.As(snapErr, &violationErr) {
 			ctrl.ReleaseResources()
 			return nil, fmt.Errorf("boot: %w", snapErr)
 		}
@@ -1834,7 +1841,22 @@ func build(ctx context.Context, opts Options) (*BuildResult, error) {
 	// (Rebuild's fail-atomic cleanup) stay safe.
 	prevCleanup := cleanup
 	cleanup = func() { prevCleanup(); _ = runtimeSet.Close() }
-	return &BuildResult{Controller: ctrl, Snapshot: snap, Runtime: runtimeSet, Extensions: extensionMgr}, nil
+	// The dispatcher only exists once sidecars started and the snapshot froze,
+	// both of which happen after control.New — hand it to the already-built
+	// controller before the build returns. Nil (no sidecars, or a degraded
+	// snapshot) leaves the controller byte-identical to the pre-dispatch path.
+	ctrl.SetExtensions(extensionDispatcher)
+	// Stage 6b2 system-prompt handoff: the 6b1 strategy pass may have replaced
+	// the prompt while the snapshot was freezing, but the executor session was
+	// built earlier with the host-composed prompt. Swap in a fresh session
+	// carrying the final prompt now — before any turn or history resume, so
+	// the live session and the frozen snapshot describe the same session.
+	if snap != nil {
+		if final := snap.SystemPrompt(); final != sysPrompt {
+			ctrl.ApplyExtensionSystemPrompt(final)
+		}
+	}
+	return &BuildResult{Controller: ctrl, Snapshot: snap, Runtime: runtimeSet, Extensions: extensionMgr, Dispatcher: extensionDispatcher}, nil
 }
 
 // effectivePlannerModel centralizes planner precedence. The explicit ACP hard

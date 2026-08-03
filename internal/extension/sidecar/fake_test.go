@@ -3,6 +3,9 @@ package sidecar
 import (
 	"bufio"
 	"context"
+	"crypto/sha256"
+	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -26,7 +29,8 @@ import (
 //	REASONIX_FAKE_MODE                 comma-separated behavior flags:
 //	                                   early_request | early_notify |
 //	                                   ignore_shutdown | stall_intercept |
-//	                                   block_intercept | stderr_flood
+//	                                   block_intercept | stderr_flood |
+//	                                   content_roundtrip | content_echo_ref
 const (
 	fakeEnvEnable     = "REASONIX_FAKE_SIDECAR"
 	fakeEnvInitResult = "REASONIX_FAKE_INIT_RESULT"
@@ -47,6 +51,16 @@ type fakeFrame struct {
 	ID     json.RawMessage `json:"id"`
 	Method string          `json:"method"`
 	Params json.RawMessage `json:"params"`
+	Result json.RawMessage `json:"result"`
+}
+
+// fakeExternalizedField mirrors the wire envelope descriptor the fake parses
+// from intercept params (and quotes back in content_echo_ref mode).
+type fakeExternalizedField struct {
+	JSONPointer string `json:"jsonPointer"`
+	ContentRef  string `json:"contentRef"`
+	TotalBytes  int64  `json:"totalBytes"`
+	SHA256      string `json:"sha256"`
 }
 
 func fakeModes() map[string]bool {
@@ -87,6 +101,67 @@ func runFakeSidecar(stdin io.Reader, stdout io.Writer) {
 		write(`{"jsonrpc":"2.0","id":%s,"result":%s}`, string(id), string(result))
 	}
 
+	// readContentRef pages one host-side content ref through host/content/read
+	// the way a real extension would, answering any interleaved host requests
+	// with the default ruling while it waits for each chunk.
+	readSeq := 88000
+	readContentRef := func(in *bufio.Reader, ref string) []byte {
+		var out []byte
+		var offset int64
+		for {
+			readSeq++
+			id := readSeq
+			params, _ := json.Marshal(map[string]any{"contentRef": ref, "offset": offset})
+			write(`{"jsonrpc":"2.0","id":%d,"method":"host/content/read","params":%s}`, id, string(params))
+			for {
+				line, err := in.ReadBytes('\n')
+				if err != nil {
+					return out
+				}
+				if len(line) == 0 {
+					continue
+				}
+				var frame fakeFrame
+				if json.Unmarshal(line, &frame) != nil {
+					continue
+				}
+				if frame.Method != "" {
+					// Interleaved host request while the read pages: answer with
+					// the defaults so the host never wedges waiting on us.
+					switch frame.Method {
+					case string(protocol.MethodExtensionShutdown):
+						respond(frame.ID, json.RawMessage(`{"accepted":true}`))
+					case string(protocol.MethodExtensionIntercept):
+						respond(frame.ID, json.RawMessage(`{"decision":"continue"}`))
+					default:
+						respond(frame.ID, json.RawMessage(`{}`))
+					}
+					continue
+				}
+				if string(frame.ID) != fmt.Sprintf("%d", id) {
+					continue
+				}
+				var chunk struct {
+					DataBase64 string `json:"dataBase64"`
+					NextOffset *int64 `json:"nextOffset"`
+				}
+				if json.Unmarshal(frame.Result, &chunk) != nil {
+					return out
+				}
+				data, err := base64.StdEncoding.DecodeString(chunk.DataBase64)
+				if err != nil {
+					return out
+				}
+				out = append(out, data...)
+				if chunk.NextOffset == nil {
+					return out
+				}
+				offset = *chunk.NextOffset
+				break
+			}
+		}
+	}
+
 	in := bufio.NewReader(stdin)
 	for {
 		line, err := in.ReadBytes('\n')
@@ -111,6 +186,35 @@ func runFakeSidecar(stdin io.Reader, stdout io.Writer) {
 						// never answer: the host-side timeout or a crash ends it
 					case modes["block_intercept"]:
 						respond(frame.ID, json.RawMessage(`{"decision":"block","reason":"fake block"}`))
+					case modes["content_roundtrip"] || modes["content_echo_ref"]:
+						var params struct {
+							Payload      json.RawMessage         `json:"payload"`
+							Externalized []fakeExternalizedField `json:"externalized"`
+						}
+						_ = json.Unmarshal(frame.Params, &params)
+						var payload []byte
+						if len(params.Externalized) > 0 {
+							payload = readContentRef(in, params.Externalized[0].ContentRef)
+						} else {
+							payload = append([]byte(nil), params.Payload...)
+						}
+						if modes["content_echo_ref"] && len(params.Externalized) > 0 {
+							// Hand the same host-held content back as the ruling:
+							// the replacement stays a ref the host must resolve.
+							descriptor := params.Externalized[0]
+							descriptor.JSONPointer = "/replacement"
+							raw, _ := json.Marshal(descriptor)
+							respond(frame.ID, json.RawMessage(fmt.Sprintf(`{"decision":"replace","replacement":null,"externalized":[%s]}`, string(raw))))
+							break
+						}
+						// Prove the read: the replacement text carries the
+						// reassembled payload's digest, padded past the 64 KiB
+						// threshold so it exercises a large inline replacement.
+						sum := sha256.Sum256(payload)
+						text := fmt.Sprintf("read %d bytes sha256:%s ", len(payload), hex.EncodeToString(sum[:]))
+						text += strings.Repeat("y", protocol.ExternalizeFieldBytes+4096)
+						replacement, _ := json.Marshal(map[string]string{"text": text})
+						respond(frame.ID, json.RawMessage(fmt.Sprintf(`{"decision":"replace","replacement":%s}`, string(replacement))))
 					default:
 						respond(frame.ID, json.RawMessage(`{"decision":"continue"}`))
 					}
