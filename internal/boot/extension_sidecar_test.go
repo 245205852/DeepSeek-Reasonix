@@ -40,6 +40,12 @@ import (
 //	REASONIX_BOOT_FAKE_PROVIDER         when "1", declare plugin/<name>/fake/x and serve
 //	                                    catalog/stream/open/stream/cancel with a fixed
 //	                                    two-chunk completion plus usage
+//
+// UI steering for the stage 8a hub tests:
+//
+//	REASONIX_BOOT_FAKE_UI_PUBLISH       when "1", publish one credential-bearing
+//	                                    status surface through host/ui/publish after
+//	                                    the handshake completes
 const (
 	bootFakeEnvEnable        = "REASONIX_BOOT_FAKE_SIDECAR"
 	bootFakeEnvInitResult    = "REASONIX_BOOT_FAKE_INIT_RESULT"
@@ -51,6 +57,7 @@ const (
 	bootFakeEnvEventLog      = "REASONIX_BOOT_FAKE_EVENT_LOG"
 	bootFakeEnvPluginName    = "REASONIX_BOOT_FAKE_PLUGIN_NAME"
 	bootFakeEnvProvider      = "REASONIX_BOOT_FAKE_PROVIDER"
+	bootFakeEnvUIPublish     = "REASONIX_BOOT_FAKE_UI_PUBLISH"
 )
 
 // TestExtensionFakeSidecarHelperProcess is the re-exec entry point; it skips
@@ -108,6 +115,9 @@ func runBootFakeSidecar(stdin io.Reader, stdout io.Writer) {
 	}
 
 	in := bufio.NewReader(stdin)
+	var sessionID string
+	var generation uint64
+	uiPublish := os.Getenv(bootFakeEnvUIPublish) == "1"
 	for {
 		line, err := in.ReadBytes('\n')
 		if len(line) > 0 {
@@ -120,7 +130,36 @@ func runBootFakeSidecar(stdin io.Reader, stdout io.Writer) {
 				var result string
 				switch frame.Method {
 				case "extension/initialize":
+					var params struct {
+						Session struct {
+							SessionID  string `json:"sessionId"`
+							Generation uint64 `json:"generation"`
+						} `json:"session"`
+					}
+					_ = json.Unmarshal(frame.Params, &params)
+					sessionID = params.Session.SessionID
+					generation = params.Session.Generation
 					result = initResult
+				case "extension/initialized":
+					// notification; the stage-8a publish mode fires one
+					// credential-bearing status surface once the handshake
+					// completes (the host must redact before surfacing).
+					if uiPublish {
+						uiPublish = false
+						payload, _ := json.Marshal(map[string]any{
+							"surfaceId": "boot-status", "sessionId": sessionID, "generation": generation,
+							"kind": "status",
+							"payload": map[string]any{
+								"label": "boot fake ready api_key=sk-abcdef1234567890SECRETKEY", "severity": "info",
+							},
+						})
+						write(`{"jsonrpc":"2.0","id":66001,"method":"host/ui/publish","params":%s}`, string(payload))
+					}
+					continue
+				case "extension/ui/action":
+					result = `{"accepted":true,"message":"boot fake action ran"}`
+				case "extension/ui/submit":
+					result = `{"accepted":true}`
 				case "extension/intercept":
 					result = bootFakeInterceptAnswer(frame.Params)
 				case "extension/event":

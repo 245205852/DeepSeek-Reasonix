@@ -37,6 +37,10 @@ import type {
   WireApproval,
   WireAsk,
   WireEvent,
+  WireExtensionCard,
+  WireExtensionForm,
+  WireExtensionStatus,
+  WireExtensionSurface,
   WireFinalReadiness,
   WireUsage,
 } from "./types";
@@ -113,9 +117,65 @@ export type Item =
       parentId?: string; // a sub-agent call nests under the `task` call with this id
       profile?: { model?: string; effort?: string }; // subagent model/effort from tool event
       argChars?: number; // args still streaming from the model: cumulative chars received
+    }
+  | {
+      kind: "extension";
+      id: string;
+      // surfaceKey is "<pluginId>:<surfaceId>"; a re-published card replaces the
+      // previous one in place instead of appending a duplicate transcript entry.
+      surfaceKey: string;
+      pluginId: string;
+      surfaceId: string;
+      generation?: number;
+      card: WireExtensionCard;
     };
 
 type ToolItem = Extract<Item, { kind: "tool" }>;
+export type ExtensionItem = Extract<Item, { kind: "extension" }>;
+
+// Extension UI surfaces (stage 8b2) — per-tab state fed by extension_surface /
+// extension_status wire events. Statuses and generations key on
+// "<pluginId>:<surfaceId>"; the form is the single pending form surface (a new
+// form replaces the old, matching the backend's one-blocking-prompt model);
+// notifications queue until the App drains them into the toast system.
+export interface ExtensionStatusEntry {
+  pluginId: string;
+  surfaceId: string;
+  label: string;
+  detail?: string;
+  severity?: string;
+  progress?: number;
+  generation?: number;
+}
+
+export interface ExtensionFormState {
+  pluginId: string;
+  surfaceId: string;
+  generation?: number;
+  form: WireExtensionForm;
+}
+
+export interface ExtensionNotificationEntry {
+  id: string;
+  pluginId: string;
+  title: string;
+  body?: string;
+  severity?: string;
+}
+
+// extensionSurfaceKey is the identity a sidecar re-publishes under to replace
+// one of its surfaces.
+export function extensionSurfaceKey(surface: Pick<WireExtensionSurface, "pluginId" | "surfaceId">): string {
+  return `${surface.pluginId}:${surface.surfaceId}`;
+}
+
+// acceptsExtensionGeneration drops a re-ordered surface publication: within
+// one runtime, a sidecar's generation is monotonic, so anything older than the
+// last accepted generation for the same surface is stale. Events without a
+// generation always pass (they carry no ordering claim).
+export function acceptsExtensionGeneration(stored: number | undefined, incoming: number | undefined): boolean {
+  return incoming === undefined || stored === undefined || incoming >= stored;
+}
 
 // Mid-turn steer messages are recorded as info notices carrying this prefix —
 // both live (the "steer" event below) and in replayed history (desktop/app.go
@@ -213,6 +273,14 @@ interface State {
   // title…). Drives right-panel snapshot refreshes so sub-agent activity keeps
   // the session metrics live; state.usage stays executor-gated for the gauge.
   usageSeq: number;
+  // Extension UI surfaces (stage 8b2). See the ExtensionStatusEntry block
+  // above for the keying/lifecycle rules.
+  extensionStatuses: Record<string, ExtensionStatusEntry>;
+  extensionForm?: ExtensionFormState;
+  extensionNotifications: ExtensionNotificationEntry[];
+  // Last accepted generation per extension surface key; guards against
+  // re-ordered publications (acceptsExtensionGeneration).
+  extensionGenerations: Record<string, number>;
 }
 
 export const initialState: State = {
@@ -247,6 +315,9 @@ export const initialState: State = {
   sessionGen: 0,
   contextPanelSeq: 0,
   usageSeq: 0,
+  extensionStatuses: {},
+  extensionNotifications: [],
+  extensionGenerations: {},
 };
 
 function usageTotalTokens(usage?: WireUsage): number {
@@ -535,6 +606,8 @@ type Action =
   | { type: "local_notice"; level: "info" | "warn"; text: string }
   | { type: "clearApproval" }
   | { type: "clearAsk" }
+  | { type: "clearExtensionForm" }
+  | { type: "extension_notifications_drained" }
   | { type: "approval_drained"; ids: string[]; epoch: number }
   | { type: "submit_prompt_failed"; id: string; epoch: number }
   | { type: "controller_rebuilt" }
@@ -835,6 +908,99 @@ function flushPendingUser(s: State): State {
   };
 }
 
+// applyExtensionSurfaceEvent reduces one extension_surface / extension_status
+// wire event. Every publication passes the per-surface generation fence first
+// (withAcceptedExtensionGeneration); the per-tab runtime-epoch fence in the
+// onEvent handler has already dropped anything from an older runtime
+// generation.
+function applyExtensionSurfaceEvent(s: State, surface: WireExtensionSurface | undefined): State {
+  if (!surface) return s;
+  const gated = withAcceptedExtensionGeneration(s, surface);
+  if (gated === null) return s;
+  s = gated;
+  const kind = surface.kind || (surface.status ? "status" : "");
+  switch (kind) {
+    case "status":
+      return applyExtensionStatus(s, surface);
+    case "card":
+      return applyExtensionCard(s, surface);
+    case "form":
+      return applyExtensionForm(s, surface);
+    case "notification":
+      return applyExtensionNotification(s, surface);
+    default:
+      return s;
+  }
+}
+
+// withAcceptedExtensionGeneration applies the per-surface generation fence.
+// Returns null when the event is a stale re-ordering and must be dropped;
+// otherwise returns state with the accepted generation recorded.
+function withAcceptedExtensionGeneration(s: State, surface: WireExtensionSurface): State | null {
+  const key = extensionSurfaceKey(surface);
+  if (!acceptsExtensionGeneration(s.extensionGenerations[key], surface.generation)) return null;
+  if (surface.generation === undefined || s.extensionGenerations[key] === surface.generation) return s;
+  return { ...s, extensionGenerations: { ...s.extensionGenerations, [key]: surface.generation } };
+}
+
+function applyExtensionStatus(s: State, surface: WireExtensionSurface): State {
+  const status: WireExtensionStatus | undefined = surface.status;
+  if (!status) return s;
+  const entry: ExtensionStatusEntry = {
+    pluginId: surface.pluginId,
+    surfaceId: surface.surfaceId,
+    label: status.label,
+    detail: status.detail,
+    severity: status.severity,
+    progress: status.progress,
+    generation: surface.generation,
+  };
+  return { ...s, extensionStatuses: { ...s.extensionStatuses, [extensionSurfaceKey(surface)]: entry } };
+}
+
+function applyExtensionCard(s: State, surface: WireExtensionSurface): State {
+  const card: WireExtensionCard | undefined = surface.card;
+  if (!card) return s;
+  const key = extensionSurfaceKey(surface);
+  const idx = s.items.findIndex((it) => it.kind === "extension" && it.surfaceKey === key);
+  if (idx >= 0) {
+    const next = [...s.items];
+    const prev = next[idx];
+    if (prev.kind === "extension") next[idx] = { ...prev, generation: surface.generation, card };
+    return { ...s, items: next };
+  }
+  return {
+    ...s,
+    seq: s.seq + 1,
+    items: [
+      ...s.items,
+      { kind: "extension", id: `x${s.seq}`, surfaceKey: key, pluginId: surface.pluginId, surfaceId: surface.surfaceId, generation: surface.generation, card },
+    ],
+  };
+}
+
+function applyExtensionForm(s: State, surface: WireExtensionSurface): State {
+  const form = surface.form;
+  if (!form) return s;
+  return {
+    ...s,
+    extensionForm: { pluginId: surface.pluginId, surfaceId: surface.surfaceId, generation: surface.generation, form },
+  };
+}
+
+function applyExtensionNotification(s: State, surface: WireExtensionSurface): State {
+  const notification = surface.notification;
+  if (!notification) return s;
+  const entry: ExtensionNotificationEntry = {
+    id: `xn${s.seq}`,
+    pluginId: surface.pluginId,
+    title: notification.title,
+    body: notification.body,
+    severity: notification.severity,
+  };
+  return { ...s, seq: s.seq + 1, extensionNotifications: [...s.extensionNotifications, entry] };
+}
+
 function applyEvent(s: State, e: WireEvent): State {
   if (s.discardTurn) {
     if (e.kind === "turn_done") return { ...s, discardTurn: false, running: false, turnActive: false, pendingPrompt: false, cancelRequested: false, cancellable: false, currentAssistant: undefined, live: undefined };
@@ -843,6 +1009,11 @@ function applyEvent(s: State, e: WireEvent): State {
   if (e.kind === "mcp_surface_ready") {
     // Background-only events must not confirm an optimistic user bubble.
     return s;
+  }
+  if (e.kind === "extension_surface" || e.kind === "extension_status") {
+    // Sidecar surface publications are background-only too: they must neither
+    // confirm an optimistic user bubble nor clear the retry indicator.
+    return applyExtensionSurfaceEvent(s, e.extension);
   }
   if (s.pendingUser !== undefined && e.kind !== "turn_done") {
     s = flushPendingUser(s);
@@ -1431,6 +1602,8 @@ export function reducer(s: State, a: Action): State {
       const next = { ...s, ask: undefined, pendingPrompt: Boolean(s.approval), resolvedPromptId: s.ask?.id ?? s.resolvedPromptId };
       return endPromptWaitIfIdle(next);
     }
+    case "clearExtensionForm": return s.extensionForm ? { ...s, extensionForm: undefined } : s;
+    case "extension_notifications_drained": return s.extensionNotifications.length > 0 ? { ...s, extensionNotifications: [] } : s;
     // A tool-approval posture switch auto-allowed exactly these prompt ids on
     // the backend. Hide + tombstone the visible approval only when it is one
     // of them; anything else (plan/memory/sandbox-escape, ask-rule approvals
@@ -1459,7 +1632,21 @@ export function reducer(s: State, a: Action): State {
     // dropped, or a genuinely new prompt reusing an old id would be misread
     // as a stale replay of an already-answered prompt and silently ignored.
     case "controller_rebuilt":
-      return { ...s, promptEpoch: s.promptEpoch + 1, resolvedPromptId: undefined, promptArrivedId: undefined, promptArrivedAt: undefined };
+      // A rebuild restarts the runtime's extension sidecars too, so extension
+      // surface state (and the per-surface generation fence) from the old
+      // runtime is meaningless for the new one and is dropped with the rest of
+      // the id-anchored bookkeeping.
+      return {
+        ...s,
+        promptEpoch: s.promptEpoch + 1,
+        resolvedPromptId: undefined,
+        promptArrivedId: undefined,
+        promptArrivedAt: undefined,
+        extensionStatuses: {},
+        extensionForm: undefined,
+        extensionNotifications: [],
+        extensionGenerations: {},
+      };
     case "reset": return { ...initialState, meta: metaWithoutCanonicalTodos(s.meta), context: { used: 0, window: s.context.window, sessionTokens: 0, compactRatio: s.context.compactRatio }, balance: s.balance, effort: s.effort, jobs: s.jobs, hydrating: s.hydrating, hydrateReason: s.hydrateReason, hydrateError: s.hydrateError, hydrateHistoryLoaded: s.hydrateHistoryLoaded, hydratePlaceholderItems: s.hydratePlaceholderItems, backendActivationPending: s.backendActivationPending, sessionGen: s.sessionGen + 1, promptEpoch: s.promptEpoch + 1 };
     case "context_panel_refresh": return { ...s, contextPanelSeq: s.contextPanelSeq + 1 };
     case "event": return applyEvent(s, a.e);
@@ -2730,6 +2917,20 @@ export function useController() {
     dispatchTo(activeTabId, { type: "local_notice", level, text });
   }, [activeTabId, dispatchTo]);
 
+  // Extension form dismissed/submitted locally: hide the surface. The backend
+  // round-trip (SubmitExtensionForm) lives in App.tsx, which owns the toast
+  // context used for error reporting.
+  const dismissExtensionForm = useCallback(() => {
+    if (!activeTabId) return;
+    dispatchTo(activeTabId, { type: "clearExtensionForm" });
+  }, [activeTabId, dispatchTo]);
+
+  // The App drained the queued extension notifications into the toast system.
+  const drainExtensionNotifications = useCallback(() => {
+    if (!activeTabId) return;
+    dispatchTo(activeTabId, { type: "extension_notifications_drained" });
+  }, [activeTabId, dispatchTo]);
+
   const cancelTab = useCallback((tabId: string) => {
     app.CancelTab(tabId)
       .then(() => scheduleCancelReconcile(tabId))
@@ -3583,6 +3784,7 @@ export function useController() {
     liveStore,
     activeTabId,
     send, sendToTab, recoverDeliveryToTab, runShell, runShellForTab, steer, steerForTab, notice, cancel, approve, resolveRecovery, answerQuestion, setControllerMode,
+    dismissExtensionForm, drainExtensionNotifications,
     setCollaborationMode, setCollaborationModeForTab, setToolApprovalMode, setToolApprovalModeForTab, setComposerProfileForTab, setGoal, setGoalForTab, clearGoal, clearGoalForTab, resumeGoal, resumeGoalForTab,
     newSession, clearSession, listSessions, listTrashedSessions, resumeSession, openChannelSession, previewSession, deleteSession, restoreSession, purgeTrashedSession, renameSession,
     loadOlderHistory,

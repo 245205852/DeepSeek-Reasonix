@@ -183,6 +183,10 @@ type Messages struct {
 	CompactionAuto    string // trigger label: reached the window threshold
 	CompactionManual  string // trigger label: user ran /compact
 
+	// extension structured-UI surfaces (ExtensionSurface / ExtensionStatus events).
+	ExtFormFieldsHint string // form card: field values are collected through the usual prompts
+	ExtRunActionFmt   string // card action hint, one %s = the /<plugin>:<action> slash name
+
 	// chat TUI slash commands.
 	SlashCompactDone             string // "/compact" succeeded
 	SlashCompactFailed           string // "/compact" errored, prefixed before the underlying error

@@ -148,6 +148,9 @@ var ChineseTraditional = Messages{
 	CompactionAuto:    "自動",
 	CompactionManual:  "手動",
 
+	ExtFormFieldsHint: "欄位將透過逐項提問收集",
+	ExtRunActionFmt:   "執行 %s",
+
 	SlashCompactDone:   "已壓縮 — 舊的中段換成一段摘要，最近幾輪保留原樣",
 	SlashCompactFailed: "壓縮失敗",
 	SlashNewDone:       "已開啟新上下文 — 之前的對話已存檔",

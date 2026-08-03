@@ -2,6 +2,7 @@ package boot
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"sync/atomic"
 
@@ -11,6 +12,7 @@ import (
 	"reasonix/internal/extension/dispatch"
 	"reasonix/internal/extension/protocol"
 	"reasonix/internal/extension/sidecar"
+	"reasonix/internal/extension/uihub"
 	"reasonix/internal/hook"
 	"reasonix/internal/plugin"
 	"reasonix/internal/provider"
@@ -38,6 +40,12 @@ type BuildResult struct {
 	// degraded). It is immutable and safe for concurrent turns; the
 	// controller receives it through SetExtensions right after assembly.
 	Dispatcher *dispatch.Dispatcher
+	// ExtensionUI is the host extension UI hub for this runtime generation
+	// (stage 8a; nil when no sidecar started). It is bound to the build's
+	// session ID and generation; the controller receives it through
+	// SetExtensionUI right after assembly, and a Rebuild creates a fresh hub
+	// on the new generation.
+	ExtensionUI *uihub.Hub
 	// ProviderResolver is the build's effective provider resolver: the
 	// caller-owned broker when Options.ProviderResolver is set, the local
 	// config-backed resolver otherwise, merged with any extension-hosted
@@ -100,11 +108,13 @@ type legacyAssembly struct {
 
 // extensionBoot carries the extension sidecar launch inputs into snapshot
 // assembly: where the pluginpkg installed state lives, the session the
-// sidecars serve, and where non-fatal warnings go.
+// sidecars serve, where non-fatal warnings go, and (stage 8a) the UI hub the
+// sidecars' host/ui/* calls bind to.
 type extensionBoot struct {
 	home      string
 	session   protocol.SessionContext
 	onWarning func(string)
+	ui        *uihub.Hub
 }
 
 func (p extensionBoot) warn(msg string) {
@@ -165,7 +175,14 @@ func assembleLegacySnapshot(ctx context.Context, in legacyAssembly, generation u
 	if strings.TrimSpace(ext.home) != "" {
 		var warnings []string
 		var err error
-		mgr, warnings, err = sidecar.StartPackages(ctx, ext.home, ext.session, nil)
+		// The stage-8a UI hub installs as each sidecar's host/ui/* handler; a
+		// nil hub keeps the "ui not available" default. Guard against the
+		// typed-nil trap: a nil *uihub.Hub must stay a nil UIHandler.
+		var ui sidecar.UIHandler
+		if ext.ui != nil {
+			ui = ext.ui
+		}
+		mgr, warnings, err = sidecar.StartPackages(ctx, ext.home, ext.session, ui)
 		for _, warning := range warnings {
 			ext.warn(warning)
 		}
@@ -177,6 +194,7 @@ func assembleLegacySnapshot(ctx context.Context, in legacyAssembly, generation u
 		}
 		if len(mgr.Clients()) > 0 {
 			managed := mgr
+			bindExtensionUI(ext.ui, managed, ext.warn)
 			sidecarContribs := managed.Contributions()
 			b.AddContributor(extension.ContributorFunc{
 				ContributorName: "boot-extension-runtimes",
@@ -287,6 +305,32 @@ func sidecarClientResolver(mgr *sidecar.Manager) func(pluginID string) dispatch.
 			return client
 		}
 		return nil
+	}
+}
+
+// bindExtensionUI finishes the stage-8a hub binding once sidecars are live:
+// the client resolver routes later /<plugin>:<action> invocations and form
+// submissions, and each client's handshake-declared UI actions enter the
+// registry. An invalid declaration degrades to a warning (the plugin's other
+// contributions are unaffected) rather than failing the build.
+func bindExtensionUI(hub *uihub.Hub, mgr *sidecar.Manager, warn func(string)) {
+	if hub == nil || mgr == nil {
+		return
+	}
+	hub.SetResolver(func(pluginID string) uihub.ActionClient {
+		if client := mgr.Client(pluginID); client != nil {
+			return client
+		}
+		return nil
+	})
+	for _, client := range mgr.Clients() {
+		actions := client.Handshake().UIActions
+		if len(actions) == 0 {
+			continue
+		}
+		if err := hub.RegisterActions(client.PluginID(), actions); err != nil {
+			warn(fmt.Sprintf("%s: extension UI actions not registered: %v", client.PluginID(), err))
+		}
 	}
 }
 

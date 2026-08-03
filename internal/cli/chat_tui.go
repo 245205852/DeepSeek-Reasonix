@@ -535,6 +535,14 @@ type promptResolvedMsg struct {
 	err     error
 }
 
+// extensionActionMsg carries the result of invoking one extension UI action
+// (an async extension/ui/action round-trip to the sidecar). The extension's
+// (already redacted) message surfaces as a transcript notice.
+type extensionActionMsg struct {
+	message string
+	err     error
+}
+
 // refsResolvedMsg carries the result of resolving the @references in a
 // submitted line (async file reads / MCP resources/read).
 type refsResolvedMsg struct {
@@ -1672,6 +1680,14 @@ func (m chatTUI) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.notice(i18n.M.SlashPromptEmpty)
 		default:
 			cmds = append(cmds, m.startTurn(msg.sent, msg.display, msg.display))
+		}
+
+	case extensionActionMsg:
+		switch {
+		case msg.err != nil:
+			m.commitLine(wrapForViewport(i18n.M.ErrorPrefix+" "+msg.err.Error(), m.width, activeCLITheme.warn))
+		case strings.TrimSpace(msg.message) != "":
+			m.notice(msg.message)
 		}
 
 	case mcpExternalDoneMsg:
@@ -3859,6 +3875,29 @@ func (m *chatTUI) ingestEvent(e event.Event) {
 			m.commitLine("  · " + line)
 		}
 
+	case event.ExtensionStatus:
+		// One-line status contribution from an extension sidecar — a
+		// severity-aware notice line, like event.Notice.
+		if line := extensionStatusLine(e.Extension); line != "" {
+			m.finalizeStreamed()
+			m.commitLine(line)
+		}
+
+	case event.ExtensionSurface:
+		// A published card/form renders as a transcript card; a notification
+		// renders as a notice line. Form fields themselves arrive through the
+		// Ask machinery (the hub translates them), so no dialog work here.
+		m.finalizeStreamed()
+		if e.Extension != nil && e.Extension.Notification != nil {
+			if line := extensionNotificationLine(e.Extension); line != "" {
+				m.commitLine(line)
+			}
+			break
+		}
+		for _, ln := range extensionSurfaceLines(e.Extension, m.width) {
+			m.commitLine(ln)
+		}
+
 	case event.CompactionStarted:
 		m.finalizeStreamed()
 		m.commitLine(dim("  ⋯ " + i18n.M.CompactionWorking))
@@ -4157,6 +4196,13 @@ func (m *chatTUI) runSlashCommand(input string) tea.Cmd {
 				}
 			}
 			return m.startControllerTurn(input, input, func() { m.ctrl.SubmitDisplay(input, input) })
+		}
+		// An extension action (/<plugin>:<action>) resolves last, before the
+		// unknown-command notice; the invocation is a sidecar round-trip, so it
+		// runs off the event loop and its result lands as a notice.
+		if action, ok := matchExtensionAction(m.ctrl, typedCmd); ok {
+			m.echoLocalCommand(input)
+			return m.runExtensionAction(action.Slash, parseExtensionActionArgs(strings.Fields(input)[1:]))
 		}
 		m.notice(fmt.Sprintf("%s: %s", i18n.M.SlashUnknown, cmd))
 	}
@@ -4590,6 +4636,16 @@ func (m *chatTUI) runMCPPrompt(input string) tea.Cmd {
 			return promptResolvedMsg{display: input, err: fmt.Errorf("%s: /%s", i18n.M.SlashUnknown, name)}
 		}
 		return promptResolvedMsg{display: input, sent: sent, err: err}
+	}
+}
+
+// runExtensionAction invokes one extension UI action off the event loop (the
+// call is a blocking sidecar round-trip), delivering an extensionActionMsg
+// whose message surfaces as a transcript notice.
+func (m *chatTUI) runExtensionAction(name string, args map[string]string) tea.Cmd {
+	return func() tea.Msg {
+		message, err := m.ctrl.InvokeExtensionAction(context.Background(), name, args)
+		return extensionActionMsg{message: message, err: err}
 	}
 }
 

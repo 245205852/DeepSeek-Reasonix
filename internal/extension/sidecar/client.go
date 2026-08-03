@@ -46,6 +46,16 @@ type UIHandler interface {
 	Request(ctx context.Context, p protocol.UIRequestParams) (protocol.UIRequestResult, error)
 }
 
+// UIBinder is the optional interface a UIHandler implements to receive
+// per-plugin bindings and crash notifications from StartPackages (the stage-8
+// UI hub). HandlerFor returns the handler installed on one client's
+// connection; ClientCrashed reports that plugin's sidecar dying.
+type UIBinder interface {
+	UIHandler
+	HandlerFor(pluginID string) UIHandler
+	ClientCrashed(pluginID string)
+}
+
 // unavailableUIHandler is the default UIHandler: every call fails with the
 // frozen unknown_method reason so an extension depending on UI degrades
 // loudly instead of blocking forever.
@@ -557,6 +567,41 @@ func (c *Client) NotifyResourcesChanged(paths []string) error {
 		return err
 	}
 	return c.conn.Notify(string(protocol.MethodExtensionResourcesChanged), protocol.ResourcesChangedParams{Paths: paths})
+}
+
+// UIAction invokes one handshake-declared UI action on the sidecar (stage 8).
+// The host UI hub routes /<plugin>:<action> invocations here. A crashed or
+// shut-down sidecar fails fast with the provider_interrupted reason.
+func (c *Client) UIAction(ctx context.Context, params protocol.UIActionParams) (protocol.UIActionResult, error) {
+	if err := c.readyErr(); err != nil {
+		return protocol.UIActionResult{}, err
+	}
+	raw, err := c.conn.Request(ctx, string(protocol.MethodExtensionUIAction), params)
+	if err != nil {
+		return protocol.UIActionResult{}, mapRequestError(err)
+	}
+	decoded, err := protocol.DecodeHostRequestResult(protocol.MethodExtensionUIAction, raw)
+	if err != nil {
+		return protocol.UIActionResult{}, &protocol.ProtocolError{Reason: protocol.ErrProtocolError, Message: "invalid UI action result: " + err.Error()}
+	}
+	return decoded.(protocol.UIActionResult), nil
+}
+
+// UISubmit delivers a form surface's values back to the sidecar (stage 8).
+// The host UI hub routes submissions here.
+func (c *Client) UISubmit(ctx context.Context, params protocol.UISubmitParams) (protocol.UISubmitResult, error) {
+	if err := c.readyErr(); err != nil {
+		return protocol.UISubmitResult{}, err
+	}
+	raw, err := c.conn.Request(ctx, string(protocol.MethodExtensionUISubmit), params)
+	if err != nil {
+		return protocol.UISubmitResult{}, mapRequestError(err)
+	}
+	decoded, err := protocol.DecodeHostRequestResult(protocol.MethodExtensionUISubmit, raw)
+	if err != nil {
+		return protocol.UISubmitResult{}, &protocol.ProtocolError{Reason: protocol.ErrProtocolError, Message: "invalid UI submit result: " + err.Error()}
+	}
+	return decoded.(protocol.UISubmitResult), nil
 }
 
 // ProviderCatalog fetches the sidecar's extension-hosted provider catalog

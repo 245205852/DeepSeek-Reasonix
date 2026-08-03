@@ -31,7 +31,7 @@ import (
 //	                                   ignore_shutdown | stall_intercept |
 //	                                   block_intercept | stderr_flood |
 //	                                   content_roundtrip | content_echo_ref |
-//	                                   provider_stream
+//	                                   provider_stream | crash_after_init
 const (
 	fakeEnvEnable     = "REASONIX_FAKE_SIDECAR"
 	fakeEnvInitResult = "REASONIX_FAKE_INIT_RESULT"
@@ -179,7 +179,12 @@ func runFakeSidecar(stdin io.Reader, stdout io.Writer) {
 					}
 					respond(frame.ID, fakeInitResult())
 				case string(protocol.MethodExtensionInitialized):
-					// notification; nothing to do
+					// notification; nothing to do — except in crash_after_init
+					// mode, where exiting here ends the connection while the
+					// host sees a ready handshake: an unexpected EOF (crash).
+					if modes["crash_after_init"] {
+						return
+					}
 				case string(protocol.MethodExtensionIntercept):
 					switch {
 					case modes["stall_intercept"]:
@@ -241,6 +246,18 @@ func runFakeSidecar(stdin io.Reader, stdout io.Writer) {
 					}
 				case string(protocol.MethodExtensionProviderStreamCancel):
 					respond(frame.ID, json.RawMessage(`{"cancelled":true}`))
+				case string(protocol.MethodExtensionUIAction):
+					// Echo the invoked action id so the host-side test proves
+					// the routing; the message carries a credential-looking
+					// token to exercise hub redaction end to end.
+					var params struct {
+						ActionID string `json:"actionId"`
+					}
+					_ = json.Unmarshal(frame.Params, &params)
+					message, _ := json.Marshal("ran " + params.ActionID + " with api_key=sk-abcdef1234567890SECRETKEY")
+					respond(frame.ID, json.RawMessage(`{"accepted":true,"message":`+string(message)+`}`))
+				case string(protocol.MethodExtensionUISubmit):
+					respond(frame.ID, json.RawMessage(`{"accepted":true}`))
 				default:
 					respond(frame.ID, json.RawMessage(`{}`))
 				}

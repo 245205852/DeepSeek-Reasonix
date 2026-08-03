@@ -1,6 +1,10 @@
 package protocol
 
-import "encoding/json"
+import (
+	"encoding/json"
+	"fmt"
+	"reflect"
+)
 
 // UI DTOs: extension-contributed actions, host-rendered surfaces, and
 // blocking prompts.
@@ -132,4 +136,39 @@ type UINotificationPayload struct {
 	Title    string     `json:"title" validate:"nonempty"`
 	Body     string     `json:"body,omitempty"`
 	Severity UISeverity `json:"severity,omitempty"`
+}
+
+// DecodeUIPublishPayload strict-decodes the payload document of one
+// host/ui/publish call into the kind's payload struct (UIStatusPayload,
+// UICardPayload, UIFormPayload, or UINotificationPayload). It applies the
+// same strictness as the method DTO decoders: unknown fields, enum values,
+// and required-field violations are rejected.
+func DecodeUIPublishPayload(kind UISurfaceKind, raw json.RawMessage) (any, error) {
+	var typ reflect.Type
+	switch kind {
+	case UISurfaceStatus:
+		typ = reflect.TypeOf(UIStatusPayload{})
+	case UISurfaceCard:
+		typ = reflect.TypeOf(UICardPayload{})
+	case UISurfaceForm:
+		typ = reflect.TypeOf(UIFormPayload{})
+	case UISurfaceNotification:
+		typ = reflect.TypeOf(UINotificationPayload{})
+	default:
+		return nil, fmt.Errorf("protocol: unknown UI surface kind %q", kind)
+	}
+	return decodeAndValidate(raw, typ)
+}
+
+// DecodeUIRequestPayload strict-decodes the payload document of one
+// host/ui/request call. Every request kind carries a UIFormPayload-shaped
+// document: a confirm is a form with one confirm field (or a bare message),
+// input/select/multiselect compose the matching field kinds.
+func DecodeUIRequestPayload(kind UIRequestKind, raw json.RawMessage) (any, error) {
+	switch kind {
+	case UIRequestConfirm, UIRequestInput, UIRequestSelect, UIRequestMultiselect:
+		return decodeAndValidate(raw, reflect.TypeOf(UIFormPayload{}))
+	default:
+		return nil, fmt.Errorf("protocol: unknown UI request kind %q", kind)
+	}
 }

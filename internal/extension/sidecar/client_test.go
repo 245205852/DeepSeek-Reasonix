@@ -300,6 +300,31 @@ func TestUIHandlerDefaultsToUnavailable(t *testing.T) {
 	}
 }
 
+// TestUIActionAndSubmitRoundTrip drives the host-initiated UI calls (stage 8)
+// over the real wire: the fake sidecar echoes the action id and accepts the
+// form submission.
+func TestUIActionAndSubmitRoundTrip(t *testing.T) {
+	client := startFakeClient(t, nil, nil)
+	action, err := client.UIAction(context.Background(), protocol.UIActionParams{
+		ActionID: "act1", SessionID: "sess-test", Generation: 1, Args: map[string]string{"k": "v"},
+	})
+	if err != nil {
+		t.Fatalf("UIAction: %v", err)
+	}
+	if !action.Accepted || action.Message == "" {
+		t.Fatalf("UIAction result = %+v", action)
+	}
+	submit, err := client.UISubmit(context.Background(), protocol.UISubmitParams{
+		SurfaceID: "f1", SessionID: "sess-test", Generation: 1, Values: map[string]any{"name": "x"},
+	})
+	if err != nil {
+		t.Fatalf("UISubmit: %v", err)
+	}
+	if !submit.Accepted {
+		t.Fatalf("UISubmit result = %+v", submit)
+	}
+}
+
 func TestStartRejectsInvalidOptions(t *testing.T) {
 	pkg, installed := fakeSidecarPackage(t, "fakeplugin", nil)
 	if _, err := StartClient(context.Background(), ClientOptions{

@@ -45,10 +45,13 @@ type InitializeParams struct {
 
 // ClientCapabilities is what the client offers the agent: filesystem proxy
 // methods (fs/read_text_file, fs/write_text_file) that see unsaved editor
-// buffers, and host-owned terminals (terminal/*).
+// buffers, and host-owned terminals (terminal/*). Meta carries vendor
+// capability blocks (e.g. _meta["reasonix.io"]) for tolerant parse — unknown
+// or malformed entries simply mean the vendor feature stays off.
 type ClientCapabilities struct {
 	FS       FSCapabilities `json:"fs,omitempty"`
 	Terminal bool           `json:"terminal,omitempty"`
+	Meta     map[string]any `json:"_meta,omitempty"`
 }
 
 // FSCapabilities reports which client filesystem methods are available.
@@ -89,6 +92,9 @@ type ReasonixExtensionCapabilities struct {
 	SessionSteer *SessionSteerCapability `json:"sessionSteer,omitempty"`
 	// SessionReloadExtensions advertises the vendor runtime-reload method.
 	SessionReloadExtensions *SessionReloadExtensionsCapability `json:"sessionReloadExtensions,omitempty"`
+	// ExtensionSurface advertises structured extension-UI surface support:
+	// the agent publishes surfaces as vendor session/update payloads.
+	ExtensionSurface *ExtensionSurfaceCapability `json:"extensionSurface,omitempty"`
 }
 
 // SessionSteerCapability identifies the vendor-namespaced steering method.
@@ -100,6 +106,22 @@ type SessionSteerCapability struct {
 // reload method.
 type SessionReloadExtensionsCapability struct {
 	Method string `json:"method"`
+}
+
+const (
+	// reasonixExtensionSurfaceSchemaVersion versions the extension-surface DTO
+	// carried by the vendor session/update variant.
+	reasonixExtensionSurfaceSchemaVersion = 1
+	// extensionSurfaceUpdateKind discriminates the vendor session/update
+	// variant that carries a structured extension-UI surface.
+	extensionSurfaceUpdateKind = "_reasonix.io/extension_surface"
+)
+
+// ExtensionSurfaceCapability advertises that a participant renders structured
+// extension-UI surfaces (Extension Protocol v1) natively.
+type ExtensionSurfaceCapability struct {
+	Supported     bool `json:"supported"`
+	SchemaVersion int  `json:"schemaVersion"`
 }
 
 // EmptyCapability serializes to {} for ACP capability flags.
@@ -513,6 +535,19 @@ type messageChunk struct {
 	SessionUpdate string       `json:"sessionUpdate"`
 	Content       ContentBlock `json:"content"`
 	Metadata      *updateMeta  `json:"metadata,omitempty"`
+}
+
+// extensionSurfaceUpdate is the vendor session/update variant that carries one
+// structured extension-UI surface to clients that negotiated
+// reasonix.extensionSurface in initialize. ACP has no standard notification for
+// extension surfaces, so the DTO (the shared eventwire JSON contract) rides
+// _meta["reasonix.io"]["extensionSurface"], mirroring how the initialize
+// handshake namespaces vendor data under "reasonix.io". The sink always pairs
+// it with a flattened agent_message_chunk text fallback (belt and suspenders):
+// a client that ignores the vendor variant still shows the content.
+type extensionSurfaceUpdate struct {
+	SessionUpdate string         `json:"sessionUpdate"`
+	Meta          map[string]any `json:"_meta"`
 }
 
 // updateMeta carries optional error detail on an agent_message_chunk.

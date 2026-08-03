@@ -271,6 +271,8 @@ func TestEventwireExternalizableFieldsDriveRemoteSchema(t *testing.T) {
 		"/approval/reason", "/approval/subject",
 		"/ask/questions/*/options/*/description", "/ask/questions/*/prompt",
 		"/compaction/archive", "/compaction/summary", "/detail", "/err",
+		"/extension/card/markdown", "/extension/card/text",
+		"/extension/form/message", "/extension/notification/body",
 		"/guardian/rationale", "/reasoning", "/text",
 		"/tool/args", "/tool/diff", "/tool/err", "/tool/output",
 	}

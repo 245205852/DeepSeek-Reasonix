@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -208,5 +209,92 @@ func TestManagerCloseShutsEverythingDown(t *testing.T) {
 	}
 	if err := manager.Close(); err != nil {
 		t.Fatalf("second Close: %v", err)
+	}
+}
+
+// recordingBinder is a UIBinder test double: it records the per-plugin
+// HandlerFor bindings and crash notifications StartPackages delivers.
+type recordingBinder struct {
+	mu      sync.Mutex
+	bound   map[string]int
+	crashed map[string]int
+}
+
+func newRecordingBinder() *recordingBinder {
+	return &recordingBinder{bound: map[string]int{}, crashed: map[string]int{}}
+}
+
+func (b *recordingBinder) Publish(context.Context, protocol.UIPublishParams) (protocol.UIPublishResult, error) {
+	return protocol.UIPublishResult{}, &protocol.ProtocolError{Reason: protocol.ErrUnknownMethod, Message: "unbound"}
+}
+
+func (b *recordingBinder) Request(context.Context, protocol.UIRequestParams) (protocol.UIRequestResult, error) {
+	return protocol.UIRequestResult{}, &protocol.ProtocolError{Reason: protocol.ErrUnknownMethod, Message: "unbound"}
+}
+
+func (b *recordingBinder) HandlerFor(pluginID string) UIHandler {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.bound[pluginID]++
+	return bindingStub{}
+}
+
+func (b *recordingBinder) ClientCrashed(pluginID string) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.crashed[pluginID]++
+}
+
+func (b *recordingBinder) boundCount(pluginID string) int {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.bound[pluginID]
+}
+
+func (b *recordingBinder) crashedCount(pluginID string) int {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.crashed[pluginID]
+}
+
+type bindingStub struct{}
+
+func (bindingStub) Publish(context.Context, protocol.UIPublishParams) (protocol.UIPublishResult, error) {
+	return protocol.UIPublishResult{Accepted: true}, nil
+}
+
+func (bindingStub) Request(context.Context, protocol.UIRequestParams) (protocol.UIRequestResult, error) {
+	return protocol.UIRequestResult{Cancelled: true}, nil
+}
+
+// TestStartPackagesBindsUIHandlerPerPlugin proves the stage-8 wiring: a
+// UIHandler implementing UIBinder receives one HandlerFor binding per started
+// client (never the shared unbound handler), and a sidecar crash is reported
+// through ClientCrashed.
+func TestStartPackagesBindsUIHandlerPerPlugin(t *testing.T) {
+	home := t.TempDir()
+	installFakePlugin(t, home, "live", nil)
+	installFakePlugin(t, home, "doomed", func(rt *pluginpkg.RuntimeSpec) {
+		rt.Env[fakeEnvMode] = "crash_after_init"
+	})
+	binder := newRecordingBinder()
+	manager, _, err := StartPackages(context.Background(), home, testSessionContext(), binder)
+	if err != nil {
+		t.Fatalf("StartPackages: %v", err)
+	}
+	t.Cleanup(func() { _ = manager.Close() })
+
+	for _, pluginID := range []string{"doomed", "live"} {
+		if got := binder.boundCount(pluginID); got != 1 {
+			t.Fatalf("HandlerFor(%q) called %d times, want 1", pluginID, got)
+		}
+	}
+	// The doomed sidecar exits right after initialized: the host observes an
+	// unexpected EOF and reports the crash through the binder.
+	waitFor(t, "crash notification", 10*time.Second, func() bool {
+		return binder.crashedCount("doomed") == 1
+	})
+	if got := binder.crashedCount("live"); got != 0 {
+		t.Fatalf("ClientCrashed(live) called %d times, want 0", got)
 	}
 }

@@ -18,6 +18,7 @@ import (
 	"reasonix/internal/agent"
 	"reasonix/internal/control"
 	"reasonix/internal/event"
+	"reasonix/internal/extension/uihub"
 	"reasonix/internal/fileutil"
 	fileencoding "reasonix/internal/fileutil/encoding"
 	"reasonix/internal/jobs"
@@ -190,6 +191,29 @@ func (s *service) clientCapabilities() ClientCapabilities {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.clientCaps
+}
+
+// extensionSurfaceSupported reports whether the connected client advertised
+// reasonix.extensionSurface support in its initialize handshake.
+func (s *service) extensionSurfaceSupported() bool {
+	return clientExtensionSurfaceSupported(s.clientCapabilities())
+}
+
+// clientExtensionSurfaceSupported tolerantly parses the client's vendor
+// capability block: _meta["reasonix.io"]["extensionSurface"]["supported"] must
+// be an explicit true. Absent keys, wrong shapes, or a malformed block all
+// mean unsupported — the sink then sends only the text fallback.
+func clientExtensionSurfaceSupported(caps ClientCapabilities) bool {
+	vendor, ok := caps.Meta["reasonix.io"].(map[string]any)
+	if !ok {
+		return false
+	}
+	capability, ok := vendor["extensionSurface"].(map[string]any)
+	if !ok {
+		return false
+	}
+	supported, _ := capability["supported"].(bool)
+	return supported
 }
 
 // bindClientIO fills SessionParams' overlay/terminal fields from the client's
@@ -575,6 +599,7 @@ func (s *service) initialize(_ context.Context, raw json.RawMessage) (any, error
 				"reasonix.io": ReasonixExtensionCapabilities{
 					SessionSteer:            &SessionSteerCapability{Method: sessionSteerMethod},
 					SessionReloadExtensions: &SessionReloadExtensionsCapability{Method: sessionReloadExtensionsMethod},
+					ExtensionSurface:        &ExtensionSurfaceCapability{Supported: true, SchemaVersion: reasonixExtensionSurfaceSchemaVersion},
 				},
 				sessionStatusMethod:       ReasonixSchemaCapability{SchemaVersion: reasonixStatusSchemaVersion},
 				sessionStatusUpdateMethod: ReasonixSchemaCapability{SchemaVersion: reasonixStatusSchemaVersion},
@@ -644,6 +669,7 @@ func (s *service) sessionNew(ctx context.Context, raw json.RawMessage) (any, err
 
 	sink := newUpdateSink(s.conn, id)
 	sink.bindCwd(cwd)
+	sink.bindExtensionSurface(s.extensionSurfaceSupported())
 	sessionParams := SessionParams{
 		Cwd:                cwd,
 		MCPServers:         mcpServers,
@@ -939,6 +965,7 @@ func (s *service) openExistingSession(ctx context.Context, method, id, cwdParam 
 
 	sink := newUpdateSink(s.conn, id)
 	sink.bindCwd(cwd)
+	sink.bindExtensionSurface(s.extensionSurfaceSupported())
 	sessionParams := SessionParams{
 		Cwd:                cwd,
 		MCPServers:         mcpServers,
@@ -2476,6 +2503,26 @@ func availableCommandsFor(ctrl acpController) []AvailableCommand {
 			byName[name] = ac
 		}
 	}
+	// Extension actions surface as "<plugin>:<action>" commands so ACP clients
+	// can discover them in the slash menu alongside commands/skills/prompts.
+	for _, action := range ctrl.ExtensionActions() {
+		name := strings.TrimPrefix(strings.TrimSpace(action.Slash), "/")
+		if name == "" {
+			continue
+		}
+		if _, exists := byName[name]; exists {
+			continue
+		}
+		desc := strings.TrimSpace(action.Label)
+		if desc == "" {
+			desc = "Run the " + name + " extension action"
+		}
+		byName[name] = AvailableCommand{
+			Name:        name,
+			Description: desc,
+			Input:       &AvailableCommandInput{Hint: "arguments"},
+		}
+	}
 	out := make([]AvailableCommand, 0, len(byName))
 	for _, cmd := range byName {
 		out = append(out, cmd)
@@ -2502,7 +2549,42 @@ func (s *service) resolveSlashPrompt(ctx context.Context, sess *acpSession, text
 	if sent, ok, err := ctrl.MCPPrompt(ctx, line); err == nil && ok {
 		return sent
 	}
+	if sent, ok := invokeExtensionAction(ctx, ctrl, line); ok {
+		return sent
+	}
 	return text
+}
+
+// invokeExtensionAction resolves a "/<plugin>:<action> args…" line against the
+// handshake-declared extension actions and invokes it — the last resolution
+// step in resolveSlashPrompt, after custom commands, skills, and MCP prompts.
+// The extension's result message becomes the prompt text. A parse miss, an
+// undeclared action, an invocation error, or an empty result all leave the
+// line untouched (ok=false), matching how unknown slash commands fall through.
+func invokeExtensionAction(ctx context.Context, ctrl acpController, line string) (string, bool) {
+	fields := strings.Fields(line)
+	if len(fields) == 0 {
+		return "", false
+	}
+	pluginID, actionID, ok := uihub.ParseSlashName(fields[0])
+	if !ok {
+		return "", false
+	}
+	declared := false
+	for _, action := range ctrl.ExtensionActions() {
+		if action.PluginID == pluginID && action.ActionID == actionID {
+			declared = true
+			break
+		}
+	}
+	if !declared {
+		return "", false
+	}
+	message, err := ctrl.InvokeExtensionAction(ctx, fields[0], control.ParseExtensionActionArgs(fields[1:]))
+	if err != nil || strings.TrimSpace(message) == "" {
+		return "", false
+	}
+	return message, true
 }
 
 type acpSessionMeta struct {

@@ -33,6 +33,7 @@ import {
   Brain,
   Cpu,
   Palette,
+  Puzzle,
   X,
   TerminalSquare,
 } from "lucide-react";
@@ -53,12 +54,13 @@ import { TranscriptSelectionMenu } from "./components/TranscriptSelectionMenu";
 import { TodoPanel } from "./components/TodoPanel";
 import { ApprovalModal } from "./components/ApprovalModal";
 import { AskCard } from "./components/AskCard";
+import { ExtensionFormDialog } from "./components/ExtensionFormDialog";
 import { UndoRewindBanner } from "./components/UndoRewindBanner";
 import { ClearContextCard } from "./components/ClearContextCard";
 import { RuntimeDecisionCard } from "./components/RuntimeDecisionCard";
 
 /** Footer decision surface kinds. Runtime blockers are explicit recovery choices. */
-type DecisionSurfaceKind = "tool_approval" | "plan_approval" | "ask" | "workspace_conflict" | "mode_jobs" | "close_active" | "clear_context";
+type DecisionSurfaceKind = "tool_approval" | "plan_approval" | "ask" | "extension_form" | "workspace_conflict" | "mode_jobs" | "close_active" | "clear_context";
 import { StatusBar } from "./components/StatusBar";
 import { RemoteHostKeyDialog } from "./components/RemoteHostKeyDialog";
 import { RemoteSecretDialog } from "./components/RemoteSecretDialog";
@@ -1070,6 +1072,8 @@ export default function App() {
     resolveRecovery,
     answerQuestion,
     setControllerMode,
+    dismissExtensionForm,
+    drainExtensionNotifications,
     setCollaborationMode: setControllerCollaborationMode,
     setToolApprovalMode: setControllerToolApprovalMode,
     setComposerProfileForTab: setControllerComposerProfileForTab,
@@ -1138,6 +1142,8 @@ export default function App() {
   const [histView, setHistView] = useState<HistoryViewState | null>(null);
   const paletteOpen = useOverlayStore((s) => s.paletteOpen);
   const setPaletteOpen = useOverlayStore((s) => s.setPaletteOpen);
+  const paletteExtensionActions = useOverlayStore((s) => s.paletteExtensionActions);
+  const setPaletteExtensionActions = useOverlayStore((s) => s.setPaletteExtensionActions);
   const remoteExplorerOpen = useRemoteStore((s) => s.explorerOpen);
   const remoteExplorerHostId = useRemoteStore((s) => s.explorerHostId);
   const remoteHosts = useRemoteStore((s) => s.hosts);
@@ -1755,12 +1761,13 @@ export default function App() {
       return state.approval.tool === "exit_plan_mode" ? "plan_approval" : "tool_approval";
     }
     if (state.ask) return "ask";
+    if (state.extensionForm) return "extension_form";
     if (workspaceConflict) return "workspace_conflict";
     if (pendingModeSwitch) return "mode_jobs";
     if (pendingClose) return "close_active";
     if (clearContextPending) return "clear_context";
     return null;
-  }, [clearContextPending, pendingClose, pendingModeSwitch, state.approval, state.ask, workspaceConflict]);
+  }, [clearContextPending, pendingClose, pendingModeSwitch, state.approval, state.ask, state.extensionForm, workspaceConflict]);
   decisionSurfaceRef.current = decisionSurface;
   useEffect(() => {
     // Close composer menus/popovers when a decision takes over the footer.
@@ -1783,6 +1790,51 @@ export default function App() {
     });
     return () => cancelAnimationFrame(frame);
   }, [activeTabId, closeTransientOverlays, decisionSurface]);
+
+  // Extension form surface (stage 8b2): submit delivers the structured values
+  // to the owning sidecar; cancel reports values{"cancelled": true} over the
+  // same channel. A failed cancel still dismisses — the sidecar that could not
+  // be reached is gone either way.
+  const [extensionFormBusy, setExtensionFormBusy] = useState(false);
+  const submitExtensionForm = useCallback(async (values: Record<string, unknown>) => {
+    const pending = state.extensionForm;
+    if (!pending || !activeTabId || extensionFormBusy) return;
+    setExtensionFormBusy(true);
+    try {
+      await app.SubmitExtensionForm(activeTabId, pending.pluginId, pending.surfaceId, values);
+      dismissExtensionForm();
+    } catch (err) {
+      showToast(err instanceof Error ? err.message : String(err), "error");
+    } finally {
+      setExtensionFormBusy(false);
+    }
+  }, [activeTabId, dismissExtensionForm, extensionFormBusy, showToast, state.extensionForm]);
+  const cancelExtensionForm = useCallback(async () => {
+    const pending = state.extensionForm;
+    if (!pending || extensionFormBusy) return;
+    setExtensionFormBusy(true);
+    try {
+      if (activeTabId) {
+        await app.SubmitExtensionForm(activeTabId, pending.pluginId, pending.surfaceId, { cancelled: true }).catch(() => {});
+      }
+      dismissExtensionForm();
+    } finally {
+      setExtensionFormBusy(false);
+    }
+  }, [activeTabId, dismissExtensionForm, extensionFormBusy, state.extensionForm]);
+
+  // Extension notifications queue in per-tab state (the reducer cannot reach
+  // the toast context); drain the active tab's queue into toasts here.
+  useEffect(() => {
+    const pending = state.extensionNotifications;
+    if (!pending || pending.length === 0) return;
+    for (const notification of pending) {
+      const level = notification.severity === "error" ? "error" : notification.severity === "warn" ? "warn" : "info";
+      showToast(notification.body ? `${notification.title} — ${notification.body}` : notification.title, level);
+    }
+    drainExtensionNotifications();
+  }, [state.extensionNotifications, showToast, drainExtensionNotifications]);
+  const extensionStatusList = useMemo(() => Object.values(state.extensionStatuses ?? {}), [state.extensionStatuses]);
   const patchActiveComposerProfile = useCallback(
     (patch: Partial<Omit<ComposerProfile, "pending">>, pendingFields: ComposerProfileField[]) => {
       if (!activeTabId) return;
@@ -3802,12 +3854,13 @@ export default function App() {
 
   // Command palette: ⌘K / Ctrl+K opens a fuzzy navigator over commands and
   // recent sessions. Sessions are snapshotted on open so the list is stable
-  // while the palette is up.
+  // while the palette is up; extension actions follow the same snapshot rule.
   const openPalette = useCallback(async () => {
     closeTransientOverlays();
     setPaletteOpen(true);
     setPaletteSessions(await listSessions().catch(() => []));
-  }, [closeTransientOverlays, listSessions]);
+    setPaletteExtensionActions(await app.ExtensionActions(activeTabIdRef.current ?? "").catch(() => []));
+  }, [closeTransientOverlays, listSessions, setPaletteExtensionActions]);
   useGlobalShortcut("commandPalette.open", () => {
     setPaletteOpen((current) => {
       if (!current) void openPalette();
@@ -3928,8 +3981,27 @@ export default function App() {
         },
       };
     });
-    return [...cmds, ...remoteItems, ...sessionItems];
-  }, [t, paletteSessions, remoteHosts, remoteStatuses, activeTab?.id, handleNewTab, openTrash, onResumeSession, openRemoteWorkspaceFromStatus, connectAndOpenRemoteWorkspace, openRightDockMode, showToast]);
+    const extensionItems: PaletteItem[] = paletteExtensionActions.map((action) => ({
+      id: `ext-${action.slash}`,
+      group: t("palette.group.extensions"),
+      title: action.description || action.slash,
+      hint: action.slash,
+      icon: <Puzzle size={15} />,
+      keywords: ["extension", "扩展", action.plugin, action.action, action.slash],
+      run: () => {
+        const tabID = activeTab?.id;
+        if (!tabID) return;
+        // The extension's result message is user-facing feedback; only hard
+        // failures need an error toast.
+        void app.InvokeExtensionAction(tabID, action.slash, {})
+          .then((message) => {
+            if (message) showToast(message, "info");
+          })
+          .catch((err) => showToast(err instanceof Error ? err.message : String(err), "error"));
+      },
+    }));
+    return [...cmds, ...extensionItems, ...remoteItems, ...sessionItems];
+  }, [t, paletteSessions, paletteExtensionActions, remoteHosts, remoteStatuses, activeTab?.id, handleNewTab, openTrash, onResumeSession, openRemoteWorkspaceFromStatus, connectAndOpenRemoteWorkspace, openRightDockMode, showToast]);
   // Delete / rename act on disk, then re-fetch so the panel reflects the change.
   const onDeleteSession = useCallback(
     async (path: string) => {
@@ -4854,6 +4926,16 @@ export default function App() {
                 }}
               />
               )
+            : decisionSurface === "extension_form"
+              ? state.extensionForm && (
+              <ExtensionFormDialog
+                key={`${activeTabId ?? ""}:${state.extensionForm.pluginId}:${state.extensionForm.surfaceId}`}
+                surface={state.extensionForm}
+                busy={extensionFormBusy}
+                onSubmit={(values) => void submitExtensionForm(values)}
+                onCancel={() => void cancelExtensionForm()}
+              />
+              )
             : decisionSurface === "workspace_conflict" && workspaceConflict ? (
               <RuntimeDecisionCard
                 id="workspace-conflict"
@@ -5197,6 +5279,7 @@ export default function App() {
             modelLabel={state.meta?.label}
             labelStyle={statusBarStyle}
             items={statusBarItems}
+            extensionStatuses={extensionStatusList}
             workspacePath={state.meta?.workspacePath || state.meta?.workspaceRoot || state.meta?.cwd}
             workspaceName={state.meta?.workspaceName}
             gitBranch={state.meta?.gitBranch}

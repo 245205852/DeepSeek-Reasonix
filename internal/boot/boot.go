@@ -32,6 +32,7 @@ import (
 	"reasonix/internal/extension/dispatch"
 	"reasonix/internal/extension/protocol"
 	"reasonix/internal/extension/sidecar"
+	"reasonix/internal/extension/uihub"
 	"reasonix/internal/guardian"
 	"reasonix/internal/history"
 	"reasonix/internal/hook"
@@ -1797,6 +1798,21 @@ func build(ctx context.Context, opts Options) (*BuildResult, error) {
 	if sessionID == "" {
 		sessionID = fmt.Sprintf("boot-%d", generation)
 	}
+	// Stage 8a: the host extension UI hub serves every sidecar's host/ui/*
+	// calls for this generation — publications become frontend events through
+	// the controller sink, blocking prompts ride the controller's Ask
+	// channel. It is bound to the same session ID and generation the sidecar
+	// handshake receives, so a stale sidecar from an older generation can
+	// never overwrite this one's surfaces.
+	extUIHub := uihub.New(uihub.Options{
+		SessionID:  sessionID,
+		Generation: generation,
+		Emit:       ctrl.EmitExtensionEvent,
+		Request:    uihub.AskRequestFunc(ctrl.Ask),
+		Warn: func(msg string) {
+			slog.Warn("boot: extension UI hub: "+msg, "root", root)
+		},
+	})
 	snap, runtimeSet, extensionMgr, extensionDispatcher, snapErr := assembleLegacySnapshot(ctx, legacyAssembly{
 		systemPrompt: sysPrompt,
 		registry:     reg,
@@ -1808,6 +1824,7 @@ func build(ctx context.Context, opts Options) (*BuildResult, error) {
 	}, generation, extensionBoot{
 		home:    config.ReasonixHomeDir(),
 		session: protocol.SessionContext{SessionID: sessionID, WorkspaceRoot: root, Generation: generation},
+		ui:      extUIHub,
 		onWarning: func(msg string) {
 			slog.Warn("boot: extension runtime: "+msg, "root", root)
 			sink.Emit(event.Event{Kind: event.Notice, Level: event.LevelWarn, Text: msg})
@@ -1858,6 +1875,14 @@ func build(ctx context.Context, opts Options) (*BuildResult, error) {
 	// controller before the build returns. Nil (no sidecars, or a degraded
 	// snapshot) leaves the controller byte-identical to the pre-dispatch path.
 	ctrl.SetExtensions(extensionDispatcher)
+	// Stage 8a: the UI hub only earns its place on the controller when
+	// sidecars actually started — with none, the hub is dropped here and the
+	// session behaves exactly as if it never existed.
+	if extensionMgr == nil {
+		extUIHub = nil
+	} else {
+		ctrl.SetExtensionUI(extUIHub)
+	}
 	// Stage 6b2 system-prompt handoff: the 6b1 strategy pass may have replaced
 	// the prompt while the snapshot was freezing, but the executor session was
 	// built earlier with the host-composed prompt. Swap in a fresh session
@@ -1868,7 +1893,7 @@ func build(ctx context.Context, opts Options) (*BuildResult, error) {
 			ctrl.ApplyExtensionSystemPrompt(final)
 		}
 	}
-	return &BuildResult{Controller: ctrl, Snapshot: snap, Runtime: runtimeSet, Extensions: extensionMgr, Dispatcher: extensionDispatcher, ProviderResolver: providerResolver}, nil
+	return &BuildResult{Controller: ctrl, Snapshot: snap, Runtime: runtimeSet, Extensions: extensionMgr, Dispatcher: extensionDispatcher, ExtensionUI: extUIHub, ProviderResolver: providerResolver}, nil
 }
 
 // effectivePlannerModel centralizes planner precedence. The explicit ACP hard

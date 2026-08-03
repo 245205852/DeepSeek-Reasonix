@@ -41,6 +41,7 @@ import (
 	"reasonix/internal/evidence"
 	"reasonix/internal/extension"
 	"reasonix/internal/extension/dispatch"
+	"reasonix/internal/extension/uihub"
 	"reasonix/internal/guardian"
 	"reasonix/internal/hook"
 	"reasonix/internal/i18n"
@@ -161,6 +162,10 @@ type Controller struct {
 	// starts serving (Options.Extensions or SetExtensions) and never swapped
 	// afterwards, so wiring points read it without locking.
 	extensions *dispatch.Dispatcher
+	// extensionUI is the host extension UI hub for this controller generation
+	// (stage 8a), or nil when no v1 runtime packages started. Installed via
+	// SetExtensionUI before serving and never swapped; readers take c.mu.
+	extensionUI *uihub.Hub
 
 	// Capability routing (Delivery hybrid route + dual-model Planner proxy).
 	// Not part of the provider-visible prefix; only seeds the turn-scoped ledger

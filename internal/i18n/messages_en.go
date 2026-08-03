@@ -153,6 +153,9 @@ var English = Messages{
 	CompactionAuto:    "auto",
 	CompactionManual:  "manual",
 
+	ExtFormFieldsHint: "fields are collected through the usual prompts",
+	ExtRunActionFmt:   "run %s",
+
 	SlashCompactDone:   "session compacted — older middle replaced by a summary, recent turns kept",
 	SlashCompactFailed: "compaction failed",
 	SlashNewDone:       "new session started — previous transcript saved",

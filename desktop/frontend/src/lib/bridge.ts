@@ -50,6 +50,7 @@ import type {
   DeliveryWorktreeOpenResult,
   DroppedItem,
   EffortInfo,
+  ExtensionActionView,
   FilePreview,
   ExternalOpenersView,
   HistoryMessage,
@@ -298,6 +299,12 @@ export interface AppBindings {
   SetPluginEnabled(name: string, enabled: boolean): Promise<void>;
   UpdatePlugin(name: string): Promise<string>;
   PluginDoctor(name: string): Promise<PluginView>;
+  // Extension UI (stage 8b2): enumerate handshake-declared extension actions
+  // for the command palette, invoke one, and deliver a form surface's values
+  // (or {cancelled: true} on dismissal) back to the owning sidecar.
+  ExtensionActions(tabID: string): Promise<ExtensionActionView[]>;
+  InvokeExtensionAction(tabID: string, name: string, args: Record<string, string>): Promise<string>;
+  SubmitExtensionForm(tabID: string, pluginID: string, surfaceID: string, values: Record<string, unknown>): Promise<void>;
   AddMCPServer(input: MCPServerInput): Promise<number>;
   InstallMCPServer(input: MCPServerInput): Promise<MCPInstallResult>;
   UpdateMCPServer(name: string, input: MCPServerInput): Promise<void>;
@@ -5064,6 +5071,13 @@ function makeMockApp(): AppBindings {
     async WorkbenchPendingProviderTrust() {
       return null;
     },
+    async ExtensionActions() {
+      return [];
+    },
+    async InvokeExtensionAction() {
+      return "";
+    },
+    async SubmitExtensionForm() {},
   };
 }
 

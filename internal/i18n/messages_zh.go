@@ -154,6 +154,9 @@ var Chinese = Messages{
 	CompactionAuto:    "自动",
 	CompactionManual:  "手动",
 
+	ExtFormFieldsHint: "字段将通过逐项提问收集",
+	ExtRunActionFmt:   "运行 %s",
+
 	SlashCompactDone:   "已压缩 — 旧的中段换成一段摘要，最近几轮保留原样",
 	SlashCompactFailed: "压缩失败",
 	SlashNewDone:       "已开启新会话 — 之前的对话已存档",

@@ -57,18 +57,33 @@ type Manager struct {
 // everything started so far is shut down and the error is a
 // *RequiredStartError. An optional package's failure is collected as a
 // warning string and startup continues.
+//
+// The ui handler serves every client's host/ui/* calls. A handler that also
+// implements UIBinder (the stage-8 UI hub) receives a per-plugin binding and
+// crash notifications instead of sharing one unbound handler.
 func StartPackages(ctx context.Context, home string, sessionCtx protocol.SessionContext, ui UIHandler) (*Manager, []string, error) {
 	m := &Manager{clients: make(map[string]*Client)}
 	packages, warnings := LoadRuntimePackages(home)
+	var binder UIBinder
+	if b, ok := ui.(UIBinder); ok {
+		binder = b
+	}
 	for _, item := range packages {
 		pluginID := item.Installed.Name
+		clientUI := ui
+		if binder != nil {
+			clientUI = binder.HandlerFor(pluginID)
+		}
 		client, err := StartClient(ctx, ClientOptions{
 			Package:   item.Package,
 			Installed: item.Installed,
 			Session:   sessionCtx,
-			UI:        ui,
+			UI:        clientUI,
 			OnCrash: func(err error) {
 				slog.Warn("extension sidecar crashed", "plugin", pluginID, "err", err)
+				if binder != nil {
+					binder.ClientCrashed(pluginID)
+				}
 			},
 		})
 		if err != nil {
