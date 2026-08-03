@@ -12,10 +12,11 @@ import {
   providerBaseURLFromChatURL,
   providerChatURLPreview,
   providerEditorEffectiveKind,
+  normalizeProviderView,
 } from "../components/SettingsPanel";
 import { LocaleProvider } from "../lib/i18n";
 import type { AppBindings } from "../lib/bridge";
-import type { SettingsView } from "../lib/types";
+import type { ProviderView, SettingsView } from "../lib/types";
 import {
   applyTypographyPreferences,
   createDefaultTypographyPreferences,
@@ -150,6 +151,13 @@ function baseSettings(displayMode: "standard" | "compact" = "standard"): Setting
 }
 
 console.log("\nsettings refresh snapshot");
+
+const nullableProvider = normalizeProviderView({
+  name: null,
+  baseUrl: null,
+} as unknown as ProviderView);
+eq(nullableProvider.name, "", "provider snapshots normalize a null name at the settings boundary");
+eq(nullableProvider.baseUrl, "", "provider snapshots normalize a null base URL at the settings boundary");
 
 eq(providerEditorEffectiveKind(true, "anthropic", ["anthropic", "openai"]), "anthropic", "new custom providers keep the selected Anthropic-compatible kind");
 eq(providerEditorEffectiveKind(false, "anthropic", ["anthropic", "openai"]), "anthropic", "existing providers preserve their stored kind");
