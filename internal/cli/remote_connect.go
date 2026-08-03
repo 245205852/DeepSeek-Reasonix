@@ -139,8 +139,8 @@ func remoteConnectCLI(args []string, version string) int {
 	noServe := fs.Bool("no-serve", false, "only establish forwards; do not bootstrap serve")
 	open := fs.Bool("open", openAlias, "print/open the serve URL")
 	forwardOnly := fs.Bool("forward-only", false, "apply configured forwards only; no serve")
-	if err := fs.Parse(args[1:]); err != nil {
-		return 2
+	if code, ok := parseCommandFlags(fs, args[1:]); !ok {
+		return code
 	}
 	rest := fs.Args()
 	if len(rest) != 1 {
@@ -307,8 +307,8 @@ func remoteServeCLI(args []string, version string) int {
 	fs := newFlagSet("remote serve")
 	workspace := fs.String("workspace", "", "remote workspace directory")
 	n := fs.Int("n", 200, "log lines to show (logs)")
-	if err := fs.Parse(args[2:]); err != nil {
-		return 2
+	if code, ok := parseCommandFlags(fs, args[2:]); !ok {
+		return code
 	}
 	name := args[1]
 	cfg, err := config.Load()
