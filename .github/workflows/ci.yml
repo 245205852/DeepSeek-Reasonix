@@ -152,6 +152,12 @@ jobs:
           WINDOWS_SANDBOX_WAIT_MS: "20000"
         run: go test -p 4 -timeout=3m ./...
 
+      - name: test (Scoop desktop launch)
+        if: env.RUN_STEPS == 'true' && runner.os == 'Windows'
+        timeout-minutes: 10
+        shell: powershell
+        run: .\scripts\test-scoop-desktop-launch.ps1
+
   race:
     needs: changes
     if: always() && (github.event_name != 'pull_request' || needs.changes.outputs.code != 'false')
