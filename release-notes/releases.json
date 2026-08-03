@@ -6,12 +6,12 @@
       "date": "2026-08-03",
       "channel": "stable",
       "title": {
-        "en": "Safer reasoning and a reliable Windows launch path",
-        "zh": "更安全的推理与可靠的 Windows 启动链路"
+        "en": "Reasonix v1.19.4 — Safer Reasoning and Reliable Windows Launch",
+        "zh": "Reasonix v1.19.4 — 更安全的推理与可靠的 Windows 启动"
       },
       "summary": {
-        "en": "This release brings important stability and usability improvements, including a reasoning usage guard, silent recovery of missing tool-call reasoning, faster crash dashboard queries, a provider model picker crash fix, Windows launcher junction resolution, workspace tab alignment, and a more compact Creation toolbar.",
-        "zh": "此版本带来了重要的稳定性和可用性改进，包括推理消耗保护、工具调用推理缺失的静默恢复、更快的崩溃仪表板查询、提供程序模型选择器崩溃修复、Windows 启动器目录联接解析、工作区标签页对齐以及更紧凑的创作工具栏。"
+        "en": "This release brings critical stability and usability fixes, including reasoning consumption protection to prevent runaway tokens, silent recovery of missing tool-call reasoning, significantly faster crash dashboard and preferences, provider model picker crash fix, Windows launcher directory junction resolution, and workspace tab alignment.",
+        "zh": "此版本带来了重要的稳定性和可用性修复，包括推理消耗保护以阻止令牌失控、工具调用推理缺失的静默恢复、显著加速的崩溃仪表板和偏好设置、提供程序模型选择器崩溃修复、Windows 启动器目录联接解析以及工作区标签页对齐。"
       },
       "surfaces": [
         "desktop"
@@ -23,10 +23,10 @@
             "zh": "Reasonix 规范文档"
           },
           "body": {
-            "en": "Refer to the Reasonix spec for protocol and feature details.",
+            "en": "Refer to the Reasonix specification for detailed protocol and features.",
             "zh": "请参阅 Reasonix 规范文档以获取协议和功能的详细信息。"
           },
-          "href": "https://github.com/esengine/DeepSeek-Reasonix/blob/c9da18452892b3e66b8a5a2552721c6b36318997/docs/SPEC.md"
+          "href": "https://github.com/esengine/DeepSeek-Reasonix/blob/26e004f4bad2a51b635793dc7f0531222c6700f3/docs/SPEC.md"
         },
         {
           "title": {
@@ -34,21 +34,21 @@
             "zh": "Reasonix 规范文档（中文）"
           },
           "body": {
-            "en": "Refer to the Chinese version of the Reasonix spec for protocol and feature details.",
-            "zh": "请参阅 Reasonix 规范文档的中文版本以获取协议和功能的详细信息。"
+            "en": "Refer to the Chinese version of the Reasonix specification.",
+            "zh": "请参阅 Reasonix 规范文档的中文版本。"
           },
-          "href": "https://github.com/esengine/DeepSeek-Reasonix/blob/c9da18452892b3e66b8a5a2552721c6b36318997/docs/SPEC.zh-CN.md"
+          "href": "https://github.com/esengine/DeepSeek-Reasonix/blob/26e004f4bad2a51b635793dc7f0531222c6700f3/docs/SPEC.zh-CN.md"
         }
       ],
       "highlights": [
         {
           "kind": "new",
           "title": {
-            "en": "Reasoning consumption protection",
+            "en": "Reasoning Consumption Protection",
             "zh": "推理消耗保护"
           },
           "body": {
-            "en": "Introduced a client-side 128KB reasoning guard and configurable per-model output token budgets. Official DeepSeek endpoints default to a 32K total output budget. Client now estimates token usage when stream is cancelled before final usage record arrives, preventing token runaway and making costs more predictable.",
+            "en": "Introduced a client-side 128KB reasoning guard and configurable per-model output token budget. Official DeepSeek endpoints default to a 32K total output budget. When a stream is cancelled before final usage records arrive, the client now estimates token usage, preventing runaway tokens and improving cost predictability.",
             "zh": "引入了客户端128KB推理守卫和可配置的每模型输出令牌预算。官方DeepSeek端点默认应用32K总输出预算。当流在最终使用记录到达前被取消时，客户端现在会估算令牌使用量，防止令牌失控并使成本更可预测。"
           },
           "refs": [
@@ -58,12 +58,12 @@
         {
           "kind": "fixed",
           "title": {
-            "en": "Silent recovery of missing tool-call reasoning",
+            "en": "Silent Recovery for Missing Tool-Call Reasoning",
             "zh": "静默恢复工具调用推理缺失"
           },
           "body": {
-            "en": "Agent now silently recovers missing tool-call reasoning by replaying the request before tool execution, removing user-visible warning and improving reliability.",
-            "zh": "代理现在在工具执行前静默重试请求以恢复缺失的工具调用推理，移除了用户可见的警告，提高了可靠性。"
+            "en": "Removed the user-visible warning for missing reasoning content; the agent now silently retries the request before tool execution, reducing interference and improving agent reliability.",
+            "zh": "移除了推理内容缺失的用户可见警告；代理现在在工具执行前静默重试请求，减少了干扰性警告并提高了代理可靠性。"
           },
           "refs": [
             7259
@@ -72,12 +72,12 @@
         {
           "kind": "improved",
           "title": {
-            "en": "Accelerated crash dashboard and preferences",
+            "en": "Accelerated Crash Dashboard and Preferences",
             "zh": "加速的崩溃仪表板与偏好设置"
           },
           "body": {
-            "en": "Precomputed the 30-day preferences deduplication, making that view load in 68ms instead of the 5.6s required by the live 7-day query. Dropped redundant database indexes to speed up dashboard aggregate queries; homepage avatars were also optimized to WebP for smaller downloads.",
-            "zh": "预计算了 30 天偏好去重，使该视图加载仅需 68 毫秒，而实时计算的 7 天视图需要 5.6 秒。删除了冗余数据库索引以加速仪表板聚合查询；首页头像也优化为 WebP 格式，以减小下载量。"
+            "en": "Precomputed 30-day preference deduplication, making that view load in only 68ms compared to 5.6s for the real-time 7-day view. Removed redundant database indexes to speed up dashboard aggregation queries; homepage avatars also optimized as WebP for smaller downloads.",
+            "zh": "预计算了30天偏好去重，使该视图加载仅需68毫秒，而实时计算的7天视图需要5.6秒。删除了冗余数据库索引以加速仪表板聚合查询；首页头像也优化为WebP格式，以减小下载量。"
           },
           "refs": [
             7279,
@@ -89,12 +89,12 @@
         {
           "kind": "fixed",
           "title": {
-            "en": "Provider model picker no longer crashes",
+            "en": "Provider Model Picker No Longer Crashes",
             "zh": "提供程序模型选择器不再崩溃"
           },
           "body": {
-            "en": "Fixed a React Hook ordering issue that caused the provider model picker to crash when the model list loaded asynchronously from empty to populated.",
-            "zh": "修复了React Hook顺序问题，该问题导致提供程序模型选择器在异步加载模型列表时崩溃。"
+            "en": "Fixed a React Hook order issue that caused a crash when the model list asynchronously loaded. The picker now safely handles the transition from empty to populated.",
+            "zh": "修复了React Hook顺序问题，该问题导致提供程序模型选择器在异步加载模型列表时崩溃。现在选择器能安全地处理从空到有内容的过渡。"
           },
           "refs": [
             7195
@@ -103,11 +103,11 @@
         {
           "kind": "fixed",
           "title": {
-            "en": "Windows launcher resolves directory junctions",
+            "en": "Windows Launcher Resolves Directory Junctions",
             "zh": "Windows 启动器解析目录联接"
           },
           "body": {
-            "en": "Fixed Windows launcher to correctly resolve Scoop's 'current' directory junction, preventing launch failures when installed via Scoop.",
+            "en": "Fixed the Windows launcher to correctly resolve directory junctions like Scoop's 'current', preventing launch failures when installed through Scoop.",
             "zh": "修复了Windows启动器以正确解析Scoop的'current'目录联接，防止通过Scoop安装时启动失败。"
           },
           "refs": [
@@ -117,11 +117,11 @@
         {
           "kind": "fixed",
           "title": {
-            "en": "Unified Windows workspace tabs",
+            "en": "Unified Windows Workspace Tab Bar",
             "zh": "统一 Windows 工作区标签栏"
           },
           "body": {
-            "en": "Workspace sidebar now shows only the four intended views (Overview, Files, Changes, Remote), removed duplicate Terminal tab, and correctly placed Windows caption controls.",
+            "en": "Workspace sidebar now shows only the four intended views (Overview, Files, Changes, Remote), removes duplicate terminal tab, and correctly positions Windows caption controls.",
             "zh": "工作区侧边栏现在仅显示四个预期视图（概览、文件、变更、远程），移除了重复的终端标签页，并正确放置了Windows标题控件。"
           },
           "refs": [
@@ -130,111 +130,29 @@
         }
       ],
       "changes": {
-        "new": [
-          {
-            "title": {
-              "en": "Reasoning consumption protection",
-              "zh": "推理消耗保护"
-            },
-            "body": {
-              "en": "Introduced client-side reasoning guard and configurable per-model output token budgets to prevent runaway token usage.",
-              "zh": "引入了客户端推理守卫和可配置的每模型输出令牌预算，以防止令牌使用失控。"
-            },
-            "refs": [
-              7186
-            ]
-          }
-        ],
+        "new": [],
         "improved": [
           {
             "title": {
-              "en": "Accelerated crash dashboard and preferences",
-              "zh": "加速的崩溃仪表板与偏好设置"
-            },
-            "body": {
-              "en": "Precomputed 30-day deduplication and removed redundant indexes significantly sped up dashboard queries. Avatars optimized to WebP.",
-              "zh": "预计算30天去重和删除冗余索引显著加速了仪表板查询。头像优化为WebP。"
-            },
-            "refs": [
-              7279,
-              7284,
-              7258,
-              7266
-            ]
-          },
-          {
-            "title": {
-              "en": "Creation UI polish",
+              "en": "Creation Interface Refinements",
               "zh": "创作界面优化"
             },
             "body": {
-              "en": "Simplified input mode pill to text-only in Creation style and moved folder opener to the front of the toolbar for better ergonomics.",
-              "zh": "在创作风格中将输入模式 pill 简化为纯文字，并将文件夹打开器移至工具栏前端以改善操作体验。"
+              "en": "Simplified the input mode pill and moved the folder opener to the front of the toolbar in Creation style, resulting in a more compact and cohesive layout. Classic and Workbench styles remain unchanged.",
+              "zh": "精简了创作风格下的输入模式pill，并将文件夹打开器移至工具栏最前，布局更紧凑协调。经典版和工作台风格保持不变。"
             },
             "refs": [
               7276
             ]
           }
         ],
-        "fixed": [
-          {
-            "title": {
-              "en": "Silent recovery of missing tool-call reasoning",
-              "zh": "静默恢复工具调用推理缺失"
-            },
-            "body": {
-              "en": "Agent silently retries requests when tool-call reasoning is missing, avoiding user-visible warnings.",
-              "zh": "代理在工具调用推理缺失时静默重试请求，避免用户可见的警告。"
-            },
-            "refs": [
-              7259
-            ]
-          },
-          {
-            "title": {
-              "en": "Provider model picker crash",
-              "zh": "提供程序模型选择器崩溃"
-            },
-            "body": {
-              "en": "Fixed React Hook ordering to prevent crash when model list loads asynchronously.",
-              "zh": "修复了React Hook顺序，防止异步加载模型列表时崩溃。"
-            },
-            "refs": [
-              7195
-            ]
-          },
-          {
-            "title": {
-              "en": "Windows launcher junction resolution",
-              "zh": "Windows 启动器目录联接解析"
-            },
-            "body": {
-              "en": "Fixed launcher to resolve Scoop 'current' junction, enabling launches from directory junctions.",
-              "zh": "修复了启动器以解析Scoop的'current'联接，使通过目录联接的安装可以正常启动。"
-            },
-            "refs": [
-              7275
-            ]
-          },
-          {
-            "title": {
-              "en": "Windows workspace tab alignment",
-              "zh": "Windows 工作区标签页对齐"
-            },
-            "body": {
-              "en": "Unified workspace sidebar to show only intended views and correctly placed caption controls.",
-              "zh": "统一了工作区侧边栏，仅显示预期视图并正确放置了标题控件。"
-            },
-            "refs": [
-              7270
-            ]
-          }
-        ]
+        "fixed": []
       },
       "upgrade": [],
       "risks": [],
       "contributors": [
         "Li-Charles-One",
+        "github-actions[bot]",
         "SivanCola",
         "esengine",
         "paradoxSCH"
