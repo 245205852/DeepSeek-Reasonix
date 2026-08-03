@@ -1645,8 +1645,8 @@ func bashMayMutate(command string) bool {
 		if bashSegmentIsVerification(fields) {
 			continue
 		}
-		base, sub, readOnly := shellsafe.CommandIsReadOnly(normalized)
-		if !readOnly || bashReadOnlyCommandWrites(base, sub, fields) {
+		base, sub, workspaceNonMutating := shellsafe.CommandIsWorkspaceNonMutating(normalized)
+		if !workspaceNonMutating || bashReadOnlyCommandWrites(base, sub, fields) {
 			return true
 		}
 	}

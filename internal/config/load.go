@@ -46,9 +46,6 @@ func LoadForRootReadOnly(root string) (*Config, error) {
 // Host-owned features that may execute a configured binary should use this
 // instead of LoadForRoot so an untrusted checkout cannot choose the process.
 func LoadUserConfigReadOnly() (*Config, error) {
-	if SafeModeRequested() {
-		return loadSafeModeForRoot("."), nil
-	}
 	cfg := Default()
 	if path := userConfigLoadPath(); path != "" {
 		if err := mergeFile(cfg, path); err != nil {
@@ -61,9 +58,6 @@ func LoadUserConfigReadOnly() (*Config, error) {
 
 func loadForRoot(root string, migrateOnDisk bool) (*Config, error) {
 	root = resolveRoot(root)
-	if SafeModeRequested() {
-		return loadSafeModeForRoot(root), nil
-	}
 	expansionEnv := loadDotEnvForRoot(root)
 	cfg := Default()
 	cfg.setExpansionEnv(expansionEnv)
@@ -92,9 +86,27 @@ func loadForRoot(root string, migrateOnDisk bool) (*Config, error) {
 	if uc := userConfigLoadPath(); uc != "" {
 		tomlSources = append(tomlSources, uc)
 		if err := mergeTOML(cfg, uc); err != nil {
-			return nil, err
+			// Never rewrite the broken original file. Prefer the last verified
+			// snapshot in memory, then built-in defaults, and keep loading so
+			// the rest of the app stays usable.
+			lkgCfg := Default()
+			lkgCfg.setExpansionEnv(expansionEnv)
+			lkgCfg.CredentialsStore = credentialsStoreMode()
+			if lkgErr := loadLastKnownGoodUserConfig(lkgCfg); lkgErr == nil {
+				*cfg = *lkgCfg
+				cfg.addLoadWarning(fmt.Sprintf(
+					"user config %s is invalid (%v); using last-known-good snapshot in memory without modifying the original file",
+					uc, err,
+				))
+			} else {
+				cfg.addLoadWarning(fmt.Sprintf(
+					"user config %s is invalid (%v); using built-in defaults in memory without modifying the original file",
+					uc, err,
+				))
+			}
+		} else {
+			userDefaultModelExplicit = tomlFileDefinesKey(uc, "default_model")
 		}
-		userDefaultModelExplicit = tomlFileDefinesKey(uc, "default_model")
 	}
 	userDefaultModel := cfg.DefaultModel
 	globalCLI := cfg.CLI
@@ -106,7 +118,15 @@ func loadForRoot(root string, migrateOnDisk bool) (*Config, error) {
 
 	tomlSources = append(tomlSources, projectTOML)
 	if err := mergeTOML(cfg, projectTOML); err != nil {
-		return nil, err
+		// Project config damage is isolated to this workspace: continue with
+		// user/global config so other tabs stay available.
+		cfg.addLoadWarning(fmt.Sprintf(
+			"project config %s is invalid (%v); ignored for this workspace",
+			projectTOML, err,
+		))
+		// Drop the project path from later multi-file merges so a broken TOML
+		// cannot fail plugin/provider re-merges.
+		tomlSources = tomlSources[:len(tomlSources)-1]
 	}
 	// The native CLI update channel controls the one user-installed binary.
 	// A repository-local reasonix.toml must never switch that global choice.
@@ -132,18 +152,19 @@ func loadForRoot(root string, migrateOnDisk bool) (*Config, error) {
 	// mergeTOMLPlugins only reads files; it does not run on-disk migrations.
 	plugins, err := mergeTOMLPlugins(tomlSources)
 	if err != nil {
-		return nil, err
+		cfg.addLoadWarning(fmt.Sprintf("plugin configuration could not be merged (%v); continuing without those entries", err))
+	} else {
+		cfg.Plugins = plugins
 	}
-	cfg.Plugins = plugins
 	if providers, providerSources, shadowedProjectProviders, ok, err := mergeTOMLProviders(tomlSources); err != nil {
-		return nil, err
+		cfg.addLoadWarning(fmt.Sprintf("provider configuration could not be merged (%v); keeping providers already loaded", err))
 	} else if ok {
 		cfg.Providers = providers
 		cfg.providerSources = providerSources
 		cfg.shadowedProjectProviders = shadowedProjectProviders
 	}
 	if access, ok, err := mergeTOMLProviderAccess(tomlSources); err != nil {
-		return nil, err
+		cfg.addLoadWarning(fmt.Sprintf("provider access configuration could not be merged (%v)", err))
 	} else if ok {
 		cfg.Desktop.ProviderAccess = access
 	}
@@ -158,9 +179,10 @@ func loadForRoot(root string, migrateOnDisk bool) (*Config, error) {
 	}
 	entries, err := loadMCPJSON(mcpFile)
 	if err != nil {
-		return nil, err
+		cfg.addLoadWarning(fmt.Sprintf("project .mcp.json is invalid (%v); MCP servers from that file are ignored", err))
+	} else {
+		cfg.mergeMCPJSON(entries)
 	}
-	cfg.mergeMCPJSON(entries)
 
 	// Lowest priority before the one-time v1.9.1 MCP migration: the v0.x
 	// ~/.reasonix/config.json's mcpServers. Once the migration marker exists, the
@@ -197,21 +219,13 @@ func loadForRoot(root string, migrateOnDisk bool) (*Config, error) {
 	return cfg, nil
 }
 
-// SafeModeRequested reports whether this process should ignore user/project
-// runtime extensions and boot from built-in defaults. The environment switch is
-// intentionally process-local; it never rewrites user configuration.
-func SafeModeRequested() bool {
-	switch strings.ToLower(strings.TrimSpace(os.Getenv("REASONIX_SAFE_MODE"))) {
-	case "1", "true", "yes", "on":
-		return true
-	default:
-		return false
-	}
-}
-
-func loadSafeModeForRoot(root string) *Config {
+// LoadBuiltinDefaultsForRoot returns a read-only built-in-only configuration
+// without reading or migrating user/project TOML. Diagnostic and recovery tools
+// use it when configuration is malformed; it does not put the process into any
+// degraded product "mode". Provider credentials still resolve only from
+// Reasonix's global credential store.
+func LoadBuiltinDefaultsForRoot(root string) *Config {
 	cfg := Default()
-	cfg.safeMode = true
 	cfg.Plugins = nil
 	cfg.Skills = SkillsConfig{}
 	cfg.Bot.Enabled = false
@@ -219,29 +233,17 @@ func loadSafeModeForRoot(root string) *Config {
 	cfg.Bot.Routes = nil
 	cfg.Statusline.Command = ""
 	cfg.LSP.Enabled = false
-	cfg.Desktop.CheckUpdates = safeModeBoolPtr(false)
-	// A Safe Mode boot never reads the user's config, so it cannot see (and
-	// must not override) a telemetry/metrics opt-out recorded there. Force
-	// every reporting path off instead of inheriting the enabled defaults.
-	cfg.Desktop.Telemetry = safeModeBoolPtr(false)
-	cfg.Desktop.Metrics = safeModeBoolPtr(false)
-	cfg.Telemetry.CLIMetrics = "off"
 	cfg.setExpansionEnv(nil)
 	cfg.CredentialsStore = credentialsStoreMode()
 	resolveProviderCredentialsForRoot(root, cfg)
 	return cfg
 }
 
-// LoadRecoveryDefaultsForRoot returns the same built-in-only configuration used
-// by Safe Mode without reading or migrating user/project TOML. Recovery tools use
-// it to reach an explicitly selected built-in provider when configuration is
-// malformed; provider credentials still resolve only from Reasonix's global
-// credential store.
+// LoadRecoveryDefaultsForRoot is retained as an alias of LoadBuiltinDefaultsForRoot
+// for older recovery call sites.
 func LoadRecoveryDefaultsForRoot(root string) *Config {
-	return loadSafeModeForRoot(root)
+	return LoadBuiltinDefaultsForRoot(root)
 }
-
-func safeModeBoolPtr(v bool) *bool { return &v }
 
 func (c *Config) setExpansionEnv(env map[string]string) {
 	if c == nil {
@@ -304,6 +306,14 @@ func tomlFileDefinesKey(path string, key ...string) bool {
 		return false
 	}
 	return meta.IsDefined(key...)
+}
+
+// ConfigFileDefinesCompactRatio reports whether path explicitly overrides the
+// automatic compaction threshold. It is used by config surfaces that need to
+// explain whether the effective value came from defaults, user config, or the
+// current project.
+func ConfigFileDefinesCompactRatio(path string) bool {
+	return tomlFileDefinesKey(path, "agent", "compact_ratio")
 }
 
 // backfillDeepSeekPro restores deepseek-pro for configs the pre-fix setup wizard
@@ -743,6 +753,14 @@ func mergeFile(cfg *Config, path string) error {
 	}
 	if !exists {
 		return nil
+	}
+	// BurntSushi/toml decodes struct fields incrementally and can leave earlier
+	// fields mutated when a later value has the wrong type. Validate the complete
+	// file against a disposable Config before merging it into the active object.
+	// This makes user LKG fallback and project-level isolation transactional.
+	var validated Config
+	if _, err := decodeTOMLFileResolved(resolved, &validated); err != nil {
+		return fmt.Errorf("config %s: %w", path, err)
 	}
 	meta, err := decodeTOMLFileResolved(resolved, cfg)
 	if err != nil {

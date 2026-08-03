@@ -217,8 +217,6 @@ for (const style of THEME_STYLES) {
       id: `base-${style}`,
       name: style,
       baseStyle: style,
-      kind: "base",
-      builtin: true,
       tokens: {},
       recipes: { density: "comfortable", corners: "soft" },
     });
@@ -425,7 +423,6 @@ const activeAuroraExperience = {
   effectiveStyle: "aurora" as const,
   activeThemeId: aurora.id,
   activePack: aurora,
-  safeMode: false,
 };
 applyExperienceToDOM(activeAuroraExperience);
 ok(configuredBaseStyleForSync(activeAuroraExperience) === null, "active pack effective style is not mirrored as configured base");

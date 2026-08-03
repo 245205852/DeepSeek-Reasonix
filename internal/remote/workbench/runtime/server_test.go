@@ -115,6 +115,7 @@ type profileFakeController struct {
 	approvalMode string
 	goal         string
 	goalStatus   string
+	goalWrites   int
 	goalWriteErr error
 }
 
@@ -162,6 +163,7 @@ func (c *profileFakeController) SetGoalDurable(goal, _ string) error {
 	if err := os.WriteFile(store.SessionGoalState(c.sessionPath), []byte(strings.TrimSpace(goal)+"\n"), 0o644); err != nil {
 		return err
 	}
+	c.goalWrites++
 	c.SetGoal(goal)
 	return nil
 }
@@ -1108,6 +1110,81 @@ func TestSetProfileAppliesGoalInSameTransaction(t *testing.T) {
 	}
 	if _, err := os.Stat(srv.profileTransactionPath()); !os.IsNotExist(err) {
 		t.Fatalf("profile transaction journal remains after commit: %v", err)
+	}
+}
+
+func TestSetProfileNoOpIsUnchanged(t *testing.T) {
+	sessionDir := t.TempDir()
+	srv := New(Options{Workspace: t.TempDir(), SessionDir: sessionDir, RegistryPath: filepath.Join(t.TempDir(), "sessions.json")})
+	srv.registryRead = true
+	ctrl := &profileFakeController{persistentFakeController: &persistentFakeController{
+		fakeController: &fakeController{model: "local/model"}, sessionDir: sessionDir,
+		sessionPath: filepath.Join(sessionDir, "session.jsonl"),
+	}, approvalMode: string(protocol.ToolApprovalAsk)}
+	target := srv.installTestSession(ctrl)
+	if err := srv.persistSessionRegistry(); err != nil {
+		t.Fatal(err)
+	}
+	collaboration := protocol.CollaborationNormal
+	approval := protocol.ToolApprovalAsk
+	goal := ""
+
+	result, err := srv.setProfile(context.Background(), protocol.SessionProfileSetParams{
+		SessionMutation: protocol.SessionMutation{
+			ExpectedHostEpoch: srv.hostEpoch, Target: target, ExpectedRuntimeEpoch: "runtime_test",
+		},
+		Patch: protocol.ProfilePatch{
+			CollaborationMode: &collaboration,
+			ToolApprovalMode:  &approval,
+			Goal:              &goal,
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Disposition != protocol.ProfileUnchanged || result.RuntimeEpoch != "runtime_test" {
+		t.Fatalf("no-op result = %+v", result)
+	}
+	if ctrl.goalWrites != 0 || ctrl.planMode || ctrl.approvalMode != string(protocol.ToolApprovalAsk) {
+		t.Fatalf("no-op touched controller: writes=%d plan=%v approval=%q", ctrl.goalWrites, ctrl.planMode, ctrl.approvalMode)
+	}
+	ctrl.status.Running = true
+	result, err = srv.setProfile(context.Background(), protocol.SessionProfileSetParams{
+		SessionMutation: protocol.SessionMutation{
+			ExpectedHostEpoch: srv.hostEpoch, Target: target, ExpectedRuntimeEpoch: "runtime_test",
+		},
+		Patch: protocol.ProfilePatch{CollaborationMode: &collaboration, ToolApprovalMode: &approval, Goal: &goal},
+	})
+	if err != nil || result.Disposition != protocol.ProfileUnchanged {
+		t.Fatalf("busy no-op result = %+v err=%v", result, err)
+	}
+}
+
+func TestSetProfileSameNonRunningGoalReactivates(t *testing.T) {
+	sessionDir := t.TempDir()
+	srv := New(Options{Workspace: t.TempDir(), SessionDir: sessionDir, RegistryPath: filepath.Join(t.TempDir(), "sessions.json")})
+	srv.registryRead = true
+	ctrl := &profileFakeController{persistentFakeController: &persistentFakeController{
+		fakeController: &fakeController{model: "local/model"}, sessionDir: sessionDir,
+		sessionPath: filepath.Join(sessionDir, "session.jsonl"),
+	}, approvalMode: string(protocol.ToolApprovalAsk), goal: "ship it", goalStatus: string(protocol.GoalBlocked)}
+	target := srv.installTestSession(ctrl)
+	if err := srv.persistSessionRegistry(); err != nil {
+		t.Fatal(err)
+	}
+	goal := "ship it"
+
+	result, err := srv.setProfile(context.Background(), protocol.SessionProfileSetParams{
+		SessionMutation: protocol.SessionMutation{
+			ExpectedHostEpoch: srv.hostEpoch, Target: target, ExpectedRuntimeEpoch: "runtime_test",
+		},
+		Patch: protocol.ProfilePatch{Goal: &goal},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Disposition != protocol.ProfileUpdated || ctrl.GoalStatus() != string(protocol.GoalRunning) || ctrl.goalWrites != 1 {
+		t.Fatalf("reactivated profile = %+v controller=(%q,%q,writes=%d)", result, ctrl.Goal(), ctrl.GoalStatus(), ctrl.goalWrites)
 	}
 }
 

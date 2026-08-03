@@ -468,7 +468,6 @@ var ChineseTraditional = Messages{
 	ReportKept:                "報告已保留在本機。",
 	ReportDeletedFmt:          "已刪除 CLI 當機報告 %s。",
 	ReportSentFmt:             "已傳送 CLI 當機報告 %s。",
-	ReportSafeModeBlocked:     "Safe Mode 下不能傳送當機報告；本機報告已保留",
 	ReportConfigFailedFmt:     "無法載入網路設定：%v",
 	ReportUploadFailedFmt:     "報告上傳失敗；本機報告已保留：%v",
 	ReportSentDeleteFailedFmt: "報告已傳送，但無法刪除本機副本：%v",
@@ -497,6 +496,7 @@ var ChineseTraditional = Messages{
   reasonix acp [--model NAME]                           透過 stdio 提供 Agent Client Protocol（也可用：reasonix --acp）
   reasonix setup [path]                                 互動式設定精靈；生成 reasonix.toml（及 .env）
   reasonix config reasoning-language [auto|zh|en]        設定可見思考語言
+  reasonix config compact-ratio [--local] [65..85]       設定自動壓縮閾值
   reasonix config telemetry [auto|on|off]                設定不含內容的 CLI 使用統計
   reasonix report [list|show|send|delete] [ID]           審閱並明確傳送本機 CLI 當機報告
   reasonix mcp <add|remove|list|import>                 管理 reasonix.toml 裡的 MCP 伺服器

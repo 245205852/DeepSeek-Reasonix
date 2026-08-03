@@ -3,6 +3,7 @@ package config
 import (
 	"bytes"
 	"fmt"
+	"math"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -606,6 +607,38 @@ func TestSetReasoningLanguage(t *testing.T) {
 	}
 }
 
+func TestSetCompactRatio(t *testing.T) {
+	c := Default()
+	for _, ratio := range []float64{0.65, 0.7, 0.8, 0.85} {
+		if err := c.SetCompactRatio(ratio); err != nil {
+			t.Fatalf("SetCompactRatio(%v): %v", ratio, err)
+		}
+		if c.Agent.CompactRatio != ratio {
+			t.Fatalf("compact ratio = %v, want %v", c.Agent.CompactRatio, ratio)
+		}
+	}
+
+	previous := c.Agent.CompactRatio
+	for _, ratio := range []float64{0.64, 0.86, math.NaN(), math.Inf(1), math.Inf(-1)} {
+		if err := c.SetCompactRatio(ratio); err == nil {
+			t.Fatalf("SetCompactRatio(%v) should fail", ratio)
+		}
+		if c.Agent.CompactRatio != previous {
+			t.Fatalf("rejected ratio %v changed compact ratio to %v", ratio, c.Agent.CompactRatio)
+		}
+	}
+
+	c.Agent.ToolResultSnipRatio = 0.75
+	if err := c.SetCompactRatio(0.7); err == nil {
+		t.Fatal("SetCompactRatio should reject a value at or below the configured snip ratio")
+	}
+	c.Agent.ToolResultSnipRatio = 0.6
+	c.Agent.CompactForceRatio = 0.8
+	if err := c.SetCompactRatio(0.8); err == nil {
+		t.Fatal("SetCompactRatio should reject a value at or above the configured force ratio")
+	}
+}
+
 func TestNormalizeEffortDeepSeek(t *testing.T) {
 	e := &ProviderEntry{Name: "deepseek", Kind: "openai", BaseURL: "https://api.deepseek.com", Model: "deepseek-v4"}
 	cap := EffortCapabilityForEntry(e)
@@ -837,6 +870,7 @@ func TestResolveModelAppliesModelOverrides(t *testing.T) {
 		Models:            []string{"deepseek-v4-flash", "plain-chat"},
 		Default:           "plain-chat",
 		ContextWindow:     131_072,
+		MaxOutputTokens:   8_192,
 		ReasoningProtocol: ReasoningProtocolOpenAI,
 		SupportedEfforts:  []string{"low", "medium", "high"},
 		ModelOverrides: map[string]ProviderModelOverride{
@@ -846,6 +880,7 @@ func TestResolveModelAppliesModelOverrides(t *testing.T) {
 				DefaultEffort:     "max",
 				Vision:            &visionOff,
 				ContextWindow:     1_000_000,
+				MaxOutputTokens:   32_768,
 			},
 		},
 	}}}
@@ -867,6 +902,9 @@ func TestResolveModelAppliesModelOverrides(t *testing.T) {
 	if deepseek.ContextWindow != 1_000_000 {
 		t.Fatalf("deepseek context window = %d, want per-model override", deepseek.ContextWindow)
 	}
+	if deepseek.MaxOutputTokens != 32_768 {
+		t.Fatalf("deepseek max output tokens = %d, want per-model override", deepseek.MaxOutputTokens)
+	}
 
 	plain, ok := c.ResolveModel("gateway/plain-chat")
 	if !ok {
@@ -877,6 +915,9 @@ func TestResolveModelAppliesModelOverrides(t *testing.T) {
 	}
 	if plain.ContextWindow != 131_072 {
 		t.Fatalf("plain context window = %d, want inherited provider value", plain.ContextWindow)
+	}
+	if plain.MaxOutputTokens != 8_192 {
+		t.Fatalf("plain max output tokens = %d, want inherited provider value", plain.MaxOutputTokens)
 	}
 }
 

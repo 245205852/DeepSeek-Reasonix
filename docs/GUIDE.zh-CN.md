@@ -143,7 +143,7 @@ telemetry 请求之前只询问一次。提示为 `[Y/n]`：直接回车、输�
 `auto`；输入 `n` 或 `no` 会保存为 `off` 并删除待发送计数。选择保存后不再提示，允许的
 后续上报保持静默。如果偏好设置保存失败，则不会上传任何内容。
 
-在 CI、Safe Mode、开发构建中始终关闭；设置 `DO_NOT_TRACK` 或
+在 CI、开发构建中始终关闭；设置 `DO_NOT_TRACK` 或
 `REASONIX_TELEMETRY=0` 也会关闭。`auto` 模式下，重定向、pipe 或其他非交互会话
 不会上报。尚未保存选择时，这些不符合条件的会话既不会提示，也不会上报。授权后的
 网络失败完全静默，不会改变 stdout、stderr 或进程退出码；未发送计数只会保存在有
@@ -175,8 +175,8 @@ reasonix report send [ID]       # 明确发送；成功后才删除本地副本
 reasonix report delete [ID]     # 不发送，直接删除
 ```
 
-通过 pipe 或重定向运行 `reasonix report` 时只会预览，不会询问或发送。Safe Mode 也会
-禁止发送，但仍允许审阅或删除本地报告。CLI telemetry 设置不会自动发送或自动删除这些
+通过 pipe 或重定向运行 `reasonix report` 时只会预览，不会询问或发送。CLI telemetry
+设置不会自动发送或自动删除这些
 需要单独审阅的报告。Go 无法恢复 runtime fatal throw、操作系统强制终止，以及未包装
 后台 goroutine 中的 panic，因此这些情况不会生成本地报告。
 

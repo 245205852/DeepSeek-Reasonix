@@ -2204,6 +2204,7 @@ func (gw *BotGateway) getOrCreateSession(ctx context.Context, key string, msg In
 		MaxStepsKey:     "bot.max_steps",
 		RequireKey:      true,
 		Sink:            sessionSink,
+		StatsSource:     "bot",
 		WorkspaceRoot:   profile.workspaceRoot,
 		SessionDir:      botSessionDir(profile.workspaceRoot),
 		ApprovalTimeout: gw.approvalTimeout(),

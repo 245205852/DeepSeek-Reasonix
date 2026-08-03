@@ -404,12 +404,11 @@ export function acceptsRuntimeEventEpoch(acceptedEpoch: string | undefined, even
 
 export function composerProfileApplicationKey(
   runtimeEpoch: string | undefined,
-  promptEpoch: number,
   collaborationMode: CollaborationMode,
   toolApprovalMode: ToolApprovalMode,
   goal: string,
 ): string {
-  return JSON.stringify([runtimeEpoch ?? "", promptEpoch, collaborationMode, toolApprovalMode, goal]);
+  return JSON.stringify([runtimeEpoch ?? "", collaborationMode, toolApprovalMode, goal]);
 }
 
 function metaWithoutCanonicalTodos(meta?: Meta): Meta | undefined {
@@ -1502,6 +1501,9 @@ function errorMessage(err: unknown): string {
 export function effortSwitchNoticeText(err: unknown): string {
   return settingSwitchNoticeText(err, "effort", {
     busy: "status.effortSwitchBusy",
+    busyRunning: "status.effortSwitchBusyRunning",
+    busyPrompt: "status.effortSwitchBusyPrompt",
+    busyJobs: "status.effortSwitchBusyJobs",
     leaseHeld: "status.effortSwitchLeaseHeld",
     starting: "status.effortSwitchStarting",
     startupFailed: "status.effortSwitchStartupFailed",
@@ -1522,6 +1524,9 @@ export function modelSwitchNoticeText(err: unknown): string {
   }
   return settingSwitchNoticeText(msg, "model", {
     busy: "status.modelSwitchBusy",
+    busyRunning: "status.modelSwitchBusyRunning",
+    busyPrompt: "status.modelSwitchBusyPrompt",
+    busyJobs: "status.modelSwitchBusyJobs",
     leaseHeld: "status.modelSwitchLeaseHeld",
     starting: "status.modelSwitchStarting",
     startupFailed: "status.modelSwitchStartupFailed",
@@ -1533,6 +1538,9 @@ export function modelSwitchNoticeText(err: unknown): string {
 export function tokenModeSwitchNoticeText(err: unknown): string {
   return settingSwitchNoticeText(err, "token mode", {
     busy: "status.tokenModeSwitchBusy",
+    busyRunning: "status.tokenModeSwitchBusyRunning",
+    busyPrompt: "status.tokenModeSwitchBusyPrompt",
+    busyJobs: "status.tokenModeSwitchBusyJobs",
     leaseHeld: "status.tokenModeSwitchLeaseHeld",
     starting: "status.tokenModeSwitchStarting",
     startupFailed: "status.tokenModeSwitchStartupFailed",
@@ -1786,6 +1794,9 @@ function settingSwitchNoticeText(
   setting: "effort" | "model" | "token mode",
   keys: {
     busy: DictKey;
+    busyRunning: DictKey;
+    busyPrompt: DictKey;
+    busyJobs: DictKey;
     leaseHeld: DictKey;
     starting: DictKey;
     startupFailed: DictKey;
@@ -1796,6 +1807,11 @@ function settingSwitchNoticeText(
   const msg = errorMessage(err).trim() || "unknown error";
   const lower = msg.toLowerCase();
   if (lower.includes("finish or cancel") && lower.includes(`before changing ${setting}`)) {
+    const detail = /running=(true|false);\s*pending_prompt=(true|false);\s*background_jobs=(\d+)/i.exec(msg);
+    if (detail?.[2] === "true") return t(keys.busyPrompt);
+    if (detail?.[1] === "true") return t(keys.busyRunning);
+    const jobs = Number(detail?.[3] ?? 0);
+    if (jobs > 0) return t(keys.busyJobs, { n: jobs });
     return t(keys.busy);
   }
   if (lower.includes("already open in another reasonix window") || lower.includes("session lease held")) {
@@ -2832,7 +2848,6 @@ export function useController() {
     const promptEpoch = state?.promptEpoch ?? 0;
     const key = composerProfileApplicationKey(
       runtimeEpochByTabRef.current.get(tabId) ?? state?.meta?.runtime?.epoch,
-      promptEpoch,
       collaborationMode,
       toolApprovalMode,
       goal,
@@ -3189,6 +3204,21 @@ export function useController() {
     return true;
   }, [activeTabId, dispatchTo, refreshMetaForTab]);
 
+  const cancelJob = useCallback(async (jobID: string): Promise<boolean> => {
+    const tabId = activeTabId;
+    if (!tabId || !jobID.trim()) return false;
+    try {
+      const cancelled = await app.CancelJobForTab(tabId, jobID);
+      const jobs = asArray(await app.JobsForTab(tabId));
+      dispatchTo(tabId, { type: "jobs", jobs });
+      await refreshMetaForTab(tabId);
+      return cancelled;
+    } catch {
+      dispatchTo(tabId, { type: "local_notice", level: "warn", text: t("status.jobStopFailed") });
+      return false;
+    }
+  }, [activeTabId, dispatchTo, refreshMetaForTab]);
+
   const fetchMemory = useCallback((): Promise<MemoryView> =>
     app.Memory().catch(() => ({
       docs: [], facts: [], archives: [], scopes: [], instructionDiagnostics: [], conflicts: [],
@@ -3521,17 +3551,23 @@ export function useController() {
     return result;
   }, [beginActiveNavigation, confirmBackendActiveTab, dispatchRuntimeStatusForTab, dispatchTo, loadSessionDataForTab, navigationCompletionCurrent, reassertVisibleTabAfterStaleNavigation, reconcileTabRuntime]);
 
-  const closeTab = useCallback(async (tabId: string) => {
+  const closeTab = useCallback(async (
+    tabId: string,
+    policy: "keep_running" | "stop_and_close" = "keep_running",
+  ): Promise<boolean> => {
     if (tabId === activeTabIdRef.current) beginActiveNavigation();
     try {
-      await app.CloseTab(tabId);
+      await app.CloseTabWithPolicy(tabId, policy);
       invalidateProviderStateForTab(tabId);
       disposeComposerProfileState(tabId);
       statesRef.current.delete(tabId);
       notifyLiveListeners(tabId);
       bump();
       if (tabId === activeTabId) await syncActiveTabFromBackend(false);
-    } catch { /* ignore */ }
+      return true;
+    } catch {
+      return false;
+    }
   }, [activeTabId, beginActiveNavigation, bump, disposeComposerProfileState, invalidateProviderStateForTab, notifyLiveListeners, syncActiveTabFromBackend]);
 
   const reorderTabs = useCallback(async (tabIds: string[]) => {
@@ -3548,7 +3584,7 @@ export function useController() {
     setCollaborationMode, setCollaborationModeForTab, setToolApprovalMode, setToolApprovalModeForTab, setComposerProfileForTab, setGoal, setGoalForTab, clearGoal, clearGoalForTab, resumeGoal, resumeGoalForTab,
     newSession, clearSession, listSessions, listTrashedSessions, resumeSession, openChannelSession, previewSession, deleteSession, restoreSession, purgeTrashedSession, renameSession,
     loadOlderHistory,
-    refreshMeta, pickWorkspace, switchWorkspace, compact, rewind, rewindForTab, setModel, setEffort, setTokenMode,
+    refreshMeta, pickWorkspace, switchWorkspace, compact, rewind, rewindForTab, setModel, setEffort, setTokenMode, cancelJob,
     fetchMemory, remember, forget, saveDoc,
     switchTab, openProjectTab, openGlobalTab, openTopicSession, ensureBlankTab, activateTopic, ensureBlankSurface, createDeliveryWorktree, closeTab, reorderTabs,
     // Invalidate in-flight navigation completions (activateTopic's stale

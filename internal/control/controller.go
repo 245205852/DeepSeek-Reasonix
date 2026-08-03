@@ -54,6 +54,7 @@ import (
 	"reasonix/internal/skill"
 	"reasonix/internal/store"
 	"reasonix/internal/tool"
+	"reasonix/internal/workspacelease"
 )
 
 // ErrTurnRunning reports that a caller tried to start a second foreground turn
@@ -137,6 +138,9 @@ type Controller struct {
 	// tools spawn into it; Compose drains its completion notes into the next turn;
 	// Close cancels its still-running jobs.
 	jobs *jobs.Manager
+	// workspaceLease is the Delivery writer owner shared with the executor.
+	// It is exposed only through a sanitized state snapshot for Desktop recovery.
+	workspaceLease *workspacelease.Owner
 
 	// mcp owns the session's live tool/plugin surface — the MCP plugin Host, the
 	// tool registry the executor reads each turn, and the session-scoped context a
@@ -403,6 +407,8 @@ type Options struct {
 	BalanceClient *http.Client
 	// Jobs is the session-scoped background-job manager (nil disables background jobs).
 	Jobs *jobs.Manager
+	// WorkspaceLease is the Delivery writer owner shared with the executor.
+	WorkspaceLease *workspacelease.Owner
 	// Registry is the executor's live tool set, and PluginCtx the session-scoped
 	// context; both are needed for hot-adding MCP servers via AddMCPServer.
 	Registry  *tool.Registry
@@ -510,6 +516,7 @@ func New(opts Options) *Controller {
 		balanceKey:                        opts.BalanceKey,
 		balanceClient:                     opts.BalanceClient,
 		jobs:                              opts.Jobs,
+		workspaceLease:                    opts.WorkspaceLease,
 		mcp:                               newMcpManager(opts.Host, opts.Registry, pluginCtx),
 		mcpDefaultCallTimeout:             opts.MCPDefaultCallTimeout,
 		mcpConfigureSpec:                  opts.MCPConfigureSpec,
@@ -898,6 +905,7 @@ func (c *Controller) RunTurn(ctx context.Context, input string) error {
 	c.running = true
 	c.canceling = false
 	c.mu.Unlock()
+	defer event.RecordTurnCompletion(c.sink)
 
 	defer func() {
 		c.mu.Lock()
@@ -1624,6 +1632,7 @@ func (c *Controller) noticeDetail(text, detail string) {
 // headless `reasonix run` path, where the Sink renders to stdout and the caller
 // just needs the exit status — no TurnDone event, no cancel bookkeeping.
 func (c *Controller) Run(ctx context.Context, input string) (err error) {
+	defer event.RecordTurnCompletion(c.sink)
 	c.maybeSessionStart(ctx)
 	parentSession := c.parentSessionID()
 	ctx = agent.WithParentSession(ctx, parentSession)
@@ -5187,7 +5196,14 @@ func (c *Controller) CancelJob(id string) bool {
 	if c.jobs == nil {
 		return false
 	}
-	return c.jobs.Kill(id)
+	return c.jobs.KillForSession(c.parentSessionID(), id)
+}
+
+// WorkspaceLeaseState reports only whether this controller owns or is waiting
+// for the Delivery workspace writer lease. It never exposes filesystem or
+// process identity.
+func (c *Controller) WorkspaceLeaseState() workspacelease.State {
+	return c.workspaceLease.State()
 }
 
 // SetToolApprovalMode changes the runtime approval posture for permission-gated

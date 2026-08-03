@@ -71,8 +71,11 @@ type Config struct {
 	pluginPackageOwners        map[string]string
 	pluginPackageSkillOwners   map[string][]string
 	pluginPackageAgentOwners   map[string][]string
-	safeMode                   bool
 	editLoadErr                error
+	// loadWarnings are non-fatal issues observed while loading config (corrupt
+	// user/project files recovered via last-known-good or defaults). They never
+	// rewrite the original file; the UI may surface them for doctor repair.
+	loadWarnings []string
 }
 
 // TelemetryConfig controls content-free CLI usage metrics. It is user-global:
@@ -112,10 +115,31 @@ func (c *Config) CLITelemetryMode() string {
 	}
 }
 
-// SafeMode reports whether this configuration was built for recovery startup.
-// It is process-local runtime state and is never persisted to TOML.
-func (c *Config) SafeMode() bool {
-	return c != nil && c.safeMode
+// LoadWarnings returns non-fatal config load issues (corrupt files recovered in
+// memory). The returned slice is a copy.
+func (c *Config) LoadWarnings() []string {
+	if c == nil || len(c.loadWarnings) == 0 {
+		return nil
+	}
+	out := make([]string, len(c.loadWarnings))
+	copy(out, c.loadWarnings)
+	return out
+}
+
+// HasLoadWarnings reports whether the load used a degraded in-memory fallback.
+func (c *Config) HasLoadWarnings() bool {
+	return c != nil && len(c.loadWarnings) > 0
+}
+
+func (c *Config) addLoadWarning(msg string) {
+	if c == nil {
+		return
+	}
+	msg = strings.TrimSpace(msg)
+	if msg == "" {
+		return
+	}
+	c.loadWarnings = append(c.loadWarnings, msg)
 }
 
 // IgnoredLegacyAgentStepLimits reports whether this load found and ignored the
@@ -1249,10 +1273,14 @@ type ProviderEntry struct {
 	ResponsesStateful *bool `toml:"responses_stateful"`
 	resolvedAPIKey    string
 	resolvedSource    CredentialSource
-	BalanceURL        string                       `toml:"balance_url"` // optional; a provider-specific wallet-balance endpoint (DeepSeek: https://api.deepseek.com/user/balance). Empty = no balance readout.
-	ContextWindow     int                          `toml:"context_window"`
-	Price             *provider.Pricing            `toml:"price"`  // legacy/provider-wide fallback
-	Prices            map[string]*provider.Pricing `toml:"prices"` // optional per-model prices; keys are model ids
+	BalanceURL        string `toml:"balance_url"` // optional; a provider-specific wallet-balance endpoint (DeepSeek: https://api.deepseek.com/user/balance). Empty = no balance readout.
+	ContextWindow     int    `toml:"context_window"`
+	// MaxOutputTokens is a protocol-neutral total output budget. Zero lets the
+	// provider choose a safe default, a positive value is explicit, and a
+	// negative value omits optional wire limits. Anthropic still requires one.
+	MaxOutputTokens int                          `toml:"max_output_tokens"`
+	Price           *provider.Pricing            `toml:"price"`  // legacy/provider-wide fallback
+	Prices          map[string]*provider.Pricing `toml:"prices"` // optional per-model prices; keys are model ids
 
 	persistedOfficialCurrency string
 
@@ -1279,9 +1307,17 @@ type ProviderEntry struct {
 	// (the field is omitted). "low" caps an image to a fixed ~85 tokens for cheap
 	// coarse reads; ignored by providers without the knob (e.g. anthropic).
 	VisionDetail string `toml:"vision_detail"`
+	// WebSearch enables the server-side web_search tool for the anthropic
+	// provider kind. When true, the provider includes {"type":"web_search"} in
+	// the tools array, and the API executes searches server-side, returning
+	// web_search_tool_result content blocks in the stream. This is the primary
+	// way to use DeepSeek's built-in search via its Anthropic-compatible
+	// endpoint (https://api.deepseek.com/anthropic). Off by default.
+	WebSearch bool `toml:"web_search"`
 	// ReasoningProtocol selects the request shape for OpenAI-compatible reasoning
 	// models. Empty/auto uses the model capability registry plus endpoint
-	// heuristics; none disables automatic reasoning controls for this provider.
+	// heuristics; glm selects GLM's thinking.type toggle; none disables automatic
+	// reasoning controls for this provider.
 	ReasoningProtocol string `toml:"reasoning_protocol"`
 	// SupportedEfforts lists the /effort levels this provider/model exposes.
 	// When non-empty, it overrides the built-in defaults derived from
@@ -1312,6 +1348,9 @@ type ProviderModelOverride struct {
 	// Zero inherits ProviderEntry.ContextWindow so existing configurations keep
 	// their current compaction behavior.
 	ContextWindow int `toml:"context_window"`
+	// MaxOutputTokens overrides the provider-wide output budget. Zero inherits;
+	// positive values set a cap and negative values omit optional wire limits.
+	MaxOutputTokens int `toml:"max_output_tokens"`
 }
 
 // ModelList returns the models this provider exposes: the explicit `models` list,
@@ -1459,6 +1498,9 @@ func (e *ProviderEntry) applyModelOverride() {
 	}
 	if ov.ContextWindow > 0 {
 		e.ContextWindow = ov.ContextWindow
+	}
+	if ov.MaxOutputTokens != 0 {
+		e.MaxOutputTokens = ov.MaxOutputTokens
 	}
 }
 

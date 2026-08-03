@@ -27,7 +27,7 @@ func TestStreamRetriesThenSucceeds(t *testing.T) {
 		}
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.WriteHeader(http.StatusOK)
-		_, _ = io.WriteString(w, "data: {\"choices\":[{\"delta\":{\"content\":\"hi there\"}}]}\n\ndata: [DONE]\n\n")
+		_, _ = io.WriteString(w, "data: {\"choices\":[{\"delta\":{\"content\":\"hi there\"}}]}\n\ndata: {\"choices\":[],\"usage\":{\"prompt_tokens\":3,\"completion_tokens\":2,\"total_tokens\":5}}\n\ndata: [DONE]\n\n")
 	}))
 	defer srv.Close()
 
@@ -49,12 +49,16 @@ func TestStreamRetriesThenSucceeds(t *testing.T) {
 		t.Fatalf("Stream after retries: %v", err)
 	}
 	var got strings.Builder
+	var usage *provider.Usage
 	for chunk := range ch {
 		if chunk.Type == provider.ChunkError {
 			t.Fatalf("unexpected stream error: %v", chunk.Err)
 		}
 		if chunk.Type == provider.ChunkText {
 			got.WriteString(chunk.Text)
+		}
+		if chunk.Type == provider.ChunkUsage {
+			usage = chunk.Usage
 		}
 	}
 	if got.String() != "hi there" {
@@ -65,6 +69,23 @@ func TestStreamRetriesThenSucceeds(t *testing.T) {
 	}
 	if len(attempts) != 2 || attempts[0] != 1 || attempts[1] != 2 {
 		t.Errorf("retry-notify attempts = %v, want [1 2]", attempts)
+	}
+	if usage == nil || usage.RequestCount != 3 {
+		t.Errorf("usage request count = %+v, want 3", usage)
+	}
+}
+
+func TestMergeUsageCountsStreamsNotUsageChunks(t *testing.T) {
+	firstChunk := &provider.Usage{PromptTokens: 2, TotalTokens: 2, RequestCount: 2}
+	secondChunk := &provider.Usage{CompletionTokens: 1, TotalTokens: 1, RequestCount: 2}
+	oneStream := mergeUsage(firstChunk, secondChunk, false)
+	if oneStream.RequestCount != 2 {
+		t.Fatalf("same-stream request count = %d, want 2", oneStream.RequestCount)
+	}
+	nextStream := &provider.Usage{PromptTokens: 3, TotalTokens: 3, RequestCount: 1}
+	combined := mergeUsage(oneStream, nextStream, true)
+	if combined.RequestCount != 3 {
+		t.Fatalf("multi-stream request count = %d, want 3", combined.RequestCount)
 	}
 }
 
@@ -276,7 +297,7 @@ func TestStreamContinuesDeepSeekLengthWithAssistantPrefix(t *testing.T) {
 	if usageChunks != 1 || doneChunks != 1 || usage == nil {
 		t.Fatalf("usage chunks=%d done chunks=%d usage=%+v", usageChunks, doneChunks, usage)
 	}
-	if usage.PromptTokens != 30 || usage.CompletionTokens != 5 || usage.TotalTokens != 35 ||
+	if usage.PromptTokens != 30 || usage.CompletionTokens != 5 || usage.TotalTokens != 35 || usage.RequestCount != 2 ||
 		usage.CacheHitTokens != 26 || usage.CacheMissTokens != 4 || usage.ReasoningTokens != 2 || usage.FinishReason != "stop" {
 		t.Fatalf("merged usage = %+v", usage)
 	}
@@ -1157,6 +1178,80 @@ func TestBuildRequestKimiK3OfficialWireShape(t *testing.T) {
 	}
 }
 
+func TestBuildRequestUsesProviderSpecificOutputBudget(t *testing.T) {
+	newClient := func(t *testing.T, baseURL, model string, maxOutputTokens int) *client {
+		t.Helper()
+		p, err := New(provider.Config{
+			Name: "test", BaseURL: baseURL, Model: model,
+			Extra: map[string]any{"max_output_tokens": maxOutputTokens},
+		})
+		if err != nil {
+			t.Fatalf("New: %v", err)
+		}
+		return p.(*client)
+	}
+
+	deepseek := newClient(t, "https://api.deepseek.com", "deepseek-v4-flash", 0).buildRequest(provider.Request{})
+	if deepseek.MaxTokens != provider.DefaultReasoningOutputTokens || deepseek.MaxCompletionTokens != 0 {
+		t.Fatalf("DeepSeek output budget = max_tokens %d, max_completion_tokens %d", deepseek.MaxTokens, deepseek.MaxCompletionTokens)
+	}
+
+	thinkingDisabledProvider, err := New(provider.Config{
+		Name: "test", BaseURL: "https://api.deepseek.com", Model: "deepseek-v4-pro",
+		Extra: map[string]any{"thinking": "disabled", "max_output_tokens": 0},
+	})
+	if err != nil {
+		t.Fatalf("New thinking-disabled DeepSeek: %v", err)
+	}
+	thinkingDisabled := thinkingDisabledProvider.(*client).buildRequest(provider.Request{})
+	if thinkingDisabled.MaxTokens != 0 || thinkingDisabled.MaxCompletionTokens != 0 {
+		t.Fatalf("thinking-disabled DeepSeek received an automatic output budget: %+v", thinkingDisabled)
+	}
+	effortDisabledProvider, err := New(provider.Config{
+		Name: "test", BaseURL: "https://api.deepseek.com", Model: "deepseek-v4-pro",
+		Extra: map[string]any{"effort": "disabled", "max_output_tokens": 0},
+	})
+	if err != nil {
+		t.Fatalf("New effort-disabled DeepSeek: %v", err)
+	}
+	effortDisabled := effortDisabledProvider.(*client).buildRequest(provider.Request{})
+	if effortDisabled.MaxTokens != 0 || effortDisabled.Thinking == nil || effortDisabled.Thinking.Type != "disabled" {
+		t.Fatalf("effort-disabled DeepSeek request = %+v, want thinking disabled without an automatic budget", effortDisabled)
+	}
+
+	explicitDisabledProvider, err := New(provider.Config{
+		Name: "test", BaseURL: "https://api.deepseek.com", Model: "deepseek-v4-pro",
+		Extra: map[string]any{"thinking": "disabled", "max_output_tokens": 8192},
+	})
+	if err != nil {
+		t.Fatalf("New explicitly capped DeepSeek: %v", err)
+	}
+	explicitDisabled := explicitDisabledProvider.(*client).buildRequest(provider.Request{})
+	if explicitDisabled.MaxTokens != 8192 {
+		t.Fatalf("explicit thinking-disabled DeepSeek budget = %d, want 8192", explicitDisabled.MaxTokens)
+	}
+
+	disabledDeepSeek := newClient(t, "https://api.deepseek.com", "deepseek-v4-flash", -1).buildRequest(provider.Request{})
+	if disabledDeepSeek.MaxTokens != 0 || disabledDeepSeek.MaxCompletionTokens != 0 {
+		t.Fatalf("disabled DeepSeek output budget = %+v", disabledDeepSeek)
+	}
+
+	officialOpenAI := newClient(t, "https://api.openai.com/v1", "o3", 8192).buildRequest(provider.Request{})
+	if officialOpenAI.MaxTokens != 0 || officialOpenAI.MaxCompletionTokens != 8192 {
+		t.Fatalf("official OpenAI output budget = max_tokens %d, max_completion_tokens %d", officialOpenAI.MaxTokens, officialOpenAI.MaxCompletionTokens)
+	}
+
+	gateway := newClient(t, "https://gateway.example/v1", "plain-chat", 8192).buildRequest(provider.Request{})
+	if gateway.MaxTokens != 8192 || gateway.MaxCompletionTokens != 0 {
+		t.Fatalf("compatible gateway output budget = max_tokens %d, max_completion_tokens %d", gateway.MaxTokens, gateway.MaxCompletionTokens)
+	}
+
+	unspecifiedGateway := newClient(t, "https://gateway.example/v1", "plain-chat", 0).buildRequest(provider.Request{})
+	if unspecifiedGateway.MaxTokens != 0 || unspecifiedGateway.MaxCompletionTokens != 0 {
+		t.Fatalf("unspecified compatible gateway received a budget: %+v", unspecifiedGateway)
+	}
+}
+
 func TestBuildRequestDeepSeekThinking(t *testing.T) {
 	for _, tc := range []struct {
 		name          string
@@ -1318,6 +1413,96 @@ func TestNewZhipuSetsFlag(t *testing.T) {
 		if c := p.(*client); !c.zhipu {
 			t.Errorf("zhipu flag not set for baseURL=%q", baseURL)
 		}
+	}
+}
+
+func TestNewExplicitGLMProtocolOnGateway(t *testing.T) {
+	for _, tc := range []struct {
+		effort string
+		want   string
+	}{
+		{effort: "", want: "enabled"},
+		{effort: "enabled", want: "enabled"},
+		{effort: "disabled", want: "disabled"},
+	} {
+		p, err := New(provider.Config{
+			Name:    "glm-gateway",
+			BaseURL: "https://gateway.example.com/v1",
+			Model:   "glm-5.2",
+			APIKey:  "k",
+			Extra: map[string]any{
+				"reasoning_protocol": "glm",
+				"effort":             tc.effort,
+			},
+		})
+		if err != nil {
+			t.Fatalf("New(explicit GLM, effort=%q): %v", tc.effort, err)
+		}
+		c := p.(*client)
+		if !c.zhipu {
+			t.Fatalf("explicit GLM protocol did not select GLM wire shape")
+		}
+		req := c.buildRequest(provider.Request{})
+		if req.Thinking == nil || req.Thinking.Type != tc.want {
+			t.Fatalf("effort=%q thinking = %+v, want %q", tc.effort, req.Thinking, tc.want)
+		}
+		if req.ReasoningEffort != "" {
+			t.Fatalf("explicit GLM protocol sent reasoning_effort=%q", req.ReasoningEffort)
+		}
+	}
+}
+
+func TestBuildRequestRoundTripsGLMReasoningHistory(t *testing.T) {
+	build := func(effort string) (*client, chatRequest) {
+		p, err := New(provider.Config{
+			Name:    "glm-gateway",
+			BaseURL: "https://tokenrhythm.studio/v1",
+			Model:   "glm-5.2",
+			APIKey:  "k",
+			Extra: map[string]any{
+				"reasoning_protocol": "glm",
+				"effort":             effort,
+			},
+		})
+		if err != nil {
+			t.Fatalf("New(GLM, effort=%q): %v", effort, err)
+		}
+		c := p.(*client)
+		out := c.buildRequest(provider.Request{Messages: []provider.Message{
+			{Role: provider.RoleUser, Content: "inspect"},
+			{Role: provider.RoleAssistant, ReasoningContent: "read main.go first", ToolCalls: []provider.ToolCall{{
+				ID: "call_1", Name: "read_file", Arguments: `{"path":"main.go"}`,
+			}}},
+			{Role: provider.RoleTool, ToolCallID: "call_1", Name: "read_file", Content: "package main"},
+			{Role: provider.RoleUser, Content: "continue"},
+			{Role: provider.RoleAssistant, Content: "done", ReasoningContent: "combine the result"},
+		}})
+		return c, out
+	}
+
+	enabled, enabledReq := build("enabled")
+	if enabled.RequiresToolCallReasoning() || !enabled.RequiresReasoningRoundTrip() {
+		t.Fatal("thinking-enabled GLM must preserve complete reasoning history without enabling DeepSeek recovery policy")
+	}
+	if got := enabledReq.Messages[1].ReasoningContent; got == nil || *got != "read main.go first" {
+		t.Fatalf("enabled GLM reasoning_content = %v, want provider-issued reasoning", got)
+	}
+	if got := enabledReq.Messages[4].ReasoningContent; got == nil || *got != "combine the result" {
+		t.Fatalf("enabled GLM plain-turn reasoning_content = %v, want complete reasoning history", got)
+	}
+	if provider.WarnOnMissingToolCallReasoning(enabled) {
+		t.Fatal("GLM must preserve available reasoning without entering DeepSeek-specific missing-reasoning recovery")
+	}
+
+	disabled, disabledReq := build("disabled")
+	if disabled.RequiresToolCallReasoning() || disabled.RequiresReasoningRoundTrip() {
+		t.Fatal("thinking-disabled GLM must not require new reasoning round trips")
+	}
+	if got := disabledReq.Messages[1].ReasoningContent; got == nil || *got != "read main.go first" {
+		t.Fatalf("disabled GLM must preserve reasoning from an earlier thinking round, got %v", got)
+	}
+	if got := disabledReq.Messages[4].ReasoningContent; got == nil || *got != "combine the result" {
+		t.Fatalf("disabled GLM must preserve plain reasoning from an earlier thinking round, got %v", got)
 	}
 }
 
