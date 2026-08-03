@@ -379,6 +379,33 @@ func TestRunWellFormedToolLoopRoundTrips(t *testing.T) {
 	}
 }
 
+// A provider without the DeepSeek tool-call reasoning policy must keep the
+// ordinary two-call tool loop even when its tool-call turn has no reasoning.
+func TestRunNonDeepSeekMissingToolCallReasoningDoesNotRetry(t *testing.T) {
+	mp := testutil.NewMock("openai",
+		testutil.Turn{ToolCalls: []provider.ToolCall{{ID: "c1", Name: "echo", Arguments: `{"text":"hi"}`}}},
+		testutil.Turn{Text: "all set"},
+	)
+	sink := &recordSink{}
+	a := New(mp, echoRegistry(), NewSession(""), Options{}, sink)
+
+	if err := a.Run(context.Background(), "go"); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if got := mp.CallCount(); got != 2 {
+		t.Fatalf("provider calls = %d, want tool turn + final turn without recovery retry", got)
+	}
+	if got := len(sink.kinds(event.ToolDispatch)); got != 1 {
+		t.Fatalf("tool dispatches = %d, want one", got)
+	}
+	sink.mu.Lock()
+	recovery := append([]event.ProtocolRecoveryAudit(nil), sink.recovery...)
+	sink.mu.Unlock()
+	if len(recovery) != 0 {
+		t.Fatalf("non-DeepSeek provider emitted protocol recovery audits: %+v", recovery)
+	}
+}
+
 // A one-off missing reasoning_content response is replaced before any tool
 // executes. The retry reuses identical input, its usage is accounted for, and
 // no provider-protocol warning or duplicate tool card reaches the user.
