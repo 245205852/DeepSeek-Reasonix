@@ -13,15 +13,20 @@ import (
 	"reasonix/internal/remote/broker"
 	"reasonix/internal/remote/protocol"
 	"reasonix/internal/remote/workbench/client"
+	"reasonix/internal/remote/workbench/reconnect"
 	"reasonix/internal/remote/workbench/target"
 	"reasonix/internal/remote/workbench/transport"
 	"reasonix/internal/remote/workbench/trust"
 )
 
 // workbenchKernel owns Local + Remote adapters for the main desktop window.
+// Logical Remote slot state lives in targets; physical client fields are
+// cleared on unexpected disconnect while snapshot caches are retained for
+// read-only projection and exact session recovery.
 type workbenchKernel struct {
 	mu                sync.Mutex
 	transitionMu      sync.Mutex
+	reconnectMu       sync.Mutex
 	targets           *target.Manager
 	remote            *client.Client
 	remoteGen         uint64
@@ -33,6 +38,19 @@ type workbenchKernel struct {
 	sessionCatalog    protocol.SessionCatalogResult
 	pendingTrust      *ProviderTrustPromptView
 	trustAnswer       chan bool
+	reconnect         *reconnect.Supervisor
+}
+
+// workbenchConnectOptions controls initial connect vs exact auto-reconnect.
+type workbenchConnectOptions struct {
+	LogicalGen          uint64
+	ExactTarget         protocol.RuntimeTarget
+	ExactEpoch          protocol.RuntimeEpoch
+	RequireExact        bool
+	ExpectedFingerprint string
+	SkipProviderTrust   bool
+	IsAutoReconnect     bool
+	Attempt             int
 }
 
 type workbenchProviderAccess struct {
@@ -81,6 +99,8 @@ type WorkbenchTargetStateView struct {
 	Workspace   string            `json:"workspace,omitempty"`
 	IdentityGen uint64            `json:"identityGen"`
 	RequestSeq  uint64            `json:"requestSeq"`
+	Attempt     int               `json:"attempt,omitempty"`
+	Retryable   bool              `json:"retryable,omitempty"`
 	Error       string            `json:"error,omitempty"`
 	Reconnect   target.RemoteHint `json:"reconnect"`
 }
@@ -139,15 +159,47 @@ func (a *App) workbench() *workbenchKernel {
 }
 
 // WorkbenchActiveTarget returns the current projection for the status bar.
+// Fields must match remote:workbench-target event payloads (including attempt
+// and retryable while reconnecting).
 func (a *App) WorkbenchActiveTarget() map[string]any {
 	k := a.workbench()
 	id, gen, seq := k.targets.Active()
 	h := a.workbenchLastRemoteHint()
-	return map[string]any{
+	out := map[string]any{
 		"kind": string(id.Kind), "hostId": id.HostID, "workspace": id.Workspace,
 		"identityGen": gen, "requestSeq": seq,
 		"reconnect": map[string]string{"hostId": h.HostID, "workspace": h.Workspace, "label": h.Label},
 	}
+	state := "disconnected"
+	if id.Kind == target.KindLocal {
+		state = "disconnected"
+	}
+	if remote := k.targets.Remote(); remote != nil && id.Kind == target.KindRemote {
+		state = string(remote.ConnState)
+		if state == "" {
+			if remote.Connected {
+				state = string(target.StateConnected)
+			} else {
+				state = string(target.StateDisconnected)
+			}
+		}
+		if remote.Attempt > 0 {
+			out["attempt"] = remote.Attempt
+		}
+		if remote.Retryable {
+			out["retryable"] = true
+		}
+		if remote.Error != "" {
+			out["error"] = remote.Error
+		}
+	} else if id.Kind == target.KindRemote {
+		state = string(target.StateConnected)
+	}
+	if k.targets.Connecting() && id.Kind != target.KindRemote {
+		state = string(target.StateConnecting)
+	}
+	out["state"] = state
+	return out
 }
 
 // WorkbenchLastRemoteHint is the post-restart reconnect entry (no auto-connect).
@@ -177,7 +229,8 @@ func (a *App) workbenchLastRemoteHint() target.RemoteHint {
 	return h
 }
 
-// WorkbenchSwitchLocal projects the permanent Local adapter.
+// WorkbenchSwitchLocal projects the permanent Local adapter. Background Remote
+// recovery may continue, but success must not auto-activate Remote projection.
 func (a *App) WorkbenchSwitchLocal() map[string]any {
 	k := a.workbench()
 	k.transitionMu.Lock()
@@ -187,19 +240,21 @@ func (a *App) WorkbenchSwitchLocal() map[string]any {
 	tabID := a.workbenchProjectionTabID()
 	a.emitReady(a.ctx, tabID)
 	a.emitWorkbenchLocalRuntimeRebuilt(tabID)
-	return map[string]any{"kind": string(id.Kind), "identityGen": gen, "requestSeq": seq}
+	return map[string]any{"kind": string(id.Kind), "identityGen": gen, "requestSeq": seq, "state": "disconnected"}
 }
 
 // WorkbenchConnectRemote opens SSH stdio workbench + local Provider Broker.
+// When called against a reconnect_failed slot for the same host/workspace it
+// is a manual retry of the saved exact RuntimeTarget.
 func (a *App) WorkbenchConnectRemote(hostID, workspace string) error {
 	hostID = strings.TrimSpace(hostID)
 	workspace = strings.TrimSpace(workspace)
 	if hostID == "" || workspace == "" {
 		return fmt.Errorf("host and workspace are required")
 	}
+	a.workbenchStopReconnectSupervisor()
 	k := a.workbench()
 	k.transitionMu.Lock()
-	defer k.transitionMu.Unlock()
 	if remote := k.targets.Remote(); remote != nil && remote.Connected &&
 		remote.Identity.HostID == hostID && remote.Identity.Workspace == workspace {
 		tabID := a.workbenchProjectionTabID()
@@ -210,6 +265,7 @@ func (a *App) WorkbenchConnectRemote(hostID, workspace string) error {
 		}
 		k.mu.Unlock()
 		if cli == nil || cli.Generation() != remote.Generation {
+			k.transitionMu.Unlock()
 			return fmt.Errorf("Remote adapter is unavailable; reconnect the host")
 		}
 		// Rebind the projection before activation. Until ActivateRemote succeeds,
@@ -223,8 +279,10 @@ func (a *App) WorkbenchConnectRemote(hostID, workspace string) error {
 			}
 			k.mu.Unlock()
 			cli.SetCallbacks(a.workbenchClientCallbacks(remote.Generation, previousTabID))
+			k.transitionMu.Unlock()
 			return err
 		}
+		k.transitionMu.Unlock()
 		go a.workbenchRefreshSnapshot(remote.Generation, tabID)
 		go a.workbenchRefreshCatalog(remote.Generation)
 		a.emitWorkbenchTarget("connected", activeID, activeGen, requestSeq, "")
@@ -232,24 +290,66 @@ func (a *App) WorkbenchConnectRemote(hostID, workspace string) error {
 		a.emitWorkbenchRuntimeRebuilt(tabID, string(cli.State().RuntimeEpoch))
 		return nil
 	}
-	_, gen, err := k.targets.BeginRemoteConnect(hostID, workspace)
-	if err != nil {
-		return err
+	opts := workbenchConnectOptions{}
+	if remote := k.targets.Remote(); remote != nil &&
+		remote.Identity.HostID == hostID && remote.Identity.Workspace == workspace &&
+		remote.Target.SessionID != "" {
+		opts.ExactTarget = remote.Target
+		opts.ExactEpoch = remote.RuntimeEpoch
+		opts.RequireExact = true
+		opts.ExpectedFingerprint = remote.Fingerprint
+		opts.LogicalGen = remote.LogicalGen
 	}
-	committedID, committedGen, committedSeq := k.targets.Active()
-	a.emitWorkbenchTarget("connecting", committedID, committedGen, committedSeq, "")
+	k.transitionMu.Unlock()
+	return a.workbenchConnectRemoteCore(a.bootContext(), hostID, workspace, opts)
+}
+
+func (a *App) workbenchConnectRemoteCore(ctx context.Context, hostID, workspace string, opts workbenchConnectOptions) error {
+	k := a.workbench()
+	// Reserve the candidate generation under the transition fence, then perform
+	// SSH/bootstrap I/O without holding it. This keeps Switch Local and shutdown
+	// responsive even when a reconnect attempt is stuck in the network stack.
+	k.transitionMu.Lock()
+	var gen uint64
+	var err error
+	if opts.IsAutoReconnect {
+		gen = k.targets.NextAttachGeneration()
+		if err := k.targets.BeginAutoReconnect(opts.LogicalGen, gen, opts.Attempt); err != nil {
+			k.transitionMu.Unlock()
+			return err
+		}
+	} else {
+		_, gen, err = k.targets.BeginRemoteConnect(hostID, workspace)
+		if err != nil {
+			k.transitionMu.Unlock()
+			return err
+		}
+		committedID, committedGen, committedSeq := k.targets.Active()
+		a.emitWorkbenchTarget("connecting", committedID, committedGen, committedSeq, "")
+	}
+	_, intentGen, intentSeq := k.targets.Active()
+	k.transitionMu.Unlock()
 	committed := false
 	failureText := ""
 	defer func() {
 		if !committed {
+			k.transitionMu.Lock()
 			if k.targets.AbortRemoteConnect(gen) {
 				active, identityGen, requestSeq := k.targets.Active()
 				state := "disconnected"
 				if active.Kind == target.KindRemote {
-					state = "connected"
+					if remote := k.targets.Remote(); remote != nil {
+						state = string(remote.ConnState)
+						if state == "" {
+							state = "connected"
+						}
+					} else {
+						state = "connected"
+					}
 				}
 				a.emitWorkbenchTarget(state, active, identityGen, requestSeq, failureText)
 			}
+			k.transitionMu.Unlock()
 		}
 	}()
 	fail := func(err error) error {
@@ -269,8 +369,11 @@ func (a *App) WorkbenchConnectRemote(hostID, workspace string) error {
 	if err != nil {
 		return fail(err)
 	}
+	if opts.ExpectedFingerprint != "" && fp != opts.ExpectedFingerprint {
+		return fail(fmt.Errorf("host key fingerprint changed; refusing automatic reconnect"))
+	}
 	currentBuild := protocol.CurrentBuildID(version)
-	remoteBinary, err := a.workbenchEnsureRemoteCLI(hostID, entry, currentBuild)
+	remoteBinary, err := a.workbenchEnsureRemoteCLI(ctx, hostID, entry, currentBuild)
 	if err != nil {
 		return fail(err)
 	}
@@ -284,6 +387,9 @@ func (a *App) WorkbenchConnectRemote(hostID, workspace string) error {
 		return fail(err)
 	}
 	if len(missing) > 0 {
+		if opts.SkipProviderTrust {
+			return fail(fmt.Errorf("provider authorization no longer matches; reconnect explicitly to re-authorize"))
+		}
 		if err := a.workbenchRequestTrust(hostID, hostLabel, keyType, fp, workspace, missing); err != nil {
 			return fail(err)
 		}
@@ -347,7 +453,12 @@ func (a *App) WorkbenchConnectRemote(hostID, workspace string) error {
 		"protocolVersion": currentBuild.ProtocolVersion, "schemaHash": currentBuild.SchemaHash,
 	}
 	tabID := a.workbenchProjectionTabID()
-	cli, err := client.Connect(a.bootContext(), factory, gen, brokerOpts, buildID, workspace, a.workbenchClientCallbacks(gen, tabID))
+	if tabID == "" {
+		k.mu.Lock()
+		tabID = k.remoteTabID
+		k.mu.Unlock()
+	}
+	cli, err := client.Connect(ctx, factory, gen, brokerOpts, buildID, workspace, a.workbenchClientCallbacks(gen, tabID))
 	if err != nil {
 		return fail(err)
 	}
@@ -367,7 +478,7 @@ func (a *App) WorkbenchConnectRemote(hostID, workspace string) error {
 	if model == "" && len(refs) > 0 {
 		model = refs[0]
 	}
-	listRaw, err := cli.Request(a.bootContext(), string(protocol.MethodSessionList), protocol.SessionListParams{})
+	listRaw, err := cli.Request(ctx, string(protocol.MethodSessionList), protocol.SessionListParams{})
 	if err != nil {
 		return fail(fmt.Errorf("list Remote sessions: %w", err))
 	}
@@ -376,46 +487,99 @@ func (a *App) WorkbenchConnectRemote(hostID, workspace string) error {
 		return fail(fmt.Errorf("decode Remote sessions: %w", err))
 	}
 	sessions := listDecoded.(protocol.SessionListResult).Items
-	resumed := false
-	for _, session := range sessions {
-		if session.Runtime == nil || session.Runtime.RuntimeEpoch == "" {
-			continue
+	if opts.RequireExact {
+		foundExact := false
+		for _, session := range sessions {
+			if session.Target != opts.ExactTarget {
+				continue
+			}
+			epoch := protocol.RuntimeEpoch("")
+			if session.Runtime != nil {
+				epoch = session.Runtime.RuntimeEpoch
+			}
+			if epoch == "" {
+				return fail(fmt.Errorf("exact Remote session has no runtime epoch"))
+			}
+			useEpoch := epoch
+			if opts.ExactEpoch != "" && epoch != opts.ExactEpoch {
+				// Same target still exists but Host replaced the runtime epoch.
+				useEpoch = epoch
+			} else if opts.ExactEpoch != "" {
+				useEpoch = opts.ExactEpoch
+				// Prefer Host-advertised epoch when it matches.
+				if epoch == opts.ExactEpoch {
+					useEpoch = epoch
+				}
+			}
+			if err := cli.SelectSession(session.Target, useEpoch); err != nil {
+				return fail(err)
+			}
+			foundExact = true
+			break
 		}
-		if err := cli.SelectSession(session.Target, session.Runtime.RuntimeEpoch); err != nil {
-			continue
+		if !foundExact {
+			return fail(reconnect.ErrTargetMissing)
 		}
-		resumed = true
-		break
-	}
-	if !resumed {
-		if _, err := cli.CreateSession(a.bootContext(), model, ""); err != nil {
-			return fail(fmt.Errorf("create Remote session: %w", err))
+	} else {
+		resumed := false
+		for _, session := range sessions {
+			if session.Runtime == nil || session.Runtime.RuntimeEpoch == "" {
+				continue
+			}
+			if err := cli.SelectSession(session.Target, session.Runtime.RuntimeEpoch); err != nil {
+				continue
+			}
+			resumed = true
+			break
+		}
+		if !resumed {
+			if _, err := cli.CreateSession(ctx, model, ""); err != nil {
+				return fail(fmt.Errorf("create Remote session: %w", err))
+			}
 		}
 	}
 	var activeID target.Identity
 	var activeGen, requestSeq uint64
 	var previous *client.Client
-	subscribed, err := cli.SubscribeCommitted(a.bootContext(), protocol.HistoryMaxTurns, func(result protocol.SessionSubscribeResult) error {
-		catalog, err := workbenchLoadCatalog(a.bootContext(), cli)
+	activateProjection := false
+	subscribed, err := cli.SubscribeCommitted(ctx, protocol.HistoryMaxTurns, func(result protocol.SessionSubscribeResult) error {
+		// Catalog I/O is still candidate-local and cancellable. Only the atomic
+		// generation check + projection swap below needs the transition fence.
+		if opts.LogicalGen != 0 {
+			if remote := k.targets.Remote(); remote != nil && remote.LogicalGen != opts.LogicalGen && !opts.IsAutoReconnect {
+				return fmt.Errorf("stale logical remote slot")
+			}
+		}
+		catalog, err := workbenchLoadCatalog(ctx, cli)
 		if err != nil {
 			return fmt.Errorf("load Remote model catalog: %w", err)
 		}
-		sessionCatalog, err := workbenchLoadSessionCatalog(a.bootContext(), cli)
+		sessionCatalog, err := workbenchLoadSessionCatalog(ctx, cli)
 		if err != nil {
 			return fmt.Errorf("load Remote session catalog: %w", err)
 		}
+		k.transitionMu.Lock()
+		defer k.transitionMu.Unlock()
+		activateProjection = !k.targets.IsStale(intentGen, intentSeq)
 		if err := k.targets.MarkRemoteConnected(gen); err != nil {
 			return err
 		}
-		activeID, activeGen, requestSeq, err = k.targets.ActivateRemote(gen)
+		if activateProjection {
+			activeID, activeGen, requestSeq, err = k.targets.ActivateRemote(gen)
+		} else {
+			activeID, activeGen, requestSeq, err = k.targets.CommitBackgroundRemote(gen)
+		}
 		if err != nil {
 			return err
 		}
+		k.targets.SetRemoteSession(gen, result.Snapshot.Target, result.Snapshot.RuntimeEpoch, fp)
 		k.mu.Lock()
 		previous = k.remote
 		k.remote = cli
 		k.remoteGen = gen
-		k.remoteTabID = tabID
+		if activateProjection || k.remoteTabID == "" {
+			k.remoteTabID = tabID
+		}
 		k.remoteFingerprint = fp
 		k.providerAccess = providerAccess
 		k.snapshot = result.Snapshot
@@ -423,10 +587,10 @@ func (a *App) WorkbenchConnectRemote(hostID, workspace string) error {
 		k.sessionCatalog = sessionCatalog
 		k.mu.Unlock()
 		k.targets.SetRemoteBusy(result.Snapshot.Runtime.Running || result.Snapshot.Runtime.CurrentOperation != nil)
-		// Publish the Remote authority while SubscribeCommitted still holds the
-		// client projection fence. Pending-prompt replay and live events cannot
-		// overtake this epoch transition and be rejected as Local events.
-		a.emitWorkbenchRuntimeRebuilt(tabID, string(result.Snapshot.RuntimeEpoch))
+		if activateProjection && (!opts.IsAutoReconnect || opts.ExactEpoch == "" || result.Snapshot.RuntimeEpoch != opts.ExactEpoch) {
+			// Publish Remote authority while SubscribeCommitted still holds the fence.
+			a.emitWorkbenchRuntimeRebuilt(tabID, string(result.Snapshot.RuntimeEpoch))
+		}
 		return nil
 	})
 	if err != nil {
@@ -440,12 +604,17 @@ func (a *App) WorkbenchConnectRemote(hostID, workspace string) error {
 	k.targets.RememberRemote(target.RemoteHint{HostID: hostID, Workspace: workspace, Label: hostLabel})
 	a.saveLastRemoteWorkspace(hostID, workspace)
 	committed = true
-	a.emitWorkbenchTarget("connected", activeID, activeGen, requestSeq, "")
-	a.emitReady(a.ctx, tabID)
+	if activateProjection {
+		a.emitWorkbenchTarget("connected", activeID, activeGen, requestSeq, "")
+		a.emitReady(a.ctx, tabID)
+	} else {
+		// Background recovery only: notify without activating.
+		a.emitWorkbenchTargetState("connected", activeID, activeGen, requestSeq, "Remote session restored in the background. Switch back to Remote when ready.", 0, false)
+	}
 	return nil
 }
 
-func (a *App) workbenchEnsureRemoteCLI(hostID string, entry config.RemoteHostEntry, expected protocol.BuildID) (string, error) {
+func (a *App) workbenchEnsureRemoteCLI(ctx context.Context, hostID string, entry config.RemoteHostEntry, expected protocol.BuildID) (string, error) {
 	rt, err := a.remoteRT()
 	if err != nil {
 		return "", err
@@ -454,7 +623,7 @@ func (a *App) workbenchEnsureRemoteCLI(hostID string, entry config.RemoteHostEnt
 	if !ok {
 		return "", fmt.Errorf("remote manager cannot provision the Workbench CLI")
 	}
-	return manager.EnsureWorkbenchCLI(a.bootContext(), hostID, entry, expected)
+	return manager.EnsureWorkbenchCLI(ctx, hostID, entry, expected)
 }
 
 type workbenchPeerIdentitySource interface {
@@ -474,7 +643,10 @@ func authorizeWorkbenchPeer(factory transport.Factory, expectedFingerprint strin
 }
 
 // WorkbenchDisconnectRemote detaches when idle and revokes the Broker channel.
+// Cancels the auto-reconnect supervisor first. Busy remotes still refuse detach;
+// idle but unreachable remotes may clear the local slot.
 func (a *App) WorkbenchDisconnectRemote() error {
+	a.workbenchStopReconnectSupervisor()
 	k := a.workbench()
 	k.transitionMu.Lock()
 	defer k.transitionMu.Unlock()
@@ -591,7 +763,7 @@ func (a *App) WorkbenchRemoteRequest(method string, paramsJSON string) (string, 
 	k.mu.Unlock()
 	remoteState := k.targets.Remote()
 	if cli == nil || remoteState == nil || !remoteState.Connected || cliGen != remoteState.Generation {
-		return "", fmt.Errorf("CAPABILITY_UNAVAILABLE: remote not connected")
+		return "", remoteReconnectingErr()
 	}
 	var params any
 	if strings.TrimSpace(paramsJSON) != "" {
@@ -708,12 +880,22 @@ func (a *App) workbenchTransportFactory(hostID string, entry config.RemoteHostEn
 }
 
 func (a *App) emitWorkbenchTarget(state string, id target.Identity, gen, seq uint64, errText string) {
+	attempt, retryable := 0, false
+	if remote := a.workbench().targets.Remote(); remote != nil && id.Kind == target.KindRemote {
+		attempt = remote.Attempt
+		retryable = remote.Retryable || remote.ConnState == target.StateReconnectFailed || remote.ConnState == target.StateReconnecting
+	}
+	a.emitWorkbenchTargetState(state, id, gen, seq, errText, attempt, retryable)
+}
+
+func (a *App) emitWorkbenchTargetState(state string, id target.Identity, gen, seq uint64, errText string, attempt int, retryable bool) {
 	if a == nil || a.ctx == nil {
 		return
 	}
 	a.runtimeEvents.Emit(a.ctx, workbenchTargetEvent, WorkbenchTargetStateView{
 		State: state, Kind: id.Kind, HostID: id.HostID, Workspace: id.Workspace,
-		IdentityGen: gen, RequestSeq: seq, Error: errText, Reconnect: a.workbenchLastRemoteHint(),
+		IdentityGen: gen, RequestSeq: seq, Attempt: attempt, Retryable: retryable,
+		Error: errText, Reconnect: a.workbenchLastRemoteHint(),
 	})
 }
 

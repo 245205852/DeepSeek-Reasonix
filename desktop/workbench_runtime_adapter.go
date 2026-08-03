@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -12,6 +13,7 @@ import (
 	"reasonix/internal/remote/protocol"
 	"reasonix/internal/remote/workbench/client"
 	"reasonix/internal/remote/workbench/mirror"
+	"reasonix/internal/remote/workbench/reconnect"
 	"reasonix/internal/remote/workbench/target"
 )
 
@@ -140,33 +142,59 @@ func (a *App) workbenchClientCallbacks(generation uint64, tabID string) client.C
 			go a.workbenchRefreshCatalog(generation)
 		},
 		OnDisconnected: func() {
-			k := a.workbench()
-			id, identityGen, requestSeq, changed := k.targets.MarkRemoteDisconnected(generation)
-			if !changed {
-				return
-			}
-			k.mu.Lock()
-			if k.remoteGen != generation {
-				k.mu.Unlock()
-				return
-			}
-			projectionTabID := k.remoteTabID
-			if projectionTabID == "" {
-				projectionTabID = tabID
-			}
-			k.remote = nil
-			k.remoteGen = 0
-			k.remoteTabID = ""
-			k.remoteFingerprint = ""
-			k.providerAccess = nil
-			k.snapshot = protocol.SessionSnapshot{}
-			k.catalog = protocol.WorkspaceCatalogResult{}
-			k.sessionCatalog = protocol.SessionCatalogResult{}
-			k.mu.Unlock()
-			a.emitWorkbenchTarget("disconnected", id, identityGen, requestSeq, "Remote transport closed; reconnect to resume the Host session.")
-			a.emitReady(a.ctx, projectionTabID)
-			a.emitWorkbenchLocalRuntimeRebuilt(projectionTabID)
+			a.workbenchHandleTransportLost(generation, tabID)
 		},
+	}
+}
+
+// workbenchHandleTransportLost clears the physical client, keeps the logical
+// Remote slot and last snapshot, and starts the auto-reconnect supervisor.
+// Explicit disconnect and App shutdown cancel the supervisor instead.
+func (a *App) workbenchHandleTransportLost(generation uint64, tabID string) {
+	k := a.workbench()
+	id, identityGen, requestSeq, changed := k.targets.MarkRemoteDisconnected(generation)
+	if !changed {
+		return
+	}
+	k.mu.Lock()
+	if k.remoteGen != generation && k.remoteGen != 0 {
+		k.mu.Unlock()
+		return
+	}
+	projectionTabID := k.remoteTabID
+	if projectionTabID == "" {
+		projectionTabID = tabID
+	}
+	// Preserve snapshot/catalog/session identity for read-only projection and
+	// exact session recovery. Only the physical client is cleared.
+	k.remote = nil
+	k.remoteGen = 0
+	// Keep remoteTabID, fingerprint, providerAccess, and caches.
+	k.mu.Unlock()
+
+	remote := k.targets.Remote()
+	errText := "Remote transport closed; reconnecting…"
+	state := string(target.StateReconnecting)
+	attempt := 1
+	retryable := true
+	if remote != nil {
+		attempt = remote.Attempt
+		if attempt <= 0 {
+			attempt = 1
+		}
+		retryable = remote.Retryable
+		if remote.ConnState == target.StateReconnectFailed {
+			state = string(target.StateReconnectFailed)
+			errText = remote.Error
+			if errText == "" {
+				errText = "Remote reconnect failed"
+			}
+		}
+	}
+	a.emitWorkbenchTargetState(state, id, identityGen, requestSeq, errText, attempt, retryable)
+	// Do not emit Local runtime rebuilt — Remote remains the projection.
+	if remote != nil && remote.ConnState == target.StateReconnecting {
+		a.workbenchStartReconnectSupervisor(remote.LogicalGen, remote.Identity.HostID, remote.Identity.Workspace, projectionTabID)
 	}
 }
 
@@ -177,7 +205,30 @@ func workbenchWireEvent(notification protocol.SessionEvent, tabID string) wireEv
 	}
 }
 
-func (a *App) activeRemoteWorkbench() (*client.Client, protocol.SessionSnapshot, protocol.WorkspaceCatalogResult, string, bool) {
+// remoteRoute classifies the main-window workbench projection for AppBindings.
+type remoteRoute int
+
+const (
+	remoteRouteLocal remoteRoute = iota
+	remoteRouteConnected
+	remoteRouteUnavailable // projected Remote with no live physical client
+)
+
+func (a *App) remoteRoute() remoteRoute {
+	k := a.workbench()
+	id, _, _ := k.targets.Active()
+	if id.Kind != target.KindRemote {
+		return remoteRouteLocal
+	}
+	if _, _, _, _, ok := a.connectedRemoteWorkbench(); ok {
+		return remoteRouteConnected
+	}
+	return remoteRouteUnavailable
+}
+
+// connectedRemoteWorkbench returns the live physical Remote client when the
+// projection is Remote and the transport is up.
+func (a *App) connectedRemoteWorkbench() (*client.Client, protocol.SessionSnapshot, protocol.WorkspaceCatalogResult, string, bool) {
 	k := a.workbench()
 	id, _, _ := k.targets.Active()
 	if id.Kind != target.KindRemote {
@@ -192,9 +243,44 @@ func (a *App) activeRemoteWorkbench() (*client.Client, protocol.SessionSnapshot,
 	return k.remote, k.snapshot, k.catalog, k.remoteTabID, true
 }
 
+// projectedRemoteWorkbench returns the cached Remote projection even while
+// reconnecting. Mutations must not use this path.
+func (a *App) projectedRemoteWorkbench() (protocol.SessionSnapshot, protocol.WorkspaceCatalogResult, string, bool) {
+	k := a.workbench()
+	id, _, _ := k.targets.Active()
+	if id.Kind != target.KindRemote {
+		return protocol.SessionSnapshot{}, protocol.WorkspaceCatalogResult{}, "", false
+	}
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	return k.snapshot, k.catalog, k.remoteTabID, true
+}
+
+// activeRemoteWorkbench is the historical name for the connected Remote client.
+// Prefer connectedRemoteWorkbench / projectedRemoteWorkbench / remoteRoute for
+// new call sites. Callers that fall through to Local after a false ok MUST first
+// ensure the projection is not Remote-unavailable (see remoteMutationBlocked).
+func (a *App) activeRemoteWorkbench() (*client.Client, protocol.SessionSnapshot, protocol.WorkspaceCatalogResult, string, bool) {
+	return a.connectedRemoteWorkbench()
+}
+
 func (a *App) activeWorkbenchTargetIsRemote() bool {
 	id, _, _ := a.workbench().targets.Active()
 	return id.Kind == target.KindRemote
+}
+
+// remoteMutationBlocked returns a Remote reconnecting error when the active
+// projection is Remote but the physical client is unavailable. Local execution
+// must not run in that state.
+func (a *App) remoteMutationBlocked() error {
+	if a.remoteRoute() == remoteRouteUnavailable {
+		return remoteReconnectingErr()
+	}
+	return nil
+}
+
+func remoteReconnectingErr() error {
+	return fmt.Errorf("REMOTE_RECONNECTING: Remote Workbench is reconnecting; try again after the Host session is restored")
 }
 
 func remoteSavedSessionManagementErr() error {
@@ -210,16 +296,19 @@ func remoteAutoResearchUnavailableErr() error {
 }
 
 func (a *App) workbenchSnapshot() (protocol.SessionSnapshot, bool) {
-	_, snapshot, _, _, ok := a.activeRemoteWorkbench()
-	return snapshot, ok
+	if snapshot, _, _, ok := a.projectedRemoteWorkbench(); ok {
+		return snapshot, true
+	}
+	return protocol.SessionSnapshot{}, false
 }
 
 func (a *App) workbenchProjectTabMetas(metas []TabMeta) []TabMeta {
-	_, snapshot, _, tabID, ok := a.activeRemoteWorkbench()
+	snapshot, _, tabID, ok := a.projectedRemoteWorkbench()
 	if !ok {
 		return metas
 	}
 	id, _, _ := a.workbench().targets.Active()
+	remote := a.workbench().targets.Remote()
 	for i := range metas {
 		if metas[i].ID != tabID {
 			continue
@@ -231,13 +320,15 @@ func (a *App) workbenchProjectTabMetas(metas []TabMeta) []TabMeta {
 		metas[i].TopicID = string(snapshot.Meta.TopicID)
 		metas[i].TopicTitle = snapshot.Meta.Title
 		metas[i].Label = snapshot.Meta.ResolvedProfile.Model
-		metas[i].Ready = true
+		metas[i].Ready = remote != nil && remote.Connected
 		metas[i].Runtime = workbenchRuntimeView(snapshot)
 		metas[i].Running = snapshot.Runtime.Running
 		metas[i].PendingPrompt = snapshot.PendingPrompt != nil
 		metas[i].BackgroundJobs = len(snapshot.Jobs)
 		metas[i].CancelRequested = snapshot.Runtime.CancelRequested
-		metas[i].Cancellable = snapshot.Runtime.CurrentTurn != nil || snapshot.Runtime.CurrentOperation != nil
+		// Mutations disabled while reconnecting: not cancellable from Desktop.
+		metas[i].Cancellable = remote != nil && remote.Connected &&
+			(snapshot.Runtime.CurrentTurn != nil || snapshot.Runtime.CurrentOperation != nil)
 		metas[i].Mode = string(snapshot.Meta.ResolvedProfile.CollaborationMode)
 		metas[i].CollaborationMode = string(snapshot.Meta.ResolvedProfile.CollaborationMode)
 		metas[i].ToolApprovalMode = string(snapshot.Meta.ResolvedProfile.ToolApprovalMode)
@@ -246,6 +337,121 @@ func (a *App) workbenchProjectTabMetas(metas []TabMeta) []TabMeta {
 		metas[i].GoalStatus = string(snapshot.Meta.GoalStatus)
 	}
 	return metas
+}
+
+// workbenchStartReconnectSupervisor launches automatic exact-session recovery
+// for one logical slot. Desktop restarts never restore the supervisor.
+func (a *App) workbenchStartReconnectSupervisor(logicalGen uint64, hostID, workspace, tabID string) {
+	k := a.workbench()
+	k.reconnectMu.Lock()
+	defer k.reconnectMu.Unlock()
+	k.mu.Lock()
+	prev := k.reconnect
+	k.reconnect = nil
+	k.mu.Unlock()
+	if prev != nil {
+		prev.Stop()
+	}
+	sup := reconnect.New(reconnect.Options{}, func(ctx context.Context, attempt int) error {
+		return a.workbenchReconnectAttempt(ctx, logicalGen, hostID, workspace, tabID, attempt)
+	})
+	done, started := sup.StartAsync(a.bootContext())
+	if !started {
+		return
+	}
+	k.mu.Lock()
+	k.reconnect = sup
+	k.mu.Unlock()
+	go func() {
+		<-done
+		// Only the still-registered supervisor may mark window expiry. Explicit
+		// disconnect / replacement clears k.reconnect before Stop returns.
+		k := a.workbench()
+		k.mu.Lock()
+		stillMine := k.reconnect == sup
+		if stillMine {
+			k.reconnect = nil
+		}
+		k.mu.Unlock()
+		if !stillMine {
+			return
+		}
+		remote := k.targets.Remote()
+		if remote == nil || remote.LogicalGen != logicalGen {
+			return
+		}
+		if remote.Connected && remote.ConnState == target.StateConnected {
+			return
+		}
+		if remote.ConnState == target.StateReconnectFailed {
+			return
+		}
+		id, gen, seq, ok := k.targets.MarkReconnectFailed(logicalGen, "automatic reconnect window expired")
+		if ok {
+			a.emitWorkbenchTargetState(string(target.StateReconnectFailed), id, gen, seq, "automatic reconnect window expired", remote.Attempt, true)
+		}
+	}()
+}
+
+func (a *App) workbenchStopReconnectSupervisor() {
+	k := a.workbench()
+	k.reconnectMu.Lock()
+	defer k.reconnectMu.Unlock()
+	k.mu.Lock()
+	sup := k.reconnect
+	k.reconnect = nil
+	k.mu.Unlock()
+	if sup != nil {
+		sup.Stop()
+	}
+}
+
+// workbenchReconnectAttempt performs one failure-atomic candidate reconnect for
+// the saved exact RuntimeTarget. On success it commits under the transition fence.
+func (a *App) workbenchReconnectAttempt(ctx context.Context, logicalGen uint64, hostID, workspace, tabID string, attempt int) error {
+	k := a.workbench()
+	remote := k.targets.Remote()
+	if remote == nil || remote.LogicalGen != logicalGen {
+		return reconnect.ErrStaleSlot
+	}
+	if remote.Identity.HostID != hostID || remote.Identity.Workspace != workspace {
+		return reconnect.ErrStaleSlot
+	}
+	k.targets.UpdateReconnectAttempt(logicalGen, attempt, "")
+	id, gen, seq := k.targets.Active()
+	a.emitWorkbenchTargetState(string(target.StateReconnecting), id, gen, seq, reconnect.FormatAttemptError(attempt, nil), attempt, true)
+
+	// Reuse the full connect path with exact-session recovery. Manual connect
+	// and auto-reconnect share workbenchConnectRemoteCore.
+	err := a.workbenchConnectRemoteCore(ctx, hostID, workspace, workbenchConnectOptions{
+		LogicalGen:          logicalGen,
+		ExactTarget:         remote.Target,
+		ExactEpoch:          remote.RuntimeEpoch,
+		RequireExact:        remote.Target.SessionID != "",
+		ExpectedFingerprint: remote.Fingerprint,
+		SkipProviderTrust:   true, // auto-reconnect must not re-prompt trust
+		IsAutoReconnect:     true,
+		Attempt:             attempt,
+	})
+	if err != nil {
+		// Supervisor cancellation and logical-slot replacement are lifecycle
+		// fences, not reconnect failures. Do not overwrite a newer/manual state.
+		if ctx.Err() != nil || errors.Is(err, reconnect.ErrStaleSlot) {
+			return err
+		}
+		class := reconnect.ClassifyError(err)
+		k.targets.UpdateReconnectAttempt(logicalGen, attempt, err.Error())
+		id, gen, seq := k.targets.Active()
+		a.emitWorkbenchTargetState(string(target.StateReconnecting), id, gen, seq, reconnect.FormatAttemptError(attempt, err), attempt, true)
+		if class == reconnect.ClassStop {
+			id, gen, seq, changed := k.targets.MarkReconnectFailed(logicalGen, err.Error())
+			if changed {
+				a.emitWorkbenchTargetState(string(target.StateReconnectFailed), id, gen, seq, err.Error(), attempt, true)
+			}
+		}
+		return err
+	}
+	return nil
 }
 
 func workbenchRuntimeView(snapshot protocol.SessionSnapshot) SessionRuntimeView {
@@ -290,12 +496,8 @@ func (a *App) workbenchSessionCatalog() (protocol.SessionCatalogResult, bool) {
 	if id.Kind != target.KindRemote {
 		return protocol.SessionCatalogResult{}, false
 	}
-	remoteState := k.targets.Remote()
 	k.mu.Lock()
 	defer k.mu.Unlock()
-	if k.remote == nil || remoteState == nil || !remoteState.Connected || k.remoteGen != remoteState.Generation {
-		return protocol.SessionCatalogResult{}, false
-	}
 	return k.sessionCatalog, true
 }
 
@@ -453,8 +655,14 @@ func (a *App) workbenchMirrorSnapshot(cli *client.Client, snapshot protocol.Sess
 }
 
 func (a *App) workbenchRequest(method protocol.Method, params any) ([]byte, error) {
+	if err := a.remoteMutationBlocked(); err != nil {
+		return nil, err
+	}
 	cli, _, _, _, ok := a.activeRemoteWorkbench()
 	if !ok {
+		if a.activeWorkbenchTargetIsRemote() {
+			return nil, remoteReconnectingErr()
+		}
 		return nil, fmt.Errorf("CAPABILITY_UNAVAILABLE: active target is local")
 	}
 	ctx, cancel := context.WithTimeout(a.bootContext(), 30*time.Second)
@@ -466,27 +674,34 @@ func (a *App) workbenchSubmit(input, display, editedOriginal string, invocations
 	if a.workbench().targets.Connecting() {
 		return true, fmt.Errorf("Remote target is connecting; wait for the connection to finish")
 	}
-	cli, _, _, _, ok := a.activeRemoteWorkbench()
-	if !ok {
-		return false, nil
+	if a.activeWorkbenchTargetIsRemote() {
+		cli, _, _, _, ok := a.activeRemoteWorkbench()
+		if !ok {
+			// Never fall through to Local while Remote is the projection.
+			return true, remoteReconnectingErr()
+		}
+		input = strings.TrimSpace(input)
+		if input == "" {
+			return true, fmt.Errorf("input is required")
+		}
+		ctx, cancel := context.WithTimeout(a.bootContext(), 30*time.Second)
+		defer cancel()
+		_, err := cli.Request(ctx, string(protocol.MethodSessionSubmit), protocol.SessionSubmitParams{
+			Input: input, DisplayText: display, EditedOriginal: editedOriginal,
+			Invocations: invocations, DeliveryRecovery: recovery,
+		})
+		return true, err
 	}
-	input = strings.TrimSpace(input)
-	if input == "" {
-		return true, fmt.Errorf("input is required")
-	}
-	ctx, cancel := context.WithTimeout(a.bootContext(), 30*time.Second)
-	defer cancel()
-	_, err := cli.Request(ctx, string(protocol.MethodSessionSubmit), protocol.SessionSubmitParams{
-		Input: input, DisplayText: display, EditedOriginal: editedOriginal,
-		Invocations: invocations, DeliveryRecovery: recovery,
-	})
-	return true, err
+	return false, nil
 }
 
 func (a *App) workbenchSetProfile(patch protocol.ProfilePatch) (bool, error) {
+	if !a.activeWorkbenchTargetIsRemote() {
+		return false, nil
+	}
 	cli, snapshot, _, tabID, ok := a.activeRemoteWorkbench()
 	if !ok {
-		return false, nil
+		return true, remoteReconnectingErr()
 	}
 	ctx, cancel := context.WithTimeout(a.bootContext(), 30*time.Second)
 	defer cancel()

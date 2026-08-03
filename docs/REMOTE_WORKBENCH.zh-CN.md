@@ -72,6 +72,30 @@ Desktop → Host：`broker/stream/chunk`、`broker/stream/end`、`broker/catalog
 
 意外断连：runtime 保留 **5 分钟** 宽限后在空闲时快照退出。显式断开在空闲时立即退出；忙碌时禁止替换 Host。
 
+## 自动重连（仅本进程）
+
+已经成功建立的 Remote Workbench 在 SSH/rpcwire 意外断开后：
+
+- 主窗口**保持 Remote 投影**与最后确认快照（只读），**不会**自动切回 Local。
+- 所有 mutation（发送、取消、审批、profile、Goal、shell 等）返回 `REMOTE_RECONNECTING`，绝不能落到 Local controller。
+- 单个 supervisor 使用 full-jitter 指数退避（立即一次，随后 1s/2s/4s/8s，上限 15s），自动恢复窗口 **5 分钟**。
+- 恢复只查找保存的精确 `RuntimeTarget`；target 不存在则失败（禁止选“第一个 Session”、禁止自动创建）。
+- 同一 target 的 runtime epoch 被 Host 替换时，采用 Host 当前 epoch 并发送一次 `runtime:rebuilt`。
+- 窗口结束后进入 `reconnect_failed`，可用同一 `WorkbenchConnectRemote` 手动重试精确 Session。
+- 用户可随时切到 Local；后台恢复成功后**不得**自动抢回 Remote 投影。
+- 主机指纹变化、认证失败、Build ID 不匹配、Provider 授权失效会终止自动重试（需用户显式重连）。
+- 断线时未确认的 mutation **不会**自动重放；以 Host 快照为最终状态。
+- Desktop 新进程不会恢复 supervisor，也不会自动发起 SSH。
+
+## 单连接控制/数据优先级
+
+Remote 在 rpcwire 上启用可选双队列出站调度：
+
+- **控制**（最多 128 帧 / 16 MiB）：ping、取消、mutation、subscribe 与快照响应、broker cancel、catalog 控制通知。
+- **数据**（最多 256 帧 / 32 MiB）：stream chunk/end、session event/resync、大体积 history/file/git/research 响应。
+- 每队列严格 FIFO；连续 16 个控制帧后若 data 已排队则放行一帧 data，防止饥饿。已开始写出的帧不可抢占。
+- 队列超限会关闭连接（绝不静默丢帧），随后由重连 supervisor 接管恢复。
+
 ## Provider Trust
 
 持久授权键：`HostID + fingerprint` → allowed refs。绝不写入 API Key / base URL / Header / env 名 / 密码。

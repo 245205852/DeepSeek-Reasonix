@@ -65,6 +65,9 @@ type Options struct {
 	// by JSON-RPC, while allowing a protocol to poison transport-local state.
 	// The nil default preserves existing protocol behavior.
 	BeforeNotification func(method string, params json.RawMessage) error
+	// Outbound enables the optional dual-priority write scheduler. Nil keeps the
+	// original synchronous write mutex so ACP and other callers are unchanged.
+	Outbound *OutboundSchedulerOptions
 }
 
 // Conn is one bidirectional JSON-RPC 2.0 connection framed as NDJSON.
@@ -73,7 +76,8 @@ type Conn struct {
 	w    io.Writer
 	opts Options
 
-	wmu sync.Mutex
+	wmu       sync.Mutex
+	scheduler *outboundScheduler
 
 	nextID atomic.Int64
 
@@ -143,7 +147,21 @@ func NewConn(r io.Reader, w io.Writer, opts Options) *Conn {
 	if opts.MaxQueuedNotifications > 0 {
 		conn.notifyQueue = make(chan notificationCall, opts.MaxQueuedNotifications)
 	}
+	if opts.Outbound != nil {
+		// Capture conn methods after the struct exists. fail uses closeOnce so a
+		// recursive overflow fail from inside write is safe.
+		conn.scheduler = newOutboundScheduler(opts.Name, *opts.Outbound, conn.writeRaw, conn.fail)
+	}
 	return conn
+}
+
+// OutboundStats returns dual-queue high-water diagnostics when the optional
+// scheduler is enabled. The zero value is returned for unscheduled connections.
+func (c *Conn) OutboundStats() OutboundQueueStats {
+	if c == nil || c.scheduler == nil {
+		return OutboundQueueStats{}
+	}
+	return c.scheduler.stats()
 }
 
 // Handle registers a request handler. It is not safe to mutate registrations
@@ -394,7 +412,7 @@ func (c *Conn) serveRequest(ctx context.Context, id json.RawMessage, method stri
 		c.runAfterWrite(afterWrite, err)
 		return
 	}
-	writeErr := c.write(outbound{JSONRPC: "2.0", ID: id, Result: raw})
+	writeErr := c.write(outbound{JSONRPC: "2.0", ID: id, Result: raw}, OutboundMeta{Kind: FrameResponse, Method: method})
 	if writeErr != nil {
 		var tooLarge *FrameTooLargeError
 		if errors.As(writeErr, &tooLarge) {
@@ -457,7 +475,7 @@ func (c *Conn) Notify(method string, params any) error {
 	if err != nil {
 		return err
 	}
-	err = c.write(outbound{JSONRPC: "2.0", Method: method, Params: raw})
+	err = c.write(outbound{JSONRPC: "2.0", Method: method, Params: raw}, OutboundMeta{Kind: FrameNotification, Method: method})
 	if err != nil {
 		var tooLarge *FrameTooLargeError
 		if !errors.As(err, &tooLarge) {
@@ -495,7 +513,7 @@ func (c *Conn) Request(ctx context.Context, method string, params any) (json.Raw
 	}()
 
 	idRaw, _ := json.Marshal(id)
-	if err := c.write(outbound{JSONRPC: "2.0", ID: idRaw, Method: method, Params: raw}); err != nil {
+	if err := c.write(outbound{JSONRPC: "2.0", ID: idRaw, Method: method, Params: raw}, OutboundMeta{Kind: FrameRequest, Method: method}); err != nil {
 		var tooLarge *FrameTooLargeError
 		if !errors.As(err, &tooLarge) {
 			c.fail(err)
@@ -510,7 +528,7 @@ func (c *Conn) Request(ctx context.Context, method string, params any) (json.Raw
 	}
 }
 
-func (c *Conn) write(m outbound) error {
+func (c *Conn) write(m outbound, meta OutboundMeta) error {
 	var buf bytes.Buffer
 	enc := json.NewEncoder(&buf)
 	enc.SetEscapeHTML(false)
@@ -520,17 +538,29 @@ func (c *Conn) write(m outbound) error {
 	if limit := c.opts.MaxOutboundBytes; limit > 0 && buf.Len() > limit {
 		return &FrameTooLargeError{Direction: "outbound", Size: buf.Len(), Limit: limit}
 	}
-	c.wmu.Lock()
-	defer c.wmu.Unlock()
-	for buf.Len() > 0 {
-		n, err := c.w.Write(buf.Bytes())
+	payload := append([]byte(nil), buf.Bytes()...)
+	if c.scheduler != nil {
+		return c.scheduler.enqueue(payload, c.scheduler.opts.Classifier(meta))
+	}
+	return c.writeRaw(payload)
+}
+
+// writeRaw is the physical writer. With a scheduler it runs on a single
+// goroutine; without one it is called under wmu.
+func (c *Conn) writeRaw(payload []byte) error {
+	if c.scheduler == nil {
+		c.wmu.Lock()
+		defer c.wmu.Unlock()
+	}
+	for len(payload) > 0 {
+		n, err := c.w.Write(payload)
 		if err != nil {
 			return err
 		}
 		if n == 0 {
 			return io.ErrShortWrite
 		}
-		buf.Next(n)
+		payload = payload[n:]
 	}
 	return nil
 }
@@ -546,7 +576,7 @@ func (c *Conn) writeError(id json.RawMessage, code int, message string, data any
 			raw = encoded
 		}
 	}
-	return c.write(outbound{JSONRPC: "2.0", ID: id, Error: &ErrorObject{Code: code, Message: message, Data: raw}})
+	return c.write(outbound{JSONRPC: "2.0", ID: id, Error: &ErrorObject{Code: code, Message: message, Data: raw}}, OutboundMeta{Kind: FrameError})
 }
 
 func (c *Conn) respondError(id json.RawMessage, code int, message string, data any) {
@@ -582,6 +612,9 @@ func (c *Conn) shutdown(err error) {
 		c.closeErr = err
 		c.closeMu.Unlock()
 		close(c.closed)
+		if c.scheduler != nil {
+			c.scheduler.fail(err)
+		}
 		c.pmu.Lock()
 		for id, ch := range c.pending {
 			closedErr := err

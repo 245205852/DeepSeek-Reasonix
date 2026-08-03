@@ -571,7 +571,17 @@ function RemoteStatusBarChip({
   const activeRemoteHost = workbenchTarget?.kind === "ssh"
     ? hosts.find((host) => host.id === workbenchTarget.hostId)
     : undefined;
-  const triggerLabel = activeRemoteHost
+  const workbenchState = workbenchTarget?.state;
+  const workbenchReconnectLabel = workbenchTarget?.kind === "ssh" && activeRemoteHost && (
+    workbenchState === "reconnecting" || workbenchState === "reconnect_failed"
+  )
+    ? workbenchState === "reconnecting"
+      ? t("remote.banner.reconnecting", { n: workbenchTarget?.attempt ?? 1 })
+      : t("remote.status.failed")
+    : null;
+  const triggerLabel = workbenchReconnectLabel
+    ? `${activeRemoteHost?.label ?? "SSH"} · ${workbenchReconnectLabel}`
+    : activeRemoteHost
     ? t("remote.statusBar.activeWorkspace", { host: activeRemoteHost.label, workspace: compactPath(workbenchTarget?.workspace) })
     : worst.state === "stopped" && !worst.error
     ? t("remote.statusBar.disconnected")

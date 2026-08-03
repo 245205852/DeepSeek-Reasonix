@@ -1,20 +1,36 @@
 /**
  * Workbench Target projection helpers for Local vs Remote adapters.
  * Desktop always starts Local; Remote is opt-in via reconnect / Connect.
+ *
+ * After an unexpected SSH drop, kind stays "ssh" with state reconnecting or
+ * reconnect_failed: the last Remote snapshot stays visible and mutations are
+ * disabled until recovery or an explicit switch to Local.
  */
 
 import { app } from "./bridge";
 
 export type WorkbenchTargetKind = "local" | "ssh";
 
+export type WorkbenchTargetState =
+  | "connecting"
+  | "connected"
+  | "reconnecting"
+  | "reconnect_failed"
+  | "disconnected"
+  | "background_activity"
+  | string;
+
 export type WorkbenchActiveTarget = {
-  state?: string;
+  state?: WorkbenchTargetState;
   kind: WorkbenchTargetKind;
   hostId?: string;
   workspace?: string;
   identityGen?: number;
   requestSeq?: number;
+  attempt?: number;
+  retryable?: boolean;
   error?: string;
+  reconnect?: WorkbenchRemoteHint;
 };
 
 export type WorkbenchRemoteHint = {
@@ -33,10 +49,20 @@ export type ProviderTrustPrompt = {
   warning: string;
 };
 
-/** True while the backend is preparing a candidate target. The identity in
- * the event remains the currently committed target until activation. */
+/** True while the backend is preparing a candidate target, auto-recovering, or
+ * stuck in reconnect_failed. Mutations stay disabled; the last Remote
+ * transcript remains visible. */
 export function workbenchTargetTransitioning(target: WorkbenchActiveTarget): boolean {
-  return target.state === "connecting";
+  return (
+    target.state === "connecting" ||
+    target.state === "reconnecting" ||
+    target.state === "reconnect_failed"
+  );
+}
+
+/** True when the status bar should offer a manual reconnect retry. */
+export function workbenchRemoteRetryable(target: WorkbenchActiveTarget): boolean {
+  return target.kind === "ssh" && target.state === "reconnect_failed" && target.retryable === true;
 }
 
 /** Resolve the workspace used by one-click Remote connections. */

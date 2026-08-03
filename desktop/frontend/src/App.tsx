@@ -43,7 +43,11 @@ import { createBoundedRefreshCoordinator, sameTabMetaLists, shouldRefreshTabMeta
 import { clearLegacyLangPref, normalizeLangPref, readLegacyLangPref, t, useI18n, useT, type Translator } from "./lib/i18n";
 import { localizedNoticeText, useController, type Item, type LiveStream } from "./lib/useController";
 import { app, onEvent, onProjectTreeChanged, onReady, onRuntimeRebuilt, onSessionRecovered, onWorkbenchTarget, openExternal } from "./lib/bridge";
-import { preferredRemoteWorkspace, workbenchTargetTransitioning, type WorkbenchActiveTarget } from "./lib/workbenchTarget";
+import {
+  preferredRemoteWorkspace,
+  workbenchTargetTransitioning,
+  type WorkbenchActiveTarget,
+} from "./lib/workbenchTarget";
 import { generativeMusic, isGenerativeMusicEnabled } from "./lib/generative-music";
 import { clearAttentionChimeKeys, playAttentionChime, playSuccessChime, shouldPlayAttentionChimeForEvent } from "./lib/sound";
 import { NoticeCard, Transcript } from "./components/Transcript";
@@ -287,6 +291,7 @@ const HistoryPanel = lazy(() => import("./components/HistoryPanel").then((module
 const SettingsPanel = lazy(() => import("./components/SettingsPanelEntry").then((module) => ({ default: module.SettingsPanel })));
 const RemotePanel = lazy(() => import("./components/RemotePanel").then((module) => ({ default: module.RemotePanel })));
 const TerminalPanel = lazy(() => import("./components/TerminalPanel").then((module) => ({ default: module.TerminalPanel })));
+const RemoteReconnectBanner = lazy(() => import("./components/RemoteReconnectBanner"));
 
 const CHAT_MIN_WIDTH = 400;
 const CHAT_COMFORT_MIN_WIDTH = 560;
@@ -4667,6 +4672,11 @@ export default function App() {
 
           {state.meta?.startupErr && (
             <div className="banner banner--error">{t("topbar.startupError", { msg: state.meta.startupErr })}</div>
+          )}
+          {workbenchTarget.kind === "ssh" && workbenchTarget.state?.startsWith("reconnect") && (
+            <Suspense fallback={null}>
+              <RemoteReconnectBanner target={workbenchTarget} onTargetChange={setWorkbenchTarget} />
+            </Suspense>
           )}
           {configLoadWarnings.length > 0 && (
             <div className="banner banner--warning banner--actionable">

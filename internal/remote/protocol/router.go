@@ -88,6 +88,7 @@ func (r *Router) WireOptions() rpcwire.Options {
 		Name: "remote", MaxInboundBytes: FrameBytes, MaxOutboundBytes: FrameBytes,
 		StrictJSONRPC: true, MaxConcurrentHandlers: RPCConcurrentHandlers, MaxQueuedNotifications: RPCQueuedNotifications,
 		BeforeRequest: r.BeforeRequest, BeforeNotification: r.BeforeNotification,
+		Outbound:      RemoteWireOutbound(),
 	}
 }
 

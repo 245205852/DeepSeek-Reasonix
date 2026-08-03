@@ -1,6 +1,10 @@
 package target
 
-import "testing"
+import (
+	"testing"
+
+	"reasonix/internal/remote/protocol"
+)
 
 func TestManagerStartsLocalAndFencesSwitch(t *testing.T) {
 	m := New()
@@ -167,7 +171,7 @@ func TestSuccessfulReplacementPromotesAtomically(t *testing.T) {
 	}
 }
 
-func TestManagerUnexpectedDisconnectReturnsToLocalAndClearsBusy(t *testing.T) {
+func TestManagerUnexpectedDisconnectKeepsRemoteProjection(t *testing.T) {
 	m := New()
 	_, attachGen, err := m.BeginRemoteConnect("lab", "/work")
 	if err != nil {
@@ -179,19 +183,111 @@ func TestManagerUnexpectedDisconnectReturnsToLocalAndClearsBusy(t *testing.T) {
 	if _, _, _, err := m.ActivateRemote(attachGen); err != nil {
 		t.Fatal(err)
 	}
+	m.SetRemoteSession(attachGen, protocol.RuntimeTarget{WorkspaceID: "ws", SessionID: "sess"}, "epoch-1", "fp")
 	m.SetRemoteBusy(true)
 	id, _, _, changed := m.MarkRemoteDisconnected(attachGen)
-	if !changed || id.Kind != KindLocal {
-		t.Fatalf("disconnect = %+v changed=%v", id, changed)
+	if !changed || id.Kind != KindRemote {
+		t.Fatalf("disconnect = %+v changed=%v, want keep Remote projection", id, changed)
 	}
 	remote := m.Remote()
-	if remote == nil || remote.Connected {
+	if remote == nil || remote.Connected || remote.ConnState != StateReconnecting {
 		t.Fatalf("remote lifecycle = %+v", remote)
 	}
+	if remote.Target.SessionID != "sess" || remote.RuntimeEpoch != "epoch-1" {
+		t.Fatalf("exact session not preserved: %+v", remote)
+	}
+	if !m.ProjectedRemote() || m.ConnectedRemote() {
+		t.Fatal("projected remote should be true and connected false")
+	}
+	// Manual retry of the same slot is allowed after busy was cleared by disconnect.
 	if _, _, err := m.BeginRemoteConnect("lab", "/work"); err != nil {
 		t.Fatalf("reconnect remained fenced as busy: %v", err)
 	}
 	if _, _, _, changed := m.MarkRemoteDisconnected(attachGen); changed {
 		t.Fatal("stale disconnect changed replacement connection")
+	}
+}
+
+func TestManagerLatePhysicalCallbackIgnored(t *testing.T) {
+	m := New()
+	_, firstGen, _ := m.BeginRemoteConnect("lab", "/work")
+	_ = m.MarkRemoteConnected(firstGen)
+	_, _, _, _ = m.ActivateRemote(firstGen)
+	_, _, _, _ = m.MarkRemoteDisconnected(firstGen)
+
+	phys := m.NextAttachGeneration()
+	if err := m.BeginAutoReconnect(m.Remote().LogicalGen, phys, 2); err != nil {
+		t.Fatal(err)
+	}
+	_ = m.MarkRemoteConnected(phys)
+	if _, _, _, err := m.ActivateRemote(phys); err != nil {
+		t.Fatal(err)
+	}
+	// Late disconnect from the first physical generation must not tear down the winner.
+	if _, _, _, changed := m.MarkRemoteDisconnected(firstGen); changed {
+		t.Fatal("late disconnect affected winner")
+	}
+	if remote := m.Remote(); remote == nil || !remote.Connected || remote.Generation != phys {
+		t.Fatalf("winner lost: %+v", remote)
+	}
+}
+
+func TestManagerReconnectFailedPreservesSlot(t *testing.T) {
+	m := New()
+	_, gen, _ := m.BeginRemoteConnect("lab", "/work")
+	_ = m.MarkRemoteConnected(gen)
+	_, _, _, _ = m.ActivateRemote(gen)
+	m.SetRemoteSession(gen, protocol.RuntimeTarget{WorkspaceID: "ws", SessionID: "sess"}, "epoch-1", "fp")
+	_, _, _, _ = m.MarkRemoteDisconnected(gen)
+	logical := m.Remote().LogicalGen
+	id, _, _, ok := m.MarkReconnectFailed(logical, "window expired")
+	if !ok || id.Kind != KindRemote {
+		t.Fatalf("failed = %+v ok=%v", id, ok)
+	}
+	remote := m.Remote()
+	if remote.ConnState != StateReconnectFailed || remote.Target.SessionID != "sess" {
+		t.Fatalf("remote = %+v", remote)
+	}
+	// Manual retry continues the exact target.
+	_, retryGen, err := m.BeginRemoteConnect("lab", "/work")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if m.connecting == nil || m.connecting.Target.SessionID != "sess" {
+		t.Fatalf("manual retry lost target: %+v", m.connecting)
+	}
+	_ = retryGen
+}
+
+func TestCommitBackgroundRemoteDoesNotStealProjection(t *testing.T) {
+	m := New()
+	_, gen, _ := m.BeginRemoteConnect("lab", "/work")
+	_ = m.MarkRemoteConnected(gen)
+	_, _, _, _ = m.ActivateRemote(gen)
+	m.SwitchLocal()
+	_, localGen, localSeq := m.Active()
+	_, disconnectedGen, disconnectedSeq, _ := m.MarkRemoteDisconnected(gen)
+	if disconnectedGen != localGen || disconnectedSeq != localSeq {
+		t.Fatalf("background disconnect invalidated Local token: before=(%d,%d) after=(%d,%d)", localGen, localSeq, disconnectedGen, disconnectedSeq)
+	}
+
+	phys := m.NextAttachGeneration()
+	if err := m.BeginAutoReconnect(m.Remote().LogicalGen, phys, 1); err != nil {
+		t.Fatal(err)
+	}
+	_ = m.MarkRemoteConnected(phys)
+	_, beforeGen, beforeSeq := m.Active()
+	active, afterGen, afterSeq, err := m.CommitBackgroundRemote(phys)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if active.Kind != KindLocal {
+		t.Fatalf("background commit stole projection: %+v", active)
+	}
+	if afterGen != beforeGen || afterSeq != beforeSeq {
+		t.Fatalf("background commit invalidated Local token: before=(%d,%d) after=(%d,%d)", beforeGen, beforeSeq, afterGen, afterSeq)
+	}
+	if remote := m.Remote(); remote == nil || !remote.Connected {
+		t.Fatalf("background remote not connected: %+v", remote)
 	}
 }

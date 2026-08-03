@@ -80,6 +80,7 @@ func Connect(ctx context.Context, factory transport.Factory, gen uint64, brokerO
 		Name: "workbench-desktop", StrictJSONRPC: true,
 		MaxInboundBytes: protocol.FrameBytes, MaxOutboundBytes: protocol.FrameBytes,
 		MaxQueuedNotifications: protocol.RPCQueuedNotifications,
+		Outbound:               protocol.RemoteWireOutbound(),
 	})
 	desktopBroker, err := broker.Attach(wire, brokerOpts)
 	if err != nil {

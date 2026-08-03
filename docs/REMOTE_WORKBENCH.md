@@ -58,6 +58,44 @@ Catalog entries are non-secret and include `toolCallReasoning` / `warnOnMissingT
 - One `activeTarget` projection; hidden Target events use badge/Toast only (no global modal for hidden approvals).
 - Desktop restart always opens Local and only shows a **Reconnect** hint for the last Remote (no auto SSH / AskPass / trust).
 
+## Automatic reconnect (in-process)
+
+When an already-established Remote Workbench loses its SSH/rpcwire transport
+unexpectedly:
+
+- The main window **keeps the Remote projection** and the last confirmed
+  snapshot (read-only). It does **not** auto-switch to Local.
+- Mutations (submit, cancel, approval, profile, Goal, shell, …) return
+  `REMOTE_RECONNECTING` and never fall through to the Local controller.
+- A single supervisor retries with full-jitter exponential backoff
+  (immediate, then 1s / 2s / 4s / 8s ceilings, max 15s) for up to **5 minutes**.
+- Recovery restores the **exact** saved `RuntimeTarget`. If that target is gone,
+  reconnect fails closed (no “first session” fallback, no auto-create).
+- If the Host replaced the runtime epoch for the same target, Desktop adopts the
+  Host epoch and emits one `runtime:rebuilt`.
+- After the window expires the state is `reconnect_failed` with a manual
+  **Retry** that reuses `WorkbenchConnectRemote` for the same target.
+- Switching to Local is always available. Background recovery may still succeed
+  afterwards, but it must **not** auto-steal the projection.
+- Host key fingerprint changes, auth failures, Build ID mismatches, and revoked
+  Provider trust stop automatic retries (explicit user reconnect required).
+- Unconfirmed mutations are **not** auto-replayed after reconnect; the Host
+  snapshot is the source of truth.
+- Desktop process restart never resumes the supervisor or opens SSH by itself.
+
+## Control/data priority on one SSH stdio link
+
+Remote peers enable an optional rpcwire dual-queue outbound scheduler:
+
+- **Control** (max 128 frames / 16 MiB): ping, cancel, mutations, subscribe +
+  snapshot responses, broker cancel, catalog control notifications.
+- **Data** (max 256 frames / 32 MiB): stream chunks/end, session events/resync,
+  large history/file/git/research responses.
+- Each queue is strict FIFO. A control burst of 16 admits one queued data frame
+  to prevent starvation. Frames already being written are never preempted.
+- Queue overflow fails the connection (no silent drops); the reconnect
+  supervisor then recovers.
+
 ## Workspace selection
 
 One-click Remote connections select the Host workspace in this order:
