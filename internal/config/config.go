@@ -1258,10 +1258,14 @@ type ProviderEntry struct {
 	ResponsesStateful *bool `toml:"responses_stateful"`
 	resolvedAPIKey    string
 	resolvedSource    CredentialSource
-	BalanceURL        string                       `toml:"balance_url"` // optional; a provider-specific wallet-balance endpoint (DeepSeek: https://api.deepseek.com/user/balance). Empty = no balance readout.
-	ContextWindow     int                          `toml:"context_window"`
-	Price             *provider.Pricing            `toml:"price"`  // legacy/provider-wide fallback
-	Prices            map[string]*provider.Pricing `toml:"prices"` // optional per-model prices; keys are model ids
+	BalanceURL        string `toml:"balance_url"` // optional; a provider-specific wallet-balance endpoint (DeepSeek: https://api.deepseek.com/user/balance). Empty = no balance readout.
+	ContextWindow     int    `toml:"context_window"`
+	// MaxOutputTokens is a protocol-neutral total output budget. Zero lets the
+	// provider choose a safe default, a positive value is explicit, and a
+	// negative value omits optional wire limits. Anthropic still requires one.
+	MaxOutputTokens int                          `toml:"max_output_tokens"`
+	Price           *provider.Pricing            `toml:"price"`  // legacy/provider-wide fallback
+	Prices          map[string]*provider.Pricing `toml:"prices"` // optional per-model prices; keys are model ids
 
 	persistedOfficialCurrency string
 
@@ -1290,7 +1294,8 @@ type ProviderEntry struct {
 	VisionDetail string `toml:"vision_detail"`
 	// ReasoningProtocol selects the request shape for OpenAI-compatible reasoning
 	// models. Empty/auto uses the model capability registry plus endpoint
-	// heuristics; none disables automatic reasoning controls for this provider.
+	// heuristics; glm selects GLM's thinking.type toggle; none disables automatic
+	// reasoning controls for this provider.
 	ReasoningProtocol string `toml:"reasoning_protocol"`
 	// SupportedEfforts lists the /effort levels this provider/model exposes.
 	// When non-empty, it overrides the built-in defaults derived from
@@ -1321,6 +1326,9 @@ type ProviderModelOverride struct {
 	// Zero inherits ProviderEntry.ContextWindow so existing configurations keep
 	// their current compaction behavior.
 	ContextWindow int `toml:"context_window"`
+	// MaxOutputTokens overrides the provider-wide output budget. Zero inherits;
+	// positive values set a cap and negative values omit optional wire limits.
+	MaxOutputTokens int `toml:"max_output_tokens"`
 }
 
 // ModelList returns the models this provider exposes: the explicit `models` list,
@@ -1468,6 +1476,9 @@ func (e *ProviderEntry) applyModelOverride() {
 	}
 	if ov.ContextWindow > 0 {
 		e.ContextWindow = ov.ContextWindow
+	}
+	if ov.MaxOutputTokens != 0 {
+		e.MaxOutputTokens = ov.MaxOutputTokens
 	}
 }
 

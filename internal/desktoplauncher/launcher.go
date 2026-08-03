@@ -69,10 +69,15 @@ func ResolveInstallRoot() (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("resolve launcher path: %w", err)
 	}
-	if resolved, resolveErr := filepath.EvalSymlinks(exe); resolveErr == nil {
-		exe = resolved
+	return resolveInstallRoot(exe)
+}
+
+func resolveInstallRoot(exe string) (string, error) {
+	resolved, err := resolveExecutablePath(exe)
+	if err != nil {
+		return "", fmt.Errorf("resolve launcher path: %w", err)
 	}
-	return filepath.Clean(filepath.Dir(exe)), nil
+	return filepath.Clean(filepath.Dir(resolved)), nil
 }
 
 // ResolveDesktopPath resolves current.json when present. A present but invalid

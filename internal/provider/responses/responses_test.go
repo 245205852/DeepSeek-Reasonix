@@ -44,8 +44,11 @@ func writeEvents(w http.ResponseWriter, events ...string) {
 func TestDetectVendorAndModeDefaults(t *testing.T) {
 	tests := []struct{ url, vendor, mode string }{
 		{"https://api.deepseek.com", "deepseek", "stateless"},
+		{"https://eu.deepseek.com/v1", "deepseek", "stateless"},
 		{"https://dashscope.aliyuncs.com/compatible-mode/v1", "dashscope", "stateful"},
 		{"https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1", "dashscope", "stateful"},
+		{"https://api.deepseek.com.attacker.example/v1", "", "stateful"},
+		{"https://example.com/api.deepseek.com/v1", "", "stateful"},
 		{"https://example.com/v1", "", "stateful"},
 	}
 	for _, test := range tests {
@@ -79,6 +82,53 @@ func TestDeepSeekEffortUsesResponsesReasoningShape(t *testing.T) {
 		if got != test.want {
 			t.Errorf("effort %q serialized as %q, want %q", test.effort, got, test.want)
 		}
+	}
+}
+
+func TestRequestSerializesExplicitMaxOutputTokens(t *testing.T) {
+	client := New(Config{Name: "responses", BaseURL: "https://example.com", Model: "model"}).(*client)
+	body, _, _ := client.buildRequestBody(provider.Request{
+		Messages:  []provider.Message{{Role: provider.RoleUser, Content: "hi"}},
+		MaxTokens: 32 * 1024,
+	})
+	if got := body["max_output_tokens"]; got != 32*1024 {
+		t.Fatalf("max_output_tokens = %#v, want 32768", got)
+	}
+}
+
+func TestRequestUsesOnlySafeProviderOutputDefaults(t *testing.T) {
+	message := []provider.Message{{Role: provider.RoleUser, Content: "hi"}}
+
+	deepseek := New(Config{Name: "deepseek", BaseURL: "https://api.deepseek.com", Model: "deepseek-v4-flash"}).(*client)
+	deepseekBody, _, _ := deepseek.buildRequestBody(provider.Request{Messages: message})
+	if got := deepseekBody["max_output_tokens"]; got != provider.DefaultReasoningOutputTokens {
+		t.Fatalf("DeepSeek max_output_tokens = %#v, want %d", got, provider.DefaultReasoningOutputTokens)
+	}
+
+	for _, effort := range []string{"none", "disabled", "off", " NONE "} {
+		thinkingDisabled := New(Config{Name: "deepseek", BaseURL: "https://api.deepseek.com", Model: "deepseek-v4-flash", Effort: effort}).(*client)
+		thinkingDisabledBody, _, _ := thinkingDisabled.buildRequestBody(provider.Request{Messages: message})
+		if _, exists := thinkingDisabledBody["max_output_tokens"]; exists {
+			t.Fatalf("thinking-disabled DeepSeek effort %q received an automatic output budget: %#v", effort, thinkingDisabledBody)
+		}
+	}
+
+	explicitThinkingDisabled := New(Config{Name: "deepseek", BaseURL: "https://api.deepseek.com", Model: "deepseek-v4-flash", Effort: "none", MaxOutputTokens: 8192}).(*client)
+	explicitThinkingDisabledBody, _, _ := explicitThinkingDisabled.buildRequestBody(provider.Request{Messages: message})
+	if got := explicitThinkingDisabledBody["max_output_tokens"]; got != 8192 {
+		t.Fatalf("explicit thinking-disabled DeepSeek budget = %#v, want 8192", got)
+	}
+
+	unknown := New(Config{Name: "responses", BaseURL: "https://example.com", Model: "model"}).(*client)
+	unknownBody, _, _ := unknown.buildRequestBody(provider.Request{Messages: message})
+	if _, exists := unknownBody["max_output_tokens"]; exists {
+		t.Fatalf("unknown Responses endpoint received an inferred output budget: %#v", unknownBody)
+	}
+
+	disabled := New(Config{Name: "deepseek", BaseURL: "https://api.deepseek.com", Model: "deepseek-v4-flash", MaxOutputTokens: -1}).(*client)
+	disabledBody, _, _ := disabled.buildRequestBody(provider.Request{Messages: message})
+	if _, exists := disabledBody["max_output_tokens"]; exists {
+		t.Fatalf("disabled DeepSeek Responses budget remained present: %#v", disabledBody)
 	}
 }
 

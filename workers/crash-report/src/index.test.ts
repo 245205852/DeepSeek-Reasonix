@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+﻿import { describe, expect, it } from "vitest";
 import {
   groupFingerprintFromPath,
   isDevelopmentReport,
@@ -11,6 +11,7 @@ import {
   Metrics,
   CLI_TELEMETRY_SCHEMA_SQL,
   ensureCLITelemetrySchema,
+  refreshMetricUserRollup,
   severityForReport,
   telemetryTableNames,
 } from "./index";
@@ -204,6 +205,85 @@ describe("telemetry deployment order compatibility", () => {
   });
 });
 
+function fakeRollupDB(options: { failAtQuery?: number } = {}) {
+  const cursor = { next_signal: 0 };
+  const queried: string[] = [];
+  const batches: string[][] = [];
+  const db = {
+    prepare(sql: string) {
+      const stmt = {
+        sql,
+        binds: [] as unknown[],
+        bind(...args: unknown[]) {
+          stmt.binds = args;
+          return stmt;
+        },
+        async first() {
+          return sql.includes("FROM metric_user_rollup_state") ? { next_signal: cursor.next_signal } : null;
+        },
+        async all() {
+          if (!sql.includes("COUNT(DISTINCT install_id)")) return { results: [] };
+          const nth = queried.length;
+          queried.push(String(stmt.binds[0]));
+          if (options.failAtQuery === nth) throw new Error("D1 DB exceeded its CPU time limit and was reset");
+          return { results: [{ bucket: "dark", total: 7 }] };
+        },
+        async run() {
+          if (sql.includes("INSERT INTO metric_user_rollup_state")) cursor.next_signal = Number(stmt.binds[0]);
+          return {};
+        },
+      };
+      return stmt;
+    },
+    async batch(stmts: { sql: string }[]) {
+      batches.push(stmts.map((s) => s.sql));
+      return [];
+    },
+  } as unknown as D1Database;
+  return { env: { DB: db } as unknown as Parameters<typeof refreshMetricUserRollup>[0], cursor, queried, batches };
+}
+
+describe("metric_user rollup", () => {
+  it("walks the whole signal list across runs without repeating one", async () => {
+    const { env, cursor, queried } = fakeRollupDB();
+
+    await refreshMetricUserRollup(env, 3);
+    expect(cursor.next_signal).toBe(3);
+    await refreshMetricUserRollup(env, 3);
+    expect(cursor.next_signal).toBe(6);
+
+    expect(queried).toHaveLength(6);
+    expect(new Set(queried).size).toBe(6);
+  });
+
+  it("wraps the cursor back to the start after a full pass", async () => {
+    const { env, cursor, queried } = fakeRollupDB();
+    await refreshMetricUserRollup(env, 10_000);
+    expect(queried.length).toBeGreaterThan(50);
+    expect(new Set(queried).size).toBe(queried.length);
+    expect(cursor.next_signal).toBe(0);
+  });
+
+  it("moves past a signal whose query is abandoned instead of retrying it forever", async () => {
+    const { env, cursor, queried } = fakeRollupDB({ failAtQuery: 1 });
+    await refreshMetricUserRollup(env, 3);
+    expect(queried).toHaveLength(3);
+    expect(cursor.next_signal).toBe(3);
+  });
+
+  it("replaces a signal's rows in one batch so no reader sees it half-written", async () => {
+    const { env, batches } = fakeRollupDB();
+    await refreshMetricUserRollup(env, 2);
+
+    const writes = batches.filter((b) => b.some((sql) => /DELETE FROM metric_user_rollup\b/.test(sql)));
+    expect(writes).toHaveLength(2);
+    for (const batch of writes) {
+      expect(batch[0]).toMatch(/DELETE FROM metric_user_rollup\b/);
+      expect(batch.slice(1).every((sql) => /INSERT INTO metric_user_rollup\b/.test(sql))).toBe(true);
+    }
+  });
+});
+
 describe("diagnostic classification", () => {
   it("keeps development reports out of release crash priority", () => {
     expect(isDevelopmentReport({ ...base, version: "dev-32bit" })).toBe(true);
@@ -368,6 +448,8 @@ describe("diagnostics dashboard lanes", () => {
       metrics: [],
       previousMetrics: [],
       metricUsers: [],
+      metricUsersUnavailable: false,
+      metricUsersComputedAt: "",
       sources: [],
       overview: { latestAdoptionPct: null, openReports: 4, newLatestReports: 0, regressedReports: 0, criticalOpenReports: 1 },
       latestVersion: "v1.40.0",
@@ -413,6 +495,8 @@ describe("diagnostics dashboard lanes", () => {
       metrics: [],
       previousMetrics: [],
       metricUsers: [],
+      metricUsersUnavailable: false,
+      metricUsersComputedAt: "",
       sources: [],
       overview: { latestAdoptionPct: null, openReports: 0, newLatestReports: 0, regressedReports: 0, criticalOpenReports: 0 },
       latestVersion: "",
@@ -437,5 +521,76 @@ describe("diagnostics dashboard lanes", () => {
     expect(html).toContain("surface=cli");
     expect(html).toContain('aria-label="Client surface"');
     expect(html).toContain('href="/stats"');
+  });
+
+  it("says the deduplication did not finish instead of showing an empty dashboard", () => {
+    type StatsData = Parameters<typeof renderStats>[0];
+    const data: StatsData = {
+      daily: [],
+      versions: [],
+      platforms: [],
+      crashes: [],
+      metrics: [],
+      previousMetrics: [],
+      metricUsers: [],
+        metricUsersUnavailable: true,
+      metricUsersComputedAt: "",
+      sources: [],
+      overview: { latestAdoptionPct: null, openReports: 0, newLatestReports: 0, regressedReports: 0, criticalOpenReports: 0 },
+      latestVersion: "",
+      filters: {
+        surface: "desktop",
+        status: "",
+        source: "",
+        version: "",
+        os: "",
+        platform: "",
+        newLatest: false,
+        regressed: false,
+        windowDays: 30,
+        preferenceMode: "users",
+      },
+    };
+    const html = renderStats(
+      data,
+      { id: 1, email: "viewer@example.com", role: "viewer", created_at: "", approved_at: "" },
+      "preferences",
+    );
+    const installs = html.slice(html.indexOf("Deduplicated installs"), html.indexOf("Launch/open snapshots"));
+    expect(installs).toContain("deduplication");
+    expect(installs).toContain("window=7d");
+    expect(installs).not.toContain("No settings preference metrics yet");
+  });
+
+  it("shows how old the precomputed window is", () => {
+    type StatsData = Parameters<typeof renderStats>[0];
+    const data: StatsData = {
+      daily: [],
+      versions: [],
+      platforms: [],
+      crashes: [],
+      metrics: [],
+      previousMetrics: [],
+      metricUsers: [{ signal: "settings_theme", bucket: "dark", total: 12 }],
+      metricUsersUnavailable: false,
+      metricUsersComputedAt: "2026-08-03T07:28:41.019Z",
+      sources: [],
+      overview: { latestAdoptionPct: null, openReports: 0, newLatestReports: 0, regressedReports: 0, criticalOpenReports: 0 },
+      latestVersion: "",
+      filters: {
+        surface: "desktop",
+        status: "",
+        source: "",
+        version: "",
+        os: "",
+        platform: "",
+        newLatest: false,
+        regressed: false,
+        windowDays: 30,
+        preferenceMode: "users",
+      },
+    };
+    const user = { id: 1, email: "viewer@example.com", role: "viewer", created_at: "", approved_at: "" } as const;
+    expect(renderStats(data, user, "preferences")).toContain("2026-08-03 07:28Z");
   });
 });

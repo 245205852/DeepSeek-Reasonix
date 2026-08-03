@@ -90,9 +90,43 @@ func TestMissingReasoningWarnStateHealthyTurnRearmsRegression(t *testing.T) {
 	if !s.claimAt(fingerprint, now) {
 		t.Fatal("fresh incident must warn")
 	}
-	s.resolveAt(fingerprint, now.Add(time.Minute))
-	if !s.claimAt(fingerprint, now.Add(2*time.Minute)) {
-		t.Fatal("regression after a healthy turn must warn again")
+	for healthy := 1; healthy <= missingReasoningHealthyResolveStreak; healthy++ {
+		result := s.resolveAt(fingerprint, now.Add(time.Duration(healthy)*time.Minute))
+		if !result.Recorded {
+			t.Fatalf("healthy observation %d was not recorded", healthy)
+		}
+		if got, want := result.Resolved, healthy == missingReasoningHealthyResolveStreak; got != want {
+			t.Fatalf("healthy observation %d resolved = %v, want %v", healthy, got, want)
+		}
+	}
+	if !s.claimAt(fingerprint, now.Add(4*time.Minute)) {
+		t.Fatal("regression after three healthy turns must warn again")
+	}
+}
+
+func TestMissingReasoningWarnStateMissingTurnResetsHealthyStreak(t *testing.T) {
+	s := newMissingReasoningWarnState(t.TempDir())
+	fingerprint := warningFingerprint("config")
+	now := missingReasoningTestNow()
+	if !s.claimAt(fingerprint, now) {
+		t.Fatal("fresh incident must warn")
+	}
+	for healthy := 1; healthy < missingReasoningHealthyResolveStreak; healthy++ {
+		if result := s.resolveAt(fingerprint, now.Add(time.Duration(healthy)*time.Minute)); !result.Recorded || result.Resolved {
+			t.Fatalf("pre-reset healthy observation %d = %+v", healthy, result)
+		}
+	}
+	if s.claimAt(fingerprint, now.Add(3*time.Minute)) {
+		t.Fatal("missing turn inside the active incident must stay suppressed")
+	}
+	for healthy := 1; healthy < missingReasoningHealthyResolveStreak; healthy++ {
+		result := s.resolveAt(fingerprint, now.Add(time.Duration(3+healthy)*time.Minute))
+		if !result.Recorded || result.Resolved {
+			t.Fatalf("post-reset healthy observation %d = %+v", healthy, result)
+		}
+	}
+	if s.claimAt(fingerprint, now.Add(6*time.Minute)) {
+		t.Fatal("two healthy turns after a reset must not re-arm recovery")
 	}
 }
 
@@ -114,18 +148,52 @@ func TestMissingReasoningWarnStateStaleHealthCannotClearNewerFailure(t *testing.
 	}
 }
 
+func TestMissingReasoningWarnStateDuplicateHealthAndDelayedFailureDoNotChangeStreak(t *testing.T) {
+	s := newMissingReasoningWarnState(t.TempDir())
+	fingerprint := warningFingerprint("config")
+	now := missingReasoningTestNow()
+	if !s.persistClaimAt(fingerprint, now) {
+		t.Fatal("fresh incident must warn")
+	}
+	firstHealthyAt := now.Add(2 * time.Millisecond)
+	if result := s.resolveAt(fingerprint, firstHealthyAt); !result.Recorded || result.Resolved {
+		t.Fatalf("first healthy observation = %+v", result)
+	}
+	if result := s.resolveAt(fingerprint, firstHealthyAt); !result.Recorded || result.Resolved {
+		t.Fatalf("duplicate healthy observation = %+v", result)
+	}
+	if s.persistClaimAt(fingerprint, now.Add(time.Millisecond)) {
+		t.Fatal("delayed failure older than healthy progress revived the incident")
+	}
+	if result := s.resolveAt(fingerprint, now.Add(3*time.Millisecond)); !result.Recorded || result.Resolved {
+		t.Fatalf("second unique healthy observation = %+v", result)
+	}
+	if result := s.resolveAt(fingerprint, now.Add(4*time.Millisecond)); !result.Recorded || !result.Resolved {
+		t.Fatalf("third unique healthy observation = %+v", result)
+	}
+}
+
 func TestMissingReasoningWarnStateDelayedFailureCannotReviveResolvedIncident(t *testing.T) {
 	s := newMissingReasoningWarnState(t.TempDir())
 	fingerprint := warningFingerprint("config")
 	now := time.Now()
-	firstMissingAt := now.Add(-4 * time.Millisecond)
-	delayedMissingAt := now.Add(-2 * time.Millisecond)
-	healthyAt := now.Add(-time.Millisecond)
+	firstMissingAt := now.Add(-10 * time.Millisecond)
+	delayedMissingAt := now.Add(-8 * time.Millisecond)
+	healthyAt := []time.Time{
+		now.Add(-6 * time.Millisecond),
+		now.Add(-4 * time.Millisecond),
+		now.Add(-2 * time.Millisecond),
+	}
 
 	if !s.persistClaimAt(fingerprint, firstMissingAt) {
 		t.Fatal("fresh incident must warn")
 	}
-	s.resolveAt(fingerprint, healthyAt)
+	for i, observedAt := range healthyAt {
+		result := s.resolveAt(fingerprint, observedAt)
+		if !result.Recorded || result.Resolved != (i == len(healthyAt)-1) {
+			t.Fatalf("healthy observation %d = %+v", i+1, result)
+		}
+	}
 	// Simulate a missing observation that happened before the healthy result but
 	// completed its cross-process transaction afterward.
 	if s.persistClaimAt(fingerprint, delayedMissingAt) {
@@ -133,6 +201,34 @@ func TestMissingReasoningWarnStateDelayedFailureCannotReviveResolvedIncident(t *
 	}
 	if !s.claimAt(fingerprint, now) {
 		t.Fatal("healthy result did not re-arm a later regression")
+	}
+}
+
+func TestMissingReasoningWarnStateV2OptionalStreakFieldsResume(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, missingReasoningWarnStateFilename)
+	fingerprint := warningFingerprint("config")
+	now := missingReasoningTestNow()
+	doc := fmt.Sprintf(`{"version":2,"incidents":[{"fingerprint":"%s","warnedAtUnixMs":%d,"lastMissingAtUnixMs":%d,"lastMissingAtUnixNano":%d,"resolveStreak":2,"lastHealthyAtUnixNano":%d}]}`,
+		fingerprint, now.UnixMilli(), now.UnixMilli(), now.UnixNano(), now.Add(2*time.Minute).UnixNano())
+	if err := os.WriteFile(path, []byte(doc), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	s := newMissingReasoningWarnState(dir)
+	result := s.resolveAt(fingerprint, now.Add(3*time.Minute))
+	if !result.Recorded || !result.Resolved {
+		t.Fatalf("resumed third healthy observation = %+v", result)
+	}
+	if !s.claimAt(fingerprint, now.Add(4*time.Minute)) {
+		t.Fatal("resumed v2 streak did not re-arm a later regression")
+	}
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(b), `"version":2`) {
+		t.Fatalf("optional fields changed the v2 document contract: %s", b)
 	}
 }
 

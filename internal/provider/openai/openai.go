@@ -100,9 +100,10 @@ func New(cfg provider.Config) (provider.Provider, error) {
 		visionDetail = "" // auto — omit the field
 	}
 	deepseek := protocol == "deepseek" || (protocol == "" && officialDeepSeek)
+	maxOutputTokens, _ := cfg.Extra["max_output_tokens"].(int)
 	deepseekV4Flash := strings.EqualFold(strings.TrimSpace(cfg.Model), "deepseek-v4-flash")
 	minimax := protocol == "" && IsMiniMax(cfg.BaseURL)
-	zhipu := protocol == "" && IsZhipu(cfg.BaseURL)
+	zhipu := protocol == "glm" || (protocol == "" && IsZhipu(cfg.BaseURL))
 	longcat := protocol == "" && IsLongCat(cfg.BaseURL)
 	ollamaCloud := protocol == "" && IsOllamaCloud(cfg.BaseURL)
 	kimiK3 := IsKimiAPI(cfg.BaseURL) && strings.EqualFold(strings.TrimSpace(cfg.Model), "kimi-k3")
@@ -200,33 +201,40 @@ func New(cfg provider.Config) (provider.Provider, error) {
 			return nil, fmt.Errorf("openai: provider %q: effort must be low, medium, or high", name)
 		}
 	}
+	// The automatic cap protects DeepSeek reasoning, not ordinary long-form
+	// output. Preserve an explicit user budget in either mode, but leave a
+	// thinking-disabled request uncapped unless the user configured one.
+	if maxOutputTokens == 0 && officialDeepSeek && thinkingType != "disabled" {
+		maxOutputTokens = provider.DefaultReasoningOutputTokens
+	}
 	httpClient, err := newHTTPClient(cfg)
 	if err != nil {
 		return nil, fmt.Errorf("openai: network: %w", err)
 	}
 	return &client{
-		name:          name,
-		apiKey:        cfg.APIKey,
-		keyEnv:        keyEnv,
-		keySource:     keySource,
-		baseURL:       strings.TrimRight(cfg.BaseURL, "/"),
-		chatURL:       chatURL,
-		prefixChatURL: prefixChatURL,
-		headers:       cleanCustomHeaders(headers),
-		extraBody:     cleanExtraBody(extraBody),
-		model:         normalizeModelID(cfg.BaseURL, cfg.Model),
-		deepseek:      deepseek,
-		minimax:       minimax,
-		zhipu:         zhipu,
-		longcat:       longcat,
-		kimiK3:        kimiK3,
-		mimo:          IsMiMo(cfg.BaseURL),
-		thinkingType:  thinkingType,
-		vision:        vision,
-		visionDetail:  visionDetail,
-		effort:        effort,
-		http:          httpClient,
-		idleTimeout:   defaultStreamIdleTimeout,
+		name:            name,
+		apiKey:          cfg.APIKey,
+		keyEnv:          keyEnv,
+		keySource:       keySource,
+		baseURL:         strings.TrimRight(cfg.BaseURL, "/"),
+		chatURL:         chatURL,
+		prefixChatURL:   prefixChatURL,
+		headers:         cleanCustomHeaders(headers),
+		extraBody:       cleanExtraBody(extraBody),
+		model:           normalizeModelID(cfg.BaseURL, cfg.Model),
+		deepseek:        deepseek,
+		minimax:         minimax,
+		zhipu:           zhipu,
+		longcat:         longcat,
+		kimiK3:          kimiK3,
+		mimo:            IsMiMo(cfg.BaseURL),
+		thinkingType:    thinkingType,
+		vision:          vision,
+		visionDetail:    visionDetail,
+		maxOutputTokens: maxOutputTokens,
+		effort:          effort,
+		http:            httpClient,
+		idleTimeout:     defaultStreamIdleTimeout,
 	}, nil
 }
 
@@ -251,29 +259,30 @@ func newHTTPClient(cfg provider.Config) (*http.Client, error) {
 }
 
 type client struct {
-	name          string
-	apiKey        string
-	keyEnv        string // api_key_env name, surfaced in auth errors
-	keySource     string // source of keyEnv, surfaced in auth errors
-	baseURL       string
-	chatURL       string
-	prefixChatURL string // official DeepSeek Beta endpoint; empty for custom gateways
-	headers       map[string]string
-	extraBody     map[string]any
-	model         string
-	http          *http.Client
-	deepseek      bool
-	minimax       bool          // true for api.minimaxi.com — emits MiniMax-M3's thinking knob instead of reasoning_effort
-	zhipu         bool          // true for Zhipu GLM (bigmodel.cn / z.ai) — gates thinking via thinking.type, ignores reasoning_effort
-	longcat       bool          // true for LongCat — gates thinking via thinking.type, ignores reasoning_effort
-	kimiK3        bool          // true only for kimi-k3 on Moonshot's official direct API hosts
-	mimo          bool          // true for MiMo — upgrades legacy tuple schemas to Draft 2020-12
-	thinkingType  string        // explicit `thinking` config override (enabled|disabled); "" = no override
-	vision        bool          // model accepts image input — embed attached images as image_url parts
-	visionDetail  string        // image_url detail hint (low|high); "" = auto/omit
-	effort        string        // reasoning_effort for OpenAI; thinking.type for MiniMax; "" = auto/provider default
-	idleTimeout   time.Duration // SSE stall watchdog window; defaultStreamIdleTimeout unless a test overrides
-	authed        atomic.Bool   // a request has succeeded — gate transient-401 retry
+	name            string
+	apiKey          string
+	keyEnv          string // api_key_env name, surfaced in auth errors
+	keySource       string // source of keyEnv, surfaced in auth errors
+	baseURL         string
+	chatURL         string
+	prefixChatURL   string // official DeepSeek Beta endpoint; empty for custom gateways
+	headers         map[string]string
+	extraBody       map[string]any
+	model           string
+	http            *http.Client
+	deepseek        bool
+	minimax         bool          // true for api.minimaxi.com — emits MiniMax-M3's thinking knob instead of reasoning_effort
+	zhipu           bool          // true for Zhipu GLM (bigmodel.cn / z.ai) — gates thinking via thinking.type, ignores reasoning_effort
+	longcat         bool          // true for LongCat — gates thinking via thinking.type, ignores reasoning_effort
+	kimiK3          bool          // true only for kimi-k3 on Moonshot's official direct API hosts
+	mimo            bool          // true for MiMo — upgrades legacy tuple schemas to Draft 2020-12
+	thinkingType    string        // explicit `thinking` config override (enabled|disabled); "" = no override
+	vision          bool          // model accepts image input — embed attached images as image_url parts
+	visionDetail    string        // image_url detail hint (low|high); "" = auto/omit
+	maxOutputTokens int           // configured/default total output budget; <=0 omits the optional field
+	effort          string        // reasoning_effort for OpenAI; thinking.type for MiniMax; "" = auto/provider default
+	idleTimeout     time.Duration // SSE stall watchdog window; defaultStreamIdleTimeout unless a test overrides
+	authed          atomic.Bool   // a request has succeeded — gate transient-401 retry
 }
 
 func (c *client) Name() string { return c.name }
@@ -283,11 +292,22 @@ func (c *client) RequiresToolCallReasoning() bool {
 }
 
 func (c *client) RequiresReasoningRoundTrip() bool {
-	return c != nil && c.kimiK3
+	return c != nil && (c.kimiK3 || c.glmThinkingEnabled())
 }
 
 func (c *client) WarnOnMissingToolCallReasoning() bool {
 	return c.RequiresToolCallReasoning() && expectsDeepSeekToolCallReasoning(c.model, c.thinkingType)
+}
+
+func (c *client) glmThinkingEnabled() bool {
+	if c == nil || !c.zhipu {
+		return false
+	}
+	t := c.effort
+	if c.thinkingType != "" {
+		t = c.thinkingType
+	}
+	return t != "disabled"
 }
 
 func expectsDeepSeekToolCallReasoning(model, thinkingType string) bool {
@@ -328,7 +348,7 @@ func (c *client) sendOpts() provider.SendOptions {
 
 func normalizeReasoningProtocol(raw string) string {
 	switch strings.ToLower(strings.TrimSpace(raw)) {
-	case "deepseek", "openai", "none":
+	case "deepseek", "glm", "openai", "none":
 		return strings.ToLower(strings.TrimSpace(raw))
 	default:
 		return ""
@@ -399,7 +419,7 @@ func cleanExtraBody(in map[string]any) map[string]any {
 
 func reservedExtraBodyField(name string) bool {
 	switch strings.ToLower(strings.TrimSpace(name)) {
-	case "model", "messages", "tools", "stream", "stream_options", "temperature", "max_tokens", "reasoning_effort", "thinking":
+	case "model", "messages", "tools", "stream", "stream_options", "temperature", "max_tokens", "max_completion_tokens", "max_output_tokens", "reasoning_effort", "thinking":
 		return true
 	default:
 		return false
@@ -676,6 +696,12 @@ func (c *client) buildRequest(req provider.Request) chatRequest {
 				if c.RequiresToolCallReasoning() || m.ReasoningContent != "" {
 					cm.ReasoningContent = &m.ReasoningContent
 				}
+			case c.zhipu && m.ReasoningContent != "":
+				// GLM interleaved and preserved thinking require provider-issued
+				// reasoning content to be returned unchanged in later history. Keep
+				// an existing value even after thinking is turned off so an
+				// enabled→disabled session retains its valid history bytes.
+				cm.ReasoningContent = &m.ReasoningContent
 			}
 		}
 		for _, tc := range m.ToolCalls {
@@ -721,6 +747,13 @@ func (c *client) buildRequest(req provider.Request) chatRequest {
 		})
 	}
 
+	maxOutputTokens := req.MaxTokens
+	if maxOutputTokens == 0 {
+		maxOutputTokens = c.maxOutputTokens
+	}
+	if maxOutputTokens < 0 {
+		maxOutputTokens = 0
+	}
 	out := chatRequest{
 		Model:           c.model,
 		Messages:        msgs,
@@ -728,7 +761,7 @@ func (c *client) buildRequest(req provider.Request) chatRequest {
 		Stream:          true,
 		StreamOptions:   &streamOptions{IncludeUsage: true},
 		Temperature:     req.Temperature,
-		MaxTokens:       req.MaxTokens,
+		MaxTokens:       maxOutputTokens,
 		ReasoningEffort: c.effort,
 		ExtraBody:       c.extraBody,
 	}
@@ -738,9 +771,15 @@ func (c *client) buildRequest(req provider.Request) chatRequest {
 		// names the output budget max_completion_tokens rather than max_tokens.
 		out.Temperature = nil
 		out.MaxTokens = 0
-		out.MaxCompletionTokens = req.MaxTokens
+		out.MaxCompletionTokens = maxOutputTokens
 		out.ExtraBody = omitExtraBodyFields(out.ExtraBody,
 			"temperature", "top_p", "n", "presence_penalty", "frequency_penalty", "max_completion_tokens")
+	case IsOpenAI(c.baseURL):
+		// OpenAI's current Chat Completions contract replaces max_tokens with
+		// max_completion_tokens, which includes visible and reasoning tokens and
+		// is required by o-series models. Compatible gateways retain max_tokens.
+		out.MaxTokens = 0
+		out.MaxCompletionTokens = maxOutputTokens
 	case c.deepseek:
 		// DeepSeek's CoT is controlled by `thinking` plus `reasoning_effort` for
 		// depth. Thinking is on by default but can be turned off via
