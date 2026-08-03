@@ -35,16 +35,29 @@ const lightANSI: ITheme = {
   blue: "#1d5fbf",
   magenta: "#7c3aaa",
   cyan: "#08746f",
-  white: "#d8dadd",
+  white: "#555b61",
   brightBlack: "#6b7077",
-  brightRed: "#d13c45",
-  brightGreen: "#5b8d24",
-  brightYellow: "#a66a00",
-  brightBlue: "#3478d4",
+  brightRed: "#c3343f",
+  brightGreen: "#4b7a1f",
+  brightYellow: "#986000",
+  brightBlue: "#2c6cc5",
   brightMagenta: "#9751c6",
-  brightCyan: "#168b85",
-  brightWhite: "#ffffff",
+  brightCyan: "#0e7d77",
+  brightWhite: "#34383d",
 };
+
+// Wails dispatches bound Go calls on separate goroutines. Keep terminal-theme
+// writes in click order so an older save can never finish after newer intent.
+export function createTerminalThemeSaveQueue(
+  persist: (theme: TerminalThemePreference) => Promise<void>,
+): (theme: TerminalThemePreference) => Promise<void> {
+  let tail = Promise.resolve();
+  return (theme) => {
+    const save = tail.then(() => persist(theme));
+    tail = save.catch(() => undefined);
+    return save;
+  };
+}
 
 export function normalizeTerminalThemePreference(value: unknown): TerminalThemePreference {
   return value === "dark" || value === "light" ? value : "auto";

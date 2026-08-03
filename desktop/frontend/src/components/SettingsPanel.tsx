@@ -19,6 +19,7 @@ import {
 } from "../lib/theme";
 import {
   applyTerminalThemePreference,
+  createTerminalThemeSaveQueue,
   getTerminalThemePreference,
   normalizeTerminalThemePreference,
   type TerminalThemePreference,
@@ -136,6 +137,12 @@ export function SettingsPanel({
     if (command) onUseSubagent(command);
   }, 240);
   const zoomSaveSeq = useRef(0);
+  const terminalThemeSaveSeq = useRef(0);
+  const terminalThemeSavePending = useRef(false);
+  const terminalThemeSaveQueue = useRef<ReturnType<typeof createTerminalThemeSaveQueue> | null>(null);
+  if (!terminalThemeSaveQueue.current) {
+    terminalThemeSaveQueue.current = createTerminalThemeSaveQueue((next) => app.SetDesktopTerminalTheme(next));
+  }
 
   const reload = useCallback(async () => {
     setLoadingSettings(true);
@@ -162,7 +169,9 @@ export function SettingsPanel({
     const nextStyle = normalizeThemeStyleForTheme(s.desktopThemeStyle, nextTheme);
     setThemeState(nextTheme);
     setThemeStyleState(nextStyle);
-    setTerminalThemeState(applyTerminalThemePreference(s.desktopTerminalTheme));
+    if (!terminalThemeSavePending.current) {
+      setTerminalThemeState(applyTerminalThemePreference(s.desktopTerminalTheme));
+    }
     setConversationWidth(applyConversationWidth(s.conversationWidth));
   }, [s?.conversationWidth, s?.desktopTheme, s?.desktopThemeStyle, s?.desktopTerminalTheme]);
   useEffect(() => {
@@ -217,6 +226,35 @@ export function SettingsPanel({
       setErr(formatSettingsError(e, t));
     }
   }, [reload, onChanged, t]);
+  const setTerminalThemePreference = useCallback((next: TerminalThemePreference) => {
+    const seq = ++terminalThemeSaveSeq.current;
+    const previous = getTerminalThemePreference();
+    terminalThemeSavePending.current = true;
+    setErr(null);
+    setWarning(null);
+    applyTerminalThemePreference(next);
+    setTerminalThemeState(next);
+
+    void terminalThemeSaveQueue.current!(next)
+      .then(async () => {
+        if (seq !== terminalThemeSaveSeq.current) return;
+        const refreshed = await reload();
+        if (seq !== terminalThemeSaveSeq.current) return;
+        terminalThemeSavePending.current = false;
+        onChanged(refreshed);
+      })
+      .catch(async (error) => {
+        if (seq !== terminalThemeSaveSeq.current) return;
+        const refreshed = await reload();
+        if (seq !== terminalThemeSaveSeq.current) return;
+        const restored = normalizeTerminalThemePreference(refreshed?.desktopTerminalTheme ?? previous);
+        applyTerminalThemePreference(restored);
+        setTerminalThemeState(restored);
+        terminalThemeSavePending.current = false;
+        setErr(formatSettingsError(error, t));
+        onChanged(refreshed);
+      });
+  }, [onChanged, reload, t]);
   const setRestartZoom = useCallback(async (zoom: ZoomLevel) => {
     const snapped = snapZoom(zoom);
     const seq = ++zoomSaveSeq.current;
@@ -332,11 +370,7 @@ export function SettingsPanel({
                         setThemeStyleState(style);
                         setBaseAppearance(getTheme(), style);
                       }}
-                      onTerminalTheme={(nextTerminalTheme) => {
-                        applyTerminalThemePreference(nextTerminalTheme);
-                        setTerminalThemeState(nextTerminalTheme);
-                        void apply(() => app.SetDesktopTerminalTheme(nextTerminalTheme));
-                      }}
+                      onTerminalTheme={setTerminalThemePreference}
                       onTextSize={(size) => {
                         applyTextSize(size);
                         setTextSizeState(size);

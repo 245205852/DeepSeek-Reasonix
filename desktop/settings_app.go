@@ -293,7 +293,7 @@ type SettingsView struct {
 	DesktopLayoutStyle      string               `json:"desktopLayoutStyle"`
 	DesktopTheme            string               `json:"desktopTheme"`
 	DesktopThemeStyle       string               `json:"desktopThemeStyle"`
-	DesktopTerminalTheme    string               `json:"desktopTerminalTheme"`
+	DesktopTerminalTheme    string               `json:"desktopTerminalTheme,omitempty"`
 	CloseBehavior           string               `json:"closeBehavior"`
 	DisplayMode             string               `json:"displayMode"`
 	StatusBarStyle          string               `json:"statusBarStyle"`
@@ -328,7 +328,7 @@ type DesktopStartupSettingsView struct {
 	DesktopLayoutStyle   string          `json:"desktopLayoutStyle"`
 	DesktopTheme         string          `json:"desktopTheme"`
 	DesktopThemeStyle    string          `json:"desktopThemeStyle"`
-	DesktopTerminalTheme string          `json:"desktopTerminalTheme"`
+	DesktopTerminalTheme string          `json:"desktopTerminalTheme,omitempty"`
 	DisplayMode          string          `json:"displayMode"`
 	StatusBarStyle       string          `json:"statusBarStyle"`
 	StatusBarItems       []string        `json:"statusBarItems"`
