@@ -30,7 +30,7 @@ func Load() (*Config, error) {
 // changing the process cwd, while provider keys stay rooted in Reasonix home.
 //
 // Note: LoadForRoot may rewrite legacy MCP `tier` lines on disk (see
-// mergeRuntimeTOMLFile). Callers that must not mutate config files should use
+// mergeRuntimeTOMLFileSnapshot). Callers that must not mutate config files should use
 // LoadForRootReadOnly instead.
 func LoadForRoot(root string) (*Config, error) {
 	return loadForRoot(root, true)
@@ -817,11 +817,6 @@ func mergeFileSnapshotWithRead(cfg *Config, path string, readFile func(string) (
 		}
 	}
 	return meta, nil
-}
-
-func mergeRuntimeTOMLFile(cfg *Config, path string) error {
-	_, err := mergeRuntimeTOMLFileSnapshot(cfg, path)
-	return err
 }
 
 func mergeRuntimeTOMLFileSnapshot(cfg *Config, path string) (toml.MetaData, error) {
