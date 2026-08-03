@@ -313,6 +313,23 @@ func TestServeIndexDefinesQueryHelpers(t *testing.T) {
 	}
 }
 
+func TestServeIndexReportsSessionDeleteFailures(t *testing.T) {
+	html := string(indexHTML)
+	for _, want := range []string{
+		"'cannot_delete_active': 'Cannot delete the active session'",
+		"'cannot_delete_active': '无法删除当前会话'",
+		"'delete_failed': 'Could not delete the session. Check your connection and try again.'",
+		"'delete_failed': '无法删除会话，请检查连接后重试'",
+		"if(target&&target.current){showNotice(__('cannot_delete_active'),'warn');return;}",
+		"if(!r.ok){showNotice((await r.text()).trim()||('HTTP '+r.status),'warn');}",
+		"}).catch(()=>showNotice(__('delete_failed'),'warn'));",
+	} {
+		if !strings.Contains(html, want) {
+			t.Fatalf("serve index missing session delete failure handling %q", want)
+		}
+	}
+}
+
 func TestServeIndexHandlesRetryingEvents(t *testing.T) {
 	html := string(indexHTML)
 	for _, want := range []string{
