@@ -12880,6 +12880,47 @@ body > .mermaid-diagram--fullscreen {
   white-space: pre-wrap;
   word-break: break-word;
 }
+/* FULL TRUST runtime disclosure inside the plugin install plan preview. */
+.cap-plugin-runtime {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  flex-basis: 100%;
+  margin: 4px 0 2px;
+  padding: 8px 10px;
+  border: 1px solid color-mix(in srgb, var(--err) 45%, transparent);
+  border-left-width: 3px;
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--err) 9%, transparent);
+}
+.cap-plugin-runtime__title {
+  color: var(--err);
+  font-size: 11.5px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+}
+.cap-plugin-runtime__row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 8px;
+  color: var(--fg);
+  font-size: 11px;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+.cap-plugin-runtime__label {
+  color: var(--fg-dim);
+}
+.cap-plugin-runtime__cmd {
+  font-family: var(--mono);
+}
+.cap-plugin-runtime__risk {
+  color: var(--err);
+  font-size: 11px;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
 .cap-plugin-actions {
   display: flex;
   flex-direction: column;

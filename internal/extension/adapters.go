@@ -8,6 +8,7 @@ import (
 	"reasonix/internal/command"
 	"reasonix/internal/hook"
 	"reasonix/internal/plugin"
+	"reasonix/internal/pluginpkg"
 	"reasonix/internal/provider"
 	"reasonix/internal/skill"
 	"reasonix/internal/tool"
@@ -257,6 +258,65 @@ func mcpScope(spec plugin.Spec) (Scope, string) {
 		configSource = "user_config"
 	}
 	return ScopeGlobal, configSource
+}
+
+// PromptContribution maps one plugin package prompt template to its kernel
+// contribution as KindPrompt, namespaced "plugin:<plugin>:<name>" — the same
+// namespacing the catalog documents for themes — so prompts from different
+// packages can never collide. This adapter lives in extension rather than
+// pluginpkg for the same reason it may import pluginpkg at all: pluginpkg
+// cannot import extension (extension -> hook -> pluginpkg would become an
+// import cycle), while extension importing pluginpkg is acyclic.
+func PromptContribution(pluginID string, ref pluginpkg.PromptRef) Contribution {
+	return Contribution{
+		Kind: KindPrompt,
+		ID:   "plugin:" + pluginID + ":" + ref.Name,
+		Source: ContributionSource{
+			PluginID: pluginID,
+			Scope:    ScopePlugin,
+			Origin:   "plugin",
+			Path:     ref.Path,
+		},
+		Payload: ref,
+	}
+}
+
+// ThemeContribution maps one plugin package theme file to its kernel
+// contribution as KindTheme with the stable ID "plugin:<plugin>:<theme>"
+// named in the catalog contract.
+func ThemeContribution(pluginID string, ref pluginpkg.ThemeRef) Contribution {
+	return Contribution{
+		Kind: KindTheme,
+		ID:   "plugin:" + pluginID + ":" + ref.Name,
+		Source: ContributionSource{
+			PluginID: pluginID,
+			Scope:    ScopePlugin,
+			Origin:   "plugin",
+			Path:     ref.Path,
+		},
+		Payload: ref,
+	}
+}
+
+// PluginResourcesContributor contributes one parsed plugin package's prompt
+// templates (KindPrompt) and theme files (KindTheme). Runtime, interceptor,
+// and strategy wiring is a later stage; this covers the manifest's static
+// resource contributions.
+func PluginResourcesContributor(pkg pluginpkg.Package) Contributor {
+	return ContributorFunc{
+		ContributorName: "plugin-resources-" + pkg.Manifest.Name,
+		Fn: func(context.Context) ([]Contribution, error) {
+			inv := pkg.Inventory()
+			out := make([]Contribution, 0, len(inv.Prompts)+len(inv.Themes))
+			for _, ref := range inv.Prompts {
+				out = append(out, PromptContribution(pkg.Manifest.Name, ref))
+			}
+			for _, ref := range inv.Themes {
+				out = append(out, ThemeContribution(pkg.Manifest.Name, ref))
+			}
+			return out, nil
+		},
+	}
 }
 
 // ProviderContribution maps one provider descriptor to its kernel
