@@ -1966,11 +1966,12 @@ export function Composer({
   const onIntentHoverLeave = useCallback(() => {
     if (!creationChrome) return;
     clearIntentHoverTimers();
+    if (!intentMenuOpen && !intentMenuClosing) return;
     intentHoverLeaveTimerRef.current = window.setTimeout(() => {
       intentHoverLeaveTimerRef.current = null;
       closeIntentMenu();
     }, 140);
-  }, [closeIntentMenu, creationChrome]);
+  }, [closeIntentMenu, creationChrome, intentMenuClosing, intentMenuOpen]);
 
   const onIntentPopoverEnter = useCallback(() => {
     if (!creationChrome) return;
@@ -1989,11 +1990,12 @@ export function Composer({
   const onProfileHoverLeave = useCallback(() => {
     if (!creationChrome) return;
     clearProfileHoverTimers();
+    if (!profileMenuOpen && !profileMenuClosing) return;
     profileHoverLeaveTimerRef.current = window.setTimeout(() => {
       profileHoverLeaveTimerRef.current = null;
       closeProfileMenu();
     }, 140);
-  }, [closeProfileMenu, creationChrome]);
+  }, [closeProfileMenu, creationChrome, profileMenuClosing, profileMenuOpen]);
 
   const onProfilePopoverEnter = useCallback(() => {
     if (!creationChrome) return;
