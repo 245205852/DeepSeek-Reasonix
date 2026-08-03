@@ -2944,8 +2944,9 @@ function makeMockApp(): AppBindings {
           return this.Balance();
         },
         async UsageStats() {
-          // Browser dev mock has no stats files; return an empty aggregate.
-          return { from: "", to: "", tokens: 0, requests: 0, turns: 0, cacheHit: 0, cacheMiss: 0, activeDays: 0, topModel: "", topProvider: "", daily: [], models: [], providers: [] };
+          // Browser dev mock has no stats files; the panel does not consume
+          // provider aggregates, so keep this initial-bundle fallback lean.
+          return { from: "", to: "", tokens: 0, requests: 0, turns: 0, cacheHit: 0, cacheMiss: 0, activeDays: 0, topModel: "", daily: [], models: [] } as unknown as UsageStatsRange;
         },
         async Jobs() {
           return []; // browser dev mock has no background jobs

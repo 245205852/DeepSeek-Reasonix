@@ -1,7 +1,7 @@
 /* ── Usage statistics panel (UsageStatsPanel.tsx) ─────────────────────────
    Charts are hand-drawn SVG driven entirely by theme variables, so both stock
    themes and theme packs adapt automatically. The heatmap's 5 levels and the
-   per-model palette derive from --accent / a hue cycle via color-mix. */
+   per-model palette derive from --accent / --fg via color-mix. */
 
 .usage-stats {
   --stats-hue-l: 66%;

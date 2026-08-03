@@ -149,17 +149,18 @@ const USAGE_STATS_TRANSLATIONS = {
 type UsageStatsKey = keyof typeof USAGE_STATS_TRANSLATIONS.en;
 type UsageStatsTranslator = (key: UsageStatsKey) => string;
 
-// The per-model palette is a user-specified set of 20 colours. Colours are
-// assigned in the order the models were first used, drawn from a determinis-
-// tically shuffled copy of the palette (so "random" stays stable across
-// renders); once the palette is exhausted each additional model gets a stable
-// muted hue derived from its ref, so any model count stays unique.
-const PALETTE = [
+// Seed hues keep neighbouring models distinguishable. The final CSS colour
+// expression blends each seed with the live theme's accent and foreground, so
+// base-colour and light/dark changes need no React rerender.
+const PALETTE_SEEDS = [
   "#0087be", "#78dcfa", "#00aadc", "#87a6bc", "#d54e21", "#f0821e",
   "#4ab866", "#f0b849", "#d94f4f", "#e66760", "#8c88cd", "#69c5e4",
   "#ffdf8b", "#61e064", "#bbd634", "#fdd666", "#a4dbdb", "#b51f29",
   "#f58268", "#f4979c",
 ];
+const themedModelColor = (seed: string): string =>
+  `color-mix(in srgb, color-mix(in srgb, var(--accent) 24%, ${seed}) 60%, var(--fg) 40%)`;
+const PALETTE = PALETTE_SEEDS.map(themedModelColor);
 // LCG-seeded Fisher–Yates: a fixed seed keeps the shuffle stable across
 // renders and ranges while still picking palette colours "at random".
 const PALETTE_ORDER = (() => {
@@ -183,8 +184,9 @@ function assignModelColors(ordered: string[]): Map<string, string> {
     if (slot < PALETTE_ORDER.length) {
       map.set(m, PALETTE_ORDER[slot]);
     } else {
-      // Beyond the curated palette: a stable, equally muted hue from the ref.
-      map.set(m, `hsl(${hashHue(m)} 52% var(--stats-hue-l))`);
+      // Beyond the curated palette: retain a stable hue, then blend it with
+      // the active accent and foreground for the same theme adaptation.
+      map.set(m, overflowModelColor(m));
     }
     slot++;
   }
@@ -195,6 +197,8 @@ const hashHue = (key: string): number => {
   for (let i = 0; i < key.length; i++) h = (h * 31 + key.charCodeAt(i)) >>> 0;
   return h % 360;
 };
+const overflowModelColor = (model: string): string =>
+  `color-mix(in srgb, color-mix(in srgb, hsl(${hashHue(model)} 52% var(--stats-hue-l)) 76%, var(--accent) 24%) 60%, var(--fg) 40%)`;
 
 // localDay returns today's date (plus/minus offsetDays) in the local calendar,
 // matching the backend's "2006-01-02" day keys.
@@ -291,7 +295,7 @@ export function UsageStatsPanel() {
   }, [stats]);
   const palette = useMemo(() => assignModelColors(modelOrder), [modelOrder]);
   const colorForModel = useCallback(
-    (model: string) => palette.get(model) ?? `hsl(${hashHue(model || "unknown")} 52% var(--stats-hue-l))`,
+    (model: string) => palette.get(model) ?? overflowModelColor(model || "unknown"),
     [palette],
   );
 

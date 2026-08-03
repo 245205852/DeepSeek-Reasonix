@@ -65,7 +65,14 @@ globalThis.ResizeObserver = TestResizeObserver as unknown as typeof ResizeObserv
 
 let rejectCLIHeat: ((error: Error) => void) | undefined;
 const usageStats = (req: UsageStatsRequest): Promise<UsageStatsRange> => {
-  if (req.range !== "custom") return Promise.resolve(emptyStats());
+  if (req.range !== "custom") return Promise.resolve(emptyStats({
+    tokens: 21,
+    models: Array.from({ length: 21 }, (_, index) => ({
+      model: `deepseek/model-${index + 1}`,
+      tokens: 1,
+      percent: 100 / 21,
+    })),
+  }));
   if (req.source === "cli") {
     return new Promise((_, reject) => { rejectCLIHeat = reject; });
   }
@@ -94,6 +101,11 @@ for (let i = 0; i < 20 && rootEl.querySelectorAll("rect.usage-stats__heat-cell--
   await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
 }
 ok(rootEl.querySelectorAll("rect.usage-stats__heat-cell--5").length === 1, "initial source heat data is rendered");
+const modelSegments = rootEl.querySelectorAll("circle.usage-stats__donut-seg");
+const primaryColour = modelSegments[0]?.getAttribute("stroke") ?? "";
+ok(primaryColour.includes("var(--accent)") && primaryColour.includes("var(--fg)"), "model colours adapt to the active theme");
+const overflowColour = modelSegments[20]?.getAttribute("stroke") ?? "";
+ok(overflowColour.includes("var(--accent)") && overflowColour.includes("var(--fg)"), "overflow model colours also adapt to the active theme");
 
 const cliButton = [...rootEl.querySelectorAll("button")].find((button) => button.textContent === "CLI");
 if (!cliButton) throw new Error("missing CLI source button");
