@@ -16,8 +16,8 @@ func TestGeneratedArtifactsAreDeterministicAndCommitted(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(first) != 3 || len(second) != len(first) {
-		t.Fatalf("generated %d/%d artifacts, want 3", len(first), len(second))
+	if len(first) != 4 || len(second) != len(first) {
+		t.Fatalf("generated %d/%d artifacts, want 4", len(first), len(second))
 	}
 
 	temporaryRoot := t.TempDir()
