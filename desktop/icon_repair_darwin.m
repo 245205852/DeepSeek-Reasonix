@@ -88,7 +88,9 @@ int reasonix_repair_alias(const char *alias_path, const char *current_app_path,
             NSString *resolvedPath = resolved.URLByResolvingSymlinksInPath.standardizedURL.path;
             NSString *currentPath = currentURL.URLByResolvingSymlinksInPath.standardizedURL.path;
             if ([resolvedPath isEqualToString:currentPath]) {
-                owned = YES;
+                // The alias is already healthy. Avoid rewriting it on every
+                // launch so Finder metadata and any user customization remain.
+                return 0;
             } else {
                 NSBundle *bundle = [NSBundle bundleWithURL:resolved];
                 owned = [bundle.bundleIdentifier isEqualToString:@"com.wails.reasonix-desktop"];

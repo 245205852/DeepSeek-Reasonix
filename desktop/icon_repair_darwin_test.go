@@ -114,3 +114,32 @@ func TestRepairMacDesktopAliasesPreservesOrdinaryReasonixFile(t *testing.T) {
 		t.Fatalf("ordinary Reasonix file changed to %q", got)
 	}
 }
+
+func TestRepairMacDesktopAliasesPreservesHealthyReasonixAlias(t *testing.T) {
+	root := t.TempDir()
+	desktop := filepath.Join(root, "Desktop")
+	if err := os.Mkdir(desktop, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	currentApp := filepath.Join(root, "Reasonix.app")
+	writeReasonixTestBundle(t, currentApp)
+	alias := filepath.Join(desktop, "Reasonix")
+	if err := writeMacAlias(currentApp, alias); err != nil {
+		t.Fatal(err)
+	}
+	before, err := os.ReadFile(alias)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := repairMacDesktopAliases(desktop, currentApp); err != nil {
+		t.Fatal(err)
+	}
+	after, err := os.ReadFile(alias)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(after) != string(before) {
+		t.Fatal("healthy Finder alias was rewritten")
+	}
+}

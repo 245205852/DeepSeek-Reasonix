@@ -71,3 +71,27 @@ func TestReasonixWindowsShortcutTargetRequiresCurrentInstall(t *testing.T) {
 		})
 	}
 }
+
+func TestReasonixWindowsStaleIconOnlyMatchesVersionedDesktop(t *testing.T) {
+	root := filepath.Join(`C:\Program Files, Inc`, "Reasonix")
+	launcher := filepath.Join(root, "reasonix-launcher.exe")
+	tests := []struct {
+		name string
+		icon string
+		want bool
+	}{
+		{name: "versioned", icon: filepath.Join(root, "versions", "v1.19.3", "reasonix-desktop.exe") + ",0", want: true},
+		{name: "quoted versioned", icon: `"` + filepath.Join(root, "versions", "v1.19.3", "reasonix-desktop.exe") + `", 0`, want: true},
+		{name: "stable launcher", icon: launcher + ",0", want: false},
+		{name: "custom icon", icon: filepath.Join(root, "custom.ico") + ",0", want: false},
+		{name: "other install", icon: filepath.Join(`D:\Apps`, "Reasonix", "versions", "v1.19.3", "reasonix-desktop.exe") + ",0", want: false},
+		{name: "empty", icon: "", want: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := reasonixWindowsStaleIcon(tt.icon, launcher); got != tt.want {
+				t.Fatalf("reasonixWindowsStaleIcon(%q, %q) = %v, want %v", tt.icon, launcher, got, tt.want)
+			}
+		})
+	}
+}

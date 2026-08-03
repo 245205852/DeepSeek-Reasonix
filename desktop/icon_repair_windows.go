@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"unsafe"
 
@@ -119,6 +120,15 @@ func repairWindowsShortcut(shortcutPath, launcher string) (bool, error) {
 	if !reasonixWindowsShortcutTarget(target, launcher) {
 		return false, nil
 	}
+	iconValue, err := oleutil.GetProperty(shortcut, "IconLocation")
+	if err != nil {
+		return false, fmt.Errorf("read IconLocation: %w", err)
+	}
+	iconLocation := iconValue.ToString()
+	_ = iconValue.Clear()
+	if !reasonixWindowsStaleIcon(iconLocation, launcher) {
+		return false, nil
+	}
 
 	result, err := oleutil.PutProperty(shortcut, "IconLocation", launcher+",0")
 	if result != nil {
@@ -151,6 +161,27 @@ func reasonixWindowsShortcutTarget(target, launcher string) bool {
 		}
 	}
 	rel, err := filepath.Rel(root, target)
+	if err != nil || rel == "." || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return false
+	}
+	parts := strings.Split(rel, string(filepath.Separator))
+	return len(parts) == 3 && strings.EqualFold(parts[0], "versions") &&
+		strings.EqualFold(parts[2], "reasonix-desktop.exe")
+}
+
+func reasonixWindowsStaleIcon(iconLocation, launcher string) bool {
+	iconPath := strings.TrimSpace(iconLocation)
+	if comma := strings.LastIndex(iconPath, ","); comma >= 0 {
+		if _, err := strconv.Atoi(strings.TrimSpace(iconPath[comma+1:])); err == nil {
+			iconPath = iconPath[:comma]
+		}
+	}
+	iconPath = strings.Trim(strings.TrimSpace(iconPath), `"`)
+	if iconPath == "" {
+		return false
+	}
+	root := filepath.Dir(filepath.Clean(strings.TrimSpace(launcher)))
+	rel, err := filepath.Rel(root, filepath.Clean(iconPath))
 	if err != nil || rel == "." || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
 		return false
 	}
