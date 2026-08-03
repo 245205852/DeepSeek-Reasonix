@@ -438,6 +438,18 @@ func TestParsePermissionModeClaudeAliases(t *testing.T) {
 	}
 }
 
+func TestResolveRunPermissionModeRequiresExplicitAuto(t *testing.T) {
+	if got, err := resolveRunPermissionMode("ask", false, false); err != nil || got != "ask" {
+		t.Fatalf("default run permission mode = (%q, %v), want ask", got, err)
+	}
+	if got, err := resolveRunPermissionMode("ask", true, false); err != nil || got != "auto" {
+		t.Fatalf("-y run permission mode = (%q, %v), want auto", got, err)
+	}
+	if got, err := resolveRunPermissionMode("dontAsk", true, true); err == nil || got != "" {
+		t.Fatalf("combined permission flags = (%q, %v), want conflict", got, err)
+	}
+}
+
 func TestRunKeepsChatAndCodeCompatibilityAliases(t *testing.T) {
 	isolateCLIConfigHome(t)
 
@@ -1023,7 +1035,7 @@ func TestConfiguredCLITelemetryDoesNotPromptAgain(t *testing.T) {
 	startCalls := 0
 	startCLITelemetryReporter = func(opts telemetry.Options) *telemetry.Reporter {
 		startCalls++
-		if telemetry.Enabled(opts.Mode, opts.Version, opts.Interactive, opts.SafeMode) {
+		if telemetry.Enabled(opts.Mode, opts.Version, opts.Interactive) {
 			return want
 		}
 		return nil
@@ -1060,23 +1072,18 @@ func TestUndecidedCLITelemetryDoesNotPromptOrUploadWhenIneligible(t *testing.T) 
 		interactive bool
 		envKey      string
 		envValue    string
-		safeMode    bool
 	}{
 		{name: "noninteractive", version: "v1.20.0"},
 		{name: "development", version: "dev", interactive: true},
 		{name: "CI", version: "v1.20.0", interactive: true, envKey: "CI", envValue: "1"},
 		{name: "do not track", version: "v1.20.0", interactive: true, envKey: "DO_NOT_TRACK", envValue: "1"},
 		{name: "environment opt out", version: "v1.20.0", interactive: true, envKey: "REASONIX_TELEMETRY", envValue: "0"},
-		{name: "Safe Mode", version: "v1.20.0", interactive: true, safeMode: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			isolateCLIConfigHome(t)
 			clearCLITelemetryPolicyEnv(t)
 			if tc.envKey != "" {
 				t.Setenv(tc.envKey, tc.envValue)
-			}
-			if tc.safeMode {
-				t.Setenv("REASONIX_SAFE_MODE", "1")
 			}
 			cfg, err := config.LoadForRootReadOnly(".")
 			if err != nil {
@@ -1095,6 +1102,25 @@ func TestUndecidedCLITelemetryDoesNotPromptOrUploadWhenIneligible(t *testing.T) 
 				t.Fatalf("ineligible invocation wrote config: %v", err)
 			}
 		})
+	}
+}
+
+func TestLegacySafeModeEnvDoesNotAlterConfiguredCLITelemetry(t *testing.T) {
+	isolateCLIConfigHome(t)
+	clearCLITelemetryPolicyEnv(t)
+	t.Setenv("REASONIX_SAFE_MODE", "1")
+	cfg := config.Default()
+	if err := cfg.SetCLITelemetryMode("auto"); err != nil {
+		t.Fatal(err)
+	}
+	previousStart := startCLITelemetryReporter
+	t.Cleanup(func() { startCLITelemetryReporter = previousStart })
+	want := &telemetry.Reporter{}
+	startCLITelemetryReporter = func(telemetry.Options) *telemetry.Reporter { return want }
+	if got := startCLITelemetryWithIO(cfg, telemetry.Options{
+		Version: "v1.20.0", Interactive: true, CLIMode: "tui",
+	}, strings.NewReader(""), io.Discard, io.Discard); got != want {
+		t.Fatalf("telemetry reporter = %p, want %p", got, want)
 	}
 }
 

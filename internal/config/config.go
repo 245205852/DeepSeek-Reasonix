@@ -71,8 +71,11 @@ type Config struct {
 	pluginPackageOwners        map[string]string
 	pluginPackageSkillOwners   map[string][]string
 	pluginPackageAgentOwners   map[string][]string
-	safeMode                   bool
 	editLoadErr                error
+	// loadWarnings are non-fatal issues observed while loading config (corrupt
+	// user/project files recovered via last-known-good or defaults). They never
+	// rewrite the original file; the UI may surface them for doctor repair.
+	loadWarnings []string
 }
 
 // TelemetryConfig controls content-free CLI usage metrics. It is user-global:
@@ -112,10 +115,31 @@ func (c *Config) CLITelemetryMode() string {
 	}
 }
 
-// SafeMode reports whether this configuration was built for recovery startup.
-// It is process-local runtime state and is never persisted to TOML.
-func (c *Config) SafeMode() bool {
-	return c != nil && c.safeMode
+// LoadWarnings returns non-fatal config load issues (corrupt files recovered in
+// memory). The returned slice is a copy.
+func (c *Config) LoadWarnings() []string {
+	if c == nil || len(c.loadWarnings) == 0 {
+		return nil
+	}
+	out := make([]string, len(c.loadWarnings))
+	copy(out, c.loadWarnings)
+	return out
+}
+
+// HasLoadWarnings reports whether the load used a degraded in-memory fallback.
+func (c *Config) HasLoadWarnings() bool {
+	return c != nil && len(c.loadWarnings) > 0
+}
+
+func (c *Config) addLoadWarning(msg string) {
+	if c == nil {
+		return
+	}
+	msg = strings.TrimSpace(msg)
+	if msg == "" {
+		return
+	}
+	c.loadWarnings = append(c.loadWarnings, msg)
 }
 
 // IgnoredLegacyAgentStepLimits reports whether this load found and ignored the
@@ -175,7 +199,10 @@ type UIConfig struct {
 // project runtime settings so a repository cannot change the installed
 // binary's update channel.
 type CLIConfig struct {
-	UpdateChannel string `toml:"update_channel"` // stable|preview; empty and unknown values resolve to stable
+	// UpdateChannel is decoded for compatibility with pre-single-channel
+	// configurations. Runtime behavior is always the official release channel,
+	// and the canonical renderer intentionally drops this field.
+	UpdateChannel string `toml:"update_channel"`
 }
 
 // DesktopConfig controls desktop-only UI preferences. It is intentionally
@@ -194,12 +221,14 @@ type DesktopConfig struct {
 	StatusBarItems          []string `toml:"status_bar_items"`           // ordered visible desktop status bar items
 	DefaultToolApprovalMode string   `toml:"default_tool_approval_mode"` // ask|auto|yolo; defaults to auto for newly-created desktop sessions
 	CheckUpdates            *bool    `toml:"check_updates"`              // startup update checks; nil keeps the default enabled
-	UpdateChannel           string   `toml:"update_channel"`             // stable|preview; canary is accepted as a legacy alias for preview
-	Telemetry               *bool    `toml:"telemetry"`                  // anonymous launch ping plus scrubbed next-launch native crash diagnostics; nil keeps the default enabled
-	Metrics                 *bool    `toml:"metrics"`                    // aggregate desktop metrics (anonymous signal/bucket counts, including lifecycle health; no content); nil keeps the default enabled
-	ProviderAccess          []string `toml:"provider_access"`            // desktop-only list of provider entries shown in Settings > Model > Access
-	ExpandThinking          bool     `toml:"expand_thinking"`            // true = show reasoning text expanded by default; false = collapsed
-	ConversationWidth       string   `toml:"conversation_width"`         // standard|full; max transcript width; empty = standard
+	// UpdateChannel is a legacy compatibility field. It is accepted on read but
+	// ignored and omitted from future canonical writes.
+	UpdateChannel     string   `toml:"update_channel"`
+	Telemetry         *bool    `toml:"telemetry"`          // anonymous launch ping plus scrubbed next-launch native crash diagnostics; nil keeps the default enabled
+	Metrics           *bool    `toml:"metrics"`            // aggregate desktop metrics (anonymous signal/bucket counts, including lifecycle health; no content); nil keeps the default enabled
+	ProviderAccess    []string `toml:"provider_access"`    // desktop-only list of provider entries shown in Settings > Model > Access
+	ExpandThinking    bool     `toml:"expand_thinking"`    // true = show reasoning text expanded by default; false = collapsed
+	ConversationWidth string   `toml:"conversation_width"` // standard|full; max transcript width; empty = standard
 }
 
 // DesktopExternalOpener returns the user-selected external opener id. The
@@ -508,12 +537,9 @@ func (c *Config) DesktopCheckUpdates() bool {
 	return *c.Desktop.CheckUpdates
 }
 
-// NormalizeCLIUpdateChannel returns the canonical native CLI update channel.
-// Missing and unknown values fail closed to Stable.
-func NormalizeCLIUpdateChannel(ch string) string {
-	if strings.EqualFold(strings.TrimSpace(ch), "preview") {
-		return "preview"
-	}
+// NormalizeCLIUpdateChannel returns the only public native CLI update channel.
+// The input remains accepted so older preview configurations keep loading.
+func NormalizeCLIUpdateChannel(_ string) string {
 	return "stable"
 }
 
@@ -525,16 +551,11 @@ func (c *Config) CLIUpdateChannel() string {
 	return NormalizeCLIUpdateChannel(c.CLI.UpdateChannel)
 }
 
-// NormalizeDesktopUpdateChannel returns the canonical desktop update channel.
-// "canary" is accepted for existing configs and older release terminology, but
-// new writes use "preview" because that is the user-facing channel name.
-func NormalizeDesktopUpdateChannel(ch string) string {
-	switch strings.ToLower(strings.TrimSpace(ch)) {
-	case "preview", "canary", "beta", "next":
-		return "preview"
-	default:
-		return "stable"
-	}
+// NormalizeDesktopUpdateChannel returns the only public Desktop update channel.
+// Legacy preview/canary/beta/next values are deliberately ignored so an old
+// configuration cannot strand the installation on the retired channel.
+func NormalizeDesktopUpdateChannel(_ string) string {
+	return "stable"
 }
 
 // DesktopUpdateChannel returns the desktop channel whose latest pointer should be
@@ -1214,26 +1235,33 @@ type AgentConfig struct {
 // token budget; the harness compacts older history as a turn's prompt approaches
 // it (see agent compaction). 0 disables compaction for the instance.
 type ProviderEntry struct {
-	Name           string            `toml:"name"`
-	Kind           string            `toml:"kind"`
-	BaseURL        string            `toml:"base_url"`
-	ChatURL        string            `toml:"chat_url"`
-	Model          string            `toml:"model"`      // a single model (back-compat)
-	Models         []string          `toml:"models"`     // a vendor's model list (one base_url/key, many models)
-	ModelsURL      string            `toml:"models_url"` // auto-fetch models from this URL on startup
-	Default        string            `toml:"default"`    // default model when Models is set (else Models[0])
-	APIKeyEnv      string            `toml:"api_key_env"`
-	PresetID       string            `toml:"preset_id"`      // curated preset identity; UI-only metadata, not sent to model providers.
-	PresetVersion  int               `toml:"preset_version"` // curated preset schema version for future migrations.
-	Headers        map[string]string `toml:"headers"`        // optional extra HTTP headers for compatible gateways; secrets should stay in api_key_env.
-	ExtraBody      map[string]any    `toml:"extra_body"`     // optional extra top-level JSON request body fields for OpenAI-compatible gateways.
-	AuthHeader     bool              `toml:"auth_header"`    // for Anthropic-compatible gateways that expect Authorization: Bearer instead of x-api-key.
-	resolvedAPIKey string
-	resolvedSource CredentialSource
-	BalanceURL     string                       `toml:"balance_url"` // optional; a provider-specific wallet-balance endpoint (DeepSeek: https://api.deepseek.com/user/balance). Empty = no balance readout.
-	ContextWindow  int                          `toml:"context_window"`
-	Price          *provider.Pricing            `toml:"price"`  // legacy/provider-wide fallback
-	Prices         map[string]*provider.Pricing `toml:"prices"` // optional per-model prices; keys are model ids
+	Name          string            `toml:"name"`
+	Kind          string            `toml:"kind"`
+	BaseURL       string            `toml:"base_url"`
+	ChatURL       string            `toml:"chat_url"`
+	Model         string            `toml:"model"`      // a single model (back-compat)
+	Models        []string          `toml:"models"`     // a vendor's model list (one base_url/key, many models)
+	ModelsURL     string            `toml:"models_url"` // auto-fetch models from this URL on startup
+	Default       string            `toml:"default"`    // default model when Models is set (else Models[0])
+	APIKeyEnv     string            `toml:"api_key_env"`
+	PresetID      string            `toml:"preset_id"`      // curated preset identity; UI-only metadata, not sent to model providers.
+	PresetVersion int               `toml:"preset_version"` // curated preset schema version for future migrations.
+	Headers       map[string]string `toml:"headers"`        // optional extra HTTP headers for compatible gateways; secrets should stay in api_key_env.
+	ExtraBody     map[string]any    `toml:"extra_body"`     // optional extra top-level JSON request body fields for OpenAI-compatible gateways.
+	AuthHeader    bool              `toml:"auth_header"`    // for Anthropic-compatible gateways that expect Authorization: Bearer instead of x-api-key.
+	// ResponsesMode selects the Responses API context strategy. Empty preserves
+	// vendor detection; DeepSeek is stateless while compatible endpoints may use
+	// stateful previous_response_id continuation.
+	ResponsesMode string `toml:"responses_mode"`
+	// ResponsesStateful is the legacy boolean form retained for config
+	// compatibility. ResponsesMode wins when both are present.
+	ResponsesStateful *bool `toml:"responses_stateful"`
+	resolvedAPIKey    string
+	resolvedSource    CredentialSource
+	BalanceURL        string                       `toml:"balance_url"` // optional; a provider-specific wallet-balance endpoint (DeepSeek: https://api.deepseek.com/user/balance). Empty = no balance readout.
+	ContextWindow     int                          `toml:"context_window"`
+	Price             *provider.Pricing            `toml:"price"`  // legacy/provider-wide fallback
+	Prices            map[string]*provider.Pricing `toml:"prices"` // optional per-model prices; keys are model ids
 
 	persistedOfficialCurrency string
 
@@ -1241,7 +1269,8 @@ type ProviderEntry struct {
 	// via Config.Extra. The anthropic provider reads Thinking="adaptive" to enable
 	// extended thinking and Effort ("low".."max") to tune depth. The
 	// openai-compatible provider forwards Effort as reasoning_effort for
-	// thinking-capable models; DeepSeek accepts high|max.
+	// thinking-capable models; DeepSeek V4 Flash accepts low|high|max while
+	// other DeepSeek models retain their model-specific capability mapping.
 	// Empty = provider default.
 	Thinking string `toml:"thinking"`
 	Effort   string `toml:"effort"`
@@ -1468,16 +1497,18 @@ func clonePricing(p *provider.Pricing) *provider.Pricing {
 
 // ToolsConfig selects which built-in tools are enabled. Empty means all of them.
 type ToolsConfig struct {
-	Enabled               []string             `toml:"enabled"`
-	BashTimeoutSeconds    *int                 `toml:"bash_timeout_seconds"`
-	MCPCallTimeoutSeconds *int                 `toml:"mcp_call_timeout_seconds"`
-	BackgroundJobs        BackgroundJobsConfig `toml:"background_jobs"`
-	Search                SearchConfig         `toml:"search"`
-	Shell                 ShellConfig          `toml:"shell"`
+	Enabled                  []string             `toml:"enabled"`
+	BashTimeoutSeconds       *int                 `toml:"bash_timeout_seconds"`
+	MCPStartupTimeoutSeconds *int                 `toml:"mcp_startup_timeout_seconds"`
+	MCPCallTimeoutSeconds    *int                 `toml:"mcp_call_timeout_seconds"`
+	BackgroundJobs           BackgroundJobsConfig `toml:"background_jobs"`
+	Search                   SearchConfig         `toml:"search"`
+	Shell                    ShellConfig          `toml:"shell"`
 }
 
 const (
 	defaultBashTimeoutSeconds             = 120
+	defaultMCPStartupTimeoutSeconds       = 30
 	defaultMCPCallTimeoutSeconds          = 300
 	defaultBackgroundJobStalledWarningSec = 900
 	maxBackgroundJobStalledWarningSec     = 86400
@@ -1502,6 +1533,17 @@ func (c *Config) MCPCallTimeoutSeconds() int {
 		return defaultMCPCallTimeoutSeconds
 	}
 	return *c.Tools.MCPCallTimeoutSeconds
+}
+
+// MCPStartupTimeoutSeconds returns the background initialize + tools/list
+// safety cap. Omitted, zero, and negative values keep the built-in default so
+// a slow but healthy MCP can outlive the short interactive wait without running
+// indefinitely.
+func (c *Config) MCPStartupTimeoutSeconds() int {
+	if c.Tools.MCPStartupTimeoutSeconds == nil || *c.Tools.MCPStartupTimeoutSeconds <= 0 {
+		return defaultMCPStartupTimeoutSeconds
+	}
+	return *c.Tools.MCPStartupTimeoutSeconds
 }
 
 // BackgroundJobsConfig tunes parent-created background jobs.
@@ -1547,10 +1589,11 @@ type ShellConfig struct {
 // fall back to allow. Allow/Ask/Deny are rule lists of the form "ToolName" or
 // "ToolName(glob)". Precedence: deny > ask > allow > fallback.
 type PermissionsConfig struct {
-	Mode  string   `toml:"mode"`
-	Allow []string `toml:"allow"`
-	Ask   []string `toml:"ask"`
-	Deny  []string `toml:"deny"`
+	Mode             string   `toml:"mode"`
+	Allow            []string `toml:"allow"`
+	Ask              []string `toml:"ask"`
+	Deny             []string `toml:"deny"`
+	AllowDynamicBash bool     `toml:"allow_dynamic_bash"`
 }
 
 // MCPConfigSource records where a merged MCP entry came from. It is runtime
@@ -1598,6 +1641,9 @@ type PluginEntry struct {
 	Env     map[string]string `toml:"env"`
 	URL     string            `toml:"url"`
 	Headers map[string]string `toml:"headers"`
+	// StartupTimeoutSeconds overrides [tools].mcp_startup_timeout_seconds for
+	// initialize + tools/list. Zero keeps the global/default cap.
+	StartupTimeoutSeconds int `toml:"startup_timeout_seconds"`
 	// CallTimeoutSeconds overrides the default per-call deadline for this MCP
 	// server. Zero falls back to [tools].mcp_call_timeout_seconds.
 	CallTimeoutSeconds int `toml:"call_timeout_seconds"`

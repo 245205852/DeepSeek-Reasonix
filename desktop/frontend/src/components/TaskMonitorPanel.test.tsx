@@ -1,24 +1,26 @@
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { TaskMonitorPanel } from "./TaskMonitorPanel";
+// Run: tsx src/components/TaskMonitorPanel.test.tsx
 
-const mockListTasks = vi.fn();
-const mockListTaskEvents = vi.fn();
-const mockRequeueTask = vi.fn();
+import { JSDOM } from "jsdom";
+import { act } from "react";
+import { createRoot, type Root } from "react-dom/client";
 
-vi.mock("../lib/bridge", () => ({
-  app: {
-    ListTasks: (...args: unknown[]) => mockListTasks(...args),
-    ListTaskEvents: (...args: unknown[]) => mockListTaskEvents(...args),
-    StopTask: vi.fn(),
-    CancelTask: vi.fn(),
-    RequeueTask: (...args: unknown[]) => mockRequeueTask(...args),
-    OpenTaskSession: vi.fn(),
-    GetTask: vi.fn().mockResolvedValue(null),
-  },
-}));
+type Task = Record<string, unknown>;
+type Event = Record<string, unknown>;
 
-function snap(overrides: Record<string, unknown> = {}) {
+let passed = 0;
+let failed = 0;
+
+function ok(value: boolean, label: string) {
+  if (value) {
+    process.stdout.write(`  PASS  ${label}\n`);
+    passed += 1;
+  } else {
+    process.stdout.write(`  FAIL  ${label}\n`);
+    failed += 1;
+  }
+}
+
+function snap(overrides: Task = {}): Task {
   return {
     schema_version: 1,
     task_id: "task-0001",
@@ -32,7 +34,7 @@ function snap(overrides: Record<string, unknown> = {}) {
   };
 }
 
-function ev(overrides: Record<string, unknown> = {}) {
+function taskEvent(overrides: Event = {}): Event {
   return {
     sequence: 1,
     timestamp: "2025-01-01T00:00:01Z",
@@ -45,185 +47,221 @@ function ev(overrides: Record<string, unknown> = {}) {
   };
 }
 
-describe("TaskMonitorPanel", () => {
-  beforeEach(() => {
-    vi.clearAllMocks();
-    mockListTasks.mockResolvedValue([]);
-    mockListTaskEvents.mockResolvedValue([]);
-    mockRequeueTask.mockResolvedValue({
+const dom = new JSDOM("<!doctype html><html><body></body></html>", {
+  pretendToBeVisual: true,
+  url: "http://localhost/",
+});
+(globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+globalThis.window = dom.window as unknown as Window & typeof globalThis;
+globalThis.document = dom.window.document;
+globalThis.Node = dom.window.Node;
+globalThis.Element = dom.window.Element;
+globalThis.HTMLElement = dom.window.HTMLElement;
+globalThis.SVGElement = dom.window.SVGElement;
+globalThis.Event = dom.window.Event;
+globalThis.MouseEvent = dom.window.MouseEvent;
+globalThis.requestAnimationFrame = dom.window.requestAnimationFrame.bind(dom.window);
+globalThis.cancelAnimationFrame = dom.window.cancelAnimationFrame.bind(dom.window);
+
+let listTasksImpl: () => Promise<Task[]> = async () => [];
+let listEventsImpl: () => Promise<Event[]> = async () => [];
+const requeueCalls: unknown[][] = [];
+const mockApp = {
+  ListTasks: () => listTasksImpl(),
+  GetTask: async () => null,
+  ListTaskEvents: () => listEventsImpl(),
+  StopTask: async () => ({ schema_version: 1, command: "stop", task_id: "", accepted: true, idempotent: false }),
+  CancelTask: async () => ({ schema_version: 1, command: "cancel", task_id: "", accepted: true, idempotent: false }),
+  RequeueTask: async (...args: unknown[]) => {
+    requeueCalls.push(args);
+    return {
       schema_version: 1,
       command: "requeue",
-      task_id: "task-0001",
+      task_id: String(args[0] ?? ""),
       state: "queued",
       runtime_state: "exited",
       version: 2,
       accepted: true,
       idempotent: false,
-    });
+    };
+  },
+  OpenTaskSession: async () => ({ schema_version: 1, command: "open_session", task_id: "", accepted: true, idempotent: false }),
+};
+(window as unknown as { go: { main: { App: typeof mockApp } } }).go = { main: { App: mockApp } };
+
+const { TaskMonitorPanel } = await import("./TaskMonitorPanel");
+
+let activeRoot: Root | null = null;
+let activeHost: HTMLElement | null = null;
+
+async function flush() {
+  await new Promise((resolve) => setTimeout(resolve, 25));
+}
+
+async function renderPanel(onClose?: () => void) {
+  activeHost = document.createElement("div");
+  document.body.appendChild(activeHost);
+  activeRoot = createRoot(activeHost);
+  await act(async () => {
+    activeRoot?.render(<TaskMonitorPanel onClose={onClose} />);
+    await flush();
   });
-  afterEach(() => cleanup());
+}
 
-  it("renders the panel header", () => {
-    render(<TaskMonitorPanel />);
-    expect(screen.getByText("Tasks")).toBeInTheDocument();
+async function cleanup() {
+  if (activeRoot) {
+    await act(async () => activeRoot?.unmount());
+  }
+  activeHost?.remove();
+  activeRoot = null;
+  activeHost = null;
+  listTasksImpl = async () => [];
+  listEventsImpl = async () => [];
+  requeueCalls.length = 0;
+}
+
+function buttonByLabel(label: string): HTMLButtonElement {
+  const button = Array.from(document.querySelectorAll<HTMLButtonElement>("button"))
+    .find((candidate) => candidate.getAttribute("aria-label") === label);
+  if (!button) throw new Error(`missing button: ${label}`);
+  return button;
+}
+
+function buttonByText(label: string): HTMLButtonElement {
+  const button = Array.from(document.querySelectorAll<HTMLButtonElement>("button"))
+    .find((candidate) => candidate.textContent?.trim() === label);
+  if (!button) throw new Error(`missing button text: ${label}`);
+  return button;
+}
+
+async function click(button: HTMLButtonElement) {
+  await act(async () => {
+    button.click();
+    await flush();
   });
+}
 
-  it("shows empty state", async () => {
-    render(<TaskMonitorPanel />);
-    fireEvent.click(screen.getByLabelText("Expand tasks"));
-    await waitFor(() => {
-      expect(screen.getByText("No background tasks")).toBeInTheDocument();
-    });
-  });
+async function openPanel() {
+  await click(buttonByLabel("Expand tasks"));
+}
 
-  it("shows error when fetch fails", async () => {
-    mockListTasks.mockRejectedValue(new Error("Network error"));
-    render(<TaskMonitorPanel />);
-    fireEvent.click(screen.getByLabelText("Expand tasks"));
-    await waitFor(() => {
-      expect(screen.getByText(/Network/)).toBeInTheDocument();
-    });
-  });
+async function check(label: string, run: () => Promise<boolean>) {
+  try {
+    ok(await run(), label);
+  } catch (error) {
+    process.stderr.write(`  ERROR ${label}: ${String(error)}\n`);
+    ok(false, label);
+  } finally {
+    await cleanup();
+  }
+}
 
-  it("renders tasks with state badges", async () => {
-    mockListTasks.mockResolvedValue([
-      snap({ task_id: "a1", state: "running" }),
-      snap({ task_id: "b2", state: "failed" }),
-    ]);
-    render(<TaskMonitorPanel />);
-    fireEvent.click(screen.getByLabelText("Expand tasks"));
-    await waitFor(() => {
-      expect(screen.getByText("a1")).toBeInTheDocument();
-    });
-    expect(screen.getByText("Running")).toBeInTheDocument();
-    expect(screen.getByText("Failed")).toBeInTheDocument();
-  });
+console.log("\nTask Monitor panel");
 
-  it("shows lifecycle state separately from runtime liveness", async () => {
-    mockListTasks.mockResolvedValue([
-      snap({ task_id: "failed-1", state: "failed", runtime_state: "exited" }),
-      snap({ task_id: "legacy-1", state: "running", runtime_state: undefined }),
-    ]);
-    render(<TaskMonitorPanel />);
-    fireEvent.click(screen.getByLabelText("Expand tasks"));
-    await waitFor(() => {
-      expect(screen.getByText("failed-1")).toBeInTheDocument();
-    });
-    expect(screen.getByText("Exited")).toBeInTheDocument();
-    expect(screen.getByText("Runtime unknown")).toBeInTheDocument();
-  });
-
-  it("requeues a failed exited task without calling resume", async () => {
-    mockListTasks.mockResolvedValue([
-      snap({ task_id: "failed-1", state: "failed", runtime_state: "exited", version: 7 }),
-    ]);
-    render(<TaskMonitorPanel />);
-    fireEvent.click(screen.getByLabelText("Expand tasks"));
-    await waitFor(() => {
-      expect(screen.getByText("failed-1")).toBeInTheDocument();
-    });
-    fireEvent.click(screen.getByLabelText("Task failed-1 — Failed"));
-    fireEvent.click(screen.getByRole("button", { name: "Requeue" }));
-    await waitFor(() => {
-      expect(mockRequeueTask).toHaveBeenCalledWith(
-        "failed-1",
-        7,
-        "desktop-requeue-failed-1-7",
-      );
-    });
-  });
-
-  it("expands and collapses detail", async () => {
-    mockListTasks.mockResolvedValue([snap({ task_id: "task-0001", state: "succeeded" })]);
-    render(<TaskMonitorPanel />);
-    fireEvent.click(screen.getByLabelText("Expand tasks"));
-    await waitFor(() => {
-      expect(screen.getByText("task-000")).toBeInTheDocument();
-    });
-    expect(screen.queryByText("Task ID")).not.toBeInTheDocument();
-
-    fireEvent.click(screen.getByLabelText("Task task-000 — Succeeded"));
-    await waitFor(() => {
-      expect(screen.getByText("Task ID")).toBeInTheDocument();
-    });
-
-    fireEvent.click(screen.getByLabelText("Task task-000 — Succeeded"));
-    await waitFor(() => {
-      expect(screen.queryByText("Task ID")).not.toBeInTheDocument();
-    });
-  });
-
-  it("loads events on expand", async () => {
-    mockListTasks.mockResolvedValue([snap({ task_id: "task-0001", state: "failed" })]);
-    mockListTaskEvents.mockResolvedValue([
-      ev({ sequence: 1, event_type: "error", error_code: "CRASH" }),
-    ]);
-    render(<TaskMonitorPanel />);
-    fireEvent.click(screen.getByLabelText("Expand tasks"));
-    await waitFor(() => {
-      expect(screen.getByText("task-000")).toBeInTheDocument();
-    });
-    fireEvent.click(screen.getByLabelText("Task task-000 — Failed"));
-    await waitFor(() => {
-      expect(screen.getByText("Recent Events")).toBeInTheDocument();
-    });
-    expect(screen.getByText(/CRASH/)).toBeInTheDocument();
-  });
-
-  it("shows event error", async () => {
-    mockListTasks.mockResolvedValue([snap({ task_id: "task-0001" })]);
-    mockListTaskEvents.mockRejectedValue(new Error("Event failure"));
-    render(<TaskMonitorPanel />);
-    fireEvent.click(screen.getByLabelText("Expand tasks"));
-    await waitFor(() => {
-      expect(screen.getByText("task-000")).toBeInTheDocument();
-    });
-    fireEvent.click(screen.getByLabelText("Task task-000 — Running"));
-    await waitFor(() => {
-      expect(screen.getByText(/Event/)).toBeInTheDocument();
-    });
-  });
-
-  it("calls onClose", () => {
-    const onClose = vi.fn();
-    render(<TaskMonitorPanel onClose={onClose} />);
-    fireEvent.click(screen.getByLabelText("Close task panel"));
-    expect(onClose).toHaveBeenCalledTimes(1);
-  });
-
-  it("refreshes on button click", async () => {
-    mockListTasks
-      .mockResolvedValueOnce([])
-      .mockResolvedValueOnce([snap({ task_id: "ok" })]);
-    render(<TaskMonitorPanel />);
-    fireEvent.click(screen.getByLabelText("Expand tasks"));
-    await waitFor(() => {
-      expect(screen.getByText("No background tasks")).toBeInTheDocument();
-    });
-    fireEvent.click(screen.getByLabelText("Refresh tasks"));
-    await waitFor(() => {
-      expect(screen.getByText("ok")).toBeInTheDocument();
-    });
-  });
-
-  it("shows task count badge", async () => {
-    mockListTasks.mockResolvedValue([snap({ task_id: "a" }), snap({ task_id: "b" })]);
-    render(<TaskMonitorPanel />);
-    await waitFor(() => {
-      expect(screen.getByText("2")).toBeInTheDocument();
-    });
-  });
-
-  it("shows terminal icon only for terminal tasks", async () => {
-    mockListTasks.mockResolvedValue([
-      snap({ task_id: "t1", state: "succeeded" }),
-      snap({ task_id: "t2", state: "running" }),
-    ]);
-    render(<TaskMonitorPanel />);
-    fireEvent.click(screen.getByLabelText("Expand tasks"));
-    await waitFor(() => {
-      expect(screen.getByText("t1")).toBeInTheDocument();
-    });
-    expect(document.querySelectorAll(".taskmonitor__terminal").length).toBe(1);
-  });
+await check("renders the panel header", async () => {
+  await renderPanel();
+  return document.body.textContent?.includes("Tasks") === true;
 });
+
+await check("shows the empty state", async () => {
+  await renderPanel();
+  await openPanel();
+  return document.body.textContent?.includes("No background tasks") === true;
+});
+
+await check("shows task-fetch errors", async () => {
+  listTasksImpl = async () => { throw new Error("Network error"); };
+  await renderPanel();
+  await openPanel();
+  return document.body.textContent?.includes("Network error") === true;
+});
+
+await check("renders lifecycle badges", async () => {
+  listTasksImpl = async () => [snap({ task_id: "a1" }), snap({ task_id: "b2", state: "failed" })];
+  await renderPanel();
+  await openPanel();
+  const text = document.body.textContent ?? "";
+  return text.includes("Running") && text.includes("Failed");
+});
+
+await check("separates lifecycle state from runtime liveness", async () => {
+  listTasksImpl = async () => [
+    snap({ task_id: "failed-1", state: "failed", runtime_state: "exited" }),
+    snap({ task_id: "legacy-1", runtime_state: undefined }),
+  ];
+  await renderPanel();
+  await openPanel();
+  const text = document.body.textContent ?? "";
+  return text.includes("Exited") && text.includes("Runtime unknown");
+});
+
+await check("requeues failed exited tasks", async () => {
+  listTasksImpl = async () => [snap({ task_id: "failed-1", state: "failed", runtime_state: "exited", version: 7 })];
+  await renderPanel();
+  await openPanel();
+  await click(buttonByLabel("Task failed-1 — Failed"));
+  await click(buttonByText("Requeue"));
+  return JSON.stringify(requeueCalls[0]) === JSON.stringify(["failed-1", 7, "desktop-requeue-failed-1-7"]);
+});
+
+await check("expands and collapses task details", async () => {
+  listTasksImpl = async () => [snap({ state: "succeeded" })];
+  await renderPanel();
+  await openPanel();
+  const row = buttonByLabel("Task task-000 — Succeeded");
+  await click(row);
+  const expanded = document.body.textContent?.includes("Task ID") === true;
+  await click(row);
+  return expanded && document.body.textContent?.includes("Task ID") !== true;
+});
+
+await check("loads recent task events", async () => {
+  listTasksImpl = async () => [snap({ state: "failed" })];
+  listEventsImpl = async () => [taskEvent({ event_type: "error", error_code: "CRASH" })];
+  await renderPanel();
+  await openPanel();
+  await click(buttonByLabel("Task task-000 — Failed"));
+  return document.body.textContent?.includes("CRASH") === true;
+});
+
+await check("shows task-event errors", async () => {
+  listTasksImpl = async () => [snap()];
+  listEventsImpl = async () => { throw new Error("Event failure"); };
+  await renderPanel();
+  await openPanel();
+  await click(buttonByLabel("Task task-000 — Running"));
+  return document.body.textContent?.includes("Event failure") === true;
+});
+
+await check("calls the close callback", async () => {
+  let closeCalls = 0;
+  await renderPanel(() => { closeCalls += 1; });
+  await click(buttonByLabel("Close task panel"));
+  return closeCalls === 1;
+});
+
+await check("refreshes tasks on request", async () => {
+  let calls = 0;
+  listTasksImpl = async () => (++calls === 1 ? [] : [snap({ task_id: "ok" })]);
+  await renderPanel();
+  await openPanel();
+  await click(buttonByLabel("Refresh tasks"));
+  return document.body.textContent?.includes("ok") === true;
+});
+
+await check("shows the task count", async () => {
+  listTasksImpl = async () => [snap({ task_id: "a" }), snap({ task_id: "b" })];
+  await renderPanel();
+  return document.querySelector(".taskmonitor__count")?.textContent === "2";
+});
+
+await check("marks only terminal tasks", async () => {
+  listTasksImpl = async () => [snap({ task_id: "t1", state: "succeeded" }), snap({ task_id: "t2" })];
+  await renderPanel();
+  await openPanel();
+  return document.querySelectorAll(".taskmonitor__terminal").length === 1;
+});
+
+dom.window.close();
+console.log(`\n${passed} passed, ${failed} failed`);
+if (failed > 0) process.exit(1);

@@ -39,6 +39,7 @@ import (
 
 	// Blank import registers the provider kind the same way cmd/reasonix's main
 	// does; importing builtin above registers the built-in tools.
+	_ "reasonix/internal/provider/anthropic"
 	_ "reasonix/internal/provider/openai"
 )
 
@@ -180,7 +181,8 @@ api_key_env = "REASONIX_TEST_KEY_UNSET"
 	}
 }
 
-func TestBuildSafeModeSkipsCleanupPendingReconciliation(t *testing.T) {
+func TestBuildRunsCleanupPendingDespiteSafeModeEnv(t *testing.T) {
+	// v1.20+: REASONIX_SAFE_MODE no longer skips cleanup reconciliation.
 	isolateConfigHome(t)
 	dir := robustTempDir(t)
 	t.Chdir(dir)
@@ -198,8 +200,8 @@ func TestBuildSafeModeSkipsCleanupPendingReconciliation(t *testing.T) {
 		t.Fatalf("Build: %v", err)
 	}
 	defer ctrl.Close()
-	if called {
-		t.Fatal("safe mode ran cleanup-pending reconciliation")
+	if !called {
+		t.Fatal("cleanup-pending reconciler must still run when REASONIX_SAFE_MODE is set")
 	}
 }
 
@@ -1050,8 +1052,8 @@ func (p *headlessTaskTestProvider) Stream(context.Context, provider.Request) (<-
 // TestBuildHeadlessApprovalModePropagatesToTaskSubagentGate pins boot.Build's
 // actual wiring for the fix: a `task` sub-agent spawned from a headless run
 // must honor the same --permission-mode contract as the parent executor
-// instead of the mode-unaware default gate (ask resolves to allow) that boot
-// used to build unconditionally. Auto must fail closed on write_file's
+// instead of the mode-unaware default gate that boot used to build
+// unconditionally. Ask and Auto must fail closed on write_file's
 // explicit ask rule even inside the sub-agent; only yolo may bypass it.
 func TestBuildHeadlessApprovalModePropagatesToTaskSubagentGate(t *testing.T) {
 	runTaskWriteOnce := func(t *testing.T, mode string) bool {
@@ -1092,6 +1094,9 @@ model = "x"
 		return statErr == nil
 	}
 
+	if written := runTaskWriteOnce(t, "ask"); written {
+		t.Fatalf("ask: task sub-agent wrote sub.txt despite having no approval UI")
+	}
 	if written := runTaskWriteOnce(t, "auto"); written {
 		t.Fatalf("auto: task sub-agent wrote sub.txt despite the explicit ask rule on write_file")
 	}
@@ -1176,7 +1181,7 @@ func TestRecoveryHeadlessModeUsesExplicitFrontendCapability(t *testing.T) {
 // later at runtime via Shift+Tab (Controller.SetToolApprovalMode) — followed
 // by a runtime switch to auto must also reach the task sub-agent's gate.
 // Before this fix, the sub-agent gate was captured once at boot with the
-// mode-unaware default (ask resolves to allow) and had no rebuild hook, so a
+// mode-unaware default and had no rebuild hook, so a
 // later SetToolApprovalMode(auto) call updated only the parent executor.
 func TestBuildInteractiveApprovalModeSwitchPropagatesToTaskSubagentGate(t *testing.T) {
 	isolateConfigHome(t)
@@ -1453,6 +1458,28 @@ func TestNewProviderAppliesModelReasoningProtocol(t *testing.T) {
 	}
 }
 
+func TestNewProviderBuildsDeepSeekAnthropicPreset(t *testing.T) {
+	preset, ok := config.CuratedProviderPreset("deepseek-anthropic")
+	if !ok || len(preset.Entries) != 1 {
+		t.Fatalf("DeepSeek Anthropic preset = %+v", preset)
+	}
+	var cfg config.Config
+	if err := cfg.UpsertProvider(preset.Entries[0]); err != nil {
+		t.Fatalf("UpsertProvider: %v", err)
+	}
+	entry, ok := cfg.ResolveModel("deepseek-anthropic/deepseek-v4-flash")
+	if !ok {
+		t.Fatal("ResolveModel failed")
+	}
+	p, err := NewProvider(entry)
+	if err != nil {
+		t.Fatalf("NewProvider: %v", err)
+	}
+	if p.Name() != "deepseek-anthropic" || !provider.RequiresToolCallReasoning(p) || provider.RequiresReasoningRoundTrip(p) {
+		t.Fatalf("assembled DeepSeek Anthropic provider = %T/%q policies=%v/%v", p, p.Name(), provider.RequiresToolCallReasoning(p), provider.RequiresReasoningRoundTrip(p))
+	}
+}
+
 func TestNewProviderAllowsExplicitOfficialDeepSeekVisionModel(t *testing.T) {
 	var gotReq map[string]any
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -1591,7 +1618,8 @@ api_key_env = "REASONIX_TEST_KEY_UNSET"
 	}
 }
 
-func TestBuildSafeModeSkipsSkillDiscovery(t *testing.T) {
+func TestBuildDiscoversSkillsDespiteSafeModeEnv(t *testing.T) {
+	// v1.20+: skill discovery is not gated by REASONIX_SAFE_MODE.
 	dir := robustTempDir(t)
 	home := robustTempDir(t)
 	t.Setenv("HOME", home)
@@ -1607,17 +1635,8 @@ func TestBuildSafeModeSkipsSkillDiscovery(t *testing.T) {
 	}
 	defer ctrl.Close()
 
-	if skills := ctrl.Skills(); len(skills) != 0 {
-		t.Fatalf("safe mode skills = %+v, want none", skills)
-	}
-	if skills := ctrl.AllSkills(); len(skills) != 0 {
-		t.Fatalf("safe mode all skills = %+v, want none", skills)
-	}
-	if skills := ctrl.SlashSkills(); len(skills) != 0 {
-		t.Fatalf("safe mode slash skills = %+v, want none", skills)
-	}
-	if sys := systemMessage(ctrl.History()); strings.Contains(sys, "# Skills") || strings.Contains(sys, "project-skill") || strings.Contains(sys, "global-skill") {
-		t.Fatalf("safe mode system prompt contains skills:\n%s", sys)
+	if skills := ctrl.AllSkills(); len(skills) == 0 {
+		t.Fatal("skills must still be discovered when REASONIX_SAFE_MODE is set")
 	}
 }
 
@@ -4313,22 +4332,29 @@ func TestPartitionByTier(t *testing.T) {
 	}
 }
 
-func TestPluginSpecsMapConfiguredCallTimeouts(t *testing.T) {
+func TestPluginSpecsMapConfiguredMCPTimeouts(t *testing.T) {
 	specs := PluginSpecsForRootWithOptions([]config.PluginEntry{{
-		Name:               "maker",
-		Command:            "maker-mcp",
-		CallTimeoutSeconds: 600,
+		Name:                  "maker",
+		Command:               "maker-mcp",
+		StartupTimeoutSeconds: 45,
+		CallTimeoutSeconds:    600,
 		ToolTimeoutSeconds: map[string]int{
 			"generate_video": 1800,
 			" ":              120,
 			"zero":           0,
 		},
-	}}, "", PluginSpecOptions{DefaultCallTimeout: 300 * time.Second})
+	}}, "", PluginSpecOptions{
+		DefaultStartupTimeout: 30 * time.Second,
+		DefaultCallTimeout:    300 * time.Second,
+	})
 	if len(specs) != 1 {
 		t.Fatalf("PluginSpecs returned %d specs, want 1", len(specs))
 	}
 	if specs[0].DefaultCallTimeout != 5*time.Minute {
 		t.Fatalf("DefaultCallTimeout = %v, want 5m", specs[0].DefaultCallTimeout)
+	}
+	if specs[0].DefaultStartupTimeout != 30*time.Second || specs[0].StartupTimeout != 45*time.Second {
+		t.Fatalf("startup timeouts = default %v override %v, want 30s/45s", specs[0].DefaultStartupTimeout, specs[0].StartupTimeout)
 	}
 	if specs[0].CallTimeout != 10*time.Minute {
 		t.Fatalf("CallTimeout = %v, want 10m", specs[0].CallTimeout)
@@ -4432,6 +4458,19 @@ func TestApplyDefaultMCPCallTimeoutPreservesConfiguredDefault(t *testing.T) {
 	}
 	if specs[1].DefaultCallTimeout != 5*time.Minute {
 		t.Fatalf("empty DefaultCallTimeout = %v, want 5m", specs[1].DefaultCallTimeout)
+	}
+}
+
+func TestApplyDefaultMCPStartupTimeoutPreservesConfiguredDefault(t *testing.T) {
+	specs := applyDefaultMCPStartupTimeout([]plugin.Spec{
+		{Name: "configured", DefaultStartupTimeout: 20 * time.Second},
+		{Name: "empty"},
+	}, 30*time.Second)
+	if specs[0].DefaultStartupTimeout != 20*time.Second {
+		t.Fatalf("configured DefaultStartupTimeout overwritten: %v", specs[0].DefaultStartupTimeout)
+	}
+	if specs[1].DefaultStartupTimeout != 30*time.Second {
+		t.Fatalf("empty DefaultStartupTimeout = %v, want 30s", specs[1].DefaultStartupTimeout)
 	}
 }
 
@@ -5026,37 +5065,30 @@ func TestHelperProcess(t *testing.T) {
 	}
 }
 
-// TestBuildSafeModeOmitsSourceConnectorAndSkillTools pins the Safe Mode
-// surface across token modes: no Economy connect_tool_source (it could
-// re-expose skills, commands, memory, and MCP), no install_source, and no
-// skill tools — while slash_command stays registered with an empty list.
-func TestBuildSafeModeOmitsSourceConnectorAndSkillTools(t *testing.T) {
+// TestBuildKeepsSourceConnectorAndSkillToolsDespiteSafeModeEnv pins that
+// v1.20+ no longer strips tools when REASONIX_SAFE_MODE is set.
+func TestBuildKeepsSourceConnectorAndSkillToolsDespiteSafeModeEnv(t *testing.T) {
 	isolateConfigHome(t)
 	dir := robustTempDir(t)
 	t.Chdir(dir)
 	t.Setenv("REASONIX_SAFE_MODE", "1")
 
-	for _, tokenMode := range []string{TokenModeFull, TokenModeEconomy} {
-		ctrl, err := Build(context.Background(), Options{
-			SessionDir: filepath.Join(t.TempDir(), "sessions"),
-			TokenMode:  tokenMode,
-			Sink:       event.Discard,
-		})
-		if err != nil {
-			t.Fatalf("Build(%q): %v", tokenMode, err)
-		}
-		names := map[string]bool{}
-		for _, e := range ctrl.ToolContractEntries() {
-			names[e.Name] = true
-		}
-		ctrl.Close()
-		for _, banned := range []string{"connect_tool_source", "install_source", "run_skill", "read_skill", "read_only_skill"} {
-			if names[banned] {
-				t.Fatalf("safe mode (%q) registered %s", tokenMode, banned)
-			}
-		}
-		if !names["slash_command"] {
-			t.Fatalf("safe mode (%q) should still register slash_command", tokenMode)
+	ctrl, err := Build(context.Background(), Options{
+		SessionDir: filepath.Join(t.TempDir(), "sessions"),
+		TokenMode:  TokenModeFull,
+		Sink:       event.Discard,
+	})
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	names := map[string]bool{}
+	for _, e := range ctrl.ToolContractEntries() {
+		names[e.Name] = true
+	}
+	ctrl.Close()
+	for _, want := range []string{"install_source", "run_skill", "slash_command"} {
+		if !names[want] {
+			t.Fatalf("expected %s when REASONIX_SAFE_MODE is set", want)
 		}
 	}
 }

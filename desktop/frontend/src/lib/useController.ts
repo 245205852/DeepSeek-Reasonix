@@ -384,6 +384,20 @@ export function runtimeReadyForSubmit(meta?: Meta): boolean {
   return !meta.runtime || meta.runtime.phase === "ready";
 }
 
+// normalizeTurnSubmit is the final frontend boundary before optimistic
+// transcript state is created. Display text may intentionally be shorter than
+// the provider input, but a visible-only message must never start an empty model
+// turn (#6869).
+export function normalizeTurnSubmit(displayText: string, submitText: string): {
+  display: string;
+  submit: string;
+} {
+  const display = displayText.trim();
+  const submit = submitText.trim();
+  if (!submit) throw new Error("Message cannot be empty.");
+  return { display, submit };
+}
+
 export function acceptsRuntimeEventEpoch(acceptedEpoch: string | undefined, eventEpoch: string | undefined): boolean {
   return !eventEpoch || !acceptedEpoch || acceptedEpoch === eventEpoch;
 }
@@ -1488,6 +1502,9 @@ function errorMessage(err: unknown): string {
 export function effortSwitchNoticeText(err: unknown): string {
   return settingSwitchNoticeText(err, "effort", {
     busy: "status.effortSwitchBusy",
+    busyRunning: "status.effortSwitchBusyRunning",
+    busyPrompt: "status.effortSwitchBusyPrompt",
+    busyJobs: "status.effortSwitchBusyJobs",
     leaseHeld: "status.effortSwitchLeaseHeld",
     starting: "status.effortSwitchStarting",
     startupFailed: "status.effortSwitchStartupFailed",
@@ -1508,6 +1525,9 @@ export function modelSwitchNoticeText(err: unknown): string {
   }
   return settingSwitchNoticeText(msg, "model", {
     busy: "status.modelSwitchBusy",
+    busyRunning: "status.modelSwitchBusyRunning",
+    busyPrompt: "status.modelSwitchBusyPrompt",
+    busyJobs: "status.modelSwitchBusyJobs",
     leaseHeld: "status.modelSwitchLeaseHeld",
     starting: "status.modelSwitchStarting",
     startupFailed: "status.modelSwitchStartupFailed",
@@ -1519,6 +1539,9 @@ export function modelSwitchNoticeText(err: unknown): string {
 export function tokenModeSwitchNoticeText(err: unknown): string {
   return settingSwitchNoticeText(err, "token mode", {
     busy: "status.tokenModeSwitchBusy",
+    busyRunning: "status.tokenModeSwitchBusyRunning",
+    busyPrompt: "status.tokenModeSwitchBusyPrompt",
+    busyJobs: "status.tokenModeSwitchBusyJobs",
     leaseHeld: "status.tokenModeSwitchLeaseHeld",
     starting: "status.tokenModeSwitchStarting",
     startupFailed: "status.tokenModeSwitchStartupFailed",
@@ -1544,6 +1567,11 @@ const noticeCodeKeys: Record<string, DictKey> = {
 // localizedNoticeText localizes a notice's main copy by its stable code first,
 // then falls back to English-text matching for codeless payloads.
 export function localizedNoticeText(text: string, code?: string): string {
+  if (code === "unapplied_steer") {
+    const separator = text.indexOf("\n");
+    const guidance = separator >= 0 ? text.slice(separator + 1) : text;
+    return t("notice.unappliedSteer", { guidance });
+  }
   const key = code ? noticeCodeKeys[code] : undefined;
   if (key) return t(key);
   return localizedBackendNoticeText(text);
@@ -1767,6 +1795,9 @@ function settingSwitchNoticeText(
   setting: "effort" | "model" | "token mode",
   keys: {
     busy: DictKey;
+    busyRunning: DictKey;
+    busyPrompt: DictKey;
+    busyJobs: DictKey;
     leaseHeld: DictKey;
     starting: DictKey;
     startupFailed: DictKey;
@@ -1777,6 +1808,11 @@ function settingSwitchNoticeText(
   const msg = errorMessage(err).trim() || "unknown error";
   const lower = msg.toLowerCase();
   if (lower.includes("finish or cancel") && lower.includes(`before changing ${setting}`)) {
+    const detail = /running=(true|false);\s*pending_prompt=(true|false);\s*background_jobs=(\d+)/i.exec(msg);
+    if (detail?.[2] === "true") return t(keys.busyPrompt);
+    if (detail?.[1] === "true") return t(keys.busyRunning);
+    const jobs = Number(detail?.[3] ?? 0);
+    if (jobs > 0) return t(keys.busyJobs, { n: jobs });
     return t(keys.busy);
   }
   if (lower.includes("already open in another reasonix window") || lower.includes("session lease held")) {
@@ -1828,7 +1864,7 @@ export function useController() {
   const bump = useCallback(() => setVersion((v) => v + 1), []);
   const notifyLiveListeners = useCallback((tabId: string) => {
     for (const listener of liveListenersByTabRef.current.get(tabId) ?? []) listener();
-  }, []);
+  }, [t]);
   const disposeComposerProfileState = useCallback((tabId: string) => {
     appliedComposerProfileByTabRef.current.delete(tabId);
     composerProfileInFlightByTabRef.current.delete(tabId);
@@ -2582,8 +2618,7 @@ export function useController() {
     }
     const seq = currentState.seq;
     const promptEpoch = currentState.promptEpoch;
-    const display = displayText.trim();
-    const submit = submitText.trim();
+    const { display, submit } = normalizeTurnSubmit(displayText, submitText);
     const original = originalText?.trim() ?? "";
     dispatchTo(tabId, { type: "user", text: displayText, submitText: display !== submit ? submit : undefined, seq });
     invalidateCache();
@@ -2679,14 +2714,11 @@ export function useController() {
     if (!tabId) throw new Error(t("composer.workspaceStarting"));
     // No optimistic user bubble: rewind/fork map turns by counting user items,
     // and a steer is not a backend turn — the Steer event's ↪ notice is the
-    // visible confirmation (#3660).
-    try {
-      await app.SteerForTab(tabId, text);
-    } catch (error) {
-      dispatchTo(tabId, { type: "local_notice", level: "warn", text: `Steer failed: ${error instanceof Error ? error.message : String(error)}` });
-      throw error;
-    }
-  }, [dispatchTo]);
+    // visible confirmation (#3660). Keep backend rejection as a rejected
+    // promise: Composer retains the guidance item until TurnDone, then sends it
+    // as a normal follow-up instead of clearing running state prematurely.
+    await app.SteerForTab(tabId, text);
+  }, []);
 
   const steer = useCallback(async (text: string) => {
     if (!activeTabId) throw new Error(t("composer.workspaceStarting"));
@@ -3174,6 +3206,21 @@ export function useController() {
     return true;
   }, [activeTabId, dispatchTo, refreshMetaForTab]);
 
+  const cancelJob = useCallback(async (jobID: string): Promise<boolean> => {
+    const tabId = activeTabId;
+    if (!tabId || !jobID.trim()) return false;
+    try {
+      const cancelled = await app.CancelJobForTab(tabId, jobID);
+      const jobs = asArray(await app.JobsForTab(tabId));
+      dispatchTo(tabId, { type: "jobs", jobs });
+      await refreshMetaForTab(tabId);
+      return cancelled;
+    } catch {
+      dispatchTo(tabId, { type: "local_notice", level: "warn", text: t("status.jobStopFailed") });
+      return false;
+    }
+  }, [activeTabId, dispatchTo, refreshMetaForTab]);
+
   const fetchMemory = useCallback((): Promise<MemoryView> =>
     app.Memory().catch(() => ({
       docs: [], facts: [], archives: [], scopes: [], instructionDiagnostics: [], conflicts: [],
@@ -3506,17 +3553,23 @@ export function useController() {
     return result;
   }, [beginActiveNavigation, confirmBackendActiveTab, dispatchRuntimeStatusForTab, dispatchTo, loadSessionDataForTab, navigationCompletionCurrent, reassertVisibleTabAfterStaleNavigation, reconcileTabRuntime]);
 
-  const closeTab = useCallback(async (tabId: string) => {
+  const closeTab = useCallback(async (
+    tabId: string,
+    policy: "keep_running" | "stop_and_close" = "keep_running",
+  ): Promise<boolean> => {
     if (tabId === activeTabIdRef.current) beginActiveNavigation();
     try {
-      await app.CloseTab(tabId);
+      await app.CloseTabWithPolicy(tabId, policy);
       invalidateProviderStateForTab(tabId);
       disposeComposerProfileState(tabId);
       statesRef.current.delete(tabId);
       notifyLiveListeners(tabId);
       bump();
       if (tabId === activeTabId) await syncActiveTabFromBackend(false);
-    } catch { /* ignore */ }
+      return true;
+    } catch {
+      return false;
+    }
   }, [activeTabId, beginActiveNavigation, bump, disposeComposerProfileState, invalidateProviderStateForTab, notifyLiveListeners, syncActiveTabFromBackend]);
 
   const reorderTabs = useCallback(async (tabIds: string[]) => {
@@ -3533,7 +3586,7 @@ export function useController() {
     setCollaborationMode, setCollaborationModeForTab, setToolApprovalMode, setToolApprovalModeForTab, setComposerProfileForTab, setGoal, setGoalForTab, clearGoal, clearGoalForTab, resumeGoal, resumeGoalForTab,
     newSession, clearSession, listSessions, listTrashedSessions, resumeSession, openChannelSession, previewSession, deleteSession, restoreSession, purgeTrashedSession, renameSession,
     loadOlderHistory,
-    refreshMeta, pickWorkspace, switchWorkspace, compact, rewind, rewindForTab, setModel, setEffort, setTokenMode,
+    refreshMeta, pickWorkspace, switchWorkspace, compact, rewind, rewindForTab, setModel, setEffort, setTokenMode, cancelJob,
     fetchMemory, remember, forget, saveDoc,
     switchTab, openProjectTab, openGlobalTab, openTopicSession, ensureBlankTab, activateTopic, ensureBlankSurface, createDeliveryWorktree, closeTab, reorderTabs,
     // Invalidate in-flight navigation completions (activateTopic's stale

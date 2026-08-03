@@ -364,7 +364,10 @@ func (p Policy) Decide(toolName string, readOnly bool, args json.RawMessage) Dec
   `source`, shell `-c`, PowerShell/cmd command strings, and runtime inline-code
   flags require a human in interactive Ask/Auto. Guardian, allowing hooks, and
   the approved-plan window cannot answer that decision; only an identical exact
-  grant or YOLO can bypass it.
+  grant or YOLO can bypass it by default. The advanced
+  `[permissions] allow_dynamic_bash = true` opt-in lets an Allow fallback,
+  including Auto, cover this class; explicit `ask` and `deny` rules retain
+  precedence.
 - **Precedence.** `deny` > `ask` > `allow` > fallback. Fallback is `Allow` for
   read-only tools and `Mode` (default `Ask`) for writers. `deny` always wins, so
   a broad `allow = ["Bash"]` can still be carved by `deny = ["Bash(rm -rf*)"]`;
@@ -379,10 +382,12 @@ func (p Policy) Decide(toolName string, readOnly bool, args json.RawMessage) Dec
   grant is path-scoped when a path is available, stored as `Edit(<path>)` so all
   built-in file-mutating tools share it. A
   non-interactive run
-  (`reasonix run`, a sub-agent, anything with no TTY / no approver) cannot prompt, so
-  ordinary `Ask` resolves to **allow** — preserving autonomous behaviour. Nested
-  or indirect Bash is the exception: headless Ask/Auto/DontAsk reject it unless
-  an identical literal grant exists; only YOLO may bypass that human requirement. A `Deny` is a
+  (`reasonix run`, a sub-agent, anything with no TTY / no approver) cannot prompt.
+  Its explicit posture therefore resolves without blocking: Ask/manual fails
+  closed, Auto allows only ordinary writer fallback, and YOLO may bypass ordinary
+  Ask decisions. Nested or indirect Bash remains stricter: headless
+  Ask/Auto/DontAsk reject it unless an identical literal grant exists; YOLO or
+  `allow_dynamic_bash = true` with an Allow fallback may opt out. A `Deny` is a
   hard block in *every* mode: the tool never executes and the model receives a
   "blocked" result it can adapt to (the same shape as a plan-mode refusal).
 - **MCP authorization.** Installing an MCP server authorizes all of its tools;
@@ -484,9 +489,12 @@ func (p Policy) Decide(toolName string, readOnly bool, args json.RawMessage) Dec
 | YOLO approval / `yolo` | Ordinary prompts auto-allowed; deny rules and fresh reviews remain | Waits for user | Waits for user |
 | Approved-plan execution window | Approved plan's writer fallback is auto-allowed; explicit `ask` / `deny` rules remain | Future plans still wait | Waits for user |
 
-Out of the box (`mode = "ask"`, no rules) `reasonix run` behaves exactly as before
-(writers resolve `Ask`→allow with no TTY), while `reasonix` now prompts before
-each writer/bash call. `deny` rules harden both modes.
+Out of the box (`mode = "ask"`, no rules), interactive `reasonix` prompts before
+each writer/bash call and `reasonix run` fails closed on those calls because it
+has no approver. Use `reasonix run --auto ...` / `-y` to allow ordinary writer
+fallback in unattended automation; `--permission-mode auto` is equivalent.
+Explicit `ask` rules still fail closed under Auto, and `deny` rules harden every
+posture.
 
 ### 3.8 Slash commands (`internal/command`)
 
@@ -656,9 +664,6 @@ default_model = "deepseek"   # provider name (→ its default model) or "provide
 # shortcut_layout = "desktop"       # classic|desktop; compatibility setting
 # cursor_shape = "bar"              # CLI/TUI textarea cursor: underline|block|bar
 
-[cli]                               # user/global only; project reasonix.toml cannot override
-update_channel = "stable"           # stable|preview; missing/unknown values resolve to stable
-
 [agent]
 system_prompt = "You are Reasonix, a coding agent..."  # or system_prompt_file = "..."
 temperature       = 0.0
@@ -696,6 +701,7 @@ enabled = true   # inject a stable startup summary of OS, shell, and common tool
 [tools]
 enabled = []   # omit/empty = all built-ins
 bash_timeout_seconds = 120   # foreground safety cap; set 0 for no tool-local cap
+mcp_startup_timeout_seconds = 30   # background initialize + tools/list safety cap
 mcp_call_timeout_seconds = 300   # default MCP call safety cap; plugin/tool overrides may raise it
 
 [tools.shell]
@@ -729,6 +735,7 @@ name    = "example"            # type defaults to "stdio"
 command = "reasonix-plugin-example"
 args    = []
 # env   = { FOO = "bar" }
+# startup_timeout_seconds = 60         # initialize + tools/list cap; 0 = global/default cap
 # call_timeout_seconds = 600            # per-server MCP call timeout; 0 = global/default cap
 # tool_timeout_seconds = { "generate_video" = 1800 }   # raw MCP tool names
 # [[plugins]]                   # a remote MCP server over Streamable HTTP
@@ -738,10 +745,9 @@ args    = []
 # headers = { Authorization = "Bearer ${STRIPE_KEY}" }   # ${VAR} / ${VAR:-default} expanded
 ```
 
-The native CLI update channel is persisted in the user config. `reasonix
-upgrade` follows it, while `reasonix upgrade stable|preview` changes it and
-updates the same installed binary. The advanced `--channel` flag is a one-off
-override for automation and does not change the saved value.
+The native CLI updater always installs the latest strict `vX.Y.Z` official
+release. Legacy channel configuration and arguments remain parseable during
+1.x, resolve to the official release, and are omitted on subsequent writes.
 
 The executor tracks an adaptive progress lease while a todo is active. A new
 completion, unique successful read, command, or mutation renews the lease;
@@ -778,6 +784,13 @@ Code's exact `mcpServers` schema (`command`/`args`/`env`, `type`/`url`/`headers`
 `[[plugins]]`; on a name collision `reasonix.toml` wins (it is the more explicit,
 Reasonix-specific source). This lets a server already configured for Claude work in
 Reasonix unchanged.
+
+MCP startup has a separate lifecycle from an individual tool call. A caller
+waits briefly for cold startup, while the shared launch/authorization/
+`initialize`/`tools/list` sequence may continue in the background up to
+`mcp_startup_timeout_seconds` (default `30`). A per-server
+`startup_timeout_seconds` overrides that cap. MCP call timeouts begin only after
+the connection is ready.
 
 ```json
 { "mcpServers": {

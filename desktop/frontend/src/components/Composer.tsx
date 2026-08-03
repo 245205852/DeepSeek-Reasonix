@@ -23,6 +23,7 @@ import {
 } from "../lib/invocationDisplay";
 import { clearLayoutSize, loadOptionalLayoutSize, saveLayoutSize } from "../lib/layoutPreferences";
 import { createRafResizeUpdater } from "../lib/resizeDrag";
+import { observeComposerMenuViewport } from "../lib/composerMenuViewport";
 import { useToast } from "../lib/toast";
 import { type CollaborationMode, type CommandInfo, type ComposerInsertRequest, type ContextInfo, type DirEntry, type EffortInfo, type HistoryMessage, type Mode, type PromptHistoryEntry, type SessionMeta, type SessionReference, type SlashArgItem, type SlashArgsResult, type TokenMode, type ToolApprovalMode, type BalanceInfo } from "../lib/types";
 import {
@@ -704,6 +705,7 @@ export function Composer({
   const [pendingGuidance, setPendingGuidance] = useState<PendingGuidance[]>([]);
   const [guidanceExpanded, setGuidanceExpanded] = useState(false);
   const [guidanceSendingId, setGuidanceSendingId] = useState<number | null>(null);
+  const [guidanceRetryNonce, setGuidanceRetryNonce] = useState(0);
   const [guidanceDraftKey, setGuidanceDraftKey] = useState(draftKey);
   const pendingGuidanceRef = useRef<PendingGuidance[]>([]);
   const guidanceExpandedRef = useRef(false);
@@ -730,6 +732,7 @@ export function Composer({
   const editHistoryByDraftRef = useRef<Record<string, ComposerEditHistory>>({});
   const pendingNativeInputTypeRef = useRef<string | undefined>(undefined);
   const composerCardRef = useRef<HTMLDivElement>(null);
+  const composerWrapRef = useRef<HTMLDivElement>(null);
   const contentMenuAnchorRef = useRef<HTMLButtonElement>(null);
   const intentMenuAnchorRef = useRef<HTMLButtonElement>(null);
   const profileMenuAnchorRef = useRef<HTMLButtonElement>(null);
@@ -1175,7 +1178,7 @@ export function Composer({
     if (guidanceDraftKey !== draftKey || running || submitDisabled || suspendedByDecision) return;
     const next = pendingGuidance[0];
     if (next) void sendQueuedGuidance(next, draftKey);
-  }, [draftKey, guidanceDraftKey, running, submitDisabled, pendingGuidance, suspendedByDecision]);
+  }, [draftKey, guidanceDraftKey, guidanceRetryNonce, running, submitDisabled, pendingGuidance, suspendedByDecision]);
 
   useEffect(() => {
     if (guidanceDraftKey !== draftKey || !running || !guidanceQueuePreviewKey) return;
@@ -1421,6 +1424,13 @@ export function Composer({
           : atRaw !== null && !dismissed
             ? "at"
             : null;
+  const menuOpen = menuMode !== null;
+  useLayoutEffect(() => {
+    if (!menuOpen) return;
+    const anchor = composerWrapRef.current;
+    if (!anchor) return;
+    return observeComposerMenuViewport(anchor);
+  }, [menuOpen]);
   const countBase =
     menuMode === "slash"
       ? slashMatches.length
@@ -2041,18 +2051,21 @@ export function Composer({
     const displayText = item.text.trim();
     const submitText = item.submitText.trim() || displayText;
     if (!displayText || !submitText) return;
+    const attemptedSteer = running && onSteer !== undefined;
+    let retryRejectedSteer = false;
     const selfDispatched = selfDispatchedGuidanceByDraftRef.current[targetDraftKey] ?? [];
     selfDispatched.push(submitText);
     selfDispatchedGuidanceByDraftRef.current[targetDraftKey] = selfDispatched;
     updateGuidanceSendingIdForDraft(targetDraftKey, item.id);
     try {
-      if (running && onSteer) await onSteer(submitText, targetTabId);
+      if (attemptedSteer) await onSteer(submitText, targetTabId);
       else await onSend(displayText, submitText, targetTabId, item.structured);
       updatePendingGuidanceForDraft(targetDraftKey, (items) => items.filter((queued) => queued.id !== item.id));
       window.setTimeout(() => {
         takeSelfDispatchedGuidance(submitText, targetDraftKey);
       }, 5000);
     } catch (error) {
+      retryRejectedSteer = attemptedSteer;
       takeSelfDispatchedGuidance(submitText, targetDraftKey);
       showToast(error instanceof Error ? error.message : String(error), "warn");
     } finally {
@@ -2060,6 +2073,13 @@ export function Composer({
         ? guidanceSendingIdRef.current
         : draftsBySessionRef.current[targetDraftKey]?.guidanceSendingId;
       if (current === item.id) updateGuidanceSendingIdForDraft(targetDraftKey, null);
+      // TurnDone may render while TrySteer is still pending. That render cannot
+      // auto-send because the guidance item is marked in flight, so re-run the
+      // idle-queue effect after a rejected steer settles. Ordinary onSend
+      // failures intentionally do not re-arm, avoiding an automatic retry loop.
+      if (retryRejectedSteer && targetDraftKey === activeDraftKeyRef.current) {
+        setGuidanceRetryNonce((value) => value + 1);
+      }
     }
   };
 
@@ -3628,6 +3648,7 @@ export function Composer({
 
   return (
     <div
+      ref={composerWrapRef}
       className={`composer-wrap${decisionPending ? " composer-wrap--decision-pending" : ""}`}
       style={{ "--wails-drop-target": "drop" } as CSSProperties}
       onDropCapture={onFileDropCapture}

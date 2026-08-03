@@ -1,4 +1,3 @@
-/// <reference types="vitest/config" />
 import { defineConfig, searchForWorkspaceRoot, type Plugin } from "vite";
 import react from "@vitejs/plugin-react";
 import { execSync } from "node:child_process";
@@ -99,10 +98,6 @@ const vendorHighlight = new RegExp(`${nodeModulePath}highlight\\.js(?:[\\/]|$)`)
 // base: "./" so built asset URLs are relative. Wails serves the embedded dist from
 // the app root over the wails:// scheme, where absolute "/assets/..." URLs 404.
 export default defineConfig({
-  test: {
-    environment: "jsdom",
-    setupFiles: ["./src/test-setup.ts"],
-  },
   // errorRecovery tells lightningcss to skip unparseable rules instead of
   // failing the whole build. Vite 8 + lightningcss 1.32.0 can reject valid
   // @keyframes in concatenated CSS bundles (heartbeat.css + styles.css).

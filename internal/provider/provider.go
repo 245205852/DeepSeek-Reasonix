@@ -6,6 +6,8 @@ package provider
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -130,12 +132,15 @@ type ToolCall struct {
 	ID        string `json:"id"`
 	Name      string `json:"name"`
 	Arguments string `json:"arguments"`
-	Diff      string `json:"diff,omitempty"`
-	Added     int    `json:"added,omitempty"`
-	Removed   int    `json:"removed,omitempty"`
+	// ThoughtSignature is an opaque Gemini-issued proof attached to a function
+	// call. OpenAI-compatible Gemini endpoints require it on message replay.
+	ThoughtSignature string `json:"thought_signature,omitempty"`
+	Diff             string `json:"diff,omitempty"`
+	Added            int    `json:"added,omitempty"`
+	Removed          int    `json:"removed,omitempty"`
 	// Resolved* fields are Reasonix-local display metadata for stable proxy
 	// calls such as use_capability. Provider request builders deliberately
-	// serialize only ID/Name/Arguments, so these fields never alter the
+	// serialize only provider-visible fields, so these values never alter the
 	// provider-visible conversation or prompt-cache prefix.
 	ResolvedName     string `json:"resolved_name,omitempty"`
 	CapabilityID     string `json:"capability_id,omitempty"`
@@ -767,6 +772,15 @@ type MissingToolCallReasoningWarningPolicy interface {
 	WarnOnMissingToolCallReasoning() bool
 }
 
+// MissingToolCallReasoningWarningIdentityPolicy optionally supplies the stable,
+// non-credential configuration identity used to rate-limit missing-reasoning
+// diagnostics. Implementations may include adapter kind, endpoint, model, and
+// thinking controls; the raw identity never leaves memory and is hashed before
+// persistence.
+type MissingToolCallReasoningWarningIdentityPolicy interface {
+	MissingToolCallReasoningWarningIdentity() string
+}
+
 // WarnOnMissingToolCallReasoning reports whether a tool_calls turn with empty
 // reasoning_content should surface a visible warning.
 func WarnOnMissingToolCallReasoning(p Provider) bool {
@@ -778,6 +792,25 @@ func WarnOnMissingToolCallReasoning(p Provider) bool {
 		return policy.WarnOnMissingToolCallReasoning()
 	}
 	return RequiresToolCallReasoning(p)
+}
+
+// MissingToolCallReasoningWarningFingerprint returns an opaque stable key for
+// one provider configuration. Concrete adapters distinguish endpoint/model/
+// protocol changes; providers without the optional policy retain a safe
+// type-and-name fallback. The digest prevents local state from exposing raw
+// endpoints or model identifiers.
+func MissingToolCallReasoningWarningFingerprint(p Provider) string {
+	if nilutil.IsNil(p) {
+		return ""
+	}
+	identity := fmt.Sprintf("%T\x00%s", p, strings.TrimSpace(p.Name()))
+	if policy, ok := p.(MissingToolCallReasoningWarningIdentityPolicy); ok {
+		if configured := strings.TrimSpace(policy.MissingToolCallReasoningWarningIdentity()); configured != "" {
+			identity = configured
+		}
+	}
+	digest := sha256.Sum256([]byte(identity))
+	return hex.EncodeToString(digest[:])
 }
 
 // Config is a resolved provider instance configuration.

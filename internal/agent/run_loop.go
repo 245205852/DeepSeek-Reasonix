@@ -306,7 +306,7 @@ func (a *Agent) handleFinalResponse(ctx context.Context, state *runLoopState, te
 		}
 		event.RecordReadinessAudit(a.sink, readiness.audit(result, false))
 		a.sink.Emit(event.Event{Kind: event.Notice, Level: event.LevelInfo, Code: event.NoticeCodeFinalReadiness, Text: finalReadinessNoticeText(), Detail: readiness.reason})
-		a.session.Add(provider.Message{Role: provider.RoleUser, Content: a.withTurnPreferences(finalReadinessRetryMessage(readiness.reason))})
+		a.session.Add(provider.Message{Role: provider.RoleUser, Content: a.withTurnPreferences(finalReadinessRetryMessageFor(readiness))})
 		a.maybeCompact(ctx, usage)
 		return true, nil
 	}
@@ -340,7 +340,7 @@ func (a *Agent) handleFinalResponse(ctx context.Context, state *runLoopState, te
 	if readiness.applies {
 		event.RecordReadinessAudit(a.sink, readiness.audit(evidence.ReadinessAllowed, state.finalReadinessBlocks > 0))
 	}
-	if a.steerQueueLen() > 0 {
+	if !a.closeSteerIntakeIfIdle() {
 		return true, nil
 	}
 	// A final-answer turn otherwise skips compaction, so a large context

@@ -41,27 +41,14 @@ reasonix --dir /path/to/project
 ## 更新原生 CLI
 
 ```sh
-reasonix upgrade                  # 按已保存渠道更新（初始为正式版）
-reasonix upgrade preview          # 切换到预览版、记住选择并更新
-reasonix upgrade stable           # 切回正式版、记住选择并更新
+reasonix upgrade                  # 安装最新正式版
+reasonix upgrade --check          # 只报告目标版本
+reasonix upgrade --force          # 重新安装当前正式版
 ```
 
-所选渠道是用户全局设置，保存在 Reasonix 用户配置的 `[cli].update_channel` 中。全新
-或旧版配置默认使用 Stable，项目内的 `reasonix.toml` 不能覆盖这个选择。Stable 与
-Preview 会替换同一个原生 CLI 二进制文件，不会并行安装。
-
-Preview 只接受受保护的 `vX.Y.Z-preview.N` 发布；内部 RC 不属于任何公开渠道。
-切换渠道时允许安装版本号更低的目标，这样较新的 Preview 才能返回当前 Stable。
-
-自动化脚本仍可使用 `--channel stable|preview` 做一次性覆盖，不改变已保存渠道：
-
-```sh
-reasonix upgrade preview --check          # 保存 Preview，只检查目标版本
-reasonix upgrade --channel preview        # 脚本单次升级到 Preview
-reasonix upgrade --channel stable --force # 单次重装 Stable
-```
-
-`--check` 只报告目标而不安装，`--force` 重新安装目标渠道的当前版本。别名
+更新器只选择严格的 `vX.Y.Z` 非 prerelease GitHub Release。1.x 兼容期内，旧渠道
+位置参数与 `--channel` 仍可使用，但都会解析到同一正式版并打印废弃提示。历史
+`[cli].update_channel` 值不再影响更新，并会在 Reasonix 下次保存配置时移除。别名
 `reasonix update` 的行为完全相同。
 
 ## 配置供应商
@@ -117,13 +104,14 @@ reasonix config currency USD
 reasonix -p "总结这个仓库"
 reasonix -p "总结这个仓库" --output-format json
 reasonix run "实现 main.go 里的 TODO"
+reasonix run --auto "实现 main.go 里的 TODO"
 echo "解释这段代码" | reasonix run
 ```
 
 未使用 `-p` 或结构化输出格式时，`reasonix run` 保持正常的终端流式展示。它也接受
 `--model`、`--profile`、`--max-steps`、`--effort`、`--dir`、`--add-dir`、
 `--continue`、`--resume PATH`、`--copy`、`--allowed-tools` 和
-`--permission-mode`。
+`--permission-mode`，以及作为 `--permission-mode auto` 别名的 `--auto` / `-y`。
 
 ### 输出格式
 
@@ -263,15 +251,20 @@ reasonix --allowed-tools "Bash(go test ./...)" --allowed-tools read_file
 | `plan` | 以只读 Plan 模式启动交互式会话。 |
 | `bypassPermissions` | 跳过审批；等同于 YOLO。 |
 
+无人值守执行需要放行普通 writer fallback 时，使用 `reasonix run --auto ...`
+（或 `-y`）。这个别名不能和显式 `--permission-mode` 同时使用。
+
 `--allowed-tools` 是会话权限覆盖，不是 provider tool schema 过滤器。规则可以用逗号
 或空格分隔，也可重复传入参数。配置中的 deny 规则始终优先于命令行 allow 规则。
 
-在非交互运行（`reasonix run` / `-p`）下没有可应答的审批，各模式都以非阻塞方式解析：
-`ask`、`manual`、`acceptEdits` 保留 run 自主性，放行普通审批决策；`auto` 仍自动批准
-普通 fallback，但对命中显式 ask 规则的命令改为拒绝，而不是无人值守地执行；`dontAsk`
-拒绝；`bypassPermissions` 执行一切，仅始终需要人工新鲜批准的工具（记忆、plan、沙箱
-逃逸、受管配置写入）除外。在所有模式下，拥有当前项目 store 的顶层 controller 仍可创建
-有界、非敏感、create-only 的 project/reference 记忆；其他记忆变更在无人确认时仍会被拒绝。
+在非交互运行（`reasonix run` / `-p`）下没有可应答的审批，各模式都以非阻塞方式解析。
+默认 `ask` / `manual` 对显式 Ask 决策和普通 writer fallback 失败关闭，只读调用仍会执行；
+`acceptEdits` 放行其列出的文件编辑工具，其他 Ask 决策失败关闭；`auto` 放行普通 writer
+fallback，但仍拒绝显式 ask 规则；`dontAsk` 拒绝未批准的 writer；`bypassPermissions`
+可越过普通 ask 与 writer fallback，但配置的 deny、Sandbox，以及始终需要人工新鲜批准的
+工具（记忆、plan、沙箱逃逸、受管配置写入）仍然生效。在所有模式下，拥有当前项目 store
+的顶层 controller 仍可创建有界、非敏感、create-only 的 project/reference 记忆；其他
+记忆变更在无人确认时仍会被拒绝。
 
 ## 附加目录
 

@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
-# Resolve and validate one native CLI release tag. Stable releases and internal
-# RCs stay on the stable control plane; public Preview archives use the explicit
-# vX.Y.Z-preview.N contract and the Preview deployment gate.
+# Resolve and validate one native CLI release tag. Manual recovery exposes only
+# official versions; prerelease parsing remains for historical workflow calls.
 set -euo pipefail
 
 stable_semver_re='(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)'
@@ -34,9 +33,15 @@ case "$version" in
 *) prerelease="false" ;;
 esac
 
+if [ "${EVENT_NAME:-}" = "workflow_dispatch" ] && \
+	[ "${IN_ORCHESTRATED:-false}" != "true" ] && [ "$prerelease" = "true" ]; then
+	echo "::error::manual CLI recovery accepts only vMAJOR.MINOR.PATCH" >&2
+	exit 1
+fi
+
 if [[ "$tag" =~ $preview_semver_re ]]; then
 	channel="preview"
-	notes_version="v${BASH_REMATCH[1]}.${BASH_REMATCH[2]}.${BASH_REMATCH[3]}"
+	notes_version="$tag"
 else
 	case "$tag" in
 	v*-preview*)
@@ -45,7 +50,10 @@ else
 		;;
 	esac
 	channel="stable"
-	notes_version="$tag"
+	case "$version" in
+	*-*) notes_version="v${base_version}" ;;
+	*) notes_version="$tag" ;;
+	esac
 fi
 
 requested_channel="${IN_CHANNEL:-}"
@@ -61,6 +69,11 @@ if [ -n "$requested_channel" ]; then
 		echo "::error::CLI tag $tag belongs to $channel, not requested channel $requested_channel" >&2
 		exit 1
 	fi
+fi
+
+if [ "$channel" = "preview" ] && [ "${IN_ORCHESTRATED:-false}" != "true" ]; then
+	echo "::error::public CLI Preview releases must be dispatched by release-preview.yml" >&2
+	exit 1
 fi
 
 {

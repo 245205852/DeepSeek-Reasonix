@@ -182,6 +182,10 @@ type App struct {
 	// boundaries without weakening the production lock order. Set it before
 	// starting a rebind and never mutate it until that rebind returns.
 	rebindCandidateHook func(string) error
+	// providerCatalogBeforeCredentialLockHook is test-only. It pauses catalog
+	// compare-and-apply after its optimistic credential snapshot but before the
+	// shared credential lock and authoritative re-read.
+	providerCatalogBeforeCredentialLockHook func(string)
 
 	// tryRunMu guards tryRunCancel — the cancel handle for the single
 	// in-flight settings-page subagent try run (TrySubagentProfile /
@@ -260,17 +264,9 @@ type App struct {
 
 	heartbeat *HeartbeatEngine // scheduled heartbeat tasks; nil until startup
 
-	startupTracker *repair.StartupTracker
-	previousRun    repair.PreviousRunObservation
-	// Healthy-update identity is captured before Wails starts. A process only
-	// commits the complete probationary transaction it booted from, never a
-	// rewritten or later same-version retry.
-	healthyUpdateCreatedAt     string
-	healthyUpdateTransactionID string
-	// startupReady records that the window reached domReady. The shutdown path
-	// treats an exit before this point as an incomplete start: it must neither
-	// reset the crash-loop counter nor bless a probationary update, or a build
-	// that boots but never paints would defeat the Guard rollback safety net.
+	previousRun repair.PreviousRunObservation
+	// startupReady records that the window reached domReady so LKG config
+	// snapshots are only written after a real UI boot.
 	startupReady atomic.Bool
 }
 
@@ -504,24 +500,17 @@ func (a *App) startup(ctx context.Context) {
 	a.observeIncompleteWindowRestore()
 	a.startMainThreadWatchdog()
 
-	if !config.SafeModeRequested() {
-		a.heartbeat = newHeartbeatEngine(a)
-		a.heartbeat.Start()
-	}
+	a.heartbeat = newHeartbeatEngine(a)
+	a.heartbeat.Start()
 
 	a.mu.Lock()
 	a.tabsRestored = make(chan struct{})
 	a.mu.Unlock()
 	go a.restoreOrBuildTabs()
-	if !config.SafeModeRequested() {
-		a.goSafe("refreshBotRuntime", a.refreshBotRuntime)
-		a.goSafe("sendStartupPing", a.sendStartupPing)
-		// Pending metrics/crash payloads stay on disk in Safe Mode: whether to
-		// send or drop them depends on the user's real telemetry preference,
-		// which a Safe Mode boot cannot read. The next normal boot decides.
-		a.goSafe("flushMetrics", a.flushMetrics)
-		a.goSafe("flushPendingCrash", a.flushPendingCrash)
-	}
+	a.goSafe("refreshBotRuntime", a.refreshBotRuntime)
+	a.goSafe("sendStartupPing", a.sendStartupPing)
+	a.goSafe("flushMetrics", a.flushMetrics)
+	a.goSafe("flushPendingCrash", a.flushPendingCrash)
 	// After restoreOrBuildTabs is launched: the GC's first sweep waits on
 	// tabsRestored so it never observes the pre-restore empty tab map.
 	a.startRecoveryGC()
@@ -539,7 +528,10 @@ func (a *App) beforeClose(ctx context.Context) bool {
 		if !a.backgroundCloseHasRestorePath() {
 			return false
 		}
-		a.backgroundMaximised.Store(runtime.WindowIsMaximised(ctx))
+		// Never query native maximise state here: during close the Win32 DPI
+		// path can report 0 and panic inside Wails ScaleToDefaultDPI. Use the
+		// last frontend-reported geometry instead.
+		a.backgroundMaximised.Store(a.lastKnownMaximised())
 		a.saveWindowStateSync()
 		a.snapshotAllTabs()
 		hideForBackground(ctx)
@@ -707,14 +699,11 @@ func (a *App) restoreOrBuildTabs() {
 	// Run legacy config migration before the first config load so the
 	// freshly written config (including the user's default_model) is
 	// picked up by Load instead of falling back to built-in defaults.
-	f := desktopTabsFile{}
-	if !config.SafeModeRequested() {
-		_, _ = config.MigrateLegacyIfNeeded()
-		f = loadTabsFile()
-		_, _ = recoverLegacyProjectSidebarRoots(f)
-		_, _ = config.ApplyUserConfigUpgradesOnStartup(config.UserConfigPath())
-		_, _ = config.MigrateMCPToUserConfigOnUpgrade(desktopMCPMigrationRoots(f))
-	}
+	_, _ = config.MigrateLegacyIfNeeded()
+	f := loadTabsFile()
+	_, _ = recoverLegacyProjectSidebarRoots(f)
+	_, _ = config.ApplyUserConfigUpgradesOnStartup(config.UserConfigPath())
+	_, _ = config.MigrateMCPToUserConfigOnUpgrade(desktopMCPMigrationRoots(f))
 
 	// Load i18n from the first available config.
 	// Prefer DesktopLanguage (desktop UI setting) over Language (CLI setting),
@@ -916,17 +905,10 @@ func (a *App) shutdown(context.Context) {
 		a.releaseSessionRuntimeLocked(it.tab)
 		a.mu.Unlock()
 	}
-	if a.startupTracker != nil && a.startupReady.Load() {
-		// Only a run whose window actually became ready may reset the crash-loop
-		// counter and bless a probationary update. A clean quit before domReady
-		// (e.g. Dock-quitting a build that boots but never paints) keeps the
-		// incomplete startup record, so repeated attempts still reach the Guard
-		// recovery threshold and the update backups stay rollback-ready.
-		_ = a.startupTracker.MarkClean()
-		if !config.SafeModeRequested() {
-			_ = repair.MarkUpdateHealthyExact(version, a.healthyUpdateCreatedAt, a.healthyUpdateTransactionID)
-			_ = repair.RecordHealthyConfig(version)
-		}
+	if a.startupReady.Load() {
+		// Independent last-known-good config snapshot after a successful UI
+		// session. Does not participate in startup decisions.
+		_ = repair.RecordHealthyConfig(version)
 	}
 }
 
@@ -943,28 +925,21 @@ func (a *App) domReady(_ context.Context) {
 	if ok {
 		// Validate saved position against current screens. Wails v2 doesn't
 		// expose per-screen origin (x,y offsets) so we can only do a basic
-		// sanity check: ensure the window origin falls within a generous
-		// estimate of the screen area. If the user unplugged an external
-		// display, negative or out-of-bounds coordinates are caught here.
-		valid := state.X >= 0 && state.Y >= 0
-		if valid {
-			screens, err := runtime.ScreenGetAll(a.ctx)
-			if err == nil && len(screens) > 0 {
-				maxW, maxH := 0, 0
-				for _, sc := range screens {
-					if sc.Size.Width > maxW {
-						maxW = sc.Size.Width
-					}
-					if sc.Size.Height > maxH {
-						maxH = sc.Size.Height
-					}
+		// sanity check. Windows border insets (commonly x=-8,y=-8) are legal;
+		// large off-screen positions (unplugged external display) re-center.
+		maxW, maxH := 0, 0
+		screens, err := runtime.ScreenGetAll(a.ctx)
+		if err == nil {
+			for _, sc := range screens {
+				if sc.Size.Width > maxW {
+					maxW = sc.Size.Width
 				}
-				if state.X > maxW*2 || state.Y > maxH*2 {
-					valid = false
+				if sc.Size.Height > maxH {
+					maxH = sc.Size.Height
 				}
 			}
 		}
-		if valid {
+		if windowPositionRestorable(state, maxW, maxH) {
 			runtime.WindowSetPosition(a.ctx, state.X, state.Y)
 		} else {
 			runtime.WindowCenter(a.ctx)
@@ -979,46 +954,26 @@ func (a *App) domReady(_ context.Context) {
 
 	runtime.WindowShow(a.ctx)
 	a.startupReady.Store(true)
-	if a.startupTracker != nil {
-		_ = a.startupTracker.MarkReady()
-		tracker := a.startupTracker
-		ctx := a.ctx
-		a.goSafe("startupHeartbeat", func() {
-			ticker := time.NewTicker(30 * time.Second)
-			defer ticker.Stop()
-			for {
-				select {
-				case <-ctx.Done():
-					return
-				case <-ticker.C:
-					if err := tracker.Heartbeat(); err != nil {
-						slog.Debug("desktop: update startup heartbeat", "err", err)
-					}
-				}
-			}
-		})
-		a.goSafe("confirmStartupHealth", func() {
-			timer := time.NewTimer(repair.StartupHealthDelay)
-			defer timer.Stop()
-			select {
-			case <-timer.C:
-			case <-ctx.Done():
-				return
-			}
-			if err := tracker.MarkHealthy(); err != nil {
-				slog.Warn("desktop: mark startup healthy", "err", err)
-				return
-			}
-			if !config.SafeModeRequested() {
-				if err := repair.MarkUpdateHealthyExact(version, a.healthyUpdateCreatedAt, a.healthyUpdateTransactionID); err != nil {
-					slog.Warn("desktop: commit healthy update", "err", err)
-				}
-				if err := repair.RecordHealthyConfig(version); err != nil {
-					slog.Warn("desktop: record last-known-good config", "err", err)
-				}
-			}
-		})
-	}
+	// Record last-known-good config after the UI is actually visible. This is
+	// independent of any startup health probation or crash-loop policy.
+	ctx := a.ctx
+	a.goSafe("recordHealthyConfig", func() {
+		timer := time.NewTimer(2 * time.Second)
+		defer timer.Stop()
+		select {
+		case <-timer.C:
+		case <-ctx.Done():
+			return
+		}
+		if err := repair.RecordHealthyConfig(version); err != nil {
+			slog.Debug("desktop: record last-known-good config", "err", err)
+		}
+		if archived, err := archiveSupersededLegacyUpdateAfterReady(); err != nil {
+			slog.Warn("desktop: retire superseded legacy update", "err", err)
+		} else if archived {
+			slog.Info("desktop: archived superseded legacy update transaction")
+		}
+	})
 }
 
 // --- bound command surface (frontend → controller) ---
@@ -1031,7 +986,19 @@ func (a *App) Submit(input string) error {
 	return a.SubmitToTab("", input)
 }
 
+var errEmptyTurnInput = errors.New("message cannot be empty")
+
+func validateTurnInput(input string) error {
+	if strings.TrimSpace(input) == "" {
+		return errEmptyTurnInput
+	}
+	return nil
+}
+
 func (a *App) SubmitToTab(tabID, input string) error {
+	if err := validateTurnInput(input); err != nil {
+		return err
+	}
 	if handled, err := a.workbenchSubmit(input, input, "", nil, false); handled {
 		return err
 	}
@@ -1202,6 +1169,9 @@ func (a *App) SubmitDisplay(display, input string) error {
 }
 
 func (a *App) SubmitDisplayToTab(tabID, display, input string) error {
+	if err := validateTurnInput(input); err != nil {
+		return err
+	}
 	if handled, err := a.workbenchSubmit(input, display, "", nil, false); handled {
 		return err
 	}
@@ -1218,6 +1188,9 @@ func (a *App) SubmitDisplayToTab(tabID, display, input string) error {
 }
 
 func (a *App) SubmitDeliveryRecoveryToTab(tabID, display, input string) error {
+	if err := validateTurnInput(input); err != nil {
+		return err
+	}
 	if handled, err := a.workbenchSubmit(input, display, "", nil, true); handled {
 		return err
 	}
@@ -1262,6 +1235,9 @@ func controlInvocationRequests(invocations []InvocationRequest) []control.Invoca
 }
 
 func (a *App) SubmitInvocationsToTab(tabID, display, input string, invocations []InvocationRequest) error {
+	if err := validateInvocationTurnInput(input, invocations); err != nil {
+		return err
+	}
 	if handled, err := a.workbenchSubmit(input, display, "", protocolInvocationRequests(invocations), false); handled {
 		return err
 	}
@@ -1275,6 +1251,16 @@ func (a *App) SubmitInvocationsToTab(tabID, display, input string, invocations [
 	ctrl.SubmitInvocationDisplay(display, input, controlInvocationRequests(invocations))
 	admission.finish(ctrl)
 	return nil
+}
+
+func validateInvocationTurnInput(input string, invocations []InvocationRequest) error {
+	// A skill-only turn legitimately has no explicit task: the resolved
+	// invocation content becomes the provider input. Without an invocation,
+	// keep the same empty-input protection as every other submit path.
+	if len(invocations) > 0 {
+		return nil
+	}
+	return validateTurnInput(input)
 }
 
 func workbenchTargetChangedErr() error {
@@ -1332,6 +1318,9 @@ func (a *App) SubmitInitialGoalToTab(
 	targetKind string,
 	targetIdentityGen, targetRequestSeq uint64,
 ) ([]string, error) {
+	if err := validateInvocationTurnInput(input, invocations); err != nil {
+		return []string{}, err
+	}
 	k := a.workbench()
 	k.transitionMu.Lock()
 	active, identityGen, requestSeq := k.targets.Active()
@@ -1392,6 +1381,9 @@ func (a *App) SubmitInitialGoalToTab(
 }
 
 func (a *App) SubmitEditedDisplayToTab(tabID, display, input, original string) error {
+	if err := validateTurnInput(input); err != nil {
+		return err
+	}
 	if handled, err := a.workbenchSubmit(input, display, original, nil, false); handled {
 		return err
 	}
@@ -1448,7 +1440,9 @@ func (a *App) Steer(text string) error {
 	return a.SteerForTab("", text)
 }
 
-// SteerForTab sends mid-turn guidance to a specific tab's agent.
+// SteerForTab sends mid-turn guidance to a specific tab's active agent turn.
+// A rejected steer is returned to the frontend so its guidance shelf retains
+// the text and submits it as a regular follow-up after the turn completes.
 func (a *App) SteerForTab(tabID, text string) error {
 	if cli, snapshot, _, _, ok := a.activeRemoteWorkbench(); ok {
 		turnID := cli.State().CurrentTurnID
@@ -1472,7 +1466,13 @@ func (a *App) SteerForTab(tabID, text string) error {
 	if ctrl == nil {
 		return a.workspaceNotReadyErr(tab)
 	}
-	ctrl.Steer(text)
+	steerer, ok := ctrl.(interface{ TrySteer(string) bool })
+	if !ok {
+		return fmt.Errorf("this runtime cannot accept mid-turn guidance")
+	}
+	if !steerer.TrySteer(text) {
+		return fmt.Errorf("the turn ended before guidance could be applied; it will remain queued for the next turn")
+	}
 	return nil
 }
 
@@ -1794,7 +1794,7 @@ func (a *App) ApproveTab(tabID, id string, allow, session, persist bool) {
 		a.Approve(id, allow, session, persist)
 		return
 	}
-	ctrl := a.ctrlByTabID(tabID)
+	ctrl := a.ctrlForRuntimeTabID(tabID)
 	if ctrl != nil {
 		ctrl.Approve(id, allow, session, persist)
 	}
@@ -5774,6 +5774,17 @@ func historyMessagesWithPlannerDisplaysAndLookups(
 	plannerByUserHash := plannerTurnsByUserHash(plannerTurns)
 	suppressCanonicalTurn := false
 	for index, m := range msgs {
+		if m.LocalOnly {
+			if steerText, isSteer := agent.SteerText(agent.UserMessageText(m)); isSteer {
+				out = append(out, HistoryMessage{
+					Role:    "notice",
+					Content: agent.UnappliedSteerNotice(steerText),
+					Code:    event.NoticeCodeUnappliedSteer,
+					Level:   "warn",
+				})
+				continue
+			}
+		}
 		if suppressCanonicalTurn {
 			if m.Role != provider.RoleUser || !agent.IsUserAuthoredTurn(agent.UserMessageText(m)) {
 				continue
@@ -6594,8 +6605,9 @@ func (a *App) Balance() BalanceInfo {
 }
 
 func (a *App) BalanceForTab(tabID string) BalanceInfo {
+	currency := a.balanceDisplayCurrency()
 	if _, _, _, _, ok := a.activeRemoteWorkbench(); ok {
-		raw, err := a.workbenchRequest(protocol.MethodSessionBalance, protocol.SessionBalanceParams{})
+		raw, err := a.workbenchRequest(protocol.MethodSessionBalance, protocol.SessionBalanceParams{Currency: currency})
 		if err != nil {
 			return BalanceInfo{Err: err.Error()}
 		}
@@ -6617,7 +6629,18 @@ func (a *App) BalanceForTab(tabID string) BalanceInfo {
 	if b == nil {
 		return BalanceInfo{} // provider declares no balance endpoint
 	}
-	return BalanceInfo{Available: true, Display: b.Display()}
+	return BalanceInfo{Available: true, Display: b.DisplayForCurrency(currency)}
+}
+
+// balanceDisplayCurrency mirrors the effective pricing currency selected in
+// Settings. Auto resolves through the current desktop locale, matching the
+// controller rebuild path used by cost telemetry.
+func (a *App) balanceDisplayCurrency() string {
+	cfg, _, err := a.loadDesktopUserConfigForView()
+	if err != nil {
+		return ""
+	}
+	return a.desktopEffectivePricingCurrency(cfg)
 }
 
 // JobView is one running background job (bash/task started with
@@ -6637,7 +6660,8 @@ func (a *App) Jobs() []JobView {
 }
 
 func (a *App) JobsForTab(tabID string) []JobView {
-	if _, _, _, _, ok := a.activeRemoteWorkbench(); ok {
+	_, _, _, remoteTabID, remoteActive := a.activeRemoteWorkbench()
+	if remoteActive && (tabID == "" || tabID == remoteTabID) {
 		raw, err := a.workbenchRequest(protocol.MethodJobList, protocol.JobListParams{})
 		if err != nil {
 			return []JobView{}
@@ -6649,8 +6673,62 @@ func (a *App) JobsForTab(tabID string) []JobView {
 		return workbenchJobs(decoded.(protocol.JobListResult).Jobs)
 	}
 	out := []JobView{}
-	ctrl := a.ctrlByTabID(tabID)
+	ctrl := a.ctrlForRuntimeTabID(tabID)
 	return a.jobsForCtrl(ctrl, out)
+}
+
+// CancelJob stops one running background job in the active tab.
+func (a *App) CancelJob(jobID string) (bool, error) {
+	return a.CancelJobForTab("", jobID)
+}
+
+// CancelJobForTab stops one running background job without relying on whatever
+// tab happens to be active when the asynchronous frontend call completes.
+func (a *App) CancelJobForTab(tabID, jobID string) (bool, error) {
+	jobID = strings.TrimSpace(jobID)
+	if jobID == "" {
+		return false, fmt.Errorf("job id is required")
+	}
+	cli, _, _, remoteTabID, remoteActive := a.activeRemoteWorkbench()
+	// An explicit non-remote tab id identifies a process-local runtime even
+	// while Remote Workbench owns the visible surface. Resolve that owner before
+	// falling back to the active remote target so the global jobs popover can
+	// stop local and remote work side by side.
+	if tabID != "" && (!remoteActive || tabID != remoteTabID) {
+		ctrl := a.ctrlForRuntimeTabID(tabID)
+		if ctrl != nil {
+			return cancelJobForController(ctrl, jobID)
+		}
+		if remoteActive {
+			return false, fmt.Errorf("tab %q changed before stopping background job; retry", tabID)
+		}
+		return false, nil
+	}
+	if remoteActive {
+		ctx, cancel := context.WithTimeout(a.bootContext(), 30*time.Second)
+		defer cancel()
+		raw, err := cli.Request(ctx, string(protocol.MethodJobCancel), protocol.JobCancelParams{JobID: protocol.JobID(jobID)})
+		if err != nil {
+			return false, err
+		}
+		decoded, err := protocol.DecodeResult(protocol.MethodJobCancel, raw)
+		if err != nil {
+			return false, err
+		}
+		return decoded.(protocol.JobCancelResult).Disposition == protocol.JobCancelled, nil
+	}
+	return cancelJobForController(a.ctrlForRuntimeTabID(tabID), jobID)
+}
+
+func cancelJobForController(ctrl control.SessionAPI, jobID string) (bool, error) {
+	if ctrl == nil {
+		return false, nil
+	}
+	canceller, ok := ctrl.(interface{ CancelJob(string) bool })
+	if !ok {
+		return false, fmt.Errorf("background job cancellation is unavailable")
+	}
+	return canceller.CancelJob(jobID), nil
 }
 
 func (a *App) jobsForCtrl(ctrl control.SessionAPI, out []JobView) []JobView {
@@ -7817,10 +7895,10 @@ func (a *App) lockRuntimeTurnGates(setting string, affected func(*WorkspaceTab) 
 	// runtimes live in detachedSessions, not a.tabs, and their work counts too.
 	a.mu.RLock()
 	for _, tab := range tabs {
-		if controllerHasActiveRuntimeWork(tab.Ctrl) {
+		if err := rebuildControllerActiveWorkErrorFor(tab.Ctrl, setting); err != nil {
 			a.mu.RUnlock()
 			release()
-			return nil, rebuildControllerActiveWorkError(setting)
+			return nil, err
 		}
 	}
 	a.mu.RUnlock()
@@ -9065,8 +9143,8 @@ func (a *App) SetMCPServerEnabled(name string, enabled bool) error {
 	a.mu.RLock()
 	hostKey := tab.SharedHostKey
 	a.mu.RUnlock()
-	if controllerHasActiveRuntimeWork(ctrl) {
-		return rebuildControllerActiveWorkError("MCP server")
+	if err := rebuildControllerActiveWorkErrorFor(ctrl, "MCP server"); err != nil {
+		return err
 	}
 	configuredEntry, hasConfiguredEntry, err := desktopEffectiveMCPServer(root, name)
 	if err != nil {
@@ -9163,8 +9241,10 @@ func (a *App) SetMCPServerTier(name, tier string) error {
 
 	tier = normalizeMCPTier(tier)
 	tab, ctrl, root := a.activeMCPRuntime()
-	if tab != nil && controllerHasActiveRuntimeWork(ctrl) {
-		return rebuildControllerActiveWorkError("MCP server")
+	if tab != nil {
+		if err := rebuildControllerActiveWorkErrorFor(ctrl, "MCP server"); err != nil {
+			return err
+		}
 	}
 	updated, found, err := a.desktopMCPServerForEdit(root, name)
 	if err != nil {
@@ -9506,25 +9586,56 @@ func modelProviderAccessAllowed(access []string, name string) bool {
 	return false
 }
 
-func controllerHasActiveRuntimeWork(ctrl control.SessionAPI) bool {
+type activeRuntimeWork struct {
+	running        bool
+	pendingPrompt  bool
+	backgroundJobs int
+}
+
+func controllerActiveRuntimeWork(ctrl control.SessionAPI) activeRuntimeWork {
 	if ctrl == nil {
-		return false
+		return activeRuntimeWork{}
 	}
 	status := ctrl.RuntimeStatus()
-	return status.Running || status.PendingPrompt || status.BackgroundJobs > 0
+	return activeRuntimeWork{
+		running:        status.Running,
+		pendingPrompt:  status.PendingPrompt,
+		backgroundJobs: status.BackgroundJobs,
+	}
+}
+
+func (w activeRuntimeWork) active() bool {
+	return w.running || w.pendingPrompt || w.backgroundJobs > 0
+}
+
+func controllerHasActiveRuntimeWork(ctrl control.SessionAPI) bool {
+	return controllerActiveRuntimeWork(ctrl).active()
 }
 
 // rebuildBusyError reports a rebuild rejected because the controller still has
 // a running turn, pending prompt, or background jobs. Typed so the
 // deferred-rebuild retry loop can keep waiting instead of giving up.
-type rebuildBusyError struct{ setting string }
-
-func (e *rebuildBusyError) Error() string {
-	return fmt.Sprintf("active work is still running; finish or cancel the current turn, answer pending prompts, and stop background jobs before changing %s", e.setting)
+type rebuildBusyError struct {
+	setting string
+	work    activeRuntimeWork
 }
 
-func rebuildControllerActiveWorkError(setting string) error {
-	return &rebuildBusyError{setting: setting}
+func (e *rebuildBusyError) Error() string {
+	return fmt.Sprintf(
+		"active work is still running; running=%t; pending_prompt=%t; background_jobs=%d; finish or cancel the current turn, answer pending prompts, and stop background jobs before changing %s",
+		e.work.running,
+		e.work.pendingPrompt,
+		e.work.backgroundJobs,
+		e.setting,
+	)
+}
+
+func rebuildControllerActiveWorkErrorFor(ctrl control.SessionAPI, setting string) error {
+	work := controllerActiveRuntimeWork(ctrl)
+	if !work.active() {
+		return nil
+	}
+	return &rebuildBusyError{setting: setting, work: work}
 }
 
 type sessionLeaseBusyError struct {
@@ -9722,8 +9833,8 @@ func (a *App) SetModelForTab(tabID, name string) (retErr error) {
 	if a.controllerForTab(tab) == nil && prevPath != "" {
 		a.attachExistingSessionRuntime(tab, prevPath, a.ctx)
 	}
-	if controllerHasActiveRuntimeWork(a.controllerForTab(tab)) {
-		return rebuildControllerActiveWorkError("model")
+	if err := rebuildControllerActiveWorkErrorFor(a.controllerForTab(tab), "model"); err != nil {
+		return err
 	}
 	if err := a.ensureTabControllerWorkspace(tab); err != nil {
 		return err
@@ -9737,8 +9848,8 @@ func (a *App) SetModelForTab(tabID, name string) (retErr error) {
 		if prevPath == "" {
 			prevPath = a.currentSessionPathFor(tab)
 		}
-		if controllerHasActiveRuntimeWork(a.controllerForTab(tab)) {
-			return rebuildControllerActiveWorkError("model")
+		if err := rebuildControllerActiveWorkErrorFor(a.controllerForTab(tab), "model"); err != nil {
+			return err
 		}
 	}
 	timing.Prepare = time.Since(stageStarted)
@@ -9929,8 +10040,8 @@ func (a *App) SetEffortForTab(tabID, level string) error {
 	if a.controllerForTab(tab) == nil && prevPath != "" {
 		a.attachExistingSessionRuntime(tab, prevPath, a.ctx)
 	}
-	if controllerHasActiveRuntimeWork(a.controllerForTab(tab)) {
-		return rebuildControllerActiveWorkError("effort")
+	if err := rebuildControllerActiveWorkErrorFor(a.controllerForTab(tab), "effort"); err != nil {
+		return err
 	}
 	if err := a.ensureTabControllerWorkspace(tab); err != nil {
 		return err
@@ -9944,8 +10055,8 @@ func (a *App) SetEffortForTab(tabID, level string) error {
 		if prevPath == "" {
 			prevPath = a.currentSessionPathFor(tab)
 		}
-		if controllerHasActiveRuntimeWork(a.controllerForTab(tab)) {
-			return rebuildControllerActiveWorkError("effort")
+		if err := rebuildControllerActiveWorkErrorFor(a.controllerForTab(tab), "effort"); err != nil {
+			return err
 		}
 	}
 	snap := a.tabRuntimeSnapshot(tab)
@@ -10069,8 +10180,8 @@ func (a *App) SetTokenModeForTab(tabID, mode string) error {
 	if a.controllerForTab(tab) == nil && prevPath != "" {
 		a.attachExistingSessionRuntime(tab, prevPath, a.ctx)
 	}
-	if controllerHasActiveRuntimeWork(a.controllerForTab(tab)) {
-		return rebuildControllerActiveWorkError("token mode")
+	if err := rebuildControllerActiveWorkErrorFor(a.controllerForTab(tab), "token mode"); err != nil {
+		return err
 	}
 	if err := a.ensureTabControllerWorkspace(tab); err != nil {
 		return err
@@ -10084,8 +10195,8 @@ func (a *App) SetTokenModeForTab(tabID, mode string) error {
 		if prevPath == "" {
 			prevPath = a.currentSessionPathFor(tab)
 		}
-		if controllerHasActiveRuntimeWork(a.controllerForTab(tab)) {
-			return rebuildControllerActiveWorkError("token mode")
+		if err := rebuildControllerActiveWorkErrorFor(a.controllerForTab(tab), "token mode"); err != nil {
+			return err
 		}
 	}
 	modelRef, fallback, err := a.resolvedModelForTab(tab)
@@ -11942,8 +12053,10 @@ func (a *App) ConnectKey(apiKey string) (string, error) {
 	if apiKey == "" {
 		return "", fmt.Errorf("key is required")
 	}
-	if tab := a.activeTab(); tab != nil && controllerHasActiveRuntimeWork(tab.Ctrl) {
-		return "", rebuildControllerActiveWorkError("provider key")
+	if tab := a.activeTab(); tab != nil {
+		if err := rebuildControllerActiveWorkErrorFor(tab.Ctrl, "provider key"); err != nil {
+			return "", err
+		}
 	}
 	ctx, cancel := context.WithTimeout(a.ctx, 8*time.Second)
 	defer cancel()

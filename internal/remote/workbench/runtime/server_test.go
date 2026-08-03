@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"reasonix/internal/agent"
+	"reasonix/internal/billing"
 	"reasonix/internal/checkpoint"
 	"reasonix/internal/command"
 	"reasonix/internal/control"
@@ -33,9 +34,20 @@ import (
 )
 
 type fakeController struct {
-	model   string
-	history []provider.Message
-	status  control.RuntimeStatus
+	model         string
+	history       []provider.Message
+	status        control.RuntimeStatus
+	steerAccepted bool
+	steers        []string
+}
+
+type balanceFakeController struct {
+	*fakeController
+	balance *billing.Balance
+}
+
+func (c *balanceFakeController) Balance(context.Context) (*billing.Balance, error) {
+	return c.balance, nil
 }
 
 type blockingController struct {
@@ -298,6 +310,13 @@ func (c *fakeController) RuntimeStatus() control.RuntimeStatus {
 func (c *fakeController) Submit(input string) {
 	c.history = append(c.history, provider.Message{Role: provider.RoleUser, Content: input})
 }
+func (c *fakeController) TrySteer(text string) bool {
+	if !c.steerAccepted {
+		return false
+	}
+	c.steers = append(c.steers, text)
+	return true
+}
 func (c *fakeController) Cancel()               {}
 func (c *fakeController) Close()                {}
 func (c *fakeController) SessionPath() string   { return "" }
@@ -305,6 +324,56 @@ func (c *fakeController) SetSessionPath(string) {}
 func (c *fakeController) EnsureSessionPath()    {}
 func (c *fakeController) AdoptHistory(h []provider.Message, _ string) {
 	c.history = append([]provider.Message(nil), h...)
+}
+
+func TestSessionBalanceUsesRequestedPricingCurrency(t *testing.T) {
+	srv := New(Options{Workspace: t.TempDir(), Version: "test"})
+	ctrl := &balanceFakeController{
+		fakeController: &fakeController{model: "deepseek/deepseek-v4-flash"},
+		balance: &billing.Balance{Available: true, Infos: []billing.Info{
+			{Currency: "CNY", TotalBalance: "70.16"},
+			{Currency: "USD", TotalBalance: "9.82"},
+		}},
+	}
+	target := srv.installTestSession(ctrl)
+	result, err := srv.sessionBalance(context.Background(), protocol.SessionBalanceParams{
+		RuntimeQuery: protocol.RuntimeQuery{
+			ExpectedHostEpoch: srv.hostEpoch, Target: target, ExpectedRuntimeEpoch: "runtime_test",
+		},
+		Currency: "USD",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.Available || result.Display != "$9.82" {
+		t.Fatalf("USD balance = %+v, want available $9.82", result)
+	}
+
+	ctrl.balance.Infos = []billing.Info{{Currency: "CNY", TotalBalance: "70.16"}}
+	mismatch, err := srv.sessionBalance(context.Background(), protocol.SessionBalanceParams{
+		RuntimeQuery: protocol.RuntimeQuery{
+			ExpectedHostEpoch: srv.hostEpoch, Target: target, ExpectedRuntimeEpoch: "runtime_test",
+		},
+		Currency: "USD",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !mismatch.Available || mismatch.Display != "CNY ¥70.16" {
+		t.Fatalf("CNY-only balance = %+v, want explicit non-converted currency", mismatch)
+	}
+
+	legacy, err := srv.sessionBalance(context.Background(), protocol.SessionBalanceParams{
+		RuntimeQuery: protocol.RuntimeQuery{
+			ExpectedHostEpoch: srv.hostEpoch, Target: target, ExpectedRuntimeEpoch: "runtime_test",
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !legacy.Available || legacy.Display != "¥70.16" {
+		t.Fatalf("legacy balance = %+v, want CNY-first compatibility", legacy)
+	}
 }
 
 func TestSessionCatalogAndSlashArgsUseHostControllerCapabilities(t *testing.T) {
@@ -502,6 +571,44 @@ func TestRuntimeMutationRequestIDConflictPrecedesEpochChecks(t *testing.T) {
 	var remoteErr *protocol.RemoteError
 	if !errors.As(err, &remoteErr) || remoteErr.Code != protocol.ErrRequestIDConflict {
 		t.Fatalf("conflicting request error = %v, want REQUEST_ID_CONFLICT", err)
+	}
+}
+
+func TestRuntimeSteerReportsTurnExitRaceInsteadOfFalseAcceptance(t *testing.T) {
+	srv := New(Options{Workspace: t.TempDir(), Version: "test"})
+	ctrl := &fakeController{model: "local/stub"}
+	target := srv.installTestSession(ctrl)
+	turnID := protocol.TurnID("turn_test")
+	srv.mu.Lock()
+	srv.sessions[target.SessionID].currentTurn = turnID
+	srv.mu.Unlock()
+	params := protocol.TurnSteerParams{
+		SessionMutation: protocol.SessionMutation{
+			RequestID:            "request-steer",
+			ExpectedHostEpoch:    srv.hostEpoch,
+			Target:               target,
+			ExpectedRuntimeEpoch: "runtime_test",
+		},
+		ExpectedTurnID: turnID,
+		Text:           "use plan B",
+	}
+
+	if _, err := srv.steer(params); err == nil {
+		t.Fatal("rejected steer returned false acceptance")
+	} else {
+		var remoteErr *protocol.RemoteError
+		if !errors.As(err, &remoteErr) || remoteErr.Code != protocol.ErrTurnNotActive {
+			t.Fatalf("rejected steer error = %v, want TURN_NOT_ACTIVE", err)
+		}
+	}
+
+	ctrl.steerAccepted = true
+	result, err := srv.steer(params)
+	if err != nil {
+		t.Fatalf("accepted steer: %v", err)
+	}
+	if !result.Accepted || result.TurnID != turnID || len(ctrl.steers) != 1 || ctrl.steers[0] != params.Text {
+		t.Fatalf("accepted steer result=%+v steers=%v", result, ctrl.steers)
 	}
 }
 

@@ -1057,7 +1057,7 @@ func TestDesktopStartupSettingsUsesUserDesktopPreferencesWithoutFullSettingsPayl
 	}
 
 	got := NewApp().DesktopStartupSettings()
-	if got.DesktopLanguage != "en" || got.DesktopLayoutStyle != "classic" || got.DesktopTheme != "dark" || got.DesktopThemeStyle != "graphite" || got.DisplayMode != "standard" || got.StatusBarStyle != "icon" || got.CheckUpdates || got.UpdateChannel != "preview" {
+	if got.DesktopLanguage != "en" || got.DesktopLayoutStyle != "classic" || got.DesktopTheme != "dark" || got.DesktopThemeStyle != "graphite" || got.DisplayMode != "standard" || got.StatusBarStyle != "icon" || got.CheckUpdates || got.UpdateChannel != "stable" {
 		t.Fatalf("DesktopStartupSettings desktop prefs = %+v, want user-level startup prefs", got)
 	}
 	if want := []string{"workspace", "git_branch", "model"}; !reflect.DeepEqual(got.StatusBarItems, want) {
@@ -1690,7 +1690,7 @@ func TestSettingsMarksPresetWithChangedCoreConfigAsModified(t *testing.T) {
 	}
 }
 
-func TestSettingsMigratesLegacyStepFunPresetBaseURLs(t *testing.T) {
+func TestSettingsPreservesStepFunRegionalPresetBaseURLs(t *testing.T) {
 	isolateDesktopUserDirs(t)
 
 	cfg := config.Default()
@@ -1715,25 +1715,25 @@ func TestSettingsMigratesLegacyStepFunPresetBaseURLs(t *testing.T) {
 	view := NewApp().Settings()
 	for _, id := range []string{"stepfun", "stepfun-anthropic"} {
 		presetView := providerPresetViewByID(t, view, id)
-		if !presetView.Added || presetView.Status != providerPresetStatusInstalled {
-			t.Fatalf("%s preset view = %+v, want installed after migration", id, presetView)
+		if !presetView.Added || presetView.Status != providerPresetStatusInstalledModified {
+			t.Fatalf("%s preset view = %+v, want installed-modified for a preserved regional endpoint", id, presetView)
 		}
 	}
 
-	migrated := config.LoadForEdit(config.UserConfigPath())
-	stepfunEntryView, ok := migrated.Provider("stepfun")
+	loaded := config.LoadForEdit(config.UserConfigPath())
+	stepfunEntryView, ok := loaded.Provider("stepfun")
 	if !ok {
-		t.Fatal("stepfun provider missing after migration")
+		t.Fatal("stepfun provider missing after load")
 	}
-	if got := stepfunEntryView.BaseURL; got != "https://api.stepfun.com/step_plan/v1" {
-		t.Fatalf("stepfun base_url = %q, want official URL", got)
+	if got := stepfunEntryView.BaseURL; got != "https://api.stepfun.ai/step_plan/v1" {
+		t.Fatalf("stepfun base_url = %q, want preserved regional URL", got)
 	}
-	stepfunAnthropicEntryView, ok := migrated.Provider("stepfun-anthropic")
+	stepfunAnthropicEntryView, ok := loaded.Provider("stepfun-anthropic")
 	if !ok {
-		t.Fatal("stepfun-anthropic provider missing after migration")
+		t.Fatal("stepfun-anthropic provider missing after load")
 	}
-	if got := stepfunAnthropicEntryView.BaseURL; got != "https://api.stepfun.com/step_plan" {
-		t.Fatalf("stepfun-anthropic base_url = %q, want official URL", got)
+	if got := stepfunAnthropicEntryView.BaseURL; got != "https://api.stepfun.ai/step_plan" {
+		t.Fatalf("stepfun-anthropic base_url = %q, want preserved regional URL", got)
 	}
 }
 
@@ -3847,10 +3847,8 @@ func newStaleWorkspaceBindingFixtureWithLayout(t *testing.T, suffix, layoutStyle
 	isolateDesktopUserDirs(t)
 	setDesktopTestCredential(t, "TEST_MODEL_KEY", "sk-test")
 
-	// Steers and idle-steer fallbacks start real provider turns (they are no
-	// longer command-interpreted), so the fixture's provider must complete
-	// instantly instead of pointing at an unreachable host — otherwise every
-	// steer leaves the controller running for the rest of the test.
+	// Submitted turns use a real provider, so the fixture must complete them
+	// instantly instead of pointing at an unreachable host.
 	providerStub := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.WriteHeader(http.StatusOK)
@@ -4059,16 +4057,13 @@ func TestDescribeSessionBindingWorkspaceKeepsWindowsPathReadable(t *testing.T) {
 	}
 }
 
-func TestSteerForTabReconcilesStaleWorkspaceBeforeIdleFallback(t *testing.T) {
+func TestSteerForTabReconcilesStaleWorkspaceBeforeRejectingIdleGuidance(t *testing.T) {
 	f := newStaleWorkspaceBindingFixture(t, "steer_idle_fallback")
 
-	// The idle fallback submits the steer text verbatim as a provider turn
-	// (steers are never command-interpreted); the fixture's provider stub
-	// completes it instantly.
-	if err := f.app.SteerForTab(f.tab.ID, "steer guidance"); err != nil {
-		t.Fatalf("SteerForTab: %v", err)
+	err := f.app.SteerForTab(f.tab.ID, "steer guidance")
+	if err == nil || !strings.Contains(err.Error(), "remain queued") {
+		t.Fatalf("SteerForTab error = %v, want explicit rejected-guidance result", err)
 	}
-	waitNotRunning(t, f.tab.Ctrl)
 	assertTabRebuiltToPinnedWorkspace(t, f)
 }
 
@@ -4242,12 +4237,12 @@ func runQuickClickWorkspaceReconcileTest(t *testing.T, layoutStyle string) {
 	wg.Wait()
 	close(errs)
 	for err := range errs {
-		// The steer action holds a real provider turn now, so racing quick
-		// clicks may legitimately observe a busy controller. This test
-		// asserts workspace-rebuild serialization, not that every
-		// concurrent action wins the turn.
+		// Racing quick clicks may legitimately observe a busy controller or an
+		// already-ended steer target. This test asserts workspace-rebuild
+		// serialization, not that every concurrent action wins admission.
 		if strings.Contains(err.Error(), "turn already running") ||
-			strings.Contains(err.Error(), "cannot compact while a turn is running") {
+			strings.Contains(err.Error(), "cannot compact while a turn is running") ||
+			strings.Contains(err.Error(), "remain queued") {
 			continue
 		}
 		t.Error(err)
@@ -5013,6 +5008,32 @@ func TestConnectKeyRestoresDeepSeekProviderAccess(t *testing.T) {
 	}
 }
 
+func TestBalanceForTabUsesDesktopPricingCurrency(t *testing.T) {
+	isolateDesktopUserDirs(t)
+	cfg := config.Default()
+	cfg.Desktop.Currency = "USD"
+	if err := cfg.SaveTo(config.UserConfigPath()); err != nil {
+		t.Fatalf("save USD desktop currency: %v", err)
+	}
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"is_available":true,"balance_infos":[{"currency":"CNY","total_balance":"70.16"},{"currency":"USD","total_balance":"9.82"}]}`)
+	}))
+	defer srv.Close()
+
+	app := NewApp()
+	app.ctx = context.Background()
+	ctrl := control.New(control.Options{BalanceURL: srv.URL, BalanceClient: srv.Client()})
+	t.Cleanup(ctrl.Close)
+	app.setTestCtrl(ctrl, "deepseek/deepseek-v4-flash")
+
+	got := app.BalanceForTab("test")
+	if !got.Available || got.Display != "$9.82" || got.Err != "" {
+		t.Fatalf("USD desktop balance = %+v, want available $9.82", got)
+	}
+}
+
 func TestConnectKeyRebuildLeaseHeldKeepsCurrentController(t *testing.T) {
 	isolateDesktopUserDirs(t)
 	t.Setenv(onboardingKeyEnv, "")
@@ -5601,6 +5622,17 @@ func TestSetTokenModeRejectsRunningTurn(t *testing.T) {
 
 func TestSetTokenModeRejectsBackgroundJobs(t *testing.T) {
 	isolateDesktopUserDirs(t)
+	setDesktopTestCredential(t, "OLD_MODEL_KEY", "sk-test")
+
+	cfg := config.Default()
+	cfg.DefaultModel = "old/old-model"
+	cfg.Desktop.ProviderAccess = []string{"old"}
+	cfg.Providers = []config.ProviderEntry{
+		{Name: "old", Kind: "openai", BaseURL: "https://example.invalid/v1", Model: "old-model", APIKeyEnv: "OLD_MODEL_KEY"},
+	}
+	if err := cfg.SaveTo(config.UserConfigPath()); err != nil {
+		t.Fatalf("save config: %v", err)
+	}
 
 	dir := config.SessionDir()
 	if err := os.MkdirAll(dir, 0o755); err != nil {
@@ -5609,12 +5641,17 @@ func TestSetTokenModeRejectsBackgroundJobs(t *testing.T) {
 	path := filepath.Join(dir, "jobs.jsonl")
 	jm := jobs.NewManager(event.Discard)
 	ctrl := control.New(control.Options{SessionDir: dir, SessionPath: path, Label: "test", Jobs: jm})
-	defer ctrl.Close()
 	app := NewApp()
-	app.setTestCtrl(ctrl, "")
+	app.ctx = context.Background()
+	app.setTestCtrl(ctrl, "old/old-model")
+	t.Cleanup(func() {
+		if current := app.activeCtrl(); current != nil {
+			current.Close()
+		}
+	})
 
 	release := make(chan struct{})
-	jm.StartForSession(agent.BranchID(path), "bash", "long job", func(ctx context.Context, _ io.Writer) (string, error) {
+	job := jm.StartForSession(agent.BranchID(path), "bash", "long job", func(ctx context.Context, _ io.Writer) (string, error) {
 		select {
 		case <-ctx.Done():
 			return "", ctx.Err()
@@ -5622,11 +5659,21 @@ func TestSetTokenModeRejectsBackgroundJobs(t *testing.T) {
 			return "", nil
 		}
 	})
-	defer close(release)
+	t.Cleanup(func() { close(release) })
 
 	err := app.SetTokenMode("economy")
-	if err == nil || !strings.Contains(err.Error(), "stop background jobs") {
-		t.Fatalf("SetTokenMode with background job error = %v, want background-job guard", err)
+	if err == nil || !strings.Contains(err.Error(), "background_jobs=1") {
+		t.Fatalf("SetTokenMode with background job error = %v, want exact background-job guard", err)
+	}
+	cancelled, err := app.CancelJobForTab("", job.ID)
+	if err != nil || !cancelled {
+		t.Fatalf("CancelJobForTab = %v, %v, want true, nil", cancelled, err)
+	}
+	if result := jm.WaitForSession(context.Background(), agent.BranchID(path), []string{job.ID}, 5); len(result) != 1 || result[0].Status != jobs.Killed {
+		t.Fatalf("stopped background job = %+v, want one killed result", result)
+	}
+	if err := app.SetTokenMode("economy"); err != nil {
+		t.Fatalf("SetTokenMode after stopping background job: %v", err)
 	}
 }
 
@@ -6958,6 +7005,46 @@ func TestUserTriggeredCommandsReturnErrorsWhenUnavailable(t *testing.T) {
 				t.Fatalf("error = %q, want to contain %q", err, tt.want)
 			}
 		})
+	}
+}
+
+func TestSubmitEntryPointsRejectEmptyProviderInput(t *testing.T) {
+	app := NewApp()
+	for _, tt := range []struct {
+		name string
+		call func() error
+	}{
+		{name: "plain", call: func() error { return app.SubmitToTab("missing", " \n\t ") }},
+		{name: "display", call: func() error { return app.SubmitDisplayToTab("missing", "visible prompt", " ") }},
+		{name: "delivery recovery", call: func() error {
+			return app.SubmitDeliveryRecoveryToTab("missing", "visible prompt", "")
+		}},
+		{name: "invocations", call: func() error {
+			return app.SubmitInvocationsToTab("missing", "/skill visible", "", nil)
+		}},
+		{name: "edited display", call: func() error {
+			return app.SubmitEditedDisplayToTab("missing", "visible prompt", "\n", "original prompt")
+		}},
+		{name: "initial goal", call: func() error {
+			_, err := app.SubmitInitialGoalToTab("missing", "goal", "visible prompt", "", nil, "normal", "auto", "local", 0, 0)
+			return err
+		}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			if err := tt.call(); !errors.Is(err, errEmptyTurnInput) {
+				t.Fatalf("error = %v, want errEmptyTurnInput", err)
+			}
+		})
+	}
+}
+
+func TestInvocationEntryPointsAllowEmptyExplicitTaskForSkillOnlyTurn(t *testing.T) {
+	invocations := []InvocationRequest{{Name: "skill", Kind: "skill"}}
+	if err := validateInvocationTurnInput("", invocations); err != nil {
+		t.Fatalf("skill-only invocation input rejected: %v", err)
+	}
+	if err := validateInvocationTurnInput("", nil); !errors.Is(err, errEmptyTurnInput) {
+		t.Fatalf("empty input without invocations = %v, want errEmptyTurnInput", err)
 	}
 }
 
