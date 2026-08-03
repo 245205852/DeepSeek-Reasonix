@@ -1,0 +1,106 @@
+# Reasonix 扩展
+
+扩展让插件包在运行时改变 Reasonix 的行为——改写输入、拦截工具调用、
+替换系统提示词、提供流式模型 Provider、发布结构化 UI，以及分发
+prompts 和主题——全部基于稳定、带版本号的契约。
+
+插件能力分两类：
+
+- **声明式**（任意插件包）：skills、agents、commands、prompts、hooks、
+  MCP servers 和主题。它们是文件与配置，按宿主正常权限运行。
+- **代码型 Runtime**（Manifest v1 的 `runtime` 块）：通过 Extension
+  Protocol 驱动的 Sidecar 进程。代码型扩展是**完全信任（full trust）**
+  的——安装前请务必阅读下文安全章节。
+
+## 安装与管理
+
+扩展的安装方式与普通插件包完全一致：
+
+```bash
+reasonix plugin install git:github.com/owner/extension --dry-run   # 预览
+reasonix plugin install git:github.com/owner/extension --yes       # 安装
+reasonix plugin show <name>                                        # 详情
+reasonix plugin doctor <name>                                      # 校验
+```
+
+带有 `runtime` 块的插件，其预览与 `show` 输出会包含 **FULL TRUST**
+区块：Runtime 命令、拦截的事件、持有的替换槽，以及 Provider/UI 能力。
+安装、更新、替换或 `--link` 即代表授权——没有二次确认，`--link` 在内容
+变化后自动保持信任。请只安装你完全信任的运行时。
+
+## 扩展能做什么
+
+- **拦截器（Interceptors）**——观察并裁决 17 个 hook 点（输入、工具
+  调用、权限判定、Provider 请求/响应、压缩、会话生命周期、前端事件）。
+  拦截器可以 `continue`、`block`（给出用户可见原因）或 `replace`
+  （替换载荷）；宿主会对每个替换重新校验。
+- **替换策略**——单 owner 槽位（`system_prompt`、`context`、
+  `provider_request`、`provider_response`、`compaction`、
+  `session_policy`、`permission`、`frontend_events`、`tool:<name>`、
+  `provider:<ref>`）。同一槽位在所有已安装插件中只能有一个 owner，
+  争用会令运行时构建失败并列出来源。
+- **流式 Provider**——新模型以 `plugin/<plugin>/<provider>/<model>`
+  出现在模型选择器中，流式语义（text/reasoning/工具调用/usage）与
+  内置 Provider 一致。
+- **结构化 UI**——status、card、form、notification 在 CLI transcript、
+  Desktop 与 ACP 客户端中原生渲染（不支持时退化为文本），action 同时
+  出现在 `/<plugin>:<action>` 斜杠菜单、Desktop 命令面板和 ACP 可发现
+  命令中。
+- **Prompts 与主题**——`/<plugin>:<name>` 提示词模板，以及 Desktop
+  设置中的只读插件主题（`plugin:<plugin>:<theme>`）。
+
+## 运行时重载
+
+已安装扩展发生变化（安装、更新、启用/禁用、`--link` 内容变化）绝不会
+修改正在运行的回合。重载是一个失败原子的操作，三个入口语义一致——
+CLI `/reload`、Desktop「重载运行时」（命令面板）、ACP vendor method
+`_reasonix.io/session/reloadExtensions`：
+
+1. 回合或后台任务运行中，只排队一次重载。
+2. 空闲后启动新 Sidecar 并构建新的运行时快照。
+3. 完整成功后原子交换，并迁移 session path、transcript、授权记录和
+   goal/recovery 状态。
+4. 新构建失败时，旧运行时不受影响继续可用。
+5. 交换完成后才关闭旧 Sidecar。
+
+每个回合自始至终（含工具批次与压缩）固定使用同一个运行时
+generation——扩展变更从下一个回合生效；no-op 重载后 Provider 提示词
+缓存前缀字节不变。
+
+## 开发扩展
+
+1. 在 `reasonix-plugin.json` 中加入
+   `apiVersion: "reasonix.io/plugin/v1"`，声明 `contributes` 与
+   （可选的）`runtime`——见 `docs/PLUGIN_PACKAGES.zh-CN.md`。
+2. 实现 Sidecar。Go SDK（`sdk/go`，仅依赖标准库）已经处理了传输、
+   握手、序号、content ref 与关闭；线上契约见
+   `docs/EXTENSION_PROTOCOL.zh-CN.md`，方法索引见
+   `docs/EXTENSION_PROTOCOL.generated.md`。
+3. 用 `reasonix plugin doctor <name>` 校验，用 `--link` + `/reload`
+   快速迭代。
+
+## 兼容性
+
+- 没有 `apiVersion` 的 Manifest 继续按旧格式解析。
+- 旧版本 Reasonix 会忽略扩展专有状态：会话级
+  `<session>.extensions.json` sidecar 文件、`plugin/...` 模型 ref
+  （仅报告模型不可用），以及 `extension_surface`/`extension_status`
+  事件类型（旧前端丢弃未知类型；未声明 `reasonix.extensionSurface`
+  的 ACP 客户端收到文本 fallback）。
+- `plugin-packages.json` 保持现有 schema；已启用的已安装 Runtime 即
+  为信任记录。
+
+## 安全模型
+
+代码型扩展运行在 Reasonix Sandbox 之外，继承未过滤的完整环境：可以
+读取完整会话与环境、绕过权限与工作区限制、直接操作本机；它在
+`permission.decision` 上的 "allow" 可覆盖宿主 deny。作为约束，宿主
+保证：
+
+- 只有通过插件安装流程的插件才能启动 Runtime——项目配置永远无法
+  声明代码型 Sidecar；
+- 握手时拒绝任何超出 Manifest 声明的能力；
+- 所有替换都按点位 DTO 与 Schema 重新校验；
+- Sidecar 产出的文本在进入 UI、日志或错误之前经过凭据脱敏；
+- Sidecar 崩溃只令其自身操作明确失败——Reasonix 绝不静默回退到
+  其他模型或策略。
