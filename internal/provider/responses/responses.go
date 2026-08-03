@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -63,9 +64,9 @@ type Config struct {
 	Proxy     netclient.ProxySpec
 	KeyEnv    string
 	KeySource string
-	// MaxOutputTokens is the total provider output budget. Zero enables the
-	// official DeepSeek 32K safety default and otherwise omits the field;
-	// negative always omits it.
+	// MaxOutputTokens is the total provider output budget. Zero enables Reasonix's
+	// 32K reasoning safety default on official DeepSeek and otherwise omits the
+	// field; thinking-disabled DeepSeek requests and negative values omit it.
 	MaxOutputTokens int
 	// SessionCache controls DashScope's opt-in header. The header is never sent
 	// to non-DashScope endpoints even when this value is true.
@@ -91,11 +92,15 @@ func (c Config) mode() string {
 
 // DetectVendor identifies endpoint behavior that affects the Responses wire.
 func DetectVendor(baseURL string) string {
-	u := strings.ToLower(strings.TrimSpace(baseURL))
+	u, err := url.Parse(strings.TrimSpace(baseURL))
+	if err != nil {
+		return ""
+	}
+	host := strings.ToLower(u.Hostname())
 	switch {
-	case strings.Contains(u, "dashscope.aliyuncs.com"), strings.Contains(u, ".maas.aliyuncs.com"):
+	case host == "dashscope.aliyuncs.com", strings.HasSuffix(host, ".dashscope.aliyuncs.com"), strings.HasSuffix(host, ".maas.aliyuncs.com"):
 		return "dashscope"
-	case strings.Contains(u, "api.deepseek.com"):
+	case host == "api.deepseek.com", strings.HasSuffix(host, ".deepseek.com"):
 		return "deepseek"
 	default:
 		return ""
@@ -121,7 +126,7 @@ type client struct {
 func New(cfg Config) provider.Provider {
 	vendor := DetectVendor(cfg.BaseURL)
 	maxOutputTokens := cfg.MaxOutputTokens
-	if maxOutputTokens == 0 && vendor == "deepseek" {
+	if maxOutputTokens == 0 && vendor == "deepseek" && !responsesReasoningDisabled(cfg.Effort) {
 		maxOutputTokens = provider.DefaultReasoningOutputTokens
 	}
 	sessionCache := vendor == "dashscope"
@@ -140,6 +145,15 @@ func New(cfg Config) provider.Provider {
 		baseURL: strings.TrimRight(cfg.BaseURL, "/"), model: cfg.Model, effort: cfg.Effort,
 		vendor: vendor, mode: cfg.mode(), sessionCache: sessionCache, maxOutputTokens: maxOutputTokens,
 		http: httpClient, idleTimeout: defaultStreamIdleTimeout,
+	}
+}
+
+func responsesReasoningDisabled(effort string) bool {
+	switch strings.ToLower(strings.TrimSpace(effort)) {
+	case "none", "disabled", "off":
+		return true
+	default:
+		return false
 	}
 }
 

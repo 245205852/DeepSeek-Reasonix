@@ -101,9 +101,6 @@ func New(cfg provider.Config) (provider.Provider, error) {
 	}
 	deepseek := protocol == "deepseek" || (protocol == "" && officialDeepSeek)
 	maxOutputTokens, _ := cfg.Extra["max_output_tokens"].(int)
-	if maxOutputTokens == 0 && officialDeepSeek {
-		maxOutputTokens = provider.DefaultReasoningOutputTokens
-	}
 	deepseekV4Flash := strings.EqualFold(strings.TrimSpace(cfg.Model), "deepseek-v4-flash")
 	minimax := protocol == "" && IsMiniMax(cfg.BaseURL)
 	zhipu := protocol == "" && IsZhipu(cfg.BaseURL)
@@ -203,6 +200,12 @@ func New(cfg provider.Config) (provider.Provider, error) {
 		default:
 			return nil, fmt.Errorf("openai: provider %q: effort must be low, medium, or high", name)
 		}
+	}
+	// The automatic cap protects DeepSeek reasoning, not ordinary long-form
+	// output. Preserve an explicit user budget in either mode, but leave a
+	// thinking-disabled request uncapped unless the user configured one.
+	if maxOutputTokens == 0 && officialDeepSeek && thinkingType != "disabled" {
+		maxOutputTokens = provider.DefaultReasoningOutputTokens
 	}
 	httpClient, err := newHTTPClient(cfg)
 	if err != nil {

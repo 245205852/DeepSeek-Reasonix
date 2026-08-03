@@ -1175,6 +1175,41 @@ func TestBuildRequestUsesProviderSpecificOutputBudget(t *testing.T) {
 		t.Fatalf("DeepSeek output budget = max_tokens %d, max_completion_tokens %d", deepseek.MaxTokens, deepseek.MaxCompletionTokens)
 	}
 
+	thinkingDisabledProvider, err := New(provider.Config{
+		Name: "test", BaseURL: "https://api.deepseek.com", Model: "deepseek-v4-pro",
+		Extra: map[string]any{"thinking": "disabled", "max_output_tokens": 0},
+	})
+	if err != nil {
+		t.Fatalf("New thinking-disabled DeepSeek: %v", err)
+	}
+	thinkingDisabled := thinkingDisabledProvider.(*client).buildRequest(provider.Request{})
+	if thinkingDisabled.MaxTokens != 0 || thinkingDisabled.MaxCompletionTokens != 0 {
+		t.Fatalf("thinking-disabled DeepSeek received an automatic output budget: %+v", thinkingDisabled)
+	}
+	effortDisabledProvider, err := New(provider.Config{
+		Name: "test", BaseURL: "https://api.deepseek.com", Model: "deepseek-v4-pro",
+		Extra: map[string]any{"effort": "disabled", "max_output_tokens": 0},
+	})
+	if err != nil {
+		t.Fatalf("New effort-disabled DeepSeek: %v", err)
+	}
+	effortDisabled := effortDisabledProvider.(*client).buildRequest(provider.Request{})
+	if effortDisabled.MaxTokens != 0 || effortDisabled.Thinking == nil || effortDisabled.Thinking.Type != "disabled" {
+		t.Fatalf("effort-disabled DeepSeek request = %+v, want thinking disabled without an automatic budget", effortDisabled)
+	}
+
+	explicitDisabledProvider, err := New(provider.Config{
+		Name: "test", BaseURL: "https://api.deepseek.com", Model: "deepseek-v4-pro",
+		Extra: map[string]any{"thinking": "disabled", "max_output_tokens": 8192},
+	})
+	if err != nil {
+		t.Fatalf("New explicitly capped DeepSeek: %v", err)
+	}
+	explicitDisabled := explicitDisabledProvider.(*client).buildRequest(provider.Request{})
+	if explicitDisabled.MaxTokens != 8192 {
+		t.Fatalf("explicit thinking-disabled DeepSeek budget = %d, want 8192", explicitDisabled.MaxTokens)
+	}
+
 	disabledDeepSeek := newClient(t, "https://api.deepseek.com", "deepseek-v4-flash", -1).buildRequest(provider.Request{})
 	if disabledDeepSeek.MaxTokens != 0 || disabledDeepSeek.MaxCompletionTokens != 0 {
 		t.Fatalf("disabled DeepSeek output budget = %+v", disabledDeepSeek)

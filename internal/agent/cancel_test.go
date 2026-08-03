@@ -186,6 +186,28 @@ func (p activeReasoningUntilCancelProvider) Stream(ctx context.Context, _ provid
 	return ch, nil
 }
 
+type reasoningGuardCancelProvider struct {
+	canceled chan struct{}
+}
+
+func (reasoningGuardCancelProvider) Name() string { return "reasoning-guard-cancel" }
+
+func (p reasoningGuardCancelProvider) Stream(ctx context.Context, _ provider.Request) (<-chan provider.Chunk, error) {
+	ch := make(chan provider.Chunk)
+	go func() {
+		defer close(ch)
+		defer close(p.canceled)
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case ch <- provider.Chunk{Type: provider.ChunkReasoning, Text: "0123456789abcdef"}:
+			}
+		}
+	}()
+	return ch, nil
+}
+
 func TestRunawayReasoningStopsAtAgentSideByteGuard(t *testing.T) {
 	sink := &recordSink{}
 	a := New(activeReasoningUntilCancelProvider{}, tool.NewRegistry(), NewSession(""), Options{ReasoningByteLimit: 64}, sink)
@@ -206,6 +228,20 @@ func TestRunawayReasoningStopsAtAgentSideByteGuard(t *testing.T) {
 	}
 	if u := usages[0].Usage; u == nil || u.FinishReason != "client_reasoning_limit" || !u.Estimated || u.TotalTokens <= 0 || u.ReasoningTokens <= 0 {
 		t.Fatalf("usage = %+v, want client reasoning limit with estimated reasoning tokens", u)
+	}
+}
+
+func TestReasoningByteGuardCancelsProviderStream(t *testing.T) {
+	canceled := make(chan struct{})
+	a := New(reasoningGuardCancelProvider{canceled: canceled}, tool.NewRegistry(), NewSession(""), Options{ReasoningByteLimit: 32}, event.Discard)
+
+	if err := a.Run(context.Background(), "trigger the reasoning guard"); !errors.Is(err, errReasoningByteLimitExceeded) {
+		t.Fatalf("Run error = %v, want reasoning limit guard", err)
+	}
+	select {
+	case <-canceled:
+	case <-time.After(time.Second):
+		t.Fatal("provider context remained live after the reasoning guard returned")
 	}
 }
 
