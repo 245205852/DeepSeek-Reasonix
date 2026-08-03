@@ -14899,7 +14899,26 @@ body > .mermaid-diagram--fullscreen {
   display: flex;
   flex-direction: column;
   align-items: flex-start;
-  gap: 10px;
+  gap: 8px;
+}
+
+.compact-ratio-presets {
+  max-width: 100%;
+}
+
+.compact-ratio-impact,
+.compact-ratio-custom__hint {
+  color: var(--fg-dim);
+  font-size: var(--text-2xs);
+  line-height: 1.45;
+}
+
+.compact-ratio-custom-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  width: 100%;
+  padding-top: 2px;
 }
 
 .compact-ratio-custom {
@@ -14912,8 +14931,7 @@ body > .mermaid-diagram--fullscreen {
   width: 88px;
 }
 
-.compact-ratio-custom__suffix,
-.compact-ratio-custom__hint {
+.compact-ratio-custom__suffix {
   color: var(--fg-dim);
   font-size: var(--text-2xs);
 }
