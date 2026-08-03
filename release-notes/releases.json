@@ -6,12 +6,12 @@
       "date": "2026-08-03",
       "channel": "stable",
       "title": {
-        "en": "Reasonix v1.19.4 — Safer Reasoning and Reliable Windows Launch",
-        "zh": "Reasonix v1.19.4 — 更安全的推理与可靠的 Windows 启动"
+        "en": "Safer reasoning, resilient updates, and reliable Windows launches",
+        "zh": "更安全的推理、可靠更新与 Windows 启动链路"
       },
       "summary": {
-        "en": "This release brings critical stability and usability fixes, including reasoning consumption protection to prevent runaway tokens, silent recovery of missing tool-call reasoning, significantly faster crash dashboard and preferences, provider model picker crash fix, Windows launcher directory junction resolution, and workspace tab alignment.",
-        "zh": "此版本带来了重要的稳定性和可用性修复，包括推理消耗保护以阻止令牌失控、工具调用推理缺失的静默恢复、显著加速的崩溃仪表板和偏好设置、提供程序模型选择器崩溃修复、Windows 启动器目录联接解析以及工作区标签页对齐。"
+        "en": "This release strengthens reasoning and tool-call recovery, speeds up crash diagnostics, repairs native shortcut icons after updates, stops Remote profile resync loops, and fixes the Windows launcher path used by Scoop, alongside provider picker, workspace, and Creation UI improvements.",
+        "zh": "此版本加强了推理与工具调用恢复、加速崩溃诊断、自动修复更新后的原生快捷方式图标、阻止远程 Profile 重同步循环，并修复 Scoop 使用的 Windows 启动链路，同时改进了提供程序选择器、工作区与创作界面。"
       },
       "surfaces": [
         "desktop"
@@ -127,11 +127,69 @@
           "refs": [
             7270
           ]
+        },
+        {
+          "kind": "fixed",
+          "title": {
+            "en": "Native shortcut icons repair themselves after updates",
+            "zh": "更新后自动修复原生快捷方式图标"
+          },
+          "body": {
+            "en": "Reasonix now repairs only owned, stale icon integrations after upgrades: version-scoped Windows shortcut icons, broken or outdated macOS Finder aliases, and Linux desktop icon caches. Healthy, unrelated, and customized integrations are preserved, and repair failures never block startup.",
+            "zh": "Reasonix 现在会在升级后仅修复自身拥有且已过期的图标集成：Windows 版本目录中的快捷方式图标、损坏或过期的 macOS Finder 别名，以及 Linux 桌面图标缓存。健康、无关或自定义的集成会被保留，修复失败也不会阻止启动。"
+          },
+          "refs": [
+            7296
+          ]
+        },
+        {
+          "kind": "fixed",
+          "title": {
+            "en": "Remote profiles stop resyncing in a loop",
+            "zh": "远程 Profile 不再循环重同步"
+          },
+          "body": {
+            "en": "Identical Remote profile updates are now side-effect free, late control-plane responses cannot restore stale runtime authority, and runtime epochs remain intact across the Desktop bridge so replaced-runtime events are rejected correctly.",
+            "zh": "相同的远程 Profile 更新现在不会产生副作用，延迟到达的控制面响应无法恢复过期的运行时权威，运行时 epoch 也会完整通过 Desktop 桥接，从而正确拒绝已被替换运行时的事件。"
+          },
+          "refs": [
+            7277
+          ]
         }
       ],
       "changes": {
-        "new": [],
+        "new": [
+          {
+            "title": {
+              "en": "Reasoning consumption protection",
+              "zh": "推理消耗保护"
+            },
+            "body": {
+              "en": "Added a client-side reasoning byte guard and configurable per-model output token budgets to prevent unexpected token consumption.",
+              "zh": "增加客户端推理字节守卫和可配置的每模型输出令牌预算，以防止意外的令牌消耗。"
+            },
+            "refs": [
+              7186
+            ]
+          }
+        ],
         "improved": [
+          {
+            "title": {
+              "en": "Faster crash dashboard and preferences",
+              "zh": "更快的崩溃仪表板与偏好设置"
+            },
+            "body": {
+              "en": "Precomputed 30-day deduplication and removed redundant indexes to speed up dashboard aggregate queries; homepage avatars now use WebP for smaller downloads.",
+              "zh": "通过预计算 30 天去重和删除冗余索引来加速仪表板聚合查询；首页头像改用 WebP 以减小下载量。"
+            },
+            "refs": [
+              7279,
+              7284,
+              7258,
+              7266
+            ]
+          },
           {
             "title": {
               "en": "Creation Interface Refinements",
@@ -146,13 +204,91 @@
             ]
           }
         ],
-        "fixed": []
+        "fixed": [
+          {
+            "title": {
+              "en": "Missing tool-call reasoning recovery",
+              "zh": "工具调用推理缺失恢复"
+            },
+            "body": {
+              "en": "Silently retries when tool-call reasoning content is absent, avoiding user-visible warnings and improving tool reliability.",
+              "zh": "工具调用推理内容缺失时会静默重试，避免用户可见警告并提升工具可靠性。"
+            },
+            "refs": [
+              7259
+            ]
+          },
+          {
+            "title": {
+              "en": "Provider model picker crash",
+              "zh": "提供程序模型选择器崩溃"
+            },
+            "body": {
+              "en": "Fixed React Hook ordering so asynchronously loaded model lists no longer crash the picker.",
+              "zh": "修复 React Hook 顺序，使异步加载的模型列表不再导致选择器崩溃。"
+            },
+            "refs": [
+              7195
+            ]
+          },
+          {
+            "title": {
+              "en": "Windows launcher junction resolution",
+              "zh": "Windows 启动器目录联接解析"
+            },
+            "body": {
+              "en": "The launcher now resolves Scoop's `current` directory junction and starts the active version reliably.",
+              "zh": "启动器现在会解析 Scoop 的 `current` 目录联接，并可靠启动当前活动版本。"
+            },
+            "refs": [
+              7275
+            ]
+          },
+          {
+            "title": {
+              "en": "Windows workspace tab alignment",
+              "zh": "Windows 工作区标签页对齐"
+            },
+            "body": {
+              "en": "The workspace sidebar now shows only the intended views and places Windows caption controls correctly.",
+              "zh": "工作区侧边栏现在仅显示预期视图，并正确放置 Windows 标题栏控件。"
+            },
+            "refs": [
+              7270
+            ]
+          },
+          {
+            "title": {
+              "en": "Native icon repair after updates",
+              "zh": "更新后的原生图标修复"
+            },
+            "body": {
+              "en": "Repairs stale Reasonix-owned shortcut icons and aliases across Windows, macOS, and native Linux packages without overwriting healthy customizations.",
+              "zh": "在 Windows、macOS 与原生 Linux 包中修复 Reasonix 自有的过期快捷方式图标和别名，同时不覆盖健康的自定义设置。"
+            },
+            "refs": [
+              7296
+            ]
+          },
+          {
+            "title": {
+              "en": "Remote profile resync loops",
+              "zh": "远程 Profile 重同步循环"
+            },
+            "body": {
+              "en": "Made identical profile and goal mutations no-ops and fenced stale control-plane responses and runtime events.",
+              "zh": "将相同的 Profile 与 Goal 变更处理为无操作，并隔离过期的控制面响应与运行时事件。"
+            },
+            "refs": [
+              7277
+            ]
+          }
+        ]
       },
       "upgrade": [],
       "risks": [],
       "contributors": [
         "Li-Charles-One",
-        "github-actions[bot]",
         "SivanCola",
         "esengine",
         "paradoxSCH"
