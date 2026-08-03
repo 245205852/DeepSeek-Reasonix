@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+	"time"
 
 	"reasonix/internal/jobs"
 )
@@ -23,6 +24,7 @@ type TaskRecorder struct {
 	sessionIDFn func() string
 	mu          sync.Mutex
 	monitorIDs  map[string]string
+	heartbeats  map[string]context.CancelFunc
 }
 
 // NewTaskRecorder returns a TaskRecorder writing to store under projectDir.
@@ -30,8 +32,13 @@ type TaskRecorder struct {
 // creation time (controllers resolve their session path lazily); it may return
 // "" when no session is bound yet.
 func NewTaskRecorder(store WriteStore, projectDir string, sessionIDFn func() string) *TaskRecorder {
-	return &TaskRecorder{store: store, projectDir: projectDir, sessionIDFn: sessionIDFn, monitorIDs: make(map[string]string)}
+	return &TaskRecorder{store: store, projectDir: projectDir, sessionIDFn: sessionIDFn, monitorIDs: make(map[string]string), heartbeats: make(map[string]context.CancelFunc)}
 }
+
+const (
+	runtimeLeaseTTL       = 30 * time.Second
+	runtimeHeartbeatEvery = 5 * time.Second
+)
 
 // monitorTaskID creates a globally unique monitor identity for a job within
 // a session. jobs.Manager IDs are local to a manager and restart from task-1
@@ -73,6 +80,45 @@ func (r *TaskRecorder) lookupMonitorID(jobID string) (string, bool) {
 	return monitorID, ok
 }
 
+func (r *TaskRecorder) startHeartbeat(monitorID string) {
+	ctx, cancel := context.WithCancel(context.Background())
+	r.mu.Lock()
+	if old := r.heartbeats[monitorID]; old != nil {
+		old()
+	}
+	r.heartbeats[monitorID] = cancel
+	r.mu.Unlock()
+	go func() {
+		ticker := time.NewTicker(runtimeHeartbeatEvery)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				cur, err := r.store.GetTask(ctx, r.projectDir, monitorID)
+				if err != nil || cur == nil || cur.State.Terminal() || cur.RuntimeState.Effective() != RuntimeStateAlive {
+					return
+				}
+				cur.Version++
+				cur.RuntimeLeaseUntil = timeNow().Add(runtimeLeaseTTL)
+				if err := r.store.SaveTask(ctx, r.projectDir, *cur); err != nil {
+					return
+				}
+			}
+		}
+	}()
+}
+
+func (r *TaskRecorder) stopHeartbeat(monitorID string) {
+	r.mu.Lock()
+	if cancel := r.heartbeats[monitorID]; cancel != nil {
+		cancel()
+		delete(r.heartbeats, monitorID)
+	}
+	r.mu.Unlock()
+}
+
 // RecordStart implements jobs.TaskRecorder.
 func (r *TaskRecorder) RecordStart(id, kind, label string) {
 	ctx := context.Background()
@@ -87,14 +133,15 @@ func (r *TaskRecorder) RecordStart(id, kind, label string) {
 	}
 	r.rememberMonitorID(id, monitorID)
 	snap := TaskSnapshot{
-		SchemaVersion: 1,
-		TaskID:        monitorID,
-		SessionID:     sessionID,
-		State:         TaskStateRunning,
-		RuntimeState:  RuntimeStateAlive,
-		Version:       1,
-		CreatedAt:     now,
-		UpdatedAt:     now,
+		SchemaVersion:     1,
+		TaskID:            monitorID,
+		SessionID:         sessionID,
+		State:             TaskStateRunning,
+		RuntimeState:      RuntimeStateAlive,
+		RuntimeLeaseUntil: now.Add(runtimeLeaseTTL),
+		Version:           1,
+		CreatedAt:         now,
+		UpdatedAt:         now,
 	}
 	if err := r.store.SaveTask(ctx, r.projectDir, snap); err != nil {
 		return
@@ -104,6 +151,7 @@ func (r *TaskRecorder) RecordStart(id, kind, label string) {
 		TaskID: monitorID, SessionID: sessionID, State: TaskStateRunning,
 		RuntimeState: RuntimeStateAlive,
 	})
+	r.startHeartbeat(monitorID)
 }
 
 // RecordDone implements jobs.TaskRecorder.
@@ -117,6 +165,7 @@ func (r *TaskRecorder) RecordDone(id string, st jobs.Status, jobErr error) {
 	if !ok {
 		return // no matching lifecycle was recorded by this recorder
 	}
+	r.stopHeartbeat(monitorID)
 	const maxSaveAttempts = 4
 	for attempt := 0; attempt < maxSaveAttempts; attempt++ {
 		cur, gerr := r.store.GetTask(ctx, r.projectDir, monitorID)
@@ -126,6 +175,7 @@ func (r *TaskRecorder) RecordDone(id string, st jobs.Status, jobErr error) {
 		now := timeNow()
 		cur.State = target
 		cur.RuntimeState = RuntimeStateExited
+		cur.RuntimeLeaseUntil = time.Time{}
 		cur.Version++
 		cur.UpdatedAt = now
 		if jobErr != nil {

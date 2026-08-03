@@ -66,6 +66,22 @@ func (s RuntimeState) IsKnown() bool {
 	}
 }
 
+// reconcileRuntime marks an alive snapshot stale when its owner lease has
+// expired. It is deliberately pure; callers decide whether to persist the
+// reconciled value.
+func reconcileRuntime(snap *TaskSnapshot, now time.Time) {
+	if snap == nil || snap.RuntimeState.Effective() != RuntimeStateAlive || snap.RuntimeLeaseUntil.IsZero() {
+		return
+	}
+	if now.Before(snap.RuntimeLeaseUntil) {
+		return
+	}
+	snap.RuntimeState = RuntimeStateExited
+	if !snap.State.Terminal() {
+		snap.State = TaskStateStale
+	}
+}
+
 // ValidTaskStates is the set of well-known states.
 var ValidTaskStates = map[TaskState]bool{
 	TaskStateQueued:    true,
@@ -140,14 +156,15 @@ type TaskSnapshot struct {
 	TaskID        string `json:"task_id"`
 	// SessionID is the session the task was created in; it may be empty when
 	// the recorder attached before a session path was resolved.
-	SessionID    string       `json:"session_id"`
-	State        TaskState    `json:"state"`
-	RuntimeState RuntimeState `json:"runtime_state,omitempty"`
-	Version      uint64       `json:"version"`
-	CreatedAt    time.Time    `json:"created_at"`
-	UpdatedAt    time.Time    `json:"updated_at"`
-	ErrorCode    string       `json:"error_code,omitempty"`
-	ErrorSummary string       `json:"error_summary,omitempty"`
+	SessionID         string       `json:"session_id"`
+	State             TaskState    `json:"state"`
+	RuntimeState      RuntimeState `json:"runtime_state,omitempty"`
+	RuntimeLeaseUntil time.Time    `json:"runtime_lease_until,omitempty"`
+	Version           uint64       `json:"version"`
+	CreatedAt         time.Time    `json:"created_at"`
+	UpdatedAt         time.Time    `json:"updated_at"`
+	ErrorCode         string       `json:"error_code,omitempty"`
+	ErrorSummary      string       `json:"error_summary,omitempty"`
 }
 
 // Validate returns a non-nil error if required fields are missing or
@@ -184,6 +201,9 @@ func (ts TaskSnapshot) Validate() error {
 	}
 	if len(ts.RuntimeState) > maxFieldLen {
 		return fmt.Errorf("TaskSnapshot.RuntimeState exceeds max length %d", maxFieldLen)
+	}
+	if !ts.RuntimeLeaseUntil.IsZero() && ts.RuntimeLeaseUntil.Before(ts.CreatedAt) {
+		return fmt.Errorf("TaskSnapshot.RuntimeLeaseUntil is before CreatedAt")
 	}
 	if len(ts.ErrorSummary) > maxErrorSummaryLen {
 		return fmt.Errorf("TaskSnapshot.ErrorSummary exceeds max length %d",

@@ -143,6 +143,21 @@ func TestControlService_RequeueRejectsLiveRuntime(t *testing.T) {
 	}
 }
 
+func TestControlService_RequeueAllowsExpiredRuntimeLease(t *testing.T) {
+	now := time.Now().UTC()
+	s := NewInMemoryStore()
+	cs := NewControlService(s)
+	mustUpsertControl(t, s, "/p", TaskSnapshot{
+		SchemaVersion: 1, TaskID: "failed", SessionID: "s1",
+		State: TaskStateFailed, RuntimeState: RuntimeStateAlive, RuntimeLeaseUntil: now.Add(-time.Minute), Version: 3,
+		CreatedAt: now.Add(-time.Hour), UpdatedAt: now.Add(-time.Minute),
+	})
+	res, err := cs.RequeueTask(context.Background(), "/p", "failed", 3, "")
+	if err != nil || !res.Accepted || res.State != TaskStateQueued || res.RuntimeState != RuntimeStateExited {
+		t.Fatalf("expected expired lease to requeue, got result=%+v err=%v", res, err)
+	}
+}
+
 func TestControlService_RequeueRejectsNonFailedState(t *testing.T) {
 	s := NewInMemoryStore()
 	cs := NewControlService(s)

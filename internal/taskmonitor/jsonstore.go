@@ -85,6 +85,7 @@ func (s *FileStore) ListTasks(ctx context.Context, projectDir string) ([]TaskSna
 		if err != nil {
 			continue // skip corrupt entries
 		}
+		reconcileRuntime(&snap, timeNow())
 		result = append(result, snap)
 	}
 	sort.Slice(result, func(i, j int) bool {
@@ -113,6 +114,7 @@ func (s *FileStore) GetTask(ctx context.Context, projectDir string, taskID strin
 		}
 		return nil, err
 	}
+	reconcileRuntime(&snap, timeNow())
 	return &snap, nil
 }
 

@@ -237,6 +237,19 @@ func TestTaskSnapshotJSON_RoundTrip(t *testing.T) {
 	}
 }
 
+func TestReconcileRuntimeExpiredLease(t *testing.T) {
+	now := time.Now().UTC()
+	snap := TaskSnapshot{
+		SchemaVersion: 1, TaskID: "task-1", SessionID: "s1", State: TaskStateRunning,
+		RuntimeState: RuntimeStateAlive, RuntimeLeaseUntil: now.Add(-time.Second),
+		CreatedAt: now.Add(-time.Minute), UpdatedAt: now.Add(-time.Minute),
+	}
+	reconcileRuntime(&snap, now)
+	if snap.State != TaskStateStale || snap.RuntimeState != RuntimeStateExited {
+		t.Fatalf("reconciled snapshot = %+v", snap)
+	}
+}
+
 func TestTaskSnapshotJSON_LegacyMissingRuntimeState(t *testing.T) {
 	raw := `{"schema_version":1,"task_id":"legacy","session_id":"s","state":"running","version":1,"created_at":"2025-01-01T00:00:00Z","updated_at":"2025-01-01T00:00:01Z"}`
 	var snap TaskSnapshot

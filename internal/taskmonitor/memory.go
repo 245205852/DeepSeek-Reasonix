@@ -162,6 +162,7 @@ func (s *InMemoryStore) ListTasks(ctx context.Context, projectDir string) ([]Tas
 			continue
 		}
 		cp := *snap
+		reconcileRuntime(&cp, timeNow())
 		result = append(result, cp)
 	}
 
@@ -195,6 +196,7 @@ func (s *InMemoryStore) GetTask(ctx context.Context, projectDir string, taskID s
 		return nil, nil
 	}
 	cp := *snap
+	reconcileRuntime(&cp, timeNow())
 	return &cp, nil
 }
 
