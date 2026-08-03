@@ -157,6 +157,24 @@ func TestRemoteWorkbenchWindowsToLinuxPhysicalAcceptance(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	profile := subscribed.Snapshot.Meta.ResolvedProfile
+	emptyGoal := ""
+	for attempt := 0; attempt < 2; attempt++ {
+		result, setErr := client.SetProfile(ctx, protocol.ProfilePatch{
+			CollaborationMode: &profile.CollaborationMode,
+			ToolApprovalMode:  &profile.ToolApprovalMode,
+			Goal:              &emptyGoal,
+		})
+		if setErr != nil {
+			t.Fatal(setErr)
+		}
+		if result.Disposition != protocol.ProfileUnchanged || result.RuntimeEpoch != subscribed.Snapshot.RuntimeEpoch {
+			t.Fatalf("idempotent profile attempt %d = disposition %q epoch %q, want unchanged/%q", attempt+1, result.Disposition, result.RuntimeEpoch, subscribed.Snapshot.RuntimeEpoch)
+		}
+		if !client.IsCurrentSnapshot(subscribed) {
+			t.Fatalf("idempotent profile attempt %d invalidated the current snapshot", attempt+1)
+		}
+	}
 	if _, err := client.Submit(ctx, "read the physical acceptance marker"); err != nil {
 		t.Fatal(err)
 	}
