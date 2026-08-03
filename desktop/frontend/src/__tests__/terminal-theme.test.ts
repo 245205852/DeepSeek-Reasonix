@@ -122,6 +122,40 @@ const testDir = dirname(fileURLToPath(import.meta.url));
 const terminalSource = readFileSync(resolve(testDir, "../components/TerminalView.tsx"), "utf8");
 const settingsSource = readFileSync(resolve(testDir, "../components/SettingsPanel.tsx"), "utf8");
 const stylesSource = readFileSync(resolve(testDir, "../styles.css"), "utf8");
+
+function cssRuleDeclarations(css: string, selector: string): Record<string, string> {
+  const escapedSelector = selector.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const match = css.match(new RegExp(`${escapedSelector}\\s*\\{([^}]*)\\}`));
+  assert.ok(match, `missing CSS rule for ${selector}`);
+  return Object.fromEntries(
+    match[1]
+      .split(";")
+      .map((declaration) => declaration.trim())
+      .filter(Boolean)
+      .map((declaration) => {
+        const colon = declaration.indexOf(":");
+        assert.ok(colon > 0, `invalid declaration in ${selector}: ${declaration}`);
+        return [declaration.slice(0, colon).trim(), declaration.slice(colon + 1).trim()];
+      }),
+  );
+}
+
+function assertCssRule(
+  css: string,
+  selector: string,
+  expected: Record<string, string>,
+): void {
+  const actual = cssRuleDeclarations(css, selector);
+  for (const [property, value] of Object.entries(expected)) {
+    assert.equal(actual[property], value, `${selector} must set ${property} from terminal-owned tokens`);
+  }
+}
+
+const terminalStylesStart = stylesSource.indexOf("/* Integrated terminal */");
+const terminalStylesEnd = stylesSource.indexOf("@media (max-width: 760px)", terminalStylesStart);
+assert.ok(terminalStylesStart >= 0 && terminalStylesEnd > terminalStylesStart, "integrated terminal CSS section must exist");
+const terminalStyles = stylesSource.slice(terminalStylesStart, terminalStylesEnd);
+
 assert.ok(terminalSource.includes("terminal.options.theme = terminalThemeForElement(host)"));
 assert.ok(!terminalSource.includes('background: "#111315"'));
 assert.ok(settingsSource.includes("createTerminalThemeSaveQueue"));
@@ -129,5 +163,51 @@ assert.ok(settingsSource.includes("if (!terminalThemeSavePending.current)"));
 assert.ok(settingsSource.includes("onTerminalTheme={setTerminalThemePreference}"));
 assert.ok(stylesSource.includes(':root[data-terminal-theme="light"]'));
 assert.ok(stylesSource.includes(':root[data-terminal-theme="dark"]'));
+assert.doesNotMatch(terminalStyles, /var\(--(?:bg-elev-1|fg-muted)\)/, "auto mode must use defined app tokens");
+
+assertCssRule(terminalStyles, ":root", {
+  "--terminal-surface": "var(--bg-elev)",
+  "--terminal-muted": "var(--fg-dim)",
+  "--terminal-cursor": "var(--accent)",
+});
+assertCssRule(terminalStyles, ':root[data-terminal-theme="dark"] .terminal-panel', { "color-scheme": "dark" });
+assertCssRule(terminalStyles, ':root[data-terminal-theme="light"] .terminal-panel', { "color-scheme": "light" });
+
+const terminalChromeMatrix: Array<[string, Record<string, string>]> = [
+  [".terminal-panel__header", {
+    "border-bottom": "1px solid var(--terminal-border)",
+    background: "var(--terminal-surface)",
+  }],
+  [".terminal-panel__identity span", { color: "var(--terminal-muted)" }],
+  [".terminal-shell-select", {
+    border: "1px solid var(--terminal-border)",
+    background: "var(--terminal-active)",
+    color: "var(--terminal-fg)",
+  }],
+  [".terminal-shell-select:hover, .terminal-shell-select:focus-visible", {
+    "border-color": "var(--terminal-cursor)",
+  }],
+  [".terminal-icon-button", { color: "var(--terminal-muted)" }],
+  [".terminal-icon-button:hover, .terminal-icon-button:focus-visible", {
+    "border-color": "var(--terminal-border)",
+    background: "var(--terminal-active)",
+    color: "var(--terminal-fg)",
+  }],
+  [".terminal-session--active", {
+    "border-bottom-color": "var(--terminal-cursor)",
+    background: "var(--terminal-active)",
+  }],
+  [".terminal-empty__spinner", { "border-top-color": "var(--terminal-cursor)" }],
+];
+for (const [selector, expected] of terminalChromeMatrix) {
+  assertCssRule(terminalStyles, selector, expected);
+}
+assertCssRule(stylesSource, ".layout--terminal-drawer-expanded .terminal-drawer", {
+  background: "var(--terminal-bg, #111315)",
+  "border-top": "1px solid var(--terminal-border)",
+});
+assertCssRule(stylesSource, ".layout--terminal-drawer-open .terminal-drawer .terminal-panel__header", {
+  "border-bottom": "1px solid var(--terminal-border)",
+});
 
 console.log("terminal theme tests passed");
