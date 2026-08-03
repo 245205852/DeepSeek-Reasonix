@@ -507,7 +507,7 @@ func (a *Agent) prepareToolExecution(ctx context.Context, plan *toolCallPlan) (t
 	if !plan.readOnly {
 		a.observeBeforeMutation(plan)
 		plan.mutationObserved = plan.mutationPath != ""
-		if a.hooks != nil && a.mutationObserver != nil {
+		if toolHooksMayMutateWorkspace(a.hooks) && a.mutationObserver != nil {
 			a.mutationObserver.RecordGap(checkpoint.CoverageGap{Reason: checkpoint.GapHookWrite, Tool: plan.evidenceName, Detail: "tool hook may write paths that are not declared by the tool"})
 		}
 	}
@@ -570,6 +570,22 @@ func (a *Agent) prepareToolExecution(ctx context.Context, plan *toolCallPlan) (t
 	})
 	plan.cctx = cctx
 	return toolOutcome{}, false
+}
+
+type toolMutationHookReporter interface {
+	ToolMutationHooksEnabled() bool
+}
+
+func toolHooksMayMutateWorkspace(hooks ToolHooks) bool {
+	if hooks == nil {
+		return false
+	}
+	if reporter, ok := hooks.(toolMutationHookReporter); ok {
+		return reporter.ToolMutationHooksEnabled()
+	}
+	// Custom ToolHooks implementations predate the capability report. Preserve
+	// conservative coverage for them because their callbacks may write files.
+	return true
 }
 
 // finishToolExecution performs the concrete Execute, records evidence, runs

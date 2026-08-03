@@ -3,6 +3,7 @@ package control
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -15,6 +16,54 @@ import (
 	"reasonix/internal/provider"
 	"reasonix/internal/tool"
 )
+
+func TestCompatibilityRewindRequiresConfirmationForPartialCoverage(t *testing.T) {
+	dir := t.TempDir()
+	root := t.TempDir()
+	path := filepath.Join(root, "partial.txt")
+	if err := os.WriteFile(path, []byte("before"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	sess := agent.NewSession("sys")
+	ag := agent.New(nil, tool.NewRegistry(), sess, agent.Options{}, event.Discard)
+	c := New(Options{
+		Runner:        ag,
+		Executor:      ag,
+		SessionDir:    dir,
+		SessionPath:   filepath.Join(dir, "partial.jsonl"),
+		WorkspaceRoot: root,
+		Sink:          event.Discard,
+	})
+	c.beginCheckpoint("edit partial.txt")
+	c.mutationObserver.BeforeMutation("partial.txt", "write_file", checkpoint.CaptureBeforeMutation)
+	if err := os.WriteFile(path, []byte("after"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	c.mutationObserver.AfterMutation("partial.txt", "write_file")
+	c.mutationObserver.RecordGap(checkpoint.CoverageGap{Reason: checkpoint.GapBashSideEffect, Tool: "bash"})
+
+	plan, err := c.PrepareRewind(0, RewindCode)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !plan.CanFiles || !RewindPlanRequiresConfirmation(plan) {
+		t.Fatalf("partial plan = %+v, want restorable files with explicit confirmation", plan)
+	}
+	if err := c.Rewind(0, RewindCode); !errors.Is(err, ErrRewindCoverageConfirmationRequired) {
+		t.Fatalf("compatibility Rewind error = %v, want confirmation-required", err)
+	}
+	if got := string(mustReadFile(t, path)); got != "after" {
+		t.Fatalf("unconfirmed rewind changed file to %q", got)
+	}
+
+	result, err := c.CommitRewind(plan.PlanID)
+	if err != nil || !result.OK {
+		t.Fatalf("confirmed CommitRewind result=%+v err=%v", result, err)
+	}
+	if got := string(mustReadFile(t, path)); got != "before" {
+		t.Fatalf("confirmed rewind left file at %q, want before", got)
+	}
+}
 
 func TestResumeRecoversCommittingCombinedRewind(t *testing.T) {
 	dir := t.TempDir()

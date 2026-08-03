@@ -13,6 +13,19 @@ import (
 	"reasonix/internal/provider"
 )
 
+// ErrRewindCoverageConfirmationRequired is returned by the compatibility
+// Rewind path when restoring files from a partially covered checkpoint. New
+// callers should preview with PrepareRewind, show the coverage warning, and
+// commit only after the user explicitly confirms it.
+var ErrRewindCoverageConfirmationRequired = errors.New("partial checkpoint coverage requires explicit confirmation")
+
+// RewindPlanRequiresConfirmation reports whether a prepared plan can restore
+// files but cannot guarantee that every workspace mutation was captured.
+func RewindPlanRequiresConfirmation(plan checkpoint.RewindPlan) bool {
+	wantsFiles := plan.Scope == checkpoint.RewindCode || plan.Scope == checkpoint.RewindBoth
+	return wantsFiles && plan.CanFiles && (plan.Coverage == checkpoint.CoveragePartial || len(plan.CoverageGaps) > 0)
+}
+
 // conversationApplier bridges checkpoint transactions to controller session state.
 type conversationApplier struct {
 	c *Controller
@@ -287,6 +300,9 @@ func (c *Controller) Rewind(turn int, scope RewindScope) error {
 	}
 	if (scope == RewindConversation || scope == RewindBoth) && !plan.CanConversation {
 		return c.rewindFail(fmt.Errorf("%s", plan.DisabledReason))
+	}
+	if RewindPlanRequiresConfirmation(plan) {
+		return c.rewindFail(fmt.Errorf("%w (%d coverage gap(s))", ErrRewindCoverageConfirmationRequired, len(plan.CoverageGaps)))
 	}
 	if forward == nil {
 		forward, err = json.Marshal(c.executor.Session().Snapshot())

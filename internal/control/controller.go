@@ -1650,6 +1650,7 @@ func (c *Controller) Run(ctx context.Context, input string) (err error) {
 	input = c.Compose(input)
 	startMessages := c.messageCount()
 	defer c.snapshotActivityIfChanged(startMessages)
+	c.beginCheckpoint(input)
 	if c.guardianSess != nil {
 		c.guardianSess.ResetTurn()
 	}
