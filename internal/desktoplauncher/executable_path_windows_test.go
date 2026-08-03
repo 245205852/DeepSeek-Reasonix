@@ -6,7 +6,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strings"
 	"testing"
 )
 
@@ -27,7 +26,15 @@ func TestResolveInstallRootThroughDirectoryJunction(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !sameWindowsPath(got, root) {
+	gotInfo, err := os.Stat(got)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantInfo, err := os.Stat(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !os.SameFile(gotInfo, wantInfo) {
 		t.Fatalf("resolveInstallRoot() = %q, want %q", got, root)
 	}
 }
@@ -50,8 +57,4 @@ func TestNormalizeFinalWindowsPath(t *testing.T) {
 			}
 		})
 	}
-}
-
-func sameWindowsPath(left, right string) bool {
-	return strings.EqualFold(filepath.Clean(left), filepath.Clean(right))
 }
