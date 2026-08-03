@@ -1,14 +1,16 @@
 package agent
 
-// reasoning_warn_state.go rate-limits the missing tool-call thinking notice
-// across sessions and processes (#7059).
+// reasoning_warn_state.go rate-limits missing tool-call thinking recovery
+// attempts across sessions and processes (#7059). Legacy warning-oriented Go
+// names and JSON fields intentionally remain unchanged for upgrade and
+// cross-version compatibility.
 //
 // DeepSeek's thinking-mode contract requires provider-issued thinking content
 // to accompany tool calls and be replayed on later requests. Missing content is
 // therefore a compatibility incident, not a permanent provider characteristic.
 // State is keyed by an opaque configuration fingerprint, expires after a bounded
-// cooldown, and is cleared after a healthy tool-call turn so a future regression
-// becomes visible again.
+// cooldown, and is cleared after a healthy tool-call turn so a future isolated
+// regression gets one fresh silent retry.
 
 import (
 	"context"
@@ -33,9 +35,9 @@ const (
 	missingReasoningWarnStateVersion      = 2
 	missingReasoningWarnStateCooldown     = 24 * time.Hour
 	missingReasoningWarnStateMaxIncidents = 256
-	// A diagnostic must never make a turn wait indefinitely behind another
-	// process. On contention or I/O failure, callers emit the warning rather
-	// than silently losing it.
+	// Recovery bookkeeping must never make a turn wait indefinitely behind
+	// another process. On contention or I/O failure, callers fail open and allow
+	// the bounded retry rather than silently losing self-healing.
 	missingReasoningWarnStateLockTimeout = 200 * time.Millisecond
 )
 
@@ -62,10 +64,10 @@ type missingReasoningWarnState struct {
 
 // missingReasoningWarnClaimFlights coalesces concurrent observations of the
 // same incident inside one process. filelock.Acquire intentionally has a short
-// deadline so a diagnostic cannot stall a turn behind another process. On a
+// deadline so recovery bookkeeping cannot stall a turn behind another process. On a
 // slower filesystem (notably Windows CI), several local callers can otherwise
 // exhaust that deadline while queued behind the first atomic write and each
-// take the fail-visible path, producing duplicate warnings.
+// take the fail-open path, producing duplicate recovery requests.
 //
 // Followers update the latest observation timestamp and let the leader persist
 // it before the flight is removed. This preserves resolveAt's stale-health
@@ -284,8 +286,8 @@ func missingReasoningTransactionNow(observedAt time.Time) time.Time {
 }
 
 // persistClaimAt performs one cross-process read-check-write transaction.
-// Persistence failure returns true so diagnostics fail visible rather than
-// fail silent.
+// Persistence failure returns true so recovery fails open rather than being
+// disabled by local bookkeeping trouble.
 func (s *missingReasoningWarnState) persistClaimAt(fingerprint string, observedAt time.Time) bool {
 	processLock := s.processLock()
 	processLock.Lock()
@@ -307,8 +309,8 @@ func (s *missingReasoningWarnState) persistClaimAt(fingerprint string, observedA
 		return false
 	}
 	activeIncident := exists && incident.LastMissingUnixNano > incident.LastResolvedAtUnixNano
-	shouldWarn := !activeIncident
-	if shouldWarn {
+	shouldRetry := !activeIncident
+	if shouldRetry {
 		lastResolvedAtUnixNano := incident.LastResolvedAtUnixNano
 		incident = missingReasoningIncident{
 			Fingerprint:            fingerprint,
@@ -324,14 +326,14 @@ func (s *missingReasoningWarnState) persistClaimAt(fingerprint string, observedA
 	if err := s.save(incidents); err != nil {
 		return true
 	}
-	return shouldWarn
+	return shouldRetry
 }
 
 // claimAt records the latest missing-reasoning observation and reports whether
-// this active incident should emit a warning. Concurrent observations of the
-// same incident in this process share one leader; the file lock covers the
-// leader's read-check-write transactions against other processes sharing the
-// Reasonix home.
+// this active incident should receive its one recovery retry. Concurrent
+// observations of the same incident in this process share one leader; the file
+// lock covers the leader's read-check-write transactions against other
+// processes sharing the Reasonix home.
 func (s *missingReasoningWarnState) claimAt(fingerprint string, observedAt time.Time) bool {
 	fingerprint = strings.TrimSpace(fingerprint)
 	if s == nil || s.dir == "" || !validMissingReasoningFingerprint(fingerprint) {
@@ -353,14 +355,14 @@ func (s *missingReasoningWarnState) claimAt(fingerprint string, observedAt time.
 	missingReasoningWarnClaimFlights.Unlock()
 
 	processedAt := time.Time{}
-	shouldWarn := false
+	shouldRetry := false
 	for {
 		missingReasoningWarnClaimFlights.Lock()
 		nextObservedAt := flight.latestObservedAt
 		missingReasoningWarnClaimFlights.Unlock()
 
 		if nextObservedAt.After(processedAt) {
-			shouldWarn = s.persistClaimAt(fingerprint, nextObservedAt) || shouldWarn
+			shouldRetry = s.persistClaimAt(fingerprint, nextObservedAt) || shouldRetry
 			processedAt = nextObservedAt
 		}
 
@@ -368,7 +370,7 @@ func (s *missingReasoningWarnState) claimAt(fingerprint string, observedAt time.
 		if !flight.latestObservedAt.After(processedAt) {
 			delete(missingReasoningWarnClaimFlights.flights, key)
 			missingReasoningWarnClaimFlights.Unlock()
-			return shouldWarn
+			return shouldRetry
 		}
 		missingReasoningWarnClaimFlights.Unlock()
 	}

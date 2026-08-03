@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"reflect"
 	"runtime"
 	"strings"
 	"testing"
@@ -378,17 +379,20 @@ func TestRunWellFormedToolLoopRoundTrips(t *testing.T) {
 	}
 }
 
-// TestRunWarnsAndContinuesOnMissingToolCallReasoning: a DeepSeek thinking-mode
-// tool_calls turn arriving without reasoning is a quality degradation, not a
-// failure — the turn is saved, the loop continues to completion, and the user
-// sees a single warn notice. Missing reasoning often repeats after an endpoint
-// or gateway loses the field, so later rounds in the same active incident stay
-// silent instead of flooding the transcript (#6259). The wire layer keeps the
-// replay structurally valid by always serializing the reasoning_content key.
-func TestRunWarnsAndContinuesOnMissingToolCallReasoning(t *testing.T) {
+// A one-off missing reasoning_content response is replaced before any tool
+// executes. The retry reuses identical input, its usage is accounted for, and
+// no provider-protocol warning or duplicate tool card reaches the user.
+func TestRunSilentlyRecoversMissingToolCallReasoning(t *testing.T) {
 	mp := testutil.NewMock("deepseek-proxy",
-		testutil.Turn{ToolCalls: []provider.ToolCall{{ID: "c1", Name: "echo", Arguments: `{"text":"hi"}`}}},
-		testutil.Turn{ToolCalls: []provider.ToolCall{{ID: "c2", Name: "echo", Arguments: `{"text":"again"}`}}},
+		testutil.Turn{
+			ToolCalls: []provider.ToolCall{{ID: "c1", Name: "echo", Arguments: `{"text":"hi"}`}},
+			Usage:     &provider.Usage{PromptTokens: 10, CompletionTokens: 2, TotalTokens: 12, CacheMissTokens: 10, FinishReason: "tool_calls"},
+		},
+		testutil.Turn{
+			Reasoning: "retry reasoning",
+			ToolCalls: []provider.ToolCall{{ID: "c1", Name: "echo", Arguments: `{"text":"hi"}`}},
+			Usage:     &provider.Usage{PromptTokens: 10, CompletionTokens: 3, TotalTokens: 13, CacheHitTokens: 10, ReasoningTokens: 2, FinishReason: "tool_calls"},
+		},
 		testutil.Turn{Text: "done"},
 	)
 	sink := &recordSink{}
@@ -398,33 +402,83 @@ func TestRunWarnsAndContinuesOnMissingToolCallReasoning(t *testing.T) {
 		t.Fatalf("Run: %v", err)
 	}
 	var savedToolTurns int
+	var savedReasoning string
 	for _, m := range a.Session().Messages {
 		if m.Role == provider.RoleAssistant && len(m.ToolCalls) > 0 {
 			savedToolTurns++
+			savedReasoning = m.ReasoningContent
 		}
 	}
-	if savedToolTurns != 2 {
-		t.Fatalf("tool-call turns saved = %d, want 2 despite missing reasoning, session=%+v", savedToolTurns, a.Session().Messages)
+	if savedToolTurns != 1 || savedReasoning != "retry reasoning" {
+		t.Fatalf("saved tool turns = %d reasoning = %q, want one recovered turn: %+v", savedToolTurns, savedReasoning, a.Session().Messages)
 	}
-	var warns int
+	if mp.CallCount() != 3 {
+		t.Fatalf("provider calls = %d, want malformed + retry + final", mp.CallCount())
+	}
+	requests := mp.Requests()
+	if len(requests) < 2 || !reflect.DeepEqual(requests[0], requests[1]) {
+		t.Fatalf("protocol retry changed provider-visible request:\nfirst=%+v\nretry=%+v", requests[0], requests[1])
+	}
 	for _, e := range sink.kinds(event.Notice) {
-		if e.Level == event.LevelWarn && strings.Contains(e.Text, "without replayable thinking content") {
-			warns++
+		if strings.Contains(e.Text, "reasoning") || strings.Contains(e.Detail, "reasoning") {
+			t.Fatalf("provider protocol leaked into user notice: %+v", e)
 		}
 	}
-	if warns != 1 {
-		t.Fatalf("missing-reasoning warn notices = %d, want exactly 1 (first round warns, repeats stay silent)", warns)
+	if got := len(sink.kinds(event.ToolDispatch)); got != 1 {
+		t.Fatalf("tool dispatches = %d, want one adopted call", got)
+	}
+	usageEvents := sink.kinds(event.Usage)
+	if len(usageEvents) == 0 || usageEvents[0].Usage == nil || usageEvents[0].Usage.TotalTokens != 25 || usageEvents[0].Usage.CacheHitTokens != 10 || usageEvents[0].Usage.CacheMissTokens != 10 {
+		t.Fatalf("recovery usage was not merged truthfully: %+v", usageEvents)
+	}
+	if sink.recoveryCount(event.ProtocolRecoveryMissingReasoningRetryAttempted) != 1 || sink.recoveryCount(event.ProtocolRecoveryMissingReasoningRetryRecovered) != 1 {
+		t.Fatalf("unexpected recovery audit: %+v", sink.recovery)
 	}
 }
 
-// TestSetSessionRearmsMissingToolCallReasoningWarn: the once-per-session dedupe
-// is scoped to the conversation — swapping in a different session (resume/new)
-// must re-arm the notice so the fresh conversation still gets its one warning.
-func TestSetSessionRearmsMissingToolCallReasoningWarn(t *testing.T) {
+func TestMissingReasoningRecoveryFailureFallsBackBeforeToolExecution(t *testing.T) {
+	mp := testutil.NewMock("deepseek-proxy",
+		testutil.Turn{
+			ToolCalls: []provider.ToolCall{{ID: "c1", Name: "echo", Arguments: `{"text":"hi"}`}},
+			Usage:     &provider.Usage{PromptTokens: 10, CompletionTokens: 2, TotalTokens: 12, FinishReason: "tool_calls"},
+		},
+		testutil.Turn{
+			Usage:      &provider.Usage{PromptTokens: 10, CompletionTokens: 1, TotalTokens: 11},
+			ChunkError: errors.New("recovery stream failed"),
+		},
+		testutil.Turn{Text: "done"},
+	)
+	sink := &recordSink{}
+	a := New(toolCallReasoningRequiredProvider{mp}, echoRegistry(), NewSession(""), Options{}, sink)
+
+	if err := a.Run(context.Background(), "go"); err != nil {
+		t.Fatalf("Run should keep the complete first response, got %v", err)
+	}
+	var toolResults int
+	for _, message := range a.Session().Messages {
+		if message.Role == provider.RoleTool && message.ToolCallID == "c1" {
+			toolResults++
+		}
+	}
+	if toolResults != 1 {
+		t.Fatalf("tool results = %d, want the original call executed once", toolResults)
+	}
+	usageEvents := sink.kinds(event.Usage)
+	if len(usageEvents) == 0 || usageEvents[0].Usage == nil || usageEvents[0].Usage.TotalTokens != 23 {
+		t.Fatalf("failed recovery usage was not accounted for: %+v", usageEvents)
+	}
+	if sink.recoveryCount(event.ProtocolRecoveryMissingReasoningFallback) != 1 {
+		t.Fatalf("fallback audit missing: %+v", sink.recovery)
+	}
+}
+
+func TestSetSessionRearmsInMemoryMissingReasoningRecovery(t *testing.T) {
 	mp := testutil.NewMock("deepseek-proxy",
 		testutil.Turn{ToolCalls: []provider.ToolCall{{ID: "c1", Name: "echo", Arguments: `{"text":"hi"}`}}},
+		testutil.Turn{ToolCalls: []provider.ToolCall{{ID: "c1r", Name: "echo", Arguments: `{"text":"hi"}`}}},
 		testutil.Turn{Text: "done"},
 		testutil.Turn{ToolCalls: []provider.ToolCall{{ID: "c2", Name: "echo", Arguments: `{"text":"hi"}`}}},
+		testutil.Turn{ToolCalls: []provider.ToolCall{{ID: "c2r", Name: "echo", Arguments: `{"text":"hi"}`}}},
 		testutil.Turn{Text: "done again"},
 	)
 	sink := &recordSink{}
@@ -437,76 +491,53 @@ func TestSetSessionRearmsMissingToolCallReasoningWarn(t *testing.T) {
 	if err := a.Run(context.Background(), "go"); err != nil {
 		t.Fatalf("second Run: %v", err)
 	}
-	var warns int
-	for _, e := range sink.kinds(event.Notice) {
-		if e.Level == event.LevelWarn && strings.Contains(e.Text, "without replayable thinking content") {
-			warns++
-		}
-	}
-	if warns != 2 {
-		t.Fatalf("warn notices across two sessions = %d, want 2 (SetSession re-arms the dedupe)", warns)
+	if got := sink.recoveryCount(event.ProtocolRecoveryMissingReasoningRetryAttempted); got != 2 {
+		t.Fatalf("recovery retries across two sessions = %d, want 2", got)
 	}
 }
 
-// TestMissingReasoningWarnNoticeRateLimitsActiveIncidentAcrossSessions: when
-// boot supplies a shared state dir, the same provider configuration stays
-// silent across sessions while its compatibility incident remains active.
-func TestMissingReasoningWarnNoticeRateLimitsActiveIncidentAcrossSessions(t *testing.T) {
+// A shared state dir turns the old warning cooldown into a cross-process retry
+// circuit breaker. The first process retries once; a fresh process immediately
+// uses the empty-key fallback without doubling the request.
+func TestMissingReasoningRecoveryRateLimitsAcrossProcesses(t *testing.T) {
 	stateDir := t.TempDir()
-	mockTurns := func() *testutil.MockProvider {
-		return testutil.NewMock("deepseek-proxy",
-			testutil.Turn{ToolCalls: []provider.ToolCall{{ID: "c1", Name: "echo", Arguments: `{"text":"hi"}`}}},
-			testutil.Turn{Text: "done"},
-			testutil.Turn{ToolCalls: []provider.ToolCall{{ID: "c2", Name: "echo", Arguments: `{"text":"hi"}`}}},
-			testutil.Turn{Text: "done again"},
-		)
-	}
-	warnCount := func(sink *recordSink) int {
-		var n int
-		for _, e := range sink.kinds(event.Notice) {
-			if e.Level == event.LevelWarn && strings.Contains(e.Text, "without replayable thinking content") {
-				n++
-			}
-		}
-		return n
-	}
-
-	// First agent, first session: the active incident gets its notice.
-	mp := mockTurns()
+	mp := testutil.NewMock("deepseek-proxy",
+		testutil.Turn{ToolCalls: []provider.ToolCall{{ID: "c1", Name: "echo", Arguments: `{"text":"hi"}`}}},
+		testutil.Turn{ToolCalls: []provider.ToolCall{{ID: "c1r", Name: "echo", Arguments: `{"text":"hi"}`}}},
+		testutil.Turn{Text: "done"},
+	)
 	sink1 := &recordSink{}
 	a1 := New(toolCallReasoningRequiredProvider{mp}, echoRegistry(), NewSession(""), Options{MissingReasoningWarnStateDir: stateDir}, sink1)
 	if err := a1.Run(context.Background(), "go"); err != nil {
 		t.Fatalf("first Run: %v", err)
 	}
-	if got := warnCount(sink1); got != 1 {
-		t.Fatalf("first session warn notices = %d, want 1", got)
+	if got := sink1.recoveryCount(event.ProtocolRecoveryMissingReasoningRetryAttempted); got != 1 {
+		t.Fatalf("first process recovery retries = %d, want 1", got)
 	}
 
-	// Swapped-in conversation on the same configuration stays silent.
-	a1.SetSession(NewSession(""))
-	if err := a1.Run(context.Background(), "go"); err != nil {
-		t.Fatalf("second Run: %v", err)
-	}
-	if got := warnCount(sink1); got != 1 {
-		t.Fatalf("warn notices after SetSession = %d, want still 1", got)
-	}
-
-	// Brand-new agent (fresh process equivalent) sharing the state dir: silent.
+	mp2 := testutil.NewMock("deepseek-proxy",
+		testutil.Turn{ToolCalls: []provider.ToolCall{{ID: "c2", Name: "echo", Arguments: `{"text":"hi"}`}}},
+		testutil.Turn{Text: "done again"},
+	)
 	sink2 := &recordSink{}
-	a2 := New(toolCallReasoningRequiredProvider{mockTurns()}, echoRegistry(), NewSession(""), Options{MissingReasoningWarnStateDir: stateDir}, sink2)
+	a2 := New(toolCallReasoningRequiredProvider{mp2}, echoRegistry(), NewSession(""), Options{MissingReasoningWarnStateDir: stateDir}, sink2)
 	if err := a2.Run(context.Background(), "go"); err != nil {
-		t.Fatalf("third Run: %v", err)
+		t.Fatalf("second process Run: %v", err)
 	}
-	if got := warnCount(sink2); got != 0 {
-		t.Fatalf("fresh agent warn notices = %d, want 0 (active incident is rate-limited)", got)
+	if got := sink2.recoveryCount(event.ProtocolRecoveryMissingReasoningRetryAttempted); got != 0 {
+		t.Fatalf("fresh process recovery retries = %d, want 0", got)
+	}
+	if got := sink2.recoveryCount(event.ProtocolRecoveryMissingReasoningRetrySuppressed); got != 1 {
+		t.Fatalf("fresh process suppressed retries = %d, want 1", got)
 	}
 }
 
-func TestMissingReasoningWarnNoticeSeparatesProviderConfigurations(t *testing.T) {
+func TestMissingReasoningRecoverySeparatesProviderConfigurations(t *testing.T) {
 	stateDir := t.TempDir()
-	warnCount := func(identity string) int {
+	retryCount := func(identity string) int {
 		mp := testutil.NewMock("deepseek-proxy",
 			testutil.Turn{ToolCalls: []provider.ToolCall{{ID: "c1", Name: "echo", Arguments: `{"text":"hi"}`}}},
+			testutil.Turn{ToolCalls: []provider.ToolCall{{ID: "c1r", Name: "echo", Arguments: `{"text":"hi"}`}}},
 			testutil.Turn{Text: "done"},
 		)
 		sink := &recordSink{}
@@ -514,55 +545,43 @@ func TestMissingReasoningWarnNoticeSeparatesProviderConfigurations(t *testing.T)
 		if err := a.Run(context.Background(), "go"); err != nil {
 			t.Fatalf("Run(%q): %v", identity, err)
 		}
-		var count int
-		for _, e := range sink.kinds(event.Notice) {
-			if e.Level == event.LevelWarn && strings.Contains(e.Text, "without replayable thinking content") {
-				count++
-			}
-		}
-		return count
+		return sink.recoveryCount(event.ProtocolRecoveryMissingReasoningRetryAttempted)
 	}
-	if got := warnCount("openai\x00endpoint-a\x00deepseek-v4-pro"); got != 1 {
-		t.Fatalf("first configuration warnings = %d, want 1", got)
+	if got := retryCount("openai\x00endpoint-a\x00deepseek-v4-pro"); got != 1 {
+		t.Fatalf("first configuration retries = %d, want 1", got)
 	}
-	if got := warnCount("openai\x00endpoint-a\x00deepseek-v4-pro"); got != 0 {
-		t.Fatalf("same configuration warnings = %d, want 0", got)
+	if got := retryCount("openai\x00endpoint-a\x00deepseek-v4-pro"); got != 0 {
+		t.Fatalf("same configuration retries = %d, want 0", got)
 	}
-	if got := warnCount("openai\x00endpoint-b\x00deepseek-v4-pro"); got != 1 {
-		t.Fatalf("changed endpoint warnings = %d, want 1", got)
+	if got := retryCount("openai\x00endpoint-b\x00deepseek-v4-pro"); got != 1 {
+		t.Fatalf("changed endpoint retries = %d, want 1", got)
 	}
-	if got := warnCount("openai\x00endpoint-a\x00deepseek-v4-flash"); got != 1 {
-		t.Fatalf("changed model warnings = %d, want 1", got)
+	if got := retryCount("openai\x00endpoint-a\x00deepseek-v4-flash"); got != 1 {
+		t.Fatalf("changed model retries = %d, want 1", got)
 	}
 }
 
 func TestHealthyToolCallReasoningRearmsFutureRegression(t *testing.T) {
 	stateDir := t.TempDir()
-	run := func(turn testutil.Turn) int {
-		mp := testutil.NewMock("deepseek-proxy", turn, testutil.Turn{Text: "done"})
+	run := func(turns ...testutil.Turn) int {
+		mp := testutil.NewMock("deepseek-proxy", turns...)
 		sink := &recordSink{}
 		a := New(toolCallReasoningRequiredProvider{mp}, echoRegistry(), NewSession(""), Options{MissingReasoningWarnStateDir: stateDir}, sink)
 		if err := a.Run(context.Background(), "go"); err != nil {
 			t.Fatalf("Run: %v", err)
 		}
-		var count int
-		for _, e := range sink.kinds(event.Notice) {
-			if e.Level == event.LevelWarn && strings.Contains(e.Text, "without replayable thinking content") {
-				count++
-			}
-		}
-		return count
+		return sink.recoveryCount(event.ProtocolRecoveryMissingReasoningRetryAttempted)
 	}
 	missing := testutil.Turn{ToolCalls: []provider.ToolCall{{ID: "c1", Name: "echo", Arguments: `{"text":"hi"}`}}}
 	healthy := testutil.Turn{Reasoning: "call echo", ToolCalls: []provider.ToolCall{{ID: "c2", Name: "echo", Arguments: `{"text":"hi"}`}}}
-	if got := run(missing); got != 1 {
-		t.Fatalf("first incident warnings = %d, want 1", got)
+	if got := run(missing, missing, testutil.Turn{Text: "done"}); got != 1 {
+		t.Fatalf("first incident retries = %d, want 1", got)
 	}
-	if got := run(healthy); got != 0 {
-		t.Fatalf("healthy turn warnings = %d, want 0", got)
+	if got := run(healthy, testutil.Turn{Text: "done"}); got != 0 {
+		t.Fatalf("healthy turn retries = %d, want 0", got)
 	}
-	if got := run(missing); got != 1 {
-		t.Fatalf("post-recovery regression warnings = %d, want 1", got)
+	if got := run(missing, missing, testutil.Turn{Text: "done"}); got != 1 {
+		t.Fatalf("post-recovery regression retries = %d, want 1", got)
 	}
 }
 
@@ -571,23 +590,12 @@ func TestHealthyToolCallReasoningRetriesTransientStateWriteFailure(t *testing.T)
 		t.Skip("chmod permissions are not portable to Windows")
 	}
 	stateDir := t.TempDir()
-	sink := &recordSink{}
 	prov := toolCallReasoningRequiredProvider{testutil.NewMock("deepseek-proxy")}
-	a := New(prov, echoRegistry(), NewSession(""), Options{MissingReasoningWarnStateDir: stateDir}, sink)
+	a := New(prov, echoRegistry(), NewSession(""), Options{MissingReasoningWarnStateDir: stateDir}, event.Discard)
 	calls := []provider.ToolCall{{ID: "c1", Name: "echo", Arguments: `{"text":"hi"}`}}
-	warnCount := func() int {
-		var count int
-		for _, e := range sink.kinds(event.Notice) {
-			if e.Level == event.LevelWarn && strings.Contains(e.Text, "without replayable thinking content") {
-				count++
-			}
-		}
-		return count
-	}
 
-	a.warnMissingToolCallReasoning(calls, "")
-	if got := warnCount(); got != 1 {
-		t.Fatalf("initial warnings = %d, want 1", got)
+	if missing, retry := a.observeMissingToolCallReasoning(calls, ""); !missing || !retry {
+		t.Fatalf("initial observation = missing:%v retry:%v, want true/true", missing, retry)
 	}
 	if err := os.Chmod(stateDir, 0o500); err != nil {
 		t.Fatal(err)
@@ -598,15 +606,16 @@ func TestHealthyToolCallReasoningRetriesTransientStateWriteFailure(t *testing.T)
 			_ = os.Chmod(stateDir, 0o700)
 		}
 	}()
-	a.warnMissingToolCallReasoning(calls, "healthy reasoning")
+	if missing, retry := a.observeMissingToolCallReasoning(calls, "healthy reasoning"); missing || retry {
+		t.Fatalf("healthy observation = missing:%v retry:%v, want false/false", missing, retry)
+	}
 	if err := os.Chmod(stateDir, 0o700); err != nil {
 		t.Fatal(err)
 	}
 	permissionsRestored = true
 
-	a.warnMissingToolCallReasoning(calls, "")
-	if got := warnCount(); got != 2 {
-		t.Fatalf("warnings after transient healthy-state write failure = %d, want 2", got)
+	if missing, retry := a.observeMissingToolCallReasoning(calls, ""); !missing || !retry {
+		t.Fatalf("post-recovery observation = missing:%v retry:%v, want true/true", missing, retry)
 	}
 }
 

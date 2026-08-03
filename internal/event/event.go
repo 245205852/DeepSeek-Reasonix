@@ -362,6 +362,42 @@ func RecordReadinessAudit(s Sink, a evidence.ReadinessAudit) {
 	}
 }
 
+// ProtocolRecoveryKind is a content-free internal observation about a provider
+// protocol repair. It is deliberately separate from Event/Notice so recovery
+// stays invisible in chat transcripts and frontends do not need to understand
+// provider implementation details.
+type ProtocolRecoveryKind string
+
+const (
+	ProtocolRecoveryMissingReasoningDetected        ProtocolRecoveryKind = "missing_reasoning_detected"
+	ProtocolRecoveryMissingReasoningRetryAttempted  ProtocolRecoveryKind = "missing_reasoning_retry_attempted"
+	ProtocolRecoveryMissingReasoningRetryRecovered  ProtocolRecoveryKind = "missing_reasoning_retry_recovered"
+	ProtocolRecoveryMissingReasoningRetrySuppressed ProtocolRecoveryKind = "missing_reasoning_retry_suppressed"
+	ProtocolRecoveryMissingReasoningFallback        ProtocolRecoveryKind = "missing_reasoning_fallback_used"
+)
+
+type ProtocolRecoveryAudit struct {
+	Kind ProtocolRecoveryKind
+}
+
+// ProtocolRecoveryAuditSink is an optional sink capability. Implementations
+// must keep it content-free; prompts, responses, endpoints, model names, and
+// tool arguments do not belong in this audit channel.
+type ProtocolRecoveryAuditSink interface {
+	RecordProtocolRecovery(ProtocolRecoveryAudit)
+}
+
+// RecordProtocolRecovery forwards a content-free recovery observation only to
+// sinks that explicitly opt in. Ordinary UI sinks receive nothing.
+func RecordProtocolRecovery(s Sink, a ProtocolRecoveryAudit) {
+	if nilutil.IsNil(s) {
+		return
+	}
+	if rs, ok := s.(ProtocolRecoveryAuditSink); ok {
+		rs.RecordProtocolRecovery(a)
+	}
+}
+
 // Sink consumes a turn's events. The agent calls Emit serially from its run
 // loop (tool execution may fan out across goroutines, but emission does not),
 // so an implementation need not be safe for concurrent Emit. Emit must not

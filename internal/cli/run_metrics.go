@@ -33,6 +33,11 @@ type RunMetrics struct {
 	ReadinessMissingSignoff        int     `json:"readiness_missing_signoff"`
 	ReadinessMissingActionEvidence int     `json:"readiness_missing_action_evidence"`
 	ReadinessMissingMutation       int     `json:"readiness_missing_mutation"`
+	MissingReasoningDetected       int     `json:"missing_reasoning_detected,omitempty"`
+	MissingReasoningRetries        int     `json:"missing_reasoning_retries,omitempty"`
+	MissingReasoningRecovered      int     `json:"missing_reasoning_recovered,omitempty"`
+	MissingReasoningSuppressed     int     `json:"missing_reasoning_retry_suppressed,omitempty"`
+	MissingReasoningFallbacks      int     `json:"missing_reasoning_fallbacks,omitempty"`
 	// Capability / Delivery routing counters (optional; zero for older readers).
 	CapabilityRoutes               int     `json:"capability_routes,omitempty"`
 	CapabilityRoutedCandidates     int     `json:"capability_routed_candidates,omitempty"`
@@ -121,6 +126,25 @@ func (s *metricsSink) RecordReadinessAudit(a evidence.ReadinessAudit) {
 	s.m.ReadinessMissingSignoff += a.MissingSignoff
 	s.m.ReadinessMissingActionEvidence += a.MissingActionEvidence
 	s.m.ReadinessMissingMutation += a.MissingMutation
+}
+
+func (s *metricsSink) RecordProtocolRecovery(a event.ProtocolRecoveryAudit) {
+	switch a.Kind {
+	case event.ProtocolRecoveryMissingReasoningDetected:
+		s.m.MissingReasoningDetected++
+	case event.ProtocolRecoveryMissingReasoningRetryAttempted:
+		s.m.MissingReasoningRetries++
+		// Usage from the original and recovery responses is intentionally merged
+		// into one invisible UI event, but Steps remains a true model-call count.
+		s.m.Steps++
+	case event.ProtocolRecoveryMissingReasoningRetryRecovered:
+		s.m.MissingReasoningRecovered++
+	case event.ProtocolRecoveryMissingReasoningRetrySuppressed:
+		s.m.MissingReasoningSuppressed++
+	case event.ProtocolRecoveryMissingReasoningFallback:
+		s.m.MissingReasoningFallbacks++
+	}
+	event.RecordProtocolRecovery(s.inner, a)
 }
 
 // MergeCapabilityAuditCounters copies capability counters into RunMetrics.

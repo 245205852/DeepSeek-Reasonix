@@ -292,9 +292,11 @@ type Agent struct {
 	lastPrefixShape     PrefixShape
 	haveLastPrefixShape bool
 
-	// warnedMissingToolCallReasoning dedupes one active missing-reasoning
-	// incident within this agent. A healthy tool-call turn clears it so a later
-	// regression becomes visible. Loop-owned; reset by SetSession.
+	// warnedMissingToolCallReasoning marks one active missing-reasoning incident
+	// within this agent. The legacy name is retained because the persisted state
+	// predates silent recovery; it now gates one automatic retry rather than a
+	// user-visible warning. A healthy tool-call turn clears it. Loop-owned;
+	// reset by SetSession.
 	warnedMissingToolCallReasoning bool
 	// missingReasoningWarnStateChecked avoids a file transaction on every
 	// healthy tool-call turn. It resets with the session so the first healthy
@@ -305,9 +307,10 @@ type Agent struct {
 	// before consulting the persisted incident and otherwise fails visible.
 	missingReasoningWarnPendingResolveAt time.Time
 
-	// missingReasoningWarnState rate-limits incidents across sessions/processes
-	// by an opaque provider-configuration fingerprint (#7059). nil (no dir in
-	// Options) keeps in-memory active-incident deduplication only.
+	// missingReasoningWarnState rate-limits recovery retries across sessions and
+	// processes by an opaque provider-configuration fingerprint (#7059). The
+	// legacy type/file names preserve the on-disk v2 contract. nil (no dir in
+	// Options) keeps in-memory active-incident gating only.
 	missingReasoningWarnState *missingReasoningWarnState
 
 	// planMode enables planning workflow instructions and explicit phase opt-outs.
@@ -983,9 +986,10 @@ type Options struct {
 	Hooks ToolHooks
 
 	// MissingReasoningWarnStateDir, when non-empty, points at the shared
-	// directory where missing tool-call thinking incidents are rate-limited by
-	// opaque provider-configuration fingerprint (#7059). Boot always supplies
-	// it; direct construction with an empty value keeps in-memory deduplication.
+	// directory where missing tool-call thinking recovery retries are gated by
+	// opaque provider-configuration fingerprint (#7059). The field name is kept
+	// for source compatibility. Boot always supplies it; direct construction
+	// with an empty value keeps in-memory gating.
 	MissingReasoningWarnStateDir string
 
 	// Jobs is the session's background-job manager (nil disables background tools).
@@ -1266,15 +1270,15 @@ func (a *Agent) Run(ctx context.Context, input string) (runErr error) {
 	return a.runToolLoop(ctx, state)
 }
 
-// warnMissingToolCallReasoning surfaces a thinking-mode tool-call turn that
-// arrived without replayable provider reasoning. DeepSeek requires that
-// thinking content to be returned and replayed, so absence is a compatibility
-// incident rather than a permanent provider trait. Repeated broken rounds are
-// rate-limited by exact provider configuration, while a healthy round resolves
-// the incident and re-arms a future regression (#6259, #7059).
-func (a *Agent) warnMissingToolCallReasoning(calls []provider.ToolCall, reasoning string) {
+// observeMissingToolCallReasoning classifies a thinking-mode tool-call turn and
+// claims the single silent retry allowed for its active compatibility incident.
+// DeepSeek requires provider-issued thinking content to be replayed, so a
+// missing value is retried once before tools execute. Persistent broken rounds
+// use the existing exact-configuration cooldown; a healthy round resolves the
+// incident and re-arms a future isolated regression (#6259, #7059).
+func (a *Agent) observeMissingToolCallReasoning(calls []provider.ToolCall, reasoning string) (missing, shouldRetry bool) {
 	if len(calls) == 0 || !provider.WarnOnMissingToolCallReasoning(a.prov) {
-		return
+		return false, false
 	}
 	fingerprint := provider.MissingToolCallReasoningWarningFingerprint(a.prov)
 	observedAt := time.Now()
@@ -1296,10 +1300,10 @@ func (a *Agent) warnMissingToolCallReasoning(calls []provider.ToolCall, reasonin
 				a.missingReasoningWarnStateChecked = false
 			}
 		}
-		return
+		return false, false
 	}
 	if a.warnedMissingToolCallReasoning {
-		return
+		return true, false
 	}
 	if s := a.missingReasoningWarnState; s != nil {
 		stateReady := true
@@ -1310,10 +1314,11 @@ func (a *Agent) warnMissingToolCallReasoning(calls []provider.ToolCall, reasonin
 			}
 		}
 		if stateReady && !s.claimAt(fingerprint, observedAt) {
-			// This exact configuration already reported the active incident.
+			// This exact configuration already attempted recovery for the active
+			// incident, so keep the empty-key fallback without doubling requests.
 			a.warnedMissingToolCallReasoning = true
 			a.missingReasoningWarnStateChecked = true
-			return
+			return true, false
 		}
 		if !stateReady {
 			a.missingReasoningWarnStateChecked = false
@@ -1323,9 +1328,7 @@ func (a *Agent) warnMissingToolCallReasoning(calls []provider.ToolCall, reasonin
 	if a.missingReasoningWarnPendingResolveAt.IsZero() {
 		a.missingReasoningWarnStateChecked = true
 	}
-	a.sink.Emit(event.Event{Kind: event.Notice, Level: event.LevelWarn,
-		Text:   fmt.Sprintf("%s returned tool calls without replayable thinking content; continuing with degraded reasoning (shown once for this incident)", a.prov.Name()),
-		Detail: fmt.Sprintf("this round carried %d tool call(s), but the endpoint omitted the thinking content DeepSeek requires clients to replay. Check the selected model, endpoint, and reasoning protocol. Repeated broken rounds are rate-limited for this exact provider configuration for up to 24 hours; a healthy tool-call turn re-arms future regressions.", len(calls))})
+	return true, true
 }
 
 // maxStepsPause is the deliberate stop when a positive tool-call budget runs
@@ -2627,9 +2630,9 @@ func streamRecoveryMessage(hasPartialText, hadPartialTool bool) string {
 // stream so a sink can re-render the streamed raw text as styled markdown. The
 // accumulated text and reasoning are also returned so the caller can round-trip
 // reasoning on the next turn.
-func (a *Agent) stream(ctx context.Context, turn int) (string, string, string, []provider.ToolCall, *provider.Usage, bool, bool, []provider.ToolCall, error) {
+func (a *Agent) stream(ctx context.Context, turn int, sink event.Sink) (string, string, string, []provider.ToolCall, *provider.Usage, bool, bool, []provider.ToolCall, error) {
 	ctx = provider.WithRetryNotify(ctx, func(info provider.RetryInfo) {
-		a.sink.Emit(event.Event{Kind: event.Retrying, RetryAttempt: info.Attempt, RetryMax: info.Max})
+		sink.Emit(event.Event{Kind: event.Retrying, RetryAttempt: info.Attempt, RetryMax: info.Max})
 	})
 	// CreatedAt is durable UI metadata, not model input. Strip it from the
 	// transport copy so wall-clock differences never invalidate the provider's
@@ -2666,7 +2669,7 @@ func (a *Agent) stream(ctx context.Context, turn int) (string, string, string, [
 		if transformReasoning && original != "" {
 			display = a.hooks.PostLLMCall(ctx, original, turn)
 			if display != "" {
-				a.sink.Emit(event.Event{Kind: event.Reasoning, Text: display})
+				sink.Emit(event.Event{Kind: event.Reasoning, Text: display})
 			}
 		}
 		stored = display
@@ -2689,7 +2692,7 @@ func (a *Agent) stream(ctx context.Context, turn int) (string, string, string, [
 				}
 				stored, display := finishReasoning()
 				if text.Len() > 0 || display != "" {
-					a.sink.Emit(event.Event{
+					sink.Emit(event.Event{
 						Kind:      event.Message,
 						Text:      StripGoalMarkers(text.String()),
 						Reasoning: display,
@@ -2706,11 +2709,11 @@ func (a *Agent) stream(ctx context.Context, turn int) (string, string, string, [
 				signature = chunk.Signature
 			}
 			if chunk.Text != "" && !transformReasoning {
-				a.sink.Emit(event.Event{Kind: event.Reasoning, Text: chunk.Text})
+				sink.Emit(event.Event{Kind: event.Reasoning, Text: chunk.Text})
 			}
 		case provider.ChunkText:
 			text.WriteString(chunk.Text)
-			a.sink.Emit(event.Event{Kind: event.Text, Text: chunk.Text})
+			sink.Emit(event.Event{Kind: event.Text, Text: chunk.Text})
 		case provider.ChunkToolCallStart:
 			partialToolStarted = true
 			// Surface the tool card as soon as the call begins — before its
@@ -2719,7 +2722,7 @@ func (a *Agent) stream(ctx context.Context, turn int) (string, string, string, [
 			// (with args) once the call completes; the frontend merges by ID.
 			if tc := chunk.ToolCall; tc != nil {
 				partialCalls = upsertPartialToolCall(partialCalls, *tc)
-				a.sink.Emit(event.Event{Kind: event.ToolDispatch, Tool: event.Tool{
+				sink.Emit(event.Event{Kind: event.ToolDispatch, Tool: event.Tool{
 					ID: tc.ID, Name: tc.Name, ReadOnly: a.toolReadOnly(tc.Name), Partial: true,
 				}})
 			}
@@ -2732,7 +2735,7 @@ func (a *Agent) stream(ctx context.Context, turn int) (string, string, string, [
 			if tc := chunk.ToolCall; tc != nil && time.Since(lastArgProgress) >= 250*time.Millisecond {
 				partialCalls = upsertPartialToolCall(partialCalls, *tc)
 				lastArgProgress = time.Now()
-				a.sink.Emit(event.Event{Kind: event.ToolDispatch, Tool: event.Tool{
+				sink.Emit(event.Event{Kind: event.ToolDispatch, Tool: event.Tool{
 					ID: tc.ID, Name: tc.Name, ReadOnly: a.toolReadOnly(tc.Name), Partial: true, ArgChars: chunk.ArgChars,
 				}})
 			}
