@@ -225,15 +225,18 @@ export function StatusBar({
   // All-sources telemetry first; the executor-only live counters only bridge
   // the gap before the first ContextInfo refresh of a fresh session.
   const avgPct = contextAvgRate(context) ?? avgRate(usage);
-  const turnCostLabel = formatMoneyLocalized(turnCost, currency, { locale });
-  const costLabel = formatMoneyLocalized(cost, currency, { locale });
+  const turnEstimated = usage?.estimated === true;
+  const sessionEstimated = context.estimated === true;
+  const markEstimated = (value: string, estimated: boolean) => estimated && value !== "-" ? `≈${value}` : value;
+  const turnCostLabel = markEstimated(formatMoneyLocalized(turnCost, currency, { locale }), turnEstimated);
+  const costLabel = markEstimated(formatMoneyLocalized(cost, currency, { locale }), sessionEstimated);
   const displayWorkspacePath = (workspacePath || workspaceName || "").trim();
   const workspaceLabel = compactPath(displayWorkspacePath, workspaceName);
   const branchLabel = (gitBranch || "").trim();
   const workspaceTitle = displayWorkspacePath ? workspaceTooltip(t, displayWorkspacePath, workspacePath, branchLabel) : "";
   const turnLabel = formatTurnCount(sessionTurns, t);
-  const tokenLabel = formatTokenCount(sessionTokens);
-  const turnTokenLabel = formatTokenCount(turnTokens);
+  const tokenLabel = markEstimated(formatTokenCount(sessionTokens), sessionEstimated);
+  const turnTokenLabel = markEstimated(formatTokenCount(turnTokens), turnEstimated);
   const balanceLabel = balance?.available && balance.display ? balance.display : "-";
   const metricLabelStyle = labelStyle === "text" ? "text" : "icon";
   const visibleItems = normalizeStatusBarItems(items);

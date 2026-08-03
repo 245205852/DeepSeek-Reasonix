@@ -75,6 +75,7 @@ func workbenchContextInfo(view protocol.ContextView) ContextInfo {
 			PromptTokens: source.PromptTokens, CompletionTokens: source.CompletionTokens,
 			TotalTokens: source.TotalTokens, ReasoningTokens: source.ReasoningTokens,
 			CacheHitTokens: source.CacheHitTokens, CacheMissTokens: source.CacheMissTokens,
+			Estimated:    source.Estimated,
 			RequestCount: source.RequestCount, SessionCost: source.SessionCost,
 			SessionCurrency: source.SessionCurrency,
 		}
@@ -83,7 +84,8 @@ func workbenchContextInfo(view protocol.ContextView) ContextInfo {
 		Used: view.UsedTokens, Window: view.WindowTokens, SessionTokens: view.TotalTokens,
 		SessionCost: view.SessionCost, SessionCurrency: view.SessionCurrency,
 		CacheHitTokens: view.SessionCacheHitTokens, CacheMissTokens: view.SessionCacheMissTokens,
-		Sources: sources,
+		Estimated: view.Estimated,
+		Sources:   sources,
 	}
 }
 
