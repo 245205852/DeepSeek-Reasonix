@@ -1834,6 +1834,18 @@ func build(ctx context.Context, opts Options) (*BuildResult, error) {
 		slog.Warn("boot: extension snapshot assembly failed; continuing without a runtime snapshot", "err", snapErr)
 		runtimeSet = extension.NewRuntimeSet(generation)
 	}
+	// Stage 7 provider merge: fold the started sidecars' extension-hosted
+	// providers into the build's resolver. A conflict with the base catalog
+	// that lacks the plugin's provider:<ref> claim is fatal, the same class as
+	// a required runtime that cannot start: booting without the declared
+	// provider would silently change what the session is.
+	mergedResolver, mergeErr := mergeSidecarProviders(providerResolver, extensionMgr, snapshotReplacements(snap))
+	if mergeErr != nil {
+		_ = runtimeSet.Close()
+		ctrl.ReleaseResources()
+		return nil, fmt.Errorf("boot: %w", mergeErr)
+	}
+	providerResolver = mergedResolver
 	// The runtime set (extension sidecar Manager, when any) is owned by the
 	// controller: chain its close into the controller cleanup the way LSP
 	// cleanup is chained, so sidecars live exactly as long as their
@@ -1856,7 +1868,7 @@ func build(ctx context.Context, opts Options) (*BuildResult, error) {
 			ctrl.ApplyExtensionSystemPrompt(final)
 		}
 	}
-	return &BuildResult{Controller: ctrl, Snapshot: snap, Runtime: runtimeSet, Extensions: extensionMgr, Dispatcher: extensionDispatcher}, nil
+	return &BuildResult{Controller: ctrl, Snapshot: snap, Runtime: runtimeSet, Extensions: extensionMgr, Dispatcher: extensionDispatcher, ProviderResolver: providerResolver}, nil
 }
 
 // effectivePlannerModel centralizes planner precedence. The explicit ACP hard

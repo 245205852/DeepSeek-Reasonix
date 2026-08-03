@@ -10,7 +10,7 @@ import (
 	"reasonix/internal/event"
 	"reasonix/internal/extension"
 	"reasonix/internal/extension/dispatch"
-	"reasonix/internal/extension/protocol"
+	"reasonix/internal/extension/providerconv"
 	"reasonix/internal/provider"
 )
 
@@ -136,7 +136,7 @@ func (a *Agent) interceptContextPrepare(ctx context.Context, messages []provider
 	if d == nil {
 		return messages, nil
 	}
-	payload := dispatch.ContextPayload{Messages: providerMessagesToProtocol(messages)}
+	payload := dispatch.ContextPayload{Messages: providerconv.MessagesToProtocol(messages)}
 	result, err := d.Intercept(ctx, extension.PointContextPrepare, &payload)
 	if err != nil {
 		return nil, err
@@ -152,7 +152,7 @@ func (a *Agent) interceptContextPrepare(ctx context.Context, messages []provider
 	}
 	d.Event(extension.PointContextPrepare, payload)
 	if len(result.Applied) > 0 || replaced {
-		return providerMessagesFromProtocol(payload.Messages), nil
+		return providerconv.MessagesFromProtocol(payload.Messages), nil
 	}
 	return messages, nil
 }
@@ -166,7 +166,7 @@ func (a *Agent) interceptProviderRequest(ctx context.Context, req provider.Reque
 	if d == nil {
 		return req, nil
 	}
-	payload := dispatch.ProviderRequestPayload{Request: providerRequestToProtocol(req)}
+	payload := dispatch.ProviderRequestPayload{Request: providerconv.RequestToProtocol(req)}
 	result, err := d.Intercept(ctx, extension.PointProviderRequest, &payload)
 	if err != nil {
 		return provider.Request{}, err
@@ -183,7 +183,7 @@ func (a *Agent) interceptProviderRequest(ctx context.Context, req provider.Reque
 	}
 	d.Event(extension.PointProviderRequest, payload)
 	if len(result.Applied) > 0 || replaced {
-		return providerRequestFromProtocol(payload.Request), nil
+		return providerconv.RequestFromProtocol(payload.Request), nil
 	}
 	return req, nil
 }
@@ -206,8 +206,8 @@ func (a *Agent) interceptProviderResponse(ctx context.Context, text, reasoning, 
 		Text:      text,
 		Reasoning: reasoning,
 		Signature: signature,
-		Calls:     providerToolCallsToProtocol(calls),
-		Usage:     providerUsageToProtocol(usage),
+		Calls:     providerconv.ToolCallsToProtocol(calls),
+		Usage:     providerconv.UsageToProtocol(usage),
 	}
 	result, err := d.Intercept(ctx, extension.PointProviderResponse, &payload)
 	if err != nil {
@@ -226,7 +226,7 @@ func (a *Agent) interceptProviderResponse(ctx context.Context, text, reasoning, 
 	d.Event(extension.PointProviderResponse, payload)
 	if len(result.Applied) > 0 || replaced {
 		return payload.Text, payload.Reasoning, payload.Signature,
-			providerToolCallsFromProtocol(payload.Calls), providerUsageFromProtocol(payload.Usage), nil
+			providerconv.ToolCallsFromProtocol(payload.Calls), providerconv.UsageFromProtocol(payload.Usage), nil
 	}
 	return text, reasoning, signature, calls, usage, nil
 }
@@ -399,7 +399,7 @@ func (a *Agent) interceptCompactionPrepare(ctx context.Context, fold []provider.
 		return fold, guidance, nil
 	}
 	payload := dispatch.CompactionPreparePayload{
-		Messages: providerMessagesToProtocol(fold),
+		Messages: providerconv.MessagesToProtocol(fold),
 		Guidance: guidance,
 	}
 	result, err := d.Intercept(ctx, extension.PointCompactionPrepare, &payload)
@@ -418,7 +418,7 @@ func (a *Agent) interceptCompactionPrepare(ctx context.Context, fold []provider.
 	}
 	d.Event(extension.PointCompactionPrepare, payload)
 	if len(result.Applied) > 0 || replaced {
-		return providerMessagesFromProtocol(payload.Messages), payload.Guidance, nil
+		return providerconv.MessagesFromProtocol(payload.Messages), payload.Guidance, nil
 	}
 	return fold, guidance, nil
 }
@@ -452,139 +452,4 @@ func (a *Agent) interceptCompactionComplete(ctx context.Context, summary string)
 		return payload.Summary, nil
 	}
 	return summary, nil
-}
-
-// Host-side conversions between internal/provider values and the public wire
-// DTOs (the protocol package deliberately does not import internal/provider).
-// Replacements adopt the converted values only when a replace ruling actually
-// applied, so a continue walk keeps the original values byte-identically.
-
-func providerMessagesToProtocol(msgs []provider.Message) []protocol.ProviderMessage {
-	out := make([]protocol.ProviderMessage, 0, len(msgs))
-	for _, m := range msgs {
-		out = append(out, protocol.ProviderMessage{
-			Role:               protocol.ProviderRole(m.Role),
-			Content:            m.Content,
-			Images:             m.Images,
-			ReasoningContent:   m.ReasoningContent,
-			ReasoningSignature: m.ReasoningSignature,
-			ToolCalls:          providerToolCallsToProtocol(m.ToolCalls),
-			ToolCallID:         m.ToolCallID,
-			Name:               m.Name,
-		})
-	}
-	return out
-}
-
-func providerMessagesFromProtocol(msgs []protocol.ProviderMessage) []provider.Message {
-	out := make([]provider.Message, 0, len(msgs))
-	for _, m := range msgs {
-		out = append(out, provider.Message{
-			Role:               provider.Role(m.Role),
-			Content:            m.Content,
-			Images:             m.Images,
-			ReasoningContent:   m.ReasoningContent,
-			ReasoningSignature: m.ReasoningSignature,
-			ToolCalls:          providerToolCallsFromProtocol(m.ToolCalls),
-			ToolCallID:         m.ToolCallID,
-			Name:               m.Name,
-		})
-	}
-	return out
-}
-
-func providerToolCallsToProtocol(calls []provider.ToolCall) []protocol.ProviderToolCall {
-	if len(calls) == 0 {
-		return nil
-	}
-	out := make([]protocol.ProviderToolCall, 0, len(calls))
-	for _, c := range calls {
-		out = append(out, protocol.ProviderToolCall{
-			ID:               c.ID,
-			Name:             c.Name,
-			Arguments:        c.Arguments,
-			ThoughtSignature: c.ThoughtSignature,
-		})
-	}
-	return out
-}
-
-func providerToolCallsFromProtocol(calls []protocol.ProviderToolCall) []provider.ToolCall {
-	if len(calls) == 0 {
-		return nil
-	}
-	out := make([]provider.ToolCall, 0, len(calls))
-	for _, c := range calls {
-		out = append(out, provider.ToolCall{
-			ID:               c.ID,
-			Name:             c.Name,
-			Arguments:        c.Arguments,
-			ThoughtSignature: c.ThoughtSignature,
-		})
-	}
-	return out
-}
-
-func providerRequestToProtocol(req provider.Request) protocol.ProviderRequest {
-	tools := make([]protocol.ProviderToolSchema, 0, len(req.Tools))
-	for _, s := range req.Tools {
-		tools = append(tools, protocol.ProviderToolSchema{
-			Name:        s.Name,
-			Description: s.Description,
-			Parameters:  s.Parameters,
-		})
-	}
-	return protocol.ProviderRequest{
-		Messages:    providerMessagesToProtocol(req.Messages),
-		Tools:       tools,
-		Temperature: req.Temperature,
-		MaxTokens:   req.MaxTokens,
-	}
-}
-
-func providerRequestFromProtocol(req protocol.ProviderRequest) provider.Request {
-	tools := make([]provider.ToolSchema, 0, len(req.Tools))
-	for _, s := range req.Tools {
-		tools = append(tools, provider.ToolSchema{
-			Name:        s.Name,
-			Description: s.Description,
-			Parameters:  s.Parameters,
-		})
-	}
-	return provider.Request{
-		Messages:    providerMessagesFromProtocol(req.Messages),
-		Tools:       tools,
-		Temperature: req.Temperature,
-		MaxTokens:   req.MaxTokens,
-	}
-}
-
-func providerUsageToProtocol(u *provider.Usage) *protocol.ProviderUsage {
-	if u == nil {
-		return nil
-	}
-	return &protocol.ProviderUsage{
-		PromptTokens:     u.PromptTokens,
-		CompletionTokens: u.CompletionTokens,
-		TotalTokens:      u.TotalTokens,
-		CacheHitTokens:   u.CacheHitTokens,
-		CacheMissTokens:  u.CacheMissTokens,
-		ReasoningTokens:  u.ReasoningTokens,
-		FinishReason:     u.FinishReason,
-	}
-}
-
-func providerUsageFromProtocol(u *protocol.ProviderUsage) *provider.Usage {
-	if u == nil {
-		return nil
-	}
-	return &provider.Usage{
-		PromptTokens:     u.PromptTokens,
-		CompletionTokens: u.CompletionTokens,
-		TotalTokens:      u.TotalTokens,
-		CacheHitTokens:   u.CacheHitTokens,
-		CacheMissTokens:  u.CacheMissTokens,
-		ReasoningTokens:  u.ReasoningTokens,
-		FinishReason:     u.FinishReason,
-	}
 }

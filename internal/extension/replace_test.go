@@ -8,13 +8,15 @@ import (
 )
 
 // TestParseSlot pins the accepted slot forms: the eight named slots, tool:
-// with a bare tool name, and provider: with a name/model ref. Everything else
-// is rejected so a typo can never open a slot nothing reads.
+// with a bare tool name, and provider: with a name/model ref — including the
+// extension-hosted plugin/<plugin>/<name>/<model> form (stage 7). Everything
+// else is rejected so a typo can never open a slot nothing reads.
 func TestParseSlot(t *testing.T) {
 	valid := []string{
 		"system_prompt", "context", "provider_request", "provider_response",
 		"compaction", "session_policy", "permission", "frontend_events",
 		"tool:bash", "tool:read_file", "provider:openai/gpt-5", "provider:deepseek/deepseek-chat",
+		"provider:plugin/demo/fake/x",
 	}
 	for _, s := range valid {
 		if _, err := ParseSlot(s); err != nil {
@@ -24,6 +26,7 @@ func TestParseSlot(t *testing.T) {
 	invalid := []string{
 		"", "bogus", "SYSTEM_PROMPT", "tool:", "tool:a b", "provider:", "provider:openai",
 		"provider:openai/x/y", "tool", "provider",
+		"provider:plugin/demo/fake", "provider:plugin//fake/x", "provider:plugin/ /fake/x",
 	}
 	for _, s := range invalid {
 		if _, err := ParseSlot(s); err == nil {
@@ -42,6 +45,9 @@ func TestParseSlot(t *testing.T) {
 	}
 	if _, err := ParseSlot(string(SlotProviderRef("openai/x"))); err != nil {
 		t.Fatalf("SlotProviderRef output rejected by ParseSlot: %v", err)
+	}
+	if _, err := ParseSlot(string(SlotProviderRef("plugin/demo/fake/x"))); err != nil {
+		t.Fatalf("SlotProviderRef plugin output rejected by ParseSlot: %v", err)
 	}
 }
 

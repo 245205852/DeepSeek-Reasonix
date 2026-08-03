@@ -5,6 +5,9 @@ import (
 	"strings"
 
 	"reasonix/internal/config"
+	"reasonix/internal/extension"
+	"reasonix/internal/extension/providerext"
+	"reasonix/internal/extension/sidecar"
 	"reasonix/internal/netclient"
 	"reasonix/internal/provider"
 )
@@ -74,6 +77,56 @@ func resolveProvider(opts Options, cfg *config.Config, proxy netclient.ProxySpec
 		return opts.ProviderResolver.Resolve(selection)
 	}
 	return NewLocalProviderResolver(cfg, proxy).Resolve(selection)
+}
+
+// snapshotReplacements returns the frozen replacement-slot ownership table
+// from a snapshot that may be nil (a degraded assembly).
+func snapshotReplacements(snap *extension.RuntimeSnapshot) map[extension.Slot]extension.ContributionSource {
+	if snap == nil {
+		return nil
+	}
+	return snap.Replacements()
+}
+
+// mergeSidecarProviders wraps the build's resolver with the extension-hosted
+// provider adapter (stage 7) whenever a started sidecar declared providers in
+// its handshake. The base resolver — the caller-owned broker when
+// opts.ProviderResolver is set, the local config-backed one otherwise — keeps
+// serving every non-plugin ref; plugin providers are additive on top of it,
+// and an exact-ref collision without the plugin's provider:<ref> claim is a
+// *providerext.ConflictError (fatal at the call site). The merged Resolver is
+// also the sidecar clients' stream router, installed here so inbound
+// stream/chunk and stream/end notifications reach the buffered streams.
+func mergeSidecarProviders(base provider.Resolver, mgr *sidecar.Manager, claims map[extension.Slot]extension.ContributionSource) (provider.Resolver, error) {
+	if mgr == nil {
+		return base, nil
+	}
+	declares := false
+	for _, client := range mgr.Clients() {
+		if len(client.Handshake().Providers) > 0 {
+			declares = true
+			break
+		}
+	}
+	if !declares {
+		return base, nil
+	}
+	clientsFn := func() []providerext.ProviderClient {
+		clients := mgr.Clients()
+		out := make([]providerext.ProviderClient, 0, len(clients))
+		for _, client := range clients {
+			out = append(out, client)
+		}
+		return out
+	}
+	merged, err := providerext.New(base, clientsFn, claims)
+	if err != nil {
+		return nil, err
+	}
+	for _, client := range mgr.Clients() {
+		client.SetStreamRouter(merged)
+	}
+	return merged, nil
 }
 
 func modelRefFromEntry(e *config.ProviderEntry) string {

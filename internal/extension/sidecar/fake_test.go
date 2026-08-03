@@ -30,7 +30,8 @@ import (
 //	                                   early_request | early_notify |
 //	                                   ignore_shutdown | stall_intercept |
 //	                                   block_intercept | stderr_flood |
-//	                                   content_roundtrip | content_echo_ref
+//	                                   content_roundtrip | content_echo_ref |
+//	                                   provider_stream
 const (
 	fakeEnvEnable     = "REASONIX_FAKE_SIDECAR"
 	fakeEnvInitResult = "REASONIX_FAKE_INIT_RESULT"
@@ -226,6 +227,20 @@ func runFakeSidecar(stdin io.Reader, stdout io.Writer) {
 					}
 					respond(frame.ID, json.RawMessage(`{"accepted":true}`))
 					return
+				case string(protocol.MethodExtensionProviderCatalog):
+					respond(frame.ID, json.RawMessage(`{"providers":[]}`))
+				case string(protocol.MethodExtensionProviderStreamOpen):
+					respond(frame.ID, json.RawMessage(`{"accepted":true}`))
+					if modes["provider_stream"] {
+						var params struct {
+							StreamID string `json:"streamId"`
+						}
+						_ = json.Unmarshal(frame.Params, &params)
+						write(`{"jsonrpc":"2.0","method":"extension/provider/stream/chunk","params":{"streamId":%q,"seq":1,"chunk":{"type":"text","text":"wired"}}}`, params.StreamID)
+						write(`{"jsonrpc":"2.0","method":"extension/provider/stream/end","params":{"streamId":%q,"lastSeq":1}}`, params.StreamID)
+					}
+				case string(protocol.MethodExtensionProviderStreamCancel):
+					respond(frame.ID, json.RawMessage(`{"cancelled":true}`))
 				default:
 					respond(frame.ID, json.RawMessage(`{}`))
 				}

@@ -59,8 +59,9 @@ func (unavailableUIHandler) Request(context.Context, protocol.UIRequestParams) (
 	return protocol.UIRequestResult{}, &protocol.ProtocolError{Reason: protocol.ErrUnknownMethod, Message: "extension UI is not available on this host"}
 }
 
-// StreamRouter receives the extension's provider stream notifications. Stage
-// 7 wires the real broker; the nil default drops with a debug log.
+// StreamRouter receives the extension's provider stream notifications. The
+// stage 7 adapter (internal/extension/providerext) installs the real router
+// through SetStreamRouter; the nil default drops with a debug log.
 type StreamRouter interface {
 	RouteStreamChunk(p protocol.StreamChunkParams)
 	RouteStreamEnd(p protocol.StreamEndParams)
@@ -134,6 +135,7 @@ type Client struct {
 	store            *Store
 	ui               UIHandler
 	streams          StreamRouter
+	streamsMu        sync.RWMutex
 	onCrash          func(error)
 	initResult       protocol.InitializeResult
 
@@ -435,6 +437,31 @@ func (c *Client) Store() *Store { return c.store }
 // Crashed reports whether the connection ended unexpectedly.
 func (c *Client) Crashed() bool { return c.crashed.Load() }
 
+// Disconnected returns a channel closed when the connection's serve loop ends
+// for any reason — crash, orderly shutdown, or transport failure. Provider
+// stream watchers select on it to finish in-flight streams instead of hanging
+// on notifications that will never arrive.
+func (c *Client) Disconnected() <-chan struct{} { return c.serveExited }
+
+// SetStreamRouter swaps the provider stream router (stage 7). Nil restores
+// the drop-with-debug-log default. It is safe to call while notifications are
+// in flight; routing for later notifications uses the new router.
+func (c *Client) SetStreamRouter(r StreamRouter) {
+	if r == nil {
+		r = dropStreamRouter{pluginID: c.pluginID}
+	}
+	c.streamsMu.Lock()
+	c.streams = r
+	c.streamsMu.Unlock()
+}
+
+// streamRouter returns the currently installed router.
+func (c *Client) streamRouter() StreamRouter {
+	c.streamsMu.RLock()
+	defer c.streamsMu.RUnlock()
+	return c.streams
+}
+
 // Exited reports whether the sidecar process has been reaped.
 func (c *Client) Exited() bool {
 	select {
@@ -532,6 +559,52 @@ func (c *Client) NotifyResourcesChanged(paths []string) error {
 	return c.conn.Notify(string(protocol.MethodExtensionResourcesChanged), protocol.ResourcesChangedParams{Paths: paths})
 }
 
+// ProviderCatalog fetches the sidecar's extension-hosted provider catalog
+// (stage 7). The result carries no credentials — the sidecar's refs,
+// descriptors, and declared capabilities only.
+func (c *Client) ProviderCatalog(ctx context.Context) ([]protocol.ProviderDescriptor, error) {
+	if err := c.readyErr(); err != nil {
+		return nil, err
+	}
+	raw, err := c.conn.Request(ctx, string(protocol.MethodExtensionProviderCatalog), protocol.ProviderCatalogParams{})
+	if err != nil {
+		return nil, mapRequestError(err)
+	}
+	decoded, err := protocol.DecodeHostRequestResult(protocol.MethodExtensionProviderCatalog, raw)
+	if err != nil {
+		return nil, &protocol.ProtocolError{Reason: protocol.ErrProtocolError, Message: "invalid provider catalog result: " + err.Error()}
+	}
+	return decoded.(protocol.ProviderCatalogResult).Providers, nil
+}
+
+// ProviderStreamOpen asks the sidecar to start one provider stream (stage 7).
+// Accepted streams deliver chunks as extension/provider/stream/chunk
+// notifications routed to the installed StreamRouter and exactly one
+// stream/end. A crashed or shut-down sidecar fails fast with the
+// provider_interrupted reason.
+func (c *Client) ProviderStreamOpen(ctx context.Context, params protocol.StreamOpenParams) (protocol.StreamOpenResult, error) {
+	if err := c.readyErr(); err != nil {
+		return protocol.StreamOpenResult{}, err
+	}
+	raw, err := c.conn.Request(ctx, string(protocol.MethodExtensionProviderStreamOpen), params)
+	if err != nil {
+		return protocol.StreamOpenResult{}, mapRequestError(err)
+	}
+	decoded, err := protocol.DecodeHostRequestResult(protocol.MethodExtensionProviderStreamOpen, raw)
+	if err != nil {
+		return protocol.StreamOpenResult{}, &protocol.ProtocolError{Reason: protocol.ErrProtocolError, Message: "invalid stream open result: " + err.Error()}
+	}
+	return decoded.(protocol.StreamOpenResult), nil
+}
+
+// ProviderStreamCancel cancels one in-flight provider stream, best effort: a
+// wedged or dead sidecar simply never answers inside the bounded budget.
+func (c *Client) ProviderStreamCancel(streamID string) {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	_, _ = c.conn.Request(ctx, string(protocol.MethodExtensionProviderStreamCancel), protocol.StreamCancelParams{StreamID: streamID})
+}
+
 // Shutdown stops the sidecar with the bounded sequence: extension/shutdown
 // (bounded by timeout), close stdin, a 750ms EOF grace, a process-tree kill,
 // and a 5s reap. It is idempotent; later calls return immediately.
@@ -599,7 +672,7 @@ func (c *Client) handleStreamChunk(_ context.Context, raw json.RawMessage) {
 		slog.Debug("sidecar: dropping malformed stream chunk", "plugin", c.pluginID, "err", err)
 		return
 	}
-	c.streams.RouteStreamChunk(decoded.(protocol.StreamChunkParams))
+	c.streamRouter().RouteStreamChunk(decoded.(protocol.StreamChunkParams))
 }
 
 func (c *Client) handleStreamEnd(_ context.Context, raw json.RawMessage) {
@@ -608,7 +681,7 @@ func (c *Client) handleStreamEnd(_ context.Context, raw json.RawMessage) {
 		slog.Debug("sidecar: dropping malformed stream end", "plugin", c.pluginID, "err", err)
 		return
 	}
-	c.streams.RouteStreamEnd(decoded.(protocol.StreamEndParams))
+	c.streamRouter().RouteStreamEnd(decoded.(protocol.StreamEndParams))
 }
 
 // mapHandlerError converts a UIHandler failure into a wire-safe error.

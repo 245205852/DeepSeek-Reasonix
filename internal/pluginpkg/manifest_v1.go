@@ -490,6 +490,8 @@ var runtimeCapabilities = []string{"interceptors", "strategies", "providers", "u
 
 // validateRuntimeSlot mirrors extension.ParseSlot: bare names must be
 // declared slots; tool:/provider: forms must carry a well-formed target.
+// Provider targets are <name>/<model>, or plugin/<pluginID>/<name>/<model>
+// for extension-hosted providers (stage 7).
 func validateRuntimeSlot(s string) error {
 	if runtimeNamedSlots[s] {
 		return nil
@@ -501,13 +503,32 @@ func validateRuntimeSlot(s string) error {
 		return nil
 	}
 	if rest, ok := strings.CutPrefix(s, "provider:"); ok {
-		name, model, found := strings.Cut(rest, "/")
-		if !found || name == "" || model == "" || strings.Contains(model, "/") {
-			return fmt.Errorf("runtime.replaces: invalid provider slot %q: want provider:<name>/<model>", s)
+		if !validRuntimeProviderRef(rest) {
+			return fmt.Errorf("runtime.replaces: invalid provider slot %q: want provider:<name>/<model> or provider:plugin/<plugin>/<name>/<model>", s)
 		}
 		return nil
 	}
 	return fmt.Errorf("runtime.replaces: unknown slot %q", s)
+}
+
+// validRuntimeProviderRef mirrors the kernel's provider-slot target rule
+// (extension.validProviderSlotTarget): an ordinary <name>/<model> ref, or an
+// extension-hosted plugin/<pluginID>/<name>/<model> ref.
+func validRuntimeProviderRef(ref string) bool {
+	name, model, found := strings.Cut(ref, "/")
+	if found && name != "" && model != "" && !strings.Contains(model, "/") {
+		return true
+	}
+	rest, ok := strings.CutPrefix(ref, "plugin/")
+	if !ok {
+		return false
+	}
+	pluginID, nameModel, ok := strings.Cut(rest, "/")
+	if !ok || pluginID == "" || strings.ContainsAny(pluginID, " \t\n") {
+		return false
+	}
+	name, model, found = strings.Cut(nameModel, "/")
+	return found && name != "" && model != "" && !strings.Contains(model, "/")
 }
 
 // parseV1Runtime strict-decodes and validates the runtime block. Every

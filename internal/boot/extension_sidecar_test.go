@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -32,6 +33,13 @@ import (
 //	REASONIX_BOOT_FAKE_REPLACE_PROMPT   answer system_prompt.build replace with this prompt
 //	REASONIX_BOOT_FAKE_REPLACE_INPUT    answer input.receive replace with this text
 //	REASONIX_BOOT_FAKE_EVENT_LOG        append one "event payload" line per extension/event
+//
+// Provider steering for the stage 7 adapter tests:
+//
+//	REASONIX_BOOT_FAKE_PLUGIN_NAME      the installed plugin name (provider ref namespace)
+//	REASONIX_BOOT_FAKE_PROVIDER         when "1", declare plugin/<name>/fake/x and serve
+//	                                    catalog/stream/open/stream/cancel with a fixed
+//	                                    two-chunk completion plus usage
 const (
 	bootFakeEnvEnable        = "REASONIX_BOOT_FAKE_SIDECAR"
 	bootFakeEnvInitResult    = "REASONIX_BOOT_FAKE_INIT_RESULT"
@@ -41,6 +49,8 @@ const (
 	bootFakeEnvReplacePrompt = "REASONIX_BOOT_FAKE_REPLACE_PROMPT"
 	bootFakeEnvReplaceInput  = "REASONIX_BOOT_FAKE_REPLACE_INPUT"
 	bootFakeEnvEventLog      = "REASONIX_BOOT_FAKE_EVENT_LOG"
+	bootFakeEnvPluginName    = "REASONIX_BOOT_FAKE_PLUGIN_NAME"
+	bootFakeEnvProvider      = "REASONIX_BOOT_FAKE_PROVIDER"
 )
 
 // TestExtensionFakeSidecarHelperProcess is the re-exec entry point; it skips
@@ -55,11 +65,48 @@ func TestExtensionFakeSidecarHelperProcess(t *testing.T) {
 
 func runBootFakeSidecar(stdin io.Reader, stdout io.Writer) {
 	out := bufio.NewWriter(stdout)
+	var writeMu sync.Mutex
+	write := func(format string, args ...any) {
+		writeMu.Lock()
+		defer writeMu.Unlock()
+		fmt.Fprintf(out, format+"\n", args...)
+		_ = out.Flush()
+	}
+	pluginName := strings.TrimSpace(os.Getenv(bootFakeEnvPluginName))
+	providerMode := os.Getenv(bootFakeEnvProvider) == "1" && pluginName != ""
+	providerRef := "plugin/" + pluginName + "/fake/x"
+	providerDescriptor := func() string {
+		return fmt.Sprintf(`{"ref":%q,"displayName":"Boot Fake","model":"x","contextWindow":64000,"tools":true,"reasoning":true,"efforts":["low","high"],"defaultEffort":"low"}`, providerRef)
+	}
 	initResult := strings.TrimSpace(os.Getenv(bootFakeEnvInitResult))
+	if initResult == "" && providerMode {
+		initResult = fmt.Sprintf(`{"protocolVersion":"1","name":"boot-fake","version":"1.0.0","stateSchemaVersion":0,"providers":[%s]}`, providerDescriptor())
+	}
 	if initResult == "" {
 		initResult = `{"protocolVersion":"1","name":"boot-fake","version":"1.0.0","stateSchemaVersion":0}`
 	}
 	ignoreShutdown := os.Getenv(bootFakeEnvMode) == "ignore_shutdown"
+
+	// streamFakeCompletion answers stream/open and then pushes the fixed
+	// completion — two text chunks and one usage chunk, sealed by stream/end —
+	// from its own goroutine so the read loop keeps answering other requests.
+	streamFakeCompletion := func(id json.RawMessage, rawParams json.RawMessage) {
+		var params struct {
+			StreamID string `json:"streamId"`
+		}
+		_ = json.Unmarshal(rawParams, &params)
+		write(`{"jsonrpc":"2.0","id":%s,"result":{"accepted":true}}`, string(id))
+		go func() {
+			chunk := func(seq int, body string) {
+				write(`{"jsonrpc":"2.0","method":"extension/provider/stream/chunk","params":{"streamId":%q,"seq":%d,"chunk":%s}}`, params.StreamID, seq, body)
+			}
+			chunk(1, `{"type":"text","text":"fake-hello "}`)
+			chunk(2, `{"type":"text","text":"fake-world"}`)
+			chunk(3, `{"type":"usage","usage":{"promptTokens":5,"completionTokens":7,"totalTokens":12,"cacheHitTokens":2,"cacheMissTokens":3,"reasoningTokens":4,"finishReason":"stop"}}`)
+			write(`{"jsonrpc":"2.0","method":"extension/provider/stream/end","params":{"streamId":%q,"lastSeq":3}}`, params.StreamID)
+		}()
+	}
+
 	in := bufio.NewReader(stdin)
 	for {
 		line, err := in.ReadBytes('\n')
@@ -79,19 +126,23 @@ func runBootFakeSidecar(stdin io.Reader, stdout io.Writer) {
 				case "extension/event":
 					bootFakeLogEvent(frame.Params)
 					continue // notification: never answer
+				case "extension/provider/catalog":
+					result = fmt.Sprintf(`{"providers":[%s]}`, providerDescriptor())
+				case "extension/provider/stream/open":
+					streamFakeCompletion(frame.ID, frame.Params)
+					continue
+				case "extension/provider/stream/cancel":
+					result = `{"cancelled":true}`
 				case "extension/shutdown":
 					if ignoreShutdown {
 						continue
 					}
-					result = `{"accepted":true}`
-					fmt.Fprintf(out, `{"jsonrpc":"2.0","id":%s,"result":%s}`+"\n", string(frame.ID), result)
-					_ = out.Flush()
+					write(`{"jsonrpc":"2.0","id":%s,"result":{"accepted":true}}`, string(frame.ID))
 					return
 				default:
 					continue
 				}
-				fmt.Fprintf(out, `{"jsonrpc":"2.0","id":%s,"result":%s}`+"\n", string(frame.ID), result)
-				_ = out.Flush()
+				write(`{"jsonrpc":"2.0","id":%s,"result":%s}`, string(frame.ID), result)
 			}
 		}
 		if err != nil {

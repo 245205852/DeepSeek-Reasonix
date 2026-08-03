@@ -64,12 +64,33 @@ func ParseSlot(s string) (Slot, error) {
 		return Slot(s), nil
 	}
 	if rest, ok := strings.CutPrefix(s, slotProviderPrefix); ok {
-		if _, _, ok := splitProviderRef(rest); !ok {
-			return "", fmt.Errorf("extension: invalid provider slot %q: want provider:<name>/<model>", s)
+		if !validProviderSlotTarget(rest) {
+			return "", fmt.Errorf("extension: invalid provider slot %q: want provider:<name>/<model> or provider:plugin/<plugin>/<name>/<model>", s)
 		}
 		return Slot(s), nil
 	}
 	return "", fmt.Errorf("extension: unknown slot %q", s)
+}
+
+// validProviderSlotTarget reports whether ref can name a provider:<ref>
+// replacement slot: an ordinary <name>/<model> ref, or an extension-hosted
+// plugin/<pluginID>/<name>/<model> ref (stage 7). Plugin providers carry the
+// extra namespace segments so claims can name them without relaxing the
+// ordinary ref grammar.
+func validProviderSlotTarget(ref string) bool {
+	if _, _, ok := splitProviderRef(ref); ok {
+		return true
+	}
+	rest, ok := strings.CutPrefix(ref, "plugin/")
+	if !ok {
+		return false
+	}
+	pluginID, nameModel, ok := strings.Cut(rest, "/")
+	if !ok || pluginID == "" || strings.ContainsAny(pluginID, " \t\n") {
+		return false
+	}
+	_, _, ok = splitProviderRef(nameModel)
+	return ok
 }
 
 // splitProviderRef splits a "name/model" ref. Providers address models by

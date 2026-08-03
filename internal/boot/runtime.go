@@ -38,6 +38,12 @@ type BuildResult struct {
 	// degraded). It is immutable and safe for concurrent turns; the
 	// controller receives it through SetExtensions right after assembly.
 	Dispatcher *dispatch.Dispatcher
+	// ProviderResolver is the build's effective provider resolver: the
+	// caller-owned broker when Options.ProviderResolver is set, the local
+	// config-backed resolver otherwise, merged with any extension-hosted
+	// sidecar providers (stage 7). Plugin-namespaced refs route to the owning
+	// sidecar; every other ref resolves through the base resolver.
+	ProviderResolver provider.Resolver
 }
 
 // runtimeGeneration is the process-wide build generation counter. The first
