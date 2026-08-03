@@ -1545,6 +1545,15 @@ if EVENT_NAME=workflow_dispatch IN_ORCHESTRATED=false IN_CHANNEL=stable IN_BASE_
 fi
 grep -Eq 'does not match requested version' "$test_root/npm-mismatch.log"
 
+e2e_workflow="$repo_root/.github/workflows/e2e-bot.yml"
+grep -Fq "printf 'DEEPSEEK_API_KEY=%s\\n' \"\$DEEPSEEK_API_KEY\" > \"\$HOME/.config/reasonix/.env\"" "$e2e_workflow"
+grep -Fq 'const unsuccessful = results.filter((result) => !result.Passed || result.Skipped);' "$e2e_workflow"
+grep -Fq "if: always() && hashFiles('report.md') != ''" "$e2e_workflow"
+if grep -A2 -F 'missing DEEPSEEK_API_KEY secret' "$e2e_workflow" | grep -Fq 'exit 0'; then
+	echo "e2e bot still treats a missing provider secret as success" >&2
+	exit 1
+fi
+
 node --test "$repo_root/npm/publish.test.mjs"
 node --test "$repo_root/scripts/finalize-npm-official-release.test.mjs"
 bash "$repo_root/scripts/release-stable.test.sh"
