@@ -136,6 +136,7 @@ func workbenchMeta(snapshot protocol.SessionSnapshot, workspace string) Meta {
 	label := profile.Model
 	return Meta{
 		Label: label, Ready: true, EventChannel: "agent:event", Cwd: workspace,
+		Runtime:       workbenchRuntimeView(snapshot),
 		WorkspaceRoot: workspace, WorkspaceName: filepath.Base(filepath.Clean(workspace)), WorkspacePath: workspace,
 		AutoApproveTools:  profile.ToolApprovalMode == protocol.ToolApprovalAuto || profile.ToolApprovalMode == protocol.ToolApprovalYOLO,
 		Bypass:            profile.ToolApprovalMode == protocol.ToolApprovalYOLO,

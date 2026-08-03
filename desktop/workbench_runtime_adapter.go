@@ -29,6 +29,35 @@ func (a *App) workbenchProjectionTabID() string {
 	return a.activeTabID
 }
 
+func (a *App) emitWorkbenchRuntimeRebuilt(tabID, runtimeEpoch string) {
+	if strings.TrimSpace(runtimeEpoch) == "" {
+		a.emitRuntimeEvent("runtime:rebuilt", tabID)
+		return
+	}
+	a.emitRuntimeEvent("runtime:rebuilt", tabID, runtimeEpoch)
+}
+
+func (a *App) emitWorkbenchLocalRuntimeRebuilt(tabID string) {
+	a.mu.RLock()
+	tab := a.tabByIDLocked(tabID)
+	runtimeEpoch := a.sessionRuntimeViewLocked(tab).Epoch
+	a.mu.RUnlock()
+	if tab == nil || strings.TrimSpace(runtimeEpoch) == "" {
+		a.emitWorkbenchRuntimeRebuilt(tabID, runtimeEpoch)
+		return
+	}
+	// Use the tab event lane so the Local authority transition stays ordered
+	// with Local agent events. If a concurrent controller rebuild advanced the
+	// epoch after our snapshot, publish the newer authority once more.
+	a.notifyTabRuntimeRebuiltAtEpoch(tab, runtimeEpoch)
+	a.mu.RLock()
+	currentEpoch := a.sessionRuntimeViewLocked(tab).Epoch
+	a.mu.RUnlock()
+	if currentEpoch != "" && currentEpoch != runtimeEpoch {
+		a.notifyTabRuntimeRebuiltAtEpoch(tab, currentEpoch)
+	}
+}
+
 func (a *App) workbenchClientCallbacks(generation uint64, tabID string) client.Callbacks {
 	return client.Callbacks{
 		OnSessionEvent: func(notification protocol.SessionEvent) {
@@ -133,7 +162,7 @@ func (a *App) workbenchClientCallbacks(generation uint64, tabID string) client.C
 			k.mu.Unlock()
 			a.emitWorkbenchTarget("disconnected", id, identityGen, requestSeq, "Remote transport closed; reconnect to resume the Host session.")
 			a.emitReady(a.ctx, projectionTabID)
-			a.emitRuntimeEvent("runtime:rebuilt", projectionTabID)
+			a.emitWorkbenchLocalRuntimeRebuilt(projectionTabID)
 		},
 	}
 }
@@ -200,6 +229,7 @@ func (a *App) workbenchProjectTabMetas(metas []TabMeta) []TabMeta {
 		metas[i].TopicTitle = snapshot.Meta.Title
 		metas[i].Label = snapshot.Meta.ResolvedProfile.Model
 		metas[i].Ready = true
+		metas[i].Runtime = workbenchRuntimeView(snapshot)
 		metas[i].Running = snapshot.Runtime.Running
 		metas[i].PendingPrompt = snapshot.PendingPrompt != nil
 		metas[i].BackgroundJobs = len(snapshot.Jobs)
@@ -213,6 +243,10 @@ func (a *App) workbenchProjectTabMetas(metas []TabMeta) []TabMeta {
 		metas[i].GoalStatus = string(snapshot.Meta.GoalStatus)
 	}
 	return metas
+}
+
+func workbenchRuntimeView(snapshot protocol.SessionSnapshot) SessionRuntimeView {
+	return SessionRuntimeView{Phase: sessionRuntimeReady, Epoch: string(snapshot.RuntimeEpoch)}
 }
 
 func workbenchBaseName(path string) string {
@@ -316,7 +350,7 @@ func (a *App) workbenchRefreshSnapshot(generation uint64, tabID string) {
 		go a.workbenchMirrorSnapshot(cli, result.Snapshot)
 		a.emitReady(a.ctx, tabID)
 		if workbenchSnapshotRuntimeReplaced(previous, result.Snapshot) {
-			a.emitRuntimeEvent("runtime:rebuilt", tabID, string(result.Snapshot.RuntimeEpoch))
+			a.emitWorkbenchRuntimeRebuilt(tabID, string(result.Snapshot.RuntimeEpoch))
 		}
 		return nil
 	})

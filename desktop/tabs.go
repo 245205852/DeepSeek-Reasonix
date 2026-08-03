@@ -3029,7 +3029,7 @@ func (a *App) SetActiveTab(tabID string) error {
 	if switched {
 		a.emitWorkbenchTarget("disconnected", targetID, targetGen, targetSeq, "")
 		a.emitReady(a.ctx, tabID)
-		a.emitRuntimeEvent("runtime:rebuilt", tabID)
+		a.emitWorkbenchLocalRuntimeRebuilt(tabID)
 	}
 	a.kickDeferredRebuildRetry()
 	return nil

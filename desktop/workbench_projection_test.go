@@ -12,6 +12,7 @@ import (
 	"reasonix/internal/eventwire"
 	"reasonix/internal/provider"
 	"reasonix/internal/remote/protocol"
+	workbenchclient "reasonix/internal/remote/workbench/client"
 )
 
 func strptr(value string) *string { return &value }
@@ -50,10 +51,46 @@ func TestWorkbenchSnapshotProjectionUsesRemoteWorkspaceAndProfile(t *testing.T) 
 			Model: "deepseek/deepseek-chat", Effort: "high", CollaborationMode: protocol.CollaborationNormal,
 			TokenMode: protocol.TokenFull, ToolApprovalMode: protocol.ToolApprovalAuto,
 		},
-	}}
+	}, RuntimeEpoch: "runtime-remote"}
 	meta := workbenchMeta(snapshot, "/srv/app")
 	if meta.WorkspaceRoot != "/srv/app" || meta.Label != "deepseek/deepseek-chat" || !meta.AutoApproveTools || meta.Bypass {
 		t.Fatalf("meta projection = %+v", meta)
+	}
+	if meta.Runtime.Phase != sessionRuntimeReady || meta.Runtime.Epoch != "runtime-remote" {
+		t.Fatalf("meta runtime projection = %+v, want ready runtime-remote", meta.Runtime)
+	}
+}
+
+func TestWorkbenchTabProjectionReplacesLocalRuntimeEpoch(t *testing.T) {
+	app := testAppWithOrderedTabs(t, "tab-a", "tab-a")
+	k := app.workbench()
+	_, generation, err := k.targets.BeginRemoteConnect("remote-host", "/srv/app")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := k.targets.MarkRemoteConnected(generation); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, _, err := k.targets.ActivateRemote(generation); err != nil {
+		t.Fatal(err)
+	}
+	k.mu.Lock()
+	k.remote = &workbenchclient.Client{}
+	k.remoteGen = generation
+	k.remoteTabID = "tab-a"
+	k.snapshot = protocol.SessionSnapshot{
+		Target:       protocol.RuntimeTarget{WorkspaceID: "workspace", SessionID: "session"},
+		RuntimeEpoch: "runtime-remote",
+		Meta: protocol.SessionMetaSnapshot{ResolvedProfile: protocol.ResolvedProfile{
+			Model: "remote/model", CollaborationMode: protocol.CollaborationNormal,
+			TokenMode: protocol.TokenFull, ToolApprovalMode: protocol.ToolApprovalAsk,
+		}},
+	}
+	k.mu.Unlock()
+
+	metas := app.ListTabs()
+	if len(metas) != 1 || metas[0].Runtime.Phase != sessionRuntimeReady || metas[0].Runtime.Epoch != "runtime-remote" {
+		t.Fatalf("Remote tab runtime projection = %+v", metas)
 	}
 }
 
