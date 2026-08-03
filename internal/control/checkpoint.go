@@ -1,7 +1,6 @@
 package control
 
 import (
-	"fmt"
 	"sync"
 
 	"reasonix/internal/checkpoint"
@@ -121,18 +120,6 @@ func (m *checkpointManager) fileState(path string) (checkpoint.FileState, bool) 
 		return checkpoint.FileState{}, false
 	}
 	return store.FileState(path)
-}
-
-// restoreCode reverts every file changed at or after turn to its pre-turn
-// content. Errors when checkpoints are disabled.
-func (m *checkpointManager) restoreCode(turn int) (written, deleted []string, err error) {
-	m.mu.Lock()
-	store := m.store
-	m.mu.Unlock()
-	if store == nil {
-		return nil, nil, fmt.Errorf("checkpoints unavailable")
-	}
-	return store.RestoreCode(turn)
 }
 
 // snapshot records a pre-edit file change into the open checkpoint — the
