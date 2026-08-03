@@ -6,12 +6,12 @@
       "date": "2026-08-03",
       "channel": "stable",
       "title": {
-        "en": "Safer reasoning, resilient updates, and reliable Windows launches",
-        "zh": "更安全的推理、可靠更新与 Windows 启动链路"
+        "en": "Provider-aware reasoning, resilient updates, and reliable Windows launches",
+        "zh": "模型感知推理、可靠更新与 Windows 启动链路"
       },
       "summary": {
-        "en": "This release strengthens reasoning and tool-call recovery, speeds up crash diagnostics, repairs native shortcut icons after updates, stops Remote profile resync loops, and fixes the Windows launcher path used by Scoop, alongside provider picker, workspace, and Creation UI improvements.",
-        "zh": "此版本加强了推理与工具调用恢复、加速崩溃诊断、自动修复更新后的原生快捷方式图标、阻止远程 Profile 重同步循环，并修复 Scoop 使用的 Windows 启动链路，同时改进了提供程序选择器、工作区与创作界面。"
+        "en": "This release adds the Token Rhythm provider with model-aware DeepSeek and GLM reasoning, strengthens reasoning and tool-call recovery, restores the CLI -c continuation shortcut, repairs native shortcut icons after updates, stops Remote profile resync loops, and fixes the Windows launcher path used by Scoop, alongside faster crash diagnostics and UI improvements.",
+        "zh": "此版本新增基元律动提供商及面向 DeepSeek 与 GLM 的模型感知推理，加强推理与工具调用恢复，恢复 CLI 的 -c 续聊快捷参数，自动修复更新后的原生快捷方式图标，阻止远程 Profile 重同步循环，并修复 Scoop 使用的 Windows 启动链路，同时加速崩溃诊断并改进界面。"
       },
       "surfaces": [
         "desktop"
@@ -53,6 +53,20 @@
           },
           "refs": [
             7186
+          ]
+        },
+        {
+          "kind": "new",
+          "title": {
+            "en": "Token Rhythm with model-aware reasoning",
+            "zh": "基元律动与模型感知推理"
+          },
+          "body": {
+            "en": "Added the Token Rhythm provider preset with model discovery, 14 curated models, vision metadata, and localized Desktop branding. DeepSeek V4 models expose supported effort scales, while GLM 5/5.1/5.2 use the official thinking.type request shape and preserve provider-issued reasoning history; matching legacy gateway configurations are detected automatically.",
+            "zh": "新增基元律动提供商预设，支持模型发现、14 个精选模型、视觉元数据和本地化桌面端品牌展示。DeepSeek V4 模型会提供其支持的推理强度，GLM 5/5.1/5.2 则使用官方 thinking.type 请求格式并保留提供商返回的推理历史；匹配的旧版网关配置也会自动识别。"
+          },
+          "refs": [
+            7301
           ]
         },
         {
@@ -171,6 +185,19 @@
             "refs": [
               7186
             ]
+          },
+          {
+            "title": {
+              "en": "Token Rhythm provider preset",
+              "zh": "基元律动提供商预设"
+            },
+            "body": {
+              "en": "Added model discovery, 14 curated models, vision metadata, localized branding, and model-specific DeepSeek and GLM reasoning behavior for Token Rhythm.",
+              "zh": "为基元律动新增模型发现、14 个精选模型、视觉元数据、本地化品牌展示，以及面向 DeepSeek 与 GLM 的模型专用推理行为。"
+            },
+            "refs": [
+              7301
+            ]
           }
         ],
         "improved": [
@@ -282,6 +309,19 @@
             "refs": [
               7277
             ]
+          },
+          {
+            "title": {
+              "en": "CLI continuation shorthand",
+              "zh": "CLI 续聊快捷参数"
+            },
+            "body": {
+              "en": "Fixed -c so it correctly aliases --continue for interactive and headless CLI sessions instead of exiting silently with a flag parsing error.",
+              "zh": "修复 -c，使其在交互式与无头 CLI 会话中正确等同于 --continue，不再因参数解析错误而静默退出。"
+            },
+            "refs": [
+              7223
+            ]
           }
         ]
       },
@@ -289,6 +329,7 @@
       "risks": [],
       "contributors": [
         "Li-Charles-One",
+        "Lxiny-zy",
         "SivanCola",
         "esengine",
         "paradoxSCH"
