@@ -691,6 +691,7 @@ const __T = {
     'delete': 'Delete',
     'delete_session': 'Delete Session',
     'cannot_delete_active': 'Cannot delete the active session',
+    'delete_failed': 'Could not delete the session. Check your connection and try again.',
     'search_sessions': 'Search sessions',
     'active': 'Active',
     'use_model': 'Use',
@@ -827,6 +828,7 @@ const __T = {
     'delete': '删除',
     'delete_session': '删除会话',
     'cannot_delete_active': '无法删除当前会话',
+    'delete_failed': '无法删除会话，请检查连接后重试',
     'search_sessions': '搜索会话',
     'active': '当前',
     'use_model': '使用',
@@ -1863,7 +1865,7 @@ $('#delete-confirm').onclick=()=>{
   post('/delete-session',{name}).then(async r=>{
     if(!r.ok){showNotice((await r.text()).trim()||('HTTP '+r.status),'warn');}
     loadSessions();
-  });
+  }).catch(()=>showNotice(__('delete_failed'),'warn'));
 };
 
 // welcome examples
