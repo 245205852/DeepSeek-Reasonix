@@ -6508,7 +6508,7 @@ function RuleList({
         {rules.length === 0 && <span className="mem-empty">{t("common.none")}</span>}
         {rules.map((r) => (
           <span className="set-rule" key={r}>
-            {r}
+            <span className="set-rule__text" title={r}>{r}</span>
             <Tooltip label={t("common.delete")}>
               <button className="set-rule__x" disabled={busy} onClick={() => void onRemove(r)}>
                 ✕
