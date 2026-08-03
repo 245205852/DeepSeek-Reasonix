@@ -123,6 +123,54 @@ func TestResolveSystemPromptProjectCannotReadReasonixHome(t *testing.T) {
 	}
 }
 
+func TestMergeFileSnapshotKeepsProjectPromptSourceAtomic(t *testing.T) {
+	home := t.TempDir()
+	root := t.TempDir()
+	t.Setenv("REASONIX_HOME", home)
+	const secret = "PROVIDER_SECRET=must-not-enter-system-prompt"
+	if err := os.WriteFile(filepath.Join(home, ".env"), []byte(secret), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	projectConfig := filepath.Join(root, "reasonix.toml")
+	if err := os.WriteFile(projectConfig, []byte("[agent]\nsystem_prompt_file = \".env\"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := Default()
+	reads := 0
+	meta, err := mergeFileSnapshotWithRead(cfg, projectConfig, func(path string) ([]byte, error) {
+		reads++
+		data, err := fileencoding.ReadFileUTF8(path)
+		if err != nil {
+			return nil, err
+		}
+		// Simulate an atomic config replacement after the read. The merged value
+		// and its provenance must still come from data, not from a second read.
+		if err := os.WriteFile(path, []byte("[agent]\nsystem_prompt = \"replacement\"\n"), 0o600); err != nil {
+			return nil, err
+		}
+		return data, nil
+	})
+	if err != nil {
+		t.Fatalf("mergeFileSnapshotWithRead: %v", err)
+	}
+	if reads != 1 {
+		t.Fatalf("config reads = %d, want exactly one", reads)
+	}
+	if !meta.IsDefined("agent", "system_prompt_file") {
+		t.Fatal("snapshot metadata lost project system_prompt_file")
+	}
+	cfg.systemPromptFileSource = promptFileSourceProject
+
+	got, err := cfg.ResolveSystemPromptForRoot(root)
+	if err == nil || !IsMissingSystemPromptFile(err) {
+		t.Fatalf("ResolveSystemPromptForRoot = %q, %v; want project-scoped missing error", got, err)
+	}
+	if strings.Contains(got, secret) || strings.Contains(err.Error(), filepath.Join(home, ".env")) {
+		t.Fatalf("project prompt resolution probed Reasonix credentials: got=%q err=%v", got, err)
+	}
+}
+
 func TestResolveSystemPromptUserConfigCanFallBackToReasonixHome(t *testing.T) {
 	home := t.TempDir()
 	root := t.TempDir()
