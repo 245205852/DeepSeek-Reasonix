@@ -1,0 +1,243 @@
+package boot
+
+import (
+	"context"
+	"strings"
+	"sync/atomic"
+
+	"reasonix/internal/command"
+	"reasonix/internal/control"
+	"reasonix/internal/extension"
+	"reasonix/internal/hook"
+	"reasonix/internal/plugin"
+	"reasonix/internal/provider"
+	"reasonix/internal/skill"
+	"reasonix/internal/tool"
+)
+
+// BuildResult is the full product of one runtime build: the ready-to-drive
+// controller plus the extension kernel's frozen view of the same assembly.
+// Snapshot is nil when kernel assembly failed — boot behavior is never
+// allowed to depend on it (see build). Runtime is the snapshot's bound
+// closable set; stage 3a always returns it empty because sidecar processes
+// arrive with stage 5.
+type BuildResult struct {
+	Controller *control.Controller
+	Snapshot   *extension.RuntimeSnapshot
+	Runtime    *extension.RuntimeSet
+}
+
+// runtimeGeneration is the process-wide build generation counter. The first
+// build gets generation 1 so 0 can mean "no snapshot" on a RuntimeSet built
+// outside the kernel pipeline.
+var runtimeGeneration atomic.Uint64
+
+// nextRuntimeGeneration returns the next build generation. Generations pair
+// with RuntimeSet.CloseIfGeneration so stale cleanup can never close a newer
+// runtime's resources.
+func nextRuntimeGeneration() uint64 { return runtimeGeneration.Add(1) }
+
+// BuildRuntime runs the full boot assembly and returns the controller
+// together with the extension kernel's frozen snapshot of the exact resources
+// the build wired — tools, skills, commands, hooks, MCP servers, providers,
+// and the composed system prompt. The snapshot is assembled from the in-hand
+// objects the build itself produced (discovery never re-runs), so it cannot
+// drift from what the controller actually uses, and it never makes an
+// otherwise-successful build fail: an assembly error degrades to a nil
+// Snapshot with a logged warning.
+func BuildRuntime(ctx context.Context, opts Options) (*BuildResult, error) {
+	return build(ctx, opts)
+}
+
+// Build loads config, resolves the model(s), and returns a Controller wrapping a
+// single Agent, or a two-model Coordinator when agent.planner_model is set. The
+// returned controller owns plugin subprocesses; call Close (via Controller.Close)
+// to release them.
+//
+// Build is the stage-3a compatibility wrapper over BuildRuntime: frontends
+// keep their existing signature while the kernel snapshot and runtime set
+// have no consumer yet.
+func Build(ctx context.Context, opts Options) (*control.Controller, error) {
+	res, err := BuildRuntime(ctx, opts)
+	if err != nil {
+		return nil, err
+	}
+	// The stage-3a runtime set is always empty (sidecar processes arrive in
+	// stage 5), so dropping it leaks nothing. Close a future non-empty set
+	// rather than orphaning its resources.
+	if res.Runtime != nil && res.Runtime.Len() > 0 {
+		_ = res.Runtime.Close()
+	}
+	return res.Controller, nil
+}
+
+// legacyAssembly carries the already-assembled runtime resources the kernel
+// snapshot is built from. Every field is the exact object the rest of the
+// build wired into the controller — the snapshot never re-derives anything.
+type legacyAssembly struct {
+	systemPrompt string
+	registry     *tool.Registry
+	skills       []skill.Skill
+	commands     []command.Command
+	hooks        []hook.ResolvedHook
+	mcpSpecs     []plugin.Spec
+	providers    []provider.Descriptor
+}
+
+// assembleLegacySnapshot freezes one boot's resources into an extension
+// kernel snapshot. ConflictCollect is deliberate: the legacy sources already
+// resolved their clashes inside their own discovery passes, and any residual
+// dispute must land on the snapshot's Diagnostics without changing whether
+// the session boots.
+func assembleLegacySnapshot(ctx context.Context, in legacyAssembly, generation uint64) (*extension.RuntimeSnapshot, *extension.RuntimeSet, error) {
+	b := extension.NewBuilder().
+		WithSystemPrompt(in.systemPrompt).
+		WithGeneration(generation).
+		WithConflictPolicy(extension.ConflictCollect).
+		AddContributor(extension.ContributorFunc{
+			ContributorName: "boot-legacy",
+			Fn: func(context.Context) ([]extension.Contribution, error) {
+				return legacyContributions(in), nil
+			},
+		})
+	return b.Build(ctx)
+}
+
+// legacyContributions maps the assembled runtime resources to kernel
+// contributions, reusing the extension package's per-kind mappers so scope
+// attribution stays in one place. Contributions whose IDs predate or violate
+// the kernel's ID contract are skipped: one pathological legacy name must not
+// take down the whole snapshot, and the live runtime is untouched either way.
+func legacyContributions(in legacyAssembly) []extension.Contribution {
+	specByName := map[string]plugin.Spec{}
+	for _, spec := range in.mcpSpecs {
+		specByName[mcpNormalizedServerName(spec.Name)] = spec
+	}
+	var out []extension.Contribution
+	for _, entry := range in.registry.ContractEntries() {
+		if !extension.ValidToolID(entry.Name) {
+			// Legacy MCP name normalization preserves uppercase characters,
+			// which predates the kernel's lowercase tool-ID contract. Such a
+			// tool keeps working in the live registry; it is skipped here
+			// rather than failing the whole snapshot.
+			continue
+		}
+		out = append(out, extension.Contribution{
+			Kind:    extension.KindTool,
+			ID:      entry.Name,
+			Source:  legacyToolSource(entry.Name, specByName),
+			Payload: entry,
+		})
+	}
+	for _, sk := range in.skills {
+		if !kernelID(sk.SlashName()) {
+			continue
+		}
+		out = append(out, extension.SkillContribution(sk))
+	}
+	for _, cmd := range in.commands {
+		if !kernelID(cmd.Name) {
+			continue
+		}
+		out = append(out, extension.CommandContribution(cmd))
+	}
+	perEvent := map[hook.Event]int{}
+	for _, h := range in.hooks {
+		seq := perEvent[h.Event]
+		perEvent[h.Event]++
+		out = append(out, extension.HookContribution(h, seq))
+	}
+	for _, spec := range in.mcpSpecs {
+		if !kernelID(spec.Name) {
+			// A server name outside the kernel ID contract cannot be a
+			// catalog entry; the server's tools still attribute through
+			// specByName above.
+			continue
+		}
+		out = append(out, extension.MCPServerContribution(spec))
+	}
+	for _, desc := range in.providers {
+		if !extension.IsProviderRef(desc.Ref) {
+			// The kernel keys providers on <name>/<model> refs; legacy
+			// catalogs can carry a bare provider name or a model that itself
+			// contains a slash. Those entries stay resolvable through the
+			// ordinary provider path but cannot be catalogued in a v1
+			// snapshot.
+			continue
+		}
+		out = append(out, extension.ProviderContribution(desc))
+	}
+	return out
+}
+
+// kernelID mirrors the generic ID hygiene the kernel validates for every
+// kind (non-empty, no whitespace). The kernel's parse step trims first, so
+// only interior whitespace or emptiness disqualifies.
+func kernelID(id string) bool {
+	id = strings.TrimSpace(id)
+	return id != "" && !strings.ContainsAny(id, " \t\n")
+}
+
+// legacyToolSource attributes a registry tool to its origin. MCP-backed tools
+// (the mcp__<server>__<tool> namespace) belong to the server's spec: a
+// package-owned server attributes to the plugin package, otherwise to the
+// server itself, both at the plugin tier. Everything else — and any MCP tool
+// whose server can no longer be matched to a spec — stays at the builtin
+// tier: the registry is the compile-time default surface, and an
+// unattributable entry must not masquerade as a higher one. Tool IDs are
+// unique inside one registry, so in stage 3a the scope is provenance only and
+// never decides a shadow race.
+func legacyToolSource(name string, specByName map[string]plugin.Spec) extension.ContributionSource {
+	if server, _, ok := tool.SplitMCPName(name); ok {
+		if spec, found := specByName[server]; found {
+			pluginID := strings.TrimSpace(spec.Package)
+			if pluginID == "" {
+				pluginID = spec.Name
+			}
+			origin := strings.TrimSpace(spec.ConfigSource)
+			if origin == "" {
+				origin = "mcp"
+			}
+			return extension.ContributionSource{Scope: extension.ScopePlugin, PluginID: pluginID, Origin: origin}
+		}
+	}
+	return extension.ContributionSource{Scope: extension.ScopeBuiltin, Origin: "builtin"}
+}
+
+// mcpNormalizedServerName returns the server name as it appears inside
+// mcp__<server>__<tool> registry names, i.e. after the plugin package's name
+// normalization (invalid characters replaced, collision hash appended).
+func mcpNormalizedServerName(name string) string {
+	return strings.TrimSuffix(strings.TrimPrefix(plugin.ToolPrefix(name), tool.MCPNamePrefix), "__")
+}
+
+// enabledMCPSpecs returns the deduplicated set of MCP server specs a build
+// enabled: the configured eager/background tiers plus host-session extras, or
+// the on-demand connect set under the Economy profile (whose servers enter
+// the registry only through connect_tool_source). Names are deduplicated so
+// the kernel catalog holds one entry per server.
+func enabledMCPSpecs(configSpecs, extraSpecs []plugin.Spec, onDemandNames []string, onDemandSpecs map[string]plugin.Spec, tokenEconomy bool) []plugin.Spec {
+	var out []plugin.Spec
+	seen := map[string]bool{}
+	add := func(spec plugin.Spec) {
+		name := strings.TrimSpace(spec.Name)
+		if name == "" || seen[name] {
+			return
+		}
+		seen[name] = true
+		out = append(out, spec)
+	}
+	if tokenEconomy {
+		for _, name := range onDemandNames {
+			add(onDemandSpecs[name])
+		}
+		return out
+	}
+	for _, spec := range configSpecs {
+		add(spec)
+	}
+	for _, spec := range extraSpecs {
+		add(spec)
+	}
+	return out
+}

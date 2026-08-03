@@ -63,6 +63,26 @@ func skillScope(sk skill.Skill) (Scope, string) {
 	}
 }
 
+// SkillContribution maps one discovered skill to its kernel contribution. The
+// canonical ID is the user-facing slash name, so a plugin skill ("pkg:name")
+// and a project skill ("name") occupy distinct IDs exactly as they do for the
+// user. Boot uses this to contribute the skill list its build already
+// assembled, so scope attribution lives in exactly one place.
+func SkillContribution(sk skill.Skill) Contribution {
+	scope, origin := skillScope(sk)
+	return Contribution{
+		Kind: KindSkill,
+		ID:   sk.SlashName(),
+		Source: ContributionSource{
+			PluginID: sk.Plugin,
+			Scope:    scope,
+			Origin:   origin,
+			Path:     sk.Path,
+		},
+		Payload: sk,
+	}
+}
+
 // SkillsContributor contributes a store's model-visible skills as KindSkill.
 // The canonical ID is the user-facing slash name, so a plugin skill
 // ("pkg:name") and a project skill ("name") occupy distinct IDs exactly as
@@ -78,30 +98,40 @@ func SkillsContributor(store *skill.Store) Contributor {
 			skills := store.List()
 			out := make([]Contribution, 0, len(skills))
 			for _, sk := range skills {
-				scope, origin := skillScope(sk)
-				out = append(out, Contribution{
-					Kind: KindSkill,
-					ID:   sk.SlashName(),
-					Source: ContributionSource{
-						PluginID: sk.Plugin,
-						Scope:    scope,
-						Origin:   origin,
-						Path:     sk.Path,
-					},
-					Payload: sk,
-				})
+				out = append(out, SkillContribution(sk))
 			}
 			return out, nil
 		},
 	}
 }
 
+// CommandContribution maps one resolved command to its kernel contribution.
+// Plugin commands map to the plugin tier. Non-plugin commands map to the
+// project tier: command.LoadRoots has already collapsed user-vs-project
+// ordering into a single winner, so the surviving entry represents the
+// strongest applicable scope.
+func CommandContribution(c command.Command) Contribution {
+	source := ContributionSource{
+		PluginID: c.Plugin,
+		Scope:    ScopeProject,
+		Origin:   "command_root",
+		Path:     c.Source,
+	}
+	if c.Plugin != "" {
+		source.Scope = ScopePlugin
+		source.Origin = "plugin"
+	}
+	return Contribution{
+		Kind:    KindCommand,
+		ID:      c.Name,
+		Source:  source,
+		Payload: c,
+	}
+}
+
 // CommandsContributor contributes the commands resolved by command.LoadRoots
 // as KindCommand. LoadRoots' later-root-wins and plugin namespacing run
-// first; the kernel sees the resolved set. Plugin commands map to the plugin
-// tier. Non-plugin commands map to the project tier: LoadRoots has already
-// collapsed user-vs-project ordering into a single winner, so the surviving
-// entry represents the strongest applicable scope. A load error aborts the
+// first; the kernel sees the resolved set. A load error aborts the
 // contribution — silently dropping a broken file is how a user's command
 // disappears without a trace.
 func CommandsContributor(roots ...command.Root) Contributor {
@@ -114,25 +144,27 @@ func CommandsContributor(roots ...command.Root) Contributor {
 			}
 			out := make([]Contribution, 0, len(commands))
 			for _, c := range commands {
-				source := ContributionSource{
-					PluginID: c.Plugin,
-					Scope:    ScopeProject,
-					Origin:   "command_root",
-					Path:     c.Source,
-				}
-				if c.Plugin != "" {
-					source.Scope = ScopePlugin
-					source.Origin = "plugin"
-				}
-				out = append(out, Contribution{
-					Kind:    KindCommand,
-					ID:      c.Name,
-					Source:  source,
-					Payload: c,
-				})
+				out = append(out, CommandContribution(c))
 			}
 			return out, nil
 		},
+	}
+}
+
+// HookContribution maps one resolved hook to its additive kernel
+// contribution. seq is the hook's per-event index in load order, so the
+// "event#n" ID matches the order hooks fire today (project, then plugin,
+// then global within an event).
+func HookContribution(h hook.ResolvedHook, seq int) Contribution {
+	return Contribution{
+		Kind: KindHook,
+		ID:   fmt.Sprintf("%s#%d", h.Event, seq),
+		Source: ContributionSource{
+			Scope:  hookScope(h.Scope),
+			Origin: h.Source,
+			Path:   h.Source,
+		},
+		Payload: h,
 	}
 }
 
@@ -150,16 +182,7 @@ func HooksContributor(opts hook.LoadOptions) Contributor {
 			for _, h := range hooks {
 				n := perEvent[h.Event]
 				perEvent[h.Event]++
-				out = append(out, Contribution{
-					Kind: KindHook,
-					ID:   fmt.Sprintf("%s#%d", h.Event, n),
-					Source: ContributionSource{
-						Scope:  hookScope(h.Scope),
-						Origin: h.Source,
-						Path:   h.Source,
-					},
-					Payload: h,
-				})
+				out = append(out, HookContribution(h, n))
 			}
 			return out, nil
 		},
@@ -180,6 +203,23 @@ func hookScope(s hook.Scope) Scope {
 	}
 }
 
+// MCPServerContribution maps one MCP server spec to its kernel contribution,
+// keyed by server name — the same identity that namespaces the server's tools
+// as mcp__<server>__<tool>.
+func MCPServerContribution(spec plugin.Spec) Contribution {
+	scope, origin := mcpScope(spec)
+	return Contribution{
+		Kind: KindMCPServer,
+		ID:   spec.Name,
+		Source: ContributionSource{
+			PluginID: spec.Package,
+			Scope:    scope,
+			Origin:   origin,
+		},
+		Payload: spec,
+	}
+}
+
 // MCPServersContributor contributes MCP server specs as KindMCPServer keyed
 // by server name — the same identity that namespaces the server's tools as
 // mcp__<server>__<tool>. Tier mapping follows the spec's provenance: plugin
@@ -191,17 +231,7 @@ func MCPServersContributor(specs ...plugin.Spec) Contributor {
 		Fn: func(context.Context) ([]Contribution, error) {
 			out := make([]Contribution, 0, len(specs))
 			for _, spec := range specs {
-				scope, origin := mcpScope(spec)
-				out = append(out, Contribution{
-					Kind: KindMCPServer,
-					ID:   spec.Name,
-					Source: ContributionSource{
-						PluginID: spec.Package,
-						Scope:    scope,
-						Origin:   origin,
-					},
-					Payload: spec,
-				})
+				out = append(out, MCPServerContribution(spec))
 			}
 			return out, nil
 		},
@@ -229,6 +259,17 @@ func mcpScope(spec plugin.Spec) (Scope, string) {
 	return ScopeGlobal, configSource
 }
 
+// ProviderContribution maps one provider descriptor to its kernel
+// contribution, keyed by ref ("provider/model") at the builtin tier.
+func ProviderContribution(desc provider.Descriptor) Contribution {
+	return Contribution{
+		Kind:    KindProvider,
+		ID:      desc.Ref,
+		Source:  ContributionSource{Scope: ScopeBuiltin, Origin: "provider_catalog"},
+		Payload: desc,
+	}
+}
+
 // ProvidersContributor contributes provider descriptors as KindProvider keyed
 // by ref ("provider/model"). Descriptors come from the built-in provider
 // catalog, so they sit at the builtin tier until a stage-3 source contributes
@@ -239,12 +280,7 @@ func ProvidersContributor(descs ...provider.Descriptor) Contributor {
 		Fn: func(context.Context) ([]Contribution, error) {
 			out := make([]Contribution, 0, len(descs))
 			for _, desc := range descs {
-				out = append(out, Contribution{
-					Kind:    KindProvider,
-					ID:      desc.Ref,
-					Source:  ContributionSource{Scope: ScopeBuiltin, Origin: "provider_catalog"},
-					Payload: desc,
-				})
+				out = append(out, ProviderContribution(desc))
 			}
 			return out, nil
 		},

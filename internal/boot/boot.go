@@ -28,6 +28,7 @@ import (
 	"reasonix/internal/control"
 	"reasonix/internal/environment"
 	"reasonix/internal/event"
+	"reasonix/internal/extension"
 	"reasonix/internal/guardian"
 	"reasonix/internal/history"
 	"reasonix/internal/hook"
@@ -176,11 +177,12 @@ func recoveryHeadlessMode(opts Options) bool {
 	return strings.TrimSpace(opts.HeadlessApprovalMode) != ""
 }
 
-// Build loads config, resolves the model(s), and returns a Controller wrapping a
-// single Agent, or a two-model Coordinator when agent.planner_model is set. The
-// returned controller owns plugin subprocesses; call Close (via Controller.Close)
-// to release them.
-func Build(ctx context.Context, opts Options) (*control.Controller, error) {
+// build is the assembly body behind BuildRuntime (and the Build compat
+// wrapper): it loads config, resolves the model(s), wires the full runtime,
+// and freezes the extension kernel snapshot from the objects it just
+// assembled. The returned controller owns plugin subprocesses; call Close
+// (via Controller.Close) to release them.
+func build(ctx context.Context, opts Options) (*BuildResult, error) {
 	stderr := opts.Stderr
 	if stderr == nil {
 		stderr = os.Stderr
@@ -1769,7 +1771,32 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 		ctrl.WireCapabilityRouting(cfg.Plugins, capSpecs, nil, capAudit)
 		ctrl.SetCapabilityProxyRouting(true)
 	}
-	return ctrl, nil
+
+	// Freeze the extension kernel's snapshot of exactly what this build wired.
+	// The snapshot is assembled from the in-hand objects above — discovery
+	// never re-runs — and assembly must never fail the boot: a kernel error
+	// degrades to a nil snapshot (logged) while the controller behaves exactly
+	// as before.
+	mcpSpecs := enabledMCPSpecs(configSpecs, extraSpecs, onDemandMCPNames, onDemandMCPSpecs, tokenEconomy)
+	providerResolver := opts.ProviderResolver
+	if providerResolver == nil {
+		providerResolver = NewLocalProviderResolver(cfg, proxySpec)
+	}
+	generation := nextRuntimeGeneration()
+	snap, runtimeSet, snapErr := assembleLegacySnapshot(ctx, legacyAssembly{
+		systemPrompt: sysPrompt,
+		registry:     reg,
+		skills:       skills,
+		commands:     cmds,
+		hooks:        resolvedHooks,
+		mcpSpecs:     mcpSpecs,
+		providers:    providerResolver.Catalog(),
+	}, generation)
+	if snapErr != nil {
+		slog.Warn("boot: extension snapshot assembly failed; continuing without a runtime snapshot", "err", snapErr)
+		runtimeSet = extension.NewRuntimeSet(generation)
+	}
+	return &BuildResult{Controller: ctrl, Snapshot: snap, Runtime: runtimeSet}, nil
 }
 
 // effectivePlannerModel centralizes planner precedence. The explicit ACP hard

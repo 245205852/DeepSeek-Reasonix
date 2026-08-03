@@ -110,6 +110,36 @@ func (f *acpFactory) SessionDir() string {
 // NewSession assembles the per-session controller. Resources (MCP subprocesses)
 // are released via the controller's Cleanup, run on ctrl.Close().
 func (f *acpFactory) NewSession(ctx context.Context, p acp.SessionParams) (*control.Controller, error) {
+	opts, err := f.sessionBootOptions(p)
+	if err != nil {
+		return nil, err
+	}
+	return boot.Build(ctx, opts)
+}
+
+// RebuildSession implements acp.SessionRebuilder: the replacement controller
+// comes from boot.Rebuild with the same boot.Options NewSession would use, so
+// _reasonix.io/session/reloadExtensions refreshes tool/skill/command/hook/
+// MCP/provider discovery while the session state migrates inside the boot
+// layer. ACP sessions hold no SharedHost — each controller owns its plugin
+// host, and the service releases the outgoing one only after the swap.
+func (f *acpFactory) RebuildSession(ctx context.Context, p acp.SessionParams, old *control.Controller) (*control.Controller, error) {
+	opts, err := f.sessionBootOptions(p)
+	if err != nil {
+		return nil, err
+	}
+	res, err := boot.Rebuild(ctx, old, opts)
+	if err != nil {
+		return nil, err
+	}
+	// The stage-3a runtime set is always empty, so nothing leaks by returning
+	// only the controller (see boot.Build's compatibility wrapper).
+	return res.Controller, nil
+}
+
+// sessionBootOptions builds the boot.Options every ACP session controller —
+// initial build or boot.Rebuild replacement — is assembled from.
+func (f *acpFactory) sessionBootOptions(p acp.SessionParams) (boot.Options, error) {
 	root := strings.TrimSpace(p.Cwd)
 	if root == "" {
 		if wd, err := os.Getwd(); err == nil {
@@ -117,13 +147,13 @@ func (f *acpFactory) NewSession(ctx context.Context, p acp.SessionParams) (*cont
 		}
 	}
 	if root != "" && !filepath.IsAbs(root) {
-		return nil, fmt.Errorf("session cwd must be an absolute path: %s", root)
+		return boot.Options{}, fmt.Errorf("session cwd must be an absolute path: %s", root)
 	}
 	bashOverride := ""
 	if f.bashOverride == "enforce" {
 		bashOverride = "enforce"
 	}
-	return boot.Build(ctx, boot.Options{
+	return boot.Options{
 		Model:                    firstNonEmpty(p.Model, f.model),
 		TokenMode:                firstNonEmpty(p.RuntimeProfile, f.profile),
 		RequireKey:               true,
@@ -140,7 +170,7 @@ func (f *acpFactory) NewSession(ctx context.Context, p acp.SessionParams) (*cont
 		SandboxNetworkOverride:   f.networkOverride,
 		SandboxBashOverride:      bashOverride,
 		WorkspaceOnly:            f.workspaceOnly,
-	})
+	}, nil
 }
 
 func (f *acpFactory) SessionRuntimeState(_ context.Context, p acp.SessionRuntimeStateParams) (acp.SessionRuntimeState, error) {

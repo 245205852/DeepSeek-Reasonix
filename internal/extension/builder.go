@@ -21,10 +21,11 @@ type Activator func(ctx context.Context, snap *RuntimeSnapshot) (*RuntimeSet, er
 // Activate. The pipeline is linear by design — every contributor sees the
 // same rules, and every consumer reads the same frozen result.
 type Builder struct {
-	contributors []Contributor
-	generation   uint64
-	systemPrompt string
-	activator    Activator
+	contributors   []Contributor
+	generation     uint64
+	systemPrompt   string
+	activator      Activator
+	conflictPolicy ConflictPolicy
 }
 
 // NewBuilder returns an empty builder with generation 0.
@@ -61,6 +62,33 @@ func (b *Builder) WithActivator(a Activator) *Builder {
 	return b
 }
 
+// ConflictPolicy selects how resolution treats same-tier duplicates of one
+// canonical ID claimed by distinct sources for a shadowed kind.
+type ConflictPolicy int
+
+const (
+	// ConflictFail is the default: a disputed ID aborts the build with a
+	// ConflictError. v1 extensions use it — a package must never silently
+	// override another package's capability.
+	ConflictFail ConflictPolicy = iota
+	// ConflictCollect keeps the deterministic winner (highest tier, then
+	// first registration) and records the dispute on the snapshot's
+	// Diagnostics instead of failing the build. Boot's legacy assembly uses
+	// it: those resources already resolved their clashes inside their own
+	// discovery passes, and surfacing a residual dispute must never change
+	// whether a session boots. Malformed contributions still fail validation,
+	// and replacement-slot disputes still fail resolution — only shadowing
+	// conflicts are collected.
+	ConflictCollect
+)
+
+// WithConflictPolicy sets how same-tier multi-source duplicates are treated.
+// The zero value is ConflictFail; see ConflictPolicy.
+func (b *Builder) WithConflictPolicy(p ConflictPolicy) *Builder {
+	b.conflictPolicy = p
+	return b
+}
+
 // ValidationError reports one malformed contribution. Build collects all of
 // them so a broken manifest surfaces every problem in one pass.
 type ValidationError struct {
@@ -79,7 +107,9 @@ func (e *ValidationError) Error() string {
 // Build runs the full pipeline and returns the frozen snapshot plus its bound
 // runtime resources. Any validation, conflict, or activation error aborts the
 // build: publishing half-resolved state would let a losing contribution leak
-// into the runtime.
+// into the runtime. Under ConflictCollect a shadowing conflict no longer
+// aborts: the deterministic winner is kept and the dispute is recorded on the
+// snapshot's Diagnostics.
 func (b *Builder) Build(ctx context.Context) (*RuntimeSnapshot, *RuntimeSet, error) {
 	raw, err := b.discover(ctx)
 	if err != nil {
@@ -89,11 +119,11 @@ func (b *Builder) Build(ctx context.Context) (*RuntimeSnapshot, *RuntimeSet, err
 	if err := validateContributions(parsed); err != nil {
 		return nil, nil, err
 	}
-	resolved, replacements, err := resolveContributions(parsed)
+	resolved, replacements, conflicts, err := resolveContributions(parsed, b.conflictPolicy)
 	if err != nil {
 		return nil, nil, err
 	}
-	snap := b.assemble(resolved, replacements)
+	snap := b.assemble(resolved, replacements, conflicts)
 	runtimeSet, err := b.activate(ctx, snap)
 	if err != nil {
 		return nil, nil, err
@@ -197,6 +227,23 @@ func validateToolContribution(ct Contribution) []error {
 	return errs
 }
 
+// ValidToolID reports whether id satisfies the kernel's tool-ID contract:
+// lowercase, and a well-formed mcp__<server>__<tool> name when the MCP
+// namespace prefix is present. It encodes the ID-shape half of
+// validateToolContribution (keep the two in sync); assemblers wrapping a
+// pre-kernel legacy registry use it to skip names that predate the contract
+// instead of failing the whole build.
+func ValidToolID(id string) bool {
+	if id != strings.ToLower(id) {
+		return false
+	}
+	if strings.HasPrefix(id, tool.MCPNamePrefix) {
+		_, _, ok := tool.SplitMCPName(id)
+		return ok
+	}
+	return true
+}
+
 // toolSchemaOf renders a tool contribution's payload into a provider schema.
 // Parameters are canonicalized here — once — so every consumer, including
 // CacheHash, sees identical bytes regardless of how the contributor marshaled
@@ -224,21 +271,26 @@ func toolSchemaOf(ct Contribution) (provider.ToolSchema, bool) {
 }
 
 // resolveContributions applies the winner rules and returns the effective
-// contribution set plus the replacement-slot owners.
+// contribution set, the replacement-slot owners, and — under ConflictCollect —
+// the shadowing disputes it resolved without failing.
 //
 // Shadowed kinds (tools, skills, commands, MCP servers, providers, prompts,
 // themes, UI actions, strategies): the highest-tier contribution wins the
-// canonical ID; distinct sources tied at that tier are a hard ConflictError —
-// the kernel refuses to pick a winner the user didn't ask for. Duplicates
-// from a single source collapse to the first registration, mirroring the
-// first-root-wins behavior inside today's discovery passes.
+// canonical ID; distinct sources tied at that tier are a hard ConflictError
+// under ConflictFail — the kernel refuses to pick a winner the user didn't
+// ask for — or a recorded ConflictError under ConflictCollect, with the same
+// deterministic winner kept. Duplicates from a single source collapse to the
+// first registration, mirroring the first-root-wins behavior inside today's
+// discovery passes.
 //
 // Hooks and interceptors are additive: every contribution survives and
 // nothing ever conflicts.
 //
 // Replacement claims come from payloads implementing SlotClaimer; a second
-// claimant for a slot is a hard SlotConflictError.
-func resolveContributions(cs []Contribution) ([]Contribution, map[Slot]ContributionSource, error) {
+// claimant for a slot is a hard SlotConflictError under both policies — a
+// slot replaces runtime behavior outright, so there is no shadowing winner
+// to keep.
+func resolveContributions(cs []Contribution, policy ConflictPolicy) (resolved []Contribution, replacements map[Slot]ContributionSource, conflicts []ConflictError, err error) {
 	type key struct {
 		kind ContributionKind
 		id   string
@@ -254,7 +306,7 @@ func resolveContributions(cs []Contribution) ([]Contribution, map[Slot]Contribut
 	}
 
 	var errs []error
-	resolved := make([]Contribution, 0, len(cs))
+	resolved = make([]Contribution, 0, len(cs))
 	claims := NewReplaceClaims()
 	for _, k := range order {
 		group := groups[k]
@@ -263,7 +315,15 @@ func resolveContributions(cs []Contribution) ([]Contribution, map[Slot]Contribut
 		} else {
 			winner, sources, conflicted := resolveGroup(group)
 			if conflicted {
-				errs = append(errs, &ConflictError{Kind: k.kind, ID: k.id, Sources: sources})
+				conflict := ConflictError{Kind: k.kind, ID: k.id, Sources: sources}
+				if policy == ConflictCollect {
+					// The dispute is surfaced on the snapshot; the winner
+					// rules above still decide what the runtime sees.
+					conflicts = append(conflicts, conflict)
+					resolved = append(resolved, winner)
+					continue
+				}
+				errs = append(errs, &conflict)
 				continue
 			}
 			resolved = append(resolved, winner)
@@ -284,14 +344,16 @@ func resolveContributions(cs []Contribution) ([]Contribution, map[Slot]Contribut
 		}
 	}
 	if err := errors.Join(errs...); err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
-	return resolved, claims.Claims(), nil
+	return resolved, claims.Claims(), conflicts, nil
 }
 
 // resolveGroup picks the winning contribution for one (kind, id): the first
 // registration among the highest-tier entries, plus whether the top tier is
-// disputed between distinct sources.
+// disputed between distinct sources. The winner is returned even when the
+// group is disputed so a ConflictCollect build keeps resolving to the same
+// deterministic entry; ConflictFail callers discard it.
 func resolveGroup(group []Contribution) (winner Contribution, sources []ContributionSource, conflicted bool) {
 	best := -1
 	for _, ct := range group {
@@ -305,14 +367,14 @@ func resolveGroup(group []Contribution) (winner Contribution, sources []Contribu
 			top = append(top, ct)
 		}
 	}
-	if sources, ok := conflictingSources(group); ok {
-		return Contribution{}, sources, true
-	}
 	winner = top[0]
 	for _, ct := range top[1:] {
 		if ct.Order < winner.Order {
 			winner = ct
 		}
+	}
+	if sources, ok := conflictingSources(group); ok {
+		return winner, sources, true
 	}
 	return winner, nil, false
 }
@@ -320,7 +382,10 @@ func resolveGroup(group []Contribution) (winner Contribution, sources []Contribu
 // assemble freezes the resolved set into an immutable snapshot. Everything
 // derivable is derived here — schemas rendered and sorted, chains grouped and
 // ordered, hashes computed — so snapshot accessors stay trivial copies.
-func (b *Builder) assemble(resolved []Contribution, replacements map[Slot]ContributionSource) *RuntimeSnapshot {
+// conflicts are the shadowing disputes a ConflictCollect build resolved with
+// its ordinary winner rules; they are frozen onto the snapshot as Diagnostics
+// in pipeline (first-appearance) order.
+func (b *Builder) assemble(resolved []Contribution, replacements map[Slot]ContributionSource, conflicts []ConflictError) *RuntimeSnapshot {
 	catalog := NewCatalog()
 	catalog.Add(resolved...)
 
@@ -347,6 +412,11 @@ func (b *Builder) assemble(resolved []Contribution, replacements map[Slot]Contri
 		repl[slot] = owner
 	}
 
+	diagnostics := make([]string, 0, len(conflicts))
+	for i := range conflicts {
+		diagnostics = append(diagnostics, conflicts[i].Error())
+	}
+
 	systemHash, toolsHash, cacheHash := computeCacheShape(b.systemPrompt, schemas)
 
 	catalog.freeze()
@@ -357,6 +427,7 @@ func (b *Builder) assemble(resolved []Contribution, replacements map[Slot]Contri
 		toolSchemas:      schemas,
 		interceptorChain: chains,
 		replacements:     repl,
+		diagnostics:      diagnostics,
 		cacheHash:        cacheHash,
 		systemHash:       systemHash,
 		toolsHash:        toolsHash,

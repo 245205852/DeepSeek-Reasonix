@@ -83,6 +83,16 @@ func splitProviderRef(ref string) (name, model string, ok bool) {
 	return name, model, true
 }
 
+// IsProviderRef reports whether ref is a kernel-shaped provider ID
+// ("<name>/<model>", exactly one slash). Legacy provider catalogs can carry
+// refs the kernel rejects at validation time — a bare provider name, or a
+// model that itself contains a slash — so assemblers wrapping those catalogs
+// use this to pre-filter entries instead of failing the whole build.
+func IsProviderRef(ref string) bool {
+	_, _, ok := splitProviderRef(ref)
+	return ok
+}
+
 // SlotClaimer is implemented by contribution payloads that replace a runtime
 // seam. The kernel enforces single ownership per slot at resolve time; it
 // does not judge whether a contributor was entitled to claim a slot — that

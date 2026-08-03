@@ -12,7 +12,11 @@
 // interface. Winner rules are resolved here, once, identically for every
 // caller: a higher-tier scope shadows a lower one for the same canonical ID,
 // same-tier duplicates from different sources are hard conflicts instead of
-// silent overrides, and hooks/interceptors stay additive.
+// silent overrides, and hooks/interceptors stay additive. Callers assembling
+// pre-kernel legacy resources (boot) can opt into ConflictCollect, which
+// records such conflicts on the snapshot's Diagnostics and keeps the
+// deterministic winner instead of failing the build; v1 extensions keep the
+// default ConflictFail.
 //
 // A RuntimeSnapshot is immutable after Freeze: every accessor returns
 // defensive copies, so a snapshot can be shared across turns, subagents, and

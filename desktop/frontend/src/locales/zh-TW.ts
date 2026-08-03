@@ -2812,6 +2812,7 @@ export const zhTW: Record<DictKey, string> = {
   "palette.cmd.appearance": "外觀",
   "palette.cmd.memory": "記憶",
   "palette.cmd.models": "模型",
+  "palette.cmd.reloadRuntime": "重載執行階段",
   "palette.group.remote": "遠端 SSH",
   "palette.remote.connect": "連線到 {host}",
   "palette.remote.open": "在 {host} 開啟遠端工作區",

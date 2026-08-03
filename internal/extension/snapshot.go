@@ -22,6 +22,7 @@ type RuntimeSnapshot struct {
 	toolSchemas      []provider.ToolSchema
 	interceptorChain map[InterceptorPoint][]Contribution
 	replacements     map[Slot]ContributionSource
+	diagnostics      []string
 	cacheHash        string
 	systemHash       string
 	toolsHash        string
@@ -66,6 +67,17 @@ func (s *RuntimeSnapshot) Replacements() map[Slot]ContributionSource {
 	for slot, owner := range s.replacements {
 		out[slot] = owner
 	}
+	return out
+}
+
+// Diagnostics returns human-readable notes about the assembly — currently the
+// shadowing disputes a ConflictCollect build resolved with its ordinary
+// winner rules instead of failing. Each entry names the kind, the canonical
+// ID, and every source that claimed it. The slice is a copy; empty means the
+// build resolved cleanly.
+func (s *RuntimeSnapshot) Diagnostics() []string {
+	out := make([]string, len(s.diagnostics))
+	copy(out, s.diagnostics)
 	return out
 }
 

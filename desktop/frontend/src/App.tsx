@@ -27,6 +27,7 @@ import {
   MessageSquare,
   Settings as SettingsIcon,
   Pencil,
+  RotateCw,
   Trash2,
   AlarmClock,
   Brain,
@@ -3875,6 +3876,21 @@ export default function App() {
       { id: "cmd-memory", group: t("palette.group.commands"), title: t("palette.cmd.memory"), icon: <Brain size={15} />, compact: true, keywords: ["memory", "记忆"], run: () => setSettingsTarget("memory") },
       { id: "cmd-models", group: t("palette.group.commands"), title: t("palette.cmd.models"), icon: <Cpu size={15} />, compact: true, keywords: ["model", "模型"], run: () => setSettingsTarget("models") },
       { id: "cmd-terminal", group: t("palette.group.commands"), title: t("rightDock.terminal"), icon: <TerminalSquare size={15} />, compact: true, keywords: ["terminal", "shell", "终端"], run: () => toggleTerminalPanel() },
+      {
+        id: "cmd-reload-runtime",
+        group: t("palette.group.commands"),
+        title: t("palette.cmd.reloadRuntime"),
+        icon: <RotateCw size={15} />,
+        compact: true,
+        keywords: ["reload", "runtime", "重载", "运行时"],
+        run: () => {
+          const tabID = activeTab?.id;
+          if (!tabID) return;
+          // Success/queued feedback arrives as a tab notice from the Go side;
+          // only hard failures need a toast here.
+          void app.ReloadRuntime(tabID).catch((err) => showToast(err instanceof Error ? err.message : String(err), "error"));
+        },
+      },
     ];
     const startOfDay = (d: Date) => new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
     const dayLabel = (ms: number) => {
@@ -3913,7 +3929,7 @@ export default function App() {
       };
     });
     return [...cmds, ...remoteItems, ...sessionItems];
-  }, [t, paletteSessions, remoteHosts, remoteStatuses, handleNewTab, openTrash, onResumeSession, openRemoteWorkspaceFromStatus, connectAndOpenRemoteWorkspace, openRightDockMode]);
+  }, [t, paletteSessions, remoteHosts, remoteStatuses, activeTab?.id, handleNewTab, openTrash, onResumeSession, openRemoteWorkspaceFromStatus, connectAndOpenRemoteWorkspace, openRightDockMode, showToast]);
   // Delete / rename act on disk, then re-fetch so the panel reflects the change.
   const onDeleteSession = useCallback(
     async (path: string) => {

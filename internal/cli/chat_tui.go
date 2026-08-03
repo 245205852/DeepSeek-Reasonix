@@ -315,9 +315,19 @@ type chatTUI struct {
 	// same-session tool grants and Plan-mode read-only command trust that
 	// don't travel through carry/resumePath (see Controller.RestoreSessionAuthorizations).
 	buildController func(spec controllerBuildSpec, carry []provider.Message, resumePath string, oldCtrl control.SessionAPI) (*control.Controller, error)
-	modelRef        string
-	runtimeProfile  string
-	effortLevel     string // "" when the current provider/model has no configurable effort
+	// rebuildRuntime builds the /reload replacement through boot.Rebuild:
+	// same model/profile/effort, but tools, skills, commands, hooks, MCP
+	// servers, and providers are discovered fresh and the session state
+	// migrates inside the boot layer. Set by chatREPL (it must NOT touch
+	// this model — the swap happens on the running copy); nil disables
+	// /reload.
+	rebuildRuntime runtimeRebuilder
+	// pendingReload coalesces /reload requests made while a turn or a runtime
+	// switch is in flight; the TurnDone drain runs it once the TUI is idle.
+	pendingReload  bool
+	modelRef       string
+	runtimeProfile string
+	effortLevel    string // "" when the current provider/model has no configurable effort
 
 	// leases owns the session lease guarding the TUI's active session file (set
 	// by chatREPL; nil in tests and when persistence is disabled). Every in-TUI
@@ -1559,6 +1569,12 @@ func (m chatTUI) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.queueEditDraft = ""
 				cmds = append(cmds, m.startTurn(interject, interject, interject))
 			}
+			// A /reload typed while the turn ran fires now that the TUI may be
+			// idle; the drain re-checks busy state (an interject above or a
+			// background job keeps it queued).
+			if c := m.drainQueuedRuntimeReload(); c != nil {
+				cmds = append(cmds, c)
+			}
 		}
 		if turnDone || gitMaybeChanged {
 			if c := m.refreshGitStatus(); c != nil {
@@ -1640,6 +1656,12 @@ func (m chatTUI) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// Starting a second one creates a race: two goroutines compete on
 			// p.Send (unbuffered), and the receiver may read them out of order,
 			// garbling the streamed text (words appear reordered).
+		}
+		// A /reload queued behind this switch runs now that it settled. On a
+		// failed switch the old controller still serves, so the reload simply
+		// retries against it.
+		if c := m.drainQueuedRuntimeReload(); c != nil {
+			cmds = append(cmds, c)
 		}
 
 	case promptResolvedMsg:
@@ -4054,6 +4076,10 @@ func (m *chatTUI) runSlashCommand(input string) tea.Cmd {
 			return nil
 		}
 		m.notice(fmt.Sprintf("commands reloaded: %d → %d commands", prev, len(m.commands)))
+
+	case "/reload":
+		m.echoLocalCommand(input)
+		return m.runReloadCommand()
 
 	case "/paste-image":
 		return m.beginClipboardImagePaste()

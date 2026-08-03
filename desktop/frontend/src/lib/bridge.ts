@@ -362,6 +362,10 @@ export interface AppBindings {
   SetEffortForTab(tabID: string, level: string): Promise<void>;
   SetTokenMode(mode: string): Promise<void>;
   SetTokenModeForTab(tabID: string, mode: string): Promise<void>;
+  // ReloadRuntime rebuilds the tab's agent runtime in place (tools, skills,
+  // commands, hooks, providers, MCP servers) via boot.Rebuild, keeping the
+  // session. Busy tabs queue one reload for when they go idle.
+  ReloadRuntime(tabID: string): Promise<void>;
   Memory(): Promise<MemoryView>;
   MemorySuggestions(): Promise<MemorySuggestionsView>;
   AcceptMemorySuggestion(suggestion: MemorySuggestion): Promise<string>;
@@ -3774,6 +3778,7 @@ function makeMockApp(): AppBindings {
           const tokenMode = normalizeTokenMode(mode);
           mockTabs = mockTabs.map((tab) => (tab.id === tabID ? { ...tab, tokenMode } : tab));
         },
+        async ReloadRuntime(_tabID) {},
     async Memory() {
       return {
         available: true,

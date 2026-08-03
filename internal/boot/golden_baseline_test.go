@@ -40,10 +40,10 @@ const goldenBaselineDir = "testdata/golden"
 // goldenBaseline is one deterministic capture of the provider-visible
 // runtime surface with zero extensions installed.
 type goldenBaseline struct {
-	SystemPrompt   string
-	ToolSchemas    []byte
-	ProviderReq    []byte
-	PrefixShape    agent.PrefixShape
+	SystemPrompt string
+	ToolSchemas  []byte
+	ProviderReq  []byte
+	PrefixShape  agent.PrefixShape
 }
 
 func captureGoldenBaseline(t *testing.T) goldenBaseline {
@@ -173,10 +173,10 @@ func TestGoldenBaselineNoExtensions(t *testing.T) {
 	shapeJSON = append(shapeJSON, '\n')
 
 	artifacts := map[string][]byte{
-		"system_prompt.txt":    []byte(first.SystemPrompt),
-		"tool_schemas.json":    first.ToolSchemas,
+		"system_prompt.txt":     []byte(first.SystemPrompt),
+		"tool_schemas.json":     first.ToolSchemas,
 		"provider_request.json": first.ProviderReq,
-		"prefix_shape.json":    shapeJSON,
+		"prefix_shape.json":     shapeJSON,
 	}
 
 	if os.Getenv("REASONIX_UPDATE_GOLDEN") == "1" {

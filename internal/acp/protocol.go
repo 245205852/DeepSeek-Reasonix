@@ -87,10 +87,18 @@ type AgentCapabilities struct {
 // ACP v1 reserves agentCapabilities._meta for vendor capability discovery.
 type ReasonixExtensionCapabilities struct {
 	SessionSteer *SessionSteerCapability `json:"sessionSteer,omitempty"`
+	// SessionReloadExtensions advertises the vendor runtime-reload method.
+	SessionReloadExtensions *SessionReloadExtensionsCapability `json:"sessionReloadExtensions,omitempty"`
 }
 
 // SessionSteerCapability identifies the vendor-namespaced steering method.
 type SessionSteerCapability struct {
+	Method string `json:"method"`
+}
+
+// SessionReloadExtensionsCapability identifies the vendor-namespaced runtime
+// reload method.
+type SessionReloadExtensionsCapability struct {
 	Method string `json:"method"`
 }
 
@@ -451,6 +459,24 @@ type SessionSteerResult struct{}
 
 // sessionSteerMethod follows ACP v1's reserved vendor-extension namespace.
 const sessionSteerMethod = "_reasonix.io/session/steer"
+
+// SessionReloadExtensionsParams addresses one live ACP session.
+type SessionReloadExtensionsParams struct {
+	SessionID string `json:"sessionId"`
+}
+
+// SessionReloadExtensionsResult reports whether the runtime reload ran
+// immediately (Queued false) or was coalesced behind a turn/rebuild in flight
+// to run when the session goes idle (Queued true).
+type SessionReloadExtensionsResult struct {
+	Queued bool `json:"queued,omitempty"`
+}
+
+// sessionReloadExtensionsMethod follows ACP v1's reserved vendor-extension
+// namespace, like sessionSteerMethod: only the "_<vendor>/" prefix is reserved
+// for vendor methods, so the bare "reasonix/session/reloadExtensions" form
+// could collide with a future official ACP method and must not be used.
+const sessionReloadExtensionsMethod = "_reasonix.io/session/reloadExtensions"
 
 // StopReason tells the client why a turn ended. Values match main's wire.
 type StopReason string
