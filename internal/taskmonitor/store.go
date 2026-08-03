@@ -3,6 +3,7 @@ package taskmonitor
 import (
 	"context"
 	"errors"
+	"time"
 )
 
 // ErrStoreVersionConflict reports that a snapshot CAS lost to another writer.
@@ -20,19 +21,30 @@ type Store interface {
 // IdempotencyRecord captures the binding between an idempotency key and the
 // operation it was used for.
 type IdempotencyRecord struct {
-	Key     string `json:"key"`
-	Op      string `json:"op"`
-	TaskID  string `json:"task_id"`
-	Version uint64 `json:"version"`
+	Key       string    `json:"key"`
+	Op        string    `json:"op"`
+	TaskID    string    `json:"task_id"`
+	Version   uint64    `json:"version"`
+	Pending   bool      `json:"pending,omitempty"`
+	ClaimedAt time.Time `json:"claimed_at,omitempty"`
+}
+
+// IdempotencyClaimer atomically reserves a key before a control operation
+// performs any side effect. Pending claims can be finalized or released.
+type IdempotencyClaimer interface {
+	ClaimIdempotency(ctx context.Context, projectDir string, r IdempotencyRecord) (*IdempotencyRecord, error)
+	FinalizeIdempotency(ctx context.Context, projectDir string, r IdempotencyRecord) error
+	ReleaseIdempotency(ctx context.Context, projectDir, key string) error
 }
 
 // WriteStore extends Store with atomic write operations for control
 // commands, persistent idempotency, and event sequencing.
 //
 // Transaction ordering for control operations:
-//  1. SaveTask        — persist state with version CAS
-//  2. AppendAuditEvent — atomically assign sequence + write event
-//  3. RecordIdempotency — atomically claim the idempotency key
+//  1. ClaimIdempotency — reserve the key before runtime/state side effects
+//  2. SaveTask         — persist state with version CAS
+//  3. AppendAuditEvent — atomically assign sequence + write event
+//  4. FinalizeIdempotency — mark the claim complete
 //
 // Steps 2-3 failures after a successful SaveTask leave the task in the new
 // state with a potentially incomplete audit log. This is acceptable for a

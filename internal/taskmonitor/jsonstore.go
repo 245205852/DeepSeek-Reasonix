@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 )
 
 // FileStore is a Store backed by a JSON file tree under a project-local
@@ -497,6 +498,155 @@ func (s *FileStore) CheckIdempotency(ctx context.Context, projectDir string, key
 		return nil, nil
 	}
 	return &rec, nil
+}
+
+func (s *FileStore) idempotencyPaths(projectDir, key string) (string, string, string, error) {
+	root, err := s.taskRoot(projectDir)
+	if err != nil {
+		return "", "", "", err
+	}
+	id, err := safeID(key)
+	if err != nil {
+		return "", "", "", err
+	}
+	dir := filepath.Join(root, ".idempotency")
+	if err := rejectSymlink(dir); err != nil {
+		return "", "", "", err
+	}
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return "", "", "", err
+	}
+	_ = os.Chmod(dir, 0o700)
+	target := filepath.Join(dir, id+".json")
+	lock := filepath.Join(dir, id+".lock")
+	if err := rejectSymlink(target); err != nil {
+		return "", "", "", err
+	}
+	if err := rejectSymlink(lock); err != nil {
+		return "", "", "", err
+	}
+	return dir, target, lock, nil
+}
+
+func (s *FileStore) ClaimIdempotency(ctx context.Context, projectDir string, r IdempotencyRecord) (*IdempotencyRecord, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	_, target, lockPath, err := s.idempotencyPaths(projectDir, r.Key)
+	if err != nil {
+		return nil, err
+	}
+	lf, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		return nil, err
+	}
+	defer lf.Close()
+	_ = lf.Chmod(0o600)
+	if err := lockTaskFile(lf); err != nil {
+		return nil, err
+	}
+	defer unlockTaskFile(lf)
+	data, err := os.ReadFile(target)
+	if err == nil {
+		var existing IdempotencyRecord
+		if jsonErr := json.Unmarshal(data, &existing); jsonErr != nil {
+			return nil, fmt.Errorf("idempotency claim: parse existing record: %w", jsonErr)
+		}
+		if existing.Pending && timeNow().Sub(existing.ClaimedAt) > 5*time.Minute {
+			_ = os.Remove(target)
+		} else {
+			return &existing, nil
+		}
+	} else if !os.IsNotExist(err) {
+		return nil, err
+	}
+	if r.ClaimedAt.IsZero() {
+		r.ClaimedAt = timeNow()
+	}
+	r.Pending = true
+	data, err = json.Marshal(r)
+	if err != nil {
+		return nil, err
+	}
+	if err := os.WriteFile(target, data, 0o600); err != nil {
+		return nil, err
+	}
+	_ = os.Chmod(target, 0o600)
+	return nil, nil
+}
+
+func (s *FileStore) FinalizeIdempotency(ctx context.Context, projectDir string, r IdempotencyRecord) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	_, target, lockPath, err := s.idempotencyPaths(projectDir, r.Key)
+	if err != nil {
+		return err
+	}
+	lf, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		return err
+	}
+	defer lf.Close()
+	if err := lockTaskFile(lf); err != nil {
+		return err
+	}
+	defer unlockTaskFile(lf)
+	data, err := os.ReadFile(target)
+	if err != nil {
+		return err
+	}
+	var existing IdempotencyRecord
+	if err := json.Unmarshal(data, &existing); err != nil {
+		return err
+	}
+	if existing.Op != r.Op || existing.TaskID != r.TaskID || existing.Version != r.Version {
+		return fmt.Errorf("idempotency key conflict: different params")
+	}
+	existing.Pending = false
+	data, err = json.Marshal(existing)
+	if err != nil {
+		return err
+	}
+	if err := os.WriteFile(target, data, 0o600); err != nil {
+		return err
+	}
+	_ = os.Chmod(target, 0o600)
+	return nil
+}
+
+func (s *FileStore) ReleaseIdempotency(ctx context.Context, projectDir, key string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	_, target, lockPath, err := s.idempotencyPaths(projectDir, key)
+	if err != nil {
+		return err
+	}
+	lf, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		return err
+	}
+	defer lf.Close()
+	if err := lockTaskFile(lf); err != nil {
+		return err
+	}
+	defer unlockTaskFile(lf)
+	data, err := os.ReadFile(target)
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	var existing IdempotencyRecord
+	if err := json.Unmarshal(data, &existing); err != nil {
+		return err
+	}
+	if existing.Pending {
+		return os.Remove(target)
+	}
+	return nil
 }
 
 // RecordIdempotency implements WriteStore.

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"sort"
 	"sync"
+	"time"
 )
 
 // defaultSchemaVersion is used when AppendEvent implicitly creates a
@@ -313,5 +314,51 @@ func (s *InMemoryStore) RecordIdempotency(ctx context.Context, projectDir string
 	}
 	cp := r
 	s.idemRecs[r.Key] = &cp
+	return nil
+}
+
+func (s *InMemoryStore) ClaimIdempotency(ctx context.Context, projectDir string, r IdempotencyRecord) (*IdempotencyRecord, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	_ = projectDir
+	_ = ctx
+	if s.idemRecs == nil {
+		s.idemRecs = make(map[string]*IdempotencyRecord)
+	}
+	if existing, ok := s.idemRecs[r.Key]; ok {
+		cp := *existing
+		if cp.Pending && timeNow().Sub(cp.ClaimedAt) > 5*time.Minute {
+			cp = r
+			s.idemRecs[r.Key] = &cp
+			return nil, nil
+		}
+		return &cp, nil
+	}
+	cp := r
+	s.idemRecs[r.Key] = &cp
+	return nil, nil
+}
+
+func (s *InMemoryStore) FinalizeIdempotency(ctx context.Context, projectDir string, r IdempotencyRecord) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	_ = projectDir
+	_ = ctx
+	existing, ok := s.idemRecs[r.Key]
+	if !ok || existing.Op != r.Op || existing.TaskID != r.TaskID || existing.Version != r.Version {
+		return fmt.Errorf("idempotency key conflict: different params")
+	}
+	existing.Pending = false
+	return nil
+}
+
+func (s *InMemoryStore) ReleaseIdempotency(ctx context.Context, projectDir, key string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	_ = projectDir
+	_ = ctx
+	if rec, ok := s.idemRecs[key]; ok && rec.Pending {
+		delete(s.idemRecs, key)
+	}
 	return nil
 }

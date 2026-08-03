@@ -116,11 +116,31 @@ func (cs *ControlService) controlOp(ctx context.Context, projectDir, taskID stri
 	cs.mu.Lock()
 	defer cs.mu.Unlock()
 
+	var claimer IdempotencyClaimer
+	claimed := false
+	releaseClaim := func() {
+		if claimed && claimer != nil {
+			_ = claimer.ReleaseIdempotency(ctx, projectDir, idemKey)
+			claimed = false
+		}
+	}
+
 	// ── idempotency check (persisted) ──
 	if idemKey != "" {
-		rec, err := cs.store.CheckIdempotency(ctx, projectDir, idemKey)
-		if err != nil {
-			return ControlResult{}, fmt.Errorf("check idempotency: %w", err)
+		var rec *IdempotencyRecord
+		var err error
+		if c, ok := cs.store.(IdempotencyClaimer); ok {
+			claimer = c
+			rec, err = claimer.ClaimIdempotency(ctx, projectDir, IdempotencyRecord{Key: idemKey, Op: cmd, TaskID: taskID, Version: expectedVersion})
+			if err != nil {
+				return ControlResult{}, fmt.Errorf("claim idempotency: %w", err)
+			}
+			claimed = rec == nil
+		} else {
+			rec, err = cs.store.CheckIdempotency(ctx, projectDir, idemKey)
+			if err != nil {
+				return ControlResult{}, fmt.Errorf("check idempotency: %w", err)
+			}
 		}
 		if rec != nil {
 			// Must match exactly
@@ -129,6 +149,10 @@ func (cs *ControlService) controlOp(ctx context.Context, projectDir, taskID stri
 					SchemaVersion: 1, Command: cmd, TaskID: taskID,
 					Error: &CtrlError{Code: ErrTaskIdempotencyConflict, Message: "idempotency key reused with different parameters"},
 				}, nil
+			}
+			if rec.Pending {
+				return ControlResult{SchemaVersion: 1, Command: cmd, TaskID: taskID,
+					Error: &CtrlError{Code: ErrTaskInProgress, Message: "idempotency key is in progress"}}, nil
 			}
 			// Replay: fetch current state
 			snap, err := cs.store.GetTask(ctx, projectDir, taskID)
@@ -152,15 +176,18 @@ func (cs *ControlService) controlOp(ctx context.Context, projectDir, taskID stri
 	// ── fetch + validate ──
 	snap, err := cs.store.GetTask(ctx, projectDir, taskID)
 	if err != nil {
+		releaseClaim()
 		return ControlResult{}, err
 	}
 	if snap == nil {
+		releaseClaim()
 		return ControlResult{
 			SchemaVersion: 1, Command: cmd, TaskID: taskID,
 			Error: &CtrlError{Code: ErrTaskNotFound, Message: "task not found"},
 		}, nil
 	}
 	if expectedVersion != snap.Version {
+		releaseClaim()
 		return ControlResult{
 			SchemaVersion: 1, Command: cmd, TaskID: taskID, SessionID: snap.SessionID,
 			State: snap.State, RuntimeState: snap.RuntimeState, Version: snap.Version,
@@ -170,6 +197,7 @@ func (cs *ControlService) controlOp(ctx context.Context, projectDir, taskID stri
 	requeue := cmd == "requeue"
 	requeueable := requeue && (snap.State == TaskStateFailed || snap.State == TaskStateStale)
 	if requeue && !requeueable {
+		releaseClaim()
 		return ControlResult{
 			SchemaVersion: 1, Command: cmd, TaskID: taskID, SessionID: snap.SessionID,
 			State: snap.State, RuntimeState: snap.RuntimeState, Version: snap.Version,
@@ -177,6 +205,7 @@ func (cs *ControlService) controlOp(ctx context.Context, projectDir, taskID stri
 		}, nil
 	}
 	if requeueable && snap.RuntimeState.Effective() == RuntimeStateAlive {
+		releaseClaim()
 		return ControlResult{
 			SchemaVersion: 1, Command: cmd, TaskID: taskID, SessionID: snap.SessionID,
 			State: snap.State, RuntimeState: snap.RuntimeState, Version: snap.Version,
@@ -184,6 +213,7 @@ func (cs *ControlService) controlOp(ctx context.Context, projectDir, taskID stri
 		}, nil
 	}
 	if snap.State.Terminal() && !requeueable {
+		releaseClaim()
 		return ControlResult{
 			SchemaVersion: 1, Command: cmd, TaskID: taskID, SessionID: snap.SessionID,
 			State: snap.State, RuntimeState: snap.RuntimeState, Version: snap.Version,
@@ -191,6 +221,7 @@ func (cs *ControlService) controlOp(ctx context.Context, projectDir, taskID stri
 		}, nil
 	}
 	if !requeueable && !snap.State.ValidTransition(targetState) {
+		releaseClaim()
 		return ControlResult{
 			SchemaVersion: 1, Command: cmd, TaskID: taskID, SessionID: snap.SessionID,
 			State: snap.State, RuntimeState: snap.RuntimeState, Version: snap.Version,
@@ -198,6 +229,7 @@ func (cs *ControlService) controlOp(ctx context.Context, projectDir, taskID stri
 		}, nil
 	}
 	if (cmd == "stop" || cmd == "cancel") && killer == nil {
+		releaseClaim()
 		return ControlResult{
 			SchemaVersion: 1, Command: cmd, TaskID: taskID, SessionID: snap.SessionID,
 			State: snap.State, RuntimeState: snap.RuntimeState, Version: snap.Version,
@@ -205,6 +237,7 @@ func (cs *ControlService) controlOp(ctx context.Context, projectDir, taskID stri
 		}, nil
 	}
 	if (cmd == "stop" || cmd == "cancel") && !killer.Kill(snap.SessionID, taskID) {
+		releaseClaim()
 		return ControlResult{
 			SchemaVersion: 1, Command: cmd, TaskID: taskID, SessionID: snap.SessionID,
 			State: snap.State, RuntimeState: snap.RuntimeState, Version: snap.Version,
@@ -218,6 +251,7 @@ func (cs *ControlService) controlOp(ctx context.Context, projectDir, taskID stri
 	snap.UpdatedAt = timeNow()
 
 	if err := cs.store.SaveTask(ctx, projectDir, *snap); err != nil {
+		releaseClaim()
 		if errors.Is(err, ErrStoreVersionConflict) {
 			latest, getErr := cs.store.GetTask(ctx, projectDir, taskID)
 			if getErr != nil {
@@ -252,6 +286,7 @@ func (cs *ControlService) controlOp(ctx context.Context, projectDir, taskID stri
 		auditEv.ErrorSummary = secrets.RedactCredentials(reason)
 	}
 	if err := cs.store.AppendAuditEvent(ctx, projectDir, auditEv); err != nil {
+		releaseClaim()
 		// State is committed but audit is missing. This is a degraded
 		// but not silent state — the caller receives an error.
 		return ControlResult{
@@ -263,7 +298,14 @@ func (cs *ControlService) controlOp(ctx context.Context, projectDir, taskID stri
 	// ── 3. RecordIdempotency (claim key after successful mutation) ──
 	if idemKey != "" {
 		rec := IdempotencyRecord{Key: idemKey, Op: cmd, TaskID: taskID, Version: expectedVersion}
-		if err := cs.store.RecordIdempotency(ctx, projectDir, rec); err != nil {
+		var err error
+		if claimer != nil {
+			err = claimer.FinalizeIdempotency(ctx, projectDir, rec)
+			claimed = false
+		} else {
+			err = cs.store.RecordIdempotency(ctx, projectDir, rec)
+		}
+		if err != nil {
 			return ControlResult{}, fmt.Errorf("record idempotency: %w", err)
 		}
 	}

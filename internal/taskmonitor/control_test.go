@@ -273,6 +273,40 @@ func TestControlService_AuditEvent(t *testing.T) {
 	}
 }
 
+func TestControlService_FileStoreClaimsIdempotencyBeforeSideEffects(t *testing.T) {
+	project := t.TempDir()
+	store := NewFileStore(".reasonix/tasks")
+	now := time.Now()
+	if err := store.SaveTask(context.Background(), project, TaskSnapshot{
+		SchemaVersion: 1, TaskID: "t1", SessionID: "s1", State: TaskStateRunning,
+		RuntimeState: RuntimeStateAlive, Version: 1, CreatedAt: now, UpdatedAt: now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	claimed := make(chan struct{})
+	release := make(chan struct{})
+	killer := &mockKiller{fn: func(string, string) bool {
+		close(claimed)
+		<-release
+		return true
+	}}
+	firstDone := make(chan ControlResult, 1)
+	go func() {
+		res, _ := NewControlService(store).StopTaskWithKiller(context.Background(), project, "t1", 1, "", "same-key", killer)
+		firstDone <- res
+	}()
+	<-claimed
+	second, err := NewControlService(store).StopTaskWithKiller(context.Background(), project, "t1", 1, "", "same-key", &mockKiller{fn: func(string, string) bool { t.Fatal("second request reached runtime"); return true }})
+	if err != nil || second.Error == nil || second.Error.Code != ErrTaskInProgress {
+		t.Fatalf("expected pending idempotency claim, got result=%+v err=%v", second, err)
+	}
+	close(release)
+	first := <-firstDone
+	if !first.Accepted || first.State != TaskStateCancelled {
+		t.Fatalf("first operation not accepted: %+v", first)
+	}
+}
+
 func TestControlService_AuditSequenceMonotonic(t *testing.T) {
 	s := NewInMemoryStore()
 	cs := NewControlService(s)
