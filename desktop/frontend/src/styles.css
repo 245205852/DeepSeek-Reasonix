@@ -27818,6 +27818,27 @@ body > .mermaid-diagram--fullscreen {
   animation: graphite-tab-underline var(--dur-base) var(--ease-out) both;
 }
 
+/* Classic and Workbench use compact text tabs in the right dock. A restrained
+   hairline clarifies each hit target without turning the strip into boxed
+   segmented controls. Creation keeps its separate equal-column treatment. */
+.app--classic .workbench-dock__tab + .workbench-dock__tab,
+.app--workbench .workbench-dock__tab + .workbench-dock__tab {
+  position: relative;
+}
+
+.app--classic .workbench-dock__tab + .workbench-dock__tab::before,
+.app--workbench .workbench-dock__tab + .workbench-dock__tab::before {
+  content: "";
+  position: absolute;
+  top: 50%;
+  left: -1px;
+  width: 1px;
+  height: 16px;
+  background: color-mix(in srgb, var(--border-soft) 86%, transparent);
+  pointer-events: none;
+  transform: translateY(-50%);
+}
+
 :root[data-theme-style] .workspace-panel,
 :root[data-theme-style] .workspace-files,
 :root[data-theme-style] .workspace-preview,
@@ -33365,9 +33386,26 @@ body > .mermaid-diagram--fullscreen {
   padding-right: 18px;
 }
 
-.app--windows-frameless .workbench-dock__tools,
-:root[data-theme-style] .app--windows-frameless .workbench-dock__tools {
-  padding-right: var(--windows-window-controls-safe);
+/* Workbench hides AppChrome, so its dock is also the native title surface.
+   Keep the Windows caption buttons on a dedicated first row and render the
+   complete dock tab strip below it, matching Classic's separated chrome. */
+.app--windows-frameless.app--workbench .workbench-dock__tools,
+:root[data-theme-style] .app--windows-frameless.app--workbench .workbench-dock__tools {
+  position: relative;
+  height: calc(40px + var(--windows-window-controls-height));
+  padding: var(--windows-window-controls-height) 12px 0;
+}
+
+.app--windows-frameless.app--workbench .workbench-dock__tools::before,
+:root[data-theme-style] .app--windows-frameless.app--workbench .workbench-dock__tools::before {
+  content: "";
+  position: absolute;
+  top: calc(var(--windows-window-controls-height) - 1px);
+  right: 0;
+  left: 0;
+  height: 1px;
+  background: var(--border-soft);
+  pointer-events: none;
 }
 
 /* Creation sets tools padding via shorthand; re-assert the Windows safe
@@ -36595,29 +36633,15 @@ body > .mermaid-diagram--fullscreen {
   padding-bottom: 4px !important;
 }
 
-/* ── Windows frameless workbench: dock tab compression ─────────── */
-/* Only compress spacing; never shrink tabs or truncate labels.
-   Classic layout (.app--classic) is untouched. */
+/* Classic and Workbench share the same compact four-view strip at the dock's
+   minimum width. Creation keeps its equal-column tab treatment. */
 @container (max-width: 420px) {
-  .app--windows-frameless.app--workbench .workbench-dock__tools,
-  :root[data-theme-style] .app--windows-frameless.app--workbench .workbench-dock__tools {
-    /* 420 px dock → 12 px left pad     300 px dock →  4 px          */
-    padding-left: clamp(4px, calc(6.667 * 1cqi - 16px), 12px);
-  }
-  .app--windows-frameless.app--workbench .workbench-dock__tabs,
-  :root[data-theme-style] .app--windows-frameless.app--workbench .workbench-dock__tabs {
-    /* 420 px dock →  2 px gap          300 px dock →  0 px          */
-    gap: clamp(0px, calc(1.667 * 1cqi - 5px), 2px);
-  }
-  .app--windows-frameless.app--workbench .workbench-dock__tab,
-  :root[data-theme-style] .app--windows-frameless.app--workbench .workbench-dock__tab {
-    flex: 0 0 auto;
-    min-width: auto;
-    max-width: none;
-    /* 420 px dock → 12 px padding      300 px dock →  4 px          */
-    padding-left:  clamp(4px, calc(6.667 * 1cqi - 16px), 12px);
-    padding-right: clamp(4px, calc(6.667 * 1cqi - 16px), 12px);
-    /* icon↔label gap: 420→6px          300→2px                     */
-    gap:           clamp(2px, calc(3.333 * 1cqi - 8px), 6px);
+  .app--classic .workbench-dock__tab,
+  .app--workbench .workbench-dock__tab,
+  :root[data-theme-style] .app--classic .workbench-dock__tab,
+  :root[data-theme-style] .app--workbench .workbench-dock__tab {
+    padding-left: 10px;
+    padding-right: 10px;
+    gap: 4px;
   }
 }
