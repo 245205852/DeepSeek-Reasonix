@@ -53,12 +53,13 @@ func (m chatTUI) handleRewindKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	r := m.rewind
 	switch msg.String() {
 	case "esc":
-		if r.stage == 2 {
+		switch r.stage {
+		case 2:
 			r.stage = 1
 			r.pendingPlan = checkpoint.RewindPlan{}
-		} else if r.stage == 1 {
+		case 1:
 			r.stage = 0
-		} else {
+		default:
 			m.rewind = nil
 		}
 	case "up", "k":
@@ -78,11 +79,12 @@ func (m chatTUI) handleRewindKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			r.scope++
 		}
 	case "enter":
-		if r.stage == 0 {
+		switch r.stage {
+		case 0:
 			r.stage = 1
-		} else if r.stage == 1 {
+		case 1:
 			return m.applyRewind()
-		} else {
+		default:
 			return m.commitPreparedRewind()
 		}
 	case "y":
