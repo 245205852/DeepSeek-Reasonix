@@ -108,10 +108,6 @@ func webView2ProcessKindBucket(kind int) string {
 	return names[kind]
 }
 
-func webView2ProcessFailureReport(kind int) crashReport {
-	return webView2ProcessFailureReportWithContext(kind, 1, webView2RuntimeVersion())
-}
-
 func webView2ProcessFailureReportWithContext(kind, occurrence int, runtimeVersion string) crashReport {
 	bucket := webView2ProcessKindBucket(kind)
 	report := baseCrashReport("crash")
