@@ -2,6 +2,144 @@
   "schemaVersion": 1,
   "releases": [
     {
+      "version": "1.19.4",
+      "date": "2026-08-03",
+      "channel": "stable",
+      "title": {
+        "en": "Reasonix 1.19.4",
+        "zh": "Reasonix 1.19.4"
+      },
+      "summary": {
+        "en": "This release delivers important stability and usability fixes, including a guard against runaway agent reasoning, fixes for the provider model picker crash, Windows launcher junction resolution, and Windows workspace tab alignment.",
+        "zh": "此版本带来了重要的稳定性和可用性修复，包括防止代理推理失控的保护、提供程序模型选择器崩溃的修复、Windows 启动器目录联接解析以及 Windows 工作区标签页对齐。"
+      },
+      "surfaces": [
+        "desktop"
+      ],
+      "guides": [
+        {
+          "title": {
+            "en": "Reasonix Specification",
+            "zh": "Reasonix 规范文档"
+          },
+          "body": {
+            "en": "Refer to the Reasonix specification for detailed information about the protocol and features. A Simplified Chinese version is available at the same location.",
+            "zh": "请参阅 Reasonix 规范文档（中文版可在同一位置找到）以获取协议和功能的详细信息。"
+          },
+          "href": "https://github.com/esengine/DeepSeek-Reasonix/blob/88feabab21bf619483cac495010573dfec269599/docs/SPEC.md"
+        }
+      ],
+      "highlights": [
+        {
+          "kind": "fixed",
+          "title": {
+            "en": "Runaway reasoning guard and usage estimates",
+            "zh": "推理失控保护与用量估算"
+          },
+          "body": {
+            "en": "The agent now enforces a local 128 KB reasoning guard and supports configurable per-model output token budgets. When a stream ends without a usage record, the client estimates the approximate token usage (≈). Default output budgets are applied for official DeepSeek endpoints. This prevents unexpected token consumption and makes costs more predictable.",
+            "zh": "代理现在执行本地 128 KB 推理限制并支持可配置的每模型输出令牌预算。当流结束后没有用量记录时，客户端会估算大致令牌用量（≈）。官方 DeepSeek 端点默认应用输出预算。这防止意外的令牌消耗并使成本更可预测。"
+          },
+          "refs": [
+            7186
+          ]
+        },
+        {
+          "kind": "fixed",
+          "title": {
+            "en": "Provider model picker no longer crashes",
+            "zh": "提供程序模型选择器不再崩溃"
+          },
+          "body": {
+            "en": "Fixed a React Hook order issue that caused a crash when the model list was loaded asynchronously. The model picker now handles empty-to-populated transitions safely.",
+            "zh": "修复了一个 React Hook 顺序问题，该问题在异步加载模型列表时导致崩溃。模型选择器现在能安全地处理从空到填充的过渡。"
+          },
+          "refs": [
+            7195
+          ]
+        }
+      ],
+      "changes": {
+        "new": [],
+        "improved": [],
+        "fixed": [
+          {
+            "title": {
+              "en": "Fix Windows launcher junction resolution",
+              "zh": "修复 Windows 启动器目录联接解析"
+            },
+            "body": {
+              "en": "Resolve the running Windows launcher through its file handle so Scoop's current directory junction maps to the physical version directory, preventing installer validation failures.",
+              "zh": "通过文件句柄解析运行中的 Windows 启动器，使 Scoop 的 current 目录联接正确映射到物理版本目录，从而避免安装器校验失败。"
+            },
+            "refs": [
+              7275
+            ]
+          },
+          {
+            "title": {
+              "en": "Guard against runaway reasoning in agent",
+              "zh": "防止代理程序推理失控"
+            },
+            "body": {
+              "en": "Introduce a client-side 128 KB reasoning guard and configurable per-model output token budgets. When a response is cancelled before the final usage record arrives, the client now estimates usage and displays an approximate value (marked ≈). This prevents excessive token consumption and improves cost predictability.",
+              "zh": "引入客户端 128 KB 推理守护和可配置的每模型输出令牌预算。当响应在最终用量记录到达前被取消时，客户端现在会估算用量并显示近似值（标记为 ≈）。这防止了令牌过量消耗并提高了成本可预测性。"
+            },
+            "refs": [
+              7186
+            ]
+          },
+          {
+            "title": {
+              "en": "Fix provider model picker crash",
+              "zh": "修复提供程序模型选择器崩溃"
+            },
+            "body": {
+              "en": "Stabilize React Hook order when the model list transitions from empty to populated, preventing a crash that occurred when entering provider settings.",
+              "zh": "当模型列表从空变为有内容时稳定 React Hook 顺序，避免进入提供程序设置时崩溃。"
+            },
+            "refs": [
+              7195
+            ]
+          },
+          {
+            "title": {
+              "en": "Align Windows workspace dock tabs",
+              "zh": "统一 Windows 工作区标签栏"
+            },
+            "body": {
+              "en": "Ensure Classic and Workbench docks show only the four workspace views (Overview, Files, Changes, Remote) and correctly position Windows caption controls. This removes a duplicate Terminal tab and improves layout consistency.",
+              "zh": "确保经典版和工作台侧边栏仅显示四个工作区视图（概览、文件、变更、远程），并正确放置 Windows 标题控件。这移除了重复的终端标签页并改进了布局一致性。"
+            },
+            "refs": [
+              7270
+            ]
+          }
+        ]
+      },
+      "upgrade": [],
+      "risks": [],
+      "contributors": [
+        "SivanCola",
+        "paradoxSCH",
+        "esengine"
+      ],
+      "links": {
+        "github": "https://github.com/esengine/DeepSeek-Reasonix/releases/tag/desktop-v1.19.4",
+        "compare": "https://github.com/esengine/DeepSeek-Reasonix/compare/desktop-v1.19.3...desktop-v1.19.4",
+        "download": "https://reasonix.io/?download=desktop&channel=stable#start"
+      },
+      "releaseId": "1.19.4",
+      "baseVersion": "1.19.4",
+      "status": "reviewed",
+      "previousRelease": "1.19.3",
+      "builds": {
+        "cli": "v1.19.4",
+        "desktop": "v1.19.4",
+        "npm": "1.19.4"
+      }
+    },
+    {
       "version": "1.19.3",
       "date": "2026-08-02",
       "channel": "stable",
