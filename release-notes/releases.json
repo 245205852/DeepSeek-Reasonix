@@ -69,8 +69,8 @@
               "zh": "修复 Windows 启动器目录联接解析"
             },
             "body": {
-              "en": "Resolve the running Windows launcher through its file handle so Scoop's current directory junction maps to the physical version directory, preventing installer validation failures.",
-              "zh": "通过文件句柄解析运行中的 Windows 启动器，使 Scoop 的 current 目录联接正确映射到物理版本目录，从而避免安装器校验失败。"
+              "en": "Resolve the running Windows launcher through its file handle so Scoop's current directory junction maps to the physical version directory, preventing install-root validation failures.",
+              "zh": "通过文件句柄解析运行中的 Windows 启动器，使 Scoop 的 current 目录联接正确映射到物理版本目录，从而避免安装根目录校验失败。"
             },
             "refs": [
               7275
