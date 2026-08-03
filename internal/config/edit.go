@@ -401,8 +401,8 @@ func (c *Config) SetColdResumePrune(enabled bool) error {
 	return nil
 }
 
-// SetCompactRatio updates the advanced Desktop auto-compaction preference.
-// Keep the UI-owned range inside the default snip/force guard rails so lowering
+// SetCompactRatio updates the user-controlled auto-compaction threshold.
+// Keep the editable range inside the default snip/force guard rails so lowering
 // the threshold cannot accidentally turn normal cache growth into constant
 // compaction, while higher values still retain context-exhaustion headroom.
 func (c *Config) SetCompactRatio(ratio float64) error {
@@ -1712,6 +1712,22 @@ func SaveMinimalProjectReasoningLanguage(path, lang string) (string, error) {
 reasoning_language = %q
 `, cfg.ReasoningLanguage())
 	return cfg.ReasoningLanguage(), writeConfigFile(path, body)
+}
+
+// SaveMinimalProjectCompactRatio writes a new project config that only
+// overrides [agent].compact_ratio.
+func SaveMinimalProjectCompactRatio(path string, ratio float64) (float64, error) {
+	cfg := Default()
+	if err := cfg.SetCompactRatio(ratio); err != nil {
+		return 0, err
+	}
+	body := fmt.Sprintf(`# Reasonix project configuration.
+# Project-local overrides are merged over the user config.
+
+[agent]
+compact_ratio = %s
+`, formatFloat(cfg.Agent.CompactRatio))
+	return cfg.Agent.CompactRatio, writeConfigFile(path, body)
 }
 
 func writeConfigFile(path, body string) error {
