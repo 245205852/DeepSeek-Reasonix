@@ -2,7 +2,7 @@
 
 export const REMOTE_SCHEMA_FORMAT = "reasonix.remote.schema.v1" as const;
 export const REMOTE_PROTOCOL_VERSION = "1" as const;
-export const REMOTE_SCHEMA_HASH = "sha256:047432f60de24a79173cdf4a266aab75242fa2a1871115302fdf9e8f243614a1" as const;
+export const REMOTE_SCHEMA_HASH = "sha256:9e6946d39d1d4d0ee4a2ffd6bc0456707c1966b8284f9fc8ec0d16ce9f5bc1a0" as const;
 
 export const REMOTE_FIXED_RESOURCES = {
   "protocol": {
@@ -3719,7 +3719,7 @@ export type SessionProfileSetParamsHydrated = {
 
 export type SessionProfileSetResultRaw = {
   "autoResolvedPromptIds": Array<string>;
-  "disposition": "rebuilt" | "updated";
+  "disposition": "rebuilt" | "unchanged" | "updated";
   "resolvedProfile": {
     "collaborationMode": "goal" | "normal" | "plan";
     "effort": string;
@@ -3731,7 +3731,7 @@ export type SessionProfileSetResultRaw = {
 };
 export type SessionProfileSetResultHydrated = {
   "autoResolvedPromptIds": Array<string>;
-  "disposition": "rebuilt" | "updated";
+  "disposition": "rebuilt" | "unchanged" | "updated";
   "resolvedProfile": {
     "collaborationMode": "goal" | "normal" | "plan";
     "effort": string;

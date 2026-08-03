@@ -404,12 +404,11 @@ export function acceptsRuntimeEventEpoch(acceptedEpoch: string | undefined, even
 
 export function composerProfileApplicationKey(
   runtimeEpoch: string | undefined,
-  promptEpoch: number,
   collaborationMode: CollaborationMode,
   toolApprovalMode: ToolApprovalMode,
   goal: string,
 ): string {
-  return JSON.stringify([runtimeEpoch ?? "", promptEpoch, collaborationMode, toolApprovalMode, goal]);
+  return JSON.stringify([runtimeEpoch ?? "", collaborationMode, toolApprovalMode, goal]);
 }
 
 function metaWithoutCanonicalTodos(meta?: Meta): Meta | undefined {
@@ -2849,7 +2848,6 @@ export function useController() {
     const promptEpoch = state?.promptEpoch ?? 0;
     const key = composerProfileApplicationKey(
       runtimeEpochByTabRef.current.get(tabId) ?? state?.meta?.runtime?.epoch,
-      promptEpoch,
       collaborationMode,
       toolApprovalMode,
       goal,

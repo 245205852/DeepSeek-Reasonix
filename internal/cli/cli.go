@@ -444,6 +444,14 @@ func withNotifications(sink event.Sink, cfg *config.Config) event.Sink {
 	return notify.NewSink(sink, newNotificationSender(), cfg.Notifications)
 }
 
+// registerContinueFlag registers --continue with its -c shorthand. The
+// shorthand must go through BoolP (pflag shorthand), not BoolVar: BoolVar
+// registers "c" as a long flag name, which leaves "-c" unparseable
+// ("unknown shorthand flag: 'c' in -c") while accidentally accepting "--c".
+func registerContinueFlag(fs *pflag.FlagSet) *bool {
+	return fs.BoolP("continue", "c", false, "resume the most recent saved session")
+}
+
 func runAgent(args []string, version string) int {
 	fs := pflag.NewFlagSet("run", pflag.ContinueOnError)
 	fs.SetInterspersed(true)
@@ -453,8 +461,7 @@ func runAgent(args []string, version string) int {
 	showThinking := fs.Bool("show-thinking", false, "show thinking text instead of the collapsed thinking marker")
 	metricsPath := fs.String("metrics", "", "write a JSON token/cache/cost summary of the run to this path")
 	dir := fs.String("dir", "", "change to this directory first (project root); config, sandbox and file tools resolve from here")
-	cont := fs.Bool("continue", false, "resume the most recent saved session")
-	fs.BoolVar(cont, "c", false, "shorthand for --continue")
+	cont := registerContinueFlag(fs)
 	resume := fs.String("resume", "", "resume a specific session file (non-interactive; takes precedence over --continue)")
 	copySession := fs.Bool("copy", false, "with --resume/--continue: duplicate the session and continue in the copy (escape hatch when the original is held by another Reasonix process)")
 	effort := fs.String("effort", "", "session reasoning effort override")
@@ -468,8 +475,8 @@ func runAgent(args []string, version string) int {
 	var allowedToolValues []string
 	fs.StringArrayVar(&allowedToolValues, "allowed-tools", nil, "comma or space-separated permission rules to allow")
 	fs.StringArrayVar(&allowedToolValues, "allowedTools", nil, "alias for --allowed-tools")
-	if err := fs.Parse(args); err != nil {
-		return 2
+	if code, ok := parseCommandFlags(fs, args); !ok {
+		return code
 	}
 	resolvedPermissionMode, err := resolveRunPermissionMode(*permissionMode, *autoApprove, fs.Changed("permission-mode"))
 	if err != nil {
@@ -757,8 +764,8 @@ func runServe(args []string) int {
 	portFile := fs.String("port-file", "", "write the actual bound listen address (host:port) to this file after binding")
 	tokenFile := fs.String("token-file", "", "read the auth=token pre-shared token from this file (overrides --token; keeps the secret out of argv)")
 	pidFile := fs.String("pid-file", "", "write the server process id to this file")
-	if err := fs.Parse(args); err != nil {
-		return 2
+	if code, ok := parseCommandFlags(fs, args); !ok {
+		return code
 	}
 	profile, err := parseRuntimeProfile(*profileFlag)
 	if err != nil {
@@ -961,8 +968,7 @@ func chatREPL(args []string, version string) int {
 	model := fs.String("model", "", "provider name (default: config default_model)")
 	profileFlag := fs.String("profile", "balanced", "runtime profile: economy | balanced | delivery")
 	maxSteps := fs.Int("max-steps", 0, "one-off max tool-call rounds (0 = automatic)")
-	cont := fs.Bool("continue", false, "resume the most recent saved session")
-	fs.BoolVar(cont, "c", false, "shorthand for --continue")
+	cont := registerContinueFlag(fs)
 	resume := fs.StringP("resume", "r", "", "resume by session ID/query, or open the picker when no value is given")
 	fs.Lookup("resume").NoOptDefVal = resumePickerSentinel
 	copySession := fs.Bool("copy", false, "with --resume/--continue: duplicate the selected session and continue in the copy (escape hatch when the original is held by another Reasonix process)")
@@ -976,8 +982,8 @@ func chatREPL(args []string, version string) int {
 	var allowedToolValues []string
 	fs.StringArrayVar(&allowedToolValues, "allowed-tools", nil, "comma or space-separated permission rules to allow")
 	fs.StringArrayVar(&allowedToolValues, "allowedTools", nil, "alias for --allowed-tools")
-	if err := fs.Parse(normalizeOptionalResumeArg(args)); err != nil {
-		return 2
+	if code, ok := parseCommandFlags(fs, normalizeOptionalResumeArg(args)); !ok {
+		return code
 	}
 	allowedTools, err := splitAllowedToolRules(allowedToolValues)
 	if err != nil {
@@ -2271,8 +2277,8 @@ func configCommand(args []string) int {
 func configCurrencyCommand(args []string) int {
 	fs := flag.NewFlagSet("config currency", flag.ContinueOnError)
 	local := fs.Bool("local", false, "unsupported; pricing currency is user-level only")
-	if err := fs.Parse(args); err != nil {
-		return 2
+	if code, ok := parseCommandFlags(fs, args); !ok {
+		return code
 	}
 	if *local {
 		fmt.Fprintln(os.Stderr, i18n.M.ErrorPrefix, "currency is user-level only; --local is not supported")
@@ -2345,8 +2351,8 @@ var (
 
 func configTelemetryCommand(args []string) int {
 	fs := flag.NewFlagSet("config telemetry", flag.ContinueOnError)
-	if err := fs.Parse(args); err != nil {
-		return 2
+	if code, ok := parseCommandFlags(fs, args); !ok {
+		return code
 	}
 	rest := fs.Args()
 	if len(rest) > 1 {
@@ -2394,8 +2400,8 @@ func configTelemetryCommand(args []string) int {
 func configAutoPlanCompatibilityCommand(args []string) int {
 	fs := flag.NewFlagSet("config auto-plan", flag.ContinueOnError)
 	local := fs.Bool("local", false, "unsupported; automatic plan mode is retired")
-	if err := fs.Parse(args); err != nil {
-		return 2
+	if code, ok := parseCommandFlags(fs, args); !ok {
+		return code
 	}
 	if *local {
 		fmt.Fprintln(os.Stderr, i18n.M.ErrorPrefix, "auto-plan is user-level only; --local is not supported")
@@ -2422,8 +2428,8 @@ func configAutoPlanCompatibilityCommand(args []string) int {
 func configReasoningLanguageCommand(args []string) int {
 	fs := flag.NewFlagSet("config reasoning-language", flag.ContinueOnError)
 	local := fs.Bool("local", false, "write ./reasonix.toml instead of the user config")
-	if err := fs.Parse(args); err != nil {
-		return 2
+	if code, ok := parseCommandFlags(fs, args); !ok {
+		return code
 	}
 	rest := fs.Args()
 	if len(rest) > 1 {
