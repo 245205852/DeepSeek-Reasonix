@@ -245,6 +245,9 @@ func (s *FileStore) ListEvents(ctx context.Context, projectDir string, taskID st
 }
 
 func (s *FileStore) readSnapshot(taskDir string) (TaskSnapshot, error) {
+	if err := rejectSymlink(filepath.Join(taskDir, "snapshot.json")); err != nil {
+		return TaskSnapshot{}, err
+	}
 	data, err := os.ReadFile(filepath.Join(taskDir, "snapshot.json"))
 	if err != nil {
 		return TaskSnapshot{}, err
@@ -257,6 +260,9 @@ func (s *FileStore) readSnapshot(taskDir string) (TaskSnapshot, error) {
 }
 
 func (s *FileStore) readEvents(taskDir string) ([]TaskEvent, error) {
+	if err := rejectSymlink(filepath.Join(taskDir, "events.jsonl")); err != nil {
+		return nil, err
+	}
 	data, err := os.ReadFile(filepath.Join(taskDir, "events.jsonl"))
 	if err != nil {
 		return nil, err

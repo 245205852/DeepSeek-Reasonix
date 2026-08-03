@@ -187,6 +187,27 @@ func TestFileStore_RejectsSymlinkStoreParent(t *testing.T) {
 	}
 }
 
+func TestFileStore_RejectsSymlinkSnapshotAndEvents(t *testing.T) {
+	project := t.TempDir()
+	outside := t.TempDir()
+	root := filepath.Join(project, ".reasonix", "tasks", "t1")
+	if err := os.MkdirAll(root, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"snapshot.json", "events.jsonl"} {
+		if err := os.Symlink(filepath.Join(outside, name), filepath.Join(root, name)); err != nil {
+			t.Skipf("symlink unavailable: %v", err)
+		}
+	}
+	store := NewFileStore(".reasonix/tasks")
+	if _, err := store.GetTask(context.Background(), project, "t1"); err == nil {
+		t.Fatal("expected snapshot symlink to be rejected")
+	}
+	if _, err := store.ListEvents(context.Background(), project, "t1", 0); err == nil {
+		t.Fatal("expected events symlink to be rejected")
+	}
+}
+
 func TestFileStore_WritablePathsUsePrivateModes(t *testing.T) {
 	project := t.TempDir()
 	store := NewFileStore(".reasonix/tasks")

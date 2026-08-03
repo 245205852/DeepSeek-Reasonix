@@ -307,6 +307,26 @@ func TestControlService_FileStoreClaimsIdempotencyBeforeSideEffects(t *testing.T
 	}
 }
 
+func TestInMemoryStore_IdempotencyClaimIsPendingUntilFinalized(t *testing.T) {
+	store := NewInMemoryStore()
+	r := IdempotencyRecord{Key: "same-key", Op: "stop", TaskID: "t1", Version: 1}
+	first, err := store.ClaimIdempotency(context.Background(), "/p", r)
+	if err != nil || first != nil {
+		t.Fatalf("first claim = %+v, err=%v", first, err)
+	}
+	second, err := store.ClaimIdempotency(context.Background(), "/p", r)
+	if err != nil || second == nil || !second.Pending {
+		t.Fatalf("second claim = %+v, err=%v; want pending record", second, err)
+	}
+	if err := store.FinalizeIdempotency(context.Background(), "/p", r); err != nil {
+		t.Fatal(err)
+	}
+	final, err := store.ClaimIdempotency(context.Background(), "/p", r)
+	if err != nil || final == nil || final.Pending {
+		t.Fatalf("final claim = %+v, err=%v; want finalized record", final, err)
+	}
+}
+
 func TestControlService_AuditSequenceMonotonic(t *testing.T) {
 	s := NewInMemoryStore()
 	cs := NewControlService(s)

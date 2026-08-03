@@ -325,6 +325,10 @@ func (s *InMemoryStore) ClaimIdempotency(ctx context.Context, projectDir string,
 	if s.idemRecs == nil {
 		s.idemRecs = make(map[string]*IdempotencyRecord)
 	}
+	if r.ClaimedAt.IsZero() {
+		r.ClaimedAt = timeNow()
+	}
+	r.Pending = true
 	if existing, ok := s.idemRecs[r.Key]; ok {
 		cp := *existing
 		if cp.Pending && timeNow().Sub(cp.ClaimedAt) > 5*time.Minute {
