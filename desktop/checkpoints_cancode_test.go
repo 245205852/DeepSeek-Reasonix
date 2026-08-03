@@ -27,14 +27,19 @@ func TestDesktopRewindCommitAndUndoUseAuthoritativeControllerState(t *testing.T)
 	if err := os.WriteFile(filePath, []byte("after"), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	fileInfo, err := os.Stat(filePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	diskMode := uint32(fileInfo.Mode().Perm())
 	before := "before"
 	afterExists := true
 	seedCheckpoint(t, ckptDir, checkpoint.Checkpoint{
 		SchemaVersion: checkpoint.SchemaV2, Turn: 1, Time: time.Now(), Prompt: "edit", MsgIndex: 3,
 		Coverage: checkpoint.CoverageComplete,
 		Files: []checkpoint.FileSnap{{
-			Path: "a.txt", Content: &before, SHA256: checkpoint.Digest([]byte(before)), Mode: 0o644,
-			AfterExisted: &afterExists, AfterSHA256: checkpoint.Digest([]byte("after")), AfterMode: 0o644,
+			Path: "a.txt", Content: &before, SHA256: checkpoint.Digest([]byte(before)), Mode: diskMode,
+			AfterExisted: &afterExists, AfterSHA256: checkpoint.Digest([]byte("after")), AfterMode: diskMode,
 			CaptureSource: checkpoint.CaptureBeforeMutation,
 		}},
 	})
