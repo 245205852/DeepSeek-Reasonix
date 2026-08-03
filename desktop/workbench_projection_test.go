@@ -57,6 +57,16 @@ func TestWorkbenchSnapshotProjectionUsesRemoteWorkspaceAndProfile(t *testing.T) 
 	}
 }
 
+func TestWorkbenchEventProjectionPreservesRuntimeEpoch(t *testing.T) {
+	projected := workbenchWireEvent(protocol.SessionEvent{
+		RuntimeEpoch: "runtime-next",
+		Event:        eventwire.Event{Kind: "text", Text: "new runtime"},
+	}, "tab-remote")
+	if projected.TabID != "tab-remote" || projected.RuntimeEpoch != "runtime-next" || projected.Text != "new runtime" {
+		t.Fatalf("Remote event projection lost its runtime fence: %+v", projected)
+	}
+}
+
 func TestWorkbenchSnapshotRefreshOnlyRebuildsForRuntimeIdentityChange(t *testing.T) {
 	target := protocol.RuntimeTarget{WorkspaceID: "workspace", SessionID: "session"}
 	base := protocol.SessionSnapshot{Target: target, RuntimeEpoch: "runtime-1"}
@@ -173,12 +183,15 @@ func TestWorkbenchLateCallbackUsesCurrentProjectionTab(t *testing.T) {
 	// Remote was rebound to tab B. It must route through the current binding.
 	callbacks := app.workbenchClientCallbacks(generation, "a")
 	callbacks.OnSessionEvent(protocol.SessionEvent{
-		Seq: 1, Event: eventwire.Event{Kind: "text", Text: "late"},
+		Seq: 1, RuntimeEpoch: "runtime-current", Event: eventwire.Event{Kind: "text", Text: "late"},
 	})
 	select {
 	case got := <-events:
 		if got.TabID != "b" {
 			t.Fatalf("late callback tab = %q, want current projection b", got.TabID)
+		}
+		if got.RuntimeEpoch != "runtime-current" {
+			t.Fatalf("late callback runtime epoch = %q, want runtime-current", got.RuntimeEpoch)
 		}
 	case <-time.After(time.Second):
 		t.Fatal("late callback was not projected")

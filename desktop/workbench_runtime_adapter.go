@@ -94,7 +94,7 @@ func (a *App) workbenchClientCallbacks(generation uint64, tabID string) client.C
 				projectionTabID = tabID
 			}
 			if a.ctx != nil {
-				a.runtimeEvents.Emit(a.ctx, "agent:event", wireEventTab{Event: notification.Event, TabID: projectionTabID})
+				a.runtimeEvents.Emit(a.ctx, "agent:event", workbenchWireEvent(notification, projectionTabID))
 			}
 			k.transitionMu.Unlock()
 			if notification.Event.Kind == "turn_done" {
@@ -135,6 +135,13 @@ func (a *App) workbenchClientCallbacks(generation uint64, tabID string) client.C
 			a.emitReady(a.ctx, projectionTabID)
 			a.emitRuntimeEvent("runtime:rebuilt", projectionTabID)
 		},
+	}
+}
+
+func workbenchWireEvent(notification protocol.SessionEvent, tabID string) wireEventTab {
+	return wireEventTab{
+		Event: notification.Event, TabID: tabID,
+		RuntimeEpoch: string(notification.RuntimeEpoch),
 	}
 }
 
