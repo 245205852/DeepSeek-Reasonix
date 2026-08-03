@@ -283,6 +283,36 @@ func TestTrashReclaimableRecoveryBranchEnforcesGraceAtFinalGuard(t *testing.T) {
 	}
 }
 
+func TestPrepareRecoveryTrashEntryMakesTranscriptRecoverableBeforeMarker(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "cross-version.jsonl")
+	if err := os.WriteFile(path, []byte("conversation\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	key := filepath.Base(path)
+	_, itemDir, err := reserveRecoveryTrashItemDir(dir, key)
+	if err != nil {
+		t.Fatalf("reserveRecoveryTrashItemDir: %v", err)
+	}
+	if err := prepareRecoveryTrashEntry(path, key, itemDir); err != nil {
+		t.Fatalf("prepareRecoveryTrashEntry: %v", err)
+	}
+	if IsCleanupPending(path) {
+		t.Fatal("cleanup marker was published before the transcript became recoverable")
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("live transcript still exists after trash publication: %v", err)
+	}
+	for _, target := range []string{
+		filepath.Join(itemDir, key),
+		filepath.Join(itemDir, recoveryTrashMetaFile),
+	} {
+		if _, err := os.Stat(target); err != nil {
+			t.Fatalf("recoverable trash target %s: %v", target, err)
+		}
+	}
+}
+
 func TestReconcileCleanupPendingFinishesRecoveryTrashWithoutHardDeleteCallback(t *testing.T) {
 	dir := t.TempDir()
 	_, branchPath, _ := forkRecoveryBranch(t, dir, "trash-interrupted")
@@ -291,11 +321,11 @@ func TestReconcileCleanupPendingFinishesRecoveryTrashWithoutHardDeleteCallback(t
 	if err != nil {
 		t.Fatalf("reserveRecoveryTrashItemDir: %v", err)
 	}
+	if err := prepareRecoveryTrashEntry(branchPath, key, itemDir); err != nil {
+		t.Fatalf("prepare trash entry before simulated crash: %v", err)
+	}
 	if err := MarkCleanupPending(branchPath, recoveryTrashOperationPrefix+itemName); err != nil {
 		t.Fatalf("MarkCleanupPending: %v", err)
-	}
-	if err := moveRecoveryTrashPath(branchPath, filepath.Join(itemDir, key)); err != nil {
-		t.Fatalf("move transcript before simulated crash: %v", err)
 	}
 
 	calledFallback := false

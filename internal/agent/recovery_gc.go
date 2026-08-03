@@ -240,6 +240,13 @@ func TrashReclaimableRecoveryBranch(path, parentDir string) error {
 	if err != nil {
 		return err
 	}
+	// Publish the primary transcript in the recoverable Desktop trash before
+	// writing a cleanup-pending marker. Older Reasonix versions do not recognize
+	// recovery-trash operations and may route such a marker through their normal
+	// delete reconciler; by then the conversation itself must already be safe.
+	if err := prepareRecoveryTrashEntry(path, key, itemDir); err != nil {
+		return err
+	}
 	if err := MarkCleanupPending(path, recoveryTrashOperationPrefix+itemName); err != nil {
 		return err
 	}
@@ -259,9 +266,10 @@ func recoveryBranchIdle(path string, meta BranchMeta, now time.Time, grace time.
 }
 
 // reconcileRecoveryTrashPending completes an interrupted recovery-trash move.
-// The durable marker was written only after coverage was verified under the
-// parent guard, so reconciliation must finish the recoverable move even when
-// the live transcript has already been relocated and cannot be re-verified.
+// The durable marker is written only after coverage was verified under the
+// parent guard and the transcript became recoverable in .trash, so
+// reconciliation may finish moving sidecars even though the live transcript
+// has already been relocated and cannot be re-verified.
 func reconcileRecoveryTrashPending(item CleanupPendingInfo) (bool, error) {
 	operation := strings.TrimSpace(item.Meta.Operation)
 	if !strings.HasPrefix(operation, recoveryTrashOperationPrefix) {
@@ -307,7 +315,7 @@ func finishRecoveryTrashMove(dir, path, key, itemDir string, guard *SessionRemov
 	if err := os.MkdirAll(itemDir, 0o755); err != nil {
 		return err
 	}
-	for _, src := range recoveryTrashArtifacts(path) {
+	for _, src := range recoveryTrashSidecars(path) {
 		if err := moveRecoveryTrashPath(src, filepath.Join(itemDir, filepath.Base(src))); err != nil {
 			return err
 		}
@@ -315,12 +323,7 @@ func finishRecoveryTrashMove(dir, path, key, itemDir string, guard *SessionRemov
 	if err := moveRecoverySubagentArtifacts(dir, path, itemDir); err != nil {
 		return err
 	}
-	meta := recoveryTrashMeta{Key: key, DeletedAt: time.Now().UnixMilli()}
-	b, err := json.MarshalIndent(meta, "", "  ")
-	if err != nil {
-		return err
-	}
-	if err := os.WriteFile(filepath.Join(itemDir, recoveryTrashMetaFile), b, 0o644); err != nil {
+	if err := writeRecoveryTrashMeta(itemDir, key); err != nil {
 		return err
 	}
 	// Keep the branch guard until the trash entry is complete and the hidden
@@ -332,9 +335,27 @@ func finishRecoveryTrashMove(dir, path, key, itemDir string, guard *SessionRemov
 	return guard.RemoveSidecarsAndRelease()
 }
 
-func recoveryTrashArtifacts(path string) []string {
-	artifacts := []string{path}
-	artifacts = append(artifacts, store.SessionSidecarFiles(path)...)
+func prepareRecoveryTrashEntry(path, key, itemDir string) error {
+	if err := writeRecoveryTrashMeta(itemDir, key); err != nil {
+		return err
+	}
+	return moveRecoveryTrashPath(path, filepath.Join(itemDir, key))
+}
+
+func writeRecoveryTrashMeta(itemDir, key string) error {
+	meta := recoveryTrashMeta{Key: key, DeletedAt: time.Now().UnixMilli()}
+	b, err := json.MarshalIndent(meta, "", "  ")
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(itemDir, 0o755); err != nil {
+		return err
+	}
+	return os.WriteFile(filepath.Join(itemDir, recoveryTrashMetaFile), b, 0o644)
+}
+
+func recoveryTrashSidecars(path string) []string {
+	artifacts := append([]string(nil), store.SessionSidecarFiles(path)...)
 	artifacts = append(artifacts,
 		path+".telemetry.json",
 		store.SessionCheckpointDir(path),
