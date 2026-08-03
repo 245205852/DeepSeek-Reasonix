@@ -103,7 +103,7 @@ func New(cfg provider.Config) (provider.Provider, error) {
 	maxOutputTokens, _ := cfg.Extra["max_output_tokens"].(int)
 	deepseekV4Flash := strings.EqualFold(strings.TrimSpace(cfg.Model), "deepseek-v4-flash")
 	minimax := protocol == "" && IsMiniMax(cfg.BaseURL)
-	zhipu := protocol == "" && IsZhipu(cfg.BaseURL)
+	zhipu := protocol == "glm" || (protocol == "" && IsZhipu(cfg.BaseURL))
 	longcat := protocol == "" && IsLongCat(cfg.BaseURL)
 	ollamaCloud := protocol == "" && IsOllamaCloud(cfg.BaseURL)
 	kimiK3 := IsKimiAPI(cfg.BaseURL) && strings.EqualFold(strings.TrimSpace(cfg.Model), "kimi-k3")
@@ -292,11 +292,22 @@ func (c *client) RequiresToolCallReasoning() bool {
 }
 
 func (c *client) RequiresReasoningRoundTrip() bool {
-	return c != nil && c.kimiK3
+	return c != nil && (c.kimiK3 || c.glmThinkingEnabled())
 }
 
 func (c *client) WarnOnMissingToolCallReasoning() bool {
 	return c.RequiresToolCallReasoning() && expectsDeepSeekToolCallReasoning(c.model, c.thinkingType)
+}
+
+func (c *client) glmThinkingEnabled() bool {
+	if c == nil || !c.zhipu {
+		return false
+	}
+	t := c.effort
+	if c.thinkingType != "" {
+		t = c.thinkingType
+	}
+	return t != "disabled"
 }
 
 func expectsDeepSeekToolCallReasoning(model, thinkingType string) bool {
@@ -337,7 +348,7 @@ func (c *client) sendOpts() provider.SendOptions {
 
 func normalizeReasoningProtocol(raw string) string {
 	switch strings.ToLower(strings.TrimSpace(raw)) {
-	case "deepseek", "openai", "none":
+	case "deepseek", "glm", "openai", "none":
 		return strings.ToLower(strings.TrimSpace(raw))
 	default:
 		return ""
@@ -685,6 +696,12 @@ func (c *client) buildRequest(req provider.Request) chatRequest {
 				if c.RequiresToolCallReasoning() || m.ReasoningContent != "" {
 					cm.ReasoningContent = &m.ReasoningContent
 				}
+			case c.zhipu && m.ReasoningContent != "":
+				// GLM interleaved and preserved thinking require provider-issued
+				// reasoning content to be returned unchanged in later history. Keep
+				// an existing value even after thinking is turned off so an
+				// enabled→disabled session retains its valid history bytes.
+				cm.ReasoningContent = &m.ReasoningContent
 			}
 		}
 		for _, tc := range m.ToolCalls {

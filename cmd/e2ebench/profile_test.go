@@ -21,6 +21,18 @@ func TestAppendBenchmarkProfileArgsDeliveryUsesRealRuntimeProfile(t *testing.T) 
 	}
 }
 
+func TestBuildRunTaskArgsEnablesUnattendedWorkspaceWrites(t *testing.T) {
+	got := buildRunTaskArgs("metrics.json", "e2e", benchmarkProfileDelivery, 12, "fix it")
+	want := []string{
+		"run", "--auto", "--metrics", "metrics.json",
+		"--model", "e2e", "--max-steps", "12",
+		"--profile", "delivery", "fix it",
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("run task args = %v, want %v", got, want)
+	}
+}
+
 func TestNormalizeBenchmarkProfile(t *testing.T) {
 	for _, input := range []string{"", "baseline", " BASELINE "} {
 		if got, err := normalizeBenchmarkProfile(input); err != nil || got != benchmarkProfileBaseline {
