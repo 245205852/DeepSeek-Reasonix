@@ -6988,7 +6988,7 @@ function UpdatesSection({
         : t("updater.installing")
     ) :
     status.kind === "relaunching" || status.kind === "done" ? t("updater.done") :
-    status.kind === "error" ? t("updater.failed", { msg: status.message }) :
+    status.kind === "error" ? "" :
     "";
   const updateStatusTone =
     status.kind === "error" ? "error" :
@@ -6996,9 +6996,24 @@ function UpdatesSection({
     status.kind === "upToDate" || status.kind === "done" || status.kind === "relaunching" ? "success" :
     status.kind === "checking" || updaterBusy ? "busy" :
     "neutral";
+  const updateErrorTitle = status.kind === "error"
+    ? status.disposition === "recovery"
+      ? t("updater.recoveryBlocked")
+      : status.disposition === "manual"
+        ? t("updater.manualUpdateRequired")
+        : t("updater.failed", { msg: status.message })
+    : "";
+  const updateErrorHint = status.kind === "error"
+    ? status.disposition === "recovery"
+      ? t("updater.recoveryHint")
+      : status.disposition === "manual"
+        ? t("updater.manualFallbackHint")
+        : ""
+    : "";
+  const downloadIsPrimary = status.kind === "error" && status.disposition !== "retryable";
 
   return (
-    <SettingsSection title={t("updater.title")}>
+    <SettingsSection>
       <SettingsField
         className="settings-field--wide-copy updates-control"
         label={
@@ -7032,8 +7047,29 @@ function UpdatesSection({
           </Tooltip>
         </div>
       </SettingsField>
-      <div className="updates-control__hint">
-        <div>{t("updater.officialReleaseHint")}</div>
+      <div
+        className="updates-control__hint"
+        style={{ display: "flex", alignItems: "center", flexWrap: "wrap", gap: "4px 8px" }}
+      >
+        <span>{t("updater.officialReleaseHint")}</span>
+        <button
+          className="btn btn--small"
+          type="button"
+          onClick={openDownload}
+          style={{
+            height: "auto",
+            minHeight: 0,
+            padding: 0,
+            borderColor: "transparent",
+            background: "transparent",
+            color: "var(--fg-dim)",
+            textDecoration: "underline",
+            textUnderlineOffset: 2,
+          }}
+        >
+          {t("updater.officialDownload")}
+          <ExternalLink size={13} aria-hidden="true" />
+        </button>
       </div>
       {status.kind === "available" && (
         <div className="updates-control__action">
@@ -7049,66 +7085,37 @@ function UpdatesSection({
           </button>
         </div>
       )}
-      {status.kind === "error" && status.info && (
-        <div className="updates-control__action">
+      {status.kind === "error" && (
+        <div
+          className="banner banner--update banner--error"
+          role="alert"
+          style={{ alignItems: "flex-start", flexWrap: "wrap", marginBottom: 12 }}
+        >
+          <div style={{ flex: "1 1 360px", minWidth: 0 }}>
+            <div>{updateErrorTitle}</div>
+            {updateErrorHint && <div className="banner__hint">{updateErrorHint}</div>}
+            {status.disposition !== "retryable" && (
+              <div className="banner__hint" style={{ overflowWrap: "anywhere" }}>
+                {t("updater.errorDetails", { msg: status.message })}
+              </div>
+            )}
+          </div>
+          <span className="banner__spacer" />
+          {downloadIsPrimary && (
+            <button className="btn btn--primary btn--small" type="button" onClick={openDownload}>
+              {t("updater.officialDownload")}
+              <ExternalLink size={14} aria-hidden="true" />
+            </button>
+          )}
           <button
-            className="btn btn--primary btn--small"
+            className={`btn btn--small${downloadIsPrimary ? "" : " btn--primary"}`}
+            type="button"
             disabled={settingsBusy || updaterBusy}
-            onClick={() => applyUpdate(status.info!)}
+            onClick={() => status.info ? applyUpdate(status.info) : void check()}
           >
             {t("updater.retry")}
           </button>
         </div>
-      )}
-      <SettingsField
-        className="settings-field--wide-copy"
-        label={t("updater.autoCheckLabel")}
-        hint={t("updater.autoCheckHint")}
-      >
-        <ToggleSegment
-          value={checkUpdates}
-          disabled={settingsBusy}
-          onChange={(enabled) => void applySettings(() => app.SetDesktopCheckUpdates(enabled))}
-        />
-      </SettingsField>
-      <SettingsField
-        className="settings-field--wide-copy"
-        label={t("settings.telemetryLabel")}
-        hint={t("settings.telemetryHint")}
-      >
-        <ToggleSegment
-          value={telemetry}
-          disabled={settingsBusy}
-          onChange={(enabled) => void applySettings(() => app.SetDesktopTelemetry(enabled))}
-        />
-      </SettingsField>
-      <SettingsField
-        className="settings-field--wide-copy"
-        label={t("settings.metricsLabel")}
-        hint={t("settings.metricsHint")}
-      >
-        <ToggleSegment
-          value={metrics}
-          disabled={settingsBusy}
-          onChange={(enabled) => void applySettings(() => app.SetDesktopMetrics(enabled))}
-        />
-      </SettingsField>
-      {status.kind === "error" && (
-        <div className="banner banner--error">
-          {updateStatus}
-          {status.manualHint && (
-            <div className="mem-hint">
-              <button className="btn btn--small" onClick={openDownload}>
-                {t("updater.goToDownload")}
-              </button>
-            </div>
-          )}
-        </div>
-      )}
-      {configPath && (
-        <Tooltip label={configPath} fill block className="mem-hint settings-config-path">
-          {t("settings.config", { path: configPath })}
-        </Tooltip>
       )}
       <SettingsField
         className="settings-field--wide-copy"
@@ -7120,6 +7127,86 @@ function UpdatesSection({
           <ExternalLink size={14} aria-hidden="true" />
         </button>
       </SettingsField>
+      <SettingsField
+        className="settings-field--wide-copy"
+        label={t("feedback.title")}
+        hint={t("feedback.subtitle")}
+      >
+        <div className="settings-inline-controls">
+          <button
+            className="btn btn--small"
+            onClick={() => void openExternal("https://github.com/esengine/DeepSeek-Reasonix/issues/new/choose")}
+          >
+            {t("feedback.submitIssue")}
+            <ExternalLink size={14} aria-hidden="true" />
+          </button>
+          <button
+            className="btn btn--small"
+            onClick={() => void openExternal("https://github.com/esengine/DeepSeek-Reasonix/issues")}
+          >
+            {t("feedback.viewIssues")}
+            <ExternalLink size={14} aria-hidden="true" />
+          </button>
+        </div>
+      </SettingsField>
+      <details
+        className="provider-editor-advanced"
+        style={{
+          marginTop: 0,
+          borderRight: 0,
+          borderBottom: 0,
+          borderLeft: 0,
+          borderRadius: 0,
+          background: "transparent",
+        }}
+      >
+        <summary style={{ padding: "0 2px" }}>
+          <span className="provider-editor-advanced__title">
+            <ChevronDown className="provider-editor-advanced__icon" size={16} aria-hidden="true" />
+            {t("updater.privacyAndUpdatePreferences")}
+          </span>
+        </summary>
+        <div className="provider-editor-advanced__body">
+          <SettingsField
+            className="settings-field--wide-copy"
+            label={t("updater.autoCheckLabel")}
+            hint={t("updater.autoCheckHint")}
+          >
+            <ToggleSegment
+              value={checkUpdates}
+              disabled={settingsBusy}
+              onChange={(enabled) => void applySettings(() => app.SetDesktopCheckUpdates(enabled))}
+            />
+          </SettingsField>
+          <SettingsField
+            className="settings-field--wide-copy"
+            label={t("settings.telemetryLabel")}
+            hint={t("settings.telemetryHint")}
+          >
+            <ToggleSegment
+              value={telemetry}
+              disabled={settingsBusy}
+              onChange={(enabled) => void applySettings(() => app.SetDesktopTelemetry(enabled))}
+            />
+          </SettingsField>
+          <SettingsField
+            className="settings-field--wide-copy"
+            label={t("settings.metricsLabel")}
+            hint={t("settings.metricsHint")}
+          >
+            <ToggleSegment
+              value={metrics}
+              disabled={settingsBusy}
+              onChange={(enabled) => void applySettings(() => app.SetDesktopMetrics(enabled))}
+            />
+          </SettingsField>
+          {configPath && (
+            <Tooltip label={configPath} fill block className="mem-hint settings-config-path">
+              {t("settings.config", { path: configPath })}
+            </Tooltip>
+          )}
+        </div>
+      </details>
     </SettingsSection>
   );
 }
