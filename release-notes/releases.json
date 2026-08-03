@@ -6,12 +6,12 @@
       "date": "2026-08-03",
       "channel": "stable",
       "title": {
-        "en": "Reasonix v1.19.4 — Safer reasoning and reliable Windows launch chain",
-        "zh": "Reasonix v1.19.4 — 更安全的推理与可靠的 Windows 启动链路"
+        "en": "Safer reasoning and a reliable Windows launch path",
+        "zh": "更安全的推理与可靠的 Windows 启动链路"
       },
       "summary": {
-        "en": "This release brings important stability and usability fixes, including reasoning consumption protection to prevent token runaway, silent recovery of missing tool-call reasoning, significantly accelerated crash dashboard and preferences, provider model picker crash fix, Windows launcher directory junction resolution, and workspace tab alignment.",
-        "zh": "此版本带来了重要的稳定性和可用性修复，包括推理消耗保护以阻止令牌失控、工具调用推理缺失的静默恢复、显著加速的崩溃仪表板和偏好设置、提供程序模型选择器崩溃修复、Windows 启动器目录联接解析以及工作区标签页对齐。"
+        "en": "This release brings important stability and usability improvements, including a reasoning usage guard, silent recovery of missing tool-call reasoning, faster crash dashboard queries, a provider model picker crash fix, Windows launcher junction resolution, workspace tab alignment, and a more compact Creation toolbar.",
+        "zh": "此版本带来了重要的稳定性和可用性改进，包括推理消耗保护、工具调用推理缺失的静默恢复、更快的崩溃仪表板查询、提供程序模型选择器崩溃修复、Windows 启动器目录联接解析、工作区标签页对齐以及更紧凑的创作工具栏。"
       },
       "surfaces": [
         "desktop"
@@ -76,8 +76,8 @@
             "zh": "加速的崩溃仪表板与偏好设置"
           },
           "body": {
-            "en": "Precomputed 30-day preferences deduplication, making that view load in 68ms versus 5.6s for a 7-day window. Dropped redundant database indexes to speed up aggregate dashboard queries. Homepage avatars optimized to WebP for smaller downloads.",
-            "zh": "预计算了30天偏好去重，使该视图加载仅需68毫秒，而7天视图需5.6秒。删除了冗余数据库索引以加速仪表板聚合查询。首页头像优化为WebP格式，以减小下载量。"
+            "en": "Precomputed the 30-day preferences deduplication, making that view load in 68ms instead of the 5.6s required by the live 7-day query. Dropped redundant database indexes to speed up dashboard aggregate queries; homepage avatars were also optimized to WebP for smaller downloads.",
+            "zh": "预计算了 30 天偏好去重，使该视图加载仅需 68 毫秒，而实时计算的 7 天视图需要 5.6 秒。删除了冗余数据库索引以加速仪表板聚合查询；首页头像也优化为 WebP 格式，以减小下载量。"
           },
           "refs": [
             7279,
@@ -235,7 +235,6 @@
       "risks": [],
       "contributors": [
         "Li-Charles-One",
-        "github-actions[bot]",
         "SivanCola",
         "esengine",
         "paradoxSCH"
