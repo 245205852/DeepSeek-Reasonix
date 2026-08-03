@@ -723,24 +723,20 @@ func formatWebSearchResults(raw json.RawMessage) string {
 	if err := json.Unmarshal(raw, &results); err != nil {
 		return ""
 	}
-	if len(results) == 0 {
-		return ""
-	}
 	var b strings.Builder
-	b.WriteString("\n")
-	for i, r := range results {
+	for _, r := range results {
 		if r.Title == "" && r.URL == "" {
 			continue
 		}
-		b.WriteString(fmt.Sprintf("\n- **%s**", r.Title))
+		fmt.Fprintf(&b, "\n- **%s**", r.Title)
 		if r.URL != "" {
-			b.WriteString(fmt.Sprintf("\n  <%s>", r.URL))
-		}
-		if i == len(results)-1 {
-			b.WriteByte('\n')
+			fmt.Fprintf(&b, "\n  <%s>", r.URL)
 		}
 	}
-	return b.String()
+	if b.Len() == 0 {
+		return ""
+	}
+	return "\n" + b.String() + "\n"
 }
 
 // --- Messages API wire protocol ---
