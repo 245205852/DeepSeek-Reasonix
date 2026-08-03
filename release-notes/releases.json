@@ -10,8 +10,8 @@
         "zh": "模型感知推理、可靠更新与 Windows 启动链路"
       },
       "summary": {
-        "en": "This release adds the Token Rhythm provider with model-aware DeepSeek and GLM reasoning, strengthens reasoning and tool-call recovery, restores the CLI -c continuation shortcut, repairs native shortcut icons after updates, stops Remote profile resync loops, and fixes the Windows launcher path used by Scoop, alongside faster crash diagnostics and UI improvements.",
-        "zh": "此版本新增基元律动提供商及面向 DeepSeek 与 GLM 的模型感知推理，加强推理与工具调用恢复，恢复 CLI 的 -c 续聊快捷参数，自动修复更新后的原生快捷方式图标，阻止远程 Profile 重同步循环，并修复 Scoop 使用的 Windows 启动链路，同时加速崩溃诊断并改进界面。"
+        "en": "This release adds the Token Rhythm provider with model-aware DeepSeek and GLM reasoning, strengthens reasoning and tool-call recovery, restores the CLI -c continuation shortcut, repairs native shortcut icons after updates, stops Remote profile resync loops, and fixes the Windows launcher path used by Scoop, while preventing conditional React Hook crashes and making long decision details accessible without overflowing the Desktop.",
+        "zh": "此版本新增基元律动提供商及面向 DeepSeek 与 GLM 的模型感知推理，加强推理与工具调用恢复，恢复 CLI 的 -c 续聊快捷参数，自动修复更新后的原生快捷方式图标，阻止远程 Profile 重同步循环，并修复 Scoop 使用的 Windows 启动链路，同时防止条件式 React Hook 顺序崩溃，让较长的决策详情可访问且不会撑出桌面窗口。"
       },
       "surfaces": [
         "desktop"
@@ -103,15 +103,16 @@
         {
           "kind": "fixed",
           "title": {
-            "en": "Provider Model Picker No Longer Crashes",
-            "zh": "提供程序模型选择器不再崩溃"
+            "en": "Desktop React Hook Transitions No Longer Crash",
+            "zh": "桌面端 React Hook 状态切换不再崩溃"
           },
           "body": {
-            "en": "Fixed a React Hook order issue that caused a crash when the model list asynchronously loaded. The picker now safely handles the transition from empty to populated.",
-            "zh": "修复了React Hook顺序问题，该问题导致提供程序模型选择器在异步加载模型列表时崩溃。现在选择器能安全地处理从空到有内容的过渡。"
+            "en": "Fixed Hook ordering across asynchronously loaded model lists, built-in-to-custom provider editor transitions, and closed-to-open workspace code search. Production builds now enforce the React Hooks lint rules so the same class of crash is blocked before release.",
+            "zh": "修复了异步模型列表、内置到自定义提供商编辑器切换，以及工作区代码搜索从关闭到打开时的 Hook 顺序。生产构建现会强制执行 React Hooks 检查，在发布前阻止同类崩溃。"
           },
           "refs": [
-            7195
+            7195,
+            7310
           ]
         },
         {
@@ -247,15 +248,29 @@
           },
           {
             "title": {
-              "en": "Provider model picker crash",
-              "zh": "提供程序模型选择器崩溃"
+              "en": "Conditional React Hook crashes",
+              "zh": "条件式 React Hook 顺序崩溃"
             },
             "body": {
-              "en": "Fixed React Hook ordering so asynchronously loaded model lists no longer crash the picker.",
-              "zh": "修复 React Hook 顺序，使异步加载的模型列表不再导致选择器崩溃。"
+              "en": "Fixed Hook ordering in model lists, provider editing, and workspace code search, and added a build-time Hooks lint gate.",
+              "zh": "修复模型列表、提供商编辑和工作区代码搜索中的 Hook 顺序，并新增构建期 Hooks 检查门禁。"
             },
             "refs": [
-              7195
+              7195,
+              7310
+            ]
+          },
+          {
+            "title": {
+              "en": "Long decision details",
+              "zh": "较长的决策详情"
+            },
+            "body": {
+              "en": "Long Ask, approval, plan, safety, clear-context, and recovery descriptions now use an overflow-aware, keyboard- and touch-accessible disclosure while keeping consequences and action controls visible.",
+              "zh": "Ask、审批、计划、安全、清除上下文和恢复场景中的较长说明现在会使用感知溢出且支持键盘与触控的展开控件，同时保持后果提示和操作按钮可见。"
+            },
+            "refs": [
+              7300
             ]
           },
           {
