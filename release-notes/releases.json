@@ -6,8 +6,8 @@
       "date": "2026-08-03",
       "channel": "stable",
       "title": {
-        "en": "Reasonix v1.19.4",
-        "zh": "Reasonix v1.19.4"
+        "en": "Safer reasoning and a reliable Windows launch path",
+        "zh": "更安全的推理与可靠的 Windows 启动链路"
       },
       "summary": {
         "en": "This release brings important stability and usability fixes, including a reasoning usage guard to prevent runaway token consumption, silent recovery of missing tool-call reasoning, significantly faster crash dashboard and preferences, a fix for a provider model picker crash, Windows launcher junction resolution, and workspace tab alignment.",
@@ -76,8 +76,8 @@
             "zh": "加速的崩溃仪表板与偏好设置"
           },
           "body": {
-            "en": "Precomputed the 30-day preferences deduplication, making the 30-day view load in 68ms vs 5.6s for the 7-day view. Dropped redundant database indexes, speeding up all dashboard queries; homepage avatars also optimized to WebP for smaller downloads.",
-            "zh": "预计算了 30 天偏好去重，使 30 天视图加载仅需 68 毫秒，而 7 天视图需 5.6 秒。删除了冗余的数据库索引，加速了所有仪表板查询；首页头像也优化为 WebP 格式，以减小下载量。"
+            "en": "Precomputed the 30-day preferences deduplication, making that view load in 68ms instead of the 5.6s required by the live 7-day query. Dropped redundant database indexes to speed up dashboard aggregate queries; homepage avatars were also optimized to WebP for smaller downloads.",
+            "zh": "预计算了 30 天偏好去重，使该视图加载仅需 68 毫秒，而实时计算的 7 天视图需要 5.6 秒。删除了冗余数据库索引以加速仪表板聚合查询；首页头像也优化为 WebP 格式，以减小下载量。"
           },
           "refs": [
             7279,
@@ -107,8 +107,8 @@
             "zh": "Windows 启动器解析目录联接"
           },
           "body": {
-            "en": "Fixed the Windows launcher to correctly resolve directory junctions (like Scoop's 'current' link), preventing launch failures in environments that use symbolic links.",
-            "zh": "修复了 Windows 启动器以正确解析目录联接（如 Scoop 的“current”链接），防止在使用符号链接的环境中启动失败。"
+            "en": "Fixed the Windows launcher to correctly resolve directory junctions such as Scoop's 'current' link, preventing launch failures in junction-based installs.",
+            "zh": "修复了 Windows 启动器以正确解析 Scoop 的“current”等目录联接，防止通过目录联接安装时启动失败。"
           },
           "refs": [
             7275
@@ -222,7 +222,6 @@
       "contributors": [
         "SivanCola",
         "esengine",
-        "github-actions[bot]",
         "paradoxSCH"
       ],
       "links": {
