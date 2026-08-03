@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"path/filepath"
 	"reflect"
 	"runtime"
 	"strings"
@@ -643,7 +644,7 @@ func TestMissingReasoningRecoverySeparatesProviderConfigurations(t *testing.T) {
 	}
 }
 
-func TestHealthyToolCallReasoningRearmsFutureRegression(t *testing.T) {
+func TestThreeHealthyToolCallReasoningTurnsRearmFutureRegression(t *testing.T) {
 	stateDir := t.TempDir()
 	run := func(turns ...testutil.Turn) int {
 		mp := testutil.NewMock("deepseek-proxy", turns...)
@@ -659,11 +660,53 @@ func TestHealthyToolCallReasoningRearmsFutureRegression(t *testing.T) {
 	if got := run(missing, missing, testutil.Turn{Text: "done"}); got != 1 {
 		t.Fatalf("first incident retries = %d, want 1", got)
 	}
-	if got := run(healthy, testutil.Turn{Text: "done"}); got != 0 {
-		t.Fatalf("healthy turn retries = %d, want 0", got)
+	for healthyTurn := 1; healthyTurn <= missingReasoningHealthyResolveStreak; healthyTurn++ {
+		if got := run(healthy, testutil.Turn{Text: "done"}); got != 0 {
+			t.Fatalf("healthy turn %d retries = %d, want 0", healthyTurn, got)
+		}
 	}
 	if got := run(missing, missing, testutil.Turn{Text: "done"}); got != 1 {
 		t.Fatalf("post-recovery regression retries = %d, want 1", got)
+	}
+}
+
+func TestHealthyToolCallReasoningStreakWorksWithinOneAgentAndResetsOnMissing(t *testing.T) {
+	stateDir := t.TempDir()
+	prov := toolCallReasoningRequiredProvider{testutil.NewMock("deepseek-proxy")}
+	a := New(prov, echoRegistry(), NewSession(""), Options{MissingReasoningWarnStateDir: stateDir}, event.Discard)
+	calls := []provider.ToolCall{{ID: "c1", Name: "echo", Arguments: `{"text":"hi"}`}}
+
+	if missing, retry := a.observeMissingToolCallReasoning(calls, ""); !missing || !retry {
+		t.Fatalf("initial observation = missing:%v retry:%v, want true/true", missing, retry)
+	}
+	for healthy := 1; healthy < missingReasoningHealthyResolveStreak; healthy++ {
+		a.observeMissingToolCallReasoning(calls, "healthy reasoning")
+	}
+	if missing, retry := a.observeMissingToolCallReasoning(calls, ""); !missing || retry {
+		t.Fatalf("missing reset = missing:%v retry:%v, want true/false", missing, retry)
+	}
+	for healthy := 1; healthy <= missingReasoningHealthyResolveStreak; healthy++ {
+		a.observeMissingToolCallReasoning(calls, "healthy reasoning")
+	}
+	if missing, retry := a.observeMissingToolCallReasoning(calls, ""); !missing || !retry {
+		t.Fatalf("post-recovery observation = missing:%v retry:%v, want true/true", missing, retry)
+	}
+}
+
+func TestMissingReasoningRecoveryIOFailureStillSuppressesLocally(t *testing.T) {
+	statePath := filepath.Join(t.TempDir(), "not-a-directory")
+	if err := os.WriteFile(statePath, []byte("occupied"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	prov := toolCallReasoningRequiredProvider{testutil.NewMock("deepseek-proxy")}
+	a := New(prov, echoRegistry(), NewSession(""), Options{MissingReasoningWarnStateDir: statePath}, event.Discard)
+	calls := []provider.ToolCall{{ID: "c1", Name: "echo", Arguments: `{"text":"hi"}`}}
+
+	if missing, retry := a.observeMissingToolCallReasoning(calls, ""); !missing || !retry {
+		t.Fatalf("initial observation = missing:%v retry:%v, want true/true", missing, retry)
+	}
+	if missing, retry := a.observeMissingToolCallReasoning(calls, ""); !missing || retry {
+		t.Fatalf("repeated observation = missing:%v retry:%v, want true/false", missing, retry)
 	}
 }
 
@@ -695,6 +738,11 @@ func TestHealthyToolCallReasoningRetriesTransientStateWriteFailure(t *testing.T)
 		t.Fatal(err)
 	}
 	permissionsRestored = true
+	for healthy := 0; healthy < missingReasoningHealthyResolveStreak-1; healthy++ {
+		if missing, retry := a.observeMissingToolCallReasoning(calls, "healthy reasoning"); missing || retry {
+			t.Fatalf("healthy recovery observation %d = missing:%v retry:%v, want false/false", healthy+1, missing, retry)
+		}
+	}
 
 	if missing, retry := a.observeMissingToolCallReasoning(calls, ""); !missing || !retry {
 		t.Fatalf("post-recovery observation = missing:%v retry:%v, want true/true", missing, retry)

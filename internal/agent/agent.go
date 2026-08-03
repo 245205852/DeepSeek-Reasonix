@@ -299,9 +299,12 @@ type Agent struct {
 	// reset by SetSession.
 	warnedMissingToolCallReasoning bool
 	// missingReasoningWarnStateChecked avoids a file transaction on every
-	// healthy tool-call turn. It resets with the session so the first healthy
-	// observation can clear an incident persisted by an earlier process.
+	// healthy tool-call turn. It resets with the session so a new Agent can
+	// continue or confirm an incident persisted by an earlier process.
 	missingReasoningWarnStateChecked bool
+	// missingReasoningHealthyStreak provides the same three-turn anti-flapping
+	// policy when no cross-process state directory is configured.
+	missingReasoningHealthyStreak int
 	// missingReasoningWarnPendingResolveAt keeps a healthy observation retryable
 	// when its state write fails. The next missing turn retries that watermark
 	// before consulting the persisted incident and otherwise fails visible.
@@ -738,6 +741,7 @@ func (a *Agent) SetSession(s *Session) {
 	a.sessCacheMiss.Store(0)
 	a.warnedMissingToolCallReasoning = false
 	a.missingReasoningWarnStateChecked = false
+	a.missingReasoningHealthyStreak = 0
 	a.repeatFailureCounts = nil
 	a.repeatFailureScope = ""
 	if s != nil {
@@ -1275,7 +1279,8 @@ func (a *Agent) Run(ctx context.Context, input string) (runErr error) {
 // DeepSeek requires provider-issued thinking content to be replayed, so a
 // missing value is retried once before tools execute. Persistent broken rounds
 // use the existing exact-configuration cooldown; a healthy round resolves the
-// incident and re-arms a future isolated regression (#6259, #7059).
+// incident after three consecutive healthy turns and re-arms a future isolated
+// regression (#6259, #7059).
 func (a *Agent) observeMissingToolCallReasoning(calls []provider.ToolCall, reasoning string) (missing, shouldRetry bool) {
 	if len(calls) == 0 || !provider.WarnOnMissingToolCallReasoning(a.prov) {
 		return false, false
@@ -1283,37 +1288,61 @@ func (a *Agent) observeMissingToolCallReasoning(calls []provider.ToolCall, reaso
 	fingerprint := provider.MissingToolCallReasoningWarningFingerprint(a.prov)
 	observedAt := time.Now()
 	if strings.TrimSpace(reasoning) != "" {
-		shouldResolve := !a.missingReasoningWarnStateChecked || a.warnedMissingToolCallReasoning
-		a.warnedMissingToolCallReasoning = false
-		if shouldResolve {
-			resolved := true
-			if s := a.missingReasoningWarnState; s != nil {
-				resolved = s.resolveAt(fingerprint, observedAt)
+		if a.missingReasoningWarnState == nil {
+			if a.warnedMissingToolCallReasoning {
+				a.missingReasoningHealthyStreak++
+				if a.missingReasoningHealthyStreak >= missingReasoningHealthyResolveStreak {
+					a.warnedMissingToolCallReasoning = false
+					a.missingReasoningHealthyStreak = 0
+				}
 			}
-			if resolved {
-				a.missingReasoningWarnPendingResolveAt = time.Time{}
-				a.missingReasoningWarnStateChecked = true
-			} else {
+			return false, false
+		}
+		shouldResolve := !a.missingReasoningWarnStateChecked || a.warnedMissingToolCallReasoning
+		if shouldResolve {
+			result := missingReasoningResolveResult{Recorded: true, Resolved: true}
+			if pending := a.missingReasoningWarnPendingResolveAt; !pending.IsZero() {
+				result = a.missingReasoningWarnState.resolveAt(fingerprint, pending)
+				if result.Recorded {
+					a.missingReasoningWarnPendingResolveAt = time.Time{}
+				}
+			}
+			if result.Recorded {
+				result = a.missingReasoningWarnState.resolveAt(fingerprint, observedAt)
+			}
+			if !result.Recorded {
 				if observedAt.After(a.missingReasoningWarnPendingResolveAt) {
 					a.missingReasoningWarnPendingResolveAt = observedAt
 				}
+				a.warnedMissingToolCallReasoning = true
+				a.missingReasoningWarnStateChecked = false
+			} else if result.Resolved {
+				a.warnedMissingToolCallReasoning = false
+				a.missingReasoningWarnStateChecked = true
+			} else {
+				a.warnedMissingToolCallReasoning = true
 				a.missingReasoningWarnStateChecked = false
 			}
 		}
 		return false, false
 	}
-	if a.warnedMissingToolCallReasoning {
-		return true, false
-	}
+	a.missingReasoningHealthyStreak = 0
 	if s := a.missingReasoningWarnState; s != nil {
 		stateReady := true
+		alreadyActive := a.warnedMissingToolCallReasoning
 		if pending := a.missingReasoningWarnPendingResolveAt; !pending.IsZero() {
-			stateReady = s.resolveAt(fingerprint, pending)
-			if stateReady {
+			result := s.resolveAt(fingerprint, pending)
+			stateReady = result.Recorded
+			if result.Recorded {
 				a.missingReasoningWarnPendingResolveAt = time.Time{}
+				if result.Resolved {
+					alreadyActive = false
+					a.warnedMissingToolCallReasoning = false
+				}
 			}
 		}
-		if stateReady && !s.claimAt(fingerprint, observedAt) {
+		claimed := stateReady && s.claimAt(fingerprint, observedAt)
+		if !claimed || alreadyActive {
 			// This exact configuration already attempted recovery for the active
 			// incident, so keep the empty-key fallback without doubling requests.
 			a.warnedMissingToolCallReasoning = true
@@ -1323,6 +1352,8 @@ func (a *Agent) observeMissingToolCallReasoning(calls []provider.ToolCall, reaso
 		if !stateReady {
 			a.missingReasoningWarnStateChecked = false
 		}
+	} else if a.warnedMissingToolCallReasoning {
+		return true, false
 	}
 	a.warnedMissingToolCallReasoning = true
 	if a.missingReasoningWarnPendingResolveAt.IsZero() {

@@ -9,8 +9,8 @@ package agent
 // to accompany tool calls and be replayed on later requests. Missing content is
 // therefore a compatibility incident, not a permanent provider characteristic.
 // State is keyed by an opaque configuration fingerprint, expires after a bounded
-// cooldown, and is cleared after a healthy tool-call turn so a future isolated
-// regression gets one fresh silent retry.
+// cooldown, and is cleared after three consecutive healthy tool-call turns so
+// a future isolated regression gets one fresh silent retry without flapping.
 
 import (
 	"context"
@@ -35,6 +35,7 @@ const (
 	missingReasoningWarnStateVersion      = 2
 	missingReasoningWarnStateCooldown     = 24 * time.Hour
 	missingReasoningWarnStateMaxIncidents = 256
+	missingReasoningHealthyResolveStreak  = 3
 	// Recovery bookkeeping must never make a turn wait indefinitely behind
 	// another process. On contention or I/O failure, callers fail open and allow
 	// the bounded retry rather than silently losing self-healing.
@@ -47,6 +48,11 @@ type missingReasoningIncident struct {
 	LastMissingUnixMs      int64  `json:"lastMissingAtUnixMs,omitempty"`
 	LastMissingUnixNano    int64  `json:"lastMissingAtUnixNano,omitempty"`
 	LastResolvedAtUnixNano int64  `json:"lastResolvedAtUnixNano,omitempty"`
+	// These optional fields extend the v2 document without changing its version.
+	// Older builds ignore them and may drop an in-progress streak on write, while
+	// both generations continue to share the same active-incident boundary.
+	ResolveStreak         int   `json:"resolveStreak,omitempty"`
+	LastHealthyAtUnixNano int64 `json:"lastHealthyAtUnixNano,omitempty"`
 }
 
 type missingReasoningWarnDocument struct {
@@ -143,7 +149,10 @@ func missingReasoningUnixNanoFromMillis(unixMs int64) (int64, bool) {
 
 func normalizeMissingReasoningIncident(incident missingReasoningIncident, now time.Time) (missingReasoningIncident, bool) {
 	incident.Fingerprint = strings.TrimSpace(incident.Fingerprint)
-	if !validMissingReasoningFingerprint(incident.Fingerprint) || incident.LastMissingUnixNano < 0 || incident.LastResolvedAtUnixNano < 0 {
+	if !validMissingReasoningFingerprint(incident.Fingerprint) ||
+		incident.LastMissingUnixNano < 0 || incident.LastResolvedAtUnixNano < 0 ||
+		incident.LastHealthyAtUnixNano < 0 || incident.ResolveStreak < 0 ||
+		incident.ResolveStreak >= missingReasoningHealthyResolveStreak {
 		return missingReasoningIncident{}, false
 	}
 
@@ -170,7 +179,8 @@ func normalizeMissingReasoningIncident(incident missingReasoningIncident, now ti
 	}
 
 	nowUnixNano := now.UnixNano()
-	if warnedAtUnixNano > nowUnixNano || incident.LastMissingUnixNano > nowUnixNano || incident.LastResolvedAtUnixNano > nowUnixNano {
+	if warnedAtUnixNano > nowUnixNano || incident.LastMissingUnixNano > nowUnixNano ||
+		incident.LastResolvedAtUnixNano > nowUnixNano || incident.LastHealthyAtUnixNano > nowUnixNano {
 		return missingReasoningIncident{}, false
 	}
 	if incident.LastMissingUnixNano > incident.LastResolvedAtUnixNano {
@@ -181,9 +191,18 @@ func normalizeMissingReasoningIncident(incident missingReasoningIncident, now ti
 		if age < 0 || age >= missingReasoningWarnStateCooldown {
 			return missingReasoningIncident{}, false
 		}
+		if incident.ResolveStreak > 0 {
+			if incident.LastHealthyAtUnixNano <= incident.LastMissingUnixNano ||
+				incident.LastHealthyAtUnixNano <= incident.LastResolvedAtUnixNano {
+				return missingReasoningIncident{}, false
+			}
+		} else if incident.LastHealthyAtUnixNano != 0 {
+			return missingReasoningIncident{}, false
+		}
 		return incident, true
 	}
-	if incident.LastResolvedAtUnixNano <= 0 {
+	if incident.LastResolvedAtUnixNano <= 0 || incident.ResolveStreak != 0 ||
+		incident.LastHealthyAtUnixNano > incident.LastResolvedAtUnixNano {
 		return missingReasoningIncident{}, false
 	}
 	resolvedAt := time.Unix(0, incident.LastResolvedAtUnixNano)
@@ -195,10 +214,14 @@ func normalizeMissingReasoningIncident(incident missingReasoningIncident, now ti
 }
 
 func (incident missingReasoningIncident) lastEventUnixNano() int64 {
-	if incident.LastResolvedAtUnixNano > incident.LastMissingUnixNano {
-		return incident.LastResolvedAtUnixNano
+	lastEvent := incident.LastMissingUnixNano
+	if incident.LastResolvedAtUnixNano > lastEvent {
+		lastEvent = incident.LastResolvedAtUnixNano
 	}
-	return incident.LastMissingUnixNano
+	if incident.LastHealthyAtUnixNano > lastEvent {
+		lastEvent = incident.LastHealthyAtUnixNano
+	}
+	return lastEvent
 }
 
 // load returns only current v2 incidents and resolution watermarks. Missing,
@@ -305,7 +328,8 @@ func (s *missingReasoningWarnState) persistClaimAt(fingerprint string, observedA
 	}
 	incident, exists := incidents[fingerprint]
 	observedAtUnixNano := observedAt.UnixNano()
-	if exists && observedAtUnixNano <= incident.LastResolvedAtUnixNano {
+	if exists && (observedAtUnixNano <= incident.LastResolvedAtUnixNano ||
+		observedAtUnixNano <= incident.LastHealthyAtUnixNano) {
 		return false
 	}
 	activeIncident := exists && incident.LastMissingUnixNano > incident.LastResolvedAtUnixNano
@@ -321,6 +345,8 @@ func (s *missingReasoningWarnState) persistClaimAt(fingerprint string, observedA
 	if incident.LastMissingUnixNano < observedAtUnixNano {
 		incident.LastMissingUnixMs = observedAt.UnixMilli()
 		incident.LastMissingUnixNano = observedAtUnixNano
+		incident.ResolveStreak = 0
+		incident.LastHealthyAtUnixNano = 0
 	}
 	incidents[fingerprint] = incident
 	if err := s.save(incidents); err != nil {
@@ -380,14 +406,19 @@ func (s *missingReasoningWarnState) claim(fingerprint string) bool {
 	return s.claimAt(fingerprint, time.Now())
 }
 
-// resolveAt records a healthy tool-call turn. Keeping a bounded resolution
-// watermark prevents a missing observation that happened earlier but acquired
-// the cross-process lock later from reviving the resolved incident. The result
-// reports whether the state was already correct or persisted successfully.
-func (s *missingReasoningWarnState) resolveAt(fingerprint string, observedAt time.Time) bool {
+type missingReasoningResolveResult struct {
+	Recorded bool
+	Resolved bool
+}
+
+// resolveAt records one healthy tool-call turn. Three consecutive healthy
+// observations resolve the incident; another missing observation resets the
+// streak. The healthy and resolved watermarks prevent events that happened
+// earlier but acquired the cross-process lock later from changing newer state.
+func (s *missingReasoningWarnState) resolveAt(fingerprint string, observedAt time.Time) missingReasoningResolveResult {
 	fingerprint = strings.TrimSpace(fingerprint)
 	if s == nil || s.dir == "" || !validMissingReasoningFingerprint(fingerprint) {
-		return false
+		return missingReasoningResolveResult{}
 	}
 	observedAt = normalizeMissingReasoningObservedAt(observedAt)
 	processLock := s.processLock()
@@ -396,23 +427,32 @@ func (s *missingReasoningWarnState) resolveAt(fingerprint string, observedAt tim
 
 	release, err := s.acquire()
 	if err != nil {
-		return false
+		return missingReasoningResolveResult{}
 	}
 	defer release()
 
 	incidents, err := s.load(missingReasoningTransactionNow(observedAt))
 	if err != nil {
-		return false
+		return missingReasoningResolveResult{}
 	}
 	incident, exists := incidents[fingerprint]
 	observedAtUnixNano := observedAt.UnixNano()
-	if exists && (incident.LastMissingUnixNano >= observedAtUnixNano || incident.LastResolvedAtUnixNano >= observedAtUnixNano) {
-		return true
+	if !exists || incident.LastMissingUnixNano <= incident.LastResolvedAtUnixNano {
+		return missingReasoningResolveResult{Recorded: true, Resolved: true}
 	}
-	if !exists {
-		incident = missingReasoningIncident{Fingerprint: fingerprint}
+	if incident.LastMissingUnixNano >= observedAtUnixNano || incident.LastHealthyAtUnixNano >= observedAtUnixNano {
+		return missingReasoningResolveResult{Recorded: true}
 	}
-	incident.LastResolvedAtUnixNano = observedAtUnixNano
+	incident.ResolveStreak++
+	incident.LastHealthyAtUnixNano = observedAtUnixNano
+	resolved := incident.ResolveStreak >= missingReasoningHealthyResolveStreak
+	if resolved {
+		incident.ResolveStreak = 0
+		incident.LastResolvedAtUnixNano = observedAtUnixNano
+	}
 	incidents[fingerprint] = incident
-	return s.save(incidents) == nil
+	if s.save(incidents) != nil {
+		return missingReasoningResolveResult{}
+	}
+	return missingReasoningResolveResult{Recorded: true, Resolved: resolved}
 }
