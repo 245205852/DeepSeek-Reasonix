@@ -333,6 +333,13 @@ func TestReplaySessionEventLogEnforcesResourceBudgetsWithoutMutation(t *testing.
 			},
 			resource: "messages",
 		},
+		{
+			name: "aggregate messages across records",
+			limits: sessionReplayLimits{
+				maxBytes: int64(len(contents) + 1), maxRecords: 10, maxMessages: 2,
+			},
+			resource: "messages",
+		},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -355,6 +362,30 @@ func TestReplaySessionEventLogEnforcesResourceBudgetsWithoutMutation(t *testing.
 				t.Fatal("resource-budget rejection modified the event log")
 			}
 		})
+	}
+}
+
+func TestReplayChecksMessageBudgetBeforeDecodingOverLimitElement(t *testing.T) {
+	logPath := filepath.Join(t.TempDir(), "bounded-before-decode.events.jsonl")
+	// The third element is valid JSON but cannot decode into provider.Message.
+	// A two-message budget must reject it before attempting that decode.
+	events := `{"schema_version":1,"type":"replace","messages":[{}, {}, 42]}` + "\n"
+	if err := os.WriteFile(logPath, []byte(events), 0o600); err != nil {
+		t.Fatalf("write event log: %v", err)
+	}
+
+	replay, err := replaySessionEventLogWithLimits(logPath, sessionReplayLimits{
+		maxBytes: int64(len(events) + 1), maxRecords: 10, maxMessages: 2,
+	})
+	if !errors.Is(err, ErrSessionReplayLimitExceeded) {
+		t.Fatalf("replay error = %v, want message replay limit", err)
+	}
+	var limitErr *SessionReplayLimitError
+	if !errors.As(err, &limitErr) || limitErr.Resource != "messages" || limitErr.Value != 3 {
+		t.Fatalf("limit error = %#v, want third message rejected before decode", limitErr)
+	}
+	if replay.records != 0 || len(replay.msgs) != 0 {
+		t.Fatalf("partial over-limit record was applied: records=%d messages=%d", replay.records, len(replay.msgs))
 	}
 }
 
@@ -395,12 +426,41 @@ func TestProbeSessionEventLogReadsOnlyNativeHeader(t *testing.T) {
 	if err := os.WriteFile(logPath, []byte(largeRecord), 0o600); err != nil {
 		t.Fatalf("write event log: %v", err)
 	}
-	probe, err := probeSessionEventLog(path)
+	probe, err := probeSessionEventLogWithLimits(path, sessionReplayLimits{
+		maxBytes: 128, maxRecords: 10, maxMessages: 10,
+	})
 	if err != nil {
 		t.Fatalf("probe: %v", err)
 	}
 	if !probe.native || probe.size != int64(len(largeRecord)) {
 		t.Fatalf("probe = %+v, want native size %d", probe, len(largeRecord))
+	}
+}
+
+func TestLoadSessionMessagesAcceptsReorderedEventHeader(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "session.jsonl")
+	checkpoint := `{"role":"system","content":"older checkpoint"}` + "\n"
+	if err := os.WriteFile(path, []byte(checkpoint), 0o600); err != nil {
+		t.Fatalf("write checkpoint: %v", err)
+	}
+	content := "newer event state " + strings.Repeat("x", int(sessionEventProbeMaxBytes*2))
+	// schema_version deliberately follows a messages payload larger than the
+	// prefix probe. Valid in-budget JSON must remain field-order independent.
+	events := `{"type":"replace","messages":[{"role":"system","content":"sys"},{"role":"user","content":"` +
+		content + `"}],"schema_version":1}` + "\n"
+	if err := os.WriteFile(store.SessionEventLog(path), []byte(events), 0o600); err != nil {
+		t.Fatalf("write reordered event log: %v", err)
+	}
+
+	msgs, fromEvents, damaged, err := loadSessionMessages(path)
+	if err != nil {
+		t.Fatalf("load reordered event log: %v", err)
+	}
+	if !fromEvents || damaged {
+		t.Fatalf("load result fromEvents=%v damaged=%v, want clean native replay", fromEvents, damaged)
+	}
+	if len(msgs) != 2 || msgs[1].Content != content {
+		t.Fatalf("loaded messages = %d, want reordered event state", len(msgs))
 	}
 }
 

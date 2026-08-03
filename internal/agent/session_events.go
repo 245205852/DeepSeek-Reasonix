@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/json"
 	"errors"
@@ -99,6 +100,22 @@ type sessionEventRecord struct {
 	CreatedAt     time.Time          `json:"created_at"`
 }
 
+// sessionEventWireRecord keeps the messages array encoded until the replay
+// budget has been checked. Decoding directly into sessionEventRecord would
+// materialize every provider.Message before replay could enforce maxMessages.
+type sessionEventWireRecord struct {
+	SchemaVersion int             `json:"schema_version"`
+	Type          string          `json:"type"`
+	Revision      int64           `json:"revision,omitempty"`
+	BaseRevision  int64           `json:"base_revision,omitempty"`
+	MessageIndex  int             `json:"message_index,omitempty"`
+	Messages      json.RawMessage `json:"messages,omitempty"`
+	ContentDigest string          `json:"content_digest,omitempty"`
+	WriterID      string          `json:"writer_id,omitempty"`
+	Reason        string          `json:"reason,omitempty"`
+	CreatedAt     time.Time       `json:"created_at"`
+}
+
 type sessionEventIndex struct {
 	SchemaVersion int       `json:"schema_version"`
 	LogSize       int64     `json:"log_size"`
@@ -188,6 +205,10 @@ func sessionEventSidecarsFit(sessionPath string) bool {
 // record — or a transcript name too long for the sidecars to fit — marks the
 // file as not ours.
 func probeSessionEventLog(sessionPath string) (sessionEventLogProbe, error) {
+	return probeSessionEventLogWithLimits(sessionPath, defaultSessionReplayLimits)
+}
+
+func probeSessionEventLogWithLimits(sessionPath string, limits sessionReplayLimits) (sessionEventLogProbe, error) {
 	path := store.SessionEventLog(sessionPath)
 	if path == "" {
 		return sessionEventLogProbe{native: true}, nil
@@ -214,7 +235,27 @@ func probeSessionEventLog(sessionPath string) (sessionEventLogProbe, error) {
 		return sessionEventLogProbe{}, err
 	}
 	defer f.Close()
-	schemaVersion, eventType, ok := probeSessionEventHeader(f)
+	var schemaVersion int
+	var eventType string
+	var ok bool
+	schemaVersion, eventType, ok = probeSessionEventHeader(f)
+	if !ok && info.Size() <= limits.maxBytes {
+		// Native writers put both identifying fields in the bounded prefix. For
+		// other valid in-budget JSON, fall back to a minimal struct decode so
+		// field order remains a compatibility property rather than a format
+		// requirement. Unknown fields are not materialized into messages.
+		if _, err := f.Seek(0, io.SeekStart); err != nil {
+			return sessionEventLogProbe{}, err
+		}
+		var header struct {
+			SchemaVersion int    `json:"schema_version"`
+			Type          string `json:"type"`
+		}
+		dec := json.NewDecoder(&io.LimitedReader{R: f, N: limits.maxBytes + 1})
+		if err := dec.Decode(&header); err == nil {
+			schemaVersion, eventType, ok = header.SchemaVersion, header.Type, true
+		}
+	}
 	if !ok {
 		// Nothing decodable at the head: not a native log this build can own.
 		return probe, nil
@@ -232,10 +273,9 @@ func probeSessionEventLog(sessionPath string) (sessionEventLogProbe, error) {
 	return probe, nil
 }
 
-// probeSessionEventHeader reads only the two leading fields emitted by
-// sessionEventRecord. Using Decode on a partial struct still buffers the whole
-// JSON value, so a corrupt first record could exhaust memory before replay's
-// byte budget had a chance to run.
+// probeSessionEventHeader searches a bounded prefix for the identifying fields.
+// Using Decode on a partial struct still buffers the whole JSON value, so native
+// writer output must take this fast path before replay's byte budget is checked.
 func probeSessionEventHeader(r io.Reader) (schemaVersion int, eventType string, ok bool) {
 	dec := json.NewDecoder(io.LimitReader(r, sessionEventProbeMaxBytes))
 	tok, err := dec.Token()
@@ -245,21 +285,38 @@ func probeSessionEventHeader(r io.Reader) (schemaVersion int, eventType string, 
 	if delim, isDelim := tok.(json.Delim); !isDelim || delim != '{' {
 		return 0, "", false
 	}
-	key, err := dec.Token()
-	if err != nil || key != "schema_version" {
-		return 0, "", false
+	var haveSchema, haveType bool
+	for dec.More() {
+		key, err := dec.Token()
+		if err != nil {
+			return 0, "", false
+		}
+		name, isString := key.(string)
+		if !isString {
+			return 0, "", false
+		}
+		switch name {
+		case "schema_version":
+			if err := dec.Decode(&schemaVersion); err != nil {
+				return 0, "", false
+			}
+			haveSchema = true
+		case "type":
+			if err := dec.Decode(&eventType); err != nil {
+				return 0, "", false
+			}
+			haveType = true
+		default:
+			var discard json.RawMessage
+			if err := dec.Decode(&discard); err != nil {
+				return 0, "", false
+			}
+		}
+		if haveSchema && haveType {
+			return schemaVersion, eventType, true
+		}
 	}
-	if err := dec.Decode(&schemaVersion); err != nil {
-		return 0, "", false
-	}
-	key, err = dec.Token()
-	if err != nil || key != "type" {
-		return 0, "", false
-	}
-	if err := dec.Decode(&eventType); err != nil {
-		return 0, "", false
-	}
-	return schemaVersion, eventType, true
+	return 0, "", false
 }
 
 // replaySessionEventLog decodes an event log tolerantly: decoding stops at the
@@ -290,7 +347,7 @@ func replaySessionEventLogWithLimits(path string, limits sessionReplayLimits) (s
 	limited := &io.LimitedReader{R: f, N: limits.maxBytes + 1}
 	dec := json.NewDecoder(limited)
 	for {
-		var rec sessionEventRecord
+		var rec sessionEventWireRecord
 		if err := dec.Decode(&rec); err != nil {
 			if limited.N == 0 {
 				return replay, sessionReplayLimitError(path, "encoded_bytes", limits.maxBytes+1, limits.maxBytes)
@@ -309,21 +366,31 @@ func replaySessionEventLogWithLimits(path string, limits sessionReplayLimits) (s
 		}
 		switch rec.Type {
 		case sessionEventTypeReplace:
-			if len(rec.Messages) > limits.maxMessages {
-				return replay, sessionReplayLimitError(path, "messages", int64(len(rec.Messages)), int64(limits.maxMessages))
+			msgs, err := decodeSessionEventMessages(path, rec.Messages, 0, limits.maxMessages)
+			if err != nil {
+				if errors.Is(err, ErrSessionReplayLimitExceeded) {
+					return replay, err
+				}
+				replay.damaged = true
+				return replay, nil
 			}
-			replay.msgs = append([]provider.Message(nil), rec.Messages...)
+			replay.msgs = msgs
 			replay.times = make([]time.Time, len(replay.msgs))
 		case sessionEventTypeAppend:
 			if rec.MessageIndex != len(replay.msgs) {
 				replay.damaged = true
 				return replay, nil
 			}
-			if len(rec.Messages) > limits.maxMessages-len(replay.msgs) {
-				return replay, sessionReplayLimitError(path, "messages", int64(len(replay.msgs)+len(rec.Messages)), int64(limits.maxMessages))
+			msgs, err := decodeSessionEventMessages(path, rec.Messages, len(replay.msgs), limits.maxMessages)
+			if err != nil {
+				if errors.Is(err, ErrSessionReplayLimitExceeded) {
+					return replay, err
+				}
+				replay.damaged = true
+				return replay, nil
 			}
-			replay.msgs = append(replay.msgs, rec.Messages...)
-			for range rec.Messages {
+			replay.msgs = append(replay.msgs, msgs...)
+			for range msgs {
 				replay.times = append(replay.times, rec.CreatedAt)
 			}
 		default:
@@ -332,6 +399,39 @@ func replaySessionEventLogWithLimits(path string, limits sessionReplayLimits) (s
 		replay.records++
 		replay.lastGoodEnd = dec.InputOffset()
 	}
+}
+
+// decodeSessionEventMessages enforces the aggregate message budget before
+// decoding each element. Keeping the array as json.RawMessage in the outer
+// record bounds encoded input without constructing an unbounded object graph.
+func decodeSessionEventMessages(path string, raw json.RawMessage, existing, maxMessages int) ([]provider.Message, error) {
+	trimmed := bytes.TrimSpace(raw)
+	if len(trimmed) == 0 || bytes.Equal(trimmed, []byte("null")) {
+		return nil, nil
+	}
+	dec := json.NewDecoder(bytes.NewReader(trimmed))
+	tok, err := dec.Token()
+	if err != nil {
+		return nil, err
+	}
+	if delim, ok := tok.(json.Delim); !ok || delim != '[' {
+		return nil, fmt.Errorf("messages must be an array")
+	}
+	var msgs []provider.Message
+	for dec.More() {
+		if existing+len(msgs) >= maxMessages {
+			return nil, sessionReplayLimitError(path, "messages", int64(existing+len(msgs)+1), int64(maxMessages))
+		}
+		var msg provider.Message
+		if err := dec.Decode(&msg); err != nil {
+			return nil, err
+		}
+		msgs = append(msgs, msg)
+	}
+	if _, err := dec.Token(); err != nil {
+		return nil, err
+	}
+	return msgs, nil
 }
 
 // loadSessionMessages returns the session transcript, preferring the event log
@@ -345,7 +445,7 @@ func loadSessionMessages(sessionPath string) (msgs []provider.Message, fromEvent
 }
 
 func loadSessionMessagesWithLimits(sessionPath string, limits sessionReplayLimits) (msgs []provider.Message, fromEvents, damaged bool, err error) {
-	probe, err := probeSessionEventLog(sessionPath)
+	probe, err := probeSessionEventLogWithLimits(sessionPath, limits)
 	if err != nil {
 		return nil, false, false, err
 	}
