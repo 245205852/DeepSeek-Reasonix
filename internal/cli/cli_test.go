@@ -293,16 +293,19 @@ func TestMetadataCommandsDoNotProbeTerminalTheme(t *testing.T) {
 }
 
 func TestRunDispatchesACPLongFlagAlias(t *testing.T) {
-	errOut := captureStderr(t, func() {
+	out, errOut := captureCLIOutput(t, func() {
 		if rc := Run([]string{"--acp", "-h"}, "test-version"); rc != 0 {
 			t.Fatalf("Run --acp -h rc = %d, want 0", rc)
 		}
 	})
-	if !strings.Contains(errOut, "Usage of acp:") {
-		t.Fatalf("--acp should dispatch to the ACP command, got stderr:\n%s", errOut)
+	if !strings.Contains(out, "Usage of acp:") {
+		t.Fatalf("--acp should dispatch to the ACP command, got stdout:\n%s", out)
 	}
-	if strings.Contains(errOut, "unknown command") {
-		t.Fatalf("--acp should not be treated as an unknown command:\n%s", errOut)
+	if errOut != "" {
+		t.Fatalf("--acp help wrote stderr: %q", errOut)
+	}
+	if strings.Contains(out, "unknown command") {
+		t.Fatalf("--acp should not be treated as an unknown command:\n%s", out)
 	}
 }
 
@@ -423,35 +426,58 @@ func TestRunReportsFlagParseErrors(t *testing.T) {
 func TestSubcommandHelpReturnsSuccess(t *testing.T) {
 	isolateCLIConfigHome(t)
 
-	for _, args := range [][]string{
-		{"run", "--help"},
-		{"chat", "--help"},
-		{"serve", "--help"},
-		{"upgrade", "--help"},
-	} {
-		stderr := captureStderr(t, func() {
-			if rc := Run(args, "test-version"); rc != 0 {
-				t.Fatalf("Run(%q) rc = %d, want 0", args, rc)
+	tests := []struct {
+		name string
+		args []string
+		want string
+	}{
+		{name: "run", args: []string{"run", "--help"}, want: "Usage of run:"},
+		{name: "chat", args: []string{"chat", "--help"}, want: "Usage of reasonix:"},
+		{name: "serve", args: []string{"serve", "--help"}, want: "Usage of serve:"},
+		{name: "upgrade", args: []string{"upgrade", "--help"}, want: "Usage of upgrade:"},
+		{name: "remote connect", args: []string{"remote", "connect", "--help"}, want: "Usage of remote connect:"},
+		{name: "remote add before name", args: []string{"remote", "add", "--help"}, want: remoteAddUsage},
+		{name: "remote add before target", args: []string{"remote", "add", "box", "--help"}, want: remoteAddUsage},
+		{name: "remote serve before action", args: []string{"remote", "serve", "--help"}, want: remoteServeUsage},
+		{name: "remote serve before name", args: []string{"remote", "serve", "start", "--help"}, want: remoteServeUsage},
+		{name: "subagent create", args: []string{"subagent", "create", "--help"}, want: subagentUsageText},
+		{name: "subagent edit", args: []string{"subagent", "edit", "--help"}, want: subagentUsageText},
+		{name: "subagent delete", args: []string{"subagent", "delete", "--help"}, want: subagentUsageText},
+		{name: "subagent try", args: []string{"subagent", "try", "--help"}, want: subagentUsageText},
+		{name: "subagent run", args: []string{"subagent", "run", "--help"}, want: subagentUsageText},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			stdout, stderr := captureCLIOutput(t, func() {
+				if rc := Run(tt.args, "test-version"); rc != 0 {
+					t.Fatalf("Run(%q) rc = %d, want 0", tt.args, rc)
+				}
+			})
+			if !strings.Contains(stdout, tt.want) {
+				t.Fatalf("Run(%q) help missing %q:\n%s", tt.args, tt.want, stdout)
+			}
+			if stderr != "" {
+				t.Fatalf("Run(%q) help wrote stderr: %q", tt.args, stderr)
+			}
+			if strings.Contains(stdout, "help requested") {
+				t.Fatalf("Run(%q) reported help as an error:\n%s", tt.args, stdout)
 			}
 		})
-		if !strings.Contains(stderr, "Usage of") {
-			t.Fatalf("Run(%q) help missing usage:\n%s", args, stderr)
-		}
-		if strings.Contains(stderr, "help requested") {
-			t.Fatalf("Run(%q) reported help as an error:\n%s", args, stderr)
-		}
 	}
 }
 
 func TestRunPrintAliasDispatchesRunFlags(t *testing.T) {
 	isolateCLIConfigHome(t)
-	errOut := captureStderr(t, func() {
+	out, errOut := captureCLIOutput(t, func() {
 		if rc := Run([]string{"-p", "-h"}, "test-version"); rc != 0 {
 			t.Fatalf("Run(-p -h) rc = %d, want 0", rc)
 		}
 	})
-	if !strings.Contains(errOut, "Usage of run:") {
-		t.Fatalf("-p should dispatch to one-shot run flags, got:\n%s", errOut)
+	if !strings.Contains(out, "Usage of run:") {
+		t.Fatalf("-p should dispatch to one-shot run flags, got:\n%s", out)
+	}
+	if errOut != "" {
+		t.Fatalf("-p help wrote stderr: %q", errOut)
 	}
 }
 
@@ -466,13 +492,16 @@ func TestRunPrintFlagAfterLeadingFlagsDispatchesRun(t *testing.T) {
 		t.Fatal("print flag after leading flags must not route to the interactive session")
 		return 0
 	}
-	errOut := captureStderr(t, func() {
+	out, errOut := captureCLIOutput(t, func() {
 		if rc := Run([]string{"--model", "x", "-p", "-h"}, "test-version"); rc != 0 {
 			t.Fatalf("Run(--model x -p -h) rc = %d, want 0", rc)
 		}
 	})
-	if !strings.Contains(errOut, "Usage of run:") {
-		t.Fatalf("--model x -p should dispatch to one-shot run flags, got:\n%s", errOut)
+	if !strings.Contains(out, "Usage of run:") {
+		t.Fatalf("--model x -p should dispatch to one-shot run flags, got:\n%s", out)
+	}
+	if errOut != "" {
+		t.Fatalf("--model x -p help wrote stderr: %q", errOut)
 	}
 }
 
@@ -1976,6 +2005,14 @@ func captureStderr(t *testing.T, fn func()) string {
 		t.Fatal(err)
 	}
 	return string(data)
+}
+
+func captureCLIOutput(t *testing.T, fn func()) (stdout, stderr string) {
+	t.Helper()
+	stderr = captureStderr(t, func() {
+		stdout = captureStdout(t, fn)
+	})
+	return stdout, stderr
 }
 
 func TestProvidersWithMissingKeysOnlyReferenced(t *testing.T) {

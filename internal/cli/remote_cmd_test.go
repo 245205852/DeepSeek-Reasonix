@@ -321,16 +321,25 @@ func TestRemoteConnectSyntaxUsesSharedFlagContract(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			stderr := captureStderr(t, func() {
+			stdout, stderr := captureCLIOutput(t, func() {
 				if code := remoteConnectCLI(tt.args, "test-version"); code != tt.wantCode {
 					t.Fatalf("remoteConnectCLI(%q) = %d, want %d", tt.args, code, tt.wantCode)
 				}
 			})
-			if !strings.Contains(stderr, tt.want) {
-				t.Fatalf("stderr = %q, want %q", stderr, tt.want)
+			output := stderr
+			if tt.wantCode == 0 {
+				output = stdout
+				if stderr != "" {
+					t.Fatalf("help wrote stderr: %q", stderr)
+				}
+			} else if stdout != "" {
+				t.Fatalf("error wrote stdout: %q", stdout)
 			}
-			if tt.noUsage && strings.Contains(stderr, "Usage of") {
-				t.Fatalf("parse error should be concise, got usage:\n%s", stderr)
+			if !strings.Contains(output, tt.want) {
+				t.Fatalf("output = %q, want %q", output, tt.want)
+			}
+			if tt.noUsage && strings.Contains(output, "Usage of") {
+				t.Fatalf("parse error should be concise, got usage:\n%s", output)
 			}
 		})
 	}

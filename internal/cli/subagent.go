@@ -143,7 +143,18 @@ func addSubagentProfileFlags(fs *flag.FlagSet, values *subagentProfileFlags) {
 	fs.StringVar(&values.dir, "dir", "", "project root")
 }
 
+func reportNamedSubagentHelp(args []string) bool {
+	if !commandHelpRequested(args, 1) {
+		return false
+	}
+	fmt.Fprint(os.Stdout, subagentUsageText)
+	return true
+}
+
 func subagentCreateCommand(args []string) int {
+	if reportNamedSubagentHelp(args) {
+		return 0
+	}
 	name, rest, ok := namedSubagentArgs(args)
 	if !ok {
 		fmt.Fprint(os.Stderr, subagentUsageText)
@@ -200,6 +211,9 @@ func subagentCreateCommand(args []string) int {
 }
 
 func subagentEditCommand(args []string) int {
+	if reportNamedSubagentHelp(args) {
+		return 0
+	}
 	name, rest, ok := namedSubagentArgs(args)
 	if !ok {
 		fmt.Fprint(os.Stderr, subagentUsageText)
@@ -279,6 +293,9 @@ func subagentEditCommand(args []string) int {
 }
 
 func subagentDeleteCommand(args []string) int {
+	if reportNamedSubagentHelp(args) {
+		return 0
+	}
 	name, rest, ok := namedSubagentArgs(args)
 	if !ok {
 		fmt.Fprint(os.Stderr, subagentUsageText)
@@ -319,6 +336,9 @@ func subagentDeleteCommand(args []string) int {
 }
 
 func subagentRunCommand(args []string, readOnly bool) int {
+	if reportNamedSubagentHelp(args) {
+		return 0
+	}
 	name, rest, ok := namedSubagentArgs(args)
 	if !ok {
 		fmt.Fprint(os.Stderr, subagentUsageText)

@@ -184,7 +184,7 @@ func upgradeCommand(args []string, version string) int {
 		return 2
 	}
 	if syntax.helpRequested {
-		fmt.Fprint(os.Stderr, syntax.helpText)
+		fmt.Fprint(os.Stdout, syntax.helpText)
 		return 0
 	}
 

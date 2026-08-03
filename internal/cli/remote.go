@@ -93,11 +93,17 @@ func editUserConfig(mutate func(*config.Config) error) error {
 	return cfg.SaveTo(path)
 }
 
+const remoteAddUsage = "usage: reasonix remote add <name> [user@]host[:port] [flags]"
+
 func remoteAddCLI(args []string) int {
 	// Positionals come first (name, target); Go's flag package stops at the
 	// first non-flag argument, so the flags are parsed from what follows.
+	if commandHelpRequested(args, 2) {
+		fmt.Fprintln(os.Stdout, remoteAddUsage)
+		return 0
+	}
 	if len(args) < 2 {
-		fmt.Fprintln(os.Stderr, "usage: reasonix remote add <name> [user@]host[:port] [flags]")
+		fmt.Fprintln(os.Stderr, remoteAddUsage)
 		return 2
 	}
 	name, target := args[0], args[1]

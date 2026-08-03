@@ -349,10 +349,16 @@ func fetchRemoteCLIBinary(ctx context.Context, version, goos, goarch string) ([]
 	return releaseasset.DownloadCLI(ctx, client, version, goos, goarch)
 }
 
+const remoteServeUsage = "usage: reasonix remote serve start|stop|status|logs <name> [--workspace PATH] [-n N]"
+
 // remoteServeCLI: serve start|stop|status|logs <name>.
 func remoteServeCLI(args []string, version string) int {
+	if commandHelpRequested(args, 2) {
+		fmt.Fprintln(os.Stdout, remoteServeUsage)
+		return 0
+	}
 	if len(args) < 2 {
-		fmt.Fprintln(os.Stderr, "usage: reasonix remote serve start|stop|status|logs <name> [--workspace PATH] [-n N]")
+		fmt.Fprintln(os.Stderr, remoteServeUsage)
 		return 2
 	}
 	action := args[0]

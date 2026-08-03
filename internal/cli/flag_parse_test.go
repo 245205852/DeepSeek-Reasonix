@@ -100,17 +100,20 @@ func TestParseCommandFlagsTreatsHelpAsSuccess(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			var code int
 			var proceed bool
-			stderr := captureStderr(t, func() {
+			stdout, stderr := captureCLIOutput(t, func() {
 				code, proceed = parseCommandFlags(tt.newFlagSet(), []string{"--help"})
 			})
 			if code != 0 || proceed {
 				t.Fatalf("parseCommandFlags(--help) = (%d, %v), want (0, false)", code, proceed)
 			}
-			if !strings.Contains(stderr, "Usage of test:") || !strings.Contains(stderr, "model name") {
-				t.Fatalf("help output missing usage:\n%s", stderr)
+			if !strings.Contains(stdout, "Usage of test:") || !strings.Contains(stdout, "model name") {
+				t.Fatalf("help output missing usage:\n%s", stdout)
 			}
-			if strings.Contains(stderr, "Error:") || strings.Contains(stderr, "flag: help requested") {
-				t.Fatalf("help should not be reported as an error:\n%s", stderr)
+			if stderr != "" {
+				t.Fatalf("help wrote stderr: %q", stderr)
+			}
+			if strings.Contains(stdout, "Error:") || strings.Contains(stdout, "flag: help requested") {
+				t.Fatalf("help should not be reported as an error:\n%s", stdout)
 			}
 		})
 	}
