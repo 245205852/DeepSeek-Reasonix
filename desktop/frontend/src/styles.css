@@ -8137,6 +8137,11 @@ body > .mermaid-diagram--fullscreen {
   padding: 10px;
   outline: none;
 }
+.prompt-shelf__content {
+  display: grid;
+  min-width: 0;
+  gap: 8px;
+}
 .prompt-shelf__card:focus-visible {
   border-color: var(--accent);
   box-shadow:
@@ -8335,12 +8340,22 @@ body > .mermaid-diagram--fullscreen {
   flex: 0 0 auto;
   min-width: 88px;
 }
-/* Unified decision surface: vertical full-width options, sticky footer,
-   content scrolls within 55vh. Never collapses to horizontal pills. */
+/* Unified decision surface: vertical full-width options, sticky footer, and
+   one bounded content scroller. Never collapses to horizontal pills. */
 .prompt-shelf--decision .prompt-shelf__card {
+  grid-template-rows: minmax(0, 1fr) auto;
   gap: 8px;
+  max-height: min(82vh, 720px);
   padding: 10px 12px;
+  overflow: hidden;
   border-color: color-mix(in srgb, var(--accent) 28%, var(--border));
+}
+.prompt-shelf--decision .prompt-shelf__content {
+  min-height: 0;
+  align-content: start;
+  overflow: auto;
+  overscroll-behavior: contain;
+  padding-right: 2px;
 }
 .prompt-shelf--decision .prompt-shelf__header {
   align-items: flex-start;
@@ -8352,9 +8367,8 @@ body > .mermaid-diagram--fullscreen {
   overflow-wrap: anywhere;
 }
 .prompt-shelf--decision .prompt-shelf__body {
-  max-height: min(55vh, 420px);
-  overflow: auto;
-  padding-right: 2px;
+  max-height: none;
+  overflow: visible;
 }
 .prompt-shelf--decision .prompt-shelf__actions {
   display: grid !important;
@@ -8362,9 +8376,8 @@ body > .mermaid-diagram--fullscreen {
   grid-auto-rows: max-content;
   align-content: start;
   gap: 6px;
-  max-height: min(40vh, 320px);
-  overflow: auto;
-  padding-right: 2px;
+  max-height: none;
+  overflow: visible;
 }
 .prompt-shelf--decision .prompt-shelf__actions > .prompt-action-row {
   width: 100%;
@@ -8413,20 +8426,7 @@ body > .mermaid-diagram--fullscreen {
   max-width: min(var(--maxw), 760px);
 }
 .prompt-shelf--recovery-approval .prompt-shelf__card {
-  max-height: min(82vh, 720px);
-  overflow: auto;
-  overscroll-behavior: contain;
   border-color: var(--border);
-}
-.prompt-shelf--recovery-approval .prompt-shelf__body {
-  max-height: min(34vh, 300px);
-  overflow: auto;
-  padding-right: 2px;
-}
-.prompt-shelf--recovery-approval .prompt-shelf__actions {
-  max-height: min(34vh, 300px);
-  overflow: auto;
-  padding-right: 2px;
 }
 .prompt-shelf--recovery-approval .prompt-action__key {
   border-color: transparent;
@@ -8992,9 +8992,6 @@ body > .mermaid-diagram--fullscreen {
   text-overflow: clip;
   white-space: normal;
   overflow-wrap: anywhere;
-}
-.prompt-shelf--ask .prompt-shelf__actions {
-  max-height: min(50vh, 380px);
 }
 .prompt-shelf--ask .prompt-shelf__quick-actions {
   justify-content: flex-end;

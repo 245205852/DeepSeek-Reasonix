@@ -21,6 +21,15 @@ export function PromptDescriptionToggle({
       aria-expanded={expanded}
       aria-controls={descriptionId}
       onClick={onToggle}
+      onKeyDown={(event) => {
+        // Decision surfaces also own document-level Enter shortcuts. Keep
+        // disclosure activation local so the same key press cannot confirm
+        // the currently selected decision.
+        if (event.key !== "Enter" && event.key !== " ") return;
+        event.preventDefault();
+        event.stopPropagation();
+        onToggle();
+      }}
       disabled={disabled}
     >
       {t(expanded ? "decision.hideFullDescription" : "decision.showFullDescription")}

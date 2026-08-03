@@ -260,6 +260,30 @@ console.log("\ndecision surface");
   ok(Boolean(actions[0].title), "tool approval keeps the complete option description in a desktop tooltip");
   const toolDescriptionToggle = document.querySelector(".prompt-shelf__footnote .prompt-action__description-toggle") as HTMLButtonElement | null;
   if (!toolDescriptionToggle) throw new Error("tool approval description disclosure did not render");
+  const toolContent = document.querySelector(".prompt-shelf__content") as HTMLElement | null;
+  const toolFooter = document.querySelector(".prompt-shelf__footer") as HTMLElement | null;
+  if (!toolContent || !toolFooter) throw new Error("tool approval scroll layout did not render");
+  eq(window.getComputedStyle(toolContent).overflow, "auto", "tool approval uses the shared decision scroller");
+  eq(toolContent.contains(toolFooter), false, "tool approval confirm footer stays visible outside the scroller");
+  await act(async () => {
+    toolDescriptionToggle.dispatchEvent(new window.KeyboardEvent("keydown", {
+      key: "Enter",
+      bubbles: true,
+      cancelable: true,
+    }));
+    await flushTimers();
+  });
+  eq(answers.length, 0, "Enter on tool disclosure never approves the default permission");
+  eq(toolDescriptionToggle.getAttribute("aria-expanded"), "true", "Enter expands tool approval copy");
+  await act(async () => {
+    toolDescriptionToggle.dispatchEvent(new window.KeyboardEvent("keydown", {
+      key: "Enter",
+      bubbles: true,
+      cancelable: true,
+    }));
+    await flushTimers();
+  });
+  eq(toolDescriptionToggle.getAttribute("aria-expanded"), "false", "Enter collapses tool approval copy again");
   await act(async () => {
     toolDescriptionToggle.click();
     await flushTimers();
@@ -350,11 +374,14 @@ console.log("\ndecision surface");
   const recoveryDescriptionToggle = document.querySelector(".prompt-action-row .prompt-action__description-toggle") as HTMLButtonElement | null;
   if (!recoveryDescriptionToggle) throw new Error("recovery description disclosure did not render");
   const recoveryCard = document.querySelector(".prompt-shelf--recovery-approval .prompt-shelf__card") as HTMLElement | null;
+  const recoveryContent = document.querySelector(".prompt-shelf--recovery-approval .prompt-shelf__content") as HTMLElement | null;
   const recoveryActions = document.querySelector(".prompt-shelf--recovery-approval .prompt-shelf__actions") as HTMLElement | null;
-  if (!recoveryCard || !recoveryActions) throw new Error("recovery height bounds did not render");
+  if (!recoveryCard || !recoveryContent || !recoveryActions) throw new Error("recovery height bounds did not render");
   eq(window.getComputedStyle(recoveryCard).maxHeight, "min(82vh, 720px)", "recovery card stays bounded by the viewport");
-  eq(window.getComputedStyle(recoveryActions).maxHeight, "min(34vh, 300px)", "recovery options scroll before growing the page");
-  eq(window.getComputedStyle(recoveryActions).overflow, "auto", "recovery options retain full text through internal scrolling");
+  eq(window.getComputedStyle(recoveryCard).overflow, "hidden", "recovery card clips only at its shared scroll boundary");
+  eq(window.getComputedStyle(recoveryContent).overflow, "auto", "recovery content uses one internal scroller");
+  eq(window.getComputedStyle(recoveryActions).maxHeight, "none", "recovery options avoid a nested height cap");
+  eq(window.getComputedStyle(recoveryActions).overflow, "visible", "recovery option text remains available in the shared scroller");
   await act(async () => {
     recoveryDescriptionToggle.click();
     await flushTimers();
@@ -814,6 +841,26 @@ console.log("\ndecision surface");
   ok(actions[0].classList.contains("prompt-action--selected"), "clear context defaults to cancel");
   const clearDescriptionToggle = document.querySelector(".prompt-shelf__footnote .prompt-action__description-toggle") as HTMLButtonElement | null;
   if (!clearDescriptionToggle) throw new Error("clear-context description disclosure did not render");
+  await act(async () => {
+    clearDescriptionToggle.dispatchEvent(new window.KeyboardEvent("keydown", {
+      key: "Enter",
+      bubbles: true,
+      cancelable: true,
+    }));
+    await flushTimers();
+  });
+  eq(cancelled, 0, "Enter on clear-context disclosure does not trigger the safe default");
+  eq(confirmed, 0, "Enter on clear-context disclosure never clears the conversation");
+  eq(clearDescriptionToggle.getAttribute("aria-expanded"), "true", "Enter expands clear-context copy");
+  await act(async () => {
+    clearDescriptionToggle.dispatchEvent(new window.KeyboardEvent("keydown", {
+      key: "Enter",
+      bubbles: true,
+      cancelable: true,
+    }));
+    await flushTimers();
+  });
+  eq(clearDescriptionToggle.getAttribute("aria-expanded"), "false", "Enter collapses clear-context copy again");
   await act(async () => {
     clearDescriptionToggle.click();
     await flushTimers();

@@ -40,7 +40,7 @@ export function PromptShelf({
   barRef?: RefObject<HTMLDivElement | null>;
   role?: "dialog" | "region";
   // Decision surfaces keep a vertical full-width option list and a fixed
-  // confirm footer; content scrolls within 55vh.
+  // confirm footer; all preceding content shares one viewport-bounded scroll.
   decision?: boolean;
   // Select-then-confirm surfaces use listbox. Immediate actions are a group of
   // buttons so assistive technology does not announce them as pending choices.
@@ -65,21 +65,23 @@ export function PromptShelf({
         aria-labelledby={titleId}
         tabIndex={-1}
       >
-        <div className="prompt-shelf__header">
-          <div className="prompt-shelf__copy">
-            <div id={titleId} className="prompt-shelf__title">
-              <span className="prompt-shelf__heading">{title}</span>
-              {badges && <span className="prompt-shelf__badges">{badges}</span>}
+        <div className="prompt-shelf__content">
+          <div className="prompt-shelf__header">
+            <div className="prompt-shelf__copy">
+              <div id={titleId} className="prompt-shelf__title">
+                <span className="prompt-shelf__heading">{title}</span>
+                {badges && <span className="prompt-shelf__badges">{badges}</span>}
+              </div>
+              {meta && <div className="prompt-shelf__meta">{meta}</div>}
             </div>
-            {meta && <div className="prompt-shelf__meta">{meta}</div>}
+            {headerActions && <div className="prompt-shelf__header-actions">{headerActions}</div>}
           </div>
-          {headerActions && <div className="prompt-shelf__header-actions">{headerActions}</div>}
+          {crumbs}
+          {children && <div className="prompt-shelf__body">{children}</div>}
+          {actions && <div className="prompt-shelf__actions" role={actionsRole}>{actions}</div>}
+          {note && <div className="prompt-shelf__footnote">{note}</div>}
+          {quickActions && <div className="prompt-shelf__quick-actions">{quickActions}</div>}
         </div>
-        {crumbs}
-        {children && <div className="prompt-shelf__body">{children}</div>}
-        {actions && <div className="prompt-shelf__actions" role={actionsRole}>{actions}</div>}
-        {note && <div className="prompt-shelf__footnote">{note}</div>}
-        {quickActions && <div className="prompt-shelf__quick-actions">{quickActions}</div>}
         {footer && <div className="prompt-shelf__footer">{footer}</div>}
       </div>
     </div>

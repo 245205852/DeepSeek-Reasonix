@@ -121,8 +121,10 @@ console.log("\nask card layout");
   });
 
   const card = document.querySelector(".prompt-shelf__card") as HTMLElement | null;
+  const content = document.querySelector(".prompt-shelf__content") as HTMLElement | null;
   const meta = document.querySelector(".prompt-shelf__meta") as HTMLElement | null;
-  if (!card || !meta) throw new Error("ask prompt shelf did not render");
+  const footer = document.querySelector(".prompt-shelf__footer") as HTMLElement | null;
+  if (!card || !content || !meta || !footer) throw new Error("ask prompt shelf did not render");
 
   eq(meta.textContent, ask.questions[0].prompt, "ask question text remains complete in the prompt shelf");
 
@@ -133,6 +135,10 @@ console.log("\nask card layout");
   eq(computed.overflowWrap, "anywhere", "long unspaced ask questions can break within the shelf");
   ok(card.getAttribute("role") === "dialog", "ask prompt shelf keeps dialog semantics");
   ok(document.querySelector(".prompt-shelf--decision") != null, "ask uses the unified decision surface layout");
+  eq(window.getComputedStyle(card).maxHeight, "min(82vh, 720px)", "Ask card stays bounded by the viewport");
+  eq(window.getComputedStyle(card).overflow, "hidden", "Ask card delegates overflow to one content scroller");
+  eq(window.getComputedStyle(content).overflow, "auto", "Ask title, question, and options share one scroll region");
+  eq(content.contains(footer), false, "Ask confirmation footer stays outside the scrolling content");
 
   const optionButtons = [...document.querySelectorAll(".prompt-shelf__actions .prompt-action")] as HTMLElement[];
   // options + custom + skip
@@ -149,7 +155,8 @@ console.log("\nask card layout");
   const actionsStyle = window.getComputedStyle(actions);
   eq(actionsStyle.gridAutoRows, "max-content", "decision rows use their full content height before scrolling");
   eq(actionsStyle.alignContent, "start", "decision rows stay content-sized at the top of the scroll region");
-  eq(actionsStyle.maxHeight, "min(50vh, 380px)", "Ask keeps typical long decisions visible before falling back to scrolling");
+  eq(actionsStyle.maxHeight, "none", "Ask options do not create a nested scroll region");
+  eq(actionsStyle.overflow, "visible", "Ask option overflow belongs to the shared content scroller");
 
   const optionStyle = window.getComputedStyle(firstOption);
   eq(optionStyle.height, "auto", "long decision rows are not fixed-height");
@@ -170,6 +177,27 @@ console.log("\nask card layout");
   eq(descriptionToggle.textContent?.trim(), "View full description", "truncated descriptions expose an explicit full-text action");
   eq(descriptionToggle.getAttribute("aria-expanded"), "false", "full description starts collapsed");
   eq(descriptionToggle.getAttribute("aria-controls"), firstDescription.id, "disclosure identifies the controlled description");
+
+  let disclosureEnterDefaultPrevented = true;
+  await act(async () => {
+    const event = new window.KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true });
+    descriptionToggle.dispatchEvent(event);
+    disclosureEnterDefaultPrevented = event.defaultPrevented;
+    await flushTimers();
+  });
+  eq(answers.length, 0, "Enter on Ask disclosure never confirms the selected answer");
+  eq(disclosureEnterDefaultPrevented, true, "Ask disclosure owns keyboard activation before global shortcuts");
+  eq(descriptionToggle.getAttribute("aria-expanded"), "true", "Enter expands the Ask description");
+
+  await act(async () => {
+    descriptionToggle.dispatchEvent(new window.KeyboardEvent("keydown", {
+      key: "Enter",
+      bubbles: true,
+      cancelable: true,
+    }));
+    await flushTimers();
+  });
+  eq(descriptionToggle.getAttribute("aria-expanded"), "false", "Enter collapses the Ask description again");
 
   await act(async () => {
     descriptionToggle.click();
