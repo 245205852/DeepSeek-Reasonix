@@ -6,7 +6,10 @@ import { fileURLToPath } from "node:url";
 import { TEXT_SIZES } from "../lib/textSize";
 
 const testDir = dirname(fileURLToPath(import.meta.url));
-const styles = readFileSync(resolve(testDir, "../styles.css"), "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
+const styles = [
+  readFileSync(resolve(testDir, "../styles.css"), "utf8"),
+  readFileSync(resolve(testDir, "../components/CompactRatioSettings.css"), "utf8"),
+].join("\n").replace(/\/\*[\s\S]*?\*\//g, "");
 
 let passed = 0;
 let failed = 0;

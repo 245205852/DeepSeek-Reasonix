@@ -1,5 +1,6 @@
 import { lazy, memo, Suspense, startTransition, useCallback, useDeferredValue, useEffect, useId, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent as ReactMouseEvent, type PointerEvent, type ReactNode } from "react";
 import { Bot as BotIcon, Check, CheckCircle2, ChevronDown, ChevronUp, Clipboard, ExternalLink, GripVertical, KeyRound, Loader2, MessageCircle, Play, QrCode, RefreshCw, Send } from "lucide-react";
+import "./CompactRatioSettings.css";
 import { asArray } from "../lib/array";
 import { useDeferredClose } from "../lib/useMountTransition";
 import { app, openExternal } from "../lib/bridge";
@@ -781,9 +782,9 @@ const PROXY_MODES = ["auto", "custom", "off"] as const;
 // inferred by the backend or edited in TOML for rare gateways.
 export const EFFORT_PRESETS: readonly string[] = ["low", "medium", "high", "xhigh", "max"];
 const COMPACT_RATIO_PRESETS = [
-  { ratio: 0.7, labelKey: "settings.compactRatioPreset.70", captionKey: "settings.compactRatioPreset.70.caption" },
-  { ratio: 0.8, labelKey: "settings.compactRatioPreset.80", captionKey: "settings.compactRatioPreset.80.caption" },
-  { ratio: 0.85, labelKey: "settings.compactRatioPreset.85", captionKey: "settings.compactRatioPreset.85.caption" },
+  [0.7, "settings.compactRatioPreset.70"],
+  [0.8, "settings.compactRatioPreset.80"],
+  [0.85, "settings.compactRatioPreset.85"],
 ] as const;
 const REASONING_PROTOCOLS: readonly string[] = ["", "deepseek", "glm", "openai", "none"];
 const THINKING_MODES: readonly string[] = ["", "enabled", "disabled", "adaptive"];
@@ -4052,14 +4053,14 @@ function ModelsSection({ s, busy, apply, backgroundApply, initialFocus }: Models
       ? t("settings.modelNeedsKey", { provider: modelProviderLabel(defaultProvider, defaultProviderView, t) })
       : "";
   const agent = s.agent ?? { temperature: 0, maxSteps: 0, plannerMaxSteps: 0, maxSubagentDepth: 2, maxSubagentConcurrency: 6, maxParallelWriters: 3, systemPrompt: "", coldResumePrune: true, reasoningLanguage: "auto", compactRatio: 0.8 };
-  const compactRatio = Number.isFinite(agent.compactRatio) && Number(agent.compactRatio) > 0 ? Number(agent.compactRatio) : 0.8;
+  const compactRatio = agent.compactRatio ?? 0.8;
   const compactRatioPercent = Math.round(compactRatio * 1000) / 10;
   const [compactRatioDraft, setCompactRatioDraft] = useState(() => String(compactRatioPercent));
   const [compactRatioCustomOpen, setCompactRatioCustomOpen] = useState(false);
   const compactRatioCustomInputRef = useRef<HTMLInputElement>(null);
-  const compactRatioPreset = COMPACT_RATIO_PRESETS.find(({ ratio }) => Math.abs(compactRatio - ratio) < 0.0001);
-  const compactRatioDraftPercent = Number(compactRatioDraft.trim());
-  const compactRatioDraftValid = compactRatioDraft.trim() !== ""
+  const compactRatioPreset = COMPACT_RATIO_PRESETS.find(([ratio]) => Math.abs(compactRatio - ratio) < 0.0001);
+  const compactRatioDraftPercent = Number(compactRatioDraft);
+  const compactRatioDraftValid = compactRatioDraft !== ""
     && Number.isFinite(compactRatioDraftPercent)
     && compactRatioDraftPercent >= 65
     && compactRatioDraftPercent <= 85;
@@ -4073,10 +4074,10 @@ function ModelsSection({ s, busy, apply, backgroundApply, initialFocus }: Models
     ? t("settings.compactRatioImpactWithTokens", { percent: compactRatioPercent, tokens: compactTokens.toLocaleString() })
     : t("settings.compactRatioImpact", { percent: compactRatioPercent });
   const compactRatioSelection = compactRatioPreset
-    ? t(compactRatioPreset.labelKey)
+    ? t(compactRatioPreset[1])
     : t("settings.compactRatioCustomValue", { percent: compactRatioPercent });
   const compactRatioOverrideHint = agent.compactRatioOverridden
-    ? t("settings.compactRatioProjectOverride", { percent: Math.round(Number(agent.effectiveCompactRatio) * 100) })
+    ? t("settings.compactRatioProjectOverride", { percent: Math.round((agent.effectiveCompactRatio ?? compactRatio) * 100) })
     : "";
   const subagentDepth = Number.isFinite(agent.maxSubagentDepth) && agent.maxSubagentDepth <= 1 ? 1 : 2;
   const subagentConcurrency = Number.isFinite(agent.maxSubagentConcurrency) && agent.maxSubagentConcurrency > 0
@@ -4095,13 +4096,7 @@ function ModelsSection({ s, busy, apply, backgroundApply, initialFocus }: Models
   }, [compactRatioCustomOpen]);
 
   const persistCompactRatio = async (ratio: number) => {
-    const previousDraft = String(compactRatioPercent);
-    setCompactRatioDraft(String(Math.round(ratio * 1000) / 10));
-    if (!await apply(() => app.SetCompactRatio(ratio))) {
-      setCompactRatioDraft(previousDraft);
-      return false;
-    }
-    return true;
+    if (await apply(() => app.SetCompactRatio(ratio))) setCompactRatioCustomOpen(false);
   };
 
   const openCompactRatioCustom = () => {
@@ -4119,14 +4114,12 @@ function ModelsSection({ s, busy, apply, backgroundApply, initialFocus }: Models
       closeCompactRatioCustom();
       return;
     }
-    if (await persistCompactRatio(ratio)) setCompactRatioCustomOpen(false);
+    await persistCompactRatio(ratio);
   };
 
   const saveCompactRatioDraft = async () => {
     if (!compactRatioDraftValid || !compactRatioDraftDirty || busy) return;
-    if (await persistCompactRatio(compactRatioDraftPercent / 100)) {
-      setCompactRatioCustomOpen(false);
-    }
+    await persistCompactRatio(compactRatioDraftPercent / 100);
   };
 
   useEffect(() => {
@@ -4367,7 +4360,7 @@ function ModelsSection({ s, busy, apply, backgroundApply, initialFocus }: Models
             <SettingsField label={t("settings.compactRatio")} hint={t("settings.compactRatioHint")} stacked>
               <div className="compact-ratio-controls">
                 <div className="set-seg compact-ratio-presets" role="group" aria-label={t("settings.compactRatio")}>
-                  {COMPACT_RATIO_PRESETS.map(({ ratio, labelKey, captionKey }) => (
+                  {COMPACT_RATIO_PRESETS.map(([ratio, labelKey]) => (
                     <button
                       key={ratio}
                       type="button"
@@ -4375,11 +4368,10 @@ function ModelsSection({ s, busy, apply, backgroundApply, initialFocus }: Models
                       disabled={busy}
                       aria-label={t(labelKey)}
                       aria-pressed={Math.abs(compactRatio - ratio) < 0.0001}
-                      title={t(labelKey)}
                       onClick={() => void selectCompactRatioPreset(ratio)}
                     >
                       <span className="compact-ratio-preset__percent" aria-hidden="true">{Math.round(ratio * 100)}%</span>
-                      <span className="compact-ratio-preset__caption" aria-hidden="true">{t(captionKey)}</span>
+                      <span className="compact-ratio-preset__caption" aria-hidden="true">{t(labelKey).split(" · ")[1]}</span>
                     </button>
                   ))}
                 </div>
@@ -4391,7 +4383,6 @@ function ModelsSection({ s, busy, apply, backgroundApply, initialFocus }: Models
                     disabled={busy}
                     aria-expanded={compactRatioCustomOpen}
                     aria-controls="settings-compact-ratio-custom-panel"
-                    title={t("settings.compactRatioCustomOption")}
                     onClick={compactRatioCustomOpen ? closeCompactRatioCustom : openCompactRatioCustom}
                   >
                     {t("settings.compactRatioCustomOption")}

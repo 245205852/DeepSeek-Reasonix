@@ -356,7 +356,7 @@ ok(compactRootEl.textContent?.includes("Automatic compaction threshold") === tru
 ok(compactRootEl.textContent?.includes("80,000 tokens") === true, "compact ratio shows the default model token threshold");
 ok(compactRootEl.textContent?.includes("Current threshold: 80% · Balanced") === true, "compact ratio summarizes the saved preset separately");
 ok(compactRootEl.textContent?.includes("effective threshold is 75%") === true, "project override shows the active effective threshold");
-ok(compactRootEl.textContent?.includes("changes the local default only") === true, "remote workbench scope is explicit");
+ok(compactRootEl.textContent?.includes("changes only the local default") === true, "remote workbench scope is explicit");
 ok(compactRootEl.querySelector('input[aria-label="Custom compaction threshold percentage"]') === null, "custom compact ratio editor stays hidden on the default path");
 const balancedCompactButton = compactRootEl.querySelector('button[aria-label="80% · Balanced"]') as HTMLButtonElement | null;
 if (!balancedCompactButton) throw new Error("balanced compaction preset did not render");
@@ -372,8 +372,8 @@ await act(async () => {
 let customCompactInput = compactRootEl.querySelector('input[aria-label="Custom compaction threshold percentage"]') as HTMLInputElement | null;
 if (!customCompactInput) throw new Error("custom compaction threshold input did not open");
 eq(customCompactInput.value, "80", "custom compaction threshold defaults older backends to 80 percent");
-ok(compactRootEl.textContent?.includes("trims stale tool output at 60%") === true, "custom compact ratio explains the lower guard rail");
-ok(compactRootEl.textContent?.includes("forces compaction at 90%") === true, "custom compact ratio explains the upper guard rail");
+ok(compactRootEl.textContent?.includes("Tool output is trimmed at 60%") === true, "custom compact ratio explains the lower guard rail");
+ok(compactRootEl.textContent?.includes("90% forces compaction") === true, "custom compact ratio explains the upper guard rail");
 ok(document.activeElement === customCompactInput, "opening the custom compact ratio moves focus to its input");
 ok(customCompactButton.getAttribute("aria-expanded") === "true", "custom compact ratio exposes its expanded state");
 ok(balancedCompactButton.getAttribute("aria-pressed") === "true", "opening custom editing preserves the saved preset selection");
