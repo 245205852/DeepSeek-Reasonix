@@ -203,6 +203,8 @@ type botController interface {
 }
 
 type sessionState struct {
+	lifecycleMu      sync.Mutex
+	retired          bool
 	ctrl             botController
 	sink             *sessionEventSink
 	leases           *control.SessionLeaseKeeper
@@ -220,6 +222,8 @@ type sessionState struct {
 	createdAt        time.Time
 	lastActive       time.Time
 }
+
+var errBotSessionRetired = errors.New("bot session retired during recovery")
 
 type sessionRuntimeProfile struct {
 	model            string
@@ -637,6 +641,19 @@ func (gw *BotGateway) closeSessionState(state *sessionState) {
 	if state == nil {
 		return
 	}
+	// Serialize retirement with recovery ownership handoffs. Stop unlinks
+	// sessions before turn goroutines drain, so a recovery callback captured by
+	// the controller can still arrive here. Marking the state retired under the
+	// same lock prevents that callback from reacquiring a lease after teardown;
+	// an already-running handoff completes before the lease is released below.
+	state.lifecycleMu.Lock()
+	if state.retired {
+		state.lifecycleMu.Unlock()
+		return
+	}
+	state.retired = true
+	state.lifecycleMu.Unlock()
+
 	gw.mu.Lock()
 	cancel := state.cancel
 	state.cancel = nil
@@ -2433,6 +2450,14 @@ func (gw *BotGateway) botSessionRecoveredHandler(key string, msg InboundMessage,
 	return func(info control.SessionRecoveryInfo) error {
 		if state == nil || state.leases == nil {
 			return nil
+		}
+		// Keep the lease handoff and mapping publication atomic with respect to
+		// state retirement. In particular, never let a callback that outlives
+		// Stop reacquire a lease after closeSessionState has released it.
+		state.lifecycleMu.Lock()
+		defer state.lifecycleMu.Unlock()
+		if state.retired {
+			return errBotSessionRetired
 		}
 		if err := state.leases.HandleSessionRecovered(info); err != nil {
 			return err

@@ -1071,6 +1071,45 @@ func TestGatewayLateRecoveryCannotReplaceCurrentSessionMapping(t *testing.T) {
 	}
 }
 
+func TestGatewayLateRecoveryAfterRetirementDoesNotReacquireLease(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	dir := t.TempDir()
+	originalPath := filepath.Join(dir, "original.jsonl")
+	recoveryPath := filepath.Join(dir, "recovery.jsonl")
+	gw := NewGateway(GatewayConfig{}, nil, logger)
+	msg := InboundMessage{Platform: PlatformWeixin, ChatType: ChatDM, ChatID: "chat", UserID: "user"}
+	key := BuildSessionKey(msg.Session())
+	leases := control.NewSessionLeaseKeeper()
+	if err := leases.Rebind(originalPath); err != nil {
+		t.Fatalf("bind original session lease: %v", err)
+	}
+	state := &sessionState{leases: leases, sessionPath: originalPath}
+	gw.controllers[key] = state
+	handler := gw.botSessionRecoveredHandler(key, msg, state)
+
+	// Gateway shutdown retires and releases the state before waiting for every
+	// turn goroutine. A callback already captured by the controller must not
+	// reacquire a lease after that teardown.
+	gw.closeSessions()
+	if got := leases.HeldPath(); got != "" {
+		t.Fatalf("lease after retirement = %q, want empty", got)
+	}
+	if err := handler(control.SessionRecoveryInfo{
+		OriginalPath: originalPath,
+		RecoveryPath: recoveryPath,
+	}); !errors.Is(err, errBotSessionRetired) {
+		t.Fatalf("late recovery error = %v, want %v", err, errBotSessionRetired)
+	}
+	if got := leases.HeldPath(); got != "" {
+		t.Fatalf("late recovery reacquired lease after retirement: %q", got)
+	}
+	probe, err := agent.TryAcquireSessionLease(recoveryPath)
+	if err != nil {
+		t.Fatalf("recovery lease remained unavailable after late callback: %v", err)
+	}
+	probe.Release()
+}
+
 func TestGatewayNewSessionLeaseFailureRetiresSession(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	readyCalls := 0
