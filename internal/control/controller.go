@@ -905,6 +905,7 @@ func (c *Controller) RunTurn(ctx context.Context, input string) error {
 	c.running = true
 	c.canceling = false
 	c.mu.Unlock()
+	defer event.RecordTurnCompletion(c.sink)
 
 	defer func() {
 		c.mu.Lock()
@@ -1631,6 +1632,7 @@ func (c *Controller) noticeDetail(text, detail string) {
 // headless `reasonix run` path, where the Sink renders to stdout and the caller
 // just needs the exit status — no TurnDone event, no cancel bookkeeping.
 func (c *Controller) Run(ctx context.Context, input string) (err error) {
+	defer event.RecordTurnCompletion(c.sink)
 	c.maybeSessionStart(ctx)
 	parentSession := c.parentSessionID()
 	ctx = agent.WithParentSession(ctx, parentSession)

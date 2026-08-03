@@ -1233,6 +1233,7 @@ export const zhTW: Record<DictKey, string> = {
   "settings.openCapabilities": "開啟管理面板",
   "settings.modelTab.usage": "使用",
   "settings.modelTab.access": "接入",
+  "settings.modelTab.stats": "用量統計",
   "settings.mcpDescription": "在專用管理面板中管理 MCP 伺服器、授權、重試和工具可用性。",
   "settings.skillsDescription": "在專用管理面板中檢視 Agent 技能、來源、啟用狀態和發現結果。",
   "settings.memoryDescription": "在記憶管理面板中管理已儲存記憶和指令檔案。",

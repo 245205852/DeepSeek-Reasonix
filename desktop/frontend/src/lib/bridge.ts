@@ -33,6 +33,8 @@ import type {
   RemoteServerView,
   RemoteForwardsEvent,
   BalanceInfo,
+  UsageStatsRange,
+  UsageStatsRequest,
   BotConnectionDiagnostic,
   BotInstallPollResult,
   BotInstallStartResult,
@@ -264,6 +266,7 @@ export interface AppBindings {
   ContextUsageForTab(tabID: string): Promise<ContextInfo>;
   Balance(): Promise<BalanceInfo>;
   BalanceForTab(tabID: string): Promise<BalanceInfo>;
+  UsageStats(req: UsageStatsRequest): Promise<UsageStatsRange>;
   Jobs(): Promise<JobView[]>;
   JobsForTab(tabID: string): Promise<JobView[]>;
   CancelJob(jobID: string): Promise<boolean>;
@@ -2948,6 +2951,11 @@ function makeMockApp(): AppBindings {
         },
         async BalanceForTab() {
           return this.Balance();
+        },
+        async UsageStats() {
+          // Browser dev mock has no stats files; the panel does not consume
+          // provider aggregates, so keep this initial-bundle fallback lean.
+          return { from: "", to: "", tokens: 0, requests: 0, turns: 0, cacheHit: 0, cacheMiss: 0, activeDays: 0, topModel: "", daily: [], models: [] } as unknown as UsageStatsRange;
         },
         async Jobs() {
           return []; // browser dev mock has no background jobs

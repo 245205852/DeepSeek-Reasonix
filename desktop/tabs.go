@@ -948,7 +948,11 @@ func (t *WorkspaceTab) recordUsage(e event.Event) {
 	t.usageTelemetry.CacheHitTokens += cacheHitTokens
 	t.usageTelemetry.CacheMissTokens += cacheMissTokens
 	t.usageTelemetry.Estimated = t.usageTelemetry.Estimated || u.Estimated
-	t.usageTelemetry.RequestCount++
+	requestCount := u.RequestCount
+	if requestCount <= 0 {
+		requestCount = 1
+	}
+	t.usageTelemetry.RequestCount += requestCount
 	if source == event.UsageSourceExecutor {
 		t.usageTelemetry.LastUsedTokens = u.PromptTokens + u.CompletionTokens
 		t.usageTelemetry.LastPromptTokens = u.PromptTokens
@@ -969,7 +973,7 @@ func (t *WorkspaceTab) recordUsage(e event.Event) {
 	src.CacheHitTokens += cacheHitTokens
 	src.CacheMissTokens += cacheMissTokens
 	src.Estimated = src.Estimated || u.Estimated
-	src.RequestCount++
+	src.RequestCount += requestCount
 	if e.Pricing != nil {
 		currency := e.Pricing.Symbol()
 		if existing := strings.TrimSpace(t.usageTelemetry.SessionCurrency); existing != "" && existing != currency {
@@ -3756,6 +3760,7 @@ func (a *App) buildTabControllerWithContextAdmissionHeld(tab *WorkspaceTab, load
 		Model:                    model,
 		RequireKey:               false,
 		AutoPricingCurrency:      a.desktopAutoPricingCurrency(),
+		StatsSource:              "desktop",
 		Sink:                     sink,
 		WorkspaceRoot:            root,
 		SessionDir:               sessionDir,
