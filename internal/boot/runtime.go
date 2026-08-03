@@ -8,6 +8,8 @@ import (
 	"reasonix/internal/command"
 	"reasonix/internal/control"
 	"reasonix/internal/extension"
+	"reasonix/internal/extension/protocol"
+	"reasonix/internal/extension/sidecar"
 	"reasonix/internal/hook"
 	"reasonix/internal/plugin"
 	"reasonix/internal/provider"
@@ -19,12 +21,17 @@ import (
 // controller plus the extension kernel's frozen view of the same assembly.
 // Snapshot is nil when kernel assembly failed — boot behavior is never
 // allowed to depend on it (see build). Runtime is the snapshot's bound
-// closable set; stage 3a always returns it empty because sidecar processes
-// arrive with stage 5.
+// closable set; it holds the extension sidecar Manager when any v1 runtime
+// package is installed, and its Close is chained into the controller's
+// cleanup so sidecars die with their controller generation.
 type BuildResult struct {
 	Controller *control.Controller
 	Snapshot   *extension.RuntimeSnapshot
 	Runtime    *extension.RuntimeSet
+	// Extensions is the started extension sidecar Manager (nil when no v1
+	// runtime package is installed). Its lifecycle belongs to Runtime; the
+	// field exists so later stages (and tests) can reach the live clients.
+	Extensions *sidecar.Manager
 }
 
 // runtimeGeneration is the process-wide build generation counter. The first
@@ -54,19 +61,14 @@ func BuildRuntime(ctx context.Context, opts Options) (*BuildResult, error) {
 // returned controller owns plugin subprocesses; call Close (via Controller.Close)
 // to release them.
 //
-// Build is the stage-3a compatibility wrapper over BuildRuntime: frontends
-// keep their existing signature while the kernel snapshot and runtime set
-// have no consumer yet.
+// Build is the compatibility wrapper over BuildRuntime: frontends keep their
+// existing signature. The runtime set is NOT closed here — it is chained into
+// the controller's cleanup (the way LSP cleanup is chained), so extension
+// sidecars live exactly as long as their controller.
 func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 	res, err := BuildRuntime(ctx, opts)
 	if err != nil {
 		return nil, err
-	}
-	// The stage-3a runtime set is always empty (sidecar processes arrive in
-	// stage 5), so dropping it leaks nothing. Close a future non-empty set
-	// rather than orphaning its resources.
-	if res.Runtime != nil && res.Runtime.Len() > 0 {
-		_ = res.Runtime.Close()
 	}
 	return res.Controller, nil
 }
@@ -84,12 +86,38 @@ type legacyAssembly struct {
 	providers    []provider.Descriptor
 }
 
+// extensionBoot carries the extension sidecar launch inputs into snapshot
+// assembly: where the pluginpkg installed state lives, the session the
+// sidecars serve, and where non-fatal warnings go.
+type extensionBoot struct {
+	home      string
+	session   protocol.SessionContext
+	onWarning func(string)
+}
+
+func (p extensionBoot) warn(msg string) {
+	if p.onWarning != nil {
+		p.onWarning(msg)
+	}
+}
+
 // assembleLegacySnapshot freezes one boot's resources into an extension
 // kernel snapshot. ConflictCollect is deliberate: the legacy sources already
 // resolved their clashes inside their own discovery passes, and any residual
 // dispute must land on the snapshot's Diagnostics without changing whether
 // the session boots.
-func assembleLegacySnapshot(ctx context.Context, in legacyAssembly, generation uint64) (*extension.RuntimeSnapshot, *extension.RuntimeSet, error) {
+//
+// Extension sidecars (stage 5b): when the pluginpkg installed state holds
+// enabled v1 runtime packages, their sidecars are started BEFORE the builder
+// freezes — the handshake's declared providers and UI actions can only enter
+// the catalog from a live handshake, and required-runtime failures must fail
+// the build, which the activator seam (post-freeze) could only do after the
+// catalog already settled. The Manager is registered into the RuntimeSet at
+// activation, so it still dies with its controller generation; the sidecar
+// contributions are declaration-level only (dispatch wiring is stages 6-8).
+// With zero runtime packages installed the path is byte-identical to the
+// pre-sidecar one: no processes, no contributions, an empty runtime set.
+func assembleLegacySnapshot(ctx context.Context, in legacyAssembly, generation uint64, ext extensionBoot) (*extension.RuntimeSnapshot, *extension.RuntimeSet, *sidecar.Manager, error) {
 	b := extension.NewBuilder().
 		WithSystemPrompt(in.systemPrompt).
 		WithGeneration(generation).
@@ -100,7 +128,51 @@ func assembleLegacySnapshot(ctx context.Context, in legacyAssembly, generation u
 				return legacyContributions(in), nil
 			},
 		})
-	return b.Build(ctx)
+
+	var mgr *sidecar.Manager
+	if strings.TrimSpace(ext.home) != "" {
+		var warnings []string
+		var err error
+		mgr, warnings, err = sidecar.StartPackages(ctx, ext.home, ext.session, nil)
+		for _, warning := range warnings {
+			ext.warn(warning)
+		}
+		if err != nil {
+			// A required runtime failed: the Manager already shut down
+			// whatever started. The call site treats *RequiredStartError as
+			// fatal.
+			return nil, nil, nil, err
+		}
+		if len(mgr.Clients()) > 0 {
+			managed := mgr
+			b.AddContributor(extension.ContributorFunc{
+				ContributorName: "boot-extension-runtimes",
+				Fn: func(context.Context) ([]extension.Contribution, error) {
+					return managed.Contributions(), nil
+				},
+			})
+			b.WithActivator(func(_ context.Context, snap *extension.RuntimeSnapshot) (*extension.RuntimeSet, error) {
+				rs := extension.NewRuntimeSet(snap.Generation())
+				rs.Add(managed)
+				return rs, nil
+			})
+		} else {
+			// No runtime packages (or every optional one failed): the build
+			// takes the pre-sidecar path byte-identically, with an empty
+			// runtime set and no Manager to retire.
+			_ = mgr.Close()
+			mgr = nil
+		}
+	}
+
+	snap, runtimeSet, err := b.Build(ctx)
+	if err != nil {
+		if mgr != nil {
+			_ = mgr.Close()
+		}
+		return nil, nil, nil, err
+	}
+	return snap, runtimeSet, mgr, nil
 }
 
 // legacyContributions maps the assembled runtime resources to kernel

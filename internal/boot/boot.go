@@ -29,6 +29,8 @@ import (
 	"reasonix/internal/environment"
 	"reasonix/internal/event"
 	"reasonix/internal/extension"
+	"reasonix/internal/extension/protocol"
+	"reasonix/internal/extension/sidecar"
 	"reasonix/internal/guardian"
 	"reasonix/internal/history"
 	"reasonix/internal/hook"
@@ -1627,27 +1629,30 @@ func build(ctx context.Context, opts Options) (*BuildResult, error) {
 	}
 
 	ctrlOpts := control.Options{
-		Runner:                runner,
-		Executor:              executor,
-		Sink:                  sink,
-		Policy:                policy,
-		SubagentGate:          headlessGate,
-		Label:                 label,
-		ModelRef:              modelRef,
-		SystemPrompt:          sysPrompt,
-		SessionDir:            sessionDir,
-		Host:                  pluginHost,
-		Commands:              cmds,
-		Skills:                skills,
-		AllSkills:             allSkills,
-		SkillStore:            skillStore,
-		AllSkillStore:         allSkillStore,
-		SkillRunner:           skillRunner,
-		ReadOnlySkillRunner:   readOnlySkillRunner,
-		SkillProfile:          skillProfile,
-		Hooks:                 hookRunner,
-		Memory:                mem,
-		Cleanup:               cleanup,
+		Runner:              runner,
+		Executor:            executor,
+		Sink:                sink,
+		Policy:              policy,
+		SubagentGate:        headlessGate,
+		Label:               label,
+		ModelRef:            modelRef,
+		SystemPrompt:        sysPrompt,
+		SessionDir:          sessionDir,
+		Host:                pluginHost,
+		Commands:            cmds,
+		Skills:              skills,
+		AllSkills:           allSkills,
+		SkillStore:          skillStore,
+		AllSkillStore:       allSkillStore,
+		SkillRunner:         skillRunner,
+		ReadOnlySkillRunner: readOnlySkillRunner,
+		SkillProfile:        skillProfile,
+		Hooks:               hookRunner,
+		Memory:              mem,
+		// Indirection: the cleanup variable gains the extension runtime set at
+		// the end of build (snapshot assembly runs after control.New), and the
+		// controller must observe the final chain at Close time.
+		Cleanup:               func() { cleanup() },
 		BalanceURL:            entry.BalanceURL,
 		BalanceKey:            entry.APIKey(),
 		BalanceClient:         balanceClient,
@@ -1783,7 +1788,15 @@ func build(ctx context.Context, opts Options) (*BuildResult, error) {
 		providerResolver = NewLocalProviderResolver(cfg, proxySpec)
 	}
 	generation := nextRuntimeGeneration()
-	snap, runtimeSet, snapErr := assembleLegacySnapshot(ctx, legacyAssembly{
+	// The session context identifies this build to extension sidecars. A
+	// freshly built controller usually has no session path yet, so fall back
+	// to a generation-scoped ID — the handshake only requires a stable,
+	// non-empty identity for this runtime generation.
+	sessionID := strings.TrimSpace(ctrl.SessionPath())
+	if sessionID == "" {
+		sessionID = fmt.Sprintf("boot-%d", generation)
+	}
+	snap, runtimeSet, extensionMgr, snapErr := assembleLegacySnapshot(ctx, legacyAssembly{
 		systemPrompt: sysPrompt,
 		registry:     reg,
 		skills:       skills,
@@ -1791,12 +1804,37 @@ func build(ctx context.Context, opts Options) (*BuildResult, error) {
 		hooks:        resolvedHooks,
 		mcpSpecs:     mcpSpecs,
 		providers:    providerResolver.Catalog(),
-	}, generation)
+	}, generation, extensionBoot{
+		home:    config.ReasonixHomeDir(),
+		session: protocol.SessionContext{SessionID: sessionID, WorkspaceRoot: root, Generation: generation},
+		onWarning: func(msg string) {
+			slog.Warn("boot: extension runtime: "+msg, "root", root)
+			sink.Emit(event.Event{Kind: event.Notice, Level: event.LevelWarn, Text: msg})
+		},
+	})
 	if snapErr != nil {
+		// Two assembly failures are fatal rather than degradable: a required
+		// extension runtime that cannot start, and two runtimes claiming the
+		// same replacement slot (the kernel's ReplaceClaims verdict). Both
+		// mean the extension contract the user installed cannot be honored;
+		// booting without it would silently change what the session is.
+		var requiredErr *sidecar.RequiredStartError
+		var slotErr *extension.SlotConflictError
+		if errors.As(snapErr, &requiredErr) || errors.As(snapErr, &slotErr) {
+			ctrl.ReleaseResources()
+			return nil, fmt.Errorf("boot: %w", snapErr)
+		}
 		slog.Warn("boot: extension snapshot assembly failed; continuing without a runtime snapshot", "err", snapErr)
 		runtimeSet = extension.NewRuntimeSet(generation)
 	}
-	return &BuildResult{Controller: ctrl, Snapshot: snap, Runtime: runtimeSet}, nil
+	// The runtime set (extension sidecar Manager, when any) is owned by the
+	// controller: chain its close into the controller cleanup the way LSP
+	// cleanup is chained, so sidecars live exactly as long as their
+	// controller. RuntimeSet.Close is idempotent, so double-close paths
+	// (Rebuild's fail-atomic cleanup) stay safe.
+	prevCleanup := cleanup
+	cleanup = func() { prevCleanup(); _ = runtimeSet.Close() }
+	return &BuildResult{Controller: ctrl, Snapshot: snap, Runtime: runtimeSet, Extensions: extensionMgr}, nil
 }
 
 // effectivePlannerModel centralizes planner precedence. The explicit ACP hard

@@ -1,0 +1,312 @@
+package boot
+
+import (
+	"bufio"
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+	"time"
+
+	"reasonix/internal/config"
+	"reasonix/internal/extension"
+	"reasonix/internal/extension/protocol"
+	"reasonix/internal/extension/sidecar"
+	"reasonix/internal/pluginpkg"
+)
+
+// Boot-level fake sidecar (re-exec helper-process pattern, mirroring the
+// sidecar package's own tests): the boot test binary re-executes itself with
+// REASONIX_BOOT_FAKE_SIDECAR=1 and speaks Extension Protocol v1 over
+// stdin/stdout. REASONIX_BOOT_FAKE_INIT_RESULT overrides the initialize
+// result; REASONIX_BOOT_FAKE_MODE=ignore_shutdown keeps the process alive
+// through extension/shutdown.
+const (
+	bootFakeEnvEnable     = "REASONIX_BOOT_FAKE_SIDECAR"
+	bootFakeEnvInitResult = "REASONIX_BOOT_FAKE_INIT_RESULT"
+	bootFakeEnvMode       = "REASONIX_BOOT_FAKE_MODE"
+)
+
+// TestExtensionFakeSidecarHelperProcess is the re-exec entry point; it skips
+// in the parent run.
+func TestExtensionFakeSidecarHelperProcess(t *testing.T) {
+	if os.Getenv(bootFakeEnvEnable) != "1" {
+		t.Skip("boot fake sidecar helper process")
+	}
+	runBootFakeSidecar(os.Stdin, os.Stdout)
+	os.Exit(0)
+}
+
+func runBootFakeSidecar(stdin io.Reader, stdout io.Writer) {
+	out := bufio.NewWriter(stdout)
+	initResult := strings.TrimSpace(os.Getenv(bootFakeEnvInitResult))
+	if initResult == "" {
+		initResult = `{"protocolVersion":"1","name":"boot-fake","version":"1.0.0","stateSchemaVersion":0}`
+	}
+	ignoreShutdown := os.Getenv(bootFakeEnvMode) == "ignore_shutdown"
+	in := bufio.NewReader(stdin)
+	for {
+		line, err := in.ReadBytes('\n')
+		if len(line) > 0 {
+			var frame struct {
+				ID     json.RawMessage `json:"id"`
+				Method string          `json:"method"`
+			}
+			if json.Unmarshal(line, &frame) == nil && frame.Method != "" {
+				var result string
+				switch frame.Method {
+				case "extension/initialize":
+					result = initResult
+				case "extension/intercept":
+					result = `{"decision":"continue"}`
+				case "extension/shutdown":
+					if ignoreShutdown {
+						continue
+					}
+					result = `{"accepted":true}`
+					fmt.Fprintf(out, `{"jsonrpc":"2.0","id":%s,"result":%s}`+"\n", string(frame.ID), result)
+					_ = out.Flush()
+					return
+				default:
+					continue
+				}
+				fmt.Fprintf(out, `{"jsonrpc":"2.0","id":%s,"result":%s}`+"\n", string(frame.ID), result)
+				_ = out.Flush()
+			}
+		}
+		if err != nil {
+			return
+		}
+	}
+}
+
+// installBootFakePlugin installs an enabled v1 runtime package (the
+// re-executed test binary) into the pluginpkg state under home.
+func installBootFakePlugin(t *testing.T, home, name string, runtime map[string]any) {
+	t.Helper()
+	exe, err := os.Executable()
+	if err != nil {
+		t.Fatalf("os.Executable: %v", err)
+	}
+	env := map[string]any{bootFakeEnvEnable: "1"}
+	for key, value := range runtime {
+		if key == "env" {
+			for k, v := range value.(map[string]string) {
+				env[k] = v
+			}
+			delete(runtime, "env")
+		}
+	}
+	runtime["command"] = exe
+	runtime["args"] = []string{"-test.run=^TestExtensionFakeSidecarHelperProcess$"}
+	runtime["env"] = env
+
+	root := filepath.Join(home, "plugins", name)
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	manifest, err := json.Marshal(map[string]any{
+		"apiVersion": pluginpkg.ManifestAPIVersionV1,
+		"name":       name,
+		"version":    "1.0.0",
+		"runtime":    runtime,
+	})
+	if err != nil {
+		t.Fatalf("marshal manifest: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(root, pluginpkg.NativeManifest), manifest, 0o644); err != nil {
+		t.Fatalf("write manifest: %v", err)
+	}
+	if err := pluginpkg.Upsert(home, pluginpkg.InstalledPlugin{
+		Name: name, Root: pluginpkg.RelativeRoot(home, root), Version: "1.0.0", Enabled: true,
+	}); err != nil {
+		t.Fatalf("Upsert: %v", err)
+	}
+}
+
+// bootWithFakePlugin builds the runtime fixture with one installed sidecar
+// package and returns the build result.
+func bootWithFakePlugin(t *testing.T, name string, runtime map[string]any) *BuildResult {
+	t.Helper()
+	isolateConfigHome(t)
+	dir := robustTempDir(t)
+	t.Chdir(dir)
+	writeRuntimeFixture(t, dir)
+	installBootFakePlugin(t, config.ReasonixHomeDir(), name, runtime)
+	res, err := BuildRuntime(context.Background(), Options{})
+	if err != nil {
+		t.Fatalf("BuildRuntime: %v", err)
+	}
+	t.Cleanup(res.Controller.Close)
+	return res
+}
+
+func TestBootStartsExtensionSidecar(t *testing.T) {
+	res := bootWithFakePlugin(t, "bootplugin", map[string]any{
+		"intercepts": []string{"input.receive"},
+	})
+	if res.Extensions == nil {
+		t.Fatal("BuildRuntime returned no extension manager")
+	}
+	if res.Runtime == nil || res.Runtime.Len() != 1 {
+		t.Fatalf("runtime set holds %d closers, want 1 (the sidecar manager)", res.Runtime.Len())
+	}
+	client := res.Extensions.Client("bootplugin")
+	if client == nil {
+		t.Fatal("manager has no client for bootplugin")
+	}
+
+	// The sidecar speaks the real protocol: ping it with an intercept.
+	result, err := client.Intercept(context.Background(), protocol.EventInputReceive, json.RawMessage(`{"text":"ping"}`), 5*time.Second)
+	if err != nil {
+		t.Fatalf("Intercept: %v", err)
+	}
+	if result.Decision != protocol.DecisionContinue {
+		t.Fatalf("decision = %q", result.Decision)
+	}
+
+	// The snapshot catalog carries the declaration-level contribution.
+	if res.Snapshot == nil {
+		t.Fatal("snapshot is nil")
+	}
+	stubs := res.Snapshot.Catalog().Get(extension.KindInterceptor, "input.receive")
+	if len(stubs) != 1 || stubs[0].Source.PluginID != "bootplugin" {
+		t.Fatalf("interceptor stubs = %+v", stubs)
+	}
+
+	// Controller teardown retires the sidecar: process exits, runtime set
+	// closes with the controller generation.
+	res.Controller.Close()
+	waitForCond(t, "sidecar process exit", 10*time.Second, client.Exited)
+	if !res.Runtime.Closed() {
+		t.Fatal("runtime set was not closed by controller teardown")
+	}
+}
+
+func TestBootExtensionStrategyClaimInSnapshot(t *testing.T) {
+	res := bootWithFakePlugin(t, "claimer", map[string]any{
+		"replaces": []string{"compaction"},
+	})
+	if res.Snapshot == nil {
+		t.Fatal("snapshot is nil")
+	}
+	owner, ok := res.Snapshot.Replacements()[extension.SlotCompaction]
+	if !ok || owner.PluginID != "claimer" {
+		t.Fatalf("compaction slot owner = %+v (ok=%v)", owner, ok)
+	}
+}
+
+func TestBootFailsWhenTwoRuntimesClaimOneSlot(t *testing.T) {
+	isolateConfigHome(t)
+	dir := robustTempDir(t)
+	t.Chdir(dir)
+	writeRuntimeFixture(t, dir)
+	reasonixHome := config.ReasonixHomeDir()
+	installBootFakePlugin(t, reasonixHome, "claim-one", map[string]any{
+		"replaces": []string{"system_prompt"},
+	})
+	installBootFakePlugin(t, reasonixHome, "claim-two", map[string]any{
+		"replaces": []string{"system_prompt"},
+	})
+	_, err := BuildRuntime(context.Background(), Options{})
+	if err == nil {
+		t.Fatal("BuildRuntime succeeded with two runtimes claiming system_prompt")
+	}
+	var slotErr *extension.SlotConflictError
+	if !errors.As(err, &slotErr) {
+		t.Fatalf("error %v is not a SlotConflictError", err)
+	}
+}
+
+func TestBootFailsWhenRequiredRuntimeFails(t *testing.T) {
+	isolateConfigHome(t)
+	dir := robustTempDir(t)
+	t.Chdir(dir)
+	writeRuntimeFixture(t, dir)
+	installBootFakePlugin(t, config.ReasonixHomeDir(), "required-broken", map[string]any{
+		"required": true,
+		"env":      map[string]string{bootFakeEnvInitResult: `{"protocolVersion":"2","name":"x","version":"1","stateSchemaVersion":0}`},
+	})
+	_, err := BuildRuntime(context.Background(), Options{})
+	if err == nil {
+		t.Fatal("BuildRuntime succeeded with a broken required runtime")
+	}
+	var requiredErr *sidecar.RequiredStartError
+	if !errors.As(err, &requiredErr) {
+		t.Fatalf("error %v is not a RequiredStartError", err)
+	}
+}
+
+func TestBootOptionalRuntimeFailureDegradesToWarning(t *testing.T) {
+	res := bootWithFakePlugin(t, "optional-broken", map[string]any{
+		"env": map[string]string{bootFakeEnvInitResult: `{"protocolVersion":"2","name":"x","version":"1","stateSchemaVersion":0}`},
+	})
+	// Optional failure: boot succeeds, no manager, empty runtime set.
+	if res.Extensions != nil {
+		t.Fatal("broken optional runtime produced a manager")
+	}
+	if res.Runtime == nil || res.Runtime.Len() != 0 {
+		t.Fatalf("runtime set holds %d closers, want 0", res.Runtime.Len())
+	}
+}
+
+// TestRebuildRetiresOldSidecars pins the Rebuild contract: the old
+// controller's Close retires its sidecars, while the replacement build's
+// sidecars keep serving their own generation.
+func TestRebuildRetiresOldSidecars(t *testing.T) {
+	isolateConfigHome(t)
+	dir := robustTempDir(t)
+	t.Chdir(dir)
+	writeRuntimeFixture(t, dir)
+	installBootFakePlugin(t, config.ReasonixHomeDir(), "rebuildplugin", map[string]any{})
+
+	oldRes, err := BuildRuntime(context.Background(), Options{})
+	if err != nil {
+		t.Fatalf("BuildRuntime: %v", err)
+	}
+	newRes, err := Rebuild(context.Background(), oldRes.Controller, Options{})
+	if err != nil {
+		oldRes.Controller.Close()
+		t.Fatalf("Rebuild: %v", err)
+	}
+	t.Cleanup(newRes.Controller.Close)
+	if oldRes.Extensions == nil || newRes.Extensions == nil {
+		t.Fatal("both builds must have extension managers")
+	}
+	oldClient := oldRes.Extensions.Client("rebuildplugin")
+	newClient := newRes.Extensions.Client("rebuildplugin")
+	if oldClient == nil || newClient == nil {
+		t.Fatal("both builds must have a sidecar client")
+	}
+	if oldRes.Snapshot.Generation() == newRes.Snapshot.Generation() {
+		t.Fatal("rebuild reused the old generation")
+	}
+
+	// Closing the old controller retires the old sidecar only.
+	oldRes.Controller.Close()
+	waitForCond(t, "old sidecar exit", 10*time.Second, oldClient.Exited)
+	result, err := newClient.Intercept(context.Background(), protocol.EventSessionStart, json.RawMessage(`{}`), 5*time.Second)
+	if err != nil || result.Decision != protocol.DecisionContinue {
+		t.Fatalf("new sidecar Intercept after old close = %+v, %v", result, err)
+	}
+
+	newRes.Controller.Close()
+	waitForCond(t, "new sidecar exit", 10*time.Second, newClient.Exited)
+}
+
+func waitForCond(t *testing.T, what string, timeout time.Duration, cond func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if cond() {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("timed out waiting for %s", what)
+}

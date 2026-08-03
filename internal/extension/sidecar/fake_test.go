@@ -1,0 +1,227 @@
+package sidecar
+
+import (
+	"bufio"
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"os"
+	"strings"
+	"testing"
+	"time"
+
+	"reasonix/internal/extension/protocol"
+	"reasonix/internal/pluginpkg"
+	"reasonix/internal/rpcwire"
+)
+
+// Re-exec fake sidecar (the standard Go helper-process pattern): the test
+// binary re-executes itself with REASONIX_FAKE_SIDECAR=1 and speaks the real
+// Extension Protocol v1 over stdin/stdout. Behavior is steered through env:
+//
+//	REASONIX_FAKE_SIDECAR=1            enable the helper
+//	REASONIX_FAKE_INIT_RESULT          raw JSON InitializeResult to answer with
+//	REASONIX_FAKE_MODE                 comma-separated behavior flags:
+//	                                   early_request | early_notify |
+//	                                   ignore_shutdown | stall_intercept |
+//	                                   block_intercept | stderr_flood
+const (
+	fakeEnvEnable     = "REASONIX_FAKE_SIDECAR"
+	fakeEnvInitResult = "REASONIX_FAKE_INIT_RESULT"
+	fakeEnvMode       = "REASONIX_FAKE_MODE"
+)
+
+// TestFakeSidecarHelperProcess is the re-exec entry point. It skips in the
+// parent test run and only acts as the sidecar when the env marker is set.
+func TestFakeSidecarHelperProcess(t *testing.T) {
+	if os.Getenv(fakeEnvEnable) != "1" {
+		t.Skip("fake sidecar helper process")
+	}
+	runFakeSidecar(os.Stdin, os.Stdout)
+	os.Exit(0)
+}
+
+type fakeFrame struct {
+	ID     json.RawMessage `json:"id"`
+	Method string          `json:"method"`
+	Params json.RawMessage `json:"params"`
+}
+
+func fakeModes() map[string]bool {
+	out := map[string]bool{}
+	for _, mode := range strings.Split(os.Getenv(fakeEnvMode), ",") {
+		if mode = strings.TrimSpace(mode); mode != "" {
+			out[mode] = true
+		}
+	}
+	return out
+}
+
+func fakeInitResult() json.RawMessage {
+	if raw := strings.TrimSpace(os.Getenv(fakeEnvInitResult)); raw != "" {
+		return json.RawMessage(raw)
+	}
+	return json.RawMessage(`{"protocolVersion":"1","name":"fake-sidecar","version":"1.0.0","stateSchemaVersion":0}`)
+}
+
+func runFakeSidecar(stdin io.Reader, stdout io.Writer) {
+	modes := fakeModes()
+	out := bufio.NewWriter(stdout)
+	write := func(format string, args ...any) {
+		fmt.Fprintf(out, format+"\n", args...)
+		_ = out.Flush()
+	}
+	if modes["stderr_flood"] {
+		// Push well past the 16 KiB tail so only the end survives, then leave
+		// a credential-looking line at the very end — it must be retained by
+		// the ring and redacted before surfacing.
+		for i := 0; i < 32*1024; i++ {
+			fmt.Fprintf(os.Stderr, "flood line %d padding padding padding\n", i)
+		}
+		fmt.Fprintln(os.Stderr, "boot failed: api_key=sk-abcdef1234567890SECRETKEY is invalid")
+	}
+
+	respond := func(id json.RawMessage, result json.RawMessage) {
+		write(`{"jsonrpc":"2.0","id":%s,"result":%s}`, string(id), string(result))
+	}
+
+	in := bufio.NewReader(stdin)
+	for {
+		line, err := in.ReadBytes('\n')
+		if len(line) > 0 {
+			var frame fakeFrame
+			if json.Unmarshal(line, &frame) == nil && frame.Method != "" {
+				switch frame.Method {
+				case string(protocol.MethodExtensionInitialize):
+					if modes["early_request"] {
+						write(`{"jsonrpc":"2.0","id":77001,"method":"host/content/read","params":{"contentRef":"content_nope","offset":0}}`)
+					}
+					if modes["early_notify"] {
+						write(`{"jsonrpc":"2.0","method":"extension/provider/stream/chunk","params":{"streamId":"s1","seq":1,"chunk":{"type":"text","text":"hi"}}}`)
+					}
+					respond(frame.ID, fakeInitResult())
+				case string(protocol.MethodExtensionInitialized):
+					// notification; nothing to do
+				case string(protocol.MethodExtensionIntercept):
+					switch {
+					case modes["stall_intercept"]:
+						fmt.Fprintln(os.Stderr, "intercept-stalled")
+						// never answer: the host-side timeout or a crash ends it
+					case modes["block_intercept"]:
+						respond(frame.ID, json.RawMessage(`{"decision":"block","reason":"fake block"}`))
+					default:
+						respond(frame.ID, json.RawMessage(`{"decision":"continue"}`))
+					}
+				case string(protocol.MethodExtensionShutdown):
+					if modes["ignore_shutdown"] {
+						// Stay alive without answering; the host must kill us
+						// inside its bounded close.
+						continue
+					}
+					respond(frame.ID, json.RawMessage(`{"accepted":true}`))
+					return
+				default:
+					respond(frame.ID, json.RawMessage(`{}`))
+				}
+			}
+		}
+		if err != nil {
+			return
+		}
+	}
+}
+
+// fakeSidecarRuntime builds the exec-form runtime spec pointing at the
+// re-executed test binary.
+func fakeSidecarRuntime(t *testing.T, configure func(rt *pluginpkg.RuntimeSpec)) *pluginpkg.RuntimeSpec {
+	t.Helper()
+	exe, err := os.Executable()
+	if err != nil {
+		t.Fatalf("os.Executable: %v", err)
+	}
+	rt := &pluginpkg.RuntimeSpec{
+		Command: exe,
+		Args:    []string{"-test.run=^TestFakeSidecarHelperProcess$"},
+		Env:     map[string]string{fakeEnvEnable: "1"},
+	}
+	if configure != nil {
+		configure(rt)
+	}
+	return rt
+}
+
+// fakeSidecarPackage builds the installed-state entry + package for one fake
+// sidecar. The package root is an empty temp dir: the runtime command is the
+// test binary itself, so nothing needs to exist on disk.
+func fakeSidecarPackage(t *testing.T, name string, configure func(rt *pluginpkg.RuntimeSpec)) (pluginpkg.Package, pluginpkg.InstalledPlugin) {
+	t.Helper()
+	rt := fakeSidecarRuntime(t, configure)
+	pkg := pluginpkg.Package{
+		Root:         t.TempDir(),
+		ManifestKind: "reasonix",
+		Manifest: pluginpkg.Manifest{
+			Name:    name,
+			Version: "1.0.0",
+			Runtime: rt,
+		},
+	}
+	installed := pluginpkg.InstalledPlugin{Name: name, Version: "1.0.0", Enabled: true, Root: pkg.Root}
+	return pkg, installed
+}
+
+func testSessionContext() protocol.SessionContext {
+	return protocol.SessionContext{SessionID: "sess-test", WorkspaceRoot: "/ws", Generation: 1}
+}
+
+// startFakeClient starts a fake sidecar client and registers its bounded
+// shutdown.
+func startFakeClient(t *testing.T, configure func(rt *pluginpkg.RuntimeSpec), opts func(*ClientOptions)) *Client {
+	t.Helper()
+	pkg, installed := fakeSidecarPackage(t, "fakeplugin", configure)
+	clientOpts := ClientOptions{Package: pkg, Installed: installed, Session: testSessionContext()}
+	if opts != nil {
+		opts(&clientOpts)
+	}
+	client, err := StartClient(context.Background(), clientOpts)
+	if err != nil {
+		t.Fatalf("StartClient: %v", err)
+	}
+	t.Cleanup(func() { _ = client.Close() })
+	return client
+}
+
+// waitFor polls cond until it holds or the deadline expires.
+func waitFor(t *testing.T, what string, timeout time.Duration, cond func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if cond() {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("timed out waiting for %s", what)
+}
+
+// protocolReason extracts the frozen protocol error reason from err, whether
+// it travels as a local *protocol.ProtocolError or as the wire-shaped
+// *rpcwire.RPCError handlers return.
+func protocolReason(t *testing.T, err error) protocol.ErrorReason {
+	t.Helper()
+	var protocolErr *protocol.ProtocolError
+	if errors.As(err, &protocolErr) {
+		return protocolErr.Reason
+	}
+	var rpcErr *rpcwire.RPCError
+	if errors.As(err, &rpcErr) {
+		var data protocol.ProtocolErrorData
+		raw, _ := json.Marshal(rpcErr.Data)
+		if json.Unmarshal(raw, &data) == nil && data.Reason != "" {
+			return data.Reason
+		}
+	}
+	t.Fatalf("error %v carries no protocol reason", err)
+	return ""
+}

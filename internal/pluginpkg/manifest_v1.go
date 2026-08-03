@@ -44,6 +44,10 @@ type RuntimeSpec struct {
 	Intercepts   []string          `json:"intercepts,omitempty"`
 	Replaces     []string          `json:"replaces,omitempty"`
 	Capabilities []string          `json:"capabilities,omitempty"`
+	// TimeoutMillis optionally tunes this runtime's synchronous intercept
+	// budget. Zero keeps the host's per-point defaults; the host clamps any
+	// value to its 60s ceiling at dispatch time.
+	TimeoutMillis int `json:"timeoutMillis,omitempty"`
 }
 
 // sniffManifestAPIVersion extracts just the apiVersion field so parseNative
@@ -533,6 +537,9 @@ func parseV1Runtime(raw json.RawMessage) (*RuntimeSpec, error) {
 	}
 	if rt.Priority < minRuntimePriority || rt.Priority > maxRuntimePriority {
 		return nil, fmt.Errorf("runtime.priority %d out of range [%d, %d]", rt.Priority, minRuntimePriority, maxRuntimePriority)
+	}
+	if rt.TimeoutMillis < 0 {
+		return nil, fmt.Errorf("runtime.timeoutMillis %d must not be negative", rt.TimeoutMillis)
 	}
 	for _, point := range rt.Intercepts {
 		if !runtimeInterceptorPoints[point] {
