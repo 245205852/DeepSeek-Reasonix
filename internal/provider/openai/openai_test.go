@@ -1395,6 +1395,96 @@ func TestNewZhipuSetsFlag(t *testing.T) {
 	}
 }
 
+func TestNewExplicitGLMProtocolOnGateway(t *testing.T) {
+	for _, tc := range []struct {
+		effort string
+		want   string
+	}{
+		{effort: "", want: "enabled"},
+		{effort: "enabled", want: "enabled"},
+		{effort: "disabled", want: "disabled"},
+	} {
+		p, err := New(provider.Config{
+			Name:    "glm-gateway",
+			BaseURL: "https://gateway.example.com/v1",
+			Model:   "glm-5.2",
+			APIKey:  "k",
+			Extra: map[string]any{
+				"reasoning_protocol": "glm",
+				"effort":             tc.effort,
+			},
+		})
+		if err != nil {
+			t.Fatalf("New(explicit GLM, effort=%q): %v", tc.effort, err)
+		}
+		c := p.(*client)
+		if !c.zhipu {
+			t.Fatalf("explicit GLM protocol did not select GLM wire shape")
+		}
+		req := c.buildRequest(provider.Request{})
+		if req.Thinking == nil || req.Thinking.Type != tc.want {
+			t.Fatalf("effort=%q thinking = %+v, want %q", tc.effort, req.Thinking, tc.want)
+		}
+		if req.ReasoningEffort != "" {
+			t.Fatalf("explicit GLM protocol sent reasoning_effort=%q", req.ReasoningEffort)
+		}
+	}
+}
+
+func TestBuildRequestRoundTripsGLMReasoningHistory(t *testing.T) {
+	build := func(effort string) (*client, chatRequest) {
+		p, err := New(provider.Config{
+			Name:    "glm-gateway",
+			BaseURL: "https://tokenrhythm.studio/v1",
+			Model:   "glm-5.2",
+			APIKey:  "k",
+			Extra: map[string]any{
+				"reasoning_protocol": "glm",
+				"effort":             effort,
+			},
+		})
+		if err != nil {
+			t.Fatalf("New(GLM, effort=%q): %v", effort, err)
+		}
+		c := p.(*client)
+		out := c.buildRequest(provider.Request{Messages: []provider.Message{
+			{Role: provider.RoleUser, Content: "inspect"},
+			{Role: provider.RoleAssistant, ReasoningContent: "read main.go first", ToolCalls: []provider.ToolCall{{
+				ID: "call_1", Name: "read_file", Arguments: `{"path":"main.go"}`,
+			}}},
+			{Role: provider.RoleTool, ToolCallID: "call_1", Name: "read_file", Content: "package main"},
+			{Role: provider.RoleUser, Content: "continue"},
+			{Role: provider.RoleAssistant, Content: "done", ReasoningContent: "combine the result"},
+		}})
+		return c, out
+	}
+
+	enabled, enabledReq := build("enabled")
+	if enabled.RequiresToolCallReasoning() || !enabled.RequiresReasoningRoundTrip() {
+		t.Fatal("thinking-enabled GLM must preserve complete reasoning history without enabling DeepSeek recovery policy")
+	}
+	if got := enabledReq.Messages[1].ReasoningContent; got == nil || *got != "read main.go first" {
+		t.Fatalf("enabled GLM reasoning_content = %v, want provider-issued reasoning", got)
+	}
+	if got := enabledReq.Messages[4].ReasoningContent; got == nil || *got != "combine the result" {
+		t.Fatalf("enabled GLM plain-turn reasoning_content = %v, want complete reasoning history", got)
+	}
+	if provider.WarnOnMissingToolCallReasoning(enabled) {
+		t.Fatal("GLM must preserve available reasoning without entering DeepSeek-specific missing-reasoning recovery")
+	}
+
+	disabled, disabledReq := build("disabled")
+	if disabled.RequiresToolCallReasoning() || disabled.RequiresReasoningRoundTrip() {
+		t.Fatal("thinking-disabled GLM must not require new reasoning round trips")
+	}
+	if got := disabledReq.Messages[1].ReasoningContent; got == nil || *got != "read main.go first" {
+		t.Fatalf("disabled GLM must preserve reasoning from an earlier thinking round, got %v", got)
+	}
+	if got := disabledReq.Messages[4].ReasoningContent; got == nil || *got != "combine the result" {
+		t.Fatalf("disabled GLM must preserve plain reasoning from an earlier thinking round, got %v", got)
+	}
+}
+
 // TestBuildRequestGenericThinking covers the vendor-agnostic `thinking` config
 // field on a provider we don't auto-detect: thinking.type is emitted as set, and
 // an empty/unset field leaves thinking off the wire entirely.

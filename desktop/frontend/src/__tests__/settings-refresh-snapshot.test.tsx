@@ -159,6 +159,13 @@ const nullableProvider = normalizeProviderView({
 eq(nullableProvider.name, "", "provider snapshots normalize a null name at the settings boundary");
 eq(nullableProvider.baseUrl, "", "provider snapshots normalize a null base URL at the settings boundary");
 
+const glmProvider = normalizeProviderView({
+  name: "custom-glm",
+  baseUrl: "https://gateway.example.com/v1",
+  reasoningProtocol: "glm",
+} as ProviderView);
+eq(glmProvider.reasoningProtocol, "glm", "provider snapshots preserve the explicit GLM reasoning protocol");
+
 eq(providerEditorEffectiveKind(true, "anthropic", ["anthropic", "openai"]), "anthropic", "new custom providers keep the selected Anthropic-compatible kind");
 eq(providerEditorEffectiveKind(false, "anthropic", ["anthropic", "openai"]), "anthropic", "existing providers preserve their stored kind");
 eq(providerChatURLPreview("https://proxy.example.com/v1", "", false), "https://proxy.example.com/v1/chat/completions", "base URL mode previews chat completions URL");

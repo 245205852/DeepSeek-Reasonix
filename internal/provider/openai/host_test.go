@@ -199,6 +199,24 @@ func TestIsZhipu(t *testing.T) {
 	}
 }
 
+func TestIsTokenRhythm(t *testing.T) {
+	for _, tc := range []struct {
+		baseURL string
+		want    bool
+	}{
+		{"https://tokenrhythm.studio/v1", true},
+		{"https://TOKENRHYTHM.STUDIO/v1", true},
+		{"https://api.tokenrhythm.studio/v1", false},
+		{"https://tokenrhythm.example.com/v1", false},
+		{"https://opencode.ai/zen/go/v1", false},
+		{"", false},
+	} {
+		if got := IsTokenRhythm(tc.baseURL); got != tc.want {
+			t.Errorf("IsTokenRhythm(%q) = %v, want %v", tc.baseURL, got, tc.want)
+		}
+	}
+}
+
 func TestIsLongCat(t *testing.T) {
 	for _, tc := range []struct {
 		baseURL string

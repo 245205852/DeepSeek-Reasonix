@@ -485,6 +485,11 @@ func (a *App) startup(ctx context.Context) {
 	installSystemQuitHook()
 	a.startTray()
 	a.enableDeferredRebuildRetry()
+	a.goSafe("repairDesktopIconIntegration", func() {
+		if err := repairDesktopIconIntegration(); err != nil {
+			slog.Debug("desktop: repair native icon integration", "err", err)
+		}
+	})
 
 	if cfg, err := config.Load(); err == nil && cfg.DesktopMetrics() && version != "dev" {
 		a.metrics.Store(newMetricsAggregator(config.MemoryUserDir()))

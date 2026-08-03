@@ -137,6 +137,17 @@ func IsZhipu(baseURL string) bool {
 		matchesVendorHost(baseURL, "z.ai", "api.z.ai")
 }
 
+// IsTokenRhythm reports whether baseURL points at Token Rhythm's official
+// OpenAI-compatible gateway. Keep this exact-host: model-aware protocol
+// upgrades must not affect unrelated subdomains or similarly named relays.
+func IsTokenRhythm(baseURL string) bool {
+	u, err := url.Parse(baseURL)
+	if err != nil {
+		return false
+	}
+	return strings.EqualFold(u.Hostname(), "tokenrhythm.studio")
+}
+
 // IsLongCat reports whether baseURL points at LongCat's OpenAI-compatible API.
 // LongCat uses the OpenAI chat shape, but gates thinking with thinking.type
 // enabled|disabled rather than the generic reasoning_effort field.
