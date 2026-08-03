@@ -4,6 +4,11 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"reasonix/internal/config"
+	"reasonix/internal/event"
+	"reasonix/internal/provider"
+	"reasonix/internal/stats"
 )
 
 // TestResolveStatsRange covers the six branches of resolveStatsRange: the four
@@ -132,5 +137,22 @@ func TestResolveStatsRangeToIsEndOfDay(t *testing.T) {
 	}
 	if to.Hour() != 23 || to.Minute() != 59 || to.Second() != 59 {
 		t.Fatalf("to must be end-of-day 23:59:59, got %v", to)
+	}
+}
+
+func TestUsageStatsFlushesPendingRecorderWrites(t *testing.T) {
+	t.Setenv("REASONIX_STATE_HOME", t.TempDir())
+	recorder := stats.NewRecorder(event.Discard, config.StatsDir(), "desktop")
+	recorder.Emit(event.Event{
+		Kind: event.Usage, ModelRef: "deepseek/model",
+		Usage: &provider.Usage{PromptTokens: 3, CompletionTokens: 2, TotalTokens: 5},
+	})
+
+	result, err := (&App{}).UsageStats(UsageStatsRequest{Range: "7", Source: "desktop"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Tokens != 5 || result.Requests != 1 {
+		t.Fatalf("usage stats = tokens %d requests %d, want 5/1", result.Tokens, result.Requests)
 	}
 }

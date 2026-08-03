@@ -78,14 +78,15 @@ func (w *Writer) Query(f SourceFilter) (RangeStats, error) {
 		return out, nil
 	}
 	days := daysInRange(f.From, f.To)
+	recordsByDay, err := readDailyRange(w.dir, days)
+	if err != nil {
+		return out, err
+	}
 	modelTotals := map[string]int64{}
 	providerTotals := map[string]int64{}
 	active := map[string]bool{} // day -> active
 	for _, day := range days {
-		recs, err := readDaily(w.dir, day)
-		if err != nil {
-			return out, err
-		}
+		recs := recordsByDay[day]
 		dayTotals := map[string]int64{}
 		dayTurns := 0
 		dayRequests := 0

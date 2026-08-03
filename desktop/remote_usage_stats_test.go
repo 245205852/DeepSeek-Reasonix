@@ -23,6 +23,9 @@ func TestRemoteProviderStreamPersistsUsageInDesktopState(t *testing.T) {
 
 	for range recordRemoteProviderStream(context.Background(), "anthropic/claude", in) {
 	}
+	if err := stats.Flush(context.Background(), config.StatsDir()); err != nil {
+		t.Fatal(err)
+	}
 	now := time.Now()
 	result, err := stats.NewWriter(config.StatsDir()).Query(stats.SourceFilter{
 		From: now.AddDate(0, 0, -1), To: now.AddDate(0, 0, 1), Source: "remote",
@@ -56,6 +59,9 @@ func TestWorkbenchTurnDonePersistsRemoteCompletionLocally(t *testing.T) {
 	app.workbenchClientCallbacks(generation, "").OnSessionEvent(protocol.SessionEvent{
 		Seq: 1, Event: eventwire.Event{Kind: "turn_done"},
 	})
+	if err := stats.Flush(context.Background(), config.StatsDir()); err != nil {
+		t.Fatal(err)
+	}
 	now := time.Now()
 	result, err := stats.NewWriter(config.StatsDir()).Query(stats.SourceFilter{
 		From: now.AddDate(0, 0, -1), To: now.AddDate(0, 0, 1), Source: "remote",

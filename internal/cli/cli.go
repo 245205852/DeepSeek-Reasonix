@@ -35,6 +35,7 @@ import (
 	"reasonix/internal/provider"
 	"reasonix/internal/provider/openai"
 	"reasonix/internal/serve"
+	"reasonix/internal/stats"
 	"reasonix/internal/telemetry"
 
 	tea "charm.land/bubbletea/v2"
@@ -49,6 +50,13 @@ var (
 
 // Run is the CLI entry point; it returns a process exit code.
 func Run(args []string, version string) int {
+	// Usage recording is asynchronous so provider/UI paths never wait on disk.
+	// Drain records accepted by this process before a normal CLI exit.
+	defer func() {
+		flushCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		_ = stats.Flush(flushCtx, config.StatsDir())
+	}()
 	// Pick the UI language up front so even pre-config paths (the first-run
 	// welcome banner) come through localized. Env-only first; if a config
 	// exists and pins a language, that wins.

@@ -19,6 +19,15 @@ func TestMergeStreamUsageCountsProviderRequests(t *testing.T) {
 	if got.RequestCount != 3 {
 		t.Fatalf("nested merged request count = %d, want 3", got.RequestCount)
 	}
+
+	got = mergeStreamUsage(nil, retry)
+	if got == nil || got.TotalTokens != retry.TotalTokens || got.RequestCount != 2 {
+		t.Fatalf("missing first usage = %+v, want retry tokens and 2 requests", got)
+	}
+	got = mergeStreamUsage(first, nil)
+	if got == nil || got.TotalTokens != first.TotalTokens || got.RequestCount != 2 {
+		t.Fatalf("missing retry usage = %+v, want first tokens and 2 requests", got)
+	}
 }
 
 func TestTaskUsageModelRefUsesCanonicalRuntimeIdentity(t *testing.T) {

@@ -22,6 +22,9 @@ const SOURCES = ["all", "desktop", "cli", "serve", "bot", "remote"] as const;
 // The heatmap always shows a fixed 40-week window regardless of the range
 // preset (it only follows the source filter).
 const HEAT_WEEKS = 40;
+// Custom ranges may span up to ten years. Keep the detailed trend bounded so
+// one unusual range cannot create thousands of interactive SVG nodes.
+const MAX_TREND_DAYS = 180;
 
 // Keep this lazy panel's translations in its own chunk. Putting them in the
 // eager global English dictionary makes an unopened settings subtab part of
@@ -47,7 +50,7 @@ const USAGE_STATS_TRANSLATIONS = {
     "settings.stats.source.remote": "Remote",
     "settings.stats.refresh": "Refresh",
     "settings.stats.tokens": "Token usage",
-    "settings.stats.sessions": "Sessions",
+    "settings.stats.sessions": "Completed turns",
     "settings.stats.requests": "Requests",
     "settings.stats.activeDays": "Active days",
     "settings.stats.cacheRate": "Avg cache hit rate",
@@ -60,6 +63,7 @@ const USAGE_STATS_TRANSLATIONS = {
     "settings.stats.heatLess": "Less",
     "settings.stats.heatMore": "More",
     "settings.stats.dailyTrend": "Daily token trend",
+    "settings.stats.trendLimited": "Showing the latest 180 days",
     "settings.stats.modelUsage": "Model usage",
     "settings.stats.total": "Total",
     "settings.stats.percent": "Share",
@@ -86,7 +90,7 @@ const USAGE_STATS_TRANSLATIONS = {
     "settings.stats.source.remote": "远程工作台",
     "settings.stats.refresh": "刷新",
     "settings.stats.tokens": "Tokens 用量",
-    "settings.stats.sessions": "会话数量",
+    "settings.stats.sessions": "完成轮次",
     "settings.stats.requests": "请求数量",
     "settings.stats.activeDays": "活跃天数",
     "settings.stats.cacheRate": "平均缓存命中率",
@@ -99,6 +103,7 @@ const USAGE_STATS_TRANSLATIONS = {
     "settings.stats.heatLess": "较少",
     "settings.stats.heatMore": "较多",
     "settings.stats.dailyTrend": "按天 Token 趋势",
+    "settings.stats.trendLimited": "仅显示最近 180 天",
     "settings.stats.modelUsage": "模型用量",
     "settings.stats.total": "总用量",
     "settings.stats.percent": "占比",
@@ -125,7 +130,7 @@ const USAGE_STATS_TRANSLATIONS = {
     "settings.stats.source.remote": "遠端工作台",
     "settings.stats.refresh": "重新整理",
     "settings.stats.tokens": "Tokens 用量",
-    "settings.stats.sessions": "會話數量",
+    "settings.stats.sessions": "完成輪次",
     "settings.stats.requests": "請求數量",
     "settings.stats.activeDays": "活躍天數",
     "settings.stats.cacheRate": "平均快取命中率",
@@ -138,6 +143,7 @@ const USAGE_STATS_TRANSLATIONS = {
     "settings.stats.heatLess": "較少",
     "settings.stats.heatMore": "較多",
     "settings.stats.dailyTrend": "按天 Token 趨勢",
+    "settings.stats.trendLimited": "僅顯示最近 180 天",
     "settings.stats.modelUsage": "模型用量",
     "settings.stats.total": "總用量",
     "settings.stats.percent": "佔比",
@@ -402,9 +408,8 @@ function StatCards({ stats, t }: { stats: UsageStatsRange; t: UsageStatsTranslat
   // exact number and stays on one line (FitText shrinks it if needed).
   const cards: Array<{ icon: typeof Coins; label: string; value: string; sm?: boolean; wrap?: boolean; hint?: string }> = [
     { icon: Coins, label: t("settings.stats.tokens"), value: stats.tokens.toLocaleString("en-US") },
-    // "sessions" shows completed turns (stats.turns) — the user-confirmed
-    // semantics is one completed turn per session, so the label and value
-    // match even though a session may span several turns historically.
+    // Turn markers count completed top-level turns; a conversation session may
+    // contain many of them, so the user-facing label names the exact metric.
     { icon: MessageSquare, label: t("settings.stats.sessions"), value: String(stats.turns) },
     { icon: MessagesSquare, label: t("settings.stats.requests"), value: String(stats.requests) },
     { icon: CalendarDays, label: t("settings.stats.activeDays"), value: String(stats.activeDays) },
@@ -591,6 +596,8 @@ function Heatmap({ daily, from, to, t }: { daily: DailyTokenUsage[]; from: strin
 
 function DailyTrend({ stats, t, colorForModel }: { stats: UsageStatsRange; t: UsageStatsTranslator; colorForModel: (m: string) => string }) {
   const daily = stats.daily;
+  const trendDaily = daily.length > MAX_TREND_DAYS ? daily.slice(-MAX_TREND_DAYS) : daily;
+  const trendLimited = trendDaily.length !== daily.length;
   const [tip, setTip] = useState<{ day: string; total: number; byModel: Record<string, number>; cacheHit: number; cacheMiss: number; cx: number; top: number; bottom: number } | null>(null);
   const [hover, setHover] = useState<string | null>(null);
   const wrapRef = useRef<HTMLDivElement>(null);
@@ -613,7 +620,7 @@ function DailyTrend({ stats, t, colorForModel }: { stats: UsageStatsRange; t: Us
 
   useEffect(() => {
     const el = wrapRef.current;
-    if (!el || daily.length === 0) return;
+    if (!el || trendDaily.length === 0) return;
     const update = () => {
       const avail = Math.max(1, el.clientWidth);
       if (avail >= W) {
@@ -622,17 +629,17 @@ function DailyTrend({ stats, t, colorForModel }: { stats: UsageStatsRange; t: Us
       }
       // Trim: keep as many of the newest days as fit at MIN_COL pitch.
       const maxN = Math.max(1, Math.floor((avail - padL - padR) / MIN_COL) + 1);
-      setView({ avail, trimN: Math.min(daily.length, maxN) });
+      setView({ avail, trimN: Math.min(trendDaily.length, maxN) });
     };
     update();
     const ro = new ResizeObserver(update);
     ro.observe(el);
     return () => ro.disconnect();
-  }, [daily.length]);
+  }, [trendDaily.length]);
 
-  if (daily.length === 0) return null;
+  if (trendDaily.length === 0) return null;
 
-  const visible = view.trimN !== null ? daily.slice(-view.trimN) : daily;
+  const visible = view.trimN !== null ? trendDaily.slice(-view.trimN) : trendDaily;
   const n = visible.length;
   const step =
     n > 1
@@ -688,7 +695,10 @@ function DailyTrend({ stats, t, colorForModel }: { stats: UsageStatsRange; t: Us
 
   return (
     <section className="usage-stats__section">
-      <h3 className="usage-stats__section-title">{t("settings.stats.dailyTrend")}</h3>
+      <div className="usage-stats__section-head">
+        <h3 className="usage-stats__section-title">{t("settings.stats.dailyTrend")}</h3>
+        {trendLimited && <span className="usage-stats__section-note">{t("settings.stats.trendLimited")}</span>}
+      </div>
       <div className="usage-stats__chart-wrap" ref={wrapRef}>
         <svg className="usage-stats__chart" width="100%" height={H} viewBox={`0 0 ${plotWUsed} ${H}`} onMouseLeave={() => { setTip(null); setHover(null); }}>
           {ticks.map((tk) => {
@@ -782,7 +792,7 @@ function DailyTrend({ stats, t, colorForModel }: { stats: UsageStatsRange; t: Us
           </div>
         )}
         <div className="usage-stats__legend">
-          {Object.keys(aggregateByModel(daily)).map((model) => (
+          {Object.keys(aggregateByModel(trendDaily)).map((model) => (
             <span key={model} className="usage-stats__legend-item" onMouseEnter={() => setHover(model)} onMouseLeave={() => setHover(null)}>
               <i className="usage-stats__legend-swatch" style={{ background: colorForModel(model) }} />
               {model}

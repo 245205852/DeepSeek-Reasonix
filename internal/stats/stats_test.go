@@ -1,6 +1,7 @@
 package stats
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -11,8 +12,18 @@ import (
 	"time"
 
 	"reasonix/internal/event"
+	"reasonix/internal/filelock"
 	"reasonix/internal/provider"
 )
+
+func flushRecorder(t *testing.T, recorder *Recorder) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := recorder.Flush(ctx); err != nil {
+		t.Fatalf("flush recorder: %v", err)
+	}
+}
 
 func TestRecorderWritesDailyFile(t *testing.T) {
 	dir := t.TempDir()
@@ -22,6 +33,7 @@ func TestRecorderWritesDailyFile(t *testing.T) {
 	r.Emit(usageEvent("deepseek/deepseek-v4-flash", 100, 50, 10, 20, 30, 150))
 	r.Emit(usageEvent("deepseek/deepseek-v4-pro", 200, 100, 0, 0, 0, 300))
 	r.Emit(turnEvent())
+	flushRecorder(t, r)
 
 	// The daily file must exist with three lines (2 usage + 1 turn marker).
 	files := dailyJSONLFiles(t, dir)
@@ -53,6 +65,7 @@ func TestRecorderCountsMergedProviderRequests(t *testing.T) {
 	e := usageEvent("deepseek/deepseek-v4-pro", 100, 50, 10, 0, 100, 150)
 	e.Usage.RequestCount = 2
 	r.Emit(e)
+	flushRecorder(t, r)
 
 	day := dayStart(time.Now())
 	got, err := r.writer.Query(SourceFilter{From: day, To: day})
@@ -74,6 +87,7 @@ func TestRecorderCapturesGuardianUsageAndPreservesProtocolAudit(t *testing.T) {
 		Guardian: event.GuardianResult{Usage: &provider.Usage{PromptTokens: 10, CompletionTokens: 5, TotalTokens: 15}},
 	})
 	event.RecordProtocolRecovery(r, event.ProtocolRecoveryAudit{Kind: event.ProtocolRecoveryMissingReasoningRetryRecovered})
+	flushRecorder(t, r)
 
 	day := dayStart(time.Now())
 	got, err := r.writer.Query(SourceFilter{From: day, To: day})
@@ -93,9 +107,52 @@ func TestRecorderSkipsZeroUsage(t *testing.T) {
 	r := NewRecorder(&spySink{}, dir, "desktop")
 	r.Emit(usageEvent("m", 0, 0, 0, 0, 0, 0)) // TotalTokens <= 0 -> skipped
 	r.Emit(turnEvent())
+	flushRecorder(t, r)
 	files := dailyJSONLFiles(t, dir)
 	if len(files) != 1 {
 		t.Fatalf("want 1 file (turn only), got %d", len(files))
+	}
+}
+
+func TestRecorderNeverWaitsForStatsFileLock(t *testing.T) {
+	dir := t.TempDir()
+	release, err := filelock.Acquire(context.Background(), filepath.Join(dir, ".append.lock"))
+	if err != nil {
+		t.Fatalf("hold stats lock: %v", err)
+	}
+	locked := true
+	defer func() {
+		if locked {
+			release()
+		}
+	}()
+
+	inner := &spySink{}
+	recorder := NewRecorder(inner, dir, "desktop")
+	emitted := make(chan struct{})
+	go func() {
+		recorder.Emit(usageEvent("deepseek/model", 10, 4, 0, 0, 10, 14))
+		close(emitted)
+	}()
+
+	select {
+	case <-emitted:
+	case <-time.After(250 * time.Millisecond):
+		t.Fatal("stats file lock blocked event forwarding")
+	}
+	if len(inner.events) != 1 {
+		t.Fatalf("forwarded events = %d, want 1", len(inner.events))
+	}
+
+	release()
+	locked = false
+	flushRecorder(t, recorder)
+	result, err := recorder.writer.Query(SourceFilter{From: dayStart(time.Now()), To: dayStart(time.Now())})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Tokens != 14 {
+		t.Fatalf("tokens after lock release = %d, want 14", result.Tokens)
 	}
 }
 

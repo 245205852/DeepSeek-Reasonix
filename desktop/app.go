@@ -55,6 +55,7 @@ import (
 	"reasonix/internal/remote/workbench/target"
 	"reasonix/internal/repair"
 	"reasonix/internal/skill"
+	"reasonix/internal/stats"
 	"reasonix/internal/store"
 	"reasonix/internal/tool"
 )
@@ -845,6 +846,13 @@ func (a *App) snapshotAllTabs() {
 
 // shutdown snapshots all tabs, saves the final window geometry, and closes tabs.
 func (a *App) shutdown(context.Context) {
+	// Run after controller teardown (and after its deferred lifecycle unlocks)
+	// so every accepted usage record reaches disk before a normal app exit.
+	defer func() {
+		flushCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		_ = stats.Flush(flushCtx, config.StatsDir())
+	}()
 	a.stopDeferredRebuildRetry()
 	a.stopMainThreadWatchdog()
 	if a.heartbeat != nil {

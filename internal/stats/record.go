@@ -4,8 +4,8 @@
 //
 // Design notes:
 //   - Only token usage (event.Usage) and turn completions (event.TurnDone) are
-//     recorded here. Turn markers double as the "sessions" metric (the panel's
-//     session count is one completed turn, per the user-confirmed semantics).
+//     recorded here. Turn markers power the panel's "completed turns" metric;
+//     they are deliberately not presented as distinct conversation sessions.
 //     Token usage was never persisted before this feature, so token numbers
 //     accumulate from the day the feature ships.
 //   - Files are append-only: each record is one JSON line appended with
@@ -128,6 +128,47 @@ func readDaily(dir, day string) ([]record, error) {
 	}
 	defer f.Close()
 	return decodeRecords(f)
+}
+
+// readDailyRange snapshots the available daily files with one directory scan,
+// then reads only dates requested by the query. Long custom ranges are often
+// mostly empty; avoiding one failed os.Open per absent day keeps their cost
+// proportional to the data that actually exists.
+func readDailyRange(dir string, days []string) (map[string][]record, error) {
+	out := make(map[string][]record)
+	if strings.TrimSpace(dir) == "" || len(days) == 0 {
+		return out, nil
+	}
+	wanted := make(map[string]struct{}, len(days))
+	for _, day := range days {
+		wanted[day] = struct{}{}
+	}
+	entries, err := os.ReadDir(dir)
+	if errors.Is(err, os.ErrNotExist) {
+		return out, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		name := entry.Name()
+		if !strings.HasSuffix(name, ".jsonl") {
+			continue
+		}
+		day := strings.TrimSuffix(name, ".jsonl")
+		if _, ok := wanted[day]; !ok {
+			continue
+		}
+		records, err := readDaily(dir, day)
+		if err != nil {
+			return nil, err
+		}
+		out[day] = records
+	}
+	return out, nil
 }
 
 func decodeRecords(r io.Reader) ([]record, error) {

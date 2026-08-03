@@ -430,11 +430,21 @@ func (a *Agent) streamTurn(ctx context.Context, turn int, sink event.Sink) strea
 }
 
 func mergeStreamUsage(first, retry *provider.Usage) *provider.Usage {
+	if first == nil && retry == nil {
+		return nil
+	}
 	if first == nil {
-		return retry
+		merged := *retry
+		// The first provider request still happened even if its terminal usage
+		// chunk was lost. Preserve the retry's known tokens and count both calls.
+		merged.RequestCount = 1 + usageRequestCount(retry)
+		return &merged
 	}
 	if retry == nil {
-		return first
+		merged := *first
+		// Likewise, a failed recovery request without usage is still an API call.
+		merged.RequestCount = usageRequestCount(first) + 1
+		return &merged
 	}
 	merged := *retry
 	merged.PromptTokens += first.PromptTokens

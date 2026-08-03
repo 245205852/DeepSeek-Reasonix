@@ -193,6 +193,11 @@
   flex-wrap: wrap;
 }
 
+.usage-stats__section-note {
+  color: var(--muted);
+  font-size: var(--font-caption);
+}
+
 .usage-stats__heatmap-wrap,
 .usage-stats__chart-wrap {
   display: flex;

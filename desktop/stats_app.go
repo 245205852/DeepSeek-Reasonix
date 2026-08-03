@@ -50,6 +50,12 @@ func (a *App) UsageStats(req UsageStatsRequest) (UsageStatsRange, error) {
 	if err != nil {
 		return UsageStatsRange{}, err
 	}
+	// Recording is asynchronous so chat completion never waits for disk. Give the
+	// settings-only read a short read-your-own-writes window; lock contention may
+	// return slightly stale statistics, but cannot stall the chat runtime.
+	flushCtx, cancel := context.WithTimeout(context.Background(), 250*time.Millisecond)
+	_ = stats.Flush(flushCtx, config.StatsDir())
+	cancel()
 	w := stats.NewWriter(config.StatsDir())
 	res, err := w.Query(stats.SourceFilter{From: from, To: to, Source: req.Source})
 	if err != nil {

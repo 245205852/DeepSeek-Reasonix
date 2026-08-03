@@ -50,6 +50,7 @@ globalThis.document = dom.window.document;
 Object.defineProperty(globalThis, "navigator", { configurable: true, value: dom.window.navigator });
 globalThis.Node = dom.window.Node;
 globalThis.HTMLElement = dom.window.HTMLElement;
+Object.defineProperty(globalThis.HTMLElement.prototype, "clientWidth", { configurable: true, get: () => 720 });
 globalThis.Event = dom.window.Event;
 globalThis.MouseEvent = dom.window.MouseEvent;
 globalThis.localStorage = dom.window.localStorage;
@@ -76,6 +77,16 @@ const usageStats = (req: UsageStatsRequest): Promise<UsageStatsRange> => {
     }
     return Promise.resolve(emptyStats({
       tokens: 21,
+      daily: Array.from({ length: 400 }, (_, index) => ({
+        day: day(index - 399),
+        total: 1,
+        byModel: { "deepseek/model": 1 },
+        byProvider: { deepseek: 1 },
+        requests: 1,
+        turns: 1,
+        cacheHit: 0,
+        cacheMiss: 1,
+      })),
       models: Array.from({ length: 21 }, (_, index) => ({
         model: `deepseek/model-${index + 1}`,
         tokens: 1,
@@ -111,6 +122,9 @@ for (let i = 0; i < 20 && rootEl.querySelectorAll("rect.usage-stats__heat-cell--
   await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
 }
 ok(rootEl.querySelectorAll("rect.usage-stats__heat-cell--5").length === 1, "initial source heat data is rendered");
+ok(rootEl.textContent?.includes("Completed turns") === true && !rootEl.textContent?.includes("Sessions"), "completed turns are not mislabeled as sessions");
+ok(rootEl.querySelectorAll("rect.usage-stats__bar-hit").length === 180, "long custom trends render at most 180 interactive columns");
+ok(rootEl.textContent?.includes("Showing the latest 180 days") === true, "bounded trends disclose the visible window");
 const modelSegments = rootEl.querySelectorAll("circle.usage-stats__donut-seg");
 const primaryColour = modelSegments[0]?.getAttribute("stroke") ?? "";
 ok(primaryColour.includes("var(--accent)") && primaryColour.includes("var(--fg)"), "model colours adapt to the active theme");
