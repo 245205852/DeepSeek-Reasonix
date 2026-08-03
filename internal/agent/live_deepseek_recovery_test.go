@@ -53,14 +53,21 @@ func TestLiveDeepSeekFlashMissingReasoningRecovery(t *testing.T) {
 				if result.strippedFields == 0 || result.replaced != 0 {
 					continue // provider chose a different response shape; retry a bounded fresh scenario
 				}
-				if !result.identicalRetry {
-					t.Fatal("missing-reasoning recovery changed the provider request")
-				}
 				if result.executions != 1 || result.toolTurns != 1 {
 					t.Fatalf("tool execution/session turns = %d/%d, want 1/1", result.executions, result.toolTurns)
 				}
 				if result.warnings != 0 {
 					t.Fatalf("user-visible protocol warnings = %d, want 0", result.warnings)
+				}
+				if result.retryAttempts == 0 {
+					if result.recovered != 0 || result.fallbacks != 1 {
+						t.Fatalf("no-retry fallback outcomes recovered/fallbacks = %d/%d, want 0/1",
+							result.recovered, result.fallbacks)
+					}
+					continue // visible text made retry unsafe; fallback was correct, seek the requested retry shape
+				}
+				if !result.identicalRetry {
+					t.Fatal("missing-reasoning recovery changed the provider request")
 				}
 				if result.retryAttempts != 1 || result.recovered != tc.wantRecovered || result.fallbacks != tc.wantFallback {
 					t.Fatalf("recovery outcomes attempts/recovered/fallbacks = %d/%d/%d, want 1/%d/%d",
