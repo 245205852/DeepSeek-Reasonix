@@ -86,6 +86,12 @@ ok(
   "Token Rhythm preset uses the official English and Chinese brand names",
 );
 ok(
+  [enLocaleSource, zhLocaleSource, zhTWLocaleSource].every((source) =>
+    source.includes('"settings.reasoningProtocol.glm"'),
+  ),
+  "GLM reasoning protocol is localized in every supported locale",
+);
+ok(
   /mockPreset\("deepseek-anthropic",\s*"DeepSeek Anthropic"/.test(bridgeSource),
   "browser mock exposes the DeepSeek Anthropic preset",
 );
