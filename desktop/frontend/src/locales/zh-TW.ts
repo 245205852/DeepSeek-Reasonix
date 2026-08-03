@@ -1632,6 +1632,8 @@ export const zhTW: Record<DictKey, string> = {
   "settings.addProvider.preset.deepseekAnthropicDesc": "DeepSeek 官方可選 Anthropic 相容端點，支援 Flash 與 Pro；預設仍使用 Chat Completions。",
   "settings.addProvider.preset.longcatOpenAIDesc": "LongCat 開放平台 OpenAI-compatible 端點，預設 LongCat-2.0。",
   "settings.addProvider.preset.longcatAnthropicDesc": "LongCat 開放平台 Anthropic-compatible Messages 端點，使用 Bearer 認證。",
+  "settings.addProvider.preset.tokenRhythmLabel": "基元律动",
+  "settings.addProvider.preset.tokenRhythmDesc": "基元律动多模型閘道，使用 OpenAI-compatible API 接入。",
   "settings.addProvider.preset.kimiCnDesc": "Kimi 中國 API，走 Moonshot CN 端點，預置 K2 視覺模型。",
   "settings.addProvider.preset.kimiGlobalDesc": "Kimi 國際 API，走 Moonshot global 端點，預置 K2 視覺模型。",
   "settings.addProvider.preset.kimiCodingPlanDesc": "Kimi Coding Plan，走獨立 Anthropic-compatible 端點，不歸屬 CN/Global。",

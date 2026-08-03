@@ -2419,6 +2419,8 @@ export const en = {
   "settings.addProvider.preset.deepseekAnthropicDesc": "Optional official DeepSeek Anthropic-compatible endpoint for Flash and Pro; Chat Completions remains the default.",
   "settings.addProvider.preset.longcatOpenAIDesc": "LongCat Platform OpenAI-compatible endpoint with LongCat-2.0 default.",
   "settings.addProvider.preset.longcatAnthropicDesc": "LongCat Platform Anthropic-compatible Messages endpoint using Bearer auth.",
+  "settings.addProvider.preset.tokenRhythmLabel": "Token Rhythm",
+  "settings.addProvider.preset.tokenRhythmDesc": "Token Rhythm multi-model gateway using its OpenAI-compatible API.",
   "settings.addProvider.preset.kimiCnDesc": "Kimi China API via Moonshot CN endpoint with K2 vision models.",
   "settings.addProvider.preset.kimiGlobalDesc": "Kimi international API via Moonshot global endpoint with K2 vision models.",
   "settings.addProvider.preset.kimiCodingPlanDesc": "Kimi Coding Plan via the dedicated Anthropic-compatible endpoint; not a CN/Global variant.",
