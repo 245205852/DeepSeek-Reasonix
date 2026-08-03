@@ -177,7 +177,7 @@ func TestTaskRecorder_DoneRetriesAfterConcurrentControlUpdate(t *testing.T) {
 	<-store.blocked
 
 	control := NewControlService(base)
-	res, err := control.StopTask(context.Background(), "/p", monitorTaskID("session-1", "task-1"), 1, "", "")
+	res, err := control.StopTaskWithKiller(context.Background(), "/p", monitorTaskID("session-1", "task-1"), 1, "", "", &mockKiller{fn: func(string, string) bool { return true }})
 	if err != nil || !res.Accepted {
 		t.Fatalf("concurrent stop: result=%+v err=%v", res, err)
 	}

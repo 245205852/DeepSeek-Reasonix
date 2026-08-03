@@ -19,7 +19,7 @@ func TestControlService_StopTask(t *testing.T) {
 		CreatedAt: time.Now(), UpdatedAt: time.Now(),
 	})
 
-	res, err := cs.StopTask(ctx, "/p", "t1", 1, "user request", "idem-1")
+	res, err := cs.StopTaskWithKiller(ctx, "/p", "t1", 1, "user request", "idem-1", &mockKiller{fn: func(string, string) bool { return true }})
 	if err != nil {
 		t.Fatalf("StopTask: %v", err)
 	}
@@ -31,6 +31,45 @@ func TestControlService_StopTask(t *testing.T) {
 	}
 	if res.Version != 2 {
 		t.Errorf("expected version 2, got %d", res.Version)
+	}
+}
+
+func TestControlService_StopRequiresRuntimeOwner(t *testing.T) {
+	s := NewInMemoryStore()
+	cs := NewControlService(s)
+	mustUpsertControl(t, s, "/p", TaskSnapshot{
+		SchemaVersion: 1, TaskID: "t1", SessionID: "s1",
+		State: TaskStateRunning, Version: 1,
+		CreatedAt: time.Now(), UpdatedAt: time.Now(),
+	})
+
+	res, err := cs.StopTask(context.Background(), "/p", "t1", 1, "", "")
+	if err != nil || res.Accepted || res.Error == nil || res.Error.Code != ErrTaskRuntimeUnavailable {
+		t.Fatalf("expected unavailable runtime, got result=%+v err=%v", res, err)
+	}
+	snap, _ := s.GetTask(context.Background(), "/p", "t1")
+	if snap.State != TaskStateRunning || snap.Version != 1 {
+		t.Fatalf("failed stop mutated task: %+v", snap)
+	}
+}
+
+func TestControlService_CancelRejectsUnreachableRuntime(t *testing.T) {
+	s := NewInMemoryStore()
+	cs := NewControlService(s)
+	mustUpsertControl(t, s, "/p", TaskSnapshot{
+		SchemaVersion: 1, TaskID: "t1", SessionID: "s1",
+		State: TaskStateRunning, Version: 1,
+		CreatedAt: time.Now(), UpdatedAt: time.Now(),
+	})
+
+	killer := &mockKiller{fn: func(string, string) bool { return false }}
+	res, err := cs.CancelTaskWithKiller(context.Background(), "/p", "t1", 1, "", "", killer)
+	if err != nil || res.Accepted || res.Error == nil || res.Error.Code != ErrTaskRuntimeUnavailable {
+		t.Fatalf("expected rejected runtime control, got result=%+v err=%v", res, err)
+	}
+	snap, _ := s.GetTask(context.Background(), "/p", "t1")
+	if snap.State != TaskStateRunning || snap.Version != 1 {
+		t.Fatalf("failed cancel mutated task: %+v", snap)
 	}
 }
 
@@ -129,13 +168,14 @@ func TestControlService_Idempotency(t *testing.T) {
 	})
 
 	// First call
-	res1, err := cs.StopTask(context.Background(), "/p", "t1", 1, "", "key-1")
+	killer := &mockKiller{fn: func(string, string) bool { return true }}
+	res1, err := cs.StopTaskWithKiller(context.Background(), "/p", "t1", 1, "", "key-1", killer)
 	if err != nil || !res1.Accepted {
 		t.Fatalf("first call failed: %v, %+v", err, res1)
 	}
 
 	// Second call with same key, op, task, version — idempotent
-	res2, err := cs.StopTask(context.Background(), "/p", "t1", 1, "", "key-1")
+	res2, err := cs.StopTaskWithKiller(context.Background(), "/p", "t1", 1, "", "key-1", killer)
 	if err != nil {
 		t.Fatalf("second call: %v", err)
 	}
@@ -147,6 +187,7 @@ func TestControlService_Idempotency(t *testing.T) {
 func TestControlService_IdempotencyConflict_DifferentOp(t *testing.T) {
 	s := NewInMemoryStore()
 	cs := NewControlService(s)
+	killer := &mockKiller{fn: func(string, string) bool { return true }}
 
 	mustUpsertControl(t, s, "/p", TaskSnapshot{
 		SchemaVersion: 1, TaskID: "t1", SessionID: "s1",
@@ -154,7 +195,7 @@ func TestControlService_IdempotencyConflict_DifferentOp(t *testing.T) {
 		CreatedAt: time.Now(), UpdatedAt: time.Now(),
 	})
 
-	cs.StopTask(context.Background(), "/p", "t1", 1, "", "key-1")
+	cs.StopTaskWithKiller(context.Background(), "/p", "t1", 1, "", "key-1", killer)
 	// Same key but different command
 	res, _ := cs.CancelTask(context.Background(), "/p", "t1", 1, "", "key-1")
 	if !strings.Contains(res.Error.Code, "idempotency") {
@@ -165,6 +206,7 @@ func TestControlService_IdempotencyConflict_DifferentOp(t *testing.T) {
 func TestControlService_IdempotencyConflict_DifferentVersion(t *testing.T) {
 	s := NewInMemoryStore()
 	cs := NewControlService(s)
+	killer := &mockKiller{fn: func(string, string) bool { return true }}
 
 	mustUpsertControl(t, s, "/p", TaskSnapshot{
 		SchemaVersion: 1, TaskID: "t1", SessionID: "s1",
@@ -172,8 +214,8 @@ func TestControlService_IdempotencyConflict_DifferentVersion(t *testing.T) {
 		CreatedAt: time.Now(), UpdatedAt: time.Now(),
 	})
 
-	cs.StopTask(context.Background(), "/p", "t1", 1, "", "key-1")
-	res, _ := cs.StopTask(context.Background(), "/p", "t1", 2, "", "key-1")
+	cs.StopTaskWithKiller(context.Background(), "/p", "t1", 1, "", "key-1", killer)
+	res, _ := cs.StopTaskWithKiller(context.Background(), "/p", "t1", 2, "", "key-1", killer)
 	if !strings.Contains(res.Error.Code, "idempotency") {
 		t.Errorf("expected idempotency conflict for different version, got %+v", res.Error)
 	}
@@ -182,6 +224,7 @@ func TestControlService_IdempotencyConflict_DifferentVersion(t *testing.T) {
 func TestControlService_AuditEvent(t *testing.T) {
 	s := NewInMemoryStore()
 	cs := NewControlService(s)
+	killer := &mockKiller{fn: func(string, string) bool { return true }}
 
 	mustUpsertControl(t, s, "/p", TaskSnapshot{
 		SchemaVersion: 1, TaskID: "t1", SessionID: "s1",
@@ -189,7 +232,7 @@ func TestControlService_AuditEvent(t *testing.T) {
 		CreatedAt: time.Now(), UpdatedAt: time.Now(),
 	})
 
-	cs.StopTask(context.Background(), "/p", "t1", 1, "stop reason", "")
+	cs.StopTaskWithKiller(context.Background(), "/p", "t1", 1, "stop reason", "", killer)
 
 	events, _ := s.ListEvents(context.Background(), "/p", "t1", 0)
 	found := false
@@ -218,6 +261,7 @@ func TestControlService_AuditEvent(t *testing.T) {
 func TestControlService_AuditSequenceMonotonic(t *testing.T) {
 	s := NewInMemoryStore()
 	cs := NewControlService(s)
+	killer := &mockKiller{fn: func(string, string) bool { return true }}
 
 	mustUpsertControl(t, s, "/p", TaskSnapshot{
 		SchemaVersion: 1, TaskID: "t1", SessionID: "s1",
@@ -226,7 +270,7 @@ func TestControlService_AuditSequenceMonotonic(t *testing.T) {
 	})
 
 	// Stop creates audit event sequence 1
-	cs.StopTask(context.Background(), "/p", "t1", 1, "", "")
+	cs.StopTaskWithKiller(context.Background(), "/p", "t1", 1, "", "", killer)
 
 	// Reset task to running (simulate a new execution lifecycle)
 	s.UpsertTask("/p", TaskSnapshot{
@@ -236,7 +280,7 @@ func TestControlService_AuditSequenceMonotonic(t *testing.T) {
 	})
 
 	// Cancel should get sequence 2 from NextSequence
-	res, _ := cs.CancelTask(context.Background(), "/p", "t1", 2, "", "")
+	res, _ := cs.CancelTaskWithKiller(context.Background(), "/p", "t1", 2, "", "", killer)
 	if !res.Accepted {
 		t.Fatalf("cancel failed: %+v", res)
 	}
@@ -347,6 +391,7 @@ func TestControlService_ConcurrentKillersRemainCallScoped(t *testing.T) {
 func TestControlService_ConcurrentAccess(t *testing.T) {
 	s := NewInMemoryStore()
 	cs := NewControlService(s)
+	killer := &mockKiller{fn: func(string, string) bool { return true }}
 
 	mustUpsertControl(t, s, "/p", TaskSnapshot{
 		SchemaVersion: 1, TaskID: "t1", SessionID: "s1",
@@ -362,7 +407,7 @@ func TestControlService_ConcurrentAccess(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			res, _ := cs.StopTask(context.Background(), "/p", "t1", 1, "", "")
+			res, _ := cs.StopTaskWithKiller(context.Background(), "/p", "t1", 1, "", "", killer)
 			if res.Accepted {
 				mu.Lock()
 				success++
@@ -380,6 +425,7 @@ func TestControlService_ConcurrentAccess(t *testing.T) {
 func TestControlService_CancelTask(t *testing.T) {
 	s := NewInMemoryStore()
 	cs := NewControlService(s)
+	killer := &mockKiller{fn: func(string, string) bool { return true }}
 
 	mustUpsertControl(t, s, "/p", TaskSnapshot{
 		SchemaVersion: 1, TaskID: "t1", SessionID: "s1",
@@ -387,7 +433,7 @@ func TestControlService_CancelTask(t *testing.T) {
 		CreatedAt: time.Now(), UpdatedAt: time.Now(),
 	})
 
-	res, _ := cs.CancelTask(context.Background(), "/p", "t1", 1, "timeout", "")
+	res, _ := cs.CancelTaskWithKiller(context.Background(), "/p", "t1", 1, "timeout", "", killer)
 	if !res.Accepted || res.State != TaskStateCancelled {
 		t.Errorf("expected cancelled, got %+v", res)
 	}

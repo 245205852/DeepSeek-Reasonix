@@ -8,9 +8,9 @@ import (
 	"time"
 )
 
-// JobKiller is an optional interface for stopping running jobs. SessionID is
-// part of the target because job IDs are only unique within a controller. When
-// no killer is supplied, control operations update only persistent state.
+// JobKiller routes a control request to the runtime that owns a task. SessionID
+// is part of the target because local job IDs are only unique within a
+// controller. Stop and cancel fail closed when no owner accepts the request.
 type JobKiller interface {
 	Kill(sessionID, jobID string) bool
 }
@@ -46,6 +46,7 @@ const (
 	ErrTaskPermissionDenied    = "task_permission_denied"
 	ErrTaskIdempotencyConflict = "task_idempotency_conflict"
 	ErrTaskAuditFailed         = "task_audit_failed"
+	ErrTaskRuntimeUnavailable  = "task_runtime_unavailable"
 )
 
 // ControlService provides atomic control operations on tasks.
@@ -194,6 +195,20 @@ func (cs *ControlService) controlOp(ctx context.Context, projectDir, taskID stri
 			Error: &CtrlError{Code: ErrTaskInvalidTransition, Message: "invalid transition"},
 		}, nil
 	}
+	if (cmd == "stop" || cmd == "cancel") && killer == nil {
+		return ControlResult{
+			SchemaVersion: 1, Command: cmd, TaskID: taskID, SessionID: snap.SessionID,
+			State: snap.State, RuntimeState: snap.RuntimeState, Version: snap.Version,
+			Error: &CtrlError{Code: ErrTaskRuntimeUnavailable, Message: "task runtime owner is unavailable"},
+		}, nil
+	}
+	if (cmd == "stop" || cmd == "cancel") && !killer.Kill(snap.SessionID, taskID) {
+		return ControlResult{
+			SchemaVersion: 1, Command: cmd, TaskID: taskID, SessionID: snap.SessionID,
+			State: snap.State, RuntimeState: snap.RuntimeState, Version: snap.Version,
+			Error: &CtrlError{Code: ErrTaskRuntimeUnavailable, Message: "task runtime owner rejected control request"},
+		}, nil
+	}
 
 	// ── 1. SaveTask (state mutation) ──
 	snap.Version++
@@ -249,11 +264,6 @@ func (cs *ControlService) controlOp(ctx context.Context, projectDir, taskID stri
 		if err := cs.store.RecordIdempotency(ctx, projectDir, rec); err != nil {
 			return ControlResult{}, fmt.Errorf("record idempotency: %w", err)
 		}
-	}
-
-	// ── kill running job ──
-	if killer != nil && (cmd == "stop" || cmd == "cancel") {
-		killer.Kill(snap.SessionID, taskID)
 	}
 
 	return ControlResult{
