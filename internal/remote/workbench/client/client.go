@@ -496,6 +496,12 @@ func (c *Client) applyRequestResult(method protocol.Method, value any, authority
 }
 
 func requestInvalidatesSnapshot(method protocol.Method, value any) bool {
+	// An idempotent profile application does not advance server state. Keeping
+	// the current snapshot authoritative avoids turning a frontend dedupe hit
+	// into a needless subscribe/resync cycle.
+	if result, ok := value.(protocol.SessionProfileSetResult); ok && result.Disposition == protocol.ProfileUnchanged {
+		return false
+	}
 	if spec, ok := protocol.LookupMethod(method); ok {
 		switch spec.Class {
 		case protocol.ClassHostMutation, protocol.ClassSessionMutation, protocol.ClassSessionRecordMutation:

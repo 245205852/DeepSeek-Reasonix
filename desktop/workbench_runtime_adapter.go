@@ -295,6 +295,7 @@ func (a *App) workbenchRefreshSnapshot(generation uint64, tabID string) {
 			return nil
 		}
 		k.mu.Lock()
+		previous := k.snapshot
 		if k.remote == cli && k.remoteGen == generation {
 			k.snapshot = result.Snapshot
 			if k.remoteTabID != "" {
@@ -307,12 +308,40 @@ func (a *App) workbenchRefreshSnapshot(generation uint64, tabID string) {
 		k.mu.Unlock()
 		go a.workbenchMirrorSnapshot(cli, result.Snapshot)
 		a.emitReady(a.ctx, tabID)
-		a.emitRuntimeEvent("runtime:rebuilt", tabID)
+		if workbenchSnapshotRuntimeReplaced(previous, result.Snapshot) {
+			a.emitRuntimeEvent("runtime:rebuilt", tabID, string(result.Snapshot.RuntimeEpoch))
+		}
 		return nil
 	})
 	if err != nil {
 		return
 	}
+}
+
+// workbenchSnapshotRuntimeReplaced distinguishes an actual Remote controller
+// replacement from an ordinary state refresh. Treating every subscribe as a
+// rebuild invalidates frontend generations and can feed profile synchronization
+// back into session/profile/set indefinitely.
+func workbenchSnapshotRuntimeReplaced(previous, next protocol.SessionSnapshot) bool {
+	if previous.Target.SessionID == "" || previous.RuntimeEpoch == "" {
+		return false
+	}
+	return previous.Target != next.Target || previous.RuntimeEpoch != next.RuntimeEpoch
+}
+
+func workbenchSnapshotMatchesProfileResult(snapshot protocol.SessionSnapshot, target protocol.RuntimeTarget, patch protocol.ProfilePatch, result protocol.SessionProfileSetResult) bool {
+	if snapshot.Target != target || snapshot.RuntimeEpoch != result.RuntimeEpoch || snapshot.Meta.ResolvedProfile != result.ResolvedProfile {
+		return false
+	}
+	if patch.Goal == nil {
+		return true
+	}
+	wantGoal := strings.TrimSpace(*patch.Goal)
+	gotGoal := ""
+	if snapshot.Meta.Goal != nil {
+		gotGoal = strings.TrimSpace(*snapshot.Meta.Goal)
+	}
+	return gotGoal == wantGoal
 }
 
 func (a *App) workbenchMirrorSnapshot(cli *client.Client, snapshot protocol.SessionSnapshot) {
@@ -411,14 +440,18 @@ func (a *App) workbenchSubmit(input, display, editedOriginal string, invocations
 }
 
 func (a *App) workbenchSetProfile(patch protocol.ProfilePatch) (bool, error) {
-	cli, _, _, tabID, ok := a.activeRemoteWorkbench()
+	cli, snapshot, _, tabID, ok := a.activeRemoteWorkbench()
 	if !ok {
 		return false, nil
 	}
 	ctx, cancel := context.WithTimeout(a.bootContext(), 30*time.Second)
 	defer cancel()
-	if _, err := cli.SetProfile(ctx, patch); err != nil {
+	result, err := cli.SetProfile(ctx, patch)
+	if err != nil {
 		return true, err
+	}
+	if result.Disposition == protocol.ProfileUnchanged && workbenchSnapshotMatchesProfileResult(snapshot, cli.State().Target, patch, result) {
+		return true, nil
 	}
 	a.workbenchRefreshSnapshot(cli.Generation(), tabID)
 	return true, nil

@@ -214,6 +214,33 @@ func TestCurrentSnapshotRejectsAuthorityOnlyMutation(t *testing.T) {
 	}
 }
 
+func TestUnchangedProfileKeepsCurrentSnapshotAuthoritative(t *testing.T) {
+	target := protocol.RuntimeTarget{WorkspaceID: "workspace-live", SessionID: "session-live"}
+	profile := protocol.ResolvedProfile{
+		Model: "local/model", Effort: "high", CollaborationMode: protocol.CollaborationNormal,
+		TokenMode: protocol.TokenFull, ToolApprovalMode: protocol.ToolApprovalAsk,
+	}
+	result := protocol.SessionSubscribeResult{
+		SubscriptionID: "subscription-live",
+		Snapshot: protocol.SessionSnapshot{
+			SnapshotID: "snapshot-live", HostEpoch: "host-live", Target: target,
+			RuntimeEpoch: "runtime-live", Meta: protocol.SessionMetaSnapshot{ResolvedProfile: profile},
+		},
+	}
+	c := &Client{state: State{
+		Initialized: true, HostEpoch: "host-live", WorkspaceID: target.WorkspaceID,
+		Target: target, RuntimeEpoch: "runtime-live", ResolvedProfile: profile,
+	}, completedTurns: map[protocol.TurnID]struct{}{}}
+	c.applyResult(protocol.MethodSessionSubscribe, result)
+	c.applyResult(protocol.MethodSessionProfileSet, protocol.SessionProfileSetResult{
+		ResolvedProfile: profile, RuntimeEpoch: "runtime-live", Disposition: protocol.ProfileUnchanged,
+		AutoResolvedPromptIDs: []protocol.PromptID{},
+	})
+	if !c.IsCurrentSnapshot(result) {
+		t.Fatal("idempotent profile application invalidated an unchanged snapshot")
+	}
+}
+
 func TestSessionEventWaitsForSnapshotProjectionCommit(t *testing.T) {
 	projected := make(chan struct{})
 	delivered := make(chan struct{}, 1)

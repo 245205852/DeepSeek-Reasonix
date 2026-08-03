@@ -57,6 +57,55 @@ func TestWorkbenchSnapshotProjectionUsesRemoteWorkspaceAndProfile(t *testing.T) 
 	}
 }
 
+func TestWorkbenchSnapshotRefreshOnlyRebuildsForRuntimeIdentityChange(t *testing.T) {
+	target := protocol.RuntimeTarget{WorkspaceID: "workspace", SessionID: "session"}
+	base := protocol.SessionSnapshot{Target: target, RuntimeEpoch: "runtime-1"}
+	if workbenchSnapshotRuntimeReplaced(base, protocol.SessionSnapshot{Target: target, RuntimeEpoch: "runtime-1"}) {
+		t.Fatal("ordinary state refresh was classified as a runtime rebuild")
+	}
+	if !workbenchSnapshotRuntimeReplaced(base, protocol.SessionSnapshot{Target: target, RuntimeEpoch: "runtime-2"}) {
+		t.Fatal("runtime epoch change was not classified as a rebuild")
+	}
+	if !workbenchSnapshotRuntimeReplaced(base, protocol.SessionSnapshot{
+		Target: protocol.RuntimeTarget{WorkspaceID: "workspace", SessionID: "session-2"}, RuntimeEpoch: "runtime-3",
+	}) {
+		t.Fatal("target replacement was not classified as a rebuild")
+	}
+	if workbenchSnapshotRuntimeReplaced(protocol.SessionSnapshot{}, base) {
+		t.Fatal("initial snapshot hydration was classified as an in-place rebuild")
+	}
+}
+
+func TestWorkbenchUnchangedProfileSkipsRefreshOnlyForCurrentProjection(t *testing.T) {
+	target := protocol.RuntimeTarget{WorkspaceID: "workspace", SessionID: "session"}
+	goal := "ship it"
+	profile := protocol.ResolvedProfile{
+		Model: "local/model", Effort: "high", CollaborationMode: protocol.CollaborationGoal,
+		TokenMode: protocol.TokenFull, ToolApprovalMode: protocol.ToolApprovalAuto,
+	}
+	snapshot := protocol.SessionSnapshot{
+		Target: target, RuntimeEpoch: "runtime-1",
+		Meta: protocol.SessionMetaSnapshot{ResolvedProfile: profile, Goal: &goal},
+	}
+	result := protocol.SessionProfileSetResult{
+		ResolvedProfile: profile, RuntimeEpoch: "runtime-1", Disposition: protocol.ProfileUnchanged,
+	}
+	patch := protocol.ProfilePatch{Goal: &goal}
+	if !workbenchSnapshotMatchesProfileResult(snapshot, target, patch, result) {
+		t.Fatal("current unchanged profile did not match the cached projection")
+	}
+	staleGoal := "older goal"
+	snapshot.Meta.Goal = &staleGoal
+	if workbenchSnapshotMatchesProfileResult(snapshot, target, patch, result) {
+		t.Fatal("stale goal projection was accepted as current")
+	}
+	snapshot.Meta.Goal = &goal
+	snapshot.RuntimeEpoch = "runtime-old"
+	if workbenchSnapshotMatchesProfileResult(snapshot, target, patch, result) {
+		t.Fatal("stale runtime projection was accepted as current")
+	}
+}
+
 func TestWorkbenchSnapshotProjectionPreservesCanonicalTodos(t *testing.T) {
 	content := "Ship the fix"
 	meta := workbenchMeta(protocol.SessionSnapshot{Todos: []protocol.TodoItem{{

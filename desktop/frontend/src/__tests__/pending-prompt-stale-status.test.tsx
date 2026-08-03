@@ -623,13 +623,22 @@ eq(controller?.state.running, false, "fresh idle snapshot releases the blocked s
   eq(controller?.state.approval?.subject, "new composer-profile prompt", "a late atomic profile drain cannot dismiss a new same-id prompt");
 
   composerProfileDrain = undefined;
-  const rebuiltProfileCallsBefore = composerProfileCalls;
+  const falseRebuildProfileCallsBefore = composerProfileCalls;
   await act(async () => {
     await controller?.setComposerProfileForTab("tab-a", "plan", "auto", "");
     await controller?.setComposerProfileForTab("tab-a", "plan", "auto", "");
     await flushPromises();
   });
-  eq(composerProfileCalls, rebuiltProfileCallsBefore + 1, "same profile applies once per rebuilt controller generation");
+  eq(composerProfileCalls, falseRebuildProfileCallsBefore, "a rebuild notice without a new runtime identity does not replay the same profile");
+
+  const rebuiltProfileCallsBefore = composerProfileCalls;
+  await act(async () => {
+    for (const handler of rebuiltHandlers) handler("tab-a", "runtime-next");
+    await controller?.setComposerProfileForTab("tab-a", "plan", "auto", "");
+    await controller?.setComposerProfileForTab("tab-a", "plan", "auto", "");
+    await flushPromises();
+  });
+  eq(composerProfileCalls, rebuiltProfileCallsBefore + 1, "same profile applies once per actual runtime generation");
 
   const concurrentProfileDrain = deferred<string[]>();
   composerProfileDrain = concurrentProfileDrain;
