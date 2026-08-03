@@ -47,6 +47,7 @@ import (
 	"reasonix/internal/sandbox"
 	"reasonix/internal/secrets"
 	"reasonix/internal/skill"
+	"reasonix/internal/stats"
 	"reasonix/internal/tool"
 	"reasonix/internal/tool/builtin"
 	"reasonix/internal/tool/sessiontool"
@@ -112,6 +113,9 @@ type Options struct {
 	// applied to the in-memory config only and never turns Auto into a persisted
 	// CNY/USD choice.
 	AutoPricingCurrency string
+	// StatsSource labels this frontend's usage records (desktop/cli/serve).
+	// Empty disables usage recording for this controller.
+	StatsSource string
 	// ExtraPlugins are session-scoped MCP servers supplied by a host transport
 	// (for example ACP session/new). They are connected eagerly for this
 	// controller but are not persisted to reasonix.toml.
@@ -251,6 +255,14 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 	// shares this synchronized sink. The job manager is session-scoped — its jobs
 	// outlive a turn and are cancelled by Controller.Close.
 	sink := event.Sync(opts.Sink)
+
+	// Record billable usage for the "usage statistics" panel. Wrapping here —
+	// outside the per-agent sinks — covers every agent (executor, planner,
+	// sub-agents, guardian) with one recorder, and each record is labelled with
+	// this frontend's StatsSource so the panel can split totals by entry point.
+	if source := strings.TrimSpace(opts.StatsSource); source != "" {
+		sink = stats.NewRecorder(sink, config.StatsDir(), source)
+	}
 
 	if migErr != nil {
 		sink.Emit(event.Event{Kind: event.Notice, Level: event.LevelWarn, Text: "Config migration did not complete.", Detail: "config migration from ~/.reasonix failed: " + migErr.Error()})
@@ -1026,6 +1038,10 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 			sysPrompt = agent.DefaultReadOnlyTaskSystemPrompt
 		}
 		runOptions := subagentSkillOptions(sctx, steps, price, ctxWin, childDepth)
+		if strings.TrimSpace(modelRef) == "" {
+			modelRef = modelRefFromEntry(entry)
+		}
+		runOptions.ModelRef = modelRef
 		// Delivery risk gates consume typed reports; outside Delivery a casual
 		// /review run may finish with prose only.
 		if runOptions.DeliveryProfile {
@@ -1145,6 +1161,10 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 			}
 		}
 		runOptions := subagentSkillOptions(sctx, steps, price, ctxWin, childDepth)
+		if strings.TrimSpace(modelRef) == "" {
+			modelRef = modelRefFromEntry(entry)
+		}
+		runOptions.ModelRef = modelRef
 		// Delivery risk gates consume typed reports; outside Delivery a casual
 		// /review run may finish with prose only.
 		if runOptions.DeliveryProfile {
@@ -1545,6 +1565,7 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 		MaxStepsKey: opts.MaxStepsKey,
 		Temperature: cfg.Agent.Temperature,
 		Pricing:     entry.Price,
+		ModelRef:    modelRef,
 		Gate:        headlessGate,
 		Hooks:       hookRunner,
 		Jobs:        jm,
@@ -1605,6 +1626,7 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 			plannerOpts := agent.Options{
 				MaxSteps:                     0,
 				Gate:                         headlessGate,
+				ModelRef:                     modelRefFromEntry(pe),
 				ContextWindow:                pe.ContextWindow,
 				SoftCompactRatio:             cfg.Agent.SoftCompactRatio,
 				ToolResultSnipRatio:          cfg.Agent.ToolResultSnipRatio,

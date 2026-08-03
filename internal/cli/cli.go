@@ -272,6 +272,7 @@ func cliProfileBuildOptions(modelName string, maxStepsOverride int, requireKey b
 		AdditionalDirs:       overrides.AdditionalDirs,
 		HeadlessApprovalMode: overrides.HeadlessApprovalMode,
 		AutoPricingCurrency:  cliAutoPricingCurrency(),
+		StatsSource:          "cli",
 		Stderr:               overrides.Stderr,
 		OnSessionRecovered:   overrides.OnSessionRecovered,
 	}

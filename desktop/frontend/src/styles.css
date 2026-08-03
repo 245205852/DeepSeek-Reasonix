@@ -81,6 +81,12 @@
   /* brand + semantic */
   --accent: #d97757;
   --accent-fg: #1a0f0a;
+
+  /* per-model palette for the usage stats charts: models take Tableau20 hex
+     colours (assigned in usage order in UsageStatsPanel.tsx); models beyond
+     the 20-colour palette fall back to a muted hsl() whose lightness follows
+     the theme via --stats-hue-l (overridden for light themes). */
+  --stats-hue-l: 66%;
   --accent-text: var(--accent-fg);
   --accent-soft: rgba(217, 119, 87, 0.14);
   --accent-strong: #e58a6b;
@@ -335,6 +341,7 @@
     --accent-fg: #fff;
     --accent-soft: rgba(47, 95, 168, 0.12);
     --accent-strong: #244f91;
+    --stats-hue-l: 46%; /* slightly deeper hues keep contrast on light surfaces */
     --chat-user-bg: color-mix(in srgb, var(--accent) 9%, var(--bg-elev));
     --chat-user-border: color-mix(in srgb, var(--accent) 22%, var(--border-soft));
     --chat-user-fg: var(--fg);
@@ -404,6 +411,7 @@
   --accent-fg: #fff;
   --accent-soft: rgba(47, 95, 168, 0.12);
   --accent-strong: #244f91;
+  --stats-hue-l: 42%; /* darker hues keep enough contrast on light surfaces */
   --chat-user-bg: color-mix(in srgb, var(--accent) 9%, var(--bg-elev));
   --chat-user-border: color-mix(in srgb, var(--accent) 22%, var(--border-soft));
   --chat-user-fg: var(--fg);

@@ -272,6 +272,7 @@ type Agent struct {
 	temperature          float64
 	pricing              *provider.Pricing
 	usageSource          string
+	modelRef             string
 	responseLanguage     atomic.Value // string: auto|zh|en
 	reasoningLanguage    atomic.Value // string: auto|zh|en
 
@@ -957,6 +958,10 @@ type Options struct {
 	Temperature     float64
 	Pricing         *provider.Pricing // optional, for per-turn cost display
 	UsageSource     string            // optional billable usage source; default executor
+	// ModelRef names the canonical "provider/model" ref backing this agent's
+	// provider instance. It is attached to emitted Usage events so downstream
+	// usage accounting can attribute tokens to the exact model.
+	ModelRef string
 
 	// Gate is the per-call permission gate. nil disables gating.
 	Gate Gate
@@ -1148,6 +1153,7 @@ func New(prov provider.Provider, tools *tool.Registry, session *Session, opts Op
 		temperature:               opts.Temperature,
 		pricing:                   opts.Pricing,
 		usageSource:               usageSourceOrDefault(opts.UsageSource, event.UsageSourceExecutor),
+		modelRef:                  strings.TrimSpace(opts.ModelRef),
 		sink:                      sink,
 		gate:                      gate,
 		recoveryGate:              opts.RecoveryGate,

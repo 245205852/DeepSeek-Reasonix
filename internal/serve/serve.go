@@ -283,9 +283,10 @@ func (s *Server) build(ctx context.Context, ref string) (*control.Controller, er
 		return s.buildController(ctx, ref)
 	}
 	return boot.Build(ctx, boot.Options{
-		Model:  ref,
-		Sink:   s.bc,
-		Stderr: os.Stderr,
+		Model:       ref,
+		Sink:        s.bc,
+		Stderr:      os.Stderr,
+		StatsSource: "serve",
 	})
 }
 
