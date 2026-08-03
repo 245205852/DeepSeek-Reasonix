@@ -248,7 +248,7 @@ func (s *Store) UndoRewind(transactionID string, applier ConversationApplier) (R
 	for _, t := range last.Targets {
 		fp, err := FingerprintPath(s.root, t.AbsPath)
 		if err != nil && !os.IsNotExist(err) {
-			// path issues
+			return RewindResult{OK: false, Error: err.Error()}, fmt.Errorf("fingerprint %s before undo: %w", t.Path, err)
 		}
 		// After commit, disk should match restore image. If it doesn't, refuse.
 		if t.Action == "delete" {

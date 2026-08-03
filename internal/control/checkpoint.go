@@ -57,22 +57,6 @@ func (m *checkpointManager) enabled() bool {
 	return m.store != nil
 }
 
-// begin opens a checkpoint for the turn about to run, recording msgIndex as the
-// conversation-rewind boundary. No-op when checkpoints are disabled.
-func (m *checkpointManager) begin(input string, msgIndex int) {
-	m.mu.Lock()
-	store := m.store
-	if store == nil {
-		m.mu.Unlock()
-		return
-	}
-	turn := m.turn
-	m.turn++
-	m.bound[turn] = msgIndex
-	m.mu.Unlock()
-	store.Begin(turn, input, msgIndex)
-}
-
 // beginWithObserver opens a checkpoint and updates the mutation observer's
 // ownership turn for subsequent captures.
 func (m *checkpointManager) beginWithObserver(input string, msgIndex int, obs *checkpoint.MutationObserver) {

@@ -353,12 +353,8 @@ func (s *Store) CaptureBeforeFromChange(ch diff.Change, opts CaptureBeforeOpts) 
 	var sha string
 	var blobRef string
 	var content *string
-	var existed bool
 
-	if ch.Kind == diff.Create {
-		existed = false
-	} else {
-		existed = true
+	if ch.Kind != diff.Create {
 		old := ch.OldText
 		content = &old
 		sha = Digest([]byte(old))
@@ -400,10 +396,6 @@ func (s *Store) CaptureBeforeFromChange(ch diff.Change, opts CaptureBeforeOpts) 
 		return
 	}
 	s.seen[ch.Path] = true
-	// In-memory stores without blobs keep content inline.
-	if s.blobs == nil && content == nil && existed {
-		// nothing
-	}
 	if s.blobs != nil && content != nil && blobRef == "" {
 		if ref, err := s.blobs.Put([]byte(*content)); err == nil {
 			blobRef = ref
@@ -434,17 +426,13 @@ func (s *Store) CaptureBefore(path string, opts CaptureBeforeOpts) {
 	if opts.Source == "" {
 		opts.Source = CaptureBeforeMutation
 	}
-	fp, gap, err := CapturePath(path, CaptureOptions{
+	fp, gap, _ := CapturePath(path, CaptureOptions{
 		WorkspaceRoot: s.root,
 		ReadContent:   true,
 	})
 	if gap != nil {
 		s.RecordGap(*gap)
 	}
-	if err != nil && !os.IsNotExist(err) && gap != nil {
-		// Gap already recorded; still try to mark path as seen with no content.
-	}
-
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.cur == nil || s.seen[path] {
@@ -619,9 +607,7 @@ func (s *Store) persist(c *Checkpoint) {
 	// omitting it would make an older concurrently running binary delete files.
 	wire := *c
 	wire.Files = make([]FileSnap, len(c.Files))
-	for i, f := range c.Files {
-		wire.Files[i] = f
-	}
+	copy(wire.Files, c.Files)
 	b, err := json.Marshal(&wire)
 	if err != nil {
 		return
@@ -931,132 +917,6 @@ func (s *Store) RestoreCode(fromTurn int) (written, deleted []string, err error)
 		return result.Written, result.Deleted, err
 	}
 	return result.Written, result.Deleted, nil
-}
-
-func (s *Store) allMissingAfter(fromTurn int) bool {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	for _, c := range s.all() {
-		if c.Turn < fromTurn {
-			continue
-		}
-		for _, f := range c.Files {
-			if f.AfterSHA256 != "" || f.AfterExisted != nil {
-				return false
-			}
-		}
-	}
-	return true
-}
-
-// restoreCodeLegacy is the original best-effort restore used when no after
-// fingerprints exist (Snapshot-only tests and v1 paths).
-func (s *Store) restoreCodeLegacy(fromTurn int) (written, deleted []string, err error) {
-	s.mu.Lock()
-	earliest := map[string]FileSnap{}
-	order := []string{}
-	for _, c := range s.all() {
-		if c.Turn < fromTurn {
-			continue
-		}
-		for _, f := range c.Files {
-			if _, ok := earliest[f.Path]; ok {
-				continue
-			}
-			earliest[f.Path] = f
-			order = append(order, f.Path)
-		}
-	}
-	root := s.root
-	blobs := s.blobs
-	s.mu.Unlock()
-
-	// Capture forward for compensation.
-	type fwd struct {
-		path    string
-		abs     string
-		existed bool
-		data    []byte
-		mode    os.FileMode
-	}
-	forwards := make([]fwd, 0, len(order))
-	for _, p := range order {
-		abs, gerr := safePath(root, p)
-		if gerr != nil {
-			return written, deleted, gerr
-		}
-		f := fwd{path: p, abs: abs}
-		if st, serr := os.Lstat(abs); serr == nil {
-			f.existed = true
-			f.mode = st.Mode().Perm()
-			if data, rerr := os.ReadFile(abs); rerr == nil {
-				f.data = data
-			}
-		}
-		forwards = append(forwards, f)
-	}
-
-	published := 0
-	for _, p := range order {
-		abs, gerr := safePath(root, p)
-		if gerr != nil {
-			err = gerr
-			break
-		}
-		snap := earliest[p]
-		if snap.Content == nil && snap.BlobRef == "" {
-			if rmErr := os.Remove(abs); rmErr == nil {
-				deleted = append(deleted, p)
-				published++
-			} else if !os.IsNotExist(rmErr) {
-				err = rmErr
-				break
-			}
-			continue
-		}
-		if mkErr := os.MkdirAll(filepath.Dir(abs), 0o755); mkErr != nil {
-			err = mkErr
-			break
-		}
-		var raw []byte
-		if snap.BlobRef != "" && blobs != nil {
-			raw, err = blobs.Get(snap.BlobRef)
-			if err != nil {
-				break
-			}
-		} else if snap.Content != nil {
-			enc := fileenc.UTF8
-			if snap.Encoding != nil {
-				enc = *snap.Encoding
-			} else if current := detectCurrentEncoding(abs); current != nil {
-				enc = *current
-			}
-			raw = fileenc.Encode(*snap.Content, enc)
-		}
-		mode := os.FileMode(0o644)
-		if snap.Mode != 0 {
-			mode = os.FileMode(snap.Mode)
-		}
-		if wErr := os.WriteFile(abs, raw, mode); wErr != nil {
-			err = wErr
-			break
-		}
-		written = append(written, p)
-		published++
-	}
-	if err != nil {
-		// Compensate already-published files.
-		for i := published - 1; i >= 0; i-- {
-			f := forwards[i]
-			if f.existed {
-				_ = os.WriteFile(f.abs, f.data, f.mode)
-			} else {
-				_ = os.Remove(f.abs)
-			}
-		}
-		return nil, nil, err
-	}
-	return written, deleted, nil
 }
 
 func detectCurrentEncoding(path string) *fileenc.Kind {
