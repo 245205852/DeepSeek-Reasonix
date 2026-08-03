@@ -224,15 +224,7 @@ func runTask(bin, model, profile string, t task) result {
 	defer cancel()
 
 	metricsPath := filepath.Join(work, ".run-metrics.json")
-	args := []string{"run", "--metrics", metricsPath}
-	if model != "" {
-		args = append(args, "--model", model)
-	}
-	if t.MaxSteps > 0 {
-		args = append(args, "--max-steps", fmt.Sprint(t.MaxSteps))
-	}
-	args = appendBenchmarkProfileArgs(args, profile)
-	args = append(args, t.Prompt)
+	args := buildRunTaskArgs(metricsPath, model, profile, t.MaxSteps, t.Prompt)
 
 	cmd := exec.CommandContext(ctx, bin, args...)
 	cmd.Dir = work
@@ -251,6 +243,20 @@ func runTask(bin, model, profile string, t task) result {
 
 	r.Passed = grade(work, t.dir)
 	return r
+}
+
+func buildRunTaskArgs(metricsPath, model, profile string, maxSteps int, prompt string) []string {
+	// Benchmarks are unattended and their fixtures require ordinary workspace
+	// writes. Auto still honors explicit ask/deny rules and the sandbox boundary.
+	args := []string{"run", "--auto", "--metrics", metricsPath}
+	if model != "" {
+		args = append(args, "--model", model)
+	}
+	if maxSteps > 0 {
+		args = append(args, "--max-steps", fmt.Sprint(maxSteps))
+	}
+	args = appendBenchmarkProfileArgs(args, profile)
+	return append(args, prompt)
 }
 
 func grade(work, taskDir string) bool {
