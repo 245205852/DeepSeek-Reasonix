@@ -1814,11 +1814,14 @@ export type TaskState =
   | "stale"
   | string; // forward-compat
 
+export type RuntimeState = "unknown" | "alive" | "exited" | string;
+
 export interface TaskSnapshot {
   schema_version: number;
   task_id: string;
   session_id: string;
   state: TaskState;
+  runtime_state?: RuntimeState; // absent in snapshots written before this field existed
   version: number;
   created_at: string; // ISO 8601
   updated_at: string; // ISO 8601
@@ -1832,6 +1835,7 @@ export interface ControlResult {
   task_id: string;
   session_id?: string;
   state?: TaskState;
+  runtime_state?: RuntimeState;
   version?: number;
   accepted: boolean;
   idempotent: boolean;
@@ -1845,6 +1849,7 @@ export interface TaskEvent {
   task_id: string;
   session_id: string;
   state: TaskState;
+  runtime_state?: RuntimeState;
   error_code?: string;
   error_summary?: string;
 }

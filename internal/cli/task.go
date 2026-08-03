@@ -32,7 +32,7 @@ func SetTaskJobKiller(k taskmonitor.JobKiller) { taskJobKiller = k }
 
 func taskCommand(args []string) int {
 	if len(args) == 0 {
-		fmt.Fprintln(os.Stderr, "usage: reasonix task <list|status|events> [flags]")
+		fmt.Fprintln(os.Stderr, "usage: reasonix task <list|status|events|stop|cancel|requeue|open-session|tmux> [flags]")
 		return 2
 	}
 	store := taskStore
@@ -54,8 +54,8 @@ func taskCommand(args []string) int {
 		return taskStopCmd(store, args[1:])
 	case "cancel":
 		return taskCancelCmd(store, args[1:])
-	case "resume":
-		return taskResumeCmd(store, args[1:])
+	case "requeue":
+		return taskRequeueCmd(store, args[1:])
 	case "open-session":
 		return taskOpenSessionCmd(store, args[1:])
 	case "tmux":
@@ -370,10 +370,7 @@ func taskStopCmd(store taskmonitor.Store, args []string) int {
 		return 1
 	}
 	cs := taskmonitor.NewControlService(ws)
-	if taskJobKiller != nil {
-		cs.SetJobKiller(taskJobKiller)
-	}
-	res, err := cs.StopTask(context.Background(), *dir, id, *expectedVersion, *reason, *idemKey)
+	res, err := cs.StopTaskWithKiller(context.Background(), *dir, id, *expectedVersion, *reason, *idemKey, taskJobKiller)
 	return outputControlResult(res, err)
 }
 
@@ -403,15 +400,12 @@ func taskCancelCmd(store taskmonitor.Store, args []string) int {
 		return 1
 	}
 	cs := taskmonitor.NewControlService(ws)
-	if taskJobKiller != nil {
-		cs.SetJobKiller(taskJobKiller)
-	}
-	res, err := cs.CancelTask(context.Background(), *dir, id, *expectedVersion, *reason, *idemKey)
+	res, err := cs.CancelTaskWithKiller(context.Background(), *dir, id, *expectedVersion, *reason, *idemKey, taskJobKiller)
 	return outputControlResult(res, err)
 }
 
-func taskResumeCmd(store taskmonitor.Store, args []string) int {
-	fs := flag.NewFlagSet("task resume", flag.ContinueOnError)
+func taskRequeueCmd(store taskmonitor.Store, args []string) int {
+	fs := flag.NewFlagSet("task requeue", flag.ContinueOnError)
 	jsonOut := fs.Bool("json", false, "output as JSON")
 	dir := fs.String("dir", "", "project directory scope")
 	expectedVersion := fs.Uint64("expected-version", 0, "expected task version for CAS")
@@ -420,25 +414,22 @@ func taskResumeCmd(store taskmonitor.Store, args []string) int {
 		return 2
 	}
 	if !*jsonOut {
-		fmt.Fprintln(os.Stderr, "task resume requires --json")
+		fmt.Fprintln(os.Stderr, "task requeue requires --json")
 		return 2
 	}
 	id := fs.Arg(0)
 	if id == "" {
-		fmt.Fprintln(os.Stderr, "usage: reasonix task resume <id> --expected-version N --json")
+		fmt.Fprintln(os.Stderr, "usage: reasonix task requeue <id> --expected-version N --json")
 		return 2
 	}
 
 	ws, ok := store.(taskmonitor.WriteStore)
 	if !ok {
-		fmt.Fprintln(os.Stderr, "task resume: store does not support writes")
+		fmt.Fprintln(os.Stderr, "task requeue: store does not support writes")
 		return 1
 	}
 	cs := taskmonitor.NewControlService(ws)
-	if taskJobKiller != nil {
-		cs.SetJobKiller(taskJobKiller)
-	}
-	res, err := cs.ResumeTask(context.Background(), *dir, id, *expectedVersion, *idemKey)
+	res, err := cs.RequeueTask(context.Background(), *dir, id, *expectedVersion, *idemKey)
 	return outputControlResult(res, err)
 }
 

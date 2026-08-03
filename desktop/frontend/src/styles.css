@@ -35953,6 +35953,7 @@ body > .mermaid-diagram--fullscreen {
 .taskmonitor__dot { font-size:10px; width:14px; text-align:center; }
 .taskmonitor__id { font-family:monospace; font-size:11px; color:var(--muted,#888); }
 .taskmonitor__badge { font-size:10px; padding:1px 6px; border-radius:8px; font-weight:600; text-transform:uppercase; }
+.taskmonitor__runtime { display:inline-flex; align-items:center; gap:3px; font-size:10px; }
 .taskmonitor__time { margin-left:auto; font-size:11px; color:var(--muted,#666); }
 .taskmonitor__detail { padding:6px 12px 10px 32px; font-size:12px; }
 .taskmonitor__detail dl { margin:0; display:grid; grid-template-columns:80px 1fr; gap:2px 8px; }

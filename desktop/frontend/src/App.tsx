@@ -4006,6 +4006,16 @@ export default function App() {
           {sidebarWorkbench ? (
             <nav className="sidebar__nav sidebar__nav--footer">
               <div className="sidebar__utility-row" aria-label={t("sidebar.utilityActions")}>
+                <Tooltip label="Tasks" fill side="top">
+                  <button
+                    className="sidebar__utility-button"
+                    type="button"
+                    onClick={() => setTasksOpen(true)}
+                    aria-label="Tasks"
+                  >
+                    <ListTodo size={16} aria-hidden="true" />
+                  </button>
+                </Tooltip>
                 <Tooltip label={t("sidebar.trash")} fill side="top">
                   <button
                     className="sidebar__utility-button"

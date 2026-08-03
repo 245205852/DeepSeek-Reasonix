@@ -3,6 +3,7 @@ package taskmonitor
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -165,7 +166,7 @@ func TestFileStore_SaveTask_VersionConflict(t *testing.T) {
 		t.Fatalf("SaveTask v1: %v", err)
 	}
 	// Same version must conflict.
-	if err := store.SaveTask(ctx, dir, v1); err == nil || !strings.Contains(err.Error(), "version conflict") {
+	if err := store.SaveTask(ctx, dir, v1); err == nil || !errors.Is(err, ErrStoreVersionConflict) {
 		t.Fatalf("expected version conflict, got %v", err)
 	}
 	// Higher version wins.

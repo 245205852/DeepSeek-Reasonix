@@ -1,6 +1,6 @@
 // Package taskmonitor defines the unified Task Monitor domain model and
 // read-only query interfaces for observing background tasks. It provides
-// TaskSnapshot, TaskEvent, TaskState and a Store abstraction.
+// TaskSnapshot, TaskEvent, TaskState, RuntimeState and a Store abstraction.
 //
 // The package does not read private session files, does not parse internal
 // Reasonix state files, and does not implement a second state machine — it
@@ -17,6 +17,13 @@ import (
 // TaskState enumerates the observable lifecycle states of a background task.
 type TaskState string
 
+// RuntimeState reports whether a task still has live execution behind its
+// persisted lifecycle state. It is intentionally independent from TaskState:
+// for example, a requeued task is queued but its previous runtime has exited.
+// The empty value is accepted for snapshots written before this field existed
+// and is interpreted as unknown.
+type RuntimeState string
+
 const (
 	TaskStateQueued    TaskState = "queued"
 	TaskStateRunning   TaskState = "running"
@@ -26,6 +33,10 @@ const (
 	TaskStateCancelled TaskState = "cancelled"
 	TaskStateStale     TaskState = "stale"
 
+	RuntimeStateUnknown RuntimeState = "unknown"
+	RuntimeStateAlive   RuntimeState = "alive"
+	RuntimeStateExited  RuntimeState = "exited"
+
 	// maxFieldLen is the maximum byte length for free-form string fields
 	// (TaskID, SessionID, ErrorCode, EventType).  It prevents memory-
 	// exhaustion attacks from unbounded JSON input.
@@ -34,6 +45,26 @@ const (
 	// maxErrorSummaryLen is the maximum byte length for ErrorSummary.
 	maxErrorSummaryLen = 1024
 )
+
+// Effective returns unknown for legacy snapshots and events that predate the
+// runtime_state field.
+func (s RuntimeState) Effective() RuntimeState {
+	if s == "" {
+		return RuntimeStateUnknown
+	}
+	return s
+}
+
+// IsKnown reports whether s is one of the well-known runtime states. The empty
+// legacy value is treated as the known unknown state.
+func (s RuntimeState) IsKnown() bool {
+	switch s.Effective() {
+	case RuntimeStateUnknown, RuntimeStateAlive, RuntimeStateExited:
+		return true
+	default:
+		return false
+	}
+}
 
 // ValidTaskStates is the set of well-known states.
 var ValidTaskStates = map[TaskState]bool{
@@ -109,13 +140,14 @@ type TaskSnapshot struct {
 	TaskID        string `json:"task_id"`
 	// SessionID is the session the task was created in; it may be empty when
 	// the recorder attached before a session path was resolved.
-	SessionID    string    `json:"session_id"`
-	State        TaskState `json:"state"`
-	Version      uint64    `json:"version"`
-	CreatedAt    time.Time `json:"created_at"`
-	UpdatedAt    time.Time `json:"updated_at"`
-	ErrorCode    string    `json:"error_code,omitempty"`
-	ErrorSummary string    `json:"error_summary,omitempty"`
+	SessionID    string       `json:"session_id"`
+	State        TaskState    `json:"state"`
+	RuntimeState RuntimeState `json:"runtime_state,omitempty"`
+	Version      uint64       `json:"version"`
+	CreatedAt    time.Time    `json:"created_at"`
+	UpdatedAt    time.Time    `json:"updated_at"`
+	ErrorCode    string       `json:"error_code,omitempty"`
+	ErrorSummary string       `json:"error_summary,omitempty"`
 }
 
 // Validate returns a non-nil error if required fields are missing or
@@ -150,6 +182,9 @@ func (ts TaskSnapshot) Validate() error {
 	if len(ts.ErrorCode) > maxFieldLen {
 		return fmt.Errorf("TaskSnapshot.ErrorCode exceeds max length %d", maxFieldLen)
 	}
+	if len(ts.RuntimeState) > maxFieldLen {
+		return fmt.Errorf("TaskSnapshot.RuntimeState exceeds max length %d", maxFieldLen)
+	}
 	if len(ts.ErrorSummary) > maxErrorSummaryLen {
 		return fmt.Errorf("TaskSnapshot.ErrorSummary exceeds max length %d",
 			maxErrorSummaryLen)
@@ -159,14 +194,15 @@ func (ts TaskSnapshot) Validate() error {
 
 // TaskEvent is a single sanitised event in a task's lifecycle.
 type TaskEvent struct {
-	Sequence     int       `json:"sequence"`
-	Timestamp    time.Time `json:"timestamp"`
-	EventType    string    `json:"event_type"`
-	TaskID       string    `json:"task_id"`
-	SessionID    string    `json:"session_id"`
-	State        TaskState `json:"state"`
-	ErrorCode    string    `json:"error_code,omitempty"`
-	ErrorSummary string    `json:"error_summary,omitempty"`
+	Sequence     int          `json:"sequence"`
+	Timestamp    time.Time    `json:"timestamp"`
+	EventType    string       `json:"event_type"`
+	TaskID       string       `json:"task_id"`
+	SessionID    string       `json:"session_id"`
+	State        TaskState    `json:"state"`
+	RuntimeState RuntimeState `json:"runtime_state,omitempty"`
+	ErrorCode    string       `json:"error_code,omitempty"`
+	ErrorSummary string       `json:"error_summary,omitempty"`
 }
 
 // Validate returns a non-nil error on required-field violations.
@@ -197,6 +233,9 @@ func (te TaskEvent) Validate() error {
 	}
 	if len(te.ErrorCode) > maxFieldLen {
 		return fmt.Errorf("TaskEvent.ErrorCode exceeds max length %d", maxFieldLen)
+	}
+	if len(te.RuntimeState) > maxFieldLen {
+		return fmt.Errorf("TaskEvent.RuntimeState exceeds max length %d", maxFieldLen)
 	}
 	if len(te.ErrorSummary) > maxErrorSummaryLen {
 		return fmt.Errorf("TaskEvent.ErrorSummary exceeds max length %d",

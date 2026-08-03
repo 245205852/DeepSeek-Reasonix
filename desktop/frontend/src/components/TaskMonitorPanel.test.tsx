@@ -4,11 +4,16 @@ import { TaskMonitorPanel } from "./TaskMonitorPanel";
 
 const mockListTasks = vi.fn();
 const mockListTaskEvents = vi.fn();
+const mockRequeueTask = vi.fn();
 
 vi.mock("../lib/bridge", () => ({
   app: {
     ListTasks: (...args: unknown[]) => mockListTasks(...args),
     ListTaskEvents: (...args: unknown[]) => mockListTaskEvents(...args),
+    StopTask: vi.fn(),
+    CancelTask: vi.fn(),
+    RequeueTask: (...args: unknown[]) => mockRequeueTask(...args),
+    OpenTaskSession: vi.fn(),
     GetTask: vi.fn().mockResolvedValue(null),
   },
 }));
@@ -19,6 +24,8 @@ function snap(overrides: Record<string, unknown> = {}) {
     task_id: "task-0001",
     session_id: "sess-1",
     state: "running",
+    runtime_state: "alive",
+    version: 1,
     created_at: "2025-01-01T00:00:00Z",
     updated_at: "2025-01-01T01:00:00Z",
     ...overrides,
@@ -33,6 +40,7 @@ function ev(overrides: Record<string, unknown> = {}) {
     task_id: "task-0001",
     session_id: "sess-1",
     state: "running",
+    runtime_state: "alive",
     ...overrides,
   };
 }
@@ -42,6 +50,16 @@ describe("TaskMonitorPanel", () => {
     vi.clearAllMocks();
     mockListTasks.mockResolvedValue([]);
     mockListTaskEvents.mockResolvedValue([]);
+    mockRequeueTask.mockResolvedValue({
+      schema_version: 1,
+      command: "requeue",
+      task_id: "task-0001",
+      state: "queued",
+      runtime_state: "exited",
+      version: 2,
+      accepted: true,
+      idempotent: false,
+    });
   });
   afterEach(() => cleanup());
 
@@ -79,6 +97,40 @@ describe("TaskMonitorPanel", () => {
     });
     expect(screen.getByText("Running")).toBeInTheDocument();
     expect(screen.getByText("Failed")).toBeInTheDocument();
+  });
+
+  it("shows lifecycle state separately from runtime liveness", async () => {
+    mockListTasks.mockResolvedValue([
+      snap({ task_id: "failed-1", state: "failed", runtime_state: "exited" }),
+      snap({ task_id: "legacy-1", state: "running", runtime_state: undefined }),
+    ]);
+    render(<TaskMonitorPanel />);
+    fireEvent.click(screen.getByLabelText("Expand tasks"));
+    await waitFor(() => {
+      expect(screen.getByText("failed-1")).toBeInTheDocument();
+    });
+    expect(screen.getByText("Exited")).toBeInTheDocument();
+    expect(screen.getByText("Runtime unknown")).toBeInTheDocument();
+  });
+
+  it("requeues a failed exited task without calling resume", async () => {
+    mockListTasks.mockResolvedValue([
+      snap({ task_id: "failed-1", state: "failed", runtime_state: "exited", version: 7 }),
+    ]);
+    render(<TaskMonitorPanel />);
+    fireEvent.click(screen.getByLabelText("Expand tasks"));
+    await waitFor(() => {
+      expect(screen.getByText("failed-1")).toBeInTheDocument();
+    });
+    fireEvent.click(screen.getByLabelText("Task failed-1 — Failed"));
+    fireEvent.click(screen.getByRole("button", { name: "Requeue" }));
+    await waitFor(() => {
+      expect(mockRequeueTask).toHaveBeenCalledWith(
+        "failed-1",
+        7,
+        "desktop-requeue-failed-1-7",
+      );
+    });
   });
 
   it("expands and collapses detail", async () => {

@@ -235,7 +235,7 @@ func (s *FileStore) SaveTask(ctx context.Context, projectDir string, snap TaskSn
 	current, err := s.readSnapshot(taskDir)
 	switch {
 	case err == nil && snap.Version <= current.Version:
-		return fmt.Errorf("save task: version conflict: stored=%d, given=%d", current.Version, snap.Version)
+		return fmt.Errorf("save task: %w: stored=%d, given=%d", ErrStoreVersionConflict, current.Version, snap.Version)
 	case err != nil && !os.IsNotExist(err):
 		// A corrupt snapshot must fail loudly, never bypass the CAS check.
 		return fmt.Errorf("save task: read current snapshot: %w", err)

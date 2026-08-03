@@ -613,8 +613,8 @@ func newMockKiller() *mockJobKiller {
 	return &mockJobKiller{called: make(map[string]int)}
 }
 
-func (m *mockJobKiller) Kill(id string) bool {
-	m.called[id]++
+func (m *mockJobKiller) Kill(sessionID, id string) bool {
+	m.called[sessionID+"/"+id]++
 	return true
 }
 
@@ -638,8 +638,8 @@ func TestCLI_StopCallsKill(t *testing.T) {
 		t.Fatalf("exit=%d out=%s", exit, out)
 	}
 	mk := taskJobKiller.(*mockJobKiller)
-	if mk.called["t1"] != 1 {
-		t.Errorf("expected Kill(t1) called once, got %v", mk.called)
+	if mk.called["s1/t1"] != 1 {
+		t.Errorf("expected Kill(s1, t1) called once, got %v", mk.called)
 	}
 }
 
@@ -662,7 +662,38 @@ func TestCLI_CancelCallsKill(t *testing.T) {
 		t.Fatalf("exit=%d out=%s", exit, out)
 	}
 	mk := taskJobKiller.(*mockJobKiller)
-	if mk.called["t1"] != 1 {
-		t.Errorf("expected Kill(t1) called once, got %v", mk.called)
+	if mk.called["s1/t1"] != 1 {
+		t.Errorf("expected Kill(s1, t1) called once, got %v", mk.called)
+	}
+}
+
+func TestCLI_RequeueReportsQueuedButExited(t *testing.T) {
+	s := taskmonitor.NewInMemoryStore()
+	taskStore = s
+	mustUpsert(t, s, "/p", taskmonitor.TaskSnapshot{
+		SchemaVersion: 1, TaskID: "failed", SessionID: "s1",
+		State: taskmonitor.TaskStateFailed, RuntimeState: taskmonitor.RuntimeStateExited, Version: 2,
+		CreatedAt: time.Now(), UpdatedAt: time.Now(),
+	})
+
+	exit, out := captureOut(func() int {
+		return taskCommand([]string{"requeue", "--json", "--expected-version", "2", "--dir", "/p", "failed"})
+	})
+	if exit != 0 {
+		t.Fatalf("exit=%d out=%s", exit, out)
+	}
+	var result taskmonitor.ControlResult
+	if err := json.Unmarshal([]byte(out), &result); err != nil {
+		t.Fatalf("decode output: %v\n%s", err, out)
+	}
+	if result.Command != "requeue" || result.State != taskmonitor.TaskStateQueued || result.RuntimeState != taskmonitor.RuntimeStateExited {
+		t.Fatalf("unexpected requeue result: %+v", result)
+	}
+}
+
+func TestCLI_ResumeIsNotATaskCommand(t *testing.T) {
+	exit, _ := captureOut(func() int { return taskCommand([]string{"resume"}) })
+	if exit != 2 {
+		t.Fatalf("legacy task resume exit=%d, want usage error 2", exit)
 	}
 }

@@ -2226,7 +2226,12 @@ func usage() {
 
 type ctrlKillerAdapter struct{ ctrl *control.Controller }
 
-func (a ctrlKillerAdapter) Kill(id string) bool { return a.ctrl.KillJob(id) }
+func (a ctrlKillerAdapter) Kill(sessionID, id string) bool {
+	if sessionID != "" && agent.BranchID(a.ctrl.SessionPath()) != sessionID {
+		return false
+	}
+	return a.ctrl.KillJob(id)
+}
 
 func configCommand(args []string) int {
 	if len(args) == 0 {

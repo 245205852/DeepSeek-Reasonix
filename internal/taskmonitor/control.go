@@ -2,29 +2,31 @@ package taskmonitor
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 	"time"
 )
 
-// JobKiller is an optional interface for stopping running jobs. ControlService
-// calls Kill to cancel a job's context when stop/cancel is requested. When nil,
-// only the persistent state is updated.
+// JobKiller is an optional interface for stopping running jobs. SessionID is
+// part of the target because job IDs are only unique within a controller. When
+// no killer is supplied, control operations update only persistent state.
 type JobKiller interface {
-	Kill(jobID string) bool
+	Kill(sessionID, jobID string) bool
 }
 
 // ControlResult is the unified response for all task control operations.
 type ControlResult struct {
-	SchemaVersion int        `json:"schema_version"`
-	Command       string     `json:"command"`
-	TaskID        string     `json:"task_id"`
-	SessionID     string     `json:"session_id"`
-	State         TaskState  `json:"state"`
-	Version       uint64     `json:"version"`
-	Accepted      bool       `json:"accepted"`
-	Idempotent    bool       `json:"idempotent"`
-	Error         *CtrlError `json:"error,omitempty"`
+	SchemaVersion int          `json:"schema_version"`
+	Command       string       `json:"command"`
+	TaskID        string       `json:"task_id"`
+	SessionID     string       `json:"session_id"`
+	State         TaskState    `json:"state"`
+	RuntimeState  RuntimeState `json:"runtime_state,omitempty"`
+	Version       uint64       `json:"version"`
+	Accepted      bool         `json:"accepted"`
+	Idempotent    bool         `json:"idempotent"`
+	Error         *CtrlError   `json:"error,omitempty"`
 }
 
 // CtrlError carries a stable machine-readable code and message.
@@ -38,7 +40,7 @@ const (
 	ErrTaskScopeMismatch       = "task_scope_mismatch"
 	ErrTaskVersionConflict     = "task_version_conflict"
 	ErrTaskInvalidTransition   = "task_invalid_transition"
-	ErrTaskNotResumable        = "task_not_resumable"
+	ErrTaskNotRequeueable      = "task_not_requeueable"
 	ErrTaskAlreadyTerminal     = "task_already_terminal"
 	ErrTaskInProgress          = "task_operation_in_progress"
 	ErrTaskPermissionDenied    = "task_permission_denied"
@@ -48,9 +50,8 @@ const (
 
 // ControlService provides atomic control operations on tasks.
 type ControlService struct {
-	mu     sync.Mutex
-	store  WriteStore
-	killer JobKiller
+	mu    sync.Mutex
+	store WriteStore
 }
 
 // NewControlService returns a ControlService backed by store.
@@ -58,19 +59,31 @@ func NewControlService(store WriteStore) *ControlService {
 	return &ControlService{store: store}
 }
 
-// SetJobKiller sets an optional JobKiller for stopping running jobs.
-func (cs *ControlService) SetJobKiller(k JobKiller) { cs.killer = k }
-
 func (cs *ControlService) StopTask(ctx context.Context, projectDir, taskID string, expectedVersion uint64, reason, idemKey string) (ControlResult, error) {
-	return cs.controlOp(ctx, projectDir, taskID, expectedVersion, "stop", TaskStateCancelled, reason, idemKey)
+	return cs.StopTaskWithKiller(ctx, projectDir, taskID, expectedVersion, reason, idemKey, nil)
+}
+
+// StopTaskWithKiller binds the live runtime target to this control operation.
+// Keeping the killer call-scoped prevents concurrent clients from overwriting a
+// shared killer and cancelling a same-named job in another session.
+func (cs *ControlService) StopTaskWithKiller(ctx context.Context, projectDir, taskID string, expectedVersion uint64, reason, idemKey string, killer JobKiller) (ControlResult, error) {
+	return cs.controlOp(ctx, projectDir, taskID, expectedVersion, "stop", TaskStateCancelled, reason, idemKey, killer)
 }
 
 func (cs *ControlService) CancelTask(ctx context.Context, projectDir, taskID string, expectedVersion uint64, reason, idemKey string) (ControlResult, error) {
-	return cs.controlOp(ctx, projectDir, taskID, expectedVersion, "cancel", TaskStateCancelled, reason, idemKey)
+	return cs.CancelTaskWithKiller(ctx, projectDir, taskID, expectedVersion, reason, idemKey, nil)
 }
 
-func (cs *ControlService) ResumeTask(ctx context.Context, projectDir, taskID string, expectedVersion uint64, idemKey string) (ControlResult, error) {
-	return cs.controlOp(ctx, projectDir, taskID, expectedVersion, "resume", TaskStateQueued, "", idemKey)
+// CancelTaskWithKiller is the call-scoped-killer form of CancelTask.
+func (cs *ControlService) CancelTaskWithKiller(ctx context.Context, projectDir, taskID string, expectedVersion uint64, reason, idemKey string, killer JobKiller) (ControlResult, error) {
+	return cs.controlOp(ctx, projectDir, taskID, expectedVersion, "cancel", TaskStateCancelled, reason, idemKey, killer)
+}
+
+// RequeueTask moves a failed or stale task back to queued. It does not start a
+// new runtime; RuntimeState therefore remains exited (or unknown for legacy
+// data) until a scheduler starts the task and records a new lifecycle.
+func (cs *ControlService) RequeueTask(ctx context.Context, projectDir, taskID string, expectedVersion uint64, idemKey string) (ControlResult, error) {
+	return cs.controlOp(ctx, projectDir, taskID, expectedVersion, "requeue", TaskStateQueued, "", idemKey, nil)
 }
 
 func (cs *ControlService) OpenTaskSession(ctx context.Context, projectDir, taskID string) (ControlResult, error) {
@@ -87,11 +100,12 @@ func (cs *ControlService) OpenTaskSession(ctx context.Context, projectDir, taskI
 	return ControlResult{
 		SchemaVersion: 1, Command: "open_session",
 		TaskID: snap.TaskID, SessionID: snap.SessionID,
-		State: snap.State, Version: snap.Version, Accepted: true,
+		State: snap.State, RuntimeState: snap.RuntimeState,
+		Version: snap.Version, Accepted: true,
 	}, nil
 }
 
-func (cs *ControlService) controlOp(ctx context.Context, projectDir, taskID string, expectedVersion uint64, cmd string, targetState TaskState, reason, idemKey string) (ControlResult, error) {
+func (cs *ControlService) controlOp(ctx context.Context, projectDir, taskID string, expectedVersion uint64, cmd string, targetState TaskState, reason, idemKey string, killer JobKiller) (ControlResult, error) {
 	if err := ctx.Err(); err != nil {
 		return ControlResult{}, err
 	}
@@ -126,7 +140,8 @@ func (cs *ControlService) controlOp(ctx context.Context, projectDir, taskID stri
 			}
 			return ControlResult{
 				SchemaVersion: 1, Command: cmd, TaskID: taskID, SessionID: snap.SessionID,
-				State: snap.State, Version: snap.Version, Accepted: true, Idempotent: true,
+				State: snap.State, RuntimeState: snap.RuntimeState,
+				Version: snap.Version, Accepted: true, Idempotent: true,
 			}, nil
 		}
 	}
@@ -145,22 +160,37 @@ func (cs *ControlService) controlOp(ctx context.Context, projectDir, taskID stri
 	if expectedVersion != snap.Version {
 		return ControlResult{
 			SchemaVersion: 1, Command: cmd, TaskID: taskID, SessionID: snap.SessionID,
-			State: snap.State, Version: snap.Version,
+			State: snap.State, RuntimeState: snap.RuntimeState, Version: snap.Version,
 			Error: &CtrlError{Code: ErrTaskVersionConflict, Message: "version mismatch"},
 		}, nil
 	}
-	resumable := cmd == "resume" && (snap.State == TaskStateFailed || snap.State == TaskStateStale)
-	if snap.State.Terminal() && !resumable {
+	requeue := cmd == "requeue"
+	requeueable := requeue && (snap.State == TaskStateFailed || snap.State == TaskStateStale)
+	if requeue && !requeueable {
 		return ControlResult{
 			SchemaVersion: 1, Command: cmd, TaskID: taskID, SessionID: snap.SessionID,
-			State: snap.State, Version: snap.Version,
+			State: snap.State, RuntimeState: snap.RuntimeState, Version: snap.Version,
+			Error: &CtrlError{Code: ErrTaskNotRequeueable, Message: "task is not failed or stale"},
+		}, nil
+	}
+	if requeueable && snap.RuntimeState.Effective() == RuntimeStateAlive {
+		return ControlResult{
+			SchemaVersion: 1, Command: cmd, TaskID: taskID, SessionID: snap.SessionID,
+			State: snap.State, RuntimeState: snap.RuntimeState, Version: snap.Version,
+			Error: &CtrlError{Code: ErrTaskInProgress, Message: "task runtime is still alive"},
+		}, nil
+	}
+	if snap.State.Terminal() && !requeueable {
+		return ControlResult{
+			SchemaVersion: 1, Command: cmd, TaskID: taskID, SessionID: snap.SessionID,
+			State: snap.State, RuntimeState: snap.RuntimeState, Version: snap.Version,
 			Error: &CtrlError{Code: ErrTaskAlreadyTerminal, Message: "task is terminal"},
 		}, nil
 	}
-	if !resumable && !snap.State.ValidTransition(targetState) {
+	if !requeueable && !snap.State.ValidTransition(targetState) {
 		return ControlResult{
 			SchemaVersion: 1, Command: cmd, TaskID: taskID, SessionID: snap.SessionID,
-			State: snap.State, Version: snap.Version,
+			State: snap.State, RuntimeState: snap.RuntimeState, Version: snap.Version,
 			Error: &CtrlError{Code: ErrTaskInvalidTransition, Message: "invalid transition"},
 		}, nil
 	}
@@ -171,17 +201,35 @@ func (cs *ControlService) controlOp(ctx context.Context, projectDir, taskID stri
 	snap.UpdatedAt = timeNow()
 
 	if err := cs.store.SaveTask(ctx, projectDir, *snap); err != nil {
+		if errors.Is(err, ErrStoreVersionConflict) {
+			latest, getErr := cs.store.GetTask(ctx, projectDir, taskID)
+			if getErr != nil {
+				return ControlResult{}, getErr
+			}
+			res := ControlResult{
+				SchemaVersion: 1, Command: cmd, TaskID: taskID,
+				Error: &CtrlError{Code: ErrTaskVersionConflict, Message: "task changed concurrently"},
+			}
+			if latest != nil {
+				res.SessionID = latest.SessionID
+				res.State = latest.State
+				res.RuntimeState = latest.RuntimeState
+				res.Version = latest.Version
+			}
+			return res, nil
+		}
 		return ControlResult{}, fmt.Errorf("save task: %w", err)
 	}
 
 	// ── 2. AppendAuditEvent (atomic sequence + write) ──
 	auditEv := TaskEvent{
-		Sequence:  0, // assigned atomically by store
-		Timestamp: timeNow(),
-		EventType: "control_" + cmd,
-		TaskID:    taskID,
-		SessionID: snap.SessionID,
-		State:     targetState,
+		Sequence:     0, // assigned atomically by store
+		Timestamp:    timeNow(),
+		EventType:    "control_" + cmd,
+		TaskID:       taskID,
+		SessionID:    snap.SessionID,
+		State:        targetState,
+		RuntimeState: snap.RuntimeState,
 	}
 	if reason != "" {
 		auditEv.ErrorSummary = reason
@@ -204,13 +252,14 @@ func (cs *ControlService) controlOp(ctx context.Context, projectDir, taskID stri
 	}
 
 	// ── kill running job ──
-	if cs.killer != nil && (cmd == "stop" || cmd == "cancel") {
-		cs.killer.Kill(taskID)
+	if killer != nil && (cmd == "stop" || cmd == "cancel") {
+		killer.Kill(snap.SessionID, taskID)
 	}
 
 	return ControlResult{
 		SchemaVersion: 1, Command: cmd, TaskID: taskID, SessionID: snap.SessionID,
-		State: snap.State, Version: snap.Version, Accepted: true,
+		State: snap.State, RuntimeState: snap.RuntimeState,
+		Version: snap.Version, Accepted: true,
 	}, nil
 }
 

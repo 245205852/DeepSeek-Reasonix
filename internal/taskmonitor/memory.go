@@ -100,6 +100,7 @@ func (s *InMemoryStore) AppendEvent(projectDir string, ev TaskEvent) error {
 			TaskID:        ev.TaskID,
 			SessionID:     ev.SessionID,
 			State:         ev.State,
+			RuntimeState:  ev.RuntimeState,
 			CreatedAt:     ev.Timestamp,
 			UpdatedAt:     ev.Timestamp,
 		}
@@ -116,6 +117,9 @@ func (s *InMemoryStore) AppendEvent(projectDir string, ev TaskEvent) error {
 	// a non-empty value; they are NOT cleared by events that lack them.
 	snap := s.tasks[ev.TaskID]
 	snap.State = ev.State
+	if ev.RuntimeState != "" {
+		snap.RuntimeState = ev.RuntimeState
+	}
 	snap.UpdatedAt = ev.Timestamp
 	if ev.ErrorCode != "" {
 		snap.ErrorCode = ev.ErrorCode
@@ -242,7 +246,7 @@ func (s *InMemoryStore) SaveTask(ctx context.Context, projectDir string, snap Ta
 	}
 	// Version must be strictly greater (CAS check)
 	if snap.Version <= existing.Version {
-		return fmt.Errorf("save task: version conflict: stored=%d, given=%d", existing.Version, snap.Version)
+		return fmt.Errorf("save task: %w: stored=%d, given=%d", ErrStoreVersionConflict, existing.Version, snap.Version)
 	}
 	cp := snap
 	s.tasks[snap.TaskID] = &cp

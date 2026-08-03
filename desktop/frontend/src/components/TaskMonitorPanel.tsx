@@ -32,6 +32,17 @@ function stateConfig(state: string) {
   return STATE_CONFIG[state] ?? { label: state, color: "#6b7280", dot: "❓" };
 }
 
+function runtimeConfig(state?: string) {
+  switch (state) {
+    case "alive":
+      return { label: "Live", color: "#22c55e" };
+    case "exited":
+      return { label: "Exited", color: "#9ca3af" };
+    default:
+      return { label: "Runtime unknown", color: "#6b7280" };
+  }
+}
+
 function safeStateClass(state: string): string {
   // Sanitize state for use in CSS class names — only allow word chars.
   return state.replace(/[^a-zA-Z0-9_-]/g, "_");
@@ -57,7 +68,7 @@ function eventSummary(ev: TaskEvent): string {
   if (ev.error_code) return `Error: ${ev.error_code}`;
   switch (ev.event_type) {
     case "state_change":
-      return `State → ${ev.state}`;
+      return `State → ${ev.state} · Runtime → ${runtimeConfig(ev.runtime_state).label}`;
     case "error":
       return ev.error_summary || "Error";
     default:
@@ -175,7 +186,7 @@ export function TaskMonitorPanel({ onClose }: { onClose?: () => void }) {
     });
   };
 
-  const controlTask = async (task: TaskSnapshot, action: "stop" | "cancel" | "resume" | "open") => {
+  const controlTask = async (task: TaskSnapshot, action: "stop" | "cancel" | "requeue" | "open") => {
     if ((action === "stop" || action === "cancel") && (!pendingAction || pendingAction.task.task_id !== task.task_id || pendingAction.action !== action)) {
       setPendingAction({ task, action });
       return;
@@ -189,8 +200,8 @@ export function TaskMonitorPanel({ onClose }: { onClose?: () => void }) {
         ? await app.StopTask(task.task_id, task.version, "desktop request", `desktop-${action}-${task.task_id}-${task.version}`)
         : action === "cancel"
           ? await app.CancelTask(task.task_id, task.version, "desktop request", `desktop-${action}-${task.task_id}-${task.version}`)
-          : action === "resume"
-            ? await app.ResumeTask(task.task_id, task.version, `desktop-${action}-${task.task_id}-${task.version}`)
+          : action === "requeue"
+            ? await app.RequeueTask(task.task_id, task.version, `desktop-${action}-${task.task_id}-${task.version}`)
             : await app.OpenTaskSession(task.task_id);
       if (result.error) {
         setActionError(`${result.error.code}: ${result.error.message}`);
@@ -276,6 +287,7 @@ export function TaskMonitorPanel({ onClose }: { onClose?: () => void }) {
           {!loading &&
             sorted.map((t) => {
               const cfg = stateConfig(t.state);
+              const runtime = runtimeConfig(t.runtime_state);
               const isOpen = expanded.has(t.task_id);
               const terminal =
                 t.state === "succeeded" ||
@@ -316,6 +328,14 @@ export function TaskMonitorPanel({ onClose }: { onClose?: () => void }) {
                       >
                         {cfg.label}
                       </span>
+                      <span
+                        className="taskmonitor__runtime"
+                        style={{ color: runtime.color }}
+                        title="Runtime process state"
+                      >
+                        <span aria-hidden="true">{t.runtime_state === "alive" ? "●" : "○"}</span>
+                        {runtime.label}
+                      </span>
                       {terminal && (
                         <XCircle size={12} className="taskmonitor__terminal" />
                       )}
@@ -339,6 +359,8 @@ export function TaskMonitorPanel({ onClose }: { onClose?: () => void }) {
                         <dd>{t.session_id || "—"}</dd>
                         <dt>State</dt>
                         <dd>{t.state}</dd>
+                        <dt>Runtime</dt>
+                        <dd>{runtime.label}</dd>
                         <dt>Updated</dt>
                         <dd>{new Date(t.updated_at).toLocaleString()}</dd>
                         {t.error_code && (
@@ -421,7 +443,7 @@ export function TaskMonitorPanel({ onClose }: { onClose?: () => void }) {
                           </>
                         )}
                         {(t.state === "failed" || t.state === "stale") && (
-                          <button disabled={actionTask === t.task_id} onClick={() => void controlTask(t, "resume")}>Resume</button>
+                          <button disabled={actionTask === t.task_id || t.runtime_state === "alive"} onClick={() => void controlTask(t, "requeue")}>Requeue</button>
                         )}
                         <button disabled={actionTask === t.task_id} onClick={() => void controlTask(t, "open")}>Open Session</button>
                       </div>

@@ -115,6 +115,20 @@ func TestTaskStateUnmarshalJSON_Known(t *testing.T) {
 	}
 }
 
+func TestRuntimeStateEffective_LegacyAndKnownValues(t *testing.T) {
+	if got := (RuntimeState("")).Effective(); got != RuntimeStateUnknown {
+		t.Fatalf("legacy empty runtime state = %q, want unknown", got)
+	}
+	for _, state := range []RuntimeState{RuntimeStateUnknown, RuntimeStateAlive, RuntimeStateExited} {
+		if !state.IsKnown() || state.Effective() != state {
+			t.Fatalf("runtime state %q was not preserved as known", state)
+		}
+	}
+	if RuntimeState("future-runtime").IsKnown() {
+		t.Fatal("future runtime state should remain forward-compatible but unknown")
+	}
+}
+
 // ---------------------------------------------------------------------------
 // TaskSnapshot
 // ---------------------------------------------------------------------------
@@ -183,6 +197,11 @@ func TestTaskSnapshotValidate_FieldLengthLimits(t *testing.T) {
 			State: TaskStateFailed, CreatedAt: time.Now(), UpdatedAt: time.Now(),
 			ErrorCode: long,
 		}, "ErrorCode exceeds"},
+		{"RuntimeState too long", TaskSnapshot{
+			SchemaVersion: 1, TaskID: "t", SessionID: "s",
+			State: TaskStateRunning, RuntimeState: RuntimeState(long),
+			CreatedAt: time.Now(), UpdatedAt: time.Now(),
+		}, "RuntimeState exceeds"},
 		{"ErrorSummary too long", TaskSnapshot{
 			SchemaVersion: 1, TaskID: "t", SessionID: "s",
 			State: TaskStateFailed, CreatedAt: time.Now(), UpdatedAt: time.Now(),
@@ -201,7 +220,8 @@ func TestTaskSnapshotJSON_RoundTrip(t *testing.T) {
 	now := time.Now().Truncate(time.Second)
 	ts := TaskSnapshot{
 		SchemaVersion: 1, TaskID: "t1", SessionID: "s1",
-		State: TaskStateFailed, CreatedAt: now.Add(-time.Hour), UpdatedAt: now,
+		State: TaskStateFailed, RuntimeState: RuntimeStateExited,
+		CreatedAt: now.Add(-time.Hour), UpdatedAt: now,
 		ErrorCode: "TIMEOUT", ErrorSummary: "task exceeded deadline",
 	}
 	data, err := json.Marshal(ts)
@@ -212,8 +232,22 @@ func TestTaskSnapshotJSON_RoundTrip(t *testing.T) {
 	if err := json.Unmarshal(data, &got); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
-	if got.TaskID != ts.TaskID || got.State != ts.State || got.ErrorCode != ts.ErrorCode {
+	if got.TaskID != ts.TaskID || got.State != ts.State || got.RuntimeState != ts.RuntimeState || got.ErrorCode != ts.ErrorCode {
 		t.Errorf("round-trip mismatch")
+	}
+}
+
+func TestTaskSnapshotJSON_LegacyMissingRuntimeState(t *testing.T) {
+	raw := `{"schema_version":1,"task_id":"legacy","session_id":"s","state":"running","version":1,"created_at":"2025-01-01T00:00:00Z","updated_at":"2025-01-01T00:00:01Z"}`
+	var snap TaskSnapshot
+	if err := json.Unmarshal([]byte(raw), &snap); err != nil {
+		t.Fatalf("unmarshal legacy snapshot: %v", err)
+	}
+	if got := snap.RuntimeState.Effective(); got != RuntimeStateUnknown {
+		t.Fatalf("legacy runtime state = %q, want unknown", got)
+	}
+	if err := snap.Validate(); err != nil {
+		t.Fatalf("legacy snapshot should remain valid: %v", err)
 	}
 }
 
@@ -267,6 +301,7 @@ func TestTaskEventValidate_FieldLengthLimits(t *testing.T) {
 		{"SessionID too long", withField(base, "SessionID", long), "SessionID exceeds"},
 		{"EventType too long", withField(base, "EventType", long), "EventType exceeds"},
 		{"ErrorCode too long", withField(base, "ErrorCode", long), "ErrorCode exceeds"},
+		{"RuntimeState too long", withField(base, "RuntimeState", long), "RuntimeState exceeds"},
 		{"ErrorSummary too long", withField(base, "ErrorSummary", longSummary), "ErrorSummary exceeds"},
 	}
 	for _, tc := range tests {
@@ -287,6 +322,8 @@ func withField(ev TaskEvent, field, val string) TaskEvent {
 		ev.EventType = val
 	case "ErrorCode":
 		ev.ErrorCode = val
+	case "RuntimeState":
+		ev.RuntimeState = RuntimeState(val)
 	case "ErrorSummary":
 		ev.ErrorSummary = val
 	}

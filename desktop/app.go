@@ -117,7 +117,8 @@ type App struct {
 
 	// taskCtrl is the process-wide task-monitor control service (lazy; see
 	// taskControl). One instance serializes control operations in-process.
-	taskCtrl *taskmonitor.ControlService
+	taskCtrl     *taskmonitor.ControlService
+	taskCtrlOnce sync.Once
 
 	// mu protects the tab map, tabOrder, activeTabID, and per-tab fields that are read
 	// from bound methods. All bound methods that touch a controller use activeCtrl().
@@ -11766,9 +11767,9 @@ func (a *App) taskStore() taskmonitor.WriteStore {
 // this process (across processes the FileStore's per-task lock still
 // arbitrates), and avoids re-creating the service on every Wails call.
 func (a *App) taskControl() *taskmonitor.ControlService {
-	if a.taskCtrl == nil {
+	a.taskCtrlOnce.Do(func() {
 		a.taskCtrl = taskmonitor.NewControlService(a.taskStore())
-	}
+	})
 	return a.taskCtrl
 }
 
@@ -11793,38 +11794,58 @@ func (a *App) ListTaskEvents(taskID string, afterSequence int) ([]taskmonitor.Ta
 }
 
 func (a *App) StopTask(taskID string, expectedVersion uint64, reason, idemKey string) (taskmonitor.ControlResult, error) {
-	cs := a.taskControl()
-	if _, ctrl := a.activeTabAndCtrl(); ctrl != nil {
-		if killer, ok := ctrl.(interface{ KillJob(string) bool }); ok {
-			cs.SetJobKiller(ctrlJobKiller{killer})
-		}
-	}
-	return cs.StopTask(a.ctx, a.projectDir(), taskID, expectedVersion, reason, idemKey)
+	return a.taskControl().StopTaskWithKiller(
+		a.ctx, a.projectDir(), taskID, expectedVersion, reason, idemKey,
+		desktopTaskJobKiller{app: a},
+	)
 }
 
 func (a *App) CancelTask(taskID string, expectedVersion uint64, reason, idemKey string) (taskmonitor.ControlResult, error) {
-	cs := a.taskControl()
-	if _, ctrl := a.activeTabAndCtrl(); ctrl != nil {
-		if killer, ok := ctrl.(interface{ KillJob(string) bool }); ok {
-			cs.SetJobKiller(ctrlJobKiller{killer})
-		}
-	}
-	return cs.CancelTask(a.ctx, a.projectDir(), taskID, expectedVersion, reason, idemKey)
+	return a.taskControl().CancelTaskWithKiller(
+		a.ctx, a.projectDir(), taskID, expectedVersion, reason, idemKey,
+		desktopTaskJobKiller{app: a},
+	)
 }
 
-func (a *App) ResumeTask(taskID string, expectedVersion uint64, idemKey string) (taskmonitor.ControlResult, error) {
-	return a.taskControl().ResumeTask(a.ctx, a.projectDir(), taskID, expectedVersion, idemKey)
+func (a *App) RequeueTask(taskID string, expectedVersion uint64, idemKey string) (taskmonitor.ControlResult, error) {
+	return a.taskControl().RequeueTask(a.ctx, a.projectDir(), taskID, expectedVersion, idemKey)
 }
 
 func (a *App) OpenTaskSession(taskID string) (taskmonitor.ControlResult, error) {
 	return a.taskControl().OpenTaskSession(a.ctx, a.projectDir(), taskID)
 }
 
-type ctrlJobKiller struct {
-	ctrl interface{ KillJob(string) bool }
+type desktopTaskJobKiller struct {
+	app *App
 }
 
-func (k ctrlJobKiller) Kill(id string) bool { return k.ctrl.KillJob(id) }
+func (k desktopTaskJobKiller) Kill(sessionID, taskID string) bool {
+	// Legacy task records without a session ID cannot be routed safely because
+	// jobs.Manager IDs restart at task-1 for each controller.
+	if k.app == nil || sessionID == "" {
+		return false
+	}
+
+	k.app.mu.RLock()
+	tabs := k.app.runtimeTabsLocked()
+	controllers := make([]control.SessionAPI, 0, len(tabs))
+	for _, tab := range tabs {
+		if tab != nil && tab.Ctrl != nil {
+			controllers = append(controllers, tab.Ctrl)
+		}
+	}
+	k.app.mu.RUnlock()
+
+	for _, ctrl := range controllers {
+		if agent.BranchID(ctrl.SessionPath()) != sessionID {
+			continue
+		}
+		if killer, ok := ctrl.(interface{ KillJob(string) bool }); ok && killer.KillJob(taskID) {
+			return true
+		}
+	}
+	return false
+}
 
 // onboardingKeyEnv is the default provider (deepseek) key from config.Default().
 const onboardingKeyEnv = "DEEPSEEK_API_KEY"

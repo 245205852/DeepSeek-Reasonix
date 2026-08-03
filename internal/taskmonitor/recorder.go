@@ -2,6 +2,7 @@ package taskmonitor
 
 import (
 	"context"
+	"errors"
 
 	"reasonix/internal/jobs"
 )
@@ -38,6 +39,7 @@ func (r *TaskRecorder) RecordStart(id, kind, label string) {
 		TaskID:        id,
 		SessionID:     sessionID,
 		State:         TaskStateRunning,
+		RuntimeState:  RuntimeStateAlive,
 		Version:       1,
 		CreatedAt:     now,
 		UpdatedAt:     now,
@@ -55,36 +57,46 @@ func (r *TaskRecorder) RecordStart(id, kind, label string) {
 	_ = r.store.AppendAuditEvent(ctx, r.projectDir, TaskEvent{
 		Timestamp: now, EventType: "state_change",
 		TaskID: id, SessionID: sessionID, State: TaskStateRunning,
+		RuntimeState: RuntimeStateAlive,
 	})
 }
 
 // RecordDone implements jobs.TaskRecorder.
-func (r *TaskRecorder) RecordDone(id string, st jobs.Status, err error) {
+func (r *TaskRecorder) RecordDone(id string, st jobs.Status, jobErr error) {
 	ctx := context.Background()
-	cur, gerr := r.store.GetTask(ctx, r.projectDir, id)
-	if gerr != nil || cur == nil {
-		return // never recorded (recorder attached after the job started)
-	}
 	target := terminalState(st)
 	if target == "" {
 		return // non-terminal/unknown status: leave the snapshot untouched
 	}
-	now := timeNow()
-	cur.State = target
-	cur.Version++
-	cur.UpdatedAt = now
-	if err != nil {
-		cur.ErrorCode = "job_failed"
-		cur.ErrorSummary = truncateSummary(err.Error())
-	}
-	if serr := r.store.SaveTask(ctx, r.projectDir, *cur); serr != nil {
+	const maxSaveAttempts = 4
+	for attempt := 0; attempt < maxSaveAttempts; attempt++ {
+		cur, gerr := r.store.GetTask(ctx, r.projectDir, id)
+		if gerr != nil || cur == nil {
+			return // never recorded (recorder attached after the job started)
+		}
+		now := timeNow()
+		cur.State = target
+		cur.RuntimeState = RuntimeStateExited
+		cur.Version++
+		cur.UpdatedAt = now
+		if jobErr != nil {
+			cur.ErrorCode = "job_failed"
+			cur.ErrorSummary = truncateSummary(jobErr.Error())
+		}
+		if serr := r.store.SaveTask(ctx, r.projectDir, *cur); serr != nil {
+			if errors.Is(serr, ErrStoreVersionConflict) {
+				continue
+			}
+			return
+		}
+		_ = r.store.AppendAuditEvent(ctx, r.projectDir, TaskEvent{
+			Timestamp: now, EventType: "state_change",
+			TaskID: id, SessionID: cur.SessionID, State: target,
+			RuntimeState: RuntimeStateExited,
+			ErrorCode:    cur.ErrorCode, ErrorSummary: cur.ErrorSummary,
+		})
 		return
 	}
-	_ = r.store.AppendAuditEvent(ctx, r.projectDir, TaskEvent{
-		Timestamp: now, EventType: "state_change",
-		TaskID: id, SessionID: cur.SessionID, State: target,
-		ErrorCode: cur.ErrorCode, ErrorSummary: cur.ErrorSummary,
-	})
 }
 
 // terminalState maps a job status to the task state it reports. Unknown or

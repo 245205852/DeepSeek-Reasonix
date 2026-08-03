@@ -72,17 +72,49 @@ func TestControlService_TerminalGuard(t *testing.T) {
 	}
 }
 
-func TestControlService_ResumeFailedTask(t *testing.T) {
+func TestControlService_RequeueFailedTaskDoesNotClaimLiveRuntime(t *testing.T) {
 	s := NewInMemoryStore()
 	cs := NewControlService(s)
 	mustUpsertControl(t, s, "/p", TaskSnapshot{
 		SchemaVersion: 1, TaskID: "failed", SessionID: "s1",
-		State: TaskStateFailed, Version: 3,
+		State: TaskStateFailed, RuntimeState: RuntimeStateExited, Version: 3,
 		CreatedAt: time.Now(), UpdatedAt: time.Now(),
 	})
-	res, err := cs.ResumeTask(context.Background(), "/p", "failed", 3, "resume-1")
-	if err != nil || !res.Accepted || res.State != TaskStateQueued || res.Version != 4 {
-		t.Fatalf("expected failed task to resume, got result=%+v err=%v", res, err)
+	res, err := cs.RequeueTask(context.Background(), "/p", "failed", 3, "requeue-1")
+	if err != nil || !res.Accepted || res.State != TaskStateQueued || res.RuntimeState != RuntimeStateExited || res.Version != 4 {
+		t.Fatalf("expected failed task to be requeued without a live runtime, got result=%+v err=%v", res, err)
+	}
+	snap, _ := s.GetTask(context.Background(), "/p", "failed")
+	if snap.RuntimeState != RuntimeStateExited {
+		t.Fatalf("requeue changed runtime state to %q, want exited", snap.RuntimeState)
+	}
+}
+
+func TestControlService_RequeueRejectsLiveRuntime(t *testing.T) {
+	s := NewInMemoryStore()
+	cs := NewControlService(s)
+	mustUpsertControl(t, s, "/p", TaskSnapshot{
+		SchemaVersion: 1, TaskID: "failed", SessionID: "s1",
+		State: TaskStateFailed, RuntimeState: RuntimeStateAlive, Version: 3,
+		CreatedAt: time.Now(), UpdatedAt: time.Now(),
+	})
+	res, err := cs.RequeueTask(context.Background(), "/p", "failed", 3, "")
+	if err != nil || res.Error == nil || res.Error.Code != ErrTaskInProgress {
+		t.Fatalf("expected live-runtime guard, got result=%+v err=%v", res, err)
+	}
+}
+
+func TestControlService_RequeueRejectsNonFailedState(t *testing.T) {
+	s := NewInMemoryStore()
+	cs := NewControlService(s)
+	mustUpsertControl(t, s, "/p", TaskSnapshot{
+		SchemaVersion: 1, TaskID: "done", SessionID: "s1",
+		State: TaskStateSucceeded, RuntimeState: RuntimeStateExited, Version: 3,
+		CreatedAt: time.Now(), UpdatedAt: time.Now(),
+	})
+	res, err := cs.RequeueTask(context.Background(), "/p", "done", 3, "")
+	if err != nil || res.Error == nil || res.Error.Code != ErrTaskNotRequeueable {
+		t.Fatalf("expected not-requeueable guard, got result=%+v err=%v", res, err)
 	}
 }
 
@@ -196,7 +228,7 @@ func TestControlService_AuditSequenceMonotonic(t *testing.T) {
 	// Stop creates audit event sequence 1
 	cs.StopTask(context.Background(), "/p", "t1", 1, "", "")
 
-	// Reset task to running (simulate resume)
+	// Reset task to running (simulate a new execution lifecycle)
 	s.UpsertTask("/p", TaskSnapshot{
 		SchemaVersion: 1, TaskID: "t1", SessionID: "s1",
 		State: TaskStateRunning, Version: 2,
@@ -223,11 +255,10 @@ func TestControlService_KillJob(t *testing.T) {
 	cs := NewControlService(s)
 
 	killed := false
-	mk := &mockKiller{fn: func(id string) bool {
+	mk := &mockKiller{fn: func(sessionID, id string) bool {
 		killed = true
-		return id == "t1"
+		return sessionID == "s1" && id == "t1"
 	}}
-	cs.SetJobKiller(mk)
 
 	mustUpsertControl(t, s, "/p", TaskSnapshot{
 		SchemaVersion: 1, TaskID: "t1", SessionID: "s1",
@@ -235,7 +266,7 @@ func TestControlService_KillJob(t *testing.T) {
 		CreatedAt: time.Now(), UpdatedAt: time.Now(),
 	})
 
-	res, _ := cs.StopTask(context.Background(), "/p", "t1", 1, "", "")
+	res, _ := cs.StopTaskWithKiller(context.Background(), "/p", "t1", 1, "", "", mk)
 	if !res.Accepted {
 		t.Fatalf("stop failed: %+v", res)
 	}
@@ -249,8 +280,7 @@ func TestControlService_KillNotCalledForTerminalTask(t *testing.T) {
 	cs := NewControlService(s)
 
 	killed := false
-	mk := &mockKiller{fn: func(id string) bool { killed = true; return true }}
-	cs.SetJobKiller(mk)
+	mk := &mockKiller{fn: func(_, _ string) bool { killed = true; return true }}
 
 	mustUpsertControl(t, s, "/p", TaskSnapshot{
 		SchemaVersion: 1, TaskID: "t1", SessionID: "s1",
@@ -258,9 +288,59 @@ func TestControlService_KillNotCalledForTerminalTask(t *testing.T) {
 		CreatedAt: time.Now(), UpdatedAt: time.Now(),
 	})
 
-	cs.StopTask(context.Background(), "/p", "t1", 1, "", "")
+	cs.StopTaskWithKiller(context.Background(), "/p", "t1", 1, "", "", mk)
 	if killed {
 		t.Error("Kill should not be called for terminal tasks")
+	}
+}
+
+func TestControlService_ConcurrentKillersRemainCallScoped(t *testing.T) {
+	s := NewInMemoryStore()
+	cs := NewControlService(s)
+	now := time.Now()
+	for _, snap := range []TaskSnapshot{
+		{SchemaVersion: 1, TaskID: "task-a", SessionID: "session-a", State: TaskStateRunning, RuntimeState: RuntimeStateAlive, Version: 1, CreatedAt: now, UpdatedAt: now},
+		{SchemaVersion: 1, TaskID: "task-b", SessionID: "session-b", State: TaskStateRunning, RuntimeState: RuntimeStateAlive, Version: 1, CreatedAt: now, UpdatedAt: now},
+	} {
+		mustUpsertControl(t, s, "/p", snap)
+	}
+
+	started := make(chan struct{})
+	killed := make(chan string, 2)
+	var wg sync.WaitGroup
+	for _, tc := range []struct {
+		taskID, sessionID string
+	}{
+		{taskID: "task-a", sessionID: "session-a"},
+		{taskID: "task-b", sessionID: "session-b"},
+	} {
+		tc := tc
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-started
+			killer := &mockKiller{fn: func(sessionID, taskID string) bool {
+				killed <- sessionID + "/" + taskID
+				return sessionID == tc.sessionID && taskID == tc.taskID
+			}}
+			res, err := cs.StopTaskWithKiller(context.Background(), "/p", tc.taskID, 1, "", "", killer)
+			if err != nil || !res.Accepted {
+				t.Errorf("StopTaskWithKiller(%s): result=%+v err=%v", tc.taskID, res, err)
+			}
+		}()
+	}
+	close(started)
+	wg.Wait()
+	close(killed)
+
+	got := map[string]bool{}
+	for target := range killed {
+		got[target] = true
+	}
+	for _, want := range []string{"session-a/task-a", "session-b/task-b"} {
+		if !got[want] {
+			t.Fatalf("missing call-scoped kill %q; got %v", want, got)
+		}
 	}
 }
 
@@ -331,12 +411,12 @@ func TestControlService_OpenSession(t *testing.T) {
 
 // mockKiller implements JobKiller for tests.
 type mockKiller struct {
-	fn func(string) bool
+	fn func(string, string) bool
 }
 
-func (m *mockKiller) Kill(id string) bool {
+func (m *mockKiller) Kill(sessionID, id string) bool {
 	if m.fn != nil {
-		return m.fn(id)
+		return m.fn(sessionID, id)
 	}
 	return false
 }

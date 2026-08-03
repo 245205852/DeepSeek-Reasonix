@@ -1,6 +1,14 @@
 package taskmonitor
 
-import "context"
+import (
+	"context"
+	"errors"
+)
+
+// ErrStoreVersionConflict reports that a snapshot CAS lost to another writer.
+// Callers may re-read and retry a derived update, or return a stable client
+// conflict without parsing implementation-specific error text.
+var ErrStoreVersionConflict = errors.New("task store version conflict")
 
 // Store is the read-only query surface for task monitoring.
 type Store interface {
