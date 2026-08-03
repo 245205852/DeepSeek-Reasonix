@@ -2,7 +2,11 @@ package taskmonitor
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
+	"fmt"
+	"sync"
 
 	"reasonix/internal/jobs"
 )
@@ -16,6 +20,8 @@ type TaskRecorder struct {
 	store       WriteStore
 	projectDir  string
 	sessionIDFn func() string
+	mu          sync.Mutex
+	monitorIDs  map[string]string
 }
 
 // NewTaskRecorder returns a TaskRecorder writing to store under projectDir.
@@ -23,7 +29,36 @@ type TaskRecorder struct {
 // creation time (controllers resolve their session path lazily); it may return
 // "" when no session is bound yet.
 func NewTaskRecorder(store WriteStore, projectDir string, sessionIDFn func() string) *TaskRecorder {
-	return &TaskRecorder{store: store, projectDir: projectDir, sessionIDFn: sessionIDFn}
+	return &TaskRecorder{store: store, projectDir: projectDir, sessionIDFn: sessionIDFn, monitorIDs: make(map[string]string)}
+}
+
+// monitorTaskID creates a globally unique monitor identity for a job within
+// a session. jobs.Manager IDs are local to a manager and restart from task-1
+// for every session, so persisting the raw job ID would cause cross-session
+// overwrites in the shared project store.
+func monitorTaskID(sessionID, jobID string) string {
+	if sessionID == "" {
+		return jobID
+	}
+	id := fmt.Sprintf("%s--%s", sessionID, jobID)
+	if len(id) <= maxFieldLen {
+		return id
+	}
+	h := sha256.Sum256([]byte(sessionID))
+	return hex.EncodeToString(h[:8]) + "--" + jobID
+}
+
+func (r *TaskRecorder) rememberMonitorID(jobID, monitorID string) {
+	r.mu.Lock()
+	r.monitorIDs[jobID] = monitorID
+	r.mu.Unlock()
+}
+
+func (r *TaskRecorder) lookupMonitorID(jobID string) (string, bool) {
+	r.mu.Lock()
+	monitorID, ok := r.monitorIDs[jobID]
+	r.mu.Unlock()
+	return monitorID, ok
 }
 
 // RecordStart implements jobs.TaskRecorder.
@@ -34,9 +69,11 @@ func (r *TaskRecorder) RecordStart(id, kind, label string) {
 	if r.sessionIDFn != nil {
 		sessionID = r.sessionIDFn()
 	}
+	monitorID := monitorTaskID(sessionID, id)
+	r.rememberMonitorID(id, monitorID)
 	snap := TaskSnapshot{
 		SchemaVersion: 1,
-		TaskID:        id,
+		TaskID:        monitorID,
 		SessionID:     sessionID,
 		State:         TaskStateRunning,
 		RuntimeState:  RuntimeStateAlive,
@@ -44,19 +81,12 @@ func (r *TaskRecorder) RecordStart(id, kind, label string) {
 		CreatedAt:     now,
 		UpdatedAt:     now,
 	}
-	// Job ids restart per session (task-1 again after a restart), so a
-	// previous terminal lifecycle may exist under the same id. Continue its
-	// version sequence and keep the original creation time.
-	if cur, err := r.store.GetTask(ctx, r.projectDir, id); err == nil && cur != nil {
-		snap.Version = cur.Version + 1
-		snap.CreatedAt = cur.CreatedAt
-	}
 	if err := r.store.SaveTask(ctx, r.projectDir, snap); err != nil {
 		return
 	}
 	_ = r.store.AppendAuditEvent(ctx, r.projectDir, TaskEvent{
 		Timestamp: now, EventType: "state_change",
-		TaskID: id, SessionID: sessionID, State: TaskStateRunning,
+		TaskID: monitorID, SessionID: sessionID, State: TaskStateRunning,
 		RuntimeState: RuntimeStateAlive,
 	})
 }
@@ -68,9 +98,13 @@ func (r *TaskRecorder) RecordDone(id string, st jobs.Status, jobErr error) {
 	if target == "" {
 		return // non-terminal/unknown status: leave the snapshot untouched
 	}
+	monitorID, ok := r.lookupMonitorID(id)
+	if !ok {
+		return // no matching lifecycle was recorded by this recorder
+	}
 	const maxSaveAttempts = 4
 	for attempt := 0; attempt < maxSaveAttempts; attempt++ {
-		cur, gerr := r.store.GetTask(ctx, r.projectDir, id)
+		cur, gerr := r.store.GetTask(ctx, r.projectDir, monitorID)
 		if gerr != nil || cur == nil {
 			return // never recorded (recorder attached after the job started)
 		}
@@ -91,7 +125,7 @@ func (r *TaskRecorder) RecordDone(id string, st jobs.Status, jobErr error) {
 		}
 		_ = r.store.AppendAuditEvent(ctx, r.projectDir, TaskEvent{
 			Timestamp: now, EventType: "state_change",
-			TaskID: id, SessionID: cur.SessionID, State: target,
+			TaskID: monitorID, SessionID: cur.SessionID, State: target,
 			RuntimeState: RuntimeStateExited,
 			ErrorCode:    cur.ErrorCode, ErrorSummary: cur.ErrorSummary,
 		})

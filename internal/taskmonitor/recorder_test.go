@@ -24,7 +24,7 @@ func TestTaskRecorder_Lifecycle(t *testing.T) {
 	ctx := context.Background()
 
 	r.RecordStart("task-1", "task", "demo")
-	snap, err := store.GetTask(ctx, dir, "task-1")
+	snap, err := store.GetTask(ctx, dir, monitorTaskID("sess-1", "task-1"))
 	if err != nil || snap == nil {
 		t.Fatalf("GetTask after start: %+v, %v", snap, err)
 	}
@@ -33,12 +33,12 @@ func TestTaskRecorder_Lifecycle(t *testing.T) {
 	}
 
 	r.RecordDone("task-1", jobs.Done, nil)
-	snap, _ = store.GetTask(ctx, dir, "task-1")
+	snap, _ = store.GetTask(ctx, dir, monitorTaskID("sess-1", "task-1"))
 	if snap.State != TaskStateSucceeded || snap.RuntimeState != RuntimeStateExited || snap.Version != 2 {
 		t.Fatalf("snapshot after done = %+v", snap)
 	}
 
-	events, err := store.ListEvents(ctx, dir, "task-1", 0)
+	events, err := store.ListEvents(ctx, dir, monitorTaskID("sess-1", "task-1"), 0)
 	if err != nil || len(events) != 2 {
 		t.Fatalf("events = %+v, %v", events, err)
 	}
@@ -57,7 +57,7 @@ func TestTaskRecorder_FailedMapsError(t *testing.T) {
 
 	r.RecordStart("bash-1", "bash", "")
 	r.RecordDone("bash-1", jobs.Failed, context.DeadlineExceeded)
-	snap, _ := store.GetTask(ctx, dir, "bash-1")
+	snap, _ := store.GetTask(ctx, dir, monitorTaskID("sess-1", "bash-1"))
 	if snap.State != TaskStateFailed || snap.ErrorCode != "job_failed" || !strings.Contains(snap.ErrorSummary, "deadline") {
 		t.Fatalf("snapshot = %+v", snap)
 	}
@@ -71,7 +71,7 @@ func TestTaskRecorder_TruncatesLongError(t *testing.T) {
 	long := strings.Repeat("x", maxErrorSummaryLen*2)
 	r.RecordStart("t1", "bash", "")
 	r.RecordDone("t1", jobs.Failed, fmt.Errorf("%s", long))
-	snap, _ := store.GetTask(ctx, dir, "t1")
+	snap, _ := store.GetTask(ctx, dir, monitorTaskID("sess-1", "t1"))
 	if len(snap.ErrorSummary) > maxErrorSummaryLen {
 		t.Fatalf("ErrorSummary length %d exceeds max %d", len(snap.ErrorSummary), maxErrorSummaryLen)
 	}
@@ -84,20 +84,20 @@ func TestTaskRecorder_KilledAndInterruptedMapToCancelled(t *testing.T) {
 
 	r.RecordStart("t1", "task", "")
 	r.RecordDone("t1", jobs.Killed, nil)
-	snap, _ := store.GetTask(ctx, dir, "t1")
+	snap, _ := store.GetTask(ctx, dir, monitorTaskID("sess-1", "t1"))
 	if snap.State != TaskStateCancelled {
 		t.Fatalf("killed -> %v, want cancelled", snap.State)
 	}
 
 	r.RecordStart("t2", "task", "")
 	r.RecordDone("t2", jobs.Interrupted, nil)
-	snap, _ = store.GetTask(ctx, dir, "t2")
+	snap, _ = store.GetTask(ctx, dir, monitorTaskID("sess-1", "t2"))
 	if snap.State != TaskStateCancelled {
 		t.Fatalf("interrupted -> %v, want cancelled", snap.State)
 	}
 }
 
-func TestTaskRecorder_RestartContinuesVersionAndKeepsCreatedAt(t *testing.T) {
+func TestTaskRecorder_RestartUsesDistinctMonitorID(t *testing.T) {
 	dir := t.TempDir()
 	r, store := newRecorderForTest(t, dir)
 	ctx := context.Background()
@@ -105,16 +105,17 @@ func TestTaskRecorder_RestartContinuesVersionAndKeepsCreatedAt(t *testing.T) {
 	// First lifecycle.
 	r.RecordStart("task-1", "task", "")
 	r.RecordDone("task-1", jobs.Done, nil)
-	first, _ := store.GetTask(ctx, dir, "task-1")
+	first, _ := store.GetTask(ctx, dir, monitorTaskID("sess-1", "task-1"))
 
-	// Second lifecycle under the same id (job seq restarts per session).
-	r.RecordStart("task-1", "task", "")
-	second, _ := store.GetTask(ctx, dir, "task-1")
-	if second.Version != first.Version+1 {
-		t.Fatalf("version = %d, want %d", second.Version, first.Version+1)
+	// A new session with the same local job ID gets a distinct monitor key.
+	r2 := NewTaskRecorder(store, dir, func() string { return "sess-2" })
+	r2.RecordStart("task-1", "task", "")
+	second, _ := store.GetTask(ctx, dir, monitorTaskID("sess-2", "task-1"))
+	if second == nil || second.Version != 1 {
+		t.Fatalf("second snapshot = %+v, want a new version-1 lifecycle", second)
 	}
-	if !second.CreatedAt.Equal(first.CreatedAt) {
-		t.Fatalf("CreatedAt changed: %v -> %v", first.CreatedAt, second.CreatedAt)
+	if second.CreatedAt.Equal(first.CreatedAt) {
+		t.Fatalf("second lifecycle reused creation time: %v", second.CreatedAt)
 	}
 	if second.State != TaskStateRunning || second.RuntimeState != RuntimeStateAlive {
 		t.Fatalf("state = %v, want running", second.State)
@@ -128,7 +129,7 @@ func TestTaskRecorder_NonTerminalStatusDoesNotUpdate(t *testing.T) {
 
 	r.RecordStart("t1", "bash", "")
 	r.RecordDone("t1", jobs.Running, nil) // never happens in practice; guard anyway
-	snap, _ := store.GetTask(ctx, dir, "t1")
+	snap, _ := store.GetTask(ctx, dir, monitorTaskID("sess-1", "t1"))
 	if snap.State != TaskStateRunning || snap.Version != 1 {
 		t.Fatalf("snapshot = %+v", snap)
 	}
@@ -155,7 +156,7 @@ func TestTaskRecorder_DoneRetriesAfterConcurrentControlUpdate(t *testing.T) {
 	base := NewInMemoryStore()
 	now := time.Now()
 	if err := base.UpsertTask("/p", TaskSnapshot{
-		SchemaVersion: 1, TaskID: "task-1", SessionID: "session-1",
+		SchemaVersion: 1, TaskID: monitorTaskID("session-1", "task-1"), SessionID: "session-1",
 		State: TaskStateRunning, RuntimeState: RuntimeStateAlive, Version: 1,
 		CreatedAt: now, UpdatedAt: now,
 	}); err != nil {
@@ -167,6 +168,7 @@ func TestTaskRecorder_DoneRetriesAfterConcurrentControlUpdate(t *testing.T) {
 		release:    make(chan struct{}),
 	}
 	recorder := NewTaskRecorder(store, "/p", func() string { return "session-1" })
+	recorder.rememberMonitorID("task-1", monitorTaskID("session-1", "task-1"))
 	done := make(chan struct{})
 	go func() {
 		recorder.RecordDone("task-1", jobs.Killed, nil)
@@ -175,14 +177,14 @@ func TestTaskRecorder_DoneRetriesAfterConcurrentControlUpdate(t *testing.T) {
 	<-store.blocked
 
 	control := NewControlService(base)
-	res, err := control.StopTask(context.Background(), "/p", "task-1", 1, "", "")
+	res, err := control.StopTask(context.Background(), "/p", monitorTaskID("session-1", "task-1"), 1, "", "")
 	if err != nil || !res.Accepted {
 		t.Fatalf("concurrent stop: result=%+v err=%v", res, err)
 	}
 	close(store.release)
 	<-done
 
-	snap, err := base.GetTask(context.Background(), "/p", "task-1")
+	snap, err := base.GetTask(context.Background(), "/p", monitorTaskID("session-1", "task-1"))
 	if err != nil || snap == nil {
 		t.Fatalf("GetTask: snap=%+v err=%v", snap, err)
 	}
@@ -217,5 +219,37 @@ func TestTaskRecorder_EmptySessionIDAllowed(t *testing.T) {
 	events, err := store.ListEvents(ctx, dir, "t1", 0)
 	if err != nil || len(events) != 1 {
 		t.Fatalf("events: %+v, %v", events, err)
+	}
+}
+
+func TestTaskRecorder_SameJobIDAcrossSessionsUsesDistinctMonitorIDs(t *testing.T) {
+	store := NewFileStore(".reasonix/tasks")
+	projectDir := t.TempDir()
+	r1 := NewTaskRecorder(store, projectDir, func() string { return "session-a" })
+	r2 := NewTaskRecorder(store, projectDir, func() string { return "session-b" })
+
+	r1.RecordStart("task-1", "task", "first")
+	r2.RecordStart("task-1", "task", "second")
+	r1.RecordDone("task-1", jobs.Done, nil)
+	r2.RecordDone("task-1", jobs.Failed, context.DeadlineExceeded)
+
+	tasks, err := store.ListTasks(context.Background(), projectDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(tasks) != 2 {
+		t.Fatalf("tasks = %+v, want two independent lifecycles", tasks)
+	}
+	seen := map[string]TaskSnapshot{}
+	for _, task := range tasks {
+		seen[task.TaskID] = task
+	}
+	first, ok := seen["session-a--task-1"]
+	if !ok || first.State != TaskStateSucceeded || first.SessionID != "session-a" {
+		t.Fatalf("session-a task = %+v", first)
+	}
+	second, ok := seen["session-b--task-1"]
+	if !ok || second.State != TaskStateFailed || second.SessionID != "session-b" {
+		t.Fatalf("session-b task = %+v", second)
 	}
 }
