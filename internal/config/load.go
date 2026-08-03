@@ -51,6 +51,9 @@ func LoadUserConfigReadOnly() (*Config, error) {
 		if err := mergeFile(cfg, path); err != nil {
 			return nil, err
 		}
+		if tomlFileDefinesKey(path, "agent", "system_prompt_file") {
+			cfg.systemPromptFileSource = promptFileSourceUser
+		}
 	}
 	normalizeConfigForEdit(cfg)
 	return cfg, nil
@@ -106,7 +109,15 @@ func loadForRoot(root string, migrateOnDisk bool) (*Config, error) {
 			}
 		} else {
 			userDefaultModelExplicit = tomlFileDefinesKey(uc, "default_model")
+			if tomlFileDefinesKey(uc, "agent", "system_prompt_file") {
+				cfg.systemPromptFileSource = promptFileSourceUser
+			}
 		}
+	}
+	// A last-known-good recovery is still trusted user configuration even though
+	// the broken source file cannot provide usable TOML metadata.
+	if cfg.systemPromptFileSource == promptFileSourceUnknown && cfg.Agent.SystemPromptFile != "" {
+		cfg.systemPromptFileSource = promptFileSourceUser
 	}
 	userDefaultModel := cfg.DefaultModel
 	globalCLI := cfg.CLI
@@ -117,6 +128,7 @@ func loadForRoot(root string, migrateOnDisk bool) (*Config, error) {
 	globalTelemetry := cfg.Telemetry
 
 	tomlSources = append(tomlSources, projectTOML)
+	projectSystemPromptFileDefined := tomlFileDefinesKey(projectTOML, "agent", "system_prompt_file")
 	if err := mergeTOML(cfg, projectTOML); err != nil {
 		// Project config damage is isolated to this workspace: continue with
 		// user/global config so other tabs stay available.
@@ -127,6 +139,8 @@ func loadForRoot(root string, migrateOnDisk bool) (*Config, error) {
 		// Drop the project path from later multi-file merges so a broken TOML
 		// cannot fail plugin/provider re-merges.
 		tomlSources = tomlSources[:len(tomlSources)-1]
+	} else if projectSystemPromptFileDefined {
+		cfg.systemPromptFileSource = promptFileSourceProject
 	}
 	// The native CLI update channel controls the one user-installed binary.
 	// A repository-local reasonix.toml must never switch that global choice.

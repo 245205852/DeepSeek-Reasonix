@@ -372,7 +372,14 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 
 	sysPrompt, err := cfg.ResolveSystemPromptForRoot(root)
 	if err != nil {
-		return nil, err
+		if !config.IsMissingSystemPromptFile(err) {
+			return nil, err
+		}
+		// A stale missing prompt file must not block startup: warn and fall back
+		// to the inline (or built-in default) system prompt. Other read failures
+		// stay fatal so Reasonix never runs without explicitly configured policy.
+		sink.Emit(event.Event{Kind: event.Notice, Level: event.LevelWarn, Text: err.Error() + "; falling back to inline/default system prompt"})
+		sysPrompt = cfg.InlineSystemPrompt()
 	}
 	// Output style: fold the selected persona/tone block into the base prompt
 	// before language/memory/skills append, so a "replace" style (keep-coding
