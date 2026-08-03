@@ -29991,6 +29991,79 @@ body > .mermaid-diagram--fullscreen {
   color: var(--fg);
 }
 
+/* Creation topicbar: slim ExternalOpener split control to match utility icons. */
+.app--creation .topicbar__actions .external-opener,
+:root[data-theme-style] .app--creation .topicbar__actions .external-opener {
+  height: 28px;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  box-shadow: none;
+}
+
+.app--creation .topicbar__actions .external-opener--open,
+:root[data-theme-style] .app--creation .topicbar__actions .external-opener--open {
+  border: none;
+  background: color-mix(in srgb, var(--fg-faint) 10%, transparent);
+}
+
+.app--creation .topicbar__actions .external-opener__primary,
+.app--creation .topicbar__actions .external-opener__menu-trigger,
+:root[data-theme-style] .app--creation .topicbar__actions .external-opener__primary,
+:root[data-theme-style] .app--creation .topicbar__actions .external-opener__menu-trigger {
+  height: 28px;
+  color: color-mix(in srgb, var(--fg-dim) 88%, transparent);
+}
+
+.app--creation .topicbar__actions .external-opener__primary,
+:root[data-theme-style] .app--creation .topicbar__actions .external-opener__primary {
+  width: 26px;
+  border-radius: 7px 0 0 7px;
+}
+
+.app--creation .topicbar__actions .external-opener__menu-trigger,
+:root[data-theme-style] .app--creation .topicbar__actions .external-opener__menu-trigger {
+  width: 18px;
+  border-left: 1px solid color-mix(in srgb, var(--border-soft) 72%, transparent);
+  border-radius: 0 7px 7px 0;
+}
+
+.app--creation .topicbar__actions .external-opener__primary:hover:not(:disabled),
+.app--creation .topicbar__actions .external-opener__primary:focus-visible:not(:disabled),
+.app--creation .topicbar__actions .external-opener__menu-trigger:hover:not(:disabled),
+.app--creation .topicbar__actions .external-opener__menu-trigger:focus-visible:not(:disabled),
+:root[data-theme-style] .app--creation .topicbar__actions .external-opener__primary:hover:not(:disabled),
+:root[data-theme-style] .app--creation .topicbar__actions .external-opener__primary:focus-visible:not(:disabled),
+:root[data-theme-style] .app--creation .topicbar__actions .external-opener__menu-trigger:hover:not(:disabled),
+:root[data-theme-style] .app--creation .topicbar__actions .external-opener__menu-trigger:focus-visible:not(:disabled) {
+  color: var(--fg);
+  background: color-mix(in srgb, var(--fg-faint) 12%, transparent);
+}
+
+.app--creation .topicbar__actions .external-opener__app-icon,
+:root[data-theme-style] .app--creation .topicbar__actions .external-opener__app-icon {
+  width: 15px;
+  height: 15px;
+}
+
+.app--creation .topicbar__actions .external-opener__fallback-icon,
+:root[data-theme-style] .app--creation .topicbar__actions .external-opener__fallback-icon {
+  border-radius: 4px;
+  box-shadow: none;
+}
+
+.app--creation .topicbar__actions .external-opener__fallback-icon svg,
+:root[data-theme-style] .app--creation .topicbar__actions .external-opener__fallback-icon svg {
+  width: 12px;
+  height: 12px;
+}
+
+.app--creation .topicbar__actions .external-opener__menu-trigger svg,
+:root[data-theme-style] .app--creation .topicbar__actions .external-opener__menu-trigger svg {
+  width: 12px;
+  height: 12px;
+}
+
 .app--creation .footer,
 :root[data-theme-style] .app--creation .footer {
   border-top: 0;
@@ -33529,6 +33602,12 @@ body > .mermaid-diagram--fullscreen {
 
 /* Align action buttons (not chrome buttons) */
 .app--windows.app--creation .topicbar__action-btn:not(.topicbar__chrome-btn) {
+  transform: translateY(-2px) !important;
+  align-self: center !important;
+}
+
+/* Align ExternalOpener split control with the same Windows titlebar center line */
+.app--windows.app--creation .topicbar__actions .external-opener {
   transform: translateY(-2px) !important;
   align-self: center !important;
 }
