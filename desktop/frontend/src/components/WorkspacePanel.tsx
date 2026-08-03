@@ -875,22 +875,60 @@ export function WorkspacePanel({
         {changes.map((change) => {
           const dir = parentPath(change.path);
           return (
-            <button
-              key={change.path}
-              className="workspace-change"
-              type="button"
-              onClick={() => selectFile(change.path)}
-            >
-              <FileText size={14} />
-              <span className="workspace-change__body">
-                <span className="workspace-change__name">{basename(change.path)}</span>
-                {dir && <span className="workspace-change__path">{dir}</span>}
-                {change.latestPrompt && <span className="workspace-change__detail">{change.latestPrompt}</span>}
-              </span>
-              <span className="workspace-change__meta">
-                {change.gitStatus && <span className="workspace-change__badge workspace-change__badge--git">{change.gitStatus}</span>}
-              </span>
-            </button>
+            <div key={change.path} className="workspace-change-row">
+              <button
+                className="workspace-change"
+                type="button"
+                onClick={() => selectFile(change.path)}
+              >
+                <FileText size={14} />
+                <span className="workspace-change__body">
+                  <span className="workspace-change__name">{basename(change.path)}</span>
+                  {dir && <span className="workspace-change__path">{dir}</span>}
+                  {change.latestPrompt && <span className="workspace-change__detail">{change.latestPrompt}</span>}
+                </span>
+                <span className="workspace-change__meta">
+                  {change.gitStatus && <span className="workspace-change__badge workspace-change__badge--git">{change.gitStatus}</span>}
+                </span>
+              </button>
+              {change.canSessionRevert && change.sources.includes("session") && (
+                <button
+                  type="button"
+                  className="workspace-change__revert"
+                  title={t("workspace.revertSessionFile")}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    void (async () => {
+                      const plan = await app.PreviewWorkspaceFileRevertForTab(workspaceTabId, change.path);
+                      if (!plan?.ok && !plan?.canFiles && !(plan?.conflicts?.length)) {
+                        return;
+                      }
+					  const resolution = plan?.conflicts?.length ? "overwrite_checkpoint" : "";
+                      if (plan?.conflicts?.length) {
+                        const ok = window.confirm(
+                          t("workspace.revertSessionFileConflict", {
+                            path: change.path,
+                            conflicts: (plan.conflicts || []).join("\n"),
+                          }),
+                        );
+                        if (!ok) return;
+                      }
+                      const result = await app.CommitWorkspaceFileRevertForTab(
+                        workspaceTabId,
+                        plan.planId || "",
+                        resolution,
+                      );
+                      if (result?.ok) {
+                        void loadWorkspaceChanges();
+                        if (selectedPath === change.path) void loadChangeDetail();
+                      }
+                    })();
+                  }}
+                >
+                  {t("workspace.revertSessionFileShort")}
+                </button>
+              )}
+            </div>
           );
         })}
       </div>

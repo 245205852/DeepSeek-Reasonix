@@ -73,6 +73,26 @@ func (m *checkpointManager) begin(input string, msgIndex int) {
 	store.Begin(turn, input, msgIndex)
 }
 
+// beginWithObserver opens a checkpoint and updates the mutation observer's
+// ownership turn for subsequent captures.
+func (m *checkpointManager) beginWithObserver(input string, msgIndex int, obs *checkpoint.MutationObserver) {
+	m.mu.Lock()
+	store := m.store
+	if store == nil {
+		m.mu.Unlock()
+		return
+	}
+	turn := m.turn
+	m.turn++
+	m.bound[turn] = msgIndex
+	m.mu.Unlock()
+	if obs != nil {
+		obs.NoteCrossTurnBackgroundWriter(turn)
+		obs.SetOwnershipTurn(turn)
+	}
+	store.Begin(turn, input, msgIndex)
+}
+
 // turnsByMessageIndex returns message-log index -> checkpoint turn over live
 // boundaries. The desktop transcript uses this authoritative map instead of
 // recounting visible user bubbles, which can diverge when synthetic user-role
@@ -166,4 +186,11 @@ func (m *checkpointManager) clearBounds() {
 	m.mu.Lock()
 	m.bound = map[int]int{}
 	m.mu.Unlock()
+}
+
+// storeRef returns the live store pointer without holding mu across caller work.
+func (m *checkpointManager) storeRef() *checkpoint.Store {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.store
 }

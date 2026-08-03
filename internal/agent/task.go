@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"reasonix/internal/checkpoint"
 	"reasonix/internal/event"
 	"reasonix/internal/evidence"
 	"reasonix/internal/jobs"
@@ -265,6 +266,8 @@ type TaskTool struct {
 	// bashSandboxEnforced reports whether OS sandbox can honour write roots
 	// for bash inside path-bound writer sub-agents.
 	bashSandboxEnforced func() bool
+	// mutationObserver is shared with spawned sub-agents for checkpoint capture.
+	mutationObserver *checkpoint.MutationObserver
 	// recoveryGate is the shared Auto Guard boundary for
 	// this session (root + sub-agents). nil disables recovery in children.
 	recoveryGate RecoveryGate
@@ -608,7 +611,12 @@ func (r *ReadOnlyTaskTool) Execute(ctx context.Context, args json.RawMessage) (s
 	if err != nil {
 		return "", fmt.Errorf("read-only sub-agent profile: %w", err)
 	}
-	answer, err := r.task.runReadOnlySubSession(ctx, p.Prompt, subReg, subSink(ctx), maxSteps, prov, pricing, ctxWin, NewSession(DefaultReadOnlyTaskSystemPrompt), childDepth, subagentRecoveryTaskID(ctx, ""), usageModelRef)
+	recoveryTaskID := subagentRecoveryTaskID(ctx, "")
+	var mutationObserver *checkpoint.MutationObserver
+	if r.task.mutationObserver != nil {
+		mutationObserver = r.task.mutationObserver.CloneForSubagent(recoveryTaskID, r.task.mutationObserver.OwnershipTurn(), false)
+	}
+	answer, err := r.task.runReadOnlySubSession(ctx, p.Prompt, subReg, subSink(ctx), maxSteps, prov, pricing, ctxWin, NewSession(DefaultReadOnlyTaskSystemPrompt), childDepth, recoveryTaskID, usageModelRef, mutationObserver)
 	if err != nil {
 		return "", err
 	}
@@ -845,10 +853,19 @@ func (t *TaskTool) RunProfileSpec(ctx context.Context, spec ProfileExecSpec) (st
 
 	runSession := func(runCtx context.Context, sink event.Sink) (string, error) {
 		recoveryTaskID := subagentRecoveryTaskID(runCtx, run.Ref)
-		if spec.ReadOnly {
-			return t.runReadOnlySubSession(runCtx, spec.Prompt, subReg, sink, maxSteps, prov, pricing, ctxWin, run.Session, childDepth, recoveryTaskID, usageModelRef)
+		var mutationObserver *checkpoint.MutationObserver
+		if t.mutationObserver != nil {
+			turn := t.mutationObserver.OwnershipTurn()
+			mutationObserver = t.mutationObserver.CloneForSubagent(recoveryTaskID, turn, spec.RunInBackground)
+			if spec.RunInBackground && !spec.ReadOnly {
+				mutationObserver.RegisterWriter(recoveryTaskID, "background_subagent", turn)
+				defer mutationObserver.UnregisterWriter(recoveryTaskID)
+			}
 		}
-		return t.runSubSession(runCtx, spec.Prompt, subReg, sink, maxSteps, prov, pricing, ctxWin, run.Session, childDepth, recoveryTaskID, usageModelRef)
+		if spec.ReadOnly {
+			return t.runReadOnlySubSession(runCtx, spec.Prompt, subReg, sink, maxSteps, prov, pricing, ctxWin, run.Session, childDepth, recoveryTaskID, usageModelRef, mutationObserver)
+		}
+		return t.runSubSession(runCtx, spec.Prompt, subReg, sink, maxSteps, prov, pricing, ctxWin, run.Session, childDepth, recoveryTaskID, usageModelRef, mutationObserver)
 	}
 
 	if spec.RunInBackground {
@@ -1597,8 +1614,8 @@ func (t *TaskTool) resolveSubSessionRuntime(modelRef, effort string) (provider.P
 	return prov, pricing, ctxWin, nil
 }
 
-func (t *TaskTool) runSubSession(ctx context.Context, prompt string, subReg *tool.Registry, sink event.Sink, maxSteps int, prov provider.Provider, pricing *provider.Pricing, ctxWin int, sess *Session, childDepth int, recoveryTaskID, modelRef string) (string, error) {
-	opts := t.subagentOptions(ctx, maxSteps, pricing, ctxWin, childDepth, recoveryTaskID)
+func (t *TaskTool) runSubSession(ctx context.Context, prompt string, subReg *tool.Registry, sink event.Sink, maxSteps int, prov provider.Provider, pricing *provider.Pricing, ctxWin int, sess *Session, childDepth int, recoveryTaskID, modelRef string, mutationObserver *checkpoint.MutationObserver) (string, error) {
+	opts := t.subagentOptions(ctx, maxSteps, pricing, ctxWin, childDepth, recoveryTaskID, mutationObserver)
 	opts.ModelRef = modelRef
 	// Capture the pristine task before host framing is prepended: delivery
 	// intent classification must judge the task, not the wrapper.
@@ -1607,8 +1624,8 @@ func (t *TaskTool) runSubSession(ctx context.Context, prompt string, subReg *too
 	return RunSubAgentWithSession(ctx, prov, subReg, sess, prompt, opts, sink)
 }
 
-func (t *TaskTool) runReadOnlySubSession(ctx context.Context, prompt string, subReg *tool.Registry, sink event.Sink, maxSteps int, prov provider.Provider, pricing *provider.Pricing, ctxWin int, sess *Session, childDepth int, recoveryTaskID, modelRef string) (string, error) {
-	opts := t.subagentOptions(ctx, maxSteps, pricing, ctxWin, childDepth, recoveryTaskID)
+func (t *TaskTool) runReadOnlySubSession(ctx context.Context, prompt string, subReg *tool.Registry, sink event.Sink, maxSteps int, prov provider.Provider, pricing *provider.Pricing, ctxWin int, sess *Session, childDepth int, recoveryTaskID, modelRef string, mutationObserver *checkpoint.MutationObserver) (string, error) {
+	opts := t.subagentOptions(ctx, maxSteps, pricing, ctxWin, childDepth, recoveryTaskID, mutationObserver)
 	opts.ModelRef = modelRef
 	// Capture the pristine task before host framing is prepended: delivery
 	// intent classification must judge the task, not the wrapper.
@@ -1621,8 +1638,8 @@ func (t *TaskTool) runReadOnlySubSession(ctx context.Context, prompt string, sub
 // sub-agent spawned through this tool shares (task, read_only_task, and
 // parallel_tasks children). Compaction, language preferences, and depth limits
 // must stay uniform across those paths — add new fields here, not at call sites.
-func (t *TaskTool) subagentOptions(ctx context.Context, maxSteps int, pricing *provider.Pricing, ctxWin, childDepth int, recoveryTaskID string) Options {
-	return Options{
+func (t *TaskTool) subagentOptions(ctx context.Context, maxSteps int, pricing *provider.Pricing, ctxWin, childDepth int, recoveryTaskID string, mutationObserver *checkpoint.MutationObserver) Options {
+	opts := Options{
 		MaxSteps:            maxSteps,
 		Temperature:         t.temperature,
 		Pricing:             pricing,
@@ -1645,7 +1662,9 @@ func (t *TaskTool) subagentOptions(ctx context.Context, maxSteps int, pricing *p
 		RecoveryGate:        t.recoveryGate,
 		RecoveryAgentID:     "subagent",
 		RecoveryTaskID:      recoveryTaskID,
+		MutationObserver:    mutationObserver,
 	}
+	return opts
 }
 
 func subagentRecoveryTaskID(ctx context.Context, ref string) string {
@@ -1664,6 +1683,17 @@ func (t *TaskTool) WithRecoveryGate(g RecoveryGate) *TaskTool {
 		return nil
 	}
 	t.recoveryGate = g
+	return t
+}
+
+// WithMutationObserver shares the host mutation observer with spawned sub-agents.
+// Foreground children inherit the parent ownership turn; background children
+// keep the turn that spawned them (set via OwnershipTurn at Begin).
+func (t *TaskTool) WithMutationObserver(obs *checkpoint.MutationObserver) *TaskTool {
+	if t == nil {
+		return nil
+	}
+	t.mutationObserver = obs
 	return t
 }
 
