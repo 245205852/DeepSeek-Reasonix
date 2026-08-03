@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -43,10 +44,11 @@ func newFromConfig(cfg provider.Config) (provider.Provider, error) {
 	proxy, _ := cfg.Extra["proxy_spec"].(netclient.ProxySpec)
 	keyEnv, _ := cfg.Extra["api_key_env"].(string)
 	keySource, _ := cfg.Extra["api_key_source"].(string)
+	maxOutputTokens, _ := cfg.Extra["max_output_tokens"].(int)
 	return New(Config{
 		Name: cfg.Name, APIKey: cfg.APIKey, BaseURL: cfg.BaseURL, Model: cfg.Model,
 		Effort: effort, Mode: mode, Stateful: stateful, Proxy: proxy,
-		KeyEnv: keyEnv, KeySource: keySource,
+		KeyEnv: keyEnv, KeySource: keySource, MaxOutputTokens: maxOutputTokens,
 	}), nil
 }
 
@@ -62,6 +64,10 @@ type Config struct {
 	Proxy     netclient.ProxySpec
 	KeyEnv    string
 	KeySource string
+	// MaxOutputTokens is the total provider output budget. Zero enables Reasonix's
+	// 32K reasoning safety default on official DeepSeek and otherwise omits the
+	// field; thinking-disabled DeepSeek requests and negative values omit it.
+	MaxOutputTokens int
 	// SessionCache controls DashScope's opt-in header. The header is never sent
 	// to non-DashScope endpoints even when this value is true.
 	SessionCache *bool
@@ -86,11 +92,15 @@ func (c Config) mode() string {
 
 // DetectVendor identifies endpoint behavior that affects the Responses wire.
 func DetectVendor(baseURL string) string {
-	u := strings.ToLower(strings.TrimSpace(baseURL))
+	u, err := url.Parse(strings.TrimSpace(baseURL))
+	if err != nil {
+		return ""
+	}
+	host := strings.ToLower(u.Hostname())
 	switch {
-	case strings.Contains(u, "dashscope.aliyuncs.com"), strings.Contains(u, ".maas.aliyuncs.com"):
+	case host == "dashscope.aliyuncs.com", strings.HasSuffix(host, ".dashscope.aliyuncs.com"), strings.HasSuffix(host, ".maas.aliyuncs.com"):
 		return "dashscope"
-	case strings.Contains(u, "api.deepseek.com"):
+	case host == "api.deepseek.com", strings.HasSuffix(host, ".deepseek.com"):
 		return "deepseek"
 	default:
 		return ""
@@ -102,6 +112,7 @@ type client struct {
 	baseURL, model, effort          string
 	vendor, mode                    string
 	sessionCache                    bool
+	maxOutputTokens                 int
 	http                            *http.Client
 	idleTimeout                     time.Duration
 	authed                          atomic.Bool
@@ -114,6 +125,10 @@ type client struct {
 // New creates a Responses API provider.
 func New(cfg Config) provider.Provider {
 	vendor := DetectVendor(cfg.BaseURL)
+	maxOutputTokens := cfg.MaxOutputTokens
+	if maxOutputTokens == 0 && vendor == "deepseek" && !responsesReasoningDisabled(cfg.Effort) {
+		maxOutputTokens = provider.DefaultReasoningOutputTokens
+	}
 	sessionCache := vendor == "dashscope"
 	if cfg.SessionCache != nil {
 		sessionCache = *cfg.SessionCache
@@ -128,8 +143,17 @@ func New(cfg Config) provider.Provider {
 	return &client{
 		name: cfg.Name, apiKey: cfg.APIKey, keyEnv: cfg.KeyEnv, keySource: cfg.KeySource,
 		baseURL: strings.TrimRight(cfg.BaseURL, "/"), model: cfg.Model, effort: cfg.Effort,
-		vendor: vendor, mode: cfg.mode(), sessionCache: sessionCache,
+		vendor: vendor, mode: cfg.mode(), sessionCache: sessionCache, maxOutputTokens: maxOutputTokens,
 		http: httpClient, idleTimeout: defaultStreamIdleTimeout,
+	}
+}
+
+func responsesReasoningDisabled(effort string) bool {
+	switch strings.ToLower(strings.TrimSpace(effort)) {
+	case "none", "disabled", "off":
+		return true
+	default:
+		return false
 	}
 }
 
@@ -226,8 +250,12 @@ func (c *client) buildRequestBody(req provider.Request) (map[string]any, bool, [
 	if effort != "" {
 		body["reasoning"] = map[string]any{"effort": effort}
 	}
-	if req.MaxTokens > 0 {
-		body["max_output_tokens"] = req.MaxTokens
+	maxOutputTokens := req.MaxTokens
+	if maxOutputTokens == 0 {
+		maxOutputTokens = c.maxOutputTokens
+	}
+	if maxOutputTokens > 0 {
+		body["max_output_tokens"] = maxOutputTokens
 	}
 	if req.Temperature != nil {
 		body["temperature"] = *req.Temperature

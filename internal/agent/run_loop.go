@@ -283,7 +283,12 @@ func (a *Agent) runToolLoop(ctx context.Context, state *runLoopState) error {
 		streamed := a.streamWithMissingReasoningRecovery(ctx, step+1)
 		text, reasoning, signature, calls, usage := streamed.text, streamed.reasoning, streamed.signature, streamed.calls, streamed.usage
 		interrupted, partialToolStarted, partialCalls, err := streamed.interrupted, streamed.partialToolStarted, streamed.partialCalls, streamed.err
+		cacheDiagnostics := CompareShape(prevPrefixShape, prefixShape, usage)
 		if err != nil {
+			a.emitTurnUsage(usage, &cacheDiagnostics)
+			if msg, ok := finishReasonMessage(usage); ok {
+				a.sink.Emit(event.Event{Kind: event.Notice, Level: event.LevelWarn, Text: msg})
+			}
 			if interrupted && state.streamRecoveries < maxStreamRecoveries {
 				state.streamRecoveries++
 				a.recordInterruptedDisplay(text, reasoning, partialCalls, false, state.workDurationMs())
@@ -299,15 +304,9 @@ func (a *Agent) runToolLoop(ctx context.Context, state *runLoopState) error {
 			return err
 		}
 		state.streamRecoveries = 0
-		cacheDiagnostics := CompareShape(prevPrefixShape, prefixShape, usage)
 		a.lastPrefixShape = prefixShape
 		a.haveLastPrefixShape = true
-		if usage != nil && usage.TotalTokens > 0 {
-			a.sink.Emit(event.Event{Kind: event.Usage, Usage: usage, Pricing: a.pricing,
-				UsageSource:      a.usageSource,
-				CacheDiagnostics: &cacheDiagnostics,
-				SessionHit:       int(a.sessCacheHit.Load()), SessionMiss: int(a.sessCacheMiss.Load())})
-		}
+		a.emitTurnUsage(usage, &cacheDiagnostics)
 		if msg, ok := finishReasonMessage(usage); ok {
 			a.sink.Emit(event.Event{Kind: event.Notice, Level: event.LevelWarn, Text: msg})
 		}
@@ -390,7 +389,7 @@ func (a *Agent) streamWithMissingReasoningRecovery(ctx context.Context, turn int
 			streamSink.Discard()
 			// The recovery stream was intentionally invisible, so do not persist
 			// partial retry text/reasoning as though the user had already seen it.
-			return streamedTurn{err: retry.err}
+			return streamedTurn{usage: mergeStreamUsage(first.usage, retry.usage), err: retry.err}
 		}
 		streamSink.Flush()
 		first.usage = mergeStreamUsage(first.usage, retry.usage)
@@ -445,6 +444,17 @@ func mergeStreamUsage(first, retry *provider.Usage) *provider.Usage {
 	merged.CacheMissTokens += first.CacheMissTokens
 	merged.ReasoningTokens += first.ReasoningTokens
 	return &merged
+}
+
+func (a *Agent) emitTurnUsage(usage *provider.Usage, cacheDiagnostics *CacheDiagnostics) {
+	if usage == nil || usage.TotalTokens <= 0 {
+		return
+	}
+	a.lastUsage.Store(usage)
+	a.sink.Emit(event.Event{Kind: event.Usage, Usage: usage, Pricing: a.pricing,
+		UsageSource:      a.usageSource,
+		CacheDiagnostics: cacheDiagnostics,
+		SessionHit:       int(a.sessCacheHit.Load()), SessionMiss: int(a.sessCacheMiss.Load())})
 }
 
 // handleFinalResponse processes a no-tool assistant turn: recovery pause,

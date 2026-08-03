@@ -247,12 +247,13 @@ type readFileRecord struct {
 }
 
 type sessionUsageStats struct {
-	PromptTokens     int `json:"promptTokens"`
-	CompletionTokens int `json:"completionTokens"`
-	TotalTokens      int `json:"totalTokens"`
-	ReasoningTokens  int `json:"reasoningTokens"`
-	CacheHitTokens   int `json:"cacheHitTokens"`
-	CacheMissTokens  int `json:"cacheMissTokens"`
+	PromptTokens     int  `json:"promptTokens"`
+	CompletionTokens int  `json:"completionTokens"`
+	TotalTokens      int  `json:"totalTokens"`
+	ReasoningTokens  int  `json:"reasoningTokens"`
+	CacheHitTokens   int  `json:"cacheHitTokens"`
+	CacheMissTokens  int  `json:"cacheMissTokens"`
+	Estimated        bool `json:"estimated,omitempty"`
 	// LastUsedTokens is the executor-reported context fill (prompt+completion)
 	// from the most recent turn. It is persisted so the status bar / context
 	// panel can show a meaningful fill percentage after a session rebind
@@ -266,6 +267,7 @@ type sessionUsageStats struct {
 	LastReasoningTokens  int                         `json:"lastReasoningTokens,omitempty"`
 	LastCacheHitTokens   int                         `json:"lastCacheHitTokens,omitempty"`
 	LastCacheMissTokens  int                         `json:"lastCacheMissTokens,omitempty"`
+	LastEstimated        bool                        `json:"lastEstimated,omitempty"`
 	RequestCount         int                         `json:"requestCount"`
 	ElapsedMs            int64                       `json:"elapsedMs"`
 	SessionCost          float64                     `json:"sessionCost,omitempty"`
@@ -284,6 +286,7 @@ type usageSourceStats struct {
 	ReasoningTokens  int     `json:"reasoningTokens"`
 	CacheHitTokens   int     `json:"cacheHitTokens"`
 	CacheMissTokens  int     `json:"cacheMissTokens"`
+	Estimated        bool    `json:"estimated,omitempty"`
 	RequestCount     int     `json:"requestCount"`
 	SessionCost      float64 `json:"sessionCost,omitempty"`
 	SessionCurrency  string  `json:"sessionCurrency,omitempty"`
@@ -944,6 +947,7 @@ func (t *WorkspaceTab) recordUsage(e event.Event) {
 	cacheHitTokens, cacheMissTokens := t.usageTelemetry.cacheTokenDelta(source, u, e.SessionHit, e.SessionMiss)
 	t.usageTelemetry.CacheHitTokens += cacheHitTokens
 	t.usageTelemetry.CacheMissTokens += cacheMissTokens
+	t.usageTelemetry.Estimated = t.usageTelemetry.Estimated || u.Estimated
 	t.usageTelemetry.RequestCount++
 	if source == event.UsageSourceExecutor {
 		t.usageTelemetry.LastUsedTokens = u.PromptTokens + u.CompletionTokens
@@ -952,6 +956,7 @@ func (t *WorkspaceTab) recordUsage(e event.Event) {
 		t.usageTelemetry.LastReasoningTokens = u.ReasoningTokens
 		t.usageTelemetry.LastCacheHitTokens = cacheHitTokens
 		t.usageTelemetry.LastCacheMissTokens = cacheMissTokens
+		t.usageTelemetry.LastEstimated = u.Estimated
 	}
 	if t.usageTelemetry.Sources == nil {
 		t.usageTelemetry.Sources = map[string]usageSourceStats{}
@@ -963,6 +968,7 @@ func (t *WorkspaceTab) recordUsage(e event.Event) {
 	src.ReasoningTokens += u.ReasoningTokens
 	src.CacheHitTokens += cacheHitTokens
 	src.CacheMissTokens += cacheMissTokens
+	src.Estimated = src.Estimated || u.Estimated
 	src.RequestCount++
 	if e.Pricing != nil {
 		currency := e.Pricing.Symbol()
@@ -1001,6 +1007,7 @@ func usageStatsAsProviderUsage(stats usageSourceStats) *provider.Usage {
 		ReasoningTokens:  stats.ReasoningTokens,
 		CacheHitTokens:   stats.CacheHitTokens,
 		CacheMissTokens:  stats.CacheMissTokens,
+		Estimated:        stats.Estimated,
 	}
 }
 
@@ -1012,6 +1019,7 @@ func sessionStatsAsProviderUsage(stats sessionUsageStats) *provider.Usage {
 		ReasoningTokens:  stats.ReasoningTokens,
 		CacheHitTokens:   stats.CacheHitTokens,
 		CacheMissTokens:  stats.CacheMissTokens,
+		Estimated:        stats.Estimated,
 	}
 }
 
@@ -8032,20 +8040,22 @@ func unixMilliOrZero(t time.Time) int64 {
 
 // ContextPanelInfo is the right-side panel's data for one tab.
 type ContextPanelInfo struct {
-	UsedTokens       int `json:"usedTokens"`
-	WindowTokens     int `json:"windowTokens"`
-	PromptTokens     int `json:"promptTokens"`
-	CompletionTokens int `json:"completionTokens"`
-	TotalTokens      int `json:"totalTokens"`
-	ReasoningTokens  int `json:"reasoningTokens"`
-	CacheHitTokens   int `json:"cacheHitTokens"`
-	CacheMissTokens  int `json:"cacheMissTokens"`
+	UsedTokens       int  `json:"usedTokens"`
+	WindowTokens     int  `json:"windowTokens"`
+	PromptTokens     int  `json:"promptTokens"`
+	CompletionTokens int  `json:"completionTokens"`
+	TotalTokens      int  `json:"totalTokens"`
+	ReasoningTokens  int  `json:"reasoningTokens"`
+	CacheHitTokens   int  `json:"cacheHitTokens"`
+	CacheMissTokens  int  `json:"cacheMissTokens"`
+	Estimated        bool `json:"estimated,omitempty"`
 	// Session-cumulative token counts (from telemetry, atomic snapshot).
 	// Separate from the per-turn fields above so existing consumers (status bar
 	// turn tokens, donut chart) are unaffected.
 	SessionCacheHitTokens   int                         `json:"sessionCacheHitTokens"`
 	SessionCacheMissTokens  int                         `json:"sessionCacheMissTokens"`
 	SessionCompletionTokens int                         `json:"sessionCompletionTokens"`
+	SessionEstimated        bool                        `json:"sessionEstimated,omitempty"`
 	RequestCount            int                         `json:"requestCount"`
 	ElapsedMs               int64                       `json:"elapsedMs"`
 	SessionCost             float64                     `json:"sessionCost"`
@@ -8106,6 +8116,7 @@ func (a *App) ContextPanel(tabID string) ContextPanelInfo {
 			info.ReasoningTokens = u.ReasoningTokens
 			info.CacheHitTokens = u.CacheHitTokens
 			info.CacheMissTokens = u.CacheMissTokens
+			info.Estimated = u.Estimated
 		} else {
 			// Executor rebuilt (session rebind): fall back to the telemetry-
 			// persisted per-turn breakdown so the donut chart and type
@@ -8116,6 +8127,7 @@ func (a *App) ContextPanel(tabID string) ContextPanelInfo {
 			info.ReasoningTokens = snap.Usage.LastReasoningTokens
 			info.CacheHitTokens = snap.Usage.LastCacheHitTokens
 			info.CacheMissTokens = snap.Usage.LastCacheMissTokens
+			info.Estimated = snap.Usage.LastEstimated
 		}
 	}
 
@@ -8134,6 +8146,7 @@ func (a *App) ContextPanel(tabID string) ContextPanelInfo {
 	info.SessionCacheHitTokens = usage.CacheHitTokens
 	info.SessionCacheMissTokens = usage.CacheMissTokens
 	info.SessionCompletionTokens = usage.CompletionTokens
+	info.SessionEstimated = usage.Estimated
 
 	// Gather workspace changes for this tab's root.
 	if ctrl != nil && tab.WorkspaceRoot != "" {
