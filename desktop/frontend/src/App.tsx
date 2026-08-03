@@ -5000,6 +5000,7 @@ export default function App() {
               guidanceConsumedText={latestGuidanceConsumed?.text}
               guidanceQueuePreviewItems={guidanceQueueMockItems}
               showContextWindowRing={sidebarCreation}
+              heroMode={sidebarCreation && !sessionHasContent}
               context={state.context}
               turnCost={state.turnCost}
               currency={state.sessionCurrency}

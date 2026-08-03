@@ -30154,6 +30154,18 @@ body > .mermaid-diagram--fullscreen {
   border-top: 0;
   padding: 0 clamp(22px, 5vw, 56px) clamp(22px, 4vh, 36px);
   background: transparent;
+  transition:
+    transform 0.52s cubic-bezier(0.22, 1, 0.36, 1),
+    padding 0.4s cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+/* Empty Creation: lift footer into the old prompt-card band under the headline,
+   then ease back to the docked bottom composer once the session has content. */
+.app--creation .chat-pane--creation-empty > .footer,
+:root[data-theme-style] .app--creation .chat-pane--creation-empty > .footer {
+  transform: translateY(calc(-1 * clamp(168px, 28vh, 280px)));
+  padding-bottom: 0;
+  will-change: transform;
 }
 
 .app--creation .composer-wrap,
@@ -30161,6 +30173,127 @@ body > .mermaid-diagram--fullscreen {
   width: min(100%, 880px);
   max-width: 880px;
   margin: 0 auto;
+  transition:
+    width 0.48s cubic-bezier(0.22, 1, 0.36, 1),
+    max-width 0.48s cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+/* Slim centered hero composer: short whole card (input+model), not a tall shell. */
+.app--creation .composer-wrap--hero,
+:root[data-theme-style] .app--creation .composer-wrap--hero {
+  width: min(100%, 640px);
+  max-width: 640px;
+}
+
+.app--creation .composer-wrap--hero .composer-resize-handle,
+:root[data-theme-style] .app--creation .composer-wrap--hero .composer-resize-handle {
+  display: none;
+}
+
+.app--creation .composer-wrap--hero .composer-card,
+.app--creation .composer-wrap--hero .composer-card.composer-card--autosized,
+:root[data-theme-style] .app--creation .composer-wrap--hero .composer-card,
+:root[data-theme-style] .app--creation .composer-wrap--hero .composer-card.composer-card--autosized {
+  display: flex;
+  flex-direction: column;
+  border-radius: 12px;
+  min-height: 0 !important;
+  height: auto !important;
+  padding: 0 !important;
+}
+
+.app--creation .composer-wrap--hero .composer,
+.app--creation .composer-wrap--hero .composer-card--autosized .composer,
+:root[data-theme-style] .app--creation .composer-wrap--hero .composer,
+:root[data-theme-style] .app--creation .composer-wrap--hero .composer-card--autosized .composer {
+  flex: 0 0 auto !important;
+  min-height: 0 !important;
+  height: auto !important;
+  padding: 8px 8px 0 14px !important;
+  border-bottom: 0;
+}
+
+.app--creation .composer-wrap--hero .composer__input-row,
+:root[data-theme-style] .app--creation .composer-wrap--hero .composer__input-row {
+  align-items: center;
+  flex: 0 0 auto !important;
+  min-height: 0 !important;
+  height: 28px !important;
+}
+
+.app--creation .composer-wrap--hero .composer__content,
+:root[data-theme-style] .app--creation .composer-wrap--hero .composer__content {
+  height: auto !important;
+  min-height: 0 !important;
+  display: flex;
+  align-items: center;
+}
+
+.app--creation .composer-wrap--hero .composer__input,
+:root[data-theme-style] .app--creation .composer-wrap--hero .composer__input {
+  flex: 0 0 auto !important;
+  line-height: 1.25 !important;
+  min-height: 20px !important;
+  height: 20px !important;
+  max-height: 20px !important;
+  padding: 0 !important;
+  overflow: hidden !important;
+  resize: none !important;
+}
+
+.app--creation .composer-wrap--hero .composer__btn,
+.app--creation .composer-wrap--hero .composer__btn--send,
+:root[data-theme-style] .app--creation .composer-wrap--hero .composer__btn,
+:root[data-theme-style] .app--creation .composer-wrap--hero .composer__btn--send {
+  width: 26px !important;
+  height: 26px !important;
+  margin-right: 2px;
+  flex: 0 0 auto;
+}
+
+.app--creation .composer-wrap--hero .composer-meta,
+:root[data-theme-style] .app--creation .composer-wrap--hero .composer-meta {
+  flex: 0 0 auto !important;
+  min-height: 0 !important;
+  height: auto !important;
+  padding: 2px 10px 6px !important;
+  gap: 0;
+}
+
+.app--creation .composer-wrap--hero .composer-meta__params,
+:root[data-theme-style] .app--creation .composer-wrap--hero .composer-meta__params {
+  justify-content: flex-end;
+  gap: 0;
+  min-height: 0;
+}
+
+.app--creation .composer-wrap--hero .composer-meta__control--model,
+:root[data-theme-style] .app--creation .composer-wrap--hero .composer-meta__control--model {
+  margin-left: 0;
+  max-width: none;
+}
+
+.app--creation .composer-wrap--hero .composer-meta__control--model .modelsw__trigger,
+:root[data-theme-style] .app--creation .composer-wrap--hero .composer-meta__control--model .modelsw__trigger {
+  min-height: 22px;
+  height: 22px;
+  padding-inline: 7px;
+  font-size: calc(11px * var(--font-scale));
+  font-weight: 400;
+}
+
+.app--creation .composer-wrap--hero .composer-meta__control--model .modelsw__label,
+:root[data-theme-style] .app--creation .composer-wrap--hero .composer-meta__control--model .modelsw__label {
+  font-weight: 400;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .app--creation .footer,
+  :root[data-theme-style] .app--creation .footer,
+  .app--creation .composer-wrap,
+  :root[data-theme-style] .app--creation .composer-wrap {
+    transition: none;
+  }
 }
 
 .app--creation .composer-run-strip,
@@ -30637,7 +30770,7 @@ body > .mermaid-diagram--fullscreen {
   padding-inline: 9px;
   box-shadow: none;
   font-size: calc(11.5px * var(--font-scale));
-  font-weight: 500;
+  font-weight: 400;
 }
 
 .app--creation .composer-task-mode-trigger,
@@ -30646,7 +30779,7 @@ body > .mermaid-diagram--fullscreen {
   gap: 0;
   padding-inline: 9px;
   font-size: calc(11.5px * var(--font-scale));
-  font-weight: 500;
+  font-weight: 400;
 }
 
 /* Creation: text-only pills — drop leading icons + chevrons (match modelsw) */
@@ -30662,7 +30795,7 @@ body > .mermaid-diagram--fullscreen {
 :root[data-theme-style] .app--creation .composer-task-mode-trigger__value,
 :root[data-theme-style] .app--creation .composer-profile-trigger__value {
   color: color-mix(in srgb, var(--fg) 88%, transparent);
-  font-weight: 500;
+  font-weight: 400;
 }
 
 .app--creation .composer-task-mode-trigger:hover:not(:disabled),
@@ -30770,6 +30903,16 @@ body > .mermaid-diagram--fullscreen {
   gap: 5px;
   padding: 0 10px;
   font-size: calc(12px * var(--font-scale));
+  font-weight: 400;
+}
+
+.app--creation .composer-meta .modelsw__label,
+.app--creation .composer-more-trigger,
+.app--creation .composer-more-trigger--effort,
+:root[data-theme-style] .app--creation .composer-meta .modelsw__label,
+:root[data-theme-style] .app--creation .composer-more-trigger,
+:root[data-theme-style] .app--creation .composer-more-trigger--effort {
+  font-weight: 400;
 }
 
 .app--creation .composer-meta .modelsw,
@@ -30821,7 +30964,7 @@ body > .mermaid-diagram--fullscreen {
   cursor: pointer;
   border-radius: 50%;
   flex-shrink: 0;
-  margin-right: 5px;
+  margin-right: 10px;
   transition: background 0.16s var(--ease-out);
 }
 .app--creation .context-ring:hover,
@@ -31622,6 +31765,11 @@ body > .mermaid-diagram--fullscreen {
 .app--creation .transcript--empty {
   justify-content: center;
   padding: 24px 32px clamp(180px, 22vh, 260px);
+}
+
+/* Empty Creation: less bottom reserve — hero composer lifts into the former card band. */
+.app--creation .chat-pane--creation-empty .transcript--empty {
+  padding: 24px 32px clamp(72px, 12vh, 120px);
 }
 
 .app--creation .transcript--empty > .welcome--creation {
@@ -32484,7 +32632,7 @@ body > .mermaid-diagram--fullscreen {
 
 .app--creation .welcome--creation {
   width: min(100%, 700px);
-  transform: translateY(-22px);
+  transform: translateY(-36px);
   justify-items: start;
   text-align: left;
 }
@@ -32524,78 +32672,9 @@ body > .mermaid-diagram--fullscreen {
   }
 }
 
-.app--creation .welcome-creation__cards {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 14px;
-  width: 100%;
-  margin-top: 26px;
-}
-
-.app--creation .welcome-creation__card {
-  --wails-draggable: no-drag;
-  min-height: 96px;
-  display: grid;
-  align-content: start;
-  justify-items: start;
-  gap: 5px;
-  padding: 13px 15px;
-  border: 0;
-  border-radius: 10px;
-  background:
-    radial-gradient(120% 95% at 12% 0%, color-mix(in srgb, var(--accent) 11%, transparent) 0%, color-mix(in srgb, var(--accent) 5%, transparent) 38%, transparent 72%),
-    linear-gradient(135deg, color-mix(in srgb, var(--accent) 5%, color-mix(in srgb, var(--bg-elev) 30%, transparent)) 0%, color-mix(in srgb, var(--bg-elev) 18%, transparent) 48%, color-mix(in srgb, var(--bg) 10%, transparent) 100%);
-  color: var(--fg-dim);
-  font: inherit;
-  text-align: left;
-  transition: background 0.14s, transform 0.14s;
-}
-
-.app--creation .welcome-creation__card:hover {
-  background:
-    radial-gradient(120% 95% at 12% 0%, color-mix(in srgb, var(--accent) 14%, transparent) 0%, color-mix(in srgb, var(--accent) 7%, transparent) 38%, transparent 72%),
-    linear-gradient(135deg, color-mix(in srgb, var(--accent) 7%, color-mix(in srgb, var(--bg-elev) 34%, transparent)) 0%, color-mix(in srgb, var(--bg-elev) 22%, transparent) 48%, color-mix(in srgb, var(--bg) 12%, transparent) 100%);
-  transform: translateY(-1px);
-}
-
-.app--creation .welcome-creation__icon {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  min-width: 22px;
-  height: 22px;
-  padding: 0 6px;
-  border: 1px solid color-mix(in srgb, var(--accent) 26%, transparent);
-  border-radius: 6px;
-  background: color-mix(in srgb, var(--accent) 8%, transparent);
-  color: var(--accent);
-  font-family: var(--font-mono);
-  font-size: calc(12px * var(--font-scale));
-  font-weight: 650;
-  line-height: 1;
-}
-
-.app--creation .welcome-creation__card strong {
-  color: var(--fg);
-  font-size: calc(11.5px * var(--font-scale));
-  font-weight: 650;
-  line-height: 1.25;
-}
-
-.app--creation .welcome-creation__card > span:last-child {
-  color: color-mix(in srgb, var(--fg-dim) 72%, transparent);
-  font-size: calc(10.5px * var(--font-scale));
-  line-height: 1.35;
-  white-space: nowrap;
-}
-
 @container (max-width: 760px) {
   .app--creation .welcome--creation {
     width: min(100%, 520px);
-  }
-
-  .app--creation .welcome-creation__cards {
-    grid-template-columns: 1fr;
   }
 }
 

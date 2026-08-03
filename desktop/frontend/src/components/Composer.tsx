@@ -572,6 +572,7 @@ export function Composer({
   guidanceConsumedText,
   guidanceQueuePreviewItems,
   showContextWindowRing = false,
+  heroMode = false,
   context,
   turnCost,
   currency,
@@ -643,6 +644,9 @@ export function Composer({
   guidanceConsumedText?: string;
   guidanceQueuePreviewItems?: readonly string[];
   showContextWindowRing?: boolean;
+  // Creation empty-session hero: slim centered composer under the welcome
+  // headline (hides task/profile/approval chrome; keeps model + effort).
+  heroMode?: boolean;
   context?: ContextInfo;
   turnCost?: number;
   currency?: string;
@@ -2839,6 +2843,13 @@ export function Composer({
       setTextareaAutoOverflow(false);
       return;
     }
+    // Creation empty hero is a short single-line strip; do not let scrollHeight
+    // inflate the card into a tall empty shell.
+    if (heroMode) {
+      setTextareaAutoHeight(20);
+      setTextareaAutoOverflow(false);
+      return;
+    }
     const richHeight = invocationsRef.current.length > 0 ? richInputRef.current?.scrollHeight() : 0;
     const node = taRef.current;
     if (!richHeight && !node) return;
@@ -2851,7 +2862,7 @@ export function Composer({
     if (node && previousHeight !== undefined) node.style.height = previousHeight;
     setTextareaAutoHeight((current) => (current === nextHeight ? current : nextHeight));
     setTextareaAutoOverflow((current) => (current === nextOverflow ? current : nextOverflow));
-  }, [composerHeight, invocations.length]);
+  }, [composerHeight, heroMode, invocations.length]);
 
   useLayoutEffect(() => {
     measureTextareaAutoHeight();
@@ -3729,7 +3740,11 @@ export function Composer({
   return (
     <div
       ref={composerWrapRef}
-      className={`composer-wrap${decisionPending ? " composer-wrap--decision-pending" : ""}`}
+      className={[
+        "composer-wrap",
+        decisionPending ? "composer-wrap--decision-pending" : "",
+        heroMode ? "composer-wrap--hero" : "",
+      ].filter(Boolean).join(" ")}
       style={{ "--wails-drop-target": "drop" } as CSSProperties}
       onDropCapture={onFileDropCapture}
     >
@@ -3792,7 +3807,7 @@ export function Composer({
           </button>
         </div>
       </AnchoredPopover>
-      <AnchoredPopover
+      {!heroMode && <AnchoredPopover
         open={intentMenuOpen}
         closing={intentMenuClosing}
         anchorRef={intentMenuAnchorRef}
@@ -3854,7 +3869,7 @@ export function Composer({
             </span>
             {goalModeOn && <Check className="composer-intent-menu__check" size={16} aria-hidden="true" />}
           </button>
-          {goalModeOn && activeGoal && (
+            {goalModeOn && activeGoal && (
             <button
               type="button"
               className="composer-intent-menu__stop"
@@ -3865,8 +3880,8 @@ export function Composer({
             </button>
           )}
         </div>
-      </AnchoredPopover>
-      <AnchoredPopover
+      </AnchoredPopover>}
+      {!heroMode && <AnchoredPopover
         open={profileMenuOpen}
         closing={profileMenuClosing}
         anchorRef={profileMenuAnchorRef}
@@ -3906,7 +3921,7 @@ export function Composer({
             </button>
           ))}
         </div>
-      </AnchoredPopover>
+      </AnchoredPopover>}
       <AnchoredPopover
         open={moreMenuOpen && !disabled && !running}
         closing={moreMenuClosing}
@@ -4450,114 +4465,122 @@ export function Composer({
         />
         <div className={composerMetaClass}>
           <div className="composer-meta__params">
-            <div className="composer-meta__control composer-meta__control--content">
-              <Tooltip label={t("composer.contentMenuTitle")} disabled={contentMenuOpen}>
-                <button
-                  ref={contentMenuAnchorRef}
-                  type="button"
-                  className={`composer-content-trigger${contentMenuOpen ? " composer-content-trigger--open" : ""}`}
-                  onClick={() => (contentMenuOpen ? setContentMenuOpen(false) : openContentMenu())}
-                  disabled={disabled || readOnly || running}
-                  aria-haspopup="menu"
-                  aria-expanded={contentMenuOpen}
-                  aria-label={t("composer.contentMenuTitle")}
-                >
-                  <Plus size={17} strokeWidth={1.8} aria-hidden="true" />
-                </button>
-              </Tooltip>
-            </div>
-            <div className="composer-meta__control composer-meta__control--intent">
-              <Tooltip label={taskModeTooltipLabel} disabled={intentMenuOpen || intentMenuClosing || creationChrome}>
-                <button
-                  ref={intentMenuAnchorRef}
-                  type="button"
-                  className={`composer-task-mode-trigger${intentMenuOpen || intentMenuClosing ? " composer-task-mode-trigger--open" : ""}`}
-                  onClick={() => (intentMenuOpen || intentMenuClosing ? closeIntentMenu() : openIntentMenu())}
-                  onMouseEnter={creationChrome ? onIntentHoverEnter : undefined}
-                  onMouseLeave={creationChrome ? onIntentHoverLeave : undefined}
-                  disabled={disabled || running}
-                  aria-haspopup="menu"
-                  aria-expanded={intentMenuOpen && !intentMenuClosing}
-                  aria-label={taskModeTriggerLabel}
-                  title={intentMenuOpen || intentMenuClosing || creationChrome ? undefined : taskModeTriggerLabel}
-                >
-                  <TaskModeIcon size={14} aria-hidden="true" />
-                  <span className="composer-task-mode-trigger__value">{t(taskModeShortKey)}</span>
-                  <ChevronsUpDown size={11} aria-hidden="true" />
-                </button>
-              </Tooltip>
-            </div>
-            <div className="composer-meta__control composer-meta__control--profile">
-              <Tooltip label={runtimeProfileTooltipLabel} disabled={profileMenuOpen || profileMenuClosing || creationChrome}>
-                <button
-                  ref={profileMenuAnchorRef}
-                  type="button"
-                  data-profile={tokenMode}
-                  className={`composer-profile-trigger${profileMenuOpen || profileMenuClosing ? " composer-profile-trigger--open" : ""}`}
-                  onClick={() => (profileMenuOpen || profileMenuClosing ? closeProfileMenu() : openProfileMenu())}
-                  onMouseEnter={creationChrome ? onProfileHoverEnter : undefined}
-                  onMouseLeave={creationChrome ? onProfileHoverLeave : undefined}
-                  disabled={disabled || running}
-                  aria-haspopup="menu"
-                  aria-expanded={profileMenuOpen && !profileMenuClosing}
-                  aria-label={runtimeProfileTriggerLabel}
-                  title={profileMenuOpen || profileMenuClosing || creationChrome ? undefined : runtimeProfileTriggerLabel}
-                >
-                  <RuntimeProfileIcon size={14} strokeWidth={1.75} aria-hidden="true" />
-                  <span className="composer-profile-trigger__label">
-                    <span className="composer-profile-trigger__value">{t(runtimeProfileShortKey)}</span>
-                  </span>
-                  <ChevronsUpDown size={11} aria-hidden="true" />
-                </button>
-              </Tooltip>
-            </div>
-            <div className="composer-meta__control composer-meta__control--approval">
-              {/* A pending tool approval disables the composer, but the approval
-                  bar stays usable so mode changes remain possible mid-prompt;
-                  the approval card explains that the pending request still needs
-                  an explicit decision. */}
-              <div
-                className="composer-modebar composer-modebar--approval"
-                data-mode={toolApprovalMode}
-                title={t("composer.accessMenuTitle", { shortcut: yoloComboLabel })}
-              >
-                <span className="composer-modebar__thumb" aria-hidden="true" />
-                <button
-                  type="button"
-                  className={`composer-modebar__item composer-modebar__item--ask${toolApprovalMode === "ask" ? " composer-modebar__item--active" : ""}`}
-                  onClick={() => chooseApprovalMode("ask")}
-                  disabled={approvalBarDisabled}
-                  aria-pressed={toolApprovalMode === "ask"}
-                  title={t("composer.accessAskTitle")}
-                >
-                  <Shield size={14} />
-                  <span>{t("composer.modeAsk")}</span>
-                </button>
-                <button
-                  type="button"
-                  className={`composer-modebar__item composer-modebar__item--auto${toolApprovalMode === "auto" ? " composer-modebar__item--active" : ""}`}
-                  onClick={() => chooseApprovalMode("auto")}
-                  disabled={approvalBarDisabled}
-                  aria-pressed={toolApprovalMode === "auto"}
-                  title={t("composer.accessAutoTitle")}
-                >
-                  <ShieldCheck size={14} />
-                  <span>{t("composer.modeNormal")}</span>
-                </button>
-                <button
-                  type="button"
-                  className={`composer-modebar__item composer-modebar__item--yolo${toolApprovalMode === "yolo" ? " composer-modebar__item--active" : ""}`}
-                  onClick={() => chooseApprovalMode("yolo")}
-                  disabled={approvalBarDisabled}
-                  aria-pressed={toolApprovalMode === "yolo"}
-                  title={t("composer.accessYoloTitle", { shortcut: yoloComboLabel })}
-                >
-                  <ShieldAlert size={14} />
-                  <span>{t("composer.modeYolo")}</span>
-                </button>
+            {!heroMode && (
+              <div className="composer-meta__control composer-meta__control--content">
+                <Tooltip label={t("composer.contentMenuTitle")} disabled={contentMenuOpen}>
+                  <button
+                    ref={contentMenuAnchorRef}
+                    type="button"
+                    className={`composer-content-trigger${contentMenuOpen ? " composer-content-trigger--open" : ""}`}
+                    onClick={() => (contentMenuOpen ? setContentMenuOpen(false) : openContentMenu())}
+                    disabled={disabled || readOnly || running}
+                    aria-haspopup="menu"
+                    aria-expanded={contentMenuOpen}
+                    aria-label={t("composer.contentMenuTitle")}
+                  >
+                    <Plus size={17} strokeWidth={1.8} aria-hidden="true" />
+                  </button>
+                </Tooltip>
               </div>
-            </div>
-            <span className="composer-meta__divider" aria-hidden="true" />
+            )}
+            {!heroMode && (
+              <div className="composer-meta__control composer-meta__control--intent">
+                <Tooltip label={taskModeTooltipLabel} disabled={intentMenuOpen || intentMenuClosing || creationChrome}>
+                  <button
+                    ref={intentMenuAnchorRef}
+                    type="button"
+                    className={`composer-task-mode-trigger${intentMenuOpen || intentMenuClosing ? " composer-task-mode-trigger--open" : ""}`}
+                    onClick={() => (intentMenuOpen || intentMenuClosing ? closeIntentMenu() : openIntentMenu())}
+                    onMouseEnter={creationChrome ? onIntentHoverEnter : undefined}
+                    onMouseLeave={creationChrome ? onIntentHoverLeave : undefined}
+                    disabled={disabled || running}
+                    aria-haspopup="menu"
+                    aria-expanded={intentMenuOpen && !intentMenuClosing}
+                    aria-label={taskModeTriggerLabel}
+                    title={intentMenuOpen || intentMenuClosing || creationChrome ? undefined : taskModeTriggerLabel}
+                  >
+                    <TaskModeIcon size={14} aria-hidden="true" />
+                    <span className="composer-task-mode-trigger__value">{t(taskModeShortKey)}</span>
+                    <ChevronsUpDown size={11} aria-hidden="true" />
+                  </button>
+                </Tooltip>
+              </div>
+            )}
+            {!heroMode && (
+              <div className="composer-meta__control composer-meta__control--profile">
+                <Tooltip label={runtimeProfileTooltipLabel} disabled={profileMenuOpen || profileMenuClosing || creationChrome}>
+                  <button
+                    ref={profileMenuAnchorRef}
+                    type="button"
+                    data-profile={tokenMode}
+                    className={`composer-profile-trigger${profileMenuOpen || profileMenuClosing ? " composer-profile-trigger--open" : ""}`}
+                    onClick={() => (profileMenuOpen || profileMenuClosing ? closeProfileMenu() : openProfileMenu())}
+                    onMouseEnter={creationChrome ? onProfileHoverEnter : undefined}
+                    onMouseLeave={creationChrome ? onProfileHoverLeave : undefined}
+                    disabled={disabled || running}
+                    aria-haspopup="menu"
+                    aria-expanded={profileMenuOpen && !profileMenuClosing}
+                    aria-label={runtimeProfileTriggerLabel}
+                    title={profileMenuOpen || profileMenuClosing || creationChrome ? undefined : runtimeProfileTriggerLabel}
+                  >
+                    <RuntimeProfileIcon size={14} strokeWidth={1.75} aria-hidden="true" />
+                    <span className="composer-profile-trigger__label">
+                      <span className="composer-profile-trigger__value">{t(runtimeProfileShortKey)}</span>
+                    </span>
+                    <ChevronsUpDown size={11} aria-hidden="true" />
+                  </button>
+                </Tooltip>
+              </div>
+            )}
+            {!heroMode && (
+              <div className="composer-meta__control composer-meta__control--approval">
+                {/* A pending tool approval disables the composer, but the approval
+                    bar stays usable so mode changes remain possible mid-prompt;
+                    the approval card explains that the pending request still needs
+                    an explicit decision. */}
+                <div
+                  className="composer-modebar composer-modebar--approval"
+                  data-mode={toolApprovalMode}
+                  title={t("composer.accessMenuTitle", { shortcut: yoloComboLabel })}
+                >
+                  <span className="composer-modebar__thumb" aria-hidden="true" />
+                  <button
+                    type="button"
+                    className={`composer-modebar__item composer-modebar__item--ask${toolApprovalMode === "ask" ? " composer-modebar__item--active" : ""}`}
+                    onClick={() => chooseApprovalMode("ask")}
+                    disabled={approvalBarDisabled}
+                    aria-pressed={toolApprovalMode === "ask"}
+                    title={t("composer.accessAskTitle")}
+                  >
+                    <Shield size={14} />
+                    <span>{t("composer.modeAsk")}</span>
+                  </button>
+                  <button
+                    type="button"
+                    className={`composer-modebar__item composer-modebar__item--auto${toolApprovalMode === "auto" ? " composer-modebar__item--active" : ""}`}
+                    onClick={() => chooseApprovalMode("auto")}
+                    disabled={approvalBarDisabled}
+                    aria-pressed={toolApprovalMode === "auto"}
+                    title={t("composer.accessAutoTitle")}
+                  >
+                    <ShieldCheck size={14} />
+                    <span>{t("composer.modeNormal")}</span>
+                  </button>
+                  <button
+                    type="button"
+                    className={`composer-modebar__item composer-modebar__item--yolo${toolApprovalMode === "yolo" ? " composer-modebar__item--active" : ""}`}
+                    onClick={() => chooseApprovalMode("yolo")}
+                    disabled={approvalBarDisabled}
+                    aria-pressed={toolApprovalMode === "yolo"}
+                    title={t("composer.accessYoloTitle", { shortcut: yoloComboLabel })}
+                  >
+                    <ShieldAlert size={14} />
+                    <span>{t("composer.modeYolo")}</span>
+                  </button>
+                </div>
+              </div>
+            )}
+            {!heroMode && <span className="composer-meta__divider" aria-hidden="true" />}
             <div className="composer-meta__control composer-meta__control--model">
               {/*
                 Creation-only: showContextWindowRing is wired to sidebarCreation
@@ -4567,7 +4590,7 @@ export function Composer({
                 ever surface this ring in another layout, its font sizes already
                 scale via --font-scale (see .context-ring-popover in styles.css).
               */}
-              {showContextWindowRing && (
+              {!heroMode && showContextWindowRing && (
                 <ContextWindowRing
                   enabled={showContextWindowRing}
                   context={context}
@@ -4581,12 +4604,12 @@ export function Composer({
               )}
               <ModelSwitcher label={modelLabel} tabId={tabId} onPick={onSwitchModel} />
             </div>
-            {hasEffort && (
+            {!heroMode && hasEffort && (
               <div className="composer-meta__control composer-meta__control--effort">
                 <EffortSwitcher effort={effort} disabled={running} onPick={onSetEffort} />
               </div>
             )}
-            {hasEffort && (
+            {!heroMode && hasEffort && (
               <div className="composer-meta__control composer-meta__control--more">
                 <Tooltip label={compactEffortTitle} disabled={moreMenuOpen || moreMenuClosing}>
                   <button
