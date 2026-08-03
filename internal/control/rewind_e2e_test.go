@@ -24,6 +24,11 @@ func TestResumeRecoversCommittingCombinedRewind(t *testing.T) {
 	if err := os.WriteFile(filePath, []byte("before"), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	fileInfo, err := os.Stat(filePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	diskMode := uint32(fileInfo.Mode().Perm())
 	fullMessages := []provider.Message{
 		{Role: provider.RoleSystem, Content: "sys"},
 		{Role: provider.RoleUser, Content: "first"},
@@ -68,8 +73,8 @@ func TestResumeRecoversCommittingCombinedRewind(t *testing.T) {
 		CheckpointBackup:    checkpointBackup,
 		Targets: []checkpoint.TransactionTarget{{
 			Path: "a.txt", AbsPath: filePath, Action: "write", Published: true,
-			RestoreExisted: true, RestoreSHA: checkpoint.Digest([]byte("before")), RestoreMode: 0o644,
-			ForwardExisted: true, ForwardSHA: checkpoint.Digest([]byte("after")), ForwardMode: 0o644,
+			RestoreExisted: true, RestoreSHA: checkpoint.Digest([]byte("before")), RestoreMode: diskMode,
+			ForwardExisted: true, ForwardSHA: checkpoint.Digest([]byte("after")), ForwardMode: diskMode,
 			ForwardInline: []byte("after"), BackupPath: filepath.Join(root, ".a.txt.reasonix-recovery.bak"),
 		}},
 	}
