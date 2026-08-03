@@ -1567,6 +1567,21 @@ func TestBuildRequestDeepSeekDisabled(t *testing.T) {
 	}{
 		{name: "effort-disabled", extra: map[string]any{"effort": "disabled"}},
 		{name: "thinking-disabled", extra: map[string]any{"thinking": "disabled"}},
+		{
+			name: "effort-disabled-with-explicit-levels",
+			extra: map[string]any{
+				"effort":            "disabled",
+				"supported_efforts": []string{"disabled", "high", "max"},
+			},
+		},
+		{
+			name: "thinking-disabled-overrides-explicit-levels",
+			extra: map[string]any{
+				"thinking":          "disabled",
+				"effort":            "max",
+				"supported_efforts": []string{"high"},
+			},
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			cfg := base
