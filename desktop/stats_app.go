@@ -46,11 +46,7 @@ func (a *App) UsageStats(req UsageStatsRequest) (UsageStatsRange, error) {
 	if err != nil {
 		return UsageStatsRange{}, err
 	}
-	dir := config.StatsDir()
-	if dir == "" {
-		return UsageStatsRange{From: from.Format(dateLayout), To: to.Format(dateLayout)}, nil
-	}
-	w := stats.NewWriter(dir)
+	w := stats.NewWriter(config.StatsDir())
 	res, err := w.Query(stats.SourceFilter{From: from, To: to, Source: req.Source})
 	if err != nil {
 		return UsageStatsRange{}, err

@@ -1736,7 +1736,7 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 		if recoveryModel != "" {
 			if re, ok := cfg.ResolveModel(recoveryModel); ok {
 				if rProv, err := NewProviderWithProxy(re, proxySpec); err == nil {
-					ctrlOpts.RecoveryReviewer = recovery.NewSessionWithSink(rProv, re.Price, sink)
+					ctrlOpts.RecoveryReviewer = recovery.NewSessionWithSink(rProv, re.Price, modelRefFromEntry(re), sink)
 				} else {
 					slog.Warn("recovery reviewer provider construction failed — rule-only recovery", "model", recoveryModel, "err", err)
 				}
@@ -1768,13 +1768,17 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 		// Prefer agent.subagent_models["capability-router"] when configured.
 		if modelRef := strings.TrimSpace(cfg.Agent.SubagentModels["capability-router"]); modelRef != "" {
 			if p, price, _, err := resolveSubagentProvider(modelRef, strings.TrimSpace(cfg.Agent.SubagentEfforts["capability-router"])); err == nil && p != nil {
-				router = &capability.SemanticRouter{Provider: p, Sink: sink, Model: modelRef, Pricing: price, Audit: capAudit}
+				usageModelRef := modelRef
+				if resolved, ok := cfg.ResolveModel(modelRef); ok {
+					usageModelRef = modelRefFromEntry(resolved)
+				}
+				router = &capability.SemanticRouter{Provider: p, Sink: sink, Model: usageModelRef, Pricing: price, Audit: capAudit}
 			}
 		}
 		if router == nil {
 			// Fallback to the executor's provider — and its pricing, so router
 			// usage events never display as zero-cost.
-			router = &capability.SemanticRouter{Provider: execProv, Sink: sink, Pricing: entry.Price, Audit: capAudit}
+			router = &capability.SemanticRouter{Provider: execProv, Sink: sink, Model: modelRef, Pricing: entry.Price, Audit: capAudit}
 		}
 		ctrl.WireCapabilityRouting(cfg.Plugins, capSpecs, router, capAudit)
 		ctrl.SetCapabilityProxyRouting(true)

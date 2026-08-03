@@ -15,6 +15,7 @@ package stats
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
 	"errors"
 	"io"
@@ -22,10 +23,14 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"reasonix/internal/filelock"
 )
 
 // dayLayout names one stats file per UTC-free local day, e.g. 2026-08-02.jsonl.
 const dayLayout = "2006-01-02"
+
+const appendLockTimeout = 2 * time.Second
 
 // record is one line in a daily stats file. TurnDone marks a completed turn so
 // per-day turn counts are available without touching session files.
@@ -71,12 +76,41 @@ func (w *Writer) Append(r record) error {
 	if err := os.MkdirAll(w.dir, 0o700); err != nil {
 		return err
 	}
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
+	ctx, cancel := context.WithTimeout(context.Background(), appendLockTimeout)
+	defer cancel()
+	release, err := filelock.Acquire(ctx, filepath.Join(w.dir, ".append.lock"))
+	if err != nil {
+		return err
+	}
+	defer release()
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR|os.O_APPEND, 0o600)
 	if err != nil {
 		return err
 	}
 	defer f.Close()
+	if err := ensureRecordBoundary(f); err != nil {
+		return err
+	}
 	_, err = f.Write(append(b, '\n'))
+	return err
+}
+
+// ensureRecordBoundary separates a torn trailing JSON object from the next
+// append. The caller holds the cross-process append lock, so checking the last
+// byte and repairing it cannot race another Reasonix writer.
+func ensureRecordBoundary(f *os.File) error {
+	st, err := f.Stat()
+	if err != nil || st.Size() == 0 {
+		return err
+	}
+	var tail [1]byte
+	if _, err := f.ReadAt(tail[:], st.Size()-1); err != nil {
+		return err
+	}
+	if tail[0] == '\n' {
+		return nil
+	}
+	_, err = f.Write([]byte{'\n'})
 	return err
 }
 

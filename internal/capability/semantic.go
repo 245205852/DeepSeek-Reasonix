@@ -192,6 +192,7 @@ func (r *SemanticRouter) callModel(ctx context.Context, input string, candidates
 		if r.Sink != nil {
 			r.Sink.Emit(event.Event{
 				Kind:        event.Usage,
+				ModelRef:    strings.TrimSpace(r.Model),
 				Usage:       usage,
 				Pricing:     r.Pricing,
 				UsageSource: event.UsageSourceCapabilityRouter,

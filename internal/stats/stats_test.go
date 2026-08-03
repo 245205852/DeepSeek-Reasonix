@@ -24,10 +24,7 @@ func TestRecorderWritesDailyFile(t *testing.T) {
 	r.Emit(turnEvent())
 
 	// The daily file must exist with three lines (2 usage + 1 turn marker).
-	files, err := os.ReadDir(dir)
-	if err != nil {
-		t.Fatalf("read dir: %v", err)
-	}
+	files := dailyJSONLFiles(t, dir)
 	if len(files) != 1 {
 		t.Fatalf("want 1 daily file, got %d", len(files))
 	}
@@ -96,10 +93,7 @@ func TestRecorderSkipsZeroUsage(t *testing.T) {
 	r := NewRecorder(&spySink{}, dir, "desktop")
 	r.Emit(usageEvent("m", 0, 0, 0, 0, 0, 0)) // TotalTokens <= 0 -> skipped
 	r.Emit(turnEvent())
-	files, err := os.ReadDir(dir)
-	if err != nil {
-		t.Fatalf("read dir: %v", err)
-	}
+	files := dailyJSONLFiles(t, dir)
 	if len(files) != 1 {
 		t.Fatalf("want 1 file (turn only), got %d", len(files))
 	}
@@ -214,6 +208,57 @@ func TestQueryEmptyRange(t *testing.T) {
 	}
 }
 
+func TestQueryDisabledWriterReturnsArrayContract(t *testing.T) {
+	now := time.Now()
+	got, err := NewWriter("").Query(SourceFilter{From: now, To: now})
+	if err != nil {
+		t.Fatalf("query: %v", err)
+	}
+	if got.Daily == nil || got.Models == nil || got.Providers == nil {
+		t.Fatalf("array contract contains nil slices: %+v", got)
+	}
+	b, err := json.Marshal(got)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var wire struct {
+		Daily     json.RawMessage `json:"daily"`
+		Models    json.RawMessage `json:"models"`
+		Providers json.RawMessage `json:"providers"`
+	}
+	if err := json.Unmarshal(b, &wire); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if string(wire.Daily) != "[]" || string(wire.Models) != "[]" || string(wire.Providers) != "[]" {
+		t.Fatalf("empty arrays serialized incorrectly: %s", b)
+	}
+}
+
+func TestQueryTopProviderAggregatesAcrossModels(t *testing.T) {
+	dir := t.TempDir()
+	w := NewWriter(dir)
+	day := dayStart(time.Now())
+	for _, rec := range []record{
+		{Timestamp: day, ModelRef: "provider-a/model-1", Total: 60},
+		{Timestamp: day, ModelRef: "provider-a/model-2", Total: 60},
+		{Timestamp: day, ModelRef: "provider-b/model-1", Total: 100},
+	} {
+		if err := w.Append(rec); err != nil {
+			t.Fatalf("append: %v", err)
+		}
+	}
+	got, err := w.Query(SourceFilter{From: day, To: day})
+	if err != nil {
+		t.Fatalf("query: %v", err)
+	}
+	if got.TopModel != "provider-b/model-1" {
+		t.Fatalf("top model = %q, want provider-b/model-1", got.TopModel)
+	}
+	if got.TopProvider != "provider-a" {
+		t.Fatalf("top provider = %q, want provider-a", got.TopProvider)
+	}
+}
+
 func TestDecodeRecordsSkipsMalformed(t *testing.T) {
 	// A torn or hand-edited line must not fail the whole day's read: it is
 	// skipped and the surrounding valid records still come through.
@@ -230,6 +275,26 @@ func TestDecodeRecordsSkipsMalformed(t *testing.T) {
 		if r.Total != 100 {
 			t.Fatalf("record total: want 100, got %d", r.Total)
 		}
+	}
+}
+
+func TestAppendRepairsTornTrailingRecord(t *testing.T) {
+	dir := t.TempDir()
+	w := NewWriter(dir)
+	now := time.Now()
+	path := filepath.Join(dir, now.Format(dayLayout)+".jsonl")
+	if err := os.WriteFile(path, []byte(`{"ts":"2026-08-02T10:00:00+08:00","total":`), 0o600); err != nil {
+		t.Fatalf("seed torn record: %v", err)
+	}
+	if err := w.Append(record{Timestamp: now, ModelRef: "deepseek/deepseek-v4-flash", Total: 42}); err != nil {
+		t.Fatalf("append after torn record: %v", err)
+	}
+	recs, err := readDaily(dir, now.Format(dayLayout))
+	if err != nil {
+		t.Fatalf("read daily: %v", err)
+	}
+	if len(recs) != 1 || recs[0].Total != 42 || recs[0].ModelRef != "deepseek/deepseek-v4-flash" {
+		t.Fatalf("recovered records = %+v", recs)
 	}
 }
 
@@ -299,6 +364,21 @@ func TestProviderSplit(t *testing.T) {
 }
 
 // --- test helpers ---
+
+func dailyJSONLFiles(t *testing.T, dir string) []os.DirEntry {
+	t.Helper()
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatalf("read dir: %v", err)
+	}
+	files := make([]os.DirEntry, 0, len(entries))
+	for _, entry := range entries {
+		if strings.HasSuffix(entry.Name(), ".jsonl") {
+			files = append(files, entry)
+		}
+	}
+	return files
+}
 
 type spySink struct{ events []event.Event }
 

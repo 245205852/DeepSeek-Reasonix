@@ -67,14 +67,17 @@ type SourceFilter struct {
 // yield zero entries. When SourceFilter.Source is set, only records whose
 // Source matches are counted.
 func (w *Writer) Query(f SourceFilter) (RangeStats, error) {
+	out := RangeStats{
+		From:      f.From.Format(dayLayout),
+		To:        f.To.Format(dayLayout),
+		Daily:     []DailyTokens{},
+		Models:    []ModelUsage{},
+		Providers: []ProviderUsage{},
+	}
 	if w == nil || w.dir == "" {
-		return RangeStats{From: f.From.Format(dayLayout), To: f.To.Format(dayLayout)}, nil
+		return out, nil
 	}
 	days := daysInRange(f.From, f.To)
-	out := RangeStats{
-		From: f.From.Format(dayLayout),
-		To:   f.To.Format(dayLayout),
-	}
 	modelTotals := map[string]int64{}
 	providerTotals := map[string]int64{}
 	active := map[string]bool{} // day -> active
@@ -158,7 +161,9 @@ func (w *Writer) Query(f SourceFilter) (RangeStats, error) {
 	out.Providers = providersSorted(providerTotals)
 	if len(out.Models) > 0 {
 		out.TopModel = out.Models[0].Model
-		out.TopProvider = out.Models[0].Provider
+	}
+	if len(out.Providers) > 0 {
+		out.TopProvider = out.Providers[0].Provider
 	}
 	if out.Tokens > 0 {
 		for i := range out.Models {

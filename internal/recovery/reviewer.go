@@ -69,26 +69,28 @@ type UsageSink interface {
 // Session is a bounded Auto Guard reviewer that calls provider.Stream directly.
 // It deliberately has no agent.Agent, tools, session history, or compaction.
 type Session struct {
-	prov    provider.Provider
-	pricing *provider.Pricing
-	sink    UsageSink
-	timeout time.Duration
+	prov     provider.Provider
+	pricing  *provider.Pricing
+	modelRef string
+	sink     UsageSink
+	timeout  time.Duration
 
 	mu sync.Mutex // serializes concurrent reviews on one shared provider instance
 }
 
 // NewSession creates an Auto Guard reviewer with temperature 0 and MaxTokens 256.
 func NewSession(prov provider.Provider, pricing *provider.Pricing) *Session {
-	return NewSessionWithSink(prov, pricing, nil)
+	return NewSessionWithSink(prov, pricing, "", nil)
 }
 
 // NewSessionWithSink is like NewSession but records usage under recovery-reviewer.
-func NewSessionWithSink(prov provider.Provider, pricing *provider.Pricing, sink UsageSink) *Session {
+func NewSessionWithSink(prov provider.Provider, pricing *provider.Pricing, modelRef string, sink UsageSink) *Session {
 	return &Session{
-		prov:    prov,
-		pricing: pricing,
-		sink:    sink,
-		timeout: reviewerTimeout,
+		prov:     prov,
+		pricing:  pricing,
+		modelRef: strings.TrimSpace(modelRef),
+		sink:     sink,
+		timeout:  reviewerTimeout,
 	}
 }
 
@@ -165,6 +167,7 @@ func (s *Session) Review(ctx context.Context, failure *FailureEvent, diagnosis [
 	if usage != nil && s.sink != nil {
 		s.sink.Emit(event.Event{
 			Kind:        event.Usage,
+			ModelRef:    s.modelRef,
 			Usage:       usage,
 			Pricing:     s.pricing,
 			UsageSource: event.UsageSourceRecoveryReviewer,
