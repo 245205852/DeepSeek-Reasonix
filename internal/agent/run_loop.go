@@ -198,7 +198,12 @@ func (a *Agent) runToolLoop(ctx context.Context, state *runLoopState) error {
 		}
 
 		text, reasoning, signature, calls, usage, interrupted, partialToolStarted, partialCalls, err := a.stream(ctx, step+1)
+		cacheDiagnostics := CompareShape(prevPrefixShape, prefixShape, usage)
 		if err != nil {
+			a.emitTurnUsage(usage, &cacheDiagnostics)
+			if msg, ok := finishReasonMessage(usage); ok {
+				a.sink.Emit(event.Event{Kind: event.Notice, Level: event.LevelWarn, Text: msg})
+			}
 			if interrupted && state.streamRecoveries < maxStreamRecoveries {
 				state.streamRecoveries++
 				a.recordInterruptedDisplay(text, reasoning, partialCalls, false, state.workDurationMs())
@@ -214,15 +219,9 @@ func (a *Agent) runToolLoop(ctx context.Context, state *runLoopState) error {
 			return err
 		}
 		state.streamRecoveries = 0
-		cacheDiagnostics := CompareShape(prevPrefixShape, prefixShape, usage)
 		a.lastPrefixShape = prefixShape
 		a.haveLastPrefixShape = true
-		if usage != nil && usage.TotalTokens > 0 {
-			a.sink.Emit(event.Event{Kind: event.Usage, Usage: usage, Pricing: a.pricing,
-				UsageSource:      a.usageSource,
-				CacheDiagnostics: &cacheDiagnostics,
-				SessionHit:       int(a.sessCacheHit.Load()), SessionMiss: int(a.sessCacheMiss.Load())})
-		}
+		a.emitTurnUsage(usage, &cacheDiagnostics)
 		if msg, ok := finishReasonMessage(usage); ok {
 			a.sink.Emit(event.Event{Kind: event.Notice, Level: event.LevelWarn, Text: msg})
 		}
@@ -258,6 +257,17 @@ func (a *Agent) runToolLoop(ctx context.Context, state *runLoopState) error {
 	// is already in the session, so the user can just send another message to pick
 	// up where it left off.
 	return &maxStepsPause{steps: state.runMaxSteps, key: state.runMaxStepsKey}
+}
+
+func (a *Agent) emitTurnUsage(usage *provider.Usage, cacheDiagnostics *CacheDiagnostics) {
+	if usage == nil || usage.TotalTokens <= 0 {
+		return
+	}
+	a.lastUsage.Store(usage)
+	a.sink.Emit(event.Event{Kind: event.Usage, Usage: usage, Pricing: a.pricing,
+		UsageSource:      a.usageSource,
+		CacheDiagnostics: cacheDiagnostics,
+		SessionHit:       int(a.sessCacheHit.Load()), SessionMiss: int(a.sessCacheMiss.Load())})
 }
 
 // handleFinalResponse processes a no-tool assistant turn: recovery pause,

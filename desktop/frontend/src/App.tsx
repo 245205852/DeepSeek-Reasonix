@@ -5058,16 +5058,6 @@ export default function App() {
                     <span className="workbench-dock__tab-label">{t("rightDock.remote")}</span>
                   </button>
                 )}
-                <button
-                  type="button"
-                  role="tab"
-                  aria-selected={terminalPanelOpen}
-                  className={`workbench-dock__tab${terminalPanelOpen ? " workbench-dock__tab--active" : ""}`}
-                  onClick={toggleTerminalPanel}
-                >
-                  <TerminalSquare size={13} />
-                  <span className="workbench-dock__tab-label">{t("rightDock.terminal")}</span>
-                </button>
               </div>
             </div>
             <div className="workbench-dock__body">

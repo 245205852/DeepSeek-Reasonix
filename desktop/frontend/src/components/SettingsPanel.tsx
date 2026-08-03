@@ -1253,11 +1253,13 @@ function normalizeExtraBodyMap(value: unknown): Record<string, unknown> {
   return out;
 }
 
-function normalizeProviderView(p: ProviderView): ProviderView {
+export function normalizeProviderView(p: ProviderView): ProviderView {
   const visionModels = asArray(p.visionModels);
   const requiresKey = providerRequiresKey(p);
   return {
     ...p,
+    name: String(p.name ?? ""),
+    baseUrl: String(p.baseUrl ?? ""),
     builtIn: Boolean(p.builtIn),
     added: Boolean(p.added),
     chatUrl: p.chatUrl ?? "",
@@ -5615,7 +5617,7 @@ function parseBotListInput(value: string): string[] {
     .filter(Boolean));
 }
 
-const ProviderEditorModelPicker = memo(function ProviderEditorModelPicker({
+export const ProviderEditorModelPicker = memo(function ProviderEditorModelPicker({
   candidates,
   selectedModels,
   visionModels,
@@ -5645,14 +5647,14 @@ const ProviderEditorModelPicker = memo(function ProviderEditorModelPicker({
     const timer = setTimeout(() => setDebouncedQuery(query), 150);
     return () => clearTimeout(timer);
   }, [query]);
-  if (candidates.length === 0) return null;
-  const selected = new Set(selectedModels);
-  const vision = new Set(visionModels);
   const q = debouncedQuery.trim().toLowerCase();
   const visibleCandidates = q
     ? candidates.filter((model) => model.toLowerCase().includes(q))
     : candidates;
   const deferredCandidates = useDeferredValue(visibleCandidates);
+  if (candidates.length === 0) return null;
+  const selected = new Set(selectedModels);
+  const vision = new Set(visionModels);
   return (
     <div className="provider-model-draft provider-model-draft--inline">
       <div className="provider-model-draft__head">

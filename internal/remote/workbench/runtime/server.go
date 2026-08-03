@@ -1469,6 +1469,7 @@ func sessionContextView(sess *session) protocol.ContextView {
 			view.ReasoningTokens = usage.ReasoningTokens
 			view.CacheHitTokens = usage.CacheHitTokens
 			view.CacheMissTokens = usage.CacheMissTokens
+			view.Estimated = usage.Estimated
 		}
 	}
 	if controller, ok := sess.ctrl.(interface{ SessionCache() (int, int) }); ok {

@@ -50,10 +50,9 @@ const (
 	// defaultBaseURL is the first-party endpoint; config may override it (e.g. a
 	// gateway). Bedrock/Vertex use a different request shape and are out of scope.
 	defaultBaseURL = "https://api.anthropic.com"
-	// defaultMaxTokens is the output ceiling used when the request leaves MaxTokens
-	// unset. Anthropic *requires* max_tokens, and the agent currently doesn't set
-	// it, so this is the de-facto cap. Generous (you only pay for tokens actually
-	// produced) and within every catalog model's limit (Sonnet/Haiku 64K, Opus 128K).
+	// defaultMaxTokens is the output ceiling used when neither the provider config
+	// nor the request supplies one. Anthropic requires max_tokens, so unlike the
+	// optional OpenAI-compatible budget it cannot be omitted.
 	defaultMaxTokens = 32768
 )
 
@@ -83,6 +82,12 @@ func New(cfg provider.Config) (provider.Provider, error) {
 	vision, _ := cfg.Extra["vision"].(bool)
 	headers, _ := cfg.Extra["headers"].(map[string]string)
 	authHeader, _ := cfg.Extra["auth_header"].(bool)
+	maxOutputTokens, _ := cfg.Extra["max_output_tokens"].(int)
+	if maxOutputTokens <= 0 {
+		// Messages requires max_tokens, so an optional-budget disable request
+		// falls back to the provider's stable mandatory default.
+		maxOutputTokens = defaultMaxTokens
+	}
 	httpClient, err := newHTTPClient(cfg)
 	if err != nil {
 		return nil, fmt.Errorf("anthropic: network: %w", err)
@@ -103,21 +108,22 @@ func New(cfg provider.Config) (provider.Provider, error) {
 		root = defaultBaseURL
 	}
 	return &client{
-		name:        name,
-		apiKey:      cfg.APIKey,
-		keyEnv:      keyEnv,
-		keySource:   keySource,
-		baseURL:     root,
-		model:       cfg.Model,
-		deepseek:    openai.IsDeepSeek(root),
-		thinking:    thinking,
-		effort:      effort,
-		vision:      vision,
-		mimo:        provider.IsMiMoEndpoint(root),
-		headers:     cleanCustomHeaders(headers),
-		authHeader:  authHeader,
-		http:        httpClient, // no overall timeout; lifecycle is ctx-driven
-		idleTimeout: defaultStreamIdleTimeout,
+		name:             name,
+		apiKey:           cfg.APIKey,
+		keyEnv:           keyEnv,
+		keySource:        keySource,
+		baseURL:          root,
+		model:            cfg.Model,
+		deepseek:         openai.IsDeepSeek(root),
+		thinking:         thinking,
+		effort:           effort,
+		vision:           vision,
+		mimo:             provider.IsMiMoEndpoint(root),
+		headers:          cleanCustomHeaders(headers),
+		authHeader:       authHeader,
+		defaultMaxTokens: maxOutputTokens,
+		http:             httpClient, // no overall timeout; lifecycle is ctx-driven
+		idleTimeout:      defaultStreamIdleTimeout,
 	}, nil
 }
 
@@ -127,22 +133,23 @@ func newHTTPClient(cfg provider.Config) (*http.Client, error) {
 }
 
 type client struct {
-	name        string
-	apiKey      string
-	keyEnv      string // api_key_env name, surfaced in auth errors
-	keySource   string // source of keyEnv, surfaced in auth errors
-	baseURL     string
-	model       string
-	deepseek    bool   // official DeepSeek Anthropic endpoint: unsigned reasoning replay + automatic cache
-	thinking    string // "adaptive" enables extended thinking; "" = off (config-driven)
-	effort      string // output_config.effort: low|medium|high|xhigh|max; "" = provider default
-	vision      bool   // model accepts image input — embed attached images as base64 image blocks
-	mimo        bool   // true for MiMo — upgrades legacy tuple schemas to Draft 2020-12
-	headers     map[string]string
-	authHeader  bool // send Authorization: Bearer instead of Anthropic's x-api-key header
-	http        *http.Client
-	idleTimeout time.Duration // SSE stall watchdog window; defaultStreamIdleTimeout unless a test overrides
-	authed      atomic.Bool   // a request has succeeded — gate transient-401 retry
+	name             string
+	apiKey           string
+	keyEnv           string // api_key_env name, surfaced in auth errors
+	keySource        string // source of keyEnv, surfaced in auth errors
+	baseURL          string
+	model            string
+	deepseek         bool   // official DeepSeek Anthropic endpoint: unsigned reasoning replay + automatic cache
+	thinking         string // "adaptive" enables extended thinking; "" = off (config-driven)
+	effort           string // output_config.effort: low|medium|high|xhigh|max; "" = provider default
+	vision           bool   // model accepts image input — embed attached images as base64 image blocks
+	mimo             bool   // true for MiMo — upgrades legacy tuple schemas to Draft 2020-12
+	headers          map[string]string
+	authHeader       bool // send Authorization: Bearer instead of Anthropic's x-api-key header
+	defaultMaxTokens int
+	http             *http.Client
+	idleTimeout      time.Duration // SSE stall watchdog window; defaultStreamIdleTimeout unless a test overrides
+	authed           atomic.Bool   // a request has succeeded — gate transient-401 retry
 }
 
 func (c *client) Name() string { return c.name }
@@ -396,7 +403,10 @@ func (c *client) buildRequest(req provider.Request) anthRequest {
 
 	maxTokens := req.MaxTokens
 	if maxTokens <= 0 {
-		maxTokens = defaultMaxTokens
+		maxTokens = c.defaultMaxTokens
+		if maxTokens <= 0 {
+			maxTokens = defaultMaxTokens
+		}
 	}
 	r := anthRequest{
 		Model:     c.model,
