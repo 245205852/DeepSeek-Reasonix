@@ -15801,9 +15801,9 @@ body > .mermaid-diagram--fullscreen {
   }
 
   .settings-subtabs {
-    display: flex;
-    width: 100%;
-    overflow-x: auto;
+    display: inline-flex;
+    max-width: 100%;
+    flex-wrap: wrap;
   }
 
   .memory-tabs-row {
