@@ -16832,26 +16832,44 @@ body > .mermaid-diagram--fullscreen {
 }
 .set-rule {
   display: inline-flex;
-  align-items: center;
+  align-items: flex-start;
   gap: 5px;
+  max-width: 100%;
+  min-width: 0;
   font-family: var(--mono);
   font-size: 11px;
   padding: 3px 4px 3px 7px;
   background: var(--bg-elev);
   border: 1px solid var(--border);
   border-radius: 6px;
+  /* Long permission commands must wrap inside the chip so the delete control
+     stays visible (Fixes #7315). Path rules already needed this; apply to all. */
+  overflow-wrap: anywhere;
+  white-space: normal;
 }
 .set-rule--path {
   max-width: 100%;
   overflow-wrap: anywhere;
   white-space: normal;
 }
+.set-rule__text {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
 .set-rule__x {
+  flex: 0 0 auto;
+  align-self: flex-start;
   border: none;
   background: transparent;
   color: var(--fg-faint);
   padding: 0 2px;
   font-size: 11px;
+  line-height: 1.35;
+}
+.set-rule .tooltip-trigger {
+  flex: 0 0 auto;
 }
 .set-rule__x:hover {
   color: var(--err);
