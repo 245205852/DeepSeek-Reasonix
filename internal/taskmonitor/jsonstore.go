@@ -301,8 +301,8 @@ func (s *FileStore) SaveTask(ctx context.Context, projectDir string, snap TaskSn
 	if err != nil {
 		return err
 	}
-	taskDir := filepath.Join(root, id)
-	if taskDir, err = prepareTaskDir(root, id); err != nil {
+	taskDir, err := prepareTaskDir(root, id)
+	if err != nil {
 		return fmt.Errorf("save task: %w", err)
 	}
 
@@ -389,8 +389,8 @@ func (s *FileStore) AppendAuditEvent(ctx context.Context, projectDir string, ev 
 	if err != nil {
 		return err
 	}
-	taskDir := filepath.Join(root, id)
-	if taskDir, err = prepareTaskDir(root, id); err != nil {
+	taskDir, err := prepareTaskDir(root, id)
+	if err != nil {
 		return fmt.Errorf("append audit event: %w", err)
 	}
 
@@ -545,7 +545,7 @@ func (s *FileStore) ClaimIdempotency(ctx context.Context, projectDir string, r I
 	if err := lockTaskFile(lf); err != nil {
 		return nil, err
 	}
-	defer unlockTaskFile(lf)
+	defer func() { _ = unlockTaskFile(lf) }()
 	data, err := os.ReadFile(target)
 	if err == nil {
 		var existing IdempotencyRecord
@@ -591,7 +591,7 @@ func (s *FileStore) FinalizeIdempotency(ctx context.Context, projectDir string, 
 	if err := lockTaskFile(lf); err != nil {
 		return err
 	}
-	defer unlockTaskFile(lf)
+	defer func() { _ = unlockTaskFile(lf) }()
 	data, err := os.ReadFile(target)
 	if err != nil {
 		return err
@@ -631,7 +631,7 @@ func (s *FileStore) ReleaseIdempotency(ctx context.Context, projectDir, key stri
 	if err := lockTaskFile(lf); err != nil {
 		return err
 	}
-	defer unlockTaskFile(lf)
+	defer func() { _ = unlockTaskFile(lf) }()
 	data, err := os.ReadFile(target)
 	if os.IsNotExist(err) {
 		return nil
