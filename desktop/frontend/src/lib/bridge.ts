@@ -438,6 +438,7 @@ export interface AppBindings {
   SetDesktopLanguage(lang: string): Promise<void>;
   SetDesktopCurrency(currency: string): Promise<void>;
   SetDesktopAppearance(theme: string, style: string): Promise<void>;
+  SetDesktopTerminalTheme(theme: string): Promise<void>;
   ListThemePacks(): Promise<import("./themePack").ThemePackView[]>;
   GetActiveThemePack(): Promise<import("./themePack").ThemeActiveView>;
   GetThemeExperience(): Promise<import("./themeExperience").ThemeExperienceView>;
@@ -1633,6 +1634,7 @@ function makeMockApp(): AppBindings {
     desktopLayoutStyle: "workbench",
     desktopTheme: "auto",
     desktopThemeStyle: "graphite",
+    desktopTerminalTheme: "auto",
     conversationWidth: "standard",
     closeBehavior: "background",
     displayMode: "compact",
@@ -3966,13 +3968,14 @@ function makeMockApp(): AppBindings {
       return this.SaveDoc(path, body);
     },
     async DesktopStartupSettings() {
-      const { bot, desktopLanguage, desktopLayoutStyle, desktopTheme, desktopThemeStyle, displayMode, statusBarStyle, statusBarItems, checkUpdates, conversationWidth } = settings;
+      const { bot, desktopLanguage, desktopLayoutStyle, desktopTheme, desktopThemeStyle, desktopTerminalTheme, displayMode, statusBarStyle, statusBarItems, checkUpdates, conversationWidth } = settings;
       return JSON.parse(JSON.stringify({
         bot,
         desktopLanguage,
         desktopLayoutStyle,
         desktopTheme,
         desktopThemeStyle,
+        desktopTerminalTheme,
         displayMode,
         statusBarStyle,
         statusBarItems,
@@ -4302,6 +4305,9 @@ function makeMockApp(): AppBindings {
           if (["graphite","aurora","slate","carbon","nocturne","amber"].includes(style)) {
             mockBaseStyle = style;
           }
+        },
+        async SetDesktopTerminalTheme(theme: string) {
+          settings.desktopTerminalTheme = theme === "dark" || theme === "light" ? theme : "auto";
         },
         async ListThemePacks() {
           const baseActive = !mockActiveThemeId;
