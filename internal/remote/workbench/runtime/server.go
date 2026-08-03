@@ -113,7 +113,10 @@ type Server struct {
 	socket      string
 	lockPath    string
 
-	registryMu   sync.Mutex
+	registryMu sync.Mutex
+	// profileMu serializes profile/Goal changes with controller/path rotations.
+	// These handlers run concurrently on the RPC server and otherwise can apply
+	// an old-epoch profile to a freshly rotated controller.
 	profileMu    sync.Mutex
 	registryRead bool
 	dormant      map[protocol.SessionID]runtimeSessionRecord
@@ -200,13 +203,14 @@ func (s *Server) retireSessionAfterLeaseFailure(sess *session, operation string,
 }
 
 type subscription struct {
-	id        protocol.SubscriptionID
-	gen       uint64
-	conn      *rpcwire.Conn
-	sessionID protocol.SessionID
-	seq       uint64
-	active    bool
-	pending   []protocol.SessionEvent
+	id           protocol.SubscriptionID
+	gen          uint64
+	conn         *rpcwire.Conn
+	sessionID    protocol.SessionID
+	runtimeEpoch protocol.RuntimeEpoch
+	seq          uint64
+	active       bool
+	pending      []protocol.SessionEvent
 }
 
 type sessionSink struct {
@@ -850,6 +854,9 @@ func nilSessionController(ctrl SessionController) bool {
 }
 
 func (s *Server) closeSession(p protocol.SessionCloseParams) (protocol.SessionCloseResult, error) {
+	s.profileMu.Lock()
+	defer s.profileMu.Unlock()
+
 	sess, err := s.sessionForMutation(p.ExpectedHostEpoch, p.Target, p.ExpectedRuntimeEpoch)
 	if err != nil {
 		return protocol.SessionCloseResult{}, err
@@ -904,7 +911,7 @@ func (s *Server) subscribe(gen uint64, p protocol.SessionSubscribeParams) (any, 
 		return nil, protocol.MustRemoteError(protocol.ErrStaleConnection, protocol.ErrorOptions{})
 	}
 	id := protocol.SubscriptionID("subscription_" + randomHex(10))
-	sub := &subscription{id: id, gen: gen, conn: conn, sessionID: sess.id}
+	sub := &subscription{id: id, gen: gen, conn: conn, sessionID: sess.id, runtimeEpoch: sess.runtimeEpoch}
 	s.subs[id] = sub
 	snapshot := s.snapshotLocked(sess, p.PageTurns)
 	s.mu.Unlock()
@@ -1116,6 +1123,9 @@ func (s *Server) shellRun(p protocol.ShellRunParams) (protocol.OperationStartedR
 }
 
 func (s *Server) newSession(p protocol.SessionNewParams) (protocol.SessionNewResult, error) {
+	s.profileMu.Lock()
+	defer s.profileMu.Unlock()
+
 	sess, err := s.sessionForMutation(p.ExpectedHostEpoch, p.Target, p.ExpectedRuntimeEpoch)
 	if err != nil {
 		return protocol.SessionNewResult{}, err
@@ -1138,10 +1148,14 @@ func (s *Server) newSession(p protocol.SessionNewParams) (protocol.SessionNewRes
 		// registry write (including shutdown) can persist the new transcript path.
 		s.logRegistryError("persist committed new session", err)
 	}
+	s.notifyRuntimeReplaced(sess.id, epoch)
 	return protocol.SessionNewResult{SourceTarget: p.Target, Target: p.Target, RuntimeEpoch: epoch, Disposition: "created", SnapshotRequired: true}, nil
 }
 
 func (s *Server) clearSession(p protocol.SessionClearParams) (protocol.SessionClearResult, error) {
+	s.profileMu.Lock()
+	defer s.profileMu.Unlock()
+
 	sess, err := s.sessionForMutation(p.ExpectedHostEpoch, p.Target, p.ExpectedRuntimeEpoch)
 	if err != nil {
 		return protocol.SessionClearResult{}, err
@@ -1164,6 +1178,7 @@ func (s *Server) clearSession(p protocol.SessionClearParams) (protocol.SessionCl
 		// destructive mutation committed, so keep the result authoritative.
 		s.logRegistryError("persist committed cleared session", err)
 	}
+	s.notifyRuntimeReplaced(sess.id, epoch)
 	return protocol.SessionClearResult{PreviousTarget: p.Target, Target: p.Target, RuntimeEpoch: epoch, Disposition: protocol.SessionCleared, SnapshotRequired: true}, nil
 }
 
@@ -1219,13 +1234,18 @@ func (s *Server) setProfile(ctx context.Context, p protocol.SessionProfileSetPar
 		return protocol.SessionProfileSetResult{}, err
 	}
 	s.mu.Lock()
-	busy := sessionHasActiveWorkLocked(sess)
-	s.mu.Unlock()
-	if busy {
-		return protocol.SessionProfileSetResult{}, protocol.MustRemoteError(protocol.ErrSessionBusy, protocol.ErrorOptions{Target: &p.Target})
+	if s.sessions[sess.id] != sess {
+		s.mu.Unlock()
+		return protocol.SessionProfileSetResult{}, protocol.MustRemoteError(protocol.ErrSessionNotFound, protocol.ErrorOptions{})
 	}
-	model, effort := sess.model, sess.effort
-	collaboration, tokenMode, toolApproval := sess.collaboration, sess.tokenMode, sess.toolApproval
+	busy := sessionHasActiveWorkLocked(sess)
+	currentModel, currentEffort := sess.model, sess.effort
+	currentCollaboration, currentTokenMode, currentToolApproval := sess.collaboration, sess.tokenMode, sess.toolApproval
+	ctrl := sess.ctrl
+	currentProfile, currentEpoch := resolvedProfile(sess), sess.runtimeEpoch
+	s.mu.Unlock()
+	model, effort := currentModel, currentEffort
+	collaboration, tokenMode, toolApproval := currentCollaboration, currentTokenMode, currentToolApproval
 	if p.Patch.Model != nil {
 		model = strings.TrimSpace(*p.Patch.Model)
 	}
@@ -1242,14 +1262,28 @@ func (s *Server) setProfile(ctx context.Context, p protocol.SessionProfileSetPar
 		toolApproval = *p.Patch.ToolApprovalMode
 	}
 	var goal *string
+	goalChanged := false
 	if p.Patch.Goal != nil {
 		value := strings.TrimSpace(*p.Patch.Goal)
 		goal = &value
-		if _, ok := sess.ctrl.(durableGoalController); !ok {
+		goalController, ok := ctrl.(durableGoalController)
+		if !ok {
 			return protocol.SessionProfileSetResult{}, protocol.MustRemoteError(protocol.ErrCapabilityUnavailable, protocol.ErrorOptions{})
 		}
+		currentGoal, currentGoalStatus := protocolGoal(goalController)
+		goalChanged = currentGoal != value || (value != "" && currentGoalStatus != protocol.GoalRunning)
 	}
-	rebuild := model != sess.model || effort != sess.effort || tokenMode != sess.tokenMode
+	rebuild := model != currentModel || effort != currentEffort || tokenMode != currentTokenMode
+	profileChanged := collaboration != currentCollaboration || toolApproval != currentToolApproval
+	if !rebuild && !profileChanged && !goalChanged {
+		return protocol.SessionProfileSetResult{
+			ResolvedProfile: currentProfile, RuntimeEpoch: currentEpoch,
+			Disposition: protocol.ProfileUnchanged, AutoResolvedPromptIDs: []protocol.PromptID{},
+		}, nil
+	}
+	if busy {
+		return protocol.SessionProfileSetResult{}, protocol.MustRemoteError(protocol.ErrSessionBusy, protocol.ErrorOptions{Target: &p.Target})
+	}
 	if !rebuild {
 		s.mu.Lock()
 		if s.sessions[sess.id] != sess {
@@ -1262,7 +1296,7 @@ func (s *Server) setProfile(ctx context.Context, p protocol.SessionProfileSetPar
 		profile, epoch := resolvedProfile(sess), sess.runtimeEpoch
 		s.mu.Unlock()
 		var txn *profileGoalTransaction
-		if goal != nil {
+		if goalChanged {
 			txn, err = s.beginProfileGoalTransaction(ctrl.SessionPath())
 			if err != nil {
 				s.mu.Lock()
@@ -1283,7 +1317,7 @@ func (s *Server) setProfile(ctx context.Context, p protocol.SessionProfileSetPar
 			return protocol.SessionProfileSetResult{}, protocol.MustRemoteError(protocol.ErrSessionPersistFailed, protocol.ErrorOptions{Target: &p.Target})
 		}
 		applyControllerProfile(ctrl, collaboration, toolApproval)
-		if goal != nil {
+		if goalChanged {
 			if err := ctrl.(durableGoalController).SetGoalDurable(*goal, profileTransactionCreateToken(txn)); err != nil {
 				s.mu.Lock()
 				if s.sessions[sess.id] == sess && sess.collaboration == collaboration && sess.toolApproval == toolApproval {
@@ -1306,8 +1340,8 @@ func (s *Server) setProfile(ctx context.Context, p protocol.SessionProfileSetPar
 				return protocol.SessionProfileSetResult{}, protocol.MustRemoteError(protocol.ErrSessionPersistFailed, protocol.ErrorOptions{Target: &p.Target})
 			}
 			_ = finishProfileGoalTransaction(txn)
-			s.notifyStateChanged(sess.id)
 		}
+		s.notifyStateChanged(sess.id)
 		return protocol.SessionProfileSetResult{
 			ResolvedProfile: profile, RuntimeEpoch: epoch,
 			Disposition: protocol.ProfileUpdated, AutoResolvedPromptIDs: []protocol.PromptID{},
@@ -1405,9 +1439,9 @@ func (s *Server) setProfile(ctx context.Context, p protocol.SessionProfileSetPar
 			return protocol.SessionProfileSetResult{}, protocol.MustRemoteError(protocol.ErrSessionPersistFailed, protocol.ErrorOptions{Target: &p.Target})
 		}
 		_ = finishProfileGoalTransaction(txn)
-		s.notifyStateChanged(sess.id)
 	}
 	old.Close()
+	s.notifyRuntimeReplaced(sess.id, epoch)
 	return protocol.SessionProfileSetResult{
 		ResolvedProfile: profile, RuntimeEpoch: epoch,
 		Disposition: protocol.ProfileRebuilt, AutoResolvedPromptIDs: []protocol.PromptID{},

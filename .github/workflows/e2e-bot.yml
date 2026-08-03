@@ -93,10 +93,12 @@ jobs:
           echo "agent under test: $src"
 
       - name: Write provider config
+        env:
+          REASONIX_HOME: ${{ runner.temp }}/reasonix-e2e-home
         # User config covers suite tasks (they run in temp dirs); the repo-root copy
         # covers diff mode (the agent runs in the repo root, where project config wins).
         run: |
-          mkdir -p ~/.config/reasonix
+          mkdir -p "$REASONIX_HOME"
           cat > /tmp/reasonix-e2e.toml <<EOF
           default_model = "e2e"
 
@@ -120,12 +122,13 @@ jobs:
           [codegraph]
           enabled = false
           EOF
-          cp /tmp/reasonix-e2e.toml ~/.config/reasonix/config.toml
+          cp /tmp/reasonix-e2e.toml "$REASONIX_HOME/config.toml"
           cp /tmp/reasonix-e2e.toml ./reasonix.toml
 
       - name: Run e2e
         env:
           DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+          REASONIX_HOME: ${{ runner.temp }}/reasonix-e2e-home
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           COMMENT_BODY: ${{ github.event.comment.body }}
         run: |
@@ -137,7 +140,7 @@ jobs:
           # global credential file, not inherited process variables. Keep this
           # ephemeral runner copy private and outside the checked-out project.
           umask 077
-          printf 'DEEPSEEK_API_KEY=%s\n' "$DEEPSEEK_API_KEY" > "$HOME/.config/reasonix/.env"
+          printf 'DEEPSEEK_API_KEY=%s\n' "$DEEPSEEK_API_KEY" > "$REASONIX_HOME/.env"
           if printf '%s' "$COMMENT_BODY" | grep -q '/e2e[[:space:]]\+diff'; then
             ATTEMPTS=$(printf '%s' "$COMMENT_BODY" | sed -nE 's@.*/e2e[[:space:]]+diff[[:space:]]+x([0-9]+).*@\1@p' | head -1)
             [ -z "$ATTEMPTS" ] && ATTEMPTS=1
