@@ -180,7 +180,8 @@ func TestRemoteWorkbenchWindowsToLinuxPhysicalAcceptance(t *testing.T) {
 	}
 
 	firstRequest := receiveRemoteWorkbenchAcceptanceRequest(t, ctx, providerStub.requests)
-	if len(firstRequest.Messages) == 0 || firstRequest.Messages[len(firstRequest.Messages)-1].Content != "read the physical acceptance marker" {
+	if len(firstRequest.Messages) == 0 || firstRequest.Messages[len(firstRequest.Messages)-1].Role != provider.RoleUser ||
+		!strings.Contains(firstRequest.Messages[len(firstRequest.Messages)-1].Content, "read the physical acceptance marker") {
 		t.Fatalf("initial Broker request lost the user prompt: %+v", firstRequest.Messages)
 	}
 	secondRequest := receiveRemoteWorkbenchAcceptanceRequest(t, ctx, providerStub.requests)
