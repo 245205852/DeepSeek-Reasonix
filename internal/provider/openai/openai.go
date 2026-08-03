@@ -138,7 +138,15 @@ func New(cfg provider.Config) (provider.Provider, error) {
 			}
 		case "high", "max":
 		default:
-			return nil, fmt.Errorf("openai: provider %q uses DeepSeek thinking; effort must be low, high, max, or disabled", name)
+			// A provider that declares supported_efforts is stating its own
+			// effort vocabulary, which is the whole point of the field on a
+			// third-party endpoint that merely serves a DeepSeek model under a
+			// different scale. Our built-in vocabulary must not override that
+			// declaration — the same reasoning already applies to "low" above.
+			if supportsEffort(supportedEfforts, effort) {
+				break
+			}
+			return nil, fmt.Errorf("openai: provider %q uses DeepSeek thinking; effort must be low, high, max, or disabled, or declared in supported_efforts", name)
 		}
 	case minimax:
 		// M3's knob is binary. The config effort layer normalises user input
