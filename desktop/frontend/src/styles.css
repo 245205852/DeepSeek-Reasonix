@@ -30475,20 +30475,63 @@ body > .mermaid-diagram--fullscreen {
 .app--creation .composer-profile-trigger,
 :root[data-theme-style] .app--creation .composer-profile-trigger {
   height: 28px;
-  padding-inline: 7px;
+  gap: 0;
+  padding-inline: 9px;
   box-shadow: none;
+  font-size: calc(11.5px * var(--font-scale));
+  font-weight: 500;
 }
 
 .app--creation .composer-task-mode-trigger,
 :root[data-theme-style] .app--creation .composer-task-mode-trigger {
   height: 28px;
-  padding-inline: 7px;
+  gap: 0;
+  padding-inline: 9px;
+  font-size: calc(11.5px * var(--font-scale));
+  font-weight: 500;
 }
 
-.app--creation .composer-task-mode-trigger svg,
-:root[data-theme-style] .app--creation .composer-task-mode-trigger svg {
-  width: 15px;
-  height: 15px;
+/* Creation: text-only pills — drop leading icons + chevrons (match modelsw) */
+.app--creation .composer-task-mode-trigger > svg,
+.app--creation .composer-profile-trigger > svg,
+:root[data-theme-style] .app--creation .composer-task-mode-trigger > svg,
+:root[data-theme-style] .app--creation .composer-profile-trigger > svg {
+  display: none;
+}
+
+.app--creation .composer-task-mode-trigger__value,
+.app--creation .composer-profile-trigger__value,
+:root[data-theme-style] .app--creation .composer-task-mode-trigger__value,
+:root[data-theme-style] .app--creation .composer-profile-trigger__value {
+  color: color-mix(in srgb, var(--fg) 88%, transparent);
+  font-weight: 500;
+}
+
+.app--creation .composer-task-mode-trigger:hover:not(:disabled),
+.app--creation .composer-task-mode-trigger:focus-visible,
+.app--creation .composer-task-mode-trigger--open,
+.app--creation .composer-profile-trigger:hover:not(:disabled),
+.app--creation .composer-profile-trigger:focus-visible,
+.app--creation .composer-profile-trigger--open,
+:root[data-theme-style] .app--creation .composer-task-mode-trigger:hover:not(:disabled),
+:root[data-theme-style] .app--creation .composer-task-mode-trigger:focus-visible,
+:root[data-theme-style] .app--creation .composer-task-mode-trigger--open,
+:root[data-theme-style] .app--creation .composer-profile-trigger:hover:not(:disabled),
+:root[data-theme-style] .app--creation .composer-profile-trigger:focus-visible,
+:root[data-theme-style] .app--creation .composer-profile-trigger--open {
+  border-color: color-mix(in srgb, var(--fg-faint) 18%, transparent);
+  background: color-mix(in srgb, var(--bg-elev) 14%, transparent);
+  color: var(--fg);
+}
+
+.app--creation .composer-meta__control--profile,
+:root[data-theme-style] .app--creation .composer-meta__control--profile {
+  max-width: 64px;
+}
+
+.app--creation .composer-meta__control--intent,
+:root[data-theme-style] .app--creation .composer-meta__control--intent {
+  max-width: 64px;
 }
 
 .app--creation .composer-modebar,
