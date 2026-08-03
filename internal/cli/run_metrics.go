@@ -36,6 +36,7 @@ type RunMetrics struct {
 	MissingReasoningDetected       int     `json:"missing_reasoning_detected,omitempty"`
 	MissingReasoningRetries        int     `json:"missing_reasoning_retries,omitempty"`
 	MissingReasoningRecovered      int     `json:"missing_reasoning_recovered,omitempty"`
+	MissingReasoningReplaced       int     `json:"missing_reasoning_retry_replaced_response,omitempty"`
 	MissingReasoningSuppressed     int     `json:"missing_reasoning_retry_suppressed,omitempty"`
 	MissingReasoningFallbacks      int     `json:"missing_reasoning_fallbacks,omitempty"`
 	// Capability / Delivery routing counters (optional; zero for older readers).
@@ -139,6 +140,8 @@ func (s *metricsSink) RecordProtocolRecovery(a event.ProtocolRecoveryAudit) {
 		s.m.Steps++
 	case event.ProtocolRecoveryMissingReasoningRetryRecovered:
 		s.m.MissingReasoningRecovered++
+	case event.ProtocolRecoveryMissingReasoningRetryReplaced:
+		s.m.MissingReasoningReplaced++
 	case event.ProtocolRecoveryMissingReasoningRetrySuppressed:
 		s.m.MissingReasoningSuppressed++
 	case event.ProtocolRecoveryMissingReasoningFallback:

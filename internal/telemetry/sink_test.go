@@ -49,7 +49,7 @@ func TestSinkWritesOnlyWhitelistedContentFreeCounters(t *testing.T) {
 	sink.Emit(event.Event{Kind: event.ToolResult, Tool: event.Tool{
 		Name: secret, Args: secret, Output: secret, Err: "permission denied: " + secret,
 	}})
-	event.RecordProtocolRecovery(sink, event.ProtocolRecoveryAudit{Kind: event.ProtocolRecoveryMissingReasoningDetected})
+	event.RecordProtocolRecovery(sink, event.ProtocolRecoveryAudit{Kind: event.ProtocolRecoveryMissingReasoningRetryReplaced})
 	sink.Emit(event.Event{Kind: event.TurnDone, Err: &provider.APIError{
 		Provider: secret, Status: 429, Body: secret, TraceID: secret,
 	}})
@@ -83,7 +83,7 @@ func TestSinkWritesOnlyWhitelistedContentFreeCounters(t *testing.T) {
 		"tool_error":                   "permission",
 		"provider_error":               "rate_limit",
 		"cli_exit":                     "error",
-		"tool_call_reasoning_recovery": "missing_reasoning_detected",
+		"tool_call_reasoning_recovery": "missing_reasoning_retry_replaced_response",
 	} {
 		if got[signal] != bucket {
 			t.Errorf("%s bucket = %q, want %q", signal, got[signal], bucket)

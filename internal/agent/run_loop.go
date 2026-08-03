@@ -411,6 +411,11 @@ func (a *Agent) streamWithMissingReasoningRecovery(ctx context.Context, turn int
 	if retryMissing {
 		event.RecordProtocolRecovery(a.sink, event.ProtocolRecoveryAudit{Kind: event.ProtocolRecoveryMissingReasoningDetected})
 		event.RecordProtocolRecovery(a.sink, event.ProtocolRecoveryAudit{Kind: event.ProtocolRecoveryMissingReasoningFallback})
+	} else if len(retry.calls) == 0 {
+		// An exact replay can legitimately choose a different completion shape.
+		// Adopt it wholesale because no tool from the discarded response ran, but
+		// do not misreport the disappearance of tool calls as recovered reasoning.
+		event.RecordProtocolRecovery(a.sink, event.ProtocolRecoveryAudit{Kind: event.ProtocolRecoveryMissingReasoningRetryReplaced})
 	} else {
 		event.RecordProtocolRecovery(a.sink, event.ProtocolRecoveryAudit{Kind: event.ProtocolRecoveryMissingReasoningRetryRecovered})
 	}

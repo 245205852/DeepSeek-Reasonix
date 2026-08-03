@@ -436,6 +436,61 @@ func TestRunSilentlyRecoversMissingToolCallReasoning(t *testing.T) {
 	}
 }
 
+// An exact recovery replay may choose a normal final answer instead of
+// repeating the original tool call. The replacement is authoritative because
+// no tool has run yet: discard the speculative call, persist only the final
+// response, and classify the outcome separately from recovered reasoning.
+func TestMissingReasoningRecoveryAdoptsRetryWithoutToolCall(t *testing.T) {
+	mp := testutil.NewMock("deepseek-proxy",
+		testutil.Turn{
+			ToolCalls: []provider.ToolCall{{ID: "discarded", Name: "echo", Arguments: `{"text":"must not run"}`}},
+			Usage:     &provider.Usage{PromptTokens: 10, CompletionTokens: 2, TotalTokens: 12, FinishReason: "tool_calls"},
+		},
+		testutil.Turn{
+			Text:  "completed without a tool",
+			Usage: &provider.Usage{PromptTokens: 10, CompletionTokens: 3, TotalTokens: 13, FinishReason: "stop"},
+		},
+	)
+	sink := &recordSink{}
+	a := New(toolCallReasoningRequiredProvider{mp}, echoRegistry(), NewSession(""), Options{}, sink)
+
+	if err := a.Run(context.Background(), "go"); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if mp.CallCount() != 2 {
+		t.Fatalf("provider calls = %d, want malformed + replacement", mp.CallCount())
+	}
+	var toolTurns, toolResults int
+	for _, message := range a.Session().Messages {
+		if message.Role == provider.RoleAssistant && len(message.ToolCalls) > 0 {
+			toolTurns++
+		}
+		if message.Role == provider.RoleTool {
+			toolResults++
+		}
+	}
+	if toolTurns != 0 || toolResults != 0 {
+		t.Fatalf("discarded tool response reached session: turns=%d results=%d session=%+v", toolTurns, toolResults, a.Session().Messages)
+	}
+	last := a.Session().Messages[len(a.Session().Messages)-1]
+	if last.Role != provider.RoleAssistant || last.Content != "completed without a tool" {
+		t.Fatalf("replacement response not adopted: %+v", last)
+	}
+	if got := len(sink.kinds(event.ToolDispatch)); got != 0 {
+		t.Fatalf("discarded tool dispatches = %d, want 0", got)
+	}
+	usageEvents := sink.kinds(event.Usage)
+	if len(usageEvents) == 0 || usageEvents[0].Usage == nil || usageEvents[0].Usage.TotalTokens != 25 {
+		t.Fatalf("replacement usage was not merged truthfully: %+v", usageEvents)
+	}
+	if sink.recoveryCount(event.ProtocolRecoveryMissingReasoningRetryAttempted) != 1 ||
+		sink.recoveryCount(event.ProtocolRecoveryMissingReasoningRetryReplaced) != 1 ||
+		sink.recoveryCount(event.ProtocolRecoveryMissingReasoningRetryRecovered) != 0 ||
+		sink.recoveryCount(event.ProtocolRecoveryMissingReasoningFallback) != 0 {
+		t.Fatalf("unexpected recovery classification: %+v", sink.recovery)
+	}
+}
+
 func TestMissingReasoningRecoveryFailureFallsBackBeforeToolExecution(t *testing.T) {
 	mp := testutil.NewMock("deepseek-proxy",
 		testutil.Turn{
