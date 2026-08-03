@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"unsafe"
 
 	"github.com/go-ole/go-ole"
@@ -19,7 +20,7 @@ import (
 
 var (
 	windowsKnownFolderPath      = windows.KnownFolderPath
-	windowsWriteShortcut        = writeWindowsShortcut
+	windowsRepairShortcut       = repairWindowsShortcut
 	windowsNotifyShortcutChange = notifyWindowsShortcutChanged
 )
 
@@ -40,7 +41,7 @@ func repairDesktopIconIntegration() error {
 	if err != nil {
 		return err
 	}
-	return repairExistingWindowsShortcuts(paths, launcher, windowsWriteShortcut)
+	return repairExistingWindowsShortcuts(paths, launcher, windowsRepairShortcut)
 }
 
 func reasonixWindowsShortcutPaths() ([]string, error) {
@@ -55,7 +56,7 @@ func reasonixWindowsShortcutPaths() ([]string, error) {
 	}, nil
 }
 
-func repairExistingWindowsShortcuts(paths []string, launcher string, writer func(string, string) error) error {
+func repairExistingWindowsShortcuts(paths []string, launcher string, repair func(string, string) (bool, error)) error {
 	var repairErr error
 	for _, path := range paths {
 		info, err := os.Lstat(path)
@@ -68,63 +69,94 @@ func repairExistingWindowsShortcuts(paths []string, launcher string, writer func
 		if !info.Mode().IsRegular() {
 			continue
 		}
-		if err := writer(path, launcher); err != nil {
+		repaired, err := repair(path, launcher)
+		if err != nil {
 			repairErr = errors.Join(repairErr, fmt.Errorf("%s: %w", path, err))
 			continue
 		}
-		windowsNotifyShortcutChange(path)
+		if repaired {
+			windowsNotifyShortcutChange(path)
+		}
 	}
 	return repairErr
 }
 
-func writeWindowsShortcut(shortcutPath, launcher string) error {
+func repairWindowsShortcut(shortcutPath, launcher string) (bool, error) {
 	runtime.LockOSThread()
 	defer runtime.UnlockOSThread()
 	if err := ole.CoInitializeEx(0, ole.COINIT_APARTMENTTHREADED); err != nil {
-		return err
+		return false, err
 	}
 	defer ole.CoUninitialize()
 
 	unknown, err := oleutil.CreateObject("WScript.Shell")
 	if err != nil {
-		return err
+		return false, err
 	}
 	defer unknown.Release()
 	shell, err := unknown.QueryInterface(ole.IID_IDispatch)
 	if err != nil {
-		return err
+		return false, err
 	}
 	defer shell.Release()
 	created, err := oleutil.CallMethod(shell, "CreateShortcut", shortcutPath)
 	if err != nil {
-		return err
+		return false, err
 	}
 	shortcut := created.ToIDispatch()
 	if shortcut == nil {
 		_ = created.Clear()
-		return fmt.Errorf("WScript.Shell returned no shortcut object")
+		return false, fmt.Errorf("WScript.Shell returned no shortcut object")
 	}
 	defer shortcut.Release()
 
-	for name, value := range map[string]string{
-		"TargetPath":       launcher,
-		"IconLocation":     launcher + ",0",
-		"WorkingDirectory": filepath.Dir(launcher),
-		"Description":      "Reasonix",
-	} {
-		result, err := oleutil.PutProperty(shortcut, name, value)
-		if result != nil {
-			_ = result.Clear()
-		}
-		if err != nil {
-			return fmt.Errorf("set %s: %w", name, err)
-		}
+	targetValue, err := oleutil.GetProperty(shortcut, "TargetPath")
+	if err != nil {
+		return false, fmt.Errorf("read TargetPath: %w", err)
 	}
-	result, err := oleutil.CallMethod(shortcut, "Save")
+	target := targetValue.ToString()
+	_ = targetValue.Clear()
+	if !reasonixWindowsShortcutTarget(target, launcher) {
+		return false, nil
+	}
+
+	result, err := oleutil.PutProperty(shortcut, "IconLocation", launcher+",0")
 	if result != nil {
 		_ = result.Clear()
 	}
-	return err
+	if err != nil {
+		return false, fmt.Errorf("set IconLocation: %w", err)
+	}
+	result, err = oleutil.CallMethod(shortcut, "Save")
+	if result != nil {
+		_ = result.Clear()
+	}
+	return err == nil, err
+}
+
+func reasonixWindowsShortcutTarget(target, launcher string) bool {
+	target = filepath.Clean(strings.TrimSpace(target))
+	launcher = filepath.Clean(strings.TrimSpace(launcher))
+	if target == "." || launcher == "." {
+		return false
+	}
+	root := filepath.Dir(launcher)
+	for _, owned := range []string{
+		launcher,
+		filepath.Join(root, "Reasonix.exe"),
+		filepath.Join(root, "reasonix-desktop.exe"),
+	} {
+		if strings.EqualFold(target, owned) {
+			return true
+		}
+	}
+	rel, err := filepath.Rel(root, target)
+	if err != nil || rel == "." || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return false
+	}
+	parts := strings.Split(rel, string(filepath.Separator))
+	return len(parts) == 3 && strings.EqualFold(parts[0], "versions") &&
+		strings.EqualFold(parts[2], "reasonix-desktop.exe")
 }
 
 func notifyWindowsShortcutChanged(path string) {
