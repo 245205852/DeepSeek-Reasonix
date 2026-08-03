@@ -13,10 +13,7 @@ export function Welcome({ onPrompt, variant = "default" }: { onPrompt: (text: st
     void onPrompt;
     return (
       <div className="welcome welcome--creation">
-        <h2 className="welcome-creation__headline">
-          <span>{t("welcome.creation.titlePrimary")}</span>
-          <span>{t("welcome.creation.titleSecondary")}</span>
-        </h2>
+        <h2 className="welcome-creation__headline">{t("welcome.creation.title")}</h2>
       </div>
     );
   }
