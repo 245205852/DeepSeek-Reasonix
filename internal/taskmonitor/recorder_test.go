@@ -212,11 +212,15 @@ func TestTaskRecorder_EmptySessionIDAllowed(t *testing.T) {
 	ctx := context.Background()
 
 	r.RecordStart("t1", "bash", "")
-	snap, err := store.GetTask(ctx, dir, "t1")
-	if err != nil || snap == nil {
-		t.Fatalf("GetTask: %+v, %v", snap, err)
+	tasks, err := store.ListTasks(ctx, dir)
+	if err != nil || len(tasks) != 1 {
+		t.Fatalf("ListTasks: %+v, %v", tasks, err)
 	}
-	events, err := store.ListEvents(ctx, dir, "t1", 0)
+	snap := tasks[0]
+	if snap.TaskID == "t1" || snap.SessionID != "" {
+		t.Fatalf("snapshot identity = %+v, want unique sessionless ID", snap)
+	}
+	events, err := store.ListEvents(ctx, dir, snap.TaskID, 0)
 	if err != nil || len(events) != 1 {
 		t.Fatalf("events: %+v, %v", events, err)
 	}

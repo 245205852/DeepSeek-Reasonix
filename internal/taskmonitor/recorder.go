@@ -2,6 +2,7 @@ package taskmonitor
 
 import (
 	"context"
+	crand "crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
@@ -48,6 +49,17 @@ func monitorTaskID(sessionID, jobID string) string {
 	return hex.EncodeToString(h[:8]) + "--" + jobID
 }
 
+func sessionlessMonitorTaskID(jobID string) string {
+	var nonce [8]byte
+	if _, err := crand.Read(nonce[:]); err != nil {
+		// crypto/rand failure is exceptional; retain a bounded, non-path-like
+		// identity rather than falling back to the colliding raw job ID.
+		h := sha256.Sum256([]byte(fmt.Sprintf("%s:%d", jobID, timeNow().UnixNano())))
+		return hex.EncodeToString(h[:8]) + "--" + jobID
+	}
+	return hex.EncodeToString(nonce[:]) + "--" + jobID
+}
+
 func (r *TaskRecorder) rememberMonitorID(jobID, monitorID string) {
 	r.mu.Lock()
 	r.monitorIDs[jobID] = monitorID
@@ -70,6 +82,9 @@ func (r *TaskRecorder) RecordStart(id, kind, label string) {
 		sessionID = r.sessionIDFn()
 	}
 	monitorID := monitorTaskID(sessionID, id)
+	if sessionID == "" {
+		monitorID = sessionlessMonitorTaskID(id)
+	}
 	r.rememberMonitorID(id, monitorID)
 	snap := TaskSnapshot{
 		SchemaVersion: 1,
