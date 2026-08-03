@@ -320,7 +320,7 @@ func (s *Store) Begin(turn int, prompt string, msgIndex int) {
 func (s *Store) Bounds() map[int]int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	m := make(map[int]int, len(s.done)+1)
+	m := make(map[int]int, len(s.done))
 	for _, c := range s.done {
 		m[c.Turn] = c.MsgIndex
 	}
