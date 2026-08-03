@@ -14903,7 +14903,16 @@ body > .mermaid-diagram--fullscreen {
 }
 
 .compact-ratio-presets {
+  width: 100%;
   max-width: 100%;
+}
+
+.compact-ratio-presets .set-seg__btn {
+  flex: 1 1 auto;
+  min-width: 0;
+  padding-inline: 8px;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .compact-ratio-impact,

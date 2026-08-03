@@ -4384,6 +4384,9 @@ function ModelsSection({ s, busy, apply, backgroundApply, initialFocus }: Models
                     aria-expanded={compactRatioCustomOpen}
                     aria-pressed={compactRatioCustomOpen || !compactRatioIsPreset}
                     aria-controls="settings-compact-ratio-custom-panel"
+                    title={compactRatioIsPreset
+                      ? t("settings.compactRatioCustomOption")
+                      : t("settings.compactRatioCustomValue", { percent: compactRatioPercent })}
                     onClick={compactRatioCustomOpen ? closeCompactRatioCustom : openCompactRatioCustom}
                   >
                     {compactRatioIsPreset
