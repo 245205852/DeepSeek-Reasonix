@@ -119,14 +119,15 @@ func PlannerPromptWithContext(context string) string {
 // executor (a full tool-using Agent) carries it out. The sessions never mix, so
 // neither model's prefix is disturbed by the other's turns.
 type Coordinator struct {
-	planner        provider.Provider
-	plannerSess    *Session
-	plannerSystem  string
-	plannerPricing *provider.Pricing
-	plannerAgent   *Agent
-	executor       *Agent
-	temperature    float64
-	sink           event.Sink
+	planner         provider.Provider
+	plannerSess     *Session
+	plannerSystem   string
+	plannerPricing  *provider.Pricing
+	plannerModelRef string
+	plannerAgent    *Agent
+	executor        *Agent
+	temperature     float64
+	sink            event.Sink
 	// plannerPolicy chooses executor-only, plan-and-execute, or plan-for-approval
 	// per turn. nil preserves the historical "plan every turn" constructor
 	// behavior used by direct Coordinator callers.
@@ -178,15 +179,16 @@ func newCoordinator(planner provider.Provider, plannerSession *Session, plannerP
 		executor.executorHandoffGuard = true
 	}
 	return &Coordinator{
-		planner:        planner,
-		plannerSess:    plannerSession,
-		plannerSystem:  plannerSystem,
-		plannerPricing: plannerPricing,
-		plannerAgent:   plannerAgent,
-		executor:       executor,
-		temperature:    temperature,
-		sink:           sink,
-		plannerPolicy:  policy,
+		planner:         planner,
+		plannerSess:     plannerSession,
+		plannerSystem:   plannerSystem,
+		plannerPricing:  plannerPricing,
+		plannerModelRef: strings.TrimSpace(plannerOptions.ModelRef),
+		plannerAgent:    plannerAgent,
+		executor:        executor,
+		temperature:     temperature,
+		sink:            sink,
+		plannerPolicy:   policy,
 	}
 }
 
@@ -841,7 +843,7 @@ func (c *Coordinator) plan(ctx context.Context, input string) (string, error) {
 	}
 	// Closes the planner's raw text block (no markdown redraw) and prints its
 	// usage line, mirroring the old Fprintln + printUsage tail.
-	c.sink.Emit(event.Event{Kind: event.Usage, Usage: usage, Pricing: c.plannerPricing, Source: event.UsageSourcePlanner, UsageSource: event.UsageSourcePlanner})
+	c.sink.Emit(event.Event{Kind: event.Usage, ModelRef: c.plannerModelRef, Usage: usage, Pricing: c.plannerPricing, Source: event.UsageSourcePlanner, UsageSource: event.UsageSourcePlanner})
 
 	plan := text.String()
 	c.plannerSess.Add(provider.Message{Role: provider.RoleAssistant, Content: plan})

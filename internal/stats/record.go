@@ -39,7 +39,8 @@ type record struct {
 	CacheHit   int       `json:"cache_hit,omitempty"`
 	CacheMiss  int       `json:"cache_miss,omitempty"`
 	Total      int       `json:"total,omitempty"`
-	Turn       bool      `json:"turn,omitempty"` // true for TurnDone marker rows
+	Requests   int       `json:"requests,omitempty"` // provider requests represented by this row
+	Turn       bool      `json:"turn,omitempty"`     // true for TurnDone marker rows
 }
 
 // Writer appends records to the daily stats file for a given stats dir.

@@ -59,6 +59,34 @@ func TestResolveStatsRange(t *testing.T) {
 			wantErr: "needs valid from/to dates",
 		},
 		{
+			name:    "custom reversed dates",
+			req:     UsageStatsRequest{Range: "custom", From: "2026-07-31", To: "2026-07-01"},
+			wantErr: "must not be after",
+		},
+		{
+			name:    "custom future to date",
+			req:     UsageStatsRequest{Range: "custom", From: today(0).Format(dateLayout), To: today(1).Format(dateLayout)},
+			wantErr: "must not be in the future",
+		},
+		{
+			name: "custom maximum span",
+			req: UsageStatsRequest{
+				Range: "custom",
+				From:  today(-(maxStatsCustomRangeDays - 1)).Format(dateLayout),
+				To:    today(0).Format(dateLayout),
+			},
+			want: [2]time.Time{today(-(maxStatsCustomRangeDays - 1)), today(0)},
+		},
+		{
+			name: "custom over maximum span",
+			req: UsageStatsRequest{
+				Range: "custom",
+				From:  today(-maxStatsCustomRangeDays).Format(dateLayout),
+				To:    today(0).Format(dateLayout),
+			},
+			wantErr: "cannot exceed",
+		},
+		{
 			name: "empty range defaults to 7 days",
 			req:  UsageStatsRequest{},
 			want: [2]time.Time{today(-6), today(0)},

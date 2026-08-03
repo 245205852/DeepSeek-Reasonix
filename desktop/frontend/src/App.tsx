@@ -4533,6 +4533,9 @@ export default function App() {
                   </button>
                 </Tooltip>
               )}
+              {sidebarCreation && !sidebarImDetailConnection && activeTab?.scope === "project" && (
+                <ExternalOpener tabId={activeTab.id} dismissSignal={transientOverlayDismissSignal} />
+              )}
               {!sidebarImDetailConnection && (
               <>
               <Tooltip label={t("topicBar.copyAll")}>
@@ -4607,7 +4610,7 @@ export default function App() {
                   </button>
                 </Tooltip>
               )}
-              {!sidebarImDetailConnection && activeTab?.scope === "project" && (
+              {!sidebarCreation && !sidebarImDetailConnection && activeTab?.scope === "project" && (
                 <ExternalOpener tabId={activeTab.id} dismissSignal={transientOverlayDismissSignal} />
               )}
               <Tooltip label={t("shortcuts.cheatsheetTitle")}>

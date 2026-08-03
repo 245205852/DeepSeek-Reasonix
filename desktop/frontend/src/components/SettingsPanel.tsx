@@ -4155,7 +4155,7 @@ function ModelsSection({ s, busy, apply, backgroundApply, initialFocus }: Models
           aria-selected={subtab === "stats"}
           onClick={() => setSubtab("stats")}
         >
-          {t("settings.modelTab.stats")}
+          {t("settings.modelUsage")}
         </button>
       </div>
 

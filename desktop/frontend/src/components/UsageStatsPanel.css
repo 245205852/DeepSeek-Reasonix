@@ -4,10 +4,21 @@
    per-model palette derive from --accent / a hue cycle via color-mix. */
 
 .usage-stats {
+  --stats-hue-l: 66%;
   display: flex;
   flex-direction: column;
   gap: 18px;
   min-width: 0;
+}
+
+@media (prefers-color-scheme: light) {
+  :root:not([data-theme]) .usage-stats {
+    --stats-hue-l: 46%;
+  }
+}
+
+:root[data-theme="light"] .usage-stats {
+  --stats-hue-l: 42%;
 }
 
 .usage-stats__toolbar {

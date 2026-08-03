@@ -2945,10 +2945,7 @@ function makeMockApp(): AppBindings {
         },
         async UsageStats() {
           // Browser dev mock has no stats files; return an empty aggregate.
-          const now = new Date();
-          const to = now.toISOString().slice(0, 10);
-          const from = new Date(now.getTime() - 6 * 864e5).toISOString().slice(0, 10);
-          return { from, to, tokens: 0, requests: 0, turns: 0, cacheHit: 0, cacheMiss: 0, activeDays: 0, topModel: "", topProvider: "", daily: [], models: [], providers: [] };
+          return { from: "", to: "", tokens: 0, requests: 0, turns: 0, cacheHit: 0, cacheMiss: 0, activeDays: 0, topModel: "", topProvider: "", daily: [], models: [], providers: [] };
         },
         async Jobs() {
           return []; // browser dev mock has no background jobs

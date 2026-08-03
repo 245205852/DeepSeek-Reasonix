@@ -8,9 +8,10 @@
 // this chunk), so the ~7 KB rule block never inflates the settings bundle.
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { Activity, CalendarDays, Coins, Cpu, MessageSquare, MessagesSquare } from "lucide-react";
-import { useT, type Translator } from "../lib/i18n";
+import { useI18n } from "../lib/i18n";
 import { app } from "../lib/bridge";
 import type { DailyTokenUsage, UsageStatsRange, UsageStatsRequest } from "../lib/types";
+import { formatUsageTokens as formatTokens } from "../lib/usageStatsFormat";
 import "./UsageStatsPanel.css";
 
 const RANGE_PRESETS = ["7", "14", "30", "90"] as const;
@@ -21,6 +22,132 @@ const SOURCES = ["all", "desktop", "cli", "serve", "bot", "remote"] as const;
 // The heatmap always shows a fixed 40-week window regardless of the range
 // preset (it only follows the source filter).
 const HEAT_WEEKS = 40;
+
+// Keep this lazy panel's translations in its own chunk. Putting them in the
+// eager global English dictionary makes an unopened settings subtab part of
+// every desktop startup bundle.
+const USAGE_STATS_TRANSLATIONS = {
+  en: {
+    "common.loading": "Loading…",
+    "common.none": "none",
+    "settings.stats.range": "Time range",
+    "settings.stats.rangePreset.7": "Last 7 days",
+    "settings.stats.rangePreset.14": "Last 14 days",
+    "settings.stats.rangePreset.30": "Last 30 days",
+    "settings.stats.rangePreset.90": "Last 90 days",
+    "settings.stats.rangeCustom": "Custom",
+    "settings.stats.from": "From",
+    "settings.stats.to": "To",
+    "settings.stats.source": "Source",
+    "settings.stats.source.all": "All",
+    "settings.stats.source.desktop": "Desktop",
+    "settings.stats.source.cli": "CLI",
+    "settings.stats.source.serve": "Web",
+    "settings.stats.source.bot": "Bot",
+    "settings.stats.source.remote": "Remote",
+    "settings.stats.refresh": "Refresh",
+    "settings.stats.tokens": "Token usage",
+    "settings.stats.sessions": "Sessions",
+    "settings.stats.requests": "Requests",
+    "settings.stats.activeDays": "Active days",
+    "settings.stats.cacheRate": "Avg cache hit rate",
+    "settings.stats.cacheRateHint": "Cached input tokens as a share of all input tokens in the range",
+    "settings.stats.cacheHitRate": "Cache hit rate",
+    "settings.stats.hitRateLegend": "Cache hit rate",
+    "settings.stats.topModel": "Most used model",
+    "settings.stats.topModelHint": "Ranked by token volume, not call count",
+    "settings.stats.heatmap": "Activity heatmap",
+    "settings.stats.heatLess": "Less",
+    "settings.stats.heatMore": "More",
+    "settings.stats.dailyTrend": "Daily token trend",
+    "settings.stats.modelUsage": "Model usage",
+    "settings.stats.total": "Total",
+    "settings.stats.percent": "Share",
+    "settings.stats.asOf": "As of",
+    "settings.stats.empty": "No usage data in this range yet. Token usage is recorded from the day this feature ships.",
+  },
+  zh: {
+    "common.loading": "加载中…",
+    "common.none": "无",
+    "settings.stats.range": "时间范围",
+    "settings.stats.rangePreset.7": "最近 7 天",
+    "settings.stats.rangePreset.14": "最近 14 天",
+    "settings.stats.rangePreset.30": "最近 30 天",
+    "settings.stats.rangePreset.90": "最近 90 天",
+    "settings.stats.rangeCustom": "自定义",
+    "settings.stats.from": "开始日期",
+    "settings.stats.to": "结束日期",
+    "settings.stats.source": "统计来源",
+    "settings.stats.source.all": "全部",
+    "settings.stats.source.desktop": "桌面端",
+    "settings.stats.source.cli": "命令行",
+    "settings.stats.source.serve": "网页端",
+    "settings.stats.source.bot": "机器人",
+    "settings.stats.source.remote": "远程工作台",
+    "settings.stats.refresh": "刷新",
+    "settings.stats.tokens": "Tokens 用量",
+    "settings.stats.sessions": "会话数量",
+    "settings.stats.requests": "请求数量",
+    "settings.stats.activeDays": "活跃天数",
+    "settings.stats.cacheRate": "平均缓存命中率",
+    "settings.stats.cacheRateHint": "时间段内缓存命中 token 占输入 token 的比例",
+    "settings.stats.cacheHitRate": "缓存命中率",
+    "settings.stats.hitRateLegend": "缓存命中率",
+    "settings.stats.topModel": "最常用模型",
+    "settings.stats.topModelHint": "按 token 用量排序，非调用次数",
+    "settings.stats.heatmap": "活跃热力图",
+    "settings.stats.heatLess": "较少",
+    "settings.stats.heatMore": "较多",
+    "settings.stats.dailyTrend": "按天 Token 趋势",
+    "settings.stats.modelUsage": "模型用量",
+    "settings.stats.total": "总用量",
+    "settings.stats.percent": "占比",
+    "settings.stats.asOf": "统计截至",
+    "settings.stats.empty": "当前时间范围内暂无用量数据。Token 用量从本功能启用后开始累计。",
+  },
+  "zh-TW": {
+    "common.loading": "載入中…",
+    "common.none": "無",
+    "settings.stats.range": "時間範圍",
+    "settings.stats.rangePreset.7": "最近 7 天",
+    "settings.stats.rangePreset.14": "最近 14 天",
+    "settings.stats.rangePreset.30": "最近 30 天",
+    "settings.stats.rangePreset.90": "最近 90 天",
+    "settings.stats.rangeCustom": "自訂",
+    "settings.stats.from": "開始日期",
+    "settings.stats.to": "結束日期",
+    "settings.stats.source": "統計來源",
+    "settings.stats.source.all": "全部",
+    "settings.stats.source.desktop": "桌面端",
+    "settings.stats.source.cli": "命令列",
+    "settings.stats.source.serve": "網頁端",
+    "settings.stats.source.bot": "機器人",
+    "settings.stats.source.remote": "遠端工作台",
+    "settings.stats.refresh": "重新整理",
+    "settings.stats.tokens": "Tokens 用量",
+    "settings.stats.sessions": "會話數量",
+    "settings.stats.requests": "請求數量",
+    "settings.stats.activeDays": "活躍天數",
+    "settings.stats.cacheRate": "平均快取命中率",
+    "settings.stats.cacheRateHint": "時間範圍內快取命中 token 佔輸入 token 的比例",
+    "settings.stats.cacheHitRate": "快取命中率",
+    "settings.stats.hitRateLegend": "快取命中率",
+    "settings.stats.topModel": "最常用模型",
+    "settings.stats.topModelHint": "依 token 用量排序，非呼叫次數",
+    "settings.stats.heatmap": "活躍熱力圖",
+    "settings.stats.heatLess": "較少",
+    "settings.stats.heatMore": "較多",
+    "settings.stats.dailyTrend": "按天 Token 趨勢",
+    "settings.stats.modelUsage": "模型用量",
+    "settings.stats.total": "總用量",
+    "settings.stats.percent": "佔比",
+    "settings.stats.asOf": "統計截至",
+    "settings.stats.empty": "目前時間範圍內暫無用量資料。Token 用量從此功能啟用後開始累計。",
+  },
+} as const;
+
+type UsageStatsKey = keyof typeof USAGE_STATS_TRANSLATIONS.en;
+type UsageStatsTranslator = (key: UsageStatsKey) => string;
 
 // The per-model palette is a user-specified set of 20 colours. Colours are
 // assigned in the order the models were first used, drawn from a determinis-
@@ -81,7 +208,8 @@ function localDay(offsetDays: number): string {
 }
 
 export function UsageStatsPanel() {
-  const t = useT();
+  const { locale } = useI18n();
+  const t = useCallback<UsageStatsTranslator>((key) => USAGE_STATS_TRANSLATIONS[locale][key], [locale]);
   const [range, setRange] = useState<string>("30");
   const [customFrom, setCustomFrom] = useState("");
   const [customTo, setCustomTo] = useState("");
@@ -102,12 +230,16 @@ export function UsageStatsPanel() {
 
   const loadHeat = useCallback(async () => {
     const generation = ++heatGenRef.current;
+    setHeatDaily([]);
     try {
       const res = await app.UsageStats({ range: "custom", from: heatWindow.from, to: heatWindow.to, source });
       if (heatGenRef.current !== generation) return;
       setHeatDaily(res.daily);
     } catch {
-      // The heatmap is auxiliary — a failed fetch just leaves the cells empty.
+      if (heatGenRef.current !== generation) return;
+      // The heatmap is auxiliary — a failed fetch leaves the current source
+      // empty instead of retaining cells from the previous source.
+      setHeatDaily([]);
     }
   }, [heatWindow.from, heatWindow.to, source]);
 
@@ -252,7 +384,7 @@ export function UsageStatsPanel() {
 
 // ── Section 2+3: numeric cards ────────────────────────────────────────────
 
-function StatCards({ stats, t }: { stats: UsageStatsRange; t: Translator }) {
+function StatCards({ stats, t }: { stats: UsageStatsRange; t: UsageStatsTranslator }) {
   const topModel = stats.topModel || t("common.none");
   // The model name is the longest value: it may wrap to a second line on
   // narrow windows instead of being shrunk or truncated; tokens shows the
@@ -335,7 +467,7 @@ const HEAT_GAP = 3;
 // container grows the cells to fill it; once the container can no longer fit
 // the window at HEAT_BASE the earliest columns are trimmed first, so the most
 // recent weeks stay visible (never the reverse).
-function Heatmap({ daily, from, to, t }: { daily: DailyTokenUsage[]; from: string; to: string; t: Translator }) {
+function Heatmap({ daily, from, to, t }: { daily: DailyTokenUsage[]; from: string; to: string; t: UsageStatsTranslator }) {
   const [tip, setTip] = useState<{ day: string; tokens: number; requests: number; cacheHit: number; cacheMiss: number; x: number; top: number; bottom: number } | null>(null);
   const wrapRef = useRef<HTMLDivElement>(null);
   const [geom, setGeom] = useState<{ size: number; cols: number }>({ size: HEAT_BASE, cols: HEAT_WEEKS });
@@ -446,7 +578,7 @@ function Heatmap({ daily, from, to, t }: { daily: DailyTokenUsage[]; from: strin
 
 // ── Section 5: stacked daily token trend ──────────────────────────────────
 
-function DailyTrend({ stats, t, colorForModel }: { stats: UsageStatsRange; t: Translator; colorForModel: (m: string) => string }) {
+function DailyTrend({ stats, t, colorForModel }: { stats: UsageStatsRange; t: UsageStatsTranslator; colorForModel: (m: string) => string }) {
   const daily = stats.daily;
   const [tip, setTip] = useState<{ day: string; total: number; byModel: Record<string, number>; cacheHit: number; cacheMiss: number; cx: number; top: number; bottom: number } | null>(null);
   const [hover, setHover] = useState<string | null>(null);
@@ -657,7 +789,7 @@ function DailyTrend({ stats, t, colorForModel }: { stats: UsageStatsRange; t: Tr
 
 // ── Section 6: per-model donut + list ─────────────────────────────────────
 
-function ModelUsage({ stats, t, colorForModel }: { stats: UsageStatsRange; t: Translator; colorForModel: (m: string) => string }) {
+function ModelUsage({ stats, t, colorForModel }: { stats: UsageStatsRange; t: UsageStatsTranslator; colorForModel: (m: string) => string }) {
   const models = stats.models;
   const [tip, setTip] = useState<{ model: string; tokens: number; percent: number; x: number; y: number } | null>(null);
   const [hover, setHover] = useState<string | null>(null);
@@ -753,12 +885,6 @@ function ModelUsage({ stats, t, colorForModel }: { stats: UsageStatsRange; t: Tr
 
 function providerOf(model: string): string {
   return model.includes("/") ? model.split("/")[0] : "default";
-}
-
-function formatTokens(n: number): string {
-  if (n >= 1e8) return (n / 1e8).toFixed(n % 1e8 === 0 ? 0 : 1) + "亿";
-  if (n >= 1e4) return (n / 1e4).toFixed(n % 1e4 === 0 ? 0 : 1) + "万";
-  return String(n);
 }
 
 function formatCompact(n: number): string {

@@ -41,11 +41,12 @@ const (
 // system prompt and prior transcript stay in the prefix cache. Each review adds
 // a delta user message, keeping the common prefix byte-stable.
 type Session struct {
-	prov    provider.Provider
-	agent   *agent.Agent
-	sess    *agent.Session
-	sink    event.Sink
-	pricing *provider.Pricing
+	prov     provider.Provider
+	agent    *agent.Agent
+	sess     *agent.Session
+	sink     event.Sink
+	pricing  *provider.Pricing
+	modelRef string
 
 	policyPrompt string // stored so Reset can recreate the system prompt
 
@@ -81,10 +82,12 @@ func NewSession(prov provider.Provider, readOnlyReg *tool.Registry, policyPrompt
 		prov:         prov,
 		sink:         sink,
 		pricing:      pricing,
+		modelRef:     strings.TrimSpace(modelRef),
 		policyPrompt: policyPrompt,
 	}
 	sess := agent.NewSession(policyPrompt)
 	ag := agent.New(prov, readOnlyReg, sess, agent.Options{
+		ModelRef:    strings.TrimSpace(modelRef),
 		MaxSteps:    6, // guardian reviews: enough for a few read-only tool calls
 		Temperature: temperature,
 		// Use the shared context window so the guardian session can compact
@@ -488,7 +491,8 @@ func (gs *Session) countRecentDenials() int {
 func (gs *Session) emitTo(sink event.Sink, a Assessment, tool, subj string, durMs int64, usage *provider.Usage) {
 	id := fmt.Sprintf("guardian-%d", time.Now().UnixNano())
 	sink.Emit(event.Event{
-		Kind: event.GuardianAssessment,
+		Kind:     event.GuardianAssessment,
+		ModelRef: gs.modelRef,
 		Guardian: event.GuardianResult{
 			ID:                id,
 			Tool:              tool,

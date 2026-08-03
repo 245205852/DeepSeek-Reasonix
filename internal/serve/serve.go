@@ -29,6 +29,7 @@ import (
 	"reasonix/internal/jobs"
 	"reasonix/internal/nilutil"
 	"reasonix/internal/provider"
+	"reasonix/internal/stats"
 	"reasonix/internal/store"
 )
 
@@ -58,6 +59,8 @@ type Server struct {
 	buildController func(ctx context.Context, ref string) (*control.Controller, error)
 	titleProv       provider.Provider // lightweight flash provider for session titles
 	titlePrice      *provider.Pricing
+	titleModelRef   string
+	titleUsageSink  event.Sink
 	titles          *titleCache
 	auth            *authGate // nil when auth is disabled
 	// leases guards the active session file against other runtimes (a desktop
@@ -167,6 +170,10 @@ func (s *Server) initTitleProvider() {
 	}
 	s.titleProv = prov
 	s.titlePrice = entry.Price
+	s.titleModelRef = entry.Name + "/" + entry.Model
+	// Title generation is accounting-only; do not inject its usage event into
+	// the shared chat SSE stream.
+	s.titleUsageSink = stats.NewRecorder(event.Discard, config.StatsDir(), "serve")
 }
 
 // switchModel rebuilds the controller with a new model, carrying over the
@@ -1220,13 +1227,13 @@ func (s *Server) generateTitle(ctx context.Context, firstMsg string) string {
 		case provider.ChunkText:
 			text.WriteString(chunk.Text)
 		case provider.ChunkUsage:
-			// Title usage is intentionally not broadcast on the shared chat SSE stream.
+			usage = chunk.Usage
 		case provider.ChunkError:
 			return ""
 		}
 	}
-	if usage != nil && usage.TotalTokens > 0 && s.bc != nil {
-		s.bc.Emit(event.Event{Kind: event.Usage, Usage: usage, Pricing: s.titlePrice, UsageSource: event.UsageSourceTitle})
+	if usage != nil && usage.TotalTokens > 0 && !nilutil.IsNil(s.titleUsageSink) {
+		s.titleUsageSink.Emit(event.Event{Kind: event.Usage, ModelRef: s.titleModelRef, Usage: usage, Pricing: s.titlePrice, UsageSource: event.UsageSourceTitle})
 	}
 	title := strings.TrimSpace(text.String())
 	if len(title) >= 2 && ((title[0] == '"' && title[len(title)-1] == '"') || (title[0] == '\'' && title[len(title)-1] == '\'')) {

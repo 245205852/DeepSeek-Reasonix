@@ -72,7 +72,10 @@ func (a *App) UsageStats(req UsageStatsRequest) (UsageStatsRange, error) {
 	}, nil
 }
 
-const dateLayout = "2006-01-02"
+const (
+	dateLayout              = "2006-01-02"
+	maxStatsCustomRangeDays = 3660
+)
 
 // resolveStatsRange maps a request's Range into an inclusive [from, to] pair.
 // "custom" requires valid From/To dates; the presets end today.
@@ -92,6 +95,18 @@ func resolveStatsRange(req UsageStatsRequest) (from, to time.Time, err error) {
 		t, terr := time.ParseInLocation(dateLayout, req.To, now.Location())
 		if ferr != nil || terr != nil {
 			return time.Time{}, time.Time{}, fmt.Errorf("usage stats: custom range needs valid from/to dates (2006-01-02)")
+		}
+		if t.Before(f) {
+			return time.Time{}, time.Time{}, fmt.Errorf("usage stats: custom range from date must not be after to date")
+		}
+		today := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
+		if t.After(today) {
+			return time.Time{}, time.Time{}, fmt.Errorf("usage stats: custom range to date must not be in the future")
+		}
+		fUTC := time.Date(f.Year(), f.Month(), f.Day(), 0, 0, 0, 0, time.UTC)
+		tUTC := time.Date(t.Year(), t.Month(), t.Day(), 0, 0, 0, 0, time.UTC)
+		if days := int(tUTC.Sub(fUTC)/(24*time.Hour)) + 1; days > maxStatsCustomRangeDays {
+			return time.Time{}, time.Time{}, fmt.Errorf("usage stats: custom range cannot exceed %d days", maxStatsCustomRangeDays)
 		}
 		from = time.Date(f.Year(), f.Month(), f.Day(), 0, 0, 0, 0, now.Location())
 		to = time.Date(t.Year(), t.Month(), t.Day(), 23, 59, 59, 0, now.Location())

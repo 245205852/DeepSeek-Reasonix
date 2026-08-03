@@ -2,9 +2,11 @@ package stats
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -45,6 +47,47 @@ func TestRecorderWritesDailyFile(t *testing.T) {
 	// Forwarding must be untouched.
 	if len(inner.events) != 3 {
 		t.Fatalf("want 3 forwarded events, got %d", len(inner.events))
+	}
+}
+
+func TestRecorderCountsMergedProviderRequests(t *testing.T) {
+	dir := t.TempDir()
+	r := NewRecorder(&spySink{}, dir, "desktop")
+	e := usageEvent("deepseek/deepseek-v4-pro", 100, 50, 10, 0, 100, 150)
+	e.Usage.RequestCount = 2
+	r.Emit(e)
+
+	day := dayStart(time.Now())
+	got, err := r.writer.Query(SourceFilter{From: day, To: day})
+	if err != nil {
+		t.Fatalf("query: %v", err)
+	}
+	if got.Requests != 2 || len(got.Daily) != 1 || got.Daily[0].Requests != 2 {
+		t.Fatalf("merged requests = total %d daily %+v, want 2", got.Requests, got.Daily)
+	}
+}
+
+func TestRecorderCapturesGuardianUsageAndPreservesProtocolAudit(t *testing.T) {
+	dir := t.TempDir()
+	inner := &auditSpySink{}
+	r := NewRecorder(inner, dir, "desktop")
+	r.Emit(event.Event{
+		Kind:     event.GuardianAssessment,
+		ModelRef: "deepseek/deepseek-v4-flash",
+		Guardian: event.GuardianResult{Usage: &provider.Usage{PromptTokens: 10, CompletionTokens: 5, TotalTokens: 15}},
+	})
+	event.RecordProtocolRecovery(r, event.ProtocolRecoveryAudit{Kind: event.ProtocolRecoveryMissingReasoningRetryRecovered})
+
+	day := dayStart(time.Now())
+	got, err := r.writer.Query(SourceFilter{From: day, To: day})
+	if err != nil {
+		t.Fatalf("query: %v", err)
+	}
+	if got.Tokens != 15 || got.TopModel != "deepseek/deepseek-v4-flash" {
+		t.Fatalf("guardian usage = %+v", got)
+	}
+	if len(inner.protocol) != 1 || inner.protocol[0].Kind != event.ProtocolRecoveryMissingReasoningRetryRecovered {
+		t.Fatalf("protocol audit was not forwarded: %+v", inner.protocol)
 	}
 }
 
@@ -190,6 +233,36 @@ func TestDecodeRecordsSkipsMalformed(t *testing.T) {
 	}
 }
 
+func TestConcurrentWritersAppendWholeRecords(t *testing.T) {
+	dir := t.TempDir()
+	now := time.Now()
+	const writers = 8
+	const perWriter = 40
+	var wg sync.WaitGroup
+	for i := 0; i < writers; i++ {
+		wg.Add(1)
+		go func(model int) {
+			defer wg.Done()
+			w := NewWriter(dir)
+			for j := 0; j < perWriter; j++ {
+				if err := w.Append(record{Timestamp: now, ModelRef: fmt.Sprintf("provider/model-%d", model), Total: 1}); err != nil {
+					t.Errorf("append: %v", err)
+					return
+				}
+			}
+		}(i)
+	}
+	wg.Wait()
+
+	recs, err := readDaily(dir, now.Format(dayLayout))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(recs) != writers*perWriter {
+		t.Fatalf("records = %d, want %d", len(recs), writers*perWriter)
+	}
+}
+
 // TestDailyTokensWireKeys guards the JSON contract the desktop panel reads:
 // the hand-written frontend types use camelCase (byModel/byProvider), so a
 // snake_case tag here silently yields undefined fields in DailyTrend and
@@ -230,6 +303,16 @@ func TestProviderSplit(t *testing.T) {
 type spySink struct{ events []event.Event }
 
 func (s *spySink) Emit(e event.Event) { s.events = append(s.events, e) }
+
+type auditSpySink struct {
+	events   []event.Event
+	protocol []event.ProtocolRecoveryAudit
+}
+
+func (s *auditSpySink) Emit(e event.Event) { s.events = append(s.events, e) }
+func (s *auditSpySink) RecordProtocolRecovery(a event.ProtocolRecoveryAudit) {
+	s.protocol = append(s.protocol, a)
+}
 
 func usageEvent(model string, prompt, completion, reasoning, hit, miss, total int) event.Event {
 	return event.Event{

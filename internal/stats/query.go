@@ -12,7 +12,7 @@ type DailyTokens struct {
 	Total      int              `json:"total"`
 	ByModel    map[string]int64 `json:"byModel"`    // model ref -> tokens
 	ByProvider map[string]int64 `json:"byProvider"` // provider name -> tokens
-	Requests   int              `json:"requests"`   // usage events (API calls)
+	Requests   int              `json:"requests"`   // provider API requests
 	Turns      int              `json:"turns"`      // completed turns
 	CacheHit   int64            `json:"cacheHit"`   // cached input tokens that day
 	CacheMiss  int64            `json:"cacheMiss"`  // uncached input tokens that day
@@ -41,7 +41,7 @@ type RangeStats struct {
 	To   string `json:"to"`   // inclusive
 	// Totals
 	Tokens    int64 `json:"tokens"`
-	Requests  int   `json:"requests"` // usage events (API calls)
+	Requests  int   `json:"requests"` // provider API requests
 	Turns     int   `json:"turns"`    // completed turns
 	CacheHit  int64 `json:"cache_hit"`
 	CacheMiss int64 `json:"cache_miss"`
@@ -109,8 +109,12 @@ func (w *Writer) Query(f SourceFilter) (RangeStats, error) {
 			dayCacheHit += int64(rec.CacheHit)
 			dayCacheMiss += int64(rec.CacheMiss)
 			if rec.Total > 0 {
-				out.Requests++
-				dayRequests++
+				requests := rec.Requests
+				if requests <= 0 {
+					requests = 1
+				}
+				out.Requests += requests
+				dayRequests += requests
 			}
 			model := rec.ModelRef
 			if model == "" {
@@ -199,7 +203,12 @@ func modelsSorted(totals map[string]int64) []ModelUsage {
 	for model, t := range totals {
 		out = append(out, ModelUsage{Model: model, Provider: providerOf(model), Tokens: t})
 	}
-	sort.SliceStable(out, func(i, j int) bool { return out[i].Tokens > out[j].Tokens })
+	sort.SliceStable(out, func(i, j int) bool {
+		if out[i].Tokens == out[j].Tokens {
+			return out[i].Model < out[j].Model
+		}
+		return out[i].Tokens > out[j].Tokens
+	})
 	return out
 }
 
@@ -208,6 +217,11 @@ func providersSorted(totals map[string]int64) []ProviderUsage {
 	for prov, t := range totals {
 		out = append(out, ProviderUsage{Provider: prov, Tokens: t})
 	}
-	sort.SliceStable(out, func(i, j int) bool { return out[i].Tokens > out[j].Tokens })
+	sort.SliceStable(out, func(i, j int) bool {
+		if out[i].Tokens == out[j].Tokens {
+			return out[i].Provider < out[j].Provider
+		}
+		return out[i].Tokens > out[j].Tokens
+	})
 	return out
 }

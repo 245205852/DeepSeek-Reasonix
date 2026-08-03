@@ -1038,10 +1038,8 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 			sysPrompt = agent.DefaultReadOnlyTaskSystemPrompt
 		}
 		runOptions := subagentSkillOptions(sctx, steps, price, ctxWin, childDepth)
-		if strings.TrimSpace(modelRef) == "" {
-			modelRef = modelRefFromEntry(entry)
-		}
-		runOptions.ModelRef = modelRef
+		usageModelRef, _ := subagentIdentity(modelRef, effortRef)
+		runOptions.ModelRef = usageModelRef
 		// Delivery risk gates consume typed reports; outside Delivery a casual
 		// /review run may finish with prose only.
 		if runOptions.DeliveryProfile {
@@ -1161,10 +1159,8 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 			}
 		}
 		runOptions := subagentSkillOptions(sctx, steps, price, ctxWin, childDepth)
-		if strings.TrimSpace(modelRef) == "" {
-			modelRef = modelRefFromEntry(entry)
-		}
-		runOptions.ModelRef = modelRef
+		usageModelRef, _ := subagentIdentity(modelRef, effortRef)
+		runOptions.ModelRef = usageModelRef
 		// Delivery risk gates consume typed reports; outside Delivery a casual
 		// /review run may finish with prose only.
 		if runOptions.DeliveryProfile {
@@ -1722,7 +1718,7 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 				sink.Emit(event.Event{Kind: event.Notice, Level: event.LevelWarn, Text: "Guardian was disabled because it could not start.", Detail: fmt.Sprintf("guardian construction failed: %v — guardian disabled", err)})
 			} else {
 				guardianReg := agent.FilterReadOnlyRegistry(reg, agent.SubagentMetaTools()...)
-				ctrlOpts.Guardian = guardian.NewSession(pProv, guardianReg, guardian.PolicyPrompt(), guardianModel, cfg.Agent.GuardianTemperature, ge.Price, sink)
+				ctrlOpts.Guardian = guardian.NewSession(pProv, guardianReg, guardian.PolicyPrompt(), modelRefFromEntry(ge), cfg.Agent.GuardianTemperature, ge.Price, sink)
 				sink.Emit(event.Event{Kind: event.Notice, Level: event.LevelInfo, Text: fmt.Sprintf("guardian enabled · model=%s", ge.Model)})
 			}
 		}
