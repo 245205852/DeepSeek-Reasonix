@@ -1,5 +1,6 @@
 import { lazy, memo, Suspense, startTransition, useCallback, useDeferredValue, useEffect, useId, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent as ReactMouseEvent, type PointerEvent, type ReactNode } from "react";
 import { Bot as BotIcon, Check, CheckCircle2, ChevronDown, ChevronUp, Clipboard, ExternalLink, GripVertical, KeyRound, Loader2, MessageCircle, Play, QrCode, RefreshCw, Send } from "lucide-react";
+import "./CompactRatioSettings.css";
 import { asArray } from "../lib/array";
 import { useDeferredClose } from "../lib/useMountTransition";
 import { app, openExternal } from "../lib/bridge";
@@ -78,6 +79,7 @@ const PluginsSettingsPage = lazy(() => import("./CapabilitiesPanel").then((modul
 const MemorySettingsPage = lazy(() => import("./MemoryPanel").then((module) => ({ default: module.MemorySettingsPage })));
 const SubagentsSettingsPage = lazy(() => import("./SubagentsPanel").then((module) => ({ default: module.SubagentsSettingsPage })));
 const DiagnosticsSettingsPage = lazy(() => import("./DiagnosticsSettingsPage").then((module) => ({ default: module.DiagnosticsSettingsPage })));
+const UsageStatsPanel = lazy(() => import("./UsageStatsPanel").then((module) => ({ default: module.UsageStatsPanel })));
 const QRCodeSVG = lazy(() => import("qrcode.react").then((module) => ({ default: module.QRCodeSVG })));
 
 // SettingsPanel is the desktop settings centre — a centred modal with left
@@ -780,6 +782,11 @@ const PROXY_MODES = ["auto", "custom", "off"] as const;
 // The settings UI uses it for subagent defaults; provider-specific levels are
 // inferred by the backend or edited in TOML for rare gateways.
 export const EFFORT_PRESETS: readonly string[] = ["low", "medium", "high", "xhigh", "max"];
+const COMPACT_RATIO_PRESETS = [
+  [0.7, "settings.compactRatioPreset.70"],
+  [0.8, "settings.compactRatioPreset.80"],
+  [0.85, "settings.compactRatioPreset.85"],
+] as const;
 const REASONING_PROTOCOLS: readonly string[] = ["", "deepseek", "glm", "openai", "none"];
 const THINKING_MODES: readonly string[] = ["", "enabled", "disabled", "adaptive"];
 const PROXY_TYPES = ["http", "https", "socks5", "socks5h"] as const;
@@ -1322,11 +1329,17 @@ function normalizeSettingsView(view: SettingsView | null | undefined): SettingsV
     noProxy: "",
     proxy: { type: "socks5", server: "", port: 0, username: "", password: "" },
   };
-  const agent = view.agent ?? { temperature: 0, maxSteps: 0, plannerMaxSteps: 0, maxSubagentDepth: 2, maxSubagentConcurrency: 6, maxParallelWriters: 3, systemPrompt: "", coldResumePrune: true, reasoningLanguage: "auto" };
+  const agent = view.agent ?? { temperature: 0, maxSteps: 0, plannerMaxSteps: 0, maxSubagentDepth: 2, maxSubagentConcurrency: 6, maxParallelWriters: 3, systemPrompt: "", coldResumePrune: true, reasoningLanguage: "auto", compactRatio: 0.8 };
   agent.plannerMaxSteps = Number.isFinite(agent.plannerMaxSteps) ? Math.max(0, Math.trunc(agent.plannerMaxSteps)) : 0;
   agent.maxSteps = Number.isFinite(agent.maxSteps) ? Math.max(0, Math.trunc(agent.maxSteps)) : 0;
   agent.maxSubagentDepth = Number.isFinite(agent.maxSubagentDepth) && agent.maxSubagentDepth <= 1 ? 1 : 2;
   agent.reasoningLanguage = normalizeReasoningLanguage(agent.reasoningLanguage);
+  agent.compactRatio = Number.isFinite(agent.compactRatio) && Number(agent.compactRatio) > 0 ? Number(agent.compactRatio) : 0.8;
+  agent.effectiveCompactRatio = Number.isFinite(agent.effectiveCompactRatio) && Number(agent.effectiveCompactRatio) > 0
+    ? Number(agent.effectiveCompactRatio)
+    : agent.compactRatio;
+  agent.compactRatioOverridden = Boolean(agent.compactRatioOverridden);
+  agent.compactRatioRemote = Boolean(agent.compactRatioRemote);
   return {
     ...view,
     providers: asArray(view.providers).map(normalizeProviderView),
@@ -4023,7 +4036,7 @@ function botDraftWithDerivedGatewayState(draft: BotSettingsView): BotSettingsVie
 
 function ModelsSection({ s, busy, apply, backgroundApply, initialFocus }: ModelsSectionProps) {
   const t = useT();
-  const [subtab, setSubtab] = useState<"usage" | "access">(
+  const [subtab, setSubtab] = useState<"usage" | "access" | "stats">(
     initialFocus?.target === "model-access" ? "access" : "usage",
   );
   const autoRefreshKeyRef = useRef("");
@@ -4040,7 +4053,33 @@ function ModelsSection({ s, busy, apply, backgroundApply, initialFocus }: Models
     : !providerIsConfigured(defaultProviderView)
       ? t("settings.modelNeedsKey", { provider: modelProviderLabel(defaultProvider, defaultProviderView, t) })
       : "";
-  const agent = s.agent ?? { temperature: 0, maxSteps: 0, plannerMaxSteps: 0, maxSubagentDepth: 2, maxSubagentConcurrency: 6, maxParallelWriters: 3, systemPrompt: "", coldResumePrune: true, reasoningLanguage: "auto" };
+  const agent = s.agent ?? { temperature: 0, maxSteps: 0, plannerMaxSteps: 0, maxSubagentDepth: 2, maxSubagentConcurrency: 6, maxParallelWriters: 3, systemPrompt: "", coldResumePrune: true, reasoningLanguage: "auto", compactRatio: 0.8 };
+  const compactRatio = agent.compactRatio ?? 0.8;
+  const compactRatioPercent = Math.round(compactRatio * 1000) / 10;
+  const [compactRatioDraft, setCompactRatioDraft] = useState(() => String(compactRatioPercent));
+  const [compactRatioCustomOpen, setCompactRatioCustomOpen] = useState(false);
+  const compactRatioCustomInputRef = useRef<HTMLInputElement>(null);
+  const compactRatioPreset = COMPACT_RATIO_PRESETS.find(([ratio]) => Math.abs(compactRatio - ratio) < 0.0001);
+  const compactRatioDraftPercent = Number(compactRatioDraft);
+  const compactRatioDraftValid = compactRatioDraft !== ""
+    && Number.isFinite(compactRatioDraftPercent)
+    && compactRatioDraftPercent >= 65
+    && compactRatioDraftPercent <= 85;
+  const compactRatioDraftDirty = compactRatioDraftValid
+    && Math.abs(compactRatioDraftPercent / 100 - compactRatio) > 0.0001;
+  const defaultModel = defaultRef.startsWith(`${defaultProvider}/`) ? defaultRef.slice(defaultProvider.length + 1) : "";
+  const modelContextWindow = defaultProviderView?.modelOverrides?.find((override) => override.model === defaultModel)?.contextWindow ?? 0;
+  const effectiveContextWindow = modelContextWindow > 0 ? modelContextWindow : (defaultProviderView?.contextWindow ?? 0);
+  const compactTokens = effectiveContextWindow > 0 ? Math.round(effectiveContextWindow * compactRatio) : 0;
+  const compactRatioImpact = compactTokens > 0
+    ? t("settings.compactRatioImpactWithTokens", { percent: compactRatioPercent, tokens: compactTokens.toLocaleString() })
+    : t("settings.compactRatioImpact", { percent: compactRatioPercent });
+  const compactRatioSelection = compactRatioPreset
+    ? t(compactRatioPreset[1])
+    : t("settings.compactRatioCustomValue", { percent: compactRatioPercent });
+  const compactRatioOverrideHint = agent.compactRatioOverridden
+    ? t("settings.compactRatioProjectOverride", { percent: Math.round((agent.effectiveCompactRatio ?? compactRatio) * 100) })
+    : "";
   const subagentDepth = Number.isFinite(agent.maxSubagentDepth) && agent.maxSubagentDepth <= 1 ? 1 : 2;
   const subagentConcurrency = Number.isFinite(agent.maxSubagentConcurrency) && agent.maxSubagentConcurrency > 0
     ? Math.max(1, Math.min(32, Math.floor(agent.maxSubagentConcurrency)))
@@ -4048,6 +4087,41 @@ function ModelsSection({ s, busy, apply, backgroundApply, initialFocus }: Models
   const parallelWriters = Number.isFinite(agent.maxParallelWriters) && agent.maxParallelWriters > 0
     ? Math.max(1, Math.min(subagentConcurrency, Math.floor(agent.maxParallelWriters)))
     : Math.min(3, subagentConcurrency);
+
+  useEffect(() => {
+    setCompactRatioDraft(String(compactRatioPercent));
+  }, [compactRatioPercent]);
+
+  useEffect(() => {
+    if (compactRatioCustomOpen) compactRatioCustomInputRef.current?.focus();
+  }, [compactRatioCustomOpen]);
+
+  const persistCompactRatio = async (ratio: number) => {
+    if (await apply(() => app.SetCompactRatio(ratio))) setCompactRatioCustomOpen(false);
+  };
+
+  const openCompactRatioCustom = () => {
+    setCompactRatioDraft(String(compactRatioPercent));
+    setCompactRatioCustomOpen(true);
+  };
+
+  const closeCompactRatioCustom = () => {
+    setCompactRatioDraft(String(compactRatioPercent));
+    setCompactRatioCustomOpen(false);
+  };
+
+  const selectCompactRatioPreset = async (ratio: number) => {
+    if (Math.abs(compactRatio - ratio) < 0.0001) {
+      closeCompactRatioCustom();
+      return;
+    }
+    await persistCompactRatio(ratio);
+  };
+
+  const saveCompactRatioDraft = async () => {
+    if (!compactRatioDraftValid || !compactRatioDraftDirty || busy) return;
+    await persistCompactRatio(compactRatioDraftPercent / 100);
+  };
 
   useEffect(() => {
     const generation = ++autoRefreshGenerationRef.current;
@@ -4149,6 +4223,14 @@ function ModelsSection({ s, busy, apply, backgroundApply, initialFocus }: Models
           onClick={() => setSubtab("access")}
         >
           {t("settings.modelTab.access")}
+        </button>
+        <button
+          type="button"
+          className={`settings-subtab${subtab === "stats" ? " settings-subtab--active" : ""}`}
+          aria-selected={subtab === "stats"}
+          onClick={() => setSubtab("stats")}
+        >
+          {t("settings.modelTab.stats")}
         </button>
       </div>
 
@@ -4284,10 +4366,101 @@ function ModelsSection({ s, busy, apply, backgroundApply, initialFocus }: Models
                 ))}
               </div>
             </SettingsField>
+            <SettingsField label={t("settings.compactRatio")} hint={t("settings.compactRatioHint")} stacked>
+              <div className="compact-ratio-controls">
+                <div className="set-seg compact-ratio-presets" role="group" aria-label={t("settings.compactRatio")}>
+                  {COMPACT_RATIO_PRESETS.map(([ratio, labelKey]) => (
+                    <button
+                      key={ratio}
+                      type="button"
+                      className={`set-seg__btn${Math.abs(compactRatio - ratio) < 0.0001 ? " set-seg__btn--on" : ""}`}
+                      disabled={busy}
+                      aria-label={t(labelKey)}
+                      aria-pressed={Math.abs(compactRatio - ratio) < 0.0001}
+                      onClick={() => void selectCompactRatioPreset(ratio)}
+                    >
+                      <span className="compact-ratio-preset__percent" aria-hidden="true">{Math.round(ratio * 100)}%</span>
+                      <span className="compact-ratio-preset__caption" aria-hidden="true">{t(labelKey).split(" · ")[1]}</span>
+                    </button>
+                  ))}
+                </div>
+                <div className="compact-ratio-summary">
+                  <div className="compact-ratio-current">{t("settings.compactRatioCurrent", { value: compactRatioSelection })}</div>
+                  <button
+                    type="button"
+                    className="btn btn--small compact-ratio-custom-toggle"
+                    disabled={busy}
+                    aria-expanded={compactRatioCustomOpen}
+                    aria-controls="settings-compact-ratio-custom-panel"
+                    onClick={compactRatioCustomOpen ? closeCompactRatioCustom : openCompactRatioCustom}
+                  >
+                    {t("settings.compactRatioCustomOption")}
+                  </button>
+                </div>
+                <div className="compact-ratio-impact">{compactRatioImpact}</div>
+                {compactRatioCustomOpen && (
+                  <div id="settings-compact-ratio-custom-panel" className="compact-ratio-custom-panel">
+                    <div className="settings-inline-controls compact-ratio-custom">
+                      <label className="set-label" htmlFor="settings-compact-ratio-custom">{t("settings.compactRatioCustom")}</label>
+                      <input
+                        ref={compactRatioCustomInputRef}
+                        id="settings-compact-ratio-custom"
+                        className="mem-input set-narrow"
+                        type="number"
+                        min={65}
+                        max={85}
+                        step={0.1}
+                        inputMode="decimal"
+                        value={compactRatioDraft}
+                        disabled={busy}
+                        aria-label={t("settings.compactRatioCustomAria")}
+                        aria-describedby="settings-compact-ratio-custom-hint"
+                        aria-invalid={!compactRatioDraftValid}
+                        onInput={(event) => setCompactRatioDraft(event.currentTarget.value)}
+                        onKeyDown={(event) => {
+                          if (event.key === "Enter") {
+                            event.preventDefault();
+                            void saveCompactRatioDraft();
+                          }
+                          if (event.key === "Escape") {
+                            event.preventDefault();
+                            closeCompactRatioCustom();
+                          }
+                        }}
+                      />
+                      <span className="compact-ratio-custom__suffix" aria-hidden="true">%</span>
+                      <button
+                        type="button"
+                        className="btn btn--small"
+                        disabled={busy || !compactRatioDraftValid || !compactRatioDraftDirty}
+                        onClick={() => void saveCompactRatioDraft()}
+                      >
+                        {t("settings.compactRatioApply")}
+                      </button>
+                      <button type="button" className="btn btn--small" disabled={busy} onClick={closeCompactRatioCustom}>
+                        {t("common.cancel")}
+                      </button>
+                    </div>
+                    <div
+                      id="settings-compact-ratio-custom-hint"
+                      className={`compact-ratio-custom__hint${compactRatioDraftValid ? "" : " compact-ratio-custom__hint--invalid"}`}
+                    >
+                      {t("settings.compactRatioCustomHint")}
+                    </div>
+                  </div>
+                )}
+              </div>
+            </SettingsField>
+            {compactRatioOverrideHint && <div className="provider-fetch-banner provider-fetch-banner--warn">{compactRatioOverrideHint}</div>}
+            {agent.compactRatioRemote && <div className="provider-fetch-banner provider-fetch-banner--warn">{t("settings.compactRatioRemote")}</div>}
           </SettingsSection>
         </>
-      ) : (
+      ) : subtab === "access" ? (
         <ProvidersSection s={s} busy={busy} apply={apply} />
+      ) : (
+        <Suspense fallback={<div className="empty">{t("settings.loading")}</div>}>
+          <UsageStatsPanel />
+        </Suspense>
       )}
     </>
   );
@@ -6348,7 +6521,7 @@ function RuleList({
         {rules.length === 0 && <span className="mem-empty">{t("common.none")}</span>}
         {rules.map((r) => (
           <span className="set-rule" key={r}>
-            {r}
+            <span className="set-rule__text" title={r}>{r}</span>
             <Tooltip label={t("common.delete")}>
               <button className="set-rule__x" disabled={busy} onClick={() => void onRemove(r)}>
                 ✕
@@ -6828,7 +7001,7 @@ function UpdatesSection({
         : t("updater.installing")
     ) :
     status.kind === "relaunching" || status.kind === "done" ? t("updater.done") :
-    status.kind === "error" ? t("updater.failed", { msg: status.message }) :
+    status.kind === "error" ? "" :
     "";
   const updateStatusTone =
     status.kind === "error" ? "error" :
@@ -6836,9 +7009,24 @@ function UpdatesSection({
     status.kind === "upToDate" || status.kind === "done" || status.kind === "relaunching" ? "success" :
     status.kind === "checking" || updaterBusy ? "busy" :
     "neutral";
+  const updateErrorTitle = status.kind === "error"
+    ? status.disposition === "recovery"
+      ? t("updater.recoveryBlocked")
+      : status.disposition === "manual"
+        ? t("updater.manualUpdateRequired")
+        : t("updater.failed", { msg: status.message })
+    : "";
+  const updateErrorHint = status.kind === "error"
+    ? status.disposition === "recovery"
+      ? t("updater.recoveryHint")
+      : status.disposition === "manual"
+        ? t("updater.manualFallbackHint")
+        : ""
+    : "";
+  const downloadIsPrimary = status.kind === "error" && status.disposition !== "retryable";
 
   return (
-    <SettingsSection title={t("updater.title")}>
+    <SettingsSection>
       <SettingsField
         className="settings-field--wide-copy updates-control"
         label={
@@ -6872,8 +7060,29 @@ function UpdatesSection({
           </Tooltip>
         </div>
       </SettingsField>
-      <div className="updates-control__hint">
-        <div>{t("updater.officialReleaseHint")}</div>
+      <div
+        className="updates-control__hint"
+        style={{ display: "flex", alignItems: "center", flexWrap: "wrap", gap: "4px 8px" }}
+      >
+        <span>{t("updater.officialReleaseHint")}</span>
+        <button
+          className="btn btn--small"
+          type="button"
+          onClick={openDownload}
+          style={{
+            height: "auto",
+            minHeight: 0,
+            padding: 0,
+            borderColor: "transparent",
+            background: "transparent",
+            color: "var(--fg-dim)",
+            textDecoration: "underline",
+            textUnderlineOffset: 2,
+          }}
+        >
+          {t("updater.officialDownload")}
+          <ExternalLink size={13} aria-hidden="true" />
+        </button>
       </div>
       {status.kind === "available" && (
         <div className="updates-control__action">
@@ -6889,66 +7098,37 @@ function UpdatesSection({
           </button>
         </div>
       )}
-      {status.kind === "error" && status.info && (
-        <div className="updates-control__action">
+      {status.kind === "error" && (
+        <div
+          className="banner banner--update banner--error"
+          role="alert"
+          style={{ alignItems: "flex-start", flexWrap: "wrap", marginBottom: 12 }}
+        >
+          <div style={{ flex: "1 1 360px", minWidth: 0 }}>
+            <div>{updateErrorTitle}</div>
+            {updateErrorHint && <div className="banner__hint">{updateErrorHint}</div>}
+            {status.disposition !== "retryable" && (
+              <div className="banner__hint" style={{ overflowWrap: "anywhere" }}>
+                {t("updater.errorDetails", { msg: status.message })}
+              </div>
+            )}
+          </div>
+          <span className="banner__spacer" />
+          {downloadIsPrimary && (
+            <button className="btn btn--primary btn--small" type="button" onClick={openDownload}>
+              {t("updater.officialDownload")}
+              <ExternalLink size={14} aria-hidden="true" />
+            </button>
+          )}
           <button
-            className="btn btn--primary btn--small"
+            className={`btn btn--small${downloadIsPrimary ? "" : " btn--primary"}`}
+            type="button"
             disabled={settingsBusy || updaterBusy}
-            onClick={() => applyUpdate(status.info!)}
+            onClick={() => status.info ? applyUpdate(status.info) : void check()}
           >
             {t("updater.retry")}
           </button>
         </div>
-      )}
-      <SettingsField
-        className="settings-field--wide-copy"
-        label={t("updater.autoCheckLabel")}
-        hint={t("updater.autoCheckHint")}
-      >
-        <ToggleSegment
-          value={checkUpdates}
-          disabled={settingsBusy}
-          onChange={(enabled) => void applySettings(() => app.SetDesktopCheckUpdates(enabled))}
-        />
-      </SettingsField>
-      <SettingsField
-        className="settings-field--wide-copy"
-        label={t("settings.telemetryLabel")}
-        hint={t("settings.telemetryHint")}
-      >
-        <ToggleSegment
-          value={telemetry}
-          disabled={settingsBusy}
-          onChange={(enabled) => void applySettings(() => app.SetDesktopTelemetry(enabled))}
-        />
-      </SettingsField>
-      <SettingsField
-        className="settings-field--wide-copy"
-        label={t("settings.metricsLabel")}
-        hint={t("settings.metricsHint")}
-      >
-        <ToggleSegment
-          value={metrics}
-          disabled={settingsBusy}
-          onChange={(enabled) => void applySettings(() => app.SetDesktopMetrics(enabled))}
-        />
-      </SettingsField>
-      {status.kind === "error" && (
-        <div className="banner banner--error">
-          {updateStatus}
-          {status.manualHint && (
-            <div className="mem-hint">
-              <button className="btn btn--small" onClick={openDownload}>
-                {t("updater.goToDownload")}
-              </button>
-            </div>
-          )}
-        </div>
-      )}
-      {configPath && (
-        <Tooltip label={configPath} fill block className="mem-hint settings-config-path">
-          {t("settings.config", { path: configPath })}
-        </Tooltip>
       )}
       <SettingsField
         className="settings-field--wide-copy"
@@ -6960,6 +7140,86 @@ function UpdatesSection({
           <ExternalLink size={14} aria-hidden="true" />
         </button>
       </SettingsField>
+      <SettingsField
+        className="settings-field--wide-copy"
+        label={t("feedback.title")}
+        hint={t("feedback.subtitle")}
+      >
+        <div className="settings-inline-controls">
+          <button
+            className="btn btn--small"
+            onClick={() => void openExternal("https://github.com/esengine/DeepSeek-Reasonix/issues/new/choose")}
+          >
+            {t("feedback.submitIssue")}
+            <ExternalLink size={14} aria-hidden="true" />
+          </button>
+          <button
+            className="btn btn--small"
+            onClick={() => void openExternal("https://github.com/esengine/DeepSeek-Reasonix/issues")}
+          >
+            {t("feedback.viewIssues")}
+            <ExternalLink size={14} aria-hidden="true" />
+          </button>
+        </div>
+      </SettingsField>
+      <details
+        className="provider-editor-advanced"
+        style={{
+          marginTop: 0,
+          borderRight: 0,
+          borderBottom: 0,
+          borderLeft: 0,
+          borderRadius: 0,
+          background: "transparent",
+        }}
+      >
+        <summary style={{ padding: "0 2px" }}>
+          <span className="provider-editor-advanced__title">
+            <ChevronDown className="provider-editor-advanced__icon" size={16} aria-hidden="true" />
+            {t("updater.privacyAndUpdatePreferences")}
+          </span>
+        </summary>
+        <div className="provider-editor-advanced__body">
+          <SettingsField
+            className="settings-field--wide-copy"
+            label={t("updater.autoCheckLabel")}
+            hint={t("updater.autoCheckHint")}
+          >
+            <ToggleSegment
+              value={checkUpdates}
+              disabled={settingsBusy}
+              onChange={(enabled) => void applySettings(() => app.SetDesktopCheckUpdates(enabled))}
+            />
+          </SettingsField>
+          <SettingsField
+            className="settings-field--wide-copy"
+            label={t("settings.telemetryLabel")}
+            hint={t("settings.telemetryHint")}
+          >
+            <ToggleSegment
+              value={telemetry}
+              disabled={settingsBusy}
+              onChange={(enabled) => void applySettings(() => app.SetDesktopTelemetry(enabled))}
+            />
+          </SettingsField>
+          <SettingsField
+            className="settings-field--wide-copy"
+            label={t("settings.metricsLabel")}
+            hint={t("settings.metricsHint")}
+          >
+            <ToggleSegment
+              value={metrics}
+              disabled={settingsBusy}
+              onChange={(enabled) => void applySettings(() => app.SetDesktopMetrics(enabled))}
+            />
+          </SettingsField>
+          {configPath && (
+            <Tooltip label={configPath} fill block className="mem-hint settings-config-path">
+              {t("settings.config", { path: configPath })}
+            </Tooltip>
+          )}
+        </div>
+      </details>
     </SettingsSection>
   );
 }

@@ -489,6 +489,7 @@ func (c *client) Stream(ctx context.Context, req provider.Request) (<-chan provi
 }
 
 func (c *client) openStream(ctx context.Context, targetURL string, wireReq chatRequest, tools []provider.ToolSchema) (<-chan provider.Chunk, error) {
+	requestCtx := provider.WithRequestAttemptCounter(ctx)
 	buf := bufPool.Get().(*bytes.Buffer)
 	buf.Reset()
 	if err := json.NewEncoder(buf).Encode(wireReq); err != nil {
@@ -510,14 +511,14 @@ func (c *client) openStream(ctx context.Context, targetURL string, wireReq chatR
 		applyCustomHeaders(httpReq.Header, c.headers)
 		return httpReq, nil
 	}
-	resp, err := provider.SendWithRetry(ctx, c.http, c.sendOpts(), newReq)
+	resp, err := provider.SendWithRetry(requestCtx, c.http, c.sendOpts(), newReq)
 	if err != nil {
 		return nil, provider.AnnotateToolSchemaError(err, tools)
 	}
 	c.authed.Store(true)
 
 	out := make(chan provider.Chunk)
-	go c.streamWithReconnect(ctx, resp, newReq, out)
+	go c.streamWithReconnect(requestCtx, resp, newReq, out)
 	return out, nil
 }
 
@@ -559,7 +560,7 @@ func (c *client) streamWithPrefixContinuation(ctx context.Context, req provider.
 					return
 				}
 			case provider.ChunkUsage:
-				currentUsage = mergeUsage(currentUsage, chunk.Usage)
+				currentUsage = mergeUsage(currentUsage, chunk.Usage, false)
 			case provider.ChunkDone:
 				// The wrapper emits one final Done after any continuation.
 			case provider.ChunkError:
@@ -579,7 +580,7 @@ func (c *client) streamWithPrefixContinuation(ctx context.Context, req provider.
 			}
 		}
 
-		totalUsage = mergeUsage(totalUsage, currentUsage)
+		totalUsage = mergeUsage(totalUsage, currentUsage, true)
 		if continuations >= maxPrefixContinuations ||
 			currentUsage == nil || currentUsage.FinishReason != "length" ||
 			currentHadTool ||
@@ -606,7 +607,10 @@ func emitUsageAndDone(ctx context.Context, out chan<- provider.Chunk, usage *pro
 	_ = sendChunk(ctx, out, provider.Chunk{Type: provider.ChunkDone})
 }
 
-func mergeUsage(total, next *provider.Usage) *provider.Usage {
+// mergeUsage folds token counters. countRequests is false for multiple usage
+// chunks from one HTTP stream (keep its request count), and true when combining
+// distinct prefix-continuation requests (sum their request counts).
+func mergeUsage(total, next *provider.Usage, countRequests bool) *provider.Usage {
 	if next == nil {
 		return total
 	}
@@ -614,14 +618,30 @@ func mergeUsage(total, next *provider.Usage) *provider.Usage {
 		clone := *next
 		return &clone
 	}
+	totalRequests := usageRequestCount(total)
+	nextRequests := usageRequestCount(next)
 	total.PromptTokens += next.PromptTokens
 	total.CompletionTokens += next.CompletionTokens
 	total.TotalTokens += next.TotalTokens
 	total.CacheHitTokens += next.CacheHitTokens
 	total.CacheMissTokens += next.CacheMissTokens
 	total.ReasoningTokens += next.ReasoningTokens
+	if countRequests {
+		total.RequestCount = totalRequests + nextRequests
+	} else if nextRequests > totalRequests {
+		total.RequestCount = nextRequests
+	} else {
+		total.RequestCount = totalRequests
+	}
 	total.FinishReason = next.FinishReason
 	return total
+}
+
+func usageRequestCount(usage *provider.Usage) int {
+	if usage != nil && usage.RequestCount > 0 {
+		return usage.RequestCount
+	}
+	return 1
 }
 
 // maxStreamReconnects bounds how many times a mid-stream connection drop is
@@ -962,6 +982,7 @@ func (c *client) readStream(ctx context.Context, resp *http.Response, out chan<-
 		if sr.Usage != nil {
 			u := normaliseUsage(sr.Usage)
 			u.FinishReason = lastFinishReason
+			provider.ApplyRequestAttemptCount(ctx, u)
 			emitted = true
 			if !sendChunk(ctx, out, provider.Chunk{Type: provider.ChunkUsage, Usage: u}) {
 				return emitted, ctx.Err()

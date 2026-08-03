@@ -16832,26 +16832,44 @@ body > .mermaid-diagram--fullscreen {
 }
 .set-rule {
   display: inline-flex;
-  align-items: center;
+  align-items: flex-start;
   gap: 5px;
+  max-width: 100%;
+  min-width: 0;
   font-family: var(--mono);
   font-size: 11px;
   padding: 3px 4px 3px 7px;
   background: var(--bg-elev);
   border: 1px solid var(--border);
   border-radius: 6px;
+  /* Long permission commands must wrap inside the chip so the delete control
+     stays visible (Fixes #7315). Path rules already needed this; apply to all. */
+  overflow-wrap: anywhere;
+  white-space: normal;
 }
 .set-rule--path {
   max-width: 100%;
   overflow-wrap: anywhere;
   white-space: normal;
 }
+.set-rule__text {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
 .set-rule__x {
+  flex: 0 0 auto;
+  align-self: flex-start;
   border: none;
   background: transparent;
   color: var(--fg-faint);
   padding: 0 2px;
   font-size: 11px;
+  line-height: 1.35;
+}
+.set-rule .tooltip-trigger {
+  flex: 0 0 auto;
 }
 .set-rule__x:hover {
   color: var(--err);
@@ -33500,25 +33518,15 @@ body > .mermaid-diagram--fullscreen {
 }
 
 .app--windows-frameless.app--creation {
-  --windows-window-controls-height: 56px;
+  /* Match Creation topicbar / dock tools (40px) so caption buttons are not taller
+     than the title strip. classic/workbench keep their own heights. */
+  --windows-window-controls-height: 40px;
   /* Tighter caption buttons free horizontal room for dock tabs at narrow widths.
      classic/workbench keep the standard 46×3 = 138 strip. */
   --windows-window-control-width: 36px;
   --windows-window-controls-width: 108px;
   --windows-window-controls-gap: 8px;
   --windows-window-controls-safe: calc(var(--windows-window-controls-width) + var(--windows-window-controls-gap));
-}
-
-/* When workspace panel is open in creation mode, match the dock tools height
-   (40px) instead of the tall 56px default, so the window controls box does not
-   extend below the workbench-dock__tools. */
-.app--windows-frameless.app--creation .layout--workspace-open ~ .windows-window-controls,
-.app--windows-frameless.app--creation .layout--workspace-maximized ~ .windows-window-controls {
-  height: 40px;
-}
-:root[data-theme-style] .app--windows-frameless.app--creation .layout--workspace-open ~ .windows-window-controls,
-:root[data-theme-style] .app--windows-frameless.app--creation .layout--workspace-maximized ~ .windows-window-controls {
-  height: 40px;
 }
 
 .app--windows-frameless .app-chrome--native-tabs,
@@ -33657,22 +33665,27 @@ body > .mermaid-diagram--fullscreen {
    Windows + Creation: Vertical alignment for titlebar elements
    ========================================================================= */
 
-/* Align sidebar logo with Windows titlebar center line */
+/* Align sidebar logo with the shorter 40px Windows title strip center line */
 .app--windows.app--creation .sidebar__brand,
 :root[data-theme-style] .app--windows.app--creation .sidebar__brand {
-  margin-top: -29px !important;
+  margin-top: -32px !important;
 }
 
-/* Align topicbar (replaces app-chrome in Creation mode) with Windows controls */
-.app--windows.app--creation .topicbar {
+/* Align topicbar (replaces app-chrome in Creation mode) with Windows controls
+   without changing the shared macOS/Linux Creation geometry above. */
+.app--windows.app--creation .topicbar,
+:root[data-theme-style] .app--windows.app--creation .topicbar {
   position: relative;
   z-index: var(--z-app-chrome);
-  transform: translateY(-4px) !important;
+  min-height: 40px;
+  padding-top: 0;
+  padding-bottom: 0;
+  transform: none !important;
 }
 
-/* Align topicbar identity (session title) with Windows controls */
-.app--windows.app--creation .topicbar__identity {
-  transform: translateY(-2px) !important;
+.app--windows.app--creation .topicbar__title-row,
+:root[data-theme-style] .app--windows.app--creation .topicbar__title-row {
+  transform: none;
 }
 
 /* Reduce session title font size and weight. The rename input replaces the h1
@@ -33684,29 +33697,22 @@ body > .mermaid-diagram--fullscreen {
   font-weight: 520 !important;
 }
 
-/* Align action buttons (not chrome buttons) */
-.app--windows.app--creation .topicbar__action-btn:not(.topicbar__chrome-btn) {
-  transform: translateY(-2px) !important;
-  align-self: center !important;
-}
-
-/* Align ExternalOpener split control with the same Windows titlebar center line */
-.app--windows.app--creation .topicbar__actions .external-opener {
-  transform: translateY(-2px) !important;
-  align-self: center !important;
-}
-
-/* Align topicbar chrome buttons separately (they're also in actions container) */
+/* Keep action / chrome buttons on the same center line as Windows controls */
+.app--windows.app--creation .topicbar__action-btn:not(.topicbar__chrome-btn),
 .app--windows.app--creation .topicbar__chrome-btn {
-  transform: translateY(-2px) !important;
   align-self: center !important;
+  transform: translateY(0.5px) !important;
 }
 
-/* The alignment offset above owns the transform slot, which would otherwise
-   erase the .topicbar__chrome-btn--pressed { scale(0.94) } press feedback —
-   recombine both here. */
+/* Folder opener glyph sits a hair lower than line icons — nudge it up alone */
+.app--windows.app--creation .topicbar__actions .external-opener {
+  align-self: center !important;
+  transform: translateY(-1px) !important;
+}
+
+/* Preserve press scale while keeping the Windows center-line nudge */
 .app--windows.app--creation .topicbar__chrome-btn.topicbar__chrome-btn--pressed {
-  transform: translateY(-2px) scale(0.94) !important;
+  transform: translateY(0.5px) scale(0.94) !important;
 }
 
 /* Windows 控制框在 Creation 下默认用 --bg-elev（近纯白），与右侧 workbench-dock
