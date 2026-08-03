@@ -354,11 +354,17 @@ await act(async () => {
 ok(compactRootEl.textContent?.includes("Advanced context management") === false, "compaction preference has no redundant advanced disclosure");
 ok(compactRootEl.textContent?.includes("Automatic compaction threshold") === true, "compaction preference is visible without expanding a disclosure");
 ok(compactRootEl.textContent?.includes("80,000 tokens") === true, "compact ratio shows the default model token threshold");
+ok(compactRootEl.textContent?.includes("Current threshold: 80% · Balanced") === true, "compact ratio summarizes the saved preset separately");
 ok(compactRootEl.textContent?.includes("effective threshold is 75%") === true, "project override shows the active effective threshold");
 ok(compactRootEl.textContent?.includes("changes the local default only") === true, "remote workbench scope is explicit");
 ok(compactRootEl.querySelector('input[aria-label="Custom compaction threshold percentage"]') === null, "custom compact ratio editor stays hidden on the default path");
-const customCompactButton = Array.from(compactRootEl.querySelectorAll("button")).find((button) => button.textContent?.includes("Custom…")) as HTMLButtonElement | undefined;
+const balancedCompactButton = compactRootEl.querySelector('button[aria-label="80% · Balanced"]') as HTMLButtonElement | null;
+if (!balancedCompactButton) throw new Error("balanced compaction preset did not render");
+ok(balancedCompactButton.getAttribute("aria-pressed") === "true", "saved compact ratio starts selected");
+const customCompactButton = Array.from(compactRootEl.querySelectorAll("button")).find((button) => button.textContent?.includes("Custom threshold…")) as HTMLButtonElement | undefined;
 if (!customCompactButton) throw new Error("custom compaction threshold option did not render");
+ok(customCompactButton.closest(".compact-ratio-presets") === null, "custom compaction is a separate disclosure rather than a preset value");
+ok(customCompactButton.hasAttribute("aria-pressed") === false, "custom disclosure does not announce a saved selection state");
 await act(async () => {
   customCompactButton.click();
   await flushPromises();
@@ -370,6 +376,7 @@ ok(compactRootEl.textContent?.includes("trims stale tool output at 60%") === tru
 ok(compactRootEl.textContent?.includes("forces compaction at 90%") === true, "custom compact ratio explains the upper guard rail");
 ok(document.activeElement === customCompactInput, "opening the custom compact ratio moves focus to its input");
 ok(customCompactButton.getAttribute("aria-expanded") === "true", "custom compact ratio exposes its expanded state");
+ok(balancedCompactButton.getAttribute("aria-pressed") === "true", "opening custom editing preserves the saved preset selection");
 const customCompactApply = Array.from(customCompactInput.closest(".compact-ratio-custom")?.querySelectorAll("button") ?? []).find((button) => button.textContent === "Apply") as HTMLButtonElement | undefined;
 if (!customCompactApply) throw new Error("custom compaction threshold apply action did not render");
 const inputValueSetter = Object.getOwnPropertyDescriptor(dom.window.HTMLInputElement.prototype, "value")?.set;
@@ -398,7 +405,8 @@ await act(async () => {
 eq(compactRatioCalls.length, 1, "custom compact ratio mutation is invoked once after apply");
 eq(compactRatioCalls[0], 0.75, "custom compact ratio converts percentage to fraction");
 ok(compactRootEl.querySelector('input[aria-label="Custom compaction threshold percentage"]') === null, "successful custom compact ratio apply collapses the editor");
-ok(customCompactButton.textContent?.includes("75% · Custom") === true, "saved custom compact ratio is summarized in the option");
+ok(compactRootEl.textContent?.includes("Current threshold: 75% · Custom") === true, "saved custom compact ratio is summarized independently from the disclosure");
+ok(customCompactButton.textContent?.includes("Custom threshold…") === true, "custom disclosure keeps an action label after saving");
 await act(async () => {
   customCompactButton.click();
   await flushPromises();
@@ -426,7 +434,7 @@ await act(async () => {
 });
 eq(compactRatioCalls.length, 1, "Cancel closes a custom compact ratio without saving");
 ok(compactRootEl.querySelector('input[aria-label="Custom compaction threshold percentage"]') === null, "Cancel collapses the custom compact ratio editor");
-const earlierCompactButton = Array.from(compactRootEl.querySelectorAll("button")).find((button) => button.textContent?.includes("70% · Earlier")) as HTMLButtonElement | undefined;
+const earlierCompactButton = compactRootEl.querySelector('button[aria-label="70% · Earlier"]') as HTMLButtonElement | null;
 if (!earlierCompactButton) throw new Error("earlier compaction preset did not render");
 await act(async () => {
   earlierCompactButton.click();

@@ -781,9 +781,9 @@ const PROXY_MODES = ["auto", "custom", "off"] as const;
 // inferred by the backend or edited in TOML for rare gateways.
 export const EFFORT_PRESETS: readonly string[] = ["low", "medium", "high", "xhigh", "max"];
 const COMPACT_RATIO_PRESETS = [
-  { ratio: 0.7, labelKey: "settings.compactRatioPreset.70" },
-  { ratio: 0.8, labelKey: "settings.compactRatioPreset.80" },
-  { ratio: 0.85, labelKey: "settings.compactRatioPreset.85" },
+  { ratio: 0.7, labelKey: "settings.compactRatioPreset.70", captionKey: "settings.compactRatioPreset.70.caption" },
+  { ratio: 0.8, labelKey: "settings.compactRatioPreset.80", captionKey: "settings.compactRatioPreset.80.caption" },
+  { ratio: 0.85, labelKey: "settings.compactRatioPreset.85", captionKey: "settings.compactRatioPreset.85.caption" },
 ] as const;
 const REASONING_PROTOCOLS: readonly string[] = ["", "deepseek", "glm", "openai", "none"];
 const THINKING_MODES: readonly string[] = ["", "enabled", "disabled", "adaptive"];
@@ -4057,7 +4057,7 @@ function ModelsSection({ s, busy, apply, backgroundApply, initialFocus }: Models
   const [compactRatioDraft, setCompactRatioDraft] = useState(() => String(compactRatioPercent));
   const [compactRatioCustomOpen, setCompactRatioCustomOpen] = useState(false);
   const compactRatioCustomInputRef = useRef<HTMLInputElement>(null);
-  const compactRatioIsPreset = COMPACT_RATIO_PRESETS.some(({ ratio }) => Math.abs(compactRatio - ratio) < 0.0001);
+  const compactRatioPreset = COMPACT_RATIO_PRESETS.find(({ ratio }) => Math.abs(compactRatio - ratio) < 0.0001);
   const compactRatioDraftPercent = Number(compactRatioDraft.trim());
   const compactRatioDraftValid = compactRatioDraft.trim() !== ""
     && Number.isFinite(compactRatioDraftPercent)
@@ -4072,6 +4072,9 @@ function ModelsSection({ s, busy, apply, backgroundApply, initialFocus }: Models
   const compactRatioImpact = compactTokens > 0
     ? t("settings.compactRatioImpactWithTokens", { percent: compactRatioPercent, tokens: compactTokens.toLocaleString() })
     : t("settings.compactRatioImpact", { percent: compactRatioPercent });
+  const compactRatioSelection = compactRatioPreset
+    ? t(compactRatioPreset.labelKey)
+    : t("settings.compactRatioCustomValue", { percent: compactRatioPercent });
   const compactRatioOverrideHint = agent.compactRatioOverridden
     ? t("settings.compactRatioProjectOverride", { percent: Math.round(Number(agent.effectiveCompactRatio) * 100) })
     : "";
@@ -4364,34 +4367,34 @@ function ModelsSection({ s, busy, apply, backgroundApply, initialFocus }: Models
             <SettingsField label={t("settings.compactRatio")} hint={t("settings.compactRatioHint")} stacked>
               <div className="compact-ratio-controls">
                 <div className="set-seg compact-ratio-presets" role="group" aria-label={t("settings.compactRatio")}>
-                  {COMPACT_RATIO_PRESETS.map(({ ratio, labelKey }) => (
+                  {COMPACT_RATIO_PRESETS.map(({ ratio, labelKey, captionKey }) => (
                     <button
                       key={ratio}
                       type="button"
-                      className={`set-seg__btn${!compactRatioCustomOpen && Math.abs(compactRatio - ratio) < 0.0001 ? " set-seg__btn--on" : ""}`}
+                      className={`set-seg__btn${Math.abs(compactRatio - ratio) < 0.0001 ? " set-seg__btn--on" : ""}`}
                       disabled={busy}
-                      aria-pressed={!compactRatioCustomOpen && Math.abs(compactRatio - ratio) < 0.0001}
+                      aria-label={t(labelKey)}
+                      aria-pressed={Math.abs(compactRatio - ratio) < 0.0001}
                       title={t(labelKey)}
                       onClick={() => void selectCompactRatioPreset(ratio)}
                     >
-                      {t(labelKey)}
+                      <span className="compact-ratio-preset__percent" aria-hidden="true">{Math.round(ratio * 100)}%</span>
+                      <span className="compact-ratio-preset__caption" aria-hidden="true">{t(captionKey)}</span>
                     </button>
                   ))}
+                </div>
+                <div className="compact-ratio-summary">
+                  <div className="compact-ratio-current">{t("settings.compactRatioCurrent", { value: compactRatioSelection })}</div>
                   <button
                     type="button"
-                    className={`set-seg__btn${compactRatioCustomOpen || !compactRatioIsPreset ? " set-seg__btn--on" : ""}`}
+                    className="btn btn--small compact-ratio-custom-toggle"
                     disabled={busy}
                     aria-expanded={compactRatioCustomOpen}
-                    aria-pressed={compactRatioCustomOpen || !compactRatioIsPreset}
                     aria-controls="settings-compact-ratio-custom-panel"
-                    title={compactRatioIsPreset
-                      ? t("settings.compactRatioCustomOption")
-                      : t("settings.compactRatioCustomValue", { percent: compactRatioPercent })}
+                    title={t("settings.compactRatioCustomOption")}
                     onClick={compactRatioCustomOpen ? closeCompactRatioCustom : openCompactRatioCustom}
                   >
-                    {compactRatioIsPreset
-                      ? t("settings.compactRatioCustomOption")
-                      : t("settings.compactRatioCustomValue", { percent: compactRatioPercent })}
+                    {t("settings.compactRatioCustomOption")}
                   </button>
                 </div>
                 <div className="compact-ratio-impact">{compactRatioImpact}</div>

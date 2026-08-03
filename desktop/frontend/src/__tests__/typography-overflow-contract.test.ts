@@ -121,10 +121,10 @@ eq(finalDeclaration(".provider-model-draft__list", "grid-auto-rows"), "min-conte
 eq(finalDeclaration(".provider-model-draft__option", "min-height"), undefined, "provider model cards do not force undersized rows");
 eq(finalDeclaration(".provider-model-draft__option", "overflow"), "hidden", "provider model cards contain overflowing controls");
 eq(finalDeclaration(".compact-ratio-presets", "width"), "100%", "compaction presets use the full settings control width");
-eq(finalDeclaration(".compact-ratio-presets .set-seg__btn", "flex"), "1 1 auto", "compaction options share constrained width");
-eq(finalDeclaration(".compact-ratio-presets .set-seg__btn", "min-width"), "0", "compaction options may shrink before the custom option is clipped");
-eq(finalDeclaration(".compact-ratio-presets .set-seg__btn", "overflow"), "hidden", "compaction labels stay inside their option");
-eq(finalDeclaration(".compact-ratio-presets .set-seg__btn", "text-overflow"), "ellipsis", "compaction labels expose constrained text with an ellipsis");
+eq(finalDeclaration(".compact-ratio-presets .set-seg__btn", "flex"), "1 1 0", "three compaction presets share the available width equally");
+eq(finalDeclaration(".compact-ratio-presets .set-seg__btn", "flex-direction"), "column", "compaction presets place percentage and strategy on separate lines");
+eq(finalDeclaration(".compact-ratio-presets .set-seg__btn", "min-height"), "44px", "two-line compaction presets keep a stable target height");
+eq(finalDeclaration(".compact-ratio-presets .set-seg__btn", "white-space"), "normal", "compaction labels do not depend on ellipsis for their meaning");
 
 eq(finalDeclaration(".statusbar", "white-space"), "nowrap", "status bar keeps metrics on one row");
 eq(finalDeclaration(".statusbar", "overflow"), "hidden", "status bar clips instead of overflowing");
