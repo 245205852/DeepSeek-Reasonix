@@ -120,10 +120,13 @@ func NewRecorder(inner event.Sink, dir, source string) *Recorder {
 	}
 }
 
-// Emit forwards the event unchanged, then queues any usage/turn record without
-// waiting for filesystem I/O.
+// Emit forwards user-visible events unchanged, then queues any usage/turn
+// record without waiting for filesystem I/O. Request-only usage is internal
+// accounting for failed provider calls, so it is persisted without surfacing a
+// zero-token receipt in the wrapped frontend.
 func (r *Recorder) Emit(e event.Event) {
-	if r != nil && r.inner != nil {
+	requestOnly := e.Kind == event.Usage && e.Usage != nil && e.Usage.TotalTokens <= 0 && e.Usage.RequestCount > 0
+	if r != nil && r.inner != nil && !requestOnly {
 		r.inner.Emit(e)
 	}
 	if r != nil && r.writer != nil && e.Kind == event.Usage {
@@ -176,7 +179,7 @@ func (r *Recorder) recordUsage(e event.Event) {
 }
 
 func (r *Recorder) recordProviderUsage(modelRef string, usage *provider.Usage) {
-	if usage == nil || usage.TotalTokens <= 0 {
+	if usage == nil || (usage.TotalTokens <= 0 && usage.RequestCount <= 0) {
 		return
 	}
 	// Recording is best-effort: a stats file failure (disk full, permissions)

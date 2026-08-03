@@ -104,6 +104,7 @@ func (s *Session) Review(ctx context.Context, failure *FailureEvent, diagnosis [
 	}
 	reviewCtx, cancel := context.WithTimeout(ctx, s.timeout)
 	defer cancel()
+	reviewCtx = provider.WithRequestAttemptCounter(reviewCtx)
 
 	sys := PolicyPrompt
 	if len(sys) > reviewerMaxSystemBytes {
@@ -134,13 +135,27 @@ func (s *Session) Review(ctx context.Context, failure *FailureEvent, diagnosis [
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	var usage *provider.Usage
+	defer func() {
+		usage = provider.UsageWithRequestAttemptCount(reviewCtx, usage)
+		if usage != nil && s.sink != nil {
+			s.sink.Emit(event.Event{
+				Kind:        event.Usage,
+				ModelRef:    s.modelRef,
+				Usage:       usage,
+				Pricing:     s.pricing,
+				UsageSource: event.UsageSourceRecoveryReviewer,
+				Source:      event.UsageSourceRecoveryReviewer,
+			})
+		}
+	}()
+
 	ch, err := s.prov.Stream(reviewCtx, req)
 	if err != nil {
 		return ReviewVerdict{}, err
 	}
 
 	var text strings.Builder
-	var usage *provider.Usage
 	for chunk := range ch {
 		switch chunk.Type {
 		case provider.ChunkText:
@@ -164,17 +179,6 @@ func (s *Session) Review(ctx context.Context, failure *FailureEvent, diagnosis [
 	if reviewCtx.Err() != nil && text.Len() == 0 {
 		return ReviewVerdict{}, reviewCtx.Err()
 	}
-	if usage != nil && s.sink != nil {
-		s.sink.Emit(event.Event{
-			Kind:        event.Usage,
-			ModelRef:    s.modelRef,
-			Usage:       usage,
-			Pricing:     s.pricing,
-			UsageSource: event.UsageSourceRecoveryReviewer,
-			Source:      event.UsageSourceRecoveryReviewer,
-		})
-	}
-
 	verdict, perr := parseReviewVerdict(text.String())
 	if perr != nil {
 		return ReviewVerdict{}, perr

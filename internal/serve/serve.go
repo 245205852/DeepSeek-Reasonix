@@ -1209,6 +1209,14 @@ func (s *Server) generateTitle(ctx context.Context, firstMsg string) string {
 	if r := []rune(firstMsg); len(r) > 300 {
 		firstMsg = string(r[:300]) + "..."
 	}
+	ctx = provider.WithRequestAttemptCounter(ctx)
+	var usage *provider.Usage
+	defer func() {
+		usage = provider.UsageWithRequestAttemptCount(ctx, usage)
+		if usage != nil && !nilutil.IsNil(s.titleUsageSink) {
+			s.titleUsageSink.Emit(event.Event{Kind: event.Usage, ModelRef: s.titleModelRef, Usage: usage, Pricing: s.titlePrice, UsageSource: event.UsageSourceTitle})
+		}
+	}()
 	ch, err := s.titleProv.Stream(ctx, provider.Request{
 		Messages: []provider.Message{
 			{Role: provider.RoleSystem, Content: titlePrompt},
@@ -1221,7 +1229,6 @@ func (s *Server) generateTitle(ctx context.Context, firstMsg string) string {
 		return ""
 	}
 	var text strings.Builder
-	var usage *provider.Usage
 	for chunk := range ch {
 		switch chunk.Type {
 		case provider.ChunkText:
@@ -1231,9 +1238,6 @@ func (s *Server) generateTitle(ctx context.Context, firstMsg string) string {
 		case provider.ChunkError:
 			return ""
 		}
-	}
-	if usage != nil && usage.TotalTokens > 0 && !nilutil.IsNil(s.titleUsageSink) {
-		s.titleUsageSink.Emit(event.Event{Kind: event.Usage, ModelRef: s.titleModelRef, Usage: usage, Pricing: s.titlePrice, UsageSource: event.UsageSourceTitle})
 	}
 	title := strings.TrimSpace(text.String())
 	if len(title) >= 2 && ((title[0] == '"' && title[len(title)-1] == '"') || (title[0] == '\'' && title[len(title)-1] == '\'')) {

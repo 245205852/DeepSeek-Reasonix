@@ -114,6 +114,33 @@ func TestRecorderSkipsZeroUsage(t *testing.T) {
 	}
 }
 
+func TestRecorderPersistsRequestOnlyFailureWithoutForwardingReceipt(t *testing.T) {
+	dir := t.TempDir()
+	inner := &spySink{}
+	r := NewRecorder(inner, dir, "desktop")
+	r.Emit(event.Event{
+		Kind:     event.Usage,
+		ModelRef: "deepseek/deepseek-v4-pro",
+		Usage:    &provider.Usage{RequestCount: 3},
+	})
+	flushRecorder(t, r)
+
+	day := dayStart(time.Now())
+	got, err := r.writer.Query(SourceFilter{From: day, To: day})
+	if err != nil {
+		t.Fatalf("query: %v", err)
+	}
+	if got.Requests != 3 || got.Tokens != 0 || got.ActiveDays != 1 {
+		t.Fatalf("request-only totals = %+v, want requests=3 tokens=0 activeDays=1", got)
+	}
+	if len(got.Models) != 0 || len(got.Providers) != 0 {
+		t.Fatalf("request-only failure created token distribution rows: models=%+v providers=%+v", got.Models, got.Providers)
+	}
+	if len(inner.events) != 0 {
+		t.Fatalf("request-only usage forwarded %d zero-token receipts", len(inner.events))
+	}
+}
+
 func TestRecorderNeverWaitsForStatsFileLock(t *testing.T) {
 	dir := t.TempDir()
 	release, err := filelock.Acquire(context.Background(), filepath.Join(dir, ".append.lock"))

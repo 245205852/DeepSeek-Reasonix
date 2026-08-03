@@ -3,8 +3,9 @@
 // desktop "usage statistics" panel.
 //
 // Design notes:
-//   - Only token usage (event.Usage) and turn completions (event.TurnDone) are
-//     recorded here. Turn markers power the panel's "completed turns" metric;
+//   - Only provider usage (including request-only failures) and turn
+//     completions (event.TurnDone) are recorded here. Turn markers power the
+//     panel's "completed turns" metric;
 //     they are deliberately not presented as distinct conversation sessions.
 //     Token usage was never persisted before this feature, so token numbers
 //     accumulate from the day the feature ships.

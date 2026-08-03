@@ -112,22 +112,27 @@ func (w *Writer) Query(f SourceFilter) (RangeStats, error) {
 			out.CacheMiss += int64(rec.CacheMiss)
 			dayCacheHit += int64(rec.CacheHit)
 			dayCacheMiss += int64(rec.CacheMiss)
-			if rec.Total > 0 {
-				requests := rec.Requests
-				if requests <= 0 {
-					requests = 1
-				}
+			requests := rec.Requests
+			if rec.Total > 0 && requests <= 0 {
+				// Rows written before request accounting existed represented one
+				// successful provider call. Keep that legacy default while allowing
+				// new request-only rows to carry tokens=0 and requests>0.
+				requests = 1
+			}
+			if requests > 0 {
 				out.Requests += requests
 				dayRequests += requests
 			}
-			model := rec.ModelRef
-			if model == "" {
-				model = "(unknown)"
+			if rec.Total > 0 {
+				model := rec.ModelRef
+				if model == "" {
+					model = "(unknown)"
+				}
+				modelTotals[model] += t
+				providerTotals[providerOf(model)] += t
+				dayTotals[model] += t
 			}
-			modelTotals[model] += t
-			providerTotals[providerOf(model)] += t
-			dayTotals[model] += t
-			dayActive = true
+			dayActive = dayActive || rec.Total > 0 || requests > 0
 		}
 		if dayActive {
 			active[day] = true

@@ -468,10 +468,12 @@ func usageRequestCount(usage *provider.Usage) int {
 }
 
 func (a *Agent) emitTurnUsage(usage *provider.Usage, cacheDiagnostics *CacheDiagnostics) {
-	if usage == nil || usage.TotalTokens <= 0 {
+	if usage == nil || (usage.TotalTokens <= 0 && usage.RequestCount <= 0) {
 		return
 	}
-	a.lastUsage.Store(usage)
+	if usage.TotalTokens > 0 {
+		a.lastUsage.Store(usage)
+	}
 	a.sink.Emit(event.Event{Kind: event.Usage, ModelRef: a.modelRef, Usage: usage, Pricing: a.pricing,
 		UsageSource:      a.usageSource,
 		CacheDiagnostics: cacheDiagnostics,

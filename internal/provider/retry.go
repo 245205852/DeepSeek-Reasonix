@@ -79,13 +79,18 @@ func retryNotifyFromContext(ctx context.Context) RetryNotify {
 	return fn
 }
 
-// WithRequestAttemptCounter returns a child context that counts every HTTP
-// request SendWithRetry starts. Provider implementations use one counter for a
-// logical stream (including header retries and safe reconnects), then attach
-// the final count to the stream's Usage record.
+// WithRequestAttemptCounter returns a context that counts every HTTP request
+// SendWithRetry starts. An existing counter is reused so a caller can observe
+// attempts even when the provider returns before producing a Usage chunk.
+// Provider implementations use one counter for a logical stream (including
+// header retries and safe reconnects), then attach the final count to the
+// stream's Usage record.
 func WithRequestAttemptCounter(ctx context.Context) context.Context {
 	if ctx == nil {
 		ctx = context.Background()
+	}
+	if counter, _ := ctx.Value(requestAttemptCounterKey{}).(*requestAttemptCounter); counter != nil {
+		return ctx
 	}
 	return context.WithValue(ctx, requestAttemptCounterKey{}, &requestAttemptCounter{})
 }
@@ -113,6 +118,26 @@ func ApplyRequestAttemptCount(ctx context.Context, usage *Usage) {
 	if count := RequestAttemptCount(ctx); count > 0 {
 		usage.RequestCount = count
 	}
+}
+
+// UsageWithRequestAttemptCount returns a copy of usage carrying the exact
+// number of HTTP requests observed through ctx. When a provider request fails
+// before producing token usage, it returns a request-only Usage record so
+// callers can still account for the API calls. If neither usage nor attempts
+// exist, it returns nil.
+func UsageWithRequestAttemptCount(ctx context.Context, usage *Usage) *Usage {
+	count := RequestAttemptCount(ctx)
+	if usage == nil {
+		if count <= 0 {
+			return nil
+		}
+		return &Usage{RequestCount: count}
+	}
+	result := *usage
+	if count > 0 {
+		result.RequestCount = count
+	}
+	return &result
 }
 
 func recordRequestAttempt(ctx context.Context) {

@@ -82,6 +82,19 @@ func remoteStatsRecorder() *stats.Recorder {
 	return stats.NewRecorder(event.Discard, config.StatsDir(), "remote")
 }
 
+func recordRemoteProviderUsage(ctx context.Context, recorder *stats.Recorder, modelRef string, usage *provider.Usage) {
+	if recorder == nil {
+		return
+	}
+	usage = provider.UsageWithRequestAttemptCount(ctx, usage)
+	if usage == nil {
+		return
+	}
+	recorder.Emit(event.Event{
+		Kind: event.Usage, ModelRef: strings.TrimSpace(modelRef), Usage: usage,
+	})
+}
+
 // recordRemoteProviderStream mirrors brokered provider usage into the Desktop
 // state root before forwarding stream completion to the Remote Workbench. The
 // provider request itself runs on Desktop, so this records the canonical model
@@ -97,6 +110,12 @@ func recordRemoteProviderStream(ctx context.Context, modelRef string, in <-chan 
 	recorder := remoteStatsRecorder()
 	go func() {
 		defer close(out)
+		recordedUsage := false
+		defer func() {
+			if !recordedUsage {
+				recordRemoteProviderUsage(ctx, recorder, modelRef, nil)
+			}
+		}()
 		for {
 			select {
 			case <-ctx.Done():
@@ -111,10 +130,9 @@ func recordRemoteProviderStream(ctx context.Context, modelRef string, in <-chan 
 					return
 				}
 				if chunk.Type == provider.ChunkUsage && chunk.Usage != nil {
-					usage := *chunk.Usage
-					recorder.Emit(event.Event{
-						Kind: event.Usage, ModelRef: strings.TrimSpace(modelRef), Usage: &usage,
-					})
+					copy := *chunk.Usage
+					recordRemoteProviderUsage(ctx, recorder, modelRef, &copy)
+					recordedUsage = true
 				}
 			}
 		}

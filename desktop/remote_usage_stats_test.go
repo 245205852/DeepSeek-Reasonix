@@ -2,6 +2,9 @@ package main
 
 import (
 	"context"
+	"io"
+	"net/http"
+	"strings"
 	"testing"
 	"time"
 
@@ -11,6 +14,10 @@ import (
 	"reasonix/internal/remote/protocol"
 	"reasonix/internal/stats"
 )
+
+type statsRoundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f statsRoundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) { return f(req) }
 
 func TestRemoteProviderStreamPersistsUsageInDesktopState(t *testing.T) {
 	t.Setenv("REASONIX_STATE_HOME", t.TempDir())
@@ -41,6 +48,42 @@ func TestRemoteProviderStreamPersistsUsageInDesktopState(t *testing.T) {
 	}
 	if len(result.Providers) != 1 || result.Providers[0].Provider != "anthropic" {
 		t.Fatalf("remote providers = %+v, want anthropic", result.Providers)
+	}
+}
+
+func TestRemoteProviderStreamPersistsRequestOnlyFailure(t *testing.T) {
+	t.Setenv("REASONIX_STATE_HOME", t.TempDir())
+	ctx := provider.WithRequestAttemptCounter(context.Background())
+	client := &http.Client{Transport: statsRoundTripFunc(func(*http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusBadRequest,
+			Header:     make(http.Header),
+			Body:       io.NopCloser(strings.NewReader("bad request")),
+		}, nil
+	})}
+	_, requestErr := provider.SendWithRetry(ctx, client, provider.SendOptions{Provider: "remote"}, func(reqCtx context.Context) (*http.Request, error) {
+		return http.NewRequestWithContext(reqCtx, http.MethodPost, "https://example.invalid", nil)
+	})
+	if requestErr == nil {
+		t.Fatal("expected provider request failure")
+	}
+	in := make(chan provider.Chunk, 1)
+	in <- provider.Chunk{Type: provider.ChunkError, Err: requestErr}
+	close(in)
+	for range recordRemoteProviderStream(ctx, "anthropic/claude", in) {
+	}
+	if err := stats.Flush(context.Background(), config.StatsDir()); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now()
+	result, err := stats.NewWriter(config.StatsDir()).Query(stats.SourceFilter{
+		From: now.AddDate(0, 0, -1), To: now.AddDate(0, 0, 1), Source: "remote",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Tokens != 0 || result.Requests != 1 {
+		t.Fatalf("remote failed totals = tokens %d requests %d, want 0/1", result.Tokens, result.Requests)
 	}
 }
 

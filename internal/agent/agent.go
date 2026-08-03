@@ -2693,6 +2693,7 @@ func (a *Agent) stream(ctx context.Context, turn int, sink event.Sink) (string, 
 	ctx = provider.WithRetryNotify(ctx, func(info provider.RetryInfo) {
 		sink.Emit(event.Event{Kind: event.Retrying, RetryAttempt: info.Attempt, RetryMax: info.Max})
 	})
+	ctx = provider.WithRequestAttemptCounter(ctx)
 	// A stream can terminate locally before the provider channel closes (for
 	// example when the client-side reasoning guard fires). Own a child context
 	// here so every return path aborts the HTTP request and releases the provider
@@ -2713,7 +2714,7 @@ func (a *Agent) stream(ctx context.Context, turn int, sink event.Sink) (string, 
 		Temperature: provider.OptionalTemperature(a.temperature),
 	})
 	if err != nil {
-		return "", "", "", nil, nil, false, false, nil, err
+		return "", "", "", nil, provider.UsageWithRequestAttemptCount(ctx, nil), false, false, nil, err
 	}
 
 	// A PostLLMCall hook rewrites the whole reasoning block, so when one is wired
@@ -2750,12 +2751,14 @@ func (a *Agent) stream(ctx context.Context, turn int, sink event.Sink) (string, 
 		case <-ctx.Done():
 			stored, _ := finishReasoning()
 			usage = bestEffortStreamUsage(usage, text.Len(), reasoning.Len(), "interrupted")
+			usage = provider.UsageWithRequestAttemptCount(ctx, usage)
 			return text.String(), stored, signature, calls, usage, false, partialToolStarted, partialCalls, ctx.Err()
 		case c, ok := <-ch:
 			if !ok {
 				if err := ctx.Err(); err != nil {
 					stored, _ := finishReasoning()
 					usage = bestEffortStreamUsage(usage, text.Len(), reasoning.Len(), "interrupted")
+					usage = provider.UsageWithRequestAttemptCount(ctx, usage)
 					return text.String(), stored, signature, calls, usage, false, partialToolStarted, partialCalls, err
 				}
 				stored, display := finishReasoning()
@@ -2766,6 +2769,7 @@ func (a *Agent) stream(ctx context.Context, turn int, sink event.Sink) (string, 
 						Reasoning: display,
 					})
 				}
+				usage = provider.UsageWithRequestAttemptCount(ctx, usage)
 				return text.String(), stored, signature, calls, usage, false, false, partialCalls, nil
 			}
 			chunk = c
@@ -2782,6 +2786,7 @@ func (a *Agent) stream(ctx context.Context, turn int, sink event.Sink) (string, 
 			if a.reasoningByteLimit > 0 && reasoning.Len() > a.reasoningByteLimit {
 				stored, _ := finishReasoning()
 				usage = bestEffortStreamUsage(usage, text.Len(), reasoning.Len(), finishReasonClientReasoningLimit)
+				usage = provider.UsageWithRequestAttemptCount(ctx, usage)
 				a.lastUsage.Store(usage)
 				return text.String(), stored, signature, calls, usage, false, partialToolStarted, partialCalls, errReasoningByteLimitExceeded
 			}
@@ -2828,12 +2833,14 @@ func (a *Agent) stream(ctx context.Context, turn int, sink event.Sink) (string, 
 			if provider.IsStreamInterrupted(chunk.Err) {
 				stored, _ := finishReasoning()
 				usage = bestEffortStreamUsage(usage, text.Len(), reasoning.Len(), "interrupted")
+				usage = provider.UsageWithRequestAttemptCount(ctx, usage)
 				return text.String(), stored, signature, calls, usage, true, partialToolStarted, partialCalls, chunk.Err
 			}
 			stored, _ := finishReasoning()
 			if errors.Is(chunk.Err, context.Canceled) || errors.Is(chunk.Err, context.DeadlineExceeded) {
 				usage = bestEffortStreamUsage(usage, text.Len(), reasoning.Len(), "interrupted")
 			}
+			usage = provider.UsageWithRequestAttemptCount(ctx, usage)
 			return text.String(), stored, signature, calls, usage, false, partialToolStarted, partialCalls, chunk.Err
 		}
 	}

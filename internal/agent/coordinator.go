@@ -817,6 +817,15 @@ func (c *Coordinator) plan(ctx context.Context, input string) (string, error) {
 		rawContent = rawInput
 	}
 	c.plannerSess.Add(provider.Message{Role: provider.RoleUser, Content: input, RawContent: rawContent})
+	ctx = provider.WithRequestAttemptCounter(ctx)
+	var usage *provider.Usage
+	streamCompleted := false
+	defer func() {
+		accounted := provider.UsageWithRequestAttemptCount(ctx, usage)
+		if accounted != nil || streamCompleted {
+			c.sink.Emit(event.Event{Kind: event.Usage, ModelRef: c.plannerModelRef, Usage: accounted, Pricing: c.plannerPricing, Source: event.UsageSourcePlanner, UsageSource: event.UsageSourcePlanner})
+		}
+	}()
 
 	ch, err := c.planner.Stream(ctx, provider.Request{
 		Messages:    provider.ModelMessages(c.plannerSess.Messages),
@@ -828,7 +837,6 @@ func (c *Coordinator) plan(ctx context.Context, input string) (string, error) {
 	}
 
 	var text strings.Builder
-	var usage *provider.Usage
 	for chunk := range ch {
 		switch chunk.Type {
 		case provider.ChunkText:
@@ -841,10 +849,7 @@ func (c *Coordinator) plan(ctx context.Context, input string) (string, error) {
 			return "", chunk.Err
 		}
 	}
-	// Closes the planner's raw text block (no markdown redraw) and prints its
-	// usage line, mirroring the old Fprintln + printUsage tail.
-	c.sink.Emit(event.Event{Kind: event.Usage, ModelRef: c.plannerModelRef, Usage: usage, Pricing: c.plannerPricing, Source: event.UsageSourcePlanner, UsageSource: event.UsageSourcePlanner})
-
+	streamCompleted = true
 	plan := text.String()
 	c.plannerSess.Add(provider.Message{Role: provider.RoleAssistant, Content: plan})
 	return plan, nil

@@ -267,3 +267,27 @@ func TestSendWithRetryRecoversAndNotifies(t *testing.T) {
 		t.Fatalf("request attempt count = %d, want 2", got)
 	}
 }
+
+func TestRequestAttemptCountSurvivesRetriesThenTerminalFailure(t *testing.T) {
+	calls := 0
+	cl := &http.Client{Transport: rtFunc(func(r *http.Request) (*http.Response, error) {
+		calls++
+		if calls < 3 {
+			return statusResp(http.StatusServiceUnavailable, nil), nil
+		}
+		return statusResp(http.StatusBadRequest, nil), nil
+	})}
+	ctx := WithRequestAttemptCounter(context.Background())
+	providerCtx := WithRequestAttemptCounter(ctx)
+
+	if _, err := SendWithRetry(providerCtx, cl, SendOptions{Provider: "p"}, newDummyReq); err == nil {
+		t.Fatal("expected terminal provider error")
+	}
+	if got := RequestAttemptCount(ctx); got != 3 {
+		t.Fatalf("request attempt count = %d, want 3", got)
+	}
+	usage := UsageWithRequestAttemptCount(ctx, nil)
+	if usage == nil || usage.TotalTokens != 0 || usage.RequestCount != 3 {
+		t.Fatalf("failed request usage = %+v, want tokens=0 requests=3", usage)
+	}
+}
