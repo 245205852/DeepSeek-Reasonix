@@ -7,7 +7,6 @@ import (
 	"os"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"reasonix/internal/agent"
@@ -62,9 +61,11 @@ type Session struct {
 	// After a threshold the session is compacted to bound memory growth.
 	reviewCount int
 
-	// lastUsage caches the most recent guardian-model telemetry so Review() can
-	// include per-call token cost in the assessment event.
-	lastUsage atomic.Pointer[provider.Usage]
+	// usageMu protects the aggregate for one review. It is separate from mu
+	// because the agent emits Usage while Review holds mu.
+	usageMu         sync.Mutex
+	reviewUsage     provider.Usage
+	haveReviewUsage bool
 }
 
 // NewSession creates a guardian review session with a dedicated model, read-only
@@ -158,7 +159,7 @@ func (gs *Session) review(ctx context.Context, toolName string, args json.RawMes
 	sink := gs.sink
 	gs.reviewCount++
 	reviewN := gs.reviewCount
-	gs.lastUsage.Store(nil)
+	gs.resetReviewUsage()
 
 	// The transcript evidence and the action request ride in ONE user message
 	// per review, so the guardian session alternates user/assistant strictly —
@@ -187,11 +188,10 @@ func (gs *Session) review(ctx context.Context, toolName string, args json.RawMes
 	start := time.Now()
 	agentErr := gs.agent.Run(reviewCtx, transcriptText+"\n"+formatReviewRequest(toolName, args))
 	dur := time.Since(start).Milliseconds()
-	reviewUsage := gs.lastUsage.Load()
-
 	if agentErr == nil && reviewN%compactEvery == 0 {
 		_ = gs.agent.CompactNow(reviewCtx, "")
 	}
+	reviewUsage := gs.snapshotReviewUsage()
 
 	// Parse the result and update circuit breaker under the lock.
 	var assessment Assessment
@@ -565,13 +565,61 @@ func lastAssistantText(sess *agent.Session) string {
 	return ""
 }
 
-// newSink returns a sink that captures Usage events so Review() can include
-// per-call token cost in the assessment event. All events are silently dropped —
-// the only guardian output the user sees is the audit line from emitTo.
+func (gs *Session) resetReviewUsage() {
+	gs.usageMu.Lock()
+	gs.reviewUsage = provider.Usage{}
+	gs.haveReviewUsage = false
+	gs.usageMu.Unlock()
+}
+
+func (gs *Session) snapshotReviewUsage() *provider.Usage {
+	gs.usageMu.Lock()
+	defer gs.usageMu.Unlock()
+	if !gs.haveReviewUsage {
+		return nil
+	}
+	usage := gs.reviewUsage
+	return &usage
+}
+
+func (gs *Session) addReviewUsage(usage *provider.Usage) {
+	if usage == nil {
+		return
+	}
+	gs.usageMu.Lock()
+	defer gs.usageMu.Unlock()
+	gs.reviewUsage.PromptTokens += usage.PromptTokens
+	gs.reviewUsage.CompletionTokens += usage.CompletionTokens
+	gs.reviewUsage.TotalTokens += usage.TotalTokens
+	gs.reviewUsage.CacheHitTokens += usage.CacheHitTokens
+	gs.reviewUsage.CacheMissTokens += usage.CacheMissTokens
+	gs.reviewUsage.ReasoningTokens += usage.ReasoningTokens
+	gs.reviewUsage.RequestCount += guardianUsageRequestCount(usage)
+	gs.reviewUsage.Estimated = gs.reviewUsage.Estimated || usage.Estimated
+	if usage.FinishReason != "" {
+		gs.reviewUsage.FinishReason = usage.FinishReason
+	}
+	gs.haveReviewUsage = true
+}
+
+func guardianUsageRequestCount(usage *provider.Usage) int {
+	if usage == nil {
+		return 0
+	}
+	if usage.RequestCount > 0 {
+		return usage.RequestCount
+	}
+	return 1
+}
+
+// newSink returns a sink that aggregates every Usage event in one review so
+// Review() can include all model and compaction calls in the assessment event.
+// All events are otherwise silently dropped — the only guardian output the user
+// sees is the audit line from emitTo.
 func (gs *Session) newSink() event.Sink {
 	return event.FuncSink(func(e event.Event) {
 		if e.Kind == event.Usage && e.Usage != nil {
-			gs.lastUsage.Store(e.Usage)
+			gs.addReviewUsage(e.Usage)
 		}
 	})
 }

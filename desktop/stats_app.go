@@ -1,11 +1,15 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"strconv"
+	"strings"
 	"time"
 
 	"reasonix/internal/config"
+	"reasonix/internal/event"
+	"reasonix/internal/provider"
 	"reasonix/internal/stats"
 )
 
@@ -66,6 +70,54 @@ func (a *App) UsageStats(req UsageStatsRequest) (UsageStatsRange, error) {
 		Models:      res.Models,
 		Providers:   res.Providers,
 	}, nil
+}
+
+func remoteStatsRecorder() *stats.Recorder {
+	return stats.NewRecorder(event.Discard, config.StatsDir(), "remote")
+}
+
+// recordRemoteProviderStream mirrors brokered provider usage into the Desktop
+// state root before forwarding stream completion to the Remote Workbench. The
+// provider request itself runs on Desktop, so this records the canonical model
+// ref without relying on the SSH target's filesystem.
+func recordRemoteProviderStream(ctx context.Context, modelRef string, in <-chan provider.Chunk) <-chan provider.Chunk {
+	if in == nil {
+		return nil
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	out := make(chan provider.Chunk)
+	recorder := remoteStatsRecorder()
+	go func() {
+		defer close(out)
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case chunk, ok := <-in:
+				if !ok {
+					return
+				}
+				select {
+				case out <- chunk:
+				case <-ctx.Done():
+					return
+				}
+				if chunk.Type == provider.ChunkUsage && chunk.Usage != nil {
+					usage := *chunk.Usage
+					recorder.Emit(event.Event{
+						Kind: event.Usage, ModelRef: strings.TrimSpace(modelRef), Usage: &usage,
+					})
+				}
+			}
+		}
+	}()
+	return out
+}
+
+func recordRemoteTurnCompletion() {
+	event.RecordTurnCompletion(remoteStatsRecorder())
 }
 
 const (

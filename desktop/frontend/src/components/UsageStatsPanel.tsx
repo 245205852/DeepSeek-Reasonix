@@ -252,14 +252,20 @@ export function UsageStatsPanel() {
   }, [loadHeat]);
 
   const load = useCallback(async () => {
+    const generation = ++generationRef.current;
     // A custom range with empty date pickers must not hit the backend — the
     // request would carry "" from/to and fail validation. Wait for both dates.
-    if (range === "custom" && (!customFrom || !customTo)) return;
+    if (range === "custom" && (!customFrom || !customTo)) {
+      setStats(null);
+      setLoading(false);
+      setError("");
+      return;
+    }
     const req: UsageStatsRequest =
       range === "custom"
         ? { range, from: customFrom, to: customTo, source }
         : { range, source };
-    const generation = ++generationRef.current;
+    setStats(null);
     setLoading(true);
     setError("");
     try {
@@ -268,6 +274,7 @@ export function UsageStatsPanel() {
       setStats(res);
     } catch (e) {
       if (generationRef.current !== generation) return;
+      setStats(null);
       setError(e instanceof Error ? e.message : String(e));
     } finally {
       if (generationRef.current === generation) setLoading(false);

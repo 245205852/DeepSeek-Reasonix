@@ -806,7 +806,7 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 		return p, me.Price, me.ContextWindow, nil
 	}
 	subagentIdentity := func(modelRef, effort string) (string, string) {
-		return subagentEffectiveIdentity(cfg, modelName, entry, modelRef, effort)
+		return subagentEffectiveIdentity(cfg, opts.ProviderResolver, modelName, entry, modelRef, effort)
 	}
 	taskModel := firstNonEmpty(cfg.Agent.SubagentModels["task"], cfg.Agent.SubagentModel)
 	taskEffort := firstNonEmpty(cfg.Agent.SubagentEfforts["task"], cfg.Agent.SubagentEffort)
@@ -1767,11 +1767,9 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 		var router *capability.SemanticRouter
 		// Prefer agent.subagent_models["capability-router"] when configured.
 		if modelRef := strings.TrimSpace(cfg.Agent.SubagentModels["capability-router"]); modelRef != "" {
-			if p, price, _, err := resolveSubagentProvider(modelRef, strings.TrimSpace(cfg.Agent.SubagentEfforts["capability-router"])); err == nil && p != nil {
-				usageModelRef := modelRef
-				if resolved, ok := cfg.ResolveModel(modelRef); ok {
-					usageModelRef = modelRefFromEntry(resolved)
-				}
+			effortRef := strings.TrimSpace(cfg.Agent.SubagentEfforts["capability-router"])
+			if p, price, _, err := resolveSubagentProvider(modelRef, effortRef); err == nil && p != nil {
+				usageModelRef, _ := subagentIdentity(modelRef, effortRef)
 				router = &capability.SemanticRouter{Provider: p, Sink: sink, Model: usageModelRef, Pricing: price, Audit: capAudit}
 			}
 		}
@@ -2174,23 +2172,38 @@ func newSubagentStore(sessionDir string) (*agent.SubagentStore, error) {
 	return store, nil
 }
 
-func subagentEffectiveIdentity(cfg *config.Config, baseModelRef string, base *config.ProviderEntry, modelRef, effort string) (string, string) {
+func subagentEffectiveIdentity(cfg *config.Config, resolver provider.Resolver, baseModelRef string, base *config.ProviderEntry, modelRef, effort string) (string, string) {
 	var entry config.ProviderEntry
 	if base != nil {
 		entry = *base
 	}
 	ref := strings.TrimSpace(modelRef)
-	if ref == "" {
+	explicit := ref != ""
+	if !explicit {
 		ref = strings.TrimSpace(baseModelRef)
 	}
-	if cfg != nil && ref != "" {
+	if explicit && cfg != nil && ref != "" {
 		if resolved, ok := cfg.ResolveModel(ref); ok {
 			entry = *resolved
-		} else if strings.TrimSpace(modelRef) != "" {
+		} else if resolved := syntheticEntryFromResolver(resolver, ref); strings.TrimSpace(resolved.Name) != "" {
+			entry = *resolved
+		} else {
 			entry.Model = ref
 		}
-	} else if strings.TrimSpace(modelRef) != "" {
-		entry.Model = strings.TrimSpace(modelRef)
+	} else if explicit {
+		if resolved := syntheticEntryFromResolver(resolver, ref); strings.TrimSpace(resolved.Name) != "" {
+			entry = *resolved
+		} else {
+			entry.Model = ref
+		}
+	} else if base == nil && ref != "" {
+		if resolved := syntheticEntryFromResolver(resolver, ref); strings.TrimSpace(resolved.Name) != "" {
+			entry = *resolved
+		} else if cfg != nil {
+			if resolved, ok := cfg.ResolveModel(ref); ok {
+				entry = *resolved
+			}
+		}
 	}
 	if rawEffort := strings.TrimSpace(effort); rawEffort != "" {
 		if normalized, err := config.NormalizeEffort(&entry, rawEffort); err == nil {

@@ -64,15 +64,25 @@ class TestResizeObserver {
 globalThis.ResizeObserver = TestResizeObserver as unknown as typeof ResizeObserver;
 
 let rejectCLIHeat: ((error: Error) => void) | undefined;
+let rejectCLIMain: ((error: Error) => void) | undefined;
+let resolveDesktopMain: ((stats: UsageStatsRange) => void) | undefined;
 const usageStats = (req: UsageStatsRequest): Promise<UsageStatsRange> => {
-  if (req.range !== "custom") return Promise.resolve(emptyStats({
-    tokens: 21,
-    models: Array.from({ length: 21 }, (_, index) => ({
-      model: `deepseek/model-${index + 1}`,
-      tokens: 1,
-      percent: 100 / 21,
-    })),
-  }));
+  if (req.range !== "custom") {
+    if (req.source === "cli") {
+      return new Promise((_, reject) => { rejectCLIMain = reject; });
+    }
+    if (req.source === "desktop") {
+      return new Promise((resolve) => { resolveDesktopMain = resolve; });
+    }
+    return Promise.resolve(emptyStats({
+      tokens: 21,
+      models: Array.from({ length: 21 }, (_, index) => ({
+        model: `deepseek/model-${index + 1}`,
+        tokens: 1,
+        percent: 100 / 21,
+      })),
+    }));
+  }
   if (req.source === "cli") {
     return new Promise((_, reject) => { rejectCLIHeat = reject; });
   }
@@ -117,9 +127,29 @@ ok(rootEl.querySelectorAll("rect.usage-stats__heat-cell--5").length === 0, "sour
 
 await act(async () => {
   rejectCLIHeat?.(new Error("expected test failure"));
+  rejectCLIMain?.(new Error("expected main test failure"));
   await new Promise((resolve) => setTimeout(resolve, 0));
 });
 ok(rootEl.querySelectorAll("rect.usage-stats__heat-cell--5").length === 0, "failed current-source fetch cannot revive previous heat data");
+ok(rootEl.querySelectorAll("circle.usage-stats__donut-seg").length === 0, "failed current-source fetch cannot retain previous main stats");
+
+const desktopButton = [...rootEl.querySelectorAll("button")].find((button) => button.textContent === "Desktop");
+if (!desktopButton) throw new Error("missing Desktop source button");
+await act(async () => {
+  desktopButton.dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true }));
+  await new Promise((resolve) => setTimeout(resolve, 0));
+});
+const customButton = [...rootEl.querySelectorAll("button")].find((button) => button.textContent === "Custom");
+if (!customButton) throw new Error("missing Custom range button");
+await act(async () => {
+  customButton.dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true }));
+  await new Promise((resolve) => setTimeout(resolve, 0));
+});
+await act(async () => {
+  resolveDesktopMain?.(emptyStats({ tokens: 777 }));
+  await new Promise((resolve) => setTimeout(resolve, 0));
+});
+ok(!rootEl.textContent?.includes("777"), "incomplete custom range invalidates an older main response");
 
 await act(async () => root.unmount());
 dom.window.close();

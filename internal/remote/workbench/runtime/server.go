@@ -827,7 +827,7 @@ func (s *Server) buildController(ctx context.Context, model string, effort *stri
 		ctrl, err = boot.Build(ctx, boot.Options{
 			Model: model, EffortOverride: effort, RequireKey: false,
 			WorkspaceRoot: s.opts.Workspace, ProviderResolver: s.broker, Sink: sink, TokenMode: string(tokenMode),
-			SessionDir: s.sessionDir(), StatsSource: "remote",
+			SessionDir: s.sessionDir(),
 		})
 	}
 	if nilSessionController(ctrl) {
