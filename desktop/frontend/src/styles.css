@@ -29891,10 +29891,8 @@ body > .mermaid-diagram--fullscreen {
 
 .app--creation .topicbar,
 :root[data-theme-style] .app--creation .topicbar {
-  min-height: 40px;
-  /* Symmetric vertical padding so title/actions share the 40px center line
-     with Windows caption buttons (asymmetric top padding was pushing icons down). */
-  padding-top: 0;
+  min-height: 56px;
+  padding-top: 14px;
   padding-bottom: 0;
   border-bottom: 0;
   background: transparent;
@@ -29904,7 +29902,7 @@ body > .mermaid-diagram--fullscreen {
 :root[data-theme-style] .app--creation .topicbar__title-row {
   gap: 0;
   background: transparent;
-  transform: none;
+  transform: translateY(-3px);
 }
 
 .app--creation .topicbar__identity,
@@ -33609,11 +33607,21 @@ body > .mermaid-diagram--fullscreen {
   margin-top: -32px !important;
 }
 
-/* Align topicbar (replaces app-chrome in Creation mode) with Windows controls */
-.app--windows.app--creation .topicbar {
+/* Align topicbar (replaces app-chrome in Creation mode) with Windows controls
+   without changing the shared macOS/Linux Creation geometry above. */
+.app--windows.app--creation .topicbar,
+:root[data-theme-style] .app--windows.app--creation .topicbar {
   position: relative;
   z-index: var(--z-app-chrome);
+  min-height: 40px;
+  padding-top: 0;
+  padding-bottom: 0;
   transform: none !important;
+}
+
+.app--windows.app--creation .topicbar__title-row,
+:root[data-theme-style] .app--windows.app--creation .topicbar__title-row {
+  transform: none;
 }
 
 /* Reduce session title font size and weight. The rename input replaces the h1

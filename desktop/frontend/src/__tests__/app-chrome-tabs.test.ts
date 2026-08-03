@@ -598,10 +598,15 @@ ok(
 ok(
   finalDeclaration(".app--windows.app--creation .topicbar", "position") === "relative" &&
     finalDeclaration(".app--windows.app--creation .topicbar", "z-index") === "var(--z-app-chrome)" &&
+    finalDeclaration(".app--windows.app--creation .topicbar", "min-height") === "40px" &&
+    finalDeclaration(":root[data-theme-style] .app--windows.app--creation .topicbar", "min-height") === "40px" &&
     finalDeclaration(".app--windows.app--creation .topicbar", "transform") === "none !important" &&
+    finalDeclaration(".app--windows.app--creation .topicbar__title-row", "transform") === "none" &&
     finalDeclaration(".app--windows-frameless.app--creation", "--windows-window-controls-height") === "40px" &&
-    finalDeclaration(".app--creation .topicbar", "min-height") === "40px",
-  "Windows Creation title strip stays 40px with topicbar menus above conversation content",
+    finalDeclaration(".app--creation .topicbar", "min-height") === "56px" &&
+    finalDeclaration(":root[data-theme-style] .app--creation .topicbar", "padding-top") === "14px" &&
+    finalDeclaration(".app--creation .topicbar__title-row", "transform") === "translateY(-3px)",
+  "Windows Creation stays 40px while macOS and Linux keep the shared Creation geometry",
 );
 
 for (const selector of [
