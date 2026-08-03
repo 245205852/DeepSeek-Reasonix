@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"reasonix/internal/provider"
 	"reasonix/internal/tool"
@@ -36,6 +37,55 @@ func TestSubagentStoreContinueLoadsSavedTranscript(t *testing.T) {
 	}
 	if got := continued.Session.Snapshot(); len(got) != 3 || got[2].Content != "finding A" {
 		t.Fatalf("continued transcript = %+v, want saved messages", got)
+	}
+}
+
+// TestSubagentStoreSaveCompletedKeepsBranchCreatedAt guards #7298: the session
+// list reads *.jsonl.meta CreatedAt, which used to be backfilled at first save
+// (= completion time) instead of the subagent start time on *.meta.json.
+func TestSubagentStoreSaveCompletedKeepsBranchCreatedAt(t *testing.T) {
+	store := NewSubagentStore(t.TempDir())
+	spec := testSubagentSpec(t, "explore")
+	run, err := store.PrepareFresh(spec)
+	if err != nil {
+		t.Fatalf("PrepareFresh: %v", err)
+	}
+	defer run.Release()
+	created := run.Meta.CreatedAt
+	if created.IsZero() {
+		t.Fatal("PrepareFresh left CreatedAt zero")
+	}
+	time.Sleep(25 * time.Millisecond)
+	run.Session.Add(provider.Message{Role: provider.RoleUser, Content: "explore repo"})
+	run.Session.Add(provider.Message{Role: provider.RoleAssistant, Content: "done"})
+	if err := store.SaveCompleted(run); err != nil {
+		t.Fatalf("SaveCompleted: %v", err)
+	}
+	if !run.Meta.UpdatedAt.After(created) {
+		t.Fatalf("UpdatedAt %v should be after CreatedAt %v", run.Meta.UpdatedAt, created)
+	}
+	branch, ok, err := LoadBranchMeta(filepath.Join(store.dir, run.Ref+".jsonl"))
+	if err != nil || !ok {
+		t.Fatalf("LoadBranchMeta: ok=%v err=%v", ok, err)
+	}
+	if !branch.CreatedAt.Equal(created) {
+		t.Fatalf("branch CreatedAt = %v, want subagent start %v", branch.CreatedAt, created)
+	}
+	ordered, err := ListSessionOrder(store.dir)
+	if err != nil {
+		t.Fatalf("ListSessionOrder: %v", err)
+	}
+	found := false
+	for _, info := range ordered {
+		if info.Path == filepath.Join(store.dir, run.Ref+".jsonl") {
+			found = true
+			if !info.CreatedAt.Equal(created) {
+				t.Fatalf("list CreatedAt = %v, want %v", info.CreatedAt, created)
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("ListSessionOrder missing ref %q: %+v", run.Ref, ordered)
 	}
 }
 
