@@ -43,6 +43,68 @@ func TestResumeDispatchOpensPicker(t *testing.T) {
 	}
 }
 
+func TestOrderResumeSessionsGroupsRecoveryCopiesAndPrefersNewestLeaf(t *testing.T) {
+	base := time.Date(2026, 8, 3, 12, 0, 0, 0, time.UTC)
+	root := agent.SessionInfo{Path: "/sessions/root.jsonl", ModTime: base.Add(4 * time.Minute)}
+	olderLeaf := agent.SessionInfo{
+		Path: "/sessions/recovery-old.jsonl", ModTime: base.Add(2 * time.Minute),
+		Recovered: true, ParentID: "root",
+	}
+	newerLeaf := agent.SessionInfo{
+		Path: "/sessions/recovery-new.jsonl", ModTime: base.Add(3 * time.Minute),
+		Recovered: true, ParentID: "root",
+	}
+	other := agent.SessionInfo{Path: "/sessions/other.jsonl", ModTime: base.Add(time.Minute)}
+
+	got := orderResumeSessions([]agent.SessionInfo{root, newerLeaf, olderLeaf, other})
+	want := []string{newerLeaf.Path, olderLeaf.Path, root.Path, other.Path}
+	if len(got) != len(want) {
+		t.Fatalf("ordered sessions len = %d, want %d", len(got), len(want))
+	}
+	for i := range want {
+		if got[i].Path != want[i] {
+			t.Fatalf("ordered[%d] = %q, want %q (all=%v)", i, got[i].Path, want[i], got)
+		}
+	}
+}
+
+func TestCapResumeSessionGroupsDoesNotSplitRecoveryFamily(t *testing.T) {
+	base := time.Date(2026, 8, 3, 12, 0, 0, 0, time.UTC)
+	sessions := make([]agent.SessionInfo, 0, 12)
+	for i := 0; i < 9; i++ {
+		sessions = append(sessions, agent.SessionInfo{
+			Path:    filepath.Join("/sessions", "standalone-"+strconv.Itoa(i)+".jsonl"),
+			ModTime: base.Add(time.Duration(20-i) * time.Minute),
+		})
+	}
+	sessions = append(sessions,
+		agent.SessionInfo{Path: "/sessions/root.jsonl", ModTime: base.Add(3 * time.Minute)},
+		agent.SessionInfo{Path: "/sessions/recovery-a.jsonl", ModTime: base.Add(2 * time.Minute), Recovered: true, ParentID: "root"},
+		agent.SessionInfo{Path: "/sessions/recovery-b.jsonl", ModTime: base.Add(time.Minute), Recovered: true, ParentID: "root"},
+	)
+
+	got := capResumeSessionGroups(orderResumeSessions(sessions), resumeListCap)
+	if len(got) != 9 {
+		t.Fatalf("capped sessions len = %d, want 9 complete standalone groups", len(got))
+	}
+	for _, session := range got {
+		if session.Recovered || agent.BranchID(session.Path) == "root" {
+			t.Fatalf("cap split recovery family instead of omitting it: %+v", got)
+		}
+	}
+}
+
+func TestSessionPickerLabelIdentifiesRecoveryParent(t *testing.T) {
+	session := agent.SessionInfo{
+		Path: "/sessions/recovery.jsonl", Preview: "keep working", Turns: 3,
+		Recovered: true, ParentID: "20260803-long-parent-id",
+	}
+	label := sessionPickerLabel(session)
+	if recoverySessionBadge(session) == "" || !strings.Contains(label, "20260803") {
+		t.Fatalf("recovery picker label = %q, want recovery badge and short parent id", label)
+	}
+}
+
 // TestResumePickerNavigateAndSelect proves the picker's up/down navigation and
 // Enter to resume the selected session.
 func TestResumePickerNavigateAndSelect(t *testing.T) {

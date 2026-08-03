@@ -1525,11 +1525,15 @@ func ReconcileCleanupPending(dir string, cleanup func(CleanupPendingInfo) error)
 		errs = append(errs, err)
 		return errors.Join(errs...)
 	}
-	if cleanup == nil {
-		return errors.Join(errs...)
-	}
 	for _, item := range pending {
-		if err := cleanup(item); err != nil {
+		handled, err := reconcileRecoveryTrashPending(item)
+		if !handled {
+			if cleanup == nil {
+				continue
+			}
+			err = cleanup(item)
+		}
+		if err != nil {
 			errs = append(errs, fmt.Errorf("%s: %w", item.SessionPath, err))
 		}
 	}

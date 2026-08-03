@@ -2,11 +2,15 @@ package agent
 
 import (
 	"bytes"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"time"
+
+	"reasonix/internal/store"
 )
 
 // Recovery-branch garbage collection. Conflict recovery forks a copy of the
@@ -21,9 +25,24 @@ import (
 // flow — the user may be comparing it against the original right now.
 const RecoveryGCGracePeriod = 24 * time.Hour
 
+const (
+	recoveryTrashDir             = ".trash"
+	recoveryTrashMetaFile        = ".trash-meta.json"
+	recoveryTrashOperationPrefix = "recovery-trash:"
+)
+
 // ErrRecoveryBranchNotCovered means the branch cannot currently be proven
 // redundant with its parent. Destructive callers must preserve it.
 var ErrRecoveryBranchNotCovered = errors.New("recovery branch is not covered by its parent")
+
+// ErrRecoveryBranchNotIdle means the branch has not yet passed the safety
+// grace period. It remains visible and may be retried by a later GC pass.
+var ErrRecoveryBranchNotIdle = errors.New("recovery branch is still inside its safety grace period")
+
+type recoveryTrashMeta struct {
+	Key       string `json:"key"`
+	DeletedAt int64  `json:"deletedAt"`
+}
 
 // SessionLeaseHeld reports whether ANY live runtime — this process included —
 // holds the session's write lease. SessionLeaseHeldByOtherRuntime deliberately
@@ -167,15 +186,7 @@ func ReclaimableRecoveryBranches(dir string, now time.Time, grace time.Duration)
 		if strings.TrimSpace(meta.ParentID) == "" {
 			continue
 		}
-		idleSince := meta.UpdatedAt
-		if idleSince.IsZero() {
-			info, err := e.Info()
-			if err != nil {
-				continue
-			}
-			idleSince = info.ModTime()
-		}
-		if now.Sub(idleSince) < grace {
+		if !recoveryBranchIdle(path, meta, now, grace) {
 			continue
 		}
 		if SessionLeaseHeld(path) {
@@ -187,4 +198,180 @@ func ReclaimableRecoveryBranches(dir string, now time.Time, grace time.Duration)
 		out = append(out, path)
 	}
 	return out, nil
+}
+
+// TrashReclaimableRecoveryBranch moves one redundant recovery branch into the
+// same recoverable .trash layout used by Desktop. It rechecks parent coverage
+// while holding both the parent and branch removal guards, so a concurrent save
+// cannot turn a redundant copy into unique history between verification and
+// relocation. The operation is durable: an interrupted move is hidden by a
+// cleanup-pending marker and completed by ReconcileCleanupPending on startup.
+func TrashReclaimableRecoveryBranch(path, parentDir string) error {
+	path = filepath.Clean(strings.TrimSpace(path))
+	parentDir = filepath.Clean(strings.TrimSpace(parentDir))
+	if path == "." || parentDir == "." || filepath.Dir(path) != parentDir {
+		return fmt.Errorf("recovery branch must be a direct child of its session directory")
+	}
+	key := filepath.Base(path)
+	if !strings.HasSuffix(key, ".jsonl") || strings.HasSuffix(key, ".events.jsonl") {
+		return fmt.Errorf("invalid recovery session path")
+	}
+
+	parentGuard, err := TryAcquireRecoveryParentGuard(path, parentDir)
+	if err != nil {
+		return err
+	}
+	defer parentGuard.Release()
+
+	branchGuard, err := TryAcquireSessionRemovalGuard(path)
+	if err != nil {
+		return err
+	}
+	defer branchGuard.Release()
+	meta, ok, err := LoadBranchMeta(path)
+	if err != nil || !ok || !recoveryBranchIdle(path, meta, time.Now(), RecoveryGCGracePeriod) {
+		return ErrRecoveryBranchNotIdle
+	}
+	if !RecoveryBranchCoveredByParent(path, parentDir) {
+		return ErrRecoveryBranchNotCovered
+	}
+
+	itemName, itemDir, err := reserveRecoveryTrashItemDir(parentDir, key)
+	if err != nil {
+		return err
+	}
+	if err := MarkCleanupPending(path, recoveryTrashOperationPrefix+itemName); err != nil {
+		return err
+	}
+	return finishRecoveryTrashMove(parentDir, path, key, itemDir, branchGuard)
+}
+
+func recoveryBranchIdle(path string, meta BranchMeta, now time.Time, grace time.Duration) bool {
+	idleSince := meta.UpdatedAt
+	if idleSince.IsZero() {
+		info, err := os.Stat(path)
+		if err != nil {
+			return false
+		}
+		idleSince = info.ModTime()
+	}
+	return now.Sub(idleSince) >= grace
+}
+
+// reconcileRecoveryTrashPending completes an interrupted recovery-trash move.
+// The durable marker was written only after coverage was verified under the
+// parent guard, so reconciliation must finish the recoverable move even when
+// the live transcript has already been relocated and cannot be re-verified.
+func reconcileRecoveryTrashPending(item CleanupPendingInfo) (bool, error) {
+	operation := strings.TrimSpace(item.Meta.Operation)
+	if !strings.HasPrefix(operation, recoveryTrashOperationPrefix) {
+		return false, nil
+	}
+	itemName := strings.TrimPrefix(operation, recoveryTrashOperationPrefix)
+	if itemName == "" || filepath.Base(itemName) != itemName || itemName == "." || itemName == ".." {
+		return true, fmt.Errorf("invalid recovery trash target")
+	}
+	path := filepath.Clean(item.SessionPath)
+	dir := filepath.Dir(path)
+	key := filepath.Base(path)
+	guard, err := TryAcquireSessionRemovalGuard(path)
+	if err != nil {
+		return true, err
+	}
+	defer guard.Release()
+	return true, finishRecoveryTrashMove(dir, path, key, filepath.Join(dir, recoveryTrashDir, itemName), guard)
+}
+
+func reserveRecoveryTrashItemDir(dir, key string) (string, string, error) {
+	root := filepath.Join(dir, recoveryTrashDir)
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		return "", "", err
+	}
+	stem := strings.TrimSuffix(key, filepath.Ext(key))
+	for i := 0; i < 1000; i++ {
+		name := key
+		if i > 0 {
+			name = fmt.Sprintf("%s-recovery-%d-%d", stem, time.Now().UTC().UnixMilli(), i)
+		}
+		itemDir := filepath.Join(root, name)
+		if err := os.Mkdir(itemDir, 0o755); err == nil {
+			return name, itemDir, nil
+		} else if !os.IsExist(err) {
+			return "", "", err
+		}
+	}
+	return "", "", fmt.Errorf("could not reserve recovery trash target")
+}
+
+func finishRecoveryTrashMove(dir, path, key, itemDir string, guard *SessionRemovalGuard) error {
+	if err := os.MkdirAll(itemDir, 0o755); err != nil {
+		return err
+	}
+	for _, src := range recoveryTrashArtifacts(path) {
+		if err := moveRecoveryTrashPath(src, filepath.Join(itemDir, filepath.Base(src))); err != nil {
+			return err
+		}
+	}
+	if err := moveRecoverySubagentArtifacts(dir, path, itemDir); err != nil {
+		return err
+	}
+	meta := recoveryTrashMeta{Key: key, DeletedAt: time.Now().UnixMilli()}
+	b, err := json.MarshalIndent(meta, "", "  ")
+	if err != nil {
+		return err
+	}
+	if err := os.WriteFile(filepath.Join(itemDir, recoveryTrashMetaFile), b, 0o644); err != nil {
+		return err
+	}
+	// Keep the branch guard until the trash entry is complete and the hidden
+	// marker is cleared. No runtime can bind the now-vacant live path in the
+	// middle and inherit an incomplete cleanup state.
+	if err := ClearCleanupPending(path); err != nil {
+		return err
+	}
+	return guard.RemoveSidecarsAndRelease()
+}
+
+func recoveryTrashArtifacts(path string) []string {
+	artifacts := []string{path}
+	artifacts = append(artifacts, store.SessionSidecarFiles(path)...)
+	artifacts = append(artifacts,
+		path+".telemetry.json",
+		store.SessionCheckpointDir(path),
+		store.SessionJobsDir(path),
+	)
+	return artifacts
+}
+
+func moveRecoverySubagentArtifacts(dir, path, itemDir string) error {
+	artifacts, err := ListSubagentsByParent(dir, BranchID(path))
+	if err != nil {
+		return err
+	}
+	targetDir := filepath.Join(itemDir, "subagents")
+	for _, artifact := range artifacts {
+		paths := []string{artifact.SessionPath, artifact.MetaPath}
+		paths = append(paths, store.SessionSidecarFiles(artifact.SessionPath)...)
+		for _, src := range paths {
+			if err := moveRecoveryTrashPath(src, filepath.Join(targetDir, filepath.Base(src))); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func moveRecoveryTrashPath(src, dst string) error {
+	if strings.TrimSpace(src) == "" {
+		return nil
+	}
+	if _, err := os.Lstat(src); os.IsNotExist(err) {
+		return nil
+	} else if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+		return err
+	}
+	return os.Rename(src, dst)
 }
