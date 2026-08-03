@@ -150,11 +150,6 @@ func (a *App) WorkspaceChanges(tabID string) WorkspaceChangesView {
 			if ctrl != nil {
 				if state, ok := ctrl.CheckpointFileState(acc.view.Path); ok && state.Owned {
 					acc.view.CanSessionRevert = true
-				} else if state, ok := ctrl.CheckpointFileState(acc.view.Path); ok {
-					// Snapshot-only captures (no after-fp) still allow revert.
-					if state.Content != nil || state.BlobRef != "" || state.SHA256 != "" {
-						acc.view.CanSessionRevert = true
-					}
 				}
 			}
 		}

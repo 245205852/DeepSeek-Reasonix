@@ -135,9 +135,16 @@ func (m *checkpointManager) snapshot(ch diff.Change) {
 
 // truncateFrom renumbers future turns from `turn` and drops every boundary at or
 // after it — the conversation-rewind renumber after the message log is cut back.
-func (m *checkpointManager) truncateFrom(turn int) {
+func (m *checkpointManager) truncateFrom(turn int) error {
 	m.mu.Lock()
 	store := m.store
+	m.mu.Unlock()
+	if store != nil {
+		if err := store.TruncateFrom(turn); err != nil {
+			return err
+		}
+	}
+	m.mu.Lock()
 	m.turn = turn
 	for k := range m.bound {
 		if k >= turn {
@@ -145,9 +152,7 @@ func (m *checkpointManager) truncateFrom(turn int) {
 		}
 	}
 	m.mu.Unlock()
-	if store != nil {
-		store.TruncateFrom(turn)
-	}
+	return nil
 }
 
 // clearBounds drops every boundary after a summarize restructures the log (so

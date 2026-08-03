@@ -44,7 +44,9 @@ func (b *BlobStore) Put(data []byte) (string, error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	if st, err := os.Stat(path); err == nil && st.Size() == int64(len(data)) {
-		return ref, nil
+		if existing, readErr := os.ReadFile(path); readErr == nil && Digest(existing) == ref {
+			return ref, nil
+		}
 	}
 	if err := os.MkdirAll(b.dir, 0o755); err != nil {
 		return "", err
@@ -63,7 +65,14 @@ func (b *BlobStore) Get(ref string) ([]byte, error) {
 	if !validBlobRef(ref) {
 		return nil, fmt.Errorf("invalid blob ref %q", ref)
 	}
-	return os.ReadFile(b.path(ref))
+	data, err := os.ReadFile(b.path(ref))
+	if err != nil {
+		return nil, err
+	}
+	if got := Digest(data); got != ref {
+		return nil, fmt.Errorf("blob %s failed content-address verification: got %s", ref, got)
+	}
+	return data, nil
 }
 
 // Has reports whether ref exists.
@@ -71,7 +80,7 @@ func (b *BlobStore) Has(ref string) bool {
 	if b == nil || b.dir == "" || !validBlobRef(ref) {
 		return false
 	}
-	_, err := os.Stat(b.path(ref))
+	_, err := b.Get(ref)
 	return err == nil
 }
 

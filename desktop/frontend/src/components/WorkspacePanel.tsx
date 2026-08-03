@@ -52,6 +52,7 @@ import type {
   FilePreview,
   GitCommitView,
   GitCommitDetailView,
+  RewindResultView,
   WorkspaceChangeDetailView,
   WorkspaceChangesView,
 } from "../lib/types";
@@ -196,6 +197,7 @@ export function WorkspacePanel({
   onOpenInTerminal,
   onRequestPanelWidth,
   onFileTreeRefresh,
+  onSessionRevertCommitted,
   refreshKey,
   initialViewMode = "files",
   revealPathRequest,
@@ -221,6 +223,7 @@ export function WorkspacePanel({
   onOpenInTerminal?: (path: string) => void;
   onRequestPanelWidth?: (width: number) => void;
   onFileTreeRefresh?: () => void;
+  onSessionRevertCommitted?: (tabId: string, result: RewindResultView) => void;
   refreshKey?: number;
   initialViewMode?: "files" | "changed";
   revealPathRequest?: WorkspaceRevealRequest | null;
@@ -919,6 +922,7 @@ export function WorkspacePanel({
                         resolution,
                       );
                       if (result?.ok) {
+                        onSessionRevertCommitted?.(workspaceTabId, result);
                         void loadWorkspaceChanges();
                         if (selectedPath === change.path) void loadChangeDetail();
                       }

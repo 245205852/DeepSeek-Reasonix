@@ -107,6 +107,7 @@ import {
   type Mode,
   modeHasPlan,
   type ProjectNode,
+  type RewindResultView,
   type RemoteHostView,
   type SessionMeta,
   type SettingsView,
@@ -3375,6 +3376,19 @@ export default function App() {
     });
   }, []);
 
+  const handleSessionRevertCommitted = useCallback((sourceTabId: string, outcome: RewindResultView) => {
+    if (!sourceTabId || !outcome.ok) return;
+    setRewindStateForTab(sourceTabId, {
+      turnDiff: 0,
+      transactionId: outcome.transactionId,
+      undoAvailable: outcome.undoAvailable,
+      filesRestored: outcome.written ?? [],
+      filesRemoved: outcome.deleted ?? [],
+    });
+    setDockRefreshKey((value) => value + 1);
+    setProjectRevision((value) => value + 1);
+  }, [setRewindStateForTab]);
+
   const hydratePlaceholderActive = Boolean(
     state.hydrating &&
     state.items.length === 0 &&
@@ -3463,8 +3477,17 @@ export default function App() {
     // Code-only rewind only affects files — no message truncation,
     // no optimistic UI needed.  Execute immediately.
     if (scope === "code") {
-      rewindForTab(sourceTabId, turn, scope).then((ok) => {
-        if (!ok) return;
+      setRewindCommittingForTab(sourceTabId, true);
+      void rewindForTabDetailed(sourceTabId, turn, scope).then((outcome) => {
+        setRewindCommittingForTab(sourceTabId, false);
+        if (!outcome.ok) return;
+        setRewindStateForTab(sourceTabId, {
+          turnDiff: 0,
+          transactionId: outcome.transactionId,
+          undoAvailable: outcome.undoAvailable,
+          filesRestored: outcome.written ?? [],
+          filesRemoved: outcome.deleted ?? [],
+        });
         setDockRefreshKey((v) => v + 1);
         setProjectRevision((v) => v + 1);
       });
@@ -3541,7 +3564,7 @@ export default function App() {
         setProjectRevision((v) => v + 1);
       }
     });
-  }, [activeTab?.readOnly, activeTabId, hydratePlaceholderActive, state.items, rewindForTabDetailed, refreshTabMetas, setRewindStateForTab, setRewindCommittingForTab]);
+  }, [activeTab?.readOnly, activeTabId, hydratePlaceholderActive, state.items, rewindForTab, rewindForTabDetailed, refreshTabMetas, setRewindStateForTab, setRewindCommittingForTab]);
 
   const handleEditPrompt = useCallback(async (turn: number, displayText: string, submitText?: string): Promise<boolean> => {
     const sourceTabId = activeTabId;
@@ -5102,6 +5125,7 @@ export default function App() {
                     onAddCodeToChat={addWorkspaceCodeToComposer}
                     onRequestPanelWidth={ensureWorkspacePanelWidth}
                     onFileTreeRefresh={refreshComposerFileRefs}
+                    onSessionRevertCommitted={handleSessionRevertCommitted}
                     onOpenInTerminal={openTerminalForPath}
                     refreshKey={dockRefreshKey}
                     initialViewMode={rightDockMode === "changed" ? "changed" : "files"}

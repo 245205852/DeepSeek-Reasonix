@@ -2693,14 +2693,6 @@ func (a *App) CheckpointsForTab(tabID string) []CheckpointMeta {
 			CanUndoFiles:       m.CanUndoFiles,
 			DisabledReason:     m.DisabledReason,
 		}
-		// Legacy / partial still surface canCode when files exist so the UI can
-		// offer conversation+captured-files with warnings.
-		if len(m.Paths) > 0 && (m.Legacy || cov == "partial" || cov == "legacy") {
-			meta.CanCode = true
-		}
-		if len(m.Paths) > 0 && cov == "" {
-			meta.CanCode = true
-		}
 		out = append(out, meta)
 	}
 	// RestoreCode(turn) reverts every file touched in this turn or any later one, so
@@ -2709,11 +2701,15 @@ func (a *App) CheckpointsForTab(tabID string) []CheckpointMeta {
 	// Also propagate the cumulative unique file count so the UI shows how many
 	// files RestoreCode would actually affect from this turn.
 	hasCodeAfter := false
+	canCodeAfter := true
 	codeFileSet := make(map[string]bool, len(metas)*2)
 	codeFilePreview := []string{}
 	for i := len(out) - 1; i >= 0; i-- {
 		if len(out[i].Files) > 0 {
 			hasCodeAfter = true
+			if !out[i].CanUndoFiles {
+				canCodeAfter = false
+			}
 		}
 		for _, f := range out[i].Files {
 			if codeFileSet[f] {
@@ -2722,7 +2718,7 @@ func (a *App) CheckpointsForTab(tabID string) []CheckpointMeta {
 			codeFileSet[f] = true
 			codeFilePreview = insertCheckpointFilePreview(codeFilePreview, f, checkpointFilePreviewLimit)
 		}
-		out[i].CanCode = hasCodeAfter
+		out[i].CanCode = hasCodeAfter && canCodeAfter
 		out[i].FileCount = len(codeFileSet)
 		out[i].Files = append([]string{}, codeFilePreview...)
 		out[i].FilesTruncated = out[i].FileCount > len(out[i].Files)

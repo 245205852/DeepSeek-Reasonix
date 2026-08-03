@@ -138,11 +138,16 @@ func TestCheckpointsCanCodePropagatesToEarlierTurns(t *testing.T) {
 		t.Fatal(err)
 	}
 	content := "old"
+	afterExists := true
 	now := time.Now()
-	seedCheckpoint(t, ckptDir, checkpoint.Checkpoint{Turn: 0, Time: now, Prompt: "ask only", MsgIndex: 0})
-	seedCheckpoint(t, ckptDir, checkpoint.Checkpoint{Turn: 1, Time: now, Prompt: "edit a file", MsgIndex: 2,
-		Files: []checkpoint.FileSnap{{Path: "a.txt", Content: &content}}})
-	seedCheckpoint(t, ckptDir, checkpoint.Checkpoint{Turn: 2, Time: now, Prompt: "ask again", MsgIndex: 4})
+	seedCheckpoint(t, ckptDir, checkpoint.Checkpoint{SchemaVersion: checkpoint.SchemaV2, Turn: 0, Time: now, Prompt: "ask only", MsgIndex: 0})
+	seedCheckpoint(t, ckptDir, checkpoint.Checkpoint{SchemaVersion: checkpoint.SchemaV2, Turn: 1, Time: now, Prompt: "edit a file", MsgIndex: 2,
+		Coverage: checkpoint.CoverageComplete,
+		Files: []checkpoint.FileSnap{{
+			Path: "a.txt", Content: &content, SHA256: checkpoint.Digest([]byte(content)),
+			AfterExisted: &afterExists, AfterSHA256: checkpoint.Digest([]byte("new")), CaptureSource: checkpoint.CaptureBeforeMutation,
+		}}})
+	seedCheckpoint(t, ckptDir, checkpoint.Checkpoint{SchemaVersion: checkpoint.SchemaV2, Turn: 2, Time: now, Prompt: "ask again", MsgIndex: 4})
 
 	ag := agent.New(nil, nil, agent.NewSession("sys"), agent.Options{}, event.Discard)
 	ctrl := control.New(control.Options{Executor: ag, SessionDir: dir, Label: "test"})
@@ -184,6 +189,36 @@ func TestCheckpointsCanCodePropagatesToEarlierTurns(t *testing.T) {
 		t.Fatalf("turn 2 cumulative files = %#v, want empty", metas[2].Files)
 	}
 	assertCheckpointFilesEncodeAsArray(t, metas)
+}
+
+func TestCheckpointsCanCodeDoesNotReenableLegacySuffix(t *testing.T) {
+	dir := t.TempDir()
+	sessionPath := filepath.Join(dir, "s.jsonl")
+	ckptDir := sessionPath[:len(sessionPath)-len(".jsonl")] + ".ckpt"
+	if err := os.MkdirAll(ckptDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	content := "old"
+	now := time.Now()
+	seedCheckpoint(t, ckptDir, checkpoint.Checkpoint{SchemaVersion: checkpoint.SchemaV2, Turn: 0, Time: now, Prompt: "before", MsgIndex: 0})
+	seedCheckpoint(t, ckptDir, checkpoint.Checkpoint{Turn: 1, Time: now, Prompt: "legacy edit", MsgIndex: 2,
+		Files: []checkpoint.FileSnap{{Path: "a.txt", Content: &content}}})
+
+	ag := agent.New(nil, nil, agent.NewSession("sys"), agent.Options{}, event.Discard)
+	ctrl := control.New(control.Options{Executor: ag, SessionDir: dir, Label: "test"})
+	ctrl.SetSessionPath(sessionPath)
+	app := &App{}
+	app.setTestCtrl(ctrl, "test")
+
+	metas := app.CheckpointsForTab("test")
+	if len(metas) != 2 {
+		t.Fatalf("checkpoints = %d, want 2", len(metas))
+	}
+	for _, meta := range metas {
+		if meta.CanCode {
+			t.Fatalf("legacy suffix re-enabled code rewind at turn %d: %+v", meta.Turn, meta)
+		}
+	}
 }
 
 func TestCheckpointsForTabLimitsCumulativeFilePreview(t *testing.T) {

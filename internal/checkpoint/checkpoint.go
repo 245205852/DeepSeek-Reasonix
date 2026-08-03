@@ -221,7 +221,7 @@ func (s *Store) SetActiveWriters(writers []ActiveWriter) {
 	if s.cur != nil {
 		s.cur.ActiveWriters = append([]ActiveWriter(nil), writers...)
 		s.recomputeCoverageLocked(s.cur)
-		s.persist(s.cur)
+		s.persistBestEffort(s.cur)
 	}
 }
 
@@ -262,45 +262,60 @@ func (s *Store) InvalidateUndo() {
 }
 
 func (s *Store) load() {
-	ents, err := os.ReadDir(s.dir)
-	if err != nil {
-		return
-	}
-	for _, e := range ents {
-		if e.IsDir() || filepath.Ext(e.Name()) != ".json" {
-			continue
-		}
-		// Only turn-*.json live in the checkpoint root; transactions/ are separate.
-		var turnNum int
-		if _, err := fmt.Sscanf(e.Name(), "turn-%d.json", &turnNum); err != nil {
-			continue
-		}
-		b, err := fileenc.ReadFileUTF8(filepath.Join(s.dir, e.Name()))
+	seen := map[int]bool{}
+	loadDir := func(dir string, expired bool) {
+		ents, err := os.ReadDir(dir)
 		if err != nil {
-			continue
+			return
 		}
-		var c Checkpoint
-		if json.Unmarshal(b, &c) != nil {
-			continue
-		}
-		// Mark v1 as legacy_unverified.
-		if c.SchemaVersion == 0 || c.SchemaVersion < SchemaV2 {
-			c.SchemaVersion = SchemaV1
-			c.Legacy = true
-			c.Coverage = CoverageLegacy
-			hasLegacyGap := false
-			for _, g := range c.CoverageGaps {
-				if g.Reason == GapLegacyUnverified {
-					hasLegacyGap = true
-					break
+		for _, e := range ents {
+			if e.IsDir() || filepath.Ext(e.Name()) != ".json" {
+				continue
+			}
+			var turnNum int
+			if _, err := fmt.Sscanf(e.Name(), "turn-%d.json", &turnNum); err != nil || seen[turnNum] {
+				continue
+			}
+			b, err := fileenc.ReadFileUTF8(filepath.Join(dir, e.Name()))
+			if err != nil {
+				continue
+			}
+			var c Checkpoint
+			if json.Unmarshal(b, &c) != nil {
+				continue
+			}
+			if expired {
+				c.ExpiredFilePayload = true
+				for i := range c.Files {
+					c.Files[i].PayloadExpired = true
+					c.Files[i].BlobRef = ""
+					c.Files[i].Content = nil
 				}
 			}
-			if !hasLegacyGap {
-				c.CoverageGaps = append(c.CoverageGaps, CoverageGap{Reason: GapLegacyUnverified, Detail: "v1 checkpoint cannot verify later manual edits"})
+			// Mark v1 as legacy_unverified.
+			if c.SchemaVersion == 0 || c.SchemaVersion < SchemaV2 {
+				c.SchemaVersion = SchemaV1
+				c.Legacy = true
+				c.Coverage = CoverageLegacy
+				hasLegacyGap := false
+				for _, g := range c.CoverageGaps {
+					if g.Reason == GapLegacyUnverified {
+						hasLegacyGap = true
+						break
+					}
+				}
+				if !hasLegacyGap {
+					c.CoverageGaps = append(c.CoverageGaps, CoverageGap{Reason: GapLegacyUnverified, Detail: "v1 checkpoint cannot verify later manual edits"})
+				}
 			}
+			seen[turnNum] = true
+			s.done = append(s.done, &c)
 		}
-		s.done = append(s.done, &c)
 	}
+	// Root turn files remain deliberately readable by previous releases. Expired
+	// metadata lives below a directory those releases never scan.
+	loadDir(s.dir, false)
+	loadDir(s.expiredDir(), true)
 	sort.Slice(s.done, func(i, j int) bool { return s.done[i].Turn < s.done[j].Turn })
 }
 
@@ -324,7 +339,7 @@ func (s *Store) Begin(turn int, prompt string, msgIndex int) {
 	}
 	s.seen = map[string]bool{}
 	s.lastUndo = nil // new turn invalidates undo
-	s.persist(s.cur)
+	s.persistBestEffort(s.cur)
 	s.gcLocked()
 }
 
@@ -358,6 +373,7 @@ func (s *Store) CaptureBeforeFromChange(ch diff.Change, opts CaptureBeforeOpts) 
 	if ch.Path == "" {
 		return
 	}
+	pathKey := NormalizeRelPath(s.root, ch.Path)
 	if opts.Source == "" {
 		opts.Source = CapturePreviewer
 	}
@@ -387,7 +403,7 @@ func (s *Store) CaptureBeforeFromChange(ch diff.Change, opts CaptureBeforeOpts) 
 		}
 		// Prefer disk bytes when available for exact restore (encoding).
 		if abs, aerr := safePath(s.root, ch.Path); aerr == nil {
-			if raw, rerr := os.ReadFile(abs); rerr == nil {
+			if raw, rerr := secureReadFile(s.root, abs); rerr == nil {
 				sha = Digest(raw)
 				if s.blobs != nil {
 					if ref, perr := s.blobs.Put(raw); perr == nil {
@@ -406,10 +422,10 @@ func (s *Store) CaptureBeforeFromChange(ch diff.Change, opts CaptureBeforeOpts) 
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.cur == nil || s.seen[ch.Path] {
+	if s.cur == nil || s.seen[pathKey] {
 		return
 	}
-	s.seen[ch.Path] = true
+	s.seen[pathKey] = true
 	if s.blobs != nil && content != nil && blobRef == "" {
 		if ref, err := s.blobs.Put([]byte(*content)); err == nil {
 			blobRef = ref
@@ -429,7 +445,7 @@ func (s *Store) CaptureBeforeFromChange(ch diff.Change, opts CaptureBeforeOpts) 
 	s.cur.Files = append(s.cur.Files, snap)
 	s.cur.SchemaVersion = SchemaV2
 	s.recomputeCoverageLocked(s.cur)
-	s.persist(s.cur)
+	s.persistBestEffort(s.cur)
 }
 
 // CaptureBefore records a preimage by Lstat+read of path.
@@ -437,6 +453,7 @@ func (s *Store) CaptureBefore(path string, opts CaptureBeforeOpts) {
 	if path == "" {
 		return
 	}
+	pathKey := NormalizeRelPath(s.root, path)
 	if opts.Source == "" {
 		opts.Source = CaptureBeforeMutation
 	}
@@ -449,10 +466,10 @@ func (s *Store) CaptureBefore(path string, opts CaptureBeforeOpts) {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.cur == nil || s.seen[path] {
+	if s.cur == nil || s.seen[pathKey] {
 		return
 	}
-	s.seen[path] = true
+	s.seen[pathKey] = true
 	snap := FileSnap{
 		Path:          path,
 		CaptureSource: opts.Source,
@@ -478,7 +495,7 @@ func (s *Store) CaptureBefore(path string, opts CaptureBeforeOpts) {
 	s.cur.Files = append(s.cur.Files, snap)
 	s.cur.SchemaVersion = SchemaV2
 	s.recomputeCoverageLocked(s.cur)
-	s.persist(s.cur)
+	s.persistBestEffort(s.cur)
 }
 
 // CaptureAfter records the after fingerprint for a path already in the current
@@ -487,6 +504,7 @@ func (s *Store) CaptureAfter(path string, opts CaptureAfterOpts) {
 	if path == "" {
 		return
 	}
+	pathKey := NormalizeRelPath(s.root, path)
 	fp, gap, err := CapturePath(path, CaptureOptions{
 		WorkspaceRoot: s.root,
 		ReadContent:   true,
@@ -509,7 +527,7 @@ func (s *Store) CaptureAfter(path string, opts CaptureAfterOpts) {
 	}
 	if s.cur != nil {
 		for i := range s.cur.Files {
-			if s.cur.Files[i].Path != path {
+			if NormalizeRelPath(s.root, s.cur.Files[i].Path) != pathKey {
 				continue
 			}
 			existed := fp.Existed
@@ -520,7 +538,7 @@ func (s *Store) CaptureAfter(path string, opts CaptureAfterOpts) {
 		}
 		if updated {
 			s.recomputeCoverageLocked(s.cur)
-			s.persist(s.cur)
+			s.persistBestEffort(s.cur)
 			s.lastUndo = nil // mutation invalidates undo
 			return
 		}
@@ -531,14 +549,14 @@ func (s *Store) CaptureAfter(path string, opts CaptureAfterOpts) {
 	for i := len(s.done) - 1; i >= 0; i-- {
 		c := s.done[i]
 		for j := range c.Files {
-			if c.Files[j].Path != path {
+			if NormalizeRelPath(s.root, c.Files[j].Path) != pathKey {
 				continue
 			}
 			existed := fp.Existed
 			c.Files[j].AfterExisted = &existed
 			c.Files[j].AfterSHA256 = fp.SHA256
 			c.Files[j].AfterMode = fp.Mode
-			s.persist(c)
+			s.persistBestEffort(c)
 			s.lastUndo = nil
 			return
 		}
@@ -570,7 +588,7 @@ func (s *Store) RecordGap(gap CoverageGap) {
 	}
 	s.cur.CoverageGaps = append(s.cur.CoverageGaps, gap)
 	s.recomputeCoverageLocked(s.cur)
-	s.persist(s.cur)
+	s.persistBestEffort(s.cur)
 }
 
 func (s *Store) recomputeCoverageLocked(c *Checkpoint) {
@@ -604,7 +622,7 @@ func (s *Store) detectEncoding(p string) *fileenc.Kind {
 	if err != nil {
 		return nil
 	}
-	b, err := os.ReadFile(abs)
+	b, err := secureReadFile(s.root, abs)
 	if err != nil {
 		return nil
 	}
@@ -612,9 +630,21 @@ func (s *Store) detectEncoding(p string) *fileenc.Kind {
 	return &enc
 }
 
-func (s *Store) persist(c *Checkpoint) {
+func (s *Store) expiredDir() string {
+	return filepath.Join(s.dir, "expired")
+}
+
+func (s *Store) checkpointPath(c *Checkpoint) string {
+	dir := s.dir
+	if c != nil && c.ExpiredFilePayload {
+		dir = s.expiredDir()
+	}
+	return filepath.Join(dir, fmt.Sprintf("turn-%d.json", c.Turn))
+}
+
+func (s *Store) persist(c *Checkpoint) error {
 	if s.dir == "" || c == nil {
-		return
+		return nil
 	}
 	// Keep inline Content even when BlobRef is present. Previous Reasonix builds
 	// ignore BlobRef and interpret nil Content as "the file did not exist";
@@ -624,18 +654,21 @@ func (s *Store) persist(c *Checkpoint) {
 	copy(wire.Files, c.Files)
 	b, err := json.Marshal(&wire)
 	if err != nil {
-		return
+		return err
 	}
-	if err := os.MkdirAll(s.dir, 0o755); err != nil {
-		slog.Warn("checkpoint: create dir failed", "dir", s.dir, "err", err)
-		return
+	path := s.checkpointPath(c)
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
 	}
-	path := filepath.Join(s.dir, fmt.Sprintf("turn-%d.json", c.Turn))
 	if err := fileutil.AtomicWriteFileStrict(path, b, 0o644); err != nil {
-		// Fallback for environments without strict rename.
-		if werr := os.WriteFile(path, b, 0o644); werr != nil {
-			slog.Warn("checkpoint: persist failed", "turn", c.Turn, "err", werr)
-		}
+		return err
+	}
+	return nil
+}
+
+func (s *Store) persistBestEffort(c *Checkpoint) {
+	if err := s.persist(c); err != nil {
+		slog.Warn("checkpoint: persist failed", "turn", c.Turn, "err", err)
 	}
 }
 
@@ -658,13 +691,20 @@ func (s *Store) gcLocked() {
 	}
 	// Expire payloads for all but the newest retainN.
 	if len(withFiles) > s.retainN {
+		expiredAny := false
 		for _, e := range withFiles[:len(withFiles)-s.retainN] {
 			if s.protectTurns[e.c.Turn] {
 				continue
 			}
-			s.expirePayloadLocked(e.c)
+			if err := s.expirePayloadLocked(e.c); err != nil {
+				slog.Warn("checkpoint: expire payload failed", "turn", e.c.Turn, "err", err)
+				continue
+			}
+			expiredAny = true
 		}
-		s.pruneBlobsLocked()
+		if expiredAny {
+			s.pruneBlobsLocked()
+		}
 	}
 	// Blob quota.
 	size, err := s.blobs.Size()
@@ -679,7 +719,10 @@ func (s *Store) gcLocked() {
 			continue
 		}
 		// Rough: expire and recompute size.
-		s.expirePayloadLocked(e.c)
+		if err := s.expirePayloadLocked(e.c); err != nil {
+			slog.Warn("checkpoint: expire payload failed", "turn", e.c.Turn, "err", err)
+			continue
+		}
 		s.pruneBlobsLocked()
 		size, _ = s.blobs.Size()
 	}
@@ -730,19 +773,33 @@ func (s *Store) pruneBlobsLocked() {
 	}
 }
 
-func (s *Store) expirePayloadLocked(c *Checkpoint) {
+func (s *Store) expirePayloadLocked(c *Checkpoint) error {
 	if c == nil || c.ExpiredFilePayload {
-		return
+		return nil
 	}
-	for i := range c.Files {
-		c.Files[i].BlobRef = ""
-		c.Files[i].Content = nil
-		c.Files[i].PayloadExpired = true
+	expired := *c
+	expired.Files = append([]FileSnap(nil), c.Files...)
+	expired.CoverageGaps = append([]CoverageGap(nil), c.CoverageGaps...)
+	for i := range expired.Files {
+		expired.Files[i].BlobRef = ""
+		expired.Files[i].Content = nil
+		expired.Files[i].PayloadExpired = true
 	}
-	c.ExpiredFilePayload = true
-	c.Coverage = CoveragePartial
-	c.CoverageGaps = append(c.CoverageGaps, CoverageGap{Reason: GapExpiredPayload, Detail: "file recovery payload expired"})
-	s.persist(c)
+	expired.ExpiredFilePayload = true
+	expired.Coverage = CoveragePartial
+	expired.CoverageGaps = append(expired.CoverageGaps, CoverageGap{Reason: GapExpiredPayload, Detail: "file recovery payload expired"})
+	if err := s.persist(&expired); err != nil {
+		return err
+	}
+	if s.dir != "" {
+		legacyVisible := filepath.Join(s.dir, fmt.Sprintf("turn-%d.json", c.Turn))
+		if err := os.Remove(legacyVisible); err != nil && !os.IsNotExist(err) {
+			_ = os.Remove(s.checkpointPath(&expired))
+			return err
+		}
+	}
+	*c = expired
+	return nil
 }
 
 // NextTurn returns the turn number a new checkpoint should take: one past the
@@ -815,41 +872,48 @@ func (s *Store) FileState(p string) (FileState, bool) {
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	var earliest *FileSnap
+	var latestAfterSHA string
+	var latestAfterExisted *bool
 	for _, c := range s.all() {
 		for _, f := range c.Files {
 			got, err := safePath(s.root, f.Path)
 			if err != nil || got != want {
 				continue
 			}
-			state := FileState{
-				Encoding: f.Encoding,
-				Mode:     f.Mode,
-				SHA256:   f.SHA256,
-				BlobRef:  f.BlobRef,
-				// Session-owned when we have a capture with after-fp, or any
-				// first-touch snapshot (legacy Snapshot path) for this path.
-				Owned: f.AfterSHA256 != "" || f.AfterExisted != nil ||
-					f.Content != nil || f.BlobRef != "" || f.SHA256 != "" ||
-					f.CaptureSource != "",
+			if earliest == nil {
+				copy := f
+				earliest = &copy
 			}
-			if f.PayloadExpired {
-				return FileState{}, false
-			}
-			if f.Content != nil {
-				content := *f.Content
-				state.Content = &content
-			} else if f.BlobRef != "" && s.blobs != nil {
-				if raw, err := s.blobs.Get(f.BlobRef); err == nil {
-					enc, payload := fileenc.Detect(raw)
-					text := string(fileenc.Decode(payload, enc))
-					state.Content = &text
-					state.Encoding = &enc
-				}
-			}
-			return state, true
+			// Ownership belongs to the final observed mutation, while the restore
+			// payload remains the earliest preimage. A later capture without an
+			// after fingerprint deliberately clears an older ownership proof.
+			latestAfterSHA = f.AfterSHA256
+			latestAfterExisted = f.AfterExisted
 		}
 	}
-	return FileState{}, false
+	if earliest == nil || earliest.PayloadExpired {
+		return FileState{}, false
+	}
+	state := FileState{
+		Encoding: earliest.Encoding,
+		Mode:     earliest.Mode,
+		SHA256:   earliest.SHA256,
+		BlobRef:  earliest.BlobRef,
+		Owned:    latestAfterSHA != "" || latestAfterExisted != nil,
+	}
+	if earliest.Content != nil {
+		content := *earliest.Content
+		state.Content = &content
+	} else if earliest.BlobRef != "" && s.blobs != nil {
+		if raw, err := s.blobs.Get(earliest.BlobRef); err == nil {
+			enc, payload := fileenc.Detect(raw)
+			text := string(fileenc.Decode(payload, enc))
+			state.Content = &text
+			state.Encoding = &enc
+		}
+	}
+	return state, true
 }
 
 // all returns done + cur in turn order. Caller holds the lock.
@@ -866,13 +930,35 @@ func (s *Store) all() []*Checkpoint {
 // removes those future turns from the transcript, so their file snapshots must
 // not remain visible or collide with newly-created checkpoints that reuse the
 // same turn numbers after the rewrite.
-func (s *Store) TruncateFrom(fromTurn int) {
+func (s *Store) TruncateFrom(fromTurn int) error {
 	s.mu.Lock()
-	done := s.done[:0]
+	defer s.mu.Unlock()
 	deleteTurns := map[int]bool{}
 	for _, c := range s.done {
 		if c.Turn >= fromTurn {
 			deleteTurns[c.Turn] = true
+		}
+	}
+	if s.cur != nil && s.cur.Turn >= fromTurn {
+		deleteTurns[s.cur.Turn] = true
+	}
+	if s.dir != "" {
+		for turn := range deleteTurns {
+			paths := []string{
+				filepath.Join(s.dir, fmt.Sprintf("turn-%d.json", turn)),
+				filepath.Join(s.expiredDir(), fmt.Sprintf("turn-%d.json", turn)),
+			}
+			for _, path := range paths {
+				if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+					return fmt.Errorf("remove checkpoint turn %d: %w", turn, err)
+				}
+			}
+		}
+	}
+
+	done := s.done[:0]
+	for _, c := range s.done {
+		if c.Turn >= fromTurn {
 			continue
 		}
 		done = append(done, c)
@@ -882,21 +968,10 @@ func (s *Store) TruncateFrom(fromTurn int) {
 	}
 	s.done = done
 	if s.cur != nil && s.cur.Turn >= fromTurn {
-		deleteTurns[s.cur.Turn] = true
 		s.cur = nil
 		s.seen = map[string]bool{}
 	}
-	dir := s.dir
-	s.mu.Unlock()
-
-	if dir == "" || len(deleteTurns) == 0 {
-		return
-	}
-	for turn := range deleteTurns {
-		if err := os.Remove(filepath.Join(dir, fmt.Sprintf("turn-%d.json", turn))); err != nil && !os.IsNotExist(err) {
-			slog.Warn("checkpoint: truncate failed", "turn", turn, "err", err)
-		}
-	}
+	return nil
 }
 
 // RestoreCode reverts the workspace to its state at the start of turn `fromTurn`

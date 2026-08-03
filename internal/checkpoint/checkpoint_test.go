@@ -277,6 +277,78 @@ func TestGCDoesNotDeleteSharedBlobStillReferencedByNewerCheckpoint(t *testing.T)
 	}
 }
 
+func TestExpiredV2PayloadRemainsSafeForLegacyReader(t *testing.T) {
+	root := t.TempDir()
+	dir := filepath.Join(t.TempDir(), "sess.ckpt")
+	content := "must not be interpreted as absent"
+	checkpoint := &Checkpoint{
+		SchemaVersion: SchemaV2,
+		Turn:          0,
+		Files: []FileSnap{{
+			Path: "a.txt", Content: &content, SHA256: Digest([]byte(content)), BlobRef: Digest([]byte(content)),
+		}},
+	}
+	store := New(dir, root)
+	if err := store.persist(checkpoint); err != nil {
+		t.Fatal(err)
+	}
+	store.mu.Lock()
+	err := store.expirePayloadLocked(checkpoint)
+	store.mu.Unlock()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// A previous release only scans turn-*.json in the checkpoint root. If the
+	// expired checkpoint remains visible there, its content must never be nil:
+	// old RestoreCode interprets nil as "delete this file".
+	raw, err := os.ReadFile(filepath.Join(dir, "turn-0.json"))
+	if err == nil {
+		var legacy struct {
+			Files []struct {
+				Content *string `json:"content"`
+			} `json:"files"`
+		}
+		if err := json.Unmarshal(raw, &legacy); err != nil {
+			t.Fatal(err)
+		}
+		if len(legacy.Files) != 1 || legacy.Files[0].Content == nil {
+			t.Fatal("expired v2 payload tells a legacy reader to delete an existing file")
+		}
+	} else if !os.IsNotExist(err) {
+		t.Fatal(err)
+	}
+
+	reloaded := New(dir, root)
+	metas := reloaded.List()
+	if len(metas) != 1 || !metas[0].ExpiredFilePayload || metas[0].CanUndoFiles {
+		t.Fatalf("expired metadata was not preserved for the new reader: %+v", metas)
+	}
+}
+
+func TestBlobReadVerifiesContentAddress(t *testing.T) {
+	store := NewBlobStore(t.TempDir())
+	ref, err := store.Put([]byte("before"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(store.path(ref), []byte("corrupt"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := store.Get(ref); err == nil {
+		t.Fatalf("content-addressed read accepted bytes %q that do not match %s", got, ref)
+	}
+	if store.Has(ref) {
+		t.Fatal("Has accepted a blob whose bytes do not match its content address")
+	}
+	if gotRef, err := store.Put([]byte("before")); err != nil || gotRef != ref {
+		t.Fatalf("Put did not repair corrupt blob: ref=%q err=%v", gotRef, err)
+	}
+	if got, err := store.Get(ref); err != nil || string(got) != "before" {
+		t.Fatalf("repaired blob = %q err=%v", got, err)
+	}
+}
+
 func TestRestoreRejectsPathEscape(t *testing.T) {
 	root := t.TempDir()
 	outside := filepath.Join(t.TempDir(), "evil.txt")
@@ -371,7 +443,9 @@ func TestTruncateFromDropsFutureCheckpointsAndFiles(t *testing.T) {
 	s.Snapshot(diff.Change{Path: a, Kind: diff.Modify, OldText: "v1"})
 	s.Begin(2, "third", 4)
 
-	s.TruncateFrom(1)
+	if err := s.TruncateFrom(1); err != nil {
+		t.Fatal(err)
+	}
 
 	metas := s.List()
 	if len(metas) != 1 || metas[0].Turn != 0 {
@@ -389,6 +463,32 @@ func TestTruncateFromDropsFutureCheckpointsAndFiles(t *testing.T) {
 	reloaded := New(dir, root)
 	if got := reloaded.List(); len(got) != 1 || got[0].Turn != 0 {
 		t.Fatalf("reloaded metas after truncate = %+v, want only turn 0", got)
+	}
+}
+
+func TestTruncateFromReportsPersistentDeleteFailure(t *testing.T) {
+	root := t.TempDir()
+	dir := filepath.Join(t.TempDir(), "sess.ckpt")
+	store := New(dir, root)
+	store.Begin(0, "first", 0)
+	store.Begin(1, "second", 2)
+	blocked := filepath.Join(dir, "turn-1.json")
+	if err := os.Remove(blocked); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(blocked, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(blocked, "keep"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := store.TruncateFrom(1); err == nil {
+		t.Fatal("truncate reported success despite a persistent checkpoint delete failure")
+	}
+	metas := store.List()
+	if len(metas) != 2 || metas[1].Turn != 1 {
+		t.Fatalf("failed truncate mutated in-memory checkpoints: %+v", metas)
 	}
 }
 

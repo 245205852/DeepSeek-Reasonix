@@ -60,8 +60,7 @@ func (a conversationApplier) RestoreConversation(forward []byte) error {
 }
 
 func (a conversationApplier) TruncateCheckpoints(fromTurn int) error {
-	a.c.checkpoints.truncateFrom(fromTurn)
-	return nil
+	return a.c.checkpoints.truncateFrom(fromTurn)
 }
 
 func (a conversationApplier) RestoreCheckpoints(backup []byte) error {

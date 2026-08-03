@@ -3,9 +3,11 @@ package checkpoint
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"reasonix/internal/diff"
 )
@@ -70,6 +72,9 @@ func TestRestoreCodeAllOrNothingOnMidPublishFailure(t *testing.T) {
 	}
 	if got := read(t, b); got != "b1" {
 		t.Fatalf("b = %q, want b1 (compensated)", got)
+	}
+	if leftovers, err := filepath.Glob(filepath.Join(root, ".*.reasonix-*")); err != nil || len(leftovers) != 0 {
+		t.Fatalf("transaction artifacts remain after compensation: %v err=%v", leftovers, err)
 	}
 }
 
@@ -405,6 +410,225 @@ func TestTransactionCrashRecoveryPreparedIsAbandoned(t *testing.T) {
 	}
 	if loaded.State != TxAborted {
 		t.Fatalf("state = %s, want aborted", loaded.State)
+	}
+}
+
+func TestCompensationRecoversCrashBetweenBackupAndPublishRenames(t *testing.T) {
+	root := t.TempDir()
+	target := filepath.Join(root, "a.txt")
+	write(t, target, "forward")
+	info, err := os.Stat(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mode := uint32(info.Mode().Perm())
+	publish, backup := transactionSiblingPaths(target, "tx-crash-gap", 0)
+	write(t, publish, "restore")
+	if err := os.Rename(target, backup); err != nil {
+		t.Fatal(err)
+	}
+
+	targetSpec := TransactionTarget{
+		Path: "a.txt", AbsPath: target, Action: "write", Published: true,
+		RestoreExisted: true, RestoreSHA: Digest([]byte("restore")), RestoreMode: mode,
+		ForwardExisted: true, ForwardSHA: Digest([]byte("forward")), ForwardMode: mode,
+		ForwardInline: []byte("forward"), PublishTmp: publish, BackupPath: backup,
+	}
+	store := New("", root)
+	if err := store.compensatePublished([]TransactionTarget{targetSpec}, []FileStage{{Path: "a.txt"}}); err != nil {
+		t.Fatalf("compensate crash gap: %v", err)
+	}
+	if got := read(t, target); got != "forward" {
+		t.Fatalf("target after compensation = %q, want forward", got)
+	}
+	if _, err := os.Stat(publish); !os.IsNotExist(err) {
+		t.Fatalf("publish temp remains after compensation: %v", err)
+	}
+}
+
+func TestLegacyFileRevertIsRefusedWithoutOwnershipFingerprint(t *testing.T) {
+	root := t.TempDir()
+	dir := t.TempDir()
+	path := filepath.Join(root, "a.txt")
+	write(t, path, "manual")
+	before := "before"
+	legacy := Checkpoint{Turn: 0, Time: time.Now(), Files: []FileSnap{{Path: "a.txt", Content: &before}}}
+	raw, err := json.Marshal(legacy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "turn-0.json"), raw, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	store := New(dir, root)
+	plan, err := store.PrepareFileRevert("a.txt", 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plan.CanFiles || plan.PlanID != "" {
+		t.Fatalf("legacy single-file revert was authorized: %+v", plan)
+	}
+	if _, err := store.CommitFileRevert(plan.PlanID, ResolveOverwriteCheckpoint); err == nil {
+		t.Fatal("legacy file revert commit must be refused")
+	}
+	if got := read(t, path); got != "manual" {
+		t.Fatalf("legacy refusal changed file to %q", got)
+	}
+}
+
+func TestFileRevertRequiresLatestOwnershipFingerprint(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "a.txt")
+	write(t, path, "before")
+	store := New("", root)
+	observer := NewMutationObserver(ObserverOptions{Store: store})
+	store.Begin(0, "first", 0)
+	observer.BeforeMutation("a.txt", "edit", CaptureBeforeMutation)
+	write(t, path, "middle")
+	observer.AfterMutation("a.txt", "edit")
+	store.Begin(1, "second", 2)
+	observer.BeforeMutation("a.txt", "edit", CaptureBeforeMutation)
+	write(t, path, "after")
+	// Simulate a writer whose mandatory after observation could not establish
+	// an identity. The earlier fingerprint must not be reused as current proof.
+
+	state, ok := store.FileState("a.txt")
+	if !ok {
+		t.Fatal("expected earliest session preimage")
+	}
+	if state.Owned {
+		t.Fatal("stale earlier after fingerprint still marked file session-owned")
+	}
+	plan, err := store.PrepareFileRevert("a.txt", 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plan.CanFiles || plan.PlanID != "" {
+		t.Fatalf("missing latest ownership proof enabled file revert: %+v", plan)
+	}
+}
+
+func TestUndoRejectsPermissionOnlyChange(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "a.txt")
+	write(t, path, "before")
+	store := New("", root)
+	observer := NewMutationObserver(ObserverOptions{Store: store})
+	store.Begin(0, "edit", 0)
+	observer.BeforeMutation("a.txt", "edit", CaptureBeforeMutation)
+	write(t, path, "after")
+	observer.AfterMutation("a.txt", "edit")
+	plan, err := store.PrepareRewind(0, RewindCode, 1, 0, false)
+	if err != nil || !plan.CanFiles {
+		t.Fatalf("prepare: plan=%+v err=%v", plan, err)
+	}
+	result, err := store.CommitRewindWithForward(plan.PlanID, nil, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(path, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.UndoRewind(result.TransactionID, nil); err == nil {
+		t.Fatal("undo overwrote a permission-only user change")
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := info.Mode().Perm(); got != 0o600 {
+		t.Fatalf("mode after refused undo = %o, want 600", got)
+	}
+}
+
+func TestRewindDeduplicatesEquivalentPathForms(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "a.txt")
+	write(t, path, "before")
+	store := New("", root)
+	observer := NewMutationObserver(ObserverOptions{Store: store})
+	store.Begin(0, "first", 0)
+	observer.BeforeMutation("a.txt", "edit", CaptureBeforeMutation)
+	write(t, path, "middle")
+	observer.AfterMutation("a.txt", "edit")
+	store.Begin(1, "second", 2)
+	observer.BeforeMutation(path, "edit", CaptureBeforeMutation)
+	write(t, path, "after")
+	observer.AfterMutation(path, "edit")
+
+	plan, err := store.PrepareRewind(0, RewindCode, 2, 0, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !plan.CanFiles || plan.FileCount != 1 || len(plan.Files) != 1 {
+		t.Fatalf("equivalent paths were not one rewind target: %+v", plan)
+	}
+	result, err := store.CommitRewindWithForward(plan.PlanID, nil, nil, nil)
+	if err != nil || !result.OK {
+		t.Fatalf("commit: result=%+v err=%v", result, err)
+	}
+	if got := read(t, path); got != "before" {
+		t.Fatalf("rewind = %q, want before", got)
+	}
+}
+
+type failCheckpointRestoreApplier struct {
+	conversation string
+}
+
+func (a *failCheckpointRestoreApplier) ApplyConversationTruncate(_ int, _ []byte) error {
+	a.conversation = "rewound"
+	return nil
+}
+func (a *failCheckpointRestoreApplier) RestoreConversation(_ []byte) error {
+	a.conversation = "forward"
+	return nil
+}
+func (a *failCheckpointRestoreApplier) TruncateCheckpoints(_ int) error { return nil }
+func (a *failCheckpointRestoreApplier) RestoreCheckpoints(_ []byte) error {
+	return errors.New("injected checkpoint restore failure")
+}
+
+func TestUndoCheckpointRestoreFailureRestoresOriginalRewind(t *testing.T) {
+	store := New("", t.TempDir())
+	applier := &failCheckpointRestoreApplier{conversation: "rewound"}
+	original := &TransactionManifest{
+		ID: "original", State: TxCommitted, Kind: "rewind", Scope: RewindBoth,
+		HasBoundary: true, BoundaryIndex: 2, TruncateFrom: 1,
+		ConversationForward: []byte(`{"messages":["forward"]}`),
+		CheckpointBackup:    []byte(`[{"turn":1}]`),
+	}
+	undo := &TransactionManifest{
+		ID: "undo", State: TxPrepared, Kind: "undo", Scope: RewindBoth,
+		ParentTransaction: original.ID,
+	}
+	if _, err := store.commitUndoTransaction(undo, original, applier); err == nil {
+		t.Fatal("expected injected checkpoint restore failure")
+	}
+	if applier.conversation != "rewound" {
+		t.Fatalf("failed undo left conversation in %q state, want rewound", applier.conversation)
+	}
+}
+
+func TestFailedFileCompensationRemainsRecoverable(t *testing.T) {
+	root := t.TempDir()
+	target := filepath.Join(root, "a.txt")
+	write(t, target, "external")
+	tx := &TransactionManifest{
+		ID: "tx-pending-compensation", State: TxCommitting, Kind: "rewind",
+		Targets: []TransactionTarget{{
+			Path: "a.txt", AbsPath: target, Action: "write", Published: true,
+			RestoreExisted: true, RestoreSHA: Digest([]byte("restore")),
+			ForwardExisted: true, ForwardSHA: Digest([]byte("forward")), ForwardInline: []byte("forward"),
+		}},
+	}
+	store := New("", root)
+	if err := store.failTransaction(tx, tx.Targets, []FileStage{{Path: "a.txt"}}, errors.New("injected failure")); err == nil {
+		t.Fatal("expected compensation failure")
+	}
+	if tx.State != TxCommitting {
+		t.Fatalf("transaction state = %s, want committing for startup retry", tx.State)
 	}
 }
 

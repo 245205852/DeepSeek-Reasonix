@@ -851,19 +851,20 @@ func (t *TaskTool) RunProfileSpec(ctx context.Context, spec ProfileExecSpec) (st
 		spec.WritePaths = whole
 	}
 
-	runSession := func(runCtx context.Context, sink event.Sink) (string, error) {
-		recoveryTaskID := subagentRecoveryTaskID(runCtx, run.Ref)
-		var mutationObserver *checkpoint.MutationObserver
-		if t.mutationObserver != nil {
-			turn := t.mutationObserver.OwnershipTurn()
-			backgroundWriter := spec.RunInBackground || spec.BackgroundWriter
-			mutationObserver = t.mutationObserver.CloneForSubagent(recoveryTaskID, turn, backgroundWriter)
-			if backgroundWriter && !spec.ReadOnly {
-				if err := mutationObserver.RegisterWriter(recoveryTaskID, "background_subagent", turn); err != nil {
-					return "", err
-				}
-				defer mutationObserver.UnregisterWriter(recoveryTaskID)
+	recoveryTaskID := subagentRecoveryTaskID(ctx, run.Ref)
+	backgroundWriter := (spec.RunInBackground || spec.BackgroundWriter) && !spec.ReadOnly
+	var mutationObserver *checkpoint.MutationObserver
+	if t.mutationObserver != nil {
+		turn := t.mutationObserver.OwnershipTurn()
+		mutationObserver = t.mutationObserver.CloneForSubagent(recoveryTaskID, turn, backgroundWriter)
+	}
+	runSession := func(runCtx context.Context, sink event.Sink, writerAlreadyRegistered bool) (string, error) {
+		if mutationObserver != nil && backgroundWriter && !writerAlreadyRegistered {
+			turn := mutationObserver.OwnershipTurn()
+			if err := mutationObserver.RegisterWriter(recoveryTaskID, "background_subagent", turn); err != nil {
+				return "", err
 			}
+			defer mutationObserver.UnregisterWriter(recoveryTaskID)
 		}
 		if spec.ReadOnly {
 			return t.runReadOnlySubSession(runCtx, spec.Prompt, subReg, sink, maxSteps, prov, pricing, ctxWin, run.Session, childDepth, recoveryTaskID, usageModelRef, mutationObserver)
@@ -902,11 +903,24 @@ func (t *TaskTool) RunProfileSpec(ctx context.Context, spec ProfileExecSpec) (st
 				return "", err
 			}
 		}
+		writerRegistered := false
+		if mutationObserver != nil && backgroundWriter {
+			turn := mutationObserver.OwnershipTurn()
+			if err := mutationObserver.RegisterWriter(recoveryTaskID, "background_subagent", turn); err != nil {
+				releaseStart()
+				run.Release()
+				return "", errors.Join(err, t.transcripts.SaveFailed(run))
+			}
+			writerRegistered = true
+		}
 		parentSession := ParentSession(ctx)
 		backgroundEvidence := evidence.NewLedger()
 		// Capture acquire request by value for the job goroutine.
 		slotReq := acquireReq
 		job := jm.StartForSession(jobs.SessionFromContext(ctx), "task", label, func(jobCtx context.Context, _ io.Writer) (result string, err error) {
+			if writerRegistered {
+				defer mutationObserver.UnregisterWriter(recoveryTaskID)
+			}
 			jobCtx = WithParentSession(jobCtx, parentSession)
 			jobCtx = evidence.WithLedger(jobCtx, backgroundEvidence)
 			defer run.Release()
@@ -925,7 +939,7 @@ func (t *TaskTool) RunProfileSpec(ctx context.Context, spec ProfileExecSpec) (st
 				return FormatSubagentRunResult("", run, true), errors.Join(slotErr, t.transcripts.SaveFailed(run))
 			}
 			defer releaseSlot()
-			answer, err := runSession(jobCtx, nested)
+			answer, err := runSession(jobCtx, nested, writerRegistered)
 			if err != nil {
 				return FormatSubagentRunResult("", run, true), errors.Join(err, t.transcripts.SaveFailed(run))
 			}
@@ -953,7 +967,7 @@ func (t *TaskTool) RunProfileSpec(ctx context.Context, spec ProfileExecSpec) (st
 	}
 	defer releaseSlot()
 	defer run.Release()
-	answer, err := runSession(ctx, subSink(ctx))
+	answer, err := runSession(ctx, subSink(ctx), false)
 	if err != nil {
 		return "", errors.Join(err, t.transcripts.SaveFailed(run))
 	}

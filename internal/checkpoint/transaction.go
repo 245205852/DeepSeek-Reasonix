@@ -273,9 +273,11 @@ func (s *Store) UndoRewind(transactionID string, applier ConversationApplier) (R
 				}}}, fmt.Errorf("file changed since rewind: %s", t.Path)
 			}
 		} else {
-			if !fp.Existed || (t.RestoreSHA != "" && fp.SHA256 != t.RestoreSHA) {
+			if !fingerprintMatches(fp, t.RestoreExisted, t.RestoreSHA, t.RestoreMode) {
+				restoreExisted := t.RestoreExisted
 				return RewindResult{OK: false, Error: "file changed since rewind", Conflicts: []RewindConflict{{
-					Path: t.Path, Reason: ConflictManualEdit, CurrentSHA: fp.SHA256, LastOwnedSHA: t.RestoreSHA,
+					Path: t.Path, Reason: CompareIdentity(fp, t.RestoreSHA, &restoreExisted, t.RestoreMode),
+					CurrentSHA: fp.SHA256, LastOwnedSHA: t.RestoreSHA, CurrentMode: fp.Mode, CheckpointMode: t.RestoreMode,
 				}}}, fmt.Errorf("file changed since rewind: %s", t.Path)
 			}
 		}
@@ -321,6 +323,10 @@ func (s *Store) UndoRewind(transactionID string, applier ConversationApplier) (R
 		} else {
 			inv.Action = "delete"
 		}
+		inv.PublishTmp, inv.BackupPath = transactionSiblingPaths(inv.AbsPath, undo.ID, len(undo.Targets))
+		if inv.Action != "write" {
+			inv.PublishTmp = ""
+		}
 		undo.Targets = append(undo.Targets, inv)
 	}
 	if err := s.persistTransaction(undo); err != nil {
@@ -330,13 +336,12 @@ func (s *Store) UndoRewind(transactionID string, applier ConversationApplier) (R
 	// Stage publish temps for write targets.
 	for i := range undo.Targets {
 		t := &undo.Targets[i]
-		t.PublishTmp, t.BackupPath = transactionSiblingPaths(t.AbsPath, undo.ID, i)
 		if t.Action != "write" {
-			t.PublishTmp = ""
 			continue
 		}
 		data, err := s.loadBlobOrInline(t.RestoreBlob, t.RestoreInline)
 		if err != nil {
+			s.cleanupPublishTemps(undo.Targets)
 			_ = s.abortTransaction(undo, err)
 			return RewindResult{OK: false, Error: err.Error()}, err
 		}
@@ -345,13 +350,14 @@ func (s *Store) UndoRewind(transactionID string, applier ConversationApplier) (R
 			mode = os.FileMode(t.RestoreMode)
 		}
 		if err := s.writePublishTemp(t.PublishTmp, data, mode); err != nil {
+			s.cleanupPublishTemps(undo.Targets)
 			_ = s.abortTransaction(undo, err)
 			return RewindResult{OK: false, Error: err.Error()}, err
 		}
 	}
 	undo.State = TxPrepared
 	if err := s.persistTransaction(undo); err != nil {
-		_ = s.abortTransaction(undo, err)
+		err = s.failTransaction(undo, undo.Targets, nil, err)
 		return RewindResult{OK: false, Error: err.Error()}, err
 	}
 
@@ -365,6 +371,7 @@ func (s *Store) commitUndoTransaction(undo, original *TransactionManifest, appli
 	undo.State = TxCommitting
 	undo.UpdatedAt = time.Now()
 	if err := s.persistTransaction(undo); err != nil {
+		err = s.failTransaction(undo, undo.Targets, nil, err)
 		return RewindResult{OK: false, Error: err.Error()}, err
 	}
 
@@ -381,6 +388,7 @@ func (s *Store) commitUndoTransaction(undo, original *TransactionManifest, appli
 			t.Published = false
 			st.Error = err.Error()
 			stages = append(stages, st)
+			err = s.failTransaction(undo, undo.Targets, stages, err)
 			result.Error = err.Error()
 			result.Files = stages
 			return result, err
@@ -415,7 +423,8 @@ func (s *Store) commitUndoTransaction(undo, original *TransactionManifest, appli
 	// Restore conversation and checkpoints to pre-rewind state.
 	if applier != nil && len(original.ConversationForward) > 0 {
 		if err := applier.RestoreConversation(original.ConversationForward); err != nil {
-			err = s.failTransaction(undo, undo.Targets, stages, err)
+			restoreErr := s.restoreOriginalRewind(original, applier)
+			err = s.failTransactionAfterStateCompensation(undo, undo.Targets, stages, err, restoreErr)
 			result.OK = false
 			result.Error = err.Error()
 			result.Files = stages
@@ -425,11 +434,11 @@ func (s *Store) commitUndoTransaction(undo, original *TransactionManifest, appli
 	}
 	if applier != nil && len(original.CheckpointBackup) > 0 {
 		if err := applier.RestoreCheckpoints(original.CheckpointBackup); err != nil {
-			// Best-effort: conversation already restored; still try file compensate
-			if cerr := applier.RestoreConversation(original.ConversationForward); cerr != nil {
-				slog.Warn("checkpoint: undo conversation re-restore", "err", cerr)
-			}
-			err = s.failTransaction(undo, undo.Targets, stages, err)
+			// Return every side to the original rewind state before compensating
+			// the inverse file publish. Re-restoring the forward conversation here
+			// would leave conversation and files at opposite endpoints.
+			restoreErr := s.restoreOriginalRewind(original, applier)
+			err = s.failTransactionAfterStateCompensation(undo, undo.Targets, stages, err, restoreErr)
 			result.OK = false
 			result.Error = err.Error()
 			result.Files = stages
@@ -437,18 +446,23 @@ func (s *Store) commitUndoTransaction(undo, original *TransactionManifest, appli
 		}
 	}
 
-	// Also reload store from disk backup.
-	if len(original.CheckpointBackup) > 0 {
+	// Controller appliers restore this same store and then rebuild their boundary
+	// index. Only the store-only path needs a direct restore here.
+	if applier == nil && len(original.CheckpointBackup) > 0 {
 		if err := s.restoreCheckpointBackup(original.CheckpointBackup); err != nil {
-			slog.Warn("checkpoint: restore backup into store", "err", err)
+			err = s.failTransactionAfterStateCompensation(undo, undo.Targets, stages, err, nil)
+			result.OK = false
+			result.Error = err.Error()
+			result.Files = stages
+			return result, err
 		}
 	}
 
 	undo.State = TxCommitted
 	undo.UpdatedAt = time.Now()
 	if err := s.persistTransaction(undo); err != nil {
-		err = errors.Join(err, s.restoreOriginalRewind(original, applier))
-		err = s.failTransaction(undo, undo.Targets, stages, err)
+		restoreErr := s.restoreOriginalRewind(original, applier)
+		err = s.failTransactionAfterStateCompensation(undo, undo.Targets, stages, err, restoreErr)
 		result.OK = false
 		result.Error = err.Error()
 		result.Files = stages
@@ -475,6 +489,9 @@ func (s *Store) commitUndoTransaction(undo, original *TransactionManifest, appli
 
 func (s *Store) restoreOriginalRewind(original *TransactionManifest, applier ConversationApplier) error {
 	if original == nil || applier == nil {
+		return nil
+	}
+	if original.Scope != RewindConversation && original.Scope != RewindBoth {
 		return nil
 	}
 	var err error
@@ -504,6 +521,12 @@ func (s *Store) prepareTransaction(plan RewindPlan, applier ConversationApplier)
 		HasBoundary:     plan.HasBoundary,
 		TruncateFrom:    plan.Turn,
 	}
+	prepared := false
+	defer func() {
+		if !prepared {
+			s.cleanupPublishTemps(tx.Targets)
+		}
+	}()
 
 	if plan.Scope == RewindCode || plan.Scope == RewindBoth {
 		earliest := s.earliestRevisions(plan.Turn)
@@ -587,6 +610,9 @@ func (s *Store) prepareTransaction(plan RewindPlan, applier ConversationApplier)
 			if fwd.Existed && s.blobs != nil {
 				ref, err := s.blobs.Put(fwd.Content)
 				if err != nil {
+					if t.PublishTmp != "" {
+						_ = secureRemove(s.root, t.PublishTmp)
+					}
 					return nil, err
 				}
 				t.ForwardBlob = ref
@@ -610,6 +636,7 @@ func (s *Store) prepareTransaction(plan RewindPlan, applier ConversationApplier)
 	if err := s.persistTransaction(tx); err != nil {
 		return nil, err
 	}
+	prepared = true
 	return tx, nil
 }
 
@@ -627,10 +654,19 @@ func (s *Store) writePublishTemp(path string, data []byte, mode os.FileMode) err
 	return nil
 }
 
+func (s *Store) cleanupPublishTemps(targets []TransactionTarget) {
+	for _, target := range targets {
+		if target.PublishTmp != "" {
+			_ = secureRemove(s.root, target.PublishTmp)
+		}
+	}
+}
+
 func (s *Store) commitTransaction(tx *TransactionManifest, applier ConversationApplier, inject *InjectFail) (RewindResult, error) {
 	tx.State = TxCommitting
 	tx.UpdatedAt = time.Now()
 	if err := s.persistTransaction(tx); err != nil {
+		err = s.failTransaction(tx, tx.Targets, nil, err)
 		return RewindResult{OK: false, Error: err.Error()}, err
 	}
 
@@ -664,6 +700,7 @@ func (s *Store) commitTransaction(tx *TransactionManifest, applier ConversationA
 			t.Published = false
 			st.Error = err.Error()
 			stages = append(stages, st)
+			err = s.failTransaction(tx, tx.Targets, stages, err)
 			result.Error = err.Error()
 			result.Files = stages
 			return result, err
@@ -723,8 +760,8 @@ func (s *Store) commitTransaction(tx *TransactionManifest, applier ConversationA
 		if applier != nil && tx.HasBoundary {
 			// Controller supplies forward via ApplyConversationTruncate.
 			if err := applier.ApplyConversationTruncate(tx.BoundaryIndex, tx.ConversationForward); err != nil {
-				err = errors.Join(err, s.restoreTransactionConversation(tx, applier))
-				err = s.failTransaction(tx, tx.Targets, stages, err)
+				restoreErr := s.restoreTransactionConversation(tx, applier)
+				err = s.failTransactionAfterStateCompensation(tx, tx.Targets, stages, err, restoreErr)
 				result.OK = false
 				result.Error = err.Error()
 				result.Files = stages
@@ -734,8 +771,8 @@ func (s *Store) commitTransaction(tx *TransactionManifest, applier ConversationA
 		}
 		if inject != nil && inject.Phase == "truncate" {
 			err := fmt.Errorf("injected failure at truncate")
-			err = errors.Join(err, s.restoreTransactionConversation(tx, applier))
-			err = s.failTransaction(tx, tx.Targets, stages, err)
+			restoreErr := s.restoreTransactionConversation(tx, applier)
+			err = s.failTransactionAfterStateCompensation(tx, tx.Targets, stages, err, restoreErr)
 			result.OK = false
 			result.Error = err.Error()
 			result.Files = stages
@@ -743,22 +780,29 @@ func (s *Store) commitTransaction(tx *TransactionManifest, applier ConversationA
 		}
 		if applier != nil {
 			if err := applier.TruncateCheckpoints(tx.TruncateFrom); err != nil {
-				err = errors.Join(err, s.restoreTransactionConversation(tx, applier))
-				err = s.failTransaction(tx, tx.Targets, stages, err)
+				restoreErr := s.restoreTransactionConversation(tx, applier)
+				err = s.failTransactionAfterStateCompensation(tx, tx.Targets, stages, err, restoreErr)
 				result.OK = false
 				result.Error = err.Error()
 				result.Files = stages
 				return result, err
 			}
 		} else {
-			s.TruncateFrom(tx.TruncateFrom)
+			if err := s.TruncateFrom(tx.TruncateFrom); err != nil {
+				restoreErr := s.restoreTransactionConversation(tx, applier)
+				err = s.failTransactionAfterStateCompensation(tx, tx.Targets, stages, err, restoreErr)
+				result.OK = false
+				result.Error = err.Error()
+				result.Files = stages
+				return result, err
+			}
 		}
 	}
 
 	if inject != nil && inject.Phase == "finalize" {
 		err := fmt.Errorf("injected failure at finalize")
-		err = errors.Join(err, s.restoreTransactionConversation(tx, applier))
-		err = s.failTransaction(tx, tx.Targets, stages, err)
+		restoreErr := s.restoreTransactionConversation(tx, applier)
+		err = s.failTransactionAfterStateCompensation(tx, tx.Targets, stages, err, restoreErr)
 		result.OK = false
 		result.Error = err.Error()
 		result.Files = stages
@@ -777,8 +821,8 @@ func (s *Store) commitTransaction(tx *TransactionManifest, applier ConversationA
 	tx.State = TxCommitted
 	tx.UpdatedAt = time.Now()
 	if err := s.persistTransaction(tx); err != nil {
-		err = errors.Join(err, s.restoreTransactionConversation(tx, applier))
-		err = s.failTransaction(tx, tx.Targets, stages, err)
+		restoreErr := s.restoreTransactionConversation(tx, applier)
+		err = s.failTransactionAfterStateCompensation(tx, tx.Targets, stages, err, restoreErr)
 		result.OK = false
 		result.Error = err.Error()
 		result.Files = stages
@@ -930,6 +974,9 @@ func (s *Store) compensatePublished(targets []TransactionTarget, stages []FileSt
 	for i := len(targets) - 1; i >= 0; i-- {
 		t := targets[i]
 		if !t.Published {
+			if t.PublishTmp != "" {
+				_ = secureRemove(s.root, t.PublishTmp)
+			}
 			continue
 		}
 		// Published is a durable intent. If the target still exactly matches its
@@ -949,6 +996,31 @@ func (s *Store) compensatePublished(targets []TransactionTarget, stages []FileSt
 			}
 			markCompensationStage(stages, t.Path, nil)
 			continue
+		}
+		// Crash window: publishTarget durably records Published before moving the
+		// target to its backup. A process death after that first rename leaves the
+		// target absent, the forward image in BackupPath, and (for writes) the
+		// publish temp still present. Recognize that owned intermediate state before
+		// classifying the absent target as an external modification.
+		if t.ForwardExisted && !cur.Existed && t.BackupPath != "" {
+			backup, backupErr := FingerprintPath(s.root, t.BackupPath)
+			publishPending := t.Action == "delete"
+			if t.Action == "write" && t.PublishTmp != "" {
+				publishPending, _ = securePathExists(s.root, t.PublishTmp)
+			}
+			if backupErr == nil && publishPending && fingerprintMatches(backup, true, t.ForwardSHA, t.ForwardMode) {
+				err = secureRename(s.root, t.BackupPath, t.AbsPath)
+				if err == nil && t.PublishTmp != "" {
+					if removeErr := secureRemove(s.root, t.PublishTmp); removeErr != nil && !os.IsNotExist(removeErr) {
+						err = removeErr
+					}
+				}
+				markCompensationStage(stages, t.Path, err)
+				if err != nil && first == nil {
+					first = err
+				}
+				continue
+			}
 		}
 		if t.ForwardExisted {
 			data, lerr := s.loadBlobOrInline(t.ForwardBlob, t.ForwardInline)
@@ -1045,10 +1117,32 @@ func markCompensationStage(stages []FileStage, path string, err error) {
 }
 
 func (s *Store) failTransaction(tx *TransactionManifest, targets []TransactionTarget, stages []FileStage, cause error) error {
+	return s.failTransactionAfterStateCompensation(tx, targets, stages, cause, nil)
+}
+
+// failTransactionAfterStateCompensation compensates files and records whether
+// the conversation/checkpoint side was also restored. Any incomplete side keeps
+// the manifest committing so startup can retry the whole compensation.
+func (s *Store) failTransactionAfterStateCompensation(tx *TransactionManifest, targets []TransactionTarget, stages []FileStage, cause, stateCompensationErr error) error {
+	if tx != nil {
+		targets = tx.Targets
+	}
 	compensationErr := s.compensatePublished(targets, stages)
-	combined := cause
+	combined := errors.Join(cause, stateCompensationErr)
 	if compensationErr != nil {
 		combined = errors.Join(combined, fmt.Errorf("compensation failed: %w", compensationErr))
+	}
+	if compensationErr != nil || stateCompensationErr != nil {
+		// Do not make a failed compensation terminal. Startup recovery retries
+		// committing manifests; marking this aborted would strand a half-applied
+		// workspace permanently.
+		tx.State = TxCommitting
+		tx.Error = combined.Error()
+		tx.UpdatedAt = time.Now()
+		if persistErr := s.persistTransaction(tx); persistErr != nil {
+			combined = errors.Join(combined, fmt.Errorf("persist pending compensation: %w", persistErr))
+		}
+		return combined
 	}
 	if abortErr := s.abortTransaction(tx, combined); abortErr != nil {
 		combined = errors.Join(combined, fmt.Errorf("persist aborted transaction: %w", abortErr))
@@ -1259,10 +1353,19 @@ func (s *Store) earliestRevisionsLocked(fromTurn int) map[string]FileRevision {
 			continue
 		}
 		for _, rev := range c.revisions() {
-			if _, ok := earliest[rev.Path]; ok {
+			pathKey := NormalizeRelPath(s.root, rev.Path)
+			if first, ok := earliest[pathKey]; ok {
+				// Preserve the earliest preimage, but carry forward the final
+				// mutation's ownership identity. Missing final identity deliberately
+				// clears an older proof instead of authorizing an unsafe restore.
+				first.AfterExisted = rev.AfterExisted
+				first.AfterSHA256 = rev.AfterSHA256
+				first.AfterMode = rev.AfterMode
+				earliest[pathKey] = first
 				continue
 			}
-			earliest[rev.Path] = rev
+			rev.Path = pathKey
+			earliest[pathKey] = rev
 		}
 	}
 	return earliest
@@ -1276,11 +1379,12 @@ func (s *Store) filesFromTurnLocked(fromTurn int) []string {
 			continue
 		}
 		for _, rev := range c.revisions() {
-			if seen[rev.Path] {
+			pathKey := NormalizeRelPath(s.root, rev.Path)
+			if seen[pathKey] {
 				continue
 			}
-			seen[rev.Path] = true
-			out = append(out, rev.Path)
+			seen[pathKey] = true
+			out = append(out, pathKey)
 		}
 	}
 	sort.Strings(out)
@@ -1389,7 +1493,16 @@ func (s *Store) restoreCheckpointBackup(backup []byte) error {
 	}
 	for _, c := range future {
 		byTurn[c.Turn] = c
-		s.persist(c)
+		if err := s.persist(c); err != nil {
+			return fmt.Errorf("persist restored checkpoint turn %d: %w", c.Turn, err)
+		}
+		counterpart := filepath.Join(s.expiredDir(), fmt.Sprintf("turn-%d.json", c.Turn))
+		if c.ExpiredFilePayload {
+			counterpart = filepath.Join(s.dir, fmt.Sprintf("turn-%d.json", c.Turn))
+		}
+		if err := os.Remove(counterpart); err != nil && !os.IsNotExist(err) {
+			return fmt.Errorf("remove stale checkpoint counterpart turn %d: %w", c.Turn, err)
+		}
 	}
 	// Rebuild done/cur: highest turn as cur if it was cur; else all in done.
 	turns := make([]int, 0, len(byTurn))
@@ -1459,10 +1572,21 @@ func (s *Store) PrepareFileRevert(path string, sessionRev int64) (RewindPlan, er
 		plan.DisabledReason = "file is not session-owned"
 		return plan, nil
 	}
+	if rev.AfterExisted == nil && rev.AfterSHA256 == "" {
+		// A v1 or incomplete capture has a preimage but no evidence that the
+		// current file is still the session's last write. Do not turn the
+		// generic conflict-overwrite affordance into an unsafe legacy restore.
+		plan.PlanID = ""
+		plan.CanFiles = false
+		plan.Legacy = true
+		plan.Coverage = CoverageLegacy
+		plan.DisabledReason = "legacy checkpoint cannot verify later manual edits"
+		return plan, nil
+	}
 	fp, fperr := FingerprintPath(s.root, abs)
 	if fperr == nil {
 		reason := CompareIdentity(fp, rev.AfterSHA256, rev.AfterExisted, rev.AfterMode)
-		if reason != "" && reason != ConflictCoverageLegacy {
+		if reason != "" {
 			plan.Conflicts = []RewindConflict{{
 				Path: path, Reason: reason,
 				CheckpointSHA: rev.SHA256, LastOwnedSHA: rev.AfterSHA256, CurrentSHA: fp.SHA256,
@@ -1509,6 +1633,9 @@ func (s *Store) CommitFileRevert(planID string, resolution ConflictResolution) (
 	plan := pp.plan
 	if plan.Path == "" {
 		return RewindResult{OK: false, Error: "not a file plan"}, fmt.Errorf("not a file plan")
+	}
+	if !plan.CanFiles {
+		return RewindResult{OK: false, Error: plan.DisabledReason, Conflicts: plan.Conflicts}, fmt.Errorf("%s", plan.DisabledReason)
 	}
 	if len(plan.Conflicts) > 0 && resolution != ResolveOverwriteCheckpoint {
 		if resolution == ResolveKeepCurrent {

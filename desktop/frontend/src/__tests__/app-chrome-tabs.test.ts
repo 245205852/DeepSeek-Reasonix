@@ -432,6 +432,18 @@ ok(
 );
 
 ok(
+  /if \(scope === "code"\) \{[\s\S]*?rewindForTabDetailed\(sourceTabId, turn, scope\)[\s\S]*?transactionId: outcome\.transactionId/.test(appSource),
+  "code-only rewind retains the committed transaction id for real undo",
+);
+
+ok(
+  /onSessionRevertCommitted\?\.\(workspaceTabId, result\)/.test(workspacePanelSource) &&
+    /onSessionRevertCommitted=\{handleSessionRevertCommitted\}/.test(appSource) &&
+    /handleSessionRevertCommitted[\s\S]*?transactionId: outcome\.transactionId/.test(appSource),
+  "single-file session revert publishes its transaction id to the app undo state",
+);
+
+ok(
   /const controllerReady =\s*state\.meta\?\.ready === true &&\s*\(!state\.meta\.runtime \|\| state\.meta\.runtime\.phase === "ready"\) &&\s*!state\.meta\.startupErr &&\s*!state\.backendActivationPending &&\s*!runtimeTransitioning;/.test(appSource) &&
     /if \(!activeTabId \|\| !controllerReady\) return;\s*void commitThenSend\(activeTabId, text\)\.catch/.test(appSource) &&
     /onPrompt=\{handleTranscriptPrompt\}/.test(appSource) &&
