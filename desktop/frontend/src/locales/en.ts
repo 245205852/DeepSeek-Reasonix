@@ -1676,7 +1676,7 @@ export const en = {
   "settings.compactRatioCustomValue": "{percent}% · Custom",
   "settings.compactRatioApply": "Apply",
   "settings.compactRatioCustomAria": "Custom compaction threshold percentage",
-  "settings.compactRatioCustomHint": "Enter 65%–85%. Press Enter to apply or Esc to cancel.",
+  "settings.compactRatioCustomHint": "Set 65%–85%. Reasonix trims stale tool output at 60% and forces compaction at 90%, leaving room to avoid frequent compaction or context exhaustion. Press Enter to apply or Esc to cancel.",
   "settings.compactRatioPreset.70": "70% · Earlier",
   "settings.compactRatioPreset.80": "80% · Balanced",
   "settings.compactRatioPreset.85": "85% · Cache first",

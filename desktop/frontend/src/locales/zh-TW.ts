@@ -1291,7 +1291,7 @@ export const zhTW: Record<DictKey, string> = {
   "settings.compactRatioCustomValue": "{percent}% · 自訂",
   "settings.compactRatioApply": "套用",
   "settings.compactRatioCustomAria": "自訂壓縮閾值百分比",
-  "settings.compactRatioCustomHint": "輸入 65%–85%。按 Enter 套用，按 Esc 取消。",
+  "settings.compactRatioCustomHint": "可設定 65%–85%。系統會在 60% 先清理舊工具輸出，並在 90% 強制壓縮；此範圍用於避免頻繁壓縮或上下文溢位。按 Enter 套用，按 Esc 取消。",
   "settings.compactRatioPreset.70": "70% · 提前清理",
   "settings.compactRatioPreset.80": "80% · 平衡",
   "settings.compactRatioPreset.85": "85% · 快取優先",

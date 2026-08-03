@@ -366,6 +366,8 @@ await act(async () => {
 let customCompactInput = compactRootEl.querySelector('input[aria-label="Custom compaction threshold percentage"]') as HTMLInputElement | null;
 if (!customCompactInput) throw new Error("custom compaction threshold input did not open");
 eq(customCompactInput.value, "80", "custom compaction threshold defaults older backends to 80 percent");
+ok(compactRootEl.textContent?.includes("trims stale tool output at 60%") === true, "custom compact ratio explains the lower guard rail");
+ok(compactRootEl.textContent?.includes("forces compaction at 90%") === true, "custom compact ratio explains the upper guard rail");
 ok(document.activeElement === customCompactInput, "opening the custom compact ratio moves focus to its input");
 ok(customCompactButton.getAttribute("aria-expanded") === "true", "custom compact ratio exposes its expanded state");
 const customCompactApply = Array.from(customCompactInput.closest(".compact-ratio-custom")?.querySelectorAll("button") ?? []).find((button) => button.textContent === "Apply") as HTMLButtonElement | undefined;
