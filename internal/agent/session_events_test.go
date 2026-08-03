@@ -389,6 +389,58 @@ func TestReplayChecksMessageBudgetBeforeDecodingOverLimitElement(t *testing.T) {
 	}
 }
 
+func TestReplayChecksCollectionBudgetBeforeDecodingOverLimitElement(t *testing.T) {
+	logPath := filepath.Join(t.TempDir(), "bounded-collection-before-decode.events.jsonl")
+	// The third tool call cannot decode into provider.ToolCall. A two-item
+	// collection budget must reject it before constructing the typed slice.
+	events := `{"schema_version":1,"type":"replace","messages":[{"role":"assistant","tool_calls":[{}, {}, 42]}]}` + "\n"
+	if err := os.WriteFile(logPath, []byte(events), 0o600); err != nil {
+		t.Fatalf("write event log: %v", err)
+	}
+
+	replay, err := replaySessionEventLogWithLimits(logPath, sessionReplayLimits{
+		maxBytes: int64(len(events) + 1), maxRecords: 10, maxMessages: 10, maxCollectionItems: 2,
+	})
+	if !errors.Is(err, ErrSessionReplayLimitExceeded) {
+		t.Fatalf("replay error = %v, want collection replay limit", err)
+	}
+	var limitErr *SessionReplayLimitError
+	if !errors.As(err, &limitErr) || limitErr.Resource != "message_collection_items" || limitErr.Value != 3 {
+		t.Fatalf("limit error = %#v, want third collection item rejected before decode", limitErr)
+	}
+	if replay.records != 0 || len(replay.msgs) != 0 {
+		t.Fatalf("partial over-limit record was applied: records=%d messages=%d", replay.records, len(replay.msgs))
+	}
+	if got, readErr := os.ReadFile(logPath); readErr != nil || string(got) != events {
+		t.Fatalf("event log changed after refusal: bytes=%q err=%v", got, readErr)
+	}
+}
+
+func TestReplayCollectionBudgetAggregatesAcrossRecords(t *testing.T) {
+	logPath := filepath.Join(t.TempDir(), "aggregate-collection-budget.events.jsonl")
+	replace := `{"schema_version":1,"type":"replace","messages":[{"role":"user","images":["one"]}]}` + "\n"
+	appendEvent := `{"schema_version":1,"type":"append","message_index":1,"messages":[{"role":"assistant","tool_calls":[{},{}]}]}` + "\n"
+	events := replace + appendEvent
+	if err := os.WriteFile(logPath, []byte(events), 0o600); err != nil {
+		t.Fatalf("write event log: %v", err)
+	}
+
+	replay, err := replaySessionEventLogWithLimits(logPath, sessionReplayLimits{
+		maxBytes: int64(len(events) + 1), maxRecords: 10, maxMessages: 10, maxCollectionItems: 2,
+	})
+	if !errors.Is(err, ErrSessionReplayLimitExceeded) {
+		t.Fatalf("replay error = %v, want aggregate collection replay limit", err)
+	}
+	var limitErr *SessionReplayLimitError
+	if !errors.As(err, &limitErr) || limitErr.Resource != "message_collection_items" || limitErr.Value != 3 {
+		t.Fatalf("limit error = %#v, want third live collection item rejected", limitErr)
+	}
+	if replay.records != 1 || len(replay.msgs) != 1 || replay.collectionItems != 1 {
+		t.Fatalf("replay prefix = records:%d messages:%d collections:%d, want first record only",
+			replay.records, len(replay.msgs), replay.collectionItems)
+	}
+}
+
 func TestLoadSessionMessagesDoesNotFallbackAfterEventReplayBudget(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "session.jsonl")
 	checkpoint := `{"role":"system","content":"older checkpoint"}` + "\n"
@@ -662,6 +714,55 @@ func TestLoadSessionUserMessagesSeesEventLogTurns(t *testing.T) {
 	}
 	if users[1].At.IsZero() {
 		t.Fatal("appended prompt lost its event timestamp")
+	}
+}
+
+func TestLoadSessionUserMessagesDoesNotFallbackAfterEventReplayBudget(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "session.jsonl")
+	checkpoint := `{"role":"user","content":"older checkpoint prompt"}` + "\n"
+	if err := os.WriteFile(path, []byte(checkpoint), 0o600); err != nil {
+		t.Fatalf("write checkpoint: %v", err)
+	}
+	logPath := store.SessionEventLog(path)
+	events := `{"schema_version":1,"type":"replace","messages":[{"role":"user","content":"newer prompt"},{"role":"assistant","content":"reply"}]}` + "\n"
+	if err := os.WriteFile(logPath, []byte(events), 0o600); err != nil {
+		t.Fatalf("write event log: %v", err)
+	}
+
+	users, err := loadSessionUserMessagesWithLimits(path, sessionReplayLimits{
+		maxBytes: int64(len(events) + 1), maxRecords: 10, maxMessages: 1, maxCollectionItems: 10,
+	})
+	if !errors.Is(err, ErrSessionReplayLimitExceeded) {
+		t.Fatalf("load error = %v, want ErrSessionReplayLimitExceeded", err)
+	}
+	if users != nil {
+		t.Fatalf("user messages = %+v, want no stale checkpoint fallback", users)
+	}
+	if got, readErr := os.ReadFile(path); readErr != nil || string(got) != checkpoint {
+		t.Fatalf("checkpoint changed after refusal: bytes=%q err=%v", got, readErr)
+	}
+	if got, readErr := os.ReadFile(logPath); readErr != nil || string(got) != events {
+		t.Fatalf("event log changed after refusal: bytes=%q err=%v", got, readErr)
+	}
+}
+
+func TestLoadSessionUserMessagesDoesNotFallbackFromFutureEventSchema(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "session.jsonl")
+	checkpoint := `{"role":"user","content":"older checkpoint prompt"}` + "\n"
+	if err := os.WriteFile(path, []byte(checkpoint), 0o600); err != nil {
+		t.Fatalf("write checkpoint: %v", err)
+	}
+	events := `{"schema_version":99,"type":"replace","messages":[{"role":"user","content":"future prompt"}]}` + "\n"
+	if err := os.WriteFile(store.SessionEventLog(path), []byte(events), 0o600); err != nil {
+		t.Fatalf("write event log: %v", err)
+	}
+
+	users, err := LoadSessionUserMessages(path)
+	if err == nil || !strings.Contains(err.Error(), "uses schema 99") {
+		t.Fatalf("load error = %v, want future-schema refusal", err)
+	}
+	if users != nil {
+		t.Fatalf("user messages = %+v, want no stale checkpoint fallback", users)
 	}
 }
 
