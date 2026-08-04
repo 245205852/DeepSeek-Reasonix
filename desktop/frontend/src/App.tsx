@@ -53,9 +53,10 @@ import { TranscriptSelectionMenu } from "./components/TranscriptSelectionMenu";
 import { TodoPanel } from "./components/TodoPanel";
 import { ApprovalModal } from "./components/ApprovalModal";
 import { AskCard } from "./components/AskCard";
-import { UndoRewindBanner } from "./components/UndoRewindBanner";
 import { ClearContextCard } from "./components/ClearContextCard";
 import { RuntimeDecisionCard } from "./components/RuntimeDecisionCard";
+
+const UndoRewindBanner = lazy(() => import("./components/UndoRewindBanner").then((module) => ({ default: module.UndoRewindBanner })));
 
 /** Footer decision surface kinds. Runtime blockers are explicit recovery choices. */
 type DecisionSurfaceKind = "tool_approval" | "plan_approval" | "ask" | "workspace_conflict" | "mode_jobs" | "close_active" | "clear_context";
@@ -69,7 +70,6 @@ import { CommandPalette, type PaletteItem } from "./components/CommandPalette";
 import { UpdateBanner } from "./components/UpdateBanner";
 import { UpdaterProvider } from "./lib/useUpdater";
 import { ContextPanel } from "./components/ContextPanel";
-import { WorkspacePanel } from "./components/WorkspacePanel";
 import { Tooltip } from "./components/Tooltip";
 import { StartupSplash } from "./components/StartupSplash";
 import { OnboardingOverlay } from "./components/OnboardingOverlay";
@@ -83,6 +83,7 @@ import "./custom/features/heartbeat/heartbeat.css";
 import { CopyButton } from "./components/CopyButton";
 import { ExternalOpener } from "./components/ExternalOpener";
 import { startTerminalEventBridge } from "./lib/terminalEvents";
+import { applyTerminalThemePreference } from "./lib/terminalTheme";
 import { formatTerminalOutputForComposer } from "./lib/terminalOutput";
 import { useTerminalStore } from "./store/terminal";
 import { parseTodos } from "./lib/tools";
@@ -108,6 +109,7 @@ import {
   type Mode,
   modeHasPlan,
   type ProjectNode,
+  type RewindResultView,
   type RemoteHostView,
   type SessionMeta,
   type SettingsView,
@@ -284,10 +286,11 @@ function NoticePreviewPanel() {
 }
 
 const HistoryPanel = lazy(() => import("./components/HistoryPanel").then((module) => ({ default: module.HistoryPanel })));
-const SettingsPanel = lazy(() => import("./components/SettingsPanel").then((module) => ({ default: module.SettingsPanel })));
+const SettingsPanel = lazy(() => import("./components/SettingsPanelEntry").then((module) => ({ default: module.SettingsPanel })));
 const RemotePanel = lazy(() => import("./components/RemotePanel").then((module) => ({ default: module.RemotePanel })));
 const TerminalPanel = lazy(() => import("./components/TerminalPanel").then((module) => ({ default: module.TerminalPanel })));
 const TaskMonitorPanel = lazy(() => import("./components/TaskMonitorPanel").then((module) => ({ default: module.TaskMonitorPanel })));
+const WorkspacePanel = lazy(() => import("./components/WorkspacePanel").then((module) => ({ default: module.WorkspacePanel })));
 
 const CHAT_MIN_WIDTH = 400;
 const CHAT_COMFORT_MIN_WIDTH = 560;
@@ -1093,6 +1096,8 @@ export default function App() {
     pickWorkspace,
     switchWorkspace,
     rewindForTab,
+    rewindForTabDetailed,
+    undoRewindForTab,
     setModel,
     setEffort,
     setTokenMode,
@@ -1480,10 +1485,11 @@ export default function App() {
   }, []);
 
   const applyDesktopPreferences = useCallback(
-    (settings: Pick<SettingsView, "desktopTheme" | "desktopThemeStyle" | "desktopLayoutStyle" | "desktopLanguage" | "checkUpdates" | "statusBarStyle" | "statusBarItems" | "conversationWidth">) => {
+    (settings: Pick<SettingsView, "desktopTheme" | "desktopThemeStyle" | "desktopTerminalTheme" | "desktopLayoutStyle" | "desktopLanguage" | "checkUpdates" | "statusBarStyle" | "statusBarItems" | "conversationWidth">) => {
       const nextTheme = normalizeThemePreference(settings.desktopTheme);
       const nextStyle = normalizeThemeStyleForTheme(settings.desktopThemeStyle, nextTheme);
       applyConfiguredBaseAppearance(nextTheme, nextStyle);
+      applyTerminalThemePreference(settings.desktopTerminalTheme);
       applyConversationWidth(settings.conversationWidth);
       const nextLayoutStyle = normalizeDesktopLayoutStyle(settings.desktopLayoutStyle);
       setDesktopLayoutStyle(nextLayoutStyle);
@@ -3339,18 +3345,16 @@ export default function App() {
 
   const [rewindSignal, setRewindSignal] = useState(0);
 
-  // ── Optimistic rewind ─────────────────────────────────────────────────
-  // Rewind is optimistic: the UI immediately truncates, scrolls to the
-  // target, fills the composer, and shows an undo banner.  The real Go
-  // Rewind is deferred until the user SENDS a new message.  Undo simply
-  // restores the full items list — no Go call needed.
+  // ── Immediate rewind ──────────────────────────────────────────────────
+  // On confirm, call Go prepare+commit immediately. Only after success does
+  // the UI truncate the transcript, refresh files, and fill the composer.
+  // Real backend undo uses UndoRewindForTab when a transaction id is available.
   type RewindState = {
-    turn: number;
-    scope: string;
-    fullItems: Item[];     // pre-truncation items (for undo)
-    boundaryIdx: number;   // first item index of the rewound-to turn
     turnDiff: number;      // turns rolled back
-    prompt: string;        // user message text for composer fill
+    transactionId?: string;
+    undoAvailable?: boolean;
+    filesRestored?: string[];
+    filesRemoved?: string[];
   };
   const [rewindStatesByTab, setRewindStatesByTab] = useState<Record<string, RewindState>>({});
   const rewindStatesByTabRef = useRef(rewindStatesByTab);
@@ -3377,6 +3381,19 @@ export default function App() {
     });
   }, []);
 
+  const handleSessionRevertCommitted = useCallback((sourceTabId: string, outcome: RewindResultView) => {
+    if (!sourceTabId || !outcome.ok) return;
+    setRewindStateForTab(sourceTabId, {
+      turnDiff: 0,
+      transactionId: outcome.transactionId,
+      undoAvailable: outcome.undoAvailable,
+      filesRestored: outcome.written ?? [],
+      filesRemoved: outcome.deleted ?? [],
+    });
+    setDockRefreshKey((value) => value + 1);
+    setProjectRevision((value) => value + 1);
+  }, [setRewindStateForTab]);
+
   const hydratePlaceholderActive = Boolean(
     state.hydrating &&
     state.items.length === 0 &&
@@ -3385,11 +3402,9 @@ export default function App() {
   const transcriptHydrating = state.hydrating && !state.hydrateHistoryLoaded;
   const transcriptItems = hydratePlaceholderActive ? state.hydratePlaceholderItems! : state.items;
 
-  // Display items: truncated when an optimistic rewind is pending.
-  const displayItems = useMemo(() => {
-    if (!rewindState) return transcriptItems;
-    return transcriptItems.slice(0, rewindState.boundaryIdx).filter((it) => it.kind !== "compaction");
-  }, [transcriptItems, rewindState]);
+  // Display items: backend history is authoritative after immediate commit.
+  // rewindState only drives the undo banner, not optimistic truncation.
+  const displayItems = transcriptItems;
   const latestGuidanceConsumed = useMemo(() => {
     for (let i = state.items.length - 1; i >= 0; i--) {
       const item = state.items[i];
@@ -3400,7 +3415,8 @@ export default function App() {
     return null;
   }, [state.items]);
 
-  // send wrapper: commits any pending optimistic rewind before sending.
+  // send wrapper: clear local undo banner state before sending a new turn
+  // (new mutation invalidates undo). Rewind itself already committed immediately.
   const commitThenSend = useCallback(async (
     sourceTabId: string,
     displayText: string,
@@ -3423,31 +3439,12 @@ export default function App() {
     ) {
       throw new Error(sourceTab.runtime?.issue?.message || sourceTab.startupErr || t("composer.workspaceStarting"));
     }
-    const rs = rewindStatesByTabRef.current[sourceTabId];
-    if (rs) {
+    // New turn invalidates the last undo slot.
+    if (rewindStatesByTabRef.current[sourceTabId]) {
       setRewindStateForTab(sourceTabId, null);
-      setRewindCommittingForTab(sourceTabId, true);
-      let ok = false;
-      try {
-        ok = await rewindForTab(sourceTabId, rs.turn, rs.scope);
-      } finally {
-        setRewindCommittingForTab(sourceTabId, false);
-      }
-      if (!ok) {
-        // Rewind failed: the Go conversation is intact. Do not send; the
-        // controller emits a notice with the reason.
-        setRewindStateForTab(sourceTabId, rs);
-        throw new Error(t("rewind.failed"));
-      }
-      setRewindSignal((v) => v + 1);
-      if (rs.scope === "both") {
-        // Code was only reverted now (deferred), so refresh the dock here.
-        setDockRefreshKey((v) => v + 1);
-        setProjectRevision((v) => v + 1);
-      }
     }
     await sendToTab(sourceTabId, displayText, submitText, undefined, structured, initialGoal);
-  }, [rewindForTab, sendToTab, setRewindCommittingForTab, setRewindStateForTab, t, tabMetas]);
+  }, [sendToTab, setRewindStateForTab, t, tabMetas]);
 
   const handleTranscriptPrompt = useCallback((text: string) => {
     if (!activeTabId || !controllerReady) return;
@@ -3485,8 +3482,17 @@ export default function App() {
     // Code-only rewind only affects files — no message truncation,
     // no optimistic UI needed.  Execute immediately.
     if (scope === "code") {
-      rewindForTab(sourceTabId, turn, scope).then((ok) => {
-        if (!ok) return;
+      setRewindCommittingForTab(sourceTabId, true);
+      void rewindForTabDetailed(sourceTabId, turn, scope).then((outcome) => {
+        setRewindCommittingForTab(sourceTabId, false);
+        if (!outcome.ok) return;
+        setRewindStateForTab(sourceTabId, {
+          turnDiff: 0,
+          transactionId: outcome.transactionId,
+          undoAvailable: outcome.undoAvailable,
+          filesRestored: outcome.written ?? [],
+          filesRemoved: outcome.deleted ?? [],
+        });
         setDockRefreshKey((v) => v + 1);
         setProjectRevision((v) => v + 1);
       });
@@ -3534,28 +3540,36 @@ export default function App() {
 
     const prevUserCount = items.filter((it) => it.kind === "user").length;
     const turnDiff = prevUserCount - targetUserCount;
-
-    // Save full items for undo.
     const userItem = items[boundaryIdx]?.kind === "user" ? items[boundaryIdx] as Extract<Item, { kind: "user" }> : undefined;
     const prompt = userItem?.text ?? "";
-    setRewindStateForTab(sourceTabId, {
-      turn,
-      scope,
-      fullItems: items,
-      boundaryIdx,
-      turnDiff,
-      prompt,
+
+    // Immediate backend commit — only update UI after success.
+    setRewindCommittingForTab(sourceTabId, true);
+    void rewindForTabDetailed(sourceTabId, turn, scope).then((outcome) => {
+      setRewindCommittingForTab(sourceTabId, false);
+      if (!outcome.ok) {
+        // Keep conversation/files as-is; notices already carry the reason.
+        return;
+      }
+      setRewindStateForTab(sourceTabId, {
+        turnDiff,
+        transactionId: outcome.transactionId,
+        undoAvailable: outcome.undoAvailable,
+        filesRestored: outcome.written ?? [],
+        filesRemoved: outcome.deleted ?? [],
+      });
+      const insertId = Date.now();
+      setComposerInsertRequestsByTab((current) => ({
+        ...current,
+        [sourceTabId]: { id: insertId, text: prompt, mode: "replace" },
+      }));
+      setRewindSignal((v) => v + 1);
+      if (scope === "both" || scope === "code") {
+        setDockRefreshKey((v) => v + 1);
+        setProjectRevision((v) => v + 1);
+      }
     });
-
-    // Fill composer with the rewound-to user message.
-    const insertId = Date.now();
-    setComposerInsertRequestsByTab((current) => ({
-      ...current,
-      [sourceTabId]: { id: insertId, text: prompt, mode: "replace" },
-    }));
-
-    setRewindSignal((v) => v + 1);
-  }, [activeTab?.readOnly, activeTabId, hydratePlaceholderActive, state.items, rewindForTab, refreshTabMetas, setRewindStateForTab]);
+  }, [activeTab?.readOnly, activeTabId, hydratePlaceholderActive, state.items, rewindForTab, rewindForTabDetailed, refreshTabMetas, setRewindStateForTab, setRewindCommittingForTab]);
 
   const handleEditPrompt = useCallback(async (turn: number, displayText: string, submitText?: string): Promise<boolean> => {
     const sourceTabId = activeTabId;
@@ -4550,6 +4564,9 @@ export default function App() {
                   </button>
                 </Tooltip>
               )}
+              {sidebarCreation && !sidebarImDetailConnection && activeTab?.scope === "project" && (
+                <ExternalOpener tabId={activeTab.id} dismissSignal={transientOverlayDismissSignal} />
+              )}
               {!sidebarImDetailConnection && (
               <>
               <Tooltip label={t("topicBar.copyAll")}>
@@ -4624,7 +4641,7 @@ export default function App() {
                   </button>
                 </Tooltip>
               )}
-              {!sidebarImDetailConnection && activeTab?.scope === "project" && (
+              {!sidebarCreation && !sidebarImDetailConnection && activeTab?.scope === "project" && (
                 <ExternalOpener tabId={activeTab.id} dismissSignal={transientOverlayDismissSignal} />
               )}
               <Tooltip label={t("shortcuts.cheatsheetTitle")}>
@@ -4790,22 +4807,30 @@ export default function App() {
               />
             )}
             {rewindState && (
-              <UndoRewindBanner
+              <Suspense fallback={null}><UndoRewindBanner
                 meta={{
                   turns: rewindState.turnDiff,
-                  filesRestored: [], // optimistic: files haven't changed yet
-                  filesRemoved: [],
+                  filesRestored: rewindState.filesRestored ?? [],
+                  filesRemoved: rewindState.filesRemoved ?? [],
                   onUndo: () => {
-                    if (activeTabId) setRewindStateForTab(activeTabId, null);
-                    if (activeTabId) {
+                    const tabId = activeTabId;
+                    if (!tabId) return;
+                    const tx = rewindState.transactionId;
+                    const undo = tx && rewindState.undoAvailable ? undoRewindForTab(tabId, tx) : Promise.resolve(true);
+                    void undo.then((ok) => {
+                      if (!ok) return;
+                      setRewindStateForTab(tabId, null);
                       setComposerInsertRequestsByTab((current) => ({
                         ...current,
-                        [activeTabId]: { id: Date.now(), text: "", mode: "replace" },
+                        [tabId]: { id: Date.now(), text: "", mode: "replace" },
                       }));
-                    }
+                      setRewindSignal((v) => v + 1);
+                      setDockRefreshKey((v) => v + 1);
+                      setProjectRevision((v) => v + 1);
+                    });
                   },
                 }}
-              />
+              /></Suspense>
             )}
             {decisionSurface === "tool_approval" || decisionSurface === "plan_approval"
               ? state.approval && (
@@ -5075,16 +5100,6 @@ export default function App() {
                     <span className="workbench-dock__tab-label">{t("rightDock.remote")}</span>
                   </button>
                 )}
-                <button
-                  type="button"
-                  role="tab"
-                  aria-selected={terminalPanelOpen}
-                  className={`workbench-dock__tab${terminalPanelOpen ? " workbench-dock__tab--active" : ""}`}
-                  onClick={toggleTerminalPanel}
-                >
-                  <TerminalSquare size={13} />
-                  <span className="workbench-dock__tab-label">{t("rightDock.terminal")}</span>
-                </button>
               </div>
             </div>
             <div className="workbench-dock__body">
@@ -5109,31 +5124,34 @@ export default function App() {
                   usageSeq={state.usageSeq}
                 />
               ) : (
-                <WorkspacePanel
-                  open={workspacePanelRenderable}
-                  tabId={activeTabId}
-                  cwd={state.meta?.cwd}
-                  workspaceScopeKey={workspaceScopeKey}
-                  workspaceMemoryKey={workspaceTreeMemoryKey}
-                  workspaceMemoryVisitId={workspaceTreeMemoryVisitId}
-                  maximized={workspacePanelMaximized}
-                  panelWidth={workspacePanelRenderWidth}
-                  onClose={() => setWorkspacePanel(false)}
-                  onToggleMaximized={() => {
-                    closeTransientOverlays();
-                    setWorkspacePanelMaximized((value) => !value);
-                  }}
-                  onPreviewModeChange={handleWorkspacePreviewModeChange}
-                  onAddToChat={addWorkspaceTextToComposer}
-                  onAddCodeToChat={addWorkspaceCodeToComposer}
-                  onRequestPanelWidth={ensureWorkspacePanelWidth}
-                  onFileTreeRefresh={refreshComposerFileRefs}
-                  onOpenInTerminal={openTerminalForPath}
-                  refreshKey={dockRefreshKey}
-                  initialViewMode={rightDockMode === "changed" ? "changed" : "files"}
-                  showViewTabs={false}
-                  creationMode={sidebarCreation}
-                />
+                <Suspense fallback={null}>
+                  <WorkspacePanel
+                    open={workspacePanelRenderable}
+                    tabId={activeTabId}
+                    cwd={state.meta?.cwd}
+                    workspaceScopeKey={workspaceScopeKey}
+                    workspaceMemoryKey={workspaceTreeMemoryKey}
+                    workspaceMemoryVisitId={workspaceTreeMemoryVisitId}
+                    maximized={workspacePanelMaximized}
+                    panelWidth={workspacePanelRenderWidth}
+                    onClose={() => setWorkspacePanel(false)}
+                    onToggleMaximized={() => {
+                      closeTransientOverlays();
+                      setWorkspacePanelMaximized((value) => !value);
+                    }}
+                    onPreviewModeChange={handleWorkspacePreviewModeChange}
+                    onAddToChat={addWorkspaceTextToComposer}
+                    onAddCodeToChat={addWorkspaceCodeToComposer}
+                    onRequestPanelWidth={ensureWorkspacePanelWidth}
+                    onFileTreeRefresh={refreshComposerFileRefs}
+                    onSessionRevertCommitted={handleSessionRevertCommitted}
+                    onOpenInTerminal={openTerminalForPath}
+                    refreshKey={dockRefreshKey}
+                    initialViewMode={rightDockMode === "changed" ? "changed" : "files"}
+                    showViewTabs={false}
+                    creationMode={sidebarCreation}
+                  />
+                </Suspense>
               )}
             </div>
           </aside>

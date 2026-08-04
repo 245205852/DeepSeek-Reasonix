@@ -162,6 +162,12 @@ type Request struct {
 	MaxTokens   int
 }
 
+// DefaultReasoningOutputTokens is the conservative provider-side budget used
+// for official reasoning APIs whose documented contract safely accepts 32K.
+// Unknown compatible gateways must opt in through configuration instead of
+// inheriting this value merely because they implement an OpenAI-shaped wire.
+const DefaultReasoningOutputTokens = 32 * 1024
+
 // TemperaturePtr wraps v in a pointer so callers that explicitly want a
 // specific temperature, including 0 for deterministic output, can distinguish
 // that intent from "not set, use the provider default".
@@ -584,6 +590,8 @@ const (
 // CompletionTokens reported by thinking-capable models. FinishReason carries
 // the model's last reported choices[0].finish_reason so the agent can surface
 // abnormal terminations ("length", "content_filter", "repetition_truncation").
+// Estimated marks counts reconstructed locally because the provider's terminal
+// usage record did not arrive; exact provider usage leaves it false.
 type Usage struct {
 	PromptTokens     int
 	CompletionTokens int
@@ -592,6 +600,11 @@ type Usage struct {
 	CacheMissTokens  int    // prompt tokens not cached
 	ReasoningTokens  int    // subset of CompletionTokens spent on chain-of-thought
 	FinishReason     string // "stop", "tool_calls", "length", "content_filter", "repetition_truncation", …
+	Estimated        bool
+	// RequestCount is the number of provider requests represented by this
+	// aggregate. Zero means one request for backward compatibility. Recovery
+	// paths that merge multiple attempts set the exact count.
+	RequestCount int
 }
 
 // Pricing is a provider's per-1M-token rates, used to estimate spend. Currency
@@ -765,24 +778,26 @@ func RequiresReasoningRoundTrip(p Provider) bool {
 
 // MissingToolCallReasoningWarningPolicy is optionally implemented by providers
 // whose replay protocol requires reasoning_content, but whose active model may
-// not reliably emit it. Request serialization should stay conservative while
-// user-visible diagnostics can be quieter for models where missing reasoning is
-// expected behavior.
+// not reliably emit it. The legacy Warning name is retained for source
+// compatibility; the agent now uses this policy for silent bounded recovery and
+// emits no user-visible protocol notice.
 type MissingToolCallReasoningWarningPolicy interface {
 	WarnOnMissingToolCallReasoning() bool
 }
 
 // MissingToolCallReasoningWarningIdentityPolicy optionally supplies the stable,
 // non-credential configuration identity used to rate-limit missing-reasoning
-// diagnostics. Implementations may include adapter kind, endpoint, model, and
-// thinking controls; the raw identity never leaves memory and is hashed before
+// recovery attempts. The legacy name preserves adapters and persisted state.
+// Implementations may include adapter kind, endpoint, model, and thinking
+// controls; the raw identity never leaves memory and is hashed before
 // persistence.
 type MissingToolCallReasoningWarningIdentityPolicy interface {
 	MissingToolCallReasoningWarningIdentity() string
 }
 
 // WarnOnMissingToolCallReasoning reports whether a tool_calls turn with empty
-// reasoning_content should surface a visible warning.
+// reasoning_content should enter silent recovery. Its legacy name is preserved
+// for provider implementations compiled against the original diagnostic API.
 func WarnOnMissingToolCallReasoning(p Provider) bool {
 	if nilutil.IsNil(p) {
 		return false
@@ -795,10 +810,11 @@ func WarnOnMissingToolCallReasoning(p Provider) bool {
 }
 
 // MissingToolCallReasoningWarningFingerprint returns an opaque stable key for
-// one provider configuration. Concrete adapters distinguish endpoint/model/
-// protocol changes; providers without the optional policy retain a safe
-// type-and-name fallback. The digest prevents local state from exposing raw
-// endpoints or model identifiers.
+// one provider configuration's recovery cooldown. Concrete adapters distinguish
+// endpoint/model/protocol changes; providers without the optional policy retain
+// a safe type-and-name fallback. The legacy name preserves the on-disk state
+// contract. The digest prevents local state from exposing raw endpoints or
+// model identifiers.
 func MissingToolCallReasoningWarningFingerprint(p Provider) string {
 	if nilutil.IsNil(p) {
 		return ""

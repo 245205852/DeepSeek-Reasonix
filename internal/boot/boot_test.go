@@ -1418,6 +1418,43 @@ func TestNewProviderAppliesOfficialKimiK3RequestContract(t *testing.T) {
 	}
 }
 
+func TestNewProviderPropagatesConfiguredMaxOutputTokens(t *testing.T) {
+	var gotReq map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&gotReq); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"ok\"}}]}\n\ndata: [DONE]\n\n"))
+	}))
+	defer srv.Close()
+
+	p, err := NewProvider(&config.ProviderEntry{
+		Name: "openai", Kind: "openai", BaseURL: "https://api.openai.com/v1",
+		ChatURL: srv.URL, Model: "o3", MaxOutputTokens: 4096,
+	})
+	if err != nil {
+		t.Fatalf("NewProvider: %v", err)
+	}
+	ch, err := p.Stream(context.Background(), provider.Request{
+		Messages: []provider.Message{{Role: provider.RoleUser, Content: "hi"}},
+	})
+	if err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+	for chunk := range ch {
+		if chunk.Type == provider.ChunkError {
+			t.Fatalf("stream error: %v", chunk.Err)
+		}
+	}
+	if gotReq["max_completion_tokens"] != float64(4096) {
+		t.Fatalf("max_completion_tokens = %#v, want 4096: %+v", gotReq["max_completion_tokens"], gotReq)
+	}
+	if _, exists := gotReq["max_tokens"]; exists {
+		t.Fatalf("official OpenAI request must omit max_tokens: %+v", gotReq)
+	}
+}
+
 func TestNewProviderAppliesModelReasoningProtocol(t *testing.T) {
 	var gotReq map[string]any
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

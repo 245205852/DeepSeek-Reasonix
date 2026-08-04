@@ -137,7 +137,7 @@ jobs:
         env:
           REASONIX_RELEASE_CACHE_GUARD: "1"
           WINDOWS_SANDBOX_WAIT_MS: "20000"
-        run: go test -p 4 -timeout=3m ./internal/agent/... ./internal/cli/... ./internal/control/... ./internal/filelock/... ./internal/fileutil/... ./internal/hook/... ./internal/instruction/... ./internal/mcplaunch/... ./internal/notify/... ./internal/proc/... ./internal/remote/... ./internal/repair/... ./internal/sandbox/... ./internal/sysproxy/... ./internal/workspacelease/... ./cmd/...
+        run: go test -p 4 -timeout=3m ./internal/agent/... ./internal/cli/... ./internal/control/... ./internal/desktoplauncher/... ./internal/filelock/... ./internal/fileutil/... ./internal/hook/... ./internal/instruction/... ./internal/mcplaunch/... ./internal/notify/... ./internal/proc/... ./internal/remote/... ./internal/repair/... ./internal/sandbox/... ./internal/sysproxy/... ./internal/workspacelease/... ./cmd/...
 
       - name: test (full)
         if: env.RUN_STEPS == 'true' && runner.os == 'Windows' && github.event_name != 'pull_request'
@@ -151,6 +151,12 @@ jobs:
           # launch cannot pin the Actions step after Go's package timeout fires.
           WINDOWS_SANDBOX_WAIT_MS: "20000"
         run: go test -p 4 -timeout=3m ./...
+
+      - name: test (Scoop desktop launch)
+        if: env.RUN_STEPS == 'true' && runner.os == 'Windows'
+        timeout-minutes: 10
+        shell: powershell
+        run: .\scripts\test-scoop-desktop-launch.ps1
 
   race:
     needs: changes
@@ -260,6 +266,9 @@ jobs:
         run: |
           pnpm --dir frontend test:terminal
           pnpm --dir frontend test:task-monitor
+
+      - name: Test usage statistics frontend
+        run: pnpm --dir frontend test:usage-stats
 
       - name: vet
         run: go vet ./...

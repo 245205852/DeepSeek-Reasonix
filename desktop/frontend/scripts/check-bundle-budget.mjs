@@ -54,7 +54,7 @@ for (const path of localeChunks) {
 
 const rawInitialBytes = [...initialJS, ...initialCSS].reduce((total, path) => total + statSync(path).size, 0);
 // Task Monitor adds a small always-loaded style surface while its panel code
-// remains lazy-loaded. Keep the raw budget explicit and leave only a narrow
-// allowance for that project-level UI addition.
-assertBudget("initial raw JavaScript and CSS", rawInitialBytes, 2_260 * 1024);
+// remains lazy-loaded. Keep the raw budget explicit while allowing the small
+// project-level UI addition and current upstream baseline.
+assertBudget("initial raw JavaScript and CSS", rawInitialBytes, 2_263 * 1024);
 assertBudget("largest initial JavaScript chunk raw", largestInitialJSRaw, 1_100 * 1024);

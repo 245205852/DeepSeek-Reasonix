@@ -36,7 +36,6 @@ import (
 	"reasonix/internal/checkpoint"
 	"reasonix/internal/command"
 	"reasonix/internal/config"
-	"reasonix/internal/diff"
 	"reasonix/internal/event"
 	"reasonix/internal/evidence"
 	"reasonix/internal/guardian"
@@ -197,6 +196,11 @@ type Controller struct {
 	// orchestration (truncating the session, restoring code, emitting events). See
 	// checkpoint.go.
 	checkpoints checkpointManager
+	// mutationObserver is the host-side file mutation observer for v2 checkpoints.
+	mutationObserver *checkpoint.MutationObserver
+	// sessionRevision increments on successful rewind/undo and is used as a
+	// prepare/commit freshness token.
+	sessionRevision int64
 
 	// approval owns the approval/ask prompt bookkeeping and the runtime approval
 	// posture (ask/auto/yolo, session grants, the just-approved-plan window)
@@ -536,9 +540,7 @@ func New(opts Options) *Controller {
 	cmdsInit := opts.Commands
 	c.commands.Store(&cmdsInit)
 	if c.executor != nil {
-		c.executor.SetPreEditHook(func(ch diff.Change) {
-			c.checkpoints.snapshot(ch)
-		})
+		c.wireMutationObserver()
 		c.executor.SetMemoryQueue(c)
 	}
 	// Auto Guard is built into Auto. Ask and YOLO bypass it through the mode
@@ -665,9 +667,13 @@ func ckptDir(sessionPath string) string {
 // rebindCheckpoints points the store at the (possibly new) session, loading any
 // checkpoints already on disk, and resets the turn boundaries. Called on
 // construction and whenever the session path changes (NewSession/Resume/SetSessionPath).
+// Also re-wires the mutation observer so capture targets the new store.
 func (c *Controller) rebindCheckpoints(sessionPath string) {
 	c.goals.setStatePath(goalStatePath(sessionPath))
 	c.checkpoints.rebind(ckptDir(sessionPath), c.workspaceRoot)
+	if c.executor != nil {
+		c.wireMutationObserver()
+	}
 }
 
 // beginCheckpoint opens a checkpoint for the turn about to run, recording the
@@ -677,7 +683,8 @@ func (c *Controller) beginCheckpoint(input string) {
 	if c.executor == nil {
 		return
 	}
-	c.checkpoints.begin(input, len(c.executor.Session().Messages))
+	atomic.AddInt64(&c.sessionRevision, 1)
+	c.checkpoints.beginWithObserver(input, len(c.executor.Session().Messages), c.mutationObserver)
 }
 
 // --- commands (frontend → controller) ---
@@ -919,6 +926,7 @@ func (c *Controller) RunTurn(ctx context.Context, input string) error {
 	c.running = true
 	c.canceling = false
 	c.mu.Unlock()
+	defer event.RecordTurnCompletion(c.sink)
 
 	defer func() {
 		c.mu.Lock()
@@ -1645,6 +1653,7 @@ func (c *Controller) noticeDetail(text, detail string) {
 // headless `reasonix run` path, where the Sink renders to stdout and the caller
 // just needs the exit status — no TurnDone event, no cancel bookkeeping.
 func (c *Controller) Run(ctx context.Context, input string) (err error) {
+	defer event.RecordTurnCompletion(c.sink)
 	c.maybeSessionStart(ctx)
 	parentSession := c.parentSessionID()
 	ctx = agent.WithParentSession(ctx, parentSession)
@@ -1655,6 +1664,7 @@ func (c *Controller) Run(ctx context.Context, input string) (err error) {
 	input = c.Compose(input)
 	startMessages := c.messageCount()
 	defer c.snapshotActivityIfChanged(startMessages)
+	c.beginCheckpoint(input)
 	if c.guardianSess != nil {
 		c.guardianSess.ResetTurn()
 	}
@@ -2913,8 +2923,20 @@ const (
 )
 
 // Checkpoints lists the session's rewind points (one per user turn), oldest first.
+//
+// Each Meta.Prompt is reduced to what the user typed. A checkpoint opens with
+// the composed turn, so the stored prompt can carry the plan-mode marker and
+// transient blocks; every consumer of this list is a label (the rewind picker,
+// the desktop change list, the workbench projection) and the picker also
+// restores the prompt into the composer, so composed text must not reach them.
+// Stripping on read rather than only on write keeps checkpoints already on disk
+// readable — they were recorded composed.
 func (c *Controller) Checkpoints() []checkpoint.Meta {
-	return c.checkpoints.list()
+	metas := c.checkpoints.list()
+	for i := range metas {
+		metas[i].Prompt = StripComposePrefixes(metas[i].Prompt)
+	}
+	return metas
 }
 
 func (c *Controller) CheckpointFileState(path string) (checkpoint.FileState, bool) {
@@ -2933,62 +2955,7 @@ func (c *Controller) rewindFail(err error) error {
 	return err
 }
 
-// Rewind restores the session to the start of `turn`: Code reverts every file that
-// turn (or a later one) changed to its pre-turn content; Conversation truncates the
-// message log back to that turn; Both does both. Refused while a turn is running.
-// Conversation rewind relies on the live boundary recorded at turn start, so it is
-// unavailable for turns inherited from a resumed session (code rewind still works).
-// Frontends re-render their transcript from History after the call.
-func (c *Controller) Rewind(turn int, scope RewindScope) error {
-	if !c.checkpoints.enabled() || c.executor == nil {
-		return c.rewindFail(fmt.Errorf("checkpoints unavailable"))
-	}
-	// Rewind rewrites the live session (conversation scope) and restores files;
-	// hold the rotation gate across the whole operation so a turn cannot start
-	// between the check and the Replace/SnapshotRewrite below.
-	if err := c.beginRotation(); err != nil {
-		if errors.Is(err, errTurnRunningRotation) {
-			return c.rewindFail(fmt.Errorf("cannot rewind while a turn is running"))
-		}
-		return c.rewindFail(err)
-	}
-	defer c.endRotation()
-	boundary, hasBound := c.checkpoints.boundary(turn)
-
-	if scope == RewindCode || scope == RewindBoth {
-		written, deleted, err := c.checkpoints.restoreCode(turn)
-		if err != nil {
-			return c.rewindFail(fmt.Errorf("rewind code: %w", err))
-		}
-		if len(written) > 0 || len(deleted) > 0 {
-			c.sink.Emit(event.Event{Kind: event.Notice, Level: event.LevelInfo,
-				Text: fmt.Sprintf("rewound code to turn %d — %d file(s) restored, %d removed", turn, len(written), len(deleted))})
-		}
-	}
-	if scope == RewindConversation || scope == RewindBoth {
-		if !hasBound {
-			return c.rewindFail(fmt.Errorf("conversation rewind unavailable for turn %d (resumed session)", turn))
-		}
-		s := c.executor.Session()
-		// boundary is the message-log index at turn start; compaction shrinks the
-		// log without rewriting boundaries, so a stale boundary past the end means
-		// the turn was compacted away — fail loudly instead of skipping silently.
-		// Snapshot/Replace keep the truncation safe against concurrent History/Save
-		// readers on other goroutines.
-		msgs := s.Snapshot()
-		if boundary > len(msgs) {
-			return c.rewindFail(fmt.Errorf("conversation rewind unavailable for turn %d: the conversation was compacted past this point", turn))
-		}
-		s.Replace(msgs[:boundary])
-		c.checkpoints.truncateFrom(turn) // renumber future turns from here; later turns are gone
-		if err := c.SnapshotRewrite(); err != nil {
-			slog.Warn("controller: snapshot after rewind", "err", err)
-		}
-		c.sink.Emit(event.Event{Kind: event.Notice, Level: event.LevelInfo,
-			Text: fmt.Sprintf("rewound conversation to turn %d", turn)})
-	}
-	return nil
-}
+// Rewind is implemented in rewind.go (transactional conversation+file restore).
 
 // Fork branches the conversation at the start of turn into a NEW session file,
 // preserving the current one as the branch point, and switches to the branch. Code
@@ -3315,6 +3282,7 @@ func (c *Controller) summarizeAt(ctx context.Context, turn int, from bool) error
 	// the turn counter monotonic so new turns don't collide with the store) —
 	// conversation rewind degrades to "unavailable" until fresh turns rebuild them.
 	c.checkpoints.clearBounds()
+	atomic.AddInt64(&c.sessionRevision, 1)
 	if err := c.SnapshotRewrite(); err != nil {
 		slog.Warn("controller: post-summarize snapshot", "err", err)
 	}
@@ -3346,6 +3314,7 @@ func (c *Controller) Resume(s *agent.Session, path string) {
 	c.loadGuardianSession()
 	c.loadRecoveryState(path)
 	c.snapshotMu.Unlock()
+	c.recoverCheckpointTransactions()
 	c.recoverInterruptedTurn(path)
 	c.maybeColdResumePrune(path)
 }
@@ -4368,7 +4337,6 @@ func (c *Controller) SetFreshSessionPath(p string) {
 func (c *Controller) setSessionPath(p string, fresh bool) {
 	// See snapshotMu: the swap must not interleave with an in-flight save.
 	c.snapshotMu.Lock()
-	defer c.snapshotMu.Unlock()
 	c.mu.Lock()
 	c.sessionPath = p
 	c.guardianPath = guardian.PathFor(p)
@@ -4379,6 +4347,10 @@ func (c *Controller) setSessionPath(p string, fresh bool) {
 		c.resetRecoveryForNewSession(p)
 	} else {
 		c.loadRecoveryState(p)
+	}
+	c.snapshotMu.Unlock()
+	if !fresh {
+		c.recoverCheckpointTransactions()
 	}
 }
 

@@ -201,6 +201,7 @@ func TestRenderTOMLRoundTrips(t *testing.T) {
 	orig.Desktop.LayoutStyle = "workbench"
 	orig.Desktop.Theme = "dark"
 	orig.Desktop.ThemeStyle = "graphite"
+	orig.Desktop.TerminalTheme = "light"
 	orig.Desktop.CloseBehavior = "background"
 	orig.Desktop.DisplayMode = "compact"
 	orig.Desktop.StatusBarStyle = "text"
@@ -352,6 +353,9 @@ func TestRenderTOMLRoundTrips(t *testing.T) {
 	}
 	if got.Desktop.ThemeStyle != "graphite" {
 		t.Errorf("desktop.theme_style = %q, want graphite", got.Desktop.ThemeStyle)
+	}
+	if got.Desktop.TerminalTheme != "light" {
+		t.Errorf("desktop.terminal_theme = %q, want light", got.Desktop.TerminalTheme)
 	}
 	if got.Desktop.CloseBehavior != "background" {
 		t.Errorf("desktop.close_behavior = %q, want background", got.Desktop.CloseBehavior)
@@ -783,7 +787,7 @@ func TestScopedRenderSeparatesUserAndProjectConfig(t *testing.T) {
 	c.Agent.RecoveryTemperature = 0.2
 
 	user := RenderTOMLForScope(c, RenderScopeUser)
-	for _, want := range []string{"config_version = 5", "[desktop]", `currency = "CNY"`, `theme = "dark"`, `close_behavior = "background"`, `status_bar_style = "text"`, `default_tool_approval_mode = "auto"`, `check_updates = false`, `recovery_model = "deepseek-pro"`, "[notifications]", "[tools.shell]"} {
+	for _, want := range []string{"config_version = 5", "[desktop]", `currency = "CNY"`, `theme = "dark"`, `terminal_theme = "auto"`, `close_behavior = "background"`, `status_bar_style = "text"`, `default_tool_approval_mode = "auto"`, `check_updates = false`, `recovery_model = "deepseek-pro"`, "[notifications]", "[tools.shell]"} {
 		if !strings.Contains(user, want) {
 			t.Fatalf("user render missing %q:\n%s", want, user)
 		}
@@ -1063,7 +1067,8 @@ func TestRenderTOMLRoundTripsProviderHeadersAndModelOverrides(t *testing.T) {
 				"mode": "fast",
 			},
 		},
-		AuthHeader: true,
+		AuthHeader:      true,
+		MaxOutputTokens: 16_384,
 		ModelOverrides: map[string]ProviderModelOverride{
 			"deepseek-v4-flash": {
 				ReasoningProtocol: ReasoningProtocolDeepSeek,
@@ -1071,6 +1076,7 @@ func TestRenderTOMLRoundTripsProviderHeadersAndModelOverrides(t *testing.T) {
 				DefaultEffort:     "high",
 				Vision:            boolPtr(false),
 				ContextWindow:     262_144,
+				MaxOutputTokens:   32_768,
 			},
 		},
 	}}
@@ -1085,7 +1091,7 @@ func TestRenderTOMLRoundTripsProviderHeadersAndModelOverrides(t *testing.T) {
 	if !strings.Contains(rendered, `auth_header = true`) {
 		t.Fatalf("rendered TOML missing auth_header:\n%s", rendered)
 	}
-	if !strings.Contains(rendered, `model_overrides`) || !strings.Contains(rendered, `reasoning_protocol = "deepseek"`) || !strings.Contains(rendered, `context_window = 262144`) {
+	if !strings.Contains(rendered, `max_output_tokens = 16384`) || !strings.Contains(rendered, `model_overrides`) || !strings.Contains(rendered, `reasoning_protocol = "deepseek"`) || !strings.Contains(rendered, `context_window = 262144`) || !strings.Contains(rendered, `max_output_tokens = 32768`) {
 		t.Fatalf("rendered TOML missing model overrides:\n%s", rendered)
 	}
 
@@ -1106,17 +1112,20 @@ func TestRenderTOMLRoundTripsProviderHeadersAndModelOverrides(t *testing.T) {
 	if !p.AuthHeader {
 		t.Fatal("auth_header after round trip = false, want true")
 	}
+	if p.MaxOutputTokens != 16_384 {
+		t.Fatalf("provider max_output_tokens after round trip = %d, want 16384", p.MaxOutputTokens)
+	}
 	metadata, ok := p.ExtraBody["metadata"].(map[string]any)
 	if !ok || metadata["mode"] != "fast" {
 		t.Fatalf("extra_body metadata after round trip = %+v", p.ExtraBody["metadata"])
 	}
 	ov := p.ModelOverrides["deepseek-v4-flash"]
-	if ov.ReasoningProtocol != ReasoningProtocolDeepSeek || !reflect.DeepEqual(ov.SupportedEfforts, []string{"high", "max"}) || ov.DefaultEffort != "high" || ov.Vision == nil || *ov.Vision || ov.ContextWindow != 262_144 {
+	if ov.ReasoningProtocol != ReasoningProtocolDeepSeek || !reflect.DeepEqual(ov.SupportedEfforts, []string{"high", "max"}) || ov.DefaultEffort != "high" || ov.Vision == nil || *ov.Vision || ov.ContextWindow != 262_144 || ov.MaxOutputTokens != 32_768 {
 		t.Fatalf("model override after round trip = %+v", ov)
 	}
 
-	// Older releases do not know context_window inside model_overrides, but their
-	// TOML decoder must still accept a config written by this release.
+	// Older releases do not know context_window/max_output_tokens inside model
+	// overrides, but their TOML decoder must still accept this release's config.
 	type legacyModelOverride struct {
 		ReasoningProtocol string   `toml:"reasoning_protocol"`
 		SupportedEfforts  []string `toml:"supported_efforts"`
