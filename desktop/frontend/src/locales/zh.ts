@@ -62,7 +62,6 @@ export const zh: Record<DictKey, string> = {
   "summary.session": "会话摘要",
   "summary.tasks": "任务",
   "summary.refresh": "刷新",
-  "summary.refreshTasks": "刷新任务",
   "summary.close": "关闭会话摘要",
   "summary.noTasks": "此工作区暂无后台任务",
   "summary.taskLabel": "任务 {id} — {state}",

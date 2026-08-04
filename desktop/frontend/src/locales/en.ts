@@ -61,7 +61,6 @@ export const en = {
   "summary.session": "Session summary",
   "summary.tasks": "Tasks",
   "summary.refresh": "Refresh",
-  "summary.refreshTasks": "Refresh tasks",
   "summary.close": "Close session summary",
   "summary.noTasks": "No background tasks in this workspace",
   "summary.taskLabel": "Task {id} — {state}",

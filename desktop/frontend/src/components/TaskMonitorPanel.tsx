@@ -259,7 +259,7 @@ export function TaskMonitorPanel({
             fetchTasks();
           }}
           title={t("summary.refresh")}
-          aria-label={t("summary.refreshTasks")}
+          aria-label={t("summary.refresh")}
         >
           <RotateCw size={12} />
         </button>

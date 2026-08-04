@@ -263,7 +263,7 @@ await check("refreshes tasks on request", async () => {
   listTasksImpl = async () => (++calls === 1 ? [] : [snap({ task_id: "ok" })]);
   await renderPanel();
   await openPanel();
-  await click(buttonByLabel("Refresh tasks"));
+  await click(buttonByLabel("Refresh"));
   return document.body.textContent?.includes("ok") === true;
 });
 
