@@ -42,6 +42,7 @@ import (
 	"reasonix/internal/outputstyle"
 	"reasonix/internal/permission"
 	"reasonix/internal/plugin"
+	"reasonix/internal/productdocs"
 	"reasonix/internal/provider"
 	"reasonix/internal/recovery"
 	"reasonix/internal/sandbox"
@@ -931,9 +932,19 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 		addReadOnlyTaskTool()
 	}
 
-	// Session and memory tools are always present in Balanced/Delivery. Economy
-	// installs them only after connect_tool_source requests that capability, so
-	// simple coding turns do not pay for unrelated schemas.
+	// Product documentation, session, and memory tools are always present in
+	// Balanced/Delivery. Economy installs them only after connect_tool_source
+	// requests that capability, so simple coding turns do not pay for unrelated
+	// schemas.
+	docsToolAdded := false
+	addDocsTool := func() string {
+		if docsToolAdded {
+			return "docs is already enabled."
+		}
+		docsToolAdded = true
+		reg.Add(productdocs.NewTool())
+		return "enabled docs."
+	}
 	sessionToolsAdded := false
 	addSessionTools := func() string {
 		if sessionToolsAdded {
@@ -957,6 +968,7 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 		return "enabled memory, remember, forget."
 	}
 	if !tokenEconomy {
+		addDocsTool()
 		addSessionTools()
 		addMemoryTools()
 	}
@@ -1363,6 +1375,9 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 			return "enabled " + strings.Join(installed, ", ") + "."
 		}
 		reg.Add(&toolSourceConnector{
+			docs: func(context.Context) (string, error) {
+				return addDocsTool(), nil
+			},
 			skills: func(context.Context) (string, error) {
 				return addSkillTools(), nil
 			},
