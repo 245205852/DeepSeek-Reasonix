@@ -18,7 +18,6 @@ import (
 	"reasonix/internal/remote"
 	"reasonix/internal/remote/bootstrap"
 	"reasonix/internal/remote/forward"
-	"reasonix/internal/remote/protocol"
 )
 
 // ── View structs mirrored in frontend/src/lib/types.ts ──
@@ -604,15 +603,14 @@ type desktopRemoteManager struct {
 	mu    sync.Mutex
 	hosts map[string]*managedHost
 
-	newClient          func(remote.Options) (desktopSSHClient, error)
-	ensureServe        func(context.Context, bootstrap.Conn, bootstrap.Options) (bootstrap.Result, error)
-	ensureWorkbenchCLI func(context.Context, bootstrap.Conn, bootstrap.WorkbenchOptions) (bootstrap.WorkbenchCLI, error)
-	stopServe          func(context.Context, bootstrap.Conn, string) error
-	serveLogs          func(context.Context, bootstrap.Conn, string, int, *strings.Builder) error
-	localBinary        func() string
-	fetchRemoteBinary  func(context.Context, string, string, string) ([]byte, error)
-	promptGate         chan struct{}
-	promptSeq          uint64
+	newClient         func(remote.Options) (desktopSSHClient, error)
+	ensureServe       func(context.Context, bootstrap.Conn, bootstrap.Options) (bootstrap.Result, error)
+	stopServe         func(context.Context, bootstrap.Conn, string) error
+	serveLogs         func(context.Context, bootstrap.Conn, string, int, *strings.Builder) error
+	localBinary       func() string
+	fetchRemoteBinary func(context.Context, string, string, string) ([]byte, error)
+	promptGate        chan struct{}
+	promptSeq         uint64
 }
 
 func newDesktopRemoteManager(sink remoteEventSink) *desktopRemoteManager {
@@ -622,9 +620,8 @@ func newDesktopRemoteManager(sink remoteEventSink) *desktopRemoteManager {
 		newClient: func(opts remote.Options) (desktopSSHClient, error) {
 			return remote.New(opts)
 		},
-		ensureServe:        bootstrap.EnsureServe,
-		ensureWorkbenchCLI: bootstrap.EnsureWorkbenchCLI,
-		stopServe:          bootstrap.Stop,
+		ensureServe: bootstrap.EnsureServe,
+		stopServe:   bootstrap.Stop,
 		serveLogs: func(ctx context.Context, conn bootstrap.Conn, workspace string, n int, out *strings.Builder) error {
 			return bootstrap.Logs(ctx, conn, workspace, n, out)
 		},
@@ -942,75 +939,6 @@ func (m *desktopRemoteManager) ResolveSecret(hostID, promptID, secret string, ac
 	default:
 		return fmt.Errorf("SSH credential prompt already resolved for %q", hostID)
 	}
-}
-
-// workbenchPeerIdentity returns the target key authenticated by the live Go SSH
-// connection. It never synthesizes a placeholder identity: Provider Broker
-// authorization must be bound to a real, verified transport peer.
-func (m *desktopRemoteManager) workbenchPeerIdentity(hostID string) (RemoteFingerprintView, bool) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	mh := m.hosts[hostID]
-	if mh == nil || mh.verifiedPeer == nil || (mh.status.State != "connected" && mh.status.State != "degraded") {
-		return RemoteFingerprintView{}, false
-	}
-	return *mh.verifiedPeer, true
-}
-
-// workbenchAskPassHandler reuses the established Remote SSH UI channel. The
-// main-window flow connects the managed Go SSH transport first, so an OpenSSH
-// host-key confirmation is accepted only when its fingerprint matches that
-// already-authenticated peer. Passwords/passphrases still travel through the
-// existing one-shot secret dialog and are never placed in argv or persisted.
-func (m *desktopRemoteManager) workbenchAskPassHandler(hostID string, entry config.RemoteHostEntry) RemoteAskPassHandler {
-	return func(ctx context.Context, prompt RemoteAskPassPrompt) (RemoteAskPassAnswer, error) {
-		m.mu.Lock()
-		mh := m.hosts[hostID]
-		var peer *RemoteFingerprintView
-		if mh != nil && mh.verifiedPeer != nil {
-			copyPeer := *mh.verifiedPeer
-			peer = &copyPeer
-		}
-		m.mu.Unlock()
-		if mh == nil {
-			return RemoteAskPassAnswer{}, fmt.Errorf("host %q is no longer connected", hostID)
-		}
-		switch prompt.Kind {
-		case RemoteAskPassHostKeyChanged:
-			return RemoteAskPassAnswer{}, fmt.Errorf("host key changed for %q", hostID)
-		case RemoteAskPassHostKeyConfirm:
-			if peer == nil || !strings.Contains(prompt.Message, peer.SHA256) {
-				return RemoteAskPassAnswer{}, fmt.Errorf("OpenSSH peer identity does not match the verified host %q", hostID)
-			}
-			return RemoteAskPassAnswer{Accepted: true, Value: "yes"}, nil
-		case RemoteAskPassKeyPassphrase:
-			if entry.PassphraseEnv != "" {
-				if value := config.ResolveCredential(entry.PassphraseEnv).Value; value != "" {
-					return RemoteAskPassAnswer{Accepted: true, Value: value}, nil
-				}
-			}
-			value, err := m.secretPrompt(hostID, mh)(ctx, remote.SecretPassphrase, peerLabel(peer, entry), entry.IdentityFile)
-			return RemoteAskPassAnswer{Accepted: err == nil, Value: value}, err
-		default:
-			if entry.PasswordEnv != "" {
-				if value := config.ResolveCredential(entry.PasswordEnv).Value; value != "" {
-					return RemoteAskPassAnswer{Accepted: true, Value: value}, nil
-				}
-			}
-			value, err := m.secretPrompt(hostID, mh)(ctx, remote.SecretPassword, peerLabel(peer, entry), "")
-			return RemoteAskPassAnswer{Accepted: err == nil, Value: value}, err
-		}
-	}
-}
-
-func peerLabel(peer *RemoteFingerprintView, entry config.RemoteHostEntry) string {
-	if peer != nil && strings.TrimSpace(peer.Address) != "" {
-		return peer.Address
-	}
-	if entry.User != "" {
-		return entry.User + "@" + entry.Host
-	}
-	return entry.Host
 }
 
 // hostKeyPrompt returns a HostKeyPrompt that surfaces the fingerprint as a
@@ -1426,38 +1354,6 @@ func (m *desktopRemoteManager) EnsureServer(ctx context.Context, hostID, workspa
 		return RemoteServerView{}, "", fmt.Errorf("host %q connection was replaced", hostID)
 	}
 	return view, res.Token, nil
-}
-
-// EnsureWorkbenchCLI prepares the exact Host executable required by the
-// Desktop's strict Remote Workbench Build ID. The per-host bootstrap mutex also
-// prevents the legacy serve installer from racing the Workbench installer.
-func (m *desktopRemoteManager) EnsureWorkbenchCLI(ctx context.Context, hostID string, entry config.RemoteHostEntry, expected protocol.BuildID) (string, error) {
-	mh := m.managed(hostID)
-	if mh == nil || mh.client == nil {
-		return "", fmt.Errorf("host %q is not connected", hostID)
-	}
-	mh.serveMu.Lock()
-	defer mh.serveMu.Unlock()
-	if !m.isCurrent(hostID, mh) {
-		return "", fmt.Errorf("host %q connection was replaced", hostID)
-	}
-	opCtx, cancel := managedOperationContext(ctx, mh)
-	defer cancel()
-	result, err := m.ensureWorkbenchCLI(opCtx, mh.client, bootstrap.WorkbenchOptions{
-		Install:       entry.ServeInstallMode(),
-		LocalBinary:   m.localBinary(),
-		LocalGOOS:     runtime.GOOS,
-		LocalGOARCH:   runtime.GOARCH,
-		ExpectedBuild: expected,
-		FetchBinary:   m.fetchRemoteBinary,
-	})
-	if err != nil {
-		return "", err
-	}
-	if !m.isCurrent(hostID, mh) {
-		return "", fmt.Errorf("host %q connection was replaced", hostID)
-	}
-	return result.Path, nil
 }
 
 func (m *desktopRemoteManager) StopServer(hostID string) error {
