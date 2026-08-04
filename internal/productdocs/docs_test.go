@@ -231,11 +231,11 @@ func TestParserIgnoresHeadingsInsideFencedCode(t *testing.T) {
 }
 
 func TestGoldmarkHeadingsPreserveTextAndSetextSemantics(t *testing.T) {
-	doc := parseDocument("EXAMPLE.md", "# Example\n\n### Configure C#\n\nBody.\n\nSetext section\n--------------\n\nMore.\n")
+	doc := parseDocument("EXAMPLE.md", "# Example\n\n### Configure *MCP* with `reasonix.toml`, C#, and <https://example.com>\n\nBody.\n\nSetext section\n--------------\n\nMore.\n")
 	if len(doc.sections) != 3 {
 		t.Fatalf("sections = %d, want 3", len(doc.sections))
 	}
-	if doc.sections[1].heading != "Example > Configure C#" {
+	if doc.sections[1].heading != "Example > Configure MCP with reasonix.toml, C#, and https://example.com" {
 		t.Fatalf("ATX heading = %q", doc.sections[1].heading)
 	}
 	if doc.sections[2].heading != "Example > Setext section" {

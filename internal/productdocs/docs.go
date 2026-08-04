@@ -562,7 +562,7 @@ func parseDocumentWithParser(name, content string, markdownParser parser.Parser)
 		if heading.Level > 4 || heading.Pos() < 0 {
 			return ast.WalkContinue, nil
 		}
-		text := strings.TrimSpace(string(heading.Text(source)))
+		text := strings.TrimSpace(markdownHeadingText(heading, source))
 		if text == "" {
 			return ast.WalkContinue, nil
 		}
@@ -627,6 +627,30 @@ func parseDocumentWithParser(name, content string, markdownParser parser.Parser)
 		appendSection(heading.start, end, strings.Join(trail, " > "))
 	}
 	return doc
+}
+
+func markdownHeadingText(heading *ast.Heading, source []byte) string {
+	var text strings.Builder
+	_ = ast.Walk(heading, func(node ast.Node, entering bool) (ast.WalkStatus, error) {
+		if !entering {
+			return ast.WalkContinue, nil
+		}
+		switch node := node.(type) {
+		case *ast.Text:
+			text.Write(node.Value(source))
+			if node.SoftLineBreak() {
+				text.WriteByte('\n')
+			}
+		case *ast.String:
+			text.Write(node.Value)
+		case *ast.AutoLink:
+			text.Write(node.Label(source))
+		case *ast.RawHTML:
+			text.Write(node.Segments.Value(source))
+		}
+		return ast.WalkContinue, nil
+	})
+	return text.String()
 }
 
 func trimSourceBounds(source []byte, start, end int) (int, int) {
