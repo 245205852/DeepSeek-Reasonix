@@ -1520,6 +1520,9 @@ func ReconcileCleanupPending(dir string, cleanup func(CleanupPendingInfo) error)
 	if err := ReconcileSessionSidecars(dir); err != nil {
 		errs = append(errs, err)
 	}
+	if err := reconcileRecoveryTrashStages(dir); err != nil {
+		errs = append(errs, err)
+	}
 	pending, err := ListCleanupPending(dir)
 	if err != nil {
 		errs = append(errs, err)

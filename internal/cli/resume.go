@@ -72,8 +72,8 @@ func capResumeSessionGroups(sessions []agent.SessionInfo, limit int) []agent.Ses
 
 // orderResumeSessions keeps conflict-recovery copies next to the session they
 // came from. Groups remain newest-first, while the newest visible leaf is first
-// within each group; that makes --continue choose the branch most likely to be
-// the user's latest writable continuation instead of an arbitrary ancestor.
+// within each group so interactive picker and numbered resume surfaces present
+// the most likely writable continuation before its ancestors.
 func orderResumeSessions(sessions []agent.SessionInfo) []agent.SessionInfo {
 	if len(sessions) < 2 {
 		return sessions
@@ -167,16 +167,18 @@ func recoveryResumeGroupKey(session agent.SessionInfo, byID map[string]agent.Ses
 // session into the running controller in place — keeping the current model and
 // replaying the transcript into scrollback.
 func (m *chatTUI) runResumeCommand(input string) {
-	reclaimCLIRecoveryBranches(m.ctrl.SessionDir())
-	sessions := recentSessions(m.ctrl.SessionDir())
-	if len(sessions) == 0 {
-		m.notice(i18n.M.NoSessionToResume)
-		return
-	}
-
 	args := tokenizeArgs(input) // args[0] == "/resume"
 	if len(args) < 2 {
 		m.openResumePicker()
+		return
+	}
+	// Do not run recovery GC between displaying/completing a numeric index and
+	// resolving it here. Removing an earlier row would silently retarget the
+	// user's already-selected number. Bare /resume performs cleanup before it
+	// builds the picker, and startup performs the ordinary background sweep.
+	sessions := recentSessions(m.ctrl.SessionDir())
+	if len(sessions) == 0 {
+		m.notice(i18n.M.NoSessionToResume)
 		return
 	}
 	if m.ctrl.Running() {
