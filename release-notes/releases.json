@@ -31,7 +31,7 @@
             "en": "Use /docs to access version-matched product documentation directly in Reasonix.",
             "zh": "使用 /docs 直接在 Reasonix 中访问版本匹配的产品文档。"
           },
-          "href": "https://github.com/esengine/DeepSeek-Reasonix/blob/80228bf4a7de23cad6ddadb242d8bd76729947e4/docs/GUIDE.md"
+          "href": "https://github.com/esengine/DeepSeek-Reasonix/blob/36d697587c3deb7f3d1c881d0a959c62111a8314/docs/GUIDE.md"
         }
       ],
       "highlights": [
@@ -509,6 +509,32 @@
             },
             "refs": [
               7456
+            ]
+          },
+          {
+            "title": {
+              "en": "Session previews prioritize the request",
+              "zh": "会话预览优先显示实际请求"
+            },
+            "body": {
+              "en": "Prompts that begin with file references now use the following request text for the session preview and sidebar title instead of showing only paths.",
+              "zh": "以文件引用开头的提示词现在会使用后续请求文本生成会话预览和侧边栏标题，而不再只显示文件路径。"
+            },
+            "refs": [
+              7464
+            ]
+          },
+          {
+            "title": {
+              "en": "Workspace toggle aligns with its panel edge",
+              "zh": "工作区切换按钮与面板边缘对齐"
+            },
+            "body": {
+              "en": "The workspace collapse and expand control now sits at the end of the topic-bar actions in both Workbench and Creation layouts.",
+              "zh": "工作区折叠与展开按钮现在在 Workbench 和 Creation 布局中都位于主题栏操作区末端。"
+            },
+            "refs": [
+              7468
             ]
           },
           {
