@@ -2708,10 +2708,11 @@ func (a *Agent) stream(ctx context.Context, turn int, sink event.Sink) (string, 
 		requestMessages[i].CreatedAt = 0
 	}
 	ch, err := a.prov.Stream(ctx, provider.Request{
-		Messages:    requestMessages,
-		Tools:       a.tools.Schemas(),
-		MaxTokens:   a.maxOutputTokens,
-		Temperature: provider.OptionalTemperature(a.temperature),
+		Messages:       requestMessages,
+		Tools:          a.tools.Schemas(),
+		MaxTokens:      a.maxOutputTokens,
+		Temperature:    provider.OptionalTemperature(a.temperature),
+		ResponseFormat: responseFormatFromRequest(ctx),
 	})
 	if err != nil {
 		return "", "", "", nil, provider.UsageWithRequestAttemptCount(ctx, nil), false, false, nil, err

@@ -122,6 +122,10 @@ type Controller struct {
 	// testCacheColdAfter overrides cacheColdAfter() in tests. Zero uses the
 	// vendor-aware resolution from config.
 	testCacheColdAfter                time.Duration
+	// pendingResponseFormat is a one-shot structured-output request from the
+	// HTTP frontend (/v1/chat with "format"), consumed by the next turn.
+	// Guarded by mu.（评审 #7234 第 2 点：将改为绑定 turn，见后续提交）
+	pendingResponseFormat             string
 	shell                             sandbox.Shell                    // interpreter for user-invoked "!" commands; zero = auto
 	startedOnce                       bool                             // guards the one-shot SessionStart hook on first turn
 	closeOnce                         sync.Once                        // makes close idempotent under racing teardown paths
@@ -930,7 +934,22 @@ func (c *Controller) runGoalLoopWithRaw(ctx context.Context, input, raw string) 
 }
 
 func (c *Controller) runGoalLoopWithRawDisplay(ctx context.Context, input, raw, display string) error {
+	// A structured-output request from the HTTP frontend applies to the
+	// whole turn: inject it into the context the agent will read.
+	if f := c.takePendingResponseFormat(); f != "" {
+		ctx = agent.WithResponseFormat(ctx, f)
+	}
 	return newTurnOrchestrator(c).runGoalLoopWithRawDisplay(ctx, input, raw, display)
+}
+
+// takePendingResponseFormat consumes the one-shot structured-output request
+// left by SubmitHTTPFormat, if any. Safe for concurrent callers.
+func (c *Controller) takePendingResponseFormat() string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	f := c.pendingResponseFormat
+	c.pendingResponseFormat = ""
+	return f
 }
 
 func (c *Controller) runEditedGoalLoopWithRawDisplay(ctx context.Context, input, raw, display, original string) error {
@@ -1003,6 +1022,48 @@ func (c *Controller) Submit(input string) {
 // references only through the controller's workspace root.
 func (c *Controller) SubmitHTTP(input string) {
 	c.submitHTTP(input, "")
+}
+
+// SubmitHTTPFormat is SubmitHTTP with an optional structured-output format
+// ("json_object") applied to the turn's completion requests. Empty format
+// behaves exactly like SubmitHTTP. A format attached to a slash command or
+// other non-turn input is discarded (nothing consumes it; see
+// takePendingResponseFormat).
+func (c *Controller) SubmitHTTPFormat(input, format string) {
+	if strings.TrimSpace(format) != "" && !isNonTurnHTTPInput(input) {
+		c.mu.Lock()
+		c.pendingResponseFormat = strings.TrimSpace(format)
+		c.mu.Unlock()
+	}
+	c.submitHTTP(input, "")
+}
+
+// isNonTurnHTTPInput reports inputs that never reach the agent turn loop, so a
+// structured-output request attached to them would otherwise leak into the
+// next real turn (the format slot is consumed only by runGoalLoopWithRawDisplay).
+func isNonTurnHTTPInput(input string) bool {
+	trimmed := strings.TrimSpace(input)
+	if trimmed == "" {
+		return true
+	}
+	// Memory quick-add / remember shortcuts and goal commands bypass turns.
+	if _, ok := MemoryQuickAddNote(trimmed); ok {
+		return true
+	}
+	if _, ok := RememberCommandNote(trimmed); ok {
+		return true
+	}
+	// "!" shell commands are rejected by submitHTTP before the turn loop
+	// (403 over HTTP); a format attached to them would never be consumed.
+	if strings.HasPrefix(trimmed, "!") {
+		return true
+	}
+	// Slash commands are management verbs (/compact /new /clear /model ...)
+	// or notices, not completion turns.
+	if strings.HasPrefix(trimmed, "/") {
+		return true
+	}
+	return false
 }
 
 // SubmitDisplay runs input as a turn while remembering the user-facing display

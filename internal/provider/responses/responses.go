@@ -14,7 +14,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"net/url"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -71,6 +70,9 @@ type Config struct {
 	// SessionCache controls DashScope's opt-in header. The header is never sent
 	// to non-DashScope endpoints even when this value is true.
 	SessionCache *bool
+	// Extra carries kind-specific options; "vision" (bool) enables embedding
+	// attached Images as input_image parts on user turns.
+	Extra map[string]any
 }
 
 func (c Config) mode() string {
@@ -84,35 +86,23 @@ func (c Config) mode() string {
 		}
 		return "stateless"
 	}
-	if DetectVendor(c.BaseURL) == "deepseek" {
+	if capabilitiesFor(DetectVendor(c.BaseURL)).stateless {
 		return "stateless"
 	}
 	return "stateful"
 }
 
-// DetectVendor identifies endpoint behavior that affects the Responses wire.
-func DetectVendor(baseURL string) string {
-	u, err := url.Parse(strings.TrimSpace(baseURL))
-	if err != nil {
-		return ""
-	}
-	host := strings.ToLower(u.Hostname())
-	switch {
-	case host == "dashscope.aliyuncs.com", strings.HasSuffix(host, ".dashscope.aliyuncs.com"), strings.HasSuffix(host, ".maas.aliyuncs.com"):
-		return "dashscope"
-	case host == "api.deepseek.com", strings.HasSuffix(host, ".deepseek.com"):
-		return "deepseek"
-	default:
-		return ""
-	}
-}
+// DetectVendor lives in vendor.go (capabilities table): it covers dashscope/
+// deepseek (incl. eu.deepseek.com) / mimo via substring matching.
 
 type client struct {
 	name, apiKey, keyEnv, keySource string
 	baseURL, model, effort          string
 	vendor, mode                    string
+	caps                            vendorCapabilities
 	sessionCache                    bool
 	maxOutputTokens                 int
+	vision                          bool // model accepts image input; embed Images as input_image parts
 	http                            *http.Client
 	idleTimeout                     time.Duration
 	authed                          atomic.Bool
@@ -125,14 +115,16 @@ type client struct {
 // New creates a Responses API provider.
 func New(cfg Config) provider.Provider {
 	vendor := DetectVendor(cfg.BaseURL)
+	cap := capabilitiesFor(vendor)
 	maxOutputTokens := cfg.MaxOutputTokens
 	if maxOutputTokens == 0 && vendor == "deepseek" && !responsesReasoningDisabled(cfg.Effort) {
 		maxOutputTokens = provider.DefaultReasoningOutputTokens
 	}
-	sessionCache := vendor == "dashscope"
+	sessionCache := cap.sessionCacheHeader
 	if cfg.SessionCache != nil {
 		sessionCache = *cfg.SessionCache
 	}
+	vision, _ := cfg.Extra["vision"].(bool)
 	httpClient := &http.Client{Timeout: 300 * time.Second}
 	if built, err := netclient.NewHTTPClient(cfg.Proxy, netclient.TransportOptions{
 		DialTimeout: 30 * time.Second, KeepAlive: 30 * time.Second,
@@ -143,8 +135,9 @@ func New(cfg Config) provider.Provider {
 	return &client{
 		name: cfg.Name, apiKey: cfg.APIKey, keyEnv: cfg.KeyEnv, keySource: cfg.KeySource,
 		baseURL: strings.TrimRight(cfg.BaseURL, "/"), model: cfg.Model, effort: cfg.Effort,
-		vendor: vendor, mode: cfg.mode(), sessionCache: sessionCache, maxOutputTokens: maxOutputTokens,
-		http: httpClient, idleTimeout: defaultStreamIdleTimeout,
+		vendor: vendor, caps: cap, mode: cfg.mode(), sessionCache: sessionCache, maxOutputTokens: maxOutputTokens,
+		vision: vision,
+		http:   httpClient, idleTimeout: defaultStreamIdleTimeout,
 	}
 }
 
@@ -159,9 +152,12 @@ func responsesReasoningDisabled(effort string) bool {
 
 func (c *client) Name() string { return c.name }
 
-// RequiresToolCallReasoning tells the agent to preserve DeepSeek reasoning on
-// assistant tool-call turns so the stateless follow-up can replay it.
-func (c *client) RequiresToolCallReasoning() bool { return c.vendor == "deepseek" }
+// RequiresToolCallReasoning tells the agent to preserve stateless vendors'
+// reasoning on assistant tool-call turns so the follow-up can replay it.
+// DeepSeek and MiMo document this requirement for multi-turn tool calls.
+func (c *client) RequiresToolCallReasoning() bool {
+	return c.caps.toolCallReasoning
+}
 
 func (c *client) MissingToolCallReasoningWarningIdentity() string {
 	if c == nil {
@@ -171,6 +167,24 @@ func (c *client) MissingToolCallReasoningWarningIdentity() string {
 		"responses", strings.TrimSpace(c.name), strings.TrimSpace(c.baseURL),
 		strings.TrimSpace(c.model), strings.TrimSpace(c.vendor), strings.TrimSpace(c.mode), strings.TrimSpace(c.effort),
 	}, "\x00")
+}
+
+// WarnOnMissingToolCallReasoning reports a tool_calls turn that arrived
+// without reasoning only for vendors whose endpoint reliably emits it.
+// DeepSeek's official API emits tool-call reasoning for its pro-tier models,
+// so a missing chain-of-thought there is a real degradation worth one warning.
+// MiMo documents reasoning alongside tool calls but does not guarantee it on
+// every round (observed: mimo-v2.5-pro tool-call turn with empty reasoning),
+// so a missing chain-of-thought is endpoint-conditional, not a degradation
+// signal — silence the warning. This mirrors openai.go's model-scoped gate.
+func (c *client) WarnOnMissingToolCallReasoning() bool {
+	if c.vendor != "deepseek" {
+		return false
+	}
+	model := strings.ToLower(strings.TrimSpace(c.model))
+	// Flash-tier DeepSeek models do not emit tool-call reasoning (same carve
+	// as openai.go expectsDeepSeekToolCallReasoning).
+	return !strings.Contains(model, "flash")
 }
 
 func (c *client) sendOpts() provider.SendOptions {
@@ -218,7 +232,7 @@ func (c *client) send(ctx context.Context, body map[string]any) (*http.Response,
 		}
 		req.Header.Set("Content-Type", "application/json")
 		req.Header.Set("Authorization", "Bearer "+c.apiKey)
-		if c.vendor == "dashscope" && c.sessionCache {
+		if c.caps.sessionCacheHeader && c.sessionCache {
 			req.Header.Set("x-dashscope-session-cache", "enable")
 		}
 		return req, nil
@@ -255,10 +269,21 @@ func (c *client) buildRequestBody(req provider.Request) (map[string]any, bool, [
 	if maxOutputTokens == 0 {
 		maxOutputTokens = c.maxOutputTokens
 	}
+	if maxOutputTokens == 0 {
+		maxOutputTokens = c.caps.defaultMaxOutputTokens
+	}
 	if maxOutputTokens > 0 {
 		body["max_output_tokens"] = maxOutputTokens
 	}
-	if req.Temperature != nil {
+	if req.ResponseFormat != nil && req.ResponseFormat.Type != "" {
+		// Structured output: Responses text.format. MiMo/DashScope/OpenAI
+		// all accept {"text":{"format":{"type":"json_object"}}}. The model
+		// only emits JSON when the instructions also demand it.
+		body["text"] = map[string]any{
+			"format": map[string]any{"type": req.ResponseFormat.Type},
+		}
+	}
+	if req.Temperature != nil && !c.caps.ignoresTemperature {
 		body["temperature"] = *req.Temperature
 	}
 	if len(req.Tools) > 0 {
@@ -285,13 +310,13 @@ func (c *client) buildRequestBody(req provider.Request) (map[string]any, bool, [
 	c.mu.Unlock()
 	if c.mode == "stateful" && previousID != "" && len(messages) > 0 &&
 		messages[len(messages)-1].Role == provider.RoleUser &&
-		conversationDigest(messages[:len(messages)-1]) == expectedDigest {
+		c.conversationDigest(messages[:len(messages)-1]) == expectedDigest {
 		body["input"] = messages[len(messages)-1].Content
 		body["previous_response_id"] = previousID
 		return body, true, messages
 	}
 
-	body["input"] = messagesToInput(rest)
+	body["input"] = messagesToInput(rest, c.vision, c.caps.summaryRequired)
 	return body, false, messages
 }
 
@@ -302,24 +327,55 @@ func splitInstructions(messages []provider.Message) (string, []provider.Message)
 	return messages[0].Content, messages[1:]
 }
 
-func messagesToInput(messages []provider.Message) []map[string]any {
+func messagesToInput(messages []provider.Message, vision, summary bool) []map[string]any {
 	input := make([]map[string]any, 0, len(messages)*2)
 	for _, message := range messages {
 		switch message.Role {
 		case provider.RoleSystem, provider.RoleUser:
-			input = append(input, map[string]any{"role": string(message.Role), "content": message.Content})
+			// Text-only turns keep the documented TextInput string shape.
+			// Vision-capable user turns with attached images switch to the
+			// InputItemList array form ({type:input_text} + {type:input_image})
+			// so the text and every image ride the same message, matching the
+			// MiMo/DashScope multimodal example. The system message is always
+			// plain text: images only attach to user turns.
+			if vision && message.Role == provider.RoleUser && len(message.Images) > 0 {
+				parts := make([]map[string]string, 0, len(message.Images)+1)
+				if message.Content != "" {
+					parts = append(parts, map[string]string{"type": "input_text", "text": message.Content})
+				}
+				for _, url := range message.Images {
+					parts = append(parts, map[string]string{"type": "input_image", "image_url": url})
+				}
+				input = append(input, map[string]any{"role": "user", "content": parts})
+			} else {
+				input = append(input, map[string]any{"role": string(message.Role), "content": message.Content})
+			}
 		case provider.RoleAssistant:
 			if message.ReasoningContent != "" {
-				// DashScope's Responses API requires a `summary` list on
-				// reasoning items (OpenAI's format only needs `content`).
-				// Without it the server rejects with
-				// "Invalid 'summary': summary is required and must be a list
-				// for reasoning."
-				input = append(input, map[string]any{
+				// Reasoning items: the OpenAI base format only needs
+				// `content`. DashScope additionally requires a `summary`
+				// list ("Invalid 'summary': summary is required and must be
+				// a list for reasoning."). Other vendors (MiMo) do not
+				// define summary in their schema; sending it leaks the
+				// reasoning text into an extra field the server may echo
+				// back into the model context, doubling chain-of-thought
+				// each turn — so only send it where the wire demands it.
+				item := map[string]any{
 					"type":    "reasoning",
-					"summary": []map[string]string{{"type": "summary_text", "text": message.ReasoningContent}},
 					"content": []map[string]string{{"type": "reasoning_text", "text": message.ReasoningContent}},
-				})
+				}
+				if message.ReasoningID != "" {
+					// OpenAI Responses schema marks Reasoning.id required;
+					// round-trip the provider-issued id when we captured one.
+					item["id"] = message.ReasoningID
+				}
+				if message.ReasoningStatus != "" {
+					item["status"] = message.ReasoningStatus
+				}
+				if summary {
+					item["summary"] = []map[string]string{{"type": "summary_text", "text": message.ReasoningContent}}
+				}
+				input = append(input, item)
 			}
 			if message.Content != "" || len(message.ToolCalls) == 0 {
 				input = append(input, map[string]any{"role": "assistant", "content": message.Content})
@@ -339,12 +395,16 @@ func messagesToInput(messages []provider.Message) []map[string]any {
 	return input
 }
 
-func conversationDigest(messages []provider.Message) string {
+func (c *client) conversationDigest(messages []provider.Message) string {
 	instructions, rest := splitInstructions(messages)
+	// Digest must mirror the wire exactly: the stateful fast path compares
+	// this against the previous request's input, so a mismatch would skip
+	// previous_response_id and force a full replay (cache-hit loss). Use the
+	// same vision/summary knobs as buildRequestBody.
 	payload, _ := json.Marshal(struct {
 		Instructions string           `json:"instructions,omitempty"`
 		Input        []map[string]any `json:"input"`
-	}{Instructions: instructions, Input: messagesToInput(rest)})
+	}{Instructions: instructions, Input: messagesToInput(rest, c.vision, c.caps.summaryRequired)})
 	sum := sha256.Sum256(payload)
 	return hex.EncodeToString(sum[:])
 }
@@ -409,6 +469,8 @@ func (c *client) readStream(ctx context.Context, resp *http.Response, out chan<-
 	textDeltas := make(map[string]bool)
 	reasoningDeltas := make(map[string]bool)
 	var text, reasoning strings.Builder
+	reasoningID := ""
+	reasoningStatus := ""
 	terminal := false
 	failed := false
 	completedResponseID := ""
@@ -460,12 +522,22 @@ func (c *client) readStream(ctx context.Context, resp *http.Response, out chan<-
 				}
 			}
 		case "response.output_item.added":
-			if event.Item != nil && event.Item.Type == "function_call" {
-				call := callForItem(event.Item.ID)
-				call.id = event.Item.CallID
-				call.name = event.Item.Name
-				if !sendChunk(ctx, out, provider.Chunk{Type: provider.ChunkToolCallStart, ToolCall: &provider.ToolCall{ID: call.id, Name: call.name}}) {
-					return
+			if event.Item != nil {
+				switch event.Item.Type {
+				case "function_call":
+					call := callForItem(event.Item.ID)
+					call.id = event.Item.CallID
+					call.name = event.Item.Name
+					if !sendChunk(ctx, out, provider.Chunk{Type: provider.ChunkToolCallStart, ToolCall: &provider.ToolCall{ID: call.id, Name: call.name}}) {
+						return
+					}
+				case "reasoning":
+					// Capture the provider-issued reasoning item id so the
+					// next turn's input reasoning item can carry it (the
+					// OpenAI Responses schema marks Reasoning.id required).
+					if event.Item.ID != "" {
+						reasoningID = event.Item.ID
+					}
 				}
 			}
 		case "response.function_call_arguments.delta":
@@ -487,21 +559,32 @@ func (c *client) readStream(ctx context.Context, resp *http.Response, out chan<-
 				}
 			}
 		case "response.output_item.done":
-			if event.Item != nil && event.Item.Type == "function_call" {
-				call := callForItem(event.Item.ID)
-				if event.Item.CallID != "" {
-					call.id = event.Item.CallID
-				}
-				if event.Item.Name != "" {
-					call.name = event.Item.Name
-				}
-				if event.Item.Arguments != "" {
-					call.arguments = event.Item.Arguments
-				}
-				if !call.completed {
-					call.completed = true
-					if !sendChunk(ctx, out, provider.Chunk{Type: provider.ChunkToolCall, ToolCall: &provider.ToolCall{ID: call.id, Name: call.name, Arguments: call.arguments}}) {
-						return
+			if event.Item != nil {
+				switch event.Item.Type {
+				case "function_call":
+					call := callForItem(event.Item.ID)
+					if event.Item.CallID != "" {
+						call.id = event.Item.CallID
+					}
+					if event.Item.Name != "" {
+						call.name = event.Item.Name
+					}
+					if event.Item.Arguments != "" {
+						call.arguments = event.Item.Arguments
+					}
+					if !call.completed {
+						call.completed = true
+						if !sendChunk(ctx, out, provider.Chunk{Type: provider.ChunkToolCall, ToolCall: &provider.ToolCall{ID: call.id, Name: call.name, Arguments: call.arguments}}) {
+							return
+						}
+					}
+				case "reasoning":
+					// The done event carries the final item status
+					// ("completed" after the thinking stream finishes);
+					// round-trip it with the reasoning item so the input
+					// matches the wire schema.
+					if event.Item.Status != "" {
+						reasoningStatus = event.Item.Status
 					}
 				}
 			}
@@ -537,6 +620,7 @@ func (c *client) readStream(ctx context.Context, resp *http.Response, out chan<-
 				// abnormal termination reason (length/content_filter/...) is
 				// still surfaced so the agent can report the truncation.
 				if usage.TotalTokens > 0 || (usage.FinishReason != "" && usage.FinishReason != "stop") {
+
 					if !sendChunk(ctx, out, provider.Chunk{Type: provider.ChunkUsage, Usage: usage}) {
 						return
 					}
@@ -577,7 +661,7 @@ func (c *client) readStream(ctx context.Context, resp *http.Response, out chan<-
 		return
 	}
 	if completedResponseID != "" {
-		assistant := provider.Message{Role: provider.RoleAssistant, Content: text.String(), ReasoningContent: reasoning.String()}
+		assistant := provider.Message{Role: provider.RoleAssistant, Content: text.String(), ReasoningContent: reasoning.String(), ReasoningID: reasoningID, ReasoningStatus: reasoningStatus}
 		for _, itemID := range callOrder {
 			call := calls[itemID]
 			if call.completed {
@@ -587,7 +671,7 @@ func (c *client) readStream(ctx context.Context, resp *http.Response, out chan<-
 		expected := append(append([]provider.Message(nil), requestMessages...), assistant)
 		c.mu.Lock()
 		c.lastResponseID = completedResponseID
-		c.expectedPrefixDigest = conversationDigest(expected)
+		c.expectedPrefixDigest = c.conversationDigest(expected)
 		c.mu.Unlock()
 	} else {
 		c.ResetContext()
@@ -662,7 +746,7 @@ type sseEvent struct {
 }
 
 type sseItem struct {
-	ID, Type, CallID, Name, Arguments string
+	ID, Type, CallID, Name, Arguments, Status string
 }
 
 func (i *sseItem) UnmarshalJSON(data []byte) error {
@@ -672,11 +756,12 @@ func (i *sseItem) UnmarshalJSON(data []byte) error {
 		CallID    string `json:"call_id"`
 		Name      string `json:"name"`
 		Arguments string `json:"arguments"`
+		Status    string `json:"status"`
 	}
 	if err := json.Unmarshal(data, &wire); err != nil {
 		return err
 	}
-	*i = sseItem{ID: wire.ID, Type: wire.Type, CallID: wire.CallID, Name: wire.Name, Arguments: wire.Arguments}
+	*i = sseItem{ID: wire.ID, Type: wire.Type, CallID: wire.CallID, Name: wire.Name, Arguments: wire.Arguments, Status: wire.Status}
 	return nil
 }
 

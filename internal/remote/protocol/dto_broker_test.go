@@ -21,6 +21,7 @@ func TestBrokerProviderRequestRoundTripIsLossless(t *testing.T) {
 		}},
 		Tools:       []provider.ToolSchema{{Name: "read", Description: "read a file", Parameters: json.RawMessage(`{"type":"object","properties":{"path":{"type":"string"}}}`)}},
 		Temperature: &temperature, MaxTokens: 4096,
+		ResponseFormat: &provider.ResponseFormat{Type: "json_object"},
 	}
 	wired := BrokerProviderRequestFromProvider(want)
 	raw, err := json.Marshal(BrokerStreamOpenParams{StreamID: "s1", ProviderRef: "local/model", Request: wired})

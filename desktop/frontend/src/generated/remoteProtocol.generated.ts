@@ -2,7 +2,7 @@
 
 export const REMOTE_SCHEMA_FORMAT = "reasonix.remote.schema.v1" as const;
 export const REMOTE_PROTOCOL_VERSION = "1" as const;
-export const REMOTE_SCHEMA_HASH = "sha256:9e6946d39d1d4d0ee4a2ffd6bc0456707c1966b8284f9fc8ec0d16ce9f5bc1a0" as const;
+export const REMOTE_SCHEMA_HASH = "sha256:34be15470dbe69212ce17099e42bdda95b668f6278344f1a90ed6c9fdff006d9" as const;
 
 export const REMOTE_FIXED_RESOURCES = {
   "protocol": {
@@ -1026,7 +1026,9 @@ export type BrokerStreamOpenParamsRaw = {
       "provider_content"?: string;
       "raw_content"?: string;
       "reasoning_content"?: string;
+      "reasoning_id"?: string;
       "reasoning_signature"?: string;
+      "reasoning_status"?: string;
       "role": "assistant" | "system" | "tool" | "user";
       "tool_call_id"?: string;
       "tool_calls"?: Array<{
@@ -1043,6 +1045,9 @@ export type BrokerStreamOpenParamsRaw = {
       }>;
       "workDurationMs"?: number;
     }>;
+    "responseFormat"?: {
+      "type": string;
+    };
     "temperature"?: number;
     "tools": Array<{
       "description": string;
@@ -1089,7 +1094,9 @@ export type BrokerStreamOpenParamsHydrated = {
       "provider_content"?: string;
       "raw_content"?: string;
       "reasoning_content"?: string;
+      "reasoning_id"?: string;
       "reasoning_signature"?: string;
+      "reasoning_status"?: string;
       "role": "assistant" | "system" | "tool" | "user";
       "tool_call_id"?: string;
       "tool_calls"?: Array<{
@@ -1106,6 +1113,9 @@ export type BrokerStreamOpenParamsHydrated = {
       }>;
       "workDurationMs"?: number;
     }>;
+    "responseFormat"?: {
+      "type": string;
+    };
     "temperature"?: number;
     "tools": Array<{
       "description": string;
