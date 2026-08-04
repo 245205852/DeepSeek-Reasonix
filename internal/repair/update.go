@@ -1678,12 +1678,23 @@ func removePendingUpdateExactVerified(expected *UpdateTransaction, verify func()
 // the new transaction is durable, destroying the previous rollback material if
 // preparation later fails.
 func ensureNoPendingUpdate() error {
-	disposition, _, err := classifyPendingUpdate()
+	disposition, tx, err := classifyPendingUpdate()
 	if err != nil {
 		return fmt.Errorf("prepare update: %w", err)
 	}
 	switch disposition {
 	case pendingUpdateActionable:
+		if tx == nil {
+			// Self-describing but not valid for this installation (see
+			// ReconcilePendingUpdate): nothing can resume or roll it back, and
+			// refusing here would refuse forever. Quarantine the marker so a
+			// future update can proceed; target and rollback material are
+			// untouched.
+			if _, err := quarantinePendingUpdate("not valid for this installation"); err != nil {
+				return fmt.Errorf("prepare update: quarantine unusable transaction: %w", err)
+			}
+			return nil
+		}
 		return fmt.Errorf("prepare update: a pending update already exists")
 	case pendingUpdateDebris:
 		// Refusing here would be refusing forever: debris cannot be resumed,
@@ -1895,13 +1906,21 @@ func ReconcilePendingUpdate(runningVersion string) (PendingUpdateReconcileResult
 		}
 		return PendingUpdateReconcileResult{Pending: true, Cleared: true}, nil
 	case tx == nil:
-		// Self-describing but not valid for this installation. Recovery needs
-		// the full transaction, so surface the reason instead of guessing.
-		_, err := ReadPendingUpdate()
-		if err == nil {
-			err = fmt.Errorf("pending update is not valid for this installation")
+		// Self-describing but not valid for this installation: the launcher and
+		// target directories no longer match (install layout moved to
+		// versions\<version>\ or the old install directory is gone). Nothing
+		// here can be resumed or rolled back by this installation, and leaving
+		// the marker blocks every future update permanently — recovery fails
+		// here before preparation can act, and the marker lives in the state
+		// directory so a reinstall does not clear it (#7391, #7416, #7407).
+		// Quarantine the marker, never a delete: the target and rollback
+		// material are untouched, so a genuine transaction observed from the
+		// wrong install loses nothing and remains recoverable from the
+		// .unusable-* file by hand.
+		if _, err := quarantinePendingUpdate("not valid for this installation"); err != nil {
+			return PendingUpdateReconcileResult{Pending: true}, fmt.Errorf("reconcile pending update: quarantine unusable transaction: %w", err)
 		}
-		return PendingUpdateReconcileResult{Pending: true}, fmt.Errorf("reconcile pending update: %w", err)
+		return PendingUpdateReconcileResult{Pending: true, Cleared: true}, nil
 	}
 	result := PendingUpdateReconcileResult{
 		Pending:     true,
