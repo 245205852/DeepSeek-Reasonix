@@ -104,6 +104,87 @@ func TestSourceManifestChangesWithMarkdownBytes(t *testing.T) {
 	}
 }
 
+func TestSourceManifestDigestUsesUnambiguousFileFraming(t *testing.T) {
+	firstA := []byte("# Guide\n\nalpha")
+	firstB := []byte("betaB.md\x00# Reference\n\ngamma")
+	secondA := []byte("# Guide\n\nalphaB.md\x00beta")
+	secondB := []byte("# Reference\n\ngamma")
+
+	legacyDigest := func(a, b []byte) [sha256.Size]byte {
+		h := sha256.New()
+		for _, record := range []struct {
+			name string
+			data []byte
+		}{{"A.md", a}, {"B.md", b}} {
+			_, _ = h.Write([]byte(record.name))
+			_, _ = h.Write([]byte{0})
+			_, _ = h.Write(record.data)
+		}
+		var digest [sha256.Size]byte
+		copy(digest[:], h.Sum(nil))
+		return digest
+	}
+	if legacyDigest(firstA, firstB) != legacyDigest(secondA, secondB) {
+		t.Fatal("test fixture must collide under the legacy delimiter-only framing")
+	}
+
+	first, err := SourceManifest(fstest.MapFS{
+		"A.md": {Data: firstA},
+		"B.md": {Data: firstB},
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := SourceManifest(fstest.MapFS{
+		"A.md": {Data: secondA},
+		"B.md": {Data: secondB},
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.Documents != second.Documents || first.Sections != second.Sections {
+		t.Fatalf("fixture changed corpus shape: first=%#v second=%#v", first, second)
+	}
+	if first.Digest == second.Digest {
+		t.Fatalf("different file boundaries produced the same digest: %s", first.Digest)
+	}
+}
+
+func TestSearchRejectsOversizedQueriesBeforeRetrieval(t *testing.T) {
+	oversized := strings.Repeat("文", maxQueryRunes+1)
+	tests := []struct {
+		name string
+		run  func() error
+	}{
+		{
+			name: "tool",
+			run: func() error {
+				args, err := json.Marshal(map[string]any{"operation": "search", "query": oversized})
+				if err != nil {
+					return err
+				}
+				_, err = NewTool().Execute(context.Background(), args)
+				return err
+			},
+		},
+		{
+			name: "slash command host path",
+			run: func() error {
+				_, err := SearchEmbedded(context.Background(), oversized)
+				return err
+			},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			err := test.run()
+			if err == nil || !strings.Contains(err.Error(), "maximum 4096 characters") {
+				t.Fatalf("oversized query error = %v", err)
+			}
+		})
+	}
+}
+
 func TestReleaseNotesAreSearchableInBothLanguages(t *testing.T) {
 	c, err := loadCatalogWithReleaseNotes(productcontent.Content, releasenotes.Content)
 	if err != nil {
@@ -322,7 +403,7 @@ func TestDocsToolContractIsStableAndReadOnly(t *testing.T) {
 	}
 	contract := tl.Name() + "\n" + tl.Description() + "\n" + string(canonical)
 	got := fmt.Sprintf("%x", sha256.Sum256([]byte(contract)))
-	const want = "ff457101c82df96b107fcae4e2db4db07b1ae838889b2e50b809980a3b2a9a93"
+	const want = "0113a592b6bcba5dd2be78c552f95ca27337534b6bb55b7b5e6fd89414f95be5"
 	if got != want {
 		t.Fatalf("provider-visible docs contract changed: got %s, want %s", got, want)
 	}

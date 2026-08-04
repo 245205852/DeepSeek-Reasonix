@@ -6,9 +6,11 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"hash"
 	"io/fs"
 	"path"
 	"regexp"
@@ -31,10 +33,11 @@ import (
 )
 
 const (
-	defaultLimit = 5
-	maxLimit     = 10
-	maxSnippet   = 360
-	scoreFloor   = 0.15
+	defaultLimit  = 5
+	maxLimit      = 10
+	maxSnippet    = 360
+	maxQueryRunes = 4096
+	scoreFloor    = 0.15
 )
 
 type document struct {
@@ -256,7 +259,7 @@ func (*docsTool) Schema() json.RawMessage {
 		"type":"object",
 		"properties":{
 			"operation":{"type":"string","enum":["search","read","list"],"description":"search ranks relevant sections; read returns one section or lists a document's sections; list shows the embedded document catalog."},
-			"query":{"type":"string","description":"Question, command, configuration key, error phrase, or topic for operation=search."},
+			"query":{"type":"string","maxLength":4096,"description":"Question, command, configuration key, error phrase, or topic for operation=search."},
 			"section_id":{"type":"string","description":"Exact section_id returned by search or by a document section listing. Used by operation=read."},
 			"path":{"type":"string","description":"Exact docs/*.md path returned by search/list. With operation=read and no section_id, lists that document's sections."},
 			"language":{"type":"string","enum":["auto","all","en","zh-CN"],"description":"Language preference. search defaults to auto from the query; list defaults to all. Explicit en or zh-CN filters results."},
@@ -327,6 +330,9 @@ func (*docsTool) SnipHint() tool.SnipHint {
 
 func (t *docsTool) search(ctx context.Context, query, language, audience string, limit int) (string, error) {
 	query = strings.TrimSpace(query)
+	if utf8.RuneCountInString(query) > maxQueryRunes {
+		return "", fmt.Errorf("query is too long: maximum %d characters", maxQueryRunes)
+	}
 	queryTerms, err := retrieval.QueryTerms(query)
 	if err != nil {
 		return "", err
@@ -455,6 +461,7 @@ func loadCatalogWithReleaseNotes(docsFS, releaseNotesFS fs.FS) (*catalog, error)
 	}
 	sort.Slice(entries, func(i, j int) bool { return entries[i].Name() < entries[j].Name() })
 	hash := sha256.New()
+	_, _ = hash.Write([]byte("reasonix-product-docs-v1\x00"))
 	markdownParser := goldmark.DefaultParser()
 	c := &catalog{byPath: map[string]*document{}, byID: map[string]*section{}}
 	for _, entry := range entries {
@@ -468,9 +475,7 @@ func loadCatalogWithReleaseNotes(docsFS, releaseNotesFS fs.FS) (*catalog, error)
 		if !utf8.Valid(data) {
 			return nil, fmt.Errorf("read %s: Markdown is not valid UTF-8", entry.Name())
 		}
-		_, _ = hash.Write([]byte(entry.Name()))
-		_, _ = hash.Write([]byte{0})
-		_, _ = hash.Write(data)
+		writeDigestRecord(hash, entry.Name(), data)
 		doc := parseDocumentWithParser(entry.Name(), string(data), markdownParser)
 		doc.source = "docs/" + entry.Name()
 		if len(doc.sections) == 0 {
@@ -488,9 +493,7 @@ func loadCatalogWithReleaseNotes(docsFS, releaseNotesFS fs.FS) (*catalog, error)
 		if !utf8.Valid(data) {
 			return nil, fmt.Errorf("read release-notes/releases.json: JSON is not valid UTF-8")
 		}
-		_, _ = hash.Write([]byte("release-notes/releases.json"))
-		_, _ = hash.Write([]byte{0})
-		_, _ = hash.Write(data)
+		writeDigestRecord(hash, "release-notes/releases.json", data)
 		rendered, releaseCount, err := renderReleaseDocuments(data)
 		if err != nil {
 			return nil, err
@@ -527,6 +530,16 @@ func loadCatalogWithReleaseNotes(docsFS, releaseNotesFS fs.FS) (*catalog, error)
 		c.avgLen = 1
 	}
 	return c, nil
+}
+
+func writeDigestRecord(destination hash.Hash, name string, data []byte) {
+	var size [8]byte
+	binary.BigEndian.PutUint64(size[:], uint64(len(name)))
+	_, _ = destination.Write(size[:])
+	_, _ = destination.Write([]byte(name))
+	binary.BigEndian.PutUint64(size[:], uint64(len(data)))
+	_, _ = destination.Write(size[:])
+	_, _ = destination.Write(data)
 }
 
 func (c *catalog) addDocument(doc *document) error {
