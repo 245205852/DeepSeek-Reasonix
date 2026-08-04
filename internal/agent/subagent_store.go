@@ -49,6 +49,25 @@ type SubagentMeta struct {
 	Effort           string         `json:"effort"`
 }
 
+// subagentMetaDecodeError distinguishes malformed metadata content from file
+// I/O failures. Cleanup may safely skip one undecodable record, but storage
+// errors must remain visible because they can affect every subagent record.
+type subagentMetaDecodeError struct {
+	ref string
+	err error
+}
+
+func (e *subagentMetaDecodeError) Error() string {
+	return fmt.Sprintf("decode subagent metadata %q: %v", e.ref, e.err)
+}
+
+func (e *subagentMetaDecodeError) Unwrap() error { return e.err }
+
+func isSubagentMetaDecodeError(err error) bool {
+	var decodeErr *subagentMetaDecodeError
+	return errors.As(err, &decodeErr)
+}
+
 // SubagentSpec describes the current invocation identity.
 type SubagentSpec struct {
 	Kind             string
@@ -229,13 +248,10 @@ func (s *SubagentStore) CleanupStaleRunning() (int, error) {
 		meta, err := s.LoadMeta(ref)
 		if err != nil {
 			// A corrupt metadata file (truncated write, killed process) must
-			// not abort startup: skip it. ListSubagentsByParent tolerates any
-			// undecodable entry; here the tolerance is deliberately narrower —
-			// only JSON decode failures are skipped, while genuine I/O errors
-			// still fail so storage problems stay visible.
-			var syntaxErr *json.SyntaxError
-			var typeErr *json.UnmarshalTypeError
-			if errors.As(err, &syntaxErr) || errors.As(err, &typeErr) {
+			// not abort startup. Skip all content decode failures, including
+			// errors from custom field decoders such as time.Time, while genuine
+			// file I/O errors remain fatal so storage problems stay visible.
+			if isSubagentMetaDecodeError(err) {
 				continue
 			}
 			return 0, err
@@ -281,6 +297,9 @@ func (s *SubagentStore) CleanupStaleRunning() (int, error) {
 			meta, err := s.LoadMeta(ref)
 			if err != nil {
 				lease.Release()
+				if isSubagentMetaDecodeError(err) {
+					continue
+				}
 				return cleaned, err
 			}
 			if meta.Status != SubagentRunning || strings.TrimSpace(meta.ParentSession) != parentID {
@@ -640,7 +659,7 @@ func (s *SubagentStore) LoadMeta(ref string) (SubagentMeta, error) {
 		return meta, fmt.Errorf("load subagent metadata %q: %w", ref, err)
 	}
 	if err := json.Unmarshal(data, &meta); err != nil {
-		return meta, fmt.Errorf("decode subagent metadata %q: %w", ref, err)
+		return meta, &subagentMetaDecodeError{ref: ref, err: err}
 	}
 	return meta, nil
 }

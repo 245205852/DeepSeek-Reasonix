@@ -699,9 +699,13 @@ func TestSubagentStoreCleanupStaleRunningSkipsCorruptMeta(t *testing.T) {
 	ref := run.Ref
 	run.Release()
 
-	// Corrupt metadata files (truncated JSON and empty) must be skipped,
-	// not abort the whole startup cleanup.
-	for i, corrupt := range []string{`{"status":"running"`, ""} {
+	// Corrupt metadata files (truncated JSON, empty, and invalid custom field
+	// values) must be skipped, not abort the whole startup cleanup.
+	for i, corrupt := range []string{
+		`{"status":"running"`,
+		"",
+		`{"createdAt":"not-a-time"}`,
+	} {
 		corruptRef := fmt.Sprintf("sa_corrupt_%d", i)
 		if err := os.WriteFile(filepath.Join(store.dir, corruptRef+".meta.json"), []byte(corrupt), 0o600); err != nil {
 			t.Fatalf("write corrupt meta %d: %v", i, err)
