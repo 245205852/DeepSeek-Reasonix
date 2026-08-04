@@ -436,7 +436,7 @@
   },
   {
     "Name": "grep",
-    "Description": "Search for a regular expression in a file, or recursively under a directory — ripgrep-backed, so it honors .gitignore. Returns matching lines as path:line:text, capped at 200 matches.",
+    "Description": "Search for a regular expression in a file, or recursively under a directory (skips hidden files and files matched by .gitignore). Returns matching lines as path:line:text, capped at 200 matches.",
     "ReadOnly": true,
     "Schema": {
       "properties": {

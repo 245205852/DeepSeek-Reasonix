@@ -31,7 +31,8 @@ import (
 //	                                   ignore_shutdown | stall_intercept |
 //	                                   block_intercept | stderr_flood |
 //	                                   content_roundtrip | content_echo_ref |
-//	                                   provider_stream | crash_after_init
+//	                                   provider_stream | crash_after_init |
+	//                                   wedge_after_init
 const (
 	fakeEnvEnable     = "REASONIX_FAKE_SIDECAR"
 	fakeEnvInitResult = "REASONIX_FAKE_INIT_RESULT"
@@ -184,6 +185,15 @@ func runFakeSidecar(stdin io.Reader, stdout io.Writer) {
 					// host sees a ready handshake: an unexpected EOF (crash).
 					if modes["crash_after_init"] {
 						return
+					}
+					if modes["wedge_after_init"] {
+						// Stay alive but never read stdin again: the host's
+						// writes fill the pipe and must hit the write-stall
+						// bound, not hang. The sleep keeps a timer pending so
+						// the runtime's deadlock detector leaves us alive.
+						for {
+							time.Sleep(time.Hour)
+						}
 					}
 				case string(protocol.MethodExtensionIntercept):
 					switch {

@@ -61,6 +61,12 @@ system_prompt = "BASE SYSTEM PROMPT"
 [environment]
 enabled = false
 
+[tools.search]
+# Pin the grep engine: on "auto" the tool's description (and with it the tool
+# schemas, provider request, and cache prefix) changes depending on whether rg
+# happens to be on PATH, which would make this golden machine-dependent.
+engine = "native"
+
 [[providers]]
 name = "test-model"
 kind = "openai"

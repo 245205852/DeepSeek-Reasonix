@@ -27,6 +27,11 @@ const (
 	// queuedNotifications bounds the ordered notification queue (provider
 	// stream chunks). A full queue fails the connection rather than dropping.
 	queuedNotifications = 256
+	// defaultWriteStallBound caps any outbound write that makes no progress
+	// (sidecar alive but not reading stdin). A healthy sidecar drains frames
+	// continuously, so 10s of no progress means the reader is wedged; the
+	// connection then fails and the process is killed.
+	defaultWriteStallBound = 10 * time.Second
 	// maxInterceptTimeout is the 60s ceiling every sync-intercept budget is
 	// clamped to, including manifest overrides.
 	maxInterceptTimeout = 60 * time.Second
@@ -107,6 +112,11 @@ type ClientOptions struct {
 	UIHostKind protocol.UIHostKind
 	// HandshakeTimeout bounds extension/initialize; zero uses 30s.
 	HandshakeTimeout time.Duration
+	// WriteStallBound bounds how long any outbound write may make no progress
+	// (the sidecar is alive but has stopped reading stdin) before the
+	// connection fails and the process is killed. Zero uses 10s. Without it a
+	// wedged reader would hang intercepts, provider/UI calls, and shutdown.
+	WriteStallBound time.Duration
 }
 
 func (o *ClientOptions) validate() error {
@@ -207,6 +217,10 @@ func newClient(p *process, opts ClientOptions) *Client {
 	if handshakeTimeout <= 0 {
 		handshakeTimeout = defaultHandshakeTimeout
 	}
+	stallBound := opts.WriteStallBound
+	if stallBound <= 0 {
+		stallBound = defaultWriteStallBound
+	}
 	version := strings.TrimSpace(opts.Installed.Version)
 	if version == "" {
 		version = strings.TrimSpace(opts.Package.Manifest.Version)
@@ -231,6 +245,7 @@ func newClient(p *process, opts ClientOptions) *Client {
 		MaxOutboundBytes:       protocol.FrameBytes,
 		StrictJSONRPC:          true,
 		MaxQueuedNotifications: queuedNotifications,
+		MaxWriteStall:          stallBound,
 		BeforeRequest:          c.beforeRequest,
 		BeforeNotification:     c.beforeNotification,
 	})
@@ -256,6 +271,11 @@ func (c *Client) supervise() {
 		if crashErr == nil {
 			crashErr = errors.New("extension sidecar exited")
 		}
+		// An unexpected end can leave the process ALIVE but unreachable — a
+		// wedged reader whose pipe writes stalled out, for example. Kill the
+		// tree so it never outlives its connection; for a genuinely crashed
+		// sidecar the kill is a no-op.
+		go c.proc.kill()
 		c.crashed.Store(true)
 		if started && c.onCrash != nil {
 			c.crashOnce.Do(func() { c.onCrash(crashErr) })

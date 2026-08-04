@@ -1,6 +1,7 @@
 package acp
 
 import (
+	"context"
 	"testing"
 
 	"reasonix/internal/control"
@@ -83,7 +84,7 @@ func TestConfigStateForSessionIncludesExtensionModels(t *testing.T) {
 
 	svc := &service{}
 	sess := &acpSession{id: "sess-1", cwd: "/tmp", ctrl: ctrl}
-	state, err := svc.configStateForSession(nil, sess)
+	state, err := svc.configStateForSession(context.Background(), sess)
 	if err != nil {
 		t.Fatalf("configStateForSession: %v", err)
 	}

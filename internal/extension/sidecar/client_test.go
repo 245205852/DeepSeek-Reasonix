@@ -3,6 +3,7 @@ package sidecar
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -11,6 +12,7 @@ import (
 	"reasonix/internal/extension"
 	"reasonix/internal/extension/protocol"
 	"reasonix/internal/pluginpkg"
+	"reasonix/internal/rpcwire"
 )
 
 func TestHandshakeSuccess(t *testing.T) {
@@ -342,4 +344,34 @@ func TestStartRejectsInvalidOptions(t *testing.T) {
 	}); err == nil {
 		t.Fatal("StartClient accepted a package without a runtime")
 	}
+}
+
+// TestWriteStallKillsWedgedSidecar is the deterministic regression for the
+// host-availability review finding: a sidecar that stays alive but stops
+// reading stdin fills the pipe, and an unbounded write would hang the host
+// forever. With the write-stall bound the call fails fast, the connection
+// dies, and the process tree is killed.
+func TestWriteStallKillsWedgedSidecar(t *testing.T) {
+	client := startFakeClient(t, func(rt *pluginpkg.RuntimeSpec) {
+		rt.Env[fakeEnvMode] = "wedge_after_init"
+	}, func(opts *ClientOptions) {
+		opts.WriteStallBound = 100 * time.Millisecond
+	})
+
+	// Bypass Intercept's externalization (payloads over 64 KiB offload to
+	// content refs) so the frame itself exceeds the OS pipe buffer.
+	big := json.RawMessage(`{"pad":"` + strings.Repeat("x", 1<<20) + `"}`)
+	start := time.Now()
+	_, err := client.conn.Request(context.Background(), string(protocol.MethodExtensionIntercept), json.RawMessage(big))
+	elapsed := time.Since(start)
+	var stall *rpcwire.WriteStallError
+	if !errors.As(err, &stall) {
+		t.Fatalf("error = %v, want WriteStallError", err)
+	}
+	if elapsed > 5*time.Second {
+		t.Fatalf("stall took %s to abort, want near 100ms", elapsed)
+	}
+
+	waitFor(t, "client marked crashed", 5*time.Second, client.Crashed)
+	waitFor(t, "wedged sidecar killed", 5*time.Second, client.Exited)
 }

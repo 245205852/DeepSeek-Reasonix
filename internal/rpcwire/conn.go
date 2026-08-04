@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"sync"
 	"sync/atomic"
+	"time"
 )
 
 // RequestHandler answers an inbound JSON-RPC request.
@@ -65,6 +66,12 @@ type Options struct {
 	// by JSON-RPC, while allowing a protocol to poison transport-local state.
 	// The nil default preserves existing protocol behavior.
 	BeforeNotification func(method string, params json.RawMessage) error
+	// MaxWriteStall bounds how long a single outbound write may make no
+	// progress (the peer keeps the pipe open but has stopped reading) before
+	// the connection fails with WriteStallError. Non-positive disables the
+	// bound, preserving the historical block-forever behavior; stdio peers
+	// should always set it, since a wedged child otherwise hangs every caller.
+	MaxWriteStall time.Duration
 }
 
 // Conn is one bidirectional JSON-RPC 2.0 connection framed as NDJSON.
@@ -394,7 +401,7 @@ func (c *Conn) serveRequest(ctx context.Context, id json.RawMessage, method stri
 		c.runAfterWrite(afterWrite, err)
 		return
 	}
-	writeErr := c.write(outbound{JSONRPC: "2.0", ID: id, Result: raw})
+	writeErr := c.write(nil, outbound{JSONRPC: "2.0", ID: id, Result: raw})
 	if writeErr != nil {
 		var tooLarge *FrameTooLargeError
 		if errors.As(writeErr, &tooLarge) {
@@ -457,7 +464,7 @@ func (c *Conn) Notify(method string, params any) error {
 	if err != nil {
 		return err
 	}
-	err = c.write(outbound{JSONRPC: "2.0", Method: method, Params: raw})
+	err = c.write(nil, outbound{JSONRPC: "2.0", Method: method, Params: raw})
 	if err != nil {
 		var tooLarge *FrameTooLargeError
 		if !errors.As(err, &tooLarge) {
@@ -495,9 +502,13 @@ func (c *Conn) Request(ctx context.Context, method string, params any) (json.Raw
 	}()
 
 	idRaw, _ := json.Marshal(id)
-	if err := c.write(outbound{JSONRPC: "2.0", ID: idRaw, Method: method, Params: raw}); err != nil {
+	if err := c.write(ctx, outbound{JSONRPC: "2.0", ID: idRaw, Method: method, Params: raw}); err != nil {
 		var tooLarge *FrameTooLargeError
-		if !errors.As(err, &tooLarge) {
+		// A caller-context abort (turn cancel, per-call timeout) fails only
+		// this request — the connection stays usable. Genuine transport
+		// failures, including a write that stalled past MaxWriteStall, fail
+		// the connection so a wedged peer is torn down.
+		if !errors.As(err, &tooLarge) && !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
 			c.fail(err)
 		}
 		return nil, err
@@ -510,7 +521,7 @@ func (c *Conn) Request(ctx context.Context, method string, params any) (json.Raw
 	}
 }
 
-func (c *Conn) write(m outbound) error {
+func (c *Conn) write(ctx context.Context, m outbound) error {
 	var buf bytes.Buffer
 	enc := json.NewEncoder(&buf)
 	enc.SetEscapeHTML(false)
@@ -523,7 +534,7 @@ func (c *Conn) write(m outbound) error {
 	c.wmu.Lock()
 	defer c.wmu.Unlock()
 	for buf.Len() > 0 {
-		n, err := c.w.Write(buf.Bytes())
+		n, err := c.writeChunk(ctx, buf.Bytes())
 		if err != nil {
 			return err
 		}
@@ -533,6 +544,43 @@ func (c *Conn) write(m outbound) error {
 		buf.Next(n)
 	}
 	return nil
+}
+
+// writeChunk performs one write with the caller's context, connection
+// closure, and the optional absolute stall bound all able to abort it. The
+// stalled goroutine (when the bound fires while the underlying Write is still
+// blocked) is freed once the connection teardown closes the transport — for
+// stdio peers that means the owning sidecar kills the child process.
+func (c *Conn) writeChunk(ctx context.Context, b []byte) (int, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if ctx.Done() == nil && c.opts.MaxWriteStall <= 0 {
+		return c.w.Write(b)
+	}
+	type writeResult struct {
+		n   int
+		err error
+	}
+	resCh := make(chan writeResult, 1)
+	go func() {
+		n, err := c.w.Write(b)
+		resCh <- writeResult{n, err}
+	}()
+	var stall <-chan time.Time
+	if c.opts.MaxWriteStall > 0 {
+		timer := time.NewTimer(c.opts.MaxWriteStall)
+		defer timer.Stop()
+		stall = timer.C
+	}
+	select {
+	case r := <-resCh:
+		return r.n, r.err
+	case <-ctx.Done():
+		return 0, ctx.Err()
+	case <-stall:
+		return 0, &WriteStallError{Direction: "outbound", Size: len(b), Stall: c.opts.MaxWriteStall}
+	}
 }
 
 func (c *Conn) writeError(id json.RawMessage, code int, message string, data any) error {
@@ -546,7 +594,7 @@ func (c *Conn) writeError(id json.RawMessage, code int, message string, data any
 			raw = encoded
 		}
 	}
-	return c.write(outbound{JSONRPC: "2.0", ID: id, Error: &ErrorObject{Code: code, Message: message, Data: raw}})
+	return c.write(nil, outbound{JSONRPC: "2.0", ID: id, Error: &ErrorObject{Code: code, Message: message, Data: raw}})
 }
 
 func (c *Conn) respondError(id json.RawMessage, code int, message string, data any) {

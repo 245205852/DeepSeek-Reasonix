@@ -6,6 +6,7 @@ package rpcwire
 import (
 	"encoding/json"
 	"fmt"
+	"time"
 )
 
 // Standard JSON-RPC 2.0 error codes.
@@ -70,4 +71,19 @@ type FrameTooLargeError struct {
 
 func (e *FrameTooLargeError) Error() string {
 	return fmt.Sprintf("rpcwire: %s frame is %d bytes; limit is %d", e.Direction, e.Size, e.Limit)
+}
+
+// WriteStallError reports an outbound write that made no progress within the
+// configured MaxWriteStall bound: the peer is alive enough to keep the pipe
+// open but has stopped reading, so without a bound the write would block the
+// caller forever. It is a transport-fatal error — the connection fails so a
+// wedged peer is torn down instead of stalling every later call.
+type WriteStallError struct {
+	Direction string
+	Size      int
+	Stall     time.Duration
+}
+
+func (e *WriteStallError) Error() string {
+	return fmt.Sprintf("rpcwire: %s write of %d bytes made no progress for %s", e.Direction, e.Size, e.Stall)
 }

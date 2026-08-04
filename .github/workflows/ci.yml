@@ -197,7 +197,7 @@ jobs:
         if: github.event_name == 'pull_request'
         env:
           REASONIX_RELEASE_CACHE_GUARD: "1"
-        run: go test -race ./internal/agent/... ./internal/plugin/... ./internal/jobs/... ./internal/proc/... ./internal/sandbox/... ./internal/filelock/... ./internal/eventwire/... ./internal/remote/...
+        run: go test -race ./internal/agent/... ./internal/plugin/... ./internal/jobs/... ./internal/proc/... ./internal/sandbox/... ./internal/filelock/... ./internal/eventwire/... ./internal/remote/... ./internal/extension/... ./internal/boot/... ./internal/control/... ./internal/tool/...
 
       - name: test -race (full)
         if: github.event_name != 'pull_request'
@@ -233,6 +233,7 @@ jobs:
 
       - name: gofmt
         if: env.RUN_STEPS == 'true'
+        shell: bash
         run: |
           unformatted=$(gofmt -l .)
           if [ -n "$unformatted" ]; then
@@ -247,6 +248,7 @@ jobs:
 
       - name: stdlib-only guard
         if: env.RUN_STEPS == 'true'
+        shell: bash
         run: |
           # The SDK is a public module with a hard stdlib-only contract.
           if go list -m all | grep -v '^github.com/esengine/DeepSeek-Reasonix/sdk/go$'; then
@@ -345,6 +347,12 @@ jobs:
 
       - name: test
         run: go test ./...
+
+      # The extension work added new shared-state paths to the desktop
+      # runtime (tab/rebuild fences, extension UI). Race-sweep the module so
+      # regressions are CI-blocked, not just author-verified locally.
+      - name: test -race
+        run: go test -race ./...
 
   # desktop/ is a separate module, so the root macOS matrix above does not
   # compile or exercise the native PTY implementation.

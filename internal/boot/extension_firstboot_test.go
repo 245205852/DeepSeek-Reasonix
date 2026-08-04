@@ -9,7 +9,6 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
-	"syscall"
 	"testing"
 	"time"
 
@@ -231,16 +230,6 @@ func readFakePID(t *testing.T, path string) int {
 		return err == nil && pid > 0
 	})
 	return pid
-}
-
-// pidAlive reports whether pid still exists (zombies count as alive: the
-// process table entry only disappears once the host reaps it).
-func pidAlive(pid int) bool {
-	if pid <= 0 {
-		return false
-	}
-	err := syscall.Kill(pid, 0)
-	return !errors.Is(err, syscall.ESRCH)
 }
 
 // TestBootRequiredExitLeavesNoSidecarProcess: a required sidecar that exits

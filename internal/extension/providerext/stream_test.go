@@ -661,3 +661,36 @@ func TestConcurrentStreamsOnOneSidecar(t *testing.T) {
 		}
 	}
 }
+
+// TestStreamPendingWindowOverflowInterrupts: a sidecar emitting ever-higher
+// sequences without the missing next chunk must not grow the pending buffer
+// without bound — the stream fails interrupted once the sequence window is
+// exceeded.
+func TestStreamPendingWindowOverflowInterrupts(t *testing.T) {
+	fc := newFakeClient("demo", demoDescriptor())
+	r := testResolver(t, baseCatalog(), nil, fc)
+	out, id := openTestStream(t, r, fc, nil)
+
+	r.RouteStreamChunk(protocol.StreamChunkParams{StreamID: id, Seq: 1, Chunk: textChunk("first")})
+	// Seqs 2..256 sit inside the pending window; none is delivered while seq
+	// 2 is missing... feed a gap first: seq 3 skips 2, so nextSeq stalls.
+	for seq := int64(3); seq <= pendingWindowLimit+1; seq++ {
+		r.RouteStreamChunk(protocol.StreamChunkParams{StreamID: id, Seq: seq, Chunk: textChunk("gap")})
+	}
+	select {
+	case chunk := <-out:
+		if chunk.Type != provider.ChunkText {
+			t.Fatalf("unexpected early terminal chunk: %+v", chunk)
+		}
+	case <-time.After(50 * time.Millisecond):
+		t.Fatal("seq 1 should have been delivered immediately")
+	}
+	// The first chunk beyond the window terminates the stream.
+	r.RouteStreamChunk(protocol.StreamChunkParams{StreamID: id, Seq: pendingWindowLimit + 2, Chunk: textChunk("overflow")})
+
+	chunks := collectChunks(t, out)
+	last := chunks[len(chunks)-1]
+	if last.Type != provider.ChunkError || !provider.IsStreamInterrupted(last.Err) {
+		t.Fatalf("terminal chunk = %+v, want interrupted error", last)
+	}
+}

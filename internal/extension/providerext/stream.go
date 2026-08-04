@@ -42,6 +42,13 @@ type extensionStream struct {
 // terminal chunk; mirroring the broker's hostDeliveryQueueLimit.
 const deliveryQueueLimit = 256
 
+// pendingWindowLimit bounds out-of-order buffering: chunks with a sequence at
+// or beyond nextSeq+pendingWindowLimit never enter pending. A sidecar with a
+// sequencing bug (emitting ever-higher seqs without the missing one or an
+// end) must not grow host memory without limit — the stream is failed
+// interrupted instead.
+const pendingWindowLimit = 256
+
 // RouteStreamChunk implements sidecar.StreamRouter. Unknown stream IDs are
 // dropped with a debug log — a sidecar can legitimately race a late chunk
 // against the host's cancel or its own crash teardown.
@@ -55,6 +62,12 @@ func (r *Resolver) RouteStreamChunk(p protocol.StreamChunkParams) {
 	}
 	if p.Seq < stream.nextSeq {
 		return // duplicate or already delivered
+	}
+	if p.Seq >= stream.nextSeq+pendingWindowLimit {
+		r.finishLocked(p.StreamID, stream, provider.Chunk{Type: provider.ChunkError, Err: &provider.StreamInterruptedError{
+			Err: fmt.Errorf("extension stream %s: chunk seq %d exceeds the pending window of stream seq %d", p.StreamID, p.Seq, stream.nextSeq),
+		}})
+		return
 	}
 	stream.pending[p.Seq] = providerconv.ChunkFromProtocol(p.Chunk)
 	r.flushLocked(p.StreamID, stream)

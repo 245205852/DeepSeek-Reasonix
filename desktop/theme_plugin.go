@@ -254,13 +254,8 @@ func servePluginThemeAsset(w http.ResponseWriter, r *http.Request, pluginName, t
 		http.NotFound(w, r)
 		return
 	}
-	declared := false
-	if pt.manifest.Background != nil && pt.manifest.Background.Image == filename {
-		declared = true
-	}
-	if pt.manifest.TaskBackground != nil && pt.manifest.TaskBackground.Image == filename {
-		declared = true
-	}
+	declared := pt.manifest.Background != nil && pt.manifest.Background.Image == filename ||
+		pt.manifest.TaskBackground != nil && pt.manifest.TaskBackground.Image == filename
 	if !declared {
 		http.NotFound(w, r)
 		return
