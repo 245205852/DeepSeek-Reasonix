@@ -310,8 +310,14 @@ func messagesToInput(messages []provider.Message) []map[string]any {
 			input = append(input, map[string]any{"role": string(message.Role), "content": message.Content})
 		case provider.RoleAssistant:
 			if message.ReasoningContent != "" {
+				// DashScope's Responses API requires a `summary` list on
+				// reasoning items (OpenAI's format only needs `content`).
+				// Without it the server rejects with
+				// "Invalid 'summary': summary is required and must be a list
+				// for reasoning."
 				input = append(input, map[string]any{
 					"type":    "reasoning",
+					"summary": []map[string]string{{"type": "summary_text", "text": message.ReasoningContent}},
 					"content": []map[string]string{{"type": "reasoning_text", "text": message.ReasoningContent}},
 				})
 			}
@@ -516,8 +522,21 @@ func (c *client) readStream(ctx context.Context, resp *http.Response, out chan<-
 					default:
 						usage.FinishReason = "incomplete"
 					}
+				} else if event.Type == "response.completed" && usage.FinishReason == "" {
+					// A completed response finished normally (stop). Preserve any
+					// vendor-specific reason already set by usageFromResponse.
+					usage.FinishReason = "stop"
 				}
-				if event.Response.Usage != nil || usage.FinishReason != "" {
+				// DashScope occasionally reports a completed event whose usage
+				// object exists but is all zeros (server-side reporting gap; the
+				// tokens were actually billed). Emitting that as ChunkUsage
+				// would corrupt cache-ratio and cost accounting with a spurious
+				// zero record, so only emit when there is real data or a reason.
+				// Zero-token usage records carry no accounting value; suppress
+				// them even when FinishReason was synthesized to "stop". An
+				// abnormal termination reason (length/content_filter/...) is
+				// still surfaced so the agent can report the truncation.
+				if usage.TotalTokens > 0 || (usage.FinishReason != "" && usage.FinishReason != "stop") {
 					if !sendChunk(ctx, out, provider.Chunk{Type: provider.ChunkUsage, Usage: usage}) {
 						return
 					}
