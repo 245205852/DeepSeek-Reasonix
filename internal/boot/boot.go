@@ -156,6 +156,10 @@ type Options struct {
 	// local UI metadata to automatic transcript recovery branches.
 	SessionRecoveryMeta func(control.SessionRecoveryRequest) agent.BranchMeta
 	OnSessionRecovered  func(control.SessionRecoveryInfo) error
+	// SubagentParentLive reports whether this process currently owns or is
+	// building the parent session. Desktop uses it to avoid probing a live tab's
+	// lease during stale-subagent cleanup. Nil preserves lease-only cleanup.
+	SubagentParentLive func(sessionPath string) bool
 	// FileOverlay and TerminalRunner let a host transport (ACP) serve file
 	// content from editor buffers and run foreground bash in a host terminal.
 	// Both only change where tool I/O happens — tool names, descriptions, and
@@ -738,7 +742,7 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 	if opts.MaxSteps > 0 {
 		maxSteps = opts.MaxSteps
 	}
-	subagentStore, err := newSubagentStore(sessionDir)
+	subagentStore, err := newSubagentStore(sessionDir, opts.SubagentParentLive)
 	if err != nil {
 		return nil, err
 	}
@@ -1617,11 +1621,17 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 	// Coordinator with its own session, kept separate for cache stability. The
 	// planner gets the same standing memory context and a filtered read-only
 	// research tool set, so it can inspect rules/code without side effects.
-	if pm := effectivePlannerModel(cfg, opts, tokenEconomy); pm != "" {
-		pe, ok := resolveOptionalEntry(opts, cfg, pm)
-		if !ok {
-			return nil, fmt.Errorf("planner_model %q is not a configured provider", pm)
-		}
+	pm := effectivePlannerModel(cfg, opts, tokenEconomy)
+	pe, plannerResolved := resolveOptionalEntry(opts, cfg, pm)
+	if pm != "" && !plannerResolved {
+		// An unusable optional planner must not take the session down with it —
+		// the executor is what the user talks to. Degrades like the guardian
+		// model below (#4615).
+		slog.Warn("planner model is not a configured provider — planning disabled", "model", pm)
+		sink.Emit(event.Event{Kind: event.Notice, Level: event.LevelWarn,
+			Text: fmt.Sprintf("planner_model %q is not a configured provider — continuing with the executor alone", pm)})
+	}
+	if pm != "" && plannerResolved {
 		if pe.Model != entry.Model {
 			plannerProv, err := resolveProvider(opts, cfg, proxySpec, provider.Selection{Ref: modelRefFromEntry(pe)})
 			if err != nil {
@@ -2182,12 +2192,12 @@ func isGitMarker(path string) bool {
 	return err == nil && (fi.IsDir() || fi.Mode().IsRegular())
 }
 
-func newSubagentStore(sessionDir string) (*agent.SubagentStore, error) {
+func newSubagentStore(sessionDir string, parentLive func(sessionPath string) bool) (*agent.SubagentStore, error) {
 	sessionDir = strings.TrimSpace(sessionDir)
 	if sessionDir == "" {
 		return nil, nil
 	}
-	store := agent.NewSubagentStore(filepath.Join(sessionDir, "subagents"))
+	store := agent.NewSubagentStore(filepath.Join(sessionDir, "subagents")).WithParentSessionProbe(parentLive)
 	if _, err := store.CleanupStaleRunning(); err != nil {
 		return nil, fmt.Errorf("cleanup stale subagents: %w", err)
 	}

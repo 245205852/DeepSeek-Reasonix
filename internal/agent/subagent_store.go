@@ -122,8 +122,9 @@ func EphemeralSubagentRun(systemPrompt string) *SubagentRun {
 // SubagentStore persists sub-agent transcripts under config.SessionDir()/subagents.
 // Its locks are process-local; cross-process mutation is intentionally out of v1.
 type SubagentStore struct {
-	dir       string
-	destroyed func(parentSession string) bool
+	dir                string
+	destroyed          func(parentSession string) bool
+	parentSessionProbe func(sessionPath string) bool
 
 	// cleanupBeforeReread is a test seam for deterministic lease interleavings.
 	cleanupBeforeReread func(parentSession, ref string)
@@ -145,6 +146,17 @@ func NewSubagentStore(dir string) *SubagentStore {
 func (s *SubagentStore) WithDestroyedChecker(fn func(parentSession string) bool) *SubagentStore {
 	if s != nil {
 		s.destroyed = fn
+	}
+	return s
+}
+
+// WithParentSessionProbe installs a process-local liveness check used before
+// stale cleanup probes a parent transcript lease. Desktop supplies this for
+// tabs and builds that are live before their durable lease is bound. A nil
+// probe preserves the lease-only behavior used by CLI and server frontends.
+func (s *SubagentStore) WithParentSessionProbe(fn func(sessionPath string) bool) *SubagentStore {
+	if s != nil {
+		s.parentSessionProbe = fn
 	}
 	return s
 }
@@ -228,10 +240,29 @@ func (s *SubagentStore) CleanupStaleRunning() (int, error) {
 	if s == nil {
 		return 0, nil
 	}
-	entries, err := os.ReadDir(s.dir)
+	// On Windows, os.ReadDir can report ERROR_DIRECTORY as an IsNotExist
+	// error when the store path exists but is a regular file. Check the leaf
+	// first so a malformed store remains a startup error instead of being
+	// mistaken for an absent store.
+	info, err := os.Stat(s.dir)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return 0, nil
+		}
+		return 0, err
+	}
+	if !info.IsDir() {
+		return 0, fmt.Errorf("subagent store path %q is not a directory", s.dir)
+	}
+	entries, err := os.ReadDir(s.dir)
+	if err != nil {
+		// Windows reports a non-directory at this path as ENOENT, so a plain
+		// IsNotExist check would silently accept a corrupt store instead of
+		// surfacing it. Only treat it as "no store yet" when nothing is there.
+		if os.IsNotExist(err) {
+			if _, statErr := os.Lstat(s.dir); statErr != nil {
+				return 0, nil
+			}
 		}
 		return 0, err
 	}
@@ -287,6 +318,9 @@ func (s *SubagentStore) CleanupStaleRunning() (int, error) {
 	cleaned := 0
 	for _, parentID := range parentIDs {
 		parent := parents[parentID]
+		if s.parentSessionProbe != nil && s.parentSessionProbe(parent.sessionPath) {
+			continue
+		}
 		lease, err := TryAcquireSessionLease(parent.sessionPath)
 		if errors.Is(err, ErrSessionLeaseHeld) {
 			continue
