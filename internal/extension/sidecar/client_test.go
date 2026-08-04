@@ -375,3 +375,44 @@ func TestWriteStallKillsWedgedSidecar(t *testing.T) {
 	waitFor(t, "client marked crashed", 5*time.Second, client.Crashed)
 	waitFor(t, "wedged sidecar killed", 5*time.Second, client.Exited)
 }
+
+// TestWriteStallWatchdogOutlivesCallerTimeout: a per-call timeout shorter
+// than the stall bound aborts only that call — the stall watchdog is an
+// independent absolute bound that still fails the connection and kills the
+// wedged sidecar afterwards. (Review finding: a 5s intercept ctx must not
+// preempt the 10s stall watchdog.)
+func TestWriteStallWatchdogOutlivesCallerTimeout(t *testing.T) {
+	client := startFakeClient(t, func(rt *pluginpkg.RuntimeSpec) {
+		rt.Env[fakeEnvMode] = "wedge_after_init"
+	}, func(opts *ClientOptions) {
+		opts.WriteStallBound = 300 * time.Millisecond
+	})
+
+	big := json.RawMessage(`{"pad":"` + strings.Repeat("x", 1<<20) + `"}`)
+	// Primer: a background-context request whose frame wedges the single
+	// writer for good (the fake never reads). Its write cannot be cancelled,
+	// so the stall watchdog has an active write to trip on.
+	go func() {
+		_, _ = client.conn.Request(context.Background(), string(protocol.MethodExtensionIntercept), big)
+	}()
+	// The timed call cancels fast — but the primer's write outlives it, and
+	// the 300ms stall watchdog still fires: the connection dies and the
+	// wedged process is killed. The caller timeout did not preempt it.
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() {
+		time.Sleep(200 * time.Millisecond)
+		cancel()
+	}()
+	start := time.Now()
+	_, err := client.conn.Request(ctx, string(protocol.MethodExtensionIntercept), big)
+	elapsed := time.Since(start)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("error = %v, want context.Canceled", err)
+	}
+	if elapsed > 3*time.Second {
+		t.Fatalf("caller cancel took %s, want near 200ms", elapsed)
+	}
+
+	waitFor(t, "client marked crashed after caller cancel", 10*time.Second, client.Crashed)
+	waitFor(t, "wedged sidecar killed after caller cancel", 10*time.Second, client.Exited)
+}

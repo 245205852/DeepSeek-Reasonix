@@ -11,6 +11,7 @@ import (
 
 	"reasonix/internal/agent"
 	"reasonix/internal/control"
+	"reasonix/internal/secrets"
 )
 
 // deferredRebuildRetryInterval is how often the retry loop probes a held
@@ -288,10 +289,19 @@ func (a *App) retryDeferredRuntimeReload(tabID string, tab *WorkspaceTab) {
 		return // a turn started meanwhile; retry once it finishes
 	}
 	// Anything else will not resolve by waiting; give up loudly instead of
-	// retrying forever.
+	// retrying forever. The error may come from provider/config plumbing and
+	// carry credential-shaped values (passwords, resolved API keys) — redact
+	// before it reaches logs or the frontend.
+	redacted := secrets.RedactCredentials(err.Error())
 	a.clearDeferredRebuild(tabID)
-	slog.Warn("desktop: deferred runtime reload failed", "tab", tabID, "err", err)
-	a.warnForTab(tabID, fmt.Sprintf("runtime reload failed: %s", err.Error()))
+	slog.Warn("desktop: deferred runtime reload failed", "tab", tabID, "err", redacted)
+	a.warnForTab(tabID, "runtime reload failed: "+redacted)
+}
+
+// deferredReloadFailedText is the user-visible failure line for an
+// unrecoverable deferred reload, credential-redacted by construction.
+func deferredReloadFailedText(err error) string {
+	return "runtime reload failed: " + secrets.RedactCredentials(err.Error())
 }
 
 func (a *App) retryDeferredStartupBuild(tabID string, tab *WorkspaceTab) {

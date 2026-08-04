@@ -24,15 +24,15 @@ import (
 // binary re-executes itself with REASONIX_FAKE_SIDECAR=1 and speaks the real
 // Extension Protocol v1 over stdin/stdout. Behavior is steered through env:
 //
-//	REASONIX_FAKE_SIDECAR=1            enable the helper
-//	REASONIX_FAKE_INIT_RESULT          raw JSON InitializeResult to answer with
-//	REASONIX_FAKE_MODE                 comma-separated behavior flags:
-//	                                   early_request | early_notify |
-//	                                   ignore_shutdown | stall_intercept |
-//	                                   block_intercept | stderr_flood |
-//	                                   content_roundtrip | content_echo_ref |
-//	                                   provider_stream | crash_after_init |
-	//                                   wedge_after_init
+//		REASONIX_FAKE_SIDECAR=1            enable the helper
+//		REASONIX_FAKE_INIT_RESULT          raw JSON InitializeResult to answer with
+//		REASONIX_FAKE_MODE                 comma-separated behavior flags:
+//		                                   early_request | early_notify |
+//		                                   ignore_shutdown | stall_intercept |
+//		                                   block_intercept | stderr_flood |
+//		                                   content_roundtrip | content_echo_ref |
+//		                                   provider_stream | crash_after_init |
+//	                                  wedge_after_init
 const (
 	fakeEnvEnable     = "REASONIX_FAKE_SIDECAR"
 	fakeEnvInitResult = "REASONIX_FAKE_INIT_RESULT"

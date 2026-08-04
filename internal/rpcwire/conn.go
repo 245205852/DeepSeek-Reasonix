@@ -80,7 +80,14 @@ type Conn struct {
 	w    io.Writer
 	opts Options
 
-	wmu sync.Mutex
+	// Exactly one writer goroutine owns w, fed by the bounded writeQ, so two
+	// frames can never interleave on the transport — even when a caller's
+	// context aborts mid-flight. writeActive/writeProgress back the optional
+	// stall watchdog (MaxWriteStall): a physical write making no progress for
+	// the bound fails the connection.
+	writeQ        chan writeJob
+	writeActive   atomic.Bool
+	writeProgress atomic.Int64
 
 	nextID atomic.Int64
 
@@ -146,9 +153,14 @@ func NewConn(r io.Reader, w io.Writer, opts Options) *Conn {
 		notH:         make(map[string]NotificationHandler),
 		closed:       make(chan struct{}),
 		handlerSlots: make(chan struct{}, opts.MaxConcurrentHandlers),
+		writeQ:       make(chan writeJob, writeQueueLimit),
 	}
 	if opts.MaxQueuedNotifications > 0 {
 		conn.notifyQueue = make(chan notificationCall, opts.MaxQueuedNotifications)
+	}
+	go conn.writerLoop()
+	if opts.MaxWriteStall > 0 {
+		go conn.stallWatchdog()
 	}
 	return conn
 }
@@ -401,7 +413,7 @@ func (c *Conn) serveRequest(ctx context.Context, id json.RawMessage, method stri
 		c.runAfterWrite(afterWrite, err)
 		return
 	}
-	writeErr := c.write(nil, outbound{JSONRPC: "2.0", ID: id, Result: raw})
+	writeErr := c.write(context.Background(), outbound{JSONRPC: "2.0", ID: id, Result: raw})
 	if writeErr != nil {
 		var tooLarge *FrameTooLargeError
 		if errors.As(writeErr, &tooLarge) {
@@ -464,7 +476,7 @@ func (c *Conn) Notify(method string, params any) error {
 	if err != nil {
 		return err
 	}
-	err = c.write(nil, outbound{JSONRPC: "2.0", Method: method, Params: raw})
+	err = c.write(context.Background(), outbound{JSONRPC: "2.0", Method: method, Params: raw})
 	if err != nil {
 		var tooLarge *FrameTooLargeError
 		if !errors.As(err, &tooLarge) {
@@ -531,55 +543,139 @@ func (c *Conn) write(ctx context.Context, m outbound) error {
 	if limit := c.opts.MaxOutboundBytes; limit > 0 && buf.Len() > limit {
 		return &FrameTooLargeError{Direction: "outbound", Size: buf.Len(), Limit: limit}
 	}
-	c.wmu.Lock()
-	defer c.wmu.Unlock()
-	for buf.Len() > 0 {
-		n, err := c.writeChunk(ctx, buf.Bytes())
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	job := writeJob{frame: buf.Bytes(), ctx: ctx, res: make(chan error, 1)}
+	select {
+	case c.writeQ <- job:
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-c.closed:
+		return c.terminalError()
+	}
+	select {
+	case err := <-job.res:
+		return err
+	case <-ctx.Done():
+		// The caller gave up: the writer loop will skip the frame if it has
+		// not physically started, or finish it serially if it has — the
+		// transport never sees a torn or interleaved frame.
+		return ctx.Err()
+	case <-c.closed:
+		// A completed write may race the connection's teardown; the buffered
+		// result is already there when that happened, so prefer it over the
+		// terminal error (the response-close regression class).
+		select {
+		case err := <-job.res:
+			return err
+		default:
+		}
+		return c.terminalError()
+	}
+}
+
+// writeQueueLimit bounds queued outbound frames per connection. A wedged
+// peer fills the queue and then the stall watchdog fails the connection;
+// senders never block unboundedly behind it.
+const writeQueueLimit = 256
+
+// writeJob is one outbound frame awaiting the single writer goroutine.
+type writeJob struct {
+	frame []byte
+	ctx   context.Context // pre-write cancellation only
+	res   chan error      // buffered 1
+}
+
+// writerLoop is the ONLY writer of c.w. It drains the queue in order, skips
+// frames whose caller already gave up before the physical write began, and
+// finishes any frame it started — frames are atomic and ordered by
+// construction. On connection close it fails everything still queued.
+func (c *Conn) writerLoop() {
+	for {
+		select {
+		case job := <-c.writeQ:
+			if job.ctx != nil {
+				if err := job.ctx.Err(); err != nil {
+					job.res <- err
+					continue
+				}
+			}
+			err := c.writeAll(job.frame)
+			if err != nil {
+				// When the connection is already terminal, report the root
+				// cause (e.g. the stall watchdog's WriteStallError) rather
+				// than its side effect — a transport closing underneath an
+				// in-flight write surfaces as a plain closed-pipe error.
+				select {
+				case <-c.closed:
+					if terminal := c.terminalError(); terminal != nil {
+						err = terminal
+					}
+				default:
+				}
+				c.fail(err)
+			}
+			job.res <- err
+		case <-c.closed:
+			for {
+				select {
+				case job := <-c.writeQ:
+					job.res <- c.terminalError()
+				default:
+					return
+				}
+			}
+		}
+	}
+}
+
+// writeAll serially writes one frame, marking activity for the stall
+// watchdog before every blocking Write. It only returns on completion or a
+// transport error — caller cancellation never tears a frame in half.
+func (c *Conn) writeAll(b []byte) error {
+	for len(b) > 0 {
+		c.writeProgress.Store(time.Now().UnixNano())
+		c.writeActive.Store(true)
+		n, err := c.w.Write(b)
+		c.writeActive.Store(false)
 		if err != nil {
 			return err
 		}
 		if n == 0 {
 			return io.ErrShortWrite
 		}
-		buf.Next(n)
+		b = b[n:]
 	}
 	return nil
 }
 
-// writeChunk performs one write with the caller's context, connection
-// closure, and the optional absolute stall bound all able to abort it. The
-// stalled goroutine (when the bound fires while the underlying Write is still
-// blocked) is freed once the connection teardown closes the transport — for
-// stdio peers that means the owning sidecar kills the child process.
-func (c *Conn) writeChunk(ctx context.Context, b []byte) (int, error) {
-	if ctx == nil {
-		ctx = context.Background()
+// stallWatchdog fails the connection when a physical write makes no progress
+// for MaxWriteStall: the peer is alive enough to hold the pipe open but has
+// stopped reading, and without a bound every later frame would queue behind
+// it forever. The watchdog is deliberately independent of any caller
+// context, so a short per-call timeout cannot preempt it.
+func (c *Conn) stallWatchdog() {
+	interval := c.opts.MaxWriteStall / 2
+	if interval <= 0 {
+		interval = time.Millisecond
 	}
-	if ctx.Done() == nil && c.opts.MaxWriteStall <= 0 {
-		return c.w.Write(b)
-	}
-	type writeResult struct {
-		n   int
-		err error
-	}
-	resCh := make(chan writeResult, 1)
-	go func() {
-		n, err := c.w.Write(b)
-		resCh <- writeResult{n, err}
-	}()
-	var stall <-chan time.Time
-	if c.opts.MaxWriteStall > 0 {
-		timer := time.NewTimer(c.opts.MaxWriteStall)
-		defer timer.Stop()
-		stall = timer.C
-	}
-	select {
-	case r := <-resCh:
-		return r.n, r.err
-	case <-ctx.Done():
-		return 0, ctx.Err()
-	case <-stall:
-		return 0, &WriteStallError{Direction: "outbound", Size: len(b), Stall: c.opts.MaxWriteStall}
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ticker.C:
+			if !c.writeActive.Load() {
+				continue
+			}
+			last := time.Unix(0, c.writeProgress.Load())
+			if time.Since(last) > c.opts.MaxWriteStall {
+				c.fail(&WriteStallError{Direction: "outbound", Stall: c.opts.MaxWriteStall})
+				return
+			}
+		case <-c.closed:
+			return
+		}
 	}
 }
 
@@ -594,7 +690,7 @@ func (c *Conn) writeError(id json.RawMessage, code int, message string, data any
 			raw = encoded
 		}
 	}
-	return c.write(nil, outbound{JSONRPC: "2.0", ID: id, Error: &ErrorObject{Code: code, Message: message, Data: raw}})
+	return c.write(context.Background(), outbound{JSONRPC: "2.0", ID: id, Error: &ErrorObject{Code: code, Message: message, Data: raw}})
 }
 
 func (c *Conn) respondError(id json.RawMessage, code int, message string, data any) {
