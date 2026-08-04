@@ -7607,7 +7607,7 @@ func (a *App) Commands() []CommandInfo {
 			}
 			out = append(out, CommandInfo{Name: item.Name, Description: item.Description, Kind: kind, Group: group})
 		}
-		return out
+		return resolveDocsCommand(out)
 	}
 	a.mu.RLock()
 	ctrl := a.activeCtrlLocked()
@@ -7639,6 +7639,37 @@ func (a *App) Commands() []CommandInfo {
 	if h := ctrl.Host(); h != nil {
 		for _, p := range h.Prompts() {
 			out = append(out, CommandInfo{Name: p.Name, Description: p.Description, Kind: "mcp", Group: "integrations"})
+		}
+	}
+	return resolveDocsCommand(out)
+}
+
+func resolveDocsCommand(commands []CommandInfo) []CommandInfo {
+	winner := -1
+	winnerRank := -1
+	for i, cmd := range commands {
+		if cmd.Name != "docs" {
+			continue
+		}
+		rank := 0
+		switch cmd.Kind {
+		case "custom":
+			rank = 2
+		case "skill", "subagent":
+			rank = 1
+		}
+		if rank > winnerRank {
+			winner = i
+			winnerRank = rank
+		}
+	}
+	if winner < 0 {
+		return commands
+	}
+	out := make([]CommandInfo, 0, len(commands))
+	for i, cmd := range commands {
+		if cmd.Name != "docs" || i == winner {
+			out = append(out, cmd)
 		}
 	}
 	return out

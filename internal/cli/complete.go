@@ -9,6 +9,7 @@ import (
 
 	"charm.land/lipgloss/v2"
 
+	"reasonix/internal/command"
 	"reasonix/internal/control"
 	"reasonix/internal/fileref"
 	"reasonix/internal/i18n"
@@ -60,7 +61,11 @@ const (
 // slashItems is the full set of slash commands offered for completion: the
 // built-in verbs, custom commands, skills (each as "/<name>"), and MCP prompts.
 func (m *chatTUI) slashItems() []compItem {
+	docsOwner := docsSlashRuntimeOwner(m.commands, m.skills)
 	items := builtinSlashItems()
+	if docsOwner != docsSlashBuiltin {
+		items = removeSlashItems(items, "/docs")
+	}
 	for _, c := range m.commands {
 		if c.Hidden {
 			continue
@@ -68,6 +73,9 @@ func (m *chatTUI) slashItems() []compItem {
 		items = append(items, compItem{label: "/" + c.Name, insert: "/" + c.Name + " ", hint: customCommandHint(c)})
 	}
 	for _, s := range m.skills {
+		if docsOwner == docsSlashCustom && s.SlashName() == "docs" {
+			continue
+		}
 		hint := s.Description
 		if s.RunAs == skill.RunSubagent {
 			hint = "🧬 " + hint
@@ -78,6 +86,40 @@ func (m *chatTUI) slashItems() []compItem {
 		items = append(items, compItem{label: "/" + p.Name, insert: "/" + p.Name + " ", hint: p.Description})
 	}
 	return items
+}
+
+type docsSlashOwner uint8
+
+const (
+	docsSlashBuiltin docsSlashOwner = iota
+	docsSlashSkill
+	docsSlashCustom
+)
+
+func docsSlashRuntimeOwner(commands []command.Command, skills []skill.Skill) docsSlashOwner {
+	// Custom commands win even when hidden: hidden only affects discovery, not
+	// direct invocation. Keep every discoverable surface aligned with dispatch.
+	for _, c := range commands {
+		if c.Name == "docs" {
+			return docsSlashCustom
+		}
+	}
+	for _, s := range skills {
+		if s.SlashName() == "docs" {
+			return docsSlashSkill
+		}
+	}
+	return docsSlashBuiltin
+}
+
+func removeSlashItems(items []compItem, label string) []compItem {
+	out := make([]compItem, 0, len(items))
+	for _, item := range items {
+		if item.label != label {
+			out = append(out, item)
+		}
+	}
+	return out
 }
 
 // updateCompletion recomputes the menu from the current input: a slash menu

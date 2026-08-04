@@ -136,6 +136,44 @@ func TestReleaseNotesAreSearchableInBothLanguages(t *testing.T) {
 	}
 }
 
+func TestReleaseSearchDoesNotTreatPreviewAsExactStableVersion(t *testing.T) {
+	docsFS := fstest.MapFS{
+		"GUIDE.md": {Data: []byte("# Guide\n\nEmbedded documentation.\n")},
+	}
+	releaseNotesFS := fstest.MapFS{
+		"releases.json": {Data: []byte(`{
+			"releases": [
+				{"version":"1.19.0","title":{"en":"Stable","zh":"稳定版"},"summary":{"en":"Stable changelog","zh":"稳定版更新日志"}},
+				{"version":"1.19.0-preview.1","title":{"en":"Preview","zh":"预览版"},"summary":{"en":"Preview-only changelog","zh":"仅预览版更新日志"}}
+			]
+		}`)},
+	}
+	c, err := loadCatalogWithReleaseNotes(docsFS, releaseNotesFS)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tl := &docsTool{catalog: c}
+
+	stable, err := tl.search(context.Background(), "1.19.0 changelog", "en", "user", 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(stable, "path=changelog/v1.19.0.md") {
+		t.Fatalf("stable release search missing exact changelog:\n%s", stable)
+	}
+	if strings.Contains(stable, "path=changelog/v1.19.0-preview.1.md") {
+		t.Fatalf("stable release search treated preview as an exact version match:\n%s", stable)
+	}
+
+	preview, err := tl.search(context.Background(), "1.19.0-preview.1 changelog", "en", "user", 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(preview, "path=changelog/v1.19.0-preview.1.md") {
+		t.Fatalf("preview release search missing exact changelog:\n%s", preview)
+	}
+}
+
 func TestSourceManifestChangesWithReleaseCatalogBytes(t *testing.T) {
 	docsFS := fstest.MapFS{"GUIDE.md": {Data: []byte("# Guide\n\nBody.\n")}}
 	firstNotes := fstest.MapFS{"releases.json": {Data: []byte(`{"releases":[{"version":"1.0.0","title":{"en":"First","zh":"第一"},"summary":{"en":"Body","zh":"正文"}}]}`)}}

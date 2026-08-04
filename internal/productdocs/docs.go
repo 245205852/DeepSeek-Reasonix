@@ -38,13 +38,14 @@ const (
 )
 
 type document struct {
-	path        string
-	source      string
-	title       string
-	locale      string
-	audience    string
-	releaseNote bool
-	sections    []*section
+	path           string
+	source         string
+	title          string
+	locale         string
+	audience       string
+	releaseNote    bool
+	releaseVersion string
+	sections       []*section
 }
 
 type section struct {
@@ -339,18 +340,17 @@ func (t *docsTool) search(ctx context.Context, query, language, audience string,
 			continue
 		}
 		score := retrieval.BM25Score(section.counts, section.length, queryTerms, t.catalog.df, len(t.catalog.sections), t.catalog.avgLen)
-		exactVersionPath := false
-		displayPathLower := strings.ToLower(section.document.displayPath())
+		exactReleaseVersion := false
 		for _, match := range queryVersions {
-			if len(match) > 1 && strings.Contains(displayPathLower, "v"+match[1]) {
-				exactVersionPath = true
+			if len(match) > 1 && strings.EqualFold(section.document.releaseVersion, match[1]) {
+				exactReleaseVersion = true
 				break
 			}
 		}
-		if score <= 0 && !exactVersionPath {
+		if score <= 0 && !exactReleaseVersion {
 			continue
 		}
-		if exactVersionPath {
+		if exactReleaseVersion {
 			// Release-note virtual paths carry the exact requested version. Keep
 			// that stronger than generic terms such as "changelog" or "更新日志".
 			score += 100
@@ -491,6 +491,7 @@ func loadCatalogWithReleaseNotes(docsFS, releaseNotesFS fs.FS) (*catalog, error)
 			doc.locale = virtual.locale
 			doc.audience = "user"
 			doc.releaseNote = true
+			doc.releaseVersion = virtual.version
 			if len(doc.sections) == 0 {
 				return nil, fmt.Errorf("rendered release note %s contains no sections", virtual.path)
 			}

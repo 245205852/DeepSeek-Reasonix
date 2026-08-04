@@ -17,13 +17,22 @@ func (m *chatTUI) showHelp() {
 
 func renderHelp(width int, commands []command.Command, skills []skill.Skill, prompts []plugin.Prompt) string {
 	var b strings.Builder
+	docsOwner := docsSlashRuntimeOwner(commands, skills)
+	builtins := builtinHelpItems()
+	if docsOwner != docsSlashBuiltin {
+		builtins = removeSlashItems(builtins, "/docs")
+	}
 	fmt.Fprintf(&b, "%s\n", viewHeader("commands"))
-	writeHelpItems(&b, width, "built-in", builtinHelpItems(), 0)
+	writeHelpItems(&b, width, "built-in", builtins, 0)
 	if len(commands) > 0 {
 		writeHelpItems(&b, width, "custom", customHelpItems(commands), helpMaxDynamicItems)
 	}
 	if len(skills) > 0 {
-		writeHelpItems(&b, width, "skills", skillHelpItems(skills), helpMaxDynamicItems)
+		items := skillHelpItems(skills)
+		if docsOwner == docsSlashCustom {
+			items = removeSlashItems(items, "/docs")
+		}
+		writeHelpItems(&b, width, "skills", items, helpMaxDynamicItems)
 	}
 	if len(prompts) > 0 {
 		writeHelpItems(&b, width, "MCP prompts", promptHelpItems(prompts), helpMaxDynamicItems)

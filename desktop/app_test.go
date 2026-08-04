@@ -24,6 +24,7 @@ import (
 	"reasonix/internal/billing"
 	"reasonix/internal/boot"
 	"reasonix/internal/bot"
+	"reasonix/internal/command"
 	"reasonix/internal/config"
 	"reasonix/internal/control"
 	"reasonix/internal/event"
@@ -383,6 +384,50 @@ func TestCommandsIncludesDocsAndEffortNotThinking(t *testing.T) {
 	}
 	if hasCommand(cmds, "thinking") {
 		t.Fatalf("Commands() should not include thinking: %+v", cmds)
+	}
+}
+
+func TestCommandsDocsShowsOnlyRuntimeWinner(t *testing.T) {
+	tests := []struct {
+		name     string
+		commands []command.Command
+		skills   []skill.Skill
+		wantKind string
+	}{
+		{
+			name:     "custom command shadows builtin",
+			commands: []command.Command{{Name: "docs", Description: "custom docs"}},
+			wantKind: "custom",
+		},
+		{
+			name:     "skill shadows builtin",
+			skills:   []skill.Skill{{Name: "docs", Description: "docs skill"}},
+			wantKind: "skill",
+		},
+		{
+			name:     "custom command shadows skill and builtin",
+			commands: []command.Command{{Name: "docs", Description: "custom docs"}},
+			skills:   []skill.Skill{{Name: "docs", Description: "docs skill"}},
+			wantKind: "custom",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctrl := control.New(control.Options{Commands: tt.commands, Skills: tt.skills})
+			defer ctrl.Close()
+			app := NewApp()
+			app.setTestCtrl(ctrl, "")
+
+			var docs []CommandInfo
+			for _, cmd := range app.Commands() {
+				if cmd.Name == "docs" {
+					docs = append(docs, cmd)
+				}
+			}
+			if len(docs) != 1 || docs[0].Kind != tt.wantKind {
+				t.Fatalf("docs commands = %+v, want one %s entry", docs, tt.wantKind)
+			}
+		})
 	}
 }
 

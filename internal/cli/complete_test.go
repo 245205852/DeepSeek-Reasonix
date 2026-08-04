@@ -14,6 +14,7 @@ import (
 	"reasonix/internal/control"
 	"reasonix/internal/event"
 	"reasonix/internal/provider"
+	"reasonix/internal/skill"
 )
 
 // writeAt creates dir/rel (with parents) holding content, for fs-backed tests.
@@ -71,6 +72,48 @@ func TestSlashCompletionIncludesCustomCommands(t *testing.T) {
 
 	if !hasLabel(m.completion.items, "/review") {
 		t.Errorf("custom command should appear in completion: %v", labels(m.completion.items))
+	}
+}
+
+func TestSlashCompletionDocsShowsOnlyRuntimeWinner(t *testing.T) {
+	tests := []struct {
+		name     string
+		commands []command.Command
+		skills   []skill.Skill
+		wantHint string
+	}{
+		{
+			name:     "custom command shadows builtin",
+			commands: []command.Command{{Name: "docs", Description: "custom docs"}},
+			wantHint: "custom docs",
+		},
+		{
+			name:     "skill shadows builtin",
+			skills:   []skill.Skill{{Name: "docs", Description: "docs skill"}},
+			wantHint: "docs skill",
+		},
+		{
+			name:     "custom command shadows skill and builtin",
+			commands: []command.Command{{Name: "docs", Description: "custom docs"}},
+			skills:   []skill.Skill{{Name: "docs", Description: "docs skill"}},
+			wantHint: "custom docs",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			m := newTestChatTUI()
+			m.commands = tt.commands
+			m.skills = tt.skills
+			var docs []compItem
+			for _, item := range m.slashItems() {
+				if item.label == "/docs" {
+					docs = append(docs, item)
+				}
+			}
+			if len(docs) != 1 || docs[0].hint != tt.wantHint {
+				t.Fatalf("/docs completion entries = %+v, want one entry with hint %q", docs, tt.wantHint)
+			}
+		})
 	}
 }
 

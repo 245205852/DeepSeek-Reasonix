@@ -44,6 +44,7 @@ type renderedReleaseDocument struct {
 	path    string
 	source  string
 	locale  string
+	version string
 	content string
 }
 
@@ -76,6 +77,7 @@ func renderReleaseDocuments(data []byte) ([]renderedReleaseDocument, int, error)
 				path:    "changelog/v" + release.Version + suffix,
 				source:  "release-notes/releases.json#v" + release.Version,
 				locale:  locale,
+				version: release.Version,
 				content: renderReleaseMarkdown(release, locale),
 			})
 		}
