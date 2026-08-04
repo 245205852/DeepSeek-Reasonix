@@ -40,52 +40,71 @@ func TestSubagentStoreContinueLoadsSavedTranscript(t *testing.T) {
 	}
 }
 
-// TestSubagentStoreSaveCompletedKeepsBranchCreatedAt guards #7298: the session
-// list reads *.jsonl.meta CreatedAt, which used to be backfilled at first save
-// (= completion time) instead of the subagent start time on *.meta.json.
-func TestSubagentStoreSaveCompletedKeepsBranchCreatedAt(t *testing.T) {
-	store := NewSubagentStore(t.TempDir())
-	spec := testSubagentSpec(t, "explore")
-	run, err := store.PrepareFresh(spec)
-	if err != nil {
-		t.Fatalf("PrepareFresh: %v", err)
-	}
-	defer run.Release()
-	created := run.Meta.CreatedAt
-	if created.IsZero() {
-		t.Fatal("PrepareFresh left CreatedAt zero")
-	}
-	time.Sleep(25 * time.Millisecond)
-	run.Session.Add(provider.Message{Role: provider.RoleUser, Content: "explore repo"})
-	run.Session.Add(provider.Message{Role: provider.RoleAssistant, Content: "done"})
-	if err := store.SaveCompleted(run); err != nil {
-		t.Fatalf("SaveCompleted: %v", err)
-	}
-	if !run.Meta.UpdatedAt.After(created) {
-		t.Fatalf("UpdatedAt %v should be after CreatedAt %v", run.Meta.UpdatedAt, created)
-	}
-	branch, ok, err := LoadBranchMeta(filepath.Join(store.dir, run.Ref+".jsonl"))
-	if err != nil || !ok {
-		t.Fatalf("LoadBranchMeta: ok=%v err=%v", ok, err)
-	}
-	if !branch.CreatedAt.Equal(created) {
-		t.Fatalf("branch CreatedAt = %v, want subagent start %v", branch.CreatedAt, created)
-	}
-	ordered, err := ListSessionOrder(store.dir)
-	if err != nil {
-		t.Fatalf("ListSessionOrder: %v", err)
-	}
-	found := false
-	for _, info := range ordered {
-		if info.Path == filepath.Join(store.dir, run.Ref+".jsonl") {
-			found = true
-			if !info.CreatedAt.Equal(created) {
-				t.Fatalf("list CreatedAt = %v, want %v", info.CreatedAt, created)
+// TestSubagentStoreTerminalSaveKeepsBranchStartAndActivityTimes guards #7298:
+// CreatedAt must remain the subagent start time while LastActivityAt reflects
+// the later terminal save used for recency ordering.
+func TestSubagentStoreTerminalSaveKeepsBranchStartAndActivityTimes(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		save func(*SubagentStore, *SubagentRun) error
+	}{
+		{name: "completed", save: (*SubagentStore).SaveCompleted},
+		{name: "failed", save: (*SubagentStore).SaveFailed},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			store := NewSubagentStore(t.TempDir())
+			run, err := store.PrepareFresh(testSubagentSpec(t, "explore"))
+			if err != nil {
+				t.Fatalf("PrepareFresh: %v", err)
 			}
-		}
-	}
-	if !found {
-		t.Fatalf("ListSessionOrder missing ref %q: %+v", run.Ref, ordered)
+			defer run.Release()
+
+			created := time.Now().UTC().Add(-2 * time.Hour)
+			run.Meta.CreatedAt = created
+			run.Session.Add(provider.Message{Role: provider.RoleUser, Content: "explore repo"})
+			run.Session.Add(provider.Message{Role: provider.RoleAssistant, Content: "done"})
+			beforeTerminalSave := time.Now().UTC()
+			if err := tc.save(store, run); err != nil {
+				t.Fatalf("terminal save: %v", err)
+			}
+
+			path := filepath.Join(store.dir, run.Ref+".jsonl")
+			branch, ok, err := LoadBranchMeta(path)
+			if err != nil || !ok {
+				t.Fatalf("LoadBranchMeta: ok=%v err=%v", ok, err)
+			}
+			if !branch.CreatedAt.Equal(created) {
+				t.Fatalf("branch CreatedAt = %v, want subagent start %v", branch.CreatedAt, created)
+			}
+			if branch.UpdatedAt.Before(beforeTerminalSave) || branch.UpdatedAt.After(run.Meta.UpdatedAt) {
+				t.Fatalf("branch UpdatedAt = %v, want terminal save in [%v, %v]", branch.UpdatedAt, beforeTerminalSave, run.Meta.UpdatedAt)
+			}
+
+			peerPath := filepath.Join(store.dir, "older-peer.jsonl")
+			peer := NewSession("system")
+			peer.Add(provider.Message{Role: provider.RoleUser, Content: "older work"})
+			if err := peer.Save(peerPath); err != nil {
+				t.Fatalf("save peer: %v", err)
+			}
+			if err := SaveBranchMetaPreserveUpdated(peerPath, BranchMeta{
+				ID:        BranchID(peerPath),
+				CreatedAt: created.Add(-time.Hour),
+				UpdatedAt: created.Add(time.Hour),
+			}); err != nil {
+				t.Fatalf("save peer meta: %v", err)
+			}
+
+			ordered, err := ListSessionOrder(store.dir)
+			if err != nil {
+				t.Fatalf("ListSessionOrder: %v", err)
+			}
+			if len(ordered) != 2 || ordered[0].Path != path {
+				t.Fatalf("session order = %+v, want terminally saved subagent first", ordered)
+			}
+			if !ordered[0].CreatedAt.Equal(created) || !ordered[0].LastActivityAt.Equal(branch.UpdatedAt) {
+				t.Fatalf("listed times = created %v activity %v, want %v / %v", ordered[0].CreatedAt, ordered[0].LastActivityAt, created, branch.UpdatedAt)
+			}
+		})
 	}
 }
 

@@ -647,7 +647,6 @@ func (s *SubagentStore) ensureBranchCreatedAt(run *SubagentRun) error {
 	return SaveBranchMetaPreserveUpdated(path, BranchMeta{
 		ID:        BranchID(path),
 		CreatedAt: created,
-		UpdatedAt: created,
 	})
 }
 
