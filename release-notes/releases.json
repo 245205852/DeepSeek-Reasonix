@@ -6,20 +6,15 @@
       "date": "2026-08-04",
       "channel": "stable",
       "title": {
-        "en": "Versioned docs, transactional rewind, and safer recovery",
-        "zh": "版本化文档、事务性回滚与更安全的恢复"
+        "en": "Reasonix v1.19.6 — Versioned Docs, Transactional Rewind & Safer Recovery",
+        "zh": "Reasonix v1.19.6 — 版本化文档、事务性回滚与更安全的恢复"
       },
       "summary": {
         "en": "This release brings embedded version-matched documentation, transactional rewind, safer subagent cleanup, and numerous desktop and CLI fixes.",
         "zh": "此版本带来内置版本匹配文档、事务性回滚、更安全的子代理清理以及大量桌面和 CLI 修复。"
       },
       "surfaces": [
-        "desktop",
-        "cli",
-        "config",
-        "recovery",
-        "security",
-        "updates"
+        "desktop"
       ],
       "guides": [
         {
@@ -31,18 +26,18 @@
             "en": "Use /docs to access version-matched product documentation directly in Reasonix.",
             "zh": "使用 /docs 直接在 Reasonix 中访问版本匹配的产品文档。"
           },
-          "href": "https://github.com/esengine/DeepSeek-Reasonix/blob/e37e035bd587eb31e2e3f7d657628cbcfd08ec40/docs/GUIDE.md"
+          "href": "https://github.com/esengine/DeepSeek-Reasonix/blob/80228bf4a7de23cad6ddadb242d8bd76729947e4/docs/GUIDE.md"
         }
       ],
       "highlights": [
         {
           "kind": "new",
           "title": {
-            "en": "Embedded version-matched documentation",
+            "en": "Embedded Version-Matched Documentation",
             "zh": "内置版本匹配文档"
           },
           "body": {
-            "en": "Access official product docs and release history directly in Reasonix with the /docs command. The built-in docs tool retrieves version-matched evidence before the AI composes an answer.",
+            "en": "Access official product documentation and release history directly in Reasonix with the /docs command. The built-in docs tool retrieves version-matched evidence before the AI composes an answer.",
             "zh": "使用 /docs 命令直接在 Reasonix 中访问官方产品文档和发布历史。内置文档工具在 AI 撰写答案前检索版本匹配的证据。"
           },
           "refs": [
@@ -52,11 +47,11 @@
         {
           "kind": "new",
           "title": {
-            "en": "Transactional rewind and single-file revert",
+            "en": "Transactional Rewind & Single-File Restore",
             "zh": "事务性回滚与单文件还原"
           },
           "body": {
-            "en": "Rewind operations now use durable transactions with SHA-256-verified blobs, crash recovery, and conflict detection. Undo is available for both code rewind and single-file session revert.",
+            "en": "Rewind operations now use durable transactions with SHA-256 verified blobs, crash recovery, and conflict detection. Undo is supported for both code rewind and single-file session revert.",
             "zh": "回滚操作现在使用持久事务，具有 SHA-256 验证的 blob、崩溃恢复和冲突检测。代码回滚和单文件会话还原均支持撤销。"
           },
           "refs": [
@@ -64,13 +59,13 @@
           ]
         },
         {
-          "kind": "improved",
+          "kind": "fixed",
           "title": {
-            "en": "Safer subagent cleanup and startup",
+            "en": "Safer Subagent Cleanup & Startup",
             "zh": "更安全的子代理清理与启动"
           },
           "body": {
-            "en": "Subagent cleanup no longer causes false startup errors or blocks on corrupt metadata. Stale subagents are cleaned up on every controller build with a parent-session liveness probe.",
+            "en": "Subagent cleanup no longer causes false startup errors or blocks on corrupt metadata. Stale subagents are cleaned on every controller build with a parent-session liveness probe.",
             "zh": "子代理清理不再导致误启动错误或因损坏的元数据而阻塞。每次控制器构建时都会通过父会话活跃探测清理过时的子代理。"
           },
           "refs": [
@@ -81,11 +76,11 @@
         {
           "kind": "improved",
           "title": {
-            "en": "Desktop and CLI quality improvements",
+            "en": "Desktop & CLI Quality Improvements",
             "zh": "桌面与 CLI 质量改进"
           },
           "body": {
-            "en": "Middle-click tab close, unified token display, workspace config override warnings, and many layout and permission fixes improve the daily experience.",
+            "en": "Middle-click tab close, unified token display, workspace config override warnings, and numerous layout and permission fixes improve the daily experience.",
             "zh": "中键关闭标签页、统一的 token 显示、工作区配置覆盖警告以及众多布局和权限修复改善了日常体验。"
           },
           "refs": [
@@ -101,11 +96,11 @@
         {
           "kind": "fixed",
           "title": {
-            "en": "Updater and recovery fixes",
+            "en": "Updater & Recovery Fixes",
             "zh": "更新器与恢复修复"
           },
           "body": {
-            "en": "Orphaned macOS app backups are now recovered, and pending update debris no longer blocks future updates or forces safe mode.",
+            "en": "Orphaned macOS app backups are now recoverable, and leftover pending updates no longer block subsequent updates or force safe mode.",
             "zh": "孤立的 macOS 应用备份现在可恢复，残留的待处理更新不再阻塞后续更新或强制安全模式。"
           },
           "refs": [
@@ -118,11 +113,11 @@
         "new": [
           {
             "title": {
-              "en": "Embedded version-matched documentation",
+              "en": "Embedded Version-Matched Documentation",
               "zh": "内置版本匹配文档"
             },
             "body": {
-              "en": "Access official product docs and release history directly in Reasonix with the /docs command.",
+              "en": "Access official product documentation and release history directly in Reasonix with the /docs command.",
               "zh": "使用 /docs 命令直接在 Reasonix 中访问官方产品文档和发布历史。"
             },
             "refs": [
@@ -131,11 +126,11 @@
           },
           {
             "title": {
-              "en": "Transactional rewind and single-file revert",
+              "en": "Transactional Rewind & Single-File Restore",
               "zh": "事务性回滚与单文件还原"
             },
             "body": {
-              "en": "Rewind operations now use durable transactions with SHA-256-verified blobs, crash recovery, and conflict detection.",
+              "en": "Rewind operations now use durable transactions with SHA-256 verified blobs, crash recovery, and conflict detection.",
               "zh": "回滚操作现在使用持久事务，具有 SHA-256 验证的 blob、崩溃恢复和冲突检测。"
             },
             "refs": [
@@ -144,12 +139,12 @@
           },
           {
             "title": {
-              "en": "Middle-click tab close",
+              "en": "Middle-Click Tab Close",
               "zh": "中键关闭标签页"
             },
             "body": {
-              "en": "Close desktop tabs with a middle click, matching common browser behavior.",
-              "zh": "用中键点击标签页即可关闭，符合常见浏览器行为。"
+              "en": "Close a session tab by clicking it with the mouse middle/wheel button.",
+              "zh": "用中键点击顶部的标签直接关闭对应会话。"
             },
             "refs": [
               4330
@@ -157,25 +152,12 @@
           },
           {
             "title": {
-              "en": "Unified token display format",
-              "zh": "统一的 token 显示格式"
+              "en": "Streamlined Creation Empty Session",
+              "zh": "精简空会话欢迎页"
             },
             "body": {
-              "en": "Token counts now use consistent K/M abbreviations across the composer and context panel.",
-              "zh": "token 计数现在在作曲器和上下文面板中使用一致的 K/M 缩写。"
-            },
-            "refs": [
-              7404
-            ]
-          },
-          {
-            "title": {
-              "en": "Streamlined creation welcome page",
-              "zh": "精简的创作欢迎页"
-            },
-            "body": {
-              "en": "The empty session welcome page now shows a centered hero input with model selection only.",
-              "zh": "空会话欢迎页现在显示居中的 hero 输入框，仅保留模型选择。"
+              "en": "Simplified welcome page with centered hero input box and model selector.",
+              "zh": "精简欢迎页，标题与输入框居中，仅保留模型选择。"
             },
             "refs": [
               7317
@@ -185,25 +167,24 @@
         "improved": [
           {
             "title": {
-              "en": "Safer subagent cleanup",
-              "zh": "更安全的子代理清理"
+              "en": "Unified Token Display Format",
+              "zh": "统一的 token 显示格式"
             },
             "body": {
-              "en": "Subagent cleanup no longer causes false startup errors or blocks on corrupt metadata.",
-              "zh": "子代理清理不再导致误启动错误或因损坏的元数据而阻塞。"
+              "en": "Token counts now use consistent K/M abbreviations across the composer and context panel.",
+              "zh": "Token 计数在作曲器和上下文面板中使用一致的 K/M 缩写。"
             },
             "refs": [
-              7405,
-              7225
+              7404
             ]
           },
           {
             "title": {
-              "en": "Workspace config override warning",
+              "en": "Workspace Config Override Warning",
               "zh": "工作区配置覆盖警告"
             },
             "body": {
-              "en": "The settings panel now warns when a workspace reasonix.toml overrides the user config.",
+              "en": "Settings panel now warns when a workspace reasonix.toml overrides the user config.",
               "zh": "设置面板现在会在工作区 reasonix.toml 覆盖用户配置时发出警告。"
             },
             "refs": [
@@ -212,12 +193,12 @@
           },
           {
             "title": {
-              "en": "Responsive settings layout",
-              "zh": "响应式设置布局"
+              "en": "Settings Page Responsive Layout",
+              "zh": "设置页响应式布局"
             },
             "body": {
-              "en": "Settings pages now wrap correctly on narrow windows, preventing overflow and misalignment.",
-              "zh": "设置页面现在在窄窗口下正确换行，防止溢出和错位。"
+              "en": "Fixed layout issues on narrow windows for model subtabs, memory page, and subagent overrides.",
+              "zh": "修复窄窗口下模型子标签、记忆页面和子代理覆盖的布局问题。"
             },
             "refs": [
               7362
@@ -225,25 +206,12 @@
           },
           {
             "title": {
-              "en": "Destructive git command classification",
-              "zh": "破坏性 git 命令分类"
-            },
-            "body": {
-              "en": "Commands like git restore and git stash drop now show danger warnings and require re-approval each time.",
-              "zh": "git restore 和 git stash drop 等命令现在显示危险警告，并每次都需要重新批准。"
-            },
-            "refs": [
-              7437
-            ]
-          },
-          {
-            "title": {
-              "en": "CLI /status shows active config file",
+              "en": "CLI /status Shows Active Config File",
               "zh": "CLI /status 显示活动配置文件"
             },
             "body": {
-              "en": "The /status command now reports which config file is in effect.",
-              "zh": "/status 命令现在报告当前生效的配置文件。"
+              "en": "/status now ends with the config source path or a note when no config file exists.",
+              "zh": "/status 现在会显示配置文件路径，或在无配置文件时给出提示。"
             },
             "refs": [
               7393
@@ -251,11 +219,11 @@
           },
           {
             "title": {
-              "en": "CLI word motion with Ctrl+arrows",
-              "zh": "CLI 中使用 Ctrl+箭头移动单词"
+              "en": "CLI Composer Word Motion",
+              "zh": "CLI 作曲器单词移动"
             },
             "body": {
-              "en": "Ctrl+Left/Right now move by word in the composer on Windows and Linux.",
+              "en": "Ctrl+Left/Right now moves by word in the composer on Windows and Linux.",
               "zh": "在 Windows 和 Linux 上，Ctrl+左/右箭头现在可在作曲器中按单词移动。"
             },
             "refs": [
@@ -264,12 +232,12 @@
           },
           {
             "title": {
-              "en": "Windows console ANSI support",
+              "en": "Windows Console ANSI Support",
               "zh": "Windows 控制台 ANSI 支持"
             },
             "body": {
-              "en": "Legacy Windows consoles now display colored output correctly in setup and config commands.",
-              "zh": "旧版 Windows 控制台现在可在 setup 和 config 命令中正确显示彩色输出。"
+              "en": "Enabled virtual terminal processing for colored output on legacy Windows consoles.",
+              "zh": "在旧版 Windows 控制台上启用虚拟终端处理以显示彩色输出。"
             },
             "refs": [
               7387
@@ -277,77 +245,81 @@
           },
           {
             "title": {
-              "en": "Recovery notices kept out of IM chats",
-              "zh": "恢复通知不再发送到 IM 聊天"
+              "en": "CLI Upgrade Authenticates with GITHUB_TOKEN",
+              "zh": "CLI 升级使用 GITHUB_TOKEN 认证"
             },
             "body": {
-              "en": "Internal recovery notices are no longer forwarded to WeChat, QQ, or Feishu conversations.",
-              "zh": "内部恢复通知不再转发到微信、QQ 或飞书对话。"
+              "en": "reasonix upgrade now uses GITHUB_TOKEN for GitHub API requests to avoid rate limiting.",
+              "zh": "reasonix upgrade 现在使用 GITHUB_TOKEN 进行 GitHub API 请求以避免速率限制。"
             },
             "refs": [
-              7421
+              7418
             ]
           },
           {
             "title": {
-              "en": "Subagent list shows start time",
-              "zh": "子代理列表显示开始时间"
+              "en": "Glob Walk Timeout",
+              "zh": "Glob 遍历超时"
             },
             "body": {
-              "en": "Subagent CreatedAt now reflects the actual spawn time instead of completion time.",
-              "zh": "子代理的 CreatedAt 现在反映实际生成时间而非完成时间。"
+              "en": "Recursive glob walks now have a 30s default timeout, returning partial results when expired.",
+              "zh": "递归 glob 遍历现在有 30 秒默认超时，超时时返回部分结果。"
             },
             "refs": [
-              7309
+              7455
+            ]
+          }
+        ],
+        "fixed": [
+          {
+            "title": {
+              "en": "Safer Subagent Cleanup & Startup",
+              "zh": "更安全的子代理清理与启动"
+            },
+            "body": {
+              "en": "Fixed false startup errors and corrupt metadata blocking during subagent cleanup.",
+              "zh": "修复子代理清理期间的误启动错误和损坏元数据阻塞问题。"
+            },
+            "refs": [
+              7405,
+              7225
             ]
           },
           {
             "title": {
-              "en": "CLI recovery session grouping",
-              "zh": "CLI 恢复会话分组"
+              "en": "Updater & Recovery Fixes",
+              "zh": "更新器与恢复修复"
             },
             "body": {
-              "en": "Conflict-recovery copies are now grouped with their source session and labeled with a short parent ID.",
-              "zh": "冲突恢复副本现在与其源会话分组，并标有简短的父 ID。"
+              "en": "Recover orphaned macOS app backups and resolve stuck pending updates that blocked future updates.",
+              "zh": "恢复孤立的 macOS 应用备份，并解决阻塞后续更新的残留待处理更新问题。"
             },
             "refs": [
-              7344
+              7369,
+              7366
             ]
           },
           {
             "title": {
-              "en": "Build outputs excluded from @ completion",
-              "zh": "构建输出从 @ 补全中排除"
+              "en": "Destructive Git Command Classification",
+              "zh": "破坏性 Git 命令分类"
             },
             "body": {
-              "en": "Generated directories like target, __pycache__, and venv no longer appear in file completion.",
-              "zh": "target、__pycache__、venv 等生成目录不再出现在文件补全中。"
+              "en": "git tag, git restore, and similar commands are now correctly classified as destructive, showing warnings and requiring re-approval.",
+              "zh": "git tag、git restore 等命令现在被正确分类为破坏性命令，显示警告并要求重新批准。"
             },
             "refs": [
-              7401
+              7437
             ]
           },
           {
             "title": {
-              "en": "Project provider_access no longer hides user providers",
-              "zh": "项目 provider_access 不再隐藏用户提供者"
+              "en": "Planner Model Unresolvable Fallback",
+              "zh": "规划模型不可解析时的回退"
             },
             "body": {
-              "en": "A project-only provider_access list no longer hides account-level providers in the model switcher.",
-              "zh": "仅项目级别的 provider_access 列表不再在模型切换器中隐藏账户级提供者。"
-            },
-            "refs": [
-              7395
-            ]
-          },
-          {
-            "title": {
-              "en": "Planner model degradation on unresolvable provider",
-              "zh": "无法解析提供者时规划器模型降级"
-            },
-            "body": {
-              "en": "When planner_model names an unknown provider, the desktop now warns and continues with the executor alone.",
-              "zh": "当 planner_model 指定未知提供者时，桌面现在会发出警告并仅使用执行器继续运行。"
+              "en": "When planner_model is unresolvable, the desktop now warns and continues with the executor alone instead of failing to start.",
+              "zh": "当 planner_model 不可解析时，桌面现在会发出警告并仅使用执行器继续运行，而不是启动失败。"
             },
             "refs": [
               7434
@@ -355,8 +327,8 @@
           },
           {
             "title": {
-              "en": "Deleted workspace folder no longer recreated",
-              "zh": "已删除的工作区文件夹不再重新创建"
+              "en": "Deleted Workspace Folder No Longer Recreated",
+              "zh": "已删除的工作区文件夹不再被重新创建"
             },
             "body": {
               "en": "Deleting a workspace folder in Explorer no longer causes Reasonix to recreate it on startup.",
@@ -368,12 +340,12 @@
           },
           {
             "title": {
-              "en": "Global hooks migration",
+              "en": "Global Hooks Migration",
               "zh": "全局钩子迁移"
             },
             "body": {
-              "en": "Global hooks in settings.json are now migrated to the new config home.",
-              "zh": "settings.json 中的全局钩子现在迁移到新的配置目录。"
+              "en": "Global hooks in settings.json are now migrated to the new home directory during upgrade.",
+              "zh": "settings.json 中的全局钩子现在会在升级时迁移到新的主目录。"
             },
             "refs": [
               7445
@@ -381,82 +353,158 @@
           },
           {
             "title": {
-              "en": "TUI long approval command display",
-              "zh": "TUI 长批准命令显示"
+              "en": "TUI Long Command Approval Display",
+              "zh": "TUI 长命令审批显示"
             },
             "body": {
-              "en": "Long commands awaiting approval now wrap in the TUI instead of being clipped.",
-              "zh": "等待批准的长命令现在在 TUI 中换行显示，而不是被截断。"
+              "en": "Long commands awaiting approval in the TUI now wrap and show the full text instead of being truncated.",
+              "zh": "TUI 中等待审批的长命令现在会换行显示完整文本，而不是被截断。"
             },
             "refs": [
               7447
             ]
-          }
-        ],
-        "fixed": [
+          },
           {
             "title": {
-              "en": "Orphaned macOS updater backup recovery",
-              "zh": "孤立的 macOS 更新器备份恢复"
+              "en": "Provider Stream Decode Error Details",
+              "zh": "提供者流解码错误详情"
             },
             "body": {
-              "en": "Interrupted updates no longer leave a permanent backup that blocks future updates.",
-              "zh": "中断的更新不再留下永久备份阻塞后续更新。"
+              "en": "Stream decode errors now include a bounded excerpt of the payload that failed to parse.",
+              "zh": "流解码错误现在包含无法解析的有效负载的有限摘录。"
             },
             "refs": [
-              7369
+              7461
             ]
           },
           {
             "title": {
-              "en": "Pending update debris recovery",
-              "zh": "待处理更新残留恢复"
+              "en": "Retry-After Header Honored Beyond Backoff Cap",
+              "zh": "遵守超过退避上限的 Retry-After 头"
             },
             "body": {
-              "en": "Invalid pending update markers are now cleaned up instead of forcing safe mode.",
-              "zh": "无效的待处理更新标记现在会被清理，而不是强制安全模式。"
+              "en": "429 responses with Retry-After longer than 15s are now honored up to 60s, and HTTP-date form is parsed.",
+              "zh": "对于 Retry-After 超过 15 秒的 429 响应，现在会遵守最多 60 秒，并解析 HTTP-date 格式。"
             },
             "refs": [
-              7366
+              7459
             ]
           },
           {
             "title": {
-              "en": "npm dependency security advisories resolved",
-              "zh": "npm 依赖安全告警已解决"
+              "en": "Transcript Text Scaling",
+              "zh": "对话文本缩放"
             },
             "body": {
-              "en": "All 24 open Dependabot alerts across desktop and worker dependencies have been resolved.",
-              "zh": "桌面和 worker 依赖中所有 24 个开放的 Dependabot 告警已解决。"
+              "en": "Thinking headers, tool cards, and other transcript elements now scale with the text-size setting.",
+              "zh": "思考标题、工具卡片和其他对话元素现在会随文本大小设置缩放。"
             },
             "refs": [
-              7446
+              7457
             ]
           },
           {
             "title": {
-              "en": "CLI upgrade GitHub authentication",
-              "zh": "CLI 升级 GitHub 认证"
+              "en": "Subagent Store Path Error on Windows",
+              "zh": "Windows 上子代理存储路径错误"
             },
             "body": {
-              "en": "reasonix upgrade now uses GITHUB_TOKEN for authenticated GitHub API requests, avoiding rate limits.",
-              "zh": "reasonix upgrade 现在使用 GITHUB_TOKEN 进行认证的 GitHub API 请求，避免速率限制。"
+              "en": "A non-directory subagent store path is now correctly treated as an error on Windows.",
+              "zh": "在 Windows 上，非目录的子代理存储路径现在被正确处理为错误。"
             },
             "refs": [
-              7418
+              7456
             ]
           },
           {
             "title": {
-              "en": "ACP session/set_config_option documentation",
+              "en": "Build Outputs Excluded from @ Completion",
+              "zh": "构建输出从 @ 补全中排除"
+            },
+            "body": {
+              "en": "Common build output directories like target, __pycache__, and venv are now skipped in @ file completion.",
+              "zh": "常见的构建输出目录（如 target、__pycache__、venv）现在在 @ 文件补全中被跳过。"
+            },
+            "refs": [
+              7401
+            ]
+          },
+          {
+            "title": {
+              "en": "Project provider_access No Longer Hides User Providers",
+              "zh": "项目 provider_access 不再隐藏用户提供者"
+            },
+            "body": {
+              "en": "A project-only provider_access list no longer hides account-level providers in the model switcher.",
+              "zh": "仅项目级别的 provider_access 列表不再在模型切换器中隐藏账户级别的提供者。"
+            },
+            "refs": [
+              7395
+            ]
+          },
+          {
+            "title": {
+              "en": "CLI Recovery Session Proliferation",
+              "zh": "CLI 恢复会话膨胀"
+            },
+            "body": {
+              "en": "Conflict-recovery copies are now grouped with their source session and automatically cleaned up after 24 hours.",
+              "zh": "冲突恢复副本现在与其源会话分组，并在 24 小时后自动清理。"
+            },
+            "refs": [
+              7344
+            ]
+          },
+          {
+            "title": {
+              "en": "Subagent List CreatedAt as Start Time",
+              "zh": "子代理列表 CreatedAt 作为开始时间"
+            },
+            "body": {
+              "en": "Subagent metadata now records the spawn time as CreatedAt instead of the completion time.",
+              "zh": "子代理元数据现在将生成时间记录为 CreatedAt，而不是完成时间。"
+            },
+            "refs": [
+              7309
+            ]
+          },
+          {
+            "title": {
+              "en": "Recovery Notices Kept Out of IM Chats",
+              "zh": "避免向 IM 聊天转发恢复通知"
+            },
+            "body": {
+              "en": "Internal recovery notices are no longer forwarded to IM bots, preventing maintenance messages from interrupting conversations.",
+              "zh": "内部恢复通知不再转发给 IM 机器人，防止维护消息中断对话。"
+            },
+            "refs": [
+              7421
+            ]
+          },
+          {
+            "title": {
+              "en": "ACP session/set_config_option Documentation",
               "zh": "ACP session/set_config_option 文档"
             },
             "body": {
-              "en": "The ACP documentation now correctly documents the configId parameter.",
-              "zh": "ACP 文档现在正确记录了 configId 参数。"
+              "en": "Documented the request shape for session/set_config_option, clarifying the configId parameter.",
+              "zh": "记录了 session/set_config_option 的请求格式，澄清了 configId 参数。"
             },
             "refs": [
               7359
+            ]
+          },
+          {
+            "title": {
+              "en": "README Badge Update",
+              "zh": "README 徽章更新"
+            },
+            "body": {
+              "en": "Swapped the daily Trendshift badge for monthly-Go and repository badges that stay current.",
+              "zh": "将每日 Trendshift 徽章替换为保持最新的月度 Go 和仓库徽章。"
+            },
+            "refs": [
+              7378
             ]
           }
         ]
@@ -464,8 +512,9 @@
       "upgrade": [],
       "risks": [],
       "contributors": [
-        "SivanCola",
         "esengine",
+        "github-actions[bot]",
+        "SivanCola",
         "zdjmrq",
         "Li-Charles-One",
         "Lxiny-zy",
