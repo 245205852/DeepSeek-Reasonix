@@ -1038,22 +1038,6 @@ func (c *Controller) SubmitHTTPFormat(input, format string) {
 	c.submitHTTPWithFormat(input, "", f)
 }
 
-// isRefTurnInput reports inputs that resolve file references and run the
-// ref-turn path (no ctx format binding). Mirrors submitCommandOrTurn's
-// runRefTurn branches.
-func isRefTurnInput(input string) bool {
-	if SlashCodeCommentLine(input) {
-		return true
-	}
-	if _, ok := FileRefLine(input); ok {
-		return true
-	}
-	if _, ok := SlashPathLineRef(input, ""); ok {
-		return true
-	}
-	return SlashPathLikeLine(input)
-}
-
 // isNonTurnHTTPInput reports inputs that never reach the agent turn loop, so a
 // structured-output request attached to them would otherwise leak into the
 // next real turn (the format slot is consumed only by runGoalLoopWithRawDisplay).

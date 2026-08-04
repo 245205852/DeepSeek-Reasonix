@@ -63,10 +63,10 @@ func TestRefTurnFormatBound(t *testing.T) {
 		t.Fatalf("ref-turn format must bind to ctx, got %+v", got)
 	}
 	// isRefTurnInput 识别 @引用 turn（format 经 wrapper 绑定，不再丢弃）
-	// SlashCodeCommentLine（// 开头）与 SlashPathLikeLine 不依赖文件系统
+	// ref-turn 输入识别（SlashCodeCommentLine 不依赖文件系统）
 	for _, input := range []string{"// comment line", "//src/main.go:12"} {
-		if !isRefTurnInput(input) {
-			t.Errorf("isRefTurnInput(%q) = false, want true", input)
+		if !SlashCodeCommentLine(input) {
+			t.Errorf("SlashCodeCommentLine(%q) = false, want true", input)
 		}
 	}
 }
