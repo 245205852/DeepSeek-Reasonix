@@ -15536,14 +15536,10 @@ body > .mermaid-diagram--fullscreen {
   margin: 0;
 }
 
-/* Project-name selector + suggestion button travel together as one unit, so a
-   wrapping flex line can never separate them on narrow screens. */
+/* Preserve the original wide-screen flex relationship. The narrow breakpoint
+   turns this wrapper into a real flex item to keep its controls together. */
 .memory-tabs-row__tail {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  min-width: 0;
-  flex: 0 1 auto;
+  display: contents;
 }
 
 .memory-suggestion-tab {
@@ -15824,6 +15820,10 @@ body > .mermaid-diagram--fullscreen {
   }
 
   .memory-tabs-row__tail {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    min-width: 0;
     flex: 0 1 100%;
   }
 
