@@ -726,6 +726,9 @@ func (s *service) sessionNew(ctx context.Context, raw json.RawMessage) (any, err
 	s.sessions[id] = sess
 	s.mu.Unlock()
 
+	// Fold in the live controller's extension catalog so plugin/... models
+	// are discoverable from the very first session/new result.
+	cfgState = enrichStateWithExtensionModels(cfgState, ctrl.ProviderCatalog())
 	return afterResponse{
 		result: SessionNewResult{
 			SessionID:     id,
@@ -1068,7 +1071,7 @@ func (s *service) openExistingSession(ctx context.Context, method, id, cwdParam 
 	if replay {
 		sink.replay(ctrl.History())
 	}
-	return cfgState, nil
+	return enrichStateWithExtensionModels(cfgState, ctrl.ProviderCatalog()), nil
 }
 
 // transcriptPath is where a session's transcript lives — keyed by id so
@@ -2180,6 +2183,9 @@ func (s *service) configStateForSession(ctx context.Context, sess *acpSession) (
 	if err != nil {
 		return SessionConfigState{}, err
 	}
+	// Fold in the live controller's extension catalog so plugin/... models
+	// are discoverable on every config-state read, not only when current.
+	state = enrichStateWithExtensionModels(state, sess.currentCtrl().ProviderCatalog())
 	return withToolApprovalConfig(state, sess.currentToolApprovalMode()), nil
 }
 

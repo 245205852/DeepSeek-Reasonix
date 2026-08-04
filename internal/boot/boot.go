@@ -251,6 +251,13 @@ func build(ctx context.Context, opts Options) (*BuildResult, error) {
 	// handshake) falls back to the same sink directly, matching the emission the
 	// controller would have made.
 	var ctrlRef atomic.Pointer[control.Controller]
+	// Readiness signals for gateExtensionUIRequest: a sidecar may legally
+	// issue host/ui/request right after extension/initialized, before the
+	// controller exists. ready closes at ctrlRef.Store; failed closes on any
+	// build error before the RuntimeSet takes ownership (the pendingMgr defer
+	// below), so a startup request never hangs a dying build.
+	controllerReady := make(chan struct{})
+	controllerBuildFailed := make(chan struct{})
 	extUIHub := uihub.New(uihub.Options{
 		SessionID:  sessionID,
 		Generation: generation,
@@ -262,10 +269,10 @@ func build(ctx context.Context, opts Options) (*BuildResult, error) {
 			sink.Emit(ev)
 		},
 		Request: func(reqCtx context.Context, req uihub.HubRequest) (map[string]any, bool, error) {
-			if c := ctrlRef.Load(); c != nil {
-				return uihub.AskRequestFunc(c.Ask)(reqCtx, req)
-			}
-			return nil, false, fmt.Errorf("extension UI request arrived before the session controller was ready")
+			return gateExtensionUIRequest(reqCtx, ctrlRef.Load, controllerReady, controllerBuildFailed,
+				func(c *control.Controller) (map[string]any, bool, error) {
+					return uihub.AskRequestFunc(c.Ask)(reqCtx, req)
+				})
 		},
 		Warn: func(msg string) {
 			slog.Warn("boot: extension UI hub: "+msg, "root", root)
@@ -285,6 +292,7 @@ func build(ctx context.Context, opts Options) (*BuildResult, error) {
 	pendingMgr := extensionMgr
 	defer func() {
 		if pendingMgr != nil {
+			close(controllerBuildFailed)
 			_ = pendingMgr.Close()
 		}
 	}()
@@ -1872,6 +1880,7 @@ func build(ctx context.Context, opts Options) (*BuildResult, error) {
 	// on, host/ui/* publishes ride ctrl.EmitExtensionEvent and blocking prompts
 	// ride ctrl.Ask, exactly as if the hub had been built after control.New.
 	ctrlRef.Store(ctrl)
+	close(controllerReady)
 	// Share the recovery checkpoint with task/fleet sub-agents so background
 	// writers observe the same failure state as the root agent.
 	if taskTool != nil {

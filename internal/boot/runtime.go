@@ -506,3 +506,29 @@ func enabledMCPSpecs(configSpecs, extraSpecs []plugin.Spec, onDemandNames []stri
 	}
 	return out
 }
+
+// gateExtensionUIRequest serves a sidecar's blocking host/ui/request once the
+// session controller exists. A sidecar may legally ask right after
+// extension/initialized — while the build is still assembling the controller —
+// so the preflight hub cannot answer immediately. Rather than failing the
+// prompt (which would deadlock an extension waiting on its own startup
+// request), the gate waits for the controller to become ready, for the build
+// to fail, or for the request context to cancel. serve is only invoked after
+// load reports a controller.
+func gateExtensionUIRequest(reqCtx context.Context, load func() *control.Controller, ready <-chan struct{}, failed <-chan struct{}, serve func(*control.Controller) (map[string]any, bool, error)) (map[string]any, bool, error) {
+	if c := load(); c != nil {
+		return serve(c)
+	}
+	select {
+	case <-ready:
+		c := load()
+		if c == nil {
+			return nil, false, fmt.Errorf("extension UI request: controller readiness signalled without a controller")
+		}
+		return serve(c)
+	case <-failed:
+		return nil, false, fmt.Errorf("extension UI request arrived but the session build failed")
+	case <-reqCtx.Done():
+		return nil, false, reqCtx.Err()
+	}
+}
