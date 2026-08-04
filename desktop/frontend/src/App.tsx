@@ -4957,11 +4957,18 @@ export default function App() {
             {/* Composer stays mounted under a decision so per-session draft
                 caches (text, attachments, paste blocks, guidance) survive. */}
             <div
-              className={decisionSurface ? "composer-decision-host composer-decision-host--hidden" : "composer-decision-host"}
+              className={[
+                "composer-decision-host",
+                decisionSurface ? "composer-decision-host--hidden" : "",
+                creationEmptyHero ? "composer-decision-host--creation-hero" : "",
+              ].filter(Boolean).join(" ")}
               hidden={Boolean(decisionSurface) || undefined}
               inert={decisionSurface ? true : undefined}
               aria-hidden={decisionSurface ? true : undefined}
             >
+            {creationEmptyHero && (
+              <h2 className="welcome-creation__headline">{t("welcome.creation.title")}</h2>
+            )}
             <Composer
               running={state.running || rewindCommitting}
               collaborationMode={collaborationMode}
