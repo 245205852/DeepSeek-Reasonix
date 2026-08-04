@@ -154,6 +154,10 @@ func (s *TaskState) UnmarshalJSON(data []byte) error {
 type TaskSnapshot struct {
 	SchemaVersion int    `json:"schema_version"`
 	TaskID        string `json:"task_id"`
+	// JobID is the jobs.Manager-local runtime identifier. TaskID is the
+	// project-wide monitor identity and may be namespaced by session, so runtime
+	// control must not pass TaskID directly to jobs.Manager.
+	JobID string `json:"job_id,omitempty"`
 	// SessionID is the session the task was created in; it may be empty when
 	// the recorder attached before a session path was resolved.
 	SessionID         string       `json:"session_id"`
@@ -192,6 +196,9 @@ func (ts TaskSnapshot) Validate() error {
 	}
 	if len(ts.TaskID) > maxFieldLen {
 		return fmt.Errorf("TaskSnapshot.TaskID exceeds max length %d", maxFieldLen)
+	}
+	if len(ts.JobID) > maxFieldLen {
+		return fmt.Errorf("TaskSnapshot.JobID exceeds max length %d", maxFieldLen)
 	}
 	if len(ts.SessionID) > maxFieldLen {
 		return fmt.Errorf("TaskSnapshot.SessionID exceeds max length %d", maxFieldLen)

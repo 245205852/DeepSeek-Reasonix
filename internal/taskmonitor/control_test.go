@@ -34,6 +34,45 @@ func TestControlService_StopTask(t *testing.T) {
 	}
 }
 
+func TestControlService_StopRoutesNamespacedTaskToRuntimeJobID(t *testing.T) {
+	s := NewInMemoryStore()
+	cs := NewControlService(s)
+	now := time.Now()
+	mustUpsertControl(t, s, "/p", TaskSnapshot{
+		SchemaVersion: 1, TaskID: "session-1--task-1", JobID: "task-1", SessionID: "session-1",
+		State: TaskStateRunning, RuntimeState: RuntimeStateAlive, Version: 1,
+		CreatedAt: now, UpdatedAt: now,
+	})
+
+	killer := &mockKiller{fn: func(sessionID, jobID string) bool {
+		return sessionID == "session-1" && jobID == "task-1"
+	}}
+	res, err := cs.StopTaskWithKiller(context.Background(), "/p", "session-1--task-1", 1, "", "", killer)
+	if err != nil || !res.Accepted {
+		t.Fatalf("namespaced stop: result=%+v err=%v", res, err)
+	}
+}
+
+func TestRuntimeJobIDSupportsSnapshotsBeforeJobIDField(t *testing.T) {
+	longSession := strings.Repeat("s", maxFieldLen)
+	for _, tc := range []struct {
+		name string
+		snap TaskSnapshot
+		want string
+	}{
+		{name: "legacy raw id", snap: TaskSnapshot{TaskID: "task-1", SessionID: "session-1"}, want: "task-1"},
+		{name: "namespaced id", snap: TaskSnapshot{TaskID: "session-1--task-1", SessionID: "session-1"}, want: "task-1"},
+		{name: "hashed namespace", snap: TaskSnapshot{TaskID: monitorTaskID(longSession, "task-1"), SessionID: longSession}, want: "task-1"},
+		{name: "explicit id", snap: TaskSnapshot{TaskID: "monitor-id", JobID: "bash-2", SessionID: "session-1"}, want: "bash-2"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := runtimeJobID(&tc.snap); got != tc.want {
+				t.Fatalf("runtimeJobID() = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
 func TestControlService_StopRequiresRuntimeOwner(t *testing.T) {
 	s := NewInMemoryStore()
 	cs := NewControlService(s)

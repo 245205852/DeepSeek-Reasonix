@@ -188,6 +188,10 @@ func TestTaskSnapshotValidate_FieldLengthLimits(t *testing.T) {
 			SchemaVersion: 1, TaskID: long, SessionID: "s",
 			State: TaskStateQueued, CreatedAt: time.Now(), UpdatedAt: time.Now(),
 		}, "TaskID exceeds"},
+		{"JobID too long", TaskSnapshot{
+			SchemaVersion: 1, TaskID: "t", JobID: long, SessionID: "s",
+			State: TaskStateQueued, CreatedAt: time.Now(), UpdatedAt: time.Now(),
+		}, "JobID exceeds"},
 		{"SessionID too long", TaskSnapshot{
 			SchemaVersion: 1, TaskID: "t", SessionID: long,
 			State: TaskStateQueued, CreatedAt: time.Now(), UpdatedAt: time.Now(),
@@ -219,7 +223,7 @@ func TestTaskSnapshotValidate_FieldLengthLimits(t *testing.T) {
 func TestTaskSnapshotJSON_RoundTrip(t *testing.T) {
 	now := time.Now().Truncate(time.Second)
 	ts := TaskSnapshot{
-		SchemaVersion: 1, TaskID: "t1", SessionID: "s1",
+		SchemaVersion: 1, TaskID: "s1--t1", JobID: "t1", SessionID: "s1",
 		State: TaskStateFailed, RuntimeState: RuntimeStateExited,
 		CreatedAt: now.Add(-time.Hour), UpdatedAt: now,
 		ErrorCode: "TIMEOUT", ErrorSummary: "task exceeded deadline",
@@ -232,7 +236,7 @@ func TestTaskSnapshotJSON_RoundTrip(t *testing.T) {
 	if err := json.Unmarshal(data, &got); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
-	if got.TaskID != ts.TaskID || got.State != ts.State || got.RuntimeState != ts.RuntimeState || got.ErrorCode != ts.ErrorCode {
+	if got.TaskID != ts.TaskID || got.JobID != ts.JobID || got.State != ts.State || got.RuntimeState != ts.RuntimeState || got.ErrorCode != ts.ErrorCode {
 		t.Errorf("round-trip mismatch")
 	}
 }
@@ -258,6 +262,9 @@ func TestTaskSnapshotJSON_LegacyMissingRuntimeState(t *testing.T) {
 	}
 	if got := snap.RuntimeState.Effective(); got != RuntimeStateUnknown {
 		t.Fatalf("legacy runtime state = %q, want unknown", got)
+	}
+	if snap.JobID != "" || runtimeJobID(&snap) != snap.TaskID {
+		t.Fatalf("legacy job identity = %q/%q", snap.JobID, runtimeJobID(&snap))
 	}
 	if err := snap.Validate(); err != nil {
 		t.Fatalf("legacy snapshot should remain valid: %v", err)

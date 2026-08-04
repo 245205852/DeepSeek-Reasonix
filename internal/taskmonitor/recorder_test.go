@@ -31,6 +31,9 @@ func TestTaskRecorder_Lifecycle(t *testing.T) {
 	if snap.State != TaskStateRunning || snap.RuntimeState != RuntimeStateAlive || snap.Version != 1 || snap.SessionID != "sess-1" {
 		t.Fatalf("snapshot after start = %+v", snap)
 	}
+	if snap.JobID != "task-1" {
+		t.Fatalf("snapshot job id = %q, want task-1", snap.JobID)
+	}
 
 	r.RecordDone("task-1", jobs.Done, nil)
 	snap, _ = store.GetTask(ctx, dir, monitorTaskID("sess-1", "task-1"))
@@ -209,6 +212,40 @@ func TestTaskRecorder_DoneRetriesAfterConcurrentControlUpdate(t *testing.T) {
 	}
 	if snap.State != TaskStateCancelled || snap.RuntimeState != RuntimeStateExited || snap.Version != 3 {
 		t.Fatalf("completion evidence was lost after CAS retry: %+v", snap)
+	}
+}
+
+func TestControlAcceptsRecorderCompletionThatWinsPostKillCAS(t *testing.T) {
+	store := NewInMemoryStore()
+	now := time.Now()
+	monitorID := monitorTaskID("session-1", "task-1")
+	if err := store.UpsertTask("/p", TaskSnapshot{
+		SchemaVersion: 1, TaskID: monitorID, JobID: "task-1", SessionID: "session-1",
+		State: TaskStateRunning, RuntimeState: RuntimeStateAlive, Version: 1,
+		CreatedAt: now, UpdatedAt: now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	recorder := NewTaskRecorder(store, "/p", func() string { return "session-1" })
+	recorder.rememberMonitorID("task-1", monitorID)
+	killer := &mockKiller{fn: func(sessionID, jobID string) bool {
+		if sessionID != "session-1" || jobID != "task-1" {
+			t.Fatalf("runtime route = %q/%q, want session-1/task-1", sessionID, jobID)
+		}
+		recorder.RecordDone("task-1", jobs.Killed, nil)
+		return true
+	}}
+
+	res, err := NewControlService(store).StopTaskWithKiller(context.Background(), "/p", monitorID, 1, "", "stop-once", killer)
+	if err != nil || !res.Accepted {
+		t.Fatalf("stop after recorder completion: result=%+v err=%v", res, err)
+	}
+	if res.State != TaskStateCancelled || res.RuntimeState != RuntimeStateExited || res.Version != 2 {
+		t.Fatalf("stop result lost recorder completion: %+v", res)
+	}
+	idem, err := store.CheckIdempotency(context.Background(), "/p", "stop-once")
+	if err != nil || idem == nil || idem.Pending {
+		t.Fatalf("idempotency result = %+v, err=%v; want finalized", idem, err)
 	}
 }
 
