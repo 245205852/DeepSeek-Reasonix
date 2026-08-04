@@ -125,6 +125,9 @@ type SubagentStore struct {
 	dir       string
 	destroyed func(parentSession string) bool
 
+	// cleanupBeforeReread is a test seam for deterministic lease interleavings.
+	cleanupBeforeReread func(parentSession, ref string)
+
 	mu     sync.Mutex
 	locked map[string]bool
 }
@@ -292,14 +295,17 @@ func (s *SubagentStore) CleanupStaleRunning() (int, error) {
 			return cleaned, fmt.Errorf("acquire parent session lease %q: %w", parentID, err)
 		}
 		for _, ref := range parent.refs {
+			if s.cleanupBeforeReread != nil {
+				s.cleanupBeforeReread(parentID, ref)
+			}
 			// Re-read after acquiring the parent lease: the former owner may
 			// have completed the child between the initial scan and handoff.
 			meta, err := s.LoadMeta(ref)
 			if err != nil {
-				lease.Release()
 				if isSubagentMetaDecodeError(err) {
 					continue
 				}
+				lease.Release()
 				return cleaned, err
 			}
 			if meta.Status != SubagentRunning || strings.TrimSpace(meta.ParentSession) != parentID {

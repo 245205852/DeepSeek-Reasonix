@@ -2,10 +2,12 @@ package agent
 
 import (
 	"bufio"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 	"testing"
 
@@ -725,6 +727,61 @@ func TestSubagentStoreCleanupStaleRunningSkipsCorruptMeta(t *testing.T) {
 	}
 	if meta.Status != SubagentInterrupted {
 		t.Fatalf("status = %q, want interrupted", meta.Status)
+	}
+}
+
+func TestSubagentStoreCleanupStaleRunningKeepsParentLeaseAfterCorruptReread(t *testing.T) {
+	sessionDir := t.TempDir()
+	store := NewSubagentStore(filepath.Join(sessionDir, "subagents"))
+	spec := testSubagentSpec(t, "review")
+	spec.ParentSession = "lease-parent"
+
+	refs := make([]string, 0, 2)
+	for range 2 {
+		run, err := store.PrepareFresh(spec)
+		if err != nil {
+			t.Fatalf("PrepareFresh: %v", err)
+		}
+		if err := store.MarkRunning(run); err != nil {
+			t.Fatalf("MarkRunning: %v", err)
+		}
+		refs = append(refs, run.Ref)
+		run.Release()
+	}
+	sort.Strings(refs)
+
+	var probeErr error
+	store.cleanupBeforeReread = func(parentSession, ref string) {
+		switch ref {
+		case refs[0]:
+			if err := os.WriteFile(store.metaPath(ref), []byte(`{"createdAt":"not-a-time"}`), 0o600); err != nil {
+				t.Fatalf("corrupt first metadata reread: %v", err)
+			}
+		case refs[1]:
+			probe, err := TryAcquireSessionLease(filepath.Join(sessionDir, parentSession+".jsonl"))
+			probeErr = err
+			if probe != nil {
+				probe.Release()
+			}
+		}
+	}
+
+	cleaned, err := store.CleanupStaleRunning()
+	if err != nil {
+		t.Fatalf("CleanupStaleRunning: %v", err)
+	}
+	if !errors.Is(probeErr, ErrSessionLeaseHeld) {
+		t.Fatalf("parent lease probe before second reread = %v, want ErrSessionLeaseHeld", probeErr)
+	}
+	if cleaned != 1 {
+		t.Fatalf("cleaned = %d, want 1", cleaned)
+	}
+	meta, err := store.LoadMeta(refs[1])
+	if err != nil {
+		t.Fatalf("LoadMeta second ref: %v", err)
+	}
+	if meta.Status != SubagentInterrupted {
+		t.Fatalf("second ref status = %q, want interrupted", meta.Status)
 	}
 }
 
