@@ -2843,11 +2843,24 @@ export function Composer({
       setTextareaAutoOverflow(false);
       return;
     }
-    // Creation empty hero is a short single-line strip; do not let scrollHeight
-    // inflate the card into a tall empty shell.
+    // Creation empty hero starts single-line but must grow so multi-line drafts
+    // stay readable before send (review: fixed 20px + overflow:hidden clipped).
     if (heroMode) {
-      setTextareaAutoHeight(20);
-      setTextareaAutoOverflow(false);
+      const node = taRef.current;
+      if (!node) {
+        setTextareaAutoHeight(20);
+        setTextareaAutoOverflow(false);
+        return;
+      }
+      const previousHeight = node.style.height;
+      node.style.height = "auto";
+      const scrollHeight = node.scrollHeight || 20;
+      const maxHeight = 96;
+      const nextHeight = Math.min(Math.max(scrollHeight, 20), maxHeight);
+      const nextOverflow = scrollHeight > maxHeight + 1;
+      node.style.height = previousHeight;
+      setTextareaAutoHeight((current) => (current === nextHeight ? current : nextHeight));
+      setTextareaAutoOverflow((current) => (current === nextOverflow ? current : nextOverflow));
       return;
     }
     const richHeight = invocationsRef.current.length > 0 ? richInputRef.current?.scrollHeight() : 0;

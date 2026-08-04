@@ -30149,56 +30149,44 @@ body > .mermaid-diagram--fullscreen {
   height: 12px;
 }
 
-.app--creation .footer,
-:root[data-theme-style] .app--creation .footer {
+.app--creation .footer {
   border-top: 0;
   padding: 0 clamp(22px, 5vw, 56px) clamp(22px, 4vh, 36px);
   background: transparent;
-  transition:
-    transform 0.52s cubic-bezier(0.22, 1, 0.36, 1),
-    padding 0.4s cubic-bezier(0.22, 1, 0.36, 1);
+  transition: padding 0.4s cubic-bezier(0.22, 1, 0.36, 1);
 }
 
-/* Empty Creation: lift footer under the headline (shared hero column),
-   then ease back to the docked bottom composer once the session has content. */
+/* Empty Creation: title + composer share one responsive column (no fixed lift). */
 .app--creation .chat-pane--creation-empty {
   --creation-hero-col: min(100%, 720px);
-  --creation-hero-inline: clamp(22px, 5vw, 56px);
+  --creation-hero-inline: clamp(16px, 4vw, 56px);
 }
 
-.app--creation .chat-pane--creation-empty > .footer,
-:root[data-theme-style] .app--creation .chat-pane--creation-empty > .footer {
-  transform: translateY(calc(-1 * clamp(240px, 38vh, 360px)));
-  padding-bottom: 0;
-  will-change: transform;
+.app--creation .chat-pane--creation-empty > .footer {
+  flex: 0 0 auto;
+  padding: 0 var(--creation-hero-inline) clamp(16px, 3vh, 28px);
+  transform: none;
 }
 
-.app--creation .composer-wrap,
-:root[data-theme-style] .app--creation .composer-wrap {
+.app--creation .composer-wrap {
   width: min(100%, 880px);
   max-width: 880px;
   margin: 0 auto;
-  transition:
-    width 0.48s cubic-bezier(0.22, 1, 0.36, 1),
-    max-width 0.48s cubic-bezier(0.22, 1, 0.36, 1);
+  transition: width 0.48s cubic-bezier(0.22, 1, 0.36, 1), max-width 0.48s cubic-bezier(0.22, 1, 0.36, 1);
 }
 
-/* Slim centered hero composer: short whole card (input+model), not a tall shell. */
-.app--creation .composer-wrap--hero,
-:root[data-theme-style] .app--creation .composer-wrap--hero {
-  width: var(--creation-hero-col, min(100%, 720px));
-  max-width: var(--creation-hero-col, min(100%, 720px));
+/* Slim hero composer: short card; textarea grows for multi-line drafts. */
+.app--creation .composer-wrap--hero {
+  width: var(--creation-hero-col);
+  max-width: var(--creation-hero-col);
 }
 
-.app--creation .composer-wrap--hero .composer-resize-handle,
-:root[data-theme-style] .app--creation .composer-wrap--hero .composer-resize-handle {
+.app--creation .composer-wrap--hero .composer-resize-handle {
   display: none;
 }
 
 .app--creation .composer-wrap--hero .composer-card,
-.app--creation .composer-wrap--hero .composer-card.composer-card--autosized,
-:root[data-theme-style] .app--creation .composer-wrap--hero .composer-card,
-:root[data-theme-style] .app--creation .composer-wrap--hero .composer-card.composer-card--autosized {
+.app--creation .composer-wrap--hero .composer-card.composer-card--autosized {
   display: flex;
   flex-direction: column;
   border-radius: 12px;
@@ -30208,9 +30196,7 @@ body > .mermaid-diagram--fullscreen {
 }
 
 .app--creation .composer-wrap--hero .composer,
-.app--creation .composer-wrap--hero .composer-card--autosized .composer,
-:root[data-theme-style] .app--creation .composer-wrap--hero .composer,
-:root[data-theme-style] .app--creation .composer-wrap--hero .composer-card--autosized .composer {
+.app--creation .composer-wrap--hero .composer-card--autosized .composer {
   flex: 0 0 auto !important;
   min-height: 0 !important;
   height: auto !important;
@@ -30218,46 +30204,40 @@ body > .mermaid-diagram--fullscreen {
   border-bottom: 0;
 }
 
-.app--creation .composer-wrap--hero .composer__input-row,
-:root[data-theme-style] .app--creation .composer-wrap--hero .composer__input-row {
-  align-items: center;
+.app--creation .composer-wrap--hero .composer__input-row {
+  align-items: flex-start;
   flex: 0 0 auto !important;
-  min-height: 0 !important;
-  height: 28px !important;
+  min-height: 28px !important;
+  height: auto !important;
 }
 
-.app--creation .composer-wrap--hero .composer__content,
-:root[data-theme-style] .app--creation .composer-wrap--hero .composer__content {
+.app--creation .composer-wrap--hero .composer__content {
   height: auto !important;
   min-height: 0 !important;
   display: flex;
-  align-items: center;
+  align-items: flex-start;
 }
 
-.app--creation .composer-wrap--hero .composer__input,
-:root[data-theme-style] .app--creation .composer-wrap--hero .composer__input {
-  flex: 0 0 auto !important;
+.app--creation .composer-wrap--hero .composer__input {
+  flex: 1 1 auto !important;
   line-height: 1.25 !important;
   min-height: 20px !important;
-  height: 20px !important;
-  max-height: 20px !important;
-  padding: 0 !important;
-  overflow: hidden !important;
+  max-height: 96px !important;
+  padding: 4px 0 !important;
+  overflow-y: auto !important;
   resize: none !important;
 }
 
 .app--creation .composer-wrap--hero .composer__btn,
-.app--creation .composer-wrap--hero .composer__btn--send,
-:root[data-theme-style] .app--creation .composer-wrap--hero .composer__btn,
-:root[data-theme-style] .app--creation .composer-wrap--hero .composer__btn--send {
+.app--creation .composer-wrap--hero .composer__btn--send {
   width: 26px !important;
   height: 26px !important;
   margin-right: 2px;
+  margin-top: 1px;
   flex: 0 0 auto;
 }
 
-.app--creation .composer-wrap--hero .composer-meta,
-:root[data-theme-style] .app--creation .composer-wrap--hero .composer-meta {
+.app--creation .composer-wrap--hero .composer-meta {
   flex: 0 0 auto !important;
   min-height: 0 !important;
   height: auto !important;
@@ -30265,21 +30245,18 @@ body > .mermaid-diagram--fullscreen {
   gap: 0;
 }
 
-.app--creation .composer-wrap--hero .composer-meta__params,
-:root[data-theme-style] .app--creation .composer-wrap--hero .composer-meta__params {
+.app--creation .composer-wrap--hero .composer-meta__params {
   justify-content: flex-end;
   gap: 0;
   min-height: 0;
 }
 
-.app--creation .composer-wrap--hero .composer-meta__control--model,
-:root[data-theme-style] .app--creation .composer-wrap--hero .composer-meta__control--model {
+.app--creation .composer-wrap--hero .composer-meta__control--model {
   margin-left: 0;
   max-width: none;
 }
 
-.app--creation .composer-wrap--hero .composer-meta__control--model .modelsw__trigger,
-:root[data-theme-style] .app--creation .composer-wrap--hero .composer-meta__control--model .modelsw__trigger {
+.app--creation .composer-wrap--hero .composer-meta__control--model .modelsw__trigger {
   min-height: 22px;
   height: 22px;
   padding-inline: 7px;
@@ -30287,16 +30264,13 @@ body > .mermaid-diagram--fullscreen {
   font-weight: 400;
 }
 
-.app--creation .composer-wrap--hero .composer-meta__control--model .modelsw__label,
-:root[data-theme-style] .app--creation .composer-wrap--hero .composer-meta__control--model .modelsw__label {
+.app--creation .composer-wrap--hero .composer-meta__control--model .modelsw__label {
   font-weight: 400;
 }
 
 @media (prefers-reduced-motion: reduce) {
   .app--creation .footer,
-  :root[data-theme-style] .app--creation .footer,
-  .app--creation .composer-wrap,
-  :root[data-theme-style] .app--creation .composer-wrap {
+  .app--creation .composer-wrap {
     transition: none;
   }
 }
@@ -31772,40 +31746,36 @@ body > .mermaid-diagram--fullscreen {
   padding: 24px 32px clamp(180px, 22vh, 260px);
 }
 
-/* Empty Creation: less bottom reserve — hero composer lifts into the former card band.
-   Horizontal inset MUST match .footer so headline + composer share one left edge. */
-/* .main/.transcript overflow:hidden clips descenders (Hey's "y") under gradient text. */
-.app--creation .chat-pane--creation-empty .main,
-.app--creation .chat-pane--creation-empty .transcript-shell,
-.app--creation .chat-pane--creation-empty .transcript,
-.app--creation .chat-pane--creation-empty .transcript--empty,
-:root[data-theme-style] .app--creation .chat-pane--creation-empty .main,
-:root[data-theme-style] .app--creation .chat-pane--creation-empty .transcript-shell,
-:root[data-theme-style] .app--creation .chat-pane--creation-empty .transcript,
-:root[data-theme-style] .app--creation .chat-pane--creation-empty .transcript--empty {
-  overflow: visible !important;
-  overflow-x: visible !important;
-  overflow-y: visible !important;
+/* Empty Creation: flex stack keeps headline + footer composer in one flow. */
+.app--creation .chat-pane--creation-empty > .main {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  overflow: visible;
 }
 
+.app--creation .chat-pane--creation-empty .transcript-shell,
 .app--creation .chat-pane--creation-empty .transcript,
-.app--creation .chat-pane--creation-empty .transcript--empty,
-:root[data-theme-style] .app--creation .chat-pane--creation-empty .transcript,
-:root[data-theme-style] .app--creation .chat-pane--creation-empty .transcript--empty {
+.app--creation .chat-pane--creation-empty .transcript--empty {
+  overflow: visible !important;
   scrollbar-gutter: auto !important;
 }
 
 .app--creation .chat-pane--creation-empty .transcript--empty {
+  flex: 0 0 auto;
+  justify-content: flex-end;
   align-items: center;
-  padding: 24px var(--creation-hero-inline, clamp(22px, 5vw, 56px)) clamp(48px, 10vh, 96px);
+  min-height: 0;
+  padding: clamp(12px, 3vh, 28px) var(--creation-hero-inline) clamp(10px, 2vh, 20px);
 }
 
 .app--creation .transcript--empty > .welcome--creation {
-  margin-block: 0;
-  margin-inline: auto;
-  width: var(--creation-hero-col, min(100%, 720px));
-  max-width: var(--creation-hero-col, min(100%, 720px));
-  overflow: visible !important;
+  margin: 0 auto;
+  width: var(--creation-hero-col);
+  max-width: var(--creation-hero-col);
+  overflow: visible;
 }
 
 .app--creation .msg--user:not(.msg--im-source) .msg__body:not(.msg__body--editing),
@@ -32661,15 +32631,12 @@ body > .mermaid-diagram--fullscreen {
   border-radius: 7px;
 }
 
-/* Empty Creation hero stack: headline + composer share one 720 column (L/R edges). */
+/* Empty Creation hero stack: headline + composer share one column. */
 .app--creation .welcome--creation {
-  width: var(--creation-hero-col, min(100%, 720px));
-  max-width: var(--creation-hero-col, min(100%, 720px));
-  transform: translateY(-12px);
+  width: var(--creation-hero-col);
+  max-width: var(--creation-hero-col);
   display: grid;
   justify-items: stretch;
-  align-content: start;
-  align-items: stretch;
   text-align: left !important;
   margin-inline: auto;
   overflow: visible;
@@ -32680,15 +32647,13 @@ body > .mermaid-diagram--fullscreen {
   margin: 0;
   width: 100%;
   box-sizing: border-box;
-  font-size: clamp(calc(42px * var(--font-scale)), 5vw, calc(58px * var(--font-scale)));
+  font-size: clamp(calc(28px * var(--font-scale)), 4.2vw, calc(52px * var(--font-scale)));
   font-weight: 740;
   letter-spacing: -0.04em;
-  /* Room for Latin descenders under background-clip:text */
-  line-height: 1.45;
-  padding-bottom: 0.18em;
+  line-height: 1.35;
+  padding-bottom: 0.12em;
   text-align: left !important;
   overflow: visible !important;
-  /* Continuous accent gradient across the whole line (EN + ZH). */
   color: transparent;
   background: var(--accent-title-grad, var(--accent));
   background-clip: text;
@@ -32696,38 +32661,23 @@ body > .mermaid-diagram--fullscreen {
   -webkit-text-fill-color: transparent;
 }
 
-:root[data-theme="dark"][data-theme-style] .app--creation .welcome-creation__headline,
-:root[data-theme="light"][data-theme-style] .app--creation .welcome-creation__headline {
-  background: var(--accent-title-grad, var(--accent));
-  background-clip: text;
-  -webkit-background-clip: text;
-  -webkit-text-fill-color: transparent;
-}
-
-@media (prefers-color-scheme: dark) {
-  :root[data-theme-style]:not([data-theme]) .app--creation .welcome-creation__headline {
-    background: var(--accent-title-grad, var(--accent));
-    background-clip: text;
-    -webkit-background-clip: text;
-    -webkit-text-fill-color: transparent;
-  }
-}
-
-/* Same column width + same horizontal inset as transcript empty. */
-.app--creation .chat-pane--creation-empty > .footer,
-:root[data-theme-style] .app--creation .chat-pane--creation-empty > .footer {
-  padding-left: var(--creation-hero-inline, clamp(22px, 5vw, 56px));
-  padding-right: var(--creation-hero-inline, clamp(22px, 5vw, 56px));
-}
-
-.app--creation .chat-pane--creation-empty .composer-wrap--hero,
-:root[data-theme-style] .app--creation .chat-pane--creation-empty .composer-wrap--hero {
-  width: var(--creation-hero-col, min(100%, 720px));
-  max-width: var(--creation-hero-col, min(100%, 720px));
+.app--creation .chat-pane--creation-empty .composer-wrap--hero {
+  width: var(--creation-hero-col);
+  max-width: var(--creation-hero-col);
   margin-inline: auto;
 }
 
-@container (max-width: 760px) {
+@media (max-height: 640px) {
+  .app--creation .chat-pane--creation-empty .transcript--empty {
+    padding-top: 8px;
+    padding-bottom: 8px;
+  }
+  .app--creation .welcome-creation__headline {
+    font-size: clamp(calc(24px * var(--font-scale)), 3.6vw, calc(36px * var(--font-scale)));
+  }
+}
+
+@media (max-width: 760px) {
   .app--creation .chat-pane--creation-empty {
     --creation-hero-col: min(100%, 520px);
   }
