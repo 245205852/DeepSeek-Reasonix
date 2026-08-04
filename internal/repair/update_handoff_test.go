@@ -295,9 +295,113 @@ func TestPrepareAppBundleUpdateHandoffQuarantinesExistingBackup(t *testing.T) {
 	if got, err := os.ReadFile(filepath.Join(quarantines[0], "marker")); err != nil || string(got) != "preserve" {
 		t.Fatalf("quarantined backup marker = %q, %v", got, err)
 	}
+	if tx.OrphanedBackupPath != quarantines[0] || strings.TrimSpace(tx.OrphanedBackupTreeID) == "" {
+		t.Fatalf("quarantine ownership = %q %q, want recorded path and digest", tx.OrphanedBackupPath, tx.OrphanedBackupTreeID)
+	}
 	current, err := ReadPendingUpdate()
 	if err != nil || UpdateTransactionID(current) != UpdateTransactionID(tx) {
 		t.Fatalf("pending transaction = %+v, %v", current, err)
+	}
+}
+
+func TestCancelAppBundleUpdateHandoffCleansOwnedQuarantine(t *testing.T) {
+	fixture := newExistingAppBundleBackupFixture(t)
+	tx, err := PrepareAppBundleUpdateHandoff(
+		"v1", "v2", fixture.app, fixture.backup, fixture.stagedApp, fixture.staging, os.Getpid(),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := CancelPendingAppBundleUpdateHandoffExact(tx, time.Second); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Lstat(tx.OrphanedBackupPath); !os.IsNotExist(err) {
+		t.Fatalf("terminal transaction retained owned quarantine: %v", err)
+	}
+	if matches, _ := filepath.Glob(tx.OrphanedBackupPath + ".reasonix-cleanup-*"); len(matches) != 0 {
+		t.Fatalf("terminal cleanup retained temporary paths: %v", matches)
+	}
+	if _, err := os.Lstat(PendingUpdatePath()); !os.IsNotExist(err) {
+		t.Fatalf("cancelled transaction remains pending: %v", err)
+	}
+}
+
+func TestCancelAppBundleUpdateHandoffPreservesChangedQuarantine(t *testing.T) {
+	fixture := newExistingAppBundleBackupFixture(t)
+	tx, err := PrepareAppBundleUpdateHandoff(
+		"v1", "v2", fixture.app, fixture.backup, fixture.stagedApp, fixture.staging, os.Getpid(),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	changed := filepath.Join(tx.OrphanedBackupPath, "changed-after-prepare")
+	if err := os.WriteFile(changed, []byte("keep"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := CancelPendingAppBundleUpdateHandoffExact(tx, time.Second); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := os.ReadFile(changed); err != nil || string(got) != "keep" {
+		t.Fatalf("changed quarantine = %q, %v; want preserved", got, err)
+	}
+	if _, err := os.Lstat(PendingUpdatePath()); !os.IsNotExist(err) {
+		t.Fatalf("cancelled transaction remains pending: %v", err)
+	}
+}
+
+func TestCancelAppBundleUpdateHandoffPreservesConcurrentQuarantineRecreate(t *testing.T) {
+	fixture := newExistingAppBundleBackupFixture(t)
+	tx, err := PrepareAppBundleUpdateHandoff(
+		"v1", "v2", fixture.app, fixture.backup, fixture.stagedApp, fixture.staging, os.Getpid(),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	originalHook := updateCleanupAfterRename
+	updateCleanupAfterRename = func(original, _ string) {
+		if original != tx.OrphanedBackupPath {
+			return
+		}
+		if err := os.Mkdir(original, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(original, "concurrent"), []byte("keep"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Cleanup(func() { updateCleanupAfterRename = originalHook })
+
+	if _, err := CancelPendingAppBundleUpdateHandoffExact(tx, time.Second); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := os.ReadFile(filepath.Join(tx.OrphanedBackupPath, "concurrent")); err != nil || string(got) != "keep" {
+		t.Fatalf("concurrently recreated quarantine = %q, %v; want preserved", got, err)
+	}
+	if _, err := os.Lstat(PendingUpdatePath()); !os.IsNotExist(err) {
+		t.Fatalf("cancelled transaction remains pending: %v", err)
+	}
+}
+
+func TestAppBundleUpdateRejectsForgedOrphanedBackupMetadata(t *testing.T) {
+	tx, _ := prepareTestAppBundleHandoff(t)
+	tx.OrphanedBackupPath = filepath.Join(filepath.Dir(tx.TargetPath), "unrelated.reasonix-orphaned-1-0")
+	tx.OrphanedBackupTreeID = strings.Repeat("0", 64)
+	if err := validateUpdateTransaction(tx); err == nil || !strings.Contains(err.Error(), "unexpected name") {
+		t.Fatalf("validation error = %v, want forged quarantine rejection", err)
+	}
+}
+
+func TestAppBundleUpdateWithoutOrphanKeepsLegacyTransactionShape(t *testing.T) {
+	prepareTestAppBundleHandoff(t)
+	body, err := os.ReadFile(PendingUpdatePath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(body), "orphanedBackup") {
+		t.Fatalf("ordinary transaction unexpectedly gained orphan metadata: %s", body)
+	}
+	if _, err := ReadPendingUpdate(); err != nil {
+		t.Fatalf("ordinary transaction is no longer readable: %v", err)
 	}
 }
 

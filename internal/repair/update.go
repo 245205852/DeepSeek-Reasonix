@@ -56,6 +56,12 @@ type UpdateTransaction struct {
 	// BackupTreeID binds a macOS rollback backup to the bundle captured before
 	// the update. It remains optional for legacy transactions.
 	BackupTreeID string `json:"backupTreeId,omitempty"`
+	// OrphanedBackupPath and OrphanedBackupTreeID bind a quarantined backup to
+	// the transaction that displaced it. Terminal transaction cleanup removes
+	// only this exact tree after re-verifying its digest; older transactions
+	// without these optional fields retain their existing behavior.
+	OrphanedBackupPath   string `json:"orphanedBackupPath,omitempty"`
+	OrphanedBackupTreeID string `json:"orphanedBackupTreeId,omitempty"`
 }
 
 type UpdateTransactionFile struct {
@@ -340,9 +346,12 @@ func PrepareAppBundleUpdateHandoff(fromVersion, toVersion, appPath, backupPath, 
 	if err := VerifyAppBundleUpdateHandoffOriginal(tx); err != nil {
 		return nil, fmt.Errorf("prepare update: %w", err)
 	}
-	if _, err := quarantineExistingAppBundleUpdateBackup(tx); err != nil {
+	orphanedBackup, orphanedTreeID, err := quarantineExistingAppBundleUpdateBackup(tx)
+	if err != nil {
 		return nil, fmt.Errorf("prepare update: recover existing handoff backup: %w", err)
 	}
+	tx.OrphanedBackupPath = orphanedBackup
+	tx.OrphanedBackupTreeID = orphanedTreeID
 	// An uncooperative writer is not covered by Reasonix's mutation lock. Recheck
 	// the public path after quarantine so a recreated node is never adopted as the
 	// rollback backup of the new transaction.
@@ -457,7 +466,7 @@ func claimPendingAppBundleUpdateHandoff(
 		return fail(fmt.Errorf("claim update handoff: handoff metadata is missing"))
 	}
 
-	unlockTargets, err := lockRepairMutationsTimeout(timeout, tx.TargetPath, tx.BackupPath)
+	unlockTargets, err := lockRepairMutationsTimeout(timeout, pendingUpdateTargetPaths(tx)...)
 	if err != nil {
 		return fail(fmt.Errorf("claim update handoff: lock targets: %w", err))
 	}
@@ -1212,7 +1221,7 @@ func cancelPendingAppBundleUpdateHandoff(
 	if expected := strings.TrimSpace(expectedTransactionID); expected != "" && expected != repairPlanStateID(tx) {
 		return nil, fmt.Errorf("cancel update handoff: pending transaction changed")
 	}
-	unlockTargets, err := lockRepairMutationsTimeout(timeout, tx.TargetPath, tx.BackupPath)
+	unlockTargets, err := lockRepairMutationsTimeout(timeout, pendingUpdateTargetPaths(tx)...)
 	if err != nil {
 		return nil, fmt.Errorf("cancel update handoff: lock targets: %w", err)
 	}
@@ -1409,42 +1418,42 @@ func verifyAppBundleUpdateHandoffBackupAbsent(tx *UpdateTransaction) error {
 // The caller holds both the pending-update lock and the target mutation locks.
 // The current executable binding prevents a crafted caller from quarantining a
 // similarly named bundle beside an unrelated application.
-func quarantineExistingAppBundleUpdateBackup(tx *UpdateTransaction) (string, error) {
+func quarantineExistingAppBundleUpdateBackup(tx *UpdateTransaction) (string, string, error) {
 	if tx == nil || tx.TargetKind != "app-bundle" ||
 		tx.BackupPath != tx.TargetPath+".reasonix-update-backup" {
-		return "", fmt.Errorf("handoff backup transaction is invalid")
+		return "", "", fmt.Errorf("handoff backup transaction is invalid")
 	}
 	info, err := os.Lstat(tx.BackupPath)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return "", nil
+			return "", "", nil
 		}
-		return "", fmt.Errorf("inspect existing handoff backup: %w", err)
+		return "", "", fmt.Errorf("inspect existing handoff backup: %w", err)
 	}
 	if !info.IsDir() {
-		return "", fmt.Errorf("existing handoff backup is not a directory")
+		return "", "", fmt.Errorf("existing handoff backup is not a directory")
 	}
 
 	launcher, err := repairExecutable()
 	if err != nil {
-		return "", fmt.Errorf("resolve current Reasonix executable: %w", err)
+		return "", "", fmt.Errorf("resolve current Reasonix executable: %w", err)
 	}
 	resolvedTarget, err := filepath.EvalSymlinks(tx.TargetPath)
 	if err != nil {
-		return "", fmt.Errorf("resolve current app bundle: %w", err)
+		return "", "", fmt.Errorf("resolve current app bundle: %w", err)
 	}
 	resolvedLauncher, err := filepath.EvalSymlinks(launcher)
 	if err != nil {
-		return "", fmt.Errorf("resolve current Reasonix executable: %w", err)
+		return "", "", fmt.Errorf("resolve current Reasonix executable: %w", err)
 	}
 	rel, err := filepath.Rel(resolvedTarget, resolvedLauncher)
 	if err != nil || rel == "." || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
-		return "", fmt.Errorf("existing handoff backup is outside the current Reasonix installation")
+		return "", "", fmt.Errorf("existing handoff backup is outside the current Reasonix installation")
 	}
 
 	expectedTreeID, err := repairPlanTreeContentStateID(tx.BackupPath)
 	if err != nil {
-		return "", fmt.Errorf("read existing handoff backup digest: %w", err)
+		return "", "", fmt.Errorf("read existing handoff backup digest: %w", err)
 	}
 	for attempt := 0; attempt < 16; attempt++ {
 		quarantine := fmt.Sprintf(
@@ -1457,7 +1466,7 @@ func quarantineExistingAppBundleUpdateBackup(tx *UpdateTransaction) (string, err
 			if os.IsExist(err) {
 				continue
 			}
-			return "", fmt.Errorf("quarantine existing handoff backup: %w", err)
+			return "", "", fmt.Errorf("quarantine existing handoff backup: %w", err)
 		}
 		updateBackupAfterQuarantine(tx.BackupPath, quarantine)
 
@@ -1475,19 +1484,34 @@ func quarantineExistingAppBundleUpdateBackup(tx *UpdateTransaction) (string, err
 
 		actualTreeID, digestErr := repairPlanTreeContentStateID(quarantine)
 		if digestErr != nil {
-			return "", restore(fmt.Errorf("read quarantined handoff backup digest: %w", digestErr))
+			return "", "", restore(fmt.Errorf("read quarantined handoff backup digest: %w", digestErr))
 		}
 		if actualTreeID != expectedTreeID {
-			return "", restore(fmt.Errorf("existing handoff backup changed during quarantine"))
+			return "", "", restore(fmt.Errorf("existing handoff backup changed during quarantine"))
 		}
 		if _, statErr := os.Lstat(tx.BackupPath); statErr == nil {
-			return "", fmt.Errorf("handoff backup path was recreated during recovery; preserved quarantined backup at %s", quarantine)
+			return "", "", fmt.Errorf("handoff backup path was recreated during recovery; preserved quarantined backup at %s", quarantine)
 		} else if !os.IsNotExist(statErr) {
-			return "", fmt.Errorf("inspect recovered handoff backup path: %w", statErr)
+			return "", "", fmt.Errorf("inspect recovered handoff backup path: %w", statErr)
 		}
-		return quarantine, nil
+		return quarantine, actualTreeID, nil
 	}
-	return "", fmt.Errorf("cannot allocate handoff backup quarantine path")
+	return "", "", fmt.Errorf("cannot allocate handoff backup quarantine path")
+}
+
+// cleanupOrphanedAppBundleUpdateBackup retires only the quarantine recorded by
+// a terminal transaction. The no-replace move and digest check keep a changed
+// or concurrently replaced directory intact for diagnosis instead of deleting
+// a path merely because its name resembles a Reasonix quarantine.
+func cleanupOrphanedAppBundleUpdateBackup(tx *UpdateTransaction) {
+	if validateOrphanedAppBundleBackupMetadata(tx) != nil ||
+		strings.TrimSpace(tx.OrphanedBackupPath) == "" {
+		return
+	}
+	if err := removeUpdateBackupTreeMatching(tx.OrphanedBackupPath, tx.OrphanedBackupTreeID); err != nil {
+		slog.Warn("repair: preserving quarantined app backup after cleanup failed",
+			"path", tx.OrphanedBackupPath, "error", err)
+	}
 }
 
 func verifyAppBundleUpdateTree(path, expected, mismatch string) error {
@@ -1645,6 +1669,7 @@ func removePendingUpdateExactVerified(expected *UpdateTransaction, verify func()
 	if err := removePendingUpdateFile(cleanup); err != nil {
 		return restore(err)
 	}
+	cleanupOrphanedAppBundleUpdateBackup(expected)
 	return nil
 }
 
@@ -3209,6 +3234,9 @@ func validateUpdateTransactionForLauncher(tx *UpdateTransaction, launcher string
 		if err := validateAppBundleHandoffMetadata(tx); err != nil {
 			return fmt.Errorf("pending update %w", err)
 		}
+		if err := validateOrphanedAppBundleBackupMetadata(tx); err != nil {
+			return fmt.Errorf("pending update %w", err)
+		}
 	default:
 		return fmt.Errorf("pending update target kind is invalid")
 	}
@@ -3274,6 +3302,47 @@ func validateAppBundleHandoffMetadata(tx *UpdateTransaction) error {
 	if !strings.HasPrefix(stagingBase, "reasonix-mac-update-") {
 		return fmt.Errorf("handoff staging directory has an unexpected name")
 	}
+	return nil
+}
+
+func validateOrphanedAppBundleBackupMetadata(tx *UpdateTransaction) error {
+	if tx == nil {
+		return fmt.Errorf("orphaned backup metadata is incomplete")
+	}
+	path := strings.TrimSpace(tx.OrphanedBackupPath)
+	treeID := strings.TrimSpace(tx.OrphanedBackupTreeID)
+	if path == "" && treeID == "" {
+		return nil
+	}
+	if tx.TargetKind != "app-bundle" || path == "" || treeID == "" {
+		return fmt.Errorf("orphaned backup metadata is incomplete")
+	}
+	path = filepath.Clean(path)
+	if !filepath.IsAbs(path) || filepath.Dir(path) != filepath.Dir(tx.BackupPath) {
+		return fmt.Errorf("orphaned backup path is outside the app installation directory")
+	}
+	prefix := filepath.Base(tx.BackupPath) + ".reasonix-orphaned-"
+	suffix, ok := strings.CutPrefix(filepath.Base(path), prefix)
+	if !ok {
+		return fmt.Errorf("orphaned backup path has an unexpected name")
+	}
+	parts := strings.Split(suffix, "-")
+	if len(parts) != 2 {
+		return fmt.Errorf("orphaned backup path has an unexpected name")
+	}
+	for _, part := range parts {
+		if part == "" || strings.Trim(part, "0123456789") != "" {
+			return fmt.Errorf("orphaned backup path has an unexpected name")
+		}
+	}
+	if len(treeID) != sha256.Size*2 {
+		return fmt.Errorf("orphaned backup digest is invalid")
+	}
+	if _, err := hex.DecodeString(treeID); err != nil {
+		return fmt.Errorf("orphaned backup digest is invalid")
+	}
+	tx.OrphanedBackupPath = path
+	tx.OrphanedBackupTreeID = treeID
 	return nil
 }
 
