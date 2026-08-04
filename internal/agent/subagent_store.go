@@ -240,6 +240,20 @@ func (s *SubagentStore) CleanupStaleRunning() (int, error) {
 	if s == nil {
 		return 0, nil
 	}
+	// On Windows, os.ReadDir can report ERROR_DIRECTORY as an IsNotExist
+	// error when the store path exists but is a regular file. Check the leaf
+	// first so a malformed store remains a startup error instead of being
+	// mistaken for an absent store.
+	info, err := os.Stat(s.dir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return 0, nil
+		}
+		return 0, err
+	}
+	if !info.IsDir() {
+		return 0, fmt.Errorf("subagent store path %q is not a directory", s.dir)
+	}
 	entries, err := os.ReadDir(s.dir)
 	if err != nil {
 		if os.IsNotExist(err) {
