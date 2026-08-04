@@ -476,17 +476,6 @@ func (a *App) RemoveRemoteForward(hostID, forwardID string) error {
 	return rt.RemoveForward(hostID, forwardID)
 }
 
-func (a *App) EnsureRemoteServer(hostID, workspace string) error {
-	rt, err := a.remoteRT()
-	if err != nil {
-		return err
-	}
-	a.goSafe("remoteEnsureServer", func() {
-		_, _, _ = rt.EnsureServer(a.bootContext(), hostID, workspace)
-	})
-	return nil
-}
-
 // OpenRemoteWorkspace is the idempotent "open remote web" entry: it starts or
 // reuses the target workspace's remote Serve, atomically replaces the loopback
 // tunnel, then opens (or re-points) the host's web window. The Serve and tunnel

@@ -3,12 +3,17 @@ import { useCallback, useEffect, useRef, useState, type ReactNode } from "react"
 import { app } from "../lib/bridge";
 import { useT } from "../lib/i18n";
 import { isRemoteDegradedWarning, isRemoteTerminalFailure, remoteConnectionErrorSummaryKey } from "../lib/remoteErrors";
-import { resolveRemoteWorkspace } from "../lib/workbenchTarget";
 import { useOverlayStore } from "../store/overlays";
 import { useRemoteStore, type RemoteExplorerTab } from "../store/remote";
 import type { RemoteDirEntry, RemoteForwardView } from "../lib/types";
 import { CodeViewer } from "./CodeViewer";
 import { RemoteStatusChip } from "./RemoteHostsPage";
+
+// resolveRemoteWorkspace prefers the last-opened workspace for the host and
+// falls back to the host's configured default workspace.
+function resolveRemoteWorkspace(lastWorkspace?: string, defaultWorkspace?: string): string {
+  return lastWorkspace?.trim() || defaultWorkspace?.trim() || "";
+}
 
 const EMPTY_REMOTE_FORWARDS: RemoteForwardView[] = [];
 
@@ -413,13 +418,8 @@ function RemoteServerTab({ hostId, connected, defaultWorkspace }: { hostId: stri
       </div>
       <div className="remote-server__actions">
         <button className="btn btn--primary" disabled={!connected || !workspace || busy} onClick={() => void start()}>
-          {t("remote.server.start")}
+          {t("remote.server.openWeb")}
         </button>
-        {server?.localUrl && (
-          <button className="btn" onClick={() => void app.OpenRemoteWorkspace(hostId, workspace)}>
-            {t("remote.server.openBrowser")}
-          </button>
-        )}
         <button className="btn" disabled={!canManageServer || busy} onClick={() => void stop()}>
           {t("remote.server.stop")}
         </button>
@@ -427,6 +427,7 @@ function RemoteServerTab({ hostId, connected, defaultWorkspace }: { hostId: stri
           {t("remote.server.logs")}
         </button>
       </div>
+      <p className="remote-panel__hint">{t("remote.server.providerHint")}</p>
       {logsOpen.current && (
         <pre className="remote-server__logs">
           {logs}
