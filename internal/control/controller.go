@@ -1647,14 +1647,6 @@ func (c *Controller) runRefTurn(input, display string) {
 	c.runRefTurnWithRefs(input, input, display)
 }
 
-func (c *Controller) runEditedRefTurn(input, display, original string) {
-	c.runEditedRefTurnWithRefs(input, input, display, original)
-}
-
-func (c *Controller) runScopedRefTurn(input, display string) {
-	c.runScopedRefTurnWithRefs(input, input, display)
-}
-
 // runRefTurnWithFormat runs a reference turn with a structured-output
 // format bound to its context (symmetric with runGoalLoop's withTurnFormat
 // injection — format is a property of every accepted turn, not just the
@@ -1702,23 +1694,9 @@ func (c *Controller) runRefTurnWithRefs(input, refLine, display string) {
 	c.runRefTurnWithResolver(input, refLine, display, c.ResolveRefs)
 }
 
-func (c *Controller) runEditedRefTurnWithRefs(input, refLine, display, original string) {
-	c.runEditedRefTurnWithResolver(input, refLine, display, original, c.ResolveRefs)
-}
-
-func (c *Controller) runScopedRefTurnWithRefs(input, refLine, display string) {
-	c.runRefTurnWithResolver(input, refLine, display, c.ResolveScopedRefs)
-}
-
 func (c *Controller) runRefTurnWithResolver(input, refLine, display string, resolve func(context.Context, string) (string, []string)) {
 	c.runGuarded(func(ctx context.Context) error {
 		return c.runRefTurnWithResolverSync(ctx, input, refLine, display, "", resolve)
-	})
-}
-
-func (c *Controller) runEditedRefTurnWithResolver(input, refLine, display, original string, resolve func(context.Context, string) (string, []string)) {
-	c.runGuarded(func(ctx context.Context) error {
-		return c.runRefTurnWithResolverSync(ctx, input, refLine, display, original, resolve)
 	})
 }
 
