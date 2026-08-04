@@ -36721,14 +36721,18 @@ body > .mermaid-diagram--fullscreen {
   outline: none;
   background: var(--bg-elev-2);
 }
-/* Task Monitor panel */
-.taskmonitor { position:absolute; left:var(--sidebar-width); right:0; bottom:0; z-index:var(--z-dock); background:var(--bg,#111); border-top:1px solid var(--border,#333); box-shadow:0 -6px 18px rgba(0,0,0,.28); }
+/* Task Monitor panel. The Codex-style popover keeps the chat composer clear. */
+.taskmonitor-popover { position:absolute; top:calc(100% + 8px); right:0; width:min(440px, calc(100vw - 32px)); max-height:min(72vh, 680px); z-index:var(--z-dock); border:1px solid var(--border,#333); border-radius:10px; background:var(--bg,#111); box-shadow:0 14px 36px rgba(0,0,0,.42); overflow:hidden; }
+.taskmonitor { background:var(--bg,#111); }
+.taskmonitor--popover { max-height:inherit; }
 .taskmonitor__head { display:flex; align-items:center; gap:6px; width:100%; padding:8px 12px; font-size:13px; }
 .taskmonitor__toggle,.taskmonitor__refresh,.taskmonitor__close { background:none; border:0; color:inherit; cursor:pointer; }
 .taskmonitor__toggle { display:flex; padding:0; }
 .taskmonitor__title { flex:1; text-align:left; font-weight:600; }
 .taskmonitor__count { background:var(--muted,#555); color:#fff; border-radius:10px; padding:0 6px; font-size:11px; line-height:18px; }
 .taskmonitor__body { max-height:360px; overflow-y:auto; }
+.taskmonitor--popover .taskmonitor__body { max-height:calc(min(72vh, 680px) - 44px); }
+.taskmonitor__category-title { padding:10px 16px 4px; color:var(--fg-dim,#aaa); font-size:11px; font-weight:650; text-transform:uppercase; letter-spacing:.06em; }
 .taskmonitor__state { display:flex; align-items:center; gap:8px; padding:16px; font-size:13px; color:var(--muted,#888); }
 .taskmonitor__state--error { color:#ef4444; }
 .taskmonitor__task { border-bottom:1px solid var(--border,#2a2a2a); }

@@ -12220,6 +12220,38 @@ func (a *App) ListTasks() ([]taskmonitor.TaskSnapshot, error) {
 	return a.taskStore().ListTasks(a.ctx, a.projectDir())
 }
 
+// CurrentTaskSessionID returns the stable branch ID for the active desktop
+// session. Task Monitor uses this as an optional view filter; an empty value
+// means that the active tab has no session controller yet.
+func (a *App) CurrentTaskSessionID() string {
+	_, ctrl := a.activeTabAndCtrl()
+	if ctrl == nil {
+		return ""
+	}
+	return agent.BranchID(ctrl.SessionPath())
+}
+
+// ListTasksForSession limits the project task view to one desktop session.
+// The unfiltered ListTasks method remains for compatibility with existing
+// callers and project-wide diagnostics.
+func (a *App) ListTasksForSession(sessionID string) ([]taskmonitor.TaskSnapshot, error) {
+	tasks, err := a.ListTasks()
+	if err != nil || strings.TrimSpace(sessionID) == "" {
+		return tasks, err
+	}
+	return filterTasksBySession(tasks, sessionID), nil
+}
+
+func filterTasksBySession(tasks []taskmonitor.TaskSnapshot, sessionID string) []taskmonitor.TaskSnapshot {
+	filtered := make([]taskmonitor.TaskSnapshot, 0, len(tasks))
+	for _, task := range tasks {
+		if task.SessionID == sessionID {
+			filtered = append(filtered, task)
+		}
+	}
+	return filtered
+}
+
 func (a *App) GetTask(taskID string) (*taskmonitor.TaskSnapshot, error) {
 	return a.taskStore().GetTask(a.ctx, a.projectDir(), taskID)
 }

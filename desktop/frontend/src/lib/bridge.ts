@@ -277,6 +277,8 @@ export interface AppBindings {
   UsageStats(req: UsageStatsRequest): Promise<UsageStatsRange>;
   Jobs(): Promise<JobView[]>;
   ListTasks(): Promise<TaskSnapshot[]>;
+  CurrentTaskSessionID(): Promise<string>;
+  ListTasksForSession(sessionID: string): Promise<TaskSnapshot[]>;
   GetTask(taskID: string): Promise<TaskSnapshot | null>;
   ListTaskEvents(taskID: string, afterSequence: number): Promise<TaskEvent[]>;
   StopTask(taskID: string, expectedVersion: number, reason: string, idemKey: string): Promise<ControlResult>;
@@ -4511,6 +4513,8 @@ function makeMockApp(): AppBindings {
     async HeartbeatTriggerNow(_id: string) {},
     async HeartbeatGenerateID() { return "mock-" + Date.now().toString(36); },
     async ListTasks() { return []; },
+    async CurrentTaskSessionID() { return ""; },
+    async ListTasksForSession() { return []; },
     async GetTask() { return null; },
     async ListTaskEvents() { return []; },
     async StopTask() { return { schema_version: 1, command: "stop", task_id: "", accepted: false, idempotent: false, error: { code: "mock", message: "not available in browser mock" } }; },

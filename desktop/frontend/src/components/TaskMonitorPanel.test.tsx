@@ -3,6 +3,7 @@
 import { JSDOM } from "jsdom";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
+import { LocaleProvider } from "../lib/i18n";
 
 type Task = Record<string, unknown>;
 type Event = Record<string, unknown>;
@@ -64,10 +65,14 @@ globalThis.requestAnimationFrame = dom.window.requestAnimationFrame.bind(dom.win
 globalThis.cancelAnimationFrame = dom.window.cancelAnimationFrame.bind(dom.window);
 
 let listTasksImpl: () => Promise<Task[]> = async () => [];
+let currentTaskSessionID = "";
+let sessionListCalls = 0;
 let listEventsImpl: () => Promise<Event[]> = async () => [];
 const requeueCalls: unknown[][] = [];
 const mockApp = {
   ListTasks: () => listTasksImpl(),
+  CurrentTaskSessionID: () => Promise.resolve(currentTaskSessionID),
+  ListTasksForSession: () => { sessionListCalls += 1; return listTasksImpl(); },
   GetTask: async () => null,
   ListTaskEvents: () => listEventsImpl(),
   StopTask: async () => ({ schema_version: 1, command: "stop", task_id: "", accepted: true, idempotent: false }),
@@ -103,7 +108,11 @@ async function renderPanel(onClose?: () => void) {
   document.body.appendChild(activeHost);
   activeRoot = createRoot(activeHost);
   await act(async () => {
-    activeRoot?.render(<TaskMonitorPanel onClose={onClose} />);
+    activeRoot?.render(
+      <LocaleProvider>
+        <TaskMonitorPanel onClose={onClose} />
+      </LocaleProvider>,
+    );
     await flush();
   });
 }
@@ -116,6 +125,8 @@ async function cleanup() {
   activeRoot = null;
   activeHost = null;
   listTasksImpl = async () => [];
+  currentTaskSessionID = "";
+  sessionListCalls = 0;
   listEventsImpl = async () => [];
   requeueCalls.length = 0;
 }
@@ -174,6 +185,13 @@ await check("shows task-fetch errors", async () => {
   await renderPanel();
   await openPanel();
   return document.body.textContent?.includes("Network error") === true;
+});
+
+await check("filters tasks to the active session", async () => {
+  currentTaskSessionID = "sess-current";
+  listTasksImpl = async () => [snap({ session_id: "sess-current" })];
+  await renderPanel();
+  return sessionListCalls === 1;
 });
 
 await check("renders lifecycle badges", async () => {
@@ -236,7 +254,7 @@ await check("shows task-event errors", async () => {
 await check("calls the close callback", async () => {
   let closeCalls = 0;
   await renderPanel(() => { closeCalls += 1; });
-  await click(buttonByLabel("Close task panel"));
+  await click(buttonByLabel("Close session summary"));
   return closeCalls === 1;
 });
 

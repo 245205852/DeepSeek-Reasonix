@@ -33,7 +33,6 @@ import {
   Cpu,
   Palette,
   X,
-  ListTodo,
   TerminalSquare,
 } from "lucide-react";
 import { useToast } from "./lib/toast";
@@ -4329,16 +4328,6 @@ export default function App() {
           {sidebarWorkbench ? (
             <nav className="sidebar__nav sidebar__nav--footer">
               <div className="sidebar__utility-row" aria-label={t("sidebar.utilityActions")}>
-                <Tooltip label="Tasks" fill side="top">
-                  <button
-                    className="sidebar__utility-button"
-                    type="button"
-                    onClick={() => setTasksOpen(true)}
-                    aria-label="Tasks"
-                  >
-                    <ListTodo size={16} aria-hidden="true" />
-                  </button>
-                </Tooltip>
                 <Tooltip label={t("sidebar.trash")} fill side="top">
                   <button
                     className="sidebar__utility-button"
@@ -4376,10 +4365,6 @@ export default function App() {
             </nav>
           ) : (
             <nav className="sidebar__nav">
-              <button className="sidebar__navitem" type="button" onClick={() => setTasksOpen(true)} title="Tasks">
-                <ListTodo size={15} />
-                <span>Tasks</span>
-              </button>
               {sidebarCreation && (
                 <Tooltip label={t("projectTree.searchPlaceholder")} fill side="right" disabled={sidebarNavTooltipDisabled}>
                   <button
@@ -4690,6 +4675,30 @@ export default function App() {
                     <PanelRight size={15} />
                   </button>
                 </Tooltip>
+              )}
+              <Tooltip label="Session summary">
+                <button
+                  className={`topicbar__action-btn topicbar__action-btn--icon topicbar__action-btn--utility${tasksOpen ? " topicbar__action-btn--active" : ""}`}
+                  type="button"
+                  aria-label="Session summary"
+                  aria-expanded={tasksOpen}
+                  onClick={() => setTasksOpen((open) => !open)}
+                >
+                  <Activity size={14} />
+                </button>
+              </Tooltip>
+              {tasksOpen && (
+                <div className="taskmonitor-popover" role="dialog" aria-label="Session summary">
+                  <Suspense fallback={null}>
+                    <TaskMonitorPanel
+                      key={`${activeTab?.workspaceRoot || "global"}:${activeTab?.sessionPath || ""}`}
+                      initialOpen
+                      popover
+                      summaryMode
+                      onClose={() => setTasksOpen(false)}
+                    />
+                  </Suspense>
+                </div>
               )}
             </div>
           </header>
@@ -5156,15 +5165,6 @@ export default function App() {
             </div>
           </aside>
         )}
-        {tasksOpen && (
-          <Suspense fallback={null}>
-            <TaskMonitorPanel
-              key={activeTab?.workspaceRoot || "global"}
-              onClose={() => setTasksOpen(false)}
-            />
-          </Suspense>
-        )}
-
         <>
           <aside
             className="terminal-drawer"

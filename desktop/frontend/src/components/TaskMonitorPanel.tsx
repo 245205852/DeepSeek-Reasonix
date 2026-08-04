@@ -11,35 +11,39 @@ import {
   XCircle,
 } from "lucide-react";
 import { app } from "../lib/bridge";
+import { useT } from "../lib/i18n";
 import type { TaskEvent, TaskSnapshot } from "../lib/types";
 
 // --- helpers ---
 
 const STATE_CONFIG: Record<
   string,
-  { label: string; color: string; dot: string }
+  { key: "queued" | "running" | "waiting" | "succeeded" | "failed" | "cancelled" | "stale"; color: string; dot: string }
 > = {
-  queued: { label: "Queued", color: "#6b7280", dot: "⚪" },
-  running: { label: "Running", color: "#3b82f6", dot: "🔵" },
-  waiting: { label: "Waiting", color: "#f59e0b", dot: "🟡" },
-  succeeded: { label: "Succeeded", color: "#22c55e", dot: "🟢" },
-  failed: { label: "Failed", color: "#ef4444", dot: "🔴" },
-  cancelled: { label: "Cancelled", color: "#9ca3af", dot: "⏹️" },
-  stale: { label: "Stale", color: "#d4d4d8", dot: "⬜" },
+  queued: { key: "queued", color: "#6b7280", dot: "⚪" },
+  running: { key: "running", color: "#3b82f6", dot: "🔵" },
+  waiting: { key: "waiting", color: "#f59e0b", dot: "🟡" },
+  succeeded: { key: "succeeded", color: "#22c55e", dot: "🟢" },
+  failed: { key: "failed", color: "#ef4444", dot: "🔴" },
+  cancelled: { key: "cancelled", color: "#9ca3af", dot: "⏹️" },
+  stale: { key: "stale", color: "#d4d4d8", dot: "⬜" },
 };
 
-function stateConfig(state: string) {
-  return STATE_CONFIG[state] ?? { label: state, color: "#6b7280", dot: "❓" };
+function stateConfig(state: string, t: ReturnType<typeof useT>) {
+  const config = STATE_CONFIG[state];
+  return config
+    ? { ...config, label: t(`task.state.${config.key}` as never) }
+    : { label: state, color: "#6b7280", dot: "❓" };
 }
 
-function runtimeConfig(state?: string) {
+function runtimeConfig(state: string | undefined, t: ReturnType<typeof useT>) {
   switch (state) {
     case "alive":
-      return { label: "Live", color: "#22c55e" };
+      return { label: t("task.runtime.live"), color: "#22c55e" };
     case "exited":
-      return { label: "Exited", color: "#9ca3af" };
+      return { label: t("task.runtime.exited"), color: "#9ca3af" };
     default:
-      return { label: "Runtime unknown", color: "#6b7280" };
+      return { label: t("task.runtime.unknown"), color: "#6b7280" };
   }
 }
 
@@ -64,13 +68,13 @@ function shortID(id: string): string {
   return id.length > 8 ? id.slice(0, 8) : id;
 }
 
-function eventSummary(ev: TaskEvent): string {
-  if (ev.error_code) return `Error: ${ev.error_code}`;
+function eventSummary(ev: TaskEvent, t: ReturnType<typeof useT>): string {
+  if (ev.error_code) return t("task.event.error", { code: ev.error_code });
   switch (ev.event_type) {
     case "state_change":
-      return `State → ${ev.state} · Runtime → ${runtimeConfig(ev.runtime_state).label}`;
+      return t("task.event.stateChange", { state: ev.state, runtime: runtimeConfig(ev.runtime_state, t).label });
     case "error":
-      return ev.error_summary || "Error";
+      return ev.error_summary || t("task.error");
     default:
       return ev.event_type;
   }
@@ -80,12 +84,23 @@ function eventSummary(ev: TaskEvent): string {
 
 const POLL_INTERVAL_MS = 5000;
 
-export function TaskMonitorPanel({ onClose }: { onClose?: () => void }) {
+export function TaskMonitorPanel({
+  onClose,
+  initialOpen = false,
+  popover = false,
+  summaryMode = false,
+}: {
+  onClose?: () => void;
+  initialOpen?: boolean;
+  popover?: boolean;
+  summaryMode?: boolean;
+}) {
+  const t = useT();
   const [tasks, setTasks] = useState<TaskSnapshot[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
-  const [open, setOpen] = useState(false);
+  const [open, setOpen] = useState(initialOpen);
   const [actionTask, setActionTask] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   const [actionMessage, setActionMessage] = useState<string | null>(null);
@@ -104,7 +119,8 @@ export function TaskMonitorPanel({ onClose }: { onClose?: () => void }) {
   const fetchTasks = useCallback(async () => {
     try {
       setError(null);
-      const list = await app.ListTasks();
+      const sessionID = await app.CurrentTaskSessionID();
+      const list = sessionID ? await app.ListTasksForSession(sessionID) : await app.ListTasks();
       setTasks(list ?? []);
     } catch (e) {
       setError(String(e));
@@ -224,7 +240,7 @@ export function TaskMonitorPanel({ onClose }: { onClose?: () => void }) {
   );
 
   return (
-    <div className="taskmonitor">
+    <div className={`taskmonitor${popover ? " taskmonitor--popover" : ""}`}>
       <div className="taskmonitor__head">
         <button
           className="taskmonitor__toggle"
@@ -234,7 +250,7 @@ export function TaskMonitorPanel({ onClose }: { onClose?: () => void }) {
         >
           {open ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
         </button>
-        <span className="taskmonitor__title">Tasks</span>
+        <span className="taskmonitor__title">{summaryMode ? t("summary.session") : t("summary.tasks")}</span>
         <span className="taskmonitor__count">{tasks.length}</span>
         <button
           className="taskmonitor__refresh"
@@ -242,8 +258,8 @@ export function TaskMonitorPanel({ onClose }: { onClose?: () => void }) {
             setLoading(true);
             fetchTasks();
           }}
-          title="Refresh"
-          aria-label="Refresh tasks"
+          title={t("summary.refresh")}
+          aria-label={t("summary.refreshTasks")}
         >
           <RotateCw size={12} />
         </button>
@@ -251,8 +267,8 @@ export function TaskMonitorPanel({ onClose }: { onClose?: () => void }) {
           <button
             className="taskmonitor__close"
             onClick={onClose}
-            title="Close"
-            aria-label="Close task panel"
+            title={t("common.close")}
+            aria-label={t("summary.close")}
           >
             <X size={14} />
           </button>
@@ -261,12 +277,13 @@ export function TaskMonitorPanel({ onClose }: { onClose?: () => void }) {
 
       {open && (
         <div className="taskmonitor__body">
+          {summaryMode && <div className="taskmonitor__category-title">{t("summary.tasks")}</div>}
           {actionError && <div className="taskmonitor__state taskmonitor__state--error">{actionError}</div>}
           {actionMessage && <div className="taskmonitor__state">{actionMessage}</div>}
           {loading && (
             <div className="taskmonitor__state">
               <Loader2 size={16} className="taskmonitor__spinner" />
-              <span>Loading...</span>
+              <span>{t("common.loading")}</span>
             </div>
           )}
 
@@ -280,35 +297,35 @@ export function TaskMonitorPanel({ onClose }: { onClose?: () => void }) {
           {!loading && !error && sorted.length === 0 && (
             <div className="taskmonitor__state taskmonitor__state--empty">
               <Clock size={16} />
-              <span>No background tasks</span>
+              <span>{t("summary.noTasks")}</span>
             </div>
           )}
 
           {!loading &&
-            sorted.map((t) => {
-              const cfg = stateConfig(t.state);
-              const runtime = runtimeConfig(t.runtime_state);
-              const isOpen = expanded.has(t.task_id);
+            sorted.map((task) => {
+              const cfg = stateConfig(task.state, t);
+              const runtime = runtimeConfig(task.runtime_state, t);
+              const isOpen = expanded.has(task.task_id);
               const terminal =
-                t.state === "succeeded" ||
-                t.state === "failed" ||
-                t.state === "cancelled" ||
-                t.state === "stale";
-              const evs = taskEvents.get(t.task_id) ?? [];
-              const evLoading = eventsLoading.has(t.task_id);
-              const evError = eventsError.get(t.task_id);
+                task.state === "succeeded" ||
+                task.state === "failed" ||
+                task.state === "cancelled" ||
+                task.state === "stale";
+              const evs = taskEvents.get(task.task_id) ?? [];
+              const evLoading = eventsLoading.has(task.task_id);
+              const evError = eventsError.get(task.task_id);
 
               return (
                 <div
-                  key={t.task_id}
-                  className={`taskmonitor__task taskmonitor__task--${safeStateClass(t.state)}`}
+                  key={task.task_id}
+                  className={`taskmonitor__task taskmonitor__task--${safeStateClass(task.state)}`}
                 >
                   <div className="taskmonitor__task-head">
                     <button
                       className="taskmonitor__expand"
-                      onClick={() => toggleTask(t.task_id)}
+                      onClick={() => toggleTask(task.task_id)}
                       aria-expanded={isOpen}
-                      aria-label={`Task ${shortID(t.task_id)} — ${cfg.label}`}
+                      aria-label={t("summary.taskLabel", { id: shortID(task.task_id), state: cfg.label })}
                     >
                       <span
                         className="taskmonitor__dot"
@@ -317,7 +334,7 @@ export function TaskMonitorPanel({ onClose }: { onClose?: () => void }) {
                         {cfg.dot}
                       </span>
                       <span className="taskmonitor__id">
-                        {shortID(t.task_id)}
+                        {shortID(task.task_id)}
                       </span>
                       <span
                         className="taskmonitor__badge"
@@ -333,14 +350,14 @@ export function TaskMonitorPanel({ onClose }: { onClose?: () => void }) {
                         style={{ color: runtime.color }}
                         title="Runtime process state"
                       >
-                        <span aria-hidden="true">{t.runtime_state === "alive" ? "●" : "○"}</span>
+                        <span aria-hidden="true">{task.runtime_state === "alive" ? "●" : "○"}</span>
                         {runtime.label}
                       </span>
                       {terminal && (
                         <XCircle size={12} className="taskmonitor__terminal" />
                       )}
                       <span className="taskmonitor__time">
-                        {elapsed(t.updated_at)}
+                        {elapsed(task.updated_at)}
                       </span>
                       {isOpen ? (
                         <ChevronDown size={12} />
@@ -353,27 +370,27 @@ export function TaskMonitorPanel({ onClose }: { onClose?: () => void }) {
                   {isOpen && (
                     <div className="taskmonitor__detail">
                       <dl>
-                        <dt>Task ID</dt>
-                        <dd>{t.task_id}</dd>
-                        <dt>Session</dt>
-                        <dd>{t.session_id || "—"}</dd>
-                        <dt>State</dt>
-                        <dd>{t.state}</dd>
-                        <dt>Runtime</dt>
+                        <dt>{t("summary.taskId")}</dt>
+                        <dd>{task.task_id}</dd>
+                        <dt>{t("summary.sessionId")}</dt>
+                        <dd>{task.session_id || "—"}</dd>
+                        <dt>{t("summary.state")}</dt>
+                        <dd>{task.state}</dd>
+                        <dt>{t("summary.runtime")}</dt>
                         <dd>{runtime.label}</dd>
-                        <dt>Updated</dt>
-                        <dd>{new Date(t.updated_at).toLocaleString()}</dd>
-                        {t.error_code && (
+                        <dt>{t("summary.updated")}</dt>
+                        <dd>{new Date(task.updated_at).toLocaleString()}</dd>
+                        {task.error_code && (
                           <>
-                            <dt>Error Code</dt>
-                            <dd className="taskmonitor__err">{t.error_code}</dd>
+                            <dt>{t("summary.errorCode")}</dt>
+                            <dd className="taskmonitor__err">{task.error_code}</dd>
                           </>
                         )}
-                        {t.error_summary && (
+                        {task.error_summary && (
                           <>
-                            <dt>Summary</dt>
+                            <dt>{t("summary.detail")}</dt>
                             <dd className="taskmonitor__err-summary">
-                              {t.error_summary}
+                              {task.error_summary}
                             </dd>
                           </>
                         )}
@@ -383,7 +400,7 @@ export function TaskMonitorPanel({ onClose }: { onClose?: () => void }) {
                       <div className="taskmonitor__events">
                         <div className="taskmonitor__events-head">
                           <List size={12} />
-                          <span>Recent Events</span>
+                          <span>{t("summary.recentEvents")}</span>
                           {evs.length > 0 && (
                             <span className="taskmonitor__events-count">
                               {evs.length}
@@ -397,7 +414,7 @@ export function TaskMonitorPanel({ onClose }: { onClose?: () => void }) {
                               size={12}
                               className="taskmonitor__spinner"
                             />
-                            <span>Loading events...</span>
+                            <span>{t("summary.loadingEvents")}</span>
                           </div>
                         )}
 
@@ -410,7 +427,7 @@ export function TaskMonitorPanel({ onClose }: { onClose?: () => void }) {
 
                         {!evLoading && !evError && evs.length === 0 && (
                           <div className="taskmonitor__state taskmonitor__state--empty">
-                            <span>No events yet</span>
+                            <span>{t("summary.noEvents")}</span>
                           </div>
                         )}
 
@@ -425,7 +442,7 @@ export function TaskMonitorPanel({ onClose }: { onClose?: () => void }) {
                                   #{ev.sequence}
                                 </span>
                                 <span className="taskmonitor__event-type">
-                                  {eventSummary(ev)}
+                                  {eventSummary(ev, t)}
                                 </span>
                                 <span className="taskmonitor__event-time">
                                   {new Date(ev.timestamp).toLocaleTimeString()}
@@ -436,22 +453,22 @@ export function TaskMonitorPanel({ onClose }: { onClose?: () => void }) {
                         )}
                       </div>
                       <div className="taskmonitor__actions">
-                        {(t.state === "queued" || t.state === "running" || t.state === "waiting") && (
+                        {(task.state === "queued" || task.state === "running" || task.state === "waiting") && (
                           <>
-                            <button disabled={actionTask === t.task_id} onClick={() => void controlTask(t, "stop")}>Stop</button>
-                            <button disabled={actionTask === t.task_id} onClick={() => void controlTask(t, "cancel")}>Cancel</button>
+                            <button disabled={actionTask === task.task_id} onClick={() => void controlTask(task, "stop")}>{t("summary.stop")}</button>
+                            <button disabled={actionTask === task.task_id} onClick={() => void controlTask(task, "cancel")}>{t("summary.cancel")}</button>
                           </>
                         )}
-                        {(t.state === "failed" || t.state === "stale") && (
-                          <button disabled={actionTask === t.task_id || t.runtime_state === "alive"} onClick={() => void controlTask(t, "requeue")}>Requeue</button>
+                        {(task.state === "failed" || task.state === "stale") && (
+                          <button disabled={actionTask === task.task_id || task.runtime_state === "alive"} onClick={() => void controlTask(task, "requeue")}>{t("summary.requeue")}</button>
                         )}
-                        <button disabled={actionTask === t.task_id} onClick={() => void controlTask(t, "open")}>Open Session</button>
+                        <button disabled={actionTask === task.task_id} onClick={() => void controlTask(task, "open")}>{t("summary.openSession")}</button>
                       </div>
-                      {pendingAction?.task.task_id === t.task_id && (
+                      {pendingAction?.task.task_id === task.task_id && (
                         <div className="taskmonitor__confirm">
-                          <span>{pendingAction.action === "stop" ? "Stop" : "Cancel"} this task?</span>
-                          <button type="button" onClick={() => void controlTask(t, pendingAction.action)}>Confirm</button>
-                          <button type="button" onClick={() => setPendingAction(null)}>Keep</button>
+                          <span>{t(pendingAction.action === "stop" ? "summary.confirmStop" : "summary.confirmCancel")}</span>
+                          <button type="button" onClick={() => void controlTask(task, pendingAction.action)}>{t("common.confirm")}</button>
+                          <button type="button" onClick={() => setPendingAction(null)}>{t("summary.keep")}</button>
                         </div>
                       )}
                     </div>
