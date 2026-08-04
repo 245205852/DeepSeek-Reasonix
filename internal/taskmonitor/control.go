@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -15,6 +16,26 @@ import (
 // controller. Stop and cancel fail closed when no owner accepts the request.
 type JobKiller interface {
 	Kill(sessionID, jobID string) bool
+}
+
+// runtimeJobID returns the jobs.Manager-local ID for runtime control. JobID is
+// present on new snapshots. The prefix fallback keeps snapshots written by the
+// short-lived namespaced-ID implementation controllable after an upgrade, while
+// legacy snapshots continue to use their unnamespaced TaskID.
+func runtimeJobID(snap *TaskSnapshot) string {
+	if snap == nil {
+		return ""
+	}
+	if snap.JobID != "" {
+		return snap.JobID
+	}
+	if snap.SessionID != "" {
+		prefix := monitorTaskID(snap.SessionID, "")
+		if strings.HasPrefix(snap.TaskID, prefix) && len(snap.TaskID) > len(prefix) {
+			return strings.TrimPrefix(snap.TaskID, prefix)
+		}
+	}
+	return snap.TaskID
 }
 
 // ControlResult is the unified response for all task control operations.
@@ -228,7 +249,8 @@ func (cs *ControlService) controlOp(ctx context.Context, projectDir, taskID stri
 			Error: &CtrlError{Code: ErrTaskInvalidTransition, Message: "invalid transition"},
 		}, nil
 	}
-	if (cmd == "stop" || cmd == "cancel") && killer == nil {
+	runtimeControl := cmd == "stop" || cmd == "cancel"
+	if runtimeControl && killer == nil {
 		releaseClaim()
 		return ControlResult{
 			SchemaVersion: 1, Command: cmd, TaskID: taskID, SessionID: snap.SessionID,
@@ -236,7 +258,7 @@ func (cs *ControlService) controlOp(ctx context.Context, projectDir, taskID stri
 			Error: &CtrlError{Code: ErrTaskRuntimeUnavailable, Message: "task runtime owner is unavailable"},
 		}, nil
 	}
-	if (cmd == "stop" || cmd == "cancel") && !killer.Kill(snap.SessionID, taskID) {
+	if runtimeControl && !killer.Kill(snap.SessionID, runtimeJobID(snap)) {
 		releaseClaim()
 		return ControlResult{
 			SchemaVersion: 1, Command: cmd, TaskID: taskID, SessionID: snap.SessionID,
@@ -245,31 +267,63 @@ func (cs *ControlService) controlOp(ctx context.Context, projectDir, taskID stri
 		}, nil
 	}
 
-	// ── 1. SaveTask (state mutation) ──
-	snap.Version++
-	snap.State = targetState
-	snap.UpdatedAt = timeNow()
+	if runtimeControl {
+		// The runtime owner accepted the request. From this point the idempotency
+		// claim must not be released: a retry must never repeat an admitted runtime
+		// side effect merely because persistence or audit reporting failed.
+		claimed = false
+	}
 
-	if err := cs.store.SaveTask(ctx, projectDir, *snap); err != nil {
-		releaseClaim()
-		if errors.Is(err, ErrStoreVersionConflict) {
-			latest, getErr := cs.store.GetTask(ctx, projectDir, taskID)
-			if getErr != nil {
-				return ControlResult{}, getErr
-			}
-			res := ControlResult{
-				SchemaVersion: 1, Command: cmd, TaskID: taskID,
-				Error: &CtrlError{Code: ErrTaskVersionConflict, Message: "task changed concurrently"},
-			}
-			if latest != nil {
-				res.SessionID = latest.SessionID
-				res.State = latest.State
-				res.RuntimeState = latest.RuntimeState
-				res.Version = latest.Version
-			}
-			return res, nil
+	// ── 1. SaveTask (state mutation) ──
+	// Kill admission races the recorder's terminal completion and the runtime
+	// heartbeat. Retry those expected version advances. If RecordDone already
+	// persisted the requested terminal state, use that snapshot as the result.
+	const maxControlSaveAttempts = 4
+	for attempt := 0; attempt < maxControlSaveAttempts; attempt++ {
+		next := *snap
+		next.Version++
+		next.State = targetState
+		next.UpdatedAt = timeNow()
+		if err := cs.store.SaveTask(ctx, projectDir, next); err == nil {
+			snap = &next
+			claimed = false
+			break
+		} else if !errors.Is(err, ErrStoreVersionConflict) {
+			releaseClaim()
+			return ControlResult{}, fmt.Errorf("save task control state: %w", err)
 		}
-		return ControlResult{}, fmt.Errorf("save task: %w", err)
+
+		latest, getErr := cs.store.GetTask(ctx, projectDir, taskID)
+		if getErr != nil {
+			releaseClaim()
+			return ControlResult{}, getErr
+		}
+		if latest == nil {
+			releaseClaim()
+			return ControlResult{}, fmt.Errorf("save task control state: task disappeared")
+		}
+		if latest.State == targetState {
+			snap = latest
+			claimed = false
+			break
+		}
+		if latest.State.Terminal() || !latest.State.ValidTransition(targetState) {
+			releaseClaim()
+			return ControlResult{
+				SchemaVersion: 1, Command: cmd, TaskID: taskID, SessionID: latest.SessionID,
+				State: latest.State, RuntimeState: latest.RuntimeState, Version: latest.Version,
+				Error: &CtrlError{Code: ErrTaskVersionConflict, Message: "task changed concurrently after runtime accepted control"},
+			}, nil
+		}
+		snap = latest
+		if attempt == maxControlSaveAttempts-1 {
+			releaseClaim()
+			return ControlResult{
+				SchemaVersion: 1, Command: cmd, TaskID: taskID, SessionID: latest.SessionID,
+				State: latest.State, RuntimeState: latest.RuntimeState, Version: latest.Version,
+				Error: &CtrlError{Code: ErrTaskVersionConflict, Message: "task kept changing after runtime accepted control"},
+			}, nil
+		}
 	}
 
 	// ── 2. AppendAuditEvent (atomic sequence + write) ──
@@ -286,7 +340,6 @@ func (cs *ControlService) controlOp(ctx context.Context, projectDir, taskID stri
 		auditEv.ErrorSummary = secrets.RedactCredentials(reason)
 	}
 	if err := cs.store.AppendAuditEvent(ctx, projectDir, auditEv); err != nil {
-		releaseClaim()
 		// State is committed but audit is missing. This is a degraded
 		// but not silent state — the caller receives an error.
 		return ControlResult{

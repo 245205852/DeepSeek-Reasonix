@@ -1,8 +1,10 @@
 package main
 
 import (
+	"context"
 	"sync"
 	"testing"
+	"time"
 
 	"reasonix/internal/agent"
 	"reasonix/internal/control"
@@ -15,7 +17,7 @@ type taskKillController struct {
 	killed []string
 }
 
-func (c *taskKillController) KillJob(id string) bool {
+func (c *taskKillController) CancelJob(id string) bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.killed = append(c.killed, id)
@@ -26,6 +28,12 @@ func (c *taskKillController) killCount() int {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return len(c.killed)
+}
+
+func (c *taskKillController) killedIDs() []string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return append([]string(nil), c.killed...)
 }
 
 func TestTaskControlConcurrentInitializationReturnsOneService(t *testing.T) {
@@ -106,5 +114,38 @@ func TestTaskMonitorUsesActiveWorkspaceRoot(t *testing.T) {
 	}
 	if got := app.projectDir(); got != root {
 		t.Fatalf("projectDir = %q, want active workspace %q", got, root)
+	}
+}
+
+func TestStopTaskRoutesMonitorIdentityToRuntimeJob(t *testing.T) {
+	root := t.TempDir()
+	path := agent.NewSessionPath(t.TempDir(), "session")
+	ctrl := &taskKillController{SessionAPI: control.New(control.Options{Label: "session", SessionPath: path})}
+	defer ctrl.Close()
+	app := &App{
+		ctx: context.Background(),
+		tabs: map[string]*WorkspaceTab{
+			"active": {ID: "active", Scope: "project", WorkspaceRoot: root, Ctrl: ctrl},
+		},
+		activeTabID: "active",
+	}
+	sessionID := agent.BranchID(path)
+	monitorID := sessionID + "--task-1"
+	now := time.Now()
+	if err := app.taskStore().SaveTask(app.ctx, root, taskmonitor.TaskSnapshot{
+		SchemaVersion: 1, TaskID: monitorID, JobID: "task-1", SessionID: sessionID,
+		State: taskmonitor.TaskStateRunning, RuntimeState: taskmonitor.RuntimeStateAlive,
+		Version: 1, CreatedAt: now, UpdatedAt: now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	res, err := app.StopTask(monitorID, 1, "", "desktop-route")
+	if err != nil || !res.Accepted {
+		t.Fatalf("StopTask: result=%+v err=%v", res, err)
+	}
+	ids := ctrl.killedIDs()
+	if len(ids) != 1 || ids[0] != "task-1" {
+		t.Fatalf("runtime killed IDs = %v, want [task-1]", ids)
 	}
 }

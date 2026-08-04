@@ -136,6 +136,7 @@ func (r *TaskRecorder) RecordStart(id, kind, label string) {
 	snap := TaskSnapshot{
 		SchemaVersion:     1,
 		TaskID:            monitorID,
+		JobID:             id,
 		SessionID:         sessionID,
 		State:             TaskStateRunning,
 		RuntimeState:      RuntimeStateAlive,

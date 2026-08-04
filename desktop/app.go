@@ -12275,7 +12275,7 @@ func (k desktopTaskJobKiller) Kill(sessionID, taskID string) bool {
 		if agent.BranchID(ctrl.SessionPath()) != sessionID {
 			continue
 		}
-		if killer, ok := ctrl.(interface{ KillJob(string) bool }); ok && killer.KillJob(taskID) {
+		if killer, ok := ctrl.(interface{ CancelJob(string) bool }); ok && killer.CancelJob(taskID) {
 			return true
 		}
 	}

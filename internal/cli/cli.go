@@ -2264,7 +2264,7 @@ func (a ctrlKillerAdapter) Kill(sessionID, id string) bool {
 	if sessionID != "" && agent.BranchID(a.ctrl.SessionPath()) != sessionID {
 		return false
 	}
-	return a.ctrl.KillJob(id)
+	return a.ctrl.CancelJob(id)
 }
 
 func configCommand(args []string) int {
