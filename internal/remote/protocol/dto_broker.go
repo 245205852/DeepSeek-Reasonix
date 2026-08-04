@@ -154,7 +154,10 @@ const (
 	BrokerChunkUsage         BrokerChunkType = "usage"
 	BrokerChunkDone          BrokerChunkType = "done"
 	BrokerChunkError         BrokerChunkType = "error"
+	BrokerChunkResponsesItem BrokerChunkType = "responses_item"
 )
+
+const maxBrokerResponsesItemBytes = 512 << 10
 
 type BrokerProviderUsage struct {
 	PromptTokens     int    `json:"promptTokens" validate:"min=0"`
@@ -193,6 +196,7 @@ type BrokerProviderChunk struct {
 	ReasoningStatus string               `json:"reasoningStatus,omitempty"`
 	ToolCall        *provider.ToolCall   `json:"toolCall,omitempty"`
 	ArgChars        int                  `json:"argChars,omitempty" validate:"min=0"`
+	ResponsesItem   *json.RawMessage     `json:"responsesItem,omitempty"`
 	Usage           *BrokerProviderUsage `json:"usage,omitempty"`
 	Error           *BrokerProviderError `json:"error,omitempty"`
 }
@@ -210,6 +214,17 @@ func (chunk BrokerProviderChunk) Validate() error {
 	if chunk.Type == BrokerChunkUsage && chunk.Usage == nil {
 		return validationError("usage chunks require usage")
 	}
+	if chunk.Type == BrokerChunkResponsesItem {
+		if chunk.ResponsesItem == nil || len(*chunk.ResponsesItem) == 0 || len(*chunk.ResponsesItem) > maxBrokerResponsesItemBytes || !json.Valid(*chunk.ResponsesItem) {
+			return validationError("responses item chunks require bounded valid JSON")
+		}
+		var object map[string]any
+		if err := json.Unmarshal(*chunk.ResponsesItem, &object); err != nil || object == nil {
+			return validationError("responses item chunks require a JSON object")
+		}
+	} else if chunk.ResponsesItem != nil {
+		return validationError("non-responses-item chunks forbid responsesItem")
+	}
 	return nil
 }
 
@@ -218,6 +233,10 @@ func BrokerProviderChunkFromProvider(chunk provider.Chunk) BrokerProviderChunk {
 		Type: brokerChunkTypeFromProvider(chunk.Type), Text: chunk.Text,
 		Signature: chunk.Signature, ToolCall: chunk.ToolCall, ArgChars: chunk.ArgChars,
 		ReasoningID: chunk.ReasoningID, ReasoningStatus: chunk.ReasoningStatus,
+	}
+	if len(chunk.ResponsesItem) > 0 {
+		item := append(json.RawMessage(nil), chunk.ResponsesItem...)
+		wired.ResponsesItem = &item
 	}
 	if chunk.Usage != nil {
 		wired.Usage = &BrokerProviderUsage{
@@ -248,6 +267,9 @@ func (chunk BrokerProviderChunk) ProviderChunk() provider.Chunk {
 		Type: providerChunkTypeFromBroker(chunk.Type), Text: chunk.Text,
 		Signature: chunk.Signature, ToolCall: chunk.ToolCall, ArgChars: chunk.ArgChars,
 		ReasoningID: chunk.ReasoningID, ReasoningStatus: chunk.ReasoningStatus,
+	}
+	if chunk.ResponsesItem != nil {
+		converted.ResponsesItem = append(json.RawMessage(nil), (*chunk.ResponsesItem)...)
 	}
 	if chunk.Usage != nil {
 		converted.Usage = &provider.Usage{
@@ -284,6 +306,8 @@ func brokerChunkTypeFromProvider(kind provider.ChunkType) BrokerChunkType {
 		return BrokerChunkUsage
 	case provider.ChunkDone:
 		return BrokerChunkDone
+	case provider.ChunkResponsesItem:
+		return BrokerChunkResponsesItem
 	default:
 		return BrokerChunkError
 	}
@@ -305,6 +329,8 @@ func providerChunkTypeFromBroker(kind BrokerChunkType) provider.ChunkType {
 		return provider.ChunkUsage
 	case BrokerChunkDone:
 		return provider.ChunkDone
+	case BrokerChunkResponsesItem:
+		return provider.ChunkResponsesItem
 	default:
 		return provider.ChunkError
 	}

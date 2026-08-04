@@ -5,4 +5,4 @@ package protocol
 // GeneratedSchemaHash is the SHA-256 of schema.generated.json. Production
 // Build IDs use this constant; protocol tests independently recompute it from
 // CanonicalSchemaBytes to reject stale generated artifacts.
-const GeneratedSchemaHash = "sha256:534dc2af964fa0286b4d907c97d26d23db3aba476cc77fc563c14f8d880667fc"
+const GeneratedSchemaHash = "sha256:26c12dd793ec53f8d9eaadcefd87e373ee7947ca395b64086fa81b443b43b673"
