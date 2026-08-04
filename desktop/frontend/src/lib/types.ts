@@ -1644,7 +1644,6 @@ export interface AgentView {
   compactRatio?: number; // Advanced global default; older backends omit it.
   effectiveCompactRatio?: number; // Active local session after project overrides.
   compactRatioOverridden?: boolean;
-  compactRatioRemote?: boolean; // Active session is owned by the remote host.
 }
 
 export interface BotAllowlistView {

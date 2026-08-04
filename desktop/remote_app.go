@@ -478,9 +478,17 @@ func (a *App) RemoveRemoteForward(hostID, forwardID string) error {
 
 // OpenRemoteWorkspace is the idempotent "open remote web" entry: it starts or
 // reuses the target workspace's remote Serve, atomically replaces the loopback
-// tunnel, then opens (or re-points) the host's web window. The Serve and tunnel
-// are established before any window is touched, so a failure keeps the previous
-// window and tunnel intact.
+// tunnel, then opens (or re-points) the host's web window.
+//
+// Two-phase switch contract:
+//   - If Serve/tunnel establishment fails, nothing is touched: the previous
+//     window and tunnel stay exactly as they were, and no workspace is saved.
+//   - Once the new Serve and tunnel are committed, the switch is final. A
+//     window-open failure (spawn error) surfaces to the caller while the Serve
+//     stays ready for the new workspace, and the recorded last workspace
+//     matches the running Serve so the next open reuses it. The previous
+//     window, if any, is left in place; it is re-pointed by the next
+//     successful open (or closed by an explicit disconnect/stop).
 func (a *App) OpenRemoteWorkspace(hostID, workspace string) error {
 	rt, err := a.remoteRT()
 	if err != nil {

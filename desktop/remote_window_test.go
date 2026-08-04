@@ -146,6 +146,30 @@ func TestConsumeRemoteWindowTicketRejectsOversizedDescriptor(t *testing.T) {
 	}
 }
 
+func TestConsumeRemoteWindowTicketRejectsExpiredTicket(t *testing.T) {
+	launch := remoteWindowLaunch{URL: "http://127.0.0.1:54321/", HostKey: "k"}
+	ticket, err := writeRemoteWindowLaunch(launch)
+	if err != nil {
+		t.Fatal(err)
+	}
+	path, err := remoteWindowTicketPath(ticket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Age the ticket beyond the TTL so consumption must reject it even though
+	// the spawning process's AfterFunc backstop never ran.
+	old := time.Now().Add(-remoteWindowTicketTTL - time.Minute)
+	if err := os.Chtimes(path, old, old); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := consumeRemoteWindowLaunch(ticket); err == nil {
+		t.Fatal("expired ticket was accepted")
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("expired ticket was not removed: %v", err)
+	}
+}
+
 func TestRemoteWindowNavigationJSEscapesURL(t *testing.T) {
 	js, err := remoteWindowNavigationJS("http://127.0.0.1:5000/?token=x%22);alert(1)//")
 	if err != nil {
@@ -179,9 +203,36 @@ func TestRemoteWindowHostKeyDistinguishesHosts(t *testing.T) {
 	}
 }
 
-func TestRemoteWindowRegistryGenerationProtectsNewerWindow(t *testing.T) {
+func TestRemoteWindowRegistryHandoffExitKeepsLiveWindow(t *testing.T) {
 	r := newRemoteWindowRegistry()
 	key := "host-a"
+
+	// W1 is the live window for the host. Re-opening the host spawns W2, which
+	// exits at the Wails single-instance gate after handing its ticket to W1.
+	// W2's Wait must clear only W2's own entry — W1 stays registered so
+	// disconnect/stop/quit can still close it and reconnect can re-point it.
+	live := spawnRemoteWindowHelper(t)
+	defer func() { _ = live.Kill(); waitRemoteWindowHelperExit(t, live) }()
+	liveGen := r.record(key, live)
+	handoff := spawnRemoteWindowHelper(t)
+	defer func() { _ = handoff.Kill(); waitRemoteWindowHelperExit(t, handoff) }()
+	handoffGen := r.record(key, handoff)
+
+	r.clearIf(key, handoffGen, handoff.Pid)
+	if !r.has(key) {
+		t.Fatal("handoff Wait cleared the live window registration")
+	}
+
+	// The live window's own exit clears the host's registration.
+	r.clearIf(key, liveGen, live.Pid)
+	if r.has(key) {
+		t.Fatal("registration not cleared by the live window's own Wait")
+	}
+}
+
+func TestRemoteWindowRegistryGenerationProtectsNewerWindow(t *testing.T) {
+	r := newRemoteWindowRegistry()
+	key := "host-b"
 
 	p1 := spawnRemoteWindowHelper(t)
 	defer func() { _ = p1.Kill(); waitRemoteWindowHelperExit(t, p1) }()
@@ -190,8 +241,8 @@ func TestRemoteWindowRegistryGenerationProtectsNewerWindow(t *testing.T) {
 		t.Fatal("first child not registered")
 	}
 
-	// The first child is replaced by a newer spawn for the same host. A stale
-	// Wait from the old child must not clear the newer registration.
+	// A newer spawn for the same host gets a distinct entry and generation. A
+	// stale Wait from the old child cannot remove the new entry.
 	p2 := spawnRemoteWindowHelper(t)
 	defer func() { _ = p2.Kill(); waitRemoteWindowHelperExit(t, p2) }()
 	g2 := r.record(key, p2)
@@ -200,10 +251,8 @@ func TestRemoteWindowRegistryGenerationProtectsNewerWindow(t *testing.T) {
 	}
 	r.clearIf(key, g1, p1.Pid)
 	if !r.has(key) {
-		t.Fatal("stale Wait cleared the newer registration")
+		t.Fatal("stale Wait removed the newer registration")
 	}
-
-	// The current generation's own Wait clears only its registration.
 	r.clearIf(key, g2, p2.Pid)
 	if r.has(key) {
 		t.Fatal("registration not cleared by its own Wait")
@@ -212,7 +261,7 @@ func TestRemoteWindowRegistryGenerationProtectsNewerWindow(t *testing.T) {
 
 func TestRemoteWindowRegistryCloseTerminatesChild(t *testing.T) {
 	r := newRemoteWindowRegistry()
-	key := "host-b"
+	key := "host-c"
 	p := spawnRemoteWindowHelper(t)
 	r.record(key, p)
 	r.close(key)
@@ -453,6 +502,66 @@ func TestRemoteWindowReconnectRepointsWindow(t *testing.T) {
 		}
 	case <-time.After(3 * time.Second):
 		t.Fatal("window not re-pointed after reconnect")
+	}
+}
+
+// TestRemoteWindowDisconnectClosesLiveWindowAfterHandoff is the real
+// single-instance sequence: the live window stays registered while a
+// short-lived handoff process (spawned by re-opening the host) exits at the
+// gate. An explicit disconnect must still close the live window.
+func TestRemoteWindowDisconnectClosesLiveWindowAfterHandoff(t *testing.T) {
+	fake := &fakeRemoteKernel{}
+	a := NewApp()
+	a.remoteRuntime = fake
+	key := remoteWindowHostKey("box")
+
+	live := spawnRemoteWindowHelper(t)
+	a.remoteWindows.record(key, live)
+	handoff := spawnRemoteWindowHelper(t)
+	defer func() { _ = handoff.Kill(); waitRemoteWindowHelperExit(t, handoff) }()
+	handoffGen := a.remoteWindows.record(key, handoff)
+	a.remoteWindows.clearIf(key, handoffGen, handoff.Pid)
+	if !a.hasRemoteWindow("box") {
+		t.Fatal("live window registration lost after handoff exit")
+	}
+
+	if err := a.DisconnectRemoteHost("box"); err != nil {
+		t.Fatal(err)
+	}
+	// Disconnect kills the live window; its Wait clears the registration.
+	waitRemoteWindowHelperExit(t, live)
+	if a.hasRemoteWindow("box") {
+		t.Fatal("live window survived explicit disconnect after handoff")
+	}
+}
+
+// TestOpenRemoteWorkspaceWindowOpenFailureKeepsServeReady covers the two-phase
+// switch contract: when the Serve and tunnel succeeded but the window open
+// fails, the error surfaces, the serve stays ready for the new workspace, and
+// no stale last-workspace is recorded.
+func TestOpenRemoteWorkspaceWindowOpenFailureKeepsServeReady(t *testing.T) {
+	const hostID = "open-fail-box"
+	fake := &fakeRemoteKernel{
+		ensureView:  RemoteServerView{HostID: hostID, Workspace: "/srv2", State: "ready", LocalURL: "http://127.0.0.1:6666/"},
+		ensureToken: "tok-fail",
+	}
+	a := NewApp()
+	a.remoteRuntime = fake
+	a.remoteWindowOpener = func(remoteWindowLaunch) error {
+		return errors.New("window spawn failed")
+	}
+	err := a.OpenRemoteWorkspace(hostID, "/srv2")
+	if err == nil || !strings.Contains(err.Error(), "window spawn failed") {
+		t.Fatalf("open error = %v, want the opener failure", err)
+	}
+	// The serve is up and ready for the new workspace; the recorded last
+	// workspace matches the running serve so the next open reuses it.
+	status, _ := a.RemoteServerStatus(hostID)
+	if status.State != "ready" || status.Workspace != "/srv2" {
+		t.Fatalf("serve state after failed open = %+v, want ready /srv2", status)
+	}
+	if got := a.RemoteLastWorkspace(hostID); got != "/srv2" {
+		t.Fatalf("last workspace = %q, want /srv2 (the running serve)", got)
 	}
 }
 

@@ -120,6 +120,12 @@ func consumeRemoteWindowLaunch(ticket string) (*remoteWindowLaunch, error) {
 	if info.Size() <= 0 || info.Size() > remoteWindowTicketMaxBytes {
 		return nil, fmt.Errorf("remote window ticket has an invalid size")
 	}
+	// Strict TTL: the ticket must be consumed within remoteWindowTicketTTL of
+	// being written. This bounds leftover token files even when the spawning
+	// process died before its time.AfterFunc backstop could remove them.
+	if time.Since(info.ModTime()) > remoteWindowTicketTTL {
+		return nil, fmt.Errorf("remote window ticket has expired")
+	}
 	// Windows does not expose Unix owner/group permission bits through Stat;
 	// CreateTemp still creates the file for the current user, while ACLs remain
 	// governed by the private user state directory.
@@ -232,58 +238,70 @@ type remoteWindowChild struct {
 }
 
 // remoteWindowRegistry tracks, per host, the web-window child processes the
-// main process spawned. Closing the window (user or terminal disconnect)
-// releases only the registration; the remote Serve and the main process's SSH
-// connection keep running. A real main-process quit terminates survivors.
+// main process spawned. The per-host value is a set: re-opening a host spawns
+// a short-lived handoff process that exits at the Wails single-instance gate
+// after passing its ticket to the still-running window, so only that
+// handoff's own entry may be cleared by its Wait — the surviving window's
+// entry must stay registered. Closing the window (user or terminal
+// disconnect) releases only its registration; the remote Serve and the main
+// process's SSH connection keep running. A real main-process quit terminates
+// survivors.
 type remoteWindowRegistry struct {
 	mu       sync.Mutex
-	children map[string]remoteWindowChild
+	children map[string][]remoteWindowChild // per host, one live window plus transient handoffs
+	nextGen  uint64
 }
 
 func newRemoteWindowRegistry() *remoteWindowRegistry {
-	return &remoteWindowRegistry{children: map[string]remoteWindowChild{}}
+	return &remoteWindowRegistry{children: map[string][]remoteWindowChild{}}
 }
 
-// record registers proc for hostKey and returns its generation.
+// record registers proc for hostKey and returns its generation. Each spawn is
+// a distinct entry; replacing the host's window never forgets a live one.
 func (r *remoteWindowRegistry) record(hostKey string, proc *os.Process) uint64 {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	child := r.children[hostKey]
-	child.gen++
-	child.pid = proc.Pid
-	child.proc = proc
-	r.children[hostKey] = child
-	return child.gen
+	gen := r.nextGen
+	r.nextGen++
+	r.children[hostKey] = append(r.children[hostKey], remoteWindowChild{gen: gen, pid: proc.Pid, proc: proc})
+	return gen
 }
 
-// clearIf drops the registration only when it still belongs to the same
-// generation and process — the caller's Wait result. A stale Wait from a
-// replaced child is ignored so it cannot clear a newer window.
+// clearIf drops exactly the caller's own entry — the Wait result for one
+// spawned process. A handoff process that exited at the single-instance gate
+// clears only itself; the window it handed the ticket to stays registered.
 func (r *remoteWindowRegistry) clearIf(hostKey string, gen uint64, pid int) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if child, ok := r.children[hostKey]; ok && child.gen == gen && child.pid == pid {
-		delete(r.children, hostKey)
+	entries := r.children[hostKey]
+	for i, child := range entries {
+		if child.gen == gen && child.pid == pid {
+			r.children[hostKey] = append(entries[:i], entries[i+1:]...)
+			if len(r.children[hostKey]) == 0 {
+				delete(r.children, hostKey)
+			}
+			return
+		}
 	}
 }
 
-// close terminates the host's child window process, if any, and releases the
-// registration immediately. The child's Wait goroutine then clears nothing
-// (the generation moved on), so a stale Wait can never remove a newer window.
+// close terminates every process registered for the host — the live window
+// and any transient handoffs — and releases the registration immediately.
+// Killing an already-exited handoff is a no-op error.
 func (r *remoteWindowRegistry) close(hostKey string) {
 	r.mu.Lock()
-	child, ok := r.children[hostKey]
-	if ok {
-		delete(r.children, hostKey)
-	}
+	entries := r.children[hostKey]
+	delete(r.children, hostKey)
 	r.mu.Unlock()
-	if !ok || child.proc == nil {
-		return
+	for _, child := range entries {
+		if child.proc != nil {
+			_ = child.proc.Kill()
+		}
 	}
-	_ = child.proc.Kill()
 }
 
-// has reports whether a child window is currently registered for hostKey.
+// has reports whether any child process is currently registered for hostKey —
+// true while the live window (or a handoff still in flight) exists.
 func (r *remoteWindowRegistry) has(hostKey string) bool {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -295,15 +313,17 @@ func (r *remoteWindowRegistry) has(hostKey string) bool {
 // process shutdown — background (tray) close keeps windows and tunnels alive.
 func (r *remoteWindowRegistry) closeAll() {
 	r.mu.Lock()
-	children := make([]*os.Process, 0, len(r.children))
-	for _, child := range r.children {
-		if child.proc != nil {
-			children = append(children, child.proc)
+	all := make([]*os.Process, 0)
+	for _, entries := range r.children {
+		for _, child := range entries {
+			if child.proc != nil {
+				all = append(all, child.proc)
+			}
 		}
 	}
-	r.children = map[string]remoteWindowChild{}
+	r.children = map[string][]remoteWindowChild{}
 	r.mu.Unlock()
-	for _, proc := range children {
+	for _, proc := range all {
 		_ = proc.Kill()
 	}
 }
