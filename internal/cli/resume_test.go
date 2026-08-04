@@ -68,6 +68,41 @@ func TestOrderResumeSessionsGroupsRecoveryCopiesAndPrefersNewestLeaf(t *testing.
 	}
 }
 
+func TestMostRecentSessionIgnoresRecoveryPickerLeafPreference(t *testing.T) {
+	dir := t.TempDir()
+	rootPath := filepath.Join(dir, "root.jsonl")
+	recoveryPath := filepath.Join(dir, "recovery.jsonl")
+	saveTestSession(t, rootPath, "latest parent prompt")
+	saveTestSession(t, recoveryPath, "older recovery prompt")
+
+	base := time.Date(2026, 8, 3, 12, 0, 0, 0, time.UTC)
+	if err := agent.SaveBranchMetaPreserveUpdated(rootPath, agent.BranchMeta{
+		ID: "root", CreatedAt: base, UpdatedAt: base.Add(4 * time.Minute),
+		SchemaVersion: agent.BranchMetaCountsVersion, Turns: 1, Preview: "latest parent prompt",
+	}); err != nil {
+		t.Fatalf("save root meta: %v", err)
+	}
+	if err := agent.SaveBranchMetaPreserveUpdated(recoveryPath, agent.BranchMeta{
+		ID: "recovery", ParentID: "root", Recovered: true,
+		CreatedAt: base, UpdatedAt: base.Add(3 * time.Minute),
+		SchemaVersion: agent.BranchMetaCountsVersion, Turns: 1, Preview: "older recovery prompt",
+	}); err != nil {
+		t.Fatalf("save recovery meta: %v", err)
+	}
+
+	grouped := recentSessions(dir)
+	if len(grouped) != 2 || grouped[0].Path != recoveryPath {
+		t.Fatalf("interactive resume order = %+v, want recovery leaf grouped first", grouped)
+	}
+	latest, ok := mostRecentSession(dir)
+	if !ok {
+		t.Fatal("mostRecentSession found no session")
+	}
+	if latest.Path != rootPath {
+		t.Fatalf("--continue session = %q, want chronologically newest %q", latest.Path, rootPath)
+	}
+}
+
 func TestCapResumeSessionGroupsDoesNotSplitRecoveryFamily(t *testing.T) {
 	base := time.Date(2026, 8, 3, 12, 0, 0, 0, time.UTC)
 	sessions := make([]agent.SessionInfo, 0, 12)

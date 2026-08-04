@@ -28,6 +28,21 @@ func recentSessions(dir string) []agent.SessionInfo {
 	return capResumeSessionGroups(sessions, resumeListCap)
 }
 
+// mostRecentSession returns the chronologically newest saved session for
+// --continue. Interactive resume surfaces deliberately group recovery families
+// and prefer visible leaves, but --continue promises the most recent session and
+// must not let that presentation ordering select an older recovery copy.
+func mostRecentSession(dir string) (agent.SessionInfo, bool) {
+	if dir == "" {
+		return agent.SessionInfo{}, false
+	}
+	sessions, err := agent.ListSessions(dir)
+	if err != nil || len(sessions) == 0 {
+		return agent.SessionInfo{}, false
+	}
+	return sessions[0], true
+}
+
 func capResumeSessionGroups(sessions []agent.SessionInfo, limit int) []agent.SessionInfo {
 	if limit <= 0 || len(sessions) <= limit {
 		return sessions

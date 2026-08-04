@@ -553,12 +553,12 @@ func runAgent(args []string, version string) int {
 	if resumePath == "" && *cont {
 		sessionDir := resolveCLISessionDir()
 		reclaimCLIRecoveryBranches(sessionDir)
-		sessions := recentSessions(sessionDir)
-		if len(sessions) == 0 {
+		session, ok := mostRecentSession(sessionDir)
+		if !ok {
 			fmt.Fprintln(os.Stderr, i18n.M.NoSessionToResume)
 			return 1
 		}
-		resumePath = sessions[0].Path
+		resumePath = session.Path
 	}
 	if *copySession && resumePath == "" {
 		fmt.Fprintln(os.Stderr, i18n.M.ErrorPrefix, "--copy requires --resume or --continue")
@@ -1052,12 +1052,12 @@ func chatREPL(args []string, version string) int {
 	case *cont:
 		sessionDir := resolveCLISessionDir()
 		reclaimCLIRecoveryBranches(sessionDir)
-		sessions := recentSessions(sessionDir)
-		if len(sessions) == 0 {
+		session, ok := mostRecentSession(sessionDir)
+		if !ok {
 			fmt.Fprintln(os.Stderr, i18n.M.NoSessionToResume)
 			return 1
 		}
-		resumePath = sessions[0].Path
+		resumePath = session.Path
 	}
 	if *copySession && resumePath == "" {
 		fmt.Fprintln(os.Stderr, i18n.M.ErrorPrefix, "--copy requires --resume or --continue")
