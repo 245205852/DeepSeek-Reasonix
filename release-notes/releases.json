@@ -6,15 +6,20 @@
       "date": "2026-08-04",
       "channel": "stable",
       "title": {
-        "en": "Reasonix v1.19.6",
-        "zh": "Reasonix v1.19.6"
+        "en": "Versioned docs, transactional rewind, and safer recovery",
+        "zh": "版本化文档、事务性回滚与更安全的恢复"
       },
       "summary": {
         "en": "This release brings embedded version-matched documentation, transactional rewind, safer subagent cleanup, and numerous desktop and CLI fixes.",
         "zh": "此版本带来内置版本匹配文档、事务性回滚、更安全的子代理清理以及大量桌面和 CLI 修复。"
       },
       "surfaces": [
-        "desktop"
+        "desktop",
+        "cli",
+        "config",
+        "recovery",
+        "security",
+        "updates"
       ],
       "guides": [
         {
@@ -386,32 +391,6 @@
             "refs": [
               7447
             ]
-          },
-          {
-            "title": {
-              "en": "Release note generation reliability",
-              "zh": "发布说明生成可靠性"
-            },
-            "body": {
-              "en": "The release-note editor now disables DeepSeek thinking to keep the full generation budget for structured JSON.",
-              "zh": "发布说明编辑器现在禁用 DeepSeek 思考，以保留完整的生成预算用于结构化 JSON。"
-            },
-            "refs": [
-              7452
-            ]
-          },
-          {
-            "title": {
-              "en": "Frontend release gate restored",
-              "zh": "前端发布门禁恢复"
-            },
-            "body": {
-              "en": "The complete frontend test suite is now run as part of the release gate.",
-              "zh": "完整的前端测试套件现在作为发布门禁的一部分运行。"
-            },
-            "refs": [
-              7449
-            ]
           }
         ],
         "fixed": [
@@ -469,19 +448,6 @@
           },
           {
             "title": {
-              "en": "Release alias alignment efficiency",
-              "zh": "发布别名对齐效率"
-            },
-            "body": {
-              "en": "The release workflow now only writes npm dist-tags that are actually behind, preventing unnecessary 403 errors.",
-              "zh": "发布工作流现在只写入实际落后的 npm dist-tag，防止不必要的 403 错误。"
-            },
-            "refs": [
-              7367
-            ]
-          },
-          {
-            "title": {
               "en": "ACP session/set_config_option documentation",
               "zh": "ACP session/set_config_option 文档"
             },
@@ -491,19 +457,6 @@
             },
             "refs": [
               7359
-            ]
-          },
-          {
-            "title": {
-              "en": "README badges updated",
-              "zh": "README 徽章更新"
-            },
-            "body": {
-              "en": "The daily Trendshift badge has been replaced with self-updating monthly and repository badges.",
-              "zh": "每日 Trendshift 徽章已替换为自动更新的月度和仓库徽章。"
-            },
-            "refs": [
-              7378
             ]
           }
         ]
