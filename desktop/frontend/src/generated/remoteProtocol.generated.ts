@@ -2,7 +2,7 @@
 
 export const REMOTE_SCHEMA_FORMAT = "reasonix.remote.schema.v1" as const;
 export const REMOTE_PROTOCOL_VERSION = "1" as const;
-export const REMOTE_SCHEMA_HASH = "sha256:34be15470dbe69212ce17099e42bdda95b668f6278344f1a90ed6c9fdff006d9" as const;
+export const REMOTE_SCHEMA_HASH = "sha256:aaa2f0d2a36851a0d9fae2b7999b8e1495df54cc61223a3ded69f2f3fd9cd8c8" as const;
 
 export const REMOTE_FIXED_RESOURCES = {
   "protocol": {
@@ -910,6 +910,8 @@ export type BrokerStreamChunkParamsRaw = {
       "code": "provider_failed" | "provider_interrupted";
       "message": string;
     };
+    "reasoningID"?: string;
+    "reasoningStatus"?: string;
     "signature"?: string;
     "text"?: string;
     "toolCall"?: {
@@ -946,6 +948,8 @@ export type BrokerStreamChunkParamsHydrated = {
       "code": "provider_failed" | "provider_interrupted";
       "message": string;
     };
+    "reasoningID"?: string;
+    "reasoningStatus"?: string;
     "signature"?: string;
     "text"?: string;
     "toolCall"?: {

@@ -183,13 +183,18 @@ type BrokerProviderError struct {
 }
 
 type BrokerProviderChunk struct {
-	Type      BrokerChunkType      `json:"type"`
-	Text      string               `json:"text,omitempty"`
-	Signature string               `json:"signature,omitempty"`
-	ToolCall  *provider.ToolCall   `json:"toolCall,omitempty"`
-	ArgChars  int                  `json:"argChars,omitempty" validate:"min=0"`
-	Usage     *BrokerProviderUsage `json:"usage,omitempty"`
-	Error     *BrokerProviderError `json:"error,omitempty"`
+	Type      BrokerChunkType `json:"type"`
+	Text      string          `json:"text,omitempty"`
+	Signature string          `json:"signature,omitempty"`
+	// ReasoningID/ReasoningStatus ride the reasoning chunk across the
+	// Host↔Desktop broker (review #7234: reasoning item id/status must
+	// survive the remote path so the next turn can round-trip them).
+	ReasoningID     string               `json:"reasoningID,omitempty"`
+	ReasoningStatus string               `json:"reasoningStatus,omitempty"`
+	ToolCall        *provider.ToolCall   `json:"toolCall,omitempty"`
+	ArgChars        int                  `json:"argChars,omitempty" validate:"min=0"`
+	Usage           *BrokerProviderUsage `json:"usage,omitempty"`
+	Error           *BrokerProviderError `json:"error,omitempty"`
 }
 
 func (chunk BrokerProviderChunk) Validate() error {
@@ -212,6 +217,7 @@ func BrokerProviderChunkFromProvider(chunk provider.Chunk) BrokerProviderChunk {
 	wired := BrokerProviderChunk{
 		Type: brokerChunkTypeFromProvider(chunk.Type), Text: chunk.Text,
 		Signature: chunk.Signature, ToolCall: chunk.ToolCall, ArgChars: chunk.ArgChars,
+		ReasoningID: chunk.ReasoningID, ReasoningStatus: chunk.ReasoningStatus,
 	}
 	if chunk.Usage != nil {
 		wired.Usage = &BrokerProviderUsage{
@@ -241,6 +247,7 @@ func (chunk BrokerProviderChunk) ProviderChunk() provider.Chunk {
 	converted := provider.Chunk{
 		Type: providerChunkTypeFromBroker(chunk.Type), Text: chunk.Text,
 		Signature: chunk.Signature, ToolCall: chunk.ToolCall, ArgChars: chunk.ArgChars,
+		ReasoningID: chunk.ReasoningID, ReasoningStatus: chunk.ReasoningStatus,
 	}
 	if chunk.Usage != nil {
 		converted.Usage = &provider.Usage{

@@ -161,3 +161,21 @@ func TestBrokerSchemaUsesTypedRequestChunkAndJSONValue(t *testing.T) {
 		t.Fatalf("chunk schema is not a typed enum object: %#v", chunk)
 	}
 }
+
+// TestBrokerChunkRoundTripsReasoningMeta：reasoning id/status 过 Host↔Desktop
+// broker 往返不丢失（管理员 #7234："远端 broker 路径，如适用"）。
+func TestBrokerChunkRoundTripsReasoningMeta(t *testing.T) {
+	original := provider.Chunk{
+		Type:            provider.ChunkReasoning,
+		ReasoningID:     "rs_broker_1",
+		ReasoningStatus: "completed",
+	}
+	wired := BrokerProviderChunkFromProvider(original)
+	if wired.ReasoningID != "rs_broker_1" || wired.ReasoningStatus != "completed" {
+		t.Fatalf("wire lost reasoning meta: %q/%q", wired.ReasoningID, wired.ReasoningStatus)
+	}
+	back := wired.ProviderChunk()
+	if back.ReasoningID != original.ReasoningID || back.ReasoningStatus != original.ReasoningStatus {
+		t.Fatalf("round-trip lost reasoning meta: %q/%q", back.ReasoningID, back.ReasoningStatus)
+	}
+}
