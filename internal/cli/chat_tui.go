@@ -640,6 +640,10 @@ func configureChatTextarea(ti *textarea.Model) {
 	// Plain Enter submits (the chatTUI handler intercepts it), so the textarea's
 	// own InsertNewline binding moves to Alt+Enter / Ctrl+J / Shift+Enter.
 	ti.KeyMap.InsertNewline = key.NewBinding(key.WithKeys("alt+enter", "ctrl+j", "shift+enter"))
+	// bubbles binds word motion to Alt+arrows (the macOS convention); Windows and
+	// Linux terminals send Ctrl+arrows for the same intent.
+	ti.KeyMap.WordForward = key.NewBinding(key.WithKeys("alt+right", "alt+f", "ctrl+right"))
+	ti.KeyMap.WordBackward = key.NewBinding(key.WithKeys("alt+left", "alt+b", "ctrl+left"))
 	ti.Focus()
 }
 
@@ -3174,10 +3178,16 @@ func (m chatTUI) renderApprovalBanner() string {
 	} else {
 		name, detail := approvalToolDetails(m.pendingApproval.Tool)
 		subj := strings.TrimSpace(m.pendingApproval.Subject)
+		full := subj
 		if subj != "" {
 			subj = " " + truncateSubject(subj, w)
 		}
 		text = strings.TrimSpace(fmt.Sprintf(i18n.M.ToolApprovalPromptFmt, name, subj, detail, ""))
+		// A command clipped to one line can hide the part that matters — the
+		// path being written, the flag that makes it destructive (#4682).
+		if body := approvalSubjectBody(full, strings.TrimSpace(subj), w); body != "" {
+			planDetails = append(planDetails, body)
+		}
 	}
 	if reason := strings.TrimSpace(m.pendingApproval.Reason); reason != "" {
 		text += " · " + truncateSubject(reason, w)
@@ -3192,6 +3202,30 @@ func (m chatTUI) renderApprovalBanner() string {
 	}
 	b.WriteString(dim("↑/↓ navigate · Enter select · y/a/p/n shortcuts"))
 	return choicePanelStyle.Width(w).Render(b.String())
+}
+
+// maxApprovalSubjectLines bounds the expanded command so a heredoc cannot push
+// the composer off screen.
+const maxApprovalSubjectLines = 8
+
+// approvalSubjectBody returns the full command wrapped over several lines when
+// the banner's one-line preview had to clip it, or "" when the preview already
+// showed everything.
+func approvalSubjectBody(full, preview string, width int) string {
+	full = strings.TrimSpace(full)
+	if full == "" || full == preview {
+		return ""
+	}
+	wrapWidth := width - 4
+	if wrapWidth < 20 {
+		wrapWidth = 20
+	}
+	lines := strings.Split(wrapStatusLine(full, wrapWidth), "\n")
+	if len(lines) > maxApprovalSubjectLines {
+		lines = lines[:maxApprovalSubjectLines]
+		lines[maxApprovalSubjectLines-1] = ansi.Truncate(lines[maxApprovalSubjectLines-1], wrapWidth-1, "") + "…"
+	}
+	return strings.Join(lines, "\n")
 }
 
 func compactApprovalPlan(plan string) string {
@@ -4116,6 +4150,20 @@ func (m *chatTUI) runSlashCommand(input string) tea.Cmd {
 	case "/forget":
 		m.forgetMemory(strings.TrimSpace(strings.TrimPrefix(input, typedCmd)))
 	default:
+		if control.IsBuiltinDocsSlash(typedCmd, m.commands, m.skills) {
+			query := strings.TrimSpace(strings.TrimPrefix(input, typedCmd))
+			if query != "" {
+				return m.startControllerTurn(input, input, func() { m.ctrl.SubmitDisplay(input, input) })
+			}
+			m.echoLocalCommand(input)
+			text, err := control.DocsCommandOverviewFor(typedCmd)
+			if err != nil {
+				m.notice("docs: " + err.Error())
+			} else {
+				m.commitLine(text)
+			}
+			return nil
+		}
 		// A custom command wins over a skill of the same name; both resolve to a turn.
 		if sent, ok := m.ctrl.CustomCommand(input); ok {
 			return m.startTurn(sent, input, input)
@@ -4186,7 +4234,23 @@ func (m *chatTUI) showStatusDetails() {
 	if tag := m.mouseTag(); tag != "" {
 		lines = append(lines, "  mouse      "+tag)
 	}
+	lines = append(lines, "  config     "+activeConfigTag())
 	m.commitLine(strings.Join(lines, "\n"))
+}
+
+// activeConfigTag names the config file actually in effect. A ./reasonix.toml
+// outranks the user-global file, so a session started in a directory holding
+// one silently ignores global edits unless the source is visible (#3317).
+func activeConfigTag() string {
+	path := config.SourcePath()
+	if path == "" {
+		return "(defaults — no config file)"
+	}
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return displayPath(path)
+	}
+	return displayPath(abs)
 }
 
 func (m *chatTUI) runGoalSubcommand(input string) tea.Cmd {

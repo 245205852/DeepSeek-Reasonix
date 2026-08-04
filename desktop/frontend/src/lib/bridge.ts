@@ -236,6 +236,11 @@ export interface AppBindings {
   CheckpointsForTab(tabID: string): Promise<CheckpointMeta[]>;
   Rewind(turn: number, scope: string): Promise<void>;
   RewindForTab(tabID: string, turn: number, scope: string): Promise<void>;
+  PreviewRewindForTab(tabID: string, turn: number, scope: string): Promise<import("./types").RewindPlanView>;
+  CommitRewindForTab(tabID: string, planID: string, turn: number, scope: string): Promise<import("./types").RewindResultView>;
+  UndoRewindForTab(tabID: string, transactionID: string): Promise<import("./types").RewindResultView>;
+  PreviewWorkspaceFileRevertForTab(tabID: string, path: string): Promise<import("./types").RewindPlanView>;
+  CommitWorkspaceFileRevertForTab(tabID: string, planID: string, resolution: string): Promise<import("./types").RewindResultView>;
   Fork(turn: number): Promise<TabMeta>;
   ForkForTab(tabID: string, turn: number): Promise<TabMeta>;
   SummarizeFrom(turn: number): Promise<void>;
@@ -1645,7 +1650,8 @@ function makeMockApp(): AppBindings {
     updateChannel: "stable",
     telemetry: true,
     metrics: true,
-    configPath: "~/projects/reasonix/reasonix.toml",
+    configPath: "~/.reasonix/config.toml",
+    shadowedByPath: "~/projects/reasonix/reasonix.toml",
     providerKinds: ["openai", "anthropic"],
     autoApproveTools: false,
     bypass: false,
@@ -1676,6 +1682,7 @@ function makeMockApp(): AppBindings {
   );
   if (freshMock) {
     settings.configPath = "~/.reasonix/config.toml";
+    settings.shadowedByPath = "";
   }
   const mockNow = Date.now();
   const mockProjectTree: ProjectNode[] = freshMock ? [] : [
@@ -2778,6 +2785,21 @@ function makeMockApp(): AppBindings {
     },
     async Rewind() {},
     async RewindForTab() {},
+    async PreviewRewindForTab() {
+      return { ok: true, canFiles: true, canConversation: true, planId: "mock", fileCount: 0 };
+    },
+    async CommitRewindForTab() {
+      return { ok: true, undoAvailable: true, transactionId: "mock-tx" };
+    },
+    async UndoRewindForTab() {
+      return { ok: true, undoAvailable: false };
+    },
+    async PreviewWorkspaceFileRevertForTab(_tabID, path) {
+      return { ok: true, canFiles: true, path, planId: "mock-file" };
+    },
+    async CommitWorkspaceFileRevertForTab() {
+      return { ok: true, undoAvailable: true, transactionId: "mock-file-tx" };
+    },
     async Fork() {
       const active = mockTabs.find((tab) => tab.active) ?? mockTabs[0];
       const tab: TabMeta = {

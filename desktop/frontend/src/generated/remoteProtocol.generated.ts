@@ -2,7 +2,7 @@
 
 export const REMOTE_SCHEMA_FORMAT = "reasonix.remote.schema.v1" as const;
 export const REMOTE_PROTOCOL_VERSION = "1" as const;
-export const REMOTE_SCHEMA_HASH = "sha256:aaa2f0d2a36851a0d9fae2b7999b8e1495df54cc61223a3ded69f2f3fd9cd8c8" as const;
+export const REMOTE_SCHEMA_HASH = "sha256:534dc2af964fa0286b4d907c97d26d23db3aba476cc77fc563c14f8d880667fc" as const;
 
 export const REMOTE_FIXED_RESOURCES = {
   "protocol": {
@@ -2717,6 +2717,12 @@ export type SessionCatalogParamsHydrated = {
 };
 
 export type SessionCatalogResultRaw = {
+  "builtinCommands"?: Array<{
+    "description"?: string;
+    "group"?: string;
+    "hint"?: string;
+    "name": string;
+  }>;
   "commands": Array<{
     "description"?: string;
     "name": string;
@@ -2740,6 +2746,12 @@ export type SessionCatalogResultRaw = {
   }>;
 };
 export type SessionCatalogResultHydrated = {
+  "builtinCommands"?: Array<{
+    "description"?: string;
+    "group"?: string;
+    "hint"?: string;
+    "name": string;
+  }>;
   "commands": Array<{
     "description"?: string;
     "name": string;

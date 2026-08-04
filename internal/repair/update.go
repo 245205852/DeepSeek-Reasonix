@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -26,6 +27,7 @@ const updateTransactionVersion = 1
 const pendingUpdateLockTimeout = 5 * time.Second
 
 var repairExecutable = os.Executable
+var updateBackupAfterQuarantine = func(string, string) {}
 
 type UpdateTransaction struct {
 	SchemaVersion int    `json:"schemaVersion"`
@@ -54,6 +56,12 @@ type UpdateTransaction struct {
 	// BackupTreeID binds a macOS rollback backup to the bundle captured before
 	// the update. It remains optional for legacy transactions.
 	BackupTreeID string `json:"backupTreeId,omitempty"`
+	// OrphanedBackupPath and OrphanedBackupTreeID bind a quarantined backup to
+	// the transaction that displaced it. Terminal transaction cleanup removes
+	// only this exact tree after re-verifying its digest; older transactions
+	// without these optional fields retain their existing behavior.
+	OrphanedBackupPath   string `json:"orphanedBackupPath,omitempty"`
+	OrphanedBackupTreeID string `json:"orphanedBackupTreeId,omitempty"`
 }
 
 type UpdateTransactionFile struct {
@@ -320,9 +328,6 @@ func PrepareAppBundleUpdateHandoff(fromVersion, toVersion, appPath, backupPath, 
 		return nil, fmt.Errorf("prepare update: lock targets: %w", err)
 	}
 	defer unlockTargets()
-	if err := verifyAppBundleUpdateHandoffBackupAbsent(tx); err != nil {
-		return nil, fmt.Errorf("prepare update: %w", err)
-	}
 	tx.HandoffAppTreeID, err = repairPlanTreeContentStateID(tx.HandoffAppPath)
 	if err != nil {
 		return nil, fmt.Errorf("prepare update: stage bundle digest: %w", err)
@@ -339,6 +344,18 @@ func PrepareAppBundleUpdateHandoff(fromVersion, toVersion, appPath, backupPath, 
 		return nil, fmt.Errorf("prepare update: %w", err)
 	}
 	if err := VerifyAppBundleUpdateHandoffOriginal(tx); err != nil {
+		return nil, fmt.Errorf("prepare update: %w", err)
+	}
+	orphanedBackup, orphanedTreeID, err := quarantineExistingAppBundleUpdateBackup(tx)
+	if err != nil {
+		return nil, fmt.Errorf("prepare update: recover existing handoff backup: %w", err)
+	}
+	tx.OrphanedBackupPath = orphanedBackup
+	tx.OrphanedBackupTreeID = orphanedTreeID
+	// An uncooperative writer is not covered by Reasonix's mutation lock. Recheck
+	// the public path after quarantine so a recreated node is never adopted as the
+	// rollback backup of the new transaction.
+	if err := verifyAppBundleUpdateHandoffBackupAbsent(tx); err != nil {
 		return nil, fmt.Errorf("prepare update: %w", err)
 	}
 	if err := ensureNoPendingUpdate(); err != nil {
@@ -449,7 +466,7 @@ func claimPendingAppBundleUpdateHandoff(
 		return fail(fmt.Errorf("claim update handoff: handoff metadata is missing"))
 	}
 
-	unlockTargets, err := lockRepairMutationsTimeout(timeout, tx.TargetPath, tx.BackupPath)
+	unlockTargets, err := lockRepairMutationsTimeout(timeout, pendingUpdateTargetPaths(tx)...)
 	if err != nil {
 		return fail(fmt.Errorf("claim update handoff: lock targets: %w", err))
 	}
@@ -1204,7 +1221,7 @@ func cancelPendingAppBundleUpdateHandoff(
 	if expected := strings.TrimSpace(expectedTransactionID); expected != "" && expected != repairPlanStateID(tx) {
 		return nil, fmt.Errorf("cancel update handoff: pending transaction changed")
 	}
-	unlockTargets, err := lockRepairMutationsTimeout(timeout, tx.TargetPath, tx.BackupPath)
+	unlockTargets, err := lockRepairMutationsTimeout(timeout, pendingUpdateTargetPaths(tx)...)
 	if err != nil {
 		return nil, fmt.Errorf("cancel update handoff: lock targets: %w", err)
 	}
@@ -1392,6 +1409,111 @@ func verifyAppBundleUpdateHandoffBackupAbsent(tx *UpdateTransaction) error {
 	return nil
 }
 
+// quarantineExistingAppBundleUpdateBackup recovers the pre-v1.20 state where
+// a committed macOS update removed pending-update.json but its sibling rollback
+// bundle survived best-effort cleanup. Without the transaction there is no
+// trustworthy authority to delete or reuse that bundle, so preparation moves it
+// aside with a no-replace rename and preserves it for diagnosis.
+//
+// The caller holds both the pending-update lock and the target mutation locks.
+// The current executable binding prevents a crafted caller from quarantining a
+// similarly named bundle beside an unrelated application.
+func quarantineExistingAppBundleUpdateBackup(tx *UpdateTransaction) (string, string, error) {
+	if tx == nil || tx.TargetKind != "app-bundle" ||
+		tx.BackupPath != tx.TargetPath+".reasonix-update-backup" {
+		return "", "", fmt.Errorf("handoff backup transaction is invalid")
+	}
+	info, err := os.Lstat(tx.BackupPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return "", "", nil
+		}
+		return "", "", fmt.Errorf("inspect existing handoff backup: %w", err)
+	}
+	if !info.IsDir() {
+		return "", "", fmt.Errorf("existing handoff backup is not a directory")
+	}
+
+	launcher, err := repairExecutable()
+	if err != nil {
+		return "", "", fmt.Errorf("resolve current Reasonix executable: %w", err)
+	}
+	resolvedTarget, err := filepath.EvalSymlinks(tx.TargetPath)
+	if err != nil {
+		return "", "", fmt.Errorf("resolve current app bundle: %w", err)
+	}
+	resolvedLauncher, err := filepath.EvalSymlinks(launcher)
+	if err != nil {
+		return "", "", fmt.Errorf("resolve current Reasonix executable: %w", err)
+	}
+	rel, err := filepath.Rel(resolvedTarget, resolvedLauncher)
+	if err != nil || rel == "." || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return "", "", fmt.Errorf("existing handoff backup is outside the current Reasonix installation")
+	}
+
+	expectedTreeID, err := repairPlanTreeContentStateID(tx.BackupPath)
+	if err != nil {
+		return "", "", fmt.Errorf("read existing handoff backup digest: %w", err)
+	}
+	for attempt := 0; attempt < 16; attempt++ {
+		quarantine := fmt.Sprintf(
+			"%s.reasonix-orphaned-%d-%d",
+			tx.BackupPath,
+			time.Now().UTC().UnixNano(),
+			attempt,
+		)
+		if err := renameRepairNodeNoReplace(tx.BackupPath, quarantine); err != nil {
+			if os.IsExist(err) {
+				continue
+			}
+			return "", "", fmt.Errorf("quarantine existing handoff backup: %w", err)
+		}
+		updateBackupAfterQuarantine(tx.BackupPath, quarantine)
+
+		restore := func(cause error) error {
+			if _, statErr := os.Lstat(tx.BackupPath); statErr == nil {
+				return fmt.Errorf("%w; preserved quarantined backup at %s because the public path was recreated", cause, quarantine)
+			} else if !os.IsNotExist(statErr) {
+				return fmt.Errorf("%w; inspect recreated handoff backup: %v", cause, statErr)
+			}
+			if restoreErr := renameRepairNodeNoReplace(quarantine, tx.BackupPath); restoreErr != nil {
+				return fmt.Errorf("%w; preserved quarantined backup at %s: %v", cause, quarantine, restoreErr)
+			}
+			return cause
+		}
+
+		actualTreeID, digestErr := repairPlanTreeContentStateID(quarantine)
+		if digestErr != nil {
+			return "", "", restore(fmt.Errorf("read quarantined handoff backup digest: %w", digestErr))
+		}
+		if actualTreeID != expectedTreeID {
+			return "", "", restore(fmt.Errorf("existing handoff backup changed during quarantine"))
+		}
+		if _, statErr := os.Lstat(tx.BackupPath); statErr == nil {
+			return "", "", fmt.Errorf("handoff backup path was recreated during recovery; preserved quarantined backup at %s", quarantine)
+		} else if !os.IsNotExist(statErr) {
+			return "", "", fmt.Errorf("inspect recovered handoff backup path: %w", statErr)
+		}
+		return quarantine, actualTreeID, nil
+	}
+	return "", "", fmt.Errorf("cannot allocate handoff backup quarantine path")
+}
+
+// cleanupOrphanedAppBundleUpdateBackup retires only the quarantine recorded by
+// a terminal transaction. The no-replace move and digest check keep a changed
+// or concurrently replaced directory intact for diagnosis instead of deleting
+// a path merely because its name resembles a Reasonix quarantine.
+func cleanupOrphanedAppBundleUpdateBackup(tx *UpdateTransaction) {
+	if validateOrphanedAppBundleBackupMetadata(tx) != nil ||
+		strings.TrimSpace(tx.OrphanedBackupPath) == "" {
+		return
+	}
+	if err := removeUpdateBackupTreeMatching(tx.OrphanedBackupPath, tx.OrphanedBackupTreeID); err != nil {
+		slog.Warn("repair: preserving quarantined app backup after cleanup failed",
+			"path", tx.OrphanedBackupPath, "error", err)
+	}
+}
+
 func verifyAppBundleUpdateTree(path, expected, mismatch string) error {
 	if strings.TrimSpace(expected) == "" {
 		return fmt.Errorf("original bundle digest is missing")
@@ -1547,6 +1669,7 @@ func removePendingUpdateExactVerified(expected *UpdateTransaction, verify func()
 	if err := removePendingUpdateFile(cleanup); err != nil {
 		return restore(err)
 	}
+	cleanupOrphanedAppBundleUpdateBackup(expected)
 	return nil
 }
 
@@ -1555,16 +1678,138 @@ func removePendingUpdateExactVerified(expected *UpdateTransaction, verify func()
 // the new transaction is durable, destroying the previous rollback material if
 // preparation later fails.
 func ensureNoPendingUpdate() error {
-	path := PendingUpdatePath()
-	if path == "" {
-		return fmt.Errorf("prepare update: Reasonix state directory is unavailable")
+	disposition, _, err := classifyPendingUpdate()
+	if err != nil {
+		return fmt.Errorf("prepare update: %w", err)
 	}
-	if _, err := os.Lstat(path); err == nil {
+	switch disposition {
+	case pendingUpdateActionable:
 		return fmt.Errorf("prepare update: a pending update already exists")
-	} else if !os.IsNotExist(err) {
-		return fmt.Errorf("prepare update: inspect pending transaction: %w", err)
+	case pendingUpdateDebris:
+		// Refusing here would be refusing forever: debris cannot be resumed,
+		// rolled back, or cleared by reconciliation, so every future update
+		// would fail on a transaction nothing can act on.
+		if _, err := quarantinePendingUpdate("blocked a new update"); err != nil {
+			return fmt.Errorf("prepare update: quarantine unusable transaction: %w", err)
+		}
 	}
 	return nil
+}
+
+// pendingUpdateDisposition is what the pending-update marker on disk currently
+// means. Preparation and reconciliation both classify through it so they cannot
+// disagree about whether a transaction exists — when they did, a marker that
+// reconciliation could not act on still made preparation refuse, and updates
+// stayed blocked permanently (#7342).
+type pendingUpdateDisposition int
+
+const (
+	// pendingUpdateNone: no marker on disk.
+	pendingUpdateNone pendingUpdateDisposition = iota
+	// pendingUpdateActionable: a transaction that can still be resumed or
+	// rolled back. Preparation must refuse over one of these — writing a new
+	// transaction would overwrite fixed backup paths and destroy the rollback
+	// material this one still owns.
+	pendingUpdateActionable
+	// pendingUpdateDebris: a marker that cannot describe a recoverable
+	// transaction, so it owns no rollback material worth protecting.
+	pendingUpdateDebris
+)
+
+// classifyPendingUpdate reads the marker and decides what can be done with it.
+//
+// The line between debris and an actionable transaction is deliberately drawn
+// at self-description. A transaction that cannot be parsed, or that does not
+// say which release it targets, for which platform, and when it was opened,
+// names nothing to roll back to — discarding it loses nothing. Every other
+// validation failure is environment-relative (the launcher path, whether the
+// target sits inside this Guard installation, where the backup lives) and can
+// fail for a perfectly good transaction observed from the wrong install, so
+// those keep the old refusal rather than risking real rollback material.
+//
+// IO failures are errors, never debris: an unreadable marker is not an absent
+// one, and quarantining on a transient permission error would throw away a
+// recoverable transaction.
+func classifyPendingUpdate() (pendingUpdateDisposition, *UpdateTransaction, error) {
+	path := PendingUpdatePath()
+	if path == "" {
+		return pendingUpdateNone, nil, fmt.Errorf("Reasonix state directory is unavailable")
+	}
+	if _, err := os.Lstat(path); err != nil {
+		if os.IsNotExist(err) {
+			return pendingUpdateNone, nil, nil
+		}
+		return pendingUpdateNone, nil, fmt.Errorf("inspect pending transaction: %w", err)
+	}
+	tx, err := readPendingUpdateUnchecked()
+	if err != nil {
+		switch {
+		case os.IsNotExist(err):
+			return pendingUpdateNone, nil, nil
+		case isPendingUpdateContentError(err):
+			return pendingUpdateDebris, nil, nil
+		default:
+			return pendingUpdateNone, nil, fmt.Errorf("read pending transaction: %w", err)
+		}
+	}
+	if !pendingUpdateSelfDescribing(tx) {
+		return pendingUpdateDebris, nil, nil
+	}
+	if err := validateUpdateTransaction(tx); err != nil {
+		return pendingUpdateActionable, nil, nil
+	}
+	return pendingUpdateActionable, tx, nil
+}
+
+// isPendingUpdateContentError reports whether err means the bytes on disk are
+// not a transaction, as opposed to the file being unreadable. A prepare
+// interrupted mid-write leaves a truncated object, which decodes to a syntax
+// error rather than an IO error.
+func isPendingUpdateContentError(err error) bool {
+	var syntax *json.SyntaxError
+	var unmarshalType *json.UnmarshalTypeError
+	return errors.As(err, &syntax) || errors.As(err, &unmarshalType) || errors.Is(err, io.ErrUnexpectedEOF)
+}
+
+// pendingUpdateSelfDescribing reports whether tx carries the identity any
+// recovery needs regardless of where Reasonix is installed: which release it
+// targets, for which platform, and when it was opened.
+func pendingUpdateSelfDescribing(tx *UpdateTransaction) bool {
+	if tx == nil || tx.SchemaVersion != updateTransactionVersion || strings.TrimSpace(tx.ToVersion) == "" {
+		return false
+	}
+	if strings.TrimSpace(tx.Platform) == "" || strings.TrimSpace(tx.CreatedAt) == "" {
+		return false
+	}
+	_, err := time.Parse(time.RFC3339Nano, strings.TrimSpace(tx.CreatedAt))
+	return err == nil
+}
+
+// quarantinePendingUpdate moves an unusable marker aside and returns where it
+// went. It is deliberately not a delete: the marker is the only evidence of
+// what went wrong, and a user who reports a stuck updater should still have it.
+// Callers hold the pending-update lock.
+func quarantinePendingUpdate(reason string) (string, error) {
+	path := PendingUpdatePath()
+	if path == "" {
+		return "", fmt.Errorf("Reasonix state directory is unavailable")
+	}
+	base := path + ".unusable-" + time.Now().UTC().Format("20060102T150405Z")
+	aside := base
+	for i := 1; ; i++ {
+		if _, err := os.Lstat(aside); os.IsNotExist(err) {
+			break
+		} else if err != nil {
+			return "", err
+		}
+		aside = fmt.Sprintf("%s-%d", base, i)
+	}
+	if err := os.Rename(path, aside); err != nil {
+		return "", err
+	}
+	slog.Warn("repair: quarantined an unusable pending update transaction",
+		"path", aside, "reason", reason)
+	return aside, nil
 }
 
 func ReadPendingUpdate() (*UpdateTransaction, error) {
@@ -1634,10 +1879,27 @@ func PendingUpdateExists() bool {
 // its rollback state is intact. Version equality alone is not installation
 // evidence: a same-version/manual launch may observe an abandoned prepare.
 func ReconcilePendingUpdate(runningVersion string) (PendingUpdateReconcileResult, error) {
-	tx, err := ReadPendingUpdate()
-	if err != nil {
-		if os.IsNotExist(err) {
-			return PendingUpdateReconcileResult{}, nil
+	disposition, tx, classifyErr := classifyPendingUpdate()
+	if classifyErr != nil {
+		return PendingUpdateReconcileResult{Pending: true}, fmt.Errorf("reconcile pending update: %w", classifyErr)
+	}
+	switch {
+	case disposition == pendingUpdateNone:
+		return PendingUpdateReconcileResult{}, nil
+	case disposition == pendingUpdateDebris:
+		// Nothing here can be resumed or rolled back. Leaving it in place is
+		// what stranded users: startup kept failing to recover it while
+		// preparation kept refusing to write over it.
+		if _, err := quarantinePendingUpdate("no recoverable transaction to reconcile"); err != nil {
+			return PendingUpdateReconcileResult{Pending: true}, fmt.Errorf("reconcile pending update: quarantine unusable transaction: %w", err)
+		}
+		return PendingUpdateReconcileResult{Pending: true, Cleared: true}, nil
+	case tx == nil:
+		// Self-describing but not valid for this installation. Recovery needs
+		// the full transaction, so surface the reason instead of guessing.
+		_, err := ReadPendingUpdate()
+		if err == nil {
+			err = fmt.Errorf("pending update is not valid for this installation")
 		}
 		return PendingUpdateReconcileResult{Pending: true}, fmt.Errorf("reconcile pending update: %w", err)
 	}
@@ -2972,6 +3234,9 @@ func validateUpdateTransactionForLauncher(tx *UpdateTransaction, launcher string
 		if err := validateAppBundleHandoffMetadata(tx); err != nil {
 			return fmt.Errorf("pending update %w", err)
 		}
+		if err := validateOrphanedAppBundleBackupMetadata(tx); err != nil {
+			return fmt.Errorf("pending update %w", err)
+		}
 	default:
 		return fmt.Errorf("pending update target kind is invalid")
 	}
@@ -3037,6 +3302,47 @@ func validateAppBundleHandoffMetadata(tx *UpdateTransaction) error {
 	if !strings.HasPrefix(stagingBase, "reasonix-mac-update-") {
 		return fmt.Errorf("handoff staging directory has an unexpected name")
 	}
+	return nil
+}
+
+func validateOrphanedAppBundleBackupMetadata(tx *UpdateTransaction) error {
+	if tx == nil {
+		return fmt.Errorf("orphaned backup metadata is incomplete")
+	}
+	path := strings.TrimSpace(tx.OrphanedBackupPath)
+	treeID := strings.TrimSpace(tx.OrphanedBackupTreeID)
+	if path == "" && treeID == "" {
+		return nil
+	}
+	if tx.TargetKind != "app-bundle" || path == "" || treeID == "" {
+		return fmt.Errorf("orphaned backup metadata is incomplete")
+	}
+	path = filepath.Clean(path)
+	if !filepath.IsAbs(path) || filepath.Dir(path) != filepath.Dir(tx.BackupPath) {
+		return fmt.Errorf("orphaned backup path is outside the app installation directory")
+	}
+	prefix := filepath.Base(tx.BackupPath) + ".reasonix-orphaned-"
+	suffix, ok := strings.CutPrefix(filepath.Base(path), prefix)
+	if !ok {
+		return fmt.Errorf("orphaned backup path has an unexpected name")
+	}
+	parts := strings.Split(suffix, "-")
+	if len(parts) != 2 {
+		return fmt.Errorf("orphaned backup path has an unexpected name")
+	}
+	for _, part := range parts {
+		if part == "" || strings.Trim(part, "0123456789") != "" {
+			return fmt.Errorf("orphaned backup path has an unexpected name")
+		}
+	}
+	if len(treeID) != sha256.Size*2 {
+		return fmt.Errorf("orphaned backup digest is invalid")
+	}
+	if _, err := hex.DecodeString(treeID); err != nil {
+		return fmt.Errorf("orphaned backup digest is invalid")
+	}
+	tx.OrphanedBackupPath = path
+	tx.OrphanedBackupTreeID = treeID
 	return nil
 }
 

@@ -57,7 +57,7 @@ export type ControllerLiveStore = {
 };
 export type MessageActionScope = "fork" | "summ-from" | "summ-upto" | "conversation" | "code" | "both";
 export type MessageActionState = { turn: number; scope: MessageActionScope };
-export type HydrateReason = "switch-tab" | "new-session" | "resume-session" | "open-topic" | "startup";
+export type HydrateReason = "switch-tab" | "new-session" | "resume-session" | "open-topic" | "startup" | "rewind";
 type SyncActiveTabOptions = {
   preserveCachedHistory?: boolean;
 };
@@ -1561,6 +1561,11 @@ const noticeCodeKeys: Record<string, DictKey> = {
   loop_guard: "notice.loopGuard",
   workspace_lease: "notice.workspaceLease",
   cancelled_turn_display: "notice.cancelledTurnDisplay",
+  session_recovery_forked: "recovery.noticeSavedCopy",
+  session_recovery_adopted: "recovery.noticeAdopted",
+  session_recovery_adopted_covered: "recovery.noticeAdoptedCovered",
+  session_recovery_depth_cap: "recovery.noticeKeptCurrent",
+  session_shutdown_recovery_forked: "recovery.noticeSavedCopy",
 };
 
 // localizedNoticeText localizes a notice's main copy by its stable code first,
@@ -1693,7 +1698,18 @@ function backendNoticeKey(msg: string): DictKey | "" {
   }
 }
 
-function recoveryNoticeDedupeKey(text: string): string {
+function recoveryNoticeDedupeKey(text: string, code?: string): string {
+  switch (code) {
+    case "session_recovery_forked":
+    case "session_shutdown_recovery_forked":
+      return "recovery:saved-copy";
+    case "session_recovery_depth_cap":
+      return "recovery:kept-current";
+    case "session_recovery_adopted_covered":
+      return "recovery:adopted-covered";
+    case "session_recovery_adopted":
+      return "recovery:adopted";
+  }
   const msg = text.trim();
   if (
     /^session changed on disk; unsaved local transcript was saved as a conflict copy$/i.test(msg) ||
@@ -1724,8 +1740,8 @@ function recoveryNoticeDedupeKey(text: string): string {
   return "";
 }
 
-function quietTranscriptNoticeKey(text: string): string {
-  const recovery = recoveryNoticeDedupeKey(text);
+function quietTranscriptNoticeKey(text: string, code?: string): string {
+  const recovery = recoveryNoticeDedupeKey(text, code);
   if (recovery) return recovery;
 
   const msg = text.trim();
@@ -1752,11 +1768,11 @@ function quietTranscriptNoticeKey(text: string): string {
 }
 
 function appendNoticeItem(items: Item[], seq: number, id: string, level: "info" | "warn", rawText: string, detail?: string, code?: string): { items: Item[]; seq: number } {
-  if (quietTranscriptNoticeKey(rawText)) {
+  if (quietTranscriptNoticeKey(rawText, code)) {
     return { items, seq };
   }
   const text = localizedNoticeText(rawText, code);
-  if (quietTranscriptNoticeKey(text)) {
+  if (quietTranscriptNoticeKey(text, code)) {
     return { items, seq };
   }
   const trimmedDetail = detail?.trim();
@@ -3229,8 +3245,16 @@ export function useController() {
   const forget = useCallback(async (name: string) => { await app.Forget(name).catch(() => {}); }, []);
   const saveDoc = useCallback(async (path: string, body: string) => { await app.SaveDoc(path, body).catch(() => {}); }, []);
 
-  const rewindForTab = useCallback(async (sourceTabId: string, turn: number, scope: string): Promise<boolean> => {
-    if (!sourceTabId) return false;
+  type RewindOutcome = {
+    ok: boolean;
+    transactionId?: string;
+    undoAvailable?: boolean;
+    written?: string[];
+    deleted?: string[];
+  };
+
+  const rewindForTabDetailed = useCallback(async (sourceTabId: string, turn: number, scope: string): Promise<RewindOutcome> => {
+    if (!sourceTabId) return { ok: false };
     const forkNavigationSeq = activeNavigationSeqRef.current;
     await waitForTabReady(sourceTabId);
     const actionScope = (["fork", "summ-from", "summ-upto", "conversation", "code", "both"].includes(scope) ? scope : "both") as MessageActionScope;
@@ -3253,48 +3277,77 @@ export function useController() {
               await syncActiveTabFromBackend(false, true);
             }
             addBreadcrumb("tab.fork", `stale completion ${tab.id} current=${currentTabId ?? ""}`);
-            return true;
+            return { ok: true };
           }
           beginActiveNavigation();
           setActiveTabId(tab.id);
           activeTabIdRef.current = tab.id;
           confirmBackendActiveTab(tab.id);
           dispatchRuntimeStatusForTab(tab.id, tab, snapshotAt);
-          // The fork's controller builds in a background goroutine: an immediate
-          // load reads empty history, and the ready-event fallback can still
-          // target the source tab, leaving the fork blank (#3742).
           await waitForTabReady(tab.id);
           await loadSessionDataForTab(tab.id, true);
           await reconcileTabRuntime(tab.id, { hydrateSessionData: false });
         } else {
           await syncActiveTabFromBackend(true);
         }
-        return true;
+        return { ok: true };
       }
 
+      let outcome: RewindOutcome = { ok: true };
       if (actionScope === "summ-from") await app.SummarizeFromForTab(sourceTabId, turn);
       else if (actionScope === "summ-upto") await app.SummarizeUpToForTab(sourceTabId, turn);
-      else await app.RewindForTab(sourceTabId, turn, actionScope);
+      else {
+        const { commitRewindWithPreview } = await import("./rewindCommit");
+        const result = await commitRewindWithPreview(sourceTabId, turn, actionScope);
+        if (!result?.ok) {
+          const detail = result?.error
+            || (result?.conflicts?.length ? result.conflicts.join("; ") : "")
+            || "rewind failed";
+          dispatchTo(sourceTabId, { type: "local_notice", level: "warn", text: detail });
+          return { ok: false, written: result?.written, deleted: result?.deleted };
+        }
+        outcome = result as RewindOutcome;
+      }
 
-      const messages = asArray(await app.HistoryForTab(sourceTabId).catch(() => [] as HistoryMessage[]));
-      dispatchTo(sourceTabId, { type: "reset" });
-      dispatchTo(sourceTabId, { type: "history", messages });
-      await refreshMetaOnlyForTab(sourceTabId);
-      dispatchTo(sourceTabId, { type: "context", context: await app.ContextUsageForTab(sourceTabId) });
-      dispatchTo(sourceTabId, { type: "checkpoints", checkpoints: asArray(await app.CheckpointsForTab(sourceTabId)) });
-      return true;
+      await loadSessionDataForTab(sourceTabId, true, "rewind");
+      return outcome;
     } catch {
-      /* The controller emits a warning notice with the specific failure reason. */
-      return false;
+      return { ok: false };
     } finally {
       dispatchTo(sourceTabId, { type: "message_action_done" });
     }
-  }, [beginActiveNavigation, confirmBackendActiveTab, dispatchRuntimeStatusForTab, dispatchTo, loadSessionDataForTab, reassertVisibleTabAfterStaleNavigation, reconcileTabRuntime, refreshMetaOnlyForTab, syncActiveTabFromBackend, waitForTabReady]);
+  }, [beginActiveNavigation, confirmBackendActiveTab, dispatchRuntimeStatusForTab, dispatchTo, loadSessionDataForTab, reassertVisibleTabAfterStaleNavigation, reconcileTabRuntime, syncActiveTabFromBackend, waitForTabReady]);
+
+  const rewindForTab = useCallback(async (sourceTabId: string, turn: number, scope: string): Promise<boolean> => {
+    return (await rewindForTabDetailed(sourceTabId, turn, scope)).ok;
+  }, [rewindForTabDetailed]);
 
   const rewind = useCallback(async (turn: number, scope: string): Promise<boolean> => {
     if (!activeTabId) return false;
     return rewindForTab(activeTabId, turn, scope);
   }, [activeTabId, rewindForTab]);
+
+  const undoRewindForTab = useCallback(async (sourceTabId: string, transactionId: string): Promise<boolean> => {
+    if (!sourceTabId || !transactionId) return false;
+    try {
+      const { undoCommittedRewind } = await import("./rewindCommit");
+      const result = await undoCommittedRewind(sourceTabId, transactionId);
+      if (!result?.ok) {
+        const detail = result?.error || "undo rewind failed";
+        dispatchTo(sourceTabId, { type: "local_notice", level: "warn", text: detail });
+        return false;
+      }
+      await loadSessionDataForTab(sourceTabId, true, "rewind");
+      return true;
+    } catch (err) {
+      dispatchTo(sourceTabId, {
+        type: "local_notice",
+        level: "warn",
+        text: err instanceof Error ? err.message : String(err),
+      });
+      return false;
+    }
+  }, [dispatchTo, loadSessionDataForTab]);
 
   // Tab management: switch preserves per-tab state; open creates it.
   const switchTab = useCallback(async (tabId: string, optimisticTab?: TabMeta, navigationIntentSeq?: number): Promise<TabMeta[] | undefined> => {
@@ -3584,7 +3637,7 @@ export function useController() {
     setCollaborationMode, setCollaborationModeForTab, setToolApprovalMode, setToolApprovalModeForTab, setComposerProfileForTab, setGoal, setGoalForTab, clearGoal, clearGoalForTab, resumeGoal, resumeGoalForTab,
     newSession, clearSession, listSessions, listTrashedSessions, resumeSession, openChannelSession, previewSession, deleteSession, restoreSession, purgeTrashedSession, renameSession,
     loadOlderHistory,
-    refreshMeta, pickWorkspace, switchWorkspace, compact, rewind, rewindForTab, setModel, setEffort, setTokenMode, cancelJob,
+    refreshMeta, pickWorkspace, switchWorkspace, compact, rewind, rewindForTab, rewindForTabDetailed, undoRewindForTab, setModel, setEffort, setTokenMode, cancelJob,
     fetchMemory, remember, forget, saveDoc,
     switchTab, openProjectTab, openGlobalTab, openTopicSession, ensureBlankTab, activateTopic, ensureBlankSurface, createDeliveryWorktree, closeTab, reorderTabs,
     // Invalidate in-flight navigation completions (activateTopic's stale
