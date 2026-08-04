@@ -7602,29 +7602,22 @@ func (a *App) Commands() []CommandInfo {
 		{Name: "reload-cmd", Description: i18n.M.CmdReloadCmd, Kind: "builtin", Group: "management"},
 	}
 	if catalog, ok := a.workbenchSessionCatalog(); ok {
-		for _, item := range catalog.Skills {
-			out = append(out, CommandInfo{Name: item.Name, Description: item.Description, Kind: "skill", Group: "skills"})
-		}
-		for _, item := range catalog.Commands {
-			kind, group := "custom", "skills"
-			if strings.HasPrefix(item.Name, "mcp__") {
-				kind, group = "mcp", "integrations"
-			}
-			out = append(out, CommandInfo{Name: item.Name, Description: item.Description, Kind: kind, Group: group})
-		}
-		return out
+		return appendRemoteSessionCommands(out, catalog)
 	}
 	a.mu.RLock()
 	ctrl := a.activeCtrlLocked()
 	a.mu.RUnlock()
 	if ctrl == nil {
-		return out
+		return append(out, docsBuiltinCommand(control.DocsSlashName))
 	}
+	commands := ctrl.Commands()
+	slashSkills := ctrl.SlashSkills()
+	out = append(out, docsBuiltinCommand(control.ResolvedBuiltinSlashName(control.DocsSlashName, commands, slashSkills)))
 	// Skills are invocable as slash commands (the model runs inline ones; subagent ones
 	// run isolated). Listing them here is what surfaces /init, /explore, … in the
 	// composer's slash menu; selecting one submits its displayed slash name, which the controller
 	// resolves via RunSkill.
-	for _, s := range ctrl.SlashSkills() {
+	for _, s := range slashSkills {
 		kind := "skill"
 		if s.RunAs == skill.RunSubagent {
 			kind = "subagent"
@@ -7635,7 +7628,7 @@ func (a *App) Commands() []CommandInfo {
 		}
 		out = append(out, CommandInfo{Name: s.SlashName(), Description: s.Description, Kind: kind, Group: group, Plugin: s.Plugin, Color: s.Color})
 	}
-	for _, c := range ctrl.Commands() {
+	for _, c := range commands {
 		if c.Hidden {
 			continue
 		}
@@ -7644,6 +7637,61 @@ func (a *App) Commands() []CommandInfo {
 	if h := ctrl.Host(); h != nil {
 		for _, p := range h.Prompts() {
 			out = append(out, CommandInfo{Name: p.Name, Description: p.Description, Kind: "mcp", Group: "integrations"})
+		}
+	}
+	return resolveDocsCommand(out)
+}
+
+func docsBuiltinCommand(name string) CommandInfo {
+	return CommandInfo{Name: name, Description: i18n.M.CmdDocs, Hint: "<question>", Kind: "builtin", Group: "integrations"}
+}
+
+func appendRemoteSessionCommands(out []CommandInfo, catalog protocol.SessionCatalogResult) []CommandInfo {
+	for _, item := range catalog.BuiltinCommands {
+		out = append(out, CommandInfo{
+			Name: item.Name, Description: item.Description, Hint: item.Hint,
+			Kind: "builtin", Group: item.Group,
+		})
+	}
+	for _, item := range catalog.Skills {
+		out = append(out, CommandInfo{Name: item.Name, Description: item.Description, Kind: "skill", Group: "skills"})
+	}
+	for _, item := range catalog.Commands {
+		kind, group := "custom", "skills"
+		if strings.HasPrefix(item.Name, "mcp__") {
+			kind, group = "mcp", "integrations"
+		}
+		out = append(out, CommandInfo{Name: item.Name, Description: item.Description, Kind: kind, Group: group})
+	}
+	return resolveDocsCommand(out)
+}
+
+func resolveDocsCommand(commands []CommandInfo) []CommandInfo {
+	winner := -1
+	winnerRank := -1
+	for i, cmd := range commands {
+		if cmd.Name != "docs" {
+			continue
+		}
+		rank := 0
+		switch cmd.Kind {
+		case "custom":
+			rank = 2
+		case "skill", "subagent":
+			rank = 1
+		}
+		if rank > winnerRank {
+			winner = i
+			winnerRank = rank
+		}
+	}
+	if winner < 0 {
+		return commands
+	}
+	out := make([]CommandInfo, 0, len(commands))
+	for i, cmd := range commands {
+		if cmd.Name != "docs" || i == winner {
+			out = append(out, cmd)
 		}
 	}
 	return out
@@ -10707,31 +10755,6 @@ type WorkspaceChangeDetailView struct {
 	Truncated bool    `json:"truncated,omitempty"`
 }
 
-// workspaceNoiseNames are local cache/vendor entries hidden from the file tree
-// and "@" menu regardless of where they appear.
-var workspaceNoiseNames = map[string]bool{
-	".codex":       true,
-	".DS_Store":    true,
-	".git":         true,
-	".npm":         true,
-	".pnpm-store":  true,
-	"node_modules": true,
-	"Thumbs.db":    true,
-}
-
-var workspaceNoiseDirs = map[string]bool{
-	"bin":                      true,
-	"desktop/build":            true,
-	"desktop/frontend/dist":    true,
-	"desktop/frontend/wailsjs": true,
-	"dist":                     true,
-	"npm/.stage":               true,
-	"site/.astro":              true,
-	"site/dist":                true,
-	"stage":                    true,
-	"tmp":                      true,
-}
-
 const filePreviewLimit = 2 * 1024 * 1024 // 2 MiB — full file preview for the workspace panel
 const fileRefSearchLimit = 20
 
@@ -10785,10 +10808,7 @@ func workspaceEntryRel(rel, name string) string {
 }
 
 func skipWorkspaceEntry(rel, name string, isDir bool) bool {
-	if workspaceNoiseNames[name] {
-		return true
-	}
-	return isDir && workspaceNoiseDirs[workspaceEntryRel(rel, name)]
+	return fileref.SkipEntry(workspaceEntryRel(rel, name), name, isDir)
 }
 
 func (a *App) activeWorkspaceBase() (string, error) {

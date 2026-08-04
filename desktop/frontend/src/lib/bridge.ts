@@ -1662,7 +1662,8 @@ function makeMockApp(): AppBindings {
     updateChannel: "stable",
     telemetry: true,
     metrics: true,
-    configPath: "~/projects/reasonix/reasonix.toml",
+    configPath: "~/.reasonix/config.toml",
+    shadowedByPath: "~/projects/reasonix/reasonix.toml",
     providerKinds: ["openai", "anthropic"],
     autoApproveTools: false,
     bypass: false,
@@ -1693,6 +1694,7 @@ function makeMockApp(): AppBindings {
   );
   if (freshMock) {
     settings.configPath = "~/.reasonix/config.toml";
+    settings.shadowedByPath = "";
   }
   const mockNow = Date.now();
   const mockProjectTree: ProjectNode[] = freshMock ? [] : [
