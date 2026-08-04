@@ -2,7 +2,7 @@
 
 export const REMOTE_SCHEMA_FORMAT = "reasonix.remote.schema.v1" as const;
 export const REMOTE_PROTOCOL_VERSION = "1" as const;
-export const REMOTE_SCHEMA_HASH = "sha256:10bd2e64924151827c16d872ab869e0fb2b83ba5bffbd71902ab6676f053affa" as const;
+export const REMOTE_SCHEMA_HASH = "sha256:6005c00982b431096e282cbd03c3f05454623ecdbf09093e30afb7b6abf0fe22" as const;
 
 export const REMOTE_FIXED_RESOURCES = {
   "protocol": {
@@ -910,6 +910,7 @@ export type BrokerStreamChunkParamsRaw = {
       "code": "provider_failed" | "provider_interrupted";
       "message": string;
     };
+    "responsesItem"?: RemoteJSONValue;
     "signature"?: string;
     "text"?: string;
     "toolCall"?: {
@@ -924,7 +925,7 @@ export type BrokerStreamChunkParamsRaw = {
       "resolved_read_only"?: boolean;
       "thought_signature"?: string;
     };
-    "type": "done" | "error" | "reasoning" | "text" | "tool_call" | "tool_call_args_delta" | "tool_call_start" | "usage";
+    "type": "done" | "error" | "reasoning" | "responses_item" | "text" | "tool_call" | "tool_call_args_delta" | "tool_call_start" | "usage";
     "usage"?: {
       "cacheHitTokens": number;
       "cacheMissTokens": number;
@@ -946,6 +947,7 @@ export type BrokerStreamChunkParamsHydrated = {
       "code": "provider_failed" | "provider_interrupted";
       "message": string;
     };
+    "responsesItem"?: RemoteJSONValue;
     "signature"?: string;
     "text"?: string;
     "toolCall"?: {
@@ -960,7 +962,7 @@ export type BrokerStreamChunkParamsHydrated = {
       "resolved_read_only"?: boolean;
       "thought_signature"?: string;
     };
-    "type": "done" | "error" | "reasoning" | "text" | "tool_call" | "tool_call_args_delta" | "tool_call_start" | "usage";
+    "type": "done" | "error" | "reasoning" | "responses_item" | "text" | "tool_call" | "tool_call_args_delta" | "tool_call_start" | "usage";
     "usage"?: {
       "cacheHitTokens": number;
       "cacheMissTokens": number;
@@ -1027,6 +1029,7 @@ export type BrokerStreamOpenParamsRaw = {
       "raw_content"?: string;
       "reasoning_content"?: string;
       "reasoning_signature"?: string;
+      "responses_items"?: Array<RemoteJSONValue>;
       "role": "assistant" | "system" | "tool" | "user";
       "tool_call_id"?: string;
       "tool_calls"?: Array<{
@@ -1090,6 +1093,7 @@ export type BrokerStreamOpenParamsHydrated = {
       "raw_content"?: string;
       "reasoning_content"?: string;
       "reasoning_signature"?: string;
+      "responses_items"?: Array<RemoteJSONValue>;
       "role": "assistant" | "system" | "tool" | "user";
       "tool_call_id"?: string;
       "tool_calls"?: Array<{

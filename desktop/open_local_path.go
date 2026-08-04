@@ -17,9 +17,7 @@ func normalizeLocalOpenPath(path string) (string, error) {
 	if path == "" {
 		return "", os.ErrInvalid
 	}
-	if strings.HasPrefix(path, "file:///") {
-		path = strings.TrimPrefix(path, "file:///")
-	}
+	path = strings.TrimPrefix(path, "file:///")
 	// Normalize forward slashes (file URLs, slash-form UNC "//nas/share")
 	// to the platform-native separators the opener expects.
 	path = filepath.FromSlash(path)

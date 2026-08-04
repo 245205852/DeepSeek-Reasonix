@@ -3298,21 +3298,24 @@ func TestSlashCodeCommentSubmitStartsTurn(t *testing.T) {
 	}
 }
 
-func TestUnknownSlashCommandDoesNotStartTurn(t *testing.T) {
+func TestUnknownSlashCommandStartsOrdinaryTurnWithNotice(t *testing.T) {
 	r := &recordingTurnRunner{}
+	events := make(chan event.Event, 8)
 	ctrl := control.New(control.Options{
 		Runner: r,
-		Sink:   event.FuncSink(func(event.Event) {}),
+		Sink:   event.FuncSink(func(e event.Event) { events <- e }),
 	})
 	m := newTestChatTUI()
 	m.ctrl = ctrl
-	m.input.SetValue("/definitely-not-a-command")
+	input := "/definitely-not-a-command"
+	m.input.SetValue(input)
 
 	model, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 	m = model.(chatTUI)
+	waitForCLIEvent(t, events, event.TurnDone)
 
-	if len(r.inputs) != 0 {
-		t.Fatalf("unknown slash command should not start a model turn, inputs=%q", r.inputs)
+	if len(r.inputs) != 1 || r.inputs[0] != input {
+		t.Fatalf("unknown slash command should start one ordinary turn, inputs=%q", r.inputs)
 	}
 	if got := strings.Join(m.transcript, "\n"); !strings.Contains(got, "unknown command") {
 		t.Fatalf("unknown slash command should be reported in transcript, got:\n%s", got)
