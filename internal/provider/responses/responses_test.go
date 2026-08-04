@@ -858,3 +858,96 @@ func TestConversationDigestMirrorsWireKnobs(t *testing.T) {
 		t.Fatal("dashscope summary must change the digest (wire sends summary)")
 	}
 }
+
+// TestSingleSegmentReasoningWiredIntoWarningPolicy：singleSegmentReasoning
+// capability 驱动警告策略（评审 #7234 Copilot：wire into behavior）。
+func TestSingleSegmentReasoningWiredIntoWarningPolicy(t *testing.T) {
+	cases := []struct {
+		name, baseURL, model string
+		want                 bool
+	}{
+		{"mimo 单段不警告", "https://api.xiaomimimo.com/v1", "mimo-v2.5-pro", false},
+		{"dashscope 无回传契约不警告", "https://dashscope.aliyuncs.com/compatible-mode/v1", "qwen3", false},
+		{"deepseek pro 多段警告", "https://api.deepseek.com", "deepseek-v4-pro", true},
+		{"deepseek flash 豁免", "https://api.deepseek.com", "deepseek-v4-flash", false},
+	}
+	for _, tc := range cases {
+		pro := New(Config{Name: "t", APIKey: "k", BaseURL: tc.baseURL, Model: tc.model}).(interface {
+			WarnOnMissingToolCallReasoning() bool
+		})
+		if got := pro.WarnOnMissingToolCallReasoning(); got != tc.want {
+			t.Errorf("%s: WarnOnMissingToolCallReasoning = %v, want %v", tc.name, got, tc.want)
+		}
+	}
+}
+
+// TestFactoryPassesExtraThrough：newFromConfig 原样透传 cfg.Extra——
+// vision 开关经 provider factory 后仍生效（评审 #7234 第 3 点）。
+func TestFactoryPassesExtraThrough(t *testing.T) {
+	p, err := newFromConfig(provider.Config{
+		Name: "mimo", BaseURL: "https://api.xiaomimimo.com/v1", Model: "mimo-v2.5-pro",
+		Extra: map[string]any{"vision": true, "effort": "low", "mode": "stateless"},
+	})
+	if err != nil {
+		t.Fatalf("newFromConfig: %v", err)
+	}
+	cl := p.(*client)
+	if !cl.vision {
+		t.Fatal("vision must survive factory (Extra passthrough)")
+	}
+	if cl.effort != "low" {
+		t.Fatalf("effort = %q, want low", cl.effort)
+	}
+}
+
+// TestReasoningMetaChunkEndToEnd：第一轮 SSE（reasoning item 带 id/status）
+// → meta chunk 携带 → 用捕获的 id/status 构造第二轮 Message →
+// messagesToInput 回传（评审 #7234 第 1 点要求的端到端回归路径）。
+func TestReasoningMetaChunkEndToEnd(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		writeEvents(w,
+			`{"type":"response.output_item.added","item":{"type":"reasoning","id":"rs_round1","summary":[],"content":[]}}`,
+			`{"type":"response.reasoning_text.delta","item_id":"rs_round1","delta":"think hard"}`,
+			`{"type":"response.output_item.done","item":{"type":"reasoning","id":"rs_round1","status":"completed"}}`,
+			`{"type":"response.completed","response":{"id":"resp_1","usage":{"input_tokens":2,"output_tokens":3,"total_tokens":5}}}`,
+		)
+	}))
+	defer server.Close()
+	c := New(Config{Name: "deepseek-responses", APIKey: "key", BaseURL: server.URL, Model: "deepseek-v4-pro"}).(*client)
+
+	var rid, rstatus string
+	ch, _ := c.Stream(context.Background(), provider.Request{
+		Messages: []provider.Message{{Role: provider.RoleUser, Content: "hi"}},
+	})
+	for chunk := range ch {
+		if chunk.Type == provider.ChunkReasoning && chunk.ReasoningID != "" {
+			rid = chunk.ReasoningID
+			rstatus = chunk.ReasoningStatus
+		}
+	}
+	if rid != "rs_round1" || rstatus != "completed" {
+		t.Fatalf("meta chunk id/status = %q/%q, want rs_round1/completed", rid, rstatus)
+	}
+
+	body, _, _ := c.buildRequestBody(provider.Request{
+		Messages: []provider.Message{
+			{Role: provider.RoleUser, Content: "hi"},
+			{Role: provider.RoleAssistant, Content: "answer", ReasoningContent: "think hard",
+				ReasoningID: rid, ReasoningStatus: rstatus},
+		},
+	})
+	items := body["input"].([]map[string]any)
+	found := false
+	for _, item := range items {
+		if item["type"] == "reasoning" {
+			if item["id"] != "rs_round1" || item["status"] != "completed" {
+				t.Fatalf("round-2 reasoning item id/status = %v/%v, want rs_round1/completed",
+					item["id"], item["status"])
+			}
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("round-2 input must contain the reasoning item with captured id/status")
+	}
+}

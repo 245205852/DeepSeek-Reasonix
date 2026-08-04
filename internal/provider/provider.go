@@ -711,12 +711,19 @@ func isThreeLetterCurrencyCode(value string) bool {
 // Chunk is a single streamed event. Read the field matching Type.
 type Chunk struct {
 	Type      ChunkType
-	Text      string    // ChunkText, ChunkReasoning
-	Signature string    // ChunkReasoning: opaque proof for the reasoning (Anthropic thinking signature), when issued
-	ToolCall  *ToolCall // ChunkToolCallStart (ID+Name only), ChunkToolCallArgsDelta (ID+Name), ChunkToolCall (complete)
-	ArgChars  int       // ChunkToolCallArgsDelta: cumulative argument characters received for this call
-	Usage     *Usage    // ChunkUsage
-	Err       error     // ChunkError
+	Text      string // ChunkText, ChunkReasoning
+	Signature string // ChunkReasoning: opaque proof for the reasoning (Anthropic thinking signature), when issued
+	// ReasoningID/ReasoningStatus ride the final ChunkReasoning of a turn
+	// (empty Text): the provider-issued reasoning item id/status captured
+	// from the SSE stream, so the Agent can persist them into the session
+	// and the next turn's input reasoning item round-trips them (review
+	// #7234 — OpenAI Responses schema marks Reasoning.id required).
+	ReasoningID     string    // ChunkReasoning: provider-issued reasoning item id
+	ReasoningStatus string    // ChunkReasoning: final reasoning item status ("completed")
+	ToolCall        *ToolCall // ChunkToolCallStart (ID+Name only), ChunkToolCallArgsDelta (ID+Name), ChunkToolCall (complete)
+	ArgChars        int       // ChunkToolCallArgsDelta: cumulative argument characters received for this call
+	Usage           *Usage    // ChunkUsage
+	Err             error     // ChunkError
 }
 
 // StreamInterruptedError marks a recoverable transport cut that happened after

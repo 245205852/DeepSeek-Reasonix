@@ -51,6 +51,8 @@ type streamedTurn struct {
 	text               string
 	reasoning          string
 	signature          string
+	reasoningID        string
+	reasoningStatus    string
 	calls              []provider.ToolCall
 	usage              *provider.Usage
 	interrupted        bool
@@ -320,6 +322,8 @@ func (a *Agent) runToolLoop(ctx context.Context, state *runLoopState) error {
 			Content:            text,
 			ReasoningContent:   reasoning,
 			ReasoningSignature: signature,
+			ReasoningID:        streamed.reasoningID,
+			ReasoningStatus:    streamed.reasoningStatus,
 			ToolCalls:          calls,
 			WorkDurationMs:     state.workDurationMs(),
 		})
@@ -422,9 +426,11 @@ func (a *Agent) streamWithMissingReasoningRecovery(ctx context.Context, turn int
 }
 
 func (a *Agent) streamTurn(ctx context.Context, turn int, sink event.Sink) streamedTurn {
-	text, reasoning, signature, calls, usage, interrupted, partialToolStarted, partialCalls, err := a.stream(ctx, turn, sink)
+	text, reasoning, signature, reasoningID, reasoningStatus, calls, usage, interrupted, partialToolStarted, partialCalls, err := a.stream(ctx, turn, sink)
 	return streamedTurn{
-		text: text, reasoning: reasoning, signature: signature, calls: calls, usage: usage,
+		text: text, reasoning: reasoning, signature: signature,
+		reasoningID: reasoningID, reasoningStatus: reasoningStatus,
+		calls: calls, usage: usage,
 		interrupted: interrupted, partialToolStarted: partialToolStarted, partialCalls: partialCalls, err: err,
 	}
 }

@@ -48,6 +48,9 @@ func newFromConfig(cfg provider.Config) (provider.Provider, error) {
 		Name: cfg.Name, APIKey: cfg.APIKey, BaseURL: cfg.BaseURL, Model: cfg.Model,
 		Effort: effort, Mode: mode, Stateful: stateful, Proxy: proxy,
 		KeyEnv: keyEnv, KeySource: keySource, MaxOutputTokens: maxOutputTokens,
+		// Extra 原样透传：vision 等能力开关由调用方（boot/CLI）写入
+		// cfg.Extra，factory 若丢弃则 New() 读不到（评审 #7234 第 3 点）。
+		Extra: cfg.Extra,
 	}), nil
 }
 
@@ -176,9 +179,13 @@ func (c *client) MissingToolCallReasoningWarningIdentity() string {
 // MiMo documents reasoning alongside tool calls but does not guarantee it on
 // every round (observed: mimo-v2.5-pro tool-call turn with empty reasoning),
 // so a missing chain-of-thought is endpoint-conditional, not a degradation
-// signal — silence the warning. This mirrors openai.go's model-scoped gate.
+// signal — silence the warning. Capability-driven (review #7234):
+// toolCallReasoning=false vendors (DashScope) never warn — no round-trip
+// contract; singleSegmentReasoning=true vendors (MiMo) never warn — their
+// tool-call thinking is a single optional segment. Only multi-segment
+// thinking vendors that require replay (DeepSeek) warn, scoped to non-flash.
 func (c *client) WarnOnMissingToolCallReasoning() bool {
-	if c.vendor != "deepseek" {
+	if !c.caps.toolCallReasoning || c.caps.singleSegmentReasoning {
 		return false
 	}
 	model := strings.ToLower(strings.TrimSpace(c.model))
@@ -677,6 +684,14 @@ func (c *client) readStream(ctx context.Context, resp *http.Response, out chan<-
 		c.ResetContext()
 	}
 	if !failed {
+		// 把 reasoning item 的 id/status 作为元数据 chunk 流给 Agent
+		// （空 Text，随 ChunkReasoning 语义）——Agent 持久化进 session，
+		// 下一轮 input reasoning item 回传 id/status（评审 #7234 第 1 点）。
+		if reasoningID != "" || reasoningStatus != "" {
+			if !sendChunk(ctx, out, provider.Chunk{Type: provider.ChunkReasoning, ReasoningID: reasoningID, ReasoningStatus: reasoningStatus}) {
+				return
+			}
+		}
 		_ = sendChunk(ctx, out, provider.Chunk{Type: provider.ChunkDone})
 	}
 }

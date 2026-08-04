@@ -32,6 +32,13 @@ func responseFormatFromContext(ctx context.Context) string {
 	return f
 }
 
+// ResponseFormatFromRequest is the exported form of responseFormatFromRequest:
+// control tests assert the turn-bound format actually reaches the agent
+// request path (review #7234 — format bound to turn, not global slot).
+func ResponseFormatFromRequest(ctx context.Context) *provider.ResponseFormat {
+	return responseFormatFromRequest(ctx)
+}
+
 // responseFormatFromRequest returns the turn-scoped structured-output format
 // (e.g. "json_object") as a Request field, or nil when none was requested
 // (nil keeps the wire byte-stable for prompt caching).
