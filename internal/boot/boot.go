@@ -883,11 +883,13 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 			KeepPolicy:          keepPolicy,
 			SubagentModel:       taskModel,
 			SubagentEffort:      taskEffort,
+			SubagentProgress:    cfg.Agent.SubagentProgress,
 			ResolveProvider:     resolveSubagentProvider,
 		}).
 			WithTranscripts(subagentStore, root, modelName, entry.Effort).
 			WithTranscriptIdentityResolver(subagentIdentity).
 			WithMaxSubagentDepth(maxSubagentDepth).
+			WithSubagentProgress(cfg.Agent.SubagentProgress).
 			WithDeliveryProfile(tokenDelivery).
 			WithWorkspaceLease(workspaceLease).
 			WithScheduler(subagentScheduler).

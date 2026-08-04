@@ -275,6 +275,9 @@ type TaskTool struct {
 	// sub-agent gets its own use_capability frontend so ledger state stays
 	// isolated while connections reuse the parent Host.
 	capabilityRuntime *MCPCapabilityRuntime
+	// subagentProgress controls whether sub-agent reasoning, thinking, text,
+	// and notices are forwarded to the parent event stream.
+	subagentProgress bool
 }
 
 // TaskToolOptions holds the construction parameters for a TaskTool.
@@ -298,6 +301,7 @@ type TaskToolOptions struct {
 	KeepPolicy          KeepPolicy
 	SubagentModel       string
 	SubagentEffort      string
+	SubagentProgress    bool
 	ResolveProvider     func(string, string) (provider.Provider, *provider.Pricing, int, error)
 }
 
@@ -328,6 +332,7 @@ func NewTaskToolWithOptions(opts TaskToolOptions) *TaskTool {
 		gate:                opts.Gate,
 		subagentModel:       opts.SubagentModel,
 		subagentEffort:      opts.SubagentEffort,
+		subagentProgress:    opts.SubagentProgress,
 		resolveProvider:     opts.ResolveProvider,
 		maxSubagentDepth:    DefaultMaxSubagentDepth,
 	}
@@ -387,6 +392,14 @@ func (t *TaskTool) WithMaxSubagentDepth(depth int) *TaskTool {
 	t.maxSubagentDepth = NormalizeMaxSubagentDepth(depth)
 	return t
 }
+
+// WithSubagentProgress enables or disables forwarding sub-agent reasoning, text,
+// and notices to the parent event stream.
+func (t *TaskTool) WithSubagentProgress(enabled bool) *TaskTool {
+	t.subagentProgress = enabled
+	return t
+}
+
 
 // WithDeliveryProfile propagates the parent's runtime delivery contract into
 // writer-capable sub-agents. Read-only sub-agents may receive the flag too, but
@@ -894,7 +907,7 @@ func (t *TaskTool) RunProfileSpec(ctx context.Context, spec ProfileExecSpec) (st
 		} else {
 			releaseStart = func() {}
 		}
-		nested := subSinkFor(parentID, parent)
+		nested := subSinkFor(parentID, parent, t != nil && t.subagentProgress)
 		label := firstNonEmpty(spec.Description, spec.Name, "task")
 		if t.transcripts != nil && run != nil && run.Ref != "" {
 			if err := t.transcripts.MarkRunning(run); err != nil {
@@ -967,7 +980,7 @@ func (t *TaskTool) RunProfileSpec(ctx context.Context, spec ProfileExecSpec) (st
 	}
 	defer releaseSlot()
 	defer run.Release()
-	answer, err := runSession(ctx, subSink(ctx), false)
+	answer, err := runSession(ctx, t.subSink(ctx), false)
 	if err != nil {
 		return "", errors.Join(err, t.transcripts.SaveFailed(run))
 	}
@@ -2084,43 +2097,39 @@ func NestedSink(ctx context.Context, fallback event.Sink) event.Sink {
 	if !ok || parent == nil {
 		return fallback
 	}
-	return subSinkFor(parentID, parent)
+	return subSinkFor(parentID, parent, false)
 }
 
-// subSink forwards a sub-agent's tool dispatch/result events and billable usage
-// to the parent's event stream. Only tool activity is nested visually; the
-// sub-agent's text/reasoning stays isolated and only its final answer is returned.
-//
-// The sub-agent's own turn/text/reasoning events are dropped — forwarding them
-// would make the parent transcript noisy and could imply they belong to the
-// parent model context, which they do not.
-//
-// Usage events are observability only, so forwarding them preserves billing
-// totals without polluting the parent provider-visible prefix.
-//
-// Tool events are tagged with the parent task call's ID so a frontend nests them
-// under it. The forwarded call IDs are namespaced with the parent ID so a
-// sub-agent call can never collide with a parent call in the frontend's
-// dispatch→result matching. Falls back to Discard when there's no parent stream
-// (the headless run loop, or a direct Execute in tests).
+// subSink forwards a sub-agent's tool dispatch/result/progress events and billable usage
+// to the parent's event stream.
 func subSink(ctx context.Context) event.Sink {
 	parentID, parent, _, ok := CallContext(ctx)
 	if !ok || parent == nil {
 		return event.Discard
 	}
-	return subSinkFor(parentID, parent)
+	return subSinkFor(parentID, parent, false)
+}
+
+func (t *TaskTool) subSink(ctx context.Context) event.Sink {
+	parentID, parent, _, ok := CallContext(ctx)
+	if !ok || parent == nil {
+		return event.Discard
+	}
+	return subSinkFor(parentID, parent, t != nil && t.subagentProgress)
 }
 
 // subSinkFor builds the nesting sink from an already-captured parent ID + stream,
 // for the background path where the job runs under a context that no longer
 // carries the call context. Falls back to Discard when there's no parent stream.
-func subSinkFor(parentID string, parent event.Sink) event.Sink {
+// When forwardProgress is true, sub-agent reasoning, text, and notices are also
+// forwarded with parent tool call association.
+func subSinkFor(parentID string, parent event.Sink, forwardProgress bool) event.Sink {
 	if parent == nil {
 		return event.Discard
 	}
 	return event.FuncSink(func(e event.Event) {
 		switch e.Kind {
-		case event.ToolDispatch, event.ToolResult:
+		case event.ToolDispatch, event.ToolResult, event.ToolProgress:
 			e.Tool.ParentID = parentID
 			e.Tool.ID = parentID + "/" + e.Tool.ID
 			parent.Emit(e)
@@ -2129,6 +2138,14 @@ func subSinkFor(parentID string, parent event.Sink) event.Sink {
 				e.UsageSource = event.UsageSourceSubagent
 			}
 			parent.Emit(e)
+		case event.Reasoning, event.Text, event.Message, event.Notice:
+			if forwardProgress {
+				if e.Source == "" {
+					e.Source = event.UsageSourceSubagent
+				}
+				e.Tool.ParentID = parentID
+				parent.Emit(e)
+			}
 		}
 	})
 }

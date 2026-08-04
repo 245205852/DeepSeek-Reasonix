@@ -165,7 +165,8 @@ func (f *FleetTool) Execute(ctx context.Context, args json.RawMessage) (string, 
 			return "", fmt.Errorf("background execution is not available in this context")
 		}
 		parentID, parent, _, _ := CallContext(ctx)
-		nested := subSinkFor(parentID, parent)
+		progress := f.taskTool != nil && f.taskTool.subagentProgress
+		nested := subSinkFor(parentID, parent, progress)
 		parentSession := ParentSession(ctx)
 		label := fmt.Sprintf("fleet(%d)", len(specs))
 		backgroundEvidence := evidence.NewLedger()
@@ -199,7 +200,7 @@ func (f *FleetTool) Execute(ctx context.Context, args json.RawMessage) (string, 
 		return fmt.Sprintf("Started background fleet %q (%s). Collect results with wait; you will be notified when it finishes.", job.ID, label), nil
 	}
 
-	return f.runFleet(ctx, subSink(ctx), specs)
+	return f.runFleet(ctx, f.taskTool.subSink(ctx), specs)
 }
 
 func (f *FleetTool) runFleet(ctx context.Context, sink event.Sink, specs []ProfileExecSpec) (string, error) {
@@ -242,7 +243,8 @@ func (f *FleetTool) runFleet(ctx context.Context, sink event.Sink, specs []Profi
 			defer wg.Done()
 			// Each fleet item runs as its own task-shaped execution so
 			// transcripts, evidence, and scheduler claims stay independent.
-			itemCtx := withCallContext(ctx, subID, subSinkFor(subID, sink), nil, false)
+			progress := f.taskTool != nil && f.taskTool.subagentProgress
+			itemCtx := withCallContext(ctx, subID, subSinkFor(subID, sink, progress), nil, false)
 			out, err := f.taskTool.RunProfileSpec(itemCtx, spec)
 			res := fleetItemResult{index: idx, profile: spec.Profile, output: out, err: err}
 			if err == nil {

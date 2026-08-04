@@ -634,6 +634,16 @@ func (c *Config) ColdResumePruneEnabled() bool {
 	return *c.Agent.ColdResumePrune
 }
 
+// SubagentProgress reports whether sub-agent reasoning, thinking, text deltas,
+// and notices are forwarded to the parent event stream for progress rendering.
+func (c *Config) SubagentProgress() bool {
+	if c == nil {
+		return false
+	}
+	return c.Agent.SubagentProgress
+}
+
+
 // ResponseLanguage normalizes the top-level language preference for final
 // answers. Empty means auto: replies follow the current user turn.
 func (c *Config) ResponseLanguage() string {
@@ -1245,7 +1255,12 @@ type AgentConfig struct {
 	SubagentModels      map[string]string `toml:"subagent_models"`
 	SubagentEffort      string            `toml:"subagent_effort"`
 	SubagentEfforts     map[string]string `toml:"subagent_efforts"`
-	MaxSubagentDepth    int               `toml:"max_subagent_depth"`
+	// MaxSubagentDepth bounds nested sub-agent delegation.
+	MaxSubagentDepth int `toml:"max_subagent_depth"`
+	// SubagentProgress enables forwarding sub-agent reasoning, thinking, text,
+	// and notices to the parent event stream.
+	SubagentProgress bool `toml:"subagent_progress"`
+
 	// MaxSubagentConcurrency bounds how many sub-agents (task, fleet items,
 	// profile skills, nested children) may run at once in one session.
 	// 0 means the default (6). Values outside 1–32 are clamped on load.

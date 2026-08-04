@@ -164,7 +164,8 @@ func (p *ParallelTasksTool) Execute(ctx context.Context, args json.RawMessage) (
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			nested := subSinkFor(subID, sink)
+			progress := p.taskTool != nil && p.taskTool.subagentProgress
+			nested := subSinkFor(subID, sink, progress)
 			// Session scheduler bounds total concurrency for parallel_tasks the
 			// same way as fleet (read-only slots; no write claims).
 			releaseSlot, slotErr := p.taskTool.acquireSlot(ctx, AcquireRequest{
