@@ -621,20 +621,31 @@ func TestCompletedResponseDefaultsFinishReasonToStop(t *testing.T) {
 	t.Fatal("missing usage chunk")
 }
 
-func TestAllZeroUsageCompletedIsSuppressed(t *testing.T) {
-	// DashScope occasionally reports a completed event whose usage object is
-	// present but all zeros (server-side reporting gap). The client must NOT
-	// emit a ChunkUsage for it, or cache-ratio and cost accounting would
-	// record a spurious zero-token turn.
+func TestAllZeroUsageCompletedEmitsCompletionSemantics(t *testing.T) {
+	// DashScope 偶发全零 usage（服务端上报缺口）。旧实现无条件抑制——
+	// agent 收不到 usage → reasoningOnlyFinishHonoured 失效 → reasoning-only
+	// 完成被误判触发重试（#7168 评审"完成语义保留"只做了一半）。新语义：
+	// 全零+stop 也发送（计费层 Pricing.Cost 对全零天然 0 成本，不污染统计），
+	// 完成语义恢复；全零且无 finish reason 才抑制（异常前哨场景）。
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		writeEvents(w, `{"type":"response.completed","response":{"id":"resp_1","usage":{"input_tokens":0,"output_tokens":0,"total_tokens":0}}}`)
 	}))
 	defer server.Close()
 	chunks := collect(t, New(Config{Name: "test", APIKey: "key", BaseURL: server.URL, Model: "m", Mode: "stateful"}), provider.Request{Messages: []provider.Message{{Role: provider.RoleUser, Content: "hi"}}})
+	var usageChunks int
 	for _, chunk := range chunks {
 		if chunk.Type == provider.ChunkUsage {
-			t.Fatalf("all-zero usage must be suppressed, got usage chunk: %+v", chunk.Usage)
+			usageChunks++
+			if chunk.Usage.FinishReason != "stop" {
+				t.Fatalf("all-zero usage must carry FinishReason=stop (completion semantics), got %q", chunk.Usage.FinishReason)
+			}
+			if chunk.Usage.Estimated {
+				t.Fatal("synthesized stop on real (zero) usage must not be marked Estimated")
+			}
 		}
+	}
+	if usageChunks != 1 {
+		t.Fatalf("usage chunks = %d, want 1 (all-zero+stop must be emitted for completion semantics)", usageChunks)
 	}
 }
 

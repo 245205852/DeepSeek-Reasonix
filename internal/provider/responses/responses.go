@@ -632,12 +632,14 @@ func (c *client) readStream(ctx context.Context, resp *http.Response, out chan<-
 				// object exists but is all zeros (server-side reporting gap; the
 				// tokens were actually billed). Emitting that as ChunkUsage
 				// would corrupt cache-ratio and cost accounting with a spurious
-				// zero record, so only emit when there is real data or a reason.
-				// Zero-token usage records carry no accounting value; suppress
-				// them even when FinishReason was synthesized to "stop". An
-				// abnormal termination reason (length/content_filter/...) is
-				// still surfaced so the agent can report the truncation.
-				if usage.TotalTokens > 0 || (usage.FinishReason != "" && usage.FinishReason != "stop") {
+				// zero record. 但完成语义必须保留：全零+stop 也发送——计费层
+				// （Pricing.Cost）对全零记录天然返回 0 成本，不污染统计；而
+				// agent 侧 reasoningOnlyFinishHonoured 依赖收到 usage 对象
+				// （FinishReason=stop）才能确认 reasoning-only 完成（#7168
+				// 评审"完成语义保留"的完整实现——此前 stop 被抑制时该语义
+				// 失效，空回复被误判触发重试）。异常终止 reason
+				// （length/content_filter/...）始终上报。
+				if usage.TotalTokens > 0 || usage.FinishReason != "" {
 
 					if !sendChunk(ctx, out, provider.Chunk{Type: provider.ChunkUsage, Usage: usage}) {
 						return
