@@ -3262,6 +3262,27 @@ func TestUnknownSlashCommandDoesNotStartTurn(t *testing.T) {
 	}
 }
 
+func TestSlashDocsShowsLocalOverviewWithoutStartingTurn(t *testing.T) {
+	r := &recordingTurnRunner{}
+	ctrl := control.New(control.Options{
+		Runner: r,
+		Sink:   event.FuncSink(func(event.Event) {}),
+	})
+	m := newTestChatTUI()
+	m.ctrl = ctrl
+
+	if cmd := m.runSlashCommand("/docs"); cmd != nil {
+		t.Fatal("bare /docs should complete locally")
+	}
+	if len(r.inputs) != 0 {
+		t.Fatalf("bare /docs should not start a model turn, inputs=%q", r.inputs)
+	}
+	transcript := strings.Join(m.transcript, "\n")
+	if !strings.Contains(transcript, "digest=sha256:") || !strings.Contains(transcript, "/docs") {
+		t.Fatalf("bare /docs transcript missing corpus identity or usage:\n%s", transcript)
+	}
+}
+
 func TestPasteMsgFoldsBeforeTextareaConsumesNewlines(t *testing.T) {
 	m := newTestChatTUI()
 	model, _ := m.Update(tea.PasteMsg{Content: "1\n2\n3\n4\n5"})

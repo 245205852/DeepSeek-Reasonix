@@ -1166,6 +1166,62 @@ func TestSubmitUnknownSlashCommandStillReportsNotice(t *testing.T) {
 	}
 }
 
+func TestSubmitDocsShowsLocalOverviewAndGroundsModelTurn(t *testing.T) {
+	runner := &fakeTurnRunner{}
+	events := make(chan event.Event, 16)
+	c := New(Options{
+		Runner: runner,
+		Sink: event.FuncSink(func(e event.Event) {
+			events <- e
+		}),
+	})
+
+	c.Submit("/docs")
+	select {
+	case e := <-events:
+		if e.Kind != event.Notice || !strings.Contains(e.Text, "digest=sha256:") || !strings.Contains(e.Text, "/docs") {
+			t.Fatalf("bare /docs event = %+v, want local corpus overview", e)
+		}
+	case <-time.After(30 * time.Second):
+		t.Fatal("timed out waiting for /docs overview")
+	}
+	if len(runner.inputs) != 0 {
+		t.Fatalf("bare /docs should not start a model turn, inputs=%q", runner.inputs)
+	}
+
+	c.Submit("/docs 1.19.5 更新日志")
+	waitForTurnDone(t, events)
+	if len(runner.inputs) != 1 {
+		t.Fatalf("/docs query model turns = %d, inputs=%q", len(runner.inputs), runner.inputs)
+	}
+	for _, want := range []string{"1.19.5 更新日志", "changelog/v1.19.5.zh-CN.md", "embedded_docs_search_results"} {
+		if !strings.Contains(runner.inputs[0], want) {
+			t.Fatalf("grounded /docs prompt missing %q:\n%s", want, runner.inputs[0])
+		}
+	}
+}
+
+func TestSubmitDocsPreservesExistingCustomCommand(t *testing.T) {
+	runner := &fakeTurnRunner{}
+	events := make(chan event.Event, 8)
+	c := New(Options{
+		Runner:   runner,
+		Commands: []command.Command{{Name: "docs", Body: "legacy docs workflow: $ARGUMENTS"}},
+		Sink: event.FuncSink(func(e event.Event) {
+			events <- e
+		}),
+	})
+
+	c.Submit("/docs release notes")
+	waitForTurnDone(t, events)
+	if len(runner.inputs) != 1 || !strings.Contains(runner.inputs[0], "legacy docs workflow: release notes") {
+		t.Fatalf("existing /docs custom command was not preserved: %q", runner.inputs)
+	}
+	if strings.Contains(runner.inputs[0], "embedded_docs_search_results") {
+		t.Fatalf("built-in /docs shadowed the existing custom command: %q", runner.inputs[0])
+	}
+}
+
 func TestSubmitUserTurnBypassesCommandDispatch(t *testing.T) {
 	runner := &fakeTurnRunner{}
 	events := make(chan event.Event, 4)

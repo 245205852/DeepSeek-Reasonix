@@ -4136,6 +4136,20 @@ func (m *chatTUI) runSlashCommand(input string) tea.Cmd {
 			}
 			return m.startControllerTurn(input, input, func() { m.ctrl.SubmitDisplay(input, input) })
 		}
+		if cmd == "/docs" {
+			query := strings.TrimSpace(strings.TrimPrefix(input, typedCmd))
+			if query != "" {
+				return m.startControllerTurn(input, input, func() { m.ctrl.SubmitDisplay(input, input) })
+			}
+			m.echoLocalCommand(input)
+			text, err := control.DocsCommandOverview()
+			if err != nil {
+				m.notice("docs: " + err.Error())
+			} else {
+				m.commitLine(text)
+			}
+			return nil
+		}
 		m.notice(fmt.Sprintf("%s: %s", i18n.M.SlashUnknown, cmd))
 	}
 	return nil

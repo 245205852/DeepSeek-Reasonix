@@ -7584,6 +7584,7 @@ func (a *App) Commands() []CommandInfo {
 		{Name: "model", Description: i18n.M.CmdModel, Kind: "builtin", Group: "actions"},
 		{Name: "provider", Description: i18n.M.CmdProvider, Kind: "builtin", Group: "management"},
 		{Name: "effort", Description: i18n.M.CmdEffort, Kind: "builtin", Group: "actions"},
+		{Name: "docs", Description: i18n.M.CmdDocs, Hint: "<question>", Kind: "builtin", Group: "integrations"},
 		{Name: "memory", Description: i18n.M.CmdMemory, Kind: "builtin", Group: "management"},
 		{Name: "migrate", Description: i18n.M.CmdMigrate, Kind: "builtin", Group: "management"},
 		{Name: "goal", Description: i18n.M.CmdGoal, Kind: "builtin", Group: "actions"},

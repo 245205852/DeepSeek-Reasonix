@@ -1295,6 +1295,26 @@ func (c *Controller) submitCommandOrTurn(trimmed, input, display string, scopedR
 			})
 			return
 		}
+		if fields[0] == "/docs" {
+			query := strings.TrimSpace(strings.TrimPrefix(trimmed, fields[0]))
+			if query == "" {
+				text, err := DocsCommandOverview()
+				if err != nil {
+					c.notice("docs: " + err.Error())
+				} else {
+					c.notice(text)
+				}
+				return
+			}
+			c.runGuarded(func(ctx context.Context) error {
+				sent, err := docsCommandPrompt(ctx, query)
+				if err != nil {
+					return fmt.Errorf("docs: %w", err)
+				}
+				return runGoalLoop(ctx, sent, sent, display)
+			})
+			return
+		}
 		c.notice("unknown command: " + trimmed)
 	default:
 		runRefTurn(input, display)

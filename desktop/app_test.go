@@ -372,9 +372,12 @@ func (r *desktopAskRuntimeRunner) Run(ctx context.Context, _ string) error {
 	return r.ask(ctx)
 }
 
-func TestCommandsIncludesEffortNotThinking(t *testing.T) {
+func TestCommandsIncludesDocsAndEffortNotThinking(t *testing.T) {
 	app := NewApp()
 	cmds := app.Commands()
+	if !hasCommand(cmds, "docs") {
+		t.Fatalf("Commands() should include docs: %+v", cmds)
+	}
 	if !hasCommand(cmds, "effort") {
 		t.Fatalf("Commands() should include effort: %+v", cmds)
 	}

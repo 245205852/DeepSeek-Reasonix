@@ -233,6 +233,7 @@ type Messages struct {
 	CmdModel            string // /model
 	CmdStatus           string // /status
 	CmdWorkMode         string // /work-mode
+	CmdDocs             string // /docs
 	CmdMemory           string // /memory
 	CmdMigrate          string // /migrate
 	CmdGoal             string // /goal

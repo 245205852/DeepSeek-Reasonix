@@ -400,6 +400,7 @@ the displayed list matches the commands the TUI accepts.
 | `/verbose` | Toggle expanded reasoning display. |
 | `/sandbox` | Inspect sandbox status. |
 | `/goal` | Start, inspect, or clear a long-running goal. |
+| `/docs [question]` | Show the embedded corpus identity, or search it locally and ask the configured AI to answer from version-matched evidence. |
 | `/mcp`, `/skills`, `/hooks` | Inspect and manage extensions. |
 | `/remember <note>` | Append a standing note to the project instruction document; `# <note>` is a shortcut. |
 | `/memory [subcommand]` | Inspect instructions, memory provenance, recall, revisions, and recovery. |
