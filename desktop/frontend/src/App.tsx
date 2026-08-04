@@ -3399,9 +3399,11 @@ export default function App() {
   const transcriptHydrating = state.hydrating && !state.hydrateHistoryLoaded;
   // Creation hero only after history hydration settles on a truly empty session.
   // Avoid flash while switching tabs: items may be empty while placeholders show.
+  // Exclude IM/Bot detail: hero CSS collapses .main, which also hosts that panel.
   // (desktopLayoutStyle is available here; sidebarCreation is declared later.)
   const creationEmptyHero =
     desktopLayoutStyle === "creation" &&
+    !sidebarImDetailConnection &&
     !sessionHasContent &&
     !transcriptHydrating &&
     !hydratePlaceholderActive;
