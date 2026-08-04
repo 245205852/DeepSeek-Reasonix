@@ -476,6 +476,50 @@ func (l *Ledger) Len() int {
 	return len(l.receipts)
 }
 
+// ReceiptProgressSummary counts successful host-observable receipts by category
+// for cross-turn progress signatures. Failed receipts and reads never count:
+// repeated reads, failed bookkeeping, and reworded answers must not masquerade
+// as progress. Categories are not mutually exclusive (a successful bash command
+// that also writes counts in both), which is fine for a change detector.
+type ReceiptProgressSummary struct {
+	Writes   int // successful mutations/writes
+	Commands int // successful commands (bash receipts)
+	Todos    int // successful todo_write receipts
+	Signoffs int // successful complete_step signoffs
+	Reviews  int // successful review receipts
+}
+
+// ReceiptProgressSummary returns the current ledger's progress counts.
+func (l *Ledger) ReceiptProgressSummary() ReceiptProgressSummary {
+	if l == nil {
+		return ReceiptProgressSummary{}
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	var out ReceiptProgressSummary
+	for _, r := range l.receipts {
+		if !r.Success {
+			continue
+		}
+		if r.Mutation || r.Write {
+			out.Writes++
+		}
+		if r.Command != "" {
+			out.Commands++
+		}
+		if r.ToolName == "todo_write" {
+			out.Todos++
+		}
+		if r.ToolName == "complete_step" && r.StepProof {
+			out.Signoffs++
+		}
+		if successfulForegroundReviewReceipt(r) || completedStructuredReviewReceipt(r, nil) {
+			out.Reviews++
+		}
+	}
+	return out
+}
+
 // HasWriteOrCommandSince reports whether a successful write or command receipt
 // was recorded at or after index — host-observable progress, as opposed to
 // bookkeeping receipts (todo_write, complete_step, ask), which carry neither a

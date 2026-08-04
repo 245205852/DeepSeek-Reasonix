@@ -157,7 +157,7 @@ func TestGoalContinuationNoticeCannotMoveOldInterceptIntoReplacementGoal(t *test
 	session := agent.NewSession("")
 	session.Add(provider.Message{
 		Role:    provider.RoleAssistant,
-		Content: "All done.\n\n[goal:complete]",
+		Content: "All done.",
 	})
 	executor := agent.New(nil, tool.NewRegistry(), session, agent.Options{}, event.Discard)
 	executor.SeedTodoState([]evidence.TodoItem{{
@@ -173,7 +173,7 @@ func TestGoalContinuationNoticeCannotMoveOldInterceptIntoReplacementGoal(t *test
 		Sink: event.FuncSink(func(e event.Event) {
 			if replaced ||
 				e.Kind != event.Notice ||
-				!strings.Contains(e.Text, "Goal still has unfinished task state") {
+				!strings.Contains(e.Text, "Goal is not ready to complete yet") {
 				return
 			}
 			replaced = true
@@ -181,10 +181,17 @@ func TestGoalContinuationNoticeCannotMoveOldInterceptIntoReplacementGoal(t *test
 		}),
 	})
 	c.SetGoal("old goal")
+	scopeID, _, _ := c.goals.deliveryScope()
+	rec := c.goals.newTurnRecorder(scopeID, c.goals.continuationToken())
+	if _, err := rec.RecordGoalReport(tool.GoalReport{Status: GoalStatusComplete, Reason: ""}); err != nil {
+		t.Fatal(err)
+	}
+	c.goalUsageTee.setActiveRecorder(rec)
 
 	if err := newTurnOrchestrator(c).continueGoal(
 		context.Background(),
 		c.goals.continuationToken(),
+		nil,
 	); err != nil {
 		t.Fatal(err)
 	}
@@ -203,7 +210,7 @@ func TestGoalContinuationOutputCannotAdvanceReplacementGoal(t *testing.T) {
 	session := agent.NewSession("system")
 	session.Add(provider.Message{
 		Role:    provider.RoleAssistant,
-		Content: "All done.\n\n[goal:complete]",
+		Content: "All done.",
 	})
 	executor := agent.New(nil, tool.NewRegistry(), session, agent.Options{}, event.Discard)
 	executor.SeedTodoState([]evidence.TodoItem{{
@@ -218,10 +225,17 @@ func TestGoalContinuationOutputCannotAdvanceReplacementGoal(t *testing.T) {
 	})
 	runner.c = c
 	c.SetGoal("old goal")
+	scopeID, _, _ := c.goals.deliveryScope()
+	rec := c.goals.newTurnRecorder(scopeID, c.goals.continuationToken())
+	if _, err := rec.RecordGoalReport(tool.GoalReport{Status: GoalStatusComplete, Reason: ""}); err != nil {
+		t.Fatal(err)
+	}
+	c.goalUsageTee.setActiveRecorder(rec)
 
 	if err := newTurnOrchestrator(c).continueGoal(
 		context.Background(),
 		c.goals.continuationToken(),
+		nil,
 	); err != nil {
 		t.Fatal(err)
 	}
@@ -284,27 +298,33 @@ func (r *deliveryScopeErrorRunner) Run(ctx context.Context, _ string) error {
 	if scope, ok := agent.DeliveryExecutionScopeFromContext(ctx); ok {
 		r.scopes = append(r.scopes, scope)
 	}
-	return &agent.FinalReadinessError{Attempts: 3, Reason: "missing verification"}
+	return &agent.FinalReadinessError{Attempts: 1, Reason: "missing verification", Missing: []string{"verification"}}
 }
 
-func TestGoalReadinessFailureBlocksAndKeepsDeliveryScope(t *testing.T) {
+func TestGoalReadinessFailureContinuesThenPausesOnNoProgress(t *testing.T) {
 	runner := &deliveryScopeErrorRunner{}
-	c := New(Options{Runner: runner})
+	executor := agent.New(nil, tool.NewRegistry(), agent.NewSession(""), agent.Options{}, event.Discard)
+	c := New(Options{Runner: runner, Executor: executor})
 	c.SetGoal("ship the integration")
 
 	err := newTurnOrchestrator(c).runGoalLoopWithRawDisplay(context.Background(), "start", "start", "")
-	var readiness *agent.FinalReadinessError
-	if !errors.As(err, &readiness) {
-		t.Fatalf("run err = %v, want FinalReadinessError", err)
+	if err != nil {
+		t.Fatalf("run err = %v, want the loop to absorb FinalReadinessError and pause on no-progress", err)
 	}
+	// The FSM absorbs the readiness failure and continues with the missing
+	// requirements; with no host-verifiable progress across turns the
+	// no-progress gate pauses the goal instead of looping forever.
 	if got := c.GoalStatus(); got != GoalStatusBlocked {
-		t.Fatalf("GoalStatus = %q, want blocked", got)
+		t.Fatalf("GoalStatus = %q, want blocked (no-progress pause)", got)
 	}
-	if len(runner.scopes) != 1 || runner.scopes[0].ID == "" || runner.scopes[0].TaskText != "ship the integration" {
-		t.Fatalf("delivery scopes = %+v", runner.scopes)
+	if rt := c.GoalRuntime(); rt.StopCause != stopCauseNoProgress {
+		t.Fatalf("stop cause = %q, want %q", rt.StopCause, stopCauseNoProgress)
+	}
+	if len(runner.scopes) < 2 || runner.scopes[0].ID == "" || runner.scopes[0].TaskText != "ship the integration" {
+		t.Fatalf("delivery scopes = %+v, want scoped continuation turns", runner.scopes)
 	}
 	if !c.ResumeGoal() || c.GoalStatus() != GoalStatusRunning {
-		t.Fatal("blocked Goal should resume with its existing scope")
+		t.Fatal("paused Goal should resume with its existing scope")
 	}
 	if id, task, ok := c.goals.deliveryScope(); !ok || id != runner.scopes[0].ID || task != "ship the integration" {
 		t.Fatalf("resumed scope = (%q, %q, %v), want preserved id/task", id, task, ok)
@@ -377,11 +397,11 @@ func (r *recordingSessionRunner) Run(ctx context.Context, input string) error {
 }
 
 func TestTurnOrchestratorGoalContinuationRunsStopPerUnit(t *testing.T) {
-	prov := &scriptedTurns{turns: [][]provider.Chunk{
-		textTurn("Started.\n\n[goal:continue]"),
-		textTurn("Finished.\n\n[goal:complete]"),
-	}}
-	ag := agent.New(prov, tool.NewRegistry(), agent.NewSession(""), agent.Options{}, event.Discard)
+	prov := &scriptedTurns{turns: flattenTurns(
+		goalToolTurn(GoalStatusRunning, "started", "next"),
+		goalToolTurn(GoalStatusComplete, "", ""),
+	)}
+	ag := agent.New(prov, goalRegistry(), agent.NewSession(""), agent.Options{}, event.Discard)
 	var stopEvents int
 	hooks := hook.NewRunner([]hook.ResolvedHook{{
 		HookConfig: hook.HookConfig{Command: "record-stop"},
@@ -405,8 +425,8 @@ func TestTurnOrchestratorGoalContinuationRunsStopPerUnit(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if prov.call != 2 {
-		t.Fatalf("provider calls = %d, want initial + continuation", prov.call)
+	if prov.call != 4 {
+		t.Fatalf("provider calls = %d, want initial + continuation (report + final answer each)", prov.call)
 	}
 	if stopEvents != 2 {
 		t.Fatalf("Stop hook events = %d, want one per goal-loop turn unit", stopEvents)

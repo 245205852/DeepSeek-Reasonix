@@ -144,8 +144,8 @@ func TestDeliveryPlanModeReturnsProposalBeforeExecutionReadiness(t *testing.T) {
 	// Approval disables plan mode before the controller starts execution. The
 	// same delivery expectations must become enforceable again at that boundary.
 	a.SetPlanMode(false)
-	if got := a.finalReadinessFailure(); !strings.Contains(got, "state change") {
-		t.Fatalf("execution readiness did not resume after plan mode: %q", got)
+	if got := a.ReadinessResult(); !strings.Contains(got.Reason, "state change") {
+		t.Fatalf("execution readiness did not resume after plan mode: %q", got.Reason)
 	}
 }
 
@@ -161,12 +161,12 @@ func TestPlanModeDefersCapabilityRequirementsUntilExecution(t *testing.T) {
 		{Entry: capability.Entry{ID: "skill:deploy"}, Policy: capability.AutoUseRequire},
 	}})
 
-	if got := a.finalReadinessCheck(); got.applies || got.reason != "" {
+	if got := a.finalReadinessCheckFor(); got.applies || got.reason != "" {
 		t.Fatalf("Plan proposal was forced through delivery capability gates: %+v", got)
 	}
 
 	a.SetPlanMode(false)
-	got := a.finalReadinessCheck()
+	got := a.finalReadinessCheckFor()
 	if !got.applies || !strings.Contains(got.reason, "required capabilities") {
 		t.Fatalf("execution did not restore required capability gate: %+v", got)
 	}
@@ -281,7 +281,11 @@ func TestRunSubAgentReadinessFailureWithoutMutationStillFails(t *testing.T) {
 	}
 }
 
-func TestFinalReadinessBudgetExtendsOnlyWithProgress(t *testing.T) {
+func TestFinalReadinessFailsImmediatelyWithoutRetries(t *testing.T) {
+	// Delivery no longer retries readiness with hidden model messages: the run
+	// ends on the FIRST unsatisfied final answer, and the host decides what
+	// happens next (Goal FSM auto-continues; plain turns surface the recovery
+	// card). Repeated reads must not buy extra provider calls.
 	newReg := func() *tool.Registry {
 		reg := tool.NewRegistry()
 		reg.Add(fakeReadFileTool{})
@@ -293,8 +297,6 @@ func TestFinalReadinessBudgetExtendsOnlyWithProgress(t *testing.T) {
 		return []provider.Chunk{toolCallChunk(id, "read_file", `{"path":"a.go"}`), {Type: provider.ChunkDone}}
 	}
 
-	// Stalled: the model answers text-only every round — no new receipts, so
-	// the base budget (3) applies unchanged.
 	stalled := &scriptedProvider{name: "p", turns: [][]provider.Chunk{finalText}}
 	a := New(stalled, newReg(), NewSession("sys"), Options{DeliveryProfile: true}, event.Discard)
 	err := a.Run(context.Background(), "fix the crash in a.go")
@@ -302,16 +304,20 @@ func TestFinalReadinessBudgetExtendsOnlyWithProgress(t *testing.T) {
 	if !errors.As(err, &readinessErr) {
 		t.Fatalf("expected FinalReadinessError, got %v", err)
 	}
-	if readinessErr.Attempts != maxFinalReadinessBlocks {
-		t.Fatalf("stalled attempts = %d, want %d", readinessErr.Attempts, maxFinalReadinessBlocks)
+	if readinessErr.Attempts != 1 {
+		t.Fatalf("attempts = %d, want 1 (no readiness retries)", readinessErr.Attempts)
+	}
+	if stalled.call != 1 {
+		t.Fatalf("provider calls = %d, want 1 (no hidden retry messages)", stalled.call)
+	}
+	if !a.deliveryRecoveryPending {
+		t.Fatal("delivery recovery must be pending for an explicit continuation")
 	}
 
-	// Repeating the same read does not change any missing requirement. Different
-	// call IDs must not turn that duplicate receipt into six paid retries.
+	// A read that changed nothing still ends the run at the first final answer.
 	converging := &scriptedProvider{name: "p", turns: [][]provider.Chunk{
-		finalText,                // block 1
-		readCall("1"), finalText, // progress → block 2
-		readCall("2"), finalText, // duplicate → block 3 → base cap
+		readCall("1"), finalText,
+		readCall("2"), finalText,
 	}}
 	a2 := New(converging, newReg(), NewSession("sys"), Options{DeliveryProfile: true}, event.Discard)
 	err2 := a2.Run(context.Background(), "fix the crash in a.go")
@@ -319,8 +325,8 @@ func TestFinalReadinessBudgetExtendsOnlyWithProgress(t *testing.T) {
 	if !errors.As(err2, &readinessErr2) {
 		t.Fatalf("expected FinalReadinessError, got %v", err2)
 	}
-	if readinessErr2.Attempts != maxFinalReadinessBlocks {
-		t.Fatalf("duplicate-receipt attempts = %d, want %d", readinessErr2.Attempts, maxFinalReadinessBlocks)
+	if converging.call != 2 {
+		t.Fatalf("provider calls = %d, want 2 (work turn + one final answer)", converging.call)
 	}
 }
 
@@ -331,8 +337,6 @@ func TestExplicitDeliveryRecoveryPreservesEvidenceOnce(t *testing.T) {
 	prov := &scriptedProvider{name: "delivery", turns: [][]provider.Chunk{
 		{toolCallChunk("todo", "todo_write", `{"todos":[{"content":"Ship main","status":"in_progress"}]}`), {Type: provider.ChunkDone}},
 		{toolCallChunk("write", "write_file", `{"path":"main.go"}`), {Type: provider.ChunkDone}},
-		finalText,
-		finalText,
 		finalText,
 		{toolCallChunk("review", "read_file", `{"path":"main.go"}`), {Type: provider.ChunkDone}},
 		{toolCallChunk("verify", "bash", `{"command":"go test ./..."}`), {Type: provider.ChunkDone}},
@@ -364,6 +368,7 @@ func TestOrdinaryFollowUpDoesNotPreserveFailedDeliveryEvidence(t *testing.T) {
 	prov := &scriptedProvider{name: "delivery", turns: [][]provider.Chunk{
 		{toolCallChunk("todo", "todo_write", `{"todos":[{"content":"Ship main","status":"in_progress"}]}`), {Type: provider.ChunkDone}},
 		{toolCallChunk("write", "write_file", `{"path":"main.go"}`), {Type: provider.ChunkDone}},
+		finalText,
 		finalText,
 		finalText,
 		finalText,
@@ -402,7 +407,6 @@ func TestPreviewStripsDeliveryMarkerAndSyntheticTurns(t *testing.T) {
 		{Role: provider.RoleSystem, Content: "sys"},
 		{Role: provider.RoleUser, Content: first},
 		{Role: provider.RoleAssistant, Content: "hi"},
-		{Role: provider.RoleUser, Content: finalReadinessRetryMessage("missing receipts") + "\n\n" + DeliveryRuntimeMarker},
 		{Role: provider.RoleUser, Content: MidTurnSteerPrefix + "\nslow down"},
 		{Role: provider.RoleUser, Content: "帮我写一个魂斗罗游戏\n\n" + DeliveryRuntimeMarker},
 	}
@@ -411,10 +415,7 @@ func TestPreviewStripsDeliveryMarkerAndSyntheticTurns(t *testing.T) {
 		t.Fatalf("preview = %q", preview)
 	}
 	if turns != 2 {
-		t.Fatalf("turns = %d, want 2 (synthetic + steer excluded)", turns)
-	}
-	if !IsSyntheticUserText(finalReadinessRetryMessage("x")) {
-		t.Fatal("readiness retry not detected as synthetic")
+		t.Fatalf("turns = %d, want 2 (steer excluded)", turns)
 	}
 }
 

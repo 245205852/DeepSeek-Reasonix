@@ -21,14 +21,12 @@ type runLoopState struct {
 	runMaxStepsKey    string
 	runLimitHostOwned bool
 
-	finalReadinessBlocks int
-	seenReadinessStates  map[string]struct{}
-	emptyFinalBlocks     int
-	handoffNudges        int
-	usedAnyTool          bool
-	streamRecoveries     int
-	graceRound           bool
-	recoveryGraceRound   bool
+	emptyFinalBlocks   int
+	handoffNudges      int
+	usedAnyTool        bool
+	streamRecoveries   int
+	graceRound         bool
+	recoveryGraceRound bool
 
 	todoProgress         int
 	trackingTodoProgress bool
@@ -136,6 +134,10 @@ func (a *Agent) beginRunTurn(ctx context.Context, input string) (rawInput string
 	providerInput := input
 	scope, scoped := DeliveryExecutionScopeFromContext(ctx)
 	preserveEvidence := a.preserveEvidenceOnce
+	// A run that starts with a pending readiness recovery (or an explicit
+	// evidence-preserving continuation) and then passes readiness counts as a
+	// recovery in the final audit.
+	a.readinessRecovered = preserveEvidence || a.deliveryRecoveryPending
 	if a.evidence != nil {
 		switch {
 		case preserveEvidence:
@@ -241,18 +243,16 @@ func (a *Agent) beginRunTurn(ctx context.Context, input string) (rawInput string
 	})
 
 	state = &runLoopState{
-		finalReadinessBlocks: 0,
-		seenReadinessStates:  make(map[string]struct{}),
-		emptyFinalBlocks:     0,
-		handoffNudges:        0,
-		usedAnyTool:          false,
-		streamRecoveries:     0,
-		graceRound:           false,
-		recoveryGraceRound:   false,
-		todoStallRounds:      0,
-		seenTodoProgress:     make(map[string]struct{}),
-		executorHandoff:      a.executorHandoffGuard && strings.Contains(input, executorHandoffMarker),
-		input:                input,
+		emptyFinalBlocks:   0,
+		handoffNudges:      0,
+		usedAnyTool:        false,
+		streamRecoveries:   0,
+		graceRound:         false,
+		recoveryGraceRound: false,
+		todoStallRounds:    0,
+		seenTodoProgress:   make(map[string]struct{}),
+		executorHandoff:    a.executorHandoffGuard && strings.Contains(input, executorHandoffMarker),
+		input:              input,
 	}
 	state.todoProgress, state.trackingTodoProgress = a.canonicalTodoProgress()
 	if a.evidence != nil {
@@ -502,36 +502,20 @@ func (a *Agent) handleFinalResponse(ctx context.Context, state *runLoopState, te
 			StopReason: reason,
 		}
 	}
-	finalizeTask := !a.deliveryScopeActive || deliveryDisposition(text) == deliveryGoalFinal
-	readiness := a.finalReadinessCheckFor(finalizeTask)
+	readiness := a.finalReadinessCheckFor()
 	if state.graceRound && (readiness.reason != "" || !hasVisibleFinalAnswer(text)) {
 		a.maybeCompact(ctx, usage)
 		return false, &maxStepsPause{steps: state.runMaxSteps, key: state.runMaxStepsKey}
 	}
 	if readiness.reason != "" {
-		// Extend the base retry budget only when the missing-requirement
-		// state actually changes. Counting ledger length let repeated reads,
-		// failed bookkeeping, or other irrelevant receipts masquerade as
-		// convergence and burn through six expensive model calls.
-		sig := readiness.progressSignature()
-		_, repeatedState := state.seenReadinessStates[sig]
-		progressed := state.finalReadinessBlocks > 0 && !repeatedState
-		state.seenReadinessStates[sig] = struct{}{}
-		state.finalReadinessBlocks++
-		exhausted := state.finalReadinessBlocks >= maxFinalReadinessBlocksWithProgress ||
-			(state.finalReadinessBlocks >= maxFinalReadinessBlocks && !progressed)
-		result := evidence.ReadinessBlocked
-		if exhausted {
-			result = evidence.ReadinessErrored
-			event.RecordReadinessAudit(a.sink, readiness.audit(result, false))
-			a.deliveryRecoveryPending = true
-			return false, &FinalReadinessError{Attempts: state.finalReadinessBlocks, Reason: readiness.reason, Missing: readiness.missingIDs()}
-		}
-		event.RecordReadinessAudit(a.sink, readiness.audit(result, false))
-		a.sink.Emit(event.Event{Kind: event.Notice, Level: event.LevelInfo, Code: event.NoticeCodeFinalReadiness, Text: finalReadinessNoticeText(), Detail: readiness.reason})
-		a.session.Add(provider.Message{Role: provider.RoleUser, Content: a.withTurnPreferences(finalReadinessRetryMessageFor(readiness))})
-		a.maybeCompact(ctx, usage)
-		return true, nil
+		// Delivery no longer retries readiness with hidden model messages: the
+		// run ends immediately with the missing requirements, and the host owns
+		// what happens next. In Goal mode the FSM auto-continues under budget
+		// with the missing list as the next turn; plain Delivery turns surface
+		// the recovery card for an explicit user continuation.
+		event.RecordReadinessAudit(a.sink, readiness.audit(evidence.ReadinessErrored, false))
+		a.deliveryRecoveryPending = true
+		return false, &FinalReadinessError{Attempts: 1, Reason: readiness.reason, Missing: readiness.missingIDs()}
 	}
 	if !hasVisibleFinalAnswer(text) {
 		// DeepSeek thinking mode can stream a long reasoning_content and
@@ -561,7 +545,7 @@ func (a *Agent) handleFinalResponse(ctx context.Context, state *runLoopState, te
 		return true, nil
 	}
 	if readiness.applies {
-		event.RecordReadinessAudit(a.sink, readiness.audit(evidence.ReadinessAllowed, state.finalReadinessBlocks > 0))
+		event.RecordReadinessAudit(a.sink, readiness.audit(evidence.ReadinessAllowed, a.readinessRecovered))
 	}
 	if !a.closeSteerIntakeIfIdle() {
 		return true, nil
