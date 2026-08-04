@@ -2858,7 +2858,7 @@ export const en = {
   "updater.done": "Update complete — restarting…",
   "updater.failed": "Update failed: {msg}",
   "updater.recoveryBlocked": "The previous update has not finished.",
-  "updater.recoveryHint": "Restarting Reasonix may recover it automatically. If it still fails, download the latest signed installer and install it over the current version without uninstalling first.",
+  "updater.recoveryHint": "Restart Reasonix and retry. On macOS, allow Reasonix in System Settings > Privacy & Security > App Management. If recovery is still blocked, download the latest signed installer and install it over the current version without uninstalling first.",
   "updater.manualUpdateRequired": "Automatic installation is unavailable.",
   "updater.manualFallbackHint": "Download the latest signed installer from the official site and install it over the current version.",
   "updater.errorDetails": "Details: {msg}",

@@ -2861,7 +2861,7 @@ export const zh: Record<DictKey, string> = {
   "updater.done": "更新完成，正在重启…",
   "updater.failed": "更新失败：{msg}",
   "updater.recoveryBlocked": "上次更新尚未完成。",
-  "updater.recoveryHint": "重新启动 Reasonix 通常可以自动恢复；若仍然失败，请从官网下载最新签名安装包，直接覆盖安装，无需先卸载。",
+  "updater.recoveryHint": "请重新启动 Reasonix 后重试。macOS 用户可在“系统设置 > 隐私与安全性 > App 管理”中允许 Reasonix；若仍无法恢复，请从官网下载最新签名安装包直接覆盖安装，无需先卸载。",
   "updater.manualUpdateRequired": "当前环境无法自动安装更新。",
   "updater.manualFallbackHint": "请从官网下载最新签名安装包，直接覆盖安装当前版本。",
   "updater.errorDetails": "详细信息：{msg}",
