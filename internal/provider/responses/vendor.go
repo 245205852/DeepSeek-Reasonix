@@ -2,6 +2,7 @@ package responses
 
 import (
 	"net/url"
+	"reasonix/internal/provider"
 	"strings"
 )
 
@@ -82,6 +83,7 @@ var vendorTable = map[string]vendorCapabilities{
 		toolCallReasoning:      true,
 		singleSegmentReasoning: false,
 		ignoresTemperature:     false,
+		defaultMaxOutputTokens: provider.DefaultReasoningOutputTokens,
 	},
 	"mimo": {
 		stateless:              true,

@@ -120,8 +120,13 @@ func New(cfg Config) provider.Provider {
 	vendor := DetectVendor(cfg.BaseURL)
 	cap := capabilitiesFor(vendor)
 	maxOutputTokens := cfg.MaxOutputTokens
-	if maxOutputTokens == 0 && vendor == "deepseek" && !responsesReasoningDisabled(cfg.Effort) {
-		maxOutputTokens = provider.DefaultReasoningOutputTokens
+	// 默认输出预算从 vendor 表取（deepseek 32K / mimo 64K）——消除硬编码
+	// 常量分叉（review：responses.go 硬编码与 caps.defaultMaxOutputTokens
+	// 职责重叠）。条件保留：thinking-disabled 的 deepseek 请求不设自动
+	// 预算（与 openai.go 一致——服务端默认即可；测试断言该行为）。
+	if maxOutputTokens == 0 && cap.defaultMaxOutputTokens > 0 &&
+		!(vendor == "deepseek" && responsesReasoningDisabled(cfg.Effort)) {
+		maxOutputTokens = cap.defaultMaxOutputTokens
 	}
 	sessionCache := cap.sessionCacheHeader
 	if cfg.SessionCache != nil {
@@ -276,8 +281,12 @@ func (c *client) buildRequestBody(req provider.Request) (map[string]any, bool, [
 	if maxOutputTokens == 0 {
 		maxOutputTokens = c.maxOutputTokens
 	}
-	if maxOutputTokens == 0 {
-		maxOutputTokens = c.caps.defaultMaxOutputTokens
+	if maxOutputTokens == 0 && c.caps.defaultMaxOutputTokens > 0 {
+		// 与 New() 构造期默认同条件：thinking-disabled 的 deepseek 请求
+		// 不设自动预算（服务端默认即可——测试断言该行为）。
+		if !(c.vendor == "deepseek" && responsesReasoningDisabled(c.effort)) {
+			maxOutputTokens = c.caps.defaultMaxOutputTokens
+		}
 	}
 	if maxOutputTokens > 0 {
 		body["max_output_tokens"] = maxOutputTokens
