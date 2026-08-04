@@ -909,11 +909,13 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 		if taskTool == nil {
 			taskTool = newTaskTool()
 		}
-		// Fixed registration order for prompt-cache stability: task →
-		// parallel_tasks → fleet. Profile names never enter tool schemas.
+		// The registry exports schemas in stable name order. Keep this surface
+		// static: profile names and result refs never enter provider-visible
+		// schemas, and the result reader does not change between turns.
 		reg.Add(taskTool)
 		reg.Add(agent.NewParallelTasksTool(taskTool, reg))
 		reg.Add(agent.NewFleetTool(taskTool))
+		reg.Add(agent.NewSubagentResultTool(taskTool))
 		return "enabled task."
 	}
 	addReadOnlyTaskTool := func() string {
