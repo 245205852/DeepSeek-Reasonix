@@ -316,9 +316,18 @@ func TestSessionEventsFireAtLifecyclePoints(t *testing.T) {
 		}
 	}
 	// The save event carries the phase payload: the session file and phase.
+	// Compare typed fields — a Windows path contains backslashes, which JSON
+	// escapes, so a raw-substring match on the payload would miss it.
 	payloads := client.notifyPayloadsFor(protocol.EventSessionSave)
-	if len(payloads) != 1 || !strings.Contains(string(payloads[0]), `"phase":"save"`) || !strings.Contains(string(payloads[0]), path) {
-		t.Fatalf("session.save payload = %v, want the path and phase", payloads)
+	if len(payloads) != 1 {
+		t.Fatalf("session.save payloads = %v, want exactly one", payloads)
+	}
+	var savePayload dispatch.SessionPayload
+	if err := json.Unmarshal(payloads[0], &savePayload); err != nil {
+		t.Fatalf("session.save payload does not decode: %v (%s)", err, payloads[0])
+	}
+	if savePayload.Phase != "save" || savePayload.SessionPath != path {
+		t.Fatalf("session.save payload = %+v, want phase=save path=%q", savePayload, path)
 	}
 }
 

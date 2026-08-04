@@ -88,6 +88,8 @@ type Conn struct {
 	writeQ        chan writeJob
 	writeActive   atomic.Bool
 	writeProgress atomic.Int64
+	writerBusy    atomic.Int64
+	writerOnce    sync.Once
 
 	nextID atomic.Int64
 
@@ -158,11 +160,20 @@ func NewConn(r io.Reader, w io.Writer, opts Options) *Conn {
 	if opts.MaxQueuedNotifications > 0 {
 		conn.notifyQueue = make(chan notificationCall, opts.MaxQueuedNotifications)
 	}
-	go conn.writerLoop()
-	if opts.MaxWriteStall > 0 {
-		go conn.stallWatchdog()
-	}
 	return conn
+}
+
+// ensureWriter starts the single writer loop (and the stall watchdog when
+// configured) exactly once, lazily on the first write or Serve. Lazy startup
+// keeps a Conn that is constructed but never used — an attach rejected before
+// Serve, for example — from leaking a permanent goroutine.
+func (c *Conn) ensureWriter() {
+	c.writerOnce.Do(func() {
+		go c.writerLoop()
+		if c.opts.MaxWriteStall > 0 {
+			go c.stallWatchdog()
+		}
+	})
 }
 
 // Handle registers a request handler. It is not safe to mutate registrations
@@ -177,6 +188,7 @@ func (c *Conn) HandleNotify(method string, h NotificationHandler) { c.notH[metho
 // when the transport ends; a product that needs work to outlive the connection
 // must derive that work from its own runtime context before returning.
 func (c *Conn) Serve(ctx context.Context) error {
+	c.ensureWriter()
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	if c.notifyQueue != nil {
@@ -208,7 +220,7 @@ func (c *Conn) Serve(ctx context.Context) error {
 		close(c.notifyQueue)
 	}
 	c.wg.Wait()
-	if terminalErr := c.terminalError(); terminalErr != nil {
+	if terminalErr := c.closeReason(); terminalErr != nil {
 		loopErr = terminalErr
 	}
 	c.shutdown(nil)
@@ -534,6 +546,7 @@ func (c *Conn) Request(ctx context.Context, method string, params any) (json.Raw
 }
 
 func (c *Conn) write(ctx context.Context, m outbound) error {
+	c.ensureWriter()
 	var buf bytes.Buffer
 	enc := json.NewEncoder(&buf)
 	enc.SetEscapeHTML(false)
@@ -552,7 +565,7 @@ func (c *Conn) write(ctx context.Context, m outbound) error {
 	case <-ctx.Done():
 		return ctx.Err()
 	case <-c.closed:
-		return c.terminalError()
+		return fmt.Errorf("DBG-enqueue: %w", c.terminalError())
 	}
 	select {
 	case err := <-job.res:
@@ -571,7 +584,7 @@ func (c *Conn) write(ctx context.Context, m outbound) error {
 			return err
 		default:
 		}
-		return c.terminalError()
+		return fmt.Errorf("DBG-wait: %w", c.terminalError())
 	}
 }
 
@@ -591,6 +604,10 @@ type writeJob struct {
 // frames whose caller already gave up before the physical write began, and
 // finishes any frame it started — frames are atomic and ordered by
 // construction. On connection close it fails everything still queued.
+//
+// writerBusy spans one whole job, including the result send: shutdown waits
+// for it to reach zero before closing, so a completed write's result is
+// always visible to its caller before the terminal error could mask it.
 func (c *Conn) writerLoop() {
 	for {
 		select {
@@ -601,6 +618,7 @@ func (c *Conn) writerLoop() {
 					continue
 				}
 			}
+			c.writerBusy.Add(1)
 			err := c.writeAll(job.frame)
 			if err != nil {
 				// When the connection is already terminal, report the root
@@ -614,17 +632,20 @@ func (c *Conn) writerLoop() {
 					}
 				default:
 				}
-				c.fail(err)
 			}
 			job.res <- err
+			c.writerBusy.Add(-1)
+			if err != nil {
+				c.fail(err)
+			}
 		case <-c.closed:
-			for {
-				select {
-				case job := <-c.writeQ:
-					job.res <- c.terminalError()
-				default:
-					return
-				}
+			// Keep draining forever: a producer racing the close can still
+			// enqueue afterwards (writeQ stays sendable), and every one of
+			// those frames must be answered with the terminal error rather
+			// than dropped silently. The loop blocks on the queue, so a dead
+			// connection costs no CPU.
+			for job := range c.writeQ {
+				job.res <- c.terminalError()
 			}
 		}
 	}
@@ -714,13 +735,46 @@ func (c *Conn) fail(err error) {
 	}
 }
 
-func (c *Conn) terminalError() error {
+// closeReason returns the stored terminal error as-is (nil on a clean EOF);
+// Serve uses it so a graceful end still reports nil.
+func (c *Conn) closeReason() error {
 	c.closeMu.Lock()
 	defer c.closeMu.Unlock()
 	return c.closeErr
 }
 
+// terminalError is the error every caller observes after the connection
+// ends. It is never nil — a graceful EOF must not report silently dropped
+// writes as successes.
+func (c *Conn) terminalError() error {
+	c.closeMu.Lock()
+	defer c.closeMu.Unlock()
+	if c.closeErr != nil {
+		return c.closeErr
+	}
+	return fmt.Errorf("%s: connection closed", c.opts.Name)
+}
+
+// writerIdleWaitBound caps how long shutdown lets an in-flight job finish
+// before closing anyway (a wedged write is the stall watchdog's job, not a
+// reason to hang teardown).
+const writerIdleWaitBound = 100 * time.Millisecond
+
+// waitWriterIdle blocks shutdown until the writer loop has no job in flight
+// and the queue is empty — or the bound expires. This is what makes a
+// completed write's result strictly visible before the terminal error.
+func (c *Conn) waitWriterIdle() {
+	deadline := time.Now().Add(writerIdleWaitBound)
+	for time.Now().Before(deadline) {
+		if c.writerBusy.Load() == 0 && len(c.writeQ) == 0 {
+			return
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
+
 func (c *Conn) shutdown(err error) {
+	c.waitWriterIdle()
 	c.closeOnce.Do(func() {
 		c.closeMu.Lock()
 		c.closeErr = err

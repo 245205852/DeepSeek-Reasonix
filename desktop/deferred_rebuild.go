@@ -290,16 +290,17 @@ func (a *App) retryDeferredRuntimeReload(tabID string, tab *WorkspaceTab) {
 	}
 	// Anything else will not resolve by waiting; give up loudly instead of
 	// retrying forever. The error may come from provider/config plumbing and
-	// carry credential-shaped values (passwords, resolved API keys) — redact
-	// before it reaches logs or the frontend.
-	redacted := secrets.RedactCredentials(err.Error())
+	// carry credential-shaped values (passwords, resolved API keys) — the
+	// tested helper redacts before the text reaches logs or the frontend.
 	a.clearDeferredRebuild(tabID)
-	slog.Warn("desktop: deferred runtime reload failed", "tab", tabID, "err", redacted)
-	a.warnForTab(tabID, "runtime reload failed: "+redacted)
+	failure := deferredReloadFailedText(err)
+	slog.Warn("desktop: "+failure, "tab", tabID)
+	a.warnForTab(tabID, failure)
 }
 
-// deferredReloadFailedText is the user-visible failure line for an
-// unrecoverable deferred reload, credential-redacted by construction.
+// deferredReloadFailedText is the failure line for an unrecoverable deferred
+// reload — the single formatter both the log and the tab warning use, so a
+// credential-shaped error can never reach either sink unredacted.
 func deferredReloadFailedText(err error) string {
 	return "runtime reload failed: " + secrets.RedactCredentials(err.Error())
 }

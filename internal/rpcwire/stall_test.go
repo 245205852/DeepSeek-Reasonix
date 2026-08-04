@@ -154,3 +154,37 @@ func TestQueuedFrameCancelledBeforeStartNeverLands(t *testing.T) {
 		t.Fatal("the first frame should have completed serially once released")
 	}
 }
+
+// TestNotifyAfterGracefulCloseFails (review regression): when Serve ends on a
+// clean EOF, a later Notify must FAIL — the frame is gone, and reporting
+// success would silently drop it. Also covers a frame enqueued in the
+// close-race window: the drain loop must answer it with the terminal error.
+func TestNotifyAfterGracefulCloseFails(t *testing.T) {
+	serverToClientR, serverToClientW := io.Pipe()
+	conn := NewConn(serverToClientR, io.Discard, Options{Name: "close-notify-test"})
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	serveDone := make(chan error, 1)
+	go func() { serveDone <- conn.Serve(ctx) }()
+
+	if err := conn.Notify("before/close", nil); err != nil {
+		t.Fatalf("pre-close Notify: %v", err)
+	}
+	// Graceful transport end: peer closes both directions, Serve returns nil.
+	_ = serverToClientW.Close()
+	if err := <-serveDone; err != nil {
+		t.Fatalf("Serve on graceful EOF: %v", err)
+	}
+
+	for i := 0; i < 20; i++ {
+		if err := conn.Notify("after/close", nil); err == nil {
+			t.Fatalf("attempt %d: post-close Notify reported success for a dropped frame", i)
+		}
+	}
+
+	// A request after close must fail immediately with the terminal error,
+	// not hang or report nil.
+	if _, err := conn.Request(context.Background(), "after/close", nil); err == nil {
+		t.Fatal("post-close Request reported success")
+	}
+}
