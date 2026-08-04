@@ -9,7 +9,6 @@ import (
 
 	"charm.land/lipgloss/v2"
 
-	"reasonix/internal/command"
 	"reasonix/internal/control"
 	"reasonix/internal/fileref"
 	"reasonix/internal/i18n"
@@ -61,11 +60,9 @@ const (
 // slashItems is the full set of slash commands offered for completion: the
 // built-in verbs, custom commands, skills (each as "/<name>"), and MCP prompts.
 func (m *chatTUI) slashItems() []compItem {
-	docsOwner := docsSlashRuntimeOwner(m.commands, m.skills)
-	items := builtinSlashItems()
-	if docsOwner != docsSlashBuiltin {
-		items = removeSlashItems(items, "/docs")
-	}
+	docsOwner := control.ResolveSlashCommandOwner(control.DocsSlashName, m.commands, m.skills)
+	docsBuiltin := "/" + control.ResolvedBuiltinSlashName(control.DocsSlashName, m.commands, m.skills)
+	items := renameSlashItem(builtinSlashItems(), "/docs", docsBuiltin)
 	for _, c := range m.commands {
 		if c.Hidden {
 			continue
@@ -73,7 +70,7 @@ func (m *chatTUI) slashItems() []compItem {
 		items = append(items, compItem{label: "/" + c.Name, insert: "/" + c.Name + " ", hint: customCommandHint(c)})
 	}
 	for _, s := range m.skills {
-		if docsOwner == docsSlashCustom && s.SlashName() == "docs" {
+		if docsOwner == control.SlashOwnerCustom && s.SlashName() == control.DocsSlashName {
 			continue
 		}
 		hint := s.Description
@@ -88,28 +85,21 @@ func (m *chatTUI) slashItems() []compItem {
 	return items
 }
 
-type docsSlashOwner uint8
-
-const (
-	docsSlashBuiltin docsSlashOwner = iota
-	docsSlashSkill
-	docsSlashCustom
-)
-
-func docsSlashRuntimeOwner(commands []command.Command, skills []skill.Skill) docsSlashOwner {
-	// Custom commands win even when hidden: hidden only affects discovery, not
-	// direct invocation. Keep every discoverable surface aligned with dispatch.
-	for _, c := range commands {
-		if c.Name == "docs" {
-			return docsSlashCustom
-		}
+func renameSlashItem(items []compItem, oldLabel, newLabel string) []compItem {
+	if oldLabel == newLabel {
+		return items
 	}
-	for _, s := range skills {
-		if s.SlashName() == "docs" {
-			return docsSlashSkill
+	for i := range items {
+		if items[i].label != oldLabel {
+			continue
 		}
+		items[i].label = newLabel
+		if strings.HasPrefix(items[i].insert, oldLabel) {
+			items[i].insert = newLabel + strings.TrimPrefix(items[i].insert, oldLabel)
+		}
+		break
 	}
-	return docsSlashBuiltin
+	return items
 }
 
 func removeSlashItems(items []compItem, label string) []compItem {

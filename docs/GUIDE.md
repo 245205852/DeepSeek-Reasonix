@@ -999,7 +999,12 @@ calling a model. Use `/docs <question>` (for example,
 then pass the version-matched evidence to the currently configured AI for a
 sourced answer. This command path does not depend on the model deciding to call
 the `docs` tool, while ordinary natural-language questions may still use the
-tool automatically.
+tool automatically. Existing custom commands and compatible plugin or skill
+aliases keep ownership of `/docs`; when that happens, CLI and Desktop normally
+expose the built-in corpus as `/reasonix:docs` instead. If that qualified name is
+also already owned, Reasonix selects the next free `reasonix:`-qualified fallback
+without displacing it. A remote Desktop uses the host's resolved command catalog,
+so the displayed entry always matches what that host will execute.
 
 Pull requests that change user-visible CLI, Desktop, configuration, provider,
 permission, or tool behavior must declare whether embedded documentation was

@@ -147,20 +147,30 @@ func EmbeddedManifest() (Manifest, error) {
 // CommandOverview returns the local /docs help text and the identity of the
 // exact corpus compiled into this binary. It never calls a model or the network.
 func CommandOverview(language string) (string, error) {
+	return CommandOverviewFor(language, "/docs")
+}
+
+// CommandOverviewFor is CommandOverview with the invocation name selected by
+// the runtime resolver (for example /reasonix:docs when /docs is occupied).
+func CommandOverviewFor(language, commandName string) (string, error) {
 	c, err := loadDefaultCatalog()
 	if err != nil {
 		return "", fmt.Errorf("load embedded documentation: %w", err)
+	}
+	commandName = "/" + strings.TrimPrefix(strings.TrimSpace(commandName), "/")
+	if commandName == "/" {
+		commandName = "/docs"
 	}
 	m := c.manifest()
 	identity := fmt.Sprintf("version=%s revision=%s digest=%s", m.Version, m.Revision, m.Digest)
 	stats := fmt.Sprintf("documents=%d sections=%d releases=%d", m.Documents, m.Sections, m.ReleaseNotes)
 	switch strings.ToLower(strings.TrimSpace(language)) {
 	case "zh", "zh-cn":
-		return fmt.Sprintf("内置 Reasonix 文档\n%s\n%s\n\n用法：/docs <问题>\n示例：/docs 1.19.5 更新日志\n\n搜索在本地完成，命中的版本匹配资料会交给当前配置的 AI 组织答案。", identity, stats), nil
+		return fmt.Sprintf("内置 Reasonix 文档\n%s\n%s\n\n用法：%s <问题>\n示例：%s 1.19.5 更新日志\n\n搜索在本地完成，命中的版本匹配资料会交给当前配置的 AI 组织答案。", identity, stats, commandName, commandName), nil
 	case "zh-tw":
-		return fmt.Sprintf("內建 Reasonix 文件\n%s\n%s\n\n用法：/docs <問題>\n範例：/docs 1.19.5 更新日誌\n\n搜尋在本機完成，命中的版本匹配資料會交給目前設定的 AI 組織答案。", identity, stats), nil
+		return fmt.Sprintf("內建 Reasonix 文件\n%s\n%s\n\n用法：%s <問題>\n範例：%s 1.19.5 更新日誌\n\n搜尋在本機完成，命中的版本匹配資料會交給目前設定的 AI 組織答案。", identity, stats, commandName, commandName), nil
 	default:
-		return fmt.Sprintf("Embedded Reasonix documentation\n%s\n%s\n\nUsage: /docs <question>\nExample: /docs 1.19.5 changelog\n\nSearch runs locally, then the version-matched evidence is passed to the configured AI to compose the answer.", identity, stats), nil
+		return fmt.Sprintf("Embedded Reasonix documentation\n%s\n%s\n\nUsage: %s <question>\nExample: %s 1.19.5 changelog\n\nSearch runs locally, then the version-matched evidence is passed to the configured AI to compose the answer.", identity, stats, commandName, commandName), nil
 	}
 }
 

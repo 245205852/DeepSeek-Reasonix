@@ -71,6 +71,13 @@ func TestDocsCommandOverviewAndSearchUseEmbeddedCorpus(t *testing.T) {
 			t.Fatalf("command overview missing %q:\n%s", want, overview)
 		}
 	}
+	qualified, err := CommandOverviewFor("en", "/reasonix:docs")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(qualified, "Usage: /reasonix:docs <question>") || strings.Contains(qualified, "Example: /docs ") {
+		t.Fatalf("qualified command overview used the wrong invocation:\n%s", qualified)
+	}
 
 	results, err := SearchEmbedded(context.Background(), "1.19.5 更新日志")
 	if err != nil {

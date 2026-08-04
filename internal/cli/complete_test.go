@@ -113,7 +113,65 @@ func TestSlashCompletionDocsShowsOnlyRuntimeWinner(t *testing.T) {
 			if len(docs) != 1 || docs[0].hint != tt.wantHint {
 				t.Fatalf("/docs completion entries = %+v, want one entry with hint %q", docs, tt.wantHint)
 			}
+			if !hasLabel(m.slashItems(), "/reasonix:docs") {
+				t.Fatalf("shadowed built-in docs fallback missing: %v", labels(m.slashItems()))
+			}
 		})
+	}
+}
+
+func TestSlashCompletionDocsAccountsForHiddenCompatibilityAliases(t *testing.T) {
+	tests := []struct {
+		name          string
+		commands      []command.Command
+		skills        []skill.Skill
+		wantCanonical string
+	}{
+		{
+			name: "hidden plugin command alias",
+			commands: []command.Command{
+				{Name: "docs", Plugin: "manuals", Hidden: true},
+				{Name: "manuals:docs", Plugin: "manuals"},
+			},
+			wantCanonical: "/manuals:docs",
+		},
+		{
+			name:          "compatible plugin skill alias",
+			skills:        []skill.Skill{{Name: "docs", Plugin: "manuals"}},
+			wantCanonical: "/manuals:docs",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			m := newTestChatTUI()
+			m.commands = tt.commands
+			m.skills = tt.skills
+			items := m.slashItems()
+			if hasLabel(items, "/docs") {
+				t.Fatalf("hidden runtime owner left a misleading /docs entry: %v", labels(items))
+			}
+			for _, want := range []string{"/reasonix:docs", tt.wantCanonical} {
+				if !hasLabel(items, want) {
+					t.Fatalf("completion missing %q: %v", want, labels(items))
+				}
+			}
+		})
+	}
+}
+
+func TestSlashCompletionDocsDoesNotDisplaceQualifiedCustomCommands(t *testing.T) {
+	m := newTestChatTUI()
+	m.commands = []command.Command{
+		{Name: "docs", Description: "custom docs"},
+		{Name: "reasonix:docs", Description: "qualified custom docs"},
+		{Name: "reasonix:builtin:docs", Description: "second qualified custom docs"},
+	}
+	items := m.slashItems()
+	for _, want := range []string{"/docs", "/reasonix:docs", "/reasonix:builtin:docs", "/reasonix:builtin:docs:2"} {
+		if !hasLabel(items, want) {
+			t.Fatalf("completion displaced %q: %v", want, labels(items))
+		}
 	}
 }
 

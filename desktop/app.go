@@ -7584,7 +7584,6 @@ func (a *App) Commands() []CommandInfo {
 		{Name: "model", Description: i18n.M.CmdModel, Kind: "builtin", Group: "actions"},
 		{Name: "provider", Description: i18n.M.CmdProvider, Kind: "builtin", Group: "management"},
 		{Name: "effort", Description: i18n.M.CmdEffort, Kind: "builtin", Group: "actions"},
-		{Name: "docs", Description: i18n.M.CmdDocs, Hint: "<question>", Kind: "builtin", Group: "integrations"},
 		{Name: "memory", Description: i18n.M.CmdMemory, Kind: "builtin", Group: "management"},
 		{Name: "migrate", Description: i18n.M.CmdMigrate, Kind: "builtin", Group: "management"},
 		{Name: "goal", Description: i18n.M.CmdGoal, Kind: "builtin", Group: "actions"},
@@ -7597,29 +7596,22 @@ func (a *App) Commands() []CommandInfo {
 		{Name: "reload-cmd", Description: i18n.M.CmdReloadCmd, Kind: "builtin", Group: "management"},
 	}
 	if catalog, ok := a.workbenchSessionCatalog(); ok {
-		for _, item := range catalog.Skills {
-			out = append(out, CommandInfo{Name: item.Name, Description: item.Description, Kind: "skill", Group: "skills"})
-		}
-		for _, item := range catalog.Commands {
-			kind, group := "custom", "skills"
-			if strings.HasPrefix(item.Name, "mcp__") {
-				kind, group = "mcp", "integrations"
-			}
-			out = append(out, CommandInfo{Name: item.Name, Description: item.Description, Kind: kind, Group: group})
-		}
-		return resolveDocsCommand(out)
+		return appendRemoteSessionCommands(out, catalog)
 	}
 	a.mu.RLock()
 	ctrl := a.activeCtrlLocked()
 	a.mu.RUnlock()
 	if ctrl == nil {
-		return out
+		return append(out, docsBuiltinCommand(control.DocsSlashName))
 	}
+	commands := ctrl.Commands()
+	slashSkills := ctrl.SlashSkills()
+	out = append(out, docsBuiltinCommand(control.ResolvedBuiltinSlashName(control.DocsSlashName, commands, slashSkills)))
 	// Skills are invocable as slash commands (the model runs inline ones; subagent ones
 	// run isolated). Listing them here is what surfaces /init, /explore, … in the
 	// composer's slash menu; selecting one submits its displayed slash name, which the controller
 	// resolves via RunSkill.
-	for _, s := range ctrl.SlashSkills() {
+	for _, s := range slashSkills {
 		kind := "skill"
 		if s.RunAs == skill.RunSubagent {
 			kind = "subagent"
@@ -7630,7 +7622,7 @@ func (a *App) Commands() []CommandInfo {
 		}
 		out = append(out, CommandInfo{Name: s.SlashName(), Description: s.Description, Kind: kind, Group: group, Plugin: s.Plugin, Color: s.Color})
 	}
-	for _, c := range ctrl.Commands() {
+	for _, c := range commands {
 		if c.Hidden {
 			continue
 		}
@@ -7640,6 +7632,30 @@ func (a *App) Commands() []CommandInfo {
 		for _, p := range h.Prompts() {
 			out = append(out, CommandInfo{Name: p.Name, Description: p.Description, Kind: "mcp", Group: "integrations"})
 		}
+	}
+	return resolveDocsCommand(out)
+}
+
+func docsBuiltinCommand(name string) CommandInfo {
+	return CommandInfo{Name: name, Description: i18n.M.CmdDocs, Hint: "<question>", Kind: "builtin", Group: "integrations"}
+}
+
+func appendRemoteSessionCommands(out []CommandInfo, catalog protocol.SessionCatalogResult) []CommandInfo {
+	for _, item := range catalog.BuiltinCommands {
+		out = append(out, CommandInfo{
+			Name: item.Name, Description: item.Description, Hint: item.Hint,
+			Kind: "builtin", Group: item.Group,
+		})
+	}
+	for _, item := range catalog.Skills {
+		out = append(out, CommandInfo{Name: item.Name, Description: item.Description, Kind: "skill", Group: "skills"})
+	}
+	for _, item := range catalog.Commands {
+		kind, group := "custom", "skills"
+		if strings.HasPrefix(item.Name, "mcp__") {
+			kind, group = "mcp", "integrations"
+		}
+		out = append(out, CommandInfo{Name: item.Name, Description: item.Description, Kind: kind, Group: group})
 	}
 	return resolveDocsCommand(out)
 }

@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"reasonix/internal/command"
+	"reasonix/internal/control"
 	"reasonix/internal/plugin"
 	"reasonix/internal/skill"
 )
@@ -17,11 +18,9 @@ func (m *chatTUI) showHelp() {
 
 func renderHelp(width int, commands []command.Command, skills []skill.Skill, prompts []plugin.Prompt) string {
 	var b strings.Builder
-	docsOwner := docsSlashRuntimeOwner(commands, skills)
-	builtins := builtinHelpItems()
-	if docsOwner != docsSlashBuiltin {
-		builtins = removeSlashItems(builtins, "/docs")
-	}
+	docsOwner := control.ResolveSlashCommandOwner(control.DocsSlashName, commands, skills)
+	docsBuiltin := "/" + control.ResolvedBuiltinSlashName(control.DocsSlashName, commands, skills)
+	builtins := renameSlashItem(builtinHelpItems(), "/docs", docsBuiltin)
 	fmt.Fprintf(&b, "%s\n", viewHeader("commands"))
 	writeHelpItems(&b, width, "built-in", builtins, 0)
 	if len(commands) > 0 {
@@ -29,7 +28,7 @@ func renderHelp(width int, commands []command.Command, skills []skill.Skill, pro
 	}
 	if len(skills) > 0 {
 		items := skillHelpItems(skills)
-		if docsOwner == docsSlashCustom {
+		if docsOwner == control.SlashOwnerCustom {
 			items = removeSlashItems(items, "/docs")
 		}
 		writeHelpItems(&b, width, "skills", items, helpMaxDynamicItems)
