@@ -52,3 +52,21 @@ func TestWithTurnFormatInjectsFormatIntoContext(t *testing.T) {
 		t.Fatalf("turn format must reach agent request, got %+v", got)
 	}
 }
+
+// TestRefTurnFormatBound：@reference turn 同样绑定 format（统一架构——
+// format 是每个被接纳 turn 的属性，非 runGoalLoop 特例）。
+func TestRefTurnFormatBound(t *testing.T) {
+	c := New(Options{})
+	ctx := context.Background()
+	// runRefTurnWithFormat 注入后 agent 请求路径读到 json_object
+	if got := agent.ResponseFormatFromRequest(c.withTurnFormat(ctx, "json_object")); got == nil || got.Type != "json_object" {
+		t.Fatalf("ref-turn format must bind to ctx, got %+v", got)
+	}
+	// isRefTurnInput 识别 @引用 turn（format 经 wrapper 绑定，不再丢弃）
+	// SlashCodeCommentLine（// 开头）与 SlashPathLikeLine 不依赖文件系统
+	for _, input := range []string{"// comment line", "//src/main.go:12"} {
+		if !isRefTurnInput(input) {
+			t.Errorf("isRefTurnInput(%q) = false, want true", input)
+		}
+	}
+}

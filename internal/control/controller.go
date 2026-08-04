@@ -1032,13 +1032,9 @@ func (c *Controller) SubmitHTTPFormat(input, format string) {
 	if f != "" && isNonTurnHTTPInput(input) {
 		f = "" // 非 turn 输入（slash 命令/! 前缀）不携带 format
 	}
-	if f != "" && isRefTurnInput(input) {
-		// @ 引用 turn（FileRefLine/SlashPathLineRef 等）不经过 runGoalLoop
-		// 的 ctx 注入——format 无法绑定，明确提示而非静默丢弃（review
-		// fix7234and7168：用户会误以为 JSON 输出已生效）。
-		c.notice("structured-output format does not apply to @reference turns")
-		f = ""
-	}
+	// @ 引用 turn（FileRefLine/SlashPathLineRef 等）同样绑定 format——
+	// runRefTurnWithFormat 族 wrapper 注入 ctx（review fix7234and7168：
+	// format 是每个被接纳 turn 的属性，统一架构）。
 	c.submitHTTPWithFormat(input, "", f)
 }
 
@@ -1229,21 +1225,29 @@ func (c *Controller) submitHTTPWithFormat(input, display, format string) {
 }
 
 func (c *Controller) submitCommandOrTurn(trimmed, input, display string, scopedRefsOnly bool, editedOriginal, format string) {
-	runRefTurn := c.runRefTurn
-	runRefTurnWithRefs := c.runRefTurnWithRefs
+	runRefTurn := func(input, display string) {
+		c.runRefTurnWithFormat(input, display, format)
+	}
+	runRefTurnWithRefs := func(input, refLine, display string) {
+		c.runRefTurnWithRefsFormat(input, refLine, display, format)
+	}
 	runGoalLoop := func(ctx context.Context, input, raw, display string) error {
 		return c.runGoalLoopWithRawDisplay(c.withTurnFormat(ctx, format), input, raw, display)
 	}
 	if scopedRefsOnly {
-		runRefTurn = c.runScopedRefTurn
-		runRefTurnWithRefs = c.runScopedRefTurnWithRefs
+		runRefTurn = func(input, display string) {
+			c.runScopedRefTurnWithFormat(input, display, format)
+		}
+		runRefTurnWithRefs = func(input, refLine, display string) {
+			c.runScopedRefTurnWithRefsFormat(input, refLine, display, format)
+		}
 	}
 	if strings.TrimSpace(editedOriginal) != "" {
 		runRefTurn = func(input, display string) {
-			c.runEditedRefTurn(input, display, editedOriginal)
+			c.runEditedRefTurnWithFormat(input, display, editedOriginal, format)
 		}
 		runRefTurnWithRefs = func(input, refLine, display string) {
-			c.runEditedRefTurnWithRefs(input, refLine, display, editedOriginal)
+			c.runEditedRefTurnWithRefsFormat(input, refLine, display, editedOriginal, format)
 		}
 		runGoalLoop = func(ctx context.Context, input, raw, display string) error {
 			return c.runEditedGoalLoopWithRawDisplay(ctx, input, raw, display, editedOriginal)
@@ -1665,6 +1669,46 @@ func (c *Controller) runEditedRefTurn(input, display, original string) {
 
 func (c *Controller) runScopedRefTurn(input, display string) {
 	c.runScopedRefTurnWithRefs(input, input, display)
+}
+
+// runRefTurnWithFormat runs a reference turn with a structured-output
+// format bound to its context (symmetric with runGoalLoop's withTurnFormat
+// injection — format is a property of every accepted turn, not just the
+// plain-goal path; review #7234 binds format to the accepted turn).
+func (c *Controller) runRefTurnWithFormat(input, display, format string) {
+	c.runGuarded(func(ctx context.Context) error {
+		return c.runRefTurnWithResolverSync(c.withTurnFormat(ctx, format), input, input, display, "", c.ResolveRefs)
+	})
+}
+
+func (c *Controller) runScopedRefTurnWithFormat(input, display, format string) {
+	c.runGuarded(func(ctx context.Context) error {
+		return c.runRefTurnWithResolverSync(c.withTurnFormat(ctx, format), input, input, display, "", c.ResolveScopedRefs)
+	})
+}
+
+func (c *Controller) runRefTurnWithRefsFormat(input, refLine, display, format string) {
+	c.runGuarded(func(ctx context.Context) error {
+		return c.runRefTurnWithResolverSync(c.withTurnFormat(ctx, format), input, refLine, display, "", c.ResolveRefs)
+	})
+}
+
+func (c *Controller) runScopedRefTurnWithRefsFormat(input, refLine, display, format string) {
+	c.runGuarded(func(ctx context.Context) error {
+		return c.runRefTurnWithResolverSync(c.withTurnFormat(ctx, format), input, refLine, display, "", c.ResolveScopedRefs)
+	})
+}
+
+func (c *Controller) runEditedRefTurnWithFormat(input, display, original, format string) {
+	c.runGuarded(func(ctx context.Context) error {
+		return c.runRefTurnWithResolverSync(c.withTurnFormat(ctx, format), input, input, display, original, c.ResolveRefs)
+	})
+}
+
+func (c *Controller) runEditedRefTurnWithRefsFormat(input, refLine, display, original, format string) {
+	c.runGuarded(func(ctx context.Context) error {
+		return c.runRefTurnWithResolverSync(c.withTurnFormat(ctx, format), input, refLine, display, original, c.ResolveRefs)
+	})
 }
 
 // runRefTurnWithRefs resolves references from refLine while preserving input as
