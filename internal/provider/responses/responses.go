@@ -96,7 +96,7 @@ func (c Config) mode() string {
 }
 
 // DetectVendor lives in vendor.go (capabilities table): it covers dashscope/
-// deepseek (incl. eu.deepseek.com) / mimo via substring matching.
+// deepseek (incl. eu.deepseek.com) / mimo via exact-host matching.
 
 type client struct {
 	name, apiKey, keyEnv, keySource string
@@ -543,6 +543,8 @@ func (c *client) readStream(ctx context.Context, resp *http.Response, out chan<-
 					// next turn's input reasoning item can carry it (the
 					// OpenAI Responses schema marks Reasoning.id required).
 					if event.Item.ID != "" {
+						// 多段推理（DeepSeek 长思考分多段）时末段 id 覆盖：round-trip
+						// 合并为一个 reasoning item 只带末段 id（服务端接受）。
 						reasoningID = event.Item.ID
 					}
 				}

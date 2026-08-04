@@ -1021,9 +1021,9 @@ func (c *Controller) SubmitHTTP(input string) {
 
 // SubmitHTTPFormat is SubmitHTTP with an optional structured-output format
 // ("json_object") applied to the turn's completion requests. Empty format
-// behaves exactly like SubmitHTTP. A format attached to a slash command or
-// other non-turn input is discarded (nothing consumes it; see
-// takePendingResponseFormat).
+// behaves exactly like SubmitHTTP. A format attached to a slash command,
+// non-turn input, or @reference turn is discarded with a notice (format is
+// bound to the submitted turn, not a global slot).
 func (c *Controller) SubmitHTTPFormat(input, format string) {
 	// format 绑定到本次提交的 turn（随请求参数传递），不再写入 Controller
 	// 全局一次性槽——评审 #7234 第 2 点：全局槽存在跨请求串用的逻辑竞态
@@ -1032,7 +1032,30 @@ func (c *Controller) SubmitHTTPFormat(input, format string) {
 	if f != "" && isNonTurnHTTPInput(input) {
 		f = "" // 非 turn 输入（slash 命令/! 前缀）不携带 format
 	}
+	if f != "" && isRefTurnInput(input) {
+		// @ 引用 turn（FileRefLine/SlashPathLineRef 等）不经过 runGoalLoop
+		// 的 ctx 注入——format 无法绑定，明确提示而非静默丢弃（review
+		// fix7234and7168：用户会误以为 JSON 输出已生效）。
+		c.notice("structured-output format does not apply to @reference turns")
+		f = ""
+	}
 	c.submitHTTPWithFormat(input, "", f)
+}
+
+// isRefTurnInput reports inputs that resolve file references and run the
+// ref-turn path (no ctx format binding). Mirrors submitCommandOrTurn's
+// runRefTurn branches.
+func isRefTurnInput(input string) bool {
+	if SlashCodeCommentLine(input) {
+		return true
+	}
+	if _, ok := FileRefLine(input); ok {
+		return true
+	}
+	if _, ok := SlashPathLineRef(input, ""); ok {
+		return true
+	}
+	return SlashPathLikeLine(input)
 }
 
 // isNonTurnHTTPInput reports inputs that never reach the agent turn loop, so a
@@ -3445,11 +3468,12 @@ func (c *Controller) ResetPlannerSession() {
 // cacheColdAfter resolves how long the active provider keeps a prompt prefix
 // cached. A session idle longer than this resumes against a cold cache, so a
 // history rewrite at that moment costs no extra cache misses — it only shrinks
-// the full-price first request. The TTL is vendor-aware: DashScope 5m,
-// DeepSeek 60m, Anthropic 5m, unknown 10m. Users can override per-provider
+// the full-price first request. The TTL is vendor-aware: DeepSeek/unknown
+// 24h (legacy default deliberately preserved), DashScope 5m, Anthropic 5m.
+// Users can override per-provider
 // with cache_ttl_minutes in config.toml.
 func (c *Controller) cacheColdAfter() time.Duration {
-	if c.testCacheColdAfter > 0 || c.testCacheColdAfter == -1 {
+	if c.testCacheColdAfter != 0 {
 		if c.testCacheColdAfter == -1 {
 			return 0
 		}

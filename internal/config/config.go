@@ -1380,7 +1380,7 @@ type ProviderEntry struct {
 	// For China-only endpoints a foreign-exit proxy resets the TLS handshake (#2803).
 	NoProxy bool `toml:"no_proxy"`
 	// CacheTTLMinutes overrides the vendor-default prefix-cache retention used by
-	// cold-resume prune. Zero uses the vendor default (DashScope 5m, DeepSeek 60m).
+	// cold-resume prune. Zero uses the vendor default (DeepSeek/unknown 24h, DashScope/Anthropic 5m).
 	CacheTTLMinutes int `toml:"cache_ttl_minutes"`
 }
 
