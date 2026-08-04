@@ -599,6 +599,9 @@ func (s *SubagentStore) SaveCompleted(run *SubagentRun) error {
 	if s.parentDestroyed(run) {
 		return nil
 	}
+	if err := s.ensureBranchCreatedAt(run); err != nil {
+		return err
+	}
 	if err := run.Session.Save(s.sessionPath(run.Ref)); err != nil {
 		return err
 	}
@@ -616,6 +619,9 @@ func (s *SubagentStore) SaveFailed(run *SubagentRun) error {
 	if s.parentDestroyed(run) {
 		return nil
 	}
+	// Terminal status is independent from transcript persistence. Keep going so
+	// a sidecar failure cannot leave a failed run marked as running on disk.
+	branchErr := s.ensureBranchCreatedAt(run)
 	var sessionErr error
 	if run.Session != nil {
 		sessionErr = run.Session.Save(s.sessionPath(run.Ref))
@@ -624,7 +630,31 @@ func (s *SubagentStore) SaveFailed(run *SubagentRun) error {
 	meta.Status = SubagentFailed
 	meta.UpdatedAt = time.Now().UTC()
 	run.Meta = meta
-	return errors.Join(sessionErr, s.saveMeta(meta))
+	return errors.Join(branchErr, sessionErr, s.saveMeta(meta))
+}
+
+// ensureBranchCreatedAt seeds the session list sidecar before the first
+// transcript save. Subagent transcripts are written only on completion, so
+// Session.Save would otherwise backfill BranchMeta.CreatedAt with the save
+// moment (completion time). The real start time already lives on run.Meta.
+func (s *SubagentStore) ensureBranchCreatedAt(run *SubagentRun) error {
+	if s == nil || run == nil || run.Ref == "" {
+		return nil
+	}
+	path := s.sessionPath(run.Ref)
+	if _, ok, err := LoadBranchMeta(path); err != nil {
+		return err
+	} else if ok {
+		return nil
+	}
+	created := run.Meta.CreatedAt.UTC()
+	if created.IsZero() {
+		created = time.Now().UTC()
+	}
+	return SaveBranchMetaPreserveUpdated(path, BranchMeta{
+		ID:        BranchID(path),
+		CreatedAt: created,
+	})
 }
 
 func (s *SubagentStore) LoadMeta(ref string) (SubagentMeta, error) {
