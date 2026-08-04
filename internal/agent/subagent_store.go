@@ -103,8 +103,9 @@ func EphemeralSubagentRun(systemPrompt string) *SubagentRun {
 // SubagentStore persists sub-agent transcripts under config.SessionDir()/subagents.
 // Its locks are process-local; cross-process mutation is intentionally out of v1.
 type SubagentStore struct {
-	dir       string
-	destroyed func(parentSession string) bool
+	dir                string
+	destroyed          func(parentSession string) bool
+	parentSessionProbe func(sessionPath string) bool
 
 	mu     sync.Mutex
 	locked map[string]bool
@@ -123,6 +124,17 @@ func NewSubagentStore(dir string) *SubagentStore {
 func (s *SubagentStore) WithDestroyedChecker(fn func(parentSession string) bool) *SubagentStore {
 	if s != nil {
 		s.destroyed = fn
+	}
+	return s
+}
+
+// WithParentSessionProbe installs a process-local liveness check used before
+// stale cleanup probes a parent transcript lease. Desktop supplies this for
+// tabs and builds that are live before their durable lease is bound. A nil
+// probe preserves the lease-only behavior used by CLI and server frontends.
+func (s *SubagentStore) WithParentSessionProbe(fn func(sessionPath string) bool) *SubagentStore {
+	if s != nil {
+		s.parentSessionProbe = fn
 	}
 	return s
 }
@@ -258,6 +270,9 @@ func (s *SubagentStore) CleanupStaleRunning() (int, error) {
 	cleaned := 0
 	for _, parentID := range parentIDs {
 		parent := parents[parentID]
+		if s.parentSessionProbe != nil && s.parentSessionProbe(parent.sessionPath) {
+			continue
+		}
 		lease, err := TryAcquireSessionLease(parent.sessionPath)
 		if errors.Is(err, ErrSessionLeaseHeld) {
 			continue
