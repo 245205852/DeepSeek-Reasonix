@@ -49,6 +49,25 @@ type SubagentMeta struct {
 	Effort           string         `json:"effort"`
 }
 
+// subagentMetaDecodeError distinguishes malformed metadata content from file
+// I/O failures. Cleanup may safely skip one undecodable record, but storage
+// errors must remain visible because they can affect every subagent record.
+type subagentMetaDecodeError struct {
+	ref string
+	err error
+}
+
+func (e *subagentMetaDecodeError) Error() string {
+	return fmt.Sprintf("decode subagent metadata %q: %v", e.ref, e.err)
+}
+
+func (e *subagentMetaDecodeError) Unwrap() error { return e.err }
+
+func isSubagentMetaDecodeError(err error) bool {
+	var decodeErr *subagentMetaDecodeError
+	return errors.As(err, &decodeErr)
+}
+
 // SubagentSpec describes the current invocation identity.
 type SubagentSpec struct {
 	Kind             string
@@ -105,6 +124,9 @@ func EphemeralSubagentRun(systemPrompt string) *SubagentRun {
 type SubagentStore struct {
 	dir       string
 	destroyed func(parentSession string) bool
+
+	// cleanupBeforeReread is a test seam for deterministic lease interleavings.
+	cleanupBeforeReread func(parentSession, ref string)
 
 	mu     sync.Mutex
 	locked map[string]bool
@@ -228,6 +250,13 @@ func (s *SubagentStore) CleanupStaleRunning() (int, error) {
 		}
 		meta, err := s.LoadMeta(ref)
 		if err != nil {
+			// A corrupt metadata file (truncated write, killed process) must
+			// not abort startup. Skip all content decode failures, including
+			// errors from custom field decoders such as time.Time, while genuine
+			// file I/O errors remain fatal so storage problems stay visible.
+			if isSubagentMetaDecodeError(err) {
+				continue
+			}
 			return 0, err
 		}
 		if meta.Status != SubagentRunning {
@@ -266,10 +295,16 @@ func (s *SubagentStore) CleanupStaleRunning() (int, error) {
 			return cleaned, fmt.Errorf("acquire parent session lease %q: %w", parentID, err)
 		}
 		for _, ref := range parent.refs {
+			if s.cleanupBeforeReread != nil {
+				s.cleanupBeforeReread(parentID, ref)
+			}
 			// Re-read after acquiring the parent lease: the former owner may
 			// have completed the child between the initial scan and handoff.
 			meta, err := s.LoadMeta(ref)
 			if err != nil {
+				if isSubagentMetaDecodeError(err) {
+					continue
+				}
 				lease.Release()
 				return cleaned, err
 			}
@@ -667,7 +702,7 @@ func (s *SubagentStore) LoadMeta(ref string) (SubagentMeta, error) {
 		return meta, fmt.Errorf("load subagent metadata %q: %w", ref, err)
 	}
 	if err := json.Unmarshal(data, &meta); err != nil {
-		return meta, fmt.Errorf("decode subagent metadata %q: %w", ref, err)
+		return meta, &subagentMetaDecodeError{ref: ref, err: err}
 	}
 	return meta, nil
 }
