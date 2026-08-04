@@ -365,8 +365,10 @@ func (a *App) spawnRemoteWindow(hostKey string, launch remoteWindowLaunch) error
 
 // openRemoteWindowForHost opens (or re-points) the host's web window at rawURL.
 // The window open is deliberately the last step: the caller must already have
-// a live Serve and loopback tunnel, so a failure here leaves the previous
-// window and tunnel untouched.
+// a live Serve and loopback tunnel for the target workspace. A failure here is
+// delivered to the caller while the Serve stays ready for the target
+// workspace; the window can simply be opened again (the Serve is reused) and
+// any previous window is left in place until then.
 func (a *App) openRemoteWindowForHost(hostID, rawURL string) error {
 	launch := remoteWindowLaunch{
 		URL:     rawURL,

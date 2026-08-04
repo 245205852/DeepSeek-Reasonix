@@ -1286,6 +1286,7 @@ func (m *desktopRemoteManager) EnsureServer(ctx context.Context, hostID, workspa
 		return RemoteServerView{}, "", fmt.Errorf("host %q connection was replaced", hostID)
 	}
 	previousServer := mh.server
+	previousToken := mh.token
 	m.mu.Unlock()
 	c := mh.client
 	opCtx, cancel := managedOperationContext(ctx, mh)
@@ -1316,7 +1317,7 @@ func (m *desktopRemoteManager) EnsureServer(ctx context.Context, hostID, workspa
 	})
 	if err != nil {
 		view := RemoteServerView{HostID: hostID, Workspace: workspace, State: "error", Error: err.Error()}
-		m.publishServerIfCurrent(hostID, mh, view, "")
+		m.publishFailedServeStart(hostID, mh, previousServer, previousToken, view)
 		return view, "", err
 	}
 	if !m.isCurrent(hostID, mh) {
@@ -1341,7 +1342,7 @@ func (m *desktopRemoteManager) EnsureServer(ctx context.Context, hostID, workspa
 			cleanupCancel()
 		}
 		view := RemoteServerView{HostID: hostID, Workspace: workspace, State: "error", Error: ferr.Error()}
-		m.publishServerIfCurrent(hostID, mh, view, "")
+		m.publishFailedServeStart(hostID, mh, previousServer, previousToken, view)
 		return view, "", ferr
 	}
 	localURL := fmt.Sprintf("http://%s/", bound)
@@ -1472,6 +1473,21 @@ func managedOperationContext(parent context.Context, mh *managedHost) (context.C
 		stop()
 		cancel()
 	}
+}
+
+// publishFailedServeStart keeps host server ownership on a previous ready
+// Serve when a new Serve or its tunnel failed to establish. The previous
+// Serve is still running with its tunnel (forward Replace is atomic), so
+// Stop/Logs and reconnect refresh must keep operating on the workspace that
+// actually runs; the failure is delivered through the EnsureServer return
+// value and the caller's actionErr. When there is no previous ready Serve
+// (first start), the error view is published so the UI can show it.
+func (m *desktopRemoteManager) publishFailedServeStart(hostID string, generation *managedHost, previous RemoteServerView, previousToken string, failed RemoteServerView) {
+	if previous.State == "ready" {
+		m.publishServerIfCurrent(hostID, generation, previous, previousToken)
+		return
+	}
+	m.publishServerIfCurrent(hostID, generation, failed, "")
 }
 
 func (m *desktopRemoteManager) publishServerIfCurrent(hostID string, generation *managedHost, view RemoteServerView, token string) bool {
