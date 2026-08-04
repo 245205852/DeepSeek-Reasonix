@@ -343,11 +343,8 @@ func TestOutboundSchedulerAfterWriteRunsOnceAfterPhysicalWrite(t *testing.T) {
 	default:
 	}
 	close(release)
-	if err := <-done; err != nil && !errors.Is(err, io.EOF) && !errors.Is(err, io.ErrClosedPipe) {
-		// Serve returns nil on clean EOF.
-		if !strings.Contains(err.Error(), "EOF") {
-			// Accept normal completion.
-		}
+	if err := <-done; err != nil && !errors.Is(err, io.EOF) && !errors.Is(err, io.ErrClosedPipe) && !strings.Contains(err.Error(), "EOF") {
+		t.Fatalf("Serve error = %v", err)
 	}
 	select {
 	case err := <-callbacks:

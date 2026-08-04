@@ -92,6 +92,21 @@ func TestRemoteMutationBlockedDuringReconnect(t *testing.T) {
 	if preview := a.ReadFileForTab("", "README.md"); !strings.Contains(preview.Err, "REMOTE_RECONNECTING") {
 		t.Fatalf("remote file preview fell through: %+v", preview)
 	}
+	if preview := a.PreviewRewindForTab("", 1, "both"); !strings.Contains(preview.Error, "REMOTE_RECONNECTING") {
+		t.Fatalf("remote rewind preview fell through: %+v", preview)
+	}
+	if result := a.CommitRewindForTab("", "", 1, "both"); !strings.Contains(result.Error, "REMOTE_RECONNECTING") {
+		t.Fatalf("remote rewind commit fell through: %+v", result)
+	}
+	if result := a.UndoRewindForTab("", "txn"); !strings.Contains(result.Error, "REMOTE_RECONNECTING") {
+		t.Fatalf("remote rewind undo fell through: %+v", result)
+	}
+	if preview := a.PreviewWorkspaceFileRevertForTab("", "README.md"); !strings.Contains(preview.Error, "REMOTE_RECONNECTING") {
+		t.Fatalf("remote file-revert preview fell through: %+v", preview)
+	}
+	if result := a.CommitWorkspaceFileRevertForTab("", "plan", "keep_current"); !strings.Contains(result.Error, "REMOTE_RECONNECTING") {
+		t.Fatalf("remote file-revert commit fell through: %+v", result)
+	}
 	if _, err := a.ForkForTab("", 1); err == nil || !strings.Contains(err.Error(), "CAPABILITY_UNAVAILABLE") {
 		t.Fatalf("remote fork fell through: %v", err)
 	}

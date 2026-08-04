@@ -170,7 +170,7 @@ func (m *Manager) BeginRemoteConnect(hostID, workspace string) (Identity, uint64
 	}
 	id := Identity{Kind: KindRemote, HostID: hostID, Workspace: workspace}
 	gen := m.attachGen.Add(1)
-	logical := m.logicalGen.Load()
+	var logical uint64
 	if m.remote != nil && m.remote.Identity.HostID == hostID && m.remote.Identity.Workspace == workspace {
 		logical = m.remote.LogicalGen
 	} else {
