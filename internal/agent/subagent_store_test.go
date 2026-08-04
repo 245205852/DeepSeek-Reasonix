@@ -108,6 +108,32 @@ func TestSubagentStoreTerminalSaveKeepsBranchStartAndActivityTimes(t *testing.T)
 	}
 }
 
+func TestSubagentStoreSaveFailedPersistsTerminalMetaWhenBranchMetaIsCorrupt(t *testing.T) {
+	store := NewSubagentStore(t.TempDir())
+	run, err := store.PrepareFresh(testSubagentSpec(t, "explore"))
+	if err != nil {
+		t.Fatalf("PrepareFresh: %v", err)
+	}
+	defer run.Release()
+	if err := store.MarkRunning(run); err != nil {
+		t.Fatalf("MarkRunning: %v", err)
+	}
+	if err := os.WriteFile(BranchMetaPath(store.sessionPath(run.Ref)), []byte("{"), 0o600); err != nil {
+		t.Fatalf("corrupt branch meta: %v", err)
+	}
+
+	if err := store.SaveFailed(run); err == nil {
+		t.Fatal("SaveFailed unexpectedly succeeded with corrupt branch meta")
+	}
+	meta, err := store.LoadMeta(run.Ref)
+	if err != nil {
+		t.Fatalf("LoadMeta: %v", err)
+	}
+	if meta.Status != SubagentFailed {
+		t.Fatalf("persisted status = %q, want %q", meta.Status, SubagentFailed)
+	}
+}
+
 func TestSubagentStoreForkCreatesIndependentReference(t *testing.T) {
 	store := NewSubagentStore(t.TempDir())
 	spec := testSubagentSpec(t, "review")

@@ -612,9 +612,9 @@ func (s *SubagentStore) SaveFailed(run *SubagentRun) error {
 	if s.parentDestroyed(run) {
 		return nil
 	}
-	if err := s.ensureBranchCreatedAt(run); err != nil {
-		return err
-	}
+	// Terminal status is independent from transcript persistence. Keep going so
+	// a sidecar failure cannot leave a failed run marked as running on disk.
+	branchErr := s.ensureBranchCreatedAt(run)
 	var sessionErr error
 	if run.Session != nil {
 		sessionErr = run.Session.Save(s.sessionPath(run.Ref))
@@ -623,7 +623,7 @@ func (s *SubagentStore) SaveFailed(run *SubagentRun) error {
 	meta.Status = SubagentFailed
 	meta.UpdatedAt = time.Now().UTC()
 	run.Meta = meta
-	return errors.Join(sessionErr, s.saveMeta(meta))
+	return errors.Join(branchErr, sessionErr, s.saveMeta(meta))
 }
 
 // ensureBranchCreatedAt seeds the session list sidecar before the first
