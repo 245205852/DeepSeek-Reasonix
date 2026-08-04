@@ -223,8 +223,51 @@ func (a *App) emitRemoteEvent(name string, payload any) {
 }
 
 // remoteEventSink implementation on *App.
-func (a *App) onStatus(s RemoteConnectionStatusView) { a.emitRemoteEvent("remote:status", s) }
-func (a *App) onServer(s RemoteServerView)           { a.emitRemoteEvent("remote:server", s) }
+func (a *App) onStatus(s RemoteConnectionStatusView) {
+	a.emitRemoteEvent("remote:status", s)
+	// A terminal SSH failure (auth, host key, exhausted retries) kills the
+	// tunnel: close the host's web window so the user is not left staring at a
+	// dead Serve page. The frontend already shows the failure reason through
+	// the remote:status event. Transient reconnects (reconnecting/degraded)
+	// keep the window open.
+	if s.State == "stopped" && s.Error != "" {
+		a.closeRemoteWindowForHost(s.HostID)
+		return
+	}
+	// After a reconnect the loopback tunnel rebinds to a new port. Re-point an
+	// open web window at the fresh Serve URL so it stays usable.
+	if s.State == "connected" && a.hasRemoteWindow(s.HostID) {
+		a.refreshRemoteWindowAfterReconnect(s.HostID)
+	}
+}
+
+// refreshRemoteWindowAfterReconnect re-establishes the Serve forward after an
+// SSH reconnect and navigates the host's web window to the new loopback URL.
+// The remote Serve process is reused, so this is a cheap state probe when the
+// tunnel already rebinding — the window is kept regardless of failure, and the
+// user can reopen it if the Serve itself went away.
+func (a *App) refreshRemoteWindowAfterReconnect(hostID string) {
+	a.goSafe("remoteWindowReconnect", func() {
+		rt, err := a.remoteRT()
+		if err != nil {
+			return
+		}
+		status := rt.ServerStatus(hostID)
+		if status.State != "ready" || strings.TrimSpace(status.Workspace) == "" {
+			return
+		}
+		view, token, err := rt.EnsureServer(a.bootContext(), hostID, status.Workspace)
+		if err != nil || view.State != "ready" || view.LocalURL == "" {
+			return
+		}
+		if !a.hasRemoteWindow(hostID) {
+			return
+		}
+		_ = a.openRemoteWindowForHost(hostID, serveURLWithToken(view.LocalURL, token))
+	})
+}
+
+func (a *App) onServer(s RemoteServerView) { a.emitRemoteEvent("remote:server", s) }
 func (a *App) onForwards(hostID string, f []RemoteForwardView) {
 	a.emitRemoteEvent("remote:forwards", map[string]any{"hostId": hostID, "forwards": f})
 }
@@ -260,7 +303,11 @@ func (a *App) RemoveRemoteHost(id string) error {
 	if err != nil {
 		return err
 	}
-	return rt.RemoveHost(id)
+	if err := rt.RemoveHost(id); err != nil {
+		return err
+	}
+	a.closeRemoteWindowForHost(id)
+	return nil
 }
 
 func (a *App) ScanSSHConfig() ([]RemoteHostInput, error) {
@@ -321,7 +368,14 @@ func (a *App) DisconnectRemoteHost(id string) error {
 	if err != nil {
 		return err
 	}
-	return rt.Disconnect(id)
+	if err := rt.Disconnect(id); err != nil {
+		return err
+	}
+	// An explicit disconnect kills the loopback tunnel; close the host's web
+	// window so the user is not left staring at a dead Serve page. The remote
+	// Serve itself stays resident.
+	a.closeRemoteWindowForHost(id)
+	return nil
 }
 
 func (a *App) RemoteConnectionStatuses() []RemoteConnectionStatusView {
@@ -434,10 +488,36 @@ func (a *App) EnsureRemoteServer(hostID, workspace string) error {
 	return nil
 }
 
-// OpenRemoteWorkspace opens the Remote Workbench path: SSH stdio attach-workspace
-// + local Provider Broker. It does not open a Serve HTML child window.
+// OpenRemoteWorkspace is the idempotent "open remote web" entry: it starts or
+// reuses the target workspace's remote Serve, atomically replaces the loopback
+// tunnel, then opens (or re-points) the host's web window. The Serve and tunnel
+// are established before any window is touched, so a failure keeps the previous
+// window and tunnel intact.
 func (a *App) OpenRemoteWorkspace(hostID, workspace string) error {
-	return a.WorkbenchConnectRemote(hostID, workspace)
+	rt, err := a.remoteRT()
+	if err != nil {
+		return err
+	}
+	view, token, err := rt.EnsureServer(a.bootContext(), hostID, workspace)
+	if err != nil {
+		return err
+	}
+	if view.LocalURL == "" {
+		return fmt.Errorf("remote serve did not report a local URL")
+	}
+	url := serveURLWithToken(view.LocalURL, token)
+	a.saveLastRemoteWorkspace(hostID, workspace)
+	return a.openRemoteWindowForHost(hostID, url)
+}
+
+// serveURLWithToken appends the one-shot Serve token to the first-visit URL.
+// The remote serve converts it to an HttpOnly cookie on the first request and
+// redirects to a token-free URL.
+func serveURLWithToken(localURL, token string) string {
+	if token != "" && !strings.Contains(localURL, "token=") {
+		return fmt.Sprintf("%s?token=%s", strings.TrimRight(localURL, "/"), token)
+	}
+	return localURL
 }
 
 func (a *App) StopRemoteServer(hostID string) error {
@@ -445,7 +525,13 @@ func (a *App) StopRemoteServer(hostID string) error {
 	if err != nil {
 		return err
 	}
-	return rt.StopServer(hostID)
+	if err := rt.StopServer(hostID); err != nil {
+		return err
+	}
+	// Stopping the service also tears down the loopback tunnel, so close the
+	// host's web window.
+	a.closeRemoteWindowForHost(hostID)
+	return nil
 }
 
 func (a *App) RemoteServerStatus(hostID string) (RemoteServerView, error) {

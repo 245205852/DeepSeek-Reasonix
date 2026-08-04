@@ -249,6 +249,23 @@ type App struct {
 	remoteRuntime   remoteKernel
 	workbenchKernel *workbenchKernel // Local + Remote workbench adapters
 
+	// Remote web windows (SSH Serve child processes). The main process tracks
+	// one child per host with a generation counter; closing a window releases
+	// only its registration, while the remote Serve and the SSH connection keep
+	// running. The child process itself deliberately skips local runtimes.
+	remoteWindows      *remoteWindowRegistry
+	remoteWindowOpener func(remoteWindowLaunch) error // test-only injection
+	// remoteWindowTicket/remoteWindowHostKey are set from argv before Wails
+	// starts in a child process. They gate the blank-shell middleware and the
+	// startup branches so the child never initializes local runtimes.
+	remoteWindowTicket  string
+	remoteWindowHostKey string
+	// remoteWindowMu serializes ticket consumption and navigation in a child
+	// process so a handoff arriving before domReady cannot be overridden by the
+	// initial ticket (or vice versa).
+	remoteWindowMu sync.Mutex
+	remoteWindow   *remoteWindowLaunch
+
 	// promptHistoryTape is a lazy, cursor-addressed view of prompt history. It
 	// stores session order and per-session parsed entries only after that session is
 	// reached by ↑ navigation. See ScanPromptHistory.
@@ -459,6 +476,7 @@ func NewApp() *App {
 		mediaTokens:         newMediaTokenStore(),
 		botInstalls:         map[string]*botInstallSession{},
 		botRuntime:          newDesktopBotRuntime(),
+		remoteWindows:       newRemoteWindowRegistry(),
 	}
 	a.terminals = newTerminalManager(a)
 	a.botBridge = a.newBotBridge()
@@ -484,6 +502,11 @@ func (a *App) Platform() string {
 func (a *App) startup(ctx context.Context) {
 	a.ctx = ctx
 	a.startWindowsWebView2StartupFallback(ctx)
+	if a.remoteWindowTicket != "" {
+		// Remote web window child: no local tabs, tray, heartbeat, providers,
+		// or remote manager. domReady consumes the ticket and navigates.
+		return
+	}
 	installSystemQuitHook()
 	a.startTray()
 	a.enableDeferredRebuildRetry()
@@ -518,6 +541,12 @@ func (a *App) startup(ctx context.Context) {
 }
 
 func (a *App) beforeClose(ctx context.Context) bool {
+	if a.remoteWindowTicket != "" {
+		// A remote web window closes immediately — nothing to snapshot, lease,
+		// or hide. Closing it must not stop the remote Serve or the main
+		// process's SSH connection.
+		return false
+	}
 	if a.forceQuit.Swap(false) || consumeSystemQuitRequested() {
 		return false
 	}
@@ -852,6 +881,15 @@ func (a *App) snapshotAllTabs() {
 
 // shutdown snapshots all tabs, saves the final window geometry, and closes tabs.
 func (a *App) shutdown(context.Context) {
+	if a.remoteWindowTicket != "" {
+		// Remote web window child: nothing to snapshot or stop locally.
+		return
+	}
+	// A real quit also terminates surviving web windows: their tunnels die with
+	// this process, so a leftover window would only show a dead Serve page.
+	// The remote Serve itself stays resident by design. Background (tray)
+	// close never reaches shutdown and keeps the windows alive.
+	a.closeAllRemoteWindows()
 	// Run after controller teardown (and after its deferred lifecycle unlocks)
 	// so every accepted usage record reaches disk before a normal app exit.
 	defer func() {
@@ -928,6 +966,11 @@ func (a *App) domReady(_ context.Context) {
 	// JSC has installed its lazy signal handlers by this point. Restore the
 	// SA_ONSTACK flags required by Go; this is a no-op outside Linux.
 	repairWebKitSignalHandlers()
+
+	if a.remoteWindowTicket != "" {
+		a.domReadyRemoteWindow()
+		return
+	}
 
 	state, ok := loadWindowState()
 	if ok {

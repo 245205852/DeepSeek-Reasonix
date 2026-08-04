@@ -1,0 +1,484 @@
+package main
+
+import (
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+	"fmt"
+	"io"
+	"log/slog"
+	"net"
+	"net/http"
+	"net/url"
+	"os"
+	"os/exec"
+	"path/filepath"
+	goruntime "runtime"
+	"strings"
+	"sync"
+	"time"
+	"unicode"
+
+	"github.com/wailsapp/wails/v2/pkg/options"
+	"github.com/wailsapp/wails/v2/pkg/runtime"
+
+	"reasonix/internal/config"
+)
+
+const (
+	remoteWindowTicketArgPrefix = "--remote-window-ticket="
+	remoteWindowHostArgPrefix   = "--remote-window-host="
+	remoteWindowTicketPrefix    = ".remote-window-"
+	remoteWindowTicketTTL       = 2 * time.Minute
+	remoteWindowTicketMaxBytes  = 16 * 1024
+	remoteWindowInstancePrefix  = "com.reasonix.desktop.remote."
+)
+
+// remoteWindowLaunch is a one-shot handoff from the primary Reasonix process to
+// a lightweight web-window child process. The URL carries the local tunnel token,
+// so the descriptor lives in a mode-0600 ticket file instead of the process
+// arguments. HostKey is the non-secret per-host digest used both to derive the
+// child's Wails single-instance identity and to verify the argv host matches the
+// ticket before the child consumes it.
+type remoteWindowLaunch struct {
+	URL     string `json:"url"`
+	Title   string `json:"title,omitempty"`
+	HostKey string `json:"hostKey,omitempty"`
+}
+
+// remoteWindowTicketPath validates the ticket name and resolves it inside the
+// Reasonix private state directory. Only the bare generated name is accepted —
+// never a path, a traversal, or a foreign filename.
+func remoteWindowTicketPath(ticket string) (string, error) {
+	if ticket == "" || filepath.Base(ticket) != ticket || !strings.HasPrefix(ticket, remoteWindowTicketPrefix) {
+		return "", fmt.Errorf("invalid remote window ticket")
+	}
+	dir := strings.TrimSpace(config.MemoryUserDir())
+	if dir == "" {
+		return "", fmt.Errorf("cannot resolve remote window state directory")
+	}
+	return filepath.Join(dir, ticket), nil
+}
+
+func writeRemoteWindowLaunch(launch remoteWindowLaunch) (string, error) {
+	if !isSafeRemoteWindowURL(launch.URL) {
+		return "", fmt.Errorf("remote window URL must use HTTP on loopback")
+	}
+	if strings.TrimSpace(launch.HostKey) == "" {
+		return "", fmt.Errorf("remote window ticket missing host identity")
+	}
+	dir := config.MemoryUserDir()
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return "", fmt.Errorf("create remote window state directory: %w", err)
+	}
+	f, err := os.CreateTemp(dir, remoteWindowTicketPrefix)
+	if err != nil {
+		return "", fmt.Errorf("create remote window ticket: %w", err)
+	}
+	path := f.Name()
+	remove := true
+	defer func() {
+		_ = f.Close()
+		if remove {
+			_ = os.Remove(path)
+		}
+	}()
+	if err := f.Chmod(0o600); err != nil {
+		return "", fmt.Errorf("secure remote window ticket: %w", err)
+	}
+	if err := json.NewEncoder(f).Encode(launch); err != nil {
+		return "", fmt.Errorf("write remote window ticket: %w", err)
+	}
+	if err := f.Sync(); err != nil {
+		return "", fmt.Errorf("sync remote window ticket: %w", err)
+	}
+	if err := f.Close(); err != nil {
+		return "", fmt.Errorf("close remote window ticket: %w", err)
+	}
+	remove = false
+	return filepath.Base(path), nil
+}
+
+// consumeRemoteWindowLaunch reads and immediately deletes the ticket. A ticket
+// is one-shot: whoever consumes it (the first window to win the per-host
+// single-instance lock, or the existing window receiving a handoff) owns the
+// navigation. The file must be a regular 0600 file within the size bound; on
+// Unix, broader permissions or symlinks are rejected outright.
+func consumeRemoteWindowLaunch(ticket string) (*remoteWindowLaunch, error) {
+	path, err := remoteWindowTicketPath(ticket)
+	if err != nil {
+		return nil, err
+	}
+	info, err := os.Lstat(path)
+	if err != nil {
+		return nil, fmt.Errorf("inspect remote window ticket: %w", err)
+	}
+	defer os.Remove(path)
+	if !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 {
+		return nil, fmt.Errorf("remote window ticket is not a regular file")
+	}
+	if info.Size() <= 0 || info.Size() > remoteWindowTicketMaxBytes {
+		return nil, fmt.Errorf("remote window ticket has an invalid size")
+	}
+	// Windows does not expose Unix owner/group permission bits through Stat;
+	// CreateTemp still creates the file for the current user, while ACLs remain
+	// governed by the private user state directory.
+	if goruntime.GOOS != "windows" && info.Mode().Perm()&0o077 != 0 {
+		return nil, fmt.Errorf("remote window ticket permissions are too broad")
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("read remote window ticket: %w", err)
+	}
+	var launch remoteWindowLaunch
+	if err := json.Unmarshal(data, &launch); err != nil {
+		return nil, fmt.Errorf("decode remote window ticket: %w", err)
+	}
+	if !isSafeRemoteWindowURL(launch.URL) {
+		return nil, fmt.Errorf("remote window URL must use HTTP on loopback")
+	}
+	if strings.TrimSpace(launch.HostKey) == "" {
+		return nil, fmt.Errorf("remote window ticket missing host identity")
+	}
+	return &launch, nil
+}
+
+// isSafeRemoteWindowURL accepts only plain HTTP on localhost or a loopback IP,
+// with no userinfo, and nothing that could smuggle a file, script, or external
+// destination through the webview navigation.
+func isSafeRemoteWindowURL(raw string) bool {
+	u, err := url.Parse(raw)
+	if err != nil || u.Scheme != "http" || u.Host == "" || u.User != nil {
+		return false
+	}
+	host := strings.TrimSpace(u.Hostname())
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
+}
+
+func remoteWindowNavigationJS(raw string) (string, error) {
+	if !isSafeRemoteWindowURL(raw) {
+		return "", fmt.Errorf("remote window URL must use HTTP on loopback")
+	}
+	encoded, err := json.Marshal(raw)
+	if err != nil {
+		return "", err
+	}
+	return "window.location.replace(" + string(encoded) + ");", nil
+}
+
+func remoteWindowTitle(hostID string) string {
+	hostID = strings.TrimSpace(strings.Map(func(r rune) rune {
+		if unicode.IsControl(r) {
+			return -1
+		}
+		return r
+	}, hostID))
+	runes := []rune(hostID)
+	if len(runes) > 80 {
+		hostID = string(runes[:80]) + "…"
+	}
+	if hostID == "" {
+		hostID = "Remote"
+	}
+	return "Reasonix [SSH: " + hostID + "]"
+}
+
+// remoteWindowHostKey derives the non-secret per-host identity used for the
+// child window's Wails single-instance lock. It is scoped to the Reasonix home
+// (so two isolated data homes can each open a window for the same host label)
+// and contains no URL, token, or user data — only a digest. The child receives
+// this digest in argv and validates it against the ticket before consuming.
+func remoteWindowHostKey(hostID string) string {
+	h := sha256.New()
+	_, _ = io.WriteString(h, singleInstanceIDPrefix+"|")
+	_, _ = io.WriteString(h, strings.TrimSpace(config.ReasonixHomeDir())+"|")
+	_, _ = io.WriteString(h, hostID)
+	return hex.EncodeToString(h.Sum(nil)[:16])
+}
+
+// remoteWindowInstanceID is the per-host Wails SingleInstanceLock identity. Two
+// remote windows for different hosts use different IDs and never collide; a
+// second launch for the same host is routed to the existing window, which
+// consumes the new ticket, updates the title, navigates, restores, and focuses.
+func remoteWindowInstanceID(hostKey string) string {
+	return remoteWindowInstancePrefix + hostKey
+}
+
+// remoteWindowSingleInstanceLock wires the child process's per-host lock. The
+// second instance never reaches the webview: Wails hands its argv to the
+// existing window's OnSecondInstanceLaunch and exits at the gate, so the new
+// ticket is consumed exactly once, by the window that owns the host.
+func remoteWindowSingleInstanceLock(app *App) *options.SingleInstanceLock {
+	return &options.SingleInstanceLock{
+		UniqueId: remoteWindowInstanceID(app.remoteWindowHostKey),
+		OnSecondInstanceLaunch: func(data options.SecondInstanceData) {
+			app.secondInstanceRemoteWindow(data)
+		},
+	}
+}
+
+// ── Child process registry (main process) ──
+
+// remoteWindowChild is one spawned web-window process. gen is bumped per spawn
+// so a late Wait from an old child can never clear a newer registration.
+type remoteWindowChild struct {
+	gen  uint64
+	pid  int
+	proc *os.Process
+}
+
+// remoteWindowRegistry tracks, per host, the web-window child processes the
+// main process spawned. Closing the window (user or terminal disconnect)
+// releases only the registration; the remote Serve and the main process's SSH
+// connection keep running. A real main-process quit terminates survivors.
+type remoteWindowRegistry struct {
+	mu       sync.Mutex
+	children map[string]remoteWindowChild
+}
+
+func newRemoteWindowRegistry() *remoteWindowRegistry {
+	return &remoteWindowRegistry{children: map[string]remoteWindowChild{}}
+}
+
+// record registers proc for hostKey and returns its generation.
+func (r *remoteWindowRegistry) record(hostKey string, proc *os.Process) uint64 {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	child := r.children[hostKey]
+	child.gen++
+	child.pid = proc.Pid
+	child.proc = proc
+	r.children[hostKey] = child
+	return child.gen
+}
+
+// clearIf drops the registration only when it still belongs to the same
+// generation and process — the caller's Wait result. A stale Wait from a
+// replaced child is ignored so it cannot clear a newer window.
+func (r *remoteWindowRegistry) clearIf(hostKey string, gen uint64, pid int) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if child, ok := r.children[hostKey]; ok && child.gen == gen && child.pid == pid {
+		delete(r.children, hostKey)
+	}
+}
+
+// close terminates the host's child window process, if any, and releases the
+// registration immediately. The child's Wait goroutine then clears nothing
+// (the generation moved on), so a stale Wait can never remove a newer window.
+func (r *remoteWindowRegistry) close(hostKey string) {
+	r.mu.Lock()
+	child, ok := r.children[hostKey]
+	if ok {
+		delete(r.children, hostKey)
+	}
+	r.mu.Unlock()
+	if !ok || child.proc == nil {
+		return
+	}
+	_ = child.proc.Kill()
+}
+
+// has reports whether a child window is currently registered for hostKey.
+func (r *remoteWindowRegistry) has(hostKey string) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	_, ok := r.children[hostKey]
+	return ok
+}
+
+// closeAll terminates every surviving child window. Used only on real main
+// process shutdown — background (tray) close keeps windows and tunnels alive.
+func (r *remoteWindowRegistry) closeAll() {
+	r.mu.Lock()
+	children := make([]*os.Process, 0, len(r.children))
+	for _, child := range r.children {
+		if child.proc != nil {
+			children = append(children, child.proc)
+		}
+	}
+	r.children = map[string]remoteWindowChild{}
+	r.mu.Unlock()
+	for _, proc := range children {
+		_ = proc.Kill()
+	}
+}
+
+// ── Spawn / open (main process) ──
+
+// spawnRemoteWindow launches a fresh Reasonix child process for hostKey. The
+// ticket name and the non-secret host digest are the only argv; the URL and the
+// Serve token travel exclusively in the 0600 ticket. When a window already
+// exists for this host, the per-host Wails single-instance lock routes the
+// ticket to it and this process exits at the gate without ever showing a UI.
+func (a *App) spawnRemoteWindow(hostKey string, launch remoteWindowLaunch) error {
+	ticket, err := writeRemoteWindowLaunch(launch)
+	if err != nil {
+		return err
+	}
+	path, _ := remoteWindowTicketPath(ticket)
+	executable, err := os.Executable()
+	if err != nil {
+		_ = os.Remove(path)
+		return fmt.Errorf("locate Reasonix executable: %w", err)
+	}
+	cmd := exec.Command(executable, remoteWindowTicketArgPrefix+ticket, remoteWindowHostArgPrefix+hostKey)
+	if err := cmd.Start(); err != nil {
+		_ = os.Remove(path)
+		return fmt.Errorf("start remote Reasonix window: %w", err)
+	}
+	gen := a.remoteWindows.record(hostKey, cmd.Process)
+	// The child (or the existing window it hands off to) normally consumes the
+	// ticket immediately. This bounds any leftover token file if every consumer
+	// exits before reaching the ticket.
+	time.AfterFunc(remoteWindowTicketTTL, func() { _ = os.Remove(path) })
+	go func() {
+		_ = cmd.Wait()
+		a.remoteWindows.clearIf(hostKey, gen, cmd.Process.Pid)
+	}()
+	return nil
+}
+
+// openRemoteWindowForHost opens (or re-points) the host's web window at rawURL.
+// The window open is deliberately the last step: the caller must already have
+// a live Serve and loopback tunnel, so a failure here leaves the previous
+// window and tunnel untouched.
+func (a *App) openRemoteWindowForHost(hostID, rawURL string) error {
+	launch := remoteWindowLaunch{
+		URL:     rawURL,
+		Title:   remoteWindowTitle(hostID),
+		HostKey: remoteWindowHostKey(hostID),
+	}
+	if a.remoteWindowOpener != nil {
+		return a.remoteWindowOpener(launch)
+	}
+	return a.spawnRemoteWindow(launch.HostKey, launch)
+}
+
+// closeRemoteWindowForHost terminates the host's web window. Called on explicit
+// disconnect, stop-server, host removal, and deterministic SSH failure.
+func (a *App) closeRemoteWindowForHost(hostID string) {
+	if a.remoteWindows == nil {
+		return
+	}
+	a.remoteWindows.close(remoteWindowHostKey(hostID))
+}
+
+func (a *App) hasRemoteWindow(hostID string) bool {
+	if a.remoteWindows == nil {
+		return false
+	}
+	return a.remoteWindows.has(remoteWindowHostKey(hostID))
+}
+
+func (a *App) closeAllRemoteWindows() {
+	if a.remoteWindows == nil {
+		return
+	}
+	a.remoteWindows.closeAll()
+}
+
+// ── Child process (web window) ──
+
+// remoteWindowAssetMiddleware replaces the primary frontend with a blank dark
+// shell while the web window boots, so the child (which exposes no Wails
+// bindings) never loads the local app. The shell then navigates to the Serve
+// URL. The main process passes this middleware through untouched.
+func (a *App) remoteWindowAssetMiddleware() func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if a.remoteWindowTicket == "" || (r.URL.Path != "/" && r.URL.Path != "/index.html") {
+				next.ServeHTTP(w, r)
+				return
+			}
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			w.Header().Set("Cache-Control", "no-store")
+			w.Header().Set("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'")
+			_, _ = w.Write([]byte(`<!doctype html><html><head><meta charset="utf-8"><style>html{background:#1a1a2e}</style></head><body></body></html>`))
+		})
+	}
+}
+
+// domReadyRemoteWindow consumes the launch ticket (guarded by the per-host
+// single-instance gate, so the second instance never reaches this point) and
+// navigates the blank shell to the Serve URL. If a handoff already applied a
+// newer ticket before domReady, the initial ticket is discarded, not applied
+// on top of it.
+func (a *App) domReadyRemoteWindow() {
+	launch, err := consumeRemoteWindowLaunch(a.remoteWindowTicket)
+	if err != nil {
+		slog.Warn("remote window: reject launch ticket", "err", err)
+		runtime.Quit(a.ctx)
+		return
+	}
+	if launch.HostKey != a.remoteWindowHostKey {
+		slog.Warn("remote window: ticket host does not match window identity")
+		runtime.Quit(a.ctx)
+		return
+	}
+	a.remoteWindowMu.Lock()
+	if a.remoteWindow == nil {
+		a.applyRemoteWindowLaunchLocked(launch, true)
+	}
+	a.remoteWindowMu.Unlock()
+	runtime.WindowCenter(a.ctx)
+	runtime.WindowShow(a.ctx)
+}
+
+// secondInstanceRemoteWindow is the existing window's side of the per-host
+// single-instance handoff: a second open for the same host arrives as this
+// window's argv. It consumes the new ticket, updates the title, navigates to
+// the new URL, and restores + focuses the window. Tickets from another host
+// identity are rejected.
+func (a *App) secondInstanceRemoteWindow(data options.SecondInstanceData) {
+	ticket := ""
+	for _, arg := range data.Args {
+		if strings.HasPrefix(arg, remoteWindowTicketArgPrefix) {
+			ticket = strings.TrimPrefix(arg, remoteWindowTicketArgPrefix)
+			break
+		}
+	}
+	if ticket == "" {
+		// A second launch without a ticket (e.g. a launcher invocation): just
+		// bring the existing remote window forward.
+		runtime.WindowCenter(a.ctx)
+		runtime.WindowShow(a.ctx)
+		return
+	}
+	launch, err := consumeRemoteWindowLaunch(ticket)
+	if err != nil {
+		slog.Warn("remote window: reject handoff ticket", "err", err)
+		return
+	}
+	a.remoteWindowMu.Lock()
+	if launch.HostKey != a.remoteWindowHostKey {
+		a.remoteWindowMu.Unlock()
+		slog.Warn("remote window: handoff host does not match window identity")
+		return
+	}
+	a.applyRemoteWindowLaunchLocked(launch, false)
+	a.remoteWindowMu.Unlock()
+}
+
+// applyRemoteWindowLaunchLocked sets the title, navigates the shell to the new
+// URL, and restores + focuses the window. The caller holds a.remoteWindowMu so
+// a handoff arriving before domReady cannot be overridden by the initial
+// ticket, and vice versa.
+func (a *App) applyRemoteWindowLaunchLocked(launch *remoteWindowLaunch, initial bool) {
+	if launch.Title != "" {
+		runtime.WindowSetTitle(a.ctx, launch.Title)
+	}
+	if js, err := remoteWindowNavigationJS(launch.URL); err == nil {
+		runtime.WindowExecJS(a.ctx, js)
+	}
+	if !initial && runtime.WindowIsMinimised(a.ctx) {
+		runtime.WindowUnminimise(a.ctx)
+	}
+	runtime.WindowCenter(a.ctx)
+	runtime.WindowShow(a.ctx)
+	a.remoteWindow = launch
+}
