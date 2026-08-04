@@ -1993,7 +1993,7 @@ export const zhTW: Record<DictKey, string> = {
   "updater.done": "更新完成，正在重新啟動…",
   "updater.failed": "更新失敗：{msg}",
   "updater.recoveryBlocked": "上次更新尚未完成。",
-  "updater.recoveryHint": "重新啟動 Reasonix 通常可以自動恢復；若仍然失敗，請從官網下載最新簽署安裝包，直接覆蓋安裝，無需先解除安裝。",
+  "updater.recoveryHint": "請重新啟動 Reasonix 後重試。macOS 使用者可在「系統設定 > 隱私權與安全性 > App 管理」中允許 Reasonix；若仍無法恢復，請從官網下載最新簽署安裝包直接覆蓋安裝，無需先解除安裝。",
   "updater.manualUpdateRequired": "目前環境無法自動安裝更新。",
   "updater.manualFallbackHint": "請從官網下載最新簽署安裝包，直接覆蓋安裝目前版本。",
   "updater.errorDetails": "詳細資訊：{msg}",

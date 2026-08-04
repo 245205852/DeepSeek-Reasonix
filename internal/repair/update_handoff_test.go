@@ -231,7 +231,15 @@ func TestClaimPendingAppBundleUpdateHandoffExactRejectsRewrittenTransaction(t *t
 	}
 }
 
-func TestPrepareAppBundleUpdateHandoffRejectsExistingBackup(t *testing.T) {
+type existingAppBundleBackupFixture struct {
+	app       string
+	backup    string
+	stagedApp string
+	staging   string
+}
+
+func newExistingAppBundleBackupFixture(t *testing.T) existingAppBundleBackupFixture {
+	t.Helper()
 	t.Setenv("REASONIX_HOME", t.TempDir())
 	installRoot, err := filepath.EvalSymlinks(t.TempDir())
 	if err != nil {
@@ -254,17 +262,128 @@ func TestPrepareAppBundleUpdateHandoffRejectsExistingBackup(t *testing.T) {
 	if err := os.WriteFile(exe, []byte("current"), 0o700); err != nil {
 		t.Fatal(err)
 	}
+	if err := os.WriteFile(filepath.Join(backup, "marker"), []byte("preserve"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	originalExecutable := repairExecutable
 	repairExecutable = func() (string, error) { return exe, nil }
 	t.Cleanup(func() { repairExecutable = originalExecutable })
+	return existingAppBundleBackupFixture{
+		app:       app,
+		backup:    backup,
+		stagedApp: stagedApp,
+		staging:   staging,
+	}
+}
 
-	if _, err := PrepareAppBundleUpdateHandoff(
-		"v1", "v2", app, backup, stagedApp, staging, os.Getpid(),
-	); err == nil || !strings.Contains(err.Error(), "backup path already exists") {
-		t.Fatalf("prepare error = %v, want existing-backup rejection", err)
+func TestPrepareAppBundleUpdateHandoffQuarantinesExistingBackup(t *testing.T) {
+	fixture := newExistingAppBundleBackupFixture(t)
+
+	tx, err := PrepareAppBundleUpdateHandoff(
+		"v1", "v2", fixture.app, fixture.backup, fixture.stagedApp, fixture.staging, os.Getpid(),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Lstat(fixture.backup); !os.IsNotExist(err) {
+		t.Fatalf("existing backup still blocks prepare: %v", err)
+	}
+	quarantines, err := filepath.Glob(fixture.backup + ".reasonix-orphaned-*")
+	if err != nil || len(quarantines) != 1 {
+		t.Fatalf("quarantined backups = %v, %v", quarantines, err)
+	}
+	if got, err := os.ReadFile(filepath.Join(quarantines[0], "marker")); err != nil || string(got) != "preserve" {
+		t.Fatalf("quarantined backup marker = %q, %v", got, err)
+	}
+	current, err := ReadPendingUpdate()
+	if err != nil || UpdateTransactionID(current) != UpdateTransactionID(tx) {
+		t.Fatalf("pending transaction = %+v, %v", current, err)
+	}
+}
+
+func TestPrepareAppBundleUpdateHandoffPreservesConcurrentBackupRecreate(t *testing.T) {
+	fixture := newExistingAppBundleBackupFixture(t)
+	originalHook := updateBackupAfterQuarantine
+	updateBackupAfterQuarantine = func(original, _ string) {
+		if original != fixture.backup {
+			return
+		}
+		if err := os.Mkdir(original, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(original, "concurrent"), []byte("keep"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Cleanup(func() { updateBackupAfterQuarantine = originalHook })
+
+	_, err := PrepareAppBundleUpdateHandoff(
+		"v1", "v2", fixture.app, fixture.backup, fixture.stagedApp, fixture.staging, os.Getpid(),
+	)
+	if err == nil || !strings.Contains(err.Error(), "recreated") {
+		t.Fatalf("prepare error = %v, want recreated-backup rejection", err)
+	}
+	if got, err := os.ReadFile(filepath.Join(fixture.backup, "concurrent")); err != nil || string(got) != "keep" {
+		t.Fatalf("concurrent backup = %q, %v", got, err)
+	}
+	quarantines, globErr := filepath.Glob(fixture.backup + ".reasonix-orphaned-*")
+	if globErr != nil || len(quarantines) != 1 {
+		t.Fatalf("preserved quarantines = %v, %v", quarantines, globErr)
 	}
 	if _, err := os.Stat(PendingUpdatePath()); !os.IsNotExist(err) {
-		t.Fatalf("rejected prepare wrote pending transaction: %v", err)
+		t.Fatalf("failed prepare wrote pending transaction: %v", err)
+	}
+}
+
+func TestPrepareAppBundleUpdateHandoffRestoresBackupChangedDuringQuarantine(t *testing.T) {
+	fixture := newExistingAppBundleBackupFixture(t)
+	originalHook := updateBackupAfterQuarantine
+	updateBackupAfterQuarantine = func(original, quarantine string) {
+		if original != fixture.backup {
+			return
+		}
+		if err := os.WriteFile(filepath.Join(quarantine, "changed"), []byte("keep"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Cleanup(func() { updateBackupAfterQuarantine = originalHook })
+
+	_, err := PrepareAppBundleUpdateHandoff(
+		"v1", "v2", fixture.app, fixture.backup, fixture.stagedApp, fixture.staging, os.Getpid(),
+	)
+	if err == nil || !strings.Contains(err.Error(), "changed during quarantine") {
+		t.Fatalf("prepare error = %v, want changed-backup rejection", err)
+	}
+	if got, err := os.ReadFile(filepath.Join(fixture.backup, "changed")); err != nil || string(got) != "keep" {
+		t.Fatalf("changed backup was not restored = %q, %v", got, err)
+	}
+	if matches, _ := filepath.Glob(fixture.backup + ".reasonix-orphaned-*"); len(matches) != 0 {
+		t.Fatalf("restored backup left a quarantine: %v", matches)
+	}
+	if _, err := os.Stat(PendingUpdatePath()); !os.IsNotExist(err) {
+		t.Fatalf("failed prepare wrote pending transaction: %v", err)
+	}
+}
+
+func TestPrepareAppBundleUpdateHandoffRejectsUnboundExistingBackup(t *testing.T) {
+	fixture := newExistingAppBundleBackupFixture(t)
+	outside := filepath.Join(t.TempDir(), "Reasonix")
+	if err := os.WriteFile(outside, []byte("outside"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	repairExecutable = func() (string, error) { return outside, nil }
+
+	_, err := PrepareAppBundleUpdateHandoff(
+		"v1", "v2", fixture.app, fixture.backup, fixture.stagedApp, fixture.staging, os.Getpid(),
+	)
+	if err == nil || !strings.Contains(err.Error(), "outside the current Reasonix installation") {
+		t.Fatalf("prepare error = %v, want current-installation rejection", err)
+	}
+	if got, err := os.ReadFile(filepath.Join(fixture.backup, "marker")); err != nil || string(got) != "preserve" {
+		t.Fatalf("unbound backup changed = %q, %v", got, err)
+	}
+	if matches, _ := filepath.Glob(fixture.backup + ".reasonix-orphaned-*"); len(matches) != 0 {
+		t.Fatalf("unbound backup was quarantined: %v", matches)
 	}
 }
 

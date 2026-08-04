@@ -27,6 +27,7 @@ const updateTransactionVersion = 1
 const pendingUpdateLockTimeout = 5 * time.Second
 
 var repairExecutable = os.Executable
+var updateBackupAfterQuarantine = func(string, string) {}
 
 type UpdateTransaction struct {
 	SchemaVersion int    `json:"schemaVersion"`
@@ -321,9 +322,6 @@ func PrepareAppBundleUpdateHandoff(fromVersion, toVersion, appPath, backupPath, 
 		return nil, fmt.Errorf("prepare update: lock targets: %w", err)
 	}
 	defer unlockTargets()
-	if err := verifyAppBundleUpdateHandoffBackupAbsent(tx); err != nil {
-		return nil, fmt.Errorf("prepare update: %w", err)
-	}
 	tx.HandoffAppTreeID, err = repairPlanTreeContentStateID(tx.HandoffAppPath)
 	if err != nil {
 		return nil, fmt.Errorf("prepare update: stage bundle digest: %w", err)
@@ -340,6 +338,15 @@ func PrepareAppBundleUpdateHandoff(fromVersion, toVersion, appPath, backupPath, 
 		return nil, fmt.Errorf("prepare update: %w", err)
 	}
 	if err := VerifyAppBundleUpdateHandoffOriginal(tx); err != nil {
+		return nil, fmt.Errorf("prepare update: %w", err)
+	}
+	if _, err := quarantineExistingAppBundleUpdateBackup(tx); err != nil {
+		return nil, fmt.Errorf("prepare update: recover existing handoff backup: %w", err)
+	}
+	// An uncooperative writer is not covered by Reasonix's mutation lock. Recheck
+	// the public path after quarantine so a recreated node is never adopted as the
+	// rollback backup of the new transaction.
+	if err := verifyAppBundleUpdateHandoffBackupAbsent(tx); err != nil {
 		return nil, fmt.Errorf("prepare update: %w", err)
 	}
 	if err := ensureNoPendingUpdate(); err != nil {
@@ -1391,6 +1398,96 @@ func verifyAppBundleUpdateHandoffBackupAbsent(tx *UpdateTransaction) error {
 		return fmt.Errorf("inspect handoff backup path: %w", err)
 	}
 	return nil
+}
+
+// quarantineExistingAppBundleUpdateBackup recovers the pre-v1.20 state where
+// a committed macOS update removed pending-update.json but its sibling rollback
+// bundle survived best-effort cleanup. Without the transaction there is no
+// trustworthy authority to delete or reuse that bundle, so preparation moves it
+// aside with a no-replace rename and preserves it for diagnosis.
+//
+// The caller holds both the pending-update lock and the target mutation locks.
+// The current executable binding prevents a crafted caller from quarantining a
+// similarly named bundle beside an unrelated application.
+func quarantineExistingAppBundleUpdateBackup(tx *UpdateTransaction) (string, error) {
+	if tx == nil || tx.TargetKind != "app-bundle" ||
+		tx.BackupPath != tx.TargetPath+".reasonix-update-backup" {
+		return "", fmt.Errorf("handoff backup transaction is invalid")
+	}
+	info, err := os.Lstat(tx.BackupPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return "", nil
+		}
+		return "", fmt.Errorf("inspect existing handoff backup: %w", err)
+	}
+	if !info.IsDir() {
+		return "", fmt.Errorf("existing handoff backup is not a directory")
+	}
+
+	launcher, err := repairExecutable()
+	if err != nil {
+		return "", fmt.Errorf("resolve current Reasonix executable: %w", err)
+	}
+	resolvedTarget, err := filepath.EvalSymlinks(tx.TargetPath)
+	if err != nil {
+		return "", fmt.Errorf("resolve current app bundle: %w", err)
+	}
+	resolvedLauncher, err := filepath.EvalSymlinks(launcher)
+	if err != nil {
+		return "", fmt.Errorf("resolve current Reasonix executable: %w", err)
+	}
+	rel, err := filepath.Rel(resolvedTarget, resolvedLauncher)
+	if err != nil || rel == "." || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return "", fmt.Errorf("existing handoff backup is outside the current Reasonix installation")
+	}
+
+	expectedTreeID, err := repairPlanTreeContentStateID(tx.BackupPath)
+	if err != nil {
+		return "", fmt.Errorf("read existing handoff backup digest: %w", err)
+	}
+	for attempt := 0; attempt < 16; attempt++ {
+		quarantine := fmt.Sprintf(
+			"%s.reasonix-orphaned-%d-%d",
+			tx.BackupPath,
+			time.Now().UTC().UnixNano(),
+			attempt,
+		)
+		if err := renameRepairNodeNoReplace(tx.BackupPath, quarantine); err != nil {
+			if os.IsExist(err) {
+				continue
+			}
+			return "", fmt.Errorf("quarantine existing handoff backup: %w", err)
+		}
+		updateBackupAfterQuarantine(tx.BackupPath, quarantine)
+
+		restore := func(cause error) error {
+			if _, statErr := os.Lstat(tx.BackupPath); statErr == nil {
+				return fmt.Errorf("%w; preserved quarantined backup at %s because the public path was recreated", cause, quarantine)
+			} else if !os.IsNotExist(statErr) {
+				return fmt.Errorf("%w; inspect recreated handoff backup: %v", cause, statErr)
+			}
+			if restoreErr := renameRepairNodeNoReplace(quarantine, tx.BackupPath); restoreErr != nil {
+				return fmt.Errorf("%w; preserved quarantined backup at %s: %v", cause, quarantine, restoreErr)
+			}
+			return cause
+		}
+
+		actualTreeID, digestErr := repairPlanTreeContentStateID(quarantine)
+		if digestErr != nil {
+			return "", restore(fmt.Errorf("read quarantined handoff backup digest: %w", digestErr))
+		}
+		if actualTreeID != expectedTreeID {
+			return "", restore(fmt.Errorf("existing handoff backup changed during quarantine"))
+		}
+		if _, statErr := os.Lstat(tx.BackupPath); statErr == nil {
+			return "", fmt.Errorf("handoff backup path was recreated during recovery; preserved quarantined backup at %s", quarantine)
+		} else if !os.IsNotExist(statErr) {
+			return "", fmt.Errorf("inspect recovered handoff backup path: %w", statErr)
+		}
+		return quarantine, nil
+	}
+	return "", fmt.Errorf("cannot allocate handoff backup quarantine path")
 }
 
 func verifyAppBundleUpdateTree(path, expected, mismatch string) error {
