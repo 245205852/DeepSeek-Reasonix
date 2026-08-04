@@ -306,6 +306,7 @@ type Messages struct {
 	ListMcpNone         string // no mcp servers
 
 	// in-chat memory/model/rewind notices.
+
 	MemoryNone                   string
 	MemoryLoaded                 string
 	MemorySavedHeader            string
@@ -355,6 +356,10 @@ type Messages struct {
 	RewindPickHint               string
 	RewindRestoreTitleFmt        string
 	RewindApplyHint              string
+	RewindCoverageTitle          string
+	RewindCoverageWarningFmt     string
+	RewindConfirmHint            string
+	RewindUnavailableFmt         string
 	RewindEmpty                  string
 
 	// skill picker overlay (/skills interactive panel in CLI TUI)

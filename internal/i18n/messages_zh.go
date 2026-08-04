@@ -364,6 +364,10 @@ var Chinese = Messages{
 	RewindPickHint:               "↑/↓ 移动 · Enter 选择 · Esc 关闭",
 	RewindRestoreTitleFmt:        "⟲ 恢复到第 %d 轮 ",
 	RewindApplyHint:              "↑/↓ · Enter 应用 · Esc 返回",
+	RewindCoverageTitle:          "⚠ 文件覆盖不完整",
+	RewindCoverageWarningFmt:     "检测到 %d 个覆盖缺口，部分文件修改可能无法恢复。",
+	RewindConfirmHint:            "Enter/y 确认 · Esc 返回",
+	RewindUnavailableFmt:         "无法回滚：%s",
 	RewindEmpty:                  "(空)",
 
 	SelectProvidersLabel:     "选择要启用的 provider",
@@ -556,6 +560,7 @@ var Chinese = Messages{
   reasonix acp [--model NAME]                           通过 stdio 提供 Agent Client Protocol（也可用：reasonix --acp）
   reasonix setup [path]                                 交互式配置向导；生成 reasonix.toml（及 .env）
   reasonix config reasoning-language [auto|zh|en]        配置可见思考语言
+  reasonix config compact-ratio [--local] [65..85]       配置自动压缩阈值
   reasonix config telemetry [auto|on|off]                配置不含内容的 CLI 使用统计
   reasonix report [list|show|send|delete] [ID]           审阅并明确发送本地 CLI 崩溃报告
   reasonix mcp <add|remove|list|import>                 管理 reasonix.toml 里的 MCP 服务器

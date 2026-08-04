@@ -363,6 +363,10 @@ var English = Messages{
 	RewindPickHint:               "↑/↓ move · Enter choose · Esc close",
 	RewindRestoreTitleFmt:        "⟲ Restore to turn %d ",
 	RewindApplyHint:              "↑/↓ · Enter apply · Esc back",
+	RewindCoverageTitle:          "⚠ Partial file coverage",
+	RewindCoverageWarningFmt:     "%d coverage gap(s) mean some file changes may not be restored.",
+	RewindConfirmHint:            "Enter/y confirm · Esc back",
+	RewindUnavailableFmt:         "rewind unavailable: %s",
 	RewindEmpty:                  "(empty)",
 
 	SelectProvidersLabel:     "Select providers to enable",
@@ -555,6 +559,7 @@ Usage:
   reasonix acp [--model NAME]                           serve Agent Client Protocol over stdio (also: reasonix --acp)
   reasonix setup [path]                                 interactive config wizard; writes reasonix.toml (+ .env)
   reasonix config reasoning-language [auto|zh|en]        configure visible reasoning language
+  reasonix config compact-ratio [--local] [65..85]       configure automatic compaction threshold
   reasonix config telemetry [auto|on|off]                configure content-free CLI usage metrics
   reasonix report [list|show|send|delete] [ID]           review and explicitly send local CLI crash reports
   reasonix mcp <add|remove|list|import>                 manage MCP servers in reasonix.toml

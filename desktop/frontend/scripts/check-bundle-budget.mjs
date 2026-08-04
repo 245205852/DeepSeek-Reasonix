@@ -54,8 +54,8 @@ for (const path of localeChunks) {
 
 const rawInitialBytes = [...initialJS, ...initialCSS].reduce((total, path) => total + statSync(path).size, 0);
 // Headroom note: the extension UI surface (ExtensionCard/ExtensionFormDialog,
-// status chips, palette group) added ~8 KiB raw initial JS+CSS in the
-// extension-protocol work; all gzip budgets above are the user-visible
-// transfer cost and remain the binding constraint.
-assertBudget("initial raw JavaScript and CSS", rawInitialBytes, 2_265 * 1024);
+// status chips, palette group) plus main-v2's provider editor additions raised
+// raw initial JS+CSS; all gzip budgets above are the user-visible transfer
+// cost and remain the binding constraint.
+assertBudget("initial raw JavaScript and CSS", rawInitialBytes, 2_270 * 1024);
 assertBudget("largest initial JavaScript chunk raw", largestInitialJSRaw, 1_100 * 1024);

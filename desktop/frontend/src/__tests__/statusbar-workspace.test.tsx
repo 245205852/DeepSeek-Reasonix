@@ -154,6 +154,42 @@ console.log("\nstatus bar workspace");
 }
 
 {
+  const estimated = renderStatusBar({
+    items: ["session_tokens", "turn_tokens", "turn_cost", "cost"],
+    context: { used: 0, window: 0, sessionTokens: 1_200, estimated: true },
+    usage: {
+      promptTokens: 800,
+      completionTokens: 200,
+      totalTokens: 1_000,
+      cacheHitTokens: 0,
+      cacheMissTokens: 800,
+      estimated: true,
+    },
+    sessionTokens: 1_200,
+    turnTokens: 1_000,
+    turnCost: 0.2,
+    cost: 0.3,
+    currency: "USD",
+  });
+  ok((estimated.match(/≈/g) ?? []).length === 4, "estimated token and cost metrics use an approximation marker");
+
+  const empty = renderStatusBar({
+    items: ["session_tokens", "turn_tokens", "turn_cost", "cost"],
+    context: { used: 0, window: 0, sessionTokens: 0, estimated: true },
+    usage: {
+      promptTokens: 0,
+      completionTokens: 0,
+      totalTokens: 0,
+      cacheHitTokens: 0,
+      cacheMissTokens: 0,
+      estimated: true,
+    },
+    currency: "USD",
+  });
+  ok(!empty.includes("≈-"), "empty estimated metrics remain a plain dash");
+}
+
+{
   const dom = new JSDOM("<!doctype html><html><body><div id=\"root\"></div></body></html>", {
     pretendToBeVisual: true,
     url: "http://localhost/",

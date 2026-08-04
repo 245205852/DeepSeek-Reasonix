@@ -73,6 +73,7 @@ func New(kind string, cfg Config) (Provider, error)
 - OpenAI-compatible vendor 只是 `kind = "openai"` 的不同配置实例，通过 `base_url`、`model`、`api_key_env` 区分；新增兼容模型通常只需改配置。
 - 一个 provider 表示一个 vendor endpoint，可通过 `models` 暴露多个模型，并以 `default` 指定默认项。`default_model`、`--model` 和桌面端模型选择器都经 `Config.ResolveModel` 解析，可接受 provider 名、裸模型名或 `provider/model`。
 - `context_window` 是 provider 级默认值；`model_overrides.<model>.context_window` 可覆盖单个模型。
+- `max_output_tokens` 是独立的总输出预算，不由客户端 reasoning 字节上限换算。0 表示使用 provider 安全默认值，正数表示显式上限，负数表示在协议允许时省略；混合网关可用 `model_overrides.<model>.max_output_tokens` 覆盖单个模型。Anthropic 因协议要求仍会提供 `max_tokens` 默认值。
 - streaming tool-call delta 在 provider 内按 index 聚合，只向上层发出完整 `ToolCall`。
 
 ### 3.2 Tool 与 registry（`internal/tool`）
@@ -148,6 +149,9 @@ Reasonix 通过低频 compaction 保持 cache-first：
 - 达到 `agent.compact_ratio` 后，先把旧 tool result 修剪为占位符，仍超阈值才调用摘要；
 - 达到 `agent.compact_force_ratio` 后，可执行强制折叠；
 - `context_window = 0` 会关闭该实例的 compaction。
+
+用户可用 `reasonix config compact-ratio [--local] [VALUE]` 查看或修改 65–85% 的自动
+压缩阈值，内置默认值为 80%。项目级设置优先于桌面端与新 CLI 会话共用的用户全局配置。
 
 tool result 的 snip/prune 不删除消息，确保 assistant `tool_calls` 与 tool result 配对。摘要只折叠 assistant/tool 工作；正常大小的用户回合和既有 digest 原样保留。被移除的原文归档到 `reasonix/archive/<timestamp>.jsonl`。
 
@@ -240,6 +244,7 @@ models         = ["deepseek-v4-flash", "deepseek-v4-pro"]
 default        = "deepseek-v4-flash"
 api_key_env    = "DEEPSEEK_API_KEY"
 context_window = 1000000
+max_output_tokens = 32768  # 正文、reasoning 与工具调用共用的总输出预算；0 使用 provider 默认值
 
 [tools]
 enabled = []
