@@ -31,7 +31,7 @@
             "en": "Use /docs to access version-matched product documentation directly in Reasonix.",
             "zh": "使用 /docs 直接在 Reasonix 中访问版本匹配的产品文档。"
           },
-          "href": "https://github.com/esengine/DeepSeek-Reasonix/blob/36d697587c3deb7f3d1c881d0a959c62111a8314/docs/GUIDE.md"
+          "href": "https://github.com/esengine/DeepSeek-Reasonix/blob/786dc6d33e5ee396f17a3b7e936b803008deaa96/docs/GUIDE.md"
         }
       ],
       "highlights": [
@@ -535,6 +535,19 @@
             },
             "refs": [
               7468
+            ]
+          },
+          {
+            "title": {
+              "en": "Changes panel uses readable Git status labels",
+              "zh": "改动面板显示易读的 Git 状态"
+            },
+            "body": {
+              "en": "Changed files now show localized labels such as Modified, Untracked, and Conflict instead of raw porcelain codes like MM and ??.",
+              "zh": "改动文件现在显示“已修改”“未跟踪”“冲突”等本地化标签，而不再直接展示 MM、?? 等原始状态码。"
+            },
+            "refs": [
+              7469
             ]
           },
           {
