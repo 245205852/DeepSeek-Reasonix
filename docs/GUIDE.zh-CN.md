@@ -284,7 +284,8 @@ reasonix remote fs ls gpu-box:'~/projects/app'
 在桌面端,于 **设置 -> 远程 SSH** 管理主机,再通过状态栏徽标或主机行的 **远程浏览器** 按钮经
 SFTP 浏览与编辑文件、管理端口转发、启动/打开远程工作区。打开工作区时会创建一个类似 VS Code
 Remote SSH 的独立 Reasonix 原生窗口。主窗口持有 SSH 隧道；远程窗口是隔离的轻量外壳，不会恢复
-或抢占本地对话会话。
+或抢占本地对话会话。远程网页使用**远端**主机上的 Provider 配置与 API Key —— 桌面端绝不会把
+本机 Provider 暴露给远端主机。
 
 ## 自定义 OpenAI-compatible provider
 

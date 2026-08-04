@@ -167,8 +167,7 @@ type Options struct {
 	FileOverlay    builtin.FileOverlay
 	TerminalRunner builtin.TerminalRunner
 	// ProviderResolver routes every model role through a caller-owned provider
-	// catalog. Remote Workbench injects a Broker resolver so no credential or
-	// provider endpoint has to exist on the Host. Nil preserves local behavior.
+	// catalog. Nil preserves local behavior.
 	ProviderResolver provider.Resolver
 	// DisablePlanner is a process-local hard override used by supervised ACP
 	// workers. It wins over user/project planner_model configuration without

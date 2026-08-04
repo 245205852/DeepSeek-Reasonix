@@ -31,6 +31,7 @@ import type {
   RemoteForwardView,
   RemoteServerView,
   RemoteForwardsEvent,
+  RemoteLegacyWorkbenchData,
   BalanceInfo,
   UsageStatsRange,
   UsageStatsRequest,
@@ -545,6 +546,8 @@ export interface AppBindings {
   RemoteServerStatus(hostId: string): Promise<RemoteServerView>;
   RemoteServerLogs(hostId: string, tailLines: number): Promise<string>;
   RemoteLastWorkspace(hostId: string): Promise<string>;
+  ScanRemoteLegacyWorkbenchData(): Promise<RemoteLegacyWorkbenchData>;
+  CleanRemoteLegacyWorkbenchData(target: "mirrors" | "trust"): Promise<void>;
 }
 
 // Compile-time drift check. Exclude<A, B> extracts keys in A that are missing
@@ -5044,6 +5047,10 @@ function makeMockApp(): AppBindings {
     async RemoteLastWorkspace() {
       return "~/app";
     },
+    async ScanRemoteLegacyWorkbenchData() {
+      return { mirrorCount: 0, mirrorBytes: 0, trustFile: false };
+    },
+    async CleanRemoteLegacyWorkbenchData() {},
   };
 }
 

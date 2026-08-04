@@ -1313,6 +1313,13 @@ export interface RemoteServerView {
   error?: string;
 }
 
+/** Path-free summary of files left behind by the removed Remote Workbench. */
+export interface RemoteLegacyWorkbenchData {
+  mirrorCount: number;
+  mirrorBytes: number;
+  trustFile: boolean;
+}
+
 export interface RemoteForwardsEvent {
   hostId: string;
   forwards: RemoteForwardView[];

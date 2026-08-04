@@ -325,7 +325,9 @@ files over SFTP, manage port forwards, and start/open the remote workspace.
 Opening a workspace creates a separate native Reasonix window, similar to a
 VS Code Remote SSH window. The primary window owns the SSH tunnel; the remote
 window is an isolated, lightweight shell and does not restore or acquire local
-conversation sessions.
+conversation sessions. The remote web page uses the provider configuration and
+API keys on the **remote** host — the desktop never exposes its own providers
+to a remote host.
 
 ## Custom OpenAI-compatible providers
 
