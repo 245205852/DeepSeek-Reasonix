@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"path/filepath"
 	"sync"
 	"testing"
 	"time"
@@ -64,8 +65,10 @@ func TestTaskControlConcurrentInitializationReturnsOneService(t *testing.T) {
 }
 
 func TestDesktopTaskJobKillerRoutesBySessionNotActiveTab(t *testing.T) {
-	pathA := agent.NewSessionPath(t.TempDir(), "session-a")
-	pathB := agent.NewSessionPath(t.TempDir(), "session-b")
+	projectA := t.TempDir()
+	projectB := t.TempDir()
+	pathA := filepath.Join(t.TempDir(), "shared-session.jsonl")
+	pathB := filepath.Join(t.TempDir(), "shared-session.jsonl")
 	ctrlA := &taskKillController{SessionAPI: control.New(control.Options{Label: "a", SessionPath: pathA})}
 	ctrlB := &taskKillController{SessionAPI: control.New(control.Options{Label: "b", SessionPath: pathB})}
 	defer ctrlA.Close()
@@ -73,17 +76,20 @@ func TestDesktopTaskJobKillerRoutesBySessionNotActiveTab(t *testing.T) {
 
 	app := &App{
 		tabs: map[string]*WorkspaceTab{
-			"active-a": {ID: "active-a", Ctrl: ctrlA},
+			"active-a": {ID: "active-a", WorkspaceRoot: projectA, Ctrl: ctrlA},
 		},
 		detachedSessions: map[string]*WorkspaceTab{
-			sessionRuntimeKey(pathB): {ID: "detached-b", Ctrl: ctrlB},
+			sessionRuntimeKey(pathB): {ID: "detached-b", WorkspaceRoot: projectB, Ctrl: ctrlB},
 		},
 		activeTabID: "active-a",
 	}
 
-	killer := desktopTaskJobKiller{app: app}
+	if agent.BranchID(pathA) != agent.BranchID(pathB) {
+		t.Fatal("test setup must use colliding session IDs")
+	}
+	killer := desktopTaskJobKiller{app: app, projectDir: projectB}
 	if !killer.Kill(agent.BranchID(pathB), "task-1") {
-		t.Fatal("expected detached session task to be killed")
+		t.Fatal("expected detached project B task to be killed")
 	}
 	if ctrlA.killCount() != 0 || ctrlB.killCount() != 1 {
 		t.Fatalf("kill routed incorrectly: active=%d detached=%d", ctrlA.killCount(), ctrlB.killCount())
@@ -91,12 +97,13 @@ func TestDesktopTaskJobKillerRoutesBySessionNotActiveTab(t *testing.T) {
 }
 
 func TestDesktopTaskJobKillerRefusesLegacyTaskWithoutSession(t *testing.T) {
+	root := t.TempDir()
 	path := agent.NewSessionPath(t.TempDir(), "session")
 	ctrl := &taskKillController{SessionAPI: control.New(control.Options{Label: "session", SessionPath: path})}
 	defer ctrl.Close()
-	app := &App{tabs: map[string]*WorkspaceTab{"active": {ID: "active", Ctrl: ctrl}}}
+	app := &App{tabs: map[string]*WorkspaceTab{"active": {ID: "active", WorkspaceRoot: root, Ctrl: ctrl}}}
 
-	if (desktopTaskJobKiller{app: app}).Kill("", "task-1") {
+	if (desktopTaskJobKiller{app: app, projectDir: root}).Kill("", "task-1") {
 		t.Fatal("legacy task without session ID must not be routed by colliding task ID")
 	}
 	if ctrl.killCount() != 0 {

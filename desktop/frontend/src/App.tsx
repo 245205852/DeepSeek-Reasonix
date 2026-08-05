@@ -693,6 +693,12 @@ function mappedSessionTarget(sessionId: string): { kind: "path" | "topic"; value
   return { kind: "topic", value: trimmed };
 }
 
+function taskSessionIDFromPath(path: string): string {
+  const base = path.replace(/\\/g, "/").split("/").pop() || "";
+  const extension = base.lastIndexOf(".");
+  return extension > 0 ? base.slice(0, extension) : base;
+}
+
 function sidebarImSessionTarget(connection: SidebarImConnection): { kind: "path" | "topic"; value: string } | null {
   return mappedSessionTarget(connection.sessionId);
 }
@@ -3825,6 +3831,18 @@ export default function App() {
     return enqueueNavigation({ kind: "resume-session", session });
   }, [enqueueNavigation, singleSurfaceLayout, state.running]);
 
+  const openTaskMonitorSession = useCallback(async (sessionID: string): Promise<void> => {
+    if (state.running && !singleSurfaceLayout) {
+      throw new Error(t("history.failedOpenSession"));
+    }
+    const sessions = await listSessions();
+    const session = sessions.find((candidate) => taskSessionIDFromPath(candidate.path) === sessionID);
+    if (!session) {
+      throw new Error(t("history.failedOpenSession"));
+    }
+    await enqueueNavigation({ kind: "resume-session", session });
+  }, [enqueueNavigation, listSessions, singleSurfaceLayout, state.running, t]);
+
   // Command palette: ⌘K / Ctrl+K opens a fuzzy navigator over commands and
   // recent sessions. Sessions are snapshotted on open so the list is stable
   // while the palette is up.
@@ -4706,6 +4724,7 @@ export default function App() {
                       popover
                       summaryMode
                       onClose={() => setTasksOpen(false)}
+                      onOpenSession={openTaskMonitorSession}
                     />
                   </Suspense>
                 </div>

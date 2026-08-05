@@ -260,6 +260,34 @@ func (s *InMemoryStore) SaveTask(ctx context.Context, projectDir string, snap Ta
 	return nil
 }
 
+// RenewRuntimeLease implements WriteStore.
+func (s *InMemoryStore) RenewRuntimeLease(ctx context.Context, projectDir, taskID, ownerID string, leaseUntil time.Time) (bool, error) {
+	if err := ctx.Err(); err != nil {
+		return false, err
+	}
+	if ownerID == "" || leaseUntil.IsZero() {
+		return false, nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if projectDir != "" {
+		proj, ok := s.byProj[projectDir]
+		if !ok {
+			return false, nil
+		}
+		if _, ok := proj[taskID]; !ok {
+			return false, nil
+		}
+	}
+	snap, ok := s.tasks[taskID]
+	if !ok || snap.RuntimeOwnerID != ownerID || snap.State.Terminal() || snap.RuntimeState.Effective() != RuntimeStateAlive {
+		return false, nil
+	}
+	snap.Version++
+	snap.RuntimeLeaseUntil = leaseUntil
+	return true, nil
+}
+
 // AppendAuditEvent implements WriteStore.
 func (s *InMemoryStore) AppendAuditEvent(ctx context.Context, projectDir string, ev TaskEvent) error {
 	s.mu.Lock()

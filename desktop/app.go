@@ -12330,16 +12330,18 @@ func (a *App) ListTaskEvents(taskID string, afterSequence int) ([]taskmonitor.Ta
 }
 
 func (a *App) StopTask(taskID string, expectedVersion uint64, reason, idemKey string) (taskmonitor.ControlResult, error) {
+	projectDir := a.projectDir()
 	return a.taskControl().StopTaskWithKiller(
-		a.ctx, a.projectDir(), taskID, expectedVersion, reason, idemKey,
-		desktopTaskJobKiller{app: a},
+		a.ctx, projectDir, taskID, expectedVersion, reason, idemKey,
+		desktopTaskJobKiller{app: a, projectDir: projectDir},
 	)
 }
 
 func (a *App) CancelTask(taskID string, expectedVersion uint64, reason, idemKey string) (taskmonitor.ControlResult, error) {
+	projectDir := a.projectDir()
 	return a.taskControl().CancelTaskWithKiller(
-		a.ctx, a.projectDir(), taskID, expectedVersion, reason, idemKey,
-		desktopTaskJobKiller{app: a},
+		a.ctx, projectDir, taskID, expectedVersion, reason, idemKey,
+		desktopTaskJobKiller{app: a, projectDir: projectDir},
 	)
 }
 
@@ -12352,13 +12354,14 @@ func (a *App) OpenTaskSession(taskID string) (taskmonitor.ControlResult, error) 
 }
 
 type desktopTaskJobKiller struct {
-	app *App
+	app        *App
+	projectDir string
 }
 
 func (k desktopTaskJobKiller) Kill(sessionID, taskID string) bool {
 	// Legacy task records without a session ID cannot be routed safely because
 	// jobs.Manager IDs restart at task-1 for each controller.
-	if k.app == nil || sessionID == "" {
+	if k.app == nil || sessionID == "" || strings.TrimSpace(k.projectDir) == "" {
 		return false
 	}
 
@@ -12366,7 +12369,7 @@ func (k desktopTaskJobKiller) Kill(sessionID, taskID string) bool {
 	tabs := k.app.runtimeTabsLocked()
 	controllers := make([]control.SessionAPI, 0, len(tabs))
 	for _, tab := range tabs {
-		if tab != nil && tab.Ctrl != nil {
+		if tab != nil && tab.Ctrl != nil && sameProjectRoot(tab.WorkspaceRoot, k.projectDir) {
 			controllers = append(controllers, tab.Ctrl)
 		}
 	}

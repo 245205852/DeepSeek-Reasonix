@@ -90,7 +90,7 @@ const mockApp = {
       idempotent: false,
     };
   },
-  OpenTaskSession: async () => ({ schema_version: 1, command: "open_session", task_id: "", accepted: true, idempotent: false }),
+  OpenTaskSession: async () => ({ schema_version: 1, command: "open_session", task_id: "", session_id: "sess-1", accepted: true, idempotent: false }),
 };
 (window as unknown as { go: { main: { App: typeof mockApp } } }).go = { main: { App: mockApp } };
 
@@ -103,14 +103,14 @@ async function flush() {
   await new Promise((resolve) => setTimeout(resolve, 25));
 }
 
-async function renderPanel(onClose?: () => void) {
+async function renderPanel(onClose?: () => void, onOpenSession?: (sessionID: string) => Promise<void> | void) {
   activeHost = document.createElement("div");
   document.body.appendChild(activeHost);
   activeRoot = createRoot(activeHost);
   await act(async () => {
     activeRoot?.render(
       <LocaleProvider>
-        <TaskMonitorPanel onClose={onClose} />
+        <TaskMonitorPanel onClose={onClose} onOpenSession={onOpenSession} />
       </LocaleProvider>,
     );
     await flush();
@@ -256,6 +256,16 @@ await check("calls the close callback", async () => {
   await renderPanel(() => { closeCalls += 1; });
   await click(buttonByLabel("Close session summary"));
   return closeCalls === 1;
+});
+
+await check("opens the task session through the navigation callback", async () => {
+  listTasksImpl = async () => [snap()];
+  let openedSession = "";
+  await renderPanel(undefined, async (sessionID) => { openedSession = sessionID; });
+  await openPanel();
+  await click(buttonByLabel("Task task-000 — Running"));
+  await click(buttonByText("Open session"));
+  return openedSession === "sess-1";
 });
 
 await check("refreshes tasks on request", async () => {

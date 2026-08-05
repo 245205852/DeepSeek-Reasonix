@@ -86,11 +86,13 @@ const POLL_INTERVAL_MS = 5000;
 
 export function TaskMonitorPanel({
   onClose,
+  onOpenSession,
   initialOpen = false,
   popover = false,
   summaryMode = false,
 }: {
   onClose?: () => void;
+  onOpenSession?: (sessionID: string) => Promise<void> | void;
   initialOpen?: boolean;
   popover?: boolean;
   summaryMode?: boolean;
@@ -222,7 +224,14 @@ export function TaskMonitorPanel({
       if (result.error) {
         setActionError(`${result.error.code}: ${result.error.message}`);
       } else if (action === "open") {
-        setActionMessage(`Session: ${result.session_id ?? "—"}`);
+        const sessionID = result.session_id?.trim();
+        if (!sessionID) throw new Error("Task session is unavailable");
+        if (onOpenSession) {
+          await onOpenSession(sessionID);
+          onClose?.();
+        } else {
+          setActionMessage(`Session: ${sessionID}`);
+        }
       } else {
         setActionMessage(result.idempotent ? "Already applied" : "Task updated");
         await fetchTasks();

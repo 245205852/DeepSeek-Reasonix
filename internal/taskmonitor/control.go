@@ -284,6 +284,10 @@ func (cs *ControlService) controlOp(ctx context.Context, projectDir, taskID stri
 		next.Version++
 		next.State = targetState
 		next.UpdatedAt = timeNow()
+		if runtimeControl || requeueable {
+			next.RuntimeLeaseUntil = time.Time{}
+			next.RuntimeOwnerID = ""
+		}
 		if err := cs.store.SaveTask(ctx, projectDir, next); err == nil {
 			snap = &next
 			claimed = false

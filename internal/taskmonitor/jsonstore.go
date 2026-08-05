@@ -184,6 +184,17 @@ func (s *FileStore) ListTasks(ctx context.Context, projectDir string) ([]TaskSna
 
 // GetTask implements Store.
 func (s *FileStore) GetTask(ctx context.Context, projectDir string, taskID string) (*TaskSnapshot, error) {
+	snap, err := s.getTaskRaw(ctx, projectDir, taskID)
+	if snap != nil {
+		reconcileRuntime(snap, timeNow())
+	}
+	return snap, err
+}
+
+// getTaskRaw returns the persisted snapshot without applying observer-side
+// runtime lease reconciliation. Runtime owners use this path when renewing a
+// lease after process suspension or system sleep.
+func (s *FileStore) getTaskRaw(ctx context.Context, projectDir string, taskID string) (*TaskSnapshot, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
@@ -205,8 +216,34 @@ func (s *FileStore) GetTask(ctx context.Context, projectDir string, taskID strin
 		}
 		return nil, err
 	}
-	reconcileRuntime(&snap, timeNow())
 	return &snap, nil
+}
+
+// RenewRuntimeLease implements WriteStore. The raw read plus SaveTask CAS
+// ensures a delayed owner cannot overwrite a concurrent control/completion
+// update or renew a newer recorder generation.
+func (s *FileStore) RenewRuntimeLease(ctx context.Context, projectDir, taskID, ownerID string, leaseUntil time.Time) (bool, error) {
+	if ownerID == "" || leaseUntil.IsZero() {
+		return false, nil
+	}
+	const maxAttempts = 4
+	for attempt := 0; attempt < maxAttempts; attempt++ {
+		snap, err := s.getTaskRaw(ctx, projectDir, taskID)
+		if err != nil || snap == nil {
+			return false, err
+		}
+		if snap.RuntimeOwnerID != ownerID || snap.State.Terminal() || snap.RuntimeState.Effective() != RuntimeStateAlive {
+			return false, nil
+		}
+		snap.Version++
+		snap.RuntimeLeaseUntil = leaseUntil
+		if err := s.SaveTask(ctx, projectDir, *snap); err == nil {
+			return true, nil
+		} else if !errors.Is(err, ErrStoreVersionConflict) {
+			return false, err
+		}
+	}
+	return false, ErrStoreVersionConflict
 }
 
 // ListEvents implements Store.
