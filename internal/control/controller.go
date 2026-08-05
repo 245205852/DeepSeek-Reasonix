@@ -29,6 +29,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"reasonix/internal/ablation"
 	"reasonix/internal/agent"
 	"reasonix/internal/autoresearch"
 	"reasonix/internal/billing"
@@ -38,6 +39,7 @@ import (
 	"reasonix/internal/config"
 	"reasonix/internal/event"
 	"reasonix/internal/evidence"
+	"reasonix/internal/goaleval"
 	"reasonix/internal/guardian"
 	"reasonix/internal/hook"
 	"reasonix/internal/i18n"
@@ -84,6 +86,13 @@ type Controller struct {
 	// recoveryGate is the shared Auto Guard state for this controller.
 	// nil when the feature is not wired for this controller.
 	recoveryGate *recovery.Gate
+	// evaluator is the bounded Goal completion evaluator consulted when the
+	// working model submits no update_goal report. nil fails closed: the goal
+	// pauses instead of defaulting to continue.
+	evaluator goaleval.Evaluator
+	// goalUsageTee accounts billable usage events into the active goal turn's
+	// token budget. It wraps the public sink when the caller didn't provide one.
+	goalUsageTee *goalUsageTee
 	sink         event.Sink
 	policy       permission.Policy
 	// subagentGate is the shared gate every headless-only sub-agent surface
@@ -117,7 +126,11 @@ type Controller struct {
 	reasoningLanguage string
 	// disableColdResumePrune skips stale-tool-result elision on cold resume.
 	// Zero value keeps the prune on (the cheaper default).
-	disableColdResumePrune            bool
+	disableColdResumePrune bool
+	// testCacheColdAfter overrides cacheColdAfter() in tests. Zero uses the
+	// vendor-aware resolution from config.
+	testCacheColdAfter time.Duration
+
 	shell                             sandbox.Shell                    // interpreter for user-invoked "!" commands; zero = auto
 	startedOnce                       bool                             // guards the one-shot SessionStart hook on first turn
 	closeOnce                         sync.Once                        // makes close idempotent under racing teardown paths
@@ -167,6 +180,7 @@ type Controller struct {
 	// entering the provider-visible registry (Balanced dual-model Planner).
 	proxyToolsFn   func() map[string][]plugin.CachedTool
 	runtimeProfile capability.Profile
+	ablation       ablation.Set
 
 	// goals owns the active goal's FSM (status, intercepts, idle/turn counters)
 	// and its persistence, behind its own mutex so a per-turn goal save never
@@ -373,8 +387,12 @@ type Options struct {
 	// RecoveryHeadless blocks mutations that need confirmation instead of
 	// waiting forever when no human decision channel exists.
 	RecoveryHeadless bool
-	Sink             event.Sink
-	Policy           permission.Policy
+	// GoalEvaluator is the optional bounded Goal completion evaluator consulted
+	// when the working model submits no update_goal report. nil fails closed:
+	// the goal pauses instead of defaulting to continue.
+	GoalEvaluator goaleval.Evaluator
+	Sink          event.Sink
+	Policy        permission.Policy
 	// SubagentGate is the shared, mutable gate every headless-only sub-agent
 	// surface (task, writer-capable skill sub-agents, planner) reads from. Nil
 	// disables gating for those surfaces same as before this field existed.
@@ -468,13 +486,24 @@ type Options struct {
 	// RuntimeProfile selects capability routing/filtering behavior. Empty keeps
 	// the backward-compatible Balanced profile.
 	RuntimeProfile capability.Profile
+	// Ablation switches subsystems off for a benchmark arm. The zero value runs
+	// everything.
+	Ablation ablation.Set
 }
 
-// New builds a Controller. A nil Sink is replaced with event.Discard.
+// New builds a Controller. A nil Sink is replaced with event.Discard. When the
+// caller did not already provide a goalUsageTee (see NewGoalUsageTee), the
+// public sink is wrapped in one so billable usage can be accounted to Goal
+// budgets; frontends observe the same forwarded stream either way.
 func New(opts Options) *Controller {
 	sink := opts.Sink
 	if nilutil.IsNil(sink) {
 		sink = event.Discard
+	}
+	usageTee, ok := sink.(*goalUsageTee)
+	if !ok {
+		usageTee = NewGoalUsageTee(sink).(*goalUsageTee)
+		sink = usageTee
 	}
 	pluginCtx := opts.PluginCtx
 	if pluginCtx == nil {
@@ -492,6 +521,8 @@ func New(opts Options) *Controller {
 		executor:                          opts.Executor,
 		guardianSess:                      opts.Guardian,
 		guardianPath:                      guardian.PathFor(opts.SessionPath),
+		evaluator:                         opts.GoalEvaluator,
+		goalUsageTee:                      usageTee,
 		sink:                              sink,
 		policy:                            opts.Policy,
 		subagentGate:                      opts.SubagentGate,
@@ -526,6 +557,7 @@ func New(opts Options) *Controller {
 		mcpConfigureSpec:                  opts.MCPConfigureSpec,
 		capabilityRuntime:                 opts.CapabilityRuntime,
 		runtimeProfile:                    runtimeProfile,
+		ablation:                          opts.Ablation,
 		workspaceRoot:                     opts.WorkspaceRoot,
 		externalFolderToolRefs:            opts.ExternalFolderToolRefs,
 		approval:                          newApprovalManager(opts.Policy, ToolApprovalAsk, opts.ApprovalTimeout),
@@ -933,7 +965,20 @@ func (c *Controller) runGoalLoopWithRaw(ctx context.Context, input, raw string) 
 	return c.runGoalLoopWithRawDisplay(ctx, input, raw, "")
 }
 
+// withTurnFormat binds a structured-output format to the turn context
+// (empty is a no-op). Extracted from the runGoalLoop closure so tests can
+// assert the format actually reaches the agent request path.
+func (c *Controller) withTurnFormat(ctx context.Context, format string) context.Context {
+	if format == "" {
+		return ctx
+	}
+	return agent.WithResponseFormat(ctx, format)
+}
+
 func (c *Controller) runGoalLoopWithRawDisplay(ctx context.Context, input, raw, display string) error {
+	// Structured-output format is bound to the submitted turn (passed via
+	// submitHTTPWithFormat → submitCommandOrTurn → runGoalLoop closure);
+	// no global one-shot slot to race across concurrent requests.
 	return newTurnOrchestrator(c).runGoalLoopWithRawDisplay(ctx, input, raw, display)
 }
 
@@ -955,22 +1000,6 @@ func (c *Controller) runSubagentSkillSlash(sk skill.Skill, task, raw, display st
 		}
 		return newTurnOrchestrator(c).runSubagentSkillGoalLoop(ctx, sk, task, raw, display, runner, planMode)
 	})
-}
-
-// toolWasCalledLastTurn reports whether the most recent assistant message
-// contained any tool calls, indicating the agent made observable progress.
-func (c *Controller) toolWasCalledLastTurn() bool {
-	msgs := c.History()
-	for i := len(msgs) - 1; i >= 0; i-- {
-		m := msgs[i]
-		if m.Role == provider.RoleAssistant {
-			return len(m.ToolCalls) > 0
-		}
-		if m.Role == provider.RoleUser {
-			return false
-		}
-	}
-	return false
 }
 
 func (c *Controller) stopGoal(status string) {
@@ -1007,6 +1036,53 @@ func (c *Controller) Submit(input string) {
 // references only through the controller's workspace root.
 func (c *Controller) SubmitHTTP(input string) {
 	c.submitHTTP(input, "")
+}
+
+// SubmitHTTPFormat is SubmitHTTP with an optional structured-output format
+// ("json_object") applied to the turn's completion requests. Empty format
+// behaves exactly like SubmitHTTP. A format attached to a slash command,
+// or other non-turn input is discarded; @reference turns preserve it because
+// the format is bound to every submitted turn rather than a global slot.
+func (c *Controller) SubmitHTTPFormat(input, format string) {
+	// format 绑定到本次提交的 turn（随请求参数传递），不再写入 Controller
+	// 全局一次性槽——评审 #7234 第 2 点：全局槽存在跨请求串用的逻辑竞态
+	// （后提交的 JSON 请求先写槽，更早的普通请求先启动消费掉）。
+	f := strings.TrimSpace(format)
+	if f != "" && isNonTurnHTTPInput(input) {
+		f = "" // 非 turn 输入（slash 命令/! 前缀）不携带 format
+	}
+	// @ 引用 turn（FileRefLine/SlashPathLineRef 等）同样绑定 format——
+	// runRefTurnWithFormat 族 wrapper 注入 ctx（review fix7234and7168：
+	// format 是每个被接纳 turn 的属性，统一架构）。
+	c.submitHTTPWithFormat(input, "", f)
+}
+
+// isNonTurnHTTPInput reports inputs that never reach the agent turn loop, so a
+// structured-output request attached to them would otherwise leak into the
+// next real turn (the format slot is consumed only by runGoalLoopWithRawDisplay).
+func isNonTurnHTTPInput(input string) bool {
+	trimmed := strings.TrimSpace(input)
+	if trimmed == "" {
+		return true
+	}
+	// Memory quick-add / remember shortcuts and goal commands bypass turns.
+	if _, ok := MemoryQuickAddNote(trimmed); ok {
+		return true
+	}
+	if _, ok := RememberCommandNote(trimmed); ok {
+		return true
+	}
+	// "!" shell commands are rejected by submitHTTP before the turn loop
+	// (403 over HTTP); a format attached to them would never be consumed.
+	if strings.HasPrefix(trimmed, "!") {
+		return true
+	}
+	// Slash commands are management verbs (/compact /new /clear /model ...)
+	// or notices, not completion turns.
+	if strings.HasPrefix(trimmed, "/") {
+		return true
+	}
+	return false
 }
 
 // SubmitDisplay runs input as a turn while remembering the user-facing display
@@ -1124,10 +1200,14 @@ func (c *Controller) submit(input, display, editedOriginal string) {
 		c.RunShell(trimmed[1:])
 		return
 	}
-	c.submitCommandOrTurn(trimmed, input, display, false, editedOriginal)
+	c.submitCommandOrTurn(trimmed, input, display, false, editedOriginal, "")
 }
 
 func (c *Controller) submitHTTP(input, display string) {
+	c.submitHTTPWithFormat(input, display, "")
+}
+
+func (c *Controller) submitHTTPWithFormat(input, display, format string) {
 	trimmed := strings.TrimSpace(input)
 	if note, ok := MemoryQuickAddNote(trimmed); ok {
 		c.rememberProjectNote(note)
@@ -1144,23 +1224,33 @@ func (c *Controller) submitHTTP(input, display string) {
 		c.notice("shell commands are unavailable from this frontend")
 		return
 	}
-	c.submitCommandOrTurn(trimmed, input, display, true, "")
+	c.submitCommandOrTurn(trimmed, input, display, true, "", format)
 }
 
-func (c *Controller) submitCommandOrTurn(trimmed, input, display string, scopedRefsOnly bool, editedOriginal string) {
-	runRefTurn := c.runRefTurn
-	runRefTurnWithRefs := c.runRefTurnWithRefs
-	runGoalLoop := c.runGoalLoopWithRawDisplay
+func (c *Controller) submitCommandOrTurn(trimmed, input, display string, scopedRefsOnly bool, editedOriginal, format string) {
+	runRefTurn := func(input, display string) {
+		c.runRefTurnWithFormat(input, display, format)
+	}
+	runRefTurnWithRefs := func(input, refLine, display string) {
+		c.runRefTurnWithRefsFormat(input, refLine, display, format)
+	}
+	runGoalLoop := func(ctx context.Context, input, raw, display string) error {
+		return c.runGoalLoopWithRawDisplay(c.withTurnFormat(ctx, format), input, raw, display)
+	}
 	if scopedRefsOnly {
-		runRefTurn = c.runScopedRefTurn
-		runRefTurnWithRefs = c.runScopedRefTurnWithRefs
+		runRefTurn = func(input, display string) {
+			c.runScopedRefTurnWithFormat(input, display, format)
+		}
+		runRefTurnWithRefs = func(input, refLine, display string) {
+			c.runScopedRefTurnWithRefsFormat(input, refLine, display, format)
+		}
 	}
 	if strings.TrimSpace(editedOriginal) != "" {
 		runRefTurn = func(input, display string) {
-			c.runEditedRefTurn(input, display, editedOriginal)
+			c.runEditedRefTurnWithFormat(input, display, editedOriginal, format)
 		}
 		runRefTurnWithRefs = func(input, refLine, display string) {
-			c.runEditedRefTurnWithRefs(input, refLine, display, editedOriginal)
+			c.runEditedRefTurnWithRefsFormat(input, refLine, display, editedOriginal, format)
 		}
 		runGoalLoop = func(ctx context.Context, input, raw, display string) error {
 			return c.runEditedGoalLoopWithRawDisplay(ctx, input, raw, display, editedOriginal)
@@ -1272,8 +1362,28 @@ func (c *Controller) submitCommandOrTurn(trimmed, input, display string, scopedR
 		if c.managementNotice(trimmed) {
 			return
 		}
+		if IsBuiltinDocsSlash(fields[0], c.Commands(), c.SlashSkills()) {
+			query := strings.TrimSpace(strings.TrimPrefix(trimmed, fields[0]))
+			if query == "" {
+				text, err := DocsCommandOverviewFor(fields[0])
+				if err != nil {
+					c.notice("docs: " + err.Error())
+				} else {
+					c.notice(text)
+				}
+				return
+			}
+			c.runGuarded(func(ctx context.Context) error {
+				sent, err := docsCommandPrompt(ctx, query)
+				if err != nil {
+					return fmt.Errorf("docs: %w", err)
+				}
+				return runGoalLoop(ctx, sent, sent, display)
+			})
+			return
+		}
 		// A custom command wins over a skill of the same name; both resolve to a
-		// turn. (Built-in slash verbs like /compact are handled above.)
+		// turn. Built-ins and their explicit Reasonix namespace are handled above.
 		if sent, ok := c.CustomCommand(trimmed); ok {
 			c.runGuarded(func(ctx context.Context) error {
 				return runGoalLoop(ctx, sent, sent, display)
@@ -1295,7 +1405,12 @@ func (c *Controller) submitCommandOrTurn(trimmed, input, display string, scopedR
 			})
 			return
 		}
-		c.notice("unknown command: " + trimmed)
+		// Unknown slash input is prose more often than a typo ("/etc/hosts
+		// looks wrong", pasted paths, half-remembered commands) — send it as a
+		// regular message instead of dead-ending the submission, with a notice
+		// so real typos are still visible (#5756).
+		c.notice("unknown command: " + trimmed + " — sent as a regular message")
+		runRefTurn(input, display)
 	default:
 		runRefTurn(input, display)
 	}
@@ -1332,12 +1447,30 @@ func (c *Controller) applyGoalCommand(input, display string) bool {
 	case GoalCommandClear:
 		c.ClearGoal()
 		c.notice(i18n.M.GoalCleared)
+	case GoalCommandPause:
+		if !c.PauseGoal() {
+			c.notice(i18n.M.GoalNotRunning)
+		}
+	case GoalCommandResume:
+		if !c.ResumeGoal() {
+			c.notice(i18n.M.GoalNotPaused)
+		}
 	default:
 		goal := c.Goal()
 		if strings.TrimSpace(goal) == "" {
 			c.notice(i18n.M.GoalEmpty)
-		} else {
-			c.notice(fmt.Sprintf(i18n.M.GoalCurrentFmt, goal))
+			break
+		}
+		rt := c.GoalRuntime()
+		c.notice(fmt.Sprintf(i18n.M.GoalCurrentFmt, goal))
+		c.notice(fmt.Sprintf(i18n.M.GoalRuntimeFmt,
+			rt.TurnsUsed, rt.TurnsLimit, rt.TokensUsed, rt.TokensLimit,
+			rt.NoProgressTurns, rt.NoProgressLimit, rt.BudgetExtensions))
+		if rt.LastReason != "" {
+			c.noticeDetail(i18n.M.GoalRuntimeLastReason, rt.LastReason)
+		}
+		if rt.StopCause != "" {
+			c.notice(fmt.Sprintf(i18n.M.GoalPausedFmt, rt.StopCause))
 		}
 	}
 	return true
@@ -1426,7 +1559,7 @@ func (c *Controller) applyPlanExec(input, display string) {
 }
 
 // prometheusPrompt is the strategic planner system prompt.
-const prometheusPrompt = "You are Prometheus, a strategic planner. Interview the user one question at a time. Cover: scope, modules, files, constraints, tests. When ready, output a numbered plan with each step tagged by module. End with [goal:complete]. Do not implement.\n\nFor independent research directions, use parallel_tasks before planning."
+const prometheusPrompt = "You are Prometheus, a strategic planner. Interview the user one question at a time. Cover: scope, modules, files, constraints, tests. When ready, output a numbered plan with each step tagged by module. End by calling update_goal with status complete. Do not implement.\n\nFor independent research directions, use parallel_tasks before planning."
 
 // applyPrometheus starts an interactive planning interview, inspired by OMO's
 // Prometheus agent. It enters goal mode with a structured interview prompt.
@@ -1576,12 +1709,44 @@ func (c *Controller) runRefTurn(input, display string) {
 	c.runRefTurnWithRefs(input, input, display)
 }
 
-func (c *Controller) runEditedRefTurn(input, display, original string) {
-	c.runEditedRefTurnWithRefs(input, input, display, original)
+// runRefTurnWithFormat runs a reference turn with a structured-output
+// format bound to its context (symmetric with runGoalLoop's withTurnFormat
+// injection — format is a property of every accepted turn, not just the
+// plain-goal path; review #7234 binds format to the accepted turn).
+func (c *Controller) runRefTurnWithFormat(input, display, format string) {
+	c.runGuarded(func(ctx context.Context) error {
+		return c.runRefTurnWithResolverSync(c.withTurnFormat(ctx, format), input, input, display, "", c.ResolveRefs)
+	})
 }
 
-func (c *Controller) runScopedRefTurn(input, display string) {
-	c.runScopedRefTurnWithRefs(input, input, display)
+func (c *Controller) runScopedRefTurnWithFormat(input, display, format string) {
+	c.runGuarded(func(ctx context.Context) error {
+		return c.runRefTurnWithResolverSync(c.withTurnFormat(ctx, format), input, input, display, "", c.ResolveScopedRefs)
+	})
+}
+
+func (c *Controller) runRefTurnWithRefsFormat(input, refLine, display, format string) {
+	c.runGuarded(func(ctx context.Context) error {
+		return c.runRefTurnWithResolverSync(c.withTurnFormat(ctx, format), input, refLine, display, "", c.ResolveRefs)
+	})
+}
+
+func (c *Controller) runScopedRefTurnWithRefsFormat(input, refLine, display, format string) {
+	c.runGuarded(func(ctx context.Context) error {
+		return c.runRefTurnWithResolverSync(c.withTurnFormat(ctx, format), input, refLine, display, "", c.ResolveScopedRefs)
+	})
+}
+
+func (c *Controller) runEditedRefTurnWithFormat(input, display, original, format string) {
+	c.runGuarded(func(ctx context.Context) error {
+		return c.runRefTurnWithResolverSync(c.withTurnFormat(ctx, format), input, input, display, original, c.ResolveRefs)
+	})
+}
+
+func (c *Controller) runEditedRefTurnWithRefsFormat(input, refLine, display, original, format string) {
+	c.runGuarded(func(ctx context.Context) error {
+		return c.runRefTurnWithResolverSync(c.withTurnFormat(ctx, format), input, refLine, display, original, c.ResolveRefs)
+	})
 }
 
 // runRefTurnWithRefs resolves references from refLine while preserving input as
@@ -1591,23 +1756,9 @@ func (c *Controller) runRefTurnWithRefs(input, refLine, display string) {
 	c.runRefTurnWithResolver(input, refLine, display, c.ResolveRefs)
 }
 
-func (c *Controller) runEditedRefTurnWithRefs(input, refLine, display, original string) {
-	c.runEditedRefTurnWithResolver(input, refLine, display, original, c.ResolveRefs)
-}
-
-func (c *Controller) runScopedRefTurnWithRefs(input, refLine, display string) {
-	c.runRefTurnWithResolver(input, refLine, display, c.ResolveScopedRefs)
-}
-
 func (c *Controller) runRefTurnWithResolver(input, refLine, display string, resolve func(context.Context, string) (string, []string)) {
 	c.runGuarded(func(ctx context.Context) error {
 		return c.runRefTurnWithResolverSync(ctx, input, refLine, display, "", resolve)
-	})
-}
-
-func (c *Controller) runEditedRefTurnWithResolver(input, refLine, display, original string, resolve func(context.Context, string) (string, []string)) {
-	c.runGuarded(func(ctx context.Context) error {
-		return c.runRefTurnWithResolverSync(ctx, input, refLine, display, original, resolve)
 	})
 }
 
@@ -1667,7 +1818,7 @@ func (c *Controller) Run(ctx context.Context, input string) (err error) {
 	c.markInFlightTurn(startMessages, true)
 	defer c.clearInFlightTurn()
 	ctx = c.withPlannerTurnMetadata(ctx, rawInput, false, startMessages)
-	err = c.runner.Run(ctx, c.withCapabilityRoute(input, rawInput))
+	err = c.runner.Run(ctx, c.withCapabilityRoute(ctx, input, rawInput))
 	return err
 }
 
@@ -2227,9 +2378,10 @@ func (c *Controller) PlanMode() bool {
 	return c.planMode
 }
 
-// GoalStrict enables or disables strict goal mode. In strict mode the agent
-// cannot override an incomplete-todo intercept — it must actually finish or
-// update all items before [goal:complete] is accepted.
+// GoalStrict enables or disables strict goal mode. Since the structured
+// protocol, every complete claim is validated against host readiness and an
+// incomplete-todo intercept can never be overridden, so the flag is persisted
+// for compatibility with older frontends but no longer changes FSM behavior.
 func (c *Controller) GoalStrict(strict bool) {
 	path, data, ok := c.goals.setStrict(strict, c.goalTodos())
 	c.persistGoalState(path, data, ok)
@@ -2287,17 +2439,86 @@ func (c *Controller) SetGoalWithResearchMode(goal string, researchMode GoalResea
 }
 
 // ResumeGoal re-enters a recoverable blocked/stopped Goal without resetting its
-// delivery evidence scope or AutoResearch identity.
+// delivery evidence scope or AutoResearch identity. A budget-paused Goal gets
+// one extra slice of its budget class; accumulated consumption is preserved.
 func (c *Controller) ResumeGoal() bool {
-	path, data, persist, resumed := c.goals.resume(c.goalTodos())
+	path, data, persist, resumed, extended := c.goals.resume(c.goalTodos())
 	if !resumed {
 		return false
 	}
 	c.persistGoalState(path, data, persist)
+	if extended {
+		c.notice(i18n.M.GoalBudgetExtended)
+	}
 	if c.executor != nil {
 		c.executor.RestoreDeliveryCheckpoint(c.goals.deliveryState())
 	}
 	return true
+}
+
+// PauseGoal suspends a running Goal without losing its todo list, Delivery
+// checkpoint, or budget history; ResumeGoal restores it. Returns false when no
+// running Goal exists.
+func (c *Controller) PauseGoal() bool {
+	if !c.goals.active() {
+		return false
+	}
+	path, data, ok := c.goals.pauseFor(stopCauseManual, i18n.M.GoalPausedReason, c.goalTodos())
+	c.persistGoalState(path, data, ok)
+	c.notice(i18n.M.GoalPaused)
+	return true
+}
+
+// GoalRuntime returns the active Goal's budget/runtime summary for frontends.
+func (c *Controller) GoalRuntime() GoalRuntimeView {
+	return c.goals.runtimeView()
+}
+
+// goalEvaluatorEvidence assembles the bounded evaluator's evidence: the goal
+// contract, the current assistant final, a todo/readiness summary, the
+// AutoResearch success-criteria summary, turn/budget state, and the last
+// continuation reason. Every field is treated as untrusted by the evaluator.
+func (c *Controller) goalEvaluatorEvidence() goaleval.GoalEvidence {
+	goal, _, mode, taskID := c.goals.snapshot()
+	ev := goaleval.GoalEvidence{
+		GoalContract:           goal,
+		LastContinuationReason: c.goals.lastContinuationReasonText(),
+	}
+	if c.executor != nil {
+		ev.AssistantFinal = lastAssistantText(c.History())
+		todos := c.goalTodos()
+		incomplete := 0
+		for _, t := range todos {
+			if t.Status != "completed" {
+				incomplete++
+			}
+		}
+		rr := c.executor.ReadinessResult()
+		readinessText := "ready"
+		if rr.Reason != "" {
+			readinessText = rr.Reason
+		}
+		ev.TodoSummary = fmt.Sprintf("todos: %d total, %d incomplete; delivery readiness: %s", len(todos), incomplete, readinessText)
+	}
+	if c.autoResearch != nil && strings.TrimSpace(taskID) != "" {
+		if summary, err := c.autoResearch.Summary(taskID); err == nil {
+			ev.AutoResearchSummary = fmt.Sprintf("task %s: iteration %d, %d open success criteria, next required action: %s",
+				summary.TaskID, summary.Iteration, len(summary.OpenCriteria), summary.NextRequiredAction)
+		}
+	}
+	ev.TurnStatus = c.goals.budgetStatusText() + "; research mode: " + goalResearchModeText(mode)
+	return ev
+}
+
+func goalResearchModeText(mode GoalResearchMode) string {
+	switch mode {
+	case GoalResearchOn:
+		return "on"
+	case GoalResearchOff:
+		return "off"
+	default:
+		return "auto"
+	}
 }
 
 func (c *Controller) persistGoalDeliveryCheckpoint() {
@@ -2494,7 +2715,7 @@ func parseAutoResearchEvidenceBlocks(text string) []autoResearchEvidenceBlock {
 }
 
 func autoResearchDirectionSummary(text string) string {
-	text = stripAutoResearchEvidenceBlocks(text)
+	text = agent.StripAutoResearchEvidenceBlocks(text)
 	for _, line := range strings.Split(text, "\n") {
 		line = strings.TrimSpace(line)
 		lower := strings.ToLower(line)
@@ -2507,25 +2728,6 @@ func autoResearchDirectionSummary(text string) string {
 		return line
 	}
 	return "turn completed"
-}
-
-func stripAutoResearchEvidenceBlocks(text string) string {
-	var b strings.Builder
-	rest := text
-	for {
-		start := strings.Index(rest, autoResearchEvidenceOpen)
-		if start < 0 {
-			b.WriteString(rest)
-			return b.String()
-		}
-		b.WriteString(rest[:start])
-		afterOpen := rest[start+len(autoResearchEvidenceOpen):]
-		end := strings.Index(afterOpen, autoResearchEvidenceClose)
-		if end < 0 {
-			return b.String()
-		}
-		rest = afterOpen[end+len(autoResearchEvidenceClose):]
-	}
 }
 
 func (c *Controller) autoResearchReadinessFailure() string {
@@ -3330,13 +3532,37 @@ func (c *Controller) ResetPlannerSession() {
 	}
 }
 
-// cacheColdAfter approximates how long the provider keeps a prompt prefix
+// cacheColdAfter resolves how long the active provider keeps a prompt prefix
 // cached. A session idle longer than this resumes against a cold cache, so a
 // history rewrite at that moment costs no extra cache misses — it only shrinks
-// the full-price first request. Deliberately conservative: too small burns a
-// live cache (~4× the miss tokens, measured), too large only forgoes a prune.
-// Tighten from benchmarks/cache-ttl-probe data, never below measured retention.
-var cacheColdAfter = 24 * time.Hour
+// the full-price first request. The TTL is vendor-aware: DeepSeek/unknown
+// 24h (legacy default deliberately preserved), DashScope 5m, Anthropic 5m.
+// Users can override per-provider
+// with cache_ttl_minutes in config.toml.
+func (c *Controller) cacheColdAfter() time.Duration {
+	if c.testCacheColdAfter != 0 {
+		if c.testCacheColdAfter == -1 {
+			return 0
+		}
+		return c.testCacheColdAfter
+	}
+	// 查询路径只读：LoadForRootReadOnly 不触发配置迁移写盘（评审 #7168
+	// 第 4 点）；失败时保守回退 24h（DeepSeek/未知 vendor 默认），避免
+	// 提前触发 PruneStaleToolResults 改写仍可命中的缓存历史。
+	cfg, err := config.LoadForRootReadOnly(c.workspaceRoot)
+	if err != nil {
+		return 24 * time.Hour
+	}
+	ref := c.modelRef
+	if ref == "" {
+		ref = cfg.DefaultModel
+	}
+	entry, ok := cfg.ResolveModel(ref)
+	if !ok {
+		return 24 * time.Hour
+	}
+	return entry.EffectiveCacheTTL()
+}
 
 // maybeColdResumePrune elides stale tool results when a resumed session has
 // been idle past the provider's cache retention, then persists the pruned
@@ -3353,7 +3579,7 @@ func (c *Controller) maybeColdResumePrune(path string) {
 		return
 	}
 	last := m.UpdatedAt
-	if time.Since(last) < cacheColdAfter {
+	if time.Since(last) < c.cacheColdAfter() {
 		return
 	}
 	st, err := c.executor.PruneStaleToolResults()
@@ -3639,6 +3865,16 @@ const (
 
 const recoveryDepthCapNoticeText = "repeated save conflicts were detected; saved the current conflict copy in place"
 
+func sessionRecoveryNotice(code, text string) event.Event {
+	return event.Event{
+		Kind:     event.Notice,
+		Level:    event.LevelWarn,
+		Audience: event.NoticeAudienceOperator,
+		Code:     code,
+		Text:     text,
+	}
+}
+
 func (c *Controller) emitRecoveryDepthCapNotice(path string) {
 	key := filepath.Clean(strings.TrimSpace(path))
 	c.mu.Lock()
@@ -3651,7 +3887,7 @@ func (c *Controller) emitRecoveryDepthCapNotice(path string) {
 	}
 	c.recoveryDepthCapNotices[key] = true
 	c.mu.Unlock()
-	c.sink.Emit(event.Event{Kind: event.Notice, Level: event.LevelWarn, Text: recoveryDepthCapNoticeText})
+	c.sink.Emit(sessionRecoveryNotice(event.NoticeCodeSessionRecoveryDepthCap, recoveryDepthCapNoticeText))
 }
 
 func (c *Controller) recoverSnapshotConflict(path string, saveErr error, forceRewrite bool) (string, conflictOutcome, error) {
@@ -3667,8 +3903,8 @@ func (c *Controller) recoverSnapshotConflict(path string, saveErr error, forceRe
 		if c.adoptDiskSession(path) {
 			appendSnapshotConflictDiagnostic(path, mode, "adopted_newer_disk_transcript", saveErr, "", false)
 			slog.Warn("controller: snapshot conflict; adopted newer disk transcript", logAttrs...)
-			c.sink.Emit(event.Event{Kind: event.Notice, Level: event.LevelWarn,
-				Text: "session changed on disk; adopted the newer transcript"})
+			c.sink.Emit(sessionRecoveryNotice(event.NoticeCodeSessionRecoveryAdopted,
+				"session changed on disk; adopted the newer transcript"))
 			return path, conflictAdoptedDisk, nil
 		}
 	}
@@ -3706,8 +3942,8 @@ func (c *Controller) recoverSnapshotConflict(path string, saveErr error, forceRe
 			if c.adoptDiskSession(path) {
 				appendSnapshotConflictDiagnostic(path, mode, "recovery_not_needed_adopted_disk_transcript", saveErr, "", false)
 				slog.Warn("controller: snapshot conflict; recovery not needed, adopted disk transcript", logAttrs...)
-				c.sink.Emit(event.Event{Kind: event.Notice, Level: event.LevelWarn,
-					Text: "session changed on disk; adopted the newer transcript (local changes already covered)"})
+				c.sink.Emit(sessionRecoveryNotice(event.NoticeCodeSessionRecoveryAdoptedCovered,
+					"session changed on disk; adopted the newer transcript (local changes already covered)"))
 				return path, conflictAdoptedDisk, nil
 			}
 			// Nothing was recovered AND the disk transcript could not be
@@ -3725,8 +3961,8 @@ func (c *Controller) recoverSnapshotConflict(path string, saveErr error, forceRe
 	appendSnapshotConflictDiagnostic(path, mode, "forked_recovery_branch", saveErr, info.Path, info.Existing)
 	slog.Warn("controller: snapshot conflict; forked recovery branch",
 		append(logAttrs, "recovery", info.Path, "existing", info.Existing)...)
-	c.sink.Emit(event.Event{Kind: event.Notice, Level: event.LevelWarn,
-		Text: "session changed on disk; unsaved local transcript was saved as a conflict copy"})
+	c.sink.Emit(sessionRecoveryNotice(event.NoticeCodeSessionRecoveryForked,
+		"session changed on disk; unsaved local transcript was saved as a conflict copy"))
 	return info.Path, conflictForkedBranch, nil
 }
 
@@ -3754,8 +3990,8 @@ func (c *Controller) recoverShutdownSnapshot(path string, saveErr error) (string
 	appendSnapshotConflictDiagnostic(path, "shutdown", "forked_file_lock_recovery", saveErr, info.Path, info.Existing)
 	slog.Warn("controller: shutdown snapshot lock timed out; forked recovery branch",
 		"path", path, "recovery", info.Path, "existing", info.Existing)
-	c.sink.Emit(event.Event{Kind: event.Notice, Level: event.LevelWarn,
-		Text: "session file stayed busy during shutdown; unsaved transcript was saved as a recovery copy"})
+	c.sink.Emit(sessionRecoveryNotice(event.NoticeCodeSessionShutdownRecoveryForked,
+		"session file stayed busy during shutdown; unsaved transcript was saved as a recovery copy"))
 	return info.Path, nil
 }
 
@@ -5160,8 +5396,6 @@ func (c *Controller) Jobs() []jobs.View {
 }
 
 // CancelJob stops one background job owned by this controller's session.
-// Remote Workbench exposes this through its required jobCancel capability;
-// local callers may continue using the existing manager-backed lifecycle.
 func (c *Controller) CancelJob(id string) bool {
 	if c.jobs == nil {
 		return false

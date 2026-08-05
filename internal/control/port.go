@@ -54,6 +54,7 @@ type TurnControl interface {
 	SubmitInvocationDisplay(display, input string, invocations []InvocationRequest)
 	SubmitEditedDisplay(display, input, original string)
 	SubmitHTTP(input string)
+	SubmitHTTPFormat(input, format string)
 	SubmitUserTurn(input, display string)
 	Send(input string)
 	SendWithRaw(input, raw string)
@@ -99,6 +100,8 @@ type Goals interface {
 	SetGoal(goal string)
 	SetGoalWithResearchMode(goal string, researchMode GoalResearchMode)
 	ResumeGoal() bool
+	PauseGoal() bool
+	GoalRuntime() GoalRuntimeView
 	GoalStrict(strict bool)
 	ClearGoal()
 	AutoResearchSummary() (*autoresearch.Summary, bool)

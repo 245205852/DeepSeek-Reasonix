@@ -21,6 +21,7 @@ import (
 	"strings"
 	"time"
 
+	"reasonix/internal/ablation"
 	"reasonix/internal/agent"
 	"reasonix/internal/capability"
 	"reasonix/internal/command"
@@ -28,6 +29,7 @@ import (
 	"reasonix/internal/control"
 	"reasonix/internal/environment"
 	"reasonix/internal/event"
+	"reasonix/internal/goaleval"
 	"reasonix/internal/guardian"
 	"reasonix/internal/history"
 	"reasonix/internal/hook"
@@ -42,6 +44,7 @@ import (
 	"reasonix/internal/outputstyle"
 	"reasonix/internal/permission"
 	"reasonix/internal/plugin"
+	"reasonix/internal/productdocs"
 	"reasonix/internal/provider"
 	"reasonix/internal/recovery"
 	"reasonix/internal/sandbox"
@@ -155,6 +158,10 @@ type Options struct {
 	// local UI metadata to automatic transcript recovery branches.
 	SessionRecoveryMeta func(control.SessionRecoveryRequest) agent.BranchMeta
 	OnSessionRecovered  func(control.SessionRecoveryInfo) error
+	// SubagentParentLive reports whether this process currently owns or is
+	// building the parent session. Desktop uses it to avoid probing a live tab's
+	// lease during stale-subagent cleanup. Nil preserves lease-only cleanup.
+	SubagentParentLive func(sessionPath string) bool
 	// FileOverlay and TerminalRunner let a host transport (ACP) serve file
 	// content from editor buffers and run foreground bash in a host terminal.
 	// Both only change where tool I/O happens — tool names, descriptions, and
@@ -162,13 +169,14 @@ type Options struct {
 	FileOverlay    builtin.FileOverlay
 	TerminalRunner builtin.TerminalRunner
 	// ProviderResolver routes every model role through a caller-owned provider
-	// catalog. Remote Workbench injects a Broker resolver so no credential or
-	// provider endpoint has to exist on the Host. Nil preserves local behavior.
+	// catalog. Nil preserves local behavior.
 	ProviderResolver provider.Resolver
-	// DisablePlanner is a process-local hard override used by supervised ACP
-	// workers. It wins over user/project planner_model configuration without
-	// mutating config or changing the provider-visible prompt/tool surface.
-	DisablePlanner bool
+	// Ablation switches subsystems off for a benchmark arm, and is also the
+	// process-local hard override supervised ACP workers use to force the planner
+	// off. It wins over user/project configuration without mutating config or
+	// changing the provider-visible prompt/tool surface. The zero value runs
+	// everything.
+	Ablation ablation.Set
 	// SandboxNetworkOverride and WorkspaceOnly are process-local hard bounds for
 	// supervised ACP workers. Nil/false preserve normal Reasonix config.
 	SandboxNetworkOverride *bool
@@ -263,6 +271,14 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 	if source := strings.TrimSpace(opts.StatsSource); source != "" {
 		sink = stats.NewRecorder(sink, config.StatsDir(), source)
 	}
+
+	// Goal token-budget accounting: the controller detects this tee and
+	// attributes billable usage events to the active goal turn's recorder, so
+	// executor/planner/subagent/compaction/classifier/router/reviewer/evaluator
+	// calls under one Goal scope count against its token budget. The tee must
+	// sit on the shared sink the agents emit into — hence the wrap here rather
+	// than inside the controller.
+	sink = control.NewGoalUsageTee(sink)
 
 	if migErr != nil {
 		sink.Emit(event.Event{Kind: event.Notice, Level: event.LevelWarn, Text: "Config migration did not complete.", Detail: "config migration from ~/.reasonix failed: " + migErr.Error()})
@@ -737,7 +753,7 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 	if opts.MaxSteps > 0 {
 		maxSteps = opts.MaxSteps
 	}
-	subagentStore, err := newSubagentStore(sessionDir)
+	subagentStore, err := newSubagentStore(sessionDir, opts.SubagentParentLive)
 	if err != nil {
 		return nil, err
 	}
@@ -889,6 +905,7 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 			WithTranscriptIdentityResolver(subagentIdentity).
 			WithMaxSubagentDepth(maxSubagentDepth).
 			WithDeliveryProfile(tokenDelivery).
+			WithAblation(opts.Ablation).
 			WithWorkspaceLease(workspaceLease).
 			WithScheduler(subagentScheduler).
 			WithProfileLookup(profileLookup).
@@ -897,6 +914,9 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 			WithCapabilityRuntime(capRuntime)
 	}
 	addTaskTool := func() string {
+		if opts.Ablation.Off(ablation.Subagent) {
+			return "task tool is disabled for this run."
+		}
 		if taskToolAdded {
 			return "task tool is already enabled."
 		}
@@ -904,14 +924,19 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 		if taskTool == nil {
 			taskTool = newTaskTool()
 		}
-		// Fixed registration order for prompt-cache stability: task →
-		// parallel_tasks → fleet. Profile names never enter tool schemas.
+		// The registry exports schemas in stable name order. Keep this surface
+		// static: profile names and result refs never enter provider-visible
+		// schemas, and the result reader does not change between turns.
 		reg.Add(taskTool)
 		reg.Add(agent.NewParallelTasksTool(taskTool, reg))
 		reg.Add(agent.NewFleetTool(taskTool))
+		reg.Add(agent.NewSubagentResultTool(taskTool))
 		return "enabled task."
 	}
 	addReadOnlyTaskTool := func() string {
+		if opts.Ablation.Off(ablation.Subagent) {
+			return "read_only_task tool is disabled for this run."
+		}
 		if readOnlyTaskToolAdded {
 			return "read_only_task tool is already enabled."
 		}
@@ -927,15 +952,33 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 		addReadOnlyTaskTool()
 	}
 
-	// Session and memory tools are always present in Balanced/Delivery. Economy
-	// installs them only after connect_tool_source requests that capability, so
-	// simple coding turns do not pay for unrelated schemas.
+	// Product documentation, session, and memory tools are always present in
+	// Balanced/Delivery. Economy installs them only after connect_tool_source
+	// requests that capability, so simple coding turns do not pay for unrelated
+	// schemas.
+	docsToolAdded := false
+	addDocsTool := func() string {
+		if docsToolAdded {
+			return "docs is already enabled."
+		}
+		docsToolAdded = true
+		reg.Add(productdocs.NewTool())
+		return "enabled docs."
+	}
 	sessionToolsAdded := false
 	addSessionTools := func() string {
 		if sessionToolsAdded {
 			return "sessions are already enabled."
 		}
 		sessionToolsAdded = true
+		// history and memory are the BM25-backed surfaces; the ablation arm drops
+		// only those two and leaves the direct-access tools alone, so a lost solve
+		// is attributable to retrieval and not to a missing session reader.
+		if opts.Ablation.Off(ablation.Retrieval) {
+			reg.Add(sessiontool.NewListSessionsTool(sessionDir))
+			reg.Add(sessiontool.NewReadSessionTool(sessionDir))
+			return "enabled list_sessions, read_session."
+		}
 		reg.Add(history.NewTool(history.Options{SessionDir: sessionDir, GlobalSessionDir: config.SessionDir(), ArchiveDir: config.ArchiveDir()}))
 		reg.Add(sessiontool.NewListSessionsTool(sessionDir))
 		reg.Add(sessiontool.NewReadSessionTool(sessionDir))
@@ -947,12 +990,18 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 			return "memory tools are already enabled."
 		}
 		memoryToolsAdded = true
+		if opts.Ablation.Off(ablation.Retrieval) {
+			reg.Add(memory.NewRememberTool(mem.Store))
+			reg.Add(memory.NewForgetTool(mem.Store))
+			return "enabled remember, forget."
+		}
 		reg.Add(memory.NewRecallTool(mem.Store))
 		reg.Add(memory.NewRememberTool(mem.Store))
 		reg.Add(memory.NewForgetTool(mem.Store))
 		return "enabled memory, remember, forget."
 	}
 	if !tokenEconomy {
+		addDocsTool()
 		addSessionTools()
 		addMemoryTools()
 	}
@@ -993,6 +1042,7 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 			SubagentDepth:       childDepth,
 			MaxSubagentDepth:    maxSubagentDepth,
 			DeliveryProfile:     tokenDelivery,
+			Ablation:            opts.Ablation,
 			WorkspaceLease:      workspaceLease,
 		}
 	}
@@ -1359,6 +1409,9 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 			return "enabled " + strings.Join(installed, ", ") + "."
 		}
 		reg.Add(&toolSourceConnector{
+			docs: func(context.Context) (string, error) {
+				return addDocsTool(), nil
+			},
 			skills: func(context.Context) (string, error) {
 				return addSkillTools(), nil
 			},
@@ -1578,6 +1631,7 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 		WriteWorkspaceRoot:           root,
 		ProjectChecks:                projectChecks,
 		DeliveryProfile:              tokenDelivery,
+		Ablation:                     opts.Ablation,
 		WorkspaceLease:               workspaceLease,
 		CapabilityLedger:             capLedger,
 		CapabilityAudit:              capAudit,
@@ -1602,11 +1656,17 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 	// Coordinator with its own session, kept separate for cache stability. The
 	// planner gets the same standing memory context and a filtered read-only
 	// research tool set, so it can inspect rules/code without side effects.
-	if pm := effectivePlannerModel(cfg, opts, tokenEconomy); pm != "" {
-		pe, ok := resolveOptionalEntry(opts, cfg, pm)
-		if !ok {
-			return nil, fmt.Errorf("planner_model %q is not a configured provider", pm)
-		}
+	pm := effectivePlannerModel(cfg, opts, tokenEconomy)
+	pe, plannerResolved := resolveOptionalEntry(opts, cfg, pm)
+	if pm != "" && !plannerResolved {
+		// An unusable optional planner must not take the session down with it —
+		// the executor is what the user talks to. Degrades like the guardian
+		// model below (#4615).
+		slog.Warn("planner model is not a configured provider — planning disabled", "model", pm)
+		sink.Emit(event.Event{Kind: event.Notice, Level: event.LevelWarn,
+			Text: fmt.Sprintf("planner_model %q is not a configured provider — continuing with the executor alone", pm)})
+	}
+	if pm != "" && plannerResolved {
 		if pe.Model != entry.Model {
 			plannerProv, err := resolveProvider(opts, cfg, proxySpec, provider.Selection{Ref: modelRefFromEntry(pe)})
 			if err != nil {
@@ -1701,6 +1761,7 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 		Shell:                  shell,
 		ApprovalTimeout:        opts.ApprovalTimeout,
 		RuntimeProfile:         runtimeProfile,
+		Ablation:               opts.Ablation,
 		OnRemember: func(rule string) control.RememberResult {
 			return rememberPermissionRule(root, rule)
 		},
@@ -1754,6 +1815,28 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 		// that capability: bots have a bounded timeout and can still answer cards.
 		ctrlOpts.RecoveryHeadless = recoveryHeadlessMode(opts)
 	}
+	// Goal evaluator: the same zero-config model fallback as the recovery
+	// reviewer (recovery_model → guardian_model → main model), isolated session
+	// and policy. When unavailable, Goal turns without an update_goal report
+	// fail closed and pause instead of defaulting to continue.
+	{
+		evalModel := strings.TrimSpace(cfg.Agent.RecoveryModel)
+		if evalModel == "" {
+			evalModel = strings.TrimSpace(cfg.Agent.GuardianModel)
+		}
+		if evalModel == "" {
+			evalModel = modelRef
+		}
+		if evalModel != "" {
+			if re, ok := cfg.ResolveModel(evalModel); ok {
+				if eProv, err := NewProviderWithProxy(re, proxySpec); err == nil {
+					ctrlOpts.GoalEvaluator = goaleval.NewSessionWithSink(eProv, re.Price, modelRefFromEntry(re), sink)
+				} else {
+					slog.Warn("goal evaluator provider construction failed — goals without an update_goal report will pause", "model", evalModel, "err", err)
+				}
+			}
+		}
+	}
 	ctrl := control.New(ctrlOpts)
 	// Share the recovery checkpoint with task/fleet sub-agents so background
 	// writers observe the same failure state as the root agent.
@@ -1803,7 +1886,7 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 // override is checked before user/project config and cannot be reversed by a
 // later assembly branch.
 func effectivePlannerModel(cfg *config.Config, opts Options, tokenEconomy bool) string {
-	if cfg == nil || opts.DisablePlanner || tokenEconomy {
+	if cfg == nil || opts.Ablation.Off(ablation.Planner) || tokenEconomy {
 		return ""
 	}
 	return strings.TrimSpace(cfg.Agent.PlannerModel)
@@ -2167,12 +2250,12 @@ func isGitMarker(path string) bool {
 	return err == nil && (fi.IsDir() || fi.Mode().IsRegular())
 }
 
-func newSubagentStore(sessionDir string) (*agent.SubagentStore, error) {
+func newSubagentStore(sessionDir string, parentLive func(sessionPath string) bool) (*agent.SubagentStore, error) {
 	sessionDir = strings.TrimSpace(sessionDir)
 	if sessionDir == "" {
 		return nil, nil
 	}
-	store := agent.NewSubagentStore(filepath.Join(sessionDir, "subagents"))
+	store := agent.NewSubagentStore(filepath.Join(sessionDir, "subagents")).WithParentSessionProbe(parentLive)
 	if _, err := store.CleanupStaleRunning(); err != nil {
 		return nil, fmt.Errorf("cleanup stale subagents: %w", err)
 	}
@@ -2265,7 +2348,7 @@ func NewProviderWithProxy(e *config.ProviderEntry, proxy netclient.ProxySpec) (p
 			"vision":                config.EffectiveVision(e),
 			"vision_model_explicit": config.ExplicitModelVision(e),
 			"vision_detail":         e.VisionDetail,
-			"web_search":            e.WebSearch,
+			"web_search":            config.EffectiveWebSearch(e),
 			"mode":                  e.ResponsesMode,
 			// Keep nil as nil so the responses provider can vendor-detect its
 			// default instead of accidentally treating every endpoint as stateful.

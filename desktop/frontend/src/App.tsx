@@ -29,6 +29,7 @@ import {
   Pencil,
   Trash2,
   AlarmClock,
+  BarChart3,
   Brain,
   Cpu,
   Palette,
@@ -42,12 +43,7 @@ import { asArray } from "./lib/array";
 import { createBoundedRefreshCoordinator, sameTabMetaLists, shouldRefreshTabMetaForEvent, TAB_META_MAX_IN_FLIGHT, tabMetaFallbackDelay } from "./lib/tabMetaRefresh";
 import { clearLegacyLangPref, normalizeLangPref, readLegacyLangPref, t, useI18n, useT, type Translator } from "./lib/i18n";
 import { localizedNoticeText, useController, type Item, type LiveStream } from "./lib/useController";
-import { app, onEvent, onProjectTreeChanged, onReady, onRuntimeRebuilt, onSessionRecovered, onWorkbenchTarget, openExternal } from "./lib/bridge";
-import {
-  preferredRemoteWorkspace,
-  workbenchTargetTransitioning,
-  type WorkbenchActiveTarget,
-} from "./lib/workbenchTarget";
+import { app, onEvent, onProjectTreeChanged, onReady, onRuntimeRebuilt, onSessionRecovered, openExternal } from "./lib/bridge";
 import { generativeMusic, isGenerativeMusicEnabled } from "./lib/generative-music";
 import { clearAttentionChimeKeys, playAttentionChime, playSuccessChime, shouldPlayAttentionChimeForEvent } from "./lib/sound";
 import { NoticeCard, Transcript } from "./components/Transcript";
@@ -66,9 +62,9 @@ type DecisionSurfaceKind = "tool_approval" | "plan_approval" | "ask" | "workspac
 import { StatusBar } from "./components/StatusBar";
 import { RemoteHostKeyDialog } from "./components/RemoteHostKeyDialog";
 import { RemoteSecretDialog } from "./components/RemoteSecretDialog";
-import { ProviderTrustDialog } from "./components/ProviderTrustDialog";
 import { onRemoteStatus, onRemoteForwards, onRemoteServer } from "./lib/bridge";
 import { RemoteConnectionTimeoutError, useRemoteStore, waitForRemoteConnection } from "./store/remote";
+import { RemoteWorkspaceLaunchGate, resolveRemoteWorkspace } from "./lib/remoteWorkspace";
 import { CommandPalette, type PaletteItem } from "./components/CommandPalette";
 import { UpdateBanner } from "./components/UpdateBanner";
 import { UpdaterProvider } from "./lib/useUpdater";
@@ -211,11 +207,7 @@ import { useGlobalShortcut } from "./lib/keyboardShortcuts";
 import { topicShortcutIndexFromEvent, useTopicShortcuts, type TopicShortcutEntry } from "./lib/topicShortcuts";
 import { composerDraftKeyForTab } from "./lib/composerDraftKey";
 import { continueDelivery } from "./lib/deliveryContinue";
-import {
-  activateGoalAndSubmitOnTab,
-  workbenchTargetToken,
-  type WorkbenchTargetToken,
-} from "./lib/goalSubmit";
+import { activateGoalAndSubmitOnTab } from "./lib/goalSubmit";
 import logoWordmark from "./assets/logo-wordmark.svg";
 
 function noticePreviewMockEnabled(): boolean {
@@ -292,7 +284,6 @@ const HistoryPanel = lazy(() => import("./components/HistoryPanel").then((module
 const SettingsPanel = lazy(() => import("./components/SettingsPanelEntry").then((module) => ({ default: module.SettingsPanel })));
 const RemotePanel = lazy(() => import("./components/RemotePanel").then((module) => ({ default: module.RemotePanel })));
 const TerminalPanel = lazy(() => import("./components/TerminalPanel").then((module) => ({ default: module.TerminalPanel })));
-const RemoteReconnectBanner = lazy(() => import("./components/RemoteReconnectBanner"));
 const WorkspacePanel = lazy(() => import("./components/WorkspacePanel").then((module) => ({ default: module.WorkspacePanel })));
 
 const CHAT_MIN_WIDTH = 400;
@@ -1082,6 +1073,7 @@ export default function App() {
     setComposerProfileForTab: setControllerComposerProfileForTab,
     setGoalForTab: setControllerGoalForTab,
     resumeGoalForTab: resumeControllerGoalForTab,
+    pauseGoalForTab: pauseControllerGoalForTab,
     clearGoal: clearControllerGoal,
     clearGoalForTab: clearControllerGoalForTab,
     clearSession,
@@ -1151,37 +1143,17 @@ export default function App() {
   const remoteExplorerHostId = useRemoteStore((s) => s.explorerHostId);
   const remoteHosts = useRemoteStore((s) => s.hosts);
   const remoteStatuses = useRemoteStore((s) => s.statuses);
-  const [workbenchTarget, setWorkbenchTarget] = useState<WorkbenchActiveTarget>({ kind: "local" });
-	const { showToast } = useToast();
+  const { showToast } = useToast();
   const { runGoalAction, handleGoalActionError } = useGoalActionHandler();
   const setRemoteHosts = useRemoteStore((s) => s.setHosts);
   const hydrateRemoteStatuses = useRemoteStore((s) => s.hydrateStatuses);
   const requestRemoteExplorer = useRemoteStore((s) => s.openExplorer);
-  const setRemoteExplorerTab = useRemoteStore((s) => s.setExplorerTab);
   const closeRemoteExplorerRequest = useRemoteStore((s) => s.closeExplorer);
   const applyRemoteStatus = useRemoteStore((s) => s.applyStatus);
   const requestRemoteStatusPopover = useRemoteStore((s) => s.requestStatusPopover);
   const setRemoteForwards = useRemoteStore((s) => s.setForwards);
   const setRemoteServer = useRemoteStore((s) => s.setServer);
 
-  useEffect(() => {
-    let active = true;
-    void app.WorkbenchActiveTarget()
-      .then((target) => { if (active) setWorkbenchTarget(target); })
-      .catch(() => undefined);
-    const off = onWorkbenchTarget((target) => {
-		if (!active) return;
-		if (target.state === "background_activity") {
-			showToast(t("remote.backgroundActivity"), "info");
-			return;
-		}
-		setWorkbenchTarget(target);
-    });
-    return () => {
-      active = false;
-      off();
-    };
-	}, [showToast, t]);
   const shortcutsOpen = useOverlayStore((s) => s.shortcutsOpen);
   const setShortcutsOpen = useOverlayStore((s) => s.setShortcutsOpen);
   const paletteSessions = useOverlayStore((s) => s.paletteSessions);
@@ -1341,7 +1313,7 @@ export default function App() {
       setBackgroundRuntimes(await app.BackgroundRuntimes());
     } catch {
       // The global recovery entry is supplementary; the active-tab job list
-      // remains available if an older Remote Workbench does not implement it.
+      // remains available even when the detached-runtime list is unavailable.
     }
   }, []);
 
@@ -1596,7 +1568,6 @@ export default function App() {
     structured?: StructuredInvocationSubmit,
     initialGoal?: {
       goal: string;
-      target: WorkbenchTargetToken;
       collaborationMode: CollaborationMode;
       toolApprovalMode: ToolApprovalMode;
     },
@@ -1751,7 +1722,7 @@ export default function App() {
   const collaborationMode = displayedComposerProfileCollaborationMode(composerProfile);
   const toolApprovalMode = composerProfile.toolApprovalMode;
   const tokenMode: TokenMode = composerProfile.tokenMode;
-  const runtimeTransitioning = Boolean(activeTabId && runtimeTransitionsByTab[activeTabId]) || workbenchTargetTransitioning(workbenchTarget);
+  const runtimeTransitioning = Boolean(activeTabId && runtimeTransitionsByTab[activeTabId]);
   const controllerReady =
     state.meta?.ready === true &&
     (!state.meta.runtime || state.meta.runtime.phase === "ready") &&
@@ -2311,26 +2282,22 @@ export default function App() {
       }
       if (collaborationMode === "goal" && !goal.trim()) {
         if (!controllerReady) return;
-        const sourceTarget = workbenchTargetToken(workbenchTarget);
-        if (!sourceTarget) throw new Error(t("composer.workspaceStarting"));
         await activateGoalAndSubmitOnTab({
           tabId: sourceTabId,
-          target: sourceTarget,
           displayText: trimmed,
           submitText,
           structured,
-          sendToTab: (tabId, nextGoal, display, routedSubmit, routedStructured, target) =>
+          sendToTab: (tabId, nextGoal, display, routedSubmit, routedStructured) =>
             commitThenSendRef.current(
               tabId,
               display,
               routedSubmit,
               routedStructured,
-              target ? {
+              {
                 goal: nextGoal,
-                target,
                 collaborationMode: controllerComposerProfileCollaborationMode(composerProfile),
                 toolApprovalMode,
-              } : undefined,
+              },
             ),
         });
         patchActivatedGoalForTab(sourceTabId, trimmed);
@@ -2391,7 +2358,7 @@ export default function App() {
       await commitThenSendRef.current(sourceTabId, trimmed, submitText.trim(), structured);
     },
     [activeTabId, applyGoal, closeTransientOverlays, collaborationMode, composerProfile, controllerReady, goal, notice, runShellForTab,
-      patchActivatedGoalForTab, setControllerComposerProfileForTab, switchModel, t, toolApprovalMode, showToast, workbenchTarget],
+      patchActivatedGoalForTab, setControllerComposerProfileForTab, switchModel, t, toolApprovalMode, showToast],
   );
 
   const handleSteer = useCallback(async (text: string, requestedTabId = activeTabId) => {
@@ -2406,6 +2373,18 @@ export default function App() {
   const clearGoalFromUi = useCallback(() => {
     runGoalAction(() => applyGoal(""));
   }, [applyGoal, runGoalAction]);
+  const pauseGoalFromUi = useCallback(() => {
+    runGoalAction(async () => {
+      if (!activeTabIdRef.current) return;
+      await pauseControllerGoalForTab(activeTabIdRef.current);
+    });
+  }, [pauseControllerGoalForTab, runGoalAction]);
+  const resumeGoalFromUi = useCallback(() => {
+    runGoalAction(async () => {
+      if (!activeTabIdRef.current) return;
+      await resumeControllerGoalForTab(activeTabIdRef.current);
+    });
+  }, [resumeControllerGoalForTab, runGoalAction]);
   const switchModelFromUi = useCallback(async (name: string): Promise<boolean> => {
     try {
       return await switchModel(name);
@@ -3025,29 +3004,23 @@ export default function App() {
     if (hostId) requestRemoteExplorer(hostId);
   }, [remoteExplorerHostId, remoteHosts, requestRemoteExplorer]);
 
-  const remoteWorkspaceLaunchSeq = useRef(0);
+  const remoteWorkspaceLaunchGate = useRef(new RemoteWorkspaceLaunchGate());
   const launchRemoteWorkspace = useCallback(async (host: RemoteHostView, requestSeq: number) => {
-    const workspace = await preferredRemoteWorkspace(host.id, host.defaultWorkspace);
-    if (requestSeq !== remoteWorkspaceLaunchSeq.current) return;
-    if (!workspace) {
-      setRemoteExplorerTab("server");
-      requestRemoteExplorer(host.id);
-      throw new Error(t("remote.workspaceRequired"));
-    }
+    const lastWorkspace = await app.RemoteLastWorkspace(host.id).catch(() => "");
+    const workspace = resolveRemoteWorkspace(lastWorkspace, host.defaultWorkspace);
+    if (!remoteWorkspaceLaunchGate.current.isCurrent(host.id, requestSeq)) return;
     await app.OpenRemoteWorkspace(host.id, workspace);
-    if (requestSeq !== remoteWorkspaceLaunchSeq.current) return;
-    setWorkbenchTarget(await app.WorkbenchActiveTarget());
-  }, [requestRemoteExplorer, setRemoteExplorerTab, t]);
+  }, []);
 
   const openRemoteWorkspaceFromStatus = useCallback((host: RemoteHostView) => {
-    const requestSeq = ++remoteWorkspaceLaunchSeq.current;
+    const requestSeq = remoteWorkspaceLaunchGate.current.begin(host.id);
     void launchRemoteWorkspace(host, requestSeq).catch((err) => {
       showToast(err instanceof Error ? err.message : String(err), "error", { durationMs: 6000 });
     });
   }, [launchRemoteWorkspace, showToast]);
 
   const connectAndOpenRemoteWorkspace = useCallback(function connectRemoteWorkspace(host: RemoteHostView) {
-    const requestSeq = ++remoteWorkspaceLaunchSeq.current;
+    const requestSeq = remoteWorkspaceLaunchGate.current.begin(host.id);
     void (async () => {
       try {
         const status = useRemoteStore.getState().statuses[host.id]?.state;
@@ -3402,6 +3375,16 @@ export default function App() {
     state.hydratePlaceholderItems?.length,
   );
   const transcriptHydrating = state.hydrating && !state.hydrateHistoryLoaded;
+  // Creation hero only after history hydration settles on a truly empty session.
+  // Avoid flash while switching tabs: items may be empty while placeholders show.
+  // Exclude IM/Bot detail: hero CSS collapses .main, which also hosts that panel.
+  // (desktopLayoutStyle is available here; sidebarCreation is declared later.)
+  const creationEmptyHero =
+    desktopLayoutStyle === "creation" &&
+    !sidebarImDetailConnection &&
+    !sessionHasContent &&
+    !transcriptHydrating &&
+    !hydratePlaceholderActive;
   const transcriptItems = hydratePlaceholderActive ? state.hydratePlaceholderItems! : state.items;
 
   // Display items: backend history is authoritative after immediate commit.
@@ -3426,7 +3409,6 @@ export default function App() {
     structured?: StructuredInvocationSubmit,
     initialGoal?: {
       goal: string;
-      target: WorkbenchTargetToken;
       collaborationMode: CollaborationMode;
       toolApprovalMode: ToolApprovalMode;
     },
@@ -3893,6 +3875,21 @@ export default function App() {
       },
       { id: "cmd-memory", group: t("palette.group.commands"), title: t("palette.cmd.memory"), icon: <Brain size={15} />, compact: true, keywords: ["memory", "记忆"], run: () => setSettingsTarget("memory") },
       { id: "cmd-models", group: t("palette.group.commands"), title: t("palette.cmd.models"), icon: <Cpu size={15} />, compact: true, keywords: ["model", "模型"], run: () => setSettingsTarget("models") },
+      {
+        id: "cmd-usage-stats",
+        group: t("palette.group.commands"),
+        title: t("palette.cmd.usageStats"),
+        icon: <BarChart3 size={15} />,
+        compact: true,
+        keywords: ["usage", "stats", "statistics", "用量", "统计"],
+        run: () => {
+          setSettingsFocus((current) => ({
+            target: "model-stats",
+            requestId: (current?.requestId ?? 0) + 1,
+          }));
+          setSettingsTarget("models");
+        },
+      },
       { id: "cmd-terminal", group: t("palette.group.commands"), title: t("rightDock.terminal"), icon: <TerminalSquare size={15} />, compact: true, keywords: ["terminal", "shell", "终端"], run: () => toggleTerminalPanel() },
     ];
     const startOfDay = (d: Date) => new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
@@ -4120,8 +4117,12 @@ export default function App() {
   const topicbarCanRename = !sidebarImDetailConnection && Boolean(activeTab?.topicId);
   const topicbarTitleEditSize = Math.min(56, Math.max(4, topicTitleDraft.length || topicbarTitle.length || 1));
   const sidebarWorkbench = desktopLayoutStyle === "workbench";
-  const handleWindowsTitlebarDoubleClick = useCallback((event: ReactMouseEvent<HTMLDivElement>) => {
-    if (!windowsFramelessChrome) return;
+  // The Wails drag runtime ignores anything with detail !== 1, so a double click
+  // on a --wails-draggable region never reaches the OS. Both platforms that hide
+  // their native title bar need this handled here.
+  const chromeDoubleClickZooms = windowsFramelessChrome || desktopPlatform === "darwin";
+  const handleChromeTitlebarDoubleClick = useCallback((event: ReactMouseEvent<HTMLDivElement>) => {
+    if (!chromeDoubleClickZooms) return;
     const target = event.target as HTMLElement | null;
     if (!target?.closest(".app-chrome, .topicbar, .workbench-dock__tools")) return;
     if (target.closest("button, input, textarea, select, a, [role='button'], [role='tab'], .windows-window-controls")) return;
@@ -4129,7 +4130,7 @@ export default function App() {
     void app.ToggleMaximiseMainWindow()
       .then(() => window.setTimeout(syncMainWindowMaximised, 80))
       .catch(() => undefined);
-  }, [syncMainWindowMaximised, windowsFramelessChrome]);
+  }, [chromeDoubleClickZooms, syncMainWindowMaximised]);
   // Creation keeps the classic sidebar/chat structure while gating chrome tweaks
   // behind its own style flag so classic/workbench remain unchanged.
   const appChromeHidden = sidebarWorkbench || sidebarCreation;
@@ -4147,7 +4148,7 @@ export default function App() {
     <TextSizeHotkeys />
       <div
         ref={appRef}
-        onDoubleClickCapture={handleWindowsTitlebarDoubleClick}
+        onDoubleClickCapture={handleChromeTitlebarDoubleClick}
         className={[
         "app",
         `app--${desktopPlatform}`,
@@ -4447,7 +4448,7 @@ export default function App() {
           </button>
         )}
 
-        <section className={`chat-pane${sidebarCreation && !sessionHasContent ? " chat-pane--creation-empty" : ""}`}>
+        <section className={`chat-pane${creationEmptyHero ? " chat-pane--creation-empty" : ""}`}>
           <>
           <header className="topicbar">
             {workbenchChromeHidden && (
@@ -4534,24 +4535,6 @@ export default function App() {
             </div>
             <div className="topicbar__spacer" />
             <div className="topicbar__actions">
-              {workbenchChromeHidden && (
-                <Tooltip label={workspacePanelRenderable ? t("rightDock.collapse") : t("rightDock.expand")}>
-                  <button
-                    className={[
-                      "topicbar__chrome-btn",
-                      "topicbar__chrome-btn--workspace",
-                      workspacePanelRenderable ? "topicbar__chrome-btn--active" : "",
-                      workspaceTogglePressed ? "topicbar__chrome-btn--pressed" : "",
-                    ].filter(Boolean).join(" ")}
-                    type="button"
-                    onClick={toggleWorkspacePanel}
-                    aria-label={workspacePanelRenderable ? t("rightDock.collapse") : t("rightDock.expand")}
-                    aria-pressed={workspacePanelRenderable}
-                  >
-                    <PanelRight size={15} />
-                  </button>
-                </Tooltip>
-              )}
               {sidebarCreation && !sidebarImDetailConnection && activeTab?.scope === "project" && (
                 <ExternalOpener tabId={activeTab.id} dismissSignal={transientOverlayDismissSignal} />
               )}
@@ -4661,7 +4644,7 @@ export default function App() {
                   {!sidebarCreation && <span>{t("topicBar.command")}</span>}
                 </button>
               </Tooltip>
-              {sidebarCreation && (
+              {(sidebarCreation || workbenchChromeHidden) && (
                 <Tooltip label={workspacePanelRenderable ? t("rightDock.collapse") : t("rightDock.expand")}>
                   <button
                     className={[
@@ -4684,11 +4667,6 @@ export default function App() {
 
           {state.meta?.startupErr && (
             <div className="banner banner--error">{t("topbar.startupError", { msg: state.meta.startupErr })}</div>
-          )}
-          {workbenchTarget.kind === "ssh" && workbenchTarget.state?.startsWith("reconnect") && (
-            <Suspense fallback={null}>
-              <RemoteReconnectBanner target={workbenchTarget} onTargetChange={setWorkbenchTarget} />
-            </Suspense>
           )}
           {configLoadWarnings.length > 0 && (
             <div className="banner banner--warning banner--actionable">
@@ -4959,17 +4937,26 @@ export default function App() {
             {/* Composer stays mounted under a decision so per-session draft
                 caches (text, attachments, paste blocks, guidance) survive. */}
             <div
-              className={decisionSurface ? "composer-decision-host composer-decision-host--hidden" : "composer-decision-host"}
+              className={[
+                "composer-decision-host",
+                decisionSurface ? "composer-decision-host--hidden" : "",
+                creationEmptyHero ? "composer-decision-host--creation-hero" : "",
+              ].filter(Boolean).join(" ")}
               hidden={Boolean(decisionSurface) || undefined}
               inert={decisionSurface ? true : undefined}
               aria-hidden={decisionSurface ? true : undefined}
             >
+            {creationEmptyHero && (
+              <h2 className="welcome-creation__headline">{t("welcome.creation.title")}</h2>
+            )}
             <Composer
               running={state.running || rewindCommitting}
               collaborationMode={collaborationMode}
               toolApprovalMode={toolApprovalMode}
               tokenMode={tokenMode}
               goal={goal}
+              goalStatus={state.meta?.goalStatus}
+              goalRuntime={state.meta?.goalRuntime}
               cwd={state.meta?.cwd}
               modelLabel={state.meta?.label ?? t("status.connecting")}
               imageInputEnabled={state.meta?.imageInputEnabled !== false}
@@ -4985,6 +4972,8 @@ export default function App() {
               onSetToolApprovalMode={applyToolApprovalMode}
               onToggleYoloApprovalMode={toggleYoloApprovalMode}
               onClearGoal={clearGoalFromUi}
+              onPauseGoal={pauseGoalFromUi}
+              onResumeGoal={resumeGoalFromUi}
               onSwitchModel={switchModelFromUi}
               onSetEffort={setEffort}
               onSetTokenMode={applyTokenMode}
@@ -5010,6 +4999,7 @@ export default function App() {
               guidanceConsumedText={latestGuidanceConsumed?.text}
               guidanceQueuePreviewItems={guidanceQueueMockItems}
               showContextWindowRing={sidebarCreation}
+              heroMode={creationEmptyHero}
               context={state.context}
               turnCost={state.turnCost}
               currency={state.sessionCurrency}
@@ -5219,12 +5209,6 @@ export default function App() {
             onOpenRemoteWorkspace={openRemoteWorkspaceFromStatus}
             remoteHosts={remoteHosts}
             remoteStatuses={remoteStatuses}
-            workbenchTarget={workbenchTarget}
-            onSwitchLocal={() => {
-              void app.WorkbenchSwitchLocal()
-                .then(setWorkbenchTarget)
-                .catch((err) => showToast(err instanceof Error ? err.message : String(err), "error"));
-            }}
           />
         )}
       </div>
@@ -5280,7 +5264,6 @@ export default function App() {
 
       <RemoteHostKeyDialog />
       <RemoteSecretDialog />
-      <ProviderTrustDialog />
 
       <CommandPalette
         open={paletteOpen}

@@ -63,6 +63,8 @@ type Server struct {
 	titleUsageSink  event.Sink
 	titles          *titleCache
 	auth            *authGate // nil when auth is disabled
+	providerSetupMu sync.RWMutex
+	providerSetup   providerSetupState
 	// leases guards the active session file against other runtimes (a desktop
 	// window, another CLI). Wired by the serve CLI command with the keeper that
 	// already holds the startup session's lease; nil (tests, embedded use)
@@ -196,7 +198,13 @@ func titleProviderConfig(entry *config.ProviderEntry) provider.Config {
 func (s *Server) switchModel(ctx context.Context, ref string) error {
 	s.bindMu.Lock()
 	defer s.bindMu.Unlock()
+	return s.switchModelLocked(ctx, ref)
+}
 
+// switchModelLocked performs switchModel while bindMu is held by the caller.
+// Provider setup uses this form so credential persistence and the controller
+// rebuild are one ordered operation relative to every session/model rebind.
+func (s *Server) switchModelLocked(ctx context.Context, ref string) error {
 	// Snapshot the current controller under a short read of s.mu only.
 	cur := s.ctl()
 	if controllerHasActiveRuntimeWork(cur) {
@@ -219,6 +227,9 @@ func (s *Server) switchModel(ctx context.Context, ref string) error {
 	if err != nil {
 		return fmt.Errorf("switch model: %w", err)
 	}
+	// Run/RunGraceful only wire the initial controller. Every replacement must
+	// receive the same frontend hooks or the ask tool falls back to headless mode.
+	newCtrl.EnableInteractiveApproval()
 	// Keep the carried conversation in its existing file so the switch doesn't
 	// orphan a duplicate (#2807).
 	newPath := agent.ContinueSessionPath(prevPath, newCtrl.SessionDir(), newCtrl.Label())
@@ -283,6 +294,7 @@ func (s *Server) switchModel(ctx context.Context, ref string) error {
 	}
 	s.ctrl = newCtrl
 	s.mu.Unlock()
+	s.refreshProviderSetup(currentModelRef(newCtrl))
 
 	// Off-lock: tear down the old controller. Close can block up to 15s.
 	cur.Close()
@@ -393,6 +405,8 @@ func (s *Server) handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /", s.index)
 	mux.HandleFunc("GET /assets/logo-wordmark.svg", s.logoWordmark)
+	mux.HandleFunc("GET /provider-setup", s.providerSetupStatus)
+	mux.HandleFunc("POST /provider-setup", s.providerSetupSave)
 	mux.HandleFunc("GET /events", s.events)
 	mux.HandleFunc("GET /history", s.history)
 	mux.HandleFunc("GET /context", s.context)
@@ -500,6 +514,10 @@ func (s *Server) RunGracefulListener(ctx context.Context, ln net.Listener) error
 }
 
 func (s *Server) index(w http.ResponseWriter, _ *http.Request) {
+	if setup, ok := s.providerSetupSnapshot(); ok && setup.Required {
+		s.providerSetupIndex(w)
+		return
+	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	_, _ = config.MigrateLegacyIfNeeded()
 	lang := "auto"
@@ -574,12 +592,23 @@ func (s *Server) events(w http.ResponseWriter, r *http.Request) {
 
 // submit runs raw user input as a turn (slash commands and @-references
 // resolved by the controller). Returns 202 — output arrives on the event stream.
+// An optional "format":"json_object" asks the model for structured JSON output
+// on this turn (text.format on the wire).
 func (s *Server) submit(w http.ResponseWriter, r *http.Request) {
 	var body struct {
-		Input string `json:"input"`
+		Input  string `json:"input"`
+		Format string `json:"format"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.Input == "" {
 		http.Error(w, "missing input", http.StatusBadRequest)
+		return
+	}
+	body.Format = strings.TrimSpace(body.Format)
+	switch body.Format {
+	case "", "json_object":
+		// Supported: empty = default text output, json_object = structured.
+	default:
+		http.Error(w, `unsupported format (supported: "json_object")`, http.StatusBadRequest)
 		return
 	}
 	trimmed := strings.TrimSpace(body.Input)
@@ -612,7 +641,7 @@ func (s *Server) submit(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	s.ctl().SubmitHTTP(body.Input)
+	s.ctl().SubmitHTTPFormat(body.Input, body.Format)
 	w.WriteHeader(http.StatusAccepted)
 }
 

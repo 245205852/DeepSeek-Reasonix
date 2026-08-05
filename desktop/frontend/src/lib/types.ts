@@ -592,6 +592,7 @@ export interface Meta {
   tokenMode?: TokenMode;
   goal?: string;
   goalStatus?: GoalStatus;
+  goalRuntime?: GoalRuntime;
   autoResearch?: AutoResearchCompactView;
   canonicalTodos?: Todo[];
 }
@@ -601,6 +602,20 @@ export type ToolApprovalMode = "ask" | "auto" | "yolo";
 // "full" is the persisted compatibility value for the Balanced runtime profile.
 export type TokenMode = "full" | "economy" | "delivery";
 export type GoalStatus = "running" | "complete" | "blocked" | "stopped";
+
+// GoalRuntime is the optional Goal budget/runtime summary the backend attaches
+// to Meta. Absent for old hosts or when no goal is active.
+export interface GoalRuntime {
+  turnsUsed: number;
+  turnsLimit: number;
+  tokensUsed: number;
+  tokensLimit: number;
+  noProgressTurns: number;
+  noProgressLimit: number;
+  lastReason?: string;
+  stopCause?: string;
+  budgetExtensions: number;
+}
 
 export interface AutoResearchCompactView {
   taskId: string;
@@ -1313,6 +1328,13 @@ export interface RemoteServerView {
   error?: string;
 }
 
+/** Path-free summary of files left behind by the removed Remote Workbench. */
+export interface RemoteLegacyWorkbenchData {
+  mirrorCount: number;
+  mirrorBytes: number;
+  trustFile: boolean;
+}
+
 export interface RemoteForwardsEvent {
   hostId: string;
   forwards: RemoteForwardView[];
@@ -1443,6 +1465,7 @@ export interface ProviderView {
   contextWindow: number;
   reasoningProtocol: string; // auto|deepseek|glm|openai|none; empty = auto/model registry
   thinking: string; // provider-specific thinking override: ""|enabled|disabled|adaptive
+  webSearch?: boolean; // expose a provider-executed web search tool when supported
   supportedEfforts: string[]; // custom /effort levels; empty = use built-in Kind/BaseURL default
   defaultEffort: string; // /effort level when user picks "auto" or unset; "" = supportedEfforts[0]
   modelOverrides?: ProviderModelOverrideView[] | null;
@@ -1636,7 +1659,6 @@ export interface AgentView {
   compactRatio?: number; // Advanced global default; older backends omit it.
   effectiveCompactRatio?: number; // Active local session after project overrides.
   compactRatioOverridden?: boolean;
-  compactRatioRemote?: boolean; // Active session is owned by the remote host.
 }
 
 export interface BotAllowlistView {
@@ -1877,6 +1899,7 @@ export interface SettingsView {
   telemetry: boolean; // anonymous launch ping + scrubbed next-launch native crash diagnostics
   metrics: boolean; // aggregate quality/lifecycle metrics (anonymous signal/bucket counts)
   configPath: string;
+  shadowedByPath?: string; // workspace reasonix.toml that outranks configPath, when one exists
   providerKinds: string[]; // provider implementations the kernel registered (for the kind picker)
   autoApproveTools: boolean;
   bypass: boolean; // legacy JSON key for live YOLO/full-access tool auto-approval
