@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"reasonix/internal/config"
 	"reasonix/internal/control"
@@ -245,6 +246,30 @@ func TestProviderSetupRejectsCredentialSavedByAnotherProcess(t *testing.T) {
 	state, ok = s.providerSetupSnapshot()
 	if !ok || state.Required {
 		t.Fatalf("setup state did not refresh after stale save: %+v, enabled:%v", state, ok)
+	}
+}
+
+func TestProviderSetupRefreshDoesNotAcquireConfigEditLock(t *testing.T) {
+	s, _ := newProviderSetupTestServer(t)
+	s.EnableProviderSetupForListener("127.0.0.1:8787")
+
+	// Config+credential writers take the config lock first. Holding it here
+	// forces the inverse-order failure mode: refresh must still finish because
+	// it only performs a read-only config load while holding the credential lock.
+	unlockConfig := config.LockUserConfigEdits()
+	done := make(chan struct{})
+	go func() {
+		s.refreshProviderSetup("remote-demo/model-a")
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		unlockConfig()
+	case <-time.After(2 * time.Second):
+		unlockConfig()
+		<-done
+		t.Fatal("Provider setup refresh waited for the config edit lock while holding the credential lock")
 	}
 }
 

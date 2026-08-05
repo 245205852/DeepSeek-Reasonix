@@ -61,7 +61,10 @@ func (s *Server) refreshProviderSetup(ref string) {
 	if lockErr != nil {
 		next.Error = "Unable to inspect the remote Reasonix credentials."
 	} else {
-		cfg, err := config.Load()
+		// Keep the credential snapshot atomic without reversing the documented
+		// config -> credential lock order. Provider setup only inspects config, so
+		// it must not run on-disk migrations or acquire a config edit lock here.
+		cfg, err := config.LoadForRootReadOnly(".")
 		if err != nil {
 			next.Error = "Unable to load the remote Reasonix configuration."
 		} else if entry, ok := cfg.ResolveModel(strings.TrimSpace(ref)); ok && entry.RequiresAPIKey() && entry.APIKey() == "" && config.IsValidCredentialKey(entry.APIKeyEnv) {
