@@ -828,7 +828,6 @@ export function ApprovalModal({
                   tone={action.tone}
                   role={isPlanApproval || isRecoveryApproval ? "button" : "option"}
                   disabled={submitting}
-                  title={action.desc}
                 />
               );
               if (isRecoveryApproval && !isRecoveryPlanChange && index === 1 && recovery?.can_grant_task) {

@@ -8584,6 +8584,9 @@ body > .mermaid-diagram--fullscreen {
   align-items: baseline;
   gap: 2px 10px;
 }
+.prompt-shelf--decision .prompt-shelf__actions .prompt-action:not(.prompt-action--descriptive) .prompt-action__copy {
+  grid-template-columns: minmax(0, 1fr);
+}
 .prompt-shelf--decision .prompt-shelf__actions .prompt-action__label,
 .prompt-shelf--decision .prompt-shelf__actions .prompt-action__desc {
   min-width: 0;
@@ -8829,10 +8832,10 @@ body > .mermaid-diagram--fullscreen {
 }
 .prompt-description-detail__label {
   overflow: hidden;
+  overflow-wrap: anywhere;
   color: var(--fg);
   font-weight: 620;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  white-space: normal;
 }
 .prompt-description-detail__text {
   overflow-wrap: anywhere;

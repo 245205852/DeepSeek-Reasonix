@@ -57,27 +57,39 @@ function installDom() {
   Object.defineProperty(dom.window.HTMLElement.prototype, "clientHeight", {
     configurable: true,
     get() {
-      return this.classList.contains("prompt-action__desc") ? 42 : 0;
+      if (this.classList.contains("prompt-action__desc")) return 42;
+      if (this.classList.contains("prompt-action__label")) return 20;
+      return 0;
     },
   });
   Object.defineProperty(dom.window.HTMLElement.prototype, "scrollHeight", {
     configurable: true,
     get() {
-      if (!this.classList.contains("prompt-action__desc")) return 0;
-      return this.textContent?.includes("Reuse the archive flow") ? 84 : 42;
+      if (this.classList.contains("prompt-action__desc")) {
+        return this.textContent?.includes("Reuse the archive flow") ? 84 : 42;
+      }
+      if (this.classList.contains("prompt-action__label")) return 20;
+      return 0;
     },
   });
   Object.defineProperty(dom.window.HTMLElement.prototype, "clientWidth", {
     configurable: true,
     get() {
-      return this.classList.contains("prompt-action__desc") ? 160 : 0;
+      if (this.classList.contains("prompt-action__desc")) return 160;
+      if (this.classList.contains("prompt-action__label")) return 160;
+      return 0;
     },
   });
   Object.defineProperty(dom.window.HTMLElement.prototype, "scrollWidth", {
     configurable: true,
     get() {
-      if (!this.classList.contains("prompt-action__desc")) return 0;
-      return this.textContent?.includes("Reuse the archive flow") ? 320 : 120;
+      if (this.classList.contains("prompt-action__desc")) {
+        return this.textContent?.includes("Reuse the archive flow") ? 320 : 120;
+      }
+      if (this.classList.contains("prompt-action__label")) {
+        return this.textContent?.includes("Keep every historical migration") ? 480 : 120;
+      }
+      return 0;
     },
   });
   Object.defineProperty(dom.window.HTMLElement.prototype, "scrollIntoView", {
@@ -195,7 +207,11 @@ console.log("\nask card layout");
   eq(descriptionStyle.getPropertyValue("-webkit-line-clamp"), "", "selection never changes the summary to two lines");
   eq(descriptionStyle.textOverflow, "ellipsis", "long summaries end with a clear ellipsis");
   eq(descriptionStyle.overflowWrap, "normal", "unspaced summaries stay clipped inside the stable row");
-  eq(firstOption.getAttribute("title"), ask.questions[0].options[0].description, "collapsed descriptions keep the full native tooltip");
+  eq(
+    firstOption.getAttribute("title"),
+    ask.questions[0].options[0].description,
+    "normal short labels preserve the existing description tooltip",
+  );
 
   const descriptionToggle = document.querySelector(".prompt-action__description-toggle") as HTMLButtonElement | null;
   if (!descriptionToggle) throw new Error("long Ask description disclosure did not render");
@@ -236,6 +252,7 @@ console.log("\nask card layout");
   eq(window.getComputedStyle(firstOption).alignItems, "center", "opening details keeps the selected row vertically centered");
   eq(window.getComputedStyle(firstDescription).overflow, "hidden", "the row summary remains clipped after opening details");
   eq(descriptionDetail.hidden, false, "full description opens in a separate region");
+  eq(descriptionDetail.getAttribute("data-scrolled-into-view"), "true", "opened detail scrolls above the fixed decision footer");
   eq(
     descriptionDetail.textContent?.includes(ask.questions[0].options[0].description ?? ""),
     true,
@@ -262,6 +279,82 @@ console.log("\nask card layout");
   });
   eq(answers.length, 1, "confirm submits the selected single-select answer");
   eq(answers[0]?.[0]?.selected?.[0], "Minimal repair", "submitted answer matches the selected option");
+
+  await act(async () => {
+    root.unmount();
+  });
+  dom.window.close();
+}
+
+// Legacy or malformed Ask payloads may omit description and put the entire
+// decision in label. Give those rows the full copy column, then disclose the
+// original label only when it still overflows. The answer value stays exact.
+{
+  const dom = installDom();
+  const rootEl = document.getElementById("root");
+  if (!rootEl) throw new Error("missing root");
+  const root = createRoot(rootEl);
+  const answers: QuestionAnswer[][] = [];
+  const longLabel = "Keep every historical migration behavior while rebuilding the release validation path";
+  const ask: WireAsk = {
+    id: "ask-long-label-fallback",
+    questions: [{
+      id: "legacy-choice",
+      prompt: "Choose a compatibility strategy",
+      options: [
+        { label: longLabel },
+        { label: "Minimal repair" },
+      ],
+    }],
+  };
+
+  await act(async () => {
+    root.render(
+      React.createElement(LocaleProvider, null,
+        React.createElement(AskCard, {
+          ask,
+          onAnswer: (_id: string, next: QuestionAnswer[]) => answers.push(next),
+          onDismiss: () => undefined,
+          onStop: () => undefined,
+        }),
+      ),
+    );
+    await flushTimers(200);
+  });
+
+  const firstOption = document.querySelector(".prompt-shelf__actions .prompt-action") as HTMLButtonElement | null;
+  const label = firstOption?.querySelector(".prompt-action__label") as HTMLElement | null;
+  const copy = firstOption?.querySelector(".prompt-action__copy") as HTMLElement | null;
+  const toggle = document.querySelector(".prompt-action__description-toggle") as HTMLButtonElement | null;
+  if (!firstOption || !label || !copy || !toggle) throw new Error("long label fallback did not render");
+
+  eq(window.getComputedStyle(copy).gridTemplateColumns, "minmax(0, 1fr)", "label-only decisions use the full copy width before truncating");
+  eq(window.getComputedStyle(label).textOverflow, "ellipsis", "overflowing legacy labels keep the stable compact row");
+  eq(firstOption.getAttribute("title"), longLabel, "overflowing labels retain their complete native tooltip");
+  eq(toggle.getAttribute("aria-expanded"), "false", "overflowing label detail starts collapsed");
+
+  await act(async () => {
+    toggle.click();
+    await flushTimers();
+  });
+  const detail = document.getElementById(toggle.getAttribute("aria-controls") ?? "") as HTMLElement | null;
+  if (!detail) throw new Error("long label detail did not render");
+  eq(detail.hidden, false, "overflowing label can be expanded outside the stable row");
+  eq(detail.getAttribute("data-scrolled-into-view"), "true", "opened label detail is brought into the visible decision scroller");
+  eq(detail.textContent?.trim(), longLabel, "label-only detail reveals the original complete decision text once");
+  eq(
+    window.getComputedStyle(detail.querySelector(".prompt-description-detail__label") as HTMLElement).whiteSpace,
+    "normal",
+    "full label detail wraps instead of being ellipsized again",
+  );
+  eq(answers.length, 0, "opening a long label never submits the decision");
+
+  await act(async () => {
+    (document.querySelector(".decision-confirm-bar__confirm") as HTMLButtonElement).click();
+    await flushTimers();
+  });
+  eq(answers.length, 1, "long label decision still submits normally");
+  eq(answers[0]?.[0]?.selected?.[0], longLabel, "display fallback does not alter the answer value");
 
   await act(async () => {
     root.unmount();

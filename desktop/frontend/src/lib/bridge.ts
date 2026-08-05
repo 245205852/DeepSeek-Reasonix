@@ -2319,6 +2319,7 @@ function makeMockApp(): AppBindings {
         if (cancelled) return;
 
         const longDescription = (...parts: string[]) => [...parts, ...parts, ...parts].join(" ");
+        const longLabel = (...parts: string[]) => [...parts, ...parts, ...parts].join(" · ");
         const q1Option1Description = t("mock.askQ1Opt1Desc");
         const q1Option2Description = t("mock.askQ1Opt2Desc");
         const q1Option3Description = t("mock.askQ1Opt3Desc");
@@ -2351,13 +2352,16 @@ function makeMockApp(): AppBindings {
                     description: longDescription(q1Option3Description, q2Option3Description, allowOnceDescription),
                   },
                   {
-                    label: [
+                    // Deliberately omit description here: this exercises the
+                    // legacy/malformed payload fallback where the complete
+                    // decision was placed in label instead of split into a
+                    // short label plus supporting description.
+                    label: longLabel(
                       t("mock.askQ2Opt1Label"),
                       t("mock.askQ1Opt3Label"),
                       t("mock.askQ2Opt3Label"),
                       t("mock.askQ1Opt1Label"),
-                    ].join(" · "),
-                    description: longDescription(q2Option1Description, q1Option3Description, q2Option3Description),
+                    ),
                   },
                   {
                     label: t("mock.askQ2Opt2Label"),

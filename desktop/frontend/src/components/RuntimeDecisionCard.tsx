@@ -79,7 +79,6 @@ export function RuntimeDecisionCard({
           disabled={action.disabled}
           tone={action.danger ? "danger" : "default"}
           role="button"
-          title={action.description}
         />
       ))}
       footer={secondaryAction ? (

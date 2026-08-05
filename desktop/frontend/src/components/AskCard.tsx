@@ -52,7 +52,7 @@ export function AskCard({
   const selectedOption = selectedIndex >= 0 && selectedIndex < optionCount
     ? q?.options[selectedIndex]
     : undefined;
-  const selectedDescriptionId = selectedOption?.description
+  const selectedDescriptionId = selectedOption
     ? `${instanceId}-description-${selectedIndex}`
     : undefined;
   const descriptionExpanded = selectedDescriptionId !== undefined && expandedDescriptionId === selectedDescriptionId;
@@ -290,7 +290,6 @@ export function AskCard({
                 selected={q.multi ? on : cursor}
                 active={q.multi ? cursor : false}
                 disabled={submitting}
-                title={o.description || undefined}
               />
             );
           })}
@@ -326,7 +325,7 @@ export function AskCard({
             <PromptDescriptionDisclosure
               descriptionId={`${selectedDescriptionId}-detail`}
               label={selectedOption?.label}
-              description={selectedOption?.description ?? ""}
+              description={selectedOption?.description}
               expanded={descriptionExpanded}
               onToggle={() => setExpandedDescriptionId((current) => current === selectedDescriptionId ? null : selectedDescriptionId)}
               disabled={submitting}

@@ -48,13 +48,24 @@ export function PromptDescriptionDisclosure({
 }: {
   descriptionId: string;
   label?: ReactNode;
-  description: ReactNode;
+  description?: ReactNode;
   expanded: boolean;
   onToggle?: () => void;
   disabled?: boolean;
   alwaysVisible?: boolean;
 }) {
   const visible = alwaysVisible || expanded;
+  const detailRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    // The decision footer stays fixed while the card content scrolls. When a
+    // user explicitly opens details near that boundary, bring the separate
+    // region into the nearest visible area instead of leaving it behind the
+    // footer. Auto-open safety consequences do not steal the initial scroll.
+    if (!expanded || alwaysVisible) return;
+    detailRef.current?.scrollIntoView?.({ block: "nearest" });
+  }, [alwaysVisible, expanded]);
+
   return (
     <div className="prompt-description-disclosure">
       {!alwaysVisible && onToggle && (
@@ -66,6 +77,7 @@ export function PromptDescriptionDisclosure({
         />
       )}
       <div
+        ref={detailRef}
         id={descriptionId}
         className="prompt-description-detail"
         role="region"
@@ -74,7 +86,9 @@ export function PromptDescriptionDisclosure({
         {label != null && label !== "" && (
           <strong className="prompt-description-detail__label">{label}</strong>
         )}
-        <span className="prompt-description-detail__text">{description}</span>
+        {description != null && description !== "" && (
+          <span className="prompt-description-detail__text">{description}</span>
+        )}
       </div>
     </div>
   );
@@ -134,28 +148,40 @@ export function PromptAction({
 }) {
   const generatedDescriptionId = useId();
   const actionRef = useRef<HTMLButtonElement | null>(null);
+  const labelRef = useRef<HTMLSpanElement | null>(null);
   const descriptionRef = useRef<HTMLSpanElement | null>(null);
   const overflowCallbackRef = useRef(onDescriptionOverflowChange);
   const [internalExpanded, setInternalExpanded] = useState(false);
-  const [descriptionOverflowing, setDescriptionOverflowing] = useState(false);
+  const [copyOverflowing, setCopyOverflowing] = useState(false);
+  const [labelOverflowing, setLabelOverflowing] = useState(false);
   overflowCallbackRef.current = onDescriptionOverflowChange;
 
-  const hasCopy = description != null || (label != null && label !== "");
-  const resolvedDescriptionId = description
+  const hasLabel = label != null && label !== "";
+  const hasDescription = description != null && description !== "";
+  const hasCopy = hasDescription || hasLabel;
+  const resolvedDescriptionId = hasCopy
     ? (descriptionId ?? `${generatedDescriptionId}-description`)
     : undefined;
   const detailDescriptionId = resolvedDescriptionId ? `${resolvedDescriptionId}-detail` : undefined;
   const expanded = internalExpanded;
+  const labelText = typeof label === "string" ? label : undefined;
   const descriptionText = typeof description === "string" ? description : undefined;
-  const resolvedTitle = title ?? (descriptionDisclosure ? descriptionText : undefined);
+  const fullCopyTitle = [labelText, descriptionText].filter(Boolean).join(" — ");
+  const resolvedTitle = title ?? (descriptionDisclosure
+    ? (labelOverflowing ? fullCopyTitle : descriptionText)
+    : undefined);
 
   useEffect(() => {
     setInternalExpanded(false);
-  }, [description]);
+  }, [description, label]);
 
   useLayoutEffect(() => {
-    if (!descriptionDisclosure || !descriptionRef.current) {
-      setDescriptionOverflowing(false);
+    const elements = [labelRef.current, descriptionRef.current].filter(
+      (element): element is HTMLSpanElement => element !== null,
+    );
+    if (!descriptionDisclosure || elements.length === 0) {
+      setCopyOverflowing(false);
+      setLabelOverflowing(false);
       overflowCallbackRef.current?.(false);
       return;
     }
@@ -163,11 +189,15 @@ export function PromptAction({
     // remains available even though the unclamped element no longer overflows.
     if (expanded) return;
 
-    const element = descriptionRef.current;
     const measure = () => {
-      const overflowing = element.scrollHeight > element.clientHeight + 1
-        || element.scrollWidth > element.clientWidth + 1;
-      setDescriptionOverflowing((current) => current === overflowing ? current : overflowing);
+      const overflows = (element: HTMLSpanElement | null) => element !== null && (
+        element.scrollHeight > element.clientHeight + 1
+        || element.scrollWidth > element.clientWidth + 1
+      );
+      const nextLabelOverflowing = overflows(labelRef.current);
+      const overflowing = nextLabelOverflowing || overflows(descriptionRef.current);
+      setLabelOverflowing((current) => current === nextLabelOverflowing ? current : nextLabelOverflowing);
+      setCopyOverflowing((current) => current === overflowing ? current : overflowing);
       overflowCallbackRef.current?.(overflowing);
     };
     measure();
@@ -184,7 +214,7 @@ export function PromptAction({
       if (!cancelled) measure();
     });
     const observer = typeof ResizeObserver !== "undefined" ? new ResizeObserver(measure) : null;
-    observer?.observe(element);
+    elements.forEach((element) => observer?.observe(element));
     window.addEventListener("resize", measure);
     return () => {
       cancelled = true;
@@ -193,7 +223,7 @@ export function PromptAction({
       observer?.disconnect();
       window.removeEventListener("resize", measure);
     };
-  }, [descriptionDisclosure, expanded, resolvedDescriptionId, description, Boolean(onDescriptionOverflowChange)]);
+  }, [descriptionDisclosure, expanded, resolvedDescriptionId, description, label, Boolean(onDescriptionOverflowChange)]);
 
   useEffect(() => {
     if (!selected && !active && !expanded) return;
@@ -213,7 +243,7 @@ export function PromptAction({
         primary || selected ? " prompt-action--selected" : "",
         active ? " prompt-action--active" : "",
         quiet ? " prompt-action--quiet" : "",
-        description ? " prompt-action--descriptive" : "",
+        hasDescription ? " prompt-action--descriptive" : "",
         descriptionDisclosure ? " prompt-action--description-collapsible" : "",
         !hasCopy ? " prompt-action--key-only" : "",
         tone === "danger" ? " prompt-action--danger" : "",
@@ -230,8 +260,16 @@ export function PromptAction({
       {keyLabel && <span className="prompt-action__key">{keyLabel}</span>}
       {hasCopy && (
         <span className="prompt-action__copy">
-          {label != null && label !== "" && <span className="prompt-action__label">{label}</span>}
-          {description && (
+          {hasLabel && (
+            <span
+              ref={labelRef}
+              id={!hasDescription ? resolvedDescriptionId : undefined}
+              className="prompt-action__label"
+            >
+              {label}
+            </span>
+          )}
+          {hasDescription && (
             <span ref={descriptionRef} id={resolvedDescriptionId} className="prompt-action__desc">
               {description}
             </span>
@@ -249,10 +287,10 @@ export function PromptAction({
   return (
     <div className={[
       "prompt-action-row",
-      expanded || (descriptionAlwaysVisible && descriptionOverflowing) ? " prompt-action-row--description-expanded" : "",
+      expanded || (descriptionAlwaysVisible && copyOverflowing) ? " prompt-action-row--description-expanded" : "",
     ].join("")}>
       {action}
-      {detailDescriptionId && description && descriptionOverflowing && (
+      {detailDescriptionId && copyOverflowing && (
         <PromptDescriptionDisclosure
           descriptionId={detailDescriptionId}
           label={label}

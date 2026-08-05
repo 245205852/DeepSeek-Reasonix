@@ -1711,10 +1711,11 @@ function DecisionReceiptLine({ receipt }: { receipt: NonNullable<NoticeItem["dec
   const outcome = outcomeKeys[receipt.outcome]
     ? t(outcomeKeys[receipt.outcome] as never)
     : receipt.outcome || t("notice.decisionReceiptTitle");
+  const showOutcome = receipt.kind !== "ask" || receipt.outcome !== "answered";
   return (
     <div className="notice-line__decision-receipt">
       <span className="notice-line__decision-title">{t(titleKey as never)}</span>
-      <span className="notice-line__decision-outcome">{outcome}</span>
+      {showOutcome && <span className="notice-line__decision-outcome">{outcome}</span>}
       {receipt.tool && <code>{receipt.tool}</code>}
       {receipt.subject && <span className="notice-line__decision-subject">{receipt.subject}</span>}
     </div>

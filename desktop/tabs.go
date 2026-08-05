@@ -1335,7 +1335,14 @@ func recordHistoryDisplayEvent(buffer *displayTurnBuffer, e event.Event) {
 			if e.Level == event.LevelWarn {
 				level = "warn"
 			}
-			buffer.messages = append(buffer.messages, &bufferedHistoryMessage{message: HistoryMessage{Role: "notice", Level: level, Content: e.Text, Detail: e.Detail, Code: e.Code}})
+			buffer.messages = append(buffer.messages, &bufferedHistoryMessage{message: HistoryMessage{
+				Role:            "notice",
+				Level:           level,
+				Content:         e.Text,
+				Detail:          e.Detail,
+				Code:            e.Code,
+				DecisionReceipt: cloneDecisionReceipt(e.DecisionReceipt),
+			}})
 		}
 	}
 }
