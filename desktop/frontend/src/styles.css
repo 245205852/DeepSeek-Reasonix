@@ -7466,6 +7466,35 @@ body > .mermaid-diagram--fullscreen {
   opacity: 0.55;
 }
 
+.composer-intent-menu__goal-actions {
+  display: grid;
+  gap: 2px;
+  width: 100%;
+}
+
+.composer-intent-menu__goal-actions .composer-intent-menu__stop {
+  justify-self: end;
+}
+
+.composer-intent-menu__goal-runtime {
+  padding: 0 6px 4px;
+}
+
+.composer-intent-menu__goal-runtime-line {
+  display: block;
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--dim);
+}
+
+.composer-intent-menu__goal-runtime-line--blocked {
+  color: var(--err);
+}
+
+.composer-intent-menu__goal-runtime-line--paused {
+  color: var(--warn);
+}
+
 .composer-more-menu {
   width: min(190px, calc(100vw - 16px));
 }
