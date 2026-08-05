@@ -236,6 +236,23 @@ func build(ctx context.Context, opts Options) (*BuildResult, error) {
 	// and are cancelled by Controller.Close.
 	sink := event.Sync(opts.Sink)
 
+	// Both sink wraps must complete BEFORE the extension UI hub closes over the
+	// sink variable: a sidecar publish during preflight lands on this closure
+	// from a wire-handler goroutine, and any later reassignment races it.
+	// Record billable usage for the "usage statistics" panel. Wrapping here —
+	// outside the per-agent sinks — covers every agent (executor, planner,
+	// sub-agents, guardian) with one recorder, and each record is labelled with
+	// this frontend's StatsSource so the panel can split totals by entry point.
+	if source := strings.TrimSpace(opts.StatsSource); source != "" {
+		sink = stats.NewRecorder(sink, config.StatsDir(), source)
+	}
+	// Goal token-budget accounting: the controller detects this tee and
+	// attributes billable usage events to the active goal turn's recorder, so
+	// executor/planner/subagent/compaction/classifier/router/reviewer/evaluator
+	// calls under one Goal scope count against its token budget. The tee must
+	// sit on the shared sink the agents emit into.
+	sink = control.NewGoalUsageTee(sink)
+
 	// Extension preflight (stages 5b/7): start the installed, enabled v1 runtime
 	// packages ONCE, here, before model resolution, so plugin-namespaced refs
 	// (plugin/<plugin>/<provider>/<model>) resolve on the very first boot and the
@@ -390,23 +407,6 @@ func build(ctx context.Context, opts Options) (*BuildResult, error) {
 			return nil, err
 		}
 	}
-
-	// Record billable usage for the "usage statistics" panel. Wrapping here —
-	// outside the per-agent sinks — covers every agent (executor, planner,
-	// sub-agents, guardian) with one recorder, and each record is labelled with
-	// this frontend's StatsSource so the panel can split totals by entry point.
-	// (The sink itself was synchronized earlier, before extension preflight.)
-	if source := strings.TrimSpace(opts.StatsSource); source != "" {
-		sink = stats.NewRecorder(sink, config.StatsDir(), source)
-	}
-
-	// Goal token-budget accounting: the controller detects this tee and
-	// attributes billable usage events to the active goal turn's recorder, so
-	// executor/planner/subagent/compaction/classifier/router/reviewer/evaluator
-	// calls under one Goal scope count against its token budget. The tee must
-	// sit on the shared sink the agents emit into — hence the wrap here rather
-	// than inside the controller.
-	sink = control.NewGoalUsageTee(sink)
 
 	if migErr != nil {
 		sink.Emit(event.Event{Kind: event.Notice, Level: event.LevelWarn, Text: "Config migration did not complete.", Detail: "config migration from ~/.reasonix failed: " + migErr.Error()})
