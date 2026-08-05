@@ -20574,6 +20574,10 @@ body > .mermaid-diagram--fullscreen {
   align-items: flex-start;
   gap: 8px;
   margin-bottom: 8px;
+  /* Many attachments (images/refs) stack rows without bound and squeeze the
+     transcript viewport (see #7578). Cap the area and scroll internally. */
+  max-height: min(30vh, 200px);
+  overflow-y: auto;
 }
 .composer-context__item {
   display: inline-flex;
@@ -20770,12 +20774,20 @@ body > .mermaid-diagram--fullscreen {
   flex-direction: column;
   gap: 6px;
   margin-bottom: 8px;
+  /* Pasting many long texts stacks fold blocks without bound and squeezes the
+     transcript viewport (see #7578). Cap the list and scroll internally. */
+  max-height: min(30vh, 240px);
+  overflow-y: auto;
 }
 .composer__pasted-block {
   border: 1px solid var(--border);
   border-radius: 7px;
   background: var(--panel);
   overflow: hidden;
+  /* The capped .composer__pasted list is a column flex container; without
+     this, flex-shrink would crush every block to a few px instead of
+     scrolling (#7578). */
+  flex-shrink: 0;
 }
 .composer__pasted-head {
   display: flex;
@@ -36629,6 +36641,31 @@ body > .mermaid-diagram--fullscreen {
 .remote-panel__hint {
   color: var(--fg-faint);
   font-size: var(--text-sm);
+}
+.remote-hosts__legacy {
+  margin-top: 18px;
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg-elev);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.remote-hosts__legacy h3 {
+  margin: 0;
+  font-size: var(--text-md);
+  color: var(--fg);
+}
+.remote-hosts__legacy p {
+  margin: 0;
+  font-size: var(--text-sm);
+  color: var(--fg-faint);
+}
+.remote-hosts__legacy-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 4px;
 }
 .remote-host-row {
   display: flex;
