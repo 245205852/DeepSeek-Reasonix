@@ -54,11 +54,12 @@ reasonix plugin doctor <name>                                      # 校验
 ## 运行时重载
 
 已安装扩展发生变化（安装、更新、启用/禁用、`--link` 内容变化）绝不会
-修改正在运行的回合。重载是一个失败原子的操作，三个入口语义一致——
-CLI `/reload`、Desktop「重载运行时」（命令面板）、ACP vendor method
-`_reasonix.io/session/reloadExtensions`：
+修改正在运行的回合。所有交互前端都提供失败原子的重载入口——CLI
+`/reload`、Desktop「重载运行时」（命令面板）、Serve `/reload`、ACP
+vendor method `_reasonix.io/session/reloadExtensions`：
 
-1. 回合或后台任务运行中，只排队一次重载。
+1. 回合或后台任务运行中，CLI/Desktop/ACP 只排队一次；Serve 会拒绝本次
+   请求，由浏览器在空闲后重试。
 2. 空闲后启动新 Sidecar 并构建新的运行时快照。
 3. 完整成功后原子交换，并迁移 session path、transcript、授权记录和
    goal/recovery 状态。

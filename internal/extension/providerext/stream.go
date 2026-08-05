@@ -64,6 +64,12 @@ func (r *Resolver) RouteStreamChunk(p protocol.StreamChunkParams) {
 	if p.Seq < stream.nextSeq {
 		return // duplicate or already delivered
 	}
+	if stream.ended && p.Seq > stream.endSeq {
+		r.finishLocked(p.StreamID, stream, provider.Chunk{Type: provider.ChunkError, Err: &provider.StreamInterruptedError{
+			Err: fmt.Errorf("extension stream %s: chunk seq %d exceeds frozen LastSeq %d", p.StreamID, p.Seq, stream.endSeq),
+		}})
+		return
+	}
 	if p.Seq >= stream.nextSeq+pendingWindowLimit {
 		r.finishLocked(p.StreamID, stream, provider.Chunk{Type: provider.ChunkError, Err: &provider.StreamInterruptedError{
 			Err: fmt.Errorf("extension stream %s: chunk seq %d exceeds the pending window of stream seq %d", p.StreamID, p.Seq, stream.nextSeq),
@@ -85,10 +91,31 @@ func (r *Resolver) RouteStreamEnd(p protocol.StreamEndParams) {
 		slog.Debug("providerext: dropping stream end for unknown stream", "stream", p.StreamID)
 		return
 	}
+	if stream.ended {
+		if stream.endSeq != p.LastSeq || stream.endError != p.Error || stream.interrupted != p.Interrupted {
+			r.finishLocked(p.StreamID, stream, provider.Chunk{Type: provider.ChunkError, Err: &provider.StreamInterruptedError{
+				Err: fmt.Errorf("extension stream %s: conflicting duplicate end changed frozen LastSeq or terminal state", p.StreamID),
+			}})
+			r.mu.Unlock()
+			return
+		}
+		r.flushLocked(p.StreamID, stream)
+		r.mu.Unlock()
+		return
+	}
 	stream.ended = true
 	stream.endSeq = p.LastSeq
 	stream.endError = p.Error
 	stream.interrupted = p.Interrupted
+	for seq := range stream.pending {
+		if seq > stream.endSeq {
+			r.finishLocked(p.StreamID, stream, provider.Chunk{Type: provider.ChunkError, Err: &provider.StreamInterruptedError{
+				Err: fmt.Errorf("extension stream %s: buffered chunk seq %d exceeds frozen LastSeq %d", p.StreamID, seq, stream.endSeq),
+			}})
+			r.mu.Unlock()
+			return
+		}
+	}
 	r.flushLocked(p.StreamID, stream)
 	if r.streams[p.StreamID] == stream && stream.nextSeq <= stream.endSeq && !stream.gapTimer {
 		stream.gapTimer = true
@@ -104,6 +131,9 @@ func (r *Resolver) RouteStreamEnd(p protocol.StreamEndParams) {
 // StreamInterruptedError, and a clean end closes the channel.
 func (r *Resolver) flushLocked(id string, stream *extensionStream) {
 	for {
+		if stream.ended && stream.nextSeq > stream.endSeq {
+			break
+		}
 		chunk, ok := stream.pending[stream.nextSeq]
 		if !ok {
 			break

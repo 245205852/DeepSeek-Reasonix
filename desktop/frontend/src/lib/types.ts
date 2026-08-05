@@ -1403,6 +1403,13 @@ export interface RemoteServerView {
   error?: string;
 }
 
+/** Path-free summary of files left behind by the removed Remote Workbench. */
+export interface RemoteLegacyWorkbenchData {
+  mirrorCount: number;
+  mirrorBytes: number;
+  trustFile: boolean;
+}
+
 export interface RemoteForwardsEvent {
   hostId: string;
   forwards: RemoteForwardView[];
@@ -1727,7 +1734,6 @@ export interface AgentView {
   compactRatio?: number; // Advanced global default; older backends omit it.
   effectiveCompactRatio?: number; // Active local session after project overrides.
   compactRatioOverridden?: boolean;
-  compactRatioRemote?: boolean; // Active session is owned by the remote host.
 }
 
 export interface BotAllowlistView {

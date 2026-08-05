@@ -16,8 +16,8 @@ import (
 	"time"
 
 	"reasonix/internal/extension/protocol"
+	"reasonix/internal/extension/rpcwire"
 	"reasonix/internal/pluginpkg"
-	"reasonix/internal/rpcwire"
 )
 
 // Re-exec fake sidecar (the standard Go helper-process pattern): the test

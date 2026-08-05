@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -150,22 +151,34 @@ api_key_env = "REASONIX_TEST_KEY_UNSET"
 func normalizeGoldenRoot(prompt string, roots ...string) string {
 	out := prompt
 	seen := make(map[string]struct{}, len(roots)*2)
-	for _, root := range roots {
+	replace := func(root string) {
 		if root == "" {
-			continue
+			return
 		}
-		if _, ok := seen[root]; !ok {
-			out = strings.ReplaceAll(out, root, "<ROOT>")
-			seen[root] = struct{}{}
+		if _, ok := seen[root]; ok {
+			return
 		}
+		// System-prompt workspace paths are Go-quoted. On Windows that doubles
+		// backslashes, so replace the quoted spelling before the raw alias.
+		out = strings.ReplaceAll(out, strconv.Quote(root), strconv.Quote("<ROOT>"))
+		out = strings.ReplaceAll(out, root, "<ROOT>")
+		seen[root] = struct{}{}
+	}
+	for _, root := range roots {
+		replace(root)
 		if real, err := filepath.EvalSymlinks(root); err == nil && real != root {
-			if _, ok := seen[real]; !ok {
-				out = strings.ReplaceAll(out, real, "<ROOT>")
-				seen[real] = struct{}{}
-			}
+			replace(real)
 		}
 	}
 	return out
+}
+
+func TestNormalizeGoldenRootReplacesQuotedWindowsPath(t *testing.T) {
+	root := `C:\Users\RUNNER~1\AppData\Local\Temp\reasonix-test-123`
+	prompt := "Current workspace: " + strconv.Quote(root)
+	if got, want := normalizeGoldenRoot(prompt, root), `Current workspace: "<ROOT>"`; got != want {
+		t.Fatalf("normalizeGoldenRoot = %q, want %q", got, want)
+	}
 }
 
 func TestNormalizeGoldenRootReplacesEveryAlias(t *testing.T) {

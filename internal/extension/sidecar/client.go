@@ -13,8 +13,8 @@ import (
 
 	"reasonix/internal/extension"
 	"reasonix/internal/extension/protocol"
+	"reasonix/internal/extension/rpcwire"
 	"reasonix/internal/pluginpkg"
-	"reasonix/internal/rpcwire"
 )
 
 // Lifecycle budgets.

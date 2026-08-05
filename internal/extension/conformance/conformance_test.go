@@ -23,9 +23,9 @@ import (
 	"time"
 
 	"reasonix/internal/extension/protocol"
+	"reasonix/internal/extension/rpcwire"
 	"reasonix/internal/extension/sidecar"
 	"reasonix/internal/pluginpkg"
-	"reasonix/internal/rpcwire"
 )
 
 // examplePath is the built fullsidecar binary, shared by every test.

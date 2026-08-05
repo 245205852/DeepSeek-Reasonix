@@ -61,11 +61,12 @@ install runtimes you trust completely.
 
 Changing an installed extension (install, update, enable/disable, or
 `--link` content changes) never mutates a running turn. Reloading is one
-fail-atomic operation with the same semantics everywhere — CLI `/reload`,
-Desktop **Reload Runtime** (command palette), and the ACP vendor method
-`_reasonix.io/session/reloadExtensions`:
+fail-atomic operation through every interactive frontend — CLI `/reload`,
+Desktop **Reload Runtime** (command palette), Serve `/reload`, and the ACP
+vendor method `_reasonix.io/session/reloadExtensions`:
 
-1. If a turn or background work is running, exactly one reload is queued.
+1. If a turn or background work is running, CLI/Desktop/ACP queue exactly one
+   reload; Serve rejects the request so the browser can retry once idle.
 2. When idle, Reasonix starts new sidecars and builds a new runtime
    snapshot.
 3. On full success it swaps atomically, carrying over the session path,

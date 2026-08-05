@@ -165,6 +165,51 @@ func TestStreamLateChunksAfterEndDropped(t *testing.T) {
 	}
 }
 
+func TestStreamRejectsBufferedChunkBeyondFrozenEnd(t *testing.T) {
+	fc := newFakeClient("demo", demoDescriptor())
+	r := testResolver(t, baseCatalog(), nil, fc)
+	out, id := openTestStream(t, r, fc, nil)
+
+	r.RouteStreamChunk(protocol.StreamChunkParams{StreamID: id, Seq: 2, Chunk: textChunk("beyond")})
+	r.RouteStreamEnd(protocol.StreamEndParams{StreamID: id, LastSeq: 1})
+
+	chunks := collectChunks(t, out)
+	if len(chunks) != 1 || chunks[0].Type != provider.ChunkError || !provider.IsStreamInterrupted(chunks[0].Err) {
+		t.Fatalf("chunks = %+v, want interrupted protocol error", chunks)
+	}
+	if !strings.Contains(chunks[0].Err.Error(), "exceeds frozen LastSeq 1") {
+		t.Fatalf("error = %q, want frozen boundary detail", chunks[0].Err)
+	}
+}
+
+func TestStreamRejectsLateChunkBeyondFrozenEnd(t *testing.T) {
+	fc := newFakeClient("demo", demoDescriptor())
+	r := testResolver(t, baseCatalog(), nil, fc)
+	out, id := openTestStream(t, r, fc, nil)
+
+	r.RouteStreamEnd(protocol.StreamEndParams{StreamID: id, LastSeq: 2})
+	r.RouteStreamChunk(protocol.StreamChunkParams{StreamID: id, Seq: 3, Chunk: textChunk("late")})
+
+	chunks := collectChunks(t, out)
+	if len(chunks) != 1 || chunks[0].Type != provider.ChunkError || !provider.IsStreamInterrupted(chunks[0].Err) {
+		t.Fatalf("chunks = %+v, want interrupted protocol error", chunks)
+	}
+}
+
+func TestStreamRejectsConflictingDuplicateEnd(t *testing.T) {
+	fc := newFakeClient("demo", demoDescriptor())
+	r := testResolver(t, baseCatalog(), nil, fc)
+	out, id := openTestStream(t, r, fc, nil)
+
+	r.RouteStreamEnd(protocol.StreamEndParams{StreamID: id, LastSeq: 2})
+	r.RouteStreamEnd(protocol.StreamEndParams{StreamID: id, LastSeq: 3})
+
+	chunks := collectChunks(t, out)
+	if len(chunks) != 1 || chunks[0].Type != provider.ChunkError || !provider.IsStreamInterrupted(chunks[0].Err) {
+		t.Fatalf("chunks = %+v, want interrupted protocol error", chunks)
+	}
+}
+
 func TestStreamCancelSendsCancelAndCloses(t *testing.T) {
 	fc := newFakeClient("demo", demoDescriptor())
 	r := testResolver(t, baseCatalog(), nil, fc)
