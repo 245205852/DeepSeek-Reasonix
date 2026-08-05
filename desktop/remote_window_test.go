@@ -203,11 +203,13 @@ func TestRemoteWindowHostKeyDistinguishesHosts(t *testing.T) {
 	if remoteWindowInstanceID(a, ownerA) == remoteWindowInstanceID(a, ownerB) {
 		t.Fatal("a restarted Desktop would adopt the previous owner's child window")
 	}
-	if remoteWindowInstanceID(a, ownerA) != remoteWindowInstanceID(a, ownerA) {
+	firstInstanceID := remoteWindowInstanceID(a, ownerA)
+	secondInstanceID := remoteWindowInstanceID(a, ownerA)
+	if firstInstanceID != secondInstanceID {
 		t.Fatal("instance ID is not stable within one Desktop owner")
 	}
-	if !strings.HasPrefix(remoteWindowInstanceID(a, ownerA), remoteWindowInstancePrefix) {
-		t.Fatalf("instance ID = %q, want %q prefix", remoteWindowInstanceID(a, ownerA), remoteWindowInstancePrefix)
+	if !strings.HasPrefix(firstInstanceID, remoteWindowInstancePrefix) {
+		t.Fatalf("instance ID = %q, want %q prefix", firstInstanceID, remoteWindowInstancePrefix)
 	}
 }
 
