@@ -119,6 +119,15 @@ func (p *ParallelTasksTool) Execute(ctx context.Context, args json.RawMessage) (
 		sink = event.Discard
 	}
 
+	// One shared progress merger paces previews for the whole group: children
+	// find it via their context and the merger is closed after every child has
+	// finished (each child flushes its own slots before publishing its result).
+	// The merger emits through the same sink the child dispatch cards flow
+	// through, so preview IDs always match the cards.
+	merger := newSubagentProgressMerger(realProgressClock{}, sink, parentID)
+	defer merger.Close()
+	ctx = withSubagentProgressMerger(ctx, merger)
+
 	type subResult struct {
 		index  int
 		output string

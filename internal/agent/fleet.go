@@ -194,15 +194,16 @@ func (f *FleetTool) Execute(ctx context.Context, args json.RawMessage) (string, 
 			jobCtx = WithParentSession(jobCtx, parentSession)
 			jobCtx = evidence.WithLedger(jobCtx, backgroundEvidence)
 			defer func() { jobs.PublishEvidence(jobCtx, backgroundEvidence.Summary()) }()
-			return f.runFleet(jobCtx, nested, specs)
+			return f.runFleet(jobCtx, nested, specs, parentID)
 		})
 		return fmt.Sprintf("Started background fleet %q (%s). Collect results with wait; you will be notified when it finishes.", job.ID, label), nil
 	}
 
-	return f.runFleet(ctx, subSink(ctx), specs)
+	fleetParentID, _, _, _ := CallContext(ctx)
+	return f.runFleet(ctx, subSink(ctx), specs, fleetParentID)
 }
 
-func (f *FleetTool) runFleet(ctx context.Context, sink event.Sink, specs []ProfileExecSpec) (string, error) {
+func (f *FleetTool) runFleet(ctx context.Context, sink event.Sink, specs []ProfileExecSpec, groupParentID string) (string, error) {
 	if sink == nil {
 		sink = event.Discard
 	}
@@ -210,6 +211,16 @@ func (f *FleetTool) runFleet(ctx context.Context, sink event.Sink, specs []Profi
 	if !ok {
 		parentID = "fleet"
 	}
+	if groupParentID == "" {
+		groupParentID = parentID
+	}
+	// One shared progress merger per fleet run; children find it via their
+	// context and it is closed after every child has finished. The merger
+	// emits through the same sink the child dispatch cards flow through, so
+	// preview IDs always match the cards.
+	merger := newSubagentProgressMerger(realProgressClock{}, sink, groupParentID)
+	defer merger.Close()
+	ctx = withSubagentProgressMerger(ctx, merger)
 
 	n := len(specs)
 	results := make([]fleetItemResult, n)
