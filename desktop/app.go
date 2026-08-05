@@ -267,9 +267,12 @@ type App struct {
 	remoteWindowParentPID int
 	// remoteWindowMu serializes ticket consumption and navigation in a child
 	// process so a handoff arriving before domReady cannot be overridden by the
-	// initial ticket (or vice versa).
-	remoteWindowMu sync.Mutex
-	remoteWindow   *remoteWindowLaunch
+	// initial ticket (or vice versa). remoteWindowTicketConsumed makes the
+	// initial handoff idempotent because WebKit fires OnDomReady again after the
+	// shell navigates to the remote Serve page.
+	remoteWindowMu             sync.Mutex
+	remoteWindowTicketConsumed bool
+	remoteWindow               *remoteWindowLaunch
 
 	// promptHistoryTape is a lazy, cursor-addressed view of prompt history. It
 	// stores session order and per-session parsed entries only after that session is

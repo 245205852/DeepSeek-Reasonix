@@ -520,13 +520,33 @@ func (a *App) remoteWindowAssetMiddleware() func(http.Handler) http.Handler {
 	}
 }
 
+// consumeInitialRemoteWindowLaunch consumes the child process's initial ticket
+// at most once. WebKit invokes OnDomReady for both the embedded blank shell and
+// the remote Serve page loaded by that shell; the second callback must not try
+// to consume the already-deleted one-shot ticket and close a healthy window.
+func (a *App) consumeInitialRemoteWindowLaunch() (*remoteWindowLaunch, bool, error) {
+	a.remoteWindowMu.Lock()
+	if a.remoteWindowTicketConsumed {
+		a.remoteWindowMu.Unlock()
+		return nil, false, nil
+	}
+	a.remoteWindowTicketConsumed = true
+	a.remoteWindowMu.Unlock()
+
+	launch, err := consumeRemoteWindowLaunch(a.remoteWindowTicket)
+	return launch, true, err
+}
+
 // domReadyRemoteWindow consumes the launch ticket (guarded by the per-host
 // single-instance gate, so the second instance never reaches this point) and
 // navigates the blank shell to the Serve URL. If a handoff already applied a
-// newer ticket before domReady, the initial ticket is discarded, not applied
-// on top of it.
+// newer ticket before the first domReady, the initial ticket is discarded, not
+// applied on top of it. Later domReady callbacks from the remote page are no-ops.
 func (a *App) domReadyRemoteWindow() {
-	launch, err := consumeRemoteWindowLaunch(a.remoteWindowTicket)
+	launch, first, err := a.consumeInitialRemoteWindowLaunch()
+	if !first {
+		return
+	}
 	if err != nil {
 		slog.Warn("remote window: reject launch ticket", "err", err)
 		runtime.Quit(a.ctx)

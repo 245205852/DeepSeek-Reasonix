@@ -88,6 +88,38 @@ func TestRemoteWindowTicketRoundTripAndRemoval(t *testing.T) {
 	}
 }
 
+func TestConsumeInitialRemoteWindowLaunchIsIdempotentAcrossDomReady(t *testing.T) {
+	launch := remoteWindowLaunch{
+		URL:     "http://127.0.0.1:54321/?token=secret-token",
+		Title:   "Reasonix [SSH: box]",
+		HostKey: "host-key-digest",
+	}
+	ticket, err := writeRemoteWindowLaunch(launch)
+	if err != nil {
+		t.Fatal(err)
+	}
+	a := &App{remoteWindowTicket: ticket}
+
+	got, first, err := a.consumeInitialRemoteWindowLaunch()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !first || got == nil || *got != launch {
+		t.Fatalf("first consume = (%+v, %v), want (%+v, true)", got, first, launch)
+	}
+	if _, err := os.Stat(filepath.Join(config.MemoryUserDir(), ticket)); !os.IsNotExist(err) {
+		t.Fatalf("initial ticket was not removed: %v", err)
+	}
+
+	got, first, err = a.consumeInitialRemoteWindowLaunch()
+	if err != nil {
+		t.Fatalf("repeated domReady returned an error: %v", err)
+	}
+	if first || got != nil {
+		t.Fatalf("repeated consume = (%+v, %v), want (nil, false)", got, first)
+	}
+}
+
 func TestRemoteWindowTicketRejectsUnsafeInputs(t *testing.T) {
 	for _, raw := range []string{
 		"https://127.0.0.1:5000/?token=x",
