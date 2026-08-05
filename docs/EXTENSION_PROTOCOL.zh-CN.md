@@ -26,7 +26,8 @@ Extension Protocol 是 Reasonix（**宿主**）与以独立进程运行的代码
 
 1. 宿主以 exec form 启动 Sidecar（不经 Shell），并首先发送
    `extension/initialize`，参数携带 Manifest 期望：宿主将接受的
-   intercepts、replaces、providers 和 UI actions。
+   intercepts、replaces、providers 和 UI actions。同一 runtime generation
+   最多并行初始化 4 个 Sidecar，并共享 30 秒总启动预算。
 2. Sidecar 应答自身声明。宿主校验：协议 major version 精确匹配，且
    subscriptions、替换槽、Provider、UI action 都必须是 **Manifest 声明
    的子集**；超出部分以 `capability_not_declared` 握手失败。

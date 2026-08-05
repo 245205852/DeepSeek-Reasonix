@@ -269,8 +269,9 @@ func build(ctx context.Context, opts Options) (*BuildResult, error) {
 	sessionID := fmt.Sprintf("boot-%d", generation)
 	proxySpec := cfg.NetworkProxySpec()
 	extWarn := func(msg string) {
-		slog.Warn("boot: extension runtime: "+msg, "root", root)
-		sink.Emit(event.Event{Kind: event.Notice, Level: event.LevelWarn, Text: msg})
+		redacted := secrets.RedactCredentials(msg)
+		slog.Warn("boot: extension runtime: "+redacted, "root", root)
+		sink.Emit(event.Event{Kind: event.Notice, Level: event.LevelWarn, Text: redacted})
 	}
 	// Stage 8a: the host extension UI hub serves every sidecar's host/ui/* calls
 	// for this generation — publications become frontend events through the

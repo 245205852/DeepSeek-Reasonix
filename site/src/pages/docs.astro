@@ -223,7 +223,7 @@ DEEPSEEK_API_KEY=sk-...</div>
         </div>
         <div>
           <strong><span class="l-en">Stable and cache-aware</span><span class="l-zh">稳定且缓存友好</span></strong>
-          <p><span class="l-en">Each turn pins one runtime generation. No-op reloads keep the prompt prefix byte-identical; stable replacements remain cacheable, while per-turn timestamps or random values in prompts and schemas destroy reuse.</span><span class="l-zh">每个回合固定使用一个 runtime generation。空操作重载保持提示词前缀字节不变；稳定替换仍可缓存，把时间戳或随机值逐回合写入提示词与 Schema 则会破坏复用。</span></p>
+          <p><span class="l-en">Each turn pins one runtime generation. Sidecars initialize with four-way concurrency inside one shared 30-second startup budget. No-op reloads keep the prompt prefix byte-identical; stable replacements remain cacheable, while per-turn timestamps or random values in prompts and schemas destroy reuse.</span><span class="l-zh">每个回合固定使用一个 runtime generation；Sidecar 最多 4 路并行初始化，并共享 30 秒总启动预算。空操作重载保持提示词前缀字节不变；稳定替换仍可缓存，把时间戳或随机值逐回合写入提示词与 Schema 则会破坏复用。</span></p>
         </div>
       </div>
       <p><span class="l-en">The repository includes a complete starter with its manifest, Go Sidecar, build commands, linked installation, reload loop, and visible input rewrite:</span><span class="l-zh">仓库提供了完整 starter，包含 Manifest、Go Sidecar、构建命令、链接安装、重载循环与可观察的输入改写：</span></p>

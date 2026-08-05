@@ -15,6 +15,7 @@ import (
 	"reasonix/internal/extension/protocol"
 	"reasonix/internal/extension/rpcwire"
 	"reasonix/internal/pluginpkg"
+	"reasonix/internal/secrets"
 )
 
 // Lifecycle budgets.
@@ -775,11 +776,15 @@ func mapHandlerError(err error) error {
 func mapRequestError(err error) error {
 	var respErr *rpcwire.ResponseError
 	if errors.As(err, &respErr) {
+		message := secrets.RedactCredentials(respErr.Message)
 		var data protocol.ProtocolErrorData
 		if len(respErr.Data) > 0 && json.Unmarshal(respErr.Data, &data) == nil && data.Validate() == nil {
-			return &protocol.ProtocolError{Reason: data.Reason, Message: respErr.Message}
+			return &protocol.ProtocolError{Reason: data.Reason, Message: message}
 		}
-		return err
+		// Invalid or absent protocol data still came from the untrusted peer.
+		// Preserve the transport code for diagnostics, but never let its message
+		// bypass the host's credential-redaction boundary.
+		return &rpcwire.ResponseError{Code: respErr.Code, Message: message, Data: append(json.RawMessage(nil), respErr.Data...)}
 	}
 	return err
 }

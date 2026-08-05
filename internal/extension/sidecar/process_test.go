@@ -6,6 +6,7 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 
 	"reasonix/internal/pluginpkg"
 )
@@ -73,6 +74,21 @@ func TestStartupFailureRedactsAndBoundsStderr(t *testing.T) {
 	}
 	if !strings.Contains(failure.Stderr, "***") {
 		t.Fatalf("stderr tail shows no redaction mask: %q", failure.Stderr)
+	}
+}
+
+func TestStartupFailureRedactsCauseWithoutLosingIdentity(t *testing.T) {
+	const secret = "sk-abcdef1234567890SECRETKEY"
+	cause := errors.New("initialize rejected api_key=" + secret)
+	err := newStartupFailure("handshake", time.Now(), "", cause)
+	if strings.Contains(err.Error(), secret) {
+		t.Fatalf("startup failure leaked its cause: %q", err)
+	}
+	if !strings.Contains(err.Error(), "****") {
+		t.Fatalf("startup failure contains no redaction marker: %q", err)
+	}
+	if !errors.Is(err, cause) {
+		t.Fatal("startup failure no longer unwraps to its original cause")
 	}
 }
 

@@ -45,6 +45,39 @@ func TestHandshakeProtocolVersionMismatch(t *testing.T) {
 	}
 }
 
+func TestMapRequestErrorRedactsPeerMessages(t *testing.T) {
+	const secret = "sk-abcdef1234567890SECRETKEY"
+	structuredData, err := json.Marshal(protocol.ProtocolErrorData{
+		Reason:    protocol.ErrProviderFailed,
+		Retryable: true,
+	})
+	if err != nil {
+		t.Fatalf("marshal protocol error data: %v", err)
+	}
+	tests := []struct {
+		name string
+		data json.RawMessage
+	}{
+		{name: "structured protocol error", data: structuredData},
+		{name: "unstructured transport error", data: json.RawMessage(`{"unexpected":true}`)},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			mapped := mapRequestError(&rpcwire.ResponseError{
+				Code:    protocol.DomainErrorCode,
+				Message: "provider rejected api_key=" + secret,
+				Data:    tt.data,
+			})
+			if strings.Contains(mapped.Error(), secret) {
+				t.Fatalf("mapped error leaked peer credential: %q", mapped)
+			}
+			if !strings.Contains(mapped.Error(), "****") {
+				t.Fatalf("mapped error contains no redaction marker: %q", mapped)
+			}
+		})
+	}
+}
+
 // TestHandshakeCapabilityViolations pins the declaration contract: anything
 // the sidecar activates beyond its manifest fails the handshake with
 // capability_not_declared.

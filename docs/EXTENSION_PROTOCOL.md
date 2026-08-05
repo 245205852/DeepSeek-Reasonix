@@ -31,6 +31,8 @@ disagree, the generated schema wins.
 1. The host spawns the sidecar (exec form, no shell) and sends
    `extension/initialize` first. The params carry the manifest expectation:
    the intercepts, replaces, providers, and UI actions the host will accept.
+   For one runtime generation, the host initializes at most four sidecars in
+   parallel under one shared 30-second startup budget.
 2. The sidecar answers with its declaration. The host validates it: exact
    protocol major version, and every subscription, replacement slot,
    provider, and UI action must be a **subset of the plugin manifest**.

@@ -73,8 +73,11 @@ generation——扩展变更从下一个回合生效；no-op 重载后 Provider 
 ## 性能与提示词缓存
 
 未安装代码型 Runtime 时，Agent 仍走原有 nil-dispatcher 路径：不会启动
-Sidecar，也不会发生 JSON 编码、RPC 或事件排队。启用后的同步拦截器会
-串行进入相应热路径，因此 RPC 与处理耗时会累加；输入、工具、权限和
+Sidecar，也不会发生 JSON 编码、RPC 或事件排队。安装 Runtime 后，Reasonix
+在同一个 generation 的 30 秒总启动预算内最多并行初始化 4 个 Sidecar；
+卡住的可选 Runtime 不会再按已安装包数量成倍拉长启动或 reload。未能在
+预算内启动的包按其 `runtime.required` 设置降级或令构建失败。启用后的
+同步拦截器会串行进入相应热路径，因此 RPC 与处理耗时会累加；输入、工具、权限和
 Provider 拦截器应保持轻量且结果确定。观察事件通过有界非阻塞队列投递，
 背压时告警并丢弃，不会卡住当前回合。
 

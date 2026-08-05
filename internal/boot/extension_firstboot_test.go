@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"reasonix/internal/config"
+	"reasonix/internal/event"
 	"reasonix/internal/extension/protocol"
 	"reasonix/internal/extension/providerext"
 	"reasonix/internal/extension/sidecar"
@@ -214,6 +215,40 @@ func TestBootStartsExtensionPackagesOncePerBuild(t *testing.T) {
 	}
 	if res.Extensions == nil || res.Extensions.Client("counted") == nil {
 		t.Fatal("the preflighted manager did not reach the build result")
+	}
+}
+
+func TestBootRedactsExtensionStartupWarnings(t *testing.T) {
+	const secret = "sk-abcdef1234567890SECRETKEY"
+	isolateConfigHome(t)
+	dir := robustTempDir(t)
+	t.Chdir(dir)
+	writeRuntimeFixture(t, dir)
+	installBootFakePlugin(t, config.ReasonixHomeDir(), "warning-source", map[string]any{})
+
+	orig := startExtensionPackages
+	startExtensionPackages = func(ctx context.Context, home string, sessionCtx protocol.SessionContext, ui sidecar.UIHandler) (*sidecar.Manager, []string, error) {
+		manager, warnings, err := orig(ctx, home, sessionCtx, ui)
+		return manager, append(warnings, "sidecar rejected api_key="+secret), err
+	}
+	t.Cleanup(func() { startExtensionPackages = orig })
+
+	var notices []string
+	res, err := BuildRuntime(context.Background(), Options{Sink: event.FuncSink(func(ev event.Event) {
+		if ev.Kind == event.Notice {
+			notices = append(notices, ev.Text)
+		}
+	})})
+	if err != nil {
+		t.Fatalf("BuildRuntime: %v", err)
+	}
+	t.Cleanup(res.Controller.Close)
+	joined := strings.Join(notices, "\n")
+	if strings.Contains(joined, secret) {
+		t.Fatalf("extension startup notice leaked a credential: %q", joined)
+	}
+	if !strings.Contains(joined, "****") {
+		t.Fatalf("extension startup notice contains no redaction marker: %q", joined)
 	}
 }
 

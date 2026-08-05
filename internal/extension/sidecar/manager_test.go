@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -159,6 +160,95 @@ func TestManagerOptionalFailureWarnsAndContinues(t *testing.T) {
 	}
 	if manager.Client("good-optional") == nil {
 		t.Fatal("healthy optional runtime has no client")
+	}
+}
+
+func TestStartLoadedPackagesBoundsParallelismAndSharesCancellation(t *testing.T) {
+	packageCount := maxConcurrentPackageStarts + 2
+	packages := make([]pluginpkg.InstalledPackage, packageCount)
+	for i := range packages {
+		name := fmt.Sprintf("plugin-%02d", i)
+		packages[i] = pluginpkg.InstalledPackage{
+			Installed: pluginpkg.InstalledPlugin{Name: name, Enabled: true},
+			Package: pluginpkg.Package{Manifest: pluginpkg.Manifest{
+				Name: name,
+				Runtime: &pluginpkg.RuntimeSpec{
+					Command: "/not-started",
+				},
+			}},
+		}
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	entered := make(chan string, packageCount)
+	var stateMu sync.Mutex
+	active, maxActive, started := 0, 0, 0
+	starter := func(ctx context.Context, opts ClientOptions) (*Client, error) {
+		stateMu.Lock()
+		active++
+		started++
+		if active > maxActive {
+			maxActive = active
+		}
+		stateMu.Unlock()
+		entered <- opts.Installed.Name
+		<-ctx.Done()
+		stateMu.Lock()
+		active--
+		stateMu.Unlock()
+		return nil, ctx.Err()
+	}
+
+	type startResult struct {
+		manager  *Manager
+		warnings []string
+		err      error
+	}
+	done := make(chan startResult, 1)
+	go func() {
+		manager, warnings, err := startLoadedPackages(ctx, packages, testSessionContext(), nil, starter)
+		done <- startResult{manager: manager, warnings: warnings, err: err}
+	}()
+
+	for i := 0; i < maxConcurrentPackageStarts; i++ {
+		select {
+		case <-entered:
+		case <-time.After(5 * time.Second):
+			t.Fatalf("only %d package starts entered the worker pool", i)
+		}
+	}
+	select {
+	case name := <-entered:
+		t.Fatalf("package %q exceeded the %d-start concurrency bound", name, maxConcurrentPackageStarts)
+	default:
+	}
+	cancel()
+
+	var result startResult
+	select {
+	case result = <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("shared startup cancellation did not release the worker pool")
+	}
+	if result.err != nil {
+		t.Fatalf("optional startup failures returned a fatal error: %v", result.err)
+	}
+	if result.manager == nil || len(result.manager.Clients()) != 0 {
+		t.Fatalf("manager after cancelled optional starts = %#v", result.manager)
+	}
+	if len(result.warnings) != packageCount {
+		t.Fatalf("warnings = %d, want %d", len(result.warnings), packageCount)
+	}
+	for i, warning := range result.warnings {
+		if !strings.HasPrefix(warning, packages[i].Installed.Name+":") {
+			t.Fatalf("warning %d = %q, want deterministic package order", i, warning)
+		}
+	}
+	stateMu.Lock()
+	defer stateMu.Unlock()
+	if active != 0 || maxActive != maxConcurrentPackageStarts || started != maxConcurrentPackageStarts {
+		t.Fatalf("start counts active=%d max=%d started=%d, want 0/%d/%d", active, maxActive, started, maxConcurrentPackageStarts, maxConcurrentPackageStarts)
 	}
 }
 

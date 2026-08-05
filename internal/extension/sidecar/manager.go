@@ -11,7 +11,30 @@ import (
 	"reasonix/internal/extension"
 	"reasonix/internal/extension/protocol"
 	"reasonix/internal/pluginpkg"
+	"reasonix/internal/secrets"
 )
+
+const (
+	// maxConcurrentPackageStarts bounds process creation while still preventing
+	// one slow optional runtime from serially delaying every package after it.
+	maxConcurrentPackageStarts = 4
+	// packageStartupBudget is shared by every runtime in one generation. Without
+	// a generation-level budget, N stalled optional runtimes could delay boot by
+	// N times the per-client handshake timeout.
+	packageStartupBudget = defaultHandshakeTimeout
+)
+
+type clientStarter func(context.Context, ClientOptions) (*Client, error)
+
+type packageStartJob struct {
+	item pluginpkg.InstalledPackage
+	opts ClientOptions
+}
+
+type packageStartResult struct {
+	client *Client
+	err    error
+}
 
 // RequiredStartError reports a required runtime package that failed to start
 // or hand shake. It fails the whole build; an optional package's failure is a
@@ -62,39 +85,92 @@ type Manager struct {
 // implements UIBinder (the stage-8 UI hub) receives a per-plugin binding and
 // crash notifications instead of sharing one unbound handler.
 func StartPackages(ctx context.Context, home string, sessionCtx protocol.SessionContext, ui UIHandler) (*Manager, []string, error) {
-	m := &Manager{clients: make(map[string]*Client)}
 	packages, warnings := LoadRuntimePackages(home)
+	startupCtx, cancel := context.WithTimeout(ctx, packageStartupBudget)
+	defer cancel()
+	m, runtimeWarnings, err := startLoadedPackages(startupCtx, packages, sessionCtx, ui, StartClient)
+	warnings = append(warnings, runtimeWarnings...)
+	return m, warnings, err
+}
+
+// startLoadedPackages starts a previously discovered, deterministically ordered
+// package set. Handler binding stays serial; process startup and handshakes use
+// a bounded worker pool and the caller's shared generation context. Results are
+// consumed in package order so warnings and required-failure selection do not
+// depend on goroutine completion order.
+func startLoadedPackages(ctx context.Context, packages []pluginpkg.InstalledPackage, sessionCtx protocol.SessionContext, ui UIHandler, start clientStarter) (*Manager, []string, error) {
+	m := &Manager{clients: make(map[string]*Client)}
+	if len(packages) == 0 {
+		return m, nil, nil
+	}
 	var binder UIBinder
 	if b, ok := ui.(UIBinder); ok {
 		binder = b
 	}
-	for _, item := range packages {
+	jobs := make([]packageStartJob, len(packages))
+	for i, item := range packages {
 		pluginID := item.Installed.Name
 		clientUI := ui
 		if binder != nil {
 			clientUI = binder.HandlerFor(pluginID)
 		}
-		client, err := StartClient(ctx, ClientOptions{
+		jobs[i] = packageStartJob{item: item, opts: ClientOptions{
 			Package:   item.Package,
 			Installed: item.Installed,
 			Session:   sessionCtx,
 			UI:        clientUI,
 			OnCrash: func(err error) {
-				slog.Warn("extension sidecar crashed", "plugin", pluginID, "err", err)
+				slog.Warn("extension sidecar crashed", "plugin", pluginID, "err", secrets.RedactError(err))
 				if binder != nil {
 					binder.ClientCrashed(pluginID)
 				}
 			},
-		})
-		if err != nil {
-			if item.Package.Manifest.Runtime.Required {
-				_ = m.Close()
-				return nil, warnings, &RequiredStartError{Plugin: pluginID, Err: err}
+		}}
+	}
+
+	results := make([]packageStartResult, len(jobs))
+	indices := make(chan int, len(jobs))
+	for i := range jobs {
+		indices <- i
+	}
+	close(indices)
+	workers := min(maxConcurrentPackageStarts, len(jobs))
+	var wg sync.WaitGroup
+	wg.Add(workers)
+	for range workers {
+		go func() {
+			defer wg.Done()
+			for i := range indices {
+				if err := ctx.Err(); err != nil {
+					results[i].err = fmt.Errorf("extension generation startup stopped before launch: %w", err)
+					continue
+				}
+				results[i].client, results[i].err = start(ctx, jobs[i].opts)
 			}
-			warnings = append(warnings, fmt.Sprintf("%s: optional extension runtime failed to start: %v", pluginID, err))
+		}()
+	}
+	wg.Wait()
+
+	var warnings []string
+	var requiredErr *RequiredStartError
+	for i, result := range results {
+		item := jobs[i].item
+		pluginID := item.Installed.Name
+		if result.err != nil {
+			if item.Package.Manifest.Runtime.Required {
+				if requiredErr == nil {
+					requiredErr = &RequiredStartError{Plugin: pluginID, Err: result.err}
+				}
+			} else {
+				warnings = append(warnings, fmt.Sprintf("%s: optional extension runtime failed to start: %v", pluginID, result.err))
+			}
 			continue
 		}
-		m.clients[pluginID] = client
+		m.clients[pluginID] = result.client
+	}
+	if requiredErr != nil {
+		_ = m.Close()
+		return nil, warnings, requiredErr
 	}
 	return m, warnings, nil
 }

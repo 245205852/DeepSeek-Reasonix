@@ -63,7 +63,7 @@ func (e *startupFailure) Error() string {
 	if stage == "" {
 		stage = "unknown"
 	}
-	msg := fmt.Sprintf("extension sidecar startup %s failed after %s: %v", stage, formatElapsed(e.Elapsed), e.Err)
+	msg := fmt.Sprintf("extension sidecar startup %s failed after %s: %s", stage, formatElapsed(e.Elapsed), secrets.RedactError(e.Err))
 	if stderr := strings.TrimSpace(e.Stderr); stderr != "" {
 		msg += "; stderr: " + stderr
 	}

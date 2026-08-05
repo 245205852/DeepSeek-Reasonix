@@ -82,6 +82,11 @@ leaves the provider prompt-cache prefix byte-identical.
 
 With no code runtime installed, the Agent takes the existing nil-dispatcher
 path: no sidecar process, JSON encoding, RPC, or event queue is involved.
+When runtimes are installed, Reasonix initializes at most four sidecars at once
+inside one shared 30-second generation startup budget. A stalled optional
+runtime therefore cannot multiply boot or reload time by the number of installed
+packages. Packages that do not start inside that budget degrade or fail according
+to their `runtime.required` setting.
 Enabled synchronous interceptors are deliberately on the matching hot path and
 run serially, so their RPC and handler latency is additive; keep input, tool,
 permission, and provider interceptors small and deterministic. Observation
