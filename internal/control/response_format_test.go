@@ -2,9 +2,13 @@ package control
 
 import (
 	"context"
+	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"reasonix/internal/agent"
+	"reasonix/internal/event"
 )
 
 func TestIsNonTurnHTTPInput(t *testing.T) {
@@ -29,15 +33,98 @@ func TestIsNonTurnHTTPInput(t *testing.T) {
 	}
 }
 
-// TestSubmitHTTPFormatBindsToTurn：format 随提交的 turn 传递（参数链），
-// 不再有 Controller 全局一次性槽——非 turn 输入（slash/!）不携带 format。
-// 评审 #7234 第 2 点：全局槽存在跨请求串用的逻辑竞态。
+type observedTurnFormat struct {
+	input  string
+	format string
+}
+
+type formatRecordingRunner struct {
+	observed chan<- observedTurnFormat
+}
+
+func (r formatRecordingRunner) Run(ctx context.Context, input string) error {
+	format := ""
+	if responseFormat := agent.ResponseFormatFromRequest(ctx); responseFormat != nil {
+		format = responseFormat.Type
+	}
+	r.observed <- observedTurnFormat{input: input, format: format}
+	return nil
+}
+
+type formatTurnDoneGate struct {
+	mu           sync.Mutex
+	turns        int
+	firstEntered chan struct{}
+	releaseFirst chan struct{}
+	allDone      chan struct{}
+}
+
+func (g *formatTurnDoneGate) Emit(e event.Event) {
+	if e.Kind != event.TurnDone {
+		return
+	}
+	g.mu.Lock()
+	g.turns++
+	turn := g.turns
+	g.mu.Unlock()
+
+	if turn == 1 {
+		close(g.firstEntered)
+		<-g.releaseFirst
+	}
+	if turn == 2 {
+		close(g.allDone)
+	}
+}
+
+func receiveObservedTurnFormat(t *testing.T, observed <-chan observedTurnFormat) observedTurnFormat {
+	t.Helper()
+	select {
+	case got := <-observed:
+		return got
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for submitted turn")
+		return observedTurnFormat{}
+	}
+}
+
+func waitForFormatTestSignal(t *testing.T, signal <-chan struct{}, message string) {
+	t.Helper()
+	select {
+	case <-signal:
+	case <-time.After(5 * time.Second):
+		t.Fatal(message)
+	}
+}
+
+// TestSubmitHTTPFormatBindsToTurn holds the first turn's finishing window open,
+// submits a second turn with a different format, and proves the parked closure
+// preserves each accepted turn's format. This deterministically exercises the
+// interleaving that a controller-global one-shot slot could cross-wire.
 func TestSubmitHTTPFormatBindsToTurn(t *testing.T) {
-	c := New(Options{})
-	// 非 turn 输入（/new）携带 format → 被丢弃（不进入 turn 参数链）。
-	c.SubmitHTTPFormat("/new", "json_object")
-	// 普通 turn 携带 format → 进入参数链（withTurnFormat 注入 ctx）。
-	c.SubmitHTTPFormat("tell me about MiMo", "json_object")
+	observed := make(chan observedTurnFormat, 2)
+	gate := &formatTurnDoneGate{
+		firstEntered: make(chan struct{}),
+		releaseFirst: make(chan struct{}),
+		allDone:      make(chan struct{}),
+	}
+	c := New(Options{Runner: formatRecordingRunner{observed: observed}, Sink: gate})
+
+	c.SubmitHTTPFormat("first turn", "format-a")
+	first := receiveObservedTurnFormat(t, observed)
+	waitForFormatTestSignal(t, gate.firstEntered, "first turn did not enter the finishing window")
+
+	c.SubmitHTTPFormat("second turn", "format-b")
+	close(gate.releaseFirst)
+	second := receiveObservedTurnFormat(t, observed)
+	waitForFormatTestSignal(t, gate.allDone, "second turn did not finish")
+
+	if !strings.Contains(first.input, "first turn") || first.format != "format-a" {
+		t.Fatalf("first turn = %+v, want first input with format-a", first)
+	}
+	if !strings.Contains(second.input, "second turn") || second.format != "format-b" {
+		t.Fatalf("second turn = %+v, want second input with format-b", second)
+	}
 }
 
 // TestWithTurnFormatInjectsFormatIntoContext：format 绑定 turn 的实际效果

@@ -1041,8 +1041,8 @@ func (c *Controller) SubmitHTTP(input string) {
 // SubmitHTTPFormat is SubmitHTTP with an optional structured-output format
 // ("json_object") applied to the turn's completion requests. Empty format
 // behaves exactly like SubmitHTTP. A format attached to a slash command,
-// non-turn input, or @reference turn is discarded with a notice (format is
-// bound to the submitted turn, not a global slot).
+// or other non-turn input is discarded; @reference turns preserve it because
+// the format is bound to every submitted turn rather than a global slot.
 func (c *Controller) SubmitHTTPFormat(input, format string) {
 	// format 绑定到本次提交的 turn（随请求参数传递），不再写入 Controller
 	// 全局一次性槽——评审 #7234 第 2 点：全局槽存在跨请求串用的逻辑竞态
