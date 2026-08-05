@@ -230,7 +230,16 @@ func (a *App) onStatus(s RemoteConnectionStatusView) {
 	// the remote:status event. Transient reconnects (reconnecting/degraded)
 	// keep the window open.
 	if s.State == "stopped" && s.Error != "" {
-		a.closeRemoteWindowForHost(s.HostID)
+		// Status callbacks may run while desktopRemoteManager.mu is held, so never
+		// wait on the host lifecycle mutex here. Capturing the generation before
+		// queueing makes a later explicit reconnect/open supersede this close.
+		op := a.beginRemoteWindowHostOperation(s.HostID)
+		a.goSafe("remoteWindowTerminalClose", func() {
+			_ = op.run(func(func() bool) error {
+				a.closeRemoteWindowForHost(s.HostID)
+				return nil
+			})
+		})
 		return
 	}
 	// After a reconnect the loopback tunnel rebinds to a new port. Re-point an
@@ -246,23 +255,27 @@ func (a *App) onStatus(s RemoteConnectionStatusView) {
 // tunnel already rebinding — the window is kept regardless of failure, and the
 // user can reopen it if the Serve itself went away.
 func (a *App) refreshRemoteWindowAfterReconnect(hostID string) {
+	op := a.beginRemoteWindowHostOperation(hostID)
 	a.goSafe("remoteWindowReconnect", func() {
-		rt, err := a.remoteRT()
-		if err != nil {
-			return
-		}
-		status := rt.ServerStatus(hostID)
-		if status.State != "ready" || strings.TrimSpace(status.Workspace) == "" {
-			return
-		}
-		view, token, err := rt.EnsureServer(a.bootContext(), hostID, status.Workspace)
-		if err != nil || view.State != "ready" || view.LocalURL == "" {
-			return
-		}
-		if !a.hasRemoteWindow(hostID) {
-			return
-		}
-		_ = a.openRemoteWindowForHost(hostID, serveURLWithToken(view.LocalURL, token))
+		_ = op.run(func(current func() bool) error {
+			rt, err := a.remoteRT()
+			if err != nil {
+				return nil
+			}
+			status := rt.ServerStatus(hostID)
+			if status.State != "ready" || strings.TrimSpace(status.Workspace) == "" {
+				return nil
+			}
+			view, token, err := rt.EnsureServer(a.bootContext(), hostID, status.Workspace)
+			if err != nil || view.State != "ready" || view.LocalURL == "" || !current() {
+				return nil
+			}
+			if !a.hasRemoteWindow(hostID) {
+				return nil
+			}
+			_ = a.openRemoteWindowForHost(hostID, serveURLWithToken(view.LocalURL, token))
+			return nil
+		})
 	})
 }
 
@@ -298,15 +311,18 @@ func (a *App) UpdateRemoteHost(id string, in RemoteHostInput) (RemoteHostView, e
 }
 
 func (a *App) RemoveRemoteHost(id string) error {
-	rt, err := a.remoteRT()
-	if err != nil {
-		return err
-	}
-	if err := rt.RemoveHost(id); err != nil {
-		return err
-	}
-	a.closeRemoteWindowForHost(id)
-	return nil
+	op := a.beginRemoteWindowHostOperation(id)
+	return op.run(func(func() bool) error {
+		rt, err := a.remoteRT()
+		if err != nil {
+			return err
+		}
+		if err := rt.RemoveHost(id); err != nil {
+			return err
+		}
+		a.closeRemoteWindowForHost(id)
+		return nil
+	})
 }
 
 func (a *App) ScanSSHConfig() ([]RemoteHostInput, error) {
@@ -363,18 +379,21 @@ func applyRemoteConnectionError(view *RemoteConnectionStatusView, err error) {
 }
 
 func (a *App) DisconnectRemoteHost(id string) error {
-	rt, err := a.remoteRT()
-	if err != nil {
-		return err
-	}
-	if err := rt.Disconnect(id); err != nil {
-		return err
-	}
-	// An explicit disconnect kills the loopback tunnel; close the host's web
-	// window so the user is not left staring at a dead Serve page. The remote
-	// Serve itself stays resident.
-	a.closeRemoteWindowForHost(id)
-	return nil
+	op := a.beginRemoteWindowHostOperation(id)
+	return op.run(func(func() bool) error {
+		rt, err := a.remoteRT()
+		if err != nil {
+			return err
+		}
+		if err := rt.Disconnect(id); err != nil {
+			return err
+		}
+		// An explicit disconnect kills the loopback tunnel; close the host's web
+		// window so the user is not left staring at a dead Serve page. The remote
+		// Serve itself stays resident.
+		a.closeRemoteWindowForHost(id)
+		return nil
+	})
 }
 
 func (a *App) RemoteConnectionStatuses() []RemoteConnectionStatusView {
@@ -490,20 +509,29 @@ func (a *App) RemoveRemoteForward(hostID, forwardID string) error {
 //     window, if any, is left in place; it is re-pointed by the next
 //     successful open (or closed by an explicit disconnect/stop).
 func (a *App) OpenRemoteWorkspace(hostID, workspace string) error {
-	rt, err := a.remoteRT()
-	if err != nil {
-		return err
-	}
-	view, token, err := rt.EnsureServer(a.bootContext(), hostID, workspace)
-	if err != nil {
-		return err
-	}
-	if view.LocalURL == "" {
-		return fmt.Errorf("remote serve did not report a local URL")
-	}
-	url := serveURLWithToken(view.LocalURL, token)
-	a.saveLastRemoteWorkspace(hostID, workspace)
-	return a.openRemoteWindowForHost(hostID, url)
+	op := a.beginRemoteWindowHostOperation(hostID)
+	return op.run(func(current func() bool) error {
+		rt, err := a.remoteRT()
+		if err != nil {
+			return err
+		}
+		view, token, err := rt.EnsureServer(a.bootContext(), hostID, workspace)
+		if err != nil {
+			return err
+		}
+		// A disconnect, stop, removal, or terminal SSH failure that began while
+		// EnsureServer was in flight owns the final state and must prevent a late
+		// child window from being spawned against its dead tunnel.
+		if !current() {
+			return nil
+		}
+		if view.LocalURL == "" {
+			return fmt.Errorf("remote serve did not report a local URL")
+		}
+		url := serveURLWithToken(view.LocalURL, token)
+		a.saveLastRemoteWorkspace(hostID, workspace)
+		return a.openRemoteWindowForHost(hostID, url)
+	})
 }
 
 // serveURLWithToken appends the one-shot Serve token to the first-visit URL.
@@ -517,17 +545,20 @@ func serveURLWithToken(localURL, token string) string {
 }
 
 func (a *App) StopRemoteServer(hostID string) error {
-	rt, err := a.remoteRT()
-	if err != nil {
-		return err
-	}
-	if err := rt.StopServer(hostID); err != nil {
-		return err
-	}
-	// Stopping the service also tears down the loopback tunnel, so close the
-	// host's web window.
-	a.closeRemoteWindowForHost(hostID)
-	return nil
+	op := a.beginRemoteWindowHostOperation(hostID)
+	return op.run(func(func() bool) error {
+		rt, err := a.remoteRT()
+		if err != nil {
+			return err
+		}
+		if err := rt.StopServer(hostID); err != nil {
+			return err
+		}
+		// Stopping the service also tears down the loopback tunnel, so close the
+		// host's web window.
+		a.closeRemoteWindowForHost(hostID)
+		return nil
+	})
 }
 
 func (a *App) RemoteServerStatus(hostID string) (RemoteServerView, error) {

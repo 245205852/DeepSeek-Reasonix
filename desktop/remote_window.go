@@ -16,6 +16,7 @@ import (
 	goruntime "runtime"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 	"unicode"
 
@@ -44,6 +45,52 @@ type remoteWindowLaunch struct {
 	URL     string `json:"url"`
 	Title   string `json:"title,omitempty"`
 	HostKey string `json:"hostKey,omitempty"`
+}
+
+// remoteWindowLifecycleRegistry linearizes window/Serve lifecycle operations
+// per host while allowing different hosts to proceed independently. begin
+// advances the host generation before waiting for the mutex: a later explicit
+// action or SSH status event can therefore supersede an older operation that is
+// still blocked in EnsureServer. Entries intentionally live for the App process
+// lifetime; their cardinality is bounded by host identities used in that run.
+type remoteWindowLifecycleRegistry struct {
+	hosts sync.Map // map[string]*remoteWindowHostLifecycle
+}
+
+type remoteWindowHostLifecycle struct {
+	mu         sync.Mutex
+	generation atomic.Uint64
+}
+
+type remoteWindowHostOperation struct {
+	host       *remoteWindowHostLifecycle
+	generation uint64
+}
+
+func (r *remoteWindowLifecycleRegistry) begin(hostKey string) remoteWindowHostOperation {
+	value, _ := r.hosts.LoadOrStore(hostKey, &remoteWindowHostLifecycle{})
+	host := value.(*remoteWindowHostLifecycle)
+	return remoteWindowHostOperation{host: host, generation: host.generation.Add(1)}
+}
+
+// run executes fn only while this operation is still the newest request for
+// the host. fn may re-check current after a slow boundary before committing a
+// window spawn or navigation.
+func (op remoteWindowHostOperation) run(fn func(current func() bool) error) error {
+	if op.host == nil {
+		return nil
+	}
+	op.host.mu.Lock()
+	defer op.host.mu.Unlock()
+	current := func() bool { return op.host.generation.Load() == op.generation }
+	if !current() {
+		return nil
+	}
+	return fn(current)
+}
+
+func (a *App) beginRemoteWindowHostOperation(hostID string) remoteWindowHostOperation {
+	return a.remoteWindowLifecycles.begin(remoteWindowHostKey(hostID))
 }
 
 // remoteWindowTicketPath validates the ticket name and resolves it inside the

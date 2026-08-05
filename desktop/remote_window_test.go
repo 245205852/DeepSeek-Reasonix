@@ -230,6 +230,37 @@ func TestRemoteWindowRegistryHandoffExitKeepsLiveWindow(t *testing.T) {
 	}
 }
 
+func TestRemoteWindowHostLifecycleSkipsSupersededOperation(t *testing.T) {
+	var registry remoteWindowLifecycleRegistry
+	stale := registry.begin("box")
+	current := registry.begin("box")
+
+	staleCalled := false
+	if err := stale.run(func(func() bool) error {
+		staleCalled = true
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if staleCalled {
+		t.Fatal("superseded host lifecycle operation executed")
+	}
+
+	currentCalled := false
+	if err := current.run(func(isCurrent func() bool) error {
+		currentCalled = true
+		if !isCurrent() {
+			t.Fatal("current host lifecycle operation lost its generation")
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if !currentCalled {
+		t.Fatal("latest host lifecycle operation did not execute")
+	}
+}
+
 func TestRemoteWindowRegistryGenerationProtectsNewerWindow(t *testing.T) {
 	r := newRemoteWindowRegistry()
 	key := "host-b"
@@ -532,6 +563,86 @@ func TestRemoteWindowDisconnectClosesLiveWindowAfterHandoff(t *testing.T) {
 	waitRemoteWindowHelperExit(t, live)
 	if a.hasRemoteWindow("box") {
 		t.Fatal("live window survived explicit disconnect after handoff")
+	}
+}
+
+// TestOpenRemoteWorkspaceConcurrentDisconnectClosesLateWindow forces an
+// explicit disconnect to begin while the child window opener is still in
+// flight. The per-host lifecycle must let the opener finish registration first
+// and then close that exact process; otherwise disconnect can miss the late
+// registration and leave a window pointing at a dead tunnel.
+func TestOpenRemoteWorkspaceConcurrentDisconnectClosesLateWindow(t *testing.T) {
+	fake := &fakeRemoteKernel{
+		ensureView:  RemoteServerView{HostID: "box", Workspace: "/srv", State: "ready", LocalURL: "http://127.0.0.1:54321/"},
+		ensureToken: "tok-concurrent",
+	}
+	a := NewApp()
+	a.remoteRuntime = fake
+	key := remoteWindowHostKey("box")
+	live := spawnRemoteWindowHelper(t)
+	waited := false
+	defer func() {
+		if !waited {
+			_ = live.Kill()
+			waitRemoteWindowHelperExit(t, live)
+		}
+	}()
+
+	openerEntered := make(chan struct{})
+	releaseOpener := make(chan struct{})
+	a.remoteWindowOpener = func(remoteWindowLaunch) error {
+		close(openerEntered)
+		<-releaseOpener
+		a.remoteWindows.record(key, live)
+		return nil
+	}
+
+	openDone := make(chan error, 1)
+	go func() { openDone <- a.OpenRemoteWorkspace("box", "/srv") }()
+	select {
+	case <-openerEntered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("remote window opener did not start")
+	}
+
+	value, ok := a.remoteWindowLifecycles.hosts.Load(key)
+	if !ok {
+		t.Fatal("host lifecycle was not registered")
+	}
+	hostLifecycle := value.(*remoteWindowHostLifecycle)
+	openGeneration := hostLifecycle.generation.Load()
+	disconnectDone := make(chan error, 1)
+	go func() { disconnectDone <- a.DisconnectRemoteHost("box") }()
+	deadline := time.Now().Add(5 * time.Second)
+	for hostLifecycle.generation.Load() == openGeneration {
+		if time.Now().After(deadline) {
+			t.Fatal("disconnect did not enter the host lifecycle")
+		}
+		runtime.Gosched()
+	}
+
+	close(releaseOpener)
+	select {
+	case err := <-openDone:
+		if err != nil {
+			t.Fatalf("OpenRemoteWorkspace: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("OpenRemoteWorkspace did not finish")
+	}
+	select {
+	case err := <-disconnectDone:
+		if err != nil {
+			t.Fatalf("DisconnectRemoteHost: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("DisconnectRemoteHost did not finish")
+	}
+
+	waitRemoteWindowHelperExit(t, live)
+	waited = true
+	if a.hasRemoteWindow("box") {
+		t.Fatal("late window registration survived concurrent disconnect")
 	}
 }
 

@@ -153,6 +153,38 @@ func TestProviderSetupActivationFailureKeepsCredentialAndHidesDetails(t *testing
 	}
 }
 
+func TestProviderSetupRejectsCredentialSavedByAnotherProcess(t *testing.T) {
+	s, _ := newProviderSetupTestServer(t)
+	s.EnableProviderSetupForListener("127.0.0.1:8787")
+	state, ok := s.providerSetupSnapshot()
+	if !ok || !state.Required || state.CredentialRevision == "" {
+		t.Fatalf("initial setup state = %+v, enabled:%v", state, ok)
+	}
+	if _, err := config.SetCredential(providerSetupTestKeyEnv, "newer-external-secret"); err != nil {
+		t.Fatal(err)
+	}
+	s.buildController = func(context.Context, string) (*control.Controller, error) {
+		t.Fatal("stale setup request rebuilt the controller")
+		return nil, nil
+	}
+
+	httpServer := httptest.NewServer(s.Handler())
+	defer httpServer.Close()
+	resp := postProviderSetup(t, httpServer.URL, `{"apiKey":"stale-browser-secret"}`)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusConflict {
+		t.Fatalf("stale cross-process setup save = %d, want 409", resp.StatusCode)
+	}
+	resolved := config.ResolveCredentialForRootGlobalFirst(".", providerSetupTestKeyEnv)
+	if !resolved.Set || resolved.Value != "newer-external-secret" {
+		t.Fatalf("credential after stale setup = set:%v value:%q, want external value", resolved.Set, resolved.Value)
+	}
+	state, ok = s.providerSetupSnapshot()
+	if !ok || state.Required {
+		t.Fatalf("setup state did not refresh after stale save: %+v, enabled:%v", state, ok)
+	}
+}
+
 func TestProviderSetupIsLoopbackOnlyAndAuthenticated(t *testing.T) {
 	s, _ := newProviderSetupTestServer(t)
 	if s.EnableProviderSetupForListener("0.0.0.0:8787") {

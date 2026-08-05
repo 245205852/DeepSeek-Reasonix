@@ -5,6 +5,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/cookiejar"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -36,6 +37,20 @@ func TestServeStartsWithMissingProviderKey(t *testing.T) {
 	}
 
 	home := t.TempDir()
+	balanceStarted := make(chan struct{})
+	releaseBalance := make(chan struct{})
+	balanceServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		select {
+		case <-balanceStarted:
+		default:
+			close(balanceStarted)
+		}
+		<-releaseBalance
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{}`))
+	}))
+	t.Cleanup(balanceServer.Close)
+	t.Cleanup(func() { close(releaseBalance) })
 	configPath := filepath.Join(home, "config.toml")
 	configBody := `default_model = "remote-demo/model-a"
 
@@ -43,6 +58,7 @@ func TestServeStartsWithMissingProviderKey(t *testing.T) {
 name = "remote-demo"
 kind = "openai"
 base_url = "https://example.invalid/v1"
+balance_url = "` + balanceServer.URL + `"
 models = ["model-a"]
 default = "model-a"
 api_key_env = "REASONIX_TEST_REMOTE_MISSING_KEY"
@@ -88,6 +104,11 @@ api_key_env = "REASONIX_TEST_REMOTE_MISSING_KEY"
 	}
 	if addr == "" {
 		t.Fatalf("Serve did not publish its port with a missing Provider key:\n%s", output.String())
+	}
+	select {
+	case <-balanceStarted:
+	case <-time.After(5 * time.Second):
+		t.Fatalf("Serve did not start the configured balance diagnostic:\n%s", output.String())
 	}
 
 	jar, err := cookiejar.New(nil)

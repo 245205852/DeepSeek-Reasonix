@@ -20,13 +20,14 @@ var providerSetupHTML []byte
 const providerSetupMaxBody = 20 << 10
 
 type providerSetupState struct {
-	Enabled  bool   `json:"-"`
-	Required bool   `json:"required"`
-	Provider string `json:"provider,omitempty"`
-	Model    string `json:"model,omitempty"`
-	ModelRef string `json:"modelRef,omitempty"`
-	KeyEnv   string `json:"keyEnv,omitempty"`
-	Error    string `json:"error,omitempty"`
+	Enabled            bool   `json:"-"`
+	Required           bool   `json:"required"`
+	Provider           string `json:"provider,omitempty"`
+	Model              string `json:"model,omitempty"`
+	ModelRef           string `json:"modelRef,omitempty"`
+	KeyEnv             string `json:"keyEnv,omitempty"`
+	CredentialRevision string `json:"-"`
+	Error              string `json:"error,omitempty"`
 }
 
 // EnableProviderSetupForListener enables the credential-writing setup surface
@@ -52,15 +53,25 @@ func (s *Server) refreshProviderSetup(ref string) {
 	}
 
 	next := providerSetupState{Enabled: true}
-	cfg, err := config.Load()
-	if err != nil {
-		next.Error = "Unable to load the remote Reasonix configuration."
-	} else if entry, ok := cfg.ResolveModel(strings.TrimSpace(ref)); ok && entry.RequiresAPIKey() && entry.APIKey() == "" && config.IsValidCredentialKey(entry.APIKeyEnv) {
-		next.Required = true
-		next.Provider = entry.Name
-		next.Model = entry.Model
-		next.ModelRef = entry.Name + "/" + entry.Model
-		next.KeyEnv = strings.TrimSpace(entry.APIKeyEnv)
+	// Resolve the missing-key state and its credential-file revision under the
+	// same cross-process lock used by every writer. This prevents capturing a
+	// stale "missing" snapshot paired with a newer revision.
+	unlockCredentials, lockErr := config.LockUserCredentialEdits()
+	if lockErr != nil {
+		next.Error = "Unable to inspect the remote Reasonix credentials."
+	} else {
+		cfg, err := config.Load()
+		if err != nil {
+			next.Error = "Unable to load the remote Reasonix configuration."
+		} else if entry, ok := cfg.ResolveModel(strings.TrimSpace(ref)); ok && entry.RequiresAPIKey() && entry.APIKey() == "" && config.IsValidCredentialKey(entry.APIKeyEnv) {
+			next.Required = true
+			next.Provider = entry.Name
+			next.Model = entry.Model
+			next.ModelRef = entry.Name + "/" + entry.Model
+			next.KeyEnv = strings.TrimSpace(entry.APIKeyEnv)
+			next.CredentialRevision = config.CredentialStoreRevision()
+		}
+		unlockCredentials()
 	}
 
 	s.providerSetupMu.Lock()
@@ -150,15 +161,18 @@ func (s *Server) configureProviderCredential(ctx context.Context, key string) er
 	defer s.bindMu.Unlock()
 
 	setup, ok := s.providerSetupSnapshot()
-	if !ok || !setup.Required || setup.KeyEnv == "" || setup.ModelRef == "" {
+	if !ok || !setup.Required || setup.KeyEnv == "" || setup.ModelRef == "" || setup.CredentialRevision == "" {
 		return errProviderSetupUnavailable
 	}
 	if currentModelRef(s.ctl()) != setup.ModelRef {
 		s.refreshProviderSetup(currentModelRef(s.ctl()))
 		return errProviderSetupUnavailable
 	}
-	if _, err := config.SetCredential(setup.KeyEnv, key); err != nil {
+	if _, applied, err := config.SetCredentialIfRevision(setup.KeyEnv, key, setup.CredentialRevision); err != nil {
 		return fmt.Errorf("save remote provider credential: %w", err)
+	} else if !applied {
+		s.refreshProviderSetup(currentModelRef(s.ctl()))
+		return errProviderSetupUnavailable
 	}
 	if err := s.switchModelLocked(ctx, setup.ModelRef); err != nil {
 		s.providerSetupMu.Lock()

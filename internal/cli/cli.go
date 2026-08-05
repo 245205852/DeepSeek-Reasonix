@@ -944,14 +944,18 @@ func runServe(args []string) int {
 	if warning := serve.PlainHTTPAuthWarning(serveCfg, displayAddr); warning != "" {
 		fmt.Fprintf(os.Stderr, "  %s\n", warning)
 	}
-	// Diagnostic: check whether balance endpoint is reachable
-	if b, err := ctrl.Balance(context.Background()); err != nil {
-		fmt.Fprintf(os.Stderr, "  balance: error — %v\n", err)
-	} else if b == nil {
-		fmt.Fprintf(os.Stderr, "  balance: not configured (no balance_url for this provider)\n")
-	} else {
-		fmt.Printf("  balance: %s\n", b.Display())
-	}
+	// Balance is diagnostics, not readiness. Run it off the serving path so a
+	// slow or unauthenticated Provider endpoint cannot leave a published port
+	// file pointing at a listener whose HTTP accept loop has not started yet.
+	go func() {
+		if b, err := ctrl.Balance(context.Background()); err != nil {
+			fmt.Fprintf(os.Stderr, "  balance: error — %v\n", err)
+		} else if b == nil {
+			fmt.Fprintf(os.Stderr, "  balance: not configured (no balance_url for this provider)\n")
+		} else {
+			fmt.Printf("  balance: %s\n", b.Display())
+		}
+	}()
 
 	// Use graceful shutdown so SIGINT/SIGTERM drain active connections.
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)

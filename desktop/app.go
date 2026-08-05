@@ -247,11 +247,14 @@ type App struct {
 	remoteRuntime remoteKernel
 
 	// Remote web windows (SSH Serve child processes). The main process tracks
-	// one child per host with a generation counter; closing a window releases
-	// only its registration, while the remote Serve and the SSH connection keep
-	// running. The child process itself deliberately skips local runtimes.
-	remoteWindows      *remoteWindowRegistry
-	remoteWindowOpener func(remoteWindowLaunch) error // test-only injection
+	// the live child plus transient handoff processes for each host. Host-scoped
+	// lifecycle operations are generation-fenced and serialized so an overlapping
+	// disconnect/stop cannot miss a window that is still being spawned. Closing a
+	// window releases only its registration, while the remote Serve and the SSH
+	// connection keep running. The child deliberately skips local runtimes.
+	remoteWindows          *remoteWindowRegistry
+	remoteWindowLifecycles remoteWindowLifecycleRegistry
+	remoteWindowOpener     func(remoteWindowLaunch) error // test-only injection
 	// remoteWindowTicket/remoteWindowHostKey are set from argv before Wails
 	// starts in a child process. They gate the blank-shell middleware and the
 	// startup branches so the child never initializes local runtimes.
