@@ -70,9 +70,6 @@ func newDefaultTmuxRunner() TmuxRunner {
 }
 
 func (a *TmuxAdapter) Attach(ctx context.Context, projectDir, taskID, requestedSession string) TmuxResult {
-	if err := validateProjectDir(projectDir); err != nil {
-		return tmuxError(taskID, ErrTmuxMappingFailed, "invalid project directory")
-	}
 	if err := validateTmuxName(requestedSession); err != nil {
 		return tmuxError(taskID, ErrTmuxInvalidName, err.Error())
 	}
@@ -113,9 +110,6 @@ func (a *TmuxAdapter) Attach(ctx context.Context, projectDir, taskID, requestedS
 }
 
 func (a *TmuxAdapter) Status(ctx context.Context, projectDir, taskID string) TmuxResult {
-	if err := validateProjectDir(projectDir); err != nil {
-		return tmuxError(taskID, ErrTmuxMappingFailed, "invalid project directory")
-	}
 	m, err := a.load(projectDir, taskID)
 	if err != nil {
 		return tmuxError(taskID, ErrTmuxMappingFailed, "mapping read failed")
@@ -135,9 +129,6 @@ func (a *TmuxAdapter) Status(ctx context.Context, projectDir, taskID string) Tmu
 }
 
 func (a *TmuxAdapter) Open(ctx context.Context, projectDir, taskID string) TmuxResult {
-	if err := validateProjectDir(projectDir); err != nil {
-		return tmuxError(taskID, ErrTmuxMappingFailed, "invalid project directory")
-	}
 	r := a.Status(ctx, projectDir, taskID)
 	if r.Mapping == nil || r.Mapping.Stale {
 		return r
@@ -152,9 +143,6 @@ func (a *TmuxAdapter) Open(ctx context.Context, projectDir, taskID string) TmuxR
 }
 
 func (a *TmuxAdapter) Detach(ctx context.Context, projectDir, taskID string) TmuxResult {
-	if err := validateProjectDir(projectDir); err != nil {
-		return tmuxError(taskID, ErrTmuxMappingFailed, "invalid project directory")
-	}
 	m, err := a.load(projectDir, taskID)
 	if err != nil {
 		return tmuxError(taskID, ErrTmuxMappingFailed, "mapping read failed")
@@ -167,11 +155,13 @@ func (a *TmuxAdapter) Detach(ctx context.Context, projectDir, taskID string) Tmu
 			return tmuxError(taskID, ErrTmuxCommandFailed, "tmux detach failed")
 		}
 	}
-	id, err := safeID(taskID)
+	path, err := a.mappingPath(projectDir, taskID)
 	if err != nil {
 		return tmuxError(taskID, ErrTmuxMappingFailed, "invalid task id")
 	}
-	_ = os.Remove(a.mappingPath(projectDir, id))
+	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+		return tmuxError(taskID, ErrTmuxMappingFailed, "mapping removal failed")
+	}
 	return TmuxResult{SchemaVersion: 1, TaskID: taskID, Available: a.runner != nil, Idempotent: false, Mapping: m}
 }
 
@@ -206,27 +196,28 @@ func validateTmuxName(name string) error {
 	return nil
 }
 
-func validateProjectDir(projectDir string) error {
-	if strings.Contains(filepath.ToSlash(projectDir), "..") {
-		return errors.New("project directory escapes scope")
+func (a *TmuxAdapter) mappingPath(projectDir, taskID string) (string, error) {
+	id, err := safeID(taskID)
+	if err != nil {
+		return "", err
 	}
-	return nil
-}
-
-func (a *TmuxAdapter) mappingPath(projectDir, taskID string) string {
-	root := projectDir
-	if root == "" {
-		root = "."
+	root, err := NewFileStore(a.base).taskRoot(projectDir)
+	if err != nil {
+		return "", err
 	}
-	return filepath.Join(root, a.base, ".tmux", taskID+".json")
+	path := filepath.Join(root, ".tmux", id+".json")
+	if err := rejectSymlinkChain(root, path); err != nil {
+		return "", err
+	}
+	return path, nil
 }
 
 func (a *TmuxAdapter) load(projectDir, taskID string) (*TmuxMapping, error) {
-	id, err := safeID(taskID)
+	path, err := a.mappingPath(projectDir, taskID)
 	if err != nil {
 		return nil, err
 	}
-	b, err := os.ReadFile(a.mappingPath(projectDir, id))
+	b, err := os.ReadFile(path)
 	if os.IsNotExist(err) {
 		return nil, nil
 	}
@@ -241,11 +232,15 @@ func (a *TmuxAdapter) load(projectDir, taskID string) (*TmuxMapping, error) {
 }
 
 func (a *TmuxAdapter) save(projectDir string, m TmuxMapping) error {
-	if _, err := safeID(m.TaskID); err != nil {
+	path, err := a.mappingPath(projectDir, m.TaskID)
+	if err != nil {
 		return err
 	}
-	path := a.mappingPath(projectDir, m.TaskID)
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+	root, err := NewFileStore(a.base).taskRoot(projectDir)
+	if err != nil {
+		return err
+	}
+	if _, err := prepareTaskDir(root, ".tmux"); err != nil {
 		return err
 	}
 	b, err := json.Marshal(m)
@@ -262,8 +257,15 @@ func (a *TmuxAdapter) save(projectDir string, m TmuxMapping) error {
 		_ = tmp.Close()
 		return err
 	}
+	if err = tmp.Sync(); err != nil {
+		_ = tmp.Close()
+		return err
+	}
 	if err = tmp.Close(); err != nil {
 		return err
 	}
-	return os.Rename(name, path)
+	if err = os.Rename(name, path); err != nil {
+		return err
+	}
+	return nil
 }

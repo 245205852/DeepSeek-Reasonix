@@ -12,7 +12,6 @@ import (
 	"time"
 
 	"reasonix/internal/jobs"
-	"reasonix/internal/secrets"
 )
 
 // TaskRecorder bridges jobs.Manager lifecycle events into the Task Store. It
@@ -197,9 +196,9 @@ func (r *TaskRecorder) RecordDone(id string, st jobs.Status, jobErr error) {
 		cur.RuntimeOwnerID = ""
 		cur.Version++
 		cur.UpdatedAt = now
+		cur.ErrorSummary = ""
 		if jobErr != nil {
 			cur.ErrorCode = "job_failed"
-			cur.ErrorSummary = truncateSummary(secrets.RedactError(jobErr))
 		}
 		if serr := r.store.SaveTask(ctx, r.projectDir, *cur); serr != nil {
 			if errors.Is(serr, ErrStoreVersionConflict) {
@@ -230,17 +229,4 @@ func terminalState(st jobs.Status) TaskState {
 	default:
 		return ""
 	}
-}
-
-// truncateSummary caps an error message at maxErrorSummaryLen bytes without
-// splitting a UTF-8 rune.
-func truncateSummary(s string) string {
-	if len(s) <= maxErrorSummaryLen {
-		return s
-	}
-	b := []byte(s)[:maxErrorSummaryLen]
-	for len(b) > 0 && b[len(b)-1]&0xc0 == 0x80 {
-		b = b[:len(b)-1]
-	}
-	return string(b)
 }

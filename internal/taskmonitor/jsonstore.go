@@ -52,7 +52,7 @@ func safeID(name string) (string, error) {
 // directory names containing ".." are therefore valid inputs.
 func (s *FileStore) taskRoot(projectDir string) (string, error) {
 	if projectDir == "" {
-		return s.baseDir, nil
+		projectDir = "."
 	}
 	cleaned := filepath.Clean(projectDir)
 	root := filepath.Join(cleaned, s.baseDir)

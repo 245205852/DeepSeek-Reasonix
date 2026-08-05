@@ -286,7 +286,7 @@ func TestControlService_AuditEvent(t *testing.T) {
 		CreatedAt: time.Now(), UpdatedAt: time.Now(),
 	})
 
-	cs.StopTaskWithKiller(context.Background(), "/p", "t1", 1, "stop reason", "", killer)
+	cs.StopTaskWithKiller(context.Background(), "/p", "t1", 1, `stop command "rm -rf ./private" in /Users/alice/project`, "", killer)
 
 	events, _ := s.ListEvents(context.Background(), "/p", "t1", 0)
 	found := false
@@ -296,8 +296,8 @@ func TestControlService_AuditEvent(t *testing.T) {
 			if ev.Sequence < 1 {
 				t.Errorf("expected positive sequence, got %d", ev.Sequence)
 			}
-			if ev.ErrorSummary != "stop reason" {
-				t.Errorf("expected reason in event, got %q", ev.ErrorSummary)
+			if ev.ErrorSummary != "" {
+				t.Errorf("control reason leaked into event: %q", ev.ErrorSummary)
 			}
 			if ev.SessionID != "s1" {
 				t.Errorf("expected session s1, got %q", ev.SessionID)
@@ -309,6 +309,67 @@ func TestControlService_AuditEvent(t *testing.T) {
 	}
 	if !found {
 		t.Error("expected audit event for stop")
+	}
+}
+
+func TestControlService_StopPreservesRuntimeLeaseUntilExit(t *testing.T) {
+	s := NewInMemoryStore()
+	cs := NewControlService(s)
+	now := time.Now()
+	leaseUntil := now.Add(time.Minute)
+	mustUpsertControl(t, s, "/p", TaskSnapshot{
+		SchemaVersion: 1, TaskID: "t1", SessionID: "s1",
+		State: TaskStateRunning, RuntimeState: RuntimeStateAlive,
+		RuntimeLeaseUntil: leaseUntil, RuntimeOwnerID: "owner-1", Version: 1,
+		CreatedAt: now, UpdatedAt: now,
+	})
+
+	res, err := cs.StopTaskWithKiller(context.Background(), "/p", "t1", 1, "", "", &mockKiller{fn: func(string, string) bool { return true }})
+	if err != nil || !res.Accepted {
+		t.Fatalf("stop: result=%+v err=%v", res, err)
+	}
+	snap, err := s.GetTask(context.Background(), "/p", "t1")
+	if err != nil || snap == nil {
+		t.Fatalf("snapshot: %+v err=%v", snap, err)
+	}
+	if snap.RuntimeState != RuntimeStateAlive || snap.RuntimeOwnerID != "owner-1" || !snap.RuntimeLeaseUntil.Equal(leaseUntil) {
+		t.Fatalf("stop discarded live runtime ownership: %+v", snap)
+	}
+	reconciled := *snap
+	reconcileRuntime(&reconciled, leaseUntil.Add(time.Second))
+	if reconciled.State != TaskStateCancelled || reconciled.RuntimeState != RuntimeStateExited {
+		t.Fatalf("expired cancelled runtime did not reconcile: %+v", reconciled)
+	}
+}
+
+func TestControlService_StopBoundsLegacyLeaseLessRuntime(t *testing.T) {
+	s := NewInMemoryStore()
+	cs := NewControlService(s)
+	now := time.Now()
+	mustUpsertControl(t, s, "/p", TaskSnapshot{
+		SchemaVersion: 1, TaskID: "t1", SessionID: "s1",
+		State: TaskStateRunning, RuntimeState: RuntimeStateAlive,
+		RuntimeOwnerID: "owner-1", Version: 1, CreatedAt: now, UpdatedAt: now,
+	})
+
+	res, err := cs.StopTaskWithKiller(context.Background(), "/p", "t1", 1, "", "", &mockKiller{fn: func(string, string) bool { return true }})
+	if err != nil || !res.Accepted {
+		t.Fatalf("stop: result=%+v err=%v", res, err)
+	}
+	snap, err := s.GetTask(context.Background(), "/p", "t1")
+	if err != nil || snap == nil {
+		t.Fatalf("snapshot: %+v err=%v", snap, err)
+	}
+	if snap.RuntimeState != RuntimeStateAlive || snap.RuntimeLeaseUntil.IsZero() || snap.RuntimeOwnerID != "owner-1" {
+		t.Fatalf("legacy runtime did not receive bounded lease: %+v", snap)
+	}
+	if got := snap.RuntimeLeaseUntil.Sub(snap.UpdatedAt); got != runtimeLeaseTTL {
+		t.Fatalf("lease duration = %v, want %v", got, runtimeLeaseTTL)
+	}
+	reconciled := *snap
+	reconcileRuntime(&reconciled, snap.RuntimeLeaseUntil.Add(time.Second))
+	if reconciled.State != TaskStateCancelled || reconciled.RuntimeState != RuntimeStateExited {
+		t.Fatalf("expired legacy runtime did not reconcile: %+v", reconciled)
 	}
 }
 

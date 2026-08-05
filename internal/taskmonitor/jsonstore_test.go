@@ -203,6 +203,34 @@ func TestFileStore_RejectsSymlinkStoreParent(t *testing.T) {
 	}
 }
 
+func TestFileStore_DefaultProjectRejectsSymlinkStoreParent(t *testing.T) {
+	project := t.TempDir()
+	outside := t.TempDir()
+	oldWorkingDir, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chdir(project); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := os.Chdir(oldWorkingDir); err != nil {
+			t.Errorf("restore working directory: %v", err)
+		}
+	})
+	if err := os.Symlink(outside, ".reasonix"); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+
+	snap := TaskSnapshot{SchemaVersion: 1, TaskID: "t1", SessionID: "s", Version: 1, State: TaskStateRunning, CreatedAt: time.Now(), UpdatedAt: time.Now()}
+	if err := NewFileStore(".reasonix/tasks").SaveTask(context.Background(), "", snap); err == nil {
+		t.Fatal("expected default project scope to reject symlink store parent")
+	}
+	if _, err := os.Stat(filepath.Join(outside, "tasks", "t1", "snapshot.json")); !os.IsNotExist(err) {
+		t.Fatalf("default-scope write escaped through parent symlink: stat err=%v", err)
+	}
+}
+
 func TestFileStore_RejectsSymlinkSnapshotAndEvents(t *testing.T) {
 	project := t.TempDir()
 	outside := t.TempDir()

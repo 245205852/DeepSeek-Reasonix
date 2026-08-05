@@ -30,6 +30,37 @@ func SetTaskStore(s taskmonitor.Store) { taskStore = s }
 // Called by the wiring when a controller with jobs.Manager is available.
 func SetTaskJobKiller(k taskmonitor.JobKiller) { taskJobKiller = k }
 
+// The monitor commands are a content-free machine interface. Scrub optional
+// free-form summaries at the output boundary as well as at current write sites
+// so snapshots persisted by older versions cannot disclose paths or commands.
+func contentFreeTaskSnapshot(s taskmonitor.TaskSnapshot) taskmonitor.TaskSnapshot {
+	s.ErrorSummary = ""
+	return s
+}
+
+func contentFreeTaskSnapshots(tasks []taskmonitor.TaskSnapshot) []taskmonitor.TaskSnapshot {
+	if tasks == nil {
+		return nil
+	}
+	contentFree := make([]taskmonitor.TaskSnapshot, len(tasks))
+	for i := range tasks {
+		contentFree[i] = contentFreeTaskSnapshot(tasks[i])
+	}
+	return contentFree
+}
+
+func contentFreeTaskEvents(events []taskmonitor.TaskEvent) []taskmonitor.TaskEvent {
+	if events == nil {
+		return nil
+	}
+	contentFree := make([]taskmonitor.TaskEvent, len(events))
+	for i := range events {
+		contentFree[i] = events[i]
+		contentFree[i].ErrorSummary = ""
+	}
+	return contentFree
+}
+
 func taskCommand(args []string) int {
 	if len(args) == 0 {
 		fmt.Fprintln(os.Stderr, "usage: reasonix task <list|show|monitor|status|events|stop|cancel|requeue|open-session|tmux> [flags]")
@@ -232,6 +263,7 @@ func taskListCmd(store taskmonitor.Store, args []string) int {
 		fmt.Fprintln(os.Stderr, err)
 		return 1
 	}
+	tasks = contentFreeTaskSnapshots(tasks)
 	output := struct {
 		SchemaVersion int                        `json:"schema_version"`
 		Tasks         []taskmonitor.TaskSnapshot `json:"tasks"`
@@ -278,7 +310,8 @@ func taskStatusCmd(store taskmonitor.Store, args []string) int {
 		Task          *taskmonitor.TaskSnapshot `json:"task"`
 	}{SchemaVersion: 1}
 	if snap != nil {
-		output.Task = snap
+		contentFree := contentFreeTaskSnapshot(*snap)
+		output.Task = &contentFree
 	}
 	enc := json.NewEncoder(os.Stdout)
 	enc.SetIndent("", "  ")
@@ -325,6 +358,8 @@ func taskEventsCmd(store taskmonitor.Store, args []string) int {
 			fmt.Fprintln(os.Stderr, err)
 			return 1
 		}
+
+		events = contentFreeTaskEvents(events)
 
 		// Find max sequence to update cursor
 		for _, e := range events {

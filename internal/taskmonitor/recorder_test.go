@@ -3,7 +3,6 @@ package taskmonitor
 import (
 	"context"
 	"fmt"
-	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -120,49 +119,23 @@ func TestTaskRecorder_OldOwnerCannotRenewNewRuntimeGeneration(t *testing.T) {
 	}
 }
 
-func TestTaskRecorder_FailedMapsError(t *testing.T) {
+func TestTaskRecorder_FailedUsesContentFreeErrorCode(t *testing.T) {
 	dir := t.TempDir()
 	r, store := newRecorderForTest(t, dir)
 	ctx := context.Background()
 
 	r.RecordStart("bash-1", "bash", "")
-	r.RecordDone("bash-1", jobs.Failed, context.DeadlineExceeded)
+	r.RecordDone("bash-1", jobs.Failed, fmt.Errorf(`command "deploy --token secret" failed in /Users/alice/private`))
 	snap, _ := store.GetTask(ctx, dir, monitorTaskID("sess-1", "bash-1"))
-	if snap.State != TaskStateFailed || snap.ErrorCode != "job_failed" || !strings.Contains(snap.ErrorSummary, "deadline") {
+	if snap.State != TaskStateFailed || snap.ErrorCode != "job_failed" || snap.ErrorSummary != "" {
 		t.Fatalf("snapshot = %+v", snap)
 	}
-}
-
-func TestTaskRecorder_TruncatesLongError(t *testing.T) {
-	dir := t.TempDir()
-	r, store := newRecorderForTest(t, dir)
-	ctx := context.Background()
-
-	long := strings.Repeat("x", maxErrorSummaryLen*2)
-	r.RecordStart("t1", "bash", "")
-	r.RecordDone("t1", jobs.Failed, fmt.Errorf("%s", long))
-	snap, _ := store.GetTask(ctx, dir, monitorTaskID("sess-1", "t1"))
-	if len(snap.ErrorSummary) > maxErrorSummaryLen {
-		t.Fatalf("ErrorSummary length %d exceeds max %d", len(snap.ErrorSummary), maxErrorSummaryLen)
+	events, err := store.ListEvents(ctx, dir, monitorTaskID("sess-1", "bash-1"), 0)
+	if err != nil || len(events) != 2 {
+		t.Fatalf("events = %+v, err=%v", events, err)
 	}
-}
-
-func TestTaskRecorder_RedactsCredentialFromErrorSummary(t *testing.T) {
-	dir := t.TempDir()
-	r, store := newRecorderForTest(t, dir)
-	ctx := context.Background()
-	secret := "sk-real-secret-value-123456"
-	r.RecordStart("credential-error", "task", "")
-	r.RecordDone("credential-error", jobs.Failed, fmt.Errorf("provider rejected DEEPSEEK_API_KEY=%s", secret))
-	snap, err := store.GetTask(ctx, dir, monitorTaskID("sess-1", "credential-error"))
-	if err != nil || snap == nil {
-		t.Fatalf("snapshot = %+v, err=%v", snap, err)
-	}
-	if strings.Contains(snap.ErrorSummary, secret) {
-		t.Fatalf("error summary leaked credential: %q", snap.ErrorSummary)
-	}
-	if !strings.Contains(snap.ErrorSummary, "****") {
-		t.Fatalf("error summary was not redacted: %q", snap.ErrorSummary)
+	if events[1].ErrorCode != "job_failed" || events[1].ErrorSummary != "" {
+		t.Fatalf("terminal event exposed error content: %+v", events[1])
 	}
 }
 

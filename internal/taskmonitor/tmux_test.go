@@ -99,3 +99,90 @@ func TestTmuxAdapterRejectsTaskPathTraversal(t *testing.T) {
 		t.Fatal("expected invalid task id error")
 	}
 }
+
+func TestTmuxAdapterAcceptsCleanableProjectDir(t *testing.T) {
+	parent := t.TempDir()
+	for _, projectDir := range []string{
+		filepath.Join(parent, "nested", "..", "project"),
+		filepath.Join(parent, "project..archive"),
+	} {
+		if err := os.MkdirAll(filepath.Clean(projectDir), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		s := NewInMemoryStore()
+		seedTmuxTask(t, s, projectDir)
+		a := NewTmuxAdapterWithRunner(s, ".reasonix/tasks", &tmuxMock{})
+		if result := a.Attach(context.Background(), projectDir, "t1", "demo"); result.Error != nil {
+			t.Fatalf("Attach(%q): %+v", projectDir, result.Error)
+		}
+	}
+}
+
+func TestTmuxAdapterRejectsSymlinkMappingDirectory(t *testing.T) {
+	project := t.TempDir()
+	outside := t.TempDir()
+	root := filepath.Join(project, ".reasonix", "tasks")
+	if err := os.MkdirAll(root, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, filepath.Join(root, ".tmux")); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+
+	s := NewInMemoryStore()
+	seedTmuxTask(t, s, project)
+	attachRunner := &tmuxMock{}
+	a := NewTmuxAdapterWithRunner(s, ".reasonix/tasks", attachRunner)
+	if result := a.Attach(context.Background(), project, "t1", "demo"); result.Error == nil || result.Error.Code != ErrTmuxMappingFailed {
+		t.Fatalf("expected mapping write rejection, got %+v", result)
+	}
+	outsideMapping := filepath.Join(outside, "t1.json")
+	if _, err := os.Stat(outsideMapping); !os.IsNotExist(err) {
+		t.Fatalf("mapping escaped through symlink: %v", err)
+	}
+
+	mapping := `{"schema_version":1,"task_id":"t1","session":"victim","window":"task","pane":"victim:task.0"}`
+	if err := os.WriteFile(outsideMapping, []byte(mapping), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	readRunner := &tmuxMock{}
+	a = NewTmuxAdapterWithRunner(s, ".reasonix/tasks", readRunner)
+	for _, result := range []TmuxResult{
+		a.Status(context.Background(), project, "t1"),
+		a.Detach(context.Background(), project, "t1"),
+	} {
+		if result.Error == nil || result.Error.Code != ErrTmuxMappingFailed {
+			t.Fatalf("expected mapping read rejection, got %+v", result)
+		}
+	}
+	if len(readRunner.calls) != 0 {
+		t.Fatalf("untrusted mapping triggered tmux calls: %#v", readRunner.calls)
+	}
+	if _, err := os.Stat(outsideMapping); err != nil {
+		t.Fatalf("outside mapping was removed: %v", err)
+	}
+}
+
+func TestTmuxAdapterWritesPrivateMappingFiles(t *testing.T) {
+	project := t.TempDir()
+	s := NewInMemoryStore()
+	seedTmuxTask(t, s, project)
+	a := NewTmuxAdapterWithRunner(s, ".reasonix/tasks", &tmuxMock{})
+	if result := a.Attach(context.Background(), project, "t1", "demo"); result.Error != nil {
+		t.Fatal(result.Error)
+	}
+
+	for path, want := range map[string]os.FileMode{
+		filepath.Join(project, ".reasonix", "tasks"):                     0o700,
+		filepath.Join(project, ".reasonix", "tasks", ".tmux"):            0o700,
+		filepath.Join(project, ".reasonix", "tasks", ".tmux", "t1.json"): 0o600,
+	} {
+		info, err := os.Stat(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := info.Mode().Perm(); got != want {
+			t.Errorf("%s mode = %o, want %o", path, got, want)
+		}
+	}
+}

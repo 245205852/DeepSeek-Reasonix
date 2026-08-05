@@ -12,6 +12,8 @@ import (
 	"reasonix/internal/taskmonitor"
 )
 
+const legacySensitiveSummary = `command "deploy --token secret" failed in /Users/alice/private`
+
 // testStore builds an InMemoryStore with a few preloaded tasks and events.
 func testStore(t *testing.T) *taskmonitor.InMemoryStore {
 	t.Helper()
@@ -31,10 +33,14 @@ func testStore(t *testing.T) *taskmonitor.InMemoryStore {
 
 	// Events for a1
 	for i := 1; i <= 3; i++ {
-		mustAppend(t, s, "/proj-a", taskmonitor.TaskEvent{
+		event := taskmonitor.TaskEvent{
 			Sequence: i, Timestamp: seed(i), EventType: "state_change",
 			TaskID: "a1", SessionID: "s1", State: taskmonitor.TaskStateRunning,
-		})
+		}
+		if i == 3 {
+			event.ErrorSummary = legacySensitiveSummary
+		}
+		mustAppend(t, s, "/proj-a", event)
 	}
 
 	// Project B: one task
@@ -334,10 +340,35 @@ func TestTaskEvents_JSON_NoSensitiveFields(t *testing.T) {
 	if exit != 0 {
 		t.Fatalf("exit=%d", exit)
 	}
-	for _, forbidden := range []string{"prompt", "tool_args", "tool_result", "reasoning"} {
+	for _, forbidden := range []string{"prompt", "tool_args", "tool_result", "reasoning", "error_summary", legacySensitiveSummary} {
 		if strings.Contains(out, forbidden) {
 			t.Errorf("output contains forbidden field %q", forbidden)
 		}
+	}
+}
+
+func TestTaskMonitorOutputsOmitLegacyErrorSummary(t *testing.T) {
+	s := testStore(t)
+	taskStore = s
+	commands := []struct {
+		name string
+		run  func() int
+	}{
+		{name: "list", run: func() int { return taskListCmd(s, []string{"--json"}) }},
+		{name: "status", run: func() int { return taskStatusCmd(s, []string{"--json", "a1"}) }},
+		{name: "events JSON", run: func() int { return taskEventsCmd(s, []string{"--json", "a1"}) }},
+		{name: "events JSONL", run: func() int { return taskEventsCmd(s, []string{"--jsonl", "a1"}) }},
+	}
+	for _, command := range commands {
+		t.Run(command.name, func(t *testing.T) {
+			exit, out := captureOut(command.run)
+			if exit != 0 {
+				t.Fatalf("exit=%d", exit)
+			}
+			if strings.Contains(out, legacySensitiveSummary) || strings.Contains(out, `"error_summary"`) {
+				t.Fatalf("legacy error summary leaked: %s", out)
+			}
+		})
 	}
 }
 
@@ -461,7 +492,7 @@ func writeTaskData(t *testing.T, dir string) {
 	snap := taskmonitor.TaskSnapshot{
 		SchemaVersion: 1, TaskID: "task-1", SessionID: "s1",
 		State: taskmonitor.TaskStateFailed, CreatedAt: now.Add(-time.Hour), UpdatedAt: now,
-		ErrorCode: "TIMEOUT", ErrorSummary: "deadline exceeded",
+		ErrorCode: "TIMEOUT", ErrorSummary: legacySensitiveSummary,
 	}
 	data, _ := json.Marshal(snap)
 	if err := os.WriteFile(filepath.Join(taskDir, "snapshot.json"), data, 0o644); err != nil {
@@ -469,7 +500,7 @@ func writeTaskData(t *testing.T, dir string) {
 	}
 	events := `{"sequence":1,"timestamp":"2025-01-01T00:00:01Z","event_type":"state_change","task_id":"task-1","session_id":"s1","state":"queued"}
 {"sequence":2,"timestamp":"2025-01-01T00:00:02Z","event_type":"state_change","task_id":"task-1","session_id":"s1","state":"running"}
-{"sequence":3,"timestamp":"2025-01-01T00:00:03Z","event_type":"error","task_id":"task-1","session_id":"s1","state":"failed","error_code":"TIMEOUT"}
+{"sequence":3,"timestamp":"2025-01-01T00:00:03Z","event_type":"error","task_id":"task-1","session_id":"s1","state":"failed","error_code":"TIMEOUT","error_summary":"command deploy failed in /Users/alice/private"}
 `
 	if err := os.WriteFile(filepath.Join(taskDir, "events.jsonl"), []byte(events), 0o644); err != nil {
 		t.Fatal(err)
@@ -512,8 +543,8 @@ func TestFileStoreIntegration_Status(t *testing.T) {
 	if !strings.Contains(out, `task-1`) {
 		t.Errorf("expected task-1: %s", out)
 	}
-	if !strings.Contains(out, `deadline exceeded`) {
-		t.Errorf("expected error_summary: %s", out)
+	if strings.Contains(out, legacySensitiveSummary) || strings.Contains(out, `"error_summary"`) {
+		t.Errorf("status leaked legacy error_summary: %s", out)
 	}
 }
 
