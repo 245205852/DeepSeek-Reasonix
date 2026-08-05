@@ -535,7 +535,7 @@ func TestFileStoreIntegration_Status(t *testing.T) {
 	writeTaskData(t, dir)
 
 	exit, out := captureOut(func() int {
-		return taskCommand([]string{"monitor", "status", "--json", "--dir", dir, "task-1"})
+		return taskCommand([]string{"monitor", "status", "task-1", "--json", "--dir", dir})
 	})
 	if exit != 0 {
 		t.Fatalf("exit=%d", exit)
@@ -613,7 +613,7 @@ func TestFileStoreIntegration_Events_AfterCursor(t *testing.T) {
 	writeTaskData(t, dir)
 
 	exit, out := captureOut(func() int {
-		return taskCommand([]string{"monitor", "events", "--json", "--dir", dir, "--after", "1", "task-1"})
+		return taskCommand([]string{"monitor", "events", "task-1", "--json", "--dir", dir, "--after", "1"})
 	})
 	if exit != 0 {
 		t.Fatalf("exit=%d", exit)
@@ -671,7 +671,7 @@ func TestCLI_StopCallsKill(t *testing.T) {
 	})
 
 	exit, out := captureOut(func() int {
-		ec := taskCommand([]string{"stop", "--json", "--expected-version", "1", "t1"})
+		ec := taskCommand([]string{"stop", "t1", "--json", "--expected-version", "1"})
 		return ec
 	})
 	if exit != 0 {
@@ -696,7 +696,7 @@ func TestCLI_CancelCallsKill(t *testing.T) {
 	})
 
 	exit, out := captureOut(func() int {
-		return taskCommand([]string{"cancel", "--json", "--expected-version", "1", "t1"})
+		return taskCommand([]string{"cancel", "t1", "--json", "--expected-version", "1"})
 	})
 	if exit != 0 {
 		t.Fatalf("exit=%d out=%s", exit, out)
@@ -717,7 +717,7 @@ func TestCLI_RequeueReportsQueuedButExited(t *testing.T) {
 	})
 
 	exit, out := captureOut(func() int {
-		return taskCommand([]string{"requeue", "--json", "--expected-version", "2", "--dir", "/p", "failed"})
+		return taskCommand([]string{"requeue", "failed", "--json", "--expected-version", "2", "--dir", "/p"})
 	})
 	if exit != 0 {
 		t.Fatalf("exit=%d out=%s", exit, out)
@@ -728,6 +728,30 @@ func TestCLI_RequeueReportsQueuedButExited(t *testing.T) {
 	}
 	if result.Command != "requeue" || result.State != taskmonitor.TaskStateQueued || result.RuntimeState != taskmonitor.RuntimeStateExited {
 		t.Fatalf("unexpected requeue result: %+v", result)
+	}
+}
+
+func TestCLI_OpenSessionAcceptsDocumentedIDBeforeFlags(t *testing.T) {
+	s := taskmonitor.NewInMemoryStore()
+	taskStore = s
+	mustUpsert(t, s, "/p", taskmonitor.TaskSnapshot{
+		SchemaVersion: 1, TaskID: "t1", SessionID: "s1",
+		State: taskmonitor.TaskStateRunning, Version: 1,
+		CreatedAt: time.Now(), UpdatedAt: time.Now(),
+	})
+
+	exit, out := captureOut(func() int {
+		return taskCommand([]string{"open-session", "t1", "--json", "--dir", "/p"})
+	})
+	if exit != 0 {
+		t.Fatalf("exit=%d out=%s", exit, out)
+	}
+	var result taskmonitor.ControlResult
+	if err := json.Unmarshal([]byte(out), &result); err != nil {
+		t.Fatalf("decode output: %v\n%s", err, out)
+	}
+	if !result.Accepted || result.TaskID != "t1" || result.SessionID != "s1" {
+		t.Fatalf("unexpected open-session result: %+v", result)
 	}
 }
 

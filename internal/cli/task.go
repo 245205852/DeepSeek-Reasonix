@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"strings"
 	"time"
 
 	"reasonix/internal/taskmonitor"
@@ -156,7 +157,7 @@ func taskTmuxFlags(name string, args []string) (string, string, bool, *flag.Flag
 	dir := fs.String("dir", "", "project directory scope")
 	session := fs.String("session", "", "tmux session name")
 	jsonOut := fs.Bool("json", false, "output as JSON")
-	if err := fs.Parse(reorderTaskID(args)); err != nil {
+	if err := fs.Parse(reorderTaskID(fs, args)); err != nil {
 		return "", "", false, fs, 2
 	}
 	return *dir, *session, *jsonOut, fs, 0
@@ -164,33 +165,52 @@ func taskTmuxFlags(name string, args []string) (string, string, bool, *flag.Flag
 
 // reorderTaskID lets users place the positional task ID before or after flags.
 // The standard flag package stops parsing at the first positional argument.
-func reorderTaskID(args []string) []string {
-	var id string
+func reorderTaskID(fs *flag.FlagSet, args []string) []string {
 	flags := make([]string, 0, len(args))
+	positionals := make([]string, 0, 1)
 	for i := 0; i < len(args); i++ {
 		arg := args[i]
-		if arg == "--dir" || arg == "--session" {
+		if arg == "--" {
 			flags = append(flags, arg)
-			if i+1 < len(args) {
-				flags = append(flags, args[i+1])
-				i++
-			}
+			positionals = append(positionals, args[i+1:]...)
+			break
+		}
+
+		name, inlineValue := taskFlagName(arg)
+		if name == "" {
+			positionals = append(positionals, arg)
 			continue
 		}
-		if arg == "--json" {
-			flags = append(flags, arg)
+
+		flags = append(flags, arg)
+		registered := fs.Lookup(name)
+		if registered == nil || inlineValue {
 			continue
 		}
-		if id == "" {
-			id = arg
-		} else {
-			flags = append(flags, arg)
+		if boolean, ok := registered.Value.(interface{ IsBoolFlag() bool }); ok && boolean.IsBoolFlag() {
+			continue
+		}
+		if i+1 < len(args) {
+			flags = append(flags, args[i+1])
+			i++
 		}
 	}
-	if id == "" {
-		return flags
+	return append(flags, positionals...)
+}
+
+func taskFlagName(arg string) (name string, inlineValue bool) {
+	if arg == "-" || !strings.HasPrefix(arg, "-") {
+		return "", false
 	}
-	return append(flags, id)
+	name = strings.TrimPrefix(arg, "-")
+	name = strings.TrimPrefix(name, "-")
+	if name == "" {
+		return "", false
+	}
+	if before, _, ok := strings.Cut(name, "="); ok {
+		return before, true
+	}
+	return name, false
 }
 
 func printTmuxResult(r taskmonitor.TmuxResult, jsonOut bool) int {
@@ -286,7 +306,7 @@ func taskStatusCmd(store taskmonitor.Store, args []string) int {
 	fs := flag.NewFlagSet("task status", flag.ContinueOnError)
 	jsonOut := fs.Bool("json", false, "output as JSON")
 	dir := fs.String("dir", "", "project directory scope")
-	if err := fs.Parse(args); err != nil {
+	if err := fs.Parse(reorderTaskID(fs, args)); err != nil {
 		return 2
 	}
 	if !*jsonOut {
@@ -331,7 +351,7 @@ func taskEventsCmd(store taskmonitor.Store, args []string) int {
 	dir := fs.String("dir", "", "project directory scope")
 	after := fs.Int("after", 0, "only events with Sequence > N")
 	follow := fs.Bool("follow", false, "poll for new events until interrupted")
-	if err := fs.Parse(args); err != nil {
+	if err := fs.Parse(reorderTaskID(fs, args)); err != nil {
 		return 2
 	}
 	if !*jsonOut && !*jsonl {
@@ -419,7 +439,7 @@ func taskStopCmd(store taskmonitor.Store, args []string) int {
 	expectedVersion := fs.Uint64("expected-version", 0, "expected task version for CAS")
 	reason := fs.String("reason", "", "reason for stopping")
 	idemKey := fs.String("idempotency-key", "", "idempotency key")
-	if err := fs.Parse(args); err != nil {
+	if err := fs.Parse(reorderTaskID(fs, args)); err != nil {
 		return 2
 	}
 	if !*jsonOut {
@@ -449,7 +469,7 @@ func taskCancelCmd(store taskmonitor.Store, args []string) int {
 	expectedVersion := fs.Uint64("expected-version", 0, "expected task version for CAS")
 	reason := fs.String("reason", "", "reason for cancelling")
 	idemKey := fs.String("idempotency-key", "", "idempotency key")
-	if err := fs.Parse(args); err != nil {
+	if err := fs.Parse(reorderTaskID(fs, args)); err != nil {
 		return 2
 	}
 	if !*jsonOut {
@@ -478,7 +498,7 @@ func taskRequeueCmd(store taskmonitor.Store, args []string) int {
 	dir := fs.String("dir", "", "project directory scope")
 	expectedVersion := fs.Uint64("expected-version", 0, "expected task version for CAS")
 	idemKey := fs.String("idempotency-key", "", "idempotency key")
-	if err := fs.Parse(args); err != nil {
+	if err := fs.Parse(reorderTaskID(fs, args)); err != nil {
 		return 2
 	}
 	if !*jsonOut {
@@ -505,7 +525,7 @@ func taskOpenSessionCmd(store taskmonitor.Store, args []string) int {
 	fs := flag.NewFlagSet("task open-session", flag.ContinueOnError)
 	jsonOut := fs.Bool("json", false, "output as JSON")
 	dir := fs.String("dir", "", "project directory scope")
-	if err := fs.Parse(args); err != nil {
+	if err := fs.Parse(reorderTaskID(fs, args)); err != nil {
 		return 2
 	}
 	if !*jsonOut {
