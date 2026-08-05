@@ -11,10 +11,13 @@ The module is **standard library only** — zero dependencies.
 ## Install
 
 ```sh
-go get github.com/esengine/DeepSeek-Reasonix/sdk/go
+go get github.com/esengine/DeepSeek-Reasonix/sdk/go@v1.0.0
 ```
 
-Requires Go 1.23+.
+Requires Go 1.23+. SDK releases use immutable `sdk/go/vX.Y.Z` repository
+tags; `sdk/go/v1.0.0` is published with the first product release containing
+Extension Protocol v1. Before that tag exists, develop against a source
+checkout instead of depending on an unversioned API.
 
 ## Minimal example
 
@@ -76,6 +79,11 @@ The SDK serializes protocol writes itself; extensions must not write directly
 to stdout. stderr remains available for diagnostics.
 
 ## Runnable example
+
+[`examples/starterextension`](examples/starterextension/README.md) is the
+copyable first extension: it includes a Manifest v1 file, a minimal sidecar,
+cross-platform build commands, linked installation, `/reload`, and a visible
+input-rewrite check.
 
 [`examples/fullsidecar`](examples/fullsidecar/main.go) is the reference
 extension: input rewriting (try the `/fs ` trigger), tool interception

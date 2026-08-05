@@ -102,16 +102,29 @@ go test ./internal/extension/... -run '^$' -bench 'Extension|Dispatch' -benchmem
 
 ## Developing an extension
 
+Start with the complete
+[`starterextension`](../sdk/go/examples/starterextension/README.md) package.
+It keeps the manifest, Sidecar source, cross-platform build commands, linked
+installation, and first observable intercept in one directory. The normal
+development loop is:
+
 1. Add `apiVersion: "reasonix.io/plugin/v1"` to `reasonix-plugin.json` and
    declare `contributes` and (optionally) `runtime` — see
-   `docs/PLUGIN_PACKAGES.md`.
-2. Implement the sidecar. The Go SDK (`sdk/go`, standard library only)
-   handles the transport, handshake, sequencing, content references, and
-   shutdown for you; `docs/EXTENSION_PROTOCOL.md` describes the wire
-   contract and `docs/EXTENSION_PROTOCOL.generated.md` is the generated
-   method index.
-3. Validate with `reasonix plugin doctor <name>` and iterate with
-   `--link` + `/reload`.
+   [Plugin Packages](./PLUGIN_PACKAGES.md#manifest-v1-extensions).
+2. Implement the Sidecar. The [Go SDK](../sdk/go/README.md) (standard library
+   only) handles transport, handshake, sequencing, content references, and
+   shutdown; the [wire contract](./EXTENSION_PROTOCOL.md) and
+   [generated method index](./EXTENSION_PROTOCOL.generated.md) are the
+   language-neutral references.
+3. Build the runtime binary, preview its trust and capabilities with
+   `reasonix plugin install /path/to/plugin --dry-run`, then install it with
+   `--link --yes`.
+4. Validate with `reasonix plugin doctor <name>`, run `/reload` while idle,
+   and exercise the contributed intercept, Provider, UI action, or resource.
+
+SDK releases use immutable `sdk/go/vX.Y.Z` tags. The first public version is
+`sdk/go/v1.0.0`; until that tag exists, use the starter from a source checkout
+instead of relying on an unversioned module.
 
 ## Compatibility
 
