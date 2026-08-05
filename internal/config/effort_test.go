@@ -151,6 +151,8 @@ func TestIsMimoEntry(t *testing.T) {
 		{"https://api.xiaomimimo.com/v1/responses", true},
 		{"https://api.deepseek.com", false},
 		{"https://dashscope.aliyuncs.com/compatible-mode/v1", false},
+		{"https://api.xiaomimimo.com.attacker.example/v1", false},
+		{"https://example.com/?u=api.xiaomimimo.com", false},
 		{"", false},
 	} {
 		if got := isMimoEntry(&ProviderEntry{BaseURL: tc.baseURL}); got != tc.want {

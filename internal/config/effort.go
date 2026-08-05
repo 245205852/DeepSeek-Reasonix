@@ -402,14 +402,16 @@ func isOllamaCloudEntry(e *ProviderEntry) bool {
 // isMimoEntry reports whether the entry points at Xiaomi MiMo's Responses API
 // (api.xiaomimimo.com). Host matching mirrors provider/responses.DetectVendor
 // but lives in the config layer to avoid an import cycle (control → config,
-// not control → provider). The kind check is intentionally absent: MiMo is
-// served through both kind="responses" and kind="openai" presets.
+// not control → provider). Host-based exact/suffix matching (not full-URL
+// substring) so unrelated or attacker-controlled URLs can't enable MiMo
+// effort. The kind check is intentionally absent: MiMo is served through both
+// kind="responses" and kind="openai" presets.
 func isMimoEntry(e *ProviderEntry) bool {
 	if e == nil {
 		return false
 	}
-	u := strings.ToLower(strings.TrimSpace(e.BaseURL))
-	return strings.Contains(u, "api.xiaomimimo.com")
+	host := officialProviderHost(e.BaseURL)
+	return host == "api.xiaomimimo.com" || strings.HasSuffix(host, ".xiaomimimo.com")
 }
 
 // mimoEffortCapability mirrors MiMo's documented binary thinking knob: "none"
