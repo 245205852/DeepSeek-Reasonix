@@ -293,8 +293,13 @@ type App struct {
 	heartbeat *HeartbeatEngine // scheduled heartbeat tasks; nil until startup
 
 	previousRun repair.PreviousRunObservation
+	// Healthy-update identity is captured before Wails starts. A process may
+	// commit only the complete probationary transaction it actually booted from,
+	// never a rewritten or later same-version retry.
+	healthyUpdateCreatedAt     string
+	healthyUpdateTransactionID string
 	// startupReady records that the window reached domReady so LKG config
-	// snapshots are only written after a real UI boot.
+	// snapshots and update health are only committed after a real UI boot.
 	startupReady atomic.Bool
 }
 
@@ -970,8 +975,17 @@ func (a *App) shutdown(context.Context) {
 		a.mu.Unlock()
 	}
 	if a.startupReady.Load() {
-		// Independent last-known-good config snapshot after a successful UI
-		// session. Does not participate in startup decisions.
+		// A visible UI is sufficient health evidence even if the user closes the
+		// window before the delayed post-DOM task runs.
+		if err := a.commitPendingUpdateHealth(); err != nil {
+			slog.Warn("desktop: commit healthy update during shutdown", "err", err)
+		}
+		if archived, err := archiveSupersededPendingUpdateAfterReady(); err != nil {
+			slog.Warn("desktop: retire superseded update during shutdown", "err", err)
+		} else if archived {
+			slog.Info("desktop: archived superseded update transaction during shutdown")
+		}
+		// Independent last-known-good config snapshot after a successful UI session.
 		_ = repair.RecordHealthyConfig(version)
 	}
 }
@@ -1034,15 +1048,30 @@ func (a *App) domReady(_ context.Context) {
 		case <-ctx.Done():
 			return
 		}
+		if err := a.commitPendingUpdateHealth(); err != nil {
+			slog.Warn("desktop: commit healthy update", "err", err)
+		}
 		if err := repair.RecordHealthyConfig(version); err != nil {
 			slog.Debug("desktop: record last-known-good config", "err", err)
 		}
-		if archived, err := archiveSupersededLegacyUpdateAfterReady(); err != nil {
-			slog.Warn("desktop: retire superseded legacy update", "err", err)
+		if archived, err := archiveSupersededPendingUpdateAfterReady(); err != nil {
+			slog.Warn("desktop: retire superseded update", "err", err)
 		} else if archived {
-			slog.Info("desktop: archived superseded legacy update transaction")
+			slog.Info("desktop: archived superseded update transaction")
 		}
 	})
+}
+
+func (a *App) commitPendingUpdateHealth() error {
+	if a == nil || strings.TrimSpace(a.healthyUpdateCreatedAt) == "" ||
+		strings.TrimSpace(a.healthyUpdateTransactionID) == "" {
+		return nil
+	}
+	return markPendingUpdateHealthyAfterReady(
+		version,
+		a.healthyUpdateCreatedAt,
+		a.healthyUpdateTransactionID,
+	)
 }
 
 // --- bound command surface (frontend → controller) ---
