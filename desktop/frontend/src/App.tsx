@@ -29,6 +29,7 @@ import {
   Pencil,
   Trash2,
   AlarmClock,
+  BarChart3,
   Brain,
   Cpu,
   Palette,
@@ -1077,6 +1078,7 @@ export default function App() {
     setComposerProfileForTab: setControllerComposerProfileForTab,
     setGoalForTab: setControllerGoalForTab,
     resumeGoalForTab: resumeControllerGoalForTab,
+    pauseGoalForTab: pauseControllerGoalForTab,
     clearGoal: clearControllerGoal,
     clearGoalForTab: clearControllerGoalForTab,
     clearSession,
@@ -2401,6 +2403,18 @@ export default function App() {
   const clearGoalFromUi = useCallback(() => {
     runGoalAction(() => applyGoal(""));
   }, [applyGoal, runGoalAction]);
+  const pauseGoalFromUi = useCallback(() => {
+    runGoalAction(async () => {
+      if (!activeTabIdRef.current) return;
+      await pauseControllerGoalForTab(activeTabIdRef.current);
+    });
+  }, [pauseControllerGoalForTab, runGoalAction]);
+  const resumeGoalFromUi = useCallback(() => {
+    runGoalAction(async () => {
+      if (!activeTabIdRef.current) return;
+      await resumeControllerGoalForTab(activeTabIdRef.current);
+    });
+  }, [resumeControllerGoalForTab, runGoalAction]);
   const switchModelFromUi = useCallback(async (name: string): Promise<boolean> => {
     try {
       return await switchModel(name);
@@ -3397,6 +3411,16 @@ export default function App() {
     state.hydratePlaceholderItems?.length,
   );
   const transcriptHydrating = state.hydrating && !state.hydrateHistoryLoaded;
+  // Creation hero only after history hydration settles on a truly empty session.
+  // Avoid flash while switching tabs: items may be empty while placeholders show.
+  // Exclude IM/Bot detail: hero CSS collapses .main, which also hosts that panel.
+  // (desktopLayoutStyle is available here; sidebarCreation is declared later.)
+  const creationEmptyHero =
+    desktopLayoutStyle === "creation" &&
+    !sidebarImDetailConnection &&
+    !sessionHasContent &&
+    !transcriptHydrating &&
+    !hydratePlaceholderActive;
   const transcriptItems = hydratePlaceholderActive ? state.hydratePlaceholderItems! : state.items;
 
   // Display items: backend history is authoritative after immediate commit.
@@ -3888,6 +3912,21 @@ export default function App() {
       },
       { id: "cmd-memory", group: t("palette.group.commands"), title: t("palette.cmd.memory"), icon: <Brain size={15} />, compact: true, keywords: ["memory", "记忆"], run: () => setSettingsTarget("memory") },
       { id: "cmd-models", group: t("palette.group.commands"), title: t("palette.cmd.models"), icon: <Cpu size={15} />, compact: true, keywords: ["model", "模型"], run: () => setSettingsTarget("models") },
+      {
+        id: "cmd-usage-stats",
+        group: t("palette.group.commands"),
+        title: t("palette.cmd.usageStats"),
+        icon: <BarChart3 size={15} />,
+        compact: true,
+        keywords: ["usage", "stats", "statistics", "用量", "统计"],
+        run: () => {
+          setSettingsFocus((current) => ({
+            target: "model-stats",
+            requestId: (current?.requestId ?? 0) + 1,
+          }));
+          setSettingsTarget("models");
+        },
+      },
       { id: "cmd-terminal", group: t("palette.group.commands"), title: t("rightDock.terminal"), icon: <TerminalSquare size={15} />, compact: true, keywords: ["terminal", "shell", "终端"], run: () => toggleTerminalPanel() },
     ];
     const startOfDay = (d: Date) => new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
@@ -4115,8 +4154,12 @@ export default function App() {
   const topicbarCanRename = !sidebarImDetailConnection && Boolean(activeTab?.topicId);
   const topicbarTitleEditSize = Math.min(56, Math.max(4, topicTitleDraft.length || topicbarTitle.length || 1));
   const sidebarWorkbench = desktopLayoutStyle === "workbench";
-  const handleWindowsTitlebarDoubleClick = useCallback((event: ReactMouseEvent<HTMLDivElement>) => {
-    if (!windowsFramelessChrome) return;
+  // The Wails drag runtime ignores anything with detail !== 1, so a double click
+  // on a --wails-draggable region never reaches the OS. Both platforms that hide
+  // their native title bar need this handled here.
+  const chromeDoubleClickZooms = windowsFramelessChrome || desktopPlatform === "darwin";
+  const handleChromeTitlebarDoubleClick = useCallback((event: ReactMouseEvent<HTMLDivElement>) => {
+    if (!chromeDoubleClickZooms) return;
     const target = event.target as HTMLElement | null;
     if (!target?.closest(".app-chrome, .topicbar, .workbench-dock__tools")) return;
     if (target.closest("button, input, textarea, select, a, [role='button'], [role='tab'], .windows-window-controls")) return;
@@ -4124,7 +4167,7 @@ export default function App() {
     void app.ToggleMaximiseMainWindow()
       .then(() => window.setTimeout(syncMainWindowMaximised, 80))
       .catch(() => undefined);
-  }, [syncMainWindowMaximised, windowsFramelessChrome]);
+  }, [chromeDoubleClickZooms, syncMainWindowMaximised]);
   // Creation keeps the classic sidebar/chat structure while gating chrome tweaks
   // behind its own style flag so classic/workbench remain unchanged.
   const appChromeHidden = sidebarWorkbench || sidebarCreation;
@@ -4142,7 +4185,7 @@ export default function App() {
     <TextSizeHotkeys />
       <div
         ref={appRef}
-        onDoubleClickCapture={handleWindowsTitlebarDoubleClick}
+        onDoubleClickCapture={handleChromeTitlebarDoubleClick}
         className={[
         "app",
         `app--${desktopPlatform}`,
@@ -4442,7 +4485,7 @@ export default function App() {
           </button>
         )}
 
-        <section className={`chat-pane${sidebarCreation && !sessionHasContent ? " chat-pane--creation-empty" : ""}`}>
+        <section className={`chat-pane${creationEmptyHero ? " chat-pane--creation-empty" : ""}`}>
           <>
           <header className="topicbar">
             {workbenchChromeHidden && (
@@ -4529,24 +4572,6 @@ export default function App() {
             </div>
             <div className="topicbar__spacer" />
             <div className="topicbar__actions">
-              {workbenchChromeHidden && (
-                <Tooltip label={workspacePanelRenderable ? t("rightDock.collapse") : t("rightDock.expand")}>
-                  <button
-                    className={[
-                      "topicbar__chrome-btn",
-                      "topicbar__chrome-btn--workspace",
-                      workspacePanelRenderable ? "topicbar__chrome-btn--active" : "",
-                      workspaceTogglePressed ? "topicbar__chrome-btn--pressed" : "",
-                    ].filter(Boolean).join(" ")}
-                    type="button"
-                    onClick={toggleWorkspacePanel}
-                    aria-label={workspacePanelRenderable ? t("rightDock.collapse") : t("rightDock.expand")}
-                    aria-pressed={workspacePanelRenderable}
-                  >
-                    <PanelRight size={15} />
-                  </button>
-                </Tooltip>
-              )}
               {sidebarCreation && !sidebarImDetailConnection && activeTab?.scope === "project" && (
                 <ExternalOpener tabId={activeTab.id} dismissSignal={transientOverlayDismissSignal} />
               )}
@@ -4656,7 +4681,7 @@ export default function App() {
                   {!sidebarCreation && <span>{t("topicBar.command")}</span>}
                 </button>
               </Tooltip>
-              {sidebarCreation && (
+              {(sidebarCreation || workbenchChromeHidden) && (
                 <Tooltip label={workspacePanelRenderable ? t("rightDock.collapse") : t("rightDock.expand")}>
                   <button
                     className={[
@@ -4949,17 +4974,26 @@ export default function App() {
             {/* Composer stays mounted under a decision so per-session draft
                 caches (text, attachments, paste blocks, guidance) survive. */}
             <div
-              className={decisionSurface ? "composer-decision-host composer-decision-host--hidden" : "composer-decision-host"}
+              className={[
+                "composer-decision-host",
+                decisionSurface ? "composer-decision-host--hidden" : "",
+                creationEmptyHero ? "composer-decision-host--creation-hero" : "",
+              ].filter(Boolean).join(" ")}
               hidden={Boolean(decisionSurface) || undefined}
               inert={decisionSurface ? true : undefined}
               aria-hidden={decisionSurface ? true : undefined}
             >
+            {creationEmptyHero && (
+              <h2 className="welcome-creation__headline">{t("welcome.creation.title")}</h2>
+            )}
             <Composer
               running={state.running || rewindCommitting}
               collaborationMode={collaborationMode}
               toolApprovalMode={toolApprovalMode}
               tokenMode={tokenMode}
               goal={goal}
+              goalStatus={state.meta?.goalStatus}
+              goalRuntime={state.meta?.goalRuntime}
               cwd={state.meta?.cwd}
               modelLabel={state.meta?.label ?? t("status.connecting")}
               imageInputEnabled={state.meta?.imageInputEnabled !== false}
@@ -4975,6 +5009,8 @@ export default function App() {
               onSetToolApprovalMode={applyToolApprovalMode}
               onToggleYoloApprovalMode={toggleYoloApprovalMode}
               onClearGoal={clearGoalFromUi}
+              onPauseGoal={pauseGoalFromUi}
+              onResumeGoal={resumeGoalFromUi}
               onSwitchModel={switchModelFromUi}
               onSetEffort={setEffort}
               onSetTokenMode={applyTokenMode}
@@ -5000,6 +5036,7 @@ export default function App() {
               guidanceConsumedText={latestGuidanceConsumed?.text}
               guidanceQueuePreviewItems={guidanceQueueMockItems}
               showContextWindowRing={sidebarCreation}
+              heroMode={creationEmptyHero}
               context={state.context}
               turnCost={state.turnCost}
               currency={state.sessionCurrency}

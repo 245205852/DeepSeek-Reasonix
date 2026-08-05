@@ -390,6 +390,7 @@ func backfillDeepSeekOfficialPrices(c *Config) {
 		if officialProviderKind(p) != "deepseek" {
 			continue
 		}
+		backfillDeepSeekOfficialEndpointDefaults(p)
 		currency := c.DeepSeekOfficialPricingCurrency()
 		if c.DesktopCurrency() == "" && p.persistedOfficialCurrency != "" {
 			currency = p.persistedOfficialCurrency
@@ -407,6 +408,25 @@ func backfillDeepSeekOfficialPrices(c *Config) {
 			}
 		}
 	}
+}
+
+// backfillDeepSeekOfficialEndpointDefaults restores the two official-endpoint
+// fields a config may legitimately omit. Both are safe to infer here precisely
+// because the caller already matched api.deepseek.com: the wallet endpoint is
+// the vendor's own, and 1M is that vendor's real window. Values the file
+// declares are never overwritten.
+//
+// This is keyed on the endpoint rather than on list position, so it cannot leak
+// onto a custom provider the way the previous positional decode overlay did
+// (#7357, #7358).
+func backfillDeepSeekOfficialEndpointDefaults(p *ProviderEntry) {
+	if p == nil {
+		return
+	}
+	if strings.TrimSpace(p.BalanceURL) == "" {
+		p.BalanceURL = "https://api.deepseek.com/user/balance"
+	}
+	backfillOfficialContextWindow(p, 1_000_000)
 }
 
 func officialProviderKind(p *ProviderEntry) string {
@@ -545,6 +565,7 @@ func mergeTOMLProviderAccess(paths []string) ([]string, bool, error) {
 	var merged []string
 	seen := map[string]bool{}
 	saw := false
+	userDeclared := false
 	for _, path := range paths {
 		_, exists, err := statConfigPath(path)
 		if err != nil {
@@ -568,6 +589,9 @@ func mergeTOMLProviderAccess(paths []string) ([]string, bool, error) {
 			merged = []string{}
 		}
 		saw = true
+		if isUserConfigPath(path) {
+			userDeclared = true
+		}
 		for _, name := range f.Desktop.ProviderAccess {
 			name = strings.TrimSpace(name)
 			if name == "" || seen[name] {
@@ -576,6 +600,11 @@ func mergeTOMLProviderAccess(paths []string) ([]string, bool, error) {
 			seen[name] = true
 			merged = append(merged, name)
 		}
+	}
+	// An undeclared user list means "allow all"; a union with a project-only
+	// list would silently narrow that to whatever the project happens to name.
+	if saw && !userDeclared {
+		return nil, false, nil
 	}
 	return merged, saw, nil
 }

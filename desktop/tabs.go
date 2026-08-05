@@ -3768,6 +3768,7 @@ func (a *App) buildTabControllerWithContextAdmissionHeld(tab *WorkspaceTab, load
 		TokenMode:                buildTokenMode,
 		SharedHost:               sharedHost,
 		CleanupPendingReconciler: reconcileDesktopCleanupPending,
+		SubagentParentLive:       a.subagentParentProbeForBuild(tab),
 		SessionRecoveryMeta:      a.tabSessionRecoveryMeta(tab),
 		OnSessionRecovered:       a.handleTabSessionRecovered(tab),
 	})
@@ -4672,7 +4673,11 @@ func topicTitleUserTurnsFromSession(path string) []string {
 		if !agent.IsUserAuthoredTurn(msg.Text) {
 			continue
 		}
-		content := control.StripComposePrefixes(agent.HandoffTask(msg.Text))
+		// UserPreviewText is the canonical user-authored view: it unwraps
+		// memory-compiler execution contracts and strips transient blocks
+		// (and runs HandoffTask), so internal wrappers can never become a
+		// title basis (#5666).
+		content := control.StripComposePrefixes(agent.UserPreviewText(msg.Text))
 		content = control.StripReferencedContextPrefix(content)
 		if strings.TrimSpace(content) != "" {
 			users = append(users, content)
@@ -5751,6 +5756,11 @@ func loadTopicTitles(workspaceRoot string) map[string]string {
 		return m
 	}
 	_ = json.Unmarshal(b, &m)
+	// Same read-boundary cleaning as loadSessionTitles: older builds could
+	// persist titles carrying internal wrappers (#5666).
+	for key, title := range m {
+		m[key] = agent.UserPreviewText(title)
+	}
 	return m
 }
 
@@ -5849,13 +5859,24 @@ func loadTopicCreatedAtsForUpdate(workspaceRoot string) (map[string]int64, error
 	return loadInt64MapForUpdate(topicCreatedAtsPath(workspaceRoot))
 }
 
+// ensureTopicStateDir prepares the directory holding a topic-state file. A
+// project file lives under the workspace root, so the directory is only created
+// while that root still exists — otherwise deleting the folder outside Reasonix
+// resurrects it on the next launch (#4566).
+func ensureTopicStateDir(workspaceRoot, path string) error {
+	if root := strings.TrimSpace(workspaceRoot); root != "" && !existingDirectory(root) {
+		return fmt.Errorf("workspace root %q no longer exists", root)
+	}
+	return os.MkdirAll(filepath.Dir(path), 0o755)
+}
+
 func saveTopicTitles(workspaceRoot string, m map[string]string) error {
 	b, err := json.MarshalIndent(m, "", "  ")
 	if err != nil {
 		return err
 	}
 	path := topicTitlesPath(workspaceRoot)
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+	if err := ensureTopicStateDir(workspaceRoot, path); err != nil {
 		return err
 	}
 	tmp := path + ".tmp"
@@ -5871,7 +5892,7 @@ func saveTopicTitleSources(workspaceRoot string, m map[string]string) error {
 		return err
 	}
 	path := topicTitleSourcesPath(workspaceRoot)
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+	if err := ensureTopicStateDir(workspaceRoot, path); err != nil {
 		return err
 	}
 	tmp := path + ".tmp"
@@ -5887,7 +5908,7 @@ func saveTopicCreatedAts(workspaceRoot string, m map[string]int64) error {
 		return err
 	}
 	path := topicCreatedAtsPath(workspaceRoot)
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+	if err := ensureTopicStateDir(workspaceRoot, path); err != nil {
 		return err
 	}
 	tmp := path + ".tmp"
@@ -5903,7 +5924,7 @@ func saveTopicAutoTitleMeta(workspaceRoot string, m map[string]topicAutoTitleMet
 		return err
 	}
 	path := topicAutoTitleMetaPath(workspaceRoot)
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+	if err := ensureTopicStateDir(workspaceRoot, path); err != nil {
 		return err
 	}
 	tmp := path + ".tmp"
@@ -9055,26 +9076,40 @@ func (a *App) findTopicSessionForTargetByContent(scope, workspaceRoot, topicID s
 	if topicID == "" {
 		return "", ""
 	}
-	var bestPath string
-	var bestDir string
-	var bestTime time.Time
+	type candidate struct {
+		match topicSessionMatch
+		dir   string
+	}
+	var candidates []candidate
 	for _, dir := range a.knownSessionDirs() {
 		for _, match := range topicSessionMatches(dir, topicID) {
-			if requireContent && !sessionFileHasConversationContent(match.path) {
-				continue
-			}
 			if !topicSessionMatchMatchesTarget(match, scope, workspaceRoot) {
 				continue
 			}
-			if bestPath == "" || match.updatedAt.After(bestTime) ||
-				(match.updatedAt.Equal(bestTime) && match.path < bestPath) {
-				bestPath = match.path
-				bestDir = dir
-				bestTime = match.updatedAt
-			}
+			candidates = append(candidates, candidate{match: match, dir: dir})
 		}
 	}
-	return bestPath, bestDir
+	sort.Slice(candidates, func(i, j int) bool {
+		a, b := candidates[i].match, candidates[j].match
+		if !a.updatedAt.Equal(b.updatedAt) {
+			return a.updatedAt.After(b.updatedAt)
+		}
+		return a.path < b.path
+	})
+	// Content-bearing sessions outrank content-free ones regardless of
+	// updatedAt: a freshly created empty session must not hijack the topic
+	// from the conversation the user actually had (#7305). The content probe
+	// reads session files, so it walks newest-first and stops at the first
+	// hit — the common case checks one file.
+	for _, c := range candidates {
+		if sessionFileHasConversationContent(c.match.path) {
+			return c.match.path, c.dir
+		}
+	}
+	if requireContent || len(candidates) == 0 {
+		return "", ""
+	}
+	return candidates[0].match.path, candidates[0].dir
 }
 
 type topicSessionFileSignature struct {

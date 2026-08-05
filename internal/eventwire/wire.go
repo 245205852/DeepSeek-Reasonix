@@ -123,9 +123,6 @@ func ToWire(e event.Event) Event {
 		w.RetryAttempt = e.RetryAttempt
 		w.RetryMax = e.RetryMax
 	}
-	if w.Tool == nil && (e.Tool.ParentID != "" || e.Tool.ID != "") {
-		w.Tool = &Tool{ParentID: e.Tool.ParentID, ID: e.Tool.ID}
-	}
 	return w
 }
 

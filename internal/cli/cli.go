@@ -26,6 +26,7 @@ import (
 	"time"
 	"unicode/utf16"
 
+	"reasonix/internal/ablation"
 	"reasonix/internal/agent"
 	"reasonix/internal/boot"
 	"reasonix/internal/config"
@@ -169,6 +170,8 @@ func Run(args []string, version string) int {
 	case "version", "--version", "-v":
 		fmt.Println("reasonix", version)
 		return 0
+	case "docs-manifest":
+		return docsManifestCommand(rest, version)
 	case "help", "--help", "-h":
 		usage()
 		return 0
@@ -260,6 +263,7 @@ type cliBuildOverrides struct {
 	HeadlessApprovalMode string
 	Stderr               io.Writer
 	OnSessionRecovered   func(control.SessionRecoveryInfo) error
+	Ablation             ablation.Set
 }
 
 func setupProfileWithOverrides(ctx context.Context, modelName string, maxStepsOverride int, requireKey bool, sink event.Sink, profile string, overrides cliBuildOverrides) (*control.Controller, error) {
@@ -285,6 +289,7 @@ func cliProfileBuildOptions(modelName string, maxStepsOverride int, requireKey b
 		StatsSource:          "cli",
 		Stderr:               overrides.Stderr,
 		OnSessionRecovered:   overrides.OnSessionRecovered,
+		Ablation:             overrides.Ablation,
 	}
 }
 
@@ -462,6 +467,7 @@ func runAgent(args []string, version string) int {
 	maxSteps := fs.Int("max-steps", 0, "one-off max tool-call rounds (0 = automatic)")
 	showThinking := fs.Bool("show-thinking", false, "show thinking text instead of the collapsed thinking marker")
 	metricsPath := fs.String("metrics", "", "write a JSON token/cache/cost summary of the run to this path")
+	ablateFlag := fs.String("ablate", "", "benchmark arm: comma-separated subsystems to switch off (evidence, planner, subagent, retrieval, compaction; none|all)")
 	dir := fs.String("dir", "", "change to this directory first (project root); config, sandbox and file tools resolve from here")
 	cont := registerContinueFlag(fs)
 	resume := fs.String("resume", "", "resume a specific session file (non-interactive; takes precedence over --continue)")
@@ -504,6 +510,11 @@ func runAgent(args []string, version string) int {
 		format = runOutputEventsJSONL
 	}
 	profile, err := parseRuntimeProfile(*profileFlag)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, i18n.M.ErrorPrefix, err)
+		return 2
+	}
+	ablated, err := ablation.Parse(*ablateFlag)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, i18n.M.ErrorPrefix, err)
 		return 2
@@ -551,12 +562,14 @@ func runAgent(args []string, version string) int {
 	// --continue, matching the Resume call below.
 	resumePath := strings.TrimSpace(*resume)
 	if resumePath == "" && *cont {
-		sessions, err := agent.ListSessions(resolveCLISessionDir())
-		if err != nil || len(sessions) == 0 {
+		sessionDir := resolveCLISessionDir()
+		reclaimCLIRecoveryBranches(sessionDir)
+		session, ok := mostRecentSession(sessionDir)
+		if !ok {
 			fmt.Fprintln(os.Stderr, i18n.M.NoSessionToResume)
 			return 1
 		}
-		resumePath = sessions[0].Path
+		resumePath = session.Path
 	}
 	if *copySession && resumePath == "" {
 		fmt.Fprintln(os.Stderr, i18n.M.ErrorPrefix, "--copy requires --resume or --continue")
@@ -663,6 +676,7 @@ func runAgent(args []string, version string) int {
 		WorkspaceRoot:        workspaceRoot,
 		HeadlessApprovalMode: permissions.approval,
 		OnSessionRecovered:   cliSessionRecoveredHandler(leases),
+		Ablation:             ablated,
 	}
 	ctrl, err := setupProfileWithOverrides(ctx, *model, *maxSteps, true, sink, profile, overrides)
 	if err != nil {
@@ -694,6 +708,7 @@ func runAgent(args []string, version string) int {
 		fmt.Fprintln(os.Stderr, i18n.M.ErrorPrefix, control.SessionInUseMessage(err)+"; "+control.SessionLeaseCloseHint)
 		return 1
 	}
+	reclaimCLIRecoveryBranches(ctrl.SessionDir())
 
 	runErr := ctrl.Run(ctx, prompt)
 	reporter.RecordRecovery(ctrl.DrainRecoveryMetrics())
@@ -706,6 +721,9 @@ func runAgent(args []string, version string) int {
 		})
 	}
 	if metrics != nil {
+		metrics.m.DurationMs = time.Since(started).Milliseconds()
+		metrics.m.Outcome = completion.class
+		metrics.m.Arm = ablated.Arm()
 		if exec := ctrl.Executor(); exec != nil {
 			if audit := exec.CapabilityAudit(); audit != nil {
 				snap := audit.Snapshot()
@@ -1047,12 +1065,14 @@ func chatREPL(args []string, version string) int {
 		}
 		resumePath = path
 	case *cont:
-		sessions, err := agent.ListSessions(resolveCLISessionDir())
-		if err != nil || len(sessions) == 0 {
+		sessionDir := resolveCLISessionDir()
+		reclaimCLIRecoveryBranches(sessionDir)
+		session, ok := mostRecentSession(sessionDir)
+		if !ok {
 			fmt.Fprintln(os.Stderr, i18n.M.NoSessionToResume)
 			return 1
 		}
-		resumePath = sessions[0].Path
+		resumePath = session.Path
 	}
 	if *copySession && resumePath == "" {
 		fmt.Fprintln(os.Stderr, i18n.M.ErrorPrefix, "--copy requires --resume or --continue")
@@ -1148,6 +1168,7 @@ func chatREPL(args []string, version string) int {
 		fmt.Fprintln(os.Stderr, i18n.M.ErrorPrefix, control.SessionInUseMessage(err)+"; "+control.SessionLeaseCloseHint)
 		return 1
 	}
+	reclaimCLIRecoveryBranches(ctrl.SessionDir())
 
 	// Surface a missing-key warning inside the TUI banner so the first message
 	// failing is at least pre-announced; the user can still enter chat.
@@ -1489,8 +1510,10 @@ func interactiveSetup(configPath, envPath string) int {
 // message so the user can pick one. Returns the chosen path and a process
 // exit code (non-zero when there's nothing to pick or the user cancelled).
 func pickSessionToResume() (string, int) {
-	sessions, err := agent.ListSessions(resolveCLISessionDir())
-	if err != nil || len(sessions) == 0 {
+	sessionDir := resolveCLISessionDir()
+	reclaimCLIRecoveryBranches(sessionDir)
+	sessions := recentSessions(sessionDir)
+	if len(sessions) == 0 {
 		fmt.Fprintln(os.Stderr, i18n.M.NoSessionToResume)
 		return "", 1
 	}
@@ -1498,20 +1521,12 @@ func pickSessionToResume() (string, int) {
 		fmt.Fprintln(os.Stderr, i18n.M.ResumeRequiresTTY)
 		return "", 1
 	}
-	const cap = 10
-	if len(sessions) > cap {
-		sessions = sessions[:cap]
-	}
 	items := make([]menuItem, len(sessions))
 	for i, s := range sessions {
 		when := s.ModTime.Local().Format("01-02 15:04")
-		preview := s.Preview
-		if preview == "" {
-			preview = "(no user message yet)"
-		}
 		items[i] = menuItem{
 			name: when,
-			desc: fmt.Sprintf("%d turns · %s", s.Turns, preview),
+			desc: sessionSummary(s),
 		}
 	}
 	idx, err := selectOne(i18n.M.PickSessionLabel, items)

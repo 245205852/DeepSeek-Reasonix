@@ -1138,7 +1138,7 @@ func TestSubSinkForwardsUsageToParent(t *testing.T) {
 	parent := event.FuncSink(func(e event.Event) {
 		got = append(got, e)
 	})
-	subSinkFor("task_1", parent, false).Emit(event.Event{
+	subSinkFor("task_1", parent).Emit(event.Event{
 		Kind:        event.Usage,
 		Usage:       &provider.Usage{PromptTokens: 10, CompletionTokens: 2, TotalTokens: 12},
 		UsageSource: event.UsageSourceSubagent,
@@ -1147,78 +1147,6 @@ func TestSubSinkForwardsUsageToParent(t *testing.T) {
 		t.Fatalf("forwarded events = %+v, want subagent usage", got)
 	}
 }
-
-func TestSubSinkForProgressControl(t *testing.T) {
-	var got []event.Event
-	parent := event.FuncSink(func(e event.Event) {
-		got = append(got, e)
-	})
-
-	// When forwardProgress is false (default), text/reasoning/notice are dropped.
-	sinkOff := subSinkFor("task_1", parent, false)
-	sinkOff.Emit(event.Event{Kind: event.Reasoning, Text: "thinking..."})
-	sinkOff.Emit(event.Event{Kind: event.Text, Text: "working..."})
-	sinkOff.Emit(event.Event{Kind: event.Notice, Text: "notice!"})
-	sinkOff.Emit(event.Event{Kind: event.ToolProgress, Tool: event.Tool{ID: "call_1", Output: "bash output"}})
-	if len(got) != 1 || got[0].Kind != event.ToolProgress || got[0].Tool.ParentID != "task_1" {
-		t.Fatalf("disabled progress: got %+v, want only ToolProgress with ParentID", got)
-	}
-
-	got = nil
-	// When forwardProgress is true, reasoning/text/notice/progress are forwarded with ParentID.
-	sinkOn := subSinkFor("task_1", parent, true)
-	sinkOn.Emit(event.Event{Kind: event.Reasoning, Text: "thinking..."})
-	sinkOn.Emit(event.Event{Kind: event.Text, Text: "working..."})
-	sinkOn.Emit(event.Event{Kind: event.Notice, Text: "notice!"})
-	if len(got) != 3 {
-		t.Fatalf("enabled progress: got %d events, want 3", len(got))
-	}
-	for i, e := range got {
-		if e.Tool.ParentID != "task_1" {
-			t.Errorf("event %d ParentID = %q, want task_1", i, e.Tool.ParentID)
-		}
-		if e.Source != event.UsageSourceSubagent {
-			t.Errorf("event %d Source = %q, want subagent", i, e.Source)
-		}
-	}
-}
-
-func TestTaskToolWithSubagentProgressForwardsProgressEvents(t *testing.T) {
-	sub := &mockProvider{name: "sub", chunks: []provider.Chunk{
-		{Type: provider.ChunkReasoning, Reasoning: "analyzing code"},
-		{Type: provider.ChunkText, Text: "done inspecting"},
-		{Type: provider.ChunkDone},
-	}}
-	task := newTestTaskTool(t, sub, tool.NewRegistry(), "sys", "", "", nil).WithSubagentProgress(true)
-
-	var emitted []event.Event
-	parentSink := event.FuncSink(func(e event.Event) {
-		emitted = append(emitted, e)
-	})
-	ctx := withCallContext(testTaskContext(), "parent_call_100", parentSink, nil, false)
-
-	if _, err := task.Execute(ctx, []byte(`{"prompt":"inspect code"}`)); err != nil {
-		t.Fatalf("Execute: %v", err)
-	}
-
-	hasReasoning := false
-	hasText := false
-	for _, e := range emitted {
-		if e.Kind == event.Reasoning && e.Text == "analyzing code" && e.Tool.ParentID == "parent_call_100" {
-			hasReasoning = true
-		}
-		if e.Kind == event.Text && e.Text == "done inspecting" && e.Tool.ParentID == "parent_call_100" {
-			hasText = true
-		}
-	}
-	if !hasReasoning {
-		t.Errorf("emitted events missing forwarded Reasoning: %+v", emitted)
-	}
-	if !hasText {
-		t.Errorf("emitted events missing forwarded Text: %+v", emitted)
-	}
-}
-
 
 func TestTaskToolCarriesRecentKeepIntoSubsessions(t *testing.T) {
 	task := NewTaskTool(&mockProvider{name: "sub"}, nil, tool.NewRegistry(), 20, 0, 7, 0, 0, 0, 0, 0.0, "", "sys", nil, 0, "", "", nil)
