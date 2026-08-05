@@ -302,6 +302,66 @@
       }
     },
     {
+      "name": "docs",
+      "description": "Search and read the official documentation embedded in this exact Reasonix build. Use it before web search or assumptions for Reasonix setup, CLI, Desktop, configuration, permissions, MCP, memory, recovery, provider behavior, and maintainer workflows. Search first, then read the returned section_id when the full section is needed.",
+      "parameters": {
+        "properties": {
+          "audience": {
+            "description": "Optional audience filter; defaults to all.",
+            "enum": [
+              "all",
+              "user",
+              "developer",
+              "maintainer"
+            ],
+            "type": "string"
+          },
+          "language": {
+            "description": "Language preference. search defaults to auto from the query; list defaults to all. Explicit en or zh-CN filters results.",
+            "enum": [
+              "auto",
+              "all",
+              "en",
+              "zh-CN"
+            ],
+            "type": "string"
+          },
+          "limit": {
+            "description": "Maximum search results, default 5, max 10.",
+            "maximum": 10,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "operation": {
+            "description": "search ranks relevant sections; read returns one section or lists a document's sections; list shows the embedded document catalog.",
+            "enum": [
+              "search",
+              "read",
+              "list"
+            ],
+            "type": "string"
+          },
+          "path": {
+            "description": "Exact docs/*.md path returned by search/list. With operation=read and no section_id, lists that document's sections.",
+            "type": "string"
+          },
+          "query": {
+            "description": "Question, command, configuration key, error phrase, or topic for operation=search.",
+            "maxLength": 4096,
+            "type": "string"
+          },
+          "section_id": {
+            "description": "Exact section_id returned by search or by a document section listing. Used by operation=read.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "operation"
+        ],
+        "type": "object"
+      }
+    },
+    {
       "name": "edit_file",
       "description": "Replace an exact string in a file with another. old_string must occur exactly once; add surrounding context to disambiguate. Use for targeted edits instead of rewriting the whole file.",
       "parameters": {
@@ -349,7 +409,7 @@
     },
     {
       "name": "fleet",
-      "description": "Dispatch 2–64 sub-agent tasks in parallel and aggregate results. Each item may select a profile, model, effort, tools, write_paths, or read_only. Multiple writers must declare non-overlapping write_paths; omitted write_paths claim the whole workspace, so two or more writers without paths fail preflight before any task starts. Independent failure is the default: one failure does not cancel others. Background mode returns a fleet job id collectable with wait.",
+      "description": "Dispatch 2–64 sub-agent tasks in parallel and return bounded previews plus stable Subagent references for full-result retrieval from completed persisted children with read_subagent_result. Each item may select a profile, model, effort, tools, write_paths, or read_only. Multiple writers must declare non-overlapping write_paths; omitted write_paths claim the whole workspace, so two or more writers without paths fail preflight before any task starts. Independent failure is the default: one failure does not cancel others. Background mode returns a fleet job id collectable with wait.",
       "parameters": {
         "properties": {
           "run_in_background": {
@@ -444,6 +504,10 @@
           "pattern": {
             "description": "Glob pattern (supports ** for recursive matching)",
             "type": "string"
+          },
+          "timeout_seconds": {
+            "description": "Walk timeout in seconds (default 30, max 300); partial results are returned when it expires",
+            "type": "integer"
           }
         },
         "required": [
@@ -1015,7 +1079,7 @@
     },
     {
       "name": "parallel_tasks",
-      "description": "Dispatch multiple read-only sub-agent tasks concurrently and collect their results. Each task runs in its own read-only sub-agent in parallel. Blocks until all complete.",
+      "description": "Dispatch multiple read-only sub-agent tasks concurrently. Blocks until all complete, then returns a bounded preview and a stable Subagent reference for every completed persisted child; use read_subagent_result to page through any full answer without combined-result truncation.",
       "parameters": {
         "properties": {
           "tasks": {
@@ -1191,6 +1255,33 @@
         },
         "required": [
           "name"
+        ],
+        "type": "object"
+      }
+    },
+    {
+      "name": "read_subagent_result",
+      "description": "Read a completed sub-agent's full final answer by the Subagent reference returned from task, parallel_tasks, or fleet. Results are scoped to the current conversation lineage and paged by UTF-8 byte offset so large answers remain lossless without overflowing one tool result.",
+      "parameters": {
+        "properties": {
+          "limit_bytes": {
+            "description": "Maximum UTF-8 bytes to return. Defaults to 12288 and is capped at 24576.",
+            "maximum": 24576,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "offset_bytes": {
+            "description": "UTF-8 byte offset to start reading from. Omit for the beginning; use next_offset_bytes from the previous page.",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "ref": {
+            "description": "The sa_... value from a Subagent reference line.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "ref"
         ],
         "type": "object"
       }

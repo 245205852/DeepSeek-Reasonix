@@ -236,14 +236,19 @@ func TestRunSlashCommandResolutionOrder(t *testing.T) {
 		t.Fatalf("custom command should start a turn (bubble pending), pendingRestore = %q", m.pendingRestore)
 	}
 
-	// Nothing matches → the unknown-command notice, unchanged.
+	// Nothing matches → the extension action never fires and the line falls
+	// through to the unknown-slash behavior: sent as a regular message with a
+	// visible notice (#5756).
 	m2 := newTestChatTUI()
 	m2.ctrl = &extensionStubCtrl{}
-	if cmd := m2.runSlashCommand("/alpha:act1"); cmd != nil {
-		t.Fatal("unknown slash returned a cmd")
+	if cmd := m2.runSlashCommand("/alpha:act1"); cmd == nil {
+		t.Fatal("unknown slash should start a regular-message turn")
 	}
 	if plain := ansi.Strip(strings.Join(m2.transcript, "\n")); !strings.Contains(plain, "unknown command: /alpha:act1") {
 		t.Fatalf("unknown notice missing, transcript = %q", plain)
+	}
+	if m2.pendingRestore != "/alpha:act1" {
+		t.Fatalf("unknown slash should be sent as a regular message, pendingRestore = %q", m2.pendingRestore)
 	}
 }
 
