@@ -627,6 +627,24 @@ func TestSubagentProgressOrdinaryToolProgressUnaffected(t *testing.T) {
 	}
 }
 
+// TestSubagentProgressUnknownReservedChannelIgnored locks forward compatibility:
+// an older CLI must suppress a future reasonix.subagent.* channel instead of
+// treating its body as ordinary tool output.
+func TestSubagentProgressUnknownReservedChannelIgnored(t *testing.T) {
+	m := newTestChatTUI()
+	m.ingestEvent(subagentPreview("task-1", event.SubagentProgressPrefix+"future", "must stay hidden", false))
+
+	if got := strings.Join(m.transcript, "\n"); got != "" {
+		t.Fatalf("unknown reserved progress entered the transcript: %q", got)
+	}
+	if m.toolStreamID != "" || m.toolLineCount != 0 || m.toolPartial != "" {
+		t.Fatalf("unknown reserved progress opened ordinary tool output: id=%q lines=%d partial=%q", m.toolStreamID, m.toolLineCount, m.toolPartial)
+	}
+	if len(m.subagentProgress) != 0 {
+		t.Fatalf("unknown reserved progress allocated known-channel state: %+v", m.subagentProgress)
+	}
+}
+
 // TestSubagentProgressNativeScrollbackPrintsOnPhaseChange proves Termux-style
 // native scrollback (which cannot rewrite printed output) queues a status line
 // on phase changes and terminal only — same-phase repeats stay quiet.

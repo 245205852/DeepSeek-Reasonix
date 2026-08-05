@@ -4111,6 +4111,12 @@ func (m *chatTUI) ingestEvent(e event.Event) {
 			m.streamSubagentProgress(e.Tool)
 			break
 		}
+		// Unknown names in the reserved namespace may come from a newer agent.
+		// Keep them out of ordinary tool output even though this CLI cannot render
+		// their payload yet.
+		if event.IsReservedSubagentProgressName(e.Tool.Name) {
+			break
+		}
 		m.streamToolOutput(e.Tool.ID, e.Tool.Output)
 
 	case event.ToolResult:
