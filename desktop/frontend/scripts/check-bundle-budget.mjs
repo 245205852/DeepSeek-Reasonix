@@ -44,20 +44,25 @@ const localeChunks = readdirSync(resolve(distDir, "assets"))
 console.log("\nbundle budgets");
 assertBudget("initial JavaScript gzip", initialJSGzip, 430 * 1024);
 assertBudget("largest initial JavaScript chunk gzip", largestInitialJS, 295 * 1024);
-assertBudget("initial CSS gzip", initialCSSGzip, 112 * 1024);
+// Extension surfaces and Task Monitor each add a small always-loaded style
+// surface. Their combined production output measures 112.4 KiB gzip.
+assertBudget("initial CSS gzip", initialCSSGzip, 112.5 * 1024);
 if (localeChunks.length !== 2) {
   throw new Error(`expected 2 on-demand Chinese locale chunks, found ${localeChunks.length}`);
 }
 for (const path of localeChunks) {
   const name = basename(path);
-  const budget = name.startsWith("zh-TW-") ? 53 * 1024 : 52 * 1024;
+  // Task Monitor adds 37 user-facing labels to each on-demand locale, while
+  // Extension UI adds its own status and action copy. Keep both dictionaries
+  // within narrowly measured, explicit allowances.
+  const budget = name.startsWith("zh-TW-") ? 53.25 * 1024 : 52.5 * 1024;
   assertBudget(`${name} gzip`, gzipBytes(path), budget);
 }
 
 const rawInitialBytes = [...initialJS, ...initialCSS].reduce((total, path) => total + statSync(path).size, 0);
-// Headroom note: the extension UI surface (ExtensionCard/ExtensionFormDialog,
-// status chips, palette group) plus main-v2's provider editor additions raised
-// raw initial JS+CSS; all gzip budgets above are the user-visible transfer
-// cost and remain the binding constraint.
+// Extension UI adds always-loaded cards, status chips, and palette styles;
+// Task Monitor adds a small always-loaded style surface while its panel code
+// remains lazy-loaded. The gzip budgets above remain the user-visible transfer
+// constraint, with a narrowly measured raw allowance for both surfaces.
 assertBudget("initial raw JavaScript and CSS", rawInitialBytes, 2_270 * 1024);
 assertBudget("largest initial JavaScript chunk raw", largestInitialJSRaw, 1_100 * 1024);

@@ -327,8 +327,10 @@ jobs:
           pnpm --dir frontend install --frozen-lockfile
           pnpm --dir frontend build
 
-      - name: Test integrated terminal frontend
-        run: pnpm --dir frontend test:terminal
+      - name: Test desktop frontend
+        run: |
+          pnpm --dir frontend test:terminal
+          pnpm --dir frontend test:task-monitor
 
       - name: Test usage statistics frontend
         run: pnpm --dir frontend test:usage-stats

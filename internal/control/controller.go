@@ -57,6 +57,7 @@ import (
 	"reasonix/internal/sandbox"
 	"reasonix/internal/skill"
 	"reasonix/internal/store"
+	"reasonix/internal/taskmonitor"
 	"reasonix/internal/tool"
 	"reasonix/internal/workspacelease"
 )
@@ -615,6 +616,19 @@ func New(opts Options) *Controller {
 	// Auto Guard is built into Auto. Ask and YOLO bypass it through the mode
 	// provider, so no separate enablement state is needed.
 	c.initRecoveryGate(opts.RecoveryReviewer, opts.RecoveryHeadless)
+
+	// Task monitoring: record background-job lifecycle into the project-local
+	// task store so CLI, Desktop, scripts, and future clients observe the same
+	// state/event evidence. The recorder swallows its own failures — monitoring
+	// must never affect the agent pipeline. The session id is resolved lazily
+	// because the session path is only fixed once the first turn begins.
+	if c.jobs != nil && c.workspaceRoot != "" {
+		c.jobs.SetTaskRecorder(taskmonitor.NewTaskRecorder(
+			taskmonitor.NewFileStore(filepath.Join(".reasonix", "tasks")),
+			c.workspaceRoot,
+			func() string { return c.parentSessionID() },
+		))
+	}
 	return c
 }
 
@@ -5532,6 +5546,14 @@ func (c *Controller) Jobs() []jobs.View {
 		return nil
 	}
 	return c.jobs.RunningForSession(c.parentSessionID())
+}
+
+// KillJob cancels a running background job by ID.
+func (c *Controller) KillJob(id string) bool {
+	if c.jobs == nil {
+		return false
+	}
+	return c.jobs.Kill(id)
 }
 
 // CancelJob stops one background job owned by this controller's session.
