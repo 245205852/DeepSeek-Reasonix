@@ -33,14 +33,6 @@ const (
 	subagentPhaseCancelled  subagentProgressPhase = "cancelled"
 )
 
-func (p subagentProgressPhase) terminal() bool {
-	switch p {
-	case subagentPhaseCompleted, subagentPhaseFailed, subagentPhaseCancelled:
-		return true
-	}
-	return false
-}
-
 // Progress pacing and memory bounds. Preview slots merge for up to
 // subagentProgressMergeWindow before one event per (child, channel) is emitted;
 // a parent task group caps non-terminal preview events at
