@@ -26,8 +26,9 @@ func TestRequestRoundTripPreservesProviderVisibleFields(t *testing.T) {
 		Tools: []provider.ToolSchema{{
 			Name: "bash", Description: "run", Parameters: []byte(`{"type":"object"}`),
 		}},
-		Temperature: &temperature,
-		MaxTokens:   64,
+		Temperature:    &temperature,
+		MaxTokens:      64,
+		ResponseFormat: &provider.ResponseFormat{Type: "json_object"},
 	}
 
 	back := RequestFromProtocol(RequestToProtocol(req))
@@ -49,6 +50,12 @@ func TestRequestRoundTripPreservesProviderVisibleFields(t *testing.T) {
 	}
 	if back.Temperature == nil || *back.Temperature != temperature || back.MaxTokens != 64 {
 		t.Fatalf("scalars = %+v", back)
+	}
+	if back.ResponseFormat == nil || back.ResponseFormat.Type != "json_object" {
+		t.Fatalf("response format = %+v", back.ResponseFormat)
+	}
+	if RequestFromProtocol(RequestToProtocol(provider.Request{})).ResponseFormat != nil {
+		t.Fatal("nil response format must stay nil")
 	}
 }
 

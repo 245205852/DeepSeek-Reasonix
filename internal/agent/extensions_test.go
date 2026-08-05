@@ -578,7 +578,11 @@ func TestProviderResponseReplaceIsTranscript(t *testing.T) {
 	}}
 	d := newExtDispatcher(client, true, nil, extension.PointProviderResponse)
 	mp := &mockProvider{name: "p", streams: [][]provider.Chunk{
-		{{Type: provider.ChunkText, Text: "ORIGINAL ANSWER"}, {Type: provider.ChunkDone}},
+		{
+			{Type: provider.ChunkReasoning, Text: "ORIGINAL REASONING", ReasoningID: "rs_original", ReasoningStatus: "completed"},
+			{Type: provider.ChunkText, Text: "ORIGINAL ANSWER"},
+			{Type: provider.ChunkDone},
+		},
 		{{Type: provider.ChunkText, Text: "second"}, {Type: provider.ChunkDone}},
 	}}
 	sess := NewSession("sys")
@@ -592,6 +596,9 @@ func TestProviderResponseReplaceIsTranscript(t *testing.T) {
 	}
 	if assistants[0].ReasoningContent != "replaced reasoning" {
 		t.Fatalf("assistant reasoning = %q, want the replaced reasoning", assistants[0].ReasoningContent)
+	}
+	if assistants[0].ReasoningID != "" || assistants[0].ReasoningStatus != "" {
+		t.Fatalf("replaced reasoning retained provider metadata = (%q, %q)", assistants[0].ReasoningID, assistants[0].ReasoningStatus)
 	}
 	// The transcript contract: the next request replays the replaced turn,
 	// never the provider's original text.

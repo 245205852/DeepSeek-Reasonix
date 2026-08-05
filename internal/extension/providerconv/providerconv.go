@@ -98,11 +98,16 @@ func RequestToProtocol(req provider.Request) protocol.ProviderRequest {
 			Parameters:  s.Parameters,
 		})
 	}
+	var responseFormat *protocol.ProviderResponseFormat
+	if req.ResponseFormat != nil {
+		responseFormat = &protocol.ProviderResponseFormat{Type: req.ResponseFormat.Type}
+	}
 	return protocol.ProviderRequest{
-		Messages:    MessagesToProtocol(req.Messages),
-		Tools:       tools,
-		Temperature: req.Temperature,
-		MaxTokens:   req.MaxTokens,
+		Messages:       MessagesToProtocol(req.Messages),
+		Tools:          tools,
+		Temperature:    req.Temperature,
+		MaxTokens:      req.MaxTokens,
+		ResponseFormat: responseFormat,
 	}
 }
 
@@ -116,11 +121,16 @@ func RequestFromProtocol(req protocol.ProviderRequest) provider.Request {
 			Parameters:  s.Parameters,
 		})
 	}
+	var responseFormat *provider.ResponseFormat
+	if req.ResponseFormat != nil {
+		responseFormat = &provider.ResponseFormat{Type: req.ResponseFormat.Type}
+	}
 	return provider.Request{
-		Messages:    MessagesFromProtocol(req.Messages),
-		Tools:       tools,
-		Temperature: req.Temperature,
-		MaxTokens:   req.MaxTokens,
+		Messages:       MessagesFromProtocol(req.Messages),
+		Tools:          tools,
+		Temperature:    req.Temperature,
+		MaxTokens:      req.MaxTokens,
+		ResponseFormat: responseFormat,
 	}
 }
 

@@ -82,14 +82,22 @@ type ProviderToolSchema struct {
 	Parameters  json.RawMessage `json:"parameters"`
 }
 
+// ProviderResponseFormat asks an extension-hosted provider to constrain its
+// output shape. It is optional so ordinary requests retain their existing,
+// cache-stable wire representation.
+type ProviderResponseFormat struct {
+	Type string `json:"type" validate:"nonempty"`
+}
+
 // ProviderRequest is the credential-free completion request the host asks the
 // extension to stream. Nil Messages/Tools arrays are invalid; empty arrays
 // are the canonical form.
 type ProviderRequest struct {
-	Messages    []ProviderMessage    `json:"messages"`
-	Tools       []ProviderToolSchema `json:"tools"`
-	Temperature *float64             `json:"temperature,omitempty"`
-	MaxTokens   int                  `json:"maxTokens" validate:"min=0"`
+	Messages       []ProviderMessage       `json:"messages"`
+	Tools          []ProviderToolSchema    `json:"tools"`
+	Temperature    *float64                `json:"temperature,omitempty"`
+	MaxTokens      int                     `json:"maxTokens" validate:"min=0"`
+	ResponseFormat *ProviderResponseFormat `json:"responseFormat,omitempty"`
 }
 
 // Validate enforces the deterministic wire shape.
@@ -99,6 +107,9 @@ func (request ProviderRequest) Validate() error {
 	}
 	if request.MaxTokens < 0 {
 		return validationError("maxTokens must be non-negative")
+	}
+	if request.ResponseFormat != nil && strings.TrimSpace(request.ResponseFormat.Type) == "" {
+		return validationError("responseFormat.type must be non-empty")
 	}
 	for _, tool := range request.Tools {
 		parameters := bytes.TrimSpace(tool.Parameters)
