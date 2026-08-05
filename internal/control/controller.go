@@ -298,6 +298,7 @@ type approvalReply struct {
 }
 
 type pendingApproval struct {
+	id           string
 	tool         string
 	subject      string
 	reason       string
@@ -997,6 +998,17 @@ func (c *Controller) SendWithRaw(input, raw string) {
 // to gate a proposed plan. Frontends key their plan-approval UI on it (the
 // desktop renders a plan card; the chat TUI a plan banner).
 const planApprovalTool = "exit_plan_mode"
+
+// PlanDecisionAction preserves the three user-owned meanings of the Plan card.
+// Revise and exit both deny execution at the approval gate, but they are not the
+// same product decision and must remain distinguishable in durable receipts.
+type PlanDecisionAction string
+
+const (
+	PlanDecisionStartExecution PlanDecisionAction = "start_execution"
+	PlanDecisionRevisePlan     PlanDecisionAction = "revise_plan"
+	PlanDecisionExitPlan       PlanDecisionAction = "exit_plan"
+)
 
 // SandboxEscapeApprovalTool is the internal Tool name used for one-shot approval
 // to rerun a shell command without the OS sandbox after the sandbox failed.
@@ -2095,9 +2107,82 @@ func (c *Controller) Approve(id string, allow, session, persist bool) {
 		return
 	}
 	pending := c.approval.resolve(id)
-	if pending.reply != nil {
-		pending.reply <- approvalReply{allow: allow, session: session, persist: persist} // buffered, never blocks
+	if pending.reply == nil {
+		return
 	}
+	outcome := "deny"
+	if pending.tool == planApprovalTool {
+		outcome = string(PlanDecisionRevisePlan)
+		if allow {
+			outcome = string(PlanDecisionStartExecution)
+		}
+	} else if allow {
+		switch {
+		case persist:
+			outcome = "allow_persistent"
+		case session:
+			outcome = "allow_session"
+		default:
+			outcome = "allow_once"
+		}
+	}
+	c.recordDecisionReceipt(pending, outcome)
+	pending.reply <- approvalReply{allow: allow, session: session, persist: persist} // buffered, never blocks
+}
+
+// ResolvePlanDecision answers the Plan card without collapsing revise and exit
+// into the generic approval boolean used by older clients.
+func (c *Controller) ResolvePlanDecision(id string, action PlanDecisionAction) error {
+	if c == nil {
+		return fmt.Errorf("controller is nil")
+	}
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return fmt.Errorf("empty plan approval id")
+	}
+	switch action {
+	case PlanDecisionStartExecution, PlanDecisionRevisePlan, PlanDecisionExitPlan:
+	default:
+		return fmt.Errorf("unknown plan decision %q", action)
+	}
+	pending, ok := c.approval.resolveTool(id, planApprovalTool)
+	if !ok || pending.reply == nil {
+		return fmt.Errorf("plan approval %q is no longer pending", id)
+	}
+	pending.kind = "plan"
+	c.recordDecisionReceipt(pending, string(action))
+	pending.reply <- approvalReply{allow: action == PlanDecisionStartExecution}
+	return nil
+}
+
+func (c *Controller) recordDecisionReceipt(pending pendingApproval, outcome string) {
+	if c == nil || c.executor == nil || pending.reply == nil {
+		return
+	}
+	kind := pending.kind
+	if kind == "" {
+		kind = "tool"
+		if pending.tool == planApprovalTool {
+			kind = "plan"
+		}
+	}
+	receipt := &provider.DecisionReceipt{
+		ID:      pending.id,
+		Kind:    kind,
+		Tool:    strings.TrimSpace(pending.tool),
+		Subject: clipUTF8(strings.TrimSpace(pending.subject), 240),
+		Outcome: strings.TrimSpace(outcome),
+	}
+	// Keep the receipt bounded and provider-excluded even when an older caller
+	// omits optional approval metadata.
+	c.executor.Session().AddDecisionReceipt(receipt)
+	c.sink.Emit(event.Event{
+		Kind:            event.Notice,
+		Code:            event.NoticeCodeDecisionReceipt,
+		Level:           event.LevelInfo,
+		Text:            "Decision recorded: " + receipt.Outcome,
+		DecisionReceipt: receipt,
+	})
 }
 
 // EnableInteractiveApproval swaps the executor's gate for one that routes
@@ -2403,8 +2488,48 @@ func (c *Controller) AnswerQuestion(id string, answers []event.AskAnswer) {
 				return
 			}
 		}
+		c.recordAskDecisionReceipt(id, pending, answers)
 		pending.reply <- answers // buffered, never blocks
 	}
+}
+
+func (c *Controller) recordAskDecisionReceipt(id string, pending pendingAsk, answers []event.AskAnswer) {
+	if c == nil || c.executor == nil {
+		return
+	}
+	selected := make(map[string][]string, len(answers))
+	for _, answer := range answers {
+		selected[answer.QuestionID] = append([]string(nil), answer.Selected...)
+	}
+	parts := make([]string, 0, len(pending.questions))
+	for _, question := range pending.questions {
+		answer := strings.TrimSpace(strings.Join(selected[question.ID], ", "))
+		if answer == "" {
+			answer = "—"
+		}
+		prompt := strings.TrimSpace(question.Prompt)
+		if prompt == "" {
+			prompt = strings.TrimSpace(question.Header)
+		}
+		if prompt == "" {
+			prompt = question.ID
+		}
+		parts = append(parts, prompt+": "+answer)
+	}
+	receipt := &provider.DecisionReceipt{
+		ID:      id,
+		Kind:    "ask",
+		Subject: clipUTF8(strings.Join(parts, " · "), 240),
+		Outcome: "answered",
+	}
+	c.executor.Session().AddDecisionReceipt(receipt)
+	c.sink.Emit(event.Event{
+		Kind:            event.Notice,
+		Code:            event.NoticeCodeDecisionReceipt,
+		Level:           event.LevelInfo,
+		Text:            "Decision recorded: answered",
+		DecisionReceipt: receipt,
+	})
 }
 
 func askAnswersHaveSelection(answers []event.AskAnswer) bool {
@@ -6424,8 +6549,12 @@ func (c *Controller) requestApprovalDecisionWithOptions(ctx context.Context, too
 
 	var id string
 	var reply chan approvalReply
-	if opts.fresh || opts.requireHuman {
-		id, reply = c.approval.registerDecisionWithInput(tool, subject, reason, args, opts.fresh, opts.requireHuman)
+	if opts.fresh || opts.requireHuman || tool == planApprovalTool {
+		kind := ""
+		if tool == planApprovalTool {
+			kind = "plan"
+		}
+		id, reply = c.approval.registerDecisionKindWithInput(tool, subject, reason, args, opts.fresh, opts.requireHuman, kind, nil)
 	} else {
 		id, reply = c.approval.registerWithInput(tool, subject, reason, args)
 	}

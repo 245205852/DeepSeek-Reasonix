@@ -129,6 +129,14 @@ export interface WireGuardian {
   usage?: WireUsage;
 }
 
+export interface WireDecisionReceipt {
+  id: string;
+  kind: string;
+  tool?: string;
+  subject?: string;
+  outcome: string;
+}
+
 export interface WireAskOption {
   label: string;
   description?: string;
@@ -249,6 +257,7 @@ export interface WireEvent {
   ask?: WireAsk;
   compaction?: WireCompaction;
   guardian?: WireGuardian;
+  decisionReceipt?: WireDecisionReceipt;
   extension?: WireExtensionSurface;
   err?: string;
   outcome?: "final_readiness" | "recovery_paused";
@@ -499,6 +508,7 @@ export interface HistoryMessage {
   messages?: number;
   summary?: string;
   archive?: string;
+  decisionReceipt?: WireDecisionReceipt;
 }
 
 export interface HistoryToolCall {

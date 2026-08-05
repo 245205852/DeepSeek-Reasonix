@@ -16,6 +16,7 @@ import { providerIsConfigured, providerRequiresKey } from "./providerModels";
 import { DEFAULT_STATUS_BAR_ITEMS, normalizeStatusBarItems } from "./statusBarItems";
 import { registerTrustedThemeBackgroundURLs } from "./themePack";
 import { modeHasAutoApproveTools, modeWithAutoApproveTools, modeWithPlan, normalizeCollaborationMode, normalizeMode, normalizeTokenMode, normalizeToolApprovalMode } from "./types";
+import { decisionSurfaceMockFromInput, isLongDecisionOptionsMockInput } from "./decisionSurfaceMock";
 
 import type {
   AutoResearchFindingView,
@@ -193,6 +194,8 @@ export interface AppBindings {
   CancelTab(tabID: string): Promise<void>;
   Approve(id: string, allow: boolean, session: boolean, persist: boolean): Promise<void>;
   ApproveTab(tabID: string, id: string, allow: boolean, session: boolean, persist: boolean): Promise<void>;
+  ResolvePlanDecision(id: string, action: "start_execution" | "revise_plan" | "exit_plan"): Promise<void>;
+  ResolvePlanDecisionTab(tabID: string, id: string, action: "start_execution" | "revise_plan" | "exit_plan"): Promise<void>;
   ResolveRecovery(id: string, action: string, feedback: string): Promise<void>;
   ResolveRecoveryTab(tabID: string, id: string, action: string, feedback: string): Promise<void>;
   // Legacy no-ops: Auto Guard is always built into Auto.
@@ -2203,6 +2206,7 @@ function makeMockApp(): AppBindings {
           cancelled = false;
       emitMockTurnStarted();
       const trimmedInput = input.trim().toLowerCase();
+      const decisionSurfaceMock = decisionSurfaceMockFromInput(trimmedInput);
       const goalMatch = /^\/goal(?:\s+([\s\S]*))?$/.exec(input.trim());
       if (goalMatch) {
         const arg = stripGoalResearchFlags((goalMatch[1] ?? "").trim());
@@ -2230,7 +2234,7 @@ function makeMockApp(): AppBindings {
         emitMockTurnDone();
         return;
       }
-      if (trimmedInput === "/approve-preview" || trimmedInput === "approve preview" || trimmedInput === "approve预览") {
+      if (decisionSurfaceMock === "tool_approval") {
         pendingApprovalPreview = true;
         pendingApprovalPreviewPrompt = { id: "mock-approval-preview", tool: "bash" };
         await delay(250);
@@ -2305,11 +2309,7 @@ function makeMockApp(): AppBindings {
         });
         return;
       }
-      if (
-        trimmedInput === "/plan-approve-preview" ||
-        trimmedInput === "plan approve preview" ||
-        trimmedInput === "plan approve预览"
-      ) {
+      if (decisionSurfaceMock === "plan_approval") {
         pendingApprovalPreview = true;
         pendingApprovalPreviewPrompt = { id: "mock-plan-approval-preview", tool: "exit_plan_mode" };
         await delay(250);
@@ -2324,7 +2324,80 @@ function makeMockApp(): AppBindings {
         });
         return;
       }
-      if (trimmedInput === "/ask-preview" || trimmedInput === "ask preview" || trimmedInput === "ask预览") {
+      if (isLongDecisionOptionsMockInput(trimmedInput)) {
+        pendingAskPreview = true;
+        await delay(250);
+        if (cancelled) return;
+
+        const longDescription = (...parts: string[]) => [...parts, ...parts, ...parts].join(" ");
+        const longLabel = (...parts: string[]) => [...parts, ...parts, ...parts].join(" · ");
+        const q1Option1Description = t("mock.askQ1Opt1Desc");
+        const q1Option2Description = t("mock.askQ1Opt2Desc");
+        const q1Option3Description = t("mock.askQ1Opt3Desc");
+        const q2Option1Description = t("mock.askQ2Opt1Desc");
+        const q2Option2Description = t("mock.askQ2Opt2Desc");
+        const q2Option3Description = t("mock.askQ2Opt3Desc");
+        const allowOnceDescription = t("approval.allowOnceDesc");
+        const denyDescription = t("approval.denyDesc");
+
+        emit({
+          kind: "ask_request",
+          ask: {
+            id: "mock-long-options",
+            questions: [
+              {
+                id: "long-options",
+                header: `${t("mock.askQ1Header")} · QA`,
+                prompt: `${t("mock.askQ1Prompt")} ${t("mock.askQ2Prompt")}`,
+                options: [
+                  {
+                    label: t("mock.askQ1Opt1Label"),
+                    description: longDescription(q1Option1Description, q2Option1Description, allowOnceDescription),
+                  },
+                  {
+                    label: t("mock.askQ1Opt2Label"),
+                    description: longDescription(q1Option2Description, q2Option2Description, denyDescription),
+                  },
+                  {
+                    label: t("mock.askQ1Opt3Label"),
+                    description: longDescription(q1Option3Description, q2Option3Description, allowOnceDescription),
+                  },
+                  {
+                    // Deliberately omit description here: this exercises the
+                    // legacy/malformed payload fallback where the complete
+                    // decision was placed in label instead of split into a
+                    // short label plus supporting description.
+                    label: longLabel(
+                      t("mock.askQ2Opt1Label"),
+                      t("mock.askQ1Opt3Label"),
+                      t("mock.askQ2Opt3Label"),
+                      t("mock.askQ1Opt1Label"),
+                    ),
+                  },
+                  {
+                    label: t("mock.askQ2Opt2Label"),
+                    description: longDescription(
+                      q2Option2Description,
+                      "DecisionSurfacePreviewWithAnExtremelyLongUnbrokenIdentifierForOverflowVerification0123456789",
+                      q1Option1Description,
+                    ),
+                  },
+                  {
+                    label: t("mock.askQ2Opt3Label"),
+                    description: longDescription(q2Option3Description, q1Option1Description, q2Option2Description),
+                  },
+                  {
+                    label: t("approval.deny"),
+                    description: longDescription(denyDescription, q1Option2Description, q2Option1Description),
+                  },
+                ],
+              },
+            ],
+          },
+        });
+        return;
+      }
+      if (decisionSurfaceMock === "ask") {
         pendingAskPreview = true;
         await delay(250);
         if (cancelled) return;
@@ -2619,6 +2692,22 @@ function makeMockApp(): AppBindings {
         },
         async ApproveTab(_tabID, id, allow, session, persist) {
           await withMockTabScope(_tabID, () => this.Approve(id, allow, session, persist));
+        },
+        async ResolvePlanDecision(id, action) {
+          const active = mockTabs.find((tab) => tab.active);
+          await this.ResolvePlanDecisionTab(active?.id ?? "", id, action);
+        },
+        async ResolvePlanDecisionTab(_tabID, id, action) {
+          await withMockTabScope(_tabID, async () => {
+            void id;
+            pendingApprovalPreview = false;
+            pendingApprovalPreviewPrompt = undefined;
+            emit({
+              kind: "message",
+              text: `plan preview answered: ${action}`,
+            });
+            emitMockTurnDone();
+          });
         },
         async ResolveRecovery(id, action, feedback) {
           const active = mockTabs.find((tab) => tab.active);

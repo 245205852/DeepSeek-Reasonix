@@ -1702,6 +1702,42 @@ function SteerCard({ text }: { text: string }) {
   );
 }
 
+function DecisionReceiptLine({ receipt }: { receipt: NonNullable<NoticeItem["decisionReceipt"]> }) {
+  const t = useT();
+  const titleKey = receipt.kind === "ask"
+    ? "notice.decisionReceiptAsk"
+    : receipt.kind === "plan"
+    ? "notice.decisionReceiptPlan"
+    : receipt.kind === "recovery"
+      ? "notice.decisionReceiptRecovery"
+      : "notice.decisionReceiptTool";
+  const outcomeKeys: Record<string, string> = {
+    allow_once: "notice.decisionAllowOnce",
+    allow_session: "notice.decisionAllowSession",
+    allow_persistent: "notice.decisionAllowPersistent",
+    deny: "notice.decisionDeny",
+    start_execution: "notice.decisionStartExecution",
+    revise_plan: "notice.decisionRevisePlan",
+    exit_plan: "notice.decisionExitPlan",
+    recovery_continue: "notice.decisionRecoveryContinue",
+    recovery_continue_task: "notice.decisionRecoveryContinueTask",
+    recovery_revise: "notice.decisionRecoveryRevise",
+    answered: "notice.decisionAnswered",
+  };
+  const outcome = outcomeKeys[receipt.outcome]
+    ? t(outcomeKeys[receipt.outcome] as never)
+    : receipt.outcome || t("notice.decisionReceiptTitle");
+  const showOutcome = receipt.kind !== "ask" || receipt.outcome !== "answered";
+  return (
+    <div className="notice-line__decision-receipt">
+      <span className="notice-line__decision-title">{t(titleKey as never)}</span>
+      {showOutcome && <span className="notice-line__decision-outcome">{outcome}</span>}
+      {receipt.tool && <code>{receipt.tool}</code>}
+      {receipt.subject && <span className="notice-line__decision-subject">{receipt.subject}</span>}
+    </div>
+  );
+}
+
 export function NoticeCard({ item, onAction, actionDisabled = false }: { item: NoticeItem; onAction?: () => void; actionDisabled?: boolean }) {
   const t = useT();
   const StatusIcon = item.level === "warn" ? TriangleAlert : Info;
@@ -1709,8 +1745,14 @@ export function NoticeCard({ item, onAction, actionDisabled = false }: { item: N
     <div className={`notice-line notice-line--${item.level}${item.variant ? ` notice-line--${item.variant}` : ""}`} data-entrance="true">
       <StatusIcon className="notice-line__icon" size={14} aria-hidden="true" />
       <div className="notice-line__text">
-        {item.title ? <div className="notice-line__title">{item.title}</div> : null}
-        <div className="notice-line__body">{item.text}</div>
+        {item.decisionReceipt ? (
+          <DecisionReceiptLine receipt={item.decisionReceipt} />
+        ) : (
+          <>
+            {item.title ? <div className="notice-line__title">{item.title}</div> : null}
+            <div className="notice-line__body">{item.text}</div>
+          </>
+        )}
         {item.action && onAction ? (
           <div className="notice-line__actions">
             <button className="btn btn--small" type="button" onClick={onAction} disabled={actionDisabled}>

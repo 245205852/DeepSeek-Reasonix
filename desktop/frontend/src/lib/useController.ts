@@ -35,6 +35,7 @@ import type {
   ToolApprovalMode,
   WireApproval,
   WireAsk,
+  WireDecisionReceipt,
   WireEvent,
   WireExtensionCard,
   WireExtensionForm,
@@ -216,7 +217,7 @@ export type Item =
   | { kind: "user"; id: string; text: string; submitText?: string; failed?: boolean; createdAt?: number; checkpointTurn?: number }
   | { kind: "assistant"; id: string; text: string; reasoning: string; streaming: boolean; reasoningComplete?: boolean; reasoningDurationMs?: number; workDurationMs?: number; memoryCitations?: MemoryCitation[] }
   | { kind: "phase"; id: string; text: string }
-  | { kind: "notice"; id: string; level: "info" | "warn"; text: string; detail?: string; title?: string; variant?: "delivery"; action?: "continue_delivery" }
+  | { kind: "notice"; id: string; level: "info" | "warn"; text: string; detail?: string; title?: string; variant?: "delivery"; action?: "continue_delivery"; decisionReceipt?: WireDecisionReceipt }
   | {
       kind: "compaction";
       id: string;
@@ -782,8 +783,8 @@ export function historyMessagesToItems(messages: HistoryMessage[], idPrefix: str
       continue;
     }
     if (m.role === "notice") {
-      if (m.content.trim() !== "") {
-        const next = appendNoticeItem(items, seq, `${idPrefix}${seq}`, m.level === "warn" ? "warn" : "info", m.content, m.detail, m.code);
+      if (m.content.trim() !== "" || m.decisionReceipt) {
+        const next = appendNoticeItem(items, seq, `${idPrefix}${seq}`, m.level === "warn" ? "warn" : "info", m.content, m.detail, m.code, m.decisionReceipt);
         items = next.items;
         seq = next.seq;
       }
@@ -1401,7 +1402,7 @@ function applyEvent(s: State, e: WireEvent): State {
       return { ...s, usage, context: { ...s.context, used, sessionTokens }, turnTokens, turnTotalTokens, turnCost, turnArgChars: 0, sessionTokens, sessionCost, sessionCurrency, usageSeq: s.usageSeq + 1 };
     }
     case "notice":
-      return appendNoticeToState(s, e.level ?? "info", e.text ?? "", e.detail, e.code);
+      return appendNoticeToState(s, e.level ?? "info", e.text ?? "", e.detail, e.code, e.decisionReceipt);
     case "phase":
       return { ...s, seq: s.seq + 1, items: [...s.items, { kind: "phase", id: `p${s.seq}`, text: e.text ?? "" }] };
     case "compaction_started":
@@ -1922,6 +1923,7 @@ const noticeCodeKeys: Record<string, DictKey> = {
   session_recovery_adopted_covered: "recovery.noticeAdoptedCovered",
   session_recovery_depth_cap: "recovery.noticeKeptCurrent",
   session_shutdown_recovery_forked: "recovery.noticeSavedCopy",
+  decision_receipt: "notice.decisionReceiptTitle",
 };
 
 // localizedNoticeText localizes a notice's main copy by its stable code first,
@@ -2123,7 +2125,7 @@ function quietTranscriptNoticeKey(text: string, code?: string): string {
   return "";
 }
 
-function appendNoticeItem(items: Item[], seq: number, id: string, level: "info" | "warn", rawText: string, detail?: string, code?: string): { items: Item[]; seq: number } {
+function appendNoticeItem(items: Item[], seq: number, id: string, level: "info" | "warn", rawText: string, detail?: string, code?: string, decisionReceipt?: WireDecisionReceipt): { items: Item[]; seq: number } {
   if (quietTranscriptNoticeKey(rawText, code)) {
     return { items, seq };
   }
@@ -2132,11 +2134,11 @@ function appendNoticeItem(items: Item[], seq: number, id: string, level: "info" 
     return { items, seq };
   }
   const trimmedDetail = detail?.trim();
-  return { items: [...items, { kind: "notice", id, level, text, ...(trimmedDetail ? { detail: trimmedDetail } : {}) }], seq: seq + 1 };
+  return { items: [...items, { kind: "notice", id, level, text, ...(trimmedDetail ? { detail: trimmedDetail } : {}), ...(decisionReceipt ? { decisionReceipt } : {}) }], seq: seq + 1 };
 }
 
-function appendNoticeToState(s: State, level: "info" | "warn", text: string, detail?: string, code?: string): State {
-  const next = appendNoticeItem(s.items, s.seq, `n${s.seq}`, level, text, detail, code);
+function appendNoticeToState(s: State, level: "info" | "warn", text: string, detail?: string, code?: string, decisionReceipt?: WireDecisionReceipt): State {
+  const next = appendNoticeItem(s.items, s.seq, `n${s.seq}`, level, text, detail, code, decisionReceipt);
   return { ...s, running: s.turnActive ? s.running : false, seq: next.seq, items: next.items };
 }
 
@@ -3155,6 +3157,20 @@ export function useController() {
     });
   }, [activeTabId, dispatchTo]);
 
+  const resolvePlanDecision = useCallback((id: string, action: "start_execution" | "revise_plan" | "exit_plan") => {
+    if (!activeTabId) return;
+    const tabId = activeTabId;
+    const epoch = statesRef.current.get(tabId)?.promptEpoch ?? 0;
+    dispatchTo(tabId, { type: "clearApproval" });
+    const request = typeof app.ResolvePlanDecisionTab === "function"
+      ? app.ResolvePlanDecisionTab(tabId, id, action)
+      : app.ApproveTab(tabId, id, action === "start_execution", false, false);
+    request.catch(() => {
+      dispatchTo(tabId, { type: "submit_prompt_failed", id, epoch });
+      replayPendingPromptsForActiveTab(tabId);
+    });
+  }, [activeTabId, dispatchTo]);
+
   const resolveRecovery = useCallback((id: string, action: "continue" | "continue_task" | "revise" | "stop", feedback = "") => {
     if (!activeTabId) return;
     const tabId = activeTabId;
@@ -4015,7 +4031,7 @@ export function useController() {
     state: activeState,
     liveStore,
     activeTabId,
-    send, sendToTab, recoverDeliveryToTab, runShell, runShellForTab, steer, steerForTab, notice, cancel, approve, resolveRecovery, answerQuestion, setControllerMode,
+    send, sendToTab, recoverDeliveryToTab, runShell, runShellForTab, steer, steerForTab, notice, cancel, approve, resolvePlanDecision, resolveRecovery, answerQuestion, setControllerMode,
     dismissExtensionForm, drainExtensionNotifications,
     setCollaborationMode, setCollaborationModeForTab, setToolApprovalMode, setToolApprovalModeForTab, setComposerProfileForTab, setGoal, setGoalForTab, clearGoal, clearGoalForTab, resumeGoal, resumeGoalForTab, pauseGoal, pauseGoalForTab,
     newSession, clearSession, listSessions, listTrashedSessions, resumeSession, openChannelSession, previewSession, deleteSession, restoreSession, purgeTrashedSession, renameSession,

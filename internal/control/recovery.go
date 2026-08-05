@@ -65,6 +65,14 @@ func (c *Controller) ResolveRecovery(id string, action agent.RecoveryAction, fee
 	// and ReplayPending do not keep a stale prompt.
 	pending := c.approval.resolve(id)
 	if pending.reply != nil {
+		outcome := "recovery_revise"
+		switch action {
+		case agent.RecoveryActionContinue:
+			outcome = "recovery_continue"
+		case agent.RecoveryActionContinueTask:
+			outcome = "recovery_continue_task"
+		}
+		c.recordDecisionReceipt(pending, outcome)
 		switch action {
 		case agent.RecoveryActionContinue, agent.RecoveryActionContinueTask:
 			pending.reply <- approvalReply{allow: true}
