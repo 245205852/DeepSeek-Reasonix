@@ -827,7 +827,7 @@ type sseEvent struct {
 
 type sseItem struct {
 	ID, Type, CallID, Name, Arguments, Status string
-	Raw                               json.RawMessage
+	Raw                                       json.RawMessage
 }
 
 func (i *sseItem) UnmarshalJSON(data []byte) error {
