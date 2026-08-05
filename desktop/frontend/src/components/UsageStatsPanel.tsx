@@ -11,7 +11,7 @@
 // "Other" step.
 // The component's styles live in UsageStatsPanel.css (loaded on demand with
 // this chunk), so the ~7 KB rule block never inflates the settings bundle.
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { Activity, CalendarDays, ChevronDown, ChevronRight, Coins, Cpu, MessageSquare, MessagesSquare } from "lucide-react";
 import { useI18n } from "../lib/i18n";
 import { app } from "../lib/bridge";
@@ -71,6 +71,7 @@ const USAGE_STATS_TRANSLATIONS = {
     "settings.stats.trendLimited": "Showing the latest 180 days",
     "settings.stats.modelUsage": "Model usage",
     "settings.stats.other": "Other",
+    "settings.stats.moreModels": "more models",
     "settings.stats.total": "Total",
     "settings.stats.percent": "Share",
     "settings.stats.asOf": "As of",
@@ -112,6 +113,7 @@ const USAGE_STATS_TRANSLATIONS = {
     "settings.stats.trendLimited": "仅显示最近 180 天",
     "settings.stats.modelUsage": "模型用量",
     "settings.stats.other": "其他",
+    "settings.stats.moreModels": "个其他模型",
     "settings.stats.total": "总用量",
     "settings.stats.percent": "占比",
     "settings.stats.asOf": "统计截至",
@@ -153,6 +155,7 @@ const USAGE_STATS_TRANSLATIONS = {
     "settings.stats.trendLimited": "僅顯示最近 180 天",
     "settings.stats.modelUsage": "模型用量",
     "settings.stats.other": "其他",
+    "settings.stats.moreModels": "個其他模型",
     "settings.stats.total": "總用量",
     "settings.stats.percent": "佔比",
     "settings.stats.asOf": "統計截至",
@@ -177,6 +180,7 @@ const TOP_MODELS = 5;
 const OTHER_MODEL = "\u0000other"; // sentinel; cannot collide with a real model ref
 const OTHER_COLOR = "var(--chart-other)";
 const MODEL_COLOR_MIX = 72; // percent of the series colour in the --bg-elev mix
+const MAX_TOOLTIP_OTHER_DETAILS = 5;
 // A grouped day carries the raw tail split so hover tooltips can expand the
 // "Other" step into its per-model detail without extra queries.
 type GroupedDaily = DailyTokenUsage & { otherByModel: Record<string, number> };
@@ -690,7 +694,12 @@ function DailyTrend({ daily, modelOrder, t, colorForModel }: { daily: GroupedDai
   const cBottom = contentRect?.bottom ?? window.innerHeight;
   const TIP_W = 260;
   const tipX = tip ? Math.max(cLeft + TIP_W / 2 + 8, Math.min(tip.cx, cRight - TIP_W / 2 - 8)) : 0;
-  const tipRows = tip ? Object.keys(tip.byModel).length + 1 + (tip.otherByModel ? Object.keys(tip.otherByModel).length : 0) : 0; // +1 cache ratio row; + the Other breakdown rows
+  const tipOtherEntries = tip?.otherByModel
+    ? Object.entries(tip.otherByModel).sort((a, b) => b[1] - a[1])
+    : [];
+  const tipOtherVisible = tipOtherEntries.slice(0, MAX_TOOLTIP_OTHER_DETAILS);
+  const tipOtherRemaining = Math.max(0, tipOtherEntries.length - tipOtherVisible.length);
+  const tipRows = tip ? Object.keys(tip.byModel).length + 1 + tipOtherVisible.length + (tipOtherRemaining > 0 ? 1 : 0) : 0; // +1 cache ratio row; + the bounded Other breakdown
   const tipH = 46 + 18 * tipRows;
   const tipAbove = tip ? tip.top - cTop >= tipH + 10 : true;
   let tipY = tip ? (tipAbove ? tip.top - 10 : tip.bottom + 10) : 0;
@@ -793,9 +802,10 @@ function DailyTrend({ daily, modelOrder, t, colorForModel }: { daily: GroupedDai
             {modelOrder.filter((m) => tip.byModel[m] !== undefined).map((m) => (
               <div key={m} className="usage-stats__tip-row"><i className="usage-stats__legend-swatch" style={{ background: colorForModel(m) }} />{m === OTHER_MODEL ? t("settings.stats.other") : m}: {formatTokens(tip.byModel[m])}</div>
             ))}
-            {tip.otherByModel && Object.entries(tip.otherByModel).sort((a, b) => b[1] - a[1]).map(([m, v]) => (
+            {tipOtherVisible.map(([m, v]) => (
               <div key={m} className="usage-stats__tip-row usage-stats__tip-row--other"><i className="usage-stats__legend-swatch" style={{ background: OTHER_COLOR }} />{m}: {formatTokens(v)}</div>
             ))}
+            {tipOtherRemaining > 0 && <div className="usage-stats__tip-more">+{tipOtherRemaining} {t("settings.stats.moreModels")}</div>}
             <div>{t("settings.stats.cacheHitRate")}: {cacheRateText(tip.cacheHit, tip.cacheMiss)}</div>
           </div>
         )}
@@ -826,6 +836,9 @@ function ModelUsage({ models, t, colorForModel }: { models: GroupedModel[]; t: U
 
   if (models.length === 0) return null;
   const other = models.find((m) => m.model === OTHER_MODEL);
+  const tipItems = tip?.items ?? [];
+  const tipItemsVisible = tipItems.slice(0, MAX_TOOLTIP_OTHER_DETAILS);
+  const tipItemsRemaining = Math.max(0, tipItems.length - tipItemsVisible.length);
 
   // The ring leaves a 6px margin inside the 240px viewBox at rest, so the
   // hover-grow of the stroke (+5px, half of it outward) keeps a 3.5px margin
@@ -887,11 +900,12 @@ function ModelUsage({ models, t, colorForModel }: { models: GroupedModel[]; t: U
               <div className="usage-stats__tip-title">{tip.model === OTHER_MODEL ? t("settings.stats.other") : tip.model}</div>
               <div>{t("settings.stats.total")}: {formatTokens(tip.tokens)}</div>
               <div>{t("settings.stats.percent")}: {formatPercent(tip.percent)}</div>
-              {tip.items && tip.items.length > 0 && (
+              {tipItems.length > 0 && (
                 <div className="usage-stats__tip-breakdown">
-                  {tip.items.map((it) => (
+                  {tipItemsVisible.map((it) => (
                     <div key={it.model} className="usage-stats__tip-row usage-stats__tip-row--other"><i className="usage-stats__legend-swatch" style={{ background: OTHER_COLOR }} />{it.model}: {formatTokens(it.tokens)}</div>
                   ))}
+                  {tipItemsRemaining > 0 && <div className="usage-stats__tip-more">+{tipItemsRemaining} {t("settings.stats.moreModels")}</div>}
                 </div>
               )}
             </div>
@@ -900,49 +914,46 @@ function ModelUsage({ models, t, colorForModel }: { models: GroupedModel[]; t: U
         <ul className="usage-stats__model-list">
           {models.map((m) => {
             const isOther = m.model === OTHER_MODEL;
-            return (
-              <li
-                key={m.model}
-                className={`usage-stats__model-row${isOther ? " usage-stats__model-row--expandable" : ""}`}
-                onMouseEnter={() => setHover(m.model)}
-                onMouseLeave={() => setHover(null)}
-                {...(isOther
-                  ? {
-                      role: "button",
-                      tabIndex: 0,
-                      onClick: () => setExpandedOther(!expandedOther),
-                      // Keyboard users can also toggle the whole row; the
-                      // chevron button inside stops propagation for the mouse
-                      // path, and this target check keeps Enter/Space on the
-                      // button from double-firing the toggle.
-                      onKeyDown: (e: ReactKeyboardEvent<HTMLLIElement>) => {
-                        if (e.target !== e.currentTarget) return;
-                        if (e.key === "Enter" || e.key === " ") {
-                          e.preventDefault();
-                          setExpandedOther(!expandedOther);
-                        }
-                      },
-                    }
-                  : {})}
-              >
+            const rowContent = (
+              <>
                 <i className="usage-stats__legend-swatch" style={{ background: colorForModel(m.model) }} />
                 <span className="usage-stats__model-name">
                   {isOther && (
-                    <button
-                      type="button"
-                      className="usage-stats__model-toggle"
-                      onClick={(e) => { e.stopPropagation(); setExpandedOther(!expandedOther); }}
-                      aria-expanded={expandedOther}
-                      aria-label={t("settings.stats.other")}
-                    >
+                    <span className="usage-stats__model-toggle" aria-hidden="true">
                       {expandedOther ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
-                    </button>
+                    </span>
                   )}
                   {isOther ? t("settings.stats.other") : m.model}
                 </span>
                 <span className="usage-stats__model-provider">{isOther ? "" : providerOf(m.model)}</span>
                 <span className="usage-stats__model-tokens">{formatTokens(m.tokens)}</span>
                 <span className="usage-stats__model-pct">{formatPercent(m.percent)}</span>
+              </>
+            );
+            if (isOther) {
+              return (
+                <li key={m.model} className="usage-stats__model-item">
+                  <button
+                    type="button"
+                    className="usage-stats__model-row usage-stats__model-row--expandable"
+                    onMouseEnter={() => setHover(m.model)}
+                    onMouseLeave={() => setHover(null)}
+                    onClick={() => setExpandedOther((open) => !open)}
+                    aria-expanded={expandedOther}
+                  >
+                    {rowContent}
+                  </button>
+                </li>
+              );
+            }
+            return (
+              <li
+                key={m.model}
+                className="usage-stats__model-row"
+                onMouseEnter={() => setHover(m.model)}
+                onMouseLeave={() => setHover(null)}
+              >
+                {rowContent}
               </li>
             );
           })}

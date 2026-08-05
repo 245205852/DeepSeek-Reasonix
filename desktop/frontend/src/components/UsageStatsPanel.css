@@ -377,14 +377,27 @@
   background: var(--bg-elev);
 }
 
-/* "Other" aggregate row: the entire row is clickable to expand/collapse the
-   detail list. The chevron button inside it stops propagation so double-firing
-   is avoided; both the row click and the button trigger the same toggle. */
+/* "Other" aggregate row: the entire row is one native button that toggles the
+   detail list. */
 .usage-stats__model-row--expandable {
+  width: 100%;
+  border: none;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: inherit;
   cursor: pointer;
 }
 
-/* "Other" row toggle (chevron) that expands the aggregated tail models. */
+.usage-stats__model-item {
+  list-style: none;
+}
+
+.usage-stats__model-row + .usage-stats__model-item {
+  border-top: 1px solid var(--border-soft);
+}
+
+/* Decorative chevron inside the "Other" row button. */
 .usage-stats__model-toggle {
   display: inline-flex;
   align-items: center;
@@ -394,7 +407,6 @@
   border: none;
   background: none;
   color: var(--fg-faint);
-  cursor: pointer;
   vertical-align: middle;
 }
 
@@ -505,6 +517,12 @@
   border-top: 1px solid var(--border-soft);
   margin-top: 4px;
   padding-top: 4px;
+}
+
+.usage-stats__tip-more {
+  padding-left: 8px;
+  color: var(--fg-faint);
+  font-style: italic;
 }
 
 .usage-stats__foot {

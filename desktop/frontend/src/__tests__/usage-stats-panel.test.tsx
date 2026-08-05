@@ -79,9 +79,9 @@ const usageStats = (req: UsageStatsRequest): Promise<UsageStatsRange> => {
       tokens: 21,
       daily: Array.from({ length: 400 }, (_, index) => ({
         day: day(index - 399),
-        total: 1,
-        byModel: { "deepseek/model": 1 },
-        byProvider: { deepseek: 1 },
+        total: 21,
+        byModel: Object.fromEntries(Array.from({ length: 21 }, (_, modelIndex) => [`deepseek/model-${modelIndex + 1}`, 1])),
+        byProvider: { deepseek: 21 },
         requests: 1,
         turns: 1,
         cacheHit: 0,
@@ -140,6 +140,32 @@ ok(rootEl.textContent?.includes("Showing the latest 180 days") === true, "bounde
   ok(otherColour === "var(--chart-other)", "models beyond the top five collapse into the gray Other step");
   const series = [...modelSegments].slice(0, 5).map((seg) => seriesVar(seg.getAttribute("stroke") ?? ""));
   ok(new Set(series).size === 5, "the five model steps each get a distinct series colour");
+
+const otherToggle = rootEl.querySelector<HTMLButtonElement>("button.usage-stats__model-row--expandable");
+ok(otherToggle instanceof dom.window.HTMLButtonElement, "Other uses one native button for the whole expandable row");
+ok(otherToggle?.querySelector("button") === null, "Other does not nest an interactive button inside another button");
+ok(otherToggle?.getAttribute("aria-expanded") === "false", "Other exposes its collapsed state on the row button");
+await act(async () => {
+  otherToggle?.click();
+  await new Promise((resolve) => setTimeout(resolve, 0));
+});
+ok(otherToggle?.getAttribute("aria-expanded") === "true", "clicking the Other row exposes its expanded state");
+ok(rootEl.querySelector(".usage-stats__model-other-wrap--open") !== null, "clicking the Other row opens the detail list");
+
+await act(async () => {
+  modelSegments[modelSegments.length - 1]?.dispatchEvent(new dom.window.MouseEvent("mouseover", { bubbles: true, clientX: 120, clientY: 120 }));
+  await new Promise((resolve) => setTimeout(resolve, 0));
+});
+ok(rootEl.querySelectorAll(".usage-stats__tip-breakdown .usage-stats__tip-row--other").length === 5, "donut tooltip caps the visible Other breakdown");
+ok(rootEl.querySelector(".usage-stats__tip-breakdown .usage-stats__tip-more") !== null, "donut tooltip discloses omitted Other models");
+await act(async () => {
+  modelSegments[modelSegments.length - 1]?.dispatchEvent(new dom.window.MouseEvent("mouseout", { bubbles: true }));
+  rootEl.querySelector("rect.usage-stats__bar-hit")?.dispatchEvent(new dom.window.MouseEvent("mouseover", { bubbles: true, clientX: 120, clientY: 120 }));
+  await new Promise((resolve) => setTimeout(resolve, 0));
+});
+const trendTip = rootEl.querySelector(".usage-stats__tip--screen");
+ok(trendTip?.querySelectorAll(".usage-stats__tip-row--other").length === 5, "daily tooltip caps the visible Other breakdown");
+ok(trendTip?.querySelector(".usage-stats__tip-more") !== null, "daily tooltip discloses omitted Other models");
 
 const cliButton = [...rootEl.querySelectorAll("button")].find((button) => button.textContent === "CLI");
 if (!cliButton) throw new Error("missing CLI source button");
