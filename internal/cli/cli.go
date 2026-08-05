@@ -32,6 +32,7 @@ import (
 	"reasonix/internal/config"
 	"reasonix/internal/control"
 	"reasonix/internal/event"
+	"reasonix/internal/extension/providerext"
 	fileencoding "reasonix/internal/fileutil/encoding"
 	"reasonix/internal/i18n"
 	"reasonix/internal/notify"
@@ -1192,6 +1193,9 @@ func chatREPL(args []string, version string) int {
 		switch {
 		case err != nil:
 			missing = err.Error()
+		case name != "" && providerext.PluginRefOwner(name) != "":
+			// Plugin-namespaced refs hold no config credential; boot's merged
+			// resolver already gated them, and there is no key env to warn about.
 		case name != "":
 			if vErr := cfg.Validate(name); vErr != nil {
 				missing = vErr.Error()
@@ -1256,6 +1260,30 @@ func chatREPL(args []string, version string) int {
 			c.SetToolApprovalMode(spec.ToolApprovalMode)
 		}
 		return c, nil
+	}
+	// /reload support: rebuild the runtime through boot.Rebuild so tools,
+	// skills, commands, hooks, MCP servers, and providers are discovered fresh
+	// while the boot layer migrates the session (history, approval grants,
+	// goal/recovery state, lifecycle). Same construction inputs as
+	// buildController so the replacement matches this session's launch wiring;
+	// the CLI holds no SharedHost, so each rebuild owns its plugin host.
+	m.rebuildRuntime = func(ctx context.Context, spec controllerBuildSpec, old *control.Controller) (*boot.BuildResult, error) {
+		effectiveOverrides := overrides
+		if spec.EffortOverride != nil {
+			effectiveOverrides.Effort = spec.EffortOverride
+		}
+		res, err := boot.Rebuild(ctx, old, cliProfileBuildOptions(spec.ModelRef, *maxSteps, false, sink, spec.RuntimeProfile, effectiveOverrides))
+		if err != nil {
+			return nil, err
+		}
+		// The interactive approval gate and the --yolo posture are frontend
+		// wiring boot.Rebuild deliberately leaves to the caller (it carries
+		// the Ask/Auto/Yolo tool-approval mode, not the launch flag).
+		res.Controller.EnableInteractiveApproval()
+		if *yolo {
+			res.Controller.SetAutoApproveTools(true)
+		}
+		return res, nil
 	}
 	m.runtimeProfile = profile
 	if effortOverride != nil {

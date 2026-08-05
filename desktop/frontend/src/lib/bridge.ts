@@ -53,6 +53,7 @@ import type {
   DeliveryWorktreeOpenResult,
   DroppedItem,
   EffortInfo,
+  ExtensionActionView,
   FilePreview,
   ExternalOpenersView,
   HistoryMessage,
@@ -323,6 +324,12 @@ export interface AppBindings {
   SetPluginEnabled(name: string, enabled: boolean): Promise<void>;
   UpdatePlugin(name: string): Promise<string>;
   PluginDoctor(name: string): Promise<PluginView>;
+  // Extension UI (stage 8b2): enumerate handshake-declared extension actions
+  // for the command palette, invoke one, and deliver a form surface's values
+  // (or {cancelled: true} on dismissal) back to the owning sidecar.
+  ExtensionActions(tabID: string): Promise<ExtensionActionView[]>;
+  InvokeExtensionAction(tabID: string, name: string, args: Record<string, string>): Promise<string>;
+  SubmitExtensionForm(tabID: string, pluginID: string, surfaceID: string, values: Record<string, unknown>): Promise<void>;
   AddMCPServer(input: MCPServerInput): Promise<number>;
   InstallMCPServer(input: MCPServerInput): Promise<MCPInstallResult>;
   UpdateMCPServer(name: string, input: MCPServerInput): Promise<void>;
@@ -388,6 +395,10 @@ export interface AppBindings {
   SetEffortForTab(tabID: string, level: string): Promise<void>;
   SetTokenMode(mode: string): Promise<void>;
   SetTokenModeForTab(tabID: string, mode: string): Promise<void>;
+  // ReloadRuntime rebuilds the tab's agent runtime in place (tools, skills,
+  // commands, hooks, providers, MCP servers) via boot.Rebuild, keeping the
+  // session. Busy tabs queue one reload for when they go idle.
+  ReloadRuntime(tabID: string): Promise<void>;
   Memory(): Promise<MemoryView>;
   MemorySuggestions(): Promise<MemorySuggestionsView>;
   AcceptMemorySuggestion(suggestion: MemorySuggestion): Promise<string>;
@@ -3822,6 +3833,7 @@ function makeMockApp(): AppBindings {
           const tokenMode = normalizeTokenMode(mode);
           mockTabs = mockTabs.map((tab) => (tab.id === tabID ? { ...tab, tokenMode } : tab));
         },
+        async ReloadRuntime(_tabID) {},
     async Memory() {
       return {
         available: true,
@@ -5097,6 +5109,13 @@ function makeMockApp(): AppBindings {
     async ScanRemoteLegacyWorkbenchData() {
       return { mirrorCount: 0, mirrorBytes: 0, trustFile: false };
     },
+    async ExtensionActions() {
+      return [];
+    },
+    async InvokeExtensionAction() {
+      return "";
+    },
+    async SubmitExtensionForm() {},
     async CleanRemoteLegacyWorkbenchData() {},
   };
 }

@@ -182,6 +182,16 @@ type Capabilities interface {
 	DisconnectedMCPNames() []string
 	UnregisterMCPServerTools(name string) bool
 	ImportMCPEntries(entries []config.PluginEntry) (total, added, updated, connected, failed, skipped int, err error)
+	// Extension UI (stage 8a): enumerate handshake-declared extension actions
+	// and invoke one by its public /<plugin>:<action> name. Nil hub → empty /
+	// error; the stage-8b slash dispatch resolves these.
+	ExtensionActions() []ExtensionActionView
+	InvokeExtensionAction(ctx context.Context, name string, args map[string]string) (string, error)
+	// ProviderCatalog is the session's merged provider catalog — config/broker
+	// base plus sidecar-declared extension providers (plugin/... refs). Nil
+	// when no extension declared providers; frontends merge it into their
+	// model pickers and skip nil.
+	ProviderCatalog() []provider.Descriptor
 }
 
 // Status covers read-only run/usage/billing telemetry and task list state.

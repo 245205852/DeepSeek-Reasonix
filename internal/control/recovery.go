@@ -191,6 +191,29 @@ func (c *Controller) carryRecoveryState(path string) {
 	c.saveRecoveryState(path)
 }
 
+// CarryRecoveryFrom moves prev's in-memory recovery checkpoint into c across
+// a same-session controller rebuild (boot.Rebuild). Live approval channels
+// never cross the boundary — pending recovery prompts are cleared, not
+// transferred, matching the in-session carry above. Call it only when no
+// persisted sidecar was restored (the outgoing controller never pinned a
+// session path); a sidecar restored by Resume is the authoritative state.
+func (c *Controller) CarryRecoveryFrom(prev *Controller) {
+	if c == nil || prev == nil {
+		return
+	}
+	c.approval.clearKind(recovery.ApprovalKindRecovery)
+	prev.mu.Lock()
+	prevGate := prev.recoveryGate
+	prev.mu.Unlock()
+	c.mu.Lock()
+	gate := c.recoveryGate
+	c.mu.Unlock()
+	if gate == nil || prevGate == nil {
+		return
+	}
+	gate.Restore(prevGate.Snapshot())
+}
+
 func (c *Controller) flushRecoveryPersistence(path string) {
 	if c == nil {
 		return
