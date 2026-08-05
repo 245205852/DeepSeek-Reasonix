@@ -2326,6 +2326,7 @@ export const zh: Record<DictKey, string> = {
   "palette.cmd.appearance": "外观",
   "palette.cmd.memory": "记忆",
   "palette.cmd.models": "模型",
+  "palette.cmd.usageStats": "使用统计",
   "palette.group.remote": "远程 SSH",
   "palette.remote.connect": "连接到 {host}",
   "palette.remote.open": "在 {host} 打开远程工作区",
