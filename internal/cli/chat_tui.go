@@ -427,6 +427,12 @@ type compactDoneMsg struct{ err error }
 // stale controller captured before an in-TUI rebuild.
 type tuiShutdownMsg struct{}
 
+// shutdownNow is the tea.Cmd every in-TUI quit gesture returns instead of
+// tea.Quit. Routing through tuiShutdownMsg gives all exits the same
+// finalization (Snapshot + lease follow); quitting directly would drop
+// whatever the controller holds beyond the last snapshot (#5879).
+func shutdownNow() tea.Msg { return tuiShutdownMsg{} }
+
 // elapsedTickMsg fires once a second while a turn runs, driving the "thinking
 // Ns" counter in the status line.
 type elapsedTickMsg struct{}
@@ -1300,7 +1306,13 @@ func (m chatTUI) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// queueEditCursor to decide whether to save an edit or enqueue.
 		default:
 			m.resetSubmittedInputRecall()
-			m.resetQueueNavigation()
+			// Preserve queue navigation while the user is editing a queued
+			// item — only reset when they're not browsing the queue, so that
+			// typing replacement text keeps queueEditCursor alive for the
+			// Enter handler to save the edit in-place. (#4877)
+			if m.queueEditCursor < 0 {
+				m.resetQueueNavigation()
+			}
 		}
 		if imagePasteShortcut(msg.String(), runtime.GOOS) {
 			if m.state == tuiRunning {
@@ -1364,7 +1376,7 @@ func (m chatTUI) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.unsendPending() // server not yet replied — restore text, leave no trace
 				} else if m.cancelRequested() {
 					m.ctrl.Cancel()
-					return m, tea.Quit
+					return m, shutdownNow
 				} else {
 					m.ctrl.Cancel()
 				}
@@ -1394,13 +1406,13 @@ func (m chatTUI) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 			if !m.lastCtrlCAt.IsZero() && time.Since(m.lastCtrlCAt) < 1500*time.Millisecond {
-				return m, tea.Quit
+				return m, shutdownNow
 			}
 			m.lastCtrlCAt = time.Now()
 			m.notice(i18n.M.CtrlCQuitHint)
 			return m, finalize(m, nil)
 		case "ctrl+d":
-			return m, tea.Quit
+			return m, shutdownNow
 		case "ctrl+l":
 			if m.state != tuiRunning {
 				m.finalizeStreamed()
@@ -1458,7 +1470,7 @@ func (m chatTUI) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 			if line == "exit" || line == "quit" || line == ":q" {
-				return m, tea.Quit
+				return m, shutdownNow
 			}
 			m.rememberSubmittedInput(line)
 
@@ -3216,10 +3228,16 @@ func (m chatTUI) renderApprovalBanner() string {
 	} else {
 		name, detail := approvalToolDetails(m.pendingApproval.Tool)
 		subj := strings.TrimSpace(m.pendingApproval.Subject)
+		full := subj
 		if subj != "" {
 			subj = " " + truncateSubject(subj, w)
 		}
 		text = strings.TrimSpace(fmt.Sprintf(i18n.M.ToolApprovalPromptFmt, name, subj, detail, ""))
+		// A command clipped to one line can hide the part that matters — the
+		// path being written, the flag that makes it destructive (#4682).
+		if body := approvalSubjectBody(full, strings.TrimSpace(subj), w); body != "" {
+			planDetails = append(planDetails, body)
+		}
 	}
 	if reason := strings.TrimSpace(m.pendingApproval.Reason); reason != "" {
 		text += " · " + truncateSubject(reason, w)
@@ -3234,6 +3252,30 @@ func (m chatTUI) renderApprovalBanner() string {
 	}
 	b.WriteString(dim("↑/↓ navigate · Enter select · y/a/p/n shortcuts"))
 	return choicePanelStyle.Width(w).Render(b.String())
+}
+
+// maxApprovalSubjectLines bounds the expanded command so a heredoc cannot push
+// the composer off screen.
+const maxApprovalSubjectLines = 8
+
+// approvalSubjectBody returns the full command wrapped over several lines when
+// the banner's one-line preview had to clip it, or "" when the preview already
+// showed everything.
+func approvalSubjectBody(full, preview string, width int) string {
+	full = strings.TrimSpace(full)
+	if full == "" || full == preview {
+		return ""
+	}
+	wrapWidth := width - 4
+	if wrapWidth < 20 {
+		wrapWidth = 20
+	}
+	lines := strings.Split(wrapStatusLine(full, wrapWidth), "\n")
+	if len(lines) > maxApprovalSubjectLines {
+		lines = lines[:maxApprovalSubjectLines]
+		lines[maxApprovalSubjectLines-1] = ansi.Truncate(lines[maxApprovalSubjectLines-1], wrapWidth-1, "") + "…"
+	}
+	return strings.Join(lines, "\n")
 }
 
 func compactApprovalPlan(plan string) string {
@@ -3790,6 +3832,12 @@ func (m *chatTUI) ingestEvent(e event.Event) {
 
 	case event.Message:
 		// The answer stream is complete — freeze reasoning + the markdown answer.
+		// Message.Text is the canonical display text (protocol markers already
+		// stripped at emission), so it replaces the raw streamed accumulation.
+		if e.Text != "" && m.pending.Len() > 0 {
+			m.pending.Reset()
+			m.pending.WriteString(e.Text)
+		}
 		m.commitReasoning()
 		m.commitPending()
 
@@ -4177,7 +4225,7 @@ func (m *chatTUI) runSlashCommand(input string) tea.Cmd {
 			m.notice("remembered → " + path)
 		}
 	case "/quit", "/exit":
-		return tea.Quit
+		return shutdownNow
 	case "/copy":
 		return m.runCopyCommand(input)
 	case "/export":
@@ -4185,6 +4233,20 @@ func (m *chatTUI) runSlashCommand(input string) tea.Cmd {
 	case "/forget":
 		m.forgetMemory(strings.TrimSpace(strings.TrimPrefix(input, typedCmd)))
 	default:
+		if control.IsBuiltinDocsSlash(typedCmd, m.commands, m.skills) {
+			query := strings.TrimSpace(strings.TrimPrefix(input, typedCmd))
+			if query != "" {
+				return m.startControllerTurn(input, input, func() { m.ctrl.SubmitDisplay(input, input) })
+			}
+			m.echoLocalCommand(input)
+			text, err := control.DocsCommandOverviewFor(typedCmd)
+			if err != nil {
+				m.notice("docs: " + err.Error())
+			} else {
+				m.commitLine(text)
+			}
+			return nil
+		}
 		// A custom command wins over a skill of the same name; both resolve to a turn.
 		if sent, ok := m.ctrl.CustomCommand(input); ok {
 			return m.startTurn(sent, input, input)
@@ -4202,13 +4264,17 @@ func (m *chatTUI) runSlashCommand(input string) tea.Cmd {
 			return m.startControllerTurn(input, input, func() { m.ctrl.SubmitDisplay(input, input) })
 		}
 		// An extension action (/<plugin>:<action>) resolves last, before the
-		// unknown-command notice; the invocation is a sidecar round-trip, so it
+		// unknown-command fallback; the invocation is a sidecar round-trip, so it
 		// runs off the event loop and its result lands as a notice.
 		if action, ok := matchExtensionAction(m.ctrl, typedCmd); ok {
 			m.echoLocalCommand(input)
 			return m.runExtensionAction(action.Slash, parseExtensionActionArgs(strings.Fields(input)[1:]))
 		}
-		m.notice(fmt.Sprintf("%s: %s", i18n.M.SlashUnknown, cmd))
+		// Unknown slash input is prose more often than a typo — send it as a
+		// regular message (matching the controller's behavior for the other
+		// surfaces), with a notice so real typos stay visible (#5756).
+		m.notice(fmt.Sprintf("%s: %s — %s", i18n.M.SlashUnknown, cmd, i18n.M.SlashUnknownSentAsMessage))
+		return m.startTurn(input, input, input)
 	}
 	return nil
 }

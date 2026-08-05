@@ -2,9 +2,12 @@ package agent
 
 import (
 	"bufio"
+	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -777,6 +780,103 @@ func TestSubagentStoreCleanupStaleRunningSkipsMissingParentProof(t *testing.T) {
 	}
 	if meta.Status != SubagentRunning {
 		t.Fatalf("status = %q without parent proof, want running", meta.Status)
+	}
+}
+
+func TestSubagentStoreCleanupStaleRunningSkipsCorruptMeta(t *testing.T) {
+	store := NewSubagentStore(t.TempDir())
+	spec := testSubagentSpec(t, "review")
+	run, err := store.PrepareFresh(spec)
+	if err != nil {
+		t.Fatalf("PrepareFresh: %v", err)
+	}
+	if err := store.MarkRunning(run); err != nil {
+		t.Fatalf("MarkRunning: %v", err)
+	}
+	ref := run.Ref
+	run.Release()
+
+	// Corrupt metadata files (truncated JSON, empty, and invalid custom field
+	// values) must be skipped, not abort the whole startup cleanup.
+	for i, corrupt := range []string{
+		`{"status":"running"`,
+		"",
+		`{"createdAt":"not-a-time"}`,
+	} {
+		corruptRef := fmt.Sprintf("sa_corrupt_%d", i)
+		if err := os.WriteFile(filepath.Join(store.dir, corruptRef+".meta.json"), []byte(corrupt), 0o600); err != nil {
+			t.Fatalf("write corrupt meta %d: %v", i, err)
+		}
+	}
+
+	cleaned, err := store.CleanupStaleRunning()
+	if err != nil {
+		t.Fatalf("CleanupStaleRunning should skip corrupt meta: %v", err)
+	}
+	if cleaned != 1 {
+		t.Fatalf("cleaned = %d, want 1 (corrupt metas skipped, running meta interrupted)", cleaned)
+	}
+	meta, err := store.LoadMeta(ref)
+	if err != nil {
+		t.Fatalf("LoadMeta: %v", err)
+	}
+	if meta.Status != SubagentInterrupted {
+		t.Fatalf("status = %q, want interrupted", meta.Status)
+	}
+}
+
+func TestSubagentStoreCleanupStaleRunningKeepsParentLeaseAfterCorruptReread(t *testing.T) {
+	sessionDir := t.TempDir()
+	store := NewSubagentStore(filepath.Join(sessionDir, "subagents"))
+	spec := testSubagentSpec(t, "review")
+	spec.ParentSession = "lease-parent"
+
+	refs := make([]string, 0, 2)
+	for range 2 {
+		run, err := store.PrepareFresh(spec)
+		if err != nil {
+			t.Fatalf("PrepareFresh: %v", err)
+		}
+		if err := store.MarkRunning(run); err != nil {
+			t.Fatalf("MarkRunning: %v", err)
+		}
+		refs = append(refs, run.Ref)
+		run.Release()
+	}
+	sort.Strings(refs)
+
+	var probeErr error
+	store.cleanupBeforeReread = func(parentSession, ref string) {
+		switch ref {
+		case refs[0]:
+			if err := os.WriteFile(store.metaPath(ref), []byte(`{"createdAt":"not-a-time"}`), 0o600); err != nil {
+				t.Fatalf("corrupt first metadata reread: %v", err)
+			}
+		case refs[1]:
+			probe, err := TryAcquireSessionLease(filepath.Join(sessionDir, parentSession+".jsonl"))
+			probeErr = err
+			if probe != nil {
+				probe.Release()
+			}
+		}
+	}
+
+	cleaned, err := store.CleanupStaleRunning()
+	if err != nil {
+		t.Fatalf("CleanupStaleRunning: %v", err)
+	}
+	if !errors.Is(probeErr, ErrSessionLeaseHeld) {
+		t.Fatalf("parent lease probe before second reread = %v, want ErrSessionLeaseHeld", probeErr)
+	}
+	if cleaned != 1 {
+		t.Fatalf("cleaned = %d, want 1", cleaned)
+	}
+	meta, err := store.LoadMeta(refs[1])
+	if err != nil {
+		t.Fatalf("LoadMeta second ref: %v", err)
+	}
+	if meta.Status != SubagentInterrupted {
+		t.Fatalf("second ref status = %q, want interrupted", meta.Status)
 	}
 }
 
