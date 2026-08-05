@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	goruntime "runtime"
+	"strconv"
 	"strings"
 
 	"github.com/wailsapp/wails/v2"
@@ -115,14 +116,17 @@ func main() {
 		// SSH Serve page for one remote host. It deliberately skips local
 		// runtimes (tabs, tray, heartbeat, providers) and exposes no Wails
 		// bindings, local menus, or file drops, so it can never act as a second
-		// local app. Its single-instance identity is per host, so reopening the
-		// same host hands the new ticket to the existing window instead.
-		if launch.RemoteWindowHostKey == "" {
-			println("Error: remote window ticket requires a host identity")
+		// local app. Its single-instance identity is per owner and host, so one
+		// Desktop reuses its window while a restarted Desktop cannot adopt an
+		// unregistered survivor from the prior process.
+		if launch.RemoteWindowHostKey == "" || !isRemoteWindowOwnerID(launch.RemoteWindowOwnerID) || launch.RemoteWindowParentPID <= 0 {
+			println("Error: remote window ticket requires valid host and owner identities")
 			return
 		}
 		app.remoteWindowTicket = launch.RemoteWindowTicket
 		app.remoteWindowHostKey = launch.RemoteWindowHostKey
+		app.remoteWindowOwnerID = launch.RemoteWindowOwnerID
+		app.remoteWindowParentPID = launch.RemoteWindowParentPID
 		singleInstance = remoteWindowSingleInstanceLock(app)
 		appMenu = nil
 		dragAndDrop = &options.DragAndDrop{DisableWebViewDrop: true}
@@ -238,6 +242,11 @@ type desktopLaunchOptions struct {
 	// RemoteWindowHostKey is the non-secret per-host digest that derives the
 	// child window's single-instance identity and validates the ticket.
 	RemoteWindowHostKey string
+	// RemoteWindowOwnerID scopes same-host reuse to the primary Desktop process
+	// that spawned the child. RemoteWindowParentPID lets the child close when
+	// that owner and its loopback SSH tunnel disappear.
+	RemoteWindowOwnerID   string
+	RemoteWindowParentPID int
 }
 
 func parseDesktopLaunchArgs(args []string) desktopLaunchOptions {
@@ -252,6 +261,10 @@ func parseDesktopLaunchArgs(args []string) desktopLaunchOptions {
 			out.RemoteWindowTicket = strings.TrimPrefix(arg, remoteWindowTicketArgPrefix)
 		case strings.HasPrefix(arg, remoteWindowHostArgPrefix):
 			out.RemoteWindowHostKey = strings.TrimPrefix(arg, remoteWindowHostArgPrefix)
+		case strings.HasPrefix(arg, remoteWindowOwnerArgPrefix):
+			out.RemoteWindowOwnerID = strings.TrimPrefix(arg, remoteWindowOwnerArgPrefix)
+		case strings.HasPrefix(arg, remoteWindowParentArgPrefix):
+			out.RemoteWindowParentPID, _ = strconv.Atoi(strings.TrimPrefix(arg, remoteWindowParentArgPrefix))
 		}
 	}
 	return out

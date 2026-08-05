@@ -22,6 +22,7 @@ const providerSetupMaxBody = 20 << 10
 type providerSetupState struct {
 	Enabled            bool   `json:"-"`
 	Required           bool   `json:"required"`
+	ActivationPending  bool   `json:"activationPending,omitempty"`
 	Provider           string `json:"provider,omitempty"`
 	Model              string `json:"model,omitempty"`
 	ModelRef           string `json:"modelRef,omitempty"`
@@ -131,16 +132,16 @@ func (s *Server) providerSetupSave(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	key := strings.TrimSpace(body.APIKey)
-	if key == "" {
-		http.Error(w, "API key is required", http.StatusBadRequest)
-		return
-	}
 	if len(key) > 16<<10 {
 		http.Error(w, "API key is too large", http.StatusBadRequest)
 		return
 	}
 	if err := s.configureProviderCredential(r.Context(), key); err != nil {
 		status := providerSetupHTTPStatus(err)
+		if errors.Is(err, errProviderSetupAPIKeyRequired) {
+			http.Error(w, errProviderSetupAPIKeyRequired.Error(), status)
+			return
+		}
 		if status == http.StatusConflict {
 			http.Error(w, errProviderSetupUnavailable.Error(), status)
 			return
@@ -155,27 +156,43 @@ func (s *Server) providerSetupSave(w http.ResponseWriter, r *http.Request) {
 }
 
 var errProviderSetupUnavailable = errors.New("provider setup is no longer required")
+var errProviderSetupAPIKeyRequired = errors.New("API key is required")
 
 func (s *Server) configureProviderCredential(ctx context.Context, key string) error {
 	s.bindMu.Lock()
 	defer s.bindMu.Unlock()
 
 	setup, ok := s.providerSetupSnapshot()
-	if !ok || !setup.Required || setup.KeyEnv == "" || setup.ModelRef == "" || setup.CredentialRevision == "" {
+	if !ok || !setup.Required || setup.KeyEnv == "" || setup.ModelRef == "" || (!setup.ActivationPending && setup.CredentialRevision == "") {
 		return errProviderSetupUnavailable
 	}
 	if currentModelRef(s.ctl()) != setup.ModelRef {
 		s.refreshProviderSetup(currentModelRef(s.ctl()))
 		return errProviderSetupUnavailable
 	}
-	if _, applied, err := config.SetCredentialIfRevision(setup.KeyEnv, key, setup.CredentialRevision); err != nil {
-		return fmt.Errorf("save remote provider credential: %w", err)
-	} else if !applied {
-		s.refreshProviderSetup(currentModelRef(s.ctl()))
-		return errProviderSetupUnavailable
+	if setup.ActivationPending {
+		// The first request already committed the secret. Retrying must rebuild the
+		// controller without rewriting the credential or comparing against the now
+		// stale pre-save revision. If another process removed the credential in the
+		// meantime, return to the ordinary missing-key state instead.
+		if !config.CredentialStored(setup.KeyEnv) {
+			s.refreshProviderSetup(currentModelRef(s.ctl()))
+			return errProviderSetupAPIKeyRequired
+		}
+	} else {
+		if key == "" {
+			return errProviderSetupAPIKeyRequired
+		}
+		if _, applied, err := config.SetCredentialIfRevision(setup.KeyEnv, key, setup.CredentialRevision); err != nil {
+			return fmt.Errorf("save remote provider credential: %w", err)
+		} else if !applied {
+			s.refreshProviderSetup(currentModelRef(s.ctl()))
+			return errProviderSetupUnavailable
+		}
 	}
 	if err := s.switchModelLocked(ctx, setup.ModelRef); err != nil {
 		s.providerSetupMu.Lock()
+		s.providerSetup.ActivationPending = true
 		s.providerSetup.Error = "The credential was saved, but the Provider could not be activated. Retry or restart Reasonix Serve."
 		s.providerSetupMu.Unlock()
 		return fmt.Errorf("activate remote provider: %w", err)
@@ -184,6 +201,9 @@ func (s *Server) configureProviderCredential(ctx context.Context, key string) er
 }
 
 func providerSetupHTTPStatus(err error) int {
+	if errors.Is(err, errProviderSetupAPIKeyRequired) {
+		return http.StatusBadRequest
+	}
 	if errors.Is(err, errProviderSetupUnavailable) {
 		return http.StatusConflict
 	}

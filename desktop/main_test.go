@@ -24,12 +24,20 @@ func TestParseDesktopLaunchArgsRemoteWindow(t *testing.T) {
 		"--other",
 		remoteWindowTicketArgPrefix + ".remote-window-123",
 		remoteWindowHostArgPrefix + "abcd1234",
+		remoteWindowOwnerArgPrefix + "0123456789abcdef0123456789abcdef",
+		remoteWindowParentArgPrefix + "4242",
 	})
 	if got.RemoteWindowTicket != ".remote-window-123" {
 		t.Fatalf("RemoteWindowTicket = %q", got.RemoteWindowTicket)
 	}
 	if got.RemoteWindowHostKey != "abcd1234" {
 		t.Fatalf("RemoteWindowHostKey = %q", got.RemoteWindowHostKey)
+	}
+	if got.RemoteWindowOwnerID != "0123456789abcdef0123456789abcdef" {
+		t.Fatalf("RemoteWindowOwnerID = %q", got.RemoteWindowOwnerID)
+	}
+	if got.RemoteWindowParentPID != 4242 {
+		t.Fatalf("RemoteWindowParentPID = %d", got.RemoteWindowParentPID)
 	}
 	if got.LegacySafeModeArg {
 		t.Fatal("remote window args unexpectedly enabled legacy safe mode")

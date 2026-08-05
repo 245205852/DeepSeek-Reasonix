@@ -260,6 +260,11 @@ type App struct {
 	// startup branches so the child never initializes local runtimes.
 	remoteWindowTicket  string
 	remoteWindowHostKey string
+	// remoteWindowOwnerID scopes child single-instance locks to one primary
+	// Desktop process. remoteWindowParentPID is set only in children and lets
+	// them exit when that owner (and therefore its SSH tunnel) disappears.
+	remoteWindowOwnerID   string
+	remoteWindowParentPID int
 	// remoteWindowMu serializes ticket consumption and navigation in a child
 	// process so a handoff arriving before domReady cannot be overridden by the
 	// initial ticket (or vice versa).
@@ -477,6 +482,7 @@ func NewApp() *App {
 		botInstalls:         map[string]*botInstallSession{},
 		botRuntime:          newDesktopBotRuntime(),
 		remoteWindows:       newRemoteWindowRegistry(),
+		remoteWindowOwnerID: newRemoteWindowOwnerID(),
 	}
 	a.terminals = newTerminalManager(a)
 	a.botBridge = a.newBotBridge()
@@ -504,7 +510,9 @@ func (a *App) startup(ctx context.Context) {
 	a.startWindowsWebView2StartupFallback(ctx)
 	if a.remoteWindowTicket != "" {
 		// Remote web window child: no local tabs, tray, heartbeat, providers,
-		// or remote manager. domReady consumes the ticket and navigates.
+		// or remote manager. domReady consumes the ticket and navigates; the
+		// owner watcher closes the window if the primary Desktop disappears.
+		a.watchRemoteWindowOwner(ctx)
 		return
 	}
 	installSystemQuitHook()

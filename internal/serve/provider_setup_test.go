@@ -125,8 +125,18 @@ func TestProviderSetupStoresRemoteCredentialAndRebuildsController(t *testing.T) 
 func TestProviderSetupActivationFailureKeepsCredentialAndHidesDetails(t *testing.T) {
 	s, secret := newProviderSetupTestServer(t)
 	s.EnableProviderSetupForListener("127.0.0.1:8787")
-	s.buildController = func(context.Context, string) (*control.Controller, error) {
-		return nil, errors.New("sensitive remote path: /srv/private/config.toml")
+	built := 0
+	s.buildController = func(_ context.Context, ref string) (*control.Controller, error) {
+		built++
+		if built == 1 {
+			return nil, errors.New("sensitive remote path: /srv/private/config.toml")
+		}
+		return control.New(control.Options{
+			Sink:       s.bc,
+			Label:      "model-a",
+			ModelRef:   ref,
+			SessionDir: t.TempDir(),
+		}), nil
 	}
 	httpServer := httptest.NewServer(s.Handler())
 	defer httpServer.Close()
@@ -145,11 +155,64 @@ func TestProviderSetupActivationFailureKeepsCredentialAndHidesDetails(t *testing
 		t.Fatal("activation failure did not retain the successfully saved credential")
 	}
 	state, ok := s.providerSetupSnapshot()
-	if !ok || !state.Required || !strings.Contains(state.Error, "credential was saved") {
+	if !ok || !state.Required || !state.ActivationPending || !strings.Contains(state.Error, "credential was saved") {
 		t.Fatalf("activation failure state = %+v, enabled:%v", state, ok)
 	}
 	if strings.Contains(state.Error, secret) || strings.Contains(state.Error, "/srv/private") {
 		t.Fatalf("activation failure state exposed sensitive details: %q", state.Error)
+	}
+
+	// Retrying activates the already-saved credential without asking the user to
+	// enter it again or attempting a second revision-guarded write.
+	resp = postProviderSetup(t, httpServer.URL, `{"apiKey":""}`)
+	body, _ = io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("activation retry = %d, want 204: %s", resp.StatusCode, body)
+	}
+	if built != 2 {
+		t.Fatalf("controller builds after retry = %d, want 2", built)
+	}
+	resolved = config.ResolveCredentialForRootGlobalFirst(".", providerSetupTestKeyEnv)
+	if !resolved.Set || resolved.Value != secret {
+		t.Fatal("activation retry rewrote the saved credential")
+	}
+	state, ok = s.providerSetupSnapshot()
+	if !ok || state.Required || state.ActivationPending {
+		t.Fatalf("activation retry did not clear setup state: %+v, enabled:%v", state, ok)
+	}
+}
+
+func TestProviderSetupActivationRetryReturnsToMissingWhenCredentialWasRemoved(t *testing.T) {
+	s, secret := newProviderSetupTestServer(t)
+	s.EnableProviderSetupForListener("127.0.0.1:8787")
+	built := 0
+	s.buildController = func(context.Context, string) (*control.Controller, error) {
+		built++
+		return nil, errors.New("transient activation failure")
+	}
+	httpServer := httptest.NewServer(s.Handler())
+	defer httpServer.Close()
+
+	resp := postProviderSetup(t, httpServer.URL, `{"apiKey":"`+secret+`"}`)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusInternalServerError {
+		t.Fatalf("activation failure = %d, want 500", resp.StatusCode)
+	}
+	if err := config.RemoveCredential(providerSetupTestKeyEnv); err != nil {
+		t.Fatal(err)
+	}
+	resp = postProviderSetup(t, httpServer.URL, `{"apiKey":""}`)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("retry after credential removal = %d, want 400", resp.StatusCode)
+	}
+	if built != 1 {
+		t.Fatalf("credential-less retry triggered %d builds, want 1 total", built)
+	}
+	state, ok := s.providerSetupSnapshot()
+	if !ok || !state.Required || state.ActivationPending || state.CredentialRevision == "" {
+		t.Fatalf("credential removal did not restore missing-key setup: %+v, enabled:%v", state, ok)
 	}
 }
 
@@ -233,6 +296,7 @@ func TestProviderSetupRejectsUnsafeOrAmbiguousRequests(t *testing.T) {
 	}
 
 	cases := []string{
+		`{"apiKey":""}`,
 		`{"apiKey":"secret","extra":true}`,
 		`{"apiKey":"secret"}{"apiKey":"second"}`,
 		`{"apiKey":"` + strings.Repeat("x", providerSetupMaxBody) + `"}`,
@@ -254,6 +318,9 @@ func TestProviderSetupRejectsUnsafeOrAmbiguousRequests(t *testing.T) {
 	}
 	if strings.Contains(strings.ToLower(page), "localstorage") {
 		t.Fatal("setup UI must not persist Provider secrets in localStorage")
+	}
+	if !strings.Contains(page, "activationPending?'':input.value") {
+		t.Fatal("setup UI does not retry activation without resubmitting the Provider secret")
 	}
 }
 

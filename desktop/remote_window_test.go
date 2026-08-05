@@ -186,6 +186,8 @@ func TestRemoteWindowNavigationJSEscapesURL(t *testing.T) {
 func TestRemoteWindowHostKeyDistinguishesHosts(t *testing.T) {
 	a := remoteWindowHostKey("host-a")
 	b := remoteWindowHostKey("host-b")
+	ownerA := "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	ownerB := "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
 	if a == b {
 		t.Fatal("distinct hosts share a window identity")
 	}
@@ -195,11 +197,57 @@ func TestRemoteWindowHostKeyDistinguishesHosts(t *testing.T) {
 	if strings.Contains(a, "host-a") || strings.Contains(b, "host-b") {
 		t.Fatal("host key leaks the host label")
 	}
-	if remoteWindowInstanceID(a) == remoteWindowInstanceID(b) {
+	if remoteWindowInstanceID(a, ownerA) == remoteWindowInstanceID(b, ownerA) {
 		t.Fatal("instance IDs collide across hosts")
 	}
-	if !strings.HasPrefix(remoteWindowInstanceID(a), remoteWindowInstancePrefix) {
-		t.Fatalf("instance ID = %q, want %q prefix", remoteWindowInstanceID(a), remoteWindowInstancePrefix)
+	if remoteWindowInstanceID(a, ownerA) == remoteWindowInstanceID(a, ownerB) {
+		t.Fatal("a restarted Desktop would adopt the previous owner's child window")
+	}
+	if remoteWindowInstanceID(a, ownerA) != remoteWindowInstanceID(a, ownerA) {
+		t.Fatal("instance ID is not stable within one Desktop owner")
+	}
+	if !strings.HasPrefix(remoteWindowInstanceID(a, ownerA), remoteWindowInstancePrefix) {
+		t.Fatalf("instance ID = %q, want %q prefix", remoteWindowInstanceID(a, ownerA), remoteWindowInstancePrefix)
+	}
+}
+
+func TestRemoteWindowOwnerIdentityIsRandomAndValid(t *testing.T) {
+	a := newRemoteWindowOwnerID()
+	b := newRemoteWindowOwnerID()
+	if !isRemoteWindowOwnerID(a) || !isRemoteWindowOwnerID(b) {
+		t.Fatalf("invalid owner identities: %q %q", a, b)
+	}
+	if a == b {
+		t.Fatal("two Desktop processes received the same remote window owner identity")
+	}
+	for _, invalid := range []string{"", "short", strings.Repeat("g", 32), strings.Repeat("a", 31)} {
+		if isRemoteWindowOwnerID(invalid) {
+			t.Fatalf("invalid owner identity accepted: %q", invalid)
+		}
+	}
+}
+
+func TestRemoteWindowOwnerWaitDetectsParentExit(t *testing.T) {
+	cmd := exec.Command(os.Args[0], "-test.run=TestRemoteWindowHelperProcess")
+	cmd.Env = append(os.Environ(), "REMOTE_WINDOW_HELPER_PROCESS=1")
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	exited := make(chan bool, 1)
+	go func() { exited <- waitForRemoteWindowOwnerExit(ctx, cmd.Process.Pid) }()
+	if err := cmd.Process.Kill(); err != nil {
+		t.Fatal(err)
+	}
+	_, _ = cmd.Process.Wait()
+	select {
+	case detected := <-exited:
+		if !detected {
+			t.Fatal("owner watcher stopped without detecting process exit")
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("owner watcher did not detect process exit")
 	}
 }
 

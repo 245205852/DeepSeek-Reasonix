@@ -1,6 +1,8 @@
 package main
 
 import (
+	"context"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -14,6 +16,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	goruntime "runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -29,6 +32,8 @@ import (
 const (
 	remoteWindowTicketArgPrefix = "--remote-window-ticket="
 	remoteWindowHostArgPrefix   = "--remote-window-host="
+	remoteWindowOwnerArgPrefix  = "--remote-window-owner="
+	remoteWindowParentArgPrefix = "--remote-window-parent="
 	remoteWindowTicketPrefix    = ".remote-window-"
 	remoteWindowTicketTTL       = 2 * time.Minute
 	remoteWindowTicketMaxBytes  = 16 * 1024
@@ -253,21 +258,38 @@ func remoteWindowHostKey(hostID string) string {
 	return hex.EncodeToString(h.Sum(nil)[:16])
 }
 
-// remoteWindowInstanceID is the per-host Wails SingleInstanceLock identity. Two
-// remote windows for different hosts use different IDs and never collide; a
-// second launch for the same host is routed to the existing window, which
-// consumes the new ticket, updates the title, navigates, restores, and focuses.
-func remoteWindowInstanceID(hostKey string) string {
-	return remoteWindowInstancePrefix + hostKey
+func newRemoteWindowOwnerID() string {
+	var entropy [16]byte
+	if _, err := rand.Read(entropy[:]); err != nil {
+		panic("generate remote window owner identity: " + err.Error())
+	}
+	return hex.EncodeToString(entropy[:])
 }
 
-// remoteWindowSingleInstanceLock wires the child process's per-host lock. The
-// second instance never reaches the webview: Wails hands its argv to the
+func isRemoteWindowOwnerID(ownerID string) bool {
+	if len(ownerID) != 32 {
+		return false
+	}
+	_, err := hex.DecodeString(ownerID)
+	return err == nil
+}
+
+// remoteWindowInstanceID is the owner-and-host Wails SingleInstanceLock
+// identity. Different hosts proceed independently, while the same Desktop
+// reuses its existing host window. A restarted Desktop has a new owner identity
+// and therefore never adopts a child that its process registry cannot control.
+func remoteWindowInstanceID(hostKey, ownerID string) string {
+	digest := sha256.Sum256([]byte(hostKey + "|" + ownerID))
+	return remoteWindowInstancePrefix + hex.EncodeToString(digest[:16])
+}
+
+// remoteWindowSingleInstanceLock wires the child process's owner-and-host lock.
+// The second instance never reaches the webview: Wails hands its argv to the
 // existing window's OnSecondInstanceLaunch and exits at the gate, so the new
 // ticket is consumed exactly once, by the window that owns the host.
 func remoteWindowSingleInstanceLock(app *App) *options.SingleInstanceLock {
 	return &options.SingleInstanceLock{
-		UniqueId: remoteWindowInstanceID(app.remoteWindowHostKey),
+		UniqueId: remoteWindowInstanceID(app.remoteWindowHostKey, app.remoteWindowOwnerID),
 		OnSecondInstanceLaunch: func(data options.SecondInstanceData) {
 			app.secondInstanceRemoteWindow(data)
 		},
@@ -377,11 +399,11 @@ func (r *remoteWindowRegistry) closeAll() {
 
 // ── Spawn / open (main process) ──
 
-// spawnRemoteWindow launches a fresh Reasonix child process for hostKey. The
-// ticket name and the non-secret host digest are the only argv; the URL and the
-// Serve token travel exclusively in the 0600 ticket. When a window already
-// exists for this host, the per-host Wails single-instance lock routes the
-// ticket to it and this process exits at the gate without ever showing a UI.
+// spawnRemoteWindow launches a fresh Reasonix child process for hostKey. Argv
+// contains only the ticket name, non-secret host/owner identities, and owner
+// PID; the URL and Serve token travel exclusively in the 0600 ticket. When a
+// window already exists for this owner and host, the Wails single-instance lock
+// routes the ticket to it and this process exits at the gate without showing UI.
 func (a *App) spawnRemoteWindow(hostKey string, launch remoteWindowLaunch) error {
 	ticket, err := writeRemoteWindowLaunch(launch)
 	if err != nil {
@@ -393,7 +415,17 @@ func (a *App) spawnRemoteWindow(hostKey string, launch remoteWindowLaunch) error
 		_ = os.Remove(path)
 		return fmt.Errorf("locate Reasonix executable: %w", err)
 	}
-	cmd := exec.Command(executable, remoteWindowTicketArgPrefix+ticket, remoteWindowHostArgPrefix+hostKey)
+	if !isRemoteWindowOwnerID(a.remoteWindowOwnerID) {
+		_ = os.Remove(path)
+		return fmt.Errorf("remote window owner identity is unavailable")
+	}
+	cmd := exec.Command(
+		executable,
+		remoteWindowTicketArgPrefix+ticket,
+		remoteWindowHostArgPrefix+hostKey,
+		remoteWindowOwnerArgPrefix+a.remoteWindowOwnerID,
+		remoteWindowParentArgPrefix+strconv.Itoa(os.Getpid()),
+	)
 	if err := cmd.Start(); err != nil {
 		_ = os.Remove(path)
 		return fmt.Errorf("start remote Reasonix window: %w", err)
@@ -408,6 +440,22 @@ func (a *App) spawnRemoteWindow(hostKey string, launch remoteWindowLaunch) error
 		a.remoteWindows.clearIf(hostKey, gen, cmd.Process.Pid)
 	}()
 	return nil
+}
+
+// watchRemoteWindowOwner closes a child window when the primary Desktop process
+// that owns its SSH tunnel exits. The owner identity also scopes the Wails
+// single-instance lock, so a restarted Desktop creates a fresh owned child
+// instead of handing a ticket to an unregistered survivor from the old process.
+func (a *App) watchRemoteWindowOwner(ctx context.Context) {
+	pid := a.remoteWindowParentPID
+	if pid <= 0 {
+		return
+	}
+	a.goSafe("remoteWindowOwner", func() {
+		if waitForRemoteWindowOwnerExit(ctx, pid) {
+			runtime.Quit(ctx)
+		}
+	})
 }
 
 // openRemoteWindowForHost opens (or re-points) the host's web window at rawURL.
