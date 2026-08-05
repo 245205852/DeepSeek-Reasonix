@@ -478,35 +478,47 @@ func TestSubagentProgressGroupBudgetBoundsBurstAndServesAll(t *testing.T) {
 	const n = 64
 	for i := 0; i < n; i++ {
 		child := "child-" + string(rune('0'+i/10)) + string(rune('0'+i%10))
+		// Ordinary phase transitions share the budget with previews: 64
+		// status changes alone must not exceed the 32 events/s contract.
 		merger.statusEvent(child, subagentPhaseRunning)
 		merger.deltaEvent(child, subagentProgressChanReasoning, strings.Repeat("x", 256))
 	}
 
-	// The first burst is capped by the group budget (32 preview events/sec);
-	// status events bypass the budget.
+	// The first wave is capped by the group budget (32 events/s) across
+	// statuses and previews together.
 	clock.Advance(subagentProgressMergeWindow)
 	first := collectFor(t, ch, 100*time.Millisecond)
-	firstPreviews := 0
+	firstNonTerminal := 0
 	for _, e := range first {
-		if progressName(e) == event.SubagentProgressReasoningName {
-			firstPreviews++
+		if progressName(e) == event.SubagentProgressStatusName || progressName(e) == event.SubagentProgressReasoningName {
+			firstNonTerminal++
 		}
 	}
-	if firstPreviews > subagentProgressGroupBurst+8 { // burst + one refill at the wake
-		t.Fatalf("first-wave previews = %d, want capped by the 32/sec group budget", firstPreviews)
+	if firstNonTerminal > subagentProgressGroupBurst+8 { // burst + one refill at the wake
+		t.Fatalf("first-wave non-terminal events = %d, want capped by the 32/sec group budget", firstNonTerminal)
 	}
 
 	// Once the budget refills, every child is served exactly once — no child
 	// starves behind a high-activity sibling.
-	clock.Advance(2 * time.Second)
-	rest := collectFor(t, ch, 100*time.Millisecond)
+	var rest []event.Event
+	for i := 0; i < 16; i++ {
+		clock.Advance(time.Second)
+		rest = append(rest, collectFor(t, ch, 50*time.Millisecond)...)
+	}
+	statuses := 0
 	served := map[string]int{}
 	for _, batch := range [][]event.Event{first, rest} {
 		for _, e := range batch {
-			if progressName(e) == event.SubagentProgressReasoningName {
+			switch {
+			case progressName(e) == event.SubagentProgressStatusName:
+				statuses++
+			case progressName(e) == event.SubagentProgressReasoningName:
 				served[e.Tool.ID]++
 			}
 		}
+	}
+	if statuses != n {
+		t.Fatalf("status events = %d, want all %d", statuses, n)
 	}
 	if len(served) != n {
 		t.Fatalf("served %d children, want all %d", len(served), n)
@@ -515,6 +527,41 @@ func TestSubagentProgressGroupBudgetBoundsBurstAndServesAll(t *testing.T) {
 		if count != 1 {
 			t.Fatalf("child %s served %d times, want exactly once", id, count)
 		}
+	}
+}
+
+// TestSubagentProgressTrimTruncationPropagates proves a budget trim that drops
+// buffered content marks the loss on the next actually-emitted channel, so
+// frontends always learn that some preview content was discarded.
+func TestSubagentProgressTrimTruncationPropagates(t *testing.T) {
+	clock := newFakeProgressClock(time.Unix(0, 0))
+	ch := make(chan event.Event, 64)
+	merger := newSubagentProgressMerger(clock, chanSink{ch: ch}, "group-1")
+	t.Cleanup(merger.Close)
+
+	merger.statusEvent("child-1", subagentPhaseRunning)
+	waitEvent(t, ch, "running status")
+	delta := strings.Repeat("世", 4096) // 12 KiB per channel; the shared 8 KiB budget trims
+	merger.deltaEvent("child-1", subagentProgressChanReasoning, delta)
+	merger.deltaEvent("child-1", subagentProgressChanText, delta)
+	merger.deltaEvent("child-1", subagentProgressChanNotice, delta)
+	merger.flushChild("child-1", subagentPhaseCompleted, 5)
+
+	var textEvent *event.Event
+	got := collectFor(t, ch, 100*time.Millisecond)
+	for i := range got {
+		if progressName(got[i]) == event.SubagentProgressTextName {
+			textEvent = &got[i]
+		}
+	}
+	if textEvent == nil {
+		t.Fatalf("no text preview emitted: %+v", got)
+	}
+	if !textEvent.Tool.Truncated {
+		t.Fatalf("budget-trimmed preview must carry Truncated: %+v", textEvent.Tool)
+	}
+	if textEvent.Tool.Output == "" || !utf8.ValidString(textEvent.Tool.Output) {
+		t.Fatalf("trimmed preview must keep a UTF-8-safe tail: %+v", textEvent.Tool)
 	}
 }
 

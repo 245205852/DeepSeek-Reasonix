@@ -181,6 +181,23 @@ console.log("\nsubagent progress reducer");
   eq(toolById(s, "fl-1").subagentProgress?.phase, "completed", "settled fleet phase completed");
 }
 
+// --- 6b. Background group with job-id result before any child stays running
+
+{
+  let s = initialState;
+  s = dispatch(s, { id: "fl-0", name: "fleet", args: "{}", readOnly: true });
+  // The job-id result can arrive before any child has dispatched (background
+  // fleet): the empty progress tree must not settle the card as completed.
+  s = result(s, { id: "fl-0", name: "fleet", readOnly: true, output: "Started background fleet (job-3)." });
+  eq(toolById(s, "fl-0").status, "running", "fleet with no children yet stays running after the job-id result");
+  eq(toolById(s, "fl-0").subagentProgress?.phase, "running", "fleet phase stays running while children are pending");
+
+  s = dispatch(s, { id: "fl-0/fleet-1", name: "task", args: "{}", readOnly: true, parentId: "fl-0" });
+  s = progress(s, progressTool("fl-0/fleet-1", SUBAGENT_PROGRESS_STATUS, "completed"));
+  eq(toolById(s, "fl-0").status, "done", "fleet settles once its child completes");
+  eq(toolById(s, "fl-0").subagentProgress?.phase, "completed", "fleet phase completed after settling");
+}
+
 // --- 7. Preview caps keep recent tails -------------------------------------
 
 {

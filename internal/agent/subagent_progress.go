@@ -131,9 +131,10 @@ type progressSlot struct {
 	lastSend  time.Time
 }
 
-// progressStatusSlot holds the latest unsent phase for one child. Status
-// events bypass the group preview budget (the phase machine has ≤9 states per
-// child) but still merge within the 250ms window after their first send.
+// progressStatusSlot holds the latest unsent phase for one child. Ordinary
+// phase transitions share the group preview budget with content previews (a
+// fleet of phase-flapping children must not exceed the 32 events/s contract);
+// only the initial queued/running states and the terminal event bypass it.
 type progressStatusSlot struct {
 	phase    subagentProgressPhase
 	dirty    bool
@@ -164,21 +165,27 @@ type subagentProgressMerger struct {
 	done   chan struct{}
 	wg     sync.WaitGroup
 	closed bool
+
+	// truncatedPending marks children whose buffered content was dropped by a
+	// budget trim while no event carried the Truncated flag yet; the flag is
+	// propagated to the next actually-emitted preview channel.
+	truncatedPending map[string]bool
 }
 
 func newSubagentProgressMerger(clock progressClock, sink event.Sink, groupParentID string) *subagentProgressMerger {
 	now := clock.Now()
 	m := &subagentProgressMerger{
-		clock:         clock,
-		sink:          sink,
-		groupParentID: groupParentID,
-		slots:         make(map[string]map[subagentProgressChannel]*progressSlot),
-		status:        make(map[string]*progressStatusSlot),
-		tokens:        subagentProgressGroupBurst,
-		lastRefill:    now,
-		wake:          make(chan struct{}, 1),
-		done:          make(chan struct{}),
-		timer:         clock.NewTimer(0),
+		clock:            clock,
+		sink:             sink,
+		groupParentID:    groupParentID,
+		slots:            make(map[string]map[subagentProgressChannel]*progressSlot),
+		status:           make(map[string]*progressStatusSlot),
+		tokens:           subagentProgressGroupBurst,
+		lastRefill:       now,
+		wake:             make(chan struct{}, 1),
+		done:             make(chan struct{}),
+		timer:            clock.NewTimer(0),
+		truncatedPending: make(map[string]bool),
 	}
 	m.wg.Add(1)
 	go m.run()
@@ -316,10 +323,17 @@ func (m *subagentProgressMerger) flushChild(childID string, terminal subagentPro
 		}
 	}
 	m.emitStatusLocked(childID, terminal, durationMs)
+	// A budget trim that dropped content with no channel left to carry the
+	// Truncated flag is surfaced as a truncated notice so frontends still know
+	// some preview content was lost.
+	if m.truncatedPending[childID] {
+		m.emitToolProgressLocked(childID, event.SubagentProgressNoticeName, "", true, 0)
+	}
 	// Release per-child state; later events for this child are ignored by the
 	// tracker's own done flag, and the flusher has nothing left to wake for.
 	delete(m.status, childID)
 	delete(m.slots, childID)
+	delete(m.truncatedPending, childID)
 	m.removeOrderLocked(childID)
 }
 
@@ -360,8 +374,9 @@ func (m *subagentProgressMerger) run() {
 }
 
 // stepLocked emits at most one non-terminal progress event, round-robining
-// across children. Status events bypass the group budget; preview events
-// consume it. Returns false when nothing can be emitted right now.
+// across children. Status transitions and content previews share the group
+// budget; the initial queued/running (directStatus) and terminal events
+// bypass it. Returns false when nothing can be emitted right now.
 func (m *subagentProgressMerger) stepLocked() bool {
 	m.refillLocked()
 	n := len(m.order)
@@ -372,22 +387,26 @@ func (m *subagentProgressMerger) stepLocked() bool {
 	for i := 0; i < n; i++ {
 		idx := (m.rr + i) % n
 		childID := m.order[idx]
+		if m.tokens < 1 {
+			// Budget exhausted: leave the round-robin position in place so no
+			// child is skipped once a token refills.
+			return false
+		}
 		if st := m.status[childID]; st != nil && st.dirty && !now.Before(st.dueAt) {
 			m.rr = (idx + 1) % n
 			phase := st.phase
 			st.dirty = false
 			st.lastSend = now
+			m.tokens--
 			m.emitStatusLocked(childID, phase, 0)
 			return true
 		}
-		if m.tokens >= 1 {
-			for c := subagentProgressChanReasoning; c <= subagentProgressChanNotice; c++ {
-				if sl := m.slots[childID][c]; sl != nil && sl.dirty && !now.Before(sl.dueAt) {
-					m.rr = (idx + 1) % n
-					m.tokens--
-					m.emitDeltaLocked(childID, c, sl)
-					return true
-				}
+		for c := subagentProgressChanReasoning; c <= subagentProgressChanNotice; c++ {
+			if sl := m.slots[childID][c]; sl != nil && sl.dirty && !now.Before(sl.dueAt) {
+				m.rr = (idx + 1) % n
+				m.tokens--
+				m.emitDeltaLocked(childID, c, sl)
+				return true
 			}
 		}
 	}
@@ -467,6 +486,11 @@ func (m *subagentProgressMerger) emitDeltaLocked(childID string, ch subagentProg
 		return
 	}
 	buf, truncated := sl.buf, sl.truncated
+	// Carry a pending trim-truncation on the next actually-emitted channel.
+	if m.truncatedPending[childID] {
+		truncated = true
+		delete(m.truncatedPending, childID)
+	}
 	sl.buf, sl.truncated, sl.dirty = "", false, false
 	sl.lastSend = m.clock.Now()
 	m.emitToolProgressLocked(childID, ch.name(), buf, truncated, 0)
@@ -489,6 +513,9 @@ func (m *subagentProgressMerger) emitToolProgressLocked(childID, name, output st
 // trimToBudgetLocked keeps the child's pending total at or under
 // subagentProgressMaxPendingBytes, dropping the lowest-priority channel's
 // content first (notice < reasoning < text) so the response preview survives.
+// Every drop marks the child's pending-truncation flag so the loss is
+// propagated on the next actually-emitted channel (or a truncated notice at
+// flush when nothing else carries it).
 func (m *subagentProgressMerger) trimToBudgetLocked(childID string) {
 	if m.pendingBytesLocked(childID) <= subagentProgressMaxPendingBytes {
 		return
@@ -496,6 +523,7 @@ func (m *subagentProgressMerger) trimToBudgetLocked(childID string) {
 	if sl := m.slots[childID][subagentProgressChanNotice]; sl != nil && sl.dirty && sl.buf != "" {
 		sl.buf = ""
 		sl.truncated = true
+		m.truncatedPending[childID] = true
 	}
 	for _, ch := range []subagentProgressChannel{subagentProgressChanReasoning, subagentProgressChanText} {
 		over := m.pendingBytesLocked(childID) - subagentProgressMaxPendingBytes
@@ -513,6 +541,7 @@ func (m *subagentProgressMerger) trimToBudgetLocked(childID string) {
 			sl.buf = utf8SafeTail(sl.buf, keep)
 		}
 		sl.truncated = true
+		m.truncatedPending[childID] = true
 	}
 }
 

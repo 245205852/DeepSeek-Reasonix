@@ -57,9 +57,13 @@ Pacing and memory bounds (per parent task group):
 
 - One pending slot per (child, channel); previews merge for up to 250 ms before
   one event is emitted, so deltas never accumulate unboundedly.
-- At most 32 non-terminal preview events/sec per group, round-robined across
-  children so one hot child cannot starve the others. Terminal events bypass
-  the limit.
+- At most 32 non-terminal events/sec per group — phase transitions and content
+  previews share the same budget, round-robined across children so one hot
+  child cannot starve the others. Only the initial `queued`/`running` states
+  and the terminal event bypass the limit.
+- When the budget trims buffered content, the loss is flagged `Truncated` on
+  the next actually-emitted channel (or surfaced as a truncated notice at the
+  terminal flush), so frontends always learn that some preview was dropped.
 - Each child's unsent pending buffer is capped at 8 KiB total (notice is
   dropped first, then reasoning, then text); overflow keeps a UTF-8-safe tail
   and sets `Truncated`. The desktop retains per-channel preview caps (8 KiB
@@ -85,7 +89,10 @@ What is **not** done:
   never mixed with ordinary tool output.
 - A background call that already returned its job id stays in the running
   state while child progress is non-terminal; `parallel_tasks`/`fleet` group
-  cards settle when their whole child progress tree is terminal.
+  cards settle when their whole child progress tree is terminal — including
+  the reverse order where the job-id result arrives before any child has
+  dispatched (the card waits for its children instead of settling on an empty
+  tree). A cancelled/failed aggregate settles the group regardless.
 - `completed` / `failed` / `cancelled` reuse the existing done / error /
   stopped visuals; after a terminal the card folds by default unless the user
   explicitly expanded it.
