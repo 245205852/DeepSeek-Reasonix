@@ -113,7 +113,8 @@ enforces:
   project configuration can never declare one;
 - the handshake rejects any capability beyond the manifest;
 - replacements are re-validated against each point's DTO and schema;
-- sidecar output is credential-redacted before it reaches the UI, logs, or
-  errors;
+- sidecar diagnostics, structured UI, interceptor reasons, and provider errors
+  are credential-redacted by the host before they reach the UI, logs, or error
+  surfaces; ordinary provider/model content is preserved as product data;
 - a crashed sidecar fails its own operations explicitly — Reasonix never
   silently falls back to another model or strategy.

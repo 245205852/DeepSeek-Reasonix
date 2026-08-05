@@ -192,14 +192,15 @@ func TestStreamCancelSendsCancelAndCloses(t *testing.T) {
 	}
 }
 
-func TestStreamErrorChunkSurfacesRedactedMessage(t *testing.T) {
+func TestStreamErrorChunkIsDefensivelyRedacted(t *testing.T) {
 	fc := newFakeClient("demo", demoDescriptor())
 	r := testResolver(t, baseCatalog(), nil, fc)
 	out, id := openTestStream(t, r, fc, nil)
+	const secret = "sk-abcdef1234567890SECRETKEY"
 
 	r.RouteStreamChunk(protocol.StreamChunkParams{StreamID: id, Seq: 1, Chunk: protocol.ProviderChunk{
 		Type:  protocol.ChunkError,
-		Error: &protocol.ProviderError{Code: protocol.ProviderFailed, Message: "The extension provider stream failed."},
+		Error: &protocol.ProviderError{Code: protocol.ProviderFailed, Message: "provider rejected api_key=" + secret},
 	}})
 	r.RouteStreamEnd(protocol.StreamEndParams{StreamID: id, LastSeq: 1})
 
@@ -207,8 +208,11 @@ func TestStreamErrorChunkSurfacesRedactedMessage(t *testing.T) {
 	if len(chunks) != 1 || chunks[0].Type != provider.ChunkError {
 		t.Fatalf("chunks = %+v", chunks)
 	}
-	if chunks[0].Err == nil || chunks[0].Err.Error() != "The extension provider stream failed." {
-		t.Fatalf("error = %v, want the redacted wire message", chunks[0].Err)
+	if chunks[0].Err == nil || strings.Contains(chunks[0].Err.Error(), secret) {
+		t.Fatalf("error leaked credential: %v", chunks[0].Err)
+	}
+	if !strings.Contains(chunks[0].Err.Error(), "provider rejected api_key=") {
+		t.Fatalf("error lost diagnostic context: %v", chunks[0].Err)
 	}
 	if provider.IsStreamInterrupted(chunks[0].Err) {
 		t.Fatal("provider_failed mapped to an interruption")
@@ -236,17 +240,21 @@ func TestStreamEndErrorBecomesTerminalChunkError(t *testing.T) {
 	fc := newFakeClient("demo", demoDescriptor())
 	r := testResolver(t, baseCatalog(), nil, fc)
 	out, id := openTestStream(t, r, fc, nil)
+	const secret = "sk-abcdef1234567890SECRETKEY"
 
 	r.RouteStreamChunk(protocol.StreamChunkParams{StreamID: id, Seq: 1, Chunk: textChunk("partial")})
-	r.RouteStreamEnd(protocol.StreamEndParams{StreamID: id, LastSeq: 1, Error: "provider exploded (redacted)"})
+	r.RouteStreamEnd(protocol.StreamEndParams{StreamID: id, LastSeq: 1, Error: "provider rejected token=" + secret})
 
 	chunks := collectChunks(t, out)
 	if len(chunks) != 2 {
 		t.Fatalf("chunks = %v", texts(chunks))
 	}
 	terminal := chunks[1]
-	if terminal.Type != provider.ChunkError || terminal.Err == nil || terminal.Err.Error() != "provider exploded (redacted)" {
-		t.Fatalf("terminal = %+v, want the redacted end error", terminal)
+	if terminal.Type != provider.ChunkError || terminal.Err == nil || strings.Contains(terminal.Err.Error(), secret) {
+		t.Fatalf("terminal = %+v, want the host-redacted end error", terminal)
+	}
+	if !strings.Contains(terminal.Err.Error(), "provider rejected token=") {
+		t.Fatalf("terminal error lost diagnostic context: %q", terminal.Err)
 	}
 	if provider.IsStreamInterrupted(terminal.Err) {
 		t.Fatal("a clean failure must not read as an interruption")

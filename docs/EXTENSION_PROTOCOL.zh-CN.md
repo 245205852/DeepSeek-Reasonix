@@ -81,7 +81,8 @@ effort）——绝不包含凭据。模型以 `plugin/<plugin>/<provider>/<model
   失败并指明缺失序号。
 - chunk 类型：`text`、`reasoning`（含 `signature`）、
   `tool_call_start`、`tool_call_args_delta`、`tool_call`、`usage`
-  （含 cache tokens）、`done`、`error`。Provider 错误由产生方脱敏。
+  （含 cache tokens）、`done`、`error`。Provider 错误必须由产生方脱敏，
+  宿主还会进行防御性二次脱敏。
 - 取消流上下文会发送 `stream/cancel`，Sidecar 必须停止产生 chunk。
 - 扩展自行读取所需环境与凭据；宿主绝不把其他 Provider 的 API key 或
   header 发送给它。被选 Provider 崩溃时不自动回退到其他模型。
@@ -120,6 +121,7 @@ major v1 内只允许：新增 optional 字段、新增枚举值、新增方法�
 操作本机。安装、更新、替换或 `--link` 一个带 `runtime` 块的插件即
 代表授权——没有二次确认。只有通过插件安装流程（写入
 `plugin-packages.json`）的插件才能启动 Sidecar；项目配置永远无法
-声明。任何 Sidecar 产出的文本在进入 UI、日志或错误之前都会经过宿主
-的凭据脱敏。安装预览、插件详情与能力诊断对 runtime 插件始终展示
-FULL TRUST 区块。
+声明。Sidecar 的诊断输出、结构化 UI、拦截器原因和 Provider 错误在
+进入 UI、日志或错误界面前都会经过宿主的凭据脱敏；普通 Provider/模型
+内容作为产品数据保持原样。安装预览、插件详情与能力诊断对 runtime
+插件始终展示 FULL TRUST 区块。

@@ -18,7 +18,8 @@
 // REASONIX_PLUGIN_NAME / REASONIX_PLUGIN_VERSION. Sidecars can read
 // credentials, the session, and the workspace and can act with the user's
 // full authority — the same contract an installed v1 runtime already accepted
-// at install time (see pluginpkg.RuntimeTrustText). The only credential
-// hygiene applied is on data flowing BACK: sidecar stderr is redacted through
-// secrets.RedactCredentials before it can surface in diagnostics.
+// at install time (see pluginpkg.RuntimeTrustText). Sidecar stderr is redacted
+// in this process layer; provider errors, structured UI, and interceptor
+// reasons are redacted again by their host-side consumers. Ordinary
+// provider/model content remains unchanged as product data.
 package sidecar

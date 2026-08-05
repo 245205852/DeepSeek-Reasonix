@@ -12,6 +12,7 @@ import (
 	"reasonix/internal/extension/protocol"
 	"reasonix/internal/extension/providerconv"
 	"reasonix/internal/provider"
+	"reasonix/internal/secrets"
 )
 
 // extensionStream is one in-flight sidecar provider stream. Its fields are
@@ -98,8 +99,8 @@ func (r *Resolver) RouteStreamEnd(p protocol.StreamEndParams) {
 
 // flushLocked delivers every contiguous pending chunk, then completes the
 // stream once the end boundary is fully delivered. The terminal chunk mirrors
-// the broker: a reported error (already redacted by the extension, as the
-// protocol requires) becomes a ChunkError, an interruption becomes
+// the broker: a reported error is defensively credential-redacted even though
+// the protocol also requires producer-side redaction, an interruption becomes
 // StreamInterruptedError, and a clean end closes the channel.
 func (r *Resolver) flushLocked(id string, stream *extensionStream) {
 	for {
@@ -120,12 +121,13 @@ func (r *Resolver) flushLocked(id string, stream *extensionStream) {
 		return
 	}
 	if stream.endError != "" || stream.interrupted {
-		err := errors.New(stream.endError)
+		redactedEndError := secrets.RedactCredentials(stream.endError)
+		err := errors.New(redactedEndError)
 		if stream.endError == "" {
 			err = errors.New("extension provider stream failed")
 		}
 		if stream.interrupted {
-			message := stream.endError
+			message := redactedEndError
 			if message == "" {
 				message = "extension provider stream was interrupted"
 			}

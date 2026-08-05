@@ -1,6 +1,7 @@
 package providerconv
 
 import (
+	"strings"
 	"testing"
 
 	"reasonix/internal/extension/protocol"
@@ -88,19 +89,26 @@ func TestChunkFromProtocolMapsEveryType(t *testing.T) {
 }
 
 func TestChunkFromProtocolErrorCodes(t *testing.T) {
+	const secret = "sk-abcdef1234567890SECRETKEY"
 	failed := ChunkFromProtocol(protocol.ProviderChunk{
 		Type:  protocol.ChunkError,
-		Error: &protocol.ProviderError{Code: protocol.ProviderFailed, Message: "redacted failure"},
+		Error: &protocol.ProviderError{Code: protocol.ProviderFailed, Message: "provider rejected api_key=" + secret},
 	})
-	if failed.Err == nil || failed.Err.Error() != "redacted failure" || provider.IsStreamInterrupted(failed.Err) {
+	if failed.Err == nil || strings.Contains(failed.Err.Error(), secret) || provider.IsStreamInterrupted(failed.Err) {
 		t.Fatalf("failed chunk = %+v", failed)
+	}
+	if !strings.Contains(failed.Err.Error(), "provider rejected api_key=") {
+		t.Fatalf("failed error lost diagnostic context: %q", failed.Err)
 	}
 	interrupted := ChunkFromProtocol(protocol.ProviderChunk{
 		Type:  protocol.ChunkError,
-		Error: &protocol.ProviderError{Code: protocol.ProviderInterrupted, Message: "redacted interruption"},
+		Error: &protocol.ProviderError{Code: protocol.ProviderInterrupted, Message: "provider interrupted token=" + secret},
 	})
 	if !provider.IsStreamInterrupted(interrupted.Err) {
 		t.Fatalf("interrupted chunk = %+v", interrupted)
+	}
+	if strings.Contains(interrupted.Err.Error(), secret) {
+		t.Fatalf("interrupted error leaked credential: %q", interrupted.Err)
 	}
 }
 

@@ -97,7 +97,8 @@ Streams follow `extension/provider/stream/open` → `stream/chunk` →
   sequence when a gap persists.
 - Chunk types: `text`, `reasoning` (with `signature`), `tool_call_start`,
   `tool_call_args_delta`, `tool_call`, `usage` (including cache tokens),
-  `done`, `error`. Provider errors are redacted by the producer.
+  `done`, `error`. Provider errors must be redacted by the producer and are
+  defensively redacted again by the host.
 - Cancelling the stream context sends `stream/cancel`; the sidecar must stop
   producing chunks.
 - The extension reads its own environment and credentials; the host never
@@ -145,7 +146,8 @@ Installing, updating, replacing, or `--link`ing a plugin with a `runtime`
 block is the authorization — there is no second confirmation. Only plugins
 installed through the plugin flow (recorded in `plugin-packages.json`) can
 start a sidecar; project configuration can never declare one. Before any
-sidecar-sourced text reaches the UI, logs, or errors, the host runs its
-credential redaction pass. The install preview, plugin details, and
-capability diagnostics always display the FULL TRUST block for runtime
-plugins.
+sidecar diagnostics, structured UI, interceptor reasons, or provider errors
+reach the UI, logs, or error surfaces, the host runs its credential redaction
+pass. Ordinary provider/model content is preserved as product data. The
+install preview, plugin details, and capability diagnostics always display the
+FULL TRUST block for runtime plugins.

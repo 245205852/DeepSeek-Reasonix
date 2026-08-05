@@ -103,6 +103,8 @@ generation——扩展变更从下一个回合生效；no-op 重载后 Provider 
   声明代码型 Sidecar；
 - 握手时拒绝任何超出 Manifest 声明的能力；
 - 所有替换都按点位 DTO 与 Schema 重新校验；
-- Sidecar 产出的文本在进入 UI、日志或错误之前经过凭据脱敏；
+- Sidecar 的诊断输出、结构化 UI、拦截器原因和 Provider 错误在进入 UI、
+  日志或错误界面前由宿主进行凭据脱敏；普通 Provider/模型内容作为产品
+  数据保持原样；
 - Sidecar 崩溃只令其自身操作明确失败——Reasonix 绝不静默回退到
   其他模型或策略。

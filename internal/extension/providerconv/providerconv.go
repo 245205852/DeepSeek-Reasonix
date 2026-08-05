@@ -4,7 +4,8 @@
 // every host surface that moves provider data across the extension boundary —
 // the agent's intercept wiring (stage 6b2) and the sidecar provider adapter
 // (stage 7) — shares these helpers. Wire DTOs never carry credentials:
-// ProviderError messages are redacted by the producer before they cross.
+// ProviderError messages must be redacted by the producer before they cross,
+// and the host defensively redacts them again at the trust boundary.
 package providerconv
 
 import (
@@ -12,6 +13,7 @@ import (
 
 	"reasonix/internal/extension/protocol"
 	"reasonix/internal/provider"
+	"reasonix/internal/secrets"
 )
 
 // MessagesToProtocol copies provider messages into their public wire form,
@@ -177,10 +179,11 @@ func DescriptorFromProtocol(d protocol.ProviderDescriptor) provider.Descriptor {
 	}
 }
 
-// ChunkFromProtocol converts one inbound extension stream chunk. The wire
-// error is already redacted by the extension (the protocol forbids raw
-// provider errors on the boundary); a provider_interrupted code maps to
-// StreamInterruptedError so the agent's interruption recovery applies.
+// ChunkFromProtocol converts one inbound extension stream chunk. The protocol
+// requires extensions to redact provider errors before sending them, but the
+// host treats the sidecar as untrusted and defensively redacts again. A
+// provider_interrupted code maps to StreamInterruptedError so the agent's
+// interruption recovery applies.
 func ChunkFromProtocol(chunk protocol.ProviderChunk) provider.Chunk {
 	converted := provider.Chunk{
 		Type:      chunkTypeFromProtocol(chunk.Type),
@@ -200,7 +203,7 @@ func ChunkFromProtocol(chunk protocol.ProviderChunk) provider.Chunk {
 		converted.Usage = UsageFromProtocol(chunk.Usage)
 	}
 	if chunk.Error != nil {
-		err := errors.New(chunk.Error.Message)
+		err := errors.New(secrets.RedactCredentials(chunk.Error.Message))
 		if chunk.Error.Code == protocol.ProviderInterrupted {
 			err = &provider.StreamInterruptedError{Err: err}
 		}

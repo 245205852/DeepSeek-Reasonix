@@ -86,7 +86,11 @@ api_key_env = "REASONIX_TEST_KEY_UNSET"
 	if strings.TrimSpace(prompt) == "" {
 		t.Fatal("Build composed an empty system prompt")
 	}
-	prompt = normalizeGoldenRoot(prompt, dir)
+	actualDir, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("resolve fixture working directory: %v", err)
+	}
+	prompt = normalizeGoldenRoot(prompt, dir, actualDir)
 
 	// 2. Provider-visible tool contract, through the same canonical schema
 	// path the runtime registry uses.
@@ -139,14 +143,37 @@ api_key_env = "REASONIX_TEST_KEY_UNSET"
 	}
 }
 
-// normalizeGoldenRoot replaces the absolute workspace root (and its
-// symlink-evaluated form, which differs on macOS) with a stable placeholder.
-func normalizeGoldenRoot(prompt, dir string) string {
-	out := strings.ReplaceAll(prompt, dir, "<ROOT>")
-	if real, err := filepath.EvalSymlinks(dir); err == nil && real != dir {
-		out = strings.ReplaceAll(out, real, "<ROOT>")
+// normalizeGoldenRoot replaces every known spelling of the workspace root
+// (including the actual cwd and symlink-evaluated forms) with a stable
+// placeholder. Windows may report the cwd using an 8.3 short-path alias even
+// when TempDir returned the long form, so both values are required.
+func normalizeGoldenRoot(prompt string, roots ...string) string {
+	out := prompt
+	seen := make(map[string]struct{}, len(roots)*2)
+	for _, root := range roots {
+		if root == "" {
+			continue
+		}
+		if _, ok := seen[root]; !ok {
+			out = strings.ReplaceAll(out, root, "<ROOT>")
+			seen[root] = struct{}{}
+		}
+		if real, err := filepath.EvalSymlinks(root); err == nil && real != root {
+			if _, ok := seen[real]; !ok {
+				out = strings.ReplaceAll(out, real, "<ROOT>")
+				seen[real] = struct{}{}
+			}
+		}
 	}
 	return out
+}
+
+func TestNormalizeGoldenRootReplacesEveryAlias(t *testing.T) {
+	prompt := "long=/tmp/reasonix-long short=/tmp/reasonix-short"
+	got := normalizeGoldenRoot(prompt, "/tmp/reasonix-long", "/tmp/reasonix-short")
+	if got != "long=<ROOT> short=<ROOT>" {
+		t.Fatalf("normalizeGoldenRoot = %q", got)
+	}
 }
 
 func TestGoldenBaselineNoExtensions(t *testing.T) {
