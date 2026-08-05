@@ -2,25 +2,61 @@ package taskmonitor
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
 
 type tmuxMock struct {
-	calls [][]string
-	err   error
+	calls   [][]string
+	err     error
+	options map[string]string
 }
 
 func (m *tmuxMock) Run(_ context.Context, args ...string) ([]byte, error) {
 	m.calls = append(m.calls, append([]string(nil), args...))
-	return nil, m.err
+	if m.err != nil {
+		return nil, m.err
+	}
+	if len(args) == 5 && args[0] == "set-option" && args[1] == "-t" {
+		if m.options == nil {
+			m.options = make(map[string]string)
+		}
+		m.options[tmuxMockSession(args[2])+"\x00"+args[3]] = args[4]
+		return nil, nil
+	}
+	if len(args) == 5 && args[0] == "show-options" && args[1] == "-v" && args[2] == "-t" {
+		value, ok := m.options[tmuxMockSession(args[3])+"\x00"+args[4]]
+		if !ok {
+			return nil, os.ErrNotExist
+		}
+		return []byte(value + "\n"), nil
+	}
+	if len(args) == 7 && args[0] == "if-shell" && args[1] == "-t" && args[3] == "-F" {
+		session := tmuxMockSession(args[2])
+		if m.options[session+"\x00"+tmuxOwnerOption] != "" &&
+			strings.Contains(args[4], m.options[session+"\x00"+tmuxOwnerOption]) {
+			delete(m.options, session+"\x00"+tmuxOwnerOption)
+		}
+		return nil, nil
+	}
+	return nil, nil
+}
+
+func tmuxMockSession(target string) string {
+	return strings.TrimSuffix(strings.TrimPrefix(target, "="), ":")
 }
 
 func seedTmuxTask(t *testing.T, s *InMemoryStore, projectDir string) {
+	seedTmuxTaskID(t, s, projectDir, "t1")
+}
+
+func seedTmuxTaskID(t *testing.T, s *InMemoryStore, projectDir, taskID string) {
 	t.Helper()
-	if err := s.UpsertTask(projectDir, TaskSnapshot{SchemaVersion: 1, TaskID: "t1", SessionID: "s1", State: TaskStateRunning, Version: 1, CreatedAt: time.Now(), UpdatedAt: time.Now()}); err != nil {
+	if err := s.UpsertTask(projectDir, TaskSnapshot{SchemaVersion: 1, TaskID: taskID, SessionID: "s1", State: TaskStateRunning, Version: 1, CreatedAt: time.Now(), UpdatedAt: time.Now()}); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -39,8 +75,26 @@ func TestTmuxAdapterAttachIdempotent(t *testing.T) {
 	if !second.Idempotent {
 		t.Fatalf("expected idempotent attach: %+v", second)
 	}
-	if len(mock.calls) != 2 { // new-session, then has-session
+	if len(mock.calls) != 3 { // new-session, set ownership marker, then verify it
 		t.Fatalf("unexpected tmux calls: %#v", mock.calls)
+	}
+}
+
+func TestTmuxAdapterBoundsGeneratedSessionName(t *testing.T) {
+	s := NewInMemoryStore()
+	root := t.TempDir()
+	taskID := strings.Repeat("a", 60)
+	seedTmuxTaskID(t, s, root, taskID)
+	a := NewTmuxAdapterWithRunner(s, ".reasonix/tasks", &tmuxMock{})
+	r := a.Attach(context.Background(), root, taskID, "")
+	if r.Error != nil || r.Mapping == nil {
+		t.Fatalf("attach failed: %+v", r)
+	}
+	if got := r.Mapping.Session; len(got) > 64 || !strings.HasPrefix(got, defaultTmuxNamePrefix) {
+		t.Fatalf("generated session = %q (len %d)", got, len(got))
+	}
+	if r.Mapping.Session != defaultTmuxSessionName(taskID) || r.Mapping.Session == defaultTmuxSessionName(taskID+"b") {
+		t.Fatalf("generated session is not deterministic and collision-resistant: %q", r.Mapping.Session)
 	}
 }
 
@@ -63,9 +117,11 @@ func TestTmuxAdapterRejectsUnsafeNames(t *testing.T) {
 	s := NewInMemoryStore()
 	seedTmuxTask(t, s, "/p")
 	a := NewTmuxAdapterWithRunner(s, ".reasonix/tasks", &tmuxMock{})
-	r := a.Attach(context.Background(), "/p", "t1", "bad/name")
-	if r.Error == nil || r.Error.Code != ErrTmuxInvalidName {
-		t.Fatalf("expected invalid name, got %+v", r)
+	for _, name := range []string{"bad/name", "semi;colon", "dollar$name", "has space"} {
+		r := a.Attach(context.Background(), "/p", "t1", name)
+		if r.Error == nil || r.Error.Code != ErrTmuxInvalidName {
+			t.Fatalf("expected invalid name for %q, got %+v", name, r)
+		}
 	}
 }
 
@@ -160,6 +216,129 @@ func TestTmuxAdapterRejectsSymlinkMappingDirectory(t *testing.T) {
 	}
 	if _, err := os.Stat(outsideMapping); err != nil {
 		t.Fatalf("outside mapping was removed: %v", err)
+	}
+}
+
+func TestTmuxAdapterRejectsForgedMappingIdentityWithoutTmuxCalls(t *testing.T) {
+	project := t.TempDir()
+	s := NewInMemoryStore()
+	seedTmuxTask(t, s, project)
+	mock := &tmuxMock{}
+	a := NewTmuxAdapterWithRunner(s, ".reasonix/tasks", mock)
+	attached := a.Attach(context.Background(), project, "t1", "demo")
+	if attached.Error != nil || attached.Mapping == nil {
+		t.Fatalf("attach failed: %+v", attached)
+	}
+
+	path := filepath.Join(project, ".reasonix", "tasks", ".tmux", "t1.json")
+	forged := *attached.Mapping
+	forged.TaskID = "different-task"
+	forged.ProjectDir = filepath.Join(project, "different-project")
+	forged.Session = "user-owned-session"
+	forged.Pane = "user-owned-session:task.0"
+	b, err := json.Marshal(forged)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, b, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	mock.calls = nil
+	if result := a.Status(context.Background(), project, "t1"); result.Error == nil || result.Error.Code != ErrTmuxMappingFailed {
+		t.Fatalf("forged status mapping was accepted: %+v", result)
+	}
+	if len(mock.calls) != 0 {
+		t.Fatalf("forged status mapping triggered tmux calls: %#v", mock.calls)
+	}
+	if result := a.Detach(context.Background(), project, "t1"); result.Error == nil || result.Error.Code != ErrTmuxMappingFailed {
+		t.Fatalf("forged detach mapping was accepted: %+v", result)
+	}
+	if len(mock.calls) != 0 {
+		t.Fatalf("forged detach mapping triggered tmux calls: %#v", mock.calls)
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("forged mapping was not removed safely: %v", err)
+	}
+}
+
+func TestTmuxAdapterDoesNotKillSessionWithWrongOwnerToken(t *testing.T) {
+	project := t.TempDir()
+	s := NewInMemoryStore()
+	seedTmuxTask(t, s, project)
+	mock := &tmuxMock{}
+	a := NewTmuxAdapterWithRunner(s, ".reasonix/tasks", mock)
+	attached := a.Attach(context.Background(), project, "t1", "demo")
+	if attached.Error != nil || attached.Mapping == nil {
+		t.Fatalf("attach failed: %+v", attached)
+	}
+	mock.options["demo\x00"+tmuxOwnerOption] = strings.Repeat("0", tmuxOwnerTokenBytes*2)
+	mock.calls = nil
+
+	result := a.Detach(context.Background(), project, "t1")
+	if result.Error != nil || result.Mapping == nil || !result.Mapping.Stale {
+		t.Fatalf("wrong-owner detach result: %+v", result)
+	}
+	for _, call := range mock.calls {
+		if len(call) > 0 && (call[0] == "kill-session" || call[0] == "if-shell") {
+			t.Fatalf("wrong owner token killed tmux session: %#v", mock.calls)
+		}
+	}
+}
+
+func TestTmuxAdapterDetachUsesAtomicOwnedKill(t *testing.T) {
+	project := t.TempDir()
+	s := NewInMemoryStore()
+	seedTmuxTask(t, s, project)
+	mock := &tmuxMock{}
+	a := NewTmuxAdapterWithRunner(s, ".reasonix/tasks", mock)
+	attached := a.Attach(context.Background(), project, "t1", "demo")
+	if attached.Error != nil || attached.Mapping == nil {
+		t.Fatalf("attach failed: %+v", attached)
+	}
+	mock.calls = nil
+
+	result := a.Detach(context.Background(), project, "t1")
+	if result.Error != nil {
+		t.Fatalf("detach failed: %+v", result)
+	}
+	foundAtomicKill := false
+	for _, call := range mock.calls {
+		if len(call) > 0 && call[0] == "kill-session" {
+			t.Fatalf("detach used a standalone kill-session: %#v", mock.calls)
+		}
+		if len(call) > 0 && call[0] == "if-shell" {
+			foundAtomicKill = true
+		}
+	}
+	if !foundAtomicKill {
+		t.Fatalf("detach did not issue an ownership-checked atomic kill: %#v", mock.calls)
+	}
+}
+
+func TestTmuxAdapterReplacesLegacyMappingWithoutTrustingIt(t *testing.T) {
+	project := t.TempDir()
+	s := NewInMemoryStore()
+	seedTmuxTask(t, s, project)
+	path := filepath.Join(project, ".reasonix", "tasks", ".tmux", "t1.json")
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	legacy := `{"schema_version":1,"task_id":"t1","project_dir":"` + project + `","session":"legacy","window":"task","pane":"legacy:task.0"}`
+	if err := os.WriteFile(path, []byte(legacy), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	mock := &tmuxMock{}
+	a := NewTmuxAdapterWithRunner(s, ".reasonix/tasks", mock)
+
+	result := a.Attach(context.Background(), project, "t1", "fresh")
+	if result.Error != nil || result.Mapping == nil || result.Mapping.OwnerToken == "" {
+		t.Fatalf("legacy mapping replacement failed: %+v", result)
+	}
+	for _, call := range mock.calls {
+		if len(call) > 2 && call[0] == "show-options" && call[3] == "legacy" {
+			t.Fatalf("legacy mapping was trusted: %#v", mock.calls)
+		}
 	}
 }
 

@@ -5841,6 +5841,92 @@ body > .mermaid-diagram--fullscreen {
   white-space: nowrap;
   min-width: 0;
 }
+/* Sub-agent progress chip: phase + running elapsed + recent activity. The dot
+ * carries the phase color; the chip never grows the head beyond one line. */
+.tool__subagent-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
+  font-family: var(--font-code-family);
+  font-size: var(--font-caption);
+  font-variant-numeric: tabular-nums;
+  color: inherit;
+  white-space: nowrap;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 1px 7px;
+  max-width: 240px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.tool__subagent-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  background: var(--fg-dim);
+}
+.tool__subagent-chip--queued .tool__subagent-dot,
+.tool__subagent-chip--cancelled .tool__subagent-dot {
+  background: var(--fg-dim);
+}
+.tool__subagent-chip--running .tool__subagent-dot {
+  background: var(--accent);
+  animation: subagent-pulse 1.4s ease-in-out infinite;
+}
+.tool__subagent-chip--reasoning .tool__subagent-dot,
+.tool__subagent-chip--responding .tool__subagent-dot {
+  background: var(--accent-warm);
+}
+.tool__subagent-chip--tool .tool__subagent-dot,
+.tool__subagent-chip--retrying .tool__subagent-dot {
+  background: var(--accent-cool);
+}
+.tool__subagent-chip--completed .tool__subagent-dot {
+  background: var(--ok);
+}
+.tool__subagent-chip--failed .tool__subagent-dot {
+  background: var(--err);
+}
+@keyframes subagent-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.35; }
+}
+
+/* Expanded sub-agent preview: reasoning / response preview / notices live in
+ * their own block and never mix with ordinary tool output. Long text wraps;
+ * it must not widen the chat column. */
+.tool__subagent-preview {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 4px 0 8px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-soft);
+  min-width: 0;
+}
+.tool__subagent-preview-label {
+  font-family: var(--font-code-family);
+  font-size: var(--font-caption);
+  font-weight: 600;
+  color: var(--fg-dim);
+  margin-bottom: 2px;
+}
+.tool__subagent-preview-text {
+  margin: 0;
+  font-family: var(--font-code-family);
+  font-size: var(--font-caption);
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
+  overflow-wrap: anywhere;
+  max-height: 260px;
+  overflow-y: auto;
+  color: inherit;
+}
 .tool__nested-count {
   display: inline-flex;
   align-items: center;
@@ -20364,6 +20450,10 @@ body > .mermaid-diagram--fullscreen {
   align-items: flex-start;
   gap: 8px;
   margin-bottom: 8px;
+  /* Many attachments (images/refs) stack rows without bound and squeeze the
+     transcript viewport (see #7578). Cap the area and scroll internally. */
+  max-height: min(30vh, 200px);
+  overflow-y: auto;
 }
 .composer-context__item {
   display: inline-flex;
@@ -20560,12 +20650,20 @@ body > .mermaid-diagram--fullscreen {
   flex-direction: column;
   gap: 6px;
   margin-bottom: 8px;
+  /* Pasting many long texts stacks fold blocks without bound and squeezes the
+     transcript viewport (see #7578). Cap the list and scroll internally. */
+  max-height: min(30vh, 240px);
+  overflow-y: auto;
 }
 .composer__pasted-block {
   border: 1px solid var(--border);
   border-radius: 7px;
   background: var(--panel);
   overflow: hidden;
+  /* The capped .composer__pasted list is a column flex container; without
+     this, flex-shrink would crush every block to a few px instead of
+     scrolling (#7578). */
+  flex-shrink: 0;
 }
 .composer__pasted-head {
   display: flex;
@@ -36419,6 +36517,31 @@ body > .mermaid-diagram--fullscreen {
 .remote-panel__hint {
   color: var(--fg-faint);
   font-size: var(--text-sm);
+}
+.remote-hosts__legacy {
+  margin-top: 18px;
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg-elev);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.remote-hosts__legacy h3 {
+  margin: 0;
+  font-size: var(--text-md);
+  color: var(--fg);
+}
+.remote-hosts__legacy p {
+  margin: 0;
+  font-size: var(--text-sm);
+  color: var(--fg-faint);
+}
+.remote-hosts__legacy-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 4px;
 }
 .remote-host-row {
   display: flex;

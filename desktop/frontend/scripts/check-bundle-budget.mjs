@@ -50,7 +50,10 @@ if (localeChunks.length !== 2) {
 }
 for (const path of localeChunks) {
   const name = basename(path);
-  const budget = name.startsWith("zh-TW-") ? 53 * 1024 : 52 * 1024;
+  // Task Monitor adds 37 user-facing labels to each on-demand locale. Keep
+  // Simplified Chinese copy compact and grant only 0.5 KiB of explicit growth;
+  // Traditional Chinese remains within its existing budget.
+  const budget = name.startsWith("zh-TW-") ? 53 * 1024 : 52.5 * 1024;
   assertBudget(`${name} gzip`, gzipBytes(path), budget);
 }
 
