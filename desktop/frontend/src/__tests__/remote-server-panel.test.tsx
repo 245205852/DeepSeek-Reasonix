@@ -1,8 +1,8 @@
 // Run: node --import ./scripts/svg-stub-register.mjs --import tsx src/__tests__/remote-server-panel.test.tsx
 //
 // Tests the Remote SSH Server tab of the right-dock panel: the single
-// "Open Remote Web" entry, Serve progress states, the workspace-missing
-// guard, and the fixed remote-provider hint.
+// "Open Remote Web" entry, Serve progress states, the workspace home-directory
+// fallback, and the fixed remote-provider hint.
 
 import { JSDOM } from "jsdom";
 import React from "react";
@@ -117,19 +117,30 @@ ok(
   `Open Remote Web calls OpenRemoteWorkspace with the last workspace (got ${JSON.stringify(openCalls)})`,
 );
 
-// Workspace missing: a host without a default or last workspace keeps the
-// entry disabled and guides to choosing a workspace.
-useRemoteStore.getState().openExplorer("bare");
-useRemoteStore.getState().setExplorerTab("server");
-useRemoteStore.getState().setHosts([
-  host,
-  { id: "bare", label: "bare", host: "bare.test", port: 22, user: "dev", identityFile: "", proxyJump: "", defaultWorkspace: "", serveInstall: "auto", useSSHConfig: false },
-]);
-useRemoteStore.getState().applyStatus({ hostId: "bare", state: "connected" });
+// Fresh host: without a configured or last workspace, the SSH login user's
+// home directory is a safe, enterable zero-configuration fallback.
 await act(async () => {
+  useRemoteStore.getState().openExplorer("bare");
+  useRemoteStore.getState().setExplorerTab("server");
+  useRemoteStore.getState().setHosts([
+    host,
+    { id: "bare", label: "bare", host: "bare.test", port: 22, user: "dev", identityFile: "", proxyJump: "", defaultWorkspace: "", serveInstall: "auto", useSSHConfig: false },
+  ]);
+  useRemoteStore.getState().applyStatus({ hostId: "bare", state: "connected" });
   await Promise.resolve();
 });
-ok(openButton()?.hasAttribute("disabled") === true, "Open Remote Web stays disabled when no workspace is configured");
+const workspaceInput = document.querySelector<HTMLInputElement>('input[placeholder="~"]');
+ok(workspaceInput?.value === "~", "fresh host defaults its workspace to the SSH login home");
+ok(openButton()?.hasAttribute("disabled") === false, "Open Remote Web is enabled for a fresh host");
+
+await act(async () => {
+  openButton()?.dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true }));
+  await Promise.resolve();
+});
+ok(
+  openCalls.length === 2 && openCalls[1].hostId === "bare" && openCalls[1].workspace === "~",
+  `fresh host opens the SSH login home (got ${JSON.stringify(openCalls)})`,
+);
 
 await act(async () => { root.unmount(); });
 dom.window.close();

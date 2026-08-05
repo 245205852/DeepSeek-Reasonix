@@ -63,6 +63,7 @@ import { RemoteHostKeyDialog } from "./components/RemoteHostKeyDialog";
 import { RemoteSecretDialog } from "./components/RemoteSecretDialog";
 import { onRemoteStatus, onRemoteForwards, onRemoteServer } from "./lib/bridge";
 import { RemoteConnectionTimeoutError, useRemoteStore, waitForRemoteConnection } from "./store/remote";
+import { resolveRemoteWorkspace } from "./lib/remoteWorkspace";
 import { CommandPalette, type PaletteItem } from "./components/CommandPalette";
 import { UpdateBanner } from "./components/UpdateBanner";
 import { UpdaterProvider } from "./lib/useUpdater";
@@ -1145,7 +1146,6 @@ export default function App() {
   const setRemoteHosts = useRemoteStore((s) => s.setHosts);
   const hydrateRemoteStatuses = useRemoteStore((s) => s.hydrateStatuses);
   const requestRemoteExplorer = useRemoteStore((s) => s.openExplorer);
-  const setRemoteExplorerTab = useRemoteStore((s) => s.setExplorerTab);
   const closeRemoteExplorerRequest = useRemoteStore((s) => s.closeExplorer);
   const applyRemoteStatus = useRemoteStore((s) => s.applyStatus);
   const requestRemoteStatusPopover = useRemoteStore((s) => s.requestStatusPopover);
@@ -2993,15 +2993,10 @@ export default function App() {
   const remoteWorkspaceLaunchSeq = useRef(0);
   const launchRemoteWorkspace = useCallback(async (host: RemoteHostView, requestSeq: number) => {
     const lastWorkspace = await app.RemoteLastWorkspace(host.id).catch(() => "");
-    const workspace = lastWorkspace?.trim() || host.defaultWorkspace?.trim() || "";
+    const workspace = resolveRemoteWorkspace(lastWorkspace, host.defaultWorkspace);
     if (requestSeq !== remoteWorkspaceLaunchSeq.current) return;
-    if (!workspace) {
-      setRemoteExplorerTab("server");
-      requestRemoteExplorer(host.id);
-      throw new Error(t("remote.workspaceRequired"));
-    }
     await app.OpenRemoteWorkspace(host.id, workspace);
-  }, [requestRemoteExplorer, setRemoteExplorerTab, t]);
+  }, []);
 
   const openRemoteWorkspaceFromStatus = useCallback((host: RemoteHostView) => {
     const requestSeq = ++remoteWorkspaceLaunchSeq.current;

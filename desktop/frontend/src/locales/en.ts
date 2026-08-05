@@ -1418,7 +1418,6 @@ export const en = {
   "remote.disconnect": "Disconnect",
   "remote.disconnectHost": "Disconnect {host}",
   "remote.openWorkspace": "Open Remote Web",
-  "remote.workspaceRequired": "Choose a Remote workspace before opening it.",
   "remote.legacyData.title": "Legacy Remote Workbench data",
   "remote.legacyData.summary": "The removed Remote Workbench left {count} mirror file(s), {size}, in the Reasonix data directory.",
   "remote.legacyData.trustPresent": "A saved provider-trust file is present.",

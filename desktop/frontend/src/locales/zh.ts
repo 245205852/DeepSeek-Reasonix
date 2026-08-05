@@ -1420,7 +1420,6 @@ export const zh: Record<DictKey, string> = {
   "remote.disconnect": "断开",
   "remote.disconnectHost": "断开 {host}",
   "remote.openWorkspace": "打开远程网页",
-  "remote.workspaceRequired": "请先选择远程工作区，再打开它。",
   "remote.legacyData.title": "旧版 Remote Workbench 数据",
   "remote.legacyData.summary": "已移除的 Remote Workbench 在 Reasonix 数据目录中遗留了 {count} 个镜像文件，共 {size}。",
   "remote.legacyData.trustPresent": "存在已保存的 Provider 信任文件。",
