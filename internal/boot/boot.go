@@ -35,6 +35,7 @@ import (
 	"reasonix/internal/extension/providerext"
 	"reasonix/internal/extension/sidecar"
 	"reasonix/internal/extension/uihub"
+	"reasonix/internal/goaleval"
 	"reasonix/internal/guardian"
 	"reasonix/internal/history"
 	"reasonix/internal/hook"
@@ -398,6 +399,14 @@ func build(ctx context.Context, opts Options) (*BuildResult, error) {
 	if source := strings.TrimSpace(opts.StatsSource); source != "" {
 		sink = stats.NewRecorder(sink, config.StatsDir(), source)
 	}
+
+	// Goal token-budget accounting: the controller detects this tee and
+	// attributes billable usage events to the active goal turn's recorder, so
+	// executor/planner/subagent/compaction/classifier/router/reviewer/evaluator
+	// calls under one Goal scope count against its token budget. The tee must
+	// sit on the shared sink the agents emit into — hence the wrap here rather
+	// than inside the controller.
+	sink = control.NewGoalUsageTee(sink)
 
 	if migErr != nil {
 		sink.Emit(event.Event{Kind: event.Notice, Level: event.LevelWarn, Text: "Config migration did not complete.", Detail: "config migration from ~/.reasonix failed: " + migErr.Error()})
@@ -1927,6 +1936,28 @@ func build(ctx context.Context, opts Options) (*BuildResult, error) {
 		// no decision channel (`reasonix run`). ApprovalTimeout is not a proxy for
 		// that capability: bots have a bounded timeout and can still answer cards.
 		ctrlOpts.RecoveryHeadless = recoveryHeadlessMode(opts)
+	}
+	// Goal evaluator: the same zero-config model fallback as the recovery
+	// reviewer (recovery_model → guardian_model → main model), isolated session
+	// and policy. When unavailable, Goal turns without an update_goal report
+	// fail closed and pause instead of defaulting to continue.
+	{
+		evalModel := strings.TrimSpace(cfg.Agent.RecoveryModel)
+		if evalModel == "" {
+			evalModel = strings.TrimSpace(cfg.Agent.GuardianModel)
+		}
+		if evalModel == "" {
+			evalModel = modelRef
+		}
+		if evalModel != "" {
+			if re, ok := cfg.ResolveModel(evalModel); ok {
+				if eProv, err := NewProviderWithProxy(re, proxySpec); err == nil {
+					ctrlOpts.GoalEvaluator = goaleval.NewSessionWithSink(eProv, re.Price, modelRefFromEntry(re), sink)
+				} else {
+					slog.Warn("goal evaluator provider construction failed — goals without an update_goal report will pause", "model", evalModel, "err", err)
+				}
+			}
+		}
 	}
 	ctrl := control.New(ctrlOpts)
 	// Publish the controller to the extension UI hub's indirection: from here
