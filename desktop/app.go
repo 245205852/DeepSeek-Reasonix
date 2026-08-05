@@ -1731,6 +1731,26 @@ func (a *App) ApproveTab(tabID, id string, allow, session, persist bool) {
 	}
 }
 
+// ResolvePlanDecision answers a Plan card while preserving whether the user
+// chose to start execution, revise the plan, or exit without executing.
+func (a *App) ResolvePlanDecision(id, action string) error {
+	ctrl := a.ctrlByTabID("")
+	if ctrl == nil {
+		return fmt.Errorf("no active session")
+	}
+	return ctrl.ResolvePlanDecision(id, control.PlanDecisionAction(action))
+}
+
+// ResolvePlanDecisionTab is like ResolvePlanDecision but scoped to a runtime
+// tab so a delayed bridge call cannot answer a prompt in another tab.
+func (a *App) ResolvePlanDecisionTab(tabID, id, action string) error {
+	ctrl := a.ctrlForRuntimeTabID(tabID)
+	if ctrl == nil {
+		return fmt.Errorf("no active session")
+	}
+	return ctrl.ResolvePlanDecision(id, control.PlanDecisionAction(action))
+}
+
 // ResolveRecovery answers an Auto Guard card. action is continue|revise. For
 // revise, feedback is steered into the
 // agent and the pending mutation is refused in the same operation.
@@ -5881,6 +5901,17 @@ func historyMessagesWithPlannerDisplaysAndLookups(
 		hasVisibleLocalContent := strings.TrimSpace(hm.Content) != "" || strings.TrimSpace(hm.Reasoning) != "" || len(hm.ToolCalls) > 0 || (!m.LocalOnly && m.Role == provider.RoleTool)
 		if !m.LocalOnly || hasVisibleLocalContent {
 			out = append(out, hm)
+		}
+		for _, receipt := range m.DecisionReceipts {
+			if receipt == nil {
+				continue
+			}
+			out = append(out, HistoryMessage{
+				Role:            "notice",
+				Code:            event.NoticeCodeDecisionReceipt,
+				Level:           "info",
+				DecisionReceipt: cloneDecisionReceipt(receipt),
+			})
 		}
 		if m.LocalOnly && m.InterruptedTurn != nil {
 			out = append(out, HistoryMessage{

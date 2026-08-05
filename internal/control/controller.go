@@ -894,6 +894,17 @@ func (c *Controller) SendWithRaw(input, raw string) {
 // desktop renders a plan card; the chat TUI a plan banner).
 const planApprovalTool = "exit_plan_mode"
 
+// PlanDecisionAction preserves the three user-owned meanings of the Plan card.
+// Revise and exit both deny execution at the approval gate, but they are not the
+// same product decision and must remain distinguishable in durable receipts.
+type PlanDecisionAction string
+
+const (
+	PlanDecisionStartExecution PlanDecisionAction = "start_execution"
+	PlanDecisionRevisePlan     PlanDecisionAction = "revise_plan"
+	PlanDecisionExitPlan       PlanDecisionAction = "exit_plan"
+)
+
 // SandboxEscapeApprovalTool is the internal Tool name used for one-shot approval
 // to rerun a shell command without the OS sandbox after the sandbox failed.
 const SandboxEscapeApprovalTool = "sandbox_escape"
@@ -1985,7 +1996,12 @@ func (c *Controller) Approve(id string, allow, session, persist bool) {
 		return
 	}
 	outcome := "deny"
-	if allow {
+	if pending.tool == planApprovalTool {
+		outcome = string(PlanDecisionRevisePlan)
+		if allow {
+			outcome = string(PlanDecisionStartExecution)
+		}
+	} else if allow {
 		switch {
 		case persist:
 			outcome = "allow_persistent"
@@ -1999,6 +2015,31 @@ func (c *Controller) Approve(id string, allow, session, persist bool) {
 	pending.reply <- approvalReply{allow: allow, session: session, persist: persist} // buffered, never blocks
 }
 
+// ResolvePlanDecision answers the Plan card without collapsing revise and exit
+// into the generic approval boolean used by older clients.
+func (c *Controller) ResolvePlanDecision(id string, action PlanDecisionAction) error {
+	if c == nil {
+		return fmt.Errorf("controller is nil")
+	}
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return fmt.Errorf("empty plan approval id")
+	}
+	switch action {
+	case PlanDecisionStartExecution, PlanDecisionRevisePlan, PlanDecisionExitPlan:
+	default:
+		return fmt.Errorf("unknown plan decision %q", action)
+	}
+	pending, ok := c.approval.resolveTool(id, planApprovalTool)
+	if !ok || pending.reply == nil {
+		return fmt.Errorf("plan approval %q is no longer pending", id)
+	}
+	pending.kind = "plan"
+	c.recordDecisionReceipt(pending, string(action))
+	pending.reply <- approvalReply{allow: action == PlanDecisionStartExecution}
+	return nil
+}
+
 func (c *Controller) recordDecisionReceipt(pending pendingApproval, outcome string) {
 	if c == nil || c.executor == nil || pending.reply == nil {
 		return
@@ -2006,6 +2047,9 @@ func (c *Controller) recordDecisionReceipt(pending pendingApproval, outcome stri
 	kind := pending.kind
 	if kind == "" {
 		kind = "tool"
+		if pending.tool == planApprovalTool {
+			kind = "plan"
+		}
 	}
 	receipt := &provider.DecisionReceipt{
 		ID:      pending.id,
@@ -2016,7 +2060,7 @@ func (c *Controller) recordDecisionReceipt(pending pendingApproval, outcome stri
 	}
 	// Keep the receipt bounded and provider-excluded even when an older caller
 	// omits optional approval metadata.
-	c.executor.Session().Add(provider.Message{Role: provider.RoleAssistant, LocalOnly: true, DecisionReceipt: receipt})
+	c.executor.Session().AddDecisionReceipt(receipt)
 	c.sink.Emit(event.Event{
 		Kind:            event.Notice,
 		Code:            event.NoticeCodeDecisionReceipt,
@@ -2363,7 +2407,7 @@ func (c *Controller) recordAskDecisionReceipt(id string, pending pendingAsk, ans
 		Subject: clipUTF8(strings.Join(parts, " · "), 240),
 		Outcome: "answered",
 	}
-	c.executor.Session().Add(provider.Message{Role: provider.RoleAssistant, LocalOnly: true, DecisionReceipt: receipt})
+	c.executor.Session().AddDecisionReceipt(receipt)
 	c.sink.Emit(event.Event{
 		Kind:            event.Notice,
 		Code:            event.NoticeCodeDecisionReceipt,
@@ -6344,8 +6388,12 @@ func (c *Controller) requestApprovalDecisionWithOptions(ctx context.Context, too
 
 	var id string
 	var reply chan approvalReply
-	if opts.fresh || opts.requireHuman {
-		id, reply = c.approval.registerDecisionWithInput(tool, subject, reason, args, opts.fresh, opts.requireHuman)
+	if opts.fresh || opts.requireHuman || tool == planApprovalTool {
+		kind := ""
+		if tool == planApprovalTool {
+			kind = "plan"
+		}
+		id, reply = c.approval.registerDecisionKindWithInput(tool, subject, reason, args, opts.fresh, opts.requireHuman, kind, nil)
 	} else {
 		id, reply = c.approval.registerWithInput(tool, subject, reason, args)
 	}

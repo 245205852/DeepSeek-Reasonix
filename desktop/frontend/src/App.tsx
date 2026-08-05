@@ -1071,6 +1071,7 @@ export default function App() {
     notice,
     cancel,
     approve,
+    resolvePlanDecision,
     resolveRecovery,
     answerQuestion,
     setControllerMode,
@@ -4866,7 +4867,15 @@ export default function App() {
                   // Approving an exit_plan_mode plan leaves plan mode; await the
                   // mode switch before sending the approval so the controller
                   // observes the updated state before it unblocks.
-                  if (state.approval!.tool === "exit_plan_mode" && allow) await applyCollaborationMode("normal");
+                  if (state.approval!.tool === "exit_plan_mode") {
+                    if (allow) {
+                      await applyCollaborationMode("normal");
+                      resolvePlanDecision(state.approval!.id, "start_execution");
+                    } else {
+                      resolvePlanDecision(state.approval!.id, "revise_plan");
+                    }
+                    return;
+                  }
                   approve(state.approval!.id, allow, session, persist);
                 }}
                 onResolveRecovery={(action, feedback) => {
@@ -4876,11 +4885,11 @@ export default function App() {
                   if (activeTabId) {
                     setPendingPlanRevisionsByTab((current) => ({ ...current, [activeTabId]: text }));
                   }
-                  approve(state.approval!.id, false, false, false);
+                  resolvePlanDecision(state.approval!.id, "revise_plan");
                 }}
                 onExitPlan={async () => {
                   await applyCollaborationMode("normal");
-                  approve(state.approval!.id, false, false, false);
+                  resolvePlanDecision(state.approval!.id, "exit_plan");
                 }}
                 onStop={() => {
                   cancel();

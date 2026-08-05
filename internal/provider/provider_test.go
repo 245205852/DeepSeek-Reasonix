@@ -144,6 +144,58 @@ func TestDecisionReceiptIsDurableButProviderExcluded(t *testing.T) {
 	}
 }
 
+func TestAttachedDecisionReceiptPreservesCurrentAndLegacyToolPairing(t *testing.T) {
+	receipt := &DecisionReceipt{ID: "approval-1", Kind: "tool", Tool: "bash", Outcome: "allow_once"}
+	stored := []Message{
+		{Role: RoleUser, Content: "run it"},
+		{
+			Role:             RoleAssistant,
+			ToolCalls:        []ToolCall{{Name: "bash", Arguments: `{}`}},
+			DecisionReceipts: []*DecisionReceipt{receipt},
+		},
+		{Role: RoleTool, Name: "bash", Content: "ok"},
+	}
+
+	current := SanitizeToolPairing(ModelMessages(stored))
+	if len(current) != 3 || current[2].Content != "ok" {
+		t.Fatalf("current reader changed the valid tool turn: %+v", current)
+	}
+	if len(current[1].DecisionReceipts) != 0 {
+		t.Fatalf("provider-visible message leaked local decision metadata: %+v", current[1])
+	}
+
+	// Older binaries ignore the new metadata field. The remaining legacy view
+	// must still contain the same adjacent assistant/result pair, including the
+	// positional pairing used by providers that omit tool-call IDs.
+	legacy := append([]Message(nil), stored...)
+	legacy[1].DecisionReceipts = nil
+	legacy = SanitizeToolPairing(legacy)
+	if len(legacy) != 3 || legacy[1].Role != RoleAssistant || legacy[2].Role != RoleTool || legacy[2].Content != "ok" {
+		t.Fatalf("legacy reader lost the actual tool result: %+v", legacy)
+	}
+}
+
+func TestNormalizeSessionMessagesMigratesInterleavedDecisionReceipt(t *testing.T) {
+	receipt := &DecisionReceipt{ID: "approval-1", Kind: "tool", Tool: "bash", Outcome: "allow_once"}
+	old := []Message{
+		{Role: RoleUser, Content: "run it"},
+		{Role: RoleAssistant, ToolCalls: []ToolCall{{ID: "call-1", Name: "bash", Arguments: `{}`}}},
+		{Role: RoleAssistant, LocalOnly: true, DecisionReceipt: receipt},
+		{Role: RoleTool, ToolCallID: "call-1", Name: "bash", Content: "actual result"},
+	}
+
+	got := NormalizeSessionMessages(old)
+	if len(got) != 3 {
+		t.Fatalf("migrated messages = %d, want receipt folded into assistant: %+v", len(got), got)
+	}
+	if len(got[1].DecisionReceipts) != 1 || got[1].DecisionReceipts[0] != receipt {
+		t.Fatalf("migrated assistant receipt = %+v, want original receipt", got[1].DecisionReceipts)
+	}
+	if got[2].Role != RoleTool || got[2].Content != "actual result" || strings.Contains(got[2].Content, "interrupted") {
+		t.Fatalf("migrated tool result = %+v, want the actual result without a placeholder", got[2])
+	}
+}
+
 func TestModelMessagesUsesProviderContentWithoutMutatingStoredMessage(t *testing.T) {
 	stored := []Message{{
 		Role:            RoleUser,

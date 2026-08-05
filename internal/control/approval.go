@@ -348,6 +348,20 @@ func (a *approvalManager) resolve(id string) pendingApproval {
 	return p
 }
 
+// resolveTool removes id only when it belongs to the expected specialized
+// decision surface. A mismatched bridge call must not consume another approval
+// type that happens to share the same short numeric id.
+func (a *approvalManager) resolveTool(id, tool string) (pendingApproval, bool) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	p, ok := a.approvals[id]
+	if !ok || p.tool != tool {
+		return pendingApproval{}, false
+	}
+	delete(a.approvals, id)
+	return p, true
+}
+
 // registerAsk allocates an ask ID, records the pending question batch, and
 // returns the reply channel.
 func (a *approvalManager) registerAsk(questions []event.AskQuestion) (string, chan []event.AskAnswer) {

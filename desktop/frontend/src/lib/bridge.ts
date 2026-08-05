@@ -190,6 +190,8 @@ export interface AppBindings {
   CancelTab(tabID: string): Promise<void>;
   Approve(id: string, allow: boolean, session: boolean, persist: boolean): Promise<void>;
   ApproveTab(tabID: string, id: string, allow: boolean, session: boolean, persist: boolean): Promise<void>;
+  ResolvePlanDecision(id: string, action: "start_execution" | "revise_plan" | "exit_plan"): Promise<void>;
+  ResolvePlanDecisionTab(tabID: string, id: string, action: "start_execution" | "revise_plan" | "exit_plan"): Promise<void>;
   ResolveRecovery(id: string, action: string, feedback: string): Promise<void>;
   ResolveRecoveryTab(tabID: string, id: string, action: string, feedback: string): Promise<void>;
   // Legacy no-ops: Auto Guard is always built into Auto.
@@ -2656,6 +2658,22 @@ function makeMockApp(): AppBindings {
         },
         async ApproveTab(_tabID, id, allow, session, persist) {
           await withMockTabScope(_tabID, () => this.Approve(id, allow, session, persist));
+        },
+        async ResolvePlanDecision(id, action) {
+          const active = mockTabs.find((tab) => tab.active);
+          await this.ResolvePlanDecisionTab(active?.id ?? "", id, action);
+        },
+        async ResolvePlanDecisionTab(_tabID, id, action) {
+          await withMockTabScope(_tabID, async () => {
+            void id;
+            pendingApprovalPreview = false;
+            pendingApprovalPreviewPrompt = undefined;
+            emit({
+              kind: "message",
+              text: `plan preview answered: ${action}`,
+            });
+            emitMockTurnDone();
+          });
         },
         async ResolveRecovery(id, action, feedback) {
           const active = mockTabs.find((tab) => tab.active);

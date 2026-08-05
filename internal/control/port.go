@@ -76,6 +76,7 @@ type TurnControl interface {
 // posture (ask/auto/yolo). It mirrors the approvalManager surface.
 type Approvals interface {
 	Approve(id string, allow, session, persist bool)
+	ResolvePlanDecision(id string, action PlanDecisionAction) error
 	// ResolveRecovery answers an Auto Guard card: continue|continue_task|revise. Revise
 	// refuses the mutation and steers feedback.
 	ResolveRecovery(id string, action agent.RecoveryAction, feedback string) error
