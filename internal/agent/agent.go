@@ -2863,7 +2863,7 @@ func (a *Agent) stream(ctx context.Context, turn int, sink event.Sink) (string, 
 	for i := range requestMessages {
 		requestMessages[i].CreatedAt = 0
 	}
-req := provider.Request{
+	req := provider.Request{
 		Messages:       requestMessages,
 		Tools:          a.tools.Schemas(),
 		MaxTokens:      a.maxOutputTokens,
