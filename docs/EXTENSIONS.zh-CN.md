@@ -69,6 +69,24 @@ CLI `/reload`、Desktop「重载运行时」（命令面板）、ACP vendor meth
 generation——扩展变更从下一个回合生效；no-op 重载后 Provider 提示词
 缓存前缀字节不变。
 
+## 性能与提示词缓存
+
+未安装代码型 Runtime 时，Agent 仍走原有 nil-dispatcher 路径：不会启动
+Sidecar，也不会发生 JSON 编码、RPC 或事件排队。启用后的同步拦截器会
+串行进入相应热路径，因此 RPC 与处理耗时会累加；输入、工具、权限和
+Provider 拦截器应保持轻量且结果确定。观察事件通过有界非阻塞队列投递，
+背压时告警并丢弃，不会卡住当前回合。
+
+纯观察扩展不会改变 Provider 可见缓存前缀。稳定的系统提示词或工具替换
+会在安装/重载后产生一次预期的冷前缀，之后仍可持续命中缓存；若策略把
+时间戳、随机值、session ID 或其他逐回合动态数据写入系统提示词、工具
+Schema、上下文前缀或 Provider 请求，则可能破坏缓存复用。动态数据应尽量
+留在当前回合尾部。维护者可用以下命令测量宿主开销：
+
+```bash
+go test ./internal/extension/... -run '^$' -bench 'Extension|Dispatch' -benchmem
+```
+
 ## 开发扩展
 
 1. 在 `reasonix-plugin.json` 中加入

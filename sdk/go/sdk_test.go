@@ -374,6 +374,31 @@ func TestInterceptHandlerPanic(t *testing.T) {
 	}
 }
 
+// TestInterceptDeadlineReturnsFrozenTimeout pins the equal-deadline race
+// between the SDK callback budget and the host request budget. When the SDK
+// timer wins, it must answer intercept_timeout rather than a generic internal
+// error so the host observes one deterministic reason either way.
+func TestInterceptDeadlineReturnsFrozenTimeout(t *testing.T) {
+	interceptors := map[string]InterceptorFunc{
+		"tool.before": func(ctx context.Context, _ string, _ json.RawMessage) (*InterceptResult, error) {
+			<-ctx.Done()
+			return nil, ctx.Err()
+		},
+	}
+	host, _ := startFakeHost(t, basicHandler(), Options{Interceptors: interceptors})
+	host.handshake(t)
+	resp := host.request(MethodExtensionIntercept, InterceptParams{
+		Event: EventToolBefore, Seq: 1, Payload: json.RawMessage(`{}`), TimeoutMillis: 20,
+	})
+	if resp.Err == nil || resp.Err.Code != DomainErrorCode {
+		t.Fatalf("expected a domain timeout error, got %+v", resp.Err)
+	}
+	data, _ := resp.Err.Data.(ProtocolErrorData)
+	if data.Reason != ErrInterceptTimeout {
+		t.Fatalf("reason = %q, want %q", data.Reason, ErrInterceptTimeout)
+	}
+}
+
 // TestEventObservation checks extension/event reaches the observer and a
 // panicking observer does not kill the loop.
 func TestEventObservation(t *testing.T) {

@@ -141,6 +141,73 @@ func TestOutboundLimitIncludesNewline(t *testing.T) {
 	}
 }
 
+type blockingTryNotifyWriter struct {
+	started chan struct{}
+	release chan struct{}
+	once    sync.Once
+}
+
+func (w *blockingTryNotifyWriter) Write(p []byte) (int, error) {
+	w.once.Do(func() { close(w.started) })
+	<-w.release
+	return len(p), nil
+}
+
+func TestTryNotifyDoesNotWaitForPhysicalWrite(t *testing.T) {
+	w := &blockingTryNotifyWriter{started: make(chan struct{}), release: make(chan struct{})}
+	conn := NewConn(strings.NewReader(""), w, Options{})
+	done := make(chan error, 1)
+	go func() { done <- conn.TryNotify("event", map[string]int{"index": 1}) }()
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("TryNotify: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("TryNotify waited for the blocked physical write")
+	}
+	select {
+	case <-w.started:
+	case <-time.After(time.Second):
+		t.Fatal("writer never received the enqueued notification")
+	}
+	close(w.release)
+}
+
+func TestTryNotifyDropsImmediatelyWhenQueueIsFull(t *testing.T) {
+	w := &blockingTryNotifyWriter{started: make(chan struct{}), release: make(chan struct{})}
+	conn := NewConn(strings.NewReader(""), w, Options{})
+	if err := conn.TryNotify("event", map[string]int{"index": 0}); err != nil {
+		t.Fatalf("first TryNotify: %v", err)
+	}
+	select {
+	case <-w.started:
+	case <-time.After(time.Second):
+		t.Fatal("writer never blocked on the first notification")
+	}
+	for i := 1; i < bestEffortNotifyQueueLimit; i++ {
+		if err := conn.TryNotify("event", map[string]int{"index": i}); err != nil {
+			t.Fatalf("TryNotify %d before capacity: %v", i, err)
+		}
+	}
+	overflow := make(chan error, 1)
+	go func() {
+		overflow <- conn.TryNotify("event", map[string]int{"index": bestEffortNotifyQueueLimit})
+	}()
+	var err error
+	select {
+	case err = <-overflow:
+	case <-time.After(time.Second):
+		t.Fatal("full-queue TryNotify blocked instead of dropping the notification")
+	}
+	var full *OutboundQueueFullError
+	if !errors.As(err, &full) || full.Limit != bestEffortNotifyQueueLimit {
+		t.Fatalf("overflow error = %#v, want OutboundQueueFullError(%d)", err, bestEffortNotifyQueueLimit)
+	}
+	close(w.release)
+}
+
 func TestRequestReturnsStructuredPeerError(t *testing.T) {
 	serverToClientR, serverToClientW := io.Pipe()
 	clientToServerR, clientToServerW := io.Pipe()

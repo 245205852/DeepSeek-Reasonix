@@ -61,6 +61,20 @@ providers, `UI` callbacks plus the `HostUI` client for structured surfaces
 `ReadContentRef`/`ResolveExternalized` for large externalized payloads, and a
 `Shutdown` hook.
 
+## Concurrency contract
+
+`Initialize` runs once and completes before any other callback. After that,
+the SDK may run up to 32 inbound callbacks concurrently: interceptors,
+observers, resource notifications, provider `Catalog`/`Stream`, and UI
+callbacks can overlap, and multiple provider streams may be active at once.
+Treat callback inputs as call-local and protect mutable state shared by
+callbacks with a mutex, atomics, channels, or another explicit ownership
+scheme. Cancellation and shutdown may overlap work already in flight, so
+callbacks and stream producers must honor their contexts.
+
+The SDK serializes protocol writes itself; extensions must not write directly
+to stdout. stderr remains available for diagnostics.
+
 ## Runnable example
 
 [`examples/fullsidecar`](examples/fullsidecar/main.go) is the reference

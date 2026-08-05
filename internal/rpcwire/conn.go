@@ -99,13 +99,14 @@ type Conn struct {
 	reqH map[string]RequestHandler
 	notH map[string]NotificationHandler
 
-	wg           sync.WaitGroup
-	closeOnce    sync.Once
-	closed       chan struct{}
-	closeMu      sync.Mutex
-	closeErr     error
-	handlerSlots chan struct{}
-	notifyQueue  chan notificationCall
+	wg             sync.WaitGroup
+	closeOnce      sync.Once
+	closed         chan struct{}
+	closeMu        sync.Mutex
+	closeErr       error
+	handlerSlots   chan struct{}
+	notifyQueue    chan notificationCall
+	tryNotifySlots chan struct{}
 }
 
 const DefaultMaxConcurrentHandlers = 64
@@ -147,15 +148,16 @@ func NewConn(r io.Reader, w io.Writer, opts Options) *Conn {
 		opts.MaxConcurrentHandlers = DefaultMaxConcurrentHandlers
 	}
 	conn := &Conn{
-		r:            r,
-		w:            w,
-		opts:         opts,
-		pending:      make(map[int64]chan rpcResult),
-		reqH:         make(map[string]RequestHandler),
-		notH:         make(map[string]NotificationHandler),
-		closed:       make(chan struct{}),
-		handlerSlots: make(chan struct{}, opts.MaxConcurrentHandlers),
-		writeQ:       make(chan writeJob, writeQueueLimit),
+		r:              r,
+		w:              w,
+		opts:           opts,
+		pending:        make(map[int64]chan rpcResult),
+		reqH:           make(map[string]RequestHandler),
+		notH:           make(map[string]NotificationHandler),
+		closed:         make(chan struct{}),
+		handlerSlots:   make(chan struct{}, opts.MaxConcurrentHandlers),
+		writeQ:         make(chan writeJob, writeQueueLimit),
+		tryNotifySlots: make(chan struct{}, bestEffortNotifyQueueLimit),
 	}
 	if opts.MaxQueuedNotifications > 0 {
 		conn.notifyQueue = make(chan notificationCall, opts.MaxQueuedNotifications)
@@ -484,11 +486,11 @@ func (c *Conn) resolve(in inbound) {
 
 // Notify sends a fire-and-forget notification.
 func (c *Conn) Notify(method string, params any) error {
-	raw, err := json.Marshal(params)
+	m, err := notification(method, params)
 	if err != nil {
 		return err
 	}
-	err = c.write(context.Background(), outbound{JSONRPC: "2.0", Method: method, Params: raw})
+	err = c.write(context.Background(), m)
 	if err != nil {
 		var tooLarge *FrameTooLargeError
 		if !errors.As(err, &tooLarge) {
@@ -496,6 +498,53 @@ func (c *Conn) Notify(method string, params any) error {
 		}
 	}
 	return err
+}
+
+// TryNotify enqueues a fire-and-forget notification without waiting for a
+// physical write. A nil result means the bounded writer accepted the frame,
+// not that the peer has processed it. When the queue is full it returns
+// OutboundQueueFullError immediately, allowing observation-only callers to
+// drop the event instead of adding sidecar backpressure to a host hot path.
+func (c *Conn) TryNotify(method string, params any) error {
+	m, err := notification(method, params)
+	if err != nil {
+		return err
+	}
+	job, err := c.prepareWrite(m, context.Background())
+	if err != nil {
+		return err
+	}
+	select {
+	case c.tryNotifySlots <- struct{}{}:
+		job.release = func() { <-c.tryNotifySlots }
+	default:
+		return &OutboundQueueFullError{Limit: cap(c.tryNotifySlots)}
+	}
+	c.ensureWriter()
+	select {
+	case <-c.closed:
+		job.release()
+		return c.terminalError()
+	default:
+	}
+	select {
+	case <-c.closed:
+		job.release()
+		return c.terminalError()
+	case c.writeQ <- job:
+		return nil
+	default:
+		job.release()
+		return &OutboundQueueFullError{Limit: cap(c.tryNotifySlots)}
+	}
+}
+
+func notification(method string, params any) (outbound, error) {
+	raw, err := json.Marshal(params)
+	if err != nil {
+		return outbound{}, err
+	}
+	return outbound{JSONRPC: "2.0", Method: method, Params: raw}, nil
 }
 
 // Request sends a request and waits for its response, cancellation, or closure.
@@ -546,35 +595,26 @@ func (c *Conn) Request(ctx context.Context, method string, params any) (json.Raw
 }
 
 func (c *Conn) write(ctx context.Context, m outbound) error {
-	c.ensureWriter()
-	var buf bytes.Buffer
-	enc := json.NewEncoder(&buf)
-	enc.SetEscapeHTML(false)
-	if err := enc.Encode(m); err != nil {
+	job, err := c.prepareWrite(m, ctx)
+	if err != nil {
 		return err
 	}
-	if limit := c.opts.MaxOutboundBytes; limit > 0 && buf.Len() > limit {
-		return &FrameTooLargeError{Direction: "outbound", Size: buf.Len(), Limit: limit}
-	}
-	if ctx == nil {
-		ctx = context.Background()
-	}
-	job := writeJob{frame: buf.Bytes(), ctx: ctx, res: make(chan error, 1)}
+	c.ensureWriter()
 	select {
 	case c.writeQ <- job:
-	case <-ctx.Done():
-		return ctx.Err()
+	case <-job.ctx.Done():
+		return job.ctx.Err()
 	case <-c.closed:
 		return fmt.Errorf("DBG-enqueue: %w", c.terminalError())
 	}
 	select {
 	case err := <-job.res:
 		return err
-	case <-ctx.Done():
+	case <-job.ctx.Done():
 		// The caller gave up: the writer loop will skip the frame if it has
 		// not physically started, or finish it serially if it has — the
 		// transport never sees a torn or interleaved frame.
-		return ctx.Err()
+		return job.ctx.Err()
 	case <-c.closed:
 		// A completed write may race the connection's teardown; the buffered
 		// result is already there when that happened, so prefer it over the
@@ -588,16 +628,46 @@ func (c *Conn) write(ctx context.Context, m outbound) error {
 	}
 }
 
+func (c *Conn) prepareWrite(m outbound, ctx context.Context) (writeJob, error) {
+	var buf bytes.Buffer
+	enc := json.NewEncoder(&buf)
+	enc.SetEscapeHTML(false)
+	if err := enc.Encode(m); err != nil {
+		return writeJob{}, err
+	}
+	if limit := c.opts.MaxOutboundBytes; limit > 0 && buf.Len() > limit {
+		return writeJob{}, &FrameTooLargeError{Direction: "outbound", Size: buf.Len(), Limit: limit}
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return writeJob{frame: buf.Bytes(), ctx: ctx, res: make(chan error, 1)}, nil
+}
+
 // writeQueueLimit bounds queued outbound frames per connection. A wedged
 // peer fills the queue and then the stall watchdog fails the connection;
 // senders never block unboundedly behind it.
 const writeQueueLimit = 256
 
+// bestEffortNotifyQueueLimit prevents observation events from filling the
+// shared writer queue ahead of request/response traffic. Sixteen queued or
+// in-flight events absorb healthy bursts while preserving capacity and
+// latency for blocking intercept, provider, UI, and shutdown calls.
+const bestEffortNotifyQueueLimit = 16
+
 // writeJob is one outbound frame awaiting the single writer goroutine.
 type writeJob struct {
-	frame []byte
-	ctx   context.Context // pre-write cancellation only
-	res   chan error      // buffered 1
+	frame   []byte
+	ctx     context.Context // pre-write cancellation only
+	res     chan error      // buffered 1
+	release func()          // releases optional best-effort notification capacity
+}
+
+func completeWriteJob(job writeJob, err error) {
+	job.res <- err
+	if job.release != nil {
+		job.release()
+	}
 }
 
 // writerLoop is the ONLY writer of c.w. It drains the queue in order, skips
@@ -614,7 +684,7 @@ func (c *Conn) writerLoop() {
 		case job := <-c.writeQ:
 			if job.ctx != nil {
 				if err := job.ctx.Err(); err != nil {
-					job.res <- err
+					completeWriteJob(job, err)
 					continue
 				}
 			}
@@ -633,7 +703,7 @@ func (c *Conn) writerLoop() {
 				default:
 				}
 			}
-			job.res <- err
+			completeWriteJob(job, err)
 			c.writerBusy.Add(-1)
 			if err != nil {
 				c.fail(err)
@@ -645,7 +715,7 @@ func (c *Conn) writerLoop() {
 			// than dropped silently. The loop blocks on the queue, so a dead
 			// connection costs no CPU.
 			for job := range c.writeQ {
-				job.res <- c.terminalError()
+				completeWriteJob(job, c.terminalError())
 			}
 		}
 	}

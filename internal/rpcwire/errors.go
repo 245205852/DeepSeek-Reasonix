@@ -73,6 +73,17 @@ func (e *FrameTooLargeError) Error() string {
 	return fmt.Sprintf("rpcwire: %s frame is %d bytes; limit is %d", e.Direction, e.Size, e.Limit)
 }
 
+// OutboundQueueFullError reports that TryNotify could not enqueue a
+// best-effort notification without blocking. The caller may drop the event;
+// request/response traffic keeps using the bounded blocking write path.
+type OutboundQueueFullError struct {
+	Limit int
+}
+
+func (e *OutboundQueueFullError) Error() string {
+	return fmt.Sprintf("rpcwire: outbound notification queue is full (limit %d)", e.Limit)
+}
+
 // WriteStallError reports an outbound write that made no progress within the
 // configured MaxWriteStall bound: the peer is alive enough to keep the pipe
 // open but has stopped reading, so without a bound the write would block the

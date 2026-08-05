@@ -59,7 +59,8 @@ capped at **8 MiB**. Unknown or expired refs fail with `content_ref_expired`.
 
 Seventeen frozen hook points (see the generated index). `extension/intercept`
 is blocking; `extension/event` is fire-and-forget observation of the same
-points.
+points. Event delivery uses a bounded non-blocking writer queue: saturation
+drops the observation with a warning instead of stalling the Agent.
 
 - Ordinary interceptors run **sequentially** in a deterministic order:
   priority ascending (manifest `priority`, -1000..1000, default 0), then

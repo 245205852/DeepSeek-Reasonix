@@ -49,7 +49,7 @@ func (f *fakeExtClient) Intercept(_ context.Context, event protocol.InterceptEve
 	return fn(event, payload)
 }
 
-func (f *fakeExtClient) NotifyEvent(event protocol.InterceptEvent, payload json.RawMessage) error {
+func (f *fakeExtClient) TryNotifyEvent(event protocol.InterceptEvent, payload json.RawMessage) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.notifies = append(f.notifies, recordedExtCall{event: event, payload: append(json.RawMessage(nil), payload...)})

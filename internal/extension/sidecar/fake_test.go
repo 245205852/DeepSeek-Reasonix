@@ -281,7 +281,7 @@ func runFakeSidecar(stdin io.Reader, stdout io.Writer) {
 
 // fakeSidecarRuntime builds the exec-form runtime spec pointing at the
 // re-executed test binary.
-func fakeSidecarRuntime(t *testing.T, configure func(rt *pluginpkg.RuntimeSpec)) *pluginpkg.RuntimeSpec {
+func fakeSidecarRuntime(t testing.TB, configure func(rt *pluginpkg.RuntimeSpec)) *pluginpkg.RuntimeSpec {
 	t.Helper()
 	exe, err := os.Executable()
 	if err != nil {
@@ -301,7 +301,7 @@ func fakeSidecarRuntime(t *testing.T, configure func(rt *pluginpkg.RuntimeSpec))
 // fakeSidecarPackage builds the installed-state entry + package for one fake
 // sidecar. The package root is an empty temp dir: the runtime command is the
 // test binary itself, so nothing needs to exist on disk.
-func fakeSidecarPackage(t *testing.T, name string, configure func(rt *pluginpkg.RuntimeSpec)) (pluginpkg.Package, pluginpkg.InstalledPlugin) {
+func fakeSidecarPackage(t testing.TB, name string, configure func(rt *pluginpkg.RuntimeSpec)) (pluginpkg.Package, pluginpkg.InstalledPlugin) {
 	t.Helper()
 	rt := fakeSidecarRuntime(t, configure)
 	pkg := pluginpkg.Package{
@@ -323,7 +323,7 @@ func testSessionContext() protocol.SessionContext {
 
 // startFakeClient starts a fake sidecar client and registers its bounded
 // shutdown.
-func startFakeClient(t *testing.T, configure func(rt *pluginpkg.RuntimeSpec), opts func(*ClientOptions)) *Client {
+func startFakeClient(t testing.TB, configure func(rt *pluginpkg.RuntimeSpec), opts func(*ClientOptions)) *Client {
 	t.Helper()
 	pkg, installed := fakeSidecarPackage(t, "fakeplugin", configure)
 	clientOpts := ClientOptions{Package: pkg, Installed: installed, Session: testSessionContext()}

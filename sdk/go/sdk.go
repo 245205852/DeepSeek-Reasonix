@@ -8,7 +8,9 @@
 // line, integer request ids, params as JSON objects, frames capped at
 // FrameBytes). The SDK owns the wire, the handshake barrier, and the
 // shutdown sequence; the extension implements Handler and, optionally,
-// interceptors, a Provider, and UI callbacks via Options.
+// interceptors, a Provider, and UI callbacks via Options. After Initialize
+// completes, the SDK may invoke up to 32 callbacks concurrently; extensions
+// must synchronize any mutable state shared by those callbacks.
 //
 // After Serve returns nil from an orderly extension/shutdown the process
 // should exit with code 0; the host reaps it by that exit status.
@@ -40,9 +42,9 @@ import (
 // Public callback types
 // ---------------------------------------------------------------------------
 
-// Handler is the one mandatory extension hook. Initialize is called once
-// with the host's initialize params; return the sidecar's declaration (name,
-// version, subscriptions, replaces, providers, UI actions) — the host
+// Handler is the one mandatory extension hook. Initialize is called once and
+// completes before any other callback. Return the sidecar's declaration
+// (name, version, subscriptions, replaces, providers, UI actions) — the host
 // rejects anything beyond the installed manifest.
 type Handler interface {
 	Initialize(ctx context.Context, p InitializeParams) (*InitializeResult, error)
@@ -58,7 +60,8 @@ type InterceptorFunc func(ctx context.Context, event string, payload json.RawMes
 // Provider brokers extension-hosted model providers. The extension holds the
 // credentials; only the credential-free DTOs cross the wire.
 type Provider interface {
-	// Catalog returns the extension's full provider catalog.
+	// Catalog returns the extension's full provider catalog. It may run
+	// concurrently with other callbacks.
 	Catalog(ctx context.Context) ([]ProviderDescriptor, error)
 	// Stream opens one stream and returns its chunk channel. Stream must
 	// return promptly; produce chunks in the background. The SDK numbers
@@ -66,7 +69,8 @@ type Provider interface {
 	// exactly one stream/end: close the channel for a clean end, send an
 	// ErrorChunk (or a chunk with Type ChunkError) to fail the stream with
 	// end.error, and stop producing when ctx is cancelled (host cancel or
-	// shutdown) — the SDK then ends the stream interrupted.
+	// shutdown) — the SDK then ends the stream interrupted. Multiple Stream
+	// calls may run concurrently.
 	Stream(ctx context.Context, req StreamRequest) (<-chan StreamChunk, error)
 }
 
@@ -123,7 +127,10 @@ type UIHandler struct {
 	Submit func(ctx context.Context, surfaceID string, values map[string]any) error
 }
 
-// Options configures Serve. Stdin/Stdout default to os.Stdin/os.Stdout.
+// Options configures Serve. Stdin/Stdout default to os.Stdin/os.Stdout. After
+// Initialize, callback fields and Provider methods may be invoked concurrently
+// (up to 32 inbound handlers); protect shared mutable maps, slices, counters,
+// and clients with synchronization appropriate to the extension.
 type Options struct {
 	Stdin  io.Reader
 	Stdout io.Writer
@@ -518,6 +525,12 @@ func (s *server) handleIntercept(ctx context.Context, raw json.RawMessage) (any,
 	}
 	result, err := fn(ctx, string(p.Event), payload)
 	if err != nil {
+		// The callback's advertised intercept budget expired. Return the
+		// frozen timeout reason rather than racing the host's identical timer
+		// with a generic internal error response.
+		if errors.Is(err, context.DeadlineExceeded) && errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			return nil, MustProtocolError(ErrInterceptTimeout)
+		}
 		return nil, err
 	}
 	if result == nil {

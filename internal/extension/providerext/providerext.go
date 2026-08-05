@@ -91,6 +91,18 @@ type Resolver struct {
 	mu           sync.Mutex
 	streams      map[string]*extensionStream
 	catalogCache map[string][]provider.Descriptor
+	catalogCalls map[string]*catalogCall
+}
+
+// catalogCall is one in-flight catalog fetch shared by every concurrent
+// Catalog caller for the same plugin. The first caller owns the sidecar RPC;
+// followers wait for done and then receive defensive copies of the same
+// result. This prevents duplicate first-use RPCs and last-completion-wins
+// cache contents when a sidecar catalog is dynamic.
+type catalogCall struct {
+	done        chan struct{}
+	descriptors []provider.Descriptor
+	ok          bool
 }
 
 var (
@@ -122,6 +134,7 @@ func New(base provider.Resolver, clients func() []ProviderClient, claims map[ext
 		replaced:     map[string]string{},
 		streams:      make(map[string]*extensionStream),
 		catalogCache: make(map[string][]provider.Descriptor),
+		catalogCalls: make(map[string]*catalogCall),
 	}
 	baseRefs := map[string]bool{}
 	for _, d := range base.Catalog() {
@@ -196,6 +209,13 @@ func (r *Resolver) catalogFor(client ProviderClient) ([]provider.Descriptor, boo
 		r.mu.Unlock()
 		return out, true
 	}
+	if call := r.catalogCalls[pluginID]; call != nil {
+		r.mu.Unlock()
+		<-call.done
+		return append([]provider.Descriptor(nil), call.descriptors...), call.ok
+	}
+	call := &catalogCall{done: make(chan struct{})}
+	r.catalogCalls[pluginID] = call
 	r.mu.Unlock()
 
 	ctx, cancel := context.WithTimeout(context.Background(), catalogFetchTimeout)
@@ -203,6 +223,7 @@ func (r *Resolver) catalogFor(client ProviderClient) ([]provider.Descriptor, boo
 	declared, err := client.ProviderCatalog(ctx)
 	if err != nil {
 		slog.Debug("providerext: sidecar catalog fetch failed", "plugin", pluginID, "err", err)
+		r.finishCatalogCall(pluginID, call, nil, false)
 		return nil, false
 	}
 	prefix := "plugin/" + pluginID + "/"
@@ -214,12 +235,23 @@ func (r *Resolver) catalogFor(client ProviderClient) ([]provider.Descriptor, boo
 		}
 		out = append(out, providerconv.DescriptorFromProtocol(d))
 	}
+	ok := !client.Crashed()
+	r.finishCatalogCall(pluginID, call, out, ok)
+	return append([]provider.Descriptor(nil), out...), ok
+}
+
+// finishCatalogCall publishes one fetch atomically before waking followers.
+// Only a live client's successful result enters the generation-local cache.
+func (r *Resolver) finishCatalogCall(pluginID string, call *catalogCall, descriptors []provider.Descriptor, ok bool) {
 	r.mu.Lock()
-	if !client.Crashed() {
-		r.catalogCache[pluginID] = append([]provider.Descriptor(nil), out...)
+	call.descriptors = append([]provider.Descriptor(nil), descriptors...)
+	call.ok = ok
+	if ok {
+		r.catalogCache[pluginID] = append([]provider.Descriptor(nil), descriptors...)
 	}
+	delete(r.catalogCalls, pluginID)
+	close(call.done)
 	r.mu.Unlock()
-	return out, true
 }
 
 // Resolve routes a plugin-namespaced ref to the owning sidecar's Provider and

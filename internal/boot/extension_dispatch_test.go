@@ -127,6 +127,68 @@ func TestBootSystemPromptStrategyAttribution(t *testing.T) {
 	}
 }
 
+// TestBootStableExtensionCacheGuard proves that an enabled deterministic
+// strategy has one stable provider-visible prefix across independent runtime
+// generations. Installing the extension may intentionally create one cold
+// prefix versus the no-extension baseline; identical reloads must not create
+// a new one.
+func TestBootStableExtensionCacheGuard(t *testing.T) {
+	isolateConfigHome(t)
+	dir := robustTempDir(t)
+	t.Chdir(dir)
+	writeRuntimeFixture(t, dir)
+	installBootFakePlugin(t, config.ReasonixHomeDir(), "stable-strategist", map[string]any{
+		"replaces": []string{"system_prompt"},
+		"env":      map[string]string{bootFakeEnvReplacePrompt: "STABLE EXTENSION PROMPT"},
+	})
+
+	first, err := BuildRuntime(context.Background(), Options{})
+	if err != nil {
+		t.Fatalf("first BuildRuntime: %v", err)
+	}
+	firstPrompt := first.Snapshot.SystemPrompt()
+	firstHash := first.Snapshot.CacheHash()
+	firstSystemHash, firstToolsHash := first.Snapshot.CacheShape()
+	firstSchemas, err := json.Marshal(first.Snapshot.ToolSchemas())
+	if err != nil {
+		first.Controller.Close()
+		t.Fatalf("marshal first tool schemas: %v", err)
+	}
+	firstSessionPrompt := systemMessage(first.Controller.History())
+	first.Controller.Close()
+
+	second, err := BuildRuntime(context.Background(), Options{})
+	if err != nil {
+		t.Fatalf("second BuildRuntime: %v", err)
+	}
+	t.Cleanup(second.Controller.Close)
+	secondSchemas, err := json.Marshal(second.Snapshot.ToolSchemas())
+	if err != nil {
+		t.Fatalf("marshal second tool schemas: %v", err)
+	}
+	secondSystemHash, secondToolsHash := second.Snapshot.CacheShape()
+
+	if second.Snapshot.Generation() == first.Snapshot.Generation() {
+		t.Fatal("independent builds reused the same runtime generation")
+	}
+	if got := second.Snapshot.SystemPrompt(); got != firstPrompt {
+		t.Fatalf("stable extension prompt drifted: %q vs %q", got, firstPrompt)
+	}
+	if got := systemMessage(second.Controller.History()); got != firstSessionPrompt {
+		t.Fatalf("controller prompt drifted across stable reload: %q vs %q", got, firstSessionPrompt)
+	}
+	if got := second.Snapshot.CacheHash(); got != firstHash {
+		t.Fatalf("stable extension cache hash drifted: %s vs %s", got, firstHash)
+	}
+	if secondSystemHash != firstSystemHash || secondToolsHash != firstToolsHash {
+		t.Fatalf("stable extension cache shape drifted: system %s/%s tools %s/%s",
+			firstSystemHash, secondSystemHash, firstToolsHash, secondToolsHash)
+	}
+	if string(secondSchemas) != string(firstSchemas) {
+		t.Fatal("stable extension tool schema bytes drifted across reload")
+	}
+}
+
 func TestBootSystemPromptStrategyFailureFailsBuild(t *testing.T) {
 	t.Run("block", func(t *testing.T) {
 		isolateConfigHome(t)

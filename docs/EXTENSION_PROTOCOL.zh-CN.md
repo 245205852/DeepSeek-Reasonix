@@ -49,7 +49,8 @@ Extension Protocol 是 Reasonix（**宿主**）与以独立进程运行的代码
 ## 拦截
 
 十七个冻结 hook 点（见生成索引）。`extension/intercept` 是阻塞式；
-`extension/event` 是对相同点位的只读观察。
+`extension/event` 是对相同点位的只读观察。事件通过有界、非阻塞的写入
+队列投递；队列饱和时丢弃该观察并告警，不会卡住 Agent。
 
 - 普通 Interceptor 按确定顺序**串行**执行：priority 升序（Manifest
   `priority`，-1000..1000，默认 0），其次插件 ID，再其次注册序号。

@@ -568,9 +568,11 @@ func (c *Client) Intercept(ctx context.Context, event protocol.InterceptEvent, p
 	return result, nil
 }
 
-// NotifyEvent sends the fire-and-forget extension/event observation. The
-// payload follows the same content-ref rule as extension/intercept.
-func (c *Client) NotifyEvent(event protocol.InterceptEvent, payload json.RawMessage) error {
+// TryNotifyEvent non-blockingly enqueues the fire-and-forget extension/event
+// observation. The payload follows the same content-ref rule as
+// extension/intercept. Queue saturation drops the observation instead of
+// propagating sidecar backpressure into the Agent hot path.
+func (c *Client) TryNotifyEvent(event protocol.InterceptEvent, payload json.RawMessage) error {
 	if err := c.readyErr(); err != nil {
 		return err
 	}
@@ -578,7 +580,13 @@ func (c *Client) NotifyEvent(event protocol.InterceptEvent, payload json.RawMess
 	if err := c.externalizeEventParams(&params); err != nil {
 		return err
 	}
-	return c.conn.Notify(string(protocol.MethodExtensionEvent), params)
+	return c.conn.TryNotify(string(protocol.MethodExtensionEvent), params)
+}
+
+// NotifyEvent is the compatibility spelling for direct callers. Its delivery
+// semantics are the same non-blocking enqueue as TryNotifyEvent.
+func (c *Client) NotifyEvent(event protocol.InterceptEvent, payload json.RawMessage) error {
+	return c.TryNotifyEvent(event, payload)
 }
 
 // NotifyResourcesChanged sends extension/resources/changed.

@@ -77,6 +77,28 @@ Each turn pins one runtime generation for the whole turn, tool batch, and
 compaction — extension changes apply to the *next* turn, and a no-op reload
 leaves the provider prompt-cache prefix byte-identical.
 
+## Performance and prompt cache
+
+With no code runtime installed, the Agent takes the existing nil-dispatcher
+path: no sidecar process, JSON encoding, RPC, or event queue is involved.
+Enabled synchronous interceptors are deliberately on the matching hot path and
+run serially, so their RPC and handler latency is additive; keep input, tool,
+permission, and provider interceptors small and deterministic. Observation
+events use a bounded non-blocking queue and are dropped with a warning under
+backpressure instead of stalling the turn.
+
+An observation-only extension does not change the provider-visible cache
+prefix. A stable system-prompt or tool replacement creates one intentional
+cold prefix after install/reload and remains cacheable afterwards. A strategy
+that injects timestamps, random values, session IDs, or other per-turn data
+into the system prompt, tool schemas, context prefix, or provider request can
+destroy cache reuse; dynamic data should stay in the current turn tail when
+possible. Maintainers can measure host overhead with:
+
+```bash
+go test ./internal/extension/... -run '^$' -bench 'Extension|Dispatch' -benchmem
+```
+
 ## Developing an extension
 
 1. Add `apiVersion: "reasonix.io/plugin/v1"` to `reasonix-plugin.json` and

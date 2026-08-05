@@ -25,6 +25,7 @@ type fakeClient struct {
 	mu         sync.Mutex
 	catalog    []protocol.ProviderDescriptor
 	catalogErr error
+	catalogFn  func(context.Context) ([]protocol.ProviderDescriptor, error)
 	fetches    int
 	openErr    error
 	accept     bool
@@ -55,11 +56,17 @@ func (f *fakeClient) kill() {
 	close(f.disconnected)
 }
 
-func (f *fakeClient) ProviderCatalog(context.Context) ([]protocol.ProviderDescriptor, error) {
+func (f *fakeClient) ProviderCatalog(ctx context.Context) ([]protocol.ProviderDescriptor, error) {
 	f.mu.Lock()
-	defer f.mu.Unlock()
 	f.fetches++
-	return append([]protocol.ProviderDescriptor(nil), f.catalog...), f.catalogErr
+	fn := f.catalogFn
+	catalog := append([]protocol.ProviderDescriptor(nil), f.catalog...)
+	err := f.catalogErr
+	f.mu.Unlock()
+	if fn != nil {
+		return fn(ctx)
+	}
+	return catalog, err
 }
 
 func (f *fakeClient) fetchCount() int {
@@ -200,6 +207,55 @@ func TestCatalogCachesPerClientAndDropsCrashed(t *testing.T) {
 	catalog := r.Catalog()
 	if len(catalog) != 1 || catalog[0].Ref != "deepseek/deepseek-chat" {
 		t.Fatalf("catalog after crash = %v, want base only", catalog)
+	}
+}
+
+// TestCatalogCoalescesConcurrentFirstFetch forces every caller through the
+// same cold-cache window. Exactly one sidecar RPC may run; followers must
+// receive that call's result rather than racing duplicate dynamic catalogs
+// into the cache with last-completion-wins behavior.
+func TestCatalogCoalescesConcurrentFirstFetch(t *testing.T) {
+	fc := newFakeClient("demo", demoDescriptor())
+	started := make(chan struct{})
+	release := make(chan struct{})
+	var startOnce sync.Once
+	fc.catalogFn = func(ctx context.Context) ([]protocol.ProviderDescriptor, error) {
+		startOnce.Do(func() { close(started) })
+		select {
+		case <-release:
+			return []protocol.ProviderDescriptor{demoDescriptor()}, nil
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}
+	r := testResolver(t, baseCatalog(), nil, fc)
+
+	const callers = 32
+	results := make(chan []provider.Descriptor, callers)
+	for range callers {
+		go func() { results <- r.Catalog() }()
+	}
+	select {
+	case <-started:
+	case <-time.After(testBudget):
+		t.Fatal("catalog fetch never started")
+	}
+	if got := fc.fetchCount(); got != 1 {
+		t.Fatalf("catalog fetches while first call is blocked = %d, want 1", got)
+	}
+	close(release)
+	for range callers {
+		select {
+		case catalog := <-results:
+			if len(catalog) != 2 || catalog[1].Ref != demoDescriptor().Ref {
+				t.Fatalf("catalog = %+v, want base plus the shared sidecar result", catalog)
+			}
+		case <-time.After(testBudget):
+			t.Fatal("concurrent Catalog caller did not receive the shared result")
+		}
+	}
+	if got := fc.fetchCount(); got != 1 {
+		t.Fatalf("catalog fetches = %d, want exactly 1", got)
 	}
 }
 

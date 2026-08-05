@@ -38,7 +38,7 @@ import (
 // (sidecar.Client.TimeoutFor).
 type Client interface {
 	Intercept(ctx context.Context, event protocol.InterceptEvent, payload json.RawMessage, timeout time.Duration) (protocol.InterceptResult, error)
-	NotifyEvent(event protocol.InterceptEvent, payload json.RawMessage) error
+	TryNotifyEvent(event protocol.InterceptEvent, payload json.RawMessage) error
 }
 
 // Options configures a Dispatcher.
@@ -319,8 +319,9 @@ func (d *Dispatcher) RunStrategy(ctx context.Context, slot extension.Slot, point
 
 // Event broadcasts a fire-and-forget extension/event notification to every
 // chain member at point plus the owners of the slots that observe that point
-// (deduplicated by plugin). Delivery is best-effort: failures are warned
-// about once per plugin and never fail the caller.
+// (deduplicated by plugin). Delivery is a non-blocking bounded enqueue:
+// failures and queue saturation are warned about once per plugin and never
+// fail or stall the caller.
 func (d *Dispatcher) Event(point extension.InterceptorPoint, payload any) {
 	raw, err := json.Marshal(payload)
 	if err != nil {
@@ -337,7 +338,7 @@ func (d *Dispatcher) Event(point extension.InterceptorPoint, payload any) {
 		if client == nil {
 			return
 		}
-		if err := client.NotifyEvent(protocol.InterceptEvent(point), raw); err != nil {
+		if err := client.TryNotifyEvent(protocol.InterceptEvent(point), raw); err != nil {
 			d.warnOnce("event|"+pluginID, fmt.Sprintf(
 				"extension %s dropped the %s event: %s", pluginID, point, secrets.RedactCredentials(err.Error())))
 		}

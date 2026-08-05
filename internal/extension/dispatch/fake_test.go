@@ -37,7 +37,7 @@ func (f *fakeClient) Intercept(_ context.Context, event protocol.InterceptEvent,
 	return fn(event, payload)
 }
 
-func (f *fakeClient) NotifyEvent(event protocol.InterceptEvent, payload json.RawMessage) error {
+func (f *fakeClient) TryNotifyEvent(event protocol.InterceptEvent, payload json.RawMessage) error {
 	f.mu.Lock()
 	f.notifies = append(f.notifies, recordedCall{event: event, payload: append(json.RawMessage(nil), payload...)})
 	fn := f.notifyFn
