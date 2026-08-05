@@ -118,6 +118,7 @@ import {
 import type { InvocationMetadataMap, StructuredInvocationSubmit } from "./lib/invocationDisplay";
 import { formatSelectionReference, type SelectedTextInsertRequest } from "./lib/selectedTextContext";
 import { workspaceTreeVisitId } from "./lib/workspaceTreeMemory";
+import { resolveTaskMonitorSession } from "./lib/taskMonitorNavigation";
 import {
   composerProfileFromMeta,
   composerProfileFromTab,
@@ -290,6 +291,7 @@ const HistoryPanel = lazy(() => import("./components/HistoryPanel").then((module
 const SettingsPanel = lazy(() => import("./components/SettingsPanelEntry").then((module) => ({ default: module.SettingsPanel })));
 const RemotePanel = lazy(() => import("./components/RemotePanel").then((module) => ({ default: module.RemotePanel })));
 const TerminalPanel = lazy(() => import("./components/TerminalPanel").then((module) => ({ default: module.TerminalPanel })));
+const TaskMonitorPanel = lazy(() => import("./components/TaskMonitorPanel").then((module) => ({ default: module.TaskMonitorPanel })));
 const WorkspacePanel = lazy(() => import("./components/WorkspacePanel").then((module) => ({ default: module.WorkspacePanel })));
 
 const CHAT_MIN_WIDTH = 400;
@@ -692,6 +694,12 @@ function mappedSessionTarget(sessionId: string): { kind: "path" | "topic"; value
     return { kind: "path", value: trimmed };
   }
   return { kind: "topic", value: trimmed };
+}
+
+function taskSessionIDFromPath(path: string): string {
+  const base = path.replace(/\\/g, "/").split("/").pop() || "";
+  const extension = base.lastIndexOf(".");
+  return extension > 0 ? base.slice(0, extension) : base;
 }
 
 function sidebarImSessionTarget(connection: SidebarImConnection): { kind: "path" | "topic"; value: string } | null {
@@ -1186,6 +1194,7 @@ export default function App() {
   const sidebarWidth = useLayoutStore((s) => s.sidebarWidth);
   const setSidebarWidth = useLayoutStore((s) => s.setSidebarWidth);
   const [sidebarResizing, setSidebarResizing] = useState(false);
+  const [tasksOpen, setTasksOpen] = useState(false);
   const [liveSidebarWidth, setLiveSidebarWidth] = useState<number | null>(null);
   const [viewportWidth, setViewportWidth] = useState(() => (typeof window === "undefined" ? 1440 : window.innerWidth));
   const [viewportHeight, setViewportHeight] = useState(() => (typeof window === "undefined" ? 720 : window.innerHeight));
@@ -3803,6 +3812,14 @@ export default function App() {
     }
   }, [activateTopic, createDeliveryWorktree, ensureBlankSurface, ensureBlankTab, isNavigationIntentCurrent, openChannelSession, openGlobalTab, openProjectTab, openTopicSession, refreshHistoryView, resumeSession, seedActiveTabMeta, showToast, singleSurfaceLayout, t]);
 
+  const enqueueNavigationWithIntent = useCallback((input: DesktopNavigationIntent, navigationIntentSeq: number): Promise<void> => {
+    return enqueueNavigationRequest(
+      { seqRef: navigationSeqRef, runningRef: navigationRunningRef, pendingRef: navigationPendingRef },
+      { ...input, navigationIntentSeq } as DesktopNavigationInput,
+      runNavigationRequest,
+    );
+  }, [runNavigationRequest]);
+
   const enqueueNavigation = useCallback((input: DesktopNavigationIntent): Promise<void> => {
     // Invalidate any in-flight activation's stale apply at ENQUEUE time. The
     // queue serializes requests, so a click made while another request runs
@@ -3811,12 +3828,8 @@ export default function App() {
     // pass the controller-local guard, flip the visible tab, and prune the
     // newer surface's cached state (#6613 review).
     const navigationIntentSeq = noteNavigationIntent();
-    return enqueueNavigationRequest(
-      { seqRef: navigationSeqRef, runningRef: navigationRunningRef, pendingRef: navigationPendingRef },
-      { ...input, navigationIntentSeq } as DesktopNavigationInput,
-      runNavigationRequest,
-    );
-  }, [noteNavigationIntent, runNavigationRequest]);
+    return enqueueNavigationWithIntent(input, navigationIntentSeq);
+  }, [enqueueNavigationWithIntent, noteNavigationIntent]);
 
   const openBlankSession = useCallback((scope: string, workspaceRoot: string): Promise<void> =>
     enqueueNavigation({ kind: "blank", scope, workspaceRoot: scope === "project" ? workspaceRoot : "" }),
@@ -3849,6 +3862,28 @@ export default function App() {
     if (state.running && !singleSurfaceLayout) return Promise.resolve();
     return enqueueNavigation({ kind: "resume-session", session });
   }, [enqueueNavigation, singleSurfaceLayout, state.running]);
+
+  const openTaskMonitorSession = useCallback(async (tabID: string, taskID: string): Promise<boolean> => {
+    if (state.running && !singleSurfaceLayout) {
+      throw new Error(t("history.failedOpenSession"));
+    }
+    // Claim the navigation epoch before the first Wails await. If the user
+    // switches tabs while the task/session lookup is pending, its completion is
+    // stale and must not enqueue a newer navigation request.
+    const navigationIntentSeq = noteNavigationIntent();
+    const session = await resolveTaskMonitorSession({
+      tabID,
+      taskID,
+      intentSeq: navigationIntentSeq,
+      isIntentCurrent: isNavigationIntentCurrent,
+      openTaskSessionForTab: (sourceTabID, sourceTaskID) => app.OpenTaskSessionForTab(sourceTabID, sourceTaskID),
+      listSessionsForTab: async (sourceTabID) => asArray(await app.ListSessionsForTab(sourceTabID)),
+      sessionIDFromPath: taskSessionIDFromPath,
+    });
+    if (!session) return false;
+    await enqueueNavigationWithIntent({ kind: "resume-session", session }, navigationIntentSeq);
+    return isNavigationIntentCurrent(navigationIntentSeq);
+  }, [enqueueNavigationWithIntent, isNavigationIntentCurrent, noteNavigationIntent, singleSurfaceLayout, state.running, t]);
 
   // Command palette: ⌘K / Ctrl+K opens a fuzzy navigator over commands and
   // recent sessions. Sessions are snapshotted on open so the list is stable
@@ -4712,6 +4747,32 @@ export default function App() {
                   </button>
                 </Tooltip>
               )}
+              <Tooltip label="Session summary">
+                <button
+                  className={`topicbar__action-btn topicbar__action-btn--icon topicbar__action-btn--utility${tasksOpen ? " topicbar__action-btn--active" : ""}`}
+                  type="button"
+                  aria-label="Session summary"
+                  aria-expanded={tasksOpen}
+                  onClick={() => setTasksOpen((open) => !open)}
+                >
+                  <Activity size={14} />
+                </button>
+              </Tooltip>
+              {tasksOpen && (
+                <div className="taskmonitor-popover" role="dialog" aria-label="Session summary">
+                  <Suspense fallback={null}>
+                    <TaskMonitorPanel
+                      key={`${activeTab?.id || activeTabId || "none"}:${activeTab?.workspaceRoot || "global"}:${activeTab?.sessionPath || ""}`}
+                      tabID={activeTab?.id || activeTabId || ""}
+                      initialOpen
+                      popover
+                      summaryMode
+                      onClose={() => setTasksOpen(false)}
+                      onOpenSession={openTaskMonitorSession}
+                    />
+                  </Suspense>
+                </div>
+              )}
             </div>
           </header>
 
@@ -5199,7 +5260,6 @@ export default function App() {
             </div>
           </aside>
         )}
-
         <>
           <aside
             className="terminal-drawer"

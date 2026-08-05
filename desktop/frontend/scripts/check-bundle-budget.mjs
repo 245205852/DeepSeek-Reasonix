@@ -50,10 +50,16 @@ if (localeChunks.length !== 2) {
 }
 for (const path of localeChunks) {
   const name = basename(path);
-  const budget = name.startsWith("zh-TW-") ? 53 * 1024 : 52 * 1024;
+  // Task Monitor adds 37 user-facing labels to each on-demand locale. Keep
+  // Simplified Chinese copy compact and grant only 0.5 KiB of explicit growth;
+  // Traditional Chinese remains within its existing budget.
+  const budget = name.startsWith("zh-TW-") ? 53 * 1024 : 52.5 * 1024;
   assertBudget(`${name} gzip`, gzipBytes(path), budget);
 }
 
 const rawInitialBytes = [...initialJS, ...initialCSS].reduce((total, path) => total + statSync(path).size, 0);
+// Task Monitor adds a small always-loaded style surface while its panel code
+// remains lazy-loaded. Keep the raw budget explicit while allowing the small
+// project-level UI addition and current upstream baseline.
 assertBudget("initial raw JavaScript and CSS", rawInitialBytes, 2_263 * 1024);
 assertBudget("largest initial JavaScript chunk raw", largestInitialJSRaw, 1_100 * 1024);
