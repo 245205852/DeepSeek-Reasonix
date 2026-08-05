@@ -6,15 +6,25 @@
       "date": "2026-08-05",
       "channel": "stable",
       "title": {
-        "en": "Reasonix Desktop 1.20.0",
-        "zh": "Reasonix Desktop 1.20.0"
+        "en": "Extension kernel, Task Monitor, and safer Goal completion",
+        "zh": "扩展内核、任务监视器与更安全的 Goal 完成"
       },
       "summary": {
         "en": "Compact decision surfaces, local decision receipts, unified extension kernel, native Task Monitor, bounded sub-agent progress, Goal fail-closed completion, MiMo and DashScope Responses fixes, SSH remote access simplification, and multiple Desktop stability improvements.",
         "zh": "压缩决策弹窗、本地决策回执、统一扩展内核、原生任务监视器、有界子代理进度、Goal 安全完成、MiMo 与 DashScope Responses 修复、SSH 远程访问简化，以及多项桌面稳定性改进。"
       },
       "surfaces": [
-        "desktop"
+        "agent",
+        "cli",
+        "config",
+        "desktop",
+        "plugin",
+        "provider",
+        "recovery",
+        "remote",
+        "serve",
+        "site",
+        "updates"
       ],
       "guides": [
         {
@@ -30,11 +40,11 @@
         },
         {
           "title": {
-            "en": "Goal Enforcement",
+            "en": "Goal Enforcement (Chinese)",
             "zh": "Goal 强制执行"
           },
           "body": {
-            "en": "How the new update_goal tool and fail-closed completion work.",
+            "en": "Read the Chinese guide to the new update_goal tool and fail-closed completion flow.",
             "zh": "新的 update_goal 工具与安全停止完成机制如何工作。"
           },
           "href": "https://github.com/esengine/DeepSeek-Reasonix/blob/73bc4e0c1a8fd859b2b1c648d1f2c019e4a5c448/docs/GOAL_ENFORCEMENT.zh-CN.md"
