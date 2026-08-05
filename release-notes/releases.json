@@ -163,6 +163,20 @@
         {
           "kind": "fixed",
           "title": {
+            "en": "Cross-platform Extension and Task Monitor Reliability",
+            "zh": "Extension 与任务监视器跨平台可靠性"
+          },
+          "body": {
+            "en": "Make content-reference eviction deterministic, reject Unix and Windows absolute plugin paths consistently, stabilize parallel-task cancellation, and restore reliable Windows validation for Task Monitor and remote provider setup.",
+            "zh": "让内容引用淘汰顺序保持确定，一致拒绝 Unix 与 Windows 绝对插件路径，稳定并行任务取消流程，并恢复任务监视器与远程提供者设置的可靠 Windows 验证。"
+          },
+          "refs": [
+            7625
+          ]
+        },
+        {
+          "kind": "fixed",
+          "title": {
             "en": "MiMo and DashScope Responses Wire Alignment",
             "zh": "MiMo 与 DashScope Responses 协议对齐"
           },
@@ -331,6 +345,19 @@
           }
         ],
         "fixed": [
+          {
+            "title": {
+              "en": "Cross-platform Extension and Task Monitor Reliability",
+              "zh": "Extension 与任务监视器跨平台可靠性"
+            },
+            "body": {
+              "en": "Make content-reference eviction deterministic, reject Unix and Windows absolute plugin paths consistently, stabilize parallel-task cancellation, and restore reliable Windows validation for Task Monitor and remote provider setup.",
+              "zh": "让内容引用淘汰顺序保持确定，一致拒绝 Unix 与 Windows 绝对插件路径，稳定并行任务取消流程，并恢复任务监视器与远程提供者设置的可靠 Windows 验证。"
+            },
+            "refs": [
+              7625
+            ]
+          },
           {
             "title": {
               "en": "MiMo and DashScope Responses Wire Alignment",
