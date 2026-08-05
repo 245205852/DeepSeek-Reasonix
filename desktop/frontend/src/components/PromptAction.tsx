@@ -37,6 +37,49 @@ export function PromptDescriptionToggle({
   );
 }
 
+export function PromptDescriptionDisclosure({
+  descriptionId,
+  label,
+  description,
+  expanded,
+  onToggle,
+  disabled = false,
+  alwaysVisible = false,
+}: {
+  descriptionId: string;
+  label?: ReactNode;
+  description: ReactNode;
+  expanded: boolean;
+  onToggle?: () => void;
+  disabled?: boolean;
+  alwaysVisible?: boolean;
+}) {
+  const visible = alwaysVisible || expanded;
+  return (
+    <div className="prompt-description-disclosure">
+      {!alwaysVisible && onToggle && (
+        <PromptDescriptionToggle
+          descriptionId={descriptionId}
+          expanded={expanded}
+          onToggle={onToggle}
+          disabled={disabled}
+        />
+      )}
+      <div
+        id={descriptionId}
+        className="prompt-description-detail"
+        role="region"
+        hidden={!visible}
+      >
+        {label != null && label !== "" && (
+          <strong className="prompt-description-detail__label">{label}</strong>
+        )}
+        <span className="prompt-description-detail__text">{description}</span>
+      </div>
+    </div>
+  );
+}
+
 export function PromptAction({
   actionId,
   keyLabel,
@@ -44,7 +87,7 @@ export function PromptAction({
   description,
   descriptionId,
   descriptionDisclosure = false,
-  descriptionExpanded,
+  descriptionAlwaysVisible = false,
   onDescriptionOverflowChange,
   onClick,
   ariaLabel,
@@ -64,11 +107,13 @@ export function PromptAction({
   label?: ReactNode;
   description?: ReactNode;
   descriptionId?: string;
-  // Clamp supplementary copy to three lines and reveal it on demand when it
-  // actually overflows. Option/listbox surfaces render the disclosure outside
-  // the listbox; immediate button groups render it beside their action.
+  // Keep supplementary copy to one stable summary line and reveal the complete
+  // text in a separate detail region. Option/listbox surfaces render that
+  // region outside the listbox; immediate button groups own it here.
   descriptionDisclosure?: boolean;
-  descriptionExpanded?: boolean;
+  // Safety-critical consequences open automatically when the stable summary
+  // row is actually truncated. Complete summaries are not repeated.
+  descriptionAlwaysVisible?: boolean;
   onDescriptionOverflowChange?: (overflowing: boolean) => void;
   onClick: () => void;
   ariaLabel?: string;
@@ -99,7 +144,8 @@ export function PromptAction({
   const resolvedDescriptionId = description
     ? (descriptionId ?? `${generatedDescriptionId}-description`)
     : undefined;
-  const expanded = descriptionExpanded ?? internalExpanded;
+  const detailDescriptionId = resolvedDescriptionId ? `${resolvedDescriptionId}-detail` : undefined;
+  const expanded = internalExpanded;
   const descriptionText = typeof description === "string" ? description : undefined;
   const resolvedTitle = title ?? (descriptionDisclosure ? descriptionText : undefined);
 
@@ -119,15 +165,31 @@ export function PromptAction({
 
     const element = descriptionRef.current;
     const measure = () => {
-      const overflowing = element.scrollHeight > element.clientHeight + 1;
+      const overflowing = element.scrollHeight > element.clientHeight + 1
+        || element.scrollWidth > element.clientWidth + 1;
       setDescriptionOverflowing((current) => current === overflowing ? current : overflowing);
       overflowCallbackRef.current?.(overflowing);
     };
     measure();
+    // The shelf can finish constraining its grid after this layout effect.
+    // Recheck over the next two frames so an initially content-sized summary
+    // cannot hide the disclosure once the final row width is known.
+    let cancelled = false;
+    let settledFrame = 0;
+    const layoutFrame = window.requestAnimationFrame(() => {
+      measure();
+      settledFrame = window.requestAnimationFrame(measure);
+    });
+    void document.fonts?.ready.then(() => {
+      if (!cancelled) measure();
+    });
     const observer = typeof ResizeObserver !== "undefined" ? new ResizeObserver(measure) : null;
     observer?.observe(element);
     window.addEventListener("resize", measure);
     return () => {
+      cancelled = true;
+      window.cancelAnimationFrame(layoutFrame);
+      if (settledFrame) window.cancelAnimationFrame(settledFrame);
       observer?.disconnect();
       window.removeEventListener("resize", measure);
     };
@@ -153,7 +215,6 @@ export function PromptAction({
         quiet ? " prompt-action--quiet" : "",
         description ? " prompt-action--descriptive" : "",
         descriptionDisclosure ? " prompt-action--description-collapsible" : "",
-        expanded ? " prompt-action--description-expanded" : "",
         !hasCopy ? " prompt-action--key-only" : "",
         tone === "danger" ? " prompt-action--danger" : "",
       ].join("")}
@@ -183,17 +244,23 @@ export function PromptAction({
   // A listbox may only own options, so its explicit disclosure is rendered by
   // the parent in PromptShelf.note. Button groups can safely keep the control
   // next to the corresponding immediate action.
-  if (role !== "button" || !descriptionDisclosure) return action;
+  if (role !== "button" || (!descriptionDisclosure && !descriptionAlwaysVisible)) return action;
 
   return (
-    <div className="prompt-action-row">
+    <div className={[
+      "prompt-action-row",
+      expanded || (descriptionAlwaysVisible && descriptionOverflowing) ? " prompt-action-row--description-expanded" : "",
+    ].join("")}>
       {action}
-      {resolvedDescriptionId && descriptionOverflowing && (
-        <PromptDescriptionToggle
-          descriptionId={resolvedDescriptionId}
+      {detailDescriptionId && description && descriptionOverflowing && (
+        <PromptDescriptionDisclosure
+          descriptionId={detailDescriptionId}
+          label={label}
+          description={description}
           expanded={expanded}
           onToggle={() => setInternalExpanded((current) => !current)}
           disabled={disabled}
+          alwaysVisible={descriptionAlwaysVisible}
         />
       )}
     </div>

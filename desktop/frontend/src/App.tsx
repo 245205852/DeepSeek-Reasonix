@@ -55,11 +55,9 @@ import { ApprovalModal } from "./components/ApprovalModal";
 import { AskCard } from "./components/AskCard";
 import { ClearContextCard } from "./components/ClearContextCard";
 import { RuntimeDecisionCard } from "./components/RuntimeDecisionCard";
+import { decisionSurfaceMockFromInput, type DecisionSurfaceKind } from "./lib/decisionSurfaceMock";
 
 const UndoRewindBanner = lazy(() => import("./components/UndoRewindBanner").then((module) => ({ default: module.UndoRewindBanner })));
-
-/** Footer decision surface kinds. Runtime blockers are explicit recovery choices. */
-type DecisionSurfaceKind = "tool_approval" | "plan_approval" | "ask" | "workspace_conflict" | "mode_jobs" | "close_active" | "clear_context";
 import { StatusBar } from "./components/StatusBar";
 import { RemoteHostKeyDialog } from "./components/RemoteHostKeyDialog";
 import { RemoteSecretDialog } from "./components/RemoteSecretDialog";
@@ -218,6 +216,14 @@ import logoWordmark from "./assets/logo-wordmark.svg";
 function noticePreviewMockEnabled(): boolean {
   const value = browserMockScenarioParam();
   return value === "notice" || value === "notices" || value === "notice-preview";
+}
+
+function runtimeProfileShortKey(mode: TokenMode) {
+  return mode === "economy"
+    ? "composer.runtimeProfileEconomyShort" as const
+    : mode === "delivery"
+      ? "composer.runtimeProfileDeliveryShort" as const
+      : "composer.runtimeProfileBalancedShort" as const;
 }
 
 function noticePreviewItems(): Item[] {
@@ -2284,6 +2290,49 @@ export default function App() {
         setClearContextPending(true);
         return;
       }
+      const decisionMock = typeof window !== "undefined" && !window.runtime
+        ? decisionSurfaceMockFromInput(trimmed)
+        : null;
+      if (decisionMock === "workspace_conflict" || decisionMock === "mode_jobs" || decisionMock === "close_active" || decisionMock === "clear_context") {
+        if (activeTabIdRef.current !== sourceTabId) return;
+        closeTransientOverlays();
+        setWorkspaceConflict(null);
+        setPendingModeSwitch(null);
+        setPendingClose(null);
+        setClearContextPending(false);
+        const mockWork: ActiveWorkView = {
+          running: true,
+          pendingPrompt: false,
+          cancellable: true,
+          jobs: [
+            { id: "mock-decision-build", kind: "bash", label: "pnpm build", status: "running", startedAt: Date.now() - 42_000 },
+            { id: "mock-decision-test", kind: "bash", label: "go test ./...", status: "running", startedAt: Date.now() - 18_000 },
+          ],
+        };
+        if (decisionMock === "workspace_conflict") {
+          setWorkspaceConflict({
+            state: "local",
+            ownerTabId: "mock-workspace-writer",
+            ownerTitle: t("mock.topicDevStandard"),
+            ownerWork: mockWork,
+            canReveal: true,
+            canCreateWorktree: true,
+          });
+        } else if (decisionMock === "mode_jobs") {
+          setPendingModeSwitch({
+            tabId: sourceTabId,
+            target: tokenMode === "delivery" ? "full" : "delivery",
+            previous: tokenMode,
+            work: mockWork,
+            stopping: false,
+          });
+        } else if (decisionMock === "close_active") {
+          setPendingClose({ tabId: sourceTabId, work: mockWork, stopping: false });
+        } else {
+          setClearContextPending(true);
+        }
+        return;
+      }
       const goalCommand = /^\/goal(?:\s+(.*))?$/.exec(trimmed);
       if (goalCommand) {
         const arg = (goalCommand[1] ?? "").trim();
@@ -2388,7 +2437,7 @@ export default function App() {
       await commitThenSendRef.current(sourceTabId, trimmed, submitText.trim(), structured);
     },
     [activeTabId, applyGoal, closeTransientOverlays, collaborationMode, composerProfile, controllerReady, goal, notice, runShellForTab,
-      patchActivatedGoalForTab, setControllerComposerProfileForTab, switchModel, t, toolApprovalMode, showToast, workbenchTarget],
+      patchActivatedGoalForTab, setControllerComposerProfileForTab, switchModel, t, tokenMode, toolApprovalMode, showToast, workbenchTarget],
   );
 
   const handleSteer = useCallback(async (text: string, requestedTabId = activeTabId) => {
@@ -4920,20 +4969,23 @@ export default function App() {
             : decisionSurface === "mode_jobs" && pendingModeSwitch ? (
               <RuntimeDecisionCard
                 id="mode-jobs"
-                title={t("runtime.modeJobsTitle")}
+                title={t("runtime.modeJobsTitle", { mode: t(runtimeProfileShortKey(pendingModeSwitch.target)) })}
                 badge={t("status.jobs", { n: pendingModeSwitch.work.jobs.length })}
                 meta={t("runtime.modeJobsMeta")}
                 note={pendingModeSwitch.work.jobs.map((job) => job.label || job.kind).join(" · ")}
                 onCancel={() => setPendingModeSwitch(null)}
                 actions={[
                   {
-                    key: "1", label: pendingModeSwitch.stopping ? t("status.jobStopping") : t("runtime.stopAndSwitch"),
-                    description: t("runtime.stopAndSwitchDesc"), onClick: () => void stopJobsAndSwitchMode(),
+                    key: "1", label: pendingModeSwitch.stopping
+                      ? t("status.jobStopping")
+                      : t("runtime.stopAndSwitch", { n: pendingModeSwitch.work.jobs.length }),
+                    description: t("runtime.stopAndSwitchDesc", { mode: t(runtimeProfileShortKey(pendingModeSwitch.target)) }),
+                    onClick: () => void stopJobsAndSwitchMode(),
                     danger: true, disabled: pendingModeSwitch.stopping,
                   },
                 ]}
                 secondaryAction={{
-                  key: "Esc", label: t("common.cancel"), description: t("runtime.keepModeDesc"),
+                  key: "Esc", label: t("runtime.keepMode"), description: t("runtime.keepModeDesc"),
                   onClick: () => setPendingModeSwitch(null), disabled: pendingModeSwitch.stopping,
                 }}
               />
@@ -4942,9 +4994,8 @@ export default function App() {
               <RuntimeDecisionCard
                 id="close-active"
                 title={t("runtime.closeTitle")}
-                badge={t("runtime.closeBadge")}
-                meta={t("runtime.closeMeta", { n: pendingClose.work.jobs.length })}
-                note={t("runtime.closeNote")}
+                badge={t("status.jobs", { n: pendingClose.work.jobs.length })}
+                meta={t("runtime.closeMeta")}
                 onCancel={() => setPendingClose(null)}
                 actions={[
                   {
@@ -4958,7 +5009,7 @@ export default function App() {
                   },
                 ]}
                 secondaryAction={{
-                  key: "Esc", label: t("common.cancel"), description: t("runtime.closeCancelDesc"),
+                  key: "Esc", label: t("runtime.returnToTask"), description: t("runtime.closeCancelDesc"),
                   onClick: () => setPendingClose(null), disabled: pendingClose.stopping,
                 }}
               />

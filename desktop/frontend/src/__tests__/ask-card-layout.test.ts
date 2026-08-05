@@ -67,6 +67,19 @@ function installDom() {
       return this.textContent?.includes("Reuse the archive flow") ? 84 : 42;
     },
   });
+  Object.defineProperty(dom.window.HTMLElement.prototype, "clientWidth", {
+    configurable: true,
+    get() {
+      return this.classList.contains("prompt-action__desc") ? 160 : 0;
+    },
+  });
+  Object.defineProperty(dom.window.HTMLElement.prototype, "scrollWidth", {
+    configurable: true,
+    get() {
+      if (!this.classList.contains("prompt-action__desc")) return 0;
+      return this.textContent?.includes("Reuse the archive flow") ? 320 : 120;
+    },
+  });
   Object.defineProperty(dom.window.HTMLElement.prototype, "scrollIntoView", {
     configurable: true,
     value() {
@@ -155,15 +168,16 @@ console.log("\nask card layout");
   if (!actions || !firstOption || !firstDescription) throw new Error("ask option layout did not render");
 
   const actionsStyle = window.getComputedStyle(actions);
-  eq(actionsStyle.gridAutoRows, "max-content", "decision rows use their full content height before scrolling");
+  eq(actionsStyle.gridAutoRows, "max-content", "decision row wrappers accommodate optional external details");
   eq(actionsStyle.alignContent, "start", "decision rows stay content-sized at the top of the scroll region");
   eq(actionsStyle.maxHeight, "none", "Ask options do not create a nested scroll region");
   eq(actionsStyle.overflow, "visible", "Ask option overflow belongs to the shared content scroller");
 
   const optionStyle = window.getComputedStyle(firstOption);
-  eq(optionStyle.height, "auto", "long decision rows are not fixed-height");
-  eq(optionStyle.minHeight, "40px", "short decision rows retain the compact minimum height");
-  eq(optionStyle.alignItems, "flex-start", "multi-line decision copy aligns with the option key");
+  eq(optionStyle.height, "38px", "desktop decision rows keep a stable compact height");
+  eq(optionStyle.minHeight, "38px", "short decision rows retain a compact click target");
+  eq(optionStyle.alignItems, "center", "single-line decision copy stays vertically centered with the option key");
+  eq(window.getComputedStyle(firstOption.querySelector(".prompt-action__key") as HTMLElement).marginTop, "0px", "decision keys do not carry a top offset");
 
   ok(
     /\.prompt-shelf--decision \.prompt-shelf__actions \.prompt-action__copy \{[^}]*grid-template-columns:\s*fit-content\(44%\) minmax\(0, 1fr\)/s.test(styles),
@@ -175,19 +189,22 @@ console.log("\nask card layout");
   );
 
   const descriptionStyle = window.getComputedStyle(firstDescription);
-  eq(descriptionStyle.whiteSpace, "normal", "long option descriptions can wrap");
-  eq(descriptionStyle.display, "-webkit-box", "long Ask descriptions use a multi-line clamp box");
-  eq(descriptionStyle.overflow, "hidden", "collapsed Ask descriptions stay within three lines");
-  eq(descriptionStyle.getPropertyValue("-webkit-line-clamp"), "2", "selected Ask descriptions show two summary lines");
-  eq(descriptionStyle.textOverflow, "clip", "wrapped descriptions do not use a single-line ellipsis");
-  eq(descriptionStyle.overflowWrap, "anywhere", "unspaced option descriptions can wrap without overflowing");
+  eq(descriptionStyle.whiteSpace, "nowrap", "long option descriptions stay on one stable summary line");
+  eq(descriptionStyle.display, "block", "Ask summaries use ordinary single-line flow");
+  eq(descriptionStyle.overflow, "hidden", "collapsed Ask summaries stay inside their row");
+  eq(descriptionStyle.getPropertyValue("-webkit-line-clamp"), "", "selection never changes the summary to two lines");
+  eq(descriptionStyle.textOverflow, "ellipsis", "long summaries end with a clear ellipsis");
+  eq(descriptionStyle.overflowWrap, "normal", "unspaced summaries stay clipped inside the stable row");
   eq(firstOption.getAttribute("title"), ask.questions[0].options[0].description, "collapsed descriptions keep the full native tooltip");
 
   const descriptionToggle = document.querySelector(".prompt-action__description-toggle") as HTMLButtonElement | null;
   if (!descriptionToggle) throw new Error("long Ask description disclosure did not render");
   eq(descriptionToggle.textContent?.trim(), "View full description", "truncated descriptions expose an explicit full-text action");
   eq(descriptionToggle.getAttribute("aria-expanded"), "false", "full description starts collapsed");
-  eq(descriptionToggle.getAttribute("aria-controls"), firstDescription.id, "disclosure identifies the controlled description");
+  const descriptionDetail = document.getElementById(`${firstDescription.id}-detail`) as HTMLElement | null;
+  if (!descriptionDetail) throw new Error("long Ask detail region did not render");
+  eq(descriptionToggle.getAttribute("aria-controls"), descriptionDetail.id, "disclosure identifies the separate detail region");
+  eq(descriptionDetail.hidden, true, "full detail region starts hidden");
 
   let disclosureEnterDefaultPrevented = true;
   await act(async () => {
@@ -214,17 +231,22 @@ console.log("\nask card layout");
     descriptionToggle.click();
     await flushTimers();
   });
-  eq(firstOption.classList.contains("prompt-action--description-expanded"), true, "full-text action expands the selected card");
+  eq(window.getComputedStyle(firstOption).height, "38px", "opening details does not resize the selected row");
   eq(descriptionToggle.getAttribute("aria-expanded"), "true", "expanded state is announced");
-  const expandedDescriptionStyle = window.getComputedStyle(firstDescription);
-  eq(expandedDescriptionStyle.display, "block", "expanded description restores normal block flow");
-  eq(expandedDescriptionStyle.overflow, "visible", "expanded description reveals the complete text");
+  eq(window.getComputedStyle(firstOption).alignItems, "center", "opening details keeps the selected row vertically centered");
+  eq(window.getComputedStyle(firstDescription).overflow, "hidden", "the row summary remains clipped after opening details");
+  eq(descriptionDetail.hidden, false, "full description opens in a separate region");
+  eq(
+    descriptionDetail.textContent?.includes(ask.questions[0].options[0].description ?? ""),
+    true,
+    "separate detail region reveals the complete text",
+  );
 
   await act(async () => {
     descriptionToggle.click();
     await flushTimers();
   });
-  eq(firstOption.classList.contains("prompt-action--description-expanded"), false, "full description can be collapsed again");
+  eq(descriptionDetail.hidden, true, "separate detail region can be collapsed again");
   eq(descriptionToggle.getAttribute("aria-expanded"), "false", "collapsed state is announced");
 
   await act(async () => {

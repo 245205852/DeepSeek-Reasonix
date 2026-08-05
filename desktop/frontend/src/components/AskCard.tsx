@@ -4,7 +4,7 @@ import type { QuestionAnswer, WireAsk, WireAskQuestion } from "../lib/types";
 import {
   DecisionConfirmBar,
   PromptAction,
-  PromptDescriptionToggle,
+  PromptDescriptionDisclosure,
   PromptHeaderAction,
   PromptShelf,
 } from "./PromptShelf";
@@ -283,7 +283,6 @@ export function AskCard({
                 description={o.description}
                 descriptionId={`${instanceId}-description-${index}`}
                 descriptionDisclosure
-                descriptionExpanded={selectedIndex === index && descriptionExpanded}
                 onDescriptionOverflowChange={selectedIndex === index ? setDescriptionTruncated : undefined}
                 onClick={() => selectRow(index)}
                 // Single-select: cursor owns selection. Multi-select: selected
@@ -324,8 +323,10 @@ export function AskCard({
       note={
         <>
           {selectedDescriptionId && descriptionTruncated && (
-            <PromptDescriptionToggle
-              descriptionId={selectedDescriptionId}
+            <PromptDescriptionDisclosure
+              descriptionId={`${selectedDescriptionId}-detail`}
+              label={selectedOption?.label}
+              description={selectedOption?.description ?? ""}
               expanded={descriptionExpanded}
               onToggle={() => setExpandedDescriptionId((current) => current === selectedDescriptionId ? null : selectedDescriptionId)}
               disabled={submitting}
