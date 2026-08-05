@@ -161,7 +161,7 @@ console.log("\nsubagent progress reducer");
   eq(toolById(s, "f-1").status, "error", "failed terminal maps to error status");
 }
 
-// --- 6. Group card settles only when every child is terminal ---------------
+// --- 6. Group card settles only from its own lifecycle terminal ------------
 
 {
   let s = initialState;
@@ -171,31 +171,60 @@ console.log("\nsubagent progress reducer");
 
   // Background fleet: the result (job id) arrives while children still run.
   s = result(s, { id: "fl-1", name: "fleet", readOnly: true, output: "Started background fleet (job-2)." });
-  eq(toolById(s, "fl-1").status, "running", "fleet card stays running while children live");
-  eq(toolById(s, "fl-1").subagentProgress?.phase, "tool", "child dispatch flips the group phase to tool");
+  eq(toolById(s, "fl-1").status, "running", "fleet card stays running after the job-id result");
 
   s = progress(s, progressTool("fl-1/fleet-1", SUBAGENT_PROGRESS_STATUS, "completed"));
-  eq(toolById(s, "fl-1").status, "running", "one child done keeps the fleet running");
   s = progress(s, progressTool("fl-1/fleet-2", SUBAGENT_PROGRESS_STATUS, "completed"));
-  eq(toolById(s, "fl-1").status, "done", "all children terminal settles the fleet");
+  eq(toolById(s, "fl-1").status, "running", "all children terminal alone must not settle the fleet");
+
+  // The group settles from its own lifecycle terminal event.
+  s = progress(s, progressTool("fl-1", SUBAGENT_PROGRESS_STATUS, "completed", { durationMs: 9000 }));
+  eq(toolById(s, "fl-1").status, "done", "group completed terminal settles the fleet");
   eq(toolById(s, "fl-1").subagentProgress?.phase, "completed", "settled fleet phase completed");
 }
 
-// --- 6b. Background group with job-id result before any child stays running
+// --- 6b. Job-id first + fast child must not settle the group ----------------
 
 {
   let s = initialState;
   s = dispatch(s, { id: "fl-0", name: "fleet", args: "{}", readOnly: true });
-  // The job-id result can arrive before any child has dispatched (background
-  // fleet): the empty progress tree must not settle the card as completed.
+  // Background order: job-id result, then child-1 dispatches and finishes
+  // while later children have not dispatched yet.
   s = result(s, { id: "fl-0", name: "fleet", readOnly: true, output: "Started background fleet (job-3)." });
-  eq(toolById(s, "fl-0").status, "running", "fleet with no children yet stays running after the job-id result");
-  eq(toolById(s, "fl-0").subagentProgress?.phase, "running", "fleet phase stays running while children are pending");
+  eq(toolById(s, "fl-0").status, "running", "fleet stays running after the job-id result");
 
   s = dispatch(s, { id: "fl-0/fleet-1", name: "task", args: "{}", readOnly: true, parentId: "fl-0" });
   s = progress(s, progressTool("fl-0/fleet-1", SUBAGENT_PROGRESS_STATUS, "completed"));
-  eq(toolById(s, "fl-0").status, "done", "fleet settles once its child completes");
-  eq(toolById(s, "fl-0").subagentProgress?.phase, "completed", "fleet phase completed after settling");
+  eq(toolById(s, "fl-0").status, "running", "a fast first child must not settle the fleet");
+
+  // A later child appears and runs while the group is still live.
+  s = dispatch(s, { id: "fl-0/fleet-2", name: "task", args: "{}", readOnly: true, parentId: "fl-0" });
+  s = progress(s, progressTool("fl-0/fleet-2", SUBAGENT_PROGRESS_STATUS, "reasoning"));
+  eq(toolById(s, "fl-0").status, "running", "fleet keeps running while a later child works");
+
+  s = progress(s, progressTool("fl-0/fleet-2", SUBAGENT_PROGRESS_STATUS, "completed"));
+  s = progress(s, progressTool("fl-0", SUBAGENT_PROGRESS_STATUS, "completed"));
+  eq(toolById(s, "fl-0").status, "done", "group terminal settles the fleet after all children");
+}
+
+// --- 6c. Zero-child cancellation and group failure --------------------------
+
+{
+  // A background fleet cancelled before any child dispatched still receives
+  // its explicit cancelled terminal from the backend.
+  let s = initialState;
+  s = dispatch(s, { id: "zc-1", name: "fleet", args: "{}", readOnly: true });
+  s = progress(s, progressTool("zc-1", SUBAGENT_PROGRESS_STATUS, "cancelled"));
+  s = result(s, { id: "zc-1", name: "fleet", readOnly: true, err: "cancelled: context canceled" });
+  eq(toolById(s, "zc-1").status, "stopped", "zero-child cancelled fleet shows stopped");
+
+  // A group failed terminal maps to error regardless of children.
+  s = dispatch(s, { id: "gf-1", name: "parallel_tasks", args: "{}", readOnly: true });
+  s = dispatch(s, { id: "gf-1/sub-1", name: "task", args: "{}", readOnly: true, parentId: "gf-1" });
+  s = progress(s, progressTool("gf-1/sub-1", SUBAGENT_PROGRESS_STATUS, "failed"));
+  s = progress(s, progressTool("gf-1", SUBAGENT_PROGRESS_STATUS, "failed"));
+  s = result(s, { id: "gf-1", name: "parallel_tasks", readOnly: true, output: "Completed 1 parallel tasks..." });
+  eq(toolById(s, "gf-1").status, "error", "group failed terminal maps to error");
 }
 
 // --- 7. Preview caps keep recent tails -------------------------------------

@@ -839,3 +839,130 @@ func TestBackgroundTaskEmitsQueuedRunningCompleted(t *testing.T) {
 		t.Fatalf("background terminal statuses = %d, want exactly one", terminals)
 	}
 }
+
+// TestParallelTasksGroupLifecycleEvents proves the group card gets an
+// explicit lifecycle from the tool itself: running when children start and
+// exactly one terminal after every child settles, keyed by the group call ID
+// — frontends never need to infer group completion from observed children.
+func TestParallelTasksGroupLifecycleEvents(t *testing.T) {
+	rec := &recordSink{}
+	task := newTestTaskTool(t, parallelStaticProvider{}, tool.NewRegistry(), "sys", "", "", nil)
+	parallel := NewParallelTasksTool(task, tool.NewRegistry())
+	ctx := withCallContext(context.Background(), "parallel-call", rec, nil, false)
+
+	if _, err := parallel.Execute(ctx, json.RawMessage(`{
+		"tasks": [{"prompt": "first"}, {"prompt": "second"}]
+	}`)); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+
+	var groupStatuses []string
+	childStatuses := map[string][]string{}
+	for _, e := range rec.kinds(event.ToolProgress) {
+		if progressName(e) != event.SubagentProgressStatusName {
+			continue
+		}
+		switch {
+		case e.Tool.ID == "parallel-call":
+			groupStatuses = append(groupStatuses, progressOutput(e))
+		case strings.HasPrefix(e.Tool.ID, "parallel-call/"):
+			childStatuses[e.Tool.ID] = append(childStatuses[e.Tool.ID], progressOutput(e))
+		}
+	}
+	if len(groupStatuses) != 2 || groupStatuses[0] != string(subagentPhaseRunning) || groupStatuses[1] != string(subagentPhaseCompleted) {
+		t.Fatalf("group lifecycle = %v, want running → completed", groupStatuses)
+	}
+	for id, st := range childStatuses {
+		if len(st) < 2 || st[0] != string(subagentPhaseRunning) || st[len(st)-1] != string(subagentPhaseCompleted) {
+			t.Fatalf("child %s lifecycle = %v, want running → … → completed", id, st)
+		}
+		terminals := 0
+		for _, out := range st {
+			if isTerminalStatusOutput(out) {
+				terminals++
+			}
+		}
+		if terminals != 1 {
+			t.Fatalf("child %s terminals = %d, want exactly one", id, terminals)
+		}
+	}
+	if len(childStatuses) != 2 {
+		t.Fatalf("child status cards = %d, want 2", len(childStatuses))
+	}
+}
+
+// TestParallelTasksGroupLifecycleCancelled proves a cancelled group emits
+// exactly one cancelled terminal.
+func TestParallelTasksGroupLifecycleCancelled(t *testing.T) {
+	rec := &recordSink{}
+	started := make(chan struct{})
+	task := newTestTaskTool(t, &blockingProvider{started: started}, tool.NewRegistry(), "sys", "", "", nil)
+	parallel := NewParallelTasksTool(task, tool.NewRegistry())
+	ctx, cancel := context.WithCancel(withCallContext(context.Background(), "parallel-call", rec, nil, false))
+	defer cancel()
+	go func() {
+		<-started
+		cancel()
+	}()
+
+	if _, err := parallel.Execute(ctx, json.RawMessage(`{
+		"tasks": [{"prompt": "first"}, {"prompt": "second"}]
+	}`)); err == nil {
+		t.Fatal("cancelled Execute must return an error")
+	}
+
+	terminals := 0
+	for _, e := range rec.kinds(event.ToolProgress) {
+		if progressName(e) != event.SubagentProgressStatusName || e.Tool.ID != "parallel-call" {
+			continue
+		}
+		if isTerminalStatusOutput(progressOutput(e)) {
+			terminals++
+			if progressOutput(e) != string(subagentPhaseCancelled) {
+				t.Fatalf("group terminal = %q, want cancelled", progressOutput(e))
+			}
+		}
+	}
+	if terminals != 1 {
+		t.Fatalf("group terminals = %d, want exactly one", terminals)
+	}
+}
+
+// TestParallelTasksGroupLifecycleFailedOnValidation proves validation failures
+// still emit a failed terminal for the group card.
+func TestParallelTasksGroupLifecycleFailedOnValidation(t *testing.T) {
+	rec := &recordSink{}
+	parallel := &ParallelTasksTool{} // unconfigured: fails after merger setup
+	ctx := withCallContext(context.Background(), "parallel-call", rec, nil, false)
+
+	if _, err := parallel.Execute(ctx, json.RawMessage(`{"tasks":[{"prompt":"x"}]}`)); err == nil {
+		t.Fatal("unconfigured parallel_tasks must fail")
+	}
+
+	terminals := 0
+	ran := false
+	for _, e := range rec.kinds(event.ToolProgress) {
+		if progressName(e) != event.SubagentProgressStatusName || e.Tool.ID != "parallel-call" {
+			continue
+		}
+		if progressOutput(e) == string(subagentPhaseRunning) {
+			ran = true
+		}
+		if isTerminalStatusOutput(progressOutput(e)) {
+			terminals++
+			if progressOutput(e) != string(subagentPhaseFailed) {
+				t.Fatalf("group terminal = %q, want failed", progressOutput(e))
+			}
+		}
+	}
+	if ran {
+		t.Fatal("validation failure must not emit running")
+	}
+	if terminals != 1 {
+		t.Fatalf("group terminals = %d, want exactly one failed", terminals)
+	}
+}
+
+func isTerminalStatusOutput(out string) bool {
+	return out == string(subagentPhaseCompleted) || out == string(subagentPhaseFailed) || out == string(subagentPhaseCancelled)
+}

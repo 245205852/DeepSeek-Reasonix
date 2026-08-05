@@ -45,6 +45,13 @@ State machine (emitted by the unified run chain in `RunProfileSpec`, shared by
 - Foreground runs start with `running`.
 - Background runs emit `queued` at registration and `running` once the job
   acquires its execution slot.
+- `parallel_tasks`/`fleet` group cards get an explicit lifecycle of their own:
+  `running` when children start and exactly one terminal after every child
+  settles (`completed`, `cancelled` for cancellation/deadline, `failed` when
+  any child failed or the call errored — including validation failures).
+  Frontends never infer group completion from the children observed so far,
+  since background children dispatch asynchronously and a fast first child
+  can finish before later ones appear.
 - The child's `Reasoning` / `Text` / `Notice` / `Retrying` events become the
   corresponding preview channels; the child's real tool activity flips the
   phase to `tool` while the nested tool cards render as before.
@@ -89,10 +96,9 @@ What is **not** done:
   never mixed with ordinary tool output.
 - A background call that already returned its job id stays in the running
   state while child progress is non-terminal; `parallel_tasks`/`fleet` group
-  cards settle when their whole child progress tree is terminal — including
-  the reverse order where the job-id result arrives before any child has
-  dispatched (the card waits for its children instead of settling on an empty
-  tree). A cancelled/failed aggregate settles the group regardless.
+  cards settle only from their own lifecycle terminal event, so neither a
+  job-id result arriving before any child nor a fast first child finishing
+  before later children dispatch can settle the group prematurely.
 - `completed` / `failed` / `cancelled` reuse the existing done / error /
   stopped visuals; after a terminal the card folds by default unless the user
   explicitly expanded it.

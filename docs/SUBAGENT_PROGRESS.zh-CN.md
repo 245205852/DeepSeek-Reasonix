@@ -31,6 +31,7 @@
 
 - 前台运行以 `running` 开始。
 - 后台任务在注册成功后发出 `queued`，真正获得执行槽时发出 `running`。
+- `parallel_tasks`/`fleet` 组卡片拥有自己的显式生命周期：children 开始时分发 `running`，所有 children 落定后发出唯一 terminal（`completed`；取消/deadline 为 `cancelled`；任一 child 失败或调用出错——包括验证失败——为 `failed`）。前端绝不根据"当前已观察到的 children"推断组完成，因为后台 children 是异步分发的，快的首个子任务可能在后续子任务出现前就已完成。
 - 子任务的 `Reasoning`/`Text`/`Notice`/`Retrying` 事件转换为对应预览频道；子任务真实工具活动把阶段更新为 `tool`，嵌套工具卡片渲染不变。
 - 每次运行恰好发出**一个** terminal 状态：成功为 `completed`，context 取消或 deadline 为 `cancelled`，provider/工具/存储/panic 错误为 `failed`。terminal 前同步 flush 待发送预览；terminal 后的迟到事件被忽略。
 
@@ -52,7 +53,7 @@
 
 - 子 Agent 工具卡片的头部显示阶段徽标（阶段 + 运行耗时 + “N 秒前”最近活动）；子任务存活期间每秒跳动一次，结束后定格为阶段 + 时长摘要。
 - 展开卡片显示独立的 reasoning / 回答预览 / notice——绝不与普通工具输出混排。
-- 后台调用即使已返回 job id，只要子进度仍为非终态，卡片仍保持运行状态；`parallel_tasks`/`fleet` 组卡片在其整个子进度树终态后定格——包括反向时序：job-id result 先于任何子任务 dispatch 到达时，卡片保持运行等待子任务，而非在空树上直接定格。取消/失败的聚合结果则无条件定格组卡片。
+- 后台调用即使已返回 job id，只要子进度仍为非终态，卡片仍保持运行状态；`parallel_tasks`/`fleet` 组卡片只由其自身生命周期 terminal 事件定格——job-id result 先于任何子任务到达、或快的首个子任务先于后续子任务完成，都不会让组卡片提前定格。
 - `completed`/`failed`/`cancelled` 分别沿用现有 done/error/stopped 视觉语义；terminal 后默认折叠，用户手动展开的选择在状态变化后保留。
 
 ## CLI

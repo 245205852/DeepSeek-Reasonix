@@ -161,7 +161,6 @@ function applySubagentProgress(s: State, t: WireTool): State {
   }
   const status = isTerminalSubagentPhase(sp.phase) ? terminalStatusOf(sp.phase) : it.status;
   next[idx] = { ...it, subagentProgress: sp, status };
-  if (isTerminalSubagentPhase(sp.phase)) settleGroupAncestors(next, idx);
   return { ...s, items: next };
 }
 
@@ -173,57 +172,6 @@ function touchSubagentParent(next: Item[], parentId: string): void {
   const it = next[idx];
   if (it.kind !== "tool" || !it.subagentProgress || isTerminalSubagentPhase(it.subagentProgress.phase)) return;
   next[idx] = { ...it, subagentProgress: { ...it.subagentProgress, phase: "tool", lastActivityAt: Date.now() } };
-}
-
-// True when the card has at least one child card carrying a progress preview.
-function hasSubagentChildren(items: Item[], cardId: string): boolean {
-  return items.some((it) => it.kind === "tool" && it.parentId === cardId && it.subagentProgress);
-}
-
-// A card's progress tree is live while its own progress is non-terminal (task
-// cards), or — for group cards (parallel_tasks/fleet) — while any descendant
-// progress is still live, since group cards never get a terminal of their own.
-function isProgressTreeLive(items: Item[], idx: number, visited?: Set<number>): boolean {
-  const it = items[idx];
-  if (it.kind !== "tool" || !it.subagentProgress) return false;
-  const seen = visited ?? new Set<number>();
-  if (seen.has(idx)) return false;
-  seen.add(idx);
-  if (!isGroupSubagentTool(it.name)) {
-    return !isTerminalSubagentPhase(it.subagentProgress.phase);
-  }
-  for (let i = 0; i < items.length; i++) {
-    const c = items[i];
-    if (c.kind === "tool" && c.parentId === it.id && c.subagentProgress && isProgressTreeLive(items, i, seen)) {
-      return true;
-    }
-  }
-  return false;
-}
-
-// Walks the group-card ancestors of the card at idx and settles any whose
-// progress tree just became terminal once their own result already arrived
-// (a background fleet returns a job id before its children finish).
-function settleGroupAncestors(next: Item[], idx: number): void {
-  const seen = new Set<number>();
-  let curIdx = idx;
-  for (;;) {
-    const cur = next[curIdx];
-    if (cur.kind !== "tool" || !cur.parentId || seen.has(curIdx)) return;
-    seen.add(curIdx);
-    const pIdx = next.findIndex((it) => it.kind === "tool" && it.id === cur.parentId);
-    if (pIdx < 0) return;
-    const p = next[pIdx];
-    if (p.kind !== "tool" || !p.subagentProgress || !isGroupSubagentTool(p.name)) return;
-    if ((p.output !== undefined || p.error !== undefined) && !isProgressTreeLive(next, pIdx)) {
-      next[pIdx] = {
-        ...p,
-        status: p.error ? "error" : "done",
-        subagentProgress: { ...p.subagentProgress, phase: "completed" },
-      };
-    }
-    curIdx = pIdx;
-  }
 }
 
 export type LiveStream = {
@@ -1208,27 +1156,22 @@ function applyEvent(s: State, e: WireEvent): State {
           const existing = it;
           const summary = t.err ? undefined : existing.summary || summarize(existing.name, existing.args, t.output);
           let status: ToolStatus = t.err ? "error" : "done";
-          let settledPhase: SubagentPhase | undefined;
           if (existing.subagentProgress) {
             // Sub-agent progress owns the card's final visual: a background
             // call that returned a job id stays running while the child
             // works; a cancelled child keeps its stopped semantics even when
             // the aggregate result carries an error. Group cards
-            // (parallel_tasks/fleet) settle with their children — but a
-            // background group whose job-id result arrived before any child
-            // dispatched must stay running until the children appear and
-            // settle, instead of being marked done on an empty tree.
+            // (parallel_tasks/fleet) settle only from their own lifecycle
+            // terminal event — the backend emits running at start and exactly
+            // one terminal at the end (including validation failures and
+            // zero-child cancellation) — never from inferring the children
+            // observed so far, since a background group's children dispatch
+            // asynchronously and a fast child can finish before later ones
+            // even appear.
             if (isGroupSubagentTool(existing.name)) {
-              if (isProgressTreeLive(next, idx)) {
-                status = "running";
-              } else if (t.err) {
-                // A cancelled/failed aggregate settles regardless of children.
-                status = "error";
-              } else if (hasSubagentChildren(next, existing.id)) {
-                settledPhase = "completed";
-              } else {
-                status = "running"; // background job id arrived first: wait
-              }
+              status = isTerminalSubagentPhase(existing.subagentProgress.phase)
+                ? terminalStatusOf(existing.subagentProgress.phase)
+                : "running";
             } else if (!isTerminalSubagentPhase(existing.subagentProgress.phase)) {
               status = "running";
             } else {
@@ -1246,11 +1189,7 @@ function applyEvent(s: State, e: WireEvent): State {
             truncated: t.truncated,
             durationMs: t.durationMs,
             summary,
-            subagentProgress: settledPhase && existing.subagentProgress
-              ? { ...existing.subagentProgress, phase: settledPhase }
-              : existing.subagentProgress,
           };
-          if (existing.subagentProgress) settleGroupAncestors(next, idx);
         }
       }
       // A nested result refreshes its sub-agent parent's recent activity.
