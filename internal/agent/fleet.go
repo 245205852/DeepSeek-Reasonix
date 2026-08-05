@@ -131,10 +131,22 @@ func (f *FleetTool) Execute(ctx context.Context, args json.RawMessage) (result s
 	// happen to have observed. Validation failures emit a failed terminal;
 	// once runFleet starts it owns the lifecycle (the background job runs
 	// runFleet inside the job, after this function has returned).
-	groupParentID, _, _, _ := CallContext(ctx)
-	merger := newSubagentProgressMerger(realProgressClock{}, subSink(ctx), groupParentID)
-	defer merger.Close()
+	groupParentID, groupSink, _, ok := CallContext(ctx)
+	if !ok || groupSink == nil {
+		groupParentID = "fleet"
+		groupSink = event.Discard
+	}
+	// The merger emits already-namespaced group/child IDs, so it must use the
+	// raw call sink. A nested subSink would prefix the group ID a second time
+	// (group/group), leaving the frontend unable to match its lifecycle card.
+	merger := newSubagentProgressMerger(realProgressClock{}, groupSink, groupParentID)
 	lifecycleHandoff := false
+	mergerCloseHandoff := false
+	defer func() {
+		if !mergerCloseHandoff {
+			merger.Close()
+		}
+	}()
 	defer func() {
 		if lifecycleHandoff {
 			return
@@ -200,8 +212,7 @@ func (f *FleetTool) Execute(ctx context.Context, args json.RawMessage) (result s
 		if !ok {
 			return "", fmt.Errorf("background execution is not available in this context")
 		}
-		parentID, parent, _, _ := CallContext(ctx)
-		nested := subSinkFor(parentID, parent)
+		parentID := groupParentID
 		parentSession := ParentSession(ctx)
 		label := fmt.Sprintf("fleet(%d)", len(specs))
 		backgroundEvidence := evidence.NewLedger()
@@ -224,6 +235,10 @@ func (f *FleetTool) Execute(ctx context.Context, args json.RawMessage) (result s
 			}
 		}
 		job := jm.StartForSession(jobs.SessionFromContext(ctx), "fleet", label, func(jobCtx context.Context, _ io.Writer) (string, error) {
+			// Execute returns as soon as the job is registered, so the job owns
+			// the handed-off merger until every child preview and terminal has
+			// flushed. Closing it in Execute would strand child cards at running.
+			defer merger.Close()
 			if writerRegistered {
 				defer observer.UnregisterWriter(writerID)
 			}
@@ -233,28 +248,36 @@ func (f *FleetTool) Execute(ctx context.Context, args json.RawMessage) (result s
 			// The job shares the Execute-level merger so the group lifecycle
 			// events and the child previews ride the same pacing budget.
 			jobCtx = withSubagentProgressMerger(jobCtx, merger)
-			return f.runFleet(jobCtx, nested, specs, parentID)
+			return f.runFleet(jobCtx, groupSink, specs, parentID)
 		})
-		// runFleet (inside the job) owns the terminal from here on.
+		// runFleet (inside the job) owns the terminal and merger close from
+		// here on. Foreground runFleet hands off only the terminal; Execute
+		// still closes the merger after the synchronous call returns.
 		lifecycleHandoff = true
+		mergerCloseHandoff = true
 		return fmt.Sprintf("Started background fleet %q (%s). Collect results with wait; you will be notified when it finishes.", job.ID, label), nil
 	}
 
 	lifecycleHandoff = true
-	return f.runFleet(ctx, subSink(ctx), specs, groupParentID)
+	return f.runFleet(ctx, groupSink, specs, groupParentID)
 }
 
 func (f *FleetTool) runFleet(ctx context.Context, sink event.Sink, specs []ProfileExecSpec, groupParentID string) (result string, err error) {
 	if sink == nil {
 		sink = event.Discard
 	}
-	parentID, _, _, ok := CallContext(ctx)
-	if !ok {
-		parentID = "fleet"
+	// Child IDs are namespaced exactly once under the group call. Background
+	// jobs no longer carry the original call context, so groupParentID is the
+	// authoritative identity there; direct callers fall back to CallContext.
+	parentID := strings.TrimSpace(groupParentID)
+	if parentID == "" {
+		var ok bool
+		parentID, _, _, ok = CallContext(ctx)
+		if !ok || parentID == "" {
+			parentID = "fleet"
+		}
 	}
-	if groupParentID == "" {
-		groupParentID = parentID
-	}
+	groupParentID = parentID
 	// The Execute-level merger (or a fallback for direct callers) paces the
 	// group; runFleet owns the lifecycle once it starts: running up front
 	// and exactly one terminal after every child settles.
