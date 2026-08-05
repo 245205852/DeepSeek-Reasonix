@@ -130,10 +130,7 @@ func (r *Resolver) RouteStreamEnd(p protocol.StreamEndParams) {
 // the protocol also requires producer-side redaction, an interruption becomes
 // StreamInterruptedError, and a clean end closes the channel.
 func (r *Resolver) flushLocked(id string, stream *extensionStream) {
-	for {
-		if stream.ended && stream.nextSeq > stream.endSeq {
-			break
-		}
+	for !stream.ended || stream.nextSeq <= stream.endSeq {
 		chunk, ok := stream.pending[stream.nextSeq]
 		if !ok {
 			break
