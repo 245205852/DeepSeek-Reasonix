@@ -403,8 +403,8 @@ function JobsStatusBarChip({
   const [stopping, setStopping] = useState<Set<string>>(() => new Set());
   const triggerRef = useRef<HTMLButtonElement>(null);
   const groups = runtimes.filter((runtime) => runtime.running || runtime.pendingPrompt || runtime.jobs.length > 0);
-  // BackgroundRuntimes is process-local, while active Remote Workbench jobs
-  // arrive through the active controller snapshot. Keep both sources visible.
+  // BackgroundRuntimes is process-local, while jobs from the active controller
+  // snapshot may come from another runtime. Keep both sources visible.
   if (jobs.length > 0 && (activeJobsRemote || !groups.some((runtime) => runtime.jobs.length > 0))) {
     groups.push({ tabId: "", title: "", detached: false, running: false, pendingPrompt: false, jobs });
   }

@@ -21,6 +21,7 @@ import (
 	"strings"
 	"time"
 
+	"reasonix/internal/ablation"
 	"reasonix/internal/agent"
 	"reasonix/internal/capability"
 	"reasonix/internal/command"
@@ -170,10 +171,12 @@ type Options struct {
 	// ProviderResolver routes every model role through a caller-owned provider
 	// catalog. Nil preserves local behavior.
 	ProviderResolver provider.Resolver
-	// DisablePlanner is a process-local hard override used by supervised ACP
-	// workers. It wins over user/project planner_model configuration without
-	// mutating config or changing the provider-visible prompt/tool surface.
-	DisablePlanner bool
+	// Ablation switches subsystems off for a benchmark arm, and is also the
+	// process-local hard override supervised ACP workers use to force the planner
+	// off. It wins over user/project configuration without mutating config or
+	// changing the provider-visible prompt/tool surface. The zero value runs
+	// everything.
+	Ablation ablation.Set
 	// SandboxNetworkOverride and WorkspaceOnly are process-local hard bounds for
 	// supervised ACP workers. Nil/false preserve normal Reasonix config.
 	SandboxNetworkOverride *bool
@@ -902,6 +905,7 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 			WithTranscriptIdentityResolver(subagentIdentity).
 			WithMaxSubagentDepth(maxSubagentDepth).
 			WithDeliveryProfile(tokenDelivery).
+			WithAblation(opts.Ablation).
 			WithWorkspaceLease(workspaceLease).
 			WithScheduler(subagentScheduler).
 			WithProfileLookup(profileLookup).
@@ -910,6 +914,9 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 			WithCapabilityRuntime(capRuntime)
 	}
 	addTaskTool := func() string {
+		if opts.Ablation.Off(ablation.Subagent) {
+			return "task tool is disabled for this run."
+		}
 		if taskToolAdded {
 			return "task tool is already enabled."
 		}
@@ -927,6 +934,9 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 		return "enabled task."
 	}
 	addReadOnlyTaskTool := func() string {
+		if opts.Ablation.Off(ablation.Subagent) {
+			return "read_only_task tool is disabled for this run."
+		}
 		if readOnlyTaskToolAdded {
 			return "read_only_task tool is already enabled."
 		}
@@ -961,6 +971,14 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 			return "sessions are already enabled."
 		}
 		sessionToolsAdded = true
+		// history and memory are the BM25-backed surfaces; the ablation arm drops
+		// only those two and leaves the direct-access tools alone, so a lost solve
+		// is attributable to retrieval and not to a missing session reader.
+		if opts.Ablation.Off(ablation.Retrieval) {
+			reg.Add(sessiontool.NewListSessionsTool(sessionDir))
+			reg.Add(sessiontool.NewReadSessionTool(sessionDir))
+			return "enabled list_sessions, read_session."
+		}
 		reg.Add(history.NewTool(history.Options{SessionDir: sessionDir, GlobalSessionDir: config.SessionDir(), ArchiveDir: config.ArchiveDir()}))
 		reg.Add(sessiontool.NewListSessionsTool(sessionDir))
 		reg.Add(sessiontool.NewReadSessionTool(sessionDir))
@@ -972,6 +990,11 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 			return "memory tools are already enabled."
 		}
 		memoryToolsAdded = true
+		if opts.Ablation.Off(ablation.Retrieval) {
+			reg.Add(memory.NewRememberTool(mem.Store))
+			reg.Add(memory.NewForgetTool(mem.Store))
+			return "enabled remember, forget."
+		}
 		reg.Add(memory.NewRecallTool(mem.Store))
 		reg.Add(memory.NewRememberTool(mem.Store))
 		reg.Add(memory.NewForgetTool(mem.Store))
@@ -1019,6 +1042,7 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 			SubagentDepth:       childDepth,
 			MaxSubagentDepth:    maxSubagentDepth,
 			DeliveryProfile:     tokenDelivery,
+			Ablation:            opts.Ablation,
 			WorkspaceLease:      workspaceLease,
 		}
 	}
@@ -1607,6 +1631,7 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 		WriteWorkspaceRoot:           root,
 		ProjectChecks:                projectChecks,
 		DeliveryProfile:              tokenDelivery,
+		Ablation:                     opts.Ablation,
 		WorkspaceLease:               workspaceLease,
 		CapabilityLedger:             capLedger,
 		CapabilityAudit:              capAudit,
@@ -1736,6 +1761,7 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 		Shell:                  shell,
 		ApprovalTimeout:        opts.ApprovalTimeout,
 		RuntimeProfile:         runtimeProfile,
+		Ablation:               opts.Ablation,
 		OnRemember: func(rule string) control.RememberResult {
 			return rememberPermissionRule(root, rule)
 		},
@@ -1860,7 +1886,7 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 // override is checked before user/project config and cannot be reversed by a
 // later assembly branch.
 func effectivePlannerModel(cfg *config.Config, opts Options, tokenEconomy bool) string {
-	if cfg == nil || opts.DisablePlanner || tokenEconomy {
+	if cfg == nil || opts.Ablation.Off(ablation.Planner) || tokenEconomy {
 		return ""
 	}
 	return strings.TrimSpace(cfg.Agent.PlannerModel)
