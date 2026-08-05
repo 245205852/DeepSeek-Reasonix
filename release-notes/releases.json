@@ -14,7 +14,15 @@
         "zh": "此版本改进了子 Agent 结果处理，添加了服务端网页搜索控制，修复了多个桌面端和 Agent 问题，并包含多项稳定性和可用性增强。"
       },
       "surfaces": [
-        "desktop"
+        "agent",
+        "cli",
+        "config",
+        "desktop",
+        "provider",
+        "recovery",
+        "remote",
+        "serve",
+        "updates"
       ],
       "guides": [
         {
@@ -240,6 +248,19 @@
             "refs": [
               7383
             ]
+          },
+          {
+            "title": {
+              "en": "Observe session saves without an in-process lease owner",
+              "zh": "观测缺少进程内租约所有者的会话保存"
+            },
+            "body": {
+              "en": "Added deduplicated structured diagnostics for unleased session saves so future single-writer enforcement can account for legitimate writers without changing save behavior in this release.",
+              "zh": "为无租约会话保存增加了去重的结构化诊断，便于后续单写者约束覆盖合法写入方；本版本不改变保存行为。"
+            },
+            "refs": [
+              7532
+            ]
           }
         ],
         "fixed": [
@@ -404,7 +425,21 @@
         ]
       },
       "upgrade": [],
-      "risks": [],
+      "risks": [
+        {
+          "title": {
+            "en": "DeepSeek web-search privacy and billing",
+            "zh": "DeepSeek 网页搜索的隐私与计费"
+          },
+          "body": {
+            "en": "On official DeepSeek Responses and Anthropic endpoints, omitting web_search now enables server-side search by default. Search queries are sent to DeepSeek and token usage or charges may increase; set web_search = false to opt out.",
+            "zh": "在 DeepSeek 官方 Responses 与 Anthropic 端点上，省略 web_search 现在会默认启用服务端搜索。搜索查询会发送给 DeepSeek，Token 用量或费用可能增加；如需退出，请设置 web_search = false。"
+          },
+          "refs": [
+            7466
+          ]
+        }
+      ],
       "contributors": [
         "esengine",
         "github-actions[bot]",
