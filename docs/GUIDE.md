@@ -342,7 +342,10 @@ API keys on the **remote** host — the desktop never exposes its own providers
 to a remote host. If that host is missing the selected Provider's API key, the
 window shows the authenticated setup page first, saves the key only in the
 remote Reasonix credential file, and activates the Provider without restarting
-the remote Serve process.
+the remote Serve process. A transient SSH outage keeps the remote window open;
+the desktop reconnects in the background, re-attaches its loopback forward, and
+reloads the window against the recovered Serve. An authentication or host-key
+failure is terminal and closes the unusable remote window instead.
 
 ## Custom OpenAI-compatible providers
 
