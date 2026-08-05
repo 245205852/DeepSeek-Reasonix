@@ -2,7 +2,7 @@
 
 export const REMOTE_SCHEMA_FORMAT = "reasonix.remote.schema.v1" as const;
 export const REMOTE_PROTOCOL_VERSION = "1" as const;
-export const REMOTE_SCHEMA_HASH = "sha256:c488e6868e7f3fb990c3d86319fee867a3fb634552fd87f294fb71d299cbcf8a" as const;
+export const REMOTE_SCHEMA_HASH = "sha256:60490c2f5df96974c735cb36626a2a73be8b18fc3fdb7ada300ef720c0bbced5" as const;
 
 export const REMOTE_FIXED_RESOURCES = {
   "protocol": {
@@ -180,6 +180,13 @@ export type RemoteEventRaw = {
     "summary"?: string | null;
     "trigger"?: string;
   };
+  "decisionReceipt"?: {
+    "id": string;
+    "kind": string;
+    "outcome": string;
+    "subject"?: string;
+    "tool"?: string;
+  };
   "detail"?: string | null;
   "err"?: string | null;
   "guardian"?: {
@@ -330,6 +337,13 @@ export type RemoteEventHydrated = {
     "messages"?: number;
     "summary"?: string;
     "trigger"?: string;
+  };
+  "decisionReceipt"?: {
+    "id": string;
+    "kind": string;
+    "outcome": string;
+    "subject"?: string;
+    "tool"?: string;
   };
   "detail"?: string;
   "err"?: string;
@@ -999,6 +1013,13 @@ export type BrokerStreamOpenParamsRaw = {
     "messages": Array<{
       "content"?: string;
       "createdAt"?: number;
+      "decision_receipt"?: {
+        "id": string;
+        "kind": string;
+        "outcome": string;
+        "subject"?: string;
+        "tool"?: string;
+      };
       "edited"?: boolean;
       "images"?: Array<string>;
       "interrupted_turn"?: {
@@ -1063,6 +1084,13 @@ export type BrokerStreamOpenParamsHydrated = {
     "messages": Array<{
       "content"?: string;
       "createdAt"?: number;
+      "decision_receipt"?: {
+        "id": string;
+        "kind": string;
+        "outcome": string;
+        "subject"?: string;
+        "tool"?: string;
+      };
       "edited"?: boolean;
       "images"?: Array<string>;
       "interrupted_turn"?: {
@@ -3121,6 +3149,13 @@ export type SessionEventRaw = {
       "summary"?: string | null;
       "trigger"?: string;
     };
+    "decisionReceipt"?: {
+      "id": string;
+      "kind": string;
+      "outcome": string;
+      "subject"?: string;
+      "tool"?: string;
+    };
     "detail"?: string | null;
     "err"?: string | null;
     "guardian"?: {
@@ -3292,6 +3327,13 @@ export type SessionEventHydrated = {
       "messages"?: number;
       "summary"?: string;
       "trigger"?: string;
+    };
+    "decisionReceipt"?: {
+      "id": string;
+      "kind": string;
+      "outcome": string;
+      "subject"?: string;
+      "tool"?: string;
     };
     "detail"?: string;
     "err"?: string;
@@ -4414,6 +4456,13 @@ export type SessionSubscribeResultRaw = {
           "summary"?: string | null;
           "trigger"?: string;
         };
+        "decisionReceipt"?: {
+          "id": string;
+          "kind": string;
+          "outcome": string;
+          "subject"?: string;
+          "tool"?: string;
+        };
         "detail"?: string | null;
         "err"?: string | null;
         "guardian"?: {
@@ -4847,6 +4896,13 @@ export type SessionSubscribeResultHydrated = {
           "messages"?: number;
           "summary"?: string;
           "trigger"?: string;
+        };
+        "decisionReceipt"?: {
+          "id": string;
+          "kind": string;
+          "outcome": string;
+          "subject"?: string;
+          "tool"?: string;
         };
         "detail"?: string;
         "err"?: string;

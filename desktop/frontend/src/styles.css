@@ -3593,6 +3593,35 @@ a[href] {
 .notice-line__body {
   min-width: 0;
 }
+.notice-line__decision-receipt {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 6px 9px;
+  min-width: 0;
+  line-height: 1.4;
+}
+.notice-line__decision-title {
+  color: var(--fg);
+  font-weight: 650;
+}
+.notice-line__decision-outcome {
+  color: var(--accent);
+  font-weight: 600;
+}
+.notice-line__decision-receipt code {
+  color: var(--fg-dim);
+  font-family: var(--mono);
+  font-size: 11px;
+}
+.notice-line__decision-subject {
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--fg-dim);
+}
 .notice-line__title + .notice-line__body {
   margin-top: 2px;
 }
@@ -8384,6 +8413,17 @@ body > .mermaid-diagram--fullscreen {
   gap: 12px;
   flex-wrap: wrap;
 }
+.decision-confirm-bar__secondary {
+  flex: 0 0 auto;
+  color: var(--fg-dim);
+  background: transparent;
+  border-color: transparent;
+}
+.decision-confirm-bar__secondary:hover:not(:disabled) {
+  color: var(--fg);
+  background: var(--bg-soft);
+  border-color: var(--border-soft);
+}
 .decision-confirm-bar__hint {
   min-width: 0;
   flex: 1;
@@ -8399,9 +8439,9 @@ body > .mermaid-diagram--fullscreen {
    one bounded content scroller. Never collapses to horizontal pills. */
 .prompt-shelf--decision .prompt-shelf__card {
   grid-template-rows: minmax(0, 1fr) auto;
-  gap: 8px;
-  max-height: min(82vh, 720px);
-  padding: 10px 12px;
+  gap: 6px;
+  max-height: min(62vh, 560px);
+  padding: 8px 10px;
   overflow: hidden;
   border-color: color-mix(in srgb, var(--accent) 28%, var(--border));
 }
@@ -8443,7 +8483,7 @@ body > .mermaid-diagram--fullscreen {
   height: auto;
   align-items: flex-start;
   border-radius: 8px !important;
-  padding: 8px 10px;
+  padding: 6px 8px;
   white-space: normal !important;
 }
 .prompt-shelf--decision .prompt-shelf__actions .prompt-action__key {
@@ -8451,7 +8491,13 @@ body > .mermaid-diagram--fullscreen {
 }
 .prompt-shelf--decision .prompt-shelf__actions .prompt-action__copy {
   display: grid !important;
-  gap: 2px;
+  grid-template-columns: minmax(0, max-content) minmax(0, 1fr);
+  align-items: baseline;
+  gap: 2px 10px;
+}
+.prompt-shelf--decision .prompt-shelf__actions .prompt-action__label {
+  min-width: 0;
+  max-width: 44%;
 }
 .prompt-shelf--decision .prompt-shelf__actions .prompt-action__label,
 .prompt-shelf--decision .prompt-shelf__actions .prompt-action__desc {
@@ -8469,8 +8515,12 @@ body > .mermaid-diagram--fullscreen {
 .prompt-shelf--decision .prompt-shelf__actions .prompt-action--description-collapsible:not(.prompt-action--description-expanded) .prompt-action__desc {
   display: -webkit-box;
   -webkit-box-orient: vertical;
-  -webkit-line-clamp: 3;
+  -webkit-line-clamp: 1;
   overflow: hidden;
+}
+.prompt-shelf--decision .prompt-shelf__actions .prompt-action--selected.prompt-action--description-collapsible:not(.prompt-action--description-expanded) .prompt-action__desc,
+.prompt-shelf--decision .prompt-shelf__actions .prompt-action[data-active="true"].prompt-action--description-collapsible:not(.prompt-action--description-expanded) .prompt-action__desc {
+  -webkit-line-clamp: 2;
 }
 .prompt-shelf--decision .prompt-shelf__actions .prompt-action--description-expanded .prompt-action__desc {
   display: block;
@@ -9112,11 +9162,55 @@ body > .mermaid-diagram--fullscreen {
   overflow-wrap: anywhere;
 }
 .prompt-shelf--ask .ask-shelf__custom-row {
-  margin-top: 0;
+  margin-top: 4px;
+  display: grid;
+  gap: 4px;
 }
 .prompt-shelf--ask .ask-shelf__custom {
   height: 30px;
   padding: 0 9px;
+}
+.prompt-shelf--runtime-decision .prompt-shelf__note {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.runtime-decision-footer {
+  display: flex;
+  justify-content: flex-start;
+  gap: 8px;
+}
+.runtime-decision-footer__secondary {
+  color: var(--fg-dim);
+  background: transparent;
+  border-color: transparent;
+}
+.runtime-decision-footer__secondary:hover:not(:disabled) {
+  color: var(--fg);
+  background: var(--bg-soft);
+  border-color: var(--border-soft);
+}
+
+@media (max-width: 560px) {
+  .prompt-shelf--decision .prompt-shelf__actions .prompt-action__copy {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 1px;
+  }
+
+  .prompt-shelf--decision .prompt-shelf__actions .prompt-action__label {
+    max-width: none;
+  }
+
+  .decision-confirm-bar {
+    gap: 6px;
+  }
+
+  .decision-confirm-bar__hint {
+    order: 3;
+    flex-basis: 100%;
+  }
 }
 .modal__plannote {
   margin: 0 0 16px;

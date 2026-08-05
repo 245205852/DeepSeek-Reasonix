@@ -23,6 +23,7 @@ type Event struct {
 	Ask             *Ask             `json:"ask,omitempty"`
 	Compaction      *Compaction      `json:"compaction,omitempty"`
 	Guardian        *Guardian        `json:"guardian,omitempty"`
+	DecisionReceipt *DecisionReceipt `json:"decisionReceipt,omitempty"`
 	Err             string           `json:"err,omitempty" externalizable:"true"`
 	Outcome         string           `json:"outcome,omitempty"`
 	Readiness       *FinalReadiness  `json:"readiness,omitempty"`
@@ -39,6 +40,9 @@ func ToWire(e event.Event) Event {
 	switch e.Kind {
 	case event.Notice:
 		w.Code = e.Code
+		if e.DecisionReceipt != nil {
+			w.DecisionReceipt = ToWireDecisionReceipt(e.DecisionReceipt)
+		}
 		if e.Level == event.LevelWarn {
 			w.Level = "warn"
 		} else {
@@ -124,6 +128,22 @@ func ToWire(e event.Event) Event {
 		w.RetryMax = e.RetryMax
 	}
 	return w
+}
+
+// DecisionReceipt is the JSON form of a provider-excluded user decision.
+type DecisionReceipt struct {
+	ID      string `json:"id"`
+	Kind    string `json:"kind"`
+	Tool    string `json:"tool,omitempty"`
+	Subject string `json:"subject,omitempty"`
+	Outcome string `json:"outcome"`
+}
+
+func ToWireDecisionReceipt(in *provider.DecisionReceipt) *DecisionReceipt {
+	if in == nil {
+		return nil
+	}
+	return &DecisionReceipt{ID: in.ID, Kind: in.Kind, Tool: in.Tool, Subject: in.Subject, Outcome: in.Outcome}
 }
 
 type FinalReadiness struct {

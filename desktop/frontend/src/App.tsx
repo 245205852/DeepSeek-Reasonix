@@ -4910,11 +4910,11 @@ export default function App() {
                     key: "2", label: t("runtime.openWorktree"), description: t("runtime.openWorktreeDesc"),
                     onClick: () => void continueInDeliveryWorktree(),
                   }] : []),
-                  {
-                    key: "Esc", label: t("runtime.cancelWait"), description: t("runtime.cancelWaitDesc"),
-                    onClick: () => { cancel(); setWorkspaceConflict(null); }, danger: true,
-                  },
                 ]}
+                secondaryAction={{
+                  key: "Esc", label: t("runtime.cancelWait"), description: t("runtime.cancelWaitDesc"),
+                  onClick: () => { cancel(); setWorkspaceConflict(null); },
+                }}
               />
             )
             : decisionSurface === "mode_jobs" && pendingModeSwitch ? (
@@ -4927,15 +4927,15 @@ export default function App() {
                 onCancel={() => setPendingModeSwitch(null)}
                 actions={[
                   {
-                    key: "1", label: t("common.cancel"), description: t("runtime.keepModeDesc"),
-                    onClick: () => setPendingModeSwitch(null), disabled: pendingModeSwitch.stopping,
-                  },
-                  {
-                    key: "2", label: pendingModeSwitch.stopping ? t("status.jobStopping") : t("runtime.stopAndSwitch"),
+                    key: "1", label: pendingModeSwitch.stopping ? t("status.jobStopping") : t("runtime.stopAndSwitch"),
                     description: t("runtime.stopAndSwitchDesc"), onClick: () => void stopJobsAndSwitchMode(),
                     danger: true, disabled: pendingModeSwitch.stopping,
                   },
                 ]}
+                secondaryAction={{
+                  key: "Esc", label: t("common.cancel"), description: t("runtime.keepModeDesc"),
+                  onClick: () => setPendingModeSwitch(null), disabled: pendingModeSwitch.stopping,
+                }}
               />
             )
             : decisionSurface === "close_active" && pendingClose ? (
@@ -4948,19 +4948,19 @@ export default function App() {
                 onCancel={() => setPendingClose(null)}
                 actions={[
                   {
-                    key: "1", label: t("common.cancel"), description: t("runtime.closeCancelDesc"),
-                    onClick: () => setPendingClose(null), disabled: pendingClose.stopping,
-                  },
-                  {
-                    key: "2", label: t("runtime.keepRunning"), description: t("runtime.keepRunningDesc"),
+                    key: "1", label: t("runtime.keepRunning"), description: t("runtime.keepRunningDesc"),
                     onClick: () => void resolvePendingClose("keep_running"), disabled: pendingClose.stopping,
                   },
                   {
-                    key: "3", label: pendingClose.stopping ? t("status.jobStopping") : t("runtime.stopAndClose"),
+                    key: "2", label: pendingClose.stopping ? t("status.jobStopping") : t("runtime.stopAndClose"),
                     description: t("runtime.stopAndCloseDesc"), onClick: () => void resolvePendingClose("stop_and_close"),
                     danger: true, disabled: pendingClose.stopping,
                   },
                 ]}
+                secondaryAction={{
+                  key: "Esc", label: t("common.cancel"), description: t("runtime.closeCancelDesc"),
+                  onClick: () => setPendingClose(null), disabled: pendingClose.stopping,
+                }}
               />
             )
             : decisionSurface === "clear_context" ? (

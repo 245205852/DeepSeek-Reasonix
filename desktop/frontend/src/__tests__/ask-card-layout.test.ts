@@ -135,14 +135,16 @@ console.log("\nask card layout");
   eq(computed.overflowWrap, "anywhere", "long unspaced ask questions can break within the shelf");
   ok(card.getAttribute("role") === "dialog", "ask prompt shelf keeps dialog semantics");
   ok(document.querySelector(".prompt-shelf--decision") != null, "ask uses the unified decision surface layout");
-  eq(window.getComputedStyle(card).maxHeight, "min(82vh, 720px)", "Ask card stays bounded by the viewport");
+  eq(window.getComputedStyle(card).maxHeight, "min(62vh, 560px)", "Ask card stays bounded by the viewport");
   eq(window.getComputedStyle(card).overflow, "hidden", "Ask card delegates overflow to one content scroller");
   eq(window.getComputedStyle(content).overflow, "auto", "Ask title, question, and options share one scroll region");
   eq(content.contains(footer), false, "Ask confirmation footer stays outside the scrolling content");
+  const secondary = footer.querySelector(".decision-confirm-bar__secondary") as HTMLButtonElement | null;
+  ok(Boolean(secondary?.textContent?.trim()), "Ask skip is a quiet footer action");
 
   const optionButtons = [...document.querySelectorAll(".prompt-shelf__actions .prompt-action")] as HTMLElement[];
-  // options + custom + skip
-  eq(optionButtons.length, 4, "ask renders options plus custom and skip rows");
+  // options + custom; skip is a secondary footer action
+  eq(optionButtons.length, 3, "ask renders options plus custom without a skip row");
   ok(
     optionButtons[0]?.textContent?.includes("Reuse the archive flow") === true,
     "option descriptions render inline on each decision row",
@@ -167,7 +169,7 @@ console.log("\nask card layout");
   eq(descriptionStyle.whiteSpace, "normal", "long option descriptions can wrap");
   eq(descriptionStyle.display, "-webkit-box", "long Ask descriptions use a multi-line clamp box");
   eq(descriptionStyle.overflow, "hidden", "collapsed Ask descriptions stay within three lines");
-  eq(descriptionStyle.getPropertyValue("-webkit-line-clamp"), "3", "collapsed Ask descriptions show three summary lines");
+  eq(descriptionStyle.getPropertyValue("-webkit-line-clamp"), "2", "selected Ask descriptions show two summary lines");
   eq(descriptionStyle.textOverflow, "clip", "wrapped descriptions do not use a single-line ellipsis");
   eq(descriptionStyle.overflowWrap, "anywhere", "unspaced option descriptions can wrap without overflowing");
   eq(firstOption.getAttribute("title"), ask.questions[0].options[0].description, "collapsed descriptions keep the full native tooltip");

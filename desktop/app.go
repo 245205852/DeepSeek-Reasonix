@@ -5743,6 +5743,7 @@ type HistoryMessage struct {
 	Messages           int                       `json:"messages,omitempty"`
 	Summary            string                    `json:"summary,omitempty"`
 	Archive            string                    `json:"archive,omitempty"`
+	DecisionReceipt    *provider.DecisionReceipt `json:"decisionReceipt,omitempty"`
 }
 
 type HistoryToolCall struct {
@@ -6098,6 +6099,15 @@ func historyMessagesWithPlannerDisplaysAndLookups(
 	plannerByUserHash := plannerTurnsByUserHash(plannerTurns)
 	suppressCanonicalTurn := false
 	for index, m := range msgs {
+		if m.DecisionReceipt != nil {
+			out = append(out, HistoryMessage{
+				Role:            "notice",
+				Code:            event.NoticeCodeDecisionReceipt,
+				Level:           "info",
+				DecisionReceipt: cloneDecisionReceipt(m.DecisionReceipt),
+			})
+			continue
+		}
 		if m.LocalOnly {
 			if steerText, isSteer := agent.SteerText(agent.UserMessageText(m)); isSteer {
 				out = append(out, HistoryMessage{
@@ -6199,6 +6209,14 @@ func historyMessagesWithPlannerDisplaysAndLookups(
 		}
 	}
 	return out
+}
+
+func cloneDecisionReceipt(in *provider.DecisionReceipt) *provider.DecisionReceipt {
+	if in == nil {
+		return nil
+	}
+	copy := *in
+	return &copy
 }
 
 func plannerDisplaySuppressesCanonical(turn plannerDisplayTurn) bool {

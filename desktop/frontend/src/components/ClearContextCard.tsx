@@ -104,6 +104,7 @@ export function ClearContextCard({
   return (
     <PromptShelf
       decision
+      className="prompt-shelf--clear-context"
       barRef={shelfRef}
       titleId="clear-context-shelf-title"
       title={t("clearContext.title")}

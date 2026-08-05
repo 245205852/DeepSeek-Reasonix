@@ -128,6 +128,22 @@ func TestModelMessagesAndSanitizeDropLocalOnlyInterruptedOutput(t *testing.T) {
 	}
 }
 
+func TestDecisionReceiptIsDurableButProviderExcluded(t *testing.T) {
+	receipt := &DecisionReceipt{ID: "approval-1", Kind: "tool", Tool: "write_file", Subject: "src/app.go", Outcome: "allow_once"}
+	in := []Message{
+		{Role: RoleUser, Content: "edit the app"},
+		{Role: RoleAssistant, LocalOnly: true, DecisionReceipt: receipt},
+		{Role: RoleAssistant, Content: "done"},
+	}
+	model := ModelMessages(in)
+	if len(model) != 2 || model[0].Content != "edit the app" || model[1].Content != "done" {
+		t.Fatalf("provider messages leaked decision receipt: %+v", model)
+	}
+	if len(in) != 3 || in[1].DecisionReceipt != receipt || !in[1].LocalOnly {
+		t.Fatalf("stored receipt was not preserved: %+v", in)
+	}
+}
+
 func TestModelMessagesUsesProviderContentWithoutMutatingStoredMessage(t *testing.T) {
 	stored := []Message{{
 		Role:            RoleUser,

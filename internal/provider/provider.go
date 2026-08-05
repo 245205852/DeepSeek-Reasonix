@@ -77,7 +77,19 @@ type Message struct {
 	// replay what the user saw without feeding partial reasoning or tool-call
 	// arguments back into the next request.
 	LocalOnly       bool                     `json:"local_only,omitempty"`
+	DecisionReceipt *DecisionReceipt         `json:"decision_receipt,omitempty"`
 	InterruptedTurn *InterruptedTurnRecovery `json:"interrupted_turn,omitempty"`
+}
+
+// DecisionReceipt is durable, provider-excluded evidence of a user-owned
+// approval decision. It intentionally contains only bounded labels and the
+// outcome, never free-form guidance or provider-visible content.
+type DecisionReceipt struct {
+	ID      string `json:"id"`
+	Kind    string `json:"kind"`
+	Tool    string `json:"tool,omitempty"`
+	Subject string `json:"subject,omitempty"`
+	Outcome string `json:"outcome"`
 }
 
 // InterruptedTurnRecovery is the durable, provider-excluded handoff for a turn

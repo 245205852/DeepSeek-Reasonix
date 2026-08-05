@@ -377,7 +377,7 @@ console.log("\ndecision surface");
   const recoveryContent = document.querySelector(".prompt-shelf--recovery-approval .prompt-shelf__content") as HTMLElement | null;
   const recoveryActions = document.querySelector(".prompt-shelf--recovery-approval .prompt-shelf__actions") as HTMLElement | null;
   if (!recoveryCard || !recoveryContent || !recoveryActions) throw new Error("recovery height bounds did not render");
-  eq(window.getComputedStyle(recoveryCard).maxHeight, "min(82vh, 720px)", "recovery card stays bounded by the viewport");
+  eq(window.getComputedStyle(recoveryCard).maxHeight, "min(62vh, 560px)", "recovery card stays bounded by the viewport");
   eq(window.getComputedStyle(recoveryCard).overflow, "hidden", "recovery card clips only at its shared scroll boundary");
   eq(window.getComputedStyle(recoveryContent).overflow, "auto", "recovery content uses one internal scroller");
   eq(window.getComputedStyle(recoveryActions).maxHeight, "none", "recovery options avoid a nested height cap");

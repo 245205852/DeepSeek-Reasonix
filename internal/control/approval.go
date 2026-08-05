@@ -262,6 +262,7 @@ func (a *approvalManager) registerDecisionKindWithInput(tool, subject, reason st
 		autoDrain = a.autoApprovalWouldAllowLocked(tool, subject)
 	}
 	a.approvals[id] = pendingApproval{
+		id:   id,
 		tool: tool, subject: subject, reason: reason, rawInput: append(json.RawMessage(nil), rawInput...), fresh: fresh, requireHuman: requireHuman,
 		autoDrain: autoDrain, kind: kind, recovery: rec, reply: reply,
 	}

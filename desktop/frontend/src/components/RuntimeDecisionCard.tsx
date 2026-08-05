@@ -17,6 +17,7 @@ export function RuntimeDecisionCard({
   meta,
   note,
   actions,
+  secondaryAction,
   onCancel,
 }: {
   id: string;
@@ -25,6 +26,7 @@ export function RuntimeDecisionCard({
   meta: string;
   note?: string;
   actions: RuntimeDecisionAction[];
+  secondaryAction?: RuntimeDecisionAction;
   onCancel: () => void;
 }) {
   const shelfRef = useRef<HTMLDivElement | null>(null);
@@ -58,6 +60,7 @@ export function RuntimeDecisionCard({
   return (
     <PromptShelf
       decision
+      className="prompt-shelf--runtime-decision"
       barRef={shelfRef}
       titleId={`${id}-title`}
       title={title}
@@ -78,6 +81,18 @@ export function RuntimeDecisionCard({
           title={action.description}
         />
       ))}
+      footer={secondaryAction ? (
+        <div className="runtime-decision-footer">
+          <button
+            type="button"
+            className="btn btn--small runtime-decision-footer__secondary"
+            onClick={secondaryAction.onClick}
+            disabled={secondaryAction.disabled}
+          >
+            {secondaryAction.label}
+          </button>
+        </div>
+      ) : undefined}
     >
       {note && <p className="prompt-shelf__note">{note}</p>}
     </PromptShelf>

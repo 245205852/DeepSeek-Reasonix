@@ -275,6 +275,7 @@ type approvalReply struct {
 }
 
 type pendingApproval struct {
+	id           string
 	tool         string
 	subject      string
 	reason       string
@@ -1884,9 +1885,49 @@ func (c *Controller) Approve(id string, allow, session, persist bool) {
 		return
 	}
 	pending := c.approval.resolve(id)
-	if pending.reply != nil {
-		pending.reply <- approvalReply{allow: allow, session: session, persist: persist} // buffered, never blocks
+	if pending.reply == nil {
+		return
 	}
+	outcome := "deny"
+	if allow {
+		switch {
+		case persist:
+			outcome = "allow_persistent"
+		case session:
+			outcome = "allow_session"
+		default:
+			outcome = "allow_once"
+		}
+	}
+	c.recordDecisionReceipt(pending, outcome)
+	pending.reply <- approvalReply{allow: allow, session: session, persist: persist} // buffered, never blocks
+}
+
+func (c *Controller) recordDecisionReceipt(pending pendingApproval, outcome string) {
+	if c == nil || c.executor == nil || pending.reply == nil {
+		return
+	}
+	kind := pending.kind
+	if kind == "" {
+		kind = "tool"
+	}
+	receipt := &provider.DecisionReceipt{
+		ID:      pending.id,
+		Kind:    kind,
+		Tool:    strings.TrimSpace(pending.tool),
+		Subject: clipUTF8(strings.TrimSpace(pending.subject), 240),
+		Outcome: strings.TrimSpace(outcome),
+	}
+	// Keep the receipt bounded and provider-excluded even when an older caller
+	// omits optional approval metadata.
+	c.executor.Session().Add(provider.Message{Role: provider.RoleAssistant, LocalOnly: true, DecisionReceipt: receipt})
+	c.sink.Emit(event.Event{
+		Kind:            event.Notice,
+		Code:            event.NoticeCodeDecisionReceipt,
+		Level:           event.LevelInfo,
+		Text:            "Decision recorded: " + receipt.Outcome,
+		DecisionReceipt: receipt,
+	})
 }
 
 // EnableInteractiveApproval swaps the executor's gate for one that routes
@@ -2192,8 +2233,48 @@ func (c *Controller) AnswerQuestion(id string, answers []event.AskAnswer) {
 				return
 			}
 		}
+		c.recordAskDecisionReceipt(id, pending, answers)
 		pending.reply <- answers // buffered, never blocks
 	}
+}
+
+func (c *Controller) recordAskDecisionReceipt(id string, pending pendingAsk, answers []event.AskAnswer) {
+	if c == nil || c.executor == nil {
+		return
+	}
+	selected := make(map[string][]string, len(answers))
+	for _, answer := range answers {
+		selected[answer.QuestionID] = append([]string(nil), answer.Selected...)
+	}
+	parts := make([]string, 0, len(pending.questions))
+	for _, question := range pending.questions {
+		answer := strings.TrimSpace(strings.Join(selected[question.ID], ", "))
+		if answer == "" {
+			answer = "—"
+		}
+		prompt := strings.TrimSpace(question.Prompt)
+		if prompt == "" {
+			prompt = strings.TrimSpace(question.Header)
+		}
+		if prompt == "" {
+			prompt = question.ID
+		}
+		parts = append(parts, prompt+": "+answer)
+	}
+	receipt := &provider.DecisionReceipt{
+		ID:      id,
+		Kind:    "ask",
+		Subject: clipUTF8(strings.Join(parts, " · "), 240),
+		Outcome: "answered",
+	}
+	c.executor.Session().Add(provider.Message{Role: provider.RoleAssistant, LocalOnly: true, DecisionReceipt: receipt})
+	c.sink.Emit(event.Event{
+		Kind:            event.Notice,
+		Code:            event.NoticeCodeDecisionReceipt,
+		Level:           event.LevelInfo,
+		Text:            "Decision recorded: answered",
+		DecisionReceipt: receipt,
+	})
 }
 
 func askAnswersHaveSelection(answers []event.AskAnswer) bool {

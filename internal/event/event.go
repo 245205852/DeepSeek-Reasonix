@@ -330,6 +330,7 @@ const (
 	NoticeCodeSessionRecoveryAdoptedCovered = "session_recovery_adopted_covered"
 	NoticeCodeSessionRecoveryDepthCap       = "session_recovery_depth_cap"
 	NoticeCodeSessionShutdownRecoveryForked = "session_shutdown_recovery_forked"
+	NoticeCodeDecisionReceipt               = "decision_receipt"
 )
 
 type Event struct {
@@ -350,20 +351,21 @@ type Event struct {
 	// session (Usage events only), so a frontend can show the aggregate hit-rate
 	// — which doesn't crater on a short turn or after compaction — alongside
 	// Usage's single-turn numbers.
-	SessionHit   int             // Usage: cumulative cache-hit prompt tokens this session
-	SessionMiss  int             // Usage: cumulative cache-miss prompt tokens this session
-	Level        Level           // Notice
-	Audience     NoticeAudience  // Notice: empty = ordinary frontend delivery; operator = no end-user chat forwarding
-	Approval     Approval        // ApprovalRequest
-	Ask          Ask             // AskRequest
-	Err          error           // TurnDone: non-nil on failure
-	Cancelled    bool            // TurnDone: Cancel was requested while the turn was active
-	Outcome      string          // TurnDone: optional machine-readable recoverable outcome
-	Readiness    *FinalReadiness // TurnDone: structured final-readiness recovery state
-	Compaction   Compaction      // Compaction
-	Guardian     GuardianResult
-	RetryAttempt int // Retrying: 1-based attempt about to be made
-	RetryMax     int // Retrying: total attempts before giving up
+	SessionHit      int             // Usage: cumulative cache-hit prompt tokens this session
+	SessionMiss     int             // Usage: cumulative cache-miss prompt tokens this session
+	Level           Level           // Notice
+	Audience        NoticeAudience  // Notice: empty = ordinary frontend delivery; operator = no end-user chat forwarding
+	Approval        Approval        // ApprovalRequest
+	Ask             Ask             // AskRequest
+	Err             error           // TurnDone: non-nil on failure
+	Cancelled       bool            // TurnDone: Cancel was requested while the turn was active
+	Outcome         string          // TurnDone: optional machine-readable recoverable outcome
+	Readiness       *FinalReadiness // TurnDone: structured final-readiness recovery state
+	Compaction      Compaction      // Compaction
+	Guardian        GuardianResult
+	DecisionReceipt *provider.DecisionReceipt // Notice: durable user decision receipt
+	RetryAttempt    int                       // Retrying: 1-based attempt about to be made
+	RetryMax        int                       // Retrying: total attempts before giving up
 }
 
 // ReadinessAuditSink is an optional sink capability. Sinks that do not care
