@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path"
 	"path/filepath"
 	"regexp"
 	"sort"
@@ -33,6 +34,7 @@ const (
 )
 
 var validName = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9._-]{0,63}$`)
+var windowsAbsolutePath = regexp.MustCompile(`^[A-Za-z]:/`)
 
 // Package is one parsed plugin package rooted on disk.
 type Package struct {
@@ -742,15 +744,11 @@ func parseSkillPaths(raw json.RawMessage) ([]string, error) {
 func cleanPathList(paths []string) ([]string, error) {
 	var out []string
 	seen := map[string]bool{}
-	for _, p := range paths {
-		p = filepath.Clean(strings.TrimSpace(p))
-		if p == "." || p == "" {
-			p = "."
+	for _, raw := range paths {
+		slash, err := cleanPortableRelativePath(raw)
+		if err != nil {
+			return nil, err
 		}
-		if filepath.IsAbs(p) || strings.HasPrefix(p, ".."+string(filepath.Separator)) || p == ".." {
-			return nil, fmt.Errorf("plugin path %q must be relative and stay inside the plugin root", p)
-		}
-		slash := filepath.ToSlash(p)
 		if !seen[slash] {
 			seen[slash] = true
 			out = append(out, slash)
@@ -862,14 +860,28 @@ func validHookShell(shell string) bool {
 }
 
 func validateRelativePath(p string) error {
-	p = filepath.Clean(strings.TrimSpace(p))
-	if p == "" {
+	if strings.TrimSpace(p) == "" {
 		return fmt.Errorf("plugin path is required")
 	}
-	if filepath.IsAbs(p) || strings.HasPrefix(p, ".."+string(filepath.Separator)) || p == ".." {
-		return fmt.Errorf("plugin path %q must be relative and stay inside the plugin root", p)
+	_, err := cleanPortableRelativePath(p)
+	return err
+}
+
+// cleanPortableRelativePath applies the same manifest path contract on every
+// host OS. A plugin prepared on Windows must not turn a drive/UNC path into a
+// harmless-looking relative path on Unix, and a Unix-rooted path must remain
+// absolute when the same package is parsed on Windows.
+func cleanPortableRelativePath(raw string) (string, error) {
+	trimmed := strings.TrimSpace(raw)
+	normalized := strings.ReplaceAll(trimmed, `\`, "/")
+	if filepath.IsAbs(trimmed) || path.IsAbs(normalized) || windowsAbsolutePath.MatchString(normalized) {
+		return "", fmt.Errorf("plugin path %q must be relative and stay inside the plugin root", trimmed)
 	}
-	return nil
+	cleaned := path.Clean(normalized)
+	if cleaned == ".." || strings.HasPrefix(cleaned, "../") {
+		return "", fmt.Errorf("plugin path %q must be relative and stay inside the plugin root", trimmed)
+	}
+	return cleaned, nil
 }
 
 func (p Package) SkillRoots() []string {
