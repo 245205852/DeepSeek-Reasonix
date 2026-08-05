@@ -3339,6 +3339,21 @@ func (a *App) ListSessions() []SessionMeta {
 		return []SessionMeta{}
 	}
 	dir := a.activeSessionDir()
+	return a.listSessionsFromDir(dir, a.activeSessionPath(dir))
+}
+
+// ListSessionsForTab returns sessions from the directory owned by tabID. Task
+// Monitor uses this stable target after asynchronous control lookups so a tab
+// switch cannot redirect the eventual session lookup to another workspace.
+func (a *App) ListSessionsForTab(tabID string) []SessionMeta {
+	target, err := a.taskMonitorTargetForTab(tabID)
+	if err != nil {
+		return []SessionMeta{}
+	}
+	return a.listSessionsFromDir(target.sessionDir, target.sessionPath)
+}
+
+func (a *App) listSessionsFromDir(dir, active string) []SessionMeta {
 	infos, err := agent.ListSessions(dir)
 	if err != nil {
 		return []SessionMeta{}
@@ -3354,7 +3369,6 @@ func (a *App) ListSessions() []SessionMeta {
 	_ = pruneSessionPlannerDisplays(dir, protectedDisplays)
 	titles := loadSessionTitles(dir)
 	channelRoutes := channelSessionRoutesForDir(dir)
-	active := a.activeSessionPath(dir)
 	out := make([]SessionMeta, 0, len(infos))
 	for _, s := range infos {
 		_, isOpen := open[s.Path]
@@ -12343,6 +12357,68 @@ func (a *App) projectDir() string {
 	return a.activeWorkspaceRoot()
 }
 
+type taskMonitorTabTarget struct {
+	projectDir  string
+	sessionDir  string
+	sessionPath string
+	sessionID   string
+}
+
+// taskMonitorTargetForTab snapshots the workspace and session identity owned by
+// tabID. Wails dispatches bound calls concurrently, so resolving the active tab
+// inside a task operation would allow a later tab switch to retarget it.
+func (a *App) taskMonitorTargetForTab(tabID string) (taskMonitorTabTarget, error) {
+	tabID = strings.TrimSpace(tabID)
+	if tabID == "" {
+		return taskMonitorTabTarget{}, fmt.Errorf("task monitor tab id is required")
+	}
+
+	a.mu.RLock()
+	tab := a.tabByIDLocked(tabID)
+	if tab == nil {
+		a.mu.RUnlock()
+		return taskMonitorTabTarget{}, fmt.Errorf("task monitor tab %q is unavailable", tabID)
+	}
+	workspaceRoot := strings.TrimSpace(tab.WorkspaceRoot)
+	tabSessionPath := strings.TrimSpace(tab.SessionPath)
+	ctrl := tab.Ctrl
+	leaseKey := tab.sessionLeaseRuntimeKey()
+	a.mu.RUnlock()
+
+	projectDir := workspaceRoot
+	if projectDir == "" {
+		projectDir = "."
+	}
+	sessionDir := desktopSessionDir(workspaceRoot)
+	sessionPath := tabSessionPath
+	if ctrl != nil {
+		if dir := strings.TrimSpace(ctrl.SessionDir()); dir != "" {
+			sessionDir = dir
+		}
+		if path := strings.TrimSpace(ctrl.SessionPath()); path != "" {
+			sessionPath = path
+		}
+	}
+	// During a recovery handoff the lease-backed tab path is newer than the
+	// controller path until the controller commits the handoff.
+	if tabSessionPath != "" && sessionRuntimeKey(tabSessionPath) == leaseKey {
+		sessionPath = tabSessionPath
+		sessionDir = filepath.Dir(tabSessionPath)
+	} else if ctrl == nil && tabSessionPath != "" {
+		sessionDir = filepath.Dir(tabSessionPath)
+	}
+
+	target := taskMonitorTabTarget{
+		projectDir:  projectDir,
+		sessionDir:  sessionDir,
+		sessionPath: sessionPath,
+	}
+	if sessionPath != "" {
+		target.sessionID = agent.BranchID(sessionPath)
+	}
+	return target, nil
+}
+
 func (a *App) ListTasks() ([]taskmonitor.TaskSnapshot, error) {
 	return a.taskStore().ListTasks(a.ctx, a.projectDir())
 }
@@ -12369,6 +12445,20 @@ func (a *App) ListTasksForSession(sessionID string) ([]taskmonitor.TaskSnapshot,
 	return filterTasksBySession(tasks, sessionID), nil
 }
 
+// ListTasksForTab returns the task view owned by tabID and filters it to that
+// tab's session when one is available. It deliberately avoids active-tab state.
+func (a *App) ListTasksForTab(tabID string) ([]taskmonitor.TaskSnapshot, error) {
+	target, err := a.taskMonitorTargetForTab(tabID)
+	if err != nil {
+		return nil, err
+	}
+	tasks, err := a.taskStore().ListTasks(a.ctx, target.projectDir)
+	if err != nil || target.sessionID == "" {
+		return tasks, err
+	}
+	return filterTasksBySession(tasks, target.sessionID), nil
+}
+
 func filterTasksBySession(tasks []taskmonitor.TaskSnapshot, sessionID string) []taskmonitor.TaskSnapshot {
 	filtered := make([]taskmonitor.TaskSnapshot, 0, len(tasks))
 	for _, task := range tasks {
@@ -12387,11 +12477,30 @@ func (a *App) ListTaskEvents(taskID string, afterSequence int) ([]taskmonitor.Ta
 	return a.taskStore().ListEvents(a.ctx, a.projectDir(), taskID, afterSequence)
 }
 
+func (a *App) ListTaskEventsForTab(tabID, taskID string, afterSequence int) ([]taskmonitor.TaskEvent, error) {
+	target, err := a.taskMonitorTargetForTab(tabID)
+	if err != nil {
+		return nil, err
+	}
+	return a.taskStore().ListEvents(a.ctx, target.projectDir, taskID, afterSequence)
+}
+
 func (a *App) StopTask(taskID string, expectedVersion uint64, reason, idemKey string) (taskmonitor.ControlResult, error) {
 	projectDir := a.projectDir()
 	return a.taskControl().StopTaskWithKiller(
 		a.ctx, projectDir, taskID, expectedVersion, reason, idemKey,
 		desktopTaskJobKiller{app: a, projectDir: projectDir},
+	)
+}
+
+func (a *App) StopTaskForTab(tabID, taskID string, expectedVersion uint64, reason, idemKey string) (taskmonitor.ControlResult, error) {
+	target, err := a.taskMonitorTargetForTab(tabID)
+	if err != nil {
+		return taskmonitor.ControlResult{}, err
+	}
+	return a.taskControl().StopTaskWithKiller(
+		a.ctx, target.projectDir, taskID, expectedVersion, reason, idemKey,
+		desktopTaskJobKiller{app: a, projectDir: target.projectDir},
 	)
 }
 
@@ -12403,12 +12512,39 @@ func (a *App) CancelTask(taskID string, expectedVersion uint64, reason, idemKey 
 	)
 }
 
+func (a *App) CancelTaskForTab(tabID, taskID string, expectedVersion uint64, reason, idemKey string) (taskmonitor.ControlResult, error) {
+	target, err := a.taskMonitorTargetForTab(tabID)
+	if err != nil {
+		return taskmonitor.ControlResult{}, err
+	}
+	return a.taskControl().CancelTaskWithKiller(
+		a.ctx, target.projectDir, taskID, expectedVersion, reason, idemKey,
+		desktopTaskJobKiller{app: a, projectDir: target.projectDir},
+	)
+}
+
 func (a *App) RequeueTask(taskID string, expectedVersion uint64, idemKey string) (taskmonitor.ControlResult, error) {
 	return a.taskControl().RequeueTask(a.ctx, a.projectDir(), taskID, expectedVersion, idemKey)
 }
 
+func (a *App) RequeueTaskForTab(tabID, taskID string, expectedVersion uint64, idemKey string) (taskmonitor.ControlResult, error) {
+	target, err := a.taskMonitorTargetForTab(tabID)
+	if err != nil {
+		return taskmonitor.ControlResult{}, err
+	}
+	return a.taskControl().RequeueTask(a.ctx, target.projectDir, taskID, expectedVersion, idemKey)
+}
+
 func (a *App) OpenTaskSession(taskID string) (taskmonitor.ControlResult, error) {
 	return a.taskControl().OpenTaskSession(a.ctx, a.projectDir(), taskID)
+}
+
+func (a *App) OpenTaskSessionForTab(tabID, taskID string) (taskmonitor.ControlResult, error) {
+	target, err := a.taskMonitorTargetForTab(tabID)
+	if err != nil {
+		return taskmonitor.ControlResult{}, err
+	}
+	return a.taskControl().OpenTaskSession(a.ctx, target.projectDir, taskID)
 }
 
 type desktopTaskJobKiller struct {

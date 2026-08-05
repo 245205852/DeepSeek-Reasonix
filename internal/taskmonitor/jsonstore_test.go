@@ -113,13 +113,29 @@ func TestFileStore_RejectsPathTraversal_TaskID(t *testing.T) {
 	}
 }
 
-func TestFileStore_RejectsPathTraversal_ProjectDir(t *testing.T) {
-	dir := t.TempDir()
+func TestFileStore_AcceptsCleanableProjectDir(t *testing.T) {
+	parent := t.TempDir()
 	store := NewFileStore(".reasonix/tasks")
+	now := time.Now()
 
-	_, err := store.ListTasks(context.Background(), dir+"/../../../etc")
-	if err == nil || !strings.Contains(err.Error(), "escapes") {
-		t.Fatalf("expected escape rejection, got %v", err)
+	for _, projectDir := range []string{
+		filepath.Join(parent, "nested", "..", "project"),
+		filepath.Join(parent, "project..archive"),
+	} {
+		if err := os.MkdirAll(filepath.Clean(projectDir), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		snap := TaskSnapshot{
+			SchemaVersion: 1, TaskID: "task-1", SessionID: "session-1",
+			State: TaskStateRunning, Version: 1, CreatedAt: now, UpdatedAt: now,
+		}
+		if err := store.SaveTask(context.Background(), projectDir, snap); err != nil {
+			t.Fatalf("SaveTask(%q): %v", projectDir, err)
+		}
+		got, err := store.GetTask(context.Background(), projectDir, snap.TaskID)
+		if err != nil || got == nil || got.TaskID != snap.TaskID {
+			t.Fatalf("GetTask(%q) = %+v, %v", projectDir, got, err)
+		}
 	}
 }
 

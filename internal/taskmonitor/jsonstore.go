@@ -46,16 +46,13 @@ func safeID(name string) (string, error) {
 	return cleaned, nil
 }
 
-// taskRoot returns the sanitised directory holding task data for projectDir.
-// It cleans projectDir and rejects paths that attempt to escape.
+// taskRoot returns the cleaned directory holding task data for projectDir.
+// projectDir is the caller-selected project scope, not a path relative to a
+// separate containment root. Parent-relative paths such as ../project and
+// directory names containing ".." are therefore valid inputs.
 func (s *FileStore) taskRoot(projectDir string) (string, error) {
 	if projectDir == "" {
 		return s.baseDir, nil
-	}
-	// Reject any path containing ".." before cleaning — catches both
-	// relative (../) and absolute traversal (../../etc).
-	if strings.Contains(filepath.ToSlash(projectDir), "..") {
-		return "", fmt.Errorf("projectDir %q escapes the intended root", projectDir)
 	}
 	cleaned := filepath.Clean(projectDir)
 	root := filepath.Join(cleaned, s.baseDir)

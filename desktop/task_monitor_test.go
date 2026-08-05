@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"os"
 	"path/filepath"
 	"sync"
 	"testing"
@@ -154,5 +155,81 @@ func TestStopTaskRoutesMonitorIdentityToRuntimeJob(t *testing.T) {
 	ids := ctrl.killedIDs()
 	if len(ids) != 1 || ids[0] != "task-1" {
 		t.Fatalf("runtime killed IDs = %v, want [task-1]", ids)
+	}
+}
+
+func TestStopTaskForTabKeepsSourceWorkspaceAfterActiveTabSwitch(t *testing.T) {
+	projectA := t.TempDir()
+	projectB := t.TempDir()
+	pathA := filepath.Join(t.TempDir(), "shared-session.jsonl")
+	pathB := filepath.Join(t.TempDir(), "shared-session.jsonl")
+	ctrlA := &taskKillController{SessionAPI: control.New(control.Options{Label: "a", SessionPath: pathA})}
+	ctrlB := &taskKillController{SessionAPI: control.New(control.Options{Label: "b", SessionPath: pathB})}
+	defer ctrlA.Close()
+	defer ctrlB.Close()
+
+	app := &App{
+		ctx: context.Background(),
+		tabs: map[string]*WorkspaceTab{
+			"tab-a": {ID: "tab-a", Scope: "project", WorkspaceRoot: projectA, SessionPath: pathA, Ctrl: ctrlA},
+			"tab-b": {ID: "tab-b", Scope: "project", WorkspaceRoot: projectB, SessionPath: pathB, Ctrl: ctrlB},
+		},
+		activeTabID: "tab-b",
+	}
+	sessionID := agent.BranchID(pathA)
+	if sessionID != agent.BranchID(pathB) {
+		t.Fatal("test setup must use colliding session IDs")
+	}
+	monitorID := sessionID + "--task-1"
+	now := time.Now()
+	for _, root := range []string{projectA, projectB} {
+		if err := app.taskStore().SaveTask(app.ctx, root, taskmonitor.TaskSnapshot{
+			SchemaVersion: 1, TaskID: monitorID, JobID: "task-1", SessionID: sessionID,
+			State: taskmonitor.TaskStateRunning, RuntimeState: taskmonitor.RuntimeStateAlive,
+			Version: 1, CreatedAt: now, UpdatedAt: now,
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	res, err := app.StopTaskForTab("tab-a", monitorID, 1, "", "tab-bound-stop")
+	if err != nil || !res.Accepted {
+		t.Fatalf("StopTaskForTab: result=%+v err=%v", res, err)
+	}
+	if ctrlA.killCount() != 1 || ctrlB.killCount() != 0 {
+		t.Fatalf("kill routed away from source tab: projectA=%d projectB=%d", ctrlA.killCount(), ctrlB.killCount())
+	}
+	projectBTask, err := app.taskStore().GetTask(app.ctx, projectB, monitorID)
+	if err != nil || projectBTask == nil || projectBTask.State != taskmonitor.TaskStateRunning {
+		t.Fatalf("project B task mutated by project A control: task=%+v err=%v", projectBTask, err)
+	}
+}
+
+func TestListSessionsForTabKeepsSourceDirectoryAfterActiveTabSwitch(t *testing.T) {
+	dirA := t.TempDir()
+	dirB := t.TempDir()
+	pathA := filepath.Join(dirA, "a.jsonl")
+	pathB := filepath.Join(dirB, "b.jsonl")
+	if err := os.WriteFile(pathA, []byte(`{"role":"user","content":"workspace A"}`+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(pathB, []byte(`{"role":"user","content":"workspace B"}`+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	ctrlA := control.New(control.Options{SessionDir: dirA, SessionPath: pathA, Label: "a"})
+	ctrlB := control.New(control.Options{SessionDir: dirB, SessionPath: pathB, Label: "b"})
+	defer ctrlA.Close()
+	defer ctrlB.Close()
+	app := &App{
+		tabs: map[string]*WorkspaceTab{
+			"tab-a": {ID: "tab-a", Scope: "project", WorkspaceRoot: t.TempDir(), SessionPath: pathA, Ctrl: ctrlA},
+			"tab-b": {ID: "tab-b", Scope: "project", WorkspaceRoot: t.TempDir(), SessionPath: pathB, Ctrl: ctrlB},
+		},
+		activeTabID: "tab-b",
+	}
+
+	sessions := app.ListSessionsForTab("tab-a")
+	if len(sessions) != 1 || sessions[0].Path != pathA || sessions[0].Preview != "workspace A" {
+		t.Fatalf("ListSessionsForTab(tab-a) = %+v", sessions)
 	}
 }
