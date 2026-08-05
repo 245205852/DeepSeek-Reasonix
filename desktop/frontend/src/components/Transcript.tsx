@@ -1,11 +1,12 @@
 import { createContext, memo, type CSSProperties, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent, type ReactNode, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
-import type { ControllerLiveStore, Item, LiveStream } from "../lib/useController";
+import type { ControllerLiveStore, ExtensionItem, Item, LiveStream } from "../lib/useController";
 import type { CheckpointMeta } from "../lib/types";
 import type { InvocationMetadataMap } from "../lib/invocationDisplay";
 import { useT } from "../lib/i18n";
 import { AssistantMessage, InvocationMetadataContext, TurnActions, UserMessage } from "./Message";
 import { ProcessBrainIcon, ProcessCompactIcon, ProcessPhaseIcon } from "./ProcessCard";
 import { ToolCard } from "./ToolCard";
+import { ExtensionCard } from "./ExtensionCard";
 import { ArrowDown, ChevronRight, CirclePlay, Info, TriangleAlert } from "lucide-react";
 import { Welcome } from "./Welcome";
 import { ReadOnlyBatch } from "./ReadOnlyBatch";
@@ -193,7 +194,7 @@ function assistantHasVisibleAnswer(item: AssistantItem, liveId: string | undefin
 
 type TurnDisplayParts = {
   processItems: Item[];
-  outsideItems: Array<NoticeItem | AssistantItem>;
+  outsideItems: Array<NoticeItem | AssistantItem | ExtensionItem>;
 };
 
 // Splits a turn by channel, not by position: reasoning, tools, phases, info
@@ -239,6 +240,13 @@ function partitionTurnItems(
       } else {
         pushProcess(item);
       }
+      continue;
+    }
+    if (item.kind === "extension") {
+      // Extension cards carry their own actions and progress — keep them
+      // visible like warnings instead of folding them into the process
+      // collapse, but never treat them as a conversational boundary.
+      current.outsideItems.push(item);
       continue;
     }
     if (item.kind !== "assistant") {
@@ -820,6 +828,10 @@ export function Transcript({
           );
         }
         for (const item of segment.outsideItems) {
+          if (item.kind === "extension") {
+            out.push(<ExtensionCard key={item.id} item={item} tabId={tabId} />);
+            continue;
+          }
           if (item.kind === "notice") {
             if (isSteerNoticeText(item.text)) {
               out.push(<SteerCard key={item.id} text={item.text} />);
@@ -1219,6 +1231,10 @@ function WarmTurnItems({
       );
     }
     for (const item of segment.outsideItems) {
+      if (item.kind === "extension") {
+        nodes.push(<ExtensionCard key={item.id} item={item} tabId={tabId} />);
+        continue;
+      }
       if (item.kind === "notice") {
         if (isSteerNoticeText(item.text)) {
           nodes.push(<SteerCard key={item.id} text={item.text} />);

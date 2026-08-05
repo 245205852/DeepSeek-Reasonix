@@ -195,7 +195,7 @@ type Request struct {
 	// ResponseFormat, when non-nil, asks the endpoint for structured JSON
 	// output (Responses: text.format.type=json_object). Nil omits the field
 	// entirely — the common path must stay byte-stable for prompt caching.
-	ResponseFormat *ResponseFormat
+	ResponseFormat *ResponseFormat `json:"ResponseFormat,omitempty"`
 }
 
 // ResponseFormat asks a provider to constrain its output shape.

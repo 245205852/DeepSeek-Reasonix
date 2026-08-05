@@ -40,6 +40,7 @@ import (
 	"reasonix/internal/control"
 	"reasonix/internal/event"
 	"reasonix/internal/evidence"
+	"reasonix/internal/extension/providerext"
 	"reasonix/internal/fileref"
 	fileenc "reasonix/internal/fileutil/encoding"
 	"reasonix/internal/i18n"
@@ -292,8 +293,13 @@ type App struct {
 	heartbeat *HeartbeatEngine // scheduled heartbeat tasks; nil until startup
 
 	previousRun repair.PreviousRunObservation
+	// Healthy-update identity is captured before Wails starts. A process may
+	// commit only the complete probationary transaction it actually booted from,
+	// never a rewritten or later same-version retry.
+	healthyUpdateCreatedAt     string
+	healthyUpdateTransactionID string
 	// startupReady records that the window reached domReady so LKG config
-	// snapshots are only written after a real UI boot.
+	// snapshots and update health are only committed after a real UI boot.
 	startupReady atomic.Bool
 }
 
@@ -969,8 +975,17 @@ func (a *App) shutdown(context.Context) {
 		a.mu.Unlock()
 	}
 	if a.startupReady.Load() {
-		// Independent last-known-good config snapshot after a successful UI
-		// session. Does not participate in startup decisions.
+		// A visible UI is sufficient health evidence even if the user closes the
+		// window before the delayed post-DOM task runs.
+		if err := a.commitPendingUpdateHealth(); err != nil {
+			slog.Warn("desktop: commit healthy update during shutdown", "err", err)
+		}
+		if archived, err := archiveSupersededPendingUpdateAfterReady(); err != nil {
+			slog.Warn("desktop: retire superseded update during shutdown", "err", err)
+		} else if archived {
+			slog.Info("desktop: archived superseded update transaction during shutdown")
+		}
+		// Independent last-known-good config snapshot after a successful UI session.
 		_ = repair.RecordHealthyConfig(version)
 	}
 }
@@ -1033,15 +1048,30 @@ func (a *App) domReady(_ context.Context) {
 		case <-ctx.Done():
 			return
 		}
+		if err := a.commitPendingUpdateHealth(); err != nil {
+			slog.Warn("desktop: commit healthy update", "err", err)
+		}
 		if err := repair.RecordHealthyConfig(version); err != nil {
 			slog.Debug("desktop: record last-known-good config", "err", err)
 		}
-		if archived, err := archiveSupersededLegacyUpdateAfterReady(); err != nil {
-			slog.Warn("desktop: retire superseded legacy update", "err", err)
+		if archived, err := archiveSupersededPendingUpdateAfterReady(); err != nil {
+			slog.Warn("desktop: retire superseded update", "err", err)
 		} else if archived {
-			slog.Info("desktop: archived superseded legacy update transaction")
+			slog.Info("desktop: archived superseded update transaction")
 		}
 	})
+}
+
+func (a *App) commitPendingUpdateHealth() error {
+	if a == nil || strings.TrimSpace(a.healthyUpdateCreatedAt) == "" ||
+		strings.TrimSpace(a.healthyUpdateTransactionID) == "" {
+		return nil
+	}
+	return markPendingUpdateHealthyAfterReady(
+		version,
+		a.healthyUpdateCreatedAt,
+		a.healthyUpdateTransactionID,
+	)
 }
 
 // --- bound command surface (frontend → controller) ---
@@ -9575,11 +9605,20 @@ func (a *App) ModelsForTab(tabID string) []ModelInfo {
 	a.mu.RLock()
 	curModel := ""
 	workspaceRoot := ""
+	var ctrl control.SessionAPI
 	if tab := a.tabByIDLocked(tabID); tab != nil {
 		curModel = tab.model
 		workspaceRoot = tab.WorkspaceRoot
+		ctrl = tab.Ctrl
 	}
 	a.mu.RUnlock()
+	// The tab controller's merged catalog carries extension sidecar providers
+	// (plugin/... refs). Read it off-lock: a cold catalog fetch can block on a
+	// sidecar RPC and must never park a.mu.
+	var extensionCatalog []provider.Descriptor
+	if ctrl != nil {
+		extensionCatalog = ctrl.ProviderCatalog()
+	}
 	cfg, err := config.LoadForRoot(workspaceRoot)
 	if err != nil {
 		return []ModelInfo{}
@@ -9598,7 +9637,53 @@ func (a *App) ModelsForTab(tabID string) []ModelInfo {
 			out = append(out, ModelInfo{Ref: ref, Provider: p.Name, Model: m, Current: ref == curModel})
 		}
 	}
+	return mergeExtensionModelInfos(out, extensionCatalog, curModel)
+}
+
+// mergeExtensionModelInfos folds the tab controller's extension provider
+// catalog into the config-backed switcher list. Extension refs arrive fully
+// namespaced (plugin/<plugin>/<provider>/<model>) and need no provider-access
+// gate: installing/enabling the plugin package is the host-level grant. A nil
+// catalog (no provider-declaring sidecar) leaves the list untouched.
+func mergeExtensionModelInfos(out []ModelInfo, catalog []provider.Descriptor, curModel string) []ModelInfo {
+	if len(catalog) == 0 {
+		return out
+	}
+	seen := make(map[string]bool, len(out)+len(catalog))
+	for _, info := range out {
+		seen[info.Ref] = true
+	}
+	for _, d := range catalog {
+		ref := strings.TrimSpace(d.Ref)
+		if ref == "" || seen[ref] {
+			continue
+		}
+		seen[ref] = true
+		providerName, model := "plugin", ref
+		if owner := providerext.PluginRefOwner(ref); owner != "" {
+			providerName = "plugin/" + owner
+			model = strings.TrimPrefix(ref, "plugin/"+owner+"/")
+		}
+		out = append(out, ModelInfo{Ref: ref, Provider: providerName, Model: model, Current: ref == curModel})
+	}
 	return out
+}
+
+// extensionModelDescriptor finds a plugin-namespaced ref in a controller's
+// merged catalog: an exact match, or the prefix form where ref names the
+// provider and the descriptor adds the model segment. Non-plugin refs never
+// match — they belong to the config catalog.
+func extensionModelDescriptor(catalog []provider.Descriptor, ref string) (provider.Descriptor, bool) {
+	ref = strings.TrimSpace(ref)
+	if providerext.PluginRefOwner(ref) == "" {
+		return provider.Descriptor{}, false
+	}
+	for _, d := range catalog {
+		if d.Ref == ref || strings.HasPrefix(d.Ref, ref+"/") {
+			return d, true
+		}
+	}
+	return provider.Descriptor{}, false
 }
 
 func modelProviderAccessAllowed(access []string, name string) bool {
@@ -9612,6 +9697,19 @@ func modelProviderAccessAllowed(access []string, name string) bool {
 		}
 	}
 	return false
+}
+
+// providerCatalogForTab returns the tab controller's merged provider catalog
+// (extension sidecar providers over the config base), or nil when the tab has
+// no live controller or no sidecar declared providers.
+func (a *App) providerCatalogForTab(tab *WorkspaceTab) []provider.Descriptor {
+	if tab == nil {
+		return nil
+	}
+	if ctrl := a.controllerForTab(tab); ctrl != nil {
+		return ctrl.ProviderCatalog()
+	}
+	return nil
 }
 
 type activeRuntimeWork struct {
@@ -9925,15 +10023,27 @@ func (a *App) SetModelForTab(tabID, name string) (retErr error) {
 		return err
 	}
 	entry, ok := cfg.ResolveModel(name)
+	pluginRef := false
+	if !ok {
+		// Plugin-namespaced refs belong to extension sidecars: validate them
+		// against the tab controller's merged catalog instead of the config.
+		if d, found := extensionModelDescriptor(a.providerCatalogForTab(tab), name); found {
+			pluginRef = true
+			ok = true
+			name = d.Ref
+		}
+	}
 	if !ok {
 		return fmt.Errorf("unknown model %q", name)
 	}
-	if !modelProviderAccessAllowed(cfg.Desktop.ProviderAccess, entry.Name) {
-		return fmt.Errorf("model %q is not available because provider %q is not added", name, entry.Name)
+	if !pluginRef {
+		if !modelProviderAccessAllowed(cfg.Desktop.ProviderAccess, entry.Name) {
+			return fmt.Errorf("model %q is not available because provider %q is not added", name, entry.Name)
+		}
+		name = entry.Name + "/" + entry.Model
 	}
-	name = entry.Name + "/" + entry.Model
 	effortOverride := cloneStringPtr(snap.effort)
-	if effortOverride != nil {
+	if effortOverride != nil && !pluginRef {
 		normalized, err := config.NormalizeEffort(entry, config.EffortDisplay(&config.ProviderEntry{Effort: *effortOverride}))
 		if err != nil {
 			effortOverride = nil
