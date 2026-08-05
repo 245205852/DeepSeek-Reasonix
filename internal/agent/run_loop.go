@@ -11,6 +11,7 @@ import (
 	"reasonix/internal/evidence"
 	"reasonix/internal/jobs"
 	"reasonix/internal/provider"
+	"reasonix/internal/tool"
 )
 
 // runLoopState holds per-Run loop counters and flags. It is package-private and
@@ -25,6 +26,7 @@ type runLoopState struct {
 	handoffNudges      int
 	usedAnyTool        bool
 	streamRecoveries   int
+	goalToolRepairs    int
 	graceRound         bool
 	recoveryGraceRound bool
 
@@ -201,8 +203,10 @@ func (a *Agent) beginRunTurn(ctx context.Context, input string) (rawInput string
 	} else if strings.TrimSpace(classifierInput) == "" {
 		classifierInput = rawInput
 	}
-	a.deliveryTaskExpected = deliveryTaskNeedsEvidence(classifierInput)
-	a.deliveryMutationExpected = deliveryTaskNeedsMutation(classifierInput) && registryHasWriterTools(a.tools)
+	intent := classifyDeliveryTaskIntent(classifierInput)
+	a.deliveryTaskExpected = intent == deliveryIntentObservableRead || intent == deliveryIntentMutation || intent == deliveryIntentPersistentAction
+	a.deliveryMutationExpected = intent == deliveryIntentMutation && registryHasWriterTools(a.tools)
+	a.deliveryPersistentExpected = deliveryTaskNeedsPersistentAction(classifierInput)
 	a.recoveryTaskSummary = boundedRecoveryTaskSummary(classifierInput)
 	// A cancelled/error turn leaves a provider-excluded recovery record at the
 	// transcript tail. Fold its bounded facts into this new user turn exactly
@@ -335,7 +339,7 @@ func (a *Agent) runToolLoop(ctx context.Context, state *runLoopState) error {
 			continue
 		}
 
-		cont, terr := a.handleToolRound(ctx, state, step, calls, usage)
+		cont, terr := a.handleToolRound(ctx, state, step, text, reasoning, calls, usage)
 		if !cont {
 			return terr
 		}
@@ -561,9 +565,10 @@ func (a *Agent) handleFinalResponse(ctx context.Context, state *runLoopState, te
 // cancellation, todo stall tracking, recovery finalization pause, and the
 // max-steps grace round. cont=true continues the tool loop; cont=false returns
 // err from Run.
-func (a *Agent) handleToolRound(ctx context.Context, state *runLoopState, step int, calls []provider.ToolCall, usage *provider.Usage) (cont bool, err error) {
+func (a *Agent) handleToolRound(ctx context.Context, state *runLoopState, step int, text, reasoning string, calls []provider.ToolCall, usage *provider.Usage) (cont bool, err error) {
 	state.emptyFinalBlocks = 0
 	state.usedAnyTool = true
+	outOfContextGoalOnly := toolCallsAreOutOfContextGoalReports(ctx, calls)
 
 	// Grace round guard: if we already gave the model one extra response
 	// and it still wants to call tools, stop here.
@@ -615,6 +620,18 @@ func (a *Agent) handleToolRound(ctx context.Context, state *runLoopState, step i
 	if ctx.Err() != nil {
 		a.recordInterruptedDisplay("", "", nil, true, state.workDurationMs())
 		return false, ctx.Err()
+	}
+	if outOfContextGoalOnly {
+		if hasVisibleFinalAnswer(text) {
+			// Keep the assistant tool call and host error paired in the transcript,
+			// but accept the co-streamed answer instead of spending another model
+			// request repairing harmless Goal bookkeeping outside Goal mode.
+			return a.handleFinalResponse(ctx, state, text, reasoning, usage)
+		}
+		state.goalToolRepairs++
+		if state.goalToolRepairs > 1 {
+			return false, fmt.Errorf("model repeatedly called update_goal outside Goal mode without a visible answer")
+		}
 	}
 	if !a.planMode.Load() {
 		nextProgress, nextTracking := a.canonicalTodoProgress()
@@ -685,4 +702,19 @@ func (a *Agent) handleToolRound(ctx context.Context, state *runLoopState, step i
 		a.sink.Emit(event.Event{Kind: event.Notice, Level: event.LevelInfo, Code: event.NoticeCodeToolBudget, Text: toolBudgetNoticeText(), Detail: fmt.Sprintf("budget (%s=%d) exhausted: one grace round to finalize", state.runMaxStepsKey, state.runMaxSteps)})
 	}
 	return true, nil
+}
+
+func toolCallsAreOutOfContextGoalReports(ctx context.Context, calls []provider.ToolCall) bool {
+	if len(calls) == 0 {
+		return false
+	}
+	if _, ok := tool.GoalTurnRecorderFromContext(ctx); ok {
+		return false
+	}
+	for _, call := range calls {
+		if call.Name != "update_goal" {
+			return false
+		}
+	}
+	return true
 }

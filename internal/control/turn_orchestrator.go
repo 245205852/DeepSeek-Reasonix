@@ -88,13 +88,19 @@ func (o *turnOrchestrator) runSubagentSkillTurnsGoalLoop(ctx context.Context, sk
 	// budget, so bind a recorder for the span even though the sub-agent cannot
 	// call update_goal itself.
 	if scopeID, _, ok := o.c.goals.deliveryScope(); ok {
-		o.c.goalUsageTee.setActiveRecorder(o.c.goals.newTurnRecorder(scopeID, o.c.goals.continuationToken()))
+		recorder := o.c.goals.newTurnRecorder(scopeID, o.c.goals.continuationToken())
+		o.c.goalUsageTee.setActiveRecorder(recorder)
+		ctx = provider.WithRequestBudget(ctx, recorder)
 	}
 	if err := o.runSubagentSkillTurns(ctx, skills, task, raw, display, runner, planMode); err != nil {
 		if ctx.Err() != nil {
 			o.c.goalUsageTee.setActiveRecorder(nil)
 			o.c.stopGoal(GoalStatusStopped)
 		}
+		if errors.Is(err, provider.ErrRequestBudgetExhausted) && o.c.goals.active() {
+			return o.continueGoal(ctx, expectedContinuationEpoch, err)
+		}
+		o.c.goalUsageTee.setActiveRecorder(nil)
 		return err
 	}
 	return o.continueGoal(ctx, expectedContinuationEpoch, nil)
@@ -246,10 +252,6 @@ func (o *turnOrchestrator) runOrchestratedTurn(ctx context.Context, turn orchest
 	}
 	autoResearchAcceptedBefore := c.autoResearchAcceptedEvidenceIDs(autoResearchTaskID)
 	c.appendAutoResearchHeartbeat(autoResearchTaskID, autoresearch.HeartbeatStartingTurn, "")
-	modelInput := input
-	if !turn.synthetic {
-		modelInput = c.withCapabilityRoute(input, turn.raw)
-	}
 	if continuation != nil {
 		ctx = agent.WithDeliveryExecutionScope(ctx, agent.DeliveryExecutionScope{
 			ID:       continuation.scopeID,
@@ -269,7 +271,12 @@ func (o *turnOrchestrator) runOrchestratedTurn(ctx context.Context, turn orchest
 			recorder.setProgressBefore(c.executor.HostProgressSignature())
 		}
 		ctx = tool.WithGoalTurnRecorder(ctx, recorder)
+		ctx = provider.WithRequestBudget(ctx, recorder)
 		c.goalUsageTee.setActiveRecorder(recorder)
+	}
+	modelInput := input
+	if !turn.synthetic {
+		modelInput = c.withCapabilityRoute(ctx, input, turn.raw)
 	}
 	ctx = c.withPlannerTurnMetadata(ctx, turn.raw, turn.synthetic, startMessages)
 	// Real user turns open a fresh Recovery Episode. Goal auto-continues and
@@ -377,7 +384,7 @@ func (o *turnOrchestrator) runGoalLoopWithRawDisplay(ctx context.Context, input,
 			return err
 		}
 		var readinessErr *agent.FinalReadinessError
-		if !errors.As(err, &readinessErr) || !o.c.goals.active() {
+		if (!errors.As(err, &readinessErr) && !errors.Is(err, provider.ErrRequestBudgetExhausted)) || !o.c.goals.active() {
 			// Terminal provider/host error (or a plain non-Goal Delivery
 			// readiness failure): stop auto-continue. With no active Goal the
 			// error surfaces the recovery card; with a Goal it stays running so
@@ -401,7 +408,7 @@ func (o *turnOrchestrator) runEditedGoalLoopWithRawDisplay(ctx context.Context, 
 			return err
 		}
 		var readinessErr *agent.FinalReadinessError
-		if !errors.As(err, &readinessErr) || !o.c.goals.active() {
+		if (!errors.As(err, &readinessErr) && !errors.Is(err, provider.ErrRequestBudgetExhausted)) || !o.c.goals.active() {
 			o.c.goalUsageTee.setActiveRecorder(nil)
 			return err
 		}
@@ -443,7 +450,7 @@ func (o *turnOrchestrator) continueGoal(ctx context.Context, expectedContinuatio
 				return err
 			}
 			var readinessErr *agent.FinalReadinessError
-			if !errors.As(err, &readinessErr) {
+			if !errors.As(err, &readinessErr) && !errors.Is(err, provider.ErrRequestBudgetExhausted) {
 				// Terminal provider/host error: stop auto-continue; the Goal
 				// stays running for the next user turn.
 				c.goalUsageTee.setActiveRecorder(nil)
@@ -470,15 +477,14 @@ func (o *turnOrchestrator) advanceGoalAfterTurn(ctx context.Context, expectedCon
 	recorder := c.goalUsageTee.activeRecorder()
 	defer c.goalUsageTee.setActiveRecorder(nil)
 
-	// Fold this turn's billable usage into the goal token budget (the machine
-	// rejects stale scope/epoch).
-	if recorder != nil {
-		recorder.foldIntoGoal()
-	}
-
 	var readiness agent.ReadinessResult
 	var readinessErr *agent.FinalReadinessError
-	if errors.As(turnErr, &readinessErr) {
+	var budgetErr *provider.RequestBudgetError
+	budgetRequestBlocked := ""
+	if errors.As(turnErr, &budgetErr) {
+		budgetRequestBlocked = fmt.Sprintf("token budget cannot admit another provider request (%d/%d tokens used, %d remaining; next input estimate %d)",
+			budgetErr.Used, budgetErr.Limit, budgetErr.Remaining, budgetErr.EstimatedInput)
+	} else if errors.As(turnErr, &readinessErr) {
 		readiness = agent.ReadinessResult{
 			Ready:       false,
 			Missing:     append([]string(nil), readinessErr.Missing...),
@@ -515,7 +521,10 @@ func (o *turnOrchestrator) advanceGoalAfterTurn(ctx context.Context, expectedCon
 	// in the FSM.
 	var evaluator *goalEvaluatorVerdict
 	var evaluatorFailed string
-	if report == nil && len(readiness.Missing) == 0 && !c.goals.budgetExhausted() {
+	if budgetRequestBlocked == "" && report == nil && len(readiness.Missing) == 0 && !c.goals.budgetExhausted() {
+		if recorder != nil {
+			ctx = provider.WithRequestBudget(ctx, recorder)
+		}
 		if c.evaluator == nil {
 			evaluatorFailed = "goal evaluator unavailable"
 		} else if verdict, err := c.evaluator.Evaluate(ctx, c.goalEvaluatorEvidence()); err != nil {
@@ -534,14 +543,15 @@ func (o *turnOrchestrator) advanceGoalAfterTurn(ctx context.Context, expectedCon
 	}
 
 	res := c.goals.advance(goalAdvanceInput{
-		report:          report,
-		readiness:       readiness,
-		evaluator:       evaluator,
-		evaluatorFailed: evaluatorFailed,
-		todos:           c.goalTodos(),
-		progressBefore:  progressBefore,
-		progressAfter:   progressAfter,
-		expectedEpoch:   &expectedContinuationEpoch,
+		report:               report,
+		readiness:            readiness,
+		evaluator:            evaluator,
+		evaluatorFailed:      evaluatorFailed,
+		budgetRequestBlocked: budgetRequestBlocked,
+		todos:                c.goalTodos(),
+		progressBefore:       progressBefore,
+		progressAfter:        progressAfter,
+		expectedEpoch:        &expectedContinuationEpoch,
 	})
 	c.persistGoalState(res.path, res.data, res.ok)
 	if res.notice != "" {

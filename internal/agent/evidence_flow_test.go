@@ -139,6 +139,9 @@ func TestEvidenceFlowEndToEnd(t *testing.T) {
 func TestDeliveryProfileEnforcesAcceptanceReviewVerificationAndSignoff(t *testing.T) {
 	reg := evidenceRegistry()
 	reg.Add(fakeTool{name: "read_file", readOnly: true})
+	// Keep review available so this ordinary production change exercises the
+	// Medium-risk host-proof alternative instead of the minimal-registry bypass.
+	reg.Add(fakeTool{name: "review", readOnly: true})
 
 	prov := &scriptedProvider{name: "delivery", turns: [][]provider.Chunk{
 		{toolCallChunk("blocked-write", "write_file", `{"path":"main.go","content":"package main"}`), {Type: provider.ChunkDone}},

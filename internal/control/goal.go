@@ -16,12 +16,13 @@ import (
 	"reasonix/internal/fileutil"
 	fileencoding "reasonix/internal/fileutil/encoding"
 	"reasonix/internal/goaleval"
+	"reasonix/internal/provider"
 	"reasonix/internal/store"
 	"reasonix/internal/tool"
 )
 
 const (
-	goalContinueTurn  = "Continue pursuing the active goal under its task contract. Do the next useful work, then call update_goal with your disposition: continue (include the next concrete step in next_action), complete (only when fully done and verified), or blocked (when only the user can unblock)."
+	goalContinueTurn   = "Continue pursuing the active goal under its task contract. Do the next useful work, then call update_goal with your disposition: continue (include the next concrete step in next_action), complete (only when fully done and verified), or blocked (when only the user can unblock)."
 	goalCompleteNotice = "goal complete"
 
 	// Default no-progress stall limit: four consecutive goal turns without any
@@ -130,17 +131,17 @@ type goalState struct {
 	Strict             bool                        `json:"strict,omitempty"`
 	Todos              []evidence.TodoItem         `json:"todos,omitempty"`
 
-	BudgetClass          string `json:"budgetClass,omitempty"`
-	TurnsUsed            int    `json:"turnsUsed,omitempty"`
-	TurnsLimit           int    `json:"turnsLimit,omitempty"`
-	TokensUsed           int    `json:"tokensUsed,omitempty"`
-	TokensLimit          int    `json:"tokensLimit,omitempty"`
-	NoProgressTurns      int    `json:"noProgressTurns,omitempty"`
-	NoProgressLimit      int    `json:"noProgressLimit,omitempty"`
+	BudgetClass            string `json:"budgetClass,omitempty"`
+	TurnsUsed              int    `json:"turnsUsed,omitempty"`
+	TurnsLimit             int    `json:"turnsLimit,omitempty"`
+	TokensUsed             int    `json:"tokensUsed,omitempty"`
+	TokensLimit            int    `json:"tokensLimit,omitempty"`
+	NoProgressTurns        int    `json:"noProgressTurns,omitempty"`
+	NoProgressLimit        int    `json:"noProgressLimit,omitempty"`
 	LastContinuationReason string `json:"lastContinuationReason,omitempty"`
-	LastEvaluatorReason  string `json:"lastEvaluatorReason,omitempty"`
-	StopCause            string `json:"stopCause,omitempty"`
-	BudgetExtensions     int    `json:"budgetExtensions,omitempty"`
+	LastEvaluatorReason    string `json:"lastEvaluatorReason,omitempty"`
+	StopCause              string `json:"stopCause,omitempty"`
+	BudgetExtensions       int    `json:"budgetExtensions,omitempty"`
 }
 
 // goalMachineSnapshot is an in-memory rollback point for durable Goal updates.
@@ -161,14 +162,15 @@ type goalMachineSnapshot struct {
 // decision point: it applies readiness, budget, and no-progress gates and
 // decides complete / continue / blocked / pause.
 type goalAdvanceInput struct {
-	report         *goalTurnReport     // validated update_goal report; nil when none
-	readiness      agent.ReadinessResult
-	evaluator      *goalEvaluatorVerdict // evaluator verdict; nil when not run
-	evaluatorFailed string             // evaluator error/timeout text; pause fail-closed
-	todos          []evidence.TodoItem
-	progressBefore string // host progress signature captured before the turn
-	progressAfter  string // host progress signature captured after the turn
-	expectedEpoch  *uint64
+	report               *goalTurnReport // validated update_goal report; nil when none
+	readiness            agent.ReadinessResult
+	evaluator            *goalEvaluatorVerdict // evaluator verdict; nil when not run
+	evaluatorFailed      string                // evaluator error/timeout text; pause fail-closed
+	budgetRequestBlocked string                // request-level budget admission failure; pause before another provider call
+	todos                []evidence.TodoItem
+	progressBefore       string // host progress signature captured before the turn
+	progressAfter        string // host progress signature captured after the turn
+	expectedEpoch        *uint64
 }
 
 // goalEvaluatorVerdict is the bounded evaluator's structured outcome.
@@ -564,6 +566,12 @@ func (g *goalMachine) advance(in goalAdvanceInput) goalAdvanceResult {
 		g.stopCause = ""
 		g.lastContinuationReason, g.lastEvaluatorReason = "", ""
 		notice = goalCompleteNotice
+	case in.budgetRequestBlocked != "":
+		reason := clipGoalReason(in.budgetRequestBlocked)
+		g.status = GoalStatusBlocked
+		g.stopCause = stopCauseBudgetTokens
+		g.block = reason
+		notice = "goal paused: " + reason
 	case in.evaluatorFailed != "" || (in.evaluator != nil && in.evaluator.outcome == goaleval.OutcomeUncertain):
 		// Fail closed: an unavailable, erroring, or uncertain evaluator pauses
 		// the goal instead of defaulting to continue.
@@ -637,13 +645,14 @@ func (g *goalMachine) advance(in goalAdvanceInput) goalAdvanceResult {
 // foldUsage attributes a turn's billable tokens to the goal, but only while the
 // goal lifecycle still matches the recorder's scope+epoch; stale or replaced
 // goals reject late usage.
-func (g *goalMachine) foldUsage(scopeID string, epoch uint64, tokens int) {
+func (g *goalMachine) foldUsage(scopeID string, epoch uint64, tokens int) bool {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	if tokens <= 0 || g.scopeID != scopeID || g.continuationEpoch != epoch {
-		return
+		return false
 	}
 	g.tokensUsed += tokens
+	return true
 }
 
 // buildStateLocked marshals the current goal state for persistence. The caller
@@ -655,27 +664,27 @@ func (g *goalMachine) buildStateLocked(todos []evidence.TodoItem) (path string, 
 		return "", nil, false
 	}
 	state := goalState{
-		Goal:                 g.goal,
-		Status:               g.status,
-		ResearchMode:         g.researchMode,
-		AutoResearchTaskID:   g.autoResearchTaskID,
-		ScopeID:              g.scopeID,
-		DeliveryCheckpoint:   g.deliveryCheckpoint,
-		Turns:                g.turnsUsed,
-		Block:                g.block,
-		Strict:               g.strict,
-		Todos:                todos,
-		BudgetClass:          g.budgetClass,
-		TurnsUsed:            g.turnsUsed,
-		TurnsLimit:           g.turnsLimit,
-		TokensUsed:           g.tokensUsed,
-		TokensLimit:          g.tokensLimit,
-		NoProgressTurns:      g.noProgressTurns,
-		NoProgressLimit:      g.noProgressLimit,
+		Goal:                   g.goal,
+		Status:                 g.status,
+		ResearchMode:           g.researchMode,
+		AutoResearchTaskID:     g.autoResearchTaskID,
+		ScopeID:                g.scopeID,
+		DeliveryCheckpoint:     g.deliveryCheckpoint,
+		Turns:                  g.turnsUsed,
+		Block:                  g.block,
+		Strict:                 g.strict,
+		Todos:                  todos,
+		BudgetClass:            g.budgetClass,
+		TurnsUsed:              g.turnsUsed,
+		TurnsLimit:             g.turnsLimit,
+		TokensUsed:             g.tokensUsed,
+		TokensLimit:            g.tokensLimit,
+		NoProgressTurns:        g.noProgressTurns,
+		NoProgressLimit:        g.noProgressLimit,
 		LastContinuationReason: g.lastContinuationReason,
-		LastEvaluatorReason:  g.lastEvaluatorReason,
-		StopCause:            g.stopCause,
-		BudgetExtensions:     g.budgetExtensions,
+		LastEvaluatorReason:    g.lastEvaluatorReason,
+		StopCause:              g.stopCause,
+		BudgetExtensions:       g.budgetExtensions,
 	}
 	b, err := json.Marshal(state)
 	if err != nil {
@@ -977,16 +986,17 @@ func (g *goalMachine) budgetStatusText() string {
 // from a replaced or cleared goal are rejected. Usage events emitted during the
 // turn are folded through the recorder into the goal's token budget.
 type goalTurnRecorder struct {
-	mu          sync.Mutex
-	machine     *goalMachine
-	scopeID     string
-	epoch       uint64
-	recorded    bool
-	terminal    bool
-	status      string
-	reason      string
-	nextAction  string
-	tokensUsed  int
+	mu             sync.Mutex
+	machine        *goalMachine
+	scopeID        string
+	epoch          uint64
+	recorded       bool
+	terminal       bool
+	status         string
+	reason         string
+	nextAction     string
+	tokensUsed     int
+	tokensReserved int
 	progressBefore string
 }
 
@@ -1043,7 +1053,9 @@ func (r *goalTurnRecorder) addUsage(tokens int) {
 		return
 	}
 	r.mu.Lock()
-	r.tokensUsed += tokens
+	if r.machine.foldUsage(r.scopeID, r.epoch, tokens) {
+		r.tokensUsed += tokens
+	}
 	r.mu.Unlock()
 }
 
@@ -1053,13 +1065,106 @@ func (r *goalTurnRecorder) usageTokens() int {
 	return r.tokensUsed
 }
 
-// foldIntoGoal attributes the recorder's accumulated usage to the goal machine,
-// which rejects it when the scope/epoch binding is stale.
-func (r *goalTurnRecorder) foldIntoGoal() {
-	if r == nil || r.machine == nil {
+// ReserveProviderRequest implements provider.RequestBudget. It reserves a
+// conservative input+output allowance before the network call, preventing
+// concurrent requests from spending the same remaining Goal budget. A zero
+// provider max keeps its existing wire behavior while reserving Reasonix's
+// conservative default output ceiling; near the boundary it is reduced to the
+// exact remaining output allowance.
+func (r *goalTurnRecorder) ReserveProviderRequest(estimatedInput, maxOutputTokens int) (int, provider.RequestBudgetReservation, error) {
+	if estimatedInput < 1 {
+		estimatedInput = 1
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.machine == nil {
+		return maxOutputTokens, noopGoalRequestReservation{}, nil
+	}
+	r.machine.mu.Lock()
+	defer r.machine.mu.Unlock()
+	if r.machine.scopeID != r.scopeID || r.machine.continuationEpoch != r.epoch || r.machine.status != GoalStatusRunning {
+		return 0, nil, &provider.RequestBudgetError{EstimatedInput: estimatedInput}
+	}
+	if r.machine.tokensLimit <= 0 {
+		return maxOutputTokens, noopGoalRequestReservation{}, nil
+	}
+	remaining := r.machine.tokensLimit - r.machine.tokensUsed - r.tokensReserved
+	if remaining <= estimatedInput {
+		return 0, nil, &provider.RequestBudgetError{
+			Used: r.machine.tokensUsed, Limit: r.machine.tokensLimit,
+			Remaining: maxInt(remaining, 0), EstimatedInput: estimatedInput,
+		}
+	}
+	availableOutput := remaining - estimatedInput
+	reserveOutput := maxOutputTokens
+	adjustedOutput := maxOutputTokens
+	if reserveOutput <= 0 {
+		reserveOutput = provider.DefaultReasoningOutputTokens
+	}
+	if reserveOutput > availableOutput {
+		reserveOutput = availableOutput
+		adjustedOutput = availableOutput
+	}
+	if reserveOutput <= 0 {
+		return 0, nil, &provider.RequestBudgetError{
+			Used: r.machine.tokensUsed, Limit: r.machine.tokensLimit,
+			Remaining: maxInt(remaining, 0), EstimatedInput: estimatedInput,
+		}
+	}
+	reserved := estimatedInput + reserveOutput
+	r.tokensReserved += reserved
+	return adjustedOutput, &goalRequestReservation{recorder: r, reserved: reserved}, nil
+}
+
+type goalRequestReservation struct {
+	once     sync.Once
+	recorder *goalTurnRecorder
+	reserved int
+}
+
+func (r *goalRequestReservation) Commit(tokens int) {
+	if r == nil {
 		return
 	}
-	r.machine.foldUsage(r.scopeID, r.epoch, r.usageTokens())
+	r.once.Do(func() {
+		r.recorder.settleProviderRequest(r.reserved, tokens)
+	})
+}
+
+func (r *goalRequestReservation) Cancel() {
+	if r == nil {
+		return
+	}
+	r.once.Do(func() {
+		r.recorder.settleProviderRequest(r.reserved, 0)
+	})
+}
+
+type noopGoalRequestReservation struct{}
+
+func (noopGoalRequestReservation) Commit(int) {}
+func (noopGoalRequestReservation) Cancel()    {}
+
+func (r *goalTurnRecorder) settleProviderRequest(reserved, tokens int) {
+	if r == nil {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.tokensReserved -= reserved
+	if r.tokensReserved < 0 {
+		r.tokensReserved = 0
+	}
+	if tokens > 0 && r.machine.foldUsage(r.scopeID, r.epoch, tokens) {
+		r.tokensUsed += tokens
+	}
+}
+
+func maxInt(a, b int) int {
+	if a > b {
+		return a
+	}
+	return b
 }
 
 // validReport returns the recorded report only when the goal lifecycle still

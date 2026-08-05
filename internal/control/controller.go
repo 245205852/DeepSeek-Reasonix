@@ -386,7 +386,7 @@ type Options struct {
 	// the goal pauses instead of defaulting to continue.
 	GoalEvaluator goaleval.Evaluator
 	Sink          event.Sink
-	Policy           permission.Policy
+	Policy        permission.Policy
 	// SubagentGate is the shared, mutable gate every headless-only sub-agent
 	// surface (task, writer-capable skill sub-agents, planner) reads from. Nil
 	// disables gating for those surfaces same as before this field existed.
@@ -977,22 +977,6 @@ func (c *Controller) runSubagentSkillSlash(sk skill.Skill, task, raw, display st
 		}
 		return newTurnOrchestrator(c).runSubagentSkillGoalLoop(ctx, sk, task, raw, display, runner, planMode)
 	})
-}
-
-// toolWasCalledLastTurn reports whether the most recent assistant message
-// contained any tool calls, indicating the agent made observable progress.
-func (c *Controller) toolWasCalledLastTurn() bool {
-	msgs := c.History()
-	for i := len(msgs) - 1; i >= 0; i-- {
-		m := msgs[i]
-		if m.Role == provider.RoleAssistant {
-			return len(m.ToolCalls) > 0
-		}
-		if m.Role == provider.RoleUser {
-			return false
-		}
-	}
-	return false
 }
 
 func (c *Controller) stopGoal(status string) {
@@ -1732,7 +1716,7 @@ func (c *Controller) Run(ctx context.Context, input string) (err error) {
 	c.markInFlightTurn(startMessages, true)
 	defer c.clearInFlightTurn()
 	ctx = c.withPlannerTurnMetadata(ctx, rawInput, false, startMessages)
-	err = c.runner.Run(ctx, c.withCapabilityRoute(input, rawInput))
+	err = c.runner.Run(ctx, c.withCapabilityRoute(ctx, input, rawInput))
 	return err
 }
 
@@ -2395,7 +2379,7 @@ func (c *Controller) GoalRuntime() GoalRuntimeView {
 func (c *Controller) goalEvaluatorEvidence() goaleval.GoalEvidence {
 	goal, _, mode, taskID := c.goals.snapshot()
 	ev := goaleval.GoalEvidence{
-		GoalContract:         goal,
+		GoalContract:           goal,
 		LastContinuationReason: c.goals.lastContinuationReasonText(),
 	}
 	if c.executor != nil {

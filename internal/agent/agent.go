@@ -452,6 +452,7 @@ type Agent struct {
 	deliveryCriteriaEstablished bool
 	deliveryTaskExpected        bool
 	deliveryMutationExpected    bool
+	deliveryPersistentExpected  bool
 	deliveryScopeID             string
 	deliveryScopeActive         bool
 	deliveryCheckpoint          evidence.DeliveryCheckpoint
@@ -1614,9 +1615,13 @@ func (a *Agent) finalReadinessCheckFor() finalReadinessCheck {
 			deliveryMutation = true
 		}
 		workObserved := a.evidence.HasSuccessfulWorkReceipt() || (checkpointApplies && checkpoint.WorkObserved)
-		if a.deliveryTaskExpected && !workObserved {
+		if a.deliveryTaskExpected && !a.deliveryPersistentExpected && !workObserved {
 			out.missingActionEvidence++
 			missing = append(missing, "perform host-observable work for this technical task before answering")
+		}
+		if a.deliveryPersistentExpected && !a.evidence.HasSuccessfulToolReceipt("remember") {
+			out.missingMutation++
+			missing = append(missing, "save the requested durable memory with the remember tool before answering")
 		}
 		if a.deliveryMutationExpected && !deliveryMutation {
 			out.missingMutation++
@@ -1633,6 +1638,16 @@ func (a *Agent) finalReadinessCheckFor() finalReadinessCheck {
 			out.applies = true
 			out.missingCapabilities++
 			missing = append(missing, msg)
+		}
+		if a.deliveryPersistentExpected && !a.deliveryMutationExpected && !a.evidence.HasSuccessfulMutationOtherThan("remember") {
+			// A durable-memory-only request has its own concrete receipt contract.
+			// It must not inherit code-delivery todo/test/diff/review ceremonies;
+			// any unrelated mutation falls through to the full contract below.
+			out.applies = true
+			if len(missing) > 0 {
+				out.reason = strings.Join(missing, "; ")
+			}
+			return out
 		}
 	}
 	if !hasWriter {
@@ -1738,9 +1753,14 @@ func (a *Agent) updateDeliveryCheckpoint(runErr error) {
 	}
 	cp.CriteriaEstablished = cp.CriteriaEstablished || a.deliveryCriteriaEstablished || a.evidence.HasSuccessfulTodoWrite()
 	cp.WorkObserved = cp.WorkObserved || a.evidence.HasSuccessfulWorkReceipt()
-	if _, ok := a.evidence.LatestSuccessfulMutationIndex(); ok {
+	persistentOnlyReady := a.deliveryPersistentExpected && !a.deliveryMutationExpected &&
+		a.evidence.HasSuccessfulToolReceipt("remember") && !a.evidence.HasSuccessfulMutationOtherThan("remember")
+	if _, ok := a.evidence.LatestSuccessfulMutationIndex(); ok && !persistentOnlyReady {
 		cp.MutationObserved = true
 		cp.PendingMutation = true
+	}
+	if persistentOnlyReady {
+		cp.MutationObserved = true
 	}
 	if runErr == nil && cp.PendingMutation && a.deliveryMutationCheckpointReady() {
 		cp.PendingMutation = false
@@ -1890,15 +1910,36 @@ func registryHasWriterTools(reg *tool.Registry) bool {
 	return false
 }
 
-func deliveryTaskNeedsEvidence(input string) bool {
-	if !heuristicInputIsTask(input) {
-		return false
+type deliveryTaskIntent uint8
+
+const (
+	deliveryIntentConversation deliveryTaskIntent = iota
+	deliveryIntentAdvisory
+	deliveryIntentObservableRead
+	deliveryIntentMutation
+	deliveryIntentPersistentAction
+)
+
+func classifyDeliveryTaskIntent(input string) deliveryTaskIntent {
+	switch {
+	case deliveryTaskHasMutationIntent(input):
+		return deliveryIntentMutation
+	case deliveryTaskNeedsPersistentAction(input):
+		return deliveryIntentPersistentAction
+	case deliveryTaskIsConversationOnly(input):
+		return deliveryIntentConversation
+	case !heuristicInputIsTask(input):
+		return deliveryIntentConversation
+	case deliveryTaskIsAdvisory(input):
+		return deliveryIntentAdvisory
+	default:
+		return deliveryIntentObservableRead
 	}
-	// Mutations always need evidence. Read-only technical tasks still need it
-	// when the user names work Reasonix can observe (reviewing a PR, reading a
-	// file, running tests, or reproducing a failure). Only explicit advisory
-	// questions may finish with an explanation alone.
-	return deliveryTaskNeedsMutation(input) || !deliveryTaskIsAdvisory(input)
+}
+
+func deliveryTaskNeedsEvidence(input string) bool {
+	intent := classifyDeliveryTaskIntent(input)
+	return intent == deliveryIntentObservableRead || intent == deliveryIntentMutation || intent == deliveryIntentPersistentAction
 }
 
 var deliveryMutationNeedles = []string{
@@ -1917,8 +1958,45 @@ var deliveryAdvisoryPhrases = []string{
 }
 
 func deliveryTaskNeedsMutation(input string) bool {
+	intent := classifyDeliveryTaskIntent(input)
+	return intent == deliveryIntentMutation || intent == deliveryIntentPersistentAction
+}
+
+func deliveryTaskHasMutationIntent(input string) bool {
 	affirmative, _ := deliveryTaskMutationIntent(input)
 	return affirmative
+}
+
+func deliveryTaskNeedsPersistentAction(input string) bool {
+	normalized := strings.ToLower(strings.TrimSpace(input))
+	if normalized == "" {
+		return false
+	}
+	action := containsAnySubstring(normalized, []string{
+		"remember", "save", "store", "keep this", "keep that",
+		"记住", "记下来", "保存", "存下来", "记录下来",
+	})
+	durable := containsAnySubstring(normalized, []string{
+		"permanently", "durable", "long-term", "long term", "across sessions", "future sessions", "every session", "after restart", "after restarting",
+		"永久", "长期", "持久", "跨会话", "以后每次", "未来会话", "重启后", "下次启动",
+	})
+	return action && durable && !deliveryTaskClauseIsAdvisory(normalized)
+}
+
+func deliveryTaskIsConversationOnly(input string) bool {
+	normalized := strings.ToLower(strings.TrimSpace(input))
+	if normalized == "" || deliveryTaskHasHostAnchor(normalized) || deliveryTaskHasCommand(normalized) {
+		return false
+	}
+	localCue := containsAnySubstring(normalized, []string{
+		"next turn", "next message", "later in this chat", "this conversation", "when i ask again", "when i ask next",
+		"下一轮", "下轮", "下一条消息", "稍后再问", "待会再问", "这个对话", "本次对话", "本轮会话",
+	})
+	conversationAction := containsAnySubstring(normalized, []string{
+		"remember", "keep in mind", "keep this", "keep that", "answer", "respond", "reply",
+		"记住", "记一下", "回答", "回复", "再告诉我",
+	})
+	return localCue && conversationAction
 }
 
 // TaskNeedsMutation reports whether a task text looks like a mutation request
@@ -2759,12 +2837,17 @@ func (a *Agent) stream(ctx context.Context, turn int, sink event.Sink) (string, 
 	for i := range requestMessages {
 		requestMessages[i].CreatedAt = 0
 	}
-	ch, err := a.prov.Stream(ctx, provider.Request{
+	req := provider.Request{
 		Messages:    requestMessages,
 		Tools:       a.tools.Schemas(),
 		MaxTokens:   a.maxOutputTokens,
 		Temperature: provider.OptionalTemperature(a.temperature),
-	})
+	}
+	inputFloor := 0
+	if previous := a.lastUsage.Load(); previous != nil {
+		inputFloor = previous.PromptTokens
+	}
+	ch, err := provider.StreamWithRequestBudgetEstimate(ctx, a.prov, req, inputFloor)
 	if err != nil {
 		return "", "", "", nil, nil, provider.UsageWithRequestAttemptCount(ctx, nil), false, false, nil, err
 	}
@@ -3079,6 +3162,7 @@ func (a *Agent) executeBatch(ctx context.Context, calls []provider.ToolCall) bat
 			calls[i].ResolvedName = outcomes[i].resolvedName
 			calls[i].CapabilityID = outcomes[i].capabilityID
 			calls[i].ResolvedReadOnly = &readOnly
+			surfaceWriters[i] = !readOnly
 		}
 		if calls[i].Name == "complete_step" && outcomes[i].errMsg == "" {
 			completedStepInBatch = true

@@ -67,6 +67,29 @@ func TestSimpleGoalWithoutReportCompletesViaEvaluator(t *testing.T) {
 	}
 }
 
+func TestGoalEvaluatorUsageCommitsBeforeFSMCompletion(t *testing.T) {
+	sink := NewGoalUsageTee(event.Discard)
+	mainProv := &scriptedTurns{turns: [][]provider.Chunk{textTurn("Here is the answer.")}}
+	evalProv := &scriptedTurns{turns: [][]provider.Chunk{{
+		{Type: provider.ChunkText, Text: `{"outcome":"complete","reason":"done"}`},
+		{Type: provider.ChunkUsage, Usage: &provider.Usage{PromptTokens: 60, CompletionTokens: 17, TotalTokens: 77}},
+		{Type: provider.ChunkDone},
+	}}}
+	executor := agent.New(mainProv, goalRegistry(), agent.NewSession(""), agent.Options{}, sink)
+	evaluator := goaleval.NewSessionWithSink(evalProv, nil, "test/evaluator", sink)
+	c := New(Options{Runner: executor, Executor: executor, GoalEvaluator: evaluator, Sink: sink})
+	c.SetGoal("answer once")
+	if err := newTurnOrchestrator(c).runGoalLoopWithRawDisplay(context.Background(), "answer", "answer", ""); err != nil {
+		t.Fatal(err)
+	}
+	if c.GoalStatus() != GoalStatusComplete {
+		t.Fatalf("status = %q, want complete", c.GoalStatus())
+	}
+	if got := c.GoalRuntime().TokensUsed; got != 77 {
+		t.Fatalf("evaluator usage = %d, want 77 committed before FSM completion", got)
+	}
+}
+
 // TestEvaluatorOutcomesDriveFSM covers the evaluator verdict matrix.
 func TestEvaluatorOutcomesDriveFSM(t *testing.T) {
 	cases := []struct {
@@ -357,13 +380,11 @@ func TestGoalTurnRecorderProtocol(t *testing.T) {
 	t.Run("usage folds only for matching lifecycle", func(t *testing.T) {
 		g, rec := newRec(t)
 		rec.addUsage(150)
-		rec.foldIntoGoal()
 		if g.tokensUsed != 150 {
 			t.Fatalf("tokensUsed = %d, want 150", g.tokensUsed)
 		}
 		g.set("replacement", GoalResearchAuto, "", nil)
 		rec.addUsage(50)
-		rec.foldIntoGoal()
 		if g.tokensUsed != 0 {
 			t.Fatalf("stale usage folded into replacement goal: %d", g.tokensUsed)
 		}
@@ -399,12 +420,60 @@ func TestGoalUsageTeeAttributesScopedBillableCallsAndExcludesTitle(t *testing.T)
 	if rec.usageTokens() != 100+200+300+400+500+600+700+800 {
 		t.Fatalf("usageTokens = %d, want 3600", rec.usageTokens())
 	}
+	if g.tokensUsed != 3600 {
+		t.Fatalf("live goal tokens = %d, want 3600", g.tokensUsed)
+	}
+	// Request middleware commits exact usage before the event is forwarded;
+	// the marker prevents the fallback sink path from double counting it.
+	tee.Emit(event.Event{Kind: event.Usage, Usage: &provider.Usage{TotalTokens: 50, BudgetAccounted: true}, UsageSource: event.UsageSourceExecutor})
+	if g.tokensUsed != 3600 {
+		t.Fatalf("middleware-accounted usage was counted twice: %d", g.tokensUsed)
+	}
 
 	// No active goal turn → nothing folds.
 	tee.setActiveRecorder(nil)
 	tee.Emit(event.Event{Kind: event.Usage, Usage: usage(50), UsageSource: event.UsageSourceExecutor})
 	if rec.usageTokens() != 3600 {
 		t.Fatalf("usageTokens after span close = %d, want 3600", rec.usageTokens())
+	}
+}
+
+func TestGoalRequestBudgetReservesConcurrentAllowanceAndStopsBeforeOvershoot(t *testing.T) {
+	g := &goalMachine{goal: "bounded", status: GoalStatusRunning, tokensUsed: 40, tokensLimit: 100}
+	g.scopeID = newGoalScopeID()
+	rec := g.newTurnRecorder(g.scopeID, g.continuationEpoch)
+
+	adjusted, first, err := rec.ReserveProviderRequest(30, 50)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if adjusted != 30 {
+		t.Fatalf("adjusted output = %d, want 30", adjusted)
+	}
+	if _, _, err := rec.ReserveProviderRequest(1, 1); err == nil {
+		t.Fatal("concurrent request spent the first request's reservation")
+	}
+	first.Commit(45)
+	if g.tokensUsed != 85 || rec.usageTokens() != 45 {
+		t.Fatalf("committed usage = goal %d turn %d, want 85/45", g.tokensUsed, rec.usageTokens())
+	}
+
+	adjusted, second, err := rec.ReserveProviderRequest(10, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if adjusted != 5 {
+		t.Fatalf("boundary output cap = %d, want 5", adjusted)
+	}
+	second.Commit(14)
+	if g.tokensUsed != 99 {
+		t.Fatalf("tokensUsed = %d, want 99", g.tokensUsed)
+	}
+	if _, _, err := rec.ReserveProviderRequest(1, 1); err == nil {
+		t.Fatal("request whose input reaches the remaining token must be rejected before provider call")
+	}
+	if g.tokensUsed > g.tokensLimit {
+		t.Fatalf("hard request boundary overshot: %d/%d", g.tokensUsed, g.tokensLimit)
 	}
 }
 

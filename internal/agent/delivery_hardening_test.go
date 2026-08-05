@@ -120,6 +120,131 @@ func TestReadOnlyRegistryDisarmsMutationExpectation(t *testing.T) {
 	}
 }
 
+func TestDeliveryResolvedReadOnlyBashDoesNotArmMutationReadiness(t *testing.T) {
+	reg := tool.NewRegistry()
+	reg.Add(stubBash{})
+	prov := &scriptedProvider{name: "delivery", turns: [][]provider.Chunk{
+		{toolCallChunk("pwd-base", "bash", `{"command":"basename \"$(pwd)\""}`), {Type: provider.ChunkDone}},
+		{{Type: provider.ChunkText, Text: "workspace basename inspected"}, {Type: provider.ChunkDone}},
+	}}
+	a := New(prov, reg, NewSession("sys"), Options{DeliveryProfile: true}, event.Discard)
+	if err := a.Run(context.Background(), "inspect and report the current workspace basename"); err != nil {
+		t.Fatalf("resolved read-only delivery command: %v", err)
+	}
+	if _, ok := a.evidence.LatestSuccessfulMutationIndex(); ok {
+		t.Fatal("resolved read-only bash was recorded as a mutation")
+	}
+	msgs := a.session.Snapshot()
+	var resolved bool
+	for _, msg := range msgs {
+		for _, call := range msg.ToolCalls {
+			if call.ID == "pwd-base" && call.ResolvedReadOnly != nil && *call.ResolvedReadOnly {
+				resolved = true
+			}
+		}
+	}
+	if !resolved {
+		t.Fatal("session receipt did not preserve resolved_read_only=true")
+	}
+}
+
+func TestDeliveryConversationTokenSurvivesToNextTurnWithoutActionEvidence(t *testing.T) {
+	prov := &scriptedProvider{name: "delivery", turns: [][]provider.Chunk{
+		{{Type: provider.ChunkText, Text: "Understood."}, {Type: provider.ChunkDone}},
+		{{Type: provider.ChunkText, Text: "ORBIT-42"}, {Type: provider.ChunkDone}},
+	}}
+	a := New(prov, tool.NewRegistry(), NewSession("sys"), Options{DeliveryProfile: true}, event.Discard)
+	if err := a.Run(context.Background(), "Remember ORBIT-42 and answer on the next turn."); err != nil {
+		t.Fatalf("deferred conversation turn was blocked: %v", err)
+	}
+	if err := a.Run(context.Background(), "What was the code?"); err != nil {
+		t.Fatalf("answer turn was blocked: %v", err)
+	}
+	if prov.call != 2 {
+		t.Fatalf("provider calls = %d, want exactly two conversational turns", prov.call)
+	}
+	if got := lastAssistantContent(a.Session()); got != "ORBIT-42" {
+		t.Fatalf("last assistant text = %q, want ORBIT-42", got)
+	}
+}
+
+func TestDeliveryDurableMemoryRequiresRememberWithoutCodeCeremony(t *testing.T) {
+	reg := tool.NewRegistry()
+	reg.Add(fakeTool{name: "remember", readOnly: false})
+	prov := &scriptedProvider{name: "delivery", turns: [][]provider.Chunk{
+		{toolCallChunk("remember", "remember", `{"description":"ORBIT code","body":"ORBIT-42"}`), {Type: provider.ChunkDone}},
+		{{Type: provider.ChunkText, Text: "Saved for future sessions."}, {Type: provider.ChunkDone}},
+	}}
+	a := New(prov, reg, NewSession("sys"), Options{DeliveryProfile: true}, event.Discard)
+	if err := a.Run(context.Background(), "Remember ORBIT-42 permanently across sessions"); err != nil {
+		t.Fatalf("durable-memory workflow inherited code-delivery ceremony: %v", err)
+	}
+	if prov.call != 2 {
+		t.Fatalf("provider calls = %d, want remember plus final answer", prov.call)
+	}
+	if a.deliveryCriteriaEstablished {
+		t.Fatal("durable-memory-only workflow should not manufacture code acceptance criteria")
+	}
+
+	missing := &scriptedProvider{name: "delivery", turns: [][]provider.Chunk{
+		{{Type: provider.ChunkText, Text: "I'll remember it."}, {Type: provider.ChunkDone}},
+	}}
+	b := New(missing, reg, NewSession("sys"), Options{DeliveryProfile: true}, event.Discard)
+	err := b.Run(context.Background(), "Remember ORBIT-42 permanently across sessions")
+	var readiness *FinalReadinessError
+	if !errors.As(err, &readiness) || !strings.Contains(readiness.Reason, "remember tool") {
+		t.Fatalf("text-only durable-memory claim err = %v", err)
+	}
+}
+
+func TestNonGoalUpdateGoalWithVisibleTextDoesNotSpendRepairRound(t *testing.T) {
+	goalTool, ok := tool.LookupBuiltin("update_goal")
+	if !ok {
+		t.Fatal("update_goal builtin not registered")
+	}
+	reg := tool.NewRegistry()
+	reg.Add(goalTool)
+	prov := &scriptedProvider{name: "p", turns: [][]provider.Chunk{
+		{{Type: provider.ChunkText, Text: "Here is the answer."}, toolCallChunk("goal", "update_goal", `{"status":"complete"}`), {Type: provider.ChunkDone}},
+		{{Type: provider.ChunkText, Text: "unexpected repair"}, {Type: provider.ChunkDone}},
+	}}
+	a := New(prov, reg, NewSession("sys"), Options{}, event.Discard)
+	if err := a.Run(context.Background(), "answer normally"); err != nil {
+		t.Fatalf("non-Goal update_goal with text: %v", err)
+	}
+	if prov.call != 1 {
+		t.Fatalf("provider calls = %d, want no repair round", prov.call)
+	}
+	if got := lastAssistantContent(a.Session()); got != "Here is the answer." {
+		t.Fatalf("last assistant text = %q", got)
+	}
+	if got := lastToolResult(a.Session(), "update_goal"); !strings.Contains(got, "only available while an active goal turn") {
+		t.Fatalf("paired update_goal result = %q", got)
+	}
+}
+
+func TestNonGoalToolOnlyUpdateGoalGetsAtMostOneRepairRound(t *testing.T) {
+	goalTool, ok := tool.LookupBuiltin("update_goal")
+	if !ok {
+		t.Fatal("update_goal builtin not registered")
+	}
+	reg := tool.NewRegistry()
+	reg.Add(goalTool)
+	prov := &scriptedProvider{name: "p", turns: [][]provider.Chunk{
+		{toolCallChunk("goal-1", "update_goal", `{"status":"complete"}`), {Type: provider.ChunkDone}},
+		{toolCallChunk("goal-2", "update_goal", `{"status":"complete"}`), {Type: provider.ChunkDone}},
+		{{Type: provider.ChunkText, Text: "unexpected third round"}, {Type: provider.ChunkDone}},
+	}}
+	a := New(prov, reg, NewSession("sys"), Options{}, event.Discard)
+	err := a.Run(context.Background(), "answer normally")
+	if err == nil || !strings.Contains(err.Error(), "repeatedly called update_goal outside Goal mode") {
+		t.Fatalf("repeated tool-only misuse error = %v", err)
+	}
+	if prov.call != 2 {
+		t.Fatalf("provider calls = %d, want one repair round", prov.call)
+	}
+}
+
 func TestDeliveryPlanModeReturnsProposalBeforeExecutionReadiness(t *testing.T) {
 	reg := tool.NewRegistry()
 	reg.Add(fakeReadFileTool{})

@@ -12,7 +12,6 @@ import (
 )
 
 type scriptedProvider struct {
-	name    string
 	turns   []string // one response per call, recycled
 	err     error    // stream-open error
 	timeout bool     // hang until ctx deadline

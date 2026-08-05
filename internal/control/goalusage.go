@@ -39,7 +39,7 @@ func (t *goalUsageTee) Emit(e event.Event) {
 	if t == nil {
 		return
 	}
-	if e.Kind == event.Usage && e.Usage != nil && e.UsageSource != event.UsageSourceTitle {
+	if e.Kind == event.Usage && e.Usage != nil && !e.Usage.BudgetAccounted && e.UsageSource != event.UsageSourceTitle {
 		t.mu.Lock()
 		rec := t.active
 		t.mu.Unlock()

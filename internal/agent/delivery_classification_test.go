@@ -56,6 +56,12 @@ func TestDeliveryClassificationMatrix(t *testing.T) {
 		{"chinese reset", "无法安装依赖请在现有配置中修改", true, true},
 		{"negated request", "不想请团队修改代码", false, false},
 		{"negated application", "禁止申请修改配置", false, false},
+		{"deferred conversation token", "Remember ORBIT-42 and answer on the next turn.", false, false},
+		{"chinese deferred conversation token", "记住 ORBIT-42，下一轮回答", false, false},
+		{"long conversational context", "Please keep this code in mind because I will ask you about it in my next message", false, false},
+		{"durable memory", "Remember ORBIT-42 permanently across sessions", true, true},
+		{"chinese durable memory", "请永久记住 ORBIT-42，跨会话也要保留", true, true},
+		{"durable memory advice", "How do I save a preference permanently across sessions?", false, false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
