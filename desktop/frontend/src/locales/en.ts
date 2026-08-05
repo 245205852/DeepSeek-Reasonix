@@ -2286,6 +2286,7 @@ export const en = {
   "palette.cmd.appearance": "Appearance",
   "palette.cmd.memory": "Memory",
   "palette.cmd.models": "Models",
+  "palette.cmd.usageStats": "Usage statistics",
   "palette.group.remote": "Remote SSH",
   "palette.remote.connect": "Connect to {host}",
   "palette.remote.open": "Open remote workspace on {host}",
