@@ -44,6 +44,7 @@ import type {
   CapabilityDiagnosticsReport,
   CheckpointMeta,
   CommandInfo,
+  ControlResult,
   ContextInfo,
   ContextPanelInfo,
   DirEntry,
@@ -94,6 +95,8 @@ import type {
   SkillRootView,
   SkillSuggestion,
   SkillView,
+  TaskEvent,
+  TaskSnapshot,
   SlashArgsResult,
   SubagentProfileInput,
   TabMeta,
@@ -246,6 +249,7 @@ export interface AppBindings {
   SummarizeUpTo(turn: number): Promise<void>;
   SummarizeUpToForTab(tabID: string, turn: number): Promise<void>;
   ListSessions(): Promise<SessionMeta[]>;
+  ListSessionsForTab(tabID: string): Promise<SessionMeta[]>;
   ListTrashedSessions(): Promise<SessionMeta[]>;
   ResumeSession(path: string): Promise<HistoryMessage[]>;
   ResumeSessionForTab(tabID: string, path: string): Promise<HistoryMessage[]>;
@@ -271,6 +275,21 @@ export interface AppBindings {
   BalanceForTab(tabID: string): Promise<BalanceInfo>;
   UsageStats(req: UsageStatsRequest): Promise<UsageStatsRange>;
   Jobs(): Promise<JobView[]>;
+  ListTasks(): Promise<TaskSnapshot[]>;
+  CurrentTaskSessionID(): Promise<string>;
+  ListTasksForSession(sessionID: string): Promise<TaskSnapshot[]>;
+  GetTask(taskID: string): Promise<TaskSnapshot | null>;
+  ListTaskEvents(taskID: string, afterSequence: number): Promise<TaskEvent[]>;
+  StopTask(taskID: string, expectedVersion: number, reason: string, idemKey: string): Promise<ControlResult>;
+  CancelTask(taskID: string, expectedVersion: number, reason: string, idemKey: string): Promise<ControlResult>;
+  RequeueTask(taskID: string, expectedVersion: number, idemKey: string): Promise<ControlResult>;
+  OpenTaskSession(taskID: string): Promise<ControlResult>;
+  ListTasksForTab(tabID: string): Promise<TaskSnapshot[]>;
+  ListTaskEventsForTab(tabID: string, taskID: string, afterSequence: number): Promise<TaskEvent[]>;
+  StopTaskForTab(tabID: string, taskID: string, expectedVersion: number, reason: string, idemKey: string): Promise<ControlResult>;
+  CancelTaskForTab(tabID: string, taskID: string, expectedVersion: number, reason: string, idemKey: string): Promise<ControlResult>;
+  RequeueTaskForTab(tabID: string, taskID: string, expectedVersion: number, idemKey: string): Promise<ControlResult>;
+  OpenTaskSessionForTab(tabID: string, taskID: string): Promise<ControlResult>;
   JobsForTab(tabID: string): Promise<JobView[]>;
   CancelJob(jobID: string): Promise<boolean>;
   CancelJobForTab(tabID: string, jobID: string): Promise<boolean>;
@@ -2831,6 +2850,9 @@ function makeMockApp(): AppBindings {
     async ListSessions() {
       return sessions.map((s) => ({ ...s }));
     },
+    async ListSessionsForTab() {
+      return sessions.map((s) => ({ ...s }));
+    },
     async ListTrashedSessions() {
       return trashedSessions.map((s) => ({ ...s }));
     },
@@ -4487,6 +4509,21 @@ function makeMockApp(): AppBindings {
     async HeartbeatSaveTasks(_tasks: unknown) {},
     async HeartbeatTriggerNow(_id: string) {},
     async HeartbeatGenerateID() { return "mock-" + Date.now().toString(36); },
+    async ListTasks() { return []; },
+    async CurrentTaskSessionID() { return ""; },
+    async ListTasksForSession() { return []; },
+    async GetTask() { return null; },
+    async ListTaskEvents() { return []; },
+    async StopTask() { return { schema_version: 1, command: "stop", task_id: "", accepted: false, idempotent: false, error: { code: "mock", message: "not available in browser mock" } }; },
+    async CancelTask() { return { schema_version: 1, command: "cancel", task_id: "", accepted: false, idempotent: false, error: { code: "mock", message: "not available in browser mock" } }; },
+    async RequeueTask() { return { schema_version: 1, command: "requeue", task_id: "", accepted: false, idempotent: false, error: { code: "mock", message: "not available in browser mock" } }; },
+    async OpenTaskSession() { return { schema_version: 1, command: "open_session", task_id: "", accepted: false, idempotent: false, error: { code: "mock", message: "not available in browser mock" } }; },
+    async ListTasksForTab() { return []; },
+    async ListTaskEventsForTab() { return []; },
+    async StopTaskForTab() { return { schema_version: 1, command: "stop", task_id: "", accepted: false, idempotent: false, error: { code: "mock", message: "not available in browser mock" } }; },
+    async CancelTaskForTab() { return { schema_version: 1, command: "cancel", task_id: "", accepted: false, idempotent: false, error: { code: "mock", message: "not available in browser mock" } }; },
+    async RequeueTaskForTab() { return { schema_version: 1, command: "requeue", task_id: "", accepted: false, idempotent: false, error: { code: "mock", message: "not available in browser mock" } }; },
+    async OpenTaskSessionForTab() { return { schema_version: 1, command: "open_session", task_id: "", accepted: false, idempotent: false, error: { code: "mock", message: "not available in browser mock" } }; },
     async SetTrayLocale(_locale: "en" | "zh" | "zh-TW") {},
     async SetAutoApproveTools(on: boolean) {
       await this.SetToolApprovalMode(on ? "yolo" : "ask");
