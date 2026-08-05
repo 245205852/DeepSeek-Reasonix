@@ -1972,15 +1972,30 @@ func deliveryTaskNeedsPersistentAction(input string) bool {
 	if normalized == "" {
 		return false
 	}
-	action := containsAnySubstring(normalized, []string{
+	actionNeedles := []string{
 		"remember", "save", "store", "keep this", "keep that",
 		"记住", "记下来", "保存", "存下来", "记录下来",
-	})
-	durable := containsAnySubstring(normalized, []string{
+	}
+	durableNeedles := []string{
 		"permanently", "durable", "long-term", "long term", "across sessions", "future sessions", "every session", "after restart", "after restarting",
 		"永久", "长期", "持久", "跨会话", "以后每次", "未来会话", "重启后", "下次启动",
-	})
-	return action && durable && !deliveryTaskClauseIsAdvisory(normalized)
+	}
+	for _, clause := range deliveryTaskClauses(normalized) {
+		action := false
+		for _, needle := range actionNeedles {
+			affirmative, _ := deliveryTaskNeedleIntent(clause, needle)
+			action = action || affirmative
+		}
+		durable := false
+		for _, needle := range durableNeedles {
+			affirmative, _ := deliveryTaskNeedleIntent(clause, needle)
+			durable = durable || affirmative
+		}
+		if action && durable && !deliveryTaskClauseIsAdvisory(clause) {
+			return true
+		}
+	}
+	return false
 }
 
 func deliveryTaskIsConversationOnly(input string) bool {
@@ -2015,7 +2030,7 @@ func deliveryTaskMutationIntent(input string) (affirmative, negated bool) {
 			clauseNegated = true
 		}
 		for _, needle := range deliveryMutationNeedles {
-			hasAffirmative, hasNegated := deliveryMutationNeedleIntent(clause, needle)
+			hasAffirmative, hasNegated := deliveryTaskNeedleIntent(clause, needle)
 			clauseAffirmative = clauseAffirmative || hasAffirmative
 			clauseNegated = clauseNegated || hasNegated
 		}
@@ -2212,7 +2227,8 @@ func deliveryTaskClauseHasObservableWork(clause string) bool {
 		"review", "inspect", "analyze", "check", "reproduce", "audit", "verify",
 		"评审", "审查", "检查", "分析", "复现", "审计", "验证",
 	} {
-		if containsTaskNeedle(clause, needle) {
+		affirmative, _ := deliveryTaskNeedleIntent(clause, needle)
+		if affirmative {
 			return true
 		}
 	}
@@ -2363,7 +2379,7 @@ func deliveryMutationClauseNegated(clause string) bool {
 	return false
 }
 
-func deliveryMutationNeedleIntent(clause, needle string) (affirmative, negated bool) {
+func deliveryTaskNeedleIntent(clause, needle string) (affirmative, negated bool) {
 	if containsNonASCII(needle) {
 		for offset := 0; offset < len(clause); {
 			relative := strings.Index(clause[offset:], needle)

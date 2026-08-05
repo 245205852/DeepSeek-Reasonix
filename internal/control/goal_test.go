@@ -65,9 +65,11 @@ type fakeGoalEvaluator struct {
 	outcome goaleval.Outcome
 	reason  string
 	err     error
+	calls   int
 }
 
 func (f *fakeGoalEvaluator) Evaluate(_ context.Context, _ goaleval.GoalEvidence) (goaleval.Verdict, error) {
+	f.calls++
 	if f.err != nil {
 		return goaleval.Verdict{}, f.err
 	}

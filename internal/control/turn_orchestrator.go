@@ -476,6 +476,13 @@ func (o *turnOrchestrator) advanceGoalAfterTurn(ctx context.Context, expectedCon
 	c := o.c
 	recorder := c.goalUsageTee.activeRecorder()
 	defer c.goalUsageTee.setActiveRecorder(nil)
+	// Only active Goal turns bind a recorder. Ordinary and edited non-Goal
+	// turns still pass through the shared turn wrapper, but must not enter the
+	// Goal FSM or pay for an isolated completion evaluation.
+	if recorder == nil || recorder.epoch != expectedContinuationEpoch ||
+		!c.goals.turnActive(recorder.scopeID, recorder.epoch) {
+		return goalAdvanceResult{cont: false}
+	}
 
 	var readiness agent.ReadinessResult
 	var readinessErr *agent.FinalReadinessError

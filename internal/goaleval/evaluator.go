@@ -184,13 +184,13 @@ func (s *Session) Evaluate(ctx context.Context, evidence GoalEvidence) (Verdict,
 }
 
 type evidencePayload struct {
-	Notice             string `json:"notice"`
-	GoalContract       string `json:"goal_contract,omitempty"`
-	AssistantFinal     string `json:"assistant_final,omitempty"`
-	TodoSummary        string `json:"todo_summary,omitempty"`
+	Notice              string `json:"notice"`
+	GoalContract        string `json:"goal_contract,omitempty"`
+	AssistantFinal      string `json:"assistant_final,omitempty"`
+	TodoSummary         string `json:"todo_summary,omitempty"`
 	AutoResearchSummary string `json:"autoresearch_summary,omitempty"`
-	TurnStatus         string `json:"turn_status,omitempty"`
-	LastReason         string `json:"last_reason,omitempty"`
+	TurnStatus          string `json:"turn_status,omitempty"`
+	LastReason          string `json:"last_reason,omitempty"`
 }
 
 // buildEvidence budgets every field before marshaling; the serialized payload
