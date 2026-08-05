@@ -44,7 +44,9 @@ const localeChunks = readdirSync(resolve(distDir, "assets"))
 console.log("\nbundle budgets");
 assertBudget("initial JavaScript gzip", initialJSGzip, 430 * 1024);
 assertBudget("largest initial JavaScript chunk gzip", largestInitialJS, 295 * 1024);
-assertBudget("initial CSS gzip", initialCSSGzip, 112 * 1024);
+// Compact decision surfaces add shared approval, disclosure, and receipt styles
+// to the always-loaded chat shell. Keep the allowance bounded to 1 KiB.
+assertBudget("initial CSS gzip", initialCSSGzip, 113 * 1024);
 if (localeChunks.length !== 2) {
   throw new Error(`expected 2 on-demand Chinese locale chunks, found ${localeChunks.length}`);
 }

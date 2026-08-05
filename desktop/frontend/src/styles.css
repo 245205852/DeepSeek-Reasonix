@@ -8499,13 +8499,15 @@ body > .mermaid-diagram--fullscreen {
   gap: 12px;
   flex-wrap: wrap;
 }
-.decision-confirm-bar__secondary {
+.decision-confirm-bar__secondary,
+.runtime-decision-footer__secondary {
   flex: 0 0 auto;
   color: var(--fg-dim);
   background: transparent;
   border-color: transparent;
 }
-.decision-confirm-bar__secondary:hover:not(:disabled) {
+.decision-confirm-bar__secondary:hover:not(:disabled),
+.runtime-decision-footer__secondary:hover:not(:disabled) {
   color: var(--fg);
   background: var(--bg-soft);
   border-color: var(--border-soft);
@@ -8581,9 +8583,6 @@ body > .mermaid-diagram--fullscreen {
   grid-template-columns: fit-content(44%) minmax(0, 1fr);
   align-items: baseline;
   gap: 2px 10px;
-}
-.prompt-shelf--decision .prompt-shelf__actions .prompt-action__label {
-  min-width: 0;
 }
 .prompt-shelf--decision .prompt-shelf__actions .prompt-action__label,
 .prompt-shelf--decision .prompt-shelf__actions .prompt-action__desc {
@@ -8824,8 +8823,11 @@ body > .mermaid-diagram--fullscreen {
 .prompt-description-detail[hidden] {
   display: none;
 }
-.prompt-description-detail__label {
+.prompt-description-detail__label,
+.prompt-description-detail__text {
   min-width: 0;
+}
+.prompt-description-detail__label {
   overflow: hidden;
   color: var(--fg);
   font-weight: 620;
@@ -8833,7 +8835,6 @@ body > .mermaid-diagram--fullscreen {
   white-space: nowrap;
 }
 .prompt-description-detail__text {
-  min-width: 0;
   overflow-wrap: anywhere;
 }
 .prompt-action__description-toggle {
@@ -9278,28 +9279,15 @@ body > .mermaid-diagram--fullscreen {
   padding: 0 9px;
 }
 .prompt-shelf--runtime-decision .prompt-shelf__note {
-  display: -webkit-box;
-  -webkit-box-orient: vertical;
-  -webkit-line-clamp: 1;
   overflow: hidden;
   text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .runtime-decision-footer {
   display: flex;
   justify-content: flex-start;
   gap: 8px;
 }
-.runtime-decision-footer__secondary {
-  color: var(--fg-dim);
-  background: transparent;
-  border-color: transparent;
-}
-.runtime-decision-footer__secondary:hover:not(:disabled) {
-  color: var(--fg);
-  background: var(--bg-soft);
-  border-color: var(--border-soft);
-}
-
 @media (max-width: 560px) {
   .prompt-shelf--decision .prompt-shelf__actions .prompt-action {
     height: 52px;
