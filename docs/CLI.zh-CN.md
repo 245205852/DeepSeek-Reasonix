@@ -212,6 +212,9 @@ reasonix session status <machine-session-id> --json [--dir SESSION_DIR | --proje
 reasonix session recovery [<machine-session-id>] --json [--dir SESSION_DIR | --project-root PATH]
 reasonix task list --json [--dir SESSION_DIR | --project-root PATH] [--session MACHINE_SESSION_ID]
 reasonix task show <task-id> --json [--dir SESSION_DIR | --project-root PATH] [--session MACHINE_SESSION_ID]
+reasonix task monitor list --json [--dir PROJECT_DIR]
+reasonix task monitor status <task-id> --json [--dir PROJECT_DIR]
+reasonix task monitor events <task-id> --json|--jsonl [--dir PROJECT_DIR] [--after N] [--follow]
 reasonix hook list --json [--project-root PATH] [--home-dir PATH]
 reasonix hook status --json [--project-root PATH] [--home-dir PATH]
 ```
