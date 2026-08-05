@@ -165,6 +165,15 @@ console.log("\nask card layout");
   eq(optionStyle.minHeight, "40px", "short decision rows retain the compact minimum height");
   eq(optionStyle.alignItems, "flex-start", "multi-line decision copy aligns with the option key");
 
+  ok(
+    /\.prompt-shelf--decision \.prompt-shelf__actions \.prompt-action__copy \{[^}]*grid-template-columns:\s*fit-content\(44%\) minmax\(0, 1fr\)/s.test(styles),
+    "decision option labels size to content while staying capped at 44% of the row",
+  );
+  ok(
+    !/\.prompt-shelf--decision \.prompt-shelf__actions \.prompt-action__label \{[^}]*max-width:\s*[\d.]/s.test(styles),
+    "decision option labels never resolve their width cap against their own content-sized track",
+  );
+
   const descriptionStyle = window.getComputedStyle(firstDescription);
   eq(descriptionStyle.whiteSpace, "normal", "long option descriptions can wrap");
   eq(descriptionStyle.display, "-webkit-box", "long Ask descriptions use a multi-line clamp box");

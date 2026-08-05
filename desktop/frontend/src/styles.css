@@ -8491,13 +8491,12 @@ body > .mermaid-diagram--fullscreen {
 }
 .prompt-shelf--decision .prompt-shelf__actions .prompt-action__copy {
   display: grid !important;
-  grid-template-columns: minmax(0, max-content) minmax(0, 1fr);
+  grid-template-columns: fit-content(44%) minmax(0, 1fr);
   align-items: baseline;
   gap: 2px 10px;
 }
 .prompt-shelf--decision .prompt-shelf__actions .prompt-action__label {
   min-width: 0;
-  max-width: 44%;
 }
 .prompt-shelf--decision .prompt-shelf__actions .prompt-action__label,
 .prompt-shelf--decision .prompt-shelf__actions .prompt-action__desc {
