@@ -2,7 +2,7 @@
 
 export const REMOTE_SCHEMA_FORMAT = "reasonix.remote.schema.v1" as const;
 export const REMOTE_PROTOCOL_VERSION = "1" as const;
-export const REMOTE_SCHEMA_HASH = "sha256:60490c2f5df96974c735cb36626a2a73be8b18fc3fdb7ada300ef720c0bbced5" as const;
+export const REMOTE_SCHEMA_HASH = "sha256:6f1d1fa483629528b3d340618aec4a64e3df6aabbe3c74d3ae0edf15e4c5b5b3" as const;
 
 export const REMOTE_FIXED_RESOURCES = {
   "protocol": {
@@ -924,6 +924,8 @@ export type BrokerStreamChunkParamsRaw = {
       "code": "provider_failed" | "provider_interrupted";
       "message": string;
     };
+    "reasoningID"?: string;
+    "reasoningStatus"?: string;
     "responsesItem"?: RemoteJSONValue;
     "signature"?: string;
     "text"?: string;
@@ -961,6 +963,8 @@ export type BrokerStreamChunkParamsHydrated = {
       "code": "provider_failed" | "provider_interrupted";
       "message": string;
     };
+    "reasoningID"?: string;
+    "reasoningStatus"?: string;
     "responsesItem"?: RemoteJSONValue;
     "signature"?: string;
     "text"?: string;
@@ -1049,7 +1053,9 @@ export type BrokerStreamOpenParamsRaw = {
       "provider_content"?: string;
       "raw_content"?: string;
       "reasoning_content"?: string;
+      "reasoning_id"?: string;
       "reasoning_signature"?: string;
+      "reasoning_status"?: string;
       "responses_items"?: Array<RemoteJSONValue>;
       "role": "assistant" | "system" | "tool" | "user";
       "tool_call_id"?: string;
@@ -1067,6 +1073,9 @@ export type BrokerStreamOpenParamsRaw = {
       }>;
       "workDurationMs"?: number;
     }>;
+    "responseFormat"?: {
+      "type": string;
+    };
     "temperature"?: number;
     "tools": Array<{
       "description": string;
@@ -1120,7 +1129,9 @@ export type BrokerStreamOpenParamsHydrated = {
       "provider_content"?: string;
       "raw_content"?: string;
       "reasoning_content"?: string;
+      "reasoning_id"?: string;
       "reasoning_signature"?: string;
+      "reasoning_status"?: string;
       "responses_items"?: Array<RemoteJSONValue>;
       "role": "assistant" | "system" | "tool" | "user";
       "tool_call_id"?: string;
@@ -1138,6 +1149,9 @@ export type BrokerStreamOpenParamsHydrated = {
       }>;
       "workDurationMs"?: number;
     }>;
+    "responseFormat"?: {
+      "type": string;
+    };
     "temperature"?: number;
     "tools": Array<{
       "description": string;
