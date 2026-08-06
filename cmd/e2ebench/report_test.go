@@ -77,6 +77,27 @@ func TestUnaccountedSolvesDoNotDeflateCostPerSolved(t *testing.T) {
 	}
 }
 
+func TestRenderShowsCacheResetsByCause(t *testing.T) {
+	out := render([]result{
+		{task: task{ID: "a"}, Passed: true, WallMs: 1000,
+			runMetrics: runMetrics{Outcome: "success", PrefixChangeReasonCounts: map[string]int{"compact_auto": 1, "tools": 2}}},
+		{task: task{ID: "b"}, Passed: true, WallMs: 1000,
+			runMetrics: runMetrics{Outcome: "success", PrefixChangeReasonCounts: map[string]int{"snip": 3}}},
+	})
+	if want := "**Cache resets by cause:** compact_auto ×1 · snip ×3 · tools ×2"; !strings.Contains(out, want) {
+		t.Errorf("report missing %q:\n%s", want, out)
+	}
+}
+
+func TestRenderOmitsCacheResetsLineWhenNoReasonsReported(t *testing.T) {
+	out := render([]result{
+		{task: task{ID: "a"}, Passed: true, WallMs: 1000, runMetrics: runMetrics{Outcome: "success"}},
+	})
+	if strings.Contains(out, "Cache resets by cause") {
+		t.Errorf("report should omit the cache-resets line when no run reported any reasons:\n%s", out)
+	}
+}
+
 func TestDurFormatsSubMinuteAndMinuteScale(t *testing.T) {
 	if got := dur(4500); got != "4.5s" {
 		t.Errorf("dur(4500) = %q, want 4.5s", got)
