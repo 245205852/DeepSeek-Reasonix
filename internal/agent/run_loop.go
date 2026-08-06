@@ -3,7 +3,6 @@ package agent
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"math/rand"
 	"strings"
@@ -384,12 +383,12 @@ func (a *Agent) streamWithSamplingRecovery(ctx context.Context, turn int) stream
 		if delta < 0 {
 			delta = 0
 		}
-		// httpRequests=0 means either (a) local admission never reached Stream,
-		// or (b) a provider that does not use SendWithRetry (extension/custom).
+		// httpRequests=0 means the provider does not use SendWithRetry
+		// (extension/custom), or it failed before issuing an HTTP request.
 		// Only overwrite RequestCount when the built-in counter observed POSTs;
 		// otherwise keep the provider-reported count (zero still means one via
-		// usageRequestCount compatibility). estimateFailedAttemptUsage already
-		// returns nil for pre-body budget rejects so no invented request appears.
+		// usageRequestCount compatibility). estimateFailedAttemptUsage returns nil
+		// for zero-output local failures so no invented request appears.
 		result.usage = estimateFailedAttemptUsage(result.usage, frozen, result, delta)
 		if result.usage != nil {
 			if delta > 0 {
@@ -416,7 +415,7 @@ func (a *Agent) streamWithSamplingRecovery(ctx context.Context, turn int) stream
 		billable = mergeSamplingUsage(billable, result.usage)
 		// lastUsage is the latest single-request shape (prompt+completion+cache
 		// for that attempt only). Never the multi-attempt billable aggregate —
-		// that would inflate the next inputFloor and ContextSnapshot.
+		// that would inflate ContextSnapshot and compaction decisions.
 		a.storeLatestRequestUsage(result.usage)
 		last = result
 		last.usage = finalizeSamplingUsage(billable, result.usage)
@@ -557,14 +556,15 @@ func sleepStreamRetryBackoff(ctx context.Context, attempt int) bool {
 }
 
 // estimateFailedAttemptUsage fills Estimated usage when a body attempt ends
-// without a terminal provider usage record, so Goal budgets still charge the
-// issued request plus any observed speculative output. Non-interrupt failures
-// that already carry usage (e.g. client reasoning limit) are left intact.
+// without a terminal provider usage record, so billing and observational Goal
+// usage still include the issued request plus any observed speculative output.
+// Non-interrupt failures that already carry usage (e.g. client reasoning limit)
+// are left intact.
 //
 // httpRequests is the SendWithRetry attempt-counter delta for this body attempt.
-// When it is 0 the failure never reached Provider.Stream (local admission /
-// exact-budget reject) — return nil or the existing zero-token usage without
-// inventing PromptTokens that would clear BudgetAccounted on the aggregate.
+// When it is 0 and there was no speculative output, the failure was local or
+// came from a provider without observable transport accounting; return nil or
+// its existing usage rather than inventing billable tokens.
 func estimateFailedAttemptUsage(usage *provider.Usage, frozen samplingRequest, result streamedTurn, httpRequests int) *provider.Usage {
 	if result.err == nil {
 		return usage
@@ -573,17 +573,10 @@ func estimateFailedAttemptUsage(usage *provider.Usage, frozen samplingRequest, r
 	if usage != nil && usage.FinishReason != "" && usage.FinishReason != "interrupted" {
 		return usage
 	}
-	// Middleware already settled this attempt — never rewrite it into a larger
-	// estimate that could change Goal accounting semantics.
-	if usage != nil && usage.BudgetAccounted {
-		return usage
-	}
-	// Pre-body local failures (exact budget admission, etc.) never issued an HTTP
-	// request. Do not invent PromptTokens — that would clear aggregate
-	// BudgetAccounted and make Goal re-charge prior settled attempts.
-	var budgetErr *provider.RequestBudgetError
-	preBodyLocal := httpRequests <= 0 && (errors.As(result.err, &budgetErr) ||
-		(!result.interrupted && !provider.IsStreamInterrupted(result.err) && !sawSpeculativeSamplingOutput(result)))
+	// A zero-output, non-interrupted failure with no observed HTTP request is a
+	// local/provider validation failure. It is not a billable sampling attempt.
+	preBodyLocal := httpRequests <= 0 && !result.interrupted &&
+		!provider.IsStreamInterrupted(result.err) && !sawSpeculativeSamplingOutput(result)
 	if preBodyLocal {
 		if usage != nil && usageTotalTokens(usage) > 0 {
 			return usage
@@ -624,10 +617,7 @@ func estimateFailedAttemptUsage(usage *provider.Usage, frozen samplingRequest, r
 		est = &provider.Usage{Estimated: true, FinishReason: finish}
 	}
 	if est.PromptTokens <= 0 {
-		est.PromptTokens = provider.EstimateRequestInputTokens(frozen.req)
-		if frozen.inputFloor > est.PromptTokens {
-			est.PromptTokens = frozen.inputFloor
-		}
+		est.PromptTokens = estimateSamplingRequestInputTokens(frozen.req)
 		est.Estimated = true
 	}
 	// Estimated failed attempts without cache split still need Cost() to see
@@ -654,14 +644,34 @@ func sawSpeculativeSamplingOutput(result streamedTurn) bool {
 		result.partialToolStarted || len(result.calls) > 0 || len(result.partialCalls) > 0
 }
 
-// budgetAccountedOrZero reports whether an attempt is already settled for Goal
-// event accounting: middleware committed it, or it spent no billable tokens
-// (pre-body failure / cancel with reservation Cancel — nothing to charge again).
-func budgetAccountedOrZero(u *provider.Usage) bool {
-	if u == nil {
-		return true
+// estimateSamplingRequestInputTokens reconstructs a conservative input count
+// only when an interrupted attempt closed before terminal provider usage. It is
+// accounting telemetry, not request admission: the estimate never changes the
+// frozen provider request or imposes a token ceiling.
+func estimateSamplingRequestInputTokens(req provider.Request) int {
+	total := 3
+	for _, msg := range provider.ModelMessages(req.Messages) {
+		total += 4
+		total += estimateTextTokens(msg.Content)
+		total += estimateTextTokens(msg.ReasoningContent)
+		total += estimateTextTokens(msg.ReasoningSignature)
+		total += estimateTextTokens(msg.Name)
+		total += estimateTextTokens(msg.ToolCallID)
+		for _, image := range msg.Images {
+			total += estimateTextTokens(image)
+		}
+		for _, call := range msg.ToolCalls {
+			total += 8 + estimateTextTokens(call.ID) + estimateTextTokens(call.Name) + estimateTextTokens(call.Arguments)
+		}
+		for _, item := range msg.ResponsesItems {
+			total += estimateTextTokens(string(item))
+		}
 	}
-	return u.BudgetAccounted || usageTotalTokens(u) == 0
+	for _, schema := range req.Tools {
+		encoded, _ := json.Marshal(schema)
+		total += 8 + estimateTextTokens(string(encoded))
+	}
+	return max(total, 1)
 }
 
 // mergeSamplingUsage accumulates billable counters across body attempts.
@@ -696,7 +706,6 @@ func mergeSamplingUsage(acc, attempt *provider.Usage) *provider.Usage {
 		merged.CacheHitTokens = hit
 		merged.CacheMissTokens = miss
 		merged.PromptTokens = billablePrompt(hit, miss, attempt.PromptTokens)
-		merged.BudgetAccounted = budgetAccountedOrZero(attempt)
 		return &merged
 	}
 	merged := *acc
@@ -721,9 +730,6 @@ func mergeSamplingUsage(acc, attempt *provider.Usage) *provider.Usage {
 	if attempt.Estimated {
 		merged.Estimated = true
 	}
-	// Zero-token attempts (header failure / cancelled reservation) do not
-	// invalidate prior middleware commits.
-	merged.BudgetAccounted = budgetAccountedOrZero(acc) && budgetAccountedOrZero(attempt)
 	if attempt.FinishReason != "" {
 		merged.FinishReason = attempt.FinishReason
 	}
@@ -731,8 +737,8 @@ func mergeSamplingUsage(acc, attempt *provider.Usage) *provider.Usage {
 }
 
 // storeLatestRequestUsage records the most recent single-request usage for
-// inputFloor (PromptTokens) and ContextSnapshot (Prompt+Completion). It must
-// never receive a multi-attempt billable aggregate.
+// ContextSnapshot and compaction. It must never receive a multi-attempt
+// billable aggregate.
 func (a *Agent) storeLatestRequestUsage(attempt *provider.Usage) {
 	if a == nil || attempt == nil {
 		return
@@ -750,7 +756,6 @@ func (a *Agent) storeLatestRequestUsage(attempt *provider.Usage) {
 // expect one coherent billable record:
 //   - PromptTokens / cache hit+miss / Completion / Total / RequestCount: billable aggregate
 //   - Context* fields: latest attempt only (context gauges + rebind telemetry)
-//   - BudgetAccounted: every attempt was middleware-settled or zero-token
 func finalizeSamplingUsage(billable, latest *provider.Usage) *provider.Usage {
 	if billable == nil && latest == nil {
 		return nil
@@ -758,7 +763,6 @@ func finalizeSamplingUsage(billable, latest *provider.Usage) *provider.Usage {
 	if billable == nil {
 		out := *latest
 		applyLatestContextShape(&out, latest)
-		out.BudgetAccounted = budgetAccountedOrZero(&out)
 		return &out
 	}
 	out := *billable
@@ -774,10 +778,6 @@ func finalizeSamplingUsage(billable, latest *provider.Usage) *provider.Usage {
 	if out.TotalTokens < out.PromptTokens+out.CompletionTokens {
 		out.TotalTokens = out.PromptTokens + out.CompletionTokens
 	}
-	// billable already AND-ed every attempt (treating zero-token as settled).
-	// Do not re-AND against latest alone — that would clear the flag when the
-	// last attempt is a request-only shell or an un-flagged raw mock usage.
-	out.BudgetAccounted = budgetAccountedOrZero(billable)
 	return &out
 }
 
@@ -826,7 +826,7 @@ func (a *Agent) emitTurnUsage(usage *provider.Usage, cacheDiagnostics *CacheDiag
 	}
 	// lastUsage must stay as the latest single-request shape (set during
 	// sampling recovery). Never overwrite it with a multi-attempt billable
-	// aggregate — that would inflate inputFloor and ContextSnapshot.
+	// aggregate — that would inflate ContextSnapshot and compaction decisions.
 	if a.lastUsage.Load() == nil && usage.PromptTokens > 0 {
 		a.storeLatestRequestUsage(usage)
 	}

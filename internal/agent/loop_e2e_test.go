@@ -372,82 +372,6 @@ func TestRunRecoversInterruptedPartialToolCallWithoutExecutingIt(t *testing.T) {
 	}
 }
 
-// failExactBudget rejects the second exact admission while allowing the first
-// (and the prepare probe). Models the interrupt-then-local-budget-reject path.
-type failExactBudget struct {
-	exactCalls int
-}
-
-func (b *failExactBudget) ReserveProviderRequest(estimatedInput, maxOutputTokens int) (int, provider.RequestBudgetReservation, error) {
-	// prepareSamplingRequest probe only.
-	if maxOutputTokens <= 0 {
-		maxOutputTokens = 1
-	}
-	return maxOutputTokens, noopReservation{}, nil
-}
-
-func (b *failExactBudget) ReserveExactProviderRequest(estimatedInput, maxOutputTokens int) (provider.RequestBudgetReservation, error) {
-	b.exactCalls++
-	if b.exactCalls >= 2 {
-		return nil, &provider.RequestBudgetError{
-			Used: 100, Limit: 200, Remaining: 20, EstimatedInput: estimatedInput,
-		}
-	}
-	return noopReservation{}, nil
-}
-
-type noopReservation struct{}
-
-func (noopReservation) Commit(int) {}
-func (noopReservation) Cancel()    {}
-
-func TestRunInterruptThenExactBudgetRejectDoesNotDoubleCharge(t *testing.T) {
-	interrupted := &provider.StreamInterruptedError{Err: errors.New("eof"), Reason: provider.StreamInterruptPrematureEOF}
-	mp := testutil.NewMock("m",
-		testutil.Turn{
-			Text: "partial",
-			Usage: &provider.Usage{
-				PromptTokens: 100, CompletionTokens: 0, TotalTokens: 100,
-				CacheMissTokens: 100, BudgetAccounted: true, RequestCount: 1,
-			},
-			ChunkError: interrupted,
-		},
-		// Must never be consumed: second attempt dies at exact admission.
-		testutil.Turn{Text: "should-not-run"},
-	)
-	sink := &recordSink{}
-	a := New(mp, echoRegistry(), NewSession(""), Options{}, sink)
-	budget := &failExactBudget{}
-	ctx := provider.WithRequestBudget(context.Background(), budget)
-
-	err := a.Run(ctx, "go")
-	var budgetErr *provider.RequestBudgetError
-	if !errors.As(err, &budgetErr) {
-		t.Fatalf("Run error = %v, want RequestBudgetError after interrupt", err)
-	}
-	if mp.CallCount() != 1 {
-		t.Fatalf("provider calls = %d, want 1 (second attempt never reached Stream)", mp.CallCount())
-	}
-	usages := sink.kinds(event.Usage)
-	if len(usages) != 1 || usages[0].Usage == nil {
-		t.Fatalf("usage events = %+v, want one aggregate", usages)
-	}
-	u := usages[0].Usage
-	if !u.BudgetAccounted {
-		t.Fatalf("usage = %+v, want BudgetAccounted so Goal does not re-charge", u)
-	}
-	if u.RequestCount != 1 {
-		t.Fatalf("RequestCount = %d, want 1 (no invented pre-body request)", u.RequestCount)
-	}
-	if u.PromptTokens != 100 {
-		t.Fatalf("PromptTokens = %d, want only the first settled attempt (100)", u.PromptTokens)
-	}
-	// Completion may include best-effort partial text from the first attempt only.
-	if u.TotalTokens < 100 {
-		t.Fatalf("TotalTokens = %d, want at least first-attempt 100", u.TotalTokens)
-	}
-}
-
 func TestRunStreamRetryRequestCountIsLinearNotTriangular(t *testing.T) {
 	interrupted := &provider.StreamInterruptedError{Err: errors.New("eof"), Reason: provider.StreamInterruptPrematureEOF}
 	mp := testutil.NewMock("m",
@@ -484,9 +408,9 @@ func TestRunStreamRetryRequestCountIsLinearNotTriangular(t *testing.T) {
 	if u.CompletionTokens != 4 {
 		t.Fatalf("CompletionTokens = %d, want billable sum 4", u.CompletionTokens)
 	}
-	// Next-turn floor / ContextSnapshot use latest full attempt shape.
+	// ContextSnapshot and compaction use the latest full attempt shape.
 	if last := a.lastUsage.Load(); last == nil || last.PromptTokens != 30 {
-		t.Fatalf("lastUsage prompt = %+v, want 30 for next inputFloor", last)
+		t.Fatalf("lastUsage prompt = %+v, want latest attempt prompt 30", last)
 	}
 }
 

@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"io"
 	"net/http"
 	"strings"
@@ -74,7 +75,7 @@ func TestMergeStreamUsageCountsProviderRequests(t *testing.T) {
 func TestFinalizeSamplingUsageKeepsLatestPromptContext(t *testing.T) {
 	billable := &provider.Usage{
 		PromptTokens: 90000, CompletionTokens: 30, TotalTokens: 90030,
-		CacheMissTokens: 90000, RequestCount: 3, BudgetAccounted: true,
+		CacheMissTokens: 90000, RequestCount: 3,
 	}
 	latest := &provider.Usage{PromptTokens: 30000, CompletionTokens: 10, TotalTokens: 30010, CacheMissTokens: 30000, RequestCount: 1}
 	got := finalizeSamplingUsage(billable, latest)
@@ -87,8 +88,8 @@ func TestFinalizeSamplingUsageKeepsLatestPromptContext(t *testing.T) {
 	if got.ContextFillTokens() != 30010 {
 		t.Fatalf("ContextFillTokens = %d, want 30010", got.ContextFillTokens())
 	}
-	if got.CompletionTokens != 30 || got.RequestCount != 3 || !got.BudgetAccounted {
-		t.Fatalf("billable fields = %+v, want summed completion/requests and BudgetAccounted", got)
+	if got.CompletionTokens != 30 || got.RequestCount != 3 {
+		t.Fatalf("billable fields = %+v, want summed completion/requests", got)
 	}
 	// lastUsage stores the latest attempt wholesale (prompt+completion of that
 	// request), never the billable aggregate.
@@ -97,26 +98,19 @@ func TestFinalizeSamplingUsageKeepsLatestPromptContext(t *testing.T) {
 	}
 }
 
-func TestMergeSamplingUsageZeroTokenDoesNotClearBudgetAccounted(t *testing.T) {
+func TestMergeSamplingUsageKeepsBillableTokensAcrossRequestOnlyAttempt(t *testing.T) {
 	first := &provider.Usage{
 		PromptTokens: 100, CompletionTokens: 0, TotalTokens: 100,
-		CacheMissTokens: 100, RequestCount: 1, BudgetAccounted: true,
+		CacheMissTokens: 100, RequestCount: 1,
 	}
-	// Pre-body failure / cancel: only RequestCount, reservation Cancelled.
-	second := &provider.Usage{RequestCount: 1, BudgetAccounted: false}
+	second := &provider.Usage{RequestCount: 1}
 	got := mergeSamplingUsage(first, second)
-	if got == nil || !got.BudgetAccounted {
-		t.Fatalf("merged = %+v, want BudgetAccounted=true (zero-token attempt is settled)", got)
-	}
 	if got.PromptTokens != 100 || got.TotalTokens != 100 || got.RequestCount != 2 {
 		t.Fatalf("merged billable = %+v, want first tokens + 2 requests", got)
 	}
 	final := finalizeSamplingUsage(got, second)
-	if final == nil || !final.BudgetAccounted {
-		t.Fatalf("finalized = %+v, want BudgetAccounted so Goal sink does not double-count", final)
-	}
-	if final.PromptTokens != 100 {
-		t.Fatalf("final prompt = %d, want billable 100", final.PromptTokens)
+	if final == nil || final.PromptTokens != 100 {
+		t.Fatalf("final usage = %+v, want billable prompt 100", final)
 	}
 }
 
@@ -143,23 +137,22 @@ func TestEstimateFailedAttemptUsageIncludesArgChars(t *testing.T) {
 	}
 }
 
-func TestEstimateFailedAttemptUsageSkipsPreBodyLocalReject(t *testing.T) {
+func TestEstimateFailedAttemptUsageSkipsZeroHTTPLocalFailure(t *testing.T) {
 	frozen := samplingRequest{
 		req: provider.Request{Messages: []provider.Message{{Role: provider.RoleUser, Content: "hi"}}},
 	}
 	result := streamedTurn{
-		err: &provider.RequestBudgetError{Used: 90, Limit: 100, Remaining: 10, EstimatedInput: 20},
+		err: errors.New("local request validation failed"),
 	}
-	// httpRequests=0: exact admission rejected before Provider.Stream.
+	// No HTTP request and no speculative output: do not invent billable usage.
 	got := estimateFailedAttemptUsage(nil, frozen, result, 0)
 	if got != nil {
 		t.Fatalf("pre-body local reject usage = %+v, want nil (no invented billable tokens)", got)
 	}
-	// Aggregate must stay BudgetAccounted when first attempt was settled.
-	first := &provider.Usage{PromptTokens: 100, TotalTokens: 100, CacheMissTokens: 100, RequestCount: 1, BudgetAccounted: true}
+	first := &provider.Usage{PromptTokens: 100, TotalTokens: 100, CacheMissTokens: 100, RequestCount: 1}
 	merged := mergeSamplingUsage(first, got)
-	if merged == nil || !merged.BudgetAccounted || merged.PromptTokens != 100 || merged.RequestCount != 1 {
-		t.Fatalf("merged after pre-body reject = %+v, want first attempt only + BudgetAccounted", merged)
+	if merged == nil || merged.PromptTokens != 100 || merged.RequestCount != 1 {
+		t.Fatalf("merged after local reject = %+v, want first attempt only", merged)
 	}
 }
 
