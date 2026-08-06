@@ -3,8 +3,6 @@ package responses
 import (
 	"net/url"
 	"strings"
-
-	"reasonix/internal/provider"
 )
 
 // vendorCapabilities describes how a Responses-compatible endpoint deviates
@@ -84,7 +82,8 @@ var vendorTable = map[string]vendorCapabilities{
 		toolCallReasoning:      true,
 		singleSegmentReasoning: false,
 		ignoresTemperature:     false,
-		defaultMaxOutputTokens: provider.DefaultReasoningOutputTokens,
+		defaultMaxOutputTokens: 131072,
+
 	},
 	"mimo": {
 		stateless:              true,
@@ -92,7 +91,8 @@ var vendorTable = map[string]vendorCapabilities{
 		toolCallReasoning:      true,
 		singleSegmentReasoning: true,
 		ignoresTemperature:     true,
-		defaultMaxOutputTokens: 65536,
+		defaultMaxOutputTokens: 128000,
+
 	},
 	// "" (unknown OpenAI-compatible endpoint) → zero value = default behavior.
 }

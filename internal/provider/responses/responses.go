@@ -126,7 +126,8 @@ func New(cfg Config) provider.Provider {
 	vendor := DetectVendor(cfg.BaseURL)
 	cap := capabilitiesFor(vendor)
 	maxOutputTokens := cfg.MaxOutputTokens
-	// 默认输出预算从 vendor 表取（deepseek 32K / mimo 64K）——消除硬编码
+	// 默认输出预算从 vendor 表取（deepseek 128K / mimo 128K）——消除硬编码
+
 	// 常量分叉（review：responses.go 硬编码与 caps.defaultMaxOutputTokens
 	// 职责重叠）。条件保留：thinking-disabled 的 deepseek 请求不设自动
 	// 预算（与 openai.go 一致——服务端默认即可；测试断言该行为）。
@@ -152,6 +153,7 @@ func New(cfg Config) provider.Provider {
 		vendor: vendor, caps: cap, mode: cfg.mode(), sessionCache: sessionCache, webSearch: cfg.WebSearch, maxOutputTokens: maxOutputTokens,
 		vision: vision,
 		http:   httpClient, idleTimeout: defaultStreamIdleTimeout,
+
 	}
 }
 
