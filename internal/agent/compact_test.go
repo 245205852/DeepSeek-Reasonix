@@ -570,12 +570,13 @@ func TestCompactRewriteVersionFeedsCacheDiagnostics(t *testing.T) {
 	}
 
 	after := CaptureShape("sys", nil, sess.RewriteVersion())
-	diag := CompareShape(before, after, &provider.Usage{CacheMissTokens: 10})
+	reasons := sess.DrainContentRewriteReasons()
+	diag := CompareShape(before, after, &provider.Usage{CacheMissTokens: 10}, reasons)
 	if !diag.PrefixChanged {
 		t.Fatalf("diagnostics should report prefix change: %+v", diag)
 	}
-	if len(diag.PrefixChangeReasons) != 1 || diag.PrefixChangeReasons[0] != "log_rewrite" {
-		t.Fatalf("change reasons = %v, want [log_rewrite]", diag.PrefixChangeReasons)
+	if len(diag.PrefixChangeReasons) != 1 || diag.PrefixChangeReasons[0] != "compact_auto" {
+		t.Fatalf("change reasons = %v, want [compact_auto]", diag.PrefixChangeReasons)
 	}
 }
 

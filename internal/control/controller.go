@@ -794,10 +794,12 @@ func (c *Controller) markEditedForNewUser(startMessages int, original string) {
 		msgs[i].Edited = true
 		msgs[i].Original = original
 		// A periodic autosave may already contain this user message without its
-		// local edit metadata. Classify the prefix mutation atomically so the
-		// turn-end save performs an owned rewrite instead of forking a bogus
-		// same-revision recovery branch.
-		s.Rewrite(msgs)
+		// local edit metadata. Classify the mutation atomically so the turn-end
+		// save performs an owned rewrite instead of forking a bogus
+		// same-revision recovery branch. Edited/Original are local-only display
+		// metadata (provider requests ignore them), so this must not report a
+		// cache-prefix change — ReplaceLocalMetadata, not Rewrite.
+		s.ReplaceLocalMetadata(msgs)
 		return
 	}
 }
