@@ -957,3 +957,80 @@ func TestServeContextEndpoint(t *testing.T) {
 		t.Errorf("used = %d, want 0", body["used"])
 	}
 }
+
+// TestServeEventsReplaysPendingAskOnAttach proves a late /events subscriber
+// receives a still-blocked ask_request. Without replay, the browser attaches to
+// a healthy-looking session that never surfaces the parked prompt (#7643).
+func TestServeEventsReplaysPendingAskOnAttach(t *testing.T) {
+	bc := NewBroadcaster()
+	ctrl := control.New(control.Options{Sink: bc})
+	ctrl.EnableInteractiveApproval()
+	srv := httptest.NewServer(New(ctrl, bc, config.ServeConfig{}).Handler())
+	defer srv.Close()
+
+	firstSeen := make(chan struct{})
+	firstSub, cancelFirst := bc.Subscribe()
+	defer cancelFirst()
+	go func() {
+		for data := range firstSub {
+			if strings.Contains(string(data), `"kind":"ask_request"`) {
+				close(firstSeen)
+				return
+			}
+		}
+	}()
+
+	askDone := make(chan error, 1)
+	go func() {
+		_, err := ctrl.Ask(context.Background(), []event.AskQuestion{{
+			ID: "q1", Prompt: "pick one", Options: []event.AskOption{{Label: "A"}, {Label: "B"}},
+		}})
+		askDone <- err
+	}()
+
+	select {
+	case <-firstSeen:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for initial ask_request")
+	}
+
+	resp, err := http.Get(srv.URL + "/events")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("/events status = %d", resp.StatusCode)
+	}
+
+	replayed := make(chan string, 1)
+	go func() {
+		buf := make([]byte, 0, 4096)
+		tmp := make([]byte, 512)
+		for {
+			n, readErr := resp.Body.Read(tmp)
+			if n > 0 {
+				buf = append(buf, tmp[:n]...)
+				if strings.Contains(string(buf), `"kind":"ask_request"`) {
+					replayed <- string(buf)
+					return
+				}
+			}
+			if readErr != nil {
+				return
+			}
+		}
+	}()
+
+	select {
+	case <-replayed:
+	case <-time.After(2 * time.Second):
+		t.Fatal("late SSE attach never received replayed ask_request")
+	}
+
+	select {
+	case err := <-askDone:
+		t.Fatalf("ask resolved before the late client answered: %v", err)
+	default:
+	}
+}

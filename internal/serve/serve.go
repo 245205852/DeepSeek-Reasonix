@@ -659,6 +659,11 @@ func (s *Server) events(w http.ResponseWriter, r *http.Request) {
 	fmt.Fprint(w, ": connected\n\n") // open the stream immediately
 	flusher.Flush()
 
+	// A browser that attaches after an approval/ask was queued never saw the
+	// original SSE frame. Re-emit any still-blocked prompts so the session
+	// does not sit idle for hours with no actionable card (#7643).
+	s.ctl().ReplayPendingPrompts()
+
 	keepalive := time.NewTicker(sseKeepaliveInterval)
 	defer keepalive.Stop()
 
