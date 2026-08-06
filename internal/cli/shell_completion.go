@@ -67,6 +67,8 @@ func cliCompletionRootSpec() cliCompletionSpec {
 		completionFlag("--allowed-tools --allowedTools", cliCompletionStaticValue),
 		help,
 	}
+	// run/serve --resume require a value; only interactive root --resume [QUERY] is optional.
+	runResume := completionFlag("--resume", cliCompletionSessionValue)
 	runFlags := []cliCompletionFlag{
 		model, profile,
 		completionFlag("--max-steps", cliCompletionStaticValue),
@@ -74,7 +76,7 @@ func cliCompletionRootSpec() cliCompletionSpec {
 		completionFlag("--metrics", cliCompletionPathValue),
 		completionFlag("--dir", cliCompletionPathValue),
 		completionFlag("--continue -c", cliCompletionNoValue),
-		completionFlag("--resume", cliCompletionOptionalValue),
+		runResume,
 		completionFlag("--copy", cliCompletionNoValue),
 		effort, permissionMode,
 		completionFlag("--auto -y", cliCompletionNoValue),
@@ -111,7 +113,7 @@ func cliCompletionRootSpec() cliCompletionSpec {
 			model, profile,
 			completionFlag("--max-steps", cliCompletionStaticValue),
 			completionFlag("--addr", cliCompletionStaticValue),
-			completionFlag("--resume", cliCompletionOptionalValue),
+			completionFlag("--resume", cliCompletionSessionValue), // required session file/ID
 			completionFlag("--auth", cliCompletionStaticValue, "none", "token", "password"),
 			completionFlag("--token --password --port-file --token-file --pid-file", cliCompletionStaticValue),
 			completionFlag("--hash-password --behind-proxy", cliCompletionNoValue), help,
@@ -231,28 +233,30 @@ func cliCompletionRootSpec() cliCompletionSpec {
 			completionSpec("status", hookCompletionFlags(help)),
 		),
 		completionSpec("task", []cliCompletionFlag{help},
-			completionSpec("list", taskCompletionFlags(help)),
-			completionSpec("show", taskCompletionFlags(help)),
+			// Machine list/show: --json --dir --project-root --session (task_machine.go).
+			completionSpec("list", completionTaskMachineListFlags(help)),
+			completionSpec("show", completionTaskMachineShowFlags(help)),
+			// Live monitor surface (task.go FlagSets).
 			completionSpec("monitor", []cliCompletionFlag{help},
-				completionSpec("list", taskCompletionFlags(help)),
-				completionSpec("status", taskCompletionFlags(help)),
-				completionSpec("events", taskCompletionFlags(help)),
-				completionSpec("stop", taskCompletionFlags(help)),
-				completionSpec("cancel", taskCompletionFlags(help)),
-				completionSpec("requeue", taskCompletionFlags(help)),
-				completionSpec("open-session", taskCompletionFlags(help)),
+				completionSpec("list", completionTaskListFlags(help)),
+				completionSpec("status", completionTaskStatusFlags(help)),
+				completionSpec("events", completionTaskEventsFlags(help)),
+				completionSpec("stop", completionTaskControlFlags(help)),
+				completionSpec("cancel", completionTaskControlFlags(help)),
+				completionSpec("requeue", completionTaskRequeueFlags(help)),
+				completionSpec("open-session", completionTaskOpenSessionFlags(help)),
 			),
-			completionSpec("status", taskCompletionFlags(help)),
-			completionSpec("events", taskCompletionFlags(help)),
-			completionSpec("stop", taskCompletionFlags(help)),
-			completionSpec("cancel", taskCompletionFlags(help)),
-			completionSpec("requeue", taskCompletionFlags(help)),
-			completionSpec("open-session", taskCompletionFlags(help)),
+			completionSpec("status", completionTaskStatusFlags(help)),
+			completionSpec("events", completionTaskEventsFlags(help)),
+			completionSpec("stop", completionTaskControlFlags(help)),
+			completionSpec("cancel", completionTaskControlFlags(help)),
+			completionSpec("requeue", completionTaskRequeueFlags(help)),
+			completionSpec("open-session", completionTaskOpenSessionFlags(help)),
 			completionSpec("tmux", []cliCompletionFlag{help},
-				completionSpec("attach", nil),
-				completionSpec("status", nil),
-				completionSpec("open", nil),
-				completionSpec("detach", nil),
+				completionSpec("attach", completionTaskTmuxAttachFlags(help)),
+				completionSpec("status", completionTaskTmuxFlags(help)),
+				completionSpec("open", completionTaskTmuxFlags(help)),
+				completionSpec("detach", completionTaskTmuxFlags(help)),
 			),
 		),
 		completionSpec("review", []cliCompletionFlag{
@@ -306,10 +310,69 @@ func hookCompletionFlags(help cliCompletionFlag) []cliCompletionFlag {
 	}
 }
 
-func taskCompletionFlags(help cliCompletionFlag) []cliCompletionFlag {
+// completionTask*Flags mirror the real FlagSets in task.go / task_machine.go.
+// Names are prefixed with completion to avoid clashing with task.go helpers.
+
+func completionTaskMachineListFlags(help cliCompletionFlag) []cliCompletionFlag {
 	return []cliCompletionFlag{
 		completionFlag("--json", cliCompletionNoValue),
-		completionFlag("--dir --project-root --session", cliCompletionStaticValue), help,
+		completionFlag("--dir --project-root", cliCompletionPathValue),
+		completionFlag("--session", cliCompletionStaticValue), help,
+	}
+}
+
+func completionTaskMachineShowFlags(help cliCompletionFlag) []cliCompletionFlag {
+	return completionTaskMachineListFlags(help)
+}
+
+func completionTaskListFlags(help cliCompletionFlag) []cliCompletionFlag {
+	return []cliCompletionFlag{
+		completionFlag("--json", cliCompletionNoValue),
+		completionFlag("--dir", cliCompletionPathValue), help,
+	}
+}
+
+func completionTaskStatusFlags(help cliCompletionFlag) []cliCompletionFlag {
+	return completionTaskListFlags(help)
+}
+
+func completionTaskEventsFlags(help cliCompletionFlag) []cliCompletionFlag {
+	return []cliCompletionFlag{
+		completionFlag("--json --jsonl --follow", cliCompletionNoValue),
+		completionFlag("--dir", cliCompletionPathValue),
+		completionFlag("--after", cliCompletionStaticValue), help,
+	}
+}
+
+func completionTaskControlFlags(help cliCompletionFlag) []cliCompletionFlag {
+	return []cliCompletionFlag{
+		completionFlag("--json", cliCompletionNoValue),
+		completionFlag("--dir", cliCompletionPathValue),
+		completionFlag("--expected-version --reason --idempotency-key", cliCompletionStaticValue), help,
+	}
+}
+
+func completionTaskRequeueFlags(help cliCompletionFlag) []cliCompletionFlag {
+	return []cliCompletionFlag{
+		completionFlag("--json", cliCompletionNoValue),
+		completionFlag("--dir", cliCompletionPathValue),
+		completionFlag("--expected-version --idempotency-key", cliCompletionStaticValue), help,
+	}
+}
+
+func completionTaskOpenSessionFlags(help cliCompletionFlag) []cliCompletionFlag {
+	return completionTaskListFlags(help)
+}
+
+func completionTaskTmuxFlags(help cliCompletionFlag) []cliCompletionFlag {
+	return completionTaskListFlags(help)
+}
+
+func completionTaskTmuxAttachFlags(help cliCompletionFlag) []cliCompletionFlag {
+	return []cliCompletionFlag{
+		completionFlag("--json", cliCompletionNoValue),
+		completionFlag("--dir", cliCompletionPathValue),
+		completionFlag("--session", cliCompletionStaticValue), help,
 	}
 }
 
@@ -435,12 +498,7 @@ func cliCompletionCandidatesWithValues(root cliCompletionSpec, cword int, words 
 			}
 			return filterCompletionPrefix(stableUniqueCompletionValues(out), current)
 		}
-		values := completionFlagValues(*awaiting, dynamic)
-		if awaiting.kind == cliCompletionOptionalValue {
-			// Also offer session IDs for --resume optional QUERY.
-			values = append(values, dynamic(cliCompletionSessionValue)...)
-		}
-		return filterCompletionPrefix(stableUniqueCompletionValues(values), current)
+		return filterCompletionPrefix(stableUniqueCompletionValues(completionFlagValues(*awaiting, dynamic)), current)
 	}
 	if name, value, ok := strings.Cut(current, "="); ok {
 		if flag, _ := cliCompletionLookupFlag(ctx, name); flag != nil && flag.kind != cliCompletionNoValue {
@@ -506,8 +564,11 @@ func completionFlagValues(flag cliCompletionFlag, dynamic func(cliCompletionValu
 	case cliCompletionStaticValue:
 		return stableUniqueCompletionValues(flag.values)
 	case cliCompletionOptionalValue:
-		// Static optional values if declared; sessions are merged by the caller for --resume.
-		return stableUniqueCompletionValues(flag.values)
+		// Interactive --resume [QUERY]: static values (if any) plus dynamic session IDs.
+		// Used for both separated and --resume=QUERY forms.
+		out := append([]string{}, flag.values...)
+		out = append(out, dynamic(cliCompletionSessionValue)...)
+		return stableUniqueCompletionValues(out)
 	case cliCompletionPathValue:
 		return nil
 	case cliCompletionModelValue, cliCompletionSessionValue:

@@ -190,10 +190,99 @@ func TestCLICompletionOptionalResumeThenFlag(t *testing.T) {
 		}
 		return nil
 	}
-	// --resume with no QUERY, then completing --m must offer --model (optional value).
+	// Interactive root --resume [QUERY] is optional: after --resume, --m offers --model.
 	got := cliCompletionCandidatesWithValues(root, 2, []string{"reasonix", "--resume", "--m"}, values)
 	if !containsCompletionValue(got, "--model") {
 		t.Fatalf("optional --resume then --m = %v, want --model", got)
+	}
+	// Inline optional --resume=QUERY still completes sessions.
+	got = cliCompletionCandidatesWithValues(root, 1, []string{"reasonix", "--resume=a"}, values)
+	if !containsCompletionValue(got, "--resume=alpha-session") {
+		t.Fatalf("inline optional --resume= = %v, want --resume=alpha-session", got)
+	}
+}
+
+func TestCLICompletionRunServeResumeRequiresValue(t *testing.T) {
+	root := cliCompletionRootSpec()
+	values := func(kind cliCompletionValueKind) []string {
+		if kind == cliCompletionSessionValue {
+			return []string{"alpha-session", "beta-session"}
+		}
+		return nil
+	}
+	// run --resume is required: completing after --resume must offer sessions, not --model.
+	got := cliCompletionCandidatesWithValues(root, 3, []string{"reasonix", "run", "--resume", "--m"}, values)
+	if containsCompletionValue(got, "--model") {
+		t.Fatalf("run --resume must not treat next flag as free: %v", got)
+	}
+	if !containsCompletionValue(got, "alpha-session") && len(got) > 0 {
+		// Prefix "--m" filters sessions; empty is OK if no session starts with --m.
+	}
+	// Separated form with prefix "b" completes sessions.
+	got = cliCompletionCandidatesWithValues(root, 3, []string{"reasonix", "run", "--resume", "b"}, values)
+	if want := []string{"beta-session"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("run --resume b = %v, want %v", got, want)
+	}
+	// serve --resume is also required.
+	got = cliCompletionCandidatesWithValues(root, 3, []string{"reasonix", "serve", "--resume", "a"}, values)
+	if want := []string{"alpha-session"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("serve --resume a = %v, want %v", got, want)
+	}
+	// Inline required session form.
+	got = cliCompletionCandidatesWithValues(root, 2, []string{"reasonix", "run", "--resume=b"}, values)
+	if want := []string{"--resume=beta-session"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("run --resume=b = %v, want %v", got, want)
+	}
+}
+
+func TestCLICompletionTaskPerOperationFlags(t *testing.T) {
+	root := cliCompletionRootSpec()
+	values := func(cliCompletionValueKind) []string { return nil }
+
+	// status must not advertise machine-only --project-root.
+	got := cliCompletionCandidatesWithValues(root, 3, []string{"reasonix", "task", "status", "--p"}, values)
+	if containsCompletionValue(got, "--project-root") {
+		t.Fatalf("task status must not offer --project-root: %v", got)
+	}
+	if !containsCompletionValue(got, "--json") && containsCompletionValue(
+		cliCompletionCandidatesWithValues(root, 3, []string{"reasonix", "task", "status", "--j"}, values),
+		"--json") {
+		// prefix --p won't match --json; check --j
+	}
+	got = cliCompletionCandidatesWithValues(root, 3, []string{"reasonix", "task", "status", "--j"}, values)
+	if !containsCompletionValue(got, "--json") {
+		t.Fatalf("task status missing --json: %v", got)
+	}
+
+	// events has --jsonl/--after/--follow.
+	got = cliCompletionCandidatesWithValues(root, 3, []string{"reasonix", "task", "events", "--"}, values)
+	for _, want := range []string{"--json", "--jsonl", "--after", "--follow", "--dir"} {
+		if !containsCompletionValue(got, want) {
+			t.Fatalf("task events missing %q: %v", want, got)
+		}
+	}
+	if containsCompletionValue(got, "--project-root") {
+		t.Fatalf("task events must not offer --project-root: %v", got)
+	}
+
+	// stop has control flags.
+	got = cliCompletionCandidatesWithValues(root, 3, []string{"reasonix", "task", "stop", "--"}, values)
+	for _, want := range []string{"--expected-version", "--reason", "--idempotency-key", "--json", "--dir"} {
+		if !containsCompletionValue(got, want) {
+			t.Fatalf("task stop missing %q: %v", want, got)
+		}
+	}
+
+	// machine list still has --project-root.
+	got = cliCompletionCandidatesWithValues(root, 3, []string{"reasonix", "task", "list", "--p"}, values)
+	if !containsCompletionValue(got, "--project-root") {
+		t.Fatalf("task list missing --project-root: %v", got)
+	}
+
+	// tmux attach has --session.
+	got = cliCompletionCandidatesWithValues(root, 4, []string{"reasonix", "task", "tmux", "attach", "--s"}, values)
+	if !containsCompletionValue(got, "--session") {
+		t.Fatalf("task tmux attach missing --session: %v", got)
 	}
 }
 
