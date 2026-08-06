@@ -722,7 +722,7 @@ func (c *client) readStream(ctx context.Context, resp *http.Response, out chan<-
 		return
 	}
 	if err := scanner.Err(); err != nil {
-		reason := provider.StreamInterruptConnectionReset
+		var reason string
 		if stalled.Load() {
 			err = fmt.Errorf("responses: stream idle timeout after %s", idle)
 			reason = provider.StreamInterruptIdleTimeout

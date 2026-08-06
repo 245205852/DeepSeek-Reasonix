@@ -526,7 +526,6 @@ func (c *client) readStream(ctx context.Context, resp *http.Response, out chan<-
 	var inTok, outTok, cacheCreate, cacheRead int
 	var stopReason string
 	haveUsage := false
-	sawMessageStop := false
 	mergeUsage := func(usage *wireUsage) {
 		if usage == nil {
 			return
@@ -650,7 +649,6 @@ func (c *client) readStream(ctx context.Context, resp *http.Response, out chan<-
 			// without this, the attempt stays speculative and is not committed.
 			// Stop reading immediately so a post-terminal connection reset cannot
 			// reclassify a complete response as interrupted.
-			sawMessageStop = true
 			goto finalize
 		case "error":
 			msg := "stream error"
@@ -681,11 +679,11 @@ func (c *client) readStream(ctx context.Context, resp *http.Response, out chan<-
 	}
 	// EOF / clean close before message_stop is an uncommitted attempt. Complete
 	// ChunkToolCall blocks that arrived earlier remain speculative.
-	if !sawMessageStop {
-		err := fmt.Errorf("%s: stream ended before message_stop: %w", c.name, io.ErrUnexpectedEOF)
-		send(provider.Chunk{Type: provider.ChunkError, Err: provider.StreamInterrupt(err, provider.StreamInterruptPrematureEOF)})
-		return
-	}
+	send(provider.Chunk{Type: provider.ChunkError, Err: provider.StreamInterrupt(
+		fmt.Errorf("%s: stream ended before message_stop: %w", c.name, io.ErrUnexpectedEOF),
+		provider.StreamInterruptPrematureEOF,
+	)})
+	return
 
 finalize:
 	if haveUsage {

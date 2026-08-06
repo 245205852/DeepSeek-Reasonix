@@ -375,7 +375,6 @@ func (a *Agent) streamWithSamplingRecovery(ctx context.Context, turn int) stream
 
 	var billable *provider.Usage
 	var last streamedTurn
-	missingReasoningTried := false
 
 	runAttempt := func(attemptID string, sink event.Sink) streamedTurn {
 		before := provider.RequestAttemptCount(ctx)
@@ -448,8 +447,7 @@ func (a *Agent) streamWithSamplingRecovery(ctx context.Context, turn int) stream
 		missing, shouldRetry := a.observeMissingToolCallReasoning(result.calls, result.reasoning)
 		if missing {
 			event.RecordProtocolRecovery(a.sink, event.ProtocolRecoveryAudit{Kind: event.ProtocolRecoveryMissingReasoningDetected})
-			if !missingReasoningTried && shouldRetry && strings.TrimSpace(result.text) == "" {
-				missingReasoningTried = true
+			if shouldRetry && strings.TrimSpace(result.text) == "" {
 				event.RecordProtocolRecovery(a.sink, event.ProtocolRecoveryAudit{Kind: event.ProtocolRecoveryMissingReasoningRetryAttempted})
 				retrySink := newDeferredStreamSink(a.sink)
 				retry := runAttempt(attemptID, retrySink)
@@ -748,16 +746,6 @@ func (a *Agent) storeLatestRequestUsage(attempt *provider.Usage) {
 	a.lastUsage.Store(&clone)
 }
 
-// contextUsageFromAttempt is retained for tests that need a prompt-only view.
-func contextUsageFromAttempt(attempt *provider.Usage) *provider.Usage {
-	if attempt == nil {
-		return nil
-	}
-	ctx := *attempt
-	ctx.RequestCount = 0
-	return &ctx
-}
-
 // finalizeSamplingUsage builds the Usage event payload for consumers that
 // expect one coherent billable record:
 //   - PromptTokens / cache hit+miss / Completion / Total / RequestCount: billable aggregate
@@ -804,11 +792,6 @@ func applyLatestContextShape(dst, latest *provider.Usage) {
 	dst.ContextReasoningTokens = latest.ReasoningTokens
 	dst.ContextCacheHitTokens = latest.CacheHitTokens
 	dst.ContextCacheMissTokens = latest.CacheMissTokens
-	// When the latest attempt only has request bookkeeping, keep any prior
-	// context already on dst (e.g. previous successful attempt in the merge).
-	if dst.ContextPromptTokens <= 0 && dst.ContextCompletionTokens <= 0 {
-		// leave zeros; consumers fall back to billable fields
-	}
 }
 
 // mergeStreamUsage remains for missing-reasoning style single-repair merges that
