@@ -653,18 +653,20 @@ func (s *Server) events(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
 
-	ch, unsubscribe := s.bc.Subscribe()
+	var ch <-chan []byte
+	var unsubscribe func()
+	// Subscribe and replay as one handoff. Prompt producers are serialized with
+	// this operation, so no original event can land between the two steps.
+	s.ctl().ReplayPendingPromptsWith(func() event.Sink {
+		ch, unsubscribe = s.bc.Subscribe()
+		return event.FuncSink(func(e event.Event) {
+			s.bc.EmitTo(ch, e)
+		})
+	})
 	defer unsubscribe()
 
 	fmt.Fprint(w, ": connected\n\n") // open the stream immediately
 	flusher.Flush()
-
-	// A browser that attaches after an approval/ask was queued never saw the
-	// original SSE frame. Re-emit any still-blocked prompts so the session
-	// does not sit idle for hours with no actionable card (#7643).
-	s.ctl().ReplayPendingPromptsTo(event.FuncSink(func(e event.Event) {
-		s.bc.EmitTo(ch, e)
-	}))
 
 	keepalive := time.NewTicker(sseKeepaliveInterval)
 	defer keepalive.Stop()
