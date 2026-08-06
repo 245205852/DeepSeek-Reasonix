@@ -6843,7 +6843,7 @@ type GoalRuntimeView struct {
 	TurnsUsed        int    `json:"turnsUsed"`
 	TurnsLimit       int    `json:"turnsLimit"`
 	TokensUsed       int    `json:"tokensUsed"`
-	TokensLimit      int    `json:"tokensLimit"`
+	TokensLimit      int    `json:"tokensLimit"` // Deprecated: always 0; retained for bridge compatibility.
 	NoProgressTurns  int    `json:"noProgressTurns"`
 	NoProgressLimit  int    `json:"noProgressLimit"`
 	LastReason       string `json:"lastReason,omitempty"`

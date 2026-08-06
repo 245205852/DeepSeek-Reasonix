@@ -258,7 +258,8 @@ func build(ctx context.Context, opts Options) (*BuildResult, error) {
 	// Goal token-budget accounting: the controller detects this tee and
 	// attributes billable usage events to the active goal turn's recorder, so
 	// executor/planner/subagent/compaction/classifier/router/reviewer/evaluator
-	// calls under one Goal scope count against its token budget. The tee must
+	// calls under one Goal scope accumulate into its observational token total.
+	// The tee must
 	// sit on the shared sink the agents emit into.
 	sink = control.NewGoalUsageTee(sink)
 

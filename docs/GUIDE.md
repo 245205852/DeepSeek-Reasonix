@@ -1079,17 +1079,21 @@ skill in Settings -> Skills or the slash menu. Ordinary chat never changes the
 collaboration mode implicitly; choose Goal in the composer or use `/goal` to
 start a long-running objective.
 
-Goal runs under a per-class budget: simple goals get 10 turns / 200k tokens,
-write goals 20 turns / 400k tokens, and AutoResearch goals 40 turns / 800k
-tokens; four consecutive turns without host-verifiable progress pause the goal.
-A paused goal keeps its todos, Delivery checkpoint, and budget history — use
-`/goal resume` to continue (budget pauses add one more slice of the same
-class), or `/goal pause` to pause a running goal manually. `/goal status`
-shows the full runtime summary. At the end of every goal turn the model reports
-its disposition through the structured `update_goal` tool (continue/complete/
-blocked); when no report arrives, an independent bounded evaluator judges the
-turn once, and any evaluator failure pauses the goal instead of continuing
-silently.
+Goal runs under a per-class **turn** budget: simple goals get 10 turns, write
+goals 20 turns, and AutoResearch goals 40 turns; four consecutive turns without
+host-verifiable progress pause the goal. Cumulative token usage is still tracked
+and shown for diagnostics, but there is **no token hard limit** and no
+pre-provider request admission. In Goal mode, a bare bug/crash/exception
+statement defaults to the write turn class unless the user asks only for
+analysis/explanation or forbids changes. A paused goal keeps its todos, Delivery
+checkpoint, and runtime history — use `/goal resume` to continue (turn-budget
+pauses add one more slice of turns of the same class), or `/goal pause` to pause
+a running goal manually. `/goal status` shows the full runtime summary (turns
+used/limit, tokens used, no-progress, extensions). At the end of every goal turn
+the model reports its disposition through the structured `update_goal` tool
+(continue/complete/blocked); when no report arrives, an independent bounded
+evaluator judges the turn once, and any evaluator failure pauses the goal
+instead of continuing silently.
 
 For complex work, write the objective as a
 [task contract](./TASK_CONTRACT.md): Context, Request, Output format,

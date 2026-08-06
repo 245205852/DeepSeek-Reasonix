@@ -852,11 +852,13 @@ Goal 是长期目标的统一运行机制。普通 `/goal` 继续走轻量 Goal�
 Settings -> Skills 或斜杠菜单里。普通聊天不会隐式改变协作模式；需要长目标时，请在输入框中
 明确选择 Goal，或使用 `/goal` 启动。
 
-Goal 按类别运行在预算内：简单目标 10 轮 / 20 万 token，写入型 20 轮 / 40 万 token，
-AutoResearch 目标 40 轮 / 80 万 token；连续 4 轮没有宿主可验证进展会暂停。暂停会保留
-Goal、todo、Delivery checkpoint 与预算历史——用 `/goal resume` 继续（预算型暂停会追加一档
-同类别额度），`/goal pause` 可手动暂停运行中的目标，`/goal status` 显示完整的轮次/token/
-无进展运行摘要。每个目标 turn 结束时，模型通过结构化的 `update_goal` 工具报告
+Goal 按类别运行在**轮次**预算内：简单目标 10 轮，写入型 20 轮，AutoResearch 40 轮；
+连续 4 轮没有宿主可验证进展会暂停。累计 token 仍会统计并展示（便于诊断），但**没有
+token 硬上限**，也不会在 provider 请求前做 token 准入拦截。Goal 中只陈述 BUG/崩溃/异常
+且未要求分析或禁止修改时，默认按写入型轮数类别。暂停会保留 Goal、todo、Delivery
+checkpoint 与运行历史——用 `/goal resume` 继续（轮次型暂停会追加一档同类别轮数），
+`/goal pause` 可手动暂停运行中的目标，`/goal status` 显示完整的轮次/累计 token/无进展
+运行摘要。每个目标 turn 结束时，模型通过结构化的 `update_goal` 工具报告
 continue/complete/blocked；没有报告时由独立的有界 evaluator 判定一次，任何 evaluator
 故障都会安全暂停目标而不是静默继续。
 

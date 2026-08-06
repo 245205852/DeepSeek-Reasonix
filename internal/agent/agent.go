@@ -2916,11 +2916,7 @@ func (a *Agent) stream(ctx context.Context, turn int, sink event.Sink) (string, 
 	if err != nil {
 		return "", "", "", "", "", nil, nil, nil, false, false, nil, err
 	}
-	inputFloor := 0
-	if previous := a.lastUsage.Load(); previous != nil {
-		inputFloor = previous.PromptTokens
-	}
-	ch, err := provider.StreamWithRequestBudgetEstimate(ctx, a.prov, req, inputFloor)
+	ch, err := a.prov.Stream(ctx, req)
 	if err != nil {
 		return "", "", "", "", "", nil, nil, provider.UsageWithRequestAttemptCount(ctx, nil), false, false, nil, err
 	}
