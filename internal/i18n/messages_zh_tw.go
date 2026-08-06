@@ -533,10 +533,13 @@ var ChineseTraditional = Messages{
   reasonix session show|status <machine-session-id> --json [--dir PATH]  查詢單一脫敏會話
   reasonix session recovery [<machine-session-id>] --json [--dir PATH]  查詢脫敏復原狀態
   reasonix hook list|status --json [--dir PATH]         檢視脫敏 Hook 狀態
-  reasonix task list|show --json [--dir PATH]           檢視脫敏 Task 狀態
+  reasonix task list|show|status|events|stop|cancel|monitor|tmux --json [--dir PATH]
+                                                         檢視或控制脫敏 Task
   reasonix bot start|doctor|weixin-login                多管道 IM bot 閘道
   reasonix upgrade [--check] [--force]                   更新到最新正式版（別名：reasonix update）
-  reasonix version
+  reasonix completion bash|zsh|fish                     列印 shell 補全腳本到 stdout
+  reasonix version [--verbose|--json]                   列印版本（單行）或建置元資訊
+  reasonix --version | -v                               單行版本（腳本安全）
   reasonix help
 
 範例：
@@ -578,8 +581,8 @@ var ChineseTraditional = Messages{
 	GoalPaused:                 "目標已暫停 — /goal resume 可繼續",
 	GoalPausedReason:           "使用者手動暫停",
 	GoalPausedFmt:              "目標已暫停（%s）— 使用 /goal resume 繼續",
-	GoalBudgetExtended:         "目標已恢復 — 追加了一檔預算額度",
-	GoalRuntimeFmt:             "執行狀態：輪次 %d/%d，token %d/%d，無進展 %d/%d，預算追加 %d 次",
+	GoalBudgetExtended:         "目標已恢復 — 追加了一檔輪次數",
+	GoalRuntimeFmt:             "執行狀態：輪次 %d/%d，token %d，無進展 %d/%d，追加 %d",
 	GoalRuntimeLastReason:      "最近原因",
 	ProviderErrAuthRejected:    "認證失敗 (HTTP 401)：服務端拒絕了你的 API key。可能是 key 錯誤或已過期，也可能是服務端出現瞬時鑑權/額度問題——已退避重試仍失敗。請稍後再試，或檢查 .env 中的金鑰 / 執行 `reasonix setup`。",
 	SelectMoreAboveFmt:         "  ↑ 上方還有 %d 個",

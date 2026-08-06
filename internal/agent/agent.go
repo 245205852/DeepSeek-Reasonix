@@ -40,7 +40,11 @@ import (
 const maxToolOutputBytes = 32 * 1024
 
 const maxEmptyFinalBlocks = 3
-const maxStreamRecoveries = 3
+
+// maxStreamRecoveries is the number of body-phase stream retries after the
+// initial sampling attempt (Codex-aligned default: 1 + 5 = 6 attempts total).
+const maxStreamRecoveries = 5
+const maxSamplingAttempts = maxStreamRecoveries + 1
 const maxExecutorHandoffNudges = 1
 
 const defaultReasoningByteLimit = 128 * 1024
@@ -2861,33 +2865,17 @@ func toolBudgetNoticeText() string {
 	return "Tool round limit reached; asking the assistant to summarize progress."
 }
 
-func streamRecoveryMessage(hasPartialText, hadPartialTool bool) string {
-	switch {
-	case hadPartialTool:
-		return "The previous assistant response was interrupted while a tool call was streaming. Continue the same task now. If a tool is still needed, issue a fresh complete tool call from scratch; do not rely on any partial tool-call arguments from the interrupted stream."
-	case hasPartialText:
-		return "The previous assistant response was interrupted during streaming. Continue the same task now. Partial text remains visible to the user but was excluded from model context; avoid needlessly repeating it, and do not assume it was complete."
-	default:
-		return "The previous assistant response was interrupted during streaming before visible answer text was completed. Continue the same task now and provide the next useful response."
-	}
+// samplingRequest is a once-prepared, frozen provider request for one model
+// round. All stream retries replay this exact payload — no synthetic recovery
+// messages, no schema reorder, no previous_response_id drift from failed attempts.
+type samplingRequest struct {
+	req provider.Request
 }
 
-// stream runs one completion, emitting reasoning and text deltas as typed
-// events and collecting complete tool calls. A Message event closes the text
-// stream so a sink can re-render the streamed raw text as styled markdown. The
-// accumulated text and reasoning are also returned so the caller can round-trip
-// reasoning on the next turn.
-func (a *Agent) stream(ctx context.Context, turn int, sink event.Sink) (string, string, string, string, string, []provider.ToolCall, []json.RawMessage, *provider.Usage, bool, bool, []provider.ToolCall, error) {
-	ctx = provider.WithRetryNotify(ctx, func(info provider.RetryInfo) {
-		sink.Emit(event.Event{Kind: event.Retrying, RetryAttempt: info.Attempt, RetryMax: info.Max})
-	})
-	ctx = provider.WithRequestAttemptCounter(ctx)
-	// A stream can terminate locally before the provider channel closes (for
-	// example when the client-side reasoning guard fires). Own a child context
-	// here so every return path aborts the HTTP request and releases the provider
-	// reader instead of leaving generation and billing running in the background.
-	ctx, cancel := context.WithCancel(ctx)
-	defer cancel()
+// prepareSamplingRequest runs interceptors and schema fetch once per model
+// round. Callers deep-copy via freezeProviderRequest before each Stream so
+// providers cannot mutate the shared freeze across retries.
+func (a *Agent) prepareSamplingRequest(ctx context.Context) (samplingRequest, error) {
 	// CreatedAt is durable UI metadata, not model input. Strip it from the
 	// transport copy so wall-clock differences never invalidate the provider's
 	// prompt-cache prefix (and custom providers cannot accidentally send it).
@@ -2901,7 +2889,7 @@ func (a *Agent) stream(ctx context.Context, turn int, sink event.Sink) (string, 
 	// the prompt-cache prefix stays intact across turns.
 	requestMessages, err := a.interceptContextPrepare(ctx, requestMessages)
 	if err != nil {
-		return "", "", "", "", "", nil, nil, nil, false, false, nil, err
+		return samplingRequest{}, err
 	}
 	req := provider.Request{
 		Messages:       requestMessages,
@@ -2914,15 +2902,96 @@ func (a *Agent) stream(ctx context.Context, turn int, sink event.Sink) (string, 
 	// (revalidated by the payload registry) before it goes on the wire.
 	req, err = a.interceptProviderRequest(ctx, req)
 	if err != nil {
-		return "", "", "", "", "", nil, nil, nil, false, false, nil, err
+		return samplingRequest{}, err
 	}
-	inputFloor := 0
-	if previous := a.lastUsage.Load(); previous != nil {
-		inputFloor = previous.PromptTokens
+	return samplingRequest{req: freezeProviderRequest(req)}, nil
+}
+
+// freezeProviderRequest deep-copies the provider-visible request surface so
+// retries share identical messages, tools order, temperature, and format.
+func freezeProviderRequest(req provider.Request) provider.Request {
+	out := req
+	if len(req.Messages) > 0 {
+		out.Messages = append([]provider.Message(nil), req.Messages...)
+		for i := range out.Messages {
+			if len(out.Messages[i].ToolCalls) > 0 {
+				out.Messages[i].ToolCalls = append([]provider.ToolCall(nil), out.Messages[i].ToolCalls...)
+			}
+			if len(out.Messages[i].Images) > 0 {
+				out.Messages[i].Images = append([]string(nil), out.Messages[i].Images...)
+			}
+			if len(out.Messages[i].ResponsesItems) > 0 {
+				items := make([]json.RawMessage, len(out.Messages[i].ResponsesItems))
+				for j, item := range out.Messages[i].ResponsesItems {
+					items[j] = append(json.RawMessage(nil), item...)
+				}
+				out.Messages[i].ResponsesItems = items
+			}
+		}
 	}
-	ch, err := provider.StreamWithRequestBudgetEstimate(ctx, a.prov, req, inputFloor)
+	if len(req.Tools) > 0 {
+		out.Tools = make([]provider.ToolSchema, len(req.Tools))
+		for i, schema := range req.Tools {
+			out.Tools[i] = schema
+			if len(schema.Parameters) > 0 {
+				out.Tools[i].Parameters = append(json.RawMessage(nil), schema.Parameters...)
+			}
+		}
+	}
+	if req.Temperature != nil {
+		t := *req.Temperature
+		out.Temperature = &t
+	}
+	if req.ResponseFormat != nil {
+		rf := *req.ResponseFormat
+		out.ResponseFormat = &rf
+	}
+	return out
+}
+
+// stream runs one completion, emitting reasoning and text deltas as typed
+// events and collecting complete tool calls. A Message event closes the text
+// stream so a sink can re-render the streamed raw text as styled markdown. The
+// accumulated text and reasoning are also returned so the caller can round-trip
+// reasoning on the next turn.
+//
+// When frozen is non-nil, the request is not rebuilt from session — retries
+// must replay the same provider-visible body.
+func (a *Agent) stream(ctx context.Context, turn int, sink event.Sink) (string, string, string, string, string, []provider.ToolCall, []json.RawMessage, *provider.Usage, bool, bool, []provider.ToolCall, int, error) {
+	return a.streamWithFrozen(ctx, turn, sink, nil, "")
+}
+
+func (a *Agent) streamWithFrozen(ctx context.Context, turn int, sink event.Sink, frozen *samplingRequest, attemptID string) (string, string, string, string, string, []provider.ToolCall, []json.RawMessage, *provider.Usage, bool, bool, []provider.ToolCall, int, error) {
+	ctx = provider.WithRetryNotify(ctx, func(info provider.RetryInfo) {
+		sink.Emit(event.Event{Kind: event.Retrying, RetryAttempt: info.Attempt, RetryMax: info.Max, RetryScope: event.RetryScopeHeaders})
+	})
+	// Reuse a parent attempt counter when present so stream retries accumulate
+	// into one RequestCount; otherwise install a fresh counter for this call.
+	ctx = provider.WithRequestAttemptCounter(ctx)
+	// A stream can terminate locally before the provider channel closes (for
+	// example when the client-side reasoning guard fires). Own a child context
+	// here so every return path aborts the HTTP request and releases the provider
+	// reader instead of leaving generation and billing running in the background.
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	var req provider.Request
+	var err error
+	if frozen != nil {
+		req = freezeProviderRequest(frozen.req)
+	} else {
+		prepared, perr := a.prepareSamplingRequest(ctx)
+		if perr != nil {
+			return "", "", "", "", "", nil, nil, nil, false, false, nil, 0, perr
+		}
+		req = prepared.req
+	}
+	// After #7725 Goal token request admission was removed, stream goes
+	// directly to the provider. Provider-visible cache controls stay stable
+	// across retries and request timing because they are derived from req alone.
+	ch, err := a.prov.Stream(ctx, req)
 	if err != nil {
-		return "", "", "", "", "", nil, nil, provider.UsageWithRequestAttemptCount(ctx, nil), false, false, nil, err
+		return "", "", "", "", "", nil, nil, provider.UsageWithRequestAttemptCount(ctx, nil), false, false, nil, 0, err
 	}
 
 	// A PostLLMCall hook rewrites the whole reasoning block, so when one is wired
@@ -2939,6 +3008,7 @@ func (a *Agent) stream(ctx context.Context, turn int, sink event.Sink) (string, 
 	var partialCalls []provider.ToolCall
 	var usage *provider.Usage
 	var partialToolStarted bool
+	var maxArgChars int
 	var lastArgProgress time.Time
 	finishReasoning := func() (stored, display string) {
 		original := reasoning.String()
@@ -2963,14 +3033,14 @@ func (a *Agent) stream(ctx context.Context, turn int, sink event.Sink) (string, 
 			stored, _ := finishReasoning()
 			usage = bestEffortStreamUsage(usage, text.Len(), reasoning.Len(), "interrupted")
 			usage = provider.UsageWithRequestAttemptCount(ctx, usage)
-			return text.String(), stored, signature, reasoningID, reasoningStatus, calls, responsesItems, usage, false, partialToolStarted, partialCalls, ctx.Err()
+			return text.String(), stored, signature, reasoningID, reasoningStatus, calls, responsesItems, usage, false, partialToolStarted, partialCalls, maxArgChars, ctx.Err()
 		case c, ok := <-ch:
 			if !ok {
 				if err := ctx.Err(); err != nil {
 					stored, _ := finishReasoning()
 					usage = bestEffortStreamUsage(usage, text.Len(), reasoning.Len(), "interrupted")
 					usage = provider.UsageWithRequestAttemptCount(ctx, usage)
-					return text.String(), stored, signature, reasoningID, reasoningStatus, calls, responsesItems, usage, false, partialToolStarted, partialCalls, err
+					return text.String(), stored, signature, reasoningID, reasoningStatus, calls, responsesItems, usage, false, partialToolStarted, partialCalls, maxArgChars, err
 				}
 				stored, display := finishReasoning()
 				// provider.response: extensions rule on the assembled terminal
@@ -2981,7 +3051,7 @@ func (a *Agent) stream(ctx context.Context, turn int, sink event.Sink) (string, 
 				finalText, finalReasoning, signature, calls, usage, err := a.interceptProviderResponse(
 					ctx, text.String(), stored, signature, calls, usage)
 				if err != nil {
-					return "", "", "", "", "", nil, nil, nil, false, partialToolStarted, partialCalls, err
+					return "", "", "", "", "", nil, nil, nil, false, partialToolStarted, partialCalls, maxArgChars, err
 				}
 				// Responses reasoning IDs/status and Anthropic signatures are
 				// provider-bound metadata. Never attach the provider's metadata
@@ -3002,7 +3072,7 @@ func (a *Agent) stream(ctx context.Context, turn int, sink event.Sink) (string, 
 					})
 				}
 				usage = provider.UsageWithRequestAttemptCount(ctx, usage)
-				return finalText, finalReasoning, signature, reasoningID, reasoningStatus, calls, responsesItems, usage, false, false, partialCalls, nil
+				return finalText, finalReasoning, signature, reasoningID, reasoningStatus, calls, responsesItems, usage, false, false, partialCalls, maxArgChars, nil
 			}
 			chunk = c
 		}
@@ -3028,7 +3098,7 @@ func (a *Agent) stream(ctx context.Context, turn int, sink event.Sink) (string, 
 				usage = bestEffortStreamUsage(usage, text.Len(), reasoning.Len(), finishReasonClientReasoningLimit)
 				usage = provider.UsageWithRequestAttemptCount(ctx, usage)
 				a.lastUsage.Store(usage)
-				return text.String(), stored, signature, reasoningID, reasoningStatus, calls, responsesItems, usage, false, partialToolStarted, partialCalls, errReasoningByteLimitExceeded
+				return text.String(), stored, signature, reasoningID, reasoningStatus, calls, responsesItems, usage, false, partialToolStarted, partialCalls, maxArgChars, errReasoningByteLimitExceeded
 			}
 		case provider.ChunkText:
 			text.WriteString(chunk.Text)
@@ -3042,7 +3112,7 @@ func (a *Agent) stream(ctx context.Context, turn int, sink event.Sink) (string, 
 			if tc := chunk.ToolCall; tc != nil {
 				partialCalls = upsertPartialToolCall(partialCalls, *tc)
 				sink.Emit(event.Event{Kind: event.ToolDispatch, Tool: event.Tool{
-					ID: tc.ID, Name: tc.Name, ReadOnly: a.toolReadOnly(tc.Name), Partial: true,
+					ID: tc.ID, Name: tc.Name, ReadOnly: a.toolReadOnly(tc.Name), Partial: true, AttemptID: attemptID,
 				}})
 			}
 		case provider.ChunkToolCallArgsDelta:
@@ -3051,11 +3121,14 @@ func (a *Agent) stream(ctx context.Context, turn int, sink event.Sink) (string, 
 			// partial dispatch with the cumulative size (time-throttled) so the
 			// UI can show progress instead of a dead counter for the duration of
 			// a 30KB write_file body.
+			if chunk.ArgChars > maxArgChars {
+				maxArgChars = chunk.ArgChars
+			}
 			if tc := chunk.ToolCall; tc != nil && time.Since(lastArgProgress) >= 250*time.Millisecond {
 				partialCalls = upsertPartialToolCall(partialCalls, *tc)
 				lastArgProgress = time.Now()
 				sink.Emit(event.Event{Kind: event.ToolDispatch, Tool: event.Tool{
-					ID: tc.ID, Name: tc.Name, ReadOnly: a.toolReadOnly(tc.Name), Partial: true, ArgChars: chunk.ArgChars,
+					ID: tc.ID, Name: tc.Name, ReadOnly: a.toolReadOnly(tc.Name), Partial: true, ArgChars: chunk.ArgChars, AttemptID: attemptID,
 				}})
 			}
 		case provider.ChunkToolCall:
@@ -3063,6 +3136,9 @@ func (a *Agent) stream(ctx context.Context, turn int, sink event.Sink) (string, 
 			if chunk.ToolCall != nil {
 				calls = append(calls, *chunk.ToolCall)
 				partialCalls = upsertPartialToolCall(partialCalls, *chunk.ToolCall)
+				if n := len(chunk.ToolCall.Arguments); n > maxArgChars {
+					maxArgChars = n
+				}
 			}
 		case provider.ChunkResponsesItem:
 			if len(chunk.ResponsesItem) > 0 {
@@ -3078,14 +3154,14 @@ func (a *Agent) stream(ctx context.Context, turn int, sink event.Sink) (string, 
 				stored, _ := finishReasoning()
 				usage = bestEffortStreamUsage(usage, text.Len(), reasoning.Len(), "interrupted")
 				usage = provider.UsageWithRequestAttemptCount(ctx, usage)
-				return text.String(), stored, signature, reasoningID, reasoningStatus, calls, responsesItems, usage, true, partialToolStarted, partialCalls, chunk.Err
+				return text.String(), stored, signature, reasoningID, reasoningStatus, calls, responsesItems, usage, true, partialToolStarted, partialCalls, maxArgChars, chunk.Err
 			}
 			stored, _ := finishReasoning()
 			if errors.Is(chunk.Err, context.Canceled) || errors.Is(chunk.Err, context.DeadlineExceeded) {
 				usage = bestEffortStreamUsage(usage, text.Len(), reasoning.Len(), "interrupted")
 			}
 			usage = provider.UsageWithRequestAttemptCount(ctx, usage)
-			return text.String(), stored, signature, reasoningID, reasoningStatus, calls, responsesItems, usage, false, partialToolStarted, partialCalls, chunk.Err
+			return text.String(), stored, signature, reasoningID, reasoningStatus, calls, responsesItems, usage, false, partialToolStarted, partialCalls, maxArgChars, chunk.Err
 		}
 	}
 }

@@ -54,7 +54,16 @@ var (
 )
 
 // Run is the CLI entry point; it returns a process exit code.
+// Prefer RunWithBuildInfo when git commit / build time are available from ldflags.
 func Run(args []string, version string) int {
+	return RunWithBuildInfo(args, BuildInfo{Version: version})
+}
+
+// RunWithBuildInfo is the full CLI entry with optional build metadata for
+// `reasonix version --verbose` / `--json`.
+func RunWithBuildInfo(args []string, info BuildInfo) int {
+	info = info.withDefaults()
+	version := info.Version
 	// Usage recording is asynchronous so provider/UI paths never wait on disk.
 	// Drain records accepted by this process before a normal CLI exit.
 	defer func() {
@@ -169,9 +178,14 @@ func Run(args []string, version string) int {
 	case "upgrade", "update":
 		configureCLIThemeFromConfig()
 		return upgradeCommand(rest, version)
-	case "version", "--version", "-v":
-		fmt.Println("reasonix", version)
-		return 0
+	case "version":
+		// Detailed identity: version --verbose / --json. Top-level --version/-v
+		// stay single-line for script compatibility (Integration D/E).
+		return versionCommand(rest, info, true)
+	case "--version", "-v":
+		return versionCommand(nil, info, false)
+	case "completion":
+		return completionCommand(rest)
 	case "docs-manifest":
 		return docsManifestCommand(rest, version)
 	case "help", "--help", "-h":
@@ -673,7 +687,11 @@ func runAgent(args []string, version string) int {
 	}
 	var metrics *metricsSink
 	if *metricsPath != "" {
-		metrics = &metricsSink{inner: sink}
+		metrics = &metricsSink{
+			inner:         sink,
+			partialPath:   partialMetricsPath(*metricsPath),
+			snapshotEvery: 2 * time.Second,
+		}
 		sink = metrics
 	}
 	sink = withNotifications(sink, cfg)
@@ -748,13 +766,16 @@ func runAgent(args []string, version string) int {
 		})
 	}
 	if metrics != nil {
-		metrics.m.DurationMs = time.Since(started).Milliseconds()
-		metrics.m.Outcome = completion.class
-		metrics.m.Arm = ablated.Arm()
+		// Snapshot under the sink's lock: a background job can still be emitting
+		// into it while this goroutine assembles the final record.
+		final := metrics.Snapshot()
+		final.DurationMs = time.Since(started).Milliseconds()
+		final.Outcome = completion.class
+		final.Arm = ablated.Arm()
 		if exec := ctrl.Executor(); exec != nil {
 			if audit := exec.CapabilityAudit(); audit != nil {
 				snap := audit.Snapshot()
-				metrics.m.MergeCapabilityAuditCounters(
+				final.MergeCapabilityAuditCounters(
 					snap.Routes, snap.RoutedCandidates, snap.RoutedRequire, snap.RoutedPrefer, snap.RoutedSuggest, snap.Declines,
 					snap.SemanticRoutes, snap.SemanticFallbacks,
 					snap.RequireMissing, snap.RequireRecovered, snap.PreferMissing, snap.PreferRecovered,
@@ -766,7 +787,7 @@ func runAgent(args []string, version string) int {
 				)
 			}
 		}
-		if err := writeMetrics(*metricsPath, metrics.m); err != nil {
+		if err := writeMetrics(*metricsPath, final); err != nil {
 			fmt.Fprintln(os.Stderr, i18n.M.ErrorPrefix, err)
 		}
 	}

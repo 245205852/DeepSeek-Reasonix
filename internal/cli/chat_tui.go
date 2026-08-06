@@ -209,8 +209,12 @@ type chatTUI struct {
 	// pin the viewport to the bottom after a session / branch / clear switch
 	// regardless of the previous wasAtBottom state (#4584).
 	forceGotoBottom bool
-	eventCh         chan event.Event
-	started         bool // banner + resumed history committed once
+	// scrollMode is the explicit followTail / userScrolled state machine.
+	// Prefer this over a raw wasAtBottom snapshot so modal height changes
+	// (approval, chooser, pickers) never silently disable tail-follow (#6430).
+	scrollMode scrollFollowMode
+	eventCh    chan event.Event
+	started    bool // banner + resumed history committed once
 
 	// transcript holds every finalized line commitLine emits; the viewport
 	// renders a scrollable window of it (alt-screen owns the grid, so there's no
@@ -221,7 +225,22 @@ type chatTUI struct {
 	// keep their already-rendered text; markdown, user bubbles, reasoning, tool
 	// cards, and replay bundles are regenerated after a resize.
 	transcriptSources []transcriptSource
-	wrappedLines      []string // transcript wrapped to viewport width (rendered each frame)
+	// wrappedLines is the viewport line cache; wrapBlockLines / wrapWidth /
+	// wrapBlockCount support append-only updates without re-wrapping the full
+	// history on every streaming commit (#6978).
+	wrappedLines   []string
+	wrapBlockLines [][]string
+	wrapWidth      int
+	wrapBlockCount int
+	// lastMouseReenable rate-limits ConPTY mouse re-enable sequences (#7583).
+	// mouseReenablePending + timer cover trailing-edge fires after a resize storm.
+	lastMouseReenable       time.Time
+	mouseReenablePending    bool
+	mouseReenableTimerArmed bool
+	// wantMouseReenable is set by TurnDone (and similar settle points) and
+	// consumed once in Update so the raw enable sequence is batched with the
+	// frame that paints the settled state.
+	wantMouseReenable bool
 	viewport          viewport.Model
 	sel               selection
 	// autoScroll drives edge-drag scrolling: -1 up, +1 down, 0 off. dragX is the
@@ -866,12 +885,15 @@ func (m chatTUI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			logFirstFrame = true
 		}
 	}
-	wasAtBottom := m.viewport.AtBottom()
+	// Prefer explicit scrollMode over a raw AtBottom snapshot so opening an
+	// approval/chooser (height-only change) does not disable tail-follow (#6430).
+	followTail := m.shouldFollowTail()
 	prevLines := len(m.transcript)
 	prevWidth := m.width
+	prevHeight := m.height
 	prevYOff := m.viewport.YOffset()
 	var resizeAnchor transcriptResizeAnchor
-	if size, ok := msg.(tea.WindowSizeMsg); ok && size.Width != m.width && !wasAtBottom {
+	if size, ok := msg.(tea.WindowSizeMsg); ok && size.Width != m.width && !followTail {
 		resizeAnchor = captureTranscriptResizeAnchor(m.transcript, m.viewport.Width(), prevYOff)
 	}
 
@@ -895,38 +917,91 @@ func (m chatTUI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	// windows. Textarea remains the owner of the scroll offset and caret reveal.
 	cm.syncInputHeightLimit()
 	cm.viewport.SetHeight(cm.transcriptHeight())
-	if cm.width != prevWidth {
+	widthChanged := cm.width != prevWidth
+	if widthChanged {
 		cm.reflowTranscript(cm.width)
 		// Selection coordinates are visual-line based and cannot survive a
 		// semantic reflow without selecting unrelated text.
 		cm.sel = selection{}
 	}
-	// Re-feed only when the content grew or the width changed (re-wrapping is
-	// the expensive part); a bare scroll or spinner tick keeps the offset.
-	if len(cm.transcript) != prevLines || cm.width != prevWidth || cm.transcriptDirty {
-		wrapped := wrapTranscript(strings.Join(cm.transcript, "\n"), contentW)
-		cm.viewport.SetContent(wrapped)
-		cm.wrappedLines = strings.Split(wrapped, "\n")
-		if wasAtBottom {
+	// Wrap sync: full rebuild only on width change or history shrink. Streaming
+	// answer/tool rewrites use invalidateWrapFrom → suffix-only re-wrap; the
+	// transcriptDirty flag alone must never force a full-history rebuild (#6978).
+	forceFullWrap := widthChanged || len(cm.transcript) < prevLines
+	wrapBehind := cm.wrapWidth != contentW || cm.wrapBlockCount != len(cm.transcript)
+	if forceFullWrap || wrapBehind || len(cm.transcript) != prevLines {
+		if cm.syncWrappedLines(contentW, forceFullWrap) {
+			cm.feedViewportContent()
+		}
+		if followTail || cm.shouldFollowTail() {
 			cm.viewport.GotoBottom() // tail-follow: stay pinned to newest output
-		} else if cm.width != prevWidth && resizeAnchor.valid {
+			cm.markFollowTail()
+		} else if widthChanged && resizeAnchor.valid {
 			cm.viewport.SetYOffset(resizeAnchor.yOffset(cm.transcript, contentW))
 		}
+	} else if followTail && (cm.forceGotoBottom || cm.height != prevHeight) {
+		// Height-only change (modal open/close, status wrap) must still pin
+		// when we are in followTail — without waiting for new transcript.
+		cm.viewport.GotoBottom()
 	}
 	if cm.forceGotoBottom {
 		cm.viewport.GotoBottom()
+		cm.markFollowTail()
 		cm.forceGotoBottom = false
 	}
 	cm.transcriptDirty = false
+
+	// Rate-limited mouse re-enable after real resize, focus regain, or turn
+	// settle so Windows ConPTY keeps wheel → MouseWheelMsg (#7583). Trailing
+	// timer msgs are handled here too. Same-size WindowSizeMsg (session-switch
+	// rebuilds) must not force a spurious Raw cmd.
+	var mouseCmd tea.Cmd
+	switch v := msg.(type) {
+	case tea.WindowSizeMsg:
+		if cm.width != prevWidth || cm.height != prevHeight {
+			mouseCmd = cm.maybeReenableMouse()
+		}
+	case tea.FocusMsg:
+		mouseCmd = cm.maybeReenableMouse()
+	case mouseReenableMsg:
+		mouseCmd = cm.handleMouseReenableMsg(v)
+	}
+	if cm.wantMouseReenable {
+		cm.wantMouseReenable = false
+		if c := cm.maybeReenableMouse(); c != nil {
+			mouseCmd = batchCmds(mouseCmd, c)
+		}
+	}
+
 	// Any viewport scroll (wheel, PgUp/PgDn, edge auto-scroll, or tail-follow to
 	// newest output) shifts the whole window. Some terminals (Warp) mishandle
 	// the renderer's scroll/insert-line optimization and strand stale rows, so
 	// force a full clear+redraw whenever the offset actually moved.
 	if cm.viewport.YOffset() != prevYOff && !cm.nativeScrollback && !cm.sessionSwitch {
-		return cm, tea.Batch(tea.ClearScreen, cmd)
+		cm.sessionSwitch = false
+		return cm, batchCmds(tea.ClearScreen, mouseCmd, cmd)
 	}
 	cm.sessionSwitch = false
-	return cm, cmd
+	return cm, batchCmds(mouseCmd, cmd)
+}
+
+// batchCmds is tea.Batch that collapses an all-nil list to nil so callers can
+// assert "no work" without false positives from Batch(nil, nil).
+func batchCmds(cmds ...tea.Cmd) tea.Cmd {
+	var out []tea.Cmd
+	for _, c := range cmds {
+		if c != nil {
+			out = append(out, c)
+		}
+	}
+	switch len(out) {
+	case 0:
+		return nil
+	case 1:
+		return out[0]
+	default:
+		return tea.Batch(out...)
+	}
 }
 
 // update runs the model's message handling. Update wraps it to keep the
@@ -952,6 +1027,11 @@ func (m chatTUI) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.history = nil
 		}
 
+	case tea.FocusMsg:
+		// Terminal regained focus — ConPTY may have dropped mouse tracking
+		// while the pane was unfocused (#7583). Re-enable is issued from Update.
+		return m, nil
+
 	case tea.MouseWheelMsg:
 		if m.mouseOverComposer(msg.X, msg.Y) {
 			delta := 0
@@ -974,6 +1054,7 @@ func (m chatTUI) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case tea.MouseWheelDown:
 			m.viewport.ScrollDown(3)
 		}
+		m.syncScrollModeAfterGesture()
 		return m, nil
 
 	case tea.MouseClickMsg:
@@ -1080,6 +1161,7 @@ func (m chatTUI) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		} else {
 			m.viewport.ScrollUp(1)
 		}
+		m.syncScrollModeAfterGesture()
 		m.sel.head = m.transcriptCaret(m.dragX, edgeY)
 		// Stop at the boundary so a held edge can't run away to the very end.
 		if (m.autoScroll > 0 && m.viewport.AtBottom()) || (m.autoScroll < 0 && m.viewport.AtTop()) {
@@ -1110,7 +1192,7 @@ func (m chatTUI) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// "what's selected" cue and a right-click can still re-copy it. A plain
 		// click (no drag) clears any prior selection.
 		if m.scrollbarDrag {
-			m.dragScrollbar(msg.Y)
+			m.dragScrollbar(msg.Y) // already syncs scrollMode
 			m.scrollbarDrag = false
 			m.scrollbarGrabOffset = 0
 			return m, nil
@@ -1204,15 +1286,19 @@ func (m chatTUI) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		switch msg.String() {
 		case "pgup":
 			m.viewport.PageUp()
+			m.syncScrollModeAfterGesture()
 			return m, finalize(m, cmds)
 		case "pgdown":
 			m.viewport.PageDown()
+			m.syncScrollModeAfterGesture()
 			return m, finalize(m, cmds)
 		case "ctrl+home":
 			m.viewport.GotoTop()
+			m.markUserScrolled()
 			return m, finalize(m, cmds)
 		case "ctrl+end":
 			m.viewport.GotoBottom()
+			m.markFollowTail()
 			return m, finalize(m, cmds)
 		case "ctrl+z":
 			return m, suspendWithMouseReset()
@@ -1531,6 +1617,7 @@ func (m chatTUI) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				line := strings.TrimSpace(m.input.Value())
 				if line == "" {
 					m.viewport.GotoBottom()
+					m.markFollowTail()
 					return m, nil
 				}
 				if m.queueEditCursor >= 0 && m.queueEditCursor < len(m.pendingInterject) {
@@ -1556,6 +1643,7 @@ func (m chatTUI) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 			if line == "" {
 				m.viewport.GotoBottom()
+				m.markFollowTail()
 				return m, nil
 			}
 			if line == "exit" || line == "quit" || line == ":q" {
@@ -1951,7 +2039,7 @@ func (m *chatTUI) clearTranscriptDisplay() {
 	}
 	m.transcript = nil
 	m.transcriptSources = nil
-	m.wrappedLines = nil
+	m.clearWrapCache()
 	m.viewport.SetContent("")
 	m.shellOutputs = make(map[string]string)
 	m.shellExpanded = make(map[string]bool)
@@ -2209,7 +2297,6 @@ func (m *chatTUI) streamReasoning(chunk string) {
 	m.setTranscriptBlock(m.reasoningTextIdx, reasoningBlock(raw, m.width, reasoningTailLines), transcriptSource{
 		kind: transcriptSourceReasoning, raw: raw, maxLines: reasoningTailLines,
 	})
-	m.transcriptDirty = true
 }
 
 // reasoningBlock renders raw thinking text as dim, width-wrapped lines under a
@@ -2321,8 +2408,7 @@ func (m *chatTUI) streamToolOutput(id, chunk string) {
 	for i, ln := range vis {
 		lines[i] = dim(clampPlain(ln, m.width-len([]rune(connector))))
 	}
-	m.transcript[m.toolStreamIdx] = connectorBlock(lines)
-	m.transcriptDirty = true
+	m.rewriteTranscriptBlock(m.toolStreamIdx, connectorBlock(lines))
 }
 
 // pushToolLine appends a completed output line to the bounded tail, dropping the
@@ -2445,7 +2531,6 @@ func (m *chatTUI) renderSubagentProgress(id string) {
 		return
 	}
 	m.setTranscriptBlock(idx, m.subagentProgressBlock(id, sp), transcriptSource{kind: transcriptSourceSubagentProgress, raw: id})
-	m.transcriptDirty = true
 }
 
 // tickSubagentProgress refreshes the elapsed / recent-activity fields of live
@@ -2455,7 +2540,6 @@ func (m *chatTUI) tickSubagentProgress() {
 	if m.nativeScrollback {
 		return
 	}
-	changed := false
 	for id, sp := range m.subagentProgress {
 		if sp.terminal || sp.phase == "" {
 			continue
@@ -2465,10 +2549,6 @@ func (m *chatTUI) tickSubagentProgress() {
 			continue
 		}
 		m.setTranscriptBlock(idx, m.subagentProgressBlock(id, sp), transcriptSource{kind: transcriptSourceSubagentProgress, raw: id})
-		changed = true
-	}
-	if changed {
-		m.transcriptDirty = true
 	}
 }
 
@@ -2701,7 +2781,7 @@ func (m *chatTUI) collapseShellSlot(id string, idx int, resultOutput string) {
 	if n == 0 {
 		// Tool finished with no output: clear the "working…" placeholder but
 		// keep the slot (shellTranscriptIdx still points here for late progress).
-		m.transcript[idx] = ""
+		m.rewriteTranscriptBlock(idx, "")
 		return
 	}
 	if full, ok := m.shellOutputs[id]; ok {
@@ -2714,16 +2794,16 @@ func (m *chatTUI) collapseShellSlot(id string, idx int, resultOutput string) {
 				preview[i] = dim(clampPlain(lines[i], m.width-len([]rune(connector))))
 			}
 			preview[shellPreviewLines] = dim(fmt.Sprintf("… %d more lines (Ctrl+B)", total-shellPreviewLines))
-			m.transcript[idx] = connectorBlock(preview)
+			m.rewriteTranscriptBlock(idx, connectorBlock(preview))
 		} else {
 			rendered := make([]string, total)
 			for i, ln := range lines {
 				rendered[i] = dim(clampPlain(ln, m.width-len([]rune(connector))))
 			}
-			m.transcript[idx] = connectorBlock(rendered)
+			m.rewriteTranscriptBlock(idx, connectorBlock(rendered))
 		}
 	} else {
-		m.transcript[idx] = connectorBlock([]string{dim(fmt.Sprintf("%d lines", n))})
+		m.rewriteTranscriptBlock(idx, connectorBlock([]string{dim(fmt.Sprintf("%d lines", n))}))
 	}
 	m.shellTranscriptIdx[id] = idx
 }
@@ -2764,7 +2844,7 @@ func (m *chatTUI) toggleShellOutput() {
 				preview[i] = dim(clampPlain(lines[i], innerW))
 			}
 			preview[shellPreviewLines] = dim(fmt.Sprintf("… %d more lines (Ctrl+B)", total-shellPreviewLines))
-			m.transcript[lastIdx] = connectorBlock(preview)
+			m.rewriteTranscriptBlock(lastIdx, connectorBlock(preview))
 		}
 	} else {
 		// Expand: show up to shellExpandMaxLines lines.
@@ -2780,9 +2860,8 @@ func (m *chatTUI) toggleShellOutput() {
 		if total > shellExpandMaxLines {
 			rendered = append(rendered, dim(fmt.Sprintf("… %d more lines", total-shellExpandMaxLines)))
 		}
-		m.transcript[lastIdx] = connectorBlock(rendered)
+		m.rewriteTranscriptBlock(lastIdx, connectorBlock(rendered))
 	}
-	m.transcriptDirty = true
 	if m.nativeScrollback {
 		m.commitLine(m.transcript[lastIdx])
 	}
@@ -2835,8 +2914,7 @@ func (m *chatTUI) tickToolRunning() {
 	m.toolStreamFrame++
 	frame := toolWorkingFrames[m.toolStreamFrame%len(toolWorkingFrames)]
 	secs := int(time.Since(m.toolStreamStart).Seconds())
-	m.transcript[m.toolStreamIdx] = connectorBlock([]string{dim(fmt.Sprintf(i18n.M.ChatToolWorkingFmt, frame, secs))})
-	m.transcriptDirty = true
+	m.rewriteTranscriptBlock(m.toolStreamIdx, connectorBlock([]string{dim(fmt.Sprintf(i18n.M.ChatToolWorkingFmt, frame, secs))}))
 }
 
 // commitReasoning closes the live thinking block: the "▎ thinking…" marker is
@@ -2912,9 +2990,10 @@ func (m *chatTUI) streamAnswer() {
 		m.answerIdx = len(m.transcript)
 		m.commitTranscriptSource(source)
 	} else {
+		// setTranscriptBlock invalidates the wrap suffix from answerIdx so the
+		// next Update only re-wraps the live answer block — not the full history.
 		block := m.renderTranscriptSource(source, m.width)
 		m.setTranscriptBlock(m.answerIdx, block, source)
-		m.transcriptDirty = true
 	}
 }
 
@@ -2935,7 +3014,6 @@ func (m *chatTUI) commitPending() {
 	} else {
 		block := m.renderTranscriptSource(source, m.width)
 		m.setTranscriptBlock(m.answerIdx, block, source)
-		m.transcriptDirty = true
 	}
 	m.pending.Reset()
 	m.answerIdx = -1
@@ -3357,7 +3435,7 @@ func (m chatTUI) View() tea.View {
 			if cur := m.composerCursor(); cur != nil {
 				cur.X += 1
 				cur.Y += rowsAboveBox + 1
-				v.Cursor = cur
+				v.Cursor = clampCursorToTerminal(cur, m.width, m.height)
 			}
 		}
 		return v
@@ -3383,15 +3461,40 @@ func (m chatTUI) View() tea.View {
 	// Anchor the real terminal cursor at the textarea's insertion point only when
 	// the composer is visible. input.Cursor() is relative to the textarea; offset
 	// by the viewport height + rows above + the box's top border row (+1 column
-	// for PaddingLeft).
+	// for PaddingLeft). Clamp to terminal bounds so VS Code fullscreen / resize
+	// storms cannot leave the caret off-grid (#6282, #7236).
 	if !hideComposer {
 		if cur := m.composerCursor(); cur != nil {
 			cur.X += 1
 			cur.Y += m.viewport.Height() + rowsAboveBox + 1
-			v.Cursor = cur
+			v.Cursor = clampCursorToTerminal(cur, m.width, m.height)
 		}
 	}
 	return v
+}
+
+// clampCursorToTerminal keeps the reported caret inside [0,w) × [0,h).
+func clampCursorToTerminal(cur *tea.Cursor, width, height int) *tea.Cursor {
+	if cur == nil {
+		return nil
+	}
+	if width > 0 {
+		if cur.X < 0 {
+			cur.X = 0
+		}
+		if cur.X >= width {
+			cur.X = width - 1
+		}
+	}
+	if height > 0 {
+		if cur.Y < 0 {
+			cur.Y = 0
+		}
+		if cur.Y >= height {
+			cur.Y = height - 1
+		}
+	}
+	return cur
 }
 
 // compactionCardLines renders a finished compaction as a titled card: a header
@@ -4150,6 +4253,18 @@ func (m *chatTUI) ingestEvent(e event.Event) {
 		m.retryMax = e.RetryMax
 		return
 	}
+	if e.Kind == event.StreamAttempt {
+		// Body-phase replay: clear any in-progress tool presentation and surface
+		// a reconnect marker. Text already in terminal scrollback is left as-is.
+		if e.StreamAttempt.Action == event.StreamAttemptDiscard {
+			m.toolPartial = ""
+			m.toolTail = nil
+			m.toolStreamIdx = -1
+			m.toolLineCount = 0
+			m.commitLine(dim("  ↻ stream interrupted — reconnecting…"))
+		}
+		return
+	}
 	// Any other event means the connection got past the retry window (or the turn
 	// ended), so the transient "retrying" indicator clears.
 	m.retryAttempt = 0
@@ -4395,6 +4510,9 @@ func (m *chatTUI) ingestEvent(e event.Event) {
 		} else if e.Err != nil && e.Err.Error() != "" && !strings.Contains(e.Err.Error(), "context canceled") {
 			m.commitLine(wrapForViewport(i18n.M.ErrorPrefix+" "+e.Err.Error(), m.width, activeCLITheme.warn))
 		}
+		// Long turns on Windows ConPTY often drop mouse tracking; re-arm on
+		// the next frame so wheel keeps scrolling the transcript (#7583).
+		m.wantMouseReenable = true
 		// Plan-mode approval is now driven by the controller (it emits an
 		// ApprovalRequest when a plan-mode turn produces a proposal), so there's
 		// nothing to detect here.
@@ -4767,7 +4885,7 @@ func (m *chatTUI) runGoalSubcommand(input string) tea.Cmd {
 		m.notice(fmt.Sprintf(i18n.M.GoalCurrentFmt, goal))
 		rt := m.ctrl.GoalRuntime()
 		m.notice(fmt.Sprintf(i18n.M.GoalRuntimeFmt,
-			rt.TurnsUsed, rt.TurnsLimit, rt.TokensUsed, rt.TokensLimit,
+			rt.TurnsUsed, rt.TurnsLimit, rt.TokensUsed,
 			rt.NoProgressTurns, rt.NoProgressLimit, rt.BudgetExtensions))
 		if rt.LastReason != "" {
 			m.notice(fmt.Sprintf("%s: %s", i18n.M.GoalRuntimeLastReason, rt.LastReason))

@@ -347,8 +347,8 @@ var Chinese = Messages{
 	GoalPaused:                   "目标已暂停 — /goal resume 可继续",
 	GoalPausedReason:             "用户手动暂停",
 	GoalPausedFmt:                "目标已暂停（%s）— 使用 /goal resume 继续",
-	GoalBudgetExtended:           "目标已恢复 — 追加了一档预算额度",
-	GoalRuntimeFmt:               "运行状态：轮次 %d/%d，token %d/%d，无进展 %d/%d，预算追加 %d 次",
+	GoalBudgetExtended:           "目标已恢复 — 追加了一档轮次数",
+	GoalRuntimeFmt:               "运行状态：轮次 %d/%d，token %d，无进展 %d/%d，追加 %d",
 	GoalRuntimeLastReason:        "最近原因",
 	ModelSwitchUnavailable:       "本会话不支持切换模型",
 	ModelSwitchBusy:              "请先完成或取消当前工作，并停止后台任务后再切换模型",
@@ -594,10 +594,13 @@ var Chinese = Messages{
   reasonix session show|status <machine-session-id> --json [--dir PATH]  查询单个脱敏会话
   reasonix session recovery [<machine-session-id>] --json [--dir PATH]  查询脱敏恢复状态
   reasonix hook list|status --json [--dir PATH]         查看脱敏 Hook 状态
-  reasonix task list|show --json [--dir PATH]           查看脱敏 Task 状态
+  reasonix task list|show|status|events|stop|cancel|monitor|tmux --json [--dir PATH]
+                                                         查看或控制脱敏 Task
   reasonix bot start|doctor|weixin-login                多渠道 IM bot 网关
   reasonix upgrade [--check] [--force]                   更新到最新正式版（别名：reasonix update）
-  reasonix version
+  reasonix completion bash|zsh|fish                     打印 shell 补全脚本到 stdout
+  reasonix version [--verbose|--json]                   打印版本（单行）或构建元信息
+  reasonix --version | -v                               单行版本（脚本安全）
   reasonix help
 
 示例：

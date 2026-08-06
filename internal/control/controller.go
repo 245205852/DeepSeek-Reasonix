@@ -96,7 +96,7 @@ type Controller struct {
 	// pauses instead of defaulting to continue.
 	evaluator goaleval.Evaluator
 	// goalUsageTee accounts billable usage events into the active goal turn's
-	// token budget. It wraps the public sink when the caller didn't provide one.
+	// observational token total. It wraps the public sink when the caller didn't provide one.
 	goalUsageTee *goalUsageTee
 	sink         event.Sink
 	policy       permission.Policy
@@ -794,10 +794,12 @@ func (c *Controller) markEditedForNewUser(startMessages int, original string) {
 		msgs[i].Edited = true
 		msgs[i].Original = original
 		// A periodic autosave may already contain this user message without its
-		// local edit metadata. Classify the prefix mutation atomically so the
-		// turn-end save performs an owned rewrite instead of forking a bogus
-		// same-revision recovery branch.
-		s.Rewrite(msgs)
+		// local edit metadata. Classify the mutation atomically so the turn-end
+		// save performs an owned rewrite instead of forking a bogus
+		// same-revision recovery branch. Edited/Original are local-only display
+		// metadata (provider requests ignore them), so this must not report a
+		// cache-prefix change — ReplaceLocalMetadata, not Rewrite.
+		s.ReplaceLocalMetadata(msgs)
 		return
 	}
 }
@@ -1601,7 +1603,7 @@ func (c *Controller) applyGoalCommand(input, display string) bool {
 		rt := c.GoalRuntime()
 		c.notice(fmt.Sprintf(i18n.M.GoalCurrentFmt, goal))
 		c.notice(fmt.Sprintf(i18n.M.GoalRuntimeFmt,
-			rt.TurnsUsed, rt.TurnsLimit, rt.TokensUsed, rt.TokensLimit,
+			rt.TurnsUsed, rt.TurnsLimit, rt.TokensUsed,
 			rt.NoProgressTurns, rt.NoProgressLimit, rt.BudgetExtensions))
 		if rt.LastReason != "" {
 			c.noticeDetail(i18n.M.GoalRuntimeLastReason, rt.LastReason)
@@ -3803,7 +3805,12 @@ func (c *Controller) Resume(s *agent.Session, path string) {
 	c.mu.Unlock()
 	c.setActiveJobSession(path)
 	c.rebindCheckpoints(path)
-	c.goals.restoreFromState(path)
+	if migPath, migData, migrated := c.goals.restoreFromState(path); migrated {
+		// Persist legacy budget_tokens → running (and tokensLimit=0) so the
+		// next cold start does not re-enter the removed hard-limit pause.
+		// restoreFromState never issues a provider request.
+		c.persistGoalState(migPath, migData, true)
+	}
 	if c.executor != nil {
 		c.executor.RestoreDeliveryCheckpoint(c.goals.deliveryState())
 	}
