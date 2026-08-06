@@ -280,6 +280,23 @@ await check("marks only terminal tasks", async () => {
   return document.querySelectorAll(".taskmonitor__terminal").length === 1;
 });
 
+await check("freezes terminal task elapsed time", async () => {
+  const realNow = Date.now;
+  try {
+    Date.now = () => Date.parse("2025-01-01T02:00:00Z");
+    listTasksImpl = async () => [snap({ state: "cancelled", runtime_state: "exited" })];
+    await renderPanel();
+    await openPanel();
+    const atFinish = document.querySelector(".taskmonitor__time")?.textContent;
+    Date.now = () => Date.parse("2025-01-01T03:00:00Z");
+    await click(buttonByLabel("Refresh"));
+    const afterRefresh = document.querySelector(".taskmonitor__time")?.textContent;
+    return atFinish === "1h" && afterRefresh === "1h";
+  } finally {
+    Date.now = realNow;
+  }
+});
+
 dom.window.close();
 console.log(`\n${passed} passed, ${failed} failed`);
 if (failed > 0) process.exit(1);

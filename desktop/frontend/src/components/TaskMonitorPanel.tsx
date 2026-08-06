@@ -52,9 +52,16 @@ function safeStateClass(state: string): string {
   return state.replace(/[^a-zA-Z0-9_-]/g, "_");
 }
 
-function elapsed(iso: string): string {
-  if (!iso) return "—";
-  const ms = Date.now() - new Date(iso).getTime();
+function isTerminalState(state: string): boolean {
+  return state === "succeeded" || state === "failed" || state === "cancelled" || state === "stale";
+}
+
+function elapsed(task: TaskSnapshot, nowMs: number): string {
+  if (!task.created_at) return "—";
+  const startMs = new Date(task.created_at).getTime();
+  const live = task.runtime_state === "alive" && !isTerminalState(task.state);
+  const endMs = live ? nowMs : new Date(task.updated_at).getTime();
+  const ms = endMs - startMs;
   if (isNaN(ms) || ms < 0) return "—";
   const s = Math.floor(ms / 1000);
   if (s < 60) return `${s}s`;
@@ -104,6 +111,7 @@ export function TaskMonitorPanel({
   const [actionTask, setActionTask] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   const [actionMessage, setActionMessage] = useState<string | null>(null);
+  const [nowMs, setNowMs] = useState(() => Date.now());
   const [pendingAction, setPendingAction] = useState<{ task: TaskSnapshot; action: "stop" | "cancel" } | null>(null);
 
   // Per-task event state
@@ -185,6 +193,14 @@ export function TaskMonitorPanel({
     }, POLL_INTERVAL_MS);
     return () => clearInterval(interval);
   }, [fetchTasks, fetchEvents, expanded]);
+
+  // Live tasks need a ticking clock; terminal and queued tasks stay frozen at
+  // their persisted end/update time.
+  useEffect(() => {
+    if (!tasks.some((task) => task.runtime_state === "alive" && !isTerminalState(task.state))) return;
+    const interval = setInterval(() => setNowMs(Date.now()), 1000);
+    return () => clearInterval(interval);
+  }, [tasks]);
 
   const toggleTask = (id: string) => {
     setExpanded((prev) => {
@@ -306,11 +322,7 @@ export function TaskMonitorPanel({
               const cfg = stateConfig(task.state, t);
               const runtime = runtimeConfig(task.runtime_state, t);
               const isOpen = expanded.has(task.task_id);
-              const terminal =
-                task.state === "succeeded" ||
-                task.state === "failed" ||
-                task.state === "cancelled" ||
-                task.state === "stale";
+              const terminal = isTerminalState(task.state);
               const evs = taskEvents.get(task.task_id) ?? [];
               const evLoading = eventsLoading.has(task.task_id);
               const evError = eventsError.get(task.task_id);
@@ -357,7 +369,7 @@ export function TaskMonitorPanel({
                         <XCircle size={12} className="taskmonitor__terminal" />
                       )}
                       <span className="taskmonitor__time">
-                        {elapsed(task.updated_at)}
+                        {elapsed(task, nowMs)}
                       </span>
                       {isOpen ? (
                         <ChevronDown size={12} />
