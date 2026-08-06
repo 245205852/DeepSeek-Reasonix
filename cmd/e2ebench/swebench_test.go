@@ -162,3 +162,35 @@ func TestPermissionPostureIsTheOnlyDifferenceBetweenArms(t *testing.T) {
 		t.Fatal("an unknown posture must fail loudly rather than silently running unattended")
 	}
 }
+
+// A real rxclean1 run lost sphinx-11510 because the agent's repro build left a
+// binary .doctree/.pickle in /testbed; `git diff --cached` degraded it to a
+// "Binary files differ" placeholder that git apply rejects, zeroing the whole
+// patch. The extractor must keep every honest source file and drop only what a
+// text patch cannot carry or what a rebuild always regenerates.
+func TestPatchFileListDropsOnlyUnappliableAndGeneratedPaths(t *testing.T) {
+	numstat := strings.Join([]string{
+		"12\t4\tsphinx/directives/other.py",                // the actual fix: keep
+		"0\t9\tsphinx/old_helper.py",                       // text deletion: keep
+		"-\t-\t_repro/_build/.doctrees/environment.pickle", // binary: drop
+		"-\t-\timg/probe.png",                              // new binary: drop
+		"3\t0\t_repro/_build/_static/basic.css",            // Sphinx build output: drop
+		"2\t0\tsklearn.egg-info/PKG-INFO",                  // packaging metadata: drop
+		"1\t0\tpkg/__pycache__/note.txt",                   // cache tree: drop
+		"5\t1\trepro.py",                                   // agent scratch, but text: keep (harmless)
+	}, "\x00") + "\x00"
+	got := patchFileList(numstat)
+	want := []string{"sphinx/directives/other.py", "sphinx/old_helper.py", "repro.py"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("patchFileList = %v, want %v", got, want)
+	}
+}
+
+func TestPatchFileListToleratesEmptyAndMalformedInput(t *testing.T) {
+	if got := patchFileList(""); got != nil {
+		t.Fatalf("empty numstat = %v, want nil", got)
+	}
+	if got := patchFileList("garbage-without-tabs\x00\x00"); got != nil {
+		t.Fatalf("malformed numstat = %v, want nil", got)
+	}
+}

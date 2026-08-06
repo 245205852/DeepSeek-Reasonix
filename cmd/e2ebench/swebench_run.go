@@ -137,13 +137,81 @@ func runSwebenchInstance(o swebenchOpts, inst swebenchInstance) (result, string)
 		r.Note = "agent: " + runErr.Error()
 	}
 
-	patch, err := dockerOutput("exec", container, "bash", "-lc",
-		"cd /testbed && git add -A >/dev/null 2>&1; git diff --cached")
+	patch, err := extractTestbedPatch(container)
 	if err != nil {
-		r.Note = strings.TrimSpace(r.Note + " | diff: " + firstLine(patch))
+		r.Note = strings.TrimSpace(r.Note + " | diff: " + err.Error())
 		return r, ""
 	}
 	return r, patch
+}
+
+// extractTestbedPatch reads the working-tree diff from the instance container.
+// `git add -A` surfaces untracked files first, but the submitted diff is then
+// restricted to paths a text patch can honestly carry: binary files degrade to
+// a "Binary files differ" placeholder that git apply rejects wholesale — one
+// stray .pickle from a Sphinx repro build would zero an otherwise correct
+// patch — and regenerated build output can never be the fix. Files are passed
+// as plain argv, never through a shell, so hostile paths cannot execute.
+func extractTestbedPatch(container string) (string, error) {
+	if out, err := dockerOutput("exec", container, "git", "-C", "/testbed", "add", "-A"); err != nil {
+		return "", fmt.Errorf("add: %s", firstLine(out))
+	}
+	numstat, err := dockerOutput("exec", container, "git", "-C", "/testbed",
+		"diff", "--cached", "--no-renames", "--numstat", "-z")
+	if err != nil {
+		return "", fmt.Errorf("numstat: %s", firstLine(numstat))
+	}
+	files := patchFileList(numstat)
+	if len(files) == 0 {
+		return "", nil
+	}
+	args := append([]string{"exec", container, "git", "-C", "/testbed",
+		"diff", "--cached", "--no-renames", "--"}, files...)
+	patch, err := dockerOutput(args...)
+	if err != nil {
+		return "", fmt.Errorf("diff: %s", firstLine(patch))
+	}
+	return patch, nil
+}
+
+// patchFileList parses `git diff --cached --no-renames --numstat -z` output
+// and returns the paths the submitted patch may carry. Binary entries ("-" for
+// both counts) are dropped, as are well-known generated trees: _build output
+// and *.egg-info metadata regenerate on every build, so their presence is
+// always agent scratch, never the fix. Plain scratch files (repro scripts at
+// the repo root) stay: they apply cleanly, do not affect grading, and dropping
+// them by name would risk dropping a legitimate new source file.
+func patchFileList(numstat string) []string {
+	var files []string
+	for _, entry := range strings.Split(numstat, "\x00") {
+		if entry == "" {
+			continue
+		}
+		fields := strings.SplitN(entry, "\t", 3)
+		if len(fields) != 3 {
+			continue
+		}
+		added, deleted, path := fields[0], fields[1], fields[2]
+		if added == "-" || deleted == "-" || path == "" {
+			continue // binary: not representable in an appliable text diff
+		}
+		if generatedPatchPath(path) {
+			continue
+		}
+		files = append(files, path)
+	}
+	return files
+}
+
+// generatedPatchPath reports whether a diff path is regenerated build output.
+// Conservative on purpose: only trees that no SWE-bench repo keeps sources in.
+func generatedPatchPath(path string) bool {
+	for _, seg := range strings.Split(path, "/") {
+		if seg == "_build" || seg == "__pycache__" {
+			return true
+		}
+	}
+	return strings.Contains(path, ".egg-info/")
 }
 
 // provisionAgent copies the binary and a credential-free home into the
