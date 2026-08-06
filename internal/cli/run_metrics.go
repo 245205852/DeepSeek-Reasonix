@@ -26,35 +26,40 @@ type SourceUsage struct {
 // RunMetrics is the machine-readable token/cache/cost summary `run --metrics`
 // writes, so a benchmark harness can read a run's cost without scraping stdout.
 type RunMetrics struct {
-	PromptTokens                   int     `json:"prompt_tokens"`
-	CompletionTokens               int     `json:"completion_tokens"`
-	CacheHitTokens                 int     `json:"cache_hit_tokens"`
-	CacheMissTokens                int     `json:"cache_miss_tokens"`
-	Steps                          int     `json:"steps"` // model calls (one per stream, incl. tool rounds)
-	Cost                           float64 `json:"cost"`
-	Currency                       string  `json:"currency"`
-	Estimated                      bool    `json:"estimated,omitempty"`
-	Compactions                    int     `json:"compactions"`
-	ReadinessChecks                int     `json:"readiness_checks"`
-	ReadinessAllowed               int     `json:"readiness_allowed"`
-	ReadinessBlocks                int     `json:"readiness_blocks"`
-	ReadinessRecoveries            int     `json:"readiness_recoveries"`
-	ReadinessErrors                int     `json:"readiness_errors"`
-	ReadinessMissingProjectChecks  int     `json:"readiness_missing_project_checks"`
-	ReadinessIncompleteTodos       int     `json:"readiness_incomplete_todos"`
-	ReadinessCommandMismatches     int     `json:"readiness_command_mismatches"`
-	ReadinessMissingAcceptance     int     `json:"readiness_missing_acceptance_criteria"`
-	ReadinessMissingVerification   int     `json:"readiness_missing_verification"`
-	ReadinessMissingReview         int     `json:"readiness_missing_review"`
-	ReadinessMissingSignoff        int     `json:"readiness_missing_signoff"`
-	ReadinessMissingActionEvidence int     `json:"readiness_missing_action_evidence"`
-	ReadinessMissingMutation       int     `json:"readiness_missing_mutation"`
-	MissingReasoningDetected       int     `json:"missing_reasoning_detected,omitempty"`
-	MissingReasoningRetries        int     `json:"missing_reasoning_retries,omitempty"`
-	MissingReasoningRecovered      int     `json:"missing_reasoning_recovered,omitempty"`
-	MissingReasoningReplaced       int     `json:"missing_reasoning_retry_replaced_response,omitempty"`
-	MissingReasoningSuppressed     int     `json:"missing_reasoning_retry_suppressed,omitempty"`
-	MissingReasoningFallbacks      int     `json:"missing_reasoning_fallbacks,omitempty"`
+	PromptTokens     int `json:"prompt_tokens"`
+	CompletionTokens int `json:"completion_tokens"`
+	CacheHitTokens   int `json:"cache_hit_tokens"`
+	CacheMissTokens  int `json:"cache_miss_tokens"`
+	// PrefixChangeReasonCounts tallies how many usage events reported each
+	// cache-prefix-change reason (e.g. "compact_auto", "snip", "tools") across
+	// the run, so a regression in cache-reset frequency shows which operation
+	// is responsible instead of just a dropped hit-rate percentage.
+	PrefixChangeReasonCounts       map[string]int `json:"prefix_change_reason_counts,omitempty"`
+	Steps                          int            `json:"steps"` // model calls (one per stream, incl. tool rounds)
+	Cost                           float64        `json:"cost"`
+	Currency                       string         `json:"currency"`
+	Estimated                      bool           `json:"estimated,omitempty"`
+	Compactions                    int            `json:"compactions"`
+	ReadinessChecks                int            `json:"readiness_checks"`
+	ReadinessAllowed               int            `json:"readiness_allowed"`
+	ReadinessBlocks                int            `json:"readiness_blocks"`
+	ReadinessRecoveries            int            `json:"readiness_recoveries"`
+	ReadinessErrors                int            `json:"readiness_errors"`
+	ReadinessMissingProjectChecks  int            `json:"readiness_missing_project_checks"`
+	ReadinessIncompleteTodos       int            `json:"readiness_incomplete_todos"`
+	ReadinessCommandMismatches     int            `json:"readiness_command_mismatches"`
+	ReadinessMissingAcceptance     int            `json:"readiness_missing_acceptance_criteria"`
+	ReadinessMissingVerification   int            `json:"readiness_missing_verification"`
+	ReadinessMissingReview         int            `json:"readiness_missing_review"`
+	ReadinessMissingSignoff        int            `json:"readiness_missing_signoff"`
+	ReadinessMissingActionEvidence int            `json:"readiness_missing_action_evidence"`
+	ReadinessMissingMutation       int            `json:"readiness_missing_mutation"`
+	MissingReasoningDetected       int            `json:"missing_reasoning_detected,omitempty"`
+	MissingReasoningRetries        int            `json:"missing_reasoning_retries,omitempty"`
+	MissingReasoningRecovered      int            `json:"missing_reasoning_recovered,omitempty"`
+	MissingReasoningReplaced       int            `json:"missing_reasoning_retry_replaced_response,omitempty"`
+	MissingReasoningSuppressed     int            `json:"missing_reasoning_retry_suppressed,omitempty"`
+	MissingReasoningFallbacks      int            `json:"missing_reasoning_fallbacks,omitempty"`
 	// Capability / Delivery routing counters (optional; zero for older readers).
 	CapabilityRoutes               int     `json:"capability_routes,omitempty"`
 	CapabilityRoutedCandidates     int     `json:"capability_routed_candidates,omitempty"`
@@ -214,6 +219,14 @@ func (s *metricsSink) record(e event.Event) {
 			s.m.CapabilityRouterPromptTokens += u.PromptTokens
 			s.m.CapabilityRouterCompletionTok += u.CompletionTokens
 			s.m.CapabilityRouterCost += stepCost
+		}
+		if e.CacheDiagnostics != nil && len(e.CacheDiagnostics.PrefixChangeReasons) > 0 {
+			if s.m.PrefixChangeReasonCounts == nil {
+				s.m.PrefixChangeReasonCounts = map[string]int{}
+			}
+			for _, reason := range e.CacheDiagnostics.PrefixChangeReasons {
+				s.m.PrefixChangeReasonCounts[reason]++
+			}
 		}
 	}
 	if e.Kind == event.CompactionStarted {

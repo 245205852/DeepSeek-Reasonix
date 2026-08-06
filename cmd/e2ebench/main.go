@@ -30,14 +30,18 @@ type task struct {
 }
 
 type runMetrics struct {
-	PromptTokens     int     `json:"prompt_tokens"`
-	CompletionTokens int     `json:"completion_tokens"`
-	CacheHitTokens   int     `json:"cache_hit_tokens"`
-	CacheMissTokens  int     `json:"cache_miss_tokens"`
-	Steps            int     `json:"steps"`
-	Cost             float64 `json:"cost"`
-	Currency         string  `json:"currency"`
-	Compactions      int     `json:"compactions"`
+	PromptTokens     int `json:"prompt_tokens"`
+	CompletionTokens int `json:"completion_tokens"`
+	CacheHitTokens   int `json:"cache_hit_tokens"`
+	CacheMissTokens  int `json:"cache_miss_tokens"`
+	// PrefixChangeReasonCounts mirrors internal/cli.RunMetrics's field of the
+	// same name: per-run tallies of why the cache prefix changed (e.g.
+	// "compact_auto", "snip", "tools"), omitempty for older metrics files.
+	PrefixChangeReasonCounts map[string]int `json:"prefix_change_reason_counts,omitempty"`
+	Steps                    int            `json:"steps"`
+	Cost                     float64        `json:"cost"`
+	Currency                 string         `json:"currency"`
+	Compactions              int            `json:"compactions"`
 
 	// Optional Delivery capability counters (omitempty for baseline/old metrics).
 	ReadinessChecks            int     `json:"readiness_checks,omitempty"`
@@ -394,6 +398,7 @@ func renderBody(results []result) string {
 	var walls []int64
 	currency := ""
 	classes := map[string]int{}
+	prefixChangeReasons := map[string]int{}
 	for _, r := range results {
 		if r.Skipped {
 			continue
@@ -428,6 +433,9 @@ func renderBody(results []result) string {
 		cost += r.Cost
 		if r.Currency != "" {
 			currency = r.Currency
+		}
+		for reason, n := range r.PrefixChangeReasonCounts {
+			prefixChangeReasons[reason] += n
 		}
 	}
 
@@ -471,6 +479,9 @@ func renderBody(results []result) string {
 
 	if breakdown := failureBreakdown(classes); breakdown != "" {
 		fmt.Fprintf(&b, "\n**Failures by class:** %s\n", breakdown)
+	}
+	if breakdown := reasonBreakdown(prefixChangeReasons); breakdown != "" {
+		fmt.Fprintf(&b, "\n**Cache resets by cause:** %s\n", breakdown)
 	}
 
 	notes := false
@@ -544,6 +555,25 @@ func failureBreakdown(classes map[string]int) string {
 	parts := make([]string, 0, len(names))
 	for _, name := range names {
 		parts = append(parts, fmt.Sprintf("%s ×%d", name, classes[name]))
+	}
+	return strings.Join(parts, " · ")
+}
+
+// reasonBreakdown renders cache-prefix-change reason counts (compact_auto,
+// snip, prune, tools, ...) the same way failureBreakdown renders failure
+// classes, so a hit-rate regression in a PR shows which operation caused it.
+func reasonBreakdown(reasons map[string]int) string {
+	names := make([]string, 0, len(reasons))
+	for name := range reasons {
+		names = append(names, name)
+	}
+	if len(names) == 0 {
+		return ""
+	}
+	sort.Strings(names)
+	parts := make([]string, 0, len(names))
+	for _, name := range names {
+		parts = append(parts, fmt.Sprintf("%s ×%d", name, reasons[name]))
 	}
 	return strings.Join(parts, " · ")
 }
