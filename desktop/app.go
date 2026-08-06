@@ -881,6 +881,13 @@ func resolveNewSessionModel(cfg *config.Config) string {
 	def := strings.TrimSpace(cfg.DefaultModel)
 	config.NormalizeLegacyMimoCustomProvidersForRefs(cfg, def)
 	if resolved, _, ok := cfg.ResolveDesktopNewSessionModel(); ok {
+		// Keep provider identity explicit at the new-session boundary. A bare
+		// model id is ambiguous when two configured gateways expose the same
+		// model, and a provider-only ref otherwise compares unequal to the
+		// canonical ref stored on a running tab.
+		if entry, found := cfg.ResolveModel(resolved); found {
+			return entry.Name + "/" + entry.Model
+		}
 		return resolved
 	}
 	return ""
@@ -9935,6 +9942,39 @@ func (a *App) SetModel(name string) error {
 	return a.SetModelForTab("", name)
 }
 
+// persistTabModelIfCurrent repairs stale model metadata without letting an
+// older default overwrite a newer explicit model switch. Model switches use
+// the same runtimeRebuildMu, so whichever operation acquires it last owns the
+// persisted provider identity.
+func (a *App) persistTabModelIfCurrent(tab *WorkspaceTab, model string) error {
+	model = strings.TrimSpace(model)
+	if tab == nil || model == "" {
+		return nil
+	}
+	a.runtimeRebuildMu.Lock()
+	defer a.runtimeRebuildMu.Unlock()
+
+	a.mu.RLock()
+	if tab.removed || a.tabs[tab.ID] != tab {
+		a.mu.RUnlock()
+		return fmt.Errorf("tab %q changed while persisting model; retry", tab.ID)
+	}
+	if tab.Ctrl == nil || strings.TrimSpace(tab.model) != model {
+		a.mu.RUnlock()
+		return nil
+	}
+	a.mu.RUnlock()
+
+	path := a.currentSessionPathFor(tab)
+	if path == "" {
+		return nil
+	}
+	if err := agent.SetBranchModelPreserveUpdated(path, model); err != nil {
+		return fmt.Errorf("persist selected model: %w", err)
+	}
+	return nil
+}
+
 type modelSwitchTiming struct {
 	Total          time.Duration
 	LockWait       time.Duration
@@ -10153,6 +10193,17 @@ func (a *App) SetModelForTab(tabID, name string) (retErr error) {
 	// The runtime now reflects the on-disk config; drop any deferred refresh.
 	a.clearDeferredRebuild(tab.ID)
 	a.persistTabSessionPath(tab, path)
+	// Keep the provider identity in the session sidecar inside the same
+	// runtimeRebuildMu transaction as the controller swap. Empty sessions do
+	// not autosave a turn, so without this write a later startup can prefer the
+	// outgoing provider from stale metadata. Serializing it here also preserves
+	// last-click-wins when a new-session default switch overlaps an explicit
+	// model selection.
+	if path != "" {
+		if err := agent.SetBranchModelPreserveUpdated(path, name); err != nil {
+			return fmt.Errorf("persist selected model: %w", err)
+		}
+	}
 	a.notifyTabRuntimeRebuilt(tab)
 	timing.SwapAndPersist = time.Since(stageStarted)
 	return nil
