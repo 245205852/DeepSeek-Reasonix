@@ -1724,46 +1724,106 @@ func BashToolCallMasksVerificationExit(args json.RawMessage) bool {
 // this shape before execution and directs callers to auditable file tools,
 // script files, or conventional verifier commands instead.
 func BashToolCallUsesOpaqueInlineInterpreter(args json.RawMessage) bool {
+	command, ok := bashCommandFromArgs(args)
+	if !ok {
+		return false
+	}
+	return bashCommandUsesOpaqueInlineInterpreter(command)
+}
+
+// BashToolCallUsesNonTerminalInlineInterpreter reports whether an opaque
+// inline interpreter (python -c, node -e, …) is not the last top-level segment.
+// Later segments can overwrite its exit status, so ordinary mode blocks this
+// shape deterministically without rewriting the command.
+func BashToolCallUsesNonTerminalInlineInterpreter(args json.RawMessage) bool {
+	command, ok := bashCommandFromArgs(args)
+	if !ok {
+		return false
+	}
+	segments, _, ok := shellparse.SplitTopLevel(command)
+	if !ok || len(segments) < 2 {
+		// Unknown / unparseable syntax: do not pretend full analysis.
+		return false
+	}
+	for i, segment := range segments {
+		if !bashSegmentUsesOpaqueInlineInterpreter(segment) {
+			continue
+		}
+		if i < len(segments)-1 {
+			return true
+		}
+	}
+	return false
+}
+
+// BashCommandMayBeOpaqueMutation reports whether a sole opaque inline
+// interpreter call is allowed to run but cannot be proven read-only for
+// mutation-risk labeling.
+func BashCommandMayBeOpaqueMutation(args json.RawMessage) bool {
+	return BashToolCallUsesOpaqueInlineInterpreter(args)
+}
+
+func bashCommandFromArgs(args json.RawMessage) (string, bool) {
 	var fields map[string]json.RawMessage
 	if err := json.Unmarshal(args, &fields); err != nil {
-		return false
+		return "", false
 	}
 	command := strings.TrimSpace(stringField(fields, "command"))
-	if command == "" {
-		return false
-	}
+	return command, command != ""
+}
+
+func bashCommandUsesOpaqueInlineInterpreter(command string) bool {
 	segments, _, ok := shellparse.SplitTopLevel(command)
 	if !ok {
 		return false
 	}
 	for _, segment := range segments {
-		normalized, _ := shellsafe.NormalizeBashSafeRedirectsForMatch(segment)
-		argv, malformed := shellparse.StaticFields(normalized)
-		if malformed != "" || len(argv) == 0 {
-			continue
-		}
-		base := strings.ToLower(filepath.Base(argv[0]))
-		args := argv[1:]
-		switch base {
-		case "node", "bun":
-			if hasCommandArg(args, "-e", "--eval", "-p", "--print") {
-				return true
-			}
-		case "python", "python3", "ruby", "perl":
-			if hasCommandArg(args, "-c", "-e") {
-				return true
-			}
-		case "php":
-			if hasCommandArg(args, "-r") {
-				return true
-			}
-		case "deno":
-			if len(args) > 0 && strings.EqualFold(args[0], "eval") {
-				return true
-			}
+		if bashSegmentUsesOpaqueInlineInterpreter(segment) {
+			return true
 		}
 	}
 	return false
+}
+
+func bashSegmentUsesOpaqueInlineInterpreter(segment string) bool {
+	normalized, _ := shellsafe.NormalizeBashSafeRedirectsForMatch(segment)
+	argv, malformed := shellparse.StaticFields(normalized)
+	if malformed != "" || len(argv) == 0 {
+		return false
+	}
+	base := strings.ToLower(filepath.Base(argv[0]))
+	args := argv[1:]
+	switch base {
+	case "node", "bun":
+		return hasCommandArg(args, "-e", "--eval", "-p", "--print")
+	case "python", "python3", "ruby", "perl":
+		return hasCommandArg(args, "-c", "-e")
+	case "php":
+		return hasCommandArg(args, "-r")
+	case "deno":
+		return len(args) > 0 && strings.EqualFold(args[0], "eval")
+	}
+	return false
+}
+
+// ShellContractPreflightMessage is the model-facing recovery text when a
+// deterministic shell contract blocks a call before launch.
+func ShellContractPreflightMessage(reason string) string {
+	switch reason {
+	case "mixed":
+		return "blocked: this command mixes a state-changing segment with a verification check. " +
+			"Use edit_file (or another file tool) for modifications, then run verification in a separate shell call. " +
+			"Do not combine mutation and verification in one shell invocation."
+	case "mask_exit":
+		return "blocked: the trailing echo/printf of $? masks the verifier's exit status, so this command would look successful even when the check failed. " +
+			"Run the verifier by itself and let its exit status be the tool result."
+	case "inline_nonterminal":
+		return "blocked: an inline interpreter (python -c, node -e, …) is not the last top-level command, so a later segment can hide its failure. " +
+			"Use edit_file for file changes, put script source in a file, or run the inline interpreter alone as the final command."
+	default:
+		return "blocked: this shell command violates the host execution contract. " +
+			"Use edit_file for modifications and a separate shell call for verification."
+	}
 }
 
 func bashContainsVerificationSegment(command string) bool {

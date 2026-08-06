@@ -956,13 +956,17 @@ func (a *Agent) handleToolRound(ctx context.Context, state *runLoopState, step i
 	batch := a.executeBatch(ctx, calls)
 	results, images := batch.results, batch.images
 	for i, call := range calls {
-		a.session.Add(provider.Message{
+		msg := provider.Message{
 			Role:       provider.RoleTool,
 			Content:    results[i],
 			Images:     images[i],
 			ToolCallID: call.ID,
 			Name:       call.Name,
-		})
+		}
+		if i < len(batch.executions) {
+			msg.ToolExecution = toProviderToolExecution(batch.executions[i])
+		}
+		a.session.Add(msg)
 	}
 	// If the context was cancelled during tool execution, return after storing
 	// the batch results so the session keeps paired tool-call history.
