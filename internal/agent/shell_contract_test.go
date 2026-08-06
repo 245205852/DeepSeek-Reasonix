@@ -17,11 +17,12 @@ import (
 
 func TestOrdinaryModeBlocksMixedMutationAndVerification(t *testing.T) {
 	// Preflight runs before Execute, so a fake bash is enough — the process
-	// must never start for a mixed mutation+verification command.
+	// must never start for a mixed mutation+verification command. `;` is the
+	// shape that matters: the verifier's exit status replaces go generate's.
 	reg := tool.NewRegistry()
 	reg.Add(fakeTool{name: "bash", readOnly: false})
 	prov := &scriptedProvider{name: "p", turns: [][]provider.Chunk{
-		{toolCallChunk("m1", "bash", `{"command":"go generate ./... && go test ./..."}`), {Type: provider.ChunkDone}},
+		{toolCallChunk("m1", "bash", `{"command":"go generate ./... ; go test ./..."}`), {Type: provider.ChunkDone}},
 		{{Type: provider.ChunkText, Text: "ok"}, {Type: provider.ChunkDone}},
 	}}
 	a := New(prov, reg, NewSession(""), Options{}, event.Discard)
@@ -32,7 +33,7 @@ func TestOrdinaryModeBlocksMixedMutationAndVerification(t *testing.T) {
 	if strings.Contains(got, "bash done") {
 		t.Fatal("mixed command was executed")
 	}
-	if !strings.Contains(got, "mixes") && !strings.Contains(got, "edit_file") {
+	if !strings.Contains(got, "state-changing segment") {
 		t.Fatalf("result = %q, want ordinary-mode mixed block", got)
 	}
 	for _, msg := range a.session.Snapshot() {
@@ -48,6 +49,44 @@ func TestOrdinaryModeBlocksMixedMutationAndVerification(t *testing.T) {
 		return
 	}
 	t.Fatal("tool result missing")
+}
+
+// TestOrdinaryModeRunsShortCircuitBuildAndVerify guards the everyday shape the
+// preflight must not touch. `go build ./... && go test ./...` cannot report a
+// false success: bash stops at the failing build and returns its status. Only
+// Delivery blocks it, because there a mutation invalidates the verification
+// receipt regardless of exit status.
+func TestOrdinaryModeRunsShortCircuitBuildAndVerify(t *testing.T) {
+	commands := []string{
+		"go build ./... && go test ./...",
+		"npm install && npm test",
+		"mkdir -p out && go test ./...",
+	}
+	for _, command := range commands {
+		t.Run(command, func(t *testing.T) {
+			reg := tool.NewRegistry()
+			reg.Add(fakeTool{name: "bash", readOnly: false})
+			args, err := json.Marshal(map[string]string{"command": command})
+			if err != nil {
+				t.Fatal(err)
+			}
+			prov := &scriptedProvider{name: "p", turns: [][]provider.Chunk{
+				{toolCallChunk("m1", "bash", string(args)), {Type: provider.ChunkDone}},
+				{{Type: provider.ChunkText, Text: "ok"}, {Type: provider.ChunkDone}},
+			}}
+			a := New(prov, reg, NewSession(""), Options{}, event.Discard)
+			if err := a.Run(context.Background(), "test"); err != nil {
+				t.Fatal(err)
+			}
+			got := toolResultByID(a.session, "m1")
+			if strings.Contains(got, "blocked:") {
+				t.Fatalf("ordinary mode blocked %q: %s", command, got)
+			}
+			if !strings.Contains(got, "bash done") {
+				t.Fatalf("command did not run: result = %q", got)
+			}
+		})
+	}
 }
 
 func TestOrdinaryModeBlocksMaskedVerifierExit(t *testing.T) {
@@ -75,6 +114,7 @@ func TestOrdinaryModeBlocksNonTerminalInlineInterpreter(t *testing.T) {
 	reg.Add(fakeTool{name: "bash", readOnly: false})
 	prov := &scriptedProvider{name: "p", turns: [][]provider.Chunk{
 		{toolCallChunk("m1", "bash", `{"command":"python3 -c 'open(\"x\",\"w\").write(\"y\")' ; node verify_frontend_logic.js"}`), {Type: provider.ChunkDone}},
+		// A `&&` variant of the same pair is covered by the allow-list test above.
 		{{Type: provider.ChunkText, Text: "ok"}, {Type: provider.ChunkDone}},
 	}}
 	a := New(prov, reg, NewSession(""), Options{}, event.Discard)

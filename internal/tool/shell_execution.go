@@ -23,8 +23,12 @@ type ShellExecution struct {
 	FailurePhase   string `json:"failurePhase,omitempty"` // preflight | authorization | dependency | launch | execution | timeout | cancellation
 	// ExitCode is set only when a child process started and produced an exit
 	// status. Zero is a valid successful code (*int keeps 0 distinct from unset).
-	ExitCode     *int   `json:"exitCode,omitempty"`
-	StderrTail   string `json:"stderrTail,omitempty"`   // at most 16 KiB; no shell executable absolute path
+	ExitCode *int `json:"exitCode,omitempty"`
+	// StderrTail is the bounded tail of combined stdout+stderr, set only for a
+	// run that did not succeed. Both streams share one pipe so model-visible
+	// interleaving stays in child-write order, which rules out a stderr-only
+	// tail. At most 16 KiB; never a shell executable absolute path.
+	StderrTail   string `json:"stderrTail,omitempty"`
 	MutationRisk string `json:"mutationRisk,omitempty"` // none | not_started | may_have_completed | may_be_partial | unknown
 	Verification string `json:"verification,omitempty"` // not_verification | not_run | passed | failed
 	DurationMs   int64  `json:"durationMs,omitempty"`
@@ -83,7 +87,7 @@ const (
 	ShellVersionPS7  = "7+"
 )
 
-// StderrTailMaxBytes bounds stderr retained on ShellExecution.
+// StderrTailMaxBytes bounds the output tail retained on ShellExecution.
 const StderrTailMaxBytes = 16 << 10
 
 // DetailedResult is the structured outcome of a DetailedExecutor call.

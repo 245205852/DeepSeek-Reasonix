@@ -3,6 +3,7 @@ package shellrun
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os/exec"
 	"strings"
 	"testing"
@@ -183,6 +184,67 @@ func TestRunForegroundStderrTailBounded(t *testing.T) {
 	}
 	if !strings.Contains(res.Combined, "中文") && !strings.Contains(res.StderrTail, "中文") {
 		t.Fatalf("UTF-8 Chinese lost: combined=%q tail=%q", trim(res.Combined, 80), trim(res.StderrTail, 80))
+	}
+}
+
+// TestRunForegroundSharesOnePipeForStdoutAndStderr pins the mechanism behind
+// ordered combined output: os/exec reuses a single pipe and a single copy
+// goroutine only while Stdout and Stderr hold the same writer value. Giving them
+// two writers (for example to tee stderr into its own tail) silently splits the
+// child's streams into two pipes, and the model then reads reordered output.
+func TestRunForegroundSharesOnePipeForStdoutAndStderr(t *testing.T) {
+	var captured *exec.Cmd
+	RunForeground(context.Background(), Request{
+		Argv:     []string{"irrelevant"},
+		Progress: func(string) {},
+		Run: func(_ context.Context, cmd *exec.Cmd, _ proc.RunOptions) (*proc.TrackedCommand, error) {
+			captured = cmd
+			return nil, nil
+		},
+	})
+	if captured == nil {
+		t.Fatal("runner never built a command")
+	}
+	if captured.Stdout == nil || captured.Stdout != captured.Stderr {
+		t.Fatalf("Stdout and Stderr must be the same writer value; got %p and %p", captured.Stdout, captured.Stderr)
+	}
+}
+
+// TestRunForegroundPreservesInterleaving is the behavioral half of the same
+// contract: what the child wrote first must still come first.
+func TestRunForegroundPreservesInterleaving(t *testing.T) {
+	sh := sandbox.ResolveShell("auto", "", nil)
+	if sh.Kind == sandbox.ShellPowerShell {
+		t.Skip("stream-buffering semantics differ on PowerShell; the pipe-identity test covers the mechanism")
+	}
+	const rounds = 8
+	var want strings.Builder
+	for i := 1; i <= rounds; i++ {
+		fmt.Fprintf(&want, "out%d\nerr%d\n", i, i)
+	}
+	argv := shellArgvWith(sh, "for i in 1 2 3 4 5 6 7 8; do echo out$i; echo err$i 1>&2; done")
+	// Repeat: two pipes reorder probabilistically, so one run can pass by luck.
+	for run := 0; run < 10; run++ {
+		res := RunForeground(context.Background(), Request{Argv: argv, Timeout: 30 * time.Second})
+		if res.Combined != want.String() {
+			t.Fatalf("run %d lost child write order:\ngot  %q\nwant %q", run, res.Combined, want.String())
+		}
+	}
+}
+
+// TestRunForegroundDropsTailOnSuccess keeps a successful command from carrying
+// up to 16 KiB of ordinary stdout into the session record and the tool card.
+func TestRunForegroundDropsTailOnSuccess(t *testing.T) {
+	argv, _ := shellArgv(t, "echo hello")
+	res := RunForeground(context.Background(), Request{Argv: argv, Timeout: 30 * time.Second})
+	if res.State != tool.ShellStateCompleted {
+		t.Fatalf("State = %q, want %q", res.State, tool.ShellStateCompleted)
+	}
+	if !strings.Contains(res.Combined, "hello") {
+		t.Fatalf("Combined = %q, want it to contain the output", res.Combined)
+	}
+	if res.StderrTail != "" {
+		t.Fatalf("StderrTail = %q, want empty on success", res.StderrTail)
 	}
 }
 

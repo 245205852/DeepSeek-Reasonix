@@ -1678,6 +1678,29 @@ func BashToolCallMixesMutationAndVerification(args json.RawMessage) bool {
 	return bashContainsVerificationSegment(command) && bashMayMutate(command)
 }
 
+// BashToolCallMixesMutationAndMaskableVerification is the ordinary-mode subset of
+// BashToolCallMixesMutationAndVerification: the same mixed shape, but only when
+// the shell's exit status can actually hide the earlier step's failure.
+//
+// Delivery mode blocks the broad shape because a mutation invalidates the
+// verification *receipt* regardless of exit status. Ordinary mode has no receipt
+// to protect — its only concern is a result that looks successful while an
+// earlier step failed. `build && test` cannot produce that (bash short-circuits
+// and reports the failing status), so blocking it would reject the single most
+// common shell shape in real projects for no safety gain. `build; test` can,
+// and stays blocked.
+func BashToolCallMixesMutationAndMaskableVerification(args json.RawMessage) bool {
+	if !BashToolCallMixesMutationAndVerification(args) {
+		return false
+	}
+	command, ok := bashCommandFromArgs(args)
+	if !ok {
+		return false
+	}
+	canMask, analyzed := shellparse.CanMaskEarlierFailure(command)
+	return analyzed && canMask
+}
+
 // BashToolCallMasksVerificationExit reports the common `check; echo $?` shape.
 // The trailing reporter makes the shell call itself succeed even when the
 // verifier failed, so a successful tool receipt cannot prove the check passed.
@@ -1732,9 +1755,11 @@ func BashToolCallUsesOpaqueInlineInterpreter(args json.RawMessage) bool {
 }
 
 // BashToolCallUsesNonTerminalInlineInterpreter reports whether an opaque
-// inline interpreter (python -c, node -e, …) is not the last top-level segment.
-// Later segments can overwrite its exit status, so ordinary mode blocks this
-// shape deterministically without rewriting the command.
+// inline interpreter (python -c, node -e, …) is not the last top-level segment
+// *and* a later segment can overwrite its exit status. Ordinary mode blocks that
+// shape deterministically without rewriting the command. An `&&` chain is left
+// alone: bash short-circuits it, so the interpreter's failure is still the
+// call's exit status and nothing is hidden.
 func BashToolCallUsesNonTerminalInlineInterpreter(args json.RawMessage) bool {
 	command, ok := bashCommandFromArgs(args)
 	if !ok {
@@ -1743,6 +1768,9 @@ func BashToolCallUsesNonTerminalInlineInterpreter(args json.RawMessage) bool {
 	segments, _, ok := shellparse.SplitTopLevel(command)
 	if !ok || len(segments) < 2 {
 		// Unknown / unparseable syntax: do not pretend full analysis.
+		return false
+	}
+	if canMask, analyzed := shellparse.CanMaskEarlierFailure(command); !analyzed || !canMask {
 		return false
 	}
 	for i, segment := range segments {
@@ -1811,15 +1839,17 @@ func bashSegmentUsesOpaqueInlineInterpreter(segment string) bool {
 func ShellContractPreflightMessage(reason string) string {
 	switch reason {
 	case "mixed":
-		return "blocked: this command mixes a state-changing segment with a verification check. " +
-			"Use edit_file (or another file tool) for modifications, then run verification in a separate shell call. " +
-			"Do not combine mutation and verification in one shell invocation."
+		return "blocked: this command runs a verification check after a state-changing segment, separated so the " +
+			"check's exit status would hide a failure in that earlier segment. " +
+			"Chain them with '&&' so a failed step stops the command and stays the result, " +
+			"or run the modification and the verification as separate calls."
 	case "mask_exit":
 		return "blocked: the trailing echo/printf of $? masks the verifier's exit status, so this command would look successful even when the check failed. " +
 			"Run the verifier by itself and let its exit status be the tool result."
 	case "inline_nonterminal":
-		return "blocked: an inline interpreter (python -c, node -e, …) is not the last top-level command, so a later segment can hide its failure. " +
-			"Use edit_file for file changes, put script source in a file, or run the inline interpreter alone as the final command."
+		return "blocked: an inline interpreter (python -c, node -e, …) is followed by a segment that can hide its failure. " +
+			"Chain with '&&' so the interpreter's exit status survives, run it as the final command, " +
+			"or use edit_file for file changes and put script source in a file."
 	default:
 		return "blocked: this shell command violates the host execution contract. " +
 			"Use edit_file for modifications and a separate shell call for verification."

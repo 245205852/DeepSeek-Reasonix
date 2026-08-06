@@ -44,7 +44,11 @@ type Request struct {
 
 // Result is the structured outcome of a foreground run.
 type Result struct {
-	Combined     string
+	Combined string
+	// StderrTail is the bounded tail of combined output, populated only when the
+	// run did not complete successfully. Stdout and stderr share one pipe so the
+	// model-visible ordering is preserved, which makes a stderr-only tail
+	// impossible; in practice the last bytes before a failure are the diagnosis.
 	StderrTail   string
 	ExitCode     *int
 	Started      bool
@@ -84,14 +88,19 @@ func RunForeground(ctx context.Context, req Request) Result {
 
 	collector := newOutputCollector(tool.StderrTailMaxBytes)
 	var writers []io.Writer
-	writers = append(writers, collector.combined)
+	writers = append(writers, collector.combined, collector.tail)
 	if req.Progress != nil {
 		writers = append(writers, &progressWriter{emit: req.Progress})
 	}
-	// stderr is also teed into a bounded tail for structured UI metadata.
-	// Combined output keeps the historical model-visible merge of both streams.
-	cmd.Stdout = io.MultiWriter(writers...)
-	cmd.Stderr = io.MultiWriter(append(writers, collector.stderr)...)
+	// Stdout and Stderr must stay the *same* writer value: os/exec then hands the
+	// child a single pipe, so the two streams interleave in the order the child
+	// wrote them and only one copy goroutine calls Progress. Two MultiWriters
+	// would mean two pipes, and combined output would be reordered per stream.
+	// The bounded tail therefore covers combined output rather than stderr only;
+	// failing commands routinely report on stdout, so the tail stays useful.
+	w := io.MultiWriter(writers...)
+	cmd.Stdout = w
+	cmd.Stderr = w
 
 	run := req.Run
 	if run == nil {
@@ -112,7 +121,7 @@ func RunForeground(ctx context.Context, req Request) Result {
 
 	out := Result{
 		Combined:   collector.combined.String(),
-		StderrTail: collector.stderrTail(),
+		StderrTail: collector.tailString(),
 		Started:    processStarted(cmd, err),
 		Tracked:    tracked,
 		Cmd:        cmd,
@@ -146,6 +155,10 @@ func RunForeground(ctx context.Context, req Request) Result {
 		code := 0
 		out.ExitCode = &code
 		out.State = tool.ShellStateCompleted
+		// The tail exists to explain a failure. Dropping it on success keeps
+		// successful runs from persisting up to 16 KiB of ordinary stdout into
+		// every session record and tool card.
+		out.StderrTail = ""
 		return out
 	}
 	if code := exitCodeFromErr(err); code != nil {
@@ -194,25 +207,26 @@ func isCanceledWait(err error) bool {
 	return errors.As(err, &c)
 }
 
-// outputCollector owns the combined buffer and a bounded stderr ring. Writes
-// are serialized so concurrent stdout/stderr copies cannot race on Buffer.
+// outputCollector owns the combined buffer and a bounded tail ring. Writes stay
+// serialized behind one mutex so a caller that does wire two pipes cannot race
+// on the Buffer.
 type outputCollector struct {
 	mu       sync.Mutex
 	combined *lockedBuffer
-	stderr   *tailWriter
+	tail     *tailWriter
 }
 
-func newOutputCollector(stderrLimit int) *outputCollector {
+func newOutputCollector(tailLimit int) *outputCollector {
 	c := &outputCollector{}
 	c.combined = &lockedBuffer{mu: &c.mu}
-	c.stderr = &tailWriter{mu: &c.mu, limit: stderrLimit}
+	c.tail = &tailWriter{mu: &c.mu, limit: tailLimit}
 	return c
 }
 
-func (c *outputCollector) stderrTail() string {
+func (c *outputCollector) tailString() string {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	return string(c.stderr.buf)
+	return string(c.tail.buf)
 }
 
 // lockedBuffer is a bytes.Buffer guarded by an external mutex so MultiWriter

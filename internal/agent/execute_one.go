@@ -351,6 +351,13 @@ func (a *Agent) applyDeliveryPolicyGates(plan *toolCallPlan) (toolOutcome, bool)
 	// stay shell-accurate; the agent layers apply command-shape protections.
 	// Delivery keeps its longer recovery copy so existing delivery guidance tests
 	// and model recovery prompts stay stable.
+	//
+	// Ordinary mode blocks only shapes where a later segment can actually hide an
+	// earlier failure. Delivery keeps the broader classifier because a mutation
+	// invalidates the verification receipt even when the exit status is honest.
+	// Without that split, `go build ./... && go test ./...`, `npm install &&
+	// npm test`, and every other short-circuit chain would be rejected for every
+	// user, though bash already reports the failing step's status for them.
 	if plan.evidenceName == "bash" {
 		if evidence.BashToolCallMasksVerificationExit(plan.evidenceArgs) {
 			msg := evidence.ShellContractPreflightMessage("mask_exit")
@@ -364,7 +371,11 @@ func (a *Agent) applyDeliveryPolicyGates(plan *toolCallPlan) (toolOutcome, bool)
 				execution: shellPreflightExecution(plan, true),
 			}, true
 		}
-		if evidence.BashToolCallMixesMutationAndVerification(plan.evidenceArgs) {
+		mixed := evidence.BashToolCallMixesMutationAndMaskableVerification
+		if a.deliveryProfile {
+			mixed = evidence.BashToolCallMixesMutationAndVerification
+		}
+		if mixed(plan.evidenceArgs) {
 			msg := evidence.ShellContractPreflightMessage("mixed")
 			if a.deliveryProfile {
 				msg = "blocked: this command mixes a verification check with a segment that may write state. Run the state-changing preparation separately while a todo is in_progress, then run a read-only verification command. For generated input, prefer a host-recognized read-only pipeline into the verifier (for example: tail ... | head ... | node --check -) instead of writing a temporary file."
