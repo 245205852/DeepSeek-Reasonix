@@ -348,7 +348,22 @@
           }
         ]
       },
-      "upgrade": [],
+      "upgrade": [
+        {
+          "level": "info",
+          "title": {
+            "en": "No manual migration is required",
+            "zh": "无需手动迁移"
+          },
+          "body": {
+            "en": "Upgrade to v1.21.0 normally; existing configuration and sessions remain compatible.",
+            "zh": "可直接升级到 v1.21.0；现有配置与会话保持兼容。"
+          },
+          "refs": [
+            7773
+          ]
+        }
+      ],
       "risks": [],
       "contributors": [
         "SivanCola",
