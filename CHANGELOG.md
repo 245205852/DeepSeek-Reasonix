@@ -6,6 +6,17 @@ branch.
 
 ## Unreleased
 
+### Fixed
+
+- **Issue #7575:** Linux Bash under bubblewrap no longer mounts a fresh empty
+  `--tmpfs /tmp` on every call. Consecutive commands in the same logical session
+  now share a private temporary directory (bound at `/tmp` on Linux, exported via
+  `TMPDIR`/`TMP`/`TEMP` on all platforms) without exposing the host public
+  temporary root. `/new`, `/clear`, resume of another session, and branch
+  switches rotate the directory; model/settings hot rebuilds keep it. Sub-agent
+  runs get independent directories. Temporary files are not durable across process
+  restarts.
+
 ### Added
 
 - Added `[ui].show_turn_usage` so CLI/TUI users can hide per-request token and

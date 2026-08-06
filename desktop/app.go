@@ -54,12 +54,24 @@ import (
 	"reasonix/internal/pluginpkg"
 	"reasonix/internal/provider"
 	"reasonix/internal/repair"
+	"reasonix/internal/sessiontemp"
 	"reasonix/internal/skill"
 	"reasonix/internal/stats"
 	"reasonix/internal/store"
 	"reasonix/internal/taskmonitor"
 	"reasonix/internal/tool"
 )
+
+// sessionTempFromController returns the logical-session private temporary
+// directory manager for a same-session controller rebuild. Nil when the
+// controller is missing or is not a *control.Controller.
+func sessionTempFromController(ctrl control.SessionAPI) *sessiontemp.Manager {
+	c, ok := ctrl.(*control.Controller)
+	if !ok || c == nil {
+		return nil
+	}
+	return c.SessionTemp()
+}
 
 // eventChannel is the Wails runtime event name the frontend subscribes to for the
 // agent's typed event stream. One channel carries every event kind; the payload's
@@ -10091,6 +10103,9 @@ func (a *App) SetModelForTab(tabID, name string) (retErr error) {
 		SubagentParentLive:       a.subagentParentProbeForBuild(tab),
 		SessionRecoveryMeta:      a.tabSessionRecoveryMeta(tab),
 		OnSessionRecovered:       a.handleTabSessionRecovered(tab),
+		// Same logical session: keep the private temporary directory across
+		// model switches (Issue #7575).
+		SessionTemp: sessionTempFromController(oldCtrl),
 	})
 	if err != nil {
 		return err
@@ -10260,6 +10275,9 @@ func (a *App) SetEffortForTab(tabID, level string) error {
 		SubagentParentLive:       a.subagentParentProbeForBuild(tab),
 		SessionRecoveryMeta:      a.tabSessionRecoveryMeta(tab),
 		OnSessionRecovered:       a.handleTabSessionRecovered(tab),
+		// Same logical session: keep the private temporary directory across
+		// effort switches (Issue #7575).
+		SessionTemp: sessionTempFromController(oldCtrl),
 	})
 	if err != nil {
 		return err
@@ -10397,6 +10415,9 @@ func (a *App) SetTokenModeForTab(tabID, mode string) error {
 		SubagentParentLive:       a.subagentParentProbeForBuild(tab),
 		SessionRecoveryMeta:      a.tabSessionRecoveryMeta(tab),
 		OnSessionRecovered:       a.handleTabSessionRecovered(tab),
+		// Same logical session: keep the private temporary directory across
+		// token-mode switches (Issue #7575).
+		SessionTemp: sessionTempFromController(oldCtrl),
 	})
 	if err != nil {
 		return err

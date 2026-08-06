@@ -550,6 +550,35 @@ Sandbox 是授权之后的第二层边界，不能替代命令解析，也不能
 OS 沙盒生效时也不能读取配置的 `forbid_read` roots，`[sandbox] network` 为真时才能联网。
 Reasonix 始终会从工具子进程环境中移除已保存的 provider 与 bot 凭据变量，并自动把
 全局凭据 `.env` 加入运行时禁读边界；项目 `.env` 仍保持现有的 workspace 范围行为。
+
+**会话私有标准临时目录。**同一逻辑会话内的多条 Bash 命令共享一个私有临时目录，
+因此连续调用可以通过 `$TMPDIR` 交换文件（在 Linux bubblewrap 下还可以通过字面
+`/tmp`）。用户不需要设置：Reasonix 会自动为 Bash 和客户端托管的 ACP 终端注入
+`TMPDIR`、`TMP`、`TEMP`。目录按需创建，不会回退到宿主公共临时目录；在 `/new`、
+`/clear`、恢复另一会话、切换分支时旋转。模型或设置热重建会保留同一目录。临时文件
+不是持久存储：跨进程 resume 不会恢复其中内容；需要长期保留的数据应写入工作区或
+用户指定路径。
+
+Reasonix 生成的脚本和项目脚本应使用标准临时目录变量，不要硬编码 `/tmp`；用户无需
+自行设置这些变量。例如：
+
+```sh
+tmp_file="${TMPDIR:?}/result.json"
+```
+
+```powershell
+$tmpFile = Join-Path $env:TEMP "result.json"
+```
+
+| 平台 | `$TMPDIR` / `$TMP` / `$TEMP` | 字面 `/tmp` |
+| --- | --- | --- |
+| Linux + bubblewrap | 虚拟 `/tmp`（绑定到私有目录） | 会话内共享（不再是每次新建的空 tmpfs） |
+| macOS Seatbelt | 私有宿主目录路径（Seatbelt 允许写入） | 仍是 macOS 宿主临时目录；脚本应使用 `$TMPDIR` |
+| Windows（无 OS 级 Bash 沙箱） | 私有宿主目录路径 | 不保证与该目录等价（例如 Git Bash 的 `/tmp`） |
+
+MCP 等独立沙盒继续使用自己的隔离规范，不继承父会话临时目录。获得批准后绕过沙盒的
+命令仍继承私有临时变量，但在 Linux 上其字面 `/tmp` 不再由 bwrap 映射。
+
 **Windows 说明：**Reasonix 不在 Windows 上提供 OS 级 Bash 沙箱，生效模式固定为
 `off`。旧配置即使写了 `bash = "enforce"` 也会解析为 `off`，`reasonix doctor`
 会提示该设置被忽略，桌面设置中的选择器也为只读。Bash 命令会在不受 OS 沙箱限制的

@@ -312,12 +312,17 @@ func (s *Server) build(ctx context.Context, ref string) (*control.Controller, er
 	if s.buildController != nil {
 		return s.buildController(ctx, ref)
 	}
-	return boot.Build(ctx, boot.Options{
+	opts := boot.Options{
 		Model:       ref,
 		Sink:        s.bc,
 		Stderr:      os.Stderr,
 		StatsSource: "serve",
-	})
+	}
+	// Keep the logical-session private temporary directory across model switches.
+	if cur, ok := s.ctl().(*control.Controller); ok && cur != nil {
+		opts.SessionTemp = cur.SessionTemp()
+	}
+	return boot.Build(ctx, opts)
 }
 
 // reloadExtensions fail-atomically rebuilds the active controller generation

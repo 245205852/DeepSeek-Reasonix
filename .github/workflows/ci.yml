@@ -147,6 +147,15 @@ jobs:
           WINDOWS_SANDBOX_WAIT_MS: "20000"
         run: go test -p 4 -timeout=3m ./internal/agent/... ./internal/boot/... ./internal/checkpoint/... ./internal/cli/... ./internal/control/... ./internal/desktoplauncher/... ./internal/filelock/... ./internal/fileutil/... ./internal/hook/... ./internal/instruction/... ./internal/mcplaunch/... ./internal/notify/... ./internal/proc/... ./internal/remote/... ./internal/repair/... ./internal/sandbox/... ./internal/sysproxy/... ./internal/workspacelease/... ./cmd/...
 
+      # The general Windows PR smoke list intentionally omits internal/tool.
+      # Keep the session-temp portability contract covered without widening the
+      # leg to every tool test: two real PowerShell launches must share the
+      # injected TMPDIR/TMP/TEMP directory.
+      - name: test (Windows session temp)
+        if: env.RUN_STEPS == 'true' && runner.os == 'Windows' && github.event_name == 'pull_request'
+        timeout-minutes: 3
+        run: go test -timeout=2m -run '^TestBashSharesSessionTempAcrossCalls$' ./internal/tool/builtin
+
       - name: test (full)
         if: env.RUN_STEPS == 'true' && runner.os == 'Windows' && github.event_name != 'pull_request'
         timeout-minutes: 10
