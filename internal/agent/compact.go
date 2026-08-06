@@ -34,6 +34,7 @@ const (
 	fallbackTokPerChar         = 0.25  // ~4 chars/token, used before any usage is available to calibrate
 	maxPinnedFirstUserTokens   = 1500  // ceiling on pinning the first user turn verbatim; larger first turns (pasted content) stay foldable
 	pinnedFirstUserWindowFrac  = 0.15  // and never pin a first turn worth more than this fraction of the window
+	maxKeepSmallUserTurns      = 20    // position-fixed keep window for small user turns in the fold region; the first N survive verbatim, older ones fold (prefix byte-stable, never "latest N")
 )
 
 // summaryTag wraps the compaction summary so the model can distinguish it from
@@ -461,11 +462,12 @@ func isCompactionSummary(m provider.Message) bool {
 
 // pinnedPrefixLen counts the leading messages a fold keeps verbatim: the system
 // prompt, the first user turn (its task + stated facts/constraints) when it is
-// small enough to be a brief, and any prior summaries — so a fold never
-// summarizes the user's facts away, and a later fold never re-summarizes an
-// earlier summary into nothing (the drift that silently dropped user-stated facts
-// after the second compaction). A large first turn (pasted content) stays
-// foldable so pinning never starves the window.
+// small enough to be a brief, and the NEWEST prior summary — so a fold never
+// summarizes the user's facts away. Older summaries are NOT pinned: they enter
+// the fold region and are merged into the next digest (A1 rolling merge), so a
+// long session cannot accumulate an unbounded chain of digests. Merging re-feeds
+// the old summary text into the summarizer, so the facts it captured survive in
+// the new digest instead of being silently dropped.
 func (a *Agent) pinnedPrefixLen(msgs []provider.Message) int {
 	i := 0
 	if i < len(msgs) && msgs[i].Role == provider.RoleSystem {
@@ -474,8 +476,14 @@ func (a *Agent) pinnedPrefixLen(msgs []provider.Message) int {
 	if i < len(msgs) && msgs[i].Role == provider.RoleUser && !isCompactionSummary(msgs[i]) && a.pinnableUserTurn(msgs[i]) {
 		i++
 	}
-	for i < len(msgs) && isCompactionSummary(msgs[i]) {
-		i++
+	// Pin only the newest summary (the last one in the contiguous summary run);
+	// older summaries stay inside the fold region for the next merge.
+	lastSummary := -1
+	for j := i; j < len(msgs) && isCompactionSummary(msgs[j]); j++ {
+		lastSummary = j
+	}
+	if lastSummary >= 0 {
+		i = lastSummary + 1
 	}
 	return i
 }
@@ -494,13 +502,36 @@ func (a *Agent) pinnableUserTurn(m provider.Message) bool {
 }
 
 // partitionFold splits a compaction region into what is kept verbatim — small user
-// turns (a fact the user stated is never summarized away) and prior digests (so a
-// later fold never re-summarizes an earlier digest and drops the facts it already
-// captured) — and the rest, which folds. Order within each group is preserved.
+// turns (a fact the user stated is never summarized away) — and the rest, which
+// folds. Order within each group is preserved.
+//
+// Prior digests inside the region are folded (not kept verbatim): the newest
+// digest is already pinned by pinnedPrefixLen outside the region, so any summary
+// seen here is an older one being merged into the next digest (A1 rolling merge).
+// Merging re-feeds the old summary text into the summarizer, preserving its facts.
+//
+// The small-turn keep window is position-fixed (only the first keepSmallUserTurns
+// small user turns in the region survive), never "the most recent N" — a dynamic
+// tail window would move with every compaction and rewrite the kept prefix,
+// cratering the server-side prefix cache (mental-seal: prefix stability is the
+// first principle). A fixed prefix window keeps the surviving bytes identical
+// across compactions; only the folded middle is replaced by a digest.
 func (a *Agent) partitionFold(region []provider.Message) (kept, fold []provider.Message) {
 	policyKeep := keepIndexes(region, a.keepPolicy)
+	keptSmallUserTurns := 0
 	for i, m := range region {
-		if m.LocalOnly || policyKeep[i] || isCompactionSummary(m) || (m.Role == provider.RoleUser && a.pinnableUserTurn(m)) {
+		keep := m.LocalOnly || policyKeep[i]
+		if !keep && m.Role == provider.RoleUser && a.pinnableUserTurn(m) {
+			// Position-fixed small-turn keep window: the first N small user turns
+			// in the region survive verbatim; older ones fold into the digest so
+			// a long session cannot accumulate unbounded verbatim user turns.
+			// N is fixed (not "latest N"), so the kept prefix stays byte-stable.
+			if keptSmallUserTurns < maxKeepSmallUserTurns {
+				keep = true
+			}
+			keptSmallUserTurns++
+		}
+		if keep {
 			kept = append(kept, m)
 		} else {
 			fold = append(fold, m)

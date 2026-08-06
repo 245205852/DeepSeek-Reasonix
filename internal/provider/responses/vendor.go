@@ -83,7 +83,6 @@ var vendorTable = map[string]vendorCapabilities{
 		singleSegmentReasoning: false,
 		ignoresTemperature:     false,
 		defaultMaxOutputTokens: 131072,
-
 	},
 	"mimo": {
 		stateless:              true,
@@ -92,7 +91,6 @@ var vendorTable = map[string]vendorCapabilities{
 		singleSegmentReasoning: true,
 		ignoresTemperature:     true,
 		defaultMaxOutputTokens: 128000,
-
 	},
 	// "" (unknown OpenAI-compatible endpoint) → zero value = default behavior.
 }

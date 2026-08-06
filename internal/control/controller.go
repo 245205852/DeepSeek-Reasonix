@@ -3609,6 +3609,16 @@ func (c *Controller) cacheColdAfter() time.Duration {
 // maybeColdResumePrune elides stale tool results when a resumed session has
 // been idle past the provider's cache retention, then persists the pruned
 // transcript so the saved file and the prompt stay in sync.
+//
+// C1 replay gate (cache-timing aware): inside the cache window the resume
+// replays the saved history as-is — the server prefix cache is still warm, so
+// the replay is cheap AND restores the full multi-topic knowledge graph at
+// zero loss (24h of exploration re-linked). Outside the window the prefix is
+// cold; replaying it would pay full price for ~1M tokens. So beyond the
+// prune, a full compaction (A1 digest rolling-merge + B2 position-fixed
+// small-turn folding) rewrites the session to a small digest+tail prefix
+// before the first send — the deterministic cheap prefix the cache philosophy
+// demands (mental-seal: never gamble a cold 1.2M replay).
 func (c *Controller) maybeColdResumePrune(path string) {
 	if c.disableColdResumePrune || c.executor == nil || path == "" {
 		return
@@ -3622,15 +3632,29 @@ func (c *Controller) maybeColdResumePrune(path string) {
 	}
 	last := m.UpdatedAt
 	if time.Since(last) < c.cacheColdAfter() {
+		// Inside the cache window: replay as-is. The server prefix cache is
+		// warm, so the full-history replay hits it (cheap) and the knowledge
+		// graph survives verbatim (zero-loss multi-topic restoration).
 		return
 	}
+	// Outside the cache window: the prefix is cold. Prune stale tool results
+	// first (cheap, no network); then compact the whole session so the first
+	// send after resume is a small digest+tail prefix, not a full-price replay
+	// of the entire history.
 	st, err := c.executor.PruneStaleToolResults()
-	if err != nil || st.Results == 0 {
-		return
+	if err != nil {
+		slog.Warn("controller: cold-resume prune", "err", err)
+	} else if st.Results > 0 {
+		c.sink.Emit(event.Event{Kind: event.Notice, Level: event.LevelInfo, Text: fmt.Sprintf(
+			"resumed after %s idle (provider cache expired) — elided %d stale tool results to cheapen the cold restart",
+			time.Since(last).Round(time.Minute), st.Results)})
 	}
-	c.sink.Emit(event.Event{Kind: event.Notice, Level: event.LevelInfo, Text: fmt.Sprintf(
-		"resumed after %s idle (provider cache expired) — elided %d stale tool results to cheapen the cold restart",
-		time.Since(last).Round(time.Minute), st.Results)})
+	// Full compaction: A1 merges the digest chain into one rolling digest, B2
+	// folds small user turns beyond the position-fixed window. The session
+	// becomes a small, byte-stable prefix — the deterministic cheap replay.
+	if err := c.Compact(context.Background(), "cold-resume replay gate"); err != nil {
+		slog.Warn("controller: cold-resume compact", "err", err)
+	}
 	if err := c.SnapshotRewrite(); err != nil {
 		slog.Warn("controller: post-prune snapshot", "err", err)
 	}
