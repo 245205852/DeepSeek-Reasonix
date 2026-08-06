@@ -662,7 +662,9 @@ func (s *Server) events(w http.ResponseWriter, r *http.Request) {
 	// A browser that attaches after an approval/ask was queued never saw the
 	// original SSE frame. Re-emit any still-blocked prompts so the session
 	// does not sit idle for hours with no actionable card (#7643).
-	s.ctl().ReplayPendingPrompts()
+	s.ctl().ReplayPendingPromptsTo(event.FuncSink(func(e event.Event) {
+		s.bc.EmitTo(ch, e)
+	}))
 
 	keepalive := time.NewTicker(sseKeepaliveInterval)
 	defer keepalive.Stop()

@@ -83,6 +83,7 @@ type Approvals interface {
 	AnswerQuestion(id string, answers []event.AskAnswer)
 	Ask(ctx context.Context, questions []event.AskQuestion) ([]event.AskAnswer, error)
 	ReplayPendingPrompts()
+	ReplayPendingPromptsTo(sink event.Sink)
 	PendingPrompt() bool
 	EnableInteractiveApproval()
 	ToolApprovalMode() string

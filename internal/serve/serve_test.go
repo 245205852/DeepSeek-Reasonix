@@ -968,28 +968,23 @@ func TestServeEventsReplaysPendingAskOnAttach(t *testing.T) {
 	srv := httptest.NewServer(New(ctrl, bc, config.ServeConfig{}).Handler())
 	defer srv.Close()
 
-	firstSeen := make(chan struct{})
 	firstSub, cancelFirst := bc.Subscribe()
 	defer cancelFirst()
-	go func() {
-		for data := range firstSub {
-			if strings.Contains(string(data), `"kind":"ask_request"`) {
-				close(firstSeen)
-				return
-			}
-		}
-	}()
 
+	askCtx, cancelAsk := context.WithCancel(context.Background())
 	askDone := make(chan error, 1)
 	go func() {
-		_, err := ctrl.Ask(context.Background(), []event.AskQuestion{{
+		_, err := ctrl.Ask(askCtx, []event.AskQuestion{{
 			ID: "q1", Prompt: "pick one", Options: []event.AskOption{{Label: "A"}, {Label: "B"}},
 		}})
 		askDone <- err
 	}()
 
 	select {
-	case <-firstSeen:
+	case data := <-firstSub:
+		if !strings.Contains(string(data), `"kind":"ask_request"`) {
+			t.Fatalf("initial subscriber got %s, want ask_request", data)
+		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("timed out waiting for initial ask_request")
 	}
@@ -1032,5 +1027,20 @@ func TestServeEventsReplaysPendingAskOnAttach(t *testing.T) {
 	case err := <-askDone:
 		t.Fatalf("ask resolved before the late client answered: %v", err)
 	default:
+	}
+
+	// Reconnect recovery must be connection-local: the existing subscriber
+	// must not receive the same prompt a second time.
+	select {
+	case data := <-firstSub:
+		t.Fatalf("existing subscriber got duplicate replay: %s", data)
+	default:
+	}
+
+	cancelAsk()
+	select {
+	case <-askDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("blocked ask did not exit after test cancellation")
 	}
 }

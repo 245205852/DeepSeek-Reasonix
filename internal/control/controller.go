@@ -2569,16 +2569,34 @@ func askAnswersHaveSelection(answers []event.AskAnswer) bool {
 // requestApproval, so in practice at most one prompt is outstanding; the loops
 // stay general so a future concurrent prompt would still replay correctly.
 func (c *Controller) ReplayPendingPrompts() {
+	if noApprovals := c.replayPendingPromptsTo(c.sink); noApprovals {
+		// Retained compatibility hook; live Auto Guard cards are ordinary approvals.
+		c.ReplayUnresolvedRecoveries()
+	}
+}
+
+// ReplayPendingPromptsTo re-emits pending prompts to one frontend sink. Serve
+// uses this for a newly attached SSE client so existing browsers do not receive
+// duplicate approval/ask cards when another client reconnects.
+func (c *Controller) ReplayPendingPromptsTo(sink event.Sink) {
+	c.replayPendingPromptsTo(sink)
+}
+
+func (c *Controller) replayPendingPromptsTo(sink event.Sink) bool {
 	approvals, asks := c.approval.snapshotPrompts()
+	c.emitPendingPrompts(sink, approvals, asks)
+	return len(approvals) == 0
+}
+
+func (c *Controller) emitPendingPrompts(sink event.Sink, approvals []event.Approval, asks []event.Ask) {
+	if sink == nil {
+		return
+	}
 	for _, a := range approvals {
-		c.sink.Emit(c.approvalRequestEvent(a))
+		sink.Emit(c.approvalRequestEvent(a))
 	}
 	for _, a := range asks {
-		c.sink.Emit(event.Event{Kind: event.AskRequest, Ask: a})
-	}
-	// Retained compatibility hook; live Auto Guard cards are ordinary approvals.
-	if len(approvals) == 0 {
-		c.ReplayUnresolvedRecoveries()
+		sink.Emit(event.Event{Kind: event.AskRequest, Ask: a})
 	}
 }
 
