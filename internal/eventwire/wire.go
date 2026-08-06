@@ -32,6 +32,17 @@ type Event struct {
 	Readiness       *FinalReadiness   `json:"readiness,omitempty"`
 	RetryAttempt    int               `json:"retryAttempt,omitempty"`
 	RetryMax        int               `json:"retryMax,omitempty"`
+	RetryScope      string            `json:"retryScope,omitempty"` // "headers" | "stream"; omit for older clients
+	StreamAttempt   *StreamAttempt    `json:"streamAttempt,omitempty"`
+}
+
+// StreamAttempt is the JSON form of event.StreamAttemptInfo.
+type StreamAttempt struct {
+	ID      string `json:"id"`
+	Action  string `json:"action"` // begin | discard | commit
+	Attempt int    `json:"attempt,omitempty"`
+	Max     int    `json:"max,omitempty"`
+	Reason  string `json:"reason,omitempty"` // connection_reset | premature_eof | idle_timeout
 }
 
 // ToWire converts a typed runtime event into the shared frontend JSON contract.
@@ -59,8 +70,8 @@ func ToWire(e event.Event) Event {
 			ReadOnly: e.Tool.ReadOnly, Truncated: e.Tool.Truncated,
 			DurationMs: e.Tool.DurationMs, Partial: e.Tool.Partial,
 			ArgChars: e.Tool.ArgChars, Refreshed: e.Tool.Refreshed,
-			ParentID: e.Tool.ParentID,
-			Diff:     e.Tool.Diff, Added: e.Tool.Added, Removed: e.Tool.Removed,
+			ParentID: e.Tool.ParentID, AttemptID: e.Tool.AttemptID,
+			Diff: e.Tool.Diff, Added: e.Tool.Added, Removed: e.Tool.Removed,
 		}
 		if e.Tool.Profile != nil {
 			wt.Profile = &Profile{Model: e.Tool.Profile.Model, Effort: e.Tool.Profile.Effort}
@@ -74,6 +85,7 @@ func ToWire(e event.Event) Event {
 				CacheMissTokens: u.CacheMissTokens, ReasoningTokens: u.ReasoningTokens,
 				Estimated:             u.Estimated,
 				Source:                e.UsageSource,
+				ContextPromptTokens:   u.ContextPromptTokens,
 				SessionCacheHitTokens: e.SessionHit, SessionCacheMissTokens: e.SessionMiss,
 			}
 			if e.CacheDiagnostics != nil {
@@ -131,6 +143,17 @@ func ToWire(e event.Event) Event {
 	case event.Retrying:
 		w.RetryAttempt = e.RetryAttempt
 		w.RetryMax = e.RetryMax
+		if e.RetryScope != "" {
+			w.RetryScope = string(e.RetryScope)
+		}
+	case event.StreamAttempt:
+		w.StreamAttempt = &StreamAttempt{
+			ID:      e.StreamAttempt.ID,
+			Action:  string(e.StreamAttempt.Action),
+			Attempt: e.StreamAttempt.Attempt,
+			Max:     e.StreamAttempt.Max,
+			Reason:  e.StreamAttempt.Reason,
+		}
 	}
 	return w
 }
@@ -236,6 +259,7 @@ type Tool struct {
 	ArgChars     int      `json:"argChars,omitempty"`
 	Refreshed    bool     `json:"refreshed,omitempty"`
 	ParentID     string   `json:"parentId,omitempty"`
+	AttemptID    string   `json:"attemptId,omitempty"` // host-local stream_attempt id for speculative partials
 	Diff         string   `json:"diff,omitempty" externalizable:"true"`
 	Added        int      `json:"added,omitempty"`
 	Removed      int      `json:"removed,omitempty"`
@@ -256,8 +280,11 @@ type Usage struct {
 	// Session-cumulative cache tokens keep status displays steadier than one-turn values.
 	SessionCacheHitTokens  int     `json:"sessionCacheHitTokens"`
 	SessionCacheMissTokens int     `json:"sessionCacheMissTokens"`
-	Cost                   float64 `json:"cost,omitempty"`
-	Currency               string  `json:"currency,omitempty"`
+	// ContextPromptTokens is the latest single-request prompt size for gauges.
+	// When omitted, clients fall back to promptTokens (billable input total).
+	ContextPromptTokens int     `json:"contextPromptTokens,omitempty"`
+	Cost                float64 `json:"cost,omitempty"`
+	Currency            string  `json:"currency,omitempty"`
 	// CostUSD is a compatibility alias for older consumers; it mirrors Cost.
 	CostUSD float64 `json:"costUsd,omitempty"`
 }
@@ -415,6 +442,7 @@ var kindNames = map[event.Kind]string{
 	event.GuardianAssessment: "guardian_assessment",
 	event.ExtensionSurface:   "extension_surface",
 	event.ExtensionStatus:    "extension_status",
+	event.StreamAttempt:      "stream_attempt",
 }
 
 // ExtensionSurface is the JSON form of an event.ExtensionSurfacePayload.

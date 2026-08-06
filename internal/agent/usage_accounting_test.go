@@ -38,32 +38,125 @@ func (failedRequestProvider) Stream(ctx context.Context, _ provider.Request) (<-
 }
 
 func TestMergeStreamUsageCountsProviderRequests(t *testing.T) {
-	first := &provider.Usage{PromptTokens: 10, CompletionTokens: 5, TotalTokens: 15}
-	retry := &provider.Usage{PromptTokens: 20, CompletionTokens: 8, TotalTokens: 28}
+	first := &provider.Usage{PromptTokens: 10, CompletionTokens: 5, TotalTokens: 15, RequestCount: 1}
+	retry := &provider.Usage{PromptTokens: 20, CompletionTokens: 8, TotalTokens: 28, RequestCount: 1}
 	got := mergeStreamUsage(first, retry)
-	if got == nil || got.TotalTokens != 43 || got.RequestCount != 2 {
-		t.Fatalf("merged usage = %+v, want total=43 requests=2", got)
+	if got == nil || got.TotalTokens != 43 || got.RequestCount != 2 || got.CompletionTokens != 13 {
+		t.Fatalf("merged usage = %+v, want total=43 requests=2 completion=13", got)
+	}
+	// Billable PromptTokens align with summed cache hit+miss.
+	if got.CacheMissTokens != 30 || got.PromptTokens != 30 {
+		t.Fatalf("billable input = prompt %d miss %d, want 30/30", got.PromptTokens, got.CacheMissTokens)
 	}
 
-	third := &provider.Usage{PromptTokens: 1, CompletionTokens: 1, TotalTokens: 2}
+	third := &provider.Usage{PromptTokens: 1, CompletionTokens: 1, TotalTokens: 2, RequestCount: 1}
 	got = mergeStreamUsage(got, third)
 	if got.RequestCount != 3 {
 		t.Fatalf("nested merged request count = %d, want 3", got.RequestCount)
 	}
 
 	got = mergeStreamUsage(nil, retry)
-	if got == nil || got.TotalTokens != retry.TotalTokens || got.RequestCount != 2 {
-		t.Fatalf("missing first usage = %+v, want retry tokens and 2 requests", got)
+	if got == nil || got.TotalTokens != retry.TotalTokens || got.RequestCount != 1 {
+		t.Fatalf("missing first usage = %+v, want retry tokens and 1 request", got)
 	}
 	got = mergeStreamUsage(first, nil)
-	if got == nil || got.TotalTokens != first.TotalTokens || got.RequestCount != 2 {
-		t.Fatalf("missing retry usage = %+v, want first tokens and 2 requests", got)
+	if got == nil || got.TotalTokens != first.TotalTokens || got.RequestCount != 1 {
+		t.Fatalf("missing retry usage = %+v, want first tokens and 1 request", got)
 	}
 
 	requestOnly := &provider.Usage{RequestCount: 3}
 	got = mergeStreamUsage(first, requestOnly)
-	if got == nil || got.TotalTokens != first.TotalTokens || got.RequestCount != 4 {
-		t.Fatalf("request-only retry usage = %+v, want first tokens and 4 requests", got)
+	if got == nil || got.RequestCount != 4 {
+		t.Fatalf("request-only retry usage = %+v, want 4 requests", got)
+	}
+}
+
+func TestFinalizeSamplingUsageKeepsLatestPromptContext(t *testing.T) {
+	billable := &provider.Usage{
+		PromptTokens: 90000, CompletionTokens: 30, TotalTokens: 90030,
+		CacheMissTokens: 90000, RequestCount: 3, BudgetAccounted: true,
+	}
+	latest := &provider.Usage{PromptTokens: 30000, CompletionTokens: 10, TotalTokens: 30010, CacheMissTokens: 30000, RequestCount: 1}
+	got := finalizeSamplingUsage(billable, latest)
+	if got == nil || got.PromptTokens != 90000 {
+		t.Fatalf("prompt tokens = %+v, want billable total 90000", got)
+	}
+	if got.ContextPromptTokens != 30000 {
+		t.Fatalf("context prompt = %d, want latest 30000", got.ContextPromptTokens)
+	}
+	if got.CompletionTokens != 30 || got.RequestCount != 3 || !got.BudgetAccounted {
+		t.Fatalf("billable fields = %+v, want summed completion/requests and BudgetAccounted", got)
+	}
+	// lastUsage stores the latest attempt wholesale (prompt+completion of that
+	// request), never the billable aggregate.
+	if latest.PromptTokens != 30000 || latest.CompletionTokens != 10 {
+		t.Fatalf("latest attempt shape mutated: %+v", latest)
+	}
+}
+
+func TestMergeSamplingUsageZeroTokenDoesNotClearBudgetAccounted(t *testing.T) {
+	first := &provider.Usage{
+		PromptTokens: 100, CompletionTokens: 0, TotalTokens: 100,
+		CacheMissTokens: 100, RequestCount: 1, BudgetAccounted: true,
+	}
+	// Pre-body failure / cancel: only RequestCount, reservation Cancelled.
+	second := &provider.Usage{RequestCount: 1, BudgetAccounted: false}
+	got := mergeSamplingUsage(first, second)
+	if got == nil || !got.BudgetAccounted {
+		t.Fatalf("merged = %+v, want BudgetAccounted=true (zero-token attempt is settled)", got)
+	}
+	if got.PromptTokens != 100 || got.TotalTokens != 100 || got.RequestCount != 2 {
+		t.Fatalf("merged billable = %+v, want first tokens + 2 requests", got)
+	}
+	final := finalizeSamplingUsage(got, second)
+	if final == nil || !final.BudgetAccounted {
+		t.Fatalf("finalized = %+v, want BudgetAccounted so Goal sink does not double-count", final)
+	}
+	if final.PromptTokens != 100 {
+		t.Fatalf("final prompt = %d, want billable 100", final.PromptTokens)
+	}
+}
+
+func TestEstimateFailedAttemptUsageIncludesArgChars(t *testing.T) {
+	frozen := samplingRequest{
+		req: provider.Request{Messages: []provider.Message{{Role: provider.RoleUser, Content: "write a large file"}}},
+	}
+	// ~8KB of streamed tool args with no terminal usage.
+	result := streamedTurn{
+		maxArgChars: 8192,
+		err:         &provider.StreamInterruptedError{Err: io.ErrUnexpectedEOF, Reason: provider.StreamInterruptPrematureEOF},
+		interrupted: true,
+	}
+	got := estimateFailedAttemptUsage(nil, frozen, result, 1)
+	if got == nil || !got.Estimated {
+		t.Fatalf("usage = %+v, want estimated failed-attempt record", got)
+	}
+	argTokens := (8192 + 3) / 4
+	if got.CompletionTokens < argTokens {
+		t.Fatalf("completion tokens = %d, want at least arg estimate %d", got.CompletionTokens, argTokens)
+	}
+	if got.PromptTokens <= 0 {
+		t.Fatalf("prompt tokens = %d, want request input estimate", got.PromptTokens)
+	}
+}
+
+func TestEstimateFailedAttemptUsageSkipsPreBodyLocalReject(t *testing.T) {
+	frozen := samplingRequest{
+		req: provider.Request{Messages: []provider.Message{{Role: provider.RoleUser, Content: "hi"}}},
+	}
+	result := streamedTurn{
+		err: &provider.RequestBudgetError{Used: 90, Limit: 100, Remaining: 10, EstimatedInput: 20},
+	}
+	// httpRequests=0: exact admission rejected before Provider.Stream.
+	got := estimateFailedAttemptUsage(nil, frozen, result, 0)
+	if got != nil {
+		t.Fatalf("pre-body local reject usage = %+v, want nil (no invented billable tokens)", got)
+	}
+	// Aggregate must stay BudgetAccounted when first attempt was settled.
+	first := &provider.Usage{PromptTokens: 100, TotalTokens: 100, CacheMissTokens: 100, RequestCount: 1, BudgetAccounted: true}
+	merged := mergeSamplingUsage(first, got)
+	if merged == nil || !merged.BudgetAccounted || merged.PromptTokens != 100 || merged.RequestCount != 1 {
+		t.Fatalf("merged after pre-body reject = %+v, want first attempt only + BudgetAccounted", merged)
 	}
 }
 
@@ -72,7 +165,7 @@ func TestStreamReturnsRequestOnlyUsageOnProviderFailure(t *testing.T) {
 	sink := event.FuncSink(func(e event.Event) { events = append(events, e) })
 	a := New(failedRequestProvider{}, tool.NewRegistry(), NewSession(""), Options{ModelRef: "failed/model"}, sink)
 
-	_, _, _, _, _, _, _, usage, _, _, _, err := a.stream(context.Background(), 1, sink)
+	_, _, _, _, _, _, _, usage, _, _, _, _, err := a.stream(context.Background(), 1, sink)
 	if err == nil {
 		t.Fatal("expected provider failure")
 	}

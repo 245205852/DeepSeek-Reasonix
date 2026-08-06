@@ -3,7 +3,9 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"math/rand"
 	"strings"
 	"time"
 
@@ -25,7 +27,6 @@ type runLoopState struct {
 	emptyFinalBlocks   int
 	handoffNudges      int
 	usedAnyTool        bool
-	streamRecoveries   int
 	goalToolRepairs    int
 	graceRound         bool
 	recoveryGraceRound bool
@@ -60,6 +61,7 @@ type streamedTurn struct {
 	interrupted        bool
 	partialToolStarted bool
 	partialCalls       []provider.ToolCall
+	maxArgChars        int // peak streaming tool-arg size for failed-attempt estimates
 	err                error
 }
 
@@ -252,7 +254,6 @@ func (a *Agent) beginRunTurn(ctx context.Context, input string) (rawInput string
 		emptyFinalBlocks:   0,
 		handoffNudges:      0,
 		usedAnyTool:        false,
-		streamRecoveries:   0,
 		graceRound:         false,
 		recoveryGraceRound: false,
 		todoStallRounds:    0,
@@ -295,30 +296,24 @@ func (a *Agent) runToolLoop(ctx context.Context, state *runLoopState) error {
 		// edits.
 		contentReasons := a.session.DrainContentRewriteReasons()
 
-		streamed := a.streamWithMissingReasoningRecovery(ctx, step+1)
+		// Prefix shape is captured once before sampling and frozen for the
+		// whole attempt lifecycle — stream retries must not rewrite session
+		// history mid-round, so the shape stays stable across body replays.
+		streamed := a.streamWithSamplingRecovery(ctx, step+1)
 		text, reasoning, signature, calls, responsesItems, usage := streamed.text, streamed.reasoning, streamed.signature, streamed.calls, streamed.responsesItems, streamed.usage
-		interrupted, partialToolStarted, partialCalls, err := streamed.interrupted, streamed.partialToolStarted, streamed.partialCalls, streamed.err
+		partialCalls, err := streamed.partialCalls, streamed.err
 		cacheDiagnostics := CompareShape(prevPrefixShape, prefixShape, usage, contentReasons)
 		if err != nil {
 			a.emitTurnUsage(usage, &cacheDiagnostics)
 			if msg, ok := finishReasonMessage(usage); ok {
 				a.sink.Emit(event.Event{Kind: event.Notice, Level: event.LevelWarn, Text: msg})
 			}
-			if interrupted && state.streamRecoveries < maxStreamRecoveries {
-				state.streamRecoveries++
-				a.recordInterruptedDisplay(text, reasoning, partialCalls, false, state.workDurationMs())
-				a.session.Add(provider.Message{
-					Role:    provider.RoleUser,
-					Content: a.withTurnPreferences(streamRecoveryMessage(hasVisibleFinalAnswer(text), partialToolStarted)),
-				})
-				a.sink.Emit(event.Event{Kind: event.Retrying, RetryAttempt: state.streamRecoveries, RetryMax: maxStreamRecoveries})
-				step-- // recovery retries do not consume the tool-round maxSteps budget
-				continue
-			}
+			// Exhausted stream retries (or a non-retryable error): persist one
+			// bounded LocalOnly recovery record for the next real user message.
+			// Intermediate failed attempts never wrote session state.
 			a.recordInterruptedDisplay(text, reasoning, partialCalls, true, state.workDurationMs())
 			return err
 		}
-		state.streamRecoveries = 0
 		a.lastPrefixShape = prefixShape
 		a.haveLastPrefixShape = true
 		a.emitTurnUsage(usage, &cacheDiagnostics)
@@ -326,6 +321,7 @@ func (a *Agent) runToolLoop(ctx context.Context, state *runLoopState) error {
 			a.sink.Emit(event.Event{Kind: event.Notice, Level: event.LevelWarn, Text: msg})
 		}
 
+		// Commit boundary: only a clean terminal attempt reaches here.
 		// Keep reasoning_content on the assistant turn for display and session
 		// archive. Most OpenAI-compatible backends do not replay it; providers
 		// with an explicit round-trip contract retain the raw provider text.
@@ -350,6 +346,8 @@ func (a *Agent) runToolLoop(ctx context.Context, state *runLoopState) error {
 			continue
 		}
 
+		// Invariant: executeBatch only ever receives tool calls from a
+		// committed sampling attempt (clean terminal + response intercept).
 		cont, terr := a.handleToolRound(ctx, state, step, text, reasoning, calls, usage)
 		if !cont {
 			return terr
@@ -361,120 +359,463 @@ func (a *Agent) runToolLoop(ctx context.Context, state *runLoopState) error {
 	return &maxStepsPause{steps: state.runMaxSteps, key: state.runMaxStepsKey}
 }
 
-// streamWithMissingReasoningRecovery silently repairs an isolated DeepSeek
-// thinking-mode tool-call response that omitted reasoning_content. It replays
-// the exact same provider request at most once, before any tool is executed and
-// without injecting a synthetic prompt. A configuration-scoped cooldown keeps
-// a gateway that persistently strips reasoning from doubling every request; the
-// existing explicit-empty reasoning_content wire fallback remains the final
-// compatibility path.
-func (a *Agent) streamWithMissingReasoningRecovery(ctx context.Context, turn int) streamedTurn {
-	var streamSink *deferredStreamSink
-	attemptSink := a.sink
-	if provider.WarnOnMissingToolCallReasoning(a.prov) {
-		streamSink = newReasoningAwareStreamSink(a.sink)
-		attemptSink = streamSink
+// streamWithSamplingRecovery coordinates Codex-style original-request replay
+// for one model round: prepare once, freeze the provider request, run up to
+// maxSamplingAttempts body attempts, and only commit after a clean terminal.
+// Failed attempts never write Session state or execute tools. missing-reasoning
+// repair shares this lifecycle (at most one extra exact replay).
+func (a *Agent) streamWithSamplingRecovery(ctx context.Context, turn int) streamedTurn {
+	frozen, err := a.prepareSamplingRequest(ctx)
+	if err != nil {
+		return streamedTurn{err: err}
 	}
-	first := a.streamTurn(ctx, turn, attemptSink)
-	if first.err != nil {
-		streamSink.Flush()
-		return first
-	}
+	// One request counter spans every body attempt; each attempt records only
+	// its delta so RequestCount equals real HTTP POSTs (no triangular growth).
+	ctx = provider.WithRequestAttemptCounter(ctx)
 
-	missing, shouldRetry := a.observeMissingToolCallReasoning(first.calls, first.reasoning)
-	if !missing {
-		streamSink.Flush()
-		return first
-	}
-	event.RecordProtocolRecovery(a.sink, event.ProtocolRecoveryAudit{Kind: event.ProtocolRecoveryMissingReasoningDetected})
+	var billable *provider.Usage
+	var last streamedTurn
+	missingReasoningTried := false
 
-	// Non-empty visible output was already streamed from the first response.
-	// Replaying it would duplicate user-visible text, so keep the structurally
-	// valid empty-key fallback and let the cooldown suppress repeated attempts.
-	if !shouldRetry || strings.TrimSpace(first.text) != "" {
-		streamSink.Flush()
-		event.RecordProtocolRecovery(a.sink, event.ProtocolRecoveryAudit{Kind: event.ProtocolRecoveryMissingReasoningRetrySuppressed})
-		event.RecordProtocolRecovery(a.sink, event.ProtocolRecoveryAudit{Kind: event.ProtocolRecoveryMissingReasoningFallback})
-		return first
-	}
-
-	event.RecordProtocolRecovery(a.sink, event.ProtocolRecoveryAudit{Kind: event.ProtocolRecoveryMissingReasoningRetryAttempted})
-	retrySink := newDeferredStreamSink(a.sink)
-	retry := a.streamTurn(ctx, turn, retrySink)
-	if retry.err != nil {
-		retrySink.Discard()
-		if ctx.Err() != nil {
-			streamSink.Discard()
-			// The recovery stream was intentionally invisible, so do not persist
-			// partial retry text/reasoning as though the user had already seen it.
-			return streamedTurn{usage: mergeStreamUsage(first.usage, retry.usage), err: retry.err}
+	runAttempt := func(attemptID string, sink event.Sink) streamedTurn {
+		before := provider.RequestAttemptCount(ctx)
+		result := a.streamTurnFrozen(ctx, turn, sink, &frozen, attemptID)
+		after := provider.RequestAttemptCount(ctx)
+		delta := after - before
+		if delta < 0 {
+			delta = 0
 		}
-		streamSink.Flush()
-		first.usage = mergeStreamUsage(first.usage, retry.usage)
-		if first.usage != nil {
-			a.lastUsage.Store(first.usage)
+		// httpRequests=0 means either (a) local admission never reached Stream,
+		// or (b) a provider that does not use SendWithRetry (extension/custom).
+		// Only overwrite RequestCount when the built-in counter observed POSTs;
+		// otherwise keep the provider-reported count (zero still means one via
+		// usageRequestCount compatibility). estimateFailedAttemptUsage already
+		// returns nil for pre-body budget rejects so no invented request appears.
+		result.usage = estimateFailedAttemptUsage(result.usage, frozen, result, delta)
+		if result.usage != nil {
+			if delta > 0 {
+				result.usage.RequestCount = delta
+			}
+		} else if delta > 0 {
+			result.usage = &provider.Usage{RequestCount: delta}
 		}
-		event.RecordProtocolRecovery(a.sink, event.ProtocolRecoveryAudit{Kind: event.ProtocolRecoveryMissingReasoningFallback})
-		return first
+		return result
 	}
 
-	streamSink.Discard()
-	retrySink.Flush()
-	retry.usage = mergeStreamUsage(first.usage, retry.usage)
-	if retry.usage != nil {
-		a.lastUsage.Store(retry.usage)
+	for attempt := 1; attempt <= maxSamplingAttempts; attempt++ {
+		attemptID := newStreamAttemptID(attempt)
+		a.emitStreamAttempt(attemptID, event.StreamAttemptBegin, attempt, "", nil)
+
+		var streamSink *deferredStreamSink
+		attemptSink := a.sink
+		if provider.WarnOnMissingToolCallReasoning(a.prov) {
+			streamSink = newReasoningAwareStreamSink(a.sink)
+			attemptSink = streamSink
+		}
+
+		result := runAttempt(attemptID, attemptSink)
+		billable = mergeSamplingUsage(billable, result.usage)
+		// lastUsage is the latest single-request shape (prompt+completion+cache
+		// for that attempt only). Never the multi-attempt billable aggregate —
+		// that would inflate the next inputFloor and ContextSnapshot.
+		a.storeLatestRequestUsage(result.usage)
+		last = result
+		last.usage = finalizeSamplingUsage(billable, result.usage)
+
+		if result.err != nil {
+			if provider.IsStreamInterrupted(result.err) && attempt < maxSamplingAttempts {
+				streamSink.Discard()
+				reason := provider.StreamInterruptReason(result.err)
+				a.emitStreamAttempt(attemptID, event.StreamAttemptDiscard, attempt, reason, result.err)
+				a.sink.Emit(event.Event{
+					Kind: event.Retrying, RetryAttempt: attempt, RetryMax: maxStreamRecoveries,
+					RetryScope: event.RetryScopeStream,
+				})
+				if !streamRetrySleep(ctx, attempt) {
+					return streamedTurn{usage: finalizeSamplingUsage(billable, result.usage), interrupted: true, err: ctx.Err()}
+				}
+				continue
+			}
+			// Exhausted retries or non-retryable error: leave the last
+			// speculative UI visible (no discard) so LocalOnly can mirror it.
+			streamSink.Flush()
+			last.usage = finalizeSamplingUsage(billable, result.usage)
+			return last
+		}
+
+		// Clean terminal. Optionally repair missing reasoning with one extra
+		// exact replay of the same frozen request (no synthetic prompt).
+		missing, shouldRetry := a.observeMissingToolCallReasoning(result.calls, result.reasoning)
+		if missing {
+			event.RecordProtocolRecovery(a.sink, event.ProtocolRecoveryAudit{Kind: event.ProtocolRecoveryMissingReasoningDetected})
+			if !missingReasoningTried && shouldRetry && strings.TrimSpace(result.text) == "" {
+				missingReasoningTried = true
+				event.RecordProtocolRecovery(a.sink, event.ProtocolRecoveryAudit{Kind: event.ProtocolRecoveryMissingReasoningRetryAttempted})
+				retrySink := newDeferredStreamSink(a.sink)
+				retry := runAttempt(attemptID, retrySink)
+				billable = mergeSamplingUsage(billable, retry.usage)
+				if retry.err != nil {
+					retrySink.Discard()
+					if ctx.Err() != nil {
+						streamSink.Discard()
+						a.emitStreamAttempt(attemptID, event.StreamAttemptDiscard, attempt, provider.StreamInterruptReason(retry.err), retry.err)
+						// Use the cancelled retry as the "latest" shape so
+						// FinishReason=interrupted is preserved for accounting.
+						return streamedTurn{usage: finalizeSamplingUsage(billable, retry.usage), err: retry.err}
+					}
+					// Fall back to the first complete response; no tool ran.
+					streamSink.Flush()
+					a.storeLatestRequestUsage(result.usage)
+					result.usage = finalizeSamplingUsage(billable, result.usage)
+					event.RecordProtocolRecovery(a.sink, event.ProtocolRecoveryAudit{Kind: event.ProtocolRecoveryMissingReasoningFallback})
+					a.emitStreamAttempt(attemptID, event.StreamAttemptCommit, attempt, "", nil)
+					return result
+				}
+				streamSink.Discard()
+				retrySink.Flush()
+				a.storeLatestRequestUsage(retry.usage)
+				retry.usage = finalizeSamplingUsage(billable, retry.usage)
+				retryMissing, _ := a.observeMissingToolCallReasoning(retry.calls, retry.reasoning)
+				if retryMissing {
+					event.RecordProtocolRecovery(a.sink, event.ProtocolRecoveryAudit{Kind: event.ProtocolRecoveryMissingReasoningDetected})
+					event.RecordProtocolRecovery(a.sink, event.ProtocolRecoveryAudit{Kind: event.ProtocolRecoveryMissingReasoningFallback})
+				} else if len(retry.calls) == 0 {
+					event.RecordProtocolRecovery(a.sink, event.ProtocolRecoveryAudit{Kind: event.ProtocolRecoveryMissingReasoningRetryReplaced})
+				} else {
+					event.RecordProtocolRecovery(a.sink, event.ProtocolRecoveryAudit{Kind: event.ProtocolRecoveryMissingReasoningRetryRecovered})
+				}
+				a.emitStreamAttempt(attemptID, event.StreamAttemptCommit, attempt, "", nil)
+				return retry
+			}
+			if !shouldRetry || strings.TrimSpace(result.text) != "" {
+				event.RecordProtocolRecovery(a.sink, event.ProtocolRecoveryAudit{Kind: event.ProtocolRecoveryMissingReasoningRetrySuppressed})
+				event.RecordProtocolRecovery(a.sink, event.ProtocolRecoveryAudit{Kind: event.ProtocolRecoveryMissingReasoningFallback})
+			} else {
+				event.RecordProtocolRecovery(a.sink, event.ProtocolRecoveryAudit{Kind: event.ProtocolRecoveryMissingReasoningFallback})
+			}
+		}
+
+		streamSink.Flush()
+		a.emitStreamAttempt(attemptID, event.StreamAttemptCommit, attempt, "", nil)
+		result.usage = finalizeSamplingUsage(billable, result.usage)
+		return result
 	}
-	retryMissing, _ := a.observeMissingToolCallReasoning(retry.calls, retry.reasoning)
-	if retryMissing {
-		event.RecordProtocolRecovery(a.sink, event.ProtocolRecoveryAudit{Kind: event.ProtocolRecoveryMissingReasoningDetected})
-		event.RecordProtocolRecovery(a.sink, event.ProtocolRecoveryAudit{Kind: event.ProtocolRecoveryMissingReasoningFallback})
-	} else if len(retry.calls) == 0 {
-		// An exact replay can legitimately choose a different completion shape.
-		// Adopt it wholesale because no tool from the discarded response ran, but
-		// do not misreport the disappearance of tool calls as recovered reasoning.
-		event.RecordProtocolRecovery(a.sink, event.ProtocolRecoveryAudit{Kind: event.ProtocolRecoveryMissingReasoningRetryReplaced})
-	} else {
-		event.RecordProtocolRecovery(a.sink, event.ProtocolRecoveryAudit{Kind: event.ProtocolRecoveryMissingReasoningRetryRecovered})
-	}
-	return retry
+	return last
 }
 
-func (a *Agent) streamTurn(ctx context.Context, turn int, sink event.Sink) streamedTurn {
-	text, reasoning, signature, reasoningID, reasoningStatus, calls, responsesItems, usage, interrupted, partialToolStarted, partialCalls, err := a.stream(ctx, turn, sink)
+func (a *Agent) streamTurnFrozen(ctx context.Context, turn int, sink event.Sink, frozen *samplingRequest, attemptID string) streamedTurn {
+	text, reasoning, signature, reasoningID, reasoningStatus, calls, responsesItems, usage, interrupted, partialToolStarted, partialCalls, maxArgChars, err := a.streamWithFrozen(ctx, turn, sink, frozen, attemptID)
 	return streamedTurn{
 		text: text, reasoning: reasoning, signature: signature,
 		reasoningID: reasoningID, reasoningStatus: reasoningStatus,
 		calls: calls, responsesItems: responsesItems, usage: usage,
-		interrupted: interrupted, partialToolStarted: partialToolStarted, partialCalls: partialCalls, err: err,
+		interrupted: interrupted, partialToolStarted: partialToolStarted, partialCalls: partialCalls,
+		maxArgChars: maxArgChars, err: err,
 	}
 }
 
-func mergeStreamUsage(first, retry *provider.Usage) *provider.Usage {
-	if first == nil && retry == nil {
+func (a *Agent) emitStreamAttempt(id string, action event.StreamAttemptAction, attempt int, reason string, err error) {
+	if reason == "" && err != nil {
+		reason = provider.StreamInterruptReason(err)
+	}
+	a.sink.Emit(event.Event{
+		Kind: event.StreamAttempt,
+		StreamAttempt: event.StreamAttemptInfo{
+			ID: id, Action: action, Attempt: attempt, Max: maxSamplingAttempts, Reason: reason,
+		},
+	})
+}
+
+func newStreamAttemptID(attempt int) string {
+	// Host-local only: never persisted, never sent to the model.
+	return fmt.Sprintf("sa-%d-%d", attempt, time.Now().UnixNano())
+}
+
+// streamRetrySleep is the body-retry backoff. Tests replace it with a no-op so
+// recovery suites stay fast while production keeps the Codex-shaped delays.
+var streamRetrySleep = sleepStreamRetryBackoff
+
+// sleepStreamRetryBackoff waits ~0.5s, 1s, 2s, 4s, 8s with small jitter.
+// Returns false when ctx is cancelled during the wait.
+func sleepStreamRetryBackoff(ctx context.Context, attempt int) bool {
+	// attempt is 1-based for the failed attempt about to be retried.
+	shift := attempt - 1
+	if shift < 0 {
+		shift = 0
+	}
+	if shift > 4 {
+		shift = 4
+	}
+	base := time.Duration(1<<shift) * 500 * time.Millisecond
+	jitter := time.Duration(rand.Intn(250)) * time.Millisecond
+	timer := time.NewTimer(base + jitter)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return false
+	case <-timer.C:
+		return true
+	}
+}
+
+// estimateFailedAttemptUsage fills Estimated usage when a body attempt ends
+// without a terminal provider usage record, so Goal budgets still charge the
+// issued request plus any observed speculative output. Non-interrupt failures
+// that already carry usage (e.g. client reasoning limit) are left intact.
+//
+// httpRequests is the SendWithRetry attempt-counter delta for this body attempt.
+// When it is 0 the failure never reached Provider.Stream (local admission /
+// exact-budget reject) — return nil or the existing zero-token usage without
+// inventing PromptTokens that would clear BudgetAccounted on the aggregate.
+func estimateFailedAttemptUsage(usage *provider.Usage, frozen samplingRequest, result streamedTurn, httpRequests int) *provider.Usage {
+	if result.err == nil {
+		return usage
+	}
+	// Preserve exact client-side finish reasons that already computed usage.
+	if usage != nil && usage.FinishReason != "" && usage.FinishReason != "interrupted" {
+		return usage
+	}
+	// Middleware already settled this attempt — never rewrite it into a larger
+	// estimate that could change Goal accounting semantics.
+	if usage != nil && usage.BudgetAccounted {
+		return usage
+	}
+	// Pre-body local failures (exact budget admission, etc.) never issued an HTTP
+	// request. Do not invent PromptTokens — that would clear aggregate
+	// BudgetAccounted and make Goal re-charge prior settled attempts.
+	var budgetErr *provider.RequestBudgetError
+	preBodyLocal := httpRequests <= 0 && (errors.As(result.err, &budgetErr) ||
+		(!result.interrupted && !provider.IsStreamInterrupted(result.err) && !sawSpeculativeSamplingOutput(result)))
+	if preBodyLocal {
+		if usage != nil && usageTotalTokens(usage) > 0 {
+			return usage
+		}
 		return nil
 	}
-	if first == nil {
-		merged := *retry
-		// The first provider request still happened even if its terminal usage
-		// chunk was lost. Preserve the retry's known tokens and count both calls.
-		merged.RequestCount = 1 + usageRequestCount(retry)
+	if !provider.IsStreamInterrupted(result.err) && !result.interrupted {
+		// Auth/cancel/decode/limit paths keep their own accounting.
+		if usage != nil {
+			return usage
+		}
+		if httpRequests <= 0 {
+			return nil
+		}
+	}
+	textBytes := len(result.text)
+	reasoningBytes := len(result.reasoning)
+	maxArg := result.maxArgChars
+	for _, call := range result.partialCalls {
+		if n := len(call.Arguments); n > maxArg {
+			maxArg = n
+		}
+	}
+	for _, call := range result.calls {
+		if n := len(call.Arguments); n > maxArg {
+			maxArg = n
+		}
+	}
+	if usage != nil && !usage.Estimated && usage.TotalTokens > 0 {
+		return usage
+	}
+	finish := "interrupted"
+	if usage != nil && usage.FinishReason != "" {
+		finish = usage.FinishReason
+	}
+	est := bestEffortStreamUsage(usage, textBytes, reasoningBytes, finish)
+	if est == nil {
+		est = &provider.Usage{Estimated: true, FinishReason: finish}
+	}
+	if est.PromptTokens <= 0 {
+		est.PromptTokens = provider.EstimateRequestInputTokens(frozen.req)
+		if frozen.inputFloor > est.PromptTokens {
+			est.PromptTokens = frozen.inputFloor
+		}
+		est.Estimated = true
+	}
+	// Estimated failed attempts without cache split still need Cost() to see
+	// billable input — Price falls back to PromptTokens only when hit+miss=0.
+	if est.CacheHitTokens+est.CacheMissTokens == 0 && est.PromptTokens > 0 {
+		est.CacheMissTokens = est.PromptTokens
+	}
+	if maxArg > 0 {
+		argTokens := (maxArg + 3) / 4
+		if est.CompletionTokens < argTokens+estimateTokensFromBytes(textBytes)+estimateTokensFromBytes(reasoningBytes) {
+			est.CompletionTokens = argTokens + estimateTokensFromBytes(textBytes) + estimateTokensFromBytes(reasoningBytes)
+			est.Estimated = true
+		}
+	}
+	if minTotal := est.PromptTokens + est.CompletionTokens; est.TotalTokens < minTotal {
+		est.TotalTokens = minTotal
+		est.Estimated = true
+	}
+	return est
+}
+
+func sawSpeculativeSamplingOutput(result streamedTurn) bool {
+	return result.text != "" || result.reasoning != "" || result.maxArgChars > 0 ||
+		result.partialToolStarted || len(result.calls) > 0 || len(result.partialCalls) > 0
+}
+
+// budgetAccountedOrZero reports whether an attempt is already settled for Goal
+// event accounting: middleware committed it, or it spent no billable tokens
+// (pre-body failure / cancel with reservation Cancel — nothing to charge again).
+func budgetAccountedOrZero(u *provider.Usage) bool {
+	if u == nil {
+		return true
+	}
+	return u.BudgetAccounted || usageTotalTokens(u) == 0
+}
+
+// mergeSamplingUsage accumulates billable counters across body attempts.
+// PromptTokens is the billable input total (aligned with cache hit+miss).
+// ContextPromptTokens is set later by finalizeSamplingUsage from the latest attempt.
+func mergeSamplingUsage(acc, attempt *provider.Usage) *provider.Usage {
+	if attempt == nil {
+		return acc
+	}
+	billableHitMiss := func(u *provider.Usage) (hit, miss int) {
+		if u == nil {
+			return 0, 0
+		}
+		if u.CacheHitTokens+u.CacheMissTokens > 0 {
+			return u.CacheHitTokens, u.CacheMissTokens
+		}
+		// No cache split: treat PromptTokens as uncached billable input.
+		return 0, u.PromptTokens
+	}
+	billablePrompt := func(hit, miss, prompt int) int {
+		if hit+miss > 0 {
+			return hit + miss
+		}
+		return prompt
+	}
+	if acc == nil {
+		merged := *attempt
+		if merged.RequestCount <= 0 {
+			merged.RequestCount = 1
+		}
+		hit, miss := billableHitMiss(attempt)
+		merged.CacheHitTokens = hit
+		merged.CacheMissTokens = miss
+		merged.PromptTokens = billablePrompt(hit, miss, attempt.PromptTokens)
+		merged.BudgetAccounted = budgetAccountedOrZero(attempt)
 		return &merged
 	}
-	if retry == nil {
-		merged := *first
-		// Likewise, a failed recovery request without usage is still an API call.
-		merged.RequestCount = usageRequestCount(first) + 1
-		return &merged
+	merged := *acc
+	// Billable input for Cost: sum hit/miss (prompt when no cache split).
+	ah, am := billableHitMiss(acc)
+	bh, bm := billableHitMiss(attempt)
+	// If acc was previously merged, CacheHit+Miss already holds the sum and
+	// PromptTokens may still be the first attempt's value — prefer stored sums.
+	if acc.CacheHitTokens+acc.CacheMissTokens > 0 {
+		ah, am = acc.CacheHitTokens, acc.CacheMissTokens
 	}
-	merged := *retry
-	merged.PromptTokens += first.PromptTokens
-	merged.CompletionTokens += first.CompletionTokens
-	merged.TotalTokens += first.TotalTokens
-	merged.CacheHitTokens += first.CacheHitTokens
-	merged.CacheMissTokens += first.CacheMissTokens
-	merged.ReasoningTokens += first.ReasoningTokens
-	merged.RequestCount = usageRequestCount(first) + usageRequestCount(retry)
+	merged.CacheHitTokens = ah + bh
+	merged.CacheMissTokens = am + bm
+	merged.PromptTokens = billablePrompt(merged.CacheHitTokens, merged.CacheMissTokens, 0)
+	if merged.PromptTokens == 0 {
+		merged.PromptTokens = acc.PromptTokens + attempt.PromptTokens
+	}
+	merged.CompletionTokens += attempt.CompletionTokens
+	merged.ReasoningTokens += attempt.ReasoningTokens
+	merged.TotalTokens += usageTotalTokens(attempt)
+	merged.RequestCount = usageRequestCount(acc) + usageRequestCount(attempt)
+	if attempt.Estimated {
+		merged.Estimated = true
+	}
+	// Zero-token attempts (header failure / cancelled reservation) do not
+	// invalidate prior middleware commits.
+	merged.BudgetAccounted = budgetAccountedOrZero(acc) && budgetAccountedOrZero(attempt)
+	if attempt.FinishReason != "" {
+		merged.FinishReason = attempt.FinishReason
+	}
 	return &merged
+}
+
+// storeLatestRequestUsage records the most recent single-request usage for
+// inputFloor (PromptTokens) and ContextSnapshot (Prompt+Completion). It must
+// never receive a multi-attempt billable aggregate.
+func (a *Agent) storeLatestRequestUsage(attempt *provider.Usage) {
+	if a == nil || attempt == nil {
+		return
+	}
+	// Skip request-only shells with no token shape.
+	if attempt.PromptTokens <= 0 && attempt.CompletionTokens <= 0 && attempt.TotalTokens <= 0 {
+		return
+	}
+	clone := *attempt
+	// RequestCount on lastUsage is not used for context; keep per-attempt value.
+	a.lastUsage.Store(&clone)
+}
+
+// contextUsageFromAttempt is retained for tests that need a prompt-only view.
+func contextUsageFromAttempt(attempt *provider.Usage) *provider.Usage {
+	if attempt == nil {
+		return nil
+	}
+	ctx := *attempt
+	ctx.RequestCount = 0
+	return &ctx
+}
+
+// finalizeSamplingUsage builds the Usage event payload for consumers that
+// expect one coherent billable record:
+//   - PromptTokens / cache hit+miss / Completion / Total / RequestCount: billable aggregate
+//   - ContextPromptTokens: latest attempt prompt (context gauge only)
+//   - BudgetAccounted: every attempt was middleware-settled or zero-token
+func finalizeSamplingUsage(billable, latest *provider.Usage) *provider.Usage {
+	if billable == nil && latest == nil {
+		return nil
+	}
+	if billable == nil {
+		out := *latest
+		if out.ContextPromptTokens <= 0 {
+			out.ContextPromptTokens = out.PromptTokens
+		}
+		out.BudgetAccounted = budgetAccountedOrZero(&out)
+		return &out
+	}
+	out := *billable
+	if latest != nil {
+		out.ContextPromptTokens = latest.PromptTokens
+		if out.ContextPromptTokens <= 0 {
+			// Latest may only carry request-count bookkeeping; keep prior context
+			// from a previous attempt if the aggregate already held one.
+			if billable.ContextPromptTokens > 0 {
+				out.ContextPromptTokens = billable.ContextPromptTokens
+			}
+		}
+		out.FinishReason = latest.FinishReason
+	}
+	// Ensure PromptTokens matches billable input (hit+miss) for CLI/ACP/Desktop
+	// telemetry that requires cache totals to align with PromptTokens.
+	if hitMiss := out.CacheHitTokens + out.CacheMissTokens; hitMiss > 0 {
+		out.PromptTokens = hitMiss
+	}
+	if out.TotalTokens < out.PromptTokens+out.CompletionTokens {
+		out.TotalTokens = out.PromptTokens + out.CompletionTokens
+	}
+	// billable already AND-ed every attempt (treating zero-token as settled).
+	// Do not re-AND against latest alone — that would clear the flag when the
+	// last attempt is a request-only shell or an un-flagged raw mock usage.
+	out.BudgetAccounted = budgetAccountedOrZero(billable)
+	return &out
+}
+
+// mergeStreamUsage remains for missing-reasoning style single-repair merges that
+// need a simple sum. Sampling recovery uses mergeSamplingUsage instead.
+func mergeStreamUsage(first, retry *provider.Usage) *provider.Usage {
+	return mergeSamplingUsage(first, retry)
+}
+
+func usageTotalTokens(u *provider.Usage) int {
+	if u == nil {
+		return 0
+	}
+	if u.TotalTokens > 0 {
+		return u.TotalTokens
+	}
+	return u.PromptTokens + u.CompletionTokens
 }
 
 func usageRequestCount(usage *provider.Usage) int {
@@ -491,8 +832,11 @@ func (a *Agent) emitTurnUsage(usage *provider.Usage, cacheDiagnostics *CacheDiag
 	if usage == nil || (usage.TotalTokens <= 0 && usage.RequestCount <= 0) {
 		return
 	}
-	if usage.TotalTokens > 0 {
-		a.lastUsage.Store(usage)
+	// lastUsage must stay as the latest single-request shape (set during
+	// sampling recovery). Never overwrite it with a multi-attempt billable
+	// aggregate — that would inflate inputFloor and ContextSnapshot.
+	if a.lastUsage.Load() == nil && usage.PromptTokens > 0 {
+		a.storeLatestRequestUsage(usage)
 	}
 	a.sink.Emit(event.Event{Kind: event.Usage, ModelRef: a.modelRef, Usage: usage, Pricing: a.pricing,
 		UsageSource:      a.usageSource,
