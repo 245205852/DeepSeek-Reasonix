@@ -102,6 +102,17 @@ func (a *Agent) maybeCompact(ctx context.Context, u *provider.Usage) {
 		return
 	}
 	soft, snip, high := a.compactThresholds()
+	// A turn that sits under the trigger is the breathing room a healthy
+	// compaction buys; it clears the stuck latch and the run counter. This has to
+	// happen before the soft/snip branches return, because a compaction that
+	// settles the prompt anywhere in [snip, high) is working exactly as intended:
+	// leaving a stale run count behind there would latch the *next* compaction as
+	// "the window is too small" and silently disable auto-compaction for the rest
+	// of the session.
+	if u.PromptTokens < high {
+		a.consecutiveCompacts = 0
+		a.compactStuck = false
+	}
 	// Between the soft ratio and the trigger, report growing context once without
 	// rewriting the prefix — a compaction here would needlessly crater the cache.
 	if u.PromptTokens >= soft && u.PromptTokens < snip && !a.softCompactNoticed {
@@ -120,11 +131,7 @@ func (a *Agent) maybeCompact(ctx context.Context, u *provider.Usage) {
 		return
 	}
 	if u.PromptTokens < high {
-		// A turn that sits under the trigger is the breathing room a healthy
-		// compaction buys; it clears the stuck latch and the run counter.
-		a.consecutiveCompacts = 0
-		a.compactStuck = false
-		return
+		return // the latch was already cleared above
 	}
 	if a.compactStuck {
 		return

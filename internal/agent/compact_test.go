@@ -948,3 +948,55 @@ func TestSummarizeToolArgs(t *testing.T) {
 		})
 	}
 }
+
+// TestMaybeCompactClearsStuckLatchAnywhereBelowTrigger pins the documented
+// contract that any turn under the compact trigger is "breathing room" that
+// clears the stuck latch. The snip band ([snip, high)) is the regression: it
+// returned before the reset ran, so a compaction that healthily settled the
+// prompt at, say, 70% of the window left a stale consecutive-run count behind
+// and the next compaction latched the session as "window too small" — silently
+// disabling auto-compaction for the rest of the run.
+func TestMaybeCompactClearsStuckLatchAnywhereBelowTrigger(t *testing.T) {
+	// contextWindow 20000 => soft 10000, snip 12000, high (trigger) 16000.
+	for _, tc := range []struct {
+		name   string
+		prompt int
+	}{
+		{"below soft", 8000},
+		{"soft band", 11000},
+		{"snip band", 14000},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			sess := NewSession("sys")
+			sess.Add(provider.Message{Role: provider.RoleUser, Content: "hi"})
+			a := New(&fakeProvider{reply: "- summary"}, tool.NewRegistry(), sess, Options{ContextWindow: 20000}, event.Discard)
+			a.consecutiveCompacts = 1
+			a.compactStuck = true
+
+			a.maybeCompact(context.Background(), &provider.Usage{PromptTokens: tc.prompt})
+
+			if a.consecutiveCompacts != 0 || a.compactStuck {
+				t.Fatalf("prompt %d sits under the trigger; want the latch cleared, got consecutiveCompacts=%d compactStuck=%v",
+					tc.prompt, a.consecutiveCompacts, a.compactStuck)
+			}
+		})
+	}
+}
+
+// TestMaybeCompactStillLatchesWhenPromptStaysAboveTrigger proves the safety
+// valve survives the fix above: a genuinely too-small window (the prompt never
+// drops under the trigger between compactions) must still pause auto-compaction.
+func TestMaybeCompactStillLatchesWhenPromptStaysAboveTrigger(t *testing.T) {
+	sess := NewSession("sys")
+	sess.Add(provider.Message{Role: provider.RoleUser, Content: "hi"})
+	a := New(&fakeProvider{reply: "- summary"}, tool.NewRegistry(), sess, Options{ContextWindow: 20000}, event.Discard)
+
+	a.maybeCompact(context.Background(), &provider.Usage{PromptTokens: 17000})
+	if a.compactStuck {
+		t.Fatalf("a single over-trigger compaction must not latch: consecutiveCompacts=%d", a.consecutiveCompacts)
+	}
+	a.maybeCompact(context.Background(), &provider.Usage{PromptTokens: 17000})
+	if !a.compactStuck {
+		t.Fatalf("two consecutive over-trigger compactions must still latch: consecutiveCompacts=%d", a.consecutiveCompacts)
+	}
+}
