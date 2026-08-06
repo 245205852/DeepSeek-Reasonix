@@ -296,8 +296,13 @@ type NotificationsConfig struct {
 // EnvironmentConfig controls the stable startup environment block injected into
 // the model-facing prompt. Enabled nil means the default (enabled); Tools maps a
 // tool name to an explicit executable path when PATH probing is not enough.
+// Offline declares that the host has no outbound network; it is deliberately a
+// declaration rather than a probe, because reaching out to test connectivity on
+// every boot would cost a request, leak the startup, and let a transient flap
+// rewrite the cache-stable prompt prefix.
 type EnvironmentConfig struct {
 	Enabled *bool             `toml:"enabled"`
+	Offline bool              `toml:"offline"`
 	Tools   map[string]string `toml:"tools"`
 }
 
@@ -1817,8 +1822,22 @@ const UserDecisionPolicy = `User-owned choices: when a consequential decision ha
 // WorkPracticePolicy is appended to every system prompt, including user-custom
 // prompts, so custom personas cannot drop baseline engineering discipline:
 // implement the requested approach exactly, keep the repository free of scratch
-// work, scale verification to the change, and stop retrying dead network paths.
-const WorkPracticePolicy = `Work practices: when the request or a linked discussion names a specific approach or expected behavior, implement exactly that; if you believe a different approach is better, state the trade-off explicitly instead of silently substituting it. Keep scratch work (repro scripts, probes, generated output) out of the repository — use a temp directory or clean up before finishing — and review the final diff before declaring done: only the intended changes, no leftovers, and no known regressions. Scale verification to the change: reproduce the problem, run the most relevant focused tests, and avoid repeated full-suite runs; if broad failures look unrelated, confirm once that they pre-exist and move on. If network calls fail with proxy or connection errors, treat the environment as offline: stop retrying and use local sources such as git history and code search.`
+// work, and verify the change before declaring it done.
+//
+// Every clause here must hold for any user on any machine. Facts about one
+// environment belong in the environment block instead (see
+// OfflineEnvironmentNote): a run-budget or a blocked network is a property of
+// where the agent happens to be running, and baking either into the global
+// persona would push every user toward under-verifying or toward giving up on
+// a network call that a retry would have completed.
+const WorkPracticePolicy = `Work practices: when the request or a linked discussion names a specific approach or expected behavior, implement exactly that; if you believe a different approach is better, state the trade-off explicitly instead of silently substituting it. Keep scratch work (repro scripts, probes, generated output) out of the repository — use a temp directory or clean up before finishing — and review the final diff before declaring done: only the intended changes, no leftovers, and no known regressions. Scale verification to the change: reproduce the problem and run the most relevant focused tests.`
+
+// OfflineEnvironmentNote is injected only when the environment declares that it
+// has no outbound network ([environment] offline). It is a statement of fact
+// about the host, not a work practice: the deployment that knows egress is
+// blocked says so, rather than every agent inferring it from the first failed
+// request — an inference that would make ordinary flaky networks look permanent.
+const OfflineEnvironmentNote = `This environment has no outbound network access: web requests and package installs will fail with proxy or connection errors. Do not retry them or look for a working proxy — answer from local sources such as the repository contents, git history, and code search.`
 
 // LanguagePolicy is the auto fallback appended to the system prompt when no
 // concrete UI language is resolved. It is static English text, so it stays part

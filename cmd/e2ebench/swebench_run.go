@@ -42,7 +42,11 @@ type swebenchOpts struct {
 // The agent runs unconfined inside the instance container: the container is
 // already the isolation boundary, and Reasonix refuses to run bash at all when
 // it cannot find bubblewrap, which the official images do not ship.
-const swebenchAgentConfig = "[sandbox]\nbash = \"off\"\n"
+//
+// Offline is declared, not inferred: runSwebench requires -network with no
+// off-box route, so egress is blocked by construction here and the agent should
+// spend its budget on the repository rather than on retrying dead requests.
+const swebenchAgentConfig = "[sandbox]\nbash = \"off\"\n\n[environment]\noffline = true\n"
 
 func loadSwebenchSubset(path string) ([]swebenchInstance, error) {
 	data, err := fileencoding.ReadFileUTF8(path)

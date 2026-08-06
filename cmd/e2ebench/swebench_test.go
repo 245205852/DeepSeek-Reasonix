@@ -6,7 +6,10 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/BurntSushi/toml"
+
 	"reasonix/internal/ablation"
+	"reasonix/internal/config"
 )
 
 // The harness prints an unmangled local image key but pulls a mangled one; the
@@ -160,6 +163,23 @@ func TestPermissionPostureIsTheOnlyDifferenceBetweenArms(t *testing.T) {
 	}
 	if _, err := permissionFlag("bypass"); err == nil {
 		t.Fatal("an unknown posture must fail loudly rather than silently running unattended")
+	}
+}
+
+// The container config is generated text that only the agent inside a running
+// container ever parses, so a mistyped key or a section header that swallowed
+// the next one would fail silently and cost a whole benchmark run. Decode it
+// with the real config types instead of matching strings.
+func TestSwebenchAgentConfigDeclaresBlockedEgressAndKeepsBashOff(t *testing.T) {
+	var cfg config.Config
+	if _, err := toml.Decode(swebenchAgentConfig, &cfg); err != nil {
+		t.Fatalf("container config must be valid TOML: %v", err)
+	}
+	if !cfg.Environment.Offline {
+		t.Error("containers join a -network with no off-box route, so the config must declare the environment offline")
+	}
+	if cfg.Sandbox.Bash != "off" {
+		t.Errorf("sandbox.bash = %q, want \"off\": the new section must not absorb the sandbox one", cfg.Sandbox.Bash)
 	}
 }
 

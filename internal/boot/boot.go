@@ -577,6 +577,13 @@ func build(ctx context.Context, opts Options) (*BuildResult, error) {
 			sysPrompt += "\n\n" + envSection
 		}
 	}
+	// Sits outside EnvironmentEnabled on purpose: that switch only turns off
+	// tool probing, while a blocked network is a fact the agent still has to
+	// know to stop retrying. Static text from config, so it stays in the
+	// cache-stable prefix.
+	if cfg.Environment.Offline {
+		sysPrompt += "\n\n" + config.OfflineEnvironmentNote
+	}
 
 	// Persistent memory (REASONIX.md / AGENTS.md hierarchy + auto-memory index)
 	// folds into the system prompt exactly here, once: it becomes part of the
