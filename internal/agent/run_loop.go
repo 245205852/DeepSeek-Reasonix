@@ -761,7 +761,7 @@ func contextUsageFromAttempt(attempt *provider.Usage) *provider.Usage {
 // finalizeSamplingUsage builds the Usage event payload for consumers that
 // expect one coherent billable record:
 //   - PromptTokens / cache hit+miss / Completion / Total / RequestCount: billable aggregate
-//   - ContextPromptTokens: latest attempt prompt (context gauge only)
+//   - Context* fields: latest attempt only (context gauges + rebind telemetry)
 //   - BudgetAccounted: every attempt was middleware-settled or zero-token
 func finalizeSamplingUsage(billable, latest *provider.Usage) *provider.Usage {
 	if billable == nil && latest == nil {
@@ -769,22 +769,13 @@ func finalizeSamplingUsage(billable, latest *provider.Usage) *provider.Usage {
 	}
 	if billable == nil {
 		out := *latest
-		if out.ContextPromptTokens <= 0 {
-			out.ContextPromptTokens = out.PromptTokens
-		}
+		applyLatestContextShape(&out, latest)
 		out.BudgetAccounted = budgetAccountedOrZero(&out)
 		return &out
 	}
 	out := *billable
 	if latest != nil {
-		out.ContextPromptTokens = latest.PromptTokens
-		if out.ContextPromptTokens <= 0 {
-			// Latest may only carry request-count bookkeeping; keep prior context
-			// from a previous attempt if the aggregate already held one.
-			if billable.ContextPromptTokens > 0 {
-				out.ContextPromptTokens = billable.ContextPromptTokens
-			}
-		}
+		applyLatestContextShape(&out, latest)
 		out.FinishReason = latest.FinishReason
 	}
 	// Ensure PromptTokens matches billable input (hit+miss) for CLI/ACP/Desktop
@@ -800,6 +791,24 @@ func finalizeSamplingUsage(billable, latest *provider.Usage) *provider.Usage {
 	// last attempt is a request-only shell or an un-flagged raw mock usage.
 	out.BudgetAccounted = budgetAccountedOrZero(billable)
 	return &out
+}
+
+// applyLatestContextShape copies the latest single-request shape into Context*
+// fields for gauges and Desktop rebind telemetry.
+func applyLatestContextShape(dst, latest *provider.Usage) {
+	if dst == nil || latest == nil {
+		return
+	}
+	dst.ContextPromptTokens = latest.PromptTokens
+	dst.ContextCompletionTokens = latest.CompletionTokens
+	dst.ContextReasoningTokens = latest.ReasoningTokens
+	dst.ContextCacheHitTokens = latest.CacheHitTokens
+	dst.ContextCacheMissTokens = latest.CacheMissTokens
+	// When the latest attempt only has request bookkeeping, keep any prior
+	// context already on dst (e.g. previous successful attempt in the merge).
+	if dst.ContextPromptTokens <= 0 && dst.ContextCompletionTokens <= 0 {
+		// leave zeros; consumers fall back to billable fields
+	}
 }
 
 // mergeStreamUsage remains for missing-reasoning style single-repair merges that

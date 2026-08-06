@@ -1524,12 +1524,17 @@ function applyEvent(s: State, e: WireEvent): State {
     case "usage": {
       if (!countsTowardCurrentTurn(s)) return s;
       const updateContextGauge = updatesContextGauge(e.usage);
-      // Prefer contextPromptTokens (latest request) over billable promptTokens
-      // when multi-attempt sampling recovery aggregates input cost.
-      const contextPrompt = e.usage?.contextPromptTokens && e.usage.contextPromptTokens > 0
-        ? e.usage.contextPromptTokens
-        : e.usage?.promptTokens;
-      const used = e.usage && s.context.window && updateContextGauge ? (contextPrompt ?? s.context.used) : s.context.used;
+      // Prefer Context* (latest attempt) over billable aggregates when multi-
+      // attempt sampling recovery folds several provider calls into one Usage.
+      // Matches Controller.ContextSnapshot: latest prompt + completion.
+      let used = s.context.used;
+      if (e.usage && s.context.window && updateContextGauge) {
+        const hasContext =
+          (e.usage.contextPromptTokens ?? 0) > 0 || (e.usage.contextCompletionTokens ?? 0) > 0;
+        used = hasContext
+          ? (e.usage.contextPromptTokens ?? 0) + (e.usage.contextCompletionTokens ?? 0)
+          : (e.usage.promptTokens ?? 0) + (e.usage.completionTokens ?? 0);
+      }
       const turnTokens = s.turnTokens + (e.usage?.completionTokens ?? 0);
       const usageTokens = usageTotalTokens(e.usage);
       const turnTotalTokens = s.turnTotalTokens + usageTokens;

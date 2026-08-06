@@ -125,6 +125,7 @@ func TestDesktopWireEventTypeCoversSharedPayloadFields(t *testing.T) {
 		"export interface WireStreamAttempt",
 		"attemptId?: string;",
 		"contextPromptTokens?: number;",
+		"contextCompletionTokens?: number;",
 		"memoryCitations?: MemoryCitation[];",
 		"export interface MemoryCitation",
 		"resolvedName?: string;",

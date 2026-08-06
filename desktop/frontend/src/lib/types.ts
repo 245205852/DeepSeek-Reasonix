@@ -99,8 +99,12 @@ export interface WireUsage {
   // hit-rate (Σhit/Σ(hit+miss)), steadier than the single-turn cacheHitTokens.
   sessionCacheHitTokens: number;
   sessionCacheMissTokens: number;
-  /** Latest single-request prompt size for context gauges; omit → use promptTokens. */
+  /** Latest single-request shape for context gauges; omit → use billable totals. */
   contextPromptTokens?: number;
+  contextCompletionTokens?: number;
+  contextReasoningTokens?: number;
+  contextCacheHitTokens?: number;
+  contextCacheMissTokens?: number;
   cost?: number;
   currency?: string;
   // Deprecated compatibility alias. Prefer cost + currency.

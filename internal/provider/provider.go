@@ -699,11 +699,41 @@ type Usage struct {
 	// aggregate. Zero means one request for backward compatibility. Recovery
 	// paths that merge multiple attempts set the exact count.
 	RequestCount int
-	// ContextPromptTokens is the latest single-request prompt size used for
-	// context gauges. When zero, consumers fall back to PromptTokens. Multi-
-	// attempt sampling recovery sets PromptTokens to the billable input sum
-	// and ContextPromptTokens to the final attempt's prompt.
-	ContextPromptTokens int
+	// Context* fields describe the latest single-request shape for context
+	// gauges and rebind telemetry. When zero, consumers fall back to the
+	// billable Prompt/Completion/… fields. Multi-attempt sampling recovery
+	// sets PromptTokens (etc.) to the billable aggregate and fills Context*
+	// from the final attempt only.
+	ContextPromptTokens     int
+	ContextCompletionTokens int
+	ContextReasoningTokens  int
+	ContextCacheHitTokens   int
+	ContextCacheMissTokens  int
+}
+
+// ContextFillTokens returns the latest-attempt context fill (prompt+completion)
+// used by status bars and context panels. Falls back to billable totals when
+// no Context* fields were set (single-attempt / legacy usage events).
+func (u *Usage) ContextFillTokens() int {
+	if u == nil {
+		return 0
+	}
+	if u.ContextPromptTokens > 0 || u.ContextCompletionTokens > 0 {
+		return u.ContextPromptTokens + u.ContextCompletionTokens
+	}
+	return u.PromptTokens + u.CompletionTokens
+}
+
+// ContextPromptForGauge returns the latest-attempt prompt size for context
+// displays. Falls back to PromptTokens when ContextPromptTokens is unset.
+func (u *Usage) ContextPromptForGauge() int {
+	if u == nil {
+		return 0
+	}
+	if u.ContextPromptTokens > 0 {
+		return u.ContextPromptTokens
+	}
+	return u.PromptTokens
 }
 
 // Pricing is a provider's per-1M-token rates, used to estimate spend. Currency

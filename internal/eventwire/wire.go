@@ -83,10 +83,14 @@ func ToWire(e event.Event) Event {
 				PromptTokens: u.PromptTokens, CompletionTokens: u.CompletionTokens,
 				TotalTokens: u.TotalTokens, CacheHitTokens: u.CacheHitTokens,
 				CacheMissTokens: u.CacheMissTokens, ReasoningTokens: u.ReasoningTokens,
-				Estimated:             u.Estimated,
-				Source:                e.UsageSource,
-				ContextPromptTokens:   u.ContextPromptTokens,
-				SessionCacheHitTokens: e.SessionHit, SessionCacheMissTokens: e.SessionMiss,
+				Estimated:               u.Estimated,
+				Source:                  e.UsageSource,
+				ContextPromptTokens:     u.ContextPromptTokens,
+				ContextCompletionTokens: u.ContextCompletionTokens,
+				ContextReasoningTokens:  u.ContextReasoningTokens,
+				ContextCacheHitTokens:   u.ContextCacheHitTokens,
+				ContextCacheMissTokens:  u.ContextCacheMissTokens,
+				SessionCacheHitTokens:   e.SessionHit, SessionCacheMissTokens: e.SessionMiss,
 			}
 			if e.CacheDiagnostics != nil {
 				w.Usage.CacheDiagnostics = ToWireCacheDiagnostics(e.CacheDiagnostics)
@@ -278,13 +282,17 @@ type Usage struct {
 	Source           string            `json:"source,omitempty"`
 	CacheDiagnostics *CacheDiagnostics `json:"cacheDiagnostics,omitempty"`
 	// Session-cumulative cache tokens keep status displays steadier than one-turn values.
-	SessionCacheHitTokens  int     `json:"sessionCacheHitTokens"`
-	SessionCacheMissTokens int     `json:"sessionCacheMissTokens"`
-	// ContextPromptTokens is the latest single-request prompt size for gauges.
-	// When omitted, clients fall back to promptTokens (billable input total).
-	ContextPromptTokens int     `json:"contextPromptTokens,omitempty"`
-	Cost                float64 `json:"cost,omitempty"`
-	Currency            string  `json:"currency,omitempty"`
+	SessionCacheHitTokens  int `json:"sessionCacheHitTokens"`
+	SessionCacheMissTokens int `json:"sessionCacheMissTokens"`
+	// Context* fields are the latest single-request shape for gauges/rebind.
+	// When omitted, clients fall back to the billable prompt/completion totals.
+	ContextPromptTokens     int     `json:"contextPromptTokens,omitempty"`
+	ContextCompletionTokens int     `json:"contextCompletionTokens,omitempty"`
+	ContextReasoningTokens  int     `json:"contextReasoningTokens,omitempty"`
+	ContextCacheHitTokens   int     `json:"contextCacheHitTokens,omitempty"`
+	ContextCacheMissTokens  int     `json:"contextCacheMissTokens,omitempty"`
+	Cost                    float64 `json:"cost,omitempty"`
+	Currency                string  `json:"currency,omitempty"`
 	// CostUSD is a compatibility alias for older consumers; it mirrors Cost.
 	CostUSD float64 `json:"costUsd,omitempty"`
 }
