@@ -464,6 +464,21 @@ func TestRenderMCPStatusShowsQuarantinedTools(t *testing.T) {
 	}
 }
 
+func TestRenderMCPStatusShowsConfigSource(t *testing.T) {
+	got := renderMCPStatus(120,
+		[]plugin.ServerStatus{{
+			Name: "docs", Transport: "stdio", ConfigSource: "project_config", Tools: 1,
+			ToolList: []plugin.ToolInfo{{Name: "search", Description: "find docs"}},
+		}},
+		nil, nil, nil,
+	)
+	for _, want := range []string{"docs", "source=project_config", "tools", "search", "source=project_config"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("rendered MCP status missing %q:\n%s", want, got)
+		}
+	}
+}
+
 func TestMCPCapabilitiesTextUsesAdvertisedTools(t *testing.T) {
 	if got := mcpCapabilitiesText(mcpServerView{HasTools: true}); got != "tools" {
 		t.Fatalf("mcpCapabilitiesText = %q, want tools", got)

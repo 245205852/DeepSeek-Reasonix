@@ -63,12 +63,18 @@ func writeMCPServer(b *strings.Builder, width int, s plugin.ServerStatus, prompt
 		transport = "unknown"
 	}
 	meta := fmt.Sprintf("(%s)  %s · %s · %s", transport, countText(s.Tools, "tool"), countText(len(prompts), "prompt"), countText(len(resources), "resource"))
+	if src := strings.TrimSpace(s.ConfigSource); src != "" {
+		meta += " · source=" + src
+	}
 	invalidTools := invalidMCPTools(s.ToolList)
 	if len(invalidTools) > 0 {
 		meta += " · " + countText(len(invalidTools), "unavailable tool")
 	}
 	name := viewCompactText(s.Name, viewBudget(width, 4+2+1+visibleWidth(meta)))
 	fmt.Fprintf(b, "    %s %s %s\n", accent("✓"), bold(name), viewMeta(meta))
+	if len(s.ToolList) > 0 {
+		writeMCPToolList(b, width, s)
+	}
 	if len(prompts) > 0 {
 		writeMCPPromptList(b, width, prompts)
 	}
@@ -87,6 +93,36 @@ func writeMCPServer(b *strings.Builder, width int, s plugin.ServerStatus, prompt
 		if extra := len(invalidTools) - limit; extra > 0 {
 			fmt.Fprintf(b, "    %s\n", viewMore(extra, "unavailable tools"))
 		}
+	}
+}
+
+// writeMCPToolList lists connected tools under the server, tagging the
+// config-plane source when known so operators can trace a tool back to its
+// registration (#6578 / Integration D/E).
+func writeMCPToolList(b *strings.Builder, width int, s plugin.ServerStatus) {
+	tools := s.ToolList
+	if len(tools) == 0 {
+		return
+	}
+	b.WriteString(viewSubhead("    tools") + "\n")
+	limit := len(tools)
+	if limit > mcpMaxItemsPerSection {
+		limit = mcpMaxItemsPerSection
+	}
+	src := strings.TrimSpace(s.ConfigSource)
+	for _, t := range tools[:limit] {
+		detail := strings.TrimSpace(t.Description)
+		if src != "" {
+			if detail != "" {
+				detail = detail + " · source=" + src
+			} else {
+				detail = "source=" + src
+			}
+		}
+		writeMCPItem(b, width, "      ", t.Name, detail)
+	}
+	if extra := len(tools) - limit; extra > 0 {
+		fmt.Fprintf(b, "    %s\n", viewMore(extra, "tools"))
 	}
 }
 
