@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sync"
 	"testing"
 	"time"
@@ -29,8 +30,13 @@ func TestAcquireSharesGeneration(t *testing.T) {
 	if err != nil || !info.IsDir() {
 		t.Fatalf("dir stat: %v", err)
 	}
-	if perm := info.Mode().Perm(); perm != 0o700 {
-		t.Fatalf("dir perm = %o, want 0700", perm)
+	// Windows does not expose POSIX directory permission bits. The
+	// cross-platform contract is that the manager creates a private directory;
+	// the exact 0700 mode is meaningful only on Unix-like systems.
+	if runtime.GOOS != "windows" {
+		if perm := info.Mode().Perm(); perm != 0o700 {
+			t.Fatalf("dir perm = %o, want 0700", perm)
+		}
 	}
 	a.Release()
 	b.Release()
