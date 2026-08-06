@@ -480,11 +480,6 @@ func bashSandboxEscapeSessionAllowed(ctx context.Context, command string, args j
 	})
 }
 
-func (b bash) runForeground(ctx context.Context, p bashParams, sh sandbox.Shell, argv []string, wrapped bool, cmdEnv []string) (string, error) {
-	out, _, err := b.runForegroundDetailed(ctx, p, sh, argv, wrapped, cmdEnv)
-	return out, err
-}
-
 // runForegroundDetailed uses the shared shellrun collector so model bash and
 // user !command share exit-code / phase / stderr-tail classification.
 func (b bash) runForegroundDetailed(ctx context.Context, p bashParams, sh sandbox.Shell, argv []string, wrapped bool, cmdEnv []string) (string, *tool.ShellExecution, error) {

@@ -98,11 +98,12 @@ func (s *TextSink) Emit(e event.Event) {
 				name = textSinkToolHead(e.Tool.Name, e.Tool.Args)
 			} else if e.Tool.Name == "bash" && e.Tool.Execution != nil && e.Tool.Execution.Shell != "" {
 				name = e.Tool.Execution.Shell
-				if e.Tool.Execution.Shell == "powershell" {
+				switch e.Tool.Execution.Shell {
+				case "powershell":
 					name = "Windows PowerShell"
-				} else if e.Tool.Execution.Shell == "pwsh" {
+				case "pwsh":
 					name = "PowerShell 7+"
-				} else if e.Tool.Execution.Shell == "git-bash" {
+				case "git-bash":
 					name = "Git Bash"
 				}
 			}
