@@ -215,20 +215,25 @@ func TestCLICompletionRunServeResumeRequiresValue(t *testing.T) {
 	if containsCompletionValue(got, "--model") {
 		t.Fatalf("run --resume must not treat next flag as free: %v", got)
 	}
-	if !containsCompletionValue(got, "alpha-session") && len(got) > 0 {
-		// Prefix "--m" filters sessions; empty is OK if no session starts with --m.
+	// Prefix "--m" matches no configured session IDs.
+	if len(got) != 0 {
+		t.Fatalf("run --resume --m = %v, want empty (no session starts with --m)", got)
 	}
 	// Separated form with prefix "b" completes sessions.
 	got = cliCompletionCandidatesWithValues(root, 3, []string{"reasonix", "run", "--resume", "b"}, values)
 	if want := []string{"beta-session"}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("run --resume b = %v, want %v", got, want)
 	}
-	// serve --resume is also required.
+	// serve --resume is a required file path: empty candidates for shell path fallback,
+	// never dynamic session branch IDs that fail open/loadResumableSession.
 	got = cliCompletionCandidatesWithValues(root, 3, []string{"reasonix", "serve", "--resume", "a"}, values)
-	if want := []string{"alpha-session"}; !reflect.DeepEqual(got, want) {
-		t.Fatalf("serve --resume a = %v, want %v", got, want)
+	if len(got) != 0 {
+		t.Fatalf("serve --resume path value = %v, want empty for file fallback", got)
 	}
-	// Inline required session form.
+	if containsCompletionValue(got, "alpha-session") {
+		t.Fatalf("serve --resume must not complete session IDs: %v", got)
+	}
+	// Inline required session form (run only).
 	got = cliCompletionCandidatesWithValues(root, 2, []string{"reasonix", "run", "--resume=b"}, values)
 	if want := []string{"--resume=beta-session"}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("run --resume=b = %v, want %v", got, want)
@@ -243,11 +248,6 @@ func TestCLICompletionTaskPerOperationFlags(t *testing.T) {
 	got := cliCompletionCandidatesWithValues(root, 3, []string{"reasonix", "task", "status", "--p"}, values)
 	if containsCompletionValue(got, "--project-root") {
 		t.Fatalf("task status must not offer --project-root: %v", got)
-	}
-	if !containsCompletionValue(got, "--json") && containsCompletionValue(
-		cliCompletionCandidatesWithValues(root, 3, []string{"reasonix", "task", "status", "--j"}, values),
-		"--json") {
-		// prefix --p won't match --json; check --j
 	}
 	got = cliCompletionCandidatesWithValues(root, 3, []string{"reasonix", "task", "status", "--j"}, values)
 	if !containsCompletionValue(got, "--json") {

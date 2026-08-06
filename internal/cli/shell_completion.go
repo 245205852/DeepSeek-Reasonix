@@ -113,7 +113,9 @@ func cliCompletionRootSpec() cliCompletionSpec {
 			model, profile,
 			completionFlag("--max-steps", cliCompletionStaticValue),
 			completionFlag("--addr", cliCompletionStaticValue),
-			completionFlag("--resume", cliCompletionSessionValue), // required session file/ID
+			// serve loads the path with open/loadResumableSession — file path only,
+			// not branch IDs (SessionValue would complete IDs that fail at runtime).
+			completionFlag("--resume", cliCompletionPathValue),
 			completionFlag("--auth", cliCompletionStaticValue, "none", "token", "password"),
 			completionFlag("--token --password --port-file --token-file --pid-file", cliCompletionStaticValue),
 			completionFlag("--hash-password --behind-proxy", cliCompletionNoValue), help,
