@@ -1154,7 +1154,7 @@ function renderToolResult(tool) {
   }
   if(tool.err){
     const err=el('div','err-body',tool.err);
-    if(ex&&ex.stderrTail){const pre=el('pre','err-stderr',ex.stderrTail.slice(0,16000));err.appendChild(pre);}
+    if(ex&&ex.outputTail){const pre=el('pre','err-stderr',ex.outputTail.slice(0,16000));err.appendChild(pre);}
     card.appendChild(err);
     updateToolMeta(card,meta);
   } else {

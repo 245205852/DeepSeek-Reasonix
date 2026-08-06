@@ -20,7 +20,7 @@ func TestBuildRequestExcludesToolExecution(t *testing.T) {
 			Role: provider.RoleTool, ToolCallID: "call_1", Name: "bash", Content: "FAIL",
 			ToolExecution: &provider.ToolExecution{
 				Kind: "shell", Shell: "bash", State: "failed", ExitCode: &code,
-				FailurePhase: "execution", StderrTail: "中文stderr-marker-must-not-leak",
+				FailurePhase: "execution", OutputTail: "中文stderr-marker-must-not-leak",
 			},
 		},
 	})
@@ -30,7 +30,7 @@ func TestBuildRequestExcludesToolExecution(t *testing.T) {
 		t.Fatal(err)
 	}
 	s := string(body)
-	for _, banned := range []string{"tool_execution", "stderrTail", "中文stderr-marker-must-not-leak", "failurePhase", "mutationRisk"} {
+	for _, banned := range []string{"tool_execution", "outputTail", "中文stderr-marker-must-not-leak", "failurePhase", "mutationRisk"} {
 		if strings.Contains(s, banned) {
 			t.Fatalf("anthropic wire leaked %q: %s", banned, s)
 		}
@@ -48,7 +48,7 @@ func TestBuildRequestStableWhenLocalExecutionAdded(t *testing.T) {
 	}
 	code := 0
 	withMeta := append([]provider.Message(nil), base...)
-	withMeta[2].ToolExecution = &provider.ToolExecution{Kind: "shell", StderrTail: "noise", ExitCode: &code}
+	withMeta[2].ToolExecution = &provider.ToolExecution{Kind: "shell", OutputTail: "noise", ExitCode: &code}
 	a, err := json.Marshal((&client{model: "claude-test"}).buildRequest(context.Background(), provider.Request{Messages: provider.ModelMessages(base)}))
 	if err != nil {
 		t.Fatal(err)

@@ -59,7 +59,7 @@ export interface WireShellExecution {
   state?: string;
   failurePhase?: string;
   exitCode?: number;
-  stderrTail?: string;
+  outputTail?: string;
   mutationRisk?: string;
   verification?: string;
   durationMs?: number;

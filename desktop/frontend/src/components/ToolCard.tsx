@@ -113,7 +113,7 @@ function shellRiskLabel(t: Translator, execution?: ToolItem["execution"]): strin
   return "";
 }
 
-function firstStderrLine(tail?: string): string {
+function firstTailLine(tail?: string): string {
   if (!tail) return "";
   const line = tail.replace(/\r\n/g, "\n").trim().split("\n")[0]?.trim() ?? "";
   if (line.length <= ERROR_SUMMARY_MAX_CHARS) return line;
@@ -230,7 +230,7 @@ export const ToolCard = memo(function ToolCard({ item, subcalls, tabId, displayN
   const shellSummary = execution && item.status !== "running" ? shellSettledSummary(t, execution, item.durationMs) : "";
   const verificationLabel = shellVerificationLabel(t, execution?.verification);
   const riskLabel = shellRiskLabel(t, execution);
-  const stderrSummary = firstStderrLine(execution?.stderrTail);
+  const tailSummary = firstTailLine(execution?.outputTail);
   // Reset cached fullData when the item identity changes (e.g. after rewind).
   useEffect(() => {
     return () => setFullData(null);
@@ -245,7 +245,7 @@ export const ToolCard = memo(function ToolCard({ item, subcalls, tabId, displayN
   // Shell output: split into preview + "show all" toggle.
   const shellOutput = isShellCard && displayOutput ? displayOutput : null;
   const shellPreview = shellOutput ? splitPreview(shellOutput, SHELL_PREVIEW_LINES) : null;
-  const hasStderrDetails = Boolean(execution?.stderrTail && execution.stderrTail.trim());
+  const hasStderrDetails = Boolean(execution?.outputTail && execution.outputTail.trim());
   const hasBody = Boolean(previewDiff || diffs.length || hasNested || shellPreview || (!shellPreview && hasArgsOrOutput) || item.error || hasSubagentPreview || hasStderrDetails || riskLabel || verificationLabel);
   const errorText = item.error ? normalizeErrorText(item.error) : "";
   const errorSummary = errorText ? summarizeToolError(errorText, t("tool.errorReceiptMismatch")) : "";
@@ -285,7 +285,7 @@ export const ToolCard = memo(function ToolCard({ item, subcalls, tabId, displayN
     : "";
   const summary = item.status === "running"
     ? streamingArgs
-    : (verificationLabel || item.summary || summarizeFileDiff(item.fileDiff) || (item.error ? (stderrSummary || errorSummary) : archivedWithoutFullData ? "" : summarize(item.name, effectiveArgs, displayOutput, item.error)));
+    : (verificationLabel || item.summary || summarizeFileDiff(item.fileDiff) || (item.error ? (tailSummary || errorSummary) : archivedWithoutFullData ? "" : summarize(item.name, effectiveArgs, displayOutput, item.error)));
   const a11yLabel = isShellCard
     ? `${shellName} ${item.status}${shellSummary || summary ? ` ${shellSummary || summary}` : ""}`
     : undefined;
@@ -420,8 +420,8 @@ export const ToolCard = memo(function ToolCard({ item, subcalls, tabId, displayN
 
         {hasStderrDetails && (
           <details className="tool__error-details">
-            <summary>{stderrSummary || t("tool.showErrorDetails")}</summary>
-            <CodeViewer value={execution!.stderrTail!} maxHeight={240} />
+            <summary>{tailSummary || t("tool.showErrorDetails")}</summary>
+            <CodeViewer value={execution!.outputTail!} maxHeight={240} />
           </details>
         )}
 

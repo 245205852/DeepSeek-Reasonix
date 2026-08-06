@@ -1,6 +1,6 @@
 // Package shellrun provides a shared foreground shell runner used by the model
 // bash tool and the user !command path. It classifies exits, collects a bounded
-// stderr tail, and keeps combined stdout/stderr model-visible output intact.
+// output tail, and keeps combined stdout/stderr model-visible output intact.
 package shellrun
 
 import (
@@ -45,11 +45,11 @@ type Request struct {
 // Result is the structured outcome of a foreground run.
 type Result struct {
 	Combined string
-	// StderrTail is the bounded tail of combined output, populated only when the
+	// OutputTail is the bounded tail of combined output, populated only when the
 	// run did not complete successfully. Stdout and stderr share one pipe so the
 	// model-visible ordering is preserved, which makes a stderr-only tail
 	// impossible; in practice the last bytes before a failure are the diagnosis.
-	StderrTail   string
+	OutputTail   string
 	ExitCode     *int
 	Started      bool
 	State        string
@@ -86,7 +86,7 @@ func RunForeground(ctx context.Context, req Request) Result {
 	cmd.Env = req.Env
 	cmd.WaitDelay = waitDelay
 
-	collector := newOutputCollector(tool.StderrTailMaxBytes)
+	collector := newOutputCollector(tool.OutputTailMaxBytes)
 	var writers []io.Writer
 	writers = append(writers, collector.combined, collector.tail)
 	if req.Progress != nil {
@@ -121,7 +121,7 @@ func RunForeground(ctx context.Context, req Request) Result {
 
 	out := Result{
 		Combined:   collector.combined.String(),
-		StderrTail: collector.tailString(),
+		OutputTail: collector.tailString(),
 		Started:    processStarted(cmd, err),
 		Tracked:    tracked,
 		Cmd:        cmd,
@@ -158,7 +158,7 @@ func RunForeground(ctx context.Context, req Request) Result {
 		// The tail exists to explain a failure. Dropping it on success keeps
 		// successful runs from persisting up to 16 KiB of ordinary stdout into
 		// every session record and tool card.
-		out.StderrTail = ""
+		out.OutputTail = ""
 		return out
 	}
 	if code := exitCodeFromErr(err); code != nil {

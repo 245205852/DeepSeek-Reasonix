@@ -1803,7 +1803,7 @@ func (c *Controller) RunShell(command string) {
 			Kind: desc.Kind, Shell: desc.Shell, ShellVersion: desc.ShellVersion,
 			Platform: desc.Platform, SupportsAndAnd: desc.SupportsAndAnd,
 			State: res.State, FailurePhase: res.FailurePhase,
-			StderrTail: res.StderrTail, DurationMs: durationMs,
+			OutputTail: res.OutputTail, DurationMs: durationMs,
 			MutationRisk: tool.ShellMutationNone,
 			Verification: tool.ShellVerificationNotVerification,
 		}

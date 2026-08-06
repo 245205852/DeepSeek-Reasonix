@@ -178,6 +178,81 @@ func TestBatchDependencyBarrierSkipsVerificationAfterFailedMutation(t *testing.T
 	t.Fatal("verify tool result missing")
 }
 
+// TestBatchDependencyBarrierIgnoresFailedNonMutationMetaTool keeps bookkeeping
+// writers out of the barrier. todo_write, complete_step, ask, bash_output and
+// wait all report ReadOnly()==false, but evidence.ToolCallMutates deliberately
+// exempts them: they never touch workspace state. A failed todo update must not
+// block the real edits queued behind it in the same batch.
+func TestBatchDependencyBarrierIgnoresFailedNonMutationMetaTool(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "x.txt")
+	if err := os.WriteFile(path, []byte("a\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	reg := tool.NewRegistry()
+	for _, tl := range (builtin.Workspace{Dir: dir}).Tools("edit_file") {
+		reg.Add(tl)
+	}
+	reg.Add(fakeTool{name: "todo_write", readOnly: false, err: fmt.Errorf("todo store unavailable")})
+	prov := &scriptedProvider{name: "p", turns: [][]provider.Chunk{
+		{
+			toolCallChunk("t1", "todo_write", `{"todos":[]}`),
+			toolCallChunk("e1", "edit_file", `{"path":"x.txt","old_string":"a","new_string":"b"}`),
+			{Type: provider.ChunkDone},
+		},
+		{{Type: provider.ChunkText, Text: "done"}, {Type: provider.ChunkDone}},
+	}}
+	a := New(prov, reg, NewSession(""), Options{}, event.Discard)
+	if err := a.Run(context.Background(), "track then edit"); err != nil {
+		t.Fatal(err)
+	}
+	if got := toolResultByID(a.session, "e1"); strings.Contains(got, "earlier modification") {
+		t.Fatalf("edit was blocked by a failed todo_write: %s", got)
+	}
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "b\n" {
+		t.Fatalf("file = %q, want the edit to have been applied", string(got))
+	}
+}
+
+// TestBatchDependencyBarrierStopsAfterFailedWorkspaceWrite is the other half of
+// the same boundary: a genuine workspace mutation failing still stops the batch.
+func TestBatchDependencyBarrierStopsAfterFailedWorkspaceWrite(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "x.txt"), []byte("a\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	reg := tool.NewRegistry()
+	for _, tl := range (builtin.Workspace{Dir: dir}).Tools("edit_file") {
+		reg.Add(tl)
+	}
+	prov := &scriptedProvider{name: "p", turns: [][]provider.Chunk{
+		{
+			toolCallChunk("e1", "edit_file", `{"path":"x.txt","old_string":"missing","new_string":"b"}`),
+			toolCallChunk("e2", "edit_file", `{"path":"x.txt","old_string":"a","new_string":"c"}`),
+			{Type: provider.ChunkDone},
+		},
+		{{Type: provider.ChunkText, Text: "done"}, {Type: provider.ChunkDone}},
+	}}
+	a := New(prov, reg, NewSession(""), Options{}, event.Discard)
+	if err := a.Run(context.Background(), "two edits"); err != nil {
+		t.Fatal(err)
+	}
+	if got := toolResultByID(a.session, "e2"); !strings.Contains(got, "earlier modification") {
+		t.Fatalf("second edit result = %q, want dependency skip", got)
+	}
+	got, err := os.ReadFile(filepath.Join(dir, "x.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "a\n" {
+		t.Fatalf("file = %q, want it untouched after the barrier", string(got))
+	}
+}
+
 // writerProxy is a use_capability-shaped CallResolver: schema ReadOnly is true,
 // but ResolveCall points at a real writer. The batch barrier must not let this
 // run after an earlier mutation failed.

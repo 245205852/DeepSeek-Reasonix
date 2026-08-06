@@ -20,7 +20,7 @@ func TestBuildRequestExcludesToolExecution(t *testing.T) {
 			Role: provider.RoleTool, ToolCallID: "call_1", Name: "bash", Content: "FAIL",
 			ToolExecution: &provider.ToolExecution{
 				Kind: "shell", Shell: "bash", State: "failed", ExitCode: &code,
-				FailurePhase: "execution", StderrTail: "中文stderr-marker-must-not-leak",
+				FailurePhase: "execution", OutputTail: "中文stderr-marker-must-not-leak",
 				MutationRisk: "may_be_partial", Verification: "failed",
 			},
 		},
@@ -31,7 +31,7 @@ func TestBuildRequestExcludesToolExecution(t *testing.T) {
 		{Role: provider.RoleUser, Content: "hi"},
 		{Role: provider.RoleAssistant, ToolCalls: []provider.ToolCall{{ID: "c2", Name: "bash", Arguments: `{"command":"false"}`}}},
 		{Role: provider.RoleTool, ToolCallID: "c2", Name: "bash", Content: "x",
-			ToolExecution: &provider.ToolExecution{Kind: "shell", StderrTail: "中文stderr-marker-must-not-leak"}},
+			ToolExecution: &provider.ToolExecution{Kind: "shell", OutputTail: "中文stderr-marker-must-not-leak"}},
 	}
 
 	for _, tc := range []struct {
@@ -48,7 +48,7 @@ func TestBuildRequestExcludesToolExecution(t *testing.T) {
 				t.Fatal(err)
 			}
 			s := string(body)
-			for _, banned := range []string{"tool_execution", "stderrTail", "中文stderr-marker-must-not-leak", "failurePhase", "mutationRisk"} {
+			for _, banned := range []string{"tool_execution", "outputTail", "中文stderr-marker-must-not-leak", "failurePhase", "mutationRisk"} {
 				if strings.Contains(s, banned) {
 					t.Fatalf("openai wire leaked %q: %s", banned, s)
 				}
@@ -69,7 +69,7 @@ func TestBuildRequestStableWhenLocalExecutionAdded(t *testing.T) {
 	code := 0
 	withMeta := append([]provider.Message(nil), base...)
 	withMeta[2].ToolExecution = &provider.ToolExecution{
-		Kind: "shell", Shell: "bash", State: "completed", ExitCode: &code, StderrTail: "noise",
+		Kind: "shell", Shell: "bash", State: "completed", ExitCode: &code, OutputTail: "noise",
 	}
 	// Same ModelMessages strip the agent uses.
 	a, err := json.Marshal((&client{model: "deepseek-v4"}).buildRequest(provider.Request{Messages: provider.ModelMessages(base)}))

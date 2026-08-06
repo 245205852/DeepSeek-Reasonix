@@ -231,7 +231,7 @@ type ShellExecution struct {
 	State          string `json:"state,omitempty"`
 	FailurePhase   string `json:"failurePhase,omitempty"`
 	ExitCode       *int   `json:"exitCode,omitempty"`
-	StderrTail     string `json:"stderrTail,omitempty"`
+	OutputTail     string `json:"outputTail,omitempty"`
 	MutationRisk   string `json:"mutationRisk,omitempty"`
 	Verification   string `json:"verification,omitempty"`
 	DurationMs     int64  `json:"durationMs,omitempty"`

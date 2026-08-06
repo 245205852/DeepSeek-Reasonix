@@ -284,7 +284,7 @@ type ShellExecution struct {
 	State          string `json:"state,omitempty"`
 	FailurePhase   string `json:"failurePhase,omitempty"`
 	ExitCode       *int   `json:"exitCode,omitempty"`
-	StderrTail     string `json:"stderrTail,omitempty"`
+	OutputTail     string `json:"outputTail,omitempty"`
 	MutationRisk   string `json:"mutationRisk,omitempty"`
 	Verification   string `json:"verification,omitempty"`
 	DurationMs     int64  `json:"durationMs,omitempty"`
@@ -298,7 +298,7 @@ func toWireShellExecution(in *event.ShellExecution) *ShellExecution {
 		Kind: in.Kind, Shell: in.Shell, ShellVersion: in.ShellVersion,
 		Platform: in.Platform, SupportsAndAnd: in.SupportsAndAnd,
 		State: in.State, FailurePhase: in.FailurePhase,
-		StderrTail: in.StderrTail, MutationRisk: in.MutationRisk,
+		OutputTail: in.OutputTail, MutationRisk: in.MutationRisk,
 		Verification: in.Verification, DurationMs: in.DurationMs,
 	}
 	if in.ExitCode != nil {

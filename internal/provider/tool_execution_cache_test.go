@@ -19,7 +19,7 @@ func TestToolExecutionDoesNotAffectProviderVisibleBytes(t *testing.T) {
 	withMeta := append([]Message(nil), base...)
 	withMeta[2].ToolExecution = &ToolExecution{
 		Kind: "shell", Shell: "bash", State: "completed", ExitCode: &code,
-		MutationRisk: "none", Verification: "passed", StderrTail: "noise",
+		MutationRisk: "none", Verification: "passed", OutputTail: "noise",
 	}
 
 	visBase, err := json.Marshal(ModelMessages(base))
@@ -33,7 +33,7 @@ func TestToolExecutionDoesNotAffectProviderVisibleBytes(t *testing.T) {
 	if string(visBase) != string(visMeta) {
 		t.Fatalf("provider-visible messages diverged after local execution metadata\nbase: %s\nmeta: %s", visBase, visMeta)
 	}
-	if strings.Contains(string(visMeta), "tool_execution") || strings.Contains(string(visMeta), "stderrTail") {
+	if strings.Contains(string(visMeta), "tool_execution") || strings.Contains(string(visMeta), "outputTail") {
 		t.Fatalf("local execution field leaked into provider-visible JSON: %s", visMeta)
 	}
 }

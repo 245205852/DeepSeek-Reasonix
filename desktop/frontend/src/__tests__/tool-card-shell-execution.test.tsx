@@ -129,7 +129,7 @@ const failedPSExecution: WireShellExecution = {
   state: "failed",
   failurePhase: "execution",
   exitCode: 1,
-  stderrTail: "Select-String : 找不到路径“C:\\中文\\app.ps1”。\nAt line:1 char:1",
+  outputTail: "Select-String : 找不到路径“C:\\中文\\app.ps1”。\nAt line:1 char:1",
   mutationRisk: "may_be_partial",
   verification: "not_verification",
   durationMs: 42,
@@ -210,7 +210,7 @@ console.log("\ntool card shell execution");
   const afterExpand = document.body.textContent ?? "";
   ok(
     afterExpand.includes("中文") || afterExpand.includes("找不到路径"),
-    "live path: Chinese stderr from execution.stderrTail is visible in the DOM",
+    "live path: Chinese stderr from execution.outputTail is visible in the DOM",
   );
 
   await ui.cleanup();

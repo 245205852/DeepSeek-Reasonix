@@ -344,7 +344,7 @@ func mergeRunInto(dst *tool.ShellExecution, src *tool.ShellExecution) {
 	dst.State = src.State
 	dst.FailurePhase = src.FailurePhase
 	dst.ExitCode = src.ExitCode
-	dst.StderrTail = src.StderrTail
+	dst.OutputTail = src.OutputTail
 	if src.MutationRisk != "" {
 		dst.MutationRisk = src.MutationRisk
 	}
@@ -481,7 +481,7 @@ func bashSandboxEscapeSessionAllowed(ctx context.Context, command string, args j
 }
 
 // runForegroundDetailed uses the shared shellrun collector so model bash and
-// user !command share exit-code / phase / stderr-tail classification.
+// user !command share exit-code / phase / output-tail classification.
 func (b bash) runForegroundDetailed(ctx context.Context, p bashParams, sh sandbox.Shell, argv []string, wrapped bool, cmdEnv []string) (string, *tool.ShellExecution, error) {
 	ex := shellrun.DescriptorFromShell(sh)
 	var progress func(string)
@@ -520,7 +520,7 @@ func (b bash) runForegroundDetailed(ctx context.Context, p bashParams, sh sandbo
 	ex.State = res.State
 	ex.FailurePhase = res.FailurePhase
 	ex.ExitCode = res.ExitCode
-	ex.StderrTail = res.StderrTail
+	ex.OutputTail = res.OutputTail
 	switch res.State {
 	case tool.ShellStateCompleted:
 		ex.MutationRisk = tool.ShellMutationMayHaveCompleted

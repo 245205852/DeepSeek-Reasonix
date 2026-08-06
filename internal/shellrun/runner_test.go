@@ -159,7 +159,7 @@ func TestRunForegroundLaunchFailure(t *testing.T) {
 	}
 }
 
-func TestRunForegroundStderrTailBounded(t *testing.T) {
+func TestRunForegroundOutputTailBounded(t *testing.T) {
 	payload := strings.Repeat("中文", 3000)
 	// Keep the command under typical argv length limits.
 	if len(payload) > 4000 {
@@ -179,11 +179,11 @@ func TestRunForegroundStderrTailBounded(t *testing.T) {
 		ShellPath: sh.Path,
 		Track:     true,
 	})
-	if len(res.StderrTail) > tool.StderrTailMaxBytes {
-		t.Fatalf("stderr tail %d > %d", len(res.StderrTail), tool.StderrTailMaxBytes)
+	if len(res.OutputTail) > tool.OutputTailMaxBytes {
+		t.Fatalf("output tail %d > %d", len(res.OutputTail), tool.OutputTailMaxBytes)
 	}
-	if !strings.Contains(res.Combined, "中文") && !strings.Contains(res.StderrTail, "中文") {
-		t.Fatalf("UTF-8 Chinese lost: combined=%q tail=%q", trim(res.Combined, 80), trim(res.StderrTail, 80))
+	if !strings.Contains(res.Combined, "中文") && !strings.Contains(res.OutputTail, "中文") {
+		t.Fatalf("UTF-8 Chinese lost: combined=%q tail=%q", trim(res.Combined, 80), trim(res.OutputTail, 80))
 	}
 }
 
@@ -243,8 +243,8 @@ func TestRunForegroundDropsTailOnSuccess(t *testing.T) {
 	if !strings.Contains(res.Combined, "hello") {
 		t.Fatalf("Combined = %q, want it to contain the output", res.Combined)
 	}
-	if res.StderrTail != "" {
-		t.Fatalf("StderrTail = %q, want empty on success", res.StderrTail)
+	if res.OutputTail != "" {
+		t.Fatalf("OutputTail = %q, want empty on success", res.OutputTail)
 	}
 }
 
