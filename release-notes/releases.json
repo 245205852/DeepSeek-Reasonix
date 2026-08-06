@@ -116,15 +116,13 @@
             "zh": "CLI 打磨：滚动、补全与键盘操作"
           },
           "body": {
-            "en": "Transcript scrolling now follows output correctly, slash-command completions are cached for responsiveness, and keyboard shortcuts are refined: Ctrl+D forward-deletes, Ctrl+Backspace deletes words, and Ctrl+Insert/Shift+Insert handle clipboard operations.",
-            "zh": "对话滚动现在正确跟随输出，斜杠命令补全被缓存以提升响应速度，键盘快捷键得到优化：Ctrl+D 前向删除，Ctrl+Backspace 删除单词，Ctrl+Insert/Shift+Insert 处理剪贴板操作。"
+            "en": "Transcript scrolling now follows output correctly, slash-command completions are cached for responsiveness, and keyboard shortcuts are refined: Ctrl+Backspace deletes words, while Ctrl+Insert/Shift+Insert handle clipboard operations.",
+            "zh": "对话滚动现在正确跟随输出，斜杠命令补全被缓存以提升响应速度，键盘快捷键得到优化：Ctrl+Backspace 删除单词，Ctrl+Insert/Shift+Insert 处理剪贴板操作。"
           },
           "refs": [
             7706,
             7690,
-            7638,
-            7605,
-            7262
+            7656
           ]
         },
         {
@@ -198,7 +196,7 @@
               "zh": "新增 `[ui].show_turn_usage` 配置，可在 TUI 中隐藏 token/费用回执，同时保持用量统计活跃。"
             },
             "refs": [
-              7587
+              7656
             ]
           },
           {
@@ -224,7 +222,7 @@
               "zh": "新增经典终端剪贴板快捷键：Ctrl+Insert 复制选中内容，Shift+Insert 通过原生剪贴板粘贴。"
             },
             "refs": [
-              7262
+              7656
             ]
           }
         ],
@@ -239,7 +237,7 @@
               "zh": "回退选择器现在显示用户的原始输入而非组合后的 Provider 提示，并在长会话中于视口内滚动。"
             },
             "refs": [
-              7202
+              7656
             ]
           },
           {
@@ -252,7 +250,7 @@
               "zh": "一次性 `run --resume` 现在除了文件系统路径外，还能解析不透明的机器会话 ID。"
             },
             "refs": [
-              7608
+              7656
             ]
           },
           {
@@ -265,7 +263,20 @@
               "zh": "无子命令的 `reasonix --profile …` 现在按文档正确路由至交互式会话路径。"
             },
             "refs": [
-              7621
+              7656
+            ]
+          },
+          {
+            "title": {
+              "en": "CLI: Diagnostics, keyring migration, and Reasonix-home hardening",
+              "zh": "CLI：诊断、密钥环迁移与 Reasonix-home 加固"
+            },
+            "body": {
+              "en": "Startup diagnostics now expose progress and bounded recovery signals, keyring migration fails closed under timeout or error, and CLI tooling consistently uses the exact Reasonix home while redacting paths in reports.",
+              "zh": "启动诊断现在提供进度与有界恢复信号；密钥环迁移在超时或错误时安全停止；CLI 工具统一使用准确的 Reasonix home，并在报告中隐藏路径。"
+            },
+            "refs": [
+              7663
             ]
           },
           {
@@ -292,19 +303,6 @@
             },
             "refs": [
               7708
-            ]
-          },
-          {
-            "title": {
-              "en": "Bash subprocess HOME restored to OS account home",
-              "zh": "Bash 子进程 HOME 恢复为操作系统账户主目录"
-            },
-            "body": {
-              "en": "Bash tool subprocesses now use the OS account home directory when available, fixing tools like `gh` that rely on it, while Reasonix's own config isolation is unchanged.",
-              "zh": "Bash 工具子进程现在在可用时使用操作系统账户主目录，修复了依赖它的 `gh` 等工具，同时 Reasonix 自身的配置隔离保持不变。"
-            },
-            "refs": [
-              7600
             ]
           },
           {
