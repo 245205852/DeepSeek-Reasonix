@@ -94,3 +94,32 @@ func TestVersionCommandFlags(t *testing.T) {
 		t.Fatalf("json output = %q", out)
 	}
 }
+
+func TestBuildInfoDoesNotUseVCSTimeAsBuildTime(t *testing.T) {
+	// Empty BuildTimeUTC must stay "unknown" rather than silently adopting
+	// vcs.time (commit timestamp) from the Go build info.
+	info := BuildInfo{Version: "vdev", GitCommit: "deadbeef"}.withDefaults()
+	if info.BuildTimeUTC != "unknown" {
+		t.Fatalf("BuildTimeUTC without ldflags = %q, want unknown", info.BuildTimeUTC)
+	}
+}
+
+func TestReleaseStyleLdflagsAppearInVerbose(t *testing.T) {
+	// Simulates official release injection of commit + real UTC build time.
+	info := BuildInfo{
+		Version:      "vtest",
+		GitCommit:    "cafebabef00d",
+		BuildTimeUTC: "2026-08-06T12:34:56Z",
+		BuildTarget:  "linux/amd64",
+	}
+	text := info.verboseText()
+	if !strings.Contains(text, "git_commit: cafebabef00d") {
+		t.Fatalf("missing injected commit:\n%s", text)
+	}
+	if !strings.Contains(text, "build_time_utc: 2026-08-06T12:34:56Z") {
+		t.Fatalf("missing injected build time:\n%s", text)
+	}
+	if strings.Contains(text, "unknown") {
+		t.Fatalf("injected identity still unknown:\n%s", text)
+	}
+}

@@ -14,6 +14,8 @@ type cliCompletionValueKind uint8
 const (
 	cliCompletionNoValue cliCompletionValueKind = iota
 	cliCompletionStaticValue
+	cliCompletionOptionalValue // next token may be a value or another flag (--resume [QUERY])
+	cliCompletionPathValue     // path/file; backend returns empty so shells use default file completion
 	cliCompletionModelValue
 	cliCompletionSessionValue
 )
@@ -46,7 +48,7 @@ func completionSpecWithAliases(name string, aliases []string, flags []cliComplet
 func cliCompletionRootSpec() cliCompletionSpec {
 	profile := completionFlag("--profile", cliCompletionStaticValue, "economy", "balanced", "delivery")
 	model := completionFlag("--model", cliCompletionModelValue)
-	resume := completionFlag("--resume -r", cliCompletionSessionValue)
+	resume := completionFlag("--resume -r", cliCompletionOptionalValue) // optional QUERY
 	effort := completionFlag("--effort", cliCompletionStaticValue, "auto", "low", "medium", "high", "max")
 	permissionMode := completionFlag("--permission-mode", cliCompletionStaticValue,
 		"manual", "ask", "auto", "acceptEdits", "dontAsk", "plan", "bypassPermissions")
@@ -59,9 +61,9 @@ func cliCompletionRootSpec() cliCompletionSpec {
 		resume,
 		completionFlag("--copy", cliCompletionNoValue),
 		completionFlag("--dangerously-skip-permissions --yolo", cliCompletionNoValue),
-		completionFlag("--dir", cliCompletionStaticValue),
+		completionFlag("--dir", cliCompletionPathValue),
 		effort, permissionMode,
-		completionFlag("--add-dir", cliCompletionStaticValue),
+		completionFlag("--add-dir", cliCompletionPathValue),
 		completionFlag("--allowed-tools --allowedTools", cliCompletionStaticValue),
 		help,
 	}
@@ -69,18 +71,19 @@ func cliCompletionRootSpec() cliCompletionSpec {
 		model, profile,
 		completionFlag("--max-steps", cliCompletionStaticValue),
 		completionFlag("--show-thinking", cliCompletionNoValue),
-		completionFlag("--metrics", cliCompletionStaticValue),
-		completionFlag("--dir", cliCompletionStaticValue),
+		completionFlag("--metrics", cliCompletionPathValue),
+		completionFlag("--dir", cliCompletionPathValue),
 		completionFlag("--continue -c", cliCompletionNoValue),
-		completionFlag("--resume", cliCompletionSessionValue),
+		completionFlag("--resume", cliCompletionOptionalValue),
 		completionFlag("--copy", cliCompletionNoValue),
 		effort, permissionMode,
 		completionFlag("--auto -y", cliCompletionNoValue),
 		completionFlag("--print -p", cliCompletionNoValue),
 		completionFlag("--events-jsonl", cliCompletionNoValue),
 		completionFlag("--output-format", cliCompletionStaticValue, "text", "json", "stream-json"),
-		completionFlag("--add-dir", cliCompletionStaticValue),
+		completionFlag("--add-dir", cliCompletionPathValue),
 		completionFlag("--allowed-tools --allowedTools", cliCompletionStaticValue),
+		completionFlag("--ablate", cliCompletionStaticValue, "none", "all", "evidence", "planner", "subagent", "retrieval", "compaction"),
 		help,
 	}
 
@@ -94,8 +97,8 @@ func cliCompletionRootSpec() cliCompletionSpec {
 		completionFlag("--dangerously-skip-permissions --yolo", cliCompletionNoValue),
 		permissionMode,
 		effort,
-		completionFlag("--dir", cliCompletionStaticValue),
-		completionFlag("--add-dir", cliCompletionStaticValue),
+		completionFlag("--dir", cliCompletionPathValue),
+		completionFlag("--add-dir", cliCompletionPathValue),
 		completionFlag("--allowed-tools --allowedTools", cliCompletionStaticValue),
 		completionFlag("--acp", cliCompletionNoValue),
 		completionFlag("--version -v", cliCompletionNoValue),
@@ -108,7 +111,7 @@ func cliCompletionRootSpec() cliCompletionSpec {
 			model, profile,
 			completionFlag("--max-steps", cliCompletionStaticValue),
 			completionFlag("--addr", cliCompletionStaticValue),
-			completionFlag("--resume", cliCompletionSessionValue),
+			completionFlag("--resume", cliCompletionOptionalValue),
 			completionFlag("--auth", cliCompletionStaticValue, "none", "token", "password"),
 			completionFlag("--token --password --port-file --token-file --pid-file", cliCompletionStaticValue),
 			completionFlag("--hash-password --behind-proxy", cliCompletionNoValue), help,
@@ -191,11 +194,11 @@ func cliCompletionRootSpec() cliCompletionSpec {
 			completionSpec("doctor", []cliCompletionFlag{help}),
 		),
 		completionSpec("subagent", []cliCompletionFlag{help},
-			completionSpecWithAliases("list", []string{"ls"}, []cliCompletionFlag{completionFlag("--dir", cliCompletionStaticValue), help}),
+			completionSpecWithAliases("list", []string{"ls"}, []cliCompletionFlag{completionFlag("--dir", cliCompletionPathValue), help}),
 			completionSpecWithAliases("create", []string{"new"}, append(subagentCompletionFlags(model, effort, help), completionFlag("--scope", cliCompletionStaticValue, "project", "global"))),
 			completionSpecWithAliases("edit", []string{"update"}, subagentCompletionFlags(model, effort, help)),
 			completionSpecWithAliases("delete", []string{"remove", "rm"}, []cliCompletionFlag{
-				completionFlag("--yes", cliCompletionNoValue), completionFlag("--dir", cliCompletionStaticValue), help,
+				completionFlag("--yes", cliCompletionNoValue), completionFlag("--dir", cliCompletionPathValue), help,
 			}),
 			completionSpec("try", []cliCompletionFlag{model, completionFlag("--max-steps --dir", cliCompletionStaticValue), help}),
 			completionSpec("run", []cliCompletionFlag{model, completionFlag("--max-steps --dir", cliCompletionStaticValue), help}),
@@ -206,7 +209,7 @@ func cliCompletionRootSpec() cliCompletionSpec {
 			}),
 			completionSpec("quality", []cliCompletionFlag{completionFlag("--json", cliCompletionNoValue), help}),
 			completionSpec("session", []cliCompletionFlag{completionFlag("--zip", cliCompletionNoValue), completionFlag("--out", cliCompletionStaticValue), help}),
-			completionSpec("redact-sessions", []cliCompletionFlag{completionFlag("--dry-run --json", cliCompletionNoValue), completionFlag("--dir", cliCompletionStaticValue), help}),
+			completionSpec("redact-sessions", []cliCompletionFlag{completionFlag("--dry-run --json", cliCompletionNoValue), completionFlag("--dir", cliCompletionPathValue), help}),
 			completionSpec("capabilities", []cliCompletionFlag{
 				completionFlag("--root --timeout", cliCompletionStaticValue), completionFlag("--json --live", cliCompletionNoValue), help,
 			}),
@@ -230,6 +233,27 @@ func cliCompletionRootSpec() cliCompletionSpec {
 		completionSpec("task", []cliCompletionFlag{help},
 			completionSpec("list", taskCompletionFlags(help)),
 			completionSpec("show", taskCompletionFlags(help)),
+			completionSpec("monitor", []cliCompletionFlag{help},
+				completionSpec("list", taskCompletionFlags(help)),
+				completionSpec("status", taskCompletionFlags(help)),
+				completionSpec("events", taskCompletionFlags(help)),
+				completionSpec("stop", taskCompletionFlags(help)),
+				completionSpec("cancel", taskCompletionFlags(help)),
+				completionSpec("requeue", taskCompletionFlags(help)),
+				completionSpec("open-session", taskCompletionFlags(help)),
+			),
+			completionSpec("status", taskCompletionFlags(help)),
+			completionSpec("events", taskCompletionFlags(help)),
+			completionSpec("stop", taskCompletionFlags(help)),
+			completionSpec("cancel", taskCompletionFlags(help)),
+			completionSpec("requeue", taskCompletionFlags(help)),
+			completionSpec("open-session", taskCompletionFlags(help)),
+			completionSpec("tmux", []cliCompletionFlag{help},
+				completionSpec("attach", nil),
+				completionSpec("status", nil),
+				completionSpec("open", nil),
+				completionSpec("detach", nil),
+			),
 		),
 		completionSpec("review", []cliCompletionFlag{
 			completionFlag("--base --commit --instructions", cliCompletionStaticValue), model, help,
@@ -370,8 +394,15 @@ func cliCompletionCandidatesWithValues(root cliCompletionSpec, cword int, words 
 	for i := 1; i < limit; i++ {
 		token := words[i]
 		if awaiting != nil {
-			awaiting = nil
-			continue
+			// Optional values may be omitted: a following flag-looking token is
+			// treated as the next flag rather than the optional value.
+			if awaiting.kind == cliCompletionOptionalValue && strings.HasPrefix(token, "-") && !strings.HasPrefix(token, "---") {
+				awaiting = nil
+				// fall through and parse token as a flag/subcommand
+			} else {
+				awaiting = nil
+				continue
+			}
 		}
 		if flag, inline := cliCompletionLookupFlag(ctx, token); flag != nil {
 			if flag.kind != cliCompletionNoValue && !inline {
@@ -392,7 +423,24 @@ func cliCompletionCandidatesWithValues(root cliCompletionSpec, cword int, words 
 	}
 
 	if awaiting != nil {
-		return filterCompletionPrefix(completionFlagValues(*awaiting, dynamic), current)
+		if awaiting.kind == cliCompletionPathValue {
+			// Empty candidates → shell default file completion (bash -o default, zsh _default, fish without -f).
+			return nil
+		}
+		if awaiting.kind == cliCompletionOptionalValue && strings.HasPrefix(current, "-") {
+			// Completing another flag after optional-value flag with no value typed.
+			var out []string
+			for _, flag := range ctx.flags {
+				out = append(out, flag.names...)
+			}
+			return filterCompletionPrefix(stableUniqueCompletionValues(out), current)
+		}
+		values := completionFlagValues(*awaiting, dynamic)
+		if awaiting.kind == cliCompletionOptionalValue {
+			// Also offer session IDs for --resume optional QUERY.
+			values = append(values, dynamic(cliCompletionSessionValue)...)
+		}
+		return filterCompletionPrefix(stableUniqueCompletionValues(values), current)
 	}
 	if name, value, ok := strings.Cut(current, "="); ok {
 		if flag, _ := cliCompletionLookupFlag(ctx, name); flag != nil && flag.kind != cliCompletionNoValue {
@@ -457,6 +505,11 @@ func completionFlagValues(flag cliCompletionFlag, dynamic func(cliCompletionValu
 	switch flag.kind {
 	case cliCompletionStaticValue:
 		return stableUniqueCompletionValues(flag.values)
+	case cliCompletionOptionalValue:
+		// Static optional values if declared; sessions are merged by the caller for --resume.
+		return stableUniqueCompletionValues(flag.values)
+	case cliCompletionPathValue:
+		return nil
 	case cliCompletionModelValue, cliCompletionSessionValue:
 		return stableUniqueCompletionValues(dynamic(flag.kind))
 	default:
@@ -541,5 +594,5 @@ const fishCompletionScript = `function __reasonix_completion
     set -l current_index (math (count $tokens) - 1)
     command reasonix completion __complete $current_index $tokens 2>/dev/null
 end
-complete -c reasonix -f -a '(__reasonix_completion)'
+complete -c reasonix -a '(__reasonix_completion)'
 `

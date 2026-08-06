@@ -151,7 +151,58 @@ func TestCompletionCommandPrintsShellScripts(t *testing.T) {
 			if !strings.Contains(out, "reasonix completion __complete") {
 				t.Fatalf("completion %s script does not route to the shared registry:\n%s", shell, out)
 			}
+			if shell == "fish" && strings.Contains(out, "complete -c reasonix -f ") {
+				t.Fatal("fish completion must not use -f so path flags can fall back to files")
+			}
 		})
+	}
+}
+
+func TestCLICompletionTaskNestedAndRunAblate(t *testing.T) {
+	root := cliCompletionRootSpec()
+	values := func(cliCompletionValueKind) []string { return nil }
+
+	got := cliCompletionCandidatesWithValues(root, 2, []string{"reasonix", "task", "st"}, values)
+	for _, want := range []string{"status", "stop"} {
+		if !containsCompletionValue(got, want) {
+			t.Fatalf("task prefix st missing %q: %v", want, got)
+		}
+	}
+	got = cliCompletionCandidatesWithValues(root, 2, []string{"reasonix", "task", "mon"}, values)
+	if !containsCompletionValue(got, "monitor") {
+		t.Fatalf("task monitor missing: %v", got)
+	}
+	got = cliCompletionCandidatesWithValues(root, 3, []string{"reasonix", "task", "monitor", "st"}, values)
+	if !containsCompletionValue(got, "status") || !containsCompletionValue(got, "stop") {
+		t.Fatalf("task monitor st = %v", got)
+	}
+	got = cliCompletionCandidatesWithValues(root, 2, []string{"reasonix", "run", "--a"}, values)
+	if !containsCompletionValue(got, "--ablate") {
+		t.Fatalf("run --a missing --ablate: %v", got)
+	}
+}
+
+func TestCLICompletionOptionalResumeThenFlag(t *testing.T) {
+	root := cliCompletionRootSpec()
+	values := func(kind cliCompletionValueKind) []string {
+		if kind == cliCompletionSessionValue {
+			return []string{"alpha-session"}
+		}
+		return nil
+	}
+	// --resume with no QUERY, then completing --m must offer --model (optional value).
+	got := cliCompletionCandidatesWithValues(root, 2, []string{"reasonix", "--resume", "--m"}, values)
+	if !containsCompletionValue(got, "--model") {
+		t.Fatalf("optional --resume then --m = %v, want --model", got)
+	}
+}
+
+func TestCLICompletionPathFlagReturnsEmptyForShellFallback(t *testing.T) {
+	root := cliCompletionRootSpec()
+	values := func(cliCompletionValueKind) []string { return []string{"should-not-appear"} }
+	got := cliCompletionCandidatesWithValues(root, 3, []string{"reasonix", "run", "--dir", "do"}, values)
+	if len(got) != 0 {
+		t.Fatalf("path flag value candidates = %v, want empty for shell file fallback", got)
 	}
 }
 

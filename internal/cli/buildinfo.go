@@ -7,7 +7,6 @@ import (
 	"runtime"
 	"runtime/debug"
 	"strings"
-	"time"
 )
 
 // BuildInfo is the machine- and human-readable build identity for
@@ -141,16 +140,13 @@ func (b BuildInfo) withDefaults() BuildInfo {
 	if strings.TrimSpace(b.BuildTarget) == "" {
 		b.BuildTarget = defaultBuildTarget()
 	}
+	// Commit may fall back to the embedded VCS revision from `go build` when
+	// ldflags were not set (local `go run` / untagged builds). Build time must
+	// NOT use vcs.time — that is commit timestamp, not the binary's build clock.
+	// Official release/npm/desktop/Makefile paths inject buildTimeUTC explicitly.
 	if strings.TrimSpace(b.GitCommit) == "" {
 		if rev, ok := buildSetting("vcs.revision"); ok {
 			b.GitCommit = shortGitRevision(rev)
-		}
-	}
-	if strings.TrimSpace(b.BuildTimeUTC) == "" {
-		if mod, ok := buildSetting("vcs.time"); ok {
-			if t, err := time.Parse(time.RFC3339, mod); err == nil {
-				b.BuildTimeUTC = t.UTC().Format(time.RFC3339)
-			}
 		}
 	}
 	if strings.TrimSpace(b.GitCommit) == "" {
