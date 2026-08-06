@@ -314,6 +314,12 @@ type chatTUI struct {
 	// in the slash menu as "/<name>" and managed via /skills.
 	skills []skill.Skill
 
+	// slashCatalog is an immutable completion list rebuilt only on explicit
+	// invalidation (model switch, skill rescan, /reload-cmd, …). Ordinary
+	// keystrokes only filter this snapshot — no fingerprint walk (#6417, #7090).
+	slashCatalog     []compItem
+	slashCatalogOnce bool // true when slashCatalog holds a valid snapshot
+
 	// skillPick is the interactive skill picker overlay for /skills. nil when closed.
 	skillPick *skillPicker
 
@@ -1370,6 +1376,14 @@ func (m chatTUI) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			cmds = append(cmds, pasteClipboardText())
 			return m, finalize(m, cmds)
 		}
+		// Shift+Tab encodings are recognized via modeToggleKey so both
+		// "shift+tab" and CSI-Z "backtab" stay covered by one helper (#6660).
+		if modeToggleKey(msg.String()) {
+			// Shift+Tab toggles Plan only. Tool approval stays on its own
+			// axis: Ask/Auto are explicit choices; YOLO is Ctrl+Y.
+			m.cycleMode()
+			return m, nil
+		}
 		switch msg.String() {
 		case "esc":
 			// "Back out" of the most specific in-progress state: un-send a just-sent
@@ -1474,7 +1488,25 @@ func (m chatTUI) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.notice(i18n.M.CtrlCQuitHint)
 			return m, finalize(m, nil)
 		case "ctrl+d":
-			return m, shutdownNow
+			// Compatible Ctrl+D: forward-delete when the composer has any
+			// raw content (including whitespace-only); only quit when idle
+			// with a truly empty composer (bash/readline-style EOF).
+			if m.input.Value() != "" {
+				// Delegate to textarea DeleteCharacterForward (bound to
+				// ctrl+d by default) so mid-line forward delete works.
+				var ic tea.Cmd
+				m.input, ic = m.input.Update(msg)
+				if ic != nil {
+					cmds = append(cmds, ic)
+				}
+				m.growInputToFit()
+				m.updateCompletion()
+				return m, finalize(m, cmds)
+			}
+			if m.state == tuiIdle {
+				return m, shutdownNow
+			}
+			return m, nil
 		case "ctrl+l":
 			if m.state != tuiRunning {
 				m.finalizeStreamed()
@@ -1494,11 +1526,6 @@ func (m chatTUI) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "ctrl+b":
 			m.toggleShellOutput()
 			return m, finalize(m, cmds)
-		case "shift+tab":
-			// Shift+Tab toggles Plan only. Tool approval stays on its own axis:
-			// Ask/Auto are explicit choices, and YOLO is a separate Ctrl+Y toggle.
-			m.cycleMode()
-			return m, nil
 		case "enter":
 			if m.state == tuiRunning {
 				line := strings.TrimSpace(m.input.Value())
@@ -1710,7 +1737,7 @@ func (m chatTUI) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.label = msg.label
 			m.commands = msg.commands
 			m.skills = msg.skills
-			m.host = msg.host
+			m.setHostAndInvalidateSlashCatalog(msg.host)
 			m.modelRef = msg.ref
 			if msg.profile != "" {
 				m.runtimeProfile = msg.profile
@@ -3881,6 +3908,18 @@ func (m *chatTUI) growInputToFit() {
 	}
 }
 
+// modeToggleKey reports whether s is a recognized Shift+Tab encoding for the
+// plan/approval mode cycle. Terminals may emit either "shift+tab" or CSI-Z
+// "backtab" (#6660); both must hit cycleMode.
+func modeToggleKey(s string) bool {
+	switch s {
+	case "shift+tab", "backtab":
+		return true
+	default:
+		return false
+	}
+}
+
 // cycleMode handles the Shift+Tab gesture using the same three safe modes users
 // see in Claude Code: Ask → Auto → Plan → Ask. YOLO stays outside this cycle and
 // remains an explicit Ctrl+Y choice.
@@ -4331,9 +4370,9 @@ func (m *chatTUI) ingestEvent(e event.Event) {
 		m.chooser = newChooser(e.Ask)
 
 	case event.MCPSurfaceReady:
-		if m.ctrl != nil {
-			m.host = m.ctrl.Host()
-		}
+		// Prompts/resources may have arrived after connect; refresh host and
+		// drop the slash catalog so /prompt names reappear without a restart.
+		m.refreshHostAndInvalidateSlashCatalog()
 		m.refreshMCPManager()
 
 	case event.TurnDone:
@@ -4502,6 +4541,7 @@ func (m *chatTUI) runSlashCommand(input string) tea.Cmd {
 		prev := len(m.commands)
 		err := m.ctrl.ReloadCommands(context.Background())
 		m.commands = m.ctrl.Commands()
+		m.invalidateSlashCatalog()
 		m.updateCompletion()
 		if err != nil {
 			m.notice("reload-cmd: " + err.Error())
@@ -4985,6 +5025,7 @@ func (m *chatTUI) runMCPSubcommand(input string) {
 			m.notice("mcp add: " + err.Error())
 			return
 		}
+		m.refreshHostAndInvalidateSlashCatalog()
 		m.notice(fmt.Sprintf("connected %s — %d tools, saved to global config (available next message)", entry.Name, n))
 	case "connect":
 		if len(args) < 3 {
@@ -4996,7 +5037,7 @@ func (m *chatTUI) runMCPSubcommand(input string) {
 			m.notice("mcp connect: " + err.Error())
 			return
 		}
-		m.host = m.ctrl.Host()
+		m.refreshHostAndInvalidateSlashCatalog()
 		m.notice(fmt.Sprintf("connected %s — %d tools (available next message)", args[2], n))
 	case "remove", "rm":
 		if len(args) < 3 {
@@ -5009,6 +5050,7 @@ func (m *chatTUI) runMCPSubcommand(input string) {
 			m.notice("mcp remove: " + err.Error())
 			return
 		}
+		m.refreshHostAndInvalidateSlashCatalog()
 		if disconnected {
 			m.notice("disconnected " + name + " and removed it from config")
 		} else {
