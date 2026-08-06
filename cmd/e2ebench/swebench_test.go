@@ -166,41 +166,65 @@ func TestPermissionPostureIsTheOnlyDifferenceBetweenArms(t *testing.T) {
 	}
 }
 
-// The container config is generated text that only the agent inside a running
-// container ever parses, so a mistyped key or a section header that swallowed
-// the next one would fail silently and cost a whole benchmark run. Decode it
-// with the real config types instead of matching strings.
-func TestSwebenchAgentConfigDeclaresBlockedEgressAndKeepsBashOff(t *testing.T) {
+// The score is only readable if the container runs what a user would get. This
+// pins that: bash stays off because the official images ship no bubblewrap and
+// the agent would otherwise refuse to run it at all, and nothing else may be
+// tuned in the agent's favor. Decoding with the real config types rather than
+// matching strings also catches a mistyped key, which would otherwise fail
+// silently inside a container and cost a whole run.
+func TestSwebenchAgentConfigTunesNothingInTheAgentsFavor(t *testing.T) {
 	var cfg config.Config
-	if _, err := toml.Decode(swebenchAgentConfig, &cfg); err != nil {
+	meta, err := toml.Decode(swebenchAgentConfig, &cfg)
+	if err != nil {
 		t.Fatalf("container config must be valid TOML: %v", err)
 	}
-	if !cfg.Environment.Offline {
-		t.Error("containers join a -network with no off-box route, so the config must declare the environment offline")
-	}
 	if cfg.Sandbox.Bash != "off" {
-		t.Errorf("sandbox.bash = %q, want \"off\": the new section must not absorb the sandbox one", cfg.Sandbox.Bash)
+		t.Errorf("sandbox.bash = %q, want \"off\": bubblewrap is absent from the official images", cfg.Sandbox.Bash)
+	}
+	// Egress really is blocked (runSwebench requires -network with no off-box
+	// route) and [environment] offline would tell the agent so — which is
+	// exactly why it must not be set. Retrying a dead network is a weakness of
+	// the shipped software, and the benchmark exists to measure it.
+	if cfg.Environment.Offline {
+		t.Error("the benchmark must not declare the environment offline: that configures the agent better than a default install")
+	}
+	for _, key := range meta.Keys() {
+		if meta.Type(key...) == "Hash" {
+			continue // table header, not a setting
+		}
+		if got := key.String(); got != "sandbox.bash" {
+			t.Errorf("unexpected benchmark-only setting %q: the container must run a default install", got)
+		}
 	}
 }
 
 // A real rxclean1 run lost sphinx-11510 because the agent's repro build left a
 // binary .doctree/.pickle in /testbed; `git diff --cached` degraded it to a
 // "Binary files differ" placeholder that git apply rejects, zeroing the whole
-// patch. The extractor must keep every honest source file and drop only what a
-// text patch cannot carry or what a rebuild always regenerates.
-func TestPatchFileListDropsOnlyUnappliableAndGeneratedPaths(t *testing.T) {
+// patch. Binary entries are the only thing the extractor may drop — that is a
+// defect in the submission format. The agent's own leftovers must survive into
+// the diff: they apply cleanly and do not change the grade, and tidying them
+// away would report a cleanliness the run did not have.
+func TestPatchFileListDropsBinariesAndNothingElse(t *testing.T) {
 	numstat := strings.Join([]string{
-		"12\t4\tsphinx/directives/other.py",                // the actual fix: keep
-		"0\t9\tsphinx/old_helper.py",                       // text deletion: keep
+		"12\t4\tsphinx/directives/other.py",                // the actual fix
+		"0\t9\tsphinx/old_helper.py",                       // text deletion
 		"-\t-\t_repro/_build/.doctrees/environment.pickle", // binary: drop
 		"-\t-\timg/probe.png",                              // new binary: drop
-		"3\t0\t_repro/_build/_static/basic.css",            // Sphinx build output: drop
-		"2\t0\tsklearn.egg-info/PKG-INFO",                  // packaging metadata: drop
-		"1\t0\tpkg/__pycache__/note.txt",                   // cache tree: drop
-		"5\t1\trepro.py",                                   // agent scratch, but text: keep (harmless)
+		"3\t0\t_repro/_build/_static/basic.css",            // build output the agent left: keep
+		"2\t0\tsklearn.egg-info/PKG-INFO",                  // packaging metadata: keep
+		"1\t0\tpkg/__pycache__/note.txt",                   // cache tree: keep
+		"5\t1\trepro.py",                                   // agent scratch: keep
 	}, "\x00") + "\x00"
 	got := patchFileList(numstat)
-	want := []string{"sphinx/directives/other.py", "sphinx/old_helper.py", "repro.py"}
+	want := []string{
+		"sphinx/directives/other.py",
+		"sphinx/old_helper.py",
+		"_repro/_build/_static/basic.css",
+		"sklearn.egg-info/PKG-INFO",
+		"pkg/__pycache__/note.txt",
+		"repro.py",
+	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("patchFileList = %v, want %v", got, want)
 	}

@@ -39,14 +39,20 @@ type swebenchOpts struct {
 	proxyURL string
 }
 
-// The agent runs unconfined inside the instance container: the container is
-// already the isolation boundary, and Reasonix refuses to run bash at all when
-// it cannot find bubblewrap, which the official images do not ship.
+// swebenchAgentConfig carries no benchmark-specific tuning, by policy: the run
+// measures what a default install does, so anything that configures the agent
+// more favorably than a user's own machine would make the score unreadable.
+// The single setting here is a necessity rather than a favor — the agent runs
+// unconfined inside the instance container because the container is already the
+// isolation boundary, and Reasonix refuses to run bash at all when it cannot
+// find bubblewrap, which the official images do not ship.
 //
-// Offline is declared, not inferred: runSwebench requires -network with no
-// off-box route, so egress is blocked by construction here and the agent should
-// spend its budget on the repository rather than on retrying dead requests.
-const swebenchAgentConfig = "[sandbox]\nbash = \"off\"\n\n[environment]\noffline = true\n"
+// In particular the containers are not told their network is blocked, even
+// though runSwebench requires -network with no off-box route and `[environment]
+// offline` exists for exactly that situation. An agent that burns its budget
+// retrying dead requests is a real weakness of the shipped software, and the
+// benchmark is here to surface it, not to configure around it.
+const swebenchAgentConfig = "[sandbox]\nbash = \"off\"\n"
 
 func loadSwebenchSubset(path string) ([]swebenchInstance, error) {
 	data, err := fileencoding.ReadFileUTF8(path)
@@ -150,12 +156,18 @@ func runSwebenchInstance(o swebenchOpts, inst swebenchInstance) (result, string)
 }
 
 // extractTestbedPatch reads the working-tree diff from the instance container.
-// `git add -A` surfaces untracked files first, but the submitted diff is then
-// restricted to paths a text patch can honestly carry: binary files degrade to
-// a "Binary files differ" placeholder that git apply rejects wholesale — one
-// stray .pickle from a Sphinx repro build would zero an otherwise correct
-// patch — and regenerated build output can never be the fix. Files are passed
-// as plain argv, never through a shell, so hostile paths cannot execute.
+// `git add -A` surfaces untracked files first, and the submitted diff then
+// drops exactly one thing: binary files, which degrade to a "Binary files
+// differ" placeholder that git apply rejects wholesale, so one stray .pickle
+// from a Sphinx repro build would zero an otherwise correct patch. That is a
+// defect in the submission format, not in the agent, and repairing it is the
+// only reason this function exists.
+//
+// Everything a text patch can carry is submitted as-is, including the agent's
+// own leftovers. Tidying those away would make the run report a cleanliness
+// the agent did not have, and the point of the benchmark is to read what the
+// software actually does. Files are passed as plain argv, never through a
+// shell, so hostile paths cannot execute.
 func extractTestbedPatch(container string) (string, error) {
 	if out, err := dockerOutput("exec", container, "git", "-C", "/testbed", "add", "-A"); err != nil {
 		return "", fmt.Errorf("add: %s", firstLine(out))
@@ -178,13 +190,15 @@ func extractTestbedPatch(container string) (string, error) {
 	return patch, nil
 }
 
-// patchFileList parses `git diff --cached --no-renames --numstat -z` output
-// and returns the paths the submitted patch may carry. Binary entries ("-" for
-// both counts) are dropped, as are well-known generated trees: _build output
-// and *.egg-info metadata regenerate on every build, so their presence is
-// always agent scratch, never the fix. Plain scratch files (repro scripts at
-// the repo root) stay: they apply cleanly, do not affect grading, and dropping
-// them by name would risk dropping a legitimate new source file.
+// patchFileList parses `git diff --cached --no-renames --numstat -z` output and
+// returns the paths the submitted patch may carry: everything except binary
+// entries ("-" for both added and deleted counts), which no text patch can
+// represent.
+//
+// Nothing is dropped by name. Build output and scratch scripts the agent left
+// behind apply cleanly and do not change the grade, so removing them would only
+// hide the mess from the submitted diff — the harness must not clean up after
+// the software it is measuring.
 func patchFileList(numstat string) []string {
 	var files []string
 	for _, entry := range strings.Split(numstat, "\x00") {
@@ -199,23 +213,9 @@ func patchFileList(numstat string) []string {
 		if added == "-" || deleted == "-" || path == "" {
 			continue // binary: not representable in an appliable text diff
 		}
-		if generatedPatchPath(path) {
-			continue
-		}
 		files = append(files, path)
 	}
 	return files
-}
-
-// generatedPatchPath reports whether a diff path is regenerated build output.
-// Conservative on purpose: only trees that no SWE-bench repo keeps sources in.
-func generatedPatchPath(path string) bool {
-	for _, seg := range strings.Split(path, "/") {
-		if seg == "_build" || seg == "__pycache__" {
-			return true
-		}
-	}
-	return strings.Contains(path, ".egg-info/")
 }
 
 // provisionAgent copies the binary and a credential-free home into the
