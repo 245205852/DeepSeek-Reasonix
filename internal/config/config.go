@@ -1814,6 +1814,12 @@ Keep changes focused and responses concise.`
 // prompts, so custom personas cannot accidentally remove the `ask` UI contract.
 const UserDecisionPolicy = `User-owned choices: when a consequential decision has no safe, obvious default, call the ask tool so the user can choose. Otherwise proceed with a sensible reversible default. Do not ask in prose when ask is available. In non-interactive runs, state the assumption and take the safest reversible path.`
 
+// WorkPracticePolicy is appended to every system prompt, including user-custom
+// prompts, so custom personas cannot drop baseline engineering discipline:
+// implement the requested approach exactly, keep the repository free of scratch
+// work, scale verification to the change, and stop retrying dead network paths.
+const WorkPracticePolicy = `Work practices: when the request or a linked discussion names a specific approach or expected behavior, implement exactly that; if you believe a different approach is better, state the trade-off explicitly instead of silently substituting it. Keep scratch work (repro scripts, probes, generated output) out of the repository — use a temp directory or clean up before finishing — and review the final diff before declaring done: only the intended changes, no leftovers, and no known regressions. Scale verification to the change: reproduce the problem, run the most relevant focused tests, and avoid repeated full-suite runs; if broad failures look unrelated, confirm once that they pre-exist and move on. If network calls fail with proxy or connection errors, treat the environment as offline: stop retrying and use local sources such as git history and code search.`
+
 // LanguagePolicy is the auto fallback appended to the system prompt when no
 // concrete UI language is resolved. It is static English text, so it stays part
 // of the cache-stable prefix and avoids per-turn language injection.

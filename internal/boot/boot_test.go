@@ -3513,6 +3513,7 @@ func stripLanguagePolicy(s string) string {
 	s = strings.TrimSpace(s)
 	for _, policy := range []string{
 		config.LanguagePolicy,
+		config.WorkPracticePolicy,
 		config.UserDecisionPolicy,
 	} {
 		s = strings.TrimSpace(strings.TrimSuffix(s, policy))
@@ -5133,5 +5134,50 @@ func TestBuildKeepsSourceConnectorAndSkillToolsDespiteSafeModeEnv(t *testing.T) 
 		if !names[want] {
 			t.Fatalf("expected %s when REASONIX_SAFE_MODE is set", want)
 		}
+	}
+}
+
+// WorkPracticePolicy is a behavior contract, not a persona detail: it must
+// survive a custom system prompt exactly like UserDecisionPolicy does, or a
+// persona could silently drop baseline engineering discipline.
+func TestBuildAppendsWorkPracticePolicyToCustomSystemPrompt(t *testing.T) {
+	dir := robustTempDir(t)
+	t.Chdir(dir)
+	writeFile(t, dir, "reasonix.toml", `
+default_model = "test-model"
+
+[agent]
+system_prompt = "BASE"
+
+[[providers]]
+name = "test-model"
+kind = "openai"
+base_url = "https://example.invalid"
+model = "x"
+api_key_env = "REASONIX_TEST_KEY_UNSET"
+`)
+
+	ctrl, err := Build(context.Background(), Options{})
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	defer ctrl.Close()
+
+	sys := systemMessage(ctrl.History())
+	for _, want := range []string{
+		"Work practices:",
+		"implement exactly that",
+		"review the final diff",
+		"treat the environment as offline",
+	} {
+		if !strings.Contains(sys, want) {
+			t.Fatalf("work practice policy missing %q from custom system prompt:\n%s", want, sys)
+		}
+	}
+	// The policy sits between the user-decision and language policies so the
+	// prefix order stays deterministic across boots.
+	if strings.Index(sys, config.UserDecisionPolicy) >= strings.Index(sys, config.WorkPracticePolicy) ||
+		strings.Index(sys, config.WorkPracticePolicy) >= strings.Index(sys, config.LanguagePolicy) {
+		t.Fatal("policy order must be user-decision < work-practice < language for a stable prefix")
 	}
 }
