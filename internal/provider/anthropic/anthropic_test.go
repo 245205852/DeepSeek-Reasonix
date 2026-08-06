@@ -277,6 +277,28 @@ func TestNewDetectsOfficialDeepSeekEndpoint(t *testing.T) {
 	}
 }
 
+func TestNewScopesNativeCacheWritePricingToAnthropic(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		baseURL string
+		want    bool
+	}{
+		{name: "default", want: true},
+		{name: "official v1", baseURL: "https://api.anthropic.com/v1", want: true},
+		{name: "compatible gateway", baseURL: "https://proxy.example.com/anthropic", want: false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			p, err := New(provider.Config{Name: "test", BaseURL: tc.baseURL, Model: "claude-sonnet-4-6"})
+			if err != nil {
+				t.Fatalf("New: %v", err)
+			}
+			if got := p.(*client).nativeAnthropic; got != tc.want {
+				t.Fatalf("nativeAnthropic = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
 func TestMapStopReason(t *testing.T) {
 	cases := map[string]string{
 		"end_turn":      "stop",
@@ -420,8 +442,58 @@ data: {"type":"message_stop"}
 	if usage.CacheHitTokens != 7 || usage.CacheMissTokens != 18 {
 		t.Fatalf("usage cache = hit %d miss %d", usage.CacheHitTokens, usage.CacheMissTokens)
 	}
+	if usage.CacheWriteTokens != 5 || usage.CacheWriteBilledTokens != 0 {
+		t.Fatalf("compatible-gateway cache write = raw %d billed %v, want 5/0", usage.CacheWriteTokens, usage.CacheWriteBilledTokens)
+	}
 	if usage.FinishReason != "stop" {
 		t.Fatalf("finish reason = %q", usage.FinishReason)
+	}
+}
+
+func TestReadStreamPricesNativeCacheWritesByTTL(t *testing.T) {
+	sse := `event: message_start
+data: {"type":"message_start","message":{"usage":{"input_tokens":3,"cache_creation_input_tokens":5,"cache_read_input_tokens":7,"output_tokens":0}}}
+
+event: message_delta
+data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":1}}
+
+event: message_stop
+data: {"type":"message_stop"}
+`
+	for _, tc := range []struct {
+		name       string
+		long       bool
+		wantBilled float64
+	}{
+		{name: "default 5m", wantBilled: 6.25},
+		{name: "extended 1h", long: true, wantBilled: 10},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			c := &client{name: "anthropic", nativeAnthropic: true}
+			resp := &http.Response{Body: io.NopCloser(strings.NewReader(sse))}
+			ch := make(chan provider.Chunk)
+			ctx := context.Background()
+			if tc.long {
+				ctx = provider.WithCacheGapHint(ctx, cacheGapLongTTLThreshold)
+			}
+			go c.readStream(ctx, resp, ch)
+
+			var usage *provider.Usage
+			for ck := range ch {
+				if ck.Type == provider.ChunkError {
+					t.Fatalf("unexpected error chunk: %v", ck.Err)
+				}
+				if ck.Type == provider.ChunkUsage {
+					usage = ck.Usage
+				}
+			}
+			if usage == nil {
+				t.Fatal("expected a usage chunk")
+			}
+			if usage.CacheWriteTokens != 5 || usage.CacheWriteBilledTokens != tc.wantBilled {
+				t.Fatalf("usage cache write = raw %d billed %v, want 5/%v", usage.CacheWriteTokens, usage.CacheWriteBilledTokens, tc.wantBilled)
+			}
+		})
 	}
 }
 

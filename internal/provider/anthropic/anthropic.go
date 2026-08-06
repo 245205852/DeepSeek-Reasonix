@@ -115,6 +115,7 @@ func New(cfg provider.Config) (provider.Provider, error) {
 		keySource:        keySource,
 		baseURL:          root,
 		model:            cfg.Model,
+		nativeAnthropic:  strings.EqualFold(root, defaultBaseURL),
 		deepseek:         openai.IsDeepSeek(root),
 		thinking:         thinking,
 		effort:           effort,
@@ -141,6 +142,7 @@ type client struct {
 	keySource        string // source of keyEnv, surfaced in auth errors
 	baseURL          string
 	model            string
+	nativeAnthropic  bool   // first-party endpoint: documented 5m/1h cache-write pricing applies
 	deepseek         bool   // official DeepSeek Anthropic endpoint: unsigned reasoning replay + automatic cache
 	thinking         string // "adaptive" enables extended thinking; "" = off (config-driven)
 	effort           string // output_config.effort: low|medium|high|xhigh|max; "" = provider default
@@ -668,13 +670,23 @@ func (c *client) readStream(ctx context.Context, resp *http.Response, out chan<-
 	}
 
 	if haveUsage {
+		cacheWriteBilledTokens := 0.0
+		if cacheCreate > 0 && c.nativeAnthropic {
+			multiplier := cacheWrite5MinuteInputMultiplier
+			if useLongCacheTTL(ctx) {
+				multiplier = cacheWrite1HourInputMultiplier
+			}
+			cacheWriteBilledTokens = float64(cacheCreate) * multiplier
+		}
 		usage := &provider.Usage{
-			PromptTokens:     inTok + cacheCreate + cacheRead,
-			CompletionTokens: outTok,
-			TotalTokens:      inTok + cacheCreate + cacheRead + outTok,
-			CacheHitTokens:   cacheRead,
-			CacheMissTokens:  inTok + cacheCreate, // uncached input + cache writes (billed ≥1×)
-			FinishReason:     mapStopReason(stopReason),
+			PromptTokens:           inTok + cacheCreate + cacheRead,
+			CompletionTokens:       outTok,
+			TotalTokens:            inTok + cacheCreate + cacheRead + outTok,
+			CacheHitTokens:         cacheRead,
+			CacheMissTokens:        inTok + cacheCreate,
+			CacheWriteTokens:       cacheCreate,
+			CacheWriteBilledTokens: cacheWriteBilledTokens,
+			FinishReason:           mapStopReason(stopReason),
 		}
 		provider.ApplyRequestAttemptCount(ctx, usage)
 		if !send(provider.Chunk{Type: provider.ChunkUsage, Usage: usage}) {
@@ -759,6 +771,11 @@ func formatWebSearchResults(raw json.RawMessage) string {
 // doesn't flip it: an unneeded 1h choice costs proportionally more (2.1x) than
 // an unneeded 5m one (1.35x) would have, so this errs conservative.
 const cacheGapLongTTLThreshold = 120 * time.Second
+
+const (
+	cacheWrite5MinuteInputMultiplier = 1.25
+	cacheWrite1HourInputMultiplier   = 2.0
+)
 
 // cacheTTL1Hour is the opt-in extended cache_control TTL value (GA, no beta
 // header required). An empty TTL string omits the field entirely, which is

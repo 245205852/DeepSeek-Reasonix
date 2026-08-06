@@ -472,6 +472,8 @@ func mergeStreamUsage(first, retry *provider.Usage) *provider.Usage {
 	merged.TotalTokens += first.TotalTokens
 	merged.CacheHitTokens += first.CacheHitTokens
 	merged.CacheMissTokens += first.CacheMissTokens
+	merged.CacheWriteTokens += first.CacheWriteTokens
+	merged.CacheWriteBilledTokens += first.CacheWriteBilledTokens
 	merged.ReasoningTokens += first.ReasoningTokens
 	merged.RequestCount = usageRequestCount(first) + usageRequestCount(retry)
 	return &merged
