@@ -58,6 +58,15 @@ type vendorCapabilities struct {
 	// answer survives long reasoning.
 	defaultMaxOutputTokens int
 
+	// compactionOutputTokens is the separate budget for native/summary
+	// compaction calls. Zero means "no dedicated compaction budget; fall
+	// back to ordinary summarize without inheriting a large default".
+	compactionOutputTokens int
+
+	// nativeCompaction marks vendors with a dedicated compact endpoint.
+	// When false, agents must use ordinary summarize fallback.
+	nativeCompaction bool
+
 	// summaryRequired marks vendors whose Responses API requires the
 	// `summary` list on input reasoning items (DashScope; without it the
 	// server rejects with "Invalid 'summary': summary is required..."). The
@@ -77,6 +86,8 @@ var vendorTable = map[string]vendorCapabilities{
 		singleSegmentReasoning: false,
 		ignoresTemperature:     false,
 		summaryRequired:        true,
+		// No native compact endpoint yet; summarize fallback only.
+		compactionOutputTokens: 8192,
 	},
 	"deepseek": {
 		stateless:              true,
@@ -85,6 +96,9 @@ var vendorTable = map[string]vendorCapabilities{
 		singleSegmentReasoning: false,
 		ignoresTemperature:     false,
 		defaultMaxOutputTokens: provider.DefaultHighOutputTokens,
+		// Compaction summaries are short briefings; keep the budget separate
+		// from ordinary answer output so a summary call cannot inherit 32K.
+		compactionOutputTokens: 4096,
 	},
 	"mimo": {
 		stateless:              true,
@@ -93,8 +107,10 @@ var vendorTable = map[string]vendorCapabilities{
 		singleSegmentReasoning: true,
 		ignoresTemperature:     true,
 		defaultMaxOutputTokens: 128000,
+		compactionOutputTokens: 4096,
 	},
 	// "" (unknown OpenAI-compatible endpoint) → zero value = default behavior.
+	// Unknown gateways deliberately do NOT inherit a large max-output default.
 }
 
 // capabilitiesFor returns the wire capabilities for a detected vendor name.
