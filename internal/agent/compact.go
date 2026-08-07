@@ -476,15 +476,10 @@ func (a *Agent) pinnedPrefixLen(msgs []provider.Message) int {
 	if i < len(msgs) && msgs[i].Role == provider.RoleUser && !isCompactionSummary(msgs[i]) && a.pinnableUserTurn(msgs[i]) {
 		i++
 	}
-	// Pin only the newest summary (the last one in the contiguous summary run);
-	// older summaries stay inside the fold region for the next merge.
-	lastSummary := -1
-	for j := i; j < len(msgs) && isCompactionSummary(msgs[j]); j++ {
-		lastSummary = j
-	}
-	if lastSummary >= 0 {
-		i = lastSummary + 1
-	}
+	// The entire summary run stays inside the fold region; partitionFold keeps
+	// the NEWEST summary verbatim and folds the older ones into the next digest
+	// (A1 rolling merge) — re-feeding their text through the summarizer so a
+	// long session cannot accumulate an unbounded chain of digests.
 	return i
 }
 
@@ -519,13 +514,25 @@ func (a *Agent) pinnableUserTurn(m provider.Message) bool {
 func (a *Agent) partitionFold(region []provider.Message) (kept, fold []provider.Message) {
 	policyKeep := keepIndexes(region, a.keepPolicy)
 	keptSmallUserTurns := 0
+	// The NEWEST summary in the region (the last one in the contiguous summary
+	// run) is kept verbatim; older digests fold into the next digest (A1 rolling
+	// merge) and are re-fed through the summarizer, so the digest chain cannot
+	// accumulate unboundedly.
+	lastSummary := -1
 	for i, m := range region {
-		keep := m.LocalOnly || policyKeep[i]
-		if !keep && m.Role == provider.RoleUser && a.pinnableUserTurn(m) {
+		if isCompactionSummary(m) {
+			lastSummary = i
+		}
+	}
+	for i, m := range region {
+		keep := m.LocalOnly || policyKeep[i] || (isCompactionSummary(m) && i == lastSummary)
+		if !keep && m.Role == provider.RoleUser && !isCompactionSummary(m) && a.pinnableUserTurn(m) {
 			// Position-fixed small-turn keep window: the first N small user turns
 			// in the region survive verbatim; older ones fold into the digest so
 			// a long session cannot accumulate unbounded verbatim user turns.
 			// N is fixed (not "latest N"), so the kept prefix stays byte-stable.
+			// Digests are excluded: they are governed by the A1 rolling merge
+			// (only the newest survives verbatim; older ones re-enter the fold).
 			if keptSmallUserTurns < maxKeepSmallUserTurns {
 				keep = true
 			}

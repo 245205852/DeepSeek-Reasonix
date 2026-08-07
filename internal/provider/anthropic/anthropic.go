@@ -54,7 +54,7 @@ const (
 	// defaultMaxTokens is the output ceiling used when neither the provider config
 	// nor the request supplies one. Anthropic requires max_tokens, so unlike the
 	// optional OpenAI-compatible budget it cannot be omitted.
-	defaultMaxTokens = 131072
+	defaultMaxTokens = provider.DefaultHighOutputTokens
 )
 
 func init() {

@@ -3,6 +3,8 @@ package responses
 import (
 	"net/url"
 	"strings"
+
+	"reasonix/internal/provider"
 )
 
 // vendorCapabilities describes how a Responses-compatible endpoint deviates
@@ -82,7 +84,7 @@ var vendorTable = map[string]vendorCapabilities{
 		toolCallReasoning:      true,
 		singleSegmentReasoning: false,
 		ignoresTemperature:     false,
-		defaultMaxOutputTokens: 131072,
+		defaultMaxOutputTokens: provider.DefaultHighOutputTokens,
 	},
 	"mimo": {
 		stateless:              true,

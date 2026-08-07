@@ -132,10 +132,10 @@ func TestPinnedPrefixLen(t *testing.T) {
 		want int
 	}{
 		{"pins-system-and-small-task", 0, []provider.Message{sys, small, as, as}, 2},
-		{"also-pins-prior-summaries", 0, []provider.Message{sys, small, sum, sum, as}, 4},
+		{"summaries-are-not-pinned-A1-merge", 0, []provider.Message{sys, small, sum, sum, as}, 2},
 		{"large-first-turn-stays-foldable", 0, []provider.Message{sys, big, as, as}, 1},
 		{"tiny-window-wont-pin", 10, []provider.Message{sys, small, as, as}, 1},
-		{"summary-is-not-the-task-turn", 0, []provider.Message{sys, sum, as}, 2},
+		{"summary-is-not-the-task-turn", 0, []provider.Message{sys, sum, as}, 1},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -1084,11 +1084,20 @@ func TestCompactRollsOldDigestsIntoNew(t *testing.T) {
 	if !newestKept {
 		t.Fatalf("newest digest not pinned: %+v", msgs)
 	}
-	// The old digest must NOT survive as a verbatim message (it was folded);
-	// whether its facts survive depends on the summarizer, not on verbatim keep.
+	// The old digest must NOT survive as a verbatim message (it was folded into
+	// the new digest). The session may hold at most TWO summaries — the newest
+	// digest (kept verbatim by A1) plus the newly generated merged digest —
+	// proving the A1 rolling merge removed the old chain instead of pinning it.
+	var summaryCount int
 	for _, m := range msgs {
+		if isCompactionSummary(m) {
+			summaryCount++
+		}
 		if !isCompactionSummary(m) && strings.Contains(m.Content, "old standing fact") {
 			t.Fatalf("old digest survived verbatim outside a summary: %+v", msgs)
 		}
+	}
+	if summaryCount > 2 {
+		t.Fatalf("expected at most 2 summaries after A1 rolling merge (newest + merged), got %d: %+v", summaryCount, msgs)
 	}
 }
