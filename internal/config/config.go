@@ -294,14 +294,6 @@ type NotificationsConfig struct {
 	AskRequest      bool `toml:"ask_request"`
 }
 
-// EnvironmentConfig controls the stable startup environment block injected into
-// the model-facing prompt. Enabled nil means the default (enabled); Tools maps a
-// tool name to an explicit executable path when PATH probing is not enough.
-type EnvironmentConfig struct {
-	Enabled *bool             `toml:"enabled"`
-	Tools   map[string]string `toml:"tools"`
-}
-
 // EnvironmentEnabled reports whether startup environment probing should feed the
 // cache-stable system prompt.
 func (c *Config) EnvironmentEnabled() bool {

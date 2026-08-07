@@ -3512,7 +3512,7 @@ func systemMessage(msgs []provider.Message) string {
 func stripLanguagePolicy(s string) string {
 	s = strings.TrimSpace(s)
 	for _, policy := range []string{
-		config.LanguagePolicy,
+		config.LanguagePolicy, config.WorkPracticePolicy,
 		config.UserDecisionPolicy,
 	} {
 		s = strings.TrimSpace(strings.TrimSuffix(s, policy))
