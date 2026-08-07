@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -55,7 +56,7 @@ func TestCompactToProjectionLeavesCanonicalIntact(t *testing.T) {
 	fp := &fakeProvider{reply: "GOAL: ship projection\nFACTS: keep path /tmp/x"}
 	sess := NewSession("sys")
 	// Build enough history that a fold is economical.
-	for i := 0; i < 12; i++ {
+	for i := range 12 {
 		sess.Add(provider.Message{Role: provider.RoleUser, Content: "user turn " + strings.Repeat("x", 80) + " " + string(rune('A'+i%26))})
 		sess.Add(provider.Message{Role: provider.RoleAssistant, Content: "assistant work " + strings.Repeat("y", 200)})
 		sess.Add(provider.Message{Role: provider.RoleAssistant, ToolCalls: []provider.ToolCall{{ID: "c" + string(rune('0'+i%10)), Name: "read", Arguments: `{"path":"f"}`}}})
@@ -115,7 +116,7 @@ func TestCompactToProjectionLeavesCanonicalIntact(t *testing.T) {
 func TestCompactFailureDoesNotWriteMechanicalMarker(t *testing.T) {
 	fp := &fakeProvider{streamErr: errors.New("boom")}
 	sess := NewSession("sys")
-	for i := 0; i < 10; i++ {
+	for range 10 {
 		sess.Add(provider.Message{Role: provider.RoleUser, Content: strings.Repeat("u", 100)})
 		sess.Add(provider.Message{Role: provider.RoleAssistant, Content: strings.Repeat("a", 200)})
 	}
@@ -145,7 +146,7 @@ func TestFixedEarlyUserTurnsStableAcrossCompactions(t *testing.T) {
 	// 30 distinct user turns so a "latest N" strategy would reshuffle. The
 	// first four are large enough that usage-calibrated eligibility would reject
 	// them at 1 token/char, but the fixed fallback estimate accepts them.
-	for i := 0; i < 30; i++ {
+	for i := range 30 {
 		user := "unique-user-fact-" + strings.Repeat(string(rune('a'+i%26)), 20) + "-" + strings.Repeat("0", i%10+1)
 		if i < 4 {
 			user = "fixed-early-" + string(rune('a'+i)) + strings.Repeat("x", 1200)
@@ -160,7 +161,7 @@ func TestFixedEarlyUserTurnsStableAcrossCompactions(t *testing.T) {
 	}
 	firstPrefix := earlyUserPrefix(a.compactionState.Projection.Messages)
 	// Grow the session and compact again.
-	for i := 0; i < 8; i++ {
+	for i := range 8 {
 		sess.Add(provider.Message{Role: provider.RoleUser, Content: "later-fact-" + strings.Repeat("z", 30) + string(rune('0'+i))})
 		sess.Add(provider.Message{Role: provider.RoleAssistant, Content: strings.Repeat("more-", 60)})
 	}
@@ -211,7 +212,7 @@ func earlyUserPrefix(msgs []provider.Message) string {
 func TestLocalOnlyExcludedFromCompactionRequest(t *testing.T) {
 	fp := &fakeProvider{reply: "ok"}
 	sess := NewSession("sys")
-	for i := 0; i < 8; i++ {
+	for range 8 {
 		sess.Add(provider.Message{Role: provider.RoleUser, Content: strings.Repeat("u", 80)})
 		sess.Add(provider.Message{Role: provider.RoleAssistant, Content: strings.Repeat("a", 120)})
 	}
@@ -238,7 +239,7 @@ func TestLocalOnlyExcludedFromCompactionRequest(t *testing.T) {
 func TestArchiveFailureLeavesNoProjection(t *testing.T) {
 	fp := &fakeProvider{reply: "digest"}
 	sess := NewSession("sys")
-	for i := 0; i < 8; i++ {
+	for range 8 {
 		sess.Add(provider.Message{Role: provider.RoleUser, Content: strings.Repeat("u", 80)})
 		sess.Add(provider.Message{Role: provider.RoleAssistant, Content: strings.Repeat("a", 120)})
 	}
@@ -274,12 +275,7 @@ func visibleContext(a *Agent) []provider.Message {
 }
 
 func hasCompactionSummary(msgs []provider.Message) bool {
-	for _, m := range msgs {
-		if isCompactionSummary(m) {
-			return true
-		}
-	}
-	return false
+	return slices.ContainsFunc(msgs, isCompactionSummary)
 }
 
 func joinContents(msgs []provider.Message) string {

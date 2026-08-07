@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
@@ -364,7 +365,7 @@ func formatSummaryMessage(summary string) provider.Message {
 
 // extractLatestSummary returns the body of the newest compaction summary in msgs.
 func extractLatestSummary(msgs []provider.Message) string {
-	for i := len(msgs) - 1; i >= 0; i-- {
+	for i := range slices.Backward(msgs) {
 		if !isCompactionSummary(msgs[i]) {
 			continue
 		}

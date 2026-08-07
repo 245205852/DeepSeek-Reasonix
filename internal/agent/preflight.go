@@ -25,10 +25,7 @@ func (a *Agent) contextPreflight(ctx context.Context, trigger string) error {
 	cacheKey := a.currentPromptCacheKey()
 	est := estimateMessagesTokens(provider.ModelMessages(msgs))
 	_, _, high := a.compactThresholds()
-	force := int(float64(a.contextWindow) * a.compactForceRatio)
-	if force < high {
-		force = high
-	}
+	force := max(int(float64(a.contextWindow)*a.compactForceRatio), high)
 
 	// Prefer an existing valid projection when it still covers the pressure.
 	if st := a.compactionState; projectionValid(st, msgs, version, cacheKey) {
@@ -61,7 +58,7 @@ func (a *Agent) contextPreflight(ctx context.Context, trigger string) error {
 	outcome, err := a.compactToProjection(ctx, trigger, "", forceCompact)
 	if err != nil {
 		if est >= force {
-			return fmt.Errorf("%w: %v", ErrCompactionRequired, err)
+			return fmt.Errorf("%w", errors.Join(ErrCompactionRequired, err))
 		}
 		a.sink.Emit(event.Event{
 			Kind:   event.Notice,

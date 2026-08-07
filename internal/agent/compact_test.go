@@ -148,15 +148,6 @@ func TestPinnedPrefixLen(t *testing.T) {
 	}
 }
 
-func snapshotContents(s *Session) []string {
-	msgs := s.Snapshot()
-	out := make([]string, len(msgs))
-	for i, m := range msgs {
-		out[i] = m.Content
-	}
-	return out
-}
-
 func TestKeepIndexesKeepsSiblingToolResultsForKeptError(t *testing.T) {
 	region := []provider.Message{
 		{Role: provider.RoleAssistant, ToolCalls: []provider.ToolCall{
@@ -711,7 +702,7 @@ func TestPartitionFoldSmallTurnWindowIsPositionFixed(t *testing.T) {
 	// every compaction and crater the server-side prefix cache.
 	a := &Agent{}
 	var region []provider.Message
-	for i := 0; i < 25; i++ {
+	for i := range 25 {
 		region = append(region, provider.Message{Role: provider.RoleUser, Content: fmt.Sprintf("small turn %d", i)})
 	}
 	kept, fold := a.partitionFold(region)
@@ -722,7 +713,7 @@ func TestPartitionFoldSmallTurnWindowIsPositionFixed(t *testing.T) {
 		t.Fatalf("folded %d turns, want 5 (turns beyond the fixed window)", len(fold))
 	}
 	// The kept turns must be the FIRST ones in order (positions 0..19).
-	for i := 0; i < maxKeepSmallUserTurns; i++ {
+	for i := range maxKeepSmallUserTurns {
 		want := fmt.Sprintf("small turn %d", i)
 		if got := UserMessageText(kept[i]); got != want {
 			t.Fatalf("kept[%d]=%q, want %q — keep window must be the leading turns", i, got, want)
