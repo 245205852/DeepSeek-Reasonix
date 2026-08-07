@@ -10,6 +10,7 @@ import { app, onEvent, onReady, onRuntimeRebuilt } from "./bridge";
 import { invalidateCache } from "./composerHistory";
 import { formatGuardianAssessmentNotice } from "./guardianEvents";
 import { createRafBatch } from "./rafBatch";
+import { applyLiveSegments, coalesceStreamDeltas, completeLiveReasoning, type StreamDeltaEntry, type StreamSegment } from "./streamDeltaBatch";
 import { t, type DictKey } from "./i18n";
 import { sameTodoList } from "./todoVisibility";
 import { fileDiffFromWire, summarize, summarizeFileDiff, type ToolFileDiff } from "./tools";
@@ -726,6 +727,7 @@ function compactArchivedToolItems(items: Item[]): Item[] {
 
 type Action =
   | { type: "event"; e: WireEvent }
+  | { type: "stream_batch"; segments: StreamSegment[] }
   | { type: "user"; text: string; submitText?: string; seq: number; deliveryRecovery?: boolean }
   | { type: "unsend" }
   | { type: "send_failed"; error: string }
@@ -978,15 +980,21 @@ function liveReasoningDurationMs(live?: LiveStream): number | undefined {
   return completedAt - live.reasoningStartedAt;
 }
 
-function completeLiveReasoning(live: LiveStream, now = Date.now()): LiveStream {
-  if (!live.reasoning || live.reasoningCompletedAt) {
-    return { ...live, reasoningComplete: live.reasoning !== "" || live.reasoningComplete };
-  }
-  return {
-    ...live,
-    reasoningComplete: true,
-    reasoningCompletedAt: now,
-  };
+// applyDeltaSegments folds ordered stream segments into the assistant's live
+// stream in one state transition. Assumes applyEvent's preamble already ran.
+function applyDeltaSegments(s: State, segments: StreamSegment[]): State {
+  const { items, id, seq } = ensureAssistant(s);
+  const base = s.live?.id === id ? s.live : { id, text: "", reasoning: "", reasoningComplete: false };
+  return { ...s, items, live: applyLiveSegments(base, segments, Date.now()), currentAssistant: id, seq };
+}
+
+// applyStreamBatch is the stream_batch action: one frame's deltas, one reducer
+// pass, one notification. Mirrors applyEvent's preamble for delta events.
+function applyStreamBatch(s: State, segments: StreamSegment[]): State {
+  if (s.discardTurn) return s;
+  if (s.pendingUser !== undefined) s = flushPendingUser(s);
+  if (s.retry) s = { ...s, retry: undefined };
+  return applyDeltaSegments(s, segments);
 }
 
 /** Closed + open user-wait ms for the active turn (approval/ask). */
@@ -1332,23 +1340,8 @@ function applyEvent(s: State, e: WireEvent): State {
       };
     }
     case "text":
-    case "reasoning": {
-      const { items, id, seq } = ensureAssistant(s);
-      const delta = e.text ?? e.reasoning ?? "";
-      const base = s.live?.id === id ? s.live : { id, text: "", reasoning: "", reasoningComplete: false };
-      const now = Date.now();
-      const live =
-        e.kind === "text"
-          ? { ...completeLiveReasoning(base, now), text: base.text + delta }
-          : {
-              ...base,
-              reasoning: base.reasoning + delta,
-              reasoningComplete: false,
-              reasoningStartedAt: base.reasoningStartedAt ?? (delta ? now : undefined),
-              reasoningCompletedAt: undefined,
-            };
-      return { ...s, items, live, currentAssistant: id, seq };
-    }
+    case "reasoning":
+      return applyDeltaSegments(s, [{ kind: e.kind, delta: e.text ?? e.reasoning ?? "" }]);
     case "message": {
       const existingAssistant =
         s.currentAssistant === undefined
@@ -1973,6 +1966,7 @@ export function reducer(s: State, a: Action): State {
     case "reset": return { ...initialState, meta: metaWithoutCanonicalTodos(s.meta), context: { used: 0, window: s.context.window, sessionTokens: 0, compactRatio: s.context.compactRatio }, balance: s.balance, effort: s.effort, jobs: s.jobs, hydrating: s.hydrating, hydrateReason: s.hydrateReason, hydrateError: s.hydrateError, hydrateHistoryLoaded: s.hydrateHistoryLoaded, hydratePlaceholderItems: s.hydratePlaceholderItems, backendActivationPending: s.backendActivationPending, sessionGen: s.sessionGen + 1, promptEpoch: s.promptEpoch + 1 };
     case "context_panel_refresh": return { ...s, contextPanelSeq: s.contextPanelSeq + 1 };
     case "event": return applyEvent(s, a.e);
+    case "stream_batch": return applyStreamBatch(s, a.segments);
     default: return s;
   }
 }
@@ -2452,8 +2446,8 @@ export function useController() {
       states.set(tabId, next);
       notifyLiveListeners(tabId);
       const streamDeltaOnly =
-        action.type === "event" &&
-        (action.e.kind === "text" || action.e.kind === "reasoning") &&
+        (action.type === "stream_batch" ||
+          (action.type === "event" && (action.e.kind === "text" || action.e.kind === "reasoning"))) &&
         prev.items === next.items &&
         prev.currentAssistant === next.currentAssistant &&
         prev.pendingUser === next.pendingUser &&
@@ -2921,8 +2915,8 @@ export function useController() {
   }, [clearCancelReconcileTimer, reconcileTabRuntime]);
 
   useEffect(() => {
-    const textBatch = createRafBatch<{ tabId: string; e: WireEvent }>((batch) => {
-      for (const { tabId, e } of batch) dispatchTo(tabId, { type: "event", e });
+    const textBatch = createRafBatch<StreamDeltaEntry>((batch) => {
+      for (const b of coalesceStreamDeltas(batch)) dispatchTo(b.tabId, { type: "stream_batch", segments: b.segments });
     });
     const off = onEvent((e) => {
       // Untagged compatibility events belong to the tab that the backend has
