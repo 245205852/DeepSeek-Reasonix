@@ -140,6 +140,8 @@ func runSwebenchInstance(o swebenchOpts, inst swebenchInstance) (result, string)
 	return r, patch
 }
 
+const patchArgBudget = 16 << 10
+
 // extractTestbedPatch drops only binary entries, which git apply cannot carry;
 // all text files are retained and paths are passed as argv.
 func extractTestbedPatch(container string) (string, error) {
@@ -155,17 +157,56 @@ func extractTestbedPatch(container string) (string, error) {
 	if len(files) == 0 {
 		return "", nil
 	}
-	args := testbedPatchDiffArgs(container, files)
-	patch, err := dockerOutput(args...)
+	batches, err := patchFileBatches(container, files)
 	if err != nil {
-		return "", fmt.Errorf("diff: %s", firstLine(patch))
+		return "", fmt.Errorf("diff args: %w", err)
 	}
-	return patch, nil
+	var patch strings.Builder
+	for _, batch := range batches {
+		out, err := dockerOutput(testbedPatchDiffArgs(container, batch)...)
+		if err != nil {
+			return "", fmt.Errorf("diff: %s", firstLine(out))
+		}
+		patch.WriteString(out)
+	}
+	return patch.String(), nil
 }
 
 func testbedPatchDiffArgs(container string, files []string) []string {
 	return append([]string{"exec", container, "git", "--literal-pathspecs", "-C", "/testbed",
 		"diff", "--cached", "--no-renames", "--"}, files...)
+}
+
+func patchFileBatches(container string, files []string) ([][]string, error) {
+	baseBytes := argvBytes(testbedPatchDiffArgs(container, nil))
+	var batches [][]string
+	current := make([]string, 0)
+	currentBytes := baseBytes
+	for _, path := range files {
+		pathBytes := len(path) + 1
+		if baseBytes+pathBytes > patchArgBudget {
+			return nil, fmt.Errorf("path %q exceeds the %d-byte argv budget", path, patchArgBudget)
+		}
+		if len(current) > 0 && currentBytes+pathBytes > patchArgBudget {
+			batches = append(batches, current)
+			current = make([]string, 0)
+			currentBytes = baseBytes
+		}
+		current = append(current, path)
+		currentBytes += pathBytes
+	}
+	if len(current) > 0 {
+		batches = append(batches, current)
+	}
+	return batches, nil
+}
+
+func argvBytes(args []string) int {
+	total := 0
+	for _, arg := range args {
+		total += len(arg) + 1
+	}
+	return total
 }
 
 // patchFileList returns every text path from numstat, excluding binary entries.

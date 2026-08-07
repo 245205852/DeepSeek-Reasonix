@@ -237,3 +237,36 @@ func TestTestbedPatchDiffArgsTreatPathsLiterally(t *testing.T) {
 		t.Fatalf("patch diff args = %v, want %v", got, want)
 	}
 }
+
+func TestPatchFileBatchesBoundArgBytesAndPreserveOrder(t *testing.T) {
+	files := make([]string, 2000)
+	for i := range files {
+		files[i] = "generated.txt"
+	}
+
+	batches, err := patchFileBatches("agent-123", files)
+	if err != nil {
+		t.Fatalf("patchFileBatches: %v", err)
+	}
+	if len(batches) < 2 {
+		t.Fatalf("batches = %d, want multiple batches", len(batches))
+	}
+
+	var got []string
+	for _, batch := range batches {
+		if bytes := argvBytes(testbedPatchDiffArgs("agent-123", batch)); bytes > patchArgBudget {
+			t.Fatalf("batch argv bytes = %d, budget = %d", bytes, patchArgBudget)
+		}
+		got = append(got, batch...)
+	}
+	if !reflect.DeepEqual(got, files) {
+		t.Fatalf("batched paths changed: got %d paths, want %d", len(got), len(files))
+	}
+}
+
+func TestPatchFileBatchesRejectOversizedPath(t *testing.T) {
+	path := strings.Repeat("x", patchArgBudget)
+	if _, err := patchFileBatches("agent-123", []string{path}); err == nil {
+		t.Fatal("oversized path must be rejected")
+	}
+}
