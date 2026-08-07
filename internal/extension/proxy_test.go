@@ -2,7 +2,6 @@ package extension
 
 import (
 	"context"
-	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -76,6 +75,4 @@ func TestStableProxyReplaceCancelsInFlight(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("in-flight call did not complete after replace")
 	}
-	var wg sync.WaitGroup
-	_ = wg
 }

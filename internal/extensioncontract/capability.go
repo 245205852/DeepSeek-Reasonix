@@ -110,10 +110,6 @@ func (r Requirement) Validate() error {
 			return fmt.Errorf("requirement %s: %w", r.Key, err)
 		}
 	}
-	if requiresSchemaHash(r.Key.Kind) && strings.TrimSpace(r.SchemaHash) == "" && strings.TrimSpace(r.Version) != "" {
-		// Exact-version pins for schema-bearing kinds should carry a hash when known.
-		// Range-only requirements may omit it; mismatch is checked at resolve time.
-	}
 	return nil
 }
 
@@ -164,7 +160,7 @@ func normalizeVersion(v string) string {
 // validateVersionRange accepts a simple comma-separated set of comparisons
 // such as ">=1.0.0", ">=1.0.0,<2.0.0".
 func validateVersionRange(expr string) error {
-	for _, part := range strings.Split(expr, ",") {
+	for part := range strings.SplitSeq(expr, ",") {
 		part = strings.TrimSpace(part)
 		if part == "" {
 			return fmt.Errorf("empty version range clause")
@@ -181,7 +177,7 @@ func validateVersionRange(expr string) error {
 }
 
 func matchVersionRange(expr, version string) bool {
-	for _, part := range strings.Split(expr, ",") {
+	for part := range strings.SplitSeq(expr, ",") {
 		part = strings.TrimSpace(part)
 		op, ver, ok := splitRangeClause(part)
 		if !ok {

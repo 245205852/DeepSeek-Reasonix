@@ -1,6 +1,7 @@
 package extension
 
 import (
+	"errors"
 	"strings"
 	"testing"
 
@@ -91,8 +92,8 @@ func TestDependencyGraphRequiredCycle(t *testing.T) {
 	if err == nil {
 		t.Fatal("cycle accepted")
 	}
-	ge, ok := err.(*GraphError)
-	if !ok || ge.Reason != "dependency_cycle" || len(ge.Cycle) < 2 {
+	var ge *GraphError
+	if !errors.As(err, &ge) || ge.Reason != "dependency_cycle" || len(ge.Cycle) < 2 {
 		t.Fatalf("err = %#v", err)
 	}
 }

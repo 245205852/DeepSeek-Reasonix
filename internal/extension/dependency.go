@@ -2,6 +2,7 @@ package extension
 
 import (
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 
@@ -119,7 +120,7 @@ func BuildDependencyGraph(components []ComponentDescriptor) (*DependencyGraph, e
 
 	// Sort provider lists for determinism.
 	for k, ids := range g.Providers {
-		sort.Slice(ids, func(i, j int) bool { return ids[i] < ids[j] })
+		slices.Sort(ids)
 		g.Providers[k] = ids
 	}
 
@@ -130,11 +131,10 @@ func BuildDependencyGraph(components []ComponentDescriptor) (*DependencyGraph, e
 			var matched []ComponentID
 			for _, pid := range candidates {
 				prov := g.Components[pid]
-				for _, cap := range prov.Provides {
-					if req.SatisfiedBy(cap) {
-						matched = append(matched, pid)
-						break
-					}
+				if slices.ContainsFunc(prov.Provides, func(cap extensioncontract.Capability) bool {
+					return req.SatisfiedBy(cap)
+				}) {
+					matched = append(matched, pid)
 				}
 			}
 			if len(matched) == 0 {
@@ -162,7 +162,7 @@ func BuildDependencyGraph(components []ComponentDescriptor) (*DependencyGraph, e
 		}
 		// Deterministic edge order.
 		if edges := g.Edges[c.ID]; len(edges) > 1 {
-			sort.Slice(edges, func(i, j int) bool { return edges[i] < edges[j] })
+			slices.Sort(edges)
 			g.Edges[c.ID] = edges
 		}
 	}
@@ -170,7 +170,7 @@ func BuildDependencyGraph(components []ComponentDescriptor) (*DependencyGraph, e
 	if cycle := detectRequiredCycle(g); len(cycle) > 0 {
 		return nil, &GraphError{Reason: "dependency_cycle", Cycle: cycle}
 	}
-	sort.Strings(g.Diagnostics)
+	slices.Sort(g.Diagnostics)
 	return g, nil
 }
 
@@ -229,9 +229,9 @@ func detectRequiredCycle(g *DependencyGraph) []ComponentID {
 			switch color[m] {
 			case gray:
 				// Extract cycle from stack.
-				for i := len(stack) - 1; i >= 0; i-- {
-					cycle = append([]ComponentID{stack[i]}, cycle...)
-					if stack[i] == m {
+				for _, id := range slices.Backward(stack) {
+					cycle = append([]ComponentID{id}, cycle...)
+					if id == m {
 						break
 					}
 				}
@@ -252,7 +252,7 @@ func detectRequiredCycle(g *DependencyGraph) []ComponentID {
 	for id := range g.Components {
 		ids = append(ids, id)
 	}
-	sort.Slice(ids, func(i, j int) bool { return ids[i] < ids[j] })
+	slices.Sort(ids)
 	for _, id := range ids {
 		if color[id] == white {
 			if dfs(id) {
@@ -279,7 +279,7 @@ func topoOrder(g *DependencyGraph, reverse bool) []ComponentID {
 		}
 	}
 	for p, list := range consumersOf {
-		sort.Slice(list, func(i, j int) bool { return list[i] < list[j] })
+		slices.Sort(list)
 		consumersOf[p] = list
 	}
 

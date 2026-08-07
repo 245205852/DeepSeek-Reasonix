@@ -12,7 +12,6 @@ func TestEffectScopeDisposeIdempotentAndReverse(t *testing.T) {
 	var order []string
 	s := NewEffectScope(1)
 	for _, id := range []string{"a", "b", "c"} {
-		id := id
 		if err := s.Track(Effect{
 			ID: id, Class: Reversible,
 			Dispose: func(context.Context) error {

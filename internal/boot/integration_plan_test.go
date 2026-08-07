@@ -124,7 +124,7 @@ func TestPlanClassifyIntegration(t *testing.T) {
 func TestRapidReloadPreservesAdmission(t *testing.T) {
 	isolateConfigHome(t)
 	var prev *BuildResult
-	for i := 0; i < 3; i++ {
+	for i := range 3 {
 		var res *BuildResult
 		var err error
 		if prev == nil {

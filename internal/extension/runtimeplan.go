@@ -161,12 +161,8 @@ func DiffRuntimePlan(from, to *DependencyGraph, fromGen, toGen uint64) *RuntimeP
 			}
 		}
 	} else {
-		for _, id := range removed {
-			plan.DrainOrder = append(plan.DrainOrder, id)
-		}
-		for _, id := range reloaded {
-			plan.DrainOrder = append(plan.DrainOrder, id)
-		}
+		plan.DrainOrder = append(plan.DrainOrder, removed...)
+		plan.DrainOrder = append(plan.DrainOrder, reloaded...)
 	}
 	plan.CacheChanged = !plan.IsNoOp()
 	plan.Kind = classifySubgraph(plan, to)

@@ -27,9 +27,9 @@ func TestGoldenLifecycleStates(t *testing.T) {
 		t.Fatal(err)
 	}
 	var doc struct {
-		States         []string `json:"states"`
-		EffectClasses  []string `json:"effectClasses"`
-		Transitions    []struct {
+		States        []string `json:"states"`
+		EffectClasses []string `json:"effectClasses"`
+		Transitions   []struct {
 			From string `json:"from"`
 			To   string `json:"to"`
 		} `json:"transitions"`
@@ -39,11 +39,11 @@ func TestGoldenLifecycleStates(t *testing.T) {
 	}
 	// States must include the fixed machine used by LifecycleRegistry.
 	wantStates := map[string]bool{
-		string(extension.ComponentInactive): true,
+		string(extension.ComponentInactive):  true,
 		string(extension.ComponentPreparing): true,
-		string(extension.ComponentActive): true,
-		string(extension.ComponentDraining): true,
-		string(extension.ComponentFailed): true,
+		string(extension.ComponentActive):    true,
+		string(extension.ComponentDraining):  true,
+		string(extension.ComponentFailed):    true,
 	}
 	for _, s := range doc.States {
 		if !wantStates[s] {

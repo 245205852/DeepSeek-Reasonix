@@ -230,6 +230,7 @@ func (m *Manager) Drain(pluginIDs ...string) {
 // RollbackPlanStart undoes StartPackagesWithPlan ownership transfer:
 //   - Unchanged clients recorded in planAdopted are reattached to previous
 //   - Remaining clients (Added/Reloaded fresh starts) are closed via m.Close()
+//
 // Adopt errors are not swallowed: failed reattach closes the client to avoid leak.
 func (m *Manager) RollbackPlanStart(previous *Manager) {
 	if m == nil {

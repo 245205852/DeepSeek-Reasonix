@@ -8,7 +8,6 @@ import (
 	"reasonix/internal/extension/dispatch"
 	"reasonix/internal/extension/sidecar"
 	"reasonix/internal/extensioncontract"
-	"reasonix/internal/pluginpkg"
 )
 
 // RuntimeReload is previous-generation state for incremental sidecar adoption
@@ -212,9 +211,4 @@ func publishBuildResult(res *BuildResult) {
 	if res.Status != nil {
 		res.Status.PublishedGeneration = gen
 	}
-}
-
-// packageCapabilityCeiling returns the provides list for handshake enforcement.
-func packageCapabilityCeiling(pkg pluginpkg.Package) []extensioncontract.Capability {
-	return pkg.ProvidesCapabilities()
 }

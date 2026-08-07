@@ -316,25 +316,6 @@ func registerControllerDrainCancel(owner *extension.RuntimeOwner, gen uint64, ct
 	})
 }
 
-func failRebuildActivation(res *BuildResult) {
-	if res == nil {
-		return
-	}
-	if res.Snapshot != nil {
-		owner := res.Owner
-		if owner == nil {
-			owner = extension.DefaultRuntimeOwner
-		}
-		owner.Gate.BeginDrain(res.Snapshot.Generation())
-	}
-	if res.Controller != nil && !res.ReusedController {
-		res.Controller.ReleaseResources()
-	}
-	if res.Runtime != nil && !res.ReusedController {
-		_ = res.Runtime.Close()
-	}
-}
-
 func finishRebuildPublish(res *BuildResult, drainMgr *sidecar.Manager, start time.Time) {
 	publishBuildResult(res)
 	if drainMgr != nil && res != nil && res.Plan != nil && !res.ReusedController {

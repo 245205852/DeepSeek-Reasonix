@@ -19,29 +19,20 @@ func rebuildTabRuntime(a *App, tab *WorkspaceTab, old *control.Controller, opts 
 	if tab != nil {
 		tab.lastBuildResult = res
 	}
-	// Mark whether the caller must skip Close of the previous controller.
 	return res, nil
-}
-
-// SameController reports whether rebuild kept the previous controller pointer.
-func sameController(old, next control.SessionAPI) bool {
-	if old == nil || next == nil {
-		return false
-	}
-	return old == next
 }
 
 // RuntimeDoctorReport is the desktop/Wails view of extension runtime diagnostics.
 type RuntimeDoctorReport struct {
-	Text             string `json:"text"`
-	PublishedGen     uint64 `json:"publishedGeneration"`
-	AllowResume      bool   `json:"allowResume"`
-	CleanRollback    bool   `json:"cleanRollback"`
-	HasIrreversible  bool   `json:"hasIrreversible"`
-	NoOpRebuilds     uint64 `json:"noOpRebuilds"`
-	FullRebuilds     uint64 `json:"fullRebuilds"`
-	SubgraphRebuilds uint64 `json:"subgraphRebuilds"`
-	StaleDrops       uint64 `json:"staleDrops"`
+	Text              string `json:"text"`
+	PublishedGen      uint64 `json:"publishedGeneration"`
+	AllowResume       bool   `json:"allowResume"`
+	CleanRollback     bool   `json:"cleanRollback"`
+	HasIrreversible   bool   `json:"hasIrreversible"`
+	NoOpRebuilds      uint64 `json:"noOpRebuilds"`
+	FullRebuilds      uint64 `json:"fullRebuilds"`
+	SubgraphRebuilds  uint64 `json:"subgraphRebuilds"`
+	StaleDrops        uint64 `json:"staleDrops"`
 	AdmissionRejected uint64 `json:"admissionRejected"`
 }
 

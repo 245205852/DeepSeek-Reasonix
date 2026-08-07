@@ -18,12 +18,8 @@ func TestPublishGateStaleAndAdmit(t *testing.T) {
 	if !g.AdmitNewWork(2) || g.AdmitNewWork(1) {
 		t.Fatal("admit checks failed")
 	}
-	if !g.IsDraining(0) && !g.IsDraining(1) {
-		// gen 1 was previous published → draining after publish(2)
-		if !g.IsDraining(1) {
-			// Wait: first Publish(2) with published=0 doesn't drain 0.
-			// Publish again from 2 to 3.
-		}
+	if got := g.DrainingGenerations(); len(got) != 0 {
+		t.Fatalf("first publish unexpectedly drained generations: %v", got)
 	}
 	g.Publish(3)
 	if !g.IsDraining(2) {

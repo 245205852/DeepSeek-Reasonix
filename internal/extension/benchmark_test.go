@@ -76,7 +76,7 @@ func benchmarkBuildLatency(b *testing.B, builder *Builder) {
 func BenchmarkDependencyGraphAndPlan(b *testing.B) {
 	for _, n := range []int{8, 64, 256} {
 		comps := make([]ComponentDescriptor, 0, n)
-		for i := 0; i < n; i++ {
+		for i := range n {
 			id := ComponentID("plugin/" + benchmarkIndex(i%256) + benchmarkIndex(i/256))
 			comps = append(comps, ComponentDescriptor{
 				ID: id,

@@ -30,7 +30,7 @@ func TestGraphAndPlanLatencyBaseline(t *testing.T) {
 
 func TestEffectScopeDisposeBaseline(t *testing.T) {
 	s := NewEffectScope(1)
-	for i := 0; i < 64; i++ {
+	for i := range 64 {
 		id := "e" + itoa(i)
 		_ = s.Track(Effect{ID: id, Class: Reversible, Dispose: func(context.Context) error { return nil }})
 	}
