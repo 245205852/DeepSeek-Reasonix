@@ -3,11 +3,11 @@
     "banner": 0,
     "commented-code": 0,
     "essay": 4114,
-    "file-size": 73373,
+    "file-size": 73580,
     "layering": 1,
     "marker": 0,
     "narrative": 66,
-    "test-file-size": 64551
+    "test-file-size": 64694
   },
   "files": {
     "cmd/e2ebench/main.go": {
@@ -226,7 +226,7 @@
     },
     "desktop/updater.go": {
       "essay": 5,
-      "file-size": 641
+      "file-size": 649
     },
     "desktop/updater_app.go": {
       "essay": 4
@@ -1431,7 +1431,7 @@
     },
     "internal/repair/update.go": {
       "essay": 45,
-      "file-size": 2713,
+      "file-size": 2912,
       "narrative": 2
     },
     "internal/repair/update_handoff_darwin_smoke_test.go": {
@@ -1448,7 +1448,7 @@
     },
     "internal/repair/update_test.go": {
       "essay": 2,
-      "test-file-size": 2949
+      "test-file-size": 3092
     },
     "internal/sandbox/sandbox.go": {
       "essay": 11
