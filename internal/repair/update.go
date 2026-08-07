@@ -107,20 +107,13 @@ var ErrPendingUpdateAwaitingHealth = errors.New("previous update is awaiting sta
 
 var errPendingUpdateForeignInstall = errors.New("pending update belongs to a different installation")
 
-// pendingUpdateHealthStaleAfter is how long a probationary update may wait for
-// startup health confirmation before reconciliation treats a still-running
-// target as healthy. Without this bound, a missed MarkUpdateHealthy call
-// permanently blocks every later in-app update while the product is already
-// usable. Tests may override the duration.
+// pendingUpdateHealthStaleAfter bounds how long Reconcile waits for startup
+// health before auto-committing a still-running probationary target.
 var pendingUpdateHealthStaleAfter = 24 * time.Hour
 
 // PendingUpdateReconcileResult describes the safe transition performed before
-// startup or a new install. Cleared means a pre-publish transaction was
-// cancelled while every original target still matched its prepared state.
-// RolledBack means replacement had started and the verified previous release
-// unit was restored. Healthy means a probationary target was committed after
-// install evidence (and, for the automatic path, age) proved the running
-// release is already usable.
+// startup or a new install. Cleared = pre-publish cancel; RolledBack = verified
+// restore; Healthy = probationary target committed after install evidence.
 type PendingUpdateReconcileResult struct {
 	Pending        bool   `json:"pending"`
 	Cleared        bool   `json:"cleared,omitempty"`
@@ -134,9 +127,7 @@ type PendingUpdateReconcileResult struct {
 }
 
 // UpdateVersionsEqual reports whether two release version strings name the same
-// release. Desktop build injection and pending-update records historically
-// disagreed on a leading "v", which silently skipped health commits and left
-// AwaitingHealth transactions stranded forever.
+// release, normalizing an optional leading "v"/"V" prefix.
 func UpdateVersionsEqual(a, b string) bool {
 	a = strings.TrimSpace(a)
 	b = strings.TrimSpace(b)
@@ -160,9 +151,8 @@ func normalizeUpdateVersion(v string) string {
 	return "v" + strings.TrimPrefix(strings.TrimPrefix(v, "v"), "V")
 }
 
-// pendingUpdateHealthIsStaleOverride lets tests force the stale decision without
-// rewriting CreatedAt (which is part of the transaction identity and would
-// break install-evidence binding).
+// pendingUpdateHealthIsStaleOverride forces the stale decision in tests without
+// rewriting CreatedAt (part of transaction identity).
 var pendingUpdateHealthIsStaleOverride func(*UpdateTransaction) bool
 
 func pendingUpdateHealthIsStale(tx *UpdateTransaction) bool {
@@ -2068,10 +2058,7 @@ func ReconcilePendingUpdate(runningVersion string) (PendingUpdateReconcileResult
 	}
 	if UpdateVersionsEqual(runningVersion, tx.ToVersion) &&
 		pendingUpdateInstalledForHealth(tx) {
-		// A still-running probationary target whose health commit never fired
-		// (version-prefix mismatch, aborted post-DOM task, etc.) used to block
-		// every later update forever. After the stale window, commit the
-		// installed release so the product can self-heal while remaining in use.
+		// After the stale window, auto-commit a still-running probationary target.
 		if pendingUpdateHealthIsStale(tx) {
 			if healErr := MarkUpdateHealthy(runningVersion); healErr == nil && !PendingUpdateExists() {
 				result.Pending = false
@@ -2130,9 +2117,7 @@ func ReconcilePendingUpdate(runningVersion string) (PendingUpdateReconcileResult
 }
 
 // CommitProbationaryPendingUpdate commits a still-running probationary update
-// when the installed release unit matches the pending target. It is the shared
-// heal path used by startup health, user-initiated updates, and explicit
-// abandon. Returns true when the pending transaction no longer exists.
+// when install evidence matches. Returns true when the marker is gone.
 func CommitProbationaryPendingUpdate(runningVersion string) (bool, error) {
 	if strings.TrimSpace(runningVersion) == "" {
 		return false, nil
@@ -2154,18 +2139,14 @@ func CommitProbationaryPendingUpdate(runningVersion string) (bool, error) {
 }
 
 // AbandonPendingUpdate is the user-initiated recovery path for a stuck
-// transaction. Prefer committing a still-running probationary target; otherwise
-// cancel or roll back through the normal reconcile path. Returns a result
-// describing the transition performed.
+// transaction: commit if possible, else reconcile, else force-retire.
 func AbandonPendingUpdate(runningVersion string) (PendingUpdateReconcileResult, error) {
 	committed, commitErr := CommitProbationaryPendingUpdate(runningVersion)
 	if commitErr == nil && committed {
 		return PendingUpdateReconcileResult{Cleared: true, Healthy: true}, nil
 	}
 	if commitErr != nil {
-		// MarkUpdateHealthy can fail on a drifted backup while the live
-		// replacement is still installed. Continue into reconcile / force-retire
-		// so an explicit discard is not blocked by a broken rollback artifact.
+		// Keep going: a drifted backup must not block explicit discard.
 		slog.Debug("repair: probationary commit during abandon failed; continuing",
 			"err", commitErr)
 	}
@@ -2173,9 +2154,7 @@ func AbandonPendingUpdate(runningVersion string) (PendingUpdateReconcileResult, 
 	if reconcileErr == nil {
 		return result, nil
 	}
-	// AwaitingHealth after a failed commit is still stuck. When the live
-	// target is installed and the user explicitly abandons, retire the marker
-	// and best-effort remove backups so later updates can proceed.
+	// Force-retire when still AwaitingHealth with the live target installed.
 	if errors.Is(reconcileErr, ErrPendingUpdateAwaitingHealth) {
 		if retired, retireErr := forceRetireProbationaryPendingUpdate(runningVersion); retireErr != nil {
 			return result, fmt.Errorf("abandon pending update: %w", retireErr)
@@ -2193,9 +2172,8 @@ func AbandonPendingUpdate(runningVersion string) (PendingUpdateReconcileResult, 
 	return result, reconcileErr
 }
 
-// forceRetireProbationaryPendingUpdate removes a probationary transaction that
-// already owns the running install when MarkUpdateHealthy cannot finish (for
-// example a drifted backup digest). It never rolls the live release unit back.
+// forceRetireProbationaryPendingUpdate retires a probationary marker when the
+// live target is installed but MarkUpdateHealthy cannot finish (e.g. bad backup).
 func forceRetireProbationaryPendingUpdate(runningVersion string) (bool, error) {
 	tx, err := ReadPendingUpdate()
 	if err != nil {
@@ -2204,9 +2182,7 @@ func forceRetireProbationaryPendingUpdate(runningVersion string) (bool, error) {
 		}
 		return false, err
 	}
-	// Use target-only evidence: health paths also require intact rollback
-	// backups, but explicit abandon must free a stuck marker when the live
-	// replacement is already installed and only the backup artifact is broken.
+	// Target-only evidence: broken rollback backups must not block discard.
 	if !UpdateVersionsEqual(runningVersion, tx.ToVersion) || !pendingUpdateTargetInstalled(tx) {
 		return false, nil
 	}
@@ -2243,8 +2219,6 @@ func forceRetireProbationaryPendingUpdate(runningVersion string) (bool, error) {
 	if !reflect.DeepEqual(current, recheck) {
 		return false, fmt.Errorf("force retire probationary update: pending transaction changed while waiting")
 	}
-	// Require only that the replacement is still installed; skip backup digest
-	// matching so a broken rollback artifact cannot permanently lock updates.
 	verifyInstalled := func() error {
 		if !pendingUpdateTargetInstalled(recheck) {
 			return fmt.Errorf("installed target no longer matches the pending transaction")
@@ -2260,10 +2234,8 @@ func forceRetireProbationaryPendingUpdate(runningVersion string) (bool, error) {
 	return true, nil
 }
 
-// pendingUpdateTargetInstalled reports whether the live replacement unit for a
-// probationary transaction is still installed. Unlike pendingUpdateInstalledForHealth,
-// it does not require intact rollback backups — used only by explicit abandon
-// force-retire so a corrupted backup cannot permanently block later updates.
+// pendingUpdateTargetInstalled reports live replacement install evidence only
+// (no rollback backup requirement). Used by force-retire on explicit abandon.
 func pendingUpdateTargetInstalled(tx *UpdateTransaction) bool {
 	if tx == nil {
 		return false

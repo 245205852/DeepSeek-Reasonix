@@ -404,9 +404,7 @@ func TestAbandonPendingUpdateForceRetiresWhenBackupDigestBroken(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Drift the prepared backup so MarkUpdateHealthy refuses to commit while
-	// the live replacement unit remains installed. Explicit abandon must still
-	// retire the marker via force-retire.
+	// Corrupt backup: MarkUpdateHealthy fails; abandon must still force-retire.
 	if strings.TrimSpace(tx.BackupPath) == "" {
 		t.Fatal("expected prepared backup path")
 	}

@@ -278,11 +278,9 @@ func (a *App) reconcilePendingUpdateForRequest(requestID string, meta *cachedUpd
 		} else if archived {
 			slog.Info("desktop: archived superseded update before install")
 		}
-		// Visible UI at the pending target version is health evidence. Commit a
-		// probationary transaction before reconcile so a missed post-DOM health
-		// task does not block the next update forever.
-		// Exact identity commit and the broader probationary commit are both
-		// best-effort: a failed Exact path must not skip CommitProbationary.
+		// Visible UI at the pending target is health evidence — heal before
+		// reconcile so a missed post-DOM task does not block the next update.
+		// Exact and probationary commits are independent best-effort paths.
 		refreshPendingUpdateHealthIdentity(a)
 		if err := a.commitPendingUpdateHealth(); err != nil {
 			slog.Debug("desktop: commit healthy update before install", "err", err)
@@ -295,8 +293,7 @@ func (a *App) reconcilePendingUpdateForRequest(requestID string, meta *cachedUpd
 	}
 	if _, err := reconcilePendingUpdateForInstall(version); err != nil {
 		if errors.Is(err, repair.ErrPendingUpdateAwaitingHealth) {
-			// One more heal attempt after refresh: version-prefix mismatches used
-			// to leave AwaitingHealth permanently even though the product works.
+			// Retry heal after identity refresh (covers version-prefix mismatch).
 			refreshPendingUpdateHealthIdentity(a)
 			if commitErr := a.commitPendingUpdateHealth(); commitErr != nil {
 				slog.Debug("desktop: commit healthy update on awaiting-health retry", "err", commitErr)
