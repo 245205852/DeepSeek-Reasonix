@@ -902,34 +902,6 @@ func (c *Coordinator) planWithTools(ctx context.Context, input string) (string, 
 	return "", fmt.Errorf("planner finished without producing a plan")
 }
 
-// rollbackPlannerTurn discards a failed planning turn from the planner session.
-// Without a mid-turn rewrite the pre-turn snapshot is restored exactly. When
-// auto-compaction rewrote the log during the turn, restoring the snapshot would
-// also revert the compaction — wasting its summarizer call and re-growing the
-// prompt the fold just paid to shrink — so only the trailing plain user
-// messages are dropped (the dangling turn input plus any steer/nudge messages):
-// those are what would produce consecutive user roles on the next plan, while
-// completed tool rounds and the compaction digest stay coherent history.
-func (c *Coordinator) rollbackPlannerTurn(before []provider.Message, rewriteBefore int) {
-	if c.plannerSess.RewriteVersion() == rewriteBefore {
-		c.plannerSess.Replace(before)
-		return
-	}
-	msgs := c.plannerSess.Snapshot()
-	for len(msgs) > 0 {
-		last := msgs[len(msgs)-1]
-		if last.Role == provider.RoleAssistant && len(last.ToolCalls) > 0 {
-			msgs = msgs[:len(msgs)-1]
-			continue
-		}
-		if last.Role != provider.RoleUser || isCompactionSummary(last) {
-			break
-		}
-		msgs = msgs[:len(msgs)-1]
-	}
-	c.plannerSess.Replace(msgs)
-}
-
 func plannerResearchPauseDetail(err error) string {
 	var maxPause *maxStepsPause
 	if errors.As(err, &maxPause) {
