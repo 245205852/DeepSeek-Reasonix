@@ -2167,7 +2167,7 @@ func AbandonPendingUpdate(runningVersion string) (PendingUpdateReconcileResult, 
 		}
 	}
 	if commitErr != nil && reconcileErr != nil {
-		return result, fmt.Errorf("abandon pending update: %w (also: %v)", reconcileErr, commitErr)
+		return result, fmt.Errorf("abandon pending update: %w", errors.Join(reconcileErr, commitErr))
 	}
 	return result, reconcileErr
 }
