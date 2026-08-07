@@ -123,13 +123,11 @@ type Controller struct {
 	// memory owns the loaded memory snapshot, the pending turn-tail notes queue,
 	// and write serialization behind its own locks, off c.mu — so a memory-panel
 	// save never stalls an approval or status poll. See memory.go.
-	memory            memoryManager
-	cleanup           func()
-	responseLanguage  string
-	reasoningLanguage string
-	// disableColdResumePrune skips stale-tool-result elision on cold resume.
-	// Zero value keeps the prune on (the cheaper default).
-	disableColdResumePrune bool
+	memory                 memoryManager
+	cleanup                func()
+	responseLanguage       string
+	reasoningLanguage      string
+	disableColdResumePrune bool // legacy; rewrite elision removed, still gates cold notice
 	// testCacheColdAfter overrides cacheColdAfter() in tests. Zero uses the
 	// vendor-aware resolution from config.
 	testCacheColdAfter time.Duration
@@ -486,9 +484,8 @@ type Options struct {
 	// means no transient injection because the stable language policy already
 	// follows the conversation language.
 	ReasoningLanguage string
-	// DisableColdResumePrune skips the stale-tool-result elision that otherwise
-	// runs when a session resumes past the provider cache window. Zero value
-	// keeps the prune on (the cheaper default).
+	// DisableColdResumePrune suppresses the cold-resume cache-state notice.
+	// Resume never rewrites history regardless of this flag.
 	DisableColdResumePrune bool
 	// Shell is the interpreter user-invoked "!" commands run under, so /shell
 	// matches the agent's configured [tools.shell] choice. Zero value = auto.
@@ -537,10 +534,9 @@ type Options struct {
 	SessionTemp *sessiontemp.Manager
 }
 
-// New builds a Controller. A nil Sink is replaced with event.Discard. When the
-// caller did not already provide a goalUsageTee (see NewGoalUsageTee), the
-// public sink is wrapped in one so billable usage can be accounted to Goal
-// budgets; frontends observe the same forwarded stream either way.
+// New builds a Controller. A nil Sink becomes event.Discard; unless the caller
+// already provided a goalUsageTee (NewGoalUsageTee), the sink is wrapped in one
+// so billable usage can be accounted to Goal budgets.
 func New(opts Options) *Controller {
 	sink := opts.Sink
 	if nilutil.IsNil(sink) {
@@ -551,6 +547,7 @@ func New(opts Options) *Controller {
 		usageTee = NewGoalUsageTee(sink).(*goalUsageTee)
 		sink = usageTee
 	}
+	sink = event.Coalesce(sink, event.DefaultStreamDeltaWindow)
 	pluginCtx := opts.PluginCtx
 	if pluginCtx == nil {
 		pluginCtx = context.Background()
@@ -2884,6 +2881,7 @@ func (c *Controller) NewSession() error {
 	}
 	c.setActiveJobSession(c.SessionPath())
 	c.executor.SetSession(agent.NewSession(c.systemPrompt))
+	c.bindExecutorProjection(c.SessionPath(), false)
 	if c.guardianSess != nil {
 		c.guardianSess.Reset()
 	}
@@ -2968,6 +2966,7 @@ func (c *Controller) ClearSession() error {
 	}
 	c.setActiveJobSession(c.SessionPath())
 	c.executor.SetSession(agent.NewSession(c.systemPrompt))
+	c.bindExecutorProjection(c.SessionPath(), false)
 	if c.guardianSess != nil {
 		c.guardianSess.Reset()
 	}
@@ -3183,11 +3182,14 @@ func (c *Controller) forkNamed(turn int, name string, switchToFork bool) (string
 		// See snapshotMu: the swap must not interleave with an in-flight save.
 		c.snapshotMu.Lock()
 		c.executor.SetSession(sess)
-		c.ResetPlannerSession()
 		c.mu.Lock()
 		c.sessionPath = newPath
 		c.guardianPath = guardian.PathFor(newPath)
 		c.mu.Unlock()
+		// New lineage: rebind sidecar path and clear any in-memory projection
+		// without deleting the parent session's .context.json.
+		c.bindExecutorProjection(newPath, false)
+		c.ResetPlannerSession()
 		c.setActiveJobSession(newPath)
 		c.rebindCheckpoints(newPath)
 		// A historical fork rewinds before later failures, so it starts with no
@@ -3267,11 +3269,12 @@ func (c *Controller) Branch(name string) (string, error) {
 	// See snapshotMu: the swap must not interleave with an in-flight save.
 	c.snapshotMu.Lock()
 	c.executor.SetSession(sess)
-	c.ResetPlannerSession()
 	c.mu.Lock()
 	c.sessionPath = newPath
 	c.guardianPath = guardian.PathFor(newPath)
 	c.mu.Unlock()
+	c.bindExecutorProjection(newPath, false)
+	c.ResetPlannerSession()
 	c.setActiveJobSession(newPath)
 	c.rebindCheckpoints(newPath)
 	if c.guardianSess != nil {
@@ -3330,11 +3333,12 @@ func (c *Controller) SwitchBranch(ref string) (agent.BranchInfo, error) {
 	if c.executor != nil {
 		c.executor.SetSession(loaded)
 	}
-	c.ResetPlannerSession()
 	c.mu.Lock()
 	c.sessionPath = match.Path
 	c.guardianPath = guardian.PathFor(match.Path)
 	c.mu.Unlock()
+	c.bindExecutorProjection(match.Path, true)
+	c.ResetPlannerSession()
 	c.setActiveJobSession(match.Path)
 	c.rebindCheckpoints(match.Path)
 	c.restoreTerminalGoalTodos(match.Path)
@@ -3458,11 +3462,12 @@ func (c *Controller) Resume(s *agent.Session, path string) {
 	if c.executor != nil {
 		c.executor.SetSession(s)
 	}
-	c.ResetPlannerSession()
 	c.mu.Lock()
 	c.sessionPath = path
 	c.guardianPath = guardian.PathFor(path)
 	c.mu.Unlock()
+	c.bindExecutorProjection(path, true)
+	c.ResetPlannerSession()
 	c.setActiveJobSession(path)
 	c.rebindCheckpoints(path)
 	if migPath, migData, migrated := c.goals.restoreFromState(path); migrated {
@@ -3557,36 +3562,6 @@ func (c *Controller) cacheColdAfter() time.Duration {
 		return 24 * time.Hour
 	}
 	return entry.EffectiveCacheTTL()
-}
-
-// maybeColdResumePrune elides stale tool results when a resumed session has
-// been idle past the provider's cache retention, then persists the pruned
-// transcript so the saved file and the prompt stay in sync.
-func (c *Controller) maybeColdResumePrune(path string) {
-	if c.disableColdResumePrune || c.executor == nil || path == "" {
-		return
-	}
-	// Idle time comes from branch meta only — every session the controller has
-	// ever snapshotted carries one. A meta-less transcript (e.g. a legacy import
-	// not yet saved) skips the prune until its first snapshot creates the meta.
-	m, ok, err := agent.LoadBranchMeta(path)
-	if err != nil || !ok || m.UpdatedAt.IsZero() {
-		return
-	}
-	last := m.UpdatedAt
-	if time.Since(last) < c.cacheColdAfter() {
-		return
-	}
-	st, err := c.executor.PruneStaleToolResults()
-	if err != nil || st.Results == 0 {
-		return
-	}
-	c.sink.Emit(event.Event{Kind: event.Notice, Level: event.LevelInfo, Text: fmt.Sprintf(
-		"resumed after %s idle (provider cache expired) — elided %d stale tool results to cheapen the cold restart",
-		time.Since(last).Round(time.Minute), st.Results)})
-	if err := c.SnapshotRewrite(); err != nil {
-		slog.Warn("controller: post-prune snapshot", "err", err)
-	}
 }
 
 // Snapshot writes the executor's conversation to the active session file. No-op
@@ -4018,6 +3993,9 @@ func (c *Controller) commitRecoveredSession(originalPath, reason string, info ag
 	c.sessionPath = info.Path
 	c.guardianPath = guardian.PathFor(info.Path)
 	c.mu.Unlock()
+	// Recovery branch is a new lineage path; do not keep writing the original
+	// session's projection sidecar.
+	c.bindExecutorProjection(info.Path, false)
 	c.setActiveJobSession(info.Path)
 	c.rebindCheckpoints(info.Path)
 	c.transplantInFlightTurnMarker(originalPath, info.Path)
@@ -4030,6 +4008,7 @@ func (c *Controller) adoptDiskSession(path string) bool {
 		return false
 	}
 	c.executor.SetSession(loaded)
+	c.bindExecutorProjection(path, true)
 	c.ResetPlannerSession()
 	c.rebindCheckpoints(path)
 	c.setActiveJobSession(path)
@@ -4565,6 +4544,8 @@ func (c *Controller) setSessionPath(p string, fresh bool) {
 	c.sessionPath = p
 	c.guardianPath = guardian.PathFor(p)
 	c.mu.Unlock()
+	// Fresh paths clear projection; rebinds keep/load the target sidecar.
+	c.bindExecutorProjection(p, !fresh)
 	c.setActiveJobSession(p)
 	c.rebindCheckpoints(p)
 	if fresh {
