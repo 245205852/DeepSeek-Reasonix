@@ -8303,6 +8303,7 @@ func installGatedTestPluginPackage(t *testing.T, mcpServerName string) string {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(root, pluginpkg.NativeManifest), fmt.Appendf(nil, `{
+  "apiVersion": "reasonix.io/plugin/v2",
   "name": "review-helper",
   "version": "1.0.0",
   "mcpServers": {
@@ -9080,6 +9081,7 @@ func TestRemoveMCPServerRejectsPluginManagedServerWithoutDisconnecting(t *testin
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(root, pluginpkg.NativeManifest), fmt.Appendf(nil, `{
+  "apiVersion": "reasonix.io/plugin/v2",
   "name": "superpowers",
   "version": "1.0.0",
   "mcpServers": {

@@ -1,4 +1,4 @@
-// Package uihub implements the host side of the Extension Protocol v1
+// Package uihub implements the host side of the Extension Protocol v2
 // structured UI surface (stage 8a). One Hub serves host/ui/publish and
 // host/ui/request for every sidecar client of a runtime generation:
 // publications are strict-decoded, credential-redacted, and emitted as
@@ -74,6 +74,7 @@ type RequestFunc func(ctx context.Context, req HubRequest) (values map[string]an
 type Options struct {
 	SessionID  string
 	Generation uint64
+	Owner      *extension.RuntimeOwner
 	Emit       func(event.Event)
 	Request    RequestFunc
 	Warn       func(string)
@@ -97,6 +98,7 @@ type Hub struct {
 	mu         sync.Mutex
 	sessionID  string
 	generation uint64
+	owner      *extension.RuntimeOwner
 	emit       func(event.Event)
 	requestFn  RequestFunc
 	warn       func(string)
@@ -108,9 +110,14 @@ type Hub struct {
 
 // New builds a Hub bound to one session ID and generation.
 func New(opts Options) *Hub {
+	owner := opts.Owner
+	if owner == nil {
+		owner = extension.DefaultRuntimeOwner
+	}
 	return &Hub{
 		sessionID:  strings.TrimSpace(opts.SessionID),
 		generation: opts.Generation,
+		owner:      owner,
 		emit:       opts.Emit,
 		requestFn:  opts.Request,
 		warn:       opts.Warn,
@@ -221,7 +228,7 @@ func (h *Hub) gate(pluginID, sessionID string, generation uint64) (stale bool, e
 	}
 	// Also drop generations that have been superseded on the process gate
 	// (older than the published generation after a successful rebuild).
-	if extension.DefaultPublishGate().IsStale(generation) {
+	if h.owner.Gate.IsStale(generation) {
 		slog.Debug("uihub: dropping publish-gate-stale UI call", "plugin", pluginID, "got", generation)
 		return true, nil
 	}

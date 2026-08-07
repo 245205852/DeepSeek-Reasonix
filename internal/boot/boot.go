@@ -194,6 +194,9 @@ type Options struct {
 	// SessionTemp is the session-private temp manager; Rebuild reuses old's.
 	SessionTemp *sessiontemp.Manager
 	RuntimeReload
+	// deferPublish keeps a replacement generation private until migration and
+	// commit succeed. Cold BuildRuntime leaves this false and publishes at boot.
+	deferPublish bool
 }
 
 func recoveryHeadlessMode(opts Options) bool {
@@ -206,6 +209,15 @@ func recoveryHeadlessMode(opts Options) bool {
 // assembled. The returned controller owns plugin subprocesses; call Close
 // (via Controller.Close) to release them.
 func build(ctx context.Context, opts Options) (*BuildResult, error) {
+	owner := opts.Owner
+	if owner == nil {
+		owner = extension.NewRuntimeOwner()
+		opts.Owner = owner
+	}
+	ctx = extension.ContextWithRuntimeOwner(ctx, owner)
+	fileWriteReceipt := func(path string, hadPrior bool, prior []byte) {
+		owner.RecordFileWrite(path, hadPrior, prior)
+	}
 	stderr := opts.Stderr
 	if stderr == nil {
 		stderr = os.Stderr
@@ -261,7 +273,7 @@ func build(ctx context.Context, opts Options) (*BuildResult, error) {
 	// sit on the shared sink the agents emit into.
 	sink = control.NewGoalUsageTee(sink)
 
-	// Extension preflight (stages 5b/7): start the installed, enabled v1 runtime
+	// Extension preflight (stages 5b/7): start the installed, enabled v2 runtime
 	// packages ONCE, here, before model resolution, so plugin-namespaced refs
 	// (plugin/<plugin>/<provider>/<model>) resolve on the very first boot and the
 	// same sidecar generation feeds the executor, planner, guardian, sub-agents,
@@ -297,6 +309,7 @@ func build(ctx context.Context, opts Options) (*BuildResult, error) {
 	extUIHub := uihub.New(uihub.Options{
 		SessionID:  sessionID,
 		Generation: generation,
+		Owner:      owner,
 		Emit: func(ev event.Event) {
 			if c := ctrlRef.Load(); c != nil {
 				c.EmitExtensionEvent(ev)
@@ -360,7 +373,7 @@ func build(ctx context.Context, opts Options) (*BuildResult, error) {
 			if claimsErr != nil {
 				return nil, fmt.Errorf("boot: %w", claimsErr)
 			}
-			merged, mergeErr := mergeSidecarProviders(baseResolver, extensionMgr, claims)
+			merged, mergeErr := mergeSidecarProviders(baseResolver, extensionMgr, claims, owner)
 			if mergeErr != nil {
 				return nil, fmt.Errorf("boot: %w", mergeErr)
 			}
@@ -672,7 +685,7 @@ func build(ctx context.Context, opts Options) (*BuildResult, error) {
 	// startup built-ins. Do not pass that filtered empty slice to addBuiltins,
 	// where an empty list intentionally means "all built-ins".
 	if !tokenEconomy || len(cfg.Tools.Enabled) == 0 || len(enabledBuiltins) > 0 {
-		addBuiltins(reg, enabledBuiltins, writeRoots, bashSpec, bashTimeout, searchSpec, stderr, root, proxySpec, forbidReadRoots, readPathResolver, sessionGuard, managedConfig, opts.FileOverlay, opts.TerminalRunner, sessionTemp)
+		addBuiltins(reg, enabledBuiltins, writeRoots, bashSpec, bashTimeout, searchSpec, stderr, root, proxySpec, forbidReadRoots, readPathResolver, sessionGuard, managedConfig, opts.FileOverlay, opts.TerminalRunner, sessionTemp, fileWriteReceipt)
 	}
 	// Use the caller-supplied shared host when set, so controllers for the same
 	// workspace root reuse running MCP processes (e.g. one CodeGraph daemon
@@ -1543,19 +1556,20 @@ func build(ctx context.Context, opts Options) (*BuildResult, error) {
 				return source + " tools are already enabled or disabled by [tools].enabled."
 			}
 			installed := addTools(reg, builtin.Workspace{
-				Dir:             root,
-				WriteRoots:      writeRoots,
-				ForbidReadRoots: forbidReadRoots,
-				Bash:            bashSpec,
-				BashTimeout:     bashTimeout,
-				Search:          searchSpec,
-				ProxySpec:       proxySpec,
-				ReadPaths:       readPathResolver,
-				SessionGuard:    sessionGuard,
-				ManagedConfig:   managedConfig,
-				FileOverlay:     opts.FileOverlay,
-				Terminal:        opts.TerminalRunner,
-				SessionTemp:     sessionTemp,
+				Dir:              root,
+				WriteRoots:       writeRoots,
+				ForbidReadRoots:  forbidReadRoots,
+				Bash:             bashSpec,
+				BashTimeout:      bashTimeout,
+				Search:           searchSpec,
+				ProxySpec:        proxySpec,
+				ReadPaths:        readPathResolver,
+				SessionGuard:     sessionGuard,
+				ManagedConfig:    managedConfig,
+				FileOverlay:      opts.FileOverlay,
+				Terminal:         opts.TerminalRunner,
+				SessionTemp:      sessionTemp,
+				FileWriteReceipt: fileWriteReceipt,
 			}.Tools(missing...))
 			return "enabled " + strings.Join(installed, ", ") + "."
 		}
@@ -1928,6 +1942,7 @@ func build(ctx context.Context, opts Options) (*BuildResult, error) {
 		// frontends enumerate plugin/... models through ProviderCatalog.
 		ProviderResolver:  extensionResolver,
 		RuntimeGeneration: generation,
+		RuntimeOwner:      owner,
 		// Share the Manager already bound into bash/grep so tools and the
 		// Controller observe the same temporary generation across rebuilds.
 		SessionTemp: sessionTemp,
@@ -2139,7 +2154,7 @@ func build(ctx context.Context, opts Options) (*BuildResult, error) {
 		}
 	}
 	assembly := &ReusedAssembly{SystemPrompt: sysPrompt, Skills: skills, Commands: cmds, Hooks: resolvedHooks, Registry: reg}
-	return finalizeBuildResult(&BuildResult{Controller: ctrl, Snapshot: snap, Runtime: runtimeSet, Extensions: extensionMgr, Dispatcher: extensionDispatcher, ExtensionUI: extUIHub, ProviderResolver: providerResolver, BaseProviderResolver: baseResolver, Assembly: assembly}), nil
+	return finalizeBuildResult(&BuildResult{Controller: ctrl, Snapshot: snap, Runtime: runtimeSet, Owner: owner, Extensions: extensionMgr, Dispatcher: extensionDispatcher, ExtensionUI: extUIHub, ProviderResolver: providerResolver, BaseProviderResolver: baseResolver, Assembly: assembly}, !opts.deferPublish), nil
 }
 
 // effectivePlannerModel centralizes planner precedence. The explicit ACP hard
@@ -2623,12 +2638,12 @@ func NewProviderWithProxy(e *config.ProviderEntry, proxy netclient.ProxySpec) (p
 // and makes bash warn when a command references them. managedConfig names the
 // Reasonix-owned config files writable outside writeRoots after a fresh
 // per-write human approval.
-func addBuiltins(reg *tool.Registry, enabled, writeRoots []string, bashSpec sandbox.Spec, bashTimeout time.Duration, searchSpec builtin.SearchSpec, stderr io.Writer, workDir string, proxySpec netclient.ProxySpec, forbidReadRoots []string, readPathResolver *builtin.PathResolver, sessionGuard builtin.SessionDataGuard, managedConfig builtin.ManagedConfigPaths, overlay builtin.FileOverlay, terminal builtin.TerminalRunner, sessionTemp *sessiontemp.Manager) {
+func addBuiltins(reg *tool.Registry, enabled, writeRoots []string, bashSpec sandbox.Spec, bashTimeout time.Duration, searchSpec builtin.SearchSpec, stderr io.Writer, workDir string, proxySpec netclient.ProxySpec, forbidReadRoots []string, readPathResolver *builtin.PathResolver, sessionGuard builtin.SessionDataGuard, managedConfig builtin.ManagedConfigPaths, overlay builtin.FileOverlay, terminal builtin.TerminalRunner, sessionTemp *sessiontemp.Manager, fileWriteReceipt func(path string, hadPrior bool, prior []byte)) {
 	// If a workspace directory is set, use workspace-bound tools that resolve
 	// paths relative to that directory. Otherwise fall back to the process-cwd
 	// compile-time builtins.
 	if workDir != "" {
-		ws := builtin.Workspace{Dir: workDir, WriteRoots: writeRoots, ForbidReadRoots: forbidReadRoots, Bash: bashSpec, BashTimeout: bashTimeout, Search: searchSpec, ProxySpec: proxySpec, ReadPaths: readPathResolver, SessionGuard: sessionGuard, ManagedConfig: managedConfig, FileOverlay: overlay, Terminal: terminal, SessionTemp: sessionTemp}
+		ws := builtin.Workspace{Dir: workDir, WriteRoots: writeRoots, ForbidReadRoots: forbidReadRoots, Bash: bashSpec, BashTimeout: bashTimeout, Search: searchSpec, ProxySpec: proxySpec, ReadPaths: readPathResolver, SessionGuard: sessionGuard, ManagedConfig: managedConfig, FileOverlay: overlay, Terminal: terminal, SessionTemp: sessionTemp, FileWriteReceipt: fileWriteReceipt}
 		for _, t := range ws.Tools(enabled...) {
 			reg.Add(t)
 		}
@@ -2660,7 +2675,11 @@ func addBuiltins(reg *tool.Registry, enabled, writeRoots []string, bashSpec sand
 	if rebound, ok := builtin.BindSessionTemp(searchTool, sessionTemp); ok {
 		searchTool = rebound
 	}
-	confined := append(builtin.ConfineWriters(writeRoots, sessionGuard, managedConfig),
+	writers := builtin.ConfineWriters(writeRoots, sessionGuard, managedConfig)
+	for i, writer := range writers {
+		writers[i] = builtin.BindFileWriteReceipt(writer, fileWriteReceipt)
+	}
+	confined := append(writers,
 		bashTool,
 		searchTool,
 		builtin.ConfineWebFetch(proxySpec))

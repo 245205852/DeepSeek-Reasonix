@@ -35,6 +35,14 @@ func (c *Controller) RuntimeGeneration() uint64 {
 	return c.runtimeGeneration
 }
 
+// RuntimeOwner returns the lifecycle owner for this controller lineage.
+func (c *Controller) RuntimeOwner() *extension.RuntimeOwner {
+	if c == nil || c.runtimeOwner == nil {
+		return extension.DefaultRuntimeOwner
+	}
+	return c.runtimeOwner
+}
+
 // RuntimePhase reports Active when this generation is published, Draining
 // when superseded, Unknown when generation tracking is disabled.
 func (c *Controller) RuntimePhase() RuntimePhase {
@@ -45,8 +53,8 @@ func (c *Controller) RuntimePhase() RuntimePhase {
 	if gen == 0 {
 		return RuntimePhaseUnknown
 	}
-	gate := extension.DefaultPublishGate()
-	if gate.AdmitNewWork(gen) {
+	gate := c.RuntimeOwner().Gate
+	if gate.Published() == gen {
 		return RuntimePhaseActive
 	}
 	if gate.IsDraining(gen) || gate.IsStale(gen) {
@@ -57,12 +65,18 @@ func (c *Controller) RuntimePhase() RuntimePhase {
 
 func (c *Controller) rejectDrainingGenerationLocked() bool {
 	gen := c.runtimeGeneration
-	if gen == 0 || extension.DefaultPublishGate().AdmitNewWork(gen) {
+	if gen == 0 || c.RuntimeOwner().Gate.AdmitNewWork(gen) {
 		return false
 	}
 	extension.DefaultLifecycleMetrics.AdmissionRejected.Add(1)
-	c.sink.Emit(event.Event{Kind: event.Notice, Level: event.LevelWarn, Text: "input was not accepted: runtime is draining after rebuild — please resend"})
 	return true
+}
+
+func (c *Controller) emitDrainingNotice() {
+	if c == nil {
+		return
+	}
+	c.sink.Emit(event.Event{Kind: event.Notice, Level: event.LevelWarn, Text: "input was not accepted: runtime is draining after rebuild — please resend"})
 }
 
 // LastResumeDecision returns the most recent DecideResume result from
@@ -85,9 +99,9 @@ func (c *Controller) AssessResume() extension.ResumeDecision {
 	}
 	gen := c.RuntimeGeneration()
 	if gen == 0 {
-		gen = extension.DefaultPublishGate().Published()
+		gen = c.RuntimeOwner().Gate.Published()
 	}
-	d := extension.DecideResumeDefault(gen)
+	d := c.RuntimeOwner().DecideResume(gen)
 	c.mu.Lock()
 	c.lastResumeDecision = d
 	c.mu.Unlock()

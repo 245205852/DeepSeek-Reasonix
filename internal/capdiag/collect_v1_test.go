@@ -10,10 +10,10 @@ import (
 	"reasonix/internal/pluginpkg"
 )
 
-// TestPluginPackageV1FieldsAreReported pins the Manifest v1 additions to the
+// TestPluginPackageV2FieldsAreReported pins the Manifest v2 additions to the
 // plugins report: prompts/themes counts and the runtime flag, in both the
 // JSON payload and the text renderer.
-func TestPluginPackageV1FieldsAreReported(t *testing.T) {
+func TestPluginPackageV2FieldsAreReported(t *testing.T) {
 	root := t.TempDir()
 	home := t.TempDir()
 	reasonixHome := filepath.Join(home, ".reasonix")

@@ -7,7 +7,7 @@ import (
 	"testing"
 )
 
-// writeRuntimePlugin writes a Manifest v1 plugin package with a runtime
+// writeRuntimePlugin writes a Manifest v2 plugin package with a runtime
 // declaration plus prompt and theme contributions.
 func writeRuntimePlugin(t *testing.T, root string) {
 	t.Helper()

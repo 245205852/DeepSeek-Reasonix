@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"sync"
-	"sync/atomic"
 	"time"
 )
 
@@ -12,18 +11,31 @@ import (
 // generations. Only one generation is Published at a time; older generations
 // are Draining and their late traffic must be dropped.
 type PublishGate struct {
-	mu        sync.RWMutex
-	published uint64
-	draining  map[uint64]time.Time // gen → drain start
-	drainTTL  time.Duration
-	onStale   func(gen uint64, kind string)
+	mu           sync.RWMutex
+	published    uint64
+	draining     map[uint64]time.Time // gen → drain start
+	drainTTL     time.Duration
+	onStale      func(gen uint64, kind string)
+	receipts     *ReceiptStore
+	drainCancels map[uint64][]func()
+	expired      map[uint64]struct{}
 }
 
 // NewPublishGate returns a gate with a default drain timeout of 30s.
 func NewPublishGate() *PublishGate {
+	return newPublishGate(NewReceiptStore())
+}
+
+func newPublishGate(receipts *ReceiptStore) *PublishGate {
+	if receipts == nil {
+		receipts = NewReceiptStore()
+	}
 	return &PublishGate{
-		draining: make(map[uint64]time.Time),
-		drainTTL: 30 * time.Second,
+		draining:     make(map[uint64]time.Time),
+		drainTTL:     30 * time.Second,
+		receipts:     receipts,
+		drainCancels: make(map[uint64][]func()),
+		expired:      make(map[uint64]struct{}),
 	}
 }
 
@@ -63,6 +75,7 @@ func (g *PublishGate) Publish(gen uint64) {
 		g.draining[g.published] = time.Now()
 	}
 	delete(g.draining, gen)
+	delete(g.expired, gen)
 	g.published = gen
 	DefaultLifecycleMetrics.Publishes.Add(1)
 }
@@ -78,6 +91,7 @@ func (g *PublishGate) BeginDrain(gen uint64) {
 	if g.draining == nil {
 		g.draining = make(map[uint64]time.Time)
 	}
+	delete(g.expired, gen)
 	g.draining[gen] = time.Now()
 	DefaultLifecycleMetrics.Drains.Add(1)
 }
@@ -144,6 +158,7 @@ func (g *PublishGate) SweepExpiredDrains() []uint64 {
 		if now.Sub(started) >= g.drainTTL {
 			expired = append(expired, gen)
 			delete(g.draining, gen)
+			g.expired[gen] = struct{}{}
 		}
 	}
 	return expired
@@ -159,36 +174,32 @@ func (e *DrainTimeoutError) Error() string {
 	return fmt.Sprintf("extension: generation %d drain timed out", e.Generation)
 }
 
-// drainCancels holds per-generation cancel callbacks for in-flight work
-// (turns, provider streams) that must stop when drain times out.
-var drainCancels struct {
-	mu   sync.Mutex
-	byGen map[uint64][]func()
-}
-
 // RegisterDrainCancel registers a cancel func for gen. Fired once when the
 // generation is force-expired after drain TTL (or explicit ForceExpireDrain).
-func RegisterDrainCancel(gen uint64, cancel func()) {
-	if gen == 0 || cancel == nil {
+func (g *PublishGate) RegisterDrainCancel(gen uint64, cancel func()) {
+	if g == nil || gen == 0 || cancel == nil {
 		return
 	}
-	drainCancels.mu.Lock()
-	defer drainCancels.mu.Unlock()
-	if drainCancels.byGen == nil {
-		drainCancels.byGen = make(map[uint64][]func())
+	g.mu.Lock()
+	if _, expired := g.expired[gen]; expired {
+		g.mu.Unlock()
+		cancel()
+		return
 	}
-	drainCancels.byGen[gen] = append(drainCancels.byGen[gen], cancel)
+	g.drainCancels[gen] = append(g.drainCancels[gen], cancel)
+	g.mu.Unlock()
 }
 
 // FireDrainCancels runs and clears all cancel callbacks for gen.
-func FireDrainCancels(gen uint64) {
-	if gen == 0 {
+func (g *PublishGate) FireDrainCancels(gen uint64) {
+	if g == nil || gen == 0 {
 		return
 	}
-	drainCancels.mu.Lock()
-	fns := drainCancels.byGen[gen]
-	delete(drainCancels.byGen, gen)
-	drainCancels.mu.Unlock()
+	g.mu.Lock()
+	fns := g.drainCancels[gen]
+	delete(g.drainCancels, gen)
+	g.expired[gen] = struct{}{}
+	g.mu.Unlock()
 	for _, fn := range fns {
 		if fn != nil {
 			fn()
@@ -202,11 +213,18 @@ func (g *PublishGate) ForceExpireDrain(gen uint64) {
 	if g == nil || gen == 0 {
 		return
 	}
-	FireDrainCancels(gen)
 	g.mu.Lock()
+	fns := g.drainCancels[gen]
+	delete(g.drainCancels, gen)
 	delete(g.draining, gen)
+	g.expired[gen] = struct{}{}
 	g.mu.Unlock()
-	DefaultReceiptStore.Record(EffectReceipt{
+	for _, fn := range fns {
+		if fn != nil {
+			fn()
+		}
+	}
+	g.receipts.Record(EffectReceipt{
 		ID:                 fmt.Sprintf("drain-timeout-%d", gen),
 		Generation:         gen,
 		Class:              Irreversible,
@@ -221,8 +239,8 @@ func (g *PublishGate) ForceExpireDrain(gen uint64) {
 func (g *PublishGate) SweepAndForceExpire() []uint64 {
 	expired := g.SweepExpiredDrains()
 	for _, gen := range expired {
-		FireDrainCancels(gen)
-		DefaultReceiptStore.Record(EffectReceipt{
+		g.FireDrainCancels(gen)
+		g.receipts.Record(EffectReceipt{
 			ID:                 fmt.Sprintf("drain-timeout-%d", gen),
 			Generation:         gen,
 			Class:              Irreversible,
@@ -266,19 +284,20 @@ func (g *PublishGate) DrainingGenerations() []uint64 {
 	return out
 }
 
-// defaultGate is the process-wide gate used when no per-controller gate is set.
-var defaultGate atomic.Pointer[PublishGate]
-
-// DefaultPublishGate returns the process-wide publish gate, creating it on first use.
+// DefaultPublishGate returns the compatibility owner gate. Product boot paths
+// bind an isolated RuntimeOwner instead.
 func DefaultPublishGate() *PublishGate {
-	if g := defaultGate.Load(); g != nil {
-		return g
-	}
-	g := NewPublishGate()
-	if !defaultGate.CompareAndSwap(nil, g) {
-		return defaultGate.Load()
-	}
-	return g
+	return DefaultRuntimeOwner.Gate
+}
+
+// RegisterDrainCancel preserves the package-level compatibility API.
+func RegisterDrainCancel(gen uint64, cancel func()) {
+	DefaultPublishGate().RegisterDrainCancel(gen, cancel)
+}
+
+// FireDrainCancels preserves the package-level compatibility API.
+func FireDrainCancels(gen uint64) {
+	DefaultPublishGate().FireDrainCancels(gen)
 }
 
 // AwaitReady waits until ctx is done or ready is closed. Used by activation

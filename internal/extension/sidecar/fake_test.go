@@ -22,7 +22,7 @@ import (
 
 // Re-exec fake sidecar (the standard Go helper-process pattern): the test
 // binary re-executes itself with REASONIX_FAKE_SIDECAR=1 and speaks the real
-// Extension Protocol v1 over stdin/stdout. Behavior is steered through env:
+// Extension Protocol v2 over stdin/stdout. Behavior is steered through env:
 //
 //		REASONIX_FAKE_SIDECAR=1            enable the helper
 //		REASONIX_FAKE_INIT_RESULT          raw JSON InitializeResult to answer with

@@ -190,8 +190,9 @@ In addition to the existing frozen table, v2 adds:
 
 ## Migration
 
-- `reasonix plugin migrate <name> --to-v2` rewrites native manifests, backs up
-  the original, and errors on dependencies it cannot infer
+- `reasonix plugin migrate <name> --to-v2` rewrites only pre-extension native
+  manifests that omit `apiVersion`, backs up the original, and errors on
+  dependencies it cannot infer. It does not accept Manifest v1.
 - `reasonix plugin doctor` reports dependency and protocol errors
 - v1 / missing apiVersion native manifests fail install, doctor, and boot
 
@@ -203,7 +204,7 @@ In addition to the existing frozen table, v2 adds:
 4. Dependency replacement reloads only the affected subgraph
 5. Publish/drain order is testable
 6. Irreversible work is never marked rollback-success
-7. v1 native manifests are rejected with a migration path
+7. v1 native manifests are rejected without dual-read or migration
 8. Prompt/tool cache stability guards pass
 9. Doctor explains why a component is inactive
 10. No external runtime or language dependency
@@ -214,7 +215,7 @@ In addition to the existing frozen table, v2 adds:
 | --- | --- |
 | EffectScope / LiveScope / RuntimeSet | Done |
 | extensioncontract + DependencyGraph + RuntimePlan | Done |
-| Manifest `reasonix.io/plugin/v2` + migrate + reject v1 | Done |
+| Manifest `reasonix.io/plugin/v2` + reject v1 | Done |
 | Extension Protocol major v2 + schema/SDK gen | Done |
 | PublishGate + stale UI/provider chunk drop | Done |
 | Sidecar incremental adopt (StartPackagesWithPlan) | Done |

@@ -1,5 +1,5 @@
 // Package providerext adapts extension-hosted sidecar providers into the
-// host's provider.Resolver surface (Extension Protocol v1, stage 7). Each
+// host's provider.Resolver surface (Extension Protocol v2, stage 7). Each
 // started sidecar holds its own provider credentials and runs streams; the
 // host only ever sees the credential-free wire DTOs. The Resolver merges the
 // base resolver's catalog with every sidecar's declared catalog and routes
@@ -83,6 +83,7 @@ func (e *ConflictError) Error() string {
 type Resolver struct {
 	base    provider.Resolver
 	clients func() []ProviderClient
+	owner   *extension.RuntimeOwner
 
 	// replaced maps a base catalog ref to the plugin ID whose claimed
 	// provider:<ref> slot lets its descriptor substitute the base entry.
@@ -121,16 +122,21 @@ const catalogFetchTimeout = 10 * time.Second
 // Replacements). A sidecar ref colliding exactly with a base catalog ref is
 // legal only when the plugin owns the provider:<ref> slot — then the sidecar
 // descriptor replaces the base entry — and is a *ConflictError otherwise.
-func New(base provider.Resolver, clients func() []ProviderClient, claims map[extension.Slot]extension.ContributionSource) (*Resolver, error) {
+func New(base provider.Resolver, clients func() []ProviderClient, claims map[extension.Slot]extension.ContributionSource, owners ...*extension.RuntimeOwner) (*Resolver, error) {
 	if base == nil {
 		base = &provider.StaticResolver{}
 	}
 	if clients == nil {
 		clients = func() []ProviderClient { return nil }
 	}
+	owner := extension.DefaultRuntimeOwner
+	if len(owners) > 0 && owners[0] != nil {
+		owner = owners[0]
+	}
 	r := &Resolver{
 		base:         base,
 		clients:      clients,
+		owner:        owner,
 		replaced:     map[string]string{},
 		streams:      make(map[string]*extensionStream),
 		catalogCache: make(map[string][]provider.Descriptor),

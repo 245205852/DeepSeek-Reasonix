@@ -32,3 +32,21 @@ func TestReceiptStoreIngestScope(t *testing.T) {
 		t.Fatalf("expected 1 receipt, got %d", len(s.ForGeneration(7)))
 	}
 }
+
+func TestReceiptStoreKeepsSameIDAcrossGenerations(t *testing.T) {
+	s := NewReceiptStore()
+	s.Record(EffectReceipt{ID: "shared", Owner: "old", Generation: 1, Class: Irreversible})
+	s.Record(EffectReceipt{ID: "shared", Owner: "new", Generation: 2, Class: Irreversible})
+
+	oldReceipts := s.ForGeneration(1)
+	newReceipts := s.ForGeneration(2)
+	if len(oldReceipts) != 1 || oldReceipts[0].Owner != "old" || oldReceipts[0].ID != "shared" {
+		t.Fatalf("old receipts = %+v", oldReceipts)
+	}
+	if len(newReceipts) != 1 || newReceipts[0].Owner != "new" || newReceipts[0].ID == "shared" {
+		t.Fatalf("new receipts = %+v", newReceipts)
+	}
+	if old, ok := s.Get("shared"); !ok || old.Owner != "old" {
+		t.Fatalf("original receipt was overwritten: %+v ok=%v", old, ok)
+	}
+}

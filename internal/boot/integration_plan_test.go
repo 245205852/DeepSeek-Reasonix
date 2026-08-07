@@ -68,7 +68,7 @@ func TestPublishGateAdmissionAfterRebuild(t *testing.T) {
 		}
 	})
 	// Old generation must not admit new work after publish of the new one.
-	if oldGen != 0 && extension.DefaultPublishGate().AdmitNewWork(oldGen) {
+	if oldGen != 0 && oldRes.Owner.Gate.AdmitNewWork(oldGen) {
 		// Only fails if new gen was published and differs.
 		if res.Snapshot != nil && res.Snapshot.Generation() != oldGen {
 			t.Fatal("old generation still admits after rebuild publish")
@@ -96,7 +96,7 @@ func TestDoctorRuntimeReport(t *testing.T) {
 func TestPlanClassifyIntegration(t *testing.T) {
 	from, err := extension.BuildDependencyGraph([]extension.ComponentDescriptor{
 		{ID: "plugin/a", Provides: []extensioncontract.Capability{{
-			Key: extensioncontract.CapabilityKey{Namespace: "plugin/a", Kind: "ui", ID: "x"},
+			Key:     extensioncontract.CapabilityKey{Namespace: "plugin/a", Kind: "ui", ID: "x"},
 			Version: "1.0.0", SchemaHash: "sha256:a",
 		}}},
 	})
@@ -105,7 +105,7 @@ func TestPlanClassifyIntegration(t *testing.T) {
 	}
 	to, err := extension.BuildDependencyGraph([]extension.ComponentDescriptor{
 		{ID: "plugin/a", Provides: []extensioncontract.Capability{{
-			Key: extensioncontract.CapabilityKey{Namespace: "plugin/a", Kind: "ui", ID: "x"},
+			Key:     extensioncontract.CapabilityKey{Namespace: "plugin/a", Kind: "ui", ID: "x"},
 			Version: "1.0.1", SchemaHash: "sha256:b",
 		}}},
 	})
@@ -142,13 +142,13 @@ func TestRapidReloadPreservesAdmission(t *testing.T) {
 		})
 		if res.Snapshot != nil {
 			gen := res.Snapshot.Generation()
-			if !extension.DefaultPublishGate().AdmitNewWork(gen) {
+			if !res.Owner.Gate.AdmitNewWork(gen) {
 				t.Fatalf("reload %d: gen %d not admitted", i, gen)
 			}
 		}
 		if prev != nil && prev.Snapshot != nil && res.Snapshot != nil {
 			if prev.Snapshot.Generation() != res.Snapshot.Generation() {
-				if extension.DefaultPublishGate().AdmitNewWork(prev.Snapshot.Generation()) {
+				if res.Owner.Gate.AdmitNewWork(prev.Snapshot.Generation()) {
 					t.Fatalf("reload %d: old gen still admits", i)
 				}
 			}

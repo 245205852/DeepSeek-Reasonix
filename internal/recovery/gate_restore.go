@@ -39,5 +39,4 @@ func (g *Gate) Restore(snap Snapshot) {
 		// Ignore old Pending and ApprovalID — never restore as authorization.
 		g.tasks[id] = rt
 	}
-	AssessRuntimeResume(0)
 }

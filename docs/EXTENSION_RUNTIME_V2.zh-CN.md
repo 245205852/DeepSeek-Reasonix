@@ -5,7 +5,8 @@ Reasonix 插件/运行时 v2 模型说明。英文版：[EXTENSION_RUNTIME_V2.md
 ## 协议与 Manifest
 
 - 插件清单：仅接受 `apiVersion: reasonix.io/plugin/v2`（拒绝 v1 与无 apiVersion 的 native）。
-- 迁移：`reasonix plugin migrate <name> --to-v2`
+- 兼容边界：不提供 v1 双读或自动迁移。扩展 Manifest v1 从未公开发布，
+  因此 v2 是首个受支持的 Runtime Manifest。
 - 扩展线协议：`reasonix.extension.v2`（major 2）。
 - Handshake 的 `provides` 不得超过 manifest 的 provides 上限。
 
@@ -15,7 +16,8 @@ Reasonix 插件/运行时 v2 模型说明。英文版：[EXTENSION_RUNTIME_V2.md
 RuntimeSnapshot = 不可变配置与依赖视图
 RuntimeSet / EffectScope = 一代 live 资源
 RuntimePlan = 旧 → 新 的转移（子图分类）
-Controller = 已发布代的所有者（admission 绑定 PublishGate）
+RuntimeOwner = 单个 session lineage 的 gate + receipt + stream/file 证据
+Controller = 已发布 generation 的消费者（admission 绑定 RuntimeOwner）
 ```
 
 组件状态：`Inactive → Preparing → Active → Draining → Inactive`（或 `Failed`）。
@@ -47,7 +49,10 @@ reasonix plugin doctor <name>
 
 ## Effect receipt
 
-不可逆外部动作记入 `extension.DefaultReceiptStore`。Recovery **不得** 对 irreversible 声称 rollback 成功；使用 `AssessRecoverability(generation)` / `DecideResume(generation)`。
+不可逆外部动作记入当前 `RuntimeOwner` 的 receipt store。独立 session
+不共享 publish/drain 状态或恢复证据。Recovery **不得** 对 irreversible
+声称 rollback 成功；使用 owner 级的 `AssessRecoverability(generation)` /
+`DecideResume(generation)`。
 
 - Provider stream open 会记录 `provider-submit:<id>`（不可逆）。
 - Drain 超时 force-expire 记录 `drain-timeout:<gen>`，在每次 publish 后调度（`ScheduleDrainWatch` / doctor sweep）。
@@ -69,19 +74,20 @@ reasonix plugin doctor <name>
 
 | 规格验收项 | 状态 |
 | --- | --- |
-| 每个资源有明确 EffectScope 所有者 | 完成（sidecar/MCP/UI/LSP/stream cancel 宿主接线） |
+| 每个资源与 session lineage 有明确 owner | 完成（`RuntimeOwner` + sidecar/MCP/UI/LSP/stream/file receipt 接线） |
 | 激活失败不泄漏 / 不 publish | 完成 |
 | 缺依赖 → Inactive 诊断 | 完成（结构化 missing requirement + Unavailable） |
 | 真子图 rebuild（不进完整 BuildRuntime） | 完成（None/Interceptor/UI/Provider/MCP） |
 | Publish/drain 顺序 + drain 取消 | 完成 |
 | 不可逆永不标 rollback 成功 | 完成（recovery `AssessRuntimeResume`） |
-| 拒绝 v1 + migrate | 完成 |
+| 原生 Runtime Manifest 严格 v2-only | 完成（无 v1 双读 / 自动迁移） |
 | 缓存稳定性守卫 | 完成 |
 | Doctor 解释 inactive + resume | 完成（CLI + desktop RuntimeDoctor UI） |
 | 无外部运行时依赖 | 完成 |
 
 ## Phase 5 决策
 
-- **v1 parser**：保留为 **仅 migrate**（`plugin migrate --to-v2`）。install/doctor/boot 仍硬拒绝 v1。完整删除待 migrate 使用平静后再做。
+- **兼容性**：v2 是首个受支持的扩展 Runtime Manifest；install/doctor/boot
+  不双读 v1，也不自动迁移。
 - **性能**：见 [EXTENSION_RUNTIME_V2_PERF.zh-CN.md](./EXTENSION_RUNTIME_V2_PERF.zh-CN.md)。
 - **README / SDK**：示例 manifest 在 `sdk/go/examples/*`；wire 类型以 protocol gen 为准。

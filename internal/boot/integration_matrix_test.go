@@ -3,7 +3,6 @@ package boot
 import (
 	"context"
 	"testing"
-	"time"
 
 	"reasonix/internal/extension"
 	"reasonix/internal/extension/sidecar"
@@ -41,24 +40,20 @@ func TestIntegrationNoOpDoesNotBuildNewController(t *testing.T) {
 }
 
 func TestIntegrationDrainTimeoutFiresCancel(t *testing.T) {
-	g := extension.NewPublishGate().WithDrainTTL(time.Millisecond)
+	g := extension.NewPublishGate()
 	g.Publish(1)
 	g.Publish(2)
 	fired := make(chan struct{}, 1)
-	extension.RegisterDrainCancel(1, func() {
+	g.RegisterDrainCancel(1, func() {
 		select {
 		case fired <- struct{}{}:
 		default:
 		}
 	})
-	time.Sleep(5 * time.Millisecond)
-	expired := g.SweepAndForceExpire()
-	if len(expired) != 1 || expired[0] != 1 {
-		t.Fatalf("expired = %v", expired)
-	}
+	g.ForceExpireDrain(1)
 	select {
 	case <-fired:
-	case <-time.After(100 * time.Millisecond):
+	default:
 		t.Fatal("drain cancel not fired")
 	}
 }
@@ -66,7 +61,7 @@ func TestIntegrationDrainTimeoutFiresCancel(t *testing.T) {
 func TestIntegrationProviderDrainReloadOrder(t *testing.T) {
 	from, err := extension.BuildDependencyGraph([]extension.ComponentDescriptor{
 		{ID: "plugin/p", Provides: []extensioncontract.Capability{{
-			Key: extensioncontract.CapabilityKey{Namespace: "plugin/p", Kind: "provider", ID: "main"},
+			Key:     extensioncontract.CapabilityKey{Namespace: "plugin/p", Kind: "provider", ID: "main"},
 			Version: "1.0.0", SchemaHash: "sha256:a",
 		}}},
 	})
@@ -75,7 +70,7 @@ func TestIntegrationProviderDrainReloadOrder(t *testing.T) {
 	}
 	to, err := extension.BuildDependencyGraph([]extension.ComponentDescriptor{
 		{ID: "plugin/p", Provides: []extensioncontract.Capability{{
-			Key: extensioncontract.CapabilityKey{Namespace: "plugin/p", Kind: "provider", ID: "main"},
+			Key:     extensioncontract.CapabilityKey{Namespace: "plugin/p", Kind: "provider", ID: "main"},
 			Version: "1.0.1", SchemaHash: "sha256:b",
 		}}},
 	})

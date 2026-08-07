@@ -21,6 +21,7 @@ type ResumeDecision struct {
 //   - Irreversible completed → AllowResume=true, CleanRollback=false
 //   - Compensatable failed/pending → AllowResume=true, CleanRollback=false
 //   - Empty / fully compensated → both true
+//
 // Recovery never rewrites irreversible receipts to "rolled_back".
 func DecideResume(store *ReceiptStore, gen uint64) ResumeDecision {
 	if store == nil {
@@ -44,22 +45,10 @@ func DecideResumeDefault(gen uint64) ResumeDecision {
 // RecordProviderSubmit marks a provider request as already submitted
 // (irreversible). Call after the sidecar accepts stream open.
 func RecordProviderSubmit(generation uint64, streamID, owner string) {
-	DefaultReceiptStore.Record(EffectReceipt{
-		ID:                 "provider-submit:" + streamID,
-		Owner:              owner,
-		Generation:         generation,
-		Class:              Irreversible,
-		CompensationStatus: "not_applicable",
-	})
+	DefaultRuntimeOwner.RecordProviderSubmit(generation, streamID, owner)
 }
 
 // RecordMessageSent marks a user-visible outbound message as sent.
 func RecordMessageSent(generation uint64, messageID, owner string) {
-	DefaultReceiptStore.Record(EffectReceipt{
-		ID:                 "message-sent:" + messageID,
-		Owner:              owner,
-		Generation:         generation,
-		Class:              Irreversible,
-		CompensationStatus: "not_applicable",
-	})
+	DefaultRuntimeOwner.RecordMessageSent(generation, messageID, owner)
 }

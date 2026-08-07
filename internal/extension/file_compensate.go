@@ -20,8 +20,8 @@ type filePrior struct {
 	Existed bool
 }
 
-// DefaultFilePriorStore is process-wide.
-var DefaultFilePriorStore = NewFilePriorStore()
+// DefaultFilePriorStore belongs to the compatibility runtime owner.
+var DefaultFilePriorStore = DefaultRuntimeOwner.FilePriors
 
 // NewFilePriorStore returns an empty store.
 func NewFilePriorStore() *FilePriorStore {
@@ -77,20 +77,5 @@ func (s *FilePriorStore) Forget(id string) {
 
 // ApplyFileWriteCompensation restores prior content and marks the receipt applied.
 func ApplyFileWriteCompensation(receiptID string) error {
-	if err := DefaultFilePriorStore.Compensate(receiptID); err != nil {
-		DefaultReceiptStore.Record(EffectReceipt{
-			ID:                 receiptID,
-			Class:              Compensatable,
-			CompensationStatus: "failed",
-			Error:              err.Error(),
-		})
-		return err
-	}
-	DefaultFilePriorStore.Forget(receiptID)
-	DefaultReceiptStore.Record(EffectReceipt{
-		ID:                 receiptID,
-		Class:              Compensatable,
-		CompensationStatus: "applied",
-	})
-	return nil
+	return DefaultRuntimeOwner.ApplyFileWriteCompensation(receiptID)
 }

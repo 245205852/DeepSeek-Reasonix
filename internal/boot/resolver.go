@@ -84,7 +84,7 @@ func resolveProvider(resolver provider.Resolver, cfg *config.Config, proxy netcl
 // It does not install stream routers — call installSidecarStreamRouters after
 // commit so failed narrow rebuilds never leave adopted clients on a discarded
 // generation resolver.
-func mergeSidecarProviders(base provider.Resolver, mgr *sidecar.Manager, claims map[extension.Slot]extension.ContributionSource) (provider.Resolver, error) {
+func mergeSidecarProviders(base provider.Resolver, mgr *sidecar.Manager, claims map[extension.Slot]extension.ContributionSource, owners ...*extension.RuntimeOwner) (provider.Resolver, error) {
 	if mgr == nil {
 		return base, nil
 	}
@@ -106,7 +106,7 @@ func mergeSidecarProviders(base provider.Resolver, mgr *sidecar.Manager, claims 
 		}
 		return out
 	}
-	return providerext.New(base, clientsFn, claims)
+	return providerext.New(base, clientsFn, claims, owners...)
 }
 
 // installSidecarStreamRouters binds merged as the stream router on every live

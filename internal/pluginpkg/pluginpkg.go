@@ -93,8 +93,8 @@ type CommandRef struct {
 	Invocation  string
 }
 
-// PromptRef is one prompt template a plugin contributes from a prompts
-// directory (the Manifest v1 name for what legacy manifests call commands).
+// PromptRef is one prompt template a v2 plugin contributes from a prompts
+// directory (distinct from legacy command contributions).
 // Prompt files share the slash-command file shape (flat <name>.md with
 // frontmatter) but map to kernel KindPrompt contributions, not commands.
 type PromptRef struct {
@@ -148,8 +148,7 @@ type Manifest struct {
 	Commands   []string
 	Hooks      map[string][]Hook
 	MCPServers map[string]MCPServer
-	// Prompts are directories of flat <name>.md prompt templates — the
-	// Manifest v1 name for what legacy manifests call commands. The two are
+	// Prompts are directories of flat <name>.md prompt templates. The two are
 	// separate semantic sets: commands become slash commands, prompts become
 	// kernel KindPrompt contributions. A path listed under both stays in both.
 	Prompts []string
@@ -430,7 +429,7 @@ func ParseDir(root string) (Package, []string, error) {
 	return Package{}, nil, fmt.Errorf("no %s, %s, or %s found", NativeManifest, CodexManifest, ClaudeManifest)
 }
 
-// parseNativeLegacy is the pre-v1 native manifest path, preserved
+// parseNativeLegacy is the pre-extension native manifest path, preserved
 // byte-for-byte: manifests without an apiVersion parse exactly as they
 // always have, including silently ignoring unknown fields.
 func parseNativeLegacy(b []byte, root string) (Package, []string, error) {
@@ -903,7 +902,7 @@ func (p Package) CommandRoots() []string {
 }
 
 // PromptRoots returns the absolute prompt-template directories this package
-// contributes (Manifest v1 prompts).
+// contributes through a native Manifest v2.
 func (p Package) PromptRoots() []string {
 	var out []string
 	for _, rel := range p.Manifest.Prompts {
@@ -932,8 +931,8 @@ func (p Package) PromptCount() int { return len(p.promptRefs()) }
 func (p Package) ThemeCount() int { return len(p.themeRefs()) }
 
 // CapabilitySummary is the full per-package capability count set. The
-// four-value CapabilityCounts predates Manifest v1 and keeps its signature
-// for existing callers (the desktop module among them); the v1 additions
+// four-value CapabilityCounts predates native runtime manifests and keeps its
+// signature for existing callers (the desktop module among them); newer fields
 // live here.
 type CapabilitySummary struct {
 	Skills     int
@@ -947,7 +946,7 @@ type CapabilitySummary struct {
 }
 
 // CapabilitySummary counts everything the package contributes, including
-// the Manifest v1 additions (prompts, themes, runtime).
+// native Manifest v2 prompts, themes, and runtime.
 func (p Package) CapabilitySummary() CapabilitySummary {
 	skills, commands, hooks, mcp := p.CapabilityCounts()
 	return CapabilitySummary{

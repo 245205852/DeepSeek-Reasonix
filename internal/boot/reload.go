@@ -31,6 +31,9 @@ func RebuildFrom(ctx context.Context, previous *BuildResult, opts Options) (*Bui
 	if previous.Dispatcher != nil {
 		opts.PreviousDispatcher = previous.Dispatcher
 	}
+	if previous.Owner != nil {
+		opts.Owner = previous.Owner
+	}
 	return rebuildWithPrevious(ctx, previous.Controller, previous, opts)
 }
 
@@ -79,6 +82,9 @@ func rebuildWithPrevious(ctx context.Context, old *control.Controller, previous 
 	if old == nil {
 		return nil, fmt.Errorf("boot: Rebuild requires the controller being replaced")
 	}
+	if opts.Owner == nil {
+		opts.Owner = old.RuntimeOwner()
+	}
 	// Capture migratable state before building: every accessor returns a
 	// copy, so a slow build cannot observe a half-appended turn.
 	m := runtimeMigration{
@@ -115,6 +121,7 @@ func rebuildWithPrevious(ctx context.Context, old *control.Controller, previous 
 	}
 
 	extension.DefaultLifecycleMetrics.FullRebuilds.Add(1)
+	opts.deferPublish = true
 	res, err := BuildRuntime(ctx, opts)
 	if err != nil {
 		// Activation failure: new generation never published; old keeps serving.
@@ -134,13 +141,20 @@ func rebuildWithPrevious(ctx context.Context, old *control.Controller, previous 
 		// Fail-atomic: release the replacement; old keeps serving.
 		// Activation never reached Active publish.
 		if res.Snapshot != nil {
-			extension.DefaultPublishGate().BeginDrain(res.Snapshot.Generation())
+			res.Owner.Gate.BeginDrain(res.Snapshot.Generation())
 		}
 		res.Controller.ReleaseResources()
 		if res.Runtime != nil {
 			_ = res.Runtime.Close()
 		}
 		return nil, err
+	}
+	if prevGen := old.RuntimeGeneration(); prevGen != 0 && (res.Snapshot == nil || prevGen != res.Snapshot.Generation()) {
+		registerControllerDrainCancel(res.Owner, prevGen, old)
+		if host := old.Host(); host != nil {
+			h := host
+			res.Owner.Gate.RegisterDrainCancel(prevGen, func() { h.CancelInFlightMCP() })
+		}
 	}
 	// Publish new generation only after Active + state migration. Then drain
 	// Removed/Reloaded clients still held by the previous Manager.

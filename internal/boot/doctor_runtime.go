@@ -20,18 +20,22 @@ type RuntimeDoctorReport struct {
 }
 
 // CollectRuntimeDoctor builds a report from an optional live BuildResult and
-// the process-wide gates/metrics. Also sweeps expired drains so doctor is a
-// natural product trigger for drain-timeout force-expire.
+// its session-lineage owner. Also sweeps expired drains so doctor is a natural
+// product trigger for drain-timeout force-expire.
 func CollectRuntimeDoctor(res *BuildResult) RuntimeDoctorReport {
-	gate := extension.DefaultPublishGate()
+	owner := extension.DefaultRuntimeOwner
+	if res != nil && res.Owner != nil {
+		owner = res.Owner
+	}
+	gate := owner.Gate
 	_ = gate.SweepAndForceExpire()
 	gen := gate.Published()
 	report := RuntimeDoctorReport{
 		Metrics:        extension.DefaultLifecycleMetrics.Snapshot(),
 		PublishedGen:   gen,
 		DrainingGens:   gate.DrainingGenerations(),
-		Recoverability: extension.DefaultReceiptStore.AssessRecoverability(gen),
-		Resume:         extension.DecideResumeDefault(gen),
+		Recoverability: owner.AssessRecoverability(gen),
+		Resume:         owner.DecideResume(gen),
 	}
 	if res != nil {
 		report.Status = res.Status
@@ -40,8 +44,8 @@ func CollectRuntimeDoctor(res *BuildResult) RuntimeDoctorReport {
 		}
 		if res.Snapshot != nil {
 			g := res.Snapshot.Generation()
-			report.Recoverability = extension.DefaultReceiptStore.AssessRecoverability(g)
-			report.Resume = extension.DecideResumeDefault(g)
+			report.Recoverability = owner.AssessRecoverability(g)
+			report.Resume = owner.DecideResume(g)
 		}
 	}
 	if report.Text == "" {

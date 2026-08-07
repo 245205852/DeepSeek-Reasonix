@@ -9,7 +9,6 @@ import (
 	"sync"
 	"time"
 
-	"reasonix/internal/extension"
 	"reasonix/internal/extension/protocol"
 	"reasonix/internal/extension/providerconv"
 	"reasonix/internal/provider"
@@ -60,7 +59,7 @@ func (r *Resolver) RouteStreamChunk(p protocol.StreamChunkParams) {
 	if gen == 0 {
 		gen = p.Chunk.Generation
 	}
-	if extension.DefaultPublishGate().DropStale(gen, "provider_chunk") {
+	if r.owner.Gate.DropStale(gen, "provider_chunk") {
 		slog.Debug("providerext: dropping stale-generation chunk", "stream", p.StreamID, "seq", p.Seq, "generation", gen)
 		return
 	}

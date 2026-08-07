@@ -65,6 +65,10 @@ import (
 // while one is already active in the same Controller.
 var ErrTurnRunning = errors.New("turn already running")
 
+// ErrRuntimeDraining reports that a caller targeted a controller generation
+// superseded by a successful rebuild.
+var ErrRuntimeDraining = errors.New("runtime is draining after rebuild")
+
 // errTurnRunningRotation and errRotationInProgress are returned by the
 // session-rotation gate (beginRotation) when a rotation cannot proceed: a turn
 // is in flight, or another rotation already holds the gate.
@@ -167,15 +171,16 @@ type Controller struct {
 	capabilityRuntime     *agent.MCPCapabilityRuntime
 
 	runtimeGeneration  uint64 // PublishGate gen; 0 disables
+	runtimeOwner       *extension.RuntimeOwner
 	lastResumeDecision extension.ResumeDecision
 	// extensions is the frozen extension dispatcher for this controller
-	// generation, or nil when no v1 runtime packages are installed (the
+	// generation, or nil when no v2 runtime packages are installed (the
 	// universal pre-dispatch fast path). It is installed before the controller
 	// starts serving (Options.Extensions or SetExtensions) and never swapped
 	// afterwards, so wiring points read it without locking.
 	extensions *dispatch.Dispatcher
 	// extensionUI is the host extension UI hub for this controller generation
-	// (stage 8a), or nil when no v1 runtime packages started. Installed via
+	// (stage 8a), or nil when no v2 runtime packages started. Installed via
 	// SetExtensionUI before serving and never swapped; readers take c.mu.
 	extensionUI *uihub.Hub
 	// providerResolver is the build's merged provider catalog (extension
@@ -472,6 +477,9 @@ type Options struct {
 	// tabs but never shares their enabled/disabled state.
 	CapabilityRuntime *agent.MCPCapabilityRuntime
 	RuntimeGeneration uint64 // PublishGate generation for admission
+	// RuntimeOwner isolates publish/drain gates and receipts to one
+	// controller/session rebuild lineage. Nil preserves compatibility behavior.
+	RuntimeOwner *extension.RuntimeOwner
 	// WorkspaceRoot is the project root checkpoint restores are confined to ("" =
 	// no confinement). Frontends pass the cwd they launched the session in.
 	WorkspaceRoot          string
@@ -513,7 +521,7 @@ type Options struct {
 	// the backward-compatible Balanced profile.
 	RuntimeProfile capability.Profile
 	// Extensions is the frozen extension dispatcher for this controller
-	// generation (Extension Protocol v1, stage 6b1). Nil means no v1 runtime
+	// generation (Extension Protocol v2, stage 6b1). Nil means no v2 runtime
 	// packages are installed: every extension wiring point takes an untouched
 	// fast path. Boot installs it through SetExtensions because sidecars (and
 	// therefore the dispatcher) only exist after snapshot assembly, which runs
@@ -521,7 +529,7 @@ type Options struct {
 	Extensions *dispatch.Dispatcher
 	// ProviderResolver is the build's merged provider catalog — extension
 	// sidecar providers folded over the config/broker base (stage 7). Nil when
-	// no v1 runtime sidecar declared providers; ProviderCatalog then returns
+	// no v2 runtime sidecar declared providers; ProviderCatalog then returns
 	// nil and frontends enumerate providers from config alone, as before.
 	ProviderResolver provider.Resolver
 	// Ablation switches subsystems off for a benchmark arm. The zero value runs
@@ -552,6 +560,11 @@ func New(opts Options) *Controller {
 	if pluginCtx == nil {
 		pluginCtx = context.Background()
 	}
+	runtimeOwner := opts.RuntimeOwner
+	if runtimeOwner == nil {
+		runtimeOwner = extension.DefaultRuntimeOwner
+	}
+	pluginCtx = extension.ContextWithRuntimeOwner(pluginCtx, runtimeOwner)
 	runtimeProfile := opts.RuntimeProfile
 	if runtimeProfile == "" {
 		runtimeProfile = capability.ProfileBalanced
@@ -605,6 +618,7 @@ func New(opts Options) *Controller {
 		externalFolderToolRefs:            opts.ExternalFolderToolRefs,
 		providerResolver:                  opts.ProviderResolver,
 		runtimeGeneration:                 opts.RuntimeGeneration,
+		runtimeOwner:                      runtimeOwner,
 		approval:                          newApprovalManager(opts.Policy, ToolApprovalAsk, opts.ApprovalTimeout),
 	}
 	// Session-private temporary directory: reuse a shared Manager on hot
@@ -870,12 +884,16 @@ func (c *Controller) beginCheckpoint(input string) {
 	// recovery never claims a clean rollback of already-committed prompts.
 	gen := c.RuntimeGeneration()
 	if gen == 0 {
-		gen = extension.DefaultPublishGate().Published()
+		gen = c.RuntimeOwner().Gate.Published()
 	}
 	msgID := fmt.Sprintf("turn-%d-%d", gen, atomic.LoadInt64(&c.sessionRevision))
 	// Dedup: a retried turn with the same revision must not double-record.
-	extension.RecordMessageSentOnce(gen, msgID, "control")
-	c.lastResumeDecision = extension.DecideResumeDefault(gen)
+	owner := c.RuntimeOwner()
+	owner.RecordMessageSentOnce(gen, msgID, "control")
+	d := owner.DecideResume(gen)
+	c.mu.Lock()
+	c.lastResumeDecision = d
+	c.mu.Unlock()
 }
 
 // commands (frontend → controller)
@@ -935,7 +953,7 @@ func (c *Controller) finishGuardedTurn(err error) {
 		}
 		next := c.parkedTurns[0]
 		c.parkedTurns = c.parkedTurns[1:]
-		ctx, cancel := context.WithCancel(context.Background())
+		ctx, cancel := context.WithCancel(extension.ContextWithRuntimeOwner(context.Background(), c.runtimeOwner))
 		c.cancel = cancel
 		c.running = true
 		c.canceling = false
@@ -1023,7 +1041,7 @@ func (c *Controller) runTurn(ctx context.Context, input string) error {
 // composition, checkpoints, hooks, and plan approval. It is for transports that
 // need a blocking request/response boundary, such as ACP session/prompt.
 func (c *Controller) RunTurn(ctx context.Context, input string) error {
-	ctx, cancel := context.WithCancel(ctx)
+	ctx, cancel := context.WithCancel(extension.ContextWithRuntimeOwner(ctx, c.RuntimeOwner()))
 	c.mu.Lock()
 	// finishing is part of the gate: TurnDone delivery for the previous turn
 	// is still fanning out, and starting a synchronous turn inside that
@@ -1035,6 +1053,12 @@ func (c *Controller) RunTurn(ctx context.Context, input string) error {
 		c.mu.Unlock()
 		cancel()
 		return ErrTurnRunning
+	}
+	if c.rejectDrainingGenerationLocked() {
+		c.mu.Unlock()
+		cancel()
+		c.emitDrainingNotice()
+		return ErrRuntimeDraining
 	}
 	c.cancel = cancel
 	c.running = true
@@ -1888,6 +1912,11 @@ func (c *Controller) noticeDetail(text, detail string) {
 // headless `reasonix run` path, where the Sink renders to stdout and the caller
 // just needs the exit status — no TurnDone event, no cancel bookkeeping.
 func (c *Controller) Run(ctx context.Context, input string) (err error) {
+	ctx = extension.ContextWithRuntimeOwner(ctx, c.RuntimeOwner())
+	if c.RuntimePhase() == RuntimePhaseDraining {
+		c.emitDrainingNotice()
+		return ErrRuntimeDraining
+	}
 	defer event.RecordTurnCompletion(c.sink)
 	c.maybeSessionStart(ctx)
 	parentSession := c.parentSessionID()

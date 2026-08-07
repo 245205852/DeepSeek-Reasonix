@@ -15,8 +15,8 @@ type ReceiptStore struct {
 	sequence uint64
 }
 
-// DefaultReceiptStore is the process-wide ledger.
-var DefaultReceiptStore = NewReceiptStore()
+// DefaultReceiptStore is the compatibility owner's ledger.
+var DefaultReceiptStore = DefaultRuntimeOwner.Receipts
 
 // NewReceiptStore returns an empty store.
 func NewReceiptStore() *ReceiptStore {
@@ -38,17 +38,42 @@ func (s *ReceiptStore) Record(r EffectReceipt) {
 			r.CompensationStatus = "not_applicable"
 		}
 	}
-	if r.StartedAt.IsZero() {
-		r.StartedAt = time.Now().UTC()
-	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if r.ID == "" {
 		s.sequence++
 		r.ID = "receipt-" + itoaU64(s.sequence)
 	}
+	if previous, exists := s.byID[r.ID]; exists && previous.Generation != r.Generation && r.Generation != 0 {
+		// Receipt IDs are update keys only within one generation. Keep both
+		// generations when a caller accidentally reuses an ID.
+		r.ID += "#gen-" + itoaU64(r.Generation)
+	}
+	if previous, exists := s.byID[r.ID]; exists {
+		if r.Generation == 0 {
+			r.Generation = previous.Generation
+		}
+		if r.Owner == "" {
+			r.Owner = previous.Owner
+		}
+		if r.Component == "" {
+			r.Component = previous.Component
+		}
+		if r.StartedAt.IsZero() {
+			r.StartedAt = previous.StartedAt
+		}
+		if r.CompletedAt.IsZero() {
+			r.CompletedAt = previous.CompletedAt
+		}
+	}
+	if r.StartedAt.IsZero() {
+		r.StartedAt = time.Now().UTC()
+	}
+	_, exists := s.byID[r.ID]
 	s.byID[r.ID] = r
-	s.byGen[r.Generation] = append(s.byGen[r.Generation], r.ID)
+	if !exists {
+		s.byGen[r.Generation] = append(s.byGen[r.Generation], r.ID)
+	}
 }
 
 // Get returns a receipt by id.
@@ -83,10 +108,10 @@ func (s *ReceiptStore) ForGeneration(gen uint64) []EffectReceipt {
 // a clean resume. Irreversible completed work without compensation blocks
 // claiming a clean rollback but still allows resume with awareness.
 type Recoverability struct {
-	Clean          bool     `json:"clean"`
-	HasIrreversible bool    `json:"hasIrreversible"`
-	Blocking       []string `json:"blocking,omitempty"`
-	Notes          []string `json:"notes,omitempty"`
+	Clean           bool     `json:"clean"`
+	HasIrreversible bool     `json:"hasIrreversible"`
+	Blocking        []string `json:"blocking,omitempty"`
+	Notes           []string `json:"notes,omitempty"`
 }
 
 // AssessRecoverability reports whether checkpoint resume can claim a clean

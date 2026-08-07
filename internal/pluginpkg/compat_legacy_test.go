@@ -34,7 +34,7 @@ func TestLegacyNativeManifestRejected(t *testing.T) {
 	}
 }
 
-// TestV1NativeManifestRejected ensures install/doctor/boot refuse v1.
+// TestV1NativeManifestRejected ensures every native parser refuses v1.
 func TestV1NativeManifestRejected(t *testing.T) {
 	root := t.TempDir()
 	manifest := `{
@@ -46,7 +46,10 @@ func TestV1NativeManifestRejected(t *testing.T) {
 		t.Fatal(err)
 	}
 	_, _, err := ParseDir(root)
-	if err == nil || !strings.Contains(err.Error(), "no longer supported") {
-		t.Fatalf("ParseDir v1 = %v, want no longer supported", err)
+	if err == nil || !strings.Contains(err.Error(), "unsupported apiVersion") {
+		t.Fatalf("ParseDir v1 = %v, want unsupported apiVersion", err)
+	}
+	if _, _, err := ParseNativeForMigrate(root); err == nil || !strings.Contains(err.Error(), "unsupported apiVersion") {
+		t.Fatalf("ParseNativeForMigrate v1 = %v, want unsupported apiVersion", err)
 	}
 }

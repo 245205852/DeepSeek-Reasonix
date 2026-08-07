@@ -5,7 +5,9 @@ English overview of the Reasonix plugin/runtime v2 model. Chinese: [EXTENSION_RU
 ## Protocol and manifest
 
 - Plugin manifest: exact `apiVersion: reasonix.io/plugin/v2` only (no `v2.0`/`v2.1` aliases; v1 and legacy native rejected).
-- Migration: `reasonix plugin migrate <name> --to-v2`
+- Compatibility boundary: no v1 dual-read or automatic migration. Extension
+  manifests were not publicly released on v1, so v2 is the first supported
+  runtime manifest.
 - Extension wire protocol: `reasonix.extension.v2` (major 2).
 - Handshake `provides` must be a subset of the manifest provides ceiling.
 
@@ -15,7 +17,8 @@ English overview of the Reasonix plugin/runtime v2 model. Chinese: [EXTENSION_RU
 RuntimeSnapshot = immutable config + dependency view
 RuntimeSet / EffectScope = live resources for one generation
 RuntimePlan = old → new transition (subgraph classification)
-Controller = published generation owner (admission bound to PublishGate)
+RuntimeOwner = one session lineage's gate + receipts + stream/file evidence
+Controller = published generation consumer (admission bound to RuntimeOwner)
 ```
 
 Component states: `Inactive → Preparing → Active → Draining → Inactive` (or `Failed`).
@@ -47,7 +50,11 @@ Reports component status, plan, effect receipts, recoverability, and lifecycle m
 
 ## Effect receipts
 
-Irreversible external work is recorded in `extension.DefaultReceiptStore`. Recovery never claims successful rollback for irreversible effects; use `AssessRecoverability(generation)` / `DecideResume(generation)`.
+Irreversible external work is recorded in the current `RuntimeOwner`'s receipt
+store. Independent sessions never share publish/drain state or recovery
+evidence. Recovery never claims successful rollback for irreversible effects;
+use the owner-scoped `AssessRecoverability(generation)` /
+`DecideResume(generation)` methods.
 
 - Provider stream open records `provider-submit:<id>` (irreversible).
 - Drain timeout force-expire records `drain-timeout:<gen>` and is scheduled after every publish (`ScheduleDrainWatch` / doctor sweep).
@@ -69,19 +76,20 @@ Live resources for one generation are tracked on `RuntimeSet` / `EffectScope`:
 
 | Spec acceptance | Status |
 | --- | --- |
-| Clear EffectScope owner per resource | Done (host wiring for sidecar/MCP/UI/LSP/stream cancel) |
+| Clear owner per resource and session lineage | Done (`RuntimeOwner` + EffectScope wiring for sidecar/MCP/UI/LSP/stream/file receipts) |
 | Activation failure never leaks / never publishes | Done |
 | Missing deps → Inactive diagnostics | Done (structured missing requirement + Unavailable) |
 | Subgraph-only rebuild (no full BuildRuntime) | Done for None/Interceptor/UI/Provider/MCP |
 | Publish/drain order + drain cancel | Done |
 | Irreversible never rollback-success | Done (recovery `AssessRuntimeResume`) |
-| v1 native rejected + migrate | Done |
+| Strict v2-only native runtime manifest | Done (no v1 dual-read / auto-migration) |
 | Cache stability guards | Done |
 | Doctor explains inactive + resume | Done (CLI + desktop RuntimeDoctor UI) |
 | No external runtime dependency | Done |
 
 ## Phase 5 decisions
 
-- **v1 parser**: retained **migrate-only** (`parseNativeV1` for `plugin migrate --to-v2`). Install/doctor/boot still hard-reject v1. Full deletion deferred until migrate telemetry is quiet.
+- **Compatibility**: v2 is the first supported extension runtime manifest;
+  install/doctor/boot do not dual-read v1 and do not auto-migrate it.
 - **Performance**: see [EXTENSION_RUNTIME_V2_PERF.md](./EXTENSION_RUNTIME_V2_PERF.md).
 - **README / SDK**: v2 manifest examples under `sdk/go/examples/*`; protocol gen remains the source of truth for wire types.

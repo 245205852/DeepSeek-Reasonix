@@ -23,7 +23,7 @@ import (
 
 // Boot-level fake sidecar (re-exec helper-process pattern, mirroring the
 // sidecar package's own tests): the boot test binary re-executes itself with
-// REASONIX_BOOT_FAKE_SIDECAR=1 and speaks Extension Protocol v1 over
+// REASONIX_BOOT_FAKE_SIDECAR=1 and speaks Extension Protocol v2 over
 // stdin/stdout. REASONIX_BOOT_FAKE_INIT_RESULT overrides the initialize
 // result; REASONIX_BOOT_FAKE_MODE=ignore_shutdown keeps the process alive
 // through extension/shutdown. Intercept steering for the dispatch tests:
@@ -264,7 +264,7 @@ func bootFakeLogEvent(rawParams json.RawMessage) {
 	fmt.Fprintf(f, "%s %s\n", params.Event, string(params.Payload))
 }
 
-// installBootFakePlugin installs an enabled v1 runtime package (the
+// installBootFakePlugin installs an enabled v2 runtime package (the
 // re-executed test binary) into the pluginpkg state under home.
 func installBootFakePlugin(t *testing.T, home, name string, runtime map[string]any) {
 	t.Helper()

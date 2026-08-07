@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
 
 	"reasonix/internal/extensioncontract"
@@ -15,11 +14,9 @@ import (
 
 // ManifestAPIVersionV2 is the only native plugin manifest apiVersion Reasonix
 // accepts for install, doctor, and boot. v1 and legacy (no apiVersion) native
-// manifests are rejected; use `reasonix plugin migrate <name> --to-v2`.
+// manifests are rejected. The explicit migrate command is only for legacy
+// pre-extension manifests that omit apiVersion.
 const ManifestAPIVersionV2 = "reasonix.io/plugin/v2"
-
-// ManifestAPIVersionV1 is retained for the migrate command's source parser.
-const ManifestAPIVersionV1 = "reasonix.io/plugin/v1"
 
 // CapabilityRef is the wire form of a capability in a v2 manifest.
 type CapabilityRef struct {
@@ -68,33 +65,13 @@ func checkAPIVersionV2(v string) error {
 	if v == ManifestAPIVersionV2 {
 		return nil
 	}
-	if isManifestV1(v) {
-		return fmt.Errorf("%s: apiVersion %q is no longer supported; run `reasonix plugin migrate <name> --to-v2` (this Reasonix supports %s)", NativeManifest, v, ManifestAPIVersionV2)
-	}
 	return fmt.Errorf("%s: unsupported apiVersion %q: want exact %s", NativeManifest, v, ManifestAPIVersionV2)
 }
 
-// isManifestV1 reports whether apiVersion is exactly major version 1
-// (reasonix.io/plugin/v1 or v1.x). It must not treat v10 as v1.
-func isManifestV1(apiVersion string) bool {
-	if apiVersion == ManifestAPIVersionV1 {
-		return true
-	}
-	m := apiVersionPattern.FindStringSubmatch(apiVersion)
-	if m == nil {
-		return false
-	}
-	major, _ := strconv.Atoi(m[1])
-	return major == 1
-}
-
-// rejectLegacyOrV1Native explains why a non-v2 native manifest is refused.
-func rejectLegacyOrV1Native(apiVersion string) error {
+// rejectNonV2Native explains why a non-v2 native manifest is refused.
+func rejectNonV2Native(apiVersion string) error {
 	if apiVersion == "" {
-		return fmt.Errorf("%s: missing apiVersion; native manifests must declare %s (run `reasonix plugin migrate <name> --to-v2`)", NativeManifest, ManifestAPIVersionV2)
-	}
-	if isManifestV1(apiVersion) {
-		return fmt.Errorf("%s: apiVersion %q is no longer supported; run `reasonix plugin migrate <name> --to-v2`", NativeManifest, apiVersion)
+		return fmt.Errorf("%s: missing apiVersion; native manifests must declare %s", NativeManifest, ManifestAPIVersionV2)
 	}
 	return checkAPIVersionV2(apiVersion)
 }
@@ -110,7 +87,7 @@ type v2Root struct {
 	Provides    json.RawMessage `json:"provides"`
 	Contributes json.RawMessage `json:"contributes"`
 	Runtime     json.RawMessage `json:"runtime"`
-	// Resource path fields (same shapes as v1).
+	// Resource path fields (same shapes as earlier native manifests).
 	Skills     json.RawMessage              `json:"skills"`
 	Commands   json.RawMessage              `json:"commands"`
 	Hooks      map[string][]json.RawMessage `json:"hooks"`
@@ -299,12 +276,15 @@ func (p Package) ProvidesCapabilities() []extensioncontract.Capability {
 	return out
 }
 
-// MigrateManifestToV2 converts a v1 or legacy native package into a v2
+// MigrateManifestToV2 converts a legacy native package into a v2
 // manifest document. Dependencies that cannot be inferred are returned as
 // errors rather than invented.
 func MigrateManifestToV2(pkg Package) ([]byte, error) {
 	if pkg.ManifestKind != "reasonix" && pkg.ManifestKind != "" {
 		return nil, fmt.Errorf("migrate: only native reasonix manifests can be migrated (got %s)", pkg.ManifestKind)
+	}
+	if apiVersion := strings.TrimSpace(pkg.Manifest.APIVersion); apiVersion != "" {
+		return nil, fmt.Errorf("migrate: only pre-extension manifests without apiVersion can be migrated (got %s)", apiVersion)
 	}
 	name := strings.TrimSpace(pkg.Manifest.Name)
 	if name == "" {
@@ -386,13 +366,13 @@ func MigrateManifestToV2(pkg Package) ([]byte, error) {
 	return json.MarshalIndent(doc, "", "  ")
 }
 
-// WriteMigratedManifestV2 writes a v2 manifest, keeping a .v1.bak backup of the
+// WriteMigratedManifestV2 writes a v2 manifest, keeping a .bak backup of the
 // previous reasonix-plugin.json when present.
 func WriteMigratedManifestV2(root string, data []byte) error {
 	root = filepath.Clean(root)
 	path := filepath.Join(root, NativeManifest)
 	if b, err := os.ReadFile(path); err == nil {
-		bak := path + ".v1.bak"
+		bak := path + ".bak"
 		if err := os.WriteFile(bak, b, 0o644); err != nil {
 			return fmt.Errorf("migrate: backup: %w", err)
 		}
@@ -403,8 +383,8 @@ func WriteMigratedManifestV2(root string, data []byte) error {
 	return os.WriteFile(path, data, 0o644)
 }
 
-// ParseNativeForMigrate accepts v1 and legacy native manifests for migration
-// only. Normal ParseDir rejects them.
+// ParseNativeForMigrate accepts legacy native manifests without apiVersion for
+// explicit migration only. Normal ParseDir rejects them; v1 is unsupported.
 func ParseNativeForMigrate(root string) (Package, []string, error) {
 	root = filepath.Clean(root)
 	path := filepath.Join(root, NativeManifest)
@@ -419,13 +399,10 @@ func ParseNativeForMigrate(root string) (Package, []string, error) {
 	if apiVersion == "" {
 		return parseNativeLegacy(b, root)
 	}
-	if isManifestV1(apiVersion) {
-		return parseNativeV1(b, root, apiVersion)
+	if apiVersion == ManifestAPIVersionV2 {
+		return Package{}, nil, fmt.Errorf("%s: already uses %s; migration only supports pre-extension manifests without apiVersion", NativeManifest, ManifestAPIVersionV2)
 	}
-	if err := checkAPIVersionV2(apiVersion); err == nil {
-		return parseNativeV2(b, root, apiVersion)
-	}
-	return Package{}, nil, rejectLegacyOrV1Native(apiVersion)
+	return Package{}, nil, rejectNonV2Native(apiVersion)
 }
 
 func parseNative(path, root string) (Package, []string, error) {
@@ -437,8 +414,8 @@ func parseNative(path, root string) (Package, []string, error) {
 	if err != nil {
 		return Package{}, nil, err
 	}
-	if apiVersion == "" || isManifestV1(apiVersion) {
-		return Package{}, nil, rejectLegacyOrV1Native(apiVersion)
+	if apiVersion != ManifestAPIVersionV2 {
+		return Package{}, nil, rejectNonV2Native(apiVersion)
 	}
 	return parseNativeV2(b, root, apiVersion)
 }

@@ -13,19 +13,25 @@ type HostStreamRegistry struct {
 	mu     sync.Mutex
 	byGen  map[uint64]map[uint64]context.CancelFunc
 	nextID atomic.Uint64
+	gate   *PublishGate
 	// drainHooked remembers which generations already registered a
 	// RegisterDrainCancel fan-in so we do not stack duplicate hooks.
 	drainHooked map[uint64]struct{}
 }
 
-// DefaultHostStreams is the process-wide host stream registry.
-var DefaultHostStreams = NewHostStreamRegistry()
+// DefaultHostStreams belongs to the compatibility runtime owner.
+var DefaultHostStreams = DefaultRuntimeOwner.HostStreams
 
 // NewHostStreamRegistry returns an empty registry.
-func NewHostStreamRegistry() *HostStreamRegistry {
+func NewHostStreamRegistry(gates ...*PublishGate) *HostStreamRegistry {
+	var gate *PublishGate
+	if len(gates) > 0 {
+		gate = gates[0]
+	}
 	return &HostStreamRegistry{
 		byGen:       make(map[uint64]map[uint64]context.CancelFunc),
 		drainHooked: make(map[uint64]struct{}),
+		gate:        gate,
 	}
 }
 
@@ -41,12 +47,22 @@ func (r *HostStreamRegistry) Track(gen uint64, cancel context.CancelFunc) (untra
 		r.byGen[gen] = make(map[uint64]context.CancelFunc)
 	}
 	r.byGen[gen][id] = cancel
+	registerDrainHook := false
 	if _, hooked := r.drainHooked[gen]; !hooked {
 		r.drainHooked[gen] = struct{}{}
-		// Fan-in: one drain cancel per generation cancels every tracked stream.
-		RegisterDrainCancel(gen, func() { r.CancelGeneration(gen) })
+		registerDrainHook = true
 	}
 	r.mu.Unlock()
+	if registerDrainHook {
+		// Fan-in: one drain cancel per generation cancels every tracked stream.
+		// Register outside r.mu because an already-expired generation fires the
+		// callback synchronously and re-enters CancelGeneration.
+		gate := r.gate
+		if gate == nil {
+			gate = DefaultPublishGate()
+		}
+		gate.RegisterDrainCancel(gen, func() { r.CancelGeneration(gen) })
+	}
 	var once sync.Once
 	return func() {
 		once.Do(func() {

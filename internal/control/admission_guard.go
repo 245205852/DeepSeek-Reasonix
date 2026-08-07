@@ -4,6 +4,7 @@ import (
 	"context"
 
 	"reasonix/internal/event"
+	"reasonix/internal/extension"
 )
 
 // admissionResult classifies what runGuarded did with a turn body.
@@ -41,6 +42,7 @@ func (c *Controller) admitGuardedTurn(body func(ctx context.Context) error, park
 	}
 	if c.rejectDrainingGenerationLocked() {
 		c.mu.Unlock()
+		c.emitDrainingNotice()
 		return turnDroppedDraining
 	}
 	if c.rotating {
@@ -62,7 +64,7 @@ func (c *Controller) admitGuardedTurn(body func(ctx context.Context) error, park
 		c.mu.Unlock()
 		return turnParked
 	}
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(extension.ContextWithRuntimeOwner(context.Background(), c.runtimeOwner))
 	c.cancel = cancel
 	c.running = true
 	c.canceling = false

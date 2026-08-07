@@ -6,12 +6,13 @@ import (
 	"reasonix/internal/extension"
 )
 
-// trackPublishedHostStream binds cancel to the published generation so drain
-// timeout aborts host provider HTTP streams. No-op when gen is 0.
-func trackPublishedHostStream(cancel context.CancelFunc) (untrack func()) {
-	gen := extension.DefaultPublishGate().Published()
+// trackPublishedHostStream binds cancel to the context's runtime owner so a
+// session rebuild can drain its own HTTP streams without touching siblings.
+func trackPublishedHostStream(ctx context.Context, cancel context.CancelFunc) (untrack func()) {
+	owner := extension.RuntimeOwnerFromContext(ctx)
+	gen := owner.Gate.Published()
 	if gen == 0 || cancel == nil {
 		return func() {}
 	}
-	return extension.TrackHostStream(gen, cancel)
+	return owner.HostStreams.Track(gen, cancel)
 }

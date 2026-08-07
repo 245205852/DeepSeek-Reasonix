@@ -37,20 +37,33 @@ func TestHostStreamUntrack(t *testing.T) {
 }
 
 func TestHostStreamDrainHook(t *testing.T) {
-	r := NewHostStreamRegistry()
-	// Isolate from process DefaultPublishGate noise by using ForceExpireDrain
-	// after registering via Track (hooks RegisterDrainCancel).
 	g := NewPublishGate().WithDrainTTL(time.Millisecond)
-	// Temporarily install drain cancel into default path by using RegisterDrainCancel
-	// through Track on r — Track calls RegisterDrainCancel which uses global map.
+	r := NewHostStreamRegistry(g)
 	ctx, cancel := context.WithCancel(context.Background())
 	_ = r.Track(42, cancel)
 	// Simulate drain timeout path.
-	FireDrainCancels(42)
+	g.FireDrainCancels(42)
 	select {
 	case <-ctx.Done():
 	default:
 		t.Fatal("FireDrainCancels should cancel host stream")
 	}
-	_ = g
+}
+
+func TestHostStreamTrackAfterExpiredGenerationCancelsImmediately(t *testing.T) {
+	g := NewPublishGate()
+	g.Publish(41)
+	g.Publish(42)
+	g.ForceExpireDrain(41)
+	r := NewHostStreamRegistry(g)
+	ctx, cancel := context.WithCancel(context.Background())
+	_ = r.Track(41, cancel)
+	select {
+	case <-ctx.Done():
+	default:
+		t.Fatal("stream registered after generation expiry must cancel immediately")
+	}
+	if got := r.Count(41); got != 0 {
+		t.Fatalf("expired generation retained %d streams", got)
+	}
 }

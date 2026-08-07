@@ -59,18 +59,14 @@ func TestManifestV2ProviderRequiresSchemaHash(t *testing.T) {
 	}
 }
 
-func TestMigrateManifestToV2(t *testing.T) {
+func TestMigrateLegacyManifestToV2(t *testing.T) {
 	root := t.TempDir()
-	v1 := `{
-  "apiVersion": "reasonix.io/plugin/v1",
+	legacy := `{
   "name": "oldplug",
   "version": "1.2.3",
-  "runtime": {
-    "command": "./bin/run",
-    "capabilities": ["interceptors"]
-  }
+  "skills": []
 }`
-	if err := os.WriteFile(filepath.Join(root, NativeManifest), []byte(v1), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(root, NativeManifest), []byte(legacy), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	pkg, _, err := ParseNativeForMigrate(root)
@@ -84,7 +80,7 @@ func TestMigrateManifestToV2(t *testing.T) {
 	if err := WriteMigratedManifestV2(root, data); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := os.Stat(filepath.Join(root, NativeManifest+".v1.bak")); err != nil {
+	if _, err := os.Stat(filepath.Join(root, NativeManifest+".bak")); err != nil {
 		t.Fatal(err)
 	}
 	got, _, err := ParseDir(root)
@@ -103,5 +99,24 @@ func TestMigrateProvidersRequiresExplicitProvides(t *testing.T) {
 	}}
 	if _, err := MigrateManifestToV2(pkg); err == nil || !strings.Contains(err.Error(), "cannot infer schemaHash") {
 		t.Fatalf("err = %v", err)
+	}
+}
+
+func TestMigrateRejectsVersionedManifest(t *testing.T) {
+	root := t.TempDir()
+	writeV2Plugin(t, root, `{
+  "apiVersion": "reasonix.io/plugin/v2",
+  "name": "already-v2"
+}`)
+	if _, _, err := ParseNativeForMigrate(root); err == nil || !strings.Contains(err.Error(), "already uses reasonix.io/plugin/v2") {
+		t.Fatalf("ParseNativeForMigrate v2 = %v, want already-v2 rejection", err)
+	}
+
+	pkg := Package{ManifestKind: "reasonix", Manifest: Manifest{
+		APIVersion: ManifestAPIVersionV2,
+		Name:       "already-v2",
+	}}
+	if _, err := MigrateManifestToV2(pkg); err == nil || !strings.Contains(err.Error(), "without apiVersion") {
+		t.Fatalf("MigrateManifestToV2 v2 = %v, want versioned rejection", err)
 	}
 }

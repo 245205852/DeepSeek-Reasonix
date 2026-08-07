@@ -31,6 +31,10 @@ type BuildResult struct {
 	Controller *control.Controller
 	Snapshot   *extension.RuntimeSnapshot
 	Runtime    *extension.RuntimeSet
+	// Owner is the session-lineage lifecycle owner. Independent builds receive
+	// independent owners; RebuildFrom reuses the previous owner so only that
+	// lineage's old generation drains.
+	Owner *extension.RuntimeOwner
 	// Extensions is the started extension sidecar Manager (nil when no v2
 	// runtime package is installed). Its lifecycle belongs to Runtime; the
 	// field exists so later stages (and tests) can reach the live clients.
@@ -471,7 +475,7 @@ func legacyContributions(in legacyAssembly) []extension.Contribution {
 			// The kernel keys providers on <name>/<model> refs; legacy
 			// catalogs can carry a bare provider name or a model that itself
 			// contains a slash. Those entries stay resolvable through the
-			// ordinary provider path but cannot be catalogued in a v1
+			// ordinary provider path but cannot be catalogued in a v2
 			// snapshot.
 			continue
 		}

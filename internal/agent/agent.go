@@ -352,9 +352,9 @@ type Agent struct {
 	// Plan workflows. nil disables gating entirely.
 	gate Gate
 
-	// extensions, when non-nil, is the frozen Extension Protocol v1 dispatcher
+	// extensions, when non-nil, is the frozen Extension Protocol v2 dispatcher
 	// for this controller generation. The run loop consults it at the
-	// agent-side intercept points (see extensions.go); nil means no v1 runtime
+	// agent-side intercept points (see extensions.go); nil means no runtime
 	// packages are installed and every point passes through byte-identically.
 	extensions *dispatch.Dispatcher
 
@@ -1125,7 +1125,7 @@ type Options struct {
 	MaxSubagentDepth int
 
 	// Extensions is the frozen extension dispatcher for this agent's controller
-	// generation (Extension Protocol v1). Nil means no v1 runtime packages are
+	// generation (Extension Protocol v2). Nil means no runtime packages are
 	// installed; the run loop then passes every intercept point through
 	// byte-identically. Boot installs it with SetExtensions once sidecars are
 	// live (they start after the agent is constructed).
@@ -2308,7 +2308,7 @@ func (a *Agent) streamWithFrozen(ctx context.Context, turn int, sink event.Sink,
 		req = prepared.req
 	}
 	// Host stream cancels on generation drain (OpenAI/Anthropic HTTP reads).
-	defer trackPublishedHostStream(cancel)()
+	defer trackPublishedHostStream(ctx, cancel)()
 	ch, err := a.prov.Stream(ctx, req)
 	if err != nil {
 		return streamedTurn{usage: provider.UsageWithRequestAttemptCount(ctx, nil), err: err}

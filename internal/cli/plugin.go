@@ -376,7 +376,7 @@ func pluginMigrateCommand(args []string) int {
 		fmt.Fprintln(os.Stderr, "migrated manifest failed validation:", err)
 		return 1
 	}
-	fmt.Printf("migrated %s to %s (backup: %s.v1.bak)\n", name, pluginpkg.ManifestAPIVersionV2, pluginpkg.NativeManifest)
+	fmt.Printf("migrated %s to %s (backup: %s.bak)\n", name, pluginpkg.ManifestAPIVersionV2, pluginpkg.NativeManifest)
 	return 0
 }
 
@@ -398,7 +398,7 @@ func pluginDoctorCommand(args []string) int {
 	pkg, warnings, err := pluginpkg.ParseDir(root)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "invalid:", err)
-		if strings.Contains(err.Error(), "no longer supported") || strings.Contains(err.Error(), "missing apiVersion") {
+		if strings.Contains(err.Error(), "missing apiVersion") {
 			fmt.Fprintf(os.Stderr, "remediation: reasonix plugin migrate %s --to-v2\n", args[0])
 		}
 		return 1
@@ -465,7 +465,7 @@ func pluginDoctorCommand(args []string) int {
 	return 0
 }
 
-// checkRuntimeCommand verifies a Manifest v1 runtime command resolves to
+// checkRuntimeCommand verifies a Manifest v2 runtime command resolves to
 // something runnable. ${REASONIX_PLUGIN_ROOT} expands to the installed root;
 // other relative path forms resolve against the plugin root. Bare executable
 // names are looked up on PATH (a miss is a warning, not a failure — PATH

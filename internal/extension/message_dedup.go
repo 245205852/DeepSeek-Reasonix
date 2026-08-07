@@ -9,8 +9,8 @@ type MessageSendGuard struct {
 	seen map[string]struct{}
 }
 
-// DefaultMessageSendGuard is process-wide.
-var DefaultMessageSendGuard = NewMessageSendGuard()
+// DefaultMessageSendGuard belongs to the compatibility runtime owner.
+var DefaultMessageSendGuard = DefaultRuntimeOwner.Messages
 
 // NewMessageSendGuard returns an empty guard.
 func NewMessageSendGuard() *MessageSendGuard {
@@ -36,9 +36,5 @@ func (g *MessageSendGuard) TryRecord(gen uint64, messageID string) bool {
 // RecordMessageSentOnce records an irreversible message-send receipt only on
 // the first observation of (generation, messageID).
 func RecordMessageSentOnce(generation uint64, messageID, owner string) bool {
-	if !DefaultMessageSendGuard.TryRecord(generation, messageID) {
-		return false
-	}
-	RecordMessageSent(generation, messageID, owner)
-	return true
+	return DefaultRuntimeOwner.RecordMessageSentOnce(generation, messageID, owner)
 }

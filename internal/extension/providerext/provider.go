@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"strings"
 
-	"reasonix/internal/extension"
 	"reasonix/internal/extension/protocol"
 	"reasonix/internal/extension/providerconv"
 	"reasonix/internal/provider"
@@ -135,12 +134,12 @@ func (r *Resolver) open(ctx context.Context, p *Provider, request provider.Reque
 	}
 	// Provider request is already submitted to the sidecar — irreversible for
 	// recovery (never claim rollback of an in-flight provider call).
-	gen := extension.DefaultPublishGate().Published()
-	extension.RecordProviderSubmit(gen, id, client.PluginID())
+	gen := r.owner.Gate.Published()
+	r.owner.RecordProviderSubmit(gen, id, client.PluginID())
 	// Drain-timeout cancel aborts delivery and notifies the sidecar.
 	streamID := id
 	streamRef := stream
-	extension.RegisterDrainCancel(gen, func() {
+	r.owner.Gate.RegisterDrainCancel(gen, func() {
 		r.mu.Lock()
 		if r.streams[streamID] == streamRef {
 			r.abortDeliveryLocked(streamRef)

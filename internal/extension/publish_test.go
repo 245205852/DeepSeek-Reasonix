@@ -38,7 +38,9 @@ func TestPublishGateSweep(t *testing.T) {
 	g := NewPublishGate().WithDrainTTL(time.Millisecond)
 	g.Publish(1)
 	g.Publish(2)
-	time.Sleep(5 * time.Millisecond)
+	g.mu.Lock()
+	g.draining[1] = time.Now().Add(-time.Second)
+	g.mu.Unlock()
 	expired := g.SweepExpiredDrains()
 	if len(expired) != 1 || expired[0] != 1 {
 		t.Fatalf("expired = %v", expired)
@@ -51,16 +53,31 @@ func TestPublishGateSweepAndForceExpireRecordsReceipt(t *testing.T) {
 	g := NewPublishGate().WithDrainTTL(time.Millisecond)
 	g.Publish(10)
 	g.Publish(11)
-	time.Sleep(5 * time.Millisecond)
+	g.mu.Lock()
+	g.draining[10] = time.Now().Add(-time.Second)
+	g.mu.Unlock()
 	expired := g.SweepAndForceExpire()
 	if len(expired) != 1 || expired[0] != 10 {
 		t.Fatalf("expired = %v", expired)
 	}
-	if _, ok := DefaultReceiptStore.Get("drain-timeout-10"); !ok {
+	if _, ok := g.receipts.Get("drain-timeout-10"); !ok {
 		t.Fatal("expected drain-timeout receipt")
 	}
 	if g.IsDraining(10) {
 		t.Fatal("gen 10 should no longer be draining")
+	}
+}
+
+func TestPublishGateLateDrainCancelFiresImmediately(t *testing.T) {
+	g := NewPublishGate()
+	g.Publish(20)
+	g.Publish(21)
+	g.ForceExpireDrain(20)
+
+	fired := false
+	g.RegisterDrainCancel(20, func() { fired = true })
+	if !fired {
+		t.Fatal("cancel registered after force-expire must fire immediately")
 	}
 }
 

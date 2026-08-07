@@ -64,6 +64,7 @@ func tryRebuildSubgraph(ctx context.Context, old *control.Controller, previous *
 		Controller:           previous.Controller,
 		Snapshot:             previous.Snapshot.WithGeneration(gen),
 		Runtime:              extension.NewRuntimeSet(gen),
+		Owner:                opts.Owner,
 		Extensions:           previous.Extensions,
 		Dispatcher:           previous.Dispatcher,
 		ExtensionUI:          previous.ExtensionUI,
@@ -138,11 +139,11 @@ func tryRebuildSubgraph(ctx context.Context, old *control.Controller, previous *
 	}
 
 	if prevGen := previous.Snapshot.Generation(); prevGen != 0 && prevGen != gen {
-		registerControllerDrainCancel(prevGen, old)
+		registerControllerDrainCancel(res.Owner, prevGen, old)
 		if !res.ReusedController {
 			if host := old.Host(); host != nil {
 				h := host
-				extension.RegisterDrainCancel(prevGen, func() { h.CancelInFlightMCP() })
+				res.Owner.Gate.RegisterDrainCancel(prevGen, func() { h.CancelInFlightMCP() })
 			}
 		}
 	}
@@ -236,7 +237,7 @@ func stageSidecarSubgraph(ctx context.Context, res *BuildResult, oldMgr *sidecar
 	if res.Snapshot != nil {
 		claims = res.Snapshot.Replacements()
 	}
-	merged, merr := mergeSidecarProviders(base, mgr, claims)
+	merged, merr := mergeSidecarProviders(base, mgr, claims, res.Owner)
 	if merr != nil {
 		return merr
 	}
@@ -301,11 +302,14 @@ func controllerSessionID(c *control.Controller) string {
 	return c.WorkspaceRoot()
 }
 
-func registerControllerDrainCancel(gen uint64, ctrl *control.Controller) {
+func registerControllerDrainCancel(owner *extension.RuntimeOwner, gen uint64, ctrl *control.Controller) {
 	if gen == 0 || ctrl == nil {
 		return
 	}
-	extension.RegisterDrainCancel(gen, func() {
+	if owner == nil {
+		owner = extension.DefaultRuntimeOwner
+	}
+	owner.Gate.RegisterDrainCancel(gen, func() {
 		if ctrl.RuntimeGeneration() == gen || ctrl.RuntimeGeneration() == 0 {
 			ctrl.Cancel()
 		}
@@ -317,7 +321,11 @@ func failRebuildActivation(res *BuildResult) {
 		return
 	}
 	if res.Snapshot != nil {
-		extension.DefaultPublishGate().BeginDrain(res.Snapshot.Generation())
+		owner := res.Owner
+		if owner == nil {
+			owner = extension.DefaultRuntimeOwner
+		}
+		owner.Gate.BeginDrain(res.Snapshot.Generation())
 	}
 	if res.Controller != nil && !res.ReusedController {
 		res.Controller.ReleaseResources()

@@ -17,6 +17,9 @@ type RuntimeReload struct {
 	Extensions *sidecar.Manager
 	Graph      *extension.DependencyGraph
 	Generation uint64
+	// Owner is reused across one controller/session rebuild lineage. Cold builds
+	// leave it nil and receive a fresh isolated owner.
+	Owner *extension.RuntimeOwner
 	// PreviousSnapshot/Dispatcher enable CacheHash-stable no-op rebuilds and
 	// interceptor-only rewire without rediscovering the whole assembly.
 	PreviousSnapshot   *extension.RuntimeSnapshot
@@ -167,14 +170,16 @@ func planForPreflight(opts Options, toGen uint64) *extension.RuntimePlan {
 
 // finalizeBuildResult attaches the cold-start RuntimePlan and status, then
 // publishes the generation so stale traffic from prior runtimes is dropped.
-func finalizeBuildResult(res *BuildResult) *BuildResult {
+func finalizeBuildResult(res *BuildResult, publish bool) *BuildResult {
 	if res == nil {
 		return nil
 	}
 	if graph, err := buildRuntimeGraph(config.ReasonixHomeDir(), nil); err == nil {
 		attachPlanAndStatus(res, nil, graph, 0)
 	}
-	publishBuildResult(res)
+	if publish {
+		publishBuildResult(res)
+	}
 	return res
 }
 
@@ -186,7 +191,12 @@ func publishBuildResult(res *BuildResult) {
 	if gen == 0 {
 		return
 	}
-	gate := extension.DefaultPublishGate()
+	owner := res.Owner
+	if owner == nil {
+		owner = extension.DefaultRuntimeOwner
+		res.Owner = owner
+	}
+	gate := owner.Gate
 	// Expire any previous drain TTLs before publishing the new generation.
 	_ = gate.SweepAndForceExpire()
 	gate.Publish(gen)
@@ -197,7 +207,7 @@ func publishBuildResult(res *BuildResult) {
 		res.Controller.SetRuntimeGeneration(gen)
 	}
 	if res.Runtime != nil {
-		extension.DefaultReceiptStore.IngestScope(res.Runtime.Scope())
+		owner.Receipts.IngestScope(res.Runtime.Scope())
 	}
 	if res.Status != nil {
 		res.Status.PublishedGeneration = gen
