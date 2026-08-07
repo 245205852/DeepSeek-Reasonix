@@ -60,7 +60,11 @@ const failures = [];
 for (const name of suites) {
   const path = join(TESTS_DIR, name);
   console.log(`\n▶ ${path}`);
-  const result = spawnSync(process.execPath, [tsxCli, path], { stdio: "inherit" });
+  // English locale mirrors the Go convention (LANG=en_US.UTF-8 go test):
+  // Node's built-in navigator.language follows the machine's ICU locale, and
+  // suites assert English UI strings.
+  const env = { ...process.env, LANG: "en_US.UTF-8", LC_ALL: "en_US.UTF-8" };
+  const result = spawnSync(process.execPath, [tsxCli, path], { stdio: "inherit", env });
   if (result.error) console.error(`run-tests: spawn failed for ${path}: ${result.error.message}`);
   if (result.status !== 0) {
     if (!keepGoing) {
