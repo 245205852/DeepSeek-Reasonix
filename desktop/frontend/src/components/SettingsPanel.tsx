@@ -1544,10 +1544,8 @@ function reasoningProtocolLabel(protocol: string, t: ReturnType<typeof useT>): s
   switch (protocol) {
     case "deepseek":
       return t("settings.reasoningProtocol.deepseek");
-    case "glm":
-      return t("settings.reasoningProtocol.glm");
-    case "kimi-k3":
-      return t("settings.reasoningProtocol.kimiK3");
+    case "glm": return t("settings.reasoningProtocol.glm");
+    case "kimi-k3": return t("settings.reasoningProtocol.kimiK3");
     case "openai":
       return t("settings.reasoningProtocol.openai");
     case "none":

@@ -12,9 +12,7 @@
 //     reasoning_effort, matching LongCat's OpenAI-compatible API.
 //   - ollama.com → accepts hosted Ollama Cloud's reasoning_effort scale,
 //     including max, and omits the field for none/disabled.
-//   - official Kimi API + kimi-k3, or an explicit reasoning_protocol=kimi-k3,
-//     preserves complete assistant messages and uses K3's
-//     fixed-sampling/max_completion_tokens request shape.
+//   - Kimi K3 preserves complete messages and uses max_completion_tokens.
 //   - everything else (MiMo and other OpenAI-compatible gateways) uses the
 //     vanilla reasoning_effort scale (low/medium/high), unless its config
 //     declares a custom supported_efforts validation contract.
@@ -79,12 +77,13 @@ func New(cfg provider.Config) (provider.Provider, error) {
 	if effort == "auto" {
 		effort = ""
 	}
+	protocol, _ := cfg.Extra["reasoning_protocol"].(string)
+	protocol = normalizeReasoningProtocol(protocol)
+	kimiK3 := usesKimiK3Contract(protocol, cfg.BaseURL, cfg.Model)
 	supportedEfforts, _ := cfg.Extra["supported_efforts"].([]string)
 	// A meaningful explicit list is the endpoint's declared effort vocabulary;
 	// auto remains implicit and is therefore ignored here.
-	hasExplicitEfforts := hasExplicitSupportedEfforts(supportedEfforts)
-	protocol, _ := cfg.Extra["reasoning_protocol"].(string)
-	protocol = normalizeReasoningProtocol(protocol)
+	supportedEfforts, hasExplicitEfforts := reasoningEffortVocabulary(kimiK3, supportedEfforts)
 	chatURL, _ := cfg.Extra["chat_url"].(string)
 	chatURL = normalizeChatURL(cfg.BaseURL, chatURL)
 	prefixChatURL := deepSeekPrefixChatURL(chatURL)
@@ -111,7 +110,6 @@ func New(cfg provider.Config) (provider.Provider, error) {
 	zhipu := protocol == "glm" || (protocol == "" && IsZhipu(cfg.BaseURL))
 	longcat := protocol == "" && IsLongCat(cfg.BaseURL)
 	ollamaCloud := protocol == "" && IsOllamaCloud(cfg.BaseURL)
-	kimiK3 := protocol == "kimi-k3" || (IsKimiAPI(cfg.BaseURL) && strings.EqualFold(strings.TrimSpace(cfg.Model), "kimi-k3"))
 	// Optional explicit `thinking` config field — a vendor-agnostic escape hatch
 	// (credit @eghrhegpe, #5063) for OpenAI-compatible providers we don't
 	// auto-detect (e.g. opencode.ai). "enabled"/"disabled" drive thinking.type;
@@ -124,12 +122,6 @@ func New(cfg provider.Config) (provider.Provider, error) {
 	switch {
 	case protocol == "none":
 		effort = ""
-	case kimiK3:
-		switch effort {
-		case "", "low", "high", "max":
-		default:
-			return nil, fmt.Errorf("openai: provider %q uses Kimi K3 reasoning; effort must be low, high, or max", name)
-		}
 	case deepseek:
 		if thinkingType == "disabled" {
 			effort = ""

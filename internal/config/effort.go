@@ -176,27 +176,9 @@ func NormalizeEffort(e *ProviderEntry, raw string) (string, error) {
 			return "", fmt.Errorf("usage: /effort auto|disabled|high|max")
 		}
 	case ReasoningProtocolOpenAI:
-		if isMimoEntry(e) {
-			switch level {
-			case "none", "low", "medium", "high":
-				return level, nil
-			default:
-				return "", fmt.Errorf("usage: /effort auto|none|low|medium|high")
-			}
-		}
-		switch level {
-		case "low", "medium", "high":
-			return level, nil
-		default:
-			return "", fmt.Errorf("usage: /effort auto|low|medium|high")
-		}
+		return normalizeOpenAIReasoningEffort(e, level)
 	case ReasoningProtocolKimiK3:
-		switch level {
-		case "low", "high", "max":
-			return level, nil
-		default:
-			return "", fmt.Errorf("usage: /effort auto|low|high|max")
-		}
+		return normalizeKimiK3ReasoningEffort(level)
 	case ReasoningProtocolGLM:
 		return normalizeGLMEffort(level)
 	}
