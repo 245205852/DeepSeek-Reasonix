@@ -1273,6 +1273,13 @@ func chatREPL(args []string, version string) int {
 
 	m := newChatTUI(ctrl, missing, eventCh, termW)
 	m.diagnostics = diagnostics
+	// Structured stall dumps include Controller RuntimeStatus so operators can
+	// tell cancel-in-flight from a true hard freeze (#7811).
+	diagnostics.SetStatusProvider(func() string {
+		st := ctrl.RuntimeStatus()
+		return fmt.Sprintf("running=%v pending_prompt=%v cancel_requested=%v cancellable=%v background_jobs=%d",
+			st.Running, st.PendingPrompt, st.CancelRequested, st.Cancellable, st.BackgroundJobs)
+	})
 	m.planMode = permissions.plan
 	m.leases = leases
 	if cfg != nil {
