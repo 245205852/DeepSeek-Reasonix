@@ -1,11 +1,14 @@
 package sandbox
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
+	"time"
 )
 
 // Command returns the argv to run `command` through sh, wrapped in sandbox-exec
@@ -30,10 +33,42 @@ func CommandArgs(spec Spec, args []string) ([]string, bool) {
 	return append([]string{"sandbox-exec", "-p", seatbeltProfile(spec)}, args...), true
 }
 
-// Available reports whether sandbox-exec is on PATH (it ships with macOS).
+// sandboxExecUsability caches the probe result per resolved binary path, so
+// repeated Available() calls stay O(1) after the first check.
+var sandboxExecUsability sync.Map // resolved executable path -> bool
+
+// usableSandboxExec distinguishes an installed sandbox-exec from a usable
+// Seatbelt backend. Since macOS 10.14 sandbox_apply is restricted, so on newer
+// systems sandbox-exec may be on PATH yet every invocation fails with
+// "Operation not permitted" (exit 71). Treating that as available makes
+// enforce mode fail per-command with a misleading launch error and overstates
+// sandbox isolation in status surfaces (doctor, TUI, ACP). The minimal profile
+// still calls sandbox_apply — the operation that fails on restricted hosts — so
+// probing it distinguishes presence from usability, mirroring usableBwrap on
+// Linux.
+func usableSandboxExec() bool {
+	path, err := exec.LookPath("sandbox-exec")
+	if err != nil {
+		return false
+	}
+	if cached, ok := sandboxExecUsability.Load(path); ok {
+		return cached.(bool)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	err = exec.CommandContext(ctx, path, "-p", "(version 1)(allow default)", "true").Run()
+	usable := err == nil
+	actual, _ := sandboxExecUsability.LoadOrStore(path, usable)
+	return actual.(bool)
+}
+
+// Available reports whether the OS sandbox backend can actually confine
+// processes on this platform. On macOS this probes sandbox-exec rather than
+// relying on PATH presence alone: an installed binary may still be unusable
+// where sandbox_apply is restricted. On Linux it verifies bubblewrap can enter
+// its namespace (see seatbelt_other.go).
 func Available() bool {
-	_, err := exec.LookPath("sandbox-exec")
-	return err == nil
+	return usableSandboxExec()
 }
 
 // seatbeltProfile builds an SBPL profile that allows everything, then denies
