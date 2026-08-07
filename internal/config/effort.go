@@ -12,6 +12,7 @@ const (
 	ReasoningProtocolAuto     = "auto"
 	ReasoningProtocolDeepSeek = "deepseek"
 	ReasoningProtocolGLM      = "glm"
+	ReasoningProtocolKimiK3   = "kimi-k3"
 	ReasoningProtocolOpenAI   = "openai"
 	ReasoningProtocolNone     = "none"
 )
@@ -67,6 +68,8 @@ func EffortCapabilityForEntry(e *ProviderEntry) EffortCapability {
 		return deepSeekEffortCapability()
 	case ReasoningProtocolGLM:
 		return glmEffortCapability()
+	case ReasoningProtocolKimiK3:
+		return kimiK3EffortCapability()
 	case ReasoningProtocolOpenAI:
 		if isMimoEntry(e) {
 			// MiMo's Responses API documents a binary thinking knob: "none"
@@ -85,6 +88,8 @@ func EffortCapabilityForEntry(e *ProviderEntry) EffortCapability {
 		return deepSeekEffortCapability()
 	case ReasoningProtocolGLM:
 		return glmEffortCapability()
+	case ReasoningProtocolKimiK3:
+		return kimiK3EffortCapability()
 	case ReasoningProtocolOpenAI:
 		return openAIEffortCapability()
 	}
@@ -184,6 +189,13 @@ func NormalizeEffort(e *ProviderEntry, raw string) (string, error) {
 			return level, nil
 		default:
 			return "", fmt.Errorf("usage: /effort auto|low|medium|high")
+		}
+	case ReasoningProtocolKimiK3:
+		switch level {
+		case "low", "high", "max":
+			return level, nil
+		default:
+			return "", fmt.Errorf("usage: /effort auto|low|high|max")
 		}
 	case ReasoningProtocolGLM:
 		return normalizeGLMEffort(level)
@@ -343,11 +355,15 @@ func normalizeReasoningProtocol(raw string) string {
 	switch strings.ToLower(strings.TrimSpace(raw)) {
 	case "", ReasoningProtocolAuto:
 		return ""
-	case ReasoningProtocolDeepSeek, ReasoningProtocolGLM, ReasoningProtocolOpenAI, ReasoningProtocolNone:
+	case ReasoningProtocolDeepSeek, ReasoningProtocolGLM, ReasoningProtocolKimiK3, ReasoningProtocolOpenAI, ReasoningProtocolNone:
 		return strings.ToLower(strings.TrimSpace(raw))
 	default:
 		return ""
 	}
+}
+
+func kimiK3EffortCapability() EffortCapability {
+	return EffortCapability{Supported: true, Levels: []string{"auto", "low", "high", "max"}, Default: "max"}
 }
 
 // isDeepSeekEntry reports whether the entry points at DeepSeek's API. The

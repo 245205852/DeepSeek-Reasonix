@@ -12,8 +12,9 @@
 //     reasoning_effort, matching LongCat's OpenAI-compatible API.
 //   - ollama.com → accepts hosted Ollama Cloud's reasoning_effort scale,
 //     including max, and omits the field for none/disabled.
-//   - official Kimi API + kimi-k3 preserves complete assistant messages and
-//     uses K3's fixed-sampling/max_completion_tokens request shape.
+//   - official Kimi API + kimi-k3, or an explicit reasoning_protocol=kimi-k3,
+//     preserves complete assistant messages and uses K3's
+//     fixed-sampling/max_completion_tokens request shape.
 //   - everything else (MiMo and other OpenAI-compatible gateways) uses the
 //     vanilla reasoning_effort scale (low/medium/high), unless its config
 //     declares a custom supported_efforts validation contract.
@@ -110,7 +111,7 @@ func New(cfg provider.Config) (provider.Provider, error) {
 	zhipu := protocol == "glm" || (protocol == "" && IsZhipu(cfg.BaseURL))
 	longcat := protocol == "" && IsLongCat(cfg.BaseURL)
 	ollamaCloud := protocol == "" && IsOllamaCloud(cfg.BaseURL)
-	kimiK3 := IsKimiAPI(cfg.BaseURL) && strings.EqualFold(strings.TrimSpace(cfg.Model), "kimi-k3")
+	kimiK3 := protocol == "kimi-k3" || (IsKimiAPI(cfg.BaseURL) && strings.EqualFold(strings.TrimSpace(cfg.Model), "kimi-k3"))
 	// Optional explicit `thinking` config field — a vendor-agnostic escape hatch
 	// (credit @eghrhegpe, #5063) for OpenAI-compatible providers we don't
 	// auto-detect (e.g. opencode.ai). "enabled"/"disabled" drive thinking.type;
@@ -123,6 +124,12 @@ func New(cfg provider.Config) (provider.Provider, error) {
 	switch {
 	case protocol == "none":
 		effort = ""
+	case kimiK3:
+		switch effort {
+		case "", "low", "high", "max":
+		default:
+			return nil, fmt.Errorf("openai: provider %q uses Kimi K3 reasoning; effort must be low, high, or max", name)
+		}
 	case deepseek:
 		if thinkingType == "disabled" {
 			effort = ""
@@ -308,7 +315,7 @@ type client struct {
 	minimax         bool          // true for api.minimaxi.com — emits MiniMax-M3's thinking knob instead of reasoning_effort
 	zhipu           bool          // true for Zhipu GLM (bigmodel.cn / z.ai) — gates thinking via thinking.type, ignores reasoning_effort
 	longcat         bool          // true for LongCat — gates thinking via thinking.type, ignores reasoning_effort
-	kimiK3          bool          // true only for kimi-k3 on Moonshot's official direct API hosts
+	kimiK3          bool          // true for the explicit K3 protocol or kimi-k3 on Moonshot's direct API hosts
 	mimo            bool          // true for MiMo — upgrades legacy tuple schemas to Draft 2020-12
 	thinkingType    string        // explicit `thinking` config override (enabled|disabled); "" = no override
 	vision          bool          // model accepts image input — embed attached images as image_url parts
@@ -382,7 +389,7 @@ func (c *client) sendOpts() provider.SendOptions {
 
 func normalizeReasoningProtocol(raw string) string {
 	switch strings.ToLower(strings.TrimSpace(raw)) {
-	case "deepseek", "glm", "openai", "none":
+	case "deepseek", "glm", "kimi-k3", "openai", "none":
 		return strings.ToLower(strings.TrimSpace(raw))
 	default:
 		return ""
