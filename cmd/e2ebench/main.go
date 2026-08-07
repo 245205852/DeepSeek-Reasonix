@@ -23,8 +23,12 @@ import (
 )
 
 type task struct {
-	ID         string
-	Prompt     string `toml:"prompt"`
+	ID     string
+	Prompt string `toml:"prompt"`
+	// Class buckets tasks for marginal-utility comparisons (e.g. "bugfix",
+	// "codegen", "exploration"): per-class uplift vs latency is what decides
+	// whether a subsystem earns its round-trips for that kind of work.
+	Class      string `toml:"class" json:"class,omitempty"`
 	MaxSteps   int    `toml:"max_steps"`
 	TimeoutSec int    `toml:"timeout_sec"`
 	dir        string
@@ -105,6 +109,9 @@ type result struct {
 	// Trajectory is the digest of the run's recorded event trajectory; nil
 	// unless the harness ran with -trajectories.
 	Trajectory *trajectorySummary `json:"trajectory,omitempty"`
+	// PlanForced marks a -force-planner run: the prompt carried an injected
+	// plan-first directive, so arms are only comparable with equal forcing.
+	PlanForced bool `json:"plan_forced,omitempty"`
 }
 
 // class is the published failure taxonomy: solved, the guard that stopped the
@@ -159,6 +166,7 @@ func main() {
 	ablateFlag := flag.String("ablate", "", "ablation arm: subsystems to switch off (evidence, planner, subagent, retrieval, compaction; none|all)")
 	outMD := flag.String("out", "", "write the markdown report here (default: stdout)")
 	trajDir := flag.String("trajectories", "", "suite mode: write one <task-id>.trajectory.jsonl per task into this directory")
+	forcePlanner := flag.Bool("force-planner", false, "suite mode: prefix each prompt with a plan-first directive so the two-model turn engages regardless of the planner gate")
 	outJSON := flag.String("json", "", "write the JSON report here (optional)")
 	budget := flag.Int("budget", defaultSuiteTokenBudget, "abort once total tokens cross this (0 = no cap)")
 	// diff-mode flags
@@ -229,7 +237,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	results := runSuite(*bin, *model, profile, arm, tasks, *budget, *trajDir)
+	results := runSuite(*bin, *model, profile, arm, tasks, *budget, *trajDir, *forcePlanner)
 
 	report := render(results)
 	if *outMD != "" {
@@ -297,7 +305,7 @@ func loadTasks(suite string) ([]task, error) {
 
 // runSuite runs each task in order until the token budget is exhausted;
 // remaining tasks are reported as skipped rather than silently dropped.
-func runSuite(bin, model, profile string, arm ablation.Set, tasks []task, budget int, trajDir string) []result {
+func runSuite(bin, model, profile string, arm ablation.Set, tasks []task, budget int, trajDir string, forcePlanner bool) []result {
 	var results []result
 	total := 0
 	for _, t := range tasks {
@@ -305,7 +313,7 @@ func runSuite(bin, model, profile string, arm ablation.Set, tasks []task, budget
 			results = append(results, result{task: t, Profile: profile, Skipped: true, Note: "skipped: token budget reached"})
 			continue
 		}
-		r := runTask(bin, model, profile, arm, t, trajDir)
+		r := runTask(bin, model, profile, arm, t, trajDir, forcePlanner)
 		total += r.PromptTokens + r.CompletionTokens
 		results = append(results, r)
 	}
@@ -315,9 +323,16 @@ func runSuite(bin, model, profile string, arm ablation.Set, tasks []task, budget
 // runTask copies the task's seed workdir into a temp dir, runs the agent there,
 // then drops in verify.sh and runs it as the grader. The grader is added only
 // after the run so the agent can't read the answer key.
-func runTask(bin, model, profile string, arm ablation.Set, t task, trajDir string) result {
+func runTask(bin, model, profile string, arm ablation.Set, t task, trajDir string, forcePlanner bool) result {
 	r := result{task: t, Profile: profile}
 	r.Arm = arm.Arm()
+	if forcePlanner {
+		// Leading directive matched by the planner gate's
+		// planAndExecuteDirectives, so the two-model turn engages even for
+		// prompts the gate would route ExecutorOnly.
+		t.Prompt = "Plan first, then implement the following task.\n\n" + t.Prompt
+		r.PlanForced = true
+	}
 
 	trajPath := ""
 	if trajDir != "" {

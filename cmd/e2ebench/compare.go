@@ -48,10 +48,16 @@ type armStats struct {
 	Tokens                             int
 	Cost                               float64
 	WallMs                             int64
+	ByClass                            map[string]classStats
+}
+
+type classStats struct {
+	Ran, Solved int
+	WallMs      int64
 }
 
 func aggregateArm(results []result) armStats {
-	var s armStats
+	s := armStats{ByClass: map[string]classStats{}}
 	for _, r := range results {
 		if r.Skipped {
 			continue
@@ -60,6 +66,17 @@ func aggregateArm(results []result) armStats {
 		if r.Passed {
 			s.Solved++
 		}
+		label := r.Class
+		if label == "" {
+			label = "unclassified"
+		}
+		c := s.ByClass[label]
+		c.Ran++
+		if r.Passed {
+			c.Solved++
+		}
+		c.WallMs += r.WallMs
+		s.ByClass[label] = c
 		if r.Unaccounted {
 			continue
 		}
@@ -139,6 +156,56 @@ func compareReports(pathA, pathB string) (string, error) {
 	fmt.Fprintf(&b, "| Tokens / solved | %s | %s |\n", perSolved(float64(a.Tokens), a.AccountedSolved), perSolved(float64(bStats.Tokens), bStats.AccountedSolved))
 	fmt.Fprintf(&b, "| Wall seconds / solved | %s | %s |\n", perSolved(float64(a.WallMs)/1000, a.AccountedSolved), perSolved(float64(bStats.WallMs)/1000, bStats.AccountedSolved))
 	fmt.Fprintf(&b, "| Cost / solved | %s | %s |\n", perSolved(a.Cost, a.AccountedSolved), perSolved(bStats.Cost, bStats.AccountedSolved))
+	b.WriteString(marginalUtilitySection(a, bStats))
 	b.WriteString("\n<sub>Per-solved figures divide each arm's accounted totals (failures included) by its accounted solves.</sub>\n")
 	return b.String(), nil
+}
+
+func solveRate(solved, ran int) float64 {
+	if ran == 0 {
+		return 0
+	}
+	return float64(solved) * 100 / float64(ran)
+}
+
+func wallPerTask(wallMs int64, ran int) float64 {
+	if ran == 0 {
+		return 0
+	}
+	return float64(wallMs) / 1000 / float64(ran)
+}
+
+// marginalUtilitySection is the decision readout: not "does A help" but what
+// each accuracy point costs in latency, overall and per task class, so a
+// subsystem can be routed per class instead of globally defaulted.
+func marginalUtilitySection(a, b armStats) string {
+	var out strings.Builder
+	fmt.Fprintf(&out, "\n**Marginal utility (A − B):** accuracy %+.1fpp · wall/task %+.1fs\n\n",
+		solveRate(a.Solved, a.Ran)-solveRate(b.Solved, b.Ran),
+		wallPerTask(a.WallMs, a.Ran)-wallPerTask(b.WallMs, b.Ran))
+	classes := make([]string, 0, len(a.ByClass)+len(b.ByClass))
+	seen := map[string]bool{}
+	for _, m := range []map[string]classStats{a.ByClass, b.ByClass} {
+		for class := range m {
+			if !seen[class] {
+				seen[class] = true
+				classes = append(classes, class)
+			}
+		}
+	}
+	if len(classes) == 0 || (len(classes) == 1 && classes[0] == "unclassified") {
+		return out.String()
+	}
+	sort.Strings(classes)
+	out.WriteString("| Class | A solved | B solved | Δ accuracy | A wall/task | B wall/task | Δ wall |\n|---|---:|---:|---:|---:|---:|---:|\n")
+	for _, class := range classes {
+		ca, cb := a.ByClass[class], b.ByClass[class]
+		fmt.Fprintf(&out, "| %s | %d/%d | %d/%d | %+.1fpp | %.1fs | %.1fs | %+.1fs |\n",
+			class, ca.Solved, ca.Ran, cb.Solved, cb.Ran,
+			solveRate(ca.Solved, ca.Ran)-solveRate(cb.Solved, cb.Ran),
+			wallPerTask(ca.WallMs, ca.Ran), wallPerTask(cb.WallMs, cb.Ran),
+			wallPerTask(ca.WallMs, ca.Ran)-wallPerTask(cb.WallMs, cb.Ran))
+	}
+	out.WriteString("\n")
+	return out.String()
 }
