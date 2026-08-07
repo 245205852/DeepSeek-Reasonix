@@ -293,10 +293,7 @@ func (a *App) reconcilePendingUpdateForRequest(requestID string, meta *cachedUpd
 	}
 	if _, err := reconcilePendingUpdateForInstall(version); err != nil {
 		if errors.Is(err, repair.ErrPendingUpdateAwaitingHealth) {
-			// Retry heal after identity refresh (covers version-prefix mismatch).
-			// Always re-reconcile afterward; CommitProbationaryPendingUpdate may
-			// report "cleared" when no marker exists on disk without proving the
-			// install path is unblocked.
+			// Retry heal after identity refresh, then always re-reconcile.
 			refreshPendingUpdateHealthIdentity(a)
 			if commitErr := a.commitPendingUpdateHealth(); commitErr != nil {
 				slog.Debug("desktop: commit healthy update on awaiting-health retry", "err", commitErr)
