@@ -346,7 +346,7 @@ func (a *Agent) pinnedPrefixLen(msgs []provider.Message) int {
 	if i < len(msgs) && msgs[i].Role == provider.RoleSystem {
 		i++
 	}
-	if i < len(msgs) && msgs[i].Role == provider.RoleUser && !isCompactionSummary(msgs[i]) && a.pinnableUserTurn(msgs[i]) {
+	if i < len(msgs) && msgs[i].Role == provider.RoleUser && !isCompactionSummary(msgs[i]) && a.fixedPinnableUserTurn(msgs[i]) {
 		i++
 	}
 	// The entire summary run stays inside the fold region; partitionFold keeps
@@ -356,17 +356,20 @@ func (a *Agent) pinnedPrefixLen(msgs []provider.Message) int {
 	return i
 }
 
-// pinnableUserTurn reports whether a user turn is small enough to keep verbatim. A
-// turn larger than a brief (pasted content) folds like any other message so the
-// kept-verbatim floor never starves the window.
-func (a *Agent) pinnableUserTurn(m provider.Message) bool {
+// fixedPinnableUserTurn reports whether a user turn is small enough to keep
+// verbatim in a position-stable prefix. Identity decisions must not use the
+// latest provider usage: after projection activates, that usage describes the
+// projection while the canonical transcript remains larger, which would make
+// the same turn drift in or out across compactions. Dynamic token calibration is
+// reserved for non-identity estimates such as tail sizing.
+func (a *Agent) fixedPinnableUserTurn(m provider.Message) bool {
 	budget := maxPinnedFirstUserTokens
 	if a.contextWindow > 0 {
 		if f := int(float64(a.contextWindow) * pinnedFirstUserWindowFrac); f < budget {
 			budget = f
 		}
 	}
-	return int(float64(msgChars(m))*a.tokPerChar()) <= budget
+	return int(float64(msgChars(m))*fallbackTokPerChar) <= budget
 }
 
 // partitionFold splits a compaction region into what is kept verbatim — small user
@@ -399,7 +402,7 @@ func (a *Agent) partitionFold(region []provider.Message) (kept, fold []provider.
 	}
 	for i, m := range region {
 		keep := m.LocalOnly || policyKeep[i] || (isCompactionSummary(m) && i == lastSummary)
-		if !keep && m.Role == provider.RoleUser && !isCompactionSummary(m) && a.pinnableUserTurn(m) {
+		if !keep && m.Role == provider.RoleUser && !isCompactionSummary(m) && a.fixedPinnableUserTurn(m) {
 			// Position-fixed small-turn keep window: the first N small user turns
 			// in the region survive verbatim; older ones fold into the digest so
 			// a long session cannot accumulate unbounded verbatim user turns.

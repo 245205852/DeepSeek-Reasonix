@@ -1,98 +1,114 @@
-# 缓存感知智能压缩体系设计（C1+A1+B2）
+# Cache-Aware Context Projection 与惰性压缩
 
-> 日期: 2026-08-08 · 分支: dev/clearnature
-> 约束: mental-seal 钢印——**前缀稳定第一原则**（REASONIX.md MENTAL-SEAL 区段）
-> 核心定位: [[prefix-stability-core-value]] 服务端前缀缓存扛成本 + 本地知识缓存增强语义
+> 日期：2026-08-07
+> 状态：当前实现说明
+> 核心约束：canonical transcript 是永久事实源；缓存状态只影响成本策略，不直接触发历史改写。
 
-## 一、问题回顾（实测定案，见 [[context-window-display-root-cause]]）
+## 一、问题与目标
 
-- **1.2M 单跳** = 打开历史会话时 stateless 全量重放（99.2% 命中=前缀曾发过）
-- **145.7k** = compaction 保留策略使然（186 条小 turns + 10 条摘要永不折叠）
-- 旧结论"重放=赌博"**需要修正**：24h 缓存窗口内重放是**便宜的**（命中 ¥0.32 vs 全价 ¥11.90）
+长会话需要同时满足两个目标：
 
-## 二、核心洞见（用户 2026-08-08）
+1. 保留完整历史，以支持恢复、回退、分支和审计；
+2. 在模型上下文接近上限时，构造更短且稳定的 provider-visible 请求。
 
-**24h 缓存窗口内多次对话→多次压缩→不同上下文（不同话题探索）。此时重发（重放）是无损恢复知识关联度的廉价途径**——窗口内缓存还在，重放命中便宜，且比压缩后的摘要保留了更完整的多话题关联。
+旧路径把 cache TTL 过期与 session 压缩绑定：cold resume 会同步压缩并重写历史。这既把成本信号变成了数据变更信号，也会在用户只是恢复会话时破坏原有前缀。
 
-**服务端缓存 + 本地缓存分离管理**：
-- 服务端 prefix-cache（24h TTL）：管"字节稳定→每轮命中"，管成本
-- 本地知识缓存（7d TTL, EventChain）：管"知识凝聚→跨会话语义增强"，管学习
-- 压缩不是丢弃，而是把折叠区知识**凝聚进知识储备**（SaveKnowledge + EventChain 关联）
+当前设计将两者拆开：
 
-## 三、三层设计
-
-### B2: 位置固定保留窗口（保前缀稳定）
-
-现状：`partitionFold` 保留**所有** ≤1500 token 小 turns（186 条全留）——但这是**位置不敏感**的（只要小就留），不破坏前缀。
-
-风险点：若改成"保留最新 N 条"→ 每次压缩前缀都变 → **缓存打穿**。
-
-**正确实现**：保留 `[head, head+N]` **固定区间**内的小 turns（位置固定，与 pinnedPrefixLen 的固定 head 哲学一致）——超出区间的旧小 turns 允许折叠进摘要。压缩后已保留部分字节不变，只有折叠区被摘要替换（一次性代价，之后稳定）。
-
-```go
-// partitionFold 修改：小 turns 保留从"全保留"→"仅保留前 keepBudgetTokens 预算内"
-// 用 token 预算（如 8192）从 head 起向后累计，超预算后的小 turns 进入 fold
-// ——预算从固定 head 起算，位置固定 → 前缀字节稳定
+```text
+canonical transcript (Session.Messages，普通压缩永不改写)
+    |
+    +-- model-visible context projection
+    |
+    +-- cache state (warm/cold/unknown，仅参与成本与观测)
 ```
 
-### A1: 摘要滚动合并 + 知识凝聚（缩小前缀 + 增强语义）
+## 二、持久化边界
 
-现状：10 条摘要永不折叠（`pinnedPrefixLen` pin 全部），累积 27k tokens。
+### Canonical transcript
 
-**正确实现**（两层）：
-1. **滚动合并**：`pinnedPrefixLen` 只 pin **最新一条**摘要；旧摘要进入 fold 区，被新摘要**合并**（摘要生成时把旧摘要作为输入上下文，新摘要涵盖旧内容 → 信息保留且单条化）。10 条 → 1 条。
-2. **知识凝聚**：compact 完成后，把折叠区的关键知识写入本地知识缓存（`responses.SaveKnowledge`）——查询=摘要主题，内容=摘要正文，EventChain 关联相关条目 → **压缩即知识储备积累**，跨会话 L2 语义命中可恢复。
+- `Session.Messages` 始终保存完整 transcript。
+- 普通 compaction、cold resume、tool prune/snip 不删除或替换 canonical 消息。
+- rewind、fork、branch 仍以 canonical 为事实源。
 
-### C1: 缓存时效感知的重放门控（修正版）
+### Context projection sidecar
 
-现状（问题）：打开历史会话 → 无条件全量重放 → 1.2M 单跳。
+- projection 存储在 `<session>.context.json`，不改变原 session 文件格式。
+- sidecar 保存 projection、covered prefix fingerprint、transcript/projection version、prompt cache key、cache 状态和压缩 telemetry。
+- 删除 session 时 sidecar 纳入同一删除清单。
+- 老版本不知道 sidecar 时仍可读取完整 session；新版本遇到缺失、旧 schema 或校验失败的 sidecar 会安全重建。
 
-**旧方案（被洞见否决）**：无条件先压缩再发——会丢失多话题知识关联，且 24h 窗口内缓存还在时浪费了廉价重放机会。
+## 三、运行时行为
 
-**新方案（缓存时效分路）**：
+### Resume 只记录缓存状态
 
-```go
-// 打开历史会话时（loadResumableSession 后，首轮发送前）：
-ttl := provider.EffectiveCacheTTL()          // deepseek/mimo 24h, dashscope 5m
-age := time.Since(session.LastActiveTime())  // 会话最后活动时间
-if age <= ttl {
-    // 缓存窗口内：直接重放（缓存大概率命中，便宜；知识关联无损）
-    // —— 这就是"24h 内多次对话探索的廉价知识恢复"
-} else {
-    // 缓存已冷：先压缩再发（避免全价；摘要凝聚进知识缓存）
-    agent.CompactNow(ctx, "replay-gate")
-}
+恢复会话时，根据 provider TTL 和最后活动时间记录 `warm`、`cold` 或 `unknown`。Resume 路径不会调用 `Compact`、`SnapshotRewrite` 或 `PruneStaleToolResults`，也不会修改 canonical transcript。
+
+### Preflight 惰性生成 projection
+
+每次模型请求前，`contextPreflight` 根据当前 token 压力判断是否需要 projection：
+
+- 未达到压力阈值：继续发送 append-only canonical view；
+- 达到压缩阈值：尝试生成并安装 projection；
+- 达到 force 阈值但没有可折叠内容：在非 tool loop 中返回可重试的 `ErrCompactionRequired`；
+- 摘要失败：不写 mechanical marker，不安装半成品，也不改写 canonical；
+- tool loop 进行中：只发 notice，由后续 preflight/stuck guard 处理，避免中断工具调用配对。
+
+### Provider-visible 顺序
+
+projection 使用稳定顺序：
+
+```text
+system
+-> 确定性的早期 user turns
+-> 一条 rolling summary
+-> 必须保留的消息
+-> recent tail
 ```
 
-**关键点**：
-- 窗口内重放 = 赌注小（缓存命中率高：24h 内同前缀实测 99.9%）→ 保留知识关联，**符合学习目标**
-- 窗口外压缩 = 避免全价 → 摘要+知识凝聚，**符合成本目标**
-- 分路依据 = `EffectiveCacheTTL()`（vendor 表，已实测：deepseek 24h、mimo 24h、dashscope 5m）
+早期 user turn 的资格使用固定 token/char 估算和 context-window 上限，不依赖最近一次 provider usage。动态 usage 校准只用于 tail sizing 等不决定消息身份的估算，因此 projection 激活后，早期前缀不会因 canonical/projection 统计口径变化而漂移。
 
-## 四、缓存哲学校验（mental-seal 钢印逐条对照）
+旧 summary 会进入下一次 fold，由新 summary 滚动吸收；provider-visible projection 始终只保留一条 summary，不会形成无限摘要链。原 summary 仍保留在 canonical transcript 中。
 
-| 改动 | 是否改变前缀字节 | 判定 |
-|---|---|---|
-| B2 位置固定窗口 | 压缩后保留区不变（[head, head+N] 固定） | ✅ 只折叠区一次性替换 |
-| A1 摘要滚动合并 | 摘要区 10→1（一次性），之后稳定 | ✅ 前缀更小更稳 |
-| A1 知识凝聚 | 本地缓存，不进发送前缀 | ✅ 零影响 |
-| C1 窗口内重放 | 重放的是原前缀（缓存命中路径） | ✅ 命中即便宜 |
-| C1 窗口外压缩 | 一次性压缩，之后稳定 | ✅ 避免全价 |
+## 四、有效性与失效
 
-## 五、性能增强预期（探索性）
+projection 采用 fail-closed 校验：
 
-| 指标 | 现状 | 优化后 |
-|---|---|---|
-| 压缩后 prompt | 145.7k（186 turns+10 摘要） | ~30-50k（20 turns + 1 摘要） |
-| 打开历史会话成本 | 赌：¥0.32 或 ¥11.90 | 窗口内稳定 ¥0.32 / 窗口外稳定 ¥0.15 |
-| 跨会话知识复用 | 无（压缩即丢） | L2 语义命中恢复（EventChain） |
-| 前缀稳定性 | 摘要累积膨胀 | 单摘要 + 固定窗口 → 更稳 |
+- `CoveredPrefixHash` 对 `ModelMessages(canonical[:CoveredCount])` 的完整 provider-visible 内容生成稳定 fingerprint，覆盖图片、reasoning 元数据、Responses items、tool call ID/name/arguments/thought signature；
+- `PromptCacheKey` 必须存在，并严格匹配 `workspace|session lineage|model`；
+- 缺少 fingerprint、前缀被 edit/rewrite、切换模型或 lineage 时，内存 projection 立即失效；
+- rewind、fork、branch、snip/prune 和显式范围摘要会使相关 projection 失效或隔离。
 
-## 六、实施顺序（依赖排序）
+加载时发现某模型的 sidecar key 不匹配，只丢弃当前内存状态，不删除磁盘文件，避免破坏其它模型仍可使用的状态。
 
-1. **B2**（独立，compact.go 内）→ 测试 partitionFold 位置固定
-2. **A1-1 滚动合并**（compact.go pinnedPrefixLen）→ 测试摘要合并
-3. **A1-2 知识凝聚**（compact 后写 knowledge 缓存）→ 测试 EventChain
-4. **C1 门控**（desktop 打开历史会话路径 + agent 暴露 LastActiveTime）→ 测试双分支
+## 五、Provider compaction 与失败策略
 
-每步：gofmt + go build + 相关包测试 + 沙盒验证。
+Provider 接口已定义：
+
+- `NativeCompactor`；
+- `CompactionRequest` / `CompactionResult`；
+- `CompactionCapabilities`；
+- `ErrCompactionUnsupported`。
+
+当前 Responses vendor 明确返回 unsupported，并回退到 Reasonix 的摘要路径。摘要首次失败后的重试会聚合两次 attempt 的 usage 与 request count，供成本和 telemetry 使用。
+
+Anthropic、DeepSeek 等原生 compaction endpoint 尚未接入；能力接口不代表这些 endpoint 已经可用。
+
+## 六、缓存影响
+
+- 正向影响：cold resume 不再为了 TTL 状态改写历史，缓存仍 warm 时可以继续复用原 append-only 前缀。
+- 预期 miss：首次在高压力下激活 projection 时，请求前缀会从 canonical 切换为 `summary + tail`，因此会发生一次预期的 cache miss。
+- 稳定性：激活后，确定性的早期轮次、单条 rolling summary、稳定 cache key 和 fail-closed fingerprint 降低后续无意义的前缀漂移。
+- 不确定点：token 估算可能使 preflight 比旧路径更早或更晚触发摘要，需要通过 telemetry 持续观察 break-even 成本。
+
+## 七、明确未实现的后续
+
+以下能力不属于当前阶段，不能按已落地行为依赖：
+
+1. Anthropic/DeepSeek 原生 compaction endpoint；
+2. compaction 后调用 `SaveKnowledge` 或写入 EventChain；
+3. 依靠 EventChain 完成跨 session 的 L2 自动恢复；
+4. feature flag 观测期、旧兼容路径的最终清理；
+5. 完整 break-even 成本 dashboard 聚合。
+
+这些后续必须分别设计失败原子性、持久化兼容、缓存影响和 provider 能力探测，不能重新把 cache TTL 与 canonical transcript 改写绑定。

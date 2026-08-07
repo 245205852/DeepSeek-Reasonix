@@ -142,9 +142,15 @@ func TestCompactFailureDoesNotWriteMechanicalMarker(t *testing.T) {
 func TestFixedEarlyUserTurnsStableAcrossCompactions(t *testing.T) {
 	fp := &fakeProvider{reply: "digest-1"}
 	sess := NewSession("sys")
-	// 30 distinct user turns so a "latest N" strategy would reshuffle.
+	// 30 distinct user turns so a "latest N" strategy would reshuffle. The
+	// first four are large enough that usage-calibrated eligibility would reject
+	// them at 1 token/char, but the fixed fallback estimate accepts them.
 	for i := 0; i < 30; i++ {
-		sess.Add(provider.Message{Role: provider.RoleUser, Content: "unique-user-fact-" + strings.Repeat(string(rune('a'+i%26)), 20) + "-" + strings.Repeat("0", i%10+1)})
+		user := "unique-user-fact-" + strings.Repeat(string(rune('a'+i%26)), 20) + "-" + strings.Repeat("0", i%10+1)
+		if i < 4 {
+			user = "fixed-early-" + string(rune('a'+i)) + strings.Repeat("x", 1200)
+		}
+		sess.Add(provider.Message{Role: provider.RoleUser, Content: user})
 		sess.Add(provider.Message{Role: provider.RoleAssistant, Content: strings.Repeat("work-", 50) + string(rune('A'+i%26))})
 	}
 	dir := t.TempDir()
@@ -157,6 +163,13 @@ func TestFixedEarlyUserTurnsStableAcrossCompactions(t *testing.T) {
 	for i := 0; i < 8; i++ {
 		sess.Add(provider.Message{Role: provider.RoleUser, Content: "later-fact-" + strings.Repeat("z", 30) + string(rune('0'+i))})
 		sess.Add(provider.Message{Role: provider.RoleAssistant, Content: strings.Repeat("more-", 60)})
+	}
+	// Simulate a projected request reporting a very different calibration from
+	// the pre-projection canonical estimate. This remains useful for tail sizing,
+	// but must not change which early turns define the stable prefix.
+	a.lastUsage.Store(&provider.Usage{PromptTokens: charsOfMessages(sess.Messages)})
+	if got := a.tokPerChar(); got < 0.9 || got > 1.1 {
+		t.Fatalf("test did not install the intended dynamic calibration: %f", got)
 	}
 	fp.reply = "digest-2"
 	if err := a.CompactNow(context.Background(), ""); err != nil {

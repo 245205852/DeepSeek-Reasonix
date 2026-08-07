@@ -181,7 +181,7 @@ func (a *Agent) partitionFoldForProjection(region []provider.Message) (kept, fol
 		}
 		// Skip the fixed early small user turns — they are re-added from the
 		// full transcript after the summary so the prefix stays byte-stable.
-		if m.Role == provider.RoleUser && !isCompactionSummary(m) && a.pinnableUserTurn(m) && earlySeen < maxEarly {
+		if m.Role == provider.RoleUser && !isCompactionSummary(m) && a.fixedPinnableUserTurn(m) && earlySeen < maxEarly {
 			earlySeen++
 			continue
 		}
@@ -193,7 +193,7 @@ func (a *Agent) partitionFoldForProjection(region []provider.Message) (kept, fol
 			kept = append(kept, m)
 			continue
 		}
-		if m.Role == provider.RoleUser && a.pinnableUserTurn(m) {
+		if m.Role == provider.RoleUser && a.fixedPinnableUserTurn(m) {
 			// Additional small user turns beyond the fixed early window fold so
 			// the projection does not grow unbounded with every user fact.
 			fold = append(fold, m)

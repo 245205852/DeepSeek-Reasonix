@@ -754,9 +754,8 @@ func TestPartitionFoldLargeTurnsStillFold(t *testing.T) {
 }
 
 func TestCompactRollsOldDigestsIntoNew(t *testing.T) {
-	// A1 rolling merge: only the newest digest is pinned by pinnedPrefixLen;
-	// older large digests enter the fold region and are merged into the next
-	// summary. A long session cannot accumulate an unbounded chain of digests.
+	// A1 rolling merge: prior digests enter the fold region and are merged into
+	// one new provider-visible summary. The canonical transcript stays intact.
 	oldDigest := summaryTagOpen + "\n" + strings.Repeat("old standing fact ", 60) + "\n" + summaryTagClose // >1500 chars → not pinnable
 	newestDigest := summaryTagOpen + "\nnewest digest\n" + summaryTagClose
 	big := strings.Repeat("work output ", 200)
@@ -775,31 +774,35 @@ func TestCompactRollsOldDigestsIntoNew(t *testing.T) {
 	if err := a.compact(context.Background(), "manual", "", true); err != nil {
 		t.Fatalf("compact: %v", err)
 	}
-	msgs := sess.Snapshot()
-	// The newest digest survives verbatim (pinned).
-	var newestKept bool
-	for _, m := range msgs {
-		if isCompactionSummary(m) && strings.Contains(m.Content, "newest digest") {
-			newestKept = true
+	canonical := sess.Snapshot()
+	var oldDigestRetained bool
+	for _, m := range canonical {
+		if m.Content == oldDigest {
+			oldDigestRetained = true
 		}
 	}
-	if !newestKept {
-		t.Fatalf("newest digest not pinned: %+v", msgs)
+	if !oldDigestRetained {
+		t.Fatalf("canonical transcript lost old digest: %+v", canonical)
 	}
-	// The old digest must NOT survive as a verbatim message (it was folded into
-	// the new digest). The session may hold at most TWO summaries — the newest
-	// digest (kept verbatim by A1) plus the newly generated merged digest —
-	// proving the A1 rolling merge removed the old chain instead of pinning it.
+
+	projection := visibleContext(a)
 	var summaryCount int
-	for _, m := range msgs {
+	var generatedSummaryPresent bool
+	for _, m := range projection {
 		if isCompactionSummary(m) {
 			summaryCount++
+			if strings.Contains(m.Content, "merged digest") {
+				generatedSummaryPresent = true
+			}
 		}
-		if !isCompactionSummary(m) && strings.Contains(m.Content, "old standing fact") {
-			t.Fatalf("old digest survived verbatim outside a summary: %+v", msgs)
+		if m.Content == oldDigest {
+			t.Fatalf("old digest survived verbatim in projection: %+v", projection)
 		}
 	}
-	if summaryCount > 2 {
-		t.Fatalf("expected at most 2 summaries after A1 rolling merge (newest + merged), got %d: %+v", summaryCount, msgs)
+	if summaryCount != 1 {
+		t.Fatalf("projection summaries = %d, want exactly 1: %+v", summaryCount, projection)
+	}
+	if !generatedSummaryPresent {
+		t.Fatalf("generated rolling summary missing from projection: %+v", projection)
 	}
 }

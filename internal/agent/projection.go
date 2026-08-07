@@ -388,7 +388,7 @@ func (a *Agent) fixedEarlyUserTurns(msgs []provider.Message, head int) []provide
 		if m.LocalOnly || m.Role != provider.RoleUser || isCompactionSummary(m) {
 			continue
 		}
-		if !a.pinnableUserTurn(m) {
+		if !a.fixedPinnableUserTurn(m) {
 			// Large early turns stay foldable; stop extending the fixed prefix
 			// once a non-pinnable user turn appears so positions stay stable.
 			break
