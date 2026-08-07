@@ -209,15 +209,7 @@ func recoveryHeadlessMode(opts Options) bool {
 // assembled. The returned controller owns plugin subprocesses; call Close
 // (via Controller.Close) to release them.
 func build(ctx context.Context, opts Options) (*BuildResult, error) {
-	owner := opts.Owner
-	if owner == nil {
-		owner = extension.NewRuntimeOwner()
-		opts.Owner = owner
-	}
-	ctx = extension.ContextWithRuntimeOwner(ctx, owner)
-	fileWriteReceipt := func(path string, hadPrior bool, prior []byte) {
-		owner.RecordFileWrite(path, hadPrior, prior)
-	}
+	ctx, opts, owner, fileWriteReceipt := bindRuntimeOwner(ctx, opts)
 	stderr := opts.Stderr
 	if stderr == nil {
 		stderr = os.Stderr

@@ -17,12 +17,9 @@ type ResumeDecision struct {
 	Blocking []string `json:"blocking,omitempty"`
 }
 
-// DecideResume evaluates receipts for gen. Policy:
-//   - Irreversible completed → AllowResume=true, CleanRollback=false
-//   - Compensatable failed/pending → AllowResume=true, CleanRollback=false
-//   - Empty / fully compensated → both true
-//
-// Recovery never rewrites irreversible receipts to "rolled_back".
+// DecideResume allows resume but denies clean rollback for irreversible or
+// uncompensated effects. Empty or fully compensated generations are clean;
+// irreversible receipts are never rewritten to "rolled_back".
 func DecideResume(store *ReceiptStore, gen uint64) ResumeDecision {
 	if store == nil {
 		return ResumeDecision{AllowResume: true, CleanRollback: true}

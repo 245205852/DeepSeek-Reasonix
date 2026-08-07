@@ -559,10 +559,7 @@ func New(opts Options) *Controller {
 	if pluginCtx == nil {
 		pluginCtx = context.Background()
 	}
-	runtimeOwner := opts.RuntimeOwner
-	if runtimeOwner == nil {
-		runtimeOwner = extension.DefaultRuntimeOwner
-	}
+	runtimeOwner := runtimeOwnerOrDefault(opts.RuntimeOwner)
 	pluginCtx = extension.ContextWithRuntimeOwner(pluginCtx, runtimeOwner)
 	runtimeProfile := opts.RuntimeProfile
 	if runtimeProfile == "" {
