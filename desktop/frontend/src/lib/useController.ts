@@ -11,6 +11,7 @@ import { invalidateCache } from "./composerHistory";
 import { formatGuardianAssessmentNotice } from "./guardianEvents";
 import { createRafBatch } from "./rafBatch";
 import { applyLiveSegments, coalesceStreamDeltas, completeLiveReasoning, type StreamDeltaEntry, type StreamSegment } from "./streamDeltaBatch";
+import { uiPerfTracker } from "./uiPerf";
 import { t, type DictKey } from "./i18n";
 import { sameTodoList } from "./todoVisibility";
 import { fileDiffFromWire, summarize, summarizeFileDiff, type ToolFileDiff } from "./tools";
@@ -60,6 +61,7 @@ export const SUBAGENT_PROGRESS_NOTICE = "reasonix.subagent.notice";
 // Reserved names are matched by prefix so a future channel never falls back
 // to ordinary tool output on older frontends.
 const SUBAGENT_PROGRESS_PREFIX = "reasonix.subagent.";
+const TURN_ACTIVITY_KINDS = new Set(["turn_started", "text", "reasoning", "message", "tool_dispatch", "tool_progress", "tool_result"]);
 
 const SUBAGENT_PROGRESS_PHASES = new Set([
   "queued", "running", "reasoning", "responding", "tool", "retrying", "completed", "failed", "cancelled",
@@ -2444,6 +2446,7 @@ export function useController() {
     const next = reducer(prev, action);
     if (prev !== next) {
       states.set(tabId, next);
+      uiPerfTracker.onStateCommit();
       notifyLiveListeners(tabId);
       const streamDeltaOnly =
         (action.type === "stream_batch" ||
@@ -2916,6 +2919,7 @@ export function useController() {
 
   useEffect(() => {
     const textBatch = createRafBatch<StreamDeltaEntry>((batch) => {
+      uiPerfTracker.onStreamDispatch();
       for (const b of coalesceStreamDeltas(batch)) dispatchTo(b.tabId, { type: "stream_batch", segments: b.segments });
     });
     const off = onEvent((e) => {
@@ -2930,17 +2934,8 @@ export function useController() {
         if (!acceptsRuntimeEventEpoch(acceptedEpoch, e.runtimeEpoch)) return;
         if (!acceptedEpoch) runtimeEpochByTabRef.current.set(targetTabId, e.runtimeEpoch);
       }
-      if (
-        e.kind === "turn_started" ||
-        e.kind === "text" ||
-        e.kind === "reasoning" ||
-        e.kind === "message" ||
-        e.kind === "tool_dispatch" ||
-        e.kind === "tool_progress" ||
-        e.kind === "tool_result"
-      ) {
-        lastTurnActivityAtByTab.current.set(targetTabId, Date.now());
-      }
+      uiPerfTracker.onWireEvent(targetTabId, e.kind);
+      if (TURN_ACTIVITY_KINDS.has(e.kind)) lastTurnActivityAtByTab.current.set(targetTabId, Date.now());
       if (e.kind === "text" || e.kind === "reasoning") {
         textBatch.push({ tabId: targetTabId, e });
       } else {
