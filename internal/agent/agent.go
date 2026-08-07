@@ -1195,10 +1195,7 @@ func New(prov provider.Provider, tools *tool.Registry, session *Session, opts Op
 	} else {
 		maxSubagentDepth = NormalizeMaxSubagentDepth(maxSubagentDepth)
 	}
-	subagentDepth := opts.SubagentDepth
-	if subagentDepth < 0 {
-		subagentDepth = 0
-	}
+	subagentDepth := max(opts.SubagentDepth, 0)
 	reasoningByteLimit := opts.ReasoningByteLimit
 	if reasoningByteLimit == 0 {
 		reasoningByteLimit = defaultReasoningByteLimit
@@ -3228,7 +3225,7 @@ launch:
 			<-sem
 			break
 		}
-		i := i
+
 		wg.Add(1)
 		ranUntil = i + 1
 		go func() {
@@ -3947,8 +3944,8 @@ func (a *Agent) toolReadOnly(name string) bool {
 // firstLine returns s up to its first newline — a one-line failure summary for
 // the display Err, while the full error stays in the model-facing output.
 func firstLine(s string) string {
-	if i := strings.IndexByte(s, '\n'); i >= 0 {
-		return s[:i]
+	if before, _, ok := strings.Cut(s, "\n"); ok {
+		return before
 	}
 	return s
 }

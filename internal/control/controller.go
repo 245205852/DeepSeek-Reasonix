@@ -19,6 +19,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -830,7 +831,7 @@ func (c *Controller) beginCheckpoint(input string) {
 	c.checkpoints.beginWithObserver(input, len(c.executor.Session().Messages), c.mutationObserver)
 }
 
-// --- commands (frontend → controller) ---
+// commands (frontend → controller)
 
 // admissionResult classifies what runGuarded did with a turn body.
 type admissionResult int
@@ -921,11 +922,9 @@ func (c *Controller) admitGuardedTurn(body func(ctx context.Context) error, park
 // spawnGuardedTurn launches an admitted turn body plus its autosave companion.
 // The caller must already have claimed admission (running=true) under c.mu.
 func (c *Controller) spawnGuardedTurn(ctx context.Context, cancel context.CancelFunc, body func(ctx context.Context) error) {
-	c.autosaveWG.Add(1)
-	go func() {
-		defer c.autosaveWG.Done()
+	c.autosaveWG.Go(func() {
 		c.autosaveWhileRunning(ctx)
-	}()
+	})
 	go func() {
 		defer cancel()
 		defer func() {
@@ -1146,9 +1145,9 @@ func (c *Controller) stopGoal(status string) {
 // lastAssistantText returns the content of the most recent assistant message with
 // non-empty text — the model's final answer for the turn (its plan, in plan mode).
 func lastAssistantText(msgs []provider.Message) string {
-	for i := len(msgs) - 1; i >= 0; i-- {
-		if msgs[i].Role == provider.RoleAssistant && strings.TrimSpace(msgs[i].Content) != "" {
-			return msgs[i].Content
+	for _, msg := range slices.Backward(msgs) {
+		if msg.Role == provider.RoleAssistant && strings.TrimSpace(msg.Content) != "" {
+			return msg.Content
 		}
 	}
 	return ""
@@ -1623,14 +1622,7 @@ func (c *Controller) applyPlanExec(input, display string) {
 	}
 
 	// Parse --strict flag.
-	strict := false
-	fields := strings.Fields(input)
-	for _, f := range fields {
-		if f == "--strict" {
-			strict = true
-			break
-		}
-	}
+	strict := slices.Contains(strings.Fields(input), "--strict")
 
 	// Count completion status.
 	total := len(todos)
@@ -4403,8 +4395,8 @@ func resolveInterruptedTurnStart(msgs []provider.Message, idx int, preserveUser 
 	// graceful fallback still distinguishes the current visible turn; search
 	// backward so a repeated prompt selects the newest occurrence.
 	if fallbackContent != "" {
-		for i := len(msgs) - 1; i >= 0; i-- {
-			if matchesKind(msgs[i]) {
+		for i, msg := range slices.Backward(msgs) {
+			if matchesKind(msg) {
 				return i, true
 			}
 		}
@@ -4477,10 +4469,8 @@ func appendUniqueString(dst []string, value string) []string {
 	if value == "" {
 		return dst
 	}
-	for _, existing := range dst {
-		if existing == value {
-			return dst
-		}
+	if slices.Contains(dst, value) {
+		return dst
 	}
 	return append(dst, value)
 }
@@ -4494,10 +4484,8 @@ func interruptedToolSummary(call provider.ToolCall) provider.InterruptedToolSumm
 		if path == "" || path == "/dev/null" || len(summary.Files) >= 8 {
 			return
 		}
-		for _, existing := range summary.Files {
-			if existing == path {
-				return
-			}
+		if slices.Contains(summary.Files, path) {
+			return
 		}
 		summary.Files = append(summary.Files, path)
 	}
@@ -4509,7 +4497,7 @@ func interruptedToolSummary(call provider.ToolCall) provider.InterruptedToolSumm
 			}
 		}
 	}
-	for _, line := range strings.Split(call.Diff, "\n") {
+	for line := range strings.SplitSeq(call.Diff, "\n") {
 		line = strings.TrimSpace(line)
 		switch {
 		case strings.HasPrefix(line, "+++ b/"):
@@ -4761,14 +4749,14 @@ func (c *Controller) ToolResult(toolID string) *ToolResultData {
 	msgs := c.executor.Session().Snapshot()
 	// Search backwards: tool result first (most recent), then find the args
 	// from the preceding assistant turn.
-	for i := len(msgs) - 1; i >= 0; i-- {
-		if msgs[i].Role != provider.RoleTool || msgs[i].ToolCallID != toolID {
+	for i, msg := range slices.Backward(msgs) {
+		if msg.Role != provider.RoleTool || msg.ToolCallID != toolID {
 			continue
 		}
 		out := &ToolResultData{
 			Args:      "",
-			Output:    msgs[i].Content,
-			Execution: msgs[i].ToolExecution,
+			Output:    msg.Content,
+			Execution: msg.ToolExecution,
 		}
 		// Walk back to find the assistant turn that issued this call.
 		for j := i; j >= 0; j-- {
@@ -4824,7 +4812,7 @@ func (c *Controller) ReloadCommands(ctx context.Context) error {
 
 	entries := make([]command.SlashEntry, 0, len(cmdSkills)+len(cmds))
 	for _, sk := range cmdSkills {
-		sk := sk
+
 		entries = append(entries, command.SlashEntry{
 			Name:        sk.SlashName(),
 			Description: sk.Description,
@@ -4835,7 +4823,7 @@ func (c *Controller) ReloadCommands(ctx context.Context) error {
 		if cmd.Hidden {
 			continue
 		}
-		cmd := cmd
+
 		entries = append(entries, command.SlashEntry{
 			Name:        cmd.Name,
 			Description: cmd.Description,
@@ -5593,7 +5581,7 @@ func (c *Controller) Bypass() bool {
 	return c.AutoApproveTools()
 }
 
-// --- memory ---
+// memory
 //
 // The memory snapshot, the pending turn-tail notes queue, and write serialization
 // live in c.memory (a memoryManager) behind its own locks, off c.mu — so a
@@ -5662,7 +5650,7 @@ func (c *Controller) Memory() *memory.Set {
 	return c.memory.current()
 }
 
-// --- approval bridge (agent gate → events) ---
+// approval bridge (agent gate → events)
 
 // gateApprover adapts the Controller to permission.Approver. It is distinct
 // from the public Approve command (different signature, different direction).
