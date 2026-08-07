@@ -183,6 +183,77 @@ func TestPrepareFileUpdateQuarantinesForeignTarget(t *testing.T) {
 	}
 }
 
+func TestReconcileForeignQuarantineRejectsMarkerReplacement(t *testing.T) {
+	t.Setenv("REASONIX_HOME", t.TempDir())
+	target := filepath.Join(t.TempDir(), "reasonix-desktop")
+	originalExecutable := repairExecutable
+	repairExecutable = func() (string, error) { return filepath.Join(filepath.Dir(target), "reasonix-guard"), nil }
+	t.Cleanup(func() { repairExecutable = originalExecutable })
+	if err := os.WriteFile(target, []byte("old"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := PrepareFileUpdate("v1", "v2", target); err != nil {
+		t.Fatal(err)
+	}
+	repairExecutable = func() (string, error) { return filepath.Join(t.TempDir(), "reasonix-guard"), nil }
+	digest, err := pendingUpdateMarkerDigest(PendingUpdatePath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	replacement := &UpdateTransaction{
+		SchemaVersion: updateTransactionVersion,
+		FromVersion:   "v2",
+		ToVersion:     "v3",
+		Platform:      "test/amd64",
+		TargetKind:    "file",
+		TargetPath:    target,
+		CreatedAt:     time.Now().UTC().Format(time.RFC3339Nano),
+	}
+	if err := overwritePendingUpdateForTest(replacement); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := quarantinePendingUpdateAfterReconcile("test", digest, true); err == nil || !strings.Contains(err.Error(), "changed while waiting") {
+		t.Fatalf("quarantine after marker replacement = %v, want a replacement error", err)
+	}
+	if !PendingUpdateExists() {
+		t.Fatal("replacement marker was quarantined")
+	}
+	if got := quarantinedCopies(t); len(got) != 0 {
+		t.Fatalf("quarantined copies = %v, want none", got)
+	}
+}
+
+func TestSelfDescribingInvalidTransactionRemainsBlocked(t *testing.T) {
+	t.Setenv("REASONIX_HOME", t.TempDir())
+	target := filepath.Join(t.TempDir(), "reasonix-desktop")
+	originalExecutable := repairExecutable
+	repairExecutable = func() (string, error) { return filepath.Join(filepath.Dir(target), "reasonix-guard"), nil }
+	t.Cleanup(func() { repairExecutable = originalExecutable })
+	if err := os.WriteFile(target, []byte("old"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	tx, err := PrepareFileUpdate("v1", "v2", target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tx.BackupSHA256 = ""
+	if err := overwritePendingUpdateForTest(tx); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ReconcilePendingUpdate("v1"); err == nil || !strings.Contains(err.Error(), "backup hash is missing") {
+		t.Fatalf("reconcile invalid self-describing transaction = %v, want validation failure", err)
+	}
+	if _, err := PrepareFileUpdate("v1", "v3", target); err == nil || !strings.Contains(err.Error(), "backup hash is missing") {
+		t.Fatalf("prepare over invalid self-describing transaction = %v, want validation failure", err)
+	}
+	if !PendingUpdateExists() {
+		t.Fatal("invalid self-describing marker was quarantined or removed")
+	}
+	if got := quarantinedCopies(t); len(got) != 0 {
+		t.Fatalf("quarantined copies = %v, want none", got)
+	}
+}
+
 func TestReconcilePendingFileUpdateLeavesBoundProbationaryReleaseUnit(t *testing.T) {
 	t.Setenv("REASONIX_HOME", t.TempDir())
 	target := filepath.Join(t.TempDir(), "reasonix-desktop")

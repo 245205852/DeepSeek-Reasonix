@@ -105,6 +105,8 @@ type UpdateRollbackResult struct {
 // confirmation owns that transition.
 var ErrPendingUpdateAwaitingHealth = errors.New("previous update is awaiting startup health confirmation")
 
+var errPendingUpdateForeignInstall = errors.New("pending update belongs to a different installation")
+
 // PendingUpdateReconcileResult describes the safe transition performed before
 // startup or a new install. Cleared means a pre-publish transaction was
 // cancelled while every original target still matched its prepared state.
@@ -1767,7 +1769,10 @@ func classifyPendingUpdate() (pendingUpdateDisposition, *UpdateTransaction, erro
 		return pendingUpdateDebris, nil, nil
 	}
 	if err := validateUpdateTransaction(tx); err != nil {
-		return pendingUpdateActionable, nil, nil
+		if errors.Is(err, errPendingUpdateForeignInstall) {
+			return pendingUpdateActionable, nil, nil
+		}
+		return pendingUpdateNone, nil, fmt.Errorf("validate pending transaction: %w", err)
 	}
 	return pendingUpdateActionable, tx, nil
 }
@@ -1821,6 +1826,55 @@ func quarantinePendingUpdate(reason string) (string, error) {
 	slog.Warn("repair: quarantined an unusable pending update transaction",
 		"path", aside, "reason", reason)
 	return aside, nil
+}
+
+func pendingUpdateMarkerDigest(path string) (string, error) {
+	body, err := os.ReadFile(path)
+	if err != nil {
+		return "", err
+	}
+	digest := sha256.Sum256(body)
+	return hex.EncodeToString(digest[:]), nil
+}
+
+// quarantinePendingUpdateAfterReconcile rechecks an unusable marker while
+// holding the cross-process pending lock. Reconciliation initially classifies
+// without that lock because the normal cancel/rollback paths acquire it later;
+// the marker digest prevents a concurrent prepare from being quarantined after
+// it has replaced the marker.
+func quarantinePendingUpdateAfterReconcile(reason string, expectedDigest string, wantForeign bool) (bool, error) {
+	unlock, err := acquirePendingUpdateLock()
+	if err != nil {
+		return false, fmt.Errorf("lock pending transaction: %w", err)
+	}
+	defer unlock()
+
+	path := PendingUpdatePath()
+	actualDigest, err := pendingUpdateMarkerDigest(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return false, nil
+		}
+		return false, fmt.Errorf("read pending transaction: %w", err)
+	}
+	if actualDigest != expectedDigest {
+		return false, fmt.Errorf("pending update changed while waiting")
+	}
+	disposition, tx, err := classifyPendingUpdate()
+	if err != nil {
+		return false, err
+	}
+	if wantForeign {
+		if disposition != pendingUpdateActionable || tx != nil {
+			return false, fmt.Errorf("pending update is no longer a foreign transaction")
+		}
+	} else if disposition != pendingUpdateDebris {
+		return false, fmt.Errorf("pending update is no longer unusable debris")
+	}
+	if _, err := quarantinePendingUpdate(reason); err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 func ReadPendingUpdate() (*UpdateTransaction, error) {
@@ -1901,8 +1955,19 @@ func ReconcilePendingUpdate(runningVersion string) (PendingUpdateReconcileResult
 		// Nothing here can be resumed or rolled back. Leaving it in place is
 		// what stranded users: startup kept failing to recover it while
 		// preparation kept refusing to write over it.
-		if _, err := quarantinePendingUpdate("no recoverable transaction to reconcile"); err != nil {
+		digest, digestErr := pendingUpdateMarkerDigest(PendingUpdatePath())
+		if digestErr != nil {
+			if os.IsNotExist(digestErr) {
+				return PendingUpdateReconcileResult{}, nil
+			}
+			return PendingUpdateReconcileResult{Pending: true}, fmt.Errorf("reconcile pending update: read marker: %w", digestErr)
+		}
+		quarantined, err := quarantinePendingUpdateAfterReconcile("no recoverable transaction to reconcile", digest, false)
+		if err != nil {
 			return PendingUpdateReconcileResult{Pending: true}, fmt.Errorf("reconcile pending update: quarantine unusable transaction: %w", err)
+		}
+		if !quarantined {
+			return PendingUpdateReconcileResult{}, nil
 		}
 		return PendingUpdateReconcileResult{Pending: true, Cleared: true}, nil
 	case tx == nil:
@@ -1917,8 +1982,19 @@ func ReconcilePendingUpdate(runningVersion string) (PendingUpdateReconcileResult
 		// material are untouched, so a genuine transaction observed from the
 		// wrong install loses nothing and remains recoverable from the
 		// .unusable-* file by hand.
-		if _, err := quarantinePendingUpdate("not valid for this installation"); err != nil {
+		digest, digestErr := pendingUpdateMarkerDigest(PendingUpdatePath())
+		if digestErr != nil {
+			if os.IsNotExist(digestErr) {
+				return PendingUpdateReconcileResult{}, nil
+			}
+			return PendingUpdateReconcileResult{Pending: true}, fmt.Errorf("reconcile pending update: read marker: %w", digestErr)
+		}
+		quarantined, err := quarantinePendingUpdateAfterReconcile("not valid for this installation", digest, true)
+		if err != nil {
 			return PendingUpdateReconcileResult{Pending: true}, fmt.Errorf("reconcile pending update: quarantine unusable transaction: %w", err)
+		}
+		if !quarantined {
+			return PendingUpdateReconcileResult{}, nil
 		}
 		return PendingUpdateReconcileResult{Pending: true, Cleared: true}, nil
 	}
@@ -3159,7 +3235,7 @@ func validateUpdateTransactionForLauncher(tx *UpdateTransaction, launcher string
 		launcherKey := canonicalRepairPath(launcher)
 		targetKey := canonicalRepairPath(tx.TargetPath)
 		if launcherKey == "" || targetKey == "" || filepath.Dir(launcherKey) != filepath.Dir(targetKey) {
-			return fmt.Errorf("pending update target is outside the current Guard installation")
+			return fmt.Errorf("%w: pending update target is outside the current Guard installation", errPendingUpdateForeignInstall)
 		}
 		root := filepath.Clean(filepath.Join(config.MemoryUserDir(), "repair"))
 		insideRepairDir := func(path string) bool {
@@ -3194,7 +3270,7 @@ func validateUpdateTransactionForLauncher(tx *UpdateTransaction, launcher string
 				return fmt.Errorf("pending update lists an unexpected release file")
 			}
 			if filepath.Dir(f.TargetPath) != filepath.Dir(tx.TargetPath) {
-				return fmt.Errorf("pending update release file is outside the current Guard installation")
+				return fmt.Errorf("%w: pending update release file is outside the current Guard installation", errPendingUpdateForeignInstall)
 			}
 			if f.MissingBefore {
 				if primary || strings.TrimSpace(f.BackupPath) != "" || strings.TrimSpace(f.SHA256) != "" {
@@ -3248,7 +3324,7 @@ func validateUpdateTransactionForLauncher(tx *UpdateTransaction, launcher string
 		}
 		inside := tx.TargetPath + string(filepath.Separator)
 		if !strings.HasPrefix(launcher, inside) {
-			return fmt.Errorf("pending update bundle is not the current Guard installation")
+			return fmt.Errorf("%w: pending update bundle is not the current Guard installation", errPendingUpdateForeignInstall)
 		}
 		if err := validateAppBundleHandoffMetadata(tx); err != nil {
 			return fmt.Errorf("pending update %w", err)
