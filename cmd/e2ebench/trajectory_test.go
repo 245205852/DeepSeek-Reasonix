@@ -39,6 +39,44 @@ func TestSummarizeTrajectoryAttributesTimeAndSkipsTruncatedTail(t *testing.T) {
 	}
 }
 
+func TestSummarizeTrajectoryDecomposesModelRounds(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "rounds.trajectory.jsonl")
+	lines := []string{
+		`{"seq":1,"ts":1000,"event":{"kind":"turn_started"}}`,
+		`{"seq":2,"ts":3000,"event":{"kind":"tool_dispatch","tool":{"name":"read_file","partial":true}}}`, // round 1 gap: 2000
+		`{"seq":3,"ts":3400,"event":{"kind":"tool_dispatch","tool":{"name":"read_file"}}}`,                // same batch: no new round
+		`{"seq":4,"ts":5000,"event":{"kind":"tool_result","tool":{"name":"read_file","durationMs":400}}}`,
+		`{"seq":5,"ts":5100,"event":{"kind":"tool_dispatch","tool":{"name":"grep","parentId":"task-1"}}}`, // subagent: ignored
+		`{"seq":6,"ts":5200,"event":{"kind":"tool_result","tool":{"name":"grep","durationMs":50,"parentId":"task-1"}}}`,
+		`{"seq":7,"ts":6000,"event":{"kind":"retrying"}}`,
+		`{"seq":8,"ts":9000,"event":{"kind":"tool_dispatch","tool":{"name":"bash"}}}`, // round 2 gap: 9000-5000=4000
+		`{"seq":9,"ts":9500,"event":{"kind":"tool_result","tool":{"name":"bash","durationMs":450}}}`,
+		`{"seq":10,"ts":12000,"event":{"kind":"turn_done"}}`, // final answer round gap: 2500
+	}
+	if err := os.WriteFile(path, []byte(strings.Join(lines, "\n")), 0o644); err != nil {
+		t.Fatalf("write fixture: %v", err)
+	}
+	s, err := summarizeTrajectory(path)
+	if err != nil {
+		t.Fatalf("summarizeTrajectory: %v", err)
+	}
+	if s.ModelRounds != 3 {
+		t.Errorf("model rounds = %d, want 3 (two tool rounds + final answer)", s.ModelRounds)
+	}
+	if s.ModelGapTotalMs != 8500 {
+		t.Errorf("model gap total = %d, want 8500", s.ModelGapTotalMs)
+	}
+	if s.ModelGapP95Ms != 4000 {
+		t.Errorf("model gap p95 = %d, want 4000", s.ModelGapP95Ms)
+	}
+	if s.Retries != 1 {
+		t.Errorf("retries = %d, want 1", s.Retries)
+	}
+	if s.ToolMs != 850 {
+		t.Errorf("tool ms = %d, want 850 (subagent excluded)", s.ToolMs)
+	}
+}
+
 func TestRenderBodyIncludesTimeAttributionOnlyForRecordedRuns(t *testing.T) {
 	plain := result{task: task{ID: "a"}, Passed: true}
 	if got := renderBody([]result{plain}); strings.Contains(got, "Time attribution") {
