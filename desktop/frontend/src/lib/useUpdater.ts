@@ -54,7 +54,7 @@ function updateError(message: string, info?: UpdateInfo): UpdateStatus {
 
 const UpdaterContext = createContext<Updater | null>(null);
 
-type UpdaterOperationKind = "idle" | "checking" | "ready" | "applying";
+type UpdaterOperationKind = "idle" | "checking" | "ready" | "applying" | "abandoning";
 
 interface UpdaterOperation {
   epoch: number;
@@ -77,7 +77,7 @@ function normalizedChannel(channel: string): "stable" | "preview" {
 }
 
 function isBusyOperation(kind: UpdaterOperationKind): boolean {
-  return kind === "checking" || kind === "applying";
+  return kind === "checking" || kind === "applying" || kind === "abandoning";
 }
 
 function useUpdaterInternal(): Updater {
@@ -184,6 +184,10 @@ function useUpdaterInternal(): Updater {
   }, []);
 
   const check = useCallback(async () => {
+    // A newer check may supersede an in-flight check (and historically may
+    // interrupt apply). Discard owns exclusive recovery work and must not be
+    // epoch-stolen by Check/Retry while AbandonPendingUpdate is outstanding.
+    if (operationRef.current.kind === "abandoning") return;
     const operation = beginOperation("stable", "checking");
     setStatus({ kind: "checking" });
     try {
@@ -252,7 +256,11 @@ function useUpdaterInternal(): Updater {
   const abandonPending = useCallback(async () => {
     const active = operationRef.current;
     if (isBusyOperation(active.kind)) return;
-    const operation = beginOperation(active.channel || "stable", "checking");
+    // Publish busy UI immediately so Settings/Banner disable Retry/Check while
+    // the discard promise is outstanding. Kind "abandoning" is distinct from
+    // "checking" so a concurrent check cannot supersede the discard epoch.
+    const operation = beginOperation(active.channel || "stable", "abandoning");
+    setStatus({ kind: "checking" });
     try {
       if (typeof app.AbandonPendingUpdate === "function") {
         await app.AbandonPendingUpdate();
