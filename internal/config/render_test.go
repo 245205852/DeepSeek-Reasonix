@@ -1555,3 +1555,27 @@ func TestRenderTOMLPersistsSecretsSection(t *testing.T) {
 		t.Fatalf("user-scope render still exposes removed live-redaction setting:\n%s", out)
 	}
 }
+
+// TestRenderTOMLPersistsOfflineEnvironment pins config-save round-tripping:
+// [environment].offline is a user declaration and must survive every rendered
+// config scope, or saving an unrelated setting would silently re-enable retries
+// in a deployment that has no outbound network.
+func TestRenderTOMLPersistsOfflineEnvironment(t *testing.T) {
+	cfg := Default()
+	cfg.Environment.Offline = true
+
+	for _, scope := range []RenderScope{RenderScopeFull, RenderScopeUser, RenderScopeProject} {
+		rendered := RenderTOMLForScope(cfg, scope)
+		if !strings.Contains(rendered, "offline = true") {
+			t.Fatalf("%s-scope render missing offline declaration:\n%s", scope, rendered)
+		}
+
+		back := Default()
+		if _, err := toml.Decode(rendered, back); err != nil {
+			t.Fatalf("%s-scope round-trip decode: %v", scope, err)
+		}
+		if !back.Environment.Offline {
+			t.Fatalf("%s-scope round-trip lost offline declaration", scope)
+		}
+	}
+}
