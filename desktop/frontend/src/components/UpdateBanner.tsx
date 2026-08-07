@@ -92,17 +92,22 @@ export function UpdateBanner({
           </span>
           <span className="banner__spacer" />
           {status.disposition === "recovery" && (
-            <button className="btn btn--small" onClick={() => void abandonPending()}>
+            <button
+              className="btn btn--small"
+              type="button"
+              onClick={() => void abandonPending()}
+            >
               {t("updater.discardPrevious")}
             </button>
           )}
           {downloadFirst && (
-            <button className="btn btn--small btn--primary" onClick={openDownload}>
+            <button className="btn btn--small btn--primary" type="button" onClick={openDownload}>
               {t("updater.officialDownload")}
             </button>
           )}
           <button
             className={`btn btn--small${downloadFirst ? "" : " btn--primary"}`}
+            type="button"
             onClick={() => {
               if (status.info) apply(status.info);
               else void check();

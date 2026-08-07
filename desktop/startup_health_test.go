@@ -149,8 +149,8 @@ func TestCapturePendingUpdateHealthAcceptsVersionPrefixMismatch(t *testing.T) {
 	version = "1.21.0"
 	readPendingUpdateForHealth = func() (*repair.UpdateTransaction, error) {
 		return &repair.UpdateTransaction{
-			ToVersion: "v1.21.0",
-			CreatedAt: "2026-08-07T00:00:00Z",
+			ToVersion:  "v1.21.0",
+			CreatedAt:  "2026-08-07T00:00:00Z",
 			TargetKind: "file",
 		}, nil
 	}

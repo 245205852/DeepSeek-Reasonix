@@ -383,6 +383,58 @@ func TestAbandonPendingUpdateCommitsProbationaryReleaseUnit(t *testing.T) {
 	}
 }
 
+func TestAbandonPendingUpdateForceRetiresWhenBackupDigestBroken(t *testing.T) {
+	t.Setenv("REASONIX_HOME", t.TempDir())
+	target := filepath.Join(t.TempDir(), "reasonix-desktop")
+	originalExecutable := repairExecutable
+	repairExecutable = func() (string, error) { return filepath.Join(filepath.Dir(target), "reasonix-guard"), nil }
+	t.Cleanup(func() { repairExecutable = originalExecutable })
+	if err := os.WriteFile(target, []byte("old"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	tx, err := PrepareFileUpdate("v1", "v2", target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	receipt, err := PublishClaimedFileUpdateMemberExact(tx, target, []byte("new"), 0o700)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := RecordClaimedFileUpdateInstalled(tx, receipt); err != nil {
+		t.Fatal(err)
+	}
+
+	// Drift the prepared backup so MarkUpdateHealthy refuses to commit while
+	// the live replacement unit remains installed. Explicit abandon must still
+	// retire the marker via force-retire.
+	if strings.TrimSpace(tx.BackupPath) == "" {
+		t.Fatal("expected prepared backup path")
+	}
+	if err := os.WriteFile(tx.BackupPath, []byte("corrupted-backup"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := MarkUpdateHealthy("v2"); err == nil {
+		t.Fatal("MarkUpdateHealthy should fail when backup digest drifts")
+	}
+	if !PendingUpdateExists() {
+		t.Fatal("pending transaction was removed by failed MarkUpdateHealthy")
+	}
+
+	result, err := AbandonPendingUpdate("v2")
+	if err != nil {
+		t.Fatalf("abandon with broken backup: %v", err)
+	}
+	if !result.Healthy || !result.Cleared || result.AwaitingHealth || result.Pending {
+		t.Fatalf("abandon result = %+v", result)
+	}
+	if PendingUpdateExists() {
+		t.Fatal("pending transaction survived force-retire abandon")
+	}
+	if got, err := os.ReadFile(target); err != nil || string(got) != "new" {
+		t.Fatalf("installed target changed = %q, %v", got, err)
+	}
+}
+
 func TestReconcilePendingFileUpdateRollsBackPublishedReleaseUnit(t *testing.T) {
 	t.Setenv("REASONIX_HOME", t.TempDir())
 	target := filepath.Join(t.TempDir(), "reasonix-desktop")

@@ -281,10 +281,13 @@ func (a *App) reconcilePendingUpdateForRequest(requestID string, meta *cachedUpd
 		// Visible UI at the pending target version is health evidence. Commit a
 		// probationary transaction before reconcile so a missed post-DOM health
 		// task does not block the next update forever.
+		// Exact identity commit and the broader probationary commit are both
+		// best-effort: a failed Exact path must not skip CommitProbationary.
 		refreshPendingUpdateHealthIdentity(a)
 		if err := a.commitPendingUpdateHealth(); err != nil {
 			slog.Debug("desktop: commit healthy update before install", "err", err)
-		} else if committed, err := repair.CommitProbationaryPendingUpdate(version); err != nil {
+		}
+		if committed, err := repair.CommitProbationaryPendingUpdate(version); err != nil {
 			slog.Debug("desktop: probationary update commit before install", "err", err)
 		} else if committed {
 			slog.Info("desktop: committed probationary update before install")
@@ -295,12 +298,18 @@ func (a *App) reconcilePendingUpdateForRequest(requestID string, meta *cachedUpd
 			// One more heal attempt after refresh: version-prefix mismatches used
 			// to leave AwaitingHealth permanently even though the product works.
 			refreshPendingUpdateHealthIdentity(a)
-			if commitErr := a.commitPendingUpdateHealth(); commitErr == nil {
-				if _, retryErr := reconcilePendingUpdateForInstall(version); retryErr == nil {
-					return nil
-				} else {
-					err = retryErr
-				}
+			if commitErr := a.commitPendingUpdateHealth(); commitErr != nil {
+				slog.Debug("desktop: commit healthy update on awaiting-health retry", "err", commitErr)
+			}
+			if committed, commitErr := repair.CommitProbationaryPendingUpdate(version); commitErr != nil {
+				slog.Debug("desktop: probationary update commit on awaiting-health retry", "err", commitErr)
+			} else if committed {
+				return nil
+			}
+			if _, retryErr := reconcilePendingUpdateForInstall(version); retryErr == nil {
+				return nil
+			} else {
+				err = retryErr
 			}
 		}
 		if errors.Is(err, repair.ErrPendingUpdateAwaitingHealth) {

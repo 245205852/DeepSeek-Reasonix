@@ -2158,21 +2158,24 @@ func CommitProbationaryPendingUpdate(runningVersion string) (bool, error) {
 // cancel or roll back through the normal reconcile path. Returns a result
 // describing the transition performed.
 func AbandonPendingUpdate(runningVersion string) (PendingUpdateReconcileResult, error) {
-	committed, err := CommitProbationaryPendingUpdate(runningVersion)
-	if err != nil {
-		return PendingUpdateReconcileResult{Pending: true}, fmt.Errorf("abandon pending update: %w", err)
-	}
-	if committed {
+	committed, commitErr := CommitProbationaryPendingUpdate(runningVersion)
+	if commitErr == nil && committed {
 		return PendingUpdateReconcileResult{Cleared: true, Healthy: true}, nil
+	}
+	if commitErr != nil {
+		// MarkUpdateHealthy can fail on a drifted backup while the live
+		// replacement is still installed. Continue into reconcile / force-retire
+		// so an explicit discard is not blocked by a broken rollback artifact.
+		slog.Debug("repair: probationary commit during abandon failed; continuing",
+			"err", commitErr)
 	}
 	result, reconcileErr := ReconcilePendingUpdate(runningVersion)
 	if reconcileErr == nil {
 		return result, nil
 	}
-	// AwaitingHealth after a failed commit is still stuck. When install
-	// evidence holds and the user explicitly abandons, retire the marker and
-	// best-effort remove backups so later updates can proceed while the
-	// running product stays in place.
+	// AwaitingHealth after a failed commit is still stuck. When the live
+	// target is installed and the user explicitly abandons, retire the marker
+	// and best-effort remove backups so later updates can proceed.
 	if errors.Is(reconcileErr, ErrPendingUpdateAwaitingHealth) {
 		if retired, retireErr := forceRetireProbationaryPendingUpdate(runningVersion); retireErr != nil {
 			return result, fmt.Errorf("abandon pending update: %w", retireErr)
@@ -2183,6 +2186,9 @@ func AbandonPendingUpdate(runningVersion string) (PendingUpdateReconcileResult, 
 			result.Cleared = true
 			return result, nil
 		}
+	}
+	if commitErr != nil && reconcileErr != nil {
+		return result, fmt.Errorf("abandon pending update: %w (also: %v)", reconcileErr, commitErr)
 	}
 	return result, reconcileErr
 }
@@ -2198,7 +2204,10 @@ func forceRetireProbationaryPendingUpdate(runningVersion string) (bool, error) {
 		}
 		return false, err
 	}
-	if !UpdateVersionsEqual(runningVersion, tx.ToVersion) || !pendingUpdateInstalledForHealth(tx) {
+	// Use target-only evidence: health paths also require intact rollback
+	// backups, but explicit abandon must free a stuck marker when the live
+	// replacement is already installed and only the backup artifact is broken.
+	if !UpdateVersionsEqual(runningVersion, tx.ToVersion) || !pendingUpdateTargetInstalled(tx) {
 		return false, nil
 	}
 	unlock, err := acquirePendingUpdateLock()
@@ -2216,7 +2225,7 @@ func forceRetireProbationaryPendingUpdate(runningVersion string) (bool, error) {
 	if UpdateTransactionID(current) != UpdateTransactionID(tx) {
 		return false, fmt.Errorf("force retire probationary update: pending transaction changed")
 	}
-	if !UpdateVersionsEqual(runningVersion, current.ToVersion) || !pendingUpdateInstalledForHealth(current) {
+	if !UpdateVersionsEqual(runningVersion, current.ToVersion) || !pendingUpdateTargetInstalled(current) {
 		return false, nil
 	}
 	unlockTargets, lockErr := lockRepairMutations(pendingUpdateTargetPaths(current)...)
@@ -2237,17 +2246,8 @@ func forceRetireProbationaryPendingUpdate(runningVersion string) (bool, error) {
 	// Require only that the replacement is still installed; skip backup digest
 	// matching so a broken rollback artifact cannot permanently lock updates.
 	verifyInstalled := func() error {
-		switch recheck.TargetKind {
-		case "app-bundle":
-			if err := VerifyAppBundleUpdateHandoffTarget(recheck); err != nil {
-				return err
-			}
-		case "file":
-			if _, _, err := installedFileUpdateTargets(recheck, true); err != nil {
-				return err
-			}
-		default:
-			return fmt.Errorf("unsupported target kind %q", recheck.TargetKind)
+		if !pendingUpdateTargetInstalled(recheck) {
+			return fmt.Errorf("installed target no longer matches the pending transaction")
 		}
 		return nil
 	}
@@ -2258,6 +2258,25 @@ func forceRetireProbationaryPendingUpdate(runningVersion string) (bool, error) {
 	slog.Warn("repair: force-retired a probationary pending update after explicit abandon",
 		"toVersion", recheck.ToVersion, "target", recheck.TargetPath)
 	return true, nil
+}
+
+// pendingUpdateTargetInstalled reports whether the live replacement unit for a
+// probationary transaction is still installed. Unlike pendingUpdateInstalledForHealth,
+// it does not require intact rollback backups — used only by explicit abandon
+// force-retire so a corrupted backup cannot permanently block later updates.
+func pendingUpdateTargetInstalled(tx *UpdateTransaction) bool {
+	if tx == nil {
+		return false
+	}
+	switch tx.TargetKind {
+	case "app-bundle":
+		return VerifyAppBundleUpdateHandoffTarget(tx) == nil
+	case "file":
+		_, bound, err := installedFileUpdateTargets(tx, true)
+		return err == nil && bound
+	default:
+		return false
+	}
 }
 
 // pendingUpdateInstalledForHealth requires transaction-bound evidence for the
