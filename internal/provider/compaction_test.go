@@ -52,8 +52,8 @@ func TestResponsesCompactionCapabilities(t *testing.T) {
 	if caps.CompactionOutputTokens != 4096 {
 		t.Fatalf("CompactionOutputTokens = %d, want 4096", caps.CompactionOutputTokens)
 	}
-	if caps.MaxOutputTokens != provider.DefaultReasoningOutputTokens {
-		t.Fatalf("MaxOutputTokens = %d, want %d", caps.MaxOutputTokens, provider.DefaultReasoningOutputTokens)
+	if caps.MaxOutputTokens != provider.DefaultHighOutputTokens {
+		t.Fatalf("MaxOutputTokens = %d, want %d", caps.MaxOutputTokens, provider.DefaultHighOutputTokens)
 	}
 
 	unknown := responses.New(responses.Config{
