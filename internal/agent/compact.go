@@ -12,6 +12,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"reasonix/internal/ablation"
 	"reasonix/internal/event"
 	"reasonix/internal/provider"
 )
@@ -79,6 +80,20 @@ What is still in progress or unstarted, and the single most concrete next action
 
 Rules: be terse — bullet points and fragments, not prose. Preserve identifiers, paths, and numbers exactly. Do NOT invent anything not present in the messages; if something is unknown, leave it out rather than guessing.`
 
+// compactThresholds returns the prompt-token boundaries maybeCompact switches
+// on. The compaction ablation arm collapses the snip and fold triggers onto
+// soft, so the cache-preserving deferral branch is unreachable and the session
+// folds as soon as it grows — what a harness with no prompt-cache strategy does.
+func (a *Agent) compactThresholds() (soft, snip, high int) {
+	high = int(float64(a.contextWindow) * a.compactRatio)
+	snip = int(float64(a.contextWindow) * a.toolResultSnipRatio)
+	soft = int(float64(a.contextWindow) * a.softCompactRatio)
+	if a.ablation.Off(ablation.Compaction) {
+		high, snip = soft, soft
+	}
+	return soft, snip, high
+}
+
 // maybeCompact compacts the session when the last turn's prompt has grown to the
 // configured fraction of the context window. It is a no-op when compaction is
 // disabled (no window) or usage is unavailable.
@@ -86,9 +101,18 @@ func (a *Agent) maybeCompact(ctx context.Context, u *provider.Usage) {
 	if a.contextWindow <= 0 || u == nil || u.PromptTokens == 0 {
 		return
 	}
-	high := int(float64(a.contextWindow) * a.compactRatio)
-	snip := int(float64(a.contextWindow) * a.toolResultSnipRatio)
-	soft := int(float64(a.contextWindow) * a.softCompactRatio)
+	soft, snip, high := a.compactThresholds()
+	// A turn that sits under the trigger is the breathing room a healthy
+	// compaction buys; it clears the stuck latch and the run counter. This has to
+	// happen before the soft/snip branches return, because a compaction that
+	// settles the prompt anywhere in [snip, high) is working exactly as intended:
+	// leaving a stale run count behind there would latch the *next* compaction as
+	// "the window is too small" and silently disable auto-compaction for the rest
+	// of the session.
+	if u.PromptTokens < high {
+		a.consecutiveCompacts = 0
+		a.compactStuck = false
+	}
 	// Between the soft ratio and the trigger, report growing context once without
 	// rewriting the prefix — a compaction here would needlessly crater the cache.
 	if u.PromptTokens >= soft && u.PromptTokens < snip && !a.softCompactNoticed {
@@ -107,11 +131,7 @@ func (a *Agent) maybeCompact(ctx context.Context, u *provider.Usage) {
 		return
 	}
 	if u.PromptTokens < high {
-		// A turn that sits under the trigger is the breathing room a healthy
-		// compaction buys; it clears the stuck latch and the run counter.
-		a.consecutiveCompacts = 0
-		a.compactStuck = false
-		return
+		return // the latch was already cleared above
 	}
 	if a.compactStuck {
 		return
@@ -256,6 +276,20 @@ func (a *Agent) compact(ctx context.Context, trigger, instructions string, force
 		}
 	}
 
+	// compaction.prepare: extensions rule on the fold and the accumulated
+	// guidance (hook + /compact focus) for THIS pass only. A block skips the
+	// pass; the caller surfaces the reason through its usual notice path.
+	var err error
+	fold, instructions, err = a.interceptCompactionPrepare(ctx, fold, instructions)
+	if err != nil {
+		a.emitCompactionAborted(trigger)
+		return err
+	}
+	if len(fold) == 0 {
+		a.emitCompactionAborted(trigger)
+		return nil // the extension replaced the fold with nothing to fold
+	}
+
 	archived := ""
 	if a.archiveDir != "" {
 		path, err := archiveMessages(a.archiveDir, fold)
@@ -280,6 +314,14 @@ func (a *Agent) compact(ctx context.Context, trigger, instructions string, force
 		summary = mechanicalFoldDigest(len(fold), archived)
 	}
 
+	// compaction.complete: extensions rule on the produced summary before it
+	// is written into the session; a replacement is persisted as the summary.
+	summary, err = a.interceptCompactionComplete(ctx, summary)
+	if err != nil {
+		a.emitCompactionAborted(trigger)
+		return err
+	}
+
 	compacted := make([]provider.Message, 0, head+len(kept)+1+len(msgs)-start)
 	compacted = append(compacted, msgs[:head]...)
 	compacted = append(compacted, kept...)
@@ -291,7 +333,7 @@ func (a *Agent) compact(ctx context.Context, trigger, instructions string, force
 			summaryTagClose,
 	})
 	compacted = append(compacted, msgs[start:]...)
-	a.session.Rewrite(compacted)
+	a.session.Rewrite(compacted, "compact_"+trigger)
 
 	a.sink.Emit(event.Event{Kind: event.CompactionDone, Compaction: event.Compaction{
 		Trigger: trigger, Messages: len(fold), Summary: summary, Archive: archived,
@@ -334,7 +376,7 @@ func (a *Agent) SummarizeFrom(ctx context.Context, fromIdx int) error {
 		Content: "Summary of the later conversation (compacted from here on):\n" + summary,
 	})
 	next = append(next, localOnly...)
-	a.session.Rewrite(next)
+	a.session.Rewrite(next, "summarize_from")
 	a.sink.Emit(event.Event{Kind: event.Notice, Level: event.LevelInfo,
 		Text: fmt.Sprintf("summarized %d later messages → summary", len(region))})
 	return nil
@@ -371,7 +413,7 @@ func (a *Agent) SummarizeUpTo(ctx context.Context, toIdx int) error {
 	})
 	next = append(next, localOnly...)
 	next = append(next, msgs[toIdx:]...)
-	a.session.Rewrite(next)
+	a.session.Rewrite(next, "summarize_up_to")
 	a.sink.Emit(event.Event{Kind: event.Notice, Level: event.LevelInfo,
 		Text: fmt.Sprintf("summarized %d earlier messages → summary", len(region))})
 	return nil

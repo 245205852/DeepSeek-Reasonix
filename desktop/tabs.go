@@ -26,10 +26,10 @@ import (
 	"reasonix/internal/control"
 	"reasonix/internal/event"
 	"reasonix/internal/eventwire"
+	"reasonix/internal/extension/providerext"
 	"reasonix/internal/fileutil"
 	"reasonix/internal/notify"
 	"reasonix/internal/provider"
-	"reasonix/internal/remote/workbench/target"
 	"reasonix/internal/store"
 	"reasonix/internal/worktree"
 )
@@ -247,13 +247,17 @@ type readFileRecord struct {
 }
 
 type sessionUsageStats struct {
-	PromptTokens     int  `json:"promptTokens"`
-	CompletionTokens int  `json:"completionTokens"`
-	TotalTokens      int  `json:"totalTokens"`
-	ReasoningTokens  int  `json:"reasoningTokens"`
-	CacheHitTokens   int  `json:"cacheHitTokens"`
-	CacheMissTokens  int  `json:"cacheMissTokens"`
-	Estimated        bool `json:"estimated,omitempty"`
+	PromptTokens     int `json:"promptTokens"`
+	CompletionTokens int `json:"completionTokens"`
+	TotalTokens      int `json:"totalTokens"`
+	ReasoningTokens  int `json:"reasoningTokens"`
+	CacheHitTokens   int `json:"cacheHitTokens"`
+	CacheMissTokens  int `json:"cacheMissTokens"`
+	CacheWriteTokens int `json:"cacheWriteTokens,omitempty"`
+	// CacheWriteBilledTokens preserves provider-specific cache-write pricing
+	// across persisted telemetry repricing without changing hit-rate totals.
+	CacheWriteBilledTokens float64 `json:"cacheWriteBilledTokens,omitempty"`
+	Estimated              bool    `json:"estimated,omitempty"`
 	// LastUsedTokens is the executor-reported context fill (prompt+completion)
 	// from the most recent turn. It is persisted so the status bar / context
 	// panel can show a meaningful fill percentage after a session rebind
@@ -280,17 +284,19 @@ type sessionUsageStats struct {
 }
 
 type usageSourceStats struct {
-	PromptTokens     int     `json:"promptTokens"`
-	CompletionTokens int     `json:"completionTokens"`
-	TotalTokens      int     `json:"totalTokens"`
-	ReasoningTokens  int     `json:"reasoningTokens"`
-	CacheHitTokens   int     `json:"cacheHitTokens"`
-	CacheMissTokens  int     `json:"cacheMissTokens"`
-	Estimated        bool    `json:"estimated,omitempty"`
-	RequestCount     int     `json:"requestCount"`
-	SessionCost      float64 `json:"sessionCost,omitempty"`
-	SessionCurrency  string  `json:"sessionCurrency,omitempty"`
-	SessionCostUsd   float64 `json:"sessionCostUsd,omitempty"`
+	PromptTokens           int     `json:"promptTokens"`
+	CompletionTokens       int     `json:"completionTokens"`
+	TotalTokens            int     `json:"totalTokens"`
+	ReasoningTokens        int     `json:"reasoningTokens"`
+	CacheHitTokens         int     `json:"cacheHitTokens"`
+	CacheMissTokens        int     `json:"cacheMissTokens"`
+	CacheWriteTokens       int     `json:"cacheWriteTokens,omitempty"`
+	CacheWriteBilledTokens float64 `json:"cacheWriteBilledTokens,omitempty"`
+	Estimated              bool    `json:"estimated,omitempty"`
+	RequestCount           int     `json:"requestCount"`
+	SessionCost            float64 `json:"sessionCost,omitempty"`
+	SessionCurrency        string  `json:"sessionCurrency,omitempty"`
+	SessionCostUsd         float64 `json:"sessionCostUsd,omitempty"`
 }
 
 type sourceSessionCacheCounters struct {
@@ -930,6 +936,25 @@ func (t *WorkspaceTab) recordTurnDone(now int64) {
 	t.telemMu.Unlock()
 }
 
+// contextTelemetryFromUsage returns the latest-attempt context shape for
+// rebind-surviving Last* telemetry fields. Prefer Context* when set (multi-
+// attempt sampling recovery); otherwise fall back to billable totals / the
+// per-event cache delta already computed for this Usage event.
+//
+// When a Context shape is present, ContextCacheHit/Miss are kept even if both
+// are zero — many providers omit cache splits, and falling back to the
+// event's aggregated cache would re-inflate multi-attempt totals.
+func contextTelemetryFromUsage(u *provider.Usage, eventCacheHit, eventCacheMiss int) (prompt, completion, reasoning, hit, miss int) {
+	if u == nil {
+		return 0, 0, 0, eventCacheHit, eventCacheMiss
+	}
+	if u.ContextPromptTokens > 0 || u.ContextCompletionTokens > 0 {
+		return u.ContextPromptTokens, u.ContextCompletionTokens, u.ContextReasoningTokens,
+			u.ContextCacheHitTokens, u.ContextCacheMissTokens
+	}
+	return u.PromptTokens, u.CompletionTokens, u.ReasoningTokens, eventCacheHit, eventCacheMiss
+}
+
 func (t *WorkspaceTab) recordUsage(e event.Event) {
 	if e.Usage == nil {
 		return
@@ -947,6 +972,8 @@ func (t *WorkspaceTab) recordUsage(e event.Event) {
 	cacheHitTokens, cacheMissTokens := t.usageTelemetry.cacheTokenDelta(source, u, e.SessionHit, e.SessionMiss)
 	t.usageTelemetry.CacheHitTokens += cacheHitTokens
 	t.usageTelemetry.CacheMissTokens += cacheMissTokens
+	t.usageTelemetry.CacheWriteTokens += u.CacheWriteTokens
+	t.usageTelemetry.CacheWriteBilledTokens += u.CacheWriteBilledTokens
 	t.usageTelemetry.Estimated = t.usageTelemetry.Estimated || u.Estimated
 	requestCount := u.RequestCount
 	if requestCount <= 0 {
@@ -954,12 +981,17 @@ func (t *WorkspaceTab) recordUsage(e event.Event) {
 	}
 	t.usageTelemetry.RequestCount += requestCount
 	if source == event.UsageSourceExecutor {
-		t.usageTelemetry.LastUsedTokens = u.PromptTokens + u.CompletionTokens
-		t.usageTelemetry.LastPromptTokens = u.PromptTokens
-		t.usageTelemetry.LastCompletionTokens = u.CompletionTokens
-		t.usageTelemetry.LastReasoningTokens = u.ReasoningTokens
-		t.usageTelemetry.LastCacheHitTokens = cacheHitTokens
-		t.usageTelemetry.LastCacheMissTokens = cacheMissTokens
+		// Persist the latest-attempt context shape for rebind fallback — never
+		// the multi-attempt billable aggregate (PromptTokens/CompletionTokens
+		// after stream recovery). ContextSnapshot semantics are latest
+		// prompt+completion; Context* fields carry that shape.
+		prompt, completion, reasoning, hit, miss := contextTelemetryFromUsage(u, cacheHitTokens, cacheMissTokens)
+		t.usageTelemetry.LastUsedTokens = prompt + completion
+		t.usageTelemetry.LastPromptTokens = prompt
+		t.usageTelemetry.LastCompletionTokens = completion
+		t.usageTelemetry.LastReasoningTokens = reasoning
+		t.usageTelemetry.LastCacheHitTokens = hit
+		t.usageTelemetry.LastCacheMissTokens = miss
 		t.usageTelemetry.LastEstimated = u.Estimated
 	}
 	if t.usageTelemetry.Sources == nil {
@@ -972,6 +1004,8 @@ func (t *WorkspaceTab) recordUsage(e event.Event) {
 	src.ReasoningTokens += u.ReasoningTokens
 	src.CacheHitTokens += cacheHitTokens
 	src.CacheMissTokens += cacheMissTokens
+	src.CacheWriteTokens += u.CacheWriteTokens
+	src.CacheWriteBilledTokens += u.CacheWriteBilledTokens
 	src.Estimated = src.Estimated || u.Estimated
 	src.RequestCount += requestCount
 	if e.Pricing != nil {
@@ -1005,25 +1039,29 @@ func (t *WorkspaceTab) recordUsage(e event.Event) {
 
 func usageStatsAsProviderUsage(stats usageSourceStats) *provider.Usage {
 	return &provider.Usage{
-		PromptTokens:     stats.PromptTokens,
-		CompletionTokens: stats.CompletionTokens,
-		TotalTokens:      stats.TotalTokens,
-		ReasoningTokens:  stats.ReasoningTokens,
-		CacheHitTokens:   stats.CacheHitTokens,
-		CacheMissTokens:  stats.CacheMissTokens,
-		Estimated:        stats.Estimated,
+		PromptTokens:           stats.PromptTokens,
+		CompletionTokens:       stats.CompletionTokens,
+		TotalTokens:            stats.TotalTokens,
+		ReasoningTokens:        stats.ReasoningTokens,
+		CacheHitTokens:         stats.CacheHitTokens,
+		CacheMissTokens:        stats.CacheMissTokens,
+		CacheWriteTokens:       stats.CacheWriteTokens,
+		CacheWriteBilledTokens: stats.CacheWriteBilledTokens,
+		Estimated:              stats.Estimated,
 	}
 }
 
 func sessionStatsAsProviderUsage(stats sessionUsageStats) *provider.Usage {
 	return &provider.Usage{
-		PromptTokens:     stats.PromptTokens,
-		CompletionTokens: stats.CompletionTokens,
-		TotalTokens:      stats.TotalTokens,
-		ReasoningTokens:  stats.ReasoningTokens,
-		CacheHitTokens:   stats.CacheHitTokens,
-		CacheMissTokens:  stats.CacheMissTokens,
-		Estimated:        stats.Estimated,
+		PromptTokens:           stats.PromptTokens,
+		CompletionTokens:       stats.CompletionTokens,
+		TotalTokens:            stats.TotalTokens,
+		ReasoningTokens:        stats.ReasoningTokens,
+		CacheHitTokens:         stats.CacheHitTokens,
+		CacheMissTokens:        stats.CacheMissTokens,
+		CacheWriteTokens:       stats.CacheWriteTokens,
+		CacheWriteBilledTokens: stats.CacheWriteBilledTokens,
+		Estimated:              stats.Estimated,
 	}
 }
 
@@ -1336,7 +1374,14 @@ func recordHistoryDisplayEvent(buffer *displayTurnBuffer, e event.Event) {
 			if e.Level == event.LevelWarn {
 				level = "warn"
 			}
-			buffer.messages = append(buffer.messages, &bufferedHistoryMessage{message: HistoryMessage{Role: "notice", Level: level, Content: e.Text, Detail: e.Detail, Code: e.Code}})
+			buffer.messages = append(buffer.messages, &bufferedHistoryMessage{message: HistoryMessage{
+				Role:            "notice",
+				Level:           level,
+				Content:         e.Text,
+				Detail:          e.Detail,
+				Code:            e.Code,
+				DecisionReceipt: cloneDecisionReceipt(e.DecisionReceipt),
+			}})
 		}
 	}
 }
@@ -2252,7 +2297,7 @@ func (a *App) ListTabs() []TabMeta {
 	}
 	a.mu.RUnlock()
 	if !needsRepair {
-		return a.workbenchProjectTabMetas(enrichTabMetas(out))
+		return enrichTabMetas(out)
 	}
 
 	a.mu.Lock()
@@ -2263,7 +2308,7 @@ func (a *App) ListTabs() []TabMeta {
 		}
 	}
 	a.mu.Unlock()
-	return a.workbenchProjectTabMetas(enrichTabMetas(out))
+	return enrichTabMetas(out)
 }
 
 // syncTabWorkspaceRootSpellings repoints open project tabs at the registry's
@@ -2306,9 +2351,7 @@ func (a *App) registerProjectRoot(workspaceRoot string) {
 // session selected by the given topic. Topic selection resolves to a concrete
 // session path first; the visible tab is then attached to that session runtime.
 func (a *App) OpenProjectTab(workspaceRoot, topicID string) (TabMeta, error) {
-	return a.withWorkbenchLocalNavigation(func() (TabMeta, error) {
-		return a.openProjectTab(workspaceRoot, topicID)
-	})
+	return a.openProjectTab(workspaceRoot, topicID)
 }
 
 func (a *App) openProjectTab(workspaceRoot, topicID string) (TabMeta, error) {
@@ -2451,9 +2494,7 @@ func (a *App) openTopicTabWithActivation(scope, workspaceRoot, topicID, sessionP
 // OpenGlobalTab opens a new global-scope tab (no project root). The global
 // workspace root is the reasonix user config directory.
 func (a *App) OpenGlobalTab(topicID string) (TabMeta, error) {
-	return a.withWorkbenchLocalNavigation(func() (TabMeta, error) {
-		return a.openGlobalTab(topicID)
-	})
+	return a.openGlobalTab(topicID)
 }
 
 func (a *App) openGlobalTab(topicID string) (TabMeta, error) {
@@ -2470,9 +2511,7 @@ func (a *App) openGlobalTab(topicID string) (TabMeta, error) {
 // OpenProjectTab/OpenGlobalTab, it does not resolve the topic to the latest
 // session first; sessionPath is the runtime identity being selected.
 func (a *App) OpenTopicSession(scope, workspaceRoot, topicID, sessionPath string) (TabMeta, error) {
-	return a.withWorkbenchLocalNavigation(func() (TabMeta, error) {
-		return a.openTopicSession(scope, workspaceRoot, topicID, sessionPath)
-	})
+	return a.openTopicSession(scope, workspaceRoot, topicID, sessionPath)
 }
 
 func (a *App) openTopicSession(scope, workspaceRoot, topicID, sessionPath string) (TabMeta, error) {
@@ -2501,33 +2540,29 @@ func (a *App) openTopicSession(scope, workspaceRoot, topicID, sessionPath string
 // the classic tab path, then prunes every non-active visible tab so historical
 // clicks do not accumulate hidden startup work.
 func (a *App) ActivateTopic(scope, workspaceRoot, topicID, sessionPath string) (TabMeta, error) {
-	return a.withWorkbenchLocalNavigation(func() (TabMeta, error) {
-		a.singleSurfaceMu.Lock()
-		defer a.singleSurfaceMu.Unlock()
+	a.singleSurfaceMu.Lock()
+	defer a.singleSurfaceMu.Unlock()
 
-		var meta TabMeta
-		var err error
-		if strings.TrimSpace(sessionPath) != "" {
-			meta, err = a.openTopicSession(scope, workspaceRoot, topicID, sessionPath)
-		} else if strings.TrimSpace(scope) == "project" {
-			meta, err = a.openProjectTab(workspaceRoot, topicID)
-		} else {
-			meta, err = a.openGlobalTab(topicID)
-		}
-		if err != nil {
-			return TabMeta{}, err
-		}
-		return a.keepOnlyVisibleTab(meta.ID)
-	})
+	var meta TabMeta
+	var err error
+	if strings.TrimSpace(sessionPath) != "" {
+		meta, err = a.openTopicSession(scope, workspaceRoot, topicID, sessionPath)
+	} else if strings.TrimSpace(scope) == "project" {
+		meta, err = a.openProjectTab(workspaceRoot, topicID)
+	} else {
+		meta, err = a.openGlobalTab(topicID)
+	}
+	if err != nil {
+		return TabMeta{}, err
+	}
+	return a.keepOnlyVisibleTab(meta.ID)
 }
 
 // EnsureBlankSurface mirrors EnsureBlankTab for no-tab-strip layouts: after
 // creating or reusing a blank session, it removes other visible tabs while
 // preserving running runtimes as detached background sessions.
 func (a *App) EnsureBlankSurface(scope, workspaceRoot string) (TabMeta, error) {
-	return a.withWorkbenchLocalNavigation(func() (TabMeta, error) {
-		return a.ensureBlankSurface(scope, workspaceRoot, "")
-	})
+	return a.ensureBlankSurface(scope, workspaceRoot, "")
 }
 
 func (a *App) ensureBlankSurface(scope, workspaceRoot, tokenMode string) (TabMeta, error) {
@@ -2561,9 +2596,7 @@ func tabInWorkspace(tab *WorkspaceTab, workspaceRoot string) bool {
 // creates one if none exists. Reusing a blank tab keeps repeated "new session"
 // clicks from piling up empty conversations.
 func (a *App) EnsureBlankTab(scope, workspaceRoot string) (TabMeta, error) {
-	return a.withWorkbenchLocalNavigation(func() (TabMeta, error) {
-		return a.ensureBlankTab(scope, workspaceRoot, "")
-	})
+	return a.ensureBlankTab(scope, workspaceRoot, "")
 }
 
 func (a *App) ensureBlankTab(scope, workspaceRoot, forcedTokenMode string) (TabMeta, error) {
@@ -2601,6 +2634,7 @@ func (a *App) ensureBlankTab(scope, workspaceRoot, forcedTokenMode string) (TabM
 	defaultModel, defaultToolApprovalMode := desktopNewSessionDefaults(scope, actualRoot)
 
 	a.mu.Lock()
+	var reusable *WorkspaceTab
 	for _, id := range a.orderedTabIDsLocked() {
 		tab := a.tabs[id]
 		if a.blankTabMatchesTargetLocked(tab, scope, workspaceRoot) {
@@ -2608,12 +2642,25 @@ func (a *App) ensureBlankTab(scope, workspaceRoot, forcedTokenMode string) (TabM
 				a.mu.Unlock()
 				return TabMeta{}, err
 			}
-			a.activeTabID = tab.ID
-			meta := a.tabMeta(tab, true)
-			a.saveTabsLocked()
-			a.mu.Unlock()
-			return enrichTabMeta(meta), nil
+			reusable = tab
+			break
 		}
+	}
+	if reusable != nil {
+		a.mu.Unlock()
+		if err := a.alignReusableBlankTabModel(reusable, defaultModel); err != nil {
+			return TabMeta{}, err
+		}
+		a.mu.Lock()
+		if reusable.removed || a.tabs[reusable.ID] != reusable {
+			a.mu.Unlock()
+			return TabMeta{}, fmt.Errorf("blank session changed while applying the default model; retry")
+		}
+		a.activeTabID = reusable.ID
+		meta := a.tabMeta(reusable, true)
+		a.saveTabsLocked()
+		a.mu.Unlock()
+		return enrichTabMeta(meta), nil
 	}
 
 	// New blank sessions start from global session defaults for model and
@@ -2746,6 +2793,77 @@ func (a *App) ensureBlankTab(scope, workspaceRoot, forcedTokenMode string) (TabM
 	a.startTabControllerBuild(created)
 	a.emitProjectTreeChangedForSessionDirs(sessionListCacheDirForPath(prePath))
 	return enrichTabMeta(meta), nil
+}
+
+// alignReusableBlankTabModel makes a reused empty session obey the same
+// provider/model default as a newly-created session. Ready runtimes use the
+// normal failure-atomic model switch. A tab that is still starting has no
+// controller to swap, so invalidate its startup generation, update the empty
+// session's model metadata, and restart the build from the intended provider.
+func (a *App) alignReusableBlankTabModel(tab *WorkspaceTab, model string) error {
+	model = strings.TrimSpace(model)
+	if tab == nil || model == "" {
+		return nil
+	}
+
+	a.mu.RLock()
+	if tab.removed || a.tabs[tab.ID] != tab {
+		a.mu.RUnlock()
+		return fmt.Errorf("blank session changed while applying the default model; retry")
+	}
+	currentModel := strings.TrimSpace(tab.model)
+	ctrl := tab.Ctrl
+	path := strings.TrimSpace(tab.SessionPath)
+	a.mu.RUnlock()
+
+	storedModel, hasStoredModel := agent.LoadSessionModel(path)
+	storedModelChanged := path != "" && (!hasStoredModel || strings.TrimSpace(storedModel) != model)
+
+	if ctrl != nil {
+		if currentModel != model {
+			if err := a.SetModelForTab(tab.ID, model); err != nil {
+				return err
+			}
+		} else if storedModelChanged {
+			return a.persistTabModelIfCurrent(tab, model)
+		}
+		return nil
+	}
+
+	if currentModel == model && !storedModelChanged {
+		return nil
+	}
+	if storedModelChanged {
+		// With no published controller there is nothing to swap atomically. Fix
+		// the empty session metadata first so the replacement startup cannot
+		// prefer the outgoing provider over the corrected tab model.
+		if err := agent.SetBranchModelPreserveUpdated(path, model); err != nil {
+			return fmt.Errorf("persist default model for blank session: %w", err)
+		}
+	}
+
+	// A startup build may already have read the old sidecar model. Fence and
+	// cancel that generation before publishing the corrected tab model, then
+	// start a replacement build. The generation check prevents the cancelled
+	// build from overwriting the replacement if it completes late.
+	a.mu.Lock()
+	if tab.removed || a.tabs[tab.ID] != tab {
+		a.mu.Unlock()
+		return fmt.Errorf("blank session changed while applying the default model; retry")
+	}
+	if tab.Ctrl != nil {
+		a.mu.Unlock()
+		return a.alignReusableBlankTabModel(tab, model)
+	}
+	a.supersedeTabBuildLocked(tab)
+	tab.model = model
+	tab.Label = model
+	tab.Ready = false
+	clearTabStartupError(tab)
+	a.saveTabsLocked()
+	a.mu.Unlock()
+	a.startTabControllerBuild(tab)
+	return nil
 }
 
 // blankTabMatchesTargetLocked returns true if tab is a reusable blank tab
@@ -2983,34 +3101,10 @@ func (a *App) SetActiveTab(tabID string) error {
 	if alreadyActive {
 		return nil
 	}
-	k := a.workbench()
-	k.transitionMu.Lock()
-	defer k.transitionMu.Unlock()
-
-	// Re-check after fencing Remote activation. Framework hydration may repeat a
-	// same-tab SetActiveTab call; that is not a user request to leave Remote.
 	a.mu.RLock()
-	_, ok = a.tabs[tabID]
 	active := a.tabs[a.activeTabID]
-	alreadyActive = a.activeTabID == tabID
 	a.mu.RUnlock()
-	if !ok {
-		return fmt.Errorf("tab %q not found", tabID)
-	}
-	if alreadyActive {
-		return nil
-	}
-	activeTarget, _, _ := k.targets.Active()
-	switched := activeTarget.Kind == target.KindRemote
-	var targetID target.Identity
-	var targetGen, targetSeq uint64
-	if switched {
-		targetID, targetGen, targetSeq = k.targets.SwitchLocal()
-	}
 	if err := a.snapshotTabForAction(active, "switching tabs"); err != nil {
-		if switched {
-			a.emitWorkbenchTarget("disconnected", targetID, targetGen, targetSeq, "")
-		}
 		return err
 	}
 
@@ -3030,11 +3124,6 @@ func (a *App) SetActiveTab(tabID string) error {
 	// I/O outside the lock — disk writes can block for hundreds of ms on
 	// Windows when antivirus or the search indexer briefly locks the file.
 	a.saveTabsWrite(dir, entries, activeID, version)
-	if switched {
-		a.emitWorkbenchTarget("disconnected", targetID, targetGen, targetSeq, "")
-		a.emitReady(a.ctx, tabID)
-		a.emitWorkbenchLocalRuntimeRebuilt(tabID)
-	}
 	a.kickDeferredRebuildRetry()
 	return nil
 }
@@ -3703,20 +3792,32 @@ func (a *App) buildTabControllerWithContextAdmissionHeld(tab *WorkspaceTab, load
 		}
 	}
 	if model == "" {
-		resolved, _, ok := cfg.ResolveDesktopNewSessionModel()
-		if !ok {
-			a.recordTabStartupFailure(tab, buildGeneration, wailsCtx, errNoDesktopChatModel)
-			return
+		if def := strings.TrimSpace(cfg.DefaultModel); providerext.PluginRefOwner(def) != "" {
+			// A plugin-namespaced default_model belongs to an extension
+			// sidecar: the config catalog can never resolve it, but boot's
+			// merged resolver can. Pass it through untouched.
+			model = def
+		} else {
+			resolved, _, ok := cfg.ResolveDesktopNewSessionModel()
+			if !ok {
+				a.recordTabStartupFailure(tab, buildGeneration, wailsCtx, errNoDesktopChatModel)
+				return
+			}
+			model = resolved
 		}
-		model = resolved
 	}
 	config.NormalizeLegacyMimoCustomProvidersForRefs(cfg, model)
 	requestedModel := model
-	if resolved, fallback, ok := cfg.ResolveModelWithFallback(model); ok {
-		if fallback && strings.TrimSpace(tabModel) != "" {
-			a.noticeForTab(tab.ID, fmt.Sprintf("model %q is no longer available; switched to %s", requestedModel, resolved))
+	if providerext.PluginRefOwner(model) == "" {
+		// Plugin refs skip the config fallback: rerouting an unavailable
+		// extension model onto a config provider would silently change the
+		// session; boot's unknown-model error is the honest failure.
+		if resolved, fallback, ok := cfg.ResolveModelWithFallback(model); ok {
+			if fallback && strings.TrimSpace(tabModel) != "" {
+				a.noticeForTab(tab.ID, fmt.Sprintf("model %q is no longer available; switched to %s", requestedModel, resolved))
+			}
+			model = resolved
 		}
-		model = resolved
 	}
 
 	// Acquire a shared plugin host for this workspace root so MCP processes
