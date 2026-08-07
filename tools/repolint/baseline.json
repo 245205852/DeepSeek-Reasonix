@@ -2,12 +2,12 @@
   "limits": {
     "banner": 0,
     "commented-code": 0,
-    "essay": 4115,
-    "file-size": 73588,
+    "essay": 4100,
+    "file-size": 108842,
     "layering": 1,
     "marker": 0,
     "narrative": 66,
-    "test-file-size": 64726
+    "test-file-size": 68123
   },
   "files": {
     "cmd/e2ebench/main.go": {
@@ -75,6 +75,87 @@
     },
     "desktop/external_opener_windows_test.go": {
       "essay": 2
+    },
+    "desktop/frontend/src/App.tsx": {
+      "file-size": 4756
+    },
+    "desktop/frontend/src/__tests__/app-chrome-tabs.test.ts": {
+      "test-file-size": 19
+    },
+    "desktop/frontend/src/__tests__/capabilities-panel-actions.test.ts": {
+      "test-file-size": 308
+    },
+    "desktop/frontend/src/__tests__/composer-goal-toggle.test.tsx": {
+      "test-file-size": 1701
+    },
+    "desktop/frontend/src/__tests__/composer-session-draft.test.tsx": {
+      "test-file-size": 551
+    },
+    "desktop/frontend/src/__tests__/decision-surface.test.tsx": {
+      "test-file-size": 262
+    },
+    "desktop/frontend/src/__tests__/math-golden.test.ts": {
+      "test-file-size": 106
+    },
+    "desktop/frontend/src/__tests__/rich-composer-selection.test.tsx": {
+      "test-file-size": 352
+    },
+    "desktop/frontend/src/__tests__/workspace-changes-errors.test.tsx": {
+      "test-file-size": 106
+    },
+    "desktop/frontend/src/components/ApprovalModal.tsx": {
+      "file-size": 255
+    },
+    "desktop/frontend/src/components/CapabilitiesPanel.tsx": {
+      "file-size": 2633
+    },
+    "desktop/frontend/src/components/Composer.tsx": {
+      "file-size": 3904
+    },
+    "desktop/frontend/src/components/MemoryPanel.tsx": {
+      "file-size": 1088
+    },
+    "desktop/frontend/src/components/Message.tsx": {
+      "file-size": 181
+    },
+    "desktop/frontend/src/components/ProjectTree.tsx": {
+      "file-size": 1587
+    },
+    "desktop/frontend/src/components/RichComposerInput.tsx": {
+      "file-size": 141
+    },
+    "desktop/frontend/src/components/SettingsPanel.tsx": {
+      "file-size": 6658
+    },
+    "desktop/frontend/src/components/ThemeGallery.tsx": {
+      "file-size": 489
+    },
+    "desktop/frontend/src/components/ThemeLibrary.tsx": {
+      "file-size": 158
+    },
+    "desktop/frontend/src/components/Transcript.tsx": {
+      "file-size": 992
+    },
+    "desktop/frontend/src/components/UsageStatsPanel.tsx": {
+      "file-size": 276
+    },
+    "desktop/frontend/src/components/WorkspacePanel.tsx": {
+      "file-size": 1356
+    },
+    "desktop/frontend/src/custom/features/heartbeat/HeartbeatPanel.tsx": {
+      "file-size": 413
+    },
+    "desktop/frontend/src/lib/bridge.ts": {
+      "file-size": 4437
+    },
+    "desktop/frontend/src/lib/crash.ts": {
+      "file-size": 179
+    },
+    "desktop/frontend/src/lib/types.ts": {
+      "file-size": 1355
+    },
+    "desktop/frontend/src/lib/useController.ts": {
+      "file-size": 3406
     },
     "desktop/heartbeat.go": {
       "essay": 18,
@@ -326,12 +407,11 @@
       "essay": 27
     },
     "internal/agent/compact_test.go": {
-      "essay": 4,
-      "test-file-size": 8
+      "essay": 4
     },
     "internal/agent/coordinator.go": {
-      "essay": 20,
-      "file-size": 292
+      "essay": 17,
+      "file-size": 264
     },
     "internal/agent/coordinator_test.go": {
       "essay": 3,
@@ -484,8 +564,8 @@
       "test-file-size": 250
     },
     "internal/agent/task.go": {
-      "essay": 65,
-      "file-size": 1407
+      "essay": 56,
+      "file-size": 1377
     },
     "internal/agent/task_test.go": {
       "essay": 4,
@@ -1138,11 +1218,11 @@
       "essay": 14
     },
     "internal/guardian/guardian.go": {
-      "essay": 28
+      "essay": 25
     },
     "internal/hook/hook.go": {
       "essay": 44,
-      "file-size": 829
+      "file-size": 792
     },
     "internal/hook/hook_test.go": {
       "essay": 8,
@@ -1651,6 +1731,12 @@
     },
     "sdk/go/wire.go": {
       "essay": 1
+    },
+    "workers/crash-report/src/index.ts": {
+      "file-size": 902
+    },
+    "workers/crash-report/src/stats.ts": {
+      "file-size": 183
     }
   }
 }
