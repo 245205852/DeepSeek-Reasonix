@@ -416,15 +416,32 @@ func render(results []result) string {
 	return fmt.Sprintf("## 🤖 Reasonix e2e benchmark (%s · arm `%s`)\n\n", profile, arm) + renderBody(results)
 }
 
+// perSolvedLine is the efficiency-per-solve report line: total spend across
+// every accounted run (failures included) divided by accounted solves, so a
+// same-accuracy agent needing twice the rounds cannot hide behind averages.
+func perSolvedLine(steps, tools, modelRounds, accountedSolved int, wallAccountedMs int64) string {
+	if accountedSolved == 0 {
+		return ""
+	}
+	line := fmt.Sprintf("**Per solved task:** **model requests** %.1f · tool calls %.1f · wall %s",
+		float64(steps)/float64(accountedSolved), float64(tools)/float64(accountedSolved),
+		dur(wallAccountedMs/int64(accountedSolved)))
+	if modelRounds > 0 {
+		line += fmt.Sprintf(" · model rounds %.1f", float64(modelRounds)/float64(accountedSolved))
+	}
+	return line + "\n\n"
+}
+
 // renderBody is the report without a heading, so a caller that supplies its own
 // (SWE-bench mode) does not stack two titles.
 func renderBody(results []result) string {
 	var b strings.Builder
 	passed, ran := 0, 0
 	accounted, accountedSolved, unaccounted, unaccountedSolved, partial := 0, 0, 0, 0, 0
-	var pTok, cTok, hit, miss, compacts, tools, toolFails int
+	var pTok, cTok, hit, miss, compacts, tools, toolFails, steps, modelRounds int
 	var cost float64
 	var walls []int64
+	var wallAccountedMs int64
 	currency := ""
 	classes := map[string]int{}
 	prefixChangeReasons := map[string]int{}
@@ -459,6 +476,11 @@ func renderBody(results []result) string {
 		compacts += r.Compactions
 		tools += r.ToolCalls
 		toolFails += r.ToolFailures
+		steps += r.Steps
+		wallAccountedMs += r.WallMs
+		if r.Trajectory != nil {
+			modelRounds += r.Trajectory.ModelRounds
+		}
 		cost += r.Cost
 		if r.Currency != "" {
 			currency = r.Currency
@@ -477,6 +499,7 @@ func renderBody(results []result) string {
 	fmt.Fprintf(&b, "**Cache hit:** %s · **Tokens:** %s (prompt %s / completion %s) · **Tool calls:** %s (%s failed) · **Compactions:** %d · **Cost:** %s%.4f\n\n",
 		pct(hit, hit+miss), comma(pTok+cTok), comma(pTok), comma(cTok),
 		comma(tools), comma(toolFails), compacts, currencySym(currency), cost)
+	b.WriteString(perSolvedLine(steps, tools, modelRounds, accountedSolved, wallAccountedMs))
 	b.WriteString(renderTimeAttribution(results))
 	if unaccounted > 0 {
 		fmt.Fprintf(&b, "> **Accounting incomplete for %d of %d instances** (%d of them solved): the agent was killed before it wrote any metrics, so their cost and tokens are unknown. Totals above cover the %d accounted instances only, and per-solved figures divide by the %d accounted solves — the true totals are higher.\n\n",

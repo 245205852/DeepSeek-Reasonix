@@ -77,6 +77,34 @@ func TestSummarizeTrajectoryDecomposesModelRounds(t *testing.T) {
 	}
 }
 
+func TestRenderBodyReportsPerSolvedEfficiency(t *testing.T) {
+	solved := result{task: task{ID: "a"}, Passed: true, WallMs: 60_000}
+	solved.Steps = 6
+	solved.ToolCalls = 9
+	solved.Trajectory = &trajectorySummary{ModelRounds: 5}
+	failed := result{task: task{ID: "b"}, WallMs: 40_000}
+	failed.Steps = 8
+	failed.ToolCalls = 3
+	failed.Trajectory = &trajectorySummary{ModelRounds: 7}
+
+	got := renderBody([]result{solved, failed})
+	for _, want := range []string{
+		"**Per solved task:**",
+		"**model requests** 14.0", // failures' spend charged to the solve
+		"tool calls 12.0",
+		"wall 1m40s",
+		"model rounds 12.0",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("per-solved line missing %q:\n%s", want, got)
+		}
+	}
+
+	if got := renderBody([]result{failed}); strings.Contains(got, "Per solved task") {
+		t.Fatalf("no solves must mean no per-solved line:\n%s", got)
+	}
+}
+
 func TestRenderBodyIncludesTimeAttributionOnlyForRecordedRuns(t *testing.T) {
 	plain := result{task: task{ID: "a"}, Passed: true}
 	if got := renderBody([]result{plain}); strings.Contains(got, "Time attribution") {

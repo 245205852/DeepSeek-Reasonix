@@ -143,9 +143,6 @@ func p95(values []int64) int64 {
 	}
 	sorted := append([]int64(nil), values...)
 	slices.Sort(sorted)
-	index := (len(sorted)*95 + 99) / 100
-	if index > len(sorted) {
-		index = len(sorted)
-	}
+	index := min((len(sorted)*95+99)/100, len(sorted))
 	return sorted[index-1]
 }
