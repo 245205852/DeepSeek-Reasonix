@@ -155,13 +155,17 @@ func extractTestbedPatch(container string) (string, error) {
 	if len(files) == 0 {
 		return "", nil
 	}
-	args := append([]string{"exec", container, "git", "-C", "/testbed",
-		"diff", "--cached", "--no-renames", "--"}, files...)
+	args := testbedPatchDiffArgs(container, files)
 	patch, err := dockerOutput(args...)
 	if err != nil {
 		return "", fmt.Errorf("diff: %s", firstLine(patch))
 	}
 	return patch, nil
+}
+
+func testbedPatchDiffArgs(container string, files []string) []string {
+	return append([]string{"exec", container, "git", "--literal-pathspecs", "-C", "/testbed",
+		"diff", "--cached", "--no-renames", "--"}, files...)
 }
 
 // patchFileList returns every text path from numstat, excluding binary entries.

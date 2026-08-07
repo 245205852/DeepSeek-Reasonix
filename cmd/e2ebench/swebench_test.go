@@ -226,3 +226,14 @@ func TestPatchFileListToleratesEmptyAndMalformedInput(t *testing.T) {
 		t.Fatalf("malformed numstat = %v, want nil", got)
 	}
 }
+
+func TestTestbedPatchDiffArgsTreatPathsLiterally(t *testing.T) {
+	got := testbedPatchDiffArgs("agent-123", []string{"source.py", ":(exclude)*"})
+	want := []string{
+		"exec", "agent-123", "git", "--literal-pathspecs", "-C", "/testbed",
+		"diff", "--cached", "--no-renames", "--", "source.py", ":(exclude)*",
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("patch diff args = %v, want %v", got, want)
+	}
+}
