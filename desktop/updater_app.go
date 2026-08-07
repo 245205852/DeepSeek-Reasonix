@@ -278,14 +278,60 @@ func (a *App) reconcilePendingUpdateForRequest(requestID string, meta *cachedUpd
 		} else if archived {
 			slog.Info("desktop: archived superseded update before install")
 		}
+		// Visible UI at the pending target version is health evidence. Commit a
+		// probationary transaction before reconcile so a missed post-DOM health
+		// task does not block the next update forever.
+		refreshPendingUpdateHealthIdentity(a)
+		if err := a.commitPendingUpdateHealth(); err != nil {
+			slog.Debug("desktop: commit healthy update before install", "err", err)
+		} else if committed, err := repair.CommitProbationaryPendingUpdate(version); err != nil {
+			slog.Debug("desktop: probationary update commit before install", "err", err)
+		} else if committed {
+			slog.Info("desktop: committed probationary update before install")
+		}
 	}
 	if _, err := reconcilePendingUpdateForInstall(version); err != nil {
 		if errors.Is(err, repair.ErrPendingUpdateAwaitingHealth) {
-			err = fmt.Errorf("update recovery: the previous update is still completing its startup health check; wait briefly and try again")
+			// One more heal attempt after refresh: version-prefix mismatches used
+			// to leave AwaitingHealth permanently even though the product works.
+			refreshPendingUpdateHealthIdentity(a)
+			if commitErr := a.commitPendingUpdateHealth(); commitErr == nil {
+				if _, retryErr := reconcilePendingUpdateForInstall(version); retryErr == nil {
+					return nil
+				} else {
+					err = retryErr
+				}
+			}
+		}
+		if errors.Is(err, repair.ErrPendingUpdateAwaitingHealth) {
+			err = fmt.Errorf("update recovery: the previous update is still completing its startup health check; wait briefly and try again, or discard the previous update")
 		} else {
 			err = fmt.Errorf("update recovery: could not safely finish the previous update: %w", err)
 		}
 		return a.failUpdate(requestID, meta.Channel, meta.Version, err)
+	}
+	return nil
+}
+
+// AbandonPendingUpdate is a user-facing recovery action for stuck in-app
+// updates. It commits a still-running probationary target when possible,
+// otherwise cancels or rolls back the unfinished transaction, and as a last
+// resort force-retires a probationary marker that already owns the install.
+func (a *App) AbandonPendingUpdate() error {
+	if !pendingUpdateExistsForInstall() {
+		return nil
+	}
+	refreshPendingUpdateHealthIdentity(a)
+	if err := a.commitPendingUpdateHealth(); err != nil {
+		slog.Debug("desktop: commit healthy update during abandon", "err", err)
+	}
+	if archived, err := archiveSupersededPendingUpdateForInstall(); err != nil {
+		slog.Debug("desktop: archive superseded update during abandon", "err", err)
+	} else if archived {
+		return nil
+	}
+	if _, err := repair.AbandonPendingUpdate(version); err != nil {
+		return fmt.Errorf("could not discard the previous update: %w", err)
 	}
 	return nil
 }

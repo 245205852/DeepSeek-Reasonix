@@ -107,20 +107,82 @@ var ErrPendingUpdateAwaitingHealth = errors.New("previous update is awaiting sta
 
 var errPendingUpdateForeignInstall = errors.New("pending update belongs to a different installation")
 
+// pendingUpdateHealthStaleAfter is how long a probationary update may wait for
+// startup health confirmation before reconciliation treats a still-running
+// target as healthy. Without this bound, a missed MarkUpdateHealthy call
+// permanently blocks every later in-app update while the product is already
+// usable. Tests may override the duration.
+var pendingUpdateHealthStaleAfter = 24 * time.Hour
+
 // PendingUpdateReconcileResult describes the safe transition performed before
 // startup or a new install. Cleared means a pre-publish transaction was
 // cancelled while every original target still matched its prepared state.
 // RolledBack means replacement had started and the verified previous release
-// unit was restored.
+// unit was restored. Healthy means a probationary target was committed after
+// install evidence (and, for the automatic path, age) proved the running
+// release is already usable.
 type PendingUpdateReconcileResult struct {
 	Pending        bool   `json:"pending"`
 	Cleared        bool   `json:"cleared,omitempty"`
 	RolledBack     bool   `json:"rolledBack,omitempty"`
 	MixedInstall   bool   `json:"mixedInstall,omitempty"`
 	AwaitingHealth bool   `json:"awaitingHealth,omitempty"`
+	Healthy        bool   `json:"healthy,omitempty"`
 	FromVersion    string `json:"fromVersion,omitempty"`
 	ToVersion      string `json:"toVersion,omitempty"`
 	TargetPath     string `json:"targetPath,omitempty"`
+}
+
+// UpdateVersionsEqual reports whether two release version strings name the same
+// release. Desktop build injection and pending-update records historically
+// disagreed on a leading "v", which silently skipped health commits and left
+// AwaitingHealth transactions stranded forever.
+func UpdateVersionsEqual(a, b string) bool {
+	a = strings.TrimSpace(a)
+	b = strings.TrimSpace(b)
+	if a == "" || b == "" {
+		return false
+	}
+	if a == b {
+		return true
+	}
+	return normalizeUpdateVersion(a) == normalizeUpdateVersion(b)
+}
+
+func normalizeUpdateVersion(v string) string {
+	v = strings.TrimSpace(v)
+	if v == "" {
+		return ""
+	}
+	if !strings.HasPrefix(v, "v") && !strings.HasPrefix(v, "V") {
+		return "v" + v
+	}
+	return "v" + strings.TrimPrefix(strings.TrimPrefix(v, "v"), "V")
+}
+
+// pendingUpdateHealthIsStaleOverride lets tests force the stale decision without
+// rewriting CreatedAt (which is part of the transaction identity and would
+// break install-evidence binding).
+var pendingUpdateHealthIsStaleOverride func(*UpdateTransaction) bool
+
+func pendingUpdateHealthIsStale(tx *UpdateTransaction) bool {
+	if tx == nil {
+		return false
+	}
+	if pendingUpdateHealthIsStaleOverride != nil {
+		return pendingUpdateHealthIsStaleOverride(tx)
+	}
+	if pendingUpdateHealthStaleAfter <= 0 {
+		return false
+	}
+	created, err := time.Parse(time.RFC3339Nano, strings.TrimSpace(tx.CreatedAt))
+	if err != nil {
+		created, err = time.Parse(time.RFC3339, strings.TrimSpace(tx.CreatedAt))
+	}
+	if err != nil {
+		return false
+	}
+	return time.Since(created) >= pendingUpdateHealthStaleAfter
 }
 
 // UpdateTransactionID returns a stable, opaque identity for the complete
@@ -2004,8 +2066,23 @@ func ReconcilePendingUpdate(runningVersion string) (PendingUpdateReconcileResult
 		ToVersion:   tx.ToVersion,
 		TargetPath:  tx.TargetPath,
 	}
-	if strings.TrimSpace(runningVersion) == strings.TrimSpace(tx.ToVersion) &&
+	if UpdateVersionsEqual(runningVersion, tx.ToVersion) &&
 		pendingUpdateInstalledForHealth(tx) {
+		// A still-running probationary target whose health commit never fired
+		// (version-prefix mismatch, aborted post-DOM task, etc.) used to block
+		// every later update forever. After the stale window, commit the
+		// installed release so the product can self-heal while remaining in use.
+		if pendingUpdateHealthIsStale(tx) {
+			if healErr := MarkUpdateHealthy(runningVersion); healErr == nil && !PendingUpdateExists() {
+				result.Pending = false
+				result.Healthy = true
+				result.Cleared = true
+				return result, nil
+			} else if healErr != nil {
+				slog.Warn("repair: stale probationary update could not be committed automatically",
+					"toVersion", tx.ToVersion, "err", healErr)
+			}
+		}
 		result.AwaitingHealth = true
 		return result, ErrPendingUpdateAwaitingHealth
 	}
@@ -2050,6 +2127,137 @@ func ReconcilePendingUpdate(runningVersion string) (PendingUpdateReconcileResult
 	result.RolledBack = true
 	cleanupPendingUpdateStaging(tx)
 	return result, nil
+}
+
+// CommitProbationaryPendingUpdate commits a still-running probationary update
+// when the installed release unit matches the pending target. It is the shared
+// heal path used by startup health, user-initiated updates, and explicit
+// abandon. Returns true when the pending transaction no longer exists.
+func CommitProbationaryPendingUpdate(runningVersion string) (bool, error) {
+	if strings.TrimSpace(runningVersion) == "" {
+		return false, nil
+	}
+	tx, err := ReadPendingUpdate()
+	if err != nil {
+		if os.IsNotExist(err) {
+			return true, nil
+		}
+		return false, err
+	}
+	if !UpdateVersionsEqual(runningVersion, tx.ToVersion) || !pendingUpdateInstalledForHealth(tx) {
+		return false, nil
+	}
+	if err := MarkUpdateHealthy(runningVersion); err != nil {
+		return false, err
+	}
+	return !PendingUpdateExists(), nil
+}
+
+// AbandonPendingUpdate is the user-initiated recovery path for a stuck
+// transaction. Prefer committing a still-running probationary target; otherwise
+// cancel or roll back through the normal reconcile path. Returns a result
+// describing the transition performed.
+func AbandonPendingUpdate(runningVersion string) (PendingUpdateReconcileResult, error) {
+	committed, err := CommitProbationaryPendingUpdate(runningVersion)
+	if err != nil {
+		return PendingUpdateReconcileResult{Pending: true}, fmt.Errorf("abandon pending update: %w", err)
+	}
+	if committed {
+		return PendingUpdateReconcileResult{Cleared: true, Healthy: true}, nil
+	}
+	result, reconcileErr := ReconcilePendingUpdate(runningVersion)
+	if reconcileErr == nil {
+		return result, nil
+	}
+	// AwaitingHealth after a failed commit is still stuck. When install
+	// evidence holds and the user explicitly abandons, retire the marker and
+	// best-effort remove backups so later updates can proceed while the
+	// running product stays in place.
+	if errors.Is(reconcileErr, ErrPendingUpdateAwaitingHealth) {
+		if retired, retireErr := forceRetireProbationaryPendingUpdate(runningVersion); retireErr != nil {
+			return result, fmt.Errorf("abandon pending update: %w", retireErr)
+		} else if retired {
+			result.Pending = false
+			result.AwaitingHealth = false
+			result.Healthy = true
+			result.Cleared = true
+			return result, nil
+		}
+	}
+	return result, reconcileErr
+}
+
+// forceRetireProbationaryPendingUpdate removes a probationary transaction that
+// already owns the running install when MarkUpdateHealthy cannot finish (for
+// example a drifted backup digest). It never rolls the live release unit back.
+func forceRetireProbationaryPendingUpdate(runningVersion string) (bool, error) {
+	tx, err := ReadPendingUpdate()
+	if err != nil {
+		if os.IsNotExist(err) {
+			return true, nil
+		}
+		return false, err
+	}
+	if !UpdateVersionsEqual(runningVersion, tx.ToVersion) || !pendingUpdateInstalledForHealth(tx) {
+		return false, nil
+	}
+	unlock, err := acquirePendingUpdateLock()
+	if err != nil {
+		return false, fmt.Errorf("force retire probationary update: lock pending transaction: %w", err)
+	}
+	defer unlock()
+	current, err := ReadPendingUpdate()
+	if err != nil {
+		if os.IsNotExist(err) {
+			return true, nil
+		}
+		return false, err
+	}
+	if UpdateTransactionID(current) != UpdateTransactionID(tx) {
+		return false, fmt.Errorf("force retire probationary update: pending transaction changed")
+	}
+	if !UpdateVersionsEqual(runningVersion, current.ToVersion) || !pendingUpdateInstalledForHealth(current) {
+		return false, nil
+	}
+	unlockTargets, lockErr := lockRepairMutations(pendingUpdateTargetPaths(current)...)
+	if lockErr != nil {
+		return false, fmt.Errorf("force retire probationary update: lock targets: %w", lockErr)
+	}
+	defer unlockTargets()
+	recheck, err := ReadPendingUpdate()
+	if err != nil {
+		if os.IsNotExist(err) {
+			return true, nil
+		}
+		return false, err
+	}
+	if !reflect.DeepEqual(current, recheck) {
+		return false, fmt.Errorf("force retire probationary update: pending transaction changed while waiting")
+	}
+	// Require only that the replacement is still installed; skip backup digest
+	// matching so a broken rollback artifact cannot permanently lock updates.
+	verifyInstalled := func() error {
+		switch recheck.TargetKind {
+		case "app-bundle":
+			if err := VerifyAppBundleUpdateHandoffTarget(recheck); err != nil {
+				return err
+			}
+		case "file":
+			if _, _, err := installedFileUpdateTargets(recheck, true); err != nil {
+				return err
+			}
+		default:
+			return fmt.Errorf("unsupported target kind %q", recheck.TargetKind)
+		}
+		return nil
+	}
+	if err := removePendingUpdateExactVerified(recheck, verifyInstalled); err != nil {
+		return false, err
+	}
+	removeUpdateBackups(recheck)
+	slog.Warn("repair: force-retired a probationary pending update after explicit abandon",
+		"toVersion", recheck.ToVersion, "target", recheck.TargetPath)
+	return true, nil
 }
 
 // pendingUpdateInstalledForHealth requires transaction-bound evidence for the
@@ -2129,7 +2337,7 @@ func markUpdateHealthyInvocation(runningVersion, expectedCreatedAt, expectedTran
 		}
 		return err
 	}
-	if strings.TrimSpace(runningVersion) != strings.TrimSpace(tx.ToVersion) {
+	if !UpdateVersionsEqual(runningVersion, tx.ToVersion) {
 		return nil
 	}
 	if expected := strings.TrimSpace(expectedCreatedAt); expected != "" && expected != strings.TrimSpace(tx.CreatedAt) {
@@ -2159,7 +2367,7 @@ func markUpdateHealthyMatching(runningVersion, expectedCreatedAt, expectedTransa
 		}
 		return err
 	}
-	if strings.TrimSpace(runningVersion) != strings.TrimSpace(tx.ToVersion) {
+	if !UpdateVersionsEqual(runningVersion, tx.ToVersion) {
 		return nil
 	}
 	if expected := strings.TrimSpace(expectedCreatedAt); expected != "" && expected != strings.TrimSpace(tx.CreatedAt) {
