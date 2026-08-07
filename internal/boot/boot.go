@@ -543,9 +543,7 @@ func build(ctx context.Context, opts Options) (*BuildResult, error) {
 	if st, ok := outputstyle.Resolve(cfg.Agent.OutputStyle, outputstyle.Dirs()); ok {
 		sysPrompt = outputstyle.Apply(sysPrompt, st)
 	}
-	sysPrompt += "\n\n" + config.UserDecisionPolicy
-	sysPrompt += "\n\n" + config.WorkPracticePolicy
-	sysPrompt += "\n\n" + config.LanguagePolicy
+	sysPrompt = appendCorePolicies(sysPrompt)
 	if workspaceLine := currentWorkspacePromptLine(root); workspaceLine != "" {
 		sysPrompt += "\n\n" + workspaceLine
 	}
@@ -577,13 +575,7 @@ func build(ctx context.Context, opts Options) (*BuildResult, error) {
 			sysPrompt += "\n\n" + envSection
 		}
 	}
-	// Sits outside EnvironmentEnabled on purpose: that switch only turns off
-	// tool probing, while a blocked network is a fact the agent still has to
-	// know to stop retrying. Static text from config, so it stays in the
-	// cache-stable prefix.
-	if cfg.Environment.Offline {
-		sysPrompt += "\n\n" + config.OfflineEnvironmentNote
-	}
+	sysPrompt = appendOfflineEnvironmentNote(sysPrompt, cfg.Environment.Offline)
 
 	// Persistent memory (REASONIX.md / AGENTS.md hierarchy + auto-memory index)
 	// folds into the system prompt exactly here, once: it becomes part of the

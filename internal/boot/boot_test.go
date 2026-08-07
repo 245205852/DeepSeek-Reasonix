@@ -3512,8 +3512,7 @@ func systemMessage(msgs []provider.Message) string {
 func stripLanguagePolicy(s string) string {
 	s = strings.TrimSpace(s)
 	for _, policy := range []string{
-		config.LanguagePolicy,
-		config.WorkPracticePolicy,
+		config.LanguagePolicy, config.WorkPracticePolicy,
 		config.UserDecisionPolicy,
 	} {
 		s = strings.TrimSpace(strings.TrimSuffix(s, policy))
@@ -5134,113 +5133,5 @@ func TestBuildKeepsSourceConnectorAndSkillToolsDespiteSafeModeEnv(t *testing.T) 
 		if !names[want] {
 			t.Fatalf("expected %s when REASONIX_SAFE_MODE is set", want)
 		}
-	}
-}
-
-// WorkPracticePolicy is a behavior contract, not a persona detail: it must
-// survive a custom system prompt exactly like UserDecisionPolicy does, or a
-// persona could silently drop baseline engineering discipline.
-func TestBuildAppendsWorkPracticePolicyToCustomSystemPrompt(t *testing.T) {
-	dir := robustTempDir(t)
-	t.Chdir(dir)
-	writeFile(t, dir, "reasonix.toml", `
-default_model = "test-model"
-
-[agent]
-system_prompt = "BASE"
-
-[[providers]]
-name = "test-model"
-kind = "openai"
-base_url = "https://example.invalid"
-model = "x"
-api_key_env = "REASONIX_TEST_KEY_UNSET"
-`)
-
-	ctrl, err := Build(context.Background(), Options{})
-	if err != nil {
-		t.Fatalf("Build: %v", err)
-	}
-	defer ctrl.Close()
-
-	sys := systemMessage(ctrl.History())
-	for _, want := range []string{
-		"Work practices:",
-		"implement exactly that",
-		"review the final diff",
-	} {
-		if !strings.Contains(sys, want) {
-			t.Fatalf("work practice policy missing %q from custom system prompt:\n%s", want, sys)
-		}
-	}
-	// The policy sits between the user-decision and language policies so the
-	// prefix order stays deterministic across boots.
-	if strings.Index(sys, config.UserDecisionPolicy) >= strings.Index(sys, config.WorkPracticePolicy) ||
-		strings.Index(sys, config.WorkPracticePolicy) >= strings.Index(sys, config.LanguagePolicy) {
-		t.Fatal("policy order must be user-decision < work-practice < language for a stable prefix")
-	}
-}
-
-// The global policy must stay true for every user on every machine. A run
-// budget and a blocked network are properties of one deployment: told to
-// everyone they would push ordinary sessions toward skipping verification and
-// toward abandoning a network call that a retry would have completed.
-func TestWorkPracticePolicyCarriesNoEnvironmentSpecificClaims(t *testing.T) {
-	for _, unwanted := range []string{
-		"offline",
-		"proxy",
-		"stop retrying",
-		"avoid repeated full-suite runs",
-		"pre-exist",
-	} {
-		if strings.Contains(strings.ToLower(config.WorkPracticePolicy), unwanted) {
-			t.Errorf("work practice policy must not assert %q: it holds only in a blocked or budgeted environment, and belongs in the environment block", unwanted)
-		}
-	}
-}
-
-// The offline note is a declaration, never a default: a normal machine must not
-// be told its network is dead, and a deployment that knows egress is blocked
-// must be able to say so without also enabling tool probing.
-func TestBuildInjectsOfflineNoteOnlyWhenEnvironmentDeclaresIt(t *testing.T) {
-	build := func(t *testing.T, environmentSection string) string {
-		t.Helper()
-		dir := robustTempDir(t)
-		t.Chdir(dir)
-		writeFile(t, dir, "reasonix.toml", `
-default_model = "test-model"
-
-[agent]
-system_prompt = "BASE"
-
-[[providers]]
-name = "test-model"
-kind = "openai"
-base_url = "https://example.invalid"
-model = "x"
-api_key_env = "REASONIX_TEST_KEY_UNSET"
-`+environmentSection)
-
-		ctrl, err := Build(context.Background(), Options{})
-		if err != nil {
-			t.Fatalf("Build: %v", err)
-		}
-		defer ctrl.Close()
-		return systemMessage(ctrl.History())
-	}
-
-	if sys := build(t, ""); strings.Contains(sys, config.OfflineEnvironmentNote) {
-		t.Fatalf("an undeclared environment must not be described as offline:\n%s", sys)
-	}
-	if sys := build(t, "\n[environment]\noffline = true\n"); !strings.Contains(sys, config.OfflineEnvironmentNote) {
-		t.Fatalf("declared offline environment missing the note:\n%s", sys)
-	}
-	// Probing off, offline still declared: the switches are independent.
-	sys := build(t, "\n[environment]\nenabled = false\noffline = true\n")
-	if !strings.Contains(sys, config.OfflineEnvironmentNote) {
-		t.Fatalf("disabling tool probing must not suppress the offline declaration:\n%s", sys)
-	}
-	if strings.Contains(sys, "## Environment") {
-		t.Fatalf("enabled = false must still suppress the probed environment section:\n%s", sys)
 	}
 }

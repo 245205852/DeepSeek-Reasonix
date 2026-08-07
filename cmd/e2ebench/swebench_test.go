@@ -166,12 +166,8 @@ func TestPermissionPostureIsTheOnlyDifferenceBetweenArms(t *testing.T) {
 	}
 }
 
-// The score is only readable if the container runs what a user would get. This
-// pins that: bash stays off because the official images ship no bubblewrap and
-// the agent would otherwise refuse to run it at all, and nothing else may be
-// tuned in the agent's favor. Decoding with the real config types rather than
-// matching strings also catches a mistyped key, which would otherwise fail
-// silently inside a container and cost a whole run.
+// The benchmark config must remain a default install, except for the required
+// bash sandbox override; decode it with the real config type to pin the keys.
 func TestSwebenchAgentConfigTunesNothingInTheAgentsFavor(t *testing.T) {
 	var cfg config.Config
 	meta, err := toml.Decode(swebenchAgentConfig, &cfg)
@@ -181,10 +177,7 @@ func TestSwebenchAgentConfigTunesNothingInTheAgentsFavor(t *testing.T) {
 	if cfg.Sandbox.Bash != "off" {
 		t.Errorf("sandbox.bash = %q, want \"off\": bubblewrap is absent from the official images", cfg.Sandbox.Bash)
 	}
-	// Egress really is blocked (runSwebench requires -network with no off-box
-	// route) and [environment] offline would tell the agent so — which is
-	// exactly why it must not be set. Retrying a dead network is a weakness of
-	// the shipped software, and the benchmark exists to measure it.
+	// Do not configure the benchmark's blocked network as an agent fact.
 	if cfg.Environment.Offline {
 		t.Error("the benchmark must not declare the environment offline: that configures the agent better than a default install")
 	}
@@ -198,13 +191,8 @@ func TestSwebenchAgentConfigTunesNothingInTheAgentsFavor(t *testing.T) {
 	}
 }
 
-// A real rxclean1 run lost sphinx-11510 because the agent's repro build left a
-// binary .doctree/.pickle in /testbed; `git diff --cached` degraded it to a
-// "Binary files differ" placeholder that git apply rejects, zeroing the whole
-// patch. Binary entries are the only thing the extractor may drop — that is a
-// defect in the submission format. The agent's own leftovers must survive into
-// the diff: they apply cleanly and do not change the grade, and tidying them
-// away would report a cleanliness the run did not have.
+// Binary entries are omitted because their placeholder is not applicable;
+// every text entry, including generated files, must remain in the patch.
 func TestPatchFileListDropsBinariesAndNothingElse(t *testing.T) {
 	numstat := strings.Join([]string{
 		"12\t4\tsphinx/directives/other.py",                // the actual fix

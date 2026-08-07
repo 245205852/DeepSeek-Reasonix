@@ -30,28 +30,13 @@ type swebenchOpts struct {
 	timeoutSec int
 	workers    int
 	keepImages bool
-	// network is the docker network agent containers join. It must have no
-	// route off-box; proxyURL is the only way out, and it allowlists the model
-	// API. Without this the agent finds the upstream fix on GitHub — SWE-bench
-	// instance ids are PR numbers and the issue text searches straight to the
-	// patch — and every solve is unearned.
+	// network is the isolated Docker network; proxyURL is the allowlisted API path.
 	network  string
 	proxyURL string
 }
 
-// swebenchAgentConfig carries no benchmark-specific tuning, by policy: the run
-// measures what a default install does, so anything that configures the agent
-// more favorably than a user's own machine would make the score unreadable.
-// The single setting here is a necessity rather than a favor — the agent runs
-// unconfined inside the instance container because the container is already the
-// isolation boundary, and Reasonix refuses to run bash at all when it cannot
-// find bubblewrap, which the official images do not ship.
-//
-// In particular the containers are not told their network is blocked, even
-// though runSwebench requires -network with no off-box route and `[environment]
-// offline` exists for exactly that situation. An agent that burns its budget
-// retrying dead requests is a real weakness of the shipped software, and the
-// benchmark is here to surface it, not to configure around it.
+// The only benchmark config is sandbox.bash=off, required because official
+// images do not ship bubblewrap. Network facts are intentionally not injected.
 const swebenchAgentConfig = "[sandbox]\nbash = \"off\"\n"
 
 func loadSwebenchSubset(path string) ([]swebenchInstance, error) {
@@ -155,19 +140,8 @@ func runSwebenchInstance(o swebenchOpts, inst swebenchInstance) (result, string)
 	return r, patch
 }
 
-// extractTestbedPatch reads the working-tree diff from the instance container.
-// `git add -A` surfaces untracked files first, and the submitted diff then
-// drops exactly one thing: binary files, which degrade to a "Binary files
-// differ" placeholder that git apply rejects wholesale, so one stray .pickle
-// from a Sphinx repro build would zero an otherwise correct patch. That is a
-// defect in the submission format, not in the agent, and repairing it is the
-// only reason this function exists.
-//
-// Everything a text patch can carry is submitted as-is, including the agent's
-// own leftovers. Tidying those away would make the run report a cleanliness
-// the agent did not have, and the point of the benchmark is to read what the
-// software actually does. Files are passed as plain argv, never through a
-// shell, so hostile paths cannot execute.
+// extractTestbedPatch drops only binary entries, which git apply cannot carry;
+// all text files are retained and paths are passed as argv.
 func extractTestbedPatch(container string) (string, error) {
 	if out, err := dockerOutput("exec", container, "git", "-C", "/testbed", "add", "-A"); err != nil {
 		return "", fmt.Errorf("add: %s", firstLine(out))
@@ -190,15 +164,7 @@ func extractTestbedPatch(container string) (string, error) {
 	return patch, nil
 }
 
-// patchFileList parses `git diff --cached --no-renames --numstat -z` output and
-// returns the paths the submitted patch may carry: everything except binary
-// entries ("-" for both added and deleted counts), which no text patch can
-// represent.
-//
-// Nothing is dropped by name. Build output and scratch scripts the agent left
-// behind apply cleanly and do not change the grade, so removing them would only
-// hide the mess from the submitted diff — the harness must not clean up after
-// the software it is measuring.
+// patchFileList returns every text path from numstat, excluding binary entries.
 func patchFileList(numstat string) []string {
 	var files []string
 	for _, entry := range strings.Split(numstat, "\x00") {
