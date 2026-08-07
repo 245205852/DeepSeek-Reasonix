@@ -171,7 +171,7 @@ func testbedPatchDiffArgs(container string, files []string) []string {
 // patchFileList returns every text path from numstat, excluding binary entries.
 func patchFileList(numstat string) []string {
 	var files []string
-	for _, entry := range strings.Split(numstat, "\x00") {
+	for entry := range strings.SplitSeq(numstat, "\x00") {
 		if entry == "" {
 			continue
 		}
