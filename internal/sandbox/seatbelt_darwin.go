@@ -38,14 +38,9 @@ func CommandArgs(spec Spec, args []string) ([]string, bool) {
 var sandboxExecUsability sync.Map // resolved executable path -> bool
 
 // usableSandboxExec distinguishes an installed sandbox-exec from a usable
-// Seatbelt backend. Since macOS 10.14 sandbox_apply is restricted, so on newer
-// systems sandbox-exec may be on PATH yet every invocation fails with
-// "Operation not permitted" (exit 71). Treating that as available makes
-// enforce mode fail per-command with a misleading launch error and overstates
-// sandbox isolation in status surfaces (doctor, TUI, ACP). The minimal profile
-// still calls sandbox_apply — the operation that fails on restricted hosts — so
-// probing it distinguishes presence from usability, mirroring usableBwrap on
-// Linux.
+// Seatbelt backend. On restricted macOS hosts, sandbox-exec can be on PATH
+// while sandbox_apply fails with exit 71. Probe that operation directly with a
+// minimal profile, mirroring usableBwrap on Linux.
 func usableSandboxExec() bool {
 	path, err := exec.LookPath("sandbox-exec")
 	if err != nil {
@@ -63,10 +58,8 @@ func usableSandboxExec() bool {
 }
 
 // Available reports whether the OS sandbox backend can actually confine
-// processes on this platform. On macOS this probes sandbox-exec rather than
-// relying on PATH presence alone: an installed binary may still be unusable
-// where sandbox_apply is restricted. On Linux it verifies bubblewrap can enter
-// its namespace (see seatbelt_other.go).
+// processes. macOS probes sandbox-exec; Linux verifies bubblewrap can enter its
+// namespace (see seatbelt_other.go).
 func Available() bool {
 	return usableSandboxExec()
 }

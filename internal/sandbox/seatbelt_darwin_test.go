@@ -312,8 +312,6 @@ func TestGoBuildUnderSandbox(t *testing.T) {
 	}
 }
 
-// --- Available usability probe ---
-
 // fakeSandboxExec writes an executable named sandbox-exec into a fresh temp
 // dir, prepends that dir to PATH, and returns the binary's path. The probe
 // resolves the binary via PATH, so the fake shadows any real sandbox-exec on
