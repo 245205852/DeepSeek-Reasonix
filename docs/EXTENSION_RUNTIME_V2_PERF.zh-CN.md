@@ -1,0 +1,36 @@
+# 扩展运行时 v2 — 性能基线
+
+软 CI 阈值见 `internal/extension/bench_threshold_test.go`。
+Benchmark 见 `internal/extension/benchmark_test.go`。
+
+## 目标（开发机 / CI 软失败）
+
+| 操作 | N | 软上限 |
+| --- | --- | --- |
+| `BuildDependencyGraph` | 32 组件 | < 50ms |
+| `DiffRuntimePlan` no-op | 同图 | < 20ms |
+| `EffectScope.Dispose` | 64 effects | < 50ms |
+
+## 增量 vs 全量 rebuild
+
+- **no-op / interceptor / UI / provider / MCP-only**（`RebuildFrom` + 真子图 patch）：**不得**调用 `BuildRuntime`。指标：`NoOpRebuilds` / `SubgraphRebuilds`。
+- **全量**（`SubgraphSidecar` / `SubgraphFull`）：`FullRebuilds` + 完整 `BuildRuntime`。
+
+测量命令：
+
+```bash
+go test ./internal/extension/ -run 'TestGraphAndPlanLatencyBaseline|TestEffectScopeDisposeBaseline' -count=1
+go test ./internal/extension/ -bench 'BenchmarkDependencyGraphAndPlan|BenchmarkExtensionKernelStartup' -benchmem -count=3
+go test ./internal/boot/ -run 'TestIntegrationNoOpDoesNotBuildNewController|TestRebuildFromNoOp' -count=1
+```
+
+## 缓存命中
+
+no-op 与 UI/interceptor-only 保持 `CacheHash` 稳定。Provider/MCP-only 在
+tools/providers 变化时可能改 hash；`ReuseAssembly` 仍可跳过 skill/command/hook rediscovery。
+
+## Sidecar 启动 / drain
+
+`StartPackagesWithPlan` 收养 Unchanged 客户端；仅启动 Added/Reloaded。
+Publish 后 `DrainPlan`；默认 drain TTL 30s，超时先 fire cancel 再写
+`drain-timeout-<gen>` receipt。

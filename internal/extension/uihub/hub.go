@@ -24,6 +24,7 @@ import (
 	"sync"
 
 	"reasonix/internal/event"
+	"reasonix/internal/extension"
 	"reasonix/internal/extension/protocol"
 	"reasonix/internal/extension/sidecar"
 	"reasonix/internal/secrets"
@@ -134,10 +135,9 @@ func (h *Hub) Generation() uint64 {
 	return h.generation
 }
 
-// BindGeneration re-binds the hub to a new session and generation after a
-// reload. Later calls carrying the previous generation fail the staleness
-// gate; bindings already marked crashed stay crashed until a fresh
-// HandlerFor marks the replacement client live.
+// BindGeneration re-binds session/generation after reload. Narrow rebuild
+// stage reuses the hub without this call, so next-gen host/ui/* during
+// handshake/ready is dropped until commit; do not rely on UI before publish.
 func (h *Hub) BindGeneration(sessionID string, gen uint64) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -217,6 +217,12 @@ func (h *Hub) gate(pluginID, sessionID string, generation uint64) (stale bool, e
 	}
 	if generation != h.generation {
 		slog.Debug("uihub: dropping stale-generation UI call", "plugin", pluginID, "got", generation, "current", h.generation)
+		return true, nil
+	}
+	// Also drop generations that have been superseded on the process gate
+	// (older than the published generation after a successful rebuild).
+	if extension.DefaultPublishGate().IsStale(generation) {
+		slog.Debug("uihub: dropping publish-gate-stale UI call", "plugin", pluginID, "got", generation)
 		return true, nil
 	}
 	if sessionID != h.sessionID {

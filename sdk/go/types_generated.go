@@ -10,14 +10,14 @@ import "encoding/json"
 
 // ProtocolID is the immutable identity string peers exchange during the
 // initialize handshake.
-const ProtocolID = "reasonix.extension.v1"
+const ProtocolID = "reasonix.extension.v2"
 
 // ProtocolMajor is the frozen major version of this protocol build.
-const ProtocolMajor = 1
+const ProtocolMajor = 2
 
 // ProtocolVersion is the wire string form of ProtocolMajor carried in the
 // initialize handshake.
-const ProtocolVersion = "1"
+const ProtocolVersion = "2"
 
 // Frozen wire limits. These constants are part of the protocol contract.
 const (
@@ -67,8 +67,12 @@ type errorSpec struct {
 // frozenErrorSpecs mirrors the host's frozen error table. Adding an entry
 // is a conscious protocol change.
 var frozenErrorSpecs = map[ErrorReason]errorSpec{
+	ErrActivationFailed:      {DomainErrorCode, "Component activation failed; the new generation was not published.", false},
 	ErrCapabilityNotDeclared: {DomainErrorCode, "The extension used a capability its manifest did not declare.", false},
+	ErrCleanupFailed:         {DomainErrorCode, "Component cleanup failed while disposing scoped effects.", true},
 	ErrContentRefExpired:     {DomainErrorCode, "The referenced content has expired.", true},
+	ErrDependencyCycle:       {DomainErrorCode, "The dependency graph contains a required cycle.", false},
+	ErrDependencyUnsatisfied: {DomainErrorCode, "A required dependency is missing or not version-compatible.", false},
 	ErrFrameTooLarge:         {DomainErrorCode, "The frame exceeds the frozen protocol size limit.", false},
 	ErrInterceptTimeout:      {DomainErrorCode, "The extension did not answer an intercept within its timeout.", true},
 	ErrInternal:              {CodeInternal, "An internal extension protocol error occurred.", true},
@@ -76,10 +80,12 @@ var frozenErrorSpecs = map[ErrorReason]errorSpec{
 	ErrProtocolError:         {CodeInvalidRequest, "The extension protocol frame or envelope is invalid.", false},
 	ErrProviderFailed:        {DomainErrorCode, "The extension provider stream failed.", true},
 	ErrProviderInterrupted:   {DomainErrorCode, "The extension provider stream was interrupted.", true},
+	ErrSchemaMismatch:        {DomainErrorCode, "A capability schema hash does not match the expected pin.", false},
 	ErrShutdownTimeout:       {DomainErrorCode, "The extension did not shut down within the requested timeout.", true},
+	ErrStaleGeneration:       {DomainErrorCode, "The message belongs to a superseded runtime generation.", false},
 	ErrStreamCancelled:       {DomainErrorCode, "The provider stream was cancelled.", false},
 	ErrStreamGap:             {DomainErrorCode, "A provider stream chunk is missing from the ordered sequence.", true},
-	ErrUnknownMethod:         {CodeMethodNotFound, "The method is not registered in Extension Protocol v1.", false},
+	ErrUnknownMethod:         {CodeMethodNotFound, "The method is not registered in Extension Protocol v2.", false},
 	ErrUnsupportedVersion:    {DomainErrorCode, "The peer's extension protocol version is not supported.", false},
 }
 
@@ -123,20 +129,43 @@ type ExternalizedField struct {
 
 // InitializeParams is a generated Extension Protocol v1 wire DTO.
 type InitializeParams struct {
-	ProtocolVersion string              `json:"protocolVersion" validate:"nonempty"`
-	ProtocolID      string              `json:"protocolId" validate:"nonempty"`
-	Manifest        ManifestExpectation `json:"manifest"`
-	Session         SessionContext      `json:"session"`
-	Capabilities    HostCapabilities    `json:"capabilities"`
+	ProtocolVersion         string              `json:"protocolVersion" validate:"nonempty"`
+	ProtocolID              string              `json:"protocolId" validate:"nonempty"`
+	Manifest                ManifestExpectation `json:"manifest"`
+	Session                 SessionContext      `json:"session"`
+	Capabilities            HostCapabilities    `json:"capabilities"`
+	DependencySchemaVersion int                 `json:"dependencySchemaVersion,omitempty" validate:"min=0"`
 }
 
 // ManifestExpectation is a generated Extension Protocol v1 wire DTO.
 type ManifestExpectation struct {
-	Intercepts   []string `json:"intercepts,omitempty"`
-	Replaces     []string `json:"replaces,omitempty"`
-	Providers    []string `json:"providers,omitempty"`
-	UIActions    []string `json:"uiActions,omitempty"`
-	Capabilities []string `json:"capabilities,omitempty"`
+	Intercepts   []string          `json:"intercepts,omitempty"`
+	Replaces     []string          `json:"replaces,omitempty"`
+	Providers    []string          `json:"providers,omitempty"`
+	UIActions    []string          `json:"uiActions,omitempty"`
+	Capabilities []string          `json:"capabilities,omitempty"`
+	Requires     []RequirementWire `json:"requires,omitempty"`
+	Provides     []CapabilityWire  `json:"provides,omitempty"`
+}
+
+// RequirementWire is a generated Extension Protocol v1 wire DTO.
+type RequirementWire struct {
+	Namespace    string `json:"namespace" validate:"nonempty"`
+	Kind         string `json:"kind" validate:"nonempty"`
+	ID           string `json:"id" validate:"nonempty"`
+	Version      string `json:"version,omitempty"`
+	SchemaHash   string `json:"schemaHash,omitempty"`
+	VersionRange string `json:"versionRange,omitempty"`
+	Optional     bool   `json:"optional,omitempty"`
+}
+
+// CapabilityWire is a generated Extension Protocol v1 wire DTO.
+type CapabilityWire struct {
+	Namespace  string `json:"namespace" validate:"nonempty"`
+	Kind       string `json:"kind" validate:"nonempty"`
+	ID         string `json:"id" validate:"nonempty"`
+	Version    string `json:"version,omitempty"`
+	SchemaHash string `json:"schemaHash,omitempty"`
 }
 
 // SessionContext is a generated Extension Protocol v1 wire DTO.
@@ -144,13 +173,15 @@ type SessionContext struct {
 	SessionID     string `json:"sessionId" validate:"nonempty"`
 	WorkspaceRoot string `json:"workspaceRoot" validate:"nonempty"`
 	Generation    uint64 `json:"generation"`
+	Epoch         string `json:"epoch,omitempty"`
 }
 
 // HostCapabilities is a generated Extension Protocol v1 wire DTO.
 type HostCapabilities struct {
-	ContentRefs     bool       `json:"contentRefs"`
-	UIHost          UIHostKind `json:"uiHost"`
-	ProtocolVersion string     `json:"protocolVersion" validate:"nonempty"`
+	ContentRefs             bool       `json:"contentRefs"`
+	UIHost                  UIHostKind `json:"uiHost"`
+	ProtocolVersion         string     `json:"protocolVersion" validate:"nonempty"`
+	DependencySchemaVersion int        `json:"dependencySchemaVersion,omitempty" validate:"min=0"`
 }
 
 // UIHostKind is a generated Extension Protocol v1 string enum.
@@ -168,10 +199,13 @@ type InitializeResult struct {
 	ProtocolVersion    string               `json:"protocolVersion" validate:"nonempty"`
 	Name               string               `json:"name" validate:"nonempty"`
 	Version            string               `json:"version" validate:"nonempty"`
+	ComponentID        string               `json:"componentId,omitempty"`
 	Subscriptions      []string             `json:"subscriptions,omitempty"`
 	Replaces           []string             `json:"replaces,omitempty"`
 	Providers          []ProviderDescriptor `json:"providers,omitempty"`
 	UIActions          []UIActionDecl       `json:"uiActions,omitempty"`
+	Requires           []RequirementWire    `json:"requires,omitempty"`
+	Provides           []CapabilityWire     `json:"provides,omitempty"`
 	StateSchemaVersion int                  `json:"stateSchemaVersion" validate:"min=0"`
 }
 
@@ -252,20 +286,24 @@ type StreamCancelResult struct {
 
 // StreamChunkParams is a generated Extension Protocol v1 wire DTO.
 type StreamChunkParams struct {
-	StreamID string        `json:"streamId" validate:"nonempty"`
-	Seq      int64         `json:"seq" validate:"min=1"`
-	Chunk    ProviderChunk `json:"chunk"`
+	StreamID   string        `json:"streamId" validate:"nonempty"`
+	Seq        int64         `json:"seq" validate:"min=1"`
+	Chunk      ProviderChunk `json:"chunk"`
+	Generation uint64        `json:"generation,omitempty"`
+	Epoch      string        `json:"epoch,omitempty"`
 }
 
 // ProviderChunk is a generated Extension Protocol v1 wire DTO.
 type ProviderChunk struct {
-	Type      ProviderChunkType `json:"type"`
-	Text      string            `json:"text,omitempty"`
-	Signature string            `json:"signature,omitempty"`
-	ToolCall  *ProviderToolCall `json:"toolCall,omitempty"`
-	ArgChars  int               `json:"argChars,omitempty" validate:"min=0"`
-	Usage     *ProviderUsage    `json:"usage,omitempty"`
-	Error     *ProviderError    `json:"error,omitempty"`
+	Type       ProviderChunkType `json:"type"`
+	Text       string            `json:"text,omitempty"`
+	Signature  string            `json:"signature,omitempty"`
+	ToolCall   *ProviderToolCall `json:"toolCall,omitempty"`
+	ArgChars   int               `json:"argChars,omitempty" validate:"min=0"`
+	Usage      *ProviderUsage    `json:"usage,omitempty"`
+	Error      *ProviderError    `json:"error,omitempty"`
+	Generation uint64            `json:"generation,omitempty"`
+	Epoch      string            `json:"epoch,omitempty"`
 }
 
 // ProviderChunkType is a generated Extension Protocol v1 string enum.
@@ -331,6 +369,8 @@ type StreamOpenParams struct {
 	Effort      string          `json:"effort,omitempty"`
 	Request     ProviderRequest `json:"request"`
 	SeqBase     int             `json:"seqBase" validate:"min=0"`
+	Generation  uint64          `json:"generation,omitempty"`
+	Epoch       string          `json:"epoch,omitempty"`
 }
 
 // ProviderRequest is a generated Extension Protocol v1 wire DTO.
@@ -579,8 +619,12 @@ type ProtocolErrorData struct {
 type ErrorReason string
 
 const (
+	ErrActivationFailed      ErrorReason = "activation_failed"
 	ErrCapabilityNotDeclared ErrorReason = "capability_not_declared"
+	ErrCleanupFailed         ErrorReason = "cleanup_failed"
 	ErrContentRefExpired     ErrorReason = "content_ref_expired"
+	ErrDependencyCycle       ErrorReason = "dependency_cycle"
+	ErrDependencyUnsatisfied ErrorReason = "dependency_unsatisfied"
 	ErrFrameTooLarge         ErrorReason = "frame_too_large"
 	ErrInterceptTimeout      ErrorReason = "intercept_timeout"
 	ErrInternal              ErrorReason = "internal"
@@ -588,7 +632,9 @@ const (
 	ErrProtocolError         ErrorReason = "protocol_error"
 	ErrProviderFailed        ErrorReason = "provider_failed"
 	ErrProviderInterrupted   ErrorReason = "provider_interrupted"
+	ErrSchemaMismatch        ErrorReason = "schema_mismatch"
 	ErrShutdownTimeout       ErrorReason = "shutdown_timeout"
+	ErrStaleGeneration       ErrorReason = "stale_generation"
 	ErrStreamCancelled       ErrorReason = "stream_cancelled"
 	ErrStreamGap             ErrorReason = "stream_gap"
 	ErrUnknownMethod         ErrorReason = "unknown_method"

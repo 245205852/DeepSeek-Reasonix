@@ -11,6 +11,10 @@ import (
 	"reasonix/internal/tool"
 )
 
+// FileWriteReceipt is an optional host hook for effect receipts (wired by boot).
+// hadPrior means an existing file was overwritten; prior is previous content.
+var FileWriteReceipt func(path string, hadPrior bool, prior []byte)
+
 func init() { tool.RegisterBuiltin(writeFile{}) }
 
 // writeFile writes a file. roots, when non-empty, confines the target to the
@@ -81,8 +85,16 @@ func (w writeFile) Execute(ctx context.Context, args json.RawMessage) (string, e
 			return "", fmt.Errorf("mkdir %s: %w", dir, err)
 		}
 	}
+	hadPrior := rerr == nil
+	var prior []byte
+	if hadPrior {
+		prior = []byte(existing)
+	}
 	if err := writeFileEncoded(p.Path, p.Content, enc); err != nil {
 		return "", fmt.Errorf("write %s: %w", p.Path, err)
+	}
+	if FileWriteReceipt != nil {
+		FileWriteReceipt(p.Path, hadPrior, prior)
 	}
 	return fmt.Sprintf("wrote %d bytes to %s", len(p.Content), p.Path), nil
 }

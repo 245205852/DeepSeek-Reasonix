@@ -15,7 +15,7 @@ func installV1RuntimePlugin(t *testing.T, home string) string {
 	t.Helper()
 	root := filepath.Join(home, "plugins", "example")
 	writePluginTestFile(t, filepath.Join(root, pluginpkg.NativeManifest), `{
-  "apiVersion": "reasonix.io/plugin/v1",
+  "apiVersion": "reasonix.io/plugin/v2",
   "name": "example",
   "version": "1.0.0",
   "contributes": {
@@ -109,7 +109,7 @@ func TestPluginDoctorReportsMissingV1PathsAsWarnings(t *testing.T) {
 	t.Setenv("REASONIX_HOME", home)
 	root := filepath.Join(home, "plugins", "gap")
 	writePluginTestFile(t, filepath.Join(root, pluginpkg.NativeManifest), `{
-  "apiVersion": "reasonix.io/plugin/v1",
+  "apiVersion": "reasonix.io/plugin/v2",
   "name": "gap",
   "contributes": {
     "themes": ["themes/*.reasonix-theme"]

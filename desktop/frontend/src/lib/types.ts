@@ -1466,6 +1466,20 @@ export interface RemoteForwardsEvent {
   forwards: RemoteForwardView[];
 }
 
+/** Extension runtime doctor report from App.RuntimeDoctor. */
+export interface RuntimeDoctorReport {
+  text: string;
+  publishedGeneration: number;
+  allowResume: boolean;
+  cleanRollback: boolean;
+  hasIrreversible: boolean;
+  noOpRebuilds: number;
+  fullRebuilds: number;
+  subgraphRebuilds: number;
+  staleDrops: number;
+  admissionRejected: number;
+}
+
 /** Capability diagnostics report from App.CapabilityDiagnostics (capdiag.Report). */
 export interface CapabilityDiagnosticsReport {
   schema_version: number;

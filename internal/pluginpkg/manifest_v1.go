@@ -17,13 +17,7 @@ import (
 	"strings"
 )
 
-// ManifestAPIVersionV1 is the only plugin manifest apiVersion this Reasonix
-// parses. A native manifest (reasonix-plugin.json) WITHOUT an apiVersion
-// takes the legacy path and parses exactly as it always has; any manifest
-// that declares one is routed here.
-const ManifestAPIVersionV1 = "reasonix.io/plugin/v1"
-
-// PluginRootEnvVar is the variable a v1 runtime command may use to address
+// PluginRootEnvVar is the variable a runtime command may use to address
 // files inside its own installed package. It expands at launch time, never
 // through a shell.
 const PluginRootEnvVar = "${REASONIX_PLUGIN_ROOT}"
@@ -72,20 +66,17 @@ func sniffManifestAPIVersion(b []byte) (string, error) {
 	return strings.TrimSpace(v), nil
 }
 
-// checkAPIVersion gates the v1 parser. The exact v1 string parses; a known
-// major with a minor (v1.1) also parses as v1 — strict field rejection fails
-// loudly on anything the minor revision actually added. An unknown major is
-// unsupported; anything not matching the version shape is malformed.
+// checkAPIVersion gates the migrate-only v1 parser.
 func checkAPIVersion(v string) error {
 	if v == ManifestAPIVersionV1 {
 		return nil
 	}
 	m := apiVersionPattern.FindStringSubmatch(v)
 	if m == nil {
-		return fmt.Errorf("%s: invalid apiVersion %q: want reasonix.io/plugin/v<major>[.<minor>] (this Reasonix supports %s)", NativeManifest, v, ManifestAPIVersionV1)
+		return fmt.Errorf("%s: invalid apiVersion %q: want reasonix.io/plugin/v<major>[.<minor>]", NativeManifest, v)
 	}
 	if major, _ := strconv.Atoi(m[1]); major != 1 {
-		return fmt.Errorf("%s: unsupported apiVersion %q (this Reasonix supports %s)", NativeManifest, v, ManifestAPIVersionV1)
+		return fmt.Errorf("%s: unsupported apiVersion %q for v1 migrate parser", NativeManifest, v)
 	}
 	return nil
 }

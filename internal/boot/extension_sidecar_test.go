@@ -103,10 +103,10 @@ func runBootFakeSidecar(stdin io.Reader, stdout io.Writer) {
 	}
 	initResult := strings.TrimSpace(os.Getenv(bootFakeEnvInitResult))
 	if initResult == "" && providerMode {
-		initResult = fmt.Sprintf(`{"protocolVersion":"1","name":"boot-fake","version":"1.0.0","stateSchemaVersion":0,"providers":[%s]}`, providerDescriptor())
+		initResult = fmt.Sprintf(`{"protocolVersion":"2","name":"boot-fake","version":"1.0.0","stateSchemaVersion":0,"providers":[%s]}`, providerDescriptor())
 	}
 	if initResult == "" {
-		initResult = `{"protocolVersion":"1","name":"boot-fake","version":"1.0.0","stateSchemaVersion":0}`
+		initResult = `{"protocolVersion":"2","name":"boot-fake","version":"1.0.0","stateSchemaVersion":0}`
 	}
 	ignoreShutdown := os.Getenv(bootFakeEnvMode) == "ignore_shutdown"
 
@@ -290,7 +290,7 @@ func installBootFakePlugin(t *testing.T, home, name string, runtime map[string]a
 		t.Fatalf("MkdirAll: %v", err)
 	}
 	manifest, err := json.Marshal(map[string]any{
-		"apiVersion": pluginpkg.ManifestAPIVersionV1,
+		"apiVersion": pluginpkg.ManifestAPIVersionV2,
 		"name":       name,
 		"version":    "1.0.0",
 		"runtime":    runtime,
@@ -332,8 +332,8 @@ func TestBootStartsExtensionSidecar(t *testing.T) {
 	if res.Extensions == nil {
 		t.Fatal("BuildRuntime returned no extension manager")
 	}
-	if res.Runtime == nil || res.Runtime.Len() != 1 {
-		t.Fatalf("runtime set holds %d closers, want 1 (the sidecar manager)", res.Runtime.Len())
+	if res.Runtime == nil || res.Runtime.Len() < 1 {
+		t.Fatalf("runtime set holds %d effects, want at least the sidecar manager", res.Runtime.Len())
 	}
 	client := res.Extensions.Client("bootplugin")
 	if client == nil {
@@ -409,7 +409,8 @@ func TestBootFailsWhenRequiredRuntimeFails(t *testing.T) {
 	writeRuntimeFixture(t, dir)
 	installBootFakePlugin(t, config.ReasonixHomeDir(), "required-broken", map[string]any{
 		"required": true,
-		"env":      map[string]string{bootFakeEnvInitResult: `{"protocolVersion":"2","name":"x","version":"1","stateSchemaVersion":0}`},
+		// Extension Protocol v1 is rejected by the v2 host.
+		"env": map[string]string{bootFakeEnvInitResult: `{"protocolVersion":"1","name":"x","version":"1","stateSchemaVersion":0}`},
 	})
 	_, err := BuildRuntime(context.Background(), Options{})
 	if err == nil {
@@ -423,7 +424,7 @@ func TestBootFailsWhenRequiredRuntimeFails(t *testing.T) {
 
 func TestBootOptionalRuntimeFailureDegradesToWarning(t *testing.T) {
 	res := bootWithFakePlugin(t, "optional-broken", map[string]any{
-		"env": map[string]string{bootFakeEnvInitResult: `{"protocolVersion":"2","name":"x","version":"1","stateSchemaVersion":0}`},
+		"env": map[string]string{bootFakeEnvInitResult: `{"protocolVersion":"1","name":"x","version":"1","stateSchemaVersion":0}`},
 	})
 	// Optional failure: boot succeeds, no manager, empty runtime set.
 	if res.Extensions != nil {

@@ -267,23 +267,37 @@ func (r *Resolver) Resolve(selection provider.Selection) (provider.Provider, err
 	if pluginID == "" {
 		return r.base.Resolve(selection)
 	}
-	for _, client := range r.clients() {
-		if client.PluginID() != pluginID {
-			continue
-		}
-		descriptor, ok := declaredDescriptor(client, ref)
-		if !ok {
-			return nil, fmt.Errorf("unknown provider ref %q: extension plugin %q does not declare it", ref, pluginID)
-		}
-		return &Provider{
-			resolver:   r,
-			client:     client,
-			ref:        descriptor.Ref,
-			effort:     selection.Effort,
-			descriptor: descriptor,
-		}, nil
+	client := r.liveClient(pluginID)
+	if client == nil {
+		return nil, fmt.Errorf("unknown provider ref %q: extension plugin %q is not running", ref, pluginID)
 	}
-	return nil, fmt.Errorf("unknown provider ref %q: extension plugin %q is not running", ref, pluginID)
+	descriptor, ok := declaredDescriptor(client, ref)
+	if !ok {
+		return nil, fmt.Errorf("unknown provider ref %q: extension plugin %q does not declare it", ref, pluginID)
+	}
+	return &Provider{
+		resolver:   r,
+		client:     client,
+		owner:      pluginID,
+		ref:        descriptor.Ref,
+		effort:     selection.Effort,
+		descriptor: descriptor,
+	}, nil
+}
+
+// liveClient returns the current backend for pluginID, or nil when the plugin
+// is not registered. Crashed clients are still returned so Stream can surface
+// StreamInterruptedError; only a missing plugin yields "not running".
+func (r *Resolver) liveClient(pluginID string) ProviderClient {
+	if r == nil || pluginID == "" {
+		return nil
+	}
+	for _, client := range r.clients() {
+		if client.PluginID() == pluginID {
+			return client
+		}
+	}
+	return nil
 }
 
 // PluginRefOwner extracts the plugin ID from a plugin-namespaced ref

@@ -29,10 +29,7 @@ const (
 	// queuedNotifications bounds the ordered notification queue (provider
 	// stream chunks). A full queue fails the connection rather than dropping.
 	queuedNotifications = 256
-	// defaultWriteStallBound caps any outbound write that makes no progress
-	// (sidecar alive but not reading stdin). A healthy sidecar drains frames
-	// continuously, so 10s of no progress means the reader is wedged; the
-	// connection then fails and the process is killed.
+	// defaultWriteStallBound caps stalled outbound writes (sidecar not reading).
 	defaultWriteStallBound = 10 * time.Second
 	// maxInterceptTimeout is the 60s ceiling every sync-intercept budget is
 	// clamped to, including manifest overrides.
@@ -149,6 +146,7 @@ type Client struct {
 	pluginID         string
 	version          string
 	rt               *pluginpkg.RuntimeSpec
+	provides         []pluginpkg.CapabilityRef // manifest v2 capability ceiling
 	session          protocol.SessionContext
 	uiHost           protocol.UIHostKind
 	handshakeTimeout time.Duration
@@ -231,6 +229,7 @@ func newClient(p *process, opts ClientOptions) *Client {
 		pluginID:         p.pluginID,
 		version:          version,
 		rt:               opts.Package.Manifest.Runtime,
+		provides:         append([]pluginpkg.CapabilityRef(nil), opts.Package.Manifest.Provides...),
 		session:          opts.Session,
 		uiHost:           uiHost,
 		handshakeTimeout: handshakeTimeout,
@@ -426,6 +425,12 @@ func (c *Client) validateHandshakeResult(result protocol.InitializeResult) error
 	}
 	if len(result.UIActions) > 0 && !containsString(rt.Capabilities, "ui") {
 		return capabilityErr("extension %s declared UI actions without the ui capability", c.pluginID)
+	}
+	// Manifest provides is the capability ceiling: handshake must not claim
+	// capabilities the package never declared. Declared-but-missing provides
+	// stay Unavailable (no forge) — callers read Status via the lifecycle registry.
+	if err := validateProvidesCeiling(c.provides, result.Provides); err != nil {
+		return &protocol.ProtocolError{Reason: protocol.ErrCapabilityNotDeclared, Message: err.Error()}
 	}
 	return nil
 }
@@ -691,19 +696,21 @@ func (c *Client) Shutdown(_ context.Context, timeout time.Duration) error {
 		if timeout <= 0 {
 			timeout = defaultShutdownRequestTimeout
 		}
-		if wasReady && !c.crashed.Load() {
+		if wasReady && !c.crashed.Load() && c.conn != nil {
 			tctx, cancel := context.WithTimeout(context.Background(), timeout)
-			// Best effort: a wedged sidecar answers late or never, and the
-			// bounded process close below handles both.
 			_, _ = c.conn.Request(tctx, string(protocol.MethodExtensionShutdown), protocol.ShutdownParams{
 				TimeoutMillis: int(timeout.Milliseconds()),
 			})
 			cancel()
 		}
-		c.proc.close()
-		select {
-		case <-c.serveExited:
-		case <-time.After(closeWaitBudget):
+		if c.proc != nil {
+			c.proc.close()
+		}
+		if c.serveExited != nil {
+			select {
+			case <-c.serveExited:
+			case <-time.After(closeWaitBudget):
+			}
 		}
 	})
 	return nil

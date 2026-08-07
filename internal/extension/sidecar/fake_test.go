@@ -79,7 +79,7 @@ func fakeInitResult() json.RawMessage {
 	if raw := strings.TrimSpace(os.Getenv(fakeEnvInitResult)); raw != "" {
 		return json.RawMessage(raw)
 	}
-	return json.RawMessage(`{"protocolVersion":"1","name":"fake-sidecar","version":"1.0.0","stateSchemaVersion":0}`)
+	return json.RawMessage(`{"protocolVersion":"2","name":"fake-sidecar","version":"1.0.0","stateSchemaVersion":0}`)
 }
 
 func runFakeSidecar(stdin io.Reader, stdout io.Writer) {

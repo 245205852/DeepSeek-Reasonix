@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	"reasonix/internal/extension"
 	"reasonix/internal/extension/protocol"
 	"reasonix/internal/extension/providerconv"
 	"reasonix/internal/provider"
@@ -52,8 +53,17 @@ const pendingWindowLimit = 256
 
 // RouteStreamChunk implements sidecar.StreamRouter. Unknown stream IDs are
 // dropped with a debug log — a sidecar can legitimately race a late chunk
-// against the host's cancel or its own crash teardown.
+// against the host's cancel or its own crash teardown. Stale-generation
+// chunks (after publish of a newer runtime) are also dropped.
 func (r *Resolver) RouteStreamChunk(p protocol.StreamChunkParams) {
+	gen := p.Generation
+	if gen == 0 {
+		gen = p.Chunk.Generation
+	}
+	if extension.DefaultPublishGate().DropStale(gen, "provider_chunk") {
+		slog.Debug("providerext: dropping stale-generation chunk", "stream", p.StreamID, "seq", p.Seq, "generation", gen)
+		return
+	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	stream := r.streams[p.StreamID]

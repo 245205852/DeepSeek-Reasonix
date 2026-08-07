@@ -35,7 +35,6 @@ const (
 	maxPinnedFirstUserTokens   = 1500  // ceiling on pinning the first user turn verbatim; larger first turns (pasted content) stay foldable
 	pinnedFirstUserWindowFrac  = 0.15  // and never pin a first turn worth more than this fraction of the window
 )
-
 // summaryTag wraps the compaction summary so the model can distinguish it from
 // live user input and later strip or skip it when reasoning about the current turn.
 const (
@@ -728,6 +727,7 @@ func (a *Agent) summarize(ctx context.Context, region []provider.Message, instru
 			a.sink.Emit(event.Event{Kind: event.Usage, ModelRef: a.modelRef, Usage: usage, Pricing: a.pricing, UsageSource: event.UsageSourceCompaction})
 		}
 	}()
+	defer trackPublishedHostStream(cancel)()
 	ch, err := a.prov.Stream(ctx, provider.Request{
 		Messages: []provider.Message{
 			{Role: provider.RoleSystem, Content: sys},
@@ -739,8 +739,7 @@ func (a *Agent) summarize(ctx context.Context, region []provider.Message, instru
 		return "", err
 	}
 
-	// select on ctx.Done so a stalled stream (open but never delivering or closing)
-	// unblocks on timeout instead of pinning the "compacting…" placeholder forever.
+	// Unblock on timeout if the stream stalls while open.
 	var b strings.Builder
 	for {
 		select {

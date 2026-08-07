@@ -191,12 +191,9 @@ type Options struct {
 	SandboxNetworkOverride *bool
 	SandboxBashOverride    string
 	WorkspaceOnly          bool
-	// SessionTemp is the logical-session private temporary directory manager.
-	// Rebuild passes the previous Controller's Manager so hot rebuilds keep
-	// temporary files. Empty creates a fresh Manager inside control.New.
-	// Frontends that build a replacement Controller without Rebuild must pass
-	// the same Manager for the same logical session.
+	// SessionTemp is the session-private temp manager; Rebuild reuses old's.
 	SessionTemp *sessiontemp.Manager
+	RuntimeReload
 }
 
 func recoveryHeadlessMode(opts Options) bool {
@@ -321,7 +318,7 @@ func build(ctx context.Context, opts Options) (*BuildResult, error) {
 		session:   protocol.SessionContext{SessionID: sessionID, WorkspaceRoot: root, Generation: generation},
 		ui:        extUIHub,
 		onWarning: extWarn,
-	})
+	}, opts.Extensions, planForPreflight(opts, generation))
 	if err != nil {
 		return nil, fmt.Errorf("boot: %w", err)
 	}
@@ -367,6 +364,7 @@ func build(ctx context.Context, opts Options) (*BuildResult, error) {
 			if mergeErr != nil {
 				return nil, fmt.Errorf("boot: %w", mergeErr)
 			}
+			installSidecarStreamRouters(extensionMgr, merged)
 			effectiveResolver = merged
 			extensionResolver = merged
 		}
@@ -590,29 +588,33 @@ func build(ctx context.Context, opts Options) (*BuildResult, error) {
 	projectChecks := instruction.ExtractHostChecks(mem.Docs)
 	sysPrompt = memory.Compose(sysPrompt, mem)
 
-	// Skills: discover playbooks (built-in + project/custom/global) and fold their
-	// one-liner index into the same cache-stable prefix — names + descriptions
-	// only; bodies load on demand via run_skill or "/<name>". Bodies never enter
-	// the prefix, so the index costs a fixed, small amount per turn.
-	skillStore := skill.New(skill.Options{
-		ProjectRoot:      root,
-		CustomPaths:      cfg.SkillCustomPaths(),
-		PluginPaths:      cfg.PluginPackageSkillOwners(),
-		PluginAgentPaths: cfg.PluginPackageAgentOwners(),
-		ExcludedPaths:    cfg.SkillExcludedPaths(),
-		DisabledNames:    cfg.DisabledSkillNames(),
-		MaxDepth:         cfg.SkillMaxDepth(),
-		Stderr:           opts.Stderr,
-	})
-	// Install the static profile filter before building the prompt index and
-	// dedicated skill tools. The dependency checker is attached once the live
-	// registry/plugin host has been assembled below.
-	skillStore.ConfigureInvocationPolicy(string(runtimeProfile), nil)
-	skills := skillStore.List()
-	allSkillStore := skill.New(skill.Options{ProjectRoot: root, CustomPaths: cfg.SkillCustomPaths(), PluginPaths: cfg.PluginPackageSkillOwners(), PluginAgentPaths: cfg.PluginPackageAgentOwners(), ExcludedPaths: cfg.SkillExcludedPaths(), MaxDepth: cfg.SkillMaxDepth(), Stderr: io.Discard})
-	allSkills := allSkillStore.List()
-	if !tokenEconomy {
-		sysPrompt = skill.ApplyIndex(sysPrompt, skills)
+	// Skills: rediscovery skipped on no-op/interceptor/UI rebuilds when
+	// ReuseAssembly is retained from the previous BuildResult.
+	var skillStore *skill.Store
+	var skills []skill.Skill
+	var allSkillStore *skill.Store
+	var allSkills []skill.Skill
+	if opts.ReuseAssembly != nil && shouldReuseDiscovery(opts.PreviousPlan) {
+		skills = opts.ReuseAssembly.Skills
+		allSkills = skills
+		skillStore = skill.New(skill.Options{ProjectRoot: root, Stderr: io.Discard})
+		allSkillStore = skillStore
+		if s := strings.TrimSpace(opts.ReuseAssembly.SystemPrompt); s != "" {
+			sysPrompt = s
+		}
+	} else {
+		skillStore = skill.New(skill.Options{
+			ProjectRoot: root, CustomPaths: cfg.SkillCustomPaths(), PluginPaths: cfg.PluginPackageSkillOwners(),
+			PluginAgentPaths: cfg.PluginPackageAgentOwners(), ExcludedPaths: cfg.SkillExcludedPaths(),
+			DisabledNames: cfg.DisabledSkillNames(), MaxDepth: cfg.SkillMaxDepth(), Stderr: opts.Stderr,
+		})
+		skillStore.ConfigureInvocationPolicy(string(runtimeProfile), nil)
+		skills = skillStore.List()
+		allSkillStore = skill.New(skill.Options{ProjectRoot: root, CustomPaths: cfg.SkillCustomPaths(), PluginPaths: cfg.PluginPackageSkillOwners(), PluginAgentPaths: cfg.PluginPackageAgentOwners(), ExcludedPaths: cfg.SkillExcludedPaths(), MaxDepth: cfg.SkillMaxDepth(), Stderr: io.Discard})
+		allSkills = allSkillStore.List()
+		if !tokenEconomy {
+			sysPrompt = skill.ApplyIndex(sysPrompt, skills)
+		}
 	}
 
 	reg := tool.NewRegistry()
@@ -920,11 +922,12 @@ func build(ctx context.Context, opts Options) (*BuildResult, error) {
 		WithSessionAllow(opts.PermissionAllow)
 	headlessGate := control.NewSharedHeadlessGate(policy, opts.HeadlessApprovalMode)
 
-	// Hooks: load the global settings.json plus the project's. Non-blocking hook
-	// output is surfaced to the user as a Notice through the shared sink. The
-	// runner fires PreToolUse/PostToolUse in the agent loop and
-	// PermissionRequest/UserPromptSubmit/Stop at the controller boundary.
-	resolvedHooks := hook.Load(hook.LoadOptions{ProjectRoot: root})
+	var resolvedHooks []hook.ResolvedHook
+	if opts.ReuseAssembly != nil && shouldReuseDiscovery(opts.PreviousPlan) {
+		resolvedHooks = opts.ReuseAssembly.Hooks
+	} else {
+		resolvedHooks = hook.Load(hook.LoadOptions{ProjectRoot: root})
+	}
 	hookRuntime := hook.RuntimeOptions{}
 	if shell.Kind == sandbox.ShellBash {
 		hookRuntime.BashPath = shell.Path
@@ -1391,9 +1394,12 @@ func build(ctx context.Context, opts Options) (*BuildResult, error) {
 		}
 		return &event.Profile{Model: model, Effort: effort}
 	}
-	// Custom slash commands (.reasonix/commands + user dir). Best-effort: a malformed
-	// file is skipped, and a load error never blocks the session.
-	cmds, _ := command.LoadRoots(config.CommandRootsForRoot(root)...)
+	var cmds []command.Command
+	if opts.ReuseAssembly != nil && shouldReuseDiscovery(opts.PreviousPlan) {
+		cmds = opts.ReuseAssembly.Commands
+	} else {
+		cmds, _ = command.LoadRoots(config.CommandRootsForRoot(root)...)
+	}
 	slashCommandAdded := false
 	slashCommandIncludesSkills := false
 	addSlashCommandTool := func(includeSkills bool) string {
@@ -1920,7 +1926,8 @@ func build(ctx context.Context, opts Options) (*BuildResult, error) {
 		OnSessionRecovered:  opts.OnSessionRecovered,
 		// The merged catalog (nil without provider-declaring sidecars) lets
 		// frontends enumerate plugin/... models through ProviderCatalog.
-		ProviderResolver: extensionResolver,
+		ProviderResolver:  extensionResolver,
+		RuntimeGeneration: generation,
 		// Share the Manager already bound into bash/grep so tools and the
 		// Controller observe the same temporary generation across rebuilds.
 		SessionTemp: sessionTemp,
@@ -2069,9 +2076,11 @@ func build(ctx context.Context, opts Options) (*BuildResult, error) {
 		mcpSpecs:     mcpSpecs,
 		providers:    baseResolver.Catalog(),
 	}, generation, extensionBoot{
-		session:   protocol.SessionContext{SessionID: sessionID, WorkspaceRoot: root, Generation: generation},
-		ui:        extUIHub,
-		onWarning: extWarn,
+		session:            protocol.SessionContext{SessionID: sessionID, WorkspaceRoot: root, Generation: generation},
+		ui:                 extUIHub,
+		onWarning:          extWarn,
+		skipPromptStrategy: shouldSkipPromptStrategy(opts.PreviousPlan),
+		previousDispatcher: opts.PreviousDispatcher,
 	}, extensionMgr)
 	// Ownership of the preflighted Manager transferred to assembly on every
 	// path: it was either closed inside or registered into the RuntimeSet.
@@ -2109,25 +2118,15 @@ func build(ctx context.Context, opts Options) (*BuildResult, error) {
 	if extensionResolver != nil {
 		providerResolver = extensionResolver
 	}
-	// The runtime set (extension sidecar Manager, when any) is owned by the
-	// controller: chain its close into the controller cleanup the way LSP
-	// cleanup is chained, so sidecars live exactly as long as their
-	// controller. RuntimeSet.Close is idempotent, so double-close paths
-	// (Rebuild's fail-atomic cleanup) stay safe.
-	prevCleanup := cleanup
-	cleanup = func() { prevCleanup(); _ = runtimeSet.Close() }
-	// The dispatcher only exists once sidecars started and the snapshot froze,
-	// both of which happen after control.New — hand it to the already-built
-	// controller before the build returns. Nil (no sidecars, or a degraded
-	// snapshot) leaves the controller byte-identical to the pre-dispatch path.
+	cleanup = wireRuntimeScopeCleanup(runtimeSet, cleanup, opts.SharedHost, pluginHost, lspMgr, opts.SessionTemp)
 	ctrl.SetExtensions(extensionDispatcher)
-	// Stage 8a: the UI hub only earns its place on the controller when
-	// sidecars actually started — with none, the hub is dropped here and the
-	// session behaves exactly as if it never existed.
 	if extensionMgr == nil {
 		extUIHub = nil
 	} else {
 		ctrl.SetExtensionUI(extUIHub)
+	}
+	if providerResolver != nil {
+		ctrl.SetProviderResolver(providerResolver)
 	}
 	// Stage 6b2 system-prompt handoff: the 6b1 strategy pass may have replaced
 	// the prompt while the snapshot was freezing, but the executor session was
@@ -2139,7 +2138,8 @@ func build(ctx context.Context, opts Options) (*BuildResult, error) {
 			ctrl.ApplyExtensionSystemPrompt(final)
 		}
 	}
-	return &BuildResult{Controller: ctrl, Snapshot: snap, Runtime: runtimeSet, Extensions: extensionMgr, Dispatcher: extensionDispatcher, ExtensionUI: extUIHub, ProviderResolver: providerResolver}, nil
+	assembly := &ReusedAssembly{SystemPrompt: sysPrompt, Skills: skills, Commands: cmds, Hooks: resolvedHooks, Registry: reg}
+	return finalizeBuildResult(&BuildResult{Controller: ctrl, Snapshot: snap, Runtime: runtimeSet, Extensions: extensionMgr, Dispatcher: extensionDispatcher, ExtensionUI: extUIHub, ProviderResolver: providerResolver, BaseProviderResolver: baseResolver, Assembly: assembly}), nil
 }
 
 // effectivePlannerModel centralizes planner precedence. The explicit ACP hard

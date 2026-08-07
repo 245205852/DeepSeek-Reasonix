@@ -131,6 +131,8 @@ type MCPServerRef struct {
 
 // Manifest is the normalized manifest shape used by Reasonix.
 type Manifest struct {
+	// APIVersion is reasonix.io/plugin/v2 for native packages; empty for Claude/Codex.
+	APIVersion  string
 	Name        string
 	Version     string
 	Description string
@@ -154,9 +156,11 @@ type Manifest struct {
 	// Themes are *.reasonix-theme file paths or per-segment glob patterns
 	// (e.g. "themes/*.reasonix-theme"), all lexically inside the plugin root.
 	Themes []string
-	// Runtime declares a plugin-owned runtime process (Manifest v1 only).
-	// nil for legacy, Codex, and Claude packages.
-	Runtime *RuntimeSpec
+	// Runtime declares a plugin-owned runtime process (native v2).
+	// nil for Claude and Codex packages.
+	Runtime  *RuntimeSpec
+	Requires []CapabilityRef // v2 dependency graph
+	Provides []CapabilityRef
 }
 
 type Hook struct {
@@ -424,21 +428,6 @@ func ParseDir(root string) (Package, []string, error) {
 		return Package{}, nil, err
 	}
 	return Package{}, nil, fmt.Errorf("no %s, %s, or %s found", NativeManifest, CodexManifest, ClaudeManifest)
-}
-
-func parseNative(path, root string) (Package, []string, error) {
-	b, err := fileencoding.ReadFileUTF8(path)
-	if err != nil {
-		return Package{}, nil, err
-	}
-	apiVersion, err := sniffManifestAPIVersion(b)
-	if err != nil {
-		return Package{}, nil, err
-	}
-	if apiVersion != "" {
-		return parseNativeV1(b, root, apiVersion)
-	}
-	return parseNativeLegacy(b, root)
 }
 
 // parseNativeLegacy is the pre-v1 native manifest path, preserved

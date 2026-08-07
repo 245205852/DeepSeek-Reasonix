@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 
+	"reasonix/internal/extension"
 	"reasonix/internal/extension/protocol"
 	"reasonix/internal/extension/providerconv"
 	"reasonix/internal/provider"
@@ -20,6 +21,7 @@ import (
 type Provider struct {
 	resolver   *Resolver
 	client     ProviderClient
+	owner      string // plugin package id; used to re-resolve live backends
 	ref        string
 	effort     *string
 	descriptor provider.Descriptor
@@ -71,13 +73,16 @@ func (p *Provider) MissingToolCallReasoningWarningIdentity() string {
 	}, "\x00")
 }
 
-// Stream opens one sidecar stream and returns its buffered chunk channel.
-// The channel closes on a clean end; failures arrive as a terminal ChunkError
-// (StreamInterruptedError for interruptions). Cancelling ctx aborts the
-// stream through extension/provider/stream/cancel. A crashed sidecar fails
-// fast — there is no fallback to another provider.
+// Stream opens one sidecar stream. Each call re-resolves the live backend so
+// rolling replacement keeps the same provider-visible ref (cache-stable).
 func (p *Provider) Stream(ctx context.Context, request provider.Request) (<-chan provider.Chunk, error) {
-	if p == nil || p.resolver == nil || p.client == nil {
+	if p == nil || p.resolver == nil {
+		return nil, fmt.Errorf("extension provider is unavailable")
+	}
+	if client := p.resolver.liveClient(p.owner); client != nil {
+		p.client = client
+	}
+	if p.client == nil {
 		return nil, fmt.Errorf("extension provider is unavailable")
 	}
 	return p.resolver.open(ctx, p, request)
@@ -128,6 +133,24 @@ func (r *Resolver) open(ctx context.Context, p *Provider, request provider.Reque
 		go client.ProviderStreamCancel(id)
 		return nil, fmt.Errorf("extension %s declined provider stream %q", client.PluginID(), p.ref)
 	}
+	// Provider request is already submitted to the sidecar — irreversible for
+	// recovery (never claim rollback of an in-flight provider call).
+	gen := extension.DefaultPublishGate().Published()
+	extension.RecordProviderSubmit(gen, id, client.PluginID())
+	// Drain-timeout cancel aborts delivery and notifies the sidecar.
+	streamID := id
+	streamRef := stream
+	extension.RegisterDrainCancel(gen, func() {
+		r.mu.Lock()
+		if r.streams[streamID] == streamRef {
+			r.abortDeliveryLocked(streamRef)
+			r.finishLocked(streamID, streamRef, provider.Chunk{Type: provider.ChunkError, Err: &provider.StreamInterruptedError{
+				Err: fmt.Errorf("extension stream %s: generation %d drain timed out", streamID, gen),
+			}})
+		}
+		r.mu.Unlock()
+		go client.ProviderStreamCancel(streamID)
+	})
 	go r.watchStream(ctx, id, stream)
 	return stream.out, nil
 }

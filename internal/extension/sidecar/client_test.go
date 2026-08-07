@@ -18,7 +18,7 @@ import (
 func TestHandshakeSuccess(t *testing.T) {
 	client := startFakeClient(t, func(rt *pluginpkg.RuntimeSpec) {
 		rt.Intercepts = []string{"input.receive", "tool.before"}
-		rt.Env[fakeEnvInitResult] = `{"protocolVersion":"1","name":"fake-sidecar","version":"1.2.3","subscriptions":["input.receive"],"stateSchemaVersion":0}`
+		rt.Env[fakeEnvInitResult] = `{"protocolVersion":"2","name":"fake-sidecar","version":"1.2.3","subscriptions":["input.receive"],"stateSchemaVersion":0}`
 	}, nil)
 	result := client.Handshake()
 	if result.Name != "fake-sidecar" || result.Version != "1.2.3" {
@@ -34,11 +34,12 @@ func TestHandshakeSuccess(t *testing.T) {
 
 func TestHandshakeProtocolVersionMismatch(t *testing.T) {
 	pkg, installed := fakeSidecarPackage(t, "fakeplugin", func(rt *pluginpkg.RuntimeSpec) {
-		rt.Env[fakeEnvInitResult] = `{"protocolVersion":"2","name":"fake-sidecar","version":"1.0.0","stateSchemaVersion":0}`
+		// Peer still speaking Extension Protocol v1 major must be rejected.
+		rt.Env[fakeEnvInitResult] = `{"protocolVersion":"1","name":"fake-sidecar","version":"1.0.0","stateSchemaVersion":0}`
 	})
 	_, err := StartClient(context.Background(), ClientOptions{Package: pkg, Installed: installed, Session: testSessionContext()})
 	if err == nil {
-		t.Fatal("StartClient succeeded with protocol major 2")
+		t.Fatal("StartClient succeeded with protocol major 1")
 	}
 	if reason := protocolReason(t, err); reason != protocol.ErrUnsupportedVersion {
 		t.Fatalf("reason = %q, want %q", reason, protocol.ErrUnsupportedVersion)
@@ -90,27 +91,27 @@ func TestHandshakeCapabilityViolations(t *testing.T) {
 		{
 			name:       "subscriptions superset",
 			configure:  func(rt *pluginpkg.RuntimeSpec) { rt.Intercepts = []string{"input.receive"} },
-			initResult: `{"protocolVersion":"1","name":"fake","version":"1","subscriptions":["input.receive","tool.before"],"stateSchemaVersion":0}`,
+			initResult: `{"protocolVersion":"2","name":"fake","version":"1","subscriptions":["input.receive","tool.before"],"stateSchemaVersion":0}`,
 		},
 		{
 			name:       "replaces superset",
 			configure:  func(rt *pluginpkg.RuntimeSpec) { rt.Replaces = []string{"system_prompt"} },
-			initResult: `{"protocolVersion":"1","name":"fake","version":"1","replaces":["system_prompt","compaction"],"stateSchemaVersion":0}`,
+			initResult: `{"protocolVersion":"2","name":"fake","version":"1","replaces":["system_prompt","compaction"],"stateSchemaVersion":0}`,
 		},
 		{
 			name:       "providers without capability",
 			configure:  nil,
-			initResult: `{"protocolVersion":"1","name":"fake","version":"1","providers":[{"ref":"plugin/fakeplugin/openai/gpt-5"}],"stateSchemaVersion":0}`,
+			initResult: `{"protocolVersion":"2","name":"fake","version":"1","providers":[{"ref":"plugin/fakeplugin/openai/gpt-5"}],"stateSchemaVersion":0}`,
 		},
 		{
 			name:       "provider ref outside plugin namespace",
 			configure:  func(rt *pluginpkg.RuntimeSpec) { rt.Capabilities = []string{"providers"} },
-			initResult: `{"protocolVersion":"1","name":"fake","version":"1","providers":[{"ref":"plugin/other/openai/gpt-5"}],"stateSchemaVersion":0}`,
+			initResult: `{"protocolVersion":"2","name":"fake","version":"1","providers":[{"ref":"plugin/other/openai/gpt-5"}],"stateSchemaVersion":0}`,
 		},
 		{
 			name:       "ui actions without capability",
 			configure:  nil,
-			initResult: `{"protocolVersion":"1","name":"fake","version":"1","uiActions":[{"actionId":"a1"}],"stateSchemaVersion":0}`,
+			initResult: `{"protocolVersion":"2","name":"fake","version":"1","uiActions":[{"actionId":"a1"}],"stateSchemaVersion":0}`,
 		},
 	}
 	for _, tc := range cases {
@@ -135,7 +136,7 @@ func TestHandshakeCapabilityViolations(t *testing.T) {
 func TestHandshakeDeclaredProvidersAndUIAccepted(t *testing.T) {
 	client := startFakeClient(t, func(rt *pluginpkg.RuntimeSpec) {
 		rt.Capabilities = []string{"providers", "ui"}
-		rt.Env[fakeEnvInitResult] = `{"protocolVersion":"1","name":"fake","version":"1",` +
+		rt.Env[fakeEnvInitResult] = `{"protocolVersion":"2","name":"fake","version":"1",` +
 			`"providers":[{"ref":"plugin/fakeplugin/openai/gpt-5"}],` +
 			`"uiActions":[{"actionId":"act1","label":"Act"}],"stateSchemaVersion":0}`
 	}, nil)

@@ -1,0 +1,89 @@
+package extension
+
+import (
+	"testing"
+	"time"
+)
+
+func TestPublishGateStaleAndAdmit(t *testing.T) {
+	g := NewPublishGate()
+	g.Publish(2)
+	if g.Published() != 2 {
+		t.Fatalf("published = %d", g.Published())
+	}
+	// Only older than published is stale; equal is current.
+	if !g.IsStale(1) || g.IsStale(2) || g.IsStale(0) || g.IsStale(3) {
+		t.Fatal("stale checks failed")
+	}
+	if !g.AdmitNewWork(2) || g.AdmitNewWork(1) {
+		t.Fatal("admit checks failed")
+	}
+	if !g.IsDraining(0) && !g.IsDraining(1) {
+		// gen 1 was previous published → draining after publish(2)
+		if !g.IsDraining(1) {
+			// Wait: first Publish(2) with published=0 doesn't drain 0.
+			// Publish again from 2 to 3.
+		}
+	}
+	g.Publish(3)
+	if !g.IsDraining(2) {
+		t.Fatal("gen 2 should be draining")
+	}
+	if g.DropStale(2, "ui") != true {
+		t.Fatal("drop stale")
+	}
+}
+
+func TestPublishGateSweep(t *testing.T) {
+	g := NewPublishGate().WithDrainTTL(time.Millisecond)
+	g.Publish(1)
+	g.Publish(2)
+	time.Sleep(5 * time.Millisecond)
+	expired := g.SweepExpiredDrains()
+	if len(expired) != 1 || expired[0] != 1 {
+		t.Fatalf("expired = %v", expired)
+	}
+}
+
+func TestPublishGateSweepAndForceExpireRecordsReceipt(t *testing.T) {
+	// Isolate default store pollution by using a private gate + checking store
+	// has a drain-timeout receipt for the expired gen.
+	g := NewPublishGate().WithDrainTTL(time.Millisecond)
+	g.Publish(10)
+	g.Publish(11)
+	time.Sleep(5 * time.Millisecond)
+	expired := g.SweepAndForceExpire()
+	if len(expired) != 1 || expired[0] != 10 {
+		t.Fatalf("expired = %v", expired)
+	}
+	if _, ok := DefaultReceiptStore.Get("drain-timeout-10"); !ok {
+		t.Fatal("expected drain-timeout receipt")
+	}
+	if g.IsDraining(10) {
+		t.Fatal("gen 10 should no longer be draining")
+	}
+}
+
+func TestLifecycleTransitions(t *testing.T) {
+	r := NewLifecycleRegistry(5)
+	r.Ensure("plugin/a")
+	if err := r.Transition("plugin/a", ComponentPreparing, ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.Transition("plugin/a", ComponentActive, ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.Transition("plugin/a", ComponentInactive, ""); err == nil {
+		t.Fatal("Active -> Inactive without Draining should fail")
+	}
+	if err := r.Transition("plugin/a", ComponentDraining, ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.Transition("plugin/a", ComponentInactive, ""); err != nil {
+		t.Fatal(err)
+	}
+	st, ok := r.Status("plugin/a")
+	if !ok || st.State != ComponentInactive {
+		t.Fatalf("status = %+v", st)
+	}
+}

@@ -2377,9 +2377,8 @@ func (a *Agent) streamWithFrozen(ctx context.Context, turn int, sink event.Sink,
 		}
 		req = prepared.req
 	}
-	// After #7725 Goal token request admission was removed, stream goes
-	// directly to the provider. Provider-visible cache controls stay stable
-	// across retries and request timing because they are derived from req alone.
+	// Host stream cancels on generation drain (OpenAI/Anthropic HTTP reads).
+	defer trackPublishedHostStream(cancel)()
 	ch, err := a.prov.Stream(ctx, req)
 	if err != nil {
 		return streamedTurn{usage: provider.UsageWithRequestAttemptCount(ctx, nil), err: err}
