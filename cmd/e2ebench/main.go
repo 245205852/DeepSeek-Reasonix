@@ -92,6 +92,9 @@ type result struct {
 	// agent was killed. The numbers are real but stop at the last snapshot, so
 	// they are counted as lower bounds rather than dropped.
 	Partial bool `json:"partial"`
+	// Trajectory is the digest of the run's recorded event trajectory; nil
+	// unless the harness ran with -trajectories.
+	Trajectory *trajectorySummary `json:"trajectory,omitempty"`
 }
 
 // class is the published failure taxonomy: solved, the guard that stopped the
@@ -145,6 +148,7 @@ func main() {
 	profileFlag := flag.String("profile", benchmarkProfileBaseline, "prompt profile: baseline | delivery")
 	ablateFlag := flag.String("ablate", "", "ablation arm: subsystems to switch off (evidence, planner, subagent, retrieval, compaction; none|all)")
 	outMD := flag.String("out", "", "write the markdown report here (default: stdout)")
+	trajDir := flag.String("trajectories", "", "suite mode: write one <task-id>.trajectory.jsonl per task into this directory")
 	outJSON := flag.String("json", "", "write the JSON report here (optional)")
 	budget := flag.Int("budget", defaultSuiteTokenBudget, "abort once total tokens cross this (0 = no cap)")
 	// diff-mode flags
@@ -210,17 +214,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	var results []result
-	total := 0
-	for _, t := range tasks {
-		if *budget > 0 && total >= *budget {
-			results = append(results, result{task: t, Profile: profile, Skipped: true, Note: "skipped: token budget reached"})
-			continue
-		}
-		r := runTask(*bin, *model, profile, arm, t)
-		total += r.PromptTokens + r.CompletionTokens
-		results = append(results, r)
-	}
+	results := runSuite(*bin, *model, profile, arm, tasks, *budget, *trajDir)
 
 	report := render(results)
 	if *outMD != "" {
@@ -286,12 +280,38 @@ func loadTasks(suite string) ([]task, error) {
 	return tasks, nil
 }
 
+// runSuite runs each task in order until the token budget is exhausted;
+// remaining tasks are reported as skipped rather than silently dropped.
+func runSuite(bin, model, profile string, arm ablation.Set, tasks []task, budget int, trajDir string) []result {
+	var results []result
+	total := 0
+	for _, t := range tasks {
+		if budget > 0 && total >= budget {
+			results = append(results, result{task: t, Profile: profile, Skipped: true, Note: "skipped: token budget reached"})
+			continue
+		}
+		r := runTask(bin, model, profile, arm, t, trajDir)
+		total += r.PromptTokens + r.CompletionTokens
+		results = append(results, r)
+	}
+	return results
+}
+
 // runTask copies the task's seed workdir into a temp dir, runs the agent there,
 // then drops in verify.sh and runs it as the grader. The grader is added only
 // after the run so the agent can't read the answer key.
-func runTask(bin, model, profile string, arm ablation.Set, t task) result {
+func runTask(bin, model, profile string, arm ablation.Set, t task, trajDir string) result {
 	r := result{task: t, Profile: profile}
 	r.Arm = arm.Arm()
+
+	trajPath := ""
+	if trajDir != "" {
+		if err := os.MkdirAll(trajDir, 0o755); err != nil {
+			r.Note = "trajectory dir: " + err.Error()
+			return r
+		}
+		trajPath = filepath.Join(trajDir, t.ID+".trajectory.jsonl")
+	}
 
 	work, err := os.MkdirTemp("", "e2ebench-"+t.ID+"-")
 	if err != nil {
@@ -311,7 +331,7 @@ func runTask(bin, model, profile string, arm ablation.Set, t task) result {
 	defer cancel()
 
 	metricsPath := filepath.Join(work, ".run-metrics.json")
-	args := buildRunTaskArgs(metricsPath, model, profile, arm, t.MaxSteps, t.Prompt)
+	args := buildRunTaskArgs(metricsPath, trajPath, model, profile, arm, t.MaxSteps, t.Prompt)
 
 	cmd := exec.CommandContext(ctx, bin, args...)
 	cmd.Dir = work
@@ -324,6 +344,11 @@ func runTask(bin, model, profile string, arm ablation.Set, t task) result {
 
 	if m, err := readMetrics(metricsPath); err == nil {
 		r.runMetrics = m
+	}
+	if trajPath != "" {
+		if summary, err := summarizeTrajectory(trajPath); err == nil {
+			r.Trajectory = summary
+		}
 	}
 	// A killed child never writes metrics, so the deadline is the only place
 	// this failure mode is still observable.
@@ -339,10 +364,13 @@ func runTask(bin, model, profile string, arm ablation.Set, t task) result {
 	return r
 }
 
-func buildRunTaskArgs(metricsPath, model, profile string, arm ablation.Set, maxSteps int, prompt string) []string {
+func buildRunTaskArgs(metricsPath, trajectoryPath, model, profile string, arm ablation.Set, maxSteps int, prompt string) []string {
 	// Benchmarks are unattended and their fixtures require ordinary workspace
 	// writes. Auto still honors explicit ask/deny rules and the sandbox boundary.
 	args := []string{"run", "--auto", "--metrics", metricsPath}
+	if trajectoryPath != "" {
+		args = append(args, "--trajectory", trajectoryPath)
+	}
 	if model != "" {
 		args = append(args, "--model", model)
 	}
@@ -449,6 +477,7 @@ func renderBody(results []result) string {
 	fmt.Fprintf(&b, "**Cache hit:** %s · **Tokens:** %s (prompt %s / completion %s) · **Tool calls:** %s (%s failed) · **Compactions:** %d · **Cost:** %s%.4f\n\n",
 		pct(hit, hit+miss), comma(pTok+cTok), comma(pTok), comma(cTok),
 		comma(tools), comma(toolFails), compacts, currencySym(currency), cost)
+	b.WriteString(renderTimeAttribution(results))
 	if unaccounted > 0 {
 		fmt.Fprintf(&b, "> **Accounting incomplete for %d of %d instances** (%d of them solved): the agent was killed before it wrote any metrics, so their cost and tokens are unknown. Totals above cover the %d accounted instances only, and per-solved figures divide by the %d accounted solves — the true totals are higher.\n\n",
 			unaccounted, ran, unaccountedSolved, accounted, accountedSolved)
