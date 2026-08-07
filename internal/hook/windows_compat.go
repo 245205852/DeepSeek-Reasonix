@@ -144,7 +144,7 @@ func isPOSIXShellScriptFile(path string) bool {
 	if line == "" {
 		return false
 	}
-	for _, field := range strings.Fields(line) {
+	for field := range strings.FieldsSeq(line) {
 		field = strings.Trim(strings.ToLower(field), `"'`)
 		field = strings.TrimSuffix(filepath.Base(filepath.ToSlash(field)), ".exe")
 		switch field {
