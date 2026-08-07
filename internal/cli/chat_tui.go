@@ -1829,6 +1829,7 @@ func (m chatTUI) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.followSessionLease()
 		} else {
 			m.ctrl = msg.ctrl
+			m.updateWatchdogStatusProvider()
 			m.label = msg.label
 			m.commands = msg.commands
 			m.skills = msg.skills
@@ -4552,44 +4553,6 @@ func waitForAgentEvent(ch chan event.Event) tea.Cmd {
 
 func elapsedTick() tea.Cmd {
 	return tea.Tick(time.Second, func(_ time.Time) tea.Msg { return elapsedTickMsg{} })
-}
-
-// noteWatchdogRunning marks idle/booting → running for the stall watchdog and
-// installs a non-blocking cancel hook for the active controller generation.
-func (m *chatTUI) noteWatchdogRunning() {
-	if m == nil || m.diagnostics == nil {
-		return
-	}
-	// Capture the SessionAPI interface value (holds *Controller) so cancel
-	// remains valid after Bubble Tea copies the model value.
-	ctrl := m.ctrl
-	m.diagnostics.NoteRunning(func() {
-		if ctrl != nil {
-			ctrl.Cancel()
-		}
-	})
-}
-
-// noteWatchdogIdle marks running → idle after TurnDone, shell completion, or
-// synchronous cancel so the watchdog stops escalating.
-func (m *chatTUI) noteWatchdogIdle() {
-	if m == nil || m.diagnostics == nil {
-		return
-	}
-	m.diagnostics.NoteIdle()
-}
-
-// noteWatchdogHeartbeat records event-loop progress that proves a running turn
-// is still being serviced. No-op while idle/booting/closed.
-func (m *chatTUI) noteWatchdogHeartbeat(source string) {
-	if m == nil || m.diagnostics == nil {
-		return
-	}
-	m.diagnostics.NoteActiveHeartbeat(source)
-}
-
-func watchdogAgentSource(kind event.Kind) string {
-	return fmt.Sprintf("agent:%d", kind)
 }
 
 // runSlashCommand handles "/<cmd> <args>" input. Local commands queue their

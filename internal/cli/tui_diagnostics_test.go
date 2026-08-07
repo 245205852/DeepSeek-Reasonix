@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -336,8 +337,8 @@ func TestWatchdogCancelOncePerGeneration(t *testing.T) {
 	clock := &fakeWatchClock{now: time.Unix(1_700_000_000, 0)}
 	d := newWatchdogForTest(t, clock)
 	d.NoteBooted()
-	// cancelCalls is incremented before the cancel goroutine is scheduled, so
-	// assertions below do not need to wait for the hook body.
+	// cancelCalls is incremented before the hook body, so assertions below do not
+	// need to wait for a separate scheduler turn.
 	d.NoteRunning(func() {})
 
 	// First stall → cancel once.
@@ -363,6 +364,22 @@ func TestWatchdogCancelOncePerGeneration(t *testing.T) {
 	d.onTick(clock.now)
 	if d.killCalls.Load() != 1 {
 		t.Fatalf("killCalls after second grace = %d, want 1", d.killCalls.Load())
+	}
+}
+
+func TestWatchdogStaleCancelCannotAffectNewGeneration(t *testing.T) {
+	clock := &fakeWatchClock{now: time.Unix(1_700_000_000, 0)}
+	d := newWatchdogForTest(t, clock)
+	d.NoteBooted()
+	var oldCancelCalls atomic.Int32
+	d.NoteRunning(func() { oldCancelCalls.Add(1) })
+	oldGeneration := d.generationForTest()
+	d.NoteIdle()
+	d.NoteRunning(func() {})
+
+	d.cancelCurrentGeneration(oldGeneration, func() { oldCancelCalls.Add(1) })
+	if got := oldCancelCalls.Load(); got != 0 {
+		t.Fatalf("stale cancellation invoked old callback %d times, want 0", got)
 	}
 }
 

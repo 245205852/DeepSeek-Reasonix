@@ -50,16 +50,10 @@ func (p tuiWatchdogPhase) String() string {
 	}
 }
 
-// tuiDiagnostics owns process-level diagnostics while an interactive terminal
-// UI is alive. Bubble Tea owns the terminal screen, so background logs and
-// plugin stderr must go to a private file instead of bypassing its renderer.
-// Failure to create that file degrades to io.Discard: typed event.Notice values
-// still carry user-facing warnings through the TUI.
-//
-// The stall watchdog is a lifecycle state machine (booting/idle/running/closed).
-// Idle never kills; running stalls escalate dump → cancel → grace → hard-kill
-// so ConPTY freezes and blocked event loops can recover the terminal (#7809,
-// #7810, #7811, #7435).
+// tuiDiagnostics owns diagnostics for the interactive terminal UI. Logs and
+// plugin stderr use a private file; typed notices remain user-facing if it
+// cannot be created. The watchdog uses booting/idle/running/closed: idle never
+// kills, while running stalls escalate through dump, cancel, grace, and kill.
 type tuiDiagnostics struct {
 	previous *slog.Logger
 	logger   *slog.Logger
@@ -92,8 +86,7 @@ type tuiDiagnostics struct {
 	hardKilledGen  uint64
 
 	// cancelFn is the non-blocking controller cancel for the active generation.
-	// Cleared on idle/closed. Invoked from a goroutine so a slow Cancel cannot
-	// stall the watchdog ticker.
+	// Cleared on idle/closed. Invoked under mu after a generation check.
 	cancelFn func()
 	// statusFn optionally returns Controller RuntimeStatus text for dumps.
 	statusFn func() string
@@ -199,8 +192,8 @@ func (d *tuiDiagnostics) NoteBooted() {
 }
 
 // NoteRunning transitions idle/booting → running for a new Turn/shell generation.
-// cancel must be non-blocking (context cancel / queue a cancel); the watchdog
-// invokes it from a separate goroutine.
+// cancel must be non-blocking (context cancel / queue a cancel); it is invoked
+// under the watchdog lifecycle lock after checking the active generation.
 func (d *tuiDiagnostics) NoteRunning(cancel func()) {
 	if d == nil {
 		return
@@ -427,7 +420,8 @@ func (d *tuiDiagnostics) onTick(now time.Time) {
 		if issueCancel {
 			d.cancelIssuedGeneration = gen
 		}
-		// Snapshot cancel under lock; invoke outside.
+		// Snapshot cancel under lock; invoke after the dump outside this critical
+		// section, with a second generation check immediately before the call.
 		d.mu.Unlock()
 		d.dumpCalls.Add(1)
 		d.doDump("watchdog_stall")
@@ -439,8 +433,7 @@ func (d *tuiDiagnostics) onTick(now time.Time) {
 		}
 		d.Sync()
 		if issueCancel {
-			d.cancelCalls.Add(1)
-			go cancelFn()
+			d.cancelCurrentGeneration(gen, cancelFn)
 		}
 		return
 	}
@@ -455,6 +448,19 @@ func (d *tuiDiagnostics) onTick(now time.Time) {
 	d.writeLine(diag)
 	d.Sync()
 	d.doKill()
+}
+
+func (d *tuiDiagnostics) cancelCurrentGeneration(gen uint64, cancelFn func()) {
+	if d == nil || cancelFn == nil {
+		return
+	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.phase != watchdogRunning || d.generation != gen || d.cancelIssuedGeneration != gen {
+		return
+	}
+	d.cancelCalls.Add(1)
+	cancelFn()
 }
 
 func (d *tuiDiagnostics) formatDiagLocked(now time.Time, reason string) string {

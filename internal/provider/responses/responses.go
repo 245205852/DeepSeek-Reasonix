@@ -768,19 +768,13 @@ func (c *client) readStream(ctx context.Context, resp *http.Response, out chan<-
 	}
 }
 
-// sendChunkEnterBlocking is an optional test hook invoked after the non-blocking
-// send fails and before the blocking select. Production keeps this nil.
-var sendChunkEnterBlocking func()
-
 func sendChunk(ctx context.Context, out chan<- provider.Chunk, chunk provider.Chunk) bool {
 	select {
 	case out <- chunk:
 		return true
 	default:
 	}
-	if h := sendChunkEnterBlocking; h != nil {
-		h()
-	}
+	notifySendChunkEnterBlocking()
 	select {
 	case out <- chunk:
 		return true
