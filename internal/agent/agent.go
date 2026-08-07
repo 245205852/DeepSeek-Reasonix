@@ -2704,7 +2704,7 @@ func (a *Agent) executeBatch(ctx context.Context, calls []provider.ToolCall) bat
 	// session memory outside Session's lock.
 	calls = append([]provider.ToolCall(nil), calls...)
 	for _, c := range calls {
-		a.emitFullToolDispatch(c, false)
+		a.emitFullToolDispatch(ctx, c, false)
 	}
 
 	results := make([]string, len(calls))
@@ -2731,10 +2731,10 @@ func (a *Agent) executeBatch(ctx context.Context, calls []provider.ToolCall) bat
 		writer := known && !t.ReadOnly()
 		surfaceWriters[i] = writer
 		if earlierWriterRan && writer {
-			if refreshed, changed := refreshCurrentFileDiff(t, calls[i]); changed {
+			if refreshed, changed := refreshCurrentFileDiff(ctx, t, calls[i]); changed {
 				calls[i] = refreshed
 				a.session.UpdateToolCallPreview(refreshed)
-				a.emitFullToolDispatch(refreshed, true)
+				a.emitFullToolDispatch(ctx, refreshed, true)
 			}
 		}
 		start := time.Now()
@@ -3139,13 +3139,13 @@ func batchCallStaticallySkippable(a *Agent, call provider.ToolCall) bool {
 	return !readOnly || evidence.ToolCallMutates(call.Name, json.RawMessage(call.Arguments), readOnly)
 }
 
-func (a *Agent) emitFullToolDispatch(c provider.ToolCall, refreshed bool) {
+func (a *Agent) emitFullToolDispatch(ctx context.Context, c provider.ToolCall, refreshed bool) {
 	t, _, ambiguous := a.tools.ResolveCall(c.Name)
 	ok := t != nil && len(ambiguous) == 0
 	ev := event.Tool{ID: c.ID, Name: c.Name, Args: c.Arguments, ReadOnly: ok && t.ReadOnly(), Refreshed: refreshed}
 	ev.FileDiff = event.FileDiff{Diff: c.Diff, Added: c.Added, Removed: c.Removed}
 	if ok && ev.Diff == "" && ev.Added == 0 && ev.Removed == 0 {
-		if ch, ok := tool.PreviewChange(t, json.RawMessage(c.Arguments)); ok {
+		if ch, ok := tool.PreviewChange(ctx, t, json.RawMessage(c.Arguments)); ok {
 			ev.FileDiff = event.FileDiff{Diff: ch.Diff, Added: ch.Added, Removed: ch.Removed}
 		}
 	}
@@ -3191,7 +3191,7 @@ func (a *Agent) emitResolvedToolDispatch(c provider.ToolCall) {
 // earlier successful writers in the same provider batch. Preview failures clear
 // any stale initial diff; a later Execute will then fail or ask for recovery
 // without presenting the user with a preview that no longer describes disk.
-func refreshCurrentFileDiff(t tool.Tool, call provider.ToolCall) (provider.ToolCall, bool) {
+func refreshCurrentFileDiff(ctx context.Context, t tool.Tool, call provider.ToolCall) (provider.ToolCall, bool) {
 	pv, ok := t.(tool.Previewer)
 	if !ok {
 		return call, false
@@ -3200,7 +3200,7 @@ func refreshCurrentFileDiff(t tool.Tool, call provider.ToolCall) (provider.ToolC
 	refreshed.Diff = ""
 	refreshed.Added = 0
 	refreshed.Removed = 0
-	if change, err := pv.Preview(json.RawMessage(call.Arguments)); err == nil {
+	if change, err := pv.Preview(ctx, json.RawMessage(call.Arguments)); err == nil {
 		refreshed.Diff = change.Diff
 		refreshed.Added = change.Added
 		refreshed.Removed = change.Removed
@@ -3209,7 +3209,7 @@ func refreshCurrentFileDiff(t tool.Tool, call provider.ToolCall) (provider.ToolC
 	return refreshed, changed
 }
 
-func (a *Agent) withPreviewFileDiffs(calls []provider.ToolCall) []provider.ToolCall {
+func (a *Agent) withPreviewFileDiffs(ctx context.Context, calls []provider.ToolCall) []provider.ToolCall {
 	if len(calls) == 0 {
 		return calls
 	}
@@ -3224,7 +3224,7 @@ func (a *Agent) withPreviewFileDiffs(calls []provider.ToolCall) []provider.ToolC
 		if !ok {
 			continue
 		}
-		if ch, ok := tool.PreviewChange(t, json.RawMessage(out[i].Arguments)); ok {
+		if ch, ok := tool.PreviewChange(ctx, t, json.RawMessage(out[i].Arguments)); ok {
 			out[i].Diff = ch.Diff
 			out[i].Added = ch.Added
 			out[i].Removed = ch.Removed
