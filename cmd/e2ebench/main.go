@@ -39,10 +39,13 @@ type runMetrics struct {
 	// same name: per-run tallies of why the cache prefix changed (e.g.
 	// "compact_auto", "snip", "tools"), omitempty for older metrics files.
 	PrefixChangeReasonCounts map[string]int `json:"prefix_change_reason_counts,omitempty"`
-	Steps                    int            `json:"steps"`
-	Cost                     float64        `json:"cost"`
-	Currency                 string         `json:"currency"`
-	Compactions              int            `json:"compactions"`
+	// UsageBySource mirrors cli.RunMetrics: per-origin model-call accounting,
+	// the denominator split behind planner/subagent A/B comparisons.
+	UsageBySource map[string]sourceUsage `json:"usage_by_source,omitempty"`
+	Steps         int                    `json:"steps"`
+	Cost          float64                `json:"cost"`
+	Currency      string                 `json:"currency"`
+	Compactions   int                    `json:"compactions"`
 
 	// Optional Delivery capability counters (omitempty for baseline/old metrics).
 	ReadinessChecks            int     `json:"readiness_checks,omitempty"`
@@ -68,6 +71,13 @@ type runMetrics struct {
 	Retries            int            `json:"retries,omitempty"`
 	ToolCallsByName    map[string]int `json:"tool_calls_by_name,omitempty"`
 	ToolFailuresByName map[string]int `json:"tool_failures_by_name,omitempty"`
+}
+
+type sourceUsage struct {
+	Calls            int     `json:"calls"`
+	PromptTokens     int     `json:"prompt_tokens"`
+	CompletionTokens int     `json:"completion_tokens"`
+	Cost             float64 `json:"cost"`
 }
 
 type result struct {
@@ -131,7 +141,7 @@ func main() {
 		fmt.Fprintf(flag.CommandLine.Output(), "  %[1]s -profile delivery\n", strings.Replace(flag.CommandLine.Name(), "e2ebench", "go run ./cmd/e2ebench", 1))
 	}
 
-	mode := flag.String("mode", "suite", "suite | diff | swebench")
+	mode := flag.String("mode", "suite", "suite | diff | swebench | compare")
 	subset := flag.String("subset", "benchmarks/swebench/subset.json", "swebench mode: instance subset file")
 	namespace := flag.String("namespace", "swebench", "swebench mode: registry namespace holding the evaluation images")
 	runID := flag.String("run-id", "reasonix", "swebench mode: run id passed to the official harness")
@@ -187,6 +197,11 @@ func main() {
 		if *outJSON != "" {
 			fmt.Fprintln(os.Stderr, "note: -json is not written in swebench mode; the harness report is authoritative")
 		}
+		return
+	}
+
+	if *mode == "compare" {
+		runCompareMode(*outMD)
 		return
 	}
 
@@ -445,6 +460,7 @@ func renderBody(results []result) string {
 	currency := ""
 	classes := map[string]int{}
 	prefixChangeReasons := map[string]int{}
+	bySource := map[string]sourceUsage{}
 	for _, r := range results {
 		if r.Skipped {
 			continue
@@ -478,6 +494,7 @@ func renderBody(results []result) string {
 		toolFails += r.ToolFailures
 		steps += r.Steps
 		wallAccountedMs += r.WallMs
+		accumulateSources(bySource, r.UsageBySource)
 		if r.Trajectory != nil {
 			modelRounds += r.Trajectory.ModelRounds
 		}
@@ -500,6 +517,7 @@ func renderBody(results []result) string {
 		pct(hit, hit+miss), comma(pTok+cTok), comma(pTok), comma(cTok),
 		comma(tools), comma(toolFails), compacts, currencySym(currency), cost)
 	b.WriteString(perSolvedLine(steps, tools, modelRounds, accountedSolved, wallAccountedMs))
+	b.WriteString(requestsBySourceLine(bySource))
 	b.WriteString(renderTimeAttribution(results))
 	if unaccounted > 0 {
 		fmt.Fprintf(&b, "> **Accounting incomplete for %d of %d instances** (%d of them solved): the agent was killed before it wrote any metrics, so their cost and tokens are unknown. Totals above cover the %d accounted instances only, and per-solved figures divide by the %d accounted solves — the true totals are higher.\n\n",
