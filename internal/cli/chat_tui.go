@@ -1893,11 +1893,7 @@ func (m chatTUI) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 	case mcpExternalDoneMsg:
-		if msg.err != nil {
-			m.notice(msg.label + ": " + msg.err.Error())
-		} else if msg.target != "" {
-			m.notice(msg.label + ": " + msg.target)
-		}
+		m.handleMCPExternalDone(msg)
 
 	case refsResolvedMsg:
 		for _, e := range msg.errs {

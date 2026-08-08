@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { ArrowLeft, ChevronDown, ChevronRight, CircleAlert, Plus, RefreshCw, Search, Server as ServerIcon } from "lucide-react";
 import { asArray } from "../lib/array";
-import { app, openExternal } from "../lib/bridge";
+import { app } from "../lib/bridge";
 import { useT } from "../lib/i18n";
 import { mcpServerLifecycleActions, mcpServerRetryableFromAvailableList } from "../lib/mcpServerLifecycle";
 import type { CapabilitiesView, MCPInstallResult, MCPMarketplaceEntry, MCPMarketplaceView, MCPServerInput, PluginAgentView, PluginCommandView, PluginCompatibilityIssue, PluginHookView, PluginInstallOptions, PluginMCPServerView, PluginSkillView, PluginView, ServerView, SkillRootSkillView, SkillRootView, SkillsSettingsView, SkillView, TabMeta } from "../lib/types";
@@ -22,6 +22,12 @@ async function installMCPServer(input: MCPServerInput): Promise<MCPInstallResult
   const result = await app.InstallMCPServer(input);
   if (result.state === "issue") throw new Error(result.message);
   return result;
+}
+
+function connectMCPServer(name: string, servers: ServerView[]): Promise<void> {
+  const server = servers.find((candidate) => candidate.name === name);
+  if (server?.authStatus === "required") return app.AuthenticateMCPServer(name);
+  return app.ReconnectMCPServer(name);
 }
 
 let mcpSettingsSnapshot: SettingsSnapshot<ServerView[]> | null = null;
@@ -209,7 +215,7 @@ export function CapabilitiesPanel({
                     servers={serverGroups.failed}
                     expanded={expandedErrors}
                     onToggle={toggleError}
-                    onRetry={(name) => void mutate(() => app.ReconnectMCPServer(name))}
+                    onRetry={(name) => void mutate(() => connectMCPServer(name, view.servers))}
                     onRetryMany={(names) => void mutate(() => Promise.allSettled(names.map((name) => app.ReconnectMCPServer(name))))}
                     onConfirmClearAuth={(name) => void mutate(() => app.ClearMCPServerAuthentication(name))}
                     onConfirm={(name) => void mutate(() => app.RemoveMCPServer(name))}
@@ -244,7 +250,7 @@ export function CapabilitiesPanel({
                         setEditing(name);
                       }}
                       onCancelEdit={() => setEditing(null)}
-                      onRetry={(name) => void mutate(() => app.ReconnectMCPServer(name))}
+                      onRetry={(name) => void mutate(() => connectMCPServer(name, view.servers))}
                       onReconnect={(name) => void mutate(() => app.ReconnectMCPServer(name))}
                       onConfirmClearAuth={(name) => void mutate(() => app.ClearMCPServerAuthentication(name))}
                       onToggle={(name, on) => void mutate(() => app.SetMCPServerEnabled(name, on))}
@@ -788,10 +794,6 @@ function FailedServersNotice({
           const error = s.error || t("caps.failed");
           const actionLabel = serverActionLabel(s, t);
           const handlePrimaryAction = () => {
-            if (shouldOpenAuth(s)) {
-              openExternal((s.authUrl || "").trim());
-              return;
-            }
             onRetry(s.name);
           };
           return (
@@ -909,10 +911,6 @@ function ServerRow({
     sub = `${sub} · ${t("caps.authPossibleShort")}`;
   }
   const handlePrimaryAction = () => {
-    if (shouldOpenAuth(s)) {
-      openExternal((s.authUrl || "").trim());
-      return;
-    }
     onRetry();
   };
   return (
@@ -1445,8 +1443,7 @@ function serverAuthLabel(s: ServerView, t: ReturnType<typeof useT>): string {
 }
 
 function shouldOpenAuth(s: ServerView): boolean {
-  const url = (s.authUrl || "").trim();
-  return s.authStatus === "required" && /^https?:\/\//i.test(url);
+  return s.authStatus === "required";
 }
 
 function canClearAuth(s: ServerView): boolean {
@@ -2509,14 +2506,9 @@ function MCPSettingsServerRow({
 	const t = useT();
 	const lifecycle = mcpServerLifecycleActions(server);
 	const target = serverCommand(server);
-	const opensAuth = shouldOpenAuth(server);
 	const actionLabel = serverActionLabel(server, t);
 	const canRemove = server.configured && !server.builtIn && !server.managedByPlugin;
 	const handlePrimaryAction = () => {
-		if (opensAuth) {
-			openExternal((server.authUrl || "").trim());
-			return;
-		}
 		onRetry();
 	};
 
@@ -3191,7 +3183,7 @@ export function MCPServersSettingsPage() {
 						servers={projectServers}
 						busy={actionBusy}
 						onOpen={(name) => setScreen({ kind: "detail", name })}
-							onRetry={(name) => void mutate(() => app.ReconnectMCPServer(name))}
+							onRetry={(name) => void mutate(() => connectMCPServer(name, servers ?? []))}
 							onToggle={(name, enabled) => void mutate(() => app.SetMCPServerEnabled(name, enabled))}
 							onRemove={(name) => void mutate(() => app.RemoveMCPServer(name))}
 					/>
@@ -3201,7 +3193,7 @@ export function MCPServersSettingsPage() {
 						servers={installedServers}
 						busy={actionBusy}
 						onOpen={(name) => setScreen({ kind: "detail", name })}
-							onRetry={(name) => void mutate(() => app.ReconnectMCPServer(name))}
+							onRetry={(name) => void mutate(() => connectMCPServer(name, servers ?? []))}
 							onToggle={(name, enabled) => void mutate(() => app.SetMCPServerEnabled(name, enabled))}
 							onRemove={(name) => void mutate(() => app.RemoveMCPServer(name))}
 					/>
@@ -3211,7 +3203,7 @@ export function MCPServersSettingsPage() {
 						servers={managedServers}
 						busy={actionBusy}
 						onOpen={(name) => setScreen({ kind: "detail", name })}
-							onRetry={(name) => void mutate(() => app.ReconnectMCPServer(name))}
+							onRetry={(name) => void mutate(() => connectMCPServer(name, servers ?? []))}
 							onToggle={(name, enabled) => void mutate(() => app.SetMCPServerEnabled(name, enabled))}
 							onRemove={(name) => void mutate(() => app.RemoveMCPServer(name))}
 					/>
@@ -3296,7 +3288,7 @@ export function MCPServersSettingsPage() {
 						tools={selectedServer.toolList ?? []}
 						busy={actionBusy}
 						onConfirm={() => void mutate(() => app.RemoveMCPServer(selectedServer.name)).then((ok) => { if (ok) setScreen({ kind: "list" }); })}
-						onConnectNow={() => void mutate(() => app.ReconnectMCPServer(selectedServer.name))}
+						onConnectNow={() => void mutate(() => connectMCPServer(selectedServer.name, servers ?? []))}
 						onReconnect={() => void mutate(() => app.ReconnectMCPServer(selectedServer.name))}
 						onConfirmClearAuth={() => void mutate(() => app.ClearMCPServerAuthentication(selectedServer.name))}
 						toolsExpanded

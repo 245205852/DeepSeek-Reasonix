@@ -169,6 +169,26 @@ func TestCapabilityProxyRouteRenderKeepsConcreteMCPIDs(t *testing.T) {
 	}
 }
 
+func TestMCPServerEntriesPropagatesFailureToCachedTools(t *testing.T) {
+	entries := MCPServerEntries(CatalogOptions{
+		Plugins: []config.PluginEntry{{Name: "github", Type: "http", URL: "https://example.test/mcp"}},
+		Failed:  map[string]string{"github": "http 401"},
+		CachedTools: map[string][]plugin.CachedTool{
+			"github": {{Name: "search_issues", Description: "search issues", ReadOnly: true}},
+		},
+	})
+
+	for _, entry := range entries {
+		if entry.ID == "mcp-tool:github/search_issues" {
+			if entry.Status != StatusFailed {
+				t.Fatalf("cached tool status = %q, want %q", entry.Status, StatusFailed)
+			}
+			return
+		}
+	}
+	t.Fatal("cached MCP tool entry not found")
+}
+
 func TestOrdinaryRouteRenderDeduplicatesCollapsedMCPSourceLines(t *testing.T) {
 	candidates := []RouteCandidate{
 		{

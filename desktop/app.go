@@ -48,7 +48,6 @@ import (
 	"reasonix/internal/i18n"
 	"reasonix/internal/jobs"
 	"reasonix/internal/mcpdiag"
-	"reasonix/internal/mcplaunch"
 	"reasonix/internal/mcpregistry"
 	"reasonix/internal/memory"
 	"reasonix/internal/notify"
@@ -8013,46 +8012,6 @@ func (a *App) disconnectMCPServerAllRuntimes(serverName string) bool {
 	return disconnected
 }
 
-func (a *App) mcpLaunchSpec(root, name string) (plugin.Spec, error) {
-	cfg, err := config.LoadForRoot(root)
-	if err != nil {
-		return plugin.Spec{}, err
-	}
-	var entry *config.PluginEntry
-	for i := range cfg.Plugins {
-		if cfg.Plugins[i].Name == name {
-			entry = &cfg.Plugins[i]
-			break
-		}
-	}
-	if entry == nil {
-		return plugin.Spec{}, fmt.Errorf("no configured MCP server named %q", name)
-	}
-	return a.mcpLaunchSpecForEntryWithConfig(root, *entry, cfg)
-}
-
-func (a *App) mcpLaunchSpecForEntry(root string, entry config.PluginEntry) (plugin.Spec, error) {
-	cfg, err := config.LoadForRoot(root)
-	if err != nil {
-		return plugin.Spec{}, err
-	}
-	return a.mcpLaunchSpecForEntryWithConfig(root, entry, cfg)
-}
-
-func (a *App) mcpLaunchSpecForEntryWithConfig(root string, entry config.PluginEntry, cfg *config.Config) (plugin.Spec, error) {
-	specs := boot.PluginSpecsForRootWithOptions([]config.PluginEntry{entry}, root, boot.PluginSpecOptions{
-		DefaultCallTimeout: time.Duration(cfg.MCPCallTimeoutSeconds()) * time.Second,
-		LaunchManager:      mcplaunch.ForWorkspace(config.ReasonixHomeDir(), root),
-		ConfigSource:       "workspace_config", StateHome: config.ReasonixHomeDir(),
-		WriterRoots: cfg.WriteRootsForRoot(root), ForbidReadRoots: boot.RuntimeForbidReadRoots(cfg, root),
-		Network: cfg.Sandbox.Network,
-	})
-	if len(specs) != 1 {
-		return plugin.Spec{}, fmt.Errorf("failed to build MCP server %q", entry.Name)
-	}
-	return specs[0], nil
-}
-
 // SkillsSettings returns the skills management snapshot without MCP status.
 func (a *App) SkillsSettings() SkillsSettingsView {
 	out := SkillsSettingsView{Skills: []SkillView{}, SkillRoots: []SkillRootView{}}
@@ -9176,35 +9135,6 @@ func (a *App) ReconnectMCPServer(name string) error {
 	a.mu.Lock()
 	delete(tab.disabledMCP, name)
 	a.mu.Unlock()
-	return nil
-}
-
-// ClearMCPServerAuthentication removes local auth-like config for one MCP and
-// clears the current session's cached connection failure. It does not remove the
-// server itself or try to sign the user out of the third-party browser session.
-func (a *App) ClearMCPServerAuthentication(name string) error {
-	defer a.lockMCPMutation("clear-auth")()
-
-	tab, ctrl, root := a.activeMCPRuntime()
-	if tab == nil || ctrl == nil {
-		return fmt.Errorf("no active session")
-	}
-	host, releaseGates, err := a.lockMCPHostTurnGates("MCP server", ctrl)
-	if err != nil {
-		return err
-	}
-	defer releaseGates()
-	controllers := a.mcpControllersSharingHost(host, name, ctrl)
-	if err := ensureMCPServerDirectlyWritable(root, name); err != nil {
-		return err
-	}
-	if _, _, _, err := config.ClearPluginAuthenticationInSourceForRoot(root, name); err != nil {
-		return err
-	}
-	disconnectMCPServerControllers(name, ctrl, controllers)
-	if host != nil {
-		host.ClearFailure(name)
-	}
 	return nil
 }
 

@@ -519,7 +519,6 @@ func build(ctx context.Context, opts Options) (*BuildResult, error) {
 	if err != nil {
 		return nil, err
 	}
-
 	execProv, err := resolveProvider(effectiveResolver, cfg, proxySpec, provider.Selection{Ref: modelRef, Effort: opts.EffortOverride})
 	if err != nil {
 		return nil, err
@@ -693,6 +692,7 @@ func build(ctx context.Context, opts Options) (*BuildResult, error) {
 		ForbidReadRoots:       forbidReadRoots,
 		Network:               networkEnabled,
 		PackageOwners:         pluginPackageOwners(cfg),
+		OAuthHTTPClient:       balanceClient,
 	}
 	autoStartEntries := cfg.EnabledPlugins(root, config.DefaultMCPActivationStore())
 	enabledMCPNames := make(map[string]bool, len(autoStartEntries))
@@ -2712,20 +2712,6 @@ func PluginSpecsForRoot(entries []config.PluginEntry, workspaceRoot string) []pl
 	return PluginSpecsForRootWithOptions(entries, workspaceRoot, PluginSpecOptions{})
 }
 
-// PluginSpecOptions carries runtime policy that is not stored on each plugin
-// entry but still needs to reach plugin.Spec.
-type PluginSpecOptions struct {
-	DefaultStartupTimeout time.Duration
-	DefaultCallTimeout    time.Duration
-	LaunchManager         *mcplaunch.Manager
-	ConfigSource          string
-	StateHome             string
-	WriterRoots           []string
-	ForbidReadRoots       []string
-	Network               bool
-	PackageOwners         map[string]string
-}
-
 // PluginSpecsForRootWithOptions maps configured plugin entries to plugin.Spec
 // and injects runtime policy such as the global MCP call timeout.
 func PluginSpecsForRootWithOptions(entries []config.PluginEntry, workspaceRoot string, opts PluginSpecOptions) []plugin.Spec {
@@ -2760,6 +2746,7 @@ func pluginSpecFromEntryWithOptions(e config.PluginEntry, workspaceRoot string, 
 		LaunchManager:         opts.LaunchManager,
 		ConfigSource:          configSource,
 		Authorized:            e.Source.UserAuthorized(),
+		OAuthHTTPClient:       opts.OAuthHTTPClient,
 	}, workspaceRoot)
 	if e.Source.ProjectScoped() && strings.TrimSpace(spec.Dir) == "" {
 		spec.Dir = workspaceRoot

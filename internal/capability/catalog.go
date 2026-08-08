@@ -180,11 +180,10 @@ func MCPServerEntries(opts CatalogOptions) []Entry {
 			toolStatus = StatusReady
 		case status != StatusReady:
 			toolSrc = opts.CachedTools[name]
-			// A schema-cache-key mismatch marked the server stale; its
-			// tools carry the same staleness so routing prompts expose it.
-			if status == StatusStale {
-				toolStatus = StatusStale
-			}
+			// Cached tools share the server lifecycle. A failed or disabled
+			// server cannot make a stale schema actionable, and a cache-key
+			// mismatch keeps the same staleness on every cached tool.
+			toolStatus = status
 		}
 		for _, ct := range toolSrc {
 			raw := strings.TrimSpace(ct.Name)
