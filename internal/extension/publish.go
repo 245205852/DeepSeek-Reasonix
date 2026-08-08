@@ -17,7 +17,8 @@ type PublishGate struct {
 	drainTTL      time.Duration
 	onStale       func(gen uint64, kind string)
 	receipts      *ReceiptStore
-	drainCancels  map[uint64][]func()
+	drainCancels  map[uint64]map[uint64]func()
+	drainCancelID uint64
 	expired       map[uint64]struct{}
 	expiredOrder  []uint64
 	expiredLimit  int
@@ -39,7 +40,7 @@ func newPublishGate(receipts *ReceiptStore) *PublishGate {
 		draining:     make(map[uint64]time.Time),
 		drainTTL:     30 * time.Second,
 		receipts:     receipts,
-		drainCancels: make(map[uint64][]func()),
+		drainCancels: make(map[uint64]map[uint64]func()),
 		expired:      make(map[uint64]struct{}),
 		expiredLimit: defaultExpiredGenerationLimit,
 	}
@@ -182,11 +183,12 @@ func (e *DrainTimeoutError) Error() string {
 	return fmt.Sprintf("extension: generation %d drain timed out", e.Generation)
 }
 
-// RegisterDrainCancel registers a cancel func for gen. Fired once when the
-// generation is force-expired after drain TTL (or explicit ForceExpireDrain).
-func (g *PublishGate) RegisterDrainCancel(gen uint64, cancel func()) {
+// RegisterDrainCancel registers a cancel func for gen and returns an idempotent
+// unregister function. Remaining callbacks fire once when the generation is
+// force-expired after drain TTL (or explicit ForceExpireDrain).
+func (g *PublishGate) RegisterDrainCancel(gen uint64, cancel func()) func() {
 	if g == nil || gen == 0 || cancel == nil {
-		return
+		return func() {}
 	}
 	g.mu.Lock()
 	_, expired := g.expired[gen]
@@ -198,10 +200,32 @@ func (g *PublishGate) RegisterDrainCancel(gen uint64, cancel func()) {
 	if expired || forgottenExpired {
 		g.mu.Unlock()
 		cancel()
-		return
+		return func() {}
 	}
-	g.drainCancels[gen] = append(g.drainCancels[gen], cancel)
+	if g.drainCancels == nil {
+		g.drainCancels = make(map[uint64]map[uint64]func())
+	}
+	if g.drainCancels[gen] == nil {
+		g.drainCancels[gen] = make(map[uint64]func())
+	}
+	g.drainCancelID++
+	id := g.drainCancelID
+	g.drainCancels[gen][id] = cancel
 	g.mu.Unlock()
+
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			g.mu.Lock()
+			if callbacks := g.drainCancels[gen]; callbacks != nil {
+				delete(callbacks, id)
+				if len(callbacks) == 0 {
+					delete(g.drainCancels, gen)
+				}
+			}
+			g.mu.Unlock()
+		})
+	}
 }
 
 // FireDrainCancels runs and clears all cancel callbacks for gen.
@@ -369,8 +393,8 @@ func DefaultPublishGate() *PublishGate {
 }
 
 // RegisterDrainCancel preserves the package-level compatibility API.
-func RegisterDrainCancel(gen uint64, cancel func()) {
-	DefaultPublishGate().RegisterDrainCancel(gen, cancel)
+func RegisterDrainCancel(gen uint64, cancel func()) func() {
+	return DefaultPublishGate().RegisterDrainCancel(gen, cancel)
 }
 
 // FireDrainCancels preserves the package-level compatibility API.

@@ -77,6 +77,8 @@ per `RuntimeOwner`; writes beyond either limit record `prior_truncated`, and
 recovery remains conservative rather than claiming a clean rollback.
 
 - Provider stream open records `provider-submit:<id>` (irreversible).
+- Completed provider streams unregister their drain callback; only streams still
+  in flight remain retained by the generation gate.
 - Drain timeout force-expire records `drain-timeout:<gen>`. `ScheduleDrainWatch`
   starts only when a generation is actually draining and coalesces rapid
   publishes into one watcher per owner; the doctor sweep remains a fallback.

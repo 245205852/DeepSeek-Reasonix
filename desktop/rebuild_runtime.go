@@ -8,18 +8,45 @@ import (
 func rebuildTabRuntime(a *App, tab *WorkspaceTab, old *control.Controller, opts boot.Options) (*boot.BuildResult, error) {
 	var res *boot.BuildResult
 	var err error
-	if tab != nil && tab.lastBuildResult != nil {
-		res, err = boot.RebuildFrom(a.bootContext(), tab.lastBuildResult, opts)
+	previous := a.tabBuildResultForController(tab, old)
+	if previous != nil {
+		res, err = boot.RebuildFrom(a.bootContext(), previous, opts)
 	} else {
 		res, err = boot.Rebuild(a.bootContext(), old, opts)
 	}
 	if err != nil {
 		return nil, err
 	}
-	if tab != nil {
-		tab.lastBuildResult = res
-	}
+	a.setTabLastBuildResult(tab, res)
 	return res, nil
+}
+
+func (a *App) tabBuildResultForController(tab *WorkspaceTab, ctrl *control.Controller) *boot.BuildResult {
+	if a == nil || tab == nil || ctrl == nil {
+		return nil
+	}
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	if tab.ID != "" && a.tabs[tab.ID] != tab {
+		return nil
+	}
+	res := tab.lastBuildResult
+	if res == nil || res.Controller != ctrl || tab.Ctrl != ctrl {
+		return nil
+	}
+	return res
+}
+
+func (a *App) setTabLastBuildResult(tab *WorkspaceTab, res *boot.BuildResult) {
+	if a == nil || tab == nil {
+		return
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if tab.ID != "" && a.tabs[tab.ID] != tab {
+		return
+	}
+	tab.lastBuildResult = res
 }
 
 // RuntimeDoctorReport is the desktop/Wails view of extension runtime diagnostics.
@@ -42,10 +69,16 @@ type RuntimeDoctorReport struct {
 func (a *App) RuntimeDoctor() RuntimeDoctorReport {
 	var res *boot.BuildResult
 	if a != nil {
-		// Prefer the active tab's last build when available.
-		if tab := a.activeTab(); tab != nil {
-			res = tab.lastBuildResult
+		// Snapshot the active tab and build result under the same lock: Wails can
+		// query diagnostics while another goroutine finishes a runtime rebuild.
+		a.mu.RLock()
+		if tab := a.activeTabLocked(); tab != nil {
+			candidate := tab.lastBuildResult
+			if candidate != nil && candidate.Controller == tab.Ctrl {
+				res = candidate
+			}
 		}
+		a.mu.RUnlock()
 	}
 	report := boot.CollectRuntimeDoctor(res)
 	return RuntimeDoctorReport{

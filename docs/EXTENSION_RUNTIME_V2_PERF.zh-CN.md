@@ -45,3 +45,5 @@ Receipt 证据仅存在于当前进程，最多保留 32 个 generation、每代
 淘汰时按保守策略处理：禁止声称 clean rollback，而不是隐藏证据缺失。
 消息去重键会随对应 receipt 淘汰而释放。文件 prior 每次写入最多保留 8 MiB，
 每个 runtime owner 合计最多 32 MiB；超限 prior 不保留，并阻止 clean rollback 判断。
+已完成的 Provider stream 会立即移除 drain 回调，长寿命 generation 只保留活跃 stream
+的取消状态。

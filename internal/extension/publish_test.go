@@ -77,6 +77,26 @@ func TestPublishGateLateDrainCancelFiresImmediately(t *testing.T) {
 	}
 }
 
+func TestPublishGateDrainCancelCanBeUnregistered(t *testing.T) {
+	g := NewPublishGate()
+	g.Publish(30)
+	fired := false
+	unregister := g.RegisterDrainCancel(30, func() { fired = true })
+	unregister()
+	unregister()
+
+	g.mu.RLock()
+	pending := len(g.drainCancels[30])
+	g.mu.RUnlock()
+	if pending != 0 {
+		t.Fatalf("pending drain cancels = %d, want 0", pending)
+	}
+	g.ForceExpireDrain(30)
+	if fired {
+		t.Fatal("unregistered drain cancel fired")
+	}
+}
+
 func TestPublishGateDrainWatchSkipsColdPublishAndCoalesces(t *testing.T) {
 	g := NewPublishGate().WithDrainTTL(time.Hour)
 	g.Publish(1)

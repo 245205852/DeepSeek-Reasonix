@@ -21,21 +21,22 @@ import (
 // freezes the terminal boundary (LastSeq) and a gap timer converts a missing
 // tail chunk into an interruption instead of a hang.
 type extensionStream struct {
-	client        ProviderClient
-	out           chan provider.Chunk
-	done          chan struct{}
-	abortDelivery chan struct{}
-	nextSeq       int64
-	pending       map[int64]provider.Chunk
-	ended         bool
-	endSeq        int64
-	endError      string
-	interrupted   bool
-	gapTimer      bool
-	closeOnce     sync.Once
-	delivery      []provider.Chunk
-	deliveryWake  chan struct{}
-	deliveryFinal bool
+	client                ProviderClient
+	out                   chan provider.Chunk
+	done                  chan struct{}
+	abortDelivery         chan struct{}
+	nextSeq               int64
+	pending               map[int64]provider.Chunk
+	ended                 bool
+	endSeq                int64
+	endError              string
+	interrupted           bool
+	gapTimer              bool
+	closeOnce             sync.Once
+	delivery              []provider.Chunk
+	deliveryWake          chan struct{}
+	deliveryFinal         bool
+	unregisterDrainCancel func()
 }
 
 // deliveryQueueLimit bounds the per-stream delivery queue without applying
@@ -184,6 +185,10 @@ func (r *Resolver) finishLocked(id string, stream *extensionStream, terminal pro
 	}
 	delete(r.streams, id)
 	stream.closeOnce.Do(func() {
+		if stream.unregisterDrainCancel != nil {
+			stream.unregisterDrainCancel()
+			stream.unregisterDrainCancel = nil
+		}
 		if terminal.Err != nil || terminal.Type != 0 {
 			stream.delivery = append(stream.delivery, terminal)
 		}

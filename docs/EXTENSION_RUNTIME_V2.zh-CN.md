@@ -70,6 +70,7 @@ receipt。淘汰时也会释放关联的文件 prior 字节，并将该代证据
 判断按保守策略处理，不会声称 clean rollback。
 
 - Provider stream open 会记录 `provider-submit:<id>`（不可逆）。
+- 已完成的 Provider stream 会注销 drain 回调；generation gate 只保留仍在途的 stream。
 - Drain 超时 force-expire 记录 `drain-timeout:<gen>`。`ScheduleDrainWatch` 仅在确有
   generation 正在 drain 时启动，并将快速连续 publish 合并为每个 owner 一个 watcher；
   doctor sweep 仍作为兜底。

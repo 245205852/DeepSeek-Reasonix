@@ -49,3 +49,5 @@ clean-rollback claim instead of hiding missing evidence.
 Message dedup keys are removed with their matching evicted receipts. File-prior
 retention is bounded to 8 MiB per write and 32 MiB per runtime owner; an
 oversized prior is not retained and blocks a clean-rollback claim.
+Completed provider streams remove their drain callbacks immediately, so a
+long-lived generation retains only active stream cancellation state.
