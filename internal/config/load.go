@@ -763,6 +763,7 @@ func normalizeConfigForEdit(cfg *Config) bool {
 	changed = normalizeLegacyMimoCustomProviders(cfg) || changed
 	normalizeLegacyProviderModels(cfg)
 	normalizeDesktopOfficialProviderAccess(cfg)
+	normalizeOfficialDeepSeekModels(cfg)
 	applyDeepSeekOfficialDefaultPricing(cfg)
 	backfillDeepSeekOfficialPrices(cfg)
 	normalizeEffortConfig(cfg)
@@ -1537,6 +1538,48 @@ func normalizeOfficialDeepSeekModels(c *Config) {
 		case "deepseek-pro":
 			ensureProviderModels(p, []string{"deepseek-v4-pro"}, "deepseek-v4-pro")
 		}
+		backfillDeepSeekAnthropicCapabilities(p)
+	}
+}
+
+func backfillDeepSeekAnthropicCapabilities(p *ProviderEntry) {
+	if p == nil || !strings.EqualFold(strings.TrimSpace(p.Kind), "anthropic") ||
+		!IsOfficialDeepSeekWebSearchEndpoint(p) {
+		return
+	}
+	if strings.TrimSpace(p.Thinking) == "" {
+		p.Thinking = "enabled"
+	}
+	capabilities := map[string]ProviderModelOverride{
+		"deepseek-v4-flash": {SupportedEfforts: []string{"disabled", "low", "high", "max"}, DefaultEffort: "high"},
+		"deepseek-v4-pro":   {SupportedEfforts: []string{"disabled", "high", "max"}, DefaultEffort: "high"},
+	}
+	if model := strings.TrimSpace(p.Model); model != "" && len(p.Models) == 0 {
+		defaults, ok := capabilities[model]
+		if !ok || len(p.SupportedEfforts) > 0 {
+			return
+		}
+		p.SupportedEfforts = append([]string(nil), defaults.SupportedEfforts...)
+		if strings.TrimSpace(p.DefaultEffort) == "" {
+			p.DefaultEffort = defaults.DefaultEffort
+		}
+		return
+	}
+	if p.ModelOverrides == nil {
+		p.ModelOverrides = map[string]ProviderModelOverride{}
+	}
+	for model, defaults := range capabilities {
+		if !p.HasModel(model) {
+			continue
+		}
+		override := p.ModelOverrides[model]
+		if len(override.SupportedEfforts) == 0 {
+			override.SupportedEfforts = append([]string(nil), defaults.SupportedEfforts...)
+			if strings.TrimSpace(override.DefaultEffort) == "" {
+				override.DefaultEffort = defaults.DefaultEffort
+			}
+		}
+		p.ModelOverrides[model] = override
 	}
 }
 
@@ -1862,14 +1905,20 @@ func ensureDeepSeekOfficialProvider(c *Config) {
 	}
 	entry := ProviderEntry{
 		Name:          "deepseek",
-		Kind:          "openai",
-		BaseURL:       "https://api.deepseek.com",
+		Kind:          "anthropic",
+		BaseURL:       deepSeekAnthropicBaseURL,
 		Models:        []string{"deepseek-v4-flash", "deepseek-v4-pro"},
 		Default:       "deepseek-v4-flash",
 		APIKeyEnv:     "DEEPSEEK_API_KEY",
 		BalanceURL:    "https://api.deepseek.com/user/balance",
+		Thinking:      "enabled",
+		WebSearch:     boolPointer(true),
 		ContextWindow: 1_000_000,
 		Prices:        deepSeekV4PricesForConfig(c),
+		ModelOverrides: map[string]ProviderModelOverride{
+			"deepseek-v4-flash": {SupportedEfforts: []string{"disabled", "low", "high", "max"}, DefaultEffort: "high"},
+			"deepseek-v4-pro":   {SupportedEfforts: []string{"disabled", "high", "max"}, DefaultEffort: "high"},
+		},
 	}
 	if old, ok := c.Provider("deepseek-flash"); ok {
 		entry = officialProviderFromLegacy(entry, old)
@@ -1920,9 +1969,16 @@ func officialProviderFromLegacy(entry ProviderEntry, old *ProviderEntry) Provide
 	entry.Price = old.Price
 	entry.Thinking = old.Thinking
 	entry.Effort = old.Effort
+	if old.WebSearch != nil {
+		webSearch := *old.WebSearch
+		entry.WebSearch = &webSearch
+	} else {
+		entry.WebSearch = nil
+	}
 	entry.ReasoningProtocol = old.ReasoningProtocol
 	entry.SupportedEfforts = append([]string(nil), old.SupportedEfforts...)
 	entry.DefaultEffort = old.DefaultEffort
+	entry.ModelOverrides = cloneModelOverrideMap(old.ModelOverrides)
 	entry.NoProxy = old.NoProxy
 	entry.persistedOfficialCurrency = old.persistedOfficialCurrency
 	return entry

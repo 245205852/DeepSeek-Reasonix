@@ -222,6 +222,7 @@ func build(ctx context.Context, opts Options) (*BuildResult, error) {
 	// written config + ~/.env are picked up this same boot. CLI Run also calls this
 	// before config-only commands; this call stays as the shared frontend fallback.
 	migrated, migErr := config.MigrateLegacyIfNeededForRoot(root)
+	deepSeekProtocolMigrated, deepSeekProtocolMigErr := config.MigrateLegacyDeepSeekProtocolUserConfig()
 	stepLimitsMigrated, stepLimitMigErr := config.MigrateLegacyAgentStepLimitsForRoot(root)
 	redactToolOutputMigrated, redactToolOutputMigErr := config.MigrateLegacyRedactToolOutputForRoot(root)
 	memoryCompilerMigrated, memoryCompilerMigErr := config.MigrateLegacyMemoryCompilerForRoot(root)
@@ -423,6 +424,21 @@ func build(ctx context.Context, opts Options) (*BuildResult, error) {
 		sink.Emit(event.Event{Kind: event.Notice, Level: event.LevelWarn, Text: "Config migration did not complete.", Detail: "config migration from ~/.reasonix failed: " + migErr.Error()})
 	} else if migrated != nil {
 		sink.Emit(event.Event{Kind: event.Notice, Level: event.LevelInfo, Text: migrated.Notice()})
+	}
+	if deepSeekProtocolMigrated {
+		sink.Emit(event.Event{
+			Kind:   event.Notice,
+			Level:  event.LevelInfo,
+			Text:   "DeepSeek official access was upgraded to Anthropic Messages.",
+			Detail: "Your unmodified legacy OpenAI Chat Completions configuration now uses DeepSeek's recommended Anthropic endpoint with server-side web search. Existing model names and pricing were preserved. The first request starts a new provider cache prefix; later requests rebuild normal prefix-cache reuse.",
+		})
+	} else if deepSeekProtocolMigErr != nil {
+		sink.Emit(event.Event{
+			Kind:   event.Notice,
+			Level:  event.LevelWarn,
+			Text:   "DeepSeek protocol migration did not complete.",
+			Detail: deepSeekProtocolMigErr.Error(),
+		})
 	}
 	if stepLimitsMigrated || cfg.IgnoredLegacyAgentStepLimits() {
 		level := event.LevelInfo
@@ -2586,23 +2602,22 @@ func NewProviderWithProxy(e *config.ProviderEntry, proxy netclient.ProxySpec) (p
 		// provider-kind-specific knobs. EffectiveEffort applies a configured
 		// default_effort when the user has not explicitly selected /effort.
 		Extra: map[string]any{
-			"api_key_env":           e.APIKeyEnv,
-			"api_key_source":        e.APIKeySourceLabel(),
-			"thinking":              e.Thinking,
-			"effort":                config.EffectiveEffort(e),
-			"supported_efforts":     e.SupportedEfforts,
-			"reasoning_protocol":    config.ReasoningProtocolForEntry(e),
-			"max_output_tokens":     e.MaxOutputTokens,
-			"chat_url":              e.ChatURL,
-			"headers":               e.Headers,
-			"extra_body":            e.ExtraBody,
-			"auth_header":           e.AuthHeader,
-			"proxy_spec":            proxy,
-			"vision":                config.EffectiveVision(e),
-			"vision_model_explicit": config.ExplicitModelVision(e),
-			"vision_detail":         e.VisionDetail,
-			"web_search":            config.EffectiveWebSearch(e),
-			"mode":                  e.ResponsesMode,
+			"api_key_env":        e.APIKeyEnv,
+			"api_key_source":     e.APIKeySourceLabel(),
+			"thinking":           e.Thinking,
+			"effort":             config.EffectiveEffort(e),
+			"supported_efforts":  e.SupportedEfforts,
+			"reasoning_protocol": config.ReasoningProtocolForEntry(e),
+			"max_output_tokens":  e.MaxOutputTokens,
+			"chat_url":           e.ChatURL,
+			"headers":            e.Headers,
+			"extra_body":         e.ExtraBody,
+			"auth_header":        e.AuthHeader,
+			"proxy_spec":         proxy,
+			"vision":             config.EffectiveVision(e),
+			"vision_detail":      e.VisionDetail,
+			"web_search":         config.EffectiveWebSearch(e),
+			"mode":               e.ResponsesMode,
 			// Keep nil as nil so the responses provider can vendor-detect its
 			// default instead of accidentally treating every endpoint as stateful.
 			"stateful": e.ResponsesStateful,

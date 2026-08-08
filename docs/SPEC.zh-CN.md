@@ -238,11 +238,12 @@ reasoning_language = "auto"
 
 [[providers]]
 name           = "deepseek"
-kind           = "openai"
-base_url       = "https://api.deepseek.com"
+kind           = "anthropic"
+base_url       = "https://api.deepseek.com/anthropic"
 models         = ["deepseek-v4-flash", "deepseek-v4-pro"]
 default        = "deepseek-v4-flash"
 api_key_env    = "DEEPSEEK_API_KEY"
+web_search     = true
 context_window = 1000000
 max_output_tokens = 32768  # 正文、reasoning 与工具调用共用的总输出预算；0 使用 provider 默认值
 

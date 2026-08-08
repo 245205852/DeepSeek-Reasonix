@@ -40,34 +40,37 @@ import (
 // read
 
 type ProviderView struct {
-	Name              string                      `json:"name"`
-	BuiltIn           bool                        `json:"builtIn"`
-	Added             bool                        `json:"added"`
-	Kind              string                      `json:"kind"`
-	BaseURL           string                      `json:"baseUrl"`
-	ChatURL           string                      `json:"chatUrl"`
-	Models            []string                    `json:"models"`
-	VisionModels      []string                    `json:"visionModels"`
-	VisionModelsSet   bool                        `json:"visionModelsConfigured"`
-	ModelsURL         string                      `json:"modelsUrl"`
-	Default           string                      `json:"default"`
-	APIKeyEnv         string                      `json:"apiKeyEnv"`
-	Headers           map[string]string           `json:"headers"`
-	ExtraBody         map[string]any              `json:"extraBody"`
-	AuthHeader        bool                        `json:"authHeader"`
-	KeySet            bool                        `json:"keySet"` // the env var currently resolves to a non-empty value
-	RequiresKey       bool                        `json:"requiresKey"`
-	Configured        bool                        `json:"configured"` // selectable: either key is present or no key is required
-	KeySource         string                      `json:"keySource,omitempty"`
-	KeySourcePath     string                      `json:"keySourcePath,omitempty"`
-	BalanceURL        string                      `json:"balanceUrl"`
-	ContextWindow     int                         `json:"contextWindow"`
-	ReasoningProtocol string                      `json:"reasoningProtocol"`
-	Thinking          string                      `json:"thinking"`
-	WebSearch         bool                        `json:"webSearch"`
-	SupportedEfforts  []string                    `json:"supportedEfforts"`
-	DefaultEffort     string                      `json:"defaultEffort"`
-	ModelOverrides    []ProviderModelOverrideView `json:"modelOverrides"`
+	Name                        string                      `json:"name"`
+	BuiltIn                     bool                        `json:"builtIn"`
+	Added                       bool                        `json:"added"`
+	Kind                        string                      `json:"kind"`
+	BaseURL                     string                      `json:"baseUrl"`
+	ChatURL                     string                      `json:"chatUrl"`
+	Models                      []string                    `json:"models"`
+	VisionModels                []string                    `json:"visionModels"`
+	VisionModelsSet             bool                        `json:"visionModelsConfigured"`
+	VisionCapability            string                      `json:"visionCapability,omitempty"`
+	ModelsURL                   string                      `json:"modelsUrl"`
+	Default                     string                      `json:"default"`
+	APIKeyEnv                   string                      `json:"apiKeyEnv"`
+	Headers                     map[string]string           `json:"headers"`
+	ExtraBody                   map[string]any              `json:"extraBody"`
+	AuthHeader                  bool                        `json:"authHeader"`
+	KeySet                      bool                        `json:"keySet"` // the env var currently resolves to a non-empty value
+	RequiresKey                 bool                        `json:"requiresKey"`
+	Configured                  bool                        `json:"configured"` // selectable: either key is present or no key is required
+	KeySource                   string                      `json:"keySource,omitempty"`
+	KeySourcePath               string                      `json:"keySourcePath,omitempty"`
+	BalanceURL                  string                      `json:"balanceUrl"`
+	ContextWindow               int                         `json:"contextWindow"`
+	ReasoningProtocol           string                      `json:"reasoningProtocol"`
+	Thinking                    string                      `json:"thinking"`
+	WebSearch                   bool                        `json:"webSearch"`
+	ServerWebSearchCapability   bool                        `json:"serverWebSearchCapability"`
+	SupportedEfforts            []string                    `json:"supportedEfforts"`
+	DefaultEffort               string                      `json:"defaultEffort"`
+	ModelOverrides              []ProviderModelOverrideView `json:"modelOverrides"`
+	RecommendedUpgradeAvailable bool                        `json:"recommendedUpgradeAvailable,omitempty"`
 	// ModelCatalogFingerprint is an opaque digest of the provider identity and
 	// current model selection. Background discovery must compare it while holding
 	// the config edit lock before applying a narrow catalog-only update.
@@ -636,27 +639,33 @@ func providerViewFromEntryForRootWithResolverAndCredentials(p config.ProviderEnt
 	}
 	key := resolver.ResolveGlobalFirst(p.APIKeyEnv)
 	requiresKey := p.RequiresAPIKey()
+	visionCapability := "configurable"
+	if !config.CanConfigureVision(&p) {
+		visionCapability = "unsupported"
+	}
 	return ProviderView{
 		Name: p.Name, BuiltIn: builtIn, Added: added, Kind: p.Kind, BaseURL: p.BaseURL, ChatURL: p.ChatURL,
-		Models: nonNil(models), VisionModels: nonNil(providerVisionModels(models, visionModels)), VisionModelsSet: visionModelsSet, ModelsURL: p.ModelsURL, Default: p.DefaultModel(),
-		APIKeyEnv:               p.APIKeyEnv,
-		Headers:                 nonNilStringMap(p.Headers),
-		ExtraBody:               nonNilAnyMap(p.ExtraBody),
-		AuthHeader:              p.AuthHeader,
-		KeySet:                  key.Set,
-		RequiresKey:             requiresKey,
-		Configured:              !requiresKey || key.Set,
-		KeySource:               key.Source.Label,
-		KeySourcePath:           key.Source.Path,
-		BalanceURL:              p.BalanceURL,
-		ContextWindow:           p.ContextWindow,
-		ReasoningProtocol:       p.ReasoningProtocol,
-		Thinking:                providerThinkingForSettings(p.Thinking),
-		WebSearch:               config.EffectiveWebSearch(&p),
-		SupportedEfforts:        nonNil(p.SupportedEfforts),
-		DefaultEffort:           p.DefaultEffort,
-		ModelOverrides:          providerModelOverridesForView(p.ModelOverrides, models),
-		ModelCatalogFingerprint: providerModelCatalogFingerprintForCredentials(p, credentialsRevision),
+		Models: nonNil(models), VisionModels: nonNil(providerVisionModels(models, visionModels)), VisionModelsSet: visionModelsSet, VisionCapability: visionCapability, ModelsURL: p.ModelsURL, Default: p.DefaultModel(),
+		APIKeyEnv:                   p.APIKeyEnv,
+		Headers:                     nonNilStringMap(p.Headers),
+		ExtraBody:                   nonNilAnyMap(p.ExtraBody),
+		AuthHeader:                  p.AuthHeader,
+		KeySet:                      key.Set,
+		RequiresKey:                 requiresKey,
+		Configured:                  !requiresKey || key.Set,
+		KeySource:                   key.Source.Label,
+		KeySourcePath:               key.Source.Path,
+		BalanceURL:                  p.BalanceURL,
+		ContextWindow:               p.ContextWindow,
+		ReasoningProtocol:           p.ReasoningProtocol,
+		Thinking:                    providerThinkingForSettings(p.Thinking),
+		WebSearch:                   config.EffectiveWebSearch(&p),
+		ServerWebSearchCapability:   config.IsOfficialDeepSeekWebSearchEndpoint(&p),
+		SupportedEfforts:            nonNil(p.SupportedEfforts),
+		DefaultEffort:               p.DefaultEffort,
+		ModelOverrides:              providerModelOverridesForView(p.ModelOverrides, models),
+		RecommendedUpgradeAvailable: config.CanUpgradeDeepSeekProviderProtocol(&p),
+		ModelCatalogFingerprint:     providerModelCatalogFingerprintForCredentials(p, credentialsRevision),
 	}
 }
 
@@ -1109,13 +1118,25 @@ func (a *App) Settings() SettingsView {
 	added := providerAccessSet(cfg.Desktop.ProviderAccess)
 	resolver := config.NewCredentialResolverForRoot(root)
 	credentialsRevision := providerCredentialsRevision()
+	upgradeSourceAvailable := deepSeekProtocolUpgradeSourceAvailable(root)
 	v.OfficialProviders = officialProviderViewsForRootWithResolver(officialProviderAddedSet(cfg), a.desktopOfficialPricingLanguage(cfg), root, resolver)
 	v.ProviderPresets = providerPresetViewsForRootWithResolver(cfg, root, resolver)
 	for i := range cfg.Providers {
 		p := &cfg.Providers[i]
-		v.Providers = append(v.Providers, providerViewFromEntryForRootWithResolverAndCredentials(*p, isOfficialBuiltInProvider(*p), added[p.Name], root, resolver, credentialsRevision))
+		providerView := providerViewFromEntryForRootWithResolverAndCredentials(*p, isOfficialBuiltInProvider(*p), added[p.Name], root, resolver, credentialsRevision)
+		providerView.RecommendedUpgradeAvailable = providerView.RecommendedUpgradeAvailable && upgradeSourceAvailable
+		v.Providers = append(v.Providers, providerView)
 	}
 	return v
+}
+
+func deepSeekProtocolUpgradeSourceAvailable(root string) bool {
+	if path := config.UserConfigPath(); path != "" {
+		if _, err := os.Stat(path); err == nil {
+			return true
+		}
+	}
+	return sameConfigPath(config.SourcePathForRoot(root), config.UserConfigSourcePath())
 }
 
 func sandboxEffectiveShellView(sh sandbox.Shell) string {
@@ -2273,18 +2294,25 @@ func (a *App) SetDefaultToolApprovalMode(mode string) error {
 func (a *App) SetDefaultAutoRecoveryCheckpoint(_ bool) error { return nil }
 
 func officialProviderTemplate(kind, pricingLanguage string) ([]config.ProviderEntry, string, error) {
+	webSearchEnabled := true
 	switch strings.ToLower(strings.TrimSpace(kind)) {
 	case "deepseek", "deepseek-official":
 		return []config.ProviderEntry{{
 			Name:          "deepseek",
-			Kind:          "openai",
-			BaseURL:       "https://api.deepseek.com",
+			Kind:          "anthropic",
+			BaseURL:       "https://api.deepseek.com/anthropic",
 			Models:        []string{"deepseek-v4-flash", "deepseek-v4-pro"},
 			Default:       "deepseek-v4-flash",
 			APIKeyEnv:     "DEEPSEEK_API_KEY",
 			BalanceURL:    "https://api.deepseek.com/user/balance",
+			Thinking:      "enabled",
+			WebSearch:     &webSearchEnabled,
 			ContextWindow: 1_000_000,
 			Prices:        config.DeepSeekV4PricesForLanguage(pricingLanguage),
+			ModelOverrides: map[string]config.ProviderModelOverride{
+				"deepseek-v4-flash": {SupportedEfforts: []string{"disabled", "low", "high", "max"}, DefaultEffort: "high"},
+				"deepseek-v4-pro":   {SupportedEfforts: []string{"disabled", "high", "max"}, DefaultEffort: "high"},
+			},
 		}}, "DEEPSEEK_API_KEY", nil
 	default:
 		return nil, "", fmt.Errorf("unknown official provider template %q", kind)
@@ -2337,12 +2365,15 @@ func saveProviderConfig(c *config.Config, p ProviderView) error {
 		return fmt.Errorf("config is nil")
 	}
 	e := config.ProviderEntry{Name: p.Name}
+	existing := false
 	for i := range c.Providers {
 		if c.Providers[i].Name == p.Name {
 			e = c.Providers[i]
+			existing = true
 			break
 		}
 	}
+	original := e
 	e.Name = p.Name
 	e.Kind = p.Kind
 	e.BaseURL = p.BaseURL
@@ -2356,10 +2387,12 @@ func saveProviderConfig(c *config.Config, p ProviderView) error {
 	e.ContextWindow = p.ContextWindow
 	e.ReasoningProtocol = p.ReasoningProtocol
 	e.Thinking = providerThinkingForSettings(p.Thinking)
-	if config.SupportsServerWebSearch(&e) {
+	// Settings exposes this switch only for verified endpoints. Preserve an
+	// existing advanced override, but never carry an official default to a new URL.
+	if config.IsOfficialDeepSeekWebSearchEndpoint(&e) {
 		enabled := p.WebSearch
 		e.WebSearch = &enabled
-	} else {
+	} else if !config.SupportsServerWebSearch(&e) || !existing || config.IsOfficialDeepSeekWebSearchEndpoint(&original) {
 		e.WebSearch = nil
 	}
 	e.SupportedEfforts = p.SupportedEfforts
@@ -2596,6 +2629,29 @@ func (a *App) AddOfficialProviderAccess(kind, key string) (string, error) {
 		return "", err
 	}
 	return appendSettingsWarning(keyWarning, rebuildWarning), nil
+}
+
+// UpgradeDeepSeekProviderAccess applies the explicit Settings action for an
+// official legacy OpenAI entry. The config package performs a narrow raw-TOML
+// edit so unrelated and future fields are not lost to a full config render.
+func (a *App) UpgradeDeepSeekProviderAccess(name string) (string, error) {
+	if err := a.ensureActiveTabRebuildAllowed("DeepSeek provider protocol"); err != nil {
+		return "", err
+	}
+	changed, err := config.UpgradeDeepSeekProviderProtocolUserConfig(name)
+	if err != nil {
+		return "", err
+	}
+	if !changed {
+		return "", fmt.Errorf("DeepSeek provider %q is not eligible for the recommended protocol upgrade", name)
+	}
+	if err := a.rebuildSetting("DeepSeek provider protocol"); err != nil {
+		if warning, ok := a.deferredRebuildWarning("DeepSeek provider protocol", err); ok {
+			return warning, nil
+		}
+		return "", err
+	}
+	return "", nil
 }
 
 // AddProviderPresetAccess installs one editable custom-provider preset. Unlike

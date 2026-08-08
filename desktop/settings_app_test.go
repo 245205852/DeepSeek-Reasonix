@@ -112,6 +112,51 @@ func TestProviderViewFromEntry_MigratesProviderWideVision(t *testing.T) {
 	}
 }
 
+func TestProviderViewFromEntryReportsOfficialDeepSeekVisionUnsupported(t *testing.T) {
+	p := config.ProviderEntry{
+		Name:         "deepseek",
+		Kind:         "openai",
+		BaseURL:      "https://api.deepseek.com",
+		Models:       []string{"deepseek-v4-flash", "deepseek-v4-pro"},
+		VisionModels: []string{"deepseek-v4-flash", "deepseek-v4-pro"},
+	}
+	view := providerViewFromEntry(p, true, true)
+	if view.VisionCapability != "unsupported" {
+		t.Fatalf("VisionCapability = %q, want unsupported", view.VisionCapability)
+	}
+	if !reflect.DeepEqual(view.VisionModels, p.VisionModels) {
+		t.Fatalf("ProviderView should preserve stale metadata for a lossless settings round trip: got %v want %v", view.VisionModels, p.VisionModels)
+	}
+	resolved := p
+	resolved.Model = "deepseek-v4-pro"
+	if config.EffectiveVision(&resolved) {
+		t.Fatal("preserved stale settings metadata must not enable runtime image input")
+	}
+}
+
+func TestProviderViewFromEntryOffersOnlySafeDeepSeekProtocolUpgrade(t *testing.T) {
+	legacy := config.ProviderEntry{
+		Name: "deepseek-flash", Kind: "openai", BaseURL: "https://api.deepseek.com",
+		Model: "deepseek-v4-flash", APIKeyEnv: "DEEPSEEK_API_KEY",
+	}
+	if view := providerViewFromEntry(legacy, true, true); !view.RecommendedUpgradeAvailable {
+		t.Fatal("standard official OpenAI entry did not offer the recommended protocol upgrade")
+	}
+
+	proxy := legacy
+	proxy.BaseURL = "https://deepseek-proxy.example/v1"
+	if view := providerViewFromEntry(proxy, false, true); view.RecommendedUpgradeAvailable {
+		t.Fatal("proxy entry unexpectedly offered the official protocol upgrade")
+	}
+
+	anthropic := legacy
+	anthropic.Kind = "anthropic"
+	anthropic.BaseURL = "https://api.deepseek.com/anthropic"
+	if view := providerViewFromEntry(anthropic, true, true); view.RecommendedUpgradeAvailable {
+		t.Fatal("already-upgraded entry still offered the protocol upgrade")
+	}
+}
+
 func TestProviderViewFromEntryIncludesThinking(t *testing.T) {
 	view := providerViewFromEntry(config.ProviderEntry{
 		Name:     "anthropic",
@@ -150,6 +195,19 @@ func TestProviderViewFromEntryUsesEffectiveWebSearch(t *testing.T) {
 	}, false, true)
 	if custom.WebSearch {
 		t.Fatal("custom provider unexpectedly enabled web search")
+	}
+	if custom.ServerWebSearchCapability {
+		t.Fatal("unverified custom Responses provider unexpectedly exposed server web search in Settings")
+	}
+
+	openAI := providerViewFromEntry(config.ProviderEntry{
+		Name:      "custom-openai",
+		Kind:      "openai",
+		BaseURL:   "https://gateway.example/v1",
+		WebSearch: func() *bool { enabled := true; return &enabled }(),
+	}, false, true)
+	if openAI.ServerWebSearchCapability || openAI.WebSearch {
+		t.Fatal("OpenAI Chat Completions unexpectedly reported server web-search support")
 	}
 }
 
@@ -1045,6 +1103,127 @@ func TestSaveProviderPersistsExplicitWebSearchOff(t *testing.T) {
 	}
 }
 
+func TestSaveProviderPreservesHiddenCustomWebSearchOverride(t *testing.T) {
+	isolateDesktopUserDirs(t)
+
+	enabled := true
+	cfg := config.LoadForEdit(config.UserConfigPath())
+	cfg.Providers = []config.ProviderEntry{{
+		Name:      "custom-anthropic",
+		Kind:      "anthropic",
+		BaseURL:   "https://gateway.example/anthropic",
+		Models:    []string{"custom-model"},
+		WebSearch: &enabled,
+	}}
+	if err := cfg.SaveTo(config.UserConfigPath()); err != nil {
+		t.Fatalf("SaveTo: %v", err)
+	}
+
+	if err := NewApp().SaveProvider(ProviderView{
+		Name:          "custom-anthropic",
+		Kind:          "anthropic",
+		BaseURL:       "https://gateway.example/anthropic",
+		Models:        []string{"custom-model"},
+		Default:       "custom-model",
+		ContextWindow: 200_000,
+		WebSearch:     false, // The hidden Settings control must not overwrite advanced TOML.
+	}); err != nil {
+		t.Fatalf("SaveProvider: %v", err)
+	}
+
+	gotCfg := config.LoadForEdit(config.UserConfigPath())
+	got, ok := gotCfg.Provider("custom-anthropic")
+	if !ok || got.WebSearch == nil || !*got.WebSearch || !config.EffectiveWebSearch(got) {
+		t.Fatalf("saved provider = %+v, found=%v; want preserved advanced web_search=true", got, ok)
+	}
+}
+
+func TestSaveProviderDoesNotCarryOfficialWebSearchToCustomEndpoint(t *testing.T) {
+	isolateDesktopUserDirs(t)
+
+	enabled := true
+	cfg := config.LoadForEdit(config.UserConfigPath())
+	cfg.Providers = []config.ProviderEntry{{
+		Name:      "deepseek-customized",
+		Kind:      "anthropic",
+		BaseURL:   "https://api.deepseek.com/anthropic",
+		Models:    []string{"deepseek-v4-flash"},
+		WebSearch: &enabled,
+	}}
+	if err := cfg.SaveTo(config.UserConfigPath()); err != nil {
+		t.Fatalf("SaveTo: %v", err)
+	}
+
+	if err := NewApp().SaveProvider(ProviderView{
+		Name:      "deepseek-customized",
+		Kind:      "anthropic",
+		BaseURL:   "https://gateway.example/anthropic",
+		Models:    []string{"deepseek-v4-flash"},
+		Default:   "deepseek-v4-flash",
+		WebSearch: false,
+	}); err != nil {
+		t.Fatalf("SaveProvider: %v", err)
+	}
+
+	gotCfg := config.LoadForEdit(config.UserConfigPath())
+	got, ok := gotCfg.Provider("deepseek-customized")
+	if !ok || got.WebSearch != nil || config.EffectiveWebSearch(got) {
+		t.Fatalf("saved provider = %+v, found=%v; want official web search cleared after endpoint change", got, ok)
+	}
+}
+
+func TestUpgradeDeepSeekProviderAccessPreservesCustomizedFields(t *testing.T) {
+	isolateDesktopUserDirs(t)
+	path := config.UserConfigPath()
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	raw := `default_model = "deepseek-flash/deepseek-v4-flash"
+
+[desktop]
+provider_access = ["deepseek"]
+
+[[providers]]
+name = "deepseek-flash"
+kind = "openai"
+base_url = "https://api.deepseek.com"
+model = "deepseek-v4-flash"
+api_key_env = "DEEPSEEK_API_KEY"
+vision = true
+headers = { X-Trace = "keep" }
+future_capability = "keep"
+
+[[providers]]
+name = "deepseek-pro"
+kind = "openai"
+base_url = "https://api.deepseek.com"
+model = "deepseek-v4-pro"
+api_key_env = "DEEPSEEK_API_KEY"
+reasoning_protocol = "none"
+`
+	if err := os.WriteFile(path, []byte(raw), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := NewApp().UpgradeDeepSeekProviderAccess("deepseek"); err != nil {
+		t.Fatalf("UpgradeDeepSeekProviderAccess: %v", err)
+	}
+	updated, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(updated)
+	if strings.Count(text, `kind = "anthropic"`) != 2 ||
+		strings.Count(text, `base_url = "https://api.deepseek.com/anthropic"`) != 2 {
+		t.Fatalf("provider family was not upgraded:\n%s", text)
+	}
+	for _, preserved := range []string{`vision = true`, `headers = { X-Trace = "keep" }`, `future_capability = "keep"`, `reasoning_protocol = "none"`} {
+		if !strings.Contains(text, preserved) {
+			t.Errorf("upgrade dropped %q:\n%s", preserved, text)
+		}
+	}
+}
+
 func TestOfficialMimoAPITemplateRemoved(t *testing.T) {
 	if entries, keyEnv, err := officialProviderTemplate("mimo-api", "en"); err == nil {
 		t.Fatalf("officialProviderTemplate(mimo-api) = entries=%v key=%q nil error, want unknown template", entries, keyEnv)
@@ -1069,6 +1248,9 @@ func TestOfficialDeepSeekTemplateUsesRegionalPricing(t *testing.T) {
 			t.Fatalf("template = %v/%q, want one DEEPSEEK_API_KEY entry", entries, keyEnv)
 		}
 		got := entries[0]
+		if got.Kind != "anthropic" || got.BaseURL != "https://api.deepseek.com/anthropic" || !config.EffectiveWebSearch(&got) || got.Thinking != "enabled" {
+			t.Fatalf("%s DeepSeek template = kind:%q base_url:%q web_search:%t thinking:%q, want Anthropic-compatible with web search", tt.language, got.Kind, got.BaseURL, config.EffectiveWebSearch(&got), got.Thinking)
+		}
 		if price := got.Prices["deepseek-v4-flash"]; price == nil || price.Currency != tt.currency || price.Output != tt.flashOutput {
 			t.Fatalf("%s deepseek-v4-flash price = %+v", tt.language, price)
 		}

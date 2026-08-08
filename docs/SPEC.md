@@ -693,13 +693,14 @@ reasoning_language = "auto"       # visible reasoning text: auto|zh|en
 # A vendor endpoint exposing several models under one base_url/key.
 [[providers]]
 name           = "deepseek"
-kind           = "openai"
-base_url       = "https://api.deepseek.com"
+kind           = "anthropic"
+base_url       = "https://api.deepseek.com/anthropic"
 # chat_url     = "https://proxy.example.com/v1/chat/completions"   # optional full chat request URL
 # models_url   = "https://proxy.example.com/v1/models"             # optional model discovery URL
 models         = ["deepseek-v4-flash", "deepseek-v4-pro"]
 default        = "deepseek-v4-flash"   # optional; defaults to models[0]
 api_key_env    = "DEEPSEEK_API_KEY"
+web_search     = true
 context_window = 1000000   # tokens; harness compacts older history near this limit (0 disables)
 max_output_tokens = 32768  # total visible + reasoning + tool-call output; 0 = provider default
 # model_overrides = { "deepseek-v4-flash" = { context_window = 1000000, max_output_tokens = 32768 } }

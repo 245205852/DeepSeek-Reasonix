@@ -167,6 +167,21 @@ const glmProvider = normalizeProviderView({
 } as ProviderView);
 eq(glmProvider.reasoningProtocol, "glm", "provider snapshots preserve the explicit GLM reasoning protocol");
 
+const serverWebSearchProvider = normalizeProviderView({
+  name: "custom-anthropic",
+  kind: "anthropic",
+  baseUrl: "https://gateway.example/anthropic",
+  serverWebSearchCapability: true,
+} as ProviderView);
+eq(serverWebSearchProvider.serverWebSearchCapability, true, "provider snapshots preserve backend server web-search capability");
+
+const legacyServerWebSearchProvider = normalizeProviderView({
+  name: "legacy-anthropic",
+  kind: "anthropic",
+  baseUrl: "https://api.deepseek.com/anthropic",
+} as ProviderView);
+eq(legacyServerWebSearchProvider.serverWebSearchCapability, undefined, "older provider snapshots keep an absent capability distinguishable");
+
 eq(providerEditorEffectiveKind(true, "anthropic", ["anthropic", "openai"]), "anthropic", "new custom providers keep the selected Anthropic-compatible kind");
 eq(providerEditorEffectiveKind(false, "anthropic", ["anthropic", "openai"]), "anthropic", "existing providers preserve their stored kind");
 eq(providerChatURLPreview("https://proxy.example.com/v1", "", false), "https://proxy.example.com/v1/chat/completions", "base URL mode previews chat completions URL");

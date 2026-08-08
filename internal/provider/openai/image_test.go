@@ -79,7 +79,7 @@ func TestOfficialDeepSeekProviderWideVisionInputMatchesTextOnlyRequest(t *testin
 	}
 }
 
-func TestOfficialDeepSeekExplicitFutureVisionInputUsesImageParts(t *testing.T) {
+func TestOfficialDeepSeekExplicitModelVisionInputMatchesTextOnlyRequest(t *testing.T) {
 	p, err := New(provider.Config{
 		Name:    "deepseek",
 		BaseURL: "https://api.deepseek.com",
@@ -93,17 +93,27 @@ func TestOfficialDeepSeekExplicitFutureVisionInputUsesImageParts(t *testing.T) {
 		t.Fatalf("New: %v", err)
 	}
 	c := p.(*client)
-	if !c.vision {
-		t.Fatal("explicit model-scoped vision must remain enabled on the official DeepSeek endpoint")
+	if c.vision {
+		t.Fatal("explicit model-scoped vision must not bypass the official DeepSeek endpoint guard")
 	}
 
-	req := c.buildRequest(provider.Request{Messages: []provider.Message{{
+	textOnly := provider.Request{Messages: []provider.Message{{
+		Role: provider.RoleUser, Content: "describe",
+	}}}
+	withImage := provider.Request{Messages: []provider.Message{{
 		Role: provider.RoleUser, Content: "describe",
 		Images: []string{"data:image/png;base64,AAAA"},
-	}}})
-	parts, ok := req.Messages[0].Content.([]chatContentPart)
-	if !ok || len(parts) != 2 || parts[1].ImageURL == nil {
-		t.Fatalf("explicit future DeepSeek content = %#v, want [text, image_url]", req.Messages[0].Content)
+	}}}
+	textBody, err := json.Marshal(c.buildRequest(textOnly))
+	if err != nil {
+		t.Fatalf("marshal text request: %v", err)
+	}
+	imageBody, err := json.Marshal(c.buildRequest(withImage))
+	if err != nil {
+		t.Fatalf("marshal image request: %v", err)
+	}
+	if !bytes.Equal(imageBody, textBody) {
+		t.Fatalf("explicit official DeepSeek image request changed provider-visible bytes:\ntext:  %s\nimage: %s", textBody, imageBody)
 	}
 }
 
@@ -112,7 +122,10 @@ func TestOfficialDeepSeekDoesNotInjectToolResultImages(t *testing.T) {
 		Name:    "deepseek",
 		BaseURL: "https://api.deepseek.com/v1",
 		Model:   "deepseek-v4-pro",
-		Extra:   map[string]any{"vision": true},
+		Extra: map[string]any{
+			"vision":                true,
+			"vision_model_explicit": true,
+		},
 	})
 	if err != nil {
 		t.Fatalf("New: %v", err)

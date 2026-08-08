@@ -31,7 +31,15 @@ const (
 // intentionally editable after installation; they reduce setup friction without
 // turning fast-moving third-party catalogs into hard runtime dependencies.
 func CuratedProviderPresets() []ProviderPreset {
-	presets := cloneProviderPresets(curatedProviderPresets)
+	presets := make([]ProviderPreset, 0, len(curatedProviderPresets))
+	for _, preset := range curatedProviderPresets {
+		// Keep the old direct lookup available for installed configurations, but
+		// do not offer the redundant Anthropic preset in new-provider surfaces.
+		if preset.ID == "deepseek-anthropic" {
+			continue
+		}
+		presets = append(presets, cloneProviderPreset(preset))
+	}
 	sort.SliceStable(presets, func(i, j int) bool {
 		return providerPresetDisplayRank(presets[i].ID) < providerPresetDisplayRank(presets[j].ID)
 	})
@@ -52,9 +60,7 @@ func CuratedProviderPreset(id string) (ProviderPreset, bool) {
 func providerPresetDisplayRank(id string) int {
 	switch {
 	case id == "deepseek-responses":
-		return -1
-	case id == "deepseek-anthropic":
-		return 0
+		return -2
 	case id == "glm-cn" || id == "zai-global" || strings.HasPrefix(id, "glm-coding-plan-") || strings.HasPrefix(id, "zai-coding-plan-"):
 		return 0
 	case strings.HasPrefix(id, "longcat-"):
@@ -185,8 +191,8 @@ func kimiK3DirectOverride() ProviderModelOverride {
 var curatedProviderPresets = []ProviderPreset{
 	{
 		ID:          "deepseek-anthropic",
-		Label:       "DeepSeek Anthropic",
-		Description: "Official DeepSeek Anthropic-compatible endpoint for Flash and Pro with server-side web search; search may increase token usage.",
+		Label:       "DeepSeek Official Anthropic",
+		Description: "Separate official DeepSeek Anthropic-compatible entry for Flash and Pro.",
 		KeyEnv:      "DEEPSEEK_API_KEY",
 		Entries: []ProviderEntry{{
 			Name:          "deepseek-anthropic",
@@ -539,8 +545,8 @@ var curatedProviderPresets = []ProviderPreset{
 	},
 	{
 		ID:          "deepseek-responses",
-		Label:       "DeepSeek Responses API",
-		Description: "DeepSeek official stateless Responses API for deepseek-v4-flash with server-side web search; search may increase token usage.",
+		Label:       "DeepSeek Official Responses API",
+		Description: "Official stateless DeepSeek Responses API for Flash with server-side web search.",
 		KeyEnv:      "DEEPSEEK_API_KEY",
 		Entries: []ProviderEntry{{
 			Name:             "deepseek-responses",

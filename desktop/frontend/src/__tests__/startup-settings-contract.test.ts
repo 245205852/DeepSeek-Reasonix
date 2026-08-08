@@ -27,6 +27,7 @@ const here = dirname(fileURLToPath(import.meta.url));
 const appSource = readFileSync(resolve(here, "../App.tsx"), "utf8");
 const bridgeSource = readFileSync(resolve(here, "../lib/bridge.ts"), "utf8");
 const settingsSource = readFileSync(resolve(here, "../components/SettingsPanel.tsx"), "utf8");
+const stylesSource = readFileSync(resolve(here, "../styles.css"), "utf8");
 const enLocaleSource = readFileSync(resolve(here, "../locales/en.ts"), "utf8");
 const zhLocaleSource = readFileSync(resolve(here, "../locales/zh.ts"), "utf8");
 const zhTWLocaleSource = readFileSync(resolve(here, "../locales/zh-TW.ts"), "utf8");
@@ -71,18 +72,22 @@ ok(
   "DeepSeek Responses preset uses a localized description",
 );
 ok(
-  /case "deepseek-anthropic":\s*return t\("settings\.addProvider\.preset\.deepseekAnthropicDesc"\)/.test(settingsSource),
-  "DeepSeek Anthropic preset uses a localized description",
+  !/case "deepseek-anthropic":\s*return t\("settings\.addProvider\.preset\.deepseekAnthropicDesc"\)/.test(settingsSource),
+  "redundant DeepSeek Anthropic preset is not separately localized in the provider list",
 );
 ok(
   /case "token-rhythm":\s*return t\("settings\.addProvider\.preset\.tokenRhythmDesc"\)/.test(settingsSource) &&
-    /preset\.id === "token-rhythm"\) return t\("settings\.addProvider\.preset\.tokenRhythmLabel"\)/.test(settingsSource),
-  "Token Rhythm preset localizes the English and Chinese brand names",
+    /case "deepseek-responses":\s*return t\("settings\.addProvider\.preset\.deepseekResponsesLabel"\)/.test(settingsSource) &&
+    !/case "deepseek-anthropic":\s*return t\("settings\.addProvider\.preset\.deepseekAnthropicLabel"\)/.test(settingsSource) &&
+    /case "token-rhythm":\s*return t\("settings\.addProvider\.preset\.tokenRhythmLabel"\)/.test(settingsSource),
+  "visible official protocol presets and Token Rhythm localize their display names",
 );
 ok(
   [enLocaleSource, zhLocaleSource, zhTWLocaleSource].every((source) =>
     source.includes('"settings.addProvider.preset.deepseekResponsesDesc"') &&
-    source.includes('"settings.addProvider.preset.deepseekAnthropicDesc"') &&
+    source.includes('"settings.addProvider.preset.deepseekResponsesLabel"') &&
+    !source.includes('"settings.addProvider.preset.deepseekAnthropicDesc"') &&
+    !source.includes('"settings.addProvider.preset.deepseekAnthropicLabel"') &&
     source.includes('"settings.addProvider.preset.tokenRhythmLabel"') &&
     source.includes('"settings.addProvider.preset.tokenRhythmDesc"'),
   ),
@@ -101,16 +106,80 @@ ok(
   "GLM reasoning protocol is localized in every supported locale",
 );
 ok(
-  /mockPreset\("deepseek-anthropic",\s*"DeepSeek Anthropic"/.test(bridgeSource),
-  "browser mock exposes the DeepSeek Anthropic preset",
+  !/mockPreset\("deepseek-anthropic",/.test(bridgeSource),
+  "browser mock hides the redundant DeepSeek Anthropic preset",
+);
+ok(
+  bridgeSource.includes('value === "deepseek-upgrade"') &&
+    bridgeSource.includes('recommendedUpgradeAvailable: deepSeekUpgradeMock') &&
+    bridgeSource.includes('headers: deepSeekUpgradeMock ? { "X-Route": "official-custom" } : undefined'),
+  "browser mock can preview the customized legacy DeepSeek upgrade flow",
+);
+ok(
+  /onUpgradeRecommended=\{\(name\) => apply\(\(\) => app\.UpgradeDeepSeekProviderAccess\(name\)\)/.test(settingsSource) &&
+    settingsSource.includes('className="provider-protocol-upgrade"') &&
+    settingsSource.includes('t("settings.providerCurrentProtocol", { protocol: "OpenAI Chat Completions" })') &&
+    /<InlineConfirmButton[\s\S]*?label=\{<>\{t\("settings\.upgradeRecommendedProtocol"\)\}[\s\S]*?primary[\s\S]*?onConfirm=\{\(\) => onUpgradeRecommended/.test(settingsSource),
+  "legacy official DeepSeek cards expose an explicit recommended-protocol action",
+);
+ok(
+  /<div className="provider-access-card__actions">[\s\S]*?<ProviderAccessMoreMenu[\s\S]*?<\/div>\s*<\/div>\s*\{group\.description && <div className="provider-access-card__desc">[\s\S]*?\{upgradeProvider && \(/.test(settingsSource) &&
+    settingsSource.includes('className="provider-access-more__menu"') &&
+    settingsSource.includes('buttonRole="menuitem"') &&
+    stylesSource.includes(".provider-protocol-upgrade") &&
+    stylesSource.includes(".provider-access-more__menu"),
+  "provider protocol migration stays in a stable row and removal lives in the overflow menu",
+);
+ok(
+  settingsSource.includes('className="provider-technical-details"') &&
+    settingsSource.includes('"settings.providerCapabilitiesAndModels"') &&
+    settingsSource.includes('showModelSummary && (') &&
+    settingsSource.includes('hiddenModelCount={hiddenModelCount ?? 0}') &&
+    !settingsSource.includes('className="provider-capability-badges"') &&
+    !settingsSource.includes('t("settings.anthropicCompatible")') &&
+    stylesSource.includes('.provider-card-block--inline') &&
+    stylesSource.includes('.provider-technical-details'),
+  "provider cards keep descriptions out of the action row and collapse repeated diagnostics into compact details",
+);
+ok(
+  !settingsSource.includes("return p.baseUrl;") &&
+    settingsSource.includes("providerSupportsServerWebSearchForView(editableProvider)") &&
+    settingsSource.includes("supported={supportsServerWebSearch}"),
+  "all provider cards keep endpoint details collapsed and use backend web-search capability authority",
+);
+ok(
+  /existing\.recommendedUpgradeAvailable = existing\.recommendedUpgradeAvailable \|\| Boolean\(p\.recommendedUpgradeAvailable\)/.test(settingsSource) &&
+    /case "deepseek-flash":\s*case "deepseek-pro":\s*return "deepseek";/.test(settingsSource),
+  "legacy DeepSeek aliases remain grouped into one official provider card",
+);
+ok(
+  [enLocaleSource, zhLocaleSource, zhTWLocaleSource].every((source) =>
+    source.includes('"settings.upgradeRecommendedProtocol"') &&
+    source.includes('"settings.confirmUpgradeRecommendedProtocol"') &&
+    source.includes('"settings.providerCurrentProtocol"') &&
+    source.includes('"settings.providerMoreActions"') &&
+    source.includes('"settings.providerDesc.deepseekLegacy"') &&
+    source.includes('"settings.providerCapabilitiesAndModels"') &&
+    source.includes('"settings.providerTechnicalDetails"') &&
+    source.includes('"settings.providerEndpoint"') &&
+    source.includes('"settings.providerKeyEnvironment"') &&
+    !source.includes('"settings.anthropicCompatible"'),
+  ),
+  "the compact DeepSeek access and upgrade flows are localized in every supported locale",
+);
+ok(
+  enLocaleSource.includes('"settings.serverWebSearchCostHint": "Search content is sent to the current model provider') &&
+    zhLocaleSource.includes('"settings.serverWebSearchCostHint": "搜索内容会发送至当前模型供应商') &&
+    zhTWLocaleSource.includes('"settings.serverWebSearchCostHint": "搜尋內容會傳送至目前的模型供應商'),
+  "server web-search disclosure stays provider-neutral for compatible services",
 );
 ok(
   /mockPreset\("token-rhythm",\s*"Token Rhythm"/.test(bridgeSource),
   "browser mock exposes the Token Rhythm preset",
 );
 ok(
-  /function mockProviderPresetDisplayRank\(id: string\): number \{\s*if \(id === "deepseek-responses"\) return -1;\s*if \(id === "deepseek-anthropic"\) return 0;/.test(bridgeSource),
-  "browser mock ranks Responses first and Anthropic as the adjacent compatibility preset",
+  /function mockProviderPresetDisplayRank\(id: string\): number \{\s*if \(id === "deepseek-responses"\) return -2;/.test(bridgeSource),
+  "browser mock keeps the visible DeepSeek Responses preset first",
 );
 
 const values = new Map<string, string>();
