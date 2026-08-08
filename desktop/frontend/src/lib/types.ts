@@ -1309,7 +1309,7 @@ export interface MemoryView {
 }
 
 // SettingsTab is the top-level navigation item in the Settings Centre modal.
-export type SettingsTab = "general" | "models" | "providers" | "bots" | "mcp" | "remote" | "skills" | "subagents" | "plugins" | "memory" | "hooks" | "diagnostics" | "shortcuts" | "permissions" | "sandbox" | "network" | "appearance" | "updates";
+export type SettingsTab = "general" | "models" | "providers" | "bots" | "mcp" | "remote" | "skills" | "subagents" | "plugins" | "memory" | "hooks" | "diagnostics" | "shortcuts" | "permissions" | "sandbox" | "network" | "appearance" | "storage" | "updates";
 
 // ── Remote SSH module (mirrors desktop/remote_app.go view structs) ──
 
@@ -2030,6 +2030,25 @@ export interface SettingsView {
   autoApproveTools: boolean;
   bypass: boolean; // legacy JSON key for live YOLO/full-access tool auto-approval
   conversationWidth?: string; // "standard" | "full"; absent from older Wails payloads
+  storage: StorageSettingsView;
+}
+
+export interface StoragePathView {
+  kind: string;
+  path: string;
+  defaultPath: string;
+  sizeBytes: number;
+  availableBytes: number;
+}
+
+export interface StorageSettingsView {
+  state: StoragePathView;
+  cache: StoragePathView;
+  models: StoragePathView;
+  extensions: StoragePathView;
+  defaultWorkspace: string;
+  platform: string;
+  restartRequired: boolean;
 }
 
 export interface DesktopStartupSettingsView {

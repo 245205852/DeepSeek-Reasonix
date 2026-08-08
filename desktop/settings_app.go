@@ -322,7 +322,8 @@ type SettingsView struct {
 	// being skipped this session.
 	AutoApproveTools bool `json:"autoApproveTools"`
 	// Bypass is the legacy JSON key for the same live state.
-	Bypass bool `json:"bypass"`
+	Bypass  bool                `json:"bypass"`
+	Storage StorageSettingsView `json:"storage"`
 }
 
 // DesktopStartupSettingsView is the lightweight Settings subset needed during
@@ -977,6 +978,7 @@ func (a *App) Settings() SettingsView {
 	cfg, cfgPath, err := a.loadDesktopUserConfigForView()
 	if err != nil {
 		return SettingsView{
+			Storage:           a.StorageSettings(),
 			Providers:         []ProviderView{},
 			OfficialProviders: officialProviderViews(map[string]bool{}, ""),
 			ProviderPresets:   providerPresetViewsForRootWithResolver(nil, a.activeWorkspaceRoot(), nil),
@@ -1031,6 +1033,7 @@ func (a *App) Settings() SettingsView {
 	}
 	effectiveShell := sandbox.ResolveShell(cfg.Tools.Shell.Prefer, cfg.Tools.Shell.Path, nil)
 	v := SettingsView{
+		Storage:           a.StorageSettings(),
 		DefaultModel:      cfg.DefaultModel,
 		PlannerModel:      cfg.Agent.PlannerModel,
 		SubagentModel:     cfg.Agent.SubagentModel,

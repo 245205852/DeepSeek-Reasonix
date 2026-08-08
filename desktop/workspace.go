@@ -155,6 +155,12 @@ func forgetWorkspace(dir string) {
 // current cwd isn't writable (the Finder/`open` "/" case). A writable cwd with no
 // remembered folder (e.g. `wails dev` in the repo) is left untouched.
 func ensureWorkspace() {
+	if ws := config.DefaultWorkspacePath(); ws != "" {
+		if info, err := os.Stat(ws); err == nil && info.IsDir() && os.Chdir(ws) == nil {
+			rememberWorkspace(ws)
+			return
+		}
+	}
 	if ws := loadWorkspace(); ws != "" {
 		if info, err := os.Stat(ws); err == nil && info.IsDir() && os.Chdir(ws) == nil {
 			return

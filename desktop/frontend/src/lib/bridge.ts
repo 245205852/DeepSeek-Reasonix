@@ -93,6 +93,7 @@ import type {
   SessionRecoveryFailedEvent,
   SessionRecoveryEvent,
   SettingsView,
+  StorageSettingsView,
   SkillsSettingsView,
   SkillRootView,
   SkillSuggestion,
@@ -519,6 +520,10 @@ export interface AppBindings {
   OpenDownloadPage(): Promise<void>;
   OpenUserConfigPath?(): Promise<void>;
   ReloadUserConfig?(): Promise<{ configWarnings?: string[]; configPath?: string } | null>;
+  StorageSettings(): Promise<StorageSettingsView>;
+  SetDefaultWorkspace(path: string): Promise<void>;
+  MigrateStorage(kind: string, target: string): Promise<StorageSettingsView>;
+  PickStorageFolder(): Promise<string>;
   NeedsOnboarding(): Promise<boolean>;
   ConnectKey(apiKey: string): Promise<string>;
   // Crash overlay "Send report" (desktop/crash_app.go): scrubs user paths, attaches
@@ -1667,6 +1672,15 @@ function makeMockApp(): AppBindings {
     providerKinds: ["openai", "anthropic"],
     autoApproveTools: false,
     bypass: false,
+    storage: {
+      state: { kind: "state", path: `${cwd}/.reasonix`, defaultPath: `${cwd}/.reasonix`, sizeBytes: 0, availableBytes: 1_000_000_000 },
+      cache: { kind: "cache", path: `${cwd}/.reasonix/cache`, defaultPath: `${cwd}/.reasonix/cache`, sizeBytes: 0, availableBytes: 1_000_000_000 },
+      models: { kind: "models", path: `${cwd}/.reasonix/cache/models`, defaultPath: `${cwd}/.reasonix/cache/models`, sizeBytes: 0, availableBytes: 1_000_000_000 },
+      extensions: { kind: "extensions", path: `${cwd}/.reasonix/plugins`, defaultPath: `${cwd}/.reasonix/plugins`, sizeBytes: 0, availableBytes: 1_000_000_000 },
+      defaultWorkspace: cwd,
+      platform: "browser",
+      restartRequired: false,
+    } satisfies StorageSettingsView,
   };
   const hookEvents = ["PreToolUse", "PostToolUse", "UserPromptSubmit", "Stop", "PostLLMCall", "SessionStart", "SessionEnd", "SubagentStop", "Notification", "PreCompact"];
   const hookSettings: Record<string, HooksSettingsView> = {
@@ -4118,6 +4132,21 @@ function makeMockApp(): AppBindings {
     },
     async Settings() {
       return JSON.parse(JSON.stringify(settings)) as SettingsView;
+    },
+    async StorageSettings() {
+      return JSON.parse(JSON.stringify(settings.storage)) as StorageSettingsView;
+    },
+    async SetDefaultWorkspace(path: string) {
+      settings.storage.defaultWorkspace = path.trim();
+    },
+    async MigrateStorage(kind: string, target: string) {
+      const key = kind as "state" | "cache" | "models" | "extensions";
+      if (settings.storage[key]) settings.storage[key] = { ...settings.storage[key], path: target.trim(), restartRequired: true } as never;
+      settings.storage.restartRequired = true;
+      return JSON.parse(JSON.stringify(settings.storage)) as StorageSettingsView;
+    },
+    async PickStorageFolder() {
+      return "";
     },
     async HooksSettings(scope: string) {
       const key = scope === "project" ? "project" : "global";
