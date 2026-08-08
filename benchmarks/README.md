@@ -132,6 +132,17 @@ Diff-mode flags:
 | `-timeout` | `1200` | Agent timeout in seconds (diff mode). |
 | `-attempts` | `1` | Diff mode: retry up to N times until a run passes (stochastic agent). |
 
+## Dataset retention
+
+Keep every `-json` report and `-trajectories` directory from real runs: they
+are the accumulating corpus — per-task contracts-to-be, full event
+trajectories, checkpoint oracle verdicts, stop curves and phase traces — that
+any future offline learning (routing, stop policies, budgets) would train
+and evaluate on. The control plane stays deterministic and interpretable
+until that corpus reaches a scale where learned policies can be judged
+against the same oracles that produced it; nothing learned lands before it
+beats the deterministic baseline on these numbers.
+
 ## A/B compare mode
 
 Run the same suite twice and let the harness judge the trade:
