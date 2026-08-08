@@ -482,6 +482,7 @@ const (
 	NoticeCodeExecutorHandoff               = "executor_handoff"
 	NoticeCodeToolBudget                    = "tool_budget"
 	NoticeCodeLoopGuard                     = "loop_guard"
+	NoticeCodeProgressGuard                 = "progress_guard"
 	NoticeCodeWorkspaceLease                = "workspace_lease"
 	NoticeCodeCancelledTurn                 = "cancelled_turn_display"
 	NoticeCodeUnappliedSteer                = "unapplied_steer"
