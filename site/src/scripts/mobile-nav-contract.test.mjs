@@ -15,9 +15,7 @@ const mediaBlock = (css, px) => {
   return next === -1 ? rest : rest.slice(0, next);
 };
 
-/* The header must fit a 390px viewport: brand logo + language switch +
-   theme switch + install button. These contraction rules are what keep the
-   nav from overflowing horizontally (body has overflow-x: hidden). */
+/* The header must fit narrow viewports while keeping a clear menu trigger. */
 test("≤640px: marketing nav contracts to fit 390px viewports", async () => {
   const [css, header] = await Promise.all([
     source("../styles/global.css"),
@@ -39,16 +37,18 @@ test("≤1100px: marketing navigation collapses before controls overlap", async 
   assert.match(tabletBlock, /\.nav-links \{ display: none/);
   assert.match(tabletBlock, /\.nav-github \{ margin-left: auto; padding-inline: 8px/);
   assert.match(tabletBlock, /\.nav-github-label \{ display: none/);
+  assert.match(tabletBlock, /\.nav-menu-toggle \{ display: inline-flex/);
   assert.match(mobileBlock, /\.nav-github \{ display: none/);
 });
 
-test("≤360px: marketing nav keeps every control within 320px", async () => {
+test("≤360px: marketing nav keeps the menu trigger within 320px", async () => {
   const css = await source("../styles/global.css");
   const block = mediaBlock(css, 360);
   assert.match(block, /\.nav-inner \{ padding: 0 12px; gap: 6px/);
   assert.match(block, /\.lang-switch button \{ padding: 6px 8px/);
   assert.match(block, /\.theme-switch button \{ padding: 6px 7px/);
-  assert.match(block, /\.nav \.btn \{ padding: 9px 14px/);
+  assert.match(block, /\.nav-install \{ display: none/);
+  assert.match(block, /\.nav-menu-toggle \{ width: 36px; height: 36px/);
 });
 
 test("≤400px: marketing nav uses the compact brand mark", async () => {
@@ -80,4 +80,25 @@ test("≤440px: community nav budgets for the async account control", async () =
   assert.match(block, /\.lang-switch button \{ padding: 6px 8px/);
   assert.match(block, /\.theme-switch button \{ padding: 6px 7px/);
   assert.match(block, /#nav-account \.btn \{ padding: 7px 10px/);
+});
+
+test("shared headers expose an accessible mobile navigation", async () => {
+  const [header, community] = await Promise.all([
+    source("../components/SiteHeader.astro"),
+    source("../layouts/Community.astro"),
+  ]);
+  for (const sourceText of [header, community]) {
+    assert.match(sourceText, /data-mobile-nav-toggle/);
+    assert.match(sourceText, /data-mobile-nav/);
+    assert.match(sourceText, /data-mobile-nav-close/);
+    assert.match(sourceText, /aria-expanded="false"/);
+  }
+});
+
+test("mobile navigation behavior supports close, Escape, and focus cycling", async () => {
+  const js = await source("./mobile-nav.js");
+  assert.match(js, /event\.key === "Escape"/);
+  assert.match(js, /event\.key !== "Tab"/);
+  assert.match(js, /document\.body\.classList\.add\("mobile-nav-open"\)/);
+  assert.match(js, /document\.body\.classList\.remove\("mobile-nav-open"\)/);
 });
