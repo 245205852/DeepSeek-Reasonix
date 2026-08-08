@@ -4,12 +4,12 @@
     "commented-code": 0,
     "complexity": 2058,
     "essay": 4024,
-    "file-size": 108773,
+    "file-size": 108839,
     "function-size": 9159,
     "layering": 1,
     "marker": 0,
     "narrative": 61,
-    "test-file-size": 68158
+    "test-file-size": 68231
   },
   "files": {
     "cmd/e2ebench/main.go": {
@@ -27,7 +27,7 @@
     "desktop/app.go": {
       "complexity": 64,
       "essay": 90,
-      "file-size": 11690,
+      "file-size": 11685,
       "function-size": 388
     },
     "desktop/app_autosave_test.go": {
@@ -83,7 +83,7 @@
       "essay": 2
     },
     "desktop/frontend/src/App.tsx": {
-      "file-size": 4764
+      "file-size": 4765
     },
     "desktop/frontend/src/__tests__/app-chrome-tabs.test.ts": {
       "test-file-size": 19
@@ -113,7 +113,7 @@
       "file-size": 255
     },
     "desktop/frontend/src/components/CapabilitiesPanel.tsx": {
-      "file-size": 2651
+      "file-size": 2658
     },
     "desktop/frontend/src/components/Composer.tsx": {
       "file-size": 3963
@@ -131,7 +131,7 @@
       "file-size": 141
     },
     "desktop/frontend/src/components/SettingsPanel.tsx": {
-      "file-size": 6664
+      "file-size": 6666
     },
     "desktop/frontend/src/components/StatusBar.tsx": {
       "file-size": 23
@@ -259,7 +259,7 @@
     "desktop/settings_app.go": {
       "complexity": 25,
       "essay": 28,
-      "file-size": 3054,
+      "file-size": 3055,
       "function-size": 50
     },
     "desktop/settings_app_test.go": {
@@ -964,10 +964,10 @@
     },
     "internal/config/edit.go": {
       "essay": 15,
-      "file-size": 1618
+      "file-size": 1678
     },
     "internal/config/edit_test.go": {
-      "test-file-size": 2232
+      "test-file-size": 2305
     },
     "internal/config/effort.go": {
       "complexity": 9,
