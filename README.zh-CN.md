@@ -42,9 +42,9 @@
 <h3 align="center">面向终端的 DeepSeek 原生 AI coding agent。</h3>
 <p align="center">由配置与插件驱动的极薄 harness——单一静态 Go 二进制，围绕 DeepSeek 的前缀缓存调优，长会话也能把 token 成本压低。</p>
 
-<p align="center">
+<div align="center">
   <video src="https://github.com/user-attachments/assets/ab2f3878-e224-4931-8254-060e7695cfb9" controls preload="metadata" width="560"></video>
-</p>
+</div>
 
 <br/>
 
