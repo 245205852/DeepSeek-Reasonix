@@ -787,7 +787,6 @@ export function TurnActions({
             className={`turn-actions__btn${confirmScope === "fork" ? " turn-actions__btn--confirm" : ""}`}
             type="button"
             disabled={Boolean(forkDisabledReason)}
-            aria-label={confirmScope === "fork" ? t("rewind.confirmFork") : t("rewind.forkTooltip")}
             title={forkDisabledReason || t("rewind.forkTooltip")}
             onClick={() => selectRewind("fork")}
           >

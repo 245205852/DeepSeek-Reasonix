@@ -148,10 +148,9 @@ func SaveCompactionState(sessionPath string, st CompactionState) error {
 	if path == "" {
 		return fmt.Errorf("empty session path")
 	}
-	// V2 preserves logical user-turn boundaries in Projection.Messages and
-	// applies strict-provider role coalescing only to outbound request copies.
-	// Previous readers reject this explicit boundary and fall back to canonical
-	// history instead of interpreting the changed V1 invariant incorrectly.
+	// V2 preserves logical user-turn boundaries and coalesces roles only on
+	// outbound copies. Previous readers reject this boundary and fall back to
+	// canonical history instead of misreading the changed V1 invariant.
 	st.SchemaVersion = compactionStateSchemaCurrent
 	if st.UpdatedAt.IsZero() {
 		st.UpdatedAt = time.Now().UTC()

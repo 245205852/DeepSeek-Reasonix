@@ -140,6 +140,19 @@ func anchorPreview(text string) string {
 	return truncatePreview(previewProse(text))
 }
 
+type visibleCompressionPlan struct {
+	result    tool.CompressResult
+	foldMask  []bool
+	fold      []provider.Message
+	firstFold int
+}
+
+type preparedVisibleCompression struct {
+	fold         []provider.Message
+	instructions string
+	archive      string
+}
+
 func (a *Agent) compressVisibleRange(
 	ctx context.Context,
 	snap explicitCompressionSnapshot,
@@ -149,19 +162,84 @@ func (a *Agent) compressVisibleRange(
 	preview string,
 	instructions string,
 ) (tool.CompressResult, error) {
+	plan, ok := a.planVisibleCompression(snap, direction, anchorIndex, preview)
+	if !ok {
+		return plan.result, nil
+	}
+	result := plan.result
+
+	a.sink.Emit(event.Event{Kind: event.CompactionStarted, Compaction: event.Compaction{Trigger: trigger}})
+	prepared, reason, err := a.prepareVisibleCompression(ctx, trigger, plan.fold, instructions)
+	if err != nil {
+		a.emitCompactionAborted(trigger)
+		return tool.CompressResult{}, err
+	}
+	if reason != "" {
+		a.emitCompactionAborted(trigger)
+		result.Reason = reason
+		return result, nil
+	}
+
+	summary, mode, usage, providerReqID, err := a.runCompactionSummary(ctx, prepared.fold, prepared.instructions)
+	tele := compactionTelemetryFromSummary(trigger, a.CacheState(), result.SourceTokens, mode, usage, providerReqID)
+	if err != nil {
+		tele.Error = err.Error()
+		a.emitCompactionTelemetry(tele)
+		a.emitCompactionAborted(trigger)
+		return tool.CompressResult{}, err
+	}
+	summary, err = a.interceptCompactionComplete(ctx, summary)
+	if err != nil {
+		tele.Error = err.Error()
+		a.emitCompactionTelemetry(tele)
+		a.emitCompactionAborted(trigger)
+		return tool.CompressResult{}, err
+	}
+
+	projection := buildVisibleCompressionProjection(snap.visible, plan, summary)
+	projectionTokens := estimateMessagesTokens(a.providerProjectionMessages(projection))
+	tele.ProjectionTokens = projectionTokens
+	result.Messages = len(plan.fold)
+	result.ProjectionTokens = projectionTokens
+	result.Mode = mode
+	if projectionTokens >= result.SourceTokens {
+		result.Reason = "compressed context would not be smaller"
+		a.emitCompactionTelemetry(tele)
+		a.emitCompactionAborted(trigger)
+		return result, nil
+	}
+
+	if err := a.installVisibleCompression(snap, trigger, mode, summary, projection, result.SourceTokens, projectionTokens, usage); err != nil {
+		if errors.Is(err, errCompressStaleContext) {
+			tele.Error = err.Error()
+			a.emitCompactionTelemetry(tele)
+		}
+		a.emitCompactionAborted(trigger)
+		return tool.CompressResult{}, err
+	}
+	a.session.NoteContentRewrite("compact_" + trigger)
+	a.emitCompactionTelemetry(tele)
+	a.sink.Emit(event.Event{Kind: event.CompactionDone, Compaction: event.Compaction{
+		Trigger: trigger, Messages: len(plan.fold), Summary: summary, Archive: prepared.archive,
+	}})
+	result.Status = "ok"
+	result.Reason = ""
+	return result, nil
+}
+
+func (a *Agent) planVisibleCompression(snap explicitCompressionSnapshot, direction string, anchorIndex int, preview string) (visibleCompressionPlan, bool) {
 	sourceTokens := estimateMessagesTokens(snap.visible)
-	result := tool.CompressResult{
+	plan := visibleCompressionPlan{result: tool.CompressResult{
 		Status:           "noop",
 		Direction:        direction,
 		Anchor:           preview,
 		SourceTokens:     sourceTokens,
 		ProjectionTokens: sourceTokens,
-	}
+	}}
 	if anchorIndex < 0 || anchorIndex >= len(snap.visible) {
-		result.Reason = "anchor is no longer present in the model context"
-		return result, nil
+		plan.result.Reason = "anchor is no longer present in the model context"
+		return plan, false
 	}
-
 	head := 0
 	if len(snap.visible) > 0 && snap.visible[0].Role == provider.RoleSystem {
 		head = 1
@@ -181,37 +259,32 @@ func (a *Agent) compressVisibleRange(
 		end = completedEnd
 	}
 	if start >= end {
-		result.Reason = "selected range is empty"
-		return result, nil
+		plan.result.Reason = "selected range is empty"
+		return plan, false
 	}
 
-	foldMask := make([]bool, len(snap.visible))
-	firstFold := len(snap.visible)
-	foldCount := 0
+	plan.foldMask = make([]bool, len(snap.visible))
+	plan.firstFold = len(snap.visible)
 	for i, msg := range snap.visible {
 		selected := i >= start && i < end
 		mergeSummary := i < completedEnd && isCompactionSummary(msg)
 		if msg.Role == provider.RoleSystem || i < head || (!selected && !mergeSummary) {
 			continue
 		}
-		foldMask[i] = true
-		foldCount++
-		if i < firstFold {
-			firstFold = i
+		plan.foldMask[i] = true
+		plan.fold = append(plan.fold, msg)
+		if i < plan.firstFold {
+			plan.firstFold = i
 		}
 	}
-	if foldCount == 0 {
-		result.Reason = "selected range has no model-visible messages"
-		return result, nil
+	if len(plan.fold) == 0 {
+		plan.result.Reason = "selected range has no model-visible messages"
+		return plan, false
 	}
-	fold := make([]provider.Message, 0, foldCount)
-	for i, msg := range snap.visible {
-		if foldMask[i] {
-			fold = append(fold, msg)
-		}
-	}
+	return plan, true
+}
 
-	a.sink.Emit(event.Event{Kind: event.CompactionStarted, Compaction: event.Compaction{Trigger: trigger}})
+func (a *Agent) prepareVisibleCompression(ctx context.Context, trigger string, fold []provider.Message, instructions string) (preparedVisibleCompression, string, error) {
 	if a.hooks != nil {
 		if hookInstructions := a.hooks.PreCompact(ctx, trigger); hookInstructions != "" {
 			if instructions != "" {
@@ -220,87 +293,45 @@ func (a *Agent) compressVisibleRange(
 			instructions += hookInstructions
 		}
 	}
-
 	preparedFold, preparedInstructions, err := a.interceptCompactionPrepare(ctx, fold, instructions)
 	if err != nil {
-		a.emitCompactionAborted(trigger)
-		return tool.CompressResult{}, err
-	}
-	if len(preparedFold) == 0 {
-		a.emitCompactionAborted(trigger)
-		result.Reason = "compaction hook removed the selected range"
-		return result, nil
+		return preparedVisibleCompression{}, "", err
 	}
 	preparedFold = provider.ModelMessages(preparedFold)
 	if len(preparedFold) == 0 {
-		a.emitCompactionAborted(trigger)
-		result.Reason = "compaction hook removed the selected range"
-		return result, nil
+		return preparedVisibleCompression{}, "compaction hook removed the selected range", nil
 	}
-
-	archived := ""
-	if a.archiveDir != "" {
-		path, archiveErr := archiveMessages(a.archiveDir, preparedFold)
-		if archiveErr != nil {
-			a.emitCompactionAborted(trigger)
-			return tool.CompressResult{}, fmt.Errorf("archive: %w", archiveErr)
-		}
-		archived = path
+	prepared := preparedVisibleCompression{fold: preparedFold, instructions: preparedInstructions}
+	if a.archiveDir == "" {
+		return prepared, "", nil
 	}
-
-	summary, mode, usage, providerReqID, err := a.runCompactionSummary(ctx, preparedFold, preparedInstructions)
-	tele := compactionTelemetryFromSummary(trigger, a.CacheState(), sourceTokens, mode, usage, providerReqID)
+	prepared.archive, err = archiveMessages(a.archiveDir, preparedFold)
 	if err != nil {
-		tele.Error = err.Error()
-		a.emitCompactionTelemetry(tele)
-		a.emitCompactionAborted(trigger)
-		return tool.CompressResult{}, err
+		return preparedVisibleCompression{}, "", fmt.Errorf("archive: %w", err)
 	}
-	summary, err = a.interceptCompactionComplete(ctx, summary)
-	if err != nil {
-		tele.Error = err.Error()
-		a.emitCompactionTelemetry(tele)
-		a.emitCompactionAborted(trigger)
-		return tool.CompressResult{}, err
-	}
+	return prepared, "", nil
+}
 
-	projection := make([]provider.Message, 0, len(snap.visible)-foldCount+1)
-	inserted := false
-	for i, msg := range snap.visible {
-		if i == firstFold {
+func buildVisibleCompressionProjection(visible []provider.Message, plan visibleCompressionPlan, summary string) []provider.Message {
+	projection := make([]provider.Message, 0, len(visible)-len(plan.fold)+1)
+	for i, msg := range visible {
+		if i == plan.firstFold {
 			projection = append(projection, formatSummaryMessage(summary))
-			inserted = true
 		}
-		if !foldMask[i] {
+		if !plan.foldMask[i] {
 			projection = append(projection, msg)
 		}
 	}
-	if !inserted {
-		projection = append(projection, formatSummaryMessage(summary))
-	}
-	projection = provider.ModelMessages(projection)
-	projectionTokens := estimateMessagesTokens(a.providerProjectionMessages(projection))
-	tele.ProjectionTokens = projectionTokens
-	result.Messages = foldCount
-	result.ProjectionTokens = projectionTokens
-	result.Mode = mode
-	if projectionTokens >= sourceTokens {
-		result.Reason = "compressed context would not be smaller"
-		a.emitCompactionTelemetry(tele)
-		a.emitCompactionAborted(trigger)
-		return result, nil
-	}
+	return provider.ModelMessages(projection)
+}
 
+func (a *Agent) installVisibleCompression(snap explicitCompressionSnapshot, trigger, mode, summary string, projection []provider.Message, sourceTokens, projectionTokens int, usage *provider.Usage) error {
 	current, currentVersion := a.session.snapshotMessagesVersion()
 	if currentVersion != snap.transcriptVersion || len(current) != len(snap.canonical) ||
 		coveredPrefixHash(current, len(current)) != snap.coveredHash ||
 		a.compactionState.Projection.ProjectionVersion != snap.projectionVersion {
-		tele.Error = errCompressStaleContext.Error()
-		a.emitCompactionTelemetry(tele)
-		a.emitCompactionAborted(trigger)
-		return tool.CompressResult{}, errCompressStaleContext
+		return errCompressStaleContext
 	}
-
 	now := time.Now().UTC()
 	state := CompactionState{
 		SchemaVersion:     compactionStateSchemaCurrent,
@@ -328,17 +359,9 @@ func (a *Agent) compressVisibleRange(
 		state.LastCompactionCost = a.pricing.Cost(usage)
 	}
 	if err := a.installProjection(state); err != nil {
-		a.emitCompactionAborted(trigger)
-		return tool.CompressResult{}, fmt.Errorf("persist projection: %w", err)
+		return fmt.Errorf("persist projection: %w", err)
 	}
-	a.session.NoteContentRewrite("compact_" + trigger)
-	a.emitCompactionTelemetry(tele)
-	a.sink.Emit(event.Event{Kind: event.CompactionDone, Compaction: event.Compaction{
-		Trigger: trigger, Messages: foldCount, Summary: summary, Archive: archived,
-	}})
-	result.Status = "ok"
-	result.Reason = ""
-	return result, nil
+	return nil
 }
 
 func compactionTelemetryFromSummary(trigger, cacheState string, sourceTokens int, mode string, usage *provider.Usage, providerReqID string) CompactionTelemetry {
@@ -431,25 +454,7 @@ func (a *Agent) compactToProjection(ctx context.Context, trigger, instructions s
 
 	sourceTokens := estimateMessagesTokens(provider.ModelMessages(msgs))
 	summary, mode, usage, providerReqID, err := a.runCompactionSummary(ctx, fold, instructions)
-	tele := CompactionTelemetry{
-		Trigger:           trigger,
-		CacheState:        a.CacheState(),
-		Mode:              mode,
-		Native:            mode == CompactionModeNative,
-		SourceTokens:      sourceTokens,
-		ProviderRequestID: providerReqID,
-	}
-	if usage != nil {
-		tele.InputTokens = usage.PromptTokens
-		tele.OutputTokens = usage.CompletionTokens
-		tele.CacheHitTokens = usage.CacheHitTokens
-		tele.CacheMissTokens = usage.CacheMissTokens
-		tele.CacheWriteTokens = usage.CacheWriteTokens
-		tele.RequestCount = usage.RequestCount
-		if tele.RequestCount <= 0 {
-			tele.RequestCount = 1
-		}
-	}
+	tele := compactionTelemetryFromSummary(trigger, a.CacheState(), sourceTokens, mode, usage, providerReqID)
 	if err != nil {
 		tele.Error = err.Error()
 		a.emitCompactionTelemetry(tele)
