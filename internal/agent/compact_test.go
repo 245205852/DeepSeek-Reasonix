@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"reasonix/internal/event"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -541,15 +542,19 @@ func TestSummarizeFromPreservesLocalOnlyOutsideModelAndArchive(t *testing.T) {
 		{Role: provider.RoleSystem, Content: "sys"},
 		{Role: provider.RoleUser, Content: "task"},
 		local,
-		{Role: provider.RoleAssistant, Content: "safe answer"},
+		{Role: provider.RoleAssistant, Content: "safe answer " + strings.Repeat("work ", 200)},
 	}}
 	a := New(prov, tool.NewRegistry(), sess, Options{ArchiveDir: archiveDir}, event.Discard)
+	before := sess.Snapshot()
 
 	if err := a.SummarizeFrom(context.Background(), 1); err != nil {
 		t.Fatalf("SummarizeFrom: %v", err)
 	}
-	if len(sess.Messages) != 3 || !sess.Messages[2].LocalOnly || sess.Messages[2].Content != local.Content || sess.Messages[2].ReasoningContent != local.ReasoningContent || sess.Messages[2].InterruptedTurn == nil || !sess.Messages[2].InterruptedTurn.Pending {
-		t.Fatalf("local-only message was not preserved verbatim: %+v", sess.Messages)
+	if !reflect.DeepEqual(sess.Snapshot(), before) {
+		t.Fatalf("canonical transcript changed: before=%+v after=%+v", before, sess.Snapshot())
+	}
+	if len(a.compactionState.Projection.Messages) == 0 {
+		t.Fatal("expected summarize-from projection")
 	}
 	assertLocalOnlyAbsentFromSummaryAndArchive(t, prov, archiveDir, local)
 }
@@ -566,17 +571,21 @@ func TestSummarizeUpToPreservesLocalOnlyOutsideModelAndArchive(t *testing.T) {
 		{Role: provider.RoleSystem, Content: "sys"},
 		{Role: provider.RoleUser, Content: "old task"},
 		local,
-		{Role: provider.RoleAssistant, Content: "old answer"},
+		{Role: provider.RoleAssistant, Content: "old answer " + strings.Repeat("work ", 200)},
 		{Role: provider.RoleUser, Content: "new task"},
 		{Role: provider.RoleAssistant, Content: "new answer"},
 	}}
 	a := New(prov, tool.NewRegistry(), sess, Options{ArchiveDir: archiveDir}, event.Discard)
+	before := sess.Snapshot()
 
 	if err := a.SummarizeUpTo(context.Background(), 4); err != nil {
 		t.Fatalf("SummarizeUpTo: %v", err)
 	}
-	if len(sess.Messages) != 5 || !sess.Messages[2].LocalOnly || sess.Messages[2].Content != local.Content || sess.Messages[2].ReasoningContent != local.ReasoningContent || sess.Messages[3].Content != "new task" {
-		t.Fatalf("local-only message/tail ordering was not preserved: %+v", sess.Messages)
+	if !reflect.DeepEqual(sess.Snapshot(), before) {
+		t.Fatalf("canonical transcript changed: before=%+v after=%+v", before, sess.Snapshot())
+	}
+	if len(a.compactionState.Projection.Messages) == 0 {
+		t.Fatal("expected summarize-up-to projection")
 	}
 	assertLocalOnlyAbsentFromSummaryAndArchive(t, prov, archiveDir, local)
 }

@@ -2184,6 +2184,7 @@ func defaultFullBootToolNames() []string {
 		"bash_output",
 		"code_index",
 		"complete_step",
+		"compress",
 		"delete_range",
 		"delete_symbol",
 		"docs",
@@ -2234,6 +2235,7 @@ func economyBootToolNames() []string {
 		"ask",
 		"bash",
 		"bash_output",
+		"compress",
 		"connect_tool_source",
 		"edit_file",
 		"kill_shell",
@@ -2286,6 +2288,7 @@ command = "reasonix-missing-mockmcp"
 		"ask",
 		"bash",
 		"bash_output",
+		"compress",
 		"connect_tool_source",
 		"edit_file",
 		"kill_shell",
@@ -2297,7 +2300,7 @@ command = "reasonix-missing-mockmcp"
 	if got := toolSchemaNames(req.Tools); !reflect.DeepEqual(got, wantTools) {
 		t.Fatalf("economy first request tool order changed\ngot  %v\nwant %v", got, wantTools)
 	}
-	for _, want := range []string{"connect_tool_source", "read_file", "edit_file", "write_file", "bash", "ask"} {
+	for _, want := range []string{"compress", "connect_tool_source", "read_file", "edit_file", "write_file", "bash", "ask"} {
 		if !requestHasTool(req, want) {
 			t.Fatalf("economy first request missing tool %q; tools=%v", want, toolSchemaNames(req.Tools))
 		}
@@ -2322,6 +2325,15 @@ command = "reasonix-missing-mockmcp"
 	}
 	if strings.Contains(sys, "# Skills") || strings.Contains(sys, "projskill") {
 		t.Fatalf("skills index should not be in economy system prompt:\n%s", sys)
+	}
+}
+
+func TestTokenEconomyCompressHonorsExplicitAllowlist(t *testing.T) {
+	if got := tokenEconomyBuiltins([]string{"read_file"}); slices.Contains(got, "compress") {
+		t.Fatalf("explicit allowlist unexpectedly enabled compress: %v", got)
+	}
+	if got := tokenEconomyBuiltins([]string{"compress"}); !reflect.DeepEqual(got, []string{"compress"}) {
+		t.Fatalf("explicit compress allowlist = %v, want [compress]", got)
 	}
 }
 

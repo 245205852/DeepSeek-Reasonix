@@ -6,7 +6,9 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -260,6 +262,57 @@ func TestRewindConversationSucceedsWithLiveBoundary(t *testing.T) {
 	}
 	if !ok {
 		t.Fatal("expected a conversation-rewind success notice")
+	}
+}
+
+func TestPositionalCompressionPreservesCheckpointLineage(t *testing.T) {
+	c, ag, _ := runTwoTurns(t)
+	sess := ag.Session()
+	sess.Add(provider.Message{Role: provider.RoleAssistant, Content: strings.Repeat("large completed output ", 240)})
+	beforeMessages := sess.Snapshot()
+	beforeRewrite := sess.RewriteVersion()
+	beforeRevision := atomic.LoadInt64(&c.sessionRevision)
+	c.checkpoints.mu.Lock()
+	beforeBounds := make(map[int]int, len(c.checkpoints.bound))
+	for turn, boundary := range c.checkpoints.bound {
+		beforeBounds[turn] = boundary
+	}
+	c.checkpoints.mu.Unlock()
+
+	if err := c.SummarizeFrom(context.Background(), 0); err != nil {
+		t.Fatalf("SummarizeFrom: %v", err)
+	}
+	if !reflect.DeepEqual(sess.Snapshot(), beforeMessages) {
+		t.Fatal("positional compression changed canonical history")
+	}
+	if got := sess.RewriteVersion(); got != beforeRewrite {
+		t.Fatalf("rewrite version = %d, want unchanged %d", got, beforeRewrite)
+	}
+	if got := atomic.LoadInt64(&c.sessionRevision); got != beforeRevision {
+		t.Fatalf("controller session revision = %d, want unchanged %d", got, beforeRevision)
+	}
+	c.checkpoints.mu.Lock()
+	afterBounds := make(map[int]int, len(c.checkpoints.bound))
+	for turn, boundary := range c.checkpoints.bound {
+		afterBounds[turn] = boundary
+	}
+	c.checkpoints.mu.Unlock()
+	if !reflect.DeepEqual(afterBounds, beforeBounds) {
+		t.Fatalf("checkpoint boundaries changed: before=%v after=%v", beforeBounds, afterBounds)
+	}
+	state, ok, err := agent.LoadCompactionState(c.SessionPath())
+	if err != nil || !ok {
+		t.Fatalf("load projection sidecar: ok=%v err=%v", ok, err)
+	}
+	if state.LastTrigger != agent.CompactionTriggerManual || state.Projection.ProjectionVersion == 0 {
+		t.Fatalf("projection state = %+v", state)
+	}
+	if _, ok := c.checkpoints.boundary(1); !ok {
+		t.Fatal("conversation rewind boundary disappeared after compression")
+	}
+	plan, err := c.PrepareRewind(1, RewindConversation)
+	if err != nil || !plan.CanConversation {
+		t.Fatalf("conversation rewind unavailable after compression: plan=%+v err=%v", plan, err)
 	}
 }
 

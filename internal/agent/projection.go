@@ -35,6 +35,7 @@ const (
 	CompactionTriggerManual   = "manual"
 	CompactionTriggerOverflow = "overflow"
 	CompactionTriggerSnip     = "snip"
+	CompactionTriggerTool     = "tool"
 )
 
 // Compaction mode labels.
@@ -319,11 +320,10 @@ func modelVisibleFromProjection(proj ContextProjection, canonical []provider.Mes
 	return out
 }
 
-// coalesceProjectionUserRuns keeps provider-visible projections compatible
-// with providers that require strict user/assistant alternation. Compaction
-// inserts its digest as a user message, and the retained tail can begin with a
-// user message; merging the run in the projection preserves the digest prefix
-// while leaving the canonical transcript untouched.
+// coalesceProjectionUserRuns keeps provider request copies compatible with
+// providers that require strict user/assistant alternation. Projection
+// sidecars retain logical user-turn boundaries; only the outbound copy is
+// merged, leaving canonical history and range anchors untouched.
 func coalesceProjectionUserRuns(msgs []provider.Message) []provider.Message {
 	if len(msgs) < 2 {
 		return msgs

@@ -2832,10 +2832,8 @@ func (c *Controller) Compact(ctx context.Context, instructions string) error {
 	if c.executor == nil {
 		return nil
 	}
-	// The run loop is the only sanctioned writer of the live session during a
-	// turn; a manual compact would rewrite the log underneath it. The rotation
-	// gate (not a bare Running() check) also blocks a turn from starting while
-	// the compaction rewrites the session — see beginRotation.
+	// The rotation gate keeps a turn from starting while a manual compaction is
+	// building and installing a new model-visible projection.
 	if err := c.beginRotation(); err != nil {
 		if errors.Is(err, errTurnRunningRotation) {
 			return fmt.Errorf("cannot compact while a turn is running")
@@ -3418,12 +3416,9 @@ func branchDisplayName(b agent.BranchInfo) string {
 	return b.ID
 }
 
-// SummarizeFrom compresses the conversation from turn onward into one summary;
-// SummarizeUpTo compresses everything before it. Both are Claude Code's "summarize
-// from/up to here" — they restructure the message log (keeping code untouched), so
-// afterwards the per-turn boundaries no longer map and conversation rewind/fork
-// report "unavailable" until new turns rebuild them (code rewind, file-based, is
-// unaffected). Refused while a turn runs; need the live boundary.
+// SummarizeFrom and SummarizeUpTo preserve the historical turn-index API while
+// changing only the model-visible context projection. The canonical transcript
+// and checkpoint boundaries remain available for rewind, undo, and fork.
 func (c *Controller) SummarizeFrom(ctx context.Context, turn int) error {
 	return c.summarizeAt(ctx, turn, true)
 }
@@ -3436,10 +3431,9 @@ func (c *Controller) summarizeAt(ctx context.Context, turn int, from bool) error
 	if c.executor == nil {
 		return c.rewindFail(fmt.Errorf("checkpoints unavailable"))
 	}
-	// Summarize rewrites the live session AFTER a provider round-trip, so the
-	// bare Running() check left a seconds-wide window for a turn to start and
-	// then have the log replaced under it. Hold the rotation gate from the
-	// boundary read through the post-rewrite snapshot.
+	// Hold the rotation gate from the checkpoint-boundary lookup through
+	// projection installation so a turn cannot start against an intermediate
+	// context view.
 	if err := c.beginRotation(); err != nil {
 		if errors.Is(err, errTurnRunningRotation) {
 			return c.rewindFail(fmt.Errorf("cannot summarize while a turn is running"))
@@ -3459,14 +3453,6 @@ func (c *Controller) summarizeAt(ctx context.Context, turn int, from bool) error
 	}
 	if err != nil {
 		return c.rewindFail(err)
-	}
-	// The log was restructured; existing boundaries no longer map. Drop them (keep
-	// the turn counter monotonic so new turns don't collide with the store) —
-	// conversation rewind degrades to "unavailable" until fresh turns rebuild them.
-	c.checkpoints.clearBounds()
-	atomic.AddInt64(&c.sessionRevision, 1)
-	if err := c.SnapshotRewrite(); err != nil {
-		slog.Warn("controller: post-summarize snapshot", "err", err)
 	}
 	return nil
 }

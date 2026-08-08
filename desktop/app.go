@@ -3029,9 +3029,8 @@ func (a *App) ForkForTab(tabID string, turn int) (TabMeta, error) {
 	return meta, nil
 }
 
-// SummarizeFrom / SummarizeUpTo compress the conversation from / up to the start
-// of turn into one summary (Claude Code's "summarize from/up to here"), keeping
-// code intact. The frontend re-reads History after this resolves.
+// SummarizeFrom / SummarizeUpTo compress model context after / before the start
+// of a selected turn. Visible history and checkpoints remain unchanged.
 func (a *App) SummarizeFrom(turn int) error {
 	return a.SummarizeFromForTab("", turn)
 }
