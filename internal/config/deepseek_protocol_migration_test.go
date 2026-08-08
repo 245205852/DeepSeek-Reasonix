@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/BurntSushi/toml"
 )
 
 func TestMigrateLegacyDeepSeekProtocolUserConfigPreservesTOMLAndIsIdempotent(t *testing.T) {
@@ -102,6 +104,73 @@ future_provider_field = "untouched"
 	}
 	if string(afterSecondRun) != beforeSecondRun {
 		t.Fatal("idempotent migration rewrote the config on its second run")
+	}
+}
+
+func TestDeepSeekProtocolMigrationSupportsInlineProviderArrays(t *testing.T) {
+	raw := `config_version = 4
+future_prompt = """
+[not-a-section]
+providers = [{ name = "quoted-example", kind = "openai" }]
+"""
+providers = [{ name = "deepseek-flash", kind = "openai", base_url = "https://api.deepseek.com", model = "deepseek-v4-flash", api_key_env = "DEEPSEEK_API_KEY" }, { name = "other", kind = "openai", base_url = "https://gateway.example/v1", model = "other-model", api_key_env = "OTHER_KEY", headers = { X-Trace = "keep,=#value" } }, { name = "local", kind = "ollama", model = "local-model" }]
+`
+	next, changed, err := rewriteLegacyDeepSeekProtocol(raw, "", true)
+	if err != nil {
+		t.Fatalf("rewrite inline providers: %v", err)
+	}
+	if !changed {
+		t.Fatal("eligible inline DeepSeek provider was not migrated")
+	}
+	for _, want := range []string{
+		`kind = "anthropic"`,
+		`base_url = "https://api.deepseek.com/anthropic"`,
+		`headers = { X-Trace = "keep,=#value" }`,
+		`base_url = "https://gateway.example/v1"`,
+		`{ name = "local", kind = "ollama", model = "local-model" }`,
+		`providers = [{ name = "quoted-example", kind = "openai" }]`,
+	} {
+		if !strings.Contains(next, want) {
+			t.Errorf("inline migration dropped %q:\n%s", want, next)
+		}
+	}
+	var decoded Config
+	if _, err := toml.Decode(next, &decoded); err != nil {
+		t.Fatalf("migrated inline TOML is invalid: %v\n%s", err, next)
+	}
+	if len(decoded.Providers) != 3 || decoded.Providers[0].Kind != "anthropic" || decoded.Providers[1].Kind != "openai" {
+		t.Fatalf("migrated inline providers = %+v", decoded.Providers)
+	}
+	again, changed, err := rewriteLegacyDeepSeekProtocol(next, "", true)
+	if err != nil {
+		t.Fatalf("second inline migration: %v", err)
+	}
+	if changed || again != next {
+		t.Fatal("inline provider migration is not idempotent")
+	}
+}
+
+func TestManualDeepSeekProtocolUpgradeSupportsMultilineInlineArray(t *testing.T) {
+	raw := `providers = [
+  { name = "deepseek-pro", kind = 'openai', base_url = 'https://api.deepseek.com/v1', model = "deepseek-v4-pro", api_key_env = "CUSTOM_KEY", headers = { X-Route = "keep,=#route" }, future_capability = true },
+]
+`
+	next, changed, err := rewriteLegacyDeepSeekProtocol(raw, "deepseek", false)
+	if err != nil {
+		t.Fatalf("manual inline upgrade: %v", err)
+	}
+	if !changed || !strings.Contains(next, `kind = "anthropic"`) ||
+		!strings.Contains(next, `base_url = "https://api.deepseek.com/anthropic"`) {
+		t.Fatalf("manual inline upgrade mismatch:\n%s", next)
+	}
+	for _, want := range []string{
+		`api_key_env = "CUSTOM_KEY"`,
+		`headers = { X-Route = "keep,=#route" }`,
+		`future_capability = true`,
+	} {
+		if !strings.Contains(next, want) {
+			t.Errorf("manual inline upgrade dropped %q:\n%s", want, next)
+		}
 	}
 }
 

@@ -27,6 +27,7 @@ type turnOrchestrator struct {
 type orchestratedTurn struct {
 	input            string
 	raw              string
+	imageRefs        string
 	display          string
 	editedOriginal   string
 	synthetic        bool
@@ -41,8 +42,16 @@ func (o *turnOrchestrator) runTurnWithRawDisplay(ctx context.Context, input, raw
 	return o.runOrchestratedTurn(ctx, orchestratedTurn{input: input, raw: raw, display: display})
 }
 
+func (o *turnOrchestrator) runTurnWithImageRefsRawDisplay(ctx context.Context, input, raw, imageRefs, display string) error {
+	return o.runOrchestratedTurn(ctx, orchestratedTurn{input: input, raw: raw, imageRefs: imageRefs, display: display})
+}
+
 func (o *turnOrchestrator) runEditedTurnWithRawDisplay(ctx context.Context, input, raw, display, original string) error {
 	return o.runOrchestratedTurn(ctx, orchestratedTurn{input: input, raw: raw, display: display, editedOriginal: original})
+}
+
+func (o *turnOrchestrator) runEditedTurnWithImageRefsRawDisplay(ctx context.Context, input, raw, imageRefs, display, original string) error {
+	return o.runOrchestratedTurn(ctx, orchestratedTurn{input: input, raw: raw, imageRefs: imageRefs, display: display, editedOriginal: original})
 }
 
 func (o *turnOrchestrator) runSyntheticTurnWithRawDisplay(ctx context.Context, input, raw, display string) error {
@@ -110,8 +119,7 @@ func (o *turnOrchestrator) runSubagentSkillTurns(ctx context.Context, skills []s
 	c := o.c
 	c.maybeSessionStart(ctx)
 	parentSession := c.parentSessionID()
-	images := c.inputImages(raw)
-	imageCandidates := c.resolveInputImageCandidates(raw)
+	images, imageCandidates := c.resolveTurnImages(raw)
 	ctx = agent.WithParentSession(ctx, parentSession)
 	ctx = jobs.WithSession(ctx, parentSession)
 	ctx = agent.WithUserImages(ctx, images)
@@ -197,8 +205,7 @@ func (o *turnOrchestrator) runOrchestratedTurn(ctx context.Context, turn orchest
 	parentSession := c.parentSessionID()
 	ctx = agent.WithParentSession(ctx, parentSession)
 	ctx = jobs.WithSession(ctx, parentSession)
-	userImages := c.inputImages(turn.input)
-	imageCandidates := c.resolveInputImageCandidates(turn.raw)
+	userImages, imageCandidates := c.resolveTurnImages(turn.imageReferenceInput())
 	ctx = agent.WithUserImages(ctx, userImages)
 	ctx = agent.WithSubagentImageCandidates(ctx, imageCandidates)
 	ctx = agent.WithRawUserInput(ctx, turn.raw)
@@ -394,8 +401,12 @@ func (o *turnOrchestrator) runOrchestratedTurn(ctx context.Context, turn orchest
 }
 
 func (o *turnOrchestrator) runGoalLoopWithRawDisplay(ctx context.Context, input, raw, display string) error {
+	return o.runGoalLoopWithImageRefsRawDisplay(ctx, input, raw, "", display)
+}
+
+func (o *turnOrchestrator) runGoalLoopWithImageRefsRawDisplay(ctx context.Context, input, raw, imageRefs, display string) error {
 	expectedContinuationEpoch := o.c.goals.continuationToken()
-	err := o.runTurnWithRawDisplay(ctx, input, raw, display)
+	err := o.runTurnWithImageRefsRawDisplay(ctx, input, raw, imageRefs, display)
 	if err != nil {
 		if ctx.Err() != nil {
 			o.c.goalUsageTee.setActiveRecorder(nil)
@@ -418,8 +429,12 @@ func (o *turnOrchestrator) runGoalLoopWithRawDisplay(ctx context.Context, input,
 }
 
 func (o *turnOrchestrator) runEditedGoalLoopWithRawDisplay(ctx context.Context, input, raw, display, original string) error {
+	return o.runEditedGoalLoopWithImageRefsRawDisplay(ctx, input, raw, "", display, original)
+}
+
+func (o *turnOrchestrator) runEditedGoalLoopWithImageRefsRawDisplay(ctx context.Context, input, raw, imageRefs, display, original string) error {
 	expectedContinuationEpoch := o.c.goals.continuationToken()
-	err := o.runEditedTurnWithRawDisplay(ctx, input, raw, display, original)
+	err := o.runEditedTurnWithImageRefsRawDisplay(ctx, input, raw, imageRefs, display, original)
 	if err != nil {
 		if ctx.Err() != nil {
 			o.c.goalUsageTee.setActiveRecorder(nil)

@@ -156,6 +156,30 @@ func TestControllerResolvesSubagentImageCandidatesForTextParent(t *testing.T) {
 	}
 }
 
+func TestControllerResolveTurnImagesReusesCandidatesForVisionParent(t *testing.T) {
+	workspace := t.TempDir()
+	writeVisionTestConfig(t, workspace)
+	path := filepath.Join(workspace, "diagram.png")
+	if err := os.WriteFile(path, mustBase64(t, tinyPNG), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	c := &Controller{workspaceRoot: workspace, modelRef: "custom/vision-pro"}
+	userImages, candidates := c.resolveTurnImages("inspect @diagram.png")
+	if len(userImages) != 1 || len(candidates) != 1 {
+		t.Fatalf("turn images = %v, candidates = %v; want one image in both paths", userImages, candidates)
+	}
+	if &userImages[0] != &candidates[0] || userImages[0] != candidates[0] {
+		t.Fatal("vision parent and subagent candidates should reuse the same resolved image slice")
+	}
+
+	c.modelRef = "custom/text-only"
+	userImages, candidates = c.resolveTurnImages("inspect @diagram.png")
+	if len(userImages) != 0 || len(candidates) != 1 {
+		t.Fatalf("text parent turn images = %v, candidates = %v; want candidates only", userImages, candidates)
+	}
+}
+
 func TestControllerImageInputEnabledDoesNotFallbackFromUnknownRef(t *testing.T) {
 	workspace := t.TempDir()
 	writeVisionTestConfig(t, workspace)
