@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -408,6 +409,10 @@ func TestValidateSessionDisplayIndexMismatch(t *testing.T) {
 }
 
 func TestWriteSessionDisplayIndexPermissions(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows does not expose POSIX permission bits")
+	}
+
 	msgs := displayIndexTestMessages()
 	digest, err := digestSessionMessages(msgs)
 	if err != nil {

@@ -812,7 +812,7 @@ func historySessionLooksEventFormat(path string) bool {
 	}
 	defer f.Close()
 	line, err := bufio.NewReaderSize(f, 1<<20).ReadSlice('\n')
-	if err == bufio.ErrBufferFull {
+	if errors.Is(err, bufio.ErrBufferFull) {
 		// Legacy event headers are tiny. A megabyte first record is a provider
 		// message or malformed input, neither of which needs event probing.
 		return false
