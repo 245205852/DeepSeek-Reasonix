@@ -296,6 +296,8 @@ export interface WireEvent {
   decisionReceipt?: WireDecisionReceipt;
   extension?: WireExtensionSurface;
   err?: string;
+  checkpointTurn?: number; // Authoritative TurnDone rewind target; zero is valid.
+  submissionId?: string; // Opaque correlation for the exact optimistic user submission.
   outcome?: "final_readiness" | "recovery_paused";
   readiness?: WireFinalReadiness;
   retryAttempt?: number;
@@ -303,9 +305,7 @@ export interface WireEvent {
   /** Optional: "headers" | "stream". Older clients ignore unknown fields. */
   retryScope?: "headers" | "stream";
   streamAttempt?: WireStreamAttempt;
-  // Tab routing: set by the Go-side tabEventSink so multi-tab frontends
-  // route each event to the correct per-tab reducer.
-  tabId?: string;
+  tabId?: string; // Go's tabEventSink tags events for the correct per-tab reducer.
   runtimeEpoch?: string;
   sessionHitTokens?: number;
   sessionMissTokens?: number;

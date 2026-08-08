@@ -1,10 +1,15 @@
 package control
 
 import (
+	"context"
 	"sync"
+	"sync/atomic"
+	"time"
 
+	"reasonix/internal/agent"
 	"reasonix/internal/checkpoint"
 	"reasonix/internal/diff"
+	"reasonix/internal/provider"
 )
 
 // checkpointManager owns the snapshot-based rewind bookkeeping: the per-session
@@ -58,12 +63,12 @@ func (m *checkpointManager) enabled() bool {
 
 // beginWithObserver opens a checkpoint and updates the mutation observer's
 // ownership turn for subsequent captures.
-func (m *checkpointManager) beginWithObserver(input string, msgIndex int, obs *checkpoint.MutationObserver) {
+func (m *checkpointManager) beginWithObserver(input string, msgIndex int, obs *checkpoint.MutationObserver) (int, *checkpoint.Store, bool) {
 	m.mu.Lock()
 	store := m.store
 	if store == nil {
 		m.mu.Unlock()
-		return
+		return 0, nil, false
 	}
 	turn := m.turn
 	m.turn++
@@ -74,6 +79,83 @@ func (m *checkpointManager) beginWithObserver(input string, msgIndex int, obs *c
 		obs.SetOwnershipTurn(turn)
 	}
 	store.Begin(turn, input, msgIndex)
+	return turn, store, true
+}
+
+type guardedTurnCheckpoint struct {
+	session      *agent.Session
+	store        *checkpoint.Store
+	turn         int
+	messageIndex int
+	openedAt     int64
+}
+
+type guardedTurnCompletion struct {
+	checkpoint *guardedTurnCheckpoint
+}
+
+type guardedTurnCompletionKey struct{}
+
+func withGuardedTurnCompletion(ctx context.Context) (context.Context, *guardedTurnCompletion) {
+	completion := &guardedTurnCompletion{}
+	return context.WithValue(ctx, guardedTurnCompletionKey{}, completion), completion
+}
+
+// beginCheckpoint opens a rewind checkpoint before the visible user message is
+// appended. Guarded turns retain the exact boundary so TurnDone can identify
+// the corresponding optimistic frontend item without positional guessing.
+func (c *Controller) beginCheckpoint(ctx context.Context, input string) {
+	if c.executor == nil || c.executor.Session() == nil {
+		return
+	}
+	session := c.executor.Session()
+	messageIndex := session.Len()
+	openedAt := time.Now().UnixMilli()
+	atomic.AddInt64(&c.sessionRevision, 1)
+	turn, store, ok := c.checkpoints.beginWithObserver(input, messageIndex, c.mutationObserver)
+	if !ok {
+		return
+	}
+	if completion, _ := ctx.Value(guardedTurnCompletionKey{}).(*guardedTurnCompletion); completion != nil {
+		completion.checkpoint = &guardedTurnCheckpoint{
+			session: session, store: store, turn: turn, messageIndex: messageIndex, openedAt: openedAt,
+		}
+	}
+}
+
+// validatedCheckpointTurn returns the checkpoint only while its original
+// boundary still names the real user message committed by this guarded turn.
+// Stale or synthetic candidates fail closed rather than being relocated.
+func (c *Controller) validatedCheckpointTurn(completion *guardedTurnCompletion) *int {
+	if completion == nil || completion.checkpoint == nil || c.executor == nil {
+		return nil
+	}
+	candidate := completion.checkpoint
+	if c.executor.Session() != candidate.session {
+		return nil
+	}
+	if !c.checkpoints.matchesBoundary(candidate.store, candidate.turn, candidate.messageIndex) {
+		return nil
+	}
+	messages := candidate.session.Snapshot()
+	if candidate.messageIndex < 0 || candidate.messageIndex >= len(messages) {
+		return nil
+	}
+	message := messages[candidate.messageIndex]
+	if message.Role != provider.RoleUser || message.LocalOnly ||
+		!agent.IsUserAuthoredTurn(agent.UserMessageText(message)) ||
+		(message.CreatedAt > 0 && candidate.openedAt > 0 && message.CreatedAt < candidate.openedAt) {
+		return nil
+	}
+	turn := candidate.turn
+	return &turn
+}
+
+func (m *checkpointManager) matchesBoundary(store *checkpoint.Store, turn, messageIndex int) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	boundary, ok := m.bound[turn]
+	return ok && m.store == store && boundary == messageIndex
 }
 
 // turnsByMessageIndex returns message-log index -> checkpoint turn over live

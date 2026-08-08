@@ -103,6 +103,7 @@ const eventHandlers: Array<(e: WireEvent) => void> = [];
 let backendRunning = false;
 let cancelCalls = 0;
 let effortCalls = 0;
+let checkpointHistoryCalls = 0;
 const context: ContextInfo = { used: 0, window: 100, sessionTokens: 0 };
 const effort: EffortInfo = { supported: true, current: "auto", default: "auto", levels: ["auto"] };
 
@@ -129,7 +130,10 @@ window.go = {
       CheckpointsForTab: async () => [],
       HistoryForTab: async () => [],
       HistoryPageForTab: async () => ({ messages: [], startTurn: 0, endTurn: 0, totalTurns: 0, hasOlder: false }),
-      HistoryCheckpointTurnsForTab: async () => [],
+      HistoryCheckpointTurnsForTab: async () => {
+        checkpointHistoryCalls += 1;
+        return [];
+      },
       ReplayPendingPrompts: async () => {},
       CancelTab: async () => {
         cancelCalls += 1;
@@ -182,6 +186,12 @@ for (let attempt = 0; attempt < 20 && controller?.state.running; attempt += 1) {
 eq(controller?.state.running, false, "cancel reconciliation clears the running state");
 eq(cancelCalls, 1, "CancelTab is called once");
 eq(controller?.state.cancelRequested, false, "cancel reconciliation clears cancelRequested");
+
+await act(async () => {
+  for (const handler of eventHandlers) handler({ kind: "turn_done", tabId: "tab-a", checkpointTurn: 0 });
+  await flushPromises();
+});
+eq(checkpointHistoryCalls, 0, "TurnDone does not request the full checkpoint-turn history");
 
 await act(async () => {
   await controller?.setEffort("max");

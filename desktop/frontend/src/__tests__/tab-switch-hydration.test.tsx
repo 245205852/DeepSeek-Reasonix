@@ -148,6 +148,7 @@ const setActiveFGate = deferred<void>();
 const staleSwitchFGate = deferred<void>();
 const staleSwitchReassertGGate = deferred<void>();
 const submitTabCGate = deferred<void>();
+let tabCSubmissionId = "";
 const forkResultGate = deferred<void>();
 const staleForkResultGate = deferred<void>();
 const staleForkReassertGGate = deferred<void>();
@@ -319,7 +320,15 @@ window.go = {
         runningTabs.add(tabID);
         if (tabID === "tab-c") await submitTabCGate.promise;
       },
+      SubmitToTabWithID: async (tabID: string, _input: string, submissionID: string) => {
+        runningTabs.add(tabID);
+        if (tabID === "tab-c") tabCSubmissionId = submissionID;
+        if (tabID === "tab-c") await submitTabCGate.promise;
+      },
       SubmitDisplayToTab: async (tabID: string) => {
+        runningTabs.add(tabID);
+      },
+      SubmitDisplayToTabWithID: async (tabID: string) => {
         runningTabs.add(tabID);
       },
     } as Partial<AppBindings> as AppBindings,
@@ -550,6 +559,9 @@ await act(async () => {
 });
 eq(controller?.activeTabId, "tab-c", "switching to a cached running tab still updates the active tab");
 ok(controller?.state.items.some((item) => item.kind === "user" && item.text === "streaming C") ?? false, "cached running tab keeps its optimistic transcript");
+const tabCUser = controller?.state.items.find((item) => item.kind === "user" && item.text === "streaming C");
+eq(tabCUser?.kind === "user" && tabCUser.submissionId, tabCSubmissionId, "Wails receives the same opaque correlation stored on the optimistic user");
+ok(Boolean(tabCSubmissionId) && tabCSubmissionId !== tabCUser?.id, "opaque submission correlation is distinct from the render item id");
 ok(!historyCalls.includes("tab-c"), "cached running tab skips history hydration");
 await act(async () => {
   submitTabCGate.resolve();
