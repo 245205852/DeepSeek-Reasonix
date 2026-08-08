@@ -3393,6 +3393,51 @@ a[href] {
   margin-left: auto;
   margin-right: auto;
 }
+
+/* ── Virtual transcript rows ─────────────────────────────────────── */
+/* The transcript content is a single flat virtual list: the sizer carries the
+   total height, rows are absolutely positioned by the virtualizer. The row
+   wrapper forms a block formatting context (absolute positioning), so child
+   margins stay inside the measured height; the top margin moves to the row's
+   bottom margin only, preserving the old collapsed-sibling spacing. */
+.transcript__virtual-sizer {
+  position: relative;
+  width: 100%;
+}
+.transcript > .transcript__virtual-sizer {
+  max-width: none;
+  margin-left: 0;
+  margin-right: 0;
+}
+.transcript__row {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+}
+.transcript__row > * {
+  max-width: var(--maxw);
+  margin-left: auto;
+  margin-right: auto;
+}
+.transcript__row > *:first-child {
+  margin-top: 0;
+}
+.history-preview__body .transcript__row > * {
+  max-width: none;
+}
+/* Offscreen rows are unmounted by the virtualizer, so content-visibility
+   culling is redundant inside rows — and skipping it keeps offsetHeight
+   measurements exact instead of contain-intrinsic-size placeholders. */
+.transcript__row .msg,
+.transcript__row .turn-collapse,
+.transcript__row .tool,
+.transcript__row .process-card,
+.transcript__row .readonly-batch,
+.transcript__row .tool-group {
+  content-visibility: visible;
+  contain-intrinsic-size: none;
+}
 .transcript__jump-bottom {
   --wails-draggable: no-drag;
   position: absolute;
@@ -3475,81 +3520,6 @@ a[href] {
 .warm-collapse:disabled {
   cursor: wait;
   opacity: 0.65;
-}
-.warm-turn {
-  max-width: var(--maxw);
-  margin: 6px auto;
-  border: 1px solid var(--border-soft);
-  border-radius: 8px;
-  background: var(--bg-elev);
-  overflow: hidden;
-  transition: border-color 0.12s;
-}
-.warm-turn:hover {
-  border-color: var(--border);
-}
-.warm-turn__head {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  width: 100%;
-  min-height: 38px;
-  padding: 8px 12px;
-  border: none;
-  background: transparent;
-  color: var(--fg-dim);
-  font: inherit;
-  font-size: 12.5px;
-  text-align: left;
-  cursor: pointer;
-  transition: background 0.12s, color 0.12s;
-}
-.warm-turn__head:hover {
-  background: var(--bg-soft);
-  color: var(--fg);
-}
-.warm-turn__chevron {
-  flex-shrink: 0;
-  color: var(--fg-faint);
-  transition: transform 0.15s;
-}
-.warm-turn__chevron--open {
-  transform: rotate(90deg);
-}
-.warm-turn__preview {
-  min-width: 0;
-  flex: 1 1 auto;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  color: var(--fg);
-  font-weight: 500;
-}
-.warm-turn__meta {
-  flex-shrink: 0;
-  color: var(--fg-faint);
-  font-size: 11px;
-  white-space: nowrap;
-}
-.warm-turn__assistant {
-  padding: 0 12px 10px 41px;
-  color: var(--fg-faint);
-  font-size: 12px;
-  line-height: 1.4;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.warm-turn__body {
-  padding: 4px 0;
-}
-.warm-turn__content {
-  overflow: hidden;
-}
-.warm-turn__body > * {
-  max-width: var(--maxw-inner);
-  margin-left: auto;
-  margin-right: auto;
 }
 
 /* ── Notice line (replaces full ProcessCard for notices) ─────────── */
@@ -5143,6 +5113,40 @@ button.reasoning-summary:focus-visible {
 .md th {
   background: var(--bg-soft);
   font-weight: var(--font-weight-strong);
+}
+/* Row-virtualized oversized markdown tables (see MarkdownTable.tsx): the
+   wrapper owns vertical scroll, the thead stays pinned, and body rows are
+   absolutely positioned by the virtualizer. Flex rows keep header/body cells
+   column-aligned without a full-table layout pass. */
+.md-table-virtual {
+  overflow-y: auto;
+  overflow-x: auto;
+  margin: 0 0 12px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+.md-table-virtual table {
+  display: block;
+  margin: 0;
+  overflow: visible;
+  border-collapse: collapse;
+  width: 100%;
+}
+.md-table-virtual thead {
+  position: sticky;
+  top: 0;
+  z-index: var(--z-local-raised);
+  background: var(--bg-soft);
+}
+.md-table-virtual tr {
+  display: flex;
+  width: 100%;
+}
+.md-table-virtual th,
+.md-table-virtual td {
+  flex: 1 1 0;
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 .md-status-list {
   display: none;
