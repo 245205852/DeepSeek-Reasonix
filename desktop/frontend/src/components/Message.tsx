@@ -786,7 +786,7 @@ export function TurnActions({
             className={`turn-actions__btn${confirmScope === "fork" ? " turn-actions__btn--confirm" : ""}`}
             type="button"
             disabled={Boolean(forkDisabledReason)}
-            title={forkDisabledReason || undefined}
+            title={forkDisabledReason || t("rewind.forkTooltip")}
             onClick={() => selectRewind("fork")}
           >
             <GitBranch size={13} />
