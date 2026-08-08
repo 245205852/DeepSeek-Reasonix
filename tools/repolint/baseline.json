@@ -4,7 +4,7 @@
     "commented-code": 0,
     "complexity": 2051,
     "essay": 4086,
-    "file-size": 108704,
+    "file-size": 108708,
     "function-size": 9147,
     "layering": 1,
     "marker": 0,
@@ -981,7 +981,7 @@
     },
     "internal/config/load.go": {
       "essay": 24,
-      "file-size": 1252,
+      "file-size": 1256,
       "function-size": 53
     },
     "internal/config/main_test.go": {
