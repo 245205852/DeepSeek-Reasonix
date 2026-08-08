@@ -23,7 +23,7 @@ var mechanismOrder = []string{
 	"handoff_nudge", "empty_final_retry", "no_progress_signal",
 	"stream_retry", "header_retry", "reasoning_replay",
 	"planner", "compaction", "bookkeeping", "duplicate_work",
-	"subagent", "capability_router",
+	"subagent", "capability_router", "tool_source_connect", "prefix_reset",
 }
 
 // mechanismFacts extracts one run's (fires, attributed ms, ms known) per
@@ -35,20 +35,53 @@ func mechanismFacts(r result) map[string]mechanismRow {
 	}
 	byKind := func(kind string) int64 { return t.RecoveryGapMsByKind[kind] }
 	facts := map[string]mechanismRow{
-		"handoff_nudge":      {fires: t.HandoffNudges, ms: t.RoundOutcomeMs["handoff_retry"], msKnown: true},
-		"empty_final_retry":  {fires: t.EmptyFinalRetries, ms: byKind("empty_final_retry"), msKnown: true},
-		"no_progress_signal": {fires: t.NoProgressSignals, msKnown: false},
-		"stream_retry":       {fires: t.StreamRetries, ms: byKind("stream_retry"), msKnown: true},
-		"header_retry":       {fires: t.HeaderRetries, ms: byKind("header_retry"), msKnown: true},
-		"reasoning_replay":   {fires: t.ReasoningReplays, ms: byKind("reasoning_replay"), msKnown: true},
-		"planner":            {fires: t.PlannerRequests, ms: t.RoundOutcomeMs["planning"], msKnown: true},
-		"compaction":         {fires: t.Compactions, ms: t.RoundOutcomeMs["compaction"], msKnown: true},
-		"bookkeeping":        {fires: t.RoundOutcomes["bookkeeping"], ms: t.RoundOutcomeMs["bookkeeping"], msKnown: true},
-		"duplicate_work":     {fires: t.RoundOutcomes["duplicate_work"], ms: t.RoundOutcomeMs["duplicate_work"], msKnown: true},
-		"subagent":           {fires: t.SubagentRequests, msKnown: false},
-		"capability_router":  {fires: r.CapabilityRoutes, ms: r.CapabilityRouterLatencyMs, msKnown: true},
+		"handoff_nudge":       {fires: t.HandoffNudges, ms: t.RoundOutcomeMs["handoff_retry"], msKnown: true},
+		"empty_final_retry":   {fires: t.EmptyFinalRetries, ms: byKind("empty_final_retry"), msKnown: true},
+		"no_progress_signal":  {fires: t.NoProgressSignals, msKnown: false},
+		"stream_retry":        {fires: t.StreamRetries, ms: byKind("stream_retry"), msKnown: true},
+		"header_retry":        {fires: t.HeaderRetries, ms: byKind("header_retry"), msKnown: true},
+		"reasoning_replay":    {fires: t.ReasoningReplays, ms: byKind("reasoning_replay"), msKnown: true},
+		"planner":             {fires: t.PlannerRequests, ms: t.RoundOutcomeMs["planning"], msKnown: true},
+		"compaction":          {fires: t.Compactions, ms: t.RoundOutcomeMs["compaction"], msKnown: true},
+		"bookkeeping":         {fires: t.RoundOutcomes["bookkeeping"], ms: t.RoundOutcomeMs["bookkeeping"], msKnown: true},
+		"duplicate_work":      {fires: t.RoundOutcomes["duplicate_work"], ms: t.RoundOutcomeMs["duplicate_work"], msKnown: true},
+		"subagent":            {fires: t.SubagentRequests, msKnown: false},
+		"capability_router":   {fires: r.CapabilityRoutes, ms: r.CapabilityRouterLatencyMs, msKnown: true},
+		"tool_source_connect": {fires: t.ConnectCalls, msKnown: false},
+		"prefix_reset":        {fires: t.PrefixResets, msKnown: false},
 	}
 	return facts
+}
+
+// renderToolSurface is the schema-tax line: what every request re-pays for
+// the visible tool surface, and the churn (connects, prefix resets) the
+// economy tier trades that tax against. Fresh-session benchmarks re-pay the
+// miss on every task, so the surface size prices differently than in a
+// long-lived session.
+func renderToolSurface(results []result) string {
+	var schemaMax, schemaTotal, promptTotal int64
+	connects, resets, runs := 0, 0, 0
+	for _, r := range results {
+		t := r.Trajectory
+		if t == nil || t.SchemaTokensTotal == 0 {
+			continue
+		}
+		runs++
+		schemaMax = max(schemaMax, t.SchemaTokensMax)
+		schemaTotal += t.SchemaTokensTotal
+		promptTotal += t.PromptTokensSeen
+		connects += t.ConnectCalls
+		resets += t.PrefixResets
+	}
+	if runs == 0 {
+		return ""
+	}
+	line := fmt.Sprintf("**Tool surface**: **schema footprint** %s tok/request (max) · **Σ schema tax** %s tok", comma(int(schemaMax)), comma(int(schemaTotal)))
+	if promptTotal > 0 {
+		line += fmt.Sprintf(" (%s of prompt)", pct(int(schemaTotal), int(promptTotal)))
+	}
+	line += fmt.Sprintf(" · **connect_tool_source** ×%d · **prefix resets** %d\n\n", connects, resets)
+	return line
 }
 
 // renderMechanismLedger is the measure-before-cutting table: per mechanism,

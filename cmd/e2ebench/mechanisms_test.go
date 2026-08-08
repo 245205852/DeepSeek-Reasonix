@@ -40,6 +40,60 @@ func TestRenderMechanismLedgerSplitsFiredVsQuiet(t *testing.T) {
 	}
 }
 
+func TestSummarizeTrajectoryCollectsToolSurface(t *testing.T) {
+	path := t.TempDir() + "/surface.trajectory.jsonl"
+	lines := []string{
+		`{"seq":1,"ts":1000,"event":{"kind":"turn_started"}}`,
+		`{"seq":2,"ts":1500,"event":{"kind":"usage","usage":{"source":"executor","promptTokens":14000,"cacheDiagnostics":{"toolSchemaTokens":2000,"prefixChanged":false}}}}`,
+		`{"seq":3,"ts":2000,"event":{"kind":"tool_dispatch","tool":{"id":"a","name":"connect_tool_source","args":"{\"source\":\"web\"}"}}}`,
+		`{"seq":4,"ts":2100,"event":{"kind":"tool_result","tool":{"id":"a","name":"connect_tool_source","durationMs":100,"startedAt":2000,"endedAt":2100}}}`,
+		`{"seq":5,"ts":3000,"event":{"kind":"usage","usage":{"source":"executor","promptTokens":16000,"cacheDiagnostics":{"toolSchemaTokens":5000,"prefixChanged":true}}}}`,
+		`{"seq":6,"ts":3500,"event":{"kind":"usage","usage":{"source":"subagent","promptTokens":9000,"cacheDiagnostics":{"toolSchemaTokens":9999,"prefixChanged":true}}}}`,
+		`{"seq":7,"ts":4000,"event":{"kind":"turn_done"}}`,
+	}
+	if err := writeLines(path, lines); err != nil {
+		t.Fatalf("write fixture: %v", err)
+	}
+	s, err := summarizeTrajectory(path)
+	if err != nil {
+		t.Fatalf("summarizeTrajectory: %v", err)
+	}
+	if s.SchemaTokensMax != 5000 || s.SchemaTokensTotal != 7000 {
+		t.Errorf("schema max=%d total=%d, want 5000/7000 (subagent usage excluded)", s.SchemaTokensMax, s.SchemaTokensTotal)
+	}
+	if s.PromptTokensSeen != 30000 {
+		t.Errorf("prompt tokens = %d, want 30000", s.PromptTokensSeen)
+	}
+	if s.PrefixResets != 1 {
+		t.Errorf("prefix resets = %d, want 1 (subagent reset must not count)", s.PrefixResets)
+	}
+	if s.ConnectCalls != 1 {
+		t.Errorf("connect calls = %d, want 1", s.ConnectCalls)
+	}
+}
+
+func TestRenderToolSurfaceLine(t *testing.T) {
+	r := result{task: task{ID: "a"}, Passed: true}
+	r.Trajectory = &trajectorySummary{
+		SchemaTokensMax: 12784, SchemaTokensTotal: 89488,
+		PromptTokensSeen: 140000, PrefixResets: 2, ConnectCalls: 1,
+	}
+	got := renderToolSurface([]result{r})
+	for _, want := range []string{
+		"**schema footprint** 12,784 tok/request",
+		"**Σ schema tax** 89,488 tok (64% of prompt)",
+		"**connect_tool_source** ×1",
+		"**prefix resets** 2",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("tool surface line missing %q:\n%s", want, got)
+		}
+	}
+	if renderToolSurface([]result{{task: task{ID: "b"}}}) != "" {
+		t.Fatal("runs without schema data must not render the line")
+	}
+}
+
 func TestSummarizeTrajectorySplitsRecoveryGapByKind(t *testing.T) {
 	path := t.TempDir() + "/kinds.trajectory.jsonl"
 	lines := []string{

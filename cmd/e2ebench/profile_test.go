@@ -59,10 +59,22 @@ func TestNormalizeBenchmarkProfile(t *testing.T) {
 			t.Fatalf("normalize(%q) = %q, %v", input, got, err)
 		}
 	}
-	if got, err := normalizeBenchmarkProfile("delivery"); err != nil || got != benchmarkProfileDelivery {
-		t.Fatalf("normalize(delivery) = %q, %v", got, err)
+	for _, tier := range []string{"economy", "balanced", "delivery"} {
+		if got, err := normalizeBenchmarkProfile(tier); err != nil || got != tier {
+			t.Fatalf("normalize(%q) = %q, %v", tier, got, err)
+		}
 	}
 	if _, err := normalizeBenchmarkProfile("fast"); err == nil {
 		t.Fatal("unknown profile should fail")
+	}
+}
+
+func TestAppendBenchmarkProfileArgsPassesToolSurfaceTiers(t *testing.T) {
+	for _, tier := range []string{"economy", "balanced"} {
+		got := appendBenchmarkProfileArgs([]string{"run"}, tier)
+		want := []string{"run", "--profile", tier}
+		if !reflect.DeepEqual(got, want) {
+			t.Fatalf("%s args = %v, want %v", tier, got, want)
+		}
 	}
 }

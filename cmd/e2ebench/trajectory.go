@@ -81,6 +81,15 @@ type trajectorySummary struct {
 	// extra model round each time it fires).
 	HandoffNudges       int              `json:"handoff_nudges,omitempty"`
 	RecoveryGapMsByKind map[string]int64 `json:"recovery_gap_ms_by_kind,omitempty"`
+
+	// Tool surface: the schema tax every top-level request re-pays, and the
+	// surface churn (connect_tool_source calls, provider prefix resets) that
+	// trades that tax against mid-session cache invalidation.
+	SchemaTokensMax   int64 `json:"schema_tokens_max,omitempty"`   // largest per-request schema footprint
+	SchemaTokensTotal int64 `json:"schema_tokens_total,omitempty"` // Σ schema tokens across requests
+	PromptTokensSeen  int64 `json:"prompt_tokens_seen,omitempty"`  // Σ prompt tokens (schema share denominator)
+	PrefixResets      int   `json:"prefix_resets,omitempty"`       // usage events with prefixChanged
+	ConnectCalls      int   `json:"connect_calls,omitempty"`       // connect_tool_source dispatches
 }
 
 // toolWall is the best available tool wall-clock: interval union when the
@@ -105,7 +114,12 @@ type trajectoryRecord struct {
 			Action string `json:"action"`
 		} `json:"streamAttempt"`
 		Usage *struct {
-			Source string `json:"source"`
+			Source           string `json:"source"`
+			PromptTokens     int64  `json:"promptTokens"`
+			CacheDiagnostics *struct {
+				ToolSchemaTokens int64 `json:"toolSchemaTokens"`
+				PrefixChanged    bool  `json:"prefixChanged"`
+			} `json:"cacheDiagnostics"`
 		} `json:"usage"`
 		Tool *struct {
 			ID         string `json:"id"`
@@ -379,6 +393,14 @@ func (t *trajScan) recordModelPhase(rec trajectoryRecord) {
 		default:
 			t.s.ExecutorRequests++
 		}
+		t.s.PromptTokensSeen += u.PromptTokens
+		if d := u.CacheDiagnostics; d != nil {
+			t.s.SchemaTokensTotal += d.ToolSchemaTokens
+			t.s.SchemaTokensMax = max(t.s.SchemaTokensMax, d.ToolSchemaTokens)
+			if d.PrefixChanged {
+				t.s.PrefixResets++
+			}
+		}
 		if t.lastAttempt >= 0 {
 			t.attempts[t.lastAttempt].planner = u.Source == "planner"
 			t.lastAttempt = -1
@@ -412,6 +434,9 @@ func (t *trajScan) recordDispatch(rec trajectoryRecord) {
 		if info == nil {
 			info = &roundCall{}
 			t.batch.infos[tl.ID] = info
+			if tl.Name == "connect_tool_source" {
+				t.s.ConnectCalls++
+			}
 		}
 		info.name = tl.Name
 		info.dup = t.seen[key]
