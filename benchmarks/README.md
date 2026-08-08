@@ -33,14 +33,14 @@ utility readouts key on. Current coverage vs. target:
 
 | Class | Target | Committed | Notes |
 | --- | ---: | ---: | --- |
-| `atomic-bugfix` | 8 | 3 | short anchored fixes; routes ExecutorOnly by design |
-| `repo-exploration` | 6 | 3 | multi-file reading, answer-file graded |
-| `multi-file-bugfix` | 8 | 2 | one bug spanning ≥2 files; naturally engages the planner gate |
-| `refactor` | 6 | 2 | behavior-preserving restructuring, structure asserted |
-| `failing-test-diagnosis` | 6 | 2 | unittest suite red → fix source; tests checksummed |
-| `api-integration` | 4 | 2 | use a provided local package per its README |
-| `ambiguous` | 4 | 2 | underspecified ask; grader accepts the defensible core |
-| `long-horizon` | 4 | 2 | multi-requirement specs; planner-depth full |
+| `atomic-bugfix` | 8 | 8 | short anchored fixes; routes ExecutorOnly by design |
+| `repo-exploration` | 6 | 6 | multi-file reading, invented-token answers so they can't be guessed |
+| `multi-file-bugfix` | 8 | 8 | one bug spanning ≥2 files; naturally engages the planner gate |
+| `refactor` | 6 | 6 | behavior-preserving restructuring, structure asserted |
+| `failing-test-diagnosis` | 6 | 6 | unittest suite red → fix source; tests checksummed |
+| `api-integration` | 4 | 4 | use a provided local package per its README |
+| `ambiguous` | 4 | 4 | underspecified ask; grader accepts the defensible core |
+| `long-horizon` | 4 | 4 | multi-requirement specs; planner-depth full |
 | `codegen` / `delegation` | — | 3 | legacy smoke tasks (fizzbuzz, palindrome, subagent-delegation) |
 
 Grader authoring rule: every task must fail `verify.sh` on the pristine seed
