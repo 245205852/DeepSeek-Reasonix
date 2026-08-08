@@ -345,6 +345,60 @@ func (c *Contract) Complete() bool {
 	return true
 }
 
+// ReadyToFinalize reports whether the host should signal the model to stop:
+// the contract has real content and every bit of it is satisfied with fresh
+// evidence. Stale semantics make "latest mutation verified" implicit — an
+// unverified mutation leaves a verification check Stale, blocking this.
+func (c *Contract) ReadyToFinalize() bool {
+	return (len(c.Requirements) > 0 || len(c.Checks) > 0) && c.Complete()
+}
+
+// FinalizeSignal is the light host nudge injected once the contract is
+// fully proven; empty while anything is outstanding. The wording leaves the
+// model one exit: concrete evidence of an unresolved requirement.
+func (c *Contract) FinalizeSignal() string {
+	if !c.ReadyToFinalize() {
+		return ""
+	}
+	required := 0
+	for _, req := range c.Requirements {
+		if req.Required {
+			required++
+		}
+	}
+	return fmt.Sprintf(
+		"All required acceptance evidence is satisfied (%d/%d requirements, %d/%d checks, latest mutation verified). Finalize now unless you have concrete evidence of an unresolved requirement.",
+		required, required, len(c.Checks), len(c.Checks))
+}
+
+// Summary is the one-line contract status for logs and host notes.
+func (c *Contract) Summary() string {
+	reqDone, reqAll := 0, 0
+	for _, req := range c.Requirements {
+		if !req.Required {
+			continue
+		}
+		reqAll++
+		if req.Status == Satisfied {
+			reqDone++
+		}
+	}
+	checkDone, stale := 0, 0
+	for _, check := range c.Checks {
+		switch check.Status {
+		case Satisfied:
+			checkDone++
+		case Stale:
+			stale++
+		}
+	}
+	s := fmt.Sprintf("requirements %d/%d · checks %d/%d · epoch %d", reqDone, reqAll, checkDone, len(c.Checks), c.epoch)
+	if stale > 0 {
+		s += fmt.Sprintf(" · stale %d", stale)
+	}
+	return s
+}
+
 // Outstanding lists what still blocks completion, requirements first.
 func (c *Contract) Outstanding() []string {
 	var out []string

@@ -261,3 +261,38 @@ func TestGraphRendersEvidenceTree(t *testing.T) {
 		}
 	}
 }
+
+func TestFinalizeSignalFiresOnlyWhenFullyProven(t *testing.T) {
+	c := New("chat about the weather")
+	if c.ReadyToFinalize() {
+		t.Fatal("an empty contract must never demand finalization")
+	}
+
+	c = FromPlan("fix cache", PlanFacts{
+		AcceptanceCriteria: []string{"fix stale cache invalidation"},
+		Regressions:        []string{"cache tests keep passing"},
+		Verifications:      []string{"go test ./cache/"},
+	})
+	if s := c.FinalizeSignal(); s != "" {
+		t.Fatalf("nothing proven yet, got signal %q", s)
+	}
+	c.Observe(evidence.Receipt{ToolName: "edit_file", Mutation: true, Success: true})
+	c.Observe(evidence.Receipt{ToolName: "bash", Command: "go test ./cache/", Success: true})
+	c.Resolve("r1", Satisfied)
+	c.Resolve("g1", Satisfied, EvidenceRef{Kind: EvidenceVerification, MutationEpoch: c.Epoch(), Source: "bash", Success: true})
+
+	signal := c.FinalizeSignal()
+	if !strings.Contains(signal, "2/2 requirements") || !strings.Contains(signal, "1/1 checks") ||
+		!strings.Contains(signal, "Finalize now unless you have concrete evidence") {
+		t.Fatalf("signal = %q", signal)
+	}
+
+	// One more edit: the proof goes stale and the signal must retract.
+	c.Observe(evidence.Receipt{ToolName: "edit_file", Mutation: true, Success: true})
+	if c.FinalizeSignal() != "" {
+		t.Fatal("stale evidence must retract the finalize signal")
+	}
+	if s := c.Summary(); !strings.Contains(s, "stale 1") || !strings.Contains(s, "epoch 2") {
+		t.Fatalf("summary = %q", s)
+	}
+}
