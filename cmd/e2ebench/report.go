@@ -33,8 +33,9 @@ type suiteStats struct {
 	accounted, accountedSolved, unaccounted, unaccountedSolved, partial   int
 	pTok, cTok, hit, miss, compacts, tools, toolFails, steps, modelRounds int
 	cost                                                                  float64
-	walls, ttcs, ttft                                                     []int64
+	walls, ttcs, ttft, firstCorrect, postWaste                            []int64
 	wallAccountedMs, wallTotalMs, firstHit, firstMiss                     int64
+	solvedThenBroken                                                      int
 	currency                                                              string
 	classes, prefixChangeReasons                                          map[string]int
 	bySource                                                              map[string]sourceUsage
@@ -66,6 +67,15 @@ func gatherSuiteStats(results []result) suiteStats {
 		s.wallTotalMs += r.WallMs
 		s.classes[r.class()]++
 		s.walls = append(s.walls, r.WallMs)
+		if r.FirstCorrectMs > 0 {
+			s.firstCorrect = append(s.firstCorrect, r.FirstCorrectMs)
+			if r.Passed {
+				s.postWaste = append(s.postWaste, r.PostSolveWasteMs)
+			}
+		}
+		if r.SolvedThenBroken {
+			s.solvedThenBroken++
+		}
 		if r.Unaccounted {
 			s.unaccounted++
 			if r.Passed {
@@ -130,6 +140,12 @@ func kpiLine(s suiteStats) string {
 	}
 	if s.firstHit+s.firstMiss > 0 {
 		line += fmt.Sprintf(" · **first-request cache hit** %s", pct(int(s.firstHit), int(s.firstHit+s.firstMiss)))
+	}
+	if len(s.firstCorrect) > 0 {
+		line += fmt.Sprintf(" · **TTFCS median** %s · **post-solve waste median** %s", dur(median(s.firstCorrect)), dur(median(s.postWaste)))
+		if s.solvedThenBroken > 0 {
+			line += fmt.Sprintf(" · **solved-then-broke** %d", s.solvedThenBroken)
+		}
 	}
 	return line + "\n\n"
 }

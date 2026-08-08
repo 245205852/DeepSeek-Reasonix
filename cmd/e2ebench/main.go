@@ -127,6 +127,13 @@ type result struct {
 	// TTCSMs is the time to correct solution: wall clock summed across this
 	// task's attempts up to and including the one that passed. Zero if unsolved.
 	TTCSMs int64 `json:"ttcs_ms,omitempty"`
+	// Checkpoint grading (-checkpoints): FirstCorrectMs = when the workspace
+	// first graded correct (TTFCS); PostSolveWasteMs = the tail worked past
+	// it; SolvedThenBroken = a passing state the agent later destroyed.
+	Checkpoints      []checkpoint `json:"checkpoints,omitempty"`
+	FirstCorrectMs   int64        `json:"first_correct_ms,omitempty"`
+	PostSolveWasteMs int64        `json:"post_solve_waste_ms,omitempty"`
+	SolvedThenBroken bool         `json:"solved_then_broken,omitempty"`
 }
 
 // class is the published failure taxonomy: solved, the guard that stopped the
@@ -178,6 +185,7 @@ func main() {
 	taskFilter := flag.String("task", "", "suite mode: run only these comma-separated task IDs (e.g. -task fix-add-bug)")
 	cacheArm := flag.String("cache", "cold", "suite mode: cold (fresh session per task) | warm (prefix-warming one-step run in the same workdir before the graded run)")
 	effort := flag.String("effort", "", "reasoning effort override passed to the agent (model-specific levels, e.g. disabled|low|high|max); empty = model default")
+	checkpoints := flag.Bool("checkpoints", false, "suite mode: snapshot the workdir on every change and grade each snapshot offline after the run, yielding first_correct_ms (TTFCS) and post_solve_waste_ms")
 	bin := flag.String("bin", "reasonix", "path to the reasonix binary")
 	model := flag.String("model", "", "provider/model name (default: config default)")
 	profileFlag := flag.String("profile", benchmarkProfileBaseline, "prompt profile: baseline | delivery")
@@ -244,7 +252,7 @@ func main() {
 	runSuiteMode(suiteConfig{
 		bin: *bin, model: *model, profile: profile, arm: arm, budget: *budget,
 		trajDir: *trajDir, forcePlanner: *forcePlanner, attempts: *attempts,
-		cacheArm: cache, effort: *effort,
+		cacheArm: cache, effort: *effort, checkpoints: *checkpoints,
 	}, *suite, *taskFilter, *outMD, *outJSON)
 }
 
@@ -377,7 +385,7 @@ type suiteConfig struct {
 	bin, model, profile, cacheArm, effort string
 	arm                                   ablation.Set
 	trajDir                               string
-	forcePlanner                          bool
+	forcePlanner, checkpoints             bool
 	attempts, budget                      int
 }
 
@@ -465,8 +473,20 @@ func runTask(cfg suiteConfig, t task) result {
 	cmd.Stderr = os.Stderr
 	cmd.WaitDelay = 10 * time.Second // bound the wait for a stuck child after ctx timeout
 	startedAt := time.Now()
+	var snap *snapshotter
+	if cfg.checkpoints {
+		snapDir, err := os.MkdirTemp("", "e2ebench-cp-"+t.ID+"-")
+		if err == nil {
+			defer os.RemoveAll(snapDir)
+			snap = startSnapshotter(work, snapDir, startedAt)
+		}
+	}
 	runErr := cmd.Run()
 	r.WallMs = time.Since(startedAt).Milliseconds()
+	var taken []checkpoint
+	if snap != nil {
+		taken = snap.halt()
+	}
 
 	if m, err := readMetrics(metricsPath); err == nil {
 		r.runMetrics = m
@@ -487,6 +507,13 @@ func runTask(cfg suiteConfig, t task) result {
 	}
 
 	r.Passed = grade(work, t.dir)
+	if snap != nil {
+		r.Checkpoints = gradeCheckpoints(taken, t.dir)
+		r.FirstCorrectMs, r.SolvedThenBroken = firstCorrect(r.Checkpoints, r.Passed)
+		if r.Passed && r.FirstCorrectMs > 0 {
+			r.PostSolveWasteMs = r.WallMs - r.FirstCorrectMs
+		}
+	}
 	r.PhaseTrace = buildPhaseTrace(r)
 	return r
 }
