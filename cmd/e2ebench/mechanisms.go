@@ -1,0 +1,111 @@
+package main
+
+import (
+	"fmt"
+	"strings"
+)
+
+// mechanismRow aggregates one extra-round mechanism across a suite: how often
+// it fired, what its rounds cost, and how runs where it fired graded versus
+// runs where it stayed quiet. Correlation, not causation — the causal rescue
+// rate needs an ablation arm A/B (-ablate + -mode compare).
+type mechanismRow struct {
+	fires                  int
+	ms                     int64
+	msKnown                bool
+	firedRuns, firedSolved int
+	quietRuns, quietSolved int
+}
+
+// mechanismOrder fixes the ledger's row order: correctness nudges first, then
+// provider recovery, then structural overhead.
+var mechanismOrder = []string{
+	"handoff_nudge", "empty_final_retry", "no_progress_signal",
+	"stream_retry", "header_retry", "reasoning_replay",
+	"planner", "compaction", "bookkeeping", "duplicate_work",
+	"subagent", "capability_router",
+}
+
+// mechanismFacts extracts one run's (fires, attributed ms, ms known) per
+// mechanism from its digest and metrics.
+func mechanismFacts(r result) map[string]mechanismRow {
+	t := r.Trajectory
+	if t == nil {
+		return nil
+	}
+	byKind := func(kind string) int64 { return t.RecoveryGapMsByKind[kind] }
+	facts := map[string]mechanismRow{
+		"handoff_nudge":      {fires: t.HandoffNudges, ms: t.RoundOutcomeMs["handoff_retry"], msKnown: true},
+		"empty_final_retry":  {fires: t.EmptyFinalRetries, ms: byKind("empty_final_retry"), msKnown: true},
+		"no_progress_signal": {fires: t.NoProgressSignals, msKnown: false},
+		"stream_retry":       {fires: t.StreamRetries, ms: byKind("stream_retry"), msKnown: true},
+		"header_retry":       {fires: t.HeaderRetries, ms: byKind("header_retry"), msKnown: true},
+		"reasoning_replay":   {fires: t.ReasoningReplays, ms: byKind("reasoning_replay"), msKnown: true},
+		"planner":            {fires: t.PlannerRequests, ms: t.RoundOutcomeMs["planning"], msKnown: true},
+		"compaction":         {fires: t.Compactions, ms: t.RoundOutcomeMs["compaction"], msKnown: true},
+		"bookkeeping":        {fires: t.RoundOutcomes["bookkeeping"], ms: t.RoundOutcomeMs["bookkeeping"], msKnown: true},
+		"duplicate_work":     {fires: t.RoundOutcomes["duplicate_work"], ms: t.RoundOutcomeMs["duplicate_work"], msKnown: true},
+		"subagent":           {fires: t.SubagentRequests, msKnown: false},
+		"capability_router":  {fires: r.CapabilityRoutes, ms: r.CapabilityRouterLatencyMs, msKnown: true},
+	}
+	return facts
+}
+
+// renderMechanismLedger is the measure-before-cutting table: per mechanism,
+// incidence, attributed model time, and solved rates fired-vs-quiet. All-quiet
+// suites render a single line so absence is a stated result, not a blank.
+func renderMechanismLedger(results []result) string {
+	rows := map[string]mechanismRow{}
+	recorded := 0
+	for _, r := range results {
+		facts := mechanismFacts(r)
+		if facts == nil {
+			continue
+		}
+		recorded++
+		for name, f := range facts {
+			row := rows[name]
+			row.fires += f.fires
+			row.ms += f.ms
+			row.msKnown = row.msKnown || f.msKnown
+			if f.fires > 0 {
+				row.firedRuns++
+				if r.Passed {
+					row.firedSolved++
+				}
+			} else {
+				row.quietRuns++
+				if r.Passed {
+					row.quietSolved++
+				}
+			}
+			rows[name] = row
+		}
+	}
+	if recorded == 0 {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString("**Mechanism ledger** (incidence → cost → outcome; correlation only — causal rescue rates need an `-ablate` A/B):\n\n")
+	fired := 0
+	b.WriteString("| Mechanism | Fires | Runs fired | Time | Solved (fired) | Solved (quiet) |\n")
+	b.WriteString("|---|---:|---:|---:|---:|---:|\n")
+	for _, name := range mechanismOrder {
+		row := rows[name]
+		if row.fires == 0 {
+			continue
+		}
+		fired++
+		ms := "—"
+		if row.msKnown {
+			ms = dur(row.ms)
+		}
+		fmt.Fprintf(&b, "| %s | %d | %d/%d | %s | %s | %s |\n",
+			name, row.fires, row.firedRuns, recorded, ms,
+			pct(row.firedSolved, row.firedRuns), pct(row.quietSolved, row.quietRuns))
+	}
+	if fired == 0 {
+		return fmt.Sprintf("**Mechanism ledger**: all quiet — no extra-round machinery fired across %d recorded runs.\n\n", recorded)
+	}
+	return b.String() + "\n"
+}

@@ -69,7 +69,7 @@ type trajScan struct {
 	delays             []int64
 	allIntervals       [][2]int64
 	inModel            bool
-	tainted            bool
+	taint              string
 	streakRun          int
 	batch              *toolBatch
 

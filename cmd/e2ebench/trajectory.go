@@ -75,6 +75,12 @@ type trajectorySummary struct {
 	RoundOutcomeMs map[string]int64 `json:"round_outcome_ms,omitempty"`
 	UsefulRounds   int              `json:"useful_rounds,omitempty"`
 	WastedGapMs    int64            `json:"wasted_gap_ms,omitempty"`
+
+	// Mechanism ledger inputs: recovery gap split per taint kind, and the
+	// executor-handoff nudge count (a correctness mechanism that buys a whole
+	// extra model round each time it fires).
+	HandoffNudges       int              `json:"handoff_nudges,omitempty"`
+	RecoveryGapMsByKind map[string]int64 `json:"recovery_gap_ms_by_kind,omitempty"`
 }
 
 // toolWall is the best available tool wall-clock: interval union when the
@@ -250,7 +256,7 @@ func (t *trajScan) record(rec trajectoryRecord) {
 	t.lastTS = rec.TS
 	if rec.ProtocolRecovery == "missing_reasoning_retry_attempted" {
 		t.s.ReasoningReplays++
-		t.tainted = true
+		t.taintAs("reasoning_replay")
 	}
 	if rec.Event == nil {
 		return
@@ -258,20 +264,24 @@ func (t *trajScan) record(rec trajectoryRecord) {
 	switch rec.Event.Kind {
 	case "retrying":
 		t.s.Retries++
-		t.tainted = true
 		t.pendingRetry = rec.TS
 		switch rec.Event.RetryScope {
 		case "stream":
 			t.s.StreamRetries++
+			t.taintAs("stream_retry")
 		case "headers":
 			t.s.HeaderRetries++
+			t.taintAs("header_retry")
+		default:
+			t.taintAs("provider_retry")
 		}
 	case "notice":
 		switch rec.Event.Code {
 		case "empty_final":
 			t.s.EmptyFinalRetries++
-			t.tainted = true
+			t.taintAs("empty_final_retry")
 		case "executor_handoff":
+			t.s.HandoffNudges++
 			t.gapHandoff = true
 		case "progress_guard":
 			t.s.NoProgressSignals++
@@ -311,17 +321,29 @@ func (t *trajScan) record(rec trajectoryRecord) {
 func (t *trajScan) closeGap(gap int64) {
 	t.gaps = append(t.gaps, gap)
 	t.pendingGaps = append(t.pendingGaps, gapInfo{
-		ms: gap, tainted: t.tainted,
+		ms: gap, tainted: t.taint != "",
 		planner: t.gapPlanner, compaction: t.gapCompact, handoff: t.gapHandoff,
 	})
 	t.gapPlanner, t.gapCompact, t.gapHandoff = false, false, false
-	if t.tainted {
+	if t.taint != "" {
 		t.s.RecoveryRounds++
 		t.s.RecoveryGapMs += gap
-		t.tainted = false
+		if t.s.RecoveryGapMsByKind == nil {
+			t.s.RecoveryGapMsByKind = map[string]int64{}
+		}
+		t.s.RecoveryGapMsByKind[t.taint] += gap
+		t.taint = ""
 		return
 	}
 	t.cleanGaps = append(t.cleanGaps, gap)
+}
+
+// taintAs marks the current gap as recovery; the first mechanism to fire in
+// a gap owns its time, so per-kind splits stay disjoint.
+func (t *trajScan) taintAs(kind string) {
+	if t.taint == "" {
+		t.taint = kind
+	}
 }
 
 // recordModelPhase brackets sampling attempts (begin → commit/discard) and
