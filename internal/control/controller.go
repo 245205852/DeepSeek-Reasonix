@@ -4669,6 +4669,34 @@ func (c *Controller) History() []provider.Message {
 	return c.executor.Session().Snapshot() // copy — a turn may be appending concurrently
 }
 
+// HistoryLen returns the number of messages in the live log.
+func (c *Controller) HistoryLen() int {
+	if c.executor == nil {
+		return 0
+	}
+	return c.executor.Session().Len()
+}
+
+// HistoryWindow returns a copy of the messages in [start, end) of the live
+// log. Paging frontends use it to convert a display window without copying
+// the whole history.
+func (c *Controller) HistoryWindow(start, end int) []provider.Message {
+	if c.executor == nil {
+		return []provider.Message{}
+	}
+	return c.executor.Session().MessageRange(start, end)
+}
+
+// SessionPersistedState exposes the session's persistence baseline for the
+// controller's current session path, so a paging frontend can validate a
+// display-index sidecar against the live session.
+func (c *Controller) SessionPersistedState() (agent.PersistedState, bool) {
+	if c.executor == nil {
+		return agent.PersistedState{}, false
+	}
+	return c.executor.Session().PersistedState(c.SessionPath())
+}
+
 // ContextSnapshot returns (usedTokens, contextWindow) from the most recent
 // turn. Both zero means no data yet — a gauge hides itself.
 // usedTokens is promptTokens + completionTokens so the GUI breakdown and

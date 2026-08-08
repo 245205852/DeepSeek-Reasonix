@@ -5639,9 +5639,24 @@ func TestMetaForTabReportsImageInputCapability(t *testing.T) {
 	if err := app.SetModel("custom/vision-pro"); err != nil {
 		t.Fatalf("SetModel(custom/vision-pro): %v", err)
 	}
-	if got := app.Meta().ImageInputEnabled; !got {
-		t.Fatal("vision model meta should enable image input")
+	// ImageInputEnabled is served from the per-tab cache; the model change
+	// invalidates it and a background refresh repopulates it (tab:meta).
+	waitForMetaImageInput(t, app, true)
+}
+
+// waitForMetaImageInput polls until the cached image-input capability reaches
+// the expected value. MetaForTab serves the background-refreshed cache, so the
+// value flips asynchronously after a model/settings change.
+func waitForMetaImageInput(t *testing.T, app *App, want bool) {
+	t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		if app.Meta().ImageInputEnabled == want {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
+	t.Fatalf("Meta().ImageInputEnabled did not become %v", want)
 }
 
 func TestMetaForTabImageInputCapabilityUsesCurrentRef(t *testing.T) {
