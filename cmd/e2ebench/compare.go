@@ -43,12 +43,13 @@ func requestsBySourceLine(bySource map[string]sourceUsage) string {
 // accounting conventions as renderBody: spend totals cover accounted runs
 // (failures included) and per-solved figures divide by accounted solves.
 type armStats struct {
-	Ran, Solved, AccountedSolved       int
-	Steps, Tools, Rounds, PlannerCalls int
-	Tokens                             int
-	Cost                               float64
-	WallMs                             int64
-	ByClass                            map[string]classStats
+	Ran, Pass1, Solved, AccountedSolved int
+	Steps, Tools, Rounds, PlannerCalls  int
+	Tokens                              int
+	Cost                                float64
+	WallMs                              int64
+	TTCS                                []int64
+	ByClass                             map[string]classStats
 }
 
 type classStats struct {
@@ -62,16 +63,30 @@ func aggregateArm(results []result) armStats {
 		if r.Skipped {
 			continue
 		}
-		s.Ran++
+		// Retry entries share their task's denominator: only first attempts
+		// count into Ran, matching renderBody's task-not-attempt convention.
+		if r.Attempt <= 1 {
+			s.Ran++
+			if r.Passed {
+				s.Pass1++
+			}
+		}
 		if r.Passed {
 			s.Solved++
+			if r.TTCSMs > 0 {
+				s.TTCS = append(s.TTCS, r.TTCSMs)
+			} else {
+				s.TTCS = append(s.TTCS, r.WallMs)
+			}
 		}
 		label := r.Class
 		if label == "" {
 			label = "unclassified"
 		}
 		c := s.ByClass[label]
-		c.Ran++
+		if r.Attempt <= 1 {
+			c.Ran++
+		}
 		if r.Passed {
 			c.Solved++
 		}
@@ -104,16 +119,69 @@ func perSolved(total float64, solved int) string {
 }
 
 func runCompareMode(outMD string) {
-	if flag.NArg() != 2 {
-		fmt.Fprintln(os.Stderr, "compare mode wants two -json report files: e2ebench -mode compare a.json b.json")
+	if flag.NArg() < 2 {
+		fmt.Fprintln(os.Stderr, "compare mode wants two or more -json report files: e2ebench -mode compare a.json b.json [c.json ...]")
 		os.Exit(2)
 	}
-	report, err := compareReports(flag.Arg(0), flag.Arg(1))
+	var report string
+	var err error
+	if flag.NArg() == 2 {
+		report, err = compareReports(flag.Arg(0), flag.Arg(1))
+	} else {
+		report, err = multiCompareReport(flag.Args())
+	}
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "compare:", err)
 		os.Exit(1)
 	}
 	emit(report, outMD, "")
+}
+
+func loadArm(path string) (armStats, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return armStats{}, err
+	}
+	var results []result
+	if err := json.Unmarshal(data, &results); err != nil {
+		return armStats{}, fmt.Errorf("%s: %w", path, err)
+	}
+	return aggregateArm(results), nil
+}
+
+// multiCompareReport is the N-arm readout: one KPI row per arm, then the
+// Pareto section — the question for a lineup is frontier position, not
+// pairwise deltas.
+func multiCompareReport(paths []string) (string, error) {
+	var b strings.Builder
+	fmt.Fprintf(&b, "## e2ebench comparison: %d arms\n\n", len(paths))
+	b.WriteString("| Arm | Pass@1 | Solved | TTCS median | TTCS p90 | Solved/hour | Requests/solved | Tokens/solved | Cost/solved |\n")
+	b.WriteString("|---|---:|---:|---:|---:|---:|---:|---:|---:|\n")
+	points := make([]paretoPoint, 0, len(paths))
+	for _, path := range paths {
+		s, err := loadArm(path)
+		if err != nil {
+			return "", err
+		}
+		p := newParetoPoint(path, s)
+		points = append(points, p)
+		solvedPerHour := "—"
+		if s.WallMs > 0 {
+			solvedPerHour = fmt.Sprintf("%.1f", float64(s.Solved)*3_600_000/float64(s.WallMs))
+		}
+		cost := "—"
+		if s.AccountedSolved > 0 {
+			cost = fmt.Sprintf("%.4f", s.Cost/float64(s.AccountedSolved))
+		}
+		fmt.Fprintf(&b, "| `%s` | %s | %d/%d | %s | %s | %s | %s | %s | %s |\n",
+			p.label, pct(s.Pass1, s.Ran), s.Solved, s.Ran,
+			dur(median(s.TTCS)), dur(pctile(s.TTCS, 90)), solvedPerHour,
+			perSolved(float64(s.Steps), s.AccountedSolved),
+			tokensPerSolved(s.Tokens, s.AccountedSolved), cost)
+	}
+	b.WriteString("\n" + paretoSection(points))
+	b.WriteString("<sub>Per-solved figures divide each arm's accounted totals (failures included) by its accounted solves; TTCS charges a retried solve with its failed attempts' wall.</sub>\n")
+	return b.String(), nil
 }
 
 // accumulateSources folds one run's per-origin usage into the suite totals.
@@ -132,17 +200,12 @@ func accumulateSources(total map[string]sourceUsage, run map[string]sourceUsage)
 // the readout for an ablation experiment (e.g. control vs -ablate planner).
 func compareReports(pathA, pathB string) (string, error) {
 	arms := make([]armStats, 0, 2)
-	labels := []string{pathA, pathB}
-	for _, path := range labels {
-		data, err := os.ReadFile(path)
+	for _, path := range []string{pathA, pathB} {
+		s, err := loadArm(path)
 		if err != nil {
 			return "", err
 		}
-		var results []result
-		if err := json.Unmarshal(data, &results); err != nil {
-			return "", fmt.Errorf("%s: %w", path, err)
-		}
-		arms = append(arms, aggregateArm(results))
+		arms = append(arms, s)
 	}
 	a, bStats := arms[0], arms[1]
 	var b strings.Builder
@@ -157,7 +220,8 @@ func compareReports(pathA, pathB string) (string, error) {
 	fmt.Fprintf(&b, "| Wall seconds / solved | %s | %s |\n", perSolved(float64(a.WallMs)/1000, a.AccountedSolved), perSolved(float64(bStats.WallMs)/1000, bStats.AccountedSolved))
 	fmt.Fprintf(&b, "| Cost / solved | %s | %s |\n", perSolved(a.Cost, a.AccountedSolved), perSolved(bStats.Cost, bStats.AccountedSolved))
 	b.WriteString(marginalUtilitySection(a, bStats))
-	b.WriteString("\n<sub>Per-solved figures divide each arm's accounted totals (failures included) by its accounted solves.</sub>\n")
+	b.WriteString("\n" + paretoSection([]paretoPoint{newParetoPoint(pathA, a), newParetoPoint(pathB, bStats)}))
+	b.WriteString("<sub>Per-solved figures divide each arm's accounted totals (failures included) by its accounted solves.</sub>\n")
 	return b.String(), nil
 }
 
