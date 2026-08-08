@@ -748,9 +748,11 @@ func loadForEditStrict(path string, loadCredentials, persistMigrations bool) (*C
 		loadDotEnvForEditPath(path)
 	}
 	cfg := Default()
-	if err := mergeFile(cfg, path); err != nil {
+	meta, err := mergeFileSnapshot(cfg, path)
+	if err != nil {
 		return nil, err
 	}
+	markExplicitDefaultProjectSkillKeys(cfg, path, meta)
 	changed := normalizeConfigForEdit(cfg)
 	if persistMigrations && changed && strings.TrimSpace(path) != "" {
 		if _, err := os.Stat(path); err == nil {
@@ -760,6 +762,25 @@ func loadForEditStrict(path string, loadCredentials, persistMigrations bool) (*C
 		}
 	}
 	return cfg, nil
+}
+
+// markExplicitDefaultProjectSkillKeys preserves project skill fields that are
+// explicitly present in a file but equal the built-in default. Without this
+// transient provenance, saving an unrelated project setting would mistake an
+// intentional `false`/empty override for a stale delta and remove it.
+func markExplicitDefaultProjectSkillKeys(c *Config, path string, meta toml.MetaData) {
+	if c == nil || isUserConfigPath(path) {
+		return
+	}
+	for _, key := range projectSkillKeys {
+		if !meta.IsDefined("skills", key) || !projectSkillKeyIsDefault(c, key) {
+			continue
+		}
+		if c.explicitProjectSkillKeys == nil {
+			c.explicitProjectSkillKeys = make(map[string]bool)
+		}
+		c.explicitProjectSkillKeys[key] = true
+	}
 }
 
 func normalizeConfigForEdit(cfg *Config) bool {

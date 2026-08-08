@@ -2132,6 +2132,30 @@ func TestSaveToExistingProjectPreservesExplicitSkillDefaults(t *testing.T) {
 	}
 }
 
+func TestUnrelatedProjectSavePreservesExplicitDefaultSkillOverride(t *testing.T) {
+	projectPath := filepath.Join(t.TempDir(), "reasonix.toml")
+	if err := os.WriteFile(projectPath, []byte("[skills]\ndisable_implicit_invocation = false\n\n[permissions]\nmode = \"ask\"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := LoadForEditReadOnlyStrict(projectPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := cfg.SetDefaultModel("deepseek-pro"); err != nil {
+		t.Fatal(err)
+	}
+	if err := cfg.SaveTo(projectPath); err != nil {
+		t.Fatal(err)
+	}
+	body, err := os.ReadFile(projectPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(body), "disable_implicit_invocation = false") {
+		t.Fatalf("explicit default override was removed:\n%s", body)
+	}
+}
+
 func TestExplicitProjectSkillDefaultOverridesUserConfig(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("REASONIX_HOME", home)
