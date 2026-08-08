@@ -8,10 +8,16 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 
 	"reasonix/internal/filelock"
 	"reasonix/internal/fileutil"
 )
+
+// oauthRefreshGates prevent duplicate refresh requests from transports in the
+// same Reasonix process. The file lock below remains the cross-process source
+// of truth, but it must not be held across the token endpoint network request.
+var oauthRefreshGates sync.Map // map[string]chan struct{}
 
 func mcpOAuthStatePath(stateDir string) string {
 	if strings.TrimSpace(stateDir) == "" {
@@ -33,6 +39,20 @@ func acquireMCPOAuthStateLock(ctx context.Context, stateDir string) (func(), err
 		return nil, fmt.Errorf("private state directory is unavailable")
 	}
 	return filelock.Acquire(ctx, path+".lock")
+}
+
+func acquireMCPOAuthRefreshGate(ctx context.Context, stateDir string) (func(), error) {
+	key := filepath.Clean(strings.TrimSpace(stateDir))
+	if key == "." || key == "" {
+		return nil, fmt.Errorf("private state directory is unavailable")
+	}
+	gate, _ := oauthRefreshGates.LoadOrStore(key, make(chan struct{}, 1))
+	select {
+	case gate.(chan struct{}) <- struct{}{}:
+		return func() { <-gate.(chan struct{}) }, nil
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
 }
 
 func loadMCPOAuthState(stateDir string) (mcpOAuthState, error) {

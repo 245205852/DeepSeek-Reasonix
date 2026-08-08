@@ -53,6 +53,44 @@ func TestHasAuthConfig(t *testing.T) {
 	if HasAuthConfig(nil, map[string]string{"DEBUG": "1"}, "https://mcp.example.com/mcp") {
 		t.Fatal("unrelated env should not count as auth config")
 	}
+	for _, tc := range []struct {
+		name    string
+		headers map[string]string
+		url     string
+	}{
+		{name: "url userinfo", url: "https://user:pass@mcp.example.com/mcp"},
+		{name: "signed query", url: "https://mcp.example.com/mcp?sig=abc"},
+		{name: "api key query", url: "https://mcp.example.com/mcp?key=abc"},
+		{name: "subscription header", headers: map[string]string{"X-Subscription-Key": "abc"}, url: "https://mcp.example.com/mcp"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if !HasAuthConfig(tc.headers, nil, tc.url) {
+				t.Fatalf("HasAuthConfig(%v, %q) = false, want true", tc.headers, tc.url)
+			}
+		})
+	}
+}
+
+func TestCanUseHTTPMCPOAuthOnlyAllowsSecureOrLoopbackHTTP(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		url  string
+		want bool
+	}{
+		{name: "https", url: "https://mcp.example.com/mcp", want: true},
+		{name: "localhost", url: "http://localhost:8787/mcp", want: true},
+		{name: "ipv4 loopback", url: "http://127.0.0.1:8787/mcp", want: true},
+		{name: "ipv6 loopback", url: "http://[::1]:8787/mcp", want: true},
+		{name: "remote http", url: "http://10.0.0.8/mcp", want: false},
+		{name: "userinfo", url: "https://user:pass@mcp.example.com/mcp", want: false},
+		{name: "signed query", url: "https://mcp.example.com/mcp?sig=abc", want: false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := CanUseHTTPMCPOAuth("http", tc.url, false); got != tc.want {
+				t.Fatalf("CanUseHTTPMCPOAuth(%q) = %v, want %v", tc.url, got, tc.want)
+			}
+		})
+	}
 }
 
 func TestClearAuthConfigRemovesOnlyAuthMaterial(t *testing.T) {
@@ -84,5 +122,9 @@ func TestClearAuthConfigRemovesOnlyAuthMaterial(t *testing.T) {
 	}
 	if rawURL != "https://mcp.example.com/mcp?workspace=main" {
 		t.Fatalf("url = %q", rawURL)
+	}
+	_, _, rawURL, changed = ClearAuthConfig(nil, nil, "https://user:pass@mcp.example.com/mcp")
+	if !changed || rawURL != "https://mcp.example.com/mcp" {
+		t.Fatalf("userinfo URL clear = (%q, %v), want credential-free URL", rawURL, changed)
 	}
 }

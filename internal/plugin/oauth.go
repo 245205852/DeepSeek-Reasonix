@@ -308,58 +308,6 @@ func (c *mcpOAuthClient) canRefresh() bool {
 	return c != nil && strings.TrimSpace(c.state.RefreshToken) != "" && strings.TrimSpace(c.state.TokenEndpoint) != ""
 }
 
-func (c *mcpOAuthClient) refresh(ctx context.Context) error {
-	previousAccessToken := c.state.AccessToken
-	previousRefreshToken := c.state.RefreshToken
-	release, err := acquireMCPOAuthStateLock(ctx, c.stateDir)
-	if err != nil {
-		return fmt.Errorf("lock MCP OAuth token refresh: %w", err)
-	}
-	defer release()
-
-	latest, err := loadMCPOAuthState(c.stateDir)
-	if err != nil {
-		return err
-	}
-	if strings.TrimSpace(latest.Resource) != "" && !sameCanonicalResource(latest.Resource, c.state.Resource) {
-		return fmt.Errorf("MCP OAuth token refresh: stored token belongs to a different MCP resource")
-	}
-	c.state = latest
-	if oauthTokenStateChanged(latest, previousAccessToken, previousRefreshToken) && oauthAccessTokenUsable(latest, time.Now()) {
-		return nil
-	}
-	if !c.canRefresh() {
-		return fmt.Errorf("MCP OAuth access token expired and no refresh token is available; authorize again")
-	}
-	form := url.Values{
-		"grant_type":    {"refresh_token"},
-		"refresh_token": {c.state.RefreshToken},
-		"client_id":     {c.state.ClientID},
-		"resource":      {c.state.Resource},
-	}
-	if c.state.Scope != "" {
-		form.Set("scope", c.state.Scope)
-	}
-	token, err := requestOAuthToken(ctx, c.client, c.state, form)
-	if err != nil {
-		return fmt.Errorf("refresh MCP OAuth token: %w", err)
-	}
-	oldRefresh := c.state.RefreshToken
-	applyTokenResponse(&c.state, token, time.Now())
-	if c.state.RefreshToken == "" {
-		c.state.RefreshToken = oldRefresh
-	}
-	return saveMCPOAuthState(c.stateDir, c.state)
-}
-
-func oauthTokenStateChanged(state mcpOAuthState, previousAccessToken, previousRefreshToken string) bool {
-	return state.AccessToken != previousAccessToken || state.RefreshToken != previousRefreshToken
-}
-
-func oauthAccessTokenUsable(state mcpOAuthState, now time.Time) bool {
-	return strings.TrimSpace(state.AccessToken) != "" && (state.Expiry.IsZero() || now.Add(30*time.Second).Before(state.Expiry))
-}
-
 func discoverProtectedResource(ctx context.Context, client *http.Client, endpoint *url.URL) (protectedResourceMetadata, string, error) {
 	var metadataURL string
 	var scope string
@@ -774,6 +722,11 @@ func sameCanonicalResource(a, b string) bool {
 	ua, errA := url.Parse(strings.TrimSpace(a))
 	ub, errB := url.Parse(strings.TrimSpace(b))
 	if errA != nil || errB != nil || ua == nil || ub == nil {
+		return false
+	}
+	// URL userinfo is explicit credential material, never an OAuth resource
+	// identity. Do not let a credentialed URL match a credential-free state.
+	if ua.User != nil || ub.User != nil {
 		return false
 	}
 	ua.Fragment, ub.Fragment = "", ""

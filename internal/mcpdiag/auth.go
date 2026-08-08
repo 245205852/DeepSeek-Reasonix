@@ -1,6 +1,7 @@
 package mcpdiag
 
 import (
+	"net"
 	"net/url"
 	"strings"
 )
@@ -42,7 +43,7 @@ func DiagnoseAuth(transport, status, errText, url string, authConfigured bool) A
 // and configurations with explicit credentials must keep their normal retry
 // or credential-management path.
 func CanUseHTTPMCPOAuth(transport, url string, authConfigured bool) bool {
-	if authConfigured || !looksLikeHTTPURL(url) {
+	if authConfigured || HasAuthConfig(nil, nil, url) || !looksLikeNativeOAuthURL(url) {
 		return false
 	}
 	switch strings.ToLower(strings.TrimSpace(transport)) {
@@ -90,7 +91,7 @@ func HasAuthConfig(headers, env map[string]string, url string) bool {
 			return true
 		}
 	}
-	if containsAuthMaterial(url) {
+	if urlHasAuthConfig(url) {
 		return true
 	}
 	for k, v := range env {
@@ -132,6 +133,22 @@ func looksLikeHTTPURL(rawURL string) bool {
 	return strings.EqualFold(u.Scheme, "https") || strings.EqualFold(u.Scheme, "http")
 }
 
+func looksLikeNativeOAuthURL(rawURL string) bool {
+	u, err := url.Parse(strings.TrimSpace(rawURL))
+	if err != nil || u == nil || strings.TrimSpace(u.Host) == "" || u.User != nil || u.Fragment != "" {
+		return false
+	}
+	if strings.EqualFold(u.Scheme, "https") {
+		return true
+	}
+	return strings.EqualFold(u.Scheme, "http") && isLoopbackHost(u.Hostname())
+}
+
+func isLoopbackHost(host string) bool {
+	host = strings.Trim(strings.ToLower(strings.TrimSpace(host)), "[]")
+	return host == "localhost" || (net.ParseIP(host) != nil && net.ParseIP(host).IsLoopback())
+}
+
 func containsAuthMaterial(s string) bool {
 	lower := strings.ToLower(s)
 	return strings.Contains(lower, "${") || containsExplicitAuthMaterial(lower)
@@ -157,6 +174,10 @@ func isAuthish(key string) bool {
 		strings.Contains(lower, "api_key") ||
 		strings.Contains(lower, "api-key") ||
 		strings.Contains(lower, "apikey") ||
+		strings.Contains(lower, "subscription-key") ||
+		strings.Contains(lower, "subscription_key") ||
+		strings.Contains(lower, "signature") ||
+		strings.Contains(lower, "hmac") ||
 		strings.Contains(lower, "cookie")
 }
 
@@ -189,7 +210,8 @@ func clearAuthURL(raw string) (string, bool) {
 		return raw, false
 	}
 	q := u.Query()
-	changed := false
+	changed := u.User != nil
+	u.User = nil
 	for key := range q {
 		if isAuthQueryKey(key) {
 			q.Del(key)
@@ -204,6 +226,31 @@ func clearAuthURL(raw string) (string, bool) {
 }
 
 func isAuthQueryKey(key string) bool {
-	lower := strings.ToLower(strings.TrimSpace(key))
-	return lower == "key" || isAuthish(lower)
+	normalized := strings.NewReplacer("-", "", "_", "", " ", "").Replace(strings.ToLower(strings.TrimSpace(key)))
+	switch normalized {
+	case "auth", "authorization", "bearer", "credential", "credentials", "key", "sig", "signature", "hmac", "token", "accesstoken", "idtoken", "refreshtoken", "apikey", "accesskey", "secretkey", "subscriptionkey", "clientsecret", "password", "passwd":
+		return true
+	}
+	for _, suffix := range []string{"token", "secret", "password", "passwd", "apikey", "signature"} {
+		if strings.HasSuffix(normalized, suffix) {
+			return true
+		}
+	}
+	return false
+}
+
+func urlHasAuthConfig(raw string) bool {
+	trimmed := strings.TrimSpace(raw)
+	u, err := url.Parse(trimmed)
+	if err == nil && u != nil {
+		if u.User != nil {
+			return true
+		}
+		for key := range u.Query() {
+			if isAuthQueryKey(key) {
+				return true
+			}
+		}
+	}
+	return containsAuthMaterial(trimmed)
 }
