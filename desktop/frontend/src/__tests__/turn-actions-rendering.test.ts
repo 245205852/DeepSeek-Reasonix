@@ -7,6 +7,7 @@ import { fileURLToPath } from "node:url";
 const testDir = dirname(fileURLToPath(import.meta.url));
 const styles = readFileSync(resolve(testDir, "../styles.css"), "utf8");
 const transcriptSource = readFileSync(resolve(testDir, "../components/Transcript.tsx"), "utf8");
+const transcriptRowsSource = readFileSync(resolve(testDir, "../lib/transcriptRows.ts"), "utf8");
 const messageSource = readFileSync(resolve(testDir, "../components/Message.tsx"), "utf8");
 
 let passed = 0;
@@ -25,8 +26,8 @@ function ok(value: unknown, label: string) {
 console.log("\nturn actions rendering");
 
 ok(
-  transcriptSource.includes("!actionText.trim() && !checkpointsByTurn.has(turn)") &&
-    transcriptSource.includes("actionText.trim() || checkpoints.has(turn)"),
+  transcriptRowsSource.includes("model.actionText.trim() || options.hasCheckpointForTurn?.(turn)") &&
+    transcriptSource.includes("hasCheckpointForTurn"),
   "checkpointed turns keep rewind actions visible even when cancellation produced no assistant text",
 );
 

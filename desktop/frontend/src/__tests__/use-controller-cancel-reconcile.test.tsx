@@ -5,7 +5,8 @@ import React, { act } from "react";
 import { createRoot } from "react-dom/client";
 import { useController } from "../lib/useController";
 import type { AppBindings } from "../lib/bridge";
-import type { ContextInfo, EffortInfo, HistoryPage, Meta, TabMeta, WireEvent } from "../lib/types";
+import type { ContextInfo, EffortInfo, HistorySlice, HistorySliceRequest, Meta, TabMeta, WireEvent } from "../lib/types";
+import { historySliceFromMessages } from "./mockHistorySlice";
 
 let passed = 0;
 let failed = 0;
@@ -108,7 +109,7 @@ let historyLoads = 0;
 let checkpointLoads = 0;
 let historyShouldFail = false;
 let deferredHistory = false;
-let resolveDeferredHistory: ((page: HistoryPage) => void) | undefined;
+let resolveDeferredHistory: ((page: HistorySlice) => void) | undefined;
 const context: ContextInfo = { used: 0, window: 100, sessionTokens: 0 };
 const effort: EffortInfo = { supported: true, current: "auto", default: "auto", levels: ["auto"] };
 
@@ -137,21 +138,19 @@ window.go = {
         return [{ turn: 0, prompt: "hello", files: [], time: Date.now(), canConversation: true }];
       },
       HistoryForTab: async () => [],
-      HistoryPageForTab: async () => {
+      HistorySliceForTab: async (tabID: string, req: HistorySliceRequest) => {
         historyLoads += 1;
         if (historyShouldFail) throw new Error("history unavailable");
         if (deferredHistory) {
-          return await new Promise<HistoryPage>((resolve) => {
+          return await new Promise<HistorySlice>((resolve) => {
             resolveDeferredHistory = resolve;
           });
         }
-        return {
-          messages: [{ role: "user", content: "hello", createdAt: Date.now(), checkpointTurn: 0 }],
-          startTurn: 0,
-          endTurn: 0,
-          totalTurns: 1,
-          hasOlder: false,
-        };
+        return historySliceFromMessages(
+          tabID,
+          [{ role: "user", content: "hello", createdAt: Date.now(), checkpointTurn: 0 }],
+          req,
+        );
       },
       HistoryCheckpointTurnsForTab: async () => {
         checkpointHistoryCalls += 1;
@@ -213,7 +212,13 @@ for (let attempt = 0; attempt < 20 && controller?.state.running; attempt += 1) {
 eq(controller?.state.running, false, "cancel reconciliation clears the running state");
 eq(cancelCalls, 1, "CancelTab is called once");
 eq(controller?.state.cancelRequested, false, "cancel reconciliation clears cancelRequested");
-await waitFor("cancelled transcript reload", () => historyLoads > 0 && checkpointLoads > 0);
+await waitFor(
+  "cancelled transcript reload",
+  () => historyLoads > 0 && checkpointLoads > 0 && Boolean(
+    controller?.state.items.some((item) => item.kind === "user" && item.text === "hello") &&
+    controller.state.checkpoints.some((checkpoint) => checkpoint.turn === 0 && checkpoint.canConversation),
+  ),
+);
 ok(controller?.state.items.some((item) => item.kind === "user" && item.text === "hello"), "cancelled prompt is restored from the authoritative transcript");
 ok(controller?.state.checkpoints.some((checkpoint) => checkpoint.turn === 0 && checkpoint.canConversation), "cancelled prompt keeps its conversation checkpoint");
 
@@ -234,7 +239,13 @@ await act(async () => {
   controller?.cancel();
   await flushPromises();
 });
-await waitFor("immediate cancelled transcript reload", () => !controller?.state.running && historyLoads > 0 && checkpointLoads > 0);
+await waitFor(
+  "immediate cancelled transcript reload",
+  () => !controller?.state.running && historyLoads > 0 && checkpointLoads > 0 && Boolean(
+    controller?.state.items.some((item) => item.kind === "user" && item.text === "hello") &&
+    controller.state.checkpoints.some((checkpoint) => checkpoint.turn === 0 && checkpoint.canConversation),
+  ),
+);
 ok(controller?.state.items.some((item) => item.kind === "user" && item.text === "hello"), "immediate cancellation restores the persisted prompt bubble");
 ok(controller?.state.checkpoints.some((checkpoint) => checkpoint.turn === 0 && checkpoint.canConversation), "immediate cancellation restores the rewind checkpoint");
 
@@ -252,13 +263,11 @@ await act(async () => {
 await waitFor("deferred cancellation history", () => historyLoads > 0 && resolveDeferredHistory !== undefined);
 await act(async () => {
   await controller?.send("corrected");
-  resolveDeferredHistory?.({
-    messages: [{ role: "user", content: "stale cancellation history", createdAt: Date.now(), checkpointTurn: 0 }],
-    startTurn: 0,
-    endTurn: 0,
-    totalTurns: 1,
-    hasOlder: false,
-  });
+  resolveDeferredHistory?.(historySliceFromMessages(
+    "tab-a",
+    [{ role: "user", content: "stale cancellation history", createdAt: Date.now(), checkpointTurn: 0 }],
+    { cursor: "" },
+  ));
   resolveDeferredHistory = undefined;
   deferredHistory = false;
   await flushPromises();
