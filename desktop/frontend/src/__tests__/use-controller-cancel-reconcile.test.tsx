@@ -159,6 +159,7 @@ window.go = {
       },
       ReplayPendingPrompts: async () => {},
       SubmitToTab: async () => {},
+      SubmitToTabWithID: async () => {},
       CancelTab: async () => {
         cancelCalls += 1;
         backendRunning = false;
@@ -225,7 +226,10 @@ await act(async () => {
   await controller?.send("hello");
   await flushPromises();
 });
-eq(controller?.state.pendingUser, "hello", "an immediate stop still has the optimistic prompt marker");
+ok(
+  controller?.state.items.some((item) => item.kind === "user" && item.text === "hello"),
+  "an immediate stop still has the optimistic prompt item",
+);
 await act(async () => {
   controller?.cancel();
   await flushPromises();
