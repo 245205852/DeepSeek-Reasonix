@@ -133,3 +133,70 @@ func firstCorrect(checkpoints []checkpoint, finalPassed bool) (firstMs int64, so
 	}
 	return firstMs, anyPassed && !finalPassed
 }
+
+// solveProfile buckets a checkpointed run into the "why slow" cases that
+// demand opposite optimizations: early_correct = termination/verification
+// overhead; late_correct = exploration/decision efficiency; never_correct =
+// capability (chasing latency is pointless); solved_then_broke = a passing
+// state destroyed afterwards. Empty when the run took no checkpoints.
+func solveProfile(r result) string {
+	if len(r.Checkpoints) == 0 {
+		return ""
+	}
+	switch {
+	case r.SolvedThenBroken:
+		return "solved_then_broke"
+	case !r.Passed:
+		return "never_correct"
+	case r.FirstCorrectMs == 0:
+		return "late_correct" // only the final state passed
+	case r.PostSolveWasteMs >= 5000 && r.PostSolveWasteMs*3 >= r.WallMs:
+		return "early_correct"
+	default:
+		return "late_correct"
+	}
+}
+
+// renderSolveProfiles is the triage line: how many runs fall into each case,
+// with the early-correct bucket's median waste — the directly recoverable tail.
+func renderSolveProfiles(results []result) string {
+	counts := map[string]int{}
+	var earlyWaste []int64
+	for _, r := range results {
+		profile := solveProfile(r)
+		if profile == "" {
+			continue
+		}
+		counts[profile]++
+		if profile == "early_correct" {
+			earlyWaste = append(earlyWaste, r.PostSolveWasteMs)
+		}
+	}
+	if len(counts) == 0 {
+		return ""
+	}
+	line := "**Solve profile**: "
+	parts := []string{}
+	for _, profile := range []string{"early_correct", "late_correct", "never_correct", "solved_then_broke"} {
+		if counts[profile] == 0 {
+			continue
+		}
+		part := fmt.Sprintf("**%s** %d", profile, counts[profile])
+		if profile == "early_correct" {
+			part += fmt.Sprintf(" (median waste %s)", dur(median(earlyWaste)))
+		}
+		parts = append(parts, part)
+	}
+	return line + joinParts(parts) + "\n\n"
+}
+
+func joinParts(parts []string) string {
+	out := ""
+	for i, part := range parts {
+		if i > 0 {
+			out += " · "
+		}
+		out += part
+	}
+	return out
+}

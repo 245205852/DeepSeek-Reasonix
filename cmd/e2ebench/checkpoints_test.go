@@ -106,3 +106,40 @@ func TestKPILineIncludesTTFCS(t *testing.T) {
 		}
 	}
 }
+
+func TestSolveProfileTriage(t *testing.T) {
+	cp := []checkpoint{{Seq: 1, ElapsedMs: 1000}}
+	early := result{Passed: true, WallMs: 140_000, FirstCorrectMs: 55_000, PostSolveWasteMs: 85_000, Checkpoints: cp}
+	late := result{Passed: true, WallMs: 140_000, FirstCorrectMs: 132_000, PostSolveWasteMs: 8_000, Checkpoints: cp}
+	never := result{Passed: false, Checkpoints: cp}
+	broke := result{Passed: false, SolvedThenBroken: true, Checkpoints: cp}
+	finalOnly := result{Passed: true, WallMs: 30_000, Checkpoints: cp}
+	off := result{Passed: true}
+
+	for want, r := range map[string]result{
+		"early_correct": early, "late_correct": late, "never_correct": never,
+		"solved_then_broke": broke, "": off,
+	} {
+		if got := solveProfile(r); got != want {
+			t.Fatalf("solveProfile = %q, want %q", got, want)
+		}
+	}
+	if got := solveProfile(finalOnly); got != "late_correct" {
+		t.Fatalf("final-only pass = %q, want late_correct", got)
+	}
+
+	line := renderSolveProfiles([]result{early, late, never, broke})
+	for _, want := range []string{
+		"**early_correct** 1 (median waste 1m25s)",
+		"**late_correct** 1",
+		"**never_correct** 1",
+		"**solved_then_broke** 1",
+	} {
+		if !strings.Contains(line, want) {
+			t.Fatalf("solve profile line missing %q:\n%s", want, line)
+		}
+	}
+	if renderSolveProfiles([]result{off}) != "" {
+		t.Fatal("uncheckpointed suites must not render the line")
+	}
+}
