@@ -47,13 +47,14 @@ func (a *Agent) armForkCapture(sample evidence.OutcomeSample) {
 const govReasoningThreshold = 1500
 
 // armGovernorCapture freezes the exploration-phase state where the reasoning
-// governor would intervene: no verification debt yet, no local check path
-// discovered, and the round that just ended bought expensive thinking.
+// governor would intervene — the same governorTrigger the live policy reads,
+// so experiments fork exactly the states enforcement would treat. Refuses
+// under live enforcement: a treated state must never become a bundle.
 func (a *Agent) armGovernorCapture(sample evidence.OutcomeSample) {
-	if forkCapturePolicy() != "governor" || a.ebm.captured || a.ebm.captureArmed {
+	if forkCapturePolicy() != "governor" || governorEnabled || a.ebm.captured || a.ebm.captureArmed {
 		return
 	}
-	if sample.DebtAge > 0 || sample.LocalExecSeen || a.lastReasoning < govReasoningThreshold {
+	if !governorTrigger(sample, a.lastReasoning) {
 		return
 	}
 	a.ebm.captureArmed = true
@@ -98,23 +99,7 @@ func (p *forkCaptureProvider) Stream(ctx context.Context, req provider.Request) 
 			fmt.Fprintln(os.Stderr, "fork capture:", err)
 		}
 	}
-	inner, err := p.inner.Stream(ctx, req)
-	if err != nil {
-		return inner, err
-	}
-	// Relay chunks while noting each round's reasoning spend — the governor
-	// trigger reads it when the round's shadow sample is scored.
-	out := make(chan provider.Chunk)
-	go func() {
-		defer close(out)
-		for c := range inner {
-			if c.Type == provider.ChunkUsage && c.Usage != nil {
-				a.lastReasoning = c.Usage.ReasoningTokens
-			}
-			out <- c
-		}
-	}()
-	return out, nil
+	return p.inner.Stream(ctx, req)
 }
 
 // forkTurnInput recovers the turn's raw input from the frozen conversation:

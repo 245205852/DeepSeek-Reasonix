@@ -64,6 +64,7 @@ func (a *Agent) resetTurnEvidence() {
 	a.progress.reset()
 	a.outcome = evidence.NewOutcomeTracker()
 	a.ebm = ebmState{}
+	a.governor = governorState{}
 }
 
 // observeOutcomeShadow scores the round's receipts through the shadow outcome
@@ -78,6 +79,7 @@ func (a *Agent) observeOutcomeShadow(receiptMark int, results []string, outcomes
 	}
 	sample := a.outcome.ScoreRound(a.evidence.ReceiptsSince(receiptMark))
 	a.applyEBM(&sample, results, outcomes)
+	a.applyGovernor(&sample)
 	a.armGovernorCapture(sample)
 	event.RecordOutcomeProgress(a.sink, sample)
 }
