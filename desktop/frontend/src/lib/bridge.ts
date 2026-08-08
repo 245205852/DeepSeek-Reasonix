@@ -521,6 +521,7 @@ export interface AppBindings {
   OpenDownloadPage(): Promise<void>;
   OpenUserConfigPath?(): Promise<void>;
   ReloadUserConfig?(): Promise<{ configWarnings?: string[]; configPath?: string } | null>;
+  StorageSettings(): Promise<{ defaultWorkspace: string; statePath: string; cachePath: string; extensionsPath: string }>;
   NeedsOnboarding(): Promise<boolean>;
   ConnectKey(apiKey: string): Promise<string>;
   // Crash overlay "Send report" (desktop/crash_app.go): scrubs user paths, attaches
@@ -4132,9 +4133,8 @@ function makeMockApp(): AppBindings {
         conversationWidth,
       })) as DesktopStartupSettingsView;
     },
-    async Settings() {
-      return JSON.parse(JSON.stringify(settings)) as SettingsView;
-    },
+    async Settings() { return JSON.parse(JSON.stringify(settings)) as SettingsView; },
+    async StorageSettings() { return { defaultWorkspace: cwd, statePath: `${cwd}/.reasonix`, cachePath: `${cwd}/.reasonix/cache`, extensionsPath: `${cwd}/.reasonix/plugins` }; },
     async HooksSettings(scope: string) {
       const key = scope === "project" ? "project" : "global";
       return JSON.parse(JSON.stringify(hookSettings[key])) as HooksSettingsView;
