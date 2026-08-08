@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="docs/logo-stroke-draw-effect.svg" alt="Reasonix" width="640"/>
+  <img src="docs/logo-stroke-draw-effect.svg" alt="Reasonix" width="400"/>
 </p>
 
 <p align="center">
