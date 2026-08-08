@@ -8,6 +8,42 @@ import (
 	"reasonix/internal/pluginpkg"
 )
 
+func (c *Client) initializeParams() protocol.InitializeParams {
+	return protocol.InitializeParams{
+		ProtocolVersion:         protocol.ProtocolVersion,
+		ProtocolID:              protocol.ProtocolID,
+		Manifest:                c.manifestExpectation(),
+		Session:                 c.session,
+		DependencySchemaVersion: protocol.DependencySchemaVersion,
+		Capabilities: protocol.HostCapabilities{
+			ContentRefs:             true,
+			UIHost:                  c.uiHost,
+			ProtocolVersion:         protocol.ProtocolVersion,
+			DependencySchemaVersion: protocol.DependencySchemaVersion,
+		},
+	}
+}
+
+func (c *Client) manifestExpectation() protocol.ManifestExpectation {
+	rt := c.rt
+	expectation := protocol.ManifestExpectation{
+		Intercepts:   append([]string(nil), rt.Intercepts...),
+		Replaces:     append([]string(nil), rt.Replaces...),
+		Capabilities: append([]string(nil), rt.Capabilities...),
+		Requires:     requirementWires(c.requires),
+		Provides:     capabilityWires(c.provides),
+	}
+	for _, provided := range c.provides {
+		switch strings.ToLower(strings.TrimSpace(provided.Kind)) {
+		case "provider":
+			expectation.Providers = append(expectation.Providers, capabilityAddress(provided))
+		case "uiaction":
+			expectation.UIActions = append(expectation.UIActions, strings.TrimSpace(provided.ID))
+		}
+	}
+	return expectation
+}
+
 func capabilityAddress(ref pluginpkg.CapabilityRef) string {
 	return strings.TrimSuffix(strings.TrimSpace(ref.Namespace), "/") + "/" + strings.TrimPrefix(strings.TrimSpace(ref.ID), "/")
 }
