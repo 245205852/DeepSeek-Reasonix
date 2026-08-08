@@ -352,9 +352,9 @@ type Agent struct {
 	// Plan workflows. nil disables gating entirely.
 	gate Gate
 
-	// extensions, when non-nil, is the frozen Extension Protocol v1 dispatcher
+	// extensions, when non-nil, is the frozen Extension Protocol v2 dispatcher
 	// for this controller generation. The run loop consults it at the
-	// agent-side intercept points (see extensions.go); nil means no v1 runtime
+	// agent-side intercept points (see extensions.go); nil means no runtime
 	// packages are installed and every point passes through byte-identically.
 	extensions *dispatch.Dispatcher
 
@@ -563,6 +563,24 @@ type Agent struct {
 	// progress escalates adaptively on consecutive zero-evidence-gain rounds
 	// (see progress_guard.go); reset with the evidence ledger each turn.
 	progress progressGuard
+
+	// outcome shadows progress with an outcome-decomposed scorer whose samples
+	// only feed trajectory recording; it never influences guard behavior.
+	outcome *evidence.OutcomeTracker
+
+	// ebm is the Evidence-Before-More-Mutation nudge's once-per-turn state.
+	ebm ebmState
+
+	// governor is the reasoning governor's per-turn engagement state.
+	governor governorState
+
+	// forkRestore, when armed, swaps the frozen fork-bundle conversation in
+	// right after beginRunTurn — the counterfactual-continuation seam.
+	forkRestore func(*runLoopState)
+
+	// lastReasoning is the previous executor round's reasoning-token spend,
+	// read by the governor trigger (live policy and fork capture alike).
+	lastReasoning int
 
 	// repeatFailureCounts tracks semantically identical write-like calls that
 	// keep failing with the same failure class. Unlike stormSig, successful
@@ -1129,7 +1147,7 @@ type Options struct {
 	MaxSubagentDepth int
 
 	// Extensions is the frozen extension dispatcher for this agent's controller
-	// generation (Extension Protocol v1). Nil means no v1 runtime packages are
+	// generation (Extension Protocol v2). Nil means no runtime packages are
 	// installed; the run loop then passes every intercept point through
 	// byte-identically. Boot installs it with SetExtensions once sidecars are
 	// live (they start after the agent is constructed).
@@ -1260,6 +1278,8 @@ func New(prov provider.Provider, tools *tool.Registry, session *Session, opts Op
 	}
 	a.SetResponseLanguage(opts.ResponseLanguage)
 	a.SetReasoningLanguage(opts.ReasoningLanguage)
+	a.maybeArmForkFromEnv()
+	a.maybeWrapForkCaptureProvider()
 	return a
 }
 
@@ -1364,6 +1384,9 @@ func (a *Agent) Run(ctx context.Context, input string) (runErr error) {
 	}
 
 	_, state := a.beginRunTurn(ctx, input)
+	if a.forkRestore != nil {
+		a.forkRestore(state)
+	}
 	state.runMaxSteps = runMaxSteps
 	state.runMaxStepsKey = runMaxStepsKey
 	state.runLimitHostOwned = runLimitHostOwned
@@ -2283,9 +2306,8 @@ func (a *Agent) streamWithFrozen(ctx context.Context, turn int, sink event.Sink,
 		}
 		req = prepared.req
 	}
-	// After #7725 Goal token request admission was removed, stream goes
-	// directly to the provider. Provider-visible cache controls stay stable
-	// across retries and request timing because they are derived from req alone.
+	// Host stream cancels on generation drain (OpenAI/Anthropic HTTP reads).
+	defer trackPublishedHostStream(ctx, cancel)()
 	ch, err := a.prov.Stream(ctx, req)
 	if err != nil {
 		return streamedTurn{usage: provider.UsageWithRequestAttemptCount(ctx, nil), err: err}
@@ -2460,7 +2482,7 @@ func (a *Agent) streamWithFrozen(ctx context.Context, turn int, sink event.Sink,
 				responsesItems = append(responsesItems, append(json.RawMessage(nil), chunk.ResponsesItem...))
 			}
 		case provider.ChunkUsage:
-			usage = chunk.Usage
+			usage, a.lastReasoning = chunk.Usage, chunk.Usage.ReasoningTokens
 			a.lastUsage.Store(chunk.Usage)
 			a.sessCacheHit.Add(int64(chunk.Usage.CacheHitTokens))
 			a.sessCacheMiss.Add(int64(chunk.Usage.CacheMissTokens))

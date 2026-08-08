@@ -325,7 +325,7 @@ const (
 
 // ExtensionSurfacePayload carries one extension sidecar's structured UI
 // contribution for the ExtensionSurface / ExtensionStatus kinds. The structs
-// mirror the Extension Protocol v1 UI payload DTOs field-for-field so any
+// mirror the Extension Protocol v2 UI payload DTOs field-for-field so any
 // frontend can render them with native widgets; the protocol stays
 // structured-only (no HTML/CSS/JS/URLs). All user-visible strings are already
 // credential-redacted by the host UI hub before the event is emitted. Exactly
@@ -483,6 +483,8 @@ const (
 	NoticeCodeToolBudget                    = "tool_budget"
 	NoticeCodeLoopGuard                     = "loop_guard"
 	NoticeCodeProgressGuard                 = "progress_guard"
+	NoticeCodeEvidenceNudge                 = "evidence_nudge"
+	NoticeCodeReasoningGovernor             = "reasoning_governor"
 	NoticeCodeWorkspaceLease                = "workspace_lease"
 	NoticeCodeCancelledTurn                 = "cancelled_turn_display"
 	NoticeCodeUnappliedSteer                = "unapplied_steer"
@@ -616,6 +618,51 @@ func RecordContractShadow(s Sink, a ContractShadowAudit) {
 	}
 	if cs, ok := s.(ContractShadowAuditSink); ok {
 		cs.RecordContractShadow(a)
+	}
+}
+
+// DelegationAdmissionAudit is the shadow admission verdict for one expensive
+// delegation call: tool name and enums only, never the query or prompt text.
+// Shadow means observed, not enforced — no call is blocked.
+type DelegationAdmissionAudit struct {
+	Tool    string
+	Verdict string // "allow" | "deny"
+	Reason  string // e.g. "local_fix_no_external_need"
+	Intent  string // taskintent class of the turn
+}
+
+// DelegationAdmissionSink is an optional sink capability; implementations
+// must keep it content-free, like every other audit channel.
+type DelegationAdmissionSink interface {
+	RecordDelegationAdmission(DelegationAdmissionAudit)
+}
+
+// RecordDelegationAdmission forwards a shadow admission verdict only to sinks
+// that explicitly opt in. Ordinary UI sinks receive nothing.
+func RecordDelegationAdmission(s Sink, a DelegationAdmissionAudit) {
+	if nilutil.IsNil(s) {
+		return
+	}
+	if da, ok := s.(DelegationAdmissionSink); ok {
+		da.RecordDelegationAdmission(a)
+	}
+}
+
+// OutcomeProgressSink is an optional sink capability for the shadow outcome
+// scorer's per-round samples: counts only, never paths or commands. Shadow
+// means observed, not enforced — the novelty guard still decides behavior.
+type OutcomeProgressSink interface {
+	RecordOutcomeProgress(evidence.OutcomeSample)
+}
+
+// RecordOutcomeProgress forwards a shadow outcome sample only to sinks that
+// explicitly opt in. Ordinary UI sinks receive nothing.
+func RecordOutcomeProgress(s Sink, sample evidence.OutcomeSample) {
+	if nilutil.IsNil(s) {
+		return
+	}
+	if op, ok := s.(OutcomeProgressSink); ok {
+		op.RecordOutcomeProgress(sample)
 	}
 }
 

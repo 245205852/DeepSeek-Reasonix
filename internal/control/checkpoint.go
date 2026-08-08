@@ -2,6 +2,7 @@ package control
 
 import (
 	"context"
+	"fmt"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -113,14 +114,28 @@ func (c *Controller) beginCheckpoint(ctx context.Context, input string) {
 	openedAt := time.Now().UnixMilli()
 	atomic.AddInt64(&c.sessionRevision, 1)
 	turn, store, ok := c.checkpoints.beginWithObserver(input, messageIndex, c.mutationObserver)
-	if !ok {
-		return
-	}
-	if completion, _ := ctx.Value(guardedTurnCompletionKey{}).(*guardedTurnCompletion); completion != nil {
-		completion.checkpoint = &guardedTurnCheckpoint{
-			session: session, store: store, turn: turn, messageIndex: messageIndex, openedAt: openedAt,
+	if ok {
+		if completion, _ := ctx.Value(guardedTurnCompletionKey{}).(*guardedTurnCompletion); completion != nil {
+			completion.checkpoint = &guardedTurnCheckpoint{
+				session: session, store: store, turn: turn, messageIndex: messageIndex, openedAt: openedAt,
+			}
 		}
 	}
+	// User-visible turn start records an irreversible message-send receipt so
+	// recovery never claims a clean rollback of an already-committed prompt.
+	// Keep this owner bookkeeping even when checkpoints are disabled.
+	gen := c.RuntimeGeneration()
+	if gen == 0 {
+		gen = c.RuntimeOwner().Gate.Published()
+	}
+	msgID := fmt.Sprintf("turn-%d-%d", gen, atomic.LoadInt64(&c.sessionRevision))
+	// Dedup: a retried turn with the same revision must not double-record.
+	owner := c.RuntimeOwner()
+	owner.RecordMessageSentOnce(gen, msgID, "control")
+	d := owner.DecideResume(gen)
+	c.mu.Lock()
+	c.lastResumeDecision = d
+	c.mu.Unlock()
 }
 
 // validatedCheckpointTurn returns the checkpoint only while its original

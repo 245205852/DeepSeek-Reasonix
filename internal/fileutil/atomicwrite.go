@@ -93,14 +93,25 @@ func writeAtomicTemp(path string, data []byte, perm os.FileMode) (string, error)
 		return "", fmt.Errorf("create tmp for %s: %w", path, err)
 	}
 	tmpPath := tmp.Name()
+	closed := false
+	closeTmp := func() error {
+		if closed {
+			return nil
+		}
+		closed = true
+		return tmp.Close()
+	}
+	keep := false
+	defer func() {
+		_ = closeTmp()
+		if !keep {
+			_ = os.Remove(tmpPath)
+		}
+	}()
 	if _, err := tmp.Write(data); err != nil {
-		tmp.Close()
-		os.Remove(tmpPath)
 		return "", fmt.Errorf("write tmp for %s: %w", path, err)
 	}
 	if err := tmp.Sync(); err != nil {
-		tmp.Close()
-		os.Remove(tmpPath)
 		return "", fmt.Errorf("fsync tmp for %s: %w", path, err)
 	}
 	// Chmod the still-open handle, before Close, so there is no window between
@@ -108,14 +119,12 @@ func writeAtomicTemp(path string, data []byte, perm os.FileMode) (string, error)
 	// indexer) to grab or move the tmp and make the chmod fail with "file not
 	// found". CreateTemp makes a 0600 file, so this only widens when perm asks.
 	if err := tmp.Chmod(perm); err != nil {
-		tmp.Close()
-		os.Remove(tmpPath)
 		return "", fmt.Errorf("chmod tmp for %s: %w", path, err)
 	}
-	if err := tmp.Close(); err != nil {
-		os.Remove(tmpPath)
+	if err := closeTmp(); err != nil {
 		return "", fmt.Errorf("close tmp for %s: %w", path, err)
 	}
+	keep = true
 	return tmpPath, nil
 }
 
