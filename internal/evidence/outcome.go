@@ -28,6 +28,14 @@ type OutcomeSample struct {
 	// DebtAge counts consecutive rounds carrying an unverified mutation with
 	// no discriminating observation; 0 while no verification debt is open.
 	DebtAge int
+	// BlindMutations counts mutations since the last discriminating
+	// observation — the EBM policy's trigger input.
+	BlindMutations int
+	// EBMEligible/EBMFired mark the Evidence-Before-More-Mutation trigger
+	// holding and its nudge firing; the agent stamps both so every arm —
+	// baseline included — carries the eligibility shadow.
+	EBMEligible bool
+	EBMFired    bool
 }
 
 // OutcomeTracker is the shadow counterpart of ProgressTracker: same per-round
@@ -45,6 +53,7 @@ type OutcomeTracker struct {
 	mutatedBases map[string]bool
 	debt         bool
 	debtAge      int
+	blind        int
 }
 
 func NewOutcomeTracker() *OutcomeTracker {
@@ -75,16 +84,18 @@ func (t *OutcomeTracker) ScoreRound(receipts []Receipt) OutcomeSample {
 	// Verification debt: a discriminating observation settles it; otherwise a
 	// mutation opens it and every silent round ages it, mutation round included.
 	if s.Discriminating > 0 {
-		t.debt, t.debtAge = false, 0
+		t.debt, t.debtAge, t.blind = false, 0, 0
 	} else {
 		if s.Churn > 0 {
 			t.debt = true
+			t.blind += s.Churn
 		}
 		if t.debt {
 			t.debtAge++
 		}
 	}
 	s.DebtAge = t.debtAge
+	s.BlindMutations = t.blind
 	return s
 }
 

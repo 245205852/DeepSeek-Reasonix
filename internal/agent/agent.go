@@ -568,6 +568,9 @@ type Agent struct {
 	// only feed trajectory recording; it never influences guard behavior.
 	outcome *evidence.OutcomeTracker
 
+	// ebm is the Evidence-Before-More-Mutation nudge's once-per-turn state.
+	ebm ebmState
+
 	// repeatFailureCounts tracks semantically identical write-like calls that
 	// keep failing with the same failure class. Unlike stormSig, successful
 	// reads do not blindly clear this state: re-reading a file and then

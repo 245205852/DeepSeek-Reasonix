@@ -144,14 +144,17 @@ type trajectoryRecord struct {
 		Complete bool   `json:"complete"`
 	} `json:"contract_shadow"`
 	OutcomeProgress *struct {
-		Exploration    int `json:"exploration"`
-		Verification   int `json:"verification"`
-		Objective      int `json:"objective"`
-		Regression     int `json:"regression"`
-		Churn          int `json:"churn"`
-		LegacyGain     int `json:"legacy_gain"`
-		Discriminating int `json:"discriminating"`
-		DebtAge        int `json:"debt_age"`
+		Exploration    int  `json:"exploration"`
+		Verification   int  `json:"verification"`
+		Objective      int  `json:"objective"`
+		Regression     int  `json:"regression"`
+		Churn          int  `json:"churn"`
+		LegacyGain     int  `json:"legacy_gain"`
+		Discriminating int  `json:"discriminating"`
+		DebtAge        int  `json:"debt_age"`
+		BlindMutations int  `json:"blind_mutations"`
+		EBMEligible    bool `json:"ebm_eligible"`
+		EBMFired       bool `json:"ebm_fired"`
 	} `json:"outcome_progress"`
 	DelegationAdmission *struct {
 		Tool    string `json:"tool"`
@@ -355,6 +358,7 @@ func (t *trajScan) record(rec trajectoryRecord) {
 			ts: rec.TS, exploration: op.Exploration, verification: op.Verification,
 			objective: op.Objective, regression: op.Regression, churn: op.Churn,
 			legacyGain: op.LegacyGain, discriminating: op.Discriminating, debtAge: op.DebtAge,
+			blindMutations: op.BlindMutations, ebmEligible: op.EBMEligible, ebmFired: op.EBMFired,
 		})
 	}
 	if da := rec.DelegationAdmission; da != nil {

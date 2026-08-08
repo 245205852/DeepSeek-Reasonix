@@ -44,15 +44,18 @@ type DelegationAdmission struct {
 
 // OutcomeProgress mirrors evidence.OutcomeSample with stable snake_case keys.
 type OutcomeProgress struct {
-	Round          int `json:"round"`
-	Exploration    int `json:"exploration,omitempty"`
-	Verification   int `json:"verification,omitempty"`
-	Objective      int `json:"objective,omitempty"`
-	Regression     int `json:"regression,omitempty"`
-	Churn          int `json:"churn,omitempty"`
-	LegacyGain     int `json:"legacy_gain,omitempty"`
-	Discriminating int `json:"discriminating,omitempty"`
-	DebtAge        int `json:"debt_age,omitempty"`
+	Round          int  `json:"round"`
+	Exploration    int  `json:"exploration,omitempty"`
+	Verification   int  `json:"verification,omitempty"`
+	Objective      int  `json:"objective,omitempty"`
+	Regression     int  `json:"regression,omitempty"`
+	Churn          int  `json:"churn,omitempty"`
+	LegacyGain     int  `json:"legacy_gain,omitempty"`
+	Discriminating int  `json:"discriminating,omitempty"`
+	DebtAge        int  `json:"debt_age,omitempty"`
+	BlindMutations int  `json:"blind_mutations,omitempty"`
+	EBMEligible    bool `json:"ebm_eligible,omitempty"`
+	EBMFired       bool `json:"ebm_fired,omitempty"`
 }
 
 // ContractShadowAudit mirrors event.ContractShadowAudit with stable keys.
@@ -185,6 +188,9 @@ func (r *Recorder) RecordOutcomeProgress(sample evidence.OutcomeSample) {
 		LegacyGain:     sample.LegacyGain,
 		Discriminating: sample.Discriminating,
 		DebtAge:        sample.DebtAge,
+		BlindMutations: sample.BlindMutations,
+		EBMEligible:    sample.EBMEligible,
+		EBMFired:       sample.EBMFired,
 	}})
 	event.RecordOutcomeProgress(r.inner, sample)
 }
