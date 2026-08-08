@@ -228,5 +228,5 @@ issues get triaged.
 ## Video
 
 <p align="center">
-  <iframe width="400" height="225" src="https://www.youtube.com/embed/88uEnEKkCow" title="DeepSeek-Reasonix demo" frameborder="0" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share" referrerpolicy="strict-origin-when-cross-origin" allowfullscreen></iframe>
+  <iframe width="560" height="315" src="https://www.youtube.com/embed/88uEnEKkCow?si=GO6sPQ90UgV6plbj" title="YouTube video player" frameborder="0" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share" referrerpolicy="strict-origin-when-cross-origin" allowfullscreen></iframe>
 </p>
