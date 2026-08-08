@@ -43,6 +43,7 @@ import type {
   BotSettingsView,
   CapabilitiesView,
   CapabilityDiagnosticsReport,
+  RuntimeDoctorReport,
   CheckpointMeta,
   CommandInfo,
   ControlResult,
@@ -320,6 +321,7 @@ export interface AppBindings {
   MCPMarketplaceResolve(registryName: string): Promise<MCPMarketplaceEntry>;
   SkillsSettings(): Promise<SkillsSettingsView>;
   CapabilityDiagnostics(includeSessionRuntime: boolean): Promise<CapabilityDiagnosticsReport>;
+  RuntimeDoctor(): Promise<RuntimeDoctorReport>;
   Plugins(): Promise<PluginView[]>;
   PlanPluginInstall(source: string, options: PluginInstallOptions): Promise<string>;
   InstallPlugin(source: string, options: PluginInstallOptions): Promise<string>;
@@ -3332,6 +3334,20 @@ function makeMockApp(): AppBindings {
       return {
         skills: capSkills.map((s) => ({ ...s })),
         skillRoots: capSkillRoots.map((s) => ({ ...s })),
+      };
+    },
+    async RuntimeDoctor() {
+      return {
+        text: "runtime status: mock\nrecoverability: clean=true irreversible=false\nresume: allow=true cleanRollback=true\n",
+        publishedGeneration: 0,
+        allowResume: true,
+        cleanRollback: true,
+        hasIrreversible: false,
+        noOpRebuilds: 0,
+        fullRebuilds: 0,
+        subgraphRebuilds: 0,
+        staleDrops: 0,
+        admissionRejected: 0, runtimeOwnerFallbacks: 0,
       };
     },
     async CapabilityDiagnostics(includeSessionRuntime: boolean) {
