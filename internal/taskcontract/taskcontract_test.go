@@ -88,3 +88,53 @@ func TestOutstandingListsBlockersOnly(t *testing.T) {
 		t.Fatalf("outstanding = %v, want required requirement + check only", got)
 	}
 }
+
+func TestAtomicContractCompletesFromOneMutation(t *testing.T) {
+	c := Atomic("fix typo in README.md")
+	if c.Intent != taskintent.Mutation {
+		t.Fatalf("intent = %v, want Mutation", c.Intent)
+	}
+	if !c.Trivial() {
+		t.Fatal("atomic contract must route trivial (executor-only, no arbiters)")
+	}
+	if c.Complete() {
+		t.Fatal("nothing happened yet")
+	}
+	c.Observe(evidence.Receipt{ToolName: "read_file", Read: true, Success: true})
+	if c.Complete() {
+		t.Fatal("a read must not complete a mutation contract")
+	}
+	c.Observe(evidence.Receipt{ToolName: "edit_file", Mutation: true, Write: true, Success: true, Paths: []string{"README.md"}})
+	if !c.Complete() {
+		t.Fatalf("one successful mutation must complete it; outstanding: %v", c.Outstanding())
+	}
+	if c.Requirements[0].Status != Satisfied || len(c.Requirements[0].Evidence) != 1 {
+		t.Fatalf("r1 = %+v, want auto-satisfied with the mutation ref", c.Requirements[0])
+	}
+}
+
+func TestMutationCheckHonorsScopePaths(t *testing.T) {
+	c := Atomic("fix typo in README.md")
+	c.MergeSignals(Signals{Anchored: true, Paths: []string{"README.md"}})
+	c.Observe(evidence.Receipt{ToolName: "write_file", Mutation: true, Success: true, Paths: []string{"other.txt"}})
+	if c.Checks[0].Status == Satisfied {
+		t.Fatal("mutation outside the scoped paths must not satisfy the check")
+	}
+	c.Observe(evidence.Receipt{ToolName: "write_file", Mutation: true, Success: true, Paths: []string{"README.md"}})
+	if c.Checks[0].Status != Satisfied {
+		t.Fatal("scoped mutation must satisfy the check")
+	}
+}
+
+func TestTrivialRejectsComplexContracts(t *testing.T) {
+	c := Atomic("fix typo")
+	c.MergeSignals(Signals{HighRisk: true})
+	if c.Trivial() {
+		t.Fatal("high risk is never trivial")
+	}
+	c2 := New("refactor everything")
+	c2.MergeSignals(Signals{MultiFile: true})
+	if c2.Trivial() {
+		t.Fatal("multi-file is never trivial")
+	}
+}

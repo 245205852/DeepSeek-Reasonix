@@ -50,18 +50,32 @@ type EvidenceRef struct {
 }
 
 // Requirement is one acceptance criterion; Required=false records a
-// nice-to-have that must not block completion.
+// nice-to-have that must not block completion. Auto requirements are
+// satisfied by the first successful receipt of AutoKind — the opt-in for
+// tasks whose ask IS the evidence (fix a typo: the mutation proves it).
 type Requirement struct {
 	ID       string
 	Text     string
 	Required bool
 	Status   Status
 	Evidence []EvidenceRef
+	Auto     bool
+	AutoKind EvidenceKind
 }
 
-// Check is an expected verification; an empty Command accepts any
+// CheckKind selects what proves a check: a verification command, or any
+// successful workspace mutation (scoped to Scope.Paths when set).
+type CheckKind uint8
+
+const (
+	CheckCommand CheckKind = iota
+	CheckMutation
+)
+
+// Check is an expected proof; for CheckCommand an empty Command accepts any
 // verification-classified command.
 type Check struct {
+	Kind     CheckKind
 	Command  string
 	Status   Status
 	Evidence []EvidenceRef
@@ -102,6 +116,27 @@ type Contract struct {
 // an otherwise empty contract; no model call is made.
 func New(input string) *Contract {
 	return &Contract{Intent: taskintent.Classify(input)}
+}
+
+// Atomic is the zero-overhead contract for a simple ask: the ask itself is
+// the one requirement (auto-satisfied by mutation evidence) and the one
+// check is "the workspace changed". No planner, no evaluator, no extra
+// round — the host synthesizes it and the ledger completes it.
+func Atomic(input string) *Contract {
+	c := New(input)
+	c.Requirements = append(c.Requirements, Requirement{
+		ID: "r1", Text: input, Required: true, Auto: true, AutoKind: EvidenceMutation,
+	})
+	c.Checks = append(c.Checks, Check{Kind: CheckMutation})
+	return c
+}
+
+// Trivial reports whether the contract is simple enough to route
+// executor-only and skip every arbiter beyond the ledger itself.
+func (c *Contract) Trivial() bool {
+	return c.Risk == RiskLow &&
+		!c.Scope.MultiFile && !c.Scope.CrossSurface &&
+		len(c.Requirements) <= 1 && len(c.Checks) <= 1
 }
 
 // MergeSignals folds prompt-shape and risk signals in; risk only ratchets up.
@@ -147,7 +182,7 @@ func (c *Contract) Observe(r evidence.Receipt) {
 	c.epoch++
 	ref := refFor(c.epoch, r)
 	for i := range c.Checks {
-		if !checkMatches(c.Checks[i].Command, r) {
+		if !c.checkMatches(c.Checks[i], r, ref) {
 			continue
 		}
 		c.Checks[i].Evidence = append(c.Checks[i].Evidence, ref)
@@ -155,6 +190,13 @@ func (c *Contract) Observe(r evidence.Receipt) {
 			c.Checks[i].Status = Satisfied
 		} else if c.Checks[i].Status != Satisfied {
 			c.Checks[i].Status = Failed
+		}
+	}
+	for i := range c.Requirements {
+		req := &c.Requirements[i]
+		if req.Auto && req.Status != Satisfied && r.Success && ref.Kind == req.AutoKind {
+			req.Status = Satisfied
+			req.Evidence = append(req.Evidence, ref)
 		}
 	}
 }
@@ -223,14 +265,34 @@ func refFor(epoch uint64, r evidence.Receipt) EvidenceRef {
 	return EvidenceRef{Kind: kind, MutationEpoch: epoch, Source: r.ToolName, Success: r.Success}
 }
 
-func checkMatches(want string, r evidence.Receipt) bool {
+func (c *Contract) checkMatches(check Check, r evidence.Receipt, ref EvidenceRef) bool {
+	if check.Kind == CheckMutation {
+		if ref.Kind != EvidenceMutation {
+			return false
+		}
+		if len(c.Scope.Paths) == 0 {
+			return true
+		}
+		return pathsIntersect(c.Scope.Paths, r.Paths)
+	}
 	if r.Command == "" {
 		return false
 	}
-	if want == "" {
+	if check.Command == "" {
 		return evidence.IsDeliveryVerificationCommand(r.Command)
 	}
-	return evidence.CommandMatches(want, r.Command)
+	return evidence.CommandMatches(check.Command, r.Command)
+}
+
+func pathsIntersect(scope, got []string) bool {
+	for _, s := range scope {
+		for _, g := range got {
+			if s == g {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func appendNew(dst, add []string) []string {
