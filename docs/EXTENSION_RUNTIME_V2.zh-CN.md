@@ -64,9 +64,16 @@ Receipt ledger **只支持进程内 rebuild/resume**，不会持久化；进程�
 不在本次 Runtime v2 的范围内。内存最多保留最近 32 个 generation、每代 256 条
 receipt。淘汰时也会释放关联的文件 prior 字节，并将该代证据标记为已截断；证据
 不完整时，诊断不会声称 clean rollback。
+消息发送去重与 receipt 使用同一保留周期：消息 receipt 被淘汰时会同步释放对应的
+`(generation, messageID)` 键，避免形成第二份无界账本。文件 prior 每条最多 8 MiB、
+每个 `RuntimeOwner` 合计最多 32 MiB；超过任一上限会记录 `prior_truncated`，恢复
+判断按保守策略处理，不会声称 clean rollback。
 
 - Provider stream open 会记录 `provider-submit:<id>`（不可逆）。
-- Drain 超时 force-expire 记录 `drain-timeout:<gen>`，在每次 publish 后调度（`ScheduleDrainWatch` / doctor sweep）。
+- Drain 超时 force-expire 记录 `drain-timeout:<gen>`。`ScheduleDrainWatch` 仅在确有
+  generation 正在 drain 时启动，并将快速连续 publish 合并为每个 owner 一个 watcher；
+  doctor sweep 仍作为兜底。
+- 每个 owner 最多保留最近 256 个 late-cancel 过期 generation 标记。
 
 ## EffectScope 归属
 

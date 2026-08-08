@@ -26,10 +26,12 @@ go test ./internal/boot/ -run 'TestIntegrationNoOpDoesNotBuildNewController|Test
 
 ## Cache hit expectation
 
-No-op and UI/interceptor-only plans keep `RuntimeSnapshot.CacheHash` stable
-(`shouldReuseSnapshot`). Provider/MCP-only may change cache when tools/providers
-move; discovery of skills/commands/hooks is still skipped when `ReuseAssembly`
-is retained.
+No-op, UI/interceptor-only, and backend-only Provider/MCP plans keep the frozen
+system prompt, tool schemas, and `RuntimeSnapshot.CacheHash` byte-stable.
+Provider capability changes remain visible through `providerChanged` without
+falsely reporting `prefixChanged`. MCP schema additions, removals, or renames
+are classified as full rebuilds and intentionally recompute the prefix.
+Discovery of skills/commands/hooks is skipped while `ReuseAssembly` is retained.
 
 ## Sidecar start / drain
 
@@ -37,7 +39,13 @@ is retained.
 only starts Added/Reloaded. Drain uses `Manager.DrainPlan` after publish.
 Drain TTL defaults to 30s; force-expire fires registered cancel callbacks then
 writes `drain-timeout-<gen>` receipts.
+Cold publishes allocate no watcher. While drains exist, rapid publishes share
+one timer watcher per runtime owner; the watcher sleeps only until the oldest
+drain reaches its TTL. Expired-generation markers are capped at 256 per owner.
 
 Receipt evidence is process-local and bounded to 32 generations with 256
 receipts per generation. Retention truncation is conservative: it prevents a
 clean-rollback claim instead of hiding missing evidence.
+Message dedup keys are removed with their matching evicted receipts. File-prior
+retention is bounded to 8 MiB per write and 32 MiB per runtime owner; an
+oversized prior is not retained and blocks a clean-rollback claim.

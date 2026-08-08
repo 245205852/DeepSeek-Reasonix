@@ -18,11 +18,27 @@ func TestMessageSendGuardDedup(t *testing.T) {
 	}
 }
 
+func TestMessageSendGuardForgetReceipt(t *testing.T) {
+	g := NewMessageSendGuard()
+	if !g.TryRecord(2, "m#gen-2") {
+		t.Fatal("first should succeed")
+	}
+	g.ForgetReceipt(EffectReceipt{
+		ID:         "message-sent:m#gen-2#gen-2",
+		Component:  "m#gen-2",
+		Generation: 2,
+	})
+	if !g.TryRecord(2, "m#gen-2") {
+		t.Fatal("evicted receipt did not release its dedup key")
+	}
+}
+
 func TestRecordMessageSentOnce(t *testing.T) {
-	if !RecordMessageSentOnce(77, "once-a", "test") {
+	owner := NewRuntimeOwner()
+	if !owner.RecordMessageSentOnce(77, "once-a", "test") {
 		t.Fatal("first")
 	}
-	if RecordMessageSentOnce(77, "once-a", "test") {
+	if owner.RecordMessageSentOnce(77, "once-a", "test") {
 		t.Fatal("second must be rejected")
 	}
 }

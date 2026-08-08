@@ -26,14 +26,22 @@ go test ./internal/boot/ -run 'TestIntegrationNoOpDoesNotBuildNewController|Test
 
 ## 缓存命中
 
-no-op 与 UI/interceptor-only 保持 `CacheHash` 稳定。Provider/MCP-only 在
-tools/providers 变化时可能改 hash；`ReuseAssembly` 仍可跳过 skill/command/hook rediscovery。
+no-op、UI/interceptor-only 以及只滚动 backend 的 Provider/MCP 计划会保持
+system prompt、tool schemas 与 `CacheHash` 字节稳定。Provider capability 变化通过
+`providerChanged` 呈现，不会误报 `prefixChanged`；MCP schema 新增、删除或改名则
+归类为全量 rebuild，并有意重新计算 prefix。保留 `ReuseAssembly` 时仍可跳过
+skill/command/hook rediscovery。
 
 ## Sidecar 启动 / drain
 
 `StartPackagesWithPlan` 收养 Unchanged 客户端；仅启动 Added/Reloaded。
 Publish 后 `DrainPlan`；默认 drain TTL 30s，超时先 fire cancel 再写
 `drain-timeout-<gen>` receipt。
+冷启动 publish 不创建 watcher；存在 drain 时，快速连续 publish 在每个 runtime
+owner 上共用一个定时 watcher，并只等待最早 drain 的剩余 TTL。每个 owner 的
+过期 generation 标记最多保留 256 个。
 
 Receipt 证据仅存在于当前进程，最多保留 32 个 generation、每代 256 条。发生
 淘汰时按保守策略处理：禁止声称 clean rollback，而不是隐藏证据缺失。
+消息去重键会随对应 receipt 淘汰而释放。文件 prior 每次写入最多保留 8 MiB，
+每个 runtime owner 合计最多 32 MiB；超限 prior 不保留，并阻止 clean rollback 判断。

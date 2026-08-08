@@ -245,7 +245,7 @@ func (s *ReceiptStore) AssessRecoverability(gen uint64) Recoverability {
 			out.Clean = false
 			out.Notes = append(out.Notes, "irreversible effect "+r.ID+" cannot be rolled back")
 		case Compensatable:
-			if r.CompensationStatus == "failed" || r.CompensationStatus == "" {
+			if r.CompensationStatus == "failed" || r.CompensationStatus == "" || r.CompensationStatus == "prior_truncated" {
 				out.Clean = false
 				out.Blocking = append(out.Blocking, r.ID)
 				out.Notes = append(out.Notes, "compensatable effect "+r.ID+" not fully compensated")

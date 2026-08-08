@@ -7,11 +7,21 @@ import (
 	"sync"
 )
 
+const (
+	// Prior bytes are an in-process recovery aid, not an unbounded file cache.
+	// Keep large writes compensatable when practical while bounding one owner.
+	defaultFilePriorMaxBytes      = 32 << 20
+	defaultFilePriorMaxEntryBytes = 8 << 20
+)
+
 // FilePriorStore holds prior file contents for compensatable write_file
 // receipts so recovery can restore them (never claim success without apply).
 type FilePriorStore struct {
-	mu   sync.Mutex
-	byID map[string]filePrior
+	mu            sync.Mutex
+	byID          map[string]filePrior
+	retainedBytes int
+	maxBytes      int
+	maxEntryBytes int
 }
 
 type filePrior struct {
@@ -25,19 +35,43 @@ var DefaultFilePriorStore = DefaultRuntimeOwner.FilePriors
 
 // NewFilePriorStore returns an empty store.
 func NewFilePriorStore() *FilePriorStore {
-	return &FilePriorStore{byID: make(map[string]filePrior)}
+	return newFilePriorStore(defaultFilePriorMaxBytes, defaultFilePriorMaxEntryBytes)
+}
+
+func newFilePriorStore(maxBytes, maxEntryBytes int) *FilePriorStore {
+	return &FilePriorStore{
+		byID:          make(map[string]filePrior),
+		maxBytes:      maxBytes,
+		maxEntryBytes: maxEntryBytes,
+	}
 }
 
 // Capture records prior content for path under receipt id.
-func (s *FilePriorStore) Capture(id, path string, content []byte, existed bool) {
+// It returns false when retaining the prior would exceed the store budget.
+func (s *FilePriorStore) Capture(id, path string, content []byte, existed bool) bool {
 	if s == nil || id == "" || path == "" {
-		return
+		return false
+	}
+	if s.maxEntryBytes > 0 && len(content) > s.maxEntryBytes {
+		return false
+	}
+	s.mu.Lock()
+	old, hadOld := s.byID[id]
+	oldBytes := 0
+	if hadOld {
+		oldBytes = len(old.Content)
+	}
+	available := s.retainedBytes - oldBytes
+	if s.maxBytes > 0 && available+len(content) > s.maxBytes {
+		s.mu.Unlock()
+		return false
 	}
 	cp := make([]byte, len(content))
 	copy(cp, content)
-	s.mu.Lock()
 	s.byID[id] = filePrior{Path: path, Content: cp, Existed: existed}
+	s.retainedBytes = available + len(cp)
 	s.mu.Unlock()
+	return true
 }
 
 // Compensate restores the prior content (or removes a created file). Returns
@@ -71,7 +105,13 @@ func (s *FilePriorStore) Forget(id string) {
 		return
 	}
 	s.mu.Lock()
-	delete(s.byID, id)
+	if prior, ok := s.byID[id]; ok {
+		s.retainedBytes -= len(prior.Content)
+		if s.retainedBytes < 0 {
+			s.retainedBytes = 0
+		}
+		delete(s.byID, id)
+	}
 	s.mu.Unlock()
 }
 

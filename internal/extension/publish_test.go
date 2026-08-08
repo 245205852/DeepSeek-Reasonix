@@ -77,6 +77,59 @@ func TestPublishGateLateDrainCancelFiresImmediately(t *testing.T) {
 	}
 }
 
+func TestPublishGateDrainWatchSkipsColdPublishAndCoalesces(t *testing.T) {
+	g := NewPublishGate().WithDrainTTL(time.Hour)
+	g.Publish(1)
+	g.ScheduleDrainWatch()
+	g.mu.RLock()
+	coldWatching := g.drainWatching
+	g.mu.RUnlock()
+	if coldWatching {
+		t.Fatal("cold publish without a draining generation started a watcher")
+	}
+
+	g.Publish(2)
+	g.ScheduleDrainWatch()
+	g.ScheduleDrainWatch()
+	g.mu.RLock()
+	watching := g.drainWatching
+	g.mu.RUnlock()
+	if !watching {
+		t.Fatal("active drain did not start its coalesced watcher")
+	}
+}
+
+func TestPublishGateBoundsExpiredGenerations(t *testing.T) {
+	g := NewPublishGate()
+	g.expiredLimit = 2
+	for gen := uint64(1); gen <= 3; gen++ {
+		g.ForceExpireDrain(gen)
+	}
+	g.mu.RLock()
+	expiredLen := len(g.expired)
+	orderLen := len(g.expiredOrder)
+	_, hasFirst := g.expired[1]
+	_, hasSecond := g.expired[2]
+	_, hasThird := g.expired[3]
+	g.mu.RUnlock()
+	if expiredLen != 2 || orderLen != 2 {
+		t.Fatalf("expired retention = map:%d order:%d, want 2", expiredLen, orderLen)
+	}
+	if hasFirst {
+		t.Fatal("oldest expired generation was not evicted")
+	}
+	if !hasSecond || !hasThird {
+		t.Fatalf("latest expired generations retained = second:%v third:%v, want true/true", hasSecond, hasThird)
+	}
+
+	g.Publish(4)
+	fired := false
+	g.RegisterDrainCancel(1, func() { fired = true })
+	if !fired {
+		t.Fatal("late cancel for an evicted expired generation was retained")
+	}
+}
+
 func TestLifecycleTransitions(t *testing.T) {
 	r := NewLifecycleRegistry(5)
 	r.Ensure("plugin/a")

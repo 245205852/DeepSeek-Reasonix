@@ -11,15 +11,20 @@ import (
 // generations. Only one generation is Published at a time; older generations
 // are Draining and their late traffic must be dropped.
 type PublishGate struct {
-	mu           sync.RWMutex
-	published    uint64
-	draining     map[uint64]time.Time // gen → drain start
-	drainTTL     time.Duration
-	onStale      func(gen uint64, kind string)
-	receipts     *ReceiptStore
-	drainCancels map[uint64][]func()
-	expired      map[uint64]struct{}
+	mu            sync.RWMutex
+	published     uint64
+	draining      map[uint64]time.Time // gen → drain start
+	drainTTL      time.Duration
+	onStale       func(gen uint64, kind string)
+	receipts      *ReceiptStore
+	drainCancels  map[uint64][]func()
+	expired       map[uint64]struct{}
+	expiredOrder  []uint64
+	expiredLimit  int
+	drainWatching bool
 }
+
+const defaultExpiredGenerationLimit = 256
 
 // NewPublishGate returns a gate with a default drain timeout of 30s.
 func NewPublishGate() *PublishGate {
@@ -36,13 +41,16 @@ func newPublishGate(receipts *ReceiptStore) *PublishGate {
 		receipts:     receipts,
 		drainCancels: make(map[uint64][]func()),
 		expired:      make(map[uint64]struct{}),
+		expiredLimit: defaultExpiredGenerationLimit,
 	}
 }
 
 // WithDrainTTL sets how long a draining generation is tracked before force-forget.
 func (g *PublishGate) WithDrainTTL(d time.Duration) *PublishGate {
 	if g != nil && d > 0 {
+		g.mu.Lock()
 		g.drainTTL = d
+		g.mu.Unlock()
 	}
 	return g
 }
@@ -75,7 +83,7 @@ func (g *PublishGate) Publish(gen uint64) {
 		g.draining[g.published] = time.Now()
 	}
 	delete(g.draining, gen)
-	delete(g.expired, gen)
+	g.clearExpiredLocked(gen)
 	g.published = gen
 	DefaultLifecycleMetrics.Publishes.Add(1)
 }
@@ -91,7 +99,7 @@ func (g *PublishGate) BeginDrain(gen uint64) {
 	if g.draining == nil {
 		g.draining = make(map[uint64]time.Time)
 	}
-	delete(g.expired, gen)
+	g.clearExpiredLocked(gen)
 	g.draining[gen] = time.Now()
 	DefaultLifecycleMetrics.Drains.Add(1)
 }
@@ -158,7 +166,7 @@ func (g *PublishGate) SweepExpiredDrains() []uint64 {
 		if now.Sub(started) >= g.drainTTL {
 			expired = append(expired, gen)
 			delete(g.draining, gen)
-			g.expired[gen] = struct{}{}
+			g.markExpiredLocked(gen)
 		}
 	}
 	return expired
@@ -181,7 +189,13 @@ func (g *PublishGate) RegisterDrainCancel(gen uint64, cancel func()) {
 		return
 	}
 	g.mu.Lock()
-	if _, expired := g.expired[gen]; expired {
+	_, expired := g.expired[gen]
+	_, draining := g.draining[gen]
+	// Generation IDs increase monotonically. Once an old expiry marker leaves
+	// bounded retention, a generation below the published one is still stale
+	// and its late registration must be cancelled instead of retained forever.
+	forgottenExpired := !expired && !draining && g.published != 0 && gen < g.published
+	if expired || forgottenExpired {
 		g.mu.Unlock()
 		cancel()
 		return
@@ -198,7 +212,7 @@ func (g *PublishGate) FireDrainCancels(gen uint64) {
 	g.mu.Lock()
 	fns := g.drainCancels[gen]
 	delete(g.drainCancels, gen)
-	g.expired[gen] = struct{}{}
+	g.markExpiredLocked(gen)
 	g.mu.Unlock()
 	for _, fn := range fns {
 		if fn != nil {
@@ -217,7 +231,7 @@ func (g *PublishGate) ForceExpireDrain(gen uint64) {
 	fns := g.drainCancels[gen]
 	delete(g.drainCancels, gen)
 	delete(g.draining, gen)
-	g.expired[gen] = struct{}{}
+	g.markExpiredLocked(gen)
 	g.mu.Unlock()
 	for _, fn := range fns {
 		if fn != nil {
@@ -252,22 +266,86 @@ func (g *PublishGate) SweepAndForceExpire() []uint64 {
 	return expired
 }
 
-// ScheduleDrainWatch starts a background timer that force-expires drains
-// after drainTTL. Safe to call multiple times; each call watches once.
+// ScheduleDrainWatch starts one background timer while a gate has active
+// draining generations. Calls are coalesced so cold publishes do not allocate
+// a timer goroutine and rapid publishes do not create one watcher per publish.
 func (g *PublishGate) ScheduleDrainWatch() {
 	if g == nil {
 		return
 	}
+	g.mu.Lock()
+	if len(g.draining) == 0 || g.drainWatching {
+		g.mu.Unlock()
+		return
+	}
+	g.drainWatching = true
 	ttl := g.drainTTL
 	if ttl <= 0 {
 		ttl = 30 * time.Second
 	}
+	wakeAfter := ttl
+	now := time.Now()
+	for _, started := range g.draining {
+		remaining := ttl - now.Sub(started)
+		if remaining < wakeAfter {
+			wakeAfter = remaining
+		}
+	}
+	if wakeAfter < 0 {
+		wakeAfter = 0
+	}
+	g.mu.Unlock()
 	go func() {
-		timer := time.NewTimer(ttl)
+		timer := time.NewTimer(wakeAfter)
 		defer timer.Stop()
 		<-timer.C
 		g.SweepAndForceExpire()
+		g.mu.Lock()
+		g.drainWatching = false
+		watchAgain := len(g.draining) > 0
+		g.mu.Unlock()
+		if watchAgain {
+			g.ScheduleDrainWatch()
+		}
 	}()
+}
+
+func (g *PublishGate) markExpiredLocked(gen uint64) {
+	if gen == 0 {
+		return
+	}
+	if _, ok := g.expired[gen]; ok {
+		return
+	}
+	if g.expired == nil {
+		g.expired = make(map[uint64]struct{})
+	}
+	g.expired[gen] = struct{}{}
+	g.expiredOrder = append(g.expiredOrder, gen)
+	limit := g.expiredLimit
+	if limit < 1 {
+		limit = defaultExpiredGenerationLimit
+	}
+	for len(g.expiredOrder) > limit {
+		old := g.expiredOrder[0]
+		g.expiredOrder = g.expiredOrder[1:]
+		delete(g.expired, old)
+	}
+}
+
+func (g *PublishGate) clearExpiredLocked(gen uint64) {
+	if _, ok := g.expired[gen]; !ok {
+		return
+	}
+	delete(g.expired, gen)
+	for i, item := range g.expiredOrder {
+		if item != gen {
+			continue
+		}
+		copy(g.expiredOrder[i:], g.expiredOrder[i+1:])
+		g.expiredOrder = g.expiredOrder[:len(g.expiredOrder)-1]
+		break
+	}
 }
 
 // DrainingGenerations returns generations currently in drain.

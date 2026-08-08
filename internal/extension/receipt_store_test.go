@@ -75,3 +75,16 @@ func TestReceiptStoreBoundsGenerationAndReceiptRetention(t *testing.T) {
 		t.Fatalf("truncated generation must not claim clean recovery: %+v", rec)
 	}
 }
+
+func TestReceiptStoreTruncatedPriorBlocksCleanRecovery(t *testing.T) {
+	s := NewReceiptStore()
+	s.Record(EffectReceipt{
+		ID:                 "large-prior",
+		Generation:         5,
+		Class:              Compensatable,
+		CompensationStatus: "prior_truncated",
+	})
+	if rec := s.AssessRecoverability(5); rec.Clean || len(rec.Blocking) != 1 {
+		t.Fatalf("truncated prior recoverability = %+v", rec)
+	}
+}

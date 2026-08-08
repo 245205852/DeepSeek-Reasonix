@@ -70,9 +70,17 @@ Memory is bounded to the latest 32 generations and 256 receipts per generation.
 Eviction also drops associated file-prior bytes and marks the affected
 generation's evidence as truncated, so diagnostics refuse to claim a clean
 rollback when complete evidence is no longer available.
+Message-send deduplication follows the same receipt retention: evicting a
+message receipt releases its `(generation, messageID)` key instead of growing a
+second unbounded ledger. File priors are capped at 8 MiB per entry and 32 MiB
+per `RuntimeOwner`; writes beyond either limit record `prior_truncated`, and
+recovery remains conservative rather than claiming a clean rollback.
 
 - Provider stream open records `provider-submit:<id>` (irreversible).
-- Drain timeout force-expire records `drain-timeout:<gen>` and is scheduled after every publish (`ScheduleDrainWatch` / doctor sweep).
+- Drain timeout force-expire records `drain-timeout:<gen>`. `ScheduleDrainWatch`
+  starts only when a generation is actually draining and coalesces rapid
+  publishes into one watcher per owner; the doctor sweep remains a fallback.
+- Late-cancel expiry markers retain the latest 256 generations per owner.
 
 ## EffectScope ownership
 

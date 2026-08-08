@@ -60,3 +60,24 @@ func TestApplyFileWriteCompensationUpdatesReceipt(t *testing.T) {
 		t.Fatalf("receipt = %+v ok=%v", r, ok)
 	}
 }
+
+func TestFilePriorStoreBoundsRetainedBytes(t *testing.T) {
+	s := newFilePriorStore(5, 4)
+	dir := t.TempDir()
+	if !s.Capture("first", filepath.Join(dir, "first"), []byte("1234"), true) {
+		t.Fatal("in-budget prior was rejected")
+	}
+	if s.Capture("too-large", filepath.Join(dir, "large"), []byte("12345"), true) {
+		t.Fatal("oversized prior was retained")
+	}
+	if s.Capture("over-total", filepath.Join(dir, "total"), []byte("12"), true) {
+		t.Fatal("prior exceeding the owner budget was retained")
+	}
+	if s.retainedBytes != 4 || len(s.byID) != 1 {
+		t.Fatalf("retained state = bytes:%d entries:%d, want 4/1", s.retainedBytes, len(s.byID))
+	}
+	s.Forget("first")
+	if s.retainedBytes != 0 || len(s.byID) != 0 {
+		t.Fatalf("forget retained state = bytes:%d entries:%d, want 0/0", s.retainedBytes, len(s.byID))
+	}
+}

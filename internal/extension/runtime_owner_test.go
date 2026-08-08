@@ -79,3 +79,38 @@ func TestRuntimeOwnerReceiptEvictionReleasesFilePrior(t *testing.T) {
 		t.Fatalf("truncated receipt history must not claim clean recovery: %+v", rec)
 	}
 }
+
+func TestRuntimeOwnerFilePriorBudgetMarksRecoveryTruncated(t *testing.T) {
+	owner := NewRuntimeOwner()
+	owner.FilePriors = newFilePriorStore(1, 1)
+	owner.Gate.Publish(12)
+	id := owner.RecordFileWrite(filepath.Join(t.TempDir(), "oversized"), true, []byte("12"))
+	receipt, ok := owner.Receipts.Get(id)
+	if !ok || receipt.CompensationStatus != "prior_truncated" {
+		t.Fatalf("receipt = %+v ok=%v, want prior_truncated", receipt, ok)
+	}
+	if rec := owner.AssessRecoverability(12); rec.Clean {
+		t.Fatalf("missing prior bytes must not claim clean recovery: %+v", rec)
+	}
+}
+
+func TestRuntimeOwnerReceiptEvictionReleasesMessageDedup(t *testing.T) {
+	owner := NewRuntimeOwner()
+	const gen = uint64(13)
+	if !owner.RecordMessageSentOnce(gen, "oldest", "test") {
+		t.Fatal("first message receipt was rejected")
+	}
+	for i := 0; i < defaultReceiptPerGenerationLimit; i++ {
+		owner.Receipts.Record(EffectReceipt{
+			ID:         "later-" + itoaU64(uint64(i)),
+			Generation: gen,
+			Class:      Irreversible,
+		})
+	}
+	if _, ok := owner.Receipts.Get("message-sent:oldest"); ok {
+		t.Fatal("oldest message receipt should have been evicted")
+	}
+	if !owner.RecordMessageSentOnce(gen, "oldest", "test") {
+		t.Fatal("evicted message receipt kept an unbounded dedup key")
+	}
+}

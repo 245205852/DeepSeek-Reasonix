@@ -21,17 +21,19 @@ type RuntimeOwner struct {
 // NewRuntimeOwner returns an isolated runtime lifecycle owner.
 func NewRuntimeOwner() *RuntimeOwner {
 	priors := NewFilePriorStore()
+	messages := NewMessageSendGuard()
 	receipts := newReceiptStore(defaultReceiptGenerationLimit, defaultReceiptPerGenerationLimit, func(r EffectReceipt) {
 		if r.Class == Compensatable {
 			priors.Forget(r.ID)
 		}
+		messages.ForgetReceipt(r)
 	})
 	gate := newPublishGate(receipts)
 	owner := &RuntimeOwner{
 		Gate:       gate,
 		Receipts:   receipts,
 		FilePriors: priors,
-		Messages:   NewMessageSendGuard(),
+		Messages:   messages,
 	}
 	owner.HostStreams = NewHostStreamRegistry(gate)
 	return owner
@@ -109,6 +111,7 @@ func (o *RuntimeOwner) RecordMessageSentOnce(generation uint64, messageID, owner
 	o.Receipts.Record(EffectReceipt{
 		ID:                 "message-sent:" + messageID,
 		Owner:              owner,
+		Component:          messageID,
 		Generation:         generation,
 		Class:              Irreversible,
 		CompensationStatus: "not_applicable",
@@ -134,14 +137,18 @@ func (o *RuntimeOwner) RecordFileWrite(path string, hadPrior bool, prior []byte)
 	o = RuntimeOwnerOrDefault(o)
 	gen := o.Gate.Published()
 	id := fmt.Sprintf("file-write:%d:%d", gen, o.receiptSeq.Add(1))
-	o.FilePriors.Capture(id, path, prior, hadPrior)
+	retained := o.FilePriors.Capture(id, path, prior, hadPrior)
+	status := "prior_captured"
+	if !retained {
+		status = "prior_truncated"
+	}
 	o.Receipts.Record(EffectReceipt{
 		ID:                 id,
 		Owner:              "write_file",
 		Generation:         gen,
 		Class:              Compensatable,
-		CompensationStatus: "prior_captured",
-		Error:              fmt.Sprintf("prior_bytes=%d", len(prior)),
+		CompensationStatus: status,
+		Error:              fmt.Sprintf("prior_bytes=%d retained=%t", len(prior), retained),
 	})
 	return id
 }
