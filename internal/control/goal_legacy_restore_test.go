@@ -479,17 +479,16 @@ func TestMissingLegacyGoalCommandDoesNotStartProviderTurn(t *testing.T) {
 }
 
 func TestUnreadableExplicitLegacyArchiveBlocks(t *testing.T) {
-	if os.Geteuid() == 0 {
-		t.Skip("root can bypass archive file permissions")
-	}
 	root := t.TempDir()
 	const taskID = "unreadable-explicit-archive"
 	taskRoot := writeLegacyGoalArchive(t, root, taskID, "never run an unreadable archive")
 	specPath := filepath.Join(taskRoot, "state", "task_spec.json")
-	if err := os.Chmod(specPath, 0); err != nil {
+	if err := os.Remove(specPath); err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = os.Chmod(specPath, 0o644) })
+	if err := os.Mkdir(specPath, 0o755); err != nil {
+		t.Fatal(err)
+	}
 	c := New(Options{WorkspaceRoot: root})
 	t.Cleanup(c.Close)
 
