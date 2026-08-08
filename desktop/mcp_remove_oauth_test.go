@@ -34,7 +34,7 @@ func TestRemoveMCPServerReconcilesOAuthState(t *testing.T) {
 				t.Fatal(err)
 			}
 			statePath := filepath.Join(stateDir, "oauth.json")
-			if err := os.WriteFile(statePath, []byte(fmt.Sprintf(`{"version":1,"resource":%q,"access_token":"private"}`, resource)), 0o600); err != nil {
+			if err := os.WriteFile(statePath, fmt.Appendf(nil, `{"version":1,"resource":%q,"access_token":"private"}`, resource), 0o600); err != nil {
 				t.Fatal(err)
 			}
 
@@ -68,7 +68,7 @@ func TestRemoveMCPServerReconcilesOAuthStateAcrossWorkspaceRuntimes(t *testing.T
 			t.Fatal(err)
 		}
 		statePath := filepath.Join(stateDir, "oauth.json")
-		if err := os.WriteFile(statePath, []byte(fmt.Sprintf(`{"version":1,"resource":%q,"access_token":"private"}`, resource)), 0o600); err != nil {
+		if err := os.WriteFile(statePath, fmt.Appendf(nil, `{"version":1,"resource":%q,"access_token":"private"}`, resource), 0o600); err != nil {
 			t.Fatal(err)
 		}
 	}
