@@ -23,7 +23,7 @@ var mechanismOrder = []string{
 	"handoff_nudge", "empty_final_retry", "no_progress_signal",
 	"stream_retry", "header_retry", "reasoning_replay",
 	"planner", "compaction", "bookkeeping", "duplicate_work",
-	"subagent", "capability_router", "tool_source_connect", "prefix_reset",
+	"subagent", "capability_router", "goal_evaluator", "tool_source_connect", "prefix_reset",
 }
 
 // mechanismFacts extracts one run's (fires, attributed ms, ms known) per
@@ -49,6 +49,7 @@ func mechanismFacts(r result) map[string]mechanismRow {
 		"capability_router":   {fires: r.CapabilityRoutes, ms: r.CapabilityRouterLatencyMs, msKnown: true},
 		"tool_source_connect": {fires: t.ConnectCalls, msKnown: false},
 		"prefix_reset":        {fires: t.PrefixResets, msKnown: false},
+		"goal_evaluator":      {fires: t.RequestsBySource["goal-evaluator"], msKnown: false},
 	}
 	return facts
 }

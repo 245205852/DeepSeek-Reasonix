@@ -60,13 +60,16 @@ type trajectorySummary struct {
 	AgentOtherMs    int64 `json:"agent_other_ms,omitempty"`    // span remainder: assembly, guards, idle
 
 	// Phase-trace inputs: content-free firsts and counts for the per-task trace.
-	TTFTMs            int64 `json:"ttft_ms,omitempty"`       // span start → first output delta
-	FirstToolMs       int64 `json:"first_tool_ms,omitempty"` // span start → first tool start
-	PlannerRequests   int   `json:"planner_requests,omitempty"`
-	ExecutorRequests  int   `json:"executor_requests,omitempty"`
-	SubagentRequests  int   `json:"subagent_requests,omitempty"`
-	ToolQueueMs       int64 `json:"tool_queue_ms,omitempty"`       // Σ dispatch→start delays
-	NoProgressSignals int   `json:"no_progress_signals,omitempty"` // progress_guard escalations
+	TTFTMs           int64 `json:"ttft_ms,omitempty"`       // span start → first output delta
+	FirstToolMs      int64 `json:"first_tool_ms,omitempty"` // span start → first tool start
+	PlannerRequests  int   `json:"planner_requests,omitempty"`
+	ExecutorRequests int   `json:"executor_requests,omitempty"`
+	SubagentRequests int   `json:"subagent_requests,omitempty"`
+	// RequestsBySource keeps every origin honest — goal-evaluator, compaction
+	// and capability-router calls must not masquerade as executor rounds.
+	RequestsBySource  map[string]int `json:"requests_by_source,omitempty"`
+	ToolQueueMs       int64          `json:"tool_queue_ms,omitempty"`       // Σ dispatch→start delays
+	NoProgressSignals int            `json:"no_progress_signals,omitempty"` // progress_guard escalations
 
 	// Round outcomes: each classified round's gap booked to what it produced.
 	// Productive = evidence_gain/mutation/verification/finalization; the rest
@@ -390,15 +393,28 @@ func (t *trajScan) recordModelPhase(rec trajectoryRecord) {
 		return
 	}
 	if u := rec.Event.Usage; u != nil {
-		switch u.Source {
+		source := u.Source
+		if source == "" {
+			source = "executor"
+		}
+		if t.s.RequestsBySource == nil {
+			t.s.RequestsBySource = map[string]int{}
+		}
+		t.s.RequestsBySource[source]++
+		switch source {
 		case "planner":
 			t.s.PlannerRequests++
 			t.gapPlanner = true
+		case "executor":
+			t.s.ExecutorRequests++
 		case "subagent":
 			t.s.SubagentRequests++
 			return
 		default:
-			t.s.ExecutorRequests++
+			// Sidecar calls (goal-evaluator, compaction, capability-router)
+			// have their own prompt shape; keep them out of the executor's
+			// schema-tax and first-request accounting.
+			return
 		}
 		if t.s.PromptTokensSeen == 0 && u.PromptTokens > 0 {
 			t.s.FirstReqCacheHitTokens = u.CacheHitTokens
