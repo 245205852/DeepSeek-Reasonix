@@ -8,6 +8,8 @@ package taskcontract
 
 import (
 	"fmt"
+	"slices"
+	"strings"
 
 	"reasonix/internal/evidence"
 	"reasonix/internal/taskintent"
@@ -465,12 +467,13 @@ func (c *Contract) FinalRejection() string {
 	if c.Complete() {
 		return ""
 	}
-	out := "Final not accepted: the contract is not fully proven.\n"
+	var out strings.Builder
+	out.WriteString("Final not accepted: the contract is not fully proven.\n")
 	for _, req := range c.Requirements {
 		if !req.Required || req.Status == Satisfied {
 			continue
 		}
-		out += fmt.Sprintf("- requirement %s (%s): %s\n", req.ID, req.Text, directiveFor(req.Status, "verify"))
+		fmt.Fprintf(&out, "- requirement %s (%s): %s\n", req.ID, req.Text, directiveFor(req.Status, "verify"))
 	}
 	for _, check := range c.Checks {
 		if check.Status == Satisfied {
@@ -483,9 +486,9 @@ func (c *Contract) FinalRejection() string {
 				label = "the required change"
 			}
 		}
-		out += fmt.Sprintf("- check %s: %s\n", label, directiveFor(check.Status, "run"))
+		fmt.Fprintf(&out, "- check %s: %s\n", label, directiveFor(check.Status, "run"))
 	}
-	return out
+	return out.String()
 }
 
 func directiveFor(status Status, verb string) string {
@@ -620,10 +623,8 @@ func (c *Contract) checkMatches(check Check, r evidence.Receipt, ref EvidenceRef
 
 func pathsIntersect(scope, got []string) bool {
 	for _, s := range scope {
-		for _, g := range got {
-			if s == g {
-				return true
-			}
+		if slices.Contains(got, s) {
+			return true
 		}
 	}
 	return false

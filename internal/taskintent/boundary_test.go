@@ -31,14 +31,20 @@ var lineBudgets = map[string]int{
 
 func TestExportSurfaceIsFrozen(t *testing.T) {
 	fset := token.NewFileSet()
-	pkgs, err := parser.ParseDir(fset, ".", func(fi os.FileInfo) bool {
-		return !strings.HasSuffix(fi.Name(), "_test.go")
-	}, 0)
+	entries, err := os.ReadDir(".")
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, pkg := range pkgs {
-		for _, file := range pkg.Files {
+	for _, entry := range entries {
+		name := entry.Name()
+		if !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
+			continue
+		}
+		file, err := parser.ParseFile(fset, name, nil, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		{
 			for _, decl := range file.Decls {
 				switch d := decl.(type) {
 				case *ast.FuncDecl:
