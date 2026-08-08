@@ -16,12 +16,7 @@ SWE-bench Verified mode:
 ```text
 benchmarks/
 ├── e2e/
-│   └── tasks/
-│       ├── compaction/            # task.toml + verify.sh + workdir/ seed
-│       ├── fix-add-bug/
-│       ├── fizzbuzz/
-│       ├── palindrome/
-│       └── subagent-delegation/
+│   └── tasks/                     # one dir per task: task.toml + verify.sh + workdir/ seed
 ├── swebench/
 │   ├── select_subset.py         # helper for choosing evaluation instances
 │   └── subset.json               # committed SWE-bench Verified subset
@@ -29,6 +24,29 @@ benchmarks/
     ├── main.go
     └── run/                       # state dir written by seed/resume (default)
 ```
+
+## Task corpus stratification
+
+The suite is stratified by real coding-agent workload classes, not toy-task
+convenience — the classes are what the per-class compare tables and marginal-
+utility readouts key on. Current coverage vs. target:
+
+| Class | Target | Committed | Notes |
+| --- | ---: | ---: | --- |
+| `atomic-bugfix` | 8 | 8 | short anchored fixes; routes ExecutorOnly by design |
+| `repo-exploration` | 6 | 6 | multi-file reading, invented-token answers so they can't be guessed |
+| `multi-file-bugfix` | 8 | 8 | one bug spanning ≥2 files; naturally engages the planner gate |
+| `refactor` | 6 | 6 | behavior-preserving restructuring, structure asserted |
+| `failing-test-diagnosis` | 6 | 6 | unittest suite red → fix source; tests checksummed |
+| `api-integration` | 4 | 4 | use a provided local package per its README |
+| `ambiguous` | 4 | 4 | underspecified ask; grader accepts the defensible core |
+| `long-horizon` | 4 | 4 | multi-requirement specs; planner-depth full |
+| `codegen` / `delegation` | — | 3 | legacy smoke tasks (fizzbuzz, palindrome, subagent-delegation) |
+
+Grader authoring rule: every task must fail `verify.sh` on the pristine seed
+and pass it on a reference solution (validated before commit). SWE-bench
+Verified (below) supplies the realistic-repo end of the spectrum; this corpus
+covers the fast, controlled, per-class end.
 
 Each task under `e2e/tasks/<id>/` contains:
 
@@ -74,6 +92,12 @@ Examples: `compaction/verify.sh` normalizes `answer.txt` (strip whitespace,
 lowercase) and compares it to the expected `aldermoor-verrin`;
 `fizzbuzz/verify.sh` imports the generated module and asserts on
 `fizzbuzz(3)`, `fizzbuzz(5)`, `fizzbuzz(15)`, `fizzbuzz(7)`.
+
+Python graders must start with
+`export PYTHONPYCACHEPREFIX="$(mktemp -d)"`: macOS system Python caches
+bytecode centrally keyed by absolute path, so an agent edit that keeps a
+file's size within the same mtime second would otherwise execute stale
+bytecode while tracebacks display the new source.
 
 ## Running the e2e suite
 
