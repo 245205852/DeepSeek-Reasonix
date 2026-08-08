@@ -129,6 +129,33 @@ func TestControllerInputImagesSkipsModelImagesWhenSelectedModelIsTextOnly(t *tes
 	}
 }
 
+func TestControllerResolvesSubagentImageCandidatesForTextParent(t *testing.T) {
+	workspace := t.TempDir()
+	cfg := config.Default()
+	cfg.Providers = []config.ProviderEntry{{
+		Name:         "custom",
+		Kind:         "openai",
+		BaseURL:      "https://example.invalid/v1",
+		Models:       []string{"text-only", "vision-pro"},
+		VisionModels: []string{"vision-pro"},
+	}}
+	if err := cfg.SaveTo(filepath.Join(workspace, "reasonix.toml")); err != nil {
+		t.Fatalf("save workspace config: %v", err)
+	}
+	path := filepath.Join(workspace, "diagram.png")
+	if err := os.WriteFile(path, mustBase64(t, tinyPNG), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	c := &Controller{workspaceRoot: workspace, modelRef: "custom/text-only"}
+	if urls := c.inputImages("look at @diagram.png"); len(urls) != 0 {
+		t.Fatalf("text-only parent should suppress its own image payload, got %v", urls)
+	}
+	if urls := c.resolveInputImageCandidates("look at @diagram.png"); len(urls) != 1 {
+		t.Fatalf("subagent image candidates = %v, want one image for a vision child", urls)
+	}
+}
+
 func TestControllerImageInputEnabledDoesNotFallbackFromUnknownRef(t *testing.T) {
 	workspace := t.TempDir()
 	writeVisionTestConfig(t, workspace)

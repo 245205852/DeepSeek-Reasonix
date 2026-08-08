@@ -1262,7 +1262,11 @@ func build(ctx context.Context, opts Options) (*BuildResult, error) {
 		if runOptions.DeliveryProfile {
 			runOptions.RequireReviewReportKind = agent.ReviewReportKindForSkill(sk.Name)
 		}
-		return agent.RunReadOnlySubAgentWithSession(sctx, prov, subReg, agent.NewSession(sysPrompt), task,
+		// Provider serializers decide whether these images are wire-visible from
+		// the child model's own vision capability. Text-only children retain the
+		// attachment metadata locally but never receive image parts on the wire.
+		childCtx := agent.WithUserImages(sctx, agent.SubagentImageCandidates(sctx))
+		return agent.RunReadOnlySubAgentWithSession(childCtx, prov, subReg, agent.NewSession(sysPrompt), task,
 			runOptions, agent.NestedSink(sctx, event.Discard))
 	}
 	// Writer-capable subagent skills reuse the sub-agent machinery via this
@@ -1384,11 +1388,14 @@ func build(ctx context.Context, opts Options) (*BuildResult, error) {
 			runOptions.RequireReviewReportKind = agent.ReviewReportKindForSkill(sk.Name)
 		}
 		var answer string
+		// See the read-only runner above: the child provider, not the parent
+		// model, owns the final vision decision.
+		childCtx := agent.WithUserImages(sctx, agent.SubagentImageCandidates(sctx))
 		if sk.ReadOnly {
-			answer, err = agent.RunReadOnlySubAgentWithSession(sctx, prov, subReg, run.Session, task,
+			answer, err = agent.RunReadOnlySubAgentWithSession(childCtx, prov, subReg, run.Session, task,
 				runOptions, agent.NestedSink(sctx, event.Discard))
 		} else {
-			answer, err = agent.RunSubAgentWithSession(sctx, prov, subReg, run.Session, task,
+			answer, err = agent.RunSubAgentWithSession(childCtx, prov, subReg, run.Session, task,
 				runOptions, agent.NestedSink(sctx, event.Discard))
 		}
 		if err != nil {

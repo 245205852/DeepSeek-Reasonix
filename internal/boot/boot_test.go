@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -622,6 +623,66 @@ model = "x"
 	}
 	if got := bootLastUser(reqs[1]); !strings.Contains(got, `<subagent-context event="SubagentStart">`) || !strings.HasSuffix(got, "first skill task") {
 		t.Fatalf("skill subagent user prompt = %q, want SubagentStart context plus first skill task", got)
+	}
+}
+
+func TestBuildSubagentVisionModelReceivesParentAttachment(t *testing.T) {
+	isolateConfigHome(t)
+	dir := robustTempDir(t)
+	t.Chdir(dir)
+
+	registerBootSubagentTestProvider()
+	prov := &bootSubagentTestProvider{}
+	setBootSubagentTestProvider(t, prov)
+	writeFile(t, dir, "reasonix.toml", `
+default_model = "parent"
+
+[agent]
+system_prompt = "BASE"
+subagent_model = "vision-model"
+
+[[providers]]
+name = "parent"
+kind = "boot-subagent-test"
+model = "x"
+
+[[providers]]
+name = "vision-model"
+kind = "boot-subagent-test"
+model = "x"
+vision = true
+`)
+	png, err := base64.StdEncoding.DecodeString("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==")
+	if err != nil {
+		t.Fatalf("decode test png: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(dir, ".reasonix", "attachments"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, ".reasonix", "attachments", "shot.png"), png, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	ctrl, err := Build(context.Background(), Options{Sink: event.Discard})
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	defer ctrl.Close()
+	if err := ctrl.Run(context.Background(), "review @.reasonix/attachments/shot.png"); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	reqs := prov.requestsSnapshot()
+	if len(reqs) < 2 {
+		t.Fatalf("provider requests = %d, want parent plus vision child", len(reqs))
+	}
+	var childImageCount int
+	for _, msg := range reqs[1].Messages {
+		if msg.Role == provider.RoleUser {
+			childImageCount = len(msg.Images)
+		}
+	}
+	if childImageCount != 1 {
+		t.Fatalf("vision child user images = %d, want one attachment; request = %+v", childImageCount, reqs[1].Messages)
 	}
 }
 
