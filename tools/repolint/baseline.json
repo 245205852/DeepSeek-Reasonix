@@ -4,12 +4,12 @@
     "commented-code": 0,
     "complexity": 2051,
     "essay": 4086,
-    "file-size": 108708,
+    "file-size": 108728,
     "function-size": 9147,
     "layering": 1,
     "marker": 0,
     "narrative": 66,
-    "test-file-size": 68409
+    "test-file-size": 68436
   },
   "files": {
     "cmd/e2ebench/main.go": {
@@ -994,10 +994,10 @@
       "test-file-size": 499
     },
     "internal/config/migrate.go": {
-      "file-size": 7
+      "file-size": 27
     },
     "internal/config/migrate_test.go": {
-      "test-file-size": 331
+      "test-file-size": 358
     },
     "internal/config/mutate.go": {
       "essay": 2
