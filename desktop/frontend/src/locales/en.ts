@@ -203,6 +203,8 @@ export const en = {
   "externalOpener.reveal": "Reveal in file manager",
   "externalOpener.choose": "Choose application",
   "externalOpener.failed": "Could not open {name}: {error}",
+  "externalOpener.saveAs": "Save as…",
+  "externalOpener.saved": "Saved to {path}",
   "externalOpener.persistFailed": "Opened, but could not save {name} as default: {error}",
 
   // scope labels

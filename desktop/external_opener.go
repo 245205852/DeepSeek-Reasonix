@@ -2,11 +2,15 @@ package main
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/wailsapp/wails/v2/pkg/runtime"
 
 	"reasonix/internal/config"
 )
@@ -259,4 +263,53 @@ func (a *App) OpenLocalPathInExternalOpener(path, id string) error {
 		return fmt.Errorf("external opener %q is not available", strings.TrimSpace(id))
 	}
 	return launchPlatformExternalOpener(spec, path)
+}
+
+// SaveLocalPathAs copies a local file to a user-selected destination without
+// changing the source. Directories are intentionally excluded: Finder's
+// reveal action is the appropriate operation for them.
+func (a *App) SaveLocalPathAs(path string) (string, error) {
+	path, err := normalizeLocalOpenPath(path)
+	if err != nil {
+		return "", err
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		return "", err
+	}
+	if info.IsDir() {
+		return "", fmt.Errorf("cannot save a directory as a file")
+	}
+	if a.ctx == nil {
+		return "", nil
+	}
+	target, err := runtime.SaveFileDialog(a.ctx, runtime.SaveDialogOptions{
+		Title:                "Save file as",
+		DefaultDirectory:     filepath.Dir(path),
+		DefaultFilename:      filepath.Base(path),
+		CanCreateDirectories: true,
+	})
+	if err != nil || target == "" {
+		return "", err
+	}
+	if filepath.Clean(target) == filepath.Clean(path) {
+		return "", fmt.Errorf("destination is the same as the source")
+	}
+	src, err := os.Open(path)
+	if err != nil {
+		return "", err
+	}
+	defer src.Close()
+	dst, err := os.OpenFile(target, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, info.Mode().Perm())
+	if err != nil {
+		return "", err
+	}
+	if _, err = io.Copy(dst, src); err != nil {
+		_ = dst.Close()
+		return "", err
+	}
+	if err = dst.Close(); err != nil {
+		return "", err
+	}
+	return target, nil
 }

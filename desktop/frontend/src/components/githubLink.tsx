@@ -1,6 +1,6 @@
 import { useCallback, useMemo, useState } from "react";
 import type { MouseEvent as ReactMouseEvent, ReactNode } from "react";
-import { Copy, ExternalLink, FolderOpen, Mail } from "lucide-react";
+import { Copy, ExternalLink, FolderOpen, Mail, Save } from "lucide-react";
 import { app, openExternal } from "../lib/bridge";
 import { writeClipboardText } from "../lib/clipboard";
 import { t } from "../lib/i18n";
@@ -190,6 +190,21 @@ function LocalPathMarkdownLink({
         onSelect: () => {
           closeMenu();
           void writeClipboardText(path);
+        },
+      },
+      {
+        key: "save-as",
+        icon: <Save size={13} />,
+        label: t("externalOpener.saveAs"),
+        onSelect: () => {
+          closeMenu();
+          void app.SaveLocalPathAs(path).then((savedPath) => {
+            if (savedPath) {
+              showToast(t("externalOpener.saved", { path: savedPath }), "info");
+            }
+          }).catch((error) => {
+            showToast(t("externalOpener.failed", { name: t("externalOpener.saveAs"), error: localPathErrorText(error) }), "error");
+          });
         },
       },
     ];

@@ -2296,6 +2296,8 @@ export const zhTW: Record<DictKey, string> = {
   "externalOpener.reveal": "在檔案管理器中顯示",
   "externalOpener.choose": "選擇開啟應用程式",
   "externalOpener.failed": "無法使用 {name} 開啟：{error}",
+  "externalOpener.saveAs": "另存為…",
+  "externalOpener.saved": "已儲存到 {path}",
   "externalOpener.persistFailed": "已開啟，但無法將 {name} 儲存為預設：{error}",
   "workspace.filterReferencedFiles": "篩選依賴檔案…",
   "workspace.clearFileScope": "顯示完整檔案樹",
