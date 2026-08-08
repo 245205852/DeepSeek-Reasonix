@@ -2,6 +2,7 @@ package evidence
 
 import (
 	"path"
+	"sort"
 	"strings"
 
 	"reasonix/internal/shellsafe"
@@ -54,6 +55,30 @@ type OutcomeTracker struct {
 	debt         bool
 	debtAge      int
 	blind        int
+}
+
+// ForkSeed exports the debt-relevant state a counterfactual fork must carry so
+// post-fork discriminating detection stays continuous with the original run.
+func (t *OutcomeTracker) ForkSeed() (mutatedBases []string, debtAge, blindMutations int) {
+	for base := range t.mutatedBases {
+		mutatedBases = append(mutatedBases, base)
+	}
+	sort.Strings(mutatedBases)
+	return mutatedBases, t.debtAge, t.blind
+}
+
+// RestoreOutcomeTracker rebuilds a tracker from a fork seed. Novelty maps
+// start empty — post-fork exploration novelty is intentionally relative to the
+// fork point, while debt state continues from the original trajectory.
+func RestoreOutcomeTracker(mutatedBases []string, debtAge, blindMutations int) *OutcomeTracker {
+	t := NewOutcomeTracker()
+	for _, base := range mutatedBases {
+		t.mutatedBases[base] = true
+	}
+	t.debtAge = debtAge
+	t.blind = blindMutations
+	t.debt = debtAge > 0 || blindMutations > 0
+	return t
 }
 
 func NewOutcomeTracker() *OutcomeTracker {

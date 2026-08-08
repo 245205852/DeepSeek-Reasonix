@@ -25,7 +25,10 @@ const ebmNudge = "[evidence nudge] You have made several unverified mutations. B
 var ebmEnabled = os.Getenv("REASONIX_EXPERIMENT_EBM") == "1"
 
 type ebmState struct {
-	fired bool
+	fired        bool
+	captureArmed bool
+	captured     bool
+	captureRound int
 }
 
 // applyEBM stamps eligibility on the round's sample and, when the experiment
@@ -35,10 +38,12 @@ func (a *Agent) applyEBM(sample *evidence.OutcomeSample, results []string, outco
 		return
 	}
 	sample.EBMEligible = true
+	a.armForkCapture(*sample)
 	if !ebmEnabled || a.ebm.fired || len(results) == 0 || len(outcomes) == 0 {
 		return
 	}
 	a.ebm.fired = true
+	a.ebm.captureArmed = false
 	sample.EBMFired = true
 	results[0] = outcomes[0].output + "\n\n" + ebmNudge
 	a.sink.Emit(event.Event{Kind: event.Notice, Level: event.LevelInfo, Code: event.NoticeCodeEvidenceNudge,
