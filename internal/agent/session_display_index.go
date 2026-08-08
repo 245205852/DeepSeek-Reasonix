@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -323,7 +324,7 @@ func ScanSessionDisplayIndex(transcriptPath string) (*SessionDisplayIndex, error
 			idx.Entries = append(idx.Entries, entry)
 			offset += int64(len(line))
 		}
-		if readErr == io.EOF {
+		if errors.Is(readErr, io.EOF) {
 			break
 		}
 		if readErr != nil {
@@ -352,7 +353,7 @@ func readSessionDisplayIndexLine(reader *bufio.Reader) ([]byte, error) {
 			return nil, fmt.Errorf("session transcript line exceeds %d bytes", sessionDisplayIndexMaxLineBytes)
 		}
 		line = append(line, fragment...)
-		if err == bufio.ErrBufferFull {
+		if errors.Is(err, bufio.ErrBufferFull) {
 			continue
 		}
 		return line, err
