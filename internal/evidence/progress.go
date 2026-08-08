@@ -124,3 +124,14 @@ func (l *Ledger) ReceiptsSince(index int) []Receipt {
 	}
 	return append([]Receipt(nil), l.receipts[index:]...)
 }
+
+// Receipts returns a copy of every receipt recorded this turn, in order —
+// the replay feed for shadow observers that must not share ledger memory.
+func (l *Ledger) Receipts() []Receipt {
+	if l == nil {
+		return nil
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return append([]Receipt(nil), l.receipts...)
+}
