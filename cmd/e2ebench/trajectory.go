@@ -67,6 +67,14 @@ type trajectorySummary struct {
 	SubagentRequests  int   `json:"subagent_requests,omitempty"`
 	ToolQueueMs       int64 `json:"tool_queue_ms,omitempty"`       // Σ dispatch→start delays
 	NoProgressSignals int   `json:"no_progress_signals,omitempty"` // progress_guard escalations
+
+	// Round outcomes: each classified round's gap booked to what it produced.
+	// Productive = evidence_gain/mutation/verification/finalization; the rest
+	// accumulates into WastedGapMs — the knife-target readout.
+	RoundOutcomes  map[string]int   `json:"round_outcomes,omitempty"`
+	RoundOutcomeMs map[string]int64 `json:"round_outcome_ms,omitempty"`
+	UsefulRounds   int              `json:"useful_rounds,omitempty"`
+	WastedGapMs    int64            `json:"wasted_gap_ms,omitempty"`
 }
 
 // toolWall is the best available tool wall-clock: interval union when the
@@ -95,19 +103,39 @@ type trajectoryRecord struct {
 		} `json:"usage"`
 		Tool *struct {
 			ID         string `json:"id"`
+			Name       string `json:"name"`
+			Args       string `json:"args"`
+			Err        string `json:"err"`
 			DurationMs int64  `json:"durationMs"`
 			ParentID   string `json:"parentId"`
 			ReadOnly   bool   `json:"readOnly"`
 			Refreshed  bool   `json:"refreshed"`
 			StartedAt  int64  `json:"startedAt"`
 			EndedAt    int64  `json:"endedAt"`
+			Execution  *struct {
+				Verification string `json:"verification"`
+			} `json:"execution"`
 		} `json:"tool"`
 	} `json:"event"`
+}
+
+// roundCall is one call's outcome-relevant facts for round classification.
+type roundCall struct {
+	name, verification string
+	readOnly, errored  bool
+	resolved, dup      bool
+}
+
+// gapInfo carries one model gap until its batch closes and can classify it.
+type gapInfo struct {
+	ms                                    int64
+	tainted, planner, compaction, handoff bool
 }
 
 // toolBatch accumulates one round's top-level calls between model gaps.
 type toolBatch struct {
 	dispatchTS map[string]int64
+	infos      map[string]*roundCall
 	calls      int
 	results    int
 	readOnly   int
@@ -177,35 +205,8 @@ func renderTimeAttribution(results []result) string {
 			dur(startupMs), dur(agentOtherMs), dur(plannerMs), dur(modelStreamMs),
 			dur(toolMs), dur(retryWaitMs), dur(compactionMs))
 	}
+	line += renderRoundEfficiency(results)
 	return line + "\n\n"
-}
-
-// trajScan is the running state of one trajectory pass.
-type trajScan struct {
-	s                  *trajectorySummary
-	firstTS, lastTS    int64
-	orphanMs, gapStart int64
-	gaps, cleanGaps    []int64
-	delays             []int64
-	allIntervals       [][2]int64
-	inModel            bool
-	tainted            bool
-	streakRun          int
-	batch              *toolBatch
-
-	attemptBegin            map[string]int64
-	attempts                []modelAttempt
-	lastAttempt             int // most recent closed attempt awaiting a usage tag
-	pendingRetry, compFrom  int64
-	retryIvs, compIvs       [][2]int64
-	firstDelta, firstToolTS int64
-}
-
-// modelAttempt is one sampling attempt's wall interval; planner marks attempts
-// whose closing usage event carried source "planner".
-type modelAttempt struct {
-	iv      [2]int64
-	planner bool
 }
 
 // summarizeTrajectory reads a run's JSONL trajectory. A truncated final line
@@ -222,6 +223,7 @@ func summarizeTrajectory(path string) (*trajectorySummary, error) {
 		batch:        newToolBatch(),
 		attemptBegin: map[string]int64{},
 		lastAttempt:  -1,
+		seen:         map[string]bool{},
 	}
 	sc := bufio.NewScanner(f)
 	sc.Buffer(make([]byte, 0, 1<<20), 16<<20)
@@ -269,6 +271,8 @@ func (t *trajScan) record(rec trajectoryRecord) {
 		case "empty_final":
 			t.s.EmptyFinalRetries++
 			t.tainted = true
+		case "executor_handoff":
+			t.gapHandoff = true
 		case "progress_guard":
 			t.s.NoProgressSignals++
 		}
@@ -281,6 +285,7 @@ func (t *trajScan) record(rec trajectoryRecord) {
 	case "compaction_started":
 		t.s.Compactions++
 		t.compFrom = rec.TS
+		t.gapCompact = true
 	case "compaction_done":
 		if t.compFrom > 0 && rec.TS > t.compFrom {
 			t.compIvs = append(t.compIvs, [2]int64{t.compFrom, rec.TS})
@@ -302,8 +307,14 @@ func (t *trajScan) record(rec trajectoryRecord) {
 
 // closeGap ends one model round; recovery-tainted rounds are booked apart so
 // clean latency stays comparable across providers with different flake rates.
+// The gap is queued until its batch closes and can classify the round.
 func (t *trajScan) closeGap(gap int64) {
 	t.gaps = append(t.gaps, gap)
+	t.pendingGaps = append(t.pendingGaps, gapInfo{
+		ms: gap, tainted: t.tainted,
+		planner: t.gapPlanner, compaction: t.gapCompact, handoff: t.gapHandoff,
+	})
+	t.gapPlanner, t.gapCompact, t.gapHandoff = false, false, false
 	if t.tainted {
 		t.s.RecoveryRounds++
 		t.s.RecoveryGapMs += gap
@@ -339,6 +350,7 @@ func (t *trajScan) recordModelPhase(rec trajectoryRecord) {
 		switch u.Source {
 		case "planner":
 			t.s.PlannerRequests++
+			t.gapPlanner = true
 		case "subagent":
 			t.s.SubagentRequests++
 			return
@@ -368,9 +380,20 @@ func (t *trajScan) recordDispatch(rec trajectoryRecord) {
 		t.batch.calls++
 	}
 	// The full dispatch re-announces a streamed partial; keeping the later TS
-	// anchors start-delay to pre-exec queueing, not the stream tail.
+	// anchors start-delay to pre-exec queueing, not the stream tail. The dup
+	// check keys on the latest (fullest) name+args announcement.
 	if tl.ID != "" {
+		t.sawCallIDs = true
 		t.batch.dispatchTS[tl.ID] = rec.TS
+		key := tl.Name + "\x00" + tl.Args
+		info := t.batch.infos[tl.ID]
+		if info == nil {
+			info = &roundCall{}
+			t.batch.infos[tl.ID] = info
+		}
+		info.name = tl.Name
+		info.dup = t.seen[key]
+		t.seen[key] = true
 	}
 }
 
@@ -380,6 +403,14 @@ func (t *trajScan) recordResult(rec trajectoryRecord) {
 	t.batch.results++
 	if tl.ReadOnly {
 		t.batch.readOnly++
+	}
+	if info, ok := t.batch.infos[tl.ID]; ok {
+		info.resolved = true
+		info.readOnly = tl.ReadOnly
+		info.errored = tl.Err != ""
+		if tl.Execution != nil {
+			info.verification = tl.Execution.Verification
+		}
 	}
 	t.batch.serialMs += tl.DurationMs
 	if tl.StartedAt > 0 && tl.EndedAt >= tl.StartedAt {
@@ -401,6 +432,13 @@ func (t *trajScan) closeBatch() {
 	b, s := t.batch, t.s
 	if b.calls == 0 {
 		return
+	}
+	if len(t.pendingGaps) > 0 {
+		gap := t.pendingGaps[0]
+		t.pendingGaps = t.pendingGaps[1:]
+		if len(b.infos) > 0 {
+			t.recordOutcome(classifyRound(gap, b), gap.ms)
+		}
 	}
 	s.ToolBatches++
 	s.TopLevelCalls += b.calls
@@ -431,6 +469,12 @@ func (t *trajScan) finish() *trajectorySummary {
 		t.closeGap(t.lastTS - t.gapStart) // final answer round
 	}
 	t.closeBatch()
+	if t.sawCallIDs {
+		for _, gap := range t.pendingGaps {
+			t.recordOutcome(classifyRound(gap, nil), gap.ms)
+		}
+	}
+	t.pendingGaps = nil
 	s.ModelRounds = len(t.gaps)
 	for _, g := range t.gaps {
 		s.ModelGapTotalMs += g
@@ -492,7 +536,7 @@ func (t *trajScan) decompose() {
 }
 
 func newToolBatch() *toolBatch {
-	return &toolBatch{dispatchTS: map[string]int64{}}
+	return &toolBatch{dispatchTS: map[string]int64{}, infos: map[string]*roundCall{}}
 }
 
 func (b *toolBatch) seen(id string) bool {

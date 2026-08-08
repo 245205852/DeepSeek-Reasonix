@@ -238,13 +238,7 @@ func main() {
 		os.Exit(1)
 	}
 	if len(tasks) == 0 {
-		dir := filepath.Join(*suite, "tasks")
-		if _, statErr := os.Stat(dir); statErr != nil {
-			fmt.Fprintf(os.Stderr, "no tasks found under %s: %v\n", dir, statErr)
-		} else {
-			fmt.Fprintf(os.Stderr, "no tasks found under %s (the directory exists but contains no task.toml files)\n", dir)
-		}
-		os.Exit(1)
+		exitNoTasks(*suite)
 	}
 	if tasks, err = filterTasks(tasks, *taskFilter); err != nil {
 		fmt.Fprintln(os.Stderr, err)
@@ -315,6 +309,16 @@ func loadTasks(suite string) ([]task, error) {
 	}
 	sort.Slice(tasks, func(i, j int) bool { return tasks[i].ID < tasks[j].ID })
 	return tasks, nil
+}
+
+func exitNoTasks(suite string) {
+	dir := filepath.Join(suite, "tasks")
+	if _, statErr := os.Stat(dir); statErr != nil {
+		fmt.Fprintf(os.Stderr, "no tasks found under %s: %v\n", dir, statErr)
+	} else {
+		fmt.Fprintf(os.Stderr, "no tasks found under %s (the directory exists but contains no task.toml files)\n", dir)
+	}
+	os.Exit(1)
 }
 
 // filterTasks narrows the suite to the -task list. Unknown IDs fail loudly

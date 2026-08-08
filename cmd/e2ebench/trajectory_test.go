@@ -343,6 +343,84 @@ func TestBuildPhaseTrace(t *testing.T) {
 	}
 }
 
+func TestSummarizeTrajectoryClassifiesRoundOutcomes(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "outcomes.trajectory.jsonl")
+	lines := []string{
+		`{"seq":1,"ts":1000,"event":{"kind":"turn_started"}}`,
+		// Round 1: planner usage in the gap outranks the batch's mutation.
+		`{"seq":2,"ts":1500,"event":{"kind":"usage","usage":{"source":"planner"}}}`,
+		`{"seq":3,"ts":2000,"event":{"kind":"tool_dispatch","tool":{"id":"a","name":"write_file","args":"{\"p\":1}"}}}`,
+		`{"seq":4,"ts":2100,"event":{"kind":"tool_result","tool":{"id":"a","name":"write_file","durationMs":100,"startedAt":2000,"endedAt":2100}}}`,
+		// Round 2: successful write → mutation.
+		`{"seq":5,"ts":3000,"event":{"kind":"tool_dispatch","tool":{"id":"b","name":"write_file","args":"{\"p\":2}"}}}`,
+		`{"seq":6,"ts":3100,"event":{"kind":"tool_result","tool":{"id":"b","name":"write_file","durationMs":100,"startedAt":3000,"endedAt":3100}}}`,
+		// Round 3: first read of this target → evidence_gain.
+		`{"seq":7,"ts":4000,"event":{"kind":"tool_dispatch","tool":{"id":"c","name":"read_file","args":"{\"f\":\"x\"}","readOnly":true}}}`,
+		`{"seq":8,"ts":4100,"event":{"kind":"tool_result","tool":{"id":"c","name":"read_file","readOnly":true,"durationMs":100,"startedAt":4000,"endedAt":4100}}}`,
+		// Round 4: the exact same read again → duplicate_work.
+		`{"seq":9,"ts":5000,"event":{"kind":"tool_dispatch","tool":{"id":"d","name":"read_file","args":"{\"f\":\"x\"}","readOnly":true}}}`,
+		`{"seq":10,"ts":5100,"event":{"kind":"tool_result","tool":{"id":"d","name":"read_file","readOnly":true,"durationMs":100,"startedAt":5000,"endedAt":5100}}}`,
+		// Round 5: verification command → verification.
+		`{"seq":11,"ts":6000,"event":{"kind":"tool_dispatch","tool":{"id":"e","name":"bash","args":"{\"cmd\":\"go test\"}","readOnly":true}}}`,
+		`{"seq":12,"ts":6200,"event":{"kind":"tool_result","tool":{"id":"e","name":"bash","readOnly":true,"durationMs":200,"startedAt":6000,"endedAt":6200,"execution":{"verification":"passed"}}}}`,
+		// Round 6: ledger-only batch → bookkeeping.
+		`{"seq":13,"ts":7000,"event":{"kind":"tool_dispatch","tool":{"id":"f","name":"complete_step","args":"{\"s\":1}"}}}`,
+		`{"seq":14,"ts":7100,"event":{"kind":"tool_result","tool":{"id":"f","name":"complete_step","durationMs":100,"startedAt":7000,"endedAt":7100}}}`,
+		`{"seq":15,"ts":8000,"event":{"kind":"turn_done"}}`,
+	}
+	if err := os.WriteFile(path, []byte(strings.Join(lines, "\n")), 0o644); err != nil {
+		t.Fatalf("write fixture: %v", err)
+	}
+	s, err := summarizeTrajectory(path)
+	if err != nil {
+		t.Fatalf("summarizeTrajectory: %v", err)
+	}
+	want := map[string]int{
+		"planning": 1, "mutation": 1, "evidence_gain": 1, "duplicate_work": 1,
+		"verification": 1, "bookkeeping": 1, "finalization": 1,
+	}
+	for outcome, n := range want {
+		if s.RoundOutcomes[outcome] != n {
+			t.Errorf("outcome %s = %d, want %d (all: %v)", outcome, s.RoundOutcomes[outcome], n, s.RoundOutcomes)
+		}
+	}
+	if s.UsefulRounds != 4 {
+		t.Errorf("useful rounds = %d, want 4 (mutation, evidence, verification, finalization)", s.UsefulRounds)
+	}
+	if s.WastedGapMs != 1000+900+800 {
+		t.Errorf("wasted gap = %d, want 2700 (planning 1000 + duplicate 900 + bookkeeping 800)", s.WastedGapMs)
+	}
+	if s.RoundOutcomeMs["planning"] != 1000 {
+		t.Errorf("planning ms = %d, want 1000", s.RoundOutcomeMs["planning"])
+	}
+}
+
+func TestRenderTimeAttributionIncludesRoundEfficiency(t *testing.T) {
+	r := result{task: task{ID: "a"}, Passed: true}
+	r.Trajectory = &trajectorySummary{
+		Records: 5, SpanMs: 8000, ToolMs: 700, ModelMs: 7300, ModelRounds: 7,
+		UsefulRounds: 4, WastedGapMs: 2700,
+		RoundOutcomes: map[string]int{
+			"planning": 1, "mutation": 1, "evidence_gain": 1, "duplicate_work": 1,
+			"verification": 1, "bookkeeping": 1, "finalization": 1,
+		},
+		RoundOutcomeMs: map[string]int64{
+			"planning": 1000, "mutation": 900, "evidence_gain": 900, "duplicate_work": 900,
+			"verification": 900, "bookkeeping": 800, "finalization": 900,
+		},
+	}
+	got := renderTimeAttribution([]result{r})
+	for _, want := range []string{
+		"**Round efficiency**: **useful rounds** 4/7 (57%)",
+		"**wasted model time** 2.7s (**2.7s/solved**)",
+		"**waste breakdown**: planning ×1 (1.0s) · duplicate_work ×1 (0.9s) · bookkeeping ×1 (0.8s)",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("round efficiency missing %q:\n%s", want, got)
+		}
+	}
+}
+
 func TestRunTrajModeRedigestsRecordedFiles(t *testing.T) {
 	dir := t.TempDir()
 	lines := []string{

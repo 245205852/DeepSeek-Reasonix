@@ -20,6 +20,9 @@ type phaseTrace struct {
 	// NoProgressSignals counts progress-guard escalations (each threshold
 	// fires once), not raw zero-evidence-gain rounds.
 	NoProgressSignals int `json:"no_progress_signals,omitempty"`
+	// Rounds is the outcome ledger: total classified rounds, how many bought
+	// progress, the wasted gap total, and the per-outcome composition.
+	Rounds phaseRounds `json:"rounds"`
 
 	PromptTokens     int  `json:"prompt_tokens"`
 	CompletionTokens int  `json:"completion_tokens"`
@@ -35,6 +38,22 @@ type phaseTool struct {
 	Calls          int   `json:"calls"`
 	QueueMs        int64 `json:"queue_ms"`
 	CriticalPathMs int64 `json:"critical_path_ms"`
+}
+
+type phaseRounds struct {
+	Total    int              `json:"total"`
+	Useful   int              `json:"useful"`
+	WastedMs int64            `json:"wasted_ms"`
+	Outcomes map[string]int   `json:"outcomes,omitempty"`
+	MsByKind map[string]int64 `json:"ms_by_outcome,omitempty"`
+}
+
+func classifiedRounds(outcomes map[string]int) int {
+	total := 0
+	for _, n := range outcomes {
+		total += n
+	}
+	return total
 }
 
 // buildPhaseTrace derives the trace from a graded result; nil without a
@@ -61,8 +80,15 @@ func buildPhaseTrace(r result) *phaseTrace {
 		},
 		CompactionMs:      t.CompactionMs,
 		NoProgressSignals: t.NoProgressSignals,
-		PromptTokens:      r.PromptTokens,
-		CompletionTokens:  r.CompletionTokens,
-		Solved:            r.Passed,
+		Rounds: phaseRounds{
+			Total:    classifiedRounds(t.RoundOutcomes),
+			Useful:   t.UsefulRounds,
+			WastedMs: t.WastedGapMs,
+			Outcomes: t.RoundOutcomes,
+			MsByKind: t.RoundOutcomeMs,
+		},
+		PromptTokens:     r.PromptTokens,
+		CompletionTokens: r.CompletionTokens,
+		Solved:           r.Passed,
 	}
 }
