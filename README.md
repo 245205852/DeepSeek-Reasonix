@@ -222,3 +222,7 @@ issues get triaged.
 <p align="center">
   <img src=".github/sponsor/wechat-pay.jpg" alt="WeChat Pay QR code" width="180"/>
 </p>
+
+<p align="center">
+  <video src="https://github.com/user-attachments/assets/9454eb29-19ef-4e6c-b5a9-da4c5dea1f95" controls></video>
+</p>
