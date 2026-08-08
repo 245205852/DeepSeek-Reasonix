@@ -142,6 +142,26 @@ type App struct {
 	activeTabID string
 	readyHook   func()
 
+	// Ticketed topic activation bookkeeping (StartTopicActivation). Guarded by
+	// mu. activationGen bumps on every activation-or-supersede so a background
+	// completion can tell whether it still owns publication; the pending
+	// request/tab pair identifies the in-flight ticketed activation whose
+	// completion may still prune and emit "ready".
+	activationGen             uint64
+	latestActivationRequestID string
+	pendingActivationTabID    string
+	// activationEventHook is test-only: when set it replaces the
+	// "topic:activation" runtime event emission so tests capture events
+	// synchronously. Set before starting concurrent work, never mutate after.
+	activationEventHook func(TopicActivationEvent)
+	// tabBuildStartHook is test-only: called at the top of every tab
+	// controller build (even already-superseded ones) so ordering tests can
+	// gate builds. Same set-before-concurrency rule.
+	tabBuildStartHook func(tabID string)
+	// configLoadForRootHook is test-only: called from the background meta
+	// extras refresh so tests can prove MetaForTab itself never loads config.
+	configLoadForRootHook func(root string)
+
 	// runtimeByID/runtimeBySessionKey form the process-local ownership registry.
 	// App.mu guards both maps and every desktopSessionRuntime field.
 	runtimeByID         map[string]*desktopSessionRuntime
@@ -216,6 +236,15 @@ type App struct {
 	// deferredRebuild tracks tabs whose settings were saved but whose runtime
 	// could not refresh because the session lease was held by another process.
 	deferredRebuild deferredRebuildState
+
+	// historySliceMu guards the windowed-history background bookkeeping:
+	// single-flight display-index rebuilds for live sessions and the startup
+	// index-migration worker's cancel handle. Never held while calling
+	// controller or session methods.
+	historySliceMu              sync.Mutex
+	historyIndexRebuilds        map[string]struct{}
+	historyIndexMigrationCancel context.CancelFunc
+	historyDerived              historyDerivedCache
 
 	// detachedSessions keeps live session runtimes whose visible tab was closed.
 	// It is process-local by design: shutdown closes every detached controller.
@@ -546,6 +575,7 @@ func (a *App) startup(ctx context.Context) {
 	installSystemQuitHook()
 	a.startTray()
 	a.enableDeferredRebuildRetry()
+	a.startHistoryIndexMigration()
 	a.goSafe("repairDesktopIconIntegration", func() {
 		if err := repairDesktopIconIntegration(); err != nil {
 			slog.Debug("desktop: repair native icon integration", "err", err)
@@ -941,6 +971,7 @@ func (a *App) shutdown(context.Context) {
 		_ = stats.Flush(flushCtx, config.StatsDir())
 	}()
 	a.stopDeferredRebuildRetry()
+	a.stopHistoryIndexMigration()
 	a.stopMainThreadWatchdog()
 	if a.heartbeat != nil {
 		a.heartbeat.Stop()
@@ -3029,9 +3060,8 @@ func (a *App) ForkForTab(tabID string, turn int) (TabMeta, error) {
 	return meta, nil
 }
 
-// SummarizeFrom / SummarizeUpTo compress the conversation from / up to the start
-// of turn into one summary (Claude Code's "summarize from/up to here"), keeping
-// code intact. The frontend re-reads History after this resolves.
+// SummarizeFrom / SummarizeUpTo compress model context after / before the start
+// of a selected turn. Visible history and checkpoints remain unchanged.
 func (a *App) SummarizeFrom(turn int) error {
 	return a.SummarizeFromForTab("", turn)
 }
@@ -5867,6 +5897,20 @@ func historyMessagesWithPlannerDisplays(msgs []provider.Message, resolveUserCont
 	return historyMessagesWithPlannerDisplaysAndLookups(msgs, resolveUserContent, plannerTurns, checkpointTurns, replayedTodoArgs, toolResults)
 }
 
+// historyMessageConvertState carries the cross-message state of a provider→
+// HistoryMessage conversion pass: the planner-display queue (consumed in order
+// per user-text hash) and the canonical-turn suppression a planner interrupt
+// notice arms. Keeping it explicit lets the windowed history slice API convert
+// one message at a time with exactly the same semantics as a full pass.
+type historyMessageConvertState struct {
+	plannerByUserHash     map[string][]plannerDisplayTurn
+	suppressCanonicalTurn bool
+}
+
+func newHistoryMessageConvertState(plannerTurns []plannerDisplayTurn) *historyMessageConvertState {
+	return &historyMessageConvertState{plannerByUserHash: plannerTurnsByUserHash(plannerTurns)}
+}
+
 func historyMessagesWithPlannerDisplaysAndLookups(
 	msgs []provider.Message,
 	resolveUserContent func(string) string,
@@ -5876,131 +5920,178 @@ func historyMessagesWithPlannerDisplaysAndLookups(
 	toolResults map[string]provider.Message,
 ) []HistoryMessage {
 	out := make([]HistoryMessage, 0, len(msgs))
-	plannerByUserHash := plannerTurnsByUserHash(plannerTurns)
-	suppressCanonicalTurn := false
+	state := newHistoryMessageConvertState(plannerTurns)
 	for index, m := range msgs {
-		if m.DecisionReceipt != nil {
-			out = append(out, HistoryMessage{
-				Role:            "notice",
-				Code:            event.NoticeCodeDecisionReceipt,
-				Level:           "info",
-				DecisionReceipt: cloneDecisionReceipt(m.DecisionReceipt),
+		out = append(out, state.convertHistoryMessage(index, m, resolveUserContent, checkpointTurns, replayedTodoArgs, toolResults)...)
+	}
+	return out
+}
+
+// convertHistoryMessage converts one provider message into its 0..n history
+// rows. index is the message's position in the coordinate system of
+// checkpointTurns (window-relative for the legacy full-pass callers, absolute
+// for the windowed slice API).
+func (state *historyMessageConvertState) convertHistoryMessage(
+	index int,
+	m provider.Message,
+	resolveUserContent func(string) string,
+	checkpointTurns map[int]int,
+	replayedTodoArgs map[string]string,
+	toolResults map[string]provider.Message,
+) []HistoryMessage {
+	var out []HistoryMessage
+	if m.DecisionReceipt != nil {
+		return append(out, HistoryMessage{
+			Role:            "notice",
+			Code:            event.NoticeCodeDecisionReceipt,
+			Level:           "info",
+			DecisionReceipt: cloneDecisionReceipt(m.DecisionReceipt),
+		})
+	}
+	if m.LocalOnly {
+		if steerText, isSteer := agent.SteerText(agent.UserMessageText(m)); isSteer {
+			return append(out, HistoryMessage{
+				Role:    "notice",
+				Content: agent.UnappliedSteerNotice(steerText),
+				Code:    event.NoticeCodeUnappliedSteer,
+				Level:   "warn",
 			})
-			continue
 		}
-		if m.LocalOnly {
-			if steerText, isSteer := agent.SteerText(agent.UserMessageText(m)); isSteer {
-				out = append(out, HistoryMessage{
-					Role:    "notice",
-					Content: agent.UnappliedSteerNotice(steerText),
-					Code:    event.NoticeCodeUnappliedSteer,
-					Level:   "warn",
-				})
-				continue
-			}
+	}
+	if state.suppressCanonicalTurn {
+		if m.Role != provider.RoleUser || !agent.IsUserAuthoredTurn(agent.UserMessageText(m)) {
+			return out
 		}
-		if suppressCanonicalTurn {
-			if m.Role != provider.RoleUser || !agent.IsUserAuthoredTurn(agent.UserMessageText(m)) {
-				continue
-			}
-			suppressCanonicalTurn = false
+		state.suppressCanonicalTurn = false
+	}
+	content := m.Content
+	var checkpointTurn *int
+	if m.Role == provider.RoleUser {
+		// Mid-turn steer messages are persisted in the session so they
+		// survive tab switches. They are surfaced as a notice (↪ text)
+		// — matching the live Steer event look — rather than as a
+		// regular user bubble or being filtered as synthetic (#4044).
+		// Check against the raw m.Content: resolveUserContent applies
+		// StripComposePrefixes which trims trailing whitespace.
+		if steerText, isSteer := agent.SteerText(agent.UserMessageText(m)); isSteer {
+			return append(out, HistoryMessage{Role: "notice", Content: "↪ " + steerText})
 		}
-		content := m.Content
-		var checkpointTurn *int
-		if m.Role == provider.RoleUser {
-			// Mid-turn steer messages are persisted in the session so they
-			// survive tab switches. They are surfaced as a notice (↪ text)
-			// — matching the live Steer event look — rather than as a
-			// regular user bubble or being filtered as synthetic (#4044).
-			// Check against the raw m.Content: resolveUserContent applies
-			// StripComposePrefixes which trims trailing whitespace.
-			if steerText, isSteer := agent.SteerText(agent.UserMessageText(m)); isSteer {
-				out = append(out, HistoryMessage{Role: "notice", Content: "↪ " + steerText})
-				continue
-			}
-			content = historyUserDisplayContent(m, resolveUserContent)
-			if control.IsSyntheticUserMessage(content) {
-				continue
-			}
-			if turn, ok := checkpointTurns[index]; ok {
-				turnCopy := turn
-				checkpointTurn = &turnCopy
-			}
+		content = historyUserDisplayContent(m, resolveUserContent)
+		if control.IsSyntheticUserMessage(content) {
+			return out
 		}
-		reasoning := ""
-		if m.Role == provider.RoleAssistant || m.LocalOnly {
-			reasoning = m.ReasoningContent
+		if turn, ok := checkpointTurns[index]; ok {
+			turnCopy := turn
+			checkpointTurn = &turnCopy
 		}
-		displayRole := string(m.Role)
-		if m.LocalOnly {
-			displayRole = "assistant"
-		}
-		hm := HistoryMessage{Role: displayRole, Content: content, CheckpointTurn: checkpointTurn, CreatedAt: m.CreatedAt, Reasoning: reasoning, WorkDurationMs: m.WorkDurationMs}
-		if m.Role == provider.RoleAssistant && len(m.MemoryCitations) > 0 {
-			hm.MemoryCitations = append([]provider.MemoryCitation(nil), m.MemoryCitations...)
-		}
-		if m.Role == provider.RoleUser && content != m.Content {
-			replay := historyReplayUserContent(m.Content)
-			if agent.ContainsMemoryCompilerExecution(m.Content) {
-				// Never expose the compiler contract itself. A safely unwrapped
-				// slash invocation is useful display metadata, though: it lets the
-				// frontend restore the selected skill/subagent in history and trash.
-				if strings.HasPrefix(strings.TrimSpace(replay), "/") && replay != content {
-					hm.SubmitText = replay
-				}
-			} else if replay != content {
+	}
+	reasoning := ""
+	if m.Role == provider.RoleAssistant || m.LocalOnly {
+		reasoning = m.ReasoningContent
+	}
+	displayRole := string(m.Role)
+	if m.LocalOnly {
+		displayRole = "assistant"
+	}
+	hm := HistoryMessage{Role: displayRole, Content: content, CheckpointTurn: checkpointTurn, CreatedAt: m.CreatedAt, Reasoning: reasoning, WorkDurationMs: m.WorkDurationMs}
+	if m.Role == provider.RoleAssistant && len(m.MemoryCitations) > 0 {
+		hm.MemoryCitations = append([]provider.MemoryCitation(nil), m.MemoryCitations...)
+	}
+	if m.Role == provider.RoleUser && content != m.Content {
+		replay := historyReplayUserContent(m.Content)
+		if agent.ContainsMemoryCompilerExecution(m.Content) {
+			// Never expose the compiler contract itself. A safely unwrapped
+			// slash invocation is useful display metadata, though: it lets the
+			// frontend restore the selected skill/subagent in history and trash.
+			if strings.HasPrefix(strings.TrimSpace(replay), "/") && replay != content {
 				hm.SubmitText = replay
 			}
+		} else if replay != content {
+			hm.SubmitText = replay
 		}
-		if (m.Role == provider.RoleAssistant || m.LocalOnly) && len(m.ToolCalls) > 0 {
-			hm.ToolCalls = make([]HistoryToolCall, len(m.ToolCalls))
-			for i, tc := range m.ToolCalls {
-				args := tc.Arguments
-				if tc.Name == "todo_write" {
-					if replayed, ok := replayedTodoArgs[tc.ID]; ok {
-						args = replayed
-					}
+	}
+	if (m.Role == provider.RoleAssistant || m.LocalOnly) && len(m.ToolCalls) > 0 {
+		hm.ToolCalls = make([]HistoryToolCall, len(m.ToolCalls))
+		for i, tc := range m.ToolCalls {
+			args := tc.Arguments
+			if tc.Name == "todo_write" {
+				if replayed, ok := replayedTodoArgs[tc.ID]; ok {
+					args = replayed
 				}
-				hm.ToolCalls[i] = historyToolCall(tc, args, toolResults[tc.ID])
 			}
+			hm.ToolCalls[i] = historyToolCall(tc, args, toolResults[tc.ID])
 		}
-		if m.Role == provider.RoleTool && !m.LocalOnly {
-			hm.ToolCallID = m.ToolCallID
-			hm.ToolName = m.Name
-			hm.Content, hm.ToolResultArchived, hm.ToolResultError = historyToolResultContent(m.Content, m.ToolCallID != "")
-			hm.Execution = m.ToolExecution
+	}
+	if m.Role == provider.RoleTool && !m.LocalOnly {
+		hm.ToolCallID = m.ToolCallID
+		hm.ToolName = m.Name
+		hm.Content, hm.ToolResultArchived, hm.ToolResultError = historyToolResultContent(m.Content, m.ToolCallID != "")
+		hm.Execution = m.ToolExecution
+	}
+	hasVisibleLocalContent := strings.TrimSpace(hm.Content) != "" || strings.TrimSpace(hm.Reasoning) != "" || len(hm.ToolCalls) > 0 || (!m.LocalOnly && m.Role == provider.RoleTool)
+	if !m.LocalOnly || hasVisibleLocalContent {
+		out = append(out, hm)
+	}
+	for _, receipt := range m.DecisionReceipts {
+		if receipt == nil {
+			continue
 		}
-		hasVisibleLocalContent := strings.TrimSpace(hm.Content) != "" || strings.TrimSpace(hm.Reasoning) != "" || len(hm.ToolCalls) > 0 || (!m.LocalOnly && m.Role == provider.RoleTool)
-		if !m.LocalOnly || hasVisibleLocalContent {
-			out = append(out, hm)
-		}
-		for _, receipt := range m.DecisionReceipts {
-			if receipt == nil {
-				continue
-			}
-			out = append(out, HistoryMessage{
-				Role:            "notice",
-				Code:            event.NoticeCodeDecisionReceipt,
-				Level:           "info",
-				DecisionReceipt: cloneDecisionReceipt(receipt),
-			})
-		}
-		if m.LocalOnly && m.InterruptedTurn != nil {
-			out = append(out, HistoryMessage{
-				Role: "notice", Level: "info", Code: event.NoticeCodeCancelledTurn,
-				Content: "This turn was interrupted. Partial output is kept for reference; only completed tool pairs and a bounded recovery summary enter the next model turn. Inspect the workspace before continuing or reverting changes.",
-			})
-		}
-		if m.Role == provider.RoleUser {
-			key := messageDisplayKey(agent.UserMessageText(m))
-			if turns := plannerByUserHash[key]; len(turns) > 0 {
-				out = append(out, cloneHistoryMessages(turns[0].Messages)...)
-				suppressCanonicalTurn = plannerDisplaySuppressesCanonical(turns[0])
-				plannerByUserHash[key] = turns[1:]
-			}
+		out = append(out, HistoryMessage{
+			Role:            "notice",
+			Code:            event.NoticeCodeDecisionReceipt,
+			Level:           "info",
+			DecisionReceipt: cloneDecisionReceipt(receipt),
+		})
+	}
+	if m.LocalOnly && m.InterruptedTurn != nil {
+		out = append(out, HistoryMessage{
+			Role: "notice", Level: "info", Code: event.NoticeCodeCancelledTurn,
+			Content: "This turn was interrupted. Partial output is kept for reference; only completed tool pairs and a bounded recovery summary enter the next model turn. Inspect the workspace before continuing or reverting changes.",
+		})
+	}
+	if m.Role == provider.RoleUser {
+		key := messageDisplayKey(agent.UserMessageText(m))
+		if turns := state.plannerByUserHash[key]; len(turns) > 0 {
+			out = append(out, cloneHistoryMessages(turns[0].Messages)...)
+			state.suppressCanonicalTurn = plannerDisplaySuppressesCanonical(turns[0])
+			state.plannerByUserHash[key] = turns[1:]
 		}
 	}
 	return out
+}
+
+// consumeHistoryPlannerState advances only the cross-message planner state.
+// Windowed pages call it for the prefix they do not render, so repeated user
+// text and a planner interrupt at a page boundary behave exactly as one full
+// conversion pass. Keep the early returns in lock-step with
+// convertHistoryMessage: those rows never reach the planner attachment at its
+// tail.
+func (state *historyMessageConvertState) consumeHistoryPlannerState(m provider.Message, resolveUserContent func(string) string) {
+	if m.DecisionReceipt != nil {
+		return
+	}
+	if m.LocalOnly {
+		if _, isSteer := agent.SteerText(agent.UserMessageText(m)); isSteer {
+			return
+		}
+	}
+	if state.suppressCanonicalTurn {
+		if m.Role != provider.RoleUser || !agent.IsUserAuthoredTurn(agent.UserMessageText(m)) {
+			return
+		}
+		state.suppressCanonicalTurn = false
+	}
+	if m.Role != provider.RoleUser {
+		return
+	}
+	if control.IsSyntheticUserMessage(historyUserDisplayContent(m, resolveUserContent)) {
+		return
+	}
+	key := messageDisplayKey(agent.UserMessageText(m))
+	if turns := state.plannerByUserHash[key]; len(turns) > 0 {
+		state.suppressCanonicalTurn = plannerDisplaySuppressesCanonical(turns[0])
+		state.plannerByUserHash[key] = turns[1:]
+	}
 }
 
 func cloneDecisionReceipt(in *provider.DecisionReceipt) *provider.DecisionReceipt {
@@ -6353,41 +6444,57 @@ func clipStringBytes(s string, max int) string {
 
 func historyTodoArgsWithCompleteSteps(msgs []provider.Message) map[string]string {
 	successful := successfulHistoryToolCallIDs(msgs)
-	out := map[string]string{}
-	var todos []evidence.TodoItem
-	latestTodoID := ""
+	state := newHistoryTodoArgsState(successful)
 	for _, m := range msgs {
-		for _, tc := range m.ToolCalls {
-			if tc.ID == "" || !successful[tc.ID] {
+		state.consume(m)
+	}
+	return state.out
+}
+
+// historyTodoArgsState retains only the derived todo state needed to render a
+// todo_write call. It lets windowed history compute the same result as the
+// legacy full conversion while streaming messages in bounded chunks.
+type historyTodoArgsState struct {
+	successful   map[string]bool
+	out          map[string]string
+	todos        []evidence.TodoItem
+	latestTodoID string
+}
+
+func newHistoryTodoArgsState(successful map[string]bool) *historyTodoArgsState {
+	return &historyTodoArgsState{successful: successful, out: map[string]string{}}
+}
+
+func (state *historyTodoArgsState) consume(m provider.Message) {
+	for _, tc := range m.ToolCalls {
+		if tc.ID == "" || !state.successful[tc.ID] {
+			continue
+		}
+		switch tc.Name {
+		case "todo_write":
+			rec := evidence.ReceiptFromToolCall(tc.Name, json.RawMessage(tc.Arguments), true, true)
+			if len(rec.Todos) == 0 {
 				continue
 			}
-			switch tc.Name {
-			case "todo_write":
-				rec := evidence.ReceiptFromToolCall(tc.Name, json.RawMessage(tc.Arguments), true, true)
-				if len(rec.Todos) == 0 {
-					continue
-				}
-				todos = evidence.NormalizeSerialTodos(rec.Todos)
-				latestTodoID = tc.ID
-				if args, ok := todoArgsJSON(todos); ok {
-					out[latestTodoID] = args
-				}
-			case "complete_step":
-				if latestTodoID == "" || len(todos) == 0 {
-					continue
-				}
-				rec := evidence.ReceiptFromToolCall(tc.Name, json.RawMessage(tc.Arguments), true, true)
-				match, ok := evidence.MatchStep(rec.Step, todos)
-				if !ok || !evidence.AdvanceSerialTodo(todos, match.Index-1) {
-					continue
-				}
-				if args, ok := todoArgsJSON(todos); ok {
-					out[latestTodoID] = args
-				}
+			state.todos = evidence.NormalizeSerialTodos(rec.Todos)
+			state.latestTodoID = tc.ID
+			if args, ok := todoArgsJSON(state.todos); ok {
+				state.out[state.latestTodoID] = args
+			}
+		case "complete_step":
+			if state.latestTodoID == "" || len(state.todos) == 0 {
+				continue
+			}
+			rec := evidence.ReceiptFromToolCall(tc.Name, json.RawMessage(tc.Arguments), true, true)
+			match, ok := evidence.MatchStep(rec.Step, state.todos)
+			if !ok || !evidence.AdvanceSerialTodo(state.todos, match.Index-1) {
+				continue
+			}
+			if args, ok := todoArgsJSON(state.todos); ok {
+				state.out[state.latestTodoID] = args
 			}
 		}
 	}
-	return out
 }
 
 func successfulHistoryToolCallIDs(msgs []provider.Message) map[string]bool {
@@ -6937,17 +7044,14 @@ func (a *App) Meta() Meta {
 	return a.MetaForTab("")
 }
 
-func (a *App) imageInputEnabledForTab(tabID string) bool {
-	a.mu.RLock()
-	tab := a.tabByIDLocked(tabID)
-	var ref, root string
-	if tab != nil {
-		ref = tab.model
-		root = tab.WorkspaceRoot
-	}
-	a.mu.RUnlock()
-	if tab == nil {
-		return false
+// imageInputEnabledForRootModel reports whether the resolved model supports
+// image input. EXPENSIVE: it loads the workspace config and resolves the model
+// catalog. Never call it on a bound-method request path — MetaForTab serves
+// the cached tabMetaExtras instead, and only refreshTabMetaExtras (background)
+// calls this.
+func (a *App) imageInputEnabledForRootModel(root, ref string) bool {
+	if hook := a.configLoadForRootHook; hook != nil {
+		hook(root)
 	}
 	cfg, err := config.LoadForRoot(root)
 	if err == nil && ref == "" {
@@ -6973,6 +7077,15 @@ func (a *App) MetaForTab(tabID string) Meta {
 	if cwd == "" {
 		cwd, _ = os.Getwd()
 	}
+	// Git branch and image-input capability come from the per-tab cache
+	// refreshed in the background (refreshTabMetaExtras); computing them here
+	// put a config load + model resolution on every meta request. A miss or
+	// stale entry schedules a refresh and serves the last known values (empty
+	// on the very first call; the "tab:meta" event delivers the refresh).
+	extras, refreshExtras := tabMetaExtrasFor(tab, cwd, snap.model)
+	if refreshExtras {
+		a.scheduleTabMetaExtrasRefresh(tab.ID)
+	}
 	autoApproveTools := snap.ctrl != nil && snap.ctrl.AutoApproveTools()
 	collaborationMode := snap.collaborationMode()
 	toolApprovalMode := snap.currentToolApprovalMode()
@@ -6989,8 +7102,8 @@ func (a *App) MetaForTab(tabID string) Meta {
 		WorkspaceRoot:     cwd,
 		WorkspaceName:     tabWorkspaceNameForScope(snap.scope, cwd),
 		WorkspacePath:     cwd,
-		GitBranch:         workspaceGitBranchForMeta(cwd),
-		ImageInputEnabled: a.imageInputEnabledForTab(tabID),
+		GitBranch:         extras.gitBranch,
+		ImageInputEnabled: extras.imageInputEnabled,
 		AutoApproveTools:  autoApproveTools,
 		Bypass:            autoApproveTools,
 		CollaborationMode: collaborationMode,
