@@ -10,8 +10,8 @@
         "zh": "Reasonix v1.21.3"
       },
       "summary": {
-        "en": "This release brings Markdown rendering to thinking traces, explicit Kimi K3 reasoning for custom gateways, adaptive no-progress guard, and fixes for Windows taskbar grouping, retry-inflated compaction, and stream coalescing.",
-        "zh": "此版本为思考过程带来 Markdown 渲染，为自定义网关提供显式 Kimi K3 推理支持，引入自适应无进展防护，并修复了 Windows 任务栏分组、重试导致的提前压缩以及流合并问题。"
+        "en": "This release brings Markdown rendering to thinking traces, explicit Kimi K3 reasoning for custom gateways, visible storage paths, adaptive no-progress guard, and fixes for Windows install behavior, taskbar grouping, retry-inflated compaction, and stream coalescing.",
+        "zh": "此版本为思考过程带来 Markdown 渲染，为自定义网关提供显式 Kimi K3 推理支持，新增存储路径展示与自适应无进展防护，并修复 Windows 安装位置、任务栏分组、重试导致的提前压缩以及流合并问题。"
       },
       "surfaces": [
         "desktop"
@@ -53,6 +53,20 @@
           },
           "refs": [
             7940
+          ]
+        },
+        {
+          "kind": "improved",
+          "title": {
+            "en": "Storage paths are visible and Windows keeps its install location",
+            "zh": "存储路径可见，Windows 保留安装位置"
+          },
+          "body": {
+            "en": "Settings now shows the runtime-owned workspace, session and memory, cache, and extension paths as read-only values. Windows installs and updates continue using the user's existing install directory.",
+            "zh": "设置中现在会以只读方式显示运行时实际使用的工作区、会话与记忆、缓存和扩展路径。Windows 安装与更新会继续使用用户现有的安装目录。"
+          },
+          "refs": [
+            7942
           ]
         },
         {
@@ -158,6 +172,19 @@
           },
           {
             "title": {
+              "en": "Storage paths are visible and Windows keeps its install location",
+              "zh": "存储路径可见，Windows 保留安装位置"
+            },
+            "body": {
+              "en": "Settings now shows the runtime-owned workspace, session and memory, cache, and extension paths as read-only values. Windows installs and updates continue using the user's existing install directory.",
+              "zh": "设置中现在会以只读方式显示运行时实际使用的工作区、会话与记忆、缓存和扩展路径。Windows 安装与更新会继续使用用户现有的安装目录。"
+            },
+            "refs": [
+              7942
+            ]
+          },
+          {
+            "title": {
               "en": "Adaptive no-progress guard replaces fixed round count",
               "zh": "自适应无进展防护取代固定轮次计数"
             },
@@ -216,8 +243,7 @@
       "risks": [],
       "contributors": [
         "SivanCola",
-        "esengine",
-        "github-actions[bot]"
+        "esengine"
       ],
       "links": {
         "github": "https://github.com/esengine/DeepSeek-Reasonix/releases/tag/desktop-v1.21.3",
