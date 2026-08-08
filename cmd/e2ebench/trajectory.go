@@ -265,6 +265,16 @@ func renderTimeAttribution(results []result) string {
 // summarizeTrajectory reads a run's JSONL trajectory. A truncated final line
 // (killed run) is skipped, matching the recorder's durability contract.
 func summarizeTrajectory(path string) (*trajectorySummary, error) {
+	scan, err := scanTrajectoryFile(path)
+	if err != nil {
+		return nil, err
+	}
+	return scan.finish(), nil
+}
+
+// scanTrajectoryFile runs the record pass without finishing, so callers that
+// need the raw series (the live dashboard) can read it before finish folds it.
+func scanTrajectoryFile(path string) (*trajScan, error) {
 	f, err := os.Open(path)
 	if err != nil {
 		return nil, err
@@ -290,7 +300,7 @@ func summarizeTrajectory(path string) (*trajectorySummary, error) {
 	if err := sc.Err(); err != nil {
 		return nil, err
 	}
-	return scan.finish(), nil
+	return scan, nil
 }
 
 func (t *trajScan) record(rec trajectoryRecord) {

@@ -188,7 +188,8 @@ func main() {
 		fmt.Fprintf(flag.CommandLine.Output(), "  %[1]s -profile delivery\n", strings.Replace(flag.CommandLine.Name(), "e2ebench", "go run ./cmd/e2ebench", 1))
 	}
 
-	mode := flag.String("mode", "suite", "suite | diff | swebench | compare | traj")
+	mode := flag.String("mode", "suite", "suite | diff | swebench | compare | traj | serve")
+	addr := flag.String("addr", "127.0.0.1:7480", "serve mode: live dashboard listen address")
 	subset := flag.String("subset", "benchmarks/swebench/subset.json", "swebench mode: instance subset file")
 	namespace := flag.String("namespace", "swebench", "swebench mode: registry namespace holding the evaluation images")
 	runID := flag.String("run-id", "reasonix", "swebench mode: run id passed to the official harness")
@@ -255,6 +256,12 @@ func main() {
 		return
 	case "traj":
 		emitTrajMode(*trajDir, *outMD)
+		return
+	case "serve":
+		if err := runServeMode(*trajDir, *suite, *addr); err != nil {
+			fmt.Fprintln(os.Stderr, "serve mode:", err)
+			os.Exit(1)
+		}
 		return
 	}
 
