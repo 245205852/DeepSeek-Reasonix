@@ -199,6 +199,10 @@ CLI 进阶用法和详细配置见 **[CLI 命令参考](./docs/CLI.zh-CN.md)**�
   <sub>由 <a href="https://github.com/esengine/DeepSeek-Reasonix/graphs/contributors">esengine/DeepSeek-Reasonix</a> 社区共建</sub>
 </p>
 
+<p align="center">
+  <video src="https://github.com/user-attachments/assets/ab2f3878-e224-4931-8254-060e7695cfb9" controls></video>
+</p>
+
 ---
 
 <p align="center"><sub><strong>支持本项目</strong></sub></p>
