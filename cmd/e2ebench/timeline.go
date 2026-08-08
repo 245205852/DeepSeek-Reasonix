@@ -54,20 +54,21 @@ func taskTimeline(r result) string {
 	for _, m := range markers {
 		bar[m.at] = '│'
 	}
-	out := string(bar) + "\n"
+	var out strings.Builder
+	out.WriteString(string(bar) + "\n")
 	for _, m := range markers {
-		out += strings.Repeat(" ", m.at) + "^ " + m.label + "\n"
+		out.WriteString(strings.Repeat(" ", m.at) + "^ " + m.label + "\n")
 	}
 	if r.Passed && r.PostSolveWasteMs > 0 {
-		out += fmt.Sprintf("post-solve waste %s (%s of wall)\n", dur(r.PostSolveWasteMs), pct(int(r.PostSolveWasteMs), int(r.WallMs)))
+		fmt.Fprintf(&out, "post-solve waste %s (%s of wall)\n", dur(r.PostSolveWasteMs), pct(int(r.PostSolveWasteMs), int(r.WallMs)))
 	}
 	if r.FirstCorrectMs > 0 {
-		out += fmt.Sprintf("rounds %d→%d · calls %d→%d · after correct: verifications %d · reviews %d · mutations %d\n",
+		fmt.Fprintf(&out, "rounds %d→%d · calls %d→%d · after correct: verifications %d · reviews %d · mutations %d\n",
 			r.RoundsBeforeCorrect, r.RoundsAfterCorrect,
 			r.CallsBeforeCorrect, r.CallsAfterCorrect,
 			r.VerifyAfterCorrect, r.ReviewsAfterCorrect, r.MutationsAfterCorrect)
 	}
-	return out
+	return out.String()
 }
 
 // renderDiagnosis applies the decide-then-optimize tree to the measured

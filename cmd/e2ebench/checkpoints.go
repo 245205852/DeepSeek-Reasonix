@@ -241,14 +241,7 @@ func renderSolveProfiles(results []result) string {
 }
 
 func joinParts(parts []string) string {
-	out := ""
-	for i, part := range parts {
-		if i > 0 {
-			out += " · "
-		}
-		out += part
-	}
-	return out
+	return strings.Join(parts, " · ")
 }
 
 // mutationsBeforeCorrect counts the workspace states tried before the first

@@ -380,7 +380,7 @@ func filterTasks(tasks []task, filter string) ([]task, error) {
 		ids = append(ids, t.ID)
 	}
 	var out []task
-	for _, id := range strings.Split(filter, ",") {
+	for id := range strings.SplitSeq(filter, ",") {
 		id = strings.TrimSpace(id)
 		if id == "" {
 			continue
