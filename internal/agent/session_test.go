@@ -601,3 +601,32 @@ func TestRewriteBaselineStaysWithClones(t *testing.T) {
 		t.Fatal("saving the source must not mark the clone's rewrite persisted")
 	}
 }
+
+func TestHasUnsavedChangesProtectsIdleHistoryAfterSaveFailure(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "session.jsonl")
+	s := NewSession("sys")
+	s.Add(provider.Message{Role: provider.RoleUser, Content: "durable"})
+	if !s.HasUnsavedChanges(path) {
+		t.Fatal("new transcript without a baseline must be considered unsaved")
+	}
+	if err := s.SaveSnapshot(path); err != nil {
+		t.Fatalf("initial save: %v", err)
+	}
+	if s.HasUnsavedChanges(path) {
+		t.Fatal("saved transcript still reported unsaved")
+	}
+
+	s.Add(provider.Message{Role: provider.RoleAssistant, Content: "pending"})
+	if !s.HasUnsavedChanges(path) {
+		t.Fatal("in-memory suffix was not reported as unsaved")
+	}
+	// A future retry can persist the suffix; until then an idle history refresh
+	// must keep rendering the controller's copy instead of replacing it from the
+	// older checkpoint/WAL state.
+	if err := s.SaveSnapshot(path); err != nil {
+		t.Fatalf("retry save: %v", err)
+	}
+	if s.HasUnsavedChanges(path) {
+		t.Fatal("successful retry left the transcript marked unsaved")
+	}
+}

@@ -107,6 +107,7 @@ type HeartbeatEngine struct {
 	cfgDigest      [sha256.Size]byte                // decoded config bytes last observed
 	cfgKnown       bool                             // cfgDigest describes an existing file
 	cfgInitialized bool                             // engine has observed existing or missing config state
+	cfgDeleted     bool                             // an existing config was removed externally
 	pendingTopics  map[string]heartbeatPendingTopic // in-memory retry/in-flight safety for NewConversationEachRun
 	runningTasks   map[string]struct{}              // task-level execution reservation shared by tick and TriggerNow
 	done           chan struct{}
@@ -172,6 +173,9 @@ func (e *HeartbeatEngine) recordConfigSnapshotLocked(snapshot heartbeatConfigSna
 	e.cfgDigest = snapshot.digest
 	e.cfgKnown = snapshot.exists
 	e.cfgInitialized = true
+	if snapshot.exists {
+		e.cfgDeleted = false
+	}
 }
 
 // adoptExternalEditsLocked compares the exact content digest so edits are
@@ -182,7 +186,20 @@ func (e *HeartbeatEngine) adoptExternalEditsLocked() {
 		log.Printf("[heartbeat] invalid external config: %v", err)
 		return
 	}
-	if !snapshot.exists || (e.cfgKnown && snapshot.digest == e.cfgDigest) {
+	if !snapshot.exists {
+		// A config that existed when this engine started was explicitly removed
+		// by the user. Treat that deletion as authoritative: retaining the old
+		// in-memory tasks would execute a side effect on the next tick and then
+		// recreate the file from stale state.
+		if e.cfgInitialized && e.cfgKnown {
+			e.tasks = nil
+			e.pendingTopics = make(map[string]heartbeatPendingTopic)
+			e.cfgDeleted = true
+			e.recordConfigSnapshotLocked(snapshot)
+		}
+		return
+	}
+	if e.cfgKnown && snapshot.digest == e.cfgDigest {
 		return
 	}
 	e.recordConfigSnapshotLocked(snapshot)
@@ -334,8 +351,33 @@ func (e *HeartbeatEngine) executeTask(t HeartbeatTask) HeartbeatTask {
 		log.Printf("[heartbeat] task %q is already running, skipping overlapping trigger", t.Title)
 		return t
 	}
-	defer e.releaseTask(t.ID)
+	releaseLease, err := e.tryAcquireTaskLease(t.ID)
+	if err != nil {
+		log.Printf("[heartbeat] task %q is already owned by another runtime, skipping", t.Title)
+		e.releaseTask(t.ID)
+		return t
+	}
+	defer func() {
+		releaseLease()
+		e.releaseTask(t.ID)
+	}()
 	return e.executeTaskOwned(t)
+}
+
+// tryAcquireTaskLease extends the in-process reservation to other Reasonix
+// processes. The lease is held from before topic creation through prompt
+// submission, and the OS releases it automatically if the process is killed.
+func (e *HeartbeatEngine) tryAcquireTaskLease(taskID string) (func(), error) {
+	path := e.heartbeatTaskLeasePath(taskID)
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return nil, err
+	}
+	return filelock.TryAcquire(path)
+}
+
+func (e *HeartbeatEngine) heartbeatTaskLeasePath(taskID string) string {
+	digest := sha256.Sum256([]byte(taskID))
+	return e.configPath() + "." + hex.EncodeToString(digest[:8]) + ".run.lock"
 }
 
 func (e *HeartbeatEngine) claimTask(id string) bool {
@@ -636,8 +678,21 @@ func (e *HeartbeatEngine) mergeRunUpdatesLocked(updates map[string]HeartbeatTask
 		}
 		tasks := expected.cfg.Tasks
 		if !expected.exists {
-			// A first-run engine has no file yet. Start from its in-memory list.
-			tasks = append([]HeartbeatTask(nil), e.tasks...)
+			switch {
+			case e.cfgDeleted || (e.cfgInitialized && e.cfgKnown):
+				// Observe deletion in this CAS loop too. A run can finish before the
+				// next scheduler tick adopts external edits; relying only on tick
+				// would let that completion recreate a file the user just removed.
+				e.tasks = nil
+				e.pendingTopics = make(map[string]heartbeatPendingTopic)
+				e.cfgDeleted = true
+				e.recordConfigSnapshotLocked(expected)
+				return
+			case !e.cfgInitialized:
+				// Only an engine that has never observed disk may bootstrap from an
+				// in-memory list. Once a config existed, deletion is authoritative.
+				tasks = append([]HeartbeatTask(nil), e.tasks...)
+			}
 		}
 		mergeHeartbeatRunUpdates(tasks, updates)
 		if err := e.writeTasks(tasks, expected, true); err != nil {
@@ -666,10 +721,15 @@ func mergeHeartbeatRunUpdates(tasks []HeartbeatTask, updates map[string]Heartbea
 		if !ok {
 			continue
 		}
-		if update.TopicID != "" {
+		// Run state is monotonic. A runtime that lost the cross-process task
+		// lease returns the task snapshot it started with; if its later config
+		// merge lands after the owner, that stale completion must not roll back
+		// the owner's timestamp or fresh-conversation topic.
+		newerRun := update.LastRunAt > tasks[i].LastRunAt
+		if update.TopicID != "" && (tasks[i].TopicID == "" || newerRun) {
 			tasks[i].TopicID = update.TopicID
 		}
-		if update.LastRunAt != 0 {
+		if newerRun {
 			tasks[i].LastRunAt = update.LastRunAt
 		}
 		if tasks[i].CreatedAt == 0 && update.CreatedAt != 0 {

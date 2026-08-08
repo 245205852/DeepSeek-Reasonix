@@ -350,6 +350,8 @@ export interface TabMeta {
   topicId: string;
   topicTitle: string;
   sessionPath?: string;
+  sessionRevision?: number;
+  sessionDigest?: string;
   readOnly?: boolean;
   filePath?: string;
   projectColor?: string;
@@ -572,6 +574,8 @@ export interface HistoryPage {
   endTurn: number;
   totalTurns: number;
   hasOlder: boolean;
+  revision?: number;
+  digest?: string;
 }
 
 export interface PromptHistoryEntry {
@@ -703,11 +707,13 @@ export interface Meta {
   runtime?: SessionRuntimeView;
   startupErr?: string;
   eventChannel: string;
+  sessionPath?: string;
+  sessionRevision?: number;
+  sessionDigest?: string;
   cwd: string;
   workspaceRoot?: string;
   workspaceName?: string;
   workspacePath?: string;
-  sessionPath?: string;
   gitBranch?: string;
   imageInputEnabled?: boolean;
   autoApproveTools?: boolean;

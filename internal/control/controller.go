@@ -3188,7 +3188,7 @@ func (c *Controller) forkNamed(turn int, name string, switchToFork bool) (string
 	sess.Messages = forked
 
 	newPath := agent.NewSessionPath(c.sessionDir, c.label)
-	if err := sess.Save(newPath); err != nil {
+	if err := sess.SaveIfAbsent(newPath); err != nil {
 		return "", c.rewindFail(err)
 	}
 	forkPreview, forkTurns := agent.SessionPreviewFromMessages(forked)
@@ -3276,7 +3276,7 @@ func (c *Controller) Branch(name string) (string, error) {
 	sess.Messages = branched
 
 	newPath := agent.NewSessionPath(c.sessionDir, c.label)
-	if err := sess.Save(newPath); err != nil {
+	if err := sess.SaveIfAbsent(newPath); err != nil {
 		return "", c.rewindFail(err)
 	}
 	branchPreview, branchTurns := agent.SessionPreviewFromMessages(branched)
@@ -3870,16 +3870,12 @@ const (
 	// conflictAdoptedDisk: the executor session object was replaced by the
 	// newer disk transcript; adoptDiskSession already reset its baselines.
 	conflictAdoptedDisk
-	// conflictForceSavedBranch: recovery depth was exhausted and the same
-	// in-memory session was force-saved onto the same branch; that save
-	// advanced the session-owned rewrite baseline like any other full save.
-	conflictForceSavedBranch
 	// conflictForkedBranch: the same in-memory session moved to a freshly
 	// forked recovery branch path.
 	conflictForkedBranch
 )
 
-const recoveryDepthCapNoticeText = "repeated save conflicts were detected; saved the current conflict copy in place"
+const recoveryDepthCapNoticeText = "repeated save conflicts were detected; saved the current conflict copy in an isolated recovery branch"
 
 func sessionRecoveryNotice(code, text string) event.Event {
 	return event.Event{
@@ -3940,19 +3936,25 @@ func (c *Controller) recoverSnapshotConflict(path string, saveErr error, forceRe
 	})
 	if err != nil {
 		if errors.Is(err, agent.ErrSessionRecoveryDepthExceeded) {
-			// Saves keep conflicting on recovery branches this runtime itself
-			// created; forking again multiplies session files without
-			// converging (#5993 reached 8 nested levels). This runtime is the
-			// only writer of its own recovery branches, so force-writing the
-			// transcript back onto the current branch keeps the data and
-			// stops the chain.
-			if forceErr := c.executor.Session().Save(path); forceErr != nil {
-				return "", conflictDropped, fmt.Errorf("recovery chain depth exceeded; force save failed: %w", forceErr)
+			// The canonical branch may have advanced since this runtime loaded it.
+			// Never force-write the stale in-memory snapshot back onto that path just
+			// to stop a recovery chain. Preserve it in a writer-specific isolated
+			// branch instead; the depth cap limits lineage fan-out, not data safety.
+			isolated, isolatedErr := c.executor.Session().SaveConflictRecoveryBranch(agent.RecoveryBranchOptions{
+				OriginalPath: path,
+				Reason:       reason,
+				BranchMeta:   meta,
+			})
+			if isolatedErr != nil {
+				return "", conflictDropped, fmt.Errorf("recovery chain depth exceeded; isolated copy failed: %w", isolatedErr)
 			}
-			appendSnapshotConflictDiagnostic(path, mode, "recovery_depth_cap_force_saved", saveErr, path, false)
-			slog.Warn("controller: snapshot conflict; recovery depth cap reached, force-saved onto current branch", logAttrs...)
+			if err := c.commitRecoveredSession(path, reason, isolated); err != nil {
+				return "", conflictDropped, err
+			}
+			appendSnapshotConflictDiagnostic(path, mode, "recovery_depth_cap_isolated", saveErr, isolated.Path, isolated.Existing)
+			slog.Warn("controller: snapshot conflict; recovery depth cap reached, isolated stale transcript", append(logAttrs, "recovery", isolated.Path)...)
 			c.emitRecoveryDepthCapNotice(path)
-			return path, conflictForceSavedBranch, nil
+			return isolated.Path, conflictForkedBranch, nil
 		}
 		if errors.Is(err, agent.ErrSessionRecoveryNotNeeded) {
 			if c.adoptDiskSession(path) {
@@ -4754,6 +4756,17 @@ func (c *Controller) History() []provider.Message {
 		return nil
 	}
 	return c.executor.Session().Snapshot() // copy — a turn may be appending concurrently
+}
+
+// SessionHasUnsavedChanges tells desktop history whether it may safely refresh
+// an idle view from the durable WAL. A failed or contended save can leave the
+// controller with a newer in-memory transcript; replacing that view from disk
+// would hide the user's latest turn until the next retry.
+func (c *Controller) SessionHasUnsavedChanges() bool {
+	if c == nil || c.executor == nil {
+		return false
+	}
+	return c.executor.Session().HasUnsavedChanges(c.SessionPath())
 }
 
 // ContextSnapshot returns (usedTokens, contextWindow) from the most recent

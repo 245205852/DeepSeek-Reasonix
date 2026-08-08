@@ -212,6 +212,10 @@ type SessionPersistence interface {
 	Snapshot() error
 	SnapshotForShutdown() error
 	SnapshotActivity() error
+	// SessionHasUnsavedChanges reports whether the in-memory transcript is
+	// newer than the durable session file. Frontends use this to avoid
+	// replacing a failed/contended save with stale disk history.
+	SessionHasUnsavedChanges() bool
 	SessionCache() (hit, miss int)
 	BeginDestroySession(sessionPath string) SessionDestroyHandle
 	CloseAfterDestroy()

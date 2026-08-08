@@ -516,47 +516,36 @@ func TestLoadSessionMessagesAcceptsReorderedEventHeader(t *testing.T) {
 	}
 }
 
-func TestForceSaveDoesNotBootstrapEventLog(t *testing.T) {
+func TestDefaultSaveBootstrapsEventLog(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "session.jsonl")
 	s := NewSession("sys")
 	s.Add(provider.Message{Role: provider.RoleUser, Content: "one-shot"})
 	if err := s.Save(path); err != nil {
 		t.Fatalf("Save: %v", err)
 	}
-	if _, err := os.Stat(store.SessionEventLog(path)); !os.IsNotExist(err) {
-		t.Fatalf("force save created an event log (err=%v); one-shot copies must stay single-file", err)
+	if _, err := os.Stat(store.SessionEventLog(path)); err != nil {
+		t.Fatalf("default save did not create an event log: %v", err)
 	}
-	if _, err := os.Stat(store.SessionEventIndex(path)); !os.IsNotExist(err) {
-		t.Fatalf("force save created an event index (err=%v)", err)
+	if _, err := os.Stat(store.SessionEventIndex(path)); err != nil {
+		t.Fatalf("default save did not create an event index: %v", err)
 	}
 }
 
-func TestForceSaveCompactsExistingEventLog(t *testing.T) {
+func TestDefaultSaveRejectsDivergedOverwrite(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "session.jsonl")
-	sessionWithTurns(t, path, 3)
+	winner := sessionWithTurns(t, path, 3).Snapshot()
 
-	forced := NewSession("sys")
-	forced.Add(provider.Message{Role: provider.RoleUser, Content: "forced state"})
-	if err := forced.Save(path); err != nil {
-		t.Fatalf("force Save: %v", err)
-	}
-	events := readSessionEventsForTest(t, path)
-	if len(events) != 1 || events[0].Type != sessionEventTypeReplace {
-		t.Fatalf("events after force save = %+v, want single replace", events)
+	stale := NewSession("sys")
+	stale.Add(provider.Message{Role: provider.RoleUser, Content: "stale state"})
+	if err := stale.Save(path); !errors.Is(err, ErrSessionSnapshotConflict) {
+		t.Fatalf("diverged Save error = %v, want ErrSessionSnapshotConflict", err)
 	}
 	loaded, err := LoadSession(path)
 	if err != nil {
 		t.Fatalf("LoadSession: %v", err)
 	}
-	if len(loaded.Messages) != 2 || loaded.Messages[1].Content != "forced state" {
-		t.Fatalf("loaded after force save = %+v, want forced transcript", loaded.Messages)
-	}
-	anchor, err := loadSessionMessagesFromJSONL(path)
-	if err != nil {
-		t.Fatalf("read anchor: %v", err)
-	}
-	if len(anchor) != 2 || anchor[1].Content != "forced state" {
-		t.Fatalf("anchor after force save = %+v, want refreshed", anchor)
+	if !messagesEqualForStorageList(loaded.Messages, winner) {
+		t.Fatalf("default Save replaced newer transcript: got %d messages, want %d", len(loaded.Messages), len(winner))
 	}
 }
 

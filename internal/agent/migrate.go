@@ -194,7 +194,10 @@ func migrateLegacySessionsWithMarkers(srcDir, globalDest, marker, jsonlMarker st
 			continue
 		}
 		s := &Session{Messages: msgs}
-		if err := s.Save(dest); err != nil {
+		if err := s.SaveIfAbsent(dest); err != nil {
+			if errors.Is(err, os.ErrExist) {
+				continue
+			}
 			return imported, err
 		}
 		if eventsInfo != nil {
@@ -460,7 +463,10 @@ func migrateSubDirectory(subDir, globalDest string, projectDir func(string) stri
 				continue
 			}
 			s := &Session{Messages: msgs}
-			if err := s.Save(dest); err != nil {
+			if err := s.SaveIfAbsent(dest); err != nil {
+				if errors.Is(err, os.ErrExist) {
+					continue
+				}
 				return imported, err
 			}
 		} else if isNativeSessionEventLog(SessionEventLogPath(srcPath)) {
@@ -510,7 +516,7 @@ func saveNativeSessionCopy(src, dst string) error {
 	if err != nil {
 		return err
 	}
-	return session.Save(dst)
+	return session.SaveIfAbsent(dst)
 }
 
 func fileExists(path string) bool {
@@ -622,7 +628,7 @@ func transformAndCopyJsonl(src, dst string) error {
 	if err := tmp.Close(); err != nil {
 		return err
 	}
-	if err := os.Rename(tmpPath, dst); err != nil {
+	if err := publishFileNoReplace(tmpPath, dst); err != nil {
 		return err
 	}
 	ok = true
@@ -666,7 +672,41 @@ func moveFlatImport(oldPath, newPath string, srcInfo os.FileInfo) bool {
 	if err := os.MkdirAll(filepath.Dir(newPath), 0o755); err != nil {
 		return false
 	}
-	return os.Rename(oldPath, newPath) == nil
+	if err := linkFileNoReplace(oldPath, newPath); err != nil {
+		if errors.Is(err, os.ErrExist) {
+			return false
+		}
+		// The source and routed destination may be on different volumes. The
+		// transform path keeps the no-clobber guarantee in that case too.
+		if err := transformAndCopyJsonl(oldPath, newPath); err != nil {
+			return false
+		}
+	}
+	if err := os.Remove(oldPath); err != nil {
+		return false
+	}
+	return true
+}
+
+// publishFileNoReplace atomically publishes a completed sibling temp file
+// without replacing a destination another startup/import writer created.
+// The temp and destination share a directory, so a hard link is atomic and
+// portable across the filesystems Reasonix supports.
+func publishFileNoReplace(tmp, dst string) error {
+	if err := linkFileNoReplace(tmp, dst); err != nil {
+		return err
+	}
+	return os.Remove(tmp)
+}
+
+func linkFileNoReplace(src, dst string) error {
+	if err := os.Link(src, dst); err != nil {
+		if os.IsExist(err) {
+			return os.ErrExist
+		}
+		return err
+	}
+	return nil
 }
 
 // recordImportedTitle stores the legacy summary as the session's display title

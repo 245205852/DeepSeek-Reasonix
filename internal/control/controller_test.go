@@ -1130,18 +1130,24 @@ func TestRecoverInterruptedTurnAfterCompactionRelocatesVisibleTurn(t *testing.T)
 		t.Fatalf("LoadBranchMeta ok=%v err=%v meta=%+v", ok, err, meta)
 	}
 
-	compacted := agent.NewSession("sys")
-	compacted.Add(provider.Message{Role: provider.RoleUser, Content: "<compaction-summary>\nold work\n</compaction-summary>"})
-	compacted.Add(provider.Message{Role: provider.RoleUser, Content: "update a.txt", CreatedAt: meta.InFlightTurn.StartedAt.UnixMilli() + 1})
-	compacted.Add(provider.Message{Role: provider.RoleAssistant, ToolCalls: []provider.ToolCall{{
-		ID: "write-1", Name: "write_file", Arguments: `{"path":"a.txt","content":"ok"}`,
-	}}})
-	compacted.Add(provider.Message{Role: provider.RoleTool, ToolCallID: "write-1", Name: "write_file", Content: "wrote a.txt"})
-	compacted.Add(provider.Message{Role: provider.RoleAssistant, Content: "partial final answer", ReasoningContent: "private partial reasoning"})
+	compacted, err := agent.LoadSession(path)
+	if err != nil {
+		t.Fatalf("Load compacting owner: %v", err)
+	}
+	compacted.Replace([]provider.Message{
+		{Role: provider.RoleSystem, Content: "sys"},
+		{Role: provider.RoleUser, Content: "<compaction-summary>\nold work\n</compaction-summary>"},
+		{Role: provider.RoleUser, Content: "update a.txt", CreatedAt: meta.InFlightTurn.StartedAt.UnixMilli() + 1},
+		{Role: provider.RoleAssistant, ToolCalls: []provider.ToolCall{{
+			ID: "write-1", Name: "write_file", Arguments: `{"path":"a.txt","content":"ok"}`,
+		}}},
+		{Role: provider.RoleTool, ToolCallID: "write-1", Name: "write_file", Content: "wrote a.txt"},
+		{Role: provider.RoleAssistant, Content: "partial final answer", ReasoningContent: "private partial reasoning"},
+	})
 	if compacted.Len() >= staleStart {
 		t.Fatalf("test setup did not stale boundary: compacted=%d start=%d", compacted.Len(), staleStart)
 	}
-	if err := compacted.Save(path); err != nil {
+	if err := compacted.SaveRewrite(path); err != nil {
 		t.Fatalf("Save compacted: %v", err)
 	}
 
@@ -2252,7 +2258,7 @@ func (s *noticeSink) lastNotice() (event.Event, bool) {
 	return event.Event{}, false
 }
 
-func TestSnapshotConflictAtRecoveryDepthCapForceSavesCurrentBranch(t *testing.T) {
+func TestSnapshotConflictAtRecoveryDepthCapIsolatesCurrentBranch(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "session.jsonl")
 	disk := agent.NewSession("sys")
@@ -2284,60 +2290,49 @@ func TestSnapshotConflictAtRecoveryDepthCapForceSavesCurrentBranch(t *testing.T)
 	if err := c.Snapshot(); err != nil {
 		t.Fatalf("Snapshot: %v", err)
 	}
-	if got := c.SessionPath(); got != path {
-		t.Fatalf("session path = %q, want unchanged %q (no new fork)", got, path)
+	if got := c.SessionPath(); got == path || !strings.Contains(got, "-recovery-") {
+		t.Fatalf("session path = %q, want an isolated recovery branch", got)
 	}
 	forks, err := filepath.Glob(filepath.Join(dir, "*-recovery-*.jsonl"))
 	if err != nil {
 		t.Fatalf("glob: %v", err)
 	}
-	if len(forks) != 0 {
-		t.Fatalf("depth cap still forked: %v", forks)
+	filteredForks := forks[:0]
+	for _, fork := range forks {
+		if !strings.HasSuffix(fork, ".events.jsonl") {
+			filteredForks = append(filteredForks, fork)
+		}
+	}
+	forks = filteredForks
+	if len(forks) != 1 {
+		t.Fatalf("depth cap should preserve one isolated fork: %v", forks)
 	}
 	loaded, err := agent.LoadSession(path)
 	if err != nil {
 		t.Fatalf("LoadSession: %v", err)
 	}
-	if got := loaded.Messages[len(loaded.Messages)-1].Content; got != "local second" {
-		t.Fatalf("disk tail = %q, want force-saved local transcript", got)
+	if got := loaded.Messages[len(loaded.Messages)-1].Content; got != "disk second" {
+		t.Fatalf("canonical disk tail = %q, want newer disk transcript", got)
 	}
 	notices := sink.notices()
-	if len(notices) == 0 || !strings.Contains(notices[len(notices)-1], "saved the current conflict copy in place") {
+	if len(notices) == 0 || !strings.Contains(notices[len(notices)-1], "saved the current conflict copy in an isolated recovery branch") {
 		t.Fatalf("notices = %v, want depth-cap notice", notices)
 	}
 	notice, ok := sink.lastNotice()
 	if !ok || notice.Code != event.NoticeCodeSessionRecoveryDepthCap || notice.Audience != event.NoticeAudienceOperator {
 		t.Fatalf("depth-cap notice = %+v, want typed operator recovery notice", notice)
 	}
-	if stale.NeedsRewriteSave() {
-		t.Fatal("rewrite baseline not re-anchored by depth-cap force save")
-	}
-
-	foreign := agent.NewSession("sys")
-	foreign.Add(provider.Message{Role: provider.RoleUser, Content: "first"})
-	foreign.Add(provider.Message{Role: provider.RoleAssistant, Content: "one"})
-	foreign.Add(provider.Message{Role: provider.RoleUser, Content: "foreign second"})
-	if err := foreign.Save(path); err != nil {
-		t.Fatalf("Save foreign: %v", err)
-	}
-	meta, ok, err = agent.LoadBranchMeta(path)
-	if err != nil || !ok {
-		t.Fatalf("LoadBranchMeta foreign ok=%v err=%v", ok, err)
-	}
-	meta.Recovered = true
-	meta.RecoveryDepth = agent.SessionRecoveryMaxDepth
-	if err := agent.SaveBranchMeta(path, meta); err != nil {
-		t.Fatalf("SaveBranchMeta foreign: %v", err)
-	}
+	// The isolated branch was saved with its own verified baseline. Defensive
+	// snapshots on that branch must be no-ops rather than starting another
+	// recovery chain or repeating the operator notice.
 	if err := c.Snapshot(); err != nil {
-		t.Fatalf("repeated depth-cap Snapshot: %v", err)
+		t.Fatalf("snapshot on isolated branch: %v", err)
 	}
 	if got := sink.notices(); len(got) != len(notices) {
 		t.Fatalf("repeated depth-cap snapshot emitted duplicate notice: %v", got)
 	}
 
-	// The force save re-anchored the baseline: the next snapshot must not
-	// conflict again.
+	// New suffixes continue normally on the isolated branch.
 	stale.Add(provider.Message{Role: provider.RoleAssistant, Content: "answer"})
 	if err := c.Snapshot(); err != nil {
 		t.Fatalf("follow-up Snapshot: %v", err)

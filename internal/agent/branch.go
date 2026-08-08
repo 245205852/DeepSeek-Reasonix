@@ -197,10 +197,24 @@ func loadBranchMetaRetry(sessionPath string) (BranchMeta, bool, error) {
 }
 
 func SaveBranchMeta(sessionPath string, m BranchMeta) error {
-	return saveBranchMeta(sessionPath, m, true)
+	return UpdateBranchMeta(sessionPath, true, func(current *BranchMeta) error {
+		preserveBranchMetaPersistence(&m, *current)
+		*current = m
+		return nil
+	})
 }
 
 func SaveBranchMetaPreserveUpdated(sessionPath string, m BranchMeta) error {
+	return UpdateBranchMeta(sessionPath, false, func(current *BranchMeta) error {
+		preserveBranchMetaPersistence(&m, *current)
+		*current = m
+		return nil
+	})
+}
+
+// SaveBranchMetaPreserveUpdatedLocked is for callers that already hold
+// LockSessionMetaPath for a larger read-modify-write transaction.
+func SaveBranchMetaPreserveUpdatedLocked(sessionPath string, m BranchMeta) error {
 	return saveBranchMeta(sessionPath, m, false)
 }
 
@@ -272,6 +286,20 @@ func preserveBranchMetaPersistence(next *BranchMeta, existing BranchMeta) {
 }
 
 func EnsureBranchMeta(sessionPath string) (BranchMeta, error) {
+	var out BranchMeta
+	err := UpdateBranchMeta(sessionPath, false, func(m *BranchMeta) error {
+		out = *m
+		return nil
+	})
+	return out, err
+}
+
+// EnsureBranchMetaLocked is for callers that already hold LockSessionMetaPath.
+func EnsureBranchMetaLocked(sessionPath string) (BranchMeta, error) {
+	return ensureBranchMetaUnlocked(sessionPath)
+}
+
+func ensureBranchMetaUnlocked(sessionPath string) (BranchMeta, error) {
 	if sessionPath == "" {
 		return BranchMeta{}, fmt.Errorf("empty session path")
 	}
@@ -291,14 +319,10 @@ func EnsureBranchMeta(sessionPath string) (BranchMeta, error) {
 }
 
 func TouchBranchMeta(sessionPath string) error {
-	unlock := lockSessionSavePath(sessionPath)
-	defer unlock()
-	m, err := EnsureBranchMeta(sessionPath)
-	if err != nil {
-		return err
-	}
-	m.UpdatedAt = time.Now().UTC()
-	return saveBranchMeta(sessionPath, m, false)
+	return UpdateBranchMeta(sessionPath, false, func(m *BranchMeta) error {
+		m.UpdatedAt = time.Now().UTC()
+		return nil
+	})
 }
 
 func MarkSessionInFlightTurn(sessionPath string, startMessageIndex int, preserveUser bool) error {
@@ -318,9 +342,12 @@ func BeginSessionInFlightTurn(sessionPath string, startMessageIndex int, preserv
 	// Read the baseline and install the marker under the same in-process save
 	// lock. Otherwise an autosave can advance the revision between the read and
 	// SetSessionInFlightTurn, leaving the marker bound to a stale baseline.
-	unlock := lockSessionSavePath(sessionPath)
+	unlock, err := LockSessionMetaPath(sessionPath)
+	if err != nil {
+		return InFlightTurnMeta{}, err
+	}
 	defer unlock()
-	meta, err := EnsureBranchMeta(sessionPath)
+	meta, err := ensureBranchMetaUnlocked(sessionPath)
 	if err != nil {
 		return InFlightTurnMeta{}, err
 	}
@@ -334,7 +361,7 @@ func BeginSessionInFlightTurn(sessionPath string, startMessageIndex int, preserv
 	marker.StartDigest = strings.TrimSpace(meta.ContentDigest)
 	marker.StartMessageIndex = max(marker.StartMessageIndex, 0)
 	meta.InFlightTurn = &marker
-	if err := SaveBranchMetaPreserveUpdated(sessionPath, meta); err != nil {
+	if err := saveBranchMeta(sessionPath, meta, false); err != nil {
 		return InFlightTurnMeta{}, err
 	}
 	return marker, nil
@@ -349,9 +376,12 @@ func SetSessionInFlightTurn(sessionPath string, marker InFlightTurnMeta) error {
 	// The sidecar is read-modify-write; the per-path save lock keeps concurrent
 	// writers (autosave's UpdateSessionMeta, listing backfill) from dropping
 	// each other's fields.
-	unlock := lockSessionSavePath(sessionPath)
+	unlock, err := LockSessionMetaPath(sessionPath)
+	if err != nil {
+		return err
+	}
 	defer unlock()
-	m, err := EnsureBranchMeta(sessionPath)
+	m, err := ensureBranchMetaUnlocked(sessionPath)
 	if err != nil {
 		return err
 	}
@@ -360,7 +390,7 @@ func SetSessionInFlightTurn(sessionPath string, marker InFlightTurnMeta) error {
 		marker.StartedAt = time.Now().UTC()
 	}
 	m.InFlightTurn = &marker
-	return SaveBranchMetaPreserveUpdated(sessionPath, m)
+	return saveBranchMeta(sessionPath, m, false)
 }
 
 func ClearSessionInFlightTurn(sessionPath string) error {
@@ -372,7 +402,10 @@ func ClearSessionInFlightTurn(sessionPath string) error {
 // expected. A non-empty ID is authoritative; legacy markers without IDs fall
 // back to the complete persisted marker shape for compatibility.
 func ClearSessionInFlightTurnIfMatch(sessionPath string, expected InFlightTurnMeta) (bool, error) {
-	unlock := lockSessionSavePath(sessionPath)
+	unlock, err := LockSessionMetaPath(sessionPath)
+	if err != nil {
+		return false, err
+	}
 	defer unlock()
 	m, ok, err := LoadBranchMeta(sessionPath)
 	if err != nil || !ok {
@@ -391,7 +424,7 @@ func ClearSessionInFlightTurnIfMatch(sessionPath string, expected InFlightTurnMe
 		}
 	}
 	m.InFlightTurn = nil
-	return true, SaveBranchMetaPreserveUpdated(sessionPath, m)
+	return true, saveBranchMeta(sessionPath, m, false)
 }
 
 // PrepareSessionInFlightTurnCommit binds the owned marker to the exact final
@@ -403,7 +436,10 @@ func PrepareSessionInFlightTurnCommit(sessionPath string, expected InFlightTurnM
 	if sessionPath == "" || expected.ID == "" || digest == "" {
 		return InFlightTurnMeta{}, false, nil
 	}
-	unlock := lockSessionSavePath(sessionPath)
+	unlock, err := LockSessionMetaPath(sessionPath)
+	if err != nil {
+		return InFlightTurnMeta{}, false, err
+	}
 	defer unlock()
 	m, ok, err := LoadBranchMeta(sessionPath)
 	if err != nil || !ok || m.InFlightTurn == nil {
@@ -415,7 +451,7 @@ func PrepareSessionInFlightTurnCommit(sessionPath string, expected InFlightTurnM
 	updated := *m.InFlightTurn
 	updated.CommitDigest = digest
 	m.InFlightTurn = &updated
-	if err := SaveBranchMetaPreserveUpdated(sessionPath, m); err != nil {
+	if err := saveBranchMeta(sessionPath, m, false); err != nil {
 		return InFlightTurnMeta{}, false, err
 	}
 	return updated, true, nil
@@ -498,14 +534,17 @@ func RenameSession(sessionPath string, title string) error {
 	// Read-modify-write on the sidecar: hold the per-path meta lock so a
 	// concurrent save (recordSessionContentRevision) can't have its Revision
 	// bump clobbered by a stale read-back here.
-	unlock := lockSessionSavePath(sessionPath)
+	unlock, err := LockSessionMetaPath(sessionPath)
+	if err != nil {
+		return err
+	}
 	defer unlock()
-	m, err := EnsureBranchMeta(sessionPath)
+	m, err := ensureBranchMetaUnlocked(sessionPath)
 	if err != nil {
 		return err
 	}
 	m.CustomTitle = strings.TrimSpace(title)
-	return SaveBranchMetaPreserveUpdated(sessionPath, m)
+	return saveBranchMeta(sessionPath, m, false)
 }
 
 // LoadSessionModel reads the canonical provider/model ref saved beside a
@@ -528,14 +567,17 @@ func SetBranchModelPreserveUpdated(sessionPath, model string) error {
 	if sessionPath == "" {
 		return fmt.Errorf("empty session path")
 	}
-	unlock := lockSessionSavePath(sessionPath)
+	unlock, err := LockSessionMetaPath(sessionPath)
+	if err != nil {
+		return err
+	}
 	defer unlock()
-	meta, err := EnsureBranchMeta(sessionPath)
+	meta, err := ensureBranchMetaUnlocked(sessionPath)
 	if err != nil {
 		return err
 	}
 	meta.Model = strings.TrimSpace(model)
-	return SaveBranchMetaPreserveUpdated(sessionPath, meta)
+	return saveBranchMeta(sessionPath, meta, false)
 }
 
 // UpdateSessionMeta refreshes the listing-only sidecar fields (model, preview,
@@ -547,9 +589,12 @@ func UpdateSessionMeta(sessionPath, model, preview string, turns int, markActivi
 	if sessionPath == "" {
 		return fmt.Errorf("empty session path")
 	}
-	unlock := lockSessionSavePath(sessionPath)
+	unlock, err := LockSessionMetaPath(sessionPath)
+	if err != nil {
+		return err
+	}
 	defer unlock()
-	m, err := EnsureBranchMeta(sessionPath)
+	m, err := ensureBranchMetaUnlocked(sessionPath)
 	if err != nil {
 		return err
 	}

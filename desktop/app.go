@@ -5577,6 +5577,8 @@ type HistoryPage struct {
 	EndTurn    int              `json:"endTurn"`
 	TotalTurns int              `json:"totalTurns"`
 	HasOlder   bool             `json:"hasOlder"`
+	Revision   int64            `json:"revision,omitempty"`
+	Digest     string           `json:"digest,omitempty"`
 }
 
 // historyProviderMessagesWithPersistedTimes overlays legacy event-record
@@ -5651,8 +5653,17 @@ func (a *App) HistoryPageForTab(tabID string, beforeTurn, limit int) HistoryPage
 	}
 	dir := controllerSessionDir(ctrl)
 	path := ctrl.SessionPath()
-	msgs := historyProviderMessagesWithPersistedTimes(ctrl.History(), path)
-	return historyPageFromProviderMessages(
+	msgs := ctrl.History()
+	status := ctrl.RuntimeStatus()
+	if !status.Running && !status.PendingPrompt && !ctrl.SessionHasUnsavedChanges() && strings.TrimSpace(path) != "" {
+		// Once the foreground turn is idle, the durable event log is the source
+		// of truth. Re-reading it prevents a stale controller snapshot from
+		// hiding an assistant/tool suffix after restart or cross-runtime recovery.
+		if loaded, err := agent.LoadSession(path); err == nil && loaded != nil {
+			msgs = loaded.Snapshot()
+		}
+	}
+	page := historyPageFromProviderMessages(
 		msgs,
 		sessionDisplayResolver(dir, path),
 		sessionPlannerDisplayTurns(dir, path),
@@ -5660,6 +5671,24 @@ func (a *App) HistoryPageForTab(tabID string, beforeTurn, limit int) HistoryPage
 		beforeTurn,
 		limit,
 	)
+	digest, _ := agent.ContentDigestForMessages(msgs)
+	return historyPageWithFingerprint(page, path, digest)
+}
+
+func historyPageWithFingerprint(page HistoryPage, sessionPath, contentDigest string) HistoryPage {
+	contentDigest = strings.TrimSpace(contentDigest)
+	if strings.TrimSpace(sessionPath) == "" || contentDigest == "" {
+		return page
+	}
+	// Digest is derived from the exact full transcript used to build the page.
+	// Never copy a newer sidecar digest onto older page content.
+	page.Digest = contentDigest
+	if meta, ok, err := agent.LoadBranchMeta(sessionPath); err == nil && ok {
+		if strings.TrimSpace(meta.ContentDigest) == contentDigest {
+			page.Revision = meta.Revision
+		}
+	}
+	return page
 }
 
 func normalizeHistoryPageLimit(limit int) int {
@@ -6454,14 +6483,16 @@ func previewSessionPage(sessionDir, path string, beforeTurn, limit int) (History
 	if err != nil {
 		return HistoryPage{}, err
 	}
-	return historyPageFromProviderMessages(
-		historyProviderMessagesWithPersistedTimes(loaded.Snapshot(), sessionPath),
+	msgs := loaded.Snapshot()
+	digest, _ := agent.ContentDigestForMessages(msgs)
+	return historyPageWithFingerprint(historyPageFromProviderMessages(
+		historyProviderMessagesWithPersistedTimes(msgs, sessionPath),
 		sessionDisplayResolver(sessionDir, sessionPath),
 		sessionPlannerDisplayTurns(sessionDir, sessionPath),
 		nil,
 		beforeTurn,
 		limit,
-	), nil
+	), sessionPath, digest), nil
 }
 
 type previewEventRecord struct {
@@ -6825,6 +6856,9 @@ type Meta struct {
 	Runtime           SessionRuntimeView       `json:"runtime"`
 	StartupErr        string                   `json:"startupErr,omitempty"`
 	EventChannel      string                   `json:"eventChannel"`
+	SessionPath       string                   `json:"sessionPath,omitempty"`
+	SessionRevision   int64                    `json:"sessionRevision,omitempty"`
+	SessionDigest     string                   `json:"sessionDigest,omitempty"`
 	Cwd               string                   `json:"cwd"`
 	WorkspaceRoot     string                   `json:"workspaceRoot,omitempty"`
 	WorkspaceName     string                   `json:"workspaceName,omitempty"`
@@ -6979,12 +7013,22 @@ func (a *App) MetaForTab(tabID string) Meta {
 	tokenMode := snap.currentTokenMode()
 	goal := snap.currentGoal()
 	goalStatus := snap.currentGoalStatus()
+	sessionPath := strings.TrimSpace(snap.sessionPath)
+	var sessionRevision int64
+	var sessionDigest string
+	if branchMeta, ok, err := agent.LoadBranchMeta(sessionPath); err == nil && ok {
+		sessionRevision = branchMeta.Revision
+		sessionDigest = branchMeta.ContentDigest
+	}
 	return Meta{
 		Label:             snap.label,
 		Ready:             runtimeView.Phase == sessionRuntimeReady && snap.ctrl != nil,
 		Runtime:           runtimeView,
 		StartupErr:        snap.startupErr,
 		EventChannel:      eventChannel,
+		SessionPath:       sessionPath,
+		SessionRevision:   sessionRevision,
+		SessionDigest:     sessionDigest,
 		Cwd:               cwd,
 		WorkspaceRoot:     cwd,
 		WorkspaceName:     tabWorkspaceNameForScope(snap.scope, cwd),

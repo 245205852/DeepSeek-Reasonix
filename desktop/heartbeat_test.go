@@ -11,6 +11,7 @@ import (
 
 	"reasonix/internal/config"
 	"reasonix/internal/control"
+	"reasonix/internal/filelock"
 	fileencoding "reasonix/internal/fileutil/encoding"
 )
 
@@ -499,6 +500,27 @@ func TestHeartbeatMergeRunUpdatesPreservesConcurrentEditsAndDeletes(t *testing.T
 	}
 }
 
+func TestHeartbeatMergeRunUpdatesNeverRegressesNewerRunState(t *testing.T) {
+	tasks := []HeartbeatTask{{
+		ID:        "run",
+		TopicID:   "topic-new",
+		LastRunAt: 300,
+	}}
+	mergeHeartbeatRunUpdates(tasks, map[string]HeartbeatTask{
+		"run": {ID: "run", TopicID: "topic-old", LastRunAt: 200},
+	})
+	if tasks[0].TopicID != "topic-new" || tasks[0].LastRunAt != 300 {
+		t.Fatalf("stale run state regressed the owner result: %+v", tasks[0])
+	}
+
+	mergeHeartbeatRunUpdates(tasks, map[string]HeartbeatTask{
+		"run": {ID: "run", TopicID: "topic-latest", LastRunAt: 400},
+	})
+	if tasks[0].TopicID != "topic-latest" || tasks[0].LastRunAt != 400 {
+		t.Fatalf("newer run state was not adopted: %+v", tasks[0])
+	}
+}
+
 func TestHeartbeatReplaceTasksPrunesFreshConversationPendingTopics(t *testing.T) {
 	isolateDesktopUserDirs(t)
 	engine := &HeartbeatEngine{
@@ -638,4 +660,84 @@ func TestHeartbeatTickAdoptsExternalFileEdits(t *testing.T) {
 	if len(tasks) != 2 || tasks[1].ID != "b" {
 		t.Fatalf("tick did not adopt the external edit: %+v", tasks)
 	}
+}
+
+func TestHeartbeatExternalDeletionDoesNotResurrectTasks(t *testing.T) {
+	isolateDesktopUserDirs(t)
+	engine := newHeartbeatEngine(nil)
+	if err := engine.saveTasks([]HeartbeatTask{{ID: "deleted", Title: "old", Interval: "1h", Enabled: true}}); err != nil {
+		t.Fatal(err)
+	}
+	snapshot, err := engine.readConfigSnapshot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	engine.mu.Lock()
+	engine.recordConfigSnapshotLocked(snapshot)
+	engine.tasks = append([]HeartbeatTask(nil), snapshot.cfg.Tasks...)
+	if err := os.Remove(engine.configPath()); err != nil {
+		engine.mu.Unlock()
+		t.Fatal(err)
+	}
+	engine.adoptExternalEditsLocked()
+	if len(engine.tasks) != 0 || !engine.cfgDeleted {
+		engine.mu.Unlock()
+		t.Fatalf("deleted config left stale tasks: tasks=%+v deleted=%v", engine.tasks, engine.cfgDeleted)
+	}
+	engine.mergeRunUpdatesLocked(map[string]HeartbeatTask{"deleted": {ID: "deleted", LastRunAt: 123}})
+	engine.mu.Unlock()
+	if _, err := os.Stat(engine.configPath()); !os.IsNotExist(err) {
+		t.Fatalf("deleted heartbeat config was recreated, stat err=%v", err)
+	}
+}
+
+func TestHeartbeatRunCompletionObservesDeletionBeforeNextTick(t *testing.T) {
+	isolateDesktopUserDirs(t)
+	engine := newHeartbeatEngine(nil)
+	if err := engine.saveTasks([]HeartbeatTask{{ID: "deleted", Title: "old", Interval: "1h", Enabled: true}}); err != nil {
+		t.Fatal(err)
+	}
+	snapshot, err := engine.readConfigSnapshot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	engine.mu.Lock()
+	engine.recordConfigSnapshotLocked(snapshot)
+	engine.tasks = append([]HeartbeatTask(nil), snapshot.cfg.Tasks...)
+	if err := os.Remove(engine.configPath()); err != nil {
+		engine.mu.Unlock()
+		t.Fatal(err)
+	}
+	// Simulate a run that finishes before the scheduler's next external-edit
+	// adoption pass. The completion merge itself must observe the deletion.
+	engine.mergeRunUpdatesLocked(map[string]HeartbeatTask{"deleted": {ID: "deleted", LastRunAt: 123}})
+	deleted := engine.cfgDeleted
+	taskCount := len(engine.tasks)
+	engine.mu.Unlock()
+
+	if !deleted || taskCount != 0 {
+		t.Fatalf("run completion retained deleted config: tasks=%d deleted=%v", taskCount, deleted)
+	}
+	if _, err := os.Stat(engine.configPath()); !os.IsNotExist(err) {
+		t.Fatalf("run completion recreated deleted heartbeat config, stat err=%v", err)
+	}
+}
+
+func TestHeartbeatTaskLeaseIsCrossEngine(t *testing.T) {
+	isolateDesktopUserDirs(t)
+	first := newHeartbeatEngine(nil)
+	second := newHeartbeatEngine(nil)
+	release, err := first.tryAcquireTaskLease("same-task")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := second.tryAcquireTaskLease("same-task"); !errors.Is(err, filelock.ErrHeld) {
+		t.Fatalf("second task lease err=%v, want filelock.ErrHeld", err)
+	}
+	release()
+	retry, err := second.tryAcquireTaskLease("same-task")
+	if err != nil {
+		t.Fatalf("task lease after release: %v", err)
+	}
+	retry()
 }

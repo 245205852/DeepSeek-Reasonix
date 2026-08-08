@@ -361,6 +361,8 @@ interface State {
   historyTotalTurns: number;
   historyHasOlder: boolean;
   historyOlderLoading: boolean;
+  historyRevision?: number;
+  historyDigest?: string;
   backendActivationPending: boolean;
   messageAction?: MessageActionState;
   currentAssistant?: string;
@@ -549,6 +551,8 @@ export function metaFromTab(tab: TabMeta, existing?: Meta): Meta {
     workspaceName: tab.workspaceName || existing?.workspaceName,
     workspacePath: tab.workspacePath || tab.workspaceRoot || existing?.workspacePath,
     sessionPath: tab.sessionPath !== undefined ? tab.sessionPath : existing?.sessionPath,
+    sessionRevision: tab.sessionRevision !== undefined ? tab.sessionRevision : existing?.sessionRevision,
+    sessionDigest: tab.sessionDigest !== undefined ? tab.sessionDigest : existing?.sessionDigest,
     gitBranch: tab.gitBranch || existing?.gitBranch,
     autoApproveTools,
     bypass: autoApproveTools,
@@ -587,6 +591,8 @@ export function sameMeta(a?: Meta, b?: Meta): boolean {
     a.workspaceName === b.workspaceName &&
     a.workspacePath === b.workspacePath &&
     a.sessionPath === b.sessionPath &&
+    a.sessionRevision === b.sessionRevision &&
+    a.sessionDigest === b.sessionDigest &&
     a.gitBranch === b.gitBranch &&
     a.imageInputEnabled === b.imageInputEnabled &&
     a.autoApproveTools === b.autoApproveTools &&
@@ -667,11 +673,28 @@ function hasCachedLiveTurn(state: State | undefined): boolean {
   );
 }
 
-function hasReusableCachedTranscript(state: State | undefined, sessionPath?: string): boolean {
+function hasReusableCachedTranscript(state: State | undefined, sessionPath?: string, revision?: number, digest?: string): boolean {
   if (!state || state.items.length === 0) return false;
   const expectedSessionPath = (sessionPath ?? "").trim();
   if (!expectedSessionPath) return true;
-  return (state.meta?.sessionPath ?? "").trim() === expectedSessionPath;
+  if ((state.meta?.sessionPath ?? "").trim() !== expectedSessionPath) return false;
+  if (typeof revision === "number" && revision > 0) {
+    return state.historyRevision === revision && (digest ?? "") === (state.historyDigest ?? "");
+  }
+  if ((digest ?? "").trim() !== "") return state.historyDigest === digest;
+  // A cached page with a known fingerprint must not be reused when the
+  // backend temporarily cannot provide one (for example while its metadata
+  // sidecar is being atomically replaced). Reloading is the only way to avoid
+  // presenting a stale persisted transcript as current.
+  return state.historyRevision === undefined && !state.historyDigest;
+}
+
+function historyPageMatchesMeta(page: HistoryPage, meta: Meta): boolean {
+  const expectedDigest = (meta.sessionDigest ?? "").trim();
+  if (expectedDigest && page.digest !== expectedDigest) return false;
+  const expectedRevision = meta.sessionRevision ?? 0;
+  if (expectedRevision > 0 && page.revision !== expectedRevision) return false;
+  return true;
 }
 
 /** Mirrors Go backend's ReadOnly() hints. */
@@ -1890,7 +1913,7 @@ export function reducer(s: State, a: Action): State {
     case "message_action_done": return { ...s, messageAction: undefined };
     case "history": {
       const { items, seq } = historyMessagesToItems(a.messages, "h", s.seq);
-      return { ...s, items: compactArchivedToolItems(items), seq, hydrateHistoryLoaded: true, hydratePlaceholderItems: undefined, historyStartTurn: 0, historyTotalTurns: 0, historyHasOlder: false, historyOlderLoading: false };
+      return { ...s, items: compactArchivedToolItems(items), seq, hydrateHistoryLoaded: true, hydratePlaceholderItems: undefined, historyStartTurn: 0, historyTotalTurns: 0, historyHasOlder: false, historyOlderLoading: false, historyRevision: undefined, historyDigest: undefined };
     }
     case "history_page": {
       const { items, seq } = historyPageItems(a.page);
@@ -1905,6 +1928,8 @@ export function reducer(s: State, a: Action): State {
         historyTotalTurns: a.page.totalTurns,
         historyHasOlder: a.page.hasOlder,
         historyOlderLoading: false,
+        historyRevision: a.page.revision,
+        historyDigest: a.page.digest,
       };
     }
     case "history_older_start": return s.historyOlderLoading ? s : { ...s, historyOlderLoading: true };
@@ -2140,6 +2165,7 @@ export function localizedBackendNoticeText(text: string): string {
   }
   if (
     /^repeated save conflicts were detected; saved the current conflict copy in place$/i.test(msg) ||
+    /^repeated save conflicts were detected; saved the current conflict copy in an isolated recovery branch$/i.test(msg) ||
     /^session conflicts kept recurring; kept the transcript on the current recovery branch$/i.test(msg)
   ) {
     return t("recovery.noticeKeptCurrent");
@@ -2228,6 +2254,7 @@ function recoveryNoticeDedupeKey(text: string, code?: string): string {
   }
   if (
     /^repeated save conflicts were detected; saved the current conflict copy in place$/i.test(msg) ||
+    /^repeated save conflicts were detected; saved the current conflict copy in an isolated recovery branch$/i.test(msg) ||
     /^session conflicts kept recurring; kept the transcript on the current recovery branch$/i.test(msg) ||
     msg === t("recovery.noticeKeptCurrent")
   ) {
@@ -2546,7 +2573,7 @@ export function useController() {
   const checkpointRefreshSeq = useRef(new Map<string, number>());
   const metaRefreshSeq = useRef(new Map<string, number>());
   const sessionLoadSeq = useRef(new Map<string, number>());
-  const sessionLoadInFlight = useRef(new Map<string, { sessionPath: string; promise: Promise<void> }>());
+  const sessionLoadInFlight = useRef(new Map<string, { sessionPath: string; revision?: number; digest?: string; promise: Promise<void> }>());
   const bumpMetaRefreshSeq = useCallback((tabId: string): number => {
     const seq = (metaRefreshSeq.current.get(tabId) ?? 0) + 1;
     metaRefreshSeq.current.set(tabId, seq);
@@ -2607,14 +2634,17 @@ export function useController() {
     tabId: string,
     reset = false,
     reason: HydrateReason = "startup",
-    options: { skipHistory?: boolean; placeholderItems?: Item[]; preserveCachedHistory?: boolean; sessionPath?: string } = {},
+    options: { skipHistory?: boolean; placeholderItems?: Item[]; preserveCachedHistory?: boolean; sessionPath?: string; sessionRevision?: number; sessionDigest?: string } = {},
   ) => {
-    const sessionPath = (options.sessionPath ?? statesRef.current.get(tabId)?.meta?.sessionPath ?? "").trim();
+    const stateMeta = statesRef.current.get(tabId)?.meta;
+    const sessionPath = (options.sessionPath ?? stateMeta?.sessionPath ?? "").trim();
+    const sessionRevision = options.sessionRevision ?? stateMeta?.sessionRevision;
+    const sessionDigest = options.sessionDigest ?? stateMeta?.sessionDigest;
     const canJoinInFlight = !reset && !options.skipHistory;
     const shouldTrackInFlight = !options.skipHistory;
     if (canJoinInFlight) {
       const existing = sessionLoadInFlight.current.get(tabId);
-      if (existing?.sessionPath === sessionPath) return existing.promise;
+      if (existing?.sessionPath === sessionPath && existing.revision === sessionRevision && existing.digest === sessionDigest) return existing.promise;
     } else {
       sessionLoadInFlight.current.delete(tabId);
     }
@@ -2624,7 +2654,7 @@ export function useController() {
       const hydrateStartedAt = Date.now();
       const skipHistory = Boolean(
         options.skipHistory ||
-        (options.preserveCachedHistory && !reset && hasReusableCachedTranscript(statesRef.current.get(tabId), options.sessionPath)),
+        (options.preserveCachedHistory && !reset && hasReusableCachedTranscript(statesRef.current.get(tabId), sessionPath, sessionRevision, sessionDigest)),
       );
       addBreadcrumb("tab.hydrate", `start ${reason} ${tabId}`);
       dispatchTo(tabId, { type: "hydrate_start", reason, placeholderItems: options.placeholderItems });
@@ -2690,13 +2720,39 @@ export function useController() {
         addBreadcrumb("tab.hydrate", `ancillary skipped inactive ${reason} ${tabId}`);
         return;
       }
-      const meta = await loadTimed("meta", () => loadMetaForTab(tabId));
+      let meta = await loadTimed("meta", () => loadMetaForTab(tabId));
       if (!stillCurrent()) return;
       if (!stillVisible()) {
         addBreadcrumb("tab.hydrate", `meta ignored inactive ${reason} ${tabId}`);
         return;
       }
       if (meta !== undefined) dispatchTo(tabId, { type: "meta", meta });
+      const foregroundTurnActive = (): boolean => {
+        const state = statesRef.current.get(tabId);
+        return Boolean(state?.running || state?.turnActive || state?.pendingPrompt);
+      };
+      if (meta !== undefined && historyPage !== undefined && !skipHistory &&
+        !foregroundTurnActive() && !historyPageMatchesMeta(historyPage, meta)) {
+        // The transcript and metadata are persisted in separate files. A save
+        // can advance between those reads, so an exact-content page may be
+        // older than the metadata sampled just afterwards. Re-read both as a
+        // bounded pair; only replace the visible history when their canonical
+        // fingerprints agree. A continuously changing session keeps the first
+        // exact page and remains non-reusable because its digest differs.
+        for (let attempt = 0; attempt < 2; attempt += 1) {
+          const reconciledPage = await loadTimed("history reconcile", () => app.HistoryPageForTab(tabId, 0, HISTORY_PAGE_TURNS));
+          if (!stillCurrent() || !stillVisible() || reconciledPage === undefined) return;
+          const reconciledMeta = await loadTimed("meta reconcile", () => loadMetaForTab(tabId));
+          if (!stillCurrent() || !stillVisible() || reconciledMeta === undefined) return;
+          meta = reconciledMeta;
+          dispatchTo(tabId, { type: "meta", meta });
+          if (!foregroundTurnActive() && historyPageMatchesMeta(reconciledPage, meta)) {
+            dispatchTo(tabId, { type: "history_page", page: reconciledPage, mode: "replace" });
+            break;
+          }
+          if (foregroundTurnActive()) break;
+        }
+      }
       const ancillaryStartedAt = Date.now();
       const loadAncillary = async <T,>(label: string, load: () => Promise<T>): Promise<T | undefined> => {
         return loadTimed(`ancillary ${label}`, load);
@@ -2734,7 +2790,7 @@ export function useController() {
       });
     })();
     if (shouldTrackInFlight) {
-      sessionLoadInFlight.current.set(tabId, { sessionPath, promise });
+      sessionLoadInFlight.current.set(tabId, { sessionPath, revision: sessionRevision, digest: sessionDigest, promise });
     }
     try {
       await promise;
@@ -2752,12 +2808,22 @@ export function useController() {
     if (!state?.historyHasOlder || state.historyOlderLoading || state.running) return;
     const beforeTurn = state.historyStartTurn;
     const sessionPath = state.meta?.sessionPath ?? "";
+    const sessionRevision = state.meta?.sessionRevision ?? state.historyRevision;
+    const sessionDigest = state.meta?.sessionDigest ?? state.historyDigest;
     dispatchTo(targetTabId, { type: "history_older_start" });
     const startedAt = Date.now();
     try {
       const page = await app.HistoryPageForTab(targetTabId, beforeTurn, HISTORY_PAGE_TURNS);
       const current = statesRef.current.get(targetTabId);
-      if (!current || current.historyStartTurn !== beforeTurn || (current.meta?.sessionPath ?? "") !== sessionPath) {
+      const currentRevision = current?.meta?.sessionRevision ?? current?.historyRevision;
+      const currentDigest = current?.meta?.sessionDigest ?? current?.historyDigest;
+      const fingerprintMatches = (expected: number | undefined, actual: number | undefined) =>
+        expected === undefined || expected <= 0 ? true : actual === expected;
+      const digestMatches = (expected: string | undefined, actual: string | undefined) =>
+        !expected || actual === expected;
+      if (!current || current.historyStartTurn !== beforeTurn || (current.meta?.sessionPath ?? "") !== sessionPath ||
+        !fingerprintMatches(sessionRevision, currentRevision) || !digestMatches(sessionDigest, currentDigest) ||
+        !fingerprintMatches(sessionRevision, page.revision) || !digestMatches(sessionDigest, page.digest)) {
         dispatchTo(targetTabId, { type: "history_older_error" });
         return;
       }
@@ -2844,6 +2910,8 @@ export function useController() {
     await loadSessionDataForTab(active.id, reset, "startup", {
       preserveCachedHistory,
       sessionPath: active.sessionPath,
+      sessionRevision: active.sessionRevision,
+      sessionDigest: active.sessionDigest,
     });
     if (reset) dispatchRuntimeStatusForTab(active.id, active, snapshotAt);
     return active.id;
@@ -2864,7 +2932,11 @@ export function useController() {
     const foregroundRunning = dispatchRuntimeStatusForTab(tabId, tab, snapshotAt);
     const missedTurnDone = Boolean(local?.running && !foregroundRunning);
     if (hydrateSessionData && (needsInitialLoad || missedTurnDone)) {
-      await loadSessionDataForTab(tabId, missedTurnDone, "startup");
+      await loadSessionDataForTab(tabId, missedTurnDone, "startup", {
+        sessionPath: tab.sessionPath,
+        sessionRevision: tab.sessionRevision,
+        sessionDigest: tab.sessionDigest,
+      });
       return tabs;
     }
     const [jobs, effort] = await Promise.all([
@@ -3897,7 +3969,9 @@ export function useController() {
     const startedAt = Date.now();
     const previousTabId = activeTabIdRef.current;
     const targetSessionPath = optimisticTab?.sessionPath ?? statesRef.current.get(tabId)?.meta?.sessionPath;
-    const preserveCachedHistory = hasReusableCachedTranscript(statesRef.current.get(tabId), targetSessionPath);
+    const targetSessionRevision = optimisticTab?.sessionRevision ?? statesRef.current.get(tabId)?.meta?.sessionRevision;
+    const targetSessionDigest = optimisticTab?.sessionDigest ?? statesRef.current.get(tabId)?.meta?.sessionDigest;
+    const preserveCachedHistory = hasReusableCachedTranscript(statesRef.current.get(tabId), targetSessionPath, targetSessionRevision, targetSessionDigest);
     addBreadcrumb("tab.switch", `click ${tabId}`);
     setActiveTabId(tabId);
     activeTabIdRef.current = tabId;
@@ -3943,6 +4017,8 @@ export function useController() {
           skipHistory: hasCachedLiveTurn(statesRef.current.get(tabId)),
           preserveCachedHistory,
           sessionPath: targetSessionPath,
+          sessionRevision: targetSessionRevision,
+          sessionDigest: targetSessionDigest,
         });
         return tabs;
       })
@@ -3966,7 +4042,7 @@ export function useController() {
     const prevItems = activeTabIdRef.current ? statesRef.current.get(activeTabIdRef.current)?.items : undefined;
     const prevState = statesRef.current.get(meta.id);
     const isNewTab = !prevState;
-    const preserveCachedHistory = hasReusableCachedTranscript(prevState, meta.sessionPath);
+    const preserveCachedHistory = hasReusableCachedTranscript(prevState, meta.sessionPath, meta.sessionRevision, meta.sessionDigest);
     setActiveTabId(meta.id);
     activeTabIdRef.current = meta.id;
     confirmBackendActiveTab(meta.id);
@@ -3976,6 +4052,8 @@ export function useController() {
       placeholderItems: isNewTab ? prevItems : undefined,
       preserveCachedHistory,
       sessionPath: meta.sessionPath,
+      sessionRevision: meta.sessionRevision,
+      sessionDigest: meta.sessionDigest,
     });
     if (isNewTab) void load.then(() => reconcileTabRuntime(meta.id, { hydrateSessionData: false })).catch(() => {});
     else void load;
@@ -3993,7 +4071,7 @@ export function useController() {
     const prevItems = activeTabIdRef.current ? statesRef.current.get(activeTabIdRef.current)?.items : undefined;
     const prevState = statesRef.current.get(meta.id);
     const isNewTab = !prevState;
-    const preserveCachedHistory = hasReusableCachedTranscript(prevState, meta.sessionPath);
+    const preserveCachedHistory = hasReusableCachedTranscript(prevState, meta.sessionPath, meta.sessionRevision, meta.sessionDigest);
     setActiveTabId(meta.id);
     activeTabIdRef.current = meta.id;
     confirmBackendActiveTab(meta.id);
@@ -4003,6 +4081,8 @@ export function useController() {
       placeholderItems: isNewTab ? prevItems : undefined,
       preserveCachedHistory,
       sessionPath: meta.sessionPath,
+      sessionRevision: meta.sessionRevision,
+      sessionDigest: meta.sessionDigest,
     });
     if (isNewTab) void load.then(() => reconcileTabRuntime(meta.id, { hydrateSessionData: false })).catch(() => {});
     else void load;
@@ -4020,7 +4100,7 @@ export function useController() {
     const prevItems = activeTabIdRef.current ? statesRef.current.get(activeTabIdRef.current)?.items : undefined;
     const prevState = statesRef.current.get(meta.id);
     const isNewTab = !prevState;
-    const preserveCachedHistory = hasReusableCachedTranscript(prevState, meta.sessionPath);
+    const preserveCachedHistory = hasReusableCachedTranscript(prevState, meta.sessionPath, meta.sessionRevision, meta.sessionDigest);
     setActiveTabId(meta.id);
     activeTabIdRef.current = meta.id;
     confirmBackendActiveTab(meta.id);
@@ -4030,6 +4110,8 @@ export function useController() {
       placeholderItems: isNewTab ? prevItems : undefined,
       preserveCachedHistory,
       sessionPath: meta.sessionPath,
+      sessionRevision: meta.sessionRevision,
+      sessionDigest: meta.sessionDigest,
     });
     if (isNewTab) void load.then(() => reconcileTabRuntime(meta.id, { hydrateSessionData: false })).catch(() => {});
     else void load;

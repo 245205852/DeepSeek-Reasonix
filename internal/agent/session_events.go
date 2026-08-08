@@ -714,6 +714,7 @@ func appendSessionEvent(sessionPath string, rec sessionEventRecord, sync bool) e
 	if path == "" {
 		return fmt.Errorf("empty session event log path")
 	}
+	fileutil.Crash("wal-append", path)
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return err
 	}

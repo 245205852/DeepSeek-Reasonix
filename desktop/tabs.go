@@ -2184,6 +2184,8 @@ type TabMeta struct {
 	TopicID           string                   `json:"topicId"`
 	TopicTitle        string                   `json:"topicTitle"`
 	SessionPath       string                   `json:"sessionPath,omitempty"`
+	SessionRevision   int64                    `json:"sessionRevision,omitempty"`
+	SessionDigest     string                   `json:"sessionDigest,omitempty"`
 	ReadOnly          bool                     `json:"readOnly,omitempty"`
 	ProjectColor      string                   `json:"projectColor,omitempty"`
 	Label             string                   `json:"label"`
@@ -2229,6 +2231,13 @@ func enrichTabMetas(metas []TabMeta) []TabMeta {
 
 func (a *App) tabMeta(tab *WorkspaceTab, active bool) TabMeta {
 	runtimeView := a.sessionRuntimeViewLocked(tab)
+	sessionPath := tab.currentSessionPath()
+	var sessionRevision int64
+	var sessionDigest string
+	if meta, ok, err := agent.LoadBranchMeta(sessionPath); err == nil && ok {
+		sessionRevision = meta.Revision
+		sessionDigest = meta.ContentDigest
+	}
 	m := TabMeta{
 		ID:                tab.ID,
 		Scope:             tab.Scope,
@@ -2237,7 +2246,9 @@ func (a *App) tabMeta(tab *WorkspaceTab, active bool) TabMeta {
 		WorkspacePath:     tab.WorkspaceRoot,
 		TopicID:           tab.TopicID,
 		TopicTitle:        a.localizedTopicTitle(tab.TopicTitle, tab.topicTitleSource),
-		SessionPath:       tab.currentSessionPath(),
+		SessionPath:       sessionPath,
+		SessionRevision:   sessionRevision,
+		SessionDigest:     sessionDigest,
 		ReadOnly:          tab.ReadOnly,
 		Label:             tab.Label,
 		Ready:             runtimeView.Phase == sessionRuntimeReady && tab.Ctrl != nil,
@@ -2922,9 +2933,12 @@ func pinNewEmptySessionBranchMeta(path, scope, workspaceRoot, topicID, topicTitl
 // pinSessionBranchMeta stores the workspace scope, root, and topic on a newly
 // created session before a controller can reconcile the tab against it.
 func pinSessionBranchMeta(sessionPath, scope, workspaceRoot, topicID, topicTitle string) error {
-	unlock := agent.LockSessionMetaPath(sessionPath)
+	unlock, err := agent.LockSessionMetaPath(sessionPath)
+	if err != nil {
+		return err
+	}
 	defer unlock()
-	m, err := agent.EnsureBranchMeta(sessionPath)
+	m, err := agent.EnsureBranchMetaLocked(sessionPath)
 	if err != nil {
 		return err
 	}
@@ -2942,7 +2956,7 @@ func pinSessionBranchMeta(sessionPath, scope, workspaceRoot, topicID, topicTitle
 	m.WorkspaceRoot = workspaceRoot
 	m.TopicID = topicID
 	m.TopicTitle = topicTitle
-	return agent.SaveBranchMetaPreserveUpdated(sessionPath, m)
+	return agent.SaveBranchMetaPreserveUpdatedLocked(sessionPath, m)
 }
 
 func blankTabSessionPathHasNoContent(tab *WorkspaceTab) bool {
@@ -6668,9 +6682,12 @@ func migrateLegacySessionsIntoGlobalTopics(dir string) []string {
 			// meta lock so agent-side writers (autosave revision bumps,
 			// in-flight markers) can't interleave between the load and save
 			// below and lose their fields.
-			unlock := agent.LockSessionMetaPath(info.Path)
+			unlock, lockErr := agent.LockSessionMetaPath(info.Path)
+			if lockErr != nil {
+				return false, lockErr
+			}
 			defer unlock()
-			meta, err := agent.EnsureBranchMeta(info.Path)
+			meta, err := agent.EnsureBranchMetaLocked(info.Path)
 			if err != nil {
 				return false, err
 			}
@@ -6683,7 +6700,7 @@ func migrateLegacySessionsIntoGlobalTopics(dir string) []string {
 			meta.WorkspaceRoot = workspaceRoot
 			meta.TopicID = topicID
 			meta.TopicTitle = title
-			return true, agent.SaveBranchMetaPreserveUpdated(info.Path, meta)
+			return true, agent.SaveBranchMetaPreserveUpdatedLocked(info.Path, meta)
 		}()
 		if err != nil {
 			deferred = true
@@ -7029,7 +7046,10 @@ func restoreSessionTopicIndex(dir, sessionPath string) error {
 	// Read-modify-write on the branch-meta sidecar: re-read and save under the
 	// per-path meta lock so a concurrent save's revision bump can't land in
 	// between and get rolled back by the write at the end.
-	unlock := agent.LockSessionMetaPath(sessionPath)
+	unlock, err := agent.LockSessionMetaPath(sessionPath)
+	if err != nil {
+		return err
+	}
 	defer unlock()
 	meta, ok, err = agent.LoadBranchMeta(sessionPath)
 	if err != nil {
@@ -7078,7 +7098,7 @@ func restoreSessionTopicIndex(dir, sessionPath string) error {
 	if err := prependTopicInProjectsFile(workspaceRoot, topicID, scope == "project"); err != nil {
 		return err
 	}
-	if err := agent.SaveBranchMetaPreserveUpdated(sessionPath, meta); err != nil {
+	if err := agent.SaveBranchMetaPreserveUpdatedLocked(sessionPath, meta); err != nil {
 		return err
 	}
 	invalidateTopicSessionIndexForPath(sessionPath)
@@ -7403,14 +7423,17 @@ func (a *App) updateTopicSessionTitles(topicID, title string) []string {
 			// Read-modify-write on the branch-meta sidecar: hold the per-path
 			// meta lock so a concurrent save's revision bump can't land between
 			// the load and save below and get rolled back by this write.
-			unlock := agent.LockSessionMetaPath(match.path)
+			unlock, lockErr := agent.LockSessionMetaPath(match.path)
+			if lockErr != nil {
+				continue
+			}
 			meta, ok, err := agent.LoadBranchMeta(match.path)
 			if err != nil || !ok {
 				unlock()
 				continue
 			}
 			meta.TopicTitle = title
-			err = agent.SaveBranchMetaPreserveUpdated(match.path, meta)
+			err = agent.SaveBranchMetaPreserveUpdatedLocked(match.path, meta)
 			unlock()
 			if err == nil {
 				invalidateTopicSessionIndex(dir)
@@ -8916,9 +8939,12 @@ func saveTabSessionMetaSnapshot(snap tabSessionMetaSnapshot) error {
 	// Read-modify-write on the branch-meta sidecar: hold the per-path meta lock
 	// so agent-side writers (autosave UpdateSessionMeta, in-flight markers)
 	// can't interleave and drop fields.
-	unlock := agent.LockSessionMetaPath(snap.path)
+	unlock, err := agent.LockSessionMetaPath(snap.path)
+	if err != nil {
+		return err
+	}
 	defer unlock()
-	m, err := agent.EnsureBranchMeta(snap.path)
+	m, err := agent.EnsureBranchMetaLocked(snap.path)
 	if err != nil {
 		return err
 	}
@@ -8944,7 +8970,7 @@ func saveTabSessionMetaSnapshot(snap tabSessionMetaSnapshot) error {
 	m.Mode = persistedTabMode(snap.mode)
 	m.ToolApprovalMode = persistedToolApprovalMode(snap.toolApprovalMode)
 	m.Goal = strings.TrimSpace(snap.goal)
-	if err := agent.SaveBranchMetaPreserveUpdated(snap.path, m); err != nil {
+	if err := agent.SaveBranchMetaPreserveUpdatedLocked(snap.path, m); err != nil {
 		return err
 	}
 	invalidateTopicSessionIndexForPath(snap.path)

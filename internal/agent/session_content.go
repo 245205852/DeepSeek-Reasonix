@@ -16,7 +16,15 @@ func (s *Session) ContentDigest() (string, error) {
 	if s == nil {
 		return "", fmt.Errorf("nil session")
 	}
-	digest, err := digestSessionMessages(s.Snapshot())
+	return ContentDigestForMessages(s.Snapshot())
+}
+
+// ContentDigestForMessages returns the canonical transcript digest for an
+// immutable message snapshot. Frontends use it to bind a rendered history page
+// to the exact content it contains instead of sampling a sidecar revision that
+// may have advanced before or after the page was built.
+func ContentDigestForMessages(msgs []provider.Message) (string, error) {
+	digest, err := digestSessionMessages(msgs)
 	if err != nil {
 		return "", err
 	}

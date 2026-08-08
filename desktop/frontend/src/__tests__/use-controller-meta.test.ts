@@ -211,12 +211,12 @@ console.log("\nuse controller meta");
   );
   eq(
     localizedBackendNoticeText("session conflicts kept recurring; kept the transcript on the current recovery branch"),
-    "Repeated save conflicts were detected, so the current conflict copy was saved in place.",
+    "Repeated save conflicts were detected, so the current conflict copy was saved in an isolated recovery branch.",
     "legacy repeated recovery conflict notice can be normalized",
   );
   eq(
     localizedBackendNoticeText("repeated save conflicts were detected; saved the current conflict copy in place"),
-    "Repeated save conflicts were detected, so the current conflict copy was saved in place.",
+    "Repeated save conflicts were detected, so the current conflict copy was saved in an isolated recovery branch.",
     "repeated recovery conflict notice can be normalized",
   );
   eq(
@@ -274,7 +274,7 @@ console.log("\nuse controller meta");
   );
   eq(
     localizedNoticeText("reworded depth cap", "session_recovery_depth_cap"),
-    "Repeated save conflicts were detected, so the current conflict copy was saved in place.",
+    "Repeated save conflicts were detected, so the current conflict copy was saved in an isolated recovery branch.",
     "session recovery depth-cap localization uses its stable notice code",
   );
   eq(
