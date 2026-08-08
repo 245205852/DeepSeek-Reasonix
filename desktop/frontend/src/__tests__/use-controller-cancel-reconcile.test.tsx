@@ -5,7 +5,7 @@ import React, { act } from "react";
 import { createRoot } from "react-dom/client";
 import { useController } from "../lib/useController";
 import type { AppBindings } from "../lib/bridge";
-import type { ContextInfo, EffortInfo, Meta, TabMeta, WireEvent } from "../lib/types";
+import type { ContextInfo, EffortInfo, HistoryPage, Meta, TabMeta, WireEvent } from "../lib/types";
 
 let passed = 0;
 let failed = 0;
@@ -106,6 +106,9 @@ let effortCalls = 0;
 let checkpointHistoryCalls = 0;
 let historyLoads = 0;
 let checkpointLoads = 0;
+let historyShouldFail = false;
+let deferredHistory = false;
+let resolveDeferredHistory: ((page: HistoryPage) => void) | undefined;
 const context: ContextInfo = { used: 0, window: 100, sessionTokens: 0 };
 const effort: EffortInfo = { supported: true, current: "auto", default: "auto", levels: ["auto"] };
 
@@ -136,6 +139,12 @@ window.go = {
       HistoryForTab: async () => [],
       HistoryPageForTab: async () => {
         historyLoads += 1;
+        if (historyShouldFail) throw new Error("history unavailable");
+        if (deferredHistory) {
+          return await new Promise<HistoryPage>((resolve) => {
+            resolveDeferredHistory = resolve;
+          });
+        }
         return {
           messages: [{ role: "user", content: "hello", createdAt: Date.now(), checkpointTurn: 0 }],
           startTurn: 0,
@@ -224,6 +233,47 @@ await act(async () => {
 await waitFor("immediate cancelled transcript reload", () => !controller?.state.running && historyLoads > 0 && checkpointLoads > 0);
 ok(controller?.state.items.some((item) => item.kind === "user" && item.text === "hello"), "immediate cancellation restores the persisted prompt bubble");
 ok(controller?.state.checkpoints.some((checkpoint) => checkpoint.turn === 0 && checkpoint.canConversation), "immediate cancellation restores the rewind checkpoint");
+
+// A new submission must invalidate a cancellation hydrate that is still
+// waiting on authoritative history; otherwise its replace dispatch can erase
+// the new optimistic turn.
+historyLoads = 0;
+deferredHistory = true;
+backendRunning = true;
+await act(async () => {
+  await controller?.send("accidental");
+  controller?.cancel();
+  await flushPromises();
+});
+await waitFor("deferred cancellation history", () => historyLoads > 0 && resolveDeferredHistory !== undefined);
+await act(async () => {
+  await controller?.send("corrected");
+  resolveDeferredHistory?.({
+    messages: [{ role: "user", content: "stale cancellation history", createdAt: Date.now(), checkpointTurn: 0 }],
+    startTurn: 0,
+    endTurn: 0,
+    totalTurns: 1,
+    hasOlder: false,
+  });
+  resolveDeferredHistory = undefined;
+  deferredHistory = false;
+  await flushPromises();
+});
+ok(controller?.state.items.some((item) => item.kind === "user" && item.text === "corrected"), "resubmission survives a stale cancellation hydrate");
+ok(!controller?.state.items.some((item) => item.kind === "user" && item.text === "stale cancellation history"), "stale cancellation history cannot replace a resubmitted turn");
+
+// A failed cancellation history read must preserve the transcript that was
+// already visible instead of resetting it to an empty state.
+historyLoads = 0;
+historyShouldFail = true;
+backendRunning = true;
+await act(async () => {
+  controller?.cancel();
+  await flushPromises();
+});
+await waitFor("failed cancellation history", () => !controller?.state.running && historyLoads > 0);
+ok(controller?.state.items.some((item) => item.kind === "user" && item.text === "corrected"), "history failure preserves the visible transcript");
+historyShouldFail = false;
 
 await act(async () => {
   for (const handler of eventHandlers) handler({ kind: "turn_done", tabId: "tab-a", checkpointTurn: 0 });

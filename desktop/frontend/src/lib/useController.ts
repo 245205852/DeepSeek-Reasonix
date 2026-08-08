@@ -2658,6 +2658,7 @@ export function useController() {
   const checkpointRefreshSeq = useRef(new Map<string, number>());
   const metaRefreshSeq = useRef(new Map<string, number>());
   const sessionLoadSeq = useRef(new Map<string, number>());
+  const cancelHydrateSeq = useRef(new Map<string, number>());
   const sessionLoadInFlight = useRef(new Map<string, { sessionPath: string; promise: Promise<void> }>());
   const bumpMetaRefreshSeq = useCallback((tabId: string): number => {
     const seq = (metaRefreshSeq.current.get(tabId) ?? 0) + 1;
@@ -2678,6 +2679,14 @@ export function useController() {
   }, [bumpMetaRefreshSeq]);
   const sessionLoadCurrent = useCallback((tabId: string, seq: number): boolean => {
     return sessionLoadSeq.current.get(tabId) === seq;
+  }, []);
+  const bumpCancelHydrateSeq = useCallback((tabId: string): number => {
+    const seq = (cancelHydrateSeq.current.get(tabId) ?? 0) + 1;
+    cancelHydrateSeq.current.set(tabId, seq);
+    return seq;
+  }, []);
+  const cancelHydrateCurrent = useCallback((tabId: string, seq: number): boolean => {
+    return cancelHydrateSeq.current.get(tabId) === seq;
   }, []);
   const loadMetaForTab = useCallback(async (tabId: string): Promise<Meta | undefined> => {
     const seq = bumpMetaRefreshSeq(tabId);
@@ -2719,7 +2728,14 @@ export function useController() {
     tabId: string,
     reset = false,
     reason: HydrateReason = "startup",
-    options: { skipHistory?: boolean; placeholderItems?: Item[]; preserveCachedHistory?: boolean; sessionPath?: string } = {},
+    options: {
+      skipHistory?: boolean;
+      placeholderItems?: Item[];
+      preserveCachedHistory?: boolean;
+      sessionPath?: string;
+      cancelHydrateGeneration?: number;
+      deferResetUntilHistory?: boolean;
+    } = {},
   ) => {
     const sessionPath = (options.sessionPath ?? statesRef.current.get(tabId)?.meta?.sessionPath ?? "").trim();
     const canJoinInFlight = !reset && !options.skipHistory;
@@ -2732,17 +2748,22 @@ export function useController() {
     }
 
     const promise = (async () => {
+      const cancelHydrateGeneration = options.cancelHydrateGeneration;
+      if (cancelHydrateGeneration !== undefined && !cancelHydrateCurrent(tabId, cancelHydrateGeneration)) return;
       const seq = bumpSessionLoadSeq(tabId);
       const hydrateStartedAt = Date.now();
       const skipHistory = Boolean(
         options.skipHistory ||
         (options.preserveCachedHistory && !reset && hasReusableCachedTranscript(statesRef.current.get(tabId), options.sessionPath)),
       );
+      const deferResetUntilHistory = Boolean(options.deferResetUntilHistory && reset && !skipHistory);
+      const stillCurrent = () =>
+        sessionLoadCurrent(tabId, seq) &&
+        (cancelHydrateGeneration === undefined || cancelHydrateCurrent(tabId, cancelHydrateGeneration));
+      if (!stillCurrent()) return;
       addBreadcrumb("tab.hydrate", `start ${reason} ${tabId}`);
       dispatchTo(tabId, { type: "hydrate_start", reason, placeholderItems: options.placeholderItems });
-      if (reset && sessionLoadCurrent(tabId, seq)) dispatchTo(tabId, { type: "reset" });
-
-      const stillCurrent = () => sessionLoadCurrent(tabId, seq);
+      if (reset && !deferResetUntilHistory && stillCurrent()) dispatchTo(tabId, { type: "reset" });
       const requiresVisibleTab = reason === "startup" || reason === "switch-tab" || reason === "open-topic";
       const stillVisible = () => !requiresVisibleTab || activeTabIdRef.current === tabId;
       const noteFailure = (label: string, err: unknown) => {
@@ -2770,6 +2791,7 @@ export function useController() {
       if (!stillCurrent()) return;
       if (!skipHistory && historyPage !== undefined) {
         const messages = asArray(historyPage.messages);
+        if (deferResetUntilHistory && stillCurrent()) dispatchTo(tabId, { type: "reset" });
         dispatchTo(tabId, { type: "history_page", page: historyPage, mode: "replace" });
         addBreadcrumb(
           "tab.hydrate",
@@ -2789,6 +2811,7 @@ export function useController() {
         }
       }
 
+      if (!stillCurrent()) return;
       dispatchTo(tabId, { type: "hydrate_done" });
       addBreadcrumb("tab.hydrate", `done ${reason} ${tabId} ms=${Date.now() - hydrateStartedAt}`);
 
@@ -2855,7 +2878,7 @@ export function useController() {
         sessionLoadInFlight.current.delete(tabId);
       }
     }
-  }, [bumpSessionLoadSeq, dispatchTo, loadMetaForTab, refreshBalanceForTab, sessionLoadCurrent]);
+  }, [bumpSessionLoadSeq, cancelHydrateCurrent, dispatchTo, loadMetaForTab, refreshBalanceForTab, sessionLoadCurrent]);
 
   const loadOlderHistory = useCallback(async (tabId?: string): Promise<void> => {
     const targetTabId = tabId || activeTabIdRef.current;
@@ -3012,7 +3035,7 @@ export function useController() {
     cancelReconcileTimers.current.delete(tabId);
   }, []);
 
-  const scheduleCancelReconcile = useCallback((tabId: string, attempt = 0) => {
+  const scheduleCancelReconcile = useCallback((tabId: string, attempt = 0, cancelHydrateGeneration?: number) => {
     clearCancelReconcileTimer(tabId);
     const delay = CANCEL_RECONCILE_DELAYS_MS[Math.min(attempt, CANCEL_RECONCILE_DELAYS_MS.length - 1)];
     const timer = window.setTimeout(() => {
@@ -3022,7 +3045,7 @@ export function useController() {
         if (!tab) return;
         const stillReconciling = foregroundRunningFromRuntimeMeta(tab) || Boolean(tab.cancelRequested);
         if (stillReconciling && attempt + 1 < CANCEL_RECONCILE_DELAYS_MS.length) {
-          scheduleCancelReconcile(tabId, attempt + 1);
+          scheduleCancelReconcile(tabId, attempt + 1, cancelHydrateGeneration);
           return;
         }
         // Cancel can race the optimistic user bubble before turn_started. The
@@ -3030,7 +3053,10 @@ export function useController() {
         // hydrate the authoritative transcript once teardown is idle instead
         // of leaving the UI with a discarded bubble and no edit/rewind target.
         if (!stillReconciling) {
-          void loadSessionDataForTab(tabId, true, "rewind").catch(() => {});
+          void loadSessionDataForTab(tabId, true, "rewind", {
+            cancelHydrateGeneration,
+            deferResetUntilHistory: true,
+          }).catch(() => {});
           void refreshCheckpoints(tabId);
         }
       }).catch(() => {});
@@ -3253,6 +3279,8 @@ export function useController() {
     const promptEpoch = currentState.promptEpoch;
     const { display, submit } = normalizeTurnSubmit(displayText, submitText);
     const original = originalText?.trim() ?? "";
+    bumpCancelHydrateSeq(tabId);
+    if (currentState.hydrateReason === "rewind") dispatchTo(tabId, { type: "hydrate_done" });
     dispatchTo(tabId, { type: "user", text: displayText, submitText: display !== submit ? submit : undefined, seq, submissionId });
     invalidateCache();
     try {
@@ -3287,7 +3315,7 @@ export function useController() {
       dispatchTo(tabId, { type: "send_failed", submissionId, error: `Send failed: ${error instanceof Error ? error.message : String(error)}` });
       throw error;
     }
-  }, [dispatchTo]);
+  }, [bumpCancelHydrateSeq, dispatchTo]);
 
   const recoverDeliveryToTab = useCallback(async (tabId: string, displayText: string, submitText = displayText) => {
     if (!tabId) throw new Error(t("composer.workspaceStarting"));
@@ -3383,12 +3411,13 @@ export function useController() {
   }, [activeTabId, dispatchTo]);
 
   const cancelTab = useCallback((tabId: string) => {
+    const cancelHydrateGeneration = bumpCancelHydrateSeq(tabId);
     app.CancelTab(tabId)
-      .then(() => scheduleCancelReconcile(tabId))
+      .then(() => scheduleCancelReconcile(tabId, 0, cancelHydrateGeneration))
       .catch((error) => {
         dispatchTo(tabId, { type: "local_notice", level: "warn", text: `Cancel failed: ${errorMessage(error)}` });
       });
-  }, [dispatchTo, scheduleCancelReconcile]);
+  }, [bumpCancelHydrateSeq, dispatchTo, scheduleCancelReconcile]);
 
   const cancel = useCallback((): string | undefined => {
     const cur = stateRef.current;
