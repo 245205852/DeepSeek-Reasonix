@@ -599,7 +599,7 @@ func (a *App) coldHistorySlice(sessionDir, path string, req HistorySliceRequest)
 			indexIdentityValid = !idx.RevisionKnown
 		}
 	}
-	if idx != nil && err == nil && idx.TranscriptSize == info.Size() && indexIdentityValid && historyIndexPublishedAfterTranscript(indexPath, info) {
+	if idx != nil && err == nil && idx.TranscriptSize == info.Size() && indexIdentityValid && historyIndexTimestampValid(indexPath, info, false) {
 		slice, pageErr := a.pageHistorySliceSource(coldHistorySliceSource(sessionPath, idx), req, resolver, sessionPlannerDisplayTurns(sessionDir, sessionPath), nil, sessionPath)
 		if pageErr != nil {
 			return emptyHistorySlice(), pageErr
@@ -694,17 +694,17 @@ func (a *App) coldHistorySlice(sessionDir, path string, req HistorySliceRequest)
 	return slice, nil
 }
 
-// historyIndexPublishedAfterTranscript is the cheap file-generation guard for
+// historyIndexTimestampValid is the cheap file-generation guard for
 // cold offset reads. Save/scan publish the index atomically after the transcript
-// is complete. A later same-size external rewrite leaves size, ledger and the
-// old index digest unchanged, but advances the transcript generation; only
-// then do we pay for a streaming digest rebuild.
-func historyIndexPublishedAfterTranscript(indexPath string, transcriptInfo os.FileInfo) bool {
+// is complete. Cold offset reads reject equal timestamps because they are an
+// ambiguous generation; the migration probe may accept equality after its
+// separate revision/digest validation because it never reads indexed offsets.
+func historyIndexTimestampValid(indexPath string, transcriptInfo os.FileInfo, allowEqual bool) bool {
 	indexInfo, err := os.Stat(indexPath)
 	if err != nil || indexInfo.IsDir() {
 		return false
 	}
-	return indexInfo.ModTime().After(transcriptInfo.ModTime())
+	return indexInfo.ModTime().After(transcriptInfo.ModTime()) || allowEqual && indexInfo.ModTime().Equal(transcriptInfo.ModTime())
 }
 
 func coldHistorySliceSource(sessionPath string, idx *agent.SessionDisplayIndex) *historySliceSource {
@@ -1392,7 +1392,7 @@ func (a *App) coldHistoryFieldValue(sessionDir, sessionPath string, msgIndex, su
 	if identityErr != nil {
 		return "", false, true
 	}
-	valid := idxErr == nil && idx != nil && idx.TranscriptSize == info.Size() && historyIndexPublishedAfterTranscript(store.SessionDisplayIndex(absPath), info)
+	valid := idxErr == nil && idx != nil && idx.TranscriptSize == info.Size() && historyIndexTimestampValid(store.SessionDisplayIndex(absPath), info, false)
 	if valid && identityKnown {
 		valid = agent.ValidateSessionDisplayIndex(idx, identity.Revision, identity.RevisionKnown, identity.Digest, info.Size())
 	} else if valid {
@@ -1782,7 +1782,7 @@ func historySessionIndexOnDiskValid(sessionPath string) bool {
 	if err != nil {
 		return false
 	}
-	if idx.TranscriptSize != info.Size() || !historyIndexPublishedAfterTranscript(indexPath, info) {
+	if idx.TranscriptSize != info.Size() || !historyIndexTimestampValid(indexPath, info, true) {
 		return false
 	}
 	identity, known, err := agent.SessionContentIdentity(sessionPath)
