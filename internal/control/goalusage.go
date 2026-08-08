@@ -79,6 +79,11 @@ func (t *goalUsageTee) RecordOutcomeProgress(sample evidence.OutcomeSample) {
 	event.RecordOutcomeProgress(t.inner, sample)
 }
 
+// RecordDelegationAdmission forwards the shadow admission verdict unchanged.
+func (t *goalUsageTee) RecordDelegationAdmission(a event.DelegationAdmissionAudit) {
+	event.RecordDelegationAdmission(t.inner, a)
+}
+
 // RecordContractShadow forwards the shadow contract audit unchanged.
 func (t *goalUsageTee) RecordContractShadow(a event.ContractShadowAudit) {
 	if t == nil || t.inner == nil {
