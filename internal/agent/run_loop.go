@@ -210,7 +210,7 @@ func (a *Agent) beginRunTurn(ctx context.Context, input string) (rawInput string
 		case scoped && a.deliveryScopeID == scope.ID:
 			a.evidence.ResetBackgroundLeases()
 		default:
-			a.evidence.Reset()
+			a.resetTurnEvidence()
 		}
 	}
 	a.preserveEvidenceOnce = false
