@@ -347,9 +347,11 @@ export interface AppBindings {
   PickPluginFolder(): Promise<string>;
   AddSkillPath(path: string): Promise<void>;
   RemoveSkillPath(path: string): Promise<void>;
+  SetSkillPathEnabled(path: string, enabled: boolean): Promise<void>;
   RefreshSkills(): Promise<void>;
   ReloadCommands(): Promise<void>;
   SetSkillEnabled(name: string, enabled: boolean): Promise<void>;
+  SetSkillImplicitInvocation(enabled: boolean): Promise<void>;
   AvailableSubagentTools(): Promise<MCPToolView[]>;
   CreateSubagentProfile(input: SubagentProfileInput): Promise<string>;
   UpdateSubagentProfile(name: string, scope: string, input: SubagentProfileInput): Promise<void>;
@@ -933,7 +935,7 @@ function bridgeBreadcrumb(method: string): string {
   if (/^(CheckUpdate|ApplyUpdateRequest|OpenDownloadPage|OpenUserConfigPath|ReloadUserConfig)/.test(method)) return `update ${method}`;
   if (/^(AddMCPServer|InstallMCPServer|UpdateMCPServer|RemoveMCPServer|AuthorizeAndConnectMCPServer|AuthenticateMCPServer|ReconnectMCPServer|ClearMCPServerAuthentication|SetMCPServer)/.test(method))
     return `mcp ${method}`;
-  if (/^(AddSkillPath|RemoveSkillPath|RefreshSkills|SetSkillEnabled|AcceptSkillSuggestion|AvailableSubagentTools|CreateSubagentProfile|UpdateSubagentProfile|DeleteSubagentProfile|SetSubagentProfileModel|SetSubagentProfileEffort|TrySubagentProfile|CancelTrySubagentProfile)/.test(method))
+  if (/^(AddSkillPath|RemoveSkillPath|SetSkillPathEnabled|RefreshSkills|SetSkillEnabled|SetSkillImplicitInvocation|AcceptSkillSuggestion|AvailableSubagentTools|CreateSubagentProfile|UpdateSubagentProfile|DeleteSubagentProfile|SetSubagentProfileModel|SetSubagentProfileEffort|TrySubagentProfile|CancelTrySubagentProfile)/.test(method))
     return `skill ${method}`;
   if (/^(MinimiseMainWindow|ToggleMaximiseMainWindow|IsMainWindowMaximised|CloseMainWindow)$/.test(method)) return `window ${method}`;
   if (/^(OpenProjectTab|OpenGlobalTab|OpenTopicSession|EnsureBlankTab|ActivateTopic|EnsureBlankSurface|SetActiveTab|CloseTab|ReorderTabs|CreateTopic|RenameTopic|DeleteTopic|TrashTopic|RenameProject|RemoveWorkspace|SwitchWorkspace|PickWorkspace|DeliveryWorktreeAvailability|CreateDeliveryWorktree)/.test(method))
@@ -1382,21 +1384,22 @@ function makeMockApp(): AppBindings {
       configuredModel: "deepseek/deepseek-v4-pro", configuredEffort: "high",
     },
     { name: "research", description: "Combine web_fetch + code reading in an isolated subagent", scope: "builtin", runAs: "subagent", enabled: true, allowedTools: ["read_file", "ls", "glob", "grep", "code_index", "web_fetch"], invocation: "/research", invocationMode: "auto" },
-    { name: "review", description: "Review the staged diff", scope: "project", runAs: "inline", enabled: false, invocation: "/review" },
+    { name: "review", description: "Review the staged diff", scope: "project", sourceDir: "~/projects/reasonix/.reasonix/skills", runAs: "inline", enabled: false, invocation: "/review" },
     { name: "init", description: "Scaffold a REASONIX.md for this repo", scope: "builtin", runAs: "inline", enabled: true, invocation: "/init" },
     {
-      name: "my-formatter", description: "Formats code the way I like it", scope: "global", runAs: "subagent", enabled: true,
+      name: "my-formatter", description: "Formats code the way I like it", scope: "global", sourceDir: "~/.reasonix/skills", runAs: "subagent", enabled: true,
       model: "deepseek-pro", effort: "high", allowedTools: ["read_file", "edit_file"], color: "amber", invocation: "/my-formatter", invocationMode: "manual",
       body: "You are a code formatting assistant. Reformat the given file to match project style without changing behavior.",
     },
   ];
   let capSkillRoots: SkillRootView[] = [
-    { dir: "~/projects/reasonix/.reasonix/skills", scope: "project", priority: 1, status: "missing", configured: false, removable: true, skills: 0 },
+    { dir: "~/projects/reasonix/.reasonix/skills", scope: "project", priority: 1, status: "missing", enabled: true, configured: false, removable: true, skills: 0 },
     {
       dir: "~/my-skills",
       scope: "custom",
       priority: 5,
       status: "ok",
+      enabled: true,
       configured: true,
       removable: true,
       skills: 1,
@@ -1407,6 +1410,7 @@ function makeMockApp(): AppBindings {
       scope: "global",
       priority: 6,
       status: "ok",
+      enabled: true,
       configured: false,
       removable: true,
       skills: 2,
@@ -3334,6 +3338,7 @@ function makeMockApp(): AppBindings {
       return {
         skills: capSkills.map((s) => ({ ...s })),
         skillRoots: capSkillRoots.map((s) => ({ ...s })),
+        allowImplicitInvocation: true,
       };
     },
     async RuntimeDoctor() {
@@ -3585,6 +3590,7 @@ function makeMockApp(): AppBindings {
           scope: "custom",
           priority: capSkillRoots.length + 1,
           status: "ok",
+          enabled: true,
           configured: true,
           removable: true,
           skills: 1,
@@ -3602,12 +3608,21 @@ function makeMockApp(): AppBindings {
         if (idx >= 0) capSkills.splice(idx, 1);
       }
     },
+    async SetSkillPathEnabled(path: string, enabled: boolean) {
+      const root = capSkillRoots.find((r) => r.dir === path);
+      if (root) {
+        root.enabled = enabled;
+        root.status = enabled ? "ok" : "disabled";
+        root.skills = enabled ? (root.skillItems?.length ?? 0) : 0;
+      }
+    },
     async RefreshSkills() {},
     async ReloadCommands() {},
     async SetSkillEnabled(name: string, enabled: boolean) {
       const skill = capSkills.find((s) => s.name === name);
       if (skill) skill.enabled = enabled;
     },
+    async SetSkillImplicitInvocation(_enabled: boolean) {},
     async AvailableSubagentTools() {
       return [
         { name: "read_file", description: "Read a file's contents", readOnlyHint: true },
