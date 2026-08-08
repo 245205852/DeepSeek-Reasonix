@@ -483,6 +483,7 @@ const (
 	NoticeCodeToolBudget                    = "tool_budget"
 	NoticeCodeLoopGuard                     = "loop_guard"
 	NoticeCodeProgressGuard                 = "progress_guard"
+	NoticeCodeEvidenceNudge                 = "evidence_nudge"
 	NoticeCodeWorkspaceLease                = "workspace_lease"
 	NoticeCodeCancelledTurn                 = "cancelled_turn_display"
 	NoticeCodeUnappliedSteer                = "unapplied_steer"

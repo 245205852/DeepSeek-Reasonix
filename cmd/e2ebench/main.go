@@ -205,6 +205,7 @@ func main() {
 	cacheArm := flag.String("cache", "cold", "suite mode: cold (fresh session per task) | warm (prefix-warming one-step run in the same workdir before the graded run)")
 	effort := flag.String("effort", "", "reasoning effort override passed to the agent (model-specific levels, e.g. disabled|low|high|max); empty = model default")
 	checkpoints := flag.Bool("checkpoints", false, "suite mode: snapshot the workdir on every change and grade each snapshot offline after the run, yielding first_correct_ms (TTFCS) and post_solve_waste_ms")
+	policyFlag := flag.String("policy", "", "suite mode: experiment arm — empty (baseline) | ebm (evidence-before-more-mutation nudge)")
 	bin := flag.String("bin", "reasonix", "path to the reasonix binary")
 	model := flag.String("model", "", "provider/model name (default: config default)")
 	profileFlag := flag.String("profile", benchmarkProfileBaseline, "prompt profile: baseline | delivery")
@@ -277,7 +278,7 @@ func main() {
 	runSuiteMode(suiteConfig{
 		bin: *bin, model: *model, profile: profile, arm: arm, budget: *budget,
 		trajDir: *trajDir, forcePlanner: *forcePlanner, attempts: *attempts,
-		cacheArm: cache, effort: *effort, checkpoints: *checkpoints,
+		cacheArm: cache, effort: *effort, checkpoints: *checkpoints, policy: *policyFlag,
 	}, *suite, *taskFilter, *outMD, *outJSON)
 }
 
@@ -409,6 +410,7 @@ func filterTasks(tasks []task, filter string) ([]task, error) {
 type suiteConfig struct {
 	bin, model, profile, cacheArm, effort string
 	arm                                   ablation.Set
+	policy                                string
 	trajDir                               string
 	forcePlanner, checkpoints             bool
 	attempts, budget                      int
@@ -494,6 +496,9 @@ func runTask(cfg suiteConfig, t task) result {
 
 	cmd := exec.CommandContext(ctx, cfg.bin, args...)
 	cmd.Dir = work
+	if cfg.policy == "ebm" {
+		cmd.Env = append(os.Environ(), "REASONIX_EXPERIMENT_EBM=1")
+	}
 	cmd.Stdout = os.Stderr // stream the run to the job log, keep stdout clean for the report
 	cmd.Stderr = os.Stderr
 	cmd.WaitDelay = 10 * time.Second // bound the wait for a stuck child after ctx timeout

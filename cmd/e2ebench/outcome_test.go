@@ -126,6 +126,42 @@ func TestSummarizeOutcomeTracksDebtAndTTFDC(t *testing.T) {
 	}
 }
 
+func TestSummarizeOutcomeDerivesEBMChain(t *testing.T) {
+	path := writeTrajectory(t, "ebm.trajectory.jsonl", []string{
+		`{"seq":1,"ts":1000,"event":{"kind":"turn_started"}}`,
+		`{"seq":2,"ts":2000,"outcome_progress":{"round":1,"churn":2,"debt_age":1,"blind_mutations":2}}`,
+		`{"seq":3,"ts":3000,"outcome_progress":{"round":2,"churn":1,"debt_age":2,"blind_mutations":3,"ebm_eligible":true,"ebm_fired":true}}`,
+		`{"seq":4,"ts":4000,"outcome_progress":{"round":3,"exploration":1,"debt_age":3,"blind_mutations":3}}`,
+		`{"seq":5,"ts":9000,"outcome_progress":{"round":4,"discriminating":1,"verification":1}}`,
+		`{"seq":6,"ts":10000,"event":{"kind":"turn_done"}}`,
+	})
+	s, err := summarizeTrajectory(path)
+	if err != nil {
+		t.Fatalf("summarizeTrajectory: %v", err)
+	}
+	o := s.Outcome
+	if o == nil || o.EBMFiredRound != 2 || o.EBMEligibleRound != 2 {
+		t.Fatalf("outcome = %+v, want EBM fired/eligible at round 2", o)
+	}
+	if o.EBMBlindAtFire != 3 || o.EBMDebtAgeAtFire != 2 {
+		t.Errorf("at-fire = blind %d debt %d, want 3/2", o.EBMBlindAtFire, o.EBMDebtAgeAtFire)
+	}
+	if o.EBMRoundsToCheck != 2 || o.EBMMsToCheck != 6000 || o.EBMCheckWithin1 || !o.EBMCheckWithin2 {
+		t.Errorf("chain = rounds %d ms %d w1 %v w2 %v, want 2/6000/false/true",
+			o.EBMRoundsToCheck, o.EBMMsToCheck, o.EBMCheckWithin1, o.EBMCheckWithin2)
+	}
+	if o.DebtArea != 6 || o.BlindPeak != 3 {
+		t.Errorf("debt area %d blind peak %d, want 6/3", o.DebtArea, o.BlindPeak)
+	}
+	if o.EBMPostSequence != "RV" || o.EBMExtraBlind != 0 {
+		t.Errorf("post sequence %q extra %d, want RV/0", o.EBMPostSequence, o.EBMExtraBlind)
+	}
+	got := renderOutcomeProgress([]result{{Trajectory: s}})
+	if !strings.Contains(got, "**EBM** eligible 1 · fired 1 (compliance ≤1 extra mutation 100%, median rounds-to-check 2)") {
+		t.Errorf("render missing EBM segment:\n%s", got)
+	}
+}
+
 func TestRenderOutcomeProgressAggregatesRuns(t *testing.T) {
 	results := []result{
 		{Trajectory: &trajectorySummary{Outcome: &outcomeSummary{
