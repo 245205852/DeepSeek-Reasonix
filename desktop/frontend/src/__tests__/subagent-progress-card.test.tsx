@@ -141,6 +141,7 @@ console.log("\nsubagent progress card");
   // Expanded body shows reasoning / response / notices without ordinary output.
   const head = document.querySelector(".tool__head") as HTMLButtonElement | null;
   ok(!!head, "card head renders");
+  ok(!document.querySelector(".tool__subagent-preview"), "collapsed card skips the sub-agent preview");
   ok(!document.querySelector(".tool__subagent-preview-text .md"), "collapsed reasoning preview skips Markdown rendering");
   await act(async () => {
     head?.click();
@@ -148,11 +149,41 @@ console.log("\nsubagent progress card");
   });
   ok(!!document.querySelector(".tool__subagent-preview"), "expanded body renders the preview block");
   ok(document.querySelector(".tool__subagent-preview-label")?.textContent === "Reasoning", "reasoning section label");
-  ok(document.body.textContent?.includes("thinking step by step"), "reasoning preview text visible");
-  ok(document.querySelector(".tool__subagent-preview-text strong")?.textContent === "thinking", "reasoning preview renders Markdown emphasis");
-  ok(document.querySelectorAll(".tool__subagent-preview-text li").length === 2, "reasoning preview renders Markdown lists");
+  const reasoningSummary = document.querySelector<HTMLButtonElement>(".tool__subagent-preview .reasoning-summary");
+  ok(reasoningSummary?.textContent === "- verify", "reasoning section opens as a tail-line summary while streaming");
+  ok(reasoningSummary?.hasAttribute("data-follow-end") ?? false, "streaming reasoning summary follows the line tail");
+  ok(!document.querySelector(".tool__subagent-preview .md"), "reasoning section mounts no Markdown until expanded");
   ok(document.body.textContent?.includes("draft answer preview"), "response preview text visible");
   ok(document.body.textContent?.includes("heads up"), "notice preview text visible");
+
+  // Clicking the reasoning summary mounts the full Markdown body.
+  await act(async () => {
+    reasoningSummary?.click();
+    for (let i = 0; i < 50; i += 1) {
+      await flushTimers();
+      if (document.querySelector(".tool__subagent-preview .md strong")) break;
+    }
+  });
+  ok(document.body.textContent?.includes("thinking step by step"), "reasoning preview text visible after expanding");
+  ok(document.querySelector(".tool__subagent-preview-text strong")?.textContent === "thinking", "reasoning preview renders Markdown emphasis");
+  ok(document.querySelectorAll(".tool__subagent-preview-text li").length === 2, "reasoning preview renders Markdown lists");
+
+  // The section label toggles back to the summary and re-expands.
+  const reasoningLabel = document.querySelector(".tool__subagent-preview-label") as HTMLButtonElement | null;
+  await act(async () => {
+    reasoningLabel?.click();
+    await flushTimers();
+  });
+  ok(!document.querySelector(".tool__subagent-preview .md"), "clicking the reasoning label collapses back to the summary");
+  ok(document.querySelector(".tool__subagent-preview .reasoning-summary")?.textContent === "- verify", "collapsed reasoning section shows the summary again");
+  await act(async () => {
+    document.querySelector<HTMLButtonElement>(".tool__subagent-preview-label")?.click();
+    for (let i = 0; i < 50; i += 1) {
+      await flushTimers();
+      if (document.querySelector(".tool__subagent-preview .md strong")) break;
+    }
+  });
+  ok(!!document.querySelector(".tool__subagent-preview .md strong"), "clicking the reasoning label expands the full Markdown");
 
   await act(async () => {
     root.unmount();

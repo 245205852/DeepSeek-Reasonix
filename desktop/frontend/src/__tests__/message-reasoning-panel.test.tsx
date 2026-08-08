@@ -52,22 +52,35 @@ const rootEl = document.getElementById("root");
 if (!rootEl) throw new Error("missing root");
 const root = createRoot(rootEl);
 
-await act(async () => {
-  root.render(
-    <LocaleProvider>
-      <AssistantMessage
-        item={{
-          kind: "assistant",
-          id: "a1",
-          text: "",
-          reasoning: "**important trace**\n\n- line one\n- line two\n\n`inline code`",
-          streaming: false,
-          reasoningComplete: true,
-          reasoningDurationMs: 2_600,
-        }}
-      />
-    </LocaleProvider>,
-  );
+type ReasoningItem = React.ComponentProps<typeof AssistantMessage>["item"];
+
+async function render(item: ReasoningItem, props: { defaultExpanded?: boolean } = {}) {
+  await act(async () => {
+    root.render(
+      <LocaleProvider>
+        <AssistantMessage key={item.id} item={item} defaultExpanded={props.defaultExpanded} />
+      </LocaleProvider>,
+    );
+  });
+}
+
+async function click(el: Element | null | undefined) {
+  await act(async () => {
+    el?.dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true }));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  });
+}
+
+// Completed reasoning: collapsed to a one-line summary, Markdown stays
+// unmounted until the user asks for it.
+await render({
+  kind: "assistant",
+  id: "a1",
+  text: "",
+  reasoning: "initial plan\n\n**important trace**\n\n- line one\n- line two\n\n`inline code`",
+  streaming: false,
+  reasoningComplete: true,
+  reasoningDurationMs: 2_600,
 });
 
 const header = document.querySelector<HTMLButtonElement>(".reasoning__head");
@@ -75,16 +88,65 @@ ok(Boolean(header), "completed reasoning renders a toggle header");
 ok(header?.textContent?.includes("thinking") ?? false, "header keeps the reasoning label");
 ok(header?.textContent?.includes("lasted 3s") ?? false, "header shows rounded reasoning duration");
 ok(!document.querySelector(".reasoning__body"), "completed reasoning is collapsed by default");
+ok(!document.querySelector(".reasoning .md"), "collapsed reasoning mounts no Markdown");
 
-await act(async () => {
-  header?.dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true }));
-  await new Promise((resolve) => setTimeout(resolve, 0));
-});
+const summary = document.querySelector<HTMLButtonElement>(".reasoning-summary");
+ok(summary?.tagName === "BUTTON", "collapsed reasoning shows a clickable summary");
+ok(summary?.textContent === "initial plan", "completed summary is the first non-blank line");
 
-ok(document.querySelector(".reasoning__body")?.textContent?.includes("line two") ?? false, "clicking the header expands the reasoning body");
+await click(summary);
+ok(document.querySelector(".reasoning__body")?.textContent?.includes("line two") ?? false, "clicking the summary expands the reasoning body");
 ok(document.querySelector(".reasoning__body strong")?.textContent === "important trace", "reasoning renders Markdown emphasis");
 ok(document.querySelectorAll(".reasoning__body li").length === 2, "reasoning renders Markdown lists");
 ok(document.querySelector(".reasoning__body .md-code")?.textContent === "inline code", "reasoning renders Markdown inline code");
+ok(!document.querySelector(".reasoning-summary"), "expanded reasoning hides the summary");
+
+await click(document.querySelector(".reasoning__head"));
+ok(!document.querySelector(".reasoning__body"), "clicking the header collapses the reasoning body again");
+await click(document.querySelector(".reasoning__head"));
+ok(document.querySelector(".reasoning__body")?.textContent?.includes("line two") ?? false, "clicking the header expands the reasoning body");
+
+// Streaming reasoning: also collapsed by default, summary tracks the newest
+// tail even after the current line exceeds the summary budget.
+const streamingLine = "a".repeat(220);
+await render({
+  kind: "assistant",
+  id: "a2",
+  text: "",
+  reasoning: `first thought\n\n${streamingLine}LATEST_TOKEN`,
+  streaming: true,
+  reasoningComplete: false,
+});
+const streamingSummary = document.querySelector<HTMLButtonElement>(".reasoning-summary");
+ok(!document.querySelector(".reasoning__body"), "streaming reasoning is collapsed by default");
+ok(streamingSummary?.textContent?.endsWith("LATEST_TOKEN") ?? false, "streaming summary retains the newest tail of a long line");
+ok(streamingSummary?.hasAttribute("data-follow-end") ?? false, "streaming summary follows the line tail");
+ok(document.querySelector(".reasoning__head")?.hasAttribute("data-running") ?? false, "header keeps the running state");
+
+await render({
+  kind: "assistant",
+  id: "a2",
+  text: "",
+  reasoning: `first thought\n\n${streamingLine}LATEST_TOKEN_NEXT`,
+  streaming: true,
+  reasoningComplete: false,
+});
+ok(
+  document.querySelector(".reasoning-summary")?.textContent?.endsWith("LATEST_TOKEN_NEXT") ?? false,
+  "streaming summary updates when more text reaches the same long line",
+);
+
+// defaultExpanded keeps the previous always-open behavior.
+await render({
+  kind: "assistant",
+  id: "a3",
+  text: "",
+  reasoning: "initial plan\n\n**important trace**",
+  streaming: false,
+  reasoningComplete: true,
+}, { defaultExpanded: true });
+ok(document.querySelector(".reasoning__body strong")?.textContent === "important trace", "defaultExpanded renders the full Markdown directly");
+ok(!document.querySelector(".reasoning-summary"), "defaultExpanded skips the summary");
 
 await act(async () => {
   root.unmount();
