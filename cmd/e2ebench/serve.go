@@ -34,7 +34,7 @@ type serveTask struct {
 }
 
 type serveRound struct {
-	Ts           int64 `json:"t,omitempty"`
+	TS           int64 `json:"t,omitempty"`
 	Exploration  int   `json:"e,omitempty"`
 	Verification int   `json:"v,omitempty"`
 	Objective    int   `json:"o,omitempty"`
@@ -103,7 +103,7 @@ func collectServeState(dir string) (*serveState, error) {
 		}
 		for _, p := range scan.outcomePoints {
 			t.Rounds = append(t.Rounds, serveRound{
-				Ts:          p.ts,
+				TS:          p.ts,
 				Exploration: p.exploration, Verification: p.verification,
 				Objective: p.objective, Regression: p.regression,
 				Churn: p.churn, Legacy: p.legacyGain,
