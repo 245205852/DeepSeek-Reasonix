@@ -301,8 +301,8 @@ type Agent struct {
 	// sessCacheHit/sessCacheMiss accumulate cache tokens across every API call
 	// this session, so frontends can show the aggregate hit-rate (Σhit/Σ(hit+miss))
 	// — a steadier, cost-oriented number than the single-turn rate. They are NOT
-	// reset on compaction (compaction only rewrites session.Messages), so the
-	// aggregate never craters when the prefix is summarized away. Atomic: the run
+	// reset on compaction, so the aggregate never craters when the model-visible
+	// prefix is summarized away. Atomic: the run
 	// loop accumulates them while the status line reads them.
 	sessCacheHit  atomic.Int64
 	sessCacheMiss atomic.Int64
@@ -552,7 +552,7 @@ type Agent struct {
 	workspaceID            string // stable prompt-cache lineage component
 	cacheState             string // warm/cold/unknown; never provider-visible
 	compactionState        CompactionState
-	strictAlternatingRoles bool // coalesce projection user runs for strict providers
+	strictAlternatingRoles bool // coalesce adjacent user turns on provider request copies
 	// activeTurnCreatedAt identifies the real/synthetic user message that began
 	// the currently running turn. Compaction may rewrite older history while a
 	// tool loop is active, but it must keep this message and everything after it
@@ -1073,7 +1073,7 @@ type Options struct {
 	KeepPolicy             KeepPolicy
 	SessionPath            string // projection sidecar path; empty = memory only
 	WorkspaceID            string // prompt-cache lineage component
-	StrictAlternatingRoles bool   // merge adjacent projection user turns for strict providers
+	StrictAlternatingRoles bool   // merge adjacent user turns for strict providers at request time
 
 	// Hooks fires PreToolUse / PostToolUse shell hooks around tool calls. nil
 	// disables hook firing.
