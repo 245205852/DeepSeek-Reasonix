@@ -13,6 +13,7 @@ import (
 	"strings"
 	"sync"
 
+	"reasonix/internal/mcpdiag"
 	"reasonix/internal/tool"
 )
 
@@ -52,7 +53,7 @@ func newHTTPTransport(s Spec) (*httpTransport, error) {
 	maps.Copy(headers, s.Headers)
 	var oauth *mcpOAuthClient
 	var err error
-	if !hasHTTPHeader(headers, "Authorization") {
+	if !mcpdiag.HasAuthConfig(headers, s.Env, s.URL) {
 		oauth, err = newMCPOAuthClient(s.StateDir, s.OAuthHTTPClient)
 		if err != nil {
 			return nil, fmt.Errorf("http plugin %q: load OAuth state: %w", s.Name, err)
@@ -77,15 +78,6 @@ func newHTTPTransport(s Spec) (*httpTransport, error) {
 			return http.ErrUseLastResponse
 		}},
 	}, nil
-}
-
-func hasHTTPHeader(headers map[string]string, name string) bool {
-	for key, value := range headers {
-		if strings.EqualFold(strings.TrimSpace(key), name) && strings.TrimSpace(value) != "" {
-			return true
-		}
-	}
-	return false
 }
 
 func sameHTTPOrigin(a, b *url.URL) bool {

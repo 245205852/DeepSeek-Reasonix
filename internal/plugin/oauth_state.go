@@ -20,6 +20,13 @@ func mcpOAuthStatePath(stateDir string) string {
 	return filepath.Join(stateDir, mcpOAuthStateFile)
 }
 
+func mcpOAuthGenerationPath(stateDir string) string {
+	if strings.TrimSpace(stateDir) == "" {
+		return ""
+	}
+	return filepath.Join(stateDir, mcpOAuthGenerationFile)
+}
+
 func acquireMCPOAuthStateLock(ctx context.Context, stateDir string) (func(), error) {
 	path := mcpOAuthStatePath(stateDir)
 	if path == "" {
@@ -79,4 +86,85 @@ func saveMCPOAuthState(stateDir string, state mcpOAuthState) error {
 		return fmt.Errorf("save MCP OAuth state: %w", err)
 	}
 	return nil
+}
+
+func loadMCPOAuthGeneration(stateDir string) (string, error) {
+	path := mcpOAuthGenerationPath(stateDir)
+	if path == "" {
+		return "", nil
+	}
+	info, err := os.Lstat(path)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return "", nil
+		}
+		return "", fmt.Errorf("read MCP OAuth generation: %w", err)
+	}
+	if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
+		return "", fmt.Errorf("read MCP OAuth generation: refusing non-regular file")
+	}
+	if info.Size() > 256 {
+		return "", fmt.Errorf("read MCP OAuth generation: file is too large")
+	}
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return "", fmt.Errorf("read MCP OAuth generation: %w", err)
+	}
+	generation := strings.TrimSpace(string(b))
+	if generation == "" {
+		return "", fmt.Errorf("read MCP OAuth generation: empty generation")
+	}
+	return generation, nil
+}
+
+func saveMCPOAuthGeneration(stateDir, generation string) error {
+	path := mcpOAuthGenerationPath(stateDir)
+	if path == "" {
+		return fmt.Errorf("save MCP OAuth generation: private state directory is unavailable")
+	}
+	if strings.TrimSpace(generation) == "" {
+		return fmt.Errorf("save MCP OAuth generation: generation is empty")
+	}
+	if info, err := os.Lstat(path); err == nil && (info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular()) {
+		return fmt.Errorf("save MCP OAuth generation: refusing non-regular file")
+	} else if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("save MCP OAuth generation: %w", err)
+	}
+	if err := fileutil.AtomicWriteFileStrict(path, []byte(strings.TrimSpace(generation)+"\n"), 0o600); err != nil {
+		return fmt.Errorf("save MCP OAuth generation: %w", err)
+	}
+	return nil
+}
+
+func bumpMCPOAuthGeneration(stateDir string) error {
+	generation, err := randomBase64URL(24)
+	if err != nil {
+		return fmt.Errorf("create MCP OAuth generation: %w", err)
+	}
+	return saveMCPOAuthGeneration(stateDir, generation)
+}
+
+func captureMCPOAuthGeneration(ctx context.Context, stateDir string) (string, error) {
+	release, err := acquireMCPOAuthStateLock(ctx, stateDir)
+	if err != nil {
+		return "", fmt.Errorf("lock MCP OAuth generation: %w", err)
+	}
+	defer release()
+	return loadMCPOAuthGeneration(stateDir)
+}
+
+func saveMCPOAuthStateIfGenerationUnchanged(ctx context.Context, stateDir, generation string, state mcpOAuthState) error {
+	release, err := acquireMCPOAuthStateLock(ctx, stateDir)
+	if err != nil {
+		return fmt.Errorf("lock MCP OAuth state: %w", err)
+	}
+	defer release()
+	current, err := loadMCPOAuthGeneration(stateDir)
+	if err != nil {
+		return err
+	}
+	if current != generation {
+		return fmt.Errorf("MCP OAuth authorization was invalidated while waiting for the browser; authorize again")
+	}
+	return saveMCPOAuthState(stateDir, state)
 }

@@ -18,12 +18,14 @@ import (
 	"strings"
 	"time"
 
+	"reasonix/internal/mcpdiag"
 	"reasonix/internal/secrets"
 )
 
 const (
-	mcpOAuthStateFile = "oauth.json"
-	maxOAuthBody      = 1 << 20
+	mcpOAuthStateFile      = "oauth.json"
+	mcpOAuthGenerationFile = "oauth.generation"
+	maxOAuthBody           = 1 << 20
 )
 
 // Protocol sources: MCP Authorization (2025-11-25), RFC 9728 protected
@@ -97,11 +99,10 @@ func AuthorizeHTTPMCP(ctx context.Context, spec Spec, openURL func(string) error
 	if err := os.MkdirAll(spec.StateDir, 0o700); err != nil {
 		return fmt.Errorf("MCP OAuth: prepare private state directory: %w", err)
 	}
-	release, err := acquireMCPOAuthStateLock(ctx, spec.StateDir)
+	generation, err := captureMCPOAuthGeneration(ctx, spec.StateDir)
 	if err != nil {
-		return fmt.Errorf("MCP OAuth: lock private state: %w", err)
+		return err
 	}
-	defer release()
 	endpoint, err := parseSecureOAuthURL(spec.URL, true)
 	if err != nil {
 		return fmt.Errorf("MCP OAuth endpoint: %w", err)
@@ -203,7 +204,7 @@ func AuthorizeHTTPMCP(ctx context.Context, spec Spec, openURL func(string) error
 		return err
 	}
 	applyTokenResponse(&state, token, time.Now())
-	return saveMCPOAuthState(spec.StateDir, state)
+	return saveMCPOAuthStateIfGenerationUnchanged(ctx, spec.StateDir, generation, state)
 }
 
 func validateHTTPMCPAuthorization(spec Spec, openURL func(string) error) error {
@@ -213,8 +214,8 @@ func validateHTTPMCPAuthorization(spec Spec, openURL func(string) error) error {
 	if !isHTTPMCPTransport(spec.Type) {
 		return fmt.Errorf("MCP OAuth is only available for HTTP transports")
 	}
-	if hasHTTPHeader(spec.Headers, "Authorization") {
-		return fmt.Errorf("MCP OAuth is unavailable while an Authorization header is configured")
+	if mcpdiag.HasAuthConfig(spec.Headers, spec.Env, spec.URL) {
+		return fmt.Errorf("MCP OAuth is unavailable while explicit authentication is configured")
 	}
 	if strings.TrimSpace(spec.StateDir) == "" {
 		return fmt.Errorf("MCP OAuth: private state directory is unavailable")
@@ -256,6 +257,9 @@ func reconcileHTTPMCPOAuth(spec Spec, remainingResource string) (bool, error) {
 		if loadErr == nil && sameCanonicalResource(state.Resource, remainingResource) {
 			return false, nil
 		}
+	}
+	if err := bumpMCPOAuthGeneration(spec.StateDir); err != nil {
+		return false, fmt.Errorf("clear MCP OAuth state: %w", err)
 	}
 	if err := os.Remove(path); err != nil {
 		if errors.Is(err, os.ErrNotExist) {

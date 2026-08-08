@@ -57,11 +57,28 @@ func TestAuthorizeHTTPMCPRejectsStaticAuthorizationHeader(t *testing.T) {
 		opened = true
 		return nil
 	})
-	if err == nil || !strings.Contains(err.Error(), "Authorization header") {
+	if err == nil || !strings.Contains(err.Error(), "explicit authentication") {
 		t.Fatalf("AuthorizeHTTPMCP error = %v", err)
 	}
 	if opened {
 		t.Fatal("static Authorization configuration opened the OAuth browser")
+	}
+}
+
+func TestAuthorizeHTTPMCPRejectsStaticAPIKeyHeader(t *testing.T) {
+	opened := false
+	err := AuthorizeHTTPMCP(context.Background(), Spec{
+		Name: "remote", Type: "http", URL: "https://example.test/mcp", StateDir: t.TempDir(),
+		Headers: map[string]string{"X-API-Key": "configured"},
+	}, func(string) error {
+		opened = true
+		return nil
+	})
+	if err == nil || !strings.Contains(err.Error(), "explicit authentication") {
+		t.Fatalf("AuthorizeHTTPMCP error = %v", err)
+	}
+	if opened {
+		t.Fatal("static API key configuration opened the OAuth browser")
 	}
 }
 
@@ -218,6 +235,86 @@ func TestAuthorizeHTTPMCPUsesDiscoveryPKCEAndPersistsPrivateToken(t *testing.T) 
 	}
 	if !strings.Contains(string(result), `"ok":true`) {
 		t.Fatalf("result = %s", result)
+	}
+}
+
+func TestAuthorizeHTTPMCPDoesNotHoldStateLockDuringBrowser(t *testing.T) {
+	stateDir := t.TempDir()
+	const endpoint = "https://mcp.example.test/mcp"
+	client := &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		response := func(status int, body string) (*http.Response, error) {
+			return &http.Response{
+				StatusCode: status,
+				Header:     make(http.Header),
+				Body:       io.NopCloser(strings.NewReader(body)),
+				Request:    req,
+			}, nil
+		}
+		switch req.URL.Path {
+		case "/mcp":
+			resp, err := response(http.StatusUnauthorized, `unauthorized`)
+			if err != nil {
+				return nil, err
+			}
+			resp.Header.Set("WWW-Authenticate", `Bearer resource_metadata="https://mcp.example.test/.well-known/oauth-protected-resource"`)
+			return resp, nil
+		case "/.well-known/oauth-protected-resource":
+			return response(http.StatusOK, `{"resource":"https://mcp.example.test/mcp","authorization_servers":["https://mcp.example.test"],"scopes_supported":["mcp:connect"]}`)
+		case "/.well-known/oauth-authorization-server":
+			return response(http.StatusOK, `{"issuer":"https://mcp.example.test","authorization_endpoint":"https://mcp.example.test/authorize","token_endpoint":"https://mcp.example.test/token","registration_endpoint":"https://mcp.example.test/register","code_challenge_methods_supported":["S256"],"token_endpoint_auth_methods_supported":["client_secret_basic"]}`)
+		case "/register":
+			return response(http.StatusOK, `{"client_id":"reasonix-test","client_secret":"client-secret","token_endpoint_auth_method":"client_secret_basic"}`)
+		case "/token":
+			return response(http.StatusOK, `{"access_token":"access-one","refresh_token":"refresh-one","token_type":"Bearer","expires_in":3600}`)
+		default:
+			return response(http.StatusNotFound, `not found`)
+		}
+	})}
+
+	openURL := func(raw string) error {
+		authURL, err := url.Parse(raw)
+		if err != nil {
+			return err
+		}
+		clearDone := make(chan error, 1)
+		go func() {
+			_, clearErr := ClearHTTPMCPOAuth(Spec{StateDir: stateDir})
+			clearDone <- clearErr
+		}()
+		select {
+		case clearErr := <-clearDone:
+			if clearErr != nil {
+				return fmt.Errorf("clear during browser flow: %w", clearErr)
+			}
+		case <-time.After(time.Second):
+			return fmt.Errorf("clear during browser flow blocked on OAuth state lock")
+		}
+		callback, err := url.Parse(authURL.Query().Get("redirect_uri"))
+		if err != nil {
+			return err
+		}
+		query := callback.Query()
+		query.Set("code", "authorization-code")
+		query.Set("state", authURL.Query().Get("state"))
+		callback.RawQuery = query.Encode()
+		resp, err := http.Get(callback.String())
+		if err == nil {
+			_ = resp.Body.Close()
+		}
+		return err
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	err := AuthorizeHTTPMCP(ctx, Spec{
+		Name: "remote", Type: "http", URL: endpoint, StateDir: stateDir,
+		OAuthHTTPClient: client,
+	}, openURL)
+	if err == nil || !strings.Contains(err.Error(), "invalidated") {
+		t.Fatalf("AuthorizeHTTPMCP after concurrent clear = %v, want invalidation", err)
+	}
+	if _, err := os.Stat(mcpOAuthStatePath(stateDir)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("OAuth state was written after concurrent clear: %v", err)
 	}
 }
 
@@ -460,6 +557,44 @@ func TestReconcileHTTPMCPOAuthAfterRemovalPreservesOnlyMatchingFallback(t *testi
 	}
 	if _, err := os.Stat(mcpOAuthStatePath(stateDir)); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("different fallback OAuth state still exists: %v", err)
+	}
+}
+
+func TestMCPAuthGenerationInvalidatesPendingAuthorization(t *testing.T) {
+	stateDir := t.TempDir()
+	generation, err := captureMCPOAuthGeneration(context.Background(), stateDir)
+	if err != nil {
+		t.Fatalf("captureMCPOAuthGeneration: %v", err)
+	}
+	if err := bumpMCPOAuthGeneration(stateDir); err != nil {
+		t.Fatalf("bumpMCPOAuthGeneration: %v", err)
+	}
+	err = saveMCPOAuthStateIfGenerationUnchanged(context.Background(), stateDir, generation, mcpOAuthState{
+		Resource: "https://mcp.example.test/mcp", AccessToken: "must-not-save",
+	})
+	if err == nil || !strings.Contains(err.Error(), "invalidated") {
+		t.Fatalf("save after invalidation error = %v", err)
+	}
+	if _, err := os.Stat(mcpOAuthStatePath(stateDir)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("invalidated authorization wrote OAuth state: %v", err)
+	}
+}
+
+func TestReconcileDifferentFallbackInvalidatesPendingAuthorizationWithoutState(t *testing.T) {
+	stateDir := t.TempDir()
+	generation, err := captureMCPOAuthGeneration(context.Background(), stateDir)
+	if err != nil {
+		t.Fatalf("captureMCPOAuthGeneration: %v", err)
+	}
+	changed, err := ReconcileHTTPMCPOAuthAfterRemoval(Spec{StateDir: stateDir}, "https://other.example.test/mcp")
+	if err != nil || changed {
+		t.Fatalf("reconcile without OAuth state = (%v, %v), want (false, nil)", changed, err)
+	}
+	err = saveMCPOAuthStateIfGenerationUnchanged(context.Background(), stateDir, generation, mcpOAuthState{
+		Resource: "https://removed.example.test/mcp", AccessToken: "must-not-save",
+	})
+	if err == nil || !strings.Contains(err.Error(), "invalidated") {
+		t.Fatalf("save after different fallback reconciliation error = %v", err)
 	}
 }
 
