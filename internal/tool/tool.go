@@ -33,6 +33,13 @@ type Tool interface {
 	ReadOnly() bool
 }
 
+// ContextualTool can hide a registered tool from provider requests when the
+// current turn cannot execute it. Execute must still validate the context so
+// stale transcripts and provider-hallucinated calls fail closed.
+type ContextualTool interface {
+	ProviderVisible(context.Context) bool
+}
+
 // Previewer is an optional capability a writer Tool may implement: given the
 // same raw JSON args Execute would receive, compute the file change the call
 // *would* make — without touching disk. ctx must be Execute's, so the preview
@@ -519,23 +526,41 @@ func (r *Registry) Names() []string {
 
 // Schemas exports tool definitions in stable name order for the provider.
 func (r *Registry) Schemas() []provider.ToolSchema {
+	return r.schemasForContext(nil, false)
+}
+
+// SchemasForContext exports only tools available during ctx. Tools without a
+// contextual availability contract remain visible as before.
+func (r *Registry) SchemasForContext(ctx context.Context) []provider.ToolSchema {
+	return r.schemasForContext(ctx, true)
+}
+
+func (r *Registry) schemasForContext(ctx context.Context, filterContextual bool) []provider.ToolSchema {
 	r.mu.RLock()
-	defer r.mu.RUnlock()
+	type schemaEntry struct {
+		name      string
+		tool      Tool
+		canonical json.RawMessage
+	}
+	entries := make([]schemaEntry, 0, len(r.order))
+	for _, name := range r.order {
+		if t := r.tools[name]; t != nil {
+			entries = append(entries, schemaEntry{name: name, tool: t, canonical: r.canon[name]})
+		}
+	}
+	r.mu.RUnlock()
+	sort.Slice(entries, func(i, j int) bool { return entries[i].name < entries[j].name })
 
-	names := make([]string, len(r.order))
-	copy(names, r.order)
-	sort.Strings(names)
-
-	out := make([]provider.ToolSchema, 0, len(names))
-	for _, name := range names {
-		t := r.tools[name]
-		if t == nil {
+	out := make([]provider.ToolSchema, 0, len(entries))
+	for _, entry := range entries {
+		t := entry.tool
+		if contextual, ok := t.(ContextualTool); filterContextual && ok && !contextual.ProviderVisible(ctx) {
 			continue
 		}
 		out = append(out, provider.ToolSchema{
 			Name:        t.Name(),
 			Description: t.Description(),
-			Parameters:  r.canon[name],
+			Parameters:  entry.canonical,
 		})
 	}
 	return out

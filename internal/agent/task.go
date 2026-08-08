@@ -1507,6 +1507,7 @@ var plannerNonResearchTools = []string{
 	"complete_step",
 	"slash_command",
 	"todo_write",
+	"update_goal",
 	"wait",
 }
 
@@ -1528,6 +1529,12 @@ func PlannerToolRegistry(parent *tool.Registry) *tool.Registry {
 				continue
 			}
 			if tl, ok := base.Get(name); ok {
+				if classifier, ok := tl.(tool.PlanModeClassifier); ok && !classifier.PlanModeSafe() {
+					// The two-model planner is a planning-phase agent even when
+					// the controller's explicit Plan mode flag is off. Do not let
+					// read-only execution sign-offs leak into its provider schema.
+					continue
+				}
 				sub.Add(tl)
 			}
 		}
@@ -1872,6 +1879,10 @@ func RunSubAgentWithSession(ctx context.Context, prov provider.Provider, reg *to
 	if sess == nil {
 		return "", fmt.Errorf("sub-agent session is nil")
 	}
+	// A child may run inside a parent Goal turn, but only the root working
+	// model owns that turn's disposition. Keep cancellation and other parent
+	// context while preventing the child from seeing or writing its recorder.
+	ctx = tool.WithoutGoalTurnRecorder(ctx)
 	// Isolate temporary files for this run before any tool execution.
 	ctx, releaseTemp := withSubagentSessionTemp(ctx)
 	defer releaseTemp()

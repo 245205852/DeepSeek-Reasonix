@@ -139,6 +139,18 @@ func PlanModeFromContext(ctx context.Context) bool {
 	return ok && cc.planMode
 }
 
+func (a *Agent) withAgentContext(ctx context.Context) context.Context {
+	if a == nil {
+		return ctx
+	}
+	if a.jobs != nil {
+		ctx = jobs.WithManager(ctx, a.jobs)
+	} else {
+		ctx = jobs.WithoutManager(ctx)
+	}
+	return planmode.WithActive(ctx, a.planMode.Load())
+}
+
 // WithParentSession stamps the active parent session ID onto a turn context so
 // persisted sub-agents can record and enforce their owning conversation.
 func WithParentSession(ctx context.Context, parentSession string) context.Context {

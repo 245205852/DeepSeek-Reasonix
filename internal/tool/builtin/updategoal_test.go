@@ -75,6 +75,20 @@ func TestUpdateGoalFailsClosedOutsideActiveGoalTurn(t *testing.T) {
 	}
 }
 
+func TestUpdateGoalSchemaOnlyVisibleDuringActiveGoalTurn(t *testing.T) {
+	reg := tool.NewRegistry()
+	reg.Add(updateGoal{})
+	if got := reg.SchemasForContext(context.Background()); len(got) != 0 {
+		t.Fatalf("ordinary turn schemas = %+v, want update_goal hidden", got)
+	}
+
+	_, _, ctx := goalTool(t)
+	got := reg.SchemasForContext(ctx)
+	if len(got) != 1 || got[0].Name != "update_goal" {
+		t.Fatalf("goal turn schemas = %+v, want update_goal", got)
+	}
+}
+
 func TestUpdateGoalRecordsReport(t *testing.T) {
 	toolFn, rec, ctx := goalTool(t)
 	_, err := toolFn.Execute(ctx, json.RawMessage(`{"status":"continue","reason":"fixing the parser","next_action":"run tests"}`))

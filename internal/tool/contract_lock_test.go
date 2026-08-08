@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"testing"
 	"time"
+
+	"reasonix/internal/provider"
 )
 
 // blockingReadOnlyTool lets a test park ContractEntries inside the per-tool
@@ -13,6 +15,27 @@ type blockingReadOnlyTool struct {
 	name    string
 	entered chan<- struct{}
 	release <-chan struct{}
+}
+
+type blockingContextualTool struct {
+	name    string
+	entered chan<- struct{}
+	release <-chan struct{}
+}
+
+func (t *blockingContextualTool) Name() string        { return t.name }
+func (t *blockingContextualTool) Description() string { return "blocking contextual test tool" }
+func (t *blockingContextualTool) Schema() json.RawMessage {
+	return json.RawMessage(`{"type":"object","properties":{}}`)
+}
+func (t *blockingContextualTool) Execute(context.Context, json.RawMessage) (string, error) {
+	return "ok", nil
+}
+func (t *blockingContextualTool) ReadOnly() bool { return true }
+func (t *blockingContextualTool) ProviderVisible(context.Context) bool {
+	close(t.entered)
+	<-t.release
+	return true
 }
 
 func (t *blockingReadOnlyTool) Name() string        { return t.name }
@@ -70,5 +93,40 @@ func TestContractEntriesDoesNotHoldRegistryLockAcrossToolCallbacks(t *testing.T)
 	entries := <-entriesCh
 	if len(entries) != 1 || entries[0].Name != "blocking_tool" || !entries[0].ReadOnly {
 		t.Fatalf("ContractEntries returned %+v, want one read-only blocking_tool", entries)
+	}
+}
+
+func TestSchemasForContextDoesNotHoldRegistryLockAcrossAvailability(t *testing.T) {
+	reg := NewRegistry()
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	reg.Add(&blockingContextualTool{name: "contextual", entered: entered, release: release})
+
+	schemasCh := make(chan []provider.ToolSchema, 1)
+	go func() {
+		schemasCh <- reg.SchemasForContext(context.Background())
+	}()
+
+	select {
+	case <-entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("SchemasForContext never reached the availability callback")
+	}
+
+	addDone := make(chan struct{})
+	go func() {
+		reg.Add(stubTool{name: "writer_tool"})
+		close(addDone)
+	}()
+	select {
+	case <-addDone:
+	case <-time.After(5 * time.Second):
+		t.Fatal("registry writer blocked while SchemasForContext checked availability")
+	}
+
+	close(release)
+	schemas := <-schemasCh
+	if len(schemas) != 1 || schemas[0].Name != "contextual" {
+		t.Fatalf("SchemasForContext returned %+v, want contextual snapshot", schemas)
 	}
 }
