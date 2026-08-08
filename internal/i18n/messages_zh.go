@@ -348,7 +348,7 @@ var Chinese = Messages{
 	RewindCodeConversation:       "代码 + 对话",
 	RewindConversationOnly:       "仅对话",
 	RewindCodeOnly:               "仅代码",
-	RewindFork:                   "从这里分叉（保留当前代码）",
+	RewindFork:                   "分叉",
 	RewindSummarizeFrom:          "压缩此处之后（保留历史）",
 	RewindSummarizeUpto:          "压缩此处之前（保留历史）",
 	RewindPickTitle:              "⟲ 回滚 — 选择一轮",
