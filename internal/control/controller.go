@@ -115,12 +115,13 @@ type Controller struct {
 	// skills owns the session's discovered skills (enabled subset, full set, and
 	// the reloadable stores) — the skills slice of the Capabilities concern. See
 	// skill.go.
-	skills              skillSet
-	skillRunner         skill.SubagentRunner
-	readOnlySkillRunner skill.SubagentRunner
-	skillProfile        skill.ProfileResolver
-	slashSkillSeq       atomic.Uint64
-	hooks               *hook.Runner // session hook runner; nil-safe (no hooks configured)
+	skills                         skillSet
+	skillRunner                    skill.SubagentRunner
+	readOnlySkillRunner            skill.SubagentRunner
+	skillProfile                   skill.ProfileResolver
+	disableImplicitSkillInvocation bool
+	slashSkillSeq                  atomic.Uint64
+	hooks                          *hook.Runner // session hook runner; nil-safe (no hooks configured)
 	// hookContexts carries one-shot lifecycle hook context into the next real
 	// user turn without changing the cache-stable system prompt.
 	hookContexts []string
@@ -442,6 +443,9 @@ type Options struct {
 	AllSkills     []skill.Skill
 	SkillStore    *skill.Store
 	AllSkillStore *skill.Store
+	// DisableImplicitSkillInvocation controls model-facing discovery only;
+	// explicit /skill commands and management remain host-side capabilities.
+	DisableImplicitSkillInvocation bool
 	// SkillRunner executes a runAs=subagent skill in an isolated child loop.
 	// ReadOnlySkillRunner is reserved for explicitly read-only entry points;
 	// Plan itself is a workflow instruction and uses SkillRunner with the shared
@@ -585,6 +589,7 @@ func New(opts Options) *Controller {
 		sessionPath:                       opts.SessionPath,
 		commands:                          atomic.Pointer[[]command.Command]{},
 		skills:                            newSkillSet(opts.Skills, opts.AllSkills, opts.SkillStore, opts.AllSkillStore),
+		disableImplicitSkillInvocation:    opts.DisableImplicitSkillInvocation,
 		skillRunner:                       opts.SkillRunner,
 		readOnlySkillRunner:               opts.ReadOnlySkillRunner,
 		skillProfile:                      opts.SkillProfile,
@@ -4664,6 +4669,34 @@ func (c *Controller) History() []provider.Message {
 	return c.executor.Session().Snapshot() // copy — a turn may be appending concurrently
 }
 
+// HistoryLen returns the number of messages in the live log.
+func (c *Controller) HistoryLen() int {
+	if c.executor == nil {
+		return 0
+	}
+	return c.executor.Session().Len()
+}
+
+// HistoryWindow returns a copy of the messages in [start, end) of the live
+// log. Paging frontends use it to convert a display window without copying
+// the whole history.
+func (c *Controller) HistoryWindow(start, end int) []provider.Message {
+	if c.executor == nil {
+		return []provider.Message{}
+	}
+	return c.executor.Session().MessageRange(start, end)
+}
+
+// SessionPersistedState exposes the session's persistence baseline for the
+// controller's current session path, so a paging frontend can validate a
+// display-index sidecar against the live session.
+func (c *Controller) SessionPersistedState() (agent.PersistedState, bool) {
+	if c.executor == nil {
+		return agent.PersistedState{}, false
+	}
+	return c.executor.Session().PersistedState(c.SessionPath())
+}
+
 // ContextSnapshot returns (usedTokens, contextWindow) from the most recent
 // turn. Both zero means no data yet — a gauge hides itself.
 // usedTokens is promptTokens + completionTokens so the GUI breakdown and
@@ -4794,7 +4827,10 @@ func (c *Controller) ReloadCommands(ctx context.Context) error {
 	default:
 	}
 	cmds, loadErr := command.LoadRoots(config.CommandRootsForRoot(c.workspaceRoot)...)
-	cmdSkills := c.SlashSkills()
+	var cmdSkills []skill.Skill
+	if !c.disableImplicitSkillInvocation {
+		cmdSkills = c.SlashSkills()
+	}
 
 	entries := make([]command.SlashEntry, 0, len(cmdSkills)+len(cmds))
 	for _, sk := range cmdSkills {
@@ -4836,6 +4872,13 @@ func (c *Controller) Executor() *agent.Agent {
 
 func (c *Controller) Skills() []skill.Skill {
 	return c.skills.list()
+}
+
+// ImplicitSkillInvocationEnabled reports whether skills are exposed to the
+// model for automatic discovery and invocation. Explicit /skill handling is
+// independent of this model-facing capability.
+func (c *Controller) ImplicitSkillInvocationEnabled() bool {
+	return c != nil && !c.disableImplicitSkillInvocation
 }
 
 // SlashSkills returns the user-visible skill directory. Plugin skills use

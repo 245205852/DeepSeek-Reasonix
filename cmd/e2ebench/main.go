@@ -205,7 +205,7 @@ func main() {
 	cacheArm := flag.String("cache", "cold", "suite mode: cold (fresh session per task) | warm (prefix-warming one-step run in the same workdir before the graded run)")
 	effort := flag.String("effort", "", "reasoning effort override passed to the agent (model-specific levels, e.g. disabled|low|high|max); empty = model default")
 	checkpoints := flag.Bool("checkpoints", false, "suite mode: snapshot the workdir on every change and grade each snapshot offline after the run, yielding first_correct_ms (TTFCS) and post_solve_waste_ms")
-	policyFlag := flag.String("policy", "", "suite mode: experiment arm — empty (baseline) | ebm (evidence-before-more-mutation nudge)")
+	policyFlag := flag.String("policy", "", "suite mode: experiment arm — empty (baseline) | ebm (evidence-before-more-mutation nudge) | governor (exploration-phase reasoning governor)")
 	forkCapture := flag.String("fork-capture", "", "suite mode: capture a fork bundle per task at first EBM eligibility into <dir>/<task-id>")
 	bundles := flag.String("bundles", "", "fork mode: directory of captured bundles (<task-id>/bundle.json)")
 	forkArms := flag.String("arm", "control,treatment", "fork mode: comma-separated continuation arms (control | treatment)")
@@ -509,10 +509,13 @@ func runTask(cfg suiteConfig, t task) result {
 
 	cmd := exec.CommandContext(ctx, cfg.bin, args...)
 	cmd.Dir = work
-	if cfg.policy == "ebm" || cfg.forkCapture != "" {
+	if cfg.policy != "" || cfg.forkCapture != "" {
 		env := os.Environ()
-		if cfg.policy == "ebm" {
+		switch cfg.policy {
+		case "ebm":
 			env = append(env, "REASONIX_EXPERIMENT_EBM=1")
+		case "governor":
+			env = append(env, "REASONIX_EXPERIMENT_GOVERNOR=1")
 		}
 		if cfg.forkCapture != "" {
 			env = append(env, "REASONIX_EXPERIMENT_FORK_CAPTURE_DIR="+filepath.Join(cfg.forkCapture, t.ID))

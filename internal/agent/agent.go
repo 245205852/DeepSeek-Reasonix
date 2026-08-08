@@ -571,12 +571,15 @@ type Agent struct {
 	// ebm is the Evidence-Before-More-Mutation nudge's once-per-turn state.
 	ebm ebmState
 
+	// governor is the reasoning governor's per-turn engagement state.
+	governor governorState
+
 	// forkRestore, when armed, swaps the frozen fork-bundle conversation in
 	// right after beginRunTurn — the counterfactual-continuation seam.
 	forkRestore func(*runLoopState)
 
-	// lastReasoning is the previous round's reasoning-token spend, observed
-	// by the capture provider; only the governor fork trigger reads it.
+	// lastReasoning is the previous executor round's reasoning-token spend,
+	// read by the governor trigger (live policy and fork capture alike).
 	lastReasoning int
 
 	// repeatFailureCounts tracks semantically identical write-like calls that
@@ -2479,7 +2482,7 @@ func (a *Agent) streamWithFrozen(ctx context.Context, turn int, sink event.Sink,
 				responsesItems = append(responsesItems, append(json.RawMessage(nil), chunk.ResponsesItem...))
 			}
 		case provider.ChunkUsage:
-			usage = chunk.Usage
+			usage, a.lastReasoning = chunk.Usage, chunk.Usage.ReasoningTokens
 			a.lastUsage.Store(chunk.Usage)
 			a.sessCacheHit.Add(int64(chunk.Usage.CacheHitTokens))
 			a.sessCacheMiss.Add(int64(chunk.Usage.CacheMissTokens))

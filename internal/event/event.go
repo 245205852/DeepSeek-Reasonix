@@ -484,6 +484,7 @@ const (
 	NoticeCodeLoopGuard                     = "loop_guard"
 	NoticeCodeProgressGuard                 = "progress_guard"
 	NoticeCodeEvidenceNudge                 = "evidence_nudge"
+	NoticeCodeReasoningGovernor             = "reasoning_governor"
 	NoticeCodeWorkspaceLease                = "workspace_lease"
 	NoticeCodeCancelledTurn                 = "cancelled_turn_display"
 	NoticeCodeUnappliedSteer                = "unapplied_steer"
