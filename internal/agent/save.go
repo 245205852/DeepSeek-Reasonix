@@ -1435,7 +1435,10 @@ func MarkCleanupPending(sessionPath, operation string) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(path, b, 0o644)
+	// The marker controls session visibility during delayed cleanup. Publish it
+	// atomically so a crash cannot leave malformed JSON that hides the session
+	// and blocks reconciliation on the next startup.
+	return fileutil.AtomicWriteFile(path, b, 0o644)
 }
 
 // ClearCleanupPending removes a delayed-cleanup marker after physical cleanup.

@@ -150,6 +150,9 @@ func TestSessionInFlightTurnMetaRoundTrip(t *testing.T) {
 	if marked.InFlightTurn == nil {
 		t.Fatal("in-flight turn marker missing")
 	}
+	if marked.InFlightTurn.ID == "" || marked.InFlightTurn.StartRevision == 0 || marked.InFlightTurn.StartDigest == "" {
+		t.Fatalf("marker identity = %+v, want id/revision/digest", marked.InFlightTurn)
+	}
 	if marked.InFlightTurn.StartMessageIndex != 1 || !marked.InFlightTurn.PreserveUser {
 		t.Fatalf("in-flight marker = %+v, want index=1 preserveUser=true", marked.InFlightTurn)
 	}
@@ -158,6 +161,20 @@ func TestSessionInFlightTurnMetaRoundTrip(t *testing.T) {
 	}
 	if !marked.UpdatedAt.Equal(updatedAt) {
 		t.Fatalf("MarkSessionInFlightTurn updated activity time: got %v want %v", marked.UpdatedAt, updatedAt)
+	}
+	oldMarker := *marked.InFlightTurn
+	newMarker, err := BeginSessionInFlightTurn(path, 2, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cleared, err := ClearSessionInFlightTurnIfMatch(path, oldMarker); err != nil {
+		t.Fatal(err)
+	} else if cleared {
+		t.Fatal("stale marker unexpectedly cleared a newer marker")
+	}
+	current, ok, err := LoadBranchMeta(path)
+	if err != nil || !ok || current.InFlightTurn == nil || current.InFlightTurn.ID != newMarker.ID {
+		t.Fatalf("new marker after stale clear = %+v ok=%v err=%v", current.InFlightTurn, ok, err)
 	}
 
 	if err := UpdateSessionMeta(path, "model-a", "preview", 1, true); err != nil {
@@ -170,12 +187,12 @@ func TestSessionInFlightTurnMetaRoundTrip(t *testing.T) {
 	if refreshed.InFlightTurn == nil {
 		t.Fatal("UpdateSessionMeta dropped in-flight marker")
 	}
-	if refreshed.InFlightTurn.StartMessageIndex != 1 || !refreshed.InFlightTurn.PreserveUser {
-		t.Fatalf("refreshed in-flight marker = %+v, want index=1 preserveUser=true", refreshed.InFlightTurn)
+	if refreshed.InFlightTurn.StartMessageIndex != 2 || refreshed.InFlightTurn.PreserveUser {
+		t.Fatalf("refreshed in-flight marker = %+v, want index=2 preserveUser=false", refreshed.InFlightTurn)
 	}
 	updatedAt = refreshed.UpdatedAt
 
-	if err := ClearSessionInFlightTurn(path); err != nil {
+	if _, err := ClearSessionInFlightTurnIfMatch(path, newMarker); err != nil {
 		t.Fatal(err)
 	}
 	cleared, ok, err := LoadBranchMeta(path)

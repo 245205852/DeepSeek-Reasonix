@@ -168,6 +168,8 @@ export interface AppBindings {
   HeartbeatListTasks(): Promise<unknown>;
   HeartbeatReloadTasks(): Promise<unknown>;
   HeartbeatSaveTasks(tasks: unknown): Promise<void>;
+  HeartbeatReloadConfig(): Promise<unknown>;
+  HeartbeatSaveConfig(update: unknown): Promise<unknown>;
   HeartbeatTriggerNow(id: string): Promise<void>;
   HeartbeatGenerateID(): Promise<string>;
   Submit(input: string): Promise<void>;
@@ -4611,6 +4613,8 @@ function makeMockApp(): AppBindings {
     async HeartbeatListTasks() { return []; },
     async HeartbeatReloadTasks() { return []; },
     async HeartbeatSaveTasks(_tasks: unknown) {},
+    async HeartbeatReloadConfig() { return { revision: 0, etag: "", tasks: [] }; },
+    async HeartbeatSaveConfig(_update: unknown) { return { revision: 0, etag: "", tasks: [] }; },
     async HeartbeatTriggerNow(_id: string) {},
     async HeartbeatGenerateID() { return "mock-" + Date.now().toString(36); },
     async ListTasks() { return []; },

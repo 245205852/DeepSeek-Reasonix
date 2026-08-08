@@ -33,6 +33,7 @@ import (
 	"reasonix/internal/pluginpkg"
 	"reasonix/internal/provider"
 	"reasonix/internal/skill"
+	"reasonix/internal/store"
 	"reasonix/internal/tool"
 )
 
@@ -432,6 +433,96 @@ func TestRunTurnSnapshotsActivityWhenTranscriptChanges(t *testing.T) {
 	}
 	if meta.UpdatedAt.IsZero() {
 		t.Fatal("activity meta should be marked")
+	}
+}
+
+func TestFinishInFlightTurnKeepsMarkerUntilSnapshotSucceeds(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "session.jsonl")
+	sess := agent.NewSession("sys")
+	exec := agent.New(nil, nil, sess, agent.Options{}, event.Discard)
+	c := New(Options{Executor: exec, SessionDir: dir, SessionPath: path, Label: "test"})
+
+	start := sess.Len()
+	marker := c.markInFlightTurn(start, true)
+	if marker.ID == "" {
+		t.Fatal("in-flight marker was not created")
+	}
+	sess.Add(provider.Message{Role: provider.RoleUser, Content: "must become durable"})
+	if err := os.WriteFile(store.SessionEventLog(path), []byte(`{"schema_version":99,"type":"replace","messages":[]}`+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	c.finishInFlightTurn(start, marker)
+	meta, ok, err := agent.LoadBranchMeta(path)
+	if err != nil || !ok || meta.InFlightTurn == nil || meta.InFlightTurn.ID != marker.ID {
+		t.Fatalf("marker after failed snapshot = %+v ok=%v err=%v, want original marker", meta.InFlightTurn, ok, err)
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("failed snapshot unexpectedly wrote transcript: stat err=%v", err)
+	}
+
+	if err := os.Remove(store.SessionEventLog(path)); err != nil {
+		t.Fatal(err)
+	}
+	c.finishInFlightTurn(start, marker)
+	meta, ok, err = agent.LoadBranchMeta(path)
+	if err != nil || !ok {
+		t.Fatalf("LoadBranchMeta after successful snapshot ok=%v err=%v", ok, err)
+	}
+	if meta.InFlightTurn != nil {
+		t.Fatalf("marker survived successful snapshot: %+v", meta.InFlightTurn)
+	}
+	loaded, err := agent.LoadSession(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := loaded.Snapshot(); len(got) != 2 || got[1].Content != "must become durable" {
+		t.Fatalf("durable transcript = %+v", got)
+	}
+}
+
+func TestResumePreservesTranscriptWhenCrashFollowsFinalSnapshot(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "post-snapshot-crash.jsonl")
+	sess := agent.NewSession("sys")
+	if err := sess.Save(path); err != nil {
+		t.Fatal(err)
+	}
+	exec := agent.New(nil, nil, sess, agent.Options{}, event.Discard)
+	c := New(Options{Executor: exec, SessionDir: dir, SessionPath: path, Label: "test"})
+	marker := c.markInFlightTurn(sess.Len(), true)
+	sess.Add(provider.Message{Role: provider.RoleUser, Content: "completed prompt"})
+	sess.Add(provider.Message{Role: provider.RoleAssistant, Content: "completed answer"})
+	digest, err := sess.ContentDigest()
+	if err != nil {
+		t.Fatal(err)
+	}
+	committedMarker, matched, err := agent.PrepareSessionInFlightTurnCommit(path, marker, digest)
+	if err != nil || !matched {
+		t.Fatalf("PrepareSessionInFlightTurnCommit matched=%v err=%v", matched, err)
+	}
+	if err := sess.SaveSnapshot(path); err != nil {
+		t.Fatal(err)
+	}
+
+	loaded, err := agent.LoadSession(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	recoveredExec := agent.New(nil, nil, loaded, agent.Options{}, event.Discard)
+	recovered := New(Options{Executor: recoveredExec, SessionDir: dir, SessionPath: path, Label: "test"})
+	recovered.recoverInterruptedTurn(path)
+	msgs := recoveredExec.Session().Snapshot()
+	if len(msgs) != 3 || msgs[2].Content != "completed answer" || msgs[2].LocalOnly {
+		t.Fatalf("post-snapshot recovery changed durable transcript: %+v", msgs)
+	}
+	meta, ok, err := agent.LoadBranchMeta(path)
+	if err != nil || !ok {
+		t.Fatalf("LoadBranchMeta ok=%v err=%v", ok, err)
+	}
+	if meta.InFlightTurn != nil {
+		t.Fatalf("committed marker survived recovery: %+v (expected %+v)", meta.InFlightTurn, committedMarker)
 	}
 }
 
@@ -1085,6 +1176,85 @@ func TestRecoverInterruptedTurnAfterCompactionRelocatesVisibleTurn(t *testing.T)
 	}
 	if meta.InFlightTurn != nil {
 		t.Fatalf("in-flight marker survived recovery: %+v", meta.InFlightTurn)
+	}
+}
+
+// TestResumePreservesNewerWALAfterStaleMarker reproduces the destructive shape
+// from issue #7956: the compatibility anchor is still at 1149, while the native
+// event log has a newer 1315-message replace snapshot and an old marker at the
+// anchor boundary. Recovery must keep the WAL state and clear only the stale
+// marker instead of writing a backwards replace event.
+func TestResumePreservesNewerWALAfterStaleMarker(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "wal-newer-than-anchor.jsonl")
+
+	sess := agent.NewSession("sys")
+	for sess.Len() < 1149 {
+		role := provider.RoleAssistant
+		if sess.Len()%2 == 1 {
+			role = provider.RoleUser
+		}
+		sess.Add(provider.Message{Role: role, Content: fmt.Sprintf("base-%d", sess.Len())})
+	}
+	anchor := sess.Snapshot()
+	if err := sess.Save(path); err != nil {
+		t.Fatalf("Save anchor: %v", err)
+	}
+	if err := agent.MarkSessionInFlightTurn(path, 1149, false); err != nil {
+		t.Fatalf("MarkSessionInFlightTurn: %v", err)
+	}
+
+	sess.Add(provider.Message{Role: provider.RoleUser, Content: "synthetic-start"})
+	for i := 1; i < 166; i++ {
+		role := provider.RoleAssistant
+		if i == 40 || i == 90 || i == 140 {
+			role = provider.RoleUser
+		}
+		sess.Add(provider.Message{Role: role, Content: fmt.Sprintf("tail-%d", i)})
+	}
+	if sess.Len() != 1315 {
+		t.Fatalf("test setup length = %d, want 1315", sess.Len())
+	}
+	if err := sess.SaveRewrite(path); err != nil {
+		t.Fatalf("Save newer WAL snapshot: %v", err)
+	}
+
+	var anchorJSON strings.Builder
+	for _, msg := range anchor {
+		encoded, err := json.Marshal(msg)
+		if err != nil {
+			t.Fatalf("marshal anchor message: %v", err)
+		}
+		anchorJSON.Write(encoded)
+		anchorJSON.WriteByte('\n')
+	}
+	if err := os.WriteFile(path, []byte(anchorJSON.String()), 0o600); err != nil {
+		t.Fatalf("restore stale compatibility anchor: %v", err)
+	}
+
+	loaded, err := agent.LoadSession(path)
+	if err != nil {
+		t.Fatalf("LoadSession: %v", err)
+	}
+	if loaded.Len() != 1315 {
+		t.Fatalf("WAL replay length = %d, want 1315", loaded.Len())
+	}
+	exec := agent.New(nil, nil, loaded, agent.Options{}, event.Discard)
+	c := New(Options{Executor: exec, SessionDir: dir, SessionPath: path, Label: "test"})
+	c.recoverInterruptedTurn(path)
+
+	if got := exec.Session().Len(); got != 1315 {
+		t.Fatalf("recovery shrank newer WAL transcript to %d, want 1315", got)
+	}
+	meta, ok, err := agent.LoadBranchMeta(path)
+	if err != nil || !ok {
+		t.Fatalf("LoadBranchMeta ok=%v err=%v", ok, err)
+	}
+	if meta.InFlightTurn != nil {
+		t.Fatalf("stale marker survived safe recovery: %+v", meta.InFlightTurn)
+	}
+	if meta.Revision != 2 {
+		t.Fatalf("safe recovery rewrote WAL revision to %d, want unchanged 2", meta.Revision)
 	}
 }
 

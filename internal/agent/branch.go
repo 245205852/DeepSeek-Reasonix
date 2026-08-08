@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"reasonix/internal/fileutil"
@@ -77,9 +78,20 @@ const BranchMetaCountsVersion = 1
 // has started but not yet reached TurnDone. If the process exits mid-turn, a
 // later resume can strip the partial assistant/tool tail without guessing.
 type InFlightTurnMeta struct {
+	// ID makes marker cleanup compare-and-clear. Older sidecars omit it and are
+	// handled by the legacy index/time recovery path.
+	ID                string    `json:"id,omitempty"`
 	StartMessageIndex int       `json:"start_message_index"`
 	PreserveUser      bool      `json:"preserve_user"`
 	StartedAt         time.Time `json:"started_at"`
+	// StartRevision and StartDigest bind the legacy array boundary to the
+	// persisted transcript that existed when the turn began.
+	StartRevision int64  `json:"start_revision,omitempty"`
+	StartDigest   string `json:"start_digest,omitempty"`
+	// CommitDigest is written before the final turn snapshot. If recovery sees
+	// this exact transcript on disk, the snapshot committed and only marker
+	// cleanup was interrupted; no message recovery is necessary.
+	CommitDigest string `json:"commit_digest,omitempty"`
 }
 
 func (m BranchMeta) DefaultScope() string {
@@ -290,11 +302,42 @@ func TouchBranchMeta(sessionPath string) error {
 }
 
 func MarkSessionInFlightTurn(sessionPath string, startMessageIndex int, preserveUser bool) error {
-	return SetSessionInFlightTurn(sessionPath, InFlightTurnMeta{
+	_, err := BeginSessionInFlightTurn(sessionPath, startMessageIndex, preserveUser)
+	return err
+}
+
+var inFlightTurnSequence atomic.Uint64
+
+// BeginSessionInFlightTurn writes a new marker and returns the exact marker so
+// the owner can later clear only this turn. The baseline fields are learned from
+// the branch sidecar before replacing its marker.
+func BeginSessionInFlightTurn(sessionPath string, startMessageIndex int, preserveUser bool) (InFlightTurnMeta, error) {
+	if sessionPath == "" {
+		return InFlightTurnMeta{}, fmt.Errorf("empty session path")
+	}
+	// Read the baseline and install the marker under the same in-process save
+	// lock. Otherwise an autosave can advance the revision between the read and
+	// SetSessionInFlightTurn, leaving the marker bound to a stale baseline.
+	unlock := lockSessionSavePath(sessionPath)
+	defer unlock()
+	meta, err := EnsureBranchMeta(sessionPath)
+	if err != nil {
+		return InFlightTurnMeta{}, err
+	}
+	marker := InFlightTurnMeta{
+		ID:                fmt.Sprintf("%s-%d-%d", SessionWriterID(), time.Now().UnixNano(), inFlightTurnSequence.Add(1)),
 		StartMessageIndex: startMessageIndex,
 		PreserveUser:      preserveUser,
 		StartedAt:         time.Now().UTC(),
-	})
+	}
+	marker.StartRevision = meta.Revision
+	marker.StartDigest = strings.TrimSpace(meta.ContentDigest)
+	marker.StartMessageIndex = max(marker.StartMessageIndex, 0)
+	meta.InFlightTurn = &marker
+	if err := SaveBranchMetaPreserveUpdated(sessionPath, meta); err != nil {
+		return InFlightTurnMeta{}, err
+	}
+	return marker, nil
 }
 
 // SetSessionInFlightTurn writes an existing in-flight marker verbatim. It is
@@ -321,17 +364,71 @@ func SetSessionInFlightTurn(sessionPath string, marker InFlightTurnMeta) error {
 }
 
 func ClearSessionInFlightTurn(sessionPath string) error {
+	_, err := ClearSessionInFlightTurnIfMatch(sessionPath, InFlightTurnMeta{})
+	return err
+}
+
+// ClearSessionInFlightTurnIfMatch clears a marker only when it still matches
+// expected. A non-empty ID is authoritative; legacy markers without IDs fall
+// back to the complete persisted marker shape for compatibility.
+func ClearSessionInFlightTurnIfMatch(sessionPath string, expected InFlightTurnMeta) (bool, error) {
 	unlock := lockSessionSavePath(sessionPath)
 	defer unlock()
 	m, ok, err := LoadBranchMeta(sessionPath)
 	if err != nil || !ok {
-		return err
+		return false, err
 	}
 	if m.InFlightTurn == nil {
-		return nil
+		return false, nil
+	}
+	if expected.ID != "" {
+		if m.InFlightTurn.ID != expected.ID {
+			return false, nil
+		}
+	} else if expected.StartMessageIndex != 0 || expected.PreserveUser || !expected.StartedAt.IsZero() || expected.StartRevision != 0 || expected.StartDigest != "" {
+		if !sameInFlightTurn(*m.InFlightTurn, expected) {
+			return false, nil
+		}
 	}
 	m.InFlightTurn = nil
-	return SaveBranchMetaPreserveUpdated(sessionPath, m)
+	return true, SaveBranchMetaPreserveUpdated(sessionPath, m)
+}
+
+// PrepareSessionInFlightTurnCommit binds the owned marker to the exact final
+// transcript before that transcript is saved. Recovery can then distinguish a
+// crash after the save from a crash during the turn without guessing from roles
+// or array indexes.
+func PrepareSessionInFlightTurnCommit(sessionPath string, expected InFlightTurnMeta, digest string) (InFlightTurnMeta, bool, error) {
+	digest = strings.TrimSpace(digest)
+	if sessionPath == "" || expected.ID == "" || digest == "" {
+		return InFlightTurnMeta{}, false, nil
+	}
+	unlock := lockSessionSavePath(sessionPath)
+	defer unlock()
+	m, ok, err := LoadBranchMeta(sessionPath)
+	if err != nil || !ok || m.InFlightTurn == nil {
+		return InFlightTurnMeta{}, false, err
+	}
+	if m.InFlightTurn.ID != expected.ID {
+		return InFlightTurnMeta{}, false, nil
+	}
+	updated := *m.InFlightTurn
+	updated.CommitDigest = digest
+	m.InFlightTurn = &updated
+	if err := SaveBranchMetaPreserveUpdated(sessionPath, m); err != nil {
+		return InFlightTurnMeta{}, false, err
+	}
+	return updated, true, nil
+}
+
+func sameInFlightTurn(a, b InFlightTurnMeta) bool {
+	return a.ID == b.ID &&
+		a.StartMessageIndex == b.StartMessageIndex &&
+		a.PreserveUser == b.PreserveUser &&
+		a.StartedAt.Equal(b.StartedAt) &&
+		a.StartRevision == b.StartRevision &&
+		a.StartDigest == b.StartDigest &&
+		a.CommitDigest == b.CommitDigest
 }
 
 func ListBranches(dir string) ([]BranchInfo, error) {

@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -19,6 +21,100 @@ func TestHeartbeatConfigPathUsesReasonixUserStateDir(t *testing.T) {
 
 	if got := engine.configPath(); got != want {
 		t.Fatalf("configPath = %q, want %q", got, want)
+	}
+}
+
+func TestHeartbeatConfigRevisionKeepsLegacyFilesReadable(t *testing.T) {
+	isolateDesktopUserDirs(t)
+	engine := &HeartbeatEngine{}
+	legacy := `{"tasks":[{"id":"legacy","title":"Legacy","interval":"1h","enabled":false}]}`
+	if err := os.MkdirAll(filepath.Dir(engine.configPath()), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(engine.configPath(), []byte(legacy), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	tasks := engine.ReloadTasks()
+	if len(tasks) != 1 || tasks[0].ID != "legacy" {
+		t.Fatalf("legacy tasks = %+v, want one readable task", tasks)
+	}
+	if engine.cfgRevision != 0 {
+		t.Fatalf("legacy revision = %d, want zero", engine.cfgRevision)
+	}
+	if err := engine.ReplaceTasks(tasks); err != nil {
+		t.Fatalf("upgrade save: %v", err)
+	}
+	data, err := os.ReadFile(engine.configPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var cfg heartbeatConfig
+	if err := json.Unmarshal(data, &cfg); err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Revision != 1 || len(cfg.Tasks) != 1 {
+		t.Fatalf("upgraded config = %+v, want revision 1 with legacy task", cfg)
+	}
+	var previousReader struct {
+		Tasks []HeartbeatTask `json:"tasks"`
+	}
+	if err := json.Unmarshal(data, &previousReader); err != nil || len(previousReader.Tasks) != 1 {
+		t.Fatalf("previous reader could not ignore revision: tasks=%+v err=%v", previousReader.Tasks, err)
+	}
+}
+
+func TestHeartbeatReplaceTasksRejectsStaleRevision(t *testing.T) {
+	isolateDesktopUserDirs(t)
+	engine := &HeartbeatEngine{}
+	initial := []HeartbeatTask{{ID: "same", Title: "initial", Interval: "1h", Enabled: false}}
+	if err := engine.saveTasks(initial); err != nil {
+		t.Fatal(err)
+	}
+	engine.ReloadTasks()
+	external := []HeartbeatTask{{ID: "same", Title: "edited externally", Interval: "2h", Enabled: false}}
+	if err := engine.saveTasks(external); err != nil {
+		t.Fatal(err)
+	}
+	err := engine.ReplaceTasks([]HeartbeatTask{{ID: "same", Title: "stale UI edit", Interval: "3h", Enabled: false}})
+	if !errors.Is(err, ErrHeartbeatConfigConflict) {
+		t.Fatalf("ReplaceTasks error = %v, want config conflict", err)
+	}
+	onDisk := engine.loadTasks()
+	if len(onDisk) != 1 || onDisk[0].Title != "edited externally" || onDisk[0].Interval != "2h" {
+		t.Fatalf("stale replacement changed disk config: %+v", onDisk)
+	}
+	if got := engine.ListTasks()[0].Title; got != "initial" {
+		t.Fatalf("stale replacement changed in-memory tasks: %q", got)
+	}
+}
+
+func TestHeartbeatReplaceConfigRejectsSameRevisionExternalEditByETag(t *testing.T) {
+	isolateDesktopUserDirs(t)
+	engine := &HeartbeatEngine{}
+	initial := []HeartbeatTask{{ID: "same", Title: "initial", Interval: "1h", Enabled: false}}
+	if err := engine.saveTasks(initial); err != nil {
+		t.Fatal(err)
+	}
+	loaded := engine.ReloadConfig()
+	external := heartbeatConfig{Revision: loaded.Revision, Tasks: []HeartbeatTask{{ID: "same", Title: "edited externally", Interval: "2h", Enabled: false}}}
+	data, err := json.MarshalIndent(external, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(engine.configPath(), data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	_, err = engine.ReplaceConfig(HeartbeatConfigUpdate{
+		Revision: loaded.Revision,
+		ETag:     loaded.ETag,
+		Tasks:    []HeartbeatTask{{ID: "same", Title: "stale UI edit", Interval: "3h", Enabled: false}},
+	})
+	if !errors.Is(err, ErrHeartbeatConfigConflict) {
+		t.Fatalf("ReplaceConfig error = %v, want config conflict", err)
+	}
+	onDisk := engine.loadTasks()
+	if len(onDisk) != 1 || onDisk[0].Title != "edited externally" {
+		t.Fatalf("same-revision external edit was overwritten: %+v", onDisk)
 	}
 }
 
@@ -148,6 +244,23 @@ func TestHeartbeatControllerBusyIncludesPendingPrompt(t *testing.T) {
 	if !heartbeatControllerBusy(heartbeatStatusStub{status: control.RuntimeStatus{PendingPrompt: true}}) {
 		t.Fatal("pending prompt should keep controller busy")
 	}
+}
+
+func TestHeartbeatTaskExecutionReservationSerializesTriggers(t *testing.T) {
+	engine := &HeartbeatEngine{}
+	if !engine.claimTask("same") {
+		t.Fatal("first task claim should succeed")
+	}
+	second := make(chan bool, 1)
+	go func() { second <- engine.claimTask("same") }()
+	if <-second {
+		t.Fatal("overlapping task trigger should be rejected")
+	}
+	engine.releaseTask("same")
+	if !engine.claimTask("same") {
+		t.Fatal("task should be claimable after the owner releases it")
+	}
+	engine.releaseTask("same")
 }
 
 func TestHeartbeatExecuteTaskPersistsFreshConversationTopicID(t *testing.T) {
@@ -504,7 +617,6 @@ func TestHeartbeatTickAdoptsExternalFileEdits(t *testing.T) {
 	}
 	engine.mu.Lock()
 	engine.tasks = engine.loadTasks()
-	engine.noteConfigModLocked()
 	engine.mu.Unlock()
 
 	// External edit lands after the engine last touched the file. Force the

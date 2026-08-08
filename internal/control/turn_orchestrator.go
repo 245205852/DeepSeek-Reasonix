@@ -119,7 +119,8 @@ func (o *turnOrchestrator) runSubagentSkillTurns(ctx context.Context, skills []s
 
 	input := c.compose(task, raw, true)
 	startMessages := c.messageCount()
-	defer c.snapshotActivityIfChanged(startMessages)
+	var marker agent.InFlightTurnMeta
+	defer func() { c.finishInFlightTurn(startMessages, marker) }()
 	defer c.recordDisplayForNewUser(startMessages, display)
 	// The checkpoint prompt labels the turn in the rewind picker (and is
 	// prefilled into the composer after a conversation rewind), so it must be
@@ -140,13 +141,7 @@ func (o *turnOrchestrator) runSubagentSkillTurns(ctx context.Context, skills []s
 		defer func() { c.hooks.StopResult(context.Background(), lastAssistantText(c.History()), turn, err) }()
 	}
 
-	c.markInFlightTurn(startMessages, true)
-	inFlight := true
-	defer func() {
-		if inFlight {
-			c.clearInFlightTurn()
-		}
-	}()
+	marker = c.markInFlightTurn(startMessages, true)
 	c.sink.Emit(event.Event{Kind: event.TurnStarted})
 	if c.executor == nil {
 		return fmt.Errorf("subagent slash invocation requires an active session")
@@ -184,8 +179,6 @@ func (o *turnOrchestrator) runSubagentSkillTurns(ctx context.Context, skills []s
 		c.sink.Emit(event.Event{Kind: event.Message, Text: display})
 	}
 
-	c.clearInFlightTurn()
-	inFlight = false
 	return nil
 }
 
@@ -226,7 +219,8 @@ func (o *turnOrchestrator) runOrchestratedTurn(ctx context.Context, turn orchest
 		return nil
 	}
 	startMessages := c.messageCount()
-	defer c.snapshotActivityIfChanged(startMessages)
+	var marker agent.InFlightTurnMeta
+	defer func() { c.finishInFlightTurn(startMessages, marker) }()
 	defer c.recordDisplayForNewUser(startMessages, turn.display)
 	if turn.editedOriginal != "" {
 		defer c.markEditedForNewUser(startMessages, turn.editedOriginal)
@@ -258,7 +252,7 @@ func (o *turnOrchestrator) runOrchestratedTurn(ctx context.Context, turn orchest
 		}
 		defer func() { c.hooks.StopResult(context.Background(), lastAssistantText(c.History()), turn, err) }()
 	}
-	c.markInFlightTurn(startMessages, !turn.synthetic && !IsSyntheticUserMessage(turn.raw))
+	marker = c.markInFlightTurn(startMessages, !turn.synthetic && !IsSyntheticUserMessage(turn.raw))
 	var autoResearchTaskID string
 	if continuation != nil {
 		autoResearchTaskID = continuation.autoResearchTaskID
@@ -306,7 +300,6 @@ func (o *turnOrchestrator) runOrchestratedTurn(ctx context.Context, turn orchest
 		c.autoResearch.recordEvidenceFromAssistant(autoResearchTaskID, assistantText)
 		c.autoResearch.recordTurnProgress(autoResearchTaskID, autoResearchAcceptedBefore, assistantText)
 		c.autoResearch.heartbeat(autoResearchTaskID, autoresearch.HeartbeatTurnDone, "")
-		c.clearInFlightTurn()
 	} else {
 		c.autoResearch.heartbeat(autoResearchTaskID, autoresearch.HeartbeatWarning, err.Error())
 		// When the user explicitly cancels, keep the real prompt and any fully
@@ -337,7 +330,6 @@ func (o *turnOrchestrator) runOrchestratedTurn(ctx context.Context, turn orchest
 				CreatedAt: time.Now().UnixMilli(),
 			})
 		}
-		c.clearInFlightTurn()
 		return err
 	}
 	c.mu.Lock()
@@ -373,8 +365,8 @@ func (o *turnOrchestrator) runOrchestratedTurn(ctx context.Context, turn orchest
 	c.approval.setPlanAutoApprove(true)
 	defer c.approval.setPlanAutoApprove(false)
 	err = func() error {
-		c.markInFlightTurn(execStart, false)
-		defer c.clearInFlightTurn()
+		marker := c.markInFlightTurn(execStart, false)
+		defer c.finishInFlightTurn(execStart, marker)
 		return o.runComposedSyntheticTurn(ctx, planApprovedMessage)
 	}()
 	if err != nil {
