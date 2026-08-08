@@ -371,6 +371,70 @@ func (c *Contract) FinalizeSignal() string {
 		required, required, len(c.Checks), len(c.Checks))
 }
 
+// Verdict is the deterministic goal outcome the contract can decide without
+// a model call; Uncertain is the only case that still needs the bounded LLM
+// evaluator — it becomes the fallback, not the completion hot path.
+type Verdict uint8
+
+const (
+	VerdictUncertain Verdict = iota
+	VerdictContinue
+	VerdictBlocked
+	VerdictComplete
+)
+
+func (v Verdict) String() string {
+	switch v {
+	case VerdictContinue:
+		return "continue"
+	case VerdictBlocked:
+		return "blocked"
+	case VerdictComplete:
+		return "complete"
+	default:
+		return "uncertain"
+	}
+}
+
+// GoalVerdict decides the goal outcome from the evidence graph alone.
+// Missing or stale evidence means Continue (the next action is knowable);
+// a requirement explicitly resolved Failed — an arbiter's judgment that it
+// cannot be met — means Blocked; everything fresh-satisfied means Complete.
+// Only a contract with nothing to prove returns Uncertain.
+func (c *Contract) GoalVerdict() Verdict {
+	if len(c.Requirements) == 0 && len(c.Checks) == 0 {
+		return VerdictUncertain
+	}
+	missing, blocked := false, false
+	for _, req := range c.Requirements {
+		if !req.Required {
+			continue
+		}
+		switch req.Status {
+		case Failed:
+			blocked = true
+		case Pending, Stale:
+			missing = true
+		}
+	}
+	for _, check := range c.Checks {
+		if check.Status != Satisfied {
+			// A failed check run is actionable — fix it and re-run — so it
+			// keeps the goal in Continue, never Blocked.
+			missing = true
+		}
+	}
+	switch {
+	case missing:
+		return VerdictContinue
+	case blocked:
+		return VerdictBlocked
+	case c.Complete():
+		return VerdictComplete
+	}
+	return VerdictUncertain
+}
+
 // FinalRejection is the host's answer to a premature "done": empty when the
 // contract is fully proven (or has no content to prove), otherwise a
 // directive naming exactly what lacks fresh evidence — "verify R2" carries

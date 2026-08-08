@@ -334,3 +334,47 @@ func TestFinalRejectionNamesExactlyWhatIsUnproven(t *testing.T) {
 		t.Fatal("a contract with nothing to prove must not reject finals")
 	}
 }
+
+func TestGoalVerdictDeterministicHotPath(t *testing.T) {
+	empty := New("just chatting")
+	if v := empty.GoalVerdict(); v != VerdictUncertain {
+		t.Fatalf("empty contract = %v, want uncertain (the evaluator's only remaining territory)", v)
+	}
+
+	c := FromPlan("fix cache", PlanFacts{
+		AcceptanceCriteria: []string{"fix invalidation"},
+		Verifications:      []string{"go test ./cache/"},
+	})
+	if v := c.GoalVerdict(); v != VerdictContinue {
+		t.Fatalf("unproven contract = %v, want continue", v)
+	}
+
+	c.Observe(evidence.Receipt{ToolName: "edit_file", Mutation: true, Success: true})
+	c.Observe(evidence.Receipt{ToolName: "bash", Command: "go test ./cache/", Success: false})
+	c.Resolve("r1", Satisfied)
+	if v := c.GoalVerdict(); v != VerdictContinue {
+		t.Fatalf("failed check = %v, want continue (fix and re-run is actionable)", v)
+	}
+
+	c.Observe(evidence.Receipt{ToolName: "bash", Command: "go test ./cache/", Success: true})
+	if v := c.GoalVerdict(); v != VerdictComplete {
+		t.Fatalf("fresh-satisfied contract = %v, want complete; outstanding: %v", v, c.Outstanding())
+	}
+
+	// A newer mutation stales the proof: back to continue, not uncertain.
+	c.Observe(evidence.Receipt{ToolName: "edit_file", Mutation: true, Success: true})
+	if v := c.GoalVerdict(); v != VerdictContinue {
+		t.Fatalf("stale proof = %v, want continue", v)
+	}
+
+	// An arbiter's explicit judgment that a requirement cannot be met blocks.
+	c.Observe(evidence.Receipt{ToolName: "bash", Command: "go test ./cache/", Success: true})
+	c.AddRequirement("r9", "needs credentials we do not have", true)
+	c.Resolve("r9", Failed)
+	if v := c.GoalVerdict(); v != VerdictBlocked {
+		t.Fatalf("judgment-failed requirement = %v, want blocked", v)
+	}
+	if VerdictBlocked.String() != "blocked" || VerdictComplete.String() != "complete" {
+		t.Fatal("verdict strings")
+	}
+}
