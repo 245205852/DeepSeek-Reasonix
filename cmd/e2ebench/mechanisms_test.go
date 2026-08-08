@@ -145,3 +145,41 @@ func TestSummarizeTrajectorySplitsRecoveryGapByKind(t *testing.T) {
 func writeLines(path string, lines []string) error {
 	return os.WriteFile(path, []byte(strings.Join(lines, "\n")), 0o644)
 }
+
+func TestRenderContractShadowAgreement(t *testing.T) {
+	agree := result{task: task{ID: "a"}, Passed: true}
+	agree.Trajectory = &trajectorySummary{ShadowVerdict: "complete", ShadowComplete: true, ShadowIntent: "mutation"}
+	miss := result{task: task{ID: "b"}, Passed: true}
+	miss.Trajectory = &trajectorySummary{ShadowVerdict: "continue", ShadowComplete: false}
+	got := renderContractShadow([]result{agree, miss})
+	for _, want := range []string{
+		"verdicts complete ×1 · continue ×1",
+		"**agreement with grader** 50% (1/2)",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("shadow line missing %q:\n%s", want, got)
+		}
+	}
+	if renderContractShadow([]result{{task: task{ID: "c"}}}) != "" {
+		t.Fatal("runs without shadow audits must render nothing")
+	}
+}
+
+func TestSummarizeTrajectoryReadsContractShadow(t *testing.T) {
+	path := t.TempDir() + "/shadow.trajectory.jsonl"
+	lines := []string{
+		`{"seq":1,"ts":1000,"event":{"kind":"turn_started"}}`,
+		`{"seq":2,"ts":2000,"contract_shadow":{"intent":"mutation","verdict":"complete","complete":true}}`,
+		`{"seq":3,"ts":3000,"event":{"kind":"turn_done"}}`,
+	}
+	if err := writeLines(path, lines); err != nil {
+		t.Fatal(err)
+	}
+	s, err := summarizeTrajectory(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s.ShadowVerdict != "complete" || !s.ShadowComplete || s.ShadowIntent != "mutation" {
+		t.Fatalf("shadow = %q/%v/%q", s.ShadowVerdict, s.ShadowComplete, s.ShadowIntent)
+	}
+}

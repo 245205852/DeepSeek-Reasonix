@@ -98,6 +98,12 @@ type trajectorySummary struct {
 	// session pays the whole prefix as miss; a warmed one starts near-hit.
 	FirstReqCacheHitTokens  int64 `json:"first_req_cache_hit_tokens,omitempty"`
 	FirstReqCacheMissTokens int64 `json:"first_req_cache_miss_tokens,omitempty"`
+
+	// Shadow contract audit (last of the turn): what the observing contract
+	// concluded, priced against the hidden grader by the report.
+	ShadowIntent   string `json:"shadow_intent,omitempty"`
+	ShadowVerdict  string `json:"shadow_verdict,omitempty"`
+	ShadowComplete bool   `json:"shadow_complete,omitempty"`
 }
 
 // toolWall is the best available tool wall-clock: interval union when the
@@ -113,7 +119,12 @@ func (s *trajectorySummary) toolWall() int64 {
 type trajectoryRecord struct {
 	TS               int64  `json:"ts"`
 	ProtocolRecovery string `json:"protocol_recovery"`
-	Event            *struct {
+	ContractShadow   *struct {
+		Intent   string `json:"intent"`
+		Verdict  string `json:"verdict"`
+		Complete bool   `json:"complete"`
+	} `json:"contract_shadow"`
+	Event *struct {
 		Kind          string `json:"kind"`
 		Code          string `json:"code"`
 		RetryScope    string `json:"retryScope"`
@@ -281,6 +292,11 @@ func (t *trajScan) record(rec trajectoryRecord) {
 	if rec.ProtocolRecovery == "missing_reasoning_retry_attempted" {
 		t.s.ReasoningReplays++
 		t.taintAs("reasoning_replay")
+	}
+	if cs := rec.ContractShadow; cs != nil {
+		t.s.ShadowIntent = cs.Intent
+		t.s.ShadowVerdict = cs.Verdict
+		t.s.ShadowComplete = cs.Complete
 	}
 	if rec.Event == nil {
 		return

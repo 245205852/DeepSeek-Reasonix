@@ -143,3 +143,34 @@ func renderMechanismLedger(results []result) string {
 	}
 	return b.String() + "\n"
 }
+
+// renderContractShadow prices the shadow contract against the hidden grader:
+// agreement is the number the adoption decision is made on. Absent audits
+// (agent without shadow wiring) render nothing.
+func renderContractShadow(results []result) string {
+	agree, disagree := 0, 0
+	verdicts := map[string]int{}
+	for _, r := range results {
+		t := r.Trajectory
+		if t == nil || t.ShadowVerdict == "" {
+			continue
+		}
+		verdicts[t.ShadowVerdict]++
+		if t.ShadowComplete == r.Passed {
+			agree++
+		} else {
+			disagree++
+		}
+	}
+	if agree+disagree == 0 {
+		return ""
+	}
+	parts := make([]string, 0, len(verdicts))
+	for _, v := range []string{"complete", "continue", "blocked", "uncertain"} {
+		if verdicts[v] > 0 {
+			parts = append(parts, fmt.Sprintf("%s ×%d", v, verdicts[v]))
+		}
+	}
+	return fmt.Sprintf("**Contract shadow**: verdicts %s · **agreement with grader** %s (%d/%d)\n\n",
+		strings.Join(parts, " · "), pct(agree, agree+disagree), agree, agree+disagree)
+}
