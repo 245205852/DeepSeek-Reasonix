@@ -106,8 +106,10 @@ own outcome).
 
 | Flag | Default | Purpose |
 | --- | --- | --- |
-| `-mode` | `suite` | `suite` \| `diff` \| `swebench` (`diff` generates tests for the PR diff; `swebench` runs the official per-instance evaluation) |
+| `-mode` | `suite` | `suite` \| `diff` \| `swebench` \| `compare` \| `traj` (`diff` generates tests for the PR diff; `swebench` runs the official per-instance evaluation; `compare` renders KPI/Pareto readouts from 2+ `-json` reports; `traj` re-digests recorded trajectory files without spending tokens). |
 | `-suite` | `benchmarks/e2e` | Suite root (must contain `tasks/<id>/`). |
+| `-task` | *(all)* | Suite mode: run only these comma-separated task IDs (e.g. `-task fix-add-bug`); unknown IDs fail with the available list. |
+| `-attempts` | `1` | Suite and diff modes: retry a task until an attempt passes, up to N; enables the `Pass@≤N` KPI, and TTCS charges a retried solve with its failed attempts' wall. |
 | `-bin` | `reasonix` | Path to the reasonix binary. |
 | `-model` | *(config default)* | Provider/model name. |
 | `-profile` | `baseline` | Prompt profile: `baseline` \| `delivery`. `delivery` appends `--profile delivery` to the agent invocation. |
@@ -173,16 +175,11 @@ writer.
 4. Write `verify.sh`: `set -e`, exit 0 iff the agent's artifacts are correct.
    Keep the expected answer out of the prompt and seed; the script runs in the
    work dir and may validate anything the agent produced.
-5. Run the suite. Since `e2ebench` has no single-task filter, iterate against a
-   scratch suite root:
+5. Iterate on just that task with the single-task filter, then commit:
 
    ```sh
-   mkdir -p scratch/tasks/<task-id>
-   cp -r benchmarks/e2e/tasks/<task-id>/* scratch/tasks/<task-id>/
-   go run ./cmd/e2ebench -suite scratch
+   go run ./cmd/e2ebench -task <task-id>
    ```
-
-   When it passes, remove the scratch dir and commit the task.
 
 ## context-maintenance-e2e
 

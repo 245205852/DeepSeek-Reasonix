@@ -392,6 +392,23 @@ func TestRenderTimeAttributionIncludesBatchingLine(t *testing.T) {
 	}
 }
 
+func TestFilterTasks(t *testing.T) {
+	tasks := []task{{ID: "a"}, {ID: "b"}, {ID: "c"}}
+	got, err := filterTasks(tasks, " b, a ")
+	if err != nil {
+		t.Fatalf("filterTasks: %v", err)
+	}
+	if len(got) != 2 || got[0].ID != "b" || got[1].ID != "a" {
+		t.Fatalf("filtered = %v, want [b a] in request order", got)
+	}
+	if all, err := filterTasks(tasks, ""); err != nil || len(all) != 3 {
+		t.Fatalf("empty filter must keep the suite: %v %v", all, err)
+	}
+	if _, err := filterTasks(tasks, "typo"); err == nil || !strings.Contains(err.Error(), "available: a, b, c") {
+		t.Fatalf("unknown id must fail loudly with the available set, got %v", err)
+	}
+}
+
 func TestRenderBodyReportsTTCSKPIs(t *testing.T) {
 	a := result{task: task{ID: "a"}, Passed: true, WallMs: 60_000, Attempt: 1, TTCSMs: 60_000}
 	b1 := result{task: task{ID: "b"}, WallMs: 40_000, Attempt: 1}

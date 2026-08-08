@@ -169,6 +169,7 @@ func main() {
 	workers := flag.Int("workers", 4, "swebench mode: parallel grader workers")
 	keepImages := flag.Bool("keep-images", false, "swebench mode: keep instance images instead of removing them after each run")
 	suite := flag.String("suite", "benchmarks/e2e", "suite root (contains tasks/<id>/)")
+	taskFilter := flag.String("task", "", "suite mode: run only these comma-separated task IDs (e.g. -task fix-add-bug)")
 	bin := flag.String("bin", "reasonix", "path to the reasonix binary")
 	model := flag.String("model", "", "provider/model name (default: config default)")
 	profileFlag := flag.String("profile", benchmarkProfileBaseline, "prompt profile: baseline | delivery")
@@ -245,6 +246,10 @@ func main() {
 		}
 		os.Exit(1)
 	}
+	if tasks, err = filterTasks(tasks, *taskFilter); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(2)
+	}
 
 	results := runSuite(*bin, *model, profile, arm, tasks, *budget, *trajDir, *forcePlanner, *attempts)
 
@@ -310,6 +315,38 @@ func loadTasks(suite string) ([]task, error) {
 	}
 	sort.Slice(tasks, func(i, j int) bool { return tasks[i].ID < tasks[j].ID })
 	return tasks, nil
+}
+
+// filterTasks narrows the suite to the -task list. Unknown IDs fail loudly
+// with the available set — a typo silently running zero tasks would read as
+// success.
+func filterTasks(tasks []task, filter string) ([]task, error) {
+	filter = strings.TrimSpace(filter)
+	if filter == "" {
+		return tasks, nil
+	}
+	byID := make(map[string]task, len(tasks))
+	ids := make([]string, 0, len(tasks))
+	for _, t := range tasks {
+		byID[t.ID] = t
+		ids = append(ids, t.ID)
+	}
+	var out []task
+	for _, id := range strings.Split(filter, ",") {
+		id = strings.TrimSpace(id)
+		if id == "" {
+			continue
+		}
+		t, ok := byID[id]
+		if !ok {
+			return nil, fmt.Errorf("-task %q: no such task; available: %s", id, strings.Join(ids, ", "))
+		}
+		out = append(out, t)
+	}
+	if len(out) == 0 {
+		return nil, fmt.Errorf("-task %q selected no tasks", filter)
+	}
+	return out, nil
 }
 
 // runSuite runs each task in order until the token budget is exhausted;
