@@ -12,12 +12,11 @@ var plannerNonResearchTools = []string{
 	"complete_step",
 	"slash_command",
 	"todo_write",
-	"update_goal",
 	"wait",
 }
 
 // PlannerToolRegistry returns read-only research tools plus an isolated
-// use_capability proxy. Workflow and direct MCP schemas stay hidden.
+// use_capability proxy. Direct MCP schemas and selected workflow tools stay hidden.
 func PlannerToolRegistry(parent *tool.Registry) *tool.Registry {
 	exclude := append(SubagentMetaTools(), plannerNonResearchTools...)
 	base := FilterReadOnlyRegistry(parent, exclude...)
@@ -28,9 +27,6 @@ func PlannerToolRegistry(parent *tool.Registry) *tool.Registry {
 				continue
 			}
 			if tl, ok := base.Get(name); ok {
-				if classifier, ok := tl.(tool.PlanModeClassifier); ok && !classifier.PlanModeSafe() {
-					continue
-				}
 				sub.Add(tl)
 			}
 		}

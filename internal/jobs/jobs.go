@@ -1906,6 +1906,38 @@ func jobKey(parentSession, id string) string {
 	return strings.TrimSpace(parentSession) + "\x00" + strings.TrimSpace(id)
 }
 
+// call-context injection (mirrors agent.CallContext)
+
+type ctxKey struct{}
+type sessionCtxKey struct{}
+type jobCtxKey struct{}
+
+// WithManager stamps ctx with the job manager so tools can reach it via
+// FromContext. The agent sets this on every tool call's context.
+func WithManager(ctx context.Context, m *Manager) context.Context {
+	return context.WithValue(ctx, ctxKey{}, m)
+}
+
+// FromContext returns the job manager set by the agent, if any. ok is false for a
+// plain context (headless tests, calls outside the run loop).
+func FromContext(ctx context.Context) (*Manager, bool) {
+	m, ok := ctx.Value(ctxKey{}).(*Manager)
+	return m, ok && m != nil
+}
+
+// WithSession stamps ctx with the active parent session ID for session-scoped job
+// operations.
+func WithSession(ctx context.Context, parentSession string) context.Context {
+	return context.WithValue(ctx, sessionCtxKey{}, strings.TrimSpace(parentSession))
+}
+
+// SessionFromContext returns the active parent session ID for job ownership and
+// filtering. Empty means no session scope is available.
+func SessionFromContext(ctx context.Context) string {
+	session, _ := ctx.Value(sessionCtxKey{}).(string)
+	return strings.TrimSpace(session)
+}
+
 // PublishEvidence attaches a background agent's host-observed receipts to its
 // job. The receipts stay independent of the parent turn ledger until the
 // parent collects the terminal result with wait or bash_output.

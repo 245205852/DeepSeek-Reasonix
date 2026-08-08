@@ -16,7 +16,6 @@ import (
 
 	"reasonix/internal/fileutil"
 	fileencoding "reasonix/internal/fileutil/encoding"
-	"reasonix/internal/provider"
 	"reasonix/internal/store"
 	"reasonix/internal/tool"
 )
@@ -78,7 +77,6 @@ type SubagentSpec struct {
 	ParentToolCallID string
 	SystemPrompt     string
 	Registry         *tool.Registry
-	ToolSchemas      []provider.ToolSchema
 	Model            string
 	Effort           string
 }
@@ -744,7 +742,7 @@ func (s *SubagentStore) LoadMeta(ref string) (SubagentMeta, error) {
 }
 
 func metaFromSpec(ref string, status SubagentStatus, created, updated time.Time, spec SubagentSpec) SubagentMeta {
-	scope, schemaHash := toolIdentity(spec.Registry, spec.ToolSchemas)
+	scope, schemaHash := toolIdentity(spec.Registry)
 	return SubagentMeta{
 		Ref:              ref,
 		CreatedAt:        created,

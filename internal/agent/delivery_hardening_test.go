@@ -198,7 +198,7 @@ func TestDeliveryDurableMemoryRequiresRememberWithoutCodeCeremony(t *testing.T) 
 	}
 }
 
-func TestNonGoalHallucinatedUpdateGoalWithVisibleTextDoesNotSpendRepairRound(t *testing.T) {
+func TestNonGoalUpdateGoalWithVisibleTextDoesNotSpendRepairRound(t *testing.T) {
 	goalTool, ok := tool.LookupBuiltin("update_goal")
 	if !ok {
 		t.Fatal("update_goal builtin not registered")
@@ -211,7 +211,7 @@ func TestNonGoalHallucinatedUpdateGoalWithVisibleTextDoesNotSpendRepairRound(t *
 	}}
 	a := New(prov, reg, NewSession("sys"), Options{}, event.Discard)
 	if err := a.Run(context.Background(), "answer normally"); err != nil {
-		t.Fatalf("non-Goal hallucinated update_goal with text: %v", err)
+		t.Fatalf("non-Goal update_goal with text: %v", err)
 	}
 	if prov.call != 1 {
 		t.Fatalf("provider calls = %d, want no repair round", prov.call)
@@ -238,7 +238,7 @@ func TestNonGoalToolOnlyUpdateGoalGetsAtMostOneRepairRound(t *testing.T) {
 	}}
 	a := New(prov, reg, NewSession("sys"), Options{}, event.Discard)
 	err := a.Run(context.Background(), "answer normally")
-	if err == nil || !strings.Contains(err.Error(), "repeatedly called context-unavailable tools") {
+	if err == nil || !strings.Contains(err.Error(), "repeatedly called update_goal outside Goal mode") {
 		t.Fatalf("repeated tool-only misuse error = %v", err)
 	}
 	if prov.call != 2 {

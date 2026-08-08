@@ -16,7 +16,6 @@ type samplingRequest struct {
 
 // prepareSamplingRequest freezes one model-round request (preflight + interceptors).
 func (a *Agent) prepareSamplingRequest(ctx context.Context) (samplingRequest, error) {
-	ctx = a.withAgentContext(ctx)
 	// CreatedAt is durable UI metadata, not model input. Strip it from the
 	// transport copy so wall-clock differences never invalidate the provider's
 	// prompt-cache prefix (and custom providers cannot accidentally send it).
@@ -37,7 +36,7 @@ func (a *Agent) prepareSamplingRequest(ctx context.Context) (samplingRequest, er
 	}
 	req := provider.Request{
 		Messages:       requestMessages,
-		Tools:          a.tools.SchemasForContext(ctx),
+		Tools:          a.tools.Schemas(),
 		MaxTokens:      a.maxOutputTokens,
 		Temperature:    provider.OptionalTemperature(a.temperature),
 		ResponseFormat: responseFormatFromRequest(ctx),

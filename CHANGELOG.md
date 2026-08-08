@@ -9,13 +9,10 @@ branch.
 ### Fixed
 
 - Goal is now the sole long-task runtime. Historical AutoResearch sidecars
-  migrate transactionally into research-budget Goals, retain their archive id
-  for retry when recovery fails, and write an explicit legacy-reader fence so
-  downgrading cannot reactivate the removed AutoResearch runtime.
-- Workflow-only tools are exposed to models only while their required Goal,
-  Plan, or background-job context is active. Mixed valid/unavailable tool
-  batches receive one bounded repair, while sub-agents no longer inherit parent
-  Goal reports, background jobs, or immediate memory-queue injection.
+  migrate transactionally into research-budget Goals. Invalid archives block
+  fail closed and remain read-only; successful Goal-only sidecars omit the old
+  task id and write an explicit downgrade fence so previous readers cannot
+  reactivate the removed runtime.
 
 - **Issue #7575:** Linux Bash under bubblewrap no longer mounts a fresh empty
   `--tmpfs /tmp` on every call. Consecutive commands in the same logical session

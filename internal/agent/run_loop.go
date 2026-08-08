@@ -13,6 +13,7 @@ import (
 	"reasonix/internal/jobs"
 	"reasonix/internal/provider"
 	"reasonix/internal/taskintent"
+	"reasonix/internal/tool"
 )
 
 // runLoopState holds per-Run loop counters and flags. It is package-private and
@@ -26,7 +27,7 @@ type runLoopState struct {
 	emptyFinalBlocks   int
 	handoffNudges      int
 	usedAnyTool        bool
-	contextToolRepairs int
+	goalToolRepairs    int
 	graceRound         bool
 	recoveryGraceRound bool
 
@@ -326,7 +327,6 @@ func (a *Agent) beginRunTurn(ctx context.Context, input string) (rawInput string
 // runToolLoop owns the main tool-round budget and dispatches each streamed
 // assistant turn into final-response or tool-round handling.
 func (a *Agent) runToolLoop(ctx context.Context, state *runLoopState) error {
-	ctx = a.withAgentContext(ctx)
 	for step := 0; state.runMaxSteps <= 0 || step < state.runMaxSteps || state.graceRound || state.recoveryGraceRound; step++ {
 		// Consume a queued steer and persist it to the session so it
 		// survives tab switches and history replay. The model sees it as
@@ -336,7 +336,7 @@ func (a *Agent) runToolLoop(ctx context.Context, state *runLoopState) error {
 			a.session.Add(provider.Message{Role: provider.RoleUser, Content: a.withTurnPreferences(midTurnSteerMessage(text))})
 			a.sink.Emit(event.Event{Kind: event.Steer, Text: text})
 		}
-		schemas := a.tools.SchemasForContext(ctx)
+		schemas := a.tools.Schemas()
 		prefixShape := a.capturePrefixShape(schemas)
 		prevPrefixShape := a.lastPrefixShape
 		if !a.haveLastPrefixShape {
@@ -955,10 +955,8 @@ func (a *Agent) handleFinalResponse(ctx context.Context, state *runLoopState, te
 func (a *Agent) handleToolRound(ctx context.Context, state *runLoopState, step int, text, reasoning string, calls []provider.ToolCall, usage *provider.Usage) (cont bool, err error) {
 	state.emptyFinalBlocks = 0
 	state.usedAnyTool = true
-	unavailableContextTools, contextualOnly := a.unavailableContextualToolCalls(ctx, calls)
-	if err := a.rejectRepeatedContextToolCalls(state, calls, unavailableContextTools); err != nil {
-		return false, err
-	}
+	outOfContextGoalOnly := toolCallsAreOutOfContextGoalReports(ctx, calls)
+
 	// Grace round guard: if we already gave the model one extra response
 	// and it still wants to call tools, stop here.
 	if state.graceRound {
@@ -988,6 +986,7 @@ func (a *Agent) handleToolRound(ctx context.Context, state *runLoopState, step i
 			StopReason: reason,
 		}
 	}
+
 	receiptMark := 0
 	if a.evidence != nil {
 		receiptMark = a.evidence.Len()
@@ -1013,8 +1012,17 @@ func (a *Agent) handleToolRound(ctx context.Context, state *runLoopState, step i
 		a.recordInterruptedDisplay("", "", nil, true, state.workDurationMs())
 		return false, ctx.Err()
 	}
-	if handled, cont, err := a.repairContextToolCalls(ctx, state, text, reasoning, usage, unavailableContextTools, contextualOnly); handled {
-		return cont, err
+	if outOfContextGoalOnly {
+		if hasVisibleFinalAnswer(text) {
+			// Keep the assistant tool call and host error paired in the transcript,
+			// but accept the co-streamed answer instead of spending another model
+			// request repairing harmless Goal bookkeeping outside Goal mode.
+			return a.handleFinalResponse(ctx, state, text, reasoning, usage)
+		}
+		state.goalToolRepairs++
+		if state.goalToolRepairs > 1 {
+			return false, fmt.Errorf("model repeatedly called update_goal outside Goal mode without a visible answer")
+		}
 	}
 	if !a.planMode.Load() {
 		nextProgress, nextTracking := a.canonicalTodoProgress()
@@ -1085,4 +1093,19 @@ func (a *Agent) handleToolRound(ctx context.Context, state *runLoopState, step i
 		a.sink.Emit(event.Event{Kind: event.Notice, Level: event.LevelInfo, Code: event.NoticeCodeToolBudget, Text: toolBudgetNoticeText(), Detail: fmt.Sprintf("budget (%s=%d) exhausted: one grace round to finalize", state.runMaxStepsKey, state.runMaxSteps)})
 	}
 	return true, nil
+}
+
+func toolCallsAreOutOfContextGoalReports(ctx context.Context, calls []provider.ToolCall) bool {
+	if len(calls) == 0 {
+		return false
+	}
+	if _, ok := tool.GoalTurnRecorderFromContext(ctx); ok {
+		return false
+	}
+	for _, call := range calls {
+		if call.Name != "update_goal" {
+			return false
+		}
+	}
+	return true
 }

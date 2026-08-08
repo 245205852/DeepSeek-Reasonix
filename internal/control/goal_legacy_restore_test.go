@@ -138,7 +138,7 @@ func TestGoalSetIdempotencyUsesEffectiveBudgetClass(t *testing.T) {
 	}
 }
 
-func TestLegacySidecarArchiveFailureIsBlockedWithoutRewritingTaskID(t *testing.T) {
+func TestLegacySidecarArchiveFailureBlocksWithoutPersistingTaskID(t *testing.T) {
 	root := t.TempDir()
 	if resolved, err := filepath.EvalSymlinks(root); err == nil {
 		root = resolved

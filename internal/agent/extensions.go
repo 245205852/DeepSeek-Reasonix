@@ -111,10 +111,9 @@ func (a *Agent) interceptAgentStart(ctx context.Context) error {
 	if d == nil {
 		return nil
 	}
-	providerCtx := a.withAgentContext(ctx)
 	payload := dispatch.AgentStartPayload{
 		Model:     a.prov.Name(),
-		ToolCount: len(a.tools.SchemasForContext(providerCtx)),
+		ToolCount: len(a.tools.Schemas()),
 		SessionID: ParentSession(ctx),
 	}
 	result, err := d.Intercept(ctx, extension.PointAgentBeforeStart, &payload)
