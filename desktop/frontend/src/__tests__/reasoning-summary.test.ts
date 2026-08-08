@@ -42,6 +42,12 @@ eq(
 );
 
 eq(
+  reasoningSummaryText("first thought\n\nlatest thought\n  \t  ", { streaming: true }),
+  "latest thought",
+  "trailing whitespace-only lines are skipped while streaming",
+);
+
+eq(
   reasoningSummaryText("first thought\r\n\r\nsecond thought\r\n", { streaming: false }),
   "first thought",
   "handles CRLF line endings when completed",

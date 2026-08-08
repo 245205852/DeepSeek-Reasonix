@@ -155,6 +155,26 @@ ok(!document.querySelector(".reasoning-summary"), "defaultExpanded skips the sum
 await act(async () => {
   setReasoningSummaryEnabled(false);
 });
+const guardedReasoning = new Proxy(new String("guarded reasoning"), {
+  get(target, property, receiver) {
+    if (property === "length") throw new Error("summary text should not be derived while summaries are disabled");
+    return Reflect.get(target, property, receiver);
+  },
+}) as unknown as string;
+let disabledDerivationSkipped = true;
+try {
+  await render({
+    kind: "assistant",
+    id: "a-disabled-derivation",
+    text: "",
+    reasoning: guardedReasoning,
+    streaming: true,
+    reasoningComplete: false,
+  });
+} catch {
+  disabledDerivationSkipped = false;
+}
+ok(disabledDerivationSkipped, "disabling reasoning summaries skips summary derivation");
 await render({
   kind: "assistant",
   id: "a4",

@@ -17,15 +17,15 @@ export function setReasoningSummaryEnabled(enabled: boolean): void {
   }
 }
 
-export function onReasoningSummaryPreferenceChange(cb: (enabled: boolean) => void): () => void {
-  const handler = (event: Event) => cb(Boolean((event as CustomEvent).detail));
+export function onReasoningSummaryPreferenceChange(cb: () => void): () => void {
+  const handler = () => cb();
   window.addEventListener(REASONING_SUMMARY_EVENT, handler);
   return () => window.removeEventListener(REASONING_SUMMARY_EVENT, handler);
 }
 
 export function useReasoningSummaryEnabled(): boolean {
   return useSyncExternalStore(
-    (onStoreChange) => onReasoningSummaryPreferenceChange(onStoreChange),
+    onReasoningSummaryPreferenceChange,
     getReasoningSummaryEnabled,
     getReasoningSummaryEnabled,
   );
