@@ -22,6 +22,7 @@ import (
 	"testing"
 	"time"
 
+	"reasonix/internal/extension"
 	"reasonix/internal/extension/protocol"
 	"reasonix/internal/extension/rpcwire"
 	"reasonix/internal/extension/sidecar"
@@ -29,7 +30,10 @@ import (
 )
 
 // examplePath is the built fullsidecar binary, shared by every test.
-var examplePath string
+var (
+	examplePath string
+	exampleRoot string
+)
 
 // TestMain builds the SDK example once for the whole run. The suite skips
 // cleanly when no go toolchain is available (minimal test environments); a
@@ -45,6 +49,7 @@ func TestMain(m *testing.M) {
 		os.Exit(1)
 	}
 	sdkDir := filepath.Join(filepath.Dir(thisFile), "..", "..", "..", "sdk", "go")
+	exampleRoot = filepath.Join(sdkDir, "examples", "fullsidecar")
 	dir, err := os.MkdirTemp("", "fullsidecar-conformance-")
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "conformance: MkdirTemp:", err)
@@ -67,34 +72,79 @@ func TestMain(m *testing.M) {
 // Host client fixture
 
 const (
-	testPluginID = "conformance-ext"
-	testProvider = "plugin/conformance-ext/fake/echo"
+	testPluginID              = "full-sidecar"
+	testProvider              = "plugin/full-sidecar/fake/echo"
+	fixtureProviderSchemaHash = "sha256:416af537aeb7edd2ff0b96fd2ecb385bc10f900e8b320292857c5279cb5bce50"
+	fixtureUIActionSchemaHash = "sha256:8532d24af25d5aaeb763c35d8c9d3283d8604a3473f8ddd06a4c910565b86aeb"
 )
+
+func copyFixtureFile(t *testing.T, src, dst string, mode os.FileMode) {
+	t.Helper()
+	data, err := os.ReadFile(src)
+	if err != nil {
+		t.Fatalf("read fixture %s: %v", src, err)
+	}
+	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+		t.Fatalf("create fixture directory: %v", err)
+	}
+	if err := os.WriteFile(dst, data, mode); err != nil {
+		t.Fatalf("write fixture %s: %v", dst, err)
+	}
+}
+
+// installExamplePackage assembles the built SDK example into the same layout
+// as an installed plugin, persists enabled state, then reloads it exclusively
+// through pluginpkg's v2 parser and installed-package inventory.
+func installExamplePackage(t *testing.T) (string, pluginpkg.InstalledPackage) {
+	t.Helper()
+	home := t.TempDir()
+	root := pluginpkg.InstallRoot(home, testPluginID)
+	copyFixtureFile(t, filepath.Join(exampleRoot, pluginpkg.NativeManifest), filepath.Join(root, pluginpkg.NativeManifest), 0o644)
+	binaryName := "full-sidecar"
+	if runtime.GOOS == "windows" {
+		binaryName += ".exe"
+	}
+	copyFixtureFile(t, examplePath, filepath.Join(root, "bin", binaryName), 0o755)
+
+	pkg, warnings, err := pluginpkg.ParseDir(root)
+	if err != nil {
+		t.Fatalf("ParseDir(installed fullsidecar): %v", err)
+	}
+	if len(warnings) != 0 {
+		t.Fatalf("ParseDir warnings = %v", warnings)
+	}
+	installed := pluginpkg.InstalledPlugin{
+		Name:         testPluginID,
+		Root:         pluginpkg.RelativeRoot(home, root),
+		Version:      pkg.Manifest.Version,
+		ManifestKind: pkg.ManifestKind,
+		Enabled:      true,
+	}
+	if err := pluginpkg.Upsert(home, installed); err != nil {
+		t.Fatalf("Upsert installed fullsidecar: %v", err)
+	}
+	loaded, warnings := pluginpkg.LoadInstalled(home)
+	if len(warnings) != 0 {
+		t.Fatalf("LoadInstalled warnings = %v", warnings)
+	}
+	if len(loaded) != 1 {
+		t.Fatalf("LoadInstalled = %d packages, want 1", len(loaded))
+	}
+	return home, loaded[0]
+}
 
 // startExample launches the example under the real host sidecar client with a
 // manifest that declares everything the example contributes. mutate tunes the
 // runtime spec (env, under-declared manifests); opts tunes ClientOptions.
 func startExample(t *testing.T, mutate func(rt *pluginpkg.RuntimeSpec), opts func(*sidecar.ClientOptions)) *sidecar.Client {
 	t.Helper()
-	rt := &pluginpkg.RuntimeSpec{
-		Command:      examplePath,
-		Intercepts:   []string{"input.receive", "tool.before", "system_prompt.build", "session.start"},
-		Replaces:     []string{"system_prompt"},
-		Capabilities: []string{"providers", "ui"},
-	}
+	_, item := installExamplePackage(t)
 	if mutate != nil {
-		mutate(rt)
+		mutate(item.Package.Manifest.Runtime)
 	}
-	root := t.TempDir()
-	pkg := pluginpkg.Package{
-		Root:         root,
-		ManifestKind: "reasonix",
-		Manifest:     pluginpkg.Manifest{Name: testPluginID, Version: "1.0.0", Runtime: rt},
-	}
-	installed := pluginpkg.InstalledPlugin{Name: testPluginID, Version: "1.0.0", Enabled: true, Root: root}
 	clientOpts := sidecar.ClientOptions{
-		Package:   pkg,
-		Installed: installed,
+		Package:   item.Package,
+		Installed: item.Installed,
 		Session:   protocol.SessionContext{SessionID: "sess-conf", WorkspaceRoot: "/ws", Generation: 1},
 	}
 	if opts != nil {
@@ -241,6 +291,106 @@ func protocolReason(t *testing.T, err error) protocol.ErrorReason {
 
 // Tests: initialize handshake
 
+func TestInstallableFixtureManifestCoversEveryRuntimeSurface(t *testing.T) {
+	_, item := installExamplePackage(t)
+	pkg := item.Package
+	if pkg.Manifest.APIVersion != pluginpkg.ManifestAPIVersionV2 {
+		t.Fatalf("apiVersion = %q, want %q", pkg.Manifest.APIVersion, pluginpkg.ManifestAPIVersionV2)
+	}
+	if pkg.Manifest.Name != testPluginID || pkg.Manifest.Version != "1.0.0" {
+		t.Fatalf("manifest identity = %q/%q", pkg.Manifest.Name, pkg.Manifest.Version)
+	}
+	rt := pkg.Manifest.Runtime
+	if rt == nil || rt.Command != "${REASONIX_PLUGIN_ROOT}/bin/full-sidecar" {
+		t.Fatalf("runtime = %+v", rt)
+	}
+	wantIntercepts := map[string]bool{"input.receive": true, "tool.before": true, "system_prompt.build": true, "session.start": true}
+	if len(rt.Intercepts) != len(wantIntercepts) {
+		t.Fatalf("runtime.intercepts = %v", rt.Intercepts)
+	}
+	for _, point := range rt.Intercepts {
+		if !wantIntercepts[point] {
+			t.Fatalf("unexpected runtime intercept %q", point)
+		}
+	}
+	wantCapabilities := map[string]bool{"interceptors": true, "strategies": true, "providers": true, "ui": true}
+	if len(rt.Capabilities) != len(wantCapabilities) {
+		t.Fatalf("runtime.capabilities = %v", rt.Capabilities)
+	}
+	for _, capability := range rt.Capabilities {
+		if !wantCapabilities[capability] {
+			t.Fatalf("unexpected runtime capability %q", capability)
+		}
+	}
+	if len(rt.Replaces) != 1 || rt.Replaces[0] != "system_prompt" {
+		t.Fatalf("runtime.replaces = %v", rt.Replaces)
+	}
+	wantProvides := map[string]string{
+		"plugin/full-sidecar/interceptors/default":     "",
+		"plugin/full-sidecar/strategies/system_prompt": "",
+		"plugin/full-sidecar/provider/fake/echo":       fixtureProviderSchemaHash,
+		"plugin/full-sidecar/uiaction/demo":            fixtureUIActionSchemaHash,
+	}
+	if len(pkg.Manifest.Provides) != len(wantProvides) {
+		t.Fatalf("manifest provides = %+v", pkg.Manifest.Provides)
+	}
+	for _, provided := range pkg.Manifest.Provides {
+		key := provided.Namespace + "/" + provided.Kind + "/" + provided.ID
+		wantHash, ok := wantProvides[key]
+		if !ok || provided.SchemaHash != wantHash {
+			t.Fatalf("provided capability %q has schemaHash %q", key, provided.SchemaHash)
+		}
+	}
+}
+
+func TestInstallableFixtureEnableDisableRemoveAndKernelContributions(t *testing.T) {
+	home, _ := installExamplePackage(t)
+	if err := pluginpkg.SetEnabled(home, testPluginID, false); err != nil {
+		t.Fatalf("disable fixture: %v", err)
+	}
+	if packages, warnings := sidecar.LoadRuntimePackages(home); len(packages) != 0 || len(warnings) != 0 {
+		t.Fatalf("disabled fixture loaded packages=%d warnings=%v", len(packages), warnings)
+	}
+	if err := pluginpkg.SetEnabled(home, testPluginID, true); err != nil {
+		t.Fatalf("enable fixture: %v", err)
+	}
+	mgr, warnings, err := sidecar.StartPackages(context.Background(), home, protocol.SessionContext{
+		SessionID: "sess-installed", WorkspaceRoot: "/ws", Generation: 1,
+	}, nil)
+	if err != nil {
+		t.Fatalf("StartPackages: %v", err)
+	}
+	t.Cleanup(func() { _ = mgr.Close() })
+	if len(warnings) != 0 {
+		t.Fatalf("StartPackages warnings = %v", warnings)
+	}
+	want := map[string]bool{
+		string(extension.KindInterceptor) + ":input.receive":       true,
+		string(extension.KindInterceptor) + ":tool.before":         true,
+		string(extension.KindInterceptor) + ":system_prompt.build": true,
+		string(extension.KindInterceptor) + ":session.start":       true,
+		string(extension.KindStrategy) + ":system_prompt":          true,
+		string(extension.KindProvider) + ":fake/echo":              true,
+		string(extension.KindUIAction) + ":demo":                   true,
+	}
+	contributions := mgr.Contributions()
+	if len(contributions) != len(want) {
+		t.Fatalf("contributions = %+v", contributions)
+	}
+	for _, contribution := range contributions {
+		key := string(contribution.Kind) + ":" + contribution.ID
+		if !want[key] {
+			t.Fatalf("unexpected contribution %q", key)
+		}
+	}
+	if _, ok, err := pluginpkg.Remove(home, testPluginID); err != nil || !ok {
+		t.Fatalf("remove fixture: ok=%v err=%v", ok, err)
+	}
+	if packages, warnings := sidecar.LoadRuntimePackages(home); len(packages) != 0 || len(warnings) != 0 {
+		t.Fatalf("removed fixture loaded packages=%d warnings=%v", len(packages), warnings)
+	}
+}
+
 // TestHandshakeAccepted proves the host accepts the example's full
 // declaration: subscriptions, the system_prompt strategy slot, the namespaced
 // provider, and the demo UI action.
@@ -268,28 +418,32 @@ func TestHandshakeAccepted(t *testing.T) {
 	if len(h.UIActions) != 1 || h.UIActions[0].ActionID != "demo" {
 		t.Fatalf("uiActions = %+v", h.UIActions)
 	}
+	if len(h.Provides) != 4 {
+		t.Fatalf("provides = %+v", h.Provides)
+	}
+	wantProvides := map[string]string{
+		"plugin/full-sidecar/interceptors/default":     "",
+		"plugin/full-sidecar/strategies/system_prompt": "",
+		"plugin/full-sidecar/provider/fake/echo":       fixtureProviderSchemaHash,
+		"plugin/full-sidecar/uiaction/demo":            fixtureUIActionSchemaHash,
+	}
+	for _, provided := range h.Provides {
+		key := provided.Namespace + "/" + provided.Kind + "/" + provided.ID
+		if want, ok := wantProvides[key]; !ok || provided.SchemaHash != want {
+			t.Fatalf("handshake provided capability %q has schemaHash %q", key, provided.SchemaHash)
+		}
+	}
 }
 
 // TestHandshakeUnderDeclaredRejected proves the manifest contract: an
 // extension activating a capability its manifest did not declare is refused
 // with capability_not_declared.
 func TestHandshakeUnderDeclaredRejected(t *testing.T) {
-	rt := &pluginpkg.RuntimeSpec{
-		Command:      examplePath,
-		Intercepts:   []string{"input.receive", "tool.before", "system_prompt.build", "session.start"},
-		Replaces:     []string{"system_prompt"},
-		Capabilities: []string{"ui"}, // no "providers": the example still declares one
-	}
-	root := t.TempDir()
-	pkg := pluginpkg.Package{
-		Root:         root,
-		ManifestKind: "reasonix",
-		Manifest:     pluginpkg.Manifest{Name: testPluginID, Version: "1.0.0", Runtime: rt},
-	}
-	installed := pluginpkg.InstalledPlugin{Name: testPluginID, Version: "1.0.0", Enabled: true, Root: root}
+	_, item := installExamplePackage(t)
+	item.Package.Manifest.Runtime.Capabilities = []string{"ui"} // no "providers": the example still declares one
 	_, err := sidecar.StartClient(context.Background(), sidecar.ClientOptions{
-		Package:   pkg,
-		Installed: installed,
+		Package:   item.Package,
+		Installed: item.Installed,
 		Session:   protocol.SessionContext{SessionID: "sess-conf", WorkspaceRoot: "/ws", Generation: 1},
 	})
 	if err == nil {

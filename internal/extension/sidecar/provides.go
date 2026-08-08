@@ -8,6 +8,40 @@ import (
 	"reasonix/internal/pluginpkg"
 )
 
+func capabilityAddress(ref pluginpkg.CapabilityRef) string {
+	return strings.TrimSuffix(strings.TrimSpace(ref.Namespace), "/") + "/" + strings.TrimPrefix(strings.TrimSpace(ref.ID), "/")
+}
+
+func capabilityWires(refs []pluginpkg.CapabilityRef) []protocol.CapabilityWire {
+	out := make([]protocol.CapabilityWire, 0, len(refs))
+	for _, ref := range refs {
+		out = append(out, protocol.CapabilityWire{
+			Namespace:  strings.TrimSpace(ref.Namespace),
+			Kind:       strings.TrimSpace(ref.Kind),
+			ID:         strings.TrimSpace(ref.ID),
+			Version:    strings.TrimSpace(ref.Version),
+			SchemaHash: strings.TrimSpace(ref.SchemaHash),
+		})
+	}
+	return out
+}
+
+func requirementWires(refs []pluginpkg.CapabilityRef) []protocol.RequirementWire {
+	out := make([]protocol.RequirementWire, 0, len(refs))
+	for _, ref := range refs {
+		out = append(out, protocol.RequirementWire{
+			Namespace:    strings.TrimSpace(ref.Namespace),
+			Kind:         strings.TrimSpace(ref.Kind),
+			ID:           strings.TrimSpace(ref.ID),
+			Version:      strings.TrimSpace(ref.Version),
+			SchemaHash:   strings.TrimSpace(ref.SchemaHash),
+			VersionRange: strings.TrimSpace(ref.VersionRange),
+			Optional:     ref.Optional,
+		})
+	}
+	return out
+}
+
 // validateProvidesCeiling rejects handshake Provides entries that are not a
 // subset of the manifest capability ceiling (by namespace/kind/id).
 func validateProvidesCeiling(manifest []pluginpkg.CapabilityRef, wire []protocol.CapabilityWire) error {

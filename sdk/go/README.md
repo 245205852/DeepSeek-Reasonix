@@ -93,13 +93,17 @@ card on session start, a form prompt behind the `demo` action), and a clean
 bounded shutdown — all in one small stdlib-only program.
 
 ```sh
-go build -o /tmp/fullsidecar ./examples/fullsidecar
+mkdir -p /tmp/full-sidecar/bin
+cp ./examples/fullsidecar/reasonix-plugin.json /tmp/full-sidecar/
+go build -o /tmp/full-sidecar/bin/full-sidecar ./examples/fullsidecar
 ```
 
-The binary speaks the protocol on stdin/stdout, so install it as a plugin
-package runtime (or point the host-side conformance suite at it) rather than
-running it interactively. It is driven end-to-end against the real host by
-`internal/extension/conformance` in the Reasonix repository.
+The resulting directory is a complete Manifest v2 plugin package. The binary
+speaks the protocol on stdin/stdout, so install the directory as a plugin
+package (or point the host-side conformance suite at it) rather than running
+the binary interactively. It is installed into a temporary Reasonix home and
+driven end-to-end against the real host by `internal/extension/conformance` in
+the Reasonix repository.
 
 ## Generated wire types
 

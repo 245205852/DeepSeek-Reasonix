@@ -146,6 +146,7 @@ type Client struct {
 	pluginID         string
 	version          string
 	rt               *pluginpkg.RuntimeSpec
+	requires         []pluginpkg.CapabilityRef // manifest v2 dependency requirements
 	provides         []pluginpkg.CapabilityRef // manifest v2 capability ceiling
 	session          protocol.SessionContext
 	uiHost           protocol.UIHostKind
@@ -229,6 +230,7 @@ func newClient(p *process, opts ClientOptions) *Client {
 		pluginID:         p.pluginID,
 		version:          version,
 		rt:               opts.Package.Manifest.Runtime,
+		requires:         append([]pluginpkg.CapabilityRef(nil), opts.Package.Manifest.Requires...),
 		provides:         append([]pluginpkg.CapabilityRef(nil), opts.Package.Manifest.Provides...),
 		session:          opts.Session,
 		uiHost:           uiHost,
@@ -332,17 +334,7 @@ func (c *Client) handshake(ctx context.Context) error {
 func (c *Client) handshakeWithTimeout(ctx context.Context, timeout time.Duration) error {
 	tctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
-	params := protocol.InitializeParams{
-		ProtocolVersion: protocol.ProtocolVersion,
-		ProtocolID:      protocol.ProtocolID,
-		Manifest:        c.manifestExpectation(),
-		Session:         c.session,
-		Capabilities: protocol.HostCapabilities{
-			ContentRefs:     true,
-			UIHost:          c.uiHost,
-			ProtocolVersion: protocol.ProtocolVersion,
-		},
-	}
+	params := c.initializeParams()
 	raw, err := c.conn.Request(tctx, string(protocol.MethodExtensionInitialize), params)
 	if err != nil {
 		if perr := c.poisonError(); perr != nil {
@@ -373,6 +365,22 @@ func (c *Client) handshakeWithTimeout(ctx context.Context, timeout time.Duration
 	return nil
 }
 
+func (c *Client) initializeParams() protocol.InitializeParams {
+	return protocol.InitializeParams{
+		ProtocolVersion:         protocol.ProtocolVersion,
+		ProtocolID:              protocol.ProtocolID,
+		Manifest:                c.manifestExpectation(),
+		Session:                 c.session,
+		DependencySchemaVersion: protocol.DependencySchemaVersion,
+		Capabilities: protocol.HostCapabilities{
+			ContentRefs:             true,
+			UIHost:                  c.uiHost,
+			ProtocolVersion:         protocol.ProtocolVersion,
+			DependencySchemaVersion: protocol.DependencySchemaVersion,
+		},
+	}
+}
+
 func (c *Client) poisonError() error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -384,11 +392,22 @@ func (c *Client) poisonError() error {
 
 func (c *Client) manifestExpectation() protocol.ManifestExpectation {
 	rt := c.rt
-	return protocol.ManifestExpectation{
+	expectation := protocol.ManifestExpectation{
 		Intercepts:   append([]string(nil), rt.Intercepts...),
 		Replaces:     append([]string(nil), rt.Replaces...),
 		Capabilities: append([]string(nil), rt.Capabilities...),
+		Requires:     requirementWires(c.requires),
+		Provides:     capabilityWires(c.provides),
 	}
+	for _, provided := range c.provides {
+		switch strings.ToLower(strings.TrimSpace(provided.Kind)) {
+		case "provider":
+			expectation.Providers = append(expectation.Providers, capabilityAddress(provided))
+		case "uiaction":
+			expectation.UIActions = append(expectation.UIActions, strings.TrimSpace(provided.ID))
+		}
+	}
+	return expectation
 }
 
 // validateHandshakeResult enforces the declaration contract: the sidecar's

@@ -32,6 +32,42 @@ func TestHandshakeSuccess(t *testing.T) {
 	}
 }
 
+func TestInitializeParamsCarryManifestV2DependencyIdentity(t *testing.T) {
+	c := &Client{
+		rt: &pluginpkg.RuntimeSpec{
+			Intercepts:   []string{"input.receive", "system_prompt.build"},
+			Replaces:     []string{"system_prompt"},
+			Capabilities: []string{"interceptors", "strategies", "providers", "ui"},
+		},
+		requires: []pluginpkg.CapabilityRef{{
+			Namespace: "reasonix", Kind: "provider", ID: "base", VersionRange: ">=1.0.0", Optional: true,
+		}},
+		provides: []pluginpkg.CapabilityRef{
+			{Namespace: "plugin/example", Kind: "provider", ID: "fake/echo", Version: "1.0.0", SchemaHash: "sha256:provider"},
+			{Namespace: "plugin/example", Kind: "uiaction", ID: "demo", Version: "1.0.0", SchemaHash: "sha256:ui"},
+		},
+		session: protocol.SessionContext{SessionID: "sess", WorkspaceRoot: "/workspace", Generation: 7},
+		uiHost:  protocol.UIHostDesktop,
+	}
+
+	params := c.initializeParams()
+	if params.DependencySchemaVersion != protocol.DependencySchemaVersion || params.Capabilities.DependencySchemaVersion != protocol.DependencySchemaVersion {
+		t.Fatalf("dependency schema versions = %d/%d, want %d", params.DependencySchemaVersion, params.Capabilities.DependencySchemaVersion, protocol.DependencySchemaVersion)
+	}
+	if len(params.Manifest.Requires) != 1 || params.Manifest.Requires[0].ID != "base" || params.Manifest.Requires[0].VersionRange != ">=1.0.0" || !params.Manifest.Requires[0].Optional {
+		t.Fatalf("manifest requires = %+v", params.Manifest.Requires)
+	}
+	if len(params.Manifest.Provides) != 2 || params.Manifest.Provides[0].SchemaHash != "sha256:provider" || params.Manifest.Provides[1].SchemaHash != "sha256:ui" {
+		t.Fatalf("manifest provides = %+v", params.Manifest.Provides)
+	}
+	if len(params.Manifest.Providers) != 1 || params.Manifest.Providers[0] != "plugin/example/fake/echo" {
+		t.Fatalf("manifest providers = %v", params.Manifest.Providers)
+	}
+	if len(params.Manifest.UIActions) != 1 || params.Manifest.UIActions[0] != "demo" {
+		t.Fatalf("manifest uiActions = %v", params.Manifest.UIActions)
+	}
+}
+
 func TestHandshakeProtocolVersionMismatch(t *testing.T) {
 	pkg, installed := fakeSidecarPackage(t, "fakeplugin", func(rt *pluginpkg.RuntimeSpec) {
 		// Peer still speaking Extension Protocol v1 major must be rejected.
@@ -146,6 +182,24 @@ func TestHandshakeDeclaredProvidersAndUIAccepted(t *testing.T) {
 	}
 	if len(result.UIActions) != 1 || result.UIActions[0].ActionID != "act1" {
 		t.Fatalf("uiActions = %+v", result.UIActions)
+	}
+}
+
+func TestHandshakeProvidesOutsideManifestRejected(t *testing.T) {
+	pkg, installed := fakeSidecarPackage(t, "fakeplugin", func(rt *pluginpkg.RuntimeSpec) {
+		rt.Env[fakeEnvInitResult] = `{"protocolVersion":"2","name":"fake","version":"1",` +
+			`"provides":[{"namespace":"plugin/fakeplugin","kind":"provider","id":"rogue","version":"1.0.0","schemaHash":"sha256:rogue"}],` +
+			`"stateSchemaVersion":0}`
+	})
+	pkg.Manifest.Provides = []pluginpkg.CapabilityRef{{
+		Namespace: "plugin/fakeplugin", Kind: "provider", ID: "declared", Version: "1.0.0", SchemaHash: "sha256:declared",
+	}}
+	_, err := StartClient(context.Background(), ClientOptions{Package: pkg, Installed: installed, Session: testSessionContext()})
+	if err == nil {
+		t.Fatal("StartClient accepted a handshake provides entry outside the manifest ceiling")
+	}
+	if reason := protocolReason(t, err); reason != protocol.ErrCapabilityNotDeclared {
+		t.Fatalf("reason = %q, want %q", reason, protocol.ErrCapabilityNotDeclared)
 	}
 }
 

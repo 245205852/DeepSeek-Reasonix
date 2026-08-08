@@ -126,6 +126,7 @@ func (p *plugin) Initialize(_ context.Context, params extension.InitializeParams
 		Replaces:      []string{"system_prompt"},
 		Providers:     []extension.ProviderDescriptor{fakeDescriptor(p.id)},
 		UIActions:     []extension.UIActionDecl{{ActionID: "demo", Label: "Run the fullsidecar demo"}},
+		Provides:      append([]extension.CapabilityWire(nil), params.Manifest.Provides...),
 	}, nil
 }
 
