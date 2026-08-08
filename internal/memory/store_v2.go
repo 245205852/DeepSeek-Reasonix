@@ -13,6 +13,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 )
 
 type SaveOptions struct {
@@ -89,16 +90,40 @@ func (s Store) MigrateV2() (MigrationReport, error) {
 }
 
 // inheritOnUpdate keeps the update-omittable fields of an existing revision:
-// an update that leaves scope or keywords empty preserves them, it does not
-// clear them.
+// an update that leaves scope, activation, or keywords empty preserves them,
+// it does not clear them.
 func inheritOnUpdate(m Memory, existing Memory) Memory {
 	if strings.TrimSpace(string(m.Scope)) == "" {
 		m.Scope = existing.Scope
+	}
+	if NormalizeActivation(string(m.Activation)) == "" {
+		m.Activation = existing.Activation
 	}
 	if strings.TrimSpace(m.Keywords) == "" {
 		m.Keywords = existing.Keywords
 	}
 	return m
+}
+
+// validatePinnedBudget rejects a save that would push the total pinned-body
+// runes over PinnedGuidanceBudgetChars. Legacy virtually-pinned guidance
+// counts — it occupies the same prefix — so an over-budget store forces
+// curation before anything new can be pinned.
+func (s Store) validatePinnedBudget(m Memory) error {
+	if ResolveActivation(m) != ActivationPinned {
+		return nil
+	}
+	total := utf8.RuneCountInString(strings.TrimSpace(m.Body))
+	for _, pinned := range s.pinnedGuidance() {
+		if pinned.ID == m.ID || (m.ID == "" && pinned.Name == m.Name) {
+			continue
+		}
+		total += utf8.RuneCountInString(strings.TrimSpace(pinned.Body))
+	}
+	if total <= PinnedGuidanceBudgetChars {
+		return nil
+	}
+	return fmt.Errorf("pinning this fact would put pinned guidance at %d chars, over the %d budget: rules that must always hold belong in REASONIX.md/AGENTS.md instructions; unpin or consolidate existing pinned facts first", total, PinnedGuidanceBudgetChars)
 }
 
 func (s Store) SaveWithOptions(m Memory, opts SaveOptions) (SaveResult, error) {
@@ -154,9 +179,7 @@ func (s Store) SaveWithOptions(m Memory, opts SaveOptions) (SaveResult, error) {
 	}
 	now := time.Now().UTC()
 	if exists {
-		m.ID = existing.ID
-		m.Revision = existing.Revision + 1
-		m.CreatedAt = existing.CreatedAt
+		m.ID, m.Revision, m.CreatedAt = existing.ID, existing.Revision+1, existing.CreatedAt
 		m = inheritOnUpdate(m, existing)
 	} else {
 		m.ID = newMemoryID(m.Name, now)
@@ -176,6 +199,9 @@ func (s Store) SaveWithOptions(m Memory, opts SaveOptions) (SaveResult, error) {
 		}
 	} else {
 		m.Scope = NormalizeFactScope(string(m.Scope))
+	}
+	if err := s.validatePinnedBudget(m); err != nil {
+		return SaveResult{}, err
 	}
 
 	dir := s.DirFor(m.Scope)

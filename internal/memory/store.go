@@ -73,6 +73,45 @@ func NormalizeFactScope(s string) FactScope {
 	return FactScopeProject
 }
 
+// Activation controls how a fact reaches the model, orthogonal to Scope:
+// scope says where a fact may be used, activation says whether its body rides
+// the stable prefix every session (pinned) or is retrieval-only (relevant).
+type Activation string
+
+const (
+	ActivationRelevant Activation = "relevant" // retrieval-only: index + recall
+	ActivationPinned   Activation = "pinned"   // body loads into the stable session prefix
+)
+
+// NormalizeActivation validates a persisted or requested activation. Empty and
+// unknown values return "" (unset) so ResolveActivation can apply the
+// legacy-aware default instead of silently inventing an explicit choice.
+func NormalizeActivation(s string) Activation {
+	switch Activation(strings.ToLower(strings.TrimSpace(s))) {
+	case ActivationRelevant:
+		return ActivationRelevant
+	case ActivationPinned:
+		return ActivationPinned
+	}
+	return ""
+}
+
+// ResolveActivation defaults an unset activation. Legacy global user/feedback
+// facts predate the field and were always loaded as stable guidance, so they
+// resolve to pinned until a rewrite records an explicit choice; everything
+// else is relevant.
+func ResolveActivation(m Memory) Activation {
+	if a := NormalizeActivation(string(m.Activation)); a != "" {
+		return a
+	}
+	if NormalizeFactScope(string(m.Scope)) == FactScopeGlobal {
+		if t := NormalizeType(string(m.Type)); t == TypeUser || t == TypeFeedback {
+			return ActivationPinned
+		}
+	}
+	return ActivationRelevant
+}
+
 // Memory is one stored fact.
 type Memory struct {
 	ID          string // immutable identity; Name may change without changing ID
@@ -83,9 +122,10 @@ type Memory struct {
 	Title       string // human-readable index label; falls back to a de-kebabed Name
 	Description string // one-line summary used for the index and recall
 	Type        Type
-	Scope       FactScope // project by default; global only when explicitly requested
-	Keywords    string    // search aliases (bilingual synonyms, related commands); recall-only, never rendered into the index
-	Body        string    // the fact itself (Markdown)
+	Scope       FactScope  // project by default; global only when explicitly requested
+	Activation  Activation // persisted choice; "" = unset, resolved by ResolveActivation
+	Keywords    string     // search aliases (bilingual synonyms, related commands); recall-only, never rendered into the index
+	Body        string     // the fact itself (Markdown)
 }
 
 // ArchivedMemory is a saved fact that has been removed from active memory but
@@ -472,9 +512,13 @@ func reindexIn(dir, name string, m Memory) error {
 }
 
 func renderIndexLine(name string, m Memory) string {
-	return fmt.Sprintf("- [%s](%s.md) — [%s/%s] %s",
+	marker := ""
+	if ResolveActivation(m) == ActivationPinned {
+		marker = " pinned" // the body already rides the prefix; no need to read it
+	}
+	return fmt.Sprintf("- [%s](%s.md) — [%s/%s%s] %s",
 		displayTitle(m.Title, name), name,
-		NormalizeFactScope(string(m.Scope)), NormalizeType(string(m.Type)), oneLine(m.Description))
+		NormalizeFactScope(string(m.Scope)), NormalizeType(string(m.Type)), marker, oneLine(m.Description))
 }
 
 // List returns the saved memories parsed from their files, sorted by name. Used
@@ -556,46 +600,58 @@ func (s Store) ListAll() []Memory {
 	return out
 }
 
-// globalGuidance snapshots global user preferences and working feedback for the
-// stable session prefix. These categories were globally routed before explicit
-// scopes existed, so loading their bodies preserves the established first-turn
-// behavior without promoting project facts or references into instructions.
-func (s Store) globalGuidance() []Memory {
-	if s.GlobalDir == "" {
-		return nil
-	}
-	entries, err := os.ReadDir(s.GlobalDir)
-	if err != nil {
-		return nil
-	}
+// PinnedGuidanceBudgetChars caps the total pinned-body runes the stable prefix
+// carries. Guidance that must always hold belongs in REASONIX.md/AGENTS.md
+// instructions; pinned memory is the bounded middle tier between instructions
+// and retrieval-only facts, and the cap is enforced at write time so the
+// prefix always equals exactly what the user curated.
+const PinnedGuidanceBudgetChars = 1500
+
+// pinnedGuidance snapshots explicitly pinned facts (plus legacy global
+// user/feedback, which ResolveActivation keeps pinned for compatibility) for
+// the stable session prefix, most recently updated first.
+func (s Store) pinnedGuidance() []Memory {
 	var out []Memory
-	for _, e := range entries {
-		if e.IsDir() || e.Name() == indexFile || !strings.HasSuffix(e.Name(), ".md") {
+	for _, dir := range s.dirs() {
+		if dir == "" {
 			continue
 		}
-		m, ok := loadMemory(filepath.Join(s.GlobalDir, e.Name()))
-		if !ok {
+		entries, err := os.ReadDir(dir)
+		if err != nil {
 			continue
 		}
-		if m.Scope == "" {
-			m.Scope = FactScopeGlobal
+		for _, e := range entries {
+			if e.IsDir() || e.Name() == indexFile || !strings.HasSuffix(e.Name(), ".md") {
+				continue
+			}
+			m, ok := loadMemory(filepath.Join(dir, e.Name()))
+			if !ok {
+				continue
+			}
+			if m.Scope == "" {
+				m.Scope = s.scopeForDir(dir)
+			}
+			if ResolveActivation(m) != ActivationPinned || strings.TrimSpace(m.Body) == "" {
+				continue
+			}
+			out = append(out, m)
 		}
-		if NormalizeFactScope(string(m.Scope)) != FactScopeGlobal ||
-			(m.Type != TypeUser && m.Type != TypeFeedback) || strings.TrimSpace(m.Body) == "" {
-			continue
-		}
-		out = append(out, m)
 	}
-	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
+	sort.Slice(out, func(i, j int) bool {
+		if !out[i].UpdatedAt.Equal(out[j].UpdatedAt) {
+			return out[i].UpdatedAt.After(out[j].UpdatedAt)
+		}
+		return out[i].Name < out[j].Name
+	})
 	return out
 }
 
-// globalGuidanceForProject removes global guidance shadowed by an equivalent
+// pinnedGuidanceForProject removes pinned guidance shadowed by an equivalent
 // project fact before the stable session prefix is built. This makes the
 // documented project-over-global rule deterministic on the first turn instead
 // of depending on whether automatic recall happens to match the request.
-func (s Store) globalGuidanceForProject() []Memory {
-	guidance := s.globalGuidance()
+func (s Store) pinnedGuidanceForProject() []Memory {
+	guidance := s.pinnedGuidance()
 	if len(guidance) == 0 || s.Dir == "" {
 		return guidance
 	}
@@ -616,11 +672,15 @@ func (s Store) globalGuidanceForProject() []Memory {
 	}
 	out := guidance[:0]
 	for _, fact := range guidance {
+		// Project pinned facts always stay: the shadow rule only suppresses a
+		// GLOBAL fact that an equivalent project fact overrides.
 		shadowed := false
-		for _, key := range recallIdentityKeys(fact) {
-			if projectKeys[key] {
-				shadowed = true
-				break
+		if NormalizeFactScope(string(fact.Scope)) == FactScopeGlobal {
+			for _, key := range recallIdentityKeys(fact) {
+				if projectKeys[key] {
+					shadowed = true
+					break
+				}
 			}
 		}
 		if !shadowed {
@@ -711,6 +771,7 @@ func loadMemory(path string) (Memory, bool) {
 		Title:       fm["title"],
 		Description: fm["description"],
 		Keywords:    fm["keywords"],
+		Activation:  NormalizeActivation(fm["activation"]),
 		Type:        persistedFactType(fm),
 		Scope:       factScopeFromFrontmatter(fm["scope"]),
 		Body:        strings.TrimSpace(body),

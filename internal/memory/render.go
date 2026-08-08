@@ -15,15 +15,16 @@ import (
 // value containing ": ", '#', or quotes is escaped instead of corrupting the
 // block; plain values render byte-identically to the previous hand-built form.
 type memoryFrontmatter struct {
-	ID        string `yaml:"id,omitempty"`
-	Revision  int    `yaml:"revision,omitempty"`
-	CreatedAt string `yaml:"created_at,omitempty"`
-	UpdatedAt string `yaml:"updated_at,omitempty"`
-	Name      string `yaml:"name"`
-	Title     string `yaml:"title,omitempty"`
-	Desc      string `yaml:"description"`
-	Keywords  string `yaml:"keywords,omitempty"`
-	Metadata  struct {
+	ID         string `yaml:"id,omitempty"`
+	Revision   int    `yaml:"revision,omitempty"`
+	CreatedAt  string `yaml:"created_at,omitempty"`
+	UpdatedAt  string `yaml:"updated_at,omitempty"`
+	Name       string `yaml:"name"`
+	Title      string `yaml:"title,omitempty"`
+	Desc       string `yaml:"description"`
+	Keywords   string `yaml:"keywords,omitempty"`
+	Activation string `yaml:"activation,omitempty"`
+	Metadata   struct {
 		Type     string `yaml:"type"`
 		FactType string `yaml:"fact_type,omitempty"`
 		Scope    string `yaml:"scope"`
@@ -34,7 +35,7 @@ type memoryFrontmatter struct {
 func render(m Memory, name string) string {
 	fm := memoryFrontmatter{
 		ID: m.ID, Revision: m.Revision, Name: name, Title: oneLine(m.Title), Desc: oneLine(m.Description),
-		Keywords: oneLine(m.Keywords),
+		Keywords: oneLine(m.Keywords), Activation: string(NormalizeActivation(string(m.Activation))),
 	}
 	if !m.CreatedAt.IsZero() {
 		fm.CreatedAt = m.CreatedAt.UTC().Format(time.RFC3339Nano)

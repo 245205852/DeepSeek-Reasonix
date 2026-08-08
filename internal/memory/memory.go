@@ -16,7 +16,7 @@ import (
 // re-deriving discovery context.
 type Set struct {
 	Docs                   []Source // REASONIX.md / AGENTS.md, ascending precedence
-	GlobalGuidance         []Memory // stable snapshot of global user/feedback bodies
+	PinnedGuidance         []Memory // stable snapshot of pinned fact bodies (incl. legacy global user/feedback)
 	Store                  Store    // auto-memory store (may be a zero/disabled Store)
 	Index                  string   // MEMORY.md contents at load time
 	CWD                    string   // project working dir used for discovery
@@ -44,7 +44,7 @@ func Load(opts Options) *Set {
 	resolved := instruction.Resolve(instruction.ResolveOptions{TargetDir: cwd, UserDir: opts.UserDir})
 	return &Set{
 		Docs:                   resolved.Documents,
-		GlobalGuidance:         store.globalGuidanceForProject(),
+		PinnedGuidance:         store.pinnedGuidanceForProject(),
 		Store:                  store,
 		Index:                  store.Index(),
 		CWD:                    cwd,
@@ -84,7 +84,7 @@ func (s *Set) DocPath(scope Scope) string {
 // the base prompt byte-for-byte untouched (and the cache prefix maximal) when
 // there is no memory at all.
 func (s *Set) Empty() bool {
-	return s == nil || (len(s.Docs) == 0 && len(s.GlobalGuidance) == 0 && strings.TrimSpace(s.Index) == "")
+	return s == nil || (len(s.Docs) == 0 && len(s.PinnedGuidance) == 0 && strings.TrimSpace(s.Index) == "")
 }
 
 // docScopes are the scopes the panel can target for a quick-add or a new doc.
@@ -132,17 +132,18 @@ func (s *Set) WriteDoc(path, body string) (string, error) {
 // standing instruction files. Keeping these sections separate prevents stale
 // facts from acquiring instruction authority.
 func (s *Set) BackgroundBlock() string {
-	if s == nil || (len(s.GlobalGuidance) == 0 && strings.TrimSpace(s.Index) == "") {
+	if s == nil || (len(s.PinnedGuidance) == 0 && strings.TrimSpace(s.Index) == "") {
 		return ""
 	}
 	var b strings.Builder
 	b.WriteString("# Memory\n\n")
-	if len(s.GlobalGuidance) > 0 {
-		b.WriteString("## Global preferences and feedback\n\n")
-		b.WriteString("Cross-project preferences and working feedback saved in memory. Apply them when relevant. " +
+	if len(s.PinnedGuidance) > 0 {
+		b.WriteString("## Pinned preferences and feedback\n\n")
+		b.WriteString("Facts the user pinned to be always available. Apply them when relevant. " +
 			"The current user request and more specific standing instructions take precedence, and factual details may be stale.\n")
-		for _, m := range s.GlobalGuidance {
-			fmt.Fprintf(&b, "\n### %s (global/%s)\n\n%s\n", displayTitle(m.Title, m.Name), NormalizeType(string(m.Type)), strings.TrimSpace(m.Body))
+		for _, m := range s.PinnedGuidance {
+			fmt.Fprintf(&b, "\n### %s (%s/%s)\n\n%s\n", displayTitle(m.Title, m.Name),
+				NormalizeFactScope(string(m.Scope)), NormalizeType(string(m.Type)), strings.TrimSpace(m.Body))
 		}
 	}
 	if idx := strings.TrimSpace(s.Index); idx != "" {

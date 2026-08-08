@@ -11,7 +11,7 @@ import (
 	"reasonix/internal/memory"
 )
 
-const memoryCommandUsage = "usage: /memory [recall|revisions <id-or-name>|restore <id-or-name> <revision>|archived|recover <archive-path>|instructions]"
+const memoryCommandUsage = "usage: /memory [recall|pin <id-or-name>|unpin <id-or-name>|revisions <id-or-name>|restore <id-or-name> <revision>|archived|recover <archive-path>|instructions]"
 
 // MemoryCompletionData returns stable references for structured /memory
 // completion. IDs come first because they remain unambiguous if a fact is
@@ -61,6 +61,12 @@ func MemoryCommandText(api MemoryControl, input string) string {
 			return "usage: /memory recall"
 		}
 		return renderMemoryRecall(api.LastMemoryRecall())
+	case "pin", "unpin":
+		ref, err := singleMemoryArgument(rest)
+		if err != nil {
+			return "usage: /memory " + subcommand + " <id-or-name>"
+		}
+		return setMemoryActivation(api, ref, subcommand == "pin")
 	case "revisions":
 		ref, err := singleMemoryArgument(rest)
 		if err != nil {
@@ -102,6 +108,32 @@ func MemoryCommandText(api MemoryControl, input string) string {
 	default:
 		return "unknown /memory subcommand " + subcommand + "\n" + memoryCommandUsage
 	}
+}
+
+// setMemoryActivation flips a fact between pinned and relevant through the
+// same save path the model uses, so revisioning and the pinned budget apply.
+// The stable prefix picks the change up at the next session start.
+func setMemoryActivation(api MemoryControl, ref string, pin bool) string {
+	set := api.Memory()
+	if set == nil {
+		return i18n.M.ListMemoryNone
+	}
+	fact, ok := set.Store.Read(ref)
+	if !ok {
+		return fmt.Sprintf("memory %q not found", ref)
+	}
+	activation := memory.ActivationRelevant
+	if pin {
+		activation = memory.ActivationPinned
+	}
+	if memory.ResolveActivation(fact) == activation {
+		return fmt.Sprintf("%s is already %s", fact.Name, activation)
+	}
+	fact.Activation = activation
+	if _, err := api.SaveMemory(fact); err != nil {
+		return "memory activation: " + err.Error()
+	}
+	return fmt.Sprintf("%s is now %s (takes effect in the stable prefix at the next session)", fact.Name, activation)
 }
 
 func parseMemoryCommand(input string) (subcommand, rest string) {
@@ -181,10 +213,10 @@ func RenderMemorySummary(set *memory.Set, now time.Time) string {
 		for _, fact := range facts {
 			fmt.Fprintf(&b, "  [%s](%s.md)\n", memoryDisplayTitle(fact.Title, fact.Name), fact.Name)
 			fmt.Fprintf(&b, "    id=%s\n", fact.ID)
-			fmt.Fprintf(&b, "    revision=%d scope=%s type=%s freshness=%s\n",
+			fmt.Fprintf(&b, "    revision=%d scope=%s type=%s activation=%s freshness=%s\n",
 				fact.Revision,
 				memory.NormalizeFactScope(string(fact.Scope)), memory.NormalizeType(string(fact.Type)),
-				memory.FreshnessFor(fact, now))
+				memory.ResolveActivation(fact), memory.FreshnessFor(fact, now))
 			if description := memoryOneLine(fact.Description); description != "" {
 				fmt.Fprintf(&b, "    description=%s\n", description)
 			}
