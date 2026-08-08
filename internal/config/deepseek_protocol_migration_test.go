@@ -1,12 +1,15 @@
 package config
 
 import (
+	"bytes"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/BurntSushi/toml"
+
+	fileencoding "reasonix/internal/fileutil/encoding"
 )
 
 func TestMigrateLegacyDeepSeekProtocolUserConfigPreservesTOMLAndIsIdempotent(t *testing.T) {
@@ -104,6 +107,71 @@ future_provider_field = "untouched"
 	}
 	if string(afterSecondRun) != beforeSecondRun {
 		t.Fatal("idempotent migration rewrote the config on its second run")
+	}
+}
+
+func TestDeepSeekProtocolUpgradeAvailabilityUsesUserConfigSource(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("REASONIX_HOME", home)
+	path := filepath.Join(home, "config.toml")
+	if err := os.WriteFile(path, []byte("# unrelated user settings\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if CanUpgradeDeepSeekProviderProtocolUserConfig("deepseek") {
+		t.Fatal("an unrelated user config must not expose an upgrade for a project-only provider")
+	}
+
+	raw := `[[providers]]
+name = "deepseek-flash"
+kind = "openai"
+base_url = "https://api.deepseek.com"
+model = "deepseek-v4-flash"
+api_key_env = "DEEPSEEK_API_KEY"
+`
+	if err := os.WriteFile(path, []byte(raw), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if !CanUpgradeDeepSeekProviderProtocolUserConfig("deepseek") {
+		t.Fatal("eligible user-global provider did not expose the grouped upgrade")
+	}
+	if CanUpgradeDeepSeekProviderProtocolUserConfig("unrelated") {
+		t.Fatal("an unrelated provider target unexpectedly exposed the DeepSeek upgrade")
+	}
+}
+
+func TestMigrateLegacyDeepSeekProtocolPreservesConfigEncoding(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("REASONIX_HOME", home)
+	path := filepath.Join(home, "config.toml")
+	raw := `# preserve UTF-16 configuration
+[[providers]]
+name = "deepseek-flash"
+kind = "openai"
+base_url = "https://api.deepseek.com"
+model = "deepseek-v4-flash"
+api_key_env = "DEEPSEEK_API_KEY"
+`
+	encoded := fileencoding.Encode(raw, fileencoding.UTF16LE)
+	if err := os.WriteFile(path, encoded, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	changed, err := MigrateLegacyDeepSeekProtocolUserConfig()
+	if err != nil || !changed {
+		t.Fatalf("MigrateLegacyDeepSeekProtocolUserConfig: changed=%v err=%v", changed, err)
+	}
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.HasPrefix(got, []byte{0xff, 0xfe}) {
+		t.Fatalf("migrated config lost its UTF-16LE BOM: %x", got[:min(len(got), 8)])
+	}
+	decoded := string(fileencoding.DecodeToUTF8(got))
+	if !strings.Contains(decoded, `kind = "anthropic"`) ||
+		!strings.Contains(decoded, `base_url = "https://api.deepseek.com/anthropic"`) ||
+		!strings.Contains(decoded, "# preserve UTF-16 configuration") {
+		t.Fatalf("migrated UTF-16 config = %q", decoded)
 	}
 }
 

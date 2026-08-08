@@ -133,6 +133,7 @@ const contextOverrides = [
     defaultEffort: "",
     vision: null,
     contextWindow: 32768,
+    maxOutputTokens: -1,
   },
   {
     model: "long-model",
@@ -173,6 +174,29 @@ eq(
   mergeProviderModelContextWindows([], ["invalid-model"], { "invalid-model": "Infinity" }),
   [],
   "drops non-finite model context values before crossing the desktop bridge",
+);
+
+eq(
+  mergeProviderModelContextWindows([
+    {
+      model: "output-only",
+      reasoningProtocol: "",
+      supportedEfforts: [],
+      defaultEffort: "",
+      vision: null,
+      maxOutputTokens: 4096,
+    },
+  ], ["output-only"], { "output-only": "" }),
+  [{
+    model: "output-only",
+    reasoningProtocol: "",
+    supportedEfforts: [],
+    defaultEffort: "",
+    vision: null,
+    contextWindow: 0,
+    maxOutputTokens: 4096,
+  }],
+  "keeps output-only model overrides while editing context windows",
 );
 
 eq(

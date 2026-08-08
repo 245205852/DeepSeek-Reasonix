@@ -50,6 +50,9 @@ export function mergeProviderModelContextWindows(
       defaultEffort: previous?.defaultEffort ?? "",
       vision: previous?.vision ?? null,
       contextWindow: Math.max(parsedContextWindow, 0),
+      ...(typeof previous?.maxOutputTokens === "number"
+        ? { maxOutputTokens: previous.maxOutputTokens }
+        : {}),
     };
     if (
       override.reasoningProtocol.trim()
@@ -57,6 +60,7 @@ export function mergeProviderModelContextWindows(
       || override.defaultEffort.trim()
       || override.vision != null
       || (override.contextWindow ?? 0) > 0
+      || (override.maxOutputTokens ?? 0) !== 0
     ) {
       merged.push(override);
     }

@@ -248,10 +248,6 @@ func userConfigDisplayPath() string {
 // "" when the user config dir can't be resolved.
 func UserConfigPath() string { return userConfigPath() }
 
-// UserConfigSourcePath returns the user-global config source selected for
-// reading, including a legacy location when the primary file does not exist.
-func UserConfigSourcePath() string { return userConfigLoadPath() }
-
 // LegacyUserConfigPath is the old OS app-support config.toml path when it
 // differs from UserConfigPath. It is read as a compatibility fallback when the
 // primary user config does not exist.

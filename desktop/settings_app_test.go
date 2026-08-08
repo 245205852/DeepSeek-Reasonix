@@ -1103,6 +1103,69 @@ func TestSaveProviderPersistsExplicitWebSearchOff(t *testing.T) {
 	}
 }
 
+func TestSetProviderWebSearchUpdatesGroupedDeepSeekAliasesAtomically(t *testing.T) {
+	isolateDesktopUserDirs(t)
+
+	enabled := true
+	cfg := config.LoadForEdit(config.UserConfigPath())
+	cfg.Desktop.ProviderAccess = []string{"deepseek-flash", "deepseek-pro"}
+	cfg.Providers = []config.ProviderEntry{
+		{
+			Name: "deepseek-flash", Kind: "anthropic", BaseURL: "https://api.deepseek.com/anthropic",
+			Models: []string{"deepseek-v4-flash"}, Headers: map[string]string{"X-Route": "flash"}, WebSearch: &enabled,
+		},
+		{
+			Name: "deepseek-pro", Kind: "anthropic", BaseURL: "https://api.deepseek.com/anthropic",
+			Models: []string{"deepseek-v4-pro"}, Headers: map[string]string{"X-Route": "pro"}, WebSearch: &enabled,
+		},
+	}
+	if err := cfg.SaveTo(config.UserConfigPath()); err != nil {
+		t.Fatalf("SaveTo: %v", err)
+	}
+
+	if err := NewApp().SetProviderWebSearch([]string{"deepseek-flash", "deepseek-pro", "deepseek-flash"}, false); err != nil {
+		t.Fatalf("SetProviderWebSearch: %v", err)
+	}
+
+	got := config.LoadForEdit(config.UserConfigPath())
+	for _, name := range []string{"deepseek-flash", "deepseek-pro"} {
+		entry, ok := got.Provider(name)
+		if !ok || entry.WebSearch == nil || *entry.WebSearch {
+			t.Fatalf("provider %q = %+v, found=%v; want explicit web_search=false", name, entry, ok)
+		}
+	}
+	if flash, _ := got.Provider("deepseek-flash"); flash.Headers["X-Route"] != "flash" {
+		t.Fatalf("Flash custom transport fields changed: %+v", flash)
+	}
+	if pro, _ := got.Provider("deepseek-pro"); pro.Headers["X-Route"] != "pro" {
+		t.Fatalf("Pro custom transport fields changed: %+v", pro)
+	}
+}
+
+func TestSetProviderWebSearchRejectsWholeGroupBeforeWriting(t *testing.T) {
+	isolateDesktopUserDirs(t)
+
+	enabled := true
+	cfg := config.LoadForEdit(config.UserConfigPath())
+	cfg.Providers = []config.ProviderEntry{
+		{Name: "deepseek", Kind: "anthropic", BaseURL: "https://api.deepseek.com/anthropic", Models: []string{"deepseek-v4-flash"}, WebSearch: &enabled},
+		{Name: "proxy", Kind: "anthropic", BaseURL: "https://gateway.example/anthropic", Models: []string{"custom-model"}, WebSearch: &enabled},
+	}
+	if err := cfg.SaveTo(config.UserConfigPath()); err != nil {
+		t.Fatalf("SaveTo: %v", err)
+	}
+
+	if err := NewApp().SetProviderWebSearch([]string{"deepseek", "proxy"}, false); err == nil {
+		t.Fatal("SetProviderWebSearch accepted an unverified endpoint")
+	}
+
+	got := config.LoadForEdit(config.UserConfigPath())
+	entry, ok := got.Provider("deepseek")
+	if !ok || entry.WebSearch == nil || !*entry.WebSearch {
+		t.Fatalf("official provider was partially updated after group rejection: %+v, found=%v", entry, ok)
+	}
+}
+
 func TestSaveProviderPreservesHiddenCustomWebSearchOverride(t *testing.T) {
 	isolateDesktopUserDirs(t)
 
@@ -1190,7 +1253,20 @@ base_url = "https://api.deepseek.com"
 model = "deepseek-v4-flash"
 api_key_env = "DEEPSEEK_API_KEY"
 vision = true
+chat_url = "https://api.deepseek.com/anthropic/v1/messages"
+models_url = "https://api.deepseek.com/models"
 headers = { X-Trace = "keep" }
+extra_body = { route = "keep" }
+auth_header = true
+thinking = "enabled"
+web_search = true
+no_proxy = true
+cache_ttl_minutes = 17
+context_window = 900000
+max_output_tokens = 111111
+supported_efforts = ["disabled", "low", "high"]
+default_effort = "low"
+price = { cache_hit = 0.1, input = 1.25, output = 2.25, currency = "T" }
 future_capability = "keep"
 
 [[providers]]
@@ -1199,7 +1275,21 @@ kind = "openai"
 base_url = "https://api.deepseek.com"
 model = "deepseek-v4-pro"
 api_key_env = "DEEPSEEK_API_KEY"
+chat_url = "https://api.deepseek.com/anthropic/v1/messages"
+models_url = "https://api.deepseek.com/models"
+headers = { X-Trace = "keep" }
+extra_body = { route = "keep" }
+auth_header = true
+thinking = "enabled"
+web_search = true
+no_proxy = true
+cache_ttl_minutes = 17
+context_window = 800000
+max_output_tokens = 222222
 reasoning_protocol = "none"
+supported_efforts = ["disabled", "high", "max"]
+default_effort = "max"
+price = { cache_hit = 0.2, input = 3.75, output = 6.75, currency = "T" }
 `
 	if err := os.WriteFile(path, []byte(raw), 0o600); err != nil {
 		t.Fatal(err)
@@ -1217,10 +1307,69 @@ reasoning_protocol = "none"
 		strings.Count(text, `base_url = "https://api.deepseek.com/anthropic"`) != 2 {
 		t.Fatalf("provider family was not upgraded:\n%s", text)
 	}
-	for _, preserved := range []string{`vision = true`, `headers = { X-Trace = "keep" }`, `future_capability = "keep"`, `reasoning_protocol = "none"`} {
+	for _, preserved := range []string{`vision = true`, `headers = { X-Trace = "keep" }`, `extra_body = { route = "keep" }`, `future_capability = "keep"`, `reasoning_protocol = "none"`} {
 		if !strings.Contains(text, preserved) {
 			t.Errorf("upgrade dropped %q:\n%s", preserved, text)
 		}
+	}
+
+	cfg, err := config.LoadForRootReadOnly(t.TempDir())
+	if err != nil {
+		t.Fatalf("load upgraded config: %v", err)
+	}
+	if got := cfg.Desktop.ProviderAccess; len(got) != 1 || got[0] != "deepseek" {
+		t.Fatalf("provider_access = %v, want one canonical DeepSeek entry", got)
+	}
+	canonical, ok := cfg.Provider("deepseek")
+	if !ok {
+		t.Fatal("effective canonical DeepSeek provider missing after upgrade")
+	}
+	if canonical.ChatURL != "https://api.deepseek.com/anthropic/v1/messages" ||
+		canonical.ModelsURL != "https://api.deepseek.com/models" ||
+		canonical.Headers["X-Trace"] != "keep" || canonical.ExtraBody["route"] != "keep" ||
+		!canonical.AuthHeader || !canonical.NoProxy || canonical.CacheTTLMinutes != 17 {
+		t.Fatalf("canonical transport fields were not preserved: %+v", canonical)
+	}
+	flash, ok := cfg.ResolveModel("deepseek/deepseek-v4-flash")
+	if !ok {
+		t.Fatal("canonical DeepSeek Flash model did not resolve")
+	}
+	if flash.ContextWindow != 900000 || flash.MaxOutputTokens != 111111 || flash.DefaultEffort != "low" ||
+		flash.Price == nil || flash.Price.Output != 2.25 {
+		t.Fatalf("Flash model fields were not preserved: %+v", flash)
+	}
+	if config.EffectiveVision(flash) {
+		t.Fatal("preserved stale Flash vision metadata must not enable images on the official DeepSeek endpoint")
+	}
+	flashOverride := canonical.ModelOverrides["deepseek-v4-flash"]
+	if flashOverride.Vision == nil || !*flashOverride.Vision {
+		t.Fatalf("Flash vision metadata was dropped instead of being safely ignored: %+v", flashOverride)
+	}
+	pro, ok := cfg.ResolveModel("deepseek/deepseek-v4-pro")
+	if !ok {
+		t.Fatal("canonical DeepSeek Pro model did not resolve")
+	}
+	if pro.ContextWindow != 800000 || pro.MaxOutputTokens != 222222 || pro.ReasoningProtocol != "none" ||
+		pro.DefaultEffort != "max" || pro.Price == nil || pro.Price.Output != 6.75 {
+		t.Fatalf("Pro model fields were not preserved: %+v", pro)
+	}
+}
+
+func TestProviderModelOverrideViewPreservesMaxOutputTokens(t *testing.T) {
+	input := map[string]config.ProviderModelOverride{
+		"limited": {ContextWindow: 64_000, MaxOutputTokens: 8_192},
+		"omitted": {MaxOutputTokens: -1},
+	}
+	views := providerModelOverridesForView(input, []string{"limited", "omitted"})
+	if len(views) != 2 || views[0].MaxOutputTokens != 8_192 || views[1].MaxOutputTokens != -1 {
+		t.Fatalf("model override views = %+v, want positive and negative output-token semantics preserved", views)
+	}
+	roundTrip := providerModelOverridesForSave(views, []string{"limited", "omitted"})
+	if got := roundTrip["limited"]; got.ContextWindow != 64_000 || got.MaxOutputTokens != 8_192 {
+		t.Fatalf("limited override = %+v, want context and output limits preserved", got)
+	}
+	if got := roundTrip["omitted"]; got.MaxOutputTokens != -1 {
+		t.Fatalf("omitted override = %+v, want negative wire-omission marker preserved", got)
 	}
 }
 
@@ -1233,14 +1382,20 @@ func TestDeepSeekProtocolUpgradeSourceAvailableWithLegacyGlobalAndProjectConfig(
 	if err := os.MkdirAll(filepath.Dir(legacyPath), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(legacyPath, []byte("# legacy global config\n"), 0o600); err != nil {
+	if err := os.WriteFile(legacyPath, []byte(`[[providers]]
+name = "deepseek-flash"
+kind = "openai"
+base_url = "https://api.deepseek.com"
+model = "deepseek-v4-flash"
+api_key_env = "DEEPSEEK_API_KEY"
+`), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	project := t.TempDir()
 	if err := os.WriteFile(filepath.Join(project, "reasonix.toml"), []byte("# project config\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if !deepSeekProtocolUpgradeSourceAvailable(project) {
+	if !config.CanUpgradeDeepSeekProviderProtocolUserConfig("deepseek") {
 		t.Fatal("project config must not hide an available legacy global upgrade source")
 	}
 }

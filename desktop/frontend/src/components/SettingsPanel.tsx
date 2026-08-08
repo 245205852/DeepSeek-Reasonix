@@ -5066,9 +5066,9 @@ function ProvidersSection({ s, busy, apply }: SectionProps) {
             onCancelDraftModels={() => setGroupModelDraft(group.id, null)}
             onSaveDraftModels={() => void saveModelDraft(group)}
             onToggleWebSearch={(enabled) => {
-              const provider = group.providers[0];
-              if (!provider) return;
-              void apply(() => app.SaveProvider({ ...provider, webSearch: enabled }));
+              const providerNames = group.providers.map((provider) => provider.name);
+              if (providerNames.length === 0) return;
+              void apply(() => app.SetProviderWebSearch(providerNames, enabled));
             }}
             onUpgradeRecommended={(name) => apply(() => app.UpgradeDeepSeekProviderAccess(name)).then((upgraded) => {
               if (upgraded) {

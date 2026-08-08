@@ -118,6 +118,7 @@ type ProviderModelOverrideView struct {
 	DefaultEffort     string   `json:"defaultEffort"`
 	Vision            *bool    `json:"vision"`
 	ContextWindow     int      `json:"contextWindow,omitempty"`
+	MaxOutputTokens   int      `json:"maxOutputTokens,omitempty"`
 }
 
 type PermissionsView struct {
@@ -497,6 +498,7 @@ func providerModelOverridesForView(overrides map[string]config.ProviderModelOver
 			DefaultEffort:     ov.DefaultEffort,
 			Vision:            ov.Vision,
 			ContextWindow:     ov.ContextWindow,
+			MaxOutputTokens:   ov.MaxOutputTokens,
 		})
 	}
 	return out
@@ -522,8 +524,9 @@ func providerModelOverridesForSave(overrides []ProviderModelOverrideView, models
 			DefaultEffort:     strings.TrimSpace(item.DefaultEffort),
 			Vision:            item.Vision,
 			ContextWindow:     max(item.ContextWindow, 0),
+			MaxOutputTokens:   item.MaxOutputTokens,
 		}
-		if strings.TrimSpace(ov.ReasoningProtocol) == "" && len(ov.SupportedEfforts) == 0 && strings.TrimSpace(ov.DefaultEffort) == "" && ov.Vision == nil && ov.ContextWindow == 0 {
+		if strings.TrimSpace(ov.ReasoningProtocol) == "" && len(ov.SupportedEfforts) == 0 && strings.TrimSpace(ov.DefaultEffort) == "" && ov.Vision == nil && ov.ContextWindow == 0 && ov.MaxOutputTokens == 0 {
 			continue
 		}
 		out[model] = ov
@@ -1118,25 +1121,15 @@ func (a *App) Settings() SettingsView {
 	added := providerAccessSet(cfg.Desktop.ProviderAccess)
 	resolver := config.NewCredentialResolverForRoot(root)
 	credentialsRevision := providerCredentialsRevision()
-	upgradeSourceAvailable := deepSeekProtocolUpgradeSourceAvailable(root)
 	v.OfficialProviders = officialProviderViewsForRootWithResolver(officialProviderAddedSet(cfg), a.desktopOfficialPricingLanguage(cfg), root, resolver)
 	v.ProviderPresets = providerPresetViewsForRootWithResolver(cfg, root, resolver)
 	for i := range cfg.Providers {
 		p := &cfg.Providers[i]
 		providerView := providerViewFromEntryForRootWithResolverAndCredentials(*p, isOfficialBuiltInProvider(*p), added[p.Name], root, resolver, credentialsRevision)
-		providerView.RecommendedUpgradeAvailable = providerView.RecommendedUpgradeAvailable && upgradeSourceAvailable
+		providerView.RecommendedUpgradeAvailable = providerView.RecommendedUpgradeAvailable && config.CanUpgradeDeepSeekProviderProtocolUserConfig(p.Name)
 		v.Providers = append(v.Providers, providerView)
 	}
 	return v
-}
-
-func deepSeekProtocolUpgradeSourceAvailable(_ string) bool {
-	path := config.UserConfigSourcePath()
-	if strings.TrimSpace(path) == "" {
-		return false
-	}
-	_, err := os.Stat(path)
-	return err == nil
 }
 
 func sandboxEffectiveShellView(sh sandbox.Shell) string {
@@ -2485,6 +2478,40 @@ func saveProviderConfig(c *config.Config, p ProviderView) error {
 func (a *App) SaveProvider(p ProviderView) error {
 	return a.applyConfigChange(func(c *config.Config) error {
 		return saveProviderConfig(c, p)
+	})
+}
+
+// SetProviderWebSearch updates every provider represented by one Settings
+// access card in a single config transaction. Legacy DeepSeek aliases can
+// remain separate when their custom transport fields differ, so changing only
+// the first profile would leave the grouped control in a contradictory state.
+func (a *App) SetProviderWebSearch(names []string, enabled bool) error {
+	return a.applyConfigChange(func(c *config.Config) error {
+		seen := make(map[string]bool, len(names))
+		providers := make([]*config.ProviderEntry, 0, len(names))
+		for _, rawName := range names {
+			name := strings.TrimSpace(rawName)
+			if name == "" || seen[name] {
+				continue
+			}
+			seen[name] = true
+			entry, ok := c.Provider(name)
+			if !ok {
+				return fmt.Errorf("provider %q not found", name)
+			}
+			if !config.IsOfficialDeepSeekWebSearchEndpoint(entry) {
+				return fmt.Errorf("provider %q does not support configurable server-side web search", name)
+			}
+			providers = append(providers, entry)
+		}
+		if len(providers) == 0 {
+			return fmt.Errorf("provider list is empty")
+		}
+		for _, entry := range providers {
+			value := enabled
+			entry.WebSearch = &value
+		}
+		return nil
 	})
 }
 

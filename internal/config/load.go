@@ -7,6 +7,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strings"
 
@@ -1798,10 +1799,25 @@ func normalizeDesktopOfficialProviderAccess(c *Config) {
 	if c == nil || len(c.Desktop.ProviderAccess) == 0 {
 		return
 	}
+	canCanonicalizeDeepSeek := canCanonicalizeLegacyDeepSeekProviders(c)
+	_, hasCanonicalDeepSeek := c.Provider("deepseek")
+	legacyDeepSeek := officialLegacyDeepSeekProviders(c)
 	seen := desktopProviderAccessMap(nil)
 	next := make([]string, 0, len(c.Desktop.ProviderAccess))
 	for _, name := range c.Desktop.ProviderAccess {
-		name = desktopProviderAccessNameForConfig(c, name)
+		name = strings.TrimSpace(name)
+		if name == "deepseek" && !canCanonicalizeDeepSeek && !hasCanonicalDeepSeek && len(legacyDeepSeek) > 0 {
+			for _, legacy := range legacyDeepSeek {
+				if !seen[legacy.Name] {
+					seen[legacy.Name] = true
+					next = append(next, legacy.Name)
+				}
+			}
+			continue
+		}
+		if CanonicalDesktopOfficialProviderName(name) != "deepseek" || name == "deepseek" || canCanonicalizeDeepSeek {
+			name = desktopProviderAccessNameForConfig(c, name)
+		}
 		if name == "" || seen[name] {
 			continue
 		}
@@ -1813,7 +1829,11 @@ func normalizeDesktopOfficialProviderAccess(c *Config) {
 		ensureDeepSeekOfficialProvider(c)
 	}
 	normalizeLegacyMimoProviderCatalogs(c)
-	retargetDesktopOfficialRefs(c, seen)
+	retargetAccess := maps.Clone(seen)
+	if p, ok := c.Provider("deepseek"); !ok || officialProviderKind(p) != "deepseek" {
+		delete(retargetAccess, "deepseek")
+	}
+	retargetDesktopOfficialRefs(c, retargetAccess)
 }
 
 // NormalizeLegacyDesktopProviderAccess seeds the desktop provider-access list
@@ -1902,7 +1922,7 @@ func providerEntryMatchesCanonicalOfficialAccess(p *ProviderEntry, canonical str
 	}
 	switch canonical {
 	case "deepseek":
-		return officialProviderKind(p) == "deepseek"
+		return isCanonicalizableLegacyDeepSeekProvider(p)
 	default:
 		return false
 	}
@@ -1932,6 +1952,9 @@ func ensureDeepSeekOfficialProvider(c *Config) {
 		}
 		return
 	}
+	if !canCanonicalizeLegacyDeepSeekProviders(c) {
+		return
+	}
 	entry := ProviderEntry{
 		Name:          "deepseek",
 		Kind:          "anthropic",
@@ -1949,16 +1972,20 @@ func ensureDeepSeekOfficialProvider(c *Config) {
 			"deepseek-v4-pro":   {SupportedEfforts: []string{"disabled", "high", "max"}, DefaultEffort: "high"},
 		},
 	}
-	if old, ok := c.Provider("deepseek-flash"); ok {
-		entry = officialProviderFromLegacy(entry, old)
+	legacyProviders := officialLegacyDeepSeekProviders(c)
+	if len(legacyProviders) > 0 {
+		entry = officialProviderFromLegacy(entry, legacyProviders[0])
 		currency := c.DeepSeekOfficialPricingCurrency()
-		if c.DesktopCurrency() == "" && old.persistedOfficialCurrency != "" {
-			currency = old.persistedOfficialCurrency
+		if c.DesktopCurrency() == "" && legacyProviders[0].persistedOfficialCurrency != "" {
+			currency = legacyProviders[0].persistedOfficialCurrency
 			entry.persistedOfficialCurrency = currency
 		}
 		entry.Prices = DeepSeekV4PricesForCurrency(currency)
-		entry.Models = mergeModelLists([]string{"deepseek-v4-flash", "deepseek-v4-pro"}, old.ModelList())
-		entry.Default = firstKnownModel(entry.Default, entry.Models, "deepseek-v4-flash")
+		for _, old := range legacyProviders {
+			entry.Models = mergeModelLists(entry.Models, old.ModelList())
+			mergeLegacyDeepSeekModelConfiguration(&entry, old)
+		}
+		entry.Default = preferredLegacyDeepSeekDefault(legacyProviders, entry.Models, entry.Default)
 	}
 	backfillOfficialContextWindow(&entry, 1_000_000)
 	c.Providers = append(c.Providers, entry)
@@ -1989,28 +2016,348 @@ func backfillOfficialContextWindow(e *ProviderEntry, fallback int) {
 }
 
 func officialProviderFromLegacy(entry ProviderEntry, old *ProviderEntry) ProviderEntry {
-	entry.Kind = old.Kind
-	entry.BaseURL = old.BaseURL
-	entry.ModelsURL = old.ModelsURL
-	entry.APIKeyEnv = old.APIKeyEnv
-	entry.BalanceURL = old.BalanceURL
-	entry.ContextWindow = old.ContextWindow
-	entry.Price = old.Price
-	entry.Thinking = old.Thinking
-	entry.Effort = old.Effort
-	if old.WebSearch != nil {
-		webSearch := *old.WebSearch
-		entry.WebSearch = &webSearch
-	} else {
-		entry.WebSearch = nil
+	if old == nil {
+		return entry
 	}
-	entry.ReasoningProtocol = old.ReasoningProtocol
-	entry.SupportedEfforts = append([]string(nil), old.SupportedEfforts...)
-	entry.DefaultEffort = old.DefaultEffort
-	entry.ModelOverrides = cloneModelOverrideMap(old.ModelOverrides)
-	entry.NoProxy = old.NoProxy
-	entry.persistedOfficialCurrency = old.persistedOfficialCurrency
-	return entry
+	// Start from the legacy entry so current and future transport fields are not
+	// silently dropped from the effective canonical provider. Identity, catalog,
+	// pricing and capability fields are merged model by model below.
+	legacy := cloneProviderEntry(*old)
+	legacy.Name = entry.Name
+	legacy.Model = ""
+	legacy.Models = append([]string(nil), entry.Models...)
+	legacy.Default = entry.Default
+	legacy.ContextWindow = entry.ContextWindow
+	legacy.MaxOutputTokens = entry.MaxOutputTokens
+	legacy.Price = nil
+	legacy.Prices = clonePricingMap(entry.Prices)
+	legacy.ReasoningProtocol = entry.ReasoningProtocol
+	legacy.SupportedEfforts = append([]string(nil), entry.SupportedEfforts...)
+	legacy.DefaultEffort = entry.DefaultEffort
+	legacy.Vision = entry.Vision
+	legacy.VisionModels = append([]string(nil), entry.VisionModels...)
+	legacy.ModelOverrides = cloneModelOverrideMap(entry.ModelOverrides)
+	return legacy
+}
+
+func officialLegacyDeepSeekProviders(c *Config) []*ProviderEntry {
+	if c == nil {
+		return nil
+	}
+	out := make([]*ProviderEntry, 0, 2)
+	for _, name := range []string{"deepseek-flash", "deepseek-pro"} {
+		if p, ok := c.Provider(name); ok && isCanonicalizableLegacyDeepSeekProvider(p) {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+func isCanonicalizableLegacyDeepSeekProvider(p *ProviderEntry) bool {
+	if p == nil {
+		return false
+	}
+	switch strings.ToLower(strings.TrimSpace(p.Kind)) {
+	case "openai":
+		return isOfficialDeepSeekOpenAIEndpoint(p.BaseURL)
+	case "anthropic":
+		return IsOfficialDeepSeekWebSearchEndpoint(p)
+	default:
+		return false
+	}
+}
+
+func canCanonicalizeLegacyDeepSeekProviders(c *Config) bool {
+	if c == nil {
+		return true
+	}
+	if p, ok := c.Provider("deepseek"); ok {
+		return officialProviderKind(p) == "deepseek"
+	}
+	legacy := officialLegacyDeepSeekProviders(c)
+	for i := 1; i < len(legacy); i++ {
+		if !legacyDeepSeekProviderWideFieldsEqual(legacy[0], legacy[i]) ||
+			!legacyDeepSeekModelFieldsCompatible(legacy[0], legacy[i]) {
+			return false
+		}
+	}
+	return true
+}
+
+func legacyDeepSeekProviderWideFieldsEqual(a, b *ProviderEntry) bool {
+	if a == nil || b == nil {
+		return a == b
+	}
+	left := legacyDeepSeekProviderWideProjection(a)
+	right := legacyDeepSeekProviderWideProjection(b)
+	return reflect.DeepEqual(left, right)
+}
+
+func legacyDeepSeekProviderWideProjection(entry *ProviderEntry) ProviderEntry {
+	out := cloneProviderEntry(*entry)
+	out.Name = ""
+	out.Kind = strings.ToLower(strings.TrimSpace(out.Kind))
+	out.BaseURL = normalizedBaseURLForMigration(out.BaseURL)
+	out.ChatURL = strings.TrimSpace(out.ChatURL)
+	out.ModelsURL = strings.TrimSpace(out.ModelsURL)
+	out.APIKeyEnv = strings.TrimSpace(out.APIKeyEnv)
+	out.BalanceURL = normalizedDeepSeekBalanceURL(out.BalanceURL)
+	out.ResponsesMode = strings.TrimSpace(out.ResponsesMode)
+	out.Thinking = strings.TrimSpace(out.Thinking)
+	out.Effort = strings.TrimSpace(out.Effort)
+	out.VisionDetail = strings.TrimSpace(out.VisionDetail)
+
+	// These fields can be represented independently for every model in the
+	// canonical provider. They are compared by legacyDeepSeekModelFieldsCompatible.
+	out.Model = ""
+	out.Models = nil
+	out.Default = ""
+	out.ContextWindow = 0
+	out.MaxOutputTokens = 0
+	out.Price = nil
+	out.Prices = nil
+	out.ReasoningProtocol = ""
+	out.SupportedEfforts = nil
+	out.DefaultEffort = ""
+	out.Vision = false
+	out.VisionModels = nil
+	out.ModelOverrides = nil
+	out.visionOverride = nil
+	out.resolvedAPIKey = ""
+	out.resolvedSource = CredentialSource{}
+	return out
+}
+
+func normalizedDeepSeekBalanceURL(raw string) string {
+	raw = strings.TrimRight(strings.TrimSpace(raw), "/")
+	if raw == "" {
+		return deepSeekOfficialBalanceURL
+	}
+	return raw
+}
+
+type legacyDeepSeekModelFields struct {
+	contextWindowSet     bool
+	contextWindow        int
+	maxOutputTokensSet   bool
+	maxOutputTokens      int
+	priceSet             bool
+	price                *provider.Pricing
+	reasoningProtocolSet bool
+	reasoningProtocol    string
+	supportedEffortsSet  bool
+	supportedEfforts     []string
+	defaultEffortSet     bool
+	defaultEffort        string
+	visionSet            bool
+	vision               bool
+}
+
+func legacyDeepSeekModelFieldsCompatible(a, b *ProviderEntry) bool {
+	if a == nil || b == nil {
+		return a == b
+	}
+	if left, right := strings.TrimSpace(a.Default), strings.TrimSpace(b.Default); left != "" && right != "" && left != right {
+		return false
+	}
+	models := map[string]string{}
+	add := func(model string) {
+		model = strings.TrimSpace(model)
+		if model != "" {
+			models[strings.ToLower(model)] = model
+		}
+	}
+	for _, entry := range []*ProviderEntry{a, b} {
+		for _, model := range entry.ModelList() {
+			add(model)
+		}
+		for _, model := range entry.VisionModels {
+			add(model)
+		}
+		for model := range entry.Prices {
+			add(model)
+		}
+		for model := range entry.ModelOverrides {
+			add(model)
+		}
+	}
+	for _, model := range models {
+		left, leftSet := legacyDeepSeekModelFieldProjection(a, model)
+		right, rightSet := legacyDeepSeekModelFieldProjection(b, model)
+		if leftSet && rightSet && !legacyDeepSeekModelFieldProjectionsCompatible(left, right) {
+			return false
+		}
+	}
+	return true
+}
+
+func legacyDeepSeekModelFieldProjection(entry *ProviderEntry, model string) (legacyDeepSeekModelFields, bool) {
+	var out legacyDeepSeekModelFields
+	if entry == nil {
+		return out, false
+	}
+	listed := entry.HasModel(model)
+	if listed {
+		out.contextWindowSet = true
+		out.contextWindow = entry.ContextWindow
+		if out.contextWindow <= 0 {
+			out.contextWindow = 1_000_000
+		}
+		out.maxOutputTokensSet = true
+		out.maxOutputTokens = entry.MaxOutputTokens
+		out.reasoningProtocolSet = true
+		out.reasoningProtocol = strings.TrimSpace(entry.ReasoningProtocol)
+		out.supportedEffortsSet = true
+		out.supportedEfforts = append([]string(nil), entry.SupportedEfforts...)
+		out.defaultEffortSet = true
+		out.defaultEffort = strings.TrimSpace(entry.DefaultEffort)
+		out.visionSet = true
+		out.vision = entry.Vision || entry.HasVisionModel(model)
+		if price := entry.PriceForModel(model); price != nil {
+			out.priceSet = true
+			out.price = price
+		}
+	}
+	if price, ok := pricingForModelKey(entry.Prices, model); ok {
+		out.priceSet = true
+		out.price = clonePricing(price)
+	}
+	if override, ok := entry.modelOverrideForModel(model); ok {
+		if override.ContextWindow > 0 {
+			out.contextWindowSet = true
+			out.contextWindow = override.ContextWindow
+		}
+		if override.MaxOutputTokens != 0 {
+			out.maxOutputTokensSet = true
+			out.maxOutputTokens = override.MaxOutputTokens
+		}
+		if strings.TrimSpace(override.ReasoningProtocol) != "" {
+			out.reasoningProtocolSet = true
+			out.reasoningProtocol = strings.TrimSpace(override.ReasoningProtocol)
+		}
+		if override.SupportedEfforts != nil {
+			out.supportedEffortsSet = true
+			out.supportedEfforts = append([]string(nil), override.SupportedEfforts...)
+			out.defaultEffortSet = true
+			out.defaultEffort = strings.TrimSpace(override.DefaultEffort)
+		}
+		if override.Vision != nil {
+			out.visionSet = true
+			out.vision = *override.Vision
+		}
+	}
+	return out, listed || out.contextWindowSet || out.maxOutputTokensSet || out.priceSet ||
+		out.reasoningProtocolSet || out.supportedEffortsSet || out.defaultEffortSet || out.visionSet
+}
+
+func pricingForModelKey(prices map[string]*provider.Pricing, model string) (*provider.Pricing, bool) {
+	for key, price := range prices {
+		if strings.EqualFold(strings.TrimSpace(key), strings.TrimSpace(model)) {
+			return price, true
+		}
+	}
+	return nil, false
+}
+
+func legacyDeepSeekModelFieldProjectionsCompatible(a, b legacyDeepSeekModelFields) bool {
+	return (!a.contextWindowSet || !b.contextWindowSet || a.contextWindow == b.contextWindow) &&
+		(!a.maxOutputTokensSet || !b.maxOutputTokensSet || a.maxOutputTokens == b.maxOutputTokens) &&
+		(!a.priceSet || !b.priceSet || reflect.DeepEqual(a.price, b.price)) &&
+		(!a.reasoningProtocolSet || !b.reasoningProtocolSet || a.reasoningProtocol == b.reasoningProtocol) &&
+		(!a.supportedEffortsSet || !b.supportedEffortsSet || slices.Equal(a.supportedEfforts, b.supportedEfforts)) &&
+		(!a.defaultEffortSet || !b.defaultEffortSet || a.defaultEffort == b.defaultEffort) &&
+		(!a.visionSet || !b.visionSet || a.vision == b.vision)
+}
+
+func preferredLegacyDeepSeekDefault(entries []*ProviderEntry, models []string, fallback string) string {
+	for _, entry := range entries {
+		if entry == nil {
+			continue
+		}
+		candidate := strings.TrimSpace(entry.Default)
+		if candidate != "" && slices.Contains(models, candidate) {
+			return candidate
+		}
+	}
+	return firstKnownModel(fallback, models, "deepseek-v4-flash")
+}
+
+func mergeLegacyDeepSeekModelConfiguration(entry, old *ProviderEntry) {
+	if entry == nil || old == nil {
+		return
+	}
+	if entry.Prices == nil {
+		entry.Prices = map[string]*provider.Pricing{}
+	}
+	if entry.ModelOverrides == nil {
+		entry.ModelOverrides = map[string]ProviderModelOverride{}
+	}
+	entry.VisionModels = mergeModelLists(entry.VisionModels, old.VisionModels)
+	for model, price := range old.Prices {
+		entry.Prices[model] = clonePricing(price)
+	}
+	for _, model := range old.ModelList() {
+		model = strings.TrimSpace(model)
+		if model == "" {
+			continue
+		}
+		if price := old.PriceForModel(model); price != nil {
+			entry.Prices[model] = price
+		}
+		override := entry.ModelOverrides[model]
+		if old.ContextWindow > 0 && old.ContextWindow != entry.ContextWindow {
+			override.ContextWindow = old.ContextWindow
+		}
+		if old.MaxOutputTokens != entry.MaxOutputTokens {
+			override.MaxOutputTokens = old.MaxOutputTokens
+		}
+		if protocol := strings.TrimSpace(old.ReasoningProtocol); protocol != "" {
+			override.ReasoningProtocol = protocol
+		}
+		if len(old.SupportedEfforts) > 0 {
+			override.SupportedEfforts = append([]string(nil), old.SupportedEfforts...)
+			override.DefaultEffort = old.DefaultEffort
+		}
+		if old.Vision || old.HasVisionModel(model) {
+			vision := true
+			override.Vision = &vision
+		}
+		if explicit, ok := old.modelOverrideForModel(model); ok {
+			mergeProviderModelOverride(&override, explicit)
+		}
+		entry.ModelOverrides[model] = override
+	}
+	for model, override := range old.ModelOverrides {
+		if old.HasModel(model) {
+			continue
+		}
+		current := entry.ModelOverrides[model]
+		mergeProviderModelOverride(&current, override)
+		entry.ModelOverrides[model] = current
+	}
+}
+
+func mergeProviderModelOverride(dst *ProviderModelOverride, src ProviderModelOverride) {
+	if dst == nil {
+		return
+	}
+	if strings.TrimSpace(src.ReasoningProtocol) != "" {
+		dst.ReasoningProtocol = src.ReasoningProtocol
+	}
+	if len(src.SupportedEfforts) > 0 {
+		dst.SupportedEfforts = append([]string(nil), src.SupportedEfforts...)
+		dst.DefaultEffort = src.DefaultEffort
+	}
+	if src.Vision != nil {
+		vision := *src.Vision
+		dst.Vision = &vision
+	}
+	if src.ContextWindow > 0 {
+		dst.ContextWindow = src.ContextWindow
+	}
+	if src.MaxOutputTokens != 0 {
+		dst.MaxOutputTokens = src.MaxOutputTokens
+	}
 }
 
 func mergeModelLists(primary, extra []string) []string {

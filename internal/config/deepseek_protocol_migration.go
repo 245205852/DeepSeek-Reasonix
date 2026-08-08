@@ -46,6 +46,28 @@ func UpgradeDeepSeekProviderProtocolUserConfig(name string) (bool, error) {
 	return UpgradeDeepSeekProviderProtocol(userConfigLoadPath(), name)
 }
 
+// CanUpgradeDeepSeekProviderProtocolUserConfig reports whether the active
+// user-global source contains a safely mappable provider in the requested
+// DeepSeek family. Settings uses the same rewrite parser as the mutation path,
+// so a project-only provider or an unsupported TOML shape cannot expose an
+// action that would later edit a different file or fail unexpectedly.
+func CanUpgradeDeepSeekProviderProtocolUserConfig(name string) bool {
+	path := userConfigLoadPath()
+	if strings.TrimSpace(path) == "" {
+		return false
+	}
+	resolved, exists, err := statConfigPath(path)
+	if err != nil || !exists {
+		return false
+	}
+	raw, err := fileencoding.ReadFileUTF8(resolved)
+	if err != nil {
+		return false
+	}
+	_, changed, err := rewriteLegacyDeepSeekProtocol(string(raw), name, false)
+	return err == nil && changed
+}
+
 // CanUpgradeDeepSeekProviderProtocol reports whether Settings may offer the
 // explicit protocol upgrade. Custom transport/capability fields prevent the
 // automatic migration but remain preserved when the user confirms this action.
@@ -93,15 +115,17 @@ func editLegacyDeepSeekProtocolFile(path, target string, automatic bool) (bool, 
 	if err != nil {
 		return false, err
 	}
-	raw, err := fileencoding.ReadFileUTF8(resolved)
+	rawBytes, err := os.ReadFile(resolved)
 	if err != nil {
 		return false, err
 	}
+	encoding, detected := fileencoding.Detect(rawBytes)
+	raw := fileencoding.Decode(detected, encoding)
 	next, changed, err := rewriteLegacyDeepSeekProtocol(string(raw), target, automatic)
 	if err != nil || !changed {
 		return changed, err
 	}
-	if err := fileutil.AtomicWriteFile(resolved, []byte(next), info.Mode().Perm()); err != nil {
+	if err := fileutil.AtomicWriteFile(resolved, fileencoding.Encode(next, encoding), info.Mode().Perm()); err != nil {
 		return false, err
 	}
 	return true, nil

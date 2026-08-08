@@ -139,6 +139,12 @@ ok(
   "legacy official DeepSeek cards expose an explicit recommended-protocol action",
 );
 ok(
+  settingsSource.includes("const providerNames = group.providers.map((provider) => provider.name)") &&
+    settingsSource.includes("app.SetProviderWebSearch(providerNames, enabled)") &&
+    !settingsSource.includes("app.SaveProvider({ ...provider, webSearch: enabled })"),
+  "grouped DeepSeek profiles update server-side web search through one atomic backend call",
+);
+ok(
   /<div className="provider-access-card__actions">[\s\S]*?<ProviderAccessMoreMenu[\s\S]*?<\/div>\s*<\/div>\s*\{group\.description && <div className="provider-access-card__desc">[\s\S]*?\{upgradeProvider && \(/.test(settingsSource) &&
     settingsSource.includes('className="provider-access-more__menu"') &&
     settingsSource.includes('buttonRole="menuitem"') &&

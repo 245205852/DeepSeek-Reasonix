@@ -1651,6 +1651,7 @@ export interface ProviderModelOverrideView {
   defaultEffort: string;
   vision?: boolean | null;
   contextWindow?: number;
+  maxOutputTokens?: number;
 }
 
 // BalanceInfo is the wallet-balance readout (desktop/app.go Balance). available

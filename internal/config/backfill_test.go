@@ -856,6 +856,126 @@ func TestNormalizeDesktopOfficialProviderAccessKeepsCustomAlias(t *testing.T) {
 	}
 }
 
+func TestNormalizeDesktopOfficialProviderAccessKeepsIncompatibleOfficialAliases(t *testing.T) {
+	c := &Config{
+		DefaultModel: "deepseek-pro/deepseek-v4-pro",
+		Desktop:      DesktopConfig{ProviderAccess: []string{"deepseek"}},
+		Providers: []ProviderEntry{
+			{
+				Name: "deepseek-flash", Kind: "anthropic", BaseURL: deepSeekAnthropicBaseURL,
+				Model: "deepseek-v4-flash", APIKeyEnv: "DEEPSEEK_API_KEY",
+				Headers: map[string]string{"X-Route": "flash"},
+			},
+			{
+				Name: "deepseek-pro", Kind: "anthropic", BaseURL: deepSeekAnthropicBaseURL,
+				Model: "deepseek-v4-pro", APIKeyEnv: "DEEPSEEK_API_KEY",
+				Headers: map[string]string{"X-Route": "pro"},
+			},
+		},
+	}
+
+	normalizeDesktopOfficialProviderAccess(c)
+
+	if got := c.Desktop.ProviderAccess; !reflect.DeepEqual(got, []string{"deepseek-flash", "deepseek-pro"}) {
+		t.Fatalf("provider_access = %v, want incompatible aliases preserved separately", got)
+	}
+	if _, ok := c.Provider("deepseek"); ok {
+		t.Fatal("incompatible provider-wide headers must not be collapsed into a canonical provider")
+	}
+	if c.DefaultModel != "deepseek-pro/deepseek-v4-pro" {
+		t.Fatalf("default_model = %q, want legacy Pro reference preserved", c.DefaultModel)
+	}
+	resolved, ok := c.ResolveModel(c.DefaultModel)
+	if !ok || resolved.Headers["X-Route"] != "pro" {
+		t.Fatalf("resolved Pro provider = %+v, found=%v; want its original transport", resolved, ok)
+	}
+}
+
+func TestNormalizeDesktopOfficialProviderAccessKeepsConflictingModelAliases(t *testing.T) {
+	c := &Config{
+		DefaultModel: "deepseek-pro/deepseek-v4-flash",
+		Desktop:      DesktopConfig{ProviderAccess: []string{"deepseek"}},
+		Providers: []ProviderEntry{
+			{
+				Name: "deepseek-flash", Kind: "anthropic", BaseURL: deepSeekAnthropicBaseURL,
+				Model: "deepseek-v4-flash", APIKeyEnv: "DEEPSEEK_API_KEY", ContextWindow: 900_000,
+			},
+			{
+				Name: "deepseek-pro", Kind: "anthropic", BaseURL: deepSeekAnthropicBaseURL,
+				Model: "deepseek-v4-flash", APIKeyEnv: "DEEPSEEK_API_KEY", ContextWindow: 800_000,
+			},
+		},
+	}
+
+	normalizeDesktopOfficialProviderAccess(c)
+
+	if got := c.Desktop.ProviderAccess; !reflect.DeepEqual(got, []string{"deepseek-flash", "deepseek-pro"}) {
+		t.Fatalf("provider_access = %v, want aliases with conflicting model metadata preserved", got)
+	}
+	if _, ok := c.Provider("deepseek"); ok {
+		t.Fatal("conflicting model metadata must not be collapsed into a canonical provider")
+	}
+	resolved, ok := c.ResolveModel(c.DefaultModel)
+	if !ok || resolved.ContextWindow != 800_000 {
+		t.Fatalf("resolved Pro alias = %+v, found=%v; want its original context window", resolved, ok)
+	}
+}
+
+func TestNormalizeDesktopOfficialProviderAccessKeepsUnsupportedOfficialProtocolAlias(t *testing.T) {
+	c := &Config{
+		DefaultModel: "deepseek-flash/deepseek-v4-flash",
+		Desktop:      DesktopConfig{ProviderAccess: []string{"deepseek-flash"}},
+		Providers: []ProviderEntry{{
+			Name: "deepseek-flash", Kind: "responses", BaseURL: "https://api.deepseek.com",
+			Model: "deepseek-v4-flash", APIKeyEnv: "DEEPSEEK_API_KEY",
+		}},
+	}
+
+	normalizeDesktopOfficialProviderAccess(c)
+
+	if got := c.Desktop.ProviderAccess; !reflect.DeepEqual(got, []string{"deepseek-flash"}) {
+		t.Fatalf("provider_access = %v, want unsupported legacy protocol alias preserved", got)
+	}
+	if _, ok := c.Provider("deepseek"); ok {
+		t.Fatal("a legacy Responses alias must not be rewritten into the Anthropic canonical provider")
+	}
+	if c.DefaultModel != "deepseek-flash/deepseek-v4-flash" {
+		t.Fatalf("default_model = %q, want unsupported protocol reference preserved", c.DefaultModel)
+	}
+}
+
+func TestNormalizeDesktopOfficialProviderAccessPreservesDefaultAndUnknownPrices(t *testing.T) {
+	futurePrice := &provider.Pricing{Input: 4.2, Output: 8.4, Currency: "T"}
+	c := &Config{
+		Desktop: DesktopConfig{ProviderAccess: []string{"deepseek"}},
+		Providers: []ProviderEntry{
+			{
+				Name: "deepseek-flash", Kind: "anthropic", BaseURL: deepSeekAnthropicBaseURL,
+				Models: []string{"deepseek-v4-flash", "deepseek-v5-preview"}, Default: "deepseek-v5-preview",
+				APIKeyEnv: "DEEPSEEK_API_KEY", Prices: map[string]*provider.Pricing{"deepseek-v5-preview": futurePrice},
+			},
+			{
+				Name: "deepseek-pro", Kind: "anthropic", BaseURL: deepSeekAnthropicBaseURL,
+				Model: "deepseek-v4-pro", APIKeyEnv: "DEEPSEEK_API_KEY",
+			},
+		},
+	}
+
+	normalizeDesktopOfficialProviderAccess(c)
+
+	canonical, ok := c.Provider("deepseek")
+	if !ok {
+		t.Fatal("canonical DeepSeek provider missing")
+	}
+	if canonical.Default != "deepseek-v5-preview" {
+		t.Fatalf("canonical default = %q, want explicit legacy default preserved", canonical.Default)
+	}
+	got := canonical.Prices["deepseek-v5-preview"]
+	if got == nil || !reflect.DeepEqual(got, futurePrice) {
+		t.Fatalf("future model price = %+v, want %+v", got, futurePrice)
+	}
+}
+
 func TestNormalizeOfficialDeepSeekModelsRepairsCanonicalProvider(t *testing.T) {
 	c := &Config{
 		DefaultModel: "deepseek-flash/deepseek-v4-flash",

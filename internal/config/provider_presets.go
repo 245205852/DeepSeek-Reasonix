@@ -1009,6 +1009,14 @@ func cloneProviderEntry(e ProviderEntry) ProviderEntry {
 		value := *e.WebSearch
 		e.WebSearch = &value
 	}
+	if e.ResponsesStateful != nil {
+		value := *e.ResponsesStateful
+		e.ResponsesStateful = &value
+	}
+	if e.visionOverride != nil {
+		value := *e.visionOverride
+		e.visionOverride = &value
+	}
 	e.Models = append([]string(nil), e.Models...)
 	e.VisionModels = append([]string(nil), e.VisionModels...)
 	e.SupportedEfforts = append([]string(nil), e.SupportedEfforts...)
@@ -1064,6 +1072,10 @@ func cloneModelOverrideMap(in map[string]ProviderModelOverride) map[string]Provi
 	out := make(map[string]ProviderModelOverride, len(in))
 	for k, v := range in {
 		v.SupportedEfforts = append([]string(nil), v.SupportedEfforts...)
+		if v.Vision != nil {
+			vision := *v.Vision
+			v.Vision = &vision
+		}
 		out[k] = v
 	}
 	return out

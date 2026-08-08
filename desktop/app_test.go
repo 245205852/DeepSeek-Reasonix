@@ -5137,6 +5137,46 @@ func TestConnectKeyRestoresDeepSeekProviderAccess(t *testing.T) {
 	}
 }
 
+func TestConnectKeyFreshInstallUsesDeepSeekAnthropicDefaults(t *testing.T) {
+	isolateDesktopUserDirs(t)
+	oldFetch := connectKeyBalanceFetch
+	connectKeyBalanceFetch = func(context.Context, *http.Client, string, string) (*billing.Balance, error) {
+		return &billing.Balance{Available: true}, nil
+	}
+	t.Cleanup(func() { connectKeyBalanceFetch = oldFetch })
+
+	app := NewApp()
+	app.ctx = context.Background()
+	app.readyHook = func() {}
+	app.setTestCtrl(control.New(control.Options{Label: "fresh-install"}), "deepseek-flash/deepseek-v4-flash")
+	workspace := t.TempDir()
+	app.tabs["test"].WorkspaceRoot = workspace
+	defer func() {
+		if ctrl := app.activeCtrl(); ctrl != nil {
+			ctrl.Close()
+		}
+	}()
+
+	if _, err := app.ConnectKey("sk-test"); err != nil {
+		t.Fatalf("ConnectKey: %v", err)
+	}
+	cfg, err := config.LoadForRootReadOnly(workspace)
+	if err != nil {
+		t.Fatalf("load fresh-install config: %v", err)
+	}
+	entry, ok := cfg.ResolveModel(cfg.DefaultModel)
+	if !ok {
+		t.Fatalf("default model %q did not resolve", cfg.DefaultModel)
+	}
+	if entry.Kind != "anthropic" || entry.BaseURL != "https://api.deepseek.com/anthropic" ||
+		entry.Thinking != "enabled" || !config.EffectiveWebSearch(entry) || config.EffectiveVision(entry) {
+		t.Fatalf("fresh-install DeepSeek entry = %+v; want Anthropic, thinking, web search, and text-only vision", entry)
+	}
+	if app.NeedsOnboarding() {
+		t.Fatal("fresh-install onboarding should close after the validated DeepSeek key is stored")
+	}
+}
+
 func TestBalanceForTabUsesDesktopPricingCurrency(t *testing.T) {
 	isolateDesktopUserDirs(t)
 	cfg := config.Default()
