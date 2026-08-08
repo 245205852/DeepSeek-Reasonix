@@ -608,7 +608,7 @@ func (s *FileStore) ClaimIdempotency(ctx context.Context, projectDir string, r I
 		var existing IdempotencyRecord
 		if jsonErr := json.Unmarshal(data, &existing); jsonErr != nil {
 			if quarantineErr := quarantineCorruptIdempotency(target); quarantineErr != nil {
-				return nil, fmt.Errorf("idempotency claim: parse existing record: %w (quarantine: %v)", jsonErr, quarantineErr)
+				return nil, fmt.Errorf("idempotency claim: parse existing record: %w (quarantine: %w)", jsonErr, quarantineErr)
 			}
 			// Continue with a fresh claim after preserving the corrupt record.
 		} else if existing.Pending && timeNow().Sub(existing.ClaimedAt) > 5*time.Minute {
