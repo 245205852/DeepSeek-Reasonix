@@ -54,7 +54,7 @@ func TestReceiptStoreKeepsSameIDAcrossGenerations(t *testing.T) {
 func TestReceiptStoreBoundsGenerationAndReceiptRetention(t *testing.T) {
 	s := newReceiptStore(2, 2, nil)
 	for gen := uint64(1); gen <= 3; gen++ {
-		for i := 0; i < 2; i++ {
+		for i := range 2 {
 			s.Record(EffectReceipt{ID: itoaU64(gen) + "-" + itoaU64(uint64(i)), Generation: gen, Class: Irreversible})
 		}
 	}
@@ -65,7 +65,7 @@ func TestReceiptStoreBoundsGenerationAndReceiptRetention(t *testing.T) {
 		t.Fatalf("evicted generation must not claim clean recovery: %+v", rec)
 	}
 
-	for i := 0; i < 3; i++ {
+	for i := range 3 {
 		s.Record(EffectReceipt{ID: "current-" + itoaU64(uint64(i)), Generation: 4, Class: Irreversible})
 	}
 	if got := len(s.ForGeneration(4)); got != 2 {
