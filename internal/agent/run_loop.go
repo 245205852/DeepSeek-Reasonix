@@ -59,7 +59,6 @@ type perTurnState struct {
 	deliveryMutationExpected    bool
 	deliveryPersistentExpected  bool
 	deliveryScopeActive         bool
-
 	// readinessRecovered marks a run that started with evidence preserved from
 	// (or a pending recovery of) a prior readiness failure, so the final
 	// allowed audit can report Recovered=true.
@@ -938,6 +937,7 @@ func (a *Agent) handleFinalResponse(ctx context.Context, state *runLoopState, te
 	if readiness.applies {
 		event.RecordReadinessAudit(a.sink, readiness.audit(evidence.ReadinessAllowed, a.readinessRecovered))
 	}
+	a.emitContractShadow(state.input)
 	if !a.closeSteerIntakeIfIdle() {
 		return true, nil
 	}
