@@ -704,7 +704,7 @@ func historyIndexPublishedAfterTranscript(indexPath string, transcriptInfo os.Fi
 	if err != nil || indexInfo.IsDir() {
 		return false
 	}
-	return !indexInfo.ModTime().Before(transcriptInfo.ModTime())
+	return indexInfo.ModTime().After(transcriptInfo.ModTime())
 }
 
 func coldHistorySliceSource(sessionPath string, idx *agent.SessionDisplayIndex) *historySliceSource {
