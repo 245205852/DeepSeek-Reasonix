@@ -634,10 +634,22 @@ func applyTOMLReplacements(raw string, replacements []tomlReplacement) string {
 
 func isProviderArrayTableHeader(line string) bool {
 	trimmed := strings.TrimSpace(line)
-	if comment := strings.Index(trimmed, "#"); comment >= 0 {
+	if comment := tomlInlineCommentIndex(trimmed); comment >= 0 {
 		trimmed = strings.TrimSpace(trimmed[:comment])
 	}
-	return trimmed == "[[providers]]"
+	if !strings.HasPrefix(trimmed, "[[") || !strings.HasSuffix(trimmed, "]]") {
+		return false
+	}
+	key := strings.TrimSpace(trimmed[2 : len(trimmed)-2])
+	switch {
+	case key == "providers", key == "'providers'":
+		return true
+	case len(key) >= 2 && key[0] == '"' && key[len(key)-1] == '"':
+		decoded, err := strconv.Unquote(key)
+		return err == nil && decoded == "providers"
+	default:
+		return false
+	}
 }
 
 func rewriteDeepSeekProviderBlock(lines []string, block providerTOMLBlock) error {

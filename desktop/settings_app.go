@@ -1130,13 +1130,13 @@ func (a *App) Settings() SettingsView {
 	return v
 }
 
-func deepSeekProtocolUpgradeSourceAvailable(root string) bool {
-	if path := config.UserConfigPath(); path != "" {
-		if _, err := os.Stat(path); err == nil {
-			return true
-		}
+func deepSeekProtocolUpgradeSourceAvailable(_ string) bool {
+	path := config.UserConfigSourcePath()
+	if strings.TrimSpace(path) == "" {
+		return false
 	}
-	return sameConfigPath(config.SourcePathForRoot(root), config.UserConfigSourcePath())
+	_, err := os.Stat(path)
+	return err == nil
 }
 
 func sandboxEffectiveShellView(sh sandbox.Shell) string {

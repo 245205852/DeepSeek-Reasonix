@@ -1224,6 +1224,27 @@ reasoning_protocol = "none"
 	}
 }
 
+func TestDeepSeekProtocolUpgradeSourceAvailableWithLegacyGlobalAndProjectConfig(t *testing.T) {
+	isolateDesktopUserDirs(t)
+	legacyPath := config.LegacyUserConfigPath()
+	if legacyPath == "" {
+		t.Skip("platform has no distinct legacy user-config path")
+	}
+	if err := os.MkdirAll(filepath.Dir(legacyPath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(legacyPath, []byte("# legacy global config\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	project := t.TempDir()
+	if err := os.WriteFile(filepath.Join(project, "reasonix.toml"), []byte("# project config\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if !deepSeekProtocolUpgradeSourceAvailable(project) {
+		t.Fatal("project config must not hide an available legacy global upgrade source")
+	}
+}
+
 func TestOfficialMimoAPITemplateRemoved(t *testing.T) {
 	if entries, keyEnv, err := officialProviderTemplate("mimo-api", "en"); err == nil {
 		t.Fatalf("officialProviderTemplate(mimo-api) = entries=%v key=%q nil error, want unknown template", entries, keyEnv)

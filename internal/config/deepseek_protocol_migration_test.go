@@ -289,6 +289,43 @@ func TestDeepSeekProtocolMigrationSupportsQuotedKeys(t *testing.T) {
 	}
 }
 
+func TestDeepSeekProtocolMigrationSupportsQuotedProviderTableHeaders(t *testing.T) {
+	raw := `[["providers"]]
+name = "deepseek-flash"
+kind = "openai"
+base_url = "https://api.deepseek.com"
+model = "deepseek-v4-flash"
+api_key_env = "DEEPSEEK_API_KEY"
+
+[['providers']]
+name = "deepseek-pro"
+kind = "openai"
+base_url = "https://api.deepseek.com"
+model = "deepseek-v4-pro"
+api_key_env = "DEEPSEEK_API_KEY"
+`
+	next, changed, err := rewriteLegacyDeepSeekProtocol(raw, "", true)
+	if err != nil {
+		t.Fatalf("rewrite quoted provider table headers: %v", err)
+	}
+	if !changed || strings.Count(next, `kind = "anthropic"`) != 2 ||
+		strings.Count(next, `base_url = "https://api.deepseek.com/anthropic"`) != 2 {
+		t.Fatalf("quoted provider table headers were not migrated:\n%s", next)
+	}
+	for _, header := range []string{`[["providers"]]`, `[['providers']]`} {
+		if !strings.Contains(next, header) {
+			t.Errorf("migration changed provider table header %q:\n%s", header, next)
+		}
+	}
+	var decoded Config
+	if _, err := toml.Decode(next, &decoded); err != nil {
+		t.Fatalf("migrated quoted-header TOML is invalid: %v\n%s", err, next)
+	}
+	if len(decoded.Providers) != 2 || decoded.Providers[0].Kind != "anthropic" || decoded.Providers[1].Kind != "anthropic" {
+		t.Fatalf("migrated quoted-header providers = %+v", decoded.Providers)
+	}
+}
+
 func TestManualDeepSeekProtocolUpgradeSkipsMultilineProviderText(t *testing.T) {
 	raw := `[[providers]]
 name = "deepseek-flash"

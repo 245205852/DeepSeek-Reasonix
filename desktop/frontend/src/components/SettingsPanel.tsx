@@ -5589,7 +5589,7 @@ function ProviderAccessCard({
               cancelLabel={t("common.cancel")}
               disabled={busy}
               primary
-              onConfirm={() => onUpgradeRecommended(upgradeProvider.name)}
+              onConfirm={() => onUpgradeRecommended(canonicalOfficialProviderName(upgradeProvider.name))}
             />
           </div>
         </div>

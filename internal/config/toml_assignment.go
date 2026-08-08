@@ -44,7 +44,6 @@ func tomlAssignmentKey(line string) (string, bool) {
 				}
 				key = decoded
 				line = line[end+1:]
-				end = len(line)
 				goto assignment
 			}
 			end++

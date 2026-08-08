@@ -132,6 +132,7 @@ ok(
 );
 ok(
   /onUpgradeRecommended=\{\(name\) => apply\(\(\) => app\.UpgradeDeepSeekProviderAccess\(name\)\)/.test(settingsSource) &&
+    settingsSource.includes("onConfirm={() => onUpgradeRecommended(canonicalOfficialProviderName(upgradeProvider.name))}") &&
     settingsSource.includes('className="provider-protocol-upgrade"') &&
     settingsSource.includes('t("settings.providerCurrentProtocol", { protocol: "OpenAI Chat Completions" })') &&
     /<InlineConfirmButton[\s\S]*?label=\{<>\{t\("settings\.upgradeRecommendedProtocol"\)\}[\s\S]*?primary[\s\S]*?onConfirm=\{\(\) => onUpgradeRecommended/.test(settingsSource),
