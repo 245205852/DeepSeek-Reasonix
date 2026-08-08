@@ -24,7 +24,8 @@ func TestAppendBenchmarkProfileArgsDeliveryUsesRealRuntimeProfile(t *testing.T) 
 }
 
 func TestBuildRunTaskArgsEnablesUnattendedWorkspaceWrites(t *testing.T) {
-	got := buildRunTaskArgs("metrics.json", "run.trajectory.jsonl", "e2e", benchmarkProfileDelivery, ablation.Set{}, 12, "fix it")
+	cfg := suiteConfig{model: "e2e", profile: benchmarkProfileDelivery}
+	got := buildRunTaskArgs(cfg, "metrics.json", "run.trajectory.jsonl", 12, "fix it")
 	want := []string{
 		"run", "--auto", "--metrics", "metrics.json",
 		"--trajectory", "run.trajectory.jsonl",
@@ -37,10 +38,20 @@ func TestBuildRunTaskArgsEnablesUnattendedWorkspaceWrites(t *testing.T) {
 }
 
 func TestBuildRunTaskArgsPassesTheAblationArmThrough(t *testing.T) {
-	got := buildRunTaskArgs("m.json", "", "", benchmarkProfileBaseline, ablation.New(ablation.Evidence, ablation.Planner), 0, "fix it")
+	cfg := suiteConfig{profile: benchmarkProfileBaseline, arm: ablation.New(ablation.Evidence, ablation.Planner)}
+	got := buildRunTaskArgs(cfg, "m.json", "", 0, "fix it")
 	want := []string{"run", "--auto", "--metrics", "m.json", "--ablate", "evidence,planner", "fix it"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("ablated args = %v, want %v", got, want)
+	}
+}
+
+func TestBuildRunTaskArgsPassesEffortThrough(t *testing.T) {
+	cfg := suiteConfig{profile: benchmarkProfileEconomy, effort: "low"}
+	got := buildRunTaskArgs(cfg, "m.json", "", 0, "fix it")
+	want := []string{"run", "--auto", "--metrics", "m.json", "--profile", "economy", "--effort", "low", "fix it"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("effort args = %v, want %v", got, want)
 	}
 }
 

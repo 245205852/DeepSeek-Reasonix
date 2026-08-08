@@ -5,6 +5,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 )
@@ -56,6 +57,7 @@ type armStats struct {
 type classStats struct {
 	Ran, Solved int
 	WallMs      int64
+	TTCS        []int64
 }
 
 func aggregateArm(results []result) armStats {
@@ -90,6 +92,11 @@ func aggregateArm(results []result) armStats {
 		}
 		if r.Passed {
 			c.Solved++
+			if r.TTCSMs > 0 {
+				c.TTCS = append(c.TTCS, r.TTCSMs)
+			} else {
+				c.TTCS = append(c.TTCS, r.WallMs)
+			}
 		}
 		c.WallMs += r.WallMs
 		s.ByClass[label] = c
@@ -166,11 +173,13 @@ func multiCompareReport(paths []string) (string, error) {
 	b.WriteString("| Arm | Pass@1 | Solved | TTFT | TTCS median | TTCS p90 | Solved/hour | 1st-req cache | Requests/solved | Tokens/solved | Cost/solved |\n")
 	b.WriteString("|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|\n")
 	points := make([]paretoPoint, 0, len(paths))
+	arms := make([]armStats, 0, len(paths))
 	for _, path := range paths {
 		s, err := loadArm(path)
 		if err != nil {
 			return "", err
 		}
+		arms = append(arms, s)
 		p := newParetoPoint(path, s)
 		points = append(points, p)
 		solvedPerHour := "—"
@@ -181,15 +190,69 @@ func multiCompareReport(paths []string) (string, error) {
 		if s.AccountedSolved > 0 {
 			cost = fmt.Sprintf("%.4f", s.Cost/float64(s.AccountedSolved))
 		}
-		fmt.Fprintf(&b, "| `%s` | %s | %d/%d | %s | %s | %s | %s | %s | %s |\n",
-			p.label, pct(s.Pass1, s.Ran), s.Solved, s.Ran,
+		fmt.Fprintf(&b, "| `%s` | %s | %d/%d | %s | %s | %s | %s | %s | %s | %s | %s |\n",
+			p.label, pct(s.Pass1, s.Ran), s.Solved, s.Ran, durMs(median(s.TTFT)),
 			dur(median(s.TTCS)), dur(pctile(s.TTCS, 90)), solvedPerHour,
+			pct(int(s.FirstHit), int(s.FirstHit+s.FirstMiss)),
 			perSolved(float64(s.Steps), s.AccountedSolved),
 			tokensPerSolved(s.Tokens, s.AccountedSolved), cost)
 	}
 	b.WriteString("\n" + paretoSection(points))
+	b.WriteString(perClassWinners(paths, arms))
 	b.WriteString("<sub>Per-solved figures divide each arm's accounted totals (failures included) by its accounted solves; TTCS charges a retried solve with its failed attempts' wall.</sub>\n")
 	return b.String(), nil
+}
+
+// perClassWinners is the routing readout: per task class, each arm's solve
+// rate and TTCS median, and the winner (best solve rate, ties to the faster
+// arm). A global default hides exactly this — the class that a leaner arm
+// wins outright is a host-side routing opportunity, no classifier call needed.
+func perClassWinners(paths []string, arms []armStats) string {
+	classes := map[string]bool{}
+	for _, a := range arms {
+		for class := range a.ByClass {
+			if class != "unclassified" {
+				classes[class] = true
+			}
+		}
+	}
+	if len(classes) == 0 || len(arms) < 2 {
+		return ""
+	}
+	names := make([]string, 0, len(classes))
+	for class := range classes {
+		names = append(names, class)
+	}
+	sort.Strings(names)
+
+	var b strings.Builder
+	b.WriteString("### Per-class winners\n\n| Class |")
+	labels := make([]string, len(paths))
+	for i, path := range paths {
+		labels[i] = strings.TrimSuffix(filepath.Base(path), ".json")
+		fmt.Fprintf(&b, " `%s` |", labels[i])
+	}
+	b.WriteString(" Winner |\n|---|")
+	b.WriteString(strings.Repeat("---:|", len(paths)) + "---|\n")
+	for _, class := range names {
+		fmt.Fprintf(&b, "| %s |", class)
+		winner, bestSolve, bestTTCS := "—", -1.0, int64(0)
+		for i, a := range arms {
+			c := a.ByClass[class]
+			if c.Ran == 0 {
+				b.WriteString(" — |")
+				continue
+			}
+			ttcs := median(c.TTCS)
+			fmt.Fprintf(&b, " %s · %s |", pct(c.Solved, c.Ran), dur(ttcs))
+			solve := float64(c.Solved) / float64(c.Ran)
+			if solve > bestSolve || (solve == bestSolve && c.Solved > 0 && ttcs < bestTTCS) {
+				winner, bestSolve, bestTTCS = labels[i], solve, ttcs
+			}
+		}
+		fmt.Fprintf(&b, " %s |\n", winner)
+	}
+	return b.String() + "\n"
 }
 
 // accumulateSources folds one run's per-origin usage into the suite totals.

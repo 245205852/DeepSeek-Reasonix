@@ -118,6 +118,9 @@ type result struct {
 	// CacheArm records whether the run was cold (fresh session) or warm
 	// (prefix pre-warmed in the same workdir), so arms never get mixed.
 	CacheArm string `json:"cache_arm,omitempty"`
+	// Effort records the reasoning-effort override the arm ran with ("" =
+	// model default), the adaptive-reasoning-budget experiment axis.
+	Effort string `json:"effort,omitempty"`
 	// Attempt is this entry's 1-based try for its task; suite retries stop at
 	// the first passing attempt. Zero on skipped entries and old JSON.
 	Attempt int `json:"attempt,omitempty"`
@@ -174,6 +177,7 @@ func main() {
 	suite := flag.String("suite", "benchmarks/e2e", "suite root (contains tasks/<id>/)")
 	taskFilter := flag.String("task", "", "suite mode: run only these comma-separated task IDs (e.g. -task fix-add-bug)")
 	cacheArm := flag.String("cache", "cold", "suite mode: cold (fresh session per task) | warm (prefix-warming one-step run in the same workdir before the graded run)")
+	effort := flag.String("effort", "", "reasoning effort override passed to the agent (model-specific levels, e.g. disabled|low|high|max); empty = model default")
 	bin := flag.String("bin", "reasonix", "path to the reasonix binary")
 	model := flag.String("model", "", "provider/model name (default: config default)")
 	profileFlag := flag.String("profile", benchmarkProfileBaseline, "prompt profile: baseline | delivery")
@@ -237,40 +241,49 @@ func main() {
 		return
 	}
 
-	tasks, err := loadTasks(*suite)
+	runSuiteMode(suiteConfig{
+		bin: *bin, model: *model, profile: profile, arm: arm, budget: *budget,
+		trajDir: *trajDir, forcePlanner: *forcePlanner, attempts: *attempts,
+		cacheArm: cache, effort: *effort,
+	}, *suite, *taskFilter, *outMD, *outJSON)
+}
+
+func runSuiteMode(cfg suiteConfig, suite, taskFilter, outMD, outJSON string) {
+	tasks, err := loadTasks(suite)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "load suite:", err)
 		os.Exit(1)
 	}
 	if len(tasks) == 0 {
-		exitNoTasks(*suite)
+		exitNoTasks(suite)
 	}
-	if tasks, err = filterTasks(tasks, *taskFilter); err != nil {
+	if tasks, err = filterTasks(tasks, taskFilter); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(2)
 	}
 
-	results := runSuite(*bin, *model, profile, arm, tasks, *budget, *trajDir, *forcePlanner, *attempts, cache)
+	results := runSuite(cfg, tasks)
 
 	report := render(results)
-	if *outMD != "" {
-		if err := os.WriteFile(*outMD, []byte(report), 0o644); err != nil {
+	if outMD != "" {
+		if err := os.WriteFile(outMD, []byte(report), 0o644); err != nil {
 			fmt.Fprintln(os.Stderr, "write report:", err)
 			os.Exit(1)
 		}
 	} else {
 		fmt.Print(report)
 	}
-	if *outJSON != "" {
-		b, err := json.MarshalIndent(results, "", "  ")
-		if err != nil {
-			fmt.Fprintln(os.Stderr, "marshal json:", err)
-			os.Exit(1)
-		}
-		if err := os.WriteFile(*outJSON, b, 0o644); err != nil {
-			fmt.Fprintln(os.Stderr, "write json:", err)
-			os.Exit(1)
-		}
+	if outJSON == "" {
+		return
+	}
+	b, err := json.MarshalIndent(results, "", "  ")
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "marshal json:", err)
+		os.Exit(1)
+	}
+	if err := os.WriteFile(outJSON, b, 0o644); err != nil {
+		fmt.Fprintln(os.Stderr, "write json:", err)
+		os.Exit(1)
 	}
 }
 
@@ -358,22 +371,32 @@ func filterTasks(tasks []task, filter string) ([]task, error) {
 	return out, nil
 }
 
+// suiteConfig carries one suite invocation's fixed experiment axes: binary,
+// model, tool-surface profile, ablation arm, cache arm, and reasoning effort.
+type suiteConfig struct {
+	bin, model, profile, cacheArm, effort string
+	arm                                   ablation.Set
+	trajDir                               string
+	forcePlanner                          bool
+	attempts, budget                      int
+}
+
 // runSuite runs each task in order until the token budget is exhausted;
 // remaining tasks are reported as skipped rather than silently dropped. Each
 // task retries up to attempts times, stopping at the first passing attempt;
 // TTCS accumulates the failed attempts' wall too — a solution found on try 3
 // took three tries' worth of time to reach.
-func runSuite(bin, model, profile string, arm ablation.Set, tasks []task, budget int, trajDir string, forcePlanner bool, attempts int, cacheArm string) []result {
+func runSuite(cfg suiteConfig, tasks []task) []result {
 	var results []result
 	total := 0
 	for _, t := range tasks {
-		if budget > 0 && total >= budget {
-			results = append(results, result{task: t, Profile: profile, Skipped: true, Note: "skipped: token budget reached"})
+		if cfg.budget > 0 && total >= cfg.budget {
+			results = append(results, result{task: t, Profile: cfg.profile, Skipped: true, Note: "skipped: token budget reached"})
 			continue
 		}
 		var cumWallMs int64
-		for attempt := 1; attempt <= max(attempts, 1); attempt++ {
-			r := runTask(bin, model, profile, arm, t, trajDir, forcePlanner, cacheArm)
+		for attempt := 1; attempt <= max(cfg.attempts, 1); attempt++ {
+			r := runTask(cfg, t)
 			r.Attempt = attempt
 			cumWallMs += r.WallMs
 			if r.Passed {
@@ -381,7 +404,7 @@ func runSuite(bin, model, profile string, arm ablation.Set, tasks []task, budget
 			}
 			total += r.PromptTokens + r.CompletionTokens
 			results = append(results, r)
-			if r.Passed || (budget > 0 && total >= budget) {
+			if r.Passed || (cfg.budget > 0 && total >= cfg.budget) {
 				break
 			}
 		}
@@ -392,10 +415,10 @@ func runSuite(bin, model, profile string, arm ablation.Set, tasks []task, budget
 // runTask copies the task's seed workdir into a temp dir, runs the agent there,
 // then drops in verify.sh and runs it as the grader. The grader is added only
 // after the run so the agent can't read the answer key.
-func runTask(bin, model, profile string, arm ablation.Set, t task, trajDir string, forcePlanner bool, cacheArm string) result {
-	r := result{task: t, Profile: profile, CacheArm: cacheArm}
-	r.Arm = arm.Arm()
-	if forcePlanner {
+func runTask(cfg suiteConfig, t task) result {
+	r := result{task: t, Profile: cfg.profile, CacheArm: cfg.cacheArm, Effort: cfg.effort}
+	r.Arm = cfg.arm.Arm()
+	if cfg.forcePlanner {
 		// Leading directive matched by the planner gate's
 		// planAndExecuteDirectives, so the two-model turn engages even for
 		// prompts the gate would route ExecutorOnly.
@@ -404,12 +427,12 @@ func runTask(bin, model, profile string, arm ablation.Set, t task, trajDir strin
 	}
 
 	trajPath := ""
-	if trajDir != "" {
-		if err := os.MkdirAll(trajDir, 0o755); err != nil {
+	if cfg.trajDir != "" {
+		if err := os.MkdirAll(cfg.trajDir, 0o755); err != nil {
 			r.Note = "trajectory dir: " + err.Error()
 			return r
 		}
-		trajPath = filepath.Join(trajDir, t.ID+".trajectory.jsonl")
+		trajPath = filepath.Join(cfg.trajDir, t.ID+".trajectory.jsonl")
 	}
 
 	work, err := os.MkdirTemp("", "e2ebench-"+t.ID+"-")
@@ -426,17 +449,17 @@ func runTask(bin, model, profile string, arm ablation.Set, t task, trajDir strin
 		}
 	}
 
-	if cacheArm == benchmarkCacheWarm {
-		warmPrefix(bin, model, profile, arm, work)
+	if cfg.cacheArm == benchmarkCacheWarm {
+		warmPrefix(cfg, work)
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(t.TimeoutSec)*time.Second)
 	defer cancel()
 
 	metricsPath := filepath.Join(work, ".run-metrics.json")
-	args := buildRunTaskArgs(metricsPath, trajPath, model, profile, arm, t.MaxSteps, t.Prompt)
+	args := buildRunTaskArgs(cfg, metricsPath, trajPath, t.MaxSteps, t.Prompt)
 
-	cmd := exec.CommandContext(ctx, bin, args...)
+	cmd := exec.CommandContext(ctx, cfg.bin, args...)
 	cmd.Dir = work
 	cmd.Stdout = os.Stderr // stream the run to the job log, keep stdout clean for the report
 	cmd.Stderr = os.Stderr
@@ -468,24 +491,27 @@ func runTask(bin, model, profile string, arm ablation.Set, t task, trajDir strin
 	return r
 }
 
-func buildRunTaskArgs(metricsPath, trajectoryPath, model, profile string, arm ablation.Set, maxSteps int, prompt string) []string {
+func buildRunTaskArgs(cfg suiteConfig, metricsPath, trajectoryPath string, maxSteps int, prompt string) []string {
 	// Benchmarks are unattended and their fixtures require ordinary workspace
 	// writes. Auto still honors explicit ask/deny rules and the sandbox boundary.
 	args := []string{"run", "--auto", "--metrics", metricsPath}
 	if trajectoryPath != "" {
 		args = append(args, "--trajectory", trajectoryPath)
 	}
-	if model != "" {
-		args = append(args, "--model", model)
+	if cfg.model != "" {
+		args = append(args, "--model", cfg.model)
 	}
 	if maxSteps > 0 {
 		args = append(args, "--max-steps", fmt.Sprint(maxSteps))
 	}
-	args = appendBenchmarkProfileArgs(args, profile)
+	args = appendBenchmarkProfileArgs(args, cfg.profile)
+	if cfg.effort != "" {
+		args = append(args, "--effort", cfg.effort)
+	}
 	// The control arm must produce a byte-identical command line to the one the
 	// suite ran before ablation existed, so its numbers stay comparable.
-	if !arm.Empty() {
-		args = append(args, "--ablate", arm.String())
+	if !cfg.arm.Empty() {
+		args = append(args, "--ablate", cfg.arm.String())
 	}
 	return append(args, prompt)
 }
@@ -495,19 +521,22 @@ func buildRunTaskArgs(metricsPath, trajectoryPath, model, profile string, arm ab
 // deliberately untracked: the warm arm measures a long-lived session's steady
 // state, not the price of reaching it. Prefix-shaping flags (model, profile,
 // ablation, cwd) must match the graded invocation exactly.
-func warmPrefix(bin, model, profile string, arm ablation.Set, work string) {
+func warmPrefix(cfg suiteConfig, work string) {
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer cancel()
 	args := []string{"run", "--auto", "--max-steps", "1"}
-	if model != "" {
-		args = append(args, "--model", model)
+	if cfg.model != "" {
+		args = append(args, "--model", cfg.model)
 	}
-	args = appendBenchmarkProfileArgs(args, profile)
-	if !arm.Empty() {
-		args = append(args, "--ablate", arm.String())
+	args = appendBenchmarkProfileArgs(args, cfg.profile)
+	if cfg.effort != "" {
+		args = append(args, "--effort", cfg.effort)
+	}
+	if !cfg.arm.Empty() {
+		args = append(args, "--ablate", cfg.arm.String())
 	}
 	args = append(args, "Reply with exactly: ok")
-	cmd := exec.CommandContext(ctx, bin, args...)
+	cmd := exec.CommandContext(ctx, cfg.bin, args...)
 	cmd.Dir = work
 	cmd.Stdout = os.Stderr
 	cmd.Stderr = os.Stderr

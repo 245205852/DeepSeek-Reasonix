@@ -31,6 +31,34 @@ func TestMarkDominatedIgnoresUnsolvedArms(t *testing.T) {
 	}
 }
 
+func TestPerClassWinners(t *testing.T) {
+	economy := armStats{ByClass: map[string]classStats{
+		"atomic-bugfix":    {Ran: 2, Solved: 2, TTCS: []int64{15_000, 17_000}},
+		"repo-exploration": {Ran: 2, Solved: 1, TTCS: []int64{20_000}},
+	}}
+	balanced := armStats{ByClass: map[string]classStats{
+		"atomic-bugfix":    {Ran: 2, Solved: 2, TTCS: []int64{22_000, 24_000}},
+		"repo-exploration": {Ran: 2, Solved: 2, TTCS: []int64{30_000, 31_000}},
+		"unclassified":     {Ran: 1, Solved: 1, TTCS: []int64{5_000}},
+	}}
+	got := perClassWinners([]string{"economy.json", "balanced.json"}, []armStats{economy, balanced})
+	for _, want := range []string{
+		"### Per-class winners",
+		"| atomic-bugfix | 100% · 17.0s | 100% · 24.0s | economy |",
+		"| repo-exploration | 50% · 20.0s | 100% · 31.0s | balanced |",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("per-class table missing %q:\n%s", want, got)
+		}
+	}
+	if strings.Contains(got, "unclassified") {
+		t.Fatalf("unclassified rows must not render:\n%s", got)
+	}
+	if perClassWinners([]string{"a.json"}, []armStats{economy}) != "" {
+		t.Fatal("single arm has no winners to declare")
+	}
+}
+
 func TestParetoSectionRendersChartAndVerdicts(t *testing.T) {
 	got := paretoSection([]paretoPoint{
 		{label: "a", acc: 90, ttcsMs: 30_000, solved: 9, ran: 10},
