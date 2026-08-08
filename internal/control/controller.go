@@ -664,8 +664,7 @@ func (c *Controller) SetDisplayRecorder(fn func(content, display string)) {
 // controller starts serving turns: c.sink is swapped here and emission call
 // sites read it without locking. The first non-nil install wins; a controller
 // generation never swaps dispatchers. Nil is a no-op (the pre-dispatch path).
-// The executor agent receives the same dispatcher so the run loop consults
-// the agent-side intercept points (stage 6b2).
+// The executor agent receives the same dispatcher (stage 6b2).
 func (c *Controller) SetExtensions(d *dispatch.Dispatcher) {
 	if d == nil {
 		return
