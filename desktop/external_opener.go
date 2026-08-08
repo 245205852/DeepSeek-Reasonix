@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -295,21 +296,76 @@ func (a *App) SaveLocalPathAs(path string) (string, error) {
 	if filepath.Clean(target) == filepath.Clean(path) {
 		return "", fmt.Errorf("destination is the same as the source")
 	}
+	if err := copyLocalPathAs(path, target, info); err != nil {
+		return "", err
+	}
+	return target, nil
+}
+
+func copyLocalPathAs(path, target string, info os.FileInfo) error {
+	sameFile, err := localSaveDestinationIsSource(info, target)
+	if err != nil {
+		return err
+	}
+	if sameFile {
+		return fmt.Errorf("destination is the same as the source")
+	}
 	src, err := os.Open(path)
 	if err != nil {
-		return "", err
+		return err
 	}
 	defer src.Close()
 	dst, err := os.OpenFile(target, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, info.Mode().Perm())
 	if err != nil {
-		return "", err
+		return err
 	}
 	if _, err = io.Copy(dst, src); err != nil {
 		_ = dst.Close()
-		return "", err
+		return err
 	}
 	if err = dst.Close(); err != nil {
-		return "", err
+		return err
 	}
-	return target, nil
+	return nil
+}
+
+// localSaveDestinationIsSource compares filesystem identity, not just path
+// spelling. os.Stat follows aliases, so this catches case-insensitive paths,
+// symlinks, and hard links before the destination is opened with O_TRUNC.
+func localSaveDestinationIsSource(sourceInfo os.FileInfo, target string) (bool, error) {
+	targetInfo, err := os.Stat(target)
+	if errors.Is(err, os.ErrNotExist) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return os.SameFile(sourceInfo, targetInfo), nil
+}
+
+// externalOpenerWorkingDirectory returns a valid directory for process launch.
+// Editors still receive the original file path as an argument; only the
+// process CWD changes when the requested path is a regular file.
+func externalOpenerWorkingDirectory(path string) string {
+	info, err := os.Stat(path)
+	if err == nil && !info.IsDir() {
+		return filepath.Dir(path)
+	}
+	return path
+}
+
+func externalOpenerLaunchPath(spec externalOpenerSpec, path string) string {
+	if spec.View.Kind == externalOpenerTerminal || isTerminalLaunchMode(spec.LaunchMode) {
+		return externalOpenerWorkingDirectory(path)
+	}
+	return path
+}
+
+func isTerminalLaunchMode(mode string) bool {
+	switch mode {
+	case "ghostty", "gnome-terminal", "konsole", "kitty", "alacritty", "cwd", "windows-terminal", "console":
+		return true
+	default:
+		return false
+	}
 }
