@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"maps"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -274,9 +275,7 @@ func TestPositionalCompressionPreservesCheckpointLineage(t *testing.T) {
 	beforeRevision := atomic.LoadInt64(&c.sessionRevision)
 	c.checkpoints.mu.Lock()
 	beforeBounds := make(map[int]int, len(c.checkpoints.bound))
-	for turn, boundary := range c.checkpoints.bound {
-		beforeBounds[turn] = boundary
-	}
+	maps.Copy(beforeBounds, c.checkpoints.bound)
 	c.checkpoints.mu.Unlock()
 
 	if err := c.SummarizeFrom(context.Background(), 0); err != nil {
@@ -293,9 +292,7 @@ func TestPositionalCompressionPreservesCheckpointLineage(t *testing.T) {
 	}
 	c.checkpoints.mu.Lock()
 	afterBounds := make(map[int]int, len(c.checkpoints.bound))
-	for turn, boundary := range c.checkpoints.bound {
-		afterBounds[turn] = boundary
-	}
+	maps.Copy(afterBounds, c.checkpoints.bound)
 	c.checkpoints.mu.Unlock()
 	if !reflect.DeepEqual(afterBounds, beforeBounds) {
 		t.Fatalf("checkpoint boundaries changed: before=%v after=%v", beforeBounds, afterBounds)
