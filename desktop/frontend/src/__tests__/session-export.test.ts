@@ -60,6 +60,10 @@ assert.equal(
   "filtered:data:image/png;base64,iVBORw0KGgo=",
 );
 assert.equal(
+  transformExportMarkdownUrl("file://nas/share/report.md", "href", fallbackUrlTransform),
+  "file://nas/share/report.md",
+);
+assert.equal(
   transformExportMarkdownUrl("https://example.com/image.png", "src", fallbackUrlTransform),
   "filtered:https://example.com/image.png",
 );

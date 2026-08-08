@@ -61,6 +61,9 @@ eq(firstPath("see file:///D:/Project/report/05-final.md"), "file:///D:/Project/r
 eq(firstPath("见 file:///D:/Project/中停时分析/05-静态验收.md"), "file:///D:/Project/中停时分析/05-静态验收.md",
   "file URL with CJK dirs");
 eq(firstPath("see file:///D:/x/y.md. done"), "file:///D:/x/y.md", "file URL trailing period stripped");
+eq(firstPath("see file://nas/share/report.md"), "file://nas/share/report.md",
+  "authority-form UNC text becomes a local link");
+eq(pathCount("see file:///D:/x/%zz"), 0, "malformed file URL is not linkified");
 eq(firstPath("see \\nas\\share\\docs\\report.md done"), "\\\\nas\\share\\docs\\report.md",
   "UNC path matched whole and \\\\ prefix restored");
 
@@ -95,6 +98,10 @@ eq(localPathHref("D:\\Project\\中停时分析\\05-静态验收.md"), "file:///D
 eq(localPathHref("D:\\a\\b#c.md"), "file:///D:/a/b%23c.md", "hash escaped for URL safety");
 eq(localPathHref("file:///C:/a/b.txt"), "file:///C:/a/b.txt", "already-absolute file URL is not double-prefixed");
 eq(localPathHref("file:///D:/a%20b.txt"), "file:///D:/a%20b.txt", "literal %xx in a file URL is not double-encoded");
+eq(localPathHref("file://nas/share/report.md"), "file://nas/share/report.md",
+  "authority-form UNC URL is preserved");
+eq(localPathHref("file:////nas/share/report.md"), "file:////nas/share/report.md",
+  "slash-form UNC URL is preserved");
 eq(localPathFromHref("file:///D:/a%20b.txt"), "D:/a b.txt", "decoded %20 becomes a real space");
 
 eq(localPathFromHref("file:///D:/x/y.md"), "D:/x/y.md", "decodes plain path");

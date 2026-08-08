@@ -3,7 +3,8 @@ import ReactMarkdown, { defaultUrlTransform } from "react-markdown";
 import type { Components } from "react-markdown";
 import "katex/dist/katex.min.css";
 import { CodeViewer } from "./CodeViewer";
-import { localPathFromHref, RichMarkdownLink } from "./githubLink";
+import { RichMarkdownLink } from "./githubLink";
+import { isLocalFileHref } from "../lib/localFileUrl";
 import { normalizeMath } from "./mathNormalize";
 import { reasonixRehypePlugins, reasonixRemarkPlugins } from "./markdownRemarkPlugins";
 import { markdownImageSource } from "../lib/markdownImage";
@@ -28,7 +29,7 @@ const DIVIDER_RE = /^[\s\-_=─━—]+$/;
 // markdown links and must survive react-markdown's default URL sanitisation,
 // which would otherwise blank them along with javascript: and friends.
 function markdownUrlTransform(value: string): string {
-  return localPathFromHref(value) !== null ? value : defaultUrlTransform(value);
+  return isLocalFileHref(value) ? value : defaultUrlTransform(value);
 }
 
 function splitStatusLine(line: string): string[] {

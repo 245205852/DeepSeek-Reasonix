@@ -9,6 +9,7 @@
 
 import { visit } from "unist-util-visit";
 import type { Parent, Link, Root, Text } from "mdast";
+import { isLocalFileHref } from "./localFileUrl";
 import { unescapeRefPath } from "./refToken";
 
 // Sentence punctuation is excluded from path characters: Windows forbids `：`
@@ -27,11 +28,12 @@ const SENT_PUNCT = "，。；、！？,;!?（）";
 // same position, so a trailing `\ ` would otherwise never be consumed.
 const PATH_CHAR = String.raw`(?:\\[ \t]|[^\s<>"|?*：${SENT_PUNCT}])`;
 
-// file:/// URLs are matched whole (their `:` and `.` are legal there). Drive
-// and UNC prefix boundaries are checked in JavaScript rather than with regular
+// file URLs are matched whole (their `:` and `.` are legal there). Drive and
+// UNC prefix boundaries are checked in JavaScript rather than with regular
 // expression lookbehind: macOS 12's WebKit rejects `(?<!...)` while loading the
-// whole lazy Markdown chunk, before any message is rendered.
-const FILE_RE = new RegExp(String.raw`file:///[^\s<>"|?*${SENT_PUNCT}]+`, "g");
+// whole lazy Markdown chunk, before any message is rendered. URL candidates are
+// validated with the shared parser below so malformed file URLs stay inert.
+const FILE_RE = new RegExp(String.raw`file://[^\s<>"|?*${SENT_PUNCT}]+`, "g");
 const DRIVE_RE = new RegExp(String.raw`[A-Za-z]:[\\/]${PATH_CHAR}+`, "g");
 // UNC share paths: the plugin runs on parsed markdown text nodes, where
 // CommonMark backslash escaping has already folded `\\` into `\`. A share
@@ -100,6 +102,9 @@ export function linkifyLocalPaths(text: string): LocalPathSegment[] {
       if (!hasValidPrefixBoundary(text, match.index, kind)) {
         continue;
       }
+      if (kind === "file" && !isLocalFileHref(stripTrailingClosers(match[0]))) {
+        continue;
+      }
       // RegExpExecArray has no start/end — compare via index/length.
       const overlapped = matches.some((p) => !(matchEnd <= p.start || match.index >= p.end));
       if (!overlapped) {
@@ -131,11 +136,11 @@ export function linkifyLocalPaths(text: string): LocalPathSegment[] {
 /**
  * Builds the href for a clickable local path. Uses file:/// with forward
  * slashes (the standard Windows form) and percent-encodes non-ASCII and `#`.
- * Already-absolute file:/// matches (FILE_RE raw text) are decoded first so
- * their literal %xx sequences are not double-encoded. The click handler
- * decodes it back before calling the native opener.
+ * Valid file URLs are preserved verbatim so authority-form UNC URLs are not
+ * rewritten into a different path.
  */
 export function localPathHref(path: string): string {
+  if (isLocalFileHref(path)) return path;
   if (path.startsWith("file:///")) {
     try {
       path = decodeURIComponent(path.slice("file:///".length));

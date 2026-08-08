@@ -4,9 +4,12 @@ import { Copy, ExternalLink, FolderOpen, Mail, Save } from "lucide-react";
 import { app, openExternal } from "../lib/bridge";
 import { writeClipboardText } from "../lib/clipboard";
 import { t } from "../lib/i18n";
+import { localPathFromHref } from "../lib/localFileUrl";
 import type { ExternalOpenerView, ExternalOpenersView } from "../lib/types";
 import { useToast } from "../lib/toast";
 import { ContextMenu, contextMenuPointFromEvent, type ContextMenuItem, type ContextMenuPoint } from "./ContextMenu";
+
+export { localPathFromHref } from "../lib/localFileUrl";
 
 export interface GitHubLinkInfo {
   kind: "issue" | "pull" | "commit";
@@ -256,34 +259,6 @@ function LocalPathMarkdownLink({
       />
     </>
   );
-}
-
-// localPathFromHref returns the decoded local filesystem path for a file URL,
-// including authority-form UNC URLs (file://server/share/path), or null for
-// non-file and malformed/non-absolute URLs.
-export function localPathFromHref(href?: string): string | null {
-  // Keep the allowlist case-sensitive so FILE:/// cannot bypass the markdown
-  // URL policy and be handed to a browser/default URL handler.
-  if (!href || !href.startsWith("file://")) return null;
-  try {
-    const url = new URL(href);
-    if (url.protocol !== "file:") return null;
-    if (url.username || url.password || url.port) return null;
-
-    let path = decodeURIComponent(url.pathname);
-    if (url.hostname) {
-      path = `//${url.hostname}${path}`;
-    }
-    // file:///D:/... has a URL root slash that is not part of the Windows
-    // drive path. Multiple leading slashes are the slash-form UNC variant.
-    if (/^\/[A-Za-z]:\//.test(path)) path = path.slice(1);
-    if (path.startsWith("//")) path = `//${path.replace(/^\/+/, "")}`;
-    if (/^[A-Za-z]:\//.test(path)) return path;
-    if (!path.startsWith("/")) return null;
-    return path;
-  } catch {
-    return null;
-  }
 }
 
 export function RichMarkdownLink({
