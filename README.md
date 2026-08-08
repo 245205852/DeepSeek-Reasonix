@@ -42,6 +42,10 @@
 <h3 align="center">A DeepSeek-native AI coding agent for your terminal.</h3>
 <p align="center">A config- and plugin-driven harness — a single static Go binary, tuned around DeepSeek's prefix cache so token costs stay low across long sessions.</p>
 
+<p align="center">
+  <video src="https://github.com/user-attachments/assets/ab2f3878-e224-4931-8254-060e7695cfb9" controls preload="metadata" width="720"></video>
+</p>
+
 <br/>
 
 > [!IMPORTANT]
@@ -204,10 +208,6 @@ Special thanks to [**Bernardxu123**](https://github.com/Bernardxu123) for design
   <sub>MIT — see <a href="./LICENSE">LICENSE</a></sub>
   <br/>
   <sub>Built by the community at <a href="https://github.com/esengine/DeepSeek-Reasonix/graphs/contributors">esengine/DeepSeek-Reasonix</a></sub>
-</p>
-
-<p align="center">
-  <video src="https://github.com/user-attachments/assets/ab2f3878-e224-4931-8254-060e7695cfb9" controls></video>
 </p>
 
 ---
