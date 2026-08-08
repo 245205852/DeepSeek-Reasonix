@@ -8,7 +8,9 @@ import (
 
 	"reasonix/internal/evidence"
 	"reasonix/internal/instruction"
+	"reasonix/internal/planmode"
 	"reasonix/internal/provider"
+	"reasonix/internal/tool"
 )
 
 func TestTodoInventoryListsTurnTodos(t *testing.T) {
@@ -485,6 +487,18 @@ func TestCompleteStepIgnoresFailedTodoReceipt(t *testing.T) {
 func TestCompleteStepReadOnlyForPermissionLayer(t *testing.T) {
 	if !(completeStep{}).ReadOnly() {
 		t.Fatal("complete_step stays ReadOnly so permission policy need not prompt; plan mode blocks it as an execution-only workflow")
+	}
+}
+
+func TestCompleteStepSchemaOnlyVisibleAfterPlanApproval(t *testing.T) {
+	reg := tool.NewRegistry()
+	reg.Add(completeStep{})
+	if got := reg.SchemasForContext(planmode.WithActive(context.Background(), true)); len(got) != 0 {
+		t.Fatalf("Plan-mode schemas = %+v, want complete_step hidden", got)
+	}
+	got := reg.SchemasForContext(planmode.WithActive(context.Background(), false))
+	if len(got) != 1 || got[0].Name != "complete_step" {
+		t.Fatalf("execution schemas = %+v, want complete_step", got)
 	}
 }
 

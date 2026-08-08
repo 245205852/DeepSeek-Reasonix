@@ -361,6 +361,9 @@ func (c *Coordinator) Run(ctx context.Context, input string) error {
 		return c.executor.Run(ctx, input)
 	}
 	c.sink.Emit(event.Event{Kind: event.Phase, Text: c.planner.Name() + " · planning", Detail: routeDetail, Source: event.UsageSourcePlanner})
+	// The planner researches and proposes work but does not own the root Goal
+	// turn's disposition. Hide the recorder only for planning; the executor
+	// still receives the original context and can report after doing the work.
 	plannerCtx := tool.WithoutGoalTurnRecorder(ctx)
 	if decision.MaxResearchRounds > 0 {
 		plannerCtx = withRunStepLimit(plannerCtx, decision.MaxResearchRounds, "planner research rounds")

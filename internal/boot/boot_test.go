@@ -2049,7 +2049,7 @@ model = "x"
 	}
 }
 
-func TestBootToolContractMatchesProviderVisibleSurface(t *testing.T) {
+func TestBootToolContractCoversProviderVisibleSurface(t *testing.T) {
 	for _, tc := range []struct {
 		name      string
 		tokenMode string
@@ -2081,11 +2081,21 @@ model = "x"
 			if got := toolSchemaNames(req.Tools); !reflect.DeepEqual(got, wantNames) {
 				t.Fatalf("%s provider-visible tool surface changed\ngot  %v\nwant %v", tc.name, got, wantNames)
 			}
-			if len(entries) != len(req.Tools) {
-				t.Fatalf("contract entries = %d, provider tools = %d\ncontract=%v\nprovider=%v", len(entries), len(req.Tools), contractEntryNames(entries), toolSchemaNames(req.Tools))
+			entryByName := make(map[string]tool.ContractEntry, len(entries))
+			for _, entry := range entries {
+				entryByName[entry.Name] = entry
 			}
-			for i, e := range entries {
-				s := req.Tools[i]
+			if _, ok := entryByName["update_goal"]; !ok {
+				t.Fatalf("static contract must retain contextual update_goal: %v", contractEntryNames(entries))
+			}
+			if len(entries) != len(req.Tools)+1 {
+				t.Fatalf("contract entries = %d, provider tools = %d; want only contextual update_goal hidden\ncontract=%v\nprovider=%v", len(entries), len(req.Tools), contractEntryNames(entries), toolSchemaNames(req.Tools))
+			}
+			for i, s := range req.Tools {
+				e, ok := entryByName[s.Name]
+				if !ok {
+					t.Fatalf("provider tool %q missing from static contract", s.Name)
+				}
 				if e.Name != s.Name {
 					t.Fatalf("tool[%d] name = %q, want %q\ncontract=%v\nprovider=%v", i, e.Name, s.Name, contractEntryNames(entries), toolSchemaNames(req.Tools))
 				}
@@ -2222,7 +2232,6 @@ func defaultFullBootToolNames() []string {
 		"slash_command",
 		"task",
 		"todo_write",
-		"update_goal",
 		"wait",
 		"web_fetch",
 		"write_file",
@@ -2238,7 +2247,6 @@ func economyBootToolNames() []string {
 		"edit_file",
 		"kill_shell",
 		"read_file",
-		"update_goal",
 		"wait",
 		"write_file",
 	}
@@ -2290,7 +2298,6 @@ command = "reasonix-missing-mockmcp"
 		"edit_file",
 		"kill_shell",
 		"read_file",
-		"update_goal",
 		"wait",
 		"write_file",
 	}

@@ -67,8 +67,8 @@ func TestSubAgentMasksParentJobsAndMemoryContexts(t *testing.T) {
 		t.Fatalf("memory queue probe result = %q", got)
 	}
 	for i, req := range prov.requests {
-		if !slices.Contains(toolSchemaNames(req.Tools), "wait") {
-			t.Fatalf("child request %d lost stable wait schema: %v", i+1, toolSchemaNames(req.Tools))
+		if slices.Contains(toolSchemaNames(req.Tools), "wait") {
+			t.Fatalf("child request %d inherited parent Jobs manager: %v", i+1, toolSchemaNames(req.Tools))
 		}
 	}
 }

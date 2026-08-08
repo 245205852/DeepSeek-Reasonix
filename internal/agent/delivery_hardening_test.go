@@ -238,7 +238,7 @@ func TestNonGoalToolOnlyUpdateGoalGetsAtMostOneRepairRound(t *testing.T) {
 	}}
 	a := New(prov, reg, NewSession("sys"), Options{}, event.Discard)
 	err := a.Run(context.Background(), "answer normally")
-	if err == nil || !strings.Contains(err.Error(), "repeatedly called update_goal outside Goal mode") {
+	if err == nil || !strings.Contains(err.Error(), "repeatedly called context-unavailable tools") {
 		t.Fatalf("repeated tool-only misuse error = %v", err)
 	}
 	if prov.call != 2 {

@@ -41,6 +41,8 @@ type blockingFinishedSink struct {
 	once     sync.Once
 }
 
+type preservedContextKey struct{}
+
 func (s *blockingFinishedSink) Emit(ev event.Event) {
 	if strings.Contains(ev.Text, "background bash finished") {
 		s.once.Do(func() { close(s.entered) })
@@ -76,6 +78,19 @@ func TestStartForSessionStampsJobContext(t *testing.T) {
 	}
 	if res := m.WaitForSession(context.Background(), "session-a", []string{j.ID}, 5); len(res) != 1 || res[0].Status != Done {
 		t.Fatalf("job result = %+v, want done", res)
+	}
+}
+
+func TestWithoutManagerShadowsOnlyManager(t *testing.T) {
+	manager := NewManager(event.Discard)
+	defer manager.Close()
+	parent := context.WithValue(WithManager(context.Background(), manager), preservedContextKey{}, "preserved")
+	child := WithoutManager(parent)
+	if _, ok := FromContext(child); ok {
+		t.Fatal("child context inherited a disabled parent job manager")
+	}
+	if got := child.Value(preservedContextKey{}); got != "preserved" {
+		t.Fatalf("unrelated context value = %v, want preserved", got)
 	}
 }
 

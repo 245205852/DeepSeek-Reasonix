@@ -43,6 +43,11 @@ func (updateGoal) Schema() json.RawMessage {
 // tool permissions or bypass sandbox policy.
 func (updateGoal) ReadOnly() bool { return true }
 
+func (updateGoal) ProviderVisible(ctx context.Context) bool {
+	_, ok := tool.GoalTurnRecorderFromContext(ctx)
+	return ok
+}
+
 // PlanModeSafe reports true: the tool is read-only host bookkeeping. It is
 // provider-visible only during an active goal turn, and Execute also fails
 // closed if a stale or hallucinated call reaches an ordinary turn.

@@ -43,23 +43,15 @@ func (m legacyResearchArchive) prepare(goal string) legacyResearchSetup {
 			blockReason: "legacy research archive is unavailable for this workspace",
 		}
 	}
-	task, err := m.store.LoadTask(taskID)
+	original, err := m.loadGoalText(taskID)
 	if err != nil {
 		slog.Warn("controller: resume legacy autoresearch task", "err", err)
 		return legacyResearchSetup{explicit: true, taskID: taskID, blockReason: err.Error()}
 	}
-	original := strings.TrimSpace(task.Spec.Goal)
-	if original == "" {
-		return legacyResearchSetup{
-			explicit:    true,
-			taskID:      task.ID,
-			blockReason: "legacy research archive is missing goal text",
-		}
-	}
 	return legacyResearchSetup{
 		goal:     original,
-		taskID:   task.ID,
-		notice:   "legacy research archive loaded: " + task.ID,
+		taskID:   taskID,
+		notice:   "legacy research archive loaded: " + taskID,
 		explicit: true,
 	}
 }
@@ -73,6 +65,11 @@ func (m legacyResearchArchive) loadGoalText(taskID string) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	if report, err := m.store.ValidateTask(task.ID); err != nil {
+		return "", err
+	} else if !report.Valid {
+		return "", errLegacyArchiveInvalid
+	}
 	goal := strings.TrimSpace(task.Spec.Goal)
 	if goal == "" {
 		return "", errLegacyArchiveMissingGoal
@@ -82,6 +79,7 @@ func (m legacyResearchArchive) loadGoalText(taskID string) (string, error) {
 
 var (
 	errLegacyArchiveUnavailable = errString("legacy research archive is unavailable for this workspace")
+	errLegacyArchiveInvalid     = errString("legacy research archive is invalid")
 	errLegacyArchiveMissingGoal = errString("legacy research archive is missing goal text")
 )
 
@@ -94,16 +92,7 @@ func (c *Controller) prepareLegacyResearchTask(goal string) legacyResearchSetup 
 }
 
 func (c *Controller) restorePendingLegacyGoal(legacy legacyGoalRestore) bool {
-	if legacy.taskID == "" {
-		goal, epoch, ok := c.goals.legacyArchiveBlockedState()
-		if ok {
-			setup := c.prepareLegacyResearchTask(goal)
-			if setup.explicit && setup.taskID != "" {
-				legacy = legacyGoalRestore{taskID: setup.taskID, epoch: epoch, explicit: true}
-			}
-		}
-	}
-	if legacy.taskID == "" || (strings.TrimSpace(c.goals.goalText()) != "" && !legacy.explicit) {
+	if legacy.taskID == "" || strings.TrimSpace(c.goals.goalText()) != "" {
 		c.replaceLegacyRestore(legacyGoalRestore{})
 		return false
 	}
@@ -117,22 +106,30 @@ func (c *Controller) restorePendingLegacyGoal(legacy legacyGoalRestore) bool {
 	}
 	goal, err := c.legacyResearchArchive.loadGoalText(legacy.taskID)
 	if err != nil {
-		if epoch, ok := c.goals.blockLegacyRestore(legacy.epoch, err.Error()); ok {
+		if epoch, ok := c.goals.blockLegacyRestore(legacy.epoch, legacy.taskID, err.Error()); ok {
+			_, _ = c.persistGoalStateAtEpoch(epoch, restoreTodos)
 			c.advanceLegacyRestoreEpoch(legacy.taskID, legacy.epoch, epoch)
 			c.notice("legacy research archive resume failed: " + err.Error())
-		}
-		return true
-	}
-	if legacy.explicit {
-		if epoch, ok := c.goals.resumeLegacyArchive(legacy.epoch, goal); ok {
-			c.persistGoalStateAtEpoch(epoch, restoreTodos)
+		} else {
 			c.clearLegacyRestore(legacy.taskID, legacy.epoch)
 		}
 		return true
 	}
 	if strings.TrimSpace(c.goals.goalText()) == "" {
 		if epoch, ok := c.goals.fillGoalTextIfEmpty(legacy.epoch, goal); ok {
-			c.persistGoalStateAtEpoch(epoch, restoreTodos)
+			_, persistErr := c.persistGoalStateAtEpoch(epoch, restoreTodos)
+			if persistErr != nil {
+				reason := "persist migrated legacy Goal: " + persistErr.Error()
+				if blockedEpoch, blocked := c.goals.failLegacyRestorePersistence(epoch, legacy.taskID, reason); blocked {
+					c.replaceLegacyRestore(legacyGoalRestore{taskID: legacy.taskID, todos: restoreTodos, epoch: blockedEpoch})
+					c.notice("legacy research archive resume failed: " + reason)
+				} else {
+					c.clearLegacyRestore(legacy.taskID, legacy.epoch)
+				}
+			} else {
+				c.clearLegacyRestore(legacy.taskID, legacy.epoch)
+			}
+		} else {
 			c.clearLegacyRestore(legacy.taskID, legacy.epoch)
 		}
 	}
@@ -140,31 +137,31 @@ func (c *Controller) restorePendingLegacyGoal(legacy legacyGoalRestore) bool {
 }
 
 func (c *Controller) retryBlockedLegacyGoal() (handled, resumed bool) {
-	legacy, ok := c.legacyRestoreSnapshot()
+	goal, taskID, epoch, ok := c.goals.legacyArchiveRetryToken()
 	if !ok {
+		if _, _, blocked := c.goals.legacyArchiveBlockedState(); blocked {
+			return true, false
+		}
 		return false, false
 	}
-	goal, ok := c.goals.legacyArchiveRetryToken(legacy.epoch)
-	if !ok {
-		c.clearLegacyRestore(legacy.taskID, legacy.epoch)
-		return false, false
-	}
-	taskID, epoch := legacy.taskID, legacy.epoch
 	setup := c.prepareLegacyResearchTask(goal)
-	resolvedGoal := setup.goal
+	resolvedGoal, reason := setup.goal, setup.blockReason
 	if !setup.explicit {
 		var err error
 		resolvedGoal, err = c.legacyResearchArchive.loadGoalText(taskID)
 		if err != nil {
-			setup.blockReason = err.Error()
-		} else if strings.TrimSpace(goal) != "" {
-			resolvedGoal = goal
+			reason = err.Error()
 		}
+	} else if setup.taskID != taskID {
+		reason = "legacy research archive identity changed during retry"
 	}
-	if setup.blockReason != "" || strings.TrimSpace(resolvedGoal) == "" {
-		reason := setup.blockReason
+	if reason != "" || strings.TrimSpace(resolvedGoal) == "" {
 		if reason == "" {
 			reason = "legacy research archive could not be recovered"
+		}
+		if nextEpoch, applied := c.goals.blockLegacyRestore(epoch, taskID, reason); applied {
+			_, _ = c.persistGoalStateAtEpoch(nextEpoch, c.goalTodos())
+			c.replaceLegacyRestore(legacyGoalRestore{taskID: taskID, epoch: nextEpoch})
 		}
 		c.notice("legacy research archive resume failed: " + reason)
 		return true, false
@@ -172,11 +169,27 @@ func (c *Controller) retryBlockedLegacyGoal() (handled, resumed bool) {
 	todos := c.goalTodos()
 	resumedEpoch, applied := c.goals.resumeLegacyArchive(epoch, resolvedGoal)
 	if !applied {
+		c.replaceLegacyRestore(legacyGoalRestore{})
 		return true, false
 	}
-	c.persistGoalStateAtEpoch(resumedEpoch, todos)
-	c.clearLegacyRestore(taskID, epoch)
-	c.notice(setup.notice)
+	persisted, persistErr := c.persistGoalStateAtEpoch(resumedEpoch, todos)
+	if persistErr != nil {
+		reason := "persist migrated legacy Goal: " + persistErr.Error()
+		if blockedEpoch, blocked := c.goals.failLegacyRestorePersistence(resumedEpoch, taskID, reason); blocked {
+			c.replaceLegacyRestore(legacyGoalRestore{taskID: taskID, todos: todos, epoch: blockedEpoch})
+			c.notice("legacy research archive resume failed: " + reason)
+		} else {
+			c.replaceLegacyRestore(legacyGoalRestore{})
+		}
+		return true, false
+	}
+	if !persisted {
+		return true, false
+	}
+	c.replaceLegacyRestore(legacyGoalRestore{})
+	if setup.notice != "" {
+		c.notice(setup.notice)
+	}
 	if c.executor != nil {
 		c.executor.RestoreDeliveryCheckpoint(c.goals.deliveryState())
 	}

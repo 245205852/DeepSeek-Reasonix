@@ -22,6 +22,7 @@ type goalMachineSnapshot struct {
 	lastEvaluatorReason    string
 	stopCause              string
 	budgetExtensions       int
+	pendingLegacyTaskID    string
 }
 
 func (g *goalMachine) capture() goalMachineSnapshot {
@@ -38,6 +39,7 @@ func (g *goalMachine) capture() goalMachineSnapshot {
 		lastContinuationReason: g.lastContinuationReason,
 		lastEvaluatorReason:    g.lastEvaluatorReason,
 		stopCause:              g.stopCause, budgetExtensions: g.budgetExtensions,
+		pendingLegacyTaskID: g.pendingLegacyTaskID,
 	}
 }
 
@@ -55,6 +57,7 @@ func (g *goalMachine) restore(snapshot goalMachineSnapshot) {
 	g.lastEvaluatorReason = snapshot.lastEvaluatorReason
 	g.stopCause = snapshot.stopCause
 	g.budgetExtensions = snapshot.budgetExtensions
+	g.pendingLegacyTaskID = snapshot.pendingLegacyTaskID
 	g.continuationEpoch++
 	g.mu.Unlock()
 }

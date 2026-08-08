@@ -100,6 +100,7 @@ type goalMachine struct {
 	lastEvaluatorReason    string
 	stopCause              string
 	budgetExtensions       int // turn extensions from resume (compat field name)
+	pendingLegacyTaskID    string
 
 	// statePath is the persisted goal-state sidecar; empty disables persistence.
 	statePath string
@@ -281,7 +282,7 @@ func (g *goalMachine) set(goal, preferredBudgetClass string, todos []evidence.To
 	}
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	if goal != "" && g.goal == goal && g.status == GoalStatusRunning && g.budgetClass == preferredBudgetClass {
+	if goal != "" && g.goal == goal && g.status == GoalStatusRunning && g.budgetClass == preferredBudgetClass && g.pendingLegacyTaskID == "" {
 		return "", nil, false
 	}
 	g.installGoalLocked(goal, preferredBudgetClass)
@@ -291,7 +292,7 @@ func (g *goalMachine) set(goal, preferredBudgetClass string, todos []evidence.To
 // setLegacyArchiveBlocked atomically installs and blocks an explicit legacy
 // archive goal. A concurrent Goal replacement cannot be blocked between two
 // separate FSM mutations.
-func (g *goalMachine) setLegacyArchiveBlocked(goal, preferredBudgetClass, reason string, todos []evidence.TodoItem) (string, []byte, bool) {
+func (g *goalMachine) setLegacyArchiveBlocked(goal, preferredBudgetClass, taskID, reason string, todos []evidence.TodoItem) (string, []byte, bool) {
 	goal = strings.TrimSpace(goal)
 	if goal != "" && preferredBudgetClass == "" {
 		preferredBudgetClass = taskintent.ClassifyGoalBudget(goal)
@@ -299,6 +300,7 @@ func (g *goalMachine) setLegacyArchiveBlocked(goal, preferredBudgetClass, reason
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	g.installGoalLocked(goal, preferredBudgetClass)
+	g.pendingLegacyTaskID = strings.TrimSpace(taskID)
 	if goal != "" {
 		g.status = GoalStatusBlocked
 	}
@@ -314,6 +316,7 @@ func (g *goalMachine) installGoalLocked(goal, preferredBudgetClass string) {
 	g.lastContinuationReason, g.lastEvaluatorReason = "", ""
 	g.stopCause = ""
 	g.budgetExtensions = 0
+	g.pendingLegacyTaskID = ""
 	if goal == "" {
 		g.goal, g.status = "", GoalStatusStopped
 		g.budgetClass = ""
@@ -642,7 +645,10 @@ func (g *goalMachine) buildStateLocked(todos []evidence.TodoItem) (path string, 
 		StopCause:              g.stopCause,
 		BudgetExtensions:       g.budgetExtensions,
 	}
-	if strings.TrimSpace(g.goal) != "" {
+	if g.pendingLegacyTaskID != "" {
+		state.ResearchMode = GoalResearchOn
+		state.AutoResearchTaskID = g.pendingLegacyTaskID
+	} else {
 		// GoalResearchOff is a downgrade fence: old readers must not infer or
 		// inject the removed AutoResearch runtime. budgetClass is authoritative.
 		state.ResearchMode = GoalResearchOff
@@ -779,8 +785,12 @@ func (g *goalMachine) restoreFromState(sessionPath string) (path string, data []
 		taskID: strings.TrimSpace(state.AutoResearchTaskID),
 		todos:  append([]evidence.TodoItem(nil), state.Todos...),
 	}
-	if legacy.taskID != "" {
-		migrated = g.goal != ""
+	g.pendingLegacyTaskID = legacy.taskID
+	if g.pendingLegacyTaskID != "" && g.goal != "" {
+		// Sidecars that already carry the Goal objective do not depend on the
+		// historical archive. Complete the migration immediately.
+		g.pendingLegacyTaskID = ""
+		migrated = true
 	}
 	g.scopeID = strings.TrimSpace(state.ScopeID)
 	if g.scopeID == "" {
@@ -849,7 +859,7 @@ func (g *goalMachine) restoreFromState(sessionPath string) (path string, data []
 	}
 	g.continuationEpoch++
 	legacy.epoch = g.continuationEpoch
-	pendingLegacyGoal := legacy.taskID != "" && g.goal == ""
+	pendingLegacyGoal := g.pendingLegacyTaskID != "" && g.goal == ""
 	if migrated && !pendingLegacyGoal {
 		// Migration rewrites only the removed budget state. Preserve the todo
 		// snapshot carried by the authoritative sidecar instead of clearing it.
@@ -937,10 +947,12 @@ func (c *Controller) persistGoalState(path string, data []byte, ok bool) {
 	c.goals.writeState(path, data)
 }
 
-func (c *Controller) persistGoalStateAtEpoch(epoch uint64, todos []evidence.TodoItem) {
-	if _, err := c.goals.writeStateAtEpoch(epoch, todos); err != nil {
+func (c *Controller) persistGoalStateAtEpoch(epoch uint64, todos []evidence.TodoItem) (bool, error) {
+	applied, err := c.goals.writeStateAtEpoch(epoch, todos)
+	if err != nil {
 		slog.Warn("controller: write goal state", "err", err)
 	}
+	return applied, err
 }
 
 func (c *Controller) restoreTerminalGoalTodos(sessionPath string) {

@@ -12,6 +12,32 @@ import (
 	"reasonix/internal/planmode"
 )
 
+func TestBackgroundJobToolsVisibleOnlyWithManager(t *testing.T) {
+	plain := context.Background()
+	for name, visible := range map[string]func(context.Context) bool{
+		"bash_output": bashOutput{}.ProviderVisible,
+		"kill_shell":  killShell{}.ProviderVisible,
+		"wait":        waitJob{}.ProviderVisible,
+	} {
+		if visible(plain) {
+			t.Fatalf("%s visible without a job manager", name)
+		}
+	}
+
+	manager := jobs.NewManager(event.Discard)
+	defer manager.Close()
+	ctx := jobs.WithManager(plain, manager)
+	for name, visible := range map[string]func(context.Context) bool{
+		"bash_output": bashOutput{}.ProviderVisible,
+		"kill_shell":  killShell{}.ProviderVisible,
+		"wait":        waitJob{}.ProviderVisible,
+	} {
+		if !visible(ctx) {
+			t.Fatalf("%s hidden despite an active job manager", name)
+		}
+	}
+}
+
 // End-to-end through the actual tools: a background bash job runs under a manager
 // injected on the context, the wait tool collects its output, and bash_output
 // reads it — the same path the agent drives.

@@ -12,11 +12,10 @@ branch.
   migrate transactionally into research-budget Goals, retain their archive id
   for retry when recovery fails, and write an explicit legacy-reader fence so
   downgrading cannot reactivate the removed AutoResearch runtime.
-- Workflow-only tools keep a stable provider-visible schema and are rejected at
-  execution time when their required Goal, Plan, or background-job context is
-  absent. Mixed valid/unavailable tool batches receive one bounded repair, while
-  sub-agents no longer inherit parent Goal reports, background jobs, or
-  immediate memory-queue injection.
+- Workflow-only tools are exposed to models only while their required Goal,
+  Plan, or background-job context is active. Mixed valid/unavailable tool
+  batches receive one bounded repair, while sub-agents no longer inherit parent
+  Goal reports, background jobs, or immediate memory-queue injection.
 
 - **Issue #7575:** Linux Bash under bubblewrap no longer mounts a fresh empty
   `--tmpfs /tmp` on every call. Consecutive commands in the same logical session
