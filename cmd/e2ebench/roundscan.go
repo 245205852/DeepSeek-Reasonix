@@ -6,13 +6,22 @@ import (
 	"os"
 )
 
-// roundsSplitAt counts a run's top-level tool rounds on each side of the
-// first-correct instant, plus verification commands executed after it —
-// the raw material of the "kept verifying a finished answer" diagnosis.
-func roundsSplitAt(path string, cutoffUnixMs int64) (before, after, verifyAfter int) {
+// boundarySplit is everything countable on each side of the first-correct
+// instant — the numbers that end the exploration-vs-termination argument.
+type boundarySplit struct {
+	RoundsBefore, RoundsAfter    int
+	CallsBefore, CallsAfter      int
+	VerifyAfter                  int
+	ReviewsAfter, MutationsAfter int
+}
+
+// splitAtCorrect scans a trajectory once and tallies rounds, tool calls,
+// verifications, reviews and mutations relative to the cutoff instant.
+func splitAtCorrect(path string, cutoffUnixMs int64) boundarySplit {
+	var out boundarySplit
 	f, err := os.Open(path)
 	if err != nil {
-		return 0, 0, 0
+		return out
 	}
 	defer f.Close()
 	inModel := true
@@ -26,25 +35,37 @@ func roundsSplitAt(path string, cutoffUnixMs int64) (before, after, verifyAfter 
 		if rec.Event == nil || rec.Event.Tool == nil || rec.Event.Tool.ParentID != "" {
 			continue
 		}
+		after := rec.TS > cutoffUnixMs
 		switch rec.Event.Kind {
 		case "tool_dispatch":
 			if inModel {
 				inModel = false
-				if rec.TS <= cutoffUnixMs {
-					before++
+				if after {
+					out.RoundsAfter++
 				} else {
-					after++
+					out.RoundsBefore++
 				}
 			}
 		case "tool_result":
 			inModel = true
-			if v := rec.Event.Tool.Execution; v != nil && rec.TS > cutoffUnixMs &&
-				(v.Verification == "passed" || v.Verification == "failed") {
-				verifyAfter++
+			tl := rec.Event.Tool
+			if after {
+				out.CallsAfter++
+			} else {
+				out.CallsBefore++
+			}
+			if v := tl.Execution; v != nil && after && (v.Verification == "passed" || v.Verification == "failed") {
+				out.VerifyAfter++
+			}
+			if after && tl.Name == "review_report" {
+				out.ReviewsAfter++
+			}
+			if after && !tl.ReadOnly && !bookkeepingTools[tl.Name] && tl.Name != "review_report" {
+				out.MutationsAfter++
 			}
 		}
 	}
-	return before, after, verifyAfter
+	return out
 }
 
 // roundEnds returns the unix-ms end of each top-level tool round: the last

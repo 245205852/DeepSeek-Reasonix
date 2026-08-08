@@ -140,7 +140,11 @@ type result struct {
 	MutationsBeforeCorrect int  `json:"mutations_before_correct,omitempty"`
 	RoundsBeforeCorrect    int  `json:"rounds_before_correct,omitempty"`
 	RoundsAfterCorrect     int  `json:"rounds_after_correct,omitempty"`
+	CallsBeforeCorrect     int  `json:"calls_before_correct,omitempty"`
+	CallsAfterCorrect      int  `json:"calls_after_correct,omitempty"`
 	VerifyAfterCorrect     int  `json:"verify_after_correct,omitempty"`
+	ReviewsAfterCorrect    int  `json:"reviews_after_correct,omitempty"`
+	MutationsAfterCorrect  int  `json:"mutations_after_correct,omitempty"`
 	RegressedAfterCorrect  bool `json:"regressed_after_correct,omitempty"`
 	// StopEval is the counterfactual-stop curve: per-round end-state grades,
 	// the earliest stoppable round, and harmful continuations (PASS→FAIL).
@@ -530,8 +534,11 @@ func runTask(cfg suiteConfig, t task) result {
 		r.MutationsBeforeCorrect = mutationsBeforeCorrect(r.Checkpoints)
 		r.RegressedAfterCorrect = regressedAfterCorrect(r.Checkpoints)
 		if trajPath != "" && r.FirstCorrectMs > 0 {
-			cutoff := startedAt.UnixMilli() + r.FirstCorrectMs
-			r.RoundsBeforeCorrect, r.RoundsAfterCorrect, r.VerifyAfterCorrect = roundsSplitAt(trajPath, cutoff)
+			split := splitAtCorrect(trajPath, startedAt.UnixMilli()+r.FirstCorrectMs)
+			r.RoundsBeforeCorrect, r.RoundsAfterCorrect = split.RoundsBefore, split.RoundsAfter
+			r.CallsBeforeCorrect, r.CallsAfterCorrect = split.CallsBefore, split.CallsAfter
+			r.VerifyAfterCorrect = split.VerifyAfter
+			r.ReviewsAfterCorrect, r.MutationsAfterCorrect = split.ReviewsAfter, split.MutationsAfter
 		}
 		if trajPath != "" {
 			var endsElapsed []int64

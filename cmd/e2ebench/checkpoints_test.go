@@ -174,9 +174,9 @@ func TestRoundsSplitAt(t *testing.T) {
 		`{"seq":2,"ts":2000,"event":{"kind":"tool_dispatch","tool":{"id":"a","name":"write_file"}}}`,
 		`{"seq":3,"ts":2100,"event":{"kind":"tool_result","tool":{"id":"a","name":"write_file","durationMs":100}}}`,
 		`{"seq":4,"ts":3000,"event":{"kind":"tool_dispatch","tool":{"id":"b","name":"bash"}}}`,
-		`{"seq":5,"ts":3200,"event":{"kind":"tool_result","tool":{"id":"b","name":"bash","durationMs":200,"execution":{"verification":"passed"}}}}`,
+		`{"seq":5,"ts":3200,"event":{"kind":"tool_result","tool":{"id":"b","name":"bash","readOnly":true,"durationMs":200,"execution":{"verification":"passed"}}}}`,
 		`{"seq":6,"ts":5000,"event":{"kind":"tool_dispatch","tool":{"id":"c","name":"bash"}}}`,
-		`{"seq":7,"ts":5200,"event":{"kind":"tool_result","tool":{"id":"c","name":"bash","durationMs":200,"execution":{"verification":"passed"}}}}`,
+		`{"seq":7,"ts":5200,"event":{"kind":"tool_result","tool":{"id":"c","name":"bash","readOnly":true,"durationMs":200,"execution":{"verification":"passed"}}}}`,
 		`{"seq":8,"ts":6000,"event":{"kind":"tool_dispatch","tool":{"id":"d","name":"read_file","readOnly":true}}}`,
 		`{"seq":9,"ts":6100,"event":{"kind":"tool_result","tool":{"id":"d","name":"read_file","readOnly":true,"durationMs":100}}}`,
 		`{"seq":10,"ts":7000,"event":{"kind":"turn_done"}}`,
@@ -184,9 +184,15 @@ func TestRoundsSplitAt(t *testing.T) {
 	if err := writeLines(path, lines); err != nil {
 		t.Fatal(err)
 	}
-	before, after, verifyAfter := roundsSplitAt(path, 4000)
-	if before != 2 || after != 2 || verifyAfter != 1 {
-		t.Fatalf("split = %d/%d/%d, want 2 before, 2 after, 1 verification after", before, after, verifyAfter)
+	split := splitAtCorrect(path, 4000)
+	if split.RoundsBefore != 2 || split.RoundsAfter != 2 || split.VerifyAfter != 1 {
+		t.Fatalf("split = %+v, want 2 rounds before, 2 after, 1 verification after", split)
+	}
+	if split.CallsBefore != 2 || split.CallsAfter != 2 {
+		t.Fatalf("calls = %d/%d, want 2/2", split.CallsBefore, split.CallsAfter)
+	}
+	if split.MutationsAfter != 0 {
+		t.Fatalf("read-only tail must count no mutations, got %d", split.MutationsAfter)
 	}
 }
 

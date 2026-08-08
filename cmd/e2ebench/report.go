@@ -203,6 +203,7 @@ func renderBody(results []result) string {
 	}
 
 	renderTaskTable(&b, results)
+	b.WriteString("\n" + renderTimelines(results))
 
 	if breakdown := failureBreakdown(s.classes); breakdown != "" {
 		fmt.Fprintf(&b, "\n**Failures by class:** %s\n", breakdown)
