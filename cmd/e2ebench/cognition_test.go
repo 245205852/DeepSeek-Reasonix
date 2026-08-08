@@ -102,3 +102,27 @@ func TestRenderCognitionPricesThinking(t *testing.T) {
 		t.Error("no runs must render nothing")
 	}
 }
+
+func TestSummarizeTrajectoryJoinsDeniedDelegationTime(t *testing.T) {
+	path := writeTrajectory(t, "admit.trajectory.jsonl", []string{
+		`{"seq":1,"ts":1000,"event":{"kind":"turn_started"}}`,
+		`{"seq":2,"ts":2000,"event":{"kind":"tool_dispatch","tool":{"id":"a","name":"research"}}}`,
+		`{"seq":3,"ts":9000,"event":{"kind":"tool_result","tool":{"id":"a","name":"research","durationMs":7000}}}`,
+		`{"seq":4,"ts":9100,"delegation_admission":{"tool":"research","verdict":"deny","reason":"local_fix_no_external_need"}}`,
+		`{"seq":5,"ts":10000,"event":{"kind":"turn_done"}}`,
+	})
+	s, err := summarizeTrajectory(path)
+	if err != nil {
+		t.Fatalf("summarizeTrajectory: %v", err)
+	}
+	if s.DelegationCalls != 1 || s.DelegationDenies != 1 || s.DeniedDelegationMs != 7000 {
+		t.Fatalf("admission join = calls %d denies %d denied_ms %d, want 1/1/7000",
+			s.DelegationCalls, s.DelegationDenies, s.DeniedDelegationMs)
+	}
+	got := renderDelegationAdmission([]result{{Trajectory: s}})
+	for _, want := range []string{"**1** gated calls", "**would deny** 1 (100%)", "denied calls** 7.0s"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("render missing %q in:\n%s", want, got)
+		}
+	}
+}

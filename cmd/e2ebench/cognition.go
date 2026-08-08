@@ -43,6 +43,31 @@ func (t *trajScan) recordRound(outcome string, gap gapInfo, b *toolBatch) {
 	}
 }
 
+// renderDelegationAdmission aggregates the shadow admission verdicts: how many
+// expensive delegation calls a local-fix boundary would have refused, and the
+// subagent time those refusals would have reclaimed.
+func renderDelegationAdmission(results []result) string {
+	calls, denies := 0, 0
+	var deniedMs int64
+	for _, r := range results {
+		if r.Trajectory == nil {
+			continue
+		}
+		calls += r.Trajectory.DelegationCalls
+		denies += r.Trajectory.DelegationDenies
+		deniedMs += r.Trajectory.DeniedDelegationMs
+	}
+	if calls == 0 {
+		return ""
+	}
+	line := fmt.Sprintf("**Delegation admission** (shadow): **%d** gated calls · **would deny** %d (%s)",
+		calls, denies, pct(denies, calls))
+	if deniedMs > 0 {
+		line += fmt.Sprintf(" · **subagent time behind denied calls** %s", dur(deniedMs))
+	}
+	return line + "\n\n"
+}
+
 // renderCognition prices what the model's thinking bought: totals, the output
 // rate (uniform rates indict token volume, not serving), the slow-round
 // census, and delegation cost. Empty when no run carried usage-joined rounds.

@@ -117,6 +117,12 @@ type trajectorySummary struct {
 	SlowRoundGapMs           int64         `json:"slow_round_gap_ms,omitempty"`
 	SlowRoundReasoningTokens int64         `json:"slow_round_reasoning_tokens,omitempty"`
 	Rounds                   []roundDigest `json:"rounds,omitempty"`
+
+	// Delegation admission shadow: verdicts recorded by the runtime, and the
+	// subagent time spent by tools the shadow would have denied.
+	DelegationCalls    int   `json:"delegation_calls,omitempty"`
+	DelegationDenies   int   `json:"delegation_denies,omitempty"`
+	DeniedDelegationMs int64 `json:"denied_delegation_ms,omitempty"`
 }
 
 // toolWall is the best available tool wall-clock: interval union when the
@@ -145,6 +151,11 @@ type trajectoryRecord struct {
 		Churn        int `json:"churn"`
 		LegacyGain   int `json:"legacy_gain"`
 	} `json:"outcome_progress"`
+	DelegationAdmission *struct {
+		Tool    string `json:"tool"`
+		Verdict string `json:"verdict"`
+		Reason  string `json:"reason"`
+	} `json:"delegation_admission"`
 	Event *struct {
 		Kind          string `json:"kind"`
 		Code          string `json:"code"`
@@ -297,11 +308,13 @@ func scanTrajectoryFile(path string) (*trajScan, error) {
 	defer f.Close()
 
 	scan := &trajScan{
-		s:            &trajectorySummary{Path: path},
-		batch:        newToolBatch(),
-		attemptBegin: map[string]int64{},
-		lastAttempt:  -1,
-		seen:         map[string]bool{},
+		s:                &trajectorySummary{Path: path},
+		batch:            newToolBatch(),
+		attemptBegin:     map[string]int64{},
+		lastAttempt:      -1,
+		seen:             map[string]bool{},
+		denyDelegations:  map[string]bool{},
+		delegationToolMs: map[string]int64{},
 	}
 	sc := bufio.NewScanner(f)
 	sc.Buffer(make([]byte, 0, 1<<20), 16<<20)
@@ -341,6 +354,13 @@ func (t *trajScan) record(rec trajectoryRecord) {
 			objective: op.Objective, regression: op.Regression, churn: op.Churn,
 			legacyGain: op.LegacyGain,
 		})
+	}
+	if da := rec.DelegationAdmission; da != nil {
+		t.s.DelegationCalls++
+		if da.Verdict == "deny" {
+			t.s.DelegationDenies++
+			t.denyDelegations[da.Tool] = true
+		}
 	}
 	if rec.Event == nil {
 		return
@@ -557,6 +577,9 @@ func (t *trajScan) recordResult(rec trajectoryRecord) {
 	if ex := tl.Execution; ex != nil && (ex.Verification == "passed" || ex.Verification == "failed") {
 		t.observeVerification(tl.Name+"\x00"+tl.Args, ex.Verification == "passed", rec.TS)
 	}
+	if delegationTools[tl.Name] {
+		t.delegationToolMs[tl.Name] += tl.DurationMs
+	}
 	t.batch.serialMs += tl.DurationMs
 	if tl.StartedAt > 0 && tl.EndedAt >= tl.StartedAt {
 		t.batch.intervals = append(t.batch.intervals, [2]int64{tl.StartedAt, tl.EndedAt})
@@ -644,6 +667,11 @@ func (t *trajScan) finish() *trajectorySummary {
 		s.ModelMs = 0
 	}
 	s.Outcome = t.summarizeOutcome()
+	// The admission verdict lands after the tool's result in the stream, so
+	// denied time joins by tool name once the whole file is folded.
+	for name := range t.denyDelegations {
+		s.DeniedDelegationMs += t.delegationToolMs[name]
+	}
 	t.decompose()
 	return s
 }

@@ -55,6 +55,7 @@ func (a *Agent) applyBatchGuards(calls []provider.ToolCall, outcomes []toolOutco
 	a.applyStormBreaker(calls, outcomes, results, receiptMark)
 	a.applyProgressGuard(results, outcomes, receiptMark)
 	a.observeOutcomeShadow(receiptMark)
+	a.observeDelegationAdmission(calls)
 }
 
 // resetTurnEvidence clears the ledger and both progress scorers together.
