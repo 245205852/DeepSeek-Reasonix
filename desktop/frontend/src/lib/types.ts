@@ -988,6 +988,7 @@ export interface SkillView {
   name: string;
   description: string;
   scope: string;
+  sourceDir?: string;
   runAs: string;
   enabled: boolean;
   plugin?: string;
@@ -1019,6 +1020,7 @@ export interface SkillRootView {
   scope: string;
   priority: number;
   status: string;
+  enabled: boolean;
   configured: boolean;
   removable: boolean;
   skills: number;
@@ -1030,10 +1032,12 @@ export interface CapabilitiesView {
   skills: SkillView[];
   skillRoots: SkillRootView[];
   plugins: PluginView[];
+  allowImplicitInvocation?: boolean;
 }
 export interface SkillsSettingsView {
   skills: SkillView[];
   skillRoots: SkillRootView[];
+  allowImplicitInvocation?: boolean;
 }
 export interface SubagentProfileInput {
   name: string;

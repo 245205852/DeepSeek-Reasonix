@@ -607,13 +607,16 @@ func build(ctx context.Context, opts Options) (*BuildResult, error) {
 	projectChecks := instruction.ExtractHostChecks(mem.Docs)
 	sysPrompt = memory.Compose(sysPrompt, mem)
 
+	implicitSkillInvocation := cfg.ImplicitSkillInvocationEnabled()
 	// Skills: rediscovery skipped on no-op/interceptor/UI rebuilds when
 	// ReuseAssembly is retained from the previous BuildResult.
 	var skillStore *skill.Store
 	var skills []skill.Skill
 	var allSkillStore *skill.Store
 	var allSkills []skill.Skill
-	if opts.ReuseAssembly != nil && shouldReuseDiscovery(opts.PreviousPlan) {
+	canReuseSkills := opts.ReuseAssembly != nil && shouldReuseDiscovery(opts.PreviousPlan) &&
+		opts.ReuseAssembly.ImplicitSkillInvocation == implicitSkillInvocation
+	if canReuseSkills {
 		skills = opts.ReuseAssembly.Skills
 		allSkills = skills
 		skillStore = skill.New(skill.Options{ProjectRoot: root, Stderr: io.Discard})
@@ -631,7 +634,7 @@ func build(ctx context.Context, opts Options) (*BuildResult, error) {
 		skills = skillStore.List()
 		allSkillStore = skill.New(skill.Options{ProjectRoot: root, CustomPaths: cfg.SkillCustomPaths(), PluginPaths: cfg.PluginPackageSkillOwners(), PluginAgentPaths: cfg.PluginPackageAgentOwners(), ExcludedPaths: cfg.SkillExcludedPaths(), MaxDepth: cfg.SkillMaxDepth(), Stderr: io.Discard})
 		allSkills = allSkillStore.List()
-		if !tokenEconomy {
+		if !tokenEconomy && implicitSkillInvocation {
 			sysPrompt = skill.ApplyIndex(sysPrompt, skills)
 		}
 	}
@@ -1436,7 +1439,7 @@ func build(ctx context.Context, opts Options) (*BuildResult, error) {
 		// Expose loaded slash commands to the model via slash_command. In economy
 		// mode skills join this list only after the skills source is enabled.
 		var slashEntries []command.SlashEntry
-		if includeSkills {
+		if includeSkills && implicitSkillInvocation {
 			for _, sk := range skillStore.SlashList() {
 				slashEntries = append(slashEntries, command.SlashEntry{
 					Name:        sk.SlashName(),
@@ -1528,6 +1531,9 @@ func build(ctx context.Context, opts Options) (*BuildResult, error) {
 	}
 	readOnlySkillToolsAdded := false
 	addReadOnlySkillTools := func() string {
+		if !implicitSkillInvocation {
+			return "automatic skill invocation is disabled; use an explicit /skill command instead."
+		}
 		if readOnlySkillToolsAdded {
 			return "read_only_skill tool is already enabled.\n\n" + skill.ReadOnlyIndexBlock(skills)
 		}
@@ -1537,6 +1543,9 @@ func build(ctx context.Context, opts Options) (*BuildResult, error) {
 	}
 	skillToolsAdded := false
 	addSkillTools := func() string {
+		if !implicitSkillInvocation {
+			return "automatic skill invocation is disabled; use an explicit /skill command instead."
+		}
 		if skillToolsAdded {
 			return "skills are already enabled.\n\n" + skill.IndexBlock(skills)
 		}
@@ -1548,12 +1557,16 @@ func build(ctx context.Context, opts Options) (*BuildResult, error) {
 		for _, t := range skill.BuiltinSubagentTools(skillStore, skillRunner, skillProfile) {
 			reg.Add(t)
 		}
-		addSlashCommandTool(true)
+		addSlashCommandTool(implicitSkillInvocation)
 		return "enabled skills. Use run_skill/read_skill/read_only_skill or the dedicated skill tools on the next model request.\n\n" + skill.IndexBlock(skills)
 	}
 	if !tokenEconomy {
 		addInstallSourceTool()
-		addSkillTools()
+		if implicitSkillInvocation {
+			addSkillTools()
+		} else {
+			addSlashCommandTool(false)
+		}
 	}
 	if tokenEconomy {
 		addBuiltinSourceTools := func(source string, names ...string) string {
@@ -1889,26 +1902,27 @@ func build(ctx context.Context, opts Options) (*BuildResult, error) {
 	}
 
 	ctrlOpts := control.Options{
-		Runner:              runner,
-		Executor:            executor,
-		Sink:                sink,
-		Policy:              policy,
-		SubagentGate:        headlessGate,
-		Label:               label,
-		ModelRef:            modelRef,
-		SystemPrompt:        sysPrompt,
-		SessionDir:          sessionDir,
-		Host:                pluginHost,
-		Commands:            cmds,
-		Skills:              skills,
-		AllSkills:           allSkills,
-		SkillStore:          skillStore,
-		AllSkillStore:       allSkillStore,
-		SkillRunner:         skillRunner,
-		ReadOnlySkillRunner: readOnlySkillRunner,
-		SkillProfile:        skillProfile,
-		Hooks:               hookRunner,
-		Memory:              mem,
+		Runner:                         runner,
+		Executor:                       executor,
+		Sink:                           sink,
+		Policy:                         policy,
+		SubagentGate:                   headlessGate,
+		Label:                          label,
+		ModelRef:                       modelRef,
+		SystemPrompt:                   sysPrompt,
+		SessionDir:                     sessionDir,
+		Host:                           pluginHost,
+		Commands:                       cmds,
+		Skills:                         skills,
+		AllSkills:                      allSkills,
+		SkillStore:                     skillStore,
+		AllSkillStore:                  allSkillStore,
+		DisableImplicitSkillInvocation: !implicitSkillInvocation,
+		SkillRunner:                    skillRunner,
+		ReadOnlySkillRunner:            readOnlySkillRunner,
+		SkillProfile:                   skillProfile,
+		Hooks:                          hookRunner,
+		Memory:                         mem,
 		// Indirection: the cleanup variable gains the extension runtime set at
 		// the end of build (snapshot assembly runs after control.New), and the
 		// controller must observe the final chain at Close time.
@@ -2167,7 +2181,14 @@ func build(ctx context.Context, opts Options) (*BuildResult, error) {
 			ctrl.ApplyExtensionSystemPrompt(final)
 		}
 	}
-	assembly := &ReusedAssembly{SystemPrompt: sysPrompt, Skills: skills, Commands: cmds, Hooks: resolvedHooks, Registry: reg}
+	assembly := &ReusedAssembly{
+		SystemPrompt:            sysPrompt,
+		Skills:                  skills,
+		Commands:                cmds,
+		Hooks:                   resolvedHooks,
+		Registry:                reg,
+		ImplicitSkillInvocation: implicitSkillInvocation,
+	}
 	return finalizeBuildResult(&BuildResult{Controller: ctrl, Snapshot: snap, Runtime: runtimeSet, Owner: owner, Extensions: extensionMgr, Dispatcher: extensionDispatcher, ExtensionUI: extUIHub, ProviderResolver: providerResolver, BaseProviderResolver: baseResolver, Assembly: assembly}, !opts.deferPublish), nil
 }
 
