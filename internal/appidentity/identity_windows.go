@@ -145,6 +145,7 @@ type loadedShortcut struct {
 	link    *shellLinkW
 	persist *persistFile
 	store   *propertyStore
+	path    string
 }
 
 func ApplyToCurrentProcess() error {
@@ -343,7 +344,7 @@ func loadShortcut(path string, mode uint32) (*loadedShortcut, error) {
 	if err := checkHRESULT("CoCreateInstance(CLSID_ShellLink)", hr); err != nil {
 		return nil, err
 	}
-	shortcut := &loadedShortcut{link: link}
+	shortcut := &loadedShortcut{link: link, path: path}
 	if err := queryInterface(unsafe.Pointer(link), &iidIPersistFile, unsafe.Pointer(&shortcut.persist)); err != nil {
 		shortcut.release()
 		return nil, err
@@ -430,7 +431,20 @@ func (s *loadedShortcut) setAppUserModelID(id string) error {
 		return err
 	}
 	hr, _, _ = syscall.SyscallN(s.store.VTable.Commit, uintptr(unsafe.Pointer(s.store)))
-	return checkHRESULT("IPropertyStore.Commit", hr)
+	if err := checkHRESULT("IPropertyStore.Commit", hr); err != nil {
+		return err
+	}
+	pathPtr, err := windows.UTF16PtrFromString(s.path)
+	if err != nil {
+		return err
+	}
+	hr, _, _ = syscall.SyscallN(
+		s.persist.VTable.Save,
+		uintptr(unsafe.Pointer(s.persist)),
+		uintptr(unsafe.Pointer(pathPtr)),
+		1,
+	)
+	return checkHRESULT("IPersistFile.Save", hr)
 }
 
 func (s *loadedShortcut) release() {
