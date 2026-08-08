@@ -239,7 +239,12 @@ function LocalPathMarkdownLink({
 export function localPathFromHref(href?: string): string | null {
   if (!href || !href.startsWith("file:///")) return null;
   try {
-    return decodeURIComponent(href.slice("file:///".length));
+    const path = decodeURIComponent(href.slice("file:///".length));
+    // file:///Users/... has three slashes for the URL scheme plus the
+    // leading slash of the Unix path. Windows drive paths are the exception:
+    // file:///D:/... must remain D:/..., not /D:/....
+    if (/^[A-Za-z]:\//.test(path) || path.startsWith("//")) return path;
+    return path.startsWith("/") ? path : `/${path}`;
   } catch {
     return null;
   }
