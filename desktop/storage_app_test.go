@@ -6,41 +6,51 @@ import (
 	"testing"
 
 	"reasonix/internal/config"
+	"reasonix/internal/pluginpkg"
 )
 
-func TestSetDefaultWorkspacePersistsBootstrapPreference(t *testing.T) {
+func TestStorageSettingsReportsRuntimeOwnedPaths(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("REASONIX_HOME", home)
-	t.Setenv("REASONIX_STATE_HOME", "")
-	t.Setenv("REASONIX_CACHE_HOME", "")
+	cache := filepath.Join(t.TempDir(), "cache")
+	t.Setenv("REASONIX_CACHE_HOME", cache)
+
+	view := (&App{}).StorageSettings()
+	if view.StatePath != config.MemoryUserDir() {
+		t.Fatalf("state path = %q, want %q", view.StatePath, config.MemoryUserDir())
+	}
+	if view.CachePath != config.CacheDir() {
+		t.Fatalf("cache path = %q, want %q", view.CachePath, config.CacheDir())
+	}
+	if want := pluginpkg.PluginsDir(config.ReasonixHomeDir()); view.ExtensionsPath != want {
+		t.Fatalf("extensions path = %q, want %q", view.ExtensionsPath, want)
+	}
+}
+
+func TestStorageSettingsReportsRememberedWorkspace(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("REASONIX_HOME", home)
 	workspace := filepath.Join(t.TempDir(), "workspace")
 	if err := os.MkdirAll(workspace, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := (&App{}).SetDefaultWorkspace(workspace); err != nil {
-		t.Fatal(err)
-	}
-	if got := config.DefaultWorkspacePath(); got != workspace {
+	saveWorkspace(workspace)
+
+	if got := (&App{}).StorageSettings().DefaultWorkspace; got != workspace {
 		t.Fatalf("default workspace = %q, want %q", got, workspace)
 	}
 }
 
-func TestMigrateStorageRejectsNonEmptyTarget(t *testing.T) {
+func TestStorageSettingsFallsBackToWorkingDirectory(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("REASONIX_HOME", home)
-	t.Setenv("REASONIX_STATE_HOME", "")
-	t.Setenv("REASONIX_CACHE_HOME", "")
-	if err := os.MkdirAll(filepath.Join(home, "sessions"), 0o755); err != nil {
+	workspace, err := os.Getwd()
+	if err != nil {
 		t.Fatal(err)
 	}
-	target := filepath.Join(t.TempDir(), "target")
-	if err := os.MkdirAll(target, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(target, "existing"), []byte("keep"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := (&App{}).MigrateStorage("state", target); err == nil {
-		t.Fatal("expected non-empty target rejection")
+	saveWorkspace(filepath.Join(t.TempDir(), "missing"))
+
+	if got := (&App{}).StorageSettings().DefaultWorkspace; got != workspace {
+		t.Fatalf("default workspace = %q, want cwd %q", got, workspace)
 	}
 }

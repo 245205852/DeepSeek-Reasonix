@@ -144,7 +144,10 @@ func legacyXDGConfigPaths() []string {
 }
 
 func userSupportDir() string {
-	return StoragePath("state")
+	if dir := cleanEnvDir("REASONIX_STATE_HOME"); dir != "" {
+		return dir
+	}
+	return reasonixHomeDir()
 }
 
 func legacyOSSupportDir() string {
@@ -163,7 +166,17 @@ func legacyOSSupportDir() string {
 }
 
 func userCacheDir() string {
-	return StoragePath("cache")
+	if dir := cleanEnvDir("REASONIX_CACHE_HOME"); dir != "" {
+		return dir
+	}
+	if dir := cleanEnvDir("REASONIX_HOME"); dir != "" {
+		return filepath.Join(dir, "cache")
+	}
+	dir := osUserCacheDir()
+	if dir == "" {
+		return ""
+	}
+	return filepath.Join(dir, "reasonix")
 }
 
 func cleanEnvDir(name string) string {
@@ -513,14 +526,6 @@ func CacheDir() string {
 func MemoryUserDir() string {
 	return userSupportDir()
 }
-
-// ModelsDir is the user-selectable root for downloaded model artefacts. It is
-// separate from the prompt/session state so large model files can live on a
-// secondary drive without relocating the bootstrap configuration.
-func ModelsDir() string { return StoragePath("models") }
-
-// ExtensionsDir is the user-selectable root for installed plugin extensions.
-func ExtensionsDir() string { return StoragePath("extensions") }
 
 // ConventionDirs are the parent directories scanned for agent assets (skills,
 // commands), in canonical-first order. .reasonix is ours; .agents / .agent /

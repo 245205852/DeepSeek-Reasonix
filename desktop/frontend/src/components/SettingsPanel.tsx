@@ -60,7 +60,7 @@ import {
   shortcutDefinitions,
   type ShortcutAction,
 } from "../lib/keyboardShortcuts";
-import type { BotAccessView, BotAllowlistView, BotConnectionDiagnostic, BotConnectionView, BotInstallStartResult, BotRouteView, BotSettingsView, HookConfigView, HooksSettingsView, NetworkView, ProviderModelCatalogUpdate, ProviderPresetView, ProviderView, SettingsTab, SettingsView, StorageSettingsView } from "../lib/types";
+import type { BotAccessView, BotAllowlistView, BotConnectionDiagnostic, BotConnectionView, BotInstallStartResult, BotRouteView, BotSettingsView, HookConfigView, HooksSettingsView, NetworkView, ProviderModelCatalogUpdate, ProviderPresetView, ProviderView, SettingsTab, SettingsView } from "../lib/types";
 import { AppearanceOverview } from "./AppearanceOverview";
 import { applyConfiguredBaseAppearance, setBaseAppearance } from "../lib/themePack";
 import { InlineConfirmButton } from "./InlineConfirmButton";
@@ -86,12 +86,11 @@ const PluginsSettingsPage = lazy(() => import("./CapabilitiesPanel").then((modul
 const MemorySettingsPage = lazy(() => import("./MemoryPanel").then((module) => ({ default: module.MemorySettingsPage })));
 const SubagentsSettingsPage = lazy(() => import("./SubagentsPanel").then((module) => ({ default: module.SubagentsSettingsPage })));
 const DiagnosticsSettingsPage = lazy(() => import("./DiagnosticsSettingsPage").then((module) => ({ default: module.DiagnosticsSettingsPage })));
+const StorageSettingsPage = lazy(() => import("./StorageSettingsPage").then((module) => ({ default: module.StorageSettingsPage })));
 const UsageStatsPanel = lazy(() => import("./UsageStatsPanel").then((module) => ({ default: module.UsageStatsPanel })));
 const QRCodeSVG = lazy(() => import("qrcode.react").then((module) => ({ default: module.QRCodeSVG })));
 
-// SettingsPanel is the desktop settings centre — a centred modal with left
-// navigation and a right content area. It hosts all settings pages plus MCP,
-// Skills, and Memory management, replacing the old per-feature drawers.
+// SettingsPanel is the desktop settings centre: a modal hosting settings pages and capability management.
 export function SettingsPanel({
   onClose,
   onChanged,
@@ -280,11 +279,8 @@ export function SettingsPanel({
     return () => document.removeEventListener("keydown", onKey);
   }, [requestClose]);
 
-  // The settings-reliant pages (general, models, network, permissions,
-  // sandbox, appearance, storage, updates) need SettingsView loaded. MCP, Skills, Plugins,
-  // and Memory
-  // load their own data and render regardless.
-  const needsSettings = tab === "general" || tab === "models" || tab === "bots" || tab === "subagents" || tab === "network" || tab === "permissions" || tab === "sandbox" || tab === "appearance" || tab === "storage" || tab === "updates";
+  // These pages need SettingsView; capability pages load their own data.
+  const needsSettings = tab === "general" || tab === "models" || tab === "bots" || tab === "subagents" || tab === "network" || tab === "permissions" || tab === "sandbox" || tab === "appearance" || tab === "updates";
   const lazySettingsPageFallback = <div className="empty">{t("settings.loading")}</div>;
 
   return (
@@ -397,11 +393,7 @@ export function SettingsPanel({
                     />
                   </SettingsPageShell>
                 )}
-                {tab === "storage" && s && (
-                  <SettingsPageShell key={tab} s={s} tab={tab} busy={busy} apply={apply}>
-                    <StorageSettingsSection s={s} />
-                  </SettingsPageShell>
-                )}
+                {tab === "storage" && <SettingsPageShell key={tab} s={s} tab={tab} busy={false} apply={apply}><Suspense fallback={lazySettingsPageFallback}><StorageSettingsPage /></Suspense></SettingsPageShell>}
                 {tab === "updates" && s && (
                   <SettingsPageShell key={tab} s={s} tab={tab} busy={busy} apply={apply}>
                     <UpdatesSection
@@ -586,10 +578,8 @@ function settingsTabLabel(id: SettingsTab, t: ReturnType<typeof useT>): string {
       return t("settings.tab.permissions");
     case "sandbox":
       return t("settings.tab.sandbox");
-    case "appearance":
-      return t("settings.tab.appearance");
-    case "storage":
-      return t("settings.tab.storage");
+    case "appearance": return t("settings.tab.appearance");
+    case "storage": return t("settings.tab.storage");
     case "updates":
       return t("settings.tab.updates");
   }
@@ -629,10 +619,8 @@ function settingsTabMeta(id: SettingsTab, s: SettingsView, t: ReturnType<typeof 
       return permissionModeLabel(s.permissions.mode, t);
     case "sandbox":
       return sandboxModeLabel(s.sandbox.bash, t);
-    case "appearance":
-      return t("settings.appearanceMeta");
-    case "storage":
-      return t("settings.storageMeta");
+    case "appearance": return t("settings.appearanceMeta");
+    case "storage": return t("settings.storageMeta");
     case "updates":
       return t("settings.updatesMeta");
   }
@@ -1389,7 +1377,6 @@ function normalizeSettingsView(view: SettingsView | null | undefined): SettingsV
     proxy: { type: "socks5", server: "", port: 0, username: "", password: "" },
   };
   const agent = view.agent ?? { temperature: 0, maxSteps: 0, plannerMaxSteps: 0, maxSubagentDepth: 2, maxSubagentConcurrency: 6, maxParallelWriters: 3, systemPrompt: "", coldResumePrune: true, reasoningLanguage: "auto", compactRatio: 0.8 };
-  const storage = normalizeStorageSettings(view.storage);
   agent.plannerMaxSteps = Number.isFinite(agent.plannerMaxSteps) ? Math.max(0, Math.trunc(agent.plannerMaxSteps)) : 0;
   agent.maxSteps = Number.isFinite(agent.maxSteps) ? Math.max(0, Math.trunc(agent.maxSteps)) : 0;
   agent.maxSubagentDepth = Number.isFinite(agent.maxSubagentDepth) && agent.maxSubagentDepth <= 1 ? 1 : 2;
@@ -1424,7 +1411,6 @@ function normalizeSettingsView(view: SettingsView | null | undefined): SettingsV
     },
     agent,
     bot: normalizeBotSettings(view.bot),
-    storage,
     autoPlan: "off",
     defaultToolApprovalMode: normalizeToolApprovalMode(view.defaultToolApprovalMode),
     autoApproveTools: Boolean(view.autoApproveTools ?? view.bypass),
@@ -1442,19 +1428,6 @@ function normalizeSettingsView(view: SettingsView | null | undefined): SettingsV
     conversationWidth: normalizeConversationWidth(view.conversationWidth),
     checkUpdates: view.checkUpdates !== false,
     updateChannel: "stable",
-  };
-}
-
-function normalizeStorageSettings(value: StorageSettingsView | null | undefined): StorageSettingsView {
-  const path = (kind: string) => ({ kind, path: "", defaultPath: "", sizeBytes: 0, availableBytes: 0 });
-  return {
-    state: { ...path("state"), ...(value?.state ?? {}) },
-    cache: { ...path("cache"), ...(value?.cache ?? {}) },
-    models: { ...path("models"), ...(value?.models ?? {}) },
-    extensions: { ...path("extensions"), ...(value?.extensions ?? {}) },
-    defaultWorkspace: String(value?.defaultWorkspace ?? ""),
-    platform: String(value?.platform ?? ""),
-    restartRequired: Boolean(value?.restartRequired),
   };
 }
 
@@ -1590,39 +1563,6 @@ function thinkingModeLabel(mode: string, t: ReturnType<typeof useT>): string {
     default:
       return t("settings.thinkingMode.auto");
   }
-}
-
-function StorageSettingsSection({ s }: Pick<SectionProps, "s">) {
-  const t = useT();
-  const storage = s.storage;
-  const rows = [
-    ["state", t("settings.storageState"), storage.state],
-    ["cache", t("settings.storageCache"), storage.cache],
-    ["models", t("settings.storageModels"), storage.models],
-    ["extensions", t("settings.storageExtensions"), storage.extensions],
-  ] as const;
-  return (
-    <SettingsSection title={t("settings.storageTitle")} description={t("settings.storageHint")}>
-      <SettingsField label={t("settings.defaultWorkspace")} hint={t("settings.defaultWorkspaceHint")}>
-        <div className="settings-path-control settings-path-control--readonly">
-          <input
-            className="mem-input"
-            value={storage.defaultWorkspace}
-            placeholder={t("common.none")}
-            aria-label={t("settings.defaultWorkspace")}
-            readOnly
-          />
-        </div>
-      </SettingsField>
-      {rows.map(([kind, label, value]) => (
-        <SettingsField key={kind} label={label}>
-          <div className="settings-path-control settings-path-control--readonly">
-            <input className="mem-input" value={value.path} aria-label={label} readOnly />
-          </div>
-        </SettingsField>
-      ))}
-    </SettingsSection>
-  );
 }
 
 function GeneralSection({ s, busy, apply, agentRunning }: SectionProps & { agentRunning: boolean }) {

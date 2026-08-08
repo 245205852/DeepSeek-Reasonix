@@ -15329,37 +15329,6 @@ body > .mermaid-diagram--fullscreen {
   max-width: 640px;
 }
 
-.settings-path-control {
-  display: grid;
-  grid-template-columns: minmax(180px, 1fr) auto auto;
-  gap: 8px;
-  width: 100%;
-  max-width: 760px;
-  align-items: center;
-}
-
-.settings-path-control .mem-input {
-  min-width: 0;
-  width: 100%;
-}
-
-.settings-path-control--readonly {
-  grid-template-columns: minmax(0, 1fr);
-  max-width: 520px;
-}
-
-.settings-path-control .mem-input[readonly] {
-  background: var(--bg-soft);
-  color: var(--fg-dim);
-  cursor: text;
-}
-
-@media (max-width: 760px) {
-  .settings-path-control {
-    grid-template-columns: 1fr;
-  }
-}
-
 .settings-inline-controls .set-label {
   min-width: auto;
 }

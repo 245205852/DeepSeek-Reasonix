@@ -2030,25 +2030,6 @@ export interface SettingsView {
   autoApproveTools: boolean;
   bypass: boolean; // legacy JSON key for live YOLO/full-access tool auto-approval
   conversationWidth?: string; // "standard" | "full"; absent from older Wails payloads
-  storage: StorageSettingsView;
-}
-
-export interface StoragePathView {
-  kind: string;
-  path: string;
-  defaultPath: string;
-  sizeBytes: number;
-  availableBytes: number;
-}
-
-export interface StorageSettingsView {
-  state: StoragePathView;
-  cache: StoragePathView;
-  models: StoragePathView;
-  extensions: StoragePathView;
-  defaultWorkspace: string;
-  platform: string;
-  restartRequired: boolean;
 }
 
 export interface DesktopStartupSettingsView {

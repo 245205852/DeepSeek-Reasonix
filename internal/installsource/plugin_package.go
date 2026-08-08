@@ -13,7 +13,6 @@ import (
 	"sort"
 	"strings"
 
-	"reasonix/internal/config"
 	"reasonix/internal/gitcmd"
 	"reasonix/internal/pluginpkg"
 )
@@ -337,7 +336,7 @@ func (t *installSourceTool) pluginPackageAction(req request, pkg pluginpkg.Packa
 	}
 	root := ""
 	if t.reasonixHome != "" {
-		root = filepath.Join(pluginInstallRoot(t.reasonixHome), name)
+		root = pluginpkg.InstallRoot(t.reasonixHome, name)
 	}
 	skills, commands, hooks, mcp := pkg.CapabilityCounts()
 	agents := pkg.Inventory().Agents
@@ -426,7 +425,7 @@ func (t *installSourceTool) applyInstallPluginPackage(ctx context.Context, req r
 	if !pluginpkg.IsValidName(act.Name) {
 		return newErr(ErrInvalidManifest, "invalid plugin name %q", act.Name)
 	}
-	target := filepath.Join(pluginInstallRoot(t.reasonixHome), act.Name)
+	target := pluginpkg.InstallRoot(t.reasonixHome, act.Name)
 	sourceRoot, commit, cleanup := act.preparedRoot, act.Commit, func() {}
 	if sourceRoot == "" {
 		var err error
@@ -705,20 +704,11 @@ func (t *installSourceTool) applyRemovePluginPackage(_ request, act *action) err
 			}
 		}
 	}
-	pluginsDir := pluginInstallRoot(t.reasonixHome)
+	pluginsDir := pluginpkg.PluginsDir(t.reasonixHome)
 	if rel, err := filepath.Rel(pluginsDir, root); err == nil && rel != "." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) && rel != ".." {
 		if err := os.RemoveAll(root); err != nil {
 			return err
 		}
 	}
 	return nil
-}
-
-func pluginInstallRoot(reasonixHome string) string {
-	if current, err := filepath.Abs(config.ReasonixHomeDir()); err == nil {
-		if requested, e := filepath.Abs(reasonixHome); e == nil && current == requested {
-			return config.ExtensionsDir()
-		}
-	}
-	return pluginpkg.PluginsDir(reasonixHome)
 }
