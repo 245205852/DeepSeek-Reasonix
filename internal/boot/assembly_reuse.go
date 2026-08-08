@@ -44,7 +44,7 @@ func shouldReuseSnapshot(plan *extension.RuntimePlan) bool {
 	if plan == nil {
 		return false
 	}
-	return plan.IsNoOp() || !plan.AffectsCache()
+	return plan.IsNoOp() || !plan.MayChangePrefix()
 }
 
 // shouldSkipPromptStrategy is true when system_prompt.build must not re-run.

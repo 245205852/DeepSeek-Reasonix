@@ -46,6 +46,10 @@ reasonix plugin doctor <name>
 ```
 
 输出组件状态、计划、effect receipt、可恢复性与 lifecycle metrics。
+计划诊断拆分两个事实：`prefixChanged` 在构建完成后比较新旧 snapshot 的
+`CacheHash` 得出；`providerChanged` 表示 Provider capability 的新增、删除或
+重载。因此仅滚动 Provider backend 且 system prompt、tool schemas 字节不变时，
+诊断为 `prefixChanged=false, providerChanged=true`。
 
 ## Effect receipt
 

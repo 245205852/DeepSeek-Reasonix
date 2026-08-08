@@ -142,8 +142,11 @@ epoch = [capability key, provider component ID, provider version, provider schem
 Only epoch changes force consumer reload.
 
 `RuntimePlan` carries Added / Removed / Reloaded / Unchanged plus ActivateOrder
-and DrainOrder. No-op plans must not change `CacheHash`. Changes should affect
-only the relevant subgraph (provider, MCP server, interceptor chain, UI hub).
+and DrainOrder. Diagnostics record `PrefixChanged` only after comparing the old
+and new snapshot `CacheHash`, while `ProviderChanged` records provider capability
+add/remove/reload independently. No-op plans must not change `CacheHash`.
+Changes should affect only the relevant subgraph (provider, MCP server,
+interceptor chain, UI hub).
 
 ## Atomic publish / drain
 

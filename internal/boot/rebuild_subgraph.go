@@ -74,10 +74,6 @@ func tryRebuildSubgraph(ctx context.Context, old *control.Controller, previous *
 		Plan:                 plan,
 		ReusedController:     true,
 	}
-	if shouldReuseSnapshot(plan) {
-		res.Plan.CacheChanged = false
-	}
-
 	session := protocol.SessionContext{
 		SessionID:     controllerSessionID(previous.Controller),
 		WorkspaceRoot: previous.Controller.WorkspaceRoot(),
@@ -130,13 +126,7 @@ func tryRebuildSubgraph(ctx context.Context, old *control.Controller, previous *
 	}
 
 	_ = m
-	attachPlanAndStatus(res, from, to, opts.Generation)
-	if res.Plan != nil {
-		res.Plan.CacheChanged = plan.CacheChanged && !shouldReuseSnapshot(plan)
-		if shouldReuseSnapshot(plan) {
-			res.Plan.CacheChanged = false
-		}
-	}
+	attachPlanAndStatus(res, from, to, opts.Generation, previous.Snapshot)
 
 	if prevGen := previous.Snapshot.Generation(); prevGen != 0 && prevGen != gen {
 		registerControllerDrainCancel(res.Owner, prevGen, old)

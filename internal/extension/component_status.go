@@ -25,13 +25,14 @@ type RuntimeStatus struct {
 // RuntimePlanView is a JSON-friendly projection of RuntimePlan without the
 // live graph pointer.
 type RuntimePlanView struct {
-	FromGeneration uint64        `json:"fromGeneration"`
-	ToGeneration   uint64        `json:"toGeneration"`
-	Added          []ComponentID `json:"added,omitempty"`
-	Removed        []ComponentID `json:"removed,omitempty"`
-	Reloaded       []ComponentID `json:"reloaded,omitempty"`
-	Unchanged      []ComponentID `json:"unchanged,omitempty"`
-	CacheChanged   bool          `json:"cacheChanged"`
+	FromGeneration  uint64        `json:"fromGeneration"`
+	ToGeneration    uint64        `json:"toGeneration"`
+	Added           []ComponentID `json:"added,omitempty"`
+	Removed         []ComponentID `json:"removed,omitempty"`
+	Reloaded        []ComponentID `json:"reloaded,omitempty"`
+	Unchanged       []ComponentID `json:"unchanged,omitempty"`
+	PrefixChanged   bool          `json:"prefixChanged"`
+	ProviderChanged bool          `json:"providerChanged"`
 }
 
 // PlanView projects a plan for diagnostics APIs.
@@ -40,12 +41,13 @@ func PlanView(p *RuntimePlan) *RuntimePlanView {
 		return nil
 	}
 	return &RuntimePlanView{
-		FromGeneration: p.FromGeneration,
-		ToGeneration:   p.ToGeneration,
-		Added:          append([]ComponentID(nil), p.Added...),
-		Removed:        append([]ComponentID(nil), p.Removed...),
-		Reloaded:       append([]ComponentID(nil), p.Reloaded...),
-		Unchanged:      append([]ComponentID(nil), p.Unchanged...),
-		CacheChanged:   p.CacheChanged,
+		FromGeneration:  p.FromGeneration,
+		ToGeneration:    p.ToGeneration,
+		Added:           append([]ComponentID(nil), p.Added...),
+		Removed:         append([]ComponentID(nil), p.Removed...),
+		Reloaded:        append([]ComponentID(nil), p.Reloaded...),
+		Unchanged:       append([]ComponentID(nil), p.Unchanged...),
+		PrefixChanged:   p.PrefixChanged,
+		ProviderChanged: p.ProviderChanged,
 	}
 }

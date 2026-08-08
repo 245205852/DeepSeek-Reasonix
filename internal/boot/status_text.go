@@ -17,7 +17,7 @@ func FormatRuntimeStatus(status *extension.RuntimeStatus) string {
 	fmt.Fprintf(&b, "published generation: %d\n", status.PublishedGeneration)
 	if status.Plan != nil {
 		p := status.Plan
-		fmt.Fprintf(&b, "plan: from=%d to=%d cacheChanged=%v\n", p.FromGeneration, p.ToGeneration, p.CacheChanged)
+		fmt.Fprintf(&b, "plan: from=%d to=%d prefixChanged=%v providerChanged=%v\n", p.FromGeneration, p.ToGeneration, p.PrefixChanged, p.ProviderChanged)
 		if len(p.Added) > 0 {
 			fmt.Fprintf(&b, "  added: %s\n", joinIDs(p.Added))
 		}

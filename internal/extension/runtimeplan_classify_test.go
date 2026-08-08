@@ -14,8 +14,8 @@ func TestClassifySubgraphNone(t *testing.T) {
 		t.Fatal(err)
 	}
 	plan := DiffRuntimePlan(g, g, 1, 2)
-	if plan.Kind != SubgraphNone || plan.AffectsCache() {
-		t.Fatalf("kind=%v cache=%v", plan.Kind, plan.AffectsCache())
+	if plan.Kind != SubgraphNone || plan.MayChangePrefix() {
+		t.Fatalf("kind=%v mayChangePrefix=%v", plan.Kind, plan.MayChangePrefix())
 	}
 }
 
@@ -33,7 +33,7 @@ func TestClassifySubgraphInterceptorOnly(t *testing.T) {
 	if plan.Kind != SubgraphInterceptorOnly {
 		t.Fatalf("kind = %v, want interceptor-only", plan.Kind)
 	}
-	if plan.AffectsCache() {
+	if plan.MayChangePrefix() {
 		t.Fatal("interceptor-only must not affect cache")
 	}
 	if !plan.AffectsInterceptors() {
@@ -52,7 +52,10 @@ func TestClassifySubgraphProviderOnly(t *testing.T) {
 	if plan.Kind != SubgraphProviderOnly {
 		t.Fatalf("kind = %v, want provider-only", plan.Kind)
 	}
-	if !plan.AffectsProviders() || !plan.AffectsCache() {
-		t.Fatal("provider-only should affect providers and cache")
+	if !plan.AffectsProviders() || !plan.MayChangePrefix() {
+		t.Fatal("provider-only should affect providers and conservatively check the prefix")
+	}
+	if !plan.ProviderChanged || plan.PrefixChanged {
+		t.Fatalf("provider-only observation flags = provider:%v prefix:%v", plan.ProviderChanged, plan.PrefixChanged)
 	}
 }

@@ -29,7 +29,8 @@ const (
 
 // RuntimePlan describes the transition from one generation's graph/snapshot
 // to the next. Builders and Rebuild consume it to activate only the affected
-// subgraph and to preserve CacheHash on no-op plans.
+// subgraph. PrefixChanged is an observed post-build fact; graph diffing alone
+// only classifies which work may be required.
 type RuntimePlan struct {
 	FromGeneration uint64
 	ToGeneration   uint64
@@ -39,7 +40,14 @@ type RuntimePlan struct {
 	Unchanged      []ComponentID
 	ActivateOrder  []ComponentID
 	DrainOrder     []ComponentID
-	CacheChanged   bool
+	// PrefixChanged reports whether the frozen provider-visible prefix actually
+	// changed between the previous and current snapshots. Boot sets it only
+	// after both snapshots exist and their CacheHash values can be compared.
+	PrefixChanged bool
+	// ProviderChanged reports whether any changed component provided a provider
+	// capability on either side of the transition. Looking at both graphs keeps
+	// provider removal visible to diagnostics.
+	ProviderChanged bool
 	// Kind is the classified subgraph of this plan (computed by DiffRuntimePlan).
 	Kind SubgraphKind
 	// Graph is the resolved target graph (may be nil for pure no-op plans).
@@ -54,9 +62,11 @@ func (p *RuntimePlan) IsNoOp() bool {
 	return len(p.Added) == 0 && len(p.Removed) == 0 && len(p.Reloaded) == 0
 }
 
-// AffectsCache reports whether provider-visible prompt/tool prefix may move.
+// MayChangePrefix is the conservative pre-build planning signal for whether a
+// rebuild must re-evaluate provider-visible prompt/tool prefix state. It is not
+// a diagnostic fact; PrefixChanged is set after comparing frozen snapshots.
 // Interceptor-only and UI-only plans do not change CacheHash by contract.
-func (p *RuntimePlan) AffectsCache() bool {
+func (p *RuntimePlan) MayChangePrefix() bool {
 	if p == nil || p.IsNoOp() {
 		return false
 	}
@@ -97,13 +107,13 @@ func (p *RuntimePlan) AffectsProviders() bool {
 	if p == nil || p.IsNoOp() {
 		return false
 	}
-	return p.Kind == SubgraphProviderOnly || p.Kind == SubgraphFull || p.Kind == SubgraphSidecar
+	return p.ProviderChanged || p.Kind == SubgraphProviderOnly || p.Kind == SubgraphFull || p.Kind == SubgraphSidecar
 }
 
 // DiffRuntimePlan compares two graphs and produces a deterministic plan.
-// from may be nil (cold start). CacheChanged is true when any component is
-// added, removed, or reloaded; callers still recompute CacheHash from the
-// frozen snapshot and must not mutate it on IsNoOp plans.
+// from may be nil (cold start). PrefixChanged remains false here because graph
+// identity cannot prove provider-visible byte changes; boot observes it after
+// the next RuntimeSnapshot has been frozen.
 func DiffRuntimePlan(from, to *DependencyGraph, fromGen, toGen uint64) *RuntimePlan {
 	plan := &RuntimePlan{
 		FromGeneration: fromGen,
@@ -164,50 +174,62 @@ func DiffRuntimePlan(from, to *DependencyGraph, fromGen, toGen uint64) *RuntimeP
 		plan.DrainOrder = append(plan.DrainOrder, removed...)
 		plan.DrainOrder = append(plan.DrainOrder, reloaded...)
 	}
-	plan.CacheChanged = !plan.IsNoOp()
-	plan.Kind = classifySubgraph(plan, to)
-	if !plan.AffectsCache() {
-		plan.CacheChanged = false
-	}
+	plan.Kind = classifySubgraph(plan, from, to)
+	plan.ProviderChanged = changedComponentsProvideKind(plan, from, to, "provider")
 	return plan
 }
 
 // classifySubgraph inspects changed components' provides/intercepts to pick
 // the narrowest rebuild subgraph.
-func classifySubgraph(plan *RuntimePlan, to *DependencyGraph) SubgraphKind {
+func classifySubgraph(plan *RuntimePlan, from, to *DependencyGraph) SubgraphKind {
 	if plan == nil || plan.IsNoOp() {
 		return SubgraphNone
 	}
 	changed := append(append(append([]ComponentID{}, plan.Added...), plan.Removed...), plan.Reloaded...)
 	var hasInterceptor, hasProvider, hasUI, hasMCP, hasOther bool
+	mcpSchemaChanged := false
 	for _, id := range changed {
-		var desc ComponentDescriptor
-		if to != nil {
-			desc = to.Components[id]
-		}
-		if len(desc.Intercepts) > 0 || len(desc.Replaces) > 0 {
-			hasInterceptor = true
-		}
-		for _, cap := range desc.Provides {
-			switch strings.ToLower(cap.Key.Kind) {
-			case "provider":
-				hasProvider = true
-			case "ui", "uiaction":
-				hasUI = true
-			case "mcp", "mcpserver":
-				hasMCP = true
-			case "interceptors", "strategies":
+		oldDesc, oldOK := graphComponent(from, id)
+		newDesc, newOK := graphComponent(to, id)
+		mcpSchemaChanged = mcpSchemaChanged || mcpCapabilitySchemaChanged(oldDesc, oldOK, newDesc, newOK)
+		componentClassified := false
+		for _, desc := range []ComponentDescriptor{oldDesc, newDesc} {
+			if len(desc.Intercepts) > 0 || len(desc.Replaces) > 0 {
 				hasInterceptor = true
-			default:
-				if cap.Key.Kind != "" {
-					hasOther = true
+				componentClassified = true
+			}
+			for _, cap := range desc.Provides {
+				switch strings.ToLower(cap.Key.Kind) {
+				case "provider":
+					hasProvider = true
+					componentClassified = true
+				case "ui", "uiaction":
+					hasUI = true
+					componentClassified = true
+				case "mcp", "mcpserver":
+					hasMCP = true
+					componentClassified = true
+				case "interceptors", "strategies":
+					hasInterceptor = true
+					componentClassified = true
+				default:
+					if cap.Key.Kind != "" {
+						hasOther = true
+						componentClassified = true
+					}
 				}
 			}
 		}
 		// Plugin components with empty provides still count as sidecar.
-		if strings.HasPrefix(string(id), "plugin/") && !hasProvider && !hasUI && !hasInterceptor && !hasMCP {
+		if strings.HasPrefix(string(id), "plugin/") && !componentClassified {
 			hasOther = true
 		}
+	}
+	// An MCP backend roll may stay narrow only while its declared schema shape is
+	// unchanged. Added/removed/renamed schemas need a full snapshot rebuild so
+	// provider-visible tool bytes cannot remain stale.
+	if mcpSchemaChanged {
+		return SubgraphFull
 	}
 	kinds := 0
 	if hasInterceptor {
@@ -243,6 +265,61 @@ func classifySubgraph(plan *RuntimePlan, to *DependencyGraph) SubgraphKind {
 	default:
 		return SubgraphFull
 	}
+}
+
+func graphComponent(graph *DependencyGraph, id ComponentID) (ComponentDescriptor, bool) {
+	if graph == nil {
+		return ComponentDescriptor{}, false
+	}
+	desc, ok := graph.Components[id]
+	return desc, ok
+}
+
+func changedComponentsProvideKind(plan *RuntimePlan, from, to *DependencyGraph, kind string) bool {
+	if plan == nil || plan.IsNoOp() {
+		return false
+	}
+	changed := append(append(append([]ComponentID{}, plan.Added...), plan.Removed...), plan.Reloaded...)
+	for _, id := range changed {
+		oldDesc, _ := graphComponent(from, id)
+		newDesc, _ := graphComponent(to, id)
+		for _, desc := range []ComponentDescriptor{oldDesc, newDesc} {
+			for _, capability := range desc.Provides {
+				if strings.EqualFold(strings.TrimSpace(capability.Key.Kind), kind) {
+					return true
+				}
+			}
+		}
+	}
+	return false
+}
+
+func mcpCapabilitySchemaChanged(oldDesc ComponentDescriptor, oldOK bool, newDesc ComponentDescriptor, newOK bool) bool {
+	oldShape := mcpCapabilityShape(oldDesc, oldOK)
+	newShape := mcpCapabilityShape(newDesc, newOK)
+	if len(oldShape) != len(newShape) {
+		return len(oldShape) > 0 || len(newShape) > 0
+	}
+	for key, oldHash := range oldShape {
+		if newHash, ok := newShape[key]; !ok || newHash != oldHash {
+			return true
+		}
+	}
+	return false
+}
+
+func mcpCapabilityShape(desc ComponentDescriptor, ok bool) map[string]string {
+	shape := map[string]string{}
+	if !ok {
+		return shape
+	}
+	for _, capability := range desc.Provides {
+		switch strings.ToLower(strings.TrimSpace(capability.Key.Kind)) {
+		case "mcp", "mcpserver":
+			shape[capability.Key.String()] = strings.TrimSpace(capability.SchemaHash)
+		}
+	}
+	return shape
 }
 
 func componentIdentityChanged(a, b ComponentDescriptor) bool {

@@ -84,7 +84,7 @@ func buildRuntimeGraph(home string, hostProvides []extensioncontract.Capability)
 
 // attachPlanAndStatus fills BuildResult.Plan and Status from graphs using the
 // lifecycle registry so doctor can explain Inactive/Failed components.
-func attachPlanAndStatus(res *BuildResult, from *extension.DependencyGraph, to *extension.DependencyGraph, fromGen uint64) {
+func attachPlanAndStatus(res *BuildResult, from *extension.DependencyGraph, to *extension.DependencyGraph, fromGen uint64, previousSnapshot *extension.RuntimeSnapshot) {
 	if res == nil {
 		return
 	}
@@ -93,6 +93,9 @@ func attachPlanAndStatus(res *BuildResult, from *extension.DependencyGraph, to *
 		toGen = res.Snapshot.Generation()
 	}
 	plan := extension.DiffRuntimePlan(from, to, fromGen, toGen)
+	if previousSnapshot != nil && res.Snapshot != nil {
+		plan.PrefixChanged = previousSnapshot.CacheHash() != res.Snapshot.CacheHash()
+	}
 	res.Plan = plan
 	life := extension.NewLifecycleRegistry(toGen)
 	status := &extension.RuntimeStatus{
@@ -174,7 +177,7 @@ func finalizeBuildResult(res *BuildResult, publish bool) *BuildResult {
 		return nil
 	}
 	if graph, err := buildRuntimeGraph(config.ReasonixHomeDir(), nil); err == nil {
-		attachPlanAndStatus(res, nil, graph, 0)
+		attachPlanAndStatus(res, nil, graph, 0, nil)
 	}
 	if publish {
 		publishBuildResult(res)

@@ -37,8 +37,8 @@ func TestRebuildFromNoOpPreservesCacheHash(t *testing.T) {
 			t.Fatalf("cache hash churned on no-op: %s -> %s", oldRes.Snapshot.CacheHash(), res.Snapshot.CacheHash())
 		}
 	}
-	if res.Plan != nil && res.Plan.CacheChanged {
-		t.Fatal("no-op plan should not set CacheChanged")
+	if res.Plan != nil && res.Plan.PrefixChanged {
+		t.Fatal("no-op plan should not set PrefixChanged")
 	}
 }
 
@@ -116,7 +116,7 @@ func TestPlanClassifyIntegration(t *testing.T) {
 	if plan.Kind != extension.SubgraphUIOnly {
 		t.Fatalf("kind = %v", plan.Kind)
 	}
-	if plan.AffectsCache() {
+	if plan.MayChangePrefix() {
 		t.Fatal("UI-only must not affect cache")
 	}
 }
@@ -182,8 +182,11 @@ func TestProviderDrainReloadClassify(t *testing.T) {
 	if plan.Kind != extension.SubgraphProviderOnly {
 		t.Fatalf("kind = %v want provider-only", plan.Kind)
 	}
-	if !plan.AffectsCache() {
-		t.Fatal("provider change must affect cache")
+	if !plan.MayChangePrefix() {
+		t.Fatal("provider change must conservatively check the prefix")
+	}
+	if !plan.ProviderChanged || plan.PrefixChanged {
+		t.Fatalf("provider plan flags = provider:%v prefix:%v", plan.ProviderChanged, plan.PrefixChanged)
 	}
 	if !shouldReuseDiscovery(plan) {
 		t.Fatal("provider-only should reuse skill/command/hook discovery")

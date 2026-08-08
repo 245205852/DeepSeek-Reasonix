@@ -132,10 +132,11 @@ func rebuildWithPrevious(ctx context.Context, old *control.Controller, previous 
 	if g, err := buildRuntimeGraph(home, nil); err == nil {
 		toGraph = g
 	}
-	attachPlanAndStatus(res, fromGraph, toGraph, opts.Generation)
-	if res.Plan != nil && res.Plan.IsNoOp() {
-		res.Plan.CacheChanged = false
+	var previousSnapshot *extension.RuntimeSnapshot
+	if previous != nil {
+		previousSnapshot = previous.Snapshot
 	}
+	attachPlanAndStatus(res, fromGraph, toGraph, opts.Generation, previousSnapshot)
 
 	if err := migrateRuntimeState(res.Controller, old, m); err != nil {
 		// Fail-atomic: release the replacement; old keeps serving.

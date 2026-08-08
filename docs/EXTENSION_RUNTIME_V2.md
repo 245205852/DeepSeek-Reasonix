@@ -47,6 +47,11 @@ reasonix plugin doctor <name>
 ```
 
 Reports component status, plan, effect receipts, recoverability, and lifecycle metrics.
+Plan diagnostics separate two facts: `prefixChanged` is computed after build by
+comparing the previous and current snapshot `CacheHash`; `providerChanged`
+reports provider capability additions, removals, or reloads. A provider-only
+backend roll therefore reports `prefixChanged=false, providerChanged=true` when
+the provider-visible system prompt and tool schemas remain byte-identical.
 
 ## Effect receipts
 
