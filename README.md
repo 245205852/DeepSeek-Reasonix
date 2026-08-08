@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="docs/logo-ghost-wave-effect.svg" alt="Reasonix" width="400"/>
+  <img src="docs/logo-ghost-wave-effect.svg" alt="Reasonix" width="360"/>
 </p>
 
 <p align="center">
