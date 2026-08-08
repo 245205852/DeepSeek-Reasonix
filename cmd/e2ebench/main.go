@@ -113,6 +113,9 @@ type result struct {
 	// PlanForced marks a -force-planner run: the prompt carried an injected
 	// plan-first directive, so arms are only comparable with equal forcing.
 	PlanForced bool `json:"plan_forced,omitempty"`
+	// PhaseTrace is the per-task privacy-safe latency trace (counts and ms
+	// only); nil unless the run recorded a trajectory.
+	PhaseTrace *phaseTrace `json:"phase_trace,omitempty"`
 }
 
 // class is the published failure taxonomy: solved, the guard that stopped the
@@ -392,6 +395,7 @@ func runTask(bin, model, profile string, arm ablation.Set, t task, trajDir strin
 	}
 
 	r.Passed = grade(work, t.dir)
+	r.PhaseTrace = buildPhaseTrace(r)
 	return r
 }
 

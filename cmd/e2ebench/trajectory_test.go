@@ -265,6 +265,84 @@ func TestSummarizeTrajectoryDecomposesWallClock(t *testing.T) {
 	}
 }
 
+func TestSummarizeTrajectoryCollectsPhaseTraceInputs(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "phase.trajectory.jsonl")
+	lines := []string{
+		`{"seq":1,"ts":1000,"event":{"kind":"turn_started"}}`,
+		`{"seq":2,"ts":1870,"event":{"kind":"reasoning"}}`,
+		`{"seq":3,"ts":2000,"event":{"kind":"usage","usage":{"source":"planner"}}}`,
+		`{"seq":4,"ts":2400,"event":{"kind":"reasoning"}}`,
+		`{"seq":5,"ts":3000,"event":{"kind":"tool_dispatch","tool":{"id":"a","name":"bash"}}}`,
+		`{"seq":6,"ts":3300,"event":{"kind":"tool_result","tool":{"id":"a","name":"bash","durationMs":90,"startedAt":3210,"endedAt":3300}}}`,
+		`{"seq":7,"ts":3400,"event":{"kind":"usage","usage":{"source":"executor"}}}`,
+		`{"seq":8,"ts":3500,"event":{"kind":"usage","usage":{"source":"subagent"}}}`,
+		`{"seq":9,"ts":3600,"event":{"kind":"notice","code":"progress_guard"}}`,
+		`{"seq":10,"ts":4000,"event":{"kind":"turn_done"}}`,
+	}
+	if err := os.WriteFile(path, []byte(strings.Join(lines, "\n")), 0o644); err != nil {
+		t.Fatalf("write fixture: %v", err)
+	}
+	s, err := summarizeTrajectory(path)
+	if err != nil {
+		t.Fatalf("summarizeTrajectory: %v", err)
+	}
+	if s.TTFTMs != 870 {
+		t.Errorf("ttft = %d, want 870 (first reasoning delta)", s.TTFTMs)
+	}
+	if s.FirstToolMs != 2210 {
+		t.Errorf("first tool = %d, want 2210 (startedAt 3210 − span start)", s.FirstToolMs)
+	}
+	if s.PlannerRequests != 1 || s.ExecutorRequests != 1 || s.SubagentRequests != 1 {
+		t.Errorf("requests planner=%d executor=%d subagent=%d, want 1/1/1",
+			s.PlannerRequests, s.ExecutorRequests, s.SubagentRequests)
+	}
+	if s.ToolQueueMs != 210 {
+		t.Errorf("tool queue = %d, want 210 (start 3210 − dispatch 3000)", s.ToolQueueMs)
+	}
+	if s.NoProgressSignals != 1 {
+		t.Errorf("no-progress signals = %d, want 1", s.NoProgressSignals)
+	}
+}
+
+func TestBuildPhaseTrace(t *testing.T) {
+	r := result{task: task{ID: "a"}, Passed: true, WallMs: 92341}
+	r.PromptTokens = 84320
+	r.CompletionTokens = 12013
+	r.Trajectory = &trajectorySummary{
+		TTFTMs: 870, FirstToolMs: 4210,
+		PlannerRequests: 1, PlannerStreamMs: 11020,
+		ExecutorRequests: 7, ModelStreamMs: 56100,
+		TopLevelCalls: 14, ToolQueueMs: 430, ToolWallMs: 8120,
+		StreamRetries: 1, RecoveryGapMs: 9530,
+		CompactionMs: 800, NoProgressSignals: 3,
+	}
+	p := buildPhaseTrace(r)
+	if p == nil {
+		t.Fatal("trace must be built when a trajectory exists")
+	}
+	if p.TotalMs != 92341 || p.TTFTMs != 870 || p.TimeToFirstTool != 4210 {
+		t.Errorf("totals = %d/%d/%d, want 92341/870/4210", p.TotalMs, p.TTFTMs, p.TimeToFirstTool)
+	}
+	if p.Planner != (phaseModel{Requests: 1, Ms: 11020}) || p.Executor != (phaseModel{Requests: 7, Ms: 56100}) {
+		t.Errorf("planner=%+v executor=%+v", p.Planner, p.Executor)
+	}
+	if p.Tool != (phaseTool{Calls: 14, QueueMs: 430, CriticalPathMs: 8120}) {
+		t.Errorf("tool = %+v", p.Tool)
+	}
+	if p.Recovery != (phaseModel{Requests: 1, Ms: 9530}) {
+		t.Errorf("recovery = %+v", p.Recovery)
+	}
+	if p.CompactionMs != 800 || p.NoProgressSignals != 3 || !p.Solved {
+		t.Errorf("compaction=%d signals=%d solved=%v", p.CompactionMs, p.NoProgressSignals, p.Solved)
+	}
+	if p.PromptTokens != 84320 || p.CompletionTokens != 12013 {
+		t.Errorf("tokens = %d/%d", p.PromptTokens, p.CompletionTokens)
+	}
+	if buildPhaseTrace(result{}) != nil {
+		t.Fatal("no trajectory must mean no trace")
+	}
+}
+
 func TestRunTrajModeRedigestsRecordedFiles(t *testing.T) {
 	dir := t.TempDir()
 	lines := []string{

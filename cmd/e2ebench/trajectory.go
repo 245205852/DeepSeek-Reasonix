@@ -58,6 +58,15 @@ type trajectorySummary struct {
 	PlannerStreamMs int64 `json:"planner_stream_ms,omitempty"` // attempts closed by planner usage
 	ModelStreamMs   int64 `json:"model_stream_ms,omitempty"`   // remaining sampling attempts
 	AgentOtherMs    int64 `json:"agent_other_ms,omitempty"`    // span remainder: assembly, guards, idle
+
+	// Phase-trace inputs: content-free firsts and counts for the per-task trace.
+	TTFTMs            int64 `json:"ttft_ms,omitempty"`       // span start → first output delta
+	FirstToolMs       int64 `json:"first_tool_ms,omitempty"` // span start → first tool start
+	PlannerRequests   int   `json:"planner_requests,omitempty"`
+	ExecutorRequests  int   `json:"executor_requests,omitempty"`
+	SubagentRequests  int   `json:"subagent_requests,omitempty"`
+	ToolQueueMs       int64 `json:"tool_queue_ms,omitempty"`       // Σ dispatch→start delays
+	NoProgressSignals int   `json:"no_progress_signals,omitempty"` // progress_guard escalations
 }
 
 // toolWall is the best available tool wall-clock: interval union when the
@@ -184,11 +193,12 @@ type trajScan struct {
 	streakRun          int
 	batch              *toolBatch
 
-	attemptBegin           map[string]int64
-	attempts               []modelAttempt
-	lastAttempt            int // most recent closed attempt awaiting a usage tag
-	pendingRetry, compFrom int64
-	retryIvs, compIvs      [][2]int64
+	attemptBegin            map[string]int64
+	attempts                []modelAttempt
+	lastAttempt             int // most recent closed attempt awaiting a usage tag
+	pendingRetry, compFrom  int64
+	retryIvs, compIvs       [][2]int64
+	firstDelta, firstToolTS int64
 }
 
 // modelAttempt is one sampling attempt's wall interval; planner marks attempts
@@ -255,9 +265,16 @@ func (t *trajScan) record(rec trajectoryRecord) {
 			t.s.HeaderRetries++
 		}
 	case "notice":
-		if rec.Event.Code == "empty_final" {
+		switch rec.Event.Code {
+		case "empty_final":
 			t.s.EmptyFinalRetries++
 			t.tainted = true
+		case "progress_guard":
+			t.s.NoProgressSignals++
+		}
+	case "reasoning", "text":
+		if t.firstDelta == 0 {
+			t.firstDelta = rec.TS
 		}
 	case "stream_attempt", "usage":
 		t.recordModelPhase(rec)
@@ -318,9 +335,20 @@ func (t *trajScan) recordModelPhase(rec trajectoryRecord) {
 		}
 		return
 	}
-	if u := rec.Event.Usage; u != nil && u.Source != "subagent" && t.lastAttempt >= 0 {
-		t.attempts[t.lastAttempt].planner = u.Source == "planner"
-		t.lastAttempt = -1
+	if u := rec.Event.Usage; u != nil {
+		switch u.Source {
+		case "planner":
+			t.s.PlannerRequests++
+		case "subagent":
+			t.s.SubagentRequests++
+			return
+		default:
+			t.s.ExecutorRequests++
+		}
+		if t.lastAttempt >= 0 {
+			t.attempts[t.lastAttempt].planner = u.Source == "planner"
+			t.lastAttempt = -1
+		}
 	}
 }
 
@@ -356,6 +384,9 @@ func (t *trajScan) recordResult(rec trajectoryRecord) {
 	t.batch.serialMs += tl.DurationMs
 	if tl.StartedAt > 0 && tl.EndedAt >= tl.StartedAt {
 		t.batch.intervals = append(t.batch.intervals, [2]int64{tl.StartedAt, tl.EndedAt})
+		if t.firstToolTS == 0 || tl.StartedAt < t.firstToolTS {
+			t.firstToolTS = tl.StartedAt
+		}
 		if disp, ok := t.batch.dispatchTS[tl.ID]; ok && tl.StartedAt >= disp {
 			t.delays = append(t.delays, tl.StartedAt-disp)
 		}
@@ -407,6 +438,15 @@ func (t *trajScan) finish() *trajectorySummary {
 	s.ModelGapP95Ms = p95(t.gaps)
 	s.CleanGapP95Ms = p95(t.cleanGaps)
 	s.StartDelayP95Ms = p95(t.delays)
+	for _, d := range t.delays {
+		s.ToolQueueMs += d
+	}
+	if t.firstDelta > t.firstTS {
+		s.TTFTMs = t.firstDelta - t.firstTS
+	}
+	if t.firstToolTS > t.firstTS {
+		s.FirstToolMs = t.firstToolTS - t.firstTS
+	}
 	if len(t.allIntervals) > 0 {
 		s.ToolWallMs = intervalUnion(t.allIntervals) + t.orphanMs
 	}
