@@ -224,5 +224,5 @@ issues get triaged.
 </p>
 
 <p align="center">
-  <video src="https://github.com/user-attachments/assets/9454eb29-19ef-4e6c-b5a9-da4c5dea1f95" controls></video>
+  <video src="https://github.com/user-attachments/assets/ab2f3878-e224-4931-8254-060e7695cfb9" controls></video>
 </p>
