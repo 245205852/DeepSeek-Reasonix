@@ -352,9 +352,9 @@ type Agent struct {
 	// Plan workflows. nil disables gating entirely.
 	gate Gate
 
-	// extensions, when non-nil, is the frozen Extension Protocol v1 dispatcher
+	// extensions, when non-nil, is the frozen Extension Protocol v2 dispatcher
 	// for this controller generation. The run loop consults it at the
-	// agent-side intercept points (see extensions.go); nil means no v1 runtime
+	// agent-side intercept points (see extensions.go); nil means no runtime
 	// packages are installed and every point passes through byte-identically.
 	extensions *dispatch.Dispatcher
 
@@ -559,6 +559,14 @@ type Agent struct {
 	// See applyStormBreaker.
 	stormSig   string
 	stormCount int
+
+	// progress escalates adaptively on consecutive zero-evidence-gain rounds
+	// (see progress_guard.go); reset with the evidence ledger each turn.
+	progress progressGuard
+
+	// outcome shadows progress with an outcome-decomposed scorer whose samples
+	// only feed trajectory recording; it never influences guard behavior.
+	outcome *evidence.OutcomeTracker
 
 	// repeatFailureCounts tracks semantically identical write-like calls that
 	// keep failing with the same failure class. Unlike stormSig, successful
@@ -1125,7 +1133,7 @@ type Options struct {
 	MaxSubagentDepth int
 
 	// Extensions is the frozen extension dispatcher for this agent's controller
-	// generation (Extension Protocol v1). Nil means no v1 runtime packages are
+	// generation (Extension Protocol v2). Nil means no runtime packages are
 	// installed; the run loop then passes every intercept point through
 	// byte-identically. Boot installs it with SetExtensions once sidecars are
 	// live (they start after the agent is constructed).
@@ -1813,34 +1821,6 @@ func (a *Agent) deliveryMutationCheckpointReady() bool {
 		a.deliveryReviewGateFailure() == ""
 }
 
-// armLoopGuardPass records that a loop guard fired this user turn.
-// receiptMark is the evidence-ledger receipt count from just before the
-// guarded batch ran, so a successful write or command receipt recorded after
-// it counts as real progress and revokes the pass (see loopGuardAllowsFinal).
-func (a *Agent) armLoopGuardPass(receiptMark int) {
-	a.loopGuardArmed = true
-	a.loopGuardReceiptMark = receiptMark
-}
-
-// loopGuardAllowsFinal reports whether final readiness should stand down: a
-// loop guard fired this user turn and no host-observable progress — a
-// successful write or command receipt — has landed since. In that state the
-// missing receipts are exactly what the blocker prevents, so demanding them
-// would restart the retry loop the guard just broke; the model must be free to
-// report the blocker instead. The bookkeeping the guard recommends (ask,
-// todo_write, complete_step) produces neither write nor command receipts, so
-// it keeps the pass; real progress revokes it because receipts are obtainable
-// again and readiness should resume enforcing them.
-func (a *Agent) loopGuardAllowsFinal() bool {
-	if a == nil || !a.loopGuardArmed {
-		return false
-	}
-	if a.evidence == nil {
-		return true
-	}
-	return !a.evidence.HasWriteOrCommandSince(a.loopGuardReceiptMark)
-}
-
 func finalReadinessIncompleteTodos(items []evidence.TodoStepMatch) string {
 	parts := make([]string, 0, len(items))
 	for _, item := range items {
@@ -2307,9 +2287,8 @@ func (a *Agent) streamWithFrozen(ctx context.Context, turn int, sink event.Sink,
 		}
 		req = prepared.req
 	}
-	// After #7725 Goal token request admission was removed, stream goes
-	// directly to the provider. Provider-visible cache controls stay stable
-	// across retries and request timing because they are derived from req alone.
+	// Host stream cancels on generation drain (OpenAI/Anthropic HTTP reads).
+	defer trackPublishedHostStream(ctx, cancel)()
 	ch, err := a.prov.Stream(ctx, req)
 	if err != nil {
 		return streamedTurn{usage: provider.UsageWithRequestAttemptCount(ctx, nil), err: err}

@@ -55,3 +55,19 @@ func (s *syncSink) RecordProtocolRecovery(a ProtocolRecoveryAudit) {
 		rs.RecordProtocolRecovery(a)
 	}
 }
+
+func (s *syncSink) RecordContractShadow(a ContractShadowAudit) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if rs, ok := s.inner.(ContractShadowAuditSink); ok {
+		rs.RecordContractShadow(a)
+	}
+}
+
+func (s *syncSink) RecordOutcomeProgress(sample evidence.OutcomeSample) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if op, ok := s.inner.(OutcomeProgressSink); ok {
+		op.RecordOutcomeProgress(sample)
+	}
+}
