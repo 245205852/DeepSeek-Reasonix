@@ -784,6 +784,25 @@ func (c *Config) ExcludeSkillPath(path string) error {
 	return nil
 }
 
+// SetSkillPathEnabled enables or disables a skill discovery root without
+// deleting its configured path. Disabled roots are recorded in excluded_paths
+// and can be restored without asking the user to browse for the folder again.
+func (c *Config) SetSkillPathEnabled(path string, enabled bool) error {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return fmt.Errorf("skill path: empty path")
+	}
+	want := CanonicalSkillPath(path)
+	if want == "" {
+		return fmt.Errorf("skill path: empty path")
+	}
+	if enabled {
+		c.removeExcludedSkillPath(want)
+		return nil
+	}
+	return c.ExcludeSkillPath(path)
+}
+
 func (c *Config) removeExcludedSkillPath(want string) {
 	next := c.Skills.ExcludedPaths[:0]
 	for _, existing := range c.Skills.ExcludedPaths {
@@ -822,6 +841,13 @@ func (c *Config) SetSkillEnabled(name string, enabled bool) error {
 	}
 	c.Skills.DisabledSkills = next
 	return nil
+}
+
+// SetSkillImplicitInvocation controls whether skills are exposed to the model
+// for automatic discovery and invocation. Explicit /skill commands remain
+// available regardless of this setting.
+func (c *Config) SetSkillImplicitInvocation(enabled bool) {
+	c.Skills.DisableImplicitInvocation = !enabled
 }
 
 // CanonicalSkillPath expands env vars, ~ and relative segments to an absolute

@@ -1039,6 +1039,29 @@ func TestSkillPathMutators(t *testing.T) {
 	}
 }
 
+func TestSkillPathEnabledMutatorPreservesConfiguredPath(t *testing.T) {
+	c := Default()
+	root := t.TempDir()
+	if err := c.AddSkillPath(root); err != nil {
+		t.Fatalf("add skill path: %v", err)
+	}
+	if err := c.SetSkillPathEnabled(root, false); err != nil {
+		t.Fatalf("disable skill path: %v", err)
+	}
+	if len(c.Skills.Paths) != 1 || filepath.Clean(c.Skills.Paths[0]) != filepath.Clean(root) {
+		t.Fatalf("paths after disable = %v, want %q preserved", c.Skills.Paths, root)
+	}
+	if len(c.Skills.ExcludedPaths) != 1 || CanonicalSkillPath(c.Skills.ExcludedPaths[0]) != CanonicalSkillPath(root) {
+		t.Fatalf("excluded paths after disable = %v, want %q", c.Skills.ExcludedPaths, root)
+	}
+	if err := c.SetSkillPathEnabled(root, true); err != nil {
+		t.Fatalf("enable skill path: %v", err)
+	}
+	if len(c.Skills.Paths) != 1 || len(c.Skills.ExcludedPaths) != 0 {
+		t.Fatalf("state after enable = paths %v excluded %v", c.Skills.Paths, c.Skills.ExcludedPaths)
+	}
+}
+
 func TestSkillEnabledMutator(t *testing.T) {
 	c := Default()
 	if err := c.SetSkillEnabled("review", false); err != nil {
@@ -1061,6 +1084,21 @@ func TestSkillEnabledMutator(t *testing.T) {
 	}
 	if err := c.SetSkillEnabled("bad name", false); err == nil {
 		t.Fatal("invalid skill name should error")
+	}
+}
+
+func TestSkillImplicitInvocationMutator(t *testing.T) {
+	c := Default()
+	if !c.ImplicitSkillInvocationEnabled() {
+		t.Fatal("implicit skill invocation should be enabled by default")
+	}
+	c.SetSkillImplicitInvocation(false)
+	if c.ImplicitSkillInvocationEnabled() || !c.Skills.DisableImplicitInvocation {
+		t.Fatal("implicit skill invocation should be disabled")
+	}
+	c.SetSkillImplicitInvocation(true)
+	if !c.ImplicitSkillInvocationEnabled() || c.Skills.DisableImplicitInvocation {
+		t.Fatal("implicit skill invocation should be enabled")
 	}
 }
 

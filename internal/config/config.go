@@ -1003,12 +1003,22 @@ func (c *Config) NetworkProxyMode() string {
 // the global roots. ExcludedPaths hides matching discovery roots without deleting
 // folders. ~, relative paths, and ${VAR} expansion are supported. DisabledSkills
 // hides named skills from the agent prompt, slash invocation, and skill tools
-// while keeping them manageable.
+// while keeping them manageable. DisableImplicitInvocation keeps skills
+// discoverable to the host for explicit /skill use and management, but hides
+// their index and model-facing invocation tools.
 type SkillsConfig struct {
-	Paths          []string `toml:"paths"`
-	ExcludedPaths  []string `toml:"excluded_paths"`
-	DisabledSkills []string `toml:"disabled_skills"`
-	MaxDepth       int      `toml:"max_depth"`
+	Paths                     []string `toml:"paths"`
+	ExcludedPaths             []string `toml:"excluded_paths"`
+	DisabledSkills            []string `toml:"disabled_skills"`
+	DisableImplicitInvocation bool     `toml:"disable_implicit_invocation"`
+	MaxDepth                  int      `toml:"max_depth"`
+}
+
+// ImplicitSkillInvocationEnabled reports whether the model may discover and
+// invoke skills without an explicit user slash command. The zero value keeps
+// the historical default enabled for old configs.
+func (c *Config) ImplicitSkillInvocationEnabled() bool {
+	return c == nil || !c.Skills.DisableImplicitInvocation
 }
 
 // SkillCustomPaths returns the configured custom skill roots with ${VAR}

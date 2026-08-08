@@ -51,7 +51,7 @@ func TestSkillRootsViewCountsProjectSkills(t *testing.T) {
 	roots := skillRootsView()
 	want := realTestPath(root)
 	for _, r := range roots {
-		if realTestPath(r.Dir) == want {
+		if config.CanonicalSkillPath(r.Dir) == want {
 			if r.Status != "ok" || r.Skills != 1 || r.Scope != "project" {
 				t.Fatalf("project root view = %+v", r)
 			}
@@ -211,7 +211,7 @@ func TestSkillRootsViewDedupesConfiguredProjectConventionRoot(t *testing.T) {
 	}
 }
 
-func TestSkillRootsViewOmitsExcludedConventionRoot(t *testing.T) {
+func TestSkillRootsViewShowsExcludedConventionRootAsDisabled(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	t.Setenv("USERPROFILE", home)
@@ -242,12 +242,16 @@ func TestSkillRootsViewOmitsExcludedConventionRoot(t *testing.T) {
 	}
 
 	roots := skillRootsView()
-	want := realTestPath(root)
+	want := config.CanonicalSkillPath("~/.agents/skills")
 	for _, r := range roots {
-		if realTestPath(r.Dir) == want {
-			t.Fatalf("excluded convention root should be hidden, got %+v in %+v", r, roots)
+		if config.CanonicalSkillPath(r.Dir) == want {
+			if r.Enabled || r.Status != "disabled" || r.Skills != 0 {
+				t.Fatalf("excluded convention root should remain visible as disabled, got %+v", r)
+			}
+			return
 		}
 	}
+	t.Fatalf("excluded convention root should remain visible as disabled, roots=%+v", roots)
 }
 
 func TestRemoveSkillPathPseudoDeletesConventionRoot(t *testing.T) {
@@ -363,6 +367,59 @@ func TestSkillsSettingsCarriesSubagentProfileFields(t *testing.T) {
 	}
 	if len(got.AllowedTools) != 2 || got.AllowedTools[0] != "read_file" || got.AllowedTools[1] != "grep" {
 		t.Fatalf("AllowedTools not carried through: %v", got.AllowedTools)
+	}
+}
+
+func TestSkillsSettingsCarriesSkillSourceDir(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+	t.Setenv("AppData", filepath.Join(home, "AppData"))
+	project := t.TempDir()
+	root := filepath.Join(project, ".reasonix", "skills")
+	skillDir := filepath.Join(root, "owned")
+	skillPath := filepath.Join(skillDir, "SKILL.md")
+	if err := os.MkdirAll(skillDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(skillPath, []byte("---\ndescription: owned\n---\nbody"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.Chdir(wd)
+	if err := os.Chdir(project); err != nil {
+		t.Fatal(err)
+	}
+
+	a := NewApp()
+	a.setTestCtrl(control.New(control.Options{
+		AllSkills: []skill.Skill{{Name: "owned", Description: "owned", Scope: skill.ScopeProject, Path: skillPath}},
+	}), "")
+	defer a.activeCtrl().Close()
+
+	views := a.SkillsSettings().Skills
+	if len(views) != 1 {
+		t.Fatalf("Skills = %+v, want exactly one entry", views)
+	}
+	if got, want := realTestPath(views[0].SourceDir), realTestPath(root); got != want {
+		t.Fatalf("SourceDir = %q, want %q", got, want)
+	}
+}
+
+func TestSkillSourceDirPrefersLongestMatchingRoot(t *testing.T) {
+	parent := t.TempDir()
+	nested := filepath.Join(parent, "nested")
+	skillPath := filepath.Join(nested, "example", "SKILL.md")
+	got := skillSourceDir(skill.Skill{Scope: skill.ScopeCustom, Path: skillPath}, []SkillRootView{
+		{Dir: parent, Scope: string(skill.ScopeCustom)},
+		{Dir: nested, Scope: string(skill.ScopeCustom)},
+	})
+	if realTestPath(got) != realTestPath(nested) {
+		t.Fatalf("skillSourceDir = %q, want longest matching root %q", got, nested)
 	}
 }
 

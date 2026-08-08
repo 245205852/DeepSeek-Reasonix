@@ -3,12 +3,47 @@ package boot
 import (
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 
 	"reasonix/internal/control"
 	"reasonix/internal/provider"
 )
+
+func TestBuildRuntimeDisablesImplicitSkillInvocation(t *testing.T) {
+	isolateConfigHome(t)
+	dir := robustTempDir(t)
+	t.Chdir(dir)
+	writeRuntimeFixture(t, dir)
+	configPath := filepath.Join(dir, "reasonix.toml")
+	content, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatalf("read fixture config: %v", err)
+	}
+	content = append(content, []byte("\n[skills]\ndisable_implicit_invocation = true\n")...)
+	if err := os.WriteFile(configPath, content, 0o644); err != nil {
+		t.Fatalf("write skills config: %v", err)
+	}
+	res := buildRuntimeFixture(t)
+	if res.Controller.ImplicitSkillInvocationEnabled() {
+		t.Fatal("controller should disable implicit skill invocation")
+	}
+	if strings.Contains(res.Snapshot.SystemPrompt(), "One-liner index") {
+		t.Fatal("skill index should not be provider-visible when implicit invocation is disabled")
+	}
+	for _, entry := range res.Controller.ToolContractEntries() {
+		switch entry.Name {
+		case "run_skill", "read_skill", "read_only_skill", "install_skill":
+			t.Fatalf("skill tool %q should not be exposed to the model", entry.Name)
+		}
+	}
+	if _, ok := res.Controller.RunSkill("/explore inspect"); !ok {
+		t.Fatal("explicit /skill invocation should remain available")
+	}
+}
 
 // writeRuntimeFixture writes the minimal deterministic config the runtime
 // tests share: a resolvable model, a fixed base system prompt, and the

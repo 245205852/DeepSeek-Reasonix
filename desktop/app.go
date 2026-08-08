@@ -7502,8 +7502,9 @@ type CapabilitiesView struct {
 // SkillsSettingsView is the skills management page's data, split from MCP
 // status so opening MCP settings does not scan skill roots.
 type SkillsSettingsView struct {
-	Skills     []SkillView     `json:"skills"`
-	SkillRoots []SkillRootView `json:"skillRoots"`
+	Skills                  []SkillView     `json:"skills"`
+	SkillRoots              []SkillRootView `json:"skillRoots"`
+	AllowImplicitInvocation bool            `json:"allowImplicitInvocation"`
 }
 
 // ServerView is one MCP server for the drawer. Status is "connected" (with
@@ -7566,6 +7567,7 @@ type SkillView struct {
 	Name         string   `json:"name"`
 	Description  string   `json:"description"`
 	Scope        string   `json:"scope"`
+	SourceDir    string   `json:"sourceDir,omitempty"`
 	RunAs        string   `json:"runAs"`
 	Enabled      bool     `json:"enabled"`
 	Plugin       string   `json:"plugin,omitempty"`
@@ -7611,6 +7613,7 @@ type SkillRootView struct {
 	Scope      string               `json:"scope"`
 	Priority   int                  `json:"priority"`
 	Status     string               `json:"status"`
+	Enabled    bool                 `json:"enabled"`
 	Configured bool                 `json:"configured"`
 	Removable  bool                 `json:"removable"`
 	Skills     int                  `json:"skills"`
@@ -8055,7 +8058,7 @@ func (a *App) mcpLaunchSpecForEntryWithConfig(root string, entry config.PluginEn
 
 // SkillsSettings returns the skills management snapshot without MCP status.
 func (a *App) SkillsSettings() SkillsSettingsView {
-	out := SkillsSettingsView{Skills: []SkillView{}, SkillRoots: []SkillRootView{}}
+	out := SkillsSettingsView{Skills: []SkillView{}, SkillRoots: []SkillRootView{}, AllowImplicitInvocation: true}
 	a.mu.RLock()
 	tab := a.activeTabLocked()
 	var ctrl control.SessionAPI
@@ -8070,6 +8073,7 @@ func (a *App) SkillsSettings() SkillsSettingsView {
 	disabled := map[string]bool{}
 	var configuredModels, configuredEfforts map[string]string
 	if cfg, err := config.Load(); err == nil {
+		out.AllowImplicitInvocation = cfg.ImplicitSkillInvocationEnabled()
 		for _, name := range cfg.Skills.DisabledSkills {
 			if key := config.SkillNameKey(name); key != "" {
 				disabled[key] = true
@@ -8078,10 +8082,11 @@ func (a *App) SkillsSettings() SkillsSettingsView {
 		configuredModels = cfg.Agent.SubagentModels
 		configuredEfforts = cfg.Agent.SubagentEfforts
 	}
+	out.SkillRoots = a.cachedSkillRootsView()
 	for _, s := range ctrl.AllSkills() {
 		view := SkillView{
 			Name: s.Name, Description: s.Description,
-			Scope: string(s.Scope), RunAs: string(s.RunAs),
+			Scope: string(s.Scope), SourceDir: skillSourceDir(s, out.SkillRoots), RunAs: string(s.RunAs),
 			Enabled:          !disabled[config.SkillNameKey(s.Name)],
 			Plugin:           s.Plugin,
 			Model:            s.Model,
@@ -8103,8 +8108,21 @@ func (a *App) SkillsSettings() SkillsSettingsView {
 		}
 		out.Skills = append(out.Skills, view)
 	}
-	out.SkillRoots = a.cachedSkillRootsView()
 	return out
+}
+
+// SetSkillImplicitInvocation persists whether the model may discover and
+// invoke skills automatically, then rebuilds the active runtime. Explicit
+// /skill invocation and skill management remain available in either mode.
+func (a *App) SetSkillImplicitInvocation(enabled bool) error {
+	err := a.applyConfigChange(func(c *config.Config) error {
+		c.SetSkillImplicitInvocation(enabled)
+		return nil
+	})
+	if err == nil {
+		a.invalidateSkillRootsCache()
+	}
+	return err
 }
 
 // subagentOverrideFor resolves a per-name subagent override with the same
@@ -8557,6 +8575,7 @@ func skillRootsViewFrom(cwd string, cfg, userCfg *config.Config) []SkillRootView
 			Scope:      string(r.Scope),
 			Priority:   r.Priority + 1,
 			Status:     string(r.Status),
+			Enabled:    true,
 			Configured: r.Scope == skill.ScopeCustom && userConfigured[dir],
 			Removable:  true,
 			Skills:     counts[dir],
@@ -8570,17 +8589,45 @@ func skillRootsViewFrom(cwd string, cfg, userCfg *config.Config) []SkillRootView
 		out = append(out, view)
 	}
 	if userCfg != nil {
+		excluded := map[string]bool{}
+		for _, p := range userCfg.Skills.ExcludedPaths {
+			excluded[config.CanonicalSkillPath(p)] = true
+		}
 		for _, p := range userCfg.Skills.Paths {
 			if rootActive(out, p) {
 				continue
 			}
+			enabled := !excluded[config.CanonicalSkillPath(p)]
+			status := "inactive"
+			warning := "configured in user config but not active in this workspace; project [skills].paths may override it"
+			if !enabled {
+				status = "disabled"
+				warning = ""
+			}
 			out = append(out, SkillRootView{
 				Dir:        p,
 				Scope:      string(skill.ScopeCustom),
-				Status:     "inactive",
+				Status:     status,
+				Enabled:    enabled,
 				Configured: true,
 				Removable:  true,
-				Warning:    "configured in user config but not active in this workspace; project [skills].paths may override it",
+				Warning:    warning,
+			})
+		}
+		for _, p := range userCfg.Skills.ExcludedPaths {
+			if rootActive(out, p) || userConfigured[config.CanonicalSkillPath(p)] {
+				continue
+			}
+			scope := skill.ScopeCustom
+			if isConventionSkillRoot(p, cwd) {
+				scope = skill.ScopeProject
+				if home, err := os.UserHomeDir(); err == nil && strings.HasPrefix(config.CanonicalSkillPath(p), config.CanonicalSkillPath(home)+string(filepath.Separator)) {
+					scope = skill.ScopeGlobal
+				}
+			}
+			out = append(out, SkillRootView{
+				Dir: p, Scope: string(scope), Status: "disabled", Enabled: false,
+				Configured: false, Removable: true,
 			})
 		}
 	}
@@ -8592,6 +8639,7 @@ func mergeDuplicateSkillRootView(existing, duplicate SkillRootView) SkillRootVie
 	existing.Removable = existing.Removable || duplicate.Removable
 	if existing.Status != "ok" && duplicate.Status == "ok" {
 		existing.Status = duplicate.Status
+		existing.Enabled = duplicate.Enabled
 	}
 	if existing.Skills == 0 && duplicate.Skills > 0 {
 		existing.Skills = duplicate.Skills
@@ -8734,6 +8782,19 @@ func (a *App) RemoveSkillPath(path string) error {
 	return err
 }
 
+// SetSkillPathEnabled persists a reversible source toggle and rebuilds the
+// controller so the source is immediately included or excluded from discovery.
+func (a *App) SetSkillPathEnabled(path string, enabled bool) error {
+	path = normalizeSkillPath(path)
+	err := a.applyConfigChange(func(c *config.Config) error {
+		return c.SetSkillPathEnabled(path, enabled)
+	})
+	if err == nil {
+		a.invalidateSkillRootsCache()
+	}
+	return err
+}
+
 // RefreshSkills rebuilds the controller without changing config, reloading skill
 // discovery, the system prompt index, and slash completions.
 func (a *App) RefreshSkills() error {
@@ -8855,6 +8916,37 @@ func skillDisplayRoot(sk skill.Skill, roots []skill.Root) string {
 		}
 	}
 	return config.CanonicalSkillPath(filepath.Dir(skillRootPath(sk.Path)))
+}
+
+func skillSourceDir(sk skill.Skill, roots []SkillRootView) string {
+	path := strings.TrimSpace(sk.Path)
+	if path == "" || strings.HasPrefix(path, "(builtin") {
+		return ""
+	}
+	cleanPath := config.CanonicalSkillPath(path)
+	bestDir := ""
+	bestLen := -1
+	for _, root := range roots {
+		if root.Scope != "" && root.Scope != string(sk.Scope) {
+			continue
+		}
+		cleanRoot := config.CanonicalSkillPath(root.Dir)
+		if cleanRoot == "" {
+			continue
+		}
+		prefix := cleanRoot + string(filepath.Separator)
+		if cleanPath != cleanRoot && !strings.HasPrefix(cleanPath, prefix) {
+			continue
+		}
+		if len(cleanRoot) > bestLen {
+			bestDir = root.Dir
+			bestLen = len(cleanRoot)
+		}
+	}
+	if bestDir != "" {
+		return bestDir
+	}
+	return config.CanonicalSkillPath(filepath.Dir(skillRootPath(path)))
 }
 
 // MCPServerInput is the drawer's "add server" form. Transport is "stdio" (Command

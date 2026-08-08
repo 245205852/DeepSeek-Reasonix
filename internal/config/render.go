@@ -433,6 +433,11 @@ func RenderTOMLForScope(c *Config, scope RenderScope) string {
 	} else {
 		b.WriteString("# excluded_paths = [\"~/.agents/skills\"]   # hide convention roots without deleting folders\n")
 	}
+	if c.Skills.DisableImplicitInvocation {
+		b.WriteString("disable_implicit_invocation = true   # keep /skill explicit; hide skill discovery and tools from the model\n")
+	} else {
+		b.WriteString("# disable_implicit_invocation = false   # keep skills available for automatic model invocation\n")
+	}
 	if c.Skills.MaxDepth != 0 {
 		fmt.Fprintf(&b, "max_depth = %d   # nested scan depth; default 3, set 1 for legacy root-only discovery\n", c.SkillMaxDepth())
 	} else {
@@ -1140,6 +1145,9 @@ func RenderTOMLProjectDelta(c *Config) string {
 		}
 		if len(c.Skills.ExcludedPaths) > 0 {
 			fmt.Fprintf(&b, "excluded_paths = %s\n", renderStringArray(c.Skills.ExcludedPaths))
+		}
+		if c.Skills.DisableImplicitInvocation {
+			b.WriteString("disable_implicit_invocation = true\n")
 		}
 		if c.Skills.MaxDepth != 0 {
 			fmt.Fprintf(&b, "max_depth = %d\n", c.SkillMaxDepth())
