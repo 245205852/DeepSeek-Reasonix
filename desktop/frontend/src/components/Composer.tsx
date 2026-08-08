@@ -561,6 +561,9 @@ export function Composer({
   promptWaitStartedAt,
   turnTokens,
   turnOutputTokens,
+  turnOutputCharsAtUsage,
+  turnModelActiveAt,
+  turnModelActiveMs = 0,
   liveStore,
   turnArgChars = 0,
   retry,
@@ -633,6 +636,11 @@ export function Composer({
   // Completion + reasoning tokens accumulated this turn — feeds the streaming
   // TPS readout in the run ticker (composer-run-strip).
   turnOutputTokens?: number;
+  // Live text+reasoning characters already covered by turnOutputTokens.
+  turnOutputCharsAtUsage?: number;
+  // Active provider-output time for the current turn; excludes tool gaps.
+  turnModelActiveAt?: number;
+  turnModelActiveMs?: number;
   // Live-stream subscription for the character-count TPS fallback (chars ÷ 4)
   // when the provider does not emit per-chunk usage events with token counts
   // during streaming. Subscribing here keeps text deltas off the main state
@@ -3691,14 +3699,16 @@ export function Composer({
         const elapsedMs = Math.max(0, now - turnStartAt - waitAccumMs);
         const words = SPINNER_WORDS[locale];
         const word = words[Math.floor(elapsedMs / 3000) % words.length];
-        const usageTokens = (turnTokens ?? 0) + Math.round((turnArgChars ?? 0) / 4);
+        const usageTokens = turnTokens ?? 0;
         // Include streaming tool-call args in the estimate so TPS stays
         // meaningful while the model streams a write_file / long tool body.
-        const estimatedChars = Math.round((liveTextChars + (turnArgChars ?? 0)) / 4);
-        const liveTokens = usageTokens > 0 ? usageTokens : estimatedChars;
+        const inFlightChars = Math.max(0, liveTextChars - (turnOutputCharsAtUsage ?? 0)) + (turnArgChars ?? 0);
+        const estimatedChars = Math.round(inFlightChars / 4);
+        const liveTokens = usageTokens + estimatedChars;
         const tok = liveTokens > 0 ? ` · ↓ ${formatTokens(liveTokens)} ${t("status.tokens")}` : "";
-        const outTok: number = (turnOutputTokens ?? 0) > 0 ? (turnOutputTokens ?? 0) : estimatedChars;
-        const tps = outTok > 0 && elapsedMs >= 500 ? Math.round(outTok / (elapsedMs / 1000)) : null;
+        const outTok: number = (turnOutputTokens ?? 0) + estimatedChars;
+        const modelElapsedMs = Math.max(0, turnModelActiveMs + (turnModelActiveAt && turnModelActiveAt > 0 ? Math.max(0, now - turnModelActiveAt) : 0));
+        const tps = outTok > 0 && modelElapsedMs >= 500 ? Math.round(outTok / (modelElapsedMs / 1000)) : null;
         const tpsStr = tps !== null ? ` · ${tps} tokens/s` : "";
         const suffix = `${tpsStr}${tok}`;
         const prefix = `${word}… ${fmtElapsed(elapsedMs)}`;

@@ -357,6 +357,16 @@ interface State {
   // the current turn. Used by the status bar for per-turn output-token display
   // and TPS calculation.
   turnOutputTokens: number;
+  turnOutputChars: number;
+  // Live text/reasoning characters already covered by the accumulated usage.
+  // This lets the composer estimate only the in-flight provider request.
+  turnOutputCharsAtUsage: number;
+  // True when any output-token count in the current turn is estimated.
+  turnOutputEstimated: boolean;
+  // Active provider-output intervals for the current turn. Tool execution and
+  // gaps between provider requests are intentionally excluded from TPS.
+  turnModelActiveAt?: number;
+  turnModelActiveMs: number;
   // Time spent waiting on the user (approval/ask) within the current turn.
   // Closed intervals accumulate here; an open interval uses promptWaitStartedAt
   // so background tabs keep counting while not rendered by Composer.
@@ -368,6 +378,8 @@ interface State {
   lastTurnStartAt: number;
   lastTurnDoneAt: number;
   lastTurnWaitAccumMs: number;
+  lastTurnModelMs: number;
+  lastTurnOutputEstimated: boolean;
   promptWaitStartedAt?: number;
   // promptEventClock() reading taken when the CURRENT pending prompt first
   // arrived. Orders the prompt against reconciliation snapshots so a snapshot
@@ -448,11 +460,17 @@ export const initialState: State = {
   turnStartAt: 0,
   turnDoneAt: 0,
   turnOutputTokens: 0,
+  turnOutputChars: 0,
+  turnOutputCharsAtUsage: 0,
+  turnOutputEstimated: false,
+  turnModelActiveMs: 0,
   turnWaitAccumMs: 0,
   lastTurnOutputTokens: 0,
   lastTurnStartAt: 0,
   lastTurnDoneAt: 0,
   lastTurnWaitAccumMs: 0,
+  lastTurnModelMs: 0,
+  lastTurnOutputEstimated: false,
   turnTokens: 0,
   turnTotalTokens: 0,
   turnCost: 0,
@@ -1030,7 +1048,7 @@ function endPromptWaitIfIdle(s: State, now = Date.now()): State {
   return endPromptWait(s, now);
 }
 
-function resetTurnTiming(now = Date.now()): Pick<State, "turnStartAt" | "turnDoneAt" | "turnWaitAccumMs" | "promptWaitStartedAt" | "turnTokens" | "turnTotalTokens" | "turnOutputTokens" | "turnCost" | "turnArgChars"> {
+function resetTurnTiming(now = Date.now()): Pick<State, "turnStartAt" | "turnDoneAt" | "turnWaitAccumMs" | "promptWaitStartedAt" | "turnTokens" | "turnTotalTokens" | "turnOutputTokens" | "turnOutputChars" | "turnOutputCharsAtUsage" | "turnOutputEstimated" | "turnModelActiveAt" | "turnModelActiveMs" | "turnCost" | "turnArgChars"> {
   return {
     turnStartAt: now,
     turnDoneAt: 0,
@@ -1039,8 +1057,47 @@ function resetTurnTiming(now = Date.now()): Pick<State, "turnStartAt" | "turnDon
     turnTokens: 0,
     turnTotalTokens: 0,
     turnOutputTokens: 0,
+    turnOutputChars: 0,
+    turnOutputCharsAtUsage: 0,
+    turnOutputEstimated: false,
+    turnModelActiveAt: undefined,
+    turnModelActiveMs: 0,
     turnCost: 0,
     turnArgChars: 0,
+  };
+}
+
+function beginTurnModelActivity(s: State, now = Date.now()): State {
+  return s.turnModelActiveAt && s.turnModelActiveAt > 0
+    ? s
+    : { ...s, turnModelActiveAt: now };
+}
+
+function endTurnModelActivity(s: State, now = Date.now()): State {
+  if (!s.turnModelActiveAt || s.turnModelActiveAt <= 0) return s;
+  return {
+    ...s,
+    turnModelActiveAt: undefined,
+    turnModelActiveMs: Math.max(0, s.turnModelActiveMs) + Math.max(0, now - s.turnModelActiveAt),
+  };
+}
+
+function snapshotCompletedTurnTelemetry(s: State, now = Date.now()): State {
+  const settled = endTurnModelActivity(s, now);
+  const liveChars = (settled.live?.text.length ?? 0) + (settled.live?.reasoning.length ?? 0);
+  const inFlightChars = settled.turnOutputTokens > 0
+    ? Math.max(0, liveChars - settled.turnOutputCharsAtUsage) + settled.turnArgChars
+    : settled.turnOutputChars + settled.turnArgChars;
+  const estimatedInFlightTokens = Math.round(inFlightChars / 4);
+  return {
+    ...settled,
+    turnDoneAt: now,
+    lastTurnOutputTokens: settled.turnOutputTokens + estimatedInFlightTokens,
+    lastTurnStartAt: settled.turnStartAt,
+    lastTurnDoneAt: now,
+    lastTurnWaitAccumMs: settled.turnWaitAccumMs,
+    lastTurnModelMs: settled.turnModelActiveMs,
+    lastTurnOutputEstimated: settled.turnOutputEstimated || estimatedInFlightTokens > 0 || (settled.turnOutputTokens === 0 && settled.turnOutputChars > 0),
   };
 }
 
@@ -1229,7 +1286,8 @@ function applyEvent(s: State, e: WireEvent): State {
               reasoningStartedAt: base.reasoningStartedAt ?? (delta ? now : undefined),
               reasoningCompletedAt: undefined,
             };
-      return { ...s, items, live, currentAssistant: id, seq };
+      const next = { ...s, items, live, currentAssistant: id, seq, turnOutputChars: s.turnOutputChars + delta.length };
+      return delta ? beginTurnModelActivity(next, now) : next;
     }
     case "message": {
       const existingAssistant =
@@ -1243,13 +1301,16 @@ function applyEvent(s: State, e: WireEvent): State {
           existingAssistant && existingAssistant.text.trim() === "" && existingAssistant.reasoning.trim() === "" && !existingAssistant.memoryCitations?.length
             ? s.items.filter((it) => !(it.kind === "assistant" && it.id === existingAssistant.id))
             : s.items;
-        return { ...s, items, live: undefined, currentAssistant: undefined };
+        return { ...endTurnModelActivity(s), items, live: undefined, currentAssistant: undefined, turnOutputCharsAtUsage: 0 };
       }
-      const { items, id, seq } = ensureAssistant(s);
       const now = Date.now();
-      const completedLive = s.live?.id === id ? completeLiveReasoning({ ...s.live, text, reasoning }, now) : undefined;
+      const settled = endTurnModelActivity(s, now);
+      const { items, id, seq } = ensureAssistant(settled);
+      const streamedChars = settled.live?.id === id ? settled.live.text.length + settled.live.reasoning.length : 0;
+      const turnOutputChars = Math.max(0, settled.turnOutputChars - streamedChars + text.length + reasoning.length);
+      const completedLive = settled.live?.id === id ? completeLiveReasoning({ ...settled.live, text, reasoning }, now) : undefined;
       const reasoningDurationMs = liveReasoningDurationMs(completedLive);
-      const workDurationMs = currentTurnDurationMs(s, now);
+      const workDurationMs = currentTurnDurationMs(settled, now);
       const next = items.map((it) =>
         it.kind === "assistant" && it.id === id
           ? (() => {
@@ -1267,7 +1328,7 @@ function applyEvent(s: State, e: WireEvent): State {
             })()
           : it,
       );
-      return { ...s, items: next, live: undefined, currentAssistant: undefined, seq };
+      return { ...settled, items: next, live: undefined, currentAssistant: undefined, turnOutputChars, turnOutputCharsAtUsage: 0, seq };
     }
     case "tool_dispatch": {
       const t = e.tool;
@@ -1278,35 +1339,37 @@ function applyEvent(s: State, e: WireEvent): State {
       // zero visible activity, indistinguishable from a hang. The full
       // dispatch that follows merges by ID and fills in args/summary.
       if (t.partial) {
+        const activeState = t.parentId ? s : beginTurnModelActivity(s);
         const turnArgChars = t.argChars && t.argChars > 0 ? t.argChars : s.turnArgChars;
         // Some OpenAI-compatible streams surface the call name before its ID.
         // Without a stable ID the card could never be merged with the full
         // dispatch (a synthetic `tool${seq}` id would orphan it as a forever-
         // running duplicate), so count the progress but wait for the ID before
         // creating the card.
-        if (!t.id) return { ...s, turnArgChars };
+        if (!t.id) return { ...activeState, turnArgChars };
         const id = t.id;
-        const idx = s.items.findIndex((it) => it.kind === "tool" && it.id === id);
+        const idx = activeState.items.findIndex((it) => it.kind === "tool" && it.id === id);
         if (idx >= 0) {
-          const next = [...s.items];
+          const next = [...activeState.items];
           const it = next[idx];
           if (it.kind === "tool" && it.status === "running" && !it.args) {
             next[idx] = { ...it, argChars: t.argChars || it.argChars };
-            return { ...s, items: next, turnArgChars };
+            return { ...activeState, items: next, turnArgChars };
           }
-          return { ...s, turnArgChars };
+          return { ...activeState, turnArgChars };
         }
         return {
-          ...s,
+          ...activeState,
           turnArgChars,
           seq: s.seq + 1,
           items: [...s.items, { kind: "tool", id, name: t.name, args: "", readOnly: t.readOnly, resolvedName: t.resolvedName, capabilityId: t.capabilityId, status: "running", argChars: t.argChars || undefined, parentId: t.parentId, subagentProgress: SUBAGENT_PROGRESS_TOOLS.has(t.name) ? freshSubagentProgress() : undefined }],
         };
       }
+      const settled = t.parentId ? s : endTurnModelActivity(s);
       const id = t.id || `tool${s.seq}`;
-      const idx = s.items.findIndex((it) => it.kind === "tool" && it.id === id);
+      const idx = settled.items.findIndex((it) => it.kind === "tool" && it.id === id);
       if (idx >= 0) {
-        const next = [...s.items];
+        const next = [...settled.items];
         const it = next[idx];
         if (it.kind === "tool") {
           const args = t.args ? t.args : it.args;
@@ -1315,16 +1378,16 @@ function applyEvent(s: State, e: WireEvent): State {
           next[idx] = { ...it, name: t.name, args, readOnly: t.readOnly, resolvedName: t.resolvedName ?? it.resolvedName, capabilityId: t.capabilityId ?? it.capabilityId, profile: t.profile ?? it.profile, summary, fileDiff, argChars: undefined, subagentProgress: it.subagentProgress ?? (SUBAGENT_PROGRESS_TOOLS.has(t.name) ? freshSubagentProgress() : undefined) };
         }
         if (t.parentId) touchSubagentParent(next, t.parentId);
-        return { ...s, items: next };
+        return { ...settled, items: next };
       }
       const args = t.args ?? "";
       const fileDiff = fileDiffFromWire(t);
       const created: ToolItem = { kind: "tool", id, name: t.name, args, readOnly: t.readOnly, resolvedName: t.resolvedName, capabilityId: t.capabilityId, status: "running", summary: summarizeFileDiff(fileDiff) || summarize(t.name, args), fileDiff, isShell: id.startsWith("shell-"), parentId: t.parentId, profile: t.profile, subagentProgress: SUBAGENT_PROGRESS_TOOLS.has(t.name) ? freshSubagentProgress() : undefined };
-      const items = [...s.items, created];
+      const items = [...settled.items, created];
       // A sub-agent call nested under a task card refreshes that card's
       // recent activity and switches its phase to "tool".
       if (t.parentId) touchSubagentParent(items, t.parentId);
-      return { ...s, seq: s.seq + 1, items };
+      return { ...settled, seq: settled.seq + 1, items };
     }
     case "tool_result": {
       const t = e.tool;
@@ -1405,21 +1468,23 @@ function applyEvent(s: State, e: WireEvent): State {
     }
     case "usage": {
       if (!countsTowardCurrentTurn(s)) return s;
+      const settled = endTurnModelActivity(s);
       const updateContextGauge = updatesContextGauge(e.usage);
-      const used = e.usage && s.context.window && updateContextGauge ? e.usage.promptTokens : s.context.used;
-      const turnTokens = s.turnTokens + (e.usage?.completionTokens ?? 0);
-      const turnOutputTokens = s.turnOutputTokens + (e.usage?.completionTokens ?? 0) + (e.usage?.reasoningTokens ?? 0);
+      const used = e.usage && settled.context.window && updateContextGauge ? e.usage.promptTokens : settled.context.used;
+      const turnTokens = settled.turnTokens + (e.usage?.completionTokens ?? 0);
+      const turnOutputTokens = settled.turnOutputTokens + (e.usage?.completionTokens ?? 0) + (e.usage?.reasoningTokens ?? 0);
+      const turnOutputCharsAtUsage = (settled.live?.text.length ?? 0) + (settled.live?.reasoning.length ?? 0);
       const usageTokens = usageTotalTokens(e.usage);
-      const turnTotalTokens = s.turnTotalTokens + usageTokens;
-      const sessionTokens = s.sessionTokens + usageTokens;
+      const turnTotalTokens = settled.turnTotalTokens + usageTokens;
+      const sessionTokens = settled.sessionTokens + usageTokens;
       const usageCost = e.usage?.cost ?? e.usage?.costUsd ?? 0;
-      const turnCost = s.turnCost + usageCost;
-      const sessionCost = s.sessionCost + usageCost;
-      const sessionCurrency = e.usage?.currency || s.sessionCurrency || "¥";
-      const usage = updateContextGauge ? e.usage : s.usage;
+      const turnCost = settled.turnCost + usageCost;
+      const sessionCost = settled.sessionCost + usageCost;
+      const sessionCurrency = e.usage?.currency || settled.sessionCurrency || "¥";
+      const usage = updateContextGauge ? e.usage : settled.usage;
       // The completed round's usage now accounts for the streamed tool-call
       // arguments, so drop the live estimate rather than double-count it.
-      return { ...s, usage, context: { ...s.context, used, sessionTokens }, turnTokens, turnOutputTokens, turnTotalTokens, turnCost, turnArgChars: 0, sessionTokens, sessionCost, sessionCurrency, usageSeq: s.usageSeq + 1 };
+      return { ...settled, usage, context: { ...settled.context, used, sessionTokens }, turnTokens, turnOutputTokens, turnOutputCharsAtUsage, turnOutputEstimated: settled.turnOutputEstimated || Boolean(e.usage?.estimated), turnTotalTokens, turnCost, turnArgChars: 0, sessionTokens, sessionCost, sessionCurrency, usageSeq: settled.usageSeq + 1 };
     }
     case "notice":
       return appendNoticeToState(s, e.level ?? "info", e.text ?? "", e.detail, e.code);
@@ -1483,7 +1548,7 @@ function applyEvent(s: State, e: WireEvent): State {
     case "turn_done": {
       if (s.pendingUser !== undefined) s = flushPendingUser(s);
       const now = Date.now();
-      s = { ...s, turnDoneAt: now, lastTurnOutputTokens: s.turnOutputTokens, lastTurnStartAt: s.turnStartAt, lastTurnDoneAt: now, lastTurnWaitAccumMs: s.turnWaitAccumMs };
+      s = snapshotCompletedTurnTelemetry(s, now);
       const workDurationMs = currentTurnDurationMs(s, now);
       let lastUserIndex = -1;
       let lastAssistantIndex = -1;
@@ -1675,14 +1740,15 @@ export function reducer(s: State, a: Action): State {
           turnStartAt: s.turnStartAt || Date.now(),
         };
       }
-      const finalized = s.items.map((it) => {
-        if (it.kind === "assistant" && s.live && it.id === s.live.id) return { ...it, text: s.live.text, reasoning: s.live.reasoning, streaming: false };
+      const telemetry = snapshotCompletedTurnTelemetry(s);
+      const finalized = telemetry.items.map((it) => {
+        if (it.kind === "assistant" && telemetry.live && it.id === telemetry.live.id) return { ...it, text: telemetry.live.text, reasoning: telemetry.live.reasoning, streaming: false };
         if (it.kind === "assistant" && it.streaming) return { ...it, streaming: false };
         if (it.kind === "tool" && it.status === "running") return { ...it, status: "stopped" as const };
         return it;
       });
       return endPromptWait({
-        ...s,
+        ...telemetry,
         items: finalized,
         running: false,
         turnActive: false,

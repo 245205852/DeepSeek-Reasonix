@@ -68,15 +68,15 @@ function formatTurnCount(turns: number | undefined, t: Translator): string {
 }
 
 
-function formatTps(outputTokens?: number, startAt?: number, doneAt?: number, waitAccumMs?: number): string | null {
+function formatTps(outputTokens?: number, modelMs?: number, estimated = false): string | null {
   if (!outputTokens || outputTokens <= 0) return null;
-  if (!startAt || startAt <= 0) return null;
-  if (!doneAt || doneAt <= startAt) return null;
-  const elapsedSec = (doneAt - startAt - (waitAccumMs ?? 0)) / 1000;
+  if (!modelMs || modelMs <= 0) return null;
+  const elapsedSec = modelMs / 1000;
   if (elapsedSec < 0.001) return null;
   const tps = outputTokens / elapsedSec;
-  if (tps < 1) return "<1 t/s";
-  return `${Math.round(tps)} t/s`;
+  const prefix = estimated ? "≈" : "";
+  if (tps < 1) return `${prefix}<1 t/s`;
+  return `${prefix}${Math.round(tps)} t/s`;
 }
 
 const STATUS_SOURCE_ORDER = ["executor", "planner", "subagent", "compaction", "classifier", "title"];
@@ -174,9 +174,8 @@ export function StatusBar({
   sessionTokens,
   turnTokens,
   lastTurnOutputTokens,
-  lastTurnStartAt,
-  lastTurnDoneAt,
-  lastTurnWaitAccumMs = 0,
+  lastTurnModelMs,
+  lastTurnOutputEstimated = false,
   turnCost,
   cost,
   currency,
@@ -208,9 +207,8 @@ export function StatusBar({
   sessionTokens?: number;
   turnTokens?: number;
   lastTurnOutputTokens?: number;
-  lastTurnStartAt?: number;
-  lastTurnDoneAt?: number;
-  lastTurnWaitAccumMs?: number;
+  lastTurnModelMs?: number;
+  lastTurnOutputEstimated?: boolean;
   turnCost?: number;
   cost?: number;
   currency?: string;
@@ -257,8 +255,11 @@ export function StatusBar({
   const tokenLabel = markEstimated(formatTokenCount(sessionTokens), sessionEstimated);
   const turnTokenLabel = markEstimated(formatTokenCount(turnTokens), turnEstimated);
   const balanceLabel = balance?.available && balance.display ? balance.display : "-";
-  const tpsLabel = formatTps(lastTurnOutputTokens, lastTurnStartAt, lastTurnDoneAt, lastTurnWaitAccumMs);
-  const outputTokensLabel = usage?.completionTokens ? usage.completionTokens.toLocaleString() : "-";
+  const tpsLabel = formatTps(lastTurnOutputTokens, lastTurnModelMs, lastTurnOutputEstimated);
+  const formatUsageToken = (value: number) => `${usage?.estimated ? "≈" : ""}${value.toLocaleString()}`;
+  const outputTokensLabel = usage && typeof usage.completionTokens === "number"
+    ? formatUsageToken(usage.completionTokens)
+    : "-";
   const cacheHit = usage?.cacheHitTokens;
   const cacheMiss = usage?.cacheMissTokens;
   const hasCacheTokens = typeof cacheHit === "number" || typeof cacheMiss === "number";
@@ -361,9 +362,9 @@ export function StatusBar({
           <MetricLabel style={metricLabelStyle} icon={<HardDrive size={12} />} label={t("status.cacheTokensLabel")} />
           {hasCacheTokens ? (
             <>
-              <span>{t("status.cacheHitShort")} </span><b>{typeof cacheHit === "number" && cacheHit > 0 ? cacheHit.toLocaleString() : "0"}</b>
+              <span>{t("status.cacheHitShort")} </span><b>{formatUsageToken(typeof cacheHit === "number" && cacheHit > 0 ? cacheHit : 0)}</b>
               <span className="statusbar__cache-sep">|</span>
-              <span>{t("status.cacheMissShort")} </span><b>{typeof cacheMiss === "number" && cacheMiss > 0 ? cacheMiss.toLocaleString() : "0"}</b>
+              <span>{t("status.cacheMissShort")} </span><b>{formatUsageToken(typeof cacheMiss === "number" && cacheMiss > 0 ? cacheMiss : 0)}</b>
             </>
           ) : (
             <b className="stat__value--empty">-</b>

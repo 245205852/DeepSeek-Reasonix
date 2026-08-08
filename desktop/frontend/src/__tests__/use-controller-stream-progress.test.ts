@@ -9,6 +9,8 @@
 //    that already shows real usage.
 // 4. A retry event repairs stale idle snapshots in either delivery order so
 //    the turn remains stoppable.
+// 5. TPS telemetry accumulates provider-output intervals without tool gaps and
+//    survives both missing usage and missing turn_done events.
 
 import { initialState, promptEventClock, reducer } from "../lib/useController";
 import type { WireEvent } from "../lib/types";
@@ -180,6 +182,75 @@ function ev(s: typeof initialState, e: WireEvent) {
   });
   eq(s.running, false, "fresh idle snapshot can reconcile a missed turn_done");
   eq(s.retry, undefined, "fresh idle snapshot clears the retry indicator");
+}
+
+// --- 5. TPS telemetry excludes tool gaps and preserves fallback estimates ---
+{
+  const originalNow = Date.now;
+  let now = 1_000;
+  Date.now = () => now;
+  try {
+    let s = ev({ ...initialState }, { kind: "turn_started" } as WireEvent);
+    now = 1_100;
+    s = ev(s, { kind: "text", text: "abcd" } as WireEvent);
+    now = 2_100;
+    s = ev(s, { kind: "usage", usage: { promptTokens: 10, completionTokens: 4, totalTokens: 14, cacheHitTokens: 0, cacheMissTokens: 10 } } as WireEvent);
+    s = ev(s, { kind: "message", text: "abcd" } as WireEvent);
+    eq(s.turnModelActiveMs, 1_000, "first provider output interval is accumulated");
+    eq(s.turnOutputCharsAtUsage, 0, "completed assistant message resets the live-character baseline");
+
+    // A long tool gap must not lower TPS for the next provider request.
+    now = 8_000;
+    s = ev(s, { kind: "text", text: "abcdefgh" } as WireEvent);
+    now = 9_000;
+    s = ev(s, { kind: "turn_done" } as WireEvent);
+    eq(s.lastTurnOutputTokens, 6, "missing final usage adds only the in-flight character estimate");
+    eq(s.lastTurnModelMs, 2_000, "tool gap is excluded from completed TPS duration");
+    eq(s.lastTurnOutputEstimated, true, "missing final usage marks completed TPS as estimated");
+
+    // Providers that omit per-request usage must still close the first model
+    // interval before the tool runs.
+    now = 12_000;
+    s = ev({ ...initialState }, { kind: "turn_started" } as WireEvent);
+    now = 12_100;
+    s = ev(s, { kind: "text", text: "abcd" } as WireEvent);
+    now = 13_100;
+    s = ev(s, { kind: "message", text: "abcd" } as WireEvent);
+    s = ev(s, { kind: "tool_dispatch", tool: { id: "missing-usage", name: "read_file", args: "{}", readOnly: true } } as WireEvent);
+    now = 19_000;
+    s = ev(s, { kind: "text", text: "efgh" } as WireEvent);
+    now = 20_000;
+    s = ev(s, { kind: "turn_done" } as WireEvent);
+    eq(s.lastTurnOutputTokens, 2, "missing usage estimates output across provider requests");
+    eq(s.lastTurnModelMs, 2_000, "missing usage still excludes the tool gap");
+
+    now = 21_000;
+    s = ev({ ...initialState }, { kind: "turn_started" } as WireEvent);
+    now = 21_100;
+    s = ev(s, { kind: "text", text: "abcd" } as WireEvent);
+    now = 22_100;
+    s = ev(s, { kind: "usage", usage: { promptTokens: 10, completionTokens: 1, totalTokens: 11, cacheHitTokens: 0, cacheMissTokens: 10, estimated: true } } as WireEvent);
+    s = ev(s, { kind: "turn_done" } as WireEvent);
+    eq(s.lastTurnOutputEstimated, true, "provider-estimated usage marks completed TPS as estimated");
+
+    now = 23_000;
+    s = ev({ ...initialState }, { kind: "turn_started" } as WireEvent);
+    s = ev(s, { kind: "text", text: "abcd" } as WireEvent);
+    now = 24_000;
+    s = reducer(s, {
+      type: "backend_status",
+      running: false,
+      pendingPrompt: false,
+      backgroundJobs: 0,
+      cancelRequested: false,
+      cancellable: false,
+    });
+    eq(s.lastTurnOutputTokens, 1, "idle reconciliation snapshots fallback output telemetry");
+    eq(s.lastTurnModelMs, 1_000, "idle reconciliation closes the active provider interval");
+    eq(s.lastTurnOutputEstimated, true, "idle reconciliation preserves the estimated marker");
+  } finally {
+    Date.now = originalNow;
+  }
 }
 
 process.stdout.write(`\n${passed} passed, ${failed} failed\n`);
