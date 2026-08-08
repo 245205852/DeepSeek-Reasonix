@@ -477,16 +477,13 @@ func (p Policy) Decide(toolName string, readOnly bool, args json.RawMessage) Dec
   assumption. Completion requires the concrete request, output format,
   constraints, and relevant verification expectations to be satisfied or
   explicitly reported as unverified.
-  Goals that look like long-horizon research, debugging, optimization, or
-  implementation work automatically add an AutoResearch protocol to the same
-  transient active-goal user block. AutoResearch is a Goal strategy, not a
-  standalone global skill: it writes project-local state under
-  `.reasonix/autoresearch/YYYYMMDD-HHMMSS-slug/` and keeps dynamic run state out
-  of `REASONIX.md`, `AGENTS.md`, project memory, tool schemas, and the
-  cache-stable system prompt. `/goal --research <objective>` forces that
-  strategy; `/goal --simple <objective>` forces lightweight Goal. Outside goal
-  mode, ordinary prompts never change collaboration mode or create durable
-  AutoResearch state; the user must choose Goal or use `/goal` explicitly.
+  Goal automatically selects a simple (10), write (20), or research (40) turn
+  budget from the objective. All classes use the same Goal FSM, host receipts,
+  Delivery readiness, and bounded evaluator; there is no second research
+  protocol or writable sidecar runtime. Legacy `.reasonix/autoresearch/...`
+  archives remain read-only and explicit old paths recover as ordinary Goals.
+  Outside goal mode, ordinary prompts never change collaboration mode; the user
+  must choose Goal or use `/goal` explicitly.
   `/goal clear` removes the active goal. Switching into plan/normal mode clears
   the active goal in the desktop UI so the collaboration mode remains one of
   the three choices, while the underlying tool approval posture is preserved.

@@ -570,7 +570,7 @@ func TestSetGoalDurableRestoresInMemoryStateWhenSidecarWriteFails(t *testing.T) 
 	}
 }
 
-func TestSetGoalDurableRollsBackAutoResearchTaskAndNotice(t *testing.T) {
+func TestSetGoalDurableNeverCreatesLegacyArchive(t *testing.T) {
 	root := t.TempDir()
 	path := filepath.Join(root, "session.jsonl")
 	sink := &noticeSink{}
@@ -595,15 +595,11 @@ func TestSetGoalDurableRollsBackAutoResearchTaskAndNotice(t *testing.T) {
 	if err := c.SetGoalDurable(goal, ""); err == nil {
 		t.Fatal("SetGoalDurable succeeded despite an invalid sidecar parent")
 	}
-	entries, err := os.ReadDir(filepath.Join(root, ".reasonix", "autoresearch"))
-	if err != nil && !os.IsNotExist(err) {
-		t.Fatalf("read autoresearch dir: %v", err)
-	}
-	if len(entries) != 0 {
-		t.Fatalf("autoresearch task count after rollback = %d, want 0", len(entries))
+	if _, err := os.Stat(filepath.Join(root, ".reasonix", "autoresearch")); !os.IsNotExist(err) {
+		t.Fatalf("durable Goal update created legacy archive: %v", err)
 	}
 	for _, notice := range sink.notices() {
-		if strings.Contains(notice, "autoresearch task created") || strings.Contains(notice, "autoresearch task resumed") {
+		if strings.Contains(strings.ToLower(notice), "autoresearch task created") || strings.Contains(strings.ToLower(notice), "legacy research archive loaded") {
 			t.Fatalf("durable failure emitted success notice %q", notice)
 		}
 	}
@@ -686,7 +682,7 @@ func TestResumeRestoresRunningAutoResearchGoalFromSidecar(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(root, ".reasonix", "autoresearch", taskID, "logs"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(root, ".reasonix", "autoresearch", taskID, "state", "task_spec.json"), []byte(`{"id":"investigate-runtime-resume","goal":"investigate runtime resume","status":"running","created_at":"2026-06-30T00:00:00Z","updated_at":"2026-06-30T00:00:00Z","success_criteria":[{"id":"criterion-1","description":"resume keeps AutoResearch active","required":true}]}`), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(root, ".reasonix", "autoresearch", taskID, "state", "task_spec.json"), []byte(`{"task_id":"investigate-runtime-resume","goal":"investigate runtime resume","allowed_operations":{"write":true},"success_criteria":[{"id":"criterion-1","description":"resume keeps Goal active","required":true}]}`), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(root, ".reasonix", "autoresearch", taskID, "state", "progress.json"), []byte(`{"task_id":"investigate-runtime-resume","iteration":2,"current_direction":"verify resume","stale_count":1,"pivot_count":0,"updated_at":"2026-06-30T00:00:00Z"}`), 0o644); err != nil {
@@ -714,8 +710,11 @@ func TestResumeRestoresRunningAutoResearchGoalFromSidecar(t *testing.T) {
 		t.Fatalf("Goal() after resume = %q, want running goal from sidecar", got)
 	}
 	composed := c.Compose("continue")
-	if !strings.Contains(composed, "<autoresearch-runtime>") || !strings.Contains(composed, "task_id: "+taskID) {
-		t.Fatalf("Compose after resume missing AutoResearch runtime for %q:\n%s", taskID, composed)
+	if strings.Contains(strings.ToLower(composed), "autoresearch") {
+		t.Fatalf("Compose after resume exposed removed AutoResearch protocol:\n%s", composed)
+	}
+	if got := c.GoalRuntime().TurnsLimit; got != 40 {
+		t.Fatalf("resumed legacy Goal budget = %d, want 40", got)
 	}
 }
 

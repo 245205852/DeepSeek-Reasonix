@@ -10,26 +10,11 @@ const (
 	StatusInvalid  = "invalid"
 )
 
+// Task is a read-only view of a historical AutoResearch archive.
 type Task struct {
 	ID   string
 	Root string
 	Spec TaskSpec
-	// CreateToken is an opaque ownership proof for the directory reserved by
-	// CreateTask. Rollback helpers must pass it to RemoveTask so a failed
-	// transaction cannot delete a task directory another creator reserved.
-	CreateToken string
-}
-
-type CreateOptions struct {
-	Now func() time.Time
-	// CreateToken optionally supplies the ownership proof written during task
-	// reservation. Durable parent transactions persist it before calling
-	// CreateTask so crash recovery can find and remove an uncommitted task.
-	CreateToken       string
-	Scope             []string
-	NonGoals          []string
-	AllowedOperations AllowedOperations
-	SuccessCriteria   []SuccessCriterion
 }
 
 type AllowedOperations struct {
@@ -64,13 +49,17 @@ type Progress struct {
 	UpdatedAt        time.Time `json:"updated_at"`
 }
 
+// Historical finding kinds are free-form strings. The constants below are
+// retained only as documentation of values that older writers produced; the
+// reader accepts any non-empty kind without enumeration.
 const (
-	FindingKindCommand   = "command"
-	FindingKindFile      = "file"
-	FindingKindTest      = "test"
-	FindingKindBenchmark = "benchmark"
-	FindingKindManual    = "manual"
-	FindingKindReview    = "review"
+	FindingKindCommand      = "command"
+	FindingKindFile         = "file"
+	FindingKindTest         = "test"
+	FindingKindBenchmark    = "benchmark"
+	FindingKindManual       = "manual"
+	FindingKindReview       = "review"
+	FindingKindVerification = "verification"
 )
 
 const (
@@ -79,6 +68,7 @@ const (
 	FindingSourceManual  = "manual"
 )
 
+// Finding.Kind is an opaque string. Unknown historical values must round-trip.
 type Finding struct {
 	ID        string    `json:"id"`
 	Kind      string    `json:"kind"`
@@ -103,24 +93,12 @@ type Heartbeat struct {
 	CreatedAt time.Time `json:"created_at"`
 }
 
-type Direction struct {
-	Summary             string
-	AcceptedEvidenceIDs []string
-	Now                 time.Time
-}
-
 type DirectionTried struct {
 	Fingerprint        string `json:"fingerprint"`
 	Summary            string `json:"summary"`
 	FirstSeenIteration int    `json:"first_seen_iteration"`
 	LastSeenIteration  int    `json:"last_seen_iteration"`
 	Count              int    `json:"count"`
-}
-
-type ProgressPatch struct {
-	Status           *string
-	CurrentDirection *string
-	BlockedReason    *string
 }
 
 type CriterionSummary struct {

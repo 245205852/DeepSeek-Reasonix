@@ -2177,10 +2177,6 @@ function backendNoticeKey(msg: string): DictKey | "" {
       return "notice.goalNotReady";
     case "Goal still has unfinished task state; continuing the remaining work.":
       return "notice.goalUnfinished";
-    case "AutoResearch status update failed.":
-      return "notice.autoresearchStatusFailed";
-    case "AutoResearch task marked blocked.":
-      return "notice.autoresearchBlocked";
     case "Job artifact migration failed.":
       return "notice.jobArtifactMigrationFailed";
     case "Background job teardown timed out.":

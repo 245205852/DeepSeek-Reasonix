@@ -19,9 +19,6 @@ import { modeHasAutoApproveTools, modeWithAutoApproveTools, modeWithPlan, normal
 import { decisionSurfaceMockFromInput, isLongDecisionOptionsMockInput } from "./decisionSurfaceMock";
 
 import type {
-  AutoResearchFindingView,
-  AutoResearchEvidenceView,
-  AutoResearchStatusView,
   RemoteHostView,
   RemoteHostInput,
   RemoteConnectionStatus,
@@ -118,7 +115,7 @@ import type {
 
 const GLOBAL_PROJECT_ORDER_KEY = "__global__";
 
-function stripGoalResearchFlags(arg: string): string {
+function stripLegacyGoalBudgetFlags(arg: string): string {
   const parts = arg.trim().split(/\s+/).filter(Boolean);
   while (parts.length > 0) {
     const flag = parts[0].toLowerCase();
@@ -307,12 +304,6 @@ export interface AppBindings {
   ToolResultForTab(tabID: string, toolID: string): Promise<{ args: string; output: string; execution?: import("./types").WireShellExecution } | null>;
   Meta(): Promise<Meta>;
   MetaForTab(tabID: string): Promise<Meta>;
-  AutoResearchCurrent(): Promise<AutoResearchStatusView>;
-  AutoResearchStatus(tabID: string): Promise<AutoResearchStatusView>;
-  AutoResearchList(tabID: string): Promise<AutoResearchStatusView[]>;
-  AutoResearchFindings(tabID: string, limit: number): Promise<AutoResearchFindingView[]>;
-  AutoResearchOpenTask(tabID: string): Promise<void>;
-  AutoResearchRecordEvidence(tabID: string, criterionID: string, input: AutoResearchEvidenceView): Promise<void>;
   Commands(): Promise<CommandInfo[]>;
   Capabilities(): Promise<CapabilitiesView>;
   MCPServers(): Promise<ServerView[]>;
@@ -2212,7 +2203,7 @@ function makeMockApp(): AppBindings {
       const decisionSurfaceMock = decisionSurfaceMockFromInput(trimmedInput);
       const goalMatch = /^\/goal(?:\s+([\s\S]*))?$/.exec(input.trim());
       if (goalMatch) {
-        const arg = stripGoalResearchFlags((goalMatch[1] ?? "").trim());
+        const arg = stripLegacyGoalBudgetFlags((goalMatch[1] ?? "").trim());
         const lowered = arg.toLowerCase();
         const active = mockTabs.find((tab) => tab.active);
         if (!arg || lowered === "status") {
@@ -3151,7 +3142,6 @@ function makeMockApp(): AppBindings {
             tokenMode: normalizeTokenMode(active?.tokenMode),
             goal: active?.goal ?? "",
             goalStatus: active?.goalStatus ?? (active?.goal ? "running" : "stopped"),
-            autoResearch: active?.goal ? { taskId: "mock-autoresearch", status: "running", iteration: 4, pivotRequired: false, staleCount: 0 } : undefined,
           };
         },
         async MetaForTab(tabID) {
@@ -3177,79 +3167,7 @@ function makeMockApp(): AppBindings {
             tokenMode: normalizeTokenMode(tab?.tokenMode),
             goal: tab?.goal ?? "",
             goalStatus: tab?.goalStatus ?? (tab?.goal ? "running" : "stopped"),
-            autoResearch: tab?.goal ? { taskId: "mock-autoresearch", status: "running", iteration: 4, pivotRequired: false, staleCount: 0 } : undefined,
           };
-        },
-        async AutoResearchCurrent() {
-          return {
-            taskId: "mock-autoresearch",
-            goal: "Mock long-running research",
-            status: "running",
-            iteration: 4,
-            currentDirection: "Inspect status chip",
-            staleCount: 0,
-            pivotCount: 0,
-            pivotRequired: false,
-            lastHeartbeatAt: "2026-06-29T00:00:00Z",
-            findingCount: 1,
-            openCriteria: [],
-            blocker: "",
-            taskPath: "/tmp/mock/.reasonix/autoresearch/mock-autoresearch",
-            nextRequiredAction: "continue with the next evidence-producing step",
-          };
-        },
-        async AutoResearchStatus(_tabID) {
-          return {
-            taskId: "mock-autoresearch",
-            goal: "Mock long-running research",
-            status: "running",
-            iteration: 4,
-            currentDirection: "Inspect status chip",
-            staleCount: 0,
-            pivotCount: 0,
-            pivotRequired: false,
-            lastHeartbeatAt: "2026-06-29T00:00:00Z",
-            findingCount: 1,
-            openCriteria: [],
-            blocker: "",
-            taskPath: "/tmp/mock/.reasonix/autoresearch/mock-autoresearch",
-            nextRequiredAction: "continue with the next evidence-producing step",
-          };
-        },
-        async AutoResearchList(_tabID) {
-          return [{
-            taskId: "mock-autoresearch",
-            goal: "Mock long-running research",
-            status: "running",
-            iteration: 4,
-            currentDirection: "Inspect status chip",
-            staleCount: 0,
-            pivotCount: 0,
-            pivotRequired: false,
-            lastHeartbeatAt: "2026-06-29T00:00:00Z",
-            findingCount: 1,
-            openCriteria: [],
-            blocker: "",
-            taskPath: "/tmp/mock/.reasonix/autoresearch/mock-autoresearch",
-            nextRequiredAction: "continue with the next evidence-producing step",
-          }];
-        },
-        async AutoResearchFindings(_tabID, limit) {
-          return [{
-            id: "f1",
-            kind: "test",
-            summary: "Mock accepted finding",
-            source: "command",
-            command: "go test ./...",
-            accepted: true,
-            createdAt: "2026-06-29T00:00:00Z",
-          }].slice(0, Math.max(0, limit || 1));
-        },
-        async AutoResearchOpenTask(_tabID) {
-          console.info("mock AutoResearchOpenTask");
-        },
-        async AutoResearchRecordEvidence(_tabID, _criterionID, _input) {
-          console.info("mock AutoResearchRecordEvidence");
         },
     async Commands() {
       const commands: CommandInfo[] = [

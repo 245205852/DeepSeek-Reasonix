@@ -257,8 +257,6 @@ function noticePreviewItems(): Item[] {
     notice(8, "info", "Context was compacted without a generated summary.", "compaction completed after upstream summary generation returned empty content; retained transcript checkpoint"),
     notice(9, "info", "Goal is not ready to complete yet; continuing the remaining work.", "goal completion check found pending validation: desktop/frontend typecheck"),
     notice(13, "info", "Goal still has unfinished task state; continuing the remaining work.", "active goal has open task state: implement preview, verify browser, report result"),
-    notice(14, "warn", "AutoResearch status update failed.", "autoresearch task completion update failed: write .reasonix/autoresearch/task-42/state/task_spec.json: permission denied"),
-    notice(15, "warn", "AutoResearch task marked blocked.", "autoresearch task blocked: task-42\nreason: missing accepted verification evidence after three turns"),
     notice(16, "warn", "background export failed: needs attention", "background export failed: session archive upload returned 503 after 3 retries"),
     notice(17, "warn", "Job artifact migration failed.", "artifact migration failed for job job_123: checksum mismatch while moving output.zip"),
     notice(18, "warn", "Background job teardown timed out.", "job job_123 did not stop within 10s; process is still marked running by the supervisor"),
@@ -304,7 +302,7 @@ const CHAT_MIN_WIDTH = 400;
 const CHAT_COMFORT_MIN_WIDTH = 560;
 const WORKSPACE_RESIZER_WIDTH = 8;
 
-function stripGoalResearchFlags(arg: string): string {
+function stripLegacyGoalBudgetFlags(arg: string): string {
   const parts = arg.trim().split(/\s+/).filter(Boolean);
   while (parts.length > 0) {
     const flag = parts[0].toLowerCase();
@@ -314,7 +312,7 @@ function stripGoalResearchFlags(arg: string): string {
   return parts.join(" ");
 }
 
-function hasGoalResearchFlag(arg: string): boolean {
+function hasLegacyGoalBudgetFlag(arg: string): boolean {
   const first = arg.trim().split(/\s+/, 1)[0]?.toLowerCase();
   return first === "--research" || first === "--auto-research" || first === "--deep" || first === "--simple" || first === "--no-research";
 }
@@ -2385,9 +2383,9 @@ export default function App() {
       const goalCommand = /^\/goal(?:\s+(.*))?$/.exec(trimmed);
       if (goalCommand) {
         const arg = (goalCommand[1] ?? "").trim();
-        const displayGoal = stripGoalResearchFlags(arg);
+        const displayGoal = stripLegacyGoalBudgetFlags(arg);
         if (displayGoal && !["status", "clear", "off", "stop", "done"].includes(displayGoal.toLowerCase())) {
-          if (hasGoalResearchFlag(arg)) {
+          if (hasLegacyGoalBudgetFlag(arg)) {
             userPlanModeByTabRef.current = updateUserPlanModeIntent(userPlanModeByTabRef.current, activeTabId, false);
             patchActiveComposerProfile({
               collaborationMode: "goal",

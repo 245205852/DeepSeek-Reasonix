@@ -227,7 +227,7 @@ func TestPlanWinsRunningGoalConflictDuringDeliveryRebuild(t *testing.T) {
 	}
 }
 
-func TestRunningGoalDeliveryYoloRebuildKeepsScopeAndAutoResearch(t *testing.T) {
+func TestRunningGoalDeliveryYoloRebuildKeepsUnifiedGoalScope(t *testing.T) {
 	app, tab, oldCtrl, path := newGoalDeliveryYoloTestApp(t, control.GoalStatusRunning)
 	if err := app.SetTokenModeForTab(tab.ID, boot.TokenModeDelivery); err != nil {
 		t.Fatalf("SetTokenModeForTab: %v", err)
@@ -251,7 +251,7 @@ func TestRunningGoalDeliveryYoloRebuildKeepsScopeAndAutoResearch(t *testing.T) {
 	if err := json.Unmarshal(data, &persisted); err != nil {
 		t.Fatal(err)
 	}
-	if persisted.ScopeID != "goal-test-scope" || persisted.AutoResearchTaskID != "research-task-1" {
+	if persisted.ScopeID != "goal-test-scope" || persisted.AutoResearchTaskID != "" {
 		t.Fatalf("restored Goal identity = %+v", persisted)
 	}
 	if persisted.DeliveryCheckpoint.ScopeID != persisted.ScopeID || !persisted.DeliveryCheckpoint.PendingMutation {
@@ -336,7 +336,7 @@ func TestGoalDeliveryYoloSurvivesEveryControllerRebuildPath(t *testing.T) {
 			if err := json.Unmarshal(data, &persisted); err != nil {
 				t.Fatalf("decode Goal sidecar: %v", err)
 			}
-			if persisted.ScopeID != "goal-test-scope" || persisted.AutoResearchTaskID != "research-task-1" {
+			if persisted.ScopeID != "goal-test-scope" || persisted.AutoResearchTaskID != "" {
 				t.Fatalf("restored Goal identity = %+v", persisted)
 			}
 			if persisted.DeliveryCheckpoint.ScopeID != persisted.ScopeID || !persisted.DeliveryCheckpoint.PendingMutation {

@@ -364,7 +364,7 @@ func TestGoalTurnRecorderProtocol(t *testing.T) {
 			t.Fatal(err)
 		}
 		// The goal is replaced: epoch bumps, scope rotates.
-		g.set("replacement", GoalResearchAuto, "", nil)
+		g.set("replacement", GoalResearchAuto, nil)
 		if got := rec.validReport(rec.epoch); got != nil {
 			t.Fatalf("stale recorder report = %+v, want nil", got)
 		}
@@ -372,7 +372,7 @@ func TestGoalTurnRecorderProtocol(t *testing.T) {
 
 	t.Run("late record after replacement rejected", func(t *testing.T) {
 		g, rec := newRec(t)
-		g.set("replacement", GoalResearchAuto, "", nil)
+		g.set("replacement", GoalResearchAuto, nil)
 		if _, err := rec.RecordGoalReport(report(GoalStatusComplete, "")); err == nil {
 			t.Fatal("late record on a replaced goal must be rejected")
 		}
@@ -384,7 +384,7 @@ func TestGoalTurnRecorderProtocol(t *testing.T) {
 		if g.tokensUsed != 150 {
 			t.Fatalf("tokensUsed = %d, want 150", g.tokensUsed)
 		}
-		g.set("replacement", GoalResearchAuto, "", nil)
+		g.set("replacement", GoalResearchAuto, nil)
 		rec.addUsage(50)
 		if g.tokensUsed != 0 {
 			t.Fatalf("stale usage folded into replacement goal: %d", g.tokensUsed)
@@ -488,7 +488,7 @@ func TestGoalLegacyBudgetTokensSidecarAutoResumes(t *testing.T) {
 		t.Fatal(err)
 	}
 	g := &goalMachine{}
-	migPath, migData, migrated := g.restoreFromState(path)
+	migPath, migData, migrated, _ := g.restoreFromState(path)
 	if !migrated {
 		t.Fatal("legacy budget_tokens pause must migrate")
 	}
@@ -519,7 +519,7 @@ func TestGoalLegacyBudgetTokensSidecarAutoResumes(t *testing.T) {
 	}
 	// Second load must stay running without re-entering the legacy pause.
 	g2 := &goalMachine{}
-	if _, _, migrated2 := g2.restoreFromState(path); migrated2 {
+	if _, _, migrated2, _ := g2.restoreFromState(path); migrated2 {
 		t.Fatal("normalized sidecar migrated a second time")
 	}
 	if g2.status != GoalStatusRunning || g2.stopCause != "" {
