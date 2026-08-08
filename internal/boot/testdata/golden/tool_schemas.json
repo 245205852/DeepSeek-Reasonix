@@ -1318,6 +1318,10 @@
           "minimum": 1,
           "type": "integer"
         },
+        "expires_at": {
+          "description": "Hard expiry as RFC3339 or YYYY-MM-DD. Past this moment the fact stops being auto-recalled entirely. Set it when the fact has a known end of life. Omit on update to preserve; \"never\" clears an existing expiry.",
+          "type": "string"
+        },
         "id": {
           "description": "Stable memory id for an update. Prefer this over name when supplied by memory search/read.",
           "type": "string"
@@ -1349,6 +1353,19 @@
             "feedback",
             "project",
             "reference"
+          ],
+          "type": "string"
+        },
+        "verified": {
+          "description": "Set true only when you have JUST re-confirmed the fact still holds (checked the file, ran the command). Renews the freshness clock without changing the meaning of updated_at.",
+          "type": "boolean"
+        },
+        "volatility": {
+          "description": "How fast the fact ages, independent of type: volatile for facts that die in days (a current release branch, this week's task), stable for slow-changing ones, evergreen for facts that never age (a README location, a fixed preference). Omit to use the type default, or on update to preserve the current choice.",
+          "enum": [
+            "evergreen",
+            "stable",
+            "volatile"
           ],
           "type": "string"
         }

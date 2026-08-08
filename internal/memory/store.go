@@ -114,18 +114,21 @@ func ResolveActivation(m Memory) Activation {
 
 // Memory is one stored fact.
 type Memory struct {
-	ID          string // immutable identity; Name may change without changing ID
-	Revision    int    // monotonic content revision, starting at 1
-	CreatedAt   time.Time
-	UpdatedAt   time.Time
-	Name        string // kebab-case slug; also the file stem (<name>.md)
-	Title       string // human-readable index label; falls back to a de-kebabed Name
-	Description string // one-line summary used for the index and recall
-	Type        Type
-	Scope       FactScope  // project by default; global only when explicitly requested
-	Activation  Activation // persisted choice; "" = unset, resolved by ResolveActivation
-	Keywords    string     // search aliases (bilingual synonyms, related commands); recall-only, never rendered into the index
-	Body        string     // the fact itself (Markdown)
+	ID             string // immutable identity; Name may change without changing ID
+	Revision       int    // monotonic content revision, starting at 1
+	CreatedAt      time.Time
+	UpdatedAt      time.Time
+	Name           string // kebab-case slug; also the file stem (<name>.md)
+	Title          string // human-readable index label; falls back to a de-kebabed Name
+	Description    string // one-line summary used for the index and recall
+	Type           Type
+	Scope          FactScope  // project by default; global only when explicitly requested
+	Activation     Activation // persisted choice; "" = unset, resolved by ResolveActivation
+	Volatility     Volatility // how fast the fact ages; "" = unset, type default applies
+	ExpiresAt      time.Time  // hard freshness boundary; zero = never expires
+	LastVerifiedAt time.Time  // last explicit confirmation; renews the freshness clock
+	Keywords       string     // search aliases (bilingual synonyms, related commands); recall-only, never rendered into the index
+	Body           string     // the fact itself (Markdown)
 }
 
 // ArchivedMemory is a saved fact that has been removed from active memory but
@@ -763,18 +766,21 @@ func loadMemory(path string) (Memory, bool) {
 	}
 	fm, body := splitFrontmatter(string(b))
 	m := Memory{
-		ID:          fm["id"],
-		Revision:    parsePositiveInt(fm["revision"]),
-		CreatedAt:   parseMemoryTime(fm["created_at"]),
-		UpdatedAt:   parseMemoryTime(fm["updated_at"]),
-		Name:        fm["name"],
-		Title:       fm["title"],
-		Description: fm["description"],
-		Keywords:    fm["keywords"],
-		Activation:  NormalizeActivation(fm["activation"]),
-		Type:        persistedFactType(fm),
-		Scope:       factScopeFromFrontmatter(fm["scope"]),
-		Body:        strings.TrimSpace(body),
+		ID:             fm["id"],
+		Revision:       parsePositiveInt(fm["revision"]),
+		CreatedAt:      parseMemoryTime(fm["created_at"]),
+		UpdatedAt:      parseMemoryTime(fm["updated_at"]),
+		Name:           fm["name"],
+		Title:          fm["title"],
+		Description:    fm["description"],
+		Keywords:       fm["keywords"],
+		Activation:     NormalizeActivation(fm["activation"]),
+		Volatility:     NormalizeVolatility(fm["volatility"]),
+		ExpiresAt:      parseMemoryTime(fm["expires_at"]),
+		LastVerifiedAt: parseMemoryTime(fm["last_verified_at"]),
+		Type:           persistedFactType(fm),
+		Scope:          factScopeFromFrontmatter(fm["scope"]),
+		Body:           strings.TrimSpace(body),
 	}
 	if m.Name == "" {
 		m.Name = strings.TrimSuffix(filepath.Base(path), ".md")
