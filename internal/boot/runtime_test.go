@@ -1,6 +1,7 @@
 package boot
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"os"
@@ -46,6 +47,50 @@ func TestBuildRuntimeDisablesImplicitSkillInvocation(t *testing.T) {
 	if _, ok := res.Controller.RunSkill("/explore inspect"); !ok {
 		t.Fatal("explicit /skill invocation should remain available")
 	}
+}
+
+func TestRebuildFromForceFullRebuildRefreshesSkillPolicy(t *testing.T) {
+	isolateConfigHome(t)
+	dir := robustTempDir(t)
+	t.Chdir(dir)
+	writeRuntimeFixture(t, dir)
+	configPath := filepath.Join(dir, "reasonix.toml")
+	content, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatalf("read fixture config: %v", err)
+	}
+	content = append(content, []byte("\n[skills]\ndisable_implicit_invocation = true\n")...)
+	if err := os.WriteFile(configPath, content, 0o644); err != nil {
+		t.Fatalf("write disabled skill policy: %v", err)
+	}
+	previous, err := BuildRuntime(context.Background(), Options{})
+	if err != nil {
+		t.Fatalf("initial BuildRuntime: %v", err)
+	}
+	if previous.Controller.ImplicitSkillInvocationEnabled() {
+		t.Fatal("initial controller should disable implicit skill invocation")
+	}
+	content = bytes.Replace(content, []byte("disable_implicit_invocation = true"), []byte("disable_implicit_invocation = false"), 1)
+	if err := os.WriteFile(configPath, content, 0o644); err != nil {
+		t.Fatalf("write enabled skill policy: %v", err)
+	}
+	res, err := RebuildFrom(context.Background(), previous, Options{
+		RuntimeReload: RuntimeReload{ForceFullRebuild: true},
+	})
+	if err != nil {
+		previous.Controller.Close()
+		t.Fatalf("forced RebuildFrom: %v", err)
+	}
+	t.Cleanup(func() {
+		res.Controller.Close()
+	})
+	if res.Controller == previous.Controller {
+		t.Fatal("forced rebuild reused the previous controller")
+	}
+	if !res.Controller.ImplicitSkillInvocationEnabled() {
+		t.Fatal("forced rebuild did not refresh the enabled skill policy")
+	}
+	previous.Controller.Close()
 }
 
 // writeRuntimeFixture writes the minimal deterministic config the runtime

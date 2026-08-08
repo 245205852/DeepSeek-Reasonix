@@ -13,9 +13,14 @@ import (
 // RuntimeReload is previous-generation state for incremental sidecar adoption
 // and subgraph-classified rebuild.
 type RuntimeReload struct {
-	Extensions *sidecar.Manager
-	Graph      *extension.DependencyGraph
-	Generation uint64
+	// ForceFullRebuild bypasses extension subgraph reuse. Callers that promise
+	// the user explicitly requested a runtime reload use this when config-owned
+	// skills/providers may have changed without changing the native extension
+	// graph.
+	ForceFullRebuild bool
+	Extensions       *sidecar.Manager
+	Graph            *extension.DependencyGraph
+	Generation       uint64
 	// Owner is reused across one controller/session rebuild lineage. Cold builds
 	// leave it nil and receive a fresh isolated owner.
 	Owner *extension.RuntimeOwner

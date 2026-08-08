@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ArrowLeft, ChevronDown, ChevronRight, CircleAlert, Folder, Plus, RefreshCw, Search, Server as ServerIcon } from "lucide-react";
 import { asArray } from "../lib/array";
 import { app } from "../lib/bridge";
@@ -3320,7 +3320,7 @@ export function MCPServersSettingsPage() {
 
 // SkillsSettingsPage is a self-contained skills management page embedded inside
 // the settings centre.
-export function SkillsSettingsPage() {
+export function SkillsSettingsPage({ activeWorkspaceKey = "" }: { activeWorkspaceKey?: string }) {
 	const t = useT();
 	const [snapshotKey, setSnapshotKey] = useState("");
 	const [view, setView] = useState<SkillsSettingsView | null>(null);
@@ -3328,12 +3328,15 @@ export function SkillsSettingsPage() {
 	const [err, setErr] = useState<string | null>(null);
 	const [skillQuery, setSkillQuery] = useState("");
 	const [expandedSkills, setExpandedSkills] = useState<Set<string>>(() => new Set());
+	const reloadSequence = useRef(0);
 
 	const reload = useCallback(async () => {
+		const sequence = ++reloadSequence.current;
 		const [meta, tabs] = await Promise.all([
 			app.Meta().catch(() => null),
 			app.ListTabs().catch(() => []),
 		]);
+		if (sequence !== reloadSequence.current) return;
 		const key = settingsSnapshotKey(meta, tabs);
 		setSnapshotKey(key);
 		const cached = key ? skillsSettingsSnapshot : null;
@@ -3343,10 +3346,14 @@ export function SkillsSettingsPage() {
 			setView(null);
 		}
 		const next = normalizeSkillsSettingsView(await app.SkillsSettings().catch(() => ({ skills: [], skillRoots: [] })));
+		if (sequence !== reloadSequence.current) return;
 		skillsSettingsSnapshot = { key, value: next };
 		setView(next);
-	}, []);
-	useEffect(() => { void reload(); }, [reload]);
+	}, [activeWorkspaceKey]);
+	useEffect(() => {
+		setView(null);
+		void reload();
+	}, [reload]);
 
 	const mutate = async (fn: () => Promise<unknown>) => {
 		setBusy(true);

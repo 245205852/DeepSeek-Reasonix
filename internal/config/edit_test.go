@@ -2045,6 +2045,79 @@ func TestSaveToExistingProjectPersistsTopLevelDelta(t *testing.T) {
 	}
 }
 
+func TestSaveToExistingProjectRemovesResetSkillOverrides(t *testing.T) {
+	tests := []struct {
+		name  string
+		key   string
+		set   func(*Config)
+		reset func(*Config)
+	}{
+		{name: "paths", key: "paths", set: func(c *Config) { c.Skills.Paths = []string{"project-skills"} }, reset: func(c *Config) { c.Skills.Paths = nil }},
+		{name: "excluded paths", key: "excluded_paths", set: func(c *Config) { c.Skills.ExcludedPaths = []string{"project-skills"} }, reset: func(c *Config) { c.Skills.ExcludedPaths = nil }},
+		{name: "disabled skills", key: "disabled_skills", set: func(c *Config) { c.Skills.DisabledSkills = []string{"review"} }, reset: func(c *Config) { c.Skills.DisabledSkills = nil }},
+		{name: "implicit invocation", key: "disable_implicit_invocation", set: func(c *Config) { c.Skills.DisableImplicitInvocation = true }, reset: func(c *Config) { c.Skills.DisableImplicitInvocation = false }},
+		{name: "max depth", key: "max_depth", set: func(c *Config) { c.Skills.MaxDepth = 2 }, reset: func(c *Config) { c.Skills.MaxDepth = 0 }},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			projectPath := filepath.Join(t.TempDir(), "reasonix.toml")
+			cfg := Default()
+			tt.set(cfg)
+			if err := cfg.SaveTo(projectPath); err != nil {
+				t.Fatalf("initial SaveTo: %v", err)
+			}
+			loaded, err := LoadForEditReadOnlyStrict(projectPath)
+			if err != nil {
+				t.Fatalf("load project config: %v", err)
+			}
+			tt.reset(loaded)
+			if err := loaded.SaveTo(projectPath); err != nil {
+				t.Fatalf("reset SaveTo: %v", err)
+			}
+			body, err := os.ReadFile(projectPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if strings.Contains(string(body), tt.key+" =") {
+				t.Fatalf("reset left stale %s override:\n%s", tt.key, body)
+			}
+			fresh, err := LoadForEditReadOnlyStrict(projectPath)
+			if err != nil {
+				t.Fatalf("reload reset project config: %v", err)
+			}
+			if fresh.Skills.Paths != nil || fresh.Skills.ExcludedPaths != nil || fresh.Skills.DisabledSkills != nil || fresh.Skills.DisableImplicitInvocation || fresh.Skills.MaxDepth != 0 {
+				t.Fatalf("reloaded skills retained reset override: %+v", fresh.Skills)
+			}
+		})
+	}
+}
+
+func TestSaveToExistingProjectRemovesMultilineSkillArray(t *testing.T) {
+	projectPath := filepath.Join(t.TempDir(), "reasonix.toml")
+	original := "[skills]\npaths = [\n  \"project-skills\",\n  \"shared-skills\",\n]\n\n[permissions]\nmode = \"ask\"\n"
+	if err := os.WriteFile(projectPath, []byte(original), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := LoadForEditReadOnlyStrict(projectPath)
+	if err != nil {
+		t.Fatalf("load project config: %v", err)
+	}
+	cfg.Skills.Paths = nil
+	if err := cfg.SaveTo(projectPath); err != nil {
+		t.Fatalf("reset multiline paths: %v", err)
+	}
+	body, err := os.ReadFile(projectPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(body), "project-skills") || strings.Contains(string(body), "shared-skills") {
+		t.Fatalf("multiline skill array was only partially removed:\n%s", body)
+	}
+	if err := ValidateFile(projectPath); err != nil {
+		t.Fatalf("reset project config is invalid TOML: %v\n%s", err, body)
+	}
+}
+
 func TestSaveToExistingProjectPersistsProviderAccessWithoutReplacingDesktopSection(t *testing.T) {
 	projectPath := filepath.Join(t.TempDir(), "reasonix.toml")
 	if err := os.WriteFile(projectPath, []byte("[desktop]\nlegacy_preference = \"keep\"\n\n[permissions]\nallow = [\"Bash(go test:*)\"]\n"), 0o644); err != nil {

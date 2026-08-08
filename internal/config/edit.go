@@ -867,6 +867,12 @@ func CanonicalSkillPath(path string) string {
 	if abs, err := filepath.Abs(path); err == nil {
 		path = abs
 	}
+	// Resolve existing paths before cleaning so Windows 8.3 short names and
+	// long names compare identically. A missing configured path still falls
+	// back to the absolute lexical form used for persistence and diagnostics.
+	if resolved, err := filepath.EvalSymlinks(path); err == nil {
+		path = resolved
+	}
 	path = filepath.Clean(path)
 	if runtime.GOOS == "windows" {
 		return strings.ToLower(path)
@@ -1631,11 +1637,12 @@ func (c *Config) saveProjectIncrementalResolved(logicalPath, resolvedPath string
 	}
 	removePlugins := len(tomlPluginsForScope(c.Plugins, RenderScopeProject)) == 0 && tomlBodyHasSection(body, "plugins")
 	removeSandboxBash := shouldRemoveIneffectiveProjectSandboxBash(body, c)
+	removeSkills := projectSkillsKeysToRemove(body, c)
 	_, hasLegacyDesktopAutoGuard := tomlSectionKeyValue(body, "desktop", "default_auto_recovery_checkpoint")
 	_, hasRetiredAgentAutoGuard := tomlSectionKeyValue(body, "agent", "auto_recovery_checkpoint")
 	removeRetiredAutoGuard := hasLegacyDesktopAutoGuard || hasRetiredAgentAutoGuard
 	writeProviderAccess := c.Desktop.ProviderAccess != nil
-	if strings.TrimSpace(delta) == "" && !removePlugins && !removeSandboxBash && !removeRetiredAutoGuard && !writeProviderAccess {
+	if strings.TrimSpace(delta) == "" && !removePlugins && !removeSandboxBash && !removeSkills && !removeRetiredAutoGuard && !writeProviderAccess {
 		return nil // no changes to write
 	}
 
@@ -1649,6 +1656,9 @@ func (c *Config) saveProjectIncrementalResolved(logicalPath, resolvedPath string
 	if removeSandboxBash {
 		body = removeTOMLSectionKey(body, "sandbox", "bash")
 	}
+	if removeSkills {
+		body = cleanupProjectSkillsKeys(body, c)
+	}
 	if removeRetiredAutoGuard {
 		body = removeTOMLSectionKey(body, "desktop", "default_auto_recovery_checkpoint")
 		body = removeTOMLSectionKey(body, "agent", "auto_recovery_checkpoint")
@@ -1657,6 +1667,55 @@ func (c *Config) saveProjectIncrementalResolved(logicalPath, resolvedPath string
 		body = upsertTOMLSectionKey(body, "desktop", "provider_access", "provider_access = "+renderStringArray(c.Desktop.ProviderAccess))
 	}
 	return writeConfigFileResolved(resolvedPath, body, configFilePerm(logicalPath))
+}
+
+// projectSkillsKeysToRemove reports whether an existing project [skills]
+// section contains a field whose current edit value is the built-in default.
+// Project saves are incremental, so an empty RenderTOMLProjectDelta cannot
+// remove a stale override without this explicit cleanup pass.
+func projectSkillsKeysToRemove(body string, c *Config) bool {
+	if c == nil || !tomlBodyHasSection(body, "skills") {
+		return false
+	}
+	for _, key := range projectSkillKeys {
+		if projectSkillKeyIsDefault(c, key) {
+			if _, ok := tomlSectionKeyValue(body, "skills", key); ok {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+var projectSkillKeys = [...]string{"paths", "excluded_paths", "disabled_skills", "disable_implicit_invocation", "max_depth"}
+
+func projectSkillKeyIsDefault(c *Config, key string) bool {
+	switch key {
+	case "paths":
+		return len(c.Skills.Paths) == 0
+	case "excluded_paths":
+		return len(c.Skills.ExcludedPaths) == 0
+	case "disabled_skills":
+		return len(c.Skills.DisabledSkills) == 0
+	case "disable_implicit_invocation":
+		return !c.Skills.DisableImplicitInvocation
+	case "max_depth":
+		return c.Skills.MaxDepth == 0
+	default:
+		return false
+	}
+}
+
+func cleanupProjectSkillsKeys(body string, c *Config) string {
+	if c == nil {
+		return body
+	}
+	for _, key := range projectSkillKeys {
+		if projectSkillKeyIsDefault(c, key) {
+			body = removeTOMLSectionKey(body, "skills", key)
+		}
+	}
+	return body
 }
 
 func shouldRemoveIneffectiveProjectSandboxBash(body string, c *Config) bool {
@@ -2197,15 +2256,16 @@ func removeTOMLSectionKey(body, sectionName, key string) string {
 	if sectionIdx < 0 || keyIdx < 0 {
 		return body
 	}
+	keyEndIdx := tomlValueEndSpan(spans, keyIdx)
 	for i := sectionIdx + 1; i < endIdx; i++ {
-		if i == keyIdx {
+		if i >= keyIdx && i <= keyEndIdx {
 			continue
 		}
 		trimmed := strings.TrimSpace(spans[i].text)
 		if trimmed == "" || strings.HasPrefix(trimmed, "#") {
 			continue
 		}
-		return body[:spans[keyIdx].start] + body[spans[keyIdx].end:]
+		return body[:spans[keyIdx].start] + body[spans[keyEndIdx].end:]
 	}
 	sectionStart := spans[sectionIdx].start
 	sectionEnd := len(body)
