@@ -42,6 +42,12 @@ type outcomeSummary struct {
 	// coherent patch the copy permits, >=2 = real non-compliance.
 	EBMExtraBlind   int    `json:"ebm_extra_blind_mutations"`
 	EBMPostSequence string `json:"ebm_post_sequence,omitempty"`
+
+	// Governor chain: rounds the exploration trigger held, rounds the depth
+	// override actually rode requests, and where the first engagement sat.
+	GovernorEligibleRounds int `json:"governor_eligible_rounds,omitempty"`
+	GovernorEngagedRounds  int `json:"governor_engaged_rounds,omitempty"`
+	GovernorFirstRound     int `json:"governor_first_round,omitempty"`
 }
 
 // outcomePoint is one recorded shadow sample plus its observation time.
@@ -50,6 +56,7 @@ type outcomePoint struct {
 	exploration, verification, objective, regression, churn int
 	legacyGain, discriminating, debtAge, blindMutations     int
 	ebmEligible, ebmFired                                   bool
+	governorEligible, governorEngaged                       bool
 }
 
 // verifyPoint is one backfilled verification-transition observation.
@@ -166,6 +173,15 @@ func (t *trajScan) attachEBMChain(o *outcomeSummary) {
 		if o.EBMEligibleRound == 0 && p.ebmEligible {
 			o.EBMEligibleRound = i + 1
 		}
+		if p.governorEligible {
+			o.GovernorEligibleRounds++
+		}
+		if p.governorEngaged {
+			o.GovernorEngagedRounds++
+			if o.GovernorFirstRound == 0 {
+				o.GovernorFirstRound = i + 1
+			}
+		}
 		if fire < 0 && p.ebmFired {
 			fire = i
 		}
@@ -206,6 +222,27 @@ func postEBMCategory(p outcomePoint) string {
 	default:
 		return "."
 	}
+}
+
+// governorShadowLine aggregates the reasoning-governor shadow across runs;
+// empty when no round was eligible.
+func governorShadowLine(results []result) string {
+	runs, elig, engaged := 0, 0, 0
+	for _, r := range results {
+		if r.Trajectory == nil || r.Trajectory.Outcome == nil {
+			continue
+		}
+		o := r.Trajectory.Outcome
+		if o.GovernorEligibleRounds > 0 {
+			runs++
+		}
+		elig += o.GovernorEligibleRounds
+		engaged += o.GovernorEngagedRounds
+	}
+	if elig == 0 {
+		return ""
+	}
+	return fmt.Sprintf(" · **governor** eligible %d rounds in %d runs · engaged %d rounds", elig, runs, engaged)
 }
 
 func summarizeVerifyBackfill(points []verifyPoint, lastTS int64) *outcomeSummary {
@@ -316,6 +353,7 @@ func renderOutcomeProgress(results []result) string {
 				pct(comply, fired), median(toCheck))
 		}
 	}
+	line += governorShadowLine(results)
 	if progress > 0 {
 		line += fmt.Sprintf(" · **false progress** %d/%d (%s)", falseProgress, progress, pct(falseProgress, progress))
 	}
