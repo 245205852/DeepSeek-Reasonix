@@ -98,6 +98,34 @@ func TestSummarizeOutcomeBackfillsFromVerificationReceipts(t *testing.T) {
 	}
 }
 
+func TestSummarizeOutcomeTracksDebtAndTTFDC(t *testing.T) {
+	path := writeTrajectory(t, "debt.trajectory.jsonl", []string{
+		`{"seq":1,"ts":1000,"event":{"kind":"turn_started"}}`,
+		`{"seq":2,"ts":2000,"outcome_progress":{"round":1,"churn":1,"legacy_gain":3,"debt_age":1}}`,
+		`{"seq":3,"ts":3000,"outcome_progress":{"round":2,"exploration":1,"legacy_gain":1,"debt_age":2}}`,
+		`{"seq":4,"ts":4000,"outcome_progress":{"round":3,"churn":1,"legacy_gain":3,"debt_age":3}}`,
+		`{"seq":5,"ts":9000,"outcome_progress":{"round":4,"discriminating":1,"verification":1}}`,
+		`{"seq":6,"ts":10000,"event":{"kind":"turn_done"}}`,
+	})
+	s, err := summarizeTrajectory(path)
+	if err != nil {
+		t.Fatalf("summarizeTrajectory: %v", err)
+	}
+	o := s.Outcome
+	if o == nil || o.DebtAgeMax != 3 {
+		t.Fatalf("outcome = %+v, want debt age max 3", o)
+	}
+	if o.TTFDCMs != 8000 {
+		t.Fatalf("TTFDC = %d, want 8000 (run start 1000 → first discriminating 9000)", o.TTFDCMs)
+	}
+	got := renderOutcomeProgress([]result{{Trajectory: s}})
+	for _, want := range []string{"**discriminating checks** in 1/1 runs (TTFDC p50 8.0s)", "**verification debt max** 3 rounds"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("render missing %q in:\n%s", want, got)
+		}
+	}
+}
+
 func TestRenderOutcomeProgressAggregatesRuns(t *testing.T) {
 	results := []result{
 		{Trajectory: &trajectorySummary{Outcome: &outcomeSummary{

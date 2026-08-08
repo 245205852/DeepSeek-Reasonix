@@ -17,14 +17,18 @@ type outcomeSummary struct {
 	FinalScore          int   `json:"final_score"`
 	RegressedFromBest   bool  `json:"regressed_from_best,omitempty"`
 	SearchRegretMs      int64 `json:"search_regret_ms,omitempty"`
-	Backfilled          bool  `json:"backfilled,omitempty"`
+	// TTFDCMs is run start to the first discriminating observation (zero =
+	// never); DebtAgeMax the worst stretch of rounds with an unverified mutation.
+	TTFDCMs    int64 `json:"ttfdc_ms,omitempty"`
+	DebtAgeMax int   `json:"debt_age_max,omitempty"`
+	Backfilled bool  `json:"backfilled,omitempty"`
 }
 
 // outcomePoint is one recorded shadow sample plus its observation time.
 type outcomePoint struct {
 	ts                                                      int64
 	exploration, verification, objective, regression, churn int
-	legacyGain                                              int
+	legacyGain, discriminating, debtAge                     int
 }
 
 // verifyPoint is one backfilled verification-transition observation.
@@ -61,7 +65,7 @@ func (t *trajScan) observeVerification(key string, passed bool, ts int64) {
 // to the verification backfill, which cannot price legacy-scorer claims.
 func (t *trajScan) summarizeOutcome() *outcomeSummary {
 	if len(t.outcomePoints) > 0 {
-		return summarizeOutcomePoints(t.outcomePoints, t.lastTS)
+		return summarizeOutcomePoints(t.outcomePoints, t.firstTS, t.lastTS)
 	}
 	if len(t.verifyPoints) > 0 {
 		return summarizeVerifyBackfill(t.verifyPoints, t.lastTS)
@@ -69,7 +73,7 @@ func (t *trajScan) summarizeOutcome() *outcomeSummary {
 	return nil
 }
 
-func summarizeOutcomePoints(points []outcomePoint, lastTS int64) *outcomeSummary {
+func summarizeOutcomePoints(points []outcomePoint, firstTS, lastTS int64) *outcomeSummary {
 	o := &outcomeSummary{Rounds: len(points)}
 	verifying, solution, stall := false, false, 0
 	score, best := 0, 0
@@ -78,6 +82,10 @@ func summarizeOutcomePoints(points []outcomePoint, lastTS int64) *outcomeSummary
 		if p.verification > 0 {
 			verifying = true
 		}
+		if p.discriminating > 0 && o.TTFDCMs == 0 && p.ts > firstTS {
+			o.TTFDCMs = p.ts - firstTS
+		}
+		o.DebtAgeMax = max(o.DebtAgeMax, p.debtAge)
 		o.Objective += p.objective
 		o.Regression += p.regression
 		if p.legacyGain > 0 {
@@ -180,8 +188,28 @@ func renderOutcomeProgress(results []result) string {
 	if runs == 0 {
 		return ""
 	}
+	discRuns, debtMax := 0, 0
+	var ttfdcs []int64
+	for _, r := range results {
+		if r.Trajectory == nil || r.Trajectory.Outcome == nil {
+			continue
+		}
+		o := r.Trajectory.Outcome
+		debtMax = max(debtMax, o.DebtAgeMax)
+		if o.TTFDCMs > 0 {
+			discRuns++
+			ttfdcs = append(ttfdcs, o.TTFDCMs)
+		}
+	}
 	line := fmt.Sprintf("**Outcome shadow** (%d runs): **objective transitions** %d · **regressions** %d · **regressed from best** %d (%s)",
 		runs, objective, regression, regressed, pct(regressed, runs))
+	if discRuns > 0 {
+		line += fmt.Sprintf(" · **discriminating checks** in %d/%d runs (TTFDC p50 %s)",
+			discRuns, runs, dur(median(ttfdcs)))
+	}
+	if debtMax > 0 {
+		line += fmt.Sprintf(" · **verification debt max** %d rounds", debtMax)
+	}
 	if progress > 0 {
 		line += fmt.Sprintf(" · **false progress** %d/%d (%s)", falseProgress, progress, pct(falseProgress, progress))
 	}
