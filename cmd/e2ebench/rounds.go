@@ -90,6 +90,9 @@ type trajScan struct {
 	verifyPoints           []verifyPoint
 
 	gapReason, gapCompl, gapPrompt int64
+
+	denyDelegations  map[string]bool
+	delegationToolMs map[string]int64
 }
 
 // modelAttempt is one sampling attempt's wall interval; planner marks attempts

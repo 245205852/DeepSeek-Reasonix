@@ -22,15 +22,24 @@ const SchemaVersion = 1
 // Record is one observed occurrence. Exactly one payload field is set; Seq
 // orders them and TS is the unix-millisecond observation time at the recorder.
 type Record struct {
-	SchemaVersion    int                  `json:"schema_version"`
-	Seq              uint64               `json:"seq"`
-	TS               int64                `json:"ts"`
-	Event            *eventwire.Event     `json:"event,omitempty"`
-	ReadinessAudit   *ReadinessAudit      `json:"readiness_audit,omitempty"`
-	ProtocolRecovery string               `json:"protocol_recovery,omitempty"`
-	TurnCompletion   bool                 `json:"turn_completion,omitempty"`
-	ContractShadow   *ContractShadowAudit `json:"contract_shadow,omitempty"`
-	OutcomeProgress  *OutcomeProgress     `json:"outcome_progress,omitempty"`
+	SchemaVersion       int                  `json:"schema_version"`
+	Seq                 uint64               `json:"seq"`
+	TS                  int64                `json:"ts"`
+	Event               *eventwire.Event     `json:"event,omitempty"`
+	ReadinessAudit      *ReadinessAudit      `json:"readiness_audit,omitempty"`
+	ProtocolRecovery    string               `json:"protocol_recovery,omitempty"`
+	TurnCompletion      bool                 `json:"turn_completion,omitempty"`
+	ContractShadow      *ContractShadowAudit `json:"contract_shadow,omitempty"`
+	OutcomeProgress     *OutcomeProgress     `json:"outcome_progress,omitempty"`
+	DelegationAdmission *DelegationAdmission `json:"delegation_admission,omitempty"`
+}
+
+// DelegationAdmission mirrors event.DelegationAdmissionAudit with stable keys.
+type DelegationAdmission struct {
+	Tool    string `json:"tool"`
+	Verdict string `json:"verdict"`
+	Reason  string `json:"reason,omitempty"`
+	Intent  string `json:"intent,omitempty"`
 }
 
 // OutcomeProgress mirrors evidence.OutcomeSample with stable snake_case keys.
@@ -174,6 +183,13 @@ func (r *Recorder) RecordOutcomeProgress(sample evidence.OutcomeSample) {
 		LegacyGain:   sample.LegacyGain,
 	}})
 	event.RecordOutcomeProgress(r.inner, sample)
+}
+
+func (r *Recorder) RecordDelegationAdmission(a event.DelegationAdmissionAudit) {
+	r.append(Record{DelegationAdmission: &DelegationAdmission{
+		Tool: a.Tool, Verdict: a.Verdict, Reason: a.Reason, Intent: a.Intent,
+	}})
+	event.RecordDelegationAdmission(r.inner, a)
 }
 
 func (r *Recorder) RecordProtocolRecovery(a event.ProtocolRecoveryAudit) {

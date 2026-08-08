@@ -71,3 +71,11 @@ func (s *syncSink) RecordOutcomeProgress(sample evidence.OutcomeSample) {
 		op.RecordOutcomeProgress(sample)
 	}
 }
+
+func (s *syncSink) RecordDelegationAdmission(a DelegationAdmissionAudit) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if da, ok := s.inner.(DelegationAdmissionSink); ok {
+		da.RecordDelegationAdmission(a)
+	}
+}
