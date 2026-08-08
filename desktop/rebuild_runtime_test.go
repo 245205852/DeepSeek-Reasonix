@@ -34,17 +34,15 @@ func TestRuntimeDoctorConcurrentWithBuildResultUpdate(t *testing.T) {
 
 	start := make(chan struct{})
 	var wg sync.WaitGroup
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
+	wg.Go(func() {
 		<-start
-		for i := 0; i < 100; i++ {
+		for range 100 {
 			a.setTabLastBuildResult(tab, second)
 			a.setTabLastBuildResult(tab, first)
 		}
-	}()
+	})
 	close(start)
-	for i := 0; i < 100; i++ {
+	for range 100 {
 		report := a.RuntimeDoctor()
 		if report.Text == "" {
 			t.Fatal("expected doctor text")

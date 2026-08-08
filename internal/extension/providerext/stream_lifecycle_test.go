@@ -65,14 +65,12 @@ func TestConcurrentStreamsReuseProviderHandleWithoutMutation(t *testing.T) {
 	results := make(chan result, streamCount)
 	var wg sync.WaitGroup
 	for range streamCount {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		wg.Go(func() {
 			out, streamErr := p.Stream(context.Background(), provider.Request{
 				Messages: []provider.Message{{Role: provider.RoleUser}},
 			})
 			results <- result{out: out, err: streamErr}
-		}()
+		})
 	}
 	wg.Wait()
 	close(results)

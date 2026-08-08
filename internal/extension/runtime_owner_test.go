@@ -100,7 +100,7 @@ func TestRuntimeOwnerReceiptEvictionReleasesMessageDedup(t *testing.T) {
 	if !owner.RecordMessageSentOnce(gen, "oldest", "test") {
 		t.Fatal("first message receipt was rejected")
 	}
-	for i := 0; i < defaultReceiptPerGenerationLimit; i++ {
+	for i := range defaultReceiptPerGenerationLimit {
 		owner.Receipts.Record(EffectReceipt{
 			ID:         "later-" + itoaU64(uint64(i)),
 			Generation: gen,
