@@ -95,16 +95,12 @@ function InlineAssistantReasoning({ item, active }: { item: AssistantItem; activ
         reasoningComplete: live.reasoningComplete,
       }
     : item;
-  const reasoning = shown.reasoning.trim();
+  const reasoning = shown.reasoning.trim(); const running = shown.streaming && !shown.reasoningComplete;
   if (!reasoning) return null;
-  const running = shown.streaming && !shown.reasoningComplete;
   const visibleReasoning = displayReasoningText(shown.reasoning, {
     streaming: running,
-    truncateStreaming: true,
-    stableWindowChars: STREAMING_REASONING_WINDOW_STEP_CHARS,
-    stableWindowLines: STREAMING_REASONING_WINDOW_STEP_LINES,
+    truncateStreaming: true, stableWindowChars: STREAMING_REASONING_WINDOW_STEP_CHARS, stableWindowLines: STREAMING_REASONING_WINDOW_STEP_LINES,
   });
-  const renderMarkdown = active && open;
   return (
     <div className={`turn-collapse__reasoning-phase${open ? " turn-collapse__reasoning-phase--open" : ""}`}>
       <button
@@ -118,9 +114,7 @@ function InlineAssistantReasoning({ item, active }: { item: AssistantItem; activ
         <span>{running ? t("msg.thinkingRunning") : t("msg.thinking")}</span>
         <ChevronRight className={`reasoning__chevron${open ? " reasoning__chevron--open" : ""}`} size={12} />
       </button>
-      <div ref={bodyRef} className="turn-collapse__inline-reasoning">
-        {renderMarkdown ? <Markdown text={visibleReasoning} streaming={running} /> : visibleReasoning}
-      </div>
+      <div ref={bodyRef} className="turn-collapse__inline-reasoning">{active && open ? <Markdown text={visibleReasoning} streaming={running} /> : visibleReasoning}</div>
     </div>
   );
 }

@@ -915,9 +915,7 @@ function ReasoningPanel({
   const visibleReasoning = reasoningOpen
     ? displayReasoningText(item.reasoning, {
         streaming: isReasoningRunning,
-        truncateStreaming: truncateStreamingReasoning,
-        stableWindowChars: STREAMING_REASONING_WINDOW_STEP_CHARS,
-        stableWindowLines: STREAMING_REASONING_WINDOW_STEP_LINES,
+        truncateStreaming: truncateStreamingReasoning, stableWindowChars: STREAMING_REASONING_WINDOW_STEP_CHARS, stableWindowLines: STREAMING_REASONING_WINDOW_STEP_LINES,
       })
     : "";
   const label = isReasoningRunning ? t("msg.thinkingRunning") : t("msg.thinking");
@@ -938,9 +936,7 @@ function ReasoningPanel({
         <ChevronRight className={`reasoning__chevron${reasoningOpen ? " reasoning__chevron--open" : ""}`} size={12} />
       </button>
       {reasoningOpen && (
-        <div ref={reasoningBodyRef} className="reasoning__body">
-          <Markdown text={visibleReasoning} streaming={isReasoningRunning} />
-        </div>
+        <div ref={reasoningBodyRef} className="reasoning__body"><Markdown text={visibleReasoning} streaming={isReasoningRunning} /></div>
       )}
     </div>
   );
