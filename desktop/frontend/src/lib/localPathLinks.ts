@@ -49,10 +49,15 @@ const UNC_RE = new RegExp(
 
 const DRIVE_PREFIX_RE = /[:/A-Za-z]/;
 const UNC_PREFIX_RE = /[\\/\w:；：，。、！？（）]/;
+// A file URL must start a URI-like token. Without this guard, the matcher can
+// start in the middle of `profile://...` or `http://file://...` and produce a
+// clickable suffix that was never a local path.
+const FILE_PREFIX_CHARS = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_./\\:+-";
 
 function hasValidPrefixBoundary(text: string, start: number, kind: "file" | "drive" | "unc"): boolean {
-  if (kind === "file" || start === 0) return true;
+  if (start === 0) return true;
   const previous = text[start - 1];
+  if (kind === "file") return !FILE_PREFIX_CHARS.includes(previous);
   return kind === "drive" ? !DRIVE_PREFIX_RE.test(previous) : !UNC_PREFIX_RE.test(previous);
 }
 
