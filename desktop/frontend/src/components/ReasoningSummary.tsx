@@ -1,5 +1,6 @@
 import { memo, useEffect, useMemo, useRef } from "react";
 import { reasoningSummaryText } from "../lib/reasoningSummary";
+import { useReasoningSummaryEnabled } from "../lib/reasoningSummaryPreference";
 
 export const ReasoningSummary = memo(function ReasoningSummary({
   text,
@@ -14,6 +15,7 @@ export const ReasoningSummary = memo(function ReasoningSummary({
   onOpen?: () => void;
   maxChars?: number;
 }) {
+  const enabled = useReasoningSummaryEnabled();
   const summary = useMemo(() => reasoningSummaryText(text, { streaming, maxChars }), [text, streaming, maxChars]);
   const ref = useRef<HTMLElement>(null);
 
@@ -33,7 +35,7 @@ export const ReasoningSummary = memo(function ReasoningSummary({
     return () => cancelAnimationFrame(frame);
   }, [summary, streaming]);
 
-  if (!summary) return null;
+  if (!enabled || !summary) return null;
   const cls = `reasoning-summary${className ? ` ${className}` : ""}`;
   const followEnd = streaming ? { "data-follow-end": "" } : {};
   if (onOpen) {

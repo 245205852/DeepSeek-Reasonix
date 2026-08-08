@@ -12,6 +12,7 @@ import { createRoot } from "react-dom/client";
 import gsap from "gsap";
 import { ToolCard } from "../components/ToolCard";
 import { LocaleProvider } from "../lib/i18n";
+import { setReasoningSummaryEnabled } from "../lib/reasoningSummaryPreference";
 import type { Item, SubagentProgress } from "../lib/useController";
 
 registerHooks({
@@ -77,6 +78,7 @@ function installDom() {
   globalThis.Element = dom.window.Element;
   globalThis.HTMLElement = dom.window.HTMLElement;
   globalThis.Event = dom.window.Event;
+  globalThis.CustomEvent = dom.window.CustomEvent;
   globalThis.MouseEvent = dom.window.MouseEvent;
   globalThis.requestAnimationFrame = dom.window.requestAnimationFrame.bind(dom.window);
   globalThis.cancelAnimationFrame = dom.window.cancelAnimationFrame.bind(dom.window);
@@ -184,6 +186,30 @@ console.log("\nsubagent progress card");
     }
   });
   ok(!!document.querySelector(".tool__subagent-preview .md strong"), "clicking the reasoning label expands the full Markdown");
+
+  await act(async () => {
+    setReasoningSummaryEnabled(false);
+    root.render(
+      React.createElement(LocaleProvider, null, React.createElement(ToolCard, { key: "summary-off", item: running })),
+    );
+    await flushTimers();
+    document.querySelector<HTMLButtonElement>(".tool__head")?.click();
+    await flushTimers();
+  });
+  ok(!document.querySelector(".tool__subagent-preview .reasoning-summary"), "disabling reasoning summaries hides the sub-agent preview");
+  ok(!document.querySelector(".tool__subagent-preview .md"), "disabled summaries keep the sub-agent Markdown collapsed");
+  await act(async () => {
+    setReasoningSummaryEnabled(true);
+    root.render(
+      React.createElement(LocaleProvider, null, React.createElement(ToolCard, { key: "summary-on", item: running })),
+    );
+    await flushTimers();
+  });
+  await act(async () => {
+    document.querySelector<HTMLButtonElement>(".tool__head")?.click();
+    await flushTimers();
+  });
+  ok(!!document.querySelector(".tool__subagent-preview .reasoning-summary"), "reenabling reasoning summaries restores the sub-agent preview");
 
   await act(async () => {
     root.unmount();

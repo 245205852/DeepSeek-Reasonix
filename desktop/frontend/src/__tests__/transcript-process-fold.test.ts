@@ -23,12 +23,14 @@ console.log("\ntranscript process fold");
 
 let displayMode = "standard";
 let processFoldPref = "auto";
+let reasoningSummaryPref = true;
 Object.defineProperty(globalThis, "localStorage", {
   configurable: true,
   value: {
     getItem(key: string) {
       if (key === "reasonix-display-mode") return displayMode;
       if (key === "reasonix-process-fold") return processFoldPref;
+      if (key === "reasonix-reasoning-summary") return reasoningSummaryPref ? "1" : "0";
       return null;
     },
     setItem() {},
@@ -49,9 +51,10 @@ try {
   const { Transcript } = await server.ssrLoadModule("/src/components/Transcript.tsx");
   const { LocaleProvider } = await server.ssrLoadModule("/src/lib/i18n.tsx");
 
-  function render(items: Item[], options: { mode?: "standard" | "compact"; running?: boolean; turnStartAt?: number; foldPref?: "auto" | "expanded" } = {}) {
+  function render(items: Item[], options: { mode?: "standard" | "compact"; running?: boolean; turnStartAt?: number; foldPref?: "auto" | "expanded"; summaryEnabled?: boolean } = {}) {
     displayMode = options.mode ?? "standard";
     processFoldPref = options.foldPref ?? "auto";
+    reasoningSummaryPref = options.summaryEnabled ?? true;
     const markup = renderToStaticMarkup(
       React.createElement(
         LocaleProvider,
@@ -207,6 +210,12 @@ try {
   const aloneSummary = aloneDoc.querySelector(".turn-collapse--open .reasoning-summary");
   ok(aloneSummary?.textContent === "got cut off", "an open fold still shows reasoning as a summary by default");
   ok(!aloneDoc.querySelector(".turn-collapse--open .md"), "an open fold mounts no reasoning Markdown until the segment expands");
+  const noSummaryDoc = render([
+    { kind: "user", id: "u5b", text: "cancelled" },
+    { kind: "assistant", id: "a8b", text: "", reasoning: "got cut off", streaming: false, workDurationMs: 3_000 },
+  ], { summaryEnabled: false });
+  ok(!noSummaryDoc.querySelector(".turn-collapse .reasoning-summary"), "disabling reasoning summaries hides inline fold previews");
+  ok(!noSummaryDoc.querySelector(".turn-collapse .md"), "disabled inline previews keep Markdown lazy");
   const answeredDoc = render([
     { kind: "user", id: "u6", text: "ask" },
     { kind: "assistant", id: "a9", text: "answered", reasoning: "quick", streaming: false, workDurationMs: 3_000 },

@@ -6,6 +6,7 @@ import React, { act } from "react";
 import { createRoot } from "react-dom/client";
 import { LocaleProvider } from "../lib/i18n";
 import { AssistantMessage } from "../components/Message";
+import { setReasoningSummaryEnabled } from "../lib/reasoningSummaryPreference";
 
 registerHooks({
   resolve(specifier, context, nextResolve) {
@@ -43,6 +44,7 @@ globalThis.Node = dom.window.Node;
 globalThis.Element = dom.window.Element;
 globalThis.HTMLElement = dom.window.HTMLElement;
 globalThis.Event = dom.window.Event;
+globalThis.CustomEvent = dom.window.CustomEvent;
 globalThis.MouseEvent = dom.window.MouseEvent;
 globalThis.localStorage = dom.window.localStorage;
 globalThis.requestAnimationFrame = dom.window.requestAnimationFrame.bind(dom.window);
@@ -147,6 +149,36 @@ await render({
 }, { defaultExpanded: true });
 ok(document.querySelector(".reasoning__body strong")?.textContent === "important trace", "defaultExpanded renders the full Markdown directly");
 ok(!document.querySelector(".reasoning-summary"), "defaultExpanded skips the summary");
+
+// The settings switch can disable the preview without mounting Markdown until
+// the user opens the reasoning heading.
+await act(async () => {
+  setReasoningSummaryEnabled(false);
+});
+await render({
+  kind: "assistant",
+  id: "a4",
+  text: "",
+  reasoning: "initial plan\n\n**important trace**",
+  streaming: false,
+  reasoningComplete: true,
+});
+ok(!document.querySelector(".reasoning-summary"), "disabling reasoning summaries hides the collapsed preview");
+ok(!document.querySelector(".reasoning__body"), "disabling reasoning summaries keeps Markdown lazy");
+await click(document.querySelector(".reasoning__head"));
+ok(document.querySelector(".reasoning__body strong")?.textContent === "important trace", "the heading still opens full Markdown when summaries are disabled");
+await act(async () => {
+  setReasoningSummaryEnabled(true);
+});
+await render({
+  kind: "assistant",
+  id: "a5",
+  text: "",
+  reasoning: "initial plan\n\n**important trace**",
+  streaming: false,
+  reasoningComplete: true,
+});
+ok(Boolean(document.querySelector(".reasoning-summary")), "reenabling reasoning summaries restores the preview");
 
 await act(async () => {
   root.unmount();
