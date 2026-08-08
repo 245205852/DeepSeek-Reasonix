@@ -27,7 +27,7 @@ type runLoopState struct {
 	emptyFinalBlocks   int
 	handoffNudges      int
 	usedAnyTool        bool
-	contextToolRepairs int
+	goalToolRepairs    int
 	graceRound         bool
 	recoveryGraceRound bool
 
@@ -327,7 +327,6 @@ func (a *Agent) beginRunTurn(ctx context.Context, input string) (rawInput string
 // runToolLoop owns the main tool-round budget and dispatches each streamed
 // assistant turn into final-response or tool-round handling.
 func (a *Agent) runToolLoop(ctx context.Context, state *runLoopState) error {
-	ctx = a.withAgentContext(ctx)
 	for step := 0; state.runMaxSteps <= 0 || step < state.runMaxSteps || state.graceRound || state.recoveryGraceRound; step++ {
 		// Consume a queued steer and persist it to the session so it
 		// survives tab switches and history replay. The model sees it as
@@ -337,7 +336,7 @@ func (a *Agent) runToolLoop(ctx context.Context, state *runLoopState) error {
 			a.session.Add(provider.Message{Role: provider.RoleUser, Content: a.withTurnPreferences(midTurnSteerMessage(text))})
 			a.sink.Emit(event.Event{Kind: event.Steer, Text: text})
 		}
-		schemas := a.tools.SchemasForContext(ctx)
+		schemas := a.tools.Schemas()
 		prefixShape := a.capturePrefixShape(schemas)
 		prevPrefixShape := a.lastPrefixShape
 		if !a.haveLastPrefixShape {
@@ -956,7 +955,7 @@ func (a *Agent) handleFinalResponse(ctx context.Context, state *runLoopState, te
 func (a *Agent) handleToolRound(ctx context.Context, state *runLoopState, step int, text, reasoning string, calls []provider.ToolCall, usage *provider.Usage) (cont bool, err error) {
 	state.emptyFinalBlocks = 0
 	state.usedAnyTool = true
-	unavailableContextTools, contextualOnly := a.unavailableContextualToolCalls(ctx, calls)
+	outOfContextGoalOnly := toolCallsAreOutOfContextGoalReports(ctx, calls)
 
 	// Grace round guard: if we already gave the model one extra response
 	// and it still wants to call tools, stop here.
@@ -987,7 +986,6 @@ func (a *Agent) handleToolRound(ctx context.Context, state *runLoopState, step i
 			StopReason: reason,
 		}
 	}
-
 	receiptMark := 0
 	if a.evidence != nil {
 		receiptMark = a.evidence.Len()
@@ -1013,19 +1011,16 @@ func (a *Agent) handleToolRound(ctx context.Context, state *runLoopState, step i
 		a.recordInterruptedDisplay("", "", nil, true, state.workDurationMs())
 		return false, ctx.Err()
 	}
-	if contextualOnly {
+	if outOfContextGoalOnly {
 		if hasVisibleFinalAnswer(text) {
-			// Keep the assistant tool call and host error paired in the transcript,
-			// but accept the co-streamed answer instead of spending another request
-			// repairing a phase-only bookkeeping call.
+			// Keep the assistant tool call and host error paired instead of spending
+			// another model request repairing harmless Goal bookkeeping outside Goal mode.
 			return a.handleFinalResponse(ctx, state, text, reasoning, usage)
 		}
-		state.contextToolRepairs++
-		if state.contextToolRepairs > 1 {
-			return false, fmt.Errorf("model repeatedly called context-unavailable tools without a visible answer: %s", strings.Join(unavailableContextTools, ", "))
+		state.goalToolRepairs++
+		if state.goalToolRepairs > 1 {
+			return false, fmt.Errorf("model repeatedly called update_goal outside Goal mode without a visible answer")
 		}
-		nudge := fmt.Sprintf("The following tools are unavailable in the current workflow phase: %s. Do not call them again. Respond to the user's request with visible answer text now; call a different tool only if it is still needed to complete the request.", strings.Join(unavailableContextTools, ", "))
-		a.session.Add(provider.Message{Role: provider.RoleUser, Content: a.withTurnPreferences(nudge)})
 	}
 	if !a.planMode.Load() {
 		nextProgress, nextTracking := a.canonicalTodoProgress()
@@ -1098,21 +1093,17 @@ func (a *Agent) handleToolRound(ctx context.Context, state *runLoopState, step i
 	return true, nil
 }
 
-func (a *Agent) unavailableContextualToolCalls(ctx context.Context, calls []provider.ToolCall) ([]string, bool) {
+func toolCallsAreOutOfContextGoalReports(ctx context.Context, calls []provider.ToolCall) bool {
 	if len(calls) == 0 {
-		return nil, false
+		return false
 	}
-	names := make([]string, 0, len(calls))
+	if _, ok := tool.GoalTurnRecorderFromContext(ctx); ok {
+		return false
+	}
 	for _, call := range calls {
-		t, ok := a.tools.Get(call.Name)
-		if !ok {
-			return nil, false
+		if call.Name != "update_goal" {
+			return false
 		}
-		contextual, ok := t.(tool.ContextualTool)
-		if !ok || contextual.ProviderVisible(ctx) {
-			return nil, false
-		}
-		names = append(names, call.Name)
 	}
-	return names, true
+	return true
 }

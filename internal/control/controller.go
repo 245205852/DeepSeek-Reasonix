@@ -213,6 +213,8 @@ type Controller struct {
 	// creates or mutates archive state. See
 	// autoresearch_manager.go.
 	legacyResearchArchive legacyResearchArchive
+	legacyRestoreMu       sync.Mutex
+	legacyRestore         legacyGoalRestore
 
 	// workspaceRoot is the workspace root: the base for resolving @-refs and slash
 	// path refs, the working directory for user "!" shell commands and custom
@@ -1540,19 +1542,14 @@ func (c *Controller) applyGoalCommand(input, display string) bool {
 		return false
 	}
 	if cmd.DeprecatedBudgetFlag {
-		c.notice("This /goal budget flag is deprecated; Goal now selects its budget automatically.")
+		c.notice(GoalBudgetFlagDeprecatedNotice)
 	}
 	switch cmd.Action {
 	case GoalCommandSet:
 		c.SetPlanMode(false)
 		c.SetGoalWithResearchMode(cmd.Text, cmd.ResearchMode)
 		c.GoalStrict(cmd.Strict)
-		c.notice(fmt.Sprintf(i18n.M.GoalSetFmt, ShortGoalForNotice(cmd.Text)))
-		if c.runner != nil {
-			c.runGuarded(func(ctx context.Context) error {
-				return c.runGoalLoopWithRawDisplay(ctx, "Start pursuing the active goal now.", cmd.Text, display)
-			})
-		}
+		c.startGoalCommandTurn(cmd, display)
 	case GoalCommandClear:
 		c.ClearGoal()
 		c.notice(i18n.M.GoalCleared)
@@ -2671,70 +2668,13 @@ func (c *Controller) SetGoal(goal string) {
 	c.SetGoalWithResearchMode(goal, GoalResearchAuto)
 }
 
-// SetGoalDurable updates the Goal only when its sidecar can be replaced
-// atomically. The second parameter is retained for callers compiled against
-// the old archive-creation transaction contract and is otherwise ignored.
-func (c *Controller) SetGoalDurable(goal, _ string) error {
-	snapshot := c.goals.capture()
-	resolved, setup := c.resolveGoalText(goal, GoalResearchAuto)
-	path, data, persist := c.goals.set(resolved, setup.mode, c.goalTodos())
-	if setup.blockReason != "" {
-		path, data, persist = c.goals.stop(GoalStatusBlocked, c.goalTodos())
-	}
-	if persist {
-		if err := c.goals.writeStateErr(path, data); err != nil {
-			c.goals.restore(snapshot)
-			return err
-		}
-	}
-	if setup.notice != "" {
-		c.notice(setup.notice)
-	}
-	if setup.blockReason != "" {
-		c.notice("legacy research archive resume failed: " + setup.blockReason)
-	}
-	return nil
-}
-
-func (c *Controller) SetGoalWithResearchMode(goal string, researchMode GoalResearchMode) {
-	resolved, setup := c.resolveGoalText(goal, researchMode)
-	if setup.notice != "" {
-		c.notice(setup.notice)
-	}
-	path, data, ok := c.goals.set(resolved, setup.mode, c.goalTodos())
-	c.persistGoalState(path, data, ok)
-	if setup.blockReason != "" {
-		path, data, ok := c.goals.stop(GoalStatusBlocked, c.goalTodos())
-		c.persistGoalState(path, data, ok)
-		c.notice("legacy research archive resume failed: " + setup.blockReason)
-	}
-}
-
-// goalSetSetup is the resolved objective and budget mode after archive lookup.
-type goalSetSetup struct {
-	mode        GoalResearchMode
-	notice      string
-	blockReason string
-}
-
-func (c *Controller) resolveGoalText(goal string, researchMode GoalResearchMode) (string, goalSetSetup) {
-	setup := goalSetSetup{mode: researchMode}
-	legacy := c.prepareLegacyResearchTask(goal)
-	if !legacy.explicit {
-		return goal, setup
-	}
-	setup.notice, setup.blockReason = legacy.notice, legacy.blockReason
-	if legacy.blockReason != "" {
-		return goal, setup
-	}
-	setup.mode = GoalResearchOn
-	return legacy.goal, setup
-}
-
 // ResumeGoal re-enters a recoverable blocked/stopped Goal without resetting its
 // delivery evidence scope. A budget-paused Goal gets one extra slice of its
 // budget class; accumulated consumption is preserved.
 func (c *Controller) ResumeGoal() bool {
+	if handled, resumed := c.retryBlockedLegacyGoal(); handled {
+		return resumed
+	}
 	path, data, persist, resumed, extended := c.goals.resume(c.goalTodos())
 	if !resumed {
 		return false
@@ -2772,7 +2712,7 @@ func (c *Controller) GoalRuntime() GoalRuntimeView {
 // turn/budget state, and the last
 // continuation reason. Every field is treated as untrusted by the evaluator.
 func (c *Controller) goalEvaluatorEvidence() goaleval.GoalEvidence {
-	goal, _, _ := c.goals.snapshot()
+	goal, _ := c.goals.snapshot()
 	ev := goaleval.GoalEvidence{
 		GoalContract:           goal,
 		LastContinuationReason: c.goals.lastContinuationReasonText(),
@@ -3487,19 +3427,9 @@ func (c *Controller) Resume(s *agent.Session, path string) {
 	c.ResetPlannerSession()
 	c.setActiveJobSession(path)
 	c.rebindCheckpoints(path)
-	migPath, migData, migrated, legacyTaskID := c.goals.restoreFromState(path)
-	if migrated {
-		// Persist omitted autoResearchTaskID / cleared token limits (no provider call).
+	migPath, migData, migrated, legacy := c.goals.restoreFromState(path)
+	if !c.restorePendingLegacyGoal(legacy) && migrated {
 		c.persistGoalState(migPath, migData, true)
-	}
-	if legacyTaskID != "" && strings.TrimSpace(c.goals.goalText()) == "" {
-		if goal, err := c.legacyResearchArchive.loadGoalText(legacyTaskID); err != nil {
-			path, data, ok := c.goals.stop(GoalStatusBlocked, c.goalTodos())
-			c.persistGoalState(path, data, ok)
-			c.notice("legacy research archive resume failed: " + err.Error())
-		} else if p, d, ok := c.goals.fillGoalTextIfEmpty(goal, c.goalTodos()); ok {
-			c.persistGoalState(p, d, true)
-		}
 	}
 	if c.executor != nil {
 		c.executor.RestoreDeliveryCheckpoint(c.goals.deliveryState())

@@ -85,67 +85,6 @@ func TestCoordinatorHandsPlanToExecutor(t *testing.T) {
 	}
 }
 
-type coordinatorGoalRecorder struct {
-	reports []tool.GoalReport
-}
-
-func (r *coordinatorGoalRecorder) RecordGoalReport(report tool.GoalReport) (string, error) {
-	r.reports = append(r.reports, report)
-	return "recorded " + report.Status, nil
-}
-
-func TestCoordinatorPlannerCannotReportExecutorGoalDisposition(t *testing.T) {
-	goalTool, ok := tool.LookupBuiltin("update_goal")
-	if !ok {
-		t.Fatal("update_goal builtin not registered")
-	}
-	reg := tool.NewRegistry()
-	reg.Add(goalTool)
-	planner := &mockProvider{name: "planner", streams: [][]provider.Chunk{
-		{toolCallChunk("planner-goal", "update_goal", `{"status":"complete"}`), {Type: provider.ChunkDone}},
-		{{Type: provider.ChunkText, Text: "1. inspect the implementation\n2. apply and verify the fix"}, {Type: provider.ChunkDone}},
-	}}
-	exec := &mockProvider{name: "executor", chunks: []provider.Chunk{
-		{Type: provider.ChunkText, Text: "Implemented and verified."},
-		{Type: provider.ChunkDone},
-	}}
-	plannerSess := NewSession("planner-sys")
-	executor := New(exec, reg, NewSession("exec-sys"), Options{}, event.Discard)
-	customPlannerReg := tool.NewRegistry()
-	customPlannerReg.Add(goalTool)
-	coord := NewCoordinator(planner, plannerSess, nil, customPlannerReg, Options{}, executor, 0, event.Discard, nil)
-	recorder := &coordinatorGoalRecorder{}
-	ctx := tool.WithGoalTurnRecorder(context.Background(), recorder)
-
-	if err := coord.Run(ctx, "fix the goal bug"); err != nil {
-		t.Fatalf("Run: %v", err)
-	}
-	if len(planner.requests) != 2 {
-		t.Fatalf("planner requests = %d, want hallucinated call plus repair", len(planner.requests))
-	}
-	for i, req := range planner.requests {
-		for _, schema := range req.Tools {
-			if schema.Name == "update_goal" {
-				t.Fatalf("planner request %d exposed update_goal", i+1)
-			}
-		}
-	}
-	if got := lastToolResult(plannerSess, "update_goal"); !strings.Contains(got, "only available while an active goal turn") {
-		t.Fatalf("planner update_goal result = %q", got)
-	}
-	if len(exec.requests) == 0 {
-		t.Fatal("executor made no requests")
-	}
-	for i, req := range exec.requests {
-		if !slices.Contains(toolSchemaNames(req.Tools), "update_goal") {
-			t.Fatalf("executor request %d lost update_goal after planner isolation: %v", i+1, toolSchemaNames(req.Tools))
-		}
-	}
-	if len(recorder.reports) != 0 {
-		t.Fatalf("planner wrote reports into executor Goal recorder: %+v", recorder.reports)
-	}
-}
-
 type coordinatorApprovalGate struct {
 	calls int
 	allow bool
@@ -775,19 +714,6 @@ func (t coordinatorTestTool) Execute(context.Context, json.RawMessage) (string, 
 }
 func (t coordinatorTestTool) ReadOnly() bool { return t.readOnly }
 
-type plannerPhaseOnlyTool struct{}
-
-func (plannerPhaseOnlyTool) Name() string        { return "planner_phase_only" }
-func (plannerPhaseOnlyTool) Description() string { return "planner phase-only test tool" }
-func (plannerPhaseOnlyTool) Schema() json.RawMessage {
-	return json.RawMessage(`{"type":"object"}`)
-}
-func (plannerPhaseOnlyTool) Execute(context.Context, json.RawMessage) (string, error) {
-	return "phase-only", nil
-}
-func (plannerPhaseOnlyTool) ReadOnly() bool     { return true }
-func (plannerPhaseOnlyTool) PlanModeSafe() bool { return false }
-
 func TestCoordinatorPlannerUsesReadOnlyResearchTools(t *testing.T) {
 	planner := &mockProvider{name: "planner", streams: [][]provider.Chunk{
 		{
@@ -808,9 +734,6 @@ func TestCoordinatorPlannerUsesReadOnlyResearchTools(t *testing.T) {
 	parentReg.Add(coordinatorTestTool{name: "read_file", readOnly: true, output: "Rule: keep changes narrow."})
 	parentReg.Add(coordinatorTestTool{name: "write_file", readOnly: false})
 	parentReg.Add(coordinatorTestTool{name: "todo_write", readOnly: true})
-	parentReg.Add(mustBuiltinTool(t, "complete_step"))
-	parentReg.Add(mustBuiltinTool(t, "update_goal"))
-	parentReg.Add(plannerPhaseOnlyTool{})
 
 	executor := New(exec, tool.NewRegistry(), NewSession("exec-sys"), Options{}, event.Discard)
 	plannerSess := NewSession(PlannerPromptWithContext("Rule: keep changes narrow."))
@@ -827,7 +750,7 @@ func TestCoordinatorPlannerUsesReadOnlyResearchTools(t *testing.T) {
 	if !contains(tools, "read_file") {
 		t.Fatalf("planner tools = %v, want read_file", tools)
 	}
-	for _, forbidden := range []string{"write_file", "todo_write", "complete_step", "update_goal", "planner_phase_only"} {
+	for _, forbidden := range []string{"write_file", "todo_write"} {
 		if contains(tools, forbidden) {
 			t.Fatalf("planner tools = %v, must not include %s", tools, forbidden)
 		}

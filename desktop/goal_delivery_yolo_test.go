@@ -54,8 +54,8 @@ func newGoalDeliveryYoloTestApp(t *testing.T, goalStatus string) (*App, *Workspa
 	state := map[string]any{
 		"goal":               "ship the combined mode",
 		"status":             goalStatus,
-		"researchMode":       control.GoalResearchOn,
-		"autoResearchTaskID": "research-task-1",
+		"budgetClass":        "research",
+		"turnsLimit":         40,
 		"scopeID":            checkpoint.ScopeID,
 		"deliveryCheckpoint": checkpoint,
 	}

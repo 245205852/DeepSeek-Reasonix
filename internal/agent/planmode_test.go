@@ -3,7 +3,6 @@ package agent
 import (
 	"context"
 	"encoding/json"
-	"slices"
 	"strings"
 	"testing"
 
@@ -268,10 +267,9 @@ func TestPlanModeCanReplacePriorExecutionTodoState(t *testing.T) {
 	}
 }
 
-// TestPlanModePreservesSystemAndOrdinaryTools is the cache-stability test for
-// non-contextual tools. Phase-only tools are the intentional exception and are
-// covered by TestPlanModeRequestHidesCompleteStepUntilExecution.
-func TestPlanModePreservesSystemAndOrdinaryTools(t *testing.T) {
+// TestPlanModeDoesNotMutateSystemOrTools guards the provider-visible cache
+// prefix. Plan-only execution policy must not change system or tool bytes.
+func TestPlanModeDoesNotMutateSystemOrTools(t *testing.T) {
 	prov := &mockProvider{name: "p", chunks: []provider.Chunk{
 		{Type: provider.ChunkText, Text: "ok"},
 		{Type: provider.ChunkDone},
@@ -300,107 +298,6 @@ func TestPlanModePreservesSystemAndOrdinaryTools(t *testing.T) {
 	}
 	if planTools != standardTools {
 		t.Fatalf("tool schemas changed across Plan toggle:\nstandard=%s\nplan=%s", standardTools, planTools)
-	}
-}
-
-func TestPlanModeRequestHidesCompleteStepUntilExecution(t *testing.T) {
-	prov := &mockProvider{name: "p", chunks: []provider.Chunk{
-		{Type: provider.ChunkText, Text: "ok"},
-		{Type: provider.ChunkDone},
-	}}
-	reg := tool.NewRegistry()
-	reg.Add(fakeTool{name: "read_file", readOnly: true})
-	reg.Add(mustBuiltinTool(t, "complete_step"))
-	a := New(prov, reg, NewSession("STABLE-SYS"), Options{}, event.Discard)
-
-	if err := a.Run(context.Background(), "execution"); err != nil {
-		t.Fatalf("execution Run: %v", err)
-	}
-	if !slices.Contains(toolSchemaNames(prov.lastReq.Tools), "complete_step") {
-		t.Fatalf("execution request missing complete_step: %v", toolSchemaNames(prov.lastReq.Tools))
-	}
-
-	prov.chunks = []provider.Chunk{{Type: provider.ChunkText, Text: "plan"}, {Type: provider.ChunkDone}}
-	a.SetPlanMode(true)
-	if err := a.Run(context.Background(), "plan first"); err != nil {
-		t.Fatalf("Plan Run: %v", err)
-	}
-	planTools := toolSchemaNames(prov.lastReq.Tools)
-	if slices.Contains(planTools, "complete_step") {
-		t.Fatalf("Plan request exposed complete_step: %v", planTools)
-	}
-	if !slices.Contains(planTools, "read_file") {
-		t.Fatalf("Plan request lost ordinary tool: %v", planTools)
-	}
-	stablePlanTools := serializeToolSchemas(t, prov.lastReq.Tools)
-	prov.chunks = []provider.Chunk{{Type: provider.ChunkText, Text: "plan again"}, {Type: provider.ChunkDone}}
-	if err := a.Run(context.Background(), "refine plan"); err != nil {
-		t.Fatalf("second Plan Run: %v", err)
-	}
-	if got := serializeToolSchemas(t, prov.lastReq.Tools); got != stablePlanTools {
-		t.Fatalf("Plan tool schemas changed within the same mode:\nfirst=%s\nsecond=%s", stablePlanTools, got)
-	}
-
-	prov.chunks = []provider.Chunk{{Type: provider.ChunkText, Text: "execute"}, {Type: provider.ChunkDone}}
-	a.SetPlanMode(false)
-	if err := a.Run(context.Background(), "execute approved plan"); err != nil {
-		t.Fatalf("post-approval Run: %v", err)
-	}
-	if !slices.Contains(toolSchemaNames(prov.lastReq.Tools), "complete_step") {
-		t.Fatalf("post-approval request missing complete_step: %v", toolSchemaNames(prov.lastReq.Tools))
-	}
-}
-
-func TestPlanModeHallucinatedCompleteStepPreservesVisibleAnswer(t *testing.T) {
-	reg := tool.NewRegistry()
-	reg.Add(mustBuiltinTool(t, "complete_step"))
-	prov := &scriptedProvider{name: "p", turns: [][]provider.Chunk{
-		{
-			{Type: provider.ChunkText, Text: "Here is the plan."},
-			toolCallChunk("step", "complete_step", `{}`),
-			{Type: provider.ChunkDone},
-		},
-		{{Type: provider.ChunkText, Text: "unexpected repair"}, {Type: provider.ChunkDone}},
-	}}
-	a := New(prov, reg, NewSession("sys"), Options{}, event.Discard)
-	a.SetPlanMode(true)
-	if err := a.Run(context.Background(), "plan the change"); err != nil {
-		t.Fatalf("Plan Run: %v", err)
-	}
-	if prov.call != 1 {
-		t.Fatalf("provider calls = %d, want no repair round", prov.call)
-	}
-	if got := lastAssistantContent(a.Session()); got != "Here is the plan." {
-		t.Fatalf("last assistant text = %q", got)
-	}
-	if got := lastToolResult(a.Session(), "complete_step"); !strings.Contains(got, "only available after plan approval") {
-		t.Fatalf("complete_step result = %q", got)
-	}
-}
-
-func TestPlanModeToolOnlyCompleteStepNudgesVisibleAnswer(t *testing.T) {
-	reg := tool.NewRegistry()
-	reg.Add(mustBuiltinTool(t, "complete_step"))
-	prov := &scriptedProvider{name: "p", turns: [][]provider.Chunk{
-		{toolCallChunk("step", "complete_step", `{}`), {Type: provider.ChunkDone}},
-		{{Type: provider.ChunkText, Text: "Here is the recovered plan."}, {Type: provider.ChunkDone}},
-	}}
-	a := New(prov, reg, NewSession("sys"), Options{}, event.Discard)
-	a.SetPlanMode(true)
-	if err := a.Run(context.Background(), "plan the change"); err != nil {
-		t.Fatalf("Plan repair: %v", err)
-	}
-	if len(prov.requests) != 2 {
-		t.Fatalf("provider requests = %d, want repair round", len(prov.requests))
-	}
-	if got := lastUser(prov.requests[1]); !strings.Contains(got, "complete_step") || !strings.Contains(got, "visible answer text") {
-		t.Fatalf("repair instruction = %q", got)
-	}
-	if slices.Contains(toolSchemaNames(prov.requests[1].Tools), "complete_step") {
-		t.Fatalf("repair request re-exposed complete_step: %v", toolSchemaNames(prov.requests[1].Tools))
-	}
-	if got := lastAssistantContent(a.Session()); got != "Here is the recovered plan." {
-		t.Fatalf("last assistant text = %q", got)
 	}
 }
 

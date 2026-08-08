@@ -138,14 +138,13 @@ func (c *Controller) Compose(text string) string {
 }
 
 func (c *Controller) compose(text, source string, includeHookContext bool) string {
-	goal, goalStatus, goalResearchMode := c.goals.snapshot()
+	goal, goalStatus := c.goals.snapshot()
 	return c.composeWithGoal(
 		text,
 		source,
 		includeHookContext,
 		goal,
 		goalStatus,
-		goalResearchMode,
 	)
 }
 
@@ -153,7 +152,6 @@ func (c *Controller) composeWithGoal(
 	text, source string,
 	includeHookContext bool,
 	goal, goalStatus string,
-	goalResearchMode GoalResearchMode,
 ) string {
 	c.mu.Lock()
 	plan := c.planMode
@@ -163,7 +161,7 @@ func (c *Controller) composeWithGoal(
 	notes := c.memory.drainPending()
 
 	if strings.TrimSpace(goal) != "" && goalStatus == GoalStatusRunning {
-		prefix := activeGoalBlock(goal, goalResearchMode)
+		prefix := activeGoalBlock(goal)
 		text = prefix + "\n\n" + text
 	}
 	if plan {
@@ -298,8 +296,7 @@ func (c *Controller) ComposeSynthetic(text string) string {
 	return agent.WithReasoningLanguageForSource(text, lang, text)
 }
 
-func activeGoalBlock(goal string, researchMode GoalResearchMode) string {
-	_ = researchMode // retained for call-site stability; budget selection is host-side only
+func activeGoalBlock(goal string) string {
 	goal = strings.TrimSpace(goal)
 	goal = strings.ReplaceAll(goal, activeGoalClose, "<\\/active-goal>")
 	var b strings.Builder
@@ -368,6 +365,8 @@ type GoalCommand struct {
 	ResearchMode         GoalResearchMode
 	DeprecatedBudgetFlag bool
 }
+
+const GoalBudgetFlagDeprecatedNotice = "This /goal budget flag is deprecated; Goal now selects its budget automatically."
 
 func ParseGoalCommand(input string) (GoalCommand, bool) {
 	trimmed := strings.TrimSpace(input)

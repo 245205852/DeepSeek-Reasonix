@@ -85,15 +85,3 @@ func TestEveryBuiltinDeclaresSnipStance(t *testing.T) {
 		}
 	}
 }
-
-func TestPlanModeUnsafeBuiltinsDeclareContextualVisibility(t *testing.T) {
-	for _, builtin := range tool.Builtins() {
-		classifier, ok := builtin.(tool.PlanModeClassifier)
-		if !ok || classifier.PlanModeSafe() {
-			continue
-		}
-		if _, ok := builtin.(tool.ContextualTool); !ok {
-			t.Errorf("Plan-mode-unsafe builtin %q must hide itself from provider schemas while unavailable", builtin.Name())
-		}
-	}
-}

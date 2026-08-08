@@ -17,10 +17,18 @@ type autoMemoryWriteClaimer interface {
 }
 
 type queueKey struct{}
+type noQueue struct{}
 
 // WithQueue stamps q onto ctx for the remember/forget tools to find.
 func WithQueue(ctx context.Context, q Queue) context.Context {
 	return context.WithValue(ctx, queueKey{}, q)
+}
+
+// WithoutQueue shadows an ancestor queue while preserving cancellation and
+// unrelated context values. Sub-agents use it to avoid injecting memory changes
+// directly into their parent's current-session prompt tail.
+func WithoutQueue(ctx context.Context) context.Context {
+	return context.WithValue(ctx, queueKey{}, noQueue{})
 }
 
 // QueueFromContext returns the memory queue the agent stamped, if any.
