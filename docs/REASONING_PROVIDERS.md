@@ -48,8 +48,6 @@ base_url           = "https://my-gateway.example.com/v1"
 model              = "kimi-k3"
 api_key_env        = "MY_KIMI_API_KEY"
 reasoning_protocol = "kimi-k3"
-supported_efforts  = ["low", "high", "max"]
-default_effort     = "max"
 ```
 
 This explicit protocol is needed when the gateway host cannot be safely
@@ -57,6 +55,9 @@ auto-detected. It preserves `reasoning_content` in later assistant history,
 uses `max_completion_tokens`, and omits K3's fixed sampling fields. Do not add
 it to the curated OpenCode Go preset: that relay intentionally keeps its
 standard OpenAI-compatible request shape and its own `high`/`max` scale.
+While this protocol is selected, Reasonix always exposes K3's fixed
+`auto`/`low`/`high`/`max` effort menu with `max` as the protocol default;
+persisted `supported_efforts` metadata is retained but does not override it.
 
 ## DeepSeek Anthropic-compatible endpoint
 

@@ -36,4 +36,17 @@ func TestExplicitKimiK3GatewayRequestContract(t *testing.T) {
 	}); err == nil {
 		t.Fatal("explicit Kimi K3 protocol should reject unsupported medium effort")
 	}
+	auto, err := New(provider.Config{
+		Name: "custom-kimi-gateway", BaseURL: "https://gateway.example.com/v1", Model: "kimi-k3",
+		Extra: map[string]any{
+			"reasoning_protocol": "kimi-k3",
+			"supported_efforts":  []string{"medium", "ultra"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("New Kimi K3 with dormant custom efforts: %v", err)
+	}
+	if got := auto.(*client).buildRequest(provider.Request{}).ReasoningEffort; got != "max" {
+		t.Fatalf("Kimi K3 protocol default effort = %q, want max", got)
+	}
 }

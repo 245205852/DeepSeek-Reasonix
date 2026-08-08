@@ -14,3 +14,10 @@ func reasoningEffortVocabulary(kimiK3 bool, configured []string) ([]string, bool
 	}
 	return configured, hasExplicitSupportedEfforts(configured)
 }
+
+func kimiK3ReasoningEffort(kimiK3 bool, effort string) string {
+	if kimiK3 && effort == "" {
+		return "max"
+	}
+	return effort
+}

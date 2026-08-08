@@ -26,7 +26,7 @@ func TestNewProviderAppliesExplicitKimiK3RequestContractToCustomGateway(t *testi
 	p, err := NewProvider(&config.ProviderEntry{
 		Name: "custom-kimi-gateway", Kind: "openai", BaseURL: srv.URL, Model: "kimi-k3",
 		ReasoningProtocol: config.ReasoningProtocolKimiK3,
-		SupportedEfforts:  []string{"low", "high", "max"}, DefaultEffort: "high",
+		SupportedEfforts:  []string{"medium", "ultra"}, DefaultEffort: "ultra",
 	})
 	if err != nil {
 		t.Fatalf("NewProvider: %v", err)
@@ -53,8 +53,8 @@ func TestNewProviderAppliesExplicitKimiK3RequestContractToCustomGateway(t *testi
 	if reasoning.String() != "thinking" {
 		t.Fatalf("reasoning stream = %q, want thinking", reasoning.String())
 	}
-	if gotReq["reasoning_effort"] != "high" || gotReq["max_completion_tokens"] != float64(2048) {
-		t.Fatalf("custom Kimi K3 request = %+v, want high effort and max_completion_tokens", gotReq)
+	if gotReq["reasoning_effort"] != "max" || gotReq["max_completion_tokens"] != float64(2048) {
+		t.Fatalf("custom Kimi K3 request = %+v, want protocol-default max effort and max_completion_tokens", gotReq)
 	}
 	for _, field := range []string{"temperature", "max_tokens"} {
 		if _, ok := gotReq[field]; ok {

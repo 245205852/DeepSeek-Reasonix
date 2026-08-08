@@ -20,10 +20,17 @@ func normalizeOpenAIReasoningEffort(e *ProviderEntry, level string) (string, err
 }
 
 func normalizeKimiK3ReasoningEffort(level string) (string, error) {
+	if isKimiK3ReasoningEffort(level) {
+		return level, nil
+	}
+	return "", fmt.Errorf("usage: /effort auto|low|high|max")
+}
+
+func isKimiK3ReasoningEffort(level string) bool {
 	switch level {
 	case "low", "high", "max":
-		return level, nil
+		return true
 	default:
-		return "", fmt.Errorf("usage: /effort auto|low|high|max")
+		return false
 	}
 }

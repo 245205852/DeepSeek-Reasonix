@@ -46,8 +46,15 @@ var modelReasoningCapabilities = map[string]modelReasoningCapability{
 // provider entry. Provider implementations still decide how a stored effort is
 // serialized into requests.
 func EffortCapabilityForEntry(e *ProviderEntry) EffortCapability {
-	if explicitReasoningProtocol(e) == ReasoningProtocolNone {
+	explicitProtocol := explicitReasoningProtocol(e)
+	if explicitProtocol == ReasoningProtocolNone {
 		return EffortCapability{}
+	}
+	// Kimi K3 is a complete wire contract, including its fixed effort
+	// vocabulary. Keep any persisted supported_efforts metadata dormant while
+	// the protocol is selected so switching protocols can restore it later.
+	if explicitProtocol == ReasoningProtocolKimiK3 {
+		return kimiK3EffortCapability()
 	}
 	supported := normalizedSupportedEfforts(e)
 	if len(supported) > 0 {
@@ -60,7 +67,7 @@ func EffortCapabilityForEntry(e *ProviderEntry) EffortCapability {
 		}
 		return EffortCapability{Supported: true, Levels: levels, Default: def}
 	}
-	switch explicitReasoningProtocol(e) {
+	switch explicitProtocol {
 	case ReasoningProtocolDeepSeek:
 		if cap, ok := resolvedModelReasoningCapability(e); ok && cap.Protocol == ReasoningProtocolDeepSeek {
 			return effortCapabilityFromModel(cap)
@@ -68,8 +75,6 @@ func EffortCapabilityForEntry(e *ProviderEntry) EffortCapability {
 		return deepSeekEffortCapability()
 	case ReasoningProtocolGLM:
 		return glmEffortCapability()
-	case ReasoningProtocolKimiK3:
-		return kimiK3EffortCapability()
 	case ReasoningProtocolOpenAI:
 		if isMimoEntry(e) {
 			// MiMo's Responses API documents a binary thinking knob: "none"
@@ -135,8 +140,12 @@ func NormalizeEffort(e *ProviderEntry, raw string) (string, error) {
 	if level == "auto" {
 		return "", nil
 	}
-	if explicitReasoningProtocol(e) == ReasoningProtocolNone {
+	explicitProtocol := explicitReasoningProtocol(e)
+	if explicitProtocol == ReasoningProtocolNone {
 		return "", effortNotConfigurableError(e)
+	}
+	if explicitProtocol == ReasoningProtocolKimiK3 {
+		return normalizeKimiK3ReasoningEffort(level)
 	}
 	supported := normalizedSupportedEfforts(e)
 	if len(supported) > 0 {
@@ -249,7 +258,11 @@ func EffortDisplay(e *ProviderEntry) string {
 	if e == nil || strings.TrimSpace(e.Effort) == "" {
 		return "auto"
 	}
-	return normalizeEffortLevel(e.Effort)
+	effort := normalizeEffortLevel(e.Effort)
+	if explicitReasoningProtocol(e) == ReasoningProtocolKimiK3 && !isKimiK3ReasoningEffort(effort) {
+		return "auto"
+	}
+	return effort
 }
 
 // EffectiveEffort resolves the provider-visible effort value. Explicit
@@ -261,7 +274,13 @@ func EffectiveEffort(e *ProviderEntry) string {
 		return ""
 	}
 	if effort := normalizeStoredEffort(e.Effort); effort != "" {
+		if explicitReasoningProtocol(e) == ReasoningProtocolKimiK3 && !isKimiK3ReasoningEffort(effort) {
+			return ""
+		}
 		return effort
+	}
+	if explicitReasoningProtocol(e) == ReasoningProtocolKimiK3 {
+		return ""
 	}
 	supported := normalizedSupportedEfforts(e)
 	if len(supported) == 0 {

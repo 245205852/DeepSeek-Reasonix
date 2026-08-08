@@ -808,7 +808,7 @@ func (c *client) buildRequest(req provider.Request) chatRequest {
 		StreamOptions:   &streamOptions{IncludeUsage: true},
 		Temperature:     req.Temperature,
 		MaxTokens:       maxOutputTokens,
-		ReasoningEffort: c.effort,
+		ReasoningEffort: kimiK3ReasoningEffort(c.kimiK3, c.effort),
 		ExtraBody:       c.extraBody,
 	}
 	switch {

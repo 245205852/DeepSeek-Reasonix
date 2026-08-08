@@ -49,14 +49,14 @@ base_url           = "https://my-gateway.example.com/v1"
 model              = "kimi-k3"
 api_key_env        = "MY_KIMI_API_KEY"
 reasoning_protocol = "kimi-k3"
-supported_efforts  = ["low", "high", "max"]
-default_effort     = "max"
 ```
 
 当网关域名无法被安全自动识别时，需要这个显式协议。它会在后续 assistant 历史中
 保留 `reasoning_content`、使用 `max_completion_tokens`，并省略 K3 固定的采样字段。
 不要把它加到精选的 OpenCode Go 预设中：该中转站有自己的 `high`/`max` 档位，
 并且有意保持标准 OpenAI-compatible 请求形态。
+启用该协议后，Reasonix 固定展示 K3 的 `auto`/`low`/`high`/`max` 档位，协议默认值
+为 `max`；已有的 `supported_efforts` 配置仍会保留，但不会覆盖 K3 协议档位。
 
 ## DeepSeek Anthropic-compatible 端点
 
