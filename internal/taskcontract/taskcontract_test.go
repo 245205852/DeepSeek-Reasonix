@@ -296,3 +296,41 @@ func TestFinalizeSignalFiresOnlyWhenFullyProven(t *testing.T) {
 		t.Fatalf("summary = %q", s)
 	}
 }
+
+func TestFinalRejectionNamesExactlyWhatIsUnproven(t *testing.T) {
+	c := FromPlan("fix cache", PlanFacts{
+		AcceptanceCriteria: []string{"fix stale cache invalidation"},
+		Regressions:        []string{"cache tests keep passing"},
+		Verifications:      []string{"go test ./cache/"},
+	})
+	c.Observe(evidence.Receipt{ToolName: "edit_file", Mutation: true, Success: true})
+	c.Observe(evidence.Receipt{ToolName: "bash", Command: "go test ./cache/", Success: true})
+	c.Resolve("r1", Satisfied)
+
+	rejection := c.FinalRejection()
+	if !strings.Contains(rejection, "Final not accepted") {
+		t.Fatalf("rejection = %q", rejection)
+	}
+	if !strings.Contains(rejection, "requirement g1 (cache tests keep passing): no fresh evidence — verify it") {
+		t.Fatalf("rejection must name g1 specifically:\n%s", rejection)
+	}
+	if strings.Contains(rejection, "requirement r1") || strings.Contains(rejection, "check go test") {
+		t.Fatalf("satisfied items must not appear:\n%s", rejection)
+	}
+
+	// Stale wording after another mutation.
+	c.Resolve("g1", Satisfied, EvidenceRef{Kind: EvidenceVerification, MutationEpoch: c.Epoch(), Source: "bash", Success: true})
+	if c.FinalRejection() != "" {
+		t.Fatal("fully proven contract must accept the final")
+	}
+	c.Observe(evidence.Receipt{ToolName: "edit_file", Mutation: true, Success: true})
+	rejection = c.FinalRejection()
+	if !strings.Contains(rejection, "predates the latest mutation — re-verify it") &&
+		!strings.Contains(rejection, "predates the latest mutation — re-run it") {
+		t.Fatalf("stale items must demand re-verification:\n%s", rejection)
+	}
+
+	if (&Contract{}).FinalRejection() != "" {
+		t.Fatal("a contract with nothing to prove must not reject finals")
+	}
+}

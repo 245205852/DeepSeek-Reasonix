@@ -371,6 +371,51 @@ func (c *Contract) FinalizeSignal() string {
 		required, required, len(c.Checks), len(c.Checks))
 }
 
+// FinalRejection is the host's answer to a premature "done": empty when the
+// contract is fully proven (or has no content to prove), otherwise a
+// directive naming exactly what lacks fresh evidence — "verify R2" carries
+// more information than any generic ask-a-reviewer round.
+func (c *Contract) FinalRejection() string {
+	if len(c.Requirements) == 0 && len(c.Checks) == 0 {
+		return ""
+	}
+	if c.Complete() {
+		return ""
+	}
+	out := "Final not accepted: the contract is not fully proven.\n"
+	for _, req := range c.Requirements {
+		if !req.Required || req.Status == Satisfied {
+			continue
+		}
+		out += fmt.Sprintf("- requirement %s (%s): %s\n", req.ID, req.Text, directiveFor(req.Status, "verify"))
+	}
+	for _, check := range c.Checks {
+		if check.Status == Satisfied {
+			continue
+		}
+		label := check.Command
+		if label == "" {
+			label = "verification"
+			if check.Kind == CheckMutation {
+				label = "the required change"
+			}
+		}
+		out += fmt.Sprintf("- check %s: %s\n", label, directiveFor(check.Status, "run"))
+	}
+	return out
+}
+
+func directiveFor(status Status, verb string) string {
+	switch status {
+	case Stale:
+		return "evidence predates the latest mutation — re-" + verb + " it"
+	case Failed:
+		return "last evidence shows failure — fix it, then re-" + verb
+	default:
+		return "no fresh evidence — " + verb + " it"
+	}
+}
+
 // Summary is the one-line contract status for logs and host notes.
 func (c *Contract) Summary() string {
 	reqDone, reqAll := 0, 0
