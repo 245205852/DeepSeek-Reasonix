@@ -599,11 +599,15 @@ func durMs(ms int64) string {
 }
 
 func p95(values []int64) int64 {
+	return pctile(values, 95)
+}
+
+func pctile(values []int64, p int) int64 {
 	if len(values) == 0 {
 		return 0
 	}
 	sorted := append([]int64(nil), values...)
 	slices.Sort(sorted)
-	index := min((len(sorted)*95+99)/100, len(sorted))
+	index := min((len(sorted)*p+99)/100, len(sorted))
 	return sorted[index-1]
 }

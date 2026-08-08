@@ -392,6 +392,37 @@ func TestRenderTimeAttributionIncludesBatchingLine(t *testing.T) {
 	}
 }
 
+func TestRenderBodyReportsTTCSKPIs(t *testing.T) {
+	a := result{task: task{ID: "a"}, Passed: true, WallMs: 60_000, Attempt: 1, TTCSMs: 60_000}
+	b1 := result{task: task{ID: "b"}, WallMs: 40_000, Attempt: 1}
+	b2 := result{task: task{ID: "b"}, Passed: true, WallMs: 50_000, Attempt: 2, TTCSMs: 90_000}
+	c1 := result{task: task{ID: "c"}, WallMs: 30_000, Attempt: 1}
+	c2 := result{task: task{ID: "c"}, WallMs: 20_000, Attempt: 2}
+
+	got := renderBody([]result{a, b1, b2, c1, c2})
+	for _, want := range []string{
+		"**Solved:** 2/3 (67%)", // attempts must not inflate the task denominator
+		"**Pass@1** 33%",
+		"**Pass@≤2** 67%",
+		"**TTCS median** 1m30s", // b's solve charges its failed first attempt
+		"**TTCS p90** 1m30s",
+		"**Solved/hour** 36.0", // 2 solves over 200s of total attempt wall
+		"`b` (try 2)",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("KPI line missing %q:\n%s", want, got)
+		}
+	}
+
+	single := renderBody([]result{a})
+	if strings.Contains(single, "Pass@≤") {
+		t.Fatalf("single-attempt suite must not report Pass@≤k:\n%s", single)
+	}
+	if !strings.Contains(single, "**Pass@1** 100%") {
+		t.Fatalf("single-attempt suite missing Pass@1:\n%s", single)
+	}
+}
+
 func TestRenderBodyReportsPerSolvedEfficiency(t *testing.T) {
 	solved := result{task: task{ID: "a"}, Passed: true, WallMs: 60_000}
 	solved.Steps = 6

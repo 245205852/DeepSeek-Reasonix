@@ -12,7 +12,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -116,6 +115,12 @@ type result struct {
 	// PhaseTrace is the per-task privacy-safe latency trace (counts and ms
 	// only); nil unless the run recorded a trajectory.
 	PhaseTrace *phaseTrace `json:"phase_trace,omitempty"`
+	// Attempt is this entry's 1-based try for its task; suite retries stop at
+	// the first passing attempt. Zero on skipped entries and old JSON.
+	Attempt int `json:"attempt,omitempty"`
+	// TTCSMs is the time to correct solution: wall clock summed across this
+	// task's attempts up to and including the one that passed. Zero if unsolved.
+	TTCSMs int64 `json:"ttcs_ms,omitempty"`
 }
 
 // class is the published failure taxonomy: solved, the guard that stopped the
@@ -179,7 +184,7 @@ func main() {
 	testCmd := flag.String("test-cmd", "go test", "grader command run on the affected packages (diff mode)")
 	maxSteps := flag.Int("max-steps", 80, "agent tool-call cap for the diff task")
 	timeoutSec := flag.Int("timeout", 1200, "agent timeout in seconds (diff mode)")
-	attempts := flag.Int("attempts", 1, "diff mode: retry up to N times until a run passes (stochastic agent)")
+	attempts := flag.Int("attempts", 1, "suite/diff modes: retry a task up to N times until an attempt passes (stochastic agent); enables Pass@≤N")
 	flag.Parse()
 	profile, perr := normalizeBenchmarkProfile(*profileFlag)
 	arm, aerr := ablation.Parse(*ablateFlag)
@@ -241,7 +246,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	results := runSuite(*bin, *model, profile, arm, tasks, *budget, *trajDir, *forcePlanner)
+	results := runSuite(*bin, *model, profile, arm, tasks, *budget, *trajDir, *forcePlanner, *attempts)
 
 	report := render(results)
 	if *outMD != "" {
@@ -308,8 +313,11 @@ func loadTasks(suite string) ([]task, error) {
 }
 
 // runSuite runs each task in order until the token budget is exhausted;
-// remaining tasks are reported as skipped rather than silently dropped.
-func runSuite(bin, model, profile string, arm ablation.Set, tasks []task, budget int, trajDir string, forcePlanner bool) []result {
+// remaining tasks are reported as skipped rather than silently dropped. Each
+// task retries up to attempts times, stopping at the first passing attempt;
+// TTCS accumulates the failed attempts' wall too — a solution found on try 3
+// took three tries' worth of time to reach.
+func runSuite(bin, model, profile string, arm ablation.Set, tasks []task, budget int, trajDir string, forcePlanner bool, attempts int) []result {
 	var results []result
 	total := 0
 	for _, t := range tasks {
@@ -317,9 +325,20 @@ func runSuite(bin, model, profile string, arm ablation.Set, tasks []task, budget
 			results = append(results, result{task: t, Profile: profile, Skipped: true, Note: "skipped: token budget reached"})
 			continue
 		}
-		r := runTask(bin, model, profile, arm, t, trajDir, forcePlanner)
-		total += r.PromptTokens + r.CompletionTokens
-		results = append(results, r)
+		var cumWallMs int64
+		for attempt := 1; attempt <= max(attempts, 1); attempt++ {
+			r := runTask(bin, model, profile, arm, t, trajDir, forcePlanner)
+			r.Attempt = attempt
+			cumWallMs += r.WallMs
+			if r.Passed {
+				r.TTCSMs = cumWallMs
+			}
+			total += r.PromptTokens + r.CompletionTokens
+			results = append(results, r)
+			if r.Passed || (budget > 0 && total >= budget) {
+				break
+			}
+		}
 	}
 	return results
 }
@@ -435,260 +454,6 @@ func grade(work, taskDir string) bool {
 	cmd.Stdout = os.Stderr
 	cmd.Stderr = os.Stderr
 	return cmd.Run() == nil
-}
-
-func render(results []result) string {
-	profile := benchmarkProfileBaseline
-	arm := "full"
-	if len(results) > 0 {
-		if results[0].Profile != "" {
-			profile = results[0].Profile
-		}
-		if results[0].Arm != "" {
-			arm = results[0].Arm
-		}
-	}
-	return fmt.Sprintf("## 🤖 Reasonix e2e benchmark (%s · arm `%s`)\n\n", profile, arm) + renderBody(results)
-}
-
-// perSolvedLine is the efficiency-per-solve report line: total spend across
-// every accounted run (failures included) divided by accounted solves, so a
-// same-accuracy agent needing twice the rounds cannot hide behind averages.
-func perSolvedLine(steps, tools, modelRounds, accountedSolved int, wallAccountedMs int64) string {
-	if accountedSolved == 0 {
-		return ""
-	}
-	line := fmt.Sprintf("**Per solved task:** **model requests** %.1f · tool calls %.1f · wall %s",
-		float64(steps)/float64(accountedSolved), float64(tools)/float64(accountedSolved),
-		dur(wallAccountedMs/int64(accountedSolved)))
-	if modelRounds > 0 {
-		line += fmt.Sprintf(" · model rounds %.1f", float64(modelRounds)/float64(accountedSolved))
-	}
-	return line + "\n\n"
-}
-
-// renderBody is the report without a heading, so a caller that supplies its own
-// (SWE-bench mode) does not stack two titles.
-func renderBody(results []result) string {
-	var b strings.Builder
-	passed, ran := 0, 0
-	accounted, accountedSolved, unaccounted, unaccountedSolved, partial := 0, 0, 0, 0, 0
-	var pTok, cTok, hit, miss, compacts, tools, toolFails, steps, modelRounds int
-	var cost float64
-	var walls []int64
-	var wallAccountedMs int64
-	currency := ""
-	classes := map[string]int{}
-	prefixChangeReasons := map[string]int{}
-	bySource := map[string]sourceUsage{}
-	for _, r := range results {
-		if r.Skipped {
-			continue
-		}
-		ran++
-		if r.Passed {
-			passed++
-		}
-		classes[r.class()]++
-		walls = append(walls, r.WallMs)
-		if r.Unaccounted {
-			unaccounted++
-			if r.Passed {
-				unaccountedSolved++
-			}
-			continue
-		}
-		accounted++
-		if r.Passed {
-			accountedSolved++
-		}
-		if r.Partial {
-			partial++
-		}
-		pTok += r.PromptTokens
-		cTok += r.CompletionTokens
-		hit += r.CacheHitTokens
-		miss += r.CacheMissTokens
-		compacts += r.Compactions
-		tools += r.ToolCalls
-		toolFails += r.ToolFailures
-		steps += r.Steps
-		wallAccountedMs += r.WallMs
-		accumulateSources(bySource, r.UsageBySource)
-		if r.Trajectory != nil {
-			modelRounds += r.Trajectory.ModelRounds
-		}
-		cost += r.Cost
-		if r.Currency != "" {
-			currency = r.Currency
-		}
-		for reason, n := range r.PrefixChangeReasonCounts {
-			prefixChangeReasons[reason] += n
-		}
-	}
-
-	// Cost and tokens are divided by the solved instances we actually have
-	// accounting for. Dividing by every solve would treat a lost metrics file as
-	// a free solve and understate the published figure.
-	fmt.Fprintf(&b, "**Solved:** %d/%d (%s) · **Cost per solved:** %s · **Tokens per solved:** %s · **Median wall time:** %s\n\n",
-		passed, ran, pct(passed, ran),
-		costPerSolved(cost, accountedSolved, currency), tokensPerSolved(pTok+cTok, accountedSolved), dur(median(walls)))
-	fmt.Fprintf(&b, "**Cache hit:** %s · **Tokens:** %s (prompt %s / completion %s) · **Tool calls:** %s (%s failed) · **Compactions:** %d · **Cost:** %s%.4f\n\n",
-		pct(hit, hit+miss), comma(pTok+cTok), comma(pTok), comma(cTok),
-		comma(tools), comma(toolFails), compacts, currencySym(currency), cost)
-	b.WriteString(perSolvedLine(steps, tools, modelRounds, accountedSolved, wallAccountedMs))
-	b.WriteString(requestsBySourceLine(bySource))
-	b.WriteString(renderTimeAttribution(results))
-	if unaccounted > 0 {
-		fmt.Fprintf(&b, "> **Accounting incomplete for %d of %d instances** (%d of them solved): the agent was killed before it wrote any metrics, so their cost and tokens are unknown. Totals above cover the %d accounted instances only, and per-solved figures divide by the %d accounted solves — the true totals are higher.\n\n",
-			unaccounted, ran, unaccountedSolved, accounted, accountedSolved)
-	}
-	if partial > 0 {
-		fmt.Fprintf(&b, "> **%d of %d instances contributed partial accounting**: the agent was killed mid-run and its numbers were recovered from the last in-flight snapshot. What is counted is real but stops at that snapshot, so every total above is a lower bound.\n\n",
-			partial, ran)
-	}
-
-	fmt.Fprintf(&b, "| Task | Result | Class | Steps | Tools | Time | Prompt | Completion | Cache hit | Cost |\n")
-	fmt.Fprintf(&b, "|------|--------|-------|------:|------:|-----:|-------:|-----------:|----------:|-----:|\n")
-	for _, r := range results {
-		switch {
-		case r.Skipped:
-			fmt.Fprintf(&b, "| `%s` | ⏭️ skipped | — | — | — | — | — | — | — | — |\n", r.ID)
-		default:
-			res := "❌ fail"
-			if r.Passed {
-				res = "✅ pass"
-			}
-			fmt.Fprintf(&b, "| `%s` | %s | %s | %d | %d | %s | %s | %s | %s | %s%.4f |\n",
-				r.ID, res, r.class(), r.Steps, r.ToolCalls, dur(r.WallMs),
-				comma(r.PromptTokens), comma(r.CompletionTokens),
-				pct(r.CacheHitTokens, r.CacheHitTokens+r.CacheMissTokens),
-				currencySym(r.Currency), r.Cost)
-		}
-	}
-	fmt.Fprintf(&b, "\n<sub>Real provider run. Cache-hit %% is cached prompt tokens / total prompt tokens. Wall time is measured by the harness and includes process startup.</sub>\n")
-
-	if breakdown := failureBreakdown(classes); breakdown != "" {
-		fmt.Fprintf(&b, "\n**Failures by class:** %s\n", breakdown)
-	}
-	if breakdown := reasonBreakdown(prefixChangeReasons); breakdown != "" {
-		fmt.Fprintf(&b, "\n**Cache resets by cause:** %s\n", breakdown)
-	}
-
-	notes := false
-	for _, r := range results {
-		if r.Note != "" {
-			if !notes {
-				fmt.Fprintf(&b, "\n<details><summary>Notes</summary>\n\n")
-				notes = true
-			}
-			fmt.Fprintf(&b, "- `%s`: %s\n", r.ID, r.Note)
-		}
-	}
-	if notes {
-		fmt.Fprintf(&b, "\n</details>\n")
-	}
-	return b.String()
-}
-
-func pct(n, d int) string {
-	if d == 0 {
-		return "n/a"
-	}
-	return fmt.Sprintf("%.0f%%", 100*float64(n)/float64(d))
-}
-
-func costPerSolved(cost float64, solved int, currency string) string {
-	if solved == 0 {
-		return "n/a"
-	}
-	return fmt.Sprintf("%s%.4f", currencySym(currency), cost/float64(solved))
-}
-
-func tokensPerSolved(tokens, solved int) string {
-	if solved == 0 {
-		return "n/a"
-	}
-	return comma(tokens / solved)
-}
-
-func median(ms []int64) int64 {
-	if len(ms) == 0 {
-		return 0
-	}
-	sorted := append([]int64(nil), ms...)
-	slices.Sort(sorted)
-	return sorted[len(sorted)/2]
-}
-
-func dur(ms int64) string {
-	if ms <= 0 {
-		return "—"
-	}
-	d := time.Duration(ms) * time.Millisecond
-	if d < time.Minute {
-		return fmt.Sprintf("%.1fs", d.Seconds())
-	}
-	return fmt.Sprintf("%dm%02ds", int(d.Minutes()), int(d.Seconds())%60)
-}
-
-func failureBreakdown(classes map[string]int) string {
-	names := make([]string, 0, len(classes))
-	for name := range classes {
-		if name != "solved" {
-			names = append(names, name)
-		}
-	}
-	if len(names) == 0 {
-		return ""
-	}
-	sort.Strings(names)
-	parts := make([]string, 0, len(names))
-	for _, name := range names {
-		parts = append(parts, fmt.Sprintf("%s ×%d", name, classes[name]))
-	}
-	return strings.Join(parts, " · ")
-}
-
-// reasonBreakdown renders cache-prefix-change reason counts (compact_auto,
-// snip, prune, tools, ...) the same way failureBreakdown renders failure
-// classes, so a hit-rate regression in a PR shows which operation caused it.
-func reasonBreakdown(reasons map[string]int) string {
-	names := make([]string, 0, len(reasons))
-	for name := range reasons {
-		names = append(names, name)
-	}
-	if len(names) == 0 {
-		return ""
-	}
-	sort.Strings(names)
-	parts := make([]string, 0, len(names))
-	for _, name := range names {
-		parts = append(parts, fmt.Sprintf("%s ×%d", name, reasons[name]))
-	}
-	return strings.Join(parts, " · ")
-}
-
-func comma(n int) string {
-	s := fmt.Sprint(n)
-	if len(s) <= 3 {
-		return s
-	}
-	var out []byte
-	for i, c := range []byte(s) {
-		if i > 0 && (len(s)-i)%3 == 0 {
-			out = append(out, ',')
-		}
-		out = append(out, c)
-	}
-	return string(out)
-}
-
-func currencySym(c string) string {
-	if c == "" {
-		return ""
-	}
-	return c + " "
 }
 
 func readMetrics(path string) (runMetrics, error) {
