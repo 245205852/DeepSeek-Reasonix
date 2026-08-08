@@ -112,7 +112,7 @@ type Hub struct {
 func New(opts Options) *Hub {
 	owner := opts.Owner
 	if owner == nil {
-		owner = extension.DefaultRuntimeOwner
+		owner = extension.RuntimeOwnerOrDefault(nil)
 	}
 	return &Hub{
 		sessionID:  strings.TrimSpace(opts.SessionID),

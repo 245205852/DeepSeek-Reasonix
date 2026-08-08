@@ -46,7 +46,10 @@ reasonix doctor runtime --json
 reasonix plugin doctor <name>
 ```
 
-Reports component status, plan, effect receipts, recoverability, and lifecycle metrics.
+Reports component status, plan, effect receipts, recoverability, lifecycle
+metrics, and the process-local `runtimeOwnerFallbacks` count. Product boot binds
+an isolated owner; a non-zero fallback count identifies compatibility code that
+reached the shared default owner and needs explicit wiring.
 Plan diagnostics separate two facts: `prefixChanged` is computed after build by
 comparing the previous and current snapshot `CacheHash`; `providerChanged`
 reports provider capability additions, removals, or reloads. A provider-only
@@ -60,6 +63,13 @@ store. Independent sessions never share publish/drain state or recovery
 evidence. Recovery never claims successful rollback for irreversible effects;
 use the owner-scoped `AssessRecoverability(generation)` /
 `DecideResume(generation)` methods.
+
+The receipt ledger supports **in-process rebuild/resume only**. It is not
+persisted, so recovery after a process crash is outside this runtime-v2 scope.
+Memory is bounded to the latest 32 generations and 256 receipts per generation.
+Eviction also drops associated file-prior bytes and marks the affected
+generation's evidence as truncated, so diagnostics refuse to claim a clean
+rollback when complete evidence is no longer available.
 
 - Provider stream open records `provider-submit:<id>` (irreversible).
 - Drain timeout force-expire records `drain-timeout:<gen>` and is scheduled after every publish (`ScheduleDrainWatch` / doctor sweep).

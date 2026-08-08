@@ -45,7 +45,9 @@ reasonix doctor runtime --json
 reasonix plugin doctor <name>
 ```
 
-输出组件状态、计划、effect receipt、可恢复性与 lifecycle metrics。
+输出组件状态、计划、effect receipt、可恢复性、lifecycle metrics，以及进程内的
+`runtimeOwnerFallbacks` 计数。产品启动路径会绑定独立 owner；该值非零表示仍有
+兼容路径落到了共享默认 owner，需要补齐显式接线。
 计划诊断拆分两个事实：`prefixChanged` 在构建完成后比较新旧 snapshot 的
 `CacheHash` 得出；`providerChanged` 表示 Provider capability 的新增、删除或
 重载。因此仅滚动 Provider backend 且 system prompt、tool schemas 字节不变时，
@@ -57,6 +59,11 @@ reasonix plugin doctor <name>
 不共享 publish/drain 状态或恢复证据。Recovery **不得** 对 irreversible
 声称 rollback 成功；使用 owner 级的 `AssessRecoverability(generation)` /
 `DecideResume(generation)`。
+
+Receipt ledger **只支持进程内 rebuild/resume**，不会持久化；进程崩溃后的恢复
+不在本次 Runtime v2 的范围内。内存最多保留最近 32 个 generation、每代 256 条
+receipt。淘汰时也会释放关联的文件 prior 字节，并将该代证据标记为已截断；证据
+不完整时，诊断不会声称 clean rollback。
 
 - Provider stream open 会记录 `provider-submit:<id>`（不可逆）。
 - Drain 超时 force-expire 记录 `drain-timeout:<gen>`，在每次 publish 后调度（`ScheduleDrainWatch` / doctor sweep）。

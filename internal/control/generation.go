@@ -44,10 +44,7 @@ func (c *Controller) RuntimeOwner() *extension.RuntimeOwner {
 }
 
 func runtimeOwnerOrDefault(owner *extension.RuntimeOwner) *extension.RuntimeOwner {
-	if owner == nil {
-		return extension.DefaultRuntimeOwner
-	}
-	return owner
+	return extension.RuntimeOwnerOrDefault(owner)
 }
 
 // RuntimePhase reports Active when this generation is published, Draining

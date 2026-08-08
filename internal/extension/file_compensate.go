@@ -77,5 +77,5 @@ func (s *FilePriorStore) Forget(id string) {
 
 // ApplyFileWriteCompensation restores prior content and marks the receipt applied.
 func ApplyFileWriteCompensation(receiptID string) error {
-	return DefaultRuntimeOwner.ApplyFileWriteCompensation(receiptID)
+	return RuntimeOwnerOrDefault(nil).ApplyFileWriteCompensation(receiptID)
 }

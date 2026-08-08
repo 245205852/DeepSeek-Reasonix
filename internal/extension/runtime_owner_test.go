@@ -1,10 +1,21 @@
 package extension
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"testing"
 )
+
+func TestRuntimeOwnerFallbackIsObservable(t *testing.T) {
+	before := RuntimeOwnerFallbackCount()
+	if got := RuntimeOwnerFromContext(context.Background()); got != DefaultRuntimeOwner {
+		t.Fatal("unbound context must use the compatibility owner")
+	}
+	if after := RuntimeOwnerFallbackCount(); after <= before {
+		t.Fatalf("fallback count = %d, want greater than %d", after, before)
+	}
+}
 
 func TestRuntimeOwnerRepeatedFileWritesKeepDistinctPriors(t *testing.T) {
 	owner := NewRuntimeOwner()
@@ -46,5 +57,25 @@ func TestRuntimeOwnerRepeatedFileWritesKeepDistinctPriors(t *testing.T) {
 		if !ok || r.CompensationStatus != "applied" {
 			t.Fatalf("receipt %s = %+v, ok=%v", id, r, ok)
 		}
+	}
+}
+
+func TestRuntimeOwnerReceiptEvictionReleasesFilePrior(t *testing.T) {
+	owner := NewRuntimeOwner()
+	owner.Gate.Publish(11)
+	path := filepath.Join(t.TempDir(), "bounded.txt")
+	first := owner.RecordFileWrite(path, true, []byte("old"))
+	for i := 1; i <= defaultReceiptPerGenerationLimit; i++ {
+		owner.RecordFileWrite(path, true, []byte("old"))
+	}
+
+	if _, ok := owner.Receipts.Get(first); ok {
+		t.Fatal("oldest receipt should be evicted at the per-generation limit")
+	}
+	if err := owner.FilePriors.Compensate(first); err == nil {
+		t.Fatal("evicted receipt must release its retained file prior")
+	}
+	if rec := owner.AssessRecoverability(11); rec.Clean {
+		t.Fatalf("truncated receipt history must not claim clean recovery: %+v", rec)
 	}
 }

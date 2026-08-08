@@ -129,10 +129,11 @@ func New(base provider.Resolver, clients func() []ProviderClient, claims map[ext
 	if clients == nil {
 		clients = func() []ProviderClient { return nil }
 	}
-	owner := extension.DefaultRuntimeOwner
+	var owner *extension.RuntimeOwner
 	if len(owners) > 0 && owners[0] != nil {
 		owner = owners[0]
 	}
+	owner = extension.RuntimeOwnerOrDefault(owner)
 	r := &Resolver{
 		base:         base,
 		clients:      clients,

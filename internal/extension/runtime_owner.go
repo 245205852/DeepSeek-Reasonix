@@ -20,12 +20,17 @@ type RuntimeOwner struct {
 
 // NewRuntimeOwner returns an isolated runtime lifecycle owner.
 func NewRuntimeOwner() *RuntimeOwner {
-	receipts := NewReceiptStore()
+	priors := NewFilePriorStore()
+	receipts := newReceiptStore(defaultReceiptGenerationLimit, defaultReceiptPerGenerationLimit, func(r EffectReceipt) {
+		if r.Class == Compensatable {
+			priors.Forget(r.ID)
+		}
+	})
 	gate := newPublishGate(receipts)
 	owner := &RuntimeOwner{
 		Gate:       gate,
 		Receipts:   receipts,
-		FilePriors: NewFilePriorStore(),
+		FilePriors: priors,
 		Messages:   NewMessageSendGuard(),
 	}
 	owner.HostStreams = NewHostStreamRegistry(gate)
@@ -36,6 +41,26 @@ func NewRuntimeOwner() *RuntimeOwner {
 // have not yet supplied an explicit owner. Product boot paths use isolated
 // owners instead.
 var DefaultRuntimeOwner = NewRuntimeOwner()
+
+var defaultRuntimeOwnerFallbacks atomic.Uint64
+
+// RuntimeOwnerOrDefault returns owner when it is explicitly bound and records
+// compatibility fallbacks when a caller has not supplied one. Product boot
+// paths bind an owner before constructing a runtime; the counter makes missed
+// wiring observable in doctor diagnostics instead of silently sharing state.
+func RuntimeOwnerOrDefault(owner *RuntimeOwner) *RuntimeOwner {
+	if owner != nil {
+		return owner
+	}
+	defaultRuntimeOwnerFallbacks.Add(1)
+	return DefaultRuntimeOwner
+}
+
+// RuntimeOwnerFallbackCount returns the number of process-local compatibility
+// owner fallbacks observed since startup.
+func RuntimeOwnerFallbackCount() uint64 {
+	return defaultRuntimeOwnerFallbacks.Load()
+}
 
 // ContextWithRuntimeOwner binds owner to provider/agent work derived from ctx.
 func ContextWithRuntimeOwner(ctx context.Context, owner *RuntimeOwner) context.Context {
@@ -49,23 +74,22 @@ func ContextWithRuntimeOwner(ctx context.Context, owner *RuntimeOwner) context.C
 }
 
 // RuntimeOwnerFromContext returns the bound owner, falling back to the package
-// compatibility owner for callers outside the product boot path.
+// compatibility owner for callers outside the product boot path. The fallback
+// is counted for doctor diagnostics.
 func RuntimeOwnerFromContext(ctx context.Context) *RuntimeOwner {
 	if ctx != nil {
 		if owner, ok := ctx.Value(runtimeOwnerContextKey{}).(*RuntimeOwner); ok && owner != nil {
 			return owner
 		}
 	}
-	return DefaultRuntimeOwner
+	return RuntimeOwnerOrDefault(nil)
 }
 
 type runtimeOwnerContextKey struct{}
 
 // RecordProviderSubmit records one irreversible provider request.
 func (o *RuntimeOwner) RecordProviderSubmit(generation uint64, streamID, owner string) {
-	if o == nil {
-		o = DefaultRuntimeOwner
-	}
+	o = RuntimeOwnerOrDefault(o)
 	o.Receipts.Record(EffectReceipt{
 		ID:                 "provider-submit:" + streamID,
 		Owner:              owner,
@@ -78,9 +102,7 @@ func (o *RuntimeOwner) RecordProviderSubmit(generation uint64, streamID, owner s
 // RecordMessageSentOnce records a user-visible send exactly once per
 // generation/message pair in this runtime lineage.
 func (o *RuntimeOwner) RecordMessageSentOnce(generation uint64, messageID, owner string) bool {
-	if o == nil {
-		o = DefaultRuntimeOwner
-	}
+	o = RuntimeOwnerOrDefault(o)
 	if !o.Messages.TryRecord(generation, messageID) {
 		return false
 	}
@@ -96,9 +118,7 @@ func (o *RuntimeOwner) RecordMessageSentOnce(generation uint64, messageID, owner
 
 // RecordMessageSent records a user-visible send without applying deduplication.
 func (o *RuntimeOwner) RecordMessageSent(generation uint64, messageID, owner string) {
-	if o == nil {
-		o = DefaultRuntimeOwner
-	}
+	o = RuntimeOwnerOrDefault(o)
 	o.Receipts.Record(EffectReceipt{
 		ID:                 "message-sent:" + messageID,
 		Owner:              owner,
@@ -111,9 +131,7 @@ func (o *RuntimeOwner) RecordMessageSent(generation uint64, messageID, owner str
 // RecordFileWrite captures prior state under a unique receipt ID. Repeated
 // writes to the same path never overwrite an earlier generation's evidence.
 func (o *RuntimeOwner) RecordFileWrite(path string, hadPrior bool, prior []byte) string {
-	if o == nil {
-		o = DefaultRuntimeOwner
-	}
+	o = RuntimeOwnerOrDefault(o)
 	gen := o.Gate.Published()
 	id := fmt.Sprintf("file-write:%d:%d", gen, o.receiptSeq.Add(1))
 	o.FilePriors.Capture(id, path, prior, hadPrior)
@@ -131,9 +149,7 @@ func (o *RuntimeOwner) RecordFileWrite(path string, hadPrior bool, prior []byte)
 // ApplyFileWriteCompensation restores prior file state and updates this
 // lineage's receipt without touching another runtime owner.
 func (o *RuntimeOwner) ApplyFileWriteCompensation(receiptID string) error {
-	if o == nil {
-		o = DefaultRuntimeOwner
-	}
+	o = RuntimeOwnerOrDefault(o)
 	if err := o.FilePriors.Compensate(receiptID); err != nil {
 		o.Receipts.Record(EffectReceipt{
 			ID:                 receiptID,
@@ -154,16 +170,12 @@ func (o *RuntimeOwner) ApplyFileWriteCompensation(receiptID string) error {
 
 // DecideResume evaluates recovery evidence owned by this runtime lineage.
 func (o *RuntimeOwner) DecideResume(generation uint64) ResumeDecision {
-	if o == nil {
-		o = DefaultRuntimeOwner
-	}
+	o = RuntimeOwnerOrDefault(o)
 	return DecideResume(o.Receipts, generation)
 }
 
 // AssessRecoverability evaluates recovery evidence owned by this lineage.
 func (o *RuntimeOwner) AssessRecoverability(generation uint64) Recoverability {
-	if o == nil {
-		o = DefaultRuntimeOwner
-	}
+	o = RuntimeOwnerOrDefault(o)
 	return o.Receipts.AssessRecoverability(generation)
 }

@@ -107,5 +107,5 @@ func (r *HostStreamRegistry) Count(gen uint64) int {
 
 // TrackHostStream is a convenience over DefaultHostStreams.Track.
 func TrackHostStream(gen uint64, cancel context.CancelFunc) (untrack func()) {
-	return DefaultHostStreams.Track(gen, cancel)
+	return RuntimeOwnerOrDefault(nil).HostStreams.Track(gen, cancel)
 }

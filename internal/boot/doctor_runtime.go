@@ -10,13 +10,14 @@ import (
 // RuntimeDoctorReport is the structured runtime diagnostics document for
 // `reasonix doctor runtime` and desktop status panels.
 type RuntimeDoctorReport struct {
-	Status         *extension.RuntimeStatus           `json:"status,omitempty"`
-	Metrics        extension.LifecycleMetricsSnapshot `json:"metrics"`
-	Recoverability extension.Recoverability           `json:"recoverability"`
-	Resume         extension.ResumeDecision           `json:"resume"`
-	PublishedGen   uint64                             `json:"publishedGeneration"`
-	DrainingGens   []uint64                           `json:"drainingGenerations,omitempty"`
-	Text           string                             `json:"-"`
+	Status                *extension.RuntimeStatus           `json:"status,omitempty"`
+	Metrics               extension.LifecycleMetricsSnapshot `json:"metrics"`
+	Recoverability        extension.Recoverability           `json:"recoverability"`
+	Resume                extension.ResumeDecision           `json:"resume"`
+	PublishedGen          uint64                             `json:"publishedGeneration"`
+	DrainingGens          []uint64                           `json:"drainingGenerations,omitempty"`
+	RuntimeOwnerFallbacks uint64                             `json:"runtimeOwnerFallbacks"`
+	Text                  string                             `json:"-"`
 }
 
 // CollectRuntimeDoctor builds a report from an optional live BuildResult and
@@ -31,11 +32,12 @@ func CollectRuntimeDoctor(res *BuildResult) RuntimeDoctorReport {
 	_ = gate.SweepAndForceExpire()
 	gen := gate.Published()
 	report := RuntimeDoctorReport{
-		Metrics:        extension.DefaultLifecycleMetrics.Snapshot(),
-		PublishedGen:   gen,
-		DrainingGens:   gate.DrainingGenerations(),
-		Recoverability: owner.AssessRecoverability(gen),
-		Resume:         owner.DecideResume(gen),
+		Metrics:               extension.DefaultLifecycleMetrics.Snapshot(),
+		PublishedGen:          gen,
+		DrainingGens:          gate.DrainingGenerations(),
+		RuntimeOwnerFallbacks: extension.RuntimeOwnerFallbackCount(),
+		Recoverability:        owner.AssessRecoverability(gen),
+		Resume:                owner.DecideResume(gen),
 	}
 	if res != nil {
 		report.Status = res.Status
@@ -65,6 +67,7 @@ func RenderRuntimeDoctorText(report RuntimeDoctorReport) string {
 	if body == "" {
 		body = "runtime status: unavailable\n"
 	}
+	body += fmt.Sprintf("runtime owner fallbacks: %d\n", report.RuntimeOwnerFallbacks)
 	body += fmt.Sprintf("recoverability: clean=%v irreversible=%v\n", report.Recoverability.Clean, report.Recoverability.HasIrreversible)
 	body += fmt.Sprintf("resume: allow=%v cleanRollback=%v\n", report.Resume.AllowResume, report.Resume.CleanRollback)
 	for _, n := range report.Recoverability.Notes {

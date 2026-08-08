@@ -34,3 +34,6 @@ tools/providers 变化时可能改 hash；`ReuseAssembly` 仍可跳过 skill/com
 `StartPackagesWithPlan` 收养 Unchanged 客户端；仅启动 Added/Reloaded。
 Publish 后 `DrainPlan`；默认 drain TTL 30s，超时先 fire cancel 再写
 `drain-timeout-<gen>` receipt。
+
+Receipt 证据仅存在于当前进程，最多保留 32 个 generation、每代 256 条。发生
+淘汰时按保守策略处理：禁止声称 clean rollback，而不是隐藏证据缺失。

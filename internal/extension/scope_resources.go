@@ -151,7 +151,7 @@ func TrackIrreversible(scope EffectScope, id, owner string) error {
 		},
 	})
 	if err == nil {
-		DefaultReceiptStore.Record(EffectReceipt{
+		RuntimeOwnerOrDefault(nil).Receipts.Record(EffectReceipt{
 			ID:                 id,
 			Owner:              owner,
 			Class:              Irreversible,

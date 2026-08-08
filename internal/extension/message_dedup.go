@@ -36,5 +36,5 @@ func (g *MessageSendGuard) TryRecord(gen uint64, messageID string) bool {
 // RecordMessageSentOnce records an irreversible message-send receipt only on
 // the first observation of (generation, messageID).
 func RecordMessageSentOnce(generation uint64, messageID, owner string) bool {
-	return DefaultRuntimeOwner.RecordMessageSentOnce(generation, messageID, owner)
+	return RuntimeOwnerOrDefault(nil).RecordMessageSentOnce(generation, messageID, owner)
 }

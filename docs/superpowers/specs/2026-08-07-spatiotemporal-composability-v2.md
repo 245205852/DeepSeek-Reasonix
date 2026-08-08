@@ -22,6 +22,7 @@ language:
 - Keep existing stdio/HTTP transport; do not rewrite the transport layer
 - Do not introduce an external runtime dependency
 - Irreversible external work uses effect receipts; never fake rollback
+- Receipt recovery is process-local, bounded, and does not promise crash recovery
 - Preserve system prompt, tool schema, and memory prefix cache-first constraints
 - Claude compatibility plugin paths are out of scope for v2 native runtime changes
 
@@ -170,6 +171,11 @@ class, timestamps, receipt id, and compensation status. Provider requests
 already submitted must not be reported as rolled back. File writes need prior
 state or compensate. Sent messages get receipts and duplicate-send protection.
 Cancellation stops later work only.
+
+The ledger retains at most 32 generations and 256 receipts per generation.
+Eviction marks recovery evidence incomplete, releases associated file priors,
+and prevents a clean-rollback claim. The ledger is not persisted; process-crash
+recovery is explicitly outside this design's scope.
 
 ## Permissions
 

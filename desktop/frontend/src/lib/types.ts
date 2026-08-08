@@ -1477,7 +1477,7 @@ export interface RuntimeDoctorReport {
   fullRebuilds: number;
   subgraphRebuilds: number;
   staleDrops: number;
-  admissionRejected: number;
+  admissionRejected: number; runtimeOwnerFallbacks: number;
 }
 
 /** Capability diagnostics report from App.CapabilityDiagnostics (capdiag.Report). */

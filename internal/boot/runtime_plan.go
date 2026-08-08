@@ -195,7 +195,7 @@ func publishBuildResult(res *BuildResult) {
 	}
 	owner := res.Owner
 	if owner == nil {
-		owner = extension.DefaultRuntimeOwner
+		owner = extension.RuntimeOwnerOrDefault(nil)
 		res.Owner = owner
 	}
 	gate := owner.Gate

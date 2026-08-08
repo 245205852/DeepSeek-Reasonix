@@ -37,3 +37,7 @@ is retained.
 only starts Added/Reloaded. Drain uses `Manager.DrainPlan` after publish.
 Drain TTL defaults to 30s; force-expire fires registered cancel callbacks then
 writes `drain-timeout-<gen>` receipts.
+
+Receipt evidence is process-local and bounded to 32 generations with 256
+receipts per generation. Retention truncation is conservative: it prevents a
+clean-rollback claim instead of hiding missing evidence.

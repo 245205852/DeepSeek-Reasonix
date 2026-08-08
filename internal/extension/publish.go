@@ -287,7 +287,7 @@ func (g *PublishGate) DrainingGenerations() []uint64 {
 // DefaultPublishGate returns the compatibility owner gate. Product boot paths
 // bind an isolated RuntimeOwner instead.
 func DefaultPublishGate() *PublishGate {
-	return DefaultRuntimeOwner.Gate
+	return RuntimeOwnerOrDefault(nil).Gate
 }
 
 // RegisterDrainCancel preserves the package-level compatibility API.

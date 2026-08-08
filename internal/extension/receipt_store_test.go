@@ -50,3 +50,28 @@ func TestReceiptStoreKeepsSameIDAcrossGenerations(t *testing.T) {
 		t.Fatalf("original receipt was overwritten: %+v ok=%v", old, ok)
 	}
 }
+
+func TestReceiptStoreBoundsGenerationAndReceiptRetention(t *testing.T) {
+	s := newReceiptStore(2, 2, nil)
+	for gen := uint64(1); gen <= 3; gen++ {
+		for i := 0; i < 2; i++ {
+			s.Record(EffectReceipt{ID: itoaU64(gen) + "-" + itoaU64(uint64(i)), Generation: gen, Class: Irreversible})
+		}
+	}
+	if got := len(s.ForGeneration(1)); got != 0 {
+		t.Fatalf("evicted generation receipts = %d, want 0", got)
+	}
+	if rec := s.AssessRecoverability(1); rec.Clean || len(rec.Blocking) == 0 {
+		t.Fatalf("evicted generation must not claim clean recovery: %+v", rec)
+	}
+
+	for i := 0; i < 3; i++ {
+		s.Record(EffectReceipt{ID: "current-" + itoaU64(uint64(i)), Generation: 4, Class: Irreversible})
+	}
+	if got := len(s.ForGeneration(4)); got != 2 {
+		t.Fatalf("retained receipts = %d, want 2", got)
+	}
+	if rec := s.AssessRecoverability(4); rec.Clean || len(rec.Blocking) == 0 {
+		t.Fatalf("truncated generation must not claim clean recovery: %+v", rec)
+	}
+}

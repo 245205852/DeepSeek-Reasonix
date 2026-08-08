@@ -83,9 +83,14 @@ func TestPublishGateAdmissionAfterRebuild(t *testing.T) {
 }
 
 func TestDoctorRuntimeReport(t *testing.T) {
+	before := extension.RuntimeOwnerFallbackCount()
+	_ = extension.RuntimeOwnerFromContext(context.Background())
 	report := CollectRuntimeDoctor(nil)
+	if report.RuntimeOwnerFallbacks <= before {
+		t.Fatalf("runtime owner fallbacks = %d, want greater than %d", report.RuntimeOwnerFallbacks, before)
+	}
 	text := RenderRuntimeDoctorText(report)
-	if !strings.Contains(text, "metrics:") && !strings.Contains(text, "recoverability") {
+	if !strings.Contains(text, "runtime owner fallbacks:") || (!strings.Contains(text, "metrics:") && !strings.Contains(text, "recoverability")) {
 		t.Fatalf("unexpected doctor text:\n%s", text)
 	}
 	if _, err := RenderRuntimeDoctorJSON(report); err != nil {
