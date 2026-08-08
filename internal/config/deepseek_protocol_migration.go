@@ -50,7 +50,7 @@ func UpgradeDeepSeekProviderProtocolUserConfig(name string) (bool, error) {
 func CanUpgradeDeepSeekProviderProtocol(p *ProviderEntry) bool {
 	if p == nil || !strings.EqualFold(strings.TrimSpace(p.Kind), "openai") ||
 		!isOfficialDeepSeekOpenAIEndpoint(p.BaseURL) ||
-		strings.TrimSpace(p.APIKeyEnv) != "DEEPSEEK_API_KEY" {
+		strings.TrimSpace(p.APIKeyEnv) == "" {
 		return false
 	}
 	models := p.ModelList()
@@ -150,6 +150,12 @@ func isUnmodifiedLegacyDeepSeekProvider(p ProviderEntry, raw map[string]any) boo
 		return false
 	}
 	if !isExactDeepSeekOpenAIEndpoint(p.BaseURL) {
+		return false
+	}
+	// Automatic migration is intentionally narrower than the explicit Settings
+	// upgrade: only the stock environment variable is unambiguous enough to
+	// change without user confirmation.
+	if strings.TrimSpace(p.APIKeyEnv) != "DEEPSEEK_API_KEY" {
 		return false
 	}
 	allowed := map[string]bool{

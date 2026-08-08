@@ -211,4 +211,28 @@ func TestCanUpgradeDeepSeekProviderProtocolRejectsProxyButAllowsExplicitUpgradeO
 	if !CanUpgradeDeepSeekProviderProtocol(&versioned) {
 		t.Fatal("the official /v1 compatibility address should offer the explicit upgrade action")
 	}
+	customKey := base
+	customKey.APIKeyEnv = "MY_DEEPSEEK_KEY"
+	if !CanUpgradeDeepSeekProviderProtocol(&customKey) {
+		t.Fatal("an official provider with a custom key env should offer the explicit upgrade action")
+	}
+}
+
+func TestNormalizeOfficialDeepSeekModelsDoesNotAddProToResponses(t *testing.T) {
+	c := &Config{Providers: []ProviderEntry{{
+		Name: "deepseek", Kind: "responses", BaseURL: "https://api.deepseek.com",
+		Model: "deepseek-v4-flash",
+	}}}
+
+	normalizeOfficialDeepSeekModels(c)
+	p, ok := c.Provider("deepseek")
+	if !ok {
+		t.Fatal("DeepSeek provider missing after normalization")
+	}
+	if !p.HasModel("deepseek-v4-flash") {
+		t.Fatal("Responses provider lost its Flash model")
+	}
+	if p.HasModel("deepseek-v4-pro") {
+		t.Fatalf("Responses normalization added unsupported Pro model: %+v", p.ModelList())
+	}
 }

@@ -1532,7 +1532,14 @@ func normalizeOfficialDeepSeekModels(c *Config) {
 		}
 		switch strings.TrimSpace(p.Name) {
 		case "deepseek":
-			ensureProviderModels(p, []string{"deepseek-v4-flash", "deepseek-v4-pro"}, "deepseek-v4-flash")
+			required := []string{"deepseek-v4-flash", "deepseek-v4-pro"}
+			// The official Responses endpoint currently exposes Flash only. Do not
+			// add Pro through the generic DeepSeek catalog backfill; explicit user
+			// model lists remain untouched for compatibility.
+			if strings.EqualFold(strings.TrimSpace(p.Kind), "responses") {
+				required = []string{"deepseek-v4-flash"}
+			}
+			ensureProviderModels(p, required, "deepseek-v4-flash")
 		case "deepseek-flash":
 			ensureProviderModels(p, []string{"deepseek-v4-flash"}, "deepseek-v4-flash")
 		case "deepseek-pro":
