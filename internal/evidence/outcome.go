@@ -1,6 +1,11 @@
 package evidence
 
-import "strings"
+import (
+	"path"
+	"strings"
+
+	"reasonix/internal/shellsafe"
+)
 
 // OutcomeSample decomposes one tool round's receipts by outcome: information
 // gathered (Exploration), verification attempts run, and verification-command
@@ -16,31 +21,42 @@ type OutcomeSample struct {
 	// LegacyGain is the live novelty scorer's verdict on the same receipts, so
 	// offline analysis can compare the two policies without replaying.
 	LegacyGain int
+	// Discriminating counts observations able to falsify the working
+	// hypothesis: verification commands, or commands exercising a mutated
+	// file — deliberately broader than delivery verification (repro scripts).
+	Discriminating int
+	// DebtAge counts consecutive rounds carrying an unverified mutation with
+	// no discriminating observation; 0 while no verification debt is open.
+	DebtAge int
 }
 
 // OutcomeTracker is the shadow counterpart of ProgressTracker: same per-round
 // receipts, scored by outcome instead of novelty. It never influences guard
 // behavior — samples exist only for trajectory recording and offline analysis.
 type OutcomeTracker struct {
-	legacy     *ProgressTracker
-	round      int
-	readPaths  map[string]bool
-	commands   map[string]bool
-	failures   map[string]bool
-	actions    map[string]bool
-	verifySeen map[string]bool
-	verifyPass map[string]bool
+	legacy       *ProgressTracker
+	round        int
+	readPaths    map[string]bool
+	commands     map[string]bool
+	failures     map[string]bool
+	actions      map[string]bool
+	verifySeen   map[string]bool
+	verifyPass   map[string]bool
+	mutatedBases map[string]bool
+	debt         bool
+	debtAge      int
 }
 
 func NewOutcomeTracker() *OutcomeTracker {
 	return &OutcomeTracker{
-		legacy:     NewProgressTracker(),
-		readPaths:  map[string]bool{},
-		commands:   map[string]bool{},
-		failures:   map[string]bool{},
-		actions:    map[string]bool{},
-		verifySeen: map[string]bool{},
-		verifyPass: map[string]bool{},
+		legacy:       NewProgressTracker(),
+		readPaths:    map[string]bool{},
+		commands:     map[string]bool{},
+		failures:     map[string]bool{},
+		actions:      map[string]bool{},
+		verifySeen:   map[string]bool{},
+		verifyPass:   map[string]bool{},
+		mutatedBases: map[string]bool{},
 	}
 }
 
@@ -56,7 +72,45 @@ func (t *OutcomeTracker) ScoreRound(receipts []Receipt) OutcomeSample {
 		t.scoreReceipt(r, &s)
 	}
 	s.LegacyGain = t.legacy.ScoreRound(receipts)
+	// Verification debt: a discriminating observation settles it; otherwise a
+	// mutation opens it and every silent round ages it, mutation round included.
+	if s.Discriminating > 0 {
+		t.debt, t.debtAge = false, 0
+	} else {
+		if s.Churn > 0 {
+			t.debt = true
+		}
+		if t.debt {
+			t.debtAge++
+		}
+	}
+	s.DebtAge = t.debtAge
 	return s
+}
+
+// noteMutatedPaths remembers mutated file basenames so a later command that
+// mentions one (running a repro script, a targeted test file) reads as a
+// discriminating observation even when it is not delivery verification.
+func (t *OutcomeTracker) noteMutatedPaths(paths []string) {
+	for _, p := range paths {
+		if base := path.Base(strings.ReplaceAll(p, "\\", "/")); len(base) >= 3 {
+			t.mutatedBases[base] = true
+		}
+	}
+}
+
+func (t *OutcomeTracker) commandExercisesMutation(command string) bool {
+	// Inspecting a mutated file (cat/grep/head) cannot falsify anything; only
+	// a command that can execute it discriminates.
+	if _, _, readOnly := shellsafe.CommandIsReadOnly(command); readOnly {
+		return false
+	}
+	for base := range t.mutatedBases {
+		if strings.Contains(command, base) {
+			return true
+		}
+	}
+	return false
 }
 
 func (t *OutcomeTracker) scoreReceipt(r Receipt, s *OutcomeSample) {
@@ -69,6 +123,7 @@ func (t *OutcomeTracker) scoreReceipt(r Receipt, s *OutcomeSample) {
 		// A mutation is a state transition, not proof of progress: it counts
 		// as churn until a verification transition vouches for it.
 		s.Churn++
+		t.noteMutatedPaths(r.Paths)
 	case r.Success && (r.ToolName == "task" || r.ToolName == "parallel_tasks" || r.ToolName == "fleet"):
 		// A delegation return is new information at best — never objective
 		// progress on its own.
@@ -95,8 +150,12 @@ func (t *OutcomeTracker) scoreReceipt(r Receipt, s *OutcomeSample) {
 func (t *OutcomeTracker) scoreCommand(command string, r Receipt, s *OutcomeSample) {
 	if r.Success && (r.Mutation || r.Write) {
 		s.Churn++
+		t.noteMutatedPaths(r.Paths)
 	}
 	verify := IsDeliveryVerificationCommand(command)
+	if verify || t.commandExercisesMutation(command) {
+		s.Discriminating++
+	}
 	if verify {
 		s.Verification++
 		seen, wasPass := t.verifySeen[command], t.verifyPass[command]

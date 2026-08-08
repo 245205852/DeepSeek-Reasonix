@@ -44,13 +44,15 @@ type DelegationAdmission struct {
 
 // OutcomeProgress mirrors evidence.OutcomeSample with stable snake_case keys.
 type OutcomeProgress struct {
-	Round        int `json:"round"`
-	Exploration  int `json:"exploration,omitempty"`
-	Verification int `json:"verification,omitempty"`
-	Objective    int `json:"objective,omitempty"`
-	Regression   int `json:"regression,omitempty"`
-	Churn        int `json:"churn,omitempty"`
-	LegacyGain   int `json:"legacy_gain,omitempty"`
+	Round          int `json:"round"`
+	Exploration    int `json:"exploration,omitempty"`
+	Verification   int `json:"verification,omitempty"`
+	Objective      int `json:"objective,omitempty"`
+	Regression     int `json:"regression,omitempty"`
+	Churn          int `json:"churn,omitempty"`
+	LegacyGain     int `json:"legacy_gain,omitempty"`
+	Discriminating int `json:"discriminating,omitempty"`
+	DebtAge        int `json:"debt_age,omitempty"`
 }
 
 // ContractShadowAudit mirrors event.ContractShadowAudit with stable keys.
@@ -174,13 +176,15 @@ func (r *Recorder) RecordContractShadow(a event.ContractShadowAudit) {
 
 func (r *Recorder) RecordOutcomeProgress(sample evidence.OutcomeSample) {
 	r.append(Record{OutcomeProgress: &OutcomeProgress{
-		Round:        sample.Round,
-		Exploration:  sample.Exploration,
-		Verification: sample.Verification,
-		Objective:    sample.Objective,
-		Regression:   sample.Regression,
-		Churn:        sample.Churn,
-		LegacyGain:   sample.LegacyGain,
+		Round:          sample.Round,
+		Exploration:    sample.Exploration,
+		Verification:   sample.Verification,
+		Objective:      sample.Objective,
+		Regression:     sample.Regression,
+		Churn:          sample.Churn,
+		LegacyGain:     sample.LegacyGain,
+		Discriminating: sample.Discriminating,
+		DebtAge:        sample.DebtAge,
 	}})
 	event.RecordOutcomeProgress(r.inner, sample)
 }
