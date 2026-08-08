@@ -2674,9 +2674,8 @@ func (c *Controller) SetGoal(goal string) {
 }
 
 // SetGoalDurable updates the Goal only when its sidecar can be replaced
-// atomically. The optional legacy archive argument is ignored; retaining it as
-// a variadic parameter keeps older source call sites compiling.
-func (c *Controller) SetGoalDurable(goal string, _ ...string) error {
+// atomically.
+func (c *Controller) SetGoalDurable(goal string) error {
 	snapshot := c.goals.capture()
 	legacySnapshot, hadLegacySnapshot := c.legacyRestoreSnapshot()
 	resolved, setup := c.resolveGoalText(goal, GoalResearchAuto)

@@ -65,11 +65,6 @@ func (m legacyResearchArchive) loadGoalText(taskID string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	if report, err := m.store.ValidateTask(task.ID); err != nil {
-		return "", err
-	} else if !report.Valid {
-		return "", errLegacyArchiveInvalid
-	}
 	goal := strings.TrimSpace(task.Spec.Goal)
 	if goal == "" {
 		return "", errLegacyArchiveMissingGoal
@@ -79,7 +74,6 @@ func (m legacyResearchArchive) loadGoalText(taskID string) (string, error) {
 
 var (
 	errLegacyArchiveUnavailable = errString("legacy research archive is unavailable for this workspace")
-	errLegacyArchiveInvalid     = errString("legacy research archive is invalid")
 	errLegacyArchiveMissingGoal = errString("legacy research archive is missing goal text")
 )
 
