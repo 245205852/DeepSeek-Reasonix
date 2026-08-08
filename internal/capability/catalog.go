@@ -189,7 +189,7 @@ func MCPServerEntries(opts CatalogOptions) []Entry {
 		var toolSrc []plugin.CachedTool
 		toolStatus := StatusConfigured
 		switch {
-		case len(opts.ProxyTools[name]) > 0 && !registryHasTools:
+		case status == StatusReady && len(opts.ProxyTools[name]) > 0 && !registryHasTools:
 			toolSrc = opts.ProxyTools[name]
 			toolStatus = StatusReady
 		case status != StatusReady:

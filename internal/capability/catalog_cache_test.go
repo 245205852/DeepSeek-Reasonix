@@ -318,3 +318,18 @@ func TestCatalogKeepsProxyToolsAfterConnect(t *testing.T) {
 		t.Fatalf("registry-backed server should have exactly one catalog entry, got %d", count)
 	}
 }
+
+func TestCatalogDoesNotRouteProxyToolsAfterFailure(t *testing.T) {
+	cat := BuildCatalog(CatalogOptions{
+		Plugins:     []config.PluginEntry{{Name: "gh", AutoStart: boolPtr(false)}},
+		Profile:     ProfileDelivery,
+		Failed:      map[string]string{"gh": "connection reset"},
+		Connected:   map[string]bool{"gh": true},
+		CachedTools: map[string][]plugin.CachedTool{"gh": {{Name: "search_issues"}}},
+		ProxyTools:  map[string][]plugin.CachedTool{"gh": {{Name: "search_issues"}}},
+	})
+	entry, ok := cat.Lookup("mcp-tool:gh/search_issues")
+	if !ok || entry.Status != StatusFailed {
+		t.Fatalf("failed server proxy tool = (%+v, %v), want failed catalog entry", entry, ok)
+	}
+}
