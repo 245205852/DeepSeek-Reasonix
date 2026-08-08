@@ -152,9 +152,6 @@ func TestSkillSettingsEditProjectOwnedFields(t *testing.T) {
 	if err := app.SetSkillPathEnabled(root, false); err != nil {
 		t.Fatalf("SetSkillPathEnabled: %v", err)
 	}
-	if err := app.SetSkillImplicitInvocation(false); err != nil {
-		t.Fatalf("SetSkillImplicitInvocation: %v", err)
-	}
 	projectCfg, err := config.LoadForEditReadOnlyStrict(projectConfig)
 	if err != nil {
 		t.Fatal(err)
@@ -162,8 +159,38 @@ func TestSkillSettingsEditProjectOwnedFields(t *testing.T) {
 	if len(projectCfg.Skills.ExcludedPaths) != 1 || realTestPath(projectCfg.Skills.ExcludedPaths[0]) != realTestPath(root) {
 		t.Fatalf("project excluded paths = %v, want %q", projectCfg.Skills.ExcludedPaths, root)
 	}
+	if err := app.SetSkillPathEnabled(root, true); err != nil {
+		t.Fatalf("SetSkillPathEnabled restore: %v", err)
+	}
+	projectCfg, err = config.LoadForEditReadOnlyStrict(projectConfig)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(projectCfg.Skills.ExcludedPaths) != 0 {
+		t.Fatalf("project excluded paths after restore = %v, want empty", projectCfg.Skills.ExcludedPaths)
+	}
+	if err := app.SetSkillImplicitInvocation(false); err != nil {
+		t.Fatalf("SetSkillImplicitInvocation: %v", err)
+	}
+	projectCfg, err = config.LoadForEditReadOnlyStrict(projectConfig)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(projectCfg.Skills.ExcludedPaths) != 0 {
+		t.Fatalf("project excluded paths changed during policy edit: %v", projectCfg.Skills.ExcludedPaths)
+	}
 	if !projectCfg.Skills.DisableImplicitInvocation {
 		t.Fatal("project implicit invocation policy was overwritten")
+	}
+	if err := app.SetSkillImplicitInvocation(true); err != nil {
+		t.Fatalf("SetSkillImplicitInvocation restore: %v", err)
+	}
+	projectCfg, err = config.LoadForEditReadOnlyStrict(projectConfig)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if projectCfg.Skills.DisableImplicitInvocation {
+		t.Fatal("project implicit invocation policy did not restore")
 	}
 	userCfg := config.LoadForEdit(config.UserConfigPath())
 	if len(userCfg.Skills.ExcludedPaths) != 0 || userCfg.Skills.DisableImplicitInvocation {
