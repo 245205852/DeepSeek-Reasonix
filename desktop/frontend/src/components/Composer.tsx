@@ -3445,7 +3445,10 @@ export function Composer({
     }
     // Esc interrupts the in-flight turn (matches the Stop button's hint), and
     // restores the text if the server hadn't replied yet.
-    if (e.key === "Escape" && running) {
+    // Skip when IME composition is active (composing folds in the same
+    // composingRef + isComposing + keyCode 229 + grace window the other
+    // branches use via isImeKeyEvent), so ESC only dismisses the candidate.
+    if (e.key === "Escape" && running && !composing) {
       e.preventDefault();
       handleCancel();
     }
