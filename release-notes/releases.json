@@ -30,11 +30,11 @@
         },
         {
           "title": {
-            "en": "自定义 Kimi K3 网关设置",
+            "en": "Custom Kimi K3 Gateway Setup",
             "zh": "自定义 Kimi K3 网关设置"
           },
           "body": {
-            "en": "了解如何配置自定义 OpenAI 兼容网关以使用 Kimi K3 推理协议。",
+            "en": "Learn how to configure a custom OpenAI-compatible gateway to use the Kimi K3 reasoning protocol.",
             "zh": "了解如何配置自定义 OpenAI 兼容网关以使用 Kimi K3 推理协议。"
           },
           "href": "https://github.com/esengine/DeepSeek-Reasonix/blob/7ae8c54a5ad3b79dc33907fce0c7a4fa91f14d4e/docs/REASONING_PROVIDERS.zh-CN.md"
