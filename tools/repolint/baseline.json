@@ -4,8 +4,8 @@
     "commented-code": 0,
     "complexity": 2047,
     "essay": 4006,
-    "file-size": 107830,
-    "function-size": 9091,
+    "file-size": 107833,
+    "function-size": 9094,
     "layering": 1,
     "marker": 0,
     "narrative": 61,
@@ -13,7 +13,8 @@
   },
   "files": {
     "cmd/e2ebench/main.go": {
-      "essay": 1
+      "essay": 1,
+      "function-size": 3
     },
     "cmd/e2ebench/mutation.go": {
       "essay": 1
@@ -405,7 +406,7 @@
     "internal/agent/agent.go": {
       "complexity": 61,
       "essay": 109,
-      "file-size": 2727,
+      "file-size": 2730,
       "function-size": 124
     },
     "internal/agent/ask.go": {
