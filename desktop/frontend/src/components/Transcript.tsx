@@ -19,8 +19,9 @@ import { useEntranceAnimation } from "../lib/useEntranceAnimation";
 import { useScrollManager } from "../lib/useScrollManager";
 import { buildTurnGroups, compactQuestionText, createWarmLayerState, lastQuestionTurn, questionAnchorId, questionTurnsById, scrollVersion, warmColdPageForTurn, warmLayerWithColdPageAtLeast, warmLayerWithExpandedTurn, warmLayerWithNextColdPage, warmPagination, warmUserPreview, type QuestionAnchor, type TurnGroup, type WarmLayerState } from "../lib/transcriptGrouping";
 import { appendTurnActionCopyText } from "../lib/turnActionCopy";
-import { displayReasoningText } from "../lib/reasoningDisplay";
+import { displayReasoningText, STREAMING_REASONING_WINDOW_STEP_CHARS, STREAMING_REASONING_WINDOW_STEP_LINES } from "../lib/reasoningDisplay";
 import { observeScrollContentSize } from "../lib/scrollContentObserver";
+import { Markdown } from "./Markdown";
 
 type ToolItem = Extract<Item, { kind: "tool" }>;
 type AssistantItem = Extract<Item, { kind: "assistant" }>;
@@ -81,7 +82,7 @@ const LiveAssistantMessage = memo(function LiveAssistantMessage({
   );
 });
 
-function InlineAssistantReasoning({ item }: { item: AssistantItem }) {
+function InlineAssistantReasoning({ item, active }: { item: AssistantItem; active: boolean }) {
   const t = useT();
   const live = useContext(LiveStreamContext);
   const [open, setOpen] = useState(true);
@@ -94,13 +95,12 @@ function InlineAssistantReasoning({ item }: { item: AssistantItem }) {
         reasoningComplete: live.reasoningComplete,
       }
     : item;
-  const reasoning = shown.reasoning.trim();
+  const reasoning = shown.reasoning.trim(); const running = shown.streaming && !shown.reasoningComplete;
   if (!reasoning) return null;
   const visibleReasoning = displayReasoningText(shown.reasoning, {
-    streaming: shown.streaming,
-    truncateStreaming: true,
+    streaming: running,
+    truncateStreaming: true, stableWindowChars: STREAMING_REASONING_WINDOW_STEP_CHARS, stableWindowLines: STREAMING_REASONING_WINDOW_STEP_LINES,
   });
-  const running = shown.streaming && !shown.reasoningComplete;
   return (
     <div className={`turn-collapse__reasoning-phase${open ? " turn-collapse__reasoning-phase--open" : ""}`}>
       <button
@@ -114,7 +114,7 @@ function InlineAssistantReasoning({ item }: { item: AssistantItem }) {
         <span>{running ? t("msg.thinkingRunning") : t("msg.thinking")}</span>
         <ChevronRight className={`reasoning__chevron${open ? " reasoning__chevron--open" : ""}`} size={12} />
       </button>
-      <div ref={bodyRef} className="turn-collapse__inline-reasoning">{visibleReasoning}</div>
+      <div ref={bodyRef} className="turn-collapse__inline-reasoning">{active && open ? <Markdown text={visibleReasoning} streaming={running} /> : visibleReasoning}</div>
     </div>
   );
 }
@@ -1525,7 +1525,7 @@ function TurnCollapse({ items, durationMs, mode, subcalls, tabId, creationMode =
       case "assistant":
         // Answer text renders outside the fold (partitionTurnItems strips it),
         // so the fold only ever shows the reasoning segment.
-        body.push(<InlineAssistantReasoning key={`${it.id}-reasoning`} item={it as AssistantItem} />);
+        body.push(<InlineAssistantReasoning key={`${it.id}-reasoning`} item={it as AssistantItem} active={open} />);
         break;
     }
   }
@@ -1702,6 +1702,42 @@ function SteerCard({ text }: { text: string }) {
   );
 }
 
+function DecisionReceiptLine({ receipt }: { receipt: NonNullable<NoticeItem["decisionReceipt"]> }) {
+  const t = useT();
+  const titleKey = receipt.kind === "ask"
+    ? "notice.decisionReceiptAsk"
+    : receipt.kind === "plan"
+    ? "notice.decisionReceiptPlan"
+    : receipt.kind === "recovery"
+      ? "notice.decisionReceiptRecovery"
+      : "notice.decisionReceiptTool";
+  const outcomeKeys: Record<string, string> = {
+    allow_once: "notice.decisionAllowOnce",
+    allow_session: "notice.decisionAllowSession",
+    allow_persistent: "notice.decisionAllowPersistent",
+    deny: "notice.decisionDeny",
+    start_execution: "notice.decisionStartExecution",
+    revise_plan: "notice.decisionRevisePlan",
+    exit_plan: "notice.decisionExitPlan",
+    recovery_continue: "notice.decisionRecoveryContinue",
+    recovery_continue_task: "notice.decisionRecoveryContinueTask",
+    recovery_revise: "notice.decisionRecoveryRevise",
+    answered: "notice.decisionAnswered",
+  };
+  const outcome = outcomeKeys[receipt.outcome]
+    ? t(outcomeKeys[receipt.outcome] as never)
+    : receipt.outcome || t("notice.decisionReceiptTitle");
+  const showOutcome = receipt.kind !== "ask" || receipt.outcome !== "answered";
+  return (
+    <div className="notice-line__decision-receipt">
+      <span className="notice-line__decision-title">{t(titleKey as never)}</span>
+      {showOutcome && <span className="notice-line__decision-outcome">{outcome}</span>}
+      {receipt.tool && <code>{receipt.tool}</code>}
+      {receipt.subject && <span className="notice-line__decision-subject">{receipt.subject}</span>}
+    </div>
+  );
+}
+
 export function NoticeCard({ item, onAction, actionDisabled = false }: { item: NoticeItem; onAction?: () => void; actionDisabled?: boolean }) {
   const t = useT();
   const StatusIcon = item.level === "warn" ? TriangleAlert : Info;
@@ -1709,8 +1745,14 @@ export function NoticeCard({ item, onAction, actionDisabled = false }: { item: N
     <div className={`notice-line notice-line--${item.level}${item.variant ? ` notice-line--${item.variant}` : ""}`} data-entrance="true">
       <StatusIcon className="notice-line__icon" size={14} aria-hidden="true" />
       <div className="notice-line__text">
-        {item.title ? <div className="notice-line__title">{item.title}</div> : null}
-        <div className="notice-line__body">{item.text}</div>
+        {item.decisionReceipt ? (
+          <DecisionReceiptLine receipt={item.decisionReceipt} />
+        ) : (
+          <>
+            {item.title ? <div className="notice-line__title">{item.title}</div> : null}
+            <div className="notice-line__body">{item.text}</div>
+          </>
+        )}
         {item.action && onAction ? (
           <div className="notice-line__actions">
             <button className="btn btn--small" type="button" onClick={onAction} disabled={actionDisabled}>

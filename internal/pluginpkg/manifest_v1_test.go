@@ -398,13 +398,25 @@ func TestManifestV1PathSafety(t *testing.T) {
 			t.Fatalf("error = %v, want the traversal refusal", err)
 		}
 	})
-	t.Run("absolute path rejected", func(t *testing.T) {
-		root := t.TempDir()
-		writeV1Plugin(t, root, `{"apiVersion": "reasonix.io/plugin/v1", "name": "abs", "contributes": {"prompts": ["/etc/passwd"]}}`)
-		if _, _, err := ParseDir(root); err == nil || !strings.Contains(err.Error(), "must be relative and stay inside the plugin root") {
-			t.Fatalf("error = %v, want the absolute-path refusal", err)
-		}
-	})
+	for name, absolute := range map[string]string{
+		"unix":          "/etc/passwd",
+		"windows drive": `C:\Windows\System32\drivers\etc\hosts`,
+		"windows UNC":   `\\server\share\secret.txt`,
+	} {
+		t.Run(name+" absolute path rejected", func(t *testing.T) {
+			root := t.TempDir()
+			writeV1Plugin(t, root, jsonText(map[string]any{
+				"apiVersion": ManifestAPIVersionV1,
+				"name":       "abs",
+				"contributes": map[string]any{
+					"prompts": []string{absolute},
+				},
+			}))
+			if _, _, err := ParseDir(root); err == nil || !strings.Contains(err.Error(), "must be relative and stay inside the plugin root") {
+				t.Fatalf("error = %v, want the absolute-path refusal", err)
+			}
+		})
+	}
 	t.Run("symlink escape rejected", func(t *testing.T) {
 		outside := t.TempDir()
 		writeTestFile(t, filepath.Join(outside, "evil.md"), "evil")

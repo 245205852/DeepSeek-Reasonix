@@ -10,7 +10,6 @@ import (
 	"errors"
 	"fmt"
 	"sync"
-	"time"
 
 	"reasonix/internal/extension/protocol"
 )
@@ -27,17 +26,18 @@ const storeMaxEntries = 64
 type ExternalizedField = protocol.ExternalizedField
 
 type contentObject struct {
-	data      []byte
-	sha256    string
-	createdAt time.Time
+	data   []byte
+	sha256 string
+	order  uint64
 }
 
 // Store holds externalized content for exactly one sidecar connection. It is
 // session-scoped in memory only: refs expire with the connection, which is
 // why a read of an unknown ref answers content_ref_expired.
 type Store struct {
-	mu       sync.Mutex
-	contents map[string]contentObject
+	mu        sync.Mutex
+	contents  map[string]contentObject
+	nextOrder uint64
 }
 
 // NewStore returns an empty content store.
@@ -59,16 +59,17 @@ func (s *Store) Put(data []byte) (ref string, digest string, totalBytes int64, e
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.contents[ref] = contentObject{data: append([]byte(nil), data...), sha256: digest, createdAt: time.Now()}
+	s.nextOrder++
+	s.contents[ref] = contentObject{data: append([]byte(nil), data...), sha256: digest, order: s.nextOrder}
 	if len(s.contents) > storeMaxEntries {
 		var oldestRef string
-		var oldest time.Time
+		var oldestOrder uint64
 		for candidate, object := range s.contents {
 			if candidate == ref {
 				continue
 			}
-			if oldestRef == "" || object.createdAt.Before(oldest) {
-				oldestRef, oldest = candidate, object.createdAt
+			if oldestRef == "" || object.order < oldestOrder {
+				oldestRef, oldestOrder = candidate, object.order
 			}
 		}
 		delete(s.contents, oldestRef)
@@ -93,10 +94,7 @@ func (s *Store) Read(ref string, offset int64) (chunk []byte, next *int64, total
 	if offset < 0 || offset > int64(len(object.data)) {
 		return nil, nil, 0, "", protocol.MustProtocolError(protocol.ErrContentRefExpired)
 	}
-	end := offset + protocol.ContentRefChunkBytes
-	if end > int64(len(object.data)) {
-		end = int64(len(object.data))
-	}
+	end := min(offset+protocol.ContentRefChunkBytes, int64(len(object.data)))
 	if end < int64(len(object.data)) {
 		value := end
 		next = &value
