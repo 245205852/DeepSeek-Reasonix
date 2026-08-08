@@ -55,6 +55,7 @@ type EvidenceRef struct {
 // tasks whose ask IS the evidence (fix a typo: the mutation proves it).
 type Requirement struct {
 	ID       string
+	Kind     string // optional taxonomy, e.g. "behavior", "regression"
 	Text     string
 	Required bool
 	Status   Status
@@ -129,6 +130,76 @@ func Atomic(input string) *Contract {
 	})
 	c.Checks = append(c.Checks, Check{Kind: CheckMutation})
 	return c
+}
+
+// PlanFacts is a completed full plan's contract-relevant output, extracted
+// by the coordinator (plain data; this package never sees the plan text).
+type PlanFacts struct {
+	AcceptanceCriteria []string
+	Regressions        []string // must-keep-passing criteria
+	Verifications      []string // command-level checks; "" entries mean any
+	Risky              bool
+	Touchpoints        []string
+}
+
+// FromPlan builds the contract straight from a plan the planner already
+// produced, so the executor consumes the plan's own acceptance criteria
+// instead of re-deriving a parallel set: Planner → Contract → Executor.
+func FromPlan(input string, facts PlanFacts) *Contract {
+	c := New(input)
+	for i, text := range facts.AcceptanceCriteria {
+		c.Requirements = append(c.Requirements, Requirement{
+			ID: fmt.Sprintf("r%d", i+1), Kind: "behavior", Text: text, Required: true,
+		})
+	}
+	for i, text := range facts.Regressions {
+		c.Requirements = append(c.Requirements, Requirement{
+			ID: fmt.Sprintf("g%d", i+1), Kind: "regression", Text: text, Required: true,
+		})
+	}
+	for _, command := range facts.Verifications {
+		c.AddCheck(command)
+	}
+	c.MergeSignals(Signals{
+		MediumRisk: facts.Risky,
+		Anchored:   len(facts.Touchpoints) > 0,
+		MultiFile:  len(facts.Touchpoints) > 1,
+		Paths:      facts.Touchpoints,
+	})
+	return c
+}
+
+// ExecutionView renders the contract as the executor's todo list — a view,
+// not a parallel task description: requirements become steps, checks become
+// verify steps, and satisfied entries arrive already completed.
+func (c *Contract) ExecutionView() []evidence.TodoItem {
+	var todos []evidence.TodoItem
+	status := func(s Status) string {
+		if s == Satisfied {
+			return "completed"
+		}
+		return "pending"
+	}
+	for _, req := range c.Requirements {
+		if !req.Required {
+			continue
+		}
+		todos = append(todos, evidence.TodoItem{Content: req.Text, Status: status(req.Status)})
+	}
+	for _, check := range c.Checks {
+		label := check.Command
+		if label == "" {
+			if check.Kind == CheckMutation {
+				label = "apply the change"
+			} else {
+				label = "run verification"
+			}
+		} else {
+			label = "verify: " + label
+		}
+		todos = append(todos, evidence.TodoItem{Content: label, Status: status(check.Status)})
+	}
+	return todos
 }
 
 // Trivial reports whether the contract is simple enough to route

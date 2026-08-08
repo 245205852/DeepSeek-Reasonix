@@ -138,3 +138,50 @@ func TestTrivialRejectsComplexContracts(t *testing.T) {
 		t.Fatal("multi-file is never trivial")
 	}
 }
+
+func TestFromPlanBuildsContractFromPlannerOutput(t *testing.T) {
+	c := FromPlan("fix stale cache invalidation", PlanFacts{
+		AcceptanceCriteria: []string{"fix stale cache invalidation"},
+		Regressions:        []string{"existing cache tests continue passing"},
+		Verifications:      []string{"go test ./internal/cache/", ""},
+		Risky:              true,
+		Touchpoints:        []string{"cache.go", "invalidate.go"},
+	})
+	if len(c.Requirements) != 2 || c.Requirements[0].Kind != "behavior" || c.Requirements[1].Kind != "regression" {
+		t.Fatalf("requirements = %+v", c.Requirements)
+	}
+	if c.Requirements[1].ID != "g1" || !c.Requirements[1].Required {
+		t.Fatalf("regression requirement = %+v", c.Requirements[1])
+	}
+	if len(c.Checks) != 2 || c.Risk != RiskMedium || !c.Scope.MultiFile || len(c.Scope.Paths) != 2 {
+		t.Fatalf("checks=%d risk=%v scope=%+v", len(c.Checks), c.Risk, c.Scope)
+	}
+	if c.Trivial() {
+		t.Fatal("a risky multi-file plan contract must not route trivial")
+	}
+}
+
+func TestExecutionViewIsAViewNotAParallelDescription(t *testing.T) {
+	c := FromPlan("fix it", PlanFacts{
+		AcceptanceCriteria: []string{"behavior fixed"},
+		Verifications:      []string{"go test ./..."},
+	})
+	todos := c.ExecutionView()
+	if len(todos) != 2 || todos[0].Content != "behavior fixed" || todos[1].Content != "verify: go test ./..." {
+		t.Fatalf("view = %+v", todos)
+	}
+	if todos[0].Status != "pending" {
+		t.Fatalf("unsatisfied entries must render pending, got %q", todos[0].Status)
+	}
+	c.Observe(evidence.Receipt{ToolName: "bash", Command: "go test ./...", Success: true})
+	c.Resolve("r1", Satisfied)
+	for i, todo := range c.ExecutionView() {
+		if todo.Status != "completed" {
+			t.Fatalf("todo %d should render completed after satisfaction: %+v", i, todo)
+		}
+	}
+	atomicView := Atomic("fix typo").ExecutionView()
+	if len(atomicView) != 2 || atomicView[1].Content != "apply the change" {
+		t.Fatalf("atomic view = %+v", atomicView)
+	}
+}
