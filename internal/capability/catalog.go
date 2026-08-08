@@ -77,7 +77,21 @@ func BuildCatalog(opts CatalogOptions) Catalog {
 		profile = ProfileBalanced
 	}
 	var entries []Entry
-	entries = append(entries, ToolEntries(opts.Tools)...)
+	toolEntries := ToolEntries(opts.Tools)
+	for i := range toolEntries {
+		if toolEntries[i].Kind != KindMCPTool {
+			continue
+		}
+		name := toolEntries[i].Source
+		switch {
+		case opts.Disabled != nil && opts.Disabled[name]:
+			toolEntries[i].Status = StatusDisabled
+		case opts.Failed != nil && opts.Failed[name] != "":
+			toolEntries[i].Status = StatusFailed
+			toolEntries[i].FailureReason = opts.Failed[name]
+		}
+	}
+	entries = append(entries, toolEntries...)
 	entries = append(entries, SkillEntriesFiltered(opts.Skills, opts.Tools, profile)...)
 	entries = append(entries, MCPServerEntries(opts)...)
 

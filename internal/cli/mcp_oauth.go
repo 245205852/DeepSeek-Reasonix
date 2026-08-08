@@ -9,6 +9,7 @@ import (
 
 	"reasonix/internal/boot"
 	"reasonix/internal/config"
+	"reasonix/internal/mcpdiag"
 	"reasonix/internal/netclient"
 	"reasonix/internal/plugin"
 )
@@ -36,6 +37,10 @@ func mcpAuthCLI(args []string) int {
 	}
 	if !found {
 		fmt.Fprintf(os.Stderr, "no MCP server named %q in config\n", name)
+		return 1
+	}
+	if !mcpdiag.CanUseHTTPMCPOAuth(entry.Type, entry.URL, mcpdiag.HasAuthConfig(entry.Headers, entry.Env, entry.URL)) {
+		fmt.Fprintln(os.Stderr, "MCP OAuth is only available for Streamable HTTP MCP servers without configured authentication")
 		return 1
 	}
 	client, err := netclient.NewHTTPClient(cfg.NetworkProxySpec(), netclient.TransportOptions{})

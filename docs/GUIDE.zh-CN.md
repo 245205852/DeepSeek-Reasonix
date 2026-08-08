@@ -640,7 +640,8 @@ refresh token 轮换；发现和 token 请求与 MCP 连接使用相同的 Reaso
 OAuth client 与 token 状态保存在工作区之外、该 server 私有的 Reasonix 状态目录中，文件权限
 为 `0600`，并绑定完整的 resource URL。显式静态 `Authorization` header 始终优先。
 **清除认证** 只删除 Reasonix 本地 OAuth 状态，不会退出第三方浏览器会话。Reasonix 仅在用户
-主动点击或运行登录命令后打开浏览器，不会因后台工具调用失败而自动弹出浏览器。
+主动点击或运行登录命令后打开浏览器，不会因后台工具调用失败而自动弹出浏览器。删除 MCP server
+也会删除其本地 OAuth 状态；若删除后有同一 resource 的低优先级声明生效，则保留该状态。
 
 可在 **设置 → MCP 服务器 → 浏览市场** 打开官方 MCP Registry，也可使用
 `reasonix mcp browse [query]` 与 `reasonix mcp install <registry-name>`。Registry

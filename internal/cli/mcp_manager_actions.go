@@ -409,10 +409,16 @@ func mcpAuthStatus(v mcpServerView) string {
 }
 
 func mcpAuthDiagnosis(v mcpServerView) mcpdiag.AuthDiagnosis {
+	var diagnosis mcpdiag.AuthDiagnosis
 	if v.AuthStatus != "" {
-		return mcpdiag.AuthDiagnosis{Status: v.AuthStatus, URL: v.AuthURL}
+		diagnosis = mcpdiag.AuthDiagnosis{Status: v.AuthStatus, URL: v.AuthURL}
+	} else {
+		diagnosis = mcpdiag.DiagnoseAuth(v.Transport, v.Status, v.Error, v.URL, v.authConfigured)
 	}
-	return mcpdiag.DiagnoseAuth(v.Transport, v.Status, v.Error, v.URL, v.authConfigured)
+	if diagnosis.Status != mcpdiag.AuthNone && !mcpdiag.CanUseHTTPMCPOAuth(v.Transport, v.URL, v.authConfigured) {
+		return mcpdiag.AuthDiagnosis{Status: mcpdiag.AuthNone}
+	}
+	return diagnosis
 }
 
 func mcpCanClearAuth(v mcpServerView) bool {

@@ -4,6 +4,7 @@ import { asArray } from "../lib/array";
 import { app } from "../lib/bridge";
 import { useT } from "../lib/i18n";
 import { mcpServerLifecycleActions, mcpServerRetryableFromAvailableList } from "../lib/mcpServerLifecycle";
+import { canUseNativeMCPOAuth } from "../lib/mcpOAuthEligibility";
 import type { CapabilitiesView, MCPInstallResult, MCPMarketplaceEntry, MCPMarketplaceView, MCPServerInput, PluginAgentView, PluginCommandView, PluginCompatibilityIssue, PluginHookView, PluginInstallOptions, PluginMCPServerView, PluginSkillView, PluginView, ServerView, SkillRootSkillView, SkillRootView, SkillsSettingsView, SkillView, TabMeta } from "../lib/types";
 import { InlineConfirmButton } from "./InlineConfirmButton";
 import { ResizableDrawer } from "./ResizableDrawer";
@@ -26,7 +27,7 @@ async function installMCPServer(input: MCPServerInput): Promise<MCPInstallResult
 
 function connectMCPServer(name: string, servers: ServerView[]): Promise<void> {
   const server = servers.find((candidate) => candidate.name === name);
-  if (server?.authStatus === "required") return app.AuthenticateMCPServer(name);
+  if (server && shouldOpenAuth(server)) return app.AuthenticateMCPServer(name);
   return app.ReconnectMCPServer(name);
 }
 
@@ -1443,7 +1444,7 @@ function serverAuthLabel(s: ServerView, t: ReturnType<typeof useT>): string {
 }
 
 function shouldOpenAuth(s: ServerView): boolean {
-  return s.authStatus === "required";
+  return s.authStatus === "required" && canUseNativeMCPOAuth(s);
 }
 
 function canClearAuth(s: ServerView): boolean {

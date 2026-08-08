@@ -802,9 +802,13 @@ func mcpRemoveCLI(args []string) int {
 		fmt.Fprintf(os.Stderr, "no MCP server named %q in config\n", name)
 		return 1
 	}
-	// Uninstall clears activation overrides; schema/auth cleanup is handled by
-	// the live session path when present.
+	// Uninstall clears activation overrides and Reasonix-owned OAuth state. A
+	// same-resource lower-priority declaration keeps owning the shared state.
 	_ = config.DefaultMCPActivationStore().ClearServer(removed, workspace)
+	if err := reconcileRemovedMCPOAuth(workspace, name); err != nil {
+		fmt.Fprintf(os.Stderr, "removed MCP server %q, but failed to reconcile OAuth state: %v\n", name, err)
+		return 1
+	}
 	fmt.Printf("removed MCP server %q\n", name)
 	return 0
 }

@@ -37,3 +37,42 @@ func TestMCPAuthCLIUsesReasonixPrivateState(t *testing.T) {
 		t.Fatalf("mcp auth exit = %d", code)
 	}
 }
+
+func TestMCPAuthCLIRejectsIneligibleConfigurations(t *testing.T) {
+	tests := []struct {
+		name  string
+		entry config.PluginEntry
+	}{
+		{name: "stdio", entry: config.PluginEntry{Name: "server", Type: "stdio", Command: "server-mcp"}},
+		{name: "legacy SSE", entry: config.PluginEntry{Name: "server", Type: "sse", URL: "https://mcp.example.test/sse"}},
+		{name: "static authentication", entry: config.PluginEntry{
+			Name: "server", Type: "http", URL: "https://mcp.example.test/mcp",
+			Headers: map[string]string{"Authorization": "Bearer configured"},
+		}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			isolateCLIConfigHome(t)
+			workspace := t.TempDir()
+			t.Chdir(workspace)
+			tc.entry.Source = config.MCPSourceUserConfig
+			if _, err := config.InstallUserPluginForRoot(workspace, tc.entry, true); err != nil {
+				t.Fatal(err)
+			}
+
+			called := false
+			previous := mcpAuthorizeForCLI
+			mcpAuthorizeForCLI = func(context.Context, plugin.Spec, func(string) error) error {
+				called = true
+				return nil
+			}
+			t.Cleanup(func() { mcpAuthorizeForCLI = previous })
+			if code := mcpAuthCLI([]string{"server"}); code == 0 {
+				t.Fatal("mcp auth unexpectedly accepted an ineligible server")
+			}
+			if called {
+				t.Fatal("ineligible server reached the OAuth implementation")
+			}
+		})
+	}
+}

@@ -30,6 +30,32 @@ func TestSplitEditorCommandRejectsShellControl(t *testing.T) {
 	}
 }
 
+func TestMCPActionsOfferOAuthOnlyForEligibleHTTPServers(t *testing.T) {
+	tests := []struct {
+		name           string
+		transport      string
+		url            string
+		authConfigured bool
+		want           mcpAction
+	}{
+		{name: "streamable HTTP", transport: "http", url: "https://mcp.example.test/mcp", want: mcpActionAuth},
+		{name: "stdio", transport: "stdio", want: mcpActionConnect},
+		{name: "legacy SSE", transport: "sse", url: "https://mcp.example.test/sse", want: mcpActionConnect},
+		{name: "static authentication", transport: "http", url: "https://mcp.example.test/mcp", authConfigured: true, want: mcpActionConnect},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			actions := mcpActionsFor(mcpServerView{
+				Name: "server", Transport: tc.transport, URL: tc.url, Status: "failed",
+				Error: "authentication required", AuthStatus: "required", authConfigured: tc.authConfigured,
+			}, "")
+			if len(actions) == 0 || actions[0].kind != tc.want {
+				t.Fatalf("actions = %+v, want first action %q", actions, tc.want)
+			}
+		})
+	}
+}
+
 func TestClearMCPAuthenticationUsesControllerWorkspace(t *testing.T) {
 	isolateCLIConfigHome(t)
 	controllerRoot := t.TempDir()

@@ -91,14 +91,8 @@ type mcpOAuthClient struct {
 // server metadata discovery, dynamic client registration, PKCE S256, a
 // loopback callback, resource indicators, and private token persistence.
 func AuthorizeHTTPMCP(ctx context.Context, spec Spec, openURL func(string) error) error {
-	if openURL == nil {
-		return fmt.Errorf("MCP OAuth: browser opener is required")
-	}
-	if !isHTTPMCPTransport(spec.Type) {
-		return fmt.Errorf("MCP OAuth is only available for HTTP transports")
-	}
-	if strings.TrimSpace(spec.StateDir) == "" {
-		return fmt.Errorf("MCP OAuth: private state directory is unavailable")
+	if err := validateHTTPMCPAuthorization(spec, openURL); err != nil {
+		return err
 	}
 	if err := os.MkdirAll(spec.StateDir, 0o700); err != nil {
 		return fmt.Errorf("MCP OAuth: prepare private state directory: %w", err)
@@ -212,9 +206,37 @@ func AuthorizeHTTPMCP(ctx context.Context, spec Spec, openURL func(string) error
 	return saveMCPOAuthState(spec.StateDir, state)
 }
 
+func validateHTTPMCPAuthorization(spec Spec, openURL func(string) error) error {
+	if openURL == nil {
+		return fmt.Errorf("MCP OAuth: browser opener is required")
+	}
+	if !isHTTPMCPTransport(spec.Type) {
+		return fmt.Errorf("MCP OAuth is only available for HTTP transports")
+	}
+	if hasHTTPHeader(spec.Headers, "Authorization") {
+		return fmt.Errorf("MCP OAuth is unavailable while an Authorization header is configured")
+	}
+	if strings.TrimSpace(spec.StateDir) == "" {
+		return fmt.Errorf("MCP OAuth: private state directory is unavailable")
+	}
+	return nil
+}
+
 // ClearHTTPMCPOAuth removes Reasonix-owned OAuth client and token state for one
 // MCP server. It does not alter static headers or another application's data.
 func ClearHTTPMCPOAuth(spec Spec) (bool, error) {
+	return reconcileHTTPMCPOAuth(spec, "")
+}
+
+// ReconcileHTTPMCPOAuthAfterRemoval removes Reasonix-owned OAuth state after an
+// MCP declaration is removed, unless the remaining effective HTTP declaration
+// uses the same resource. Callers pass an empty remainingResource when no
+// eligible fallback remains.
+func ReconcileHTTPMCPOAuthAfterRemoval(spec Spec, remainingResource string) (bool, error) {
+	return reconcileHTTPMCPOAuth(spec, strings.TrimSpace(remainingResource))
+}
+
+func reconcileHTTPMCPOAuth(spec Spec, remainingResource string) (bool, error) {
 	path := mcpOAuthStatePath(spec.StateDir)
 	if path == "" {
 		return false, nil
@@ -229,6 +251,12 @@ func ClearHTTPMCPOAuth(spec Spec) (bool, error) {
 		return false, fmt.Errorf("clear MCP OAuth state: %w", err)
 	}
 	defer release()
+	if remainingResource != "" {
+		state, loadErr := loadMCPOAuthState(spec.StateDir)
+		if loadErr == nil && sameCanonicalResource(state.Resource, remainingResource) {
+			return false, nil
+		}
+	}
 	if err := os.Remove(path); err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return false, nil

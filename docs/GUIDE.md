@@ -807,7 +807,9 @@ full configured resource URL. An explicit static `Authorization` header always
 takes precedence. **Clear authentication** removes only Reasonix's local OAuth
 state; it does not sign out the third-party browser session. Reasonix opens the
 browser only after an explicit sign-in action, never automatically from a
-background tool-call failure.
+background tool-call failure. Removing the MCP server also removes its local
+OAuth state unless a lower-priority declaration for the same resource becomes
+effective.
 
 Browse the official MCP Registry from **Settings → MCP servers → Browse
 registry**, or use `reasonix mcp browse [query]` and

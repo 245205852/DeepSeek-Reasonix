@@ -48,6 +48,23 @@ func TestOAuthHTTPClientDoesNotChangeRuntimeIdentity(t *testing.T) {
 	}
 }
 
+func TestAuthorizeHTTPMCPRejectsStaticAuthorizationHeader(t *testing.T) {
+	opened := false
+	err := AuthorizeHTTPMCP(context.Background(), Spec{
+		Name: "remote", Type: "http", URL: "https://example.test/mcp", StateDir: t.TempDir(),
+		Headers: map[string]string{"Authorization": "Bearer configured"},
+	}, func(string) error {
+		opened = true
+		return nil
+	})
+	if err == nil || !strings.Contains(err.Error(), "Authorization header") {
+		t.Fatalf("AuthorizeHTTPMCP error = %v", err)
+	}
+	if opened {
+		t.Fatal("static Authorization configuration opened the OAuth browser")
+	}
+}
+
 func TestAuthorizeHTTPMCPUsesDiscoveryPKCEAndPersistsPrivateToken(t *testing.T) {
 	stateDir := t.TempDir()
 	var server *httptest.Server
@@ -414,6 +431,35 @@ func TestClearHTTPMCPOAuthAllowsMissingPrivateStateDirectory(t *testing.T) {
 	changed, err := ClearHTTPMCPOAuth(Spec{StateDir: stateDir})
 	if err != nil || changed {
 		t.Fatalf("ClearHTTPMCPOAuth = (%v, %v), want (false, nil)", changed, err)
+	}
+}
+
+func TestReconcileHTTPMCPOAuthAfterRemovalPreservesOnlyMatchingFallback(t *testing.T) {
+	stateDir := t.TempDir()
+	const resource = "https://mcp.example.test/mcp?workspace=main"
+	writeState := func() {
+		t.Helper()
+		if err := saveMCPOAuthState(stateDir, mcpOAuthState{
+			Version: 1, Resource: resource, ClientID: "client", AccessToken: "access", TokenType: "Bearer",
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	writeState()
+	changed, err := ReconcileHTTPMCPOAuthAfterRemoval(Spec{StateDir: stateDir}, resource)
+	if err != nil || changed {
+		t.Fatalf("matching fallback reconciliation = (%v, %v), want (false, nil)", changed, err)
+	}
+	if _, err := os.Stat(mcpOAuthStatePath(stateDir)); err != nil {
+		t.Fatalf("matching fallback OAuth state was removed: %v", err)
+	}
+
+	changed, err = ReconcileHTTPMCPOAuthAfterRemoval(Spec{StateDir: stateDir}, "https://other.example.test/mcp")
+	if err != nil || !changed {
+		t.Fatalf("different fallback reconciliation = (%v, %v), want (true, nil)", changed, err)
+	}
+	if _, err := os.Stat(mcpOAuthStatePath(stateDir)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("different fallback OAuth state still exists: %v", err)
 	}
 }
 

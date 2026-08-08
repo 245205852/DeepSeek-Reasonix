@@ -57,3 +57,45 @@ func TestAuthenticateMCPServerUsesPrivateStateAndReconnects(t *testing.T) {
 	}
 	t.Fatal("authorized server missing from desktop view")
 }
+
+func TestAuthenticateMCPServerRejectsIneligibleConfigurations(t *testing.T) {
+	tests := []struct {
+		name  string
+		entry config.PluginEntry
+	}{
+		{name: "stdio", entry: config.PluginEntry{Name: "server", Type: "stdio", Command: "server-mcp"}},
+		{name: "static authentication", entry: config.PluginEntry{
+			Name: "server", Type: "http", URL: "https://mcp.example.test/mcp",
+			Headers: map[string]string{"Authorization": "Bearer configured"},
+		}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			isolateDesktopUserDirs(t)
+			dir := robustTempDir(t)
+			t.Chdir(dir)
+			tc.entry.Source = config.MCPSourceUserConfig
+			if _, err := config.InstallUserPluginForRoot(dir, tc.entry, true); err != nil {
+				t.Fatal(err)
+			}
+
+			called := false
+			previous := desktopAuthorizeHTTPMCP
+			desktopAuthorizeHTTPMCP = func(context.Context, plugin.Spec, func(string) error) error {
+				called = true
+				return nil
+			}
+			t.Cleanup(func() { desktopAuthorizeHTTPMCP = previous })
+
+			app := NewApp()
+			app.setTestCtrl(control.New(control.Options{Host: plugin.NewHost()}), "")
+			defer app.activeCtrl().Close()
+			if err := app.AuthenticateMCPServer("server"); err == nil || !strings.Contains(err.Error(), "Streamable HTTP") {
+				t.Fatalf("AuthenticateMCPServer error = %v", err)
+			}
+			if called {
+				t.Fatal("ineligible server reached the OAuth implementation")
+			}
+		})
+	}
+}

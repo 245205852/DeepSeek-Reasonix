@@ -9,6 +9,7 @@ import (
 
 	"reasonix/internal/boot"
 	"reasonix/internal/config"
+	"reasonix/internal/mcpdiag"
 	"reasonix/internal/mcplaunch"
 	"reasonix/internal/netclient"
 	"reasonix/internal/plugin"
@@ -77,6 +78,9 @@ func (a *App) AuthenticateMCPServer(name string) error {
 	}
 	if !found {
 		return fmt.Errorf("no configured MCP server named %q", name)
+	}
+	if !mcpdiag.CanUseHTTPMCPOAuth(entry.Type, entry.URL, mcpdiag.HasAuthConfig(entry.Headers, entry.Env, entry.URL)) {
+		return fmt.Errorf("MCP OAuth is only available for Streamable HTTP MCP servers without configured authentication")
 	}
 	spec, err := a.mcpLaunchSpecForEntry(root, entry)
 	if err != nil {

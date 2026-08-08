@@ -9066,13 +9066,14 @@ func (a *App) RemoveMCPServer(name string) error {
 	if hasEntry {
 		_ = config.DefaultMCPActivationStore().ClearServer(entry, root)
 	}
+	authCleanupErr := reconcileRemovedMCPAuthentication(name, a.mcpWorkspaceRoots(root))
 	disconnectMCPServerControllers(name, ctrl, controllers)
 	if host != nil {
 		host.ClearFailure(name)
 	}
 	restoreMCPServerFallbacks(name, controllers)
 	a.clearMCPServerTabState(name, controllers)
-	return nil
+	return authCleanupErr
 }
 
 // restoreMCPServerFallbacks makes a lower-priority declaration immediately

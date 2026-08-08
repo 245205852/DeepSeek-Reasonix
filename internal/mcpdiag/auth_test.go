@@ -12,8 +12,8 @@ func TestDiagnoseAuthRequiredFromFailure(t *testing.T) {
 	}
 }
 
-func TestDiagnoseAuthPossibleForDeferredRemoteWithoutAuthConfig(t *testing.T) {
-	got := DiagnoseAuth("sse", "deferred", "", "https://mcp.example.com/sse", false)
+func TestDiagnoseAuthPossibleForDeferredHTTPWithoutAuthConfig(t *testing.T) {
+	got := DiagnoseAuth("streamable-http", "deferred", "", "https://mcp.example.com/mcp", false)
 	if got.Status != AuthPossible {
 		t.Fatalf("status = %q, want %q", got.Status, AuthPossible)
 	}
@@ -22,10 +22,24 @@ func TestDiagnoseAuthPossibleForDeferredRemoteWithoutAuthConfig(t *testing.T) {
 	}
 }
 
-func TestDiagnoseAuthSkipsRemoteWithStaticAuth(t *testing.T) {
-	got := DiagnoseAuth("http", "deferred", "", "https://mcp.example.com/mcp", true)
-	if got.Status != AuthNone {
-		t.Fatalf("status = %q, want %q", got.Status, AuthNone)
+func TestDiagnoseAuthRejectsIneligibleNativeOAuth(t *testing.T) {
+	for _, tc := range []struct {
+		name           string
+		transport      string
+		url            string
+		authConfigured bool
+	}{
+		{name: "stdio", transport: "stdio"},
+		{name: "legacy sse", transport: "sse", url: "https://mcp.example.com/sse"},
+		{name: "static auth", transport: "http", url: "https://mcp.example.com/mcp", authConfigured: true},
+		{name: "invalid url", transport: "http", url: "not-a-url"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := DiagnoseAuth(tc.transport, "failed", "authentication required", tc.url, tc.authConfigured)
+			if got.Status != AuthNone || got.URL != "" {
+				t.Fatalf("diagnosis = %+v, want no native OAuth action", got)
+			}
+		})
 	}
 }
 

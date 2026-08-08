@@ -150,7 +150,8 @@ interface (`call` / `notify` / `close`) abstracts that, so the MCP-level logic
     Reasonix MCP state directory, outside the workspace; tokens are bound to the
     configured resource URL and are never reused after that URL changes. OAuth
     discovery, registration, and token requests honor Reasonix's resolved
-    network-proxy settings.
+    network-proxy settings. Removing a declaration clears this state unless the
+    effective fallback uses the same OAuth resource.
   - `sse` — the legacy 2024-11-05 HTTP+SSE transport. A persistent GET stream
     receives an announced relative POST endpoint, JSON-RPC responses, and server
     messages. Cross-origin announced endpoints are rejected so static headers
