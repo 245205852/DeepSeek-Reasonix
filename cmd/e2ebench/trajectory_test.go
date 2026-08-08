@@ -200,6 +200,97 @@ func TestSummarizeTrajectorySplitsCleanAndRecoveryRounds(t *testing.T) {
 	}
 }
 
+func TestClipIntervals(t *testing.T) {
+	got := clipIntervals([][2]int64{{0, 10}, {20, 30}}, [][2]int64{{5, 25}})
+	want := [][2]int64{{0, 5}, {25, 30}}
+	if len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
+		t.Fatalf("clip = %v, want %v", got, want)
+	}
+	if rest := clipIntervals([][2]int64{{5, 8}}, [][2]int64{{0, 10}}); len(rest) != 0 {
+		t.Fatalf("fully covered base must clip to empty, got %v", rest)
+	}
+}
+
+func TestSummarizeTrajectoryDecomposesWallClock(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "wall.trajectory.jsonl")
+	lines := []string{
+		`{"seq":1,"ts":1000,"event":{"kind":"turn_started"}}`,
+		// Planner call: 3000ms, tagged by its usage source.
+		`{"seq":2,"ts":1000,"event":{"kind":"stream_attempt","streamAttempt":{"id":"p1","action":"begin"}}}`,
+		`{"seq":3,"ts":4000,"event":{"kind":"stream_attempt","streamAttempt":{"id":"p1","action":"commit"}}}`,
+		`{"seq":4,"ts":4010,"event":{"kind":"usage","usage":{"source":"planner"}}}`,
+		// Executor call: 1900ms, then one 100ms tool.
+		`{"seq":5,"ts":4100,"event":{"kind":"stream_attempt","streamAttempt":{"id":"e1","action":"begin"}}}`,
+		`{"seq":6,"ts":6000,"event":{"kind":"stream_attempt","streamAttempt":{"id":"e1","action":"commit"}}}`,
+		`{"seq":7,"ts":6010,"event":{"kind":"usage","usage":{"source":"executor"}}}`,
+		`{"seq":8,"ts":6100,"event":{"kind":"tool_dispatch","tool":{"id":"a","name":"bash"}}}`,
+		`{"seq":9,"ts":6200,"event":{"kind":"tool_result","tool":{"id":"a","name":"bash","durationMs":100,"startedAt":6100,"endedAt":6200}}}`,
+		// Retry backoff 2000ms, then a 500ms executor attempt.
+		`{"seq":10,"ts":7000,"event":{"kind":"retrying","retryScope":"stream"}}`,
+		`{"seq":11,"ts":9000,"event":{"kind":"stream_attempt","streamAttempt":{"id":"e2","action":"begin"}}}`,
+		`{"seq":12,"ts":9500,"event":{"kind":"stream_attempt","streamAttempt":{"id":"e2","action":"commit"}}}`,
+		`{"seq":13,"ts":9510,"event":{"kind":"usage","usage":{"source":"executor"}}}`,
+		// Compaction 1000ms; its inner summarize attempt must book as compaction.
+		`{"seq":14,"ts":10000,"event":{"kind":"compaction_started"}}`,
+		`{"seq":15,"ts":10100,"event":{"kind":"stream_attempt","streamAttempt":{"id":"c1","action":"begin"}}}`,
+		`{"seq":16,"ts":10800,"event":{"kind":"stream_attempt","streamAttempt":{"id":"c1","action":"commit"}}}`,
+		`{"seq":17,"ts":10810,"event":{"kind":"usage","usage":{"source":"executor"}}}`,
+		`{"seq":18,"ts":11000,"event":{"kind":"compaction_done"}}`,
+		`{"seq":19,"ts":12000,"event":{"kind":"turn_done"}}`,
+	}
+	if err := os.WriteFile(path, []byte(strings.Join(lines, "\n")), 0o644); err != nil {
+		t.Fatalf("write fixture: %v", err)
+	}
+	s, err := summarizeTrajectory(path)
+	if err != nil {
+		t.Fatalf("summarizeTrajectory: %v", err)
+	}
+	if s.RetryWaitMs != 2000 {
+		t.Errorf("retry wait = %d, want 2000", s.RetryWaitMs)
+	}
+	if s.CompactionMs != 1000 {
+		t.Errorf("compaction = %d, want 1000", s.CompactionMs)
+	}
+	if s.PlannerStreamMs != 3000 {
+		t.Errorf("planner stream = %d, want 3000", s.PlannerStreamMs)
+	}
+	if s.ModelStreamMs != 2400 {
+		t.Errorf("model stream = %d, want 2400 (1900+500; compaction-inner attempt clipped)", s.ModelStreamMs)
+	}
+	if s.AgentOtherMs != 2500 {
+		t.Errorf("agent other = %d, want 2500 (span 11000 − 100 − 2000 − 1000 − 3000 − 2400)", s.AgentOtherMs)
+	}
+	if s.Compactions != 1 {
+		t.Errorf("compactions = %d, want 1", s.Compactions)
+	}
+}
+
+func TestRunTrajModeRedigestsRecordedFiles(t *testing.T) {
+	dir := t.TempDir()
+	lines := []string{
+		`{"seq":1,"ts":1000,"event":{"kind":"turn_started"}}`,
+		`{"seq":2,"ts":1000,"event":{"kind":"stream_attempt","streamAttempt":{"id":"e1","action":"begin"}}}`,
+		`{"seq":3,"ts":2000,"event":{"kind":"stream_attempt","streamAttempt":{"id":"e1","action":"commit"}}}`,
+		`{"seq":4,"ts":2010,"event":{"kind":"usage","usage":{"source":"executor"}}}`,
+		`{"seq":5,"ts":3000,"event":{"kind":"turn_done"}}`,
+	}
+	if err := os.WriteFile(filepath.Join(dir, "t1.trajectory.jsonl"), []byte(strings.Join(lines, "\n")), 0o644); err != nil {
+		t.Fatalf("write fixture: %v", err)
+	}
+	got, err := runTrajMode(dir)
+	if err != nil {
+		t.Fatalf("runTrajMode: %v", err)
+	}
+	for _, want := range []string{"Trajectory digest", "Wall decomposition", "### `t1`", `"model_stream_ms": 1000`} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("traj mode output missing %q:\n%s", want, got)
+		}
+	}
+	if _, err := runTrajMode(filepath.Join(dir, "empty")); err == nil {
+		t.Fatalf("missing dir must error")
+	}
+}
+
 func TestRenderTimeAttributionIncludesBatchingLine(t *testing.T) {
 	r := result{task: task{ID: "a"}, Passed: true}
 	r.Trajectory = &trajectorySummary{

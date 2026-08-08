@@ -49,6 +49,15 @@ type trajectorySummary struct {
 	RecoveryRounds    int   `json:"recovery_rounds,omitempty"`
 	RecoveryGapMs     int64 `json:"recovery_gap_ms,omitempty"`
 	CleanGapP95Ms     int64 `json:"clean_gap_p95_ms,omitempty"`
+
+	// Wall decomposition: disjoint buckets partitioning the span, allocated by
+	// priority (tools > retry backoff > compaction > model streaming with the
+	// planner split out > agent overhead), so overlaps are never double-booked.
+	RetryWaitMs     int64 `json:"retry_wait_ms,omitempty"`     // retrying → next attempt begin
+	CompactionMs    int64 `json:"compaction_ms,omitempty"`     // compaction_started → done
+	PlannerStreamMs int64 `json:"planner_stream_ms,omitempty"` // attempts closed by planner usage
+	ModelStreamMs   int64 `json:"model_stream_ms,omitempty"`   // remaining sampling attempts
+	AgentOtherMs    int64 `json:"agent_other_ms,omitempty"`    // span remainder: assembly, guards, idle
 }
 
 // toolWall is the best available tool wall-clock: interval union when the
@@ -65,10 +74,17 @@ type trajectoryRecord struct {
 	TS               int64  `json:"ts"`
 	ProtocolRecovery string `json:"protocol_recovery"`
 	Event            *struct {
-		Kind       string `json:"kind"`
-		Code       string `json:"code"`
-		RetryScope string `json:"retryScope"`
-		Tool       *struct {
+		Kind          string `json:"kind"`
+		Code          string `json:"code"`
+		RetryScope    string `json:"retryScope"`
+		StreamAttempt *struct {
+			ID     string `json:"id"`
+			Action string `json:"action"`
+		} `json:"streamAttempt"`
+		Usage *struct {
+			Source string `json:"source"`
+		} `json:"usage"`
+		Tool *struct {
 			ID         string `json:"id"`
 			DurationMs int64  `json:"durationMs"`
 			ParentID   string `json:"parentId"`
@@ -94,6 +110,7 @@ type toolBatch struct {
 // when no run in the suite carried a trajectory.
 func renderTimeAttribution(results []result) string {
 	var toolMs, modelMs, gapMs, savedMs, delayP95, recoveryGapMs, cleanP95 int64
+	var retryWaitMs, compactionMs, plannerMs, modelStreamMs, agentOtherMs, startupMs int64
 	runs, rounds, batches, calls, singleReads, parallelBatches := 0, 0, 0, 0, 0, 0
 	recoveryRounds, streamRetries, headerRetries, replays, emptyFinals := 0, 0, 0, 0, 0
 	for _, r := range results {
@@ -116,6 +133,14 @@ func renderTimeAttribution(results []result) string {
 			headerRetries += r.Trajectory.HeaderRetries
 			replays += r.Trajectory.ReasoningReplays
 			emptyFinals += r.Trajectory.EmptyFinalRetries
+			retryWaitMs += r.Trajectory.RetryWaitMs
+			compactionMs += r.Trajectory.CompactionMs
+			plannerMs += r.Trajectory.PlannerStreamMs
+			modelStreamMs += r.Trajectory.ModelStreamMs
+			agentOtherMs += r.Trajectory.AgentOtherMs
+			if r.WallMs > r.Trajectory.SpanMs {
+				startupMs += r.WallMs - r.Trajectory.SpanMs
+			}
 		}
 	}
 	if runs == 0 {
@@ -138,6 +163,11 @@ func renderTimeAttribution(results []result) string {
 			recoveryRounds, pct(recoveryRounds, rounds), dur(recoveryGapMs),
 			streamRetries, headerRetries, replays, emptyFinals, durMs(cleanP95))
 	}
+	if plannerMs+modelStreamMs > 0 {
+		line += fmt.Sprintf("\n\n**Wall decomposition**: **startup** %s · **agent** %s · **planner** %s · **model** %s · **tools** %s · **retry** %s · **compaction** %s",
+			dur(startupMs), dur(agentOtherMs), dur(plannerMs), dur(modelStreamMs),
+			dur(toolMs), dur(retryWaitMs), dur(compactionMs))
+	}
 	return line + "\n\n"
 }
 
@@ -153,6 +183,19 @@ type trajScan struct {
 	tainted            bool
 	streakRun          int
 	batch              *toolBatch
+
+	attemptBegin           map[string]int64
+	attempts               []modelAttempt
+	lastAttempt            int // most recent closed attempt awaiting a usage tag
+	pendingRetry, compFrom int64
+	retryIvs, compIvs      [][2]int64
+}
+
+// modelAttempt is one sampling attempt's wall interval; planner marks attempts
+// whose closing usage event carried source "planner".
+type modelAttempt struct {
+	iv      [2]int64
+	planner bool
 }
 
 // summarizeTrajectory reads a run's JSONL trajectory. A truncated final line
@@ -164,7 +207,12 @@ func summarizeTrajectory(path string) (*trajectorySummary, error) {
 	}
 	defer f.Close()
 
-	scan := &trajScan{s: &trajectorySummary{Path: path}, batch: newToolBatch()}
+	scan := &trajScan{
+		s:            &trajectorySummary{Path: path},
+		batch:        newToolBatch(),
+		attemptBegin: map[string]int64{},
+		lastAttempt:  -1,
+	}
 	sc := bufio.NewScanner(f)
 	sc.Buffer(make([]byte, 0, 1<<20), 16<<20)
 	for sc.Scan() {
@@ -199,6 +247,7 @@ func (t *trajScan) record(rec trajectoryRecord) {
 	case "retrying":
 		t.s.Retries++
 		t.tainted = true
+		t.pendingRetry = rec.TS
 		switch rec.Event.RetryScope {
 		case "stream":
 			t.s.StreamRetries++
@@ -210,8 +259,16 @@ func (t *trajScan) record(rec trajectoryRecord) {
 			t.s.EmptyFinalRetries++
 			t.tainted = true
 		}
+	case "stream_attempt", "usage":
+		t.recordModelPhase(rec)
 	case "compaction_started":
 		t.s.Compactions++
+		t.compFrom = rec.TS
+	case "compaction_done":
+		if t.compFrom > 0 && rec.TS > t.compFrom {
+			t.compIvs = append(t.compIvs, [2]int64{t.compFrom, rec.TS})
+		}
+		t.compFrom = 0
 	}
 	if rec.Event.Tool == nil || rec.Event.Tool.ParentID != "" {
 		// Subagent calls overlap the parent's wall clock; counting them
@@ -237,6 +294,34 @@ func (t *trajScan) closeGap(gap int64) {
 		return
 	}
 	t.cleanGaps = append(t.cleanGaps, gap)
+}
+
+// recordModelPhase brackets sampling attempts (begin → commit/discard) and
+// tags the just-closed attempt with its usage source. Subagent usage is
+// skipped: subagent attempts never reach the parent sink, so a subagent usage
+// arriving mid-parent-round must not claim the parent's attempt.
+func (t *trajScan) recordModelPhase(rec trajectoryRecord) {
+	if sa := rec.Event.StreamAttempt; sa != nil {
+		switch sa.Action {
+		case "begin":
+			t.attemptBegin[sa.ID] = rec.TS
+			if t.pendingRetry > 0 && rec.TS > t.pendingRetry {
+				t.retryIvs = append(t.retryIvs, [2]int64{t.pendingRetry, rec.TS})
+			}
+			t.pendingRetry = 0
+		case "commit", "discard":
+			if begin, ok := t.attemptBegin[sa.ID]; ok && rec.TS > begin {
+				t.attempts = append(t.attempts, modelAttempt{iv: [2]int64{begin, rec.TS}})
+				t.lastAttempt = len(t.attempts) - 1
+			}
+			delete(t.attemptBegin, sa.ID)
+		}
+		return
+	}
+	if u := rec.Event.Usage; u != nil && u.Source != "subagent" && t.lastAttempt >= 0 {
+		t.attempts[t.lastAttempt].planner = u.Source == "planner"
+		t.lastAttempt = -1
+	}
 }
 
 func (t *trajScan) recordDispatch(rec trajectoryRecord) {
@@ -329,7 +414,41 @@ func (t *trajScan) finish() *trajectorySummary {
 	if s.ModelMs = s.SpanMs - s.toolWall(); s.ModelMs < 0 {
 		s.ModelMs = 0
 	}
+	t.decompose()
 	return s
+}
+
+// decompose partitions the span into disjoint wall buckets by priority, so a
+// second spent in two places is booked once, to the more specific bucket.
+func (t *trajScan) decompose() {
+	if len(t.attempts) == 0 {
+		return // old recording without stream_attempt events
+	}
+	s := t.s
+	var planIvs, execIvs [][2]int64
+	for _, a := range t.attempts {
+		if a.planner {
+			planIvs = append(planIvs, a.iv)
+		} else {
+			execIvs = append(execIvs, a.iv)
+		}
+	}
+	covered := mergeIntervals(t.allIntervals)
+	retry := clipIntervals(t.retryIvs, covered)
+	covered = mergeIntervals(append(covered, retry...))
+	comp := clipIntervals(t.compIvs, covered)
+	covered = mergeIntervals(append(covered, comp...))
+	plan := clipIntervals(planIvs, covered)
+	covered = mergeIntervals(append(covered, plan...))
+	exec := clipIntervals(execIvs, covered)
+	s.RetryWaitMs = ivsLen(retry)
+	s.CompactionMs = ivsLen(comp)
+	s.PlannerStreamMs = ivsLen(plan)
+	s.ModelStreamMs = ivsLen(exec)
+	rem := s.SpanMs - s.toolWall() - s.RetryWaitMs - s.CompactionMs - s.PlannerStreamMs - s.ModelStreamMs
+	if rem > 0 {
+		s.AgentOtherMs = rem
+	}
 }
 
 func newToolBatch() *toolBatch {
@@ -366,6 +485,14 @@ func intervalSpan(intervals [][2]int64) (wall int64, overlapped bool) {
 // intervalUnion is the merged length of all intervals, so concurrent tool
 // executions count wall-clock once.
 func intervalUnion(intervals [][2]int64) int64 {
+	return ivsLen(mergeIntervals(intervals))
+}
+
+// mergeIntervals returns a sorted, overlap-free copy of intervals.
+func mergeIntervals(intervals [][2]int64) [][2]int64 {
+	if len(intervals) == 0 {
+		return nil
+	}
 	sorted := append([][2]int64(nil), intervals...)
 	slices.SortFunc(sorted, func(a, b [2]int64) int {
 		switch {
@@ -375,17 +502,49 @@ func intervalUnion(intervals [][2]int64) int64 {
 			return int(a[1] - b[1])
 		}
 	})
-	var total int64
-	curStart, curEnd := sorted[0][0], sorted[0][1]
+	out := [][2]int64{sorted[0]}
 	for _, iv := range sorted[1:] {
-		if iv[0] > curEnd {
-			total += curEnd - curStart
-			curStart, curEnd = iv[0], iv[1]
+		if last := &out[len(out)-1]; iv[0] <= last[1] {
+			last[1] = max(last[1], iv[1])
 			continue
 		}
-		curEnd = max(curEnd, iv[1])
+		out = append(out, iv)
 	}
-	return total + (curEnd - curStart)
+	return out
+}
+
+// clipIntervals returns base minus covered; both are merged internally.
+func clipIntervals(base, covered [][2]int64) [][2]int64 {
+	base = mergeIntervals(base)
+	covered = mergeIntervals(covered)
+	var out [][2]int64
+	j := 0
+	for _, iv := range base {
+		lo := iv[0]
+		for j < len(covered) && covered[j][1] <= lo {
+			j++
+		}
+		for k := j; k < len(covered) && covered[k][0] < iv[1]; k++ {
+			if covered[k][0] > lo {
+				out = append(out, [2]int64{lo, covered[k][0]})
+			}
+			if lo = max(lo, covered[k][1]); lo >= iv[1] {
+				break
+			}
+		}
+		if lo < iv[1] {
+			out = append(out, [2]int64{lo, iv[1]})
+		}
+	}
+	return out
+}
+
+func ivsLen(intervals [][2]int64) int64 {
+	var total int64
+	for _, iv := range intervals {
+		total += iv[1] - iv[0]
+	}
+	return total
 }
 
 // durMs renders small durations without the sub-second floor dur applies.

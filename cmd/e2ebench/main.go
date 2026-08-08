@@ -5,6 +5,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -148,7 +149,7 @@ func main() {
 		fmt.Fprintf(flag.CommandLine.Output(), "  %[1]s -profile delivery\n", strings.Replace(flag.CommandLine.Name(), "e2ebench", "go run ./cmd/e2ebench", 1))
 	}
 
-	mode := flag.String("mode", "suite", "suite | diff | swebench | compare")
+	mode := flag.String("mode", "suite", "suite | diff | swebench | compare | traj")
 	subset := flag.String("subset", "benchmarks/swebench/subset.json", "swebench mode: instance subset file")
 	namespace := flag.String("namespace", "swebench", "swebench mode: registry namespace holding the evaluation images")
 	runID := flag.String("run-id", "reasonix", "swebench mode: run id passed to the official harness")
@@ -177,13 +178,9 @@ func main() {
 	timeoutSec := flag.Int("timeout", 1200, "agent timeout in seconds (diff mode)")
 	attempts := flag.Int("attempts", 1, "diff mode: retry up to N times until a run passes (stochastic agent)")
 	flag.Parse()
-	profile, err := normalizeBenchmarkProfile(*profileFlag)
-	if err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		os.Exit(2)
-	}
-	arm, err := ablation.Parse(*ablateFlag)
-	if err != nil {
+	profile, perr := normalizeBenchmarkProfile(*profileFlag)
+	arm, aerr := ablation.Parse(*ablateFlag)
+	if err := errors.Join(perr, aerr); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(2)
 	}
@@ -208,8 +205,12 @@ func main() {
 		return
 	}
 
-	if *mode == "compare" {
+	switch *mode {
+	case "compare":
 		runCompareMode(*outMD)
+		return
+	case "traj":
+		emitTrajMode(*trajDir, *outMD)
 		return
 	}
 
