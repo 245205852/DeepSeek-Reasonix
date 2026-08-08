@@ -8021,8 +8021,12 @@ func (a *App) SkillsSettings() SkillsSettingsView {
 	a.mu.RLock()
 	tab := a.activeTabLocked()
 	var ctrl control.SessionAPI
+	workspaceRoot := "."
 	if tab != nil {
 		ctrl = tab.Ctrl
+		if strings.TrimSpace(tab.WorkspaceRoot) != "" {
+			workspaceRoot = tab.WorkspaceRoot
+		}
 	}
 	a.mu.RUnlock()
 	if ctrl == nil {
@@ -8031,7 +8035,7 @@ func (a *App) SkillsSettings() SkillsSettingsView {
 
 	disabled := map[string]bool{}
 	var configuredModels, configuredEfforts map[string]string
-	if cfg, err := config.Load(); err == nil {
+	if cfg, err := config.LoadForRootReadOnly(workspaceRoot); err == nil {
 		out.AllowImplicitInvocation = cfg.ImplicitSkillInvocationEnabled()
 		for _, name := range cfg.Skills.DisabledSkills {
 			if key := config.SkillNameKey(name); key != "" {
@@ -8041,7 +8045,7 @@ func (a *App) SkillsSettings() SkillsSettingsView {
 		configuredModels = cfg.Agent.SubagentModels
 		configuredEfforts = cfg.Agent.SubagentEfforts
 	}
-	out.SkillRoots = a.cachedSkillRootsView()
+	out.SkillRoots = a.cachedSkillRootsView(workspaceRoot)
 	for _, s := range ctrl.AllSkills() {
 		view := SkillView{
 			Name: s.Name, Description: s.Description,
@@ -8074,7 +8078,7 @@ func (a *App) SkillsSettings() SkillsSettingsView {
 // invoke skills automatically, then rebuilds the active runtime. Explicit
 // /skill invocation and skill management remain available in either mode.
 func (a *App) SetSkillImplicitInvocation(enabled bool) error {
-	err := a.applyConfigChange(func(c *config.Config) error {
+	err := a.applySkillConfigChange("disable_implicit_invocation", "skills policy", func(c *config.Config) error {
 		c.SetSkillImplicitInvocation(enabled)
 		return nil
 	})
@@ -8439,11 +8443,15 @@ func mcpServerSource(source config.MCPConfigSource) (kind, configSource string) 
 
 const skillRootsCacheTTL = 10 * time.Second
 
-func (a *App) cachedSkillRootsView() []SkillRootView {
-	cwd, _ := os.Getwd()
-	cfg, _ := config.Load()
+func (a *App) cachedSkillRootsView(workspaceRoots ...string) []SkillRootView {
+	workspaceRoot := "."
+	if len(workspaceRoots) > 0 {
+		workspaceRoot = workspaceRoots[0]
+	}
+	workspaceRoot = normalizeWorkspaceRoot(workspaceRoot)
+	cfg, _ := config.LoadForRootReadOnly(workspaceRoot)
 	userCfg := config.LoadForEdit(config.UserConfigPath())
-	key := skillRootsCacheKey(cwd, cfg, userCfg)
+	key := skillRootsCacheKey(workspaceRoot, cfg, userCfg)
 
 	now := time.Now()
 	a.skillRootsMu.Lock()
@@ -8454,7 +8462,7 @@ func (a *App) cachedSkillRootsView() []SkillRootView {
 	}
 	a.skillRootsMu.Unlock()
 
-	roots := skillRootsViewFrom(cwd, cfg, userCfg)
+	roots := skillRootsViewFrom(workspaceRoot, cfg, userCfg)
 
 	a.skillRootsMu.Lock()
 	a.skillRootsCache = skillRootsCache{
@@ -8479,7 +8487,8 @@ func skillRootsView() []SkillRootView {
 	return skillRootsViewFrom(cwd, cfg, userCfg)
 }
 
-func skillRootsViewFrom(cwd string, cfg, userCfg *config.Config) []SkillRootView {
+func skillRootsViewFrom(workspaceRoot string, cfg, userCfg *config.Config) []SkillRootView {
+	workspaceRoot = normalizeWorkspaceRoot(workspaceRoot)
 	var custom []string
 	var excluded []string
 	maxDepth := 3
@@ -8494,7 +8503,7 @@ func skillRootsViewFrom(cwd string, cfg, userCfg *config.Config) []SkillRootView
 		pluginPaths = cfg.PluginPackageSkillOwners()
 		pluginAgentPaths = cfg.PluginPackageAgentOwners()
 	}
-	st := skill.New(skill.Options{ProjectRoot: cwd, CustomPaths: custom, PluginPaths: pluginPaths, PluginAgentPaths: pluginAgentPaths, ExcludedPaths: excluded, MaxDepth: maxDepth, DisableBuiltins: true, Stderr: io.Discard})
+	st := skill.New(skill.Options{ProjectRoot: workspaceRoot, CustomPaths: custom, PluginPaths: pluginPaths, PluginAgentPaths: pluginAgentPaths, ExcludedPaths: excluded, MaxDepth: maxDepth, DisableBuiltins: true, Stderr: io.Discard})
 	counts := map[string]int{}
 	skillItems := map[string][]SkillRootSkillView{}
 	roots := st.Roots()
@@ -8522,20 +8531,30 @@ func skillRootsViewFrom(cwd string, cfg, userCfg *config.Config) []SkillRootView
 	userConfigured := map[string]bool{}
 	if userCfg != nil {
 		for _, p := range userCfg.Skills.Paths {
-			userConfigured[config.CanonicalSkillPath(p)] = true
+			userConfigured[canonicalSkillPathForRoot(p, workspaceRoot)] = true
+		}
+	}
+	effectiveConfigured := map[string]bool{}
+	effectiveExcluded := map[string]bool{}
+	if cfg != nil {
+		for _, p := range cfg.Skills.Paths {
+			effectiveConfigured[canonicalSkillPathForRoot(p, workspaceRoot)] = true
+		}
+		for _, p := range cfg.Skills.ExcludedPaths {
+			effectiveExcluded[canonicalSkillPathForRoot(p, workspaceRoot)] = true
 		}
 	}
 	out := []SkillRootView{}
 	seenRoots := map[string]int{}
 	for _, r := range roots {
-		dir := config.CanonicalSkillPath(r.Dir)
+		dir := canonicalSkillPathForRoot(r.Dir, workspaceRoot)
 		view := SkillRootView{
 			Dir:        r.Dir,
 			Scope:      string(r.Scope),
 			Priority:   r.Priority + 1,
 			Status:     string(r.Status),
 			Enabled:    true,
-			Configured: r.Scope == skill.ScopeCustom && userConfigured[dir],
+			Configured: r.Scope == skill.ScopeCustom && (userConfigured[dir] || effectiveConfigured[dir]),
 			Removable:  true,
 			Skills:     counts[dir],
 			SkillItems: skillItems[dir],
@@ -8547,50 +8566,84 @@ func skillRootsViewFrom(cwd string, cfg, userCfg *config.Config) []SkillRootView
 		seenRoots[dir] = len(out)
 		out = append(out, view)
 	}
-	if userCfg != nil {
-		excluded := map[string]bool{}
-		for _, p := range userCfg.Skills.ExcludedPaths {
-			excluded[config.CanonicalSkillPath(p)] = true
-		}
-		for _, p := range userCfg.Skills.Paths {
-			if rootActive(out, p) {
+	if cfg != nil {
+		for _, p := range cfg.Skills.Paths {
+			if rootActive(out, p, workspaceRoot) {
 				continue
 			}
-			enabled := !excluded[config.CanonicalSkillPath(p)]
+			dir := canonicalSkillPathForRoot(p, workspaceRoot)
+			enabled := !effectiveExcluded[dir]
+			status := "inactive"
+			warning := "configured in project/user config but not active in this workspace"
+			if !enabled {
+				status = "disabled"
+				warning = ""
+			}
+			appendSkillRootView(&out, &seenRoots, SkillRootView{
+				Dir: dir, Scope: string(skill.ScopeCustom), Status: status, Enabled: enabled,
+				Configured: true, Removable: true, Warning: warning,
+			}, workspaceRoot)
+		}
+		for _, p := range cfg.Skills.ExcludedPaths {
+			if rootActive(out, p, workspaceRoot) {
+				continue
+			}
+			dir := canonicalSkillPathForRoot(p, workspaceRoot)
+			scope := skillRootScopeForPath(p, workspaceRoot)
+			appendSkillRootView(&out, &seenRoots, SkillRootView{
+				Dir: dir, Scope: string(scope), Status: "disabled", Enabled: false,
+				Configured: scope == skill.ScopeCustom || effectiveConfigured[dir], Removable: true,
+			}, workspaceRoot)
+		}
+	}
+	if userCfg != nil {
+		userExcluded := map[string]bool{}
+		for _, p := range userCfg.Skills.ExcludedPaths {
+			userExcluded[canonicalSkillPathForRoot(p, workspaceRoot)] = true
+		}
+		for _, p := range userCfg.Skills.Paths {
+			if rootActive(out, p, workspaceRoot) {
+				continue
+			}
+			enabled := !userExcluded[canonicalSkillPathForRoot(p, workspaceRoot)]
 			status := "inactive"
 			warning := "configured in user config but not active in this workspace; project [skills].paths may override it"
 			if !enabled {
 				status = "disabled"
 				warning = ""
 			}
-			out = append(out, SkillRootView{
-				Dir:        p,
+			appendSkillRootView(&out, &seenRoots, SkillRootView{
+				Dir:        canonicalSkillPathForRoot(p, workspaceRoot),
 				Scope:      string(skill.ScopeCustom),
 				Status:     status,
 				Enabled:    enabled,
 				Configured: true,
 				Removable:  true,
 				Warning:    warning,
-			})
+			}, workspaceRoot)
 		}
 		for _, p := range userCfg.Skills.ExcludedPaths {
-			if rootActive(out, p) || userConfigured[config.CanonicalSkillPath(p)] {
+			if rootActive(out, p, workspaceRoot) || userConfigured[canonicalSkillPathForRoot(p, workspaceRoot)] {
 				continue
 			}
-			scope := skill.ScopeCustom
-			if isConventionSkillRoot(p, cwd) {
-				scope = skill.ScopeProject
-				if home, err := os.UserHomeDir(); err == nil && strings.HasPrefix(config.CanonicalSkillPath(p), config.CanonicalSkillPath(home)+string(filepath.Separator)) {
-					scope = skill.ScopeGlobal
-				}
-			}
-			out = append(out, SkillRootView{
-				Dir: p, Scope: string(scope), Status: "disabled", Enabled: false,
-				Configured: false, Removable: true,
-			})
+			scope := skillRootScopeForPath(p, workspaceRoot)
+			appendSkillRootView(&out, &seenRoots, SkillRootView{
+				Dir: canonicalSkillPathForRoot(p, workspaceRoot), Scope: string(scope), Status: "disabled", Enabled: false,
+				Configured: scope == skill.ScopeCustom, Removable: true,
+			}, workspaceRoot)
 		}
 	}
 	return out
+}
+
+func appendSkillRootView(out *[]SkillRootView, seen *map[string]int, view SkillRootView, workspaceRoot string) {
+	dir := canonicalSkillPathForRoot(view.Dir, workspaceRoot)
+	if idx, ok := (*seen)[dir]; ok {
+		(*out)[idx] = mergeDuplicateSkillRootView((*out)[idx], view)
+		return
+	}
+	(*seen)[dir] = len(*out)
+	*out = append(*out, view)
 }
 
 func mergeDuplicateSkillRootView(existing, duplicate SkillRootView) SkillRootView {
@@ -8610,7 +8663,7 @@ func mergeDuplicateSkillRootView(existing, duplicate SkillRootView) SkillRootVie
 	return existing
 }
 
-func skillRootsCacheKey(cwd string, cfg, userCfg *config.Config) string {
+func skillRootsCacheKey(workspaceRoot string, cfg, userCfg *config.Config) string {
 	type cacheKey struct {
 		CWD       string   `json:"cwd"`
 		Custom    []string `json:"custom"`
@@ -8619,20 +8672,21 @@ func skillRootsCacheKey(cwd string, cfg, userCfg *config.Config) string {
 		MaxDepth  int      `json:"maxDepth"`
 		UserPaths []string `json:"userPaths"`
 	}
-	key := cacheKey{CWD: config.CanonicalSkillPath(cwd), MaxDepth: 3}
+	workspaceRoot = normalizeWorkspaceRoot(workspaceRoot)
+	key := cacheKey{CWD: canonicalSkillPathForRoot(workspaceRoot, workspaceRoot), MaxDepth: 3}
 	if cfg != nil {
-		key.Custom = canonicalSkillPaths(cfg.SkillCustomPaths())
+		key.Custom = canonicalSkillPathsForRoot(cfg.SkillCustomPaths(), workspaceRoot)
 		for path, owners := range cfg.PluginPackageSkillOwners() {
 			for _, owner := range owners {
-				key.Plugins = append(key.Plugins, config.CanonicalSkillPath(path)+"\x00"+owner)
+				key.Plugins = append(key.Plugins, canonicalSkillPathForRoot(path, workspaceRoot)+"\x00"+owner)
 			}
 		}
 		sort.Strings(key.Plugins)
-		key.Excluded = canonicalSkillPaths(cfg.SkillExcludedPaths())
+		key.Excluded = canonicalSkillPathsForRoot(cfg.SkillExcludedPaths(), workspaceRoot)
 		key.MaxDepth = cfg.SkillMaxDepth()
 	}
 	if userCfg != nil {
-		key.UserPaths = canonicalSkillPaths(userCfg.Skills.Paths)
+		key.UserPaths = canonicalSkillPathsForRoot(userCfg.Skills.Paths, workspaceRoot)
 	}
 	b, err := json.Marshal(key)
 	if err != nil {
@@ -8642,12 +8696,53 @@ func skillRootsCacheKey(cwd string, cfg, userCfg *config.Config) string {
 }
 
 func canonicalSkillPaths(paths []string) []string {
+	return canonicalSkillPathsForRoot(paths, ".")
+}
+
+func canonicalSkillPathsForRoot(paths []string, workspaceRoot string) []string {
 	out := make([]string, 0, len(paths))
 	for _, p := range paths {
-		out = append(out, config.CanonicalSkillPath(p))
+		out = append(out, canonicalSkillPathForRoot(p, workspaceRoot))
 	}
 	sort.Strings(out)
 	return out
+}
+
+func normalizeWorkspaceRoot(root string) string {
+	root = strings.TrimSpace(root)
+	if root == "" || root == "." {
+		if cwd, err := os.Getwd(); err == nil {
+			return filepath.Clean(cwd)
+		}
+		return "."
+	}
+	if abs, err := filepath.Abs(root); err == nil {
+		return filepath.Clean(abs)
+	}
+	return filepath.Clean(root)
+}
+
+// canonicalSkillPathForRoot mirrors skill.Store's path resolution while keeping
+// comparisons independent of the desktop process CWD. Config may intentionally
+// contain relative paths; those are relative to the active workspace.
+func canonicalSkillPathForRoot(path, workspaceRoot string) string {
+	path = config.ExpandVars(strings.TrimSpace(path))
+	if path == "" {
+		return ""
+	}
+	if path == "~" || strings.HasPrefix(path, "~/") || strings.HasPrefix(path, `~\`) {
+		if home, err := os.UserHomeDir(); err == nil {
+			if path == "~" {
+				path = home
+			} else {
+				path = filepath.Join(home, path[2:])
+			}
+		}
+	}
+	if !filepath.IsAbs(path) {
+		path = filepath.Join(normalizeWorkspaceRoot(workspaceRoot), path)
+	}
+	return config.CanonicalSkillPath(path)
 }
 
 func cloneSkillRootViews(in []SkillRootView) []SkillRootView {
@@ -8659,10 +8754,14 @@ func cloneSkillRootViews(in []SkillRootView) []SkillRootView {
 	return out
 }
 
-func rootActive(roots []SkillRootView, path string) bool {
-	want := config.CanonicalSkillPath(path)
+func rootActive(roots []SkillRootView, path string, workspaceRoots ...string) bool {
+	workspaceRoot := "."
+	if len(workspaceRoots) > 0 {
+		workspaceRoot = workspaceRoots[0]
+	}
+	want := canonicalSkillPathForRoot(path, workspaceRoot)
 	for _, r := range roots {
-		if config.CanonicalSkillPath(r.Dir) == want {
+		if canonicalSkillPathForRoot(r.Dir, workspaceRoot) == want {
 			return true
 		}
 	}
@@ -8712,7 +8811,11 @@ func (a *App) PickPluginFolder() (string, error) {
 func (a *App) AddSkillPath(path string) error {
 	path = normalizeSkillPath(path)
 	workspaceRoot := a.activeWorkspaceRoot()
-	err := a.applyConfigChange(func(c *config.Config) error {
+	field := "paths"
+	if isConventionSkillRoot(path, workspaceRoot) {
+		field = "excluded_paths"
+	}
+	err := a.applySkillConfigChange(field, "skills source", func(c *config.Config) error {
 		if isConventionSkillRoot(path, workspaceRoot) {
 			return c.RestoreSkillPath(path)
 		}
@@ -8728,7 +8831,12 @@ func (a *App) AddSkillPath(path string) error {
 // convention roots, it records a pseudo-delete in excluded_paths.
 func (a *App) RemoveSkillPath(path string) error {
 	path = normalizeSkillPath(path)
-	err := a.applyConfigChange(func(c *config.Config) error {
+	workspaceRoot := a.activeWorkspaceRoot()
+	field := "paths"
+	if isConventionSkillRoot(path, workspaceRoot) {
+		field = "excluded_paths"
+	}
+	err := a.applySkillConfigChange(field, "skills source", func(c *config.Config) error {
 		removed, err := c.RemoveSkillPath(path)
 		if err != nil || removed {
 			return err
@@ -8745,7 +8853,12 @@ func (a *App) RemoveSkillPath(path string) error {
 // controller so the source is immediately included or excluded from discovery.
 func (a *App) SetSkillPathEnabled(path string, enabled bool) error {
 	path = normalizeSkillPath(path)
-	err := a.applyConfigChange(func(c *config.Config) error {
+	workspaceRoot := a.activeWorkspaceRoot()
+	field := "paths"
+	if isConventionSkillRoot(path, workspaceRoot) {
+		field = "excluded_paths"
+	}
+	err := a.applySkillConfigChange(field, "skills source", func(c *config.Config) error {
 		return c.SetSkillPathEnabled(path, enabled)
 	})
 	if err == nil {
@@ -8788,7 +8901,7 @@ func (a *App) ReloadCommands() error {
 // SetSkillEnabled persists a skill toggle and rebuilds the controller so the
 // prompt index, slash menu, and skill tools reflect it immediately.
 func (a *App) SetSkillEnabled(name string, enabled bool) error {
-	err := a.applyConfigChange(func(c *config.Config) error {
+	err := a.applySkillConfigChange("disabled_skills", "skill", func(c *config.Config) error {
 		return c.SetSkillEnabled(name, enabled)
 	})
 	if err == nil {
@@ -8833,11 +8946,11 @@ func normalizeSkillPath(path string) string {
 }
 
 func isConventionSkillRoot(path, workspaceRoot string) bool {
-	want := config.CanonicalSkillPath(path)
+	want := canonicalSkillPathForRoot(path, workspaceRoot)
 	if want == "" {
 		return false
 	}
-	bases := []string{workspaceRoot}
+	bases := []string{normalizeWorkspaceRoot(workspaceRoot)}
 	if home, err := os.UserHomeDir(); err == nil {
 		bases = append(bases, home)
 	}
@@ -8847,12 +8960,27 @@ func isConventionSkillRoot(path, workspaceRoot string) bool {
 			continue
 		}
 		for _, dir := range config.ConventionDirs {
-			if want == config.CanonicalSkillPath(filepath.Join(base, dir, skill.SkillsDirname)) {
+			if want == canonicalSkillPathForRoot(filepath.Join(base, dir, skill.SkillsDirname), workspaceRoot) {
 				return true
 			}
 		}
 	}
 	return false
+}
+
+func skillRootScopeForPath(path, workspaceRoot string) skill.Scope {
+	want := canonicalSkillPathForRoot(path, workspaceRoot)
+	if home, err := os.UserHomeDir(); err == nil {
+		for _, dir := range config.ConventionDirs {
+			if want == canonicalSkillPathForRoot(filepath.Join(home, dir, skill.SkillsDirname), workspaceRoot) {
+				return skill.ScopeGlobal
+			}
+		}
+	}
+	if isConventionSkillRoot(path, workspaceRoot) {
+		return skill.ScopeProject
+	}
+	return skill.ScopeCustom
 }
 
 func skillRootPath(path string) string {

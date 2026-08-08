@@ -1311,6 +1311,48 @@ func (a *App) applyConfigChange(mutate func(*config.Config) error) error {
 	return err
 }
 
+// applySkillConfigChange edits the config file that owns the selected [skills]
+// field. Project skill settings shadow the global setting at runtime, so
+// writing only the user config would make the UI appear to save while the
+// active project continued using its old value.
+func (a *App) applySkillConfigChange(field, setting string, mutate func(*config.Config) error) error {
+	workspaceRoot := a.activeWorkspaceRoot()
+	projectPath := config.SourcePathForRoot(workspaceRoot)
+	projectOwned := strings.TrimSpace(projectPath) != "" &&
+		!config.IsUserConfigPath(projectPath) &&
+		config.ConfigFileDefinesSkillKey(projectPath, field)
+	if !projectOwned {
+		return a.applyConfigChange(mutate)
+	}
+	if err := a.ensureActiveTabRebuildAllowed(setting); err != nil {
+		return err
+	}
+	if err := func() error {
+		unlock, err := config.LockConfigFileEdits(projectPath)
+		if err != nil {
+			return err
+		}
+		defer unlock()
+		cfg, err := config.LoadForEditWithoutCredentialsReadOnlyStrict(projectPath)
+		if err != nil {
+			return err
+		}
+		if err := mutate(cfg); err != nil {
+			return err
+		}
+		return cfg.SaveTo(projectPath)
+	}(); err != nil {
+		return err
+	}
+	if err := a.rebuildSetting(setting); err != nil {
+		if _, ok := a.deferredRebuildWarning(setting, err); ok {
+			return nil
+		}
+		return err
+	}
+	return nil
+}
+
 func (a *App) applyConfigChangeWithWarning(setting string, mutate func(*config.Config) error) (string, error) {
 	if err := a.ensureActiveTabRebuildAllowed(setting); err != nil {
 		return "", err

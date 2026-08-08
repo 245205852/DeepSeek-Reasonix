@@ -4,8 +4,8 @@
     "commented-code": 0,
     "complexity": 2058,
     "essay": 4024,
-    "file-size": 108589,
-    "function-size": 9132,
+    "file-size": 108773,
+    "function-size": 9159,
     "layering": 1,
     "marker": 0,
     "narrative": 61,
@@ -27,8 +27,8 @@
     "desktop/app.go": {
       "complexity": 64,
       "essay": 90,
-      "file-size": 11561,
-      "function-size": 361
+      "file-size": 11690,
+      "function-size": 388
     },
     "desktop/app_autosave_test.go": {
       "essay": 1
@@ -259,7 +259,7 @@
     "desktop/settings_app.go": {
       "complexity": 25,
       "essay": 28,
-      "file-size": 3012,
+      "file-size": 3054,
       "function-size": 50
     },
     "desktop/settings_app_test.go": {
@@ -978,7 +978,7 @@
     },
     "internal/config/load.go": {
       "essay": 24,
-      "file-size": 1196,
+      "file-size": 1209,
       "function-size": 53
     },
     "internal/config/main_test.go": {

@@ -64,6 +64,113 @@ func TestSkillRootsViewCountsProjectSkills(t *testing.T) {
 	t.Fatalf("project skill root %q not found in %+v", root, roots)
 }
 
+func TestSkillRootsViewUsesActiveWorkspaceForRelativeProjectPaths(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+	t.Setenv("AppData", filepath.Join(home, "AppData"))
+	project := t.TempDir()
+	root := filepath.Join(project, "relative-skills")
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "relative.md"), []byte("---\ndescription: relative\n---\nbody"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(project, "reasonix.toml"), []byte("[skills]\npaths = [\"relative-skills\"]\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := config.LoadForRootReadOnly(project)
+	if err != nil {
+		t.Fatal(err)
+	}
+	roots := skillRootsViewFrom(project, cfg, config.LoadForEdit(config.UserConfigPath()))
+	if got := skillRootCount(roots, root); got != 1 {
+		t.Fatalf("relative project skill root count = %d, want 1; roots=%+v", got, roots)
+	}
+}
+
+func TestSkillRootsViewShowsProjectExcludedPathAsDisabled(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+	t.Setenv("AppData", filepath.Join(home, "AppData"))
+	project := t.TempDir()
+	root := filepath.Join(project, "project-skills")
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "disabled.md"), []byte("---\ndescription: disabled\n---\nbody"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(project, "reasonix.toml"), []byte("[skills]\nexcluded_paths = [\"project-skills\"]\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := config.LoadForRootReadOnly(project)
+	if err != nil {
+		t.Fatal(err)
+	}
+	roots := skillRootsViewFrom(project, cfg, config.LoadForEdit(config.UserConfigPath()))
+	for _, view := range roots {
+		if realTestPath(view.Dir) != realTestPath(root) {
+			continue
+		}
+		if view.Enabled || view.Status != "disabled" || !view.Configured || view.Skills != 0 {
+			t.Fatalf("project excluded root view = %+v", view)
+		}
+		return
+	}
+	t.Fatalf("project excluded skill root %q not found in %+v", root, roots)
+}
+
+func TestSkillSettingsEditProjectOwnedFields(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+	t.Setenv("AppData", filepath.Join(home, "AppData"))
+	project := t.TempDir()
+	root := filepath.Join(project, "project-skills")
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	projectConfig := filepath.Join(project, "reasonix.toml")
+	if err := os.WriteFile(projectConfig, []byte("[skills]\npaths = [\"project-skills\"]\ndisable_implicit_invocation = true\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.Chdir(wd)
+	if err := os.Chdir(project); err != nil {
+		t.Fatal(err)
+	}
+	app := NewApp()
+	if err := app.SetSkillPathEnabled(root, false); err != nil {
+		t.Fatalf("SetSkillPathEnabled: %v", err)
+	}
+	if err := app.SetSkillImplicitInvocation(false); err != nil {
+		t.Fatalf("SetSkillImplicitInvocation: %v", err)
+	}
+	projectCfg, err := config.LoadForEditReadOnlyStrict(projectConfig)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(projectCfg.Skills.ExcludedPaths) != 1 || realTestPath(projectCfg.Skills.ExcludedPaths[0]) != realTestPath(root) {
+		t.Fatalf("project excluded paths = %v, want %q", projectCfg.Skills.ExcludedPaths, root)
+	}
+	if !projectCfg.Skills.DisableImplicitInvocation {
+		t.Fatal("project implicit invocation policy was overwritten")
+	}
+	userCfg := config.LoadForEdit(config.UserConfigPath())
+	if len(userCfg.Skills.ExcludedPaths) != 0 || userCfg.Skills.DisableImplicitInvocation {
+		t.Fatalf("project-owned skill edits leaked into user config: %+v", userCfg.Skills)
+	}
+}
+
 func TestSkillRootsViewMarksEnvConfiguredCustomRoot(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
