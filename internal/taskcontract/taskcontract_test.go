@@ -378,3 +378,38 @@ func TestGoalVerdictDeterministicHotPath(t *testing.T) {
 		t.Fatal("verdict strings")
 	}
 }
+
+func TestGateMutationAfterGreen(t *testing.T) {
+	c := FromPlan("fix cache", PlanFacts{
+		AcceptanceCriteria: []string{"fix invalidation"},
+		Verifications:      []string{"go test ./cache/"},
+	})
+	c.AddRequirement("opt1", "nice-to-have cleanup", false)
+
+	if ok, challenge := c.GateMutation(""); !ok || challenge != "" {
+		t.Fatal("mutations must flow freely while the contract is unproven")
+	}
+
+	c.Observe(evidence.Receipt{ToolName: "edit_file", Mutation: true, Success: true})
+	c.Observe(evidence.Receipt{ToolName: "bash", Command: "go test ./cache/", Success: true})
+	c.Resolve("r1", Satisfied)
+
+	if ok, challenge := c.GateMutation(""); ok || !strings.Contains(challenge, "Name the unsatisfied requirement") {
+		t.Fatalf("unbound post-green mutation must be challenged: %v %q", ok, challenge)
+	}
+	if ok, _ := c.GateMutation("r1"); ok {
+		t.Fatal("binding to an already-satisfied requirement is not a justification")
+	}
+	if ok, _ := c.GateMutation("ghost"); ok {
+		t.Fatal("unknown requirement IDs justify nothing")
+	}
+	if ok, challenge := c.GateMutation("opt1"); !ok || challenge != "" {
+		t.Fatal("an unsatisfied optional requirement is a legitimate reason to continue")
+	}
+
+	// A landed mutation stales the proof: the gate lifts on its own.
+	c.Observe(evidence.Receipt{ToolName: "edit_file", Mutation: true, Success: true})
+	if ok, _ := c.GateMutation(""); !ok {
+		t.Fatal("once the contract is no longer green the gate must lift")
+	}
+}

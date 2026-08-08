@@ -435,6 +435,25 @@ func (c *Contract) GoalVerdict() Verdict {
 	return VerdictUncertain
 }
 
+// GateMutation is the mutation-after-green guard: while anything is
+// unproven mutations flow freely, but once the contract is fully proven a
+// further mutation must bind to a still-unsatisfied requirement ID or the
+// challenge comes back as the tool result — no extra round. The gate lifts
+// by itself after a landed mutation, since the staled proof ends green.
+func (c *Contract) GateMutation(requirementID string) (allowed bool, challenge string) {
+	if !c.ReadyToFinalize() {
+		return true, ""
+	}
+	if requirementID != "" {
+		for _, req := range c.Requirements {
+			if req.ID == requirementID && req.Status != Satisfied {
+				return true, ""
+			}
+		}
+	}
+	return false, "All acceptance evidence is satisfied. Name the unsatisfied requirement ID this mutation addresses, or finalize instead of editing."
+}
+
 // FinalRejection is the host's answer to a premature "done": empty when the
 // contract is fully proven (or has no content to prove), otherwise a
 // directive naming exactly what lacks fresh evidence — "verify R2" carries
