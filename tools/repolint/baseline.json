@@ -2,9 +2,9 @@
   "limits": {
     "banner": 0,
     "commented-code": 0,
-    "complexity": 2058,
-    "essay": 4024,
-    "file-size": 108839,
+    "complexity": 2056,
+    "essay": 4022,
+    "file-size": 108820,
     "function-size": 9159,
     "layering": 1,
     "marker": 0,
@@ -13,7 +13,8 @@
   },
   "files": {
     "cmd/e2ebench/main.go": {
-      "essay": 1
+      "essay": 1,
+      "function-size": 3
     },
     "cmd/e2ebench/mutation.go": {
       "essay": 1
@@ -405,7 +406,7 @@
     "internal/agent/agent.go": {
       "complexity": 61,
       "essay": 109,
-      "file-size": 2715,
+      "file-size": 2718,
       "function-size": 124
     },
     "internal/agent/ask.go": {
@@ -1508,10 +1509,10 @@
       "essay": 8
     },
     "internal/provider/openai/openai.go": {
-      "complexity": 63,
-      "essay": 41,
-      "file-size": 553,
-      "function-size": 255
+      "complexity": 61,
+      "essay": 40,
+      "file-size": 531,
+      "function-size": 252
     },
     "internal/provider/openai/openai_test.go": {
       "essay": 5,
@@ -1521,7 +1522,7 @@
       "essay": 7
     },
     "internal/provider/provider.go": {
-      "essay": 51,
+      "essay": 50,
       "file-size": 353
     },
     "internal/provider/responses/responses.go": {
