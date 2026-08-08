@@ -134,6 +134,14 @@ type result struct {
 	FirstCorrectMs   int64        `json:"first_correct_ms,omitempty"`
 	PostSolveWasteMs int64        `json:"post_solve_waste_ms,omitempty"`
 	SolvedThenBroken bool         `json:"solved_then_broken,omitempty"`
+	// Correct-boundary decomposition: edits and rounds on each side of the
+	// first-correct instant, verifications re-run after it, and whether a
+	// passing state regressed (PASS→FAIL) even if later repaired.
+	MutationsBeforeCorrect int  `json:"mutations_before_correct,omitempty"`
+	RoundsBeforeCorrect    int  `json:"rounds_before_correct,omitempty"`
+	RoundsAfterCorrect     int  `json:"rounds_after_correct,omitempty"`
+	VerifyAfterCorrect     int  `json:"verify_after_correct,omitempty"`
+	RegressedAfterCorrect  bool `json:"regressed_after_correct,omitempty"`
 }
 
 // class is the published failure taxonomy: solved, the guard that stopped the
@@ -512,6 +520,12 @@ func runTask(cfg suiteConfig, t task) result {
 		r.FirstCorrectMs, r.SolvedThenBroken = firstCorrect(r.Checkpoints, r.Passed)
 		if r.Passed && r.FirstCorrectMs > 0 {
 			r.PostSolveWasteMs = r.WallMs - r.FirstCorrectMs
+		}
+		r.MutationsBeforeCorrect = mutationsBeforeCorrect(r.Checkpoints)
+		r.RegressedAfterCorrect = regressedAfterCorrect(r.Checkpoints)
+		if trajPath != "" && r.FirstCorrectMs > 0 {
+			cutoff := startedAt.UnixMilli() + r.FirstCorrectMs
+			r.RoundsBeforeCorrect, r.RoundsAfterCorrect, r.VerifyAfterCorrect = roundsSplitAt(trajPath, cutoff)
 		}
 	}
 	r.PhaseTrace = buildPhaseTrace(r)

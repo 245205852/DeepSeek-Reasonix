@@ -177,6 +177,23 @@ func renderSolveProfiles(results []result) string {
 	}
 	line := "**Solve profile**: "
 	parts := []string{}
+	regressed, withCorrect := 0, 0
+	var roundsBefore, roundsAfter, verifyAfter, mutationsBefore []int64
+	for _, r := range results {
+		if len(r.Checkpoints) == 0 {
+			continue
+		}
+		if r.FirstCorrectMs > 0 {
+			withCorrect++
+			roundsBefore = append(roundsBefore, int64(r.RoundsBeforeCorrect))
+			roundsAfter = append(roundsAfter, int64(r.RoundsAfterCorrect))
+			verifyAfter = append(verifyAfter, int64(r.VerifyAfterCorrect))
+			mutationsBefore = append(mutationsBefore, int64(r.MutationsBeforeCorrect))
+		}
+		if r.RegressedAfterCorrect {
+			regressed++
+		}
+	}
 	for _, profile := range []string{"early_correct", "late_correct", "never_correct", "solved_then_broke"} {
 		if counts[profile] == 0 {
 			continue
@@ -187,7 +204,13 @@ func renderSolveProfiles(results []result) string {
 		}
 		parts = append(parts, part)
 	}
-	return line + joinParts(parts) + "\n\n"
+	line += joinParts(parts)
+	if withCorrect > 0 {
+		line += fmt.Sprintf("\n\n**Correct boundary** (medians): **mutations before** %d · **rounds before** %d · **rounds after** %d · **verifications after** %d · **regression-after-correct** %s",
+			median(mutationsBefore), median(roundsBefore), median(roundsAfter), median(verifyAfter),
+			pct(regressed, withCorrect))
+	}
+	return line + "\n\n"
 }
 
 func joinParts(parts []string) string {
@@ -199,4 +222,30 @@ func joinParts(parts []string) string {
 		out += part
 	}
 	return out
+}
+
+// mutationsBeforeCorrect counts the workspace states tried before the first
+// passing one — how many edits it took to find the correct patch.
+func mutationsBeforeCorrect(checkpoints []checkpoint) int {
+	for i, cp := range checkpoints {
+		if cp.Pass {
+			return i
+		}
+	}
+	return len(checkpoints)
+}
+
+// regressedAfterCorrect reports a PASS followed by a later FAIL — the agent
+// kept "improving" a correct answer and broke it, even if it repaired the
+// damage before finishing.
+func regressedAfterCorrect(checkpoints []checkpoint) bool {
+	seenPass := false
+	for _, cp := range checkpoints {
+		if cp.Pass {
+			seenPass = true
+		} else if seenPass {
+			return true
+		}
+	}
+	return false
 }

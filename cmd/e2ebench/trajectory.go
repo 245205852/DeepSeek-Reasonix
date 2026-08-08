@@ -713,3 +713,44 @@ func pctile(values []int64, p int) int64 {
 	index := min((len(sorted)*p+99)/100, len(sorted))
 	return sorted[index-1]
 }
+
+// roundsSplitAt counts a run's top-level tool rounds on each side of the
+// first-correct instant, plus verification commands executed after it —
+// the raw material of the "kept verifying a finished answer" diagnosis.
+func roundsSplitAt(path string, cutoffUnixMs int64) (before, after, verifyAfter int) {
+	f, err := os.Open(path)
+	if err != nil {
+		return 0, 0, 0
+	}
+	defer f.Close()
+	inModel := true
+	sc := bufio.NewScanner(f)
+	sc.Buffer(make([]byte, 0, 1<<20), 16<<20)
+	for sc.Scan() {
+		var rec trajectoryRecord
+		if err := json.Unmarshal(sc.Bytes(), &rec); err != nil {
+			continue
+		}
+		if rec.Event == nil || rec.Event.Tool == nil || rec.Event.Tool.ParentID != "" {
+			continue
+		}
+		switch rec.Event.Kind {
+		case "tool_dispatch":
+			if inModel {
+				inModel = false
+				if rec.TS <= cutoffUnixMs {
+					before++
+				} else {
+					after++
+				}
+			}
+		case "tool_result":
+			inModel = true
+			if v := rec.Event.Tool.Execution; v != nil && rec.TS > cutoffUnixMs &&
+				(v.Verification == "passed" || v.Verification == "failed") {
+				verifyAfter++
+			}
+		}
+	}
+	return before, after, verifyAfter
+}

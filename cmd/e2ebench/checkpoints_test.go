@@ -143,3 +143,48 @@ func TestSolveProfileTriage(t *testing.T) {
 		t.Fatal("uncheckpointed suites must not render the line")
 	}
 }
+
+func TestCorrectBoundaryMetrics(t *testing.T) {
+	cps := []checkpoint{
+		{Seq: 1, ElapsedMs: 10, Pass: false},
+		{Seq: 2, ElapsedMs: 20, Pass: false},
+		{Seq: 3, ElapsedMs: 30, Pass: true},
+		{Seq: 4, ElapsedMs: 40, Pass: false},
+		{Seq: 5, ElapsedMs: 50, Pass: true},
+	}
+	if got := mutationsBeforeCorrect(cps); got != 2 {
+		t.Fatalf("mutations before correct = %d, want 2", got)
+	}
+	if !regressedAfterCorrect(cps) {
+		t.Fatal("PASS→FAIL→PASS must count as a regression even though it was repaired")
+	}
+	if regressedAfterCorrect(cps[:3]) {
+		t.Fatal("no regression before the first failure-after-pass")
+	}
+	if got := mutationsBeforeCorrect(cps[:2]); got != 2 {
+		t.Fatalf("all-failing run: mutations = %d, want len", got)
+	}
+}
+
+func TestRoundsSplitAt(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "split.trajectory.jsonl")
+	lines := []string{
+		`{"seq":1,"ts":1000,"event":{"kind":"turn_started"}}`,
+		`{"seq":2,"ts":2000,"event":{"kind":"tool_dispatch","tool":{"id":"a","name":"write_file"}}}`,
+		`{"seq":3,"ts":2100,"event":{"kind":"tool_result","tool":{"id":"a","name":"write_file","durationMs":100}}}`,
+		`{"seq":4,"ts":3000,"event":{"kind":"tool_dispatch","tool":{"id":"b","name":"bash"}}}`,
+		`{"seq":5,"ts":3200,"event":{"kind":"tool_result","tool":{"id":"b","name":"bash","durationMs":200,"execution":{"verification":"passed"}}}}`,
+		`{"seq":6,"ts":5000,"event":{"kind":"tool_dispatch","tool":{"id":"c","name":"bash"}}}`,
+		`{"seq":7,"ts":5200,"event":{"kind":"tool_result","tool":{"id":"c","name":"bash","durationMs":200,"execution":{"verification":"passed"}}}}`,
+		`{"seq":8,"ts":6000,"event":{"kind":"tool_dispatch","tool":{"id":"d","name":"read_file","readOnly":true}}}`,
+		`{"seq":9,"ts":6100,"event":{"kind":"tool_result","tool":{"id":"d","name":"read_file","readOnly":true,"durationMs":100}}}`,
+		`{"seq":10,"ts":7000,"event":{"kind":"turn_done"}}`,
+	}
+	if err := writeLines(path, lines); err != nil {
+		t.Fatal(err)
+	}
+	before, after, verifyAfter := roundsSplitAt(path, 4000)
+	if before != 2 || after != 2 || verifyAfter != 1 {
+		t.Fatalf("split = %d/%d/%d, want 2 before, 2 after, 1 verification after", before, after, verifyAfter)
+	}
+}
