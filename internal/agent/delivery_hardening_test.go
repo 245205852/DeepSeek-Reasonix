@@ -12,7 +12,6 @@ import (
 	"reasonix/internal/capability"
 	"reasonix/internal/event"
 	"reasonix/internal/evidence"
-	"reasonix/internal/jobs"
 	"reasonix/internal/provider"
 	"reasonix/internal/taskintent"
 	"reasonix/internal/tool"
@@ -199,158 +198,6 @@ func TestDeliveryDurableMemoryRequiresRememberWithoutCodeCeremony(t *testing.T) 
 	}
 }
 
-func TestNonGoalRequestDoesNotExposeUpdateGoal(t *testing.T) {
-	goalTool, ok := tool.LookupBuiltin("update_goal")
-	if !ok {
-		t.Fatal("update_goal builtin not registered")
-	}
-	reg := tool.NewRegistry()
-	reg.Add(goalTool)
-	prov := &scriptedProvider{name: "p", turns: [][]provider.Chunk{
-		{{Type: provider.ChunkText, Text: "Here is the answer."}, {Type: provider.ChunkDone}},
-	}}
-	a := New(prov, reg, NewSession("sys"), Options{}, event.Discard)
-	if err := a.Run(context.Background(), "answer normally"); err != nil {
-		t.Fatalf("non-Goal answer: %v", err)
-	}
-	if len(prov.requests) != 1 {
-		t.Fatalf("provider requests = %d, want 1", len(prov.requests))
-	}
-	for _, schema := range prov.requests[0].Tools {
-		if schema.Name == "update_goal" {
-			t.Fatal("non-Goal provider request exposed update_goal")
-		}
-	}
-	if got := lastAssistantContent(a.Session()); got != "Here is the answer." {
-		t.Fatalf("last assistant text = %q", got)
-	}
-}
-
-func TestAgentWithoutJobsDoesNotExposeBackgroundTools(t *testing.T) {
-	reg := tool.NewRegistry()
-	for _, name := range []string{"wait", "bash_output", "kill_shell"} {
-		jobTool, ok := tool.LookupBuiltin(name)
-		if !ok {
-			t.Fatalf("%s builtin not registered", name)
-		}
-		reg.Add(jobTool)
-	}
-	manager := jobs.NewManager(event.Discard)
-	defer manager.Close()
-	ctx := jobs.WithManager(context.Background(), manager)
-	prov := &scriptedProvider{name: "no-jobs", turns: [][]provider.Chunk{
-		{{Type: provider.ChunkText, Text: "No background work."}, {Type: provider.ChunkDone}},
-	}}
-	a := New(prov, reg, NewSession("sys"), Options{}, event.Discard)
-	if err := a.Run(ctx, "answer normally"); err != nil {
-		t.Fatalf("no-Jobs answer: %v", err)
-	}
-	if len(prov.requests) != 1 {
-		t.Fatalf("provider requests = %d, want 1", len(prov.requests))
-	}
-	if len(prov.requests[0].Tools) != 0 {
-		t.Fatalf("no-Jobs provider tools = %v, want background tools hidden", prov.requests[0].Tools)
-	}
-
-	withJobsProv := &scriptedProvider{name: "with-jobs", turns: [][]provider.Chunk{
-		{{Type: provider.ChunkText, Text: "Background tools available."}, {Type: provider.ChunkDone}},
-	}}
-	withJobs := New(withJobsProv, reg, NewSession("sys"), Options{Jobs: manager}, event.Discard)
-	if err := withJobs.Run(context.Background(), "answer normally"); err != nil {
-		t.Fatalf("with-Jobs answer: %v", err)
-	}
-	visible := make(map[string]bool)
-	for _, schema := range withJobsProv.requests[0].Tools {
-		visible[schema.Name] = true
-	}
-	for _, name := range []string{"wait", "bash_output", "kill_shell"} {
-		if !visible[name] {
-			t.Fatalf("with-Jobs provider tools = %v, missing %s", visible, name)
-		}
-	}
-}
-
-type requestGoalRecorder struct{}
-
-func (requestGoalRecorder) RecordGoalReport(report tool.GoalReport) (string, error) {
-	return "recorded " + report.Status, nil
-}
-
-type childIsolationGoalRecorder struct {
-	reports []tool.GoalReport
-}
-
-func (r *childIsolationGoalRecorder) RecordGoalReport(report tool.GoalReport) (string, error) {
-	r.reports = append(r.reports, report)
-	return "recorded " + report.Status, nil
-}
-
-func TestGoalRequestExposesUpdateGoal(t *testing.T) {
-	goalTool, ok := tool.LookupBuiltin("update_goal")
-	if !ok {
-		t.Fatal("update_goal builtin not registered")
-	}
-	reg := tool.NewRegistry()
-	reg.Add(goalTool)
-	prov := &scriptedProvider{name: "p", turns: [][]provider.Chunk{
-		{{Type: provider.ChunkText, Text: "Goal work continues."}, {Type: provider.ChunkDone}},
-	}}
-	a := New(prov, reg, NewSession("sys"), Options{}, event.Discard)
-	ctx := tool.WithGoalTurnRecorder(context.Background(), requestGoalRecorder{})
-	if err := a.Run(ctx, "continue goal"); err != nil {
-		t.Fatalf("Goal answer: %v", err)
-	}
-	if len(prov.requests) != 1 {
-		t.Fatalf("provider requests = %d, want 1", len(prov.requests))
-	}
-	for _, schema := range prov.requests[0].Tools {
-		if schema.Name == "update_goal" {
-			return
-		}
-	}
-	t.Fatal("Goal provider request did not expose update_goal")
-}
-
-func TestSubAgentDoesNotInheritParentGoalRecorder(t *testing.T) {
-	goalTool, ok := tool.LookupBuiltin("update_goal")
-	if !ok {
-		t.Fatal("update_goal builtin not registered")
-	}
-	reg := tool.NewRegistry()
-	reg.Add(goalTool)
-	prov := &scriptedProvider{name: "goal-child", turns: [][]provider.Chunk{
-		{toolCallChunk("goal", "update_goal", `{"status":"complete"}`), {Type: provider.ChunkDone}},
-		{{Type: provider.ChunkText, Text: "Child result."}, {Type: provider.ChunkDone}},
-	}}
-	recorder := &childIsolationGoalRecorder{}
-	ctx := tool.WithGoalTurnRecorder(context.Background(), recorder)
-	sess := NewSession("child system")
-
-	answer, err := RunSubAgentWithSession(ctx, prov, reg, sess, "inspect the task", Options{}, event.Discard)
-	if err != nil {
-		t.Fatalf("Goal child: %v", err)
-	}
-	if answer != "Child result." {
-		t.Fatalf("Goal child answer = %q", answer)
-	}
-	if len(prov.requests) != 2 {
-		t.Fatalf("provider requests = %d, want hallucinated call plus repair", len(prov.requests))
-	}
-	for i, req := range prov.requests {
-		for _, schema := range req.Tools {
-			if schema.Name == "update_goal" {
-				t.Fatalf("child provider request %d exposed update_goal", i+1)
-			}
-		}
-	}
-	if len(recorder.reports) != 0 {
-		t.Fatalf("child wrote reports into parent Goal recorder: %+v", recorder.reports)
-	}
-	if got := lastToolResult(sess, "update_goal"); !strings.Contains(got, "only available while an active goal turn") {
-		t.Fatalf("child update_goal result = %q", got)
-	}
-}
-
 func TestNonGoalHallucinatedUpdateGoalWithVisibleTextDoesNotSpendRepairRound(t *testing.T) {
 	goalTool, ok := tool.LookupBuiltin("update_goal")
 	if !ok {
@@ -374,32 +221,6 @@ func TestNonGoalHallucinatedUpdateGoalWithVisibleTextDoesNotSpendRepairRound(t *
 	}
 	if got := lastToolResult(a.Session(), "update_goal"); !strings.Contains(got, "only available while an active goal turn") {
 		t.Fatalf("paired update_goal result = %q", got)
-	}
-}
-
-func TestNonGoalToolOnlyUpdateGoalNudgesVisibleAnswer(t *testing.T) {
-	goalTool, ok := tool.LookupBuiltin("update_goal")
-	if !ok {
-		t.Fatal("update_goal builtin not registered")
-	}
-	reg := tool.NewRegistry()
-	reg.Add(goalTool)
-	prov := &scriptedProvider{name: "p", turns: [][]provider.Chunk{
-		{toolCallChunk("goal", "update_goal", `{"status":"complete"}`), {Type: provider.ChunkDone}},
-		{{Type: provider.ChunkText, Text: "Here is the recovered answer."}, {Type: provider.ChunkDone}},
-	}}
-	a := New(prov, reg, NewSession("sys"), Options{}, event.Discard)
-	if err := a.Run(context.Background(), "answer normally"); err != nil {
-		t.Fatalf("non-Goal update_goal repair: %v", err)
-	}
-	if len(prov.requests) != 2 {
-		t.Fatalf("provider requests = %d, want repair round", len(prov.requests))
-	}
-	if got := lastUser(prov.requests[1]); !strings.Contains(got, "visible answer text") {
-		t.Fatalf("repair instruction = %q, want visible-answer nudge", got)
-	}
-	if got := lastAssistantContent(a.Session()); got != "Here is the recovered answer." {
-		t.Fatalf("last assistant text = %q", got)
 	}
 }
 

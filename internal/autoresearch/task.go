@@ -49,19 +49,6 @@ type Progress struct {
 	UpdatedAt        time.Time `json:"updated_at"`
 }
 
-// Historical finding kinds are free-form strings. The constants below are
-// retained only as documentation of values that older writers produced; the
-// reader accepts any non-empty kind without enumeration.
-const (
-	FindingKindCommand      = "command"
-	FindingKindFile         = "file"
-	FindingKindTest         = "test"
-	FindingKindBenchmark    = "benchmark"
-	FindingKindManual       = "manual"
-	FindingKindReview       = "review"
-	FindingKindVerification = "verification"
-)
-
 const (
 	FindingSourceCommand = "command"
 	FindingSourceFile    = "file"

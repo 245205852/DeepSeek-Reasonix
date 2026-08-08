@@ -539,7 +539,7 @@ func TestGoalStatePersistsNextToSessionPath(t *testing.T) {
 	if err := json.Unmarshal(data, &state); err != nil {
 		t.Fatal(err)
 	}
-	if state.Goal != "fix the typo" || state.Status != GoalStatusRunning || state.ResearchMode != GoalResearchOn || !state.Strict {
+	if state.Goal != "fix the typo" || state.Status != GoalStatusRunning || state.BudgetClass != budgetClassResearch || state.ResearchMode != GoalResearchOff || !state.Strict {
 		t.Fatalf("goal state = %+v, want running strict research goal", state)
 	}
 }
@@ -559,7 +559,7 @@ func TestSetGoalDurableRestoresInMemoryStateWhenSidecarWriteFails(t *testing.T) 
 	}
 	c.goals.setStatePath(filepath.Join(notDirectory, "goal.json"))
 
-	if err := c.SetGoalDurable("replace the goal", ""); err == nil {
+	if err := c.SetGoalDurable("replace the goal"); err == nil {
 		t.Fatal("SetGoalDurable succeeded despite an invalid sidecar parent")
 	}
 	if got := c.Goal(); got != "keep the old goal" {
@@ -592,7 +592,7 @@ func TestSetGoalDurableNeverCreatesLegacyArchive(t *testing.T) {
 	c.goals.setStatePath(filepath.Join(notDirectory, "goal.json"))
 
 	goal := "investigate the root cause and fix the performance regression, then verify with tests"
-	if err := c.SetGoalDurable(goal, ""); err == nil {
+	if err := c.SetGoalDurable(goal); err == nil {
 		t.Fatal("SetGoalDurable succeeded despite an invalid sidecar parent")
 	}
 	if _, err := os.Stat(filepath.Join(root, ".reasonix", "autoresearch")); !os.IsNotExist(err) {

@@ -100,6 +100,8 @@ type Goals interface {
 	Goal() string
 	GoalStatus() string
 	SetGoal(goal string)
+	// SetGoalWithResearchMode is retained for deprecated CLI budget flags. The
+	// mode is translated at the boundary and is not stored in the Goal runtime.
 	SetGoalWithResearchMode(goal string, researchMode GoalResearchMode)
 	ResumeGoal() bool
 	PauseGoal() bool

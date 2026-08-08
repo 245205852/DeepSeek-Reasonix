@@ -130,7 +130,7 @@ func toolCallChunk(id, name, args string) provider.Chunk {
 }
 
 func TestActiveGoalBlockCarriesTaskContractAndPausePolicy(t *testing.T) {
-	block := activeGoalBlock("fix the parser", GoalResearchOff)
+	block := activeGoalBlock("fix the parser")
 	for _, want := range []string{
 		"Treat the user's goal as a task contract",
 		"Context, Request, Output format, Constraints",
@@ -252,6 +252,7 @@ func TestLegacyGoalSidecarMigratesToResearchBudgetWithoutTaskID(t *testing.T) {
 	if err := os.MkdirAll(filepath.Dir(sessionPath), 0o755); err != nil {
 		t.Fatal(err)
 	}
+	writeLegacyGoalArchive(t, root, "old-task", "archive fallback should not replace sidecar goal")
 	if err := os.WriteFile(goalStatePath(sessionPath), []byte(`{"goal":"investigate runtime","status":"running","researchMode":1,"autoResearchTaskID":"old-task"}`), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -262,6 +263,9 @@ func TestLegacyGoalSidecarMigratesToResearchBudgetWithoutTaskID(t *testing.T) {
 	defer c.Close()
 	if got := c.GoalRuntime().TurnsLimit; got != 40 {
 		t.Fatalf("migrated Goal turns limit = %d, want 40", got)
+	}
+	if got := c.Goal(); got != "investigate runtime" {
+		t.Fatalf("migrated Goal = %q, want sidecar goal", got)
 	}
 	raw, err := os.ReadFile(goalStatePath(sessionPath))
 	if err != nil {
@@ -287,12 +291,23 @@ func TestMissingExplicitLegacyTaskBlocksWithoutCreatingArchive(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(root, ".reasonix", "autoresearch")); !os.IsNotExist(err) {
 		t.Fatalf("missing legacy task created archive: %v", err)
 	}
+
+	c.SetGoal("resume .reasonix/autoresearch/missing-task/../../escape")
+	if got := c.GoalStatus(); got != GoalStatusBlocked {
+		t.Fatalf("unsafe legacy path status = %q, want blocked", got)
+	}
+	if got := c.Goal(); got != "resume .reasonix/autoresearch/missing-task/../../escape" {
+		t.Fatalf("unsafe legacy path silently resumed a truncated task: %q", got)
+	}
 }
 
 func TestAssistantEvidenceBlockIsIgnoredByUnifiedGoal(t *testing.T) {
 	root := t.TempDir()
 	sessionPath := filepath.Join(root, "sessions", "s.jsonl")
-	prov := &scriptedTurns{turns: flattenTurns(goalToolTurn(GoalStatusComplete, "", ""))}
+	turns := goalToolTurn(GoalStatusComplete, "", "")
+	const evidenceBlock = `<autoresearch-evidence>{"id":"legacy-evidence","kind":"verification","summary":"must remain ordinary assistant text"}</autoresearch-evidence>`
+	turns[len(turns)-1] = textTurn("worked on the goal\n" + evidenceBlock)
+	prov := &scriptedTurns{turns: flattenTurns(turns)}
 	ag := agent.New(prov, goalRegistry(), agent.NewSession(""), agent.Options{}, event.Discard)
 	c := New(Options{WorkspaceRoot: root, SessionPath: sessionPath, Runner: ag, Executor: ag})
 	defer c.Close()
@@ -300,6 +315,9 @@ func TestAssistantEvidenceBlockIsIgnoredByUnifiedGoal(t *testing.T) {
 	_ = newTurnOrchestrator(c).runGoalLoopWithRawDisplay(context.Background(), "start", "start", "start")
 	if got := c.GoalStatus(); got != GoalStatusComplete {
 		t.Fatalf("GoalStatus = %q, want complete", got)
+	}
+	if got := lastAssistantText(c.History()); !strings.Contains(got, evidenceBlock) {
+		t.Fatalf("legacy evidence block was interpreted instead of retained as transcript text: %q", got)
 	}
 	if _, err := os.Stat(filepath.Join(root, ".reasonix", "autoresearch")); !os.IsNotExist(err) {
 		t.Fatalf("assistant evidence created archive: %v", err)
@@ -666,7 +684,7 @@ func TestGoalInterceptsCompleteWithIncompleteTodos(t *testing.T) {
 func TestGoalAdvanceResultCannotCrossGoalLifecycle(t *testing.T) {
 	newResult := func(t *testing.T, g *goalMachine) goalAdvanceResult {
 		t.Helper()
-		g.set("old goal", GoalResearchAuto, nil)
+		g.set("old goal", "", nil)
 		res := g.advance(goalAdvanceInput{
 			report: &goalTurnReport{status: GoalStatusComplete, reason: ""},
 			todos: []evidence.TodoItem{{
@@ -691,7 +709,7 @@ func TestGoalAdvanceResultCannotCrossGoalLifecycle(t *testing.T) {
 	t.Run("replacement goal invalidates result", func(t *testing.T) {
 		var g goalMachine
 		res := newResult(t, &g)
-		g.set("replacement goal", GoalResearchAuto, nil)
+		g.set("replacement goal", "", nil)
 		if got, ok := g.acceptContinuation(res); ok {
 			t.Fatalf("replacement goal accepted stale intercept %q", got)
 		}
@@ -906,45 +924,6 @@ func TestRepeatedCompleteWithIncompleteTodosPausesOnBudget(t *testing.T) {
 	if rt.TurnsUsed != rt.TurnsLimit {
 		t.Fatalf("turn budget was not enforced: %d/%d", rt.TurnsUsed, rt.TurnsLimit)
 	}
-}
-
-func readJSONFileForTest(t *testing.T, path string, out any) {
-	t.Helper()
-	data, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatalf("ReadFile(%s): %v", path, err)
-	}
-	if err := json.Unmarshal(data, out); err != nil {
-		t.Fatalf("Unmarshal(%s): %v", path, err)
-	}
-}
-
-func sessionContainsUserText(messages []provider.Message, needles ...string) bool {
-	for _, msg := range messages {
-		if msg.Role != provider.RoleUser {
-			continue
-		}
-		ok := true
-		for _, needle := range needles {
-			if !strings.Contains(msg.Content, needle) {
-				ok = false
-				break
-			}
-		}
-		if ok {
-			return true
-		}
-	}
-	return false
-}
-
-func containsNotice(notices []string, needle string) bool {
-	for _, notice := range notices {
-		if strings.Contains(notice, needle) {
-			return true
-		}
-	}
-	return false
 }
 
 // TestSessionRotationClearsActiveGoal pins the /new & /clear goal semantics:

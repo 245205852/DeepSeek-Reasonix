@@ -61,6 +61,101 @@ func TestLoadTaskRejectsSymlinkAndUnsafeIDs(t *testing.T) {
 	}
 }
 
+func TestLoadTaskRejectsSymlinkedArchiveRoot(t *testing.T) {
+	root := t.TempDir()
+	if resolved, err := filepath.EvalSymlinks(root); err == nil {
+		root = resolved
+	}
+	outside := t.TempDir()
+	if resolved, err := filepath.EvalSymlinks(outside); err == nil {
+		outside = resolved
+	}
+	const taskID = "outside-task"
+	writeArchiveFixture(t, outside, taskID, "outside workspace goal", nil)
+	if err := os.MkdirAll(filepath.Join(root, ".reasonix"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	outsideRoot := filepath.Join(outside, ".reasonix", "autoresearch")
+	if err := os.Symlink(outsideRoot, filepath.Join(root, ".reasonix", "autoresearch")); err != nil {
+		t.Fatal(err)
+	}
+
+	store := NewStore(root)
+	if _, err := store.LoadTask(taskID); err == nil {
+		t.Fatal("LoadTask accepted a symlinked archive root outside the workspace")
+	}
+	if _, err := store.ListSummaries(); err == nil {
+		t.Fatal("ListSummaries accepted a symlinked archive root outside the workspace")
+	}
+}
+
+func TestArchiveReaderRejectsSymlinkedTaskContent(t *testing.T) {
+	t.Run("state directory", func(t *testing.T) {
+		root := t.TempDir()
+		writeArchiveFixture(t, root, "source-task", "source goal", nil)
+		victimRoot := writeArchiveFixture(t, root, "victim-task", "victim goal", nil)
+		if err := os.RemoveAll(filepath.Join(victimRoot, "state")); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(filepath.Join("..", "source-task", "state"), filepath.Join(victimRoot, "state")); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := NewStore(root).LoadTask("victim-task"); err == nil {
+			t.Fatal("LoadTask followed a state-directory symlink into another task")
+		}
+	})
+
+	t.Run("task spec file", func(t *testing.T) {
+		root := t.TempDir()
+		taskRoot := writeArchiveFixture(t, root, "file-link-task", "linked goal", nil)
+		specPath := filepath.Join(taskRoot, "state", "task_spec.json")
+		if err := os.Rename(specPath, filepath.Join(taskRoot, "state", "task_spec.real.json")); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink("task_spec.real.json", specPath); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := NewStore(root).LoadTask("file-link-task"); err == nil {
+			t.Fatal("LoadTask followed a task_spec symlink")
+		}
+	})
+
+	t.Run("validation file", func(t *testing.T) {
+		root := t.TempDir()
+		taskRoot := writeArchiveFixture(t, root, "progress-link-task", "linked progress", nil)
+		progressPath := filepath.Join(taskRoot, "state", "progress.json")
+		if err := os.Rename(progressPath, filepath.Join(taskRoot, "state", "progress.real.json")); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink("progress.real.json", progressPath); err != nil {
+			t.Fatal(err)
+		}
+		report, err := NewStore(root).ValidateTask("progress-link-task")
+		if err != nil {
+			t.Fatalf("ValidateTask: %v", err)
+		}
+		if report.Valid {
+			t.Fatal("ValidateTask accepted a symlinked progress file")
+		}
+	})
+}
+
+func TestLoadTaskRejectsUnreadableArchiveFile(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root can bypass archive file permissions")
+	}
+	root := t.TempDir()
+	taskRoot := writeArchiveFixture(t, root, "permission-task", "permission goal", nil)
+	specPath := filepath.Join(taskRoot, "state", "task_spec.json")
+	if err := os.Chmod(specPath, 0); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(specPath, 0o644) })
+	if _, err := NewStore(root).LoadTask("permission-task"); err == nil {
+		t.Fatal("LoadTask accepted an unreadable task_spec.json")
+	}
+}
+
 func TestFindingsPreserveVerificationAndUnknownKinds(t *testing.T) {
 	root := t.TempDir()
 	taskID := "findings-kinds"
@@ -158,6 +253,17 @@ func TestResumeFromGoalTextLoadsExplicitTaskPath(t *testing.T) {
 	if _, ok, err := store.ResumeFromGoalText("resume .reasonix/autoresearch/missing-task/"); !ok || err == nil {
 		t.Fatalf("missing task should fail closed: ok=%v err=%v", ok, err)
 	}
+	for _, input := range []string{
+		"resume .reasonix/autoresearch/../escape",
+		"resume .reasonix/autoresearch/" + taskID + "/../../escape",
+		"resume .reasonix/autoresearch/" + taskID + "/extra",
+		"resume .reasonix/autoresearch/" + taskID + `\extra`,
+		"resume .reasonix/autoresearch/",
+	} {
+		if _, ok, err := store.ResumeFromGoalText(input); !ok || err == nil {
+			t.Errorf("unsafe explicit path %q did not fail closed: ok=%v err=%v", input, ok, err)
+		}
+	}
 }
 
 func TestListSummariesAndSummaryAreReadOnly(t *testing.T) {
@@ -180,6 +286,7 @@ func TestListSummariesAndSummaryAreReadOnly(t *testing.T) {
 		CreatedAt: time.Date(2026, 6, 30, 11, 0, 0, 0, time.UTC),
 	})
 	before := hashTree(t, filepath.Join(root, ".reasonix", "autoresearch"))
+	beforeModTimes := modTimes(t, filepath.Join(root, ".reasonix", "autoresearch"))
 	store := NewStore(root)
 	list, err := store.ListSummaries()
 	if err != nil {
@@ -204,6 +311,12 @@ func TestListSummariesAndSummaryAreReadOnly(t *testing.T) {
 			t.Fatalf("archive mutated at %s", path)
 		}
 	}
+	afterModTimes := modTimes(t, filepath.Join(root, ".reasonix", "autoresearch"))
+	for path, modTime := range beforeModTimes {
+		if !afterModTimes[path].Equal(modTime) {
+			t.Fatalf("archive modification time changed at %s", path)
+		}
+	}
 }
 
 func TestValidateTaskRejectsCorruptJSON(t *testing.T) {
@@ -221,6 +334,41 @@ func TestValidateTaskRejectsCorruptJSON(t *testing.T) {
 	if report.Valid {
 		t.Fatal("corrupt progress reported valid")
 	}
+}
+
+func TestValidateTaskRejectsCorruptArchiveLogsButAcceptsUnknownFindingKinds(t *testing.T) {
+	t.Run("corrupt finding JSON", func(t *testing.T) {
+		root := t.TempDir()
+		taskID := "corrupt-finding-json"
+		taskRoot := writeArchiveFixture(t, root, taskID, "Validate finding JSON", nil)
+		if err := os.WriteFile(filepath.Join(taskRoot, "state", "findings.jsonl"), []byte("{not-json\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		report, err := NewStore(root).ValidateTask(taskID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if report.Valid {
+			t.Fatal("corrupt finding JSON reported valid")
+		}
+	})
+
+	t.Run("unknown finding kind", func(t *testing.T) {
+		root := t.TempDir()
+		taskID := "unknown-finding-kind"
+		taskRoot := writeArchiveFixture(t, root, taskID, "Accept future finding kind", nil)
+		appendFindingLine(t, taskRoot, Finding{
+			ID: "future", Kind: "future-kind", Summary: "preserve me", Accepted: true,
+			CreatedAt: time.Date(2026, 6, 30, 10, 0, 0, 0, time.UTC),
+		})
+		report, err := NewStore(root).ValidateTask(taskID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !report.Valid {
+			t.Fatalf("unknown finding kind rejected: %+v", report.Errors)
+		}
+	})
 }
 
 func TestHeartbeatsTailRead(t *testing.T) {

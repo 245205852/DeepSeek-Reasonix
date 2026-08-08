@@ -205,7 +205,6 @@ func (o *turnOrchestrator) runOrchestratedTurn(ctx context.Context, turn orchest
 			false,
 			continuation.goal,
 			GoalStatusRunning,
-			continuation.researchMode,
 		)
 	} else {
 		input = c.compose(turn.input, turn.raw, !turn.synthetic)

@@ -93,11 +93,6 @@ func writeDirections(t *testing.T, taskRoot string, directions []DirectionTried)
 	writeJSON(t, filepath.Join(taskRoot, "state", "directions_tried.json"), directions)
 }
 
-func writeTaskSpec(t *testing.T, taskRoot string, spec TaskSpec) {
-	t.Helper()
-	writeJSON(t, filepath.Join(taskRoot, "state", "task_spec.json"), spec)
-}
-
 func appendHeartbeatLine(t *testing.T, taskRoot string, h Heartbeat) {
 	t.Helper()
 	data, err := json.Marshal(h)
@@ -138,6 +133,26 @@ func hashTree(t *testing.T, root string) map[string]string {
 	})
 	if err != nil {
 		t.Fatalf("hash tree: %v", err)
+	}
+	return out
+}
+
+func modTimes(t *testing.T, root string) map[string]time.Time {
+	t.Helper()
+	out := map[string]time.Time{}
+	err := filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		rel, err := filepath.Rel(root, path)
+		if err != nil {
+			return err
+		}
+		out[rel] = info.ModTime()
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("stat tree: %v", err)
 	}
 	return out
 }

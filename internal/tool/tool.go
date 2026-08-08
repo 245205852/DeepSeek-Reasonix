@@ -526,7 +526,7 @@ func (r *Registry) Names() []string {
 
 // Schemas exports tool definitions in stable name order for the provider.
 func (r *Registry) Schemas() []provider.ToolSchema {
-	return r.schemasForContext(nil, false)
+	return r.schemasForContext(context.Background(), false)
 }
 
 // SchemasForContext exports only tools available during ctx. Tools without a

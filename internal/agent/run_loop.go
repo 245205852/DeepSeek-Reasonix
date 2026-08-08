@@ -958,6 +958,18 @@ func (a *Agent) handleToolRound(ctx context.Context, state *runLoopState, step i
 	state.usedAnyTool = true
 	unavailableContextTools, contextualOnly := a.unavailableContextualToolCalls(ctx, calls)
 
+	if len(unavailableContextTools) > 0 && state.contextToolRepairs > 0 {
+		msg := fmt.Sprintf("blocked: context-unavailable tools were called again after the repair instruction: %s", strings.Join(unavailableContextTools, ", "))
+		for _, call := range calls {
+			a.session.Add(provider.Message{
+				Role:       provider.RoleTool,
+				Content:    msg,
+				ToolCallID: call.ID,
+				Name:       call.Name,
+			})
+		}
+		return false, fmt.Errorf("model repeatedly called context-unavailable tools without a visible answer: %s", strings.Join(unavailableContextTools, ", "))
+	}
 	// Grace round guard: if we already gave the model one extra response
 	// and it still wants to call tools, stop here.
 	if state.graceRound {
@@ -987,7 +999,6 @@ func (a *Agent) handleToolRound(ctx context.Context, state *runLoopState, step i
 			StopReason: reason,
 		}
 	}
-
 	receiptMark := 0
 	if a.evidence != nil {
 		receiptMark = a.evidence.Len()
@@ -1013,17 +1024,15 @@ func (a *Agent) handleToolRound(ctx context.Context, state *runLoopState, step i
 		a.recordInterruptedDisplay("", "", nil, true, state.workDurationMs())
 		return false, ctx.Err()
 	}
-	if contextualOnly {
+	if len(unavailableContextTools) > 0 {
 		if hasVisibleFinalAnswer(text) {
-			// Keep the assistant tool call and host error paired in the transcript,
-			// but accept the co-streamed answer instead of spending another request
-			// repairing a phase-only bookkeeping call.
-			return a.handleFinalResponse(ctx, state, text, reasoning, usage)
+			if contextualOnly {
+				// Keep the assistant tool call and host error paired in the transcript,
+				// but accept the co-streamed answer when every call was unavailable.
+				return a.handleFinalResponse(ctx, state, text, reasoning, usage)
+			}
 		}
 		state.contextToolRepairs++
-		if state.contextToolRepairs > 1 {
-			return false, fmt.Errorf("model repeatedly called context-unavailable tools without a visible answer: %s", strings.Join(unavailableContextTools, ", "))
-		}
 		nudge := fmt.Sprintf("The following tools are unavailable in the current workflow phase: %s. Do not call them again. Respond to the user's request with visible answer text now; call a different tool only if it is still needed to complete the request.", strings.Join(unavailableContextTools, ", "))
 		a.session.Add(provider.Message{Role: provider.RoleUser, Content: a.withTurnPreferences(nudge)})
 	}
@@ -1106,13 +1115,12 @@ func (a *Agent) unavailableContextualToolCalls(ctx context.Context, calls []prov
 	for _, call := range calls {
 		t, ok := a.tools.Get(call.Name)
 		if !ok {
-			return nil, false
+			continue
 		}
 		contextual, ok := t.(tool.ContextualTool)
-		if !ok || contextual.ProviderVisible(ctx) {
-			return nil, false
+		if ok && !contextual.ProviderVisible(ctx) {
+			names = append(names, call.Name)
 		}
-		names = append(names, call.Name)
 	}
-	return names, true
+	return names, len(names) == len(calls)
 }

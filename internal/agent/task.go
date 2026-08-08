@@ -19,6 +19,7 @@ import (
 	"reasonix/internal/event"
 	"reasonix/internal/evidence"
 	"reasonix/internal/jobs"
+	"reasonix/internal/memory"
 	"reasonix/internal/permission"
 	"reasonix/internal/planmode"
 	"reasonix/internal/provider"
@@ -873,7 +874,7 @@ func (t *TaskTool) RunProfileSpec(ctx context.Context, spec ProfileExecSpec) (re
 	modelRef, effortRef := spec.Model, spec.Effort
 	usageModelRef := t.usageModelRef(modelRef, effortRef)
 	parentID, _, _, _ := CallContext(ctx)
-	run, err := t.prepareTranscriptRunWithPrompt(subReg, modelRef, effortRef, ParentSession(ctx), parentID, spec.ContinueFrom, spec.ForkFrom, spec.SystemPrompt, spec.Kind, spec.Name)
+	run, err := t.prepareTranscriptRunWithPrompt(ctx, subReg, modelRef, effortRef, ParentSession(ctx), parentID, spec.ContinueFrom, spec.ForkFrom, spec.SystemPrompt, spec.Kind, spec.Name)
 	if err != nil {
 		return "", err
 	}
@@ -1055,7 +1056,7 @@ func (t *TaskTool) bashCanEnforceWriteRoots() bool {
 	return false
 }
 
-func (t *TaskTool) prepareTranscriptRunWithPrompt(subReg *tool.Registry, modelRef, effortRef, parentSession, parentID, continueFrom, legacyForkFrom, systemPrompt, kind, name string) (*SubagentRun, error) {
+func (t *TaskTool) prepareTranscriptRunWithPrompt(ctx context.Context, subReg *tool.Registry, modelRef, effortRef, parentSession, parentID, continueFrom, legacyForkFrom, systemPrompt, kind, name string) (*SubagentRun, error) {
 	continueFrom = strings.TrimSpace(continueFrom)
 	legacyForkFrom = strings.TrimSpace(legacyForkFrom)
 	parentSession = strings.TrimSpace(parentSession)
@@ -1089,6 +1090,7 @@ func (t *TaskTool) prepareTranscriptRunWithPrompt(subReg *tool.Registry, modelRe
 		ParentToolCallID: parentID,
 		SystemPrompt:     systemPrompt,
 		Registry:         subReg,
+		ToolSchemas:      subReg.SchemasForContext(subagentProviderContext(ctx)),
 		Model:            identityModel,
 		Effort:           identityEffort,
 	}
@@ -1530,9 +1532,6 @@ func PlannerToolRegistry(parent *tool.Registry) *tool.Registry {
 			}
 			if tl, ok := base.Get(name); ok {
 				if classifier, ok := tl.(tool.PlanModeClassifier); ok && !classifier.PlanModeSafe() {
-					// The two-model planner is a planning-phase agent even when
-					// the controller's explicit Plan mode flag is off. Do not let
-					// read-only execution sign-offs leak into its provider schema.
 					continue
 				}
 				sub.Add(tl)
@@ -1879,11 +1878,8 @@ func RunSubAgentWithSession(ctx context.Context, prov provider.Provider, reg *to
 	if sess == nil {
 		return "", fmt.Errorf("sub-agent session is nil")
 	}
-	// A child may run inside a parent Goal turn, but only the root working
-	// model owns that turn's disposition. Keep cancellation and other parent
-	// context while preventing the child from seeing or writing its recorder.
-	ctx = tool.WithoutGoalTurnRecorder(ctx)
 	// Isolate temporary files for this run before any tool execution.
+	ctx = subagentProviderContext(ctx)
 	ctx, releaseTemp := withSubagentSessionTemp(ctx)
 	defer releaseTemp()
 	if opts.SubagentDepth > 0 {
@@ -1945,6 +1941,12 @@ func RunSubAgentWithSession(ctx context.Context, prov provider.Provider, reg *to
 		return answer, nil
 	}
 	return "", fmt.Errorf("sub-agent finished without producing a final answer")
+}
+
+func subagentProviderContext(ctx context.Context) context.Context {
+	ctx = tool.WithoutGoalTurnRecorder(ctx)
+	ctx = jobs.WithoutManager(ctx)
+	return memory.WithoutQueue(ctx)
 }
 
 // readOnlyAgentConstruction is the single pairing every strictly read-only

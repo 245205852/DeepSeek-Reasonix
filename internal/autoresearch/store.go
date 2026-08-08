@@ -8,17 +8,20 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"regexp"
 	"sort"
 	"strings"
+	"unicode"
 
 	fileencoding "reasonix/internal/fileutil/encoding"
 )
 
 var safeTaskID = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*$`)
-var explicitTaskPath = regexp.MustCompile(`\.reasonix/autoresearch/([A-Za-z0-9][A-Za-z0-9._-]*)/?`)
+
+const explicitTaskPathPrefix = ".reasonix/autoresearch/"
 
 // Store is a fail-closed reader over a workspace's legacy AutoResearch root.
 type Store struct {
@@ -42,12 +45,25 @@ func (s *Store) Root() string {
 }
 
 func (s *Store) ListSummaries() ([]Summary, error) {
-	entries, err := os.ReadDir(s.root)
+	storeRoot, err := s.openArchiveRoot()
 	if err != nil {
 		if os.IsNotExist(err) {
 			return []Summary{}, nil
 		}
 		return nil, fmt.Errorf("autoresearch: list tasks: %w", err)
+	}
+	defer storeRoot.Close()
+	dir, err := storeRoot.Open(".")
+	if err != nil {
+		return nil, fmt.Errorf("autoresearch: open task list: %w", err)
+	}
+	entries, err := dir.ReadDir(-1)
+	closeErr := dir.Close()
+	if err != nil {
+		return nil, fmt.Errorf("autoresearch: read task list: %w", err)
+	}
+	if closeErr != nil {
+		return nil, fmt.Errorf("autoresearch: close task list: %w", closeErr)
 	}
 	ids := make([]string, 0, len(entries))
 	for _, entry := range entries {
@@ -78,22 +94,9 @@ func (s *Store) LoadTask(taskID string) (*Task, error) {
 		return nil, err
 	}
 	defer storeRoot.Close()
-	info, err := storeRoot.Lstat(taskRel)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return nil, fmt.Errorf("autoresearch: task %s not found", taskID)
-		}
-		return nil, fmt.Errorf("autoresearch: stat task %s: %w", taskID, err)
-	}
-	if info.Mode()&os.ModeSymlink != 0 {
-		return nil, fmt.Errorf("autoresearch: task %s is a symlink", taskID)
-	}
-	if !info.IsDir() {
-		return nil, fmt.Errorf("autoresearch: task %s is not a directory", taskID)
-	}
-	var spec TaskSpec
-	if err := readJSONFile(storeRoot, filepath.Join(taskRel, "state", "task_spec.json"), &spec); err != nil {
-		return nil, err
+	spec, report := validateTaskRoot(storeRoot, taskRel, taskID)
+	if !report.Valid {
+		return nil, fmt.Errorf("autoresearch: task %s is invalid: %v", taskID, report.Errors)
 	}
 	return &Task{ID: taskID, Root: s.taskRoot(taskID), Spec: spec}, nil
 }
@@ -102,30 +105,39 @@ func (s *Store) LoadTask(taskID string) (*Task, error) {
 // `.reasonix/autoresearch/<task-id>/` path. ok is true when a path was found;
 // err is non-nil when that path is missing, corrupt, a symlink, or invalid.
 func (s *Store) ResumeFromGoalText(goal string) (*Task, bool, error) {
-	match := explicitTaskPath.FindStringSubmatch(goal)
-	if len(match) < 2 {
-		return nil, false, nil
+	taskID, found, err := ExplicitTaskID(goal)
+	if !found || err != nil {
+		return nil, found, err
 	}
-	task, err := s.LoadTask(match[1])
+	task, err := s.LoadTask(taskID)
 	if err != nil {
 		return nil, true, err
-	}
-	if report, err := s.ValidateTask(task.ID); err != nil {
-		return nil, true, err
-	} else if !report.Valid {
-		return nil, true, fmt.Errorf("autoresearch: task %s is invalid: %v", task.ID, report.Errors)
 	}
 	return task, true, nil
 }
 
-// ExplicitTaskID extracts a legacy archive id from free-form goal text without
-// loading the archive.
-func ExplicitTaskID(goal string) (string, bool) {
-	match := explicitTaskPath.FindStringSubmatch(goal)
-	if len(match) < 2 {
-		return "", false
+// ExplicitTaskID extracts one complete legacy archive path token from goal
+// text. Once the prefix is present, malformed IDs and additional path
+// components are errors rather than ordinary goal text.
+func ExplicitTaskID(goal string) (string, bool, error) {
+	_, tail, found := strings.Cut(goal, explicitTaskPathPrefix)
+	if !found {
+		return "", false, nil
 	}
-	return match[1], true
+	if end := strings.IndexFunc(tail, unicode.IsSpace); end >= 0 {
+		tail = tail[:end]
+	}
+	taskID := strings.TrimSuffix(tail, "/")
+	if taskID == "" {
+		return "", true, errors.New("autoresearch: explicit task path is missing a task id")
+	}
+	if strings.ContainsAny(taskID, `/\`) {
+		return "", true, fmt.Errorf("autoresearch: explicit task path has extra components: %q", tail)
+	}
+	if err := validateTaskID(taskID); err != nil {
+		return "", true, err
+	}
+	return taskID, true, nil
 }
 
 func (s *Store) Findings(taskID string, limit int) ([]Finding, error) {
@@ -214,22 +226,29 @@ func (s *Store) ValidateTask(taskID string) (*ValidationReport, error) {
 		return nil, err
 	}
 	defer storeRoot.Close()
+	_, report := validateTaskRoot(storeRoot, taskRel, taskID)
+	return report, nil
+}
+
+// validateTaskRoot reads and validates a task through one already-open root.
+// The task directory cannot be swapped between validation and goal extraction.
+func validateTaskRoot(storeRoot *os.Root, taskRel, taskID string) (TaskSpec, *ValidationReport) {
 	report := &ValidationReport{Valid: true}
 	info, err := storeRoot.Lstat(taskRel)
 	if err != nil {
 		report.add("task", "", err.Error())
 		report.Valid = false
-		return report, nil
+		return TaskSpec{}, report
 	}
 	if info.Mode()&os.ModeSymlink != 0 {
 		report.add("task", "", "task directory must not be a symlink")
 		report.Valid = false
-		return report, nil
+		return TaskSpec{}, report
 	}
 	if !info.IsDir() {
 		report.add("task", "", "task path is not a directory")
 		report.Valid = false
-		return report, nil
+		return TaskSpec{}, report
 	}
 	var spec TaskSpec
 	if err := readJSONFile(storeRoot, filepath.Join(taskRel, "state", "task_spec.json"), &spec); err != nil {
@@ -243,18 +262,63 @@ func (s *Store) ValidateTask(taskID string) (*ValidationReport, error) {
 	} else {
 		validateProgress(report, progress)
 	}
-	for _, rel := range []string{
-		"state/directions_tried.json",
-		"state/findings.jsonl",
-		"state/iteration_log.jsonl",
-		"logs/heartbeat.jsonl",
-	} {
-		if _, err := storeRoot.Stat(filepath.Join(taskRel, rel)); err != nil {
+	validateDirections := func() error {
+		path := filepath.Join(taskRel, "state", "directions_tried.json")
+		data, err := readArchiveFile(storeRoot, path)
+		if err != nil {
+			return err
+		}
+		data = fileencoding.DecodeToUTF8(data)
+		if strings.TrimSpace(string(data)) == "" {
+			return nil
+		}
+		var directions []DirectionTried
+		if err := json.Unmarshal(data, &directions); err != nil {
+			return fmt.Errorf("parse %s: %w", path, err)
+		}
+		return nil
+	}
+	if err := validateDirections(); err != nil {
+		report.add("directions_tried.json", "", err.Error())
+	}
+	validateJSONL := func(rel string, each func([]byte) error) {
+		path := filepath.Join(taskRel, rel)
+		if err := readJSONL(storeRoot, path, each); err != nil {
 			report.add(filepath.Base(rel), "", err.Error())
 		}
 	}
+	validateJSONL("state/findings.jsonl", func(data []byte) error {
+		var finding Finding
+		if err := json.Unmarshal(fileencoding.DecodeToUTF8(data), &finding); err != nil {
+			return err
+		}
+		return validateFinding(finding)
+	})
+	validateJSONL("state/iteration_log.jsonl", func(data []byte) error {
+		var entry json.RawMessage
+		if err := json.Unmarshal(fileencoding.DecodeToUTF8(data), &entry); err != nil {
+			return err
+		}
+		return nil
+	})
+	validateJSONL("logs/heartbeat.jsonl", func(data []byte) error {
+		var heartbeat Heartbeat
+		if err := json.Unmarshal(fileencoding.DecodeToUTF8(data), &heartbeat); err != nil {
+			return err
+		}
+		if strings.TrimSpace(heartbeat.Status) == "" {
+			return errors.New("heartbeat status is required")
+		}
+		if heartbeat.Iteration < 0 {
+			return errors.New("heartbeat iteration must not be negative")
+		}
+		if heartbeat.CreatedAt.IsZero() {
+			return errors.New("heartbeat created_at is required")
+		}
+		return nil
+	})
 	report.Valid = len(report.Errors) == 0
-	return report, nil
+	return spec, report
 }
 
 func (s *Store) taskRoot(taskID string) string {
@@ -278,14 +342,109 @@ func (s *Store) openTaskRoot(taskID string) (*os.Root, string, error) {
 	if err != nil {
 		return nil, "", err
 	}
-	storeRoot, err := os.OpenRoot(s.root)
+	storeRoot, err := s.openArchiveRoot()
 	if err != nil {
 		if os.IsNotExist(err) {
 			return nil, "", fmt.Errorf("autoresearch: task %s not found", taskID)
 		}
 		return nil, "", fmt.Errorf("autoresearch: open root dir: %w", err)
 	}
-	return storeRoot, taskRel, nil
+	info, err := storeRoot.Lstat(taskRel)
+	if err != nil {
+		storeRoot.Close()
+		if os.IsNotExist(err) {
+			return nil, "", fmt.Errorf("autoresearch: task %s not found", taskID)
+		}
+		return nil, "", fmt.Errorf("autoresearch: stat task %s: %w", taskID, err)
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		storeRoot.Close()
+		return nil, "", fmt.Errorf("autoresearch: task %s is a symlink", taskID)
+	}
+	if !info.IsDir() {
+		storeRoot.Close()
+		return nil, "", fmt.Errorf("autoresearch: task %s is not a directory", taskID)
+	}
+	taskRoot, err := storeRoot.OpenRoot(taskRel)
+	if err != nil {
+		storeRoot.Close()
+		return nil, "", fmt.Errorf("autoresearch: open task %s: %w", taskID, err)
+	}
+	opened, err := taskRoot.Stat(".")
+	if err != nil || !os.SameFile(info, opened) {
+		taskRoot.Close()
+		storeRoot.Close()
+		if err != nil {
+			return nil, "", fmt.Errorf("autoresearch: verify task %s: %w", taskID, err)
+		}
+		return nil, "", fmt.Errorf("autoresearch: task %s changed while opening", taskID)
+	}
+	current, err := storeRoot.Lstat(taskRel)
+	if err != nil || current.Mode()&os.ModeSymlink != 0 || !os.SameFile(info, current) {
+		taskRoot.Close()
+		storeRoot.Close()
+		if err != nil {
+			return nil, "", fmt.Errorf("autoresearch: recheck task %s: %w", taskID, err)
+		}
+		return nil, "", fmt.Errorf("autoresearch: task %s changed while opening", taskID)
+	}
+	if err := storeRoot.Close(); err != nil {
+		taskRoot.Close()
+		return nil, "", fmt.Errorf("autoresearch: close archive root: %w", err)
+	}
+	return taskRoot, ".", nil
+}
+
+// openArchiveRoot anchors every archive read to the resolved workspace root.
+// os.Root prevents a concurrent symlink swap from escaping the workspace; the
+// explicit Lstat/SameFile checks additionally reject symlinked archive roots.
+func (s *Store) openArchiveRoot() (*os.Root, error) {
+	workspace, err := os.OpenRoot(s.workspaceRoot)
+	if err != nil {
+		return nil, fmt.Errorf("autoresearch: open workspace root: %w", err)
+	}
+	defer workspace.Close()
+
+	archiveRel := filepath.Join(".reasonix", "autoresearch")
+	rels := []string{".reasonix", archiveRel}
+	infos := make([]os.FileInfo, len(rels))
+	for i, rel := range rels {
+		info, err := workspace.Lstat(rel)
+		if err != nil {
+			return nil, fmt.Errorf("autoresearch: stat archive path %s: %w", rel, err)
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			return nil, fmt.Errorf("autoresearch: archive path %s must not be a symlink", rel)
+		}
+		if !info.IsDir() {
+			return nil, fmt.Errorf("autoresearch: archive path %s is not a directory", rel)
+		}
+		infos[i] = info
+	}
+
+	archive, err := workspace.OpenRoot(archiveRel)
+	if err != nil {
+		return nil, fmt.Errorf("autoresearch: open archive root: %w", err)
+	}
+	opened, err := archive.Stat(".")
+	if err != nil || !os.SameFile(infos[len(infos)-1], opened) {
+		archive.Close()
+		if err != nil {
+			return nil, fmt.Errorf("autoresearch: verify archive root: %w", err)
+		}
+		return nil, errors.New("autoresearch: archive root changed while opening")
+	}
+	for i, rel := range rels {
+		current, err := workspace.Lstat(rel)
+		if err != nil || current.Mode()&os.ModeSymlink != 0 || !os.SameFile(infos[i], current) {
+			archive.Close()
+			if err != nil {
+				return nil, fmt.Errorf("autoresearch: recheck archive path %s: %w", rel, err)
+			}
+			return nil, fmt.Errorf("autoresearch: archive path %s changed while opening", rel)
+		}
+	}
+	return archive, nil
 }
 
 func validateTaskID(id string) error {
@@ -317,9 +476,9 @@ func validateFinding(f Finding) error {
 }
 
 func readJSONFile(root *os.Root, path string, out any) error {
-	data, err := root.ReadFile(path)
+	data, err := readArchiveFile(root, path)
 	if err != nil {
-		return fmt.Errorf("read %s: %w", path, err)
+		return err
 	}
 	data = fileencoding.DecodeToUTF8(data)
 	if err := json.Unmarshal(data, out); err != nil {
@@ -329,7 +488,7 @@ func readJSONFile(root *os.Root, path string, out any) error {
 }
 
 func readJSONL(root *os.Root, path string, each func([]byte) error) error {
-	f, err := root.Open(path)
+	f, err := openArchiveFile(root, path)
 	if err != nil {
 		return fmt.Errorf("autoresearch: open %s: %w", path, err)
 	}
@@ -369,7 +528,7 @@ func tailJSONLLines(root *os.Root, path string, limit int) ([][]byte, error) {
 		}
 		return lines, nil
 	}
-	f, err := root.Open(path)
+	f, err := openArchiveFile(root, path)
 	if err != nil {
 		return nil, fmt.Errorf("autoresearch: open %s: %w", path, err)
 	}
@@ -411,6 +570,78 @@ func tailJSONLLines(root *os.Root, path string, limit int) ([][]byte, error) {
 		lines = lines[len(lines)-limit:]
 	}
 	return lines, nil
+}
+
+func readArchiveFile(root *os.Root, path string) ([]byte, error) {
+	f, err := openArchiveFile(root, path)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	data, err := io.ReadAll(f)
+	if err != nil {
+		return nil, fmt.Errorf("autoresearch: read %s: %w", path, err)
+	}
+	return data, nil
+}
+
+// openArchiveFile rejects symlinks and non-regular files at every path
+// component, then binds parsing to the verified file descriptor. The second
+// identity check closes the Lstat/open replacement window without holding a
+// process-global directory or changing the archive.
+func openArchiveFile(root *os.Root, path string) (*os.File, error) {
+	path = filepath.Clean(path)
+	if !filepath.IsLocal(path) || path == "." {
+		return nil, fmt.Errorf("autoresearch: unsafe archive file path %q", path)
+	}
+	parts := strings.Split(path, string(filepath.Separator))
+	infos := make([]os.FileInfo, len(parts))
+	current := ""
+	for i, part := range parts {
+		current = filepath.Join(current, part)
+		info, err := root.Lstat(current)
+		if err != nil {
+			return nil, fmt.Errorf("autoresearch: stat %s: %w", current, err)
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			return nil, fmt.Errorf("autoresearch: archive path %s must not be a symlink", current)
+		}
+		if i < len(parts)-1 {
+			if !info.IsDir() {
+				return nil, fmt.Errorf("autoresearch: archive path %s is not a directory", current)
+			}
+		} else if !info.Mode().IsRegular() {
+			return nil, fmt.Errorf("autoresearch: archive path %s is not a regular file", current)
+		}
+		infos[i] = info
+	}
+
+	f, err := root.Open(path)
+	if err != nil {
+		return nil, fmt.Errorf("autoresearch: open %s: %w", path, err)
+	}
+	opened, err := f.Stat()
+	if err != nil || !opened.Mode().IsRegular() || !os.SameFile(infos[len(infos)-1], opened) {
+		f.Close()
+		if err != nil {
+			return nil, fmt.Errorf("autoresearch: verify %s: %w", path, err)
+		}
+		return nil, fmt.Errorf("autoresearch: archive path %s changed while opening", path)
+	}
+
+	current = ""
+	for i, part := range parts {
+		current = filepath.Join(current, part)
+		info, err := root.Lstat(current)
+		if err != nil || info.Mode()&os.ModeSymlink != 0 || !os.SameFile(infos[i], info) {
+			f.Close()
+			if err != nil {
+				return nil, fmt.Errorf("autoresearch: recheck %s: %w", current, err)
+			}
+			return nil, fmt.Errorf("autoresearch: archive path %s changed while opening", current)
+		}
+	}
+	return f, nil
 }
 
 func countCompleteTailLines(buf []byte, atStart bool) int {

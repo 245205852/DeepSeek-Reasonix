@@ -4834,13 +4834,17 @@ func (m *chatTUI) runGoalSubcommand(input string) tea.Cmd {
 		m.notice(i18n.M.GoalEmpty)
 		return nil
 	}
-	switch cmd.Action {
+	switch m.noticeDeprecatedGoalBudget(cmd); cmd.Action {
 	case control.GoalCommandSet:
 		m.planMode = false
 		m.ctrl.SetPlanMode(false)
 		m.ctrl.SetGoalWithResearchMode(cmd.Text, cmd.ResearchMode)
 		m.ctrl.GoalStrict(cmd.Strict)
-		m.notice(fmt.Sprintf(i18n.M.GoalSetFmt, control.ShortGoalForNotice(cmd.Text)))
+		if m.ctrl.GoalStatus() != control.GoalStatusRunning {
+			m.echoLocalCommand(input)
+			return nil
+		}
+		m.notice(fmt.Sprintf(i18n.M.GoalSetFmt, control.ShortGoalForNotice(m.ctrl.Goal())))
 		return m.startTurn("Start pursuing the active goal now.", input, input)
 	case control.GoalCommandClear:
 		m.echoLocalCommand(input)
