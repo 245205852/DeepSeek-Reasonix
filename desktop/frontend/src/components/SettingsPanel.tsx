@@ -45,6 +45,7 @@ import {
 } from "../lib/fontFamily";
 import { getDisplayMode, onDisplayModeChange, setDisplayMode as setLocalDisplayMode } from "../lib/displayMode";
 import { getProcessFoldPreference, onProcessFoldPreferenceChange, setProcessFoldPreference, type ProcessFoldPreference } from "../lib/processFoldPreference";
+import { setReasoningSummaryEnabled, useReasoningSummaryEnabled } from "../lib/reasoningSummaryPreference";
 import { DEFAULT_STATUS_BAR_ITEMS, normalizeStatusBarItems, type StatusBarItemId } from "../lib/statusBarItems";
 import { normalizeToolApprovalMode } from "../lib/types";
 import {
@@ -1576,6 +1577,7 @@ function GeneralSection({ s, busy, apply, agentRunning }: SectionProps & { agent
   const closeBehavior = normalizeCloseBehavior(s.closeBehavior);
   const [displayMode, setDisplayMode] = useState<DisplayMode>(() => normalizeDisplayMode(getDisplayMode()));
   const [processFold, setProcessFold] = useState<ProcessFoldPreference>(getProcessFoldPreference);
+  const reasoningSummaryEnabled = useReasoningSummaryEnabled();
   const [statusBarItemsExpanded, setStatusBarItemsExpanded] = useState(false);
   const [draggingStatusBarItem, setDraggingStatusBarItem] = useState<StatusBarItemId | null>(null);
   const [statusBarDragTarget, setStatusBarDragTargetState] = useState<StatusBarDragTarget | null>(null);
@@ -1833,6 +1835,7 @@ function GeneralSection({ s, busy, apply, agentRunning }: SectionProps & { agent
           ))}
         </div>
       </SettingsField>
+      <SettingsField label={t("settings.reasoningSummary")} hint={t("settings.reasoningSummaryHint")}><div className="set-seg">{([true, false] as const).map((enabled) => <button key={enabled ? "on" : "off"} type="button" className={`set-seg__btn${reasoningSummaryEnabled === enabled ? " set-seg__btn--on" : ""}`} aria-pressed={reasoningSummaryEnabled === enabled} onClick={() => setReasoningSummaryEnabled(enabled)}>{t(enabled ? "settings.reasoningSummary.on" : "settings.reasoningSummary.off")}</button>)}</div></SettingsField>
       <SettingsField label={t("settings.defaultToolApprovalMode")} hint={t("settings.defaultToolApprovalModeHint")}>
         <div className="set-seg">
           {TOOL_APPROVAL_MODES.map((mode) => (
