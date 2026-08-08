@@ -108,6 +108,15 @@ type trajectorySummary struct {
 	// Outcome shadow: the runtime outcome scorer's per-round series condensed,
 	// or a verification-receipt backfill for recordings that predate it.
 	Outcome *outcomeSummary `json:"outcome,omitempty"`
+
+	// Cognition: executor reasoning/completion joined per model round, plus a
+	// census of slow rounds — gaps that bought unusually large thinking.
+	ReasoningTokensTotal     int64         `json:"reasoning_tokens_total,omitempty"`
+	CompletionTokensTotal    int64         `json:"completion_tokens_total,omitempty"`
+	SlowRounds               int           `json:"slow_rounds,omitempty"`
+	SlowRoundGapMs           int64         `json:"slow_round_gap_ms,omitempty"`
+	SlowRoundReasoningTokens int64         `json:"slow_round_reasoning_tokens,omitempty"`
+	Rounds                   []roundDigest `json:"rounds,omitempty"`
 }
 
 // toolWall is the best available tool wall-clock: interval union when the
@@ -147,6 +156,8 @@ type trajectoryRecord struct {
 		Usage *struct {
 			Source           string `json:"source"`
 			PromptTokens     int64  `json:"promptTokens"`
+			CompletionTokens int64  `json:"completionTokens"`
+			ReasoningTokens  int64  `json:"reasoningTokens"`
 			CacheHitTokens   int64  `json:"cacheHitTokens"`
 			CacheMissTokens  int64  `json:"cacheMissTokens"`
 			CacheDiagnostics *struct {
@@ -180,15 +191,19 @@ type roundCall struct {
 }
 
 // gapInfo carries one model gap until its batch closes and can classify it.
+// The cognition fields are the executor tokens streamed during the gap — what
+// the round's thinking actually bought.
 type gapInfo struct {
 	ms                                    int64
 	tainted, planner, compaction, handoff bool
+	reasonTok, complTok, promptTok        int64
 }
 
 // toolBatch accumulates one round's top-level calls between model gaps.
 type toolBatch struct {
 	dispatchTS map[string]int64
 	infos      map[string]*roundCall
+	names      []string
 	calls      int
 	results    int
 	readOnly   int
@@ -392,8 +407,10 @@ func (t *trajScan) closeGap(gap int64) {
 	t.pendingGaps = append(t.pendingGaps, gapInfo{
 		ms: gap, tainted: t.taint != "",
 		planner: t.gapPlanner, compaction: t.gapCompact, handoff: t.gapHandoff,
+		reasonTok: t.gapReason, complTok: t.gapCompl, promptTok: t.gapPrompt,
 	})
 	t.gapPlanner, t.gapCompact, t.gapHandoff = false, false, false
+	t.gapReason, t.gapCompl, t.gapPrompt = 0, 0, 0
 	if t.taint != "" {
 		t.s.RecoveryRounds++
 		t.s.RecoveryGapMs += gap
@@ -452,6 +469,11 @@ func (t *trajScan) recordModelPhase(rec trajectoryRecord) {
 			t.gapPlanner = true
 		case "executor":
 			t.s.ExecutorRequests++
+			t.s.ReasoningTokensTotal += u.ReasoningTokens
+			t.s.CompletionTokensTotal += u.CompletionTokens
+			t.gapReason += u.ReasoningTokens
+			t.gapCompl += u.CompletionTokens
+			t.gapPrompt = max(t.gapPrompt, u.PromptTokens)
 		case "subagent":
 			t.s.SubagentRequests++
 			return
@@ -506,6 +528,7 @@ func (t *trajScan) recordDispatch(rec trajectoryRecord) {
 		if info == nil {
 			info = &roundCall{}
 			t.batch.infos[tl.ID] = info
+			t.batch.names = append(t.batch.names, tl.Name)
 			if tl.Name == "connect_tool_source" {
 				t.s.ConnectCalls++
 			}
@@ -559,7 +582,7 @@ func (t *trajScan) closeBatch() {
 		gap := t.pendingGaps[0]
 		t.pendingGaps = t.pendingGaps[1:]
 		if len(b.infos) > 0 {
-			t.recordOutcome(classifyRound(gap, b), gap.ms)
+			t.recordRound(classifyRound(gap, b), gap, b)
 		}
 	}
 	s.ToolBatches++
@@ -593,7 +616,7 @@ func (t *trajScan) finish() *trajectorySummary {
 	t.closeBatch()
 	if t.sawCallIDs {
 		for _, gap := range t.pendingGaps {
-			t.recordOutcome(classifyRound(gap, nil), gap.ms)
+			t.recordRound(classifyRound(gap, nil), gap, nil)
 		}
 	}
 	t.pendingGaps = nil
@@ -665,93 +688,6 @@ func newToolBatch() *toolBatch {
 func (b *toolBatch) seen(id string) bool {
 	_, ok := b.dispatchTS[id]
 	return ok
-}
-
-// intervalSpan returns the batch's wall clock (max end − min start) and
-// whether any two intervals actually overlapped (true parallelism).
-func intervalSpan(intervals [][2]int64) (wall int64, overlapped bool) {
-	sorted := append([][2]int64(nil), intervals...)
-	slices.SortFunc(sorted, func(a, b [2]int64) int {
-		switch {
-		case a[0] != b[0]:
-			return int(a[0] - b[0])
-		default:
-			return int(a[1] - b[1])
-		}
-	})
-	minStart, maxEnd := sorted[0][0], sorted[0][1]
-	for _, iv := range sorted[1:] {
-		if iv[0] < maxEnd {
-			overlapped = true
-		}
-		maxEnd = max(maxEnd, iv[1])
-	}
-	return maxEnd - minStart, overlapped
-}
-
-// intervalUnion is the merged length of all intervals, so concurrent tool
-// executions count wall-clock once.
-func intervalUnion(intervals [][2]int64) int64 {
-	return ivsLen(mergeIntervals(intervals))
-}
-
-// mergeIntervals returns a sorted, overlap-free copy of intervals.
-func mergeIntervals(intervals [][2]int64) [][2]int64 {
-	if len(intervals) == 0 {
-		return nil
-	}
-	sorted := append([][2]int64(nil), intervals...)
-	slices.SortFunc(sorted, func(a, b [2]int64) int {
-		switch {
-		case a[0] != b[0]:
-			return int(a[0] - b[0])
-		default:
-			return int(a[1] - b[1])
-		}
-	})
-	out := [][2]int64{sorted[0]}
-	for _, iv := range sorted[1:] {
-		if last := &out[len(out)-1]; iv[0] <= last[1] {
-			last[1] = max(last[1], iv[1])
-			continue
-		}
-		out = append(out, iv)
-	}
-	return out
-}
-
-// clipIntervals returns base minus covered; both are merged internally.
-func clipIntervals(base, covered [][2]int64) [][2]int64 {
-	base = mergeIntervals(base)
-	covered = mergeIntervals(covered)
-	var out [][2]int64
-	j := 0
-	for _, iv := range base {
-		lo := iv[0]
-		for j < len(covered) && covered[j][1] <= lo {
-			j++
-		}
-		for k := j; k < len(covered) && covered[k][0] < iv[1]; k++ {
-			if covered[k][0] > lo {
-				out = append(out, [2]int64{lo, covered[k][0]})
-			}
-			if lo = max(lo, covered[k][1]); lo >= iv[1] {
-				break
-			}
-		}
-		if lo < iv[1] {
-			out = append(out, [2]int64{lo, iv[1]})
-		}
-	}
-	return out
-}
-
-func ivsLen(intervals [][2]int64) int64 {
-	var total int64
-	for _, iv := range intervals {
-		total += iv[1] - iv[0]
-	}
-	return total
 }
 
 // durMs renders small durations without the sub-second floor dur applies.
