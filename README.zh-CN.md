@@ -212,11 +212,3 @@ CLI 进阶用法和详细配置见 **[CLI 命令参考](./docs/CLI.zh-CN.md)**�
 <p align="center">
   <img src=".github/sponsor/wechat-pay.jpg" alt="微信支付收款码" width="180"/>
 </p>
-
-<br/>
-
-## 视频
-
-<p align="center">
-  <iframe width="560" height="315" src="https://www.youtube.com/embed/88uEnEKkCow?si=GO6sPQ90UgV6plbj" title="YouTube video player" frameborder="0" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share" referrerpolicy="strict-origin-when-cross-origin" allowfullscreen></iframe>
-</p>

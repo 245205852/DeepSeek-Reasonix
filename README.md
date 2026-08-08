@@ -222,11 +222,3 @@ issues get triaged.
 <p align="center">
   <img src=".github/sponsor/wechat-pay.jpg" alt="WeChat Pay QR code" width="180"/>
 </p>
-
-<br/>
-
-## Video
-
-<p align="center">
-  <iframe width="560" height="315" src="https://www.youtube.com/embed/88uEnEKkCow?si=GO6sPQ90UgV6plbj" title="YouTube video player" frameborder="0" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share" referrerpolicy="strict-origin-when-cross-origin" allowfullscreen></iframe>
-</p>
