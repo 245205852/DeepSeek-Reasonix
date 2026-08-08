@@ -5183,10 +5183,9 @@ func (c *Controller) configuredMCPServer(name string) (config.PluginEntry, error
 	return config.PluginEntry{}, fmt.Errorf("no configured MCP server named %q", name)
 }
 
-// RemoveMCPServer removes writable config before disconnecting the live server,
-// so a persistence failure never produces a false-successful
-// session-only removal. MCPs contributed by an installed plugin package are
-// managed with that package and cannot be removed independently.
+// RemoveMCPServer removes writable config before disconnecting the live server.
+// A persistence failure must not produce a false-successful session-only removal.
+// MCPs contributed by installed plugin packages cannot be removed independently.
 func (c *Controller) RemoveMCPServer(name string) (disconnected bool, err error) {
 	cfg, lerr := config.LoadForRoot(c.workspaceRoot)
 	if lerr != nil {
@@ -5231,6 +5230,7 @@ func (c *Controller) RemoveMCPServer(name string) (disconnected bool, err error)
 	}
 	return disconnected, removedState.cleanupErr
 }
+
 // DisconnectMCPServer disconnects a live server for this session without touching
 // config — the connector toggle's "off". Its tools vanish next turn; it reconnects
 // on the next session start, or now via ConnectConfiguredMCPServer (the "on").
