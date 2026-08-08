@@ -106,16 +106,19 @@ own outcome).
 
 | Flag | Default | Purpose |
 | --- | --- | --- |
-| `-mode` | `suite` | `suite` \| `diff` \| `swebench` (`diff` generates tests for the PR diff; `swebench` runs the official per-instance evaluation) |
+| `-mode` | `suite` | `suite` \| `diff` \| `swebench` \| `compare` \| `traj` (`diff` generates tests for the PR diff; `swebench` runs the official per-instance evaluation; `compare` renders KPI/Pareto readouts from 2+ `-json` reports; `traj` re-digests recorded trajectory files without spending tokens). |
 | `-suite` | `benchmarks/e2e` | Suite root (must contain `tasks/<id>/`). |
+| `-task` | *(all)* | Suite mode: run only these comma-separated task IDs (e.g. `-task fix-add-bug`); unknown IDs fail with the available list. |
+| `-attempts` | `1` | Suite and diff modes: retry a task until an attempt passes, up to N; enables the `Pass@≤N` KPI, and TTCS charges a retried solve with its failed attempts' wall. |
 | `-bin` | `reasonix` | Path to the reasonix binary. |
 | `-model` | *(config default)* | Provider/model name. |
-| `-profile` | `baseline` | Prompt profile: `baseline` \| `delivery`. `delivery` appends `--profile delivery` to the agent invocation. |
+| `-profile` | `baseline` | Tool-surface/runtime tier: `baseline` \| `economy` \| `balanced` \| `delivery`. All but `baseline` append `--profile <tier>` to the agent invocation; `baseline` passes no flag (byte-identical legacy control, behaviorally `balanced`). Economy starts with the core tool set and pays `connect_tool_source` rounds plus prefix resets to grow it — the report's Tool surface line prices that trade. |
 | `-ablate` | *(none)* | Ablation arm: comma-separated subsystems to switch off — `evidence`, `planner`, `subagent`, `retrieval`, `compaction`; `none` \| `all`. |
 | `-out` | *(stdout)* | Write the markdown report here. |
 | `-json` | *(none)* | Write the JSON report here (optional). |
 | `-trajectories` | *(none)* | Suite mode: write one `<task-id>.trajectory.jsonl` per task into this directory (the agent's full event stream with timestamps — see `reasonix run --trajectory`). The report gains a time-attribution line (tools vs. model) and each JSON result a `trajectory` digest. |
 | `-force-planner` | `false` | Suite mode: prefix each prompt with a plan-first directive so the two-model turn engages regardless of the planner gate. Use for the "with planner" arm of an A/B; results carry `plan_forced` so arms are only comparable with equal forcing. |
+| `-cache` | `cold` | Suite mode: `cold` runs each task as a fresh session (the fair cross-agent comparison arm); `warm` primes the provider prefix cache with a one-step run in the same workdir first, measuring the long-lived-session steady state. Never mix arms in one report — compare them with `-mode compare cold.json warm.json`. |
 | `-budget` | `800000` | Abort once total tokens cross this (`0` = no cap). Remaining tasks are reported as skipped. |
 
 Diff-mode flags:
@@ -128,6 +131,17 @@ Diff-mode flags:
 | `-max-steps` | `80` | Agent tool-call cap for the diff task. |
 | `-timeout` | `1200` | Agent timeout in seconds (diff mode). |
 | `-attempts` | `1` | Diff mode: retry up to N times until a run passes (stochastic agent). |
+
+## Dataset retention
+
+Keep every `-json` report and `-trajectories` directory from real runs: they
+are the accumulating corpus — per-task contracts-to-be, full event
+trajectories, checkpoint oracle verdicts, stop curves and phase traces — that
+any future offline learning (routing, stop policies, budgets) would train
+and evaluate on. The control plane stays deterministic and interpretable
+until that corpus reaches a scale where learned policies can be judged
+against the same oracles that produced it; nothing learned lands before it
+beats the deterministic baseline on these numbers.
 
 ## A/B compare mode
 
@@ -173,16 +187,11 @@ writer.
 4. Write `verify.sh`: `set -e`, exit 0 iff the agent's artifacts are correct.
    Keep the expected answer out of the prompt and seed; the script runs in the
    work dir and may validate anything the agent produced.
-5. Run the suite. Since `e2ebench` has no single-task filter, iterate against a
-   scratch suite root:
+5. Iterate on just that task with the single-task filter, then commit:
 
    ```sh
-   mkdir -p scratch/tasks/<task-id>
-   cp -r benchmarks/e2e/tasks/<task-id>/* scratch/tasks/<task-id>/
-   go run ./cmd/e2ebench -suite scratch
+   go run ./cmd/e2ebench -task <task-id>
    ```
-
-   When it passes, remove the scratch dir and commit the task.
 
 ## context-maintenance-e2e
 
