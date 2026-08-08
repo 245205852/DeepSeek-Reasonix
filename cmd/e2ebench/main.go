@@ -145,6 +145,9 @@ type result struct {
 	// StopEval is the counterfactual-stop curve: per-round end-state grades,
 	// the earliest stoppable round, and harmful continuations (PASS→FAIL).
 	StopEval *stopEval `json:"stop_eval,omitempty"`
+	// FirstUsefulMs approximates TTFUM: when part of the final solution first
+	// appeared (earliest checkpoint carrying a solution file's final content).
+	FirstUsefulMs int64 `json:"first_useful_ms,omitempty"`
 }
 
 // class is the published failure taxonomy: solved, the guard that stopped the
@@ -537,6 +540,7 @@ func runTask(cfg suiteConfig, t task) result {
 			}
 			r.StopEval = computeStopEval(r.Checkpoints, endsElapsed)
 		}
+		r.FirstUsefulMs = firstUsefulMutation(r.Checkpoints, filepath.Join(t.dir, "workdir"), work)
 	}
 	r.PhaseTrace = buildPhaseTrace(r)
 	return r

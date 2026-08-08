@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -237,5 +238,58 @@ func TestOverthinkingDamageRateInKPIAndCompare(t *testing.T) {
 	got := renderBody([]result{damaged, clean})
 	if !strings.Contains(got, "**overthinking damage** 50%") {
 		t.Fatalf("KPI line missing damage rate:\n%s", got)
+	}
+}
+
+func TestFirstUsefulMutationApproximatesTTFUM(t *testing.T) {
+	seed := t.TempDir()
+	final := t.TempDir()
+	snaps := t.TempDir()
+	write := func(dir, name, content string) {
+		t.Helper()
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write(seed, "util.py", "v0")
+	write(seed, "keep.py", "same")
+	write(final, "util.py", "final fix")
+	write(final, "keep.py", "same")
+	write(final, "helper.py", "created")
+	write(final, "verify.sh", "grader")
+
+	mk := func(seq int, elapsed int64, utilContent string) checkpoint {
+		dir := filepath.Join(snaps, fmt.Sprintf("%03d", seq))
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		write(dir, "util.py", utilContent)
+		return checkpoint{Seq: seq, ElapsedMs: elapsed, dir: dir}
+	}
+	cps := []checkpoint{
+		mk(1, 10_000, "wrong attempt"),
+		mk(2, 20_000, "final fix"), // part of the final solution appears
+		mk(3, 30_000, "final fix"),
+	}
+	if got := firstUsefulMutation(cps, seed, final); got != 20_000 {
+		t.Fatalf("TTFUM = %d, want 20000", got)
+	}
+
+	// A created file reaching its final content also counts.
+	write(filepath.Join(snaps, "001"), "helper.py", "created")
+	if got := firstUsefulMutation(cps, seed, final); got != 10_000 {
+		t.Fatalf("TTFUM with created file = %d, want 10000", got)
+	}
+
+	// Unchanged and harness files are never solution files.
+	files := solutionFiles(seed, final)
+	if _, ok := files["keep.py"]; ok {
+		t.Fatal("unchanged file counted as solution")
+	}
+	if _, ok := files["verify.sh"]; ok {
+		t.Fatal("grader counted as solution")
+	}
+	if len(files) != 2 {
+		t.Fatalf("solution files = %v", files)
 	}
 }

@@ -220,9 +220,18 @@ func renderSolveProfiles(results []result) string {
 		line += fmt.Sprintf("\n\n**Stop policy**: stoppable before final in %d runs · **continuations past stoppable** median %d rounds · **harmful continuations** %d", stoppable, median(past), harmful)
 	}
 	if withCorrect > 0 {
+		var ttfum []int64
+		for _, r := range results {
+			if r.FirstUsefulMs > 0 {
+				ttfum = append(ttfum, r.FirstUsefulMs)
+			}
+		}
 		line += fmt.Sprintf("\n\n**Correct boundary** (medians): **mutations before** %d · **rounds before** %d · **rounds after** %d · **verifications after** %d · **regression-after-correct** %s",
 			median(mutationsBefore), median(roundsBefore), median(roundsAfter), median(verifyAfter),
 			pct(regressed, withCorrect))
+		if len(ttfum) > 0 {
+			line += fmt.Sprintf(" · **TTFUM median** %s", dur(median(ttfum)))
+		}
 	}
 	return line + "\n\n"
 }
@@ -304,4 +313,57 @@ func computeStopEval(checkpoints []checkpoint, roundEndElapsedMs []int64) *stopE
 		eval.ContinuationsPast = len(eval.Curve) - eval.FirstStoppableRound
 	}
 	return eval
+}
+
+// firstUsefulMutation approximates TTFUM — when part of the final solution
+// first appeared: the earliest checkpoint in which any file that differs
+// between seed and final already carries its exact final content. Cosmetic
+// late edits make this an overestimate; that bias is stated, not hidden.
+func firstUsefulMutation(checkpoints []checkpoint, seedDir, finalDir string) int64 {
+	solution := solutionFiles(seedDir, finalDir)
+	if len(solution) == 0 {
+		return 0
+	}
+	for _, cp := range checkpoints {
+		for rel, want := range solution {
+			got, err := os.ReadFile(filepath.Join(cp.dir, rel))
+			if err == nil && string(got) == want {
+				return cp.ElapsedMs
+			}
+		}
+	}
+	return 0
+}
+
+// solutionFiles maps relative path → final content for every file the run
+// created or changed; harness artifacts are not part of anyone's solution.
+func solutionFiles(seedDir, finalDir string) map[string]string {
+	skip := map[string]bool{".run-metrics.json": true, "verify.sh": true}
+	out := map[string]string{}
+	_ = filepath.WalkDir(finalDir, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return nil
+		}
+		if d.IsDir() {
+			if d.Name() == "__pycache__" {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		rel, _ := filepath.Rel(finalDir, path)
+		if skip[filepath.Base(rel)] {
+			return nil
+		}
+		final, err := os.ReadFile(path)
+		if err != nil {
+			return nil
+		}
+		seed, err := os.ReadFile(filepath.Join(seedDir, rel))
+		if err == nil && string(seed) == string(final) {
+			return nil // unchanged from seed: not part of the solution
+		}
+		out[rel] = string(final)
+		return nil
+	})
+	return out
 }
