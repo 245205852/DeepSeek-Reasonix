@@ -35,7 +35,7 @@ type suiteStats struct {
 	cost                                                                  float64
 	walls, ttcs, ttft, firstCorrect, postWaste                            []int64
 	wallAccountedMs, wallTotalMs, firstHit, firstMiss                     int64
-	solvedThenBroken                                                      int
+	solvedThenBroken, damaged, withCorrect                                int
 	currency                                                              string
 	classes, prefixChangeReasons                                          map[string]int
 	bySource                                                              map[string]sourceUsage
@@ -69,6 +69,10 @@ func gatherSuiteStats(results []result) suiteStats {
 		s.walls = append(s.walls, r.WallMs)
 		if r.FirstCorrectMs > 0 {
 			s.firstCorrect = append(s.firstCorrect, r.FirstCorrectMs)
+			s.withCorrect++
+			if r.RegressedAfterCorrect {
+				s.damaged++
+			}
 			if r.Passed {
 				s.postWaste = append(s.postWaste, r.PostSolveWasteMs)
 			}
@@ -143,6 +147,7 @@ func kpiLine(s suiteStats) string {
 	}
 	if len(s.firstCorrect) > 0 {
 		line += fmt.Sprintf(" · **TTFCS median** %s · **post-solve waste median** %s", dur(median(s.firstCorrect)), dur(median(s.postWaste)))
+		line += fmt.Sprintf(" · **overthinking damage** %s", pct(s.damaged, s.withCorrect))
 		if s.solvedThenBroken > 0 {
 			line += fmt.Sprintf(" · **solved-then-broke** %d", s.solvedThenBroken)
 		}

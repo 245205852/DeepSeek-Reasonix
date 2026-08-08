@@ -50,6 +50,7 @@ type armStats struct {
 	Cost                                float64
 	WallMs                              int64
 	FirstHit, FirstMiss                 int64
+	Damaged, WithCorrect                int
 	TTCS, TTFT                          []int64
 	ByClass                             map[string]classStats
 }
@@ -121,6 +122,12 @@ func aggregateArm(results []result) armStats {
 			}
 			s.FirstHit += r.Trajectory.FirstReqCacheHitTokens
 			s.FirstMiss += r.Trajectory.FirstReqCacheMissTokens
+		}
+		if r.FirstCorrectMs > 0 {
+			s.WithCorrect++
+			if r.RegressedAfterCorrect {
+				s.Damaged++
+			}
 		}
 	}
 	return s
@@ -289,6 +296,7 @@ func compareReports(pathA, pathB string) (string, error) {
 	fmt.Fprintf(&b, "| TTCS p90 | %s | %s |\n", dur(pctile(a.TTCS, 90)), dur(pctile(bStats.TTCS, 90)))
 	fmt.Fprintf(&b, "| Cache hit | %s | %s |\n", pct(a.Hit, a.Hit+a.Miss), pct(bStats.Hit, bStats.Hit+bStats.Miss))
 	fmt.Fprintf(&b, "| First-request cache hit | %s | %s |\n", pct(int(a.FirstHit), int(a.FirstHit+a.FirstMiss)), pct(int(bStats.FirstHit), int(bStats.FirstHit+bStats.FirstMiss)))
+	fmt.Fprintf(&b, "| Overthinking damage | %s | %s |\n", pct(a.Damaged, a.WithCorrect), pct(bStats.Damaged, bStats.WithCorrect))
 	fmt.Fprintf(&b, "| Model requests / solved | %s | %s |\n", perSolved(float64(a.Steps), a.AccountedSolved), perSolved(float64(bStats.Steps), bStats.AccountedSolved))
 	fmt.Fprintf(&b, "| Planner requests / solved | %s | %s |\n", perSolved(float64(a.PlannerCalls), a.AccountedSolved), perSolved(float64(bStats.PlannerCalls), bStats.AccountedSolved))
 	fmt.Fprintf(&b, "| Model rounds / solved | %s | %s |\n", perSolved(float64(a.Rounds), a.AccountedSolved), perSolved(float64(bStats.Rounds), bStats.AccountedSolved))

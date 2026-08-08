@@ -224,3 +224,18 @@ func TestComputeStopEvalCurveAndHarmfulContinuations(t *testing.T) {
 		t.Fatalf("pre-snapshot boundary must fail: %+v", early)
 	}
 }
+
+func TestOverthinkingDamageRateInKPIAndCompare(t *testing.T) {
+	damaged := result{task: task{ID: "a"}, Passed: true, WallMs: 60_000, Attempt: 1, TTCSMs: 60_000}
+	damaged.FirstCorrectMs = 20_000
+	damaged.PostSolveWasteMs = 40_000
+	damaged.RegressedAfterCorrect = true
+	clean := result{task: task{ID: "b"}, Passed: true, WallMs: 30_000, Attempt: 1, TTCSMs: 30_000}
+	clean.FirstCorrectMs = 25_000
+	clean.PostSolveWasteMs = 5_000
+
+	got := renderBody([]result{damaged, clean})
+	if !strings.Contains(got, "**overthinking damage** 50%") {
+		t.Fatalf("KPI line missing damage rate:\n%s", got)
+	}
+}
