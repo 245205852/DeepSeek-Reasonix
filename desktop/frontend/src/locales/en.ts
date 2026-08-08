@@ -2794,7 +2794,7 @@ export const en = {
   "msg.folderReference": "Folder · Workspace reference",
   "msg.pastedExpandTooltip": "Expand pasted text",
   "msg.pastedCollapseTooltip": "Collapse pasted text",
-  "turnActions.summary": "Summary",
+  "turnActions.summary": "Compress",
   "turnActions.rewind": "Rewind",
   "transcript.jumpToBottom": "Jump to bottom",
   "transcript.showEarlierHistory": "Show {n} earlier turns",
