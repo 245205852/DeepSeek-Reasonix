@@ -1,6 +1,12 @@
 package control
 
-import "reasonix/internal/evidence"
+import (
+	"os"
+	"path/filepath"
+
+	"reasonix/internal/evidence"
+	"reasonix/internal/fileutil"
+)
 
 // goalMachineSnapshot is an in-memory rollback point for durable Goal updates.
 // Persistence paths and mutexes are deliberately excluded.
@@ -57,4 +63,36 @@ func (g *goalMachine) restore(snapshot goalMachineSnapshot) {
 	g.budgetExtensions = snapshot.budgetExtensions
 	g.continuationEpoch++
 	g.mu.Unlock()
+}
+
+func (g *goalMachine) writeStateErr(path string, data []byte) error {
+	if path == "" || data == nil {
+		return nil
+	}
+	g.writeMu.Lock()
+	defer g.writeMu.Unlock()
+	return writeGoalStateData(path, data)
+}
+
+func (g *goalMachine) writeStateAtEpoch(epoch uint64, todos []evidence.TodoItem) (bool, error) {
+	g.writeMu.Lock()
+	defer g.writeMu.Unlock()
+	g.mu.Lock()
+	if g.continuationEpoch != epoch {
+		g.mu.Unlock()
+		return false, nil
+	}
+	path, data, ok := g.buildStateLocked(todos)
+	g.mu.Unlock()
+	if !ok {
+		return true, nil
+	}
+	return true, writeGoalStateData(path, data)
+}
+
+func writeGoalStateData(path string, data []byte) error {
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	return fileutil.AtomicWriteFile(path, data, 0o644)
 }

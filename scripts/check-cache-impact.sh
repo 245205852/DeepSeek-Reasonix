@@ -66,9 +66,11 @@ for file in "${changed_files[@]:-}"; do
     internal/agent/compact*|\
     internal/agent/goal_display.go|\
     internal/agent/parallel_tasks.go|\
+    internal/agent/planner_registry.go|\
     internal/agent/prune*|\
     internal/agent/subagent_registry*|\
     internal/agent/task.go|\
+    internal/agent/workflow_context.go|\
     internal/boot/*|\
     internal/command/slashtool.go|\
     internal/config/config.go|\

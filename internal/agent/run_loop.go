@@ -13,7 +13,6 @@ import (
 	"reasonix/internal/jobs"
 	"reasonix/internal/provider"
 	"reasonix/internal/taskintent"
-	"reasonix/internal/tool"
 )
 
 // runLoopState holds per-Run loop counters and flags. It is package-private and
@@ -957,18 +956,8 @@ func (a *Agent) handleToolRound(ctx context.Context, state *runLoopState, step i
 	state.emptyFinalBlocks = 0
 	state.usedAnyTool = true
 	unavailableContextTools, contextualOnly := a.unavailableContextualToolCalls(ctx, calls)
-
-	if len(unavailableContextTools) > 0 && state.contextToolRepairs > 0 {
-		msg := fmt.Sprintf("blocked: context-unavailable tools were called again after the repair instruction: %s", strings.Join(unavailableContextTools, ", "))
-		for _, call := range calls {
-			a.session.Add(provider.Message{
-				Role:       provider.RoleTool,
-				Content:    msg,
-				ToolCallID: call.ID,
-				Name:       call.Name,
-			})
-		}
-		return false, fmt.Errorf("model repeatedly called context-unavailable tools without a visible answer: %s", strings.Join(unavailableContextTools, ", "))
+	if err := a.rejectRepeatedContextToolCalls(state, calls, unavailableContextTools); err != nil {
+		return false, err
 	}
 	// Grace round guard: if we already gave the model one extra response
 	// and it still wants to call tools, stop here.
@@ -1024,17 +1013,8 @@ func (a *Agent) handleToolRound(ctx context.Context, state *runLoopState, step i
 		a.recordInterruptedDisplay("", "", nil, true, state.workDurationMs())
 		return false, ctx.Err()
 	}
-	if len(unavailableContextTools) > 0 {
-		if hasVisibleFinalAnswer(text) {
-			if contextualOnly {
-				// Keep the assistant tool call and host error paired in the transcript,
-				// but accept the co-streamed answer when every call was unavailable.
-				return a.handleFinalResponse(ctx, state, text, reasoning, usage)
-			}
-		}
-		state.contextToolRepairs++
-		nudge := fmt.Sprintf("The following tools are unavailable in the current workflow phase: %s. Do not call them again. Respond to the user's request with visible answer text now; call a different tool only if it is still needed to complete the request.", strings.Join(unavailableContextTools, ", "))
-		a.session.Add(provider.Message{Role: provider.RoleUser, Content: a.withTurnPreferences(nudge)})
+	if handled, cont, err := a.repairContextToolCalls(ctx, state, text, reasoning, usage, unavailableContextTools, contextualOnly); handled {
+		return cont, err
 	}
 	if !a.planMode.Load() {
 		nextProgress, nextTracking := a.canonicalTodoProgress()
@@ -1105,22 +1085,4 @@ func (a *Agent) handleToolRound(ctx context.Context, state *runLoopState, step i
 		a.sink.Emit(event.Event{Kind: event.Notice, Level: event.LevelInfo, Code: event.NoticeCodeToolBudget, Text: toolBudgetNoticeText(), Detail: fmt.Sprintf("budget (%s=%d) exhausted: one grace round to finalize", state.runMaxStepsKey, state.runMaxSteps)})
 	}
 	return true, nil
-}
-
-func (a *Agent) unavailableContextualToolCalls(ctx context.Context, calls []provider.ToolCall) ([]string, bool) {
-	if len(calls) == 0 {
-		return nil, false
-	}
-	names := make([]string, 0, len(calls))
-	for _, call := range calls {
-		t, ok := a.tools.Get(call.Name)
-		if !ok {
-			continue
-		}
-		contextual, ok := t.(tool.ContextualTool)
-		if ok && !contextual.ProviderVisible(ctx) {
-			names = append(names, call.Name)
-		}
-	}
-	return names, len(names) == len(calls)
 }

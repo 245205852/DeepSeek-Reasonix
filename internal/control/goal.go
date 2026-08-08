@@ -6,14 +6,12 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
-	"path/filepath"
 	"strings"
 	"sync"
 	"time"
 
 	"reasonix/internal/agent"
 	"reasonix/internal/evidence"
-	"reasonix/internal/fileutil"
 	fileencoding "reasonix/internal/fileutil/encoding"
 	"reasonix/internal/goaleval"
 	"reasonix/internal/store"
@@ -658,41 +656,6 @@ func (g *goalMachine) buildStateLocked(todos []evidence.TodoItem) (path string, 
 		return "", nil, false
 	}
 	return g.statePath, b, true
-}
-
-// writeStateErr persists pre-marshaled goal-state bytes to disk, OFF mu and
-// serialized by writeMu so concurrent saves don't interleave or land out of
-// order. Atomic replacement keeps the prior state intact when a write fails.
-func (g *goalMachine) writeStateErr(path string, data []byte) error {
-	if path == "" || data == nil {
-		return nil
-	}
-	g.writeMu.Lock()
-	defer g.writeMu.Unlock()
-	return writeGoalStateData(path, data)
-}
-
-func (g *goalMachine) writeStateAtEpoch(epoch uint64, todos []evidence.TodoItem) (bool, error) {
-	g.writeMu.Lock()
-	defer g.writeMu.Unlock()
-	g.mu.Lock()
-	if g.continuationEpoch != epoch {
-		g.mu.Unlock()
-		return false, nil
-	}
-	path, data, ok := g.buildStateLocked(todos)
-	g.mu.Unlock()
-	if !ok {
-		return true, nil
-	}
-	return true, writeGoalStateData(path, data)
-}
-
-func writeGoalStateData(path string, data []byte) error {
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return err
-	}
-	return fileutil.AtomicWriteFile(path, data, 0o644)
 }
 
 // writeState preserves the existing best-effort behavior for background Goal
