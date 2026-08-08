@@ -92,6 +92,22 @@ func (c *Controller) prepareLegacyResearchTask(goal string) legacyResearchSetup 
 }
 
 func (c *Controller) restorePendingLegacyGoal(legacy legacyGoalRestore) bool {
+	if legacy.taskID == "" {
+		goal, epoch, ok := c.goals.legacyArchiveBlockedState()
+		if ok {
+			setup := c.prepareLegacyResearchTask(goal)
+			if setup.explicit {
+				legacy = legacyGoalRestore{taskID: setup.taskID, epoch: epoch, explicit: true}
+			}
+		}
+	}
+	// A malformed explicit archive path has no safe task id to load. Keep the
+	// Controller-owned retry token so ResumeGoal cannot fall through to the
+	// ordinary Goal resume path and execute the raw path text as an objective.
+	if legacy.explicit && legacy.taskID == "" {
+		c.replaceLegacyRestore(legacy)
+		return true
+	}
 	if legacy.taskID == "" || strings.TrimSpace(c.goals.goalText()) != "" {
 		c.replaceLegacyRestore(legacyGoalRestore{})
 		return false
@@ -106,7 +122,7 @@ func (c *Controller) restorePendingLegacyGoal(legacy legacyGoalRestore) bool {
 	}
 	goal, err := c.legacyResearchArchive.loadGoalText(legacy.taskID)
 	if err != nil {
-		if epoch, ok := c.goals.blockLegacyRestore(legacy.epoch, legacy.taskID, err.Error()); ok {
+		if epoch, ok := c.goals.blockLegacyRestore(legacy.epoch, err.Error()); ok {
 			_, _ = c.persistGoalStateAtEpoch(epoch, restoreTodos)
 			c.advanceLegacyRestoreEpoch(legacy.taskID, legacy.epoch, epoch)
 			c.notice("legacy research archive resume failed: " + err.Error())
@@ -120,7 +136,7 @@ func (c *Controller) restorePendingLegacyGoal(legacy legacyGoalRestore) bool {
 			_, persistErr := c.persistGoalStateAtEpoch(epoch, restoreTodos)
 			if persistErr != nil {
 				reason := "persist migrated legacy Goal: " + persistErr.Error()
-				if blockedEpoch, blocked := c.goals.failLegacyRestorePersistence(epoch, legacy.taskID, reason); blocked {
+				if blockedEpoch, blocked := c.goals.failLegacyRestorePersistence(epoch, reason); blocked {
 					c.replaceLegacyRestore(legacyGoalRestore{taskID: legacy.taskID, todos: restoreTodos, epoch: blockedEpoch})
 					c.notice("legacy research archive resume failed: " + reason)
 				} else {
@@ -137,13 +153,17 @@ func (c *Controller) restorePendingLegacyGoal(legacy legacyGoalRestore) bool {
 }
 
 func (c *Controller) retryBlockedLegacyGoal() (handled, resumed bool) {
-	goal, taskID, epoch, ok := c.goals.legacyArchiveRetryToken()
-	if !ok {
-		if _, _, blocked := c.goals.legacyArchiveBlockedState(); blocked {
-			return true, false
-		}
+	goal, epoch, blocked := c.goals.legacyArchiveBlockedState()
+	if !blocked {
 		return false, false
 	}
+	legacy, hasLegacy := c.legacyRestoreSnapshot()
+	if !hasLegacy || legacy.epoch != epoch || legacy.taskID == "" {
+		// A blocked sidecar without a Controller-owned archive identity is a
+		// fail-closed migration boundary after restart. Never resume raw text.
+		return true, false
+	}
+	taskID := legacy.taskID
 	setup := c.prepareLegacyResearchTask(goal)
 	resolvedGoal, reason := setup.goal, setup.blockReason
 	if !setup.explicit {
@@ -159,7 +179,7 @@ func (c *Controller) retryBlockedLegacyGoal() (handled, resumed bool) {
 		if reason == "" {
 			reason = "legacy research archive could not be recovered"
 		}
-		if nextEpoch, applied := c.goals.blockLegacyRestore(epoch, taskID, reason); applied {
+		if nextEpoch, applied := c.goals.blockLegacyRestore(epoch, reason); applied {
 			_, _ = c.persistGoalStateAtEpoch(nextEpoch, c.goalTodos())
 			c.replaceLegacyRestore(legacyGoalRestore{taskID: taskID, epoch: nextEpoch})
 		}
@@ -175,7 +195,7 @@ func (c *Controller) retryBlockedLegacyGoal() (handled, resumed bool) {
 	persisted, persistErr := c.persistGoalStateAtEpoch(resumedEpoch, todos)
 	if persistErr != nil {
 		reason := "persist migrated legacy Goal: " + persistErr.Error()
-		if blockedEpoch, blocked := c.goals.failLegacyRestorePersistence(resumedEpoch, taskID, reason); blocked {
+		if blockedEpoch, blocked := c.goals.failLegacyRestorePersistence(resumedEpoch, reason); blocked {
 			c.replaceLegacyRestore(legacyGoalRestore{taskID: taskID, todos: todos, epoch: blockedEpoch})
 			c.notice("legacy research archive resume failed: " + reason)
 		} else {

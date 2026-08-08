@@ -2684,8 +2684,8 @@ func (c *Controller) SetGoalDurable(goal string, _ ...string) error {
 	var data []byte
 	var persist bool
 	if setup.blockReason != "" {
-		path, data, persist = c.goals.setLegacyArchiveBlocked(resolved, setup.budgetClass, setup.legacyTaskID, setup.blockReason, c.goalTodos())
-		c.replaceLegacyRestore(legacyGoalRestore{taskID: setup.legacyTaskID, epoch: c.goals.continuationToken()})
+		path, data, persist = c.goals.setLegacyArchiveBlocked(resolved, setup.budgetClass, setup.blockReason, c.goalTodos())
+		c.replaceLegacyRestore(legacyGoalRestore{taskID: setup.legacyTaskID, epoch: c.goals.continuationToken(), explicit: setup.explicit})
 	} else {
 		path, data, persist = c.goals.set(resolved, setup.budgetClass, c.goalTodos())
 		c.replaceLegacyRestore(legacyGoalRestore{})
@@ -2720,8 +2720,8 @@ func (c *Controller) SetGoalWithResearchMode(goal string, researchMode GoalResea
 	var data []byte
 	var ok bool
 	if setup.blockReason != "" {
-		path, data, ok = c.goals.setLegacyArchiveBlocked(resolved, setup.budgetClass, setup.legacyTaskID, setup.blockReason, c.goalTodos())
-		c.replaceLegacyRestore(legacyGoalRestore{taskID: setup.legacyTaskID, epoch: c.goals.continuationToken()})
+		path, data, ok = c.goals.setLegacyArchiveBlocked(resolved, setup.budgetClass, setup.blockReason, c.goalTodos())
+		c.replaceLegacyRestore(legacyGoalRestore{taskID: setup.legacyTaskID, epoch: c.goals.continuationToken(), explicit: setup.explicit})
 		c.notice("legacy research archive resume failed: " + setup.blockReason)
 	} else {
 		path, data, ok = c.goals.set(resolved, setup.budgetClass, c.goalTodos())
@@ -2736,6 +2736,7 @@ type goalSetSetup struct {
 	notice       string
 	blockReason  string
 	legacyTaskID string
+	explicit     bool
 }
 
 func (c *Controller) resolveGoalText(goal string, researchMode GoalResearchMode) (string, goalSetSetup) {
@@ -2744,7 +2745,7 @@ func (c *Controller) resolveGoalText(goal string, researchMode GoalResearchMode)
 	if !legacy.explicit {
 		return goal, setup
 	}
-	setup.notice, setup.blockReason, setup.legacyTaskID = legacy.notice, legacy.blockReason, legacy.taskID
+	setup.notice, setup.blockReason, setup.legacyTaskID, setup.explicit = legacy.notice, legacy.blockReason, legacy.taskID, legacy.explicit
 	if legacy.blockReason != "" {
 		return goal, setup
 	}

@@ -138,7 +138,7 @@ func TestGoalSetIdempotencyUsesEffectiveBudgetClass(t *testing.T) {
 	}
 }
 
-func TestLegacySidecarArchiveFailureIsBlockedAndRetryable(t *testing.T) {
+func TestLegacySidecarArchiveFailureIsBlockedWithoutRewritingTaskID(t *testing.T) {
 	root := t.TempDir()
 	if resolved, err := filepath.EvalSymlinks(root); err == nil {
 		root = resolved
@@ -172,6 +172,7 @@ func TestLegacySidecarArchiveFailureIsBlockedAndRetryable(t *testing.T) {
 	exec := agent.New(nil, nil, sess, agent.Options{}, event.Discard)
 	c := New(Options{WorkspaceRoot: root, SessionDir: root, Executor: exec})
 	c.Resume(sess, sessionPath)
+	defer c.Close()
 	if got := c.GoalStatus(); got != GoalStatusBlocked {
 		t.Fatalf("failed legacy restore status = %q, want blocked", got)
 	}
@@ -183,7 +184,7 @@ func TestLegacySidecarArchiveFailureIsBlockedAndRetryable(t *testing.T) {
 	if err := json.Unmarshal(failedRaw, &failed); err != nil {
 		t.Fatal(err)
 	}
-	if failed.Status != GoalStatusBlocked || failed.ResearchMode != GoalResearchOn || failed.AutoResearchTaskID != taskID || failed.StopCause != stopCauseLegacyArchive || failed.Block == "" {
+	if failed.Status != GoalStatusBlocked || failed.ResearchMode != GoalResearchOff || failed.AutoResearchTaskID != "" || failed.StopCause != stopCauseLegacyArchive || failed.Block == "" {
 		t.Fatalf("failed restore state = %+v, want retryable blocked legacy migration", failed)
 	}
 	if failed.ScopeID != scopeID || failed.DeliveryCheckpoint != wantCheckpoint || len(failed.Todos) != 1 || failed.Todos[0] != wantTodo {
@@ -198,33 +199,29 @@ func TestLegacySidecarArchiveFailureIsBlockedAndRetryable(t *testing.T) {
 	if runtime := c.GoalRuntime(); runtime.TurnsUsed != 3 || runtime.TurnsLimit != 40 || runtime.TokensUsed != 1234 || runtime.NoProgressTurns != 2 {
 		t.Fatalf("failed restore lost in-memory runtime state: %+v", runtime)
 	}
-	c.Close()
-
 	taskRoot := writeLegacyGoalArchive(t, root, taskID, "recover after archive repair")
 	archiveBefore, err := os.ReadFile(filepath.Join(taskRoot, "state", "task_spec.json"))
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	sess2 := agent.NewSession("sys")
-	exec2 := agent.New(nil, nil, sess2, agent.Options{}, event.Discard)
-	c2 := New(Options{WorkspaceRoot: root, SessionDir: root, Executor: exec2})
-	c2.Resume(sess2, sessionPath)
-	defer c2.Close()
-	if got := c2.Goal(); got != "recover after archive repair" {
+	if !c.ResumeGoal() {
+		t.Fatal("repaired archive did not resume through the in-memory legacy token")
+	}
+	if got := c.Goal(); got != "recover after archive repair" {
 		t.Fatalf("retried Goal() = %q", got)
 	}
-	if got := c2.GoalStatus(); got != GoalStatusRunning {
+	if got := c.GoalStatus(); got != GoalStatusRunning {
 		t.Fatalf("retried status = %q, want running", got)
 	}
-	runtime := c2.GoalRuntime()
+	runtime := c.GoalRuntime()
 	if runtime.TurnsUsed != 3 || runtime.TurnsLimit != 40 || runtime.TokensUsed != 1234 || runtime.NoProgressTurns != 2 || runtime.BudgetExtensions != 1 {
 		t.Fatalf("retried runtime = %+v, want preserved legacy consumption", runtime)
 	}
-	if got := exec2.CanonicalTodoState(); len(got) != 1 || got[0] != wantTodo {
+	if got := exec.CanonicalTodoState(); len(got) != 1 || got[0] != wantTodo {
 		t.Fatalf("retried todos = %+v, want %+v", got, wantTodo)
 	}
-	if got := c2.goals.deliveryState(); got != wantCheckpoint {
+	if got := c.goals.deliveryState(); got != wantCheckpoint {
 		t.Fatalf("retried delivery checkpoint = %+v, want %+v", got, wantCheckpoint)
 	}
 	retriedRaw, err := os.ReadFile(goalStatePath(sessionPath))
@@ -305,7 +302,7 @@ func TestLegacySidecarInvalidArchivesRemainRetryableAndReadOnly(t *testing.T) {
 			if err := json.Unmarshal(persistedRaw, &persisted); err != nil {
 				t.Fatal(err)
 			}
-			if persisted.AutoResearchTaskID != taskID || persisted.ResearchMode != GoalResearchOn || persisted.StopCause != stopCauseLegacyArchive {
+			if persisted.AutoResearchTaskID != "" || persisted.ResearchMode != GoalResearchOff || persisted.StopCause != stopCauseLegacyArchive {
 				t.Fatalf("retry state = %+v", persisted)
 			}
 			archiveAfter, err := os.ReadFile(target)
@@ -382,14 +379,20 @@ func TestLegacyArchiveMigrationWriteFailureRemainsBlockedAndRetryable(t *testing
 	}
 	c.goals.setStatePath(filepath.Join(blockedParent, "goal.json"))
 	rawGoal := "resume .reasonix/autoresearch/" + taskID + "/"
-	c.goals.setLegacyArchiveBlocked(rawGoal, budgetClassResearch, taskID, "retry migration", nil)
+	_, _, _ = c.goals.setLegacyArchiveBlocked(rawGoal, budgetClassResearch, "retry migration", nil)
+	_, epoch, ok := c.goals.legacyArchiveBlockedState()
+	if !ok {
+		t.Fatal("legacy archive block state unavailable")
+	}
+	c.replaceLegacyRestore(legacyGoalRestore{taskID: taskID, epoch: epoch, explicit: true})
 
 	if c.ResumeGoal() {
 		t.Fatal("migration reported success after its sidecar write failed")
 	}
-	goal, retainedTaskID, _, ok := c.goals.legacyArchiveRetryToken()
-	if !ok || retainedTaskID != taskID || goal != "recover after sidecar write repair" {
-		t.Fatalf("failed write lost retry state: goal=%q task=%q ok=%v", goal, retainedTaskID, ok)
+	goal, retryEpoch, blocked := c.goals.legacyArchiveBlockedState()
+	legacy, hasLegacy := c.legacyRestoreSnapshot()
+	if !blocked || !hasLegacy || legacy.taskID != taskID || retryEpoch != legacy.epoch || goal != "recover after sidecar write repair" {
+		t.Fatalf("failed write lost retry state: goal=%q legacy=%+v blocked=%v", goal, legacy, blocked)
 	}
 	if c.GoalStatus() != GoalStatusBlocked {
 		t.Fatalf("status = %q, want fail-closed blocked", c.GoalStatus())
@@ -415,10 +418,10 @@ func TestLegacyArchiveMigrationWriteFailureRemainsBlockedAndRetryable(t *testing
 
 func TestStaleLegacyArchiveRetryCannotReplaceNewGoal(t *testing.T) {
 	var g goalMachine
-	g.setLegacyArchiveBlocked("resume .reasonix/autoresearch/old/", budgetClassResearch, "old", "missing", nil)
-	_, _, epoch, ok := g.legacyArchiveRetryToken()
+	g.setLegacyArchiveBlocked("resume .reasonix/autoresearch/old/", budgetClassResearch, "missing", nil)
+	_, epoch, ok := g.legacyArchiveBlockedState()
 	if !ok {
-		t.Fatal("legacy retry token unavailable")
+		t.Fatal("legacy archive block state unavailable")
 	}
 	g.set("new goal", budgetClassWrite, nil)
 	if _, resumed := g.resumeLegacyArchive(epoch, "stale archive goal"); resumed {
@@ -435,7 +438,7 @@ func TestStaleInitialLegacyFailureCannotBlockNewGoal(t *testing.T) {
 	epoch := g.continuationToken()
 	g.set("new goal", budgetClassWrite, nil)
 
-	if _, blocked := g.blockLegacyRestore(epoch, "old-task", "archive disappeared"); blocked {
+	if _, blocked := g.blockLegacyRestore(epoch, "archive disappeared"); blocked {
 		t.Fatal("stale archive failure blocked a newer Goal")
 	}
 	if got := g.goalText(); got != "new goal" || g.statusForDisplay() != GoalStatusRunning {
@@ -575,6 +578,34 @@ func TestMalformedLegacyArchivePathCannotResumeAsGoalText(t *testing.T) {
 	}
 	if c.GoalStatus() != GoalStatusBlocked {
 		t.Fatalf("status after resume = %q, want blocked", c.GoalStatus())
+	}
+}
+
+func TestMalformedExplicitLegacyGoalStaysBlockedAfterRestart(t *testing.T) {
+	root := t.TempDir()
+	sessionPath := filepath.Join(root, "sessions", "s.jsonl")
+	rawGoal := "resume .reasonix/autoresearch/bad-task/../../escape"
+
+	exec1 := agent.New(nil, nil, agent.NewSession("sys"), agent.Options{}, event.Discard)
+	c1 := New(Options{WorkspaceRoot: root, SessionDir: root, Executor: exec1})
+	c1.Resume(agent.NewSession("sys"), sessionPath)
+	c1.SetGoal(rawGoal)
+	if got := c1.GoalStatus(); got != GoalStatusBlocked {
+		t.Fatalf("initial status = %q, want blocked", got)
+	}
+	c1.Close()
+
+	c2 := New(Options{WorkspaceRoot: root, SessionDir: root})
+	c2.Resume(agent.NewSession("sys"), sessionPath)
+	defer c2.Close()
+	if got := c2.GoalStatus(); got != GoalStatusBlocked {
+		t.Fatalf("restart status = %q, want blocked", got)
+	}
+	if c2.ResumeGoal() {
+		t.Fatal("malformed explicit archive resumed after restart")
+	}
+	if got := c2.Goal(); got != rawGoal {
+		t.Fatalf("restart retry changed Goal = %q, want %q", got, rawGoal)
 	}
 }
 

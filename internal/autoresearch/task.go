@@ -113,13 +113,6 @@ type Summary struct {
 	NextRequiredAction string             `json:"next_required_action"`
 }
 
-type ReadinessReport struct {
-	Ready           bool     `json:"ready"`
-	MissingCriteria []string `json:"missing_criteria"`
-	BlockedReason   string   `json:"blocked_reason"`
-	Errors          []string `json:"errors"`
-}
-
 type ValidationError struct {
 	File  string `json:"file"`
 	Field string `json:"field"`

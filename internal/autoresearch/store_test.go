@@ -196,12 +196,12 @@ func TestFindingsPreserveVerificationAndUnknownKinds(t *testing.T) {
 	if err := validateFinding(Finding{ID: "", Kind: "anything", Summary: "x", CreatedAt: time.Now()}); err == nil {
 		t.Fatal("validateFinding accepted empty id")
 	}
-	report, err := store.Readiness(taskID)
+	summary, err := store.Summary(taskID)
 	if err != nil {
-		t.Fatalf("Readiness: %v", err)
+		t.Fatalf("Summary: %v", err)
 	}
-	if !report.Ready {
-		t.Fatalf("readiness = %+v, want ready after verification evidence", report)
+	if len(summary.OpenCriteria) != 0 {
+		t.Fatalf("summary = %+v, want verification evidence to satisfy the legacy criterion", summary)
 	}
 }
 
@@ -218,7 +218,7 @@ func TestValidateFindingDoesNotEnumerateKind(t *testing.T) {
 	}
 }
 
-func TestReadinessReportsMissingCriteria(t *testing.T) {
+func TestSummaryReportsMissingCriteria(t *testing.T) {
 	root := t.TempDir()
 	taskID := "missing-criteria"
 	writeArchiveFixture(t, root, taskID, "Block incomplete completion", []SuccessCriterion{
@@ -226,12 +226,12 @@ func TestReadinessReportsMissingCriteria(t *testing.T) {
 		{ID: "verification", Description: "Verification", Required: true},
 	})
 	store := NewStore(root)
-	report, err := store.Readiness(taskID)
+	summary, err := store.Summary(taskID)
 	if err != nil {
-		t.Fatalf("Readiness: %v", err)
+		t.Fatalf("Summary: %v", err)
 	}
-	if report.Ready || len(report.MissingCriteria) != 2 {
-		t.Fatalf("readiness = %+v, want missing both criteria", report)
+	if len(summary.OpenCriteria) != 2 {
+		t.Fatalf("summary = %+v, want missing both criteria", summary)
 	}
 }
 
