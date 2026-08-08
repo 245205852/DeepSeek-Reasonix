@@ -299,3 +299,30 @@ func TestFirstUsefulMutationApproximatesTTFUM(t *testing.T) {
 		t.Fatalf("solution files = %v", files)
 	}
 }
+
+func TestDiagnosisAppliesThePriorityTree(t *testing.T) {
+	cps := []checkpoint{{Seq: 1, ElapsedMs: 1000}}
+	wasteful := result{task: task{ID: "a"}, Passed: true, WallMs: 100_000, Checkpoints: cps,
+		FirstCorrectMs: 30_000, PostSolveWasteMs: 70_000, FirstUsefulMs: 20_000}
+	explorer := result{task: task{ID: "b"}, Passed: true, WallMs: 100_000, Checkpoints: cps,
+		FirstCorrectMs: 90_000, PostSolveWasteMs: 10_000, FirstUsefulMs: 85_000}
+	never := result{task: task{ID: "c"}, Checkpoints: cps}
+	broken := result{task: task{ID: "d"}, Passed: true, WallMs: 50_000, Checkpoints: cps,
+		FirstCorrectMs: 10_000, PostSolveWasteMs: 5_000, RegressedAfterCorrect: true}
+
+	if got := renderDiagnosis([]result{wasteful}); !strings.Contains(got, "post-solve waste dominates") {
+		t.Fatalf("waste verdict missing: %s", got)
+	}
+	if got := renderDiagnosis([]result{explorer}); !strings.Contains(got, "exploration dominates") {
+		t.Fatalf("exploration verdict missing: %s", got)
+	}
+	if got := renderDiagnosis([]result{never, never, wasteful}); !strings.Contains(got, "never-correct dominates") {
+		t.Fatalf("capability verdict must outrank latency: %s", got)
+	}
+	if got := renderDiagnosis([]result{broken, wasteful, wasteful}); !strings.Contains(got, "correct→incorrect regressions") {
+		t.Fatalf("damage verdict must outrank waste-vs-exploration: %s", got)
+	}
+	if renderDiagnosis([]result{{task: task{ID: "x"}}}) != "" {
+		t.Fatal("uncheckpointed suites carry no diagnosis")
+	}
+}

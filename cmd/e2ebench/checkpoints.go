@@ -6,6 +6,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 )
 
@@ -218,6 +219,9 @@ func renderSolveProfiles(results []result) string {
 	}
 	if stoppable > 0 {
 		line += fmt.Sprintf("\n\n**Stop policy**: stoppable before final in %d runs · **continuations past stoppable** median %d rounds · **harmful continuations** %d", stoppable, median(past), harmful)
+	}
+	if diagnosis := renderDiagnosis(results); diagnosis != "" {
+		line += "\n\n" + strings.TrimSuffix(diagnosis, "\n\n")
 	}
 	if withCorrect > 0 {
 		var ttfum []int64

@@ -69,3 +69,44 @@ func taskTimeline(r result) string {
 	}
 	return out
 }
+
+// renderDiagnosis applies the decide-then-optimize tree to the measured
+// signals and names the knife, in priority order: capability first (you
+// cannot stop what never solves), damage second (safety bounds any stop
+// policy), then the bigger of the termination tail and the exploration road.
+func renderDiagnosis(results []result) string {
+	var wall, waste, ttfum int64
+	checkpointed, neverCorrect, damaged, withCorrect := 0, 0, 0, 0
+	for _, r := range results {
+		if len(r.Checkpoints) == 0 {
+			continue
+		}
+		checkpointed++
+		wall += r.WallMs
+		if r.FirstCorrectMs == 0 && !r.Passed {
+			neverCorrect++
+			continue
+		}
+		withCorrect++
+		if r.RegressedAfterCorrect {
+			damaged++
+		}
+		waste += r.PostSolveWasteMs
+		ttfum += r.FirstUsefulMs
+	}
+	if checkpointed == 0 || wall == 0 {
+		return ""
+	}
+	verdict := ""
+	switch {
+	case neverCorrect*100 >= checkpointed*30:
+		verdict = fmt.Sprintf("**never-correct dominates** (%s of runs) → reasoning quality: better verifier, subagent specialization, or a better model — latency work is premature", pct(neverCorrect, checkpointed))
+	case withCorrect > 0 && damaged*100 >= withCorrect*10:
+		verdict = fmt.Sprintf("**correct→incorrect regressions** (%s) → conservative stop policy plus a mutation-after-pass guard before anything else", pct(damaged, withCorrect))
+	case waste >= ttfum:
+		verdict = fmt.Sprintf("**post-solve waste dominates** (%s of wall vs TTFUM %s) → TaskContract + evidence graph + early termination", pct(int(waste), int(wall)), pct(int(ttfum), int(wall)))
+	default:
+		verdict = fmt.Sprintf("**exploration dominates** (TTFUM %s of wall vs waste %s) → fault localization, context retrieval, planner and tool choice", pct(int(ttfum), int(wall)), pct(int(waste), int(wall)))
+	}
+	return "**Diagnosis**: " + verdict + "\n\n"
+}
