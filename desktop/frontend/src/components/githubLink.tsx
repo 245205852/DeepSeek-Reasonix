@@ -153,7 +153,7 @@ function LocalPathMarkdownLink({
   }, [closeMenu, path, showToast]);
 
   const menuItems = useMemo<ContextMenuItem[]>(() => {
-    const openerItems = openers.openers.map((opener) => ({
+    const openerItems = openers.openers.filter((opener) => opener.kind !== "file-manager").map((opener) => ({
       key: `open-with-${opener.id}`,
       label: t("externalOpener.openIn", { name: opener.name }),
       onSelect: () => openWith(opener),

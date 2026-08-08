@@ -137,6 +137,8 @@ console.log("\nheadless click-to-open e2e");
   ok(contextMenu !== null, "local path context menu opens on right click");
   const vscodeItem = Array.from(contextMenu?.querySelectorAll<HTMLButtonElement>('[role="menuitem"]') ?? [])
     .find((item) => item.textContent?.includes("VS Code"));
+  ok(!Array.from(contextMenu?.querySelectorAll<HTMLButtonElement>('[role="menuitem"]') ?? [])
+    .some((item) => item.textContent?.includes("使用 Finder 打开")), "file manager is not duplicated in the open-with list");
   await act(async () => {
     vscodeItem?.dispatchEvent(new window.MouseEvent("click", { bubbles: true, cancelable: true }));
   });
