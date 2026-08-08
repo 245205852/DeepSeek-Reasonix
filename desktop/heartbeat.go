@@ -628,7 +628,7 @@ func (e *HeartbeatEngine) mergeRunUpdatesLocked(updates map[string]HeartbeatTask
 	// only the run-state fields (TopicID, LastRunAt, CreatedAt backfill);
 	// task definitions added, edited, or deleted externally are adopted from
 	// disk, so the save below can never silently roll an external edit back.
-	for attempt := 0; attempt < 3; attempt++ {
+	for range 3 {
 		expected, err := e.readConfigSnapshot()
 		if err != nil {
 			log.Printf("[heartbeat] cannot read config before run-state merge: %v", err)
