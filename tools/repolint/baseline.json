@@ -4,7 +4,7 @@
     "commented-code": 0,
     "complexity": 2056,
     "essay": 4028,
-    "file-size": 108286,
+    "file-size": 108465,
     "function-size": 9127,
     "layering": 1,
     "marker": 0,
@@ -84,7 +84,7 @@
       "essay": 2
     },
     "desktop/frontend/src/App.tsx": {
-      "file-size": 4756
+      "file-size": 4764
     },
     "desktop/frontend/src/__tests__/app-chrome-tabs.test.ts": {
       "test-file-size": 19
@@ -117,7 +117,7 @@
       "file-size": 2633
     },
     "desktop/frontend/src/components/Composer.tsx": {
-      "file-size": 3904
+      "file-size": 3963
     },
     "desktop/frontend/src/components/MemoryPanel.tsx": {
       "file-size": 1088
@@ -132,7 +132,10 @@
       "file-size": 141
     },
     "desktop/frontend/src/components/SettingsPanel.tsx": {
-      "file-size": 6658
+      "file-size": 6661
+    },
+    "desktop/frontend/src/components/StatusBar.tsx": {
+      "file-size": 23
     },
     "desktop/frontend/src/components/ThemeGallery.tsx": {
       "file-size": 489
@@ -162,7 +165,7 @@
       "file-size": 1369
     },
     "desktop/frontend/src/lib/useController.ts": {
-      "file-size": 3395
+      "file-size": 3503
     },
     "desktop/heartbeat.go": {
       "essay": 18,
@@ -942,7 +945,7 @@
     },
     "internal/config/config.go": {
       "essay": 56,
-      "file-size": 1481,
+      "file-size": 1484,
       "narrative": 2
     },
     "internal/config/credentials.go": {

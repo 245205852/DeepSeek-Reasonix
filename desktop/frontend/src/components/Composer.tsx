@@ -3687,7 +3687,7 @@ export function Composer({
   );
   const liveModelActiveAt = useSyncExternalStore(
     subscribeLiveText,
-    () => liveStore?.getModelActiveAt(tabId),
+    () => liveStore?.getModelActiveAt?.(tabId),
   );
   const runStateText = retry
     ? t("status.retrying", { attempt: retry.attempt, max: retry.max })

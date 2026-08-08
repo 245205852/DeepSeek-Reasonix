@@ -204,7 +204,7 @@ type StreamAttemptJournal = {
 export type ControllerLiveStore = {
   subscribe: (tabId: string | undefined, listener: () => void) => () => void;
   getSnapshot: (tabId: string | undefined) => LiveStream | undefined;
-  getModelActiveAt: (tabId: string | undefined) => number | undefined;
+  getModelActiveAt?: (tabId: string | undefined) => number | undefined;
 };
 export type MessageActionScope = "fork" | "summ-from" | "summ-upto" | "conversation" | "code" | "both";
 export type MessageActionState = { turn: number; scope: MessageActionScope };
