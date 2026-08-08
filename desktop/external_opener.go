@@ -296,42 +296,68 @@ func (a *App) SaveLocalPathAs(path string) (string, error) {
 	if filepath.Clean(target) == filepath.Clean(path) {
 		return "", fmt.Errorf("destination is the same as the source")
 	}
-	if err := copyLocalPathAs(path, target, info); err != nil {
+	if err := copyLocalPathAs(path, target); err != nil {
 		return "", err
 	}
 	return target, nil
 }
 
-func copyLocalPathAs(path, target string, info os.FileInfo) error {
-	sameFile, err := localSaveDestinationIsSource(info, target)
+func copyLocalPathAs(path, target string) (err error) {
+	src, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	defer src.Close()
+	sourceInfo, err := src.Stat()
+	if err != nil {
+		return err
+	}
+	if sourceInfo.IsDir() {
+		return fmt.Errorf("cannot save a directory as a file")
+	}
+	sameFile, err := localSaveDestinationIsSource(sourceInfo, target)
 	if err != nil {
 		return err
 	}
 	if sameFile {
 		return fmt.Errorf("destination is the same as the source")
 	}
-	src, err := os.Open(path)
+
+	tmp, err := os.CreateTemp(filepath.Dir(target), "."+filepath.Base(target)+".reasonix-copy-*")
 	if err != nil {
 		return err
 	}
-	defer src.Close()
-	dst, err := os.OpenFile(target, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, info.Mode().Perm())
-	if err != nil {
+	tmpName := tmp.Name()
+	defer func() {
+		if tmpName != "" {
+			_ = os.Remove(tmpName)
+		}
+	}()
+	if _, err = io.Copy(tmp, src); err != nil {
+		_ = tmp.Close()
 		return err
 	}
-	if _, err = io.Copy(dst, src); err != nil {
-		_ = dst.Close()
+	if err = tmp.Sync(); err != nil {
+		_ = tmp.Close()
 		return err
 	}
-	if err = dst.Close(); err != nil {
+	if err = tmp.Chmod(sourceInfo.Mode().Perm()); err != nil {
+		_ = tmp.Close()
 		return err
 	}
+	if err = tmp.Close(); err != nil {
+		return err
+	}
+	if err = replaceLocalSaveDestination(tmpName, target); err != nil {
+		return err
+	}
+	tmpName = ""
 	return nil
 }
 
 // localSaveDestinationIsSource compares filesystem identity, not just path
 // spelling. os.Stat follows aliases, so this catches case-insensitive paths,
-// symlinks, and hard links before the destination is opened with O_TRUNC.
+// symlinks, and hard links before the destination is replaced.
 func localSaveDestinationIsSource(sourceInfo os.FileInfo, target string) (bool, error) {
 	targetInfo, err := os.Stat(target)
 	if errors.Is(err, os.ErrNotExist) {

@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { MouseEvent as ReactMouseEvent, ReactNode } from "react";
 import { Copy, ExternalLink, FolderOpen, Mail, Save } from "lucide-react";
 import { app, openExternal } from "../lib/bridge";
@@ -136,13 +136,22 @@ function LocalPathMarkdownLink({
   const [openers, setOpeners] = useState<ExternalOpenersView>({ openers: [], preferred: "" });
 
   const closeMenu = useCallback(() => setMenuPoint(null), []);
+  const openerRequestRef = useRef(0);
+  const mountedRef = useRef(true);
   const refreshOpeners = useCallback(() => {
+    const request = ++openerRequestRef.current;
     void app.ExternalOpeners().then((next) => {
+      if (!mountedRef.current || request !== openerRequestRef.current) return;
       setOpeners({
         openers: Array.isArray(next.openers) ? next.openers : [],
         preferred: next.preferred ?? "",
       });
     }).catch(() => {});
+  }, []);
+
+  useEffect(() => () => {
+    mountedRef.current = false;
+    openerRequestRef.current += 1;
   }, []);
 
   const openWith = useCallback((opener: ExternalOpenerView) => {
@@ -249,17 +258,29 @@ function LocalPathMarkdownLink({
   );
 }
 
-// localPathFromHref returns the decoded local filesystem path when href is a
-// file:/// URL (the form remarkLocalPathLinks emits), or null otherwise.
+// localPathFromHref returns the decoded local filesystem path for a file URL,
+// including authority-form UNC URLs (file://server/share/path), or null for
+// non-file and malformed/non-absolute URLs.
 export function localPathFromHref(href?: string): string | null {
-  if (!href || !href.startsWith("file:///")) return null;
+  // Keep the allowlist case-sensitive so FILE:/// cannot bypass the markdown
+  // URL policy and be handed to a browser/default URL handler.
+  if (!href || !href.startsWith("file://")) return null;
   try {
-    const path = decodeURIComponent(href.slice("file:///".length));
-    // file:///Users/... has three slashes for the URL scheme plus the
-    // leading slash of the Unix path. Windows drive paths are the exception:
-    // file:///D:/... must remain D:/..., not /D:/....
-    if (/^[A-Za-z]:\//.test(path) || path.startsWith("//")) return path;
-    return path.startsWith("/") ? path : `/${path}`;
+    const url = new URL(href);
+    if (url.protocol !== "file:") return null;
+    if (url.username || url.password || url.port) return null;
+
+    let path = decodeURIComponent(url.pathname);
+    if (url.hostname) {
+      path = `//${url.hostname}${path}`;
+    }
+    // file:///D:/... has a URL root slash that is not part of the Windows
+    // drive path. Multiple leading slashes are the slash-form UNC variant.
+    if (/^\/[A-Za-z]:\//.test(path)) path = path.slice(1);
+    if (path.startsWith("//")) path = `//${path.replace(/^\/+/, "")}`;
+    if (/^[A-Za-z]:\//.test(path)) return path;
+    if (!path.startsWith("/")) return null;
+    return path;
   } catch {
     return null;
   }

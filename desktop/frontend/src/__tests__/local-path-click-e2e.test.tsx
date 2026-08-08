@@ -27,19 +27,40 @@ const { window } = dom;
 const opened: string[] = [];
 const openedWith: Array<[string, string]> = [];
 const browsed: string[] = [];
+type MockOpeners = {
+  openers: Array<{ id: string; name: string; kind: "editor" | "file-manager" }>;
+  preferred: string;
+};
+let openerRaceMode = false;
+let openerRaceCalls = 0;
+let resolveStaleOpeners: ((value: MockOpeners) => void) | undefined;
 (window as unknown as Record<string, unknown>).go = {
   main: {
     App: {
       OpenLocalPath: async (path: string) => {
         opened.push(path);
       },
-      ExternalOpeners: async () => ({
-        openers: [
-          { id: "vscode", name: "VS Code", kind: "editor" as const },
-          { id: "finder", name: "Finder", kind: "file-manager" as const },
-        ],
-        preferred: "vscode",
-      }),
+      ExternalOpeners: async (): Promise<MockOpeners> => {
+        if (openerRaceMode) {
+          openerRaceCalls += 1;
+          if (openerRaceCalls === 1) {
+            return new Promise<MockOpeners>((resolve) => {
+              resolveStaleOpeners = resolve;
+            });
+          }
+          return {
+            openers: [{ id: "xcode", name: "Xcode", kind: "editor" }],
+            preferred: "xcode",
+          };
+        }
+        return {
+          openers: [
+            { id: "vscode", name: "VS Code", kind: "editor" as const },
+            { id: "finder", name: "Finder", kind: "file-manager" as const },
+          ],
+          preferred: "vscode",
+        };
+      },
       OpenLocalPathInExternalOpener: async (path: string, id: string) => {
         openedWith.push([path, id]);
       },
@@ -71,10 +92,10 @@ const { createRoot } = await import("react-dom/client");
 const { default: ReactMarkdown, defaultUrlTransform } = await import("react-markdown");
 const { default: remarkGfm } = await import("remark-gfm");
 const { remarkLocalPathLinks } = await import("../lib/localPathLinks");
-const { RichMarkdownLink } = await import("../components/githubLink");
+const { localPathFromHref, RichMarkdownLink } = await import("../components/githubLink");
 
 const markdownUrlTransform = (value: string) =>
-  value.startsWith("file:///") ? value : defaultUrlTransform(value);
+  localPathFromHref(value) !== null ? value : defaultUrlTransform(value);
 
 const components = { a: RichMarkdownLink };
 
@@ -122,13 +143,23 @@ console.log("\nheadless click-to-open e2e");
   ok(opened[1] === "//nas/share/docs/report.md", `UNC path forwarded as slash form (${opened[1]})`);
 }
 
-// 3. Explicit markdown link to a local file keeps working through the same path.
+// 3. Canonical authority-form UNC markdown links use the same native path.
+{
+  const anchors = await renderClick("[共享盘](file://nas/share/docs/report.md)");
+  ok(anchors.length === 1, "canonical UNC markdown link renders an anchor");
+  await act(async () => {
+    anchors[0].dispatchEvent(new window.MouseEvent("click", { bubbles: true, cancelable: true }));
+  });
+  ok(opened[2] === "//nas/share/docs/report.md", `canonical UNC path forwarded correctly (${opened[2]})`);
+}
+
+// 4. Explicit markdown link to a local file keeps working through the same path.
 {
   const anchors = await renderClick("[验收单](file:///D:/docs/acceptance.md)");
   await act(async () => {
     anchors[0].dispatchEvent(new window.MouseEvent("click", { bubbles: true, cancelable: true }));
   });
-  ok(opened[2] === "D:/docs/acceptance.md", "explicit file:/// markdown link opens locally");
+  ok(opened[3] === "D:/docs/acceptance.md", "explicit file:/// markdown link opens locally");
 
   await act(async () => {
     anchors[0].dispatchEvent(new window.MouseEvent("contextmenu", { bubbles: true, cancelable: true, clientX: 40, clientY: 40 }));
@@ -145,17 +176,42 @@ console.log("\nheadless click-to-open e2e");
   ok(JSON.stringify(openedWith) === JSON.stringify([["D:/docs/acceptance.md", "vscode"]]), "context menu opens the path with the selected application");
 }
 
-// 4. Plain http link must NOT hit OpenLocalPath.
+// 5. Overlapping opener discovery keeps the latest response.
+{
+  openerRaceMode = true;
+  const anchors = await renderClick("[竞态](file:///D:/race.md)");
+  await act(async () => {
+    anchors[0].dispatchEvent(new window.MouseEvent("contextmenu", { bubbles: true, cancelable: true, clientX: 50, clientY: 50 }));
+  });
+  await act(async () => {
+    anchors[0].dispatchEvent(new window.MouseEvent("contextmenu", { bubbles: true, cancelable: true, clientX: 50, clientY: 50 }));
+    await Promise.resolve();
+  });
+  const raceMenu = window.document.querySelector('[role="menu"]');
+  ok(openerRaceCalls === 2 && raceMenu?.textContent?.includes("Xcode") === true,
+    "latest opener discovery populates the local-path menu");
+  await act(async () => {
+    resolveStaleOpeners?.({
+      openers: [{ id: "stale", name: "Stale Editor", kind: "editor" }],
+      preferred: "stale",
+    });
+    await Promise.resolve();
+  });
+  ok(raceMenu?.textContent?.includes("Xcode") === true && !raceMenu?.textContent?.includes("Stale Editor"),
+    "stale opener discovery cannot replace the latest result");
+}
+
+// 6. Plain http link must NOT hit OpenLocalPath.
 {
   const anchors = await renderClick("见 https://example.com/page 文档");
   await act(async () => {
     anchors[0].dispatchEvent(new window.MouseEvent("click", { bubbles: true, cancelable: true }));
   });
   ok(browsed.length === 1 && browsed[0] === "https://example.com/page", "http link went to the system browser");
-  ok(opened.length === 3, "OpenLocalPath was not called for the http link");
+  ok(opened.length === 4, "OpenLocalPath was not called for the http link");
 }
 
-// 5. Non-path text renders no anchors and no clicks.
+// 7. Non-path text renders no anchors and no clicks.
 {
   const anchors = await renderClick("版本 1.2.3 已发布");
   ok(anchors.length === 0, "no anchors for plain text");

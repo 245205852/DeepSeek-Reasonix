@@ -183,15 +183,42 @@ func TestCopyLocalPathAsRejectsAliasWithoutChangingSource(t *testing.T) {
 	if err := os.Link(source, alias); err != nil {
 		t.Fatalf("create hard link: %v", err)
 	}
-	info, err := os.Stat(source)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := copyLocalPathAs(source, alias, info); err == nil {
+	if err := copyLocalPathAs(source, alias); err == nil {
 		t.Fatal("copyLocalPathAs(alias) succeeded, want same-source error")
 	}
 	if got, err := os.ReadFile(source); err != nil || !reflect.DeepEqual(got, content) {
 		t.Fatalf("source after rejected alias copy = (%q, %v), want original content", got, err)
+	}
+}
+
+func TestCopyLocalPathAsReplacesDestinationWithoutChangingSource(t *testing.T) {
+	dir := t.TempDir()
+	source := filepath.Join(dir, "source.md")
+	target := filepath.Join(dir, "target.md")
+	sourceContent := []byte("source content")
+	if err := os.WriteFile(source, sourceContent, 0o640); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(target, []byte("old destination"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := copyLocalPathAs(source, target); err != nil {
+		t.Fatalf("copyLocalPathAs = %v", err)
+	}
+	if got, err := os.ReadFile(target); err != nil || !reflect.DeepEqual(got, sourceContent) {
+		t.Fatalf("destination after copy = (%q, %v), want source content", got, err)
+	}
+	if got, err := os.ReadFile(source); err != nil || !reflect.DeepEqual(got, sourceContent) {
+		t.Fatalf("source after copy = (%q, %v), want unchanged source", got, err)
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range entries {
+		if strings.HasPrefix(entry.Name(), ".target.md.reasonix-copy-") {
+			t.Fatalf("temporary copy was not cleaned up: %s", entry.Name())
+		}
 	}
 }
 

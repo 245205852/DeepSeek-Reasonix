@@ -3,7 +3,7 @@ import ReactMarkdown, { defaultUrlTransform } from "react-markdown";
 import type { Components } from "react-markdown";
 import "katex/dist/katex.min.css";
 import { CodeViewer } from "./CodeViewer";
-import { RichMarkdownLink } from "./githubLink";
+import { localPathFromHref, RichMarkdownLink } from "./githubLink";
 import { normalizeMath } from "./mathNormalize";
 import { reasonixRehypePlugins, reasonixRemarkPlugins } from "./markdownRemarkPlugins";
 import { markdownImageSource } from "../lib/markdownImage";
@@ -24,11 +24,11 @@ const STATUS_MARKER_GLOBAL_RE = /(?:✅|☑|☒|✔️?|✓|\[[xX ]\])/g;
 const BULLET_RE = /^[-*•]\s+\S/;
 const DIVIDER_RE = /^[\s\-_=─━—]+$/;
 
-// file:/// hrefs come from local-path linkification (remarkLocalPathLinks)
-// and must survive react-markdown's default URL sanitisation, which would
-// otherwise blank them along with javascript: and friends.
+// Valid local file hrefs come from local-path linkification or explicit
+// markdown links and must survive react-markdown's default URL sanitisation,
+// which would otherwise blank them along with javascript: and friends.
 function markdownUrlTransform(value: string): string {
-  return value.startsWith("file:///") ? value : defaultUrlTransform(value);
+  return localPathFromHref(value) !== null ? value : defaultUrlTransform(value);
 }
 
 function splitStatusLine(line: string): string[] {

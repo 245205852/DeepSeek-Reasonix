@@ -99,9 +99,13 @@ eq(localPathFromHref("file:///D:/a%20b.txt"), "D:/a b.txt", "decoded %20 becomes
 
 eq(localPathFromHref("file:///D:/x/y.md"), "D:/x/y.md", "decodes plain path");
 eq(localPathFromHref("file:///Users/liangkang/notes/readme.md"), "/Users/liangkang/notes/readme.md", "preserves the leading slash for Unix paths");
+eq(localPathFromHref("file://nas/share/report.md"), "//nas/share/report.md", "parses authority-form UNC URLs");
+eq(localPathFromHref("file:////nas/share/report.md"), "//nas/share/report.md", "normalizes four-slash UNC URLs");
+eq(localPathFromHref("file://///nas/share/report.md"), "//nas/share/report.md", "normalizes generated five-slash UNC URLs");
 eq(localPathFromHref("file:///D:/Project/%E4%B8%AD%E5%81%9C%E6%97%B6%E5%88%86%E6%9E%90/05-%E9%9D%99%E6%80%81%E9%AA%8C%E6%94%B6.md"),
   "D:/Project/中停时分析/05-静态验收.md", "decodes percent-encoded CJK");
 eq(localPathFromHref("file:///D:/x/%zz"), null, "malformed escapes yield null");
+eq(localPathFromHref("FILE:///Users/a.md"), null, "uppercase file scheme is not a local URL");
 eq(localPathFromHref("https://example.com/x"), null, "http URL is not local");
 eq(localPathFromHref(undefined), null, "undefined href is not local");
 
@@ -111,9 +115,10 @@ import React from "react";
 import ReactMarkdown, { defaultUrlTransform } from "react-markdown";
 import { renderToStaticMarkup } from "react-dom/server";
 
-// Mirrors MarkdownRenderer: file:/// anchors survive the default sanitizer.
+// Mirrors MarkdownRenderer: valid local file anchors survive the default
+// sanitizer, including authority-form UNC links.
 const markdownUrlTransform = (value: string) =>
-  value.startsWith("file:///") ? value : defaultUrlTransform(value);
+  localPathFromHref(value) !== null ? value : defaultUrlTransform(value);
 
 const html = renderToStaticMarkup(
   <ReactMarkdown remarkPlugins={[remarkLocalPathLinks]} urlTransform={markdownUrlTransform}>
@@ -131,6 +136,13 @@ const mixed = renderToStaticMarkup(
 );
 ok(mixed.includes('href="file:///D:/x/y.md"'), "CJK comma boundary renders drive link");
 ok(mixed.includes('href="file:///C:/a/b.txt"'), "explicit file URL renders its own anchor");
+
+const unc = renderToStaticMarkup(
+  <ReactMarkdown remarkPlugins={[remarkLocalPathLinks]} urlTransform={markdownUrlTransform}>
+    {"[共享盘](file://nas/share/report.md)"}
+  </ReactMarkdown>,
+);
+ok(unc.includes('href="file://nas/share/report.md"'), "authority-form UNC link survives URL sanitization");
 
 const plain = renderToStaticMarkup(
   <ReactMarkdown remarkPlugins={[remarkLocalPathLinks]} urlTransform={markdownUrlTransform}>
