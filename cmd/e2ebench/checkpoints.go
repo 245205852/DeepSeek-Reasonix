@@ -205,6 +205,20 @@ func renderSolveProfiles(results []result) string {
 		parts = append(parts, part)
 	}
 	line += joinParts(parts)
+	stoppable, harmful, past := 0, 0, []int64{}
+	for _, r := range results {
+		if r.StopEval == nil {
+			continue
+		}
+		if r.StopEval.FirstStoppableRound > 0 {
+			stoppable++
+			past = append(past, int64(r.StopEval.ContinuationsPast))
+		}
+		harmful += r.StopEval.HarmfulContinuation
+	}
+	if stoppable > 0 {
+		line += fmt.Sprintf("\n\n**Stop policy**: stoppable before final in %d runs · **continuations past stoppable** median %d rounds · **harmful continuations** %d", stoppable, median(past), harmful)
+	}
 	if withCorrect > 0 {
 		line += fmt.Sprintf("\n\n**Correct boundary** (medians): **mutations before** %d · **rounds before** %d · **rounds after** %d · **verifications after** %d · **regression-after-correct** %s",
 			median(mutationsBefore), median(roundsBefore), median(roundsAfter), median(verifyAfter),
@@ -248,4 +262,46 @@ func regressedAfterCorrect(checkpoints []checkpoint) bool {
 		}
 	}
 	return false
+}
+
+// stopEval is the counterfactual-stop readout: had the run stopped at the
+// end of round N, would the grader have passed? Derived by aligning round
+// boundaries with the checkpoint grid — no agent participation.
+type stopEval struct {
+	Curve               []bool `json:"curve"`                           // round-end verdicts, 1-based rounds
+	FirstStoppableRound int    `json:"first_stoppable_round,omitempty"` // 0 = never
+	ContinuationsPast   int    `json:"continuations_past,omitempty"`    // rounds run after first stoppable
+	HarmfulContinuation int    `json:"harmful_continuations,omitempty"` // PASS→FAIL round transitions
+}
+
+// computeStopEval grades each round's end state as the last checkpoint at or
+// before that boundary; a boundary before any snapshot is the seed (fail).
+func computeStopEval(checkpoints []checkpoint, roundEndElapsedMs []int64) *stopEval {
+	if len(checkpoints) == 0 || len(roundEndElapsedMs) == 0 {
+		return nil
+	}
+	eval := &stopEval{}
+	prev := false
+	for i, end := range roundEndElapsedMs {
+		pass := false
+		for _, cp := range checkpoints {
+			if cp.ElapsedMs <= end {
+				pass = cp.Pass
+			} else {
+				break
+			}
+		}
+		eval.Curve = append(eval.Curve, pass)
+		if pass && eval.FirstStoppableRound == 0 {
+			eval.FirstStoppableRound = i + 1
+		}
+		if prev && !pass {
+			eval.HarmfulContinuation++
+		}
+		prev = pass
+	}
+	if eval.FirstStoppableRound > 0 {
+		eval.ContinuationsPast = len(eval.Curve) - eval.FirstStoppableRound
+	}
+	return eval
 }

@@ -188,3 +188,39 @@ func TestRoundsSplitAt(t *testing.T) {
 		t.Fatalf("split = %d/%d/%d, want 2 before, 2 after, 1 verification after", before, after, verifyAfter)
 	}
 }
+
+func TestComputeStopEvalCurveAndHarmfulContinuations(t *testing.T) {
+	cps := []checkpoint{
+		{Seq: 1, ElapsedMs: 8_000, Pass: false},
+		{Seq: 2, ElapsedMs: 18_000, Pass: true},
+		{Seq: 3, ElapsedMs: 28_000, Pass: true},
+		{Seq: 4, ElapsedMs: 38_000, Pass: false}, // the "improvement" that broke it
+		{Seq: 5, ElapsedMs: 48_000, Pass: true},
+	}
+	rounds := []int64{10_000, 20_000, 30_000, 40_000, 50_000}
+	eval := computeStopEval(cps, rounds)
+	want := []bool{false, true, true, false, true}
+	for i, pass := range want {
+		if eval.Curve[i] != pass {
+			t.Fatalf("curve = %v, want %v", eval.Curve, want)
+		}
+	}
+	if eval.FirstStoppableRound != 2 {
+		t.Fatalf("first stoppable = %d, want 2", eval.FirstStoppableRound)
+	}
+	if eval.HarmfulContinuation != 1 {
+		t.Fatalf("harmful continuations = %d, want 1 (round 4 destroyed a passing state)", eval.HarmfulContinuation)
+	}
+	if eval.ContinuationsPast != 3 {
+		t.Fatalf("continuations past stoppable = %d, want 3", eval.ContinuationsPast)
+	}
+
+	if computeStopEval(nil, rounds) != nil || computeStopEval(cps, nil) != nil {
+		t.Fatal("missing inputs must yield no eval")
+	}
+	// A boundary before any snapshot grades as the seed: fail.
+	early := computeStopEval(cps, []int64{1_000})
+	if early.Curve[0] || early.FirstStoppableRound != 0 {
+		t.Fatalf("pre-snapshot boundary must fail: %+v", early)
+	}
+}

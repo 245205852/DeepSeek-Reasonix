@@ -142,6 +142,9 @@ type result struct {
 	RoundsAfterCorrect     int  `json:"rounds_after_correct,omitempty"`
 	VerifyAfterCorrect     int  `json:"verify_after_correct,omitempty"`
 	RegressedAfterCorrect  bool `json:"regressed_after_correct,omitempty"`
+	// StopEval is the counterfactual-stop curve: per-round end-state grades,
+	// the earliest stoppable round, and harmful continuations (PASS→FAIL).
+	StopEval *stopEval `json:"stop_eval,omitempty"`
 }
 
 // class is the published failure taxonomy: solved, the guard that stopped the
@@ -526,6 +529,13 @@ func runTask(cfg suiteConfig, t task) result {
 		if trajPath != "" && r.FirstCorrectMs > 0 {
 			cutoff := startedAt.UnixMilli() + r.FirstCorrectMs
 			r.RoundsBeforeCorrect, r.RoundsAfterCorrect, r.VerifyAfterCorrect = roundsSplitAt(trajPath, cutoff)
+		}
+		if trajPath != "" {
+			var endsElapsed []int64
+			for _, end := range roundEnds(trajPath) {
+				endsElapsed = append(endsElapsed, end-startedAt.UnixMilli())
+			}
+			r.StopEval = computeStopEval(r.Checkpoints, endsElapsed)
 		}
 	}
 	r.PhaseTrace = buildPhaseTrace(r)
