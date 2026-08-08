@@ -780,7 +780,7 @@ export function TurnActions({
   };
   return (
     <div className={`turn-actions${openMenu ? " turn-actions--open" : ""}${hoverMenus ? " turn-actions--hover-menu" : ""}`}>
-      <CopyButton text={text} label={t("msg.copy")} />
+      {text.trim() && <CopyButton text={text} label={t("msg.copy")} />}
       {canAct && (
         <>
           <button

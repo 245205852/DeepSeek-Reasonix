@@ -782,7 +782,7 @@ export function Transcript({
         if (item.kind !== "assistant" || item.streaming || !item.text.trim()) continue;
         actionText = appendTurnActionCopyText(actionText, item.text);
       }
-      if (!actionText.trim()) return;
+      if (!actionText.trim() && !checkpointsByTurn.has(turn)) return;
       const openMenu = openAction && openAction.turn === turn ? openAction.menu : null;
       out.push(
         <TurnActions
@@ -1266,7 +1266,7 @@ function WarmTurnItems({
     if (item.kind !== "assistant" || item.streaming || !item.text.trim()) continue;
     actionText = appendTurnActionCopyText(actionText, item.text);
   }
-  if (turn != null && actionText.trim()) {
+  if (turn != null && (actionText.trim() || checkpoints.has(turn))) {
     const openMenu = openAction && openAction.turn === turn ? openAction.menu : null;
     nodes.push(
       <TurnActions

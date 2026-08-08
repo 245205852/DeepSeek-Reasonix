@@ -104,6 +104,8 @@ let backendRunning = false;
 let cancelCalls = 0;
 let effortCalls = 0;
 let checkpointHistoryCalls = 0;
+let historyLoads = 0;
+let checkpointLoads = 0;
 const context: ContextInfo = { used: 0, window: 100, sessionTokens: 0 };
 const effort: EffortInfo = { supported: true, current: "auto", default: "auto", levels: ["auto"] };
 
@@ -127,14 +129,27 @@ window.go = {
       },
       BalanceForTab: async () => ({ available: false, display: "" }),
       JobsForTab: async () => [],
-      CheckpointsForTab: async () => [],
+      CheckpointsForTab: async () => {
+        checkpointLoads += 1;
+        return [{ turn: 0, prompt: "hello", files: [], time: Date.now(), canConversation: true }];
+      },
       HistoryForTab: async () => [],
-      HistoryPageForTab: async () => ({ messages: [], startTurn: 0, endTurn: 0, totalTurns: 0, hasOlder: false }),
+      HistoryPageForTab: async () => {
+        historyLoads += 1;
+        return {
+          messages: [{ role: "user", content: "hello", createdAt: Date.now(), checkpointTurn: 0 }],
+          startTurn: 0,
+          endTurn: 0,
+          totalTurns: 1,
+          hasOlder: false,
+        };
+      },
       HistoryCheckpointTurnsForTab: async () => {
         checkpointHistoryCalls += 1;
         return [];
       },
       ReplayPendingPrompts: async () => {},
+      SubmitToTab: async () => {},
       CancelTab: async () => {
         cancelCalls += 1;
         backendRunning = false;
@@ -163,6 +178,8 @@ await waitFor("active tab", () => controller?.activeTabId === "tab-a");
 await act(async () => {
   await flushPromises(50);
 });
+historyLoads = 0;
+checkpointLoads = 0;
 
 backendRunning = true;
 await act(async () => {
@@ -186,6 +203,27 @@ for (let attempt = 0; attempt < 20 && controller?.state.running; attempt += 1) {
 eq(controller?.state.running, false, "cancel reconciliation clears the running state");
 eq(cancelCalls, 1, "CancelTab is called once");
 eq(controller?.state.cancelRequested, false, "cancel reconciliation clears cancelRequested");
+await waitFor("cancelled transcript reload", () => historyLoads > 0 && checkpointLoads > 0);
+ok(controller?.state.items.some((item) => item.kind === "user" && item.text === "hello"), "cancelled prompt is restored from the authoritative transcript");
+ok(controller?.state.checkpoints.some((checkpoint) => checkpoint.turn === 0 && checkpoint.canConversation), "cancelled prompt keeps its conversation checkpoint");
+
+// The screenshot repro stops before turn_started, while the backend has
+// already accepted the prompt and will persist it during cancellation cleanup.
+historyLoads = 0;
+checkpointLoads = 0;
+backendRunning = true;
+await act(async () => {
+  await controller?.send("hello");
+  await flushPromises();
+});
+eq(controller?.state.pendingUser, "hello", "an immediate stop still has the optimistic prompt marker");
+await act(async () => {
+  controller?.cancel();
+  await flushPromises();
+});
+await waitFor("immediate cancelled transcript reload", () => !controller?.state.running && historyLoads > 0 && checkpointLoads > 0);
+ok(controller?.state.items.some((item) => item.kind === "user" && item.text === "hello"), "immediate cancellation restores the persisted prompt bubble");
+ok(controller?.state.checkpoints.some((checkpoint) => checkpoint.turn === 0 && checkpoint.canConversation), "immediate cancellation restores the rewind checkpoint");
 
 await act(async () => {
   for (const handler of eventHandlers) handler({ kind: "turn_done", tabId: "tab-a", checkpointTurn: 0 });

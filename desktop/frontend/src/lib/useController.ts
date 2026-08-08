@@ -3023,11 +3023,20 @@ export function useController() {
         const stillReconciling = foregroundRunningFromRuntimeMeta(tab) || Boolean(tab.cancelRequested);
         if (stillReconciling && attempt + 1 < CANCEL_RECONCILE_DELAYS_MS.length) {
           scheduleCancelReconcile(tabId, attempt + 1);
+          return;
+        }
+        // Cancel can race the optimistic user bubble before turn_started. The
+        // backend still persists that visible prompt (and its checkpoint), so
+        // hydrate the authoritative transcript once teardown is idle instead
+        // of leaving the UI with a discarded bubble and no edit/rewind target.
+        if (!stillReconciling) {
+          void loadSessionDataForTab(tabId, true, "rewind").catch(() => {});
+          void refreshCheckpoints(tabId);
         }
       }).catch(() => {});
     }, delay);
     cancelReconcileTimers.current.set(tabId, timer);
-  }, [clearCancelReconcileTimer, reconcileTabRuntime]);
+  }, [clearCancelReconcileTimer, loadSessionDataForTab, reconcileTabRuntime, refreshCheckpoints]);
 
   useEffect(() => {
     const textBatch = createRafBatch<StreamDeltaEntry>((batch) => {

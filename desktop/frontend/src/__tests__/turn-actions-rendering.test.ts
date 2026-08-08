@@ -6,6 +6,8 @@ import { fileURLToPath } from "node:url";
 
 const testDir = dirname(fileURLToPath(import.meta.url));
 const styles = readFileSync(resolve(testDir, "../styles.css"), "utf8");
+const transcriptSource = readFileSync(resolve(testDir, "../components/Transcript.tsx"), "utf8");
+const messageSource = readFileSync(resolve(testDir, "../components/Message.tsx"), "utf8");
 
 let passed = 0;
 let failed = 0;
@@ -21,6 +23,17 @@ function ok(value: unknown, label: string) {
 }
 
 console.log("\nturn actions rendering");
+
+ok(
+  transcriptSource.includes("!actionText.trim() && !checkpointsByTurn.has(turn)") &&
+    transcriptSource.includes("actionText.trim() || checkpoints.has(turn)"),
+  "checkpointed turns keep rewind actions visible even when cancellation produced no assistant text",
+);
+
+ok(
+  messageSource.includes("text.trim() && <CopyButton text={text} label={t(\"msg.copy\")} />"),
+  "empty interrupted turns do not render a misleading empty copy action",
+);
 
 const creationTranscriptRule = styles.match(
   /\.app--creation \.transcript\.transcript--creation-scrollbar,\s*:root\[data-theme-style\] \.app--creation \.transcript\.transcript--creation-scrollbar\s*\{([^}]+)\}/,
