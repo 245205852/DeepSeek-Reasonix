@@ -78,6 +78,7 @@ func (a *Agent) observeOutcomeShadow(receiptMark int, results []string, outcomes
 	}
 	sample := a.outcome.ScoreRound(a.evidence.ReceiptsSince(receiptMark))
 	a.applyEBM(&sample, results, outcomes)
+	a.armGovernorCapture(sample)
 	event.RecordOutcomeProgress(a.sink, sample)
 }
 

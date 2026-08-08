@@ -37,6 +37,10 @@ type OutcomeSample struct {
 	// baseline included — carries the eligibility shadow.
 	EBMEligible bool
 	EBMFired    bool
+	// LocalExecSeen reports whether this turn has executed any local
+	// interpreter/test command yet — the self-check-propensity observable
+	// (studied set: python/node/go run/pytest; ecosystem bias documented).
+	LocalExecSeen bool
 }
 
 // OutcomeTracker is the shadow counterpart of ProgressTracker: same per-round
@@ -55,29 +59,41 @@ type OutcomeTracker struct {
 	debt         bool
 	debtAge      int
 	blind        int
+	localExec    bool
 }
 
-// ForkSeed exports the debt-relevant state a counterfactual fork must carry so
-// post-fork discriminating detection stays continuous with the original run.
-func (t *OutcomeTracker) ForkSeed() (mutatedBases []string, debtAge, blindMutations int) {
+// OutcomeSeed is the fork-portable slice of tracker state: what a
+// counterfactual continuation must inherit for its shadow to stay continuous.
+type OutcomeSeed struct {
+	MutatedBases   []string `json:"mutated_bases,omitempty"`
+	DebtAge        int      `json:"debt_age"`
+	BlindMutations int      `json:"blind_mutations"`
+	LocalExecSeen  bool     `json:"local_exec_seen"`
+}
+
+// ForkSeed exports the state a counterfactual fork must carry so post-fork
+// discriminating detection stays continuous with the original run.
+func (t *OutcomeTracker) ForkSeed() OutcomeSeed {
+	seed := OutcomeSeed{DebtAge: t.debtAge, BlindMutations: t.blind, LocalExecSeen: t.localExec}
 	for base := range t.mutatedBases {
-		mutatedBases = append(mutatedBases, base)
+		seed.MutatedBases = append(seed.MutatedBases, base)
 	}
-	sort.Strings(mutatedBases)
-	return mutatedBases, t.debtAge, t.blind
+	sort.Strings(seed.MutatedBases)
+	return seed
 }
 
 // RestoreOutcomeTracker rebuilds a tracker from a fork seed. Novelty maps
 // start empty — post-fork exploration novelty is intentionally relative to the
 // fork point, while debt state continues from the original trajectory.
-func RestoreOutcomeTracker(mutatedBases []string, debtAge, blindMutations int) *OutcomeTracker {
+func RestoreOutcomeTracker(seed OutcomeSeed) *OutcomeTracker {
 	t := NewOutcomeTracker()
-	for _, base := range mutatedBases {
+	for _, base := range seed.MutatedBases {
 		t.mutatedBases[base] = true
 	}
-	t.debtAge = debtAge
-	t.blind = blindMutations
-	t.debt = debtAge > 0 || blindMutations > 0
+	t.debtAge = seed.DebtAge
+	t.blind = seed.BlindMutations
+	t.debt = seed.DebtAge > 0 || seed.BlindMutations > 0
+	t.localExec = seed.LocalExecSeen
 	return t
 }
 
@@ -121,7 +137,21 @@ func (t *OutcomeTracker) ScoreRound(receipts []Receipt) OutcomeSample {
 	}
 	s.DebtAge = t.debtAge
 	s.BlindMutations = t.blind
+	s.LocalExecSeen = t.localExec
 	return s
+}
+
+// localExecCommand matches the exact command families the affordance study
+// validated. Deliberately narrow and Python-ecosystem biased for now;
+// generalizing to Local Discriminating Execution needs cross-language
+// replication first.
+func localExecCommand(command string) bool {
+	for _, marker := range []string{"python", "node ", "go run", "pytest", "py.test"} {
+		if strings.Contains(command, marker) {
+			return true
+		}
+	}
+	return false
 }
 
 // noteMutatedPaths remembers mutated file basenames so a later command that
@@ -191,6 +221,9 @@ func (t *OutcomeTracker) scoreCommand(command string, r Receipt, s *OutcomeSampl
 	verify := IsDeliveryVerificationCommand(command)
 	if verify || t.commandExercisesMutation(command) {
 		s.Discriminating++
+	}
+	if localExecCommand(command) {
+		t.localExec = true
 	}
 	if verify {
 		s.Verification++
