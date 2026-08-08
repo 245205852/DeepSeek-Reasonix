@@ -2292,6 +2292,8 @@ export const zhTW: Record<DictKey, string> = {
   "topicBar.exportImageParts": "會話較長，已拆分匯出為 {count} 個連續編號的 PNG 檔案。",
   "topicBar.exportFailed": "匯出失敗：{error}",
   "externalOpener.openIn": "使用 {name} 開啟",
+  "externalOpener.openDefault": "使用預設應用程式開啟",
+  "externalOpener.reveal": "在檔案管理器中顯示",
   "externalOpener.choose": "選擇開啟應用程式",
   "externalOpener.failed": "無法使用 {name} 開啟：{error}",
   "externalOpener.persistFailed": "已開啟，但無法將 {name} 儲存為預設：{error}",

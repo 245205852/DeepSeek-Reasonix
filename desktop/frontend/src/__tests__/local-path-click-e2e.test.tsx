@@ -25,6 +25,7 @@ const { window } = dom;
 // Bridge spies: OpenLocalPath is what the click must call; BrowserOpenURL is
 // what plain http links must call instead.
 const opened: string[] = [];
+const openedWith: Array<[string, string]> = [];
 const browsed: string[] = [];
 (window as unknown as Record<string, unknown>).go = {
   main: {
@@ -32,6 +33,17 @@ const browsed: string[] = [];
       OpenLocalPath: async (path: string) => {
         opened.push(path);
       },
+      ExternalOpeners: async () => ({
+        openers: [
+          { id: "vscode", name: "VS Code", kind: "editor" as const },
+          { id: "finder", name: "Finder", kind: "file-manager" as const },
+        ],
+        preferred: "vscode",
+      }),
+      OpenLocalPathInExternalOpener: async (path: string, id: string) => {
+        openedWith.push([path, id]);
+      },
+      RevealPath: async () => {},
     },
   },
 };
@@ -117,6 +129,18 @@ console.log("\nheadless click-to-open e2e");
     anchors[0].dispatchEvent(new window.MouseEvent("click", { bubbles: true, cancelable: true }));
   });
   ok(opened[2] === "D:/docs/acceptance.md", "explicit file:/// markdown link opens locally");
+
+  await act(async () => {
+    anchors[0].dispatchEvent(new window.MouseEvent("contextmenu", { bubbles: true, cancelable: true, clientX: 40, clientY: 40 }));
+  });
+  const contextMenu = window.document.querySelector('[role="menu"]');
+  ok(contextMenu !== null, "local path context menu opens on right click");
+  const vscodeItem = Array.from(contextMenu?.querySelectorAll<HTMLButtonElement>('[role="menuitem"]') ?? [])
+    .find((item) => item.textContent?.includes("VS Code"));
+  await act(async () => {
+    vscodeItem?.dispatchEvent(new window.MouseEvent("click", { bubbles: true, cancelable: true }));
+  });
+  ok(JSON.stringify(openedWith) === JSON.stringify([["D:/docs/acceptance.md", "vscode"]]), "context menu opens the path with the selected application");
 }
 
 // 4. Plain http link must NOT hit OpenLocalPath.

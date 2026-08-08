@@ -200,6 +200,8 @@ export const zh: Record<DictKey, string> = {
   "topicBar.exportImageParts": "会话较长，已拆分导出为 {count} 个连续编号的 PNG 文件。",
   "topicBar.exportFailed": "导出失败：{error}",
   "externalOpener.openIn": "使用 {name} 打开",
+  "externalOpener.openDefault": "使用默认应用打开",
+  "externalOpener.reveal": "在文件管理器中显示",
   "externalOpener.choose": "选择打开应用",
   "externalOpener.failed": "无法使用 {name} 打开：{error}",
   "externalOpener.persistFailed": "已打开，但无法将 {name} 保存为默认：{error}",

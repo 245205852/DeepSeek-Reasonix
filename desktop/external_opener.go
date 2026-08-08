@@ -229,3 +229,34 @@ func (a *App) OpenWorkspaceInExternalOpenerForTab(tabID, id string) error {
 	}
 	return launchPlatformExternalOpener(spec, path)
 }
+
+// OpenLocalPathInExternalOpener opens an absolute local path with one of the
+// detected, platform-owned applications. It shares OpenLocalPath's safety
+// checks so a markdown link cannot turn an AI-generated executable path into
+// an executable launch.
+func (a *App) OpenLocalPathInExternalOpener(path, id string) error {
+	path, err := normalizeLocalOpenPath(path)
+	if err != nil {
+		return err
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		return err
+	}
+	if !openTargetAllowed(path, info.IsDir()) {
+		return fmt.Errorf("refusing to open executable target %q", path)
+	}
+
+	specs := cachedPlatformExternalOpenerSpecs()
+	var spec externalOpenerSpec
+	var ok bool
+	if strings.TrimSpace(id) == "" {
+		spec, ok = resolveExternalOpener(specs, a.preferredExternalOpenerID())
+	} else {
+		spec, ok = externalOpenerByID(specs, id)
+	}
+	if !ok {
+		return fmt.Errorf("external opener %q is not available", strings.TrimSpace(id))
+	}
+	return launchPlatformExternalOpener(spec, path)
+}
