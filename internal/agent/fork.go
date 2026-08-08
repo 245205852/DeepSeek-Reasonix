@@ -24,6 +24,7 @@ type ForkBundle struct {
 	BlindAtFork   int                `json:"blind_at_fork"`
 	DebtAtFork    int                `json:"debt_at_fork"`
 	MutatedBases  []string           `json:"mutated_bases,omitempty"`
+	LocalExecSeen bool               `json:"local_exec_seen,omitempty"`
 	Messages      []provider.Message `json:"messages"`
 }
 
@@ -34,11 +35,41 @@ const forkBundleVersion = 1
 // does the session hold the eligible round's tool results. Arming refuses
 // under live enforcement: a treated state must never become a bundle.
 func (a *Agent) armForkCapture(sample evidence.OutcomeSample) {
-	if os.Getenv("REASONIX_EXPERIMENT_FORK_CAPTURE_DIR") == "" || ebmEnabled || a.ebm.captured || a.ebm.captureArmed {
+	if forkCapturePolicy() != "ebm" || ebmEnabled || a.ebm.captured || a.ebm.captureArmed {
 		return
 	}
 	a.ebm.captureArmed = true
 	a.ebm.captureRound = sample.Round
+}
+
+// govReasoningThreshold marks a round's thinking as expensive enough that a
+// governor experiment wants the state frozen before the next purchase.
+const govReasoningThreshold = 1500
+
+// armGovernorCapture freezes the exploration-phase state where the reasoning
+// governor would intervene: no verification debt yet, no local check path
+// discovered, and the round that just ended bought expensive thinking.
+func (a *Agent) armGovernorCapture(sample evidence.OutcomeSample) {
+	if forkCapturePolicy() != "governor" || a.ebm.captured || a.ebm.captureArmed {
+		return
+	}
+	if sample.DebtAge > 0 || sample.LocalExecSeen || a.lastReasoning < govReasoningThreshold {
+		return
+	}
+	a.ebm.captureArmed = true
+	a.ebm.captureRound = sample.Round
+}
+
+// forkCapturePolicy selects which policy's trigger owns bundle capture;
+// unset defaults to the EBM trigger for compatibility with existing runs.
+func forkCapturePolicy() string {
+	if os.Getenv("REASONIX_EXPERIMENT_FORK_CAPTURE_DIR") == "" {
+		return ""
+	}
+	if p := os.Getenv("REASONIX_EXPERIMENT_FORK_POLICY"); p != "" {
+		return p
+	}
+	return "ebm"
 }
 
 // forkCaptureProvider snapshots the session at the next Stream call after
@@ -55,18 +86,35 @@ func (p *forkCaptureProvider) Stream(ctx context.Context, req provider.Request) 
 	if a.ebm.captureArmed && !a.ebm.captured {
 		a.ebm.captured = true
 		messages := a.session.Snapshot()
-		bases, debt, blind := a.outcome.ForkSeed()
+		seed := a.outcome.ForkSeed()
 		b := ForkBundle{
-			Version: forkBundleVersion, Policy: "ebm",
+			Version: forkBundleVersion, Policy: forkCapturePolicy(),
 			Input:         forkTurnInput(messages),
-			EligibleRound: a.ebm.captureRound, BlindAtFork: blind,
-			DebtAtFork: debt, MutatedBases: bases, Messages: messages,
+			EligibleRound: a.ebm.captureRound, BlindAtFork: seed.BlindMutations,
+			DebtAtFork: seed.DebtAge, MutatedBases: seed.MutatedBases,
+			LocalExecSeen: seed.LocalExecSeen, Messages: messages,
 		}
 		if err := writeForkBundle(os.Getenv("REASONIX_EXPERIMENT_FORK_CAPTURE_DIR"), b); err != nil {
 			fmt.Fprintln(os.Stderr, "fork capture:", err)
 		}
 	}
-	return p.inner.Stream(ctx, req)
+	inner, err := p.inner.Stream(ctx, req)
+	if err != nil {
+		return inner, err
+	}
+	// Relay chunks while noting each round's reasoning spend — the governor
+	// trigger reads it when the round's shadow sample is scored.
+	out := make(chan provider.Chunk)
+	go func() {
+		defer close(out)
+		for c := range inner {
+			if c.Type == provider.ChunkUsage && c.Usage != nil {
+				a.lastReasoning = c.Usage.ReasoningTokens
+			}
+			out <- c
+		}
+	}()
+	return out, nil
 }
 
 // forkTurnInput recovers the turn's raw input from the frozen conversation:
@@ -157,26 +205,34 @@ func LoadForkBundle(path string) (*ForkBundle, error) {
 	return &b, nil
 }
 
+// actFirstNudge is the reasoning-governor's soft treatment: shaping, not
+// capping — spend cheap external evidence before expensive speculation.
+const actFirstNudge = "[guidance] Prefer cheap repository evidence or a targeted check over extended " +
+	"speculation when either can reduce uncertainty."
+
 // armForkContinuation makes the next Run continue from the bundle: turn-local
 // classification still runs on the same input, then the appended user message
-// is replaced wholesale by the frozen conversation. Treatment differs from
-// control by exactly one thing — the nudge in the live policy's slot — and
-// the single dose disarms the runtime policy.
-func (a *Agent) armForkContinuation(b *ForkBundle, treatment bool) {
+// is replaced wholesale by the frozen conversation. A non-empty nudge is the
+// arm's single treatment, placed in the live policy's slot; the dose disarms
+// every runtime policy for the continuation.
+func (a *Agent) armForkContinuation(b *ForkBundle, nudge string) {
 	a.forkRestore = func(_ *runLoopState) {
 		messages := append([]provider.Message(nil), b.Messages...)
-		if treatment {
-			applyForkTreatment(messages)
+		if nudge != "" {
+			applyForkTreatment(messages, nudge)
 		}
 		a.session.Replace(messages)
-		a.outcome = evidence.RestoreOutcomeTracker(b.MutatedBases, b.DebtAtFork, b.BlindAtFork)
+		a.outcome = evidence.RestoreOutcomeTracker(evidence.OutcomeSeed{
+			MutatedBases: b.MutatedBases, DebtAge: b.DebtAtFork,
+			BlindMutations: b.BlindAtFork, LocalExecSeen: b.LocalExecSeen,
+		})
 		a.ebm = ebmState{fired: true, captured: true, captureRound: b.EligibleRound}
 	}
 }
 
 // applyForkTreatment appends the nudge to the eligible batch's first tool
 // result — the same slot the live policy writes to.
-func applyForkTreatment(messages []provider.Message) {
+func applyForkTreatment(messages []provider.Message, nudge string) {
 	lastAssistant := -1
 	for i, m := range messages {
 		if m.Role == provider.RoleAssistant && len(m.ToolCalls) > 0 {
@@ -185,7 +241,7 @@ func applyForkTreatment(messages []provider.Message) {
 	}
 	for i := lastAssistant + 1; lastAssistant >= 0 && i < len(messages); i++ {
 		if messages[i].Role == provider.RoleTool {
-			messages[i].Content += "\n\n" + ebmNudge
+			messages[i].Content += "\n\n" + nudge
 			return
 		}
 	}
@@ -211,5 +267,12 @@ func (a *Agent) maybeArmForkFromEnv() {
 		fmt.Fprintln(os.Stderr, "fork continuation:", err)
 		return
 	}
-	a.armForkContinuation(b, os.Getenv("REASONIX_EXPERIMENT_FORK_ARM") == "treatment")
+	nudge := ""
+	switch os.Getenv("REASONIX_EXPERIMENT_FORK_ARM") {
+	case "treatment":
+		nudge = ebmNudge
+	case "actfirst":
+		nudge = actFirstNudge
+	}
+	a.armForkContinuation(b, nudge)
 }

@@ -575,6 +575,10 @@ type Agent struct {
 	// right after beginRunTurn — the counterfactual-continuation seam.
 	forkRestore func(*runLoopState)
 
+	// lastReasoning is the previous round's reasoning-token spend, observed
+	// by the capture provider; only the governor fork trigger reads it.
+	lastReasoning int
+
 	// repeatFailureCounts tracks semantically identical write-like calls that
 	// keep failing with the same failure class. Unlike stormSig, successful
 	// reads do not blindly clear this state: re-reading a file and then

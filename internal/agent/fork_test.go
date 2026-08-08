@@ -60,7 +60,7 @@ func TestForkControlContinuationMatchesOriginalRequest(t *testing.T) {
 	os.Unsetenv("REASONIX_EXPERIMENT_FORK_CAPTURE_DIR")
 	cont := &scriptedProvider{name: "p", turns: [][]provider.Chunk{{{Type: provider.ChunkText, Text: "done"}}}}
 	a := New(cont, forkRegistry(), NewSession("sys"), Options{}, event.Discard)
-	a.armForkContinuation(b, false)
+	a.armForkContinuation(b, "")
 	if err := a.Run(context.Background(), b.Input); err != nil {
 		t.Fatalf("continuation Run: %v", err)
 	}
@@ -81,7 +81,7 @@ func TestForkTreatmentDiffersOnlyByNudge(t *testing.T) {
 	os.Unsetenv("REASONIX_EXPERIMENT_FORK_CAPTURE_DIR")
 	cont := &scriptedProvider{name: "p", turns: [][]provider.Chunk{{{Type: provider.ChunkText, Text: "done"}}}}
 	a := New(cont, forkRegistry(), NewSession("sys"), Options{}, event.Discard)
-	a.armForkContinuation(b, true)
+	a.armForkContinuation(b, ebmNudge)
 	if err := a.Run(context.Background(), b.Input); err != nil {
 		t.Fatalf("treatment Run: %v", err)
 	}
@@ -130,6 +130,34 @@ func TestForkCaptureRefusesTreatedState(t *testing.T) {
 	// …so no bundle may exist: a treated state must never become a fork origin.
 	if _, err := os.Stat(filepath.Join(dir, "bundle.json")); !os.IsNotExist(err) {
 		t.Fatal("capture wrote a bundle under live enforcement")
+	}
+}
+
+func TestGovernorCaptureFreezesExpensiveExplorationState(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("REASONIX_EXPERIMENT_FORK_CAPTURE_DIR", dir)
+	t.Setenv("REASONIX_EXPERIMENT_FORK_POLICY", "governor")
+	reg := tool.NewRegistry()
+	reg.Add(fakeTool{name: "read_probe", readOnly: true})
+	prov := &scriptedProvider{name: "p", turns: [][]provider.Chunk{
+		{{Type: provider.ChunkUsage, Usage: &provider.Usage{ReasoningTokens: 2400}},
+			toolCallChunk("c1", "read_probe", `{"path":"a.go"}`)},
+		{toolCallChunk("c2", "read_probe", `{"path":"b.go"}`)},
+		{{Type: provider.ChunkText, Text: "done"}},
+	}}
+	a := New(prov, reg, NewSession("sys"), Options{}, event.Discard)
+	if err := a.Run(context.Background(), "find the bug"); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	b, err := LoadForkBundle(filepath.Join(dir, "bundle.json"))
+	if err != nil {
+		t.Fatalf("governor bundle missing: %v", err)
+	}
+	if b.Policy != "governor" || b.DebtAtFork != 0 || b.LocalExecSeen {
+		t.Fatalf("bundle = %+v, want governor policy in debt-free no-exec state", b)
+	}
+	if b.EligibleRound != 1 {
+		t.Fatalf("eligible round = %d, want 1 (the expensive exploration round)", b.EligibleRound)
 	}
 }
 

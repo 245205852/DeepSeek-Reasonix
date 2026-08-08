@@ -56,6 +56,7 @@ type OutcomeProgress struct {
 	BlindMutations int  `json:"blind_mutations,omitempty"`
 	EBMEligible    bool `json:"ebm_eligible,omitempty"`
 	EBMFired       bool `json:"ebm_fired,omitempty"`
+	LocalExecSeen  bool `json:"local_exec_seen,omitempty"`
 }
 
 // ContractShadowAudit mirrors event.ContractShadowAudit with stable keys.
@@ -191,6 +192,7 @@ func (r *Recorder) RecordOutcomeProgress(sample evidence.OutcomeSample) {
 		BlindMutations: sample.BlindMutations,
 		EBMEligible:    sample.EBMEligible,
 		EBMFired:       sample.EBMFired,
+		LocalExecSeen:  sample.LocalExecSeen,
 	}})
 	event.RecordOutcomeProgress(r.inner, sample)
 }

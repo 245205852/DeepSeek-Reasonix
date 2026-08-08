@@ -111,12 +111,16 @@ func runForkContinuation(cfg suiteConfig, t task, b *agent.ForkBundle, bdir, arm
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(t.TimeoutSec)*time.Second)
 	defer cancel()
-	// The low-effort arm is the reasoning-governor probe: same frozen state,
-	// no nudge, whole-continuation reduced thinking via the provider knob.
+	// Governor arms: low-effort cuts the whole continuation's thinking via
+	// the provider knob; act-first injects the shaping line instead. Both use
+	// the same frozen state as control.
 	runCfg, forkEnvArm := cfg, arm
-	if arm == "low-effort" {
+	switch arm {
+	case "low-effort":
 		runCfg.effort = "low"
 		forkEnvArm = "control"
+	case "act-first":
+		forkEnvArm = "actfirst"
 	}
 	args := buildRunTaskArgs(runCfg, filepath.Join(work, ".run-metrics.json"), trajPath, t.MaxSteps, b.Input)
 	cmd := exec.CommandContext(ctx, cfg.bin, args...)

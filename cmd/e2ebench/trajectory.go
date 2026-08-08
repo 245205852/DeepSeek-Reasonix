@@ -155,6 +155,7 @@ type trajectoryRecord struct {
 		BlindMutations int  `json:"blind_mutations"`
 		EBMEligible    bool `json:"ebm_eligible"`
 		EBMFired       bool `json:"ebm_fired"`
+		LocalExecSeen  bool `json:"local_exec_seen"`
 	} `json:"outcome_progress"`
 	DelegationAdmission *struct {
 		Tool    string `json:"tool"`
