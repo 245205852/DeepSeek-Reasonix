@@ -173,3 +173,10 @@ func (c *coalescer) RecordOutcomeProgress(sample evidence.OutcomeSample) {
 	c.drainAndUnlock()
 	RecordOutcomeProgress(c.inner, sample)
 }
+
+func (c *coalescer) RecordDelegationAdmission(a DelegationAdmissionAudit) {
+	c.mu.Lock()
+	c.enqueueFlushLocked()
+	c.drainAndUnlock()
+	RecordDelegationAdmission(c.inner, a)
+}

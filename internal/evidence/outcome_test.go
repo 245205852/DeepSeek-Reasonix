@@ -76,3 +76,41 @@ func TestOutcomeTrackerDelegationAndRepeatsAreExplorationAtBest(t *testing.T) {
 		t.Fatalf("nil tracker sample = %+v, want zero", got)
 	}
 }
+
+func TestOutcomeTrackerVerificationDebtLifecycle(t *testing.T) {
+	tr := NewOutcomeTracker()
+
+	// A mutation opens debt; silent rounds age it.
+	write := ReceiptFromToolCall("write_file", json.RawMessage(`{"path":"pkg/repro.py","content":"x"}`), true, false)
+	if s := tr.ScoreRound([]Receipt{write}); s.DebtAge != 1 || s.Discriminating != 0 {
+		t.Fatalf("mutation round = %+v, want debt age 1", s)
+	}
+	read := readReceipt("other.go")
+	read.OutputBytes = 5
+	if s := tr.ScoreRound([]Receipt{read}); s.DebtAge != 2 {
+		t.Fatalf("silent round = %+v, want debt age 2", s)
+	}
+	// An unrelated command does not discriminate.
+	if s := tr.ScoreRound([]Receipt{bashReceipt("ls -la", true)}); s.DebtAge != 3 || s.Discriminating != 0 {
+		t.Fatalf("unrelated command = %+v, want debt age 3", s)
+	}
+	// Reading the mutated file is inspection, not discrimination: debt ages on.
+	if s := tr.ScoreRound([]Receipt{bashReceipt("cat pkg/repro.py", true)}); s.Discriminating != 0 || s.DebtAge != 4 {
+		t.Fatalf("read-only inspection = %+v, want no discrimination, debt age 4", s)
+	}
+	// A second mutation raises the blind count; the counter tracks mutations,
+	// not rounds.
+	if s := tr.ScoreRound([]Receipt{ReceiptFromToolCall("write_file", json.RawMessage(`{"path":"pkg/b.py","content":"y"}`), true, false)}); s.BlindMutations != 2 {
+		t.Fatalf("second mutation = %+v, want blind 2", s)
+	}
+	// Running the mutated file is a discriminating observation even though it
+	// is not delivery verification: debt and the blind count settle.
+	if s := tr.ScoreRound([]Receipt{bashReceipt("python3 pkg/repro.py", false)}); s.Discriminating != 1 || s.DebtAge != 0 || s.BlindMutations != 0 {
+		t.Fatalf("repro run = %+v, want discriminating 1, debt and blind settled", s)
+	}
+	// Debt stays settled until the next mutation; delivery verification also
+	// counts as discriminating without any mutated-path match.
+	if s := tr.ScoreRound([]Receipt{bashReceipt("go test ./pkg", true)}); s.Discriminating != 1 || s.DebtAge != 0 {
+		t.Fatalf("verification round = %+v, want discriminating 1, no debt", s)
+	}
+}

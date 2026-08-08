@@ -1489,6 +1489,12 @@ function statusBarItemLabel(id: StatusBarItemId, t: ReturnType<typeof useT>): st
       return t("status.sessionTokensLabel");
     case "turn_tokens":
       return t("status.turnTokensLabel");
+    case "turn_tps":
+      return t("status.tpsLabel");
+    case "turn_output_tokens":
+      return t("status.outputTokensLabel");
+    case "turn_cache_tokens":
+      return t("status.cacheTokensLabel");
     case "turn_cost":
       return t("status.turnCostLabel");
     case "session_turns":

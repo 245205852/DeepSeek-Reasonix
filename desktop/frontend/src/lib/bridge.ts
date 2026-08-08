@@ -340,6 +340,7 @@ export interface AppBindings {
   UpdateMCPServer(name: string, input: MCPServerInput): Promise<void>;
   RemoveMCPServer(name: string): Promise<void>;
   AuthorizeAndConnectMCPServer(name: string): Promise<void>;
+  AuthenticateMCPServer(name: string): Promise<void>;
   ReconnectMCPServer(name: string): Promise<void>;
   ClearMCPServerAuthentication(name: string): Promise<void>;
   PickSkillFolder(): Promise<string>;
@@ -932,7 +933,7 @@ function bridgeBreadcrumb(method: string): string {
   if (/^(SaveProvider|SaveProviderModelCatalogs|AddOfficialProviderAccess|AddProviderPresetAccess|ResetProviderPresetAccess|RemoveProviderAccess|DeleteProvider|SaveProviderKey|SetProviderKey|ClearProviderKey|FetchProviderModels|FetchAllProviderModels|ConnectKey)/.test(method))
     return `provider ${method}`;
   if (/^(CheckUpdate|ApplyUpdateRequest|OpenDownloadPage|OpenUserConfigPath|ReloadUserConfig)/.test(method)) return `update ${method}`;
-  if (/^(AddMCPServer|InstallMCPServer|UpdateMCPServer|RemoveMCPServer|AuthorizeAndConnectMCPServer|ReconnectMCPServer|ClearMCPServerAuthentication|SetMCPServer)/.test(method))
+  if (/^(AddMCPServer|InstallMCPServer|UpdateMCPServer|RemoveMCPServer|AuthorizeAndConnectMCPServer|AuthenticateMCPServer|ReconnectMCPServer|ClearMCPServerAuthentication|SetMCPServer)/.test(method))
     return `mcp ${method}`;
   if (/^(AddSkillPath|RemoveSkillPath|SetSkillPathEnabled|RefreshSkills|SetSkillEnabled|SetSkillImplicitInvocation|AcceptSkillSuggestion|AvailableSubagentTools|CreateSubagentProfile|UpdateSubagentProfile|DeleteSubagentProfile|SetSubagentProfileModel|SetSubagentProfileEffort|TrySubagentProfile|CancelTrySubagentProfile)/.test(method))
     return `skill ${method}`;
@@ -3540,18 +3541,14 @@ function makeMockApp(): AppBindings {
       capServers = capServers.filter((s) => s.name !== name);
     },
     async AuthorizeAndConnectMCPServer(name: string) {
-      capServers = capServers.map((s) =>
-        s.name === name
-          ? {
-              ...s,
-              status: "connected",
-              runtimeState: "ready",
-              tools: s.tools || 4,
-              error: undefined,
-              requiresLaunchApproval: false,
-            }
-          : s,
-      );
+      capServers = capServers.map((s) => s.name === name
+        ? { ...s, status: "connected", runtimeState: "ready", tools: s.tools || 4, error: undefined, requiresLaunchApproval: false }
+        : s);
+    },
+    async AuthenticateMCPServer(name: string) {
+      capServers = capServers.map((s) => s.name === name
+        ? { ...s, status: "connected", runtimeState: "ready", tools: s.tools || 4, error: undefined, authStatus: "none", authUrl: undefined }
+        : s);
     },
     async ReconnectMCPServer(name: string) {
       capServers = capServers.map((s) =>

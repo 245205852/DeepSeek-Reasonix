@@ -1,6 +1,12 @@
 package evidence
 
-import "strings"
+import (
+	"path"
+	"sort"
+	"strings"
+
+	"reasonix/internal/shellsafe"
+)
 
 // OutcomeSample decomposes one tool round's receipts by outcome: information
 // gathered (Exploration), verification attempts run, and verification-command
@@ -16,31 +22,91 @@ type OutcomeSample struct {
 	// LegacyGain is the live novelty scorer's verdict on the same receipts, so
 	// offline analysis can compare the two policies without replaying.
 	LegacyGain int
+	// Discriminating counts observations able to falsify the working
+	// hypothesis: verification commands, or commands exercising a mutated
+	// file — deliberately broader than delivery verification (repro scripts).
+	Discriminating int
+	// DebtAge counts consecutive rounds carrying an unverified mutation with
+	// no discriminating observation; 0 while no verification debt is open.
+	DebtAge int
+	// BlindMutations counts mutations since the last discriminating
+	// observation — the EBM policy's trigger input.
+	BlindMutations int
+	// EBMEligible/EBMFired mark the Evidence-Before-More-Mutation trigger
+	// holding and its nudge firing; the agent stamps both so every arm —
+	// baseline included — carries the eligibility shadow.
+	EBMEligible bool
+	EBMFired    bool
+	// LocalExecSeen reports whether this turn has executed any local
+	// interpreter/test command yet — the self-check-propensity observable
+	// (studied set: python/node/go run/pytest; ecosystem bias documented).
+	LocalExecSeen bool
 }
 
 // OutcomeTracker is the shadow counterpart of ProgressTracker: same per-round
 // receipts, scored by outcome instead of novelty. It never influences guard
 // behavior — samples exist only for trajectory recording and offline analysis.
 type OutcomeTracker struct {
-	legacy     *ProgressTracker
-	round      int
-	readPaths  map[string]bool
-	commands   map[string]bool
-	failures   map[string]bool
-	actions    map[string]bool
-	verifySeen map[string]bool
-	verifyPass map[string]bool
+	legacy       *ProgressTracker
+	round        int
+	readPaths    map[string]bool
+	commands     map[string]bool
+	failures     map[string]bool
+	actions      map[string]bool
+	verifySeen   map[string]bool
+	verifyPass   map[string]bool
+	mutatedBases map[string]bool
+	debt         bool
+	debtAge      int
+	blind        int
+	localExec    bool
+}
+
+// OutcomeSeed is the fork-portable slice of tracker state: what a
+// counterfactual continuation must inherit for its shadow to stay continuous.
+type OutcomeSeed struct {
+	MutatedBases   []string `json:"mutated_bases,omitempty"`
+	DebtAge        int      `json:"debt_age"`
+	BlindMutations int      `json:"blind_mutations"`
+	LocalExecSeen  bool     `json:"local_exec_seen"`
+}
+
+// ForkSeed exports the state a counterfactual fork must carry so post-fork
+// discriminating detection stays continuous with the original run.
+func (t *OutcomeTracker) ForkSeed() OutcomeSeed {
+	seed := OutcomeSeed{DebtAge: t.debtAge, BlindMutations: t.blind, LocalExecSeen: t.localExec}
+	for base := range t.mutatedBases {
+		seed.MutatedBases = append(seed.MutatedBases, base)
+	}
+	sort.Strings(seed.MutatedBases)
+	return seed
+}
+
+// RestoreOutcomeTracker rebuilds a tracker from a fork seed. Novelty maps
+// start empty — post-fork exploration novelty is intentionally relative to the
+// fork point, while debt state continues from the original trajectory.
+func RestoreOutcomeTracker(seed OutcomeSeed) *OutcomeTracker {
+	t := NewOutcomeTracker()
+	for _, base := range seed.MutatedBases {
+		t.mutatedBases[base] = true
+	}
+	t.debtAge = seed.DebtAge
+	t.blind = seed.BlindMutations
+	t.debt = seed.DebtAge > 0 || seed.BlindMutations > 0
+	t.localExec = seed.LocalExecSeen
+	return t
 }
 
 func NewOutcomeTracker() *OutcomeTracker {
 	return &OutcomeTracker{
-		legacy:     NewProgressTracker(),
-		readPaths:  map[string]bool{},
-		commands:   map[string]bool{},
-		failures:   map[string]bool{},
-		actions:    map[string]bool{},
-		verifySeen: map[string]bool{},
-		verifyPass: map[string]bool{},
+		legacy:       NewProgressTracker(),
+		readPaths:    map[string]bool{},
+		commands:     map[string]bool{},
+		failures:     map[string]bool{},
+		actions:      map[string]bool{},
+		verifySeen:   map[string]bool{},
+		verifyPass:   map[string]bool{},
+		mutatedBases: map[string]bool{},
 	}
 }
 
@@ -56,7 +122,61 @@ func (t *OutcomeTracker) ScoreRound(receipts []Receipt) OutcomeSample {
 		t.scoreReceipt(r, &s)
 	}
 	s.LegacyGain = t.legacy.ScoreRound(receipts)
+	// Verification debt: a discriminating observation settles it; otherwise a
+	// mutation opens it and every silent round ages it, mutation round included.
+	if s.Discriminating > 0 {
+		t.debt, t.debtAge, t.blind = false, 0, 0
+	} else {
+		if s.Churn > 0 {
+			t.debt = true
+			t.blind += s.Churn
+		}
+		if t.debt {
+			t.debtAge++
+		}
+	}
+	s.DebtAge = t.debtAge
+	s.BlindMutations = t.blind
+	s.LocalExecSeen = t.localExec
 	return s
+}
+
+// localExecCommand matches the exact command families the affordance study
+// validated. Deliberately narrow and Python-ecosystem biased for now;
+// generalizing to Local Discriminating Execution needs cross-language
+// replication first.
+func localExecCommand(command string) bool {
+	for _, marker := range []string{"python", "node ", "go run", "pytest", "py.test"} {
+		if strings.Contains(command, marker) {
+			return true
+		}
+	}
+	return false
+}
+
+// noteMutatedPaths remembers mutated file basenames so a later command that
+// mentions one (running a repro script, a targeted test file) reads as a
+// discriminating observation even when it is not delivery verification.
+func (t *OutcomeTracker) noteMutatedPaths(paths []string) {
+	for _, p := range paths {
+		if base := path.Base(strings.ReplaceAll(p, "\\", "/")); len(base) >= 3 {
+			t.mutatedBases[base] = true
+		}
+	}
+}
+
+func (t *OutcomeTracker) commandExercisesMutation(command string) bool {
+	// Inspecting a mutated file (cat/grep/head) cannot falsify anything; only
+	// a command that can execute it discriminates.
+	if _, _, readOnly := shellsafe.CommandIsReadOnly(command); readOnly {
+		return false
+	}
+	for base := range t.mutatedBases {
+		if strings.Contains(command, base) {
+			return true
+		}
+	}
+	return false
 }
 
 func (t *OutcomeTracker) scoreReceipt(r Receipt, s *OutcomeSample) {
@@ -69,6 +189,7 @@ func (t *OutcomeTracker) scoreReceipt(r Receipt, s *OutcomeSample) {
 		// A mutation is a state transition, not proof of progress: it counts
 		// as churn until a verification transition vouches for it.
 		s.Churn++
+		t.noteMutatedPaths(r.Paths)
 	case r.Success && (r.ToolName == "task" || r.ToolName == "parallel_tasks" || r.ToolName == "fleet"):
 		// A delegation return is new information at best — never objective
 		// progress on its own.
@@ -95,8 +216,15 @@ func (t *OutcomeTracker) scoreReceipt(r Receipt, s *OutcomeSample) {
 func (t *OutcomeTracker) scoreCommand(command string, r Receipt, s *OutcomeSample) {
 	if r.Success && (r.Mutation || r.Write) {
 		s.Churn++
+		t.noteMutatedPaths(r.Paths)
 	}
 	verify := IsDeliveryVerificationCommand(command)
+	if verify || t.commandExercisesMutation(command) {
+		s.Discriminating++
+	}
+	if localExecCommand(command) {
+		t.localExec = true
+	}
 	if verify {
 		s.Verification++
 		seen, wasPass := t.verifySeen[command], t.verifyPass[command]
