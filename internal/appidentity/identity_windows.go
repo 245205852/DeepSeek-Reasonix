@@ -59,9 +59,9 @@ var (
 
 	procCoCreateInstance                        = ole32.NewProc("CoCreateInstance")
 	procCoInitializeEx                          = ole32.NewProc("CoInitializeEx")
-	procCoTaskMemAlloc                          = ole32.NewProc("CoTaskMemAlloc")
 	procCoUninitialize                          = ole32.NewProc("CoUninitialize")
 	procPropVariantClear                        = ole32.NewProc("PropVariantClear")
+	procPropVariantCopy                         = ole32.NewProc("PropVariantCopy")
 	procSetCurrentProcessExplicitAppUserModelID = shell32.NewProc("SetCurrentProcessExplicitAppUserModelID")
 	procSHChangeNotify                          = shell32.NewProc("SHChangeNotify")
 
@@ -405,20 +405,22 @@ func (s *loadedShortcut) appUserModelID() (string, error) {
 }
 
 func (s *loadedShortcut) setAppUserModelID(id string) error {
-	idUTF16, err := windows.UTF16FromString(id)
+	idPtr, err := windows.UTF16PtrFromString(id)
 	if err != nil {
 		return err
 	}
-	allocationSize := uintptr(len(idUTF16)) * unsafe.Sizeof(idUTF16[0])
-	allocated, _, _ := procCoTaskMemAlloc.Call(allocationSize)
-	if allocated == 0 {
-		return fmt.Errorf("CoTaskMemAlloc(%d) returned nil", allocationSize)
+	source := propVariant{VariantType: vtLPWSTR, Value: idPtr}
+	var value propVariant
+	hr, _, _ := procPropVariantCopy.Call(
+		uintptr(unsafe.Pointer(&value)),
+		uintptr(unsafe.Pointer(&source)),
+	)
+	runtime.KeepAlive(idPtr)
+	if err := checkHRESULT("PropVariantCopy", hr); err != nil {
+		return err
 	}
-	idPtr := (*uint16)(unsafe.Pointer(allocated))
-	copy(unsafe.Slice(idPtr, len(idUTF16)), idUTF16)
-	value := propVariant{VariantType: vtLPWSTR, Value: idPtr}
 	defer clearPropVariant(&value)
-	hr, _, _ := syscall.SyscallN(
+	hr, _, _ = syscall.SyscallN(
 		s.store.VTable.SetValue,
 		uintptr(unsafe.Pointer(s.store)),
 		uintptr(unsafe.Pointer(&pkeyAppUserModelID)),
