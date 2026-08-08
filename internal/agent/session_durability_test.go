@@ -10,6 +10,7 @@ import (
 
 	"reasonix/internal/fileutil"
 	"reasonix/internal/provider"
+	"reasonix/internal/store"
 )
 
 // Crash-consistency model suite: a crash is injected at every durable
@@ -311,6 +312,77 @@ func TestDurabilityStaleWriterCannotClobber(t *testing.T) {
 	}
 }
 
+func TestDurabilityBareSaveBootstrapsWAL(t *testing.T) {
+	d := newDurabilityRun(t)
+	s := NewSession("system prompt")
+	s.Add(provider.Message{Role: provider.RoleUser, Content: "bare save"})
+	if err := s.Save(d.path); err != nil {
+		t.Fatalf("bare Save: %v", err)
+	}
+	probe, err := probeSessionEventLog(d.path)
+	if err != nil {
+		t.Fatalf("probe WAL: %v", err)
+	}
+	if !probe.native || probe.size == 0 {
+		t.Fatalf("bare Save did not bootstrap a native WAL: %+v", probe)
+	}
+	loaded, err := LoadSession(d.path)
+	if err != nil {
+		t.Fatalf("reload bare Save: %v", err)
+	}
+	if !messagesEqualForStorageList(loaded.Messages, s.Messages) {
+		t.Fatalf("bare Save round trip changed transcript: got %d want %d messages", len(loaded.Messages), len(s.Messages))
+	}
+	if _, err := os.Stat(store.SessionEventLog(d.path)); err != nil {
+		t.Fatalf("bare Save WAL missing: %v", err)
+	}
+}
+
+func TestDurabilityCrossWriterIDCannotClobber(t *testing.T) {
+	originalWriterID := sessionWriterID
+	t.Cleanup(func() { sessionWriterID = originalWriterID })
+
+	d := newDurabilityRun(t)
+	sessionWriterID = "writer-a"
+	a := NewSession("system prompt")
+	a.Add(provider.Message{Role: provider.RoleUser, Content: "base"})
+	if err := a.SaveSnapshot(d.path); err != nil {
+		t.Fatalf("writer A seed save: %v", err)
+	}
+	a, err := LoadSession(d.path)
+	if err != nil {
+		t.Fatalf("writer A load: %v", err)
+	}
+
+	sessionWriterID = "writer-b"
+	b, err := LoadSession(d.path)
+	if err != nil {
+		t.Fatalf("writer B load: %v", err)
+	}
+	b.Add(provider.Message{Role: provider.RoleAssistant, Content: "newer writer B"})
+	if err := b.SaveSnapshot(d.path); err != nil {
+		t.Fatalf("writer B save: %v", err)
+	}
+	winner := b.Snapshot()
+
+	sessionWriterID = "writer-a"
+	a.Add(provider.Message{Role: provider.RoleAssistant, Content: "stale writer A"})
+	err = a.SaveSnapshot(d.path)
+	if err == nil {
+		t.Fatal("cross-writer stale save unexpectedly succeeded")
+	}
+	if _, ok := SnapshotConflictKind(err); !ok {
+		t.Fatalf("cross-writer stale save error = %v, want snapshot conflict", err)
+	}
+	loaded, err := LoadSession(d.path)
+	if err != nil {
+		t.Fatalf("reload cross-writer winner: %v", err)
+	}
+	if !messagesEqualForStorageList(loaded.Messages, winner) {
+		t.Fatalf("cross-writer stale save clobbered winner: got %d want %d messages", len(loaded.Messages), len(winner))
+	}
+}
+
 func TestDurabilityStaleCompactRewriteCannotClobber(t *testing.T) {
 	d := newDurabilityRun(t)
 	_, _ = d.buildSaved(1)
@@ -406,7 +478,6 @@ func TestDurabilityFuzzCrashConsistency(t *testing.T) {
 		t.Skip("fuzz sweep skipped in -short")
 	}
 	for seed := int64(1); seed <= 20; seed++ {
-		seed := seed
 		t.Run(fmt.Sprintf("seed%02d", seed), func(t *testing.T) {
 			rng := rand.New(rand.NewSource(seed))
 			steps := 2 + rng.Intn(5)
@@ -446,7 +517,7 @@ func TestDurabilityFuzzCrashConsistency(t *testing.T) {
 			// Dry run to count the crash step's boundaries.
 			probe := newDurabilityRun(t)
 			ps := NewSession("system prompt")
-			for i := 0; i < crashStep-1; i++ {
+			for i := range crashStep - 1 {
 				apply(ps, i)
 				if err := save(ps, i, probe.path); err != nil {
 					t.Fatalf("probe step %d: %v", i, err)
@@ -461,7 +532,7 @@ func TestDurabilityFuzzCrashConsistency(t *testing.T) {
 
 			d := newDurabilityRun(t)
 			s := NewSession("system prompt")
-			for i := 0; i < crashStep-1; i++ {
+			for i := range crashStep - 1 {
 				apply(s, i)
 				if err := save(s, i, d.path); err != nil {
 					t.Fatalf("step %d: %v", i, err)

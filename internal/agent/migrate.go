@@ -654,40 +654,6 @@ func dirExists(path string) bool {
 	return err == nil && info.IsDir()
 }
 
-// moveFlatImport re-homes a session the flat import left in the global dir.
-// The legacy event log's mtime was stamped onto the imported file, so a match
-// identifies it; a same-named native v1+ session never matches and stays put.
-func moveFlatImport(oldPath, newPath string, srcInfo os.FileInfo) bool {
-	if srcInfo == nil {
-		return false
-	}
-	info, err := os.Stat(oldPath)
-	if err != nil {
-		return false
-	}
-	d := info.ModTime().Sub(srcInfo.ModTime())
-	if d < -2*time.Second || d > 2*time.Second {
-		return false
-	}
-	if err := os.MkdirAll(filepath.Dir(newPath), 0o755); err != nil {
-		return false
-	}
-	if err := linkFileNoReplace(oldPath, newPath); err != nil {
-		if errors.Is(err, os.ErrExist) {
-			return false
-		}
-		// The source and routed destination may be on different volumes. The
-		// transform path keeps the no-clobber guarantee in that case too.
-		if err := transformAndCopyJsonl(oldPath, newPath); err != nil {
-			return false
-		}
-	}
-	if err := os.Remove(oldPath); err != nil {
-		return false
-	}
-	return true
-}
-
 // publishFileNoReplace atomically publishes a completed sibling temp file
 // without replacing a destination another startup/import writer created.
 // The temp and destination share a directory, so a hard link is atomic and
