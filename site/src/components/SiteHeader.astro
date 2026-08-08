@@ -32,7 +32,10 @@ const items: Array<{
 <header class:list={['nav', { scrolled }]}>
   <div class="nav-inner">
     <a class="brand" href={`${base}/`}>
-      <img src={`${base}/logo.svg`} alt="Reasonix logo" />
+      <picture class="brand-picture">
+        <source media="(max-width: 400px)" srcset={`${base}/favicon.svg`} />
+        <img src={`${base}/logo.svg`} alt="Reasonix logo" />
+      </picture>
     </a>
     <nav class="nav-links" aria-label="Primary navigation">
       {items.map((item) => (

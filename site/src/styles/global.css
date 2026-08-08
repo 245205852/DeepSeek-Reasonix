@@ -103,6 +103,7 @@ body[data-lang="zh"] .hero h1 { font-size: clamp(38px, 4.6vw, 62px); line-height
   height: 68px; max-width: 1480px; margin: 0 auto; padding: 0 40px;
 }
 .brand { display: flex; flex: none; align-items: center; gap: 10px; text-decoration: none; color: var(--ink); }
+.brand-picture { display: block; flex: none; }
 .brand img { width: 28px; height: 28px; border-radius: 8px; display: block; }
 .nav .brand img { width: 90px; height: auto; border-radius: 0; }
 .brand span { font-size: 17px; font-weight: 600; letter-spacing: -0.01em; }
@@ -312,6 +313,13 @@ body[data-lang="zh"] .hero h1 { font-size: clamp(38px, 4.6vw, 62px); line-height
   font-family: var(--font-mono);
   font-size: 13px;
   color: var(--ink);
+  white-space: nowrap;
+}
+
+.hero-install .install-command {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
   white-space: nowrap;
 }
 
@@ -1172,7 +1180,7 @@ footer { background: var(--bg); border-top: 1px solid var(--line); margin-top: 0
 @media (max-width: 640px) {
   .nav-inner { padding: 0 16px; gap: 10px; }
   .nav-sign-in { display: none; }
-  
+  .nav .brand img { width: 64px; }
   .nav .brand span { display: none; }
   .theme-switch button { padding: 6px 9px; }
   .docs-path-grid { grid-template-columns: 1fr; }
@@ -1222,12 +1230,17 @@ footer { background: var(--bg); border-top: 1px solid var(--line); margin-top: 0
   }
 }
 
+@media (max-width: 400px) {
+  .nav .brand img { width: 28px; height: 28px; border-radius: 8px; }
+}
+
 @media (max-width: 360px) {
-  
   .nav-inner { padding: 0 12px; gap: 6px; }
   .lang-switch button { padding: 6px 8px; }
   .theme-switch button { padding: 6px 7px; }
   .nav .btn { padding: 9px 14px; }
+  .hero-install .install { gap: 6px; padding-inline: 6px; }
+  .hero-install .install button { padding-inline: 10px; }
 }
 
 
@@ -1345,25 +1358,6 @@ body, .btn, .lang-switch button, .theme-switch button,
   .foot-inner .brand img {
     width: 72px;
   }
-}
-
-
-
-.sec-head.split .kicker {
-  display: none;
-}
-
-
-.sec-head.split {
-  align-items: start;
-}
-
-
-section.keep-kicker .sec-head.split .kicker {
-  display: block;
-}
-section.keep-kicker .sec-head.split {
-  align-items: end;
 }
 
 
