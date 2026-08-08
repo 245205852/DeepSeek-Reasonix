@@ -5,7 +5,8 @@ import React, { act } from "react";
 import { createRoot } from "react-dom/client";
 import type { AppBindings } from "../lib/bridge";
 import { useController } from "../lib/useController";
-import type { BalanceInfo, CheckpointMeta, ContextInfo, EffortInfo, HistoryMessage, HistoryPage, JobView, Meta, TabMeta, WireEvent } from "../lib/types";
+import { historySliceFromMessages } from "./mockHistorySlice";
+import type { BalanceInfo, CheckpointMeta, ContextInfo, EffortInfo, HistoryMessage, HistorySlice, HistorySliceRequest, JobView, Meta, TabMeta, TopicActivationEvent, TopicActivationRequest, WireEvent } from "../lib/types";
 
 let passed = 0;
 let failed = 0;
@@ -148,7 +149,7 @@ const historyB = deferred<HistoryMessage[]>();
 const historyD = deferred<HistoryMessage[]>();
 let metaH = deferred<Meta>();
 let historyH = deferred<HistoryMessage[]>();
-let historyLOlder = deferred<HistoryPage>();
+let historyLOlder = deferred<HistorySlice>();
 const contextDGate = deferred<ContextInfo>();
 const setActiveBGate = deferred<void>();
 const setActiveEGate = deferred<void>();
@@ -188,6 +189,7 @@ const runningTabs = new Set<string>();
 const tabsById = new Map([tabA, tabB, tabC, tabD, tabE, tabF, tabG, tabH, tabI, tabK, tabL, tabM, tabN].map((tab) => [tab.id, tab]));
 const eventHandlers: Array<(e: WireEvent) => void> = [];
 const readyHandlers: Array<(tabId?: string) => void> = [];
+const topicActivationHandlers: Array<(e: TopicActivationEvent) => void> = [];
 
 function currentTabs(): TabMeta[] {
   return Array.from(tabsById.values()).map((tab) => {
@@ -200,6 +202,7 @@ window.runtime = {
   EventsOn: (name: string, cb: (...data: unknown[]) => void) => {
     if (name === "agent:event") eventHandlers.push(cb as (e: WireEvent) => void);
     if (name === "agent:ready") readyHandlers.push(cb as (tabId?: string) => void);
+    if (name === "topic:activation") topicActivationHandlers.push(cb as (e: TopicActivationEvent) => void);
     return () => {};
   },
   BrowserOpenURL: () => {},
@@ -254,57 +257,40 @@ window.go = {
         return [userMessage("cached A")];
       },
       HistoryPageForTab: async (tabID: string) => {
+        const messages = await window.go.main.App.HistoryForTab(tabID);
+        const tab = tabsById.get(tabID);
+        return { messages, startTurn: 0, endTurn: messages.filter((message) => message.role === "user").length, totalTurns: messages.filter((message) => message.role === "user").length, hasOlder: false, revision: tab?.sessionRevision, digest: tab?.sessionDigest };
+      },
+      HistorySliceForTab: async (tabID: string, req: HistorySliceRequest) => {
         if (tabID === "tab-n") {
           historyNCalls += 1;
-          return {
-            messages: [userMessage(historyNCalls === 1 ? "stale N v1" : "history N v2")],
-            startTurn: 0,
-            endTurn: 1,
-            totalTurns: 1,
-            hasOlder: false,
-            revision: historyNCalls === 1 ? 1 : 2,
-            digest: historyNCalls === 1 ? "digest-n-v1" : "digest-n-v2",
-          };
+          const revision = historyNCalls === 1 ? 1 : 2;
+          const digest = historyNCalls === 1 ? "digest-n-v1" : "digest-n-v2";
+          return historySliceFromMessages(tabID, [userMessage(historyNCalls === 1 ? "stale N v1" : "history N v2")], req, { revision, digest });
         }
         if (tabID === "tab-m") {
           historyMCalls += 1;
-          if (historyMCalls === 1) {
-            return {
-              messages: [userMessage("stale M v1")],
-              startTurn: 0,
-              endTurn: 1,
-              totalTurns: 1,
-              hasOlder: false,
-              revision: 1,
-              digest: "digest-m-v1",
-            };
-          }
-          return {
-            messages: [userMessage("history M v2")],
-            startTurn: 0,
-            endTurn: 1,
-            totalTurns: 1,
-            hasOlder: false,
-            revision: 2,
-            digest: "digest-m-v2",
-          };
+          const revision = historyMCalls === 1 ? 1 : 2;
+          const digest = historyMCalls === 1 ? "digest-m-v1" : "digest-m-v2";
+          return historySliceFromMessages(tabID, [userMessage(historyMCalls === 1 ? "stale M v1" : "history M v2")], req, { revision, digest });
         }
         if (tabID === "tab-l") {
           historyLCalls += 1;
-          if (historyLCalls > 1) return historyLOlder.promise;
+          if (req.cursor) return historyLOlder.promise;
+          const latest = historySliceFromMessages(tabID, [userMessage("newest L")], req, { revision: 1, digest: "digest-l-v1" });
           return {
-            messages: [userMessage("newest L")],
-            startTurn: 3,
-            endTurn: 4,
-            totalTurns: 4,
+            ...latest,
+            entries: latest.entries.map((entry) => ({ ...entry, entryId: "smock-tab-l:r1:m3:o0", order: 3, turn: 4 })),
             hasOlder: true,
-            revision: 1,
-            digest: "digest-l-v1",
+            totalTurns: 4,
+            startTurn: 4,
+            endTurn: 4,
+            nextCursor: btoa(JSON.stringify({ v: 1, before: 3 })),
           };
         }
         const messages = await window.go.main.App.HistoryForTab(tabID);
         const tab = tabsById.get(tabID);
-        return { messages, startTurn: 0, endTurn: messages.filter((message) => message.role === "user").length, totalTurns: messages.filter((message) => message.role === "user").length, hasOlder: false, revision: tab?.sessionRevision, digest: tab?.sessionDigest };
+        return historySliceFromMessages(tabID, messages, req, { revision: tab?.sessionRevision, digest: tab?.sessionDigest });
       },
       HistoryCheckpointTurnsForTab: async () => [],
       OpenProjectTab: async (workspaceRoot: string, topicId: string) => {
@@ -316,6 +302,16 @@ window.go = {
         const target = Array.from(tabsById.values()).find((tab) => tab.workspaceRoot === workspaceRoot && tab.topicId === topicId) ?? tabG;
         backendActiveId = target.id;
         return { ...target, active: true };
+      },
+      StartTopicActivation: async (req: TopicActivationRequest) => {
+        const target = Array.from(tabsById.values()).find((tab) => tab.workspaceRoot === req.workspaceRoot && tab.topicId === req.topicId) ?? tabG;
+        backendActiveId = target.id;
+        const requestId = req.requestId || "mock-activation";
+        window.setTimeout(() => {
+          for (const handler of topicActivationHandlers) handler({ requestId, tabId: target.id, phase: "starting" });
+          for (const handler of topicActivationHandlers) handler({ requestId, tabId: target.id, phase: "ready" });
+        }, 0);
+        return { requestId, tabId: target.id, meta: { ...target, active: true } };
       },
       NewSession: async () => {
         newSessionCalls += 1;
@@ -896,20 +892,19 @@ await act(async () => {
   await flushPromises();
 });
 await waitFor("tab-l metadata advances", () => controller?.state.meta?.sessionRevision === 2);
-historyLOlder = deferred<HistoryPage>();
+historyLOlder = deferred<HistorySlice>();
 let olderLoad: Promise<void> | undefined;
 await act(async () => {
   olderLoad = controller?.loadOlderHistory("tab-l");
   await flushPromises();
 });
 await waitFor("tab-l older page request", () => historyLCalls === 2);
-historyLOlder.resolve({
-  messages: [userMessage("stale older L")],
-  startTurn: 0,
-  endTurn: 3,
-  totalTurns: 4,
-  hasOlder: false,
-});
+historyLOlder.resolve(historySliceFromMessages(
+  "tab-l",
+  [userMessage("stale older L")],
+  { cursor: "", turns: 12 },
+  { revision: 1, digest: "digest-l-v1" },
+));
 await act(async () => {
   await olderLoad;
   await flushPromises();

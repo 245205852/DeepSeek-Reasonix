@@ -1,15 +1,15 @@
 {
   "limits": {
-    "banner": 0,
+    "banner": 15,
     "commented-code": 0,
-    "complexity": 2064,
-    "essay": 4028,
-    "file-size": 109581,
-    "function-size": 9150,
+    "complexity": 2080,
+    "essay": 4148,
+    "file-size": 111355,
+    "function-size": 9179,
     "layering": 1,
     "marker": 0,
-    "narrative": 61,
-    "test-file-size": 68704
+    "narrative": 64,
+    "test-file-size": 69140
   },
   "files": {
     "cmd/e2ebench/main.go": {
@@ -26,17 +26,17 @@
       "essay": 19
     },
     "desktop/app.go": {
-      "complexity": 64,
-      "essay": 90,
-      "file-size": 11729,
-      "function-size": 388
+      "complexity": 63,
+      "essay": 96,
+      "file-size": 11842,
+      "function-size": 381
     },
     "desktop/app_autosave_test.go": {
       "essay": 1
     },
     "desktop/app_test.go": {
       "essay": 2,
-      "test-file-size": 10201
+      "test-file-size": 10216
     },
     "desktop/bot_bridge.go": {
       "essay": 11
@@ -84,7 +84,7 @@
       "essay": 2
     },
     "desktop/frontend/src/App.tsx": {
-      "file-size": 4765
+      "file-size": 4760
     },
     "desktop/frontend/src/__tests__/app-chrome-tabs.test.ts": {
       "test-file-size": 19
@@ -108,13 +108,13 @@
       "test-file-size": 352
     },
     "desktop/frontend/src/__tests__/tab-switch-hydration.test.tsx": {
-      "test-file-size": 155
+      "test-file-size": 150
     },
     "desktop/frontend/src/__tests__/workspace-changes-errors.test.tsx": {
       "test-file-size": 106
     },
     "desktop/frontend/src/components/ApprovalModal.tsx": {
-      "file-size": 255
+      "file-size": 261
     },
     "desktop/frontend/src/components/CapabilitiesPanel.tsx": {
       "file-size": 2658
@@ -126,7 +126,7 @@
       "file-size": 1088
     },
     "desktop/frontend/src/components/Message.tsx": {
-      "file-size": 181
+      "file-size": 185
     },
     "desktop/frontend/src/components/ProjectTree.tsx": {
       "file-size": 1587
@@ -147,7 +147,7 @@
       "file-size": 158
     },
     "desktop/frontend/src/components/Transcript.tsx": {
-      "file-size": 992
+      "file-size": 443
     },
     "desktop/frontend/src/components/UsageStatsPanel.tsx": {
       "file-size": 276
@@ -159,21 +159,36 @@
       "file-size": 415
     },
     "desktop/frontend/src/lib/bridge.ts": {
-      "file-size": 4469
+      "file-size": 4726
     },
     "desktop/frontend/src/lib/crash.ts": {
-      "file-size": 179
+      "file-size": 225
+    },
+    "desktop/frontend/src/lib/transcriptStore.ts": {
+      "file-size": 307
     },
     "desktop/frontend/src/lib/types.ts": {
-      "file-size": 1379
+      "file-size": 1470
     },
     "desktop/frontend/src/lib/useController.ts": {
-      "file-size": 3585
+      "file-size": 3870
     },
     "desktop/heartbeat.go": {
       "essay": 20,
       "file-size": 349,
       "function-size": 23
+    },
+    "desktop/history_slice.go": {
+      "banner": 2,
+      "complexity": 8,
+      "essay": 37,
+      "file-size": 1025,
+      "function-size": 20
+    },
+    "desktop/history_slice_test.go": {
+      "banner": 12,
+      "essay": 1,
+      "test-file-size": 397
     },
     "desktop/history_test.go": {
       "test-file-size": 1114
@@ -252,7 +267,7 @@
     },
     "desktop/sessions.go": {
       "essay": 5,
-      "file-size": 511
+      "file-size": 512
     },
     "desktop/sessions_lease_guard_test.go": {
       "essay": 3
@@ -286,10 +301,10 @@
       "essay": 1
     },
     "desktop/tabs.go": {
-      "complexity": 72,
-      "essay": 123,
-      "file-size": 8830,
-      "function-size": 623
+      "complexity": 74,
+      "essay": 133,
+      "file-size": 8901,
+      "function-size": 630
     },
     "desktop/tabs_order_test.go": {
       "test-file-size": 395
@@ -325,6 +340,14 @@
       "narrative": 1
     },
     "desktop/theme_state_compat_test.go": {
+      "essay": 3
+    },
+    "desktop/topic_activation.go": {
+      "banner": 1,
+      "essay": 44,
+      "narrative": 3
+    },
+    "desktop/topic_activation_test.go": {
       "essay": 3
     },
     "desktop/tray.go": {
@@ -437,7 +460,7 @@
       "essay": 27
     },
     "internal/agent/compact_projection.go": {
-      "function-size": 24
+      "function-size": 3
     },
     "internal/agent/compact_test.go": {
       "essay": 4
@@ -553,14 +576,14 @@
       "function-size": 46
     },
     "internal/agent/save.go": {
-      "complexity": 42,
-      "essay": 109,
-      "file-size": 1442,
-      "function-size": 94
+      "complexity": 49,
+      "essay": 113,
+      "file-size": 1550,
+      "function-size": 124
     },
     "internal/agent/save_test.go": {
       "essay": 9,
-      "test-file-size": 1928
+      "test-file-size": 1946
     },
     "internal/agent/scheduler.go": {
       "essay": 1
@@ -571,13 +594,16 @@
     "internal/agent/session_compat_legacy_test.go": {
       "essay": 3
     },
+    "internal/agent/session_display_index.go": {
+      "essay": 18
+    },
     "internal/agent/session_events.go": {
       "essay": 9,
       "file-size": 86
     },
     "internal/agent/session_events_test.go": {
-      "essay": 2,
-      "test-file-size": 22
+      "essay": 3,
+      "test-file-size": 33
     },
     "internal/agent/session_lease.go": {
       "essay": 18
@@ -1037,12 +1063,12 @@
       "essay": 2
     },
     "internal/control/checkpoint.go": {
-      "essay": 10
+      "essay": 9
     },
     "internal/control/controller.go": {
       "complexity": 11,
-      "essay": 168,
-      "file-size": 5454,
+      "essay": 165,
+      "file-size": 5468,
       "function-size": 78,
       "narrative": 4
     },

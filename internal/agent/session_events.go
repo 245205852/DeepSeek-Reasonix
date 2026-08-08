@@ -34,11 +34,11 @@ const (
 	sessionEventReplayMaxCollectionItems = 100_000
 	sessionEventProbeMaxBytes            = int64(4 << 10)
 	// sessionEventLogCompactFloor is the smallest log size that can trigger
-	// compaction, so short sessions never pay a checkpoint rewrite.
+	// event-log maintenance, so short sessions never pay a checkpoint rewrite.
 	sessionEventLogCompactFloor = int64(256 << 10)
 	// sessionEventLogCompactFactor bounds the log at this multiple of the live
 	// transcript's encoded size; past it the log is rewritten to one replace
-	// event so replace-heavy histories (compaction, rewind) cannot grow the
+	// event so replace-heavy histories (rewind and recovery) cannot grow the
 	// file without bound.
 	sessionEventLogCompactFactor = int64(4)
 )
@@ -839,7 +839,7 @@ func writeSessionEventIndex(path string, msgs []provider.Message, digest [sha256
 	if err != nil {
 		if os.IsNotExist(err) {
 			// No log means nothing for the index to describe; drop a stale
-			// index (e.g. after a force save folded the log away).
+			// index left by migration or manual sidecar cleanup.
 			if err := os.Remove(indexPath); err != nil && !os.IsNotExist(err) {
 				return err
 			}

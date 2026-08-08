@@ -5,7 +5,8 @@ import React, { act } from "react";
 import { createRoot } from "react-dom/client";
 import type { AppBindings } from "../lib/bridge";
 import { useController } from "../lib/useController";
-import type { HistoryPage, Meta, TabMeta, WireEvent } from "../lib/types";
+import { historySliceFromMessages } from "./mockHistorySlice";
+import type { HistorySlice, Meta, TabMeta, WireEvent } from "../lib/types";
 
 let passed = 0;
 let failed = 0;
@@ -97,7 +98,7 @@ const meta: Meta = {
   goal: "",
   goalStatus: "stopped",
 };
-const historyGate = deferred<HistoryPage>();
+const historyGate = deferred<HistorySlice>();
 const eventHandlers: Array<(event: WireEvent) => void> = [];
 let historyStarted = false;
 
@@ -118,7 +119,7 @@ window.go = {
       BalanceForTab: async () => ({ available: false, display: "" }),
       JobsForTab: async () => [],
       CheckpointsForTab: async () => [],
-      HistoryPageForTab: async () => {
+      HistorySliceForTab: async () => {
         historyStarted = true;
         return historyGate.promise;
       },
@@ -150,15 +151,12 @@ await act(async () => {
 });
 ok(controller?.state.items.some((item) => item.kind === "assistant" && item.streaming) ?? false, "turn starts while history is pending");
 
-historyGate.resolve({
-  messages: [{ role: "user", content: "stale durable history" }],
-  startTurn: 0,
-  endTurn: 1,
-  totalTurns: 1,
-  hasOlder: false,
-  revision: 1,
-  digest: "digest-v1",
-});
+historyGate.resolve(historySliceFromMessages(
+  tab.id,
+  [{ role: "user", content: "stale durable history" }],
+  { cursor: "", turns: 12 },
+  { revision: 1, digest: "digest-v1" },
+));
 await waitFor("hydration completion", () => controller?.state.hydrating === false);
 
 ok(controller?.state.running ?? false, "late history keeps the live turn running");
