@@ -29,6 +29,9 @@ const (
 	Pending Status = iota
 	Satisfied
 	Failed
+	// Stale marks a satisfaction whose proof predates the latest mutation:
+	// it was true once, and must be re-proven against the current code.
+	Stale
 )
 
 // EvidenceKind classifies what a receipt proved.
@@ -246,11 +249,16 @@ func (c *Contract) AddCheck(command string) {
 	c.Checks = append(c.Checks, Check{Command: command})
 }
 
-// Observe folds one ledger receipt into the contract: it advances the
-// mutation epoch, and satisfies any check the receipt's command proves.
-// Requirement satisfaction stays an explicit caller judgment (Resolve).
+// Observe folds one ledger receipt into the contract. Mutations advance the
+// epoch and stale every verification-backed satisfaction recorded before
+// them — a test that passed against older code proves nothing about the
+// current code. Mutation-kind evidence never stales: the change happened;
+// whether the fix still holds is verification's job.
 func (c *Contract) Observe(r evidence.Receipt) {
-	c.epoch++
+	if r.Mutation || r.Write {
+		c.epoch++
+		c.staleOutdated()
+	}
 	ref := refFor(c.epoch, r)
 	for i := range c.Checks {
 		if !c.checkMatches(c.Checks[i], r, ref) {
@@ -272,6 +280,39 @@ func (c *Contract) Observe(r evidence.Receipt) {
 	}
 }
 
+// staleOutdated demotes satisfactions whose entire proof is verification or
+// review evidence from before the current epoch.
+func (c *Contract) staleOutdated() {
+	for i := range c.Checks {
+		if c.Checks[i].Status == Satisfied && c.Checks[i].Kind == CheckCommand && allProofOutdated(c.Checks[i].Evidence, c.epoch) {
+			c.Checks[i].Status = Stale
+		}
+	}
+	for i := range c.Requirements {
+		req := &c.Requirements[i]
+		if req.Status == Satisfied && len(req.Evidence) > 0 && allProofOutdated(req.Evidence, c.epoch) {
+			req.Status = Stale
+		}
+	}
+}
+
+// allProofOutdated reports whether every proof is stale-able (verification
+// or review) and predates epoch; any current or mutation-kind ref keeps the
+// satisfaction alive.
+func allProofOutdated(refs []EvidenceRef, epoch uint64) bool {
+	sawProof := false
+	for _, ref := range refs {
+		if !ref.Success {
+			continue
+		}
+		sawProof = true
+		if ref.Kind == EvidenceMutation || ref.MutationEpoch >= epoch {
+			return false
+		}
+	}
+	return sawProof
+}
+
 // Resolve sets a requirement's status with the evidence that justified it.
 func (c *Contract) Resolve(id string, status Status, refs ...EvidenceRef) bool {
 	for i := range c.Requirements {
@@ -284,7 +325,8 @@ func (c *Contract) Resolve(id string, status Status, refs ...EvidenceRef) bool {
 	return false
 }
 
-// Epoch is the count of receipts observed so far.
+// Epoch is the mutation epoch: how many workspace mutations the contract
+// has observed. Reads and verifications never advance it.
 func (c *Contract) Epoch() uint64 { return c.epoch }
 
 // Complete reports whether every required requirement and every check is
@@ -317,10 +359,49 @@ func (c *Contract) Outstanding() []string {
 			if label == "" {
 				label = "any verification"
 			}
+			if check.Status == Stale {
+				label += " (stale: re-verify after the latest mutation)"
+			}
 			out = append(out, "check: "+label)
 		}
 	}
 	return out
+}
+
+// Graph renders the evidence graph: each requirement and check with the
+// proofs attached to it, staleness made visible.
+func (c *Contract) Graph() string {
+	var b []byte
+	statusName := map[Status]string{Pending: "pending", Satisfied: "satisfied", Failed: "failed", Stale: "STALE"}
+	kindName := map[EvidenceKind]string{EvidenceRead: "read", EvidenceMutation: "mutation", EvidenceVerification: "verification", EvidenceReview: "review"}
+	node := func(label string, status Status, refs []EvidenceRef) {
+		b = fmt.Appendf(b, "%s [%s]\n", label, statusName[status])
+		for i, ref := range refs {
+			branch := "├──"
+			if i == len(refs)-1 {
+				branch = "└──"
+			}
+			mark := ""
+			if ref.Kind != EvidenceMutation && ref.MutationEpoch < c.epoch {
+				mark = " (stale)"
+			}
+			b = fmt.Appendf(b, " %s E%d %s@%d %s success=%v%s\n", branch, i+1, kindName[ref.Kind], ref.MutationEpoch, ref.Source, ref.Success, mark)
+		}
+	}
+	for _, req := range c.Requirements {
+		node(req.ID+" "+req.Text, req.Status, req.Evidence)
+	}
+	for _, check := range c.Checks {
+		label := "check " + check.Command
+		if check.Command == "" {
+			label = "check (any verification)"
+			if check.Kind == CheckMutation {
+				label = "check (mutation)"
+			}
+		}
+		node(label, check.Status, check.Evidence)
+	}
+	return string(b)
 }
 
 func refFor(epoch uint64, r evidence.Receipt) EvidenceRef {

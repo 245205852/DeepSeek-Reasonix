@@ -1,6 +1,7 @@
 package taskcontract
 
 import (
+	"strings"
 	"testing"
 
 	"reasonix/internal/evidence"
@@ -45,10 +46,10 @@ func TestChecksSatisfyFromReceipts(t *testing.T) {
 	if c.Checks[0].Status != Satisfied || c.Checks[1].Status != Satisfied {
 		t.Fatalf("checks = %+v, want both satisfied (go test is a verification)", c.Checks)
 	}
-	if c.Epoch() != 2 {
-		t.Fatalf("epoch = %d, want 2", c.Epoch())
+	if c.Epoch() != 0 {
+		t.Fatalf("epoch = %d, want 0 (verifications never advance the mutation epoch)", c.Epoch())
 	}
-	if got := c.Checks[0].Evidence[1]; got.Kind != EvidenceVerification || got.MutationEpoch != 2 || !got.Success {
+	if got := c.Checks[0].Evidence[1]; got.Kind != EvidenceVerification || got.MutationEpoch != 0 || !got.Success {
 		t.Fatalf("evidence ref = %+v", got)
 	}
 }
@@ -183,5 +184,80 @@ func TestExecutionViewIsAViewNotAParallelDescription(t *testing.T) {
 	atomicView := Atomic("fix typo").ExecutionView()
 	if len(atomicView) != 2 || atomicView[1].Content != "apply the change" {
 		t.Fatalf("atomic view = %+v", atomicView)
+	}
+}
+
+func TestMutationStalesVerificationEvidence(t *testing.T) {
+	c := New("fix foo")
+	c.AddCheck("go test ./foo/")
+	c.AddRequirement("r2", "no regression", true)
+
+	// epoch 0→1: patch foo.go; epoch 1: go test PASS proves it.
+	c.Observe(evidence.Receipt{ToolName: "edit_file", Mutation: true, Success: true, Paths: []string{"foo.go"}})
+	c.Observe(evidence.Receipt{ToolName: "bash", Command: "go test ./foo/", Success: true})
+	c.Resolve("r2", Satisfied, EvidenceRef{Kind: EvidenceVerification, MutationEpoch: c.Epoch(), Source: "bash", Success: true})
+	if !c.Complete() {
+		t.Fatalf("satisfied at epoch %d; outstanding: %v", c.Epoch(), c.Outstanding())
+	}
+
+	// epoch 2: foo.go changes again — the epoch-1 test proves nothing now.
+	c.Observe(evidence.Receipt{ToolName: "edit_file", Mutation: true, Success: true, Paths: []string{"foo.go"}})
+	if c.Checks[0].Status != Stale {
+		t.Fatalf("check status = %v, want Stale after a newer mutation", c.Checks[0].Status)
+	}
+	if c.Requirements[0].Status != Stale {
+		t.Fatalf("verification-backed requirement must stale, got %v", c.Requirements[0].Status)
+	}
+	if c.Complete() {
+		t.Fatal("stale proof must not count as complete")
+	}
+	found := false
+	for _, item := range c.Outstanding() {
+		if strings.Contains(item, "stale: re-verify") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("outstanding must name the stale check: %v", c.Outstanding())
+	}
+
+	// Re-verify at epoch 2 → satisfied again.
+	c.Observe(evidence.Receipt{ToolName: "bash", Command: "go test ./foo/", Success: true})
+	if c.Checks[0].Status != Satisfied {
+		t.Fatalf("re-verification must re-satisfy, got %v", c.Checks[0].Status)
+	}
+}
+
+func TestMutationEvidenceNeverStales(t *testing.T) {
+	c := Atomic("fix typo in README.md")
+	c.Observe(evidence.Receipt{ToolName: "edit_file", Mutation: true, Success: true, Paths: []string{"README.md"}})
+	if !c.Complete() {
+		t.Fatal("atomic contract should complete on the mutation")
+	}
+	c.Observe(evidence.Receipt{ToolName: "write_file", Mutation: true, Success: true, Paths: []string{"notes.txt"}})
+	if !c.Complete() {
+		t.Fatalf("mutation-backed satisfaction must survive later mutations; graph:\n%s", c.Graph())
+	}
+}
+
+func TestGraphRendersEvidenceTree(t *testing.T) {
+	c := New("fix the bug")
+	c.AddRequirement("r1", "bug fixed", true)
+	c.AddCheck("go test ./...")
+	c.Observe(evidence.Receipt{ToolName: "edit_file", Mutation: true, Success: true})
+	c.Observe(evidence.Receipt{ToolName: "bash", Command: "go test ./...", Success: true})
+	c.Resolve("r1", Satisfied, EvidenceRef{Kind: EvidenceMutation, MutationEpoch: 1, Source: "edit_file", Success: true})
+	c.Observe(evidence.Receipt{ToolName: "edit_file", Mutation: true, Success: true})
+
+	graph := c.Graph()
+	for _, want := range []string{
+		"r1 bug fixed [satisfied]",
+		"└── E1 mutation@1 edit_file success=true",
+		"check go test ./... [STALE]",
+		"verification@1 bash success=true (stale)",
+	} {
+		if !strings.Contains(graph, want) {
+			t.Fatalf("graph missing %q:\n%s", want, graph)
+		}
 	}
 }
