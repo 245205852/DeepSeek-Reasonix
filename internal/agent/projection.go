@@ -18,7 +18,9 @@ import (
 // Context-projection schema versions. Readers accept any known version;
 // writers always emit the current schema.
 const (
-	compactionStateSchemaV1 = 1
+	compactionStateSchemaV1      = 1
+	compactionStateSchemaV2      = 2
+	compactionStateSchemaCurrent = compactionStateSchemaV2
 )
 
 // Cache state labels for resume/preflight telemetry. They never enter the
@@ -131,7 +133,7 @@ func LoadCompactionState(sessionPath string) (CompactionState, bool, error) {
 	if err := json.Unmarshal(b, &st); err != nil {
 		return CompactionState{}, false, fmt.Errorf("decode context state %s: %w", path, err)
 	}
-	if st.SchemaVersion != 0 && st.SchemaVersion != compactionStateSchemaV1 {
+	if st.SchemaVersion != 0 && st.SchemaVersion != compactionStateSchemaV1 && st.SchemaVersion != compactionStateSchemaV2 {
 		return CompactionState{}, false, fmt.Errorf("unsupported context schema version %d", st.SchemaVersion)
 	}
 	if st.SchemaVersion == 0 {
@@ -146,7 +148,11 @@ func SaveCompactionState(sessionPath string, st CompactionState) error {
 	if path == "" {
 		return fmt.Errorf("empty session path")
 	}
-	st.SchemaVersion = compactionStateSchemaV1
+	// V2 preserves logical user-turn boundaries in Projection.Messages and
+	// applies strict-provider role coalescing only to outbound request copies.
+	// Previous readers reject this explicit boundary and fall back to canonical
+	// history instead of interpreting the changed V1 invariant incorrectly.
+	st.SchemaVersion = compactionStateSchemaCurrent
 	if st.UpdatedAt.IsZero() {
 		st.UpdatedAt = time.Now().UTC()
 	}

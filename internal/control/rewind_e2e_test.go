@@ -314,6 +314,9 @@ func TestPositionalCompressionPreservesCheckpointLineage(t *testing.T) {
 	if err != nil || !plan.CanConversation {
 		t.Fatalf("conversation rewind unavailable after compression: plan=%+v err=%v", plan, err)
 	}
+	if err := c.SummarizeFrom(context.Background(), 0); err == nil || !strings.Contains(err.Error(), "no longer present in the model context") {
+		t.Fatalf("second positional compression error = %v, want folded-boundary explanation", err)
+	}
 }
 
 func TestEditPromptPersistsOriginalPrompt(t *testing.T) {

@@ -303,7 +303,7 @@ func (a *Agent) compressVisibleRange(
 
 	now := time.Now().UTC()
 	state := CompactionState{
-		SchemaVersion:     compactionStateSchemaV1,
+		SchemaVersion:     compactionStateSchemaCurrent,
 		TranscriptVersion: snap.transcriptVersion,
 		Projection: ContextProjection{
 			Messages:          projection,
@@ -480,7 +480,7 @@ func (a *Agent) compactToProjection(ctx context.Context, trigger, instructions s
 
 	projVersion := a.compactionState.Projection.ProjectionVersion + 1
 	st := CompactionState{
-		SchemaVersion:     compactionStateSchemaV1,
+		SchemaVersion:     compactionStateSchemaCurrent,
 		TranscriptVersion: transcriptVersion,
 		Projection: ContextProjection{
 			Messages:          projMsgs,
@@ -619,7 +619,7 @@ func (a *Agent) installPruneProjection(view []provider.Message, st PruneStats) e
 	dst := estimateMessagesTokens(view)
 	projVersion := a.compactionState.Projection.ProjectionVersion + 1
 	state := CompactionState{
-		SchemaVersion:     compactionStateSchemaV1,
+		SchemaVersion:     compactionStateSchemaCurrent,
 		TranscriptVersion: version,
 		Projection: ContextProjection{
 			Messages:          view,

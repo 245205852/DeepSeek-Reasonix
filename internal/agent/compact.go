@@ -262,10 +262,20 @@ func (a *Agent) summarizeAtProjectionBoundary(ctx context.Context, canonicalInde
 		}
 	}
 	if visibleIndex < 0 {
-		return nil
+		return fmt.Errorf("context compression unavailable: selected turn is no longer present in the model context")
 	}
-	_, err := a.compressVisibleRange(ctx, snap, CompactionTriggerManual, direction, visibleIndex, anchorPreview(UserMessageText(anchor)), "")
-	return err
+	result, err := a.compressVisibleRange(ctx, snap, CompactionTriggerManual, direction, visibleIndex, anchorPreview(UserMessageText(anchor)), "")
+	if err != nil {
+		return err
+	}
+	if result.Status != "ok" {
+		reason := strings.TrimSpace(result.Reason)
+		if reason == "" {
+			reason = "selected range did not reduce the model context"
+		}
+		return fmt.Errorf("context compression skipped: %s", reason)
+	}
+	return nil
 }
 
 // IsCompactionSummary reports whether m is a rolling digest inserted by a
