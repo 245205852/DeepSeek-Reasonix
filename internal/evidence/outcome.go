@@ -41,6 +41,11 @@ type OutcomeSample struct {
 	// interpreter/test command yet — the self-check-propensity observable
 	// (studied set: python/node/go run/pytest; ecosystem bias documented).
 	LocalExecSeen bool
+	// GovernorEligible/GovernorEngaged mark the reasoning governor's
+	// exploration trigger holding and its depth override riding requests;
+	// eligibility is stamped on every arm so baselines carry the shadow.
+	GovernorEligible bool
+	GovernorEngaged  bool
 }
 
 // OutcomeTracker is the shadow counterpart of ProgressTracker: same per-round
