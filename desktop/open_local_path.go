@@ -74,7 +74,7 @@ func hasDisallowedWindowsPathSyntax(path string) bool {
 	if strings.Contains(remainder, ":") {
 		return true
 	}
-	for _, component := range strings.Split(remainder, "/") {
+	for component := range strings.SplitSeq(remainder, "/") {
 		component = strings.TrimRight(component, " .")
 		if dot := strings.IndexByte(component, '.'); dot >= 0 {
 			component = component[:dot]
