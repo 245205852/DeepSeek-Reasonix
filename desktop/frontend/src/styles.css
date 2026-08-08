@@ -13694,11 +13694,7 @@ body > .mermaid-diagram--fullscreen {
 }
 .cap-source__side {
   display: flex;
-  min-width: 36px;
   align-items: flex-end;
-}
-.cap-source__switch {
-  flex: 0 0 auto;
 }
 .cap-source-badge {
   flex-shrink: 0;
@@ -14080,10 +14076,6 @@ body > .mermaid-diagram--fullscreen {
   background: color-mix(in srgb, var(--bg-soft) 48%, transparent);
   color: var(--fg-dim);
 }
-.cap-skill-card--disabled .cap-skill-card__command,
-.cap-skill-card--disabled .cap-skill-card__icon {
-  color: var(--fg-dim);
-}
 .cap-skill-card__top {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
@@ -14154,16 +14146,9 @@ body > .mermaid-diagram--fullscreen {
 }
 .cap-skill-card__source {
   display: inline-flex;
-  min-width: 0;
   align-items: center;
-  gap: 4px;
   color: var(--fg-faint);
-  font-family: var(--mono);
   font-size: 10px;
-  line-height: 1.25;
-}
-.cap-skill-card__source svg {
-  flex: 0 0 auto;
 }
 .cap-skill-card__source span {
   overflow: hidden;
