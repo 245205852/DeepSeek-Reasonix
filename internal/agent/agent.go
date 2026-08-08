@@ -564,6 +564,10 @@ type Agent struct {
 	// (see progress_guard.go); reset with the evidence ledger each turn.
 	progress progressGuard
 
+	// outcome shadows progress with an outcome-decomposed scorer whose samples
+	// only feed trajectory recording; it never influences guard behavior.
+	outcome *evidence.OutcomeTracker
+
 	// repeatFailureCounts tracks semantically identical write-like calls that
 	// keep failing with the same failure class. Unlike stormSig, successful
 	// reads do not blindly clear this state: re-reading a file and then

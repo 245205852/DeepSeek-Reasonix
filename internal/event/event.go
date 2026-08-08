@@ -618,6 +618,24 @@ func RecordContractShadow(s Sink, a ContractShadowAudit) {
 	}
 }
 
+// OutcomeProgressSink is an optional sink capability for the shadow outcome
+// scorer's per-round samples: counts only, never paths or commands. Shadow
+// means observed, not enforced — the novelty guard still decides behavior.
+type OutcomeProgressSink interface {
+	RecordOutcomeProgress(evidence.OutcomeSample)
+}
+
+// RecordOutcomeProgress forwards a shadow outcome sample only to sinks that
+// explicitly opt in. Ordinary UI sinks receive nothing.
+func RecordOutcomeProgress(s Sink, sample evidence.OutcomeSample) {
+	if nilutil.IsNil(s) {
+		return
+	}
+	if op, ok := s.(OutcomeProgressSink); ok {
+		op.RecordOutcomeProgress(sample)
+	}
+}
+
 // ProtocolRecoveryAuditSink is an optional sink capability. Implementations
 // must keep it content-free; prompts, responses, endpoints, model names, and
 // tool arguments do not belong in this audit channel.
