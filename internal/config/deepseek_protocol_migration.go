@@ -297,16 +297,17 @@ func replaceTOMLStringAssignment(line, value string) string {
 
 func tomlInlineCommentIndex(value string) int {
 	inBasic, inLiteral, escaped := false, false, false
-	for i := 0; i < len(value); i++ {
+	for i := range len(value) {
 		ch := value[i]
 		if inBasic {
 			if escaped {
 				escaped = false
 				continue
 			}
-			if ch == '\\' {
+			switch ch {
+			case '\\':
 				escaped = true
-			} else if ch == '"' {
+			case '"':
 				inBasic = false
 			}
 			continue

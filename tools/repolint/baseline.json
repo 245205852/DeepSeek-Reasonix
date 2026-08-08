@@ -4,7 +4,7 @@
     "commented-code": 0,
     "complexity": 2051,
     "essay": 4086,
-    "file-size": 108712,
+    "file-size": 108704,
     "function-size": 9147,
     "layering": 1,
     "marker": 0,
@@ -1015,7 +1015,7 @@
       "essay": 3
     },
     "internal/config/provider_presets.go": {
-      "file-size": 278
+      "file-size": 270
     },
     "internal/config/render.go": {
       "complexity": 240,

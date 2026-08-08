@@ -987,14 +987,6 @@ func boolPointer(value bool) *bool {
 	return &value
 }
 
-func cloneProviderPresets(in []ProviderPreset) []ProviderPreset {
-	out := make([]ProviderPreset, 0, len(in))
-	for _, p := range in {
-		out = append(out, cloneProviderPreset(p))
-	}
-	return out
-}
-
 func cloneProviderPreset(p ProviderPreset) ProviderPreset {
 	p.Entries = cloneProviderEntries(p.Entries)
 	for i := range p.Entries {
