@@ -7868,9 +7868,15 @@ body > .mermaid-diagram--fullscreen {
   color: var(--fg-faint);
   /* One line, always: without this a narrow window squeezes the flex items and
      CJK text breaks one character per line. The metric chips keep their width
-     (flex-shrink: 0) and only the model label ellipsizes to absorb the squeeze. */
+     (flex-shrink: 0) and only the model label ellipsizes to absorb the squeeze.
+     Horizontal overflow is scrollable via mouse wheel (scrollbar hidden). */
   white-space: nowrap;
-  overflow: hidden;
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: none;
+}
+.statusbar::-webkit-scrollbar {
+  display: none;
 }
 .statusbar > * {
   flex-shrink: 0;
@@ -7897,6 +7903,15 @@ body > .mermaid-diagram--fullscreen {
   color: color-mix(in srgb, var(--fg-faint) 50%, transparent);
   font-family: var(--font-mono);
   font-weight: 400;
+}
+/* shorter separator for intra-item splits like "hit X | miss Y" */
+.statusbar__cache-sep {
+  margin: 0 4px;
+  color: color-mix(in srgb, var(--fg-faint) 50%, transparent);
+  font-family: var(--font-mono);
+  font-weight: 400;
+  font-size: 0.75em;
+  line-height: 1;
 }
 .statusbar__group .tooltip-trigger {
   display: inline-flex;
