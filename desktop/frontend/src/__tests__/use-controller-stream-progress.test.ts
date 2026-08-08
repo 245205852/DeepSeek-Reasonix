@@ -295,5 +295,72 @@ function ev(s: typeof initialState, e: WireEvent) {
   }
 }
 
+// --- 6. TPS telemetry follows executor output-token semantics and retry intervals ---
+{
+  const originalNow = Date.now;
+  let now = 30_000;
+  Date.now = () => now;
+  try {
+    let s = ev({ ...initialState }, { kind: "turn_started" } as WireEvent);
+    now = 30_100;
+    s = ev(s, { kind: "text", text: "abcd" } as WireEvent);
+    now = 31_100;
+    s = ev(s, { kind: "usage", usage: {
+      promptTokens: 100,
+      completionTokens: 20,
+      reasoningTokens: 10,
+      totalTokens: 120,
+      cacheHitTokens: 0,
+      cacheMissTokens: 100,
+      source: "executor",
+    } } as WireEvent);
+    s = ev(s, { kind: "turn_done" } as WireEvent);
+    eq(s.lastTurnOutputTokens, 20, "reasoning tokens are not added twice to completed TPS");
+    eq(s.lastTurnModelMs, 1_000, "reasoning usage preserves the executor output interval");
+
+    now = 32_000;
+    s = ev({ ...initialState }, { kind: "turn_started" } as WireEvent);
+    now = 32_100;
+    s = ev(s, { kind: "text", text: "abcd" } as WireEvent);
+    now = 32_500;
+    s = ev(s, { kind: "usage", usage: {
+      promptTokens: 50,
+      completionTokens: 100,
+      totalTokens: 150,
+      cacheHitTokens: 0,
+      cacheMissTokens: 50,
+      source: "subagent",
+    } } as WireEvent);
+    now = 33_100;
+    s = ev(s, { kind: "usage", usage: {
+      promptTokens: 10,
+      completionTokens: 10,
+      totalTokens: 20,
+      cacheHitTokens: 0,
+      cacheMissTokens: 10,
+      source: "executor",
+    } } as WireEvent);
+    s = ev(s, { kind: "turn_done" } as WireEvent);
+    eq(s.lastTurnOutputTokens, 10, "subagent usage is excluded from executor TPS tokens");
+    eq(s.lastTurnModelMs, 1_000, "subagent usage does not close the executor output interval");
+
+    now = 34_000;
+    s = ev({ ...initialState }, { kind: "turn_started" } as WireEvent);
+    s = ev(s, { kind: "stream_attempt", streamAttempt: { id: "tps-a1", action: "begin", attempt: 1, max: 2 } } as WireEvent);
+    now = 34_100;
+    s = ev(s, { kind: "text", text: "abcdefgh" } as WireEvent);
+    now = 35_100;
+    s = ev(s, { kind: "stream_attempt", streamAttempt: { id: "tps-a1", action: "discard", attempt: 1, max: 2 } } as WireEvent);
+    now = 38_000;
+    s = ev(s, { kind: "stream_attempt", streamAttempt: { id: "tps-a2", action: "begin", attempt: 2, max: 2 } } as WireEvent);
+    s = ev(s, { kind: "text", text: "abcd" } as WireEvent);
+    now = 39_000;
+    s = ev(s, { kind: "turn_done" } as WireEvent);
+    eq(s.lastTurnModelMs, 2_000, "discarded sampling attempts exclude retry backoff from TPS");
+  } finally {
+    Date.now = originalNow;
+  }
+}
+
 process.stdout.write(`\n${passed} passed, ${failed} failed\n`);
 if (failed > 0) process.exit(1);

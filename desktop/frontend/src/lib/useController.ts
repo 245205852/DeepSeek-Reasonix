@@ -204,6 +204,7 @@ type StreamAttemptJournal = {
 export type ControllerLiveStore = {
   subscribe: (tabId: string | undefined, listener: () => void) => () => void;
   getSnapshot: (tabId: string | undefined) => LiveStream | undefined;
+  getModelActiveAt: (tabId: string | undefined) => number | undefined;
 };
 export type MessageActionScope = "fork" | "summ-from" | "summ-upto" | "conversation" | "code" | "both";
 export type MessageActionState = { turn: number; scope: MessageActionScope };
@@ -370,9 +371,8 @@ interface State {
   discardTurn?: boolean;
   turnStartAt: number;
   turnDoneAt: number;
-  // (completionTokens + reasoningTokens) accumulated across usage events within
-  // the current turn. Used by the status bar for per-turn output-token display
-  // and TPS calculation.
+  // Completion tokens accumulated across executor usage events within the
+  // current turn. ReasoningTokens is a subset of CompletionTokens.
   turnOutputTokens: number;
   turnOutputChars: number;
   // Live text/reasoning characters already covered by the accumulated usage.
@@ -1232,8 +1232,9 @@ function applyStreamAttempt(s: State, e: WireEvent): State {
   if (!sa?.id || !sa.action) return s;
   switch (sa.action) {
     case "begin": {
-      // Snapshot only what this attempt may mutate: live text/reasoning and
-      // turnArgChars. Concurrent non-sampling events remain outside the journal.
+      // Snapshot only what this attempt may replace in the visible stream.
+      // Provider activity timing is closed at discard but remains accumulated so
+      // retry backoff is not counted in the completed TPS denominator.
       const baselineLive = s.live
         ? {
             id: s.live.id,
@@ -1282,7 +1283,7 @@ function applyStreamAttempt(s: State, e: WireEvent): State {
           ? { ...s.live, text: "", reasoning: "", reasoningComplete: false, reasoningStartedAt: undefined, reasoningCompletedAt: undefined }
           : undefined;
       return {
-        ...s,
+        ...endTurnModelActivity(s),
         items,
         live,
         turnArgChars: journal.baselineTurnArgChars,
@@ -1609,8 +1610,11 @@ function applyEvent(s: State, e: WireEvent): State {
     }
     case "usage": {
       if (!countsTowardCurrentTurn(s)) return s;
-      const settled = endTurnModelActivity(s);
       const updateContextGauge = updatesContextGauge(e.usage);
+      // Only executor usage belongs to the foreground model stream. Planner,
+      // subagent, and auxiliary usage still contributes to session totals and
+      // usageSeq, but must not close or inflate the executor TPS interval.
+      const settled = updateContextGauge ? endTurnModelActivity(s) : s;
       // Prefer Context* (latest attempt) over billable aggregates when multi-
       // attempt sampling recovery folds several provider calls into one Usage.
       // Matches Controller.ContextSnapshot: latest prompt + completion.
@@ -1623,8 +1627,15 @@ function applyEvent(s: State, e: WireEvent): State {
           : (e.usage.promptTokens ?? 0) + (e.usage.completionTokens ?? 0);
       }
       const turnTokens = settled.turnTokens + (e.usage?.completionTokens ?? 0);
-      const turnOutputTokens = settled.turnOutputTokens + (e.usage?.completionTokens ?? 0) + (e.usage?.reasoningTokens ?? 0);
-      const turnOutputCharsAtUsage = (settled.live?.text.length ?? 0) + (settled.live?.reasoning.length ?? 0);
+      const turnOutputTokens = updateContextGauge
+        ? settled.turnOutputTokens + (e.usage?.completionTokens ?? 0)
+        : settled.turnOutputTokens;
+      const turnOutputCharsAtUsage = updateContextGauge
+        ? (settled.live?.text.length ?? 0) + (settled.live?.reasoning.length ?? 0)
+        : settled.turnOutputCharsAtUsage;
+      const turnOutputEstimated = updateContextGauge
+        ? settled.turnOutputEstimated || Boolean(e.usage?.estimated)
+        : settled.turnOutputEstimated;
       const usageTokens = usageTotalTokens(e.usage);
       const turnTotalTokens = settled.turnTotalTokens + usageTokens;
       const sessionTokens = settled.sessionTokens + usageTokens;
@@ -1635,7 +1646,7 @@ function applyEvent(s: State, e: WireEvent): State {
       const usage = updateContextGauge ? e.usage : settled.usage;
       // The completed round's usage now accounts for the streamed tool-call
       // arguments, so drop the live estimate rather than double-count it.
-      return { ...settled, usage, context: { ...settled.context, used, sessionTokens }, turnTokens, turnOutputTokens, turnOutputCharsAtUsage, turnOutputEstimated: settled.turnOutputEstimated || Boolean(e.usage?.estimated), turnTotalTokens, turnCost, turnArgChars: 0, sessionTokens, sessionCost, sessionCurrency, usageSeq: settled.usageSeq + 1 };
+      return { ...settled, usage, context: { ...settled.context, used, sessionTokens }, turnTokens, turnOutputTokens, turnOutputCharsAtUsage, turnOutputEstimated, turnTotalTokens, turnCost, turnArgChars: updateContextGauge ? 0 : settled.turnArgChars, sessionTokens, sessionCost, sessionCurrency, usageSeq: settled.usageSeq + 1 };
     }
     case "notice":
       return appendNoticeToState(s, e.level ?? "info", e.text ?? "", e.detail, e.code, e.decisionReceipt);
@@ -2503,6 +2514,9 @@ export function useController() {
     },
     getSnapshot(tabId) {
       return tabId ? statesRef.current.get(tabId)?.live : undefined;
+    },
+    getModelActiveAt(tabId) {
+      return tabId ? statesRef.current.get(tabId)?.turnModelActiveAt : undefined;
     },
   }), []);
   const beginActiveNavigation = useCallback(() => {

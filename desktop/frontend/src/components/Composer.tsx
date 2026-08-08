@@ -3685,6 +3685,10 @@ export function Composer({
       return live ? live.text.length + live.reasoning.length : 0;
     },
   );
+  const liveModelActiveAt = useSyncExternalStore(
+    subscribeLiveText,
+    () => liveStore?.getModelActiveAt(tabId),
+  );
   const runStateText = retry
     ? t("status.retrying", { attempt: retry.attempt, max: retry.max })
     : waitingPrompt === "approval"
@@ -3707,7 +3711,8 @@ export function Composer({
         const liveTokens = usageTokens + estimatedChars;
         const tok = liveTokens > 0 ? ` · ↓ ${formatTokens(liveTokens)} ${t("status.tokens")}` : "";
         const outTok: number = (turnOutputTokens ?? 0) + estimatedChars;
-        const modelElapsedMs = Math.max(0, turnModelActiveMs + (turnModelActiveAt && turnModelActiveAt > 0 ? Math.max(0, now - turnModelActiveAt) : 0));
+        const modelActiveAt = liveModelActiveAt ?? turnModelActiveAt;
+        const modelElapsedMs = Math.max(0, turnModelActiveMs + (modelActiveAt && modelActiveAt > 0 ? Math.max(0, now - modelActiveAt) : 0));
         const tps = outTok > 0 && modelElapsedMs >= 500 ? Math.round(outTok / (modelElapsedMs / 1000)) : null;
         const tpsStr = tps !== null ? ` · ${tps} tokens/s` : "";
         const suffix = `${tpsStr}${tok}`;
