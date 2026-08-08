@@ -86,7 +86,7 @@ function ok(value: unknown, label: string) {
   }
 }
 
-const { createElement } = await import("react");
+const { createElement, StrictMode } = await import("react");
 const { act } = await import("react");
 const { createRoot } = await import("react-dom/client");
 const { default: ReactMarkdown, defaultUrlTransform } = await import("react-markdown");
@@ -99,18 +99,17 @@ const markdownUrlTransform = (value: string) =>
 
 const components = { a: RichMarkdownLink };
 
-async function renderClick(markdown: string): Promise<HTMLAnchorElement[]> {
+async function renderClick(markdown: string, strictMode = false): Promise<HTMLAnchorElement[]> {
   const container = window.document.createElement("div");
   window.document.body.appendChild(container);
   const root = createRoot(container);
+  const markdownElement = createElement(
+    ReactMarkdown,
+    { remarkPlugins: [remarkGfm, remarkLocalPathLinks], urlTransform: markdownUrlTransform, components },
+    markdown,
+  );
   await act(async () => {
-    root.render(
-      createElement(
-        ReactMarkdown,
-        { remarkPlugins: [remarkGfm, remarkLocalPathLinks], urlTransform: markdownUrlTransform, components },
-        markdown,
-      ),
-    );
+    root.render(strictMode ? createElement(StrictMode, null, markdownElement) : markdownElement);
   });
   return Array.from(container.querySelectorAll("a"));
 }
@@ -176,7 +175,41 @@ console.log("\nheadless click-to-open e2e");
   ok(JSON.stringify(openedWith) === JSON.stringify([["D:/docs/acceptance.md", "vscode"]]), "context menu opens the path with the selected application");
 }
 
-// 5. Overlapping opener discovery keeps the latest response.
+// 5. A browser may emit both contextmenu and right-button auxclick. Only the
+// middle button is an open gesture; the right button must leave the menu open
+// without also launching the local file.
+{
+  const anchors = await renderClick("[右键](file:///D:/docs/right-click.md)");
+  const openedBefore = opened.length;
+  await act(async () => {
+    anchors[0].dispatchEvent(new window.MouseEvent("contextmenu", { bubbles: true, cancelable: true }));
+    anchors[0].dispatchEvent(new window.MouseEvent("auxclick", { button: 2, bubbles: true, cancelable: true }));
+    await Promise.resolve();
+  });
+  ok(opened.length === openedBefore, "right-button auxclick does not open a local path");
+  await act(async () => {
+    window.dispatchEvent(new window.KeyboardEvent("keydown", { key: "Escape" }));
+  });
+}
+
+// 6. React StrictMode replays effect setup and cleanup in development. Opener
+// discovery after that replay must still populate the context menu.
+{
+  const anchors = await renderClick("[严格模式](file:///D:/strict.md)", true);
+  await act(async () => {
+    anchors[0].dispatchEvent(new window.MouseEvent("contextmenu", { bubbles: true, cancelable: true }));
+    await Promise.resolve();
+  });
+  const menus = window.document.querySelectorAll('[role="menu"]');
+  const strictMenu = menus[menus.length - 1];
+  ok(strictMenu?.textContent?.includes("VS Code") === true,
+    "StrictMode opener discovery populates the local-path menu");
+  await act(async () => {
+    window.dispatchEvent(new window.KeyboardEvent("keydown", { key: "Escape" }));
+  });
+}
+
+// 7. Overlapping opener discovery keeps the latest response.
 {
   openerRaceMode = true;
   const anchors = await renderClick("[竞态](file:///D:/race.md)");
@@ -201,9 +234,15 @@ console.log("\nheadless click-to-open e2e");
     "stale opener discovery cannot replace the latest result");
 }
 
-// 6. Plain http link must NOT hit OpenLocalPath.
+// 8. Plain http link must NOT hit OpenLocalPath. A right-button auxclick must
+// also leave it to the context-menu gesture instead of opening the browser.
 {
   const anchors = await renderClick("见 https://example.com/page 文档");
+  const browsedBefore = browsed.length;
+  await act(async () => {
+    anchors[0].dispatchEvent(new window.MouseEvent("auxclick", { button: 2, bubbles: true, cancelable: true }));
+  });
+  ok(browsed.length === browsedBefore, "right-button auxclick does not open an http link");
   await act(async () => {
     anchors[0].dispatchEvent(new window.MouseEvent("click", { bubbles: true, cancelable: true }));
   });
@@ -211,7 +250,7 @@ console.log("\nheadless click-to-open e2e");
   ok(opened.length === 4, "OpenLocalPath was not called for the http link");
 }
 
-// 7. Non-path text renders no anchors and no clicks.
+// 9. Non-path text renders no anchors and no clicks.
 {
   const anchors = await renderClick("版本 1.2.3 已发布");
   ok(anchors.length === 0, "no anchors for plain text");

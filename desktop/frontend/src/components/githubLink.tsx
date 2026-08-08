@@ -152,9 +152,14 @@ function LocalPathMarkdownLink({
     }).catch(() => {});
   }, []);
 
-  useEffect(() => () => {
-    mountedRef.current = false;
-    openerRequestRef.current += 1;
+  useEffect(() => {
+    // React StrictMode replays mount effects in development. Reset the guard
+    // during every setup so the replayed mount can still accept discoveries.
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+      openerRequestRef.current += 1;
+    };
   }, []);
 
   const openWith = useCallback((opener: ExternalOpenerView) => {
@@ -233,6 +238,7 @@ function LocalPathMarkdownLink({
           openLink(href);
         }}
         onAuxClick={(event) => {
+          if (event.button !== 1) return;
           event.preventDefault();
           openLink(href);
         }}
@@ -283,6 +289,7 @@ export function RichMarkdownLink({
       openLink(href);
     },
     onAuxClick: (event: ReactMouseEvent<HTMLAnchorElement>) => {
+      if (event.button !== 1) return;
       event.preventDefault();
       openLink(href);
     },

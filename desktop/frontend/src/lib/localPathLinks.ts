@@ -9,7 +9,7 @@
 
 import { visit } from "unist-util-visit";
 import type { Parent, Link, Root, Text } from "mdast";
-import { isLocalFileHref } from "./localFileUrl";
+import { hasDisallowedWindowsPathSyntax, isLocalFileHref } from "./localFileUrl";
 import { unescapeRefPath } from "./refToken";
 
 // Sentence punctuation is excluded from path characters: Windows forbids `：`
@@ -26,7 +26,7 @@ const SENT_PUNCT = "，。；、！？,;!?（）";
 // The `\\[ \t]` alternative must come FIRST: in a `(?:A|B)+` loop the engine
 // backtracks by dropping repetitions, not by retrying the alternative at the
 // same position, so a trailing `\ ` would otherwise never be consumed.
-const PATH_CHAR = String.raw`(?:\\[ \t]|[^\s<>"|?*：${SENT_PUNCT}])`;
+const PATH_CHAR = String.raw`(?:\\[ \t]|[^\s<>"|?*:：${SENT_PUNCT}])`;
 
 // file URLs are matched whole (their `:` and `.` are legal there). Drive and
 // UNC prefix boundaries are checked in JavaScript rather than with regular
@@ -43,7 +43,7 @@ const DRIVE_RE = new RegExp(String.raw`[A-Za-z]:[\\/]${PATH_CHAR}+`, "g");
 // one). The JavaScript prefix guard keeps `C:\nas` or a plain `a\b` from being
 // mistaken for a share start without requiring WebKit lookbehind support.
 const UNC_RE = new RegExp(
-  String.raw`\\(?!\\)[^\s\\<>"|?*：${SENT_PUNCT}]+\\${PATH_CHAR}+`,
+  String.raw`\\(?!\\)[^\s\\<>"|?*:：${SENT_PUNCT}]+\\${PATH_CHAR}+`,
   "g",
 );
 
@@ -110,6 +110,11 @@ export function linkifyLocalPaths(text: string): LocalPathSegment[] {
       if (kind === "file" && !isLocalFileHref(stripTrailingClosers(match[0]))) {
         continue;
       }
+      // Do not turn the safe-looking prefix of an alternate data stream into
+      // a link (for example, C:\\report.md in C:\\report.md:payload).
+      if (kind !== "file" && text[matchEnd] === ":" && !/\s/.test(text[matchEnd + 1] ?? "")) {
+        continue;
+      }
       // RegExpExecArray has no start/end — compare via index/length.
       const overlapped = matches.some((p) => !(matchEnd <= p.start || match.index >= p.end));
       if (!overlapped) {
@@ -127,8 +132,9 @@ export function linkifyLocalPaths(text: string): LocalPathSegment[] {
     // UNC text arrives with a single leading backslash (markdown folded the
     // `\\` escape); restore the real UNC prefix for the native opener.
     const path = m.kind === "unc" ? "\\" + stripTrailingClosers(m.raw) : stripTrailingClosers(m.raw);
-    if (path) {
-      segments.push({ text: m.raw, path: unescapeRefPath(path) });
+    const decodedPath = unescapeRefPath(path);
+    if (path && !hasDisallowedWindowsPathSyntax(decodedPath)) {
+      segments.push({ text: m.raw, path: decodedPath });
     } else {
       segments.push({ text: m.raw });
     }

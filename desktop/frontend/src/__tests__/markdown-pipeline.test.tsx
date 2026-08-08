@@ -153,6 +153,18 @@ for (const [name, text] of Object.entries(fixtures)) {
   ok(html.includes(`href="${unc}"`), "authority-form UNC href survives HAST rendering");
 }
 
+// Windows device namespaces and alternate data streams must not be restored
+// after react-markdown's default URL sanitizer rejects their file: scheme.
+for (const unsafe of [
+  "file://./PhysicalDrive0",
+  "file:////?/C:/Windows",
+  "file:///C:/safe.txt:payload",
+  "file:///tmp/report.md?download=1",
+  "file:///tmp/report.md#section",
+]) {
+  eq(markdownUrlTransform(unsafe), "", `unsafe local URL is blanked: ${unsafe}`);
+}
+
 // Content revision + byte weight.
 {
   eq(markdownContentRevision("alpha") === markdownContentRevision("alpha"), true, "content revision is deterministic");

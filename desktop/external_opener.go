@@ -248,7 +248,7 @@ func (a *App) OpenLocalPathInExternalOpener(path, id string) error {
 	if err != nil {
 		return err
 	}
-	if !openTargetAllowed(path, info.IsDir()) {
+	if !openTargetPathAllowed(path, info) {
 		return fmt.Errorf("refusing to open executable target %q", path)
 	}
 
