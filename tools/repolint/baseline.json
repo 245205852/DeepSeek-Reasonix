@@ -4,7 +4,7 @@
     "commented-code": 0,
     "complexity": 2064,
     "essay": 4143,
-    "file-size": 110041,
+    "file-size": 110057,
     "function-size": 9152,
     "layering": 1,
     "marker": 0,
@@ -179,7 +179,7 @@
       "banner": 2,
       "complexity": 8,
       "essay": 37,
-      "file-size": 996,
+      "file-size": 1012,
       "function-size": 18
     },
     "desktop/history_slice_test.go": {
