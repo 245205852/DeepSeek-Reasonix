@@ -571,6 +571,10 @@ type Agent struct {
 	// ebm is the Evidence-Before-More-Mutation nudge's once-per-turn state.
 	ebm ebmState
 
+	// forkRestore, when armed, swaps the frozen fork-bundle conversation in
+	// right after beginRunTurn — the counterfactual-continuation seam.
+	forkRestore func(*runLoopState)
+
 	// repeatFailureCounts tracks semantically identical write-like calls that
 	// keep failing with the same failure class. Unlike stormSig, successful
 	// reads do not blindly clear this state: re-reading a file and then
@@ -1267,6 +1271,8 @@ func New(prov provider.Provider, tools *tool.Registry, session *Session, opts Op
 	}
 	a.SetResponseLanguage(opts.ResponseLanguage)
 	a.SetReasoningLanguage(opts.ReasoningLanguage)
+	a.maybeArmForkFromEnv()
+	a.maybeWrapForkCaptureProvider()
 	return a
 }
 
@@ -1371,6 +1377,9 @@ func (a *Agent) Run(ctx context.Context, input string) (runErr error) {
 	}
 
 	_, state := a.beginRunTurn(ctx, input)
+	if a.forkRestore != nil {
+		a.forkRestore(state)
+	}
 	state.runMaxSteps = runMaxSteps
 	state.runMaxStepsKey = runMaxStepsKey
 	state.runLimitHostOwned = runLimitHostOwned
