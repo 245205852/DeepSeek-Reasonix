@@ -4,7 +4,7 @@
     "commented-code": 0,
     "complexity": 2056,
     "essay": 4028,
-    "file-size": 108465,
+    "file-size": 108472,
     "function-size": 9127,
     "layering": 1,
     "marker": 0,
@@ -132,7 +132,7 @@
       "file-size": 141
     },
     "desktop/frontend/src/components/SettingsPanel.tsx": {
-      "file-size": 6661
+      "file-size": 6664
     },
     "desktop/frontend/src/components/StatusBar.tsx": {
       "file-size": 23
