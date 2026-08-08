@@ -642,13 +642,24 @@ func isProviderArrayTableHeader(line string) bool {
 
 func rewriteDeepSeekProviderBlock(lines []string, block providerTOMLBlock) error {
 	kindLine, baseURLLine := -1, -1
+	state := tomlOutside
 	for i := block.start + 1; i < block.end; i++ {
+		if state != tomlOutside {
+			state = advanceTOMLStringState(state, lines[i])
+			continue
+		}
+		nextState := advanceTOMLStringState(tomlOutside, lines[i])
+		if nextState != tomlOutside {
+			state = nextState
+			continue
+		}
 		switch {
 		case isTOMLKeyAssignment(lines[i], "kind"):
 			kindLine = i
 		case isTOMLKeyAssignment(lines[i], "base_url"):
 			baseURLLine = i
 		}
+		state = nextState
 	}
 	if kindLine < 0 || baseURLLine < 0 {
 		return fmt.Errorf("upgrade DeepSeek protocol: provider table is missing kind or base_url")
@@ -661,7 +672,10 @@ func rewriteDeepSeekProviderBlock(lines []string, block providerTOMLBlock) error
 func replaceTOMLStringAssignment(line, value string) string {
 	carriageReturn := strings.HasSuffix(line, "\r")
 	line = strings.TrimSuffix(line, "\r")
-	equals := strings.IndexByte(line, '=')
+	equals, err := findTOMLAssignmentEquals(line, 0, len(line))
+	if err != nil {
+		equals = strings.IndexByte(line, '=')
+	}
 	if equals < 0 {
 		return line
 	}

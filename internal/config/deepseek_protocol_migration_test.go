@@ -257,6 +257,74 @@ reasoning_protocol = "none"
 	}
 }
 
+func TestDeepSeekProtocolMigrationSupportsQuotedKeys(t *testing.T) {
+	raw := `[[providers]]
+"name" = "deepseek-flash"
+'kind' = 'openai'
+"base_url" = 'https://api.deepseek.com'
+'model' = "deepseek-v4-flash"
+"api_key_env" = "DEEPSEEK_API_KEY"
+`
+	next, changed, err := rewriteLegacyDeepSeekProtocol(raw, "", true)
+	if err != nil {
+		t.Fatalf("rewrite quoted-key provider: %v", err)
+	}
+	if !changed {
+		t.Fatal("quoted-key provider was not migrated")
+	}
+	for _, want := range []string{
+		`'kind' = "anthropic"`,
+		`"base_url" = "https://api.deepseek.com/anthropic"`,
+	} {
+		if !strings.Contains(next, want) {
+			t.Errorf("migration changed or dropped %q:\n%s", want, next)
+		}
+	}
+	var decoded Config
+	if _, err := toml.Decode(next, &decoded); err != nil {
+		t.Fatalf("migrated quoted-key TOML is invalid: %v\n%s", err, next)
+	}
+	if len(decoded.Providers) != 1 || decoded.Providers[0].Kind != "anthropic" || decoded.Providers[0].BaseURL != deepSeekAnthropicBaseURL {
+		t.Fatalf("migrated quoted-key provider = %+v", decoded.Providers)
+	}
+}
+
+func TestManualDeepSeekProtocolUpgradeSkipsMultilineProviderText(t *testing.T) {
+	raw := `[[providers]]
+name = "deepseek-flash"
+kind = "openai"
+base_url = "https://api.deepseek.com"
+model = "deepseek-v4-flash"
+api_key_env = "DEEPSEEK_API_KEY"
+description = '''
+kind = "example"
+base_url = "https://example.invalid"
+'''
+`
+	next, changed, err := rewriteLegacyDeepSeekProtocol(raw, "deepseek", false)
+	if err != nil {
+		t.Fatalf("manual multiline upgrade: %v", err)
+	}
+	if !changed || !strings.Contains(next, `kind = "anthropic"`) || !strings.Contains(next, `base_url = "https://api.deepseek.com/anthropic"`) {
+		t.Fatalf("manual multiline upgrade mismatch:\n%s", next)
+	}
+	for _, want := range []string{
+		`kind = "example"`,
+		`base_url = "https://example.invalid"`,
+	} {
+		if !strings.Contains(next, want) {
+			t.Errorf("multiline provider text changed or dropped %q:\n%s", want, next)
+		}
+	}
+	var decoded Config
+	if _, err := toml.Decode(next, &decoded); err != nil {
+		t.Fatalf("migrated multiline TOML is invalid: %v\n%s", err, next)
+	}
+	if len(decoded.Providers) != 1 || decoded.Providers[0].Kind != "anthropic" {
+		t.Fatalf("migrated multiline provider = %+v", decoded.Providers)
+	}
+}
+
 func TestCanUpgradeDeepSeekProviderProtocolRejectsProxyButAllowsExplicitUpgradeOfCustomization(t *testing.T) {
 	base := ProviderEntry{
 		Name: "deepseek-flash", Kind: "openai", BaseURL: "https://api.deepseek.com",
