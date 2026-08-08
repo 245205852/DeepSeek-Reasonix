@@ -19,7 +19,11 @@ func render(results []result) string {
 			arm = results[0].Arm
 		}
 	}
-	return fmt.Sprintf("## 🤖 Reasonix e2e benchmark (%s · arm `%s`)\n\n", profile, arm) + renderBody(results)
+	cache := ""
+	if len(results) > 0 && results[0].CacheArm != "" && results[0].CacheArm != benchmarkCacheCold {
+		cache = " · " + results[0].CacheArm + "-cache"
+	}
+	return fmt.Sprintf("## 🤖 Reasonix e2e benchmark (%s · arm `%s`%s)\n\n", profile, arm, cache) + renderBody(results)
 }
 
 // suiteStats aggregates result entries; ran/pass1 count tasks (first
@@ -29,8 +33,8 @@ type suiteStats struct {
 	accounted, accountedSolved, unaccounted, unaccountedSolved, partial   int
 	pTok, cTok, hit, miss, compacts, tools, toolFails, steps, modelRounds int
 	cost                                                                  float64
-	walls, ttcs                                                           []int64
-	wallAccountedMs, wallTotalMs                                          int64
+	walls, ttcs, ttft                                                     []int64
+	wallAccountedMs, wallTotalMs, firstHit, firstMiss                     int64
 	currency                                                              string
 	classes, prefixChangeReasons                                          map[string]int
 	bySource                                                              map[string]sourceUsage
@@ -88,6 +92,11 @@ func gatherSuiteStats(results []result) suiteStats {
 		accumulateSources(s.bySource, r.UsageBySource)
 		if r.Trajectory != nil {
 			s.modelRounds += r.Trajectory.ModelRounds
+			if r.Trajectory.TTFTMs > 0 {
+				s.ttft = append(s.ttft, r.Trajectory.TTFTMs)
+			}
+			s.firstHit += r.Trajectory.FirstReqCacheHitTokens
+			s.firstMiss += r.Trajectory.FirstReqCacheMissTokens
 		}
 		s.cost += r.Cost
 		if r.Currency != "" {
@@ -115,6 +124,12 @@ func kpiLine(s suiteStats) string {
 	line += fmt.Sprintf(" · **TTCS median** %s · **TTCS p90** %s", dur(median(s.ttcs)), dur(pctile(s.ttcs, 90)))
 	if s.wallTotalMs > 0 {
 		line += fmt.Sprintf(" · **Solved/hour** %.1f", float64(s.passed)*3_600_000/float64(s.wallTotalMs))
+	}
+	if len(s.ttft) > 0 {
+		line += fmt.Sprintf(" · **TTFT median** %s", durMs(median(s.ttft)))
+	}
+	if s.firstHit+s.firstMiss > 0 {
+		line += fmt.Sprintf(" · **first-request cache hit** %s", pct(int(s.firstHit), int(s.firstHit+s.firstMiss)))
 	}
 	return line + "\n\n"
 }

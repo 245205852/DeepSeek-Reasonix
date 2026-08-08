@@ -115,6 +115,9 @@ type result struct {
 	// PhaseTrace is the per-task privacy-safe latency trace (counts and ms
 	// only); nil unless the run recorded a trajectory.
 	PhaseTrace *phaseTrace `json:"phase_trace,omitempty"`
+	// CacheArm records whether the run was cold (fresh session) or warm
+	// (prefix pre-warmed in the same workdir), so arms never get mixed.
+	CacheArm string `json:"cache_arm,omitempty"`
 	// Attempt is this entry's 1-based try for its task; suite retries stop at
 	// the first passing attempt. Zero on skipped entries and old JSON.
 	Attempt int `json:"attempt,omitempty"`
@@ -170,6 +173,7 @@ func main() {
 	keepImages := flag.Bool("keep-images", false, "swebench mode: keep instance images instead of removing them after each run")
 	suite := flag.String("suite", "benchmarks/e2e", "suite root (contains tasks/<id>/)")
 	taskFilter := flag.String("task", "", "suite mode: run only these comma-separated task IDs (e.g. -task fix-add-bug)")
+	cacheArm := flag.String("cache", "cold", "suite mode: cold (fresh session per task) | warm (prefix-warming one-step run in the same workdir before the graded run)")
 	bin := flag.String("bin", "reasonix", "path to the reasonix binary")
 	model := flag.String("model", "", "provider/model name (default: config default)")
 	profileFlag := flag.String("profile", benchmarkProfileBaseline, "prompt profile: baseline | delivery")
@@ -189,7 +193,8 @@ func main() {
 	flag.Parse()
 	profile, perr := normalizeBenchmarkProfile(*profileFlag)
 	arm, aerr := ablation.Parse(*ablateFlag)
-	if err := errors.Join(perr, aerr); err != nil {
+	cache, cerr := normalizeCacheArm(*cacheArm)
+	if err := errors.Join(perr, aerr, cerr); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(2)
 	}
@@ -245,7 +250,7 @@ func main() {
 		os.Exit(2)
 	}
 
-	results := runSuite(*bin, *model, profile, arm, tasks, *budget, *trajDir, *forcePlanner, *attempts)
+	results := runSuite(*bin, *model, profile, arm, tasks, *budget, *trajDir, *forcePlanner, *attempts, cache)
 
 	report := render(results)
 	if *outMD != "" {
@@ -358,7 +363,7 @@ func filterTasks(tasks []task, filter string) ([]task, error) {
 // task retries up to attempts times, stopping at the first passing attempt;
 // TTCS accumulates the failed attempts' wall too — a solution found on try 3
 // took three tries' worth of time to reach.
-func runSuite(bin, model, profile string, arm ablation.Set, tasks []task, budget int, trajDir string, forcePlanner bool, attempts int) []result {
+func runSuite(bin, model, profile string, arm ablation.Set, tasks []task, budget int, trajDir string, forcePlanner bool, attempts int, cacheArm string) []result {
 	var results []result
 	total := 0
 	for _, t := range tasks {
@@ -368,7 +373,7 @@ func runSuite(bin, model, profile string, arm ablation.Set, tasks []task, budget
 		}
 		var cumWallMs int64
 		for attempt := 1; attempt <= max(attempts, 1); attempt++ {
-			r := runTask(bin, model, profile, arm, t, trajDir, forcePlanner)
+			r := runTask(bin, model, profile, arm, t, trajDir, forcePlanner, cacheArm)
 			r.Attempt = attempt
 			cumWallMs += r.WallMs
 			if r.Passed {
@@ -387,8 +392,8 @@ func runSuite(bin, model, profile string, arm ablation.Set, tasks []task, budget
 // runTask copies the task's seed workdir into a temp dir, runs the agent there,
 // then drops in verify.sh and runs it as the grader. The grader is added only
 // after the run so the agent can't read the answer key.
-func runTask(bin, model, profile string, arm ablation.Set, t task, trajDir string, forcePlanner bool) result {
-	r := result{task: t, Profile: profile}
+func runTask(bin, model, profile string, arm ablation.Set, t task, trajDir string, forcePlanner bool, cacheArm string) result {
+	r := result{task: t, Profile: profile, CacheArm: cacheArm}
 	r.Arm = arm.Arm()
 	if forcePlanner {
 		// Leading directive matched by the planner gate's
@@ -419,6 +424,10 @@ func runTask(bin, model, profile string, arm ablation.Set, t task, trajDir strin
 			r.Note = "copy seed: " + err.Error()
 			return r
 		}
+	}
+
+	if cacheArm == benchmarkCacheWarm {
+		warmPrefix(bin, model, profile, arm, work)
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(t.TimeoutSec)*time.Second)
@@ -479,6 +488,32 @@ func buildRunTaskArgs(metricsPath, trajectoryPath, model, profile string, arm ab
 		args = append(args, "--ablate", arm.String())
 	}
 	return append(args, prompt)
+}
+
+// warmPrefix primes the provider prefix cache for work's session shape with a
+// minimal one-step run before the graded run starts its clock. Its cost is
+// deliberately untracked: the warm arm measures a long-lived session's steady
+// state, not the price of reaching it. Prefix-shaping flags (model, profile,
+// ablation, cwd) must match the graded invocation exactly.
+func warmPrefix(bin, model, profile string, arm ablation.Set, work string) {
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	defer cancel()
+	args := []string{"run", "--auto", "--max-steps", "1"}
+	if model != "" {
+		args = append(args, "--model", model)
+	}
+	args = appendBenchmarkProfileArgs(args, profile)
+	if !arm.Empty() {
+		args = append(args, "--ablate", arm.String())
+	}
+	args = append(args, "Reply with exactly: ok")
+	cmd := exec.CommandContext(ctx, bin, args...)
+	cmd.Dir = work
+	cmd.Stdout = os.Stderr
+	cmd.Stderr = os.Stderr
+	if err := cmd.Run(); err != nil {
+		fmt.Fprintln(os.Stderr, "warm-cache pass:", err)
+	}
 }
 
 func grade(work, taskDir string) bool {

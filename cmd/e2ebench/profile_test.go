@@ -69,6 +69,17 @@ func TestNormalizeBenchmarkProfile(t *testing.T) {
 	}
 }
 
+func TestNormalizeCacheArm(t *testing.T) {
+	for input, want := range map[string]string{"": "cold", "cold": "cold", " WARM ": "warm"} {
+		if got, err := normalizeCacheArm(input); err != nil || got != want {
+			t.Fatalf("normalizeCacheArm(%q) = %q, %v", input, got, err)
+		}
+	}
+	if _, err := normalizeCacheArm("hot"); err == nil {
+		t.Fatal("unknown cache arm should fail")
+	}
+}
+
 func TestAppendBenchmarkProfileArgsPassesToolSurfaceTiers(t *testing.T) {
 	for _, tier := range []string{"economy", "balanced"} {
 		got := appendBenchmarkProfileArgs([]string{"run"}, tier)

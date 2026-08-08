@@ -45,10 +45,11 @@ func requestsBySourceLine(bySource map[string]sourceUsage) string {
 type armStats struct {
 	Ran, Pass1, Solved, AccountedSolved int
 	Steps, Tools, Rounds, PlannerCalls  int
-	Tokens                              int
+	Tokens, Hit, Miss                   int
 	Cost                                float64
 	WallMs                              int64
-	TTCS                                []int64
+	FirstHit, FirstMiss                 int64
+	TTCS, TTFT                          []int64
 	ByClass                             map[string]classStats
 }
 
@@ -101,11 +102,18 @@ func aggregateArm(results []result) armStats {
 		s.Steps += r.Steps
 		s.Tools += r.ToolCalls
 		s.Tokens += r.PromptTokens + r.CompletionTokens
+		s.Hit += r.CacheHitTokens
+		s.Miss += r.CacheMissTokens
 		s.Cost += r.Cost
 		s.WallMs += r.WallMs
 		s.PlannerCalls += r.UsageBySource["planner"].Calls
 		if r.Trajectory != nil {
 			s.Rounds += r.Trajectory.ModelRounds
+			if r.Trajectory.TTFTMs > 0 {
+				s.TTFT = append(s.TTFT, r.Trajectory.TTFTMs)
+			}
+			s.FirstHit += r.Trajectory.FirstReqCacheHitTokens
+			s.FirstMiss += r.Trajectory.FirstReqCacheMissTokens
 		}
 	}
 	return s
@@ -155,8 +163,8 @@ func loadArm(path string) (armStats, error) {
 func multiCompareReport(paths []string) (string, error) {
 	var b strings.Builder
 	fmt.Fprintf(&b, "## e2ebench comparison: %d arms\n\n", len(paths))
-	b.WriteString("| Arm | Pass@1 | Solved | TTCS median | TTCS p90 | Solved/hour | Requests/solved | Tokens/solved | Cost/solved |\n")
-	b.WriteString("|---|---:|---:|---:|---:|---:|---:|---:|---:|\n")
+	b.WriteString("| Arm | Pass@1 | Solved | TTFT | TTCS median | TTCS p90 | Solved/hour | 1st-req cache | Requests/solved | Tokens/solved | Cost/solved |\n")
+	b.WriteString("|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|\n")
 	points := make([]paretoPoint, 0, len(paths))
 	for _, path := range paths {
 		s, err := loadArm(path)
@@ -212,6 +220,12 @@ func compareReports(pathA, pathB string) (string, error) {
 	fmt.Fprintf(&b, "## e2ebench A/B: `%s` vs `%s`\n\n", pathA, pathB)
 	fmt.Fprintf(&b, "| Metric | A | B |\n|---|---:|---:|\n")
 	fmt.Fprintf(&b, "| Solved | %d/%d (%s) | %d/%d (%s) |\n", a.Solved, a.Ran, pct(a.Solved, a.Ran), bStats.Solved, bStats.Ran, pct(bStats.Solved, bStats.Ran))
+	fmt.Fprintf(&b, "| Pass@1 | %s | %s |\n", pct(a.Pass1, a.Ran), pct(bStats.Pass1, bStats.Ran))
+	fmt.Fprintf(&b, "| TTFT median | %s | %s |\n", durMs(median(a.TTFT)), durMs(median(bStats.TTFT)))
+	fmt.Fprintf(&b, "| TTCS median | %s | %s |\n", dur(median(a.TTCS)), dur(median(bStats.TTCS)))
+	fmt.Fprintf(&b, "| TTCS p90 | %s | %s |\n", dur(pctile(a.TTCS, 90)), dur(pctile(bStats.TTCS, 90)))
+	fmt.Fprintf(&b, "| Cache hit | %s | %s |\n", pct(a.Hit, a.Hit+a.Miss), pct(bStats.Hit, bStats.Hit+bStats.Miss))
+	fmt.Fprintf(&b, "| First-request cache hit | %s | %s |\n", pct(int(a.FirstHit), int(a.FirstHit+a.FirstMiss)), pct(int(bStats.FirstHit), int(bStats.FirstHit+bStats.FirstMiss)))
 	fmt.Fprintf(&b, "| Model requests / solved | %s | %s |\n", perSolved(float64(a.Steps), a.AccountedSolved), perSolved(float64(bStats.Steps), bStats.AccountedSolved))
 	fmt.Fprintf(&b, "| Planner requests / solved | %s | %s |\n", perSolved(float64(a.PlannerCalls), a.AccountedSolved), perSolved(float64(bStats.PlannerCalls), bStats.AccountedSolved))
 	fmt.Fprintf(&b, "| Model rounds / solved | %s | %s |\n", perSolved(float64(a.Rounds), a.AccountedSolved), perSolved(float64(bStats.Rounds), bStats.AccountedSolved))

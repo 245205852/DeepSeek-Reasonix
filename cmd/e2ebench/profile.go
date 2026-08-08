@@ -36,3 +36,19 @@ func appendBenchmarkProfileArgs(args []string, profile string) []string {
 	}
 	return append(args, "--profile", profile)
 }
+
+const (
+	benchmarkCacheCold = "cold"
+	benchmarkCacheWarm = "warm"
+)
+
+func normalizeCacheArm(arm string) (string, error) {
+	switch strings.ToLower(strings.TrimSpace(arm)) {
+	case "", benchmarkCacheCold:
+		return benchmarkCacheCold, nil
+	case benchmarkCacheWarm:
+		return benchmarkCacheWarm, nil
+	default:
+		return "", fmt.Errorf("unknown cache arm %q (want cold or warm)", arm)
+	}
+}

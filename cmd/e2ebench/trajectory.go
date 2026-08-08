@@ -90,6 +90,11 @@ type trajectorySummary struct {
 	PromptTokensSeen  int64 `json:"prompt_tokens_seen,omitempty"`  // Σ prompt tokens (schema share denominator)
 	PrefixResets      int   `json:"prefix_resets,omitempty"`       // usage events with prefixChanged
 	ConnectCalls      int   `json:"connect_calls,omitempty"`       // connect_tool_source dispatches
+
+	// Cold/warm evidence: the first top-level request's cache split. A cold
+	// session pays the whole prefix as miss; a warmed one starts near-hit.
+	FirstReqCacheHitTokens  int64 `json:"first_req_cache_hit_tokens,omitempty"`
+	FirstReqCacheMissTokens int64 `json:"first_req_cache_miss_tokens,omitempty"`
 }
 
 // toolWall is the best available tool wall-clock: interval union when the
@@ -116,6 +121,8 @@ type trajectoryRecord struct {
 		Usage *struct {
 			Source           string `json:"source"`
 			PromptTokens     int64  `json:"promptTokens"`
+			CacheHitTokens   int64  `json:"cacheHitTokens"`
+			CacheMissTokens  int64  `json:"cacheMissTokens"`
 			CacheDiagnostics *struct {
 				ToolSchemaTokens int64 `json:"toolSchemaTokens"`
 				PrefixChanged    bool  `json:"prefixChanged"`
@@ -392,6 +399,10 @@ func (t *trajScan) recordModelPhase(rec trajectoryRecord) {
 			return
 		default:
 			t.s.ExecutorRequests++
+		}
+		if t.s.PromptTokensSeen == 0 && u.PromptTokens > 0 {
+			t.s.FirstReqCacheHitTokens = u.CacheHitTokens
+			t.s.FirstReqCacheMissTokens = u.CacheMissTokens
 		}
 		t.s.PromptTokensSeen += u.PromptTokens
 		if d := u.CacheDiagnostics; d != nil {

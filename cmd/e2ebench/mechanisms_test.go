@@ -72,6 +72,24 @@ func TestSummarizeTrajectoryCollectsToolSurface(t *testing.T) {
 	}
 }
 
+func TestKPILineIncludesTTFTAndFirstRequestCacheHit(t *testing.T) {
+	cold := result{task: task{ID: "a"}, Passed: true, WallMs: 10_000, Attempt: 1, TTCSMs: 10_000}
+	cold.Trajectory = &trajectorySummary{
+		TTFTMs:                  2800,
+		FirstReqCacheHitTokens:  400,
+		FirstReqCacheMissTokens: 13_600,
+	}
+	got := renderBody([]result{cold})
+	for _, want := range []string{
+		"**TTFT median** 2.8s",
+		"**first-request cache hit** 3%",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("KPI line missing %q:\n%s", want, got)
+		}
+	}
+}
+
 func TestRenderToolSurfaceLine(t *testing.T) {
 	r := result{task: task{ID: "a"}, Passed: true}
 	r.Trajectory = &trajectorySummary{
