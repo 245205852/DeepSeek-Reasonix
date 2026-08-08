@@ -57,6 +57,10 @@ func (s *Sink) RecordOutcomeProgress(sample evidence.OutcomeSample) {
 	event.RecordOutcomeProgress(s.inner, sample)
 }
 
+func (s *Sink) RecordDelegationAdmission(a event.DelegationAdmissionAudit) {
+	event.RecordDelegationAdmission(s.inner, a)
+}
+
 // SendEvent applies the same notification rules for paths that do not emit through Sink.
 func SendEvent(sender Sender, cfg config.NotificationsConfig, e event.Event) {
 	if !cfg.Enabled || sender == nil {

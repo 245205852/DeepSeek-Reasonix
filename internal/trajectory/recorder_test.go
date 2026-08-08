@@ -110,13 +110,14 @@ func TestRecorderRecordsAndForwardsOptionalCapabilities(t *testing.T) {
 	r.RecordProtocolRecovery(event.ProtocolRecoveryAudit{Kind: event.ProtocolRecoveryMissingReasoningDetected})
 	r.RecordTurnCompletion()
 	r.RecordOutcomeProgress(evidence.OutcomeSample{Round: 3, Exploration: 2, Objective: 1, LegacyGain: 4})
+	r.RecordDelegationAdmission(event.DelegationAdmissionAudit{Tool: "research", Verdict: "deny", Reason: "local_fix_no_external_need", Intent: "mutation"})
 	if err := r.Close(); err != nil {
 		t.Fatalf("Close: %v", err)
 	}
 
 	recs := readRecords(t, path)
-	if len(recs) != 4 {
-		t.Fatalf("got %d records, want 4", len(recs))
+	if len(recs) != 5 {
+		t.Fatalf("got %d records, want 5", len(recs))
 	}
 	if recs[0].ReadinessAudit == nil || recs[0].ReadinessAudit.Result != "blocked" || recs[0].ReadinessAudit.MissingVerification != 2 {
 		t.Errorf("readiness record = %+v", recs[0].ReadinessAudit)
@@ -129,6 +130,9 @@ func TestRecorderRecordsAndForwardsOptionalCapabilities(t *testing.T) {
 	}
 	if recs[3].OutcomeProgress == nil || recs[3].OutcomeProgress.Round != 3 || recs[3].OutcomeProgress.Objective != 1 || recs[3].OutcomeProgress.LegacyGain != 4 {
 		t.Errorf("outcome progress record = %+v", recs[3].OutcomeProgress)
+	}
+	if recs[4].DelegationAdmission == nil || recs[4].DelegationAdmission.Verdict != "deny" || recs[4].DelegationAdmission.Tool != "research" {
+		t.Errorf("delegation admission record = %+v", recs[4].DelegationAdmission)
 	}
 	if len(inner.readiness) != 1 || len(inner.recoveries) != 1 || inner.turns != 1 || len(inner.outcomes) != 1 {
 		t.Errorf("inner capabilities = %d/%d/%d/%d, want 1/1/1/1", len(inner.readiness), len(inner.recoveries), inner.turns, len(inner.outcomes))
