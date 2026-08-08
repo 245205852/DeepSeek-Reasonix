@@ -208,6 +208,10 @@ for designing the project logo, and to
   <sub>Built by the community at <a href="https://github.com/esengine/DeepSeek-Reasonix/graphs/contributors">esengine/DeepSeek-Reasonix</a></sub>
 </p>
 
+<p align="center">
+  <video src="https://github.com/user-attachments/assets/ab2f3878-e224-4931-8254-060e7695cfb9" controls></video>
+</p>
+
 ---
 
 <p align="center"><sub><strong>Support this project</strong></sub></p>
@@ -223,6 +227,3 @@ issues get triaged.
   <img src=".github/sponsor/wechat-pay.jpg" alt="WeChat Pay QR code" width="180"/>
 </p>
 
-<p align="center">
-  <video src="https://github.com/user-attachments/assets/ab2f3878-e224-4931-8254-060e7695cfb9" controls></video>
-</p>
