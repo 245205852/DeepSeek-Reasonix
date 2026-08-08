@@ -46,10 +46,6 @@ func (o *turnOrchestrator) runTurnWithImageRefsRawDisplay(ctx context.Context, i
 	return o.runOrchestratedTurn(ctx, orchestratedTurn{input: input, raw: raw, imageRefs: imageRefs, display: display})
 }
 
-func (o *turnOrchestrator) runEditedTurnWithRawDisplay(ctx context.Context, input, raw, display, original string) error {
-	return o.runOrchestratedTurn(ctx, orchestratedTurn{input: input, raw: raw, display: display, editedOriginal: original})
-}
-
 func (o *turnOrchestrator) runEditedTurnWithImageRefsRawDisplay(ctx context.Context, input, raw, imageRefs, display, original string) error {
 	return o.runOrchestratedTurn(ctx, orchestratedTurn{input: input, raw: raw, imageRefs: imageRefs, display: display, editedOriginal: original})
 }

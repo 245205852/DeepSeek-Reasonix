@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net/url"
 	"os"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -510,9 +511,10 @@ func scanTOMLOutsideStrings(raw string, start, end int, visit func(int, byte) bo
 				i++
 				continue
 			}
-			if ch == '\\' {
+			switch ch {
+			case '\\':
 				escaped = true
-			} else if ch == '"' {
+			case '"':
 				state = outside
 			}
 			i++
@@ -624,8 +626,7 @@ func findTOMLAssignmentEquals(raw string, start, end int) (int, error) {
 
 func applyTOMLReplacements(raw string, replacements []tomlReplacement) string {
 	sort.Slice(replacements, func(i, j int) bool { return replacements[i].start < replacements[j].start })
-	for i := len(replacements) - 1; i >= 0; i-- {
-		r := replacements[i]
+	for _, r := range slices.Backward(replacements) {
 		raw = raw[:r.start] + r.value + raw[r.end:]
 	}
 	return raw
