@@ -2,14 +2,14 @@
   "limits": {
     "banner": 0,
     "commented-code": 0,
-    "complexity": 2056,
+    "complexity": 2063,
     "essay": 4022,
-    "file-size": 108820,
-    "function-size": 9159,
+    "file-size": 108864,
+    "function-size": 9163,
     "layering": 1,
     "marker": 0,
     "narrative": 61,
-    "test-file-size": 68231
+    "test-file-size": 68306
   },
   "files": {
     "cmd/e2ebench/main.go": {
@@ -260,7 +260,7 @@
     "desktop/settings_app.go": {
       "complexity": 25,
       "essay": 28,
-      "file-size": 3055,
+      "file-size": 3067,
       "function-size": 50
     },
     "desktop/settings_app_test.go": {
@@ -944,7 +944,7 @@
     },
     "internal/config/config.go": {
       "essay": 58,
-      "file-size": 1494,
+      "file-size": 1519,
       "narrative": 2
     },
     "internal/config/credentials.go": {
@@ -965,10 +965,10 @@
     },
     "internal/config/edit.go": {
       "essay": 15,
-      "file-size": 1678
+      "file-size": 1681
     },
     "internal/config/edit_test.go": {
-      "test-file-size": 2305
+      "test-file-size": 2380
     },
     "internal/config/effort.go": {
       "complexity": 9,
@@ -1016,10 +1016,10 @@
       "file-size": 272
     },
     "internal/config/render.go": {
-      "complexity": 242,
+      "complexity": 249,
       "essay": 2,
-      "file-size": 1004,
-      "function-size": 956
+      "file-size": 1008,
+      "function-size": 960
     },
     "internal/config/render_test.go": {
       "test-file-size": 761

@@ -2092,6 +2092,81 @@ func TestSaveToExistingProjectRemovesResetSkillOverrides(t *testing.T) {
 	}
 }
 
+func TestSaveToExistingProjectPreservesExplicitSkillDefaults(t *testing.T) {
+	projectPath := filepath.Join(t.TempDir(), "reasonix.toml")
+	if err := os.WriteFile(projectPath, []byte("[skills]\npaths = [\"project-skills\"]\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := LoadForEditReadOnlyStrict(projectPath)
+	if err != nil {
+		t.Fatalf("load project config: %v", err)
+	}
+	cfg.Skills.Paths = nil
+	cfg.Skills.ExcludedPaths = nil
+	cfg.Skills.DisabledSkills = nil
+	cfg.Skills.DisableImplicitInvocation = false
+	cfg.Skills.MaxDepth = 0
+	for _, key := range projectSkillKeys {
+		if err := cfg.KeepProjectSkillKey(key); err != nil {
+			t.Fatalf("keep %s: %v", key, err)
+		}
+	}
+	if err := cfg.SaveTo(projectPath); err != nil {
+		t.Fatalf("save explicit project defaults: %v", err)
+	}
+	body, err := os.ReadFile(projectPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(body)
+	for _, want := range []string{
+		"paths = []",
+		"excluded_paths = []",
+		"disabled_skills = []",
+		"disable_implicit_invocation = false",
+		"max_depth = 0",
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("explicit project default %q missing from:\n%s", want, text)
+		}
+	}
+}
+
+func TestExplicitProjectSkillDefaultOverridesUserConfig(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("REASONIX_HOME", home)
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	project := t.TempDir()
+	user := Default()
+	user.Skills.DisableImplicitInvocation = true
+	if err := user.SaveTo(UserConfigPath()); err != nil {
+		t.Fatalf("save user config: %v", err)
+	}
+	projectPath := filepath.Join(project, "reasonix.toml")
+	if err := os.WriteFile(projectPath, []byte("[skills]\ndisable_implicit_invocation = true\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := LoadForEditReadOnlyStrict(projectPath)
+	if err != nil {
+		t.Fatalf("load project config: %v", err)
+	}
+	cfg.SetSkillImplicitInvocation(true)
+	if err := cfg.KeepProjectSkillKey("disable_implicit_invocation"); err != nil {
+		t.Fatal(err)
+	}
+	if err := cfg.SaveTo(projectPath); err != nil {
+		t.Fatalf("save project override: %v", err)
+	}
+	effective, err := LoadForRootReadOnly(project)
+	if err != nil {
+		t.Fatalf("load effective config: %v", err)
+	}
+	if !effective.ImplicitSkillInvocationEnabled() {
+		t.Fatalf("project explicit false did not override user config: %+v", effective.Skills)
+	}
+}
+
 func TestSaveToExistingProjectRemovesMultilineSkillArray(t *testing.T) {
 	projectPath := filepath.Join(t.TempDir(), "reasonix.toml")
 	original := "[skills]\npaths = [\n  \"project-skills\",\n  \"shared-skills\",\n]\n\n[permissions]\nmode = \"ask\"\n"

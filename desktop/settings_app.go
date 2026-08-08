@@ -1316,11 +1316,18 @@ func (a *App) applyConfigChange(mutate func(*config.Config) error) error {
 // writing only the user config would make the UI appear to save while the
 // active project continued using its old value.
 func (a *App) applySkillConfigChange(field, setting string, mutate func(*config.Config) error) error {
+	return a.applySkillConfigChangeForFields([]string{field}, setting, mutate)
+}
+
+func (a *App) applySkillConfigChangeForFields(fields []string, setting string, mutate func(*config.Config) error) error {
 	workspaceRoot := a.activeWorkspaceRoot()
 	projectPath := config.SourcePathForRoot(workspaceRoot)
-	projectOwned := strings.TrimSpace(projectPath) != "" &&
-		!config.IsUserConfigPath(projectPath) &&
-		config.ConfigFileDefinesSkillKey(projectPath, field)
+	projectOwned := strings.TrimSpace(projectPath) != "" && !config.IsUserConfigPath(projectPath)
+	if projectOwned {
+		projectOwned = slices.ContainsFunc(fields, func(field string) bool {
+			return config.ConfigFileDefinesSkillKey(projectPath, field)
+		})
+	}
 	if !projectOwned {
 		return a.applyConfigChange(mutate)
 	}
@@ -1339,6 +1346,11 @@ func (a *App) applySkillConfigChange(field, setting string, mutate func(*config.
 		}
 		if err := mutate(cfg); err != nil {
 			return err
+		}
+		for _, field := range fields {
+			if err := cfg.KeepProjectSkillKey(field); err != nil {
+				return err
+			}
 		}
 		return cfg.SaveTo(projectPath)
 	}(); err != nil {

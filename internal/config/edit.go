@@ -1690,6 +1690,9 @@ func projectSkillsKeysToRemove(body string, c *Config) bool {
 var projectSkillKeys = [...]string{"paths", "excluded_paths", "disabled_skills", "disable_implicit_invocation", "max_depth"}
 
 func projectSkillKeyIsDefault(c *Config, key string) bool {
+	if c != nil && c.keepsProjectSkillKey(key) {
+		return false
+	}
 	switch key {
 	case "paths":
 		return len(c.Skills.Paths) == 0

@@ -76,11 +76,36 @@ type Config struct {
 	pluginPackageOwners        map[string]string
 	pluginPackageSkillOwners   map[string][]string
 	pluginPackageAgentOwners   map[string][]string
-	editLoadErr                error
+	// explicitProjectSkillKeys records project-level skill fields that the
+	// settings UI intentionally owns even when their value equals the built-in
+	// default. It is transient edit metadata and is never serialized directly.
+	explicitProjectSkillKeys map[string]bool
+	editLoadErr              error
 	// loadWarnings are non-fatal issues observed while loading config (corrupt
 	// user/project files recovered via last-known-good or defaults). They never
 	// rewrite the original file; the UI may surface them for doctor repair.
 	loadWarnings []string
+}
+
+// KeepProjectSkillKey marks a skill field as an intentional project override.
+// An explicit empty/false project value must still be written so it can
+// override a non-default user setting in the layered configuration.
+func (c *Config) KeepProjectSkillKey(key string) error {
+	key = strings.TrimSpace(key)
+	switch key {
+	case "paths", "excluded_paths", "disabled_skills", "disable_implicit_invocation", "max_depth":
+	default:
+		return fmt.Errorf("unknown project skill key %q", key)
+	}
+	if c.explicitProjectSkillKeys == nil {
+		c.explicitProjectSkillKeys = make(map[string]bool)
+	}
+	c.explicitProjectSkillKeys[key] = true
+	return nil
+}
+
+func (c *Config) keepsProjectSkillKey(key string) bool {
+	return c != nil && c.explicitProjectSkillKeys[key]
 }
 
 type promptFileSource uint8
