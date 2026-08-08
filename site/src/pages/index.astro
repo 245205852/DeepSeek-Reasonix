@@ -11,9 +11,6 @@ const vscodeMarketplace = 'https://marketplace.visualstudio.com/items?itemName=S
 const openVsx = 'https://open-vsx.org/extension/SivanLiu/reasonix-agent';
 const vscodeExtensionRepo = 'https://github.com/SivanCola/reasonix-vscode';
 
-// Release versions are resolved in the browser from the live channel pointers.
-// Static markup says "latest" and uses durable fallbacks instead of baking a
-// stale version into every link when a build-time network request fails.
 const goVer = 'latest';
 
 const fmtN = (n) => Number(n).toLocaleString('en-US');
@@ -431,7 +428,7 @@ const ld = {
   </footer>
 
   <script>
-    // Subtle hover particles for the hero install cards.
+
     if (!matchMedia('(prefers-reduced-motion: reduce)').matches) {
       document.querySelectorAll('.install-option').forEach((col) => {
         const canvas = col.querySelector('.particle-canvas');
@@ -440,7 +437,6 @@ const ld = {
         let particles = [];
         let rafId = null;
 
-        // 性能提示
         canvas.style.willChange = 'transform';
 
         function resize() {
@@ -475,10 +471,8 @@ const ld = {
           const mx = e.clientX - r.left;
           const my = e.clientY - r.top;
 
-          // 限制最大粒子数，防止快速移动时堆积
           if (particles.length > 80) return;
 
-          // 每次 2 个，更饱满
           for (let i = 0; i < 2; i++) {
             particles.push({
               x: mx + (Math.random() - 0.5) * 20,
