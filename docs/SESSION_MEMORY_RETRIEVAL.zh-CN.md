@@ -72,6 +72,8 @@ Reasonix 识别 `REASONIX.md`、`AGENTS.md`、`CLAUDE.md`，以及对应的 `.lo
 - 相互独立的 `type` 与 `scope`；
 - 可选的检索 `keywords` —— 关键词的同义词与双语别名，让换一种说法或换一种
   语言的提问也能命中这条事实；
+- 可选的 `subject_key` —— 点号分隔的键，标明这条事实回答的是哪个问题
+  （`project.package_manager`、`user.response_style`）；
 - Markdown 正文。
 
 `type` 表示内容类别：
@@ -87,6 +89,11 @@ Reasonix 识别 `REASONIX.md`、`AGENTS.md`、`CLAUDE.md`，以及对应的 `.lo
 - `global` 必须显式选择。
 
 type 不推导 scope。项目反馈仍只属于项目，全局 reference 仍然是 reference。
+
+subject key 是知识冲突模型：同一 scope 内每个 subject 至多一个 active 值。对已被
+占用的 subject 再存新事实会被拒绝并给出持有者的 id——于是 "npm → pnpm" 成为同一
+事实的新 revision，而不是两条互相矛盾、同时活跃的事实。`/memory subjects` 列出在用
+的 key；回答同一 subject 的事实在覆盖与召回抑制中视为等价，与它们的 name/title 无关。
 
 当等价的项目事实和全局事实同时存在时，自动召回使用项目事实。Context Center 和
 `/memory` 仍展示两者，并解释覆盖关系，而不是删除或隐藏任何来源。

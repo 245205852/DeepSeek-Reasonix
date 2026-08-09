@@ -82,6 +82,8 @@ Each fact is a Markdown file with:
 - an independent `type` and `scope`;
 - optional search `keywords` — aliases and translations of key terms that let
   a paraphrased or cross-language query reach the fact;
+- an optional `subject_key` — a dotted key naming the question the fact
+  answers (`project.package_manager`, `user.response_style`);
 - the Markdown body.
 
 `type` classifies the content:
@@ -98,6 +100,13 @@ Each fact is a Markdown file with:
 
 Type does not imply scope. Project feedback remains project-local, and a global
 reference remains a reference.
+
+A subject key is the knowledge-conflict model: one scope holds at most one
+active value per subject. Saving a second fact for a held subject is rejected
+with the holder's id, so "npm → pnpm" becomes a revision of one fact instead
+of two contradicting facts both staying active. `/memory subjects` lists the
+keys in use; facts answering the same subject count as equivalent for
+overrides and recall suppression regardless of their names and titles.
 
 When equivalent project and global facts exist, automatic recall uses the
 project fact. Both remain visible in Context Center and `/memory`, with the

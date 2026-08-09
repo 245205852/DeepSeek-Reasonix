@@ -353,6 +353,12 @@ func recallIdentityKeys(memory Memory) []string {
 	if title := normalizedRecallTitle(memory.Title); title != "" {
 		keys = append(keys, "title:"+title)
 	}
+	// Subject keys make equivalence semantic: two facts answering the same
+	// question are the same identity for overrides and suppression, however
+	// their names and titles differ.
+	if subject := NormalizeSubjectKey(memory.SubjectKey); subject != "" {
+		keys = append(keys, "subject:"+subject)
+	}
 	return keys
 }
 
