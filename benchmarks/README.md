@@ -254,3 +254,27 @@ go run ./benchmarks/context-maintenance-e2e comprehension
   `--profile`, `--ablate`).
 - [`cmd/e2ebench/main.go`](../cmd/e2ebench/main.go) — suite runner and report
   renderer.
+
+## memorybench
+
+The memory-effectiveness suite. Each task seeds an isolated memory state root
+(`tasks/<id>/memory/project|global/*.md`, production frontmatter) before the
+run; `memory_markers` in task.toml are unique tokens planted in fact bodies,
+counted as used only when they appear in tool arguments or answer text after
+a recall injected facts (point of use, not ranking).
+
+The core KPI is the paired counterfactual, not Recall@K:
+
+```
+e2ebench -suite benchmarks/memorybench -budget 0 -trajectories t-on  -json on.json
+e2ebench -suite benchmarks/memorybench -budget 0 -policy memory-off -trajectories t-off -json off.json
+e2ebench -mode compare on.json off.json     # Memory utility section
+```
+
+Utility delta = paired Pass(on) − Pass(off). Harmful attribution is paired,
+never judged: the same task passed without memory and failed with it while
+recall fired. Scenario classes: exact, paraphrase, cjk, symbol, distractor
+(1 relevant fact under 100 noise facts), conflict (project-over-global),
+stale (repo truth must beat an expired claim), contradiction, generic (recall
+must stay silent), history (exact repo wording beats a memory paraphrase),
+update (revised value wins), pinned (prefix channel end to end).
