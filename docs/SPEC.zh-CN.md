@@ -305,6 +305,24 @@ id 默认取 1 起的序号。重复 id、指向不存在任务的 id、自环�
 
 `internal/agent/spawn_boundary_test.go` 登记了仍然直接调用底层 runner 的文件，出现新的就失败。剩余条目——`internal/boot`（skill runners）、`internal/cli/review.go`、`desktop/subagents_app.go`——是已知负债，不是先例。
 
+### 3.16 MCP 并发：read-only 不等于 stateless
+
+子智能体共享一个 session Host 及其连接，各自持有独立的 `use_capability` 前端与 ledger。对 stdio 服务器而言，这意味着它们共享同一个进程——以及那个进程的会话状态。
+
+read-only 并不蕴含 stateless。浏览器类服务器会打开页面、切换标签、滚动；这些工具**完全可能诚实地声明 `readOnly`**（确实没有任何东西落到文件系统），但两个子智能体并发调用它，就会在彼此都看不见的状态上交错。写声明在这里帮不上忙——根本没有可声明的东西。
+
+因此每个已配置服务器带一条并发策略：
+
+```toml
+[[mcp.servers]]
+name = "browser"
+concurrency = "serial"   # parallel（默认）| serial
+```
+
+`serial` 表示整个 session 内该服务器同一时刻只跑一次调用，无论由哪个子智能体发起。闸门放在共享 runtime 上，因为被交错的那个进程正好就是这个作用域共享的；排队中的调用仍然响应自身的取消。名字看起来是已知有状态的服务器（browser、playwright、puppeteer、chrome、chromium、selenium）默认 `serial`；显式配置永远优先，其余一律保持 parallel，共享 Host 的性能取舍不变。
+
+这是刻意保守的第一版：**一个服务器一条策略，而非按 capability**。按工具的 `parallel_safe` / `exclusive` 提示与显式 `concurrency_key` 分组是后续细化，等真实服务器暴露出同一服务器内工具确有差异时再做。
+
 ## 4. 数据类型
 
 provider 层的核心类型包括 `Role`、`Message`、`ToolCall`、`ToolSchema`、`Request` 和 streaming `Chunk`。`Message` 保留 `tool_calls`、`tool_call_id` 与 `name`；`Chunk` 区分 text、tool call、done 和 error。字段定义以英文规范及 `internal/provider` 源码为准。

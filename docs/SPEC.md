@@ -789,6 +789,39 @@ low-level runners directly and fails on any new one. The remaining entries —
 `internal/boot` (skill runners), `internal/cli/review.go`, and
 `desktop/subagents_app.go` — are known debt, not precedent.
 
+### 3.16 MCP concurrency: read-only is not stateless
+
+Sub-agents share one session Host and its connections while each keeps its own
+`use_capability` frontend and ledger. For a stdio server that means they share
+one process, and therefore its session state.
+
+Read-only does not imply stateless. A browser server opens a page, selects a
+tab, scrolls; every one of those tools may honestly declare `readOnly` because
+nothing reaches the filesystem, yet two children calling it concurrently
+interleave on state neither of them can see. Write claims do not help — there is
+nothing to claim.
+
+A configured server therefore carries a concurrency policy:
+
+```toml
+[[mcp.servers]]
+name = "browser"
+concurrency = "serial"   # parallel (default) | serial
+```
+
+`serial` means the runtime never runs two calls to that server at once across
+the whole session, whichever child issues them. The gate lives on the shared
+runtime because the process being interleaved on is shared at exactly that
+scope, and a call waiting on it still honours its own cancellation. Servers
+whose names look known-stateful (browser, playwright, puppeteer, chrome,
+chromium, selenium) default to `serial`; explicit configuration always wins, and
+everything else stays parallel so the shared-Host tradeoff is unchanged.
+
+This is deliberately the conservative first version: one policy per server, not
+per capability. Per-tool `parallel_safe` / `exclusive` hints and explicit
+`concurrency_key` grouping are the later refinement, once real servers show
+which tools within one server genuinely differ.
+
 ## 4. Data Types (`internal/provider`)
 
 ```go
