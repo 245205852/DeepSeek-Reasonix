@@ -9,7 +9,6 @@ import {
   projectTreeReadActivityKey,
   projectTreeTopicHasUnreadActivity,
   projectTreeTopicArchiveBlocked,
-  projectTreeTrashingTopics,
   projectTreeShouldRenderTopicActions,
   projectTreeTopicMetaLine,
   arrangeClassicProjectTree,
@@ -19,6 +18,7 @@ import {
   projectTreeTopicMenuOffersPin,
   projectTreeDedupedExactTime,
 } from "../components/ProjectTree";
+import { projectTreeTrashingTopics } from "../lib/projectTreeArchive";
 import type { ProjectNode } from "../lib/types";
 
 let passed = 0;

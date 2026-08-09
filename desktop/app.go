@@ -45,7 +45,6 @@ import (
 	"reasonix/internal/fileref"
 	fileenc "reasonix/internal/fileutil/encoding"
 	"reasonix/internal/i18n"
-	"reasonix/internal/jobs"
 	"reasonix/internal/mcpdiag"
 	"reasonix/internal/mcpregistry"
 	"reasonix/internal/memory"
@@ -3510,132 +3509,6 @@ func (a *App) sessionDeleteFallbackTarget(target fallbackRuntimeTarget) fallback
 	return target
 }
 
-func (a *App) captureTopicRuntimeBindings(topicID string) []removedSessionRuntime {
-	a.mu.RLock()
-	defer a.mu.RUnlock()
-	var captured []removedSessionRuntime
-	for _, tabs := range []map[string]*WorkspaceTab{a.tabs, a.detachedSessions} {
-		for _, tab := range tabs {
-			if tab == nil || tab.TopicID != topicID {
-				continue
-			}
-			captured = append(captured, removedRuntimeFromTab(
-				tab,
-				tabRuntimeSessionDir(tab),
-				canonicalTabSessionPath(tab.currentSessionPath()),
-			))
-		}
-	}
-	return captured
-}
-
-// snapshotTopicRuntimeBindings preserves failure atomicity for topic archive:
-// bindings remain visible and usable until every writable controller has
-// snapshotted successfully. The caller owns the runtime admission write lock,
-// so a new turn cannot start between the active-work check and these snapshots.
-func (a *App) snapshotTopicRuntimeBindings(captured []removedSessionRuntime) error {
-	for _, item := range captured {
-		if item.ctrl == nil || item.readOnly {
-			continue
-		}
-		if item.ctrl.Running() {
-			return errTopicHasActiveWork
-		}
-		if err := item.ctrl.Snapshot(); err != nil {
-			if !errors.Is(err, agent.ErrSessionSnapshotConflict) {
-				return err
-			}
-			slog.Warn("desktop: skipping stale runtime snapshot before removing topic", "err", err)
-		}
-	}
-	return nil
-}
-
-func topicRuntimeBindingsMatchLocked(tabs map[string]*WorkspaceTab, topicID string, expected map[*WorkspaceTab]removedSessionRuntime) (int, bool) {
-	matched := 0
-	for _, tab := range tabs {
-		if tab == nil || tab.TopicID != topicID {
-			continue
-		}
-		item, ok := expected[tab]
-		if !ok || tab.Ctrl != item.ctrl || tabRuntimeSessionDir(tab) != item.sessionDir || canonicalTabSessionPath(tab.currentSessionPath()) != item.sessionPath {
-			return 0, false
-		}
-		matched++
-	}
-	return matched, true
-}
-
-// removeTopicRuntimeBindingsIfUnchanged commits the in-memory half of archive
-// only if the off-lock snapshots still describe the exact runtime generation.
-// A navigation/rebind racing the snapshot therefore wins safely and asks the
-// user to retry instead of letting an old completion remove the new runtime.
-func (a *App) removeTopicRuntimeBindingsIfUnchanged(topicID string, captured []removedSessionRuntime) (fallbackRuntimeTarget, bool) {
-	expected := make(map[*WorkspaceTab]removedSessionRuntime, len(captured))
-	for _, item := range captured {
-		expected[item.tab] = item
-	}
-
-	a.mu.Lock()
-	visible, visibleOK := topicRuntimeBindingsMatchLocked(a.tabs, topicID, expected)
-	detached, detachedOK := topicRuntimeBindingsMatchLocked(a.detachedSessions, topicID, expected)
-	if !visibleOK || !detachedOK || visible+detached != len(captured) {
-		a.mu.Unlock()
-		return fallbackRuntimeTarget{}, false
-	}
-
-	var fallback fallbackRuntimeTarget
-	fallbackSet := false
-	for id, tab := range a.tabs {
-		if _, ok := expected[tab]; !ok {
-			continue
-		}
-		if !fallbackSet {
-			fallback = fallbackRuntimeTarget{scope: tab.Scope, workspaceRoot: tab.WorkspaceRoot}
-			fallbackSet = true
-		}
-		a.markTabRemovedLocked(tab)
-		delete(a.tabs, id)
-		a.removeTabOrderLocked(id)
-		if a.activeTabID == id {
-			a.activeTabID = ""
-		}
-	}
-	for key, tab := range a.detachedSessions {
-		if _, ok := expected[tab]; !ok {
-			continue
-		}
-		if !fallbackSet {
-			fallback = fallbackRuntimeTarget{scope: tab.Scope, workspaceRoot: tab.WorkspaceRoot}
-			fallbackSet = true
-		}
-		a.markTabRemovedLocked(tab)
-		delete(a.detachedSessions, key)
-	}
-	if a.activeTabID == "" && len(a.tabOrder) > 0 {
-		a.activeTabID = a.tabOrder[0]
-	}
-	fallback.needs = len(captured) > 0 && len(a.tabs) == 0
-	dir, entries, activeID, version := a.saveTabsCollectLocked()
-	a.mu.Unlock()
-
-	a.saveTabsWrite(dir, entries, activeID, version)
-	return fallback, true
-}
-
-func (a *App) finalizeRemovedTopicRuntimes(removed []removedSessionRuntime) {
-	for _, item := range removed {
-		if item.sink != nil {
-			item.sink.clearContext()
-		}
-		if item.ctrl == nil || item.readOnly {
-			continue
-		}
-		item.ctrl.SetSessionPath("")
-		a.quiesceTabAutosave(item.tab)
-	}
-}
-
 func removedRuntimeFromTab(tab *WorkspaceTab, dir, sessionPath string) removedSessionRuntime {
 	return removedSessionRuntime{
 		tab:           tab,
@@ -3715,50 +3588,6 @@ func (a *App) destroyHandlesForSession(dir, sessionPath string, removed []remove
 		destroys = append(destroys, item.ctrl.BeginDestroySession(sessionPath))
 	}
 	return destroys
-}
-
-// Interactive session removal must return promptly even when an owned job
-// ignores cancellation. The durable cleanup-pending marker keeps the physical
-// move safe after this grace expires; the jobs package's longer default remains
-// appropriate for non-interactive shutdown.
-const desktopSessionRemovalGrace = time.Second
-
-func waitDestroyHandles(destroys []control.SessionDestroyHandle) bool {
-	results := make(chan jobs.TeardownResult, len(destroys))
-	waits := 0
-	for _, destroy := range destroys {
-		wait := destroy.Wait
-		if destroy.WaitFor != nil {
-			wait = func() jobs.TeardownResult { return destroy.WaitFor(desktopSessionRemovalGrace) }
-		}
-		if wait == nil {
-			continue
-		}
-		waits++
-		go func(wait func() jobs.TeardownResult) {
-			results <- wait()
-		}(wait)
-	}
-
-	timedOut := false
-	if waits == 0 {
-		return false
-	}
-	timer := time.NewTimer(desktopSessionRemovalGrace + 250*time.Millisecond)
-	defer timer.Stop()
-	for range waits {
-		select {
-		case result := <-results:
-			if result.HasTimedOut() {
-				timedOut = true
-			}
-		case <-timer.C:
-			// A third-party/test handle may not implement its own bounded wait.
-			// Treat it like any non-cooperative job and let delayed cleanup own it.
-			return true
-		}
-	}
-	return timedOut
 }
 
 func waitAllDestroyHandles(destroys []control.SessionDestroyHandle) {
@@ -7741,26 +7570,6 @@ func (a *App) lockRuntimeMutation(operation string) func() {
 		a.runtimeAdmissionMu.Unlock()
 		a.runtimeRebuildMu.Unlock()
 	}
-}
-
-// tryLockRuntimeMutation is the UI-operation variant of lockRuntimeMutation.
-// Destructive navigation must never sit invisibly behind a controller rebuild
-// or turn-admission reader; callers surface a retryable busy result instead.
-func (a *App) tryLockRuntimeMutation(operation string) (func(), bool) {
-	if hook := a.runtimeMutationBeforeLockHook; hook != nil {
-		hook(operation)
-	}
-	if !a.runtimeRebuildMu.TryLock() {
-		return nil, false
-	}
-	if !a.runtimeAdmissionMu.TryLock() {
-		a.runtimeRebuildMu.Unlock()
-		return nil, false
-	}
-	return func() {
-		a.runtimeAdmissionMu.Unlock()
-		a.runtimeRebuildMu.Unlock()
-	}, true
 }
 
 // lockMCPMutation is the MCP-specific spelling retained at lifecycle call sites.

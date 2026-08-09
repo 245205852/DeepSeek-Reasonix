@@ -1,6 +1,6 @@
 // Run: tsx src/__tests__/approval-animation.test.ts
 
-import { animateShelfExit, shelfExitEasing } from "../components/ApprovalModal";
+import { animateShelfExit, shelfExitEasing } from "../lib/approvalAnimation";
 
 let passed = 0;
 let failed = 0;

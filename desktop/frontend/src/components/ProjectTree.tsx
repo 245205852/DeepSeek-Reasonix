@@ -5,7 +5,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import type { CSSProperties, DragEvent as ReactDragEvent, KeyboardEvent as ReactKeyboardEvent, MouseEvent as ReactMouseEvent } from "react";
-import { Archive, ArrowDown, Pencil, Plus, Folder, FolderPlus, Search, BriefcaseBusiness, Copy, FolderOpen, XCircle, Check, ListCollapse, ListRestart, MessageSquare, Clock, Pin, MoreHorizontal, Minimize2, Maximize2, GitBranch, LoaderCircle } from "lucide-react";
+import { Archive, ArrowDown, Pencil, Plus, Folder, FolderPlus, Search, BriefcaseBusiness, Copy, FolderOpen, XCircle, Check, ListCollapse, ListRestart, MessageSquare, Clock, Pin, MoreHorizontal, Minimize2, Maximize2, GitBranch } from "lucide-react";
 import { asArray } from "../lib/array";
 import { useToast } from "../lib/toast";
 import { app } from "../lib/bridge";
@@ -13,12 +13,12 @@ import type { ProjectNode, ProjectTopicStatus } from "../lib/types";
 import { topicActivityTime } from "../lib/session";
 import { getLocale, useT, type DictKey, type Translator } from "../lib/i18n";
 import { PROJECT_COLOR_OPTIONS, projectColorValue } from "../lib/projectColors";
+import { useProjectTreeArchiveState } from "../lib/projectTreeArchive";
 import { topicShortcutLabel, type TopicShortcutEntry } from "../lib/topicShortcuts";
 import type { ShortcutPlatform } from "../lib/keyboardShortcuts";
 import { ContextMenu, contextMenuPointFromEvent, type ContextMenuItem, type ContextMenuPoint } from "./ContextMenu";
 import { Tooltip } from "./Tooltip";
 import { WorktreeBadge } from "./WorktreeBadge";
-
 type ProjectTreeVariant = "classic" | "workbench" | "creation";
 
 interface ProjectTreeProps {
@@ -200,15 +200,6 @@ export function projectTreeTopicArchiveBlocked(node: ProjectNode): boolean {
   if (status === "thinking" || status === "streaming" || status === "waiting_confirmation" || status === "background_job") return true;
   if (status === "paused" || status === "error") return false;
   return Boolean(node.running);
-}
-
-export function projectTreeTrashingTopics(previous: Set<string>, topicId: string, trashing: boolean): Set<string> {
-  const id = topicId.trim();
-  if (!id || previous.has(id) === trashing) return previous;
-  const next = new Set(previous);
-  if (trashing) next.add(id);
-  else next.delete(id);
-  return next;
 }
 
 function topicStatusLabel(node: ProjectNode, t: Translator): string {
@@ -659,8 +650,7 @@ export function ProjectTree({
   const [hoverCard, setHoverCard] = useState<{ key: string; card: ProjectTreeTopicHoverCard; left: number; top: number } | null>(null);
   const hoverCardTimerRef = useRef<number | null>(null);
   const creatingRef = useRef(false);
-  const trashingTopicsRef = useRef<Set<string>>(new Set());
-  const [trashingTopics, setTrashingTopics] = useState<Set<string>>(new Set());
+  const { trashingTopics, beginTrashingTopic, endTrashingTopic } = useProjectTreeArchiveState();
   const clickTimerRef = useRef<ProjectTreePendingTopicOpen | null>(null);
   useEffect(() => {
     return () => {
@@ -1052,10 +1042,7 @@ export function ProjectTree({
   };
 
   const trashTopic = async (topicId: string) => {
-    if (trashingTopicsRef.current.has(topicId)) return;
-    const pending = projectTreeTrashingTopics(trashingTopicsRef.current, topicId, true);
-    trashingTopicsRef.current = pending;
-    setTrashingTopics(pending);
+    if (!beginTrashingTopic(topicId)) return;
     try {
       await app.TrashTopic(topicId);
       setMenuTopic(null);
@@ -1066,9 +1053,7 @@ export function ProjectTree({
     } catch (err) {
       showToast(err instanceof Error ? err.message : String(err), "error");
     } finally {
-      const settled = projectTreeTrashingTopics(trashingTopicsRef.current, topicId, false);
-      trashingTopicsRef.current = settled;
-      setTrashingTopics(settled);
+      endTrashingTopic(topicId);
     }
   };
 
@@ -1376,7 +1361,7 @@ export function ProjectTree({
         },
         {
           key: "trash",
-          icon: topicTrashing ? <LoaderCircle className="project-tree__archive-spinner" size={13} /> : <Archive size={13} />,
+          icon: <Archive className={topicTrashing ? "project-tree__archive-spinner" : undefined} size={13} />,
           label: confirmAction?.topicId === topicId && confirmAction.action === "trash" ? t("history.confirmMoveToTrash") : t("history.moveToTrash"),
           disabled: archiveBlocked || topicTrashing,
           danger: true,
@@ -1547,15 +1532,14 @@ export function ProjectTree({
                   className={`project-tree__topic-action project-tree__topic-action--archive${topicTrashing ? " project-tree__topic-action--busy" : ""}`}
                   type="button"
                   aria-label={t("projectTree.archiveTopic")}
-                  aria-busy={topicTrashing}
-                  disabled={archiveBlocked || topicTrashing}
+                  aria-busy={topicTrashing} disabled={archiveBlocked || topicTrashing}
                   onClick={(event) => {
                     event.preventDefault();
                     event.stopPropagation();
                     void trashTopic(topicId);
                   }}
                 >
-                  {topicTrashing ? <LoaderCircle size={15} aria-hidden="true" /> : <Archive size={15} aria-hidden="true" />}
+                  <Archive className={topicTrashing ? "project-tree__archive-spinner" : undefined} size={15} aria-hidden="true" />
                 </button>
               </Tooltip>
             </span>
@@ -1766,9 +1750,7 @@ export function ProjectTree({
       },
       {
         key: "archive-active-topic",
-        icon: activeTopicId && trashingTopics.has(activeTopicId)
-          ? <LoaderCircle className="project-tree__archive-spinner" size={13} />
-          : <Archive size={13} />,
+        icon: <Archive className={activeTopicId && trashingTopics.has(activeTopicId) ? "project-tree__archive-spinner" : undefined} size={13} />,
         label: activeTopicId && confirmAction?.topicId === activeTopicId && confirmAction.action === "trash"
           ? t("history.confirmMoveToTrash")
           : t("projectTree.archiveConversation"),
