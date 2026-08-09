@@ -112,6 +112,51 @@ func TestCalibratedOutputBudgetIncludesReplayedReasoning(t *testing.T) {
 	}
 }
 
+func TestCalibratedOutputBudgetKeepsCJKConservativeFloor(t *testing.T) {
+	prov := &sharedWindowTestProvider{budget: 128 * 1024, shared: true}
+	a := &Agent{prov: prov, contextWindow: 1_048_576,
+		outputBudgetState: outputBudgetState{outputBudget: prov.budget}}
+	previous := []provider.Message{{Role: provider.RoleUser, Content: strings.Repeat("x", 300_000)}}
+	a.setPromptTokenCalibration(75_000, requestCalibrationShapeOf(provider.Request{Messages: previous}))
+	current := append(append([]provider.Message(nil), previous...), provider.Message{
+		Role:             provider.RoleAssistant,
+		ReasoningContent: strings.Repeat("字", 430_000),
+		ToolCalls:        []provider.ToolCall{{ID: "call_1", Name: "bash", Arguments: `{}`}},
+	})
+
+	calibrated := a.estimatedPromptTokens(current)
+	wantFloor := 75_000 + 2*430_000
+	if calibrated < wantFloor {
+		t.Fatalf("calibrated estimate %d fell below mixed-script safety floor %d", calibrated, wantFloor)
+	}
+
+	budget, clipped, err := a.effectiveOutputBudget(provider.Request{Messages: current})
+	if err != nil {
+		t.Fatalf("effectiveOutputBudget: %v", err)
+	}
+	if !clipped || budget <= 0 || budget >= prov.budget {
+		t.Fatalf("mixed-script request budget = %d clipped=%v, want a clipped positive budget below %d", budget, clipped, prov.budget)
+	}
+}
+
+func TestCalibrationIgnoresNonReplayableOrdinaryReasoning(t *testing.T) {
+	a := &Agent{}
+	previous := []provider.Message{
+		{Role: provider.RoleUser, Content: strings.Repeat("x", 300_000)},
+		{Role: provider.RoleAssistant, ReasoningContent: strings.Repeat("hidden", 150_000)},
+	}
+	a.setPromptTokenCalibration(75_000, requestCalibrationShapeOf(provider.Request{Messages: previous}))
+	current := append(append([]provider.Message(nil), previous...), provider.Message{
+		Role:             provider.RoleAssistant,
+		ReasoningContent: strings.Repeat("r", 400_000),
+		ToolCalls:        []provider.ToolCall{{ID: "call_1", Name: "bash", Arguments: `{}`}},
+	})
+
+	if got := a.estimatedPromptTokens(current); got < 160_000 {
+		t.Fatalf("replayable reasoning estimate = %d, want ordinary local reasoning excluded from calibration denominator", got)
+	}
+}
+
 func TestCalibratedOutputBudgetCountsToolSchemasOnce(t *testing.T) {
 	a := &Agent{}
 	req := provider.Request{
@@ -253,11 +298,45 @@ func TestSetSessionResetsTokenCalibration(t *testing.T) {
 
 func TestLatestUsagePairsWithActiveRequestSize(t *testing.T) {
 	a := &Agent{}
-	active := requestCalibrationShape{requestChars: 222, compactChars: 111}
+	active := requestCalibrationShape{requestChars: 222, compactChars: 111, cjkRunes: 22, cjkBytes: 66}
 	a.activeReqShape.Store(&active)
 	a.storeLatestRequestUsage(&provider.Usage{PromptTokens: 100})
 
-	if got := a.promptCalibration.Load(); got == nil || got.promptTokens != 100 || got.requestChars != 222 || got.compactChars != 111 {
-		t.Fatalf("promptCalibration = %+v, want promptTokens=100 requestChars=222 compactChars=111", got)
+	if got := a.promptCalibration.Load(); got == nil || got.promptTokens != 100 || got.requestChars != 222 || got.compactChars != 111 || got.cjkRunes != 22 || got.cjkBytes != 66 {
+		t.Fatalf("promptCalibration = %+v, want promptTokens=100 requestChars=222 compactChars=111 cjkRunes=22 cjkBytes=66", got)
+	}
+}
+
+func TestEstimatedUsageDoesNotReplacePromptCalibration(t *testing.T) {
+	a := &Agent{}
+	active := requestCalibrationShape{requestChars: 200_000, compactChars: 100_000}
+	a.activeReqShape.Store(&active)
+	a.setPromptTokenCalibration(50_000, requestCalibrationShape{requestChars: 100_000, compactChars: 80_000})
+
+	a.storeLatestRequestUsage(&provider.Usage{
+		PromptTokens: 10_000,
+		TotalTokens:  10_100,
+		Estimated:    true,
+	})
+
+	got := a.promptCalibration.Load()
+	if got == nil || got.promptTokens != 50_000 || got.requestChars != 100_000 || got.compactChars != 80_000 {
+		t.Fatalf("estimated usage replaced provider calibration: %+v", got)
+	}
+	if latest := a.lastUsage.Load(); latest == nil || !latest.Estimated {
+		t.Fatalf("estimated usage was not retained for accounting: %+v", latest)
+	}
+}
+
+func TestForkCaptureProviderPreservesOutputBudgetCapabilities(t *testing.T) {
+	t.Setenv("REASONIX_EXPERIMENT_FORK_CAPTURE_DIR", t.TempDir())
+	prov := &sharedWindowTestProvider{budget: 128 * 1024, shared: true}
+	a := New(prov, tool.NewRegistry(), NewSession(""), Options{}, event.Discard)
+
+	if !sharesContextWindow(a.prov) {
+		t.Fatal("fork capture wrapper erased shared-window output capability")
+	}
+	if got := outputBudgetOf(a.prov); got != prov.budget {
+		t.Fatalf("wrapped output budget = %d, want %d", got, prov.budget)
 	}
 }

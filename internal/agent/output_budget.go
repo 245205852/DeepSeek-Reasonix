@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"math"
 	"sync/atomic"
+	"unicode/utf8"
 
 	"reasonix/internal/nilutil"
 	"reasonix/internal/provider"
@@ -21,15 +22,19 @@ type promptTokenCalibration struct {
 	promptTokens int
 	requestChars int64
 	compactChars int64
+	cjkRunes     int64
+	cjkBytes     int64
 }
 
-// requestCalibrationShape pairs the complete provider-visible text shape used
-// for overflow protection with the legacy content-only shape used by fold
-// economics. Keeping both in one immutable pointer ensures readers never pair
-// requestChars from one prepared request with compactChars from another.
+// requestCalibrationShape pairs the conservative provider-visible text and CJK
+// composition used for overflow protection with the legacy content-only shape
+// used by fold economics. Keeping them in one immutable pointer ensures readers
+// never combine calibration fields from different prepared requests.
 type requestCalibrationShape struct {
 	requestChars int64
 	compactChars int64
+	cjkRunes     int64
+	cjkBytes     int64
 }
 
 func (a *Agent) resetOutputBudgetState() {
@@ -46,6 +51,8 @@ func (a *Agent) setPromptTokenCalibration(promptTokens int, shape requestCalibra
 		promptTokens: promptTokens,
 		requestChars: shape.requestChars,
 		compactChars: shape.compactChars,
+		cjkRunes:     shape.cjkRunes,
+		cjkBytes:     shape.cjkBytes,
 	})
 }
 
@@ -84,50 +91,82 @@ func (a *Agent) configuredOutputBudget(explicit int) int {
 }
 
 func requestCalibrationShapeOf(req provider.Request) requestCalibrationShape {
+	requestChars, cjkRunes, cjkBytes := requestCalibrationTextShape(req)
 	return requestCalibrationShape{
-		requestChars: requestCalibrationChars(req),
+		requestChars: requestChars,
 		compactChars: int64(charsOfMessages(req.Messages)),
+		cjkRunes:     cjkRunes,
+		cjkBytes:     cjkBytes,
 	}
 }
 
-// requestCalibrationChars counts every textual field that a shared-window
-// DeepSeek adapter can replay. In particular, reasoning and Responses items
-// must grow the next request estimate even though ordinary OpenAI modes may
-// strip them at serialization time; the hard guard is only enabled for the
-// shared-window modes that retain those fields.
-func requestCalibrationChars(req provider.Request) int64 {
-	var total int64
+// requestCalibrationTextShape counts the provider-visible text common to all
+// shared-window DeepSeek transports. Adapter-only fields are deliberately
+// excluded: including text that one transport omits would dilute its observed
+// token/byte ratio and make a later replayable field look artificially cheap.
+// Reasoning is common only on assistant tool-call turns; Responses transports
+// may send more, which makes their observed ratio conservative here.
+func requestCalibrationTextShape(req provider.Request) (chars, cjkRunes, cjkBytes int64) {
+	add := func(s string) {
+		chars += int64(len(s))
+		for _, r := range s {
+			if isCJKRune(r) {
+				cjkRunes++
+				cjkBytes += int64(utf8.RuneLen(r))
+			}
+		}
+	}
 	for _, msg := range req.Messages {
 		if msg.LocalOnly {
 			continue
 		}
-		total += int64(4 + len(msg.Role) + len(msg.Content) + len(msg.ReasoningContent))
-		total += int64(len(msg.ReasoningID) + len(msg.ReasoningStatus) + len(msg.ReasoningSignature))
-		total += int64(len(msg.Name) + len(msg.ToolCallID))
-		for _, image := range msg.Images {
-			total += int64(len(image))
+		chars += 4
+		add(string(msg.Role))
+		add(msg.Content)
+		if msg.Role == provider.RoleAssistant && len(msg.ToolCalls) > 0 {
+			add(msg.ReasoningContent)
 		}
+		add(msg.Name)
+		add(msg.ToolCallID)
 		for _, call := range msg.ToolCalls {
-			total += int64(8 + len(call.ID) + len(call.Name) + len(call.Arguments) + len(call.ThoughtSignature))
-		}
-		for _, item := range msg.ResponsesItems {
-			total += int64(len(item))
+			chars += 8
+			add(call.ID)
+			add(call.Name)
+			add(call.Arguments)
 		}
 	}
 	for _, schema := range req.Tools {
-		total += int64(8 + len(schema.Name) + len(schema.Description) + len(schema.Parameters))
+		chars += 8
+		add(schema.Name)
+		add(schema.Description)
+		add(string(schema.Parameters))
 	}
-	return total
+	return chars, cjkRunes, cjkBytes
 }
 
-func (a *Agent) calibratedPromptTokens(chars int64) (int, bool) {
-	if chars <= 0 {
+func (a *Agent) calibratedPromptTokens(shape requestCalibrationShape) (int, bool) {
+	if shape.requestChars <= 0 {
 		return 0, false
 	}
 	if cal := a.promptCalibration.Load(); cal != nil && cal.requestChars > 0 {
 		ratio := float64(cal.promptTokens) / float64(cal.requestChars)
 		if ratio > 0.05 && ratio < 2 {
-			return int(math.Ceil(float64(chars) * ratio)), true
+			trustedChars := shape.requestChars
+			excessCJKRunes := int64(0)
+			// A higher CJK share than the calibrated request cannot safely reuse
+			// its aggregate byte ratio. Scale the already represented share and
+			// price only the excess with the same two-tokens-per-rune safety floor
+			// used by the cold estimator. Equal or lower shares keep exact
+			// same-session calibration, so stable CJK sessions do not over-fold.
+			if shape.cjkRunes*cal.requestChars > cal.cjkRunes*shape.requestChars {
+				trustedCJKBytes := cal.cjkBytes * shape.requestChars / cal.requestChars
+				trustedCJKRunes := cal.cjkRunes * shape.requestChars / cal.requestChars
+				trustedCJKBytes = min(trustedCJKBytes, shape.cjkBytes)
+				trustedCJKRunes = min(trustedCJKRunes, shape.cjkRunes)
+				trustedChars -= shape.cjkBytes - trustedCJKBytes
+				excessCJKRunes = shape.cjkRunes - trustedCJKRunes
+			}
+			return int(math.Ceil(float64(trustedChars)*ratio)) + int(2*excessCJKRunes), true
 		}
 	}
 	return 0, false
@@ -142,14 +181,14 @@ func (a *Agent) estimatedPromptTokens(msgs []provider.Message) int {
 	if est <= 0 {
 		return 0
 	}
-	if calibrated, ok := a.calibratedPromptTokens(requestCalibrationChars(provider.Request{Messages: msgs})); ok {
+	if calibrated, ok := a.calibratedPromptTokens(requestCalibrationShapeOf(provider.Request{Messages: msgs})); ok {
 		return calibrated
 	}
 	return est + cjkRunesInMessages(msgs)
 }
 
 func (a *Agent) estimatedRequestTokens(req provider.Request) int {
-	if calibrated, ok := a.calibratedPromptTokens(requestCalibrationChars(req)); ok {
+	if calibrated, ok := a.calibratedPromptTokens(requestCalibrationShapeOf(req)); ok {
 		return calibrated
 	}
 	return a.estimatedPromptTokens(req.Messages) + estimateToolSchemaTokens(req.Tools)
@@ -176,14 +215,18 @@ func cjkRunesInMessages(msgs []provider.Message) int {
 func cjkRunesIn(s string) int {
 	total := 0
 	for _, r := range s {
-		if (r >= 0x4E00 && r <= 0x9FFF) ||
-			(r >= 0x3400 && r <= 0x4DBF) ||
-			(r >= 0x3040 && r <= 0x30FF) ||
-			(r >= 0xAC00 && r <= 0xD7AF) {
+		if isCJKRune(r) {
 			total++
 		}
 	}
 	return total
+}
+
+func isCJKRune(r rune) bool {
+	return (r >= 0x4E00 && r <= 0x9FFF) ||
+		(r >= 0x3400 && r <= 0x4DBF) ||
+		(r >= 0x3040 && r <= 0x30FF) ||
+		(r >= 0xAC00 && r <= 0xD7AF)
 }
 
 func estimateToolSchemaTokens(schemas []provider.ToolSchema) int {
