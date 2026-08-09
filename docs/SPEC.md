@@ -853,10 +853,17 @@ adjudication in §3.11, so it measures claims the host refused rather than a
 reviewer's opinion, and it is the one number that separates "the fleet finished
 faster" from "the fleet said it finished".
 
-Not yet measured, and deliberately not faked: task success rate needs a task
-corpus with per-task checkers, and rework-after-handoff needs mutation ordering
-across a whole run. Both belong to the harness that drives the arms, not to the
-instrument that records one run.
+Read these against the measured noise floor. Running the same arm twice over
+the same tasks moved per-task token use by a median of 19% and up to 54%, while
+the whole between-arm difference in that experiment was 2.5%. A single run per
+cell therefore proves nothing about delegation: the effect has to clear the
+variance before it is an effect. Budget repetitions, or restrict the comparison
+to tasks where `subagent_runs` shows delegation actually happened — in that
+experiment it happened on one task in six.
+
+Not yet measured, and deliberately not faked: rework-after-handoff needs
+mutation ordering across a whole run, which belongs to the harness driving the
+arms rather than the instrument recording one.
 
 ## 4. Data Types (`internal/provider`)
 
