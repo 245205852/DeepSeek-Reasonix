@@ -647,6 +647,18 @@ Headless runs remain ephemeral and return fair bounded previews without refs.
 See [Subagent profiles](./SUBAGENT_PROFILES.md)
 for the user-facing command and file-format contract.
 
+A profile describes a worker, not a run. Delegation is five separate concepts:
+the profile says how a worker thinks, `TaskSpec` what this call wants,
+`CapabilityGrant` what it may touch, `ContextCapsule` what it starts from, and
+`SchedulerPolicy` when it runs. A field belongs to whichever member decides its
+value, so a profile may carry a capability *ceiling* (`allowed-tools`,
+`read-only`) but never a per-call value such as `max_turns`, `write_paths`, or a
+retry or verification policy — those are decided by the task or the scheduler.
+Skill frontmatter may keep growing; `agent.ProfileFromSkill` is the single
+narrowing point, and routing metadata (triggers, auto-use, cost, freshness)
+stops there because it decides *when* a worker is chosen, not how it thinks.
+`internal/agent/profile_boundary_test.go` fails on any widening.
+
 ### 3.11 Sub-agents close with a host-adjudicated claim
 
 A writer sub-agent ends its run by calling `complete_subtask` with a `status`,

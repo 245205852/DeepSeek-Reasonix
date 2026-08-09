@@ -4,13 +4,15 @@ import (
 	"fmt"
 	"strings"
 
+	"reasonix/internal/skill"
 	"reasonix/internal/tool"
 )
 
-// ProfileDefinition is the resolved, runtime-facing shape of a runAs=subagent
-// skill used by task/fleet/run_skill. Profile names are resolved at call time
-// from the Skill store and must never be written into tool schemas or the
-// parent system prompt (prompt-cache stability).
+// ProfileDefinition is the delegation-facing narrowing of a stored Skill: what
+// the worker is, never what one call wants of it. A field belongs here only if
+// its value follows from the worker's identity; allowed-tools and read-only are
+// ceilings, not grants. Profile names resolve at call time and must never enter
+// tool schemas or the parent system prompt (prompt-cache stability).
 type ProfileDefinition struct {
 	Name         string
 	Body         string
@@ -30,6 +32,23 @@ type ProfileDefinition struct {
 // ProfileLookup resolves a profile by exact skill name. Implementations read
 // from the live Skill store; a nil lookup means profile= is unavailable.
 type ProfileLookup func(name string) (ProfileDefinition, bool)
+
+// ProfileFromSkill narrows a stored Skill to the fields delegation may see.
+// Routing metadata (triggers, auto-use, cost, freshness) stays behind: it
+// decides when a worker is chosen, not how that worker thinks, and admitting it
+// here is the first step from a profile toward a workflow language.
+func ProfileFromSkill(sk skill.Skill) ProfileDefinition {
+	return ProfileDefinition{
+		Name:         sk.Name,
+		Body:         sk.Body,
+		AllowedTools: sk.AllowedTools,
+		Model:        sk.Model,
+		Effort:       sk.Effort,
+		ReadOnly:     sk.ReadOnly,
+		Invocation:   sk.Invocation,
+		NamedBuiltin: NamedBuiltinProfile(sk.Name),
+	}
+}
 
 // ProfileExecSpec is the unified execution specification shared by task,
 // fleet items, and run_skill profile runs. Call sites build a spec, then hand

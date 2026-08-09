@@ -1014,17 +1014,7 @@ func build(ctx context.Context, opts Options) (*BuildResult, error) {
 		if !ok || sk.RunAs != skill.RunSubagent {
 			return agent.ProfileDefinition{}, false
 		}
-		sk = skillStore.Prepare(sk)
-		return agent.ProfileDefinition{
-			Name:         sk.Name,
-			Body:         sk.Body,
-			AllowedTools: sk.AllowedTools,
-			Model:        sk.Model,
-			Effort:       sk.Effort,
-			ReadOnly:     sk.ReadOnly,
-			Invocation:   sk.Invocation,
-			NamedBuiltin: agent.NamedBuiltinProfile(sk.Name),
-		}, true
+		return agent.ProfileFromSkill(skillStore.Prepare(sk)), true
 	}
 	profileConfigModel := func(profile string) string {
 		for _, key := range SubagentModelKeys(profile) {
