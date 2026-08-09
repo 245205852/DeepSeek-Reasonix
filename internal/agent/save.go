@@ -2245,33 +2245,6 @@ func ListSessions(dir string) ([]SessionInfo, error) {
 	return out, nil
 }
 
-func sessionInfoFromOrder(session SessionOrderInfo, preview string, turns int) SessionInfo {
-	return SessionInfo{
-		Path:           session.Path,
-		CreatedAt:      session.CreatedAt,
-		LastActivityAt: session.LastActivityAt,
-		ModTime:        session.ModTime,
-		Preview:        preview,
-		Turns:          turns,
-		Scope:          session.Scope,
-		WorkspaceRoot:  session.WorkspaceRoot,
-		TopicID:        session.TopicID,
-		TopicTitle:     session.TopicTitle,
-		CustomTitle:    session.CustomTitle,
-		Recovered:      session.Recovered,
-		RecoveryReason: session.RecoveryReason,
-		RecoveryDigest: session.RecoveryDigest,
-		ParentID:       session.ParentID,
-	}
-}
-
-func sessionArtifactsHaveContent(path string) bool {
-	if info, err := os.Stat(path); err == nil && !info.IsDir() && info.Size() > 0 {
-		return true
-	}
-	return sessionEventLogSize(path) > 0
-}
-
 // SessionPreview returns the same preview and user-turn count used by
 // ListSessions for one session file.
 func SessionPreview(path string) (string, int) {
@@ -2303,24 +2276,6 @@ func SessionPreviewFromMessages(msgs []provider.Message) (string, int) {
 func previewSession(path string) (string, int) {
 	preview, turns, _ := previewSessionWithError(path)
 	return preview, turns
-}
-
-func previewSessionWithError(path string) (string, int, error) {
-	msgs, _, _, err := loadSessionMessages(path)
-	if err != nil {
-		return "", 0, err
-	}
-	first := ""
-	turns := 0
-	for _, m := range msgs {
-		if m.Role == provider.RoleUser && IsUserAuthoredTurn(UserMessageText(m)) {
-			turns++
-			if first == "" {
-				first = truncatePreview(previewProse(UserMessageText(m)))
-			}
-		}
-	}
-	return first, turns, nil
 }
 
 // previewProse drops the leading @file references a prompt opens with so the
