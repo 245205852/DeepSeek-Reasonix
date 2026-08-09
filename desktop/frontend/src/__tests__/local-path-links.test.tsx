@@ -66,6 +66,7 @@ eq(firstPath("see file://nas/share/report.md"), "file://nas/share/report.md",
 eq(pathCount("see file:///D:/x/%zz"), 0, "malformed file URL is not linkified");
 eq(pathCount("see file://./PhysicalDrive0"), 0, "device-authority file URL is not linkified");
 eq(pathCount("see file:///C:/safe.txt:payload"), 0, "alternate data stream file URL is not linkified");
+eq(pathCount("see file:///tmp/report.md?download=1"), 0, "file URL with a query is not partially linkified");
 eq(firstPath("see \\nas\\share\\docs\\report.md done"), "\\\\nas\\share\\docs\\report.md",
   "UNC path matched whole and \\\\ prefix restored");
 
@@ -77,6 +78,10 @@ eq(pathCount("version 1.2.3 released"), 0, "version string is not a path");
 eq(pathCount("http://example.com 正常"), 0, "http URL untouched (GFM handles it)");
 eq(pathCount("profile://nas/share/report.md"), 0, "custom URI containing file:// is not partially linkified");
 eq(pathCount("http://file:///tmp/report.md"), 0, "file:// inside another URI is not linkified");
+eq(pathCount("foo://host?file:///tmp/report.md"), 0, "file:// in a URI query is not linkified");
+eq(pathCount("foo://host#file:///tmp/report.md"), 0, "file:// in a URI fragment is not linkified");
+eq(pathCount("foo://host&file:///tmp/report.md"), 0, "file:// after an ampersand is not linkified");
+eq(pathCount("foo://host=file:///tmp/report.md"), 0, "file:// after an equals sign is not linkified");
 eq(pathCount("prefixD:\\x\\y.md"), 0, "drive path after a letter is rejected without lookbehind");
 eq(pathCount("file:///D:/x/y.md"), 1, "file URL drive segment is not double-matched");
 eq(pathCount("a\\b\\c.md 讨论"), 0, "share-less backslash path in prose is not a UNC path");

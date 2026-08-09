@@ -52,7 +52,7 @@ const UNC_PREFIX_RE = /[\\/\w:；：，。、！？（）]/;
 // A file URL must start a URI-like token. Without this guard, the matcher can
 // start in the middle of `profile://...` or `http://file://...` and produce a
 // clickable suffix that was never a local path.
-const FILE_PREFIX_CHARS = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_./\\:+-";
+const FILE_PREFIX_CHARS = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_./\\:+-?#&=";
 
 function hasValidPrefixBoundary(text: string, start: number, kind: "file" | "drive" | "unc"): boolean {
   if (start === 0) return true;
@@ -108,6 +108,12 @@ export function linkifyLocalPaths(text: string): LocalPathSegment[] {
         continue;
       }
       if (kind === "file" && !isLocalFileHref(stripTrailingClosers(match[0]))) {
+        continue;
+      }
+      // FILE_RE stops before a question mark so it cannot consume query
+      // syntax. Do not linkify the safe-looking prefix of a file URL that has
+      // a raw query suffix; localPathFromHref intentionally rejects queries.
+      if (kind === "file" && text[matchEnd] === "?") {
         continue;
       }
       // Do not turn the safe-looking prefix of an alternate data stream into
