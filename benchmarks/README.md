@@ -315,3 +315,16 @@ probe, not a compaction loss.
 Probe answers are scored on whole words, and a wanted answer does not count if a
 rejected one appears anywhere in the same reply — "yes, but it has not been
 re-run since" is the shape a drifting digest produces, and it is not a pass.
+
+### Fold arms
+
+`-arm=full` (default) re-derives every digest from the canonical transcript, so
+digests never chain. `-arm=incremental` folds the model-visible view instead,
+feeding the previous digest back through the summarizer. The arms exist to price
+that trade: run the cost arm for what chaining saves, and the fidelity arm for
+what it costs.
+
+```bash
+go run ./benchmarks/compaction -mode=cost -arm=incremental
+DEEPSEEK_API_KEY=… go run ./benchmarks/compaction -mode=fidelity -arm=incremental
+```
