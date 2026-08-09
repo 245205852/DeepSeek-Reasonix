@@ -48,6 +48,15 @@ func (a *Agent) prepareSamplingRequest(ctx context.Context) (samplingRequest, er
 	if err != nil {
 		return samplingRequest{}, err
 	}
+	// Enforce the shared-window invariant on the final extension-adjusted
+	// payload. This keeps prompt + output inside the provider context window
+	// without changing message bytes, tool order, or ordinary request defaults.
+	if budget, clipped, budgetErr := a.effectiveOutputBudget(req); budgetErr != nil {
+		return samplingRequest{}, budgetErr
+	} else if clipped {
+		req.MaxTokens = budget
+	}
+	a.activeReqChars.Store(int64(charsOfMessages(req.Messages)))
 	return samplingRequest{req: freezeProviderRequest(req)}, nil
 }
 

@@ -504,11 +504,9 @@ func tailStart(msgs []provider.Message, head, budgetTokens int, tokPerChar float
 // actually sent (the provider strips it). Falls back to ~4 chars/token before
 // any usage is known, and ignores absurd ratios.
 func (a *Agent) tokPerChar() float64 {
-	if u := a.lastUsage.Load(); u != nil && u.PromptTokens > 0 {
-		if c := charsOfMessages(a.session.Messages); c > 0 {
-			if r := float64(u.PromptTokens) / float64(c); r > 0.05 && r < 2 {
-				return r
-			}
+	if cal := a.promptCalibration.Load(); cal != nil {
+		if r := float64(cal.promptTokens) / float64(cal.chars); r > 0.05 && r < 2 {
+			return r
 		}
 	}
 	return fallbackTokPerChar
@@ -554,13 +552,20 @@ func (a *Agent) summarize(ctx context.Context, region []provider.Message, instru
 		}
 	}()
 	defer trackPublishedHostStream(ctx, cancel)()
-	ch, err := a.prov.Stream(ctx, provider.Request{
+	req := provider.Request{
 		Messages: []provider.Message{
 			{Role: provider.RoleSystem, Content: sys},
 			{Role: provider.RoleUser, Content: renderTranscript(region)},
 		},
+		MaxTokens:   a.maxOutputTokens,
 		Temperature: provider.OptionalTemperature(a.temperature),
-	})
+	}
+	if budget, clipped, budgetErr := a.effectiveOutputBudget(req); budgetErr != nil {
+		return "", usage, budgetErr
+	} else if clipped {
+		req.MaxTokens = budget
+	}
+	ch, err := a.prov.Stream(ctx, req)
 	if err != nil {
 		return "", usage, err
 	}
