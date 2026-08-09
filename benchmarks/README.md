@@ -146,9 +146,38 @@ metered this way precisely because it *does* self-report: if the proxy and
 `.run-metrics.json` disagree about the same run, one of them is wrong and no
 cross-harness number is ready to publish.
 
-`-faults` injects provider failures at fixed request indices through the same
-proxy, which is what LongRun needs: deterministic 429/500 at the same point of
-a run, replayable across harnesses.
+## Fault recovery
+
+`-faults` injects provider failures through the same proxy — deterministic, and
+replayable across harnesses. Two forms:
+
+- `3:429` — a targeted failure at an exact request.
+- `every:5:500` — a cadence. **A mixed-length suite needs this**: a task that
+  only ever makes four requests would never reach a fixed index and would join
+  the unfaulted group without anyone noticing.
+
+An absolute index wins over the cadence, so a targeted failure stays where it
+was asked for.
+
+```sh
+go run ./cmd/e2ebench -meter ~/.reasonix/config.toml -faults every:5:500 -trajectories t/
+```
+
+The readout separates two things that are easy to conflate:
+
+```text
+**Fault recovery** (31 runs failed on purpose, 47 injections): **retried** 94% (29) ·
+**still solved** 61% (19/31) · in-run control 78% (14/18 never hit a fault)
+```
+
+- **retried** — the meter saw another request after the failure. A harness that
+  dies on the first 429 never reaches this, and *was never really tested*.
+- **still solved** — the task landed anyway. A harness can retry forever and
+  still not finish; that is not recovery.
+- **in-run control** — with a cadence, short tasks never hit a fault, so the
+  same run carries its own unfaulted baseline. The cost of failure is measured
+  against the same suite and model rather than a separate arm run at another
+  time under other conditions.
 
 ## task.toml schema
 
@@ -240,7 +269,7 @@ own outcome).
 | `-cache` | `cold` | Suite mode: `cold` runs each task as a fresh session (the fair cross-agent comparison arm); `warm` primes the provider prefix cache with a one-step run in the same workdir first, measuring the long-lived-session steady state. Never mix arms in one report — compare them with `-mode compare cold.json warm.json`. |
 | `-budget` | `800000` | Abort once total tokens cross this (`0` = no cap). Remaining tasks are reported as skipped. |
 | `-meter` | *(off)* | Suite mode: route the benchmarked provider through the neutral measuring proxy, using this `config.toml` as the source. Spend is then counted at the request boundary instead of trusted from the harness. See [Neutral metering](#neutral-metering). |
-| `-faults` | *(none)* | Suite mode: inject provider failures at fixed request indices, e.g. `3:429,7:500`. Requires `-meter` — the proxy is the only place a fault can be injected. |
+| `-faults` | *(none)* | Suite mode: inject provider failures through the meter — absolute indices (`3:429`) and/or a cadence that scales with the run (`every:5:500`). Requires `-meter`. See [Fault recovery](#fault-recovery). |
 
 Diff-mode flags:
 

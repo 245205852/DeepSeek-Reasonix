@@ -228,7 +228,7 @@ func main() {
 	effort := flag.String("effort", "", "reasoning effort override passed to the agent (model-specific levels, e.g. disabled|low|high|max); empty = model default")
 	checkpoints := flag.Bool("checkpoints", false, "suite mode: snapshot the workdir on every change and grade each snapshot offline after the run, yielding first_correct_ms (TTFCS) and post_solve_waste_ms")
 	meterConfig := flag.String("meter", "", "suite mode: route the benchmarked provider through the neutral measuring proxy, using this config.toml as the source (e.g. ~/.reasonix/config.toml). Spend is then counted at the request boundary instead of trusted from the harness")
-	faultSpec := flag.String("faults", "", "suite mode: inject provider failures at fixed request indices, e.g. 3:429,7:500 (requires -meter)")
+	faultSpec := flag.String("faults", "", "suite mode: inject provider failures through the meter — absolute indices (3:429) and/or a cadence that scales with the run (every:5:500). Requires -meter; the report gains a fault-recovery readout")
 	policyFlag := flag.String("policy", "", "suite mode: experiment arm — empty (baseline) | ebm (evidence-before-more-mutation nudge) | governor (exploration-phase reasoning governor) | memory-off (hide the memory store: MemoryBench counterfactual arm)")
 	forkCapture := flag.String("fork-capture", "", "suite mode: capture a fork bundle per task at first EBM eligibility into <dir>/<task-id>")
 	bundles := flag.String("bundles", "", "fork mode: directory of captured bundles (<task-id>/bundle.json)")
@@ -455,7 +455,7 @@ type suiteConfig struct {
 	// meterConfig is the real config.toml whose provider endpoint each run is
 	// redirected through the neutral meter; empty leaves runs unmetered.
 	meterConfig string
-	meterFaults map[int]int
+	meterFaults faultScript
 }
 
 // runSuite runs each task in order until the token budget is exhausted;
