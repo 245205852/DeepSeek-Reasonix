@@ -5,11 +5,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"strings"
 	"time"
 
 	"reasonix/internal/agent"
-	"reasonix/internal/autoresearch"
 	"reasonix/internal/event"
 	"reasonix/internal/evidence"
 	"reasonix/internal/jobs"
@@ -207,8 +205,6 @@ func (o *turnOrchestrator) runOrchestratedTurn(ctx context.Context, turn orchest
 			false,
 			continuation.goal,
 			GoalStatusRunning,
-			continuation.researchMode,
-			continuation.autoResearchTaskID,
 		)
 	} else {
 		input = c.compose(turn.input, turn.raw, !turn.synthetic)
@@ -259,14 +255,6 @@ func (o *turnOrchestrator) runOrchestratedTurn(ctx context.Context, turn orchest
 		defer func() { c.hooks.StopResult(context.Background(), lastAssistantText(c.History()), turn, err) }()
 	}
 	c.markInFlightTurn(startMessages, !turn.synthetic && !IsSyntheticUserMessage(turn.raw))
-	var autoResearchTaskID string
-	if continuation != nil {
-		autoResearchTaskID = continuation.autoResearchTaskID
-	} else {
-		autoResearchTaskID = c.goals.currentAutoResearchTaskID()
-	}
-	autoResearchAcceptedBefore := c.autoResearch.acceptedEvidenceIDs(autoResearchTaskID)
-	c.autoResearch.heartbeat(autoResearchTaskID, autoresearch.HeartbeatStartingTurn, "")
 	if continuation != nil {
 		ctx = agent.WithDeliveryExecutionScope(ctx, agent.DeliveryExecutionScope{
 			ID:       continuation.scopeID,
@@ -302,13 +290,8 @@ func (o *turnOrchestrator) runOrchestratedTurn(ctx context.Context, turn orchest
 	err = c.runner.Run(ctx, modelInput)
 	c.persistGoalDeliveryCheckpoint()
 	if err == nil {
-		assistantText := lastAssistantText(c.History())
-		c.autoResearch.recordEvidenceFromAssistant(autoResearchTaskID, assistantText)
-		c.autoResearch.recordTurnProgress(autoResearchTaskID, autoResearchAcceptedBefore, assistantText)
-		c.autoResearch.heartbeat(autoResearchTaskID, autoresearch.HeartbeatTurnDone, "")
 		c.clearInFlightTurn()
 	} else {
-		c.autoResearch.heartbeat(autoResearchTaskID, autoresearch.HeartbeatWarning, err.Error())
 		// When the user explicitly cancels, keep the real prompt and any fully
 		// paired tool work. Partial reasoning/output remains durable for display
 		// but is marked local-only, and a bounded recovery summary is folded into
@@ -515,17 +498,6 @@ func (o *turnOrchestrator) advanceGoalAfterTurn(ctx context.Context, expectedCon
 	} else if c.executor != nil {
 		readiness = c.executor.ReadinessResult()
 	}
-	if arReadiness := c.autoResearchReadinessFailure(); arReadiness != "" {
-		readiness.Ready = false
-		readiness.Missing = append(readiness.Missing, "autoresearch")
-		if readiness.Reason != "" {
-			readiness.Reason += "\n" + arReadiness
-		} else {
-			readiness.Reason = arReadiness
-		}
-	}
-	autoResearchTaskID := c.goals.currentAutoResearchTaskID()
-
 	// The validated update_goal report for this turn, if any.
 	var report *goalTurnReport
 	if recorder != nil {
@@ -567,39 +539,12 @@ func (o *turnOrchestrator) advanceGoalAfterTurn(ctx context.Context, expectedCon
 	})
 	c.persistGoalState(res.path, res.data, res.ok)
 	if res.notice != "" {
-		c.finalizeAutoResearchTask(autoResearchTaskID, res.notice)
 		c.notice(res.notice)
 	}
 	if res.notice == goalCompleteNotice && c.executor != nil {
 		c.completeRemainingGoalTodos()
 	}
 	return res
-}
-
-func (c *Controller) finalizeAutoResearchTask(taskID, notice string) {
-	if !c.autoResearch.enabled() || strings.TrimSpace(taskID) == "" {
-		return
-	}
-	switch {
-	case notice == goalCompleteNotice:
-		status := autoresearch.StatusComplete
-		if err := c.autoResearch.updateProgress(taskID, autoresearch.ProgressPatch{Status: &status}); err != nil {
-			c.noticeDetail("AutoResearch status update failed.", "autoresearch task completion update failed: "+err.Error())
-			return
-		}
-		c.notice("autoresearch task completed: " + taskID)
-	case strings.HasPrefix(notice, "goal blocked: ") || notice == "goal continuation limit reached":
-		status := autoresearch.StatusBlocked
-		reason := strings.TrimPrefix(notice, "goal blocked: ")
-		if reason == "" {
-			reason = notice
-		}
-		if err := c.autoResearch.updateProgress(taskID, autoresearch.ProgressPatch{Status: &status, BlockedReason: &reason}); err != nil {
-			c.noticeDetail("AutoResearch status update failed.", "autoresearch task blocked update failed: "+err.Error())
-			return
-		}
-		c.noticeDetail("AutoResearch task marked blocked.", "autoresearch task blocked: "+taskID+"\nreason: "+reason)
-	}
 }
 
 // completeRemainingGoalTodos force-completes any remaining incomplete canonical
