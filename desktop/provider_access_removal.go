@@ -1,6 +1,7 @@
 package main
 
 import (
+	"crypto/hmac"
 	"crypto/sha256"
 	"errors"
 	"fmt"
@@ -113,9 +114,9 @@ func (a *App) loadProviderRemovalConfigForEdit(root string) (*config.Config, str
 
 // providerRemovalStateFingerprint covers every config or credential-store
 // value used to classify a removal, choose its fallback, and resolve model
-// references. The digest remains process-local and contains no raw secret.
+// references. The keyed digest remains process-local and contains no raw secret.
 func providerRemovalStateFingerprint(c *config.Config, credentialsRevision string) string {
-	h := sha256.New()
+	h := hmac.New(sha256.New, providerStateFingerprintKey)
 	write := func(value string) {
 		_, _ = fmt.Fprintf(h, "%d:", len(value))
 		_, _ = h.Write([]byte(value))

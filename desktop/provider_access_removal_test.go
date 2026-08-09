@@ -541,6 +541,29 @@ func TestProviderAccessFallbackSkipsUnconfiguredProviders(t *testing.T) {
 	}
 }
 
+func TestProviderRemovalStateFingerprintCoversConfigAndCredentialRevision(t *testing.T) {
+	cfg := config.Default()
+	cfg.Providers = []config.ProviderEntry{{
+		Name: "candidate", Kind: "openai", BaseURL: "https://example.invalid/v1",
+		Model: "model-a", APIKeyEnv: "CANDIDATE_API_KEY",
+	}}
+
+	base := providerRemovalStateFingerprint(cfg, "credential-revision-a")
+	if got := providerRemovalStateFingerprint(cfg, "credential-revision-a"); got != base {
+		t.Fatal("unchanged provider removal state produced an unstable fingerprint")
+	}
+	if strings.Contains(base, "CANDIDATE_API_KEY") {
+		t.Fatal("provider removal fingerprint exposed the credential environment name")
+	}
+	if got := providerRemovalStateFingerprint(cfg, "credential-revision-b"); got == base {
+		t.Fatal("credential revision change did not invalidate provider removal fingerprint")
+	}
+	cfg.Providers[0].APIKeyEnv = "ROTATED_API_KEY"
+	if got := providerRemovalStateFingerprint(cfg, "credential-revision-a"); got == base {
+		t.Fatal("provider configuration change did not invalidate provider removal fingerprint")
+	}
+}
+
 func TestProviderAccessFallbackSkipsConfiguredProvidersOutsideAccessList(t *testing.T) {
 	cfg := &config.Config{
 		Desktop: config.DesktopConfig{ProviderAccess: []string{"removed", "visible"}},

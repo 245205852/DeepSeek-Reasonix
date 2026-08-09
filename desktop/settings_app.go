@@ -403,10 +403,10 @@ func providerCredentialsRevision() string {
 	return config.CredentialStoreRevision()
 }
 
-var providerModelCatalogFingerprintKey = func() []byte {
+var providerStateFingerprintKey = func() []byte {
 	key := make([]byte, 32)
 	if _, err := rand.Read(key); err != nil {
-		panic(fmt.Sprintf("initialize provider catalog fingerprint key: %v", err))
+		panic(fmt.Sprintf("initialize provider state fingerprint key: %v", err))
 	}
 	return key
 }()
@@ -418,7 +418,7 @@ func providerModelCatalogFingerprint(p config.ProviderEntry) string {
 func providerModelCatalogFingerprintForCredentials(p config.ProviderEntry, credentialsRevision string) string {
 	// This token crosses the Wails boundary, so key the digest instead of exposing
 	// a reusable hash of header or credential-store metadata to the frontend.
-	h := hmac.New(sha256.New, providerModelCatalogFingerprintKey)
+	h := hmac.New(sha256.New, providerStateFingerprintKey)
 	write := func(value string) {
 		_, _ = fmt.Fprintf(h, "%d:", len(value))
 		_, _ = h.Write([]byte(value))
