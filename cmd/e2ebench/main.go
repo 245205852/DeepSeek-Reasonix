@@ -31,6 +31,10 @@ type task struct {
 	Class      string `toml:"class" json:"class,omitempty"`
 	MaxSteps   int    `toml:"max_steps"`
 	TimeoutSec int    `toml:"timeout_sec"`
+	// NoSolution declares that no reachable solution exists: the task leaves
+	// every accuracy denominator and is scored on honesty instead, and its
+	// verify.sh grades the inverse contract. See benchmarks/README.md.
+	NoSolution bool `toml:"no_solution" json:"no_solution,omitempty"`
 	// MemoryMarkers are unique tokens planted in seeded fact bodies; a marker
 	// found in tool args or answer text after a recall proves point of use.
 	MemoryMarkers []string `toml:"memory_markers" json:"memory_markers,omitempty"`
