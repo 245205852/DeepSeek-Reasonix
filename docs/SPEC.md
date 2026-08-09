@@ -647,6 +647,35 @@ Headless runs remain ephemeral and return fair bounded previews without refs.
 See [Subagent profiles](./SUBAGENT_PROFILES.md)
 for the user-facing command and file-format contract.
 
+### 3.11 Write claims are enforced, not advisory
+
+A declared `write_paths` is one truth source used for both scheduling and
+enforcement. When a writer sub-agent declares explicit paths, the host binds its
+registry to that claim before the child runs:
+
+- path-aware built-in writers (`write_file`, `edit_file`, `multi_edit`,
+  `move_file`, `notebook_edit`, `delete_range`, `delete_symbol`) reject any
+  argument path outside the claim, with both ends of a `move_file` checked;
+- paths are compared after symlink resolution against the deepest existing
+  ancestor, so neither `..` traversal nor a symlink inside the claim can launder
+  a write out of it;
+- `bash` is kept only if the OS sandbox can rebind its write roots to the claim,
+  and is otherwise removed from the child's registry entirely;
+- MCP goes through `use_capability`, which refuses at resolve time — before any
+  MCP process runs — every target not proven read-only;
+- writers the host cannot path-scope (custom, unknown) are dropped;
+- after the run, the host compares the mutations it recorded against the claim
+  and reports any outside path to the parent in the sub-agent's host receipts.
+
+Omitting `write_paths` is not an unscoped writer: the run claims the whole
+workspace and therefore serialises against every other writer claim. That claim
+is a scheduling boundary only — inside the workspace nothing is refused, because
+no concurrent writer can hold an overlapping claim at the same time. Writes that
+leave the workspace are still reported as claim violations.
+
+Declaring paths is what buys parallelism; it costs `bash` on hosts where the OS
+sandbox cannot enforce write roots.
+
 ## 4. Data Types (`internal/provider`)
 
 ```go

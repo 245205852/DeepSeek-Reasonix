@@ -235,6 +235,21 @@ Bubble Tea TUI 的 modal overlay 必须隐藏 composer；slash/`@` autocomplete 
 
 `reasonix subagent try` 使用只读 Skill runner；`reasonix subagent run` 使用常规权限与 Sandbox。`task` 支持 `profile`、`model`、`effort` 和 `write_paths`；`fleet` 在 session scheduler 上并发调度多个任务。详见[子智能体 Profile](./SUBAGENT_PROFILES.zh-CN.md)。
 
+### 3.11 写入声明是强制执行的，不是建议
+
+`write_paths` 是调度与强制执行共用的同一个真相来源。写入型子智能体声明了显式路径后，host 会在子智能体启动前把它的工具注册表绑定到该声明：
+
+- 支持路径参数的内建写工具（`write_file`、`edit_file`、`multi_edit`、`move_file`、`notebook_edit`、`delete_range`、`delete_symbol`）拒绝声明之外的任何路径，`move_file` 的源和目标两端都检查；
+- 路径先解析到最深的存在祖先并展开 symlink 后再比较，因此 `..` 穿越和声明目录内指向外部的 symlink 都无法把写入洗白；
+- 仅当 OS sandbox 能把 `bash` 的写根重绑到该声明时才保留 `bash`，否则直接从子智能体的注册表中移除；
+- MCP 一律经 `use_capability`，它在解析阶段——任何 MCP 进程启动之前——拒绝所有未被证明为只读的目标；
+- host 无法路径化约束的写工具（自定义、未知）被丢弃；
+- 运行结束后，host 用自己记录的变更与声明比对，任何越界路径都会写进该子智能体的 host receipts 交还给父智能体。
+
+省略 `write_paths` 并不等于不受约束：该次运行会声明整个 workspace，因而与其他所有写入声明串行。那是纯调度边界——workspace 内部不拒绝任何写入，因为同一时刻不可能有另一个持有重叠声明的并发写入者。但离开 workspace 的写入仍会被记为越界。
+
+声明路径换来的是并行能力；代价是在 OS sandbox 无法强制写根的宿主上失去 `bash`。
+
 ## 4. 数据类型
 
 provider 层的核心类型包括 `Role`、`Message`、`ToolCall`、`ToolSchema`、`Request` 和 streaming `Chunk`。`Message` 保留 `tool_calls`、`tool_call_id` 与 `name`；`Chunk` 区分 text、tool call、done 和 error。字段定义以英文规范及 `internal/provider` 源码为准。

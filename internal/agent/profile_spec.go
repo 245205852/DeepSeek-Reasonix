@@ -33,45 +33,75 @@ type ProfileLookup func(name string) (ProfileDefinition, bool)
 
 // ProfileExecSpec is the unified execution specification shared by task,
 // fleet items, and run_skill profile runs. Call sites build a spec, then hand
-// it to TaskTool.RunProfileSpec so runners cannot drift.
+// it to TaskTool.RunProfileSpec so runners cannot drift. Its members are the
+// delegation boundary: place a new field in the member that decides its value,
+// never in whichever one is closest to the call site.
 type ProfileExecSpec struct {
+	Task    TaskSpec
+	Worker  WorkerSpec
+	Grant   CapabilityGrant
+	Context ContextCapsule
+	Sched   SchedulerPolicy
+}
+
+// TaskSpec is what one delegated run must accomplish. Every field is decided
+// per call by the delegating parent, never by the worker's identity.
+type TaskSpec struct {
+	// Objective is the task text handed to the child agent.
+	Objective string
+	// Description is an optional short UI label.
+	Description string
+}
+
+// WorkerSpec is who carries the run out: the resolved profile identity and the
+// provider runtime it thinks with. Fields here follow from the worker chosen,
+// not from what this particular call asks for.
+type WorkerSpec struct {
 	// Kind is the transcript kind: "task", "skill", or "fleet".
 	Kind string
 	// Name is the transcript / display name (profile name or "task").
 	Name string
 	// Profile is the optional profile skill name (empty for ordinary task).
 	Profile string
-	// Prompt is the user task text for the child agent.
-	Prompt string
-	// Description is an optional short UI label.
-	Description string
-	// SystemPrompt is the full child system prompt. When UseProfilePrompt is
-	// true this is exactly the profile body (no DefaultTaskSystemPrompt).
+	// SystemPrompt is the full child system prompt.
 	SystemPrompt string
-	// UseProfilePrompt marks custom/named-builtin profile system prompts so
-	// hosts do not append the ordinary concise task default.
+	// UseProfilePrompt marks a profile body used verbatim, with no task default.
 	UseProfilePrompt bool
-	// ReadOnly forces the read-only registry even when the profile can write.
-	ReadOnly bool
-	// AllowNoTools preserves the ordinary parallel research path for children
-	// that can answer directly without host tools. Explicit task/profile calls
-	// keep failing closed on an empty registry.
-	AllowNoTools bool
-	// CallTools is the optional per-call tools whitelist.
-	CallTools []string
-	// ProfileTools is the profile frontmatter allowed-tools list.
-	ProfileTools []string
 	// Model/Effort are the already-resolved effective values for this run
 	// (after config override → call params → frontmatter → global → parent).
 	Model  string
 	Effort string
+}
+
+// CapabilityGrant is what the run may touch. Profile frontmatter supplies a
+// ceiling and call arguments may only narrow it (see IntersectToolLists), so
+// the effective grant is always the intersection of the two.
+type CapabilityGrant struct {
+	// ReadOnly forces the read-only registry even when the profile can write.
+	ReadOnly bool
+	// AllowNoTools lets the parallel-research path run a child with no tools.
+	AllowNoTools bool
+	// CallTools is the optional per-call tools whitelist.
+	CallTools []string
+	// ProfileTools is the profile frontmatter allowed-tools ceiling.
+	ProfileTools []string
 	// WritePaths is the normalized write claim (empty for read-only).
 	WritePaths WritePathSet
-	// MaxSteps is the optional per-call step budget (0 = default).
-	MaxSteps int
+}
+
+// ContextCapsule is the context a child starts from, as opposed to the task it
+// is given. Today that is only a prior transcript to resume.
+type ContextCapsule struct {
 	// ContinueFrom / ForkFrom are transcript continuation refs (writer path).
 	ContinueFrom string
 	ForkFrom     string
+}
+
+// SchedulerPolicy is when and how the run executes. It never changes what the
+// child is asked to do or what it is allowed to touch.
+type SchedulerPolicy struct {
+	// MaxSteps is the optional per-call step budget (0 = default).
+	MaxSteps int
 	// RunInBackground starts a jobs.Manager background job.
 	RunInBackground bool
 	// BackgroundWriter marks work already hosted by a parent background job

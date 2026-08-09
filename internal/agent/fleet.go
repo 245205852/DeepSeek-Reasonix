@@ -183,21 +183,21 @@ func (f *FleetTool) Execute(ctx context.Context, args json.RawMessage) (result s
 		if err != nil {
 			return "", fmt.Errorf("task %d: %w", i+1, err)
 		}
-		if forceBackgroundClaim && !spec.ReadOnly && spec.WritePaths.Empty() {
+		if forceBackgroundClaim && !spec.Grant.ReadOnly && spec.Grant.WritePaths.Empty() {
 			whole, werr := WholeWorkspaceWriteClaim(f.taskTool.workspaceRoot)
 			if werr != nil {
 				return "", fmt.Errorf("task %d: %w", i+1, werr)
 			}
-			spec.WritePaths = whole
+			spec.Grant.WritePaths = whole
 		}
-		spec.Nested = SubagentDepth(ctx) > 0
-		spec.RunInBackground = false // fleet owns backgrounding
-		if spec.Description == "" {
-			spec.Description = fmt.Sprintf("fleet-%d", i+1)
+		spec.Sched.Nested = SubagentDepth(ctx) > 0
+		spec.Sched.RunInBackground = false // fleet owns backgrounding
+		if spec.Task.Description == "" {
+			spec.Task.Description = fmt.Sprintf("fleet-%d", i+1)
 		}
 		specs[i] = spec
-		if !spec.ReadOnly {
-			claims[i] = spec.WritePaths
+		if !spec.Grant.ReadOnly {
+			claims[i] = spec.Grant.WritePaths
 		}
 	}
 	if err := ValidateNonOverlappingWriteClaims(claims); err != nil {
@@ -206,7 +206,7 @@ func (f *FleetTool) Execute(ctx context.Context, args json.RawMessage) (result s
 
 	if params.RunInBackground {
 		for i := range specs {
-			specs[i].BackgroundWriter = !specs[i].ReadOnly
+			specs[i].Sched.BackgroundWriter = !specs[i].Grant.ReadOnly
 		}
 		jm, ok := jobs.FromContext(ctx)
 		if !ok {
@@ -222,7 +222,7 @@ func (f *FleetTool) Execute(ctx context.Context, args json.RawMessage) (result s
 		if observer != nil {
 			hasWriter := false
 			for i := range specs {
-				if specs[i].BackgroundWriter {
+				if specs[i].Sched.BackgroundWriter {
 					hasWriter = true
 					break
 				}
@@ -300,7 +300,7 @@ func (f *FleetTool) runFleet(ctx context.Context, sink event.Sink, specs []Profi
 	n := len(specs)
 	results = make([]fleetItemResult, n)
 	for i := range results {
-		results[i] = fleetItemResult{index: i, status: fleetItemPending, profile: specs[i].Profile}
+		results[i] = fleetItemResult{index: i, status: fleetItemPending, profile: specs[i].Worker.Profile}
 	}
 
 	var wg sync.WaitGroup
@@ -308,18 +308,18 @@ func (f *FleetTool) runFleet(ctx context.Context, sink event.Sink, specs []Profi
 
 	startOne := func(idx int) {
 		spec := specs[idx]
-		label := spec.Description
+		label := spec.Task.Description
 		subID := fmt.Sprintf("%s/fleet-%d", parentID, idx+1)
 		dispatchArgs, _ := json.Marshal(map[string]any{
-			"prompt":      spec.Prompt,
+			"prompt":      spec.Task.Objective,
 			"description": label,
-			"profile":     spec.Profile,
+			"profile":     spec.Worker.Profile,
 		})
 		sink.Emit(event.Event{
 			Kind: event.ToolDispatch,
 			Tool: event.Tool{
 				ID: subID, ParentID: parentID, Name: "task",
-				Args: string(dispatchArgs), ReadOnly: spec.ReadOnly,
+				Args: string(dispatchArgs), ReadOnly: spec.Grant.ReadOnly,
 			},
 		})
 
@@ -329,7 +329,7 @@ func (f *FleetTool) runFleet(ctx context.Context, sink event.Sink, specs []Profi
 			itemCtx := withCallContext(ctx, subID, subSinkFor(subID, sink), nil, false)
 			out, err := f.taskTool.RunProfileSpec(itemCtx, spec)
 			answer, ref := splitSubagentRunResult(out)
-			res := fleetItemResult{index: idx, profile: spec.Profile, output: answer, ref: ref, err: err}
+			res := fleetItemResult{index: idx, profile: spec.Worker.Profile, output: answer, ref: ref, err: err}
 			if err == nil {
 				res.status = fleetItemCompleted
 				sink.Emit(event.Event{
