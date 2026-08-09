@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"reasonix/internal/ablation"
 	"reasonix/internal/event"
 	"reasonix/internal/provider"
 	"reasonix/internal/tool"
@@ -401,22 +402,14 @@ func (a *Agent) compact(ctx context.Context, trigger, instructions string, force
 // installed (nothing to fold); callers at the force threshold must treat that
 // as a hard failure rather than sending the oversized canonical prompt.
 func (a *Agent) compactToProjection(ctx context.Context, trigger, instructions string, force bool) (CompactionOutcome, error) {
-	msgs, transcriptVersion := a.session.snapshotMessagesVersion()
-	head, start, ok := a.planCompaction(msgs, minCompactMessages)
-	if !ok {
-		head, start, ok = a.planCompaction(msgs, 1)
-	}
+	canonical, transcriptVersion := a.session.snapshotMessagesVersion()
+	msgs := a.foldSource(canonical)
+	head, start, ok := a.planFoldRegion(msgs)
 	if !ok {
 		return CompactionNoop, nil
 	}
-	if active := a.activeTurnStart(msgs); active >= head && active < start {
-		start = active
-		if start <= head {
-			return CompactionNoop, nil
-		}
-	}
 	region := msgs[head:start]
-	early, kept, fold := a.partitionFoldForProjection(region)
+	early, carried, kept, fold := a.partitionFoldForProjection(region)
 	if len(fold) == 0 {
 		return CompactionNoop, nil
 	}
@@ -456,7 +449,7 @@ func (a *Agent) compactToProjection(ctx context.Context, trigger, instructions s
 		archived = path
 	}
 
-	sourceTokens := estimateMessagesTokens(provider.ModelMessages(msgs))
+	sourceTokens := estimateMessagesTokens(provider.ModelMessages(canonical))
 	res, err := a.foldToSummary(ctx, fold, instructions)
 	summary := res.Text
 	tele := compactionTelemetryFromSummary(trigger, a.CacheState(), sourceTokens, res)
@@ -475,9 +468,10 @@ func (a *Agent) compactToProjection(ctx context.Context, trigger, instructions s
 		return CompactionNoop, err
 	}
 
-	projMsgs := make([]provider.Message, 0, head+len(early)+1+len(kept)+len(msgs)-start)
+	projMsgs := make([]provider.Message, 0, head+len(early)+len(carried)+1+len(kept)+len(msgs)-start)
 	projMsgs = append(projMsgs, msgs[:head]...)
 	projMsgs = append(projMsgs, early...)
+	projMsgs = append(projMsgs, carried...)
 	projMsgs = append(projMsgs, formatSummaryMessage(summary))
 	projMsgs = append(projMsgs, kept...)
 	projMsgs = append(projMsgs, msgs[start:]...)
@@ -495,8 +489,8 @@ func (a *Agent) compactToProjection(ctx context.Context, trigger, instructions s
 			Messages:          projMsgs,
 			TranscriptVersion: transcriptVersion,
 			ProjectionVersion: projVersion,
-			CoveredCount:      len(msgs),
-			CoveredPrefixHash: coveredPrefixHash(msgs, len(msgs)),
+			CoveredCount:      len(canonical),
+			CoveredPrefixHash: coveredPrefixHash(canonical, len(canonical)),
 			SummaryHash:       summaryContentHash(summary),
 			SourceTokens:      sourceTokens,
 			ProjectionTokens:  projTokens,
@@ -525,26 +519,88 @@ func (a *Agent) compactToProjection(ctx context.Context, trigger, instructions s
 	return CompactionInstalled, nil
 }
 
+// planFoldRegion locates msgs[head:start] for a fold, stopping short of an
+// active turn so a tool loop is never folded mid-flight. ok is false when there
+// is nothing left to fold.
+func (a *Agent) planFoldRegion(msgs []provider.Message) (head, start int, ok bool) {
+	head, start, ok = a.planCompaction(msgs, minCompactMessages)
+	if !ok {
+		head, start, ok = a.planCompaction(msgs, 1)
+	}
+	if !ok {
+		return head, start, false
+	}
+	if active := a.activeTurnStart(msgs); active >= head && active < start {
+		start = active
+	}
+	return head, start, start > head
+}
+
+// foldSource picks what a fold reads. By default every fold re-derives its
+// digest from the canonical transcript, so digests never chain — at the cost of
+// re-reading the whole session each time. The incremental experiment folds the
+// model-visible view instead, which feeds the previous digest back through the
+// summarizer: cheaper per fold, and lossy in a way CompactionBench measures.
+func (a *Agent) foldSource(canonical []provider.Message) []provider.Message {
+	if !a.ablation.Off(ablation.FullFold) {
+		return canonical
+	}
+	if visible := a.modelVisibleMessages(); len(visible) > 0 {
+		return visible
+	}
+	return canonical
+}
+
 // partitionFoldForProjection splits the fold region three ways: user turns
 // hoisted verbatim ahead of the digest, messages the keep policy protects, and
 // the remainder that folds (prior digests included, so a merge yields one
 // summary). The groups partition the region — one pass decides each message
 // once, so no turn can fall between a hoist rule and a fold rule that disagree.
-func (a *Agent) partitionFoldForProjection(region []provider.Message) (early, kept, fold []provider.Message) {
+func (a *Agent) partitionFoldForProjection(region []provider.Message) (early, carried, kept, fold []provider.Message) {
 	policyKeep := keepIndexes(region, a.keepPolicy)
 	hoist := a.earlyUserTurns(region)
+	carryDigests := a.carryPriorDigests(region)
 	for i, m := range region {
 		switch {
 		case m.LocalOnly: // display-only output never reaches a provider
 		case hoist[i]:
 			early = append(early, m)
-		case policyKeep[i] && !isCompactionSummary(m):
+		case isCompactionSummary(m):
+			if carryDigests {
+				carried = append(carried, m)
+				continue
+			}
+			fold = append(fold, m)
+		case policyKeep[i]:
 			kept = append(kept, m)
 		default:
 			fold = append(fold, m)
 		}
 	}
-	return early, kept, fold
+	return early, carried, kept, fold
+}
+
+// carryPriorDigests reports whether the digests already in the region survive
+// this fold verbatim instead of being re-summarized. Re-summarizing a digest is
+// the only step in a fold where a fact can be dropped and never recovered, so
+// an incremental fold carries them — until they outgrow their budget, when one
+// consolidating fold merges them and the chain starts over.
+func (a *Agent) carryPriorDigests(region []provider.Message) bool {
+	if !a.ablation.Off(ablation.FullFold) {
+		return false
+	}
+	total := 0
+	for _, m := range region {
+		if isCompactionSummary(m) {
+			total += summaryInputTokens([]provider.Message{m})
+		}
+	}
+	if total > maxCarriedDigestTokens {
+		a.sink.Emit(event.Event{Kind: event.Notice, Level: event.LevelInfo, Text: fmt.Sprintf(
+			"consolidating %d tokens est. of carried digests into one; earlier facts now depend on this merge", total)})
+		return false
+	}
+	return true
 }
 
 // earlyUserTurns marks the region positions of the small user turns hoisted
