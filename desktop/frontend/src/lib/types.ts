@@ -350,6 +350,8 @@ export interface TabMeta {
   topicId: string;
   topicTitle: string;
   sessionPath?: string;
+  sessionRevision?: number;
+  sessionDigest?: string;
   readOnly?: boolean;
   filePath?: string;
   projectColor?: string;
@@ -571,6 +573,8 @@ export interface HistoryPage {
   endTurn: number;
   totalTurns: number;
   hasOlder: boolean;
+  revision?: number;
+  digest?: string;
 }
 
 // ── Windowed history paging (desktop/history_slice.go) ──────────────────────
@@ -615,6 +619,8 @@ export interface HistorySlice {
   endTurn: number;
   stale: boolean; // cursor bound to an older session revision: discard + reload
   revision: number;
+  revisionKnown?: boolean;
+  digest?: string;
   // Diagnostic read path: index|scan|event-log|live-index|live-fallback (empty when the
   // backend predates the field or no session was readable).
   source?: string;
@@ -791,11 +797,13 @@ export interface Meta {
   runtime?: SessionRuntimeView;
   startupErr?: string;
   eventChannel: string;
+  sessionPath?: string;
+  sessionRevision?: number;
+  sessionDigest?: string;
   cwd: string;
   workspaceRoot?: string;
   workspaceName?: string;
   workspacePath?: string;
-  sessionPath?: string;
   gitBranch?: string;
   imageInputEnabled?: boolean;
   autoApproveTools?: boolean;

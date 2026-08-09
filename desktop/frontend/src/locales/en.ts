@@ -1229,7 +1229,7 @@ export const en = {
   "recovery.branch": "Conflict copy",
   "recovery.badge": "Copy",
   "recovery.noticeSavedCopy": "The session changed on disk, so the unsaved local transcript was kept as a conflict copy.",
-  "recovery.noticeKeptCurrent": "Repeated save conflicts were detected, so the current conflict copy was saved in place.",
+  "recovery.noticeKeptCurrent": "Repeated save conflicts were detected, so the current conflict copy was saved in an isolated recovery branch.",
   "recovery.noticeAdopted": "The session changed on disk, so Reasonix adopted the newer transcript.",
   "recovery.noticeAdoptedCovered": "The session changed on disk, so Reasonix adopted the newer transcript; the local changes were already covered.",
 
