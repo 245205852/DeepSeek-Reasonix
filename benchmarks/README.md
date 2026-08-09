@@ -106,6 +106,50 @@ Each task under `e2e/tasks/<id>/` contains:
 | `verify.sh` | The grader: exits 0 iff the agent's artifacts are correct. |
 | `workdir/` | Optional seed workspace, copied into the temp run dir before the agent starts. |
 
+## Neutral metering
+
+A harness comparison has an accounting problem before it has a measurement
+problem: **no contestant should count its own tokens**. Reasonix writes
+`.run-metrics.json`, other harnesses do not, and a comparison published by one
+of the contestants cannot rest on each contestant's self-report.
+
+`-meter` moves the measurement onto the request boundary. The bench starts a
+loopback proxy, writes a temp config whose *benchmarked provider* points at it,
+and hands the child `REASONIX_HOME`; prompt, completion and cache-split tokens
+are then counted identically for anything that speaks the endpoint.
+
+```sh
+go run ./cmd/e2ebench -meter ~/.reasonix/config.toml -trajectories t/
+```
+
+- **Credentials are never touched.** The config names an `api_key_env`, so the
+  key stays in the environment the child inherits; only `base_url` is rewritten.
+- **Only the provider serving `-model` is redirected.** Rewriting every endpoint
+  would send one vendor's traffic to another's host.
+- **Streamed requests are opted into usage.** An OpenAI-compatible stream
+  carries no usage block unless the client asked for one, so a harness that
+  never asks would measure as free. Non-streamed bodies are forwarded byte-for-
+  byte.
+- **A response with no usage is `unmeasured`, never zero.** Silent zeroes would
+  flatter whichever harness reports least.
+
+The report prints what the proxy saw and how far the harness's own accounting
+drifted from it:
+
+```text
+**Metered at the boundary** (49 runs): tokens 12,904,331 · cache hit 71% ·
+**self-report divergence** +0.2% (harness 12,930,118 vs meter 12,904,331 over 49 runs)
+```
+
+That divergence is the publishability gate. Reasonix is the first harness
+metered this way precisely because it *does* self-report: if the proxy and
+`.run-metrics.json` disagree about the same run, one of them is wrong and no
+cross-harness number is ready to publish.
+
+`-faults` injects provider failures at fixed request indices through the same
+proxy, which is what LongRun needs: deterministic 429/500 at the same point of
+a run, replayable across harnesses.
+
 ## task.toml schema
 
 `e2ebench` reads `benchmarks/e2e/tasks/<id>/task.toml` with the BurntSushi TOML
@@ -195,6 +239,8 @@ own outcome).
 | `-force-planner` | `false` | Suite mode: prefix each prompt with a plan-first directive so the two-model turn engages regardless of the planner gate. Use for the "with planner" arm of an A/B; results carry `plan_forced` so arms are only comparable with equal forcing. |
 | `-cache` | `cold` | Suite mode: `cold` runs each task as a fresh session (the fair cross-agent comparison arm); `warm` primes the provider prefix cache with a one-step run in the same workdir first, measuring the long-lived-session steady state. Never mix arms in one report — compare them with `-mode compare cold.json warm.json`. |
 | `-budget` | `800000` | Abort once total tokens cross this (`0` = no cap). Remaining tasks are reported as skipped. |
+| `-meter` | *(off)* | Suite mode: route the benchmarked provider through the neutral measuring proxy, using this `config.toml` as the source. Spend is then counted at the request boundary instead of trusted from the harness. See [Neutral metering](#neutral-metering). |
+| `-faults` | *(none)* | Suite mode: inject provider failures at fixed request indices, e.g. `3:429,7:500`. Requires `-meter` — the proxy is the only place a fault can be injected. |
 
 Diff-mode flags:
 
