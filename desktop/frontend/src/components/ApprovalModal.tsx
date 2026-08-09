@@ -10,52 +10,13 @@ import {
   PromptHeaderAction,
   PromptShelf,
 } from "./PromptShelf";
-import { CSS_EASE_IN, DUR_FAST } from "../lib/motion";
+import { animateElementExit, DUR_FAST } from "../lib/motion";
 import {
   FileReferenceMenu,
   insertTextAtSelection,
   pickInlineFileReference,
   useFileReferenceMenu,
 } from "./FileReferenceMenu";
-
-function animateShelfExit(
-  el: HTMLDivElement,
-  options: { opacity: number; y: number; duration: number; onComplete: () => void },
-) {
-  let completed = false;
-  const complete = () => {
-    if (completed) return;
-    completed = true;
-    options.onComplete();
-  };
-
-  if (typeof el.animate !== "function") {
-    complete();
-    return;
-  }
-
-  let animation: Animation;
-  try {
-    animation = el.animate(
-      [
-        { opacity: 1, transform: "translateY(0)" },
-        { opacity: options.opacity, transform: `translateY(${options.y}px)` },
-      ],
-      {
-        duration: options.duration * 1000,
-        easing: CSS_EASE_IN,
-      },
-    );
-  } catch {
-    // The shelf transition is cosmetic. A WebView animation failure must not
-    // prevent the selected approval, recovery, or stop action from running.
-    complete();
-    return;
-  }
-
-  animation.onfinish = complete;
-  animation.oncancel = complete;
-}
 
 function requiresFreshHumanApproval(tool: string): boolean {
   return tool === "remember" || tool === "forget" || tool === "exit_plan_mode" || tool === "sandbox_escape" || tool === "config_write";
@@ -351,7 +312,7 @@ export function ApprovalModal({
     setSubmitting(true);
     const el = shelfRef.current;
     if (el) {
-      animateShelfExit(el, {
+      animateElementExit(el, {
         opacity: 0,
         y: 8,
         duration: DUR_FAST,

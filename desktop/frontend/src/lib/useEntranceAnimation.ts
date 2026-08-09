@@ -1,4 +1,4 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useMemo, useRef } from "react";
 import { CSS_EASE_OUT, DUR_SLOW, prefersReducedMotion } from "./motion";
 
 // Animates each data-entrance element in once. First mount (and every
@@ -124,6 +124,18 @@ export function useEntranceAnimation<T extends HTMLElement>(
   }, [deps]); // eslint-disable-line react-hooks/exhaustive-deps
 
   return ref;
+}
+
+export function useTranscriptEntranceAnimation<T extends HTMLElement>(
+  tabId: string | undefined,
+  revealSignal: unknown,
+  items: readonly { id: string }[],
+) {
+  const seedIds = useMemo(() => items.map((item) => item.id), [items]);
+  // A tail append preserves this key; a surface switch, reveal, or history
+  // prepend resets it and pre-seeds every model ID before virtual rows mount.
+  const resetKey = `${tabId ?? ""}|${String(revealSignal)}|${items[0]?.id ?? ""}`;
+  return useEntranceAnimation<T>(resetKey, items.length, "[data-entrance]", seedIds);
 }
 
 function itemsStagger(count: number): number {

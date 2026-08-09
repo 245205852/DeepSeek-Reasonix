@@ -14,7 +14,7 @@ import { ReadOnlyBatch } from "./ReadOnlyBatch";
 import { ToolGroup } from "./ToolGroup";
 import { getProcessFoldPreference, onProcessFoldPreferenceChange, type ProcessFoldPreference } from "../lib/processFoldPreference";
 import { STEER_NOTICE_PREFIX, isSteerNoticeText } from "../lib/useController";
-import { useEntranceAnimation } from "../lib/useEntranceAnimation";
+import { useTranscriptEntranceAnimation } from "../lib/useEntranceAnimation";
 import { useScrollManager } from "../lib/useScrollManager";
 import { compactQuestionText, lastQuestionTurn, questionAnchorId, questionTurnsById, scrollVersion, type QuestionAnchor } from "../lib/transcriptGrouping";
 import {
@@ -442,20 +442,7 @@ export function Transcript({
     setCreationScrollbarHot(true);
   }, [SCROLLBAR_HOT_ZONE_PX, SCROLLBAR_MIN_THUMB_PX, creationMode, scrollRef, setCreationScrollbarHot, syncCreationScrollbarMetrics]);
 
-  // Appends must not reset the seen set: only a real surface switch/reveal or
-  // an older-history prepend changes this key. The previous tail-based key
-  // changed on every new item and silently disabled normal entrance motion.
-  const entranceResetKey = useMemo(
-    () => `${tabId ?? ""}|${revealSignal}|${items[0]?.id ?? ""}`,
-    [items, revealSignal, tabId],
-  );
-  const entranceSeedIds = useMemo(() => items.map((item) => item.id), [items]);
-  const entranceRef = useEntranceAnimation<HTMLDivElement>(
-    entranceResetKey,
-    items.length,
-    "[data-entrance]",
-    entranceSeedIds,
-  );
+  const entranceRef = useTranscriptEntranceAnimation<HTMLDivElement>(tabId, revealSignal, items);
 
   // Lease the markdown parse worker for as long as a transcript surface is
   // mounted; the last release terminates the thread (it re-spawns lazily).
