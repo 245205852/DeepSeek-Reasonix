@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"reasonix/internal/config"
+	"reasonix/internal/fileutil"
 	fileencoding "reasonix/internal/fileutil/encoding"
 	"reasonix/internal/frontmatter"
 )
@@ -445,10 +446,12 @@ func flushIndexIn(dir string, lines map[string]string) error {
 		b.WriteString("\n")
 	}
 	result := strings.TrimRight(b.String(), "\n")
-	if result == "" {
-		return os.WriteFile(path, []byte(""), 0o644)
+	if result != "" {
+		result += "\n"
 	}
-	return os.WriteFile(path, []byte(result+"\n"), 0o644)
+	// The index is derived state, but a torn write would still hide facts
+	// from the next session's prefix until the next reindex.
+	return fileutil.AtomicWriteFile(path, []byte(result), 0o644)
 }
 
 // reindexIn rewrites the MEMORY.md line for name in the given directory,

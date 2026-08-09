@@ -84,12 +84,7 @@ func (m *memoryManager) claimAutoRemember(args json.RawMessage) bool {
 }
 
 func (m *memoryManager) recall(query string) memory.RecallResult {
-	mem := m.current()
-	store := memory.Store{}
-	if mem != nil {
-		store = mem.Store
-	}
-	result := memory.AutoRecall(store, query, memory.RecallOptions{})
+	result := m.current().AutoRecall(query, memory.RecallOptions{})
 	m.recordRecall(result)
 	return result
 }
