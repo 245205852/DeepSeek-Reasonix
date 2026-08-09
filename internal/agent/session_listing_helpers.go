@@ -36,6 +36,37 @@ func sessionListingCountsNeedRefresh(schemaVersion, turns int) bool {
 	return turns == 0 && schemaVersion < BranchMetaCountsVersion
 }
 
+func updateSessionListingCountsIfCurrent(session SessionOrderInfo, preview string, turns int) (string, int, error) {
+	unlock, err := LockSessionMetaPath(session.Path)
+	if err != nil {
+		return preview, turns, err
+	}
+	defer unlock()
+
+	current, err := ensureBranchMetaUnlocked(session.Path)
+	if err != nil {
+		return preview, turns, err
+	}
+	if current.SchemaVersion != session.SchemaVersion ||
+		current.Turns != session.Turns ||
+		current.Preview != session.Preview ||
+		current.Revision != session.Revision ||
+		current.ContentDigest != session.ContentDigest {
+		return current.Preview, current.Turns, nil
+	}
+	if !sessionListingCountsNeedRefresh(current.SchemaVersion, current.Turns) {
+		return current.Preview, current.Turns, nil
+	}
+
+	current.Preview = preview
+	current.Turns = turns
+	current.SchemaVersion = BranchMetaCountsVersion
+	if err := saveBranchMeta(session.Path, current, false); err != nil {
+		return preview, turns, err
+	}
+	return preview, turns, nil
+}
+
 func previewSessionWithError(path string) (string, int, error) {
 	msgs, _, _, err := loadSessionMessages(path)
 	if err != nil {

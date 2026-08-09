@@ -221,10 +221,44 @@ func TestRunForegroundCombinedOutputBounded(t *testing.T) {
 	}
 }
 
+func TestRunForegroundProgressBounded(t *testing.T) {
+	payload := strings.Repeat("x", progressOutputMaxBytes+(1<<20))
+	var progress strings.Builder
+	res := RunForeground(context.Background(), Request{
+		Argv:     []string{"irrelevant"},
+		Progress: func(chunk string) { progress.WriteString(chunk) },
+		Run: func(_ context.Context, cmd *exec.Cmd, _ proc.RunOptions) (*proc.TrackedCommand, error) {
+			_, err := io.WriteString(cmd.Stdout, payload)
+			return nil, err
+		},
+	})
+	if res.Err != nil {
+		t.Fatalf("RunForeground: %v", res.Err)
+	}
+	if got, max := progress.Len(), progressOutputMaxBytes+len(progressOutputTruncated); got > max {
+		t.Fatalf("progress bytes = %d, want <= %d", got, max)
+	}
+	if !strings.Contains(progress.String(), progressOutputTruncated) {
+		t.Fatal("progress omitted the truncation notice")
+	}
+	if len(res.Combined) != len(payload) {
+		t.Fatalf("progress cap changed final output: got %d bytes, want %d", len(res.Combined), len(payload))
+	}
+}
+
 func TestRunForegroundCombinedOutputCapIsConcurrentSafe(t *testing.T) {
 	chunk := strings.Repeat("x", 128<<10)
+	var progressMu sync.Mutex
+	progressBytes := 0
+	progressMarkers := 0
 	res := RunForeground(context.Background(), Request{
 		Argv: []string{"irrelevant"},
+		Progress: func(chunk string) {
+			progressMu.Lock()
+			defer progressMu.Unlock()
+			progressBytes += len(chunk)
+			progressMarkers += strings.Count(chunk, progressOutputTruncated)
+		},
 		Run: func(_ context.Context, cmd *exec.Cmd, _ proc.RunOptions) (*proc.TrackedCommand, error) {
 			var wg sync.WaitGroup
 			for range 4 {
@@ -246,6 +280,12 @@ func TestRunForegroundCombinedOutputCapIsConcurrentSafe(t *testing.T) {
 	}
 	if !strings.Contains(res.Combined, combinedOutputTruncated) {
 		t.Fatal("combined output omitted the truncation notice")
+	}
+	if max := progressOutputMaxBytes + len(progressOutputTruncated); progressBytes > max {
+		t.Fatalf("progress bytes = %d, want <= %d", progressBytes, max)
+	}
+	if progressMarkers != 1 {
+		t.Fatalf("progress truncation markers = %d, want 1", progressMarkers)
 	}
 }
 

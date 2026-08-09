@@ -1626,6 +1626,11 @@ type SessionOrderInfo struct {
 	Turns         int
 	Preview       string
 	SchemaVersion int
+	// Revision and ContentDigest bind a listing backfill to the transcript
+	// generation it decoded. They are sidecar-only compare-and-apply guards and
+	// are not exposed through SessionInfo.
+	Revision      int64
+	ContentDigest string
 }
 
 // CleanupPendingMeta records that a session was logically removed but still has
@@ -2151,6 +2156,8 @@ func ListSessionOrder(dir string) ([]SessionOrderInfo, error) {
 		turns := 0
 		preview := ""
 		schemaVersion := 0
+		revision := int64(0)
+		contentDigest := ""
 		if meta, ok, err := LoadBranchMeta(full); err == nil && ok {
 			if !meta.CreatedAt.IsZero() {
 				createdAt = meta.CreatedAt
@@ -2170,6 +2177,8 @@ func ListSessionOrder(dir string) ([]SessionOrderInfo, error) {
 			turns = meta.Turns
 			preview = meta.Preview
 			schemaVersion = meta.SchemaVersion
+			revision = meta.Revision
+			contentDigest = meta.ContentDigest
 		}
 		out = append(out, SessionOrderInfo{
 			Path:           full,
@@ -2188,6 +2197,8 @@ func ListSessionOrder(dir string) ([]SessionOrderInfo, error) {
 			Turns:          turns,
 			Preview:        preview,
 			SchemaVersion:  schemaVersion,
+			Revision:       revision,
+			ContentDigest:  contentDigest,
 		})
 	}
 	sort.Slice(out, func(i, j int) bool {
@@ -2219,8 +2230,10 @@ func ListSessions(dir string) ([]SessionInfo, error) {
 			// later listing is O(1) and a recovered session becomes visible again.
 			preview, turns, previewErr = previewSessionWithError(session.Path)
 			if previewErr == nil {
-				// Best-effort: a failure here just means we decode again next time.
-				_ = UpdateSessionMeta(session.Path, "", preview, turns, false)
+				// Compare-and-apply under the metadata lock. A turn-end save may have
+				// advanced the transcript and its counts while this listing decoded;
+				// never overwrite that newer state with a stale backfill.
+				preview, turns, _ = updateSessionListingCountsIfCurrent(session, preview, turns)
 			}
 		}
 		if turns == 0 {
