@@ -493,7 +493,9 @@ jobs:
         run: go run ./tools/repolint
 
       - name: wails version pin
-        run: bash scripts/check-wails-pin.sh
+        run: |
+          bash scripts/check-wails-pin.sh
+          bash scripts/check-wails-pin.test.sh
 
       # `make lint-install` reads the same file, so a local run and this job
       # cannot drift onto different linter versions.

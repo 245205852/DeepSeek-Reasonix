@@ -8,7 +8,7 @@
 # upgrade. One pin, read by everyone, and this check to prove it held.
 set -euo pipefail
 
-root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+root="${1:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
 pin="$(tr -d '[:space:]' < "$root/.wails-version")"
 mod="$(awk '/github.com\/wailsapp\/wails\/v2 v/ {print $2; exit}' "$root/desktop/go.mod")"
 
@@ -41,5 +41,30 @@ for workflow in "$root"/.github/workflows/ci.yml "$root"/.github/workflows/relea
     exit 1
   fi
 done
+
+# The workflows are not the only way developers build a release. Keep local
+# packaging and setup docs from bypassing the shared pin too. The escaped dots
+# keep this regex from matching its own source.
+hard_coded="$(git -C "$root" grep -nE 'github\.com/wailsapp/wails/v2/cmd/wails@(v[0-9]|latest)' -- . || true)"
+if [[ -n "$hard_coded" ]]; then
+  cat >&2 <<MSG
+check-wails-pin: Wails CLI installs must read .wails-version; found:
+$hard_coded
+MSG
+  exit 1
+fi
+
+grep -Fq 'github.com/wailsapp/wails/v2/cmd/wails@$(WAILS_VERSION)' "$root/Makefile" || {
+  echo "check-wails-pin: make wails-install must install WAILS_VERSION" >&2
+  exit 1
+}
+grep -Fq 'make wails-install' "$root/desktop/README.md" || {
+  echo "check-wails-pin: desktop/README.md must direct developers to make wails-install" >&2
+  exit 1
+}
+grep -Fq 'wails version' "$root/prod_test" || {
+  echo "check-wails-pin: prod_test must verify the installed Wails CLI version" >&2
+  exit 1
+}
 
 echo "check-wails-pin: CLI and library both pinned at $pin"
