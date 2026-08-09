@@ -276,6 +276,7 @@ var Chinese = Messages{
 	CmdMouse:            "切换鼠标接管（关闭后由终端原生处理选中/右键）",
 	CmdReasonLang:       "设置可见思考语言",
 	CmdHelp:             "查看命令列表",
+	CmdWeb:              "在 Web UI 中继续当前会话",
 	CmdTodo:             "清除任务清单",
 	CmdQuit:             "退出会话",
 	CmdCopy:             "选择回复复制到剪贴板",
@@ -553,6 +554,7 @@ var Chinese = Messages{
   reasonix run [--model NAME] [--max-steps N] [-c|--continue] [--resume PATH] [--copy] [--output-format FORMAT] <task>
   reasonix run --events-jsonl [--model NAME] <task>      输出脱敏结构化事件 JSONL
   reasonix review [--base BRANCH] [--commit SHA] [--model NAME]  AI 代码审查（基于本地 diff）
+  reasonix web [--model NAME] [--addr HOST:PORT] [--no-open]  启动本地 Web UI 并用默认浏览器打开
   reasonix serve [--model NAME] [--addr HOST:PORT] [--auth none|token|password] [--token STR] [--password STR] [--hash-password]  通过 HTTP+SSE 提供服务（支持可选认证）
   reasonix acp [--model NAME]                           通过 stdio 提供 Agent Client Protocol（也可用：reasonix --acp）
   reasonix setup [path]                                 交互式配置向导；生成 reasonix.toml（及 .env）
@@ -582,6 +584,7 @@ var Chinese = Messages{
   reasonix
   reasonix --continue
   reasonix --resume provider-config
+  reasonix web
   reasonix run "把 main.go 里的 TODO 实现掉"
   reasonix run --model mimo-pro "给这个函数补单元测试"
   reasonix -p "总结这个仓库" --output-format json
