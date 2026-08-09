@@ -69,6 +69,7 @@ reasoning_language = "auto"      # visible reasoning text: auto|zh|en
 # max_subagent_concurrency = 6        # session-wide sub-agent concurrency (task/fleet/skills)
 # max_parallel_writers = 3            # concurrent writers with non-overlapping write_paths
 tool_result_snip_ratio = 0.6       # shorten stale tool output before summary compaction
+# context_editing = "native"       # opt in only for the official Anthropic endpoint; default local
 
 [[providers]]
 name        = "deepseek-flash"
