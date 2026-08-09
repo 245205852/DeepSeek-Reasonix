@@ -305,6 +305,11 @@ Parsing rules:
 - v2 is strict: any unknown field — at the root or nested under
   `contributes`/`runtime` — is an error naming the field path, so typos fail
   loudly instead of silently disabling a capability.
+- v2 resource discovery is explicit. Reasonix loads only the skills, agents,
+  commands, prompts, hooks, MCP servers, themes, and runtime declared by the
+  native manifest. Host-specific sidecars such as a root `CLAUDE.md`,
+  `hooks/hooks.json`, `.claude/settings.json`, or `.mcp.json` are not imported
+  implicitly.
 - Minor aliases (`reasonix.io/plugin/v2.0`, `v2.1`, …) and unknown major
   versions are rejected.
 - `requires` and `provides` declare dependency constraints and the capability
@@ -387,8 +392,10 @@ before anything is written. Set the optional install name to a marketplace
 plugin name to select only that entry. Object sources are accepted only for a
 GitHub repository URL pinned to a full commit SHA. Unpinned external strings,
 npm, `strict: false`, and other advanced marketplace protocols are skipped in
-a bulk install and rejected when selected by name. For packages
-such as Superpowers and Claude-style skill packs, Reasonix maps:
+a bulk install and rejected when selected by name. For packages such as
+Superpowers and Claude-style skill packs, Reasonix maps the following
+compatibility conventions. Native v2 manifests use only their explicit
+declarations and do not apply these fallbacks:
 
 - `skills` to Reasonix skill roots. A Claude manifest that declares no
   `skills` field falls back to the conventional `skills/` (or `.claude/skills/`)
