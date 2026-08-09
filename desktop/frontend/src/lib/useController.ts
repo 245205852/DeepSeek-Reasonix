@@ -414,15 +414,8 @@ interface State {
   lastTurnWaitAccumMs: number;
   lastTurnModelMs: number;
   lastTurnOutputEstimated: boolean;
-  // TPS of the most recent executor request: completion tokens over the
-  // provider-output interval that the usage event just closed. Refreshes on
-  // every executor usage event so the status bar stays live during long
-  // turns instead of waiting for turn_done. Persists like state.usage.
+  // Per-request rate and its pending provider interval are tab-local.
   lastRequestTps?: number;
-  // Provider-output time of the interval the message/tool_dispatch event just
-  // closed. The usage event for the same request arrives after that close, so
-  // the time is stashed here until the executor usage pairs it with tokens.
-  // Reset on turn boundaries so a stale close never pairs across turns.
   pendingRequestModelMs?: number;
   promptWaitStartedAt?: number;
   // promptEventClock() reading taken when the CURRENT pending prompt first
@@ -1149,8 +1142,7 @@ function resetTurnTiming(now = Date.now()): Pick<State, "turnStartAt" | "turnDon
     turnOutputCharsAtUsage: 0,
     turnOutputEstimated: false,
     turnModelActiveAt: undefined,
-    turnModelActiveMs: 0,
-    pendingRequestModelMs: undefined,
+    turnModelActiveMs: 0, pendingRequestModelMs: undefined,
     turnCost: 0,
     turnArgChars: 0,
   };
@@ -1167,23 +1159,11 @@ function beginTurnModelActivity(s: State, now = Date.now()): State {
     : { ...s, turnModelActiveAt: now };
 }
 
-function endTurnModelActivity(s: State, now = Date.now()): State {
+function endTurnModelActivity(s: State, now = Date.now(), stashForUsage = false): State {
   if (!s.turnModelActiveAt || s.turnModelActiveAt <= 0) return s;
-  return {
-    ...s,
-    turnModelActiveAt: undefined,
-    turnModelActiveMs: Math.max(0, s.turnModelActiveMs) + Math.max(0, now - s.turnModelActiveAt),
-  };
-}
-
-// Closes the provider-output interval and stashes the closed duration for the
-// usage event that follows this request's message/tool_dispatch. The usage
-// event arrives after the close, so the pairing needs the time preserved.
-function closeModelActivityWithPending(s: State, now = Date.now()): State {
-  const before = s.turnModelActiveMs;
-  const settled = endTurnModelActivity(s, now);
-  const closedMs = Math.max(0, settled.turnModelActiveMs - before);
-  return closedMs > 0 ? { ...settled, pendingRequestModelMs: closedMs } : settled;
+  const closedMs = Math.max(0, now - s.turnModelActiveAt);
+  return { ...s, turnModelActiveAt: undefined, turnModelActiveMs: Math.max(0, s.turnModelActiveMs) + closedMs,
+    pendingRequestModelMs: stashForUsage ? closedMs : s.pendingRequestModelMs };
 }
 
 function snapshotCompletedTurnTelemetry(s: State, now = Date.now()): State {
@@ -1506,10 +1486,10 @@ function applyEvent(s: State, e: WireEvent): State {
           existingAssistant && existingAssistant.text.trim() === "" && existingAssistant.reasoning.trim() === "" && !existingAssistant.memoryCitations?.length
             ? s.items.filter((it) => !(it.kind === "assistant" && it.id === existingAssistant.id))
             : s.items;
-        return { ...closeModelActivityWithPending(s), items, live: undefined, currentAssistant: undefined, turnOutputCharsAtUsage: 0 };
+        return { ...endTurnModelActivity(s, Date.now(), true), items, live: undefined, currentAssistant: undefined, turnOutputCharsAtUsage: 0 };
       }
       const now = Date.now();
-      const settled = closeModelActivityWithPending(s, now);
+      const settled = endTurnModelActivity(s, now, true);
       const { items, id, seq } = ensureAssistant(settled);
       const streamedChars = settled.live?.id === id ? settled.live.text.length + settled.live.reasoning.length : 0;
       const turnOutputChars = Math.max(0, settled.turnOutputChars - streamedChars + text.length + reasoning.length);
@@ -1573,7 +1553,7 @@ function applyEvent(s: State, e: WireEvent): State {
           items: [...activeState.items, { kind: "tool", id, name: t.name, args: "", readOnly: t.readOnly, resolvedName: t.resolvedName, capabilityId: t.capabilityId, status: "running", argChars: t.argChars || undefined, parentId: t.parentId, subagentProgress: SUBAGENT_PROGRESS_TOOLS.has(t.name) ? freshSubagentProgress() : undefined }],
         }, id, false, undefined, { attemptId: t.attemptId, parentId: t.parentId, partial: true });
       }
-      const settled = t.parentId ? s : closeModelActivityWithPending(s);
+      const settled = t.parentId ? s : endTurnModelActivity(s, Date.now(), true);
       const id = t.id || `tool${s.seq}`;
       const idx = settled.items.findIndex((it) => it.kind === "tool" && it.id === id);
       if (idx >= 0) {
@@ -1682,32 +1662,17 @@ function applyEvent(s: State, e: WireEvent): State {
       // Only executor usage belongs to the foreground model stream. Planner,
       // subagent, and auxiliary usage still contributes to session totals and
       // usageSeq, but must not close or inflate the executor TPS interval.
-      const settled = updateContextGauge ? closeModelActivityWithPending(s) : s;
-      // Per-request TPS: closeModelActivityWithPending stashed the interval this
-      // usage event just closed — or the one the message/tool_dispatch already
-      // closed — so pendingRequestModelMs carries the request's provider-output
-      // time for the pairing. Intervals under the 500ms composer gate (or
-      // missing — non-executor sources) keep the previous value.
+      const settled = updateContextGauge ? endTurnModelActivity(s, Date.now(), true) : s;
+      const hasRequestContext = (e.usage?.contextPromptTokens ?? 0) > 0 || (e.usage?.contextCompletionTokens ?? 0) > 0;
       const requestModelMs = updateContextGauge ? (settled.pendingRequestModelMs ?? 0) : 0;
-      const requestTokens = updateContextGauge ? (e.usage?.completionTokens ?? 0) : 0;
-      const requestTps = requestTokens > 0 && requestModelMs >= 500
-        ? Math.round(requestTokens / (requestModelMs / 1000))
-        : 0;
-      // A sub-0.5 t/s request rounds to 0 — no more trustworthy than a
-      // sub-500ms interval — so keep the previous request TPS instead of
-      // storing a value the status bar would treat as absent.
+      const requestTokens = updateContextGauge ? (hasRequestContext ? (e.usage?.contextCompletionTokens ?? 0) : (e.usage?.completionTokens ?? 0)) : 0;
+      const requestTps = requestTokens > 0 && requestModelMs >= 500 ? Math.round(requestTokens / (requestModelMs / 1000)) : 0;
       const lastRequestTps = requestTps > 0 ? requestTps : s.lastRequestTps;
-      // Prefer Context* (latest attempt) over billable aggregates when multi-
-      // attempt sampling recovery folds several provider calls into one Usage.
-      // Matches Controller.ContextSnapshot: latest prompt + completion.
+      // Context* is the latest sampling attempt; other token fields are billable aggregates.
       let used = settled.context.used;
-      if (e.usage && settled.context.window && updateContextGauge) {
-        const hasContext =
-          (e.usage.contextPromptTokens ?? 0) > 0 || (e.usage.contextCompletionTokens ?? 0) > 0;
-        used = hasContext
-          ? (e.usage.contextPromptTokens ?? 0) + (e.usage.contextCompletionTokens ?? 0)
-          : (e.usage.promptTokens ?? 0) + (e.usage.completionTokens ?? 0);
-      }
+      if (e.usage && settled.context.window && updateContextGauge) used = hasRequestContext
+        ? (e.usage.contextPromptTokens ?? 0) + (e.usage.contextCompletionTokens ?? 0)
+        : (e.usage.promptTokens ?? 0) + (e.usage.completionTokens ?? 0);
       const turnTokens = settled.turnTokens + (e.usage?.completionTokens ?? 0);
       const turnOutputTokens = updateContextGauge
         ? settled.turnOutputTokens + (e.usage?.completionTokens ?? 0)

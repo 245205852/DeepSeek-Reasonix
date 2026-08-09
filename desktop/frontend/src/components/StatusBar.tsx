@@ -66,14 +66,9 @@ function formatTurnCount(turns: number | undefined, t: Translator): string {
   if (typeof turns !== "number" || turns < 0) return "-";
   return t(turns === 1 ? "history.turnOne" : "history.turnOther", { n: turns });
 }
-
-
 function formatTps(outputTokens?: number, modelMs?: number, estimated = false): string | null {
-  if (!outputTokens || outputTokens <= 0) return null;
-  if (!modelMs || modelMs <= 0) return null;
-  const elapsedSec = modelMs / 1000;
-  if (elapsedSec < 0.001) return null;
-  const tps = outputTokens / elapsedSec;
+  if (!outputTokens || outputTokens <= 0 || !modelMs || modelMs < 1) return null;
+  const tps = outputTokens / (modelMs / 1000);
   const prefix = estimated ? "≈" : "";
   if (tps < 1) return `${prefix}<1 t/s`;
   return `${prefix}${Math.round(tps)} t/s`;
@@ -210,9 +205,7 @@ export function StatusBar({
   lastTurnOutputTokens?: number;
   lastTurnModelMs?: number;
   lastTurnOutputEstimated?: boolean;
-  // TPS of the most recent executor request; preferred over the completed
-  // turn's value so the status bar stays live during long turns.
-  lastRequestTps?: number;
+  lastRequestTps?: number; // Preferred over completed-turn TPS when available.
   turnCost?: number;
   cost?: number;
   currency?: string;
@@ -259,11 +252,9 @@ export function StatusBar({
   const tokenLabel = markEstimated(formatTokenCount(sessionTokens), sessionEstimated);
   const turnTokenLabel = markEstimated(formatTokenCount(turnTokens), turnEstimated);
   const balanceLabel = balance?.available && balance.display ? balance.display : "-";
-  // The most recent executor request's TPS (refreshed on every usage event)
-  // takes precedence; the completed turn's value bridges the gap before the
-  // first request of a session.
-  const requestTpsLabel = lastRequestTps !== undefined && lastRequestTps > 0 ? `${lastRequestTps} t/s` : null;
-  const tpsLabel = requestTpsLabel ?? formatTps(lastTurnOutputTokens, lastTurnModelMs, lastTurnOutputEstimated);
+  const tpsLabel = lastRequestTps !== undefined && lastRequestTps > 0
+    ? `${lastRequestTps} t/s`
+    : formatTps(lastTurnOutputTokens, lastTurnModelMs, lastTurnOutputEstimated);
   const formatUsageToken = (value: number) => `${usage?.estimated ? "≈" : ""}${value.toLocaleString()}`;
   const outputTokensLabel = usage && typeof usage.completionTokens === "number"
     ? formatUsageToken(usage.completionTokens)

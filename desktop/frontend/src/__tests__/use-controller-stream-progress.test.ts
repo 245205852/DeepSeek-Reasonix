@@ -376,10 +376,11 @@ function ev(s: typeof initialState, e: WireEvent) {
     s = ev(s, { kind: "message", text: "abcd" } as WireEvent);
     now = 51_200;
     s = ev(s, { kind: "usage", usage: {
-      promptTokens: 100, completionTokens: 20, totalTokens: 120,
+      promptTokens: 130, completionTokens: 30, totalTokens: 160,
+      contextPromptTokens: 100, contextCompletionTokens: 20,
       cacheHitTokens: 0, cacheMissTokens: 100, source: "executor",
     } } as WireEvent);
-    eq(s.lastRequestTps, 20, "usage pairs the message-closed interval with its tokens");
+    eq(s.lastRequestTps, 20, "sampling recovery pairs the interval with latest-attempt tokens");
 
     now = 52_000;
     s = ev(s, { kind: "text", text: "more" } as WireEvent);
