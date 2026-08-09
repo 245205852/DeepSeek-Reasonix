@@ -33,11 +33,20 @@ const sessionPlannerDisplayFile = ".planner-display.json"
 const sessionTrashDir = ".trash"
 const sessionTrashMetaFile = ".trash-meta.json"
 
-// Durable sidecar publication includes an fsync while holding the update lock.
-// Keep enough budget for a burst of in-process writers on slower Windows disks.
-const sessionSidecarLockTimeout = 5 * time.Second
+const (
+	// Durable sidecar publication includes an fsync while holding the update
+	// lock. Keep enough queue budget for a burst of in-process writers on
+	// slower Windows disks, but fail external contention quickly so turn
+	// completion and retry-queue handoff do not stall behind another process.
+	sessionSidecarQueueTimeout        = 5 * time.Second
+	sessionSidecarExternalLockTimeout = 750 * time.Millisecond
+)
 
-var sessionTitlesLockTimeout = sessionSidecarLockTimeout
+var (
+	sessionTitlesQueueTimeout                = sessionSidecarQueueTimeout
+	sessionPlannerDisplayExternalLockTimeout = sessionSidecarExternalLockTimeout
+	sessionDisplayExternalLockTimeout        = sessionSidecarExternalLockTimeout
+)
 
 func sessionTitlesPath(dir string) string  { return filepath.Join(dir, sessionTitlesFile) }
 func sessionDisplayPath(dir string) string { return filepath.Join(dir, sessionDisplayFile) }
@@ -86,9 +95,9 @@ func updateSessionTitles(dir string, mutate func(map[string]string) bool) error 
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), sessionTitlesLockTimeout)
+	ctx, cancel := context.WithTimeout(context.Background(), sessionTitlesQueueTimeout)
 	defer cancel()
-	release, err := filelock.Acquire(ctx, sessionTitlesPath(dir)+".lock")
+	release, err := filelock.AcquireWithExternalTimeout(ctx, sessionTitlesPath(dir)+".lock", sessionSidecarExternalLockTimeout)
 	if err != nil {
 		return fmt.Errorf("lock title sidecar: %w", err)
 	}
@@ -972,10 +981,7 @@ type plannerDisplayTurn struct {
 	Messages []HistoryMessage `json:"messages"`
 }
 
-var (
-	sessionPlannerDisplayLockTimeout = sessionSidecarLockTimeout
-	errCorruptSessionPlannerDisplay  = errors.New("corrupt planner display sidecar")
-)
+var errCorruptSessionPlannerDisplay = errors.New("corrupt planner display sidecar")
 
 // sessionPlannerDisplayUpdateAfterLoad is a subprocess-test seam. Production
 // leaves it nil; tests use it to force two independent processes into the old
@@ -1061,9 +1067,9 @@ func updateSessionPlannerDisplays(dir string, recoverCorrupt bool, mutate func(s
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), sessionPlannerDisplayLockTimeout)
+	ctx, cancel := context.WithTimeout(context.Background(), sessionSidecarQueueTimeout)
 	defer cancel()
-	release, err := filelock.Acquire(ctx, sessionPlannerDisplayPath(dir)+".lock")
+	release, err := filelock.AcquireWithExternalTimeout(ctx, sessionPlannerDisplayPath(dir)+".lock", sessionPlannerDisplayExternalLockTimeout)
 	if err != nil {
 		return fmt.Errorf("lock planner display sidecar: %w", err)
 	}
@@ -1188,9 +1194,9 @@ func updateSessionDisplays(dir string, mutate func(sessionDisplayMap) bool) erro
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), sessionSidecarLockTimeout)
+	ctx, cancel := context.WithTimeout(context.Background(), sessionSidecarQueueTimeout)
 	defer cancel()
-	release, err := filelock.Acquire(ctx, sessionDisplayPath(dir)+".lock")
+	release, err := filelock.AcquireWithExternalTimeout(ctx, sessionDisplayPath(dir)+".lock", sessionDisplayExternalLockTimeout)
 	if err != nil {
 		return fmt.Errorf("lock display sidecar: %w", err)
 	}

@@ -2,10 +2,13 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -85,9 +88,9 @@ func TestSetSessionTitleHonorsSidecarLock(t *testing.T) {
 	if err != nil {
 		t.Fatalf("acquire title sidecar lock: %v", err)
 	}
-	previousTimeout := sessionTitlesLockTimeout
-	sessionTitlesLockTimeout = 40 * time.Millisecond
-	t.Cleanup(func() { sessionTitlesLockTimeout = previousTimeout })
+	previousTimeout := sessionTitlesQueueTimeout
+	sessionTitlesQueueTimeout = 40 * time.Millisecond
+	t.Cleanup(func() { sessionTitlesQueueTimeout = previousTimeout })
 
 	err = setSessionTitle(dir, filepath.Join(dir, "locked.jsonl"), "Locked")
 	if err == nil {
@@ -97,6 +100,63 @@ func TestSetSessionTitleHonorsSidecarLock(t *testing.T) {
 	release()
 	if err := setSessionTitle(dir, filepath.Join(dir, "locked.jsonl"), "Saved"); err != nil {
 		t.Fatalf("setSessionTitle after release: %v", err)
+	}
+}
+
+func TestRecordSessionDisplayExternalLockUsesShortBudget(t *testing.T) {
+	if os.Getenv("REASONIX_DISPLAY_LOCK_HELPER") != "" {
+		dir := os.Getenv("REASONIX_DISPLAY_LOCK_DIR")
+		release, err := filelock.Acquire(context.Background(), sessionDisplayPath(dir)+".lock")
+		if err != nil {
+			t.Fatalf("acquire external display lock: %v", err)
+		}
+		defer release()
+		if err := os.WriteFile(filepath.Join(dir, "display-lock.ready"), []byte("ready"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if !waitForPlannerDisplayTestFile(filepath.Join(dir, "display-lock.release"), 10*time.Second) {
+			t.Fatal("timed out waiting to release external display lock")
+		}
+		return
+	}
+
+	dir := t.TempDir()
+	var output strings.Builder
+	cmd := exec.Command(os.Args[0], "-test.run=^TestRecordSessionDisplayExternalLockUsesShortBudget$")
+	cmd.Env = append(os.Environ(),
+		"REASONIX_DISPLAY_LOCK_HELPER=1",
+		"REASONIX_DISPLAY_LOCK_DIR="+dir,
+	)
+	cmd.Stdout = &output
+	cmd.Stderr = &output
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("start external display-lock helper: %v", err)
+	}
+	releasePath := filepath.Join(dir, "display-lock.release")
+	releaseHelper := func() {
+		_ = os.WriteFile(releasePath, []byte("release"), 0o600)
+	}
+	if !waitForPlannerDisplayTestFile(filepath.Join(dir, "display-lock.ready"), 5*time.Second) {
+		releaseHelper()
+		_ = cmd.Wait()
+		t.Fatalf("external display-lock helper did not start: %s", output.String())
+	}
+
+	previousTimeout := sessionDisplayExternalLockTimeout
+	sessionDisplayExternalLockTimeout = 100 * time.Millisecond
+	t.Cleanup(func() { sessionDisplayExternalLockTimeout = previousTimeout })
+	started := time.Now()
+	err := recordSessionDisplay(dir, filepath.Join(dir, "session.jsonl"), "expanded prompt", "visible prompt")
+	elapsed := time.Since(started)
+	releaseHelper()
+	if waitErr := cmd.Wait(); waitErr != nil {
+		t.Fatalf("external display-lock helper failed: %v\n%s", waitErr, output.String())
+	}
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("record display error = %v, want external lock deadline exceeded", err)
+	}
+	if elapsed >= 2*time.Second {
+		t.Fatalf("record display waited %v, want the short external lock budget", elapsed)
 	}
 }
 
