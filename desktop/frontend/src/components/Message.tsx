@@ -779,14 +779,14 @@ export function TurnActions({
   };
   return (
     <div className={`turn-actions${openMenu ? " turn-actions--open" : ""}${hoverMenus ? " turn-actions--hover-menu" : ""}`}>
-      <CopyButton text={text} label={t("msg.copy")} />
+      {text.trim() && <CopyButton text={text} label={t("msg.copy")} />}
       {canAct && (
         <>
           <button
             className={`turn-actions__btn${confirmScope === "fork" ? " turn-actions__btn--confirm" : ""}`}
             type="button"
             disabled={Boolean(forkDisabledReason)}
-            title={forkDisabledReason || undefined}
+            title={forkDisabledReason || t("rewind.forkTooltip")}
             onClick={() => selectRewind("fork")}
           >
             <GitBranch size={13} />

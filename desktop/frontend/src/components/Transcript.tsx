@@ -634,11 +634,12 @@ export function Transcript({
   const userTurn = useMemo(() => questionTurnsById(questions), [questions]);
   const lastTurn = useMemo(() => lastQuestionTurn(questions, userTurn), [questions, userTurn]);
   const checkpointsByTurn = useMemo(() => new Map(checkpoints.map((checkpoint) => [checkpoint.turn, checkpoint])), [checkpoints]);
+  const hasCheckpointForTurn = useCallback((turn: number) => checkpointsByTurn.has(turn), [checkpointsByTurn]);
 
   const turnForUser = useCallback((item: Extract<Item, { kind: "user" }>) => userTurn.get(item.id), [userTurn]);
   const rows = useMemo(
-    () => buildTranscriptRows(turnModels, { folds, foldPreference, hasOlderHistory, creationMode, turnForUser }),
-    [turnModels, folds, foldPreference, hasOlderHistory, creationMode, turnForUser],
+    () => buildTranscriptRows(turnModels, { folds, foldPreference, hasOlderHistory, creationMode, turnForUser, hasCheckpointForTurn }),
+    [turnModels, folds, foldPreference, hasOlderHistory, creationMode, turnForUser, hasCheckpointForTurn],
   );
   const rowIndexByKey = useMemo(() => {
     const map = new Map<string | number, number>();

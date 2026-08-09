@@ -1549,7 +1549,7 @@ type tabEventSink struct {
 	runtimeEvents asyncRuntimeEmitter
 	botSink       event.Sink // optional: when set, events are also forwarded here
 	botSinkGen    uint64
-	turnInFlight  bool // stays true through the end of TurnDone fan-out
+	turn          turnSubmissionState // stays reserved through the end of TurnDone fan-out
 }
 
 type closeableEventSink interface {
@@ -1561,26 +1561,6 @@ func (s *tabEventSink) binding() (string, *App) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return s.tabID, s.app
-}
-
-// setBinding reroutes the sink to another tab. A nil app keeps the current
-// App pointer (detach/close paths only change the tab id).
-func (s *tabEventSink) setBinding(tabID string, app *App) {
-	s.mu.Lock()
-	s.tabID = tabID
-	if app != nil {
-		s.app = app
-	}
-	s.mu.Unlock()
-}
-
-func (s *tabEventSink) setRuntimeEpoch(epoch string) {
-	if s == nil {
-		return
-	}
-	s.mu.Lock()
-	s.runtimeEpoch = epoch
-	s.mu.Unlock()
 }
 
 func (s *tabEventSink) runtimeEpochSnapshot() string {
@@ -1595,7 +1575,7 @@ func (s *tabEventSink) runtimeEpochSnapshot() string {
 func (s *tabEventSink) Emit(e event.Event) {
 	if e.Kind == event.TurnStarted {
 		s.mu.Lock()
-		s.turnInFlight = true
+		s.turn.inFlight = true
 		s.mu.Unlock()
 	}
 	tabID, app := s.binding()
@@ -1623,7 +1603,7 @@ func (s *tabEventSink) Emit(e event.Event) {
 			s.flushDisplay(e.Cancelled)
 		}
 	}
-	s.emitRuntimeEvent(eventChannel, toWireTab(e, tabID, s.runtimeEpochSnapshot()))
+	s.emitRuntimeEvent(eventChannel, toWireTabWithSubmission(e, tabID, s.runtimeEpochSnapshot(), s.submissionIDSnapshot()))
 	if app != nil {
 		if status, update := topicActivityStatusFromEvent(e); update {
 			changed := app.setTabActivityStatus(tabID, status)
@@ -1663,7 +1643,7 @@ func (s *tabEventSink) Emit(e event.Event) {
 	}
 	if e.Kind == event.TurnDone {
 		s.mu.Lock()
-		s.turnInFlight = false
+		s.turn = turnSubmissionState{}
 		s.mu.Unlock()
 	}
 }
@@ -1712,19 +1692,19 @@ func (s *tabEventSink) clearBotSink(generation uint64) {
 // controller clears RuntimeStatus().Running before it emits TurnDone, so the
 // controller status alone leaves a window where a new turn can inherit the old
 // turn's forwarder or have its replacement cleared by the old completion.
-func (s *tabEventSink) tryBeginTurn() bool {
+func (s *tabEventSink) tryBeginTurn(submissionID ...string) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.turnInFlight {
+	if s.turn.inFlight {
 		return false
 	}
-	s.turnInFlight = true
+	s.turn = turnSubmissionState{inFlight: true, submissionID: firstSubmissionID(submissionID)}
 	return true
 }
 
 func (s *tabEventSink) cancelTurnStart() {
 	s.mu.Lock()
-	s.turnInFlight = false
+	s.turn = turnSubmissionState{}
 	s.mu.Unlock()
 }
 
@@ -1732,13 +1712,6 @@ func (s *tabEventSink) setContext(ctx context.Context) {
 	s.mu.Lock()
 	s.ctx = ctx
 	s.mu.Unlock()
-}
-
-func (s *tabEventSink) clearContext() {
-	s.mu.Lock()
-	s.ctx = nil
-	s.mu.Unlock()
-	s.runtimeEvents.Clear()
 }
 
 func (s *tabEventSink) context() context.Context {
@@ -2188,41 +2161,40 @@ type wireEventTab struct {
 
 // TabMeta is the frontend-facing shape of one tab.
 type TabMeta struct {
-	ID                string                   `json:"id"`
-	Scope             string                   `json:"scope"`
-	WorkspaceRoot     string                   `json:"workspaceRoot"`
-	WorkspaceName     string                   `json:"workspaceName"`
-	WorkspacePath     string                   `json:"workspacePath,omitempty"`
-	GitBranch         string                   `json:"gitBranch,omitempty"`
-	IsolatedWorktree  bool                     `json:"isolatedWorktree,omitempty"`
-	TopicID           string                   `json:"topicId"`
-	TopicTitle        string                   `json:"topicTitle"`
-	SessionPath       string                   `json:"sessionPath,omitempty"`
-	ReadOnly          bool                     `json:"readOnly,omitempty"`
-	ProjectColor      string                   `json:"projectColor,omitempty"`
-	Label             string                   `json:"label"`
-	Ready             bool                     `json:"ready"`
-	Runtime           SessionRuntimeView       `json:"runtime"`
-	Running           bool                     `json:"running"`
-	PendingPrompt     bool                     `json:"pendingPrompt,omitempty"`
-	RemoteControlled  bool                     `json:"remoteControlled,omitempty"`
-	BackgroundJobs    int                      `json:"backgroundJobs,omitempty"`
-	CancelRequested   bool                     `json:"cancelRequested,omitempty"`
-	Cancellable       bool                     `json:"cancellable"`
-	Mode              string                   `json:"mode"`
-	CollaborationMode string                   `json:"collaborationMode"`
-	ToolApprovalMode  string                   `json:"toolApprovalMode"`
-	TokenMode         string                   `json:"tokenMode"`
-	Goal              string                   `json:"goal,omitempty"`
-	GoalStatus        string                   `json:"goalStatus,omitempty"`
-	AutoResearch      *AutoResearchCompactView `json:"autoResearch,omitempty"`
-	Recovered         bool                     `json:"recovered,omitempty"`
-	RecoveryReason    string                   `json:"recoveryReason,omitempty"`
-	RecoveryDigest    string                   `json:"recoveryDigest,omitempty"`
-	RecoveryParentID  string                   `json:"recoveryParentId,omitempty"`
-	StartupErr        string                   `json:"startupErr,omitempty"`
-	Active            bool                     `json:"active"`
-	Cwd               string                   `json:"cwd"`
+	ID                string             `json:"id"`
+	Scope             string             `json:"scope"`
+	WorkspaceRoot     string             `json:"workspaceRoot"`
+	WorkspaceName     string             `json:"workspaceName"`
+	WorkspacePath     string             `json:"workspacePath,omitempty"`
+	GitBranch         string             `json:"gitBranch,omitempty"`
+	IsolatedWorktree  bool               `json:"isolatedWorktree,omitempty"`
+	TopicID           string             `json:"topicId"`
+	TopicTitle        string             `json:"topicTitle"`
+	SessionPath       string             `json:"sessionPath,omitempty"`
+	ReadOnly          bool               `json:"readOnly,omitempty"`
+	ProjectColor      string             `json:"projectColor,omitempty"`
+	Label             string             `json:"label"`
+	Ready             bool               `json:"ready"`
+	Runtime           SessionRuntimeView `json:"runtime"`
+	Running           bool               `json:"running"`
+	PendingPrompt     bool               `json:"pendingPrompt,omitempty"`
+	RemoteControlled  bool               `json:"remoteControlled,omitempty"`
+	BackgroundJobs    int                `json:"backgroundJobs,omitempty"`
+	CancelRequested   bool               `json:"cancelRequested,omitempty"`
+	Cancellable       bool               `json:"cancellable"`
+	Mode              string             `json:"mode"`
+	CollaborationMode string             `json:"collaborationMode"`
+	ToolApprovalMode  string             `json:"toolApprovalMode"`
+	TokenMode         string             `json:"tokenMode"`
+	Goal              string             `json:"goal,omitempty"`
+	GoalStatus        string             `json:"goalStatus,omitempty"`
+	Recovered         bool               `json:"recovered,omitempty"`
+	RecoveryReason    string             `json:"recoveryReason,omitempty"`
+	RecoveryDigest    string             `json:"recoveryDigest,omitempty"`
+	RecoveryParentID  string             `json:"recoveryParentId,omitempty"`
+	StartupErr        string             `json:"startupErr,omitempty"`
+	Active            bool               `json:"active"`
+	Cwd               string             `json:"cwd"`
 }
 
 func enrichTabMeta(meta TabMeta) TabMeta {
@@ -2262,7 +2234,6 @@ func (a *App) tabMeta(tab *WorkspaceTab, active bool) TabMeta {
 		TokenMode:         currentTabTokenMode(tab),
 		Goal:              currentTabGoal(tab),
 		GoalStatus:        currentTabGoalStatus(tab),
-		AutoResearch:      compactAutoResearch(tab),
 		StartupErr:        tab.StartupErr,
 		Active:            active,
 		Cwd:               tab.WorkspaceRoot,
