@@ -33,7 +33,11 @@ const sessionPlannerDisplayFile = ".planner-display.json"
 const sessionTrashDir = ".trash"
 const sessionTrashMetaFile = ".trash-meta.json"
 
-var sessionTitlesLockTimeout = 750 * time.Millisecond
+// Durable sidecar publication includes an fsync while holding the update lock.
+// Keep enough budget for a burst of in-process writers on slower Windows disks.
+const sessionSidecarLockTimeout = 5 * time.Second
+
+var sessionTitlesLockTimeout = sessionSidecarLockTimeout
 
 func sessionTitlesPath(dir string) string  { return filepath.Join(dir, sessionTitlesFile) }
 func sessionDisplayPath(dir string) string { return filepath.Join(dir, sessionDisplayFile) }
@@ -969,7 +973,7 @@ type plannerDisplayTurn struct {
 }
 
 var (
-	sessionPlannerDisplayLockTimeout = 750 * time.Millisecond
+	sessionPlannerDisplayLockTimeout = sessionSidecarLockTimeout
 	errCorruptSessionPlannerDisplay  = errors.New("corrupt planner display sidecar")
 )
 
@@ -1184,7 +1188,7 @@ func updateSessionDisplays(dir string, mutate func(sessionDisplayMap) bool) erro
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 750*time.Millisecond)
+	ctx, cancel := context.WithTimeout(context.Background(), sessionSidecarLockTimeout)
 	defer cancel()
 	release, err := filelock.Acquire(ctx, sessionDisplayPath(dir)+".lock")
 	if err != nil {
