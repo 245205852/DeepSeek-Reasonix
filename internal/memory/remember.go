@@ -23,6 +23,7 @@ type rememberRequest struct {
 	Description      string `json:"description"`
 	Type             string `json:"type"`
 	Scope            string `json:"scope"`
+	Activation       string `json:"activation"`
 	Keywords         string `json:"keywords"`
 	Body             string `json:"body"`
 }
@@ -60,6 +61,7 @@ func (rememberTool) Schema() json.RawMessage {
 			"description": {"type": "string", "description": "One-line hook shown in the index — the phrase a future session reads to decide whether to open this memory. Make it specific."},
 			"type": {"type": "string", "enum": ["user", "feedback", "project", "reference"], "description": "Category of the fact."},
 			"scope": {"type": "string", "enum": ["project", "global"], "description": "Where the fact applies. For a new fact, omit for the safe default, project. When updating an existing name, omit to preserve its current scope. Use global only when it should affect every workspace."},
+			"activation": {"type": "string", "enum": ["relevant", "pinned"], "description": "How the fact reaches the model: relevant (the default) is retrieval-only; pinned loads the body into every session's stable prefix. Use pinned ONLY when the user explicitly asks for an always-available fact — pinned space is budget-limited, and rules that must always hold belong in REASONIX.md/AGENTS.md instructions instead. Omit on update to preserve the current choice."},
 			"keywords": {"type": "string", "description": "Space-separated search aliases a future query might use where the body's own words would miss: synonyms, translations of key terms (recall matching is lexical, so give Chinese facts English aliases and vice versa), related command or tool names. Omit when the body already carries the likely query words. When updating, omit to preserve existing keywords."},
 			"body": {"type": "string", "description": "The fact itself (Markdown). For feedback/project, include a \"**Why:**\" line and a \"**How to apply:**\" line; link related memories with [[their-name]]."}
 		},
@@ -82,6 +84,10 @@ func (t rememberTool) Execute(ctx context.Context, args json.RawMessage) (string
 	factScope := FactScope(scope)
 	name := rememberRequestName(in)
 	autoCreate := ClaimAutoMemoryWriteFromContext(ctx, args)
+	activation := NormalizeActivation(in.Activation)
+	if strings.TrimSpace(in.Activation) != "" && activation == "" {
+		return "", fmt.Errorf("activation must be one of relevant, pinned")
+	}
 	result, err := t.store.SaveWithOptions(Memory{
 		ID:          in.ID,
 		Name:        name,
@@ -89,6 +95,7 @@ func (t rememberTool) Execute(ctx context.Context, args json.RawMessage) (string
 		Description: in.Description,
 		Type:        NormalizeType(in.Type),
 		Scope:       factScope,
+		Activation:  activation,
 		Keywords:    in.Keywords,
 		Body:        in.Body,
 	}, SaveOptions{

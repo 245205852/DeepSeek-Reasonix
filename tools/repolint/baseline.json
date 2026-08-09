@@ -2,14 +2,14 @@
   "limits": {
     "banner": 15,
     "commented-code": 0,
-    "complexity": 2080,
+    "complexity": 2081,
     "essay": 4132,
-    "file-size": 111266,
-    "function-size": 9174,
+    "file-size": 111435,
+    "function-size": 9175,
     "layering": 1,
     "marker": 0,
     "narrative": 64,
-    "test-file-size": 70090
+    "test-file-size": 70180
   },
   "files": {
     "cmd/e2ebench/main.go": {
@@ -138,7 +138,7 @@
       "file-size": 141
     },
     "desktop/frontend/src/components/SettingsPanel.tsx": {
-      "file-size": 6912
+      "file-size": 6961
     },
     "desktop/frontend/src/components/StatusBar.tsx": {
       "file-size": 23
@@ -162,7 +162,7 @@
       "file-size": 415
     },
     "desktop/frontend/src/lib/bridge.ts": {
-      "file-size": 4674
+      "file-size": 4671
     },
     "desktop/frontend/src/lib/crash.ts": {
       "file-size": 225
@@ -227,6 +227,9 @@
     "desktop/provider_access_removal.go": {
       "essay": 4
     },
+    "desktop/provider_access_removal_test.go": {
+      "test-file-size": 1
+    },
     "desktop/race_regression_test.go": {
       "essay": 4
     },
@@ -284,11 +287,11 @@
     "desktop/settings_app.go": {
       "complexity": 22,
       "essay": 26,
-      "file-size": 2848,
+      "file-size": 2910,
       "function-size": 25
     },
     "desktop/settings_app_test.go": {
-      "test-file-size": 1768
+      "test-file-size": 1857
     },
     "desktop/shared_host.go": {
       "essay": 1
@@ -1425,14 +1428,14 @@
     },
     "internal/memory/store.go": {
       "essay": 6,
-      "file-size": 22
+      "file-size": 83
     },
     "internal/memory/store_test.go": {
       "test-file-size": 138
     },
     "internal/memory/store_v2.go": {
-      "complexity": 16,
-      "function-size": 16
+      "complexity": 17,
+      "function-size": 17
     },
     "internal/permission/bash_decompose.go": {
       "essay": 23

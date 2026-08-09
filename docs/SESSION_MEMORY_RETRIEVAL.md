@@ -103,12 +103,20 @@ When equivalent project and global facts exist, automatic recall uses the
 project fact. Both remain visible in Context Center and `/memory`, with the
 override explained instead of deleting or hiding either source.
 
-For compatibility and first-turn usability, globally scoped `user` and
-`feedback` bodies are snapshotted into a lower-priority stable-guidance section
-at session start. When an equivalent project fact exists, it suppresses that
-global guidance before the stable prefix is built, so project-over-global
-precedence does not depend on a later recall match. Other fact bodies remain
-retrieval-only until relevant.
+A third dimension, `activation`, is orthogonal to both: `relevant` (the
+default) keeps a fact retrieval-only, while `pinned` snapshots its body into a
+lower-priority stable-guidance section at session start. Pinning is an
+explicit user choice (`/memory pin <id-or-name>`, or asking the assistant),
+and total pinned bodies are capped at 1,500 characters — enforced when
+pinning, with overflow directed to REASONIX.md/AGENTS.md instructions, where
+always-binding rules belong. A fact is either pinned (in the prefix) or
+relevant (recallable): never both, never neither.
+
+For compatibility, legacy globally scoped `user` and `feedback` facts that
+predate the field stay pinned until explicitly unpinned. When an equivalent
+project fact exists, it suppresses pinned global guidance before the stable
+prefix is built, so project-over-global precedence does not depend on a later
+recall match.
 
 ## Automatic recall
 

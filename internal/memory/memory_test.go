@@ -80,11 +80,11 @@ func TestLoadIncludesStableGlobalPreferencesAndFeedback(t *testing.T) {
 	}
 
 	set := Load(Options{CWD: proj, UserDir: user})
-	if len(set.GlobalGuidance) != 2 {
-		t.Fatalf("global guidance = %+v, want user + feedback only", set.GlobalGuidance)
+	if len(set.PinnedGuidance) != 2 {
+		t.Fatalf("global guidance = %+v, want user + feedback only", set.PinnedGuidance)
 	}
 	block := set.Block()
-	for _, want := range []string{"## Global preferences and feedback", "GLOBAL USER BODY", "GLOBAL FEEDBACK BODY"} {
+	for _, want := range []string{"## Pinned preferences and feedback", "GLOBAL USER BODY", "GLOBAL FEEDBACK BODY"} {
 		if !strings.Contains(block, want) {
 			t.Fatalf("Block() missing %q:\n%s", want, block)
 		}
@@ -94,10 +94,10 @@ func TestLoadIncludesStableGlobalPreferencesAndFeedback(t *testing.T) {
 			t.Fatalf("Block() promoted non-guidance body %q:\n%s", excluded, block)
 		}
 	}
-	if strings.Index(block, "GLOBAL USER BODY") > strings.Index(block, "GLOBAL FEEDBACK BODY") {
-		t.Fatalf("global guidance is not deterministically sorted by name:\n%s", block)
+	if strings.Index(block, "GLOBAL FEEDBACK BODY") > strings.Index(block, "GLOBAL USER BODY") {
+		t.Fatalf("pinned guidance must sort most-recently-updated first:\n%s", block)
 	}
-	if strings.Index(block, "## Global preferences and feedback") > strings.Index(block, "# Instructions") && strings.Contains(block, "# Instructions") {
+	if strings.Index(block, "## Pinned preferences and feedback") > strings.Index(block, "# Instructions") && strings.Contains(block, "# Instructions") {
 		t.Fatalf("lower-priority global guidance must precede standing instructions:\n%s", block)
 	}
 	if again := set.Block(); again != block {
@@ -131,8 +131,8 @@ func TestLoadProjectFactSuppressesEquivalentGlobalGuidance(t *testing.T) {
 	}
 
 	set := Load(Options{CWD: proj, UserDir: user})
-	if len(set.GlobalGuidance) != 1 || set.GlobalGuidance[0].Name != "language" {
-		t.Fatalf("global guidance = %+v, want only unshadowed language preference", set.GlobalGuidance)
+	if len(set.PinnedGuidance) != 1 || set.PinnedGuidance[0].Name != "language" {
+		t.Fatalf("global guidance = %+v, want only unshadowed language preference", set.PinnedGuidance)
 	}
 	block := set.Block()
 	if strings.Contains(block, "Always be verbose.") {
