@@ -135,10 +135,10 @@ ok(
   "browser onboarding installs the same current DeepSeek official template as production",
 );
 ok(
-  /onUpgradeRecommended=\{\(name\) => apply\(\(\) => app\.UpgradeDeepSeekProviderAccess\(name\)\)/.test(settingsSource) &&
+  /onUpgradeRecommended=\{\(name\) => \{[\s\S]*?cancelGroupFetch\(group\.id\);[\s\S]*?return apply\(\(\) => app\.UpgradeDeepSeekProviderAccess\(name\)\)/.test(settingsSource) &&
     settingsSource.includes("onConfirm={() => onUpgradeRecommended(canonicalOfficialProviderName(upgradeProvider.name))}") &&
     settingsSource.includes('className="provider-protocol-upgrade"') &&
-    settingsSource.includes('t("settings.providerCurrentProtocol", { protocol: "OpenAI Chat Completions" })') &&
+    settingsSource.includes('t("settings.providerProtocol")}: OpenAI Chat Completions') &&
     /<InlineConfirmButton[\s\S]*?label=\{<>\{t\("settings\.upgradeRecommendedProtocol"\)\}[\s\S]*?primary[\s\S]*?onConfirm=\{\(\) => onUpgradeRecommended/.test(settingsSource),
   "legacy official DeepSeek cards expose an explicit recommended-protocol action",
 );
@@ -158,7 +158,7 @@ ok(
 );
 ok(
   settingsSource.includes('className="provider-technical-details"') &&
-    settingsSource.includes('"settings.providerCapabilitiesAndModels"') &&
+    settingsSource.includes('t("settings.providerCapabilities")') &&
     settingsSource.includes('showModelSummary && (') &&
     settingsSource.includes('hiddenModelCount={hiddenModelCount ?? 0}') &&
     !settingsSource.includes('className="provider-capability-badges"') &&
@@ -194,22 +194,17 @@ ok(
 ok(
   [enLocaleSource, zhLocaleSource, zhTWLocaleSource].every((source) =>
     source.includes('"settings.upgradeRecommendedProtocol"') &&
-    source.includes('"settings.confirmUpgradeRecommendedProtocol"') &&
-    source.includes('"settings.providerCurrentProtocol"') &&
-    source.includes('"settings.providerMoreActions"') &&
-    source.includes('"settings.providerDesc.deepseekLegacy"') &&
-    source.includes('"settings.providerCapabilitiesAndModels"') &&
-    source.includes('"settings.providerTechnicalDetails"') &&
-    source.includes('"settings.providerEndpoint"') &&
-    source.includes('"settings.providerKeyEnvironment"') &&
+    source.includes('"settings.providerAccess"') &&
+    source.includes('"settings.providerBaseUrlLabel"') &&
+    source.includes('"settings.providerApiKeyEnv"') &&
     !source.includes('"settings.anthropicCompatible"'),
   ),
   "the compact DeepSeek access and upgrade flows are localized in every supported locale",
 );
 ok(
-  enLocaleSource.includes('"settings.serverWebSearchCostHint": "Search content is sent to the current model provider') &&
-    zhLocaleSource.includes('"settings.serverWebSearchCostHint": "搜索内容会发送至当前模型供应商') &&
-    zhTWLocaleSource.includes('"settings.serverWebSearchCostHint": "搜尋內容會傳送至目前的模型供應商'),
+  enLocaleSource.includes('"settings.serverWebSearchHint": "Searches only when needed; content is sent to the current model provider') &&
+    zhLocaleSource.includes('"settings.serverWebSearchHint": "仅在需要时搜索；内容会发送给当前供应商') &&
+    zhTWLocaleSource.includes('"settings.serverWebSearchHint": "僅在需要時搜尋；內容會傳送給目前供應商'),
   "server web-search disclosure stays provider-neutral for compatible services",
 );
 ok(

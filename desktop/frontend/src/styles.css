@@ -17194,12 +17194,6 @@ body > .mermaid-diagram--fullscreen {
   font-size: 11px;
   line-height: 1.35;
 }
-.provider-capability-row__cost {
-  margin-top: 5px;
-  color: var(--fg-muted);
-  font-size: var(--text-2xs);
-  line-height: 1.4;
-}
 .provider-key-status {
   display: flex;
   align-items: center;

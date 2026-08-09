@@ -952,20 +952,20 @@ function formatSettingsError(error: unknown, t: ReturnType<typeof useT>): string
   const providerNoKey = /^model (.+) is not available because provider (.+) has no key$/i.exec(msg);
   if (providerNoKey) return t("settings.errorModelProviderNoKey", { model: providerNoKey[1], provider: providerNoKey[2] });
   if (/^background session is still open; reopen or close it before upgrading the DeepSeek provider protocol$/i.test(msg)) {
-    return t("settings.errorUpgradeProviderDetached");
+    return t("settings.errorProviderDetached");
   }
   const removeAccessBusy = /^finish or cancel active work using (.+) before removing the provider access$/i.exec(msg);
   if (removeAccessBusy) return t("settings.errorRemoveAccessBusy", { provider: removeAccessBusy[1] });
   const removeAccessDetached = /^background session is still using (.+); reopen or close it before removing the provider access$/i.exec(msg);
-  if (removeAccessDetached) return t("settings.errorRemoveAccessDetached", { provider: removeAccessDetached[1] });
+  if (removeAccessDetached) return t("settings.errorProviderDetached");
   const removeAccessNoFallback = /^remove provider access: (.+) is in use and no other configured provider exists$/i.exec(msg);
-  if (removeAccessNoFallback) return t("settings.errorRemoveAccessNoFallback", { provider: removeAccessNoFallback[1] });
+  if (removeAccessNoFallback) return t("settings.errorRemoveProviderNoFallback", { provider: removeAccessNoFallback[1] });
   const deleteProviderNoFallback = /^remove provider: (.+) is in use and no other configured provider exists$/i.exec(msg);
-  if (deleteProviderNoFallback) return t("settings.errorRemoveAccessNoFallback", { provider: deleteProviderNoFallback[1] });
+  if (deleteProviderNoFallback) return t("settings.errorRemoveProviderNoFallback", { provider: deleteProviderNoFallback[1] });
   const deleteProviderBusy = /^finish or cancel active work using (.+) before deleting the provider$/i.exec(msg);
   if (deleteProviderBusy) return t("settings.errorDeleteProviderBusy", { provider: deleteProviderBusy[1] });
   const deleteProviderDetached = /^background session is still using (.+); reopen or close it before deleting the provider$/i.exec(msg);
-  if (deleteProviderDetached) return t("settings.errorDeleteProviderDetached", { provider: deleteProviderDetached[1] });
+  if (deleteProviderDetached) return t("settings.errorProviderDetached");
   const saveBeforeRemoveAccess = /^save current session before removing provider access: (.+)$/is.exec(msg);
   if (saveBeforeRemoveAccess) return t("settings.errorSaveBeforeRemoveAccess", { err: saveBeforeRemoveAccess[1] });
   const saveBeforeDeleteProvider = /^save current session before deleting provider: (.+)$/is.exec(msg);
@@ -5651,14 +5651,14 @@ export function ProviderAccessCard({
         <div className="provider-protocol-upgrade">
           <div className="provider-protocol-upgrade__copy">
             <div className="provider-protocol-upgrade__title">
-              {t("settings.providerCurrentProtocol", { protocol: "OpenAI Chat Completions" })}
+              {t("settings.providerProtocol")}: OpenAI Chat Completions
             </div>
-            <div className="provider-protocol-upgrade__desc">{t("settings.providerDesc.deepseekLegacy")}</div>
+            <div className="provider-protocol-upgrade__desc">{t("settings.addProvider.official.deepseekDesc")}</div>
           </div>
           <div className="provider-protocol-upgrade__actions">
             <InlineConfirmButton
               label={<>{t("settings.upgradeRecommendedProtocol")}<ArrowRight size={13} aria-hidden="true" /></>}
-              confirmLabel={t("settings.confirmUpgradeRecommendedProtocol")}
+              confirmLabel={t("common.confirm")}
               cancelLabel={t("common.cancel")}
               disabled={busy}
               primary
@@ -5798,29 +5798,29 @@ function ProviderTechnicalDetails({ group }: { group: ProviderAccessGroup }) {
   const imageInputUnsupported = group.providers.length > 0 && group.providers.every((provider) => providerVisionCapabilityForView(provider) === "unsupported");
   return (
     <details className="provider-technical-details">
-      <summary>{t("settings.providerTechnicalDetails")}</summary>
+      <summary>{t("settings.providerAccess")}</summary>
       <dl>
         {group.providers.length === 1 ? (
           <>
             <div><dt>{t("settings.providerProtocol")}</dt><dd>{providerProtocolDisplayName(group.kind)}</dd></div>
-            <div><dt>{t("settings.providerEndpoint")}</dt><dd>{group.baseUrl || t("common.none")}</dd></div>
+            <div><dt>{t("settings.providerBaseUrlLabel")}</dt><dd>{group.baseUrl || t("common.none")}</dd></div>
           </>
         ) : group.providers.map((provider) => (
           <div key={provider.name}><dt>{provider.name}</dt><dd>{providerProtocolDisplayName(provider.kind)} · {provider.baseUrl || t("common.none")}</dd></div>
         ))}
         <div>
-          <dt>{t("settings.providerKeyEnvironment")}</dt>
+          <dt>{t("settings.providerApiKeyEnv")}</dt>
           <dd>{group.apiKeyEnv || t("common.none")}</dd>
         </div>
         {imageInputUnsupported && (
           <div>
             <dt>{t("settings.visionModel")}</dt>
-            <dd>{t("settings.unsupported")}</dd>
+            <dd>{t("settings.imageInputUnsupported")}</dd>
           </div>
         )}
         {group.keySource && (
           <div>
-            <dt>{t("settings.providerKeySource")}</dt>
+            <dt>{t("settings.providerKey")}</dt>
             <dd title={group.keySourcePath || undefined}>{group.keySource}</dd>
           </div>
         )}
@@ -5857,7 +5857,7 @@ function ProviderAccessMoreMenu({
   const [open, setOpen] = useState(false);
   const triggerRef = useRef<HTMLButtonElement>(null);
   const disabled = busy || removeDisabled;
-  const tooltip = removeDisabled ? t("settings.cantDeleteDefault") : t("settings.providerMoreActions");
+  const tooltip = removeDisabled ? t("settings.cantDeleteDefault") : t("settings.themeGallery.moreActions");
 
   return (
     <div className="provider-access-more">
@@ -5866,7 +5866,7 @@ function ProviderAccessMoreMenu({
           ref={triggerRef}
           type="button"
           className="btn btn--small provider-access-more__trigger"
-          aria-label={t("settings.providerMoreActions")}
+          aria-label={t("settings.themeGallery.moreActions")}
           aria-haspopup="menu"
           aria-expanded={open}
           disabled={disabled}
@@ -5883,7 +5883,7 @@ function ProviderAccessMoreMenu({
         align="end"
         placement="bottom"
       >
-        <div className="provider-access-more__items" role="menu" aria-label={t("settings.providerMoreActions")}>
+        <div className="provider-access-more__items" role="menu" aria-label={t("settings.themeGallery.moreActions")}>
           <InlineConfirmButton
             label={<><Trash2 size={14} aria-hidden="true" />{t("settings.removeProviderAccess")}</>}
             confirmLabel={builtIn ? t("settings.confirmRemoveProviderAccess") : t("settings.confirmDeleteProvider")}
@@ -6033,12 +6033,11 @@ function ProviderServiceCapabilities({
 }) {
   const t = useT();
   const capabilityID = useId();
-  const costID = `${capabilityID}-cost`;
   if (!supported) return null;
   return (
     <section className="provider-capabilities" aria-labelledby={capabilityID}>
       <div className="provider-card-block__label" id={capabilityID}>
-        {t(showModelSummary ? "settings.providerCapabilitiesAndModels" : "settings.providerCapabilities")}
+        {t("settings.providerCapabilities")}
       </div>
       {showModelSummary && (
         <ProviderModelSummary
@@ -6062,13 +6061,9 @@ function ProviderServiceCapabilities({
           role="switch"
           checked={enabled}
           disabled={disabled}
-          aria-describedby={costID}
           onChange={(event) => onChange(event.target.checked)}
         />
       </label>
-      <div className="provider-capability-row__cost" id={costID}>
-        {t("settings.serverWebSearchCostHint")}
-      </div>
     </section>
   );
 }
