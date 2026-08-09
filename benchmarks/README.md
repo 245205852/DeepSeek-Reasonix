@@ -1,6 +1,6 @@
 # Reasonix Benchmarks
 
-Two primary harnesses live under `benchmarks/`; `cmd/e2ebench` also exposes a
+Three harnesses live under `benchmarks/`; `cmd/e2ebench` also exposes a
 SWE-bench Verified mode:
 
 - `e2e/` — the committed end-to-end task suite, driven by
@@ -10,6 +10,9 @@ SWE-bench Verified mode:
 - `context-maintenance-e2e/` — a standalone seed → resume → comprehension
   harness that A/B-compares cold-restart cache behavior with and without
   context pruning.
+- `compaction/` — CompactionBench: grows a session one generation at a time and
+  folds it after each, measuring what repeated compaction costs and what it
+  loses. See [CompactionBench](#compactionbench) below.
 
 ## Directory layout
 
@@ -278,3 +281,37 @@ recall fired. Scenario classes: exact, paraphrase, cjk, symbol, distractor
 stale (repo truth must beat an expired claim), contradiction, generic (recall
 must stay silent), history (exact repo wording beats a memory paraphrase),
 update (revised value wins), pinned (prefix channel end to end).
+
+## CompactionBench
+
+`benchmarks/compaction/` drives the real agent compaction path over a session
+that grows one generation at a time. Each generation appends a round of work
+and then folds, so generation N folds everything generations 1..N produced —
+which is the growth that matters, because a fold re-derives its digest from the
+whole canonical transcript rather than from the previous digest.
+
+```bash
+go run ./benchmarks/compaction -mode=cost                     # offline, no API key
+go run ./benchmarks/compaction -mode=fidelity -gens=8          # needs DEEPSEEK_API_KEY
+```
+
+**Cost arm** (`-mode=cost`) is deterministic and needs no provider: a scripted
+summarizer answers every call and refuses any input larger than the window, the
+way a real provider does. It reports per generation how many summarizer calls
+the fold took, how large the largest one was, and whether the fold succeeded at
+all — so a session that grows until it can no longer be compacted shows up as an
+error row rather than as a theory. `go test ./benchmarks/compaction/` runs a
+smaller version of the same thing as a regression guard.
+
+**Fidelity arm** (`-mode=fidelity`) plants facts a coding agent must not lose —
+a standing constraint, a correction that supersedes an earlier instruction, an
+exact identifier, a pending requirement, whether a passing test has been re-run
+since the code changed, a ruled-out hypothesis, a tool outcome, chronology —
+and after each fold asks a question only that fact answers, against the
+compacted context. Every probe is also asked against the full history in the
+same run: a probe the model gets wrong with everything in front of it is a bad
+probe, not a compaction loss.
+
+Probe answers are scored on whole words, and a wanted answer does not count if a
+rejected one appears anywhere in the same reply — "yes, but it has not been
+re-run since" is the shape a drifting digest produces, and it is not a pass.
