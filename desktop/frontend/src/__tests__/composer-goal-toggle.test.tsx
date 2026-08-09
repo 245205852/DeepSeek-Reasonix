@@ -2179,13 +2179,6 @@ console.log("\ncomposer goal toggle");
   const sessionSearch = document.querySelector(".slashmenu__search") as HTMLInputElement | null;
   if (!sessionSearch) throw new Error("recent-session search did not render");
   await act(async () => {
-    const imeEscape = new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true });
-    Object.defineProperty(imeEscape, "isComposing", { value: true });
-    sessionSearch.dispatchEvent(imeEscape);
-    await flushTimers();
-  });
-  ok(Boolean(document.querySelector(".slashmenu__search")), "IME Escape keeps the direct recent-session picker open");
-  await act(async () => {
     sessionSearch.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));
     await flushTimers();
   });

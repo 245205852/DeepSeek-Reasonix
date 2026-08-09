@@ -6,6 +6,7 @@ import {
   canUsePromptHistory,
   composerEscapeAction,
   composerEnterAction,
+  composerMenuKeyAction,
   insertComposerNewline,
   isFnKeyEvent,
   isImeKeyEvent,
@@ -103,6 +104,15 @@ eq(composerEscapeAction({ key: "Escape" }, true, true), "pass-through", "Escape 
 eq(composerEscapeAction({ key: "Escape" }, true, false), "cancel", "plain Escape cancels a running turn");
 eq(composerEscapeAction({ key: "Escape" }, false, false), "pass-through", "Escape does not cancel an idle composer");
 eq(composerEscapeAction({ key: "Enter" }, true, false), "pass-through", "non-Escape keys do not trigger cancellation");
+
+console.log("\ncomposerMenuKeyAction / IME gating");
+
+eq(composerMenuKeyAction({ key: "Escape" }, true), "pass-through", "IME Escape stays with the input");
+eq(composerMenuKeyAction({ key: "Enter" }, true), "pass-through", "IME Enter stays with the input");
+eq(composerMenuKeyAction({ key: "ArrowDown" }, true), "pass-through", "IME ArrowDown stays with the input");
+eq(composerMenuKeyAction({ key: "Escape" }, false), "handle", "plain Escape is handled by the menu");
+eq(composerMenuKeyAction({ key: "Enter" }, false), "handle", "plain Enter is handled by the menu");
+eq(composerMenuKeyAction({ key: "a" }, false), "pass-through", "typing keys pass through menu navigation");
 
 const now = 10_000;
 eq(

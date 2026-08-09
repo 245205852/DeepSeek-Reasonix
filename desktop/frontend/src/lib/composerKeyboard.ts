@@ -44,6 +44,25 @@ export function composerEscapeAction(
   return event.key === "Escape" && running && !composing ? "cancel" : "pass-through";
 }
 
+export type ComposerMenuKeyAction = "handle" | "pass-through";
+
+export function composerMenuKeyAction(
+  event: Pick<ComposerImeKeyLike, "key">,
+  composing: boolean,
+): ComposerMenuKeyAction {
+  if (composing) return "pass-through";
+  switch (event.key) {
+    case "ArrowDown":
+    case "ArrowUp":
+    case "Enter":
+    case "Tab":
+    case "Escape":
+      return "handle";
+    default:
+      return "pass-through";
+  }
+}
+
 // "newline-native" keeps the browser's own line-break insertion (only the
 // plain Shift+Enter chord, today's proven path); "newline-insert" means the
 // chord has no native insertion (e.g. Ctrl+Enter) so the composer must insert
