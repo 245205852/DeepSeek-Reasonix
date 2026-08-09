@@ -14,7 +14,8 @@ export interface ExternalOpenerBridge {
 }
 
 type ExternalOpenerPreferenceCoordinator = {
-  latestIntent: number;
+  nextIntent: number;
+  latestSuccessfulIntent: number;
   writeTail: Promise<void>;
 };
 
@@ -23,7 +24,7 @@ const externalOpenerPreferenceCoordinators = new WeakMap<ExternalOpenerBridge, E
 function preferenceCoordinatorFor(bridge: ExternalOpenerBridge): ExternalOpenerPreferenceCoordinator {
   const current = externalOpenerPreferenceCoordinators.get(bridge);
   if (current) return current;
-  const created = { latestIntent: 0, writeTail: Promise.resolve() };
+  const created = { nextIntent: 0, latestSuccessfulIntent: 0, writeTail: Promise.resolve() };
   externalOpenerPreferenceCoordinators.set(bridge, created);
   return created;
 }
@@ -35,7 +36,7 @@ function persistPreferredExternalOpener(
   intent: number,
 ): Promise<boolean> {
   const write = coordinator.writeTail.then(async () => {
-    if (intent !== coordinator.latestIntent) return false;
+    if (intent !== coordinator.latestSuccessfulIntent) return false;
     await bridge.SetPreferredExternalOpener(id);
     return true;
   });
@@ -161,7 +162,7 @@ export function ExternalOpener({
     async (opener: ExternalOpenerView, persist: boolean) => {
       if (busyRef.current) return;
       const preferenceCoordinator = persist ? preferenceCoordinatorFor(bridge) : undefined;
-      const preferenceIntent = preferenceCoordinator ? ++preferenceCoordinator.latestIntent : 0;
+      const preferenceIntent = preferenceCoordinator ? ++preferenceCoordinator.nextIntent : 0;
       busyRef.current = true;
       discoveryRequestRef.current += 1;
       setBusy(true);
@@ -176,6 +177,10 @@ export function ExternalOpener({
           return;
         }
         if (preferenceCoordinator) {
+          preferenceCoordinator.latestSuccessfulIntent = Math.max(
+            preferenceCoordinator.latestSuccessfulIntent,
+            preferenceIntent,
+          );
           try {
             const persisted = await persistPreferredExternalOpener(
               bridge,

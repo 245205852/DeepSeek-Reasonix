@@ -243,35 +243,39 @@ const preferenceRaceBridge: ExternalOpenerBridge = {
 const preferenceContainer = document.createElement("div");
 document.body.append(preferenceContainer);
 const preferenceRoot = createRoot(preferenceContainer);
-const renderPreferenceTab = async (tabId: string) => {
+const renderPreferenceTab = async (
+  root: ReturnType<typeof createRoot>,
+  targetBridge: ExternalOpenerBridge,
+  tabId: string,
+) => {
   await act(async () => {
-    preferenceRoot.render(
+    root.render(
       <LocaleProvider>
         <ToastProvider>
-          <ExternalOpener key={tabId} tabId={tabId} dismissSignal={0} bridge={preferenceRaceBridge} />
+          <ExternalOpener key={tabId} tabId={tabId} dismissSignal={0} bridge={targetBridge} />
         </ToastProvider>
       </LocaleProvider>,
     );
     await flush();
   });
 };
-const choosePreference = async (name: string) => {
+const choosePreference = async (targetContainer: HTMLElement, name: string) => {
   await act(async () => {
-    preferenceContainer.querySelector<HTMLButtonElement>('button[aria-haspopup="menu"]')
+    targetContainer.querySelector<HTMLButtonElement>('button[aria-haspopup="menu"]')
       ?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     await flush();
   });
   await act(async () => {
-    Array.from(preferenceContainer.querySelectorAll<HTMLButtonElement>('button[role="menuitemradio"]'))
+    Array.from(targetContainer.querySelectorAll<HTMLButtonElement>('button[role="menuitemradio"]'))
       .find((button) => button.textContent?.includes(name))
       ?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     await flush();
   });
 };
-await renderPreferenceTab("older-tab");
-await choosePreference("Xcode");
-await renderPreferenceTab("newer-tab");
-await choosePreference("Finder");
+await renderPreferenceTab(preferenceRoot, preferenceRaceBridge, "older-tab");
+await choosePreference(preferenceContainer, "Xcode");
+await renderPreferenceTab(preferenceRoot, preferenceRaceBridge, "newer-tab");
+await choosePreference(preferenceContainer, "Finder");
 ok(
   preferenceLaunches.join(",") === "older-tab:xcode,newer-tab:finder" && preferenceWrites.join(",") === "finder",
   "a newer tab selection persists even when it matches the discovered preference",
@@ -283,6 +287,97 @@ await act(async () => {
 ok(preferenceWrites.join(",") === "finder", "an older tab completion cannot overwrite the latest opener preference");
 await act(async () => preferenceRoot.unmount());
 preferenceContainer.remove();
+
+const failedNewerWrites: string[] = [];
+let resolveOlderSuccessfulLaunch: (() => void) | undefined;
+const failedNewerBridge: ExternalOpenerBridge = {
+  async ExternalOpenersForTab() {
+    return {
+      openers: [
+        { id: "finder", name: "Finder", kind: "file-manager" },
+        { id: "xcode", name: "Xcode", kind: "editor" },
+      ],
+      preferred: "finder",
+      workspaceOpenable: true,
+    };
+  },
+  async SetPreferredExternalOpener(id) {
+    failedNewerWrites.push(id);
+  },
+  async OpenWorkspaceInExternalOpenerForTab(tabId) {
+    if (tabId === "older-success") {
+      await new Promise<void>((resolve) => {
+        resolveOlderSuccessfulLaunch = resolve;
+      });
+      return;
+    }
+    throw new Error("newer launch failed");
+  },
+};
+const failedNewerContainer = document.createElement("div");
+document.body.append(failedNewerContainer);
+const failedNewerRoot = createRoot(failedNewerContainer);
+await renderPreferenceTab(failedNewerRoot, failedNewerBridge, "older-success");
+await choosePreference(failedNewerContainer, "Xcode");
+await renderPreferenceTab(failedNewerRoot, failedNewerBridge, "newer-failure");
+await choosePreference(failedNewerContainer, "Finder");
+await act(async () => {
+  resolveOlderSuccessfulLaunch?.();
+  await flush();
+});
+ok(
+  failedNewerWrites.join(",") === "xcode",
+  "a newer failed launch does not cancel an older successful selection",
+);
+await act(async () => failedNewerRoot.unmount());
+failedNewerContainer.remove();
+
+const inFlightWrites: string[] = [];
+let markOlderWriteStarted: (() => void) | undefined;
+const olderWriteStarted = new Promise<void>((resolve) => {
+  markOlderWriteStarted = resolve;
+});
+let resolveOlderWrite: (() => void) | undefined;
+const inFlightWriteBridge: ExternalOpenerBridge = {
+  async ExternalOpenersForTab() {
+    return {
+      openers: [
+        { id: "finder", name: "Finder", kind: "file-manager" },
+        { id: "xcode", name: "Xcode", kind: "editor" },
+      ],
+      preferred: "finder",
+      workspaceOpenable: true,
+    };
+  },
+  async SetPreferredExternalOpener(id) {
+    inFlightWrites.push(id);
+    markOlderWriteStarted?.();
+    await new Promise<void>((resolve) => {
+      resolveOlderWrite = resolve;
+    });
+  },
+  async OpenWorkspaceInExternalOpenerForTab(tabId) {
+    if (tabId === "newer-failure") throw new Error("newer launch failed");
+  },
+};
+const inFlightContainer = document.createElement("div");
+document.body.append(inFlightContainer);
+const inFlightRoot = createRoot(inFlightContainer);
+await renderPreferenceTab(inFlightRoot, inFlightWriteBridge, "older-write");
+await choosePreference(inFlightContainer, "Xcode");
+await olderWriteStarted;
+await renderPreferenceTab(inFlightRoot, inFlightWriteBridge, "newer-failure");
+await choosePreference(inFlightContainer, "Finder");
+await act(async () => {
+  resolveOlderWrite?.();
+  await flush();
+});
+ok(
+  inFlightWrites.join(",") === "xcode",
+  "an in-flight older preference write has the same result when a newer launch fails",
+);
+await act(async () => inFlightRoot.unmount());
+inFlightContainer.remove();
 
 const failureLog: string[] = [];
 let failOpen = true;
