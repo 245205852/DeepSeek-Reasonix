@@ -131,6 +131,10 @@ ok(
   "browser mock can preview the customized legacy DeepSeek upgrade flow",
 );
 ok(
+  /async ConnectKey\(apiKey: string\)[\s\S]*?await this\.AddOfficialProviderAccess\("deepseek", apiKey\)/.test(bridgeSource),
+  "browser onboarding installs the same current DeepSeek official template as production",
+);
+ok(
   /onUpgradeRecommended=\{\(name\) => apply\(\(\) => app\.UpgradeDeepSeekProviderAccess\(name\)\)/.test(settingsSource) &&
     settingsSource.includes("onConfirm={() => onUpgradeRecommended(canonicalOfficialProviderName(upgradeProvider.name))}") &&
     settingsSource.includes('className="provider-protocol-upgrade"') &&

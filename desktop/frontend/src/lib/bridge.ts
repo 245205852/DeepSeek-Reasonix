@@ -4892,13 +4892,10 @@ function makeMockApp(): AppBindings {
     },
     async ConnectKey(apiKey: string) {
       if (!apiKey.trim()) throw new Error("key is required");
-      settings.providers.forEach((p) => {
-        if (p.apiKeyEnv === "DEEPSEEK_API_KEY") {
-          p.added = true;
-          p.keySet = true;
-          p.configured = true;
-        }
-      });
+      // Match the production onboarding path: saving a DeepSeek key also
+      // restores the current official provider template instead of merely
+      // marking a possibly stale legacy entry as configured.
+      await this.AddOfficialProviderAccess("deepseek", apiKey);
       await delay(300);
       return "";
     },
