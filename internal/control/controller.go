@@ -1904,7 +1904,8 @@ func (c *Controller) Run(ctx context.Context, input string) (err error) {
 		return nil
 	}
 	startMessages := c.messageCount()
-	defer c.snapshotActivityIfChanged(startMessages)
+	var marker agent.InFlightTurnMeta
+	defer func() { c.finishInFlightTurn(startMessages, marker) }()
 	c.beginCheckpoint(ctx, input)
 	if c.guardianSess != nil {
 		c.guardianSess.ResetTurn()
@@ -1919,8 +1920,7 @@ func (c *Controller) Run(ctx context.Context, input string) (err error) {
 		}
 		defer func() { c.hooks.StopResult(context.Background(), lastAssistantText(c.History()), turn, err) }()
 	}
-	c.markInFlightTurn(startMessages, true)
-	defer c.clearInFlightTurn()
+	marker = c.markInFlightTurn(startMessages, true)
 	ctx = c.withPlannerTurnMetadata(ctx, rawInput, false, startMessages)
 	err = c.runner.Run(ctx, c.withCapabilityRoute(ctx, input, rawInput))
 	return err
@@ -3178,7 +3178,7 @@ func (c *Controller) forkNamed(turn int, name string, switchToFork bool) (string
 	sess.Messages = forked
 
 	newPath := agent.NewSessionPath(c.sessionDir, c.label)
-	if err := sess.Save(newPath); err != nil {
+	if err := sess.SaveIfAbsent(newPath); err != nil {
 		return "", c.rewindFail(err)
 	}
 	forkPreview, forkTurns := agent.SessionPreviewFromMessages(forked)
@@ -3266,7 +3266,7 @@ func (c *Controller) Branch(name string) (string, error) {
 	sess.Messages = branched
 
 	newPath := agent.NewSessionPath(c.sessionDir, c.label)
-	if err := sess.Save(newPath); err != nil {
+	if err := sess.SaveIfAbsent(newPath); err != nil {
 		return "", c.rewindFail(err)
 	}
 	branchPreview, branchTurns := agent.SessionPreviewFromMessages(branched)
@@ -3598,6 +3598,11 @@ func (c *Controller) SnapshotRewrite() error {
 	return c.snapshot(false, true, false)
 }
 
+func (c *Controller) snapshot(markActivity, forceRewrite, shutdownRecovery bool) error {
+	_, err := c.snapshotWithDurability(markActivity, forceRewrite, shutdownRecovery)
+	return err
+}
+
 // midTurnSnapshotInterval is atomic (nanoseconds) so a test shrinking it
 // cannot race a previous test's still-parking autosave goroutine.
 var midTurnSnapshotInterval atomic.Int64
@@ -3623,7 +3628,11 @@ func (c *Controller) autosaveWhileRunning(ctx context.Context) {
 	}
 }
 
-func (c *Controller) snapshot(markActivity, forceRewrite, shutdownRecovery bool) error {
+// snapshotWithDurability reports whether the canonical transcript reached disk
+// even when a later sidecar update failed. Callers that guard a crash marker
+// need this distinction: a metadata error must not make a complete transcript
+// look like an in-memory-only turn.
+func (c *Controller) snapshotWithDurability(markActivity, forceRewrite, shutdownRecovery bool) (bool, error) {
 	c.snapshotMu.Lock()
 	defer c.snapshotMu.Unlock()
 
@@ -3632,13 +3641,13 @@ func (c *Controller) snapshot(markActivity, forceRewrite, shutdownRecovery bool)
 	modelRef := c.modelRef
 	c.mu.Unlock()
 	if c.executor == nil {
-		return nil
+		return false, nil
 	}
 	s := c.executor.Session()
 	if !s.HasContent() {
 		// Nothing to persist yet (e.g. a fresh session with only a system
 		// prompt) — staying quiet here is correct, not a data-loss path.
-		return nil
+		return false, nil
 	}
 	if !s.HasSystemMessage() {
 		// The session has user/assistant/tool messages but no leading system
@@ -3650,7 +3659,7 @@ func (c *Controller) snapshot(markActivity, forceRewrite, shutdownRecovery bool)
 		// diagnosed, then refuse to write a corrupted transcript.
 		slog.Warn("controller: refusing to snapshot session with content but no system message",
 			"label", c.Label(), "session_dir", c.SessionDir(), "message_count", len(s.Snapshot()))
-		return nil
+		return false, nil
 	}
 	if path == "" {
 		// There IS content but nowhere to write it: this silently dropped whole
@@ -3658,7 +3667,7 @@ func (c *Controller) snapshot(markActivity, forceRewrite, shutdownRecovery bool)
 		// so the missing session path can be diagnosed and fixed at the source.
 		slog.Warn("controller: session has content but no session path; conversation will not be persisted",
 			"label", c.Label(), "session_dir", c.SessionDir())
-		return errNoSessionPath
+		return false, errNoSessionPath
 	}
 	// session.save: the session_policy owner rules on the impending save; a
 	// failure (required-class) vetoes the write. The event goes out after a
@@ -3668,7 +3677,7 @@ func (c *Controller) snapshot(markActivity, forceRewrite, shutdownRecovery bool)
 	// the save targeted.
 	savePayload, strategyErr := c.extensionSessionStrategy(context.Background(), extension.PointSessionSave, dispatch.PhaseSave, path)
 	if strategyErr != nil {
-		return strategyErr
+		return false, strategyErr
 	}
 	forceRewrite = forceRewrite || s.NeedsRewriteSave()
 	var err error
@@ -3691,7 +3700,7 @@ func (c *Controller) snapshot(markActivity, forceRewrite, shutdownRecovery bool)
 		if shutdownRecovery && errors.Is(err, agent.ErrSessionFileLockHeld) {
 			recoveredPath, recoverErr := c.recoverShutdownSnapshot(path, err)
 			if recoverErr != nil {
-				return recoverErr
+				return false, recoverErr
 			}
 			path = recoveredPath
 			s = c.executor.Session()
@@ -3700,26 +3709,26 @@ func (c *Controller) snapshot(markActivity, forceRewrite, shutdownRecovery bool)
 	}
 	if err != nil {
 		if !errors.Is(err, agent.ErrSessionSnapshotConflict) {
-			return err
+			return false, err
 		}
 		recoveredPath, outcome, recoverErr := c.recoverSnapshotConflict(path, err, forceRewrite)
 		if recoverErr != nil {
 			if shutdownRecovery && errors.Is(recoverErr, agent.ErrSessionFileLockHeld) {
 				recoveredPath, recoverErr = c.recoverShutdownSnapshot(path, recoverErr)
 				if recoverErr != nil {
-					return recoverErr
+					return false, recoverErr
 				}
 				path = recoveredPath
 				s = c.executor.Session()
 			} else {
-				return recoverErr
+				return false, recoverErr
 			}
 		} else {
 			if outcome == conflictDropped {
-				return nil
+				return false, nil
 			}
-			// Whatever recovery did — adopted the disk transcript, force-saved
-			// the depth-capped branch, or forked — the rewrite baseline lives on
+			// Whatever recovery did — adopted the disk transcript, isolated the
+			// depth-capped copy, or forked — the rewrite baseline lives on
 			// the session object and was advanced by the save that succeeded, so
 			// there is nothing to re-anchor here.
 			path = recoveredPath
@@ -3735,6 +3744,7 @@ func (c *Controller) snapshot(markActivity, forceRewrite, shutdownRecovery bool)
 			}
 		}
 	}
+	transcriptDurable := true
 	// Persist recovery gate state so unresolved checkpoints survive restart.
 	c.saveRecoveryState(path)
 	// Record the listing-only sidecar fields (model, preview, user-turn count)
@@ -3745,10 +3755,10 @@ func (c *Controller) snapshot(markActivity, forceRewrite, shutdownRecovery bool)
 	// EnsureBranchMeta / SetBranchModel / TouchBranchMeta sequence.
 	preview, turns := agent.SessionPreviewFromMessages(s.Snapshot())
 	if err := agent.UpdateSessionMeta(path, modelRef, preview, turns, markActivity); err != nil {
-		return err
+		return transcriptDurable, err
 	}
 	c.extensionSessionPayloadEvent(extension.PointSessionSave, savePayload)
-	return nil
+	return transcriptDurable, nil
 }
 
 // snapshotConflictLogAttrs flattens a snapshot-conflict error into slog attrs.
@@ -3836,16 +3846,12 @@ const (
 	// conflictAdoptedDisk: the executor session object was replaced by the
 	// newer disk transcript; adoptDiskSession already reset its baselines.
 	conflictAdoptedDisk
-	// conflictForceSavedBranch: recovery depth was exhausted and the same
-	// in-memory session was force-saved onto the same branch; that save
-	// advanced the session-owned rewrite baseline like any other full save.
-	conflictForceSavedBranch
 	// conflictForkedBranch: the same in-memory session moved to a freshly
 	// forked recovery branch path.
 	conflictForkedBranch
 )
 
-const recoveryDepthCapNoticeText = "repeated save conflicts were detected; saved the current conflict copy in place"
+const recoveryDepthCapNoticeText = "repeated save conflicts were detected; saved the current conflict copy in an isolated recovery branch"
 
 func sessionRecoveryNotice(code, text string) event.Event {
 	return event.Event{
@@ -3906,19 +3912,25 @@ func (c *Controller) recoverSnapshotConflict(path string, saveErr error, forceRe
 	})
 	if err != nil {
 		if errors.Is(err, agent.ErrSessionRecoveryDepthExceeded) {
-			// Saves keep conflicting on recovery branches this runtime itself
-			// created; forking again multiplies session files without
-			// converging (#5993 reached 8 nested levels). This runtime is the
-			// only writer of its own recovery branches, so force-writing the
-			// transcript back onto the current branch keeps the data and
-			// stops the chain.
-			if forceErr := c.executor.Session().Save(path); forceErr != nil {
-				return "", conflictDropped, fmt.Errorf("recovery chain depth exceeded; force save failed: %w", forceErr)
+			// The canonical branch may have advanced since this runtime loaded it.
+			// Never force-write the stale in-memory snapshot back onto that path just
+			// to stop a recovery chain. Preserve it in a writer-specific isolated
+			// branch instead; the depth cap limits lineage fan-out, not data safety.
+			isolated, isolatedErr := c.executor.Session().SaveConflictRecoveryBranch(agent.RecoveryBranchOptions{
+				OriginalPath: path,
+				Reason:       reason,
+				BranchMeta:   meta,
+			})
+			if isolatedErr != nil {
+				return "", conflictDropped, fmt.Errorf("recovery chain depth exceeded; isolated copy failed: %w", isolatedErr)
 			}
-			appendSnapshotConflictDiagnostic(path, mode, "recovery_depth_cap_force_saved", saveErr, path, false)
-			slog.Warn("controller: snapshot conflict; recovery depth cap reached, force-saved onto current branch", logAttrs...)
+			if err := c.commitRecoveredSession(path, reason, isolated); err != nil {
+				return "", conflictDropped, err
+			}
+			appendSnapshotConflictDiagnostic(path, mode, "recovery_depth_cap_isolated", saveErr, isolated.Path, isolated.Existing)
+			slog.Warn("controller: snapshot conflict; recovery depth cap reached, isolated stale transcript", append(logAttrs, "recovery", isolated.Path)...)
 			c.emitRecoveryDepthCapNotice(path)
-			return path, conflictForceSavedBranch, nil
+			return isolated.Path, conflictForkedBranch, nil
 		}
 		if errors.Is(err, agent.ErrSessionRecoveryNotNeeded) {
 			if c.adoptDiskSession(path) {
@@ -4023,24 +4035,62 @@ func (c *Controller) messageCount() int {
 	return c.executor.Session().Len()
 }
 
-func (c *Controller) markInFlightTurn(startMessageIndex int, preserveUser bool) {
+func (c *Controller) markInFlightTurn(startMessageIndex int, preserveUser bool) agent.InFlightTurnMeta {
 	path := c.SessionPath()
 	if path == "" {
+		return agent.InFlightTurnMeta{}
+	}
+	marker, err := agent.BeginSessionInFlightTurn(path, startMessageIndex, preserveUser)
+	if err != nil {
+		slog.Warn("controller: mark in-flight turn", "err", err)
+		return agent.InFlightTurnMeta{}
+	}
+	return marker
+}
+
+func (c *Controller) clearInFlightTurn(marker agent.InFlightTurnMeta) {
+	path := c.SessionPath()
+	if path == "" || marker.ID == "" {
 		return
 	}
-	if err := agent.MarkSessionInFlightTurn(path, startMessageIndex, preserveUser); err != nil {
-		slog.Warn("controller: mark in-flight turn", "err", err)
+	if _, err := agent.ClearSessionInFlightTurnIfMatch(path, marker); err != nil {
+		slog.Warn("controller: clear in-flight turn", "err", err)
 	}
 }
 
-func (c *Controller) clearInFlightTurn() {
-	path := c.SessionPath()
-	if path == "" {
+// finishInFlightTurn persists the completed transcript before removing the
+// crash marker. A crash can therefore leave either a recoverable marker or a
+// durable completed transcript, never an unmarked in-memory-only suffix.
+func (c *Controller) finishInFlightTurn(startMessages int, marker agent.InFlightTurnMeta) {
+	commitPrepared := marker.ID == ""
+	if marker.ID != "" && c.executor != nil {
+		digest, digestErr := c.executor.Session().ContentDigest()
+		if digestErr != nil {
+			slog.Warn("controller: compute completed turn digest", "err", digestErr)
+		} else if prepared, matched, prepareErr := agent.PrepareSessionInFlightTurnCommit(c.SessionPath(), marker, digest); prepareErr != nil {
+			slog.Warn("controller: prepare in-flight turn commit", "err", prepareErr)
+		} else if matched {
+			marker = prepared
+			commitPrepared = true
+		}
+	}
+	durable, err := c.snapshotActivityIfChanged(startMessages)
+	if err != nil && !durable {
+		// Keep the marker when the transcript did not become durable. Resume can
+		// then retry recovery instead of treating an in-memory-only tail as done.
+		slog.Warn("controller: keeping in-flight marker after failed turn snapshot", "err", err)
 		return
 	}
-	if err := agent.ClearSessionInFlightTurn(path); err != nil {
-		slog.Warn("controller: clear in-flight turn", "err", err)
+	if err != nil {
+		slog.Warn("controller: turn transcript saved before metadata update failed", "err", err)
 	}
+	if !commitPrepared {
+		// Do not clear an unprepared marker: a crash between the snapshot and this
+		// point would otherwise leave recovery without exact commit evidence.
+		slog.Warn("controller: keeping in-flight marker without commit digest", "marker_id", marker.ID)
+		return
+	}
+	c.clearInFlightTurn(marker)
 }
 
 // transplantInFlightTurnMarker moves a pending in-flight-turn marker from the
@@ -4067,7 +4117,7 @@ func (c *Controller) transplantInFlightTurnMarker(fromPath, toPath string) {
 		slog.Warn("controller: transplant in-flight turn marker", "path", toPath, "err", err)
 		return
 	}
-	if err := agent.ClearSessionInFlightTurn(fromPath); err != nil {
+	if _, err := agent.ClearSessionInFlightTurnIfMatch(fromPath, *marker); err != nil {
 		slog.Warn("controller: clear in-flight turn marker on forked-from branch", "path", fromPath, "err", err)
 	}
 }
@@ -4091,13 +4141,36 @@ func (c *Controller) recoverInterruptedTurn(path string) {
 		// transplant in recoverSnapshotConflict left the marker behind on the
 		// forked-from branch; stripping now would truncate a transcript the
 		// completed turn already superseded. Clear the stale marker instead.
-		if err := agent.ClearSessionInFlightTurn(path); err != nil {
+		if _, err := agent.ClearSessionInFlightTurnIfMatch(path, *marker); err != nil {
 			slog.Warn("controller: clear fork-orphaned in-flight turn", "err", err)
 		}
 		return
 	}
 	msgs := c.executor.Session().Snapshot()
+	if marker.CommitDigest != "" {
+		if digest, digestErr := c.executor.Session().ContentDigest(); digestErr != nil {
+			slog.Warn("controller: digest resumed in-flight turn", "err", digestErr)
+		} else if digest == marker.CommitDigest {
+			// The exact transcript named before the final snapshot is present. The
+			// process died after commit and before CAS cleanup; preserve everything.
+			if _, err := agent.ClearSessionInFlightTurnIfMatch(path, *marker); err != nil {
+				slog.Warn("controller: clear committed in-flight turn marker", "err", err)
+			}
+			return
+		}
+	}
 	start, found := resolveInterruptedTurnStart(msgs, marker.StartMessageIndex, marker.PreserveUser, marker.StartedAt, provider.Message{})
+	if found && interruptedTurnCrossesLaterTurn(msgs, start) {
+		slog.Warn("controller: preserving WAL transcript after stale in-flight marker",
+			"path", path, "messages", len(msgs), "marker_index", marker.StartMessageIndex, "resolved_index", start,
+			"marker_revision", marker.StartRevision, "current_revision", meta.Revision)
+		c.sink.Emit(event.Event{Kind: event.Notice, Level: event.LevelWarn,
+			Text: "Session recovery found completed turns after a stale interruption marker; the full WAL history was preserved."})
+		if _, err := agent.ClearSessionInFlightTurnIfMatch(path, *marker); err != nil {
+			slog.Warn("controller: clear stale multi-turn in-flight marker", "err", err)
+		}
+		return
+	}
 	changed := found && len(msgs) > start
 	if changed {
 		if marker.PreserveUser {
@@ -4109,9 +4182,32 @@ func (c *Controller) recoverInterruptedTurn(path string) {
 			slog.Warn("controller: post-interrupted-turn snapshot", "err", err)
 		}
 	}
-	if err := agent.ClearSessionInFlightTurn(path); err != nil {
+	if _, err := agent.ClearSessionInFlightTurnIfMatch(path, *marker); err != nil {
 		slog.Warn("controller: clear stale in-flight turn", "err", err)
 	}
+}
+
+// interruptedTurnCrossesLaterTurn detects the data-loss shape where an old
+// marker survived while one or more later turns were durably appended. A
+// compaction summary and mid-turn steer are not new foreground turn boundaries.
+func interruptedTurnCrossesLaterTurn(msgs []provider.Message, start int) bool {
+	if start < 0 || start >= len(msgs) {
+		return false
+	}
+	turns := 0
+	for _, msg := range msgs[start:] {
+		if msg.Role != provider.RoleUser || agent.IsCompactionSummary(msg) {
+			continue
+		}
+		if _, ok := agent.SteerText(msg.Content); ok {
+			continue
+		}
+		turns++
+		if turns > 1 {
+			return true
+		}
+	}
+	return false
 }
 
 // interruptedTurnContinuedOnRecoveryBranch reports whether a recovery branch
@@ -4516,13 +4612,11 @@ func (c *Controller) replaceSessionAfterCancel(msgs []provider.Message) {
 	}
 }
 
-func (c *Controller) snapshotActivityIfChanged(startMessages int) {
+func (c *Controller) snapshotActivityIfChanged(startMessages int) (bool, error) {
 	if c.messageCount() <= startMessages {
-		return
+		return true, nil
 	}
-	if err := c.SnapshotActivity(); err != nil {
-		slog.Warn("controller: activity snapshot", "err", err)
-	}
+	return c.snapshotWithDurability(true, false, false)
 }
 
 // SetSessionPath rebinds auto-save without changing the current session
@@ -4638,6 +4732,17 @@ func (c *Controller) History() []provider.Message {
 		return nil
 	}
 	return c.executor.Session().Snapshot() // copy — a turn may be appending concurrently
+}
+
+// SessionHasUnsavedChanges tells desktop history whether it may safely refresh
+// an idle view from the durable WAL. A failed or contended save can leave the
+// controller with a newer in-memory transcript; replacing that view from disk
+// would hide the user's latest turn until the next retry.
+func (c *Controller) SessionHasUnsavedChanges() bool {
+	if c == nil || c.executor == nil {
+		return false
+	}
+	return c.executor.Session().HasUnsavedChanges(c.SessionPath())
 }
 
 // HistoryLen returns the number of messages in the live log.
