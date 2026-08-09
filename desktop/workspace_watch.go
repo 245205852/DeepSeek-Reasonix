@@ -1,9 +1,8 @@
 package main
 
 // Workspace change invalidation lives at the desktop boundary. Agent events
-// are authoritative for writes performed by Reasonix, while fsnotify covers
-// edits made by an IDE or an external terminal. The hub deliberately publishes
-// only bounded, debounced metadata; panels decide which resources to reload.
+// cover Reasonix writes; fsnotify covers IDE and external terminal edits.
+// The hub emits bounded metadata; panels decide which resources to reload.
 
 import (
 	"os"
