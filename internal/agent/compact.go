@@ -38,6 +38,8 @@ const (
 	maxEarlyUserTurns          = 3     // small user turns hoisted verbatim ahead of the digest; position-fixed (the first N of the fold region, never "the latest N") so the projection prefix stays byte-stable
 )
 
+var errSummaryOutputTruncated = errors.New("summarizer output truncated")
+
 // summaryTag wraps the compaction summary so the model can distinguish it from
 // live user input and later strip or skip it when reasoning about the current turn.
 const (
@@ -504,8 +506,8 @@ func tailStart(msgs []provider.Message, head, budgetTokens int, tokPerChar float
 // actually sent (the provider strips it). Falls back to ~4 chars/token before
 // any usage is known, and ignores absurd ratios.
 func (a *Agent) tokPerChar() float64 {
-	if cal := a.promptCalibration.Load(); cal != nil {
-		if r := float64(cal.promptTokens) / float64(cal.chars); r > 0.05 && r < 2 {
+	if cal := a.promptCalibration.Load(); cal != nil && cal.compactChars > 0 {
+		if r := float64(cal.promptTokens) / float64(cal.compactChars); r > 0.05 && r < 2 {
 			return r
 		}
 	}
@@ -578,6 +580,9 @@ func (a *Agent) summarize(ctx context.Context, region []provider.Message, instru
 			return "", usage, ctx.Err()
 		case chunk, ok := <-ch:
 			if !ok {
+				if usage != nil && usage.FinishReason == "length" {
+					return "", usage, fmt.Errorf("%w: provider reached the output token limit", errSummaryOutputTruncated)
+				}
 				s := strings.TrimSpace(b.String())
 				if s == "" {
 					return "", usage, fmt.Errorf("summarizer returned empty output")
@@ -600,7 +605,7 @@ func (a *Agent) summarize(ctx context.Context, region []provider.Message, instru
 // Token and request counts from both attempts are merged into the returned Usage.
 func (a *Agent) summarizeWithRetry(ctx context.Context, fold []provider.Message, instructions string) (string, *provider.Usage, error) {
 	summary, usage, err := a.summarize(ctx, fold, instructions)
-	if err == nil || errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
+	if err == nil || errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) || errors.Is(err, errSummaryOutputTruncated) {
 		return summary, usage, err
 	}
 	summary2, usage2, err2 := a.summarize(ctx, fold, instructions)

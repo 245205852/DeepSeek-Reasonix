@@ -56,7 +56,8 @@ func (a *Agent) prepareSamplingRequest(ctx context.Context) (samplingRequest, er
 	} else if clipped {
 		req.MaxTokens = budget
 	}
-	a.activeReqChars.Store(int64(charsOfMessages(req.Messages)))
+	shape := requestCalibrationShapeOf(req)
+	a.activeReqShape.Store(&shape)
 	return samplingRequest{req: freezeProviderRequest(req)}, nil
 }
 

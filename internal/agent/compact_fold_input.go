@@ -68,8 +68,14 @@ func (a *Agent) summaryInputBudget(instructions string) int {
 	if a.contextWindow <= 0 {
 		return 0
 	}
+	reserve := summaryOutputReserve
+	if sharesContextWindow(a.prov) && a.configuredOutputBudget(a.maxOutputTokens) > 0 {
+		reserve += outputBudgetReserve
+	}
+	// Shared-window calls keep the digest allowance separate from the estimator
+	// safety reserve. Independent-ceiling providers retain their existing budget.
 	// Span passes add a per-part line to the instructions; 256 covers it.
-	budget := a.contextWindow - summaryOutputReserve - estimateTextTokens(summarySystemPrompt) - estimateTextTokens(instructions) - 256
+	budget := a.contextWindow - reserve - estimateTextTokens(summarySystemPrompt) - estimateTextTokens(instructions) - 256
 	if budget < minSummarySpanTokens {
 		return 0
 	}

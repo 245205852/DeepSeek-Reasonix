@@ -786,7 +786,7 @@ func (a *Agent) storeLatestRequestUsage(attempt *provider.Usage) {
 	clone := *attempt
 	// Keep the per-attempt RequestCount; context calculations do not use it.
 	a.lastUsage.Store(&clone)
-	a.setPromptTokenCalibration(clone.LatestPromptTokens(), a.activeReqChars.Load())
+	a.setPromptTokenCalibrationFromActive(clone.LatestPromptTokens())
 }
 
 // finalizeSamplingUsage builds the Usage event payload for consumers that
