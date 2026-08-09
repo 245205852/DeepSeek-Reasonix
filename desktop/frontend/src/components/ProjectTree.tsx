@@ -1057,7 +1057,6 @@ export function ProjectTree({
       endTrashingTopic(topicId);
     }
   };
-
   const setTopicPinned = async (topicId: string, pinned: boolean) => {
     try {
       await app.SetTopicPinned(topicId, pinned);
