@@ -86,6 +86,7 @@ type Memory struct {
 	Scope          FactScope  // project by default; global only when explicitly requested
 	Activation     Activation // persisted choice; "" = unset, resolved by ResolveActivation
 	Volatility     Volatility // how fast the fact ages; "" = unset, type default applies
+	SubjectKey     string     // which question the fact answers (project.package_manager); one active value per scope+subject
 	ExpiresAt      time.Time  // hard freshness boundary; zero = never expires
 	LastVerifiedAt time.Time  // last explicit confirmation; renews the freshness clock
 	Keywords       string     // search aliases (bilingual synonyms, related commands); recall-only, never rendered into the index
@@ -737,6 +738,7 @@ func loadMemory(path string) (Memory, bool) {
 		Keywords:       fm["keywords"],
 		Activation:     NormalizeActivation(fm["activation"]),
 		Volatility:     NormalizeVolatility(fm["volatility"]),
+		SubjectKey:     NormalizeSubjectKey(fm["subject_key"]),
 		ExpiresAt:      parseMemoryTime(fm["expires_at"]),
 		LastVerifiedAt: parseMemoryTime(fm["last_verified_at"]),
 		Type:           persistedFactType(fm),

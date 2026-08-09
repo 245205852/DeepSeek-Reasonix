@@ -104,6 +104,9 @@ func inheritOnUpdate(m Memory, existing Memory, clearExpiry bool) Memory {
 	if NormalizeVolatility(string(m.Volatility)) == "" {
 		m.Volatility = existing.Volatility
 	}
+	if NormalizeSubjectKey(m.SubjectKey) == "" {
+		m.SubjectKey = existing.SubjectKey
+	}
 	if clearExpiry {
 		m.ExpiresAt = time.Time{}
 	} else if m.ExpiresAt.IsZero() {
@@ -116,6 +119,15 @@ func inheritOnUpdate(m Memory, existing Memory, clearExpiry bool) Memory {
 		m.Keywords = existing.Keywords
 	}
 	return m
+}
+
+// validateSave runs the cross-fact invariants once identity, scope, and
+// inheritance are resolved: the pinned budget and subject uniqueness.
+func (s Store) validateSave(m Memory) error {
+	if err := s.validatePinnedBudget(m); err != nil {
+		return err
+	}
+	return s.validateSubjectKey(m)
 }
 
 // validatePinnedBudget rejects a save that would push the total pinned-body
@@ -213,7 +225,7 @@ func (s Store) SaveWithOptions(m Memory, opts SaveOptions) (SaveResult, error) {
 	} else {
 		m.Scope = NormalizeFactScope(string(m.Scope))
 	}
-	if err := s.validatePinnedBudget(m); err != nil {
+	if err := s.validateSave(m); err != nil {
 		return SaveResult{}, err
 	}
 
