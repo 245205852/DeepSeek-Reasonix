@@ -204,6 +204,14 @@ console.log("\nstatus bar workspace");
     lastTurnOutputEstimated: true,
   });
   ok(estimated.includes("≈20 t/s"), "fallback TPS is visibly marked as estimated");
+
+  const perRequest = renderStatusBar({
+    items: ["turn_tps"],
+    lastRequestTps: 35,
+    lastTurnOutputTokens: 100,
+    lastTurnModelMs: 5_000,
+  });
+  ok(perRequest.includes("35 t/s"), "per-request TPS wins over the completed turn value");
 }
 
 {

@@ -176,6 +176,7 @@ export function StatusBar({
   lastTurnOutputTokens,
   lastTurnModelMs,
   lastTurnOutputEstimated = false,
+  lastRequestTps,
   turnCost,
   cost,
   currency,
@@ -209,6 +210,9 @@ export function StatusBar({
   lastTurnOutputTokens?: number;
   lastTurnModelMs?: number;
   lastTurnOutputEstimated?: boolean;
+  // TPS of the most recent executor request; preferred over the completed
+  // turn's value so the status bar stays live during long turns.
+  lastRequestTps?: number;
   turnCost?: number;
   cost?: number;
   currency?: string;
@@ -255,7 +259,11 @@ export function StatusBar({
   const tokenLabel = markEstimated(formatTokenCount(sessionTokens), sessionEstimated);
   const turnTokenLabel = markEstimated(formatTokenCount(turnTokens), turnEstimated);
   const balanceLabel = balance?.available && balance.display ? balance.display : "-";
-  const tpsLabel = formatTps(lastTurnOutputTokens, lastTurnModelMs, lastTurnOutputEstimated);
+  // The most recent executor request's TPS (refreshed on every usage event)
+  // takes precedence; the completed turn's value bridges the gap before the
+  // first request of a session.
+  const requestTpsLabel = lastRequestTps !== undefined && lastRequestTps > 0 ? `${lastRequestTps} t/s` : null;
+  const tpsLabel = requestTpsLabel ?? formatTps(lastTurnOutputTokens, lastTurnModelMs, lastTurnOutputEstimated);
   const formatUsageToken = (value: number) => `${usage?.estimated ? "≈" : ""}${value.toLocaleString()}`;
   const outputTokensLabel = usage && typeof usage.completionTokens === "number"
     ? formatUsageToken(usage.completionTokens)
