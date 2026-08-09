@@ -754,6 +754,8 @@ export function Composer({
   const wasRunningByDraftRef = useRef<Record<string, boolean>>({ [draftKey]: running });
   const composingRef = useRef(false);
   const lastCompositionEndAt = useRef(0);
+  const pastChatSearchComposingRef = useRef(false);
+  const pastChatSearchLastCompositionEndAt = useRef(0);
   const lastSelectionRef = useRef({ start: 0, end: 0 });
   const consumedInsertIdByDraftRef = useRef<Record<string, number>>({});
   const consumedSelectedTextIdByDraftRef = useRef<Record<string, number>>({});
@@ -3487,6 +3489,15 @@ export function Composer({
   // menu logic. Regular typing keys (letters, Backspace, etc.) pass through
   // so the user can type a search query.
   const onPastChatSearchKeyDown = (e: KeyboardEvent<HTMLInputElement>) => {
+    if (
+      isImeKeyEvent(
+        e.nativeEvent,
+        pastChatSearchComposingRef.current,
+        pastChatSearchLastCompositionEndAt.current,
+      )
+    ) {
+      return;
+    }
     if (e.key === "ArrowDown" || e.key === "ArrowUp" || e.key === "Enter" || e.key === "Tab" || e.key === "Escape") {
       e.preventDefault();
       e.stopPropagation();
@@ -4091,6 +4102,16 @@ export function Composer({
                     onChange={(ev) => {
                       setPastChatQuery(ev.target.value);
                       setActive(0);
+                    }}
+                    onCompositionStart={() => {
+                      pastChatSearchComposingRef.current = true;
+                    }}
+                    onCompositionEnd={() => {
+                      pastChatSearchComposingRef.current = false;
+                      pastChatSearchLastCompositionEndAt.current = Date.now();
+                    }}
+                    onBlur={() => {
+                      pastChatSearchComposingRef.current = false;
                     }}
                     onKeyDown={onPastChatSearchKeyDown}
                   />
