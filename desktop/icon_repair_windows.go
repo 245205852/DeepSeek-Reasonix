@@ -205,10 +205,27 @@ func reasonixWindowsVersionedTarget(target, launcher string) bool {
 
 // repairWindowsShortcutPlan decides which owned-shortcut properties need
 // rewriting. repointTarget is true when TargetPath points into a versioned
-// directory the updater can delete; fixIcon is true when IconLocation points
-// at the versioned desktop binary instead of the stable launcher.
+// directory the updater can delete or at a removed legacy root-level desktop
+// binary; fixIcon is true when IconLocation points at a versioned or removed
+// root-level desktop binary instead of the stable launcher.
 func repairWindowsShortcutPlan(target, iconLocation, launcher string) (repointTarget, fixIcon bool) {
-	return reasonixWindowsVersionedTarget(target, launcher), reasonixWindowsStaleIcon(iconLocation, launcher)
+	repointTarget = reasonixWindowsVersionedTarget(target, launcher) || reasonixWindowsFlatDesktopTarget(target, launcher)
+	return repointTarget, reasonixWindowsStaleIcon(iconLocation, launcher)
+}
+
+// reasonixWindowsFlatDesktopTarget reports whether target points at the
+// legacy root-level desktop binary (<root>/reasonix-desktop.exe) that no
+// longer exists. Pre-versioned installs created shortcuts against the
+// root-level binary; after the layout migration the file is gone and the
+// shortcut dangles. A still-present root-level binary means a live flat
+// install, which must be left alone.
+func reasonixWindowsFlatDesktopTarget(target, launcher string) bool {
+	flat := filepath.Join(filepath.Dir(filepath.Clean(strings.TrimSpace(launcher))), "reasonix-desktop.exe")
+	if !strings.EqualFold(filepath.Clean(strings.TrimSpace(target)), flat) {
+		return false
+	}
+	_, err := os.Lstat(flat)
+	return os.IsNotExist(err)
 }
 
 func reasonixWindowsStaleIcon(iconLocation, launcher string) bool {
@@ -228,8 +245,17 @@ func reasonixWindowsStaleIcon(iconLocation, launcher string) bool {
 		return false
 	}
 	parts := strings.Split(rel, string(filepath.Separator))
-	return len(parts) == 3 && strings.EqualFold(parts[0], "versions") &&
-		strings.EqualFold(parts[2], "reasonix-desktop.exe")
+	if len(parts) == 3 && strings.EqualFold(parts[0], "versions") &&
+		strings.EqualFold(parts[2], "reasonix-desktop.exe") {
+		return true
+	}
+	// Legacy root-level icon: stale only when the binary is gone, so a live
+	// flat install keeps its working icon.
+	if len(parts) == 1 && strings.EqualFold(parts[0], "reasonix-desktop.exe") {
+		_, err := os.Lstat(filepath.Clean(iconPath))
+		return os.IsNotExist(err)
+	}
+	return false
 }
 
 func notifyWindowsShortcutChanged(path string) {
