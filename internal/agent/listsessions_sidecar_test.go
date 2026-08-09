@@ -170,6 +170,81 @@ func TestListSessionsRecordsEmptyLegacySessionOnce(t *testing.T) {
 	}
 }
 
+func TestListSessionsRepairsPreviouslyCachedZeroWhenReadable(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "20260101-000000-deepseek-chat.jsonl")
+	writeSessionFile(t, path, []provider.Message{
+		{Role: provider.RoleUser, Content: "recovered question"},
+		{Role: provider.RoleAssistant, Content: "recovered answer"},
+	})
+	if err := SaveBranchMeta(path, BranchMeta{
+		ID:            BranchID(path),
+		Turns:         0,
+		SchemaVersion: branchMetaCountsInitialVersion,
+	}); err != nil {
+		t.Fatalf("SaveBranchMeta: %v", err)
+	}
+
+	infos, err := ListSessions(dir)
+	if err != nil {
+		t.Fatalf("ListSessions: %v", err)
+	}
+	if len(infos) != 1 || infos[0].Turns != 1 || infos[0].Preview != "recovered question" {
+		t.Fatalf("recovered session was not restored to the listing: %+v", infos)
+	}
+	meta, ok, err := LoadBranchMeta(path)
+	if err != nil || !ok {
+		t.Fatalf("LoadBranchMeta: ok=%v err=%v", ok, err)
+	}
+	if meta.SchemaVersion != BranchMetaCountsVersion || meta.Turns != 1 || meta.Preview != "recovered question" {
+		t.Fatalf("recovered listing metadata was not repaired: %+v", meta)
+	}
+}
+
+func TestListSessionsValidatesOldRecordedEmptyOnce(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "20260101-000000-deepseek-chat.jsonl")
+	writeSessionFile(t, path, []provider.Message{
+		{Role: provider.RoleSystem, Content: "system prompt"},
+		{Role: provider.RoleAssistant, Content: "a greeting with no user turn"},
+	})
+	if err := SaveBranchMeta(path, BranchMeta{
+		ID:            BranchID(path),
+		Turns:         0,
+		SchemaVersion: branchMetaCountsInitialVersion,
+	}); err != nil {
+		t.Fatalf("SaveBranchMeta: %v", err)
+	}
+
+	infos, err := ListSessions(dir)
+	if err != nil {
+		t.Fatalf("ListSessions (migration): %v", err)
+	}
+	if len(infos) != 0 {
+		t.Fatalf("validated empty session must stay hidden; got %+v", infos)
+	}
+	meta, ok, err := LoadBranchMeta(path)
+	if err != nil || !ok {
+		t.Fatalf("LoadBranchMeta: ok=%v err=%v", ok, err)
+	}
+	if meta.SchemaVersion != BranchMetaCountsVersion || meta.Turns != 0 {
+		t.Fatalf("empty session was not stamped as validated: %+v", meta)
+	}
+
+	// Current-version zero counts are authoritative. Making the artifact invalid
+	// after migration must not cause the listing path to decode it again.
+	if err := os.WriteFile(path, []byte("not valid json\n"), 0o600); err != nil {
+		t.Fatalf("replace session with corrupt content: %v", err)
+	}
+	infos, err = ListSessions(dir)
+	if err != nil {
+		t.Fatalf("ListSessions (steady state): %v", err)
+	}
+	if len(infos) != 0 {
+		t.Fatalf("validated empty session was unexpectedly re-probed: %+v", infos)
+	}
+}
+
 func TestListSessionsKeepsUnreadableNonEmptySessionsVisible(t *testing.T) {
 	for _, tc := range []struct {
 		name       string
@@ -188,7 +263,7 @@ func TestListSessionsKeepsUnreadableNonEmptySessionsVisible(t *testing.T) {
 				if err := SaveBranchMeta(path, BranchMeta{
 					ID:            BranchID(path),
 					Turns:         0,
-					SchemaVersion: BranchMetaCountsVersion,
+					SchemaVersion: branchMetaCountsInitialVersion,
 				}); err != nil {
 					t.Fatalf("SaveBranchMeta: %v", err)
 				}
@@ -205,14 +280,12 @@ func TestListSessionsKeepsUnreadableNonEmptySessionsVisible(t *testing.T) {
 				t.Fatalf("unexpected corrupt-session listing: %+v", infos[0])
 			}
 
-			if !tc.cachedZero {
-				meta, ok, err := LoadBranchMeta(path)
-				if err != nil {
-					t.Fatalf("LoadBranchMeta: %v", err)
-				}
-				if ok && meta.SchemaVersion >= BranchMetaCountsVersion {
-					t.Fatalf("unreadable session was incorrectly stamped authoritative: %+v", meta)
-				}
+			meta, ok, err := LoadBranchMeta(path)
+			if err != nil {
+				t.Fatalf("LoadBranchMeta: %v", err)
+			}
+			if ok && meta.SchemaVersion >= BranchMetaCountsVersion {
+				t.Fatalf("unreadable session was incorrectly stamped authoritative: %+v", meta)
 			}
 		})
 	}

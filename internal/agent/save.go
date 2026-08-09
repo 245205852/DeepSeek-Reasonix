@@ -2212,11 +2212,11 @@ func ListSessions(dir string) ([]SessionInfo, error) {
 	for _, session := range ordered {
 		preview, turns := session.Preview, session.Turns
 		var previewErr error
-		if session.SchemaVersion < BranchMetaCountsVersion {
+		if sessionListingCountsNeedRefresh(session.SchemaVersion, turns) {
 			// The sidecar's counts weren't recorded from content (a legacy session
-			// from before they were persisted). Decode the .jsonl once, then backfill
-			// + stamp the sidecar so every later listing is O(1) — and so a genuinely
-			// empty session is recorded once instead of being re-decoded forever.
+			// from before they were persisted), or an old zero may have swallowed a
+			// decode error. Decode once, then backfill + stamp the sidecar so every
+			// later listing is O(1) and a recovered session becomes visible again.
 			preview, turns, previewErr = previewSessionWithError(session.Path)
 			if previewErr == nil {
 				// Best-effort: a failure here just means we decode again next time.
@@ -2224,13 +2224,7 @@ func ListSessions(dir string) ([]SessionInfo, error) {
 			}
 		}
 		if turns == 0 {
-			// A previous build may already have mistaken a malformed non-empty
-			// transcript for an authoritative empty session. Re-probe such artifacts
-			// before hiding them so users can see and recover damaged data (#5841).
 			hasData := sessionArtifactsHaveContent(session.Path)
-			if previewErr == nil && session.SchemaVersion >= BranchMetaCountsVersion && hasData {
-				_, _, previewErr = previewSessionWithError(session.Path)
-			}
 			if previewErr != nil && hasData {
 				preview = "Session may be corrupted — " + filepath.Base(session.Path)
 				out = append(out, sessionInfoFromOrder(session, preview, 0))

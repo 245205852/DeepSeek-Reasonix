@@ -29,6 +29,13 @@ func sessionArtifactsHaveContent(path string) bool {
 	return sessionEventLogSize(path) > 0
 }
 
+func sessionListingCountsNeedRefresh(schemaVersion, turns int) bool {
+	if schemaVersion < branchMetaCountsInitialVersion {
+		return true
+	}
+	return turns == 0 && schemaVersion < BranchMetaCountsVersion
+}
+
 func previewSessionWithError(path string) (string, int, error) {
 	msgs, _, _, err := loadSessionMessages(path)
 	if err != nil {
