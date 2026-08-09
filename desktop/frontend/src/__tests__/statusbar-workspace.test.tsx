@@ -209,6 +209,24 @@ console.log("\nstatus bar workspace");
     lastTurnOutputEstimated: true,
   });
   ok(estimated.includes("≈20 t/s"), "fallback TPS is visibly marked as estimated");
+
+  const perRequest = renderStatusBar({
+    items: ["turn_tps"],
+    lastRequestTps: 35,
+    lastTurnOutputTokens: 100,
+    lastTurnModelMs: 5_000,
+  });
+  ok(perRequest.includes("35 t/s"), "per-request TPS wins over the completed turn value");
+
+  const slowRequest = renderStatusBar({
+    items: ["turn_tps"], lastRequestTps: 1 / 3, lastTurnOutputTokens: 100, lastTurnModelMs: 5_000,
+  });
+  ok(slowRequest.includes("&lt;1 t/s") && !slowRequest.includes("20 t/s"), "sub-one request TPS replaces the stale turn fallback");
+
+  const unavailable = renderStatusBar({
+    items: ["turn_tps"], lastRequestTps: null, lastTurnOutputTokens: 100, lastTurnModelMs: 5_000,
+  });
+  ok(unavailable.includes('stat__value--empty">-</b>') && !unavailable.includes("20 t/s"), "unmeasured latest requests clear the stale turn fallback");
 }
 
 {
