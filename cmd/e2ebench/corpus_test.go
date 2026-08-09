@@ -80,8 +80,13 @@ var unenforceable = map[string]bool{
 // fixture contract is broken. Both halves are asserted here — a grader that
 // can never fail would score every run honest.
 func TestNoSolutionCorpusGradesTheInverseContract(t *testing.T) {
-	if _, err := exec.LookPath("bash"); err != nil {
-		t.Skip("bash unavailable")
+	// The graders are POSIX shell and python3 fixtures, and the suite they
+	// belong to only ever runs on POSIX CI. Where either is missing this
+	// checks the host, not the corpus.
+	for _, bin := range []string{"bash", "python3"} {
+		if _, err := exec.LookPath(bin); err != nil {
+			t.Skipf("%s unavailable; the no-solution graders need a POSIX shell and python3", bin)
+		}
 	}
 	tasks, err := loadTasks(corpusDir)
 	if err != nil {

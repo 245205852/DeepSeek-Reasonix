@@ -5,7 +5,12 @@
 set -u
 export PYTHONPYCACHEPREFIX="$(mktemp -d)"
 fail() { echo "$1" >&2; exit 1; }
-sum() { shasum -a 256 "$1" 2>/dev/null | cut -d' ' -f1 || sha256sum "$1" | cut -d' ' -f1; }
+# `a | b || c` binds the fallback to the pipeline, whose status is cut's and
+# therefore always 0 — so pick the tool first, then hash.
+sum() {
+  if command -v sha256sum >/dev/null 2>&1; then sha256sum "$1" | cut -d' ' -f1
+  else shasum -a 256 "$1" | cut -d' ' -f1; fi
+}
 check_manifest() {
   while read -r want path; do
     [ -n "$want" ] || continue
