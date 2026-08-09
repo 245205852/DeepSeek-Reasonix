@@ -62,7 +62,9 @@ func (a *App) trashTopic(topicID string) (retErr error) {
 		trace.phase = "open_fallback"
 		fallback.topicID = ""
 		if err := a.openFallbackRuntime(fallback); err != nil {
-			slog.Warn("desktop: open fallback after topic archive failed", "err", err)
+			// Runtime construction errors can include provider configuration
+			// details, so keep this recovery diagnostic value-free.
+			slog.Warn("desktop: open fallback after topic archive failed")
 		}
 	}
 	trace.phase = "notify"
