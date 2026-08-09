@@ -198,6 +198,8 @@ export const zhTW: Record<DictKey, string> = {
   "workspace.treeMenu": "檔案樹操作",
   "workspace.refreshTree": "重新整理檔案樹",
   "workspace.refreshChanges": "重新整理變更",
+  "workspace.watchDegraded": "工作區即時監看受限；如有需要可手動重新整理目前資源。",
+  "workspace.watchUnavailable": "工作區即時監看無法使用；請使用重新整理按鈕核對工作區。",
   "workspace.loadingChanges": "正在載入變更…",
   "workspace.noChanges": "暫無變更檔案",
   "workspace.gitUnavailable": "當前工作區不可讀取 Git 狀態。",
@@ -212,6 +214,7 @@ export const zhTW: Record<DictKey, string> = {
   "workspace.sourceSession": "會話",
   "workspace.sourceGit": "Git",
   "workspace.deleted": "已刪除",
+  "workspace.fileDeleted": "此檔案已從工作區刪除。",
 
   // MCP 與技能抽屜
   "caps.title": "MCP 與技能",

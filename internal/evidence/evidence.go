@@ -1605,6 +1605,31 @@ func ReceiptFromToolCall(toolName string, args json.RawMessage, success bool, re
 	return r
 }
 
+// ToolCallPaths returns the bounded, structurally declared file paths in a
+// tool call. It intentionally does not attempt to parse shell scripts; callers
+// must treat bash and unknown targets as allPaths when invalidation is needed.
+func ToolCallPaths(args json.RawMessage) []string {
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(args, &fields); err != nil {
+		return nil
+	}
+	paths := extractPaths(fields)
+	seen := make(map[string]struct{}, len(paths))
+	out := make([]string, 0, len(paths))
+	for _, path := range paths {
+		path = strings.TrimSpace(path)
+		if path == "" {
+			continue
+		}
+		if _, ok := seen[path]; ok {
+			continue
+		}
+		seen[path] = struct{}{}
+		out = append(out, path)
+	}
+	return out
+}
+
 // ToolCallMutates is the delivery profile's conservative state-change
 // classifier. Trusted read-only tools never mutate. Meta tools that only
 // delegate (task, run_skill, review, …) never mutate by themselves — real

@@ -119,6 +119,7 @@ import {
 import type { InvocationMetadataMap, StructuredInvocationSubmit } from "./lib/invocationDisplay";
 import { formatSelectionReference, type SelectedTextInsertRequest } from "./lib/selectedTextContext";
 import { workspaceTreeVisitId } from "./lib/workspaceTreeMemory";
+import { reconcileWorkspaceRefresh } from "./lib/workspaceRefreshStore";
 import { resolveTaskMonitorSession } from "./lib/taskMonitorNavigation";
 import {
   composerProfileFromMeta,
@@ -1225,8 +1226,8 @@ export default function App() {
   const workspaceScopeActiveTabRef = useRef(activeTabId);
   const [workspaceControllerEpoch, setWorkspaceControllerEpoch] = useState(0);
   workspaceScopeActiveTabRef.current = activeTabId;
-  // Bump dockRefreshKey after each turn so WorkspacePanel/ContextPanel re-fetch
-  // workspace changes, git history, and session metadata after AI tool writes.
+  // ContextPanel still uses this turn sequence for usage/session metadata;
+  // WorkspacePanel listens to resource-level workspace revisions instead.
   useEffect(() => {
     startTerminalEventBridge();
     const unsub = onEvent((e) => {
@@ -2606,6 +2607,7 @@ export default function App() {
       if (timer !== undefined) window.clearTimeout(timer);
       timer = undefined;
       void refreshTabMetas();
+      if (activeTabId) void reconcileWorkspaceRefresh(activeTabId, workspaceScopeKey);
       schedule();
     };
     const onVisibilityChange = () => {
@@ -2622,7 +2624,7 @@ export default function App() {
       if (timer !== undefined) window.clearTimeout(timer);
       document.removeEventListener("visibilitychange", onVisibilityChange);
     };
-  }, [refreshTabMetas]);
+  }, [activeTabId, refreshTabMetas, workspaceScopeKey]);
 
   useEffect(() => {
     return onProjectTreeChanged(() => {
@@ -5350,7 +5352,6 @@ export default function App() {
                     onFileTreeRefresh={refreshComposerFileRefs}
                     onSessionRevertCommitted={handleSessionRevertCommitted}
                     onOpenInTerminal={openTerminalForPath}
-                    refreshKey={dockRefreshKey}
                     initialViewMode={rightDockMode === "changed" ? "changed" : "files"}
                     showViewTabs={false}
                     creationMode={sidebarCreation}

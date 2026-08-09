@@ -107,6 +107,8 @@ const (
 	// host-local only — never persisted or sent to the model. Appended last to
 	// keep earlier Kind values wire-stable; older clients ignore unknown kinds.
 	StreamAttempt
+	// WorkspaceChanged reports a debounced host-side workspace mutation.
+	WorkspaceChanged
 	// KindCount is a sentinel one past the last real Kind. New event kinds must
 	// be inserted above it so completeness tests cover them automatically.
 	KindCount
@@ -222,6 +224,10 @@ type Tool struct {
 	// Execution is optional local shell metadata (ToolResult). Never sent to
 	// model providers; omitempty keeps old wire readers compatible.
 	Execution *ShellExecution
+	// Workspace mutation metadata is host-only and is omitted from eventwire.
+	WorkspaceMutation bool
+	WorkspacePaths    []string
+	WorkspaceAllPaths bool
 }
 
 // ShellExecution mirrors tool.ShellExecution for event sinks without importing
@@ -534,6 +540,37 @@ type Event struct {
 	RetryMax        int                       // Retrying: total attempts before giving up
 	RetryScope      RetryScope                // Retrying: optional "headers" | "stream"; empty for older emitters
 	StreamAttempt   StreamAttemptInfo         // StreamAttempt lifecycle
+	Workspace       *WorkspaceChangedPayload  // WorkspaceChanged (host-local)
+}
+
+type WorkspaceWatchState string
+
+const (
+	WorkspaceWatchActive      WorkspaceWatchState = "active"
+	WorkspaceWatchDegraded    WorkspaceWatchState = "degraded"
+	WorkspaceWatchUnavailable WorkspaceWatchState = "unavailable"
+)
+
+type WorkspaceRevision struct {
+	Content     uint64 `json:"content"`
+	Tree        uint64 `json:"tree"`
+	WorkingTree uint64 `json:"workingTree"`
+	GitMeta     uint64 `json:"gitMeta"`
+	Session     uint64 `json:"session"`
+}
+
+type WorkspacePathChange struct {
+	Path    string `json:"path"`
+	OldPath string `json:"oldPath,omitempty"`
+	Op      string `json:"op"`
+}
+
+type WorkspaceChangedPayload struct {
+	Revisions  WorkspaceRevision
+	Changes    []WorkspacePathChange
+	AllPaths   bool
+	Source     string
+	WatchState WorkspaceWatchState
 }
 
 // ReadinessAuditSink is an optional sink capability. Sinks that do not care

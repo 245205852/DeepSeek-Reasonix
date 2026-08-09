@@ -1580,6 +1580,14 @@ func (s *tabEventSink) Emit(e event.Event) {
 	}
 	tabID, app := s.binding()
 	if app != nil {
+		if e.Kind == event.ToolResult {
+			app.workspaceChangedFromTool(tabID, e.Tool)
+		}
+		if e.Kind == event.TurnDone {
+			// Keep the legacy completion as a cheap missed-event safety net. The
+			// hub owns the actual resource invalidation and coalesces this probe.
+			app.reconcileWorkspaceForTab(tabID)
+		}
 		switch e.Kind {
 		case event.TurnStarted:
 			s.resetDisplayTurn()
@@ -3266,6 +3274,9 @@ func (a *App) closeTab(tabID string, allowDetach bool) error {
 	closeCtrl := tab.Ctrl
 	closeSink := tab.sink
 	a.mu.Unlock()
+	if a.workspaceHub != nil {
+		a.workspaceHub.reconcileRoots()
+	}
 
 	// Tear down outside App.mu while retaining the lifecycle barrier acquired
 	// before the tab binding was removed.

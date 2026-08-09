@@ -2950,6 +2950,8 @@ type toolOutcome struct {
 	resolvedName     string
 	capabilityID     string
 	resolvedReadOnly bool
+	resolvedArgs     json.RawMessage
+	executed         bool
 	// execution is local shell metadata (optional). Provider messages strip it
 	// via ModelMessages; UI/event sinks surface it on ToolResult cards.
 	execution *tool.ShellExecution

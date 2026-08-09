@@ -46,6 +46,26 @@ func TestToWireStreamAttemptJSON(t *testing.T) {
 	}
 }
 
+func TestToWireWorkspaceChangedKeepsBoundedEmptyArrays(t *testing.T) {
+	w := ToWire(event.Event{Kind: event.WorkspaceChanged, Workspace: &event.WorkspaceChangedPayload{
+		Revisions:  event.WorkspaceRevision{Content: 4, Tree: 2, WorkingTree: 3, GitMeta: 1, Session: 7},
+		WatchState: event.WorkspaceWatchDegraded,
+		Source:     "reconcile",
+	}})
+	if w.Workspace == nil || w.Workspace.Changes == nil {
+		t.Fatalf("workspace payload/changes must be non-nil: %+v", w.Workspace)
+	}
+	b, err := json.Marshal(w)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{`"kind":"workspace_changed"`, `"changes":[]`, `"watchState":"degraded"`, `"session":7`} {
+		if !strings.Contains(string(b), want) {
+			t.Fatalf("workspace JSON = %s, missing %s", b, want)
+		}
+	}
+}
+
 func TestToWireNoticeCarriesCode(t *testing.T) {
 	w := ToWire(event.Event{Kind: event.Notice, Level: event.LevelInfo, Code: event.NoticeCodeFinalReadiness, Text: "readiness copy"})
 	b, err := json.Marshal(w)

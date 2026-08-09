@@ -312,6 +312,40 @@ func TestExecuteBatchStampsToolResultTimestamps(t *testing.T) {
 	}
 }
 
+func TestExecuteBatchMarksOnlyExecutedWritersForWorkspaceRefresh(t *testing.T) {
+	reg := tool.NewRegistry()
+	reg.Add(fakeTool{name: "write_file"})
+	reg.Add(fakeTool{name: "read_file", readOnly: true})
+	sink := &recordSink{}
+	a := New(nil, reg, NewSession(""), Options{}, sink)
+	a.executeBatch(context.Background(), []provider.ToolCall{
+		{Name: "write_file", Arguments: `{"path":"pkg/main.go","content":"x"}`},
+		{Name: "read_file", Arguments: `{"path":"pkg/main.go"}`},
+	})
+	results := sink.kinds(event.ToolResult)
+	if len(results) != 2 {
+		t.Fatalf("got %d results, want 2", len(results))
+	}
+	if !results[0].Tool.WorkspaceMutation || len(results[0].Tool.WorkspacePaths) != 1 || results[0].Tool.WorkspacePaths[0] != "pkg/main.go" {
+		t.Fatalf("writer metadata = %+v", results[0].Tool)
+	}
+	if results[1].Tool.WorkspaceMutation {
+		t.Fatalf("read-only call was marked as mutation: %+v", results[1].Tool)
+	}
+}
+
+func TestExecuteBatchMarksFailedWriterForWorkspaceRefresh(t *testing.T) {
+	reg := tool.NewRegistry()
+	reg.Add(fakeTool{name: "write_file", err: errors.New("partial write")})
+	sink := &recordSink{}
+	a := New(nil, reg, NewSession(""), Options{}, sink)
+	a.executeBatch(context.Background(), []provider.ToolCall{{Name: "write_file", Arguments: `{"path":"partial.go"}`}})
+	results := sink.kinds(event.ToolResult)
+	if len(results) != 1 || !results[0].Tool.WorkspaceMutation {
+		t.Fatalf("failed writer did not invalidate workspace: %+v", results)
+	}
+}
+
 func TestExecuteBatchCancelledCallsCarryNoTimestamps(t *testing.T) {
 	reg := tool.NewRegistry()
 	reg.Add(fakeTool{name: "a", readOnly: true})

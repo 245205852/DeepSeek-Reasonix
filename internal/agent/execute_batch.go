@@ -318,6 +318,20 @@ func (a *Agent) executeBatch(ctx context.Context, calls []provider.ToolCall) bat
 		if startedAt[i] > 0 {
 			tr.StartedAt = startedAt[i]
 			tr.EndedAt = startedAt[i] + durations[i]
+			if o.executed && workspaceCallMutates(c, o, readOnly) {
+				tr.WorkspaceMutation = true
+				pathArgs := json.RawMessage(c.Arguments)
+				if len(o.resolvedArgs) > 0 {
+					pathArgs = o.resolvedArgs
+				}
+				tr.WorkspacePaths = evidence.ToolCallPaths(pathArgs)
+				// Shell commands and opaque/proxy targets cannot be safely
+				// attributed to a path. Let the desktop hub coalesce them into
+				// one bounded all-paths invalidation instead.
+				if c.Name == "bash" || len(tr.WorkspacePaths) == 0 {
+					tr.WorkspaceAllPaths = true
+				}
+			}
 		}
 		a.sink.Emit(event.Event{Kind: event.ToolResult, Tool: tr})
 		if o.truncated && o.truncMsg != "" {
@@ -346,6 +360,19 @@ func (a *Agent) executeBatch(ctx context.Context, calls []provider.ToolCall) bat
 		recoveryStopTurn:   recoveryBatchStop,
 		recoveryStopReason: recoveryStopReason,
 	}
+}
+
+func workspaceCallMutates(call provider.ToolCall, outcome toolOutcome, readOnly bool) bool {
+	if call.ResolvedReadOnly != nil {
+		readOnly = *call.ResolvedReadOnly
+	}
+	if outcome.resolved {
+		readOnly = outcome.resolvedReadOnly
+	}
+	if outcome.resolved && !outcome.resolvedReadOnly {
+		return true
+	}
+	return evidence.ToolCallMutates(call.Name, json.RawMessage(call.Arguments), readOnly)
 }
 
 // batchCallIsMutatingFailure reports whether a finished call was a mutation
