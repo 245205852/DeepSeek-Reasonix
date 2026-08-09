@@ -293,12 +293,17 @@ type DesktopConfig struct {
 	CheckUpdates            *bool    `toml:"check_updates"`              // startup update checks; nil keeps the default enabled
 	// UpdateChannel is a legacy compatibility field. It is accepted on read but
 	// ignored and omitted from future canonical writes.
-	UpdateChannel     string   `toml:"update_channel"`
-	Telemetry         *bool    `toml:"telemetry"`          // anonymous launch ping plus scrubbed next-launch native crash diagnostics; nil keeps the default enabled
-	Metrics           *bool    `toml:"metrics"`            // aggregate desktop metrics (anonymous signal/bucket counts, including lifecycle health; no content); nil keeps the default enabled
-	ProviderAccess    []string `toml:"provider_access"`    // desktop-only list of provider entries shown in Settings > Model > Access
-	ExpandThinking    bool     `toml:"expand_thinking"`    // true = show reasoning text expanded by default; false = collapsed
-	ConversationWidth string   `toml:"conversation_width"` // standard|full; max transcript width; empty = standard
+	UpdateChannel  string   `toml:"update_channel"`
+	Telemetry      *bool    `toml:"telemetry"`       // anonymous launch ping plus scrubbed next-launch native crash diagnostics; nil keeps the default enabled
+	Metrics        *bool    `toml:"metrics"`         // aggregate desktop metrics (anonymous signal/bucket counts, including lifecycle health; no content); nil keeps the default enabled
+	ProviderAccess []string `toml:"provider_access"` // desktop-only list of provider entries shown in Settings > Model > Access
+	// ExpandThinking is retained as a compatibility alias for older desktop
+	// builds. New code should use ReasoningDisplayMode.
+	ExpandThinking bool `toml:"expand_thinking"` // legacy: true = auto-follow, false = summary
+	// ReasoningDisplayMode controls desktop-only reasoning presentation. An
+	// empty value means the user has not explicitly selected the new setting.
+	ReasoningDisplayMode string `toml:"reasoning_display_mode"`
+	ConversationWidth    string `toml:"conversation_width"` // standard|full; max transcript width; empty = standard
 }
 
 // DesktopExternalOpener returns the user-selected external opener id. The
@@ -500,6 +505,37 @@ func (c *Config) DesktopDisplayMode() string {
 		return "compact"
 	default:
 		return "standard"
+	}
+}
+
+// DesktopReasoningDisplayMode normalizes the desktop reasoning presentation.
+// A valid explicit value wins over the legacy expand_thinking flag. Missing or
+// unknown values preserve the old explicit expand preference and otherwise
+// default to the current collapsed-summary experience.
+func (c *Config) DesktopReasoningDisplayMode() string {
+	switch strings.ToLower(strings.TrimSpace(c.Desktop.ReasoningDisplayMode)) {
+	case "hidden":
+		return "hidden"
+	case "summary":
+		return "summary"
+	case "auto":
+		return "auto"
+	}
+	if c.Desktop.ExpandThinking {
+		return "auto"
+	}
+	return "summary"
+}
+
+// DesktopReasoningDisplayModeExplicit reports whether the new enum was
+// explicitly stored and valid. Invalid future values must not block the
+// frontend from applying the legacy localStorage precedence.
+func (c *Config) DesktopReasoningDisplayModeExplicit() bool {
+	switch strings.ToLower(strings.TrimSpace(c.Desktop.ReasoningDisplayMode)) {
+	case "hidden", "summary", "auto":
+		return true
+	default:
+		return false
 	}
 }
 

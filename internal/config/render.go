@@ -129,7 +129,10 @@ func RenderTOMLForScope(c *Config, scope RenderScope) string {
 		if c.Desktop.ProviderAccess != nil {
 			fmt.Fprintf(&b, "provider_access = %s   # desktop settings: providers shown on Settings > Model > Access\n", renderStringArray(c.Desktop.ProviderAccess))
 		}
-		fmt.Fprintf(&b, "expand_thinking = %v   # desktop: show reasoning text expanded by default; false = collapsed\n", c.Desktop.ExpandThinking)
+		fmt.Fprintf(&b, "expand_thinking = %v   # desktop: legacy reasoning display alias; use reasoning_display_mode\n", c.Desktop.ExpandThinking)
+		if strings.TrimSpace(c.Desktop.ReasoningDisplayMode) != "" {
+			fmt.Fprintf(&b, "reasoning_display_mode = %q   # desktop: hidden|summary|auto reasoning presentation\n", c.DesktopReasoningDisplayMode())
+		}
 		fmt.Fprintf(&b, "display_mode = %q   # desktop: standard|compact transcript display mode\n", c.DesktopDisplayMode())
 		if width := c.DesktopConversationWidth(); width == "full" {
 			fmt.Fprintf(&b, "conversation_width = %q   # desktop: standard|full transcript width; empty = standard\n", width)

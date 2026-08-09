@@ -15,6 +15,7 @@ import { Tooltip } from "./Tooltip";
 import { useCollapseAnimation } from "../lib/useCollapseAnimation";
 import { displayReasoningText, STREAMING_REASONING_WINDOW_STEP_CHARS, STREAMING_REASONING_WINDOW_STEP_LINES } from "../lib/reasoningDisplay";
 import { ReasoningSummary } from "./ReasoningSummary";
+import { useReasoningDisplayMode } from "../lib/reasoningDisplayPreference";
 import { historyEntryIdForItemId } from "../lib/transcriptRows";
 import { stripMemoryCompilerExecution } from "../lib/memoryCompilerDisplay";
 import { visibleTranscriptMemoryCitations } from "../lib/memoryCitationVisibility";
@@ -867,13 +868,15 @@ function ReasoningPanel({
   truncateStreamingReasoning: boolean;
 }) {
   const t = useT();
-  // Thinking streams in before the answer — show it live while the model is still
-  // working, then it stays available behind the toggle once the answer arrives.
-  const [reasoningOpen, setReasoningOpen] = useState((expandWhileStreaming && item.streaming) || defaultExpanded);
+  const displayMode = useReasoningDisplayMode();
+  const isReasoningRunning = item.streaming && !item.reasoningComplete;
+  const followsWhileStreaming = displayMode === "auto" || expandWhileStreaming;
+  const [reasoningOpen, setReasoningOpen] = useState(defaultExpanded || (followsWhileStreaming && isReasoningRunning));
   const reasoningBodyRef = useRef<HTMLDivElement>(null);
   const userOverridden = useRef(false);
   const prevStreamingRef = useRef(item.streaming);
   const prevReasoningCompleteRef = useRef(item.reasoningComplete ?? false);
+  const prevDisplayModeRef = useRef(displayMode);
 
   // Follow the current display mode while streaming unless the user manually
   // toggled this message; auto-close at stream end for untouched messages.
@@ -886,12 +889,18 @@ function ReasoningPanel({
     const nowRC = item.reasoningComplete ?? false;
     prevReasoningCompleteRef.current = nowRC;
 
-    if (nowStreaming) {
+    const modeChanged = prevDisplayModeRef.current !== displayMode;
+    prevDisplayModeRef.current = displayMode;
+
+    if (modeChanged) {
+      userOverridden.current = false;
+      setReasoningOpen(defaultExpanded || (followsWhileStreaming && !nowRC));
+    } else if (nowStreaming) {
       if (!wasStreaming) userOverridden.current = false;
       if (defaultExpanded) {
         setReasoningOpen(true);
       } else if (!userOverridden.current) {
-        setReasoningOpen(expandWhileStreaming && !nowRC);
+        setReasoningOpen(followsWhileStreaming && !nowRC);
       }
     } else if (nowRC && !wasRC) {
       // Reasoning just finished — auto-close while we wait for text.
@@ -904,13 +913,14 @@ function ReasoningPanel({
         setReasoningOpen(false);
       }
     }
-  }, [item.streaming, item.reasoningComplete, defaultExpanded, expandWhileStreaming]);
+  }, [displayMode, item.streaming, item.reasoningComplete, defaultExpanded, followsWhileStreaming]);
 
   const toggleReasoning = () => {
     userOverridden.current = true;
     setReasoningOpen((v) => !v);
   };
-  const isReasoningRunning = item.streaming && !item.reasoningComplete;
+  useCollapseAnimation(reasoningBodyRef, reasoningOpen);
+  if (displayMode === "hidden" || displayMode === "pending") return null;
   const visibleReasoning = reasoningOpen
     ? displayReasoningText(item.reasoning, {
         streaming: isReasoningRunning,
@@ -919,8 +929,6 @@ function ReasoningPanel({
     : "";
   const label = isReasoningRunning ? t("msg.thinkingRunning") : t("msg.thinking");
   const meta = isReasoningRunning ? "" : reasoningDurationLabel(item.reasoningDurationMs, t);
-  useCollapseAnimation(reasoningBodyRef, reasoningOpen);
-
   return (
     <div className="reasoning">
       <button
@@ -956,9 +964,11 @@ export const AssistantMessage = memo(function AssistantMessage({
   truncateStreamingReasoning?: boolean;
   creationMode?: boolean;
 }) {
+  const reasoningDisplayMode = useReasoningDisplayMode();
   const hasText = item.streaming || item.text.trim() !== "";
   const processOnly = Boolean(item.reasoning) && !hasText;
   const processWithText = Boolean(item.reasoning) && hasText;
+  if (processOnly && (reasoningDisplayMode === "hidden" || reasoningDisplayMode === "pending")) return null;
   return (
     <div className={`msg msg--assistant${processOnly ? " msg--process-only" : ""}${processWithText ? " msg--process-with-text" : ""}`} data-history-restore={item.id.startsWith("h") ? "" : undefined} data-entrance={item.id}>
       {item.reasoning && (

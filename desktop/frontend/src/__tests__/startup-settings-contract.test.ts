@@ -106,19 +106,21 @@ ok(
   "GLM reasoning protocol is localized in every supported locale",
 );
 ok(
-  settingsSource.includes('settings.reasoningSummary') &&
-    settingsSource.includes('settings.reasoningSummary.on') &&
-    settingsSource.includes('setReasoningSummaryEnabled(enabled)'),
-  "General settings exposes live reasoning-summary options",
+  settingsSource.includes('settings.reasoningDisplay') &&
+    settingsSource.includes('settings.reasoningDisplay.hidden') &&
+    settingsSource.includes('settings.reasoningDisplay.auto') &&
+    settingsSource.includes('app.SetReasoningDisplayMode(mode)'),
+  "General settings exposes live three-mode reasoning display options",
 );
 ok(
   [enLocaleSource, zhLocaleSource, zhTWLocaleSource].every((source) =>
-    source.includes('"settings.reasoningSummary"') &&
-    source.includes('"settings.reasoningSummaryHint"') &&
-    source.includes('"settings.reasoningSummary.on"') &&
-    source.includes('"settings.reasoningSummary.off"'),
+    source.includes('"settings.reasoningDisplay"') &&
+    source.includes('"settings.reasoningDisplayHint"') &&
+    source.includes('"settings.reasoningDisplay.hidden"') &&
+    source.includes('"settings.reasoningDisplay.summary"') &&
+    source.includes('"settings.reasoningDisplay.auto"'),
   ),
-  "reasoning-summary switch labels are localized in every supported locale",
+  "reasoning-display labels are localized in every supported locale",
 );
 ok(
   !/mockPreset\("deepseek-anthropic",/.test(bridgeSource),

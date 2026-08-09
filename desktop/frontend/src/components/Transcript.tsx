@@ -21,6 +21,7 @@ import {
   buildTranscriptRows,
   buildTurnModels,
   estimateTranscriptRowSize,
+  foldMapWithReasoningOpen,
   foldMapWithToggle,
   foldSegmentStates,
   historyEntryIdForRow,
@@ -43,6 +44,7 @@ import { acquireMarkdownWorkerClient, releaseMarkdownWorkerClient } from "../lib
 import { noteTranscriptRowCounts } from "../lib/sessionDiagnostics";
 import { Markdown } from "./Markdown";
 import { ReasoningSummary } from "./ReasoningSummary";
+import { useReasoningDisplayMode } from "../lib/reasoningDisplayPreference";
 
 type OpenTurnAction = { turn: number; menu: "summary" | "rewind" };
 
@@ -100,10 +102,10 @@ const LiveAssistantMessage = memo(function LiveAssistantMessage({
   );
 });
 
-function InlineAssistantReasoning({ item }: { item: AssistantItem }) {
+function InlineAssistantReasoning({ item, onManualOpen }: { item: AssistantItem; onManualOpen?: () => void }) {
   const t = useT();
   const live = useContext(LiveStreamContext);
-  const [open, setOpen] = useState(false);
+  const displayMode = useReasoningDisplayMode();
   const shown = live && live.id === item.id
     ? {
         reasoning: live.reasoning,
@@ -111,8 +113,40 @@ function InlineAssistantReasoning({ item }: { item: AssistantItem }) {
         reasoningComplete: live.reasoningComplete,
       }
     : item;
-  const reasoning = shown.reasoning.trim();
   const running = shown.streaming && !shown.reasoningComplete;
+  const [open, setOpen] = useState(displayMode === "auto" && running);
+  const userOverridden = useRef(false);
+  const previousRunning = useRef(running);
+  const previousMode = useRef(displayMode);
+  const reasoning = shown.reasoning.trim();
+  useEffect(() => {
+    const modeChanged = previousMode.current !== displayMode;
+    const wasRunning = previousRunning.current;
+    previousMode.current = displayMode;
+    previousRunning.current = running;
+
+    if (modeChanged) {
+      userOverridden.current = false;
+      setOpen(displayMode === "auto" && running);
+      return;
+    }
+    if (displayMode !== "auto") {
+      return;
+    }
+    if (running && !wasRunning) {
+      userOverridden.current = false;
+      setOpen(true);
+    } else if (!running && wasRunning && !userOverridden.current) {
+      setOpen(false);
+    }
+  }, [displayMode, running]);
+
+  const toggle = useCallback(() => {
+    userOverridden.current = true;
+    if (!open) onManualOpen?.();
+    setOpen(!open);
+  }, [onManualOpen, open]);
+
   if (!reasoning) return null;
   // The outer fold owns this row, so Markdown only mounts while both folds are open.
   const visibleReasoning = open ? displayReasoningText(shown.reasoning, {
@@ -125,7 +159,7 @@ function InlineAssistantReasoning({ item }: { item: AssistantItem }) {
         type="button"
         className="turn-collapse__reasoning-head"
         data-running={running ? "" : undefined}
-        onClick={() => setOpen((v) => !v)}
+        onClick={toggle}
         aria-expanded={open}
       >
         <ProcessBrainIcon size={12} />
@@ -136,7 +170,7 @@ function InlineAssistantReasoning({ item }: { item: AssistantItem }) {
         <div className="turn-collapse__inline-reasoning">
           <Markdown text={visibleReasoning} streaming={running} />
         </div>
-      ) : <ReasoningSummary text={shown.reasoning} streaming={running} onOpen={() => setOpen(true)} />}
+      ) : <ReasoningSummary text={shown.reasoning} streaming={running} onOpen={toggle} />}
     </div>
   );
 }
@@ -592,13 +626,15 @@ export function Transcript({
   const liveHasAnswerText = Boolean(live?.text.trim());
   const liveHasReasoning = Boolean(live?.reasoning);
   const liveReasoningComplete = live?.reasoningComplete;
+  const reasoningDisplayMode = useReasoningDisplayMode();
+  const hideReasoning = reasoningDisplayMode === "hidden" || reasoningDisplayMode === "pending";
   const liveFlags = useMemo<TranscriptLiveFlags>(
     () => (liveId
       ? { id: liveId, hasAnswerText: liveHasAnswerText, hasReasoning: liveHasReasoning, reasoningComplete: liveReasoningComplete }
       : NO_LIVE),
     [liveId, liveHasAnswerText, liveHasReasoning, liveReasoningComplete],
   );
-  const turnModels = useMemo(() => buildTurnModels(items, liveFlags, running), [items, liveFlags, running]);
+  const turnModels = useMemo(() => buildTurnModels(items, liveFlags, running, hideReasoning), [items, liveFlags, running, hideReasoning]);
   const segmentStates = useMemo(() => foldSegmentStates(turnModels), [turnModels]);
 
   const [foldPreference, setFoldPreference] = useState<ProcessFoldPreference>(getProcessFoldPreference);
@@ -617,6 +653,11 @@ export function Transcript({
   const handleFoldToggle = useCallback((segmentKey: string, currentlyOpen: boolean) => {
     setFolds((prev) => foldMapWithToggle(prev, segmentKey, currentlyOpen));
   }, []);
+
+  const handleReasoningManualOpen = useCallback((segmentKey: string) => {
+    const running = segmentStates.find((segment) => segment.key === segmentKey)?.hasRunningWork ?? false;
+    setFolds((prev) => foldMapWithReasoningOpen(prev, segmentKey, running));
+  }, [segmentStates]);
 
   // ── The turn action menu ──────────────────────────────────────────────────
   const [openAction, setOpenAction] = useState<OpenTurnAction | null>(null);
@@ -757,7 +798,7 @@ export function Transcript({
       case "reasoning":
         return (
           <div className="turn-collapse__body">
-            <InlineAssistantReasoning item={row.item} />
+            <InlineAssistantReasoning item={row.item} onManualOpen={() => handleReasoningManualOpen(row.segmentKey)} />
           </div>
         );
       case "tool":

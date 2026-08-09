@@ -2085,6 +2085,8 @@ export interface SettingsView {
   desktopTerminalTheme: string; // "auto" follows app | "dark" | "light"
   closeBehavior: string; // "background" | "quit"
   displayMode: string;   // "standard" | "compact"
+  reasoningDisplayMode: string; // "hidden" | "summary" | "auto"
+  reasoningDisplayModeExplicit?: boolean;
   statusBarStyle: string; // "icon" | "text"
   statusBarItems: string[]; // ordered visible status bar item ids
   defaultToolApprovalMode: ToolApprovalMode | string; // default for newly-created sessions
@@ -2108,6 +2110,8 @@ export interface DesktopStartupSettingsView {
   desktopThemeStyle: string;
   desktopTerminalTheme: string; // "auto" follows app | "dark" | "light"
   displayMode: string;   // "standard" | "compact"
+  reasoningDisplayMode: string; // "hidden" | "summary" | "auto"
+  reasoningDisplayModeExplicit?: boolean;
   statusBarStyle: string; // "icon" | "text"
   statusBarItems: string[]; // ordered visible status bar item ids
   checkUpdates: boolean; // check for new versions on startup

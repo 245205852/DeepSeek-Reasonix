@@ -352,6 +352,25 @@ func (c *Config) SetDesktopDisplayMode(mode string) error {
 	return nil
 }
 
+// SetDesktopReasoningDisplayMode sets the desktop-only reasoning presentation.
+// It does not affect model requests, session persistence, or controller state.
+func (c *Config) SetDesktopReasoningDisplayMode(mode string) error {
+	switch strings.ToLower(strings.TrimSpace(mode)) {
+	case "hidden":
+		c.Desktop.ReasoningDisplayMode = "hidden"
+		c.Desktop.ExpandThinking = false
+	case "summary":
+		c.Desktop.ReasoningDisplayMode = "summary"
+		c.Desktop.ExpandThinking = false
+	case "auto":
+		c.Desktop.ReasoningDisplayMode = "auto"
+		c.Desktop.ExpandThinking = true
+	default:
+		return fmt.Errorf("reasoning display mode %q: must be hidden|summary|auto", mode)
+	}
+	return nil
+}
+
 // SetDesktopStatusBarStyle sets the desktop status bar metric label style.
 // UI-only; it must not affect CLI output or provider-visible request data.
 func (c *Config) SetDesktopStatusBarStyle(style string) error {
@@ -488,12 +507,13 @@ func (c *Config) SetUICloseBehavior(mode string) error {
 	return c.SetDesktopCloseBehavior(mode)
 }
 
-// SetExpandThinking sets whether the desktop reasoning/thinking section is
-// expanded by default. It is desktop-only and must not affect CLI output or
-// provider-visible request data.
+// SetExpandThinking is retained for older desktop callers. New callers should
+// use SetDesktopReasoningDisplayMode.
 func (c *Config) SetExpandThinking(on bool) error {
-	c.Desktop.ExpandThinking = on
-	return nil
+	if on {
+		return c.SetDesktopReasoningDisplayMode("auto")
+	}
+	return c.SetDesktopReasoningDisplayMode("summary")
 }
 
 // SetShowReasoning sets the CLI's default verbose-reasoning preference. When
