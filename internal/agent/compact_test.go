@@ -486,9 +486,9 @@ func TestInterruptedDisplayStaysOutOfCompactionPromptAndProjection(t *testing.T)
 		InterruptedTurn: &provider.InterruptedTurnRecovery{Pending: true},
 	}
 	a := &Agent{}
-	early, kept, fold := a.partitionFoldForProjection([]provider.Message{local})
-	if len(early) != 0 || len(kept) != 0 || len(fold) != 0 {
-		t.Fatalf("compaction partition early=%+v kept=%+v fold=%+v, want display-only output in none of them", early, kept, fold)
+	early, carried, kept, fold := a.partitionFoldForProjection([]provider.Message{local})
+	if len(early) != 0 || len(carried) != 0 || len(kept) != 0 || len(fold) != 0 {
+		t.Fatalf("compaction partition early=%+v carried=%+v kept=%+v fold=%+v, want display-only output in none of them", early, carried, kept, fold)
 	}
 	if transcript := renderTranscript([]provider.Message{local}); transcript != "" {
 		t.Fatalf("local interrupted output leaked into compaction prompt: %q", transcript)

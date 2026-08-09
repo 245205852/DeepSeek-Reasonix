@@ -34,6 +34,7 @@ const (
 	fallbackTokPerChar         = 0.25  // ~4 chars/token, used before any usage is available to calibrate
 	maxPinnedFirstUserTokens   = 1500  // ceiling on pinning the first user turn verbatim; larger first turns (pasted content) stay foldable
 	pinnedFirstUserWindowFrac  = 0.15  // and never pin a first turn worth more than this fraction of the window
+	maxCarriedDigestTokens     = 12000 // ceiling on digests carried verbatim across folds before one consolidating fold merges them
 	maxEarlyUserTurns          = 3     // small user turns hoisted verbatim ahead of the digest; position-fixed (the first N of the fold region, never "the latest N") so the projection prefix stays byte-stable
 )
 

@@ -15,7 +15,8 @@ func bigTurn() string { return strings.Repeat("paste ", 4000) }
 // every provider-visible message in the region lands in exactly one group.
 func partitionCoversRegion(t *testing.T, a *Agent, region []provider.Message) (early, kept, fold []provider.Message) {
 	t.Helper()
-	early, kept, fold = a.partitionFoldForProjection(region)
+	early, carried, kept, fold := a.partitionFoldForProjection(region)
+	kept = append(carried, kept...)
 	seen := map[string]int{}
 	for _, group := range [][]provider.Message{early, kept, fold} {
 		for _, m := range group {
