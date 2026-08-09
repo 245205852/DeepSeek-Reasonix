@@ -199,8 +199,12 @@ export const en = {
   "topicBar.exportImageParts": "This conversation is long, so it was exported as {count} numbered PNG files.",
   "topicBar.exportFailed": "Export failed: {error}",
   "externalOpener.openIn": "Open in {name}",
+  "externalOpener.openDefault": "Open with default application",
+  "externalOpener.reveal": "Reveal in file manager",
   "externalOpener.choose": "Choose application",
   "externalOpener.failed": "Could not open {name}: {error}",
+  "externalOpener.saveAs": "Save as…",
+  "externalOpener.saved": "Saved to {path}",
   "externalOpener.persistFailed": "Opened, but could not save {name} as default: {error}",
 
   // scope labels
