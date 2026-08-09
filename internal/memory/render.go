@@ -25,6 +25,7 @@ type memoryFrontmatter struct {
 	Keywords       string `yaml:"keywords,omitempty"`
 	Activation     string `yaml:"activation,omitempty"`
 	Volatility     string `yaml:"volatility,omitempty"`
+	SubjectKey     string `yaml:"subject_key,omitempty"`
 	ExpiresAt      string `yaml:"expires_at,omitempty"`
 	LastVerifiedAt string `yaml:"last_verified_at,omitempty"`
 	Metadata       struct {
@@ -40,6 +41,7 @@ func render(m Memory, name string) string {
 		ID: m.ID, Revision: m.Revision, Name: name, Title: oneLine(m.Title), Desc: oneLine(m.Description),
 		Keywords: oneLine(m.Keywords), Activation: string(NormalizeActivation(string(m.Activation))),
 		Volatility: string(NormalizeVolatility(string(m.Volatility))),
+		SubjectKey: NormalizeSubjectKey(m.SubjectKey),
 	}
 	if !m.CreatedAt.IsZero() {
 		fm.CreatedAt = m.CreatedAt.UTC().Format(time.RFC3339Nano)

@@ -40,8 +40,15 @@ func Load(opts Options) *Set {
 	if cwd == "" {
 		cwd = "."
 	}
-	store := StoreFor(opts.UserDir, cwd)
 	resolved := instruction.Resolve(instruction.ResolveOptions{TargetDir: cwd, UserDir: opts.UserDir})
+	// MemoryBench's counterfactual arm: hide the store, index, pinned
+	// guidance, and recall so paired runs measure memory's contribution.
+	// Instruction docs stay — standing instructions are not under test.
+	if os.Getenv("REASONIX_EXPERIMENT_NO_MEMORY") == "1" {
+		return &Set{Docs: resolved.Documents, CWD: cwd, UserDir: opts.UserDir,
+			InstructionDiagnostics: resolved.Diagnostics}
+	}
+	store := StoreFor(opts.UserDir, cwd)
 	return &Set{
 		Docs:                   resolved.Documents,
 		PinnedGuidance:         store.pinnedGuidanceForProject(),

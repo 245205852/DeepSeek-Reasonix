@@ -319,3 +319,27 @@ func TestImportDiamondAndCycle(t *testing.T) {
 		t.Errorf("expected import cycle to be detected and reported. Body:\n%s", bodyCycle)
 	}
 }
+
+func TestLoadHidesMemoryUnderExperimentEnv(t *testing.T) {
+	root := t.TempDir()
+	user := filepath.Join(root, "user")
+	proj := filepath.Join(root, "project")
+	mustMkdir(t, filepath.Join(proj, ".git"))
+	mustWrite(t, filepath.Join(proj, "AGENTS.md"), "STANDING INSTRUCTION BODY")
+	store := StoreFor(user, proj)
+	if _, err := store.Save(Memory{Name: "pinned-pref", Description: "always on", Activation: ActivationPinned, Body: "PINNED BODY"}); err != nil {
+		t.Fatal(err)
+	}
+
+	t.Setenv("REASONIX_EXPERIMENT_NO_MEMORY", "1")
+	set := Load(Options{CWD: proj, UserDir: user})
+	if len(set.PinnedGuidance) != 0 || strings.TrimSpace(set.Index) != "" || set.Store.Dir != "" {
+		t.Fatalf("memory-off arm leaked store state: %+v", set)
+	}
+	if !strings.Contains(set.Block(), "STANDING INSTRUCTION BODY") {
+		t.Fatal("instruction docs must survive the memory-off arm")
+	}
+	if AutoRecall(set.Store, "always on pinned pref", RecallOptions{}).Hits != nil {
+		t.Fatal("a zero store must not recall")
+	}
+}
