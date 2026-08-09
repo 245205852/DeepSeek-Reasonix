@@ -135,6 +135,12 @@ ok(
   "browser onboarding installs the same current DeepSeek official template as production",
 );
 ok(
+  settingsSource.includes("officialProviders={s.officialProviders}") &&
+    settingsSource.includes("added: Boolean(state?.added)") &&
+    settingsSource.includes("keySet: Boolean(state?.keySet)"),
+  "official provider templates honor the backend installed state",
+);
+ok(
   /onUpgradeRecommended=\{\(name\) => \{[\s\S]*?cancelGroupFetch\(group\.id\);[\s\S]*?return apply\(\(\) => app\.UpgradeDeepSeekProviderAccess\(name\)\)/.test(settingsSource) &&
     settingsSource.includes("onConfirm={() => onUpgradeRecommended(canonicalOfficialProviderName(upgradeProvider.name))}") &&
     settingsSource.includes('className="provider-protocol-upgrade"') &&

@@ -5080,6 +5080,7 @@ function ProvidersSection({ s, busy, apply }: SectionProps) {
           <AddProviderPanel
             mode={adding}
             kinds={s.providerKinds}
+            officialProviders={s.officialProviders}
             providerPresets={s.providerPresets}
             busy={busy}
             onMode={setAdding}
@@ -5340,9 +5341,10 @@ function providerPresetLabel(preset: ProviderPresetView, t: ReturnType<typeof us
   }
 }
 
-function AddProviderPanel({
+export function AddProviderPanel({
   mode,
   kinds,
+  officialProviders,
   providerPresets,
   busy,
   onMode,
@@ -5355,6 +5357,7 @@ function AddProviderPanel({
 }: {
   mode: AddProviderMode;
   kinds: string[];
+  officialProviders: ProviderView[];
   providerPresets: ProviderPresetView[];
   busy: boolean;
   onMode: (mode: AddProviderMode) => void;
@@ -5367,16 +5370,19 @@ function AddProviderPanel({
 }) {
   const t = useT();
   const templateChoices = useMemo<ProviderTemplateChoice[]>(() => [
-    ...OFFICIAL_PROVIDER_CHOICES.map((choice) => ({
-      id: `official:${choice.kind}`,
-      source: "official" as const,
-      kind: choice.kind,
-      label: t(choice.labelKey),
-      description: t(choice.descKey),
-      keyEnv: choice.keyEnv,
-      added: false,
-      keySet: false,
-    })),
+    ...OFFICIAL_PROVIDER_CHOICES.map((choice) => {
+      const state = officialProviders.find((provider) => officialProviderKind(provider) === choice.kind);
+      return {
+        id: `official:${choice.kind}`,
+        source: "official" as const,
+        kind: choice.kind,
+        label: t(choice.labelKey),
+        description: t(choice.descKey),
+        keyEnv: state?.apiKeyEnv || choice.keyEnv,
+        added: Boolean(state?.added),
+        keySet: Boolean(state?.keySet),
+      };
+    }),
     ...providerPresets.map((preset) => ({
       id: `preset:${preset.id}`,
       source: "preset" as const,
@@ -5389,7 +5395,7 @@ function AddProviderPanel({
       statusProviderNames: asArray(preset.statusProviderNames),
       keySet: preset.keySet,
     })),
-  ], [providerPresets, t]);
+  ], [officialProviders, providerPresets, t]);
   const [templateID, setTemplateID] = useState("official:deepseek");
   const [key, setKey] = useState("");
   const firstAvailableTemplateID = templateChoices.find(providerTemplateCanAdd)?.id ?? templateChoices[0]?.id ?? "";

@@ -5,6 +5,7 @@ import React from "react";
 import { act } from "react";
 import { createRoot } from "react-dom/client";
 import {
+  AddProviderPanel,
   ProviderAccessCard,
   type ProviderAccessGroup,
 } from "../components/SettingsPanel";
@@ -238,6 +239,32 @@ ok(
   rootEl.querySelector<HTMLInputElement>('input[role="switch"]')?.checked === true,
   "grouped switch is on when every supported profile has web search enabled",
 );
+
+await act(async () => {
+  root.render(
+    <LocaleProvider>
+      <AddProviderPanel
+        mode="official"
+        kinds={["anthropic", "openai"]}
+        officialProviders={[{ ...deepSeekAnthropic, name: "deepseek" }]}
+        providerPresets={[]}
+        busy={false}
+        onMode={() => undefined}
+        onCancel={() => undefined}
+        onAddOfficial={async () => undefined}
+        onAddPreset={async () => undefined}
+        onViewPresetConflict={() => undefined}
+        onResetPreset={async () => undefined}
+        onAddCustom={() => undefined}
+      />
+    </LocaleProvider>,
+  );
+  await flushPromises();
+});
+const installedOfficialChoice = Array.from(rootEl.querySelectorAll("button"))
+  .find((button) => button.textContent?.includes("DeepSeek"));
+ok(installedOfficialChoice?.disabled === true, "installed official providers cannot be added again");
+ok(installedOfficialChoice?.textContent?.includes("Added") === true, "installed official providers show their backend status");
 
 await act(async () => {
   root.unmount();
