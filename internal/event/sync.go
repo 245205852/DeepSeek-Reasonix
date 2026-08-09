@@ -72,6 +72,14 @@ func (s *syncSink) RecordOutcomeProgress(sample evidence.OutcomeSample) {
 	}
 }
 
+func (s *syncSink) RecordMemoryRecall(a MemoryRecallAudit) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if mr, ok := s.inner.(MemoryRecallSink); ok {
+		mr.RecordMemoryRecall(a)
+	}
+}
+
 func (s *syncSink) RecordDelegationAdmission(a DelegationAdmissionAudit) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

@@ -33,6 +33,12 @@ func seedTaskMemory(taskDir, work string) ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
+	// The child derives its project slug from Getwd, which returns the
+	// symlink-resolved path (/private/var vs /var on macOS); seed under the
+	// same identity or the store lands in a directory nobody reads.
+	if resolved, rErr := filepath.EvalSymlinks(absWork); rErr == nil {
+		absWork = resolved
+	}
 	pairs := [][2]string{
 		{filepath.Join(seeds, "project"), filepath.Join(stateHome, "projects", config.WorkspaceSlug(absWork), "memory")},
 		{filepath.Join(seeds, "global"), filepath.Join(stateHome, "memory", "global")},
