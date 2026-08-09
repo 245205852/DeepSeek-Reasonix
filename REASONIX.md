@@ -70,6 +70,12 @@ make lint                           # golangci-lint at CI's pin + repolint
 go test ./internal/tool/builtin/ ./internal/boot/  # catches tool/boot test breaks
 ```
 
+`make lint` also asserts the Wails pin: the CLI version lives in
+`.wails-version`, read by the Makefile and all three workflows, because
+`wails dev` rewrites `desktop/go.mod` down to whatever CLI is installed and
+Dependabot bumps the library without seeing the CLI. Drift in either direction
+fails the check.
+
 `make lint` runs both gates CI runs, at the version in `.golangci-version`;
 `make lint-install` installs it. Do not skip it: a `modernize` finding never
 shows up in `go vet`, and the CI round trip that catches it instead costs ten

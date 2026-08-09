@@ -26,6 +26,7 @@ fmt:
 # particular never surface in `go vet`.
 lint: lint-go
 	go run ./tools/repolint
+	bash scripts/check-wails-pin.sh
 
 lint-go:
 	@command -v golangci-lint >/dev/null || { echo "golangci-lint not installed; run: make lint-install"; exit 1; }
