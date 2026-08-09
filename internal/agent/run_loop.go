@@ -720,9 +720,7 @@ func mergeSamplingUsage(acc, attempt *provider.Usage) *provider.Usage {
 	return &merged
 }
 
-// storeLatestRequestUsage records the most recent single-request usage for
-// ContextSnapshot and compaction. It must never receive a multi-attempt
-// billable aggregate.
+// storeLatestRequestUsage records single-request usage, never a billable aggregate.
 func (a *Agent) storeLatestRequestUsage(attempt *provider.Usage) {
 	if a == nil || attempt == nil {
 		return
@@ -732,8 +730,9 @@ func (a *Agent) storeLatestRequestUsage(attempt *provider.Usage) {
 		return
 	}
 	clone := *attempt
-	// RequestCount on lastUsage is not used for context; keep per-attempt value.
+	// Keep the per-attempt RequestCount; context calculations do not use it.
 	a.lastUsage.Store(&clone)
+	a.setPromptTokenCalibrationFromUsage(&clone)
 }
 
 // finalizeSamplingUsage builds the Usage event payload for consumers that
