@@ -193,6 +193,7 @@ func renderBody(results []result) string {
 	b.WriteString(renderSolveProfiles(results))
 	b.WriteString(renderToolSurface(results))
 	b.WriteString(renderContractShadow(results))
+	b.WriteString(renderCompletionReport(results))
 	b.WriteString(renderOutcomeProgress(results))
 	b.WriteString(renderMemoryShadow(results))
 	b.WriteString(renderCognition(results))

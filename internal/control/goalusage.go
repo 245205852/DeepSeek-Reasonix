@@ -97,6 +97,14 @@ func (t *goalUsageTee) RecordContractShadow(a event.ContractShadowAudit) {
 	event.RecordContractShadow(t.inner, a)
 }
 
+// RecordCompletionReport forwards the completion report audit unchanged.
+func (t *goalUsageTee) RecordCompletionReport(a event.CompletionReportAudit) {
+	if t == nil || t.inner == nil {
+		return
+	}
+	event.RecordCompletionReport(t.inner, a)
+}
+
 // setActiveRecorder binds the current goal turn's recorder (nil clears it).
 func (t *goalUsageTee) setActiveRecorder(rec *goalTurnRecorder) {
 	if t == nil {

@@ -167,6 +167,13 @@ func (c *coalescer) RecordContractShadow(a ContractShadowAudit) {
 	RecordContractShadow(c.inner, a)
 }
 
+func (c *coalescer) RecordCompletionReport(a CompletionReportAudit) {
+	c.mu.Lock()
+	c.enqueueFlushLocked()
+	c.drainAndUnlock()
+	RecordCompletionReport(c.inner, a)
+}
+
 func (c *coalescer) RecordOutcomeProgress(sample evidence.OutcomeSample) {
 	c.mu.Lock()
 	c.enqueueFlushLocked()
