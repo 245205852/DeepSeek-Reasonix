@@ -548,7 +548,6 @@ func controlSystemMessage(msgs []provider.Message) string {
 	return ""
 }
 
-
 func sinkHasFrontendWrapper(s event.Sink) bool {
 	switch t := s.(type) {
 	case *frontendEventSink:
