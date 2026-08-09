@@ -3,13 +3,13 @@
     "banner": 15,
     "commented-code": 0,
     "complexity": 2079,
-    "essay": 4145,
-    "file-size": 110588,
-    "function-size": 9212,
+    "essay": 4141,
+    "file-size": 110524,
+    "function-size": 9191,
     "layering": 1,
     "marker": 0,
     "narrative": 64,
-    "test-file-size": 68765
+    "test-file-size": 68776
   },
   "files": {
     "cmd/e2ebench/main.go": {
@@ -28,7 +28,7 @@
     "desktop/app.go": {
       "complexity": 63,
       "essay": 96,
-      "file-size": 11799,
+      "file-size": 11751,
       "function-size": 381
     },
     "desktop/app_autosave_test.go": {
@@ -107,6 +107,9 @@
     "desktop/frontend/src/__tests__/rich-composer-selection.test.tsx": {
       "test-file-size": 352
     },
+    "desktop/frontend/src/__tests__/tab-switch-hydration.test.tsx": {
+      "test-file-size": 11
+    },
     "desktop/frontend/src/__tests__/workspace-changes-errors.test.tsx": {
       "test-file-size": 106
     },
@@ -144,7 +147,7 @@
       "file-size": 158
     },
     "desktop/frontend/src/components/Transcript.tsx": {
-      "file-size": 443
+      "file-size": 444
     },
     "desktop/frontend/src/components/UsageStatsPanel.tsx": {
       "file-size": 276
@@ -168,7 +171,7 @@
       "file-size": 1462
     },
     "desktop/frontend/src/lib/useController.ts": {
-      "file-size": 3760
+      "file-size": 3808
     },
     "desktop/heartbeat.go": {
       "essay": 18,
@@ -300,7 +303,7 @@
     "desktop/tabs.go": {
       "complexity": 73,
       "essay": 133,
-      "file-size": 8875,
+      "file-size": 8848,
       "function-size": 627
     },
     "desktop/tabs_order_test.go": {
@@ -457,7 +460,7 @@
       "essay": 27
     },
     "internal/agent/compact_projection.go": {
-      "function-size": 24
+      "function-size": 3
     },
     "internal/agent/compact_test.go": {
       "essay": 4
@@ -1060,12 +1063,12 @@
       "essay": 2
     },
     "internal/control/checkpoint.go": {
-      "essay": 10
+      "essay": 9
     },
     "internal/control/controller.go": {
       "complexity": 11,
-      "essay": 170,
-      "file-size": 5377,
+      "essay": 167,
+      "file-size": 5339,
       "function-size": 77,
       "narrative": 4
     },
