@@ -66,11 +66,6 @@ func writeFile(t *testing.T, path, content string) {
 	}
 }
 
-func writeClaudeSkill(t *testing.T, root, name string) {
-	t.Helper()
-	writeFile(t, filepath.Join(root, "skills", name, "SKILL.md"), fmt.Sprintf("---\nname: %s\ndescription: Plugin context\n---\nPlugin context", name))
-}
-
 func registeredRoots(actions []action) []string {
 	var roots []string
 	for _, a := range actions {
@@ -1989,9 +1984,8 @@ func TestGitHubClaudeMarketplaceNameSelectsOnePlugin(t *testing.T) {
 }`)
 	for _, name := range []string{"alpha-legal", "beta-legal"} {
 		dir := strings.TrimSuffix(name, "-legal")
-		root := filepath.Join(marketplaceRoot, dir)
-		writeFile(t, filepath.Join(root, ".claude-plugin", "plugin.json"), fmt.Sprintf(`{"name":%q}`, name))
-		writeClaudeSkill(t, root, name)
+		writeFile(t, filepath.Join(marketplaceRoot, dir, ".claude-plugin", "plugin.json"), fmt.Sprintf(`{"name":%q}`, name))
+		writeFile(t, filepath.Join(marketplaceRoot, dir, "skills", name, "SKILL.md"), fmt.Sprintf("---\nname: %s\ndescription: Plugin context\n---\nPlugin context", name))
 	}
 
 	tl := NewTool(Options{ProjectRoot: t.TempDir(), HomeDir: t.TempDir()})
@@ -2038,7 +2032,7 @@ func TestGitHubClaudeMarketplaceCleansCloneWhenApprovalIsDenied(t *testing.T) {
   "plugins": [{"name": "alpha", "source": "./alpha"}]
 }`)
 	writeFile(t, filepath.Join(marketplaceRoot, "alpha", ".claude-plugin", "plugin.json"), `{"name":"alpha"}`)
-	writeClaudeSkill(t, filepath.Join(marketplaceRoot, "alpha"), "alpha")
+	writeFile(t, filepath.Join(marketplaceRoot, "alpha", "skills", "alpha", "SKILL.md"), "---\nname: alpha\ndescription: Plugin context\n---\nPlugin context")
 
 	cleanupCalls := 0
 	tl := NewTool(Options{
@@ -2074,7 +2068,7 @@ func TestGitHubClaudeMarketplaceCleansPreparedPinnedEntryWhenLaterEntryFails(t *
   ]
 }`)
 	writeFile(t, filepath.Join(externalRoot, ".claude-plugin", "plugin.json"), `{"name":"external"}`)
-	writeClaudeSkill(t, externalRoot, "external")
+	writeFile(t, filepath.Join(externalRoot, "skills", "external", "SKILL.md"), "---\nname: external\ndescription: Plugin context\n---\nPlugin context")
 
 	mainCleanup, pinnedCleanup := 0, 0
 	tl := NewTool(Options{ProjectRoot: t.TempDir(), HomeDir: t.TempDir()})
@@ -2115,8 +2109,8 @@ func TestGitHubClaudeMarketplaceAcceptsBarePathsAndSkipsUnsupported(t *testing.T
 }`)
 	writeFile(t, filepath.Join(marketplaceRoot, "plugins", "alpha", ".claude-plugin", "plugin.json"), `{"name":"alpha-legal"}`)
 	writeFile(t, filepath.Join(marketplaceRoot, "plugins", "beta", ".claude-plugin", "plugin.json"), `{"name":"beta-legal"}`)
-	writeClaudeSkill(t, filepath.Join(marketplaceRoot, "plugins", "alpha"), "alpha-legal")
-	writeClaudeSkill(t, filepath.Join(marketplaceRoot, "plugins", "beta"), "beta-legal")
+	writeFile(t, filepath.Join(marketplaceRoot, "plugins", "alpha", "skills", "alpha-legal", "SKILL.md"), "---\nname: alpha-legal\ndescription: Plugin context\n---\nPlugin context")
+	writeFile(t, filepath.Join(marketplaceRoot, "plugins", "beta", "skills", "beta-legal", "SKILL.md"), "---\nname: beta-legal\ndescription: Plugin context\n---\nPlugin context")
 
 	tl := NewTool(Options{ProjectRoot: t.TempDir(), HomeDir: t.TempDir()})
 	tool := tl.(*installSourceTool)
@@ -2227,8 +2221,8 @@ func TestGitHubClaudeMarketplacePlanIDStableAcrossPlanAndApply(t *testing.T) {
 }`)
 	writeFile(t, filepath.Join(marketplaceRoot, "plugins", "alpha", ".claude-plugin", "plugin.json"), `{"name":"alpha-legal"}`)
 	writeFile(t, filepath.Join(marketplaceRoot, "plugins", "beta", ".claude-plugin", "plugin.json"), `{"name":"beta-legal"}`)
-	writeClaudeSkill(t, filepath.Join(marketplaceRoot, "plugins", "alpha"), "alpha-legal")
-	writeClaudeSkill(t, filepath.Join(marketplaceRoot, "plugins", "beta"), "beta-legal")
+	writeFile(t, filepath.Join(marketplaceRoot, "plugins", "alpha", "skills", "alpha-legal", "SKILL.md"), "---\nname: alpha-legal\ndescription: Plugin context\n---\nPlugin context")
+	writeFile(t, filepath.Join(marketplaceRoot, "plugins", "beta", "skills", "beta-legal", "SKILL.md"), "---\nname: beta-legal\ndescription: Plugin context\n---\nPlugin context")
 
 	home := t.TempDir()
 	tl := NewTool(Options{ProjectRoot: t.TempDir(), HomeDir: home})
