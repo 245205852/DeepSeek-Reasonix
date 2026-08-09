@@ -377,6 +377,39 @@ func TestDeleteProviderPersistsVisibleFallbackInsteadOfHiddenConfiguredProvider(
 	}
 }
 
+func TestDeleteProviderRejectsDefaultWhenOnlyHiddenProviderRemains(t *testing.T) {
+	isolateDesktopUserDirs(t)
+	cfg := config.Default()
+	cfg.DefaultModel = "removed/removed-model"
+	cfg.Desktop.ProviderAccess = []string{"removed"}
+	cfg.Providers = []config.ProviderEntry{
+		{Name: "removed", Kind: "openai", BaseURL: "http://127.0.0.1:11434/v1", Model: "removed-model"},
+		{Name: "hidden", Kind: "openai", BaseURL: "http://127.0.0.1:11435/v1", Model: "hidden-model"},
+	}
+	if err := cfg.SaveTo(config.UserConfigPath()); err != nil {
+		t.Fatalf("save config: %v", err)
+	}
+
+	err := NewApp().DeleteProvider("removed")
+	if err == nil || !strings.Contains(err.Error(), "no other configured provider exists") {
+		t.Fatalf("DeleteProvider error = %v, want no visible fallback", err)
+	}
+
+	got := config.LoadForEdit(config.UserConfigPath())
+	if got.DefaultModel != cfg.DefaultModel {
+		t.Fatalf("default model = %q, want unchanged %q", got.DefaultModel, cfg.DefaultModel)
+	}
+	if len(got.Desktop.ProviderAccess) != 1 || got.Desktop.ProviderAccess[0] != "removed" {
+		t.Fatalf("provider access = %+v, want unchanged removed entry", got.Desktop.ProviderAccess)
+	}
+	if _, ok := got.Provider("removed"); !ok {
+		t.Fatal("default provider was deleted despite the rejected operation")
+	}
+	if _, ok := got.Provider("hidden"); !ok {
+		t.Fatal("hidden provider changed despite the rejected operation")
+	}
+}
+
 func TestRemoveProviderAccessesRejectsInUseProviderWithoutConfiguredFallback(t *testing.T) {
 	isolateDesktopUserDirs(t)
 	setDesktopTestCredential(t, "DEEPSEEK_API_KEY", "sk-test")

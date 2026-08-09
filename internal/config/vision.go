@@ -86,6 +86,18 @@ func EffectiveVision(e *ProviderEntry) bool {
 	return isOfficialMimoVisionEntry(e)
 }
 
+// ExplicitModelVision reports whether the selected model has an explicit,
+// positive image capability declaration that the endpoint is allowed to use.
+// Keep this query separate from EffectiveVision so callers can distinguish a
+// model-scoped capability from provider-wide or endpoint-inferred support.
+func ExplicitModelVision(e *ProviderEntry) bool {
+	if !CanConfigureVision(e) {
+		return false
+	}
+	enabled, explicit := explicitModelVision(e)
+	return explicit && enabled
+}
+
 func explicitModelVision(e *ProviderEntry) (enabled, explicit bool) {
 	if e == nil {
 		return false, false

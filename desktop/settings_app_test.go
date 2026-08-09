@@ -1511,6 +1511,195 @@ api_key_env = "DEEPSEEK_API_KEY"
 	}
 }
 
+func TestUpgradeDeepSeekProviderAccessContinuesAfterWorkspaceBuildFailure(t *testing.T) {
+	isolateDesktopUserDirs(t)
+	setDesktopTestCredential(t, "DEEPSEEK_API_KEY", "sk-test")
+	path := config.UserConfigPath()
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	raw := `default_model = "deepseek-flash/deepseek-v4-flash"
+
+[desktop]
+provider_access = ["deepseek"]
+
+[[providers]]
+name = "deepseek-flash"
+kind = "openai"
+base_url = "https://api.deepseek.com"
+model = "deepseek-v4-flash"
+api_key_env = "DEEPSEEK_API_KEY"
+`
+	if err := os.WriteFile(path, []byte(raw), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	brokenRoot := t.TempDir()
+	if err := os.WriteFile(filepath.Join(brokenRoot, "reasonix.toml"), []byte(`[agent]
+system_prompt_file = "/outside-workspace/system.md"
+`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	workingRoot := t.TempDir()
+	sessionDir := config.SessionDir()
+	if err := os.MkdirAll(sessionDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	newOldController := func(id string) *blockingSnapshotCtrl {
+		session := agent.NewSession("old system prompt")
+		session.Add(provider.Message{Role: provider.RoleUser, Content: "history " + id})
+		exec := agent.New(nil, nil, session, agent.Options{}, event.Discard)
+		ctrl := control.New(control.Options{
+			Executor: exec, SessionDir: sessionDir,
+			SessionPath: filepath.Join(sessionDir, id+".jsonl"), Label: id, Sink: event.Discard,
+		})
+		wrapped := newBlockingSnapshotCtrl(ctrl)
+		close(wrapped.releaseSnapshot)
+		return wrapped
+	}
+	oldBroken := newOldController("upgrade-broken")
+	oldWorking := newOldController("upgrade-working")
+	app := NewApp()
+	app.ctx = context.Background()
+	app.readyHook = func() {}
+	broken := &WorkspaceTab{
+		ID: "a-broken", Scope: "project", WorkspaceRoot: brokenRoot, Ready: true,
+		Ctrl: oldBroken, model: "deepseek/deepseek-v4-flash", sink: &tabEventSink{tabID: "a-broken", app: app},
+		disabledMCP: map[string]ServerView{},
+	}
+	working := &WorkspaceTab{
+		ID: "b-working", Scope: "project", WorkspaceRoot: workingRoot, Ready: true,
+		Ctrl: oldWorking, model: "deepseek/deepseek-v4-flash", sink: &tabEventSink{tabID: "b-working", app: app},
+		disabledMCP: map[string]ServerView{},
+	}
+	app.tabs = map[string]*WorkspaceTab{broken.ID: broken, working.ID: working}
+	app.tabOrder = []string{broken.ID, working.ID}
+	app.activeTabID = broken.ID
+	t.Cleanup(func() {
+		for _, tab := range []*WorkspaceTab{broken, working} {
+			if tab.Ctrl != nil {
+				tab.Ctrl.Close()
+			}
+			tab.releaseSessionLease()
+		}
+	})
+
+	warning, err := app.UpgradeDeepSeekProviderAccess("deepseek")
+	if err == nil || !strings.Contains(err.Error(), "relative path within the workspace") {
+		t.Fatalf("UpgradeDeepSeekProviderAccess error = %v, want first workspace build failure", err)
+	}
+	if warning != "" {
+		t.Fatalf("UpgradeDeepSeekProviderAccess warning = %q, want no lease warning", warning)
+	}
+	updated, readErr := os.ReadFile(path)
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	if !strings.Contains(string(updated), `kind = "anthropic"`) {
+		t.Fatalf("protocol was not persisted before the runtime error:\n%s", updated)
+	}
+	if broken.Ctrl != oldBroken || oldBroken.closeCount.Load() != 0 {
+		t.Fatalf("failed tab changed controller: ctrl=%T closes=%d", broken.Ctrl, oldBroken.closeCount.Load())
+	}
+	if working.Ctrl == oldWorking || oldWorking.closeCount.Load() != 1 {
+		t.Fatalf("working sibling was not rebuilt: ctrl=%T closes=%d", working.Ctrl, oldWorking.closeCount.Load())
+	}
+}
+
+func TestUpgradeDeepSeekProviderAccessDefersLeasedTabAndRebuildsSibling(t *testing.T) {
+	isolateDesktopUserDirs(t)
+	setDesktopTestCredential(t, "DEEPSEEK_API_KEY", "sk-test")
+	path := config.UserConfigPath()
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	raw := `default_model = "deepseek-flash/deepseek-v4-flash"
+
+[desktop]
+provider_access = ["deepseek"]
+
+[[providers]]
+name = "deepseek-flash"
+kind = "openai"
+base_url = "https://api.deepseek.com"
+model = "deepseek-v4-flash"
+api_key_env = "DEEPSEEK_API_KEY"
+`
+	if err := os.WriteFile(path, []byte(raw), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	workspace := t.TempDir()
+	sessionDir := config.SessionDir()
+	if err := os.MkdirAll(sessionDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	leasedPath := filepath.Join(sessionDir, "upgrade-leased.jsonl")
+	workingPath := filepath.Join(sessionDir, "upgrade-working.jsonl")
+	externalLease, err := agent.TryAcquireSessionLease(leasedPath)
+	if err != nil {
+		t.Fatalf("TryAcquireSessionLease: %v", err)
+	}
+	t.Cleanup(externalLease.Release)
+	newOldController := func(id, sessionPath string) *blockingSnapshotCtrl {
+		session := agent.NewSession("old system prompt")
+		session.Add(provider.Message{Role: provider.RoleUser, Content: "history " + id})
+		exec := agent.New(nil, nil, session, agent.Options{}, event.Discard)
+		ctrl := control.New(control.Options{
+			Executor: exec, SessionDir: sessionDir, SessionPath: sessionPath, Label: id, Sink: event.Discard,
+		})
+		wrapped := newBlockingSnapshotCtrl(ctrl)
+		close(wrapped.releaseSnapshot)
+		return wrapped
+	}
+	oldLeased := newOldController("upgrade-leased", leasedPath)
+	oldWorking := newOldController("upgrade-working", workingPath)
+	app := NewApp()
+	app.ctx = context.Background()
+	app.readyHook = func() {}
+	leased := &WorkspaceTab{
+		ID: "a-leased", Scope: "global", WorkspaceRoot: workspace, SessionPath: leasedPath, Ready: true,
+		Ctrl: oldLeased, model: "deepseek/deepseek-v4-flash", sink: &tabEventSink{tabID: "a-leased", app: app},
+		disabledMCP: map[string]ServerView{},
+	}
+	working := &WorkspaceTab{
+		ID: "b-working", Scope: "global", WorkspaceRoot: workspace, SessionPath: workingPath, Ready: true,
+		Ctrl: oldWorking, model: "deepseek/deepseek-v4-flash", sink: &tabEventSink{tabID: "b-working", app: app},
+		disabledMCP: map[string]ServerView{},
+	}
+	app.tabs = map[string]*WorkspaceTab{leased.ID: leased, working.ID: working}
+	app.tabOrder = []string{leased.ID, working.ID}
+	app.activeTabID = leased.ID
+	t.Cleanup(func() {
+		for _, tab := range []*WorkspaceTab{leased, working} {
+			if tab.Ctrl != nil {
+				tab.Ctrl.Close()
+			}
+			tab.releaseSessionLease()
+		}
+	})
+
+	warning, err := app.UpgradeDeepSeekProviderAccess("deepseek")
+	if err != nil {
+		t.Fatalf("UpgradeDeepSeekProviderAccess: %v", err)
+	}
+	if !strings.Contains(warning, "saved, but the current session could not refresh yet") {
+		t.Fatalf("UpgradeDeepSeekProviderAccess warning = %q, want deferred lease warning", warning)
+	}
+	if !app.deferredRebuildPending(leased.ID) {
+		t.Fatal("leased tab did not receive a tab-bound deferred rebuild")
+	}
+	if app.deferredRebuildPending(working.ID) {
+		t.Fatal("working sibling unexpectedly received a deferred rebuild")
+	}
+	if leased.Ctrl != oldLeased || oldLeased.closeCount.Load() != 0 {
+		t.Fatalf("leased tab changed controller: ctrl=%T closes=%d", leased.Ctrl, oldLeased.closeCount.Load())
+	}
+	if working.Ctrl == oldWorking || oldWorking.closeCount.Load() != 1 {
+		t.Fatalf("working sibling was not rebuilt: ctrl=%T closes=%d", working.Ctrl, oldWorking.closeCount.Load())
+	}
+}
+
 func TestUpgradeDeepSeekProviderAccessRejectsDetachedRuntimeBeforeMutation(t *testing.T) {
 	isolateDesktopUserDirs(t)
 	path := config.UserConfigPath()

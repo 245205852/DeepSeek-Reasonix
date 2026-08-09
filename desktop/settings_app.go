@@ -2727,6 +2727,8 @@ func (a *App) UpgradeDeepSeekProviderAccess(name string) (string, error) {
 	if !changed {
 		return "", fmt.Errorf("DeepSeek provider %q is not eligible for the recommended protocol upgrade", name)
 	}
+	warning := ""
+	var rebuildErrs []error
 	for _, tab := range visibleTabs {
 		if a.controllerForTab(tab) == nil {
 			// A visible startup placeholder has no stale provider runtime. Its
@@ -2734,10 +2736,19 @@ func (a *App) UpgradeDeepSeekProviderAccess(name string) (string, error) {
 			continue
 		}
 		if err := a.rebuildSettingTurnLocked(setting, tab, true, false); err != nil {
-			return "", err
+			if deferred, ok := a.deferredRebuildWarningForTab(setting, err, tab); ok {
+				if warning == "" {
+					warning = deferred
+				}
+				continue
+			}
+			// The protocol is user-global and already persisted. Keep refreshing
+			// sibling tabs so one workspace-specific boot failure cannot leave
+			// every later runtime pinned to the old protocol.
+			rebuildErrs = append(rebuildErrs, err)
 		}
 	}
-	return "", nil
+	return warning, errors.Join(rebuildErrs...)
 }
 
 // visibleTabsForGlobalRuntimeUpgrade returns every visible runtime that must

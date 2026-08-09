@@ -518,8 +518,9 @@ func (a *App) deleteProviderAndRetargetTabs(name string) error {
 	if err != nil {
 		return err
 	}
-	if len(affected) > 0 && plan.fallbackRef == "" {
-		return fmt.Errorf("remove provider: %q is used by open tabs and no other configured provider exists", name)
+	defaultInUse := providerRefMatchesAny(plan.config, plan.config.DefaultModel, plan.targets)
+	if plan.fallbackRef == "" && (len(affected) > 0 || defaultInUse) {
+		return fmt.Errorf("remove provider: %q is in use and no other configured provider exists", name)
 	}
 	if len(affected) == 0 {
 		if err := a.ensureActiveTabRebuildAllowed("provider"); err != nil {
