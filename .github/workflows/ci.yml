@@ -321,7 +321,7 @@ jobs:
       - name: Install Wails CLI
         run: |
           echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
-          go install "github.com/wailsapp/wails/v2/cmd/wails@$(cat .wails-version)"
+          go install "github.com/wailsapp/wails/v2/cmd/wails@$(cat "$GITHUB_WORKSPACE/.wails-version")"
 
       - name: gofmt
         run: |
@@ -449,7 +449,7 @@ jobs:
       - name: Install Wails CLI
         run: |
           echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
-          go install "github.com/wailsapp/wails/v2/cmd/wails@$(cat .wails-version)"
+          go install "github.com/wailsapp/wails/v2/cmd/wails@$(cat "$GITHUB_WORKSPACE/.wails-version")"
 
       # go:embed of frontend/dist needs a built frontend before the package
       # compiles, same as the ubuntu desktop leg.

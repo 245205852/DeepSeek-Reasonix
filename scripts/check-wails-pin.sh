@@ -34,6 +34,12 @@ for workflow in "$root"/.github/workflows/ci.yml "$root"/.github/workflows/relea
     echo "check-wails-pin: $(basename "$workflow") hard-codes a CLI version; read .wails-version instead" >&2
     exit 1
   fi
+  # Several desktop steps run with working-directory: desktop, where a bare
+  # `cat .wails-version` resolves to nothing and installs wails@"".
+  if grep -q 'cat \.wails-version' "$workflow"; then
+    echo "check-wails-pin: $(basename "$workflow") reads .wails-version relative to the job's working directory; use \$GITHUB_WORKSPACE" >&2
+    exit 1
+  fi
 done
 
 echo "check-wails-pin: CLI and library both pinned at $pin"
