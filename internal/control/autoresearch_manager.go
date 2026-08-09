@@ -137,6 +137,7 @@ func (c *Controller) restorePendingLegacyGoal(legacy legacyGoalRestore) bool {
 					c.clearLegacyRestore(legacy.taskID, legacy.epoch)
 				}
 			} else {
+				c.goals.clearLegacyTaskID(epoch)
 				c.clearLegacyRestore(legacy.taskID, legacy.epoch)
 			}
 		} else {
@@ -200,6 +201,7 @@ func (c *Controller) retryBlockedLegacyGoal() (handled, resumed bool) {
 	if !persisted {
 		return true, false
 	}
+	c.goals.clearLegacyTaskID(resumedEpoch)
 	c.replaceLegacyRestore(legacyGoalRestore{})
 	if setup.notice != "" {
 		c.notice(setup.notice)
