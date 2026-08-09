@@ -73,6 +73,22 @@ func TestCompletionShadowCountsFailedVerification(t *testing.T) {
 	}
 }
 
+func TestCompletionShadowCountsUnbackedClaims(t *testing.T) {
+	_, report := shadowReport("fix the add bug in calc.py",
+		evidence.Receipt{ToolName: "edit_file", Mutation: true, Write: true, Success: true, Paths: []string{"calc.py"}},
+		evidence.Receipt{ToolName: "read_file", Read: true, Success: true, Paths: []string{"calc.py"}, OutputBytes: 64},
+		evidence.Receipt{ToolName: "update_goal", Success: true, Args: []byte(
+			`{"status":"complete","completion":{"verified":["pytest","go test ./..."]}}`)},
+	)
+	if report.ClaimsVerified != 2 || report.ClaimsUnbacked != 2 {
+		t.Fatalf("claims = %d verified / %d unbacked, want 2/2 — neither command ever ran",
+			report.ClaimsVerified, report.ClaimsUnbacked)
+	}
+	if !slices.Contains(report.GapKinds, "unbacked_claim") {
+		t.Fatalf("gap kinds = %v, want the fabricated verifications flagged", report.GapKinds)
+	}
+}
+
 func TestCompletionShadowStaysQuietOnAConversationTurn(t *testing.T) {
 	_, report := shadowReport("what does this function do?",
 		evidence.Receipt{ToolName: "read_file", Read: true, Success: true, Paths: []string{"calc.py"}, OutputBytes: 64},

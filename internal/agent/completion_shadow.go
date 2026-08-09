@@ -10,10 +10,16 @@ import (
 // summary: counts, enums, and gap kinds, never a path or a command.
 func completionReportAudit(rep completion.Report) event.CompletionReportAudit {
 	audit := event.CompletionReportAudit{
-		Verdict:  rep.Verdict.String(),
-		Risk:     riskName(rep.Risk),
-		Gaps:     len(rep.Gaps),
-		GapKinds: rep.GapKinds(),
+		Verdict:        rep.Verdict.String(),
+		Risk:           riskName(rep.Risk),
+		Gaps:           len(rep.Gaps),
+		GapKinds:       rep.GapKinds(),
+		ClaimsVerified: len(rep.Claimed.Verified),
+	}
+	for _, gap := range rep.Gaps {
+		if gap.Kind == completion.GapUnbackedClaim {
+			audit.ClaimsUnbacked++
+		}
 	}
 	for _, criterion := range rep.Criteria {
 		if !criterion.Required {

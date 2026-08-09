@@ -108,6 +108,8 @@ type CompletionReport struct {
 	VerificationsStale  int      `json:"verifications_stale,omitempty"`
 	Gaps                int      `json:"gaps,omitempty"`
 	GapKinds            []string `json:"gap_kinds,omitempty"`
+	ClaimsVerified      int      `json:"claims_verified,omitempty"`
+	ClaimsUnbacked      int      `json:"claims_unbacked,omitempty"`
 }
 
 // ReadinessAudit mirrors evidence.ReadinessAudit with stable snake_case keys.
@@ -229,6 +231,8 @@ func (r *Recorder) RecordCompletionReport(a event.CompletionReportAudit) {
 		VerificationsStale:  a.VerificationsStale,
 		Gaps:                a.Gaps,
 		GapKinds:            a.GapKinds,
+		ClaimsVerified:      a.ClaimsVerified,
+		ClaimsUnbacked:      a.ClaimsUnbacked,
 	}})
 	event.RecordCompletionReport(r.inner, a)
 }
