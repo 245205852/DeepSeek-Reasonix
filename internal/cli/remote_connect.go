@@ -5,7 +5,6 @@ import (
 	"errors"
 	"flag"
 	"fmt"
-	"net/url"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -269,7 +268,7 @@ func remoteConnectCLI(args []string, version string) int {
 			fmt.Fprintln(os.Stderr, i18n.M.ErrorPrefix, err)
 			return 1
 		}
-		localURL, ferr := forwardServe(client, res.State.Addr, syntax.localPort, res.Token)
+		localURL, ferr := forwardServe(ctx, client, res.State.Addr, syntax.localPort, res.Token)
 		if ferr != nil {
 			fmt.Fprintln(os.Stderr, i18n.M.ErrorPrefix, ferr)
 			return 1
@@ -304,7 +303,7 @@ func applyConfiguredForwards(client *remote.Client, entry config.RemoteHostEntry
 
 // forwardServe adds the reserved "serve" local forward to the remote serve
 // address and returns the local URL (with token).
-func forwardServe(client *remote.Client, remoteAddr string, localPort int, token string) (string, error) {
+func forwardServe(ctx context.Context, client *remote.Client, remoteAddr string, localPort int, token string) (string, error) {
 	bind := "127.0.0.1:0"
 	if localPort > 0 {
 		bind = fmt.Sprintf("127.0.0.1:%d", localPort)
@@ -318,7 +317,7 @@ func forwardServe(client *remote.Client, remoteAddr string, localPort int, token
 	if err != nil {
 		return "", err
 	}
-	return fmt.Sprintf("http://%s/#token=%s", bound, url.QueryEscape(token)), nil
+	return remoteServeBrowserURL(ctx, bound, token), nil
 }
 
 func normalizeBind(bind string) string {
