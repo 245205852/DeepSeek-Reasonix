@@ -2130,7 +2130,7 @@ export interface ExternalOpenerView {
 
 export interface ExternalOpenersView {
   openers: ExternalOpenerView[];
-  preferred: string;
+  preferred: string; workspaceOpenable?: boolean;
 }
 
 // Auto-updater payloads (desktop/updater.go). UpdateInfo drives the update banner;
