@@ -674,14 +674,8 @@ function RemoteStatusBarChip({
   const triggerState = isRemoteTerminalFailure(worst) ? "error" : worst.state;
   const triggerStatus = isRemoteTerminalFailure(worst) ? t("remote.status.failed") : t(`remote.status.${worst.state}`);
   const idleDisconnected = worst.state === "stopped" && !worst.error;
-  const triggerLabel = idleDisconnected
-    ? t("remote.statusBar.disconnected")
-    : t("remote.statusBar.summary", { host: worstHost.label, status: triggerStatus });
-  const triggerText = idleDisconnected
-    ? "SSH"
-    : triggerState === "connected"
-      ? worstHost.label
-      : triggerLabel;
+  const triggerLabel = idleDisconnected ? t("remote.statusBar.disconnected") : t("remote.statusBar.summary", { host: worstHost.label, status: triggerStatus });
+  const triggerText = idleDisconnected ? "SSH" : triggerState === "connected" ? worstHost.label : triggerLabel;
 
   return (
     <span className="statusbar__remote-wrap">
@@ -695,9 +689,7 @@ function RemoteStatusBarChip({
         aria-expanded={open}
         title={triggerLabel}
       >
-        {triggerState === "connected"
-          ? <span className="statusbar__remote-state-dot" aria-hidden="true" />
-          : <Server size={11} aria-hidden="true" />}
+        {triggerState === "connected" ? <span className="statusbar__remote-state-dot" aria-hidden="true" /> : <Server size={11} aria-hidden="true" />}
         <span className="statusbar__remote-label">{triggerText}</span>
       </button>
       <AnchoredPopover
