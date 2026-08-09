@@ -180,8 +180,9 @@ func (a *Agent) compressVisibleRange(
 		return result, nil
 	}
 
-	summary, mode, usage, providerReqID, err := a.runCompactionSummary(ctx, prepared.fold, prepared.instructions)
-	tele := compactionTelemetryFromSummary(trigger, a.CacheState(), result.SourceTokens, mode, usage, providerReqID)
+	res, err := a.foldToSummary(ctx, prepared.fold, prepared.instructions)
+	summary := res.Text
+	tele := compactionTelemetryFromSummary(trigger, a.CacheState(), result.SourceTokens, res)
 	if err != nil {
 		tele.Error = err.Error()
 		a.emitCompactionTelemetry(tele)
@@ -201,7 +202,7 @@ func (a *Agent) compressVisibleRange(
 	tele.ProjectionTokens = projectionTokens
 	result.Messages = len(plan.fold)
 	result.ProjectionTokens = projectionTokens
-	result.Mode = mode
+	result.Mode = res.Mode
 	if projectionTokens >= result.SourceTokens {
 		result.Reason = "compressed context would not be smaller"
 		a.emitCompactionTelemetry(tele)
@@ -209,7 +210,7 @@ func (a *Agent) compressVisibleRange(
 		return result, nil
 	}
 
-	if err := a.installVisibleCompression(snap, trigger, mode, summary, projection, result.SourceTokens, projectionTokens, usage); err != nil {
+	if err := a.installVisibleCompression(snap, trigger, res.Mode, summary, projection, result.SourceTokens, projectionTokens, res.Usage); err != nil {
 		if errors.Is(err, errCompressStaleContext) {
 			tele.Error = err.Error()
 			a.emitCompactionTelemetry(tele)
@@ -364,12 +365,15 @@ func (a *Agent) installVisibleCompression(snap explicitCompressionSnapshot, trig
 	return nil
 }
 
-func compactionTelemetryFromSummary(trigger, cacheState string, sourceTokens int, mode string, usage *provider.Usage, providerReqID string) CompactionTelemetry {
+func compactionTelemetryFromSummary(trigger, cacheState string, sourceTokens int, res foldSummary) CompactionTelemetry {
 	tele := CompactionTelemetry{
-		Trigger: trigger, CacheState: cacheState, Mode: mode,
-		Native: mode == CompactionModeNative, SourceTokens: sourceTokens,
-		ProviderRequestID: providerReqID,
+		Trigger: trigger, CacheState: cacheState, Mode: res.Mode,
+		Native: res.Mode == CompactionModeNative, SourceTokens: sourceTokens,
+		ProviderRequestID: res.RequestID,
+		FoldTokens:        res.FoldTokens,
+		Spans:             res.Spans,
 	}
+	usage := res.Usage
 	if usage == nil {
 		return tele
 	}
@@ -453,8 +457,9 @@ func (a *Agent) compactToProjection(ctx context.Context, trigger, instructions s
 	}
 
 	sourceTokens := estimateMessagesTokens(provider.ModelMessages(msgs))
-	summary, mode, usage, providerReqID, err := a.runCompactionSummary(ctx, fold, instructions)
-	tele := compactionTelemetryFromSummary(trigger, a.CacheState(), sourceTokens, mode, usage, providerReqID)
+	res, err := a.foldToSummary(ctx, fold, instructions)
+	summary := res.Text
+	tele := compactionTelemetryFromSummary(trigger, a.CacheState(), sourceTokens, res)
 	if err != nil {
 		tele.Error = err.Error()
 		a.emitCompactionTelemetry(tele)
@@ -500,13 +505,13 @@ func (a *Agent) compactToProjection(ctx context.Context, trigger, instructions s
 		PromptCacheKey:   a.currentPromptCacheKey(),
 		LastCacheState:   a.CacheState(),
 		LastTrigger:      trigger,
-		LastMode:         mode,
+		LastMode:         res.Mode,
 		LastSourceTokens: sourceTokens,
 		LastResultTokens: projTokens,
 		UpdatedAt:        time.Now().UTC(),
 	}
-	if a.pricing != nil && usage != nil {
-		st.LastCompactionCost = a.pricing.Cost(usage)
+	if a.pricing != nil && res.Usage != nil {
+		st.LastCompactionCost = a.pricing.Cost(res.Usage)
 	}
 	if err := a.installProjection(st); err != nil {
 		a.emitCompactionAborted(trigger)
@@ -659,8 +664,8 @@ func (a *Agent) installPruneProjection(view []provider.Message, st PruneStats) e
 // emitCompactionTelemetry records structured compaction observability without
 // logging sensitive transcript content.
 func (a *Agent) emitCompactionTelemetry(t CompactionTelemetry) {
-	detail := fmt.Sprintf("trigger=%s mode=%s cache=%s src=%d proj=%d in=%d out=%d hit=%d miss=%d write=%d reqs=%d",
-		t.Trigger, t.Mode, t.CacheState, t.SourceTokens, t.ProjectionTokens,
+	detail := fmt.Sprintf("trigger=%s mode=%s cache=%s src=%d fold=%d spans=%d proj=%d in=%d out=%d hit=%d miss=%d write=%d reqs=%d",
+		t.Trigger, t.Mode, t.CacheState, t.SourceTokens, t.FoldTokens, t.Spans, t.ProjectionTokens,
 		t.InputTokens, t.OutputTokens, t.CacheHitTokens, t.CacheMissTokens, t.CacheWriteTokens, t.RequestCount)
 	if t.ProviderRequestID != "" {
 		detail += " provider_request_id=" + t.ProviderRequestID
