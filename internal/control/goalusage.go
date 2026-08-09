@@ -84,6 +84,11 @@ func (t *goalUsageTee) RecordDelegationAdmission(a event.DelegationAdmissionAudi
 	event.RecordDelegationAdmission(t.inner, a)
 }
 
+// RecordMemoryRecall forwards the recall audit unchanged.
+func (t *goalUsageTee) RecordMemoryRecall(a event.MemoryRecallAudit) {
+	event.RecordMemoryRecall(t.inner, a)
+}
+
 // RecordContractShadow forwards the shadow contract audit unchanged.
 func (t *goalUsageTee) RecordContractShadow(a event.ContractShadowAudit) {
 	if t == nil || t.inner == nil {

@@ -174,6 +174,13 @@ func (c *coalescer) RecordOutcomeProgress(sample evidence.OutcomeSample) {
 	RecordOutcomeProgress(c.inner, sample)
 }
 
+func (c *coalescer) RecordMemoryRecall(a MemoryRecallAudit) {
+	c.mu.Lock()
+	c.enqueueFlushLocked()
+	c.drainAndUnlock()
+	RecordMemoryRecall(c.inner, a)
+}
+
 func (c *coalescer) RecordDelegationAdmission(a DelegationAdmissionAudit) {
 	c.mu.Lock()
 	c.enqueueFlushLocked()
