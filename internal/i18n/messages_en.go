@@ -261,6 +261,7 @@ var English = Messages{
 	CmdMouse:            "toggle in-app mouse capture (off = native terminal selection/right-click)",
 	CmdReasonLang:       "set visible reasoning language",
 	CmdHelp:             "list commands",
+	CmdWeb:              "continue this session in the Web UI",
 	CmdTodo:             "dismiss the task list",
 	CmdQuit:             "exit the session",
 	CmdCopy:             "pick a response to copy to clipboard",
@@ -538,6 +539,7 @@ Usage:
   reasonix run [--model NAME] [--max-steps N] [-c|--continue] [--resume PATH] [--copy] [--output-format FORMAT] <task>
   reasonix run --events-jsonl [--model NAME] <task>      emit redacted structured events as JSONL
   reasonix review [--base BRANCH] [--commit SHA] [--model NAME]  AI-powered code review on local diffs
+  reasonix web [--model NAME] [--addr HOST:PORT] [--no-open]  start the local Web UI and open it in the default browser
   reasonix serve [--model NAME] [--addr HOST:PORT] [--auth none|token|password] [--token STR] [--password STR] [--hash-password]  serve over HTTP+SSE (with optional auth)
   reasonix acp [--model NAME]                           serve Agent Client Protocol over stdio (also: reasonix --acp)
   reasonix setup [path]                                 interactive config wizard; writes reasonix.toml (+ .env)
@@ -567,6 +569,7 @@ Examples:
   reasonix
   reasonix --continue
   reasonix --resume provider-config
+  reasonix web
   reasonix run "implement the TODOs in main.go"
   reasonix run --model mimo-pro "add unit tests for this function"
   reasonix -p "summarize this repository" --output-format json

@@ -15,6 +15,7 @@ import (
 	"log/slog"
 	"math"
 	"net"
+	"net/http"
 	"net/url"
 	"os"
 	"os/signal"
@@ -52,6 +53,8 @@ import (
 var (
 	runInteractiveSession = chatREPL
 	cliIsInteractive      = isInteractive
+	runWebCommand         = runWeb
+	openBrowserURL        = openInBrowser
 )
 
 // Run is the CLI entry point; it returns a process exit code.
@@ -126,6 +129,8 @@ func RunWithBuildInfo(args []string, info BuildInfo) int {
 		return runInteractiveSession(rest, version)
 	case "serve":
 		return runServe(rest)
+	case "web":
+		return runWebCommand(rest)
 	case "setup":
 		configureCLIThemeFromConfigForTTYOutput()
 		return setupConfig(rest)
@@ -216,7 +221,7 @@ func isDefaultInteractiveFlag(arg string) bool {
 
 func shouldMigrateLegacyConfigForCLI(cmd string) bool {
 	switch cmd {
-	case "", "run", "chat", "code", "serve", "setup", "config", "init", "acp", "mcp", "remote", "plugin", "subagent", "doctor", "bot", "upgrade", "update":
+	case "", "run", "chat", "code", "serve", "web", "setup", "config", "init", "acp", "mcp", "remote", "plugin", "subagent", "doctor", "bot", "upgrade", "update":
 		return true
 	default:
 		return false
@@ -799,13 +804,43 @@ func runAgent(args []string, version string) int {
 // so the same typed stream the chat TUI consumes reaches web clients — the
 // transport-agnostic controller driven by a second frontend.
 func runServe(args []string) int {
-	fs := flag.NewFlagSet("serve", flag.ContinueOnError)
+	return runServeWithOptions(args, serveRunOptions{command: "serve"})
+}
+
+// runWeb is the local, user-facing browser entry point. It intentionally
+// shares the entire serve implementation; the only semantic difference is
+// that it opens the bound URL in the default browser after the HTTP server has
+// returned a readiness response. `reasonix serve` remains suitable for
+// supervisors and remote use.
+func runWeb(args []string) int {
+	return runServeWithOptions(args, serveRunOptions{command: "web", openBrowser: true})
+}
+
+type serveRunOptions struct {
+	command     string
+	openBrowser bool
+}
+
+func runServeWithOptions(args []string, opts serveRunOptions) int {
+	if opts.command == "" {
+		opts.command = "serve"
+	}
+	fs := flag.NewFlagSet(opts.command, flag.ContinueOnError)
 	model := fs.String("model", "", "provider name (default: config default_model)")
 	profileFlag := fs.String("profile", "balanced", "runtime profile: economy | balanced | delivery")
 	maxSteps := fs.Int("max-steps", 0, "one-off max tool-call rounds (0 = automatic)")
 	addr := fs.String("addr", "127.0.0.1:8787", "listen address")
 	resume := fs.String("resume", "", "resume a saved session file")
-	auth := fs.String("auth", "", "auth mode: none, token, or password (default: none)")
+	sessionIDValue := ""
+	sessionID := &sessionIDValue
+	if opts.command == "web" {
+		sessionID = fs.String("session-id", "", "bind a fresh Web session identity (used by /web handoff)")
+	}
+	authHelp := "auth mode: none, token, or password (default: config/none)"
+	if opts.command == "web" {
+		authHelp = "auth mode: none, token, or password (default: generated token)"
+	}
+	auth := fs.String("auth", "", authHelp)
 	token := fs.String("token", "", "pre-shared token for auth=token (auto-generated if empty)")
 	password := fs.String("password", "", "password for auth=password (use --hash-password to store a hash instead)")
 	hashPassword := fs.Bool("hash-password", false, "print a bcrypt hash of --password and exit")
@@ -813,8 +848,26 @@ func runServe(args []string) int {
 	portFile := fs.String("port-file", "", "write the actual bound listen address (host:port) to this file after binding")
 	tokenFile := fs.String("token-file", "", "read the auth=token pre-shared token from this file (overrides --token; keeps the secret out of argv)")
 	pidFile := fs.String("pid-file", "", "write the server process id to this file")
+	openBrowser := fs.Bool("open", opts.openBrowser, "open the Web UI in the default browser")
+	noOpen := fs.Bool("no-open", false, "do not open the Web UI in the default browser")
 	if code, ok := parseCommandFlags(fs, args); !ok {
 		return code
+	}
+	authExplicit := false
+	fs.Visit(func(f *flag.Flag) {
+		if f.Name == "auth" {
+			authExplicit = true
+		}
+	})
+	if *resume != "" && *sessionID != "" {
+		fmt.Fprintln(os.Stderr, i18n.M.ErrorPrefix, "--resume and --session-id cannot be used together")
+		return 2
+	}
+	if *sessionID != "" {
+		if err := validateWebSessionID(*sessionID); err != nil {
+			fmt.Fprintln(os.Stderr, i18n.M.ErrorPrefix, err)
+			return 2
+		}
 	}
 	profile, err := parseRuntimeProfile(*profileFlag)
 	if err != nil {
@@ -842,7 +895,10 @@ func runServe(args []string) int {
 	cfg, _ := config.Load()
 
 	// Build serve config, merging CLI flags over config file.
-	serveCfg := cfg.Serve
+	serveCfg := serveConfigWithCommandDefaults(opts.command, authExplicit, cfg.Serve)
+	// `reasonix web` is a local browser entry point and defaults to a freshly
+	// generated token. `reasonix serve` keeps its existing config-driven default,
+	// and an explicit --auth always wins for both commands.
 	if *auth != "" {
 		serveCfg.AuthMode = *auth
 	}
@@ -924,6 +980,13 @@ func runServe(args []string) int {
 	// Auto-save target: reuse the resumed file, else a fresh one — same as chat.
 	if *resume != "" {
 		ctrl.Resume(resumeSession, *resume)
+	} else if *sessionID != "" {
+		freshPath, err := freshWebSessionPath(ctrl.SessionDir(), *sessionID)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, i18n.M.ErrorPrefix, err)
+			return 1
+		}
+		ctrl.SetFreshSessionPath(freshPath)
 	}
 	ctrl.EnsureSessionPath()
 	// Fresh sessions take the lease too (defensive: the path is brand new); a
@@ -937,24 +1000,33 @@ func runServe(args []string) int {
 	srv.SetSessionLeases(leases)
 
 	// With --port-file the supervisor needs the real bound port (--addr may be
-	// 127.0.0.1:0), so listen first, record the address, then serve on the
-	// existing listener.
+	// 127.0.0.1:0). The Web entry point also listens first so the browser is
+	// never opened for an address that failed to bind.
 	var ln net.Listener
 	displayAddr := *addr
-	if *portFile != "" {
+	if *portFile != "" || opts.command == "web" || (*openBrowser && !*noOpen) {
 		var lerr error
-		ln, lerr = net.Listen("tcp", *addr)
+		if opts.command == "web" {
+			ln, lerr = listenWebWithPortRetry(*addr)
+		} else {
+			ln, lerr = net.Listen("tcp", *addr)
+		}
 		if lerr != nil {
 			fmt.Fprintln(os.Stderr, i18n.M.ErrorPrefix, lerr)
 			return 1
 		}
 		displayAddr = ln.Addr().String()
-		if err := writeServeAddrFile(*portFile, displayAddr); err != nil {
-			_ = ln.Close()
-			fmt.Fprintln(os.Stderr, i18n.M.ErrorPrefix, err)
-			return 1
+		if opts.command == "web" && requestedPort(*addr) != requestedPort(displayAddr) && requestedPort(*addr) != 0 {
+			fmt.Fprintf(os.Stderr, "  port %d is in use; using %d instead\n", requestedPort(*addr), requestedPort(displayAddr))
 		}
-		defer os.Remove(*portFile)
+		if *portFile != "" {
+			if err := writeServeAddrFile(*portFile, displayAddr); err != nil {
+				_ = ln.Close()
+				fmt.Fprintln(os.Stderr, i18n.M.ErrorPrefix, err)
+				return 1
+			}
+			defer os.Remove(*portFile)
+		}
 	}
 	if *pidFile != "" {
 		if err := writeServePidFile(*pidFile); err != nil {
@@ -966,9 +1038,22 @@ func runServe(args []string) int {
 		}
 		defer os.Remove(*pidFile)
 	}
+	var webRegistration *webInstanceRegistration
+	if opts.command == "web" {
+		var err error
+		webRegistration, err = registerWebInstance(config.ReasonixHomeDir(), displayAddr)
+		if err != nil {
+			if ln != nil {
+				_ = ln.Close()
+			}
+			fmt.Fprintln(os.Stderr, i18n.M.ErrorPrefix, err)
+			return 1
+		}
+		defer webRegistration.Release()
+	}
 	srv.EnableProviderSetupForListener(displayAddr)
 
-	fmt.Printf("reasonix serve — %s on http://%s\n", ctrl.Label(), displayAddr)
+	fmt.Printf("reasonix %s — %s on http://%s\n", opts.command, ctrl.Label(), displayAddr)
 	if srv.AuthMode() == "token" {
 		fmt.Printf("  auth: token\n")
 		// Under --port-file the process is supervised (e.g. remote bootstrap):
@@ -979,7 +1064,7 @@ func runServe(args []string) int {
 		if *portFile != "" && *tokenFile != "" {
 			fmt.Printf("  share: http://%s/ (token in %s)\n", displayAddr, *tokenFile)
 		} else {
-			fmt.Printf("  share: http://%s/?token=%s\n", displayAddr, srv.AuthToken())
+			fmt.Printf("  share: http://%s/#token=%s\n", displayAddr, url.QueryEscape(srv.AuthToken()))
 		}
 	} else if srv.AuthMode() == "password" {
 		fmt.Printf("  auth: password (login at http://%s/login)\n", displayAddr)
@@ -1004,8 +1089,25 @@ func runServe(args []string) int {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	if ln != nil {
-		if err := srv.RunGracefulListener(ctx, ln); err != nil {
-			fmt.Fprintln(os.Stderr, i18n.M.ErrorPrefix, err)
+		var serveErr error
+		if *openBrowser && !*noOpen {
+			openSessionID := ""
+			if *resume != "" || *sessionID != "" {
+				openSessionID = agent.BranchID(ctrl.SessionPath())
+			}
+			serveErr = runServeListenerAfterReady(ctx, srv, ln, displayAddr, func() {
+				browserURL, err := launchWebBrowser(srv, displayAddr, openSessionID)
+				if err != nil {
+					fmt.Fprintf(os.Stderr, "  browser: could not open %s — %v\n", browserURL, err)
+				} else {
+					fmt.Printf("  browser: %s\n", browserURL)
+				}
+			})
+		} else {
+			serveErr = srv.RunGracefulListener(ctx, ln)
+		}
+		if serveErr != nil {
+			fmt.Fprintln(os.Stderr, i18n.M.ErrorPrefix, serveErr)
 			return 1
 		}
 		return 0
@@ -1015,6 +1117,96 @@ func runServe(args []string) int {
 		return 1
 	}
 	return 0
+}
+
+// runServeListenerAfterReady starts the HTTP accept loop, verifies that it can
+// return a response, and only then invokes onReady. This avoids opening a tab
+// against a merely-bound listener whose HTTP server has not started serving.
+func runServeListenerAfterReady(ctx context.Context, srv *serve.Server, ln net.Listener, addr string, onReady func()) error {
+	serveCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	done := make(chan error, 1)
+	go func() {
+		done <- srv.RunGracefulListener(serveCtx, ln)
+	}()
+	if err := waitForServeHTTPReady(serveCtx, addr); err != nil {
+		cancel()
+		serveErr := <-done
+		if serveErr != nil {
+			return fmt.Errorf("wait for Web server readiness: %w (server: %v)", err, serveErr)
+		}
+		return fmt.Errorf("wait for Web server readiness: %w", err)
+	}
+	if onReady != nil {
+		onReady()
+	}
+	return <-done
+}
+
+func waitForServeHTTPReady(ctx context.Context, addr string) error {
+	readyCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(readyCtx, http.MethodGet, "http://"+browserHostPort(addr)+"/", nil)
+	if err != nil {
+		return err
+	}
+	req.Close = true
+	client := &http.Client{
+		Transport: &http.Transport{DisableKeepAlives: true},
+		CheckRedirect: func(*http.Request, []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return err
+	}
+	_ = resp.Body.Close()
+	// The status code is intentionally not constrained: 200 (none/token shell),
+	// 302 (password login), and 401 (future auth modes) all prove the HTTP stack
+	// is accepting requests and returning headers.
+	return nil
+}
+
+// webBrowserURL converts a listen address into a URL a local browser can use.
+// Wildcard binds are valid server addresses but invalid browser destinations,
+// so they map to loopback. Token auth uses a URL fragment handoff so the secret
+// is absent from the initial request URL, browser history, referrers, and logs.
+func webBrowserURL(srv *serve.Server, addr, sessionID string) string {
+	hostPort := browserHostPort(addr)
+	base := "http://" + hostPort
+	entryPath := "/"
+	if sessionID != "" {
+		entryPath = "/sessions/" + url.PathEscape(sessionID)
+	}
+	switch srv.AuthMode() {
+	case "token":
+		return base + entryPath + "#token=" + url.QueryEscape(srv.AuthToken())
+	case "password":
+		if sessionID != "" {
+			return base + entryPath
+		}
+		return base + "/login"
+	default:
+		return base + entryPath
+	}
+}
+
+func launchWebBrowser(srv *serve.Server, addr, sessionID string) (string, error) {
+	browserURL := webBrowserURL(srv, addr, sessionID)
+	return browserURL, openBrowserURL(browserURL)
+}
+
+func browserHostPort(addr string) string {
+	host, port, err := net.SplitHostPort(addr)
+	if err != nil {
+		return addr
+	}
+	switch strings.TrimSpace(host) {
+	case "", "0.0.0.0", "::":
+		host = "127.0.0.1"
+	}
+	return net.JoinHostPort(host, port)
 }
 
 // chatREPL is an interactive session: a single persistent agent/session and a
@@ -1341,7 +1533,14 @@ func chatREPL(args []string, version string) int {
 	// because Controller.Close() runs SessionEnd hooks and kills plugin
 	// subprocesses — operations that corrupt bubbletea's terminal raw mode
 	// when executed while the TUI is alive.
+	launchWeb := false
+	launchWebPath := ""
+	launchWebSessionID := ""
+	launchWebModelRef := ""
+	launchWebProfile := ""
 	if fm, ok := final.(chatTUI); ok {
+		launchWeb = fm.launchWebOnExit
+		launchWebProfile = fm.runtimeProfile
 		for _, oc := range fm.oldControllers {
 			if c, ok := oc.(*control.Controller); ok {
 				reporter.RecordRecovery(c.DrainRecoveryMetrics())
@@ -1349,6 +1548,9 @@ func chatREPL(args []string, version string) int {
 			oc.Close()
 		}
 		if fm.ctrl != nil {
+			launchWebPath = fm.launchWebResumePath
+			launchWebSessionID = fm.launchWebSessionID
+			launchWebModelRef = fm.launchWebModelRef
 			if c, ok := fm.ctrl.(*control.Controller); ok {
 				reporter.RecordRecovery(c.DrainRecoveryMetrics())
 			}
@@ -1365,7 +1567,34 @@ func chatREPL(args []string, version string) int {
 		fmt.Fprintln(os.Stderr, i18n.M.ErrorPrefix, runErr)
 		return 1
 	}
+	if launchWeb {
+		// The Web runtime resumes a materialized TUI transcript or binds the exact
+		// reserved identity for a never-used session. Release the TUI lease before
+		// rebuilding the controller or the handoff would correctly reject its own
+		// session as already in use. The deferred Release remains as a harmless
+		// final guard for every other return path.
+		leases.Release()
+		return runWebCommand(webHandoffArgs(launchWebPath, launchWebSessionID, launchWebModelRef, launchWebProfile))
+	}
 	return 0
+}
+
+func webHandoffArgs(sessionPath, sessionID, modelRef, profile string) []string {
+	// The Web command owns deterministic port selection: start at 8787 and walk
+	// upward when sibling instances are already listening.
+	args := []string{}
+	if sessionPath != "" {
+		args = append(args, "--resume", sessionPath)
+	} else if sessionID != "" {
+		args = append(args, "--session-id", sessionID)
+	}
+	if modelRef != "" {
+		args = append(args, "--model", modelRef)
+	}
+	if profile != "" {
+		args = append(args, "--profile", profile)
+	}
+	return args
 }
 
 // adoptCarriedHistoryPreservingProfileAndGrants resumes c on the carried

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"net/url"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -317,7 +318,7 @@ func forwardServe(client *remote.Client, remoteAddr string, localPort int, token
 	if err != nil {
 		return "", err
 	}
-	return fmt.Sprintf("http://%s/?token=%s", bound, token), nil
+	return fmt.Sprintf("http://%s/#token=%s", bound, url.QueryEscape(token)), nil
 }
 
 func normalizeBind(bind string) string {
@@ -734,5 +735,12 @@ func openInBrowser(url string) error {
 		cmd, args = "xdg-open", []string{url}
 	}
 	c := exec.Command(cmd, args...)
-	return c.Start()
+	if err := c.Start(); err != nil {
+		return err
+	}
+	// Browser launchers normally exit immediately after handing the URL to the
+	// desktop session. Reap that helper asynchronously so a long-lived web or
+	// remote process does not retain its process resources.
+	go func() { _ = c.Wait() }()
+	return nil
 }
