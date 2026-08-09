@@ -423,8 +423,10 @@ declarations and do not apply these fallbacks:
   Agents use `/<plugin>:agent:<name>`, so an upstream agent and skill may share
   the same name without shadowing one another.
 - `hooks/session-start-codex` to the Reasonix `SessionStart` hook when present.
-- A plugin-root `CLAUDE.md` file to a built-in `SessionStart` context hook. The
-  file is read directly by Reasonix, without spawning a shell command.
+- For Codex compatibility packages, a plugin-root `CLAUDE.md` file to a built-in
+  `SessionStart` context hook. The file is read directly by Reasonix, without
+  spawning a shell command. Claude plugin manifests ignore this file, matching
+  Claude Code's plugin contract.
 - `.claude/settings.json` and `hooks/hooks.json` command hooks to Reasonix hook
   events when the event names match. `matcher`, `args`, `shell`, `async`,
   `env`, and timeout are preserved. Claude's execution contract is retained:

@@ -372,8 +372,9 @@ Reasonix 的对应实现，并不代表导入 Hook 的每一种运行时决策�
   `mcp__*__search` 这类 MCP 通配符。Agent 使用独立的
   `/<插件>:agent:<名称>` 命名空间，因此上游 Agent 与 Skill 同名时不会互相遮蔽。
 - 如果存在 `hooks/session-start-codex`，映射为 Reasonix `SessionStart` hook。
-- 插件根目录的 `CLAUDE.md` 会映射为内置的 `SessionStart` 上下文 hook。
-  Reasonix 会直接读取该文件，不通过 shell 命令。
+- 对 Codex 兼容包，插件根目录的 `CLAUDE.md` 会映射为内置的 `SessionStart`
+  上下文 hook，Reasonix 会直接读取该文件，不通过 shell 命令。Claude 插件
+  manifest 会忽略该文件，与 Claude Code 的插件契约保持一致。
 - `.claude/settings.json` 和 `hooks/hooks.json` 里的 command hooks 会按同名事件映射。
   `matcher`、`args`、`shell`、`async`、`env` 和 timeout 均会保留。Claude 的执行契约
   也会完整保留：只要出现 `args`（即使是空数组）就按 exec form 执行，并逐项原样传参；

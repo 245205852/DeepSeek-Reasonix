@@ -533,7 +533,16 @@ func parseCodexLike(path, root, kind string, includeCodexSessionStartHook bool) 
 	if kind == "claude" {
 		warnings = append(warnings, applyClaudeConventionDirs(root, &manifest)...)
 	}
-	compatWarnings, compatIssues := applyClaudeCompatibility(root, &manifest)
+	var compatWarnings []string
+	var compatIssues []CompatibilityIssue
+	if kind == "claude" {
+		// Claude Code does not treat a plugin-root CLAUDE.md as project
+		// context. Keep its supported hook and MCP conventions without
+		// synthesizing an extra SessionStart context hook.
+		compatWarnings, compatIssues = appendClaudeCompatibility(root, &manifest)
+	} else {
+		compatWarnings, compatIssues = applyClaudeCompatibility(root, &manifest)
+	}
 	warnings = append(warnings, compatWarnings...)
 	issues = append(issues, compatIssues...)
 	if err := validateManifest(root, &manifest); err != nil {
