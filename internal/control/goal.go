@@ -98,6 +98,11 @@ type goalMachine struct {
 	lastEvaluatorReason    string
 	stopCause              string
 	budgetExtensions       int // turn extensions from resume (compat field name)
+	// legacyTaskID is retained only while a historical AutoResearch archive is
+	// awaiting migration. It is serialized on fail-closed blocked sidecars so a
+	// restart can retry the migration without treating the raw archive path as a
+	// new Goal.
+	legacyTaskID string
 
 	// statePath is the persisted goal-state sidecar; empty disables persistence.
 	statePath string
@@ -290,7 +295,12 @@ func (g *goalMachine) set(goal, preferredBudgetClass string, todos []evidence.To
 // archive goal. A concurrent Goal replacement cannot be blocked between two
 // separate FSM mutations.
 func (g *goalMachine) setLegacyArchiveBlocked(goal, preferredBudgetClass, reason string, todos []evidence.TodoItem) (string, []byte, bool) {
+	return g.setLegacyArchiveBlockedWithTaskID(goal, preferredBudgetClass, reason, "", todos)
+}
+
+func (g *goalMachine) setLegacyArchiveBlockedWithTaskID(goal, preferredBudgetClass, reason, taskID string, todos []evidence.TodoItem) (string, []byte, bool) {
 	goal = strings.TrimSpace(goal)
+	taskID = strings.TrimSpace(taskID)
 	if goal != "" && preferredBudgetClass == "" {
 		preferredBudgetClass = taskintent.ClassifyGoalBudget(goal)
 	}
@@ -302,6 +312,7 @@ func (g *goalMachine) setLegacyArchiveBlocked(goal, preferredBudgetClass, reason
 	}
 	g.stopCause = stopCauseLegacyArchive
 	g.block = clipGoalReason(reason)
+	g.legacyTaskID = taskID
 	return g.buildStateLocked(todos)
 }
 
@@ -326,6 +337,8 @@ func (g *goalMachine) installGoalLocked(goal, preferredBudgetClass string) {
 		g.tokensLimit = 0 // no token hard limit
 		g.noProgressLimit = defaultNoProgressLimit
 	}
+	// Installing a normal Goal always abandons any pending legacy migration.
+	g.legacyTaskID = ""
 }
 
 func (g *goalMachine) setStrict(strict bool, todos []evidence.TodoItem) (string, []byte, bool) {
@@ -645,11 +658,15 @@ func (g *goalMachine) buildStateLocked(todos []evidence.TodoItem) (path string, 
 		StopCause:              g.stopCause,
 		BudgetExtensions:       g.budgetExtensions,
 	}
-	// GoalResearchOff is a downgrade fence: old readers must not infer or inject
-	// the removed AutoResearch runtime. Legacy task identity is decode-only and
-	// remains in the Controller-owned recovery boundary; it is never written into
-	// a new sidecar.
-	state.ResearchMode = GoalResearchOff
+	// GoalResearchOff is a downgrade fence for ordinary Goal sidecars. A
+	// fail-closed legacy migration keeps its task identity and compatibility mode
+	// until the archive has been validated and the Goal-only state is committed.
+	if g.legacyTaskID != "" && g.status == GoalStatusBlocked && g.stopCause == stopCauseLegacyArchive {
+		state.AutoResearchTaskID = g.legacyTaskID
+		state.ResearchMode = GoalResearchOn
+	} else {
+		state.ResearchMode = GoalResearchOff
+	}
 	b, err := json.Marshal(state)
 	if err != nil {
 		slog.Warn("controller: marshal goal state", "err", err)
@@ -741,11 +758,20 @@ func (g *goalMachine) restoreFromState(sessionPath string) (path string, data []
 	if g.status == "" {
 		g.status = GoalStatusStopped
 	}
-	// Legacy task identity is decode-only compatibility data. It is returned to
-	// the Controller's migration boundary and never enters active Goal memory.
+	// Legacy task identity is migration-only compatibility data. It is returned to
+	// the Controller's archive boundary and retained in the machine only while a
+	// fail-closed migration remains pending.
 	legacy = legacyGoalRestore{
 		taskID: strings.TrimSpace(state.AutoResearchTaskID),
 		todos:  append([]evidence.TodoItem(nil), state.Todos...),
+	}
+	// A task id is pending only when the sidecar has no Goal text. A legacy
+	// sidecar that already contains an objective can be migrated directly and
+	// must serialize as ordinary Goal state on the first write.
+	if g.goal == "" {
+		g.legacyTaskID = legacy.taskID
+	} else {
+		g.legacyTaskID = ""
 	}
 	if legacy.taskID != "" && g.goal != "" {
 		// Sidecars that already carry the Goal objective do not depend on the
