@@ -64,7 +64,11 @@ go_bin_dir() {
 }
 
 installed_wails_version() {
-	wails version 2>/dev/null | awk 'match($0, /v[0-9]+\.[0-9]+\.[0-9]+/) { print substr($0, RSTART, RLENGTH); exit }'
+	local output
+	if ! output="$(wails version 2>/dev/null)"; then
+		return 1
+	fi
+	awk 'match($0, /v[0-9]+\.[0-9]+\.[0-9]+/) { print substr($0, RSTART, RLENGTH); exit }' <<<"$output"
 }
 
 sanitize_semver_id() {
@@ -159,7 +163,7 @@ install_or_check_tools() {
 
 	wails_version=""
 	if command -v wails >/dev/null 2>&1; then
-		wails_version="$(installed_wails_version)"
+		wails_version="$(installed_wails_version || true)"
 	fi
 	if [[ "$wails_version" != "$wails_pin" ]]; then
 		if [[ "$install_tools" == "1" ]]; then
@@ -170,8 +174,8 @@ install_or_check_tools() {
 			fail "Wails CLI ${wails_version:-not found} does not match .wails-version $wails_pin. Run: make wails-install"
 		fi
 	fi
-	wails_version="$(installed_wails_version)"
-	[[ "$wails_version" == "$wails_pin" ]] || fail "Wails CLI $wails_version does not match .wails-version $wails_pin after installation"
+	wails_version="$(installed_wails_version || true)"
+	[[ "$wails_version" == "$wails_pin" ]] || fail "Wails CLI ${wails_version:-not found} does not match .wails-version $wails_pin after installation"
 
 	case "$os" in
 	darwin)

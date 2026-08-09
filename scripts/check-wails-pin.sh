@@ -11,9 +11,14 @@ set -euo pipefail
 root="${1:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
 pin="$(tr -d '[:space:]' < "$root/.wails-version")"
 mod="$(awk '/github.com\/wailsapp\/wails\/v2 v/ {print $2; exit}' "$root/desktop/go.mod")"
+module="github.com/wailsapp/wails/v2/cmd/wails"
 
 if [ -z "$pin" ]; then
   echo "check-wails-pin: .wails-version is empty" >&2
+  exit 1
+fi
+if [[ ! "$pin" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+  echo "check-wails-pin: .wails-version must contain one stable semantic version (vMAJOR.MINOR.PATCH), got: $pin" >&2
   exit 1
 fi
 if [ "$pin" != "$mod" ]; then
@@ -42,9 +47,26 @@ for workflow in "$root"/.github/workflows/ci.yml "$root"/.github/workflows/relea
   fi
 done
 
-# The workflows are not the only way developers build a release. Keep local
-# packaging and setup docs from bypassing the shared pin too. The escaped dots
-# keep this regex from matching its own source.
+# The workflows are not the only way developers build a release. Reject every
+# tracked install source except the three supported ways to read the shared pin.
+install_lines="$(git -C "$root" grep -nF "$module@" -- . || true)"
+unexpected_sources="$(awk -v module="$module" '
+  index($0, ".github/workflows/ci.yml:") == 1 && index($0, module "@$(cat \"$GITHUB_WORKSPACE/.wails-version\")") { next }
+  index($0, ".github/workflows/release-desktop.yml:") == 1 && index($0, module "@$(cat \"$GITHUB_WORKSPACE/.wails-version\")") { next }
+  index($0, "Makefile:") == 1 && index($0, module "@$(WAILS_VERSION)") { next }
+  index($0, "prod_test:") == 1 && index($0, module "@$wails_pin") { next }
+  { print }
+' <<<"$install_lines")"
+if [[ -n "$unexpected_sources" ]]; then
+  cat >&2 <<MSG
+check-wails-pin: Wails CLI installs must read the shared .wails-version pin; found unsupported sources:
+$unexpected_sources
+MSG
+  exit 1
+fi
+
+# Keep setup docs from bypassing the shared pin too. The escaped dots keep this
+# regex from matching its own source.
 hard_coded="$(git -C "$root" grep -nE 'github\.com/wailsapp/wails/v2/cmd/wails@(v[0-9]|latest)' -- . || true)"
 if [[ -n "$hard_coded" ]]; then
   cat >&2 <<MSG
@@ -54,7 +76,18 @@ MSG
   exit 1
 fi
 
-grep -Fq 'github.com/wailsapp/wails/v2/cmd/wails@$(WAILS_VERSION)' "$root/Makefile" || {
+workflow_install="go install \"$module@\$(cat \"\$GITHUB_WORKSPACE/.wails-version\")\""
+for workflow in "$root"/.github/workflows/ci.yml "$root"/.github/workflows/release-desktop.yml; do
+  grep -Fq "$workflow_install" "$workflow" || {
+    echo "check-wails-pin: $(basename "$workflow") must install Wails from \$GITHUB_WORKSPACE/.wails-version" >&2
+    exit 1
+  }
+done
+grep -Fq 'WAILS_VERSION := $(shell tr -d '\''[:space:]'\'' < .wails-version)' "$root/Makefile" || {
+  echo "check-wails-pin: Makefile must read WAILS_VERSION from .wails-version" >&2
+  exit 1
+}
+grep -Fq "go install \"$module@\$(WAILS_VERSION)\"" "$root/Makefile" || {
   echo "check-wails-pin: make wails-install must install WAILS_VERSION" >&2
   exit 1
 }
@@ -64,6 +97,10 @@ grep -Fq 'make wails-install' "$root/desktop/README.md" || {
 }
 grep -Fq 'wails version' "$root/prod_test" || {
   echo "check-wails-pin: prod_test must verify the installed Wails CLI version" >&2
+  exit 1
+}
+grep -Fq "go install \"$module@\$wails_pin\"" "$root/prod_test" || {
+  echo "check-wails-pin: prod_test must install the shared Wails pin" >&2
   exit 1
 }
 

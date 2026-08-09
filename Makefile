@@ -45,7 +45,8 @@ lint-update:
 	go run ./tools/repolint -update
 
 wails-install:
-	go install github.com/wailsapp/wails/v2/cmd/wails@$(WAILS_VERSION)
+	bash scripts/check-wails-pin.sh
+	go install "github.com/wailsapp/wails/v2/cmd/wails@$(WAILS_VERSION)"
 
 # Linting one GOOS leaves every //go:build windows and darwin file unchecked.
 lint-cross:
