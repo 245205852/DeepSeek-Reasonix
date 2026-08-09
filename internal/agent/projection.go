@@ -382,24 +382,3 @@ func extractLatestSummary(msgs []provider.Message) string {
 	}
 	return ""
 }
-
-// fixedEarlyUserTurns returns position-stable early small user turns after the
-// system prompt. Unlike "latest N user turns", the set is fixed from the start
-// of the transcript so later compressions do not reshuffle the cache prefix.
-func (a *Agent) fixedEarlyUserTurns(msgs []provider.Message, head int) []provider.Message {
-	const maxEarly = 3
-	var early []provider.Message
-	for i := head; i < len(msgs) && len(early) < maxEarly; i++ {
-		m := msgs[i]
-		if m.LocalOnly || m.Role != provider.RoleUser || isCompactionSummary(m) {
-			continue
-		}
-		if !a.fixedPinnableUserTurn(m) {
-			// Large early turns stay foldable; stop extending the fixed prefix
-			// once a non-pinnable user turn appears so positions stay stable.
-			break
-		}
-		early = append(early, m)
-	}
-	return early
-}
