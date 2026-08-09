@@ -121,13 +121,20 @@ type 不推导 scope。项目反馈仍只属于项目，全局 reference 仍然�
 - provider 可见块不包含 fact storage path，snippet 中的 home directory 前缀会替换为
   `<local-home>`。
 
-freshness 按事实类型计算：
+freshness 默认按事实类型计算：
 
 | 类型 | fresh | current | 超过多久为 stale |
 | --- | ---: | ---: | ---: |
 | `reference` | 14 天 | 45 天 | 45 天 |
 | `project` | 30 天 | 180 天 | 180 天 |
 | `user`、`feedback` | 90 天 | 365 天 | 365 天 |
+
+类型只是默认值，不代表事实的真实易变性——README 地址可能三年不变，release 分支可能
+三天就失效。显式 `volatility` 会覆盖类型窗口：`volatile`（7 / 30 天）、`stable`
+（90 / 365 天）、`evergreen`（永不老化）。两个可选时间戳进一步细化：`expires_at`
+是硬边界——过期后事实状态为 `expired`，完全不再被自动召回（显式搜索仍可见）；
+`last_verified_at` 由 `/memory verify <id-or-name>` 或助手重新确认事实时打戳，
+在不改变 `updated_at` 含义的前提下续期新鲜度时钟。
 
 freshness 是提醒和排序信号，不代表事实真假。召回文本会明确告诉模型：内容可能错误或过期，
 不能覆盖当前请求和常驻指令。

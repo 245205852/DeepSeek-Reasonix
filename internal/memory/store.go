@@ -73,59 +73,23 @@ func NormalizeFactScope(s string) FactScope {
 	return FactScopeProject
 }
 
-// Activation controls how a fact reaches the model, orthogonal to Scope:
-// scope says where a fact may be used, activation says whether its body rides
-// the stable prefix every session (pinned) or is retrieval-only (relevant).
-type Activation string
-
-const (
-	ActivationRelevant Activation = "relevant" // retrieval-only: index + recall
-	ActivationPinned   Activation = "pinned"   // body loads into the stable session prefix
-)
-
-// NormalizeActivation validates a persisted or requested activation. Empty and
-// unknown values return "" (unset) so ResolveActivation can apply the
-// legacy-aware default instead of silently inventing an explicit choice.
-func NormalizeActivation(s string) Activation {
-	switch Activation(strings.ToLower(strings.TrimSpace(s))) {
-	case ActivationRelevant:
-		return ActivationRelevant
-	case ActivationPinned:
-		return ActivationPinned
-	}
-	return ""
-}
-
-// ResolveActivation defaults an unset activation. Legacy global user/feedback
-// facts predate the field and were always loaded as stable guidance, so they
-// resolve to pinned until a rewrite records an explicit choice; everything
-// else is relevant.
-func ResolveActivation(m Memory) Activation {
-	if a := NormalizeActivation(string(m.Activation)); a != "" {
-		return a
-	}
-	if NormalizeFactScope(string(m.Scope)) == FactScopeGlobal {
-		if t := NormalizeType(string(m.Type)); t == TypeUser || t == TypeFeedback {
-			return ActivationPinned
-		}
-	}
-	return ActivationRelevant
-}
-
 // Memory is one stored fact.
 type Memory struct {
-	ID          string // immutable identity; Name may change without changing ID
-	Revision    int    // monotonic content revision, starting at 1
-	CreatedAt   time.Time
-	UpdatedAt   time.Time
-	Name        string // kebab-case slug; also the file stem (<name>.md)
-	Title       string // human-readable index label; falls back to a de-kebabed Name
-	Description string // one-line summary used for the index and recall
-	Type        Type
-	Scope       FactScope  // project by default; global only when explicitly requested
-	Activation  Activation // persisted choice; "" = unset, resolved by ResolveActivation
-	Keywords    string     // search aliases (bilingual synonyms, related commands); recall-only, never rendered into the index
-	Body        string     // the fact itself (Markdown)
+	ID             string // immutable identity; Name may change without changing ID
+	Revision       int    // monotonic content revision, starting at 1
+	CreatedAt      time.Time
+	UpdatedAt      time.Time
+	Name           string // kebab-case slug; also the file stem (<name>.md)
+	Title          string // human-readable index label; falls back to a de-kebabed Name
+	Description    string // one-line summary used for the index and recall
+	Type           Type
+	Scope          FactScope  // project by default; global only when explicitly requested
+	Activation     Activation // persisted choice; "" = unset, resolved by ResolveActivation
+	Volatility     Volatility // how fast the fact ages; "" = unset, type default applies
+	ExpiresAt      time.Time  // hard freshness boundary; zero = never expires
+	LastVerifiedAt time.Time  // last explicit confirmation; renews the freshness clock
+	Keywords       string     // search aliases (bilingual synonyms, related commands); recall-only, never rendered into the index
+	Body           string     // the fact itself (Markdown)
 }
 
 // ArchivedMemory is a saved fact that has been removed from active memory but
@@ -763,18 +727,21 @@ func loadMemory(path string) (Memory, bool) {
 	}
 	fm, body := splitFrontmatter(string(b))
 	m := Memory{
-		ID:          fm["id"],
-		Revision:    parsePositiveInt(fm["revision"]),
-		CreatedAt:   parseMemoryTime(fm["created_at"]),
-		UpdatedAt:   parseMemoryTime(fm["updated_at"]),
-		Name:        fm["name"],
-		Title:       fm["title"],
-		Description: fm["description"],
-		Keywords:    fm["keywords"],
-		Activation:  NormalizeActivation(fm["activation"]),
-		Type:        persistedFactType(fm),
-		Scope:       factScopeFromFrontmatter(fm["scope"]),
-		Body:        strings.TrimSpace(body),
+		ID:             fm["id"],
+		Revision:       parsePositiveInt(fm["revision"]),
+		CreatedAt:      parseMemoryTime(fm["created_at"]),
+		UpdatedAt:      parseMemoryTime(fm["updated_at"]),
+		Name:           fm["name"],
+		Title:          fm["title"],
+		Description:    fm["description"],
+		Keywords:       fm["keywords"],
+		Activation:     NormalizeActivation(fm["activation"]),
+		Volatility:     NormalizeVolatility(fm["volatility"]),
+		ExpiresAt:      parseMemoryTime(fm["expires_at"]),
+		LastVerifiedAt: parseMemoryTime(fm["last_verified_at"]),
+		Type:           persistedFactType(fm),
+		Scope:          factScopeFromFrontmatter(fm["scope"]),
+		Body:           strings.TrimSpace(body),
 	}
 	if m.Name == "" {
 		m.Name = strings.TrimSuffix(filepath.Base(path), ".md")
