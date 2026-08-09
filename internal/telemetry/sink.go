@@ -143,6 +143,10 @@ func (s *sink) RecordDelegationAdmission(a event.DelegationAdmissionAudit) {
 	event.RecordDelegationAdmission(s.inner, a)
 }
 
+func (s *sink) RecordMemoryRecall(a event.MemoryRecallAudit) {
+	event.RecordMemoryRecall(s.inner, a)
+}
+
 func (s *sink) RecordProtocolRecovery(a event.ProtocolRecoveryAudit) {
 	add(s.counts, "tool_call_reasoning_recovery", string(a.Kind), 1)
 	event.RecordProtocolRecovery(s.inner, a)
