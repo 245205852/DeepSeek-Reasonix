@@ -17,6 +17,8 @@ var (
 	errTopicArchiveBusy   = errors.New("Reasonix is finishing another session change — wait a moment and retry archiving")
 )
 
+var topicArchiveCleanupHookForTest func() error
+
 type topicArchiveTrace struct {
 	phase        string
 	targetCount  int
@@ -108,15 +110,23 @@ func (a *App) commitTopicArchive(topicID string, trace *topicArchiveTrace) (fall
 	if err := a.snapshotTopicRuntimeBindings(removed); err != nil {
 		return fallbackRuntimeTarget{}, nil, err
 	}
+	trace.phase = "acquire_removal_ownership"
+	ownership, err := acquireTopicArchiveOwnership(targets, removed)
+	if err != nil {
+		return fallbackRuntimeTarget{}, nil, err
+	}
+	defer ownership.release()
 	trace.phase = "mark_cleanup_pending"
 	rollbackMarkers, err := markTopicArchiveCleanupPending(targets)
 	if err != nil {
+		ownership.rollback()
 		return fallbackRuntimeTarget{}, nil, err
 	}
 	trace.phase = "detach_runtimes"
 	fallback, unchanged := a.removeTopicRuntimeBindingsIfUnchanged(topicID, removed)
 	if !unchanged {
 		rollbackMarkers()
+		ownership.rollback()
 		return fallbackRuntimeTarget{}, nil, errTopicArchiveBusy
 	}
 	a.finalizeRemovedTopicRuntimes(removed)
@@ -136,18 +146,31 @@ func (a *App) commitTopicArchive(topicID string, trace *topicArchiveTrace) (fall
 		timedOut := waitDestroyHandles(destroys)
 		a.closeRemovedSessionRuntimesForSessionAfterDestroyAdmissionHeld(removed, target.dir, target.sessionPath, closedRemoved)
 		if timedOut {
-			go delayedDesktopSessionTrash(target.dir, target.sessionPath, target.key, destroys)
+			guard := ownership.take(target.sessionPath)
+			go delayedDesktopTopicTrash(target.dir, target.sessionPath, target.key, guard, destroys)
 			continue
 		}
 		trace.phase = "move_artifacts"
-		err := trashSessionArtifacts(target.dir, target.sessionPath, target.key)
+		var err error
+		if hook := topicArchiveCleanupHookForTest; hook != nil {
+			err = hook()
+		}
+		if err == nil {
+			err = trashSessionArtifactsWithGuard(target.dir, target.sessionPath, target.key, ownership.take(target.sessionPath))
+		}
 		finishDestroyHandles(destroys)
 		if err != nil {
-			return fallbackRuntimeTarget{}, nil, err
+			// Cleanup-pending is the durable commit point. Once bindings have
+			// detached, report the archive as accepted and let startup
+			// reconciliation finish any filesystem operation that could not.
+			slog.Warn("desktop: topic archive cleanup remains pending")
 		}
 	}
 	trace.phase = "delete_topic_metadata"
-	return fallback, changedDirs, a.deleteTopic(topicID)
+	if err := a.deleteTopic(topicID); err != nil {
+		slog.Warn("desktop: topic archive metadata cleanup remains pending")
+	}
+	return fallback, changedDirs, nil
 }
 
 func markTopicArchiveCleanupPending(targets []topicTrashTarget) (func(), error) {
@@ -155,7 +178,7 @@ func markTopicArchiveCleanupPending(targets []topicTrashTarget) (func(), error) 
 	rollback := func() {
 		for _, path := range marked {
 			if err := agent.ClearCleanupPending(path); err != nil {
-				slog.Warn("desktop: rollback topic archive marker failed", "err", err)
+				slog.Warn("desktop: rollback topic archive marker failed")
 			}
 		}
 	}

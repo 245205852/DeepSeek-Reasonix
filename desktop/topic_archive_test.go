@@ -1,14 +1,22 @@
 package main
 
 import (
+	"bufio"
+	"bytes"
 	"errors"
+	"log/slog"
 	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
 	"reasonix/internal/agent"
 	"reasonix/internal/config"
 	"reasonix/internal/control"
+	"reasonix/internal/provider"
+	"reasonix/internal/store"
 )
 
 type snapshotErrorSessionController struct {
@@ -80,5 +88,298 @@ func TestTrashTopicRejectsConcurrentRuntimeMutationWithoutWaiting(t *testing.T) 
 	}
 	if got := loadTopicTitle("", topicID); got != "Runtime mutation busy" {
 		t.Fatalf("busy archive changed topic title to %q", got)
+	}
+}
+
+func TestTrashTopicForeignLeaseFailsBeforeCleanupCommit(t *testing.T) {
+	isolateDesktopUserDirs(t)
+	projectRoot := t.TempDir()
+	topicID := "topic_foreign_lease"
+	if err := addProject(projectRoot, ""); err != nil {
+		t.Fatalf("add project: %v", err)
+	}
+	if err := setTopicTitle(projectRoot, topicID, "Foreign lease"); err != nil {
+		t.Fatalf("set topic title: %v", err)
+	}
+	dir := config.SessionDir()
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("mkdir sessions: %v", err)
+	}
+	sessionPath := writeTopicSessionWithPrompt(t, dir, "foreign-lease.jsonl", topicID, "Foreign lease", projectRoot, "preserve me", time.Now())
+
+	cmd := exec.Command(os.Args[0], "-test.run=^TestTrashTopicForeignLeaseHelper$")
+	cmd.Env = append(os.Environ(),
+		"REASONIX_TOPIC_ARCHIVE_LEASE_HELPER=1",
+		"REASONIX_TOPIC_ARCHIVE_LEASE_PATH="+sessionPath,
+	)
+	stdin, err := cmd.StdinPipe()
+	if err != nil {
+		t.Fatalf("lease helper stdin: %v", err)
+	}
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		t.Fatalf("lease helper stdout: %v", err)
+	}
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("start lease helper: %v", err)
+	}
+	released := false
+	release := func() {
+		if released {
+			return
+		}
+		released = true
+		_ = stdin.Close()
+		if err := cmd.Wait(); err != nil {
+			t.Errorf("lease helper exit: %v (%s)", err, stderr.String())
+		}
+	}
+	defer release()
+	ready, err := bufio.NewReader(stdout).ReadString('\n')
+	if err != nil || strings.TrimSpace(ready) != "ready" {
+		t.Fatalf("lease helper readiness = %q, err=%v (%s)", ready, err, stderr.String())
+	}
+
+	app := NewApp()
+	if err := app.TrashTopic(topicID); !errors.Is(err, errSessionBusyElsewhere) {
+		t.Fatalf("TrashTopic foreign lease error = %v, want %v", err, errSessionBusyElsewhere)
+	}
+	if agent.IsCleanupPending(sessionPath) {
+		t.Fatal("rejected archive published a cleanup-pending marker")
+	}
+	if got := loadTopicTitle(projectRoot, topicID); got != "Foreign lease" {
+		t.Fatalf("rejected archive topic title = %q", got)
+	}
+	if err := reconcileDesktopCleanupPending(dir); err != nil {
+		t.Fatalf("reconcile without marker: %v", err)
+	}
+	if _, err := os.Stat(sessionPath); err != nil {
+		t.Fatalf("rejected archive removed the live session: %v", err)
+	}
+
+	release()
+	if err := reconcileDesktopCleanupPending(dir); err != nil {
+		t.Fatalf("reconcile after foreign release: %v", err)
+	}
+	if _, err := os.Stat(sessionPath); err != nil {
+		t.Fatalf("failed archive scheduled a later deletion: %v", err)
+	}
+}
+
+func TestTrashTopicForeignLeaseHelper(t *testing.T) {
+	if os.Getenv("REASONIX_TOPIC_ARCHIVE_LEASE_HELPER") != "1" {
+		return
+	}
+	lease, err := agent.TryAcquireSessionLease(os.Getenv("REASONIX_TOPIC_ARCHIVE_LEASE_PATH"))
+	if err != nil {
+		t.Fatalf("TryAcquireSessionLease: %v", err)
+	}
+	if _, err := os.Stdout.WriteString("ready\n"); err != nil {
+		lease.Release()
+		t.Fatalf("write readiness: %v", err)
+	}
+	var release [1]byte
+	_, _ = os.Stdin.Read(release[:])
+	lease.Release()
+}
+
+func TestSnapshotTopicRuntimeConflictLogOmitsSessionPath(t *testing.T) {
+	privatePath := filepath.Join(t.TempDir(), "private-session.jsonl")
+	base := control.New(control.Options{})
+	defer base.Close()
+	ctrl := &snapshotErrorSessionController{SessionAPI: base, err: &agent.SessionSnapshotConflictError{
+		Path: privatePath,
+		Kind: agent.SessionSnapshotConflictDiverged,
+	}}
+	var output bytes.Buffer
+	previous := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&output, nil)))
+	defer slog.SetDefault(previous)
+
+	app := NewApp()
+	if err := app.snapshotTopicRuntimeBindings([]removedSessionRuntime{{ctrl: ctrl}}); err != nil {
+		t.Fatalf("snapshotTopicRuntimeBindings: %v", err)
+	}
+	logged := output.String()
+	if strings.Contains(logged, privatePath) {
+		t.Fatalf("snapshot conflict log exposed the session path: %s", logged)
+	}
+	if !strings.Contains(logged, string(agent.SessionSnapshotConflictDiverged)) {
+		t.Fatalf("snapshot conflict log omitted the safe conflict kind: %s", logged)
+	}
+}
+
+func TestTrashTopicConvertsLocalLeaseWithoutUnlockWindow(t *testing.T) {
+	isolateDesktopUserDirs(t)
+	projectRoot := t.TempDir()
+	topicID := "topic_local_lease"
+	if err := addProject(projectRoot, ""); err != nil {
+		t.Fatalf("add project: %v", err)
+	}
+	if err := setTopicTitle(projectRoot, topicID, "Local lease"); err != nil {
+		t.Fatalf("set topic title: %v", err)
+	}
+	dir := config.SessionDir()
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("mkdir sessions: %v", err)
+	}
+	sessionPath := writeTopicSessionWithPrompt(t, dir, "local-lease.jsonl", topicID, "Local lease", projectRoot, "preserve me", time.Now())
+	ctrl := control.New(control.Options{SessionDir: dir, SessionPath: sessionPath, Label: "test", WorkspaceRoot: projectRoot})
+	defer ctrl.Close()
+	tab := &WorkspaceTab{ID: "local", Scope: "project", WorkspaceRoot: projectRoot, TopicID: topicID,
+		TopicTitle: "Local lease", SessionPath: sessionPath, Ctrl: ctrl, Ready: true, disabledMCP: map[string]ServerView{}}
+	if err := tab.ensureSessionLease(sessionPath); err != nil {
+		t.Fatalf("ensureSessionLease: %v", err)
+	}
+	keep := &WorkspaceTab{ID: "keep", Scope: "project", WorkspaceRoot: projectRoot, TopicID: "keep", Ready: true}
+	app := &App{tabs: map[string]*WorkspaceTab{tab.ID: tab, keep.ID: keep}, tabOrder: []string{tab.ID, keep.ID}, activeTabID: tab.ID}
+
+	if err := app.TrashTopic(topicID); err != nil {
+		t.Fatalf("TrashTopic: %v", err)
+	}
+	if agent.IsCleanupPending(sessionPath) {
+		t.Fatal("completed archive left cleanup pending")
+	}
+	if _, err := os.Stat(sessionPath); !os.IsNotExist(err) {
+		t.Fatalf("archived session still exists, err=%v", err)
+	}
+	for _, path := range []string{store.SessionLeaseInfo(sessionPath), store.SessionLeaseLock(sessionPath), store.SessionLockFile(sessionPath)} {
+		if _, err := os.Stat(path); !os.IsNotExist(err) {
+			t.Errorf("ownership sidecar survived archive: %s (err=%v)", path, err)
+		}
+	}
+}
+
+func TestTrashTopicCommittedCleanupFailureReconcilesWithoutFailureResponse(t *testing.T) {
+	isolateDesktopUserDirs(t)
+	projectRoot := t.TempDir()
+	topicID := "topic_committed_cleanup"
+	if err := addProject(projectRoot, ""); err != nil {
+		t.Fatalf("add project: %v", err)
+	}
+	if err := setTopicTitle(projectRoot, topicID, "Committed cleanup"); err != nil {
+		t.Fatalf("set topic title: %v", err)
+	}
+	dir := config.SessionDir()
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("mkdir sessions: %v", err)
+	}
+	sessionPath := writeTopicSessionWithPrompt(t, dir, "committed-cleanup.jsonl", topicID, "Committed cleanup", projectRoot, "preserve me", time.Now())
+	topicArchiveCleanupHookForTest = func() error { return errors.New("injected cleanup failure") }
+	defer func() { topicArchiveCleanupHookForTest = nil }()
+
+	app := NewApp()
+	if err := app.TrashTopic(topicID); err != nil {
+		t.Fatalf("committed TrashTopic returned a failure: %v", err)
+	}
+	if !agent.IsCleanupPending(sessionPath) {
+		t.Fatal("committed cleanup failure did not retain its durable marker")
+	}
+	if got := loadTopicTitle(projectRoot, topicID); got != "" {
+		t.Fatalf("committed archive retained topic title %q", got)
+	}
+	if _, err := os.Stat(sessionPath); err != nil {
+		t.Fatalf("deferred session disappeared before reconciliation: %v", err)
+	}
+
+	topicArchiveCleanupHookForTest = nil
+	if err := reconcileDesktopCleanupPending(dir); err != nil {
+		t.Fatalf("reconcile committed cleanup: %v", err)
+	}
+	if agent.IsCleanupPending(sessionPath) {
+		t.Fatal("reconciliation retained the cleanup marker")
+	}
+	if _, err := os.Stat(sessionPath); !os.IsNotExist(err) {
+		t.Fatalf("reconciled session still exists, err=%v", err)
+	}
+}
+
+func TestTrashTopicPreservesDivergedExistingTrash(t *testing.T) {
+	isolateDesktopUserDirs(t)
+	projectRoot := t.TempDir()
+	topicID := "topic_diverged_trash"
+	if err := addProject(projectRoot, ""); err != nil {
+		t.Fatalf("add project: %v", err)
+	}
+	if err := setTopicTitle(projectRoot, topicID, "Diverged trash"); err != nil {
+		t.Fatalf("set topic title: %v", err)
+	}
+	dir := config.SessionDir()
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("mkdir sessions: %v", err)
+	}
+	sessionPath := writeTopicSessionWithPrompt(t, dir, "diverged-trash.jsonl", topicID, "Diverged trash", projectRoot, "new live history", time.Now())
+	existingTrashPath := filepath.Join(sessionTrashPath(dir), filepath.Base(sessionPath), filepath.Base(sessionPath))
+	existing := agent.NewSession("system")
+	existing.Add(provider.Message{Role: provider.RoleUser, Content: "older trash history"})
+	if err := existing.SaveSnapshot(existingTrashPath); err != nil {
+		t.Fatalf("write existing trash: %v", err)
+	}
+
+	app := NewApp()
+	if err := app.TrashTopic(topicID); err != nil {
+		t.Fatalf("TrashTopic: %v", err)
+	}
+	trashed, err := listTrashedSessionFiles(dir)
+	if err != nil {
+		t.Fatalf("listTrashedSessionFiles: %v", err)
+	}
+	if len(trashed) != 2 {
+		t.Fatalf("trashed session count = %d, want both histories: %v", len(trashed), trashed)
+	}
+	seen := map[string]bool{}
+	for _, path := range trashed {
+		session, err := agent.LoadSession(path)
+		if err != nil {
+			t.Fatalf("LoadSession(%q): %v", path, err)
+		}
+		for _, message := range session.Snapshot() {
+			seen[message.Content] = true
+		}
+	}
+	for _, content := range []string{"older trash history", "new live history"} {
+		if !seen[content] {
+			t.Fatalf("archived histories = %#v, missing %q", seen, content)
+		}
+	}
+}
+
+func TestTopicArchiveOwnershipRollbackRestoresLocalLease(t *testing.T) {
+	isolateDesktopUserDirs(t)
+	dir := config.SessionDir()
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("mkdir sessions: %v", err)
+	}
+	sessionPath := filepath.Join(dir, "rollback-lease.jsonl")
+	if err := os.WriteFile(sessionPath, []byte("{}\n"), 0o644); err != nil {
+		t.Fatalf("write session: %v", err)
+	}
+	tab := &WorkspaceTab{ID: "rollback", SessionPath: sessionPath, Ready: true}
+	if err := tab.ensureSessionLease(sessionPath); err != nil {
+		t.Fatalf("ensureSessionLease: %v", err)
+	}
+	defer tab.releaseSessionLease()
+	removed := []removedSessionRuntime{{tab: tab, sessionDir: dir, sessionPath: sessionPath}}
+	targets := []topicTrashTarget{{dir: dir, sessionPath: sessionPath, key: filepath.Base(sessionPath)}}
+
+	batch, err := acquireTopicArchiveOwnership(targets, removed)
+	if err != nil {
+		t.Fatalf("acquireTopicArchiveOwnership: %v", err)
+	}
+	if tab.sessionLeaseRuntimeKey() != "" {
+		batch.rollback()
+		t.Fatal("converted ownership remained attached to the runtime tab")
+	}
+	batch.rollback()
+	if got := tab.sessionLeaseRuntimeKey(); got != sessionRuntimeKey(sessionPath) {
+		t.Fatalf("rolled back lease key = %q, want %q", got, sessionRuntimeKey(sessionPath))
+	}
+	if next, err := agent.TryAcquireSessionLease(sessionPath); !errors.Is(err, agent.ErrSessionLeaseHeld) {
+		if next != nil {
+			next.Release()
+		}
+		t.Fatalf("competing lease after rollback err = %v, want ErrSessionLeaseHeld", err)
 	}
 }

@@ -36,7 +36,8 @@ func (a *App) snapshotTopicRuntimeBindings(captured []removedSessionRuntime) err
 			if !errors.Is(err, agent.ErrSessionSnapshotConflict) {
 				return err
 			}
-			slog.Warn("desktop: skipping stale runtime snapshot before removing topic", "err", err)
+			kind, _ := agent.SnapshotConflictKind(err)
+			slog.Warn("desktop: skipping stale runtime snapshot before removing topic", "conflict_kind", kind)
 		}
 	}
 	return nil
