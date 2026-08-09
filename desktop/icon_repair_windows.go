@@ -217,12 +217,10 @@ func repairWindowsShortcutPlan(target, iconLocation, launcher string, versionedL
 	return repointTarget, reasonixWindowsStaleIcon(iconLocation, launcher, versionedLayout)
 }
 
-// reasonixWindowsFlatDesktopTarget reports whether target points at the
-// legacy root-level desktop binary (<root>/reasonix-desktop.exe) after the
-// versioned layout is active or after that binary has disappeared. A valid
-// current.json is the layout commit point, so a leftover flat binary must not
-// be mistaken for a live flat install when best-effort cleanup could not remove
-// it.
+// reasonixWindowsFlatDesktopTarget reports whether target points at the legacy
+// root-level desktop binary after versioned layout activation or after the file
+// disappeared. A valid current.json is the commit point, so a leftover flat
+// binary is not a live flat install when best-effort cleanup could not remove it.
 func reasonixWindowsFlatDesktopTarget(target, launcher string, versionedLayout bool) bool {
 	flat := filepath.Join(filepath.Dir(filepath.Clean(strings.TrimSpace(launcher))), "reasonix-desktop.exe")
 	if !strings.EqualFold(filepath.Clean(strings.TrimSpace(target)), flat) {
