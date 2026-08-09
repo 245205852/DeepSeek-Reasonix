@@ -92,6 +92,17 @@ func sharesContextWindow(p provider.Provider) bool {
 	return ok && shared.SharesContextWindow()
 }
 
+func sharedWindowInputPolicyOf(p provider.Provider) provider.SharedWindowInputPolicy {
+	if nilutil.IsNil(p) {
+		return provider.SharedWindowInputPolicy{}
+	}
+	policy, ok := p.(provider.SharedWindowInputPolicyProvider)
+	if !ok {
+		return provider.SharedWindowInputPolicy{}
+	}
+	return policy.SharedWindowInputPolicy()
+}
+
 func (a *Agent) configuredOutputBudget(explicit int) int {
 	if explicit != 0 {
 		return explicit
@@ -100,7 +111,15 @@ func (a *Agent) configuredOutputBudget(explicit int) int {
 }
 
 func requestCalibrationShapeOf(req provider.Request) requestCalibrationShape {
-	requestChars, cjkRunes, cjkBytes := requestCalibrationTextShape(req)
+	return requestCalibrationShapeWithPolicy(req, provider.SharedWindowInputPolicy{})
+}
+
+func (a *Agent) requestCalibrationShape(req provider.Request) requestCalibrationShape {
+	return requestCalibrationShapeWithPolicy(req, sharedWindowInputPolicyOf(a.prov))
+}
+
+func requestCalibrationShapeWithPolicy(req provider.Request, policy provider.SharedWindowInputPolicy) requestCalibrationShape {
+	requestChars, cjkRunes, cjkBytes := requestCalibrationTextShape(req, policy)
 	return requestCalibrationShape{
 		requestChars: requestChars,
 		compactChars: int64(charsOfMessages(req.Messages)),
@@ -109,10 +128,10 @@ func requestCalibrationShapeOf(req provider.Request) requestCalibrationShape {
 	}
 }
 
-// requestCalibrationTextShape counts text common to shared-window DeepSeek
-// transports. Excluding adapter-only text prevents omitted bytes from diluting
-// the observed ratio; extra Responses text only makes that ratio conservative.
-func requestCalibrationTextShape(req provider.Request) (chars, cjkRunes, cjkBytes int64) {
+// requestCalibrationTextShape counts common shared-window text plus only the
+// adapter-specific replay fields declared by the active provider. This keeps
+// omitted bytes out of the ratio without missing newly appended wire content.
+func requestCalibrationTextShape(req provider.Request, policy provider.SharedWindowInputPolicy) (chars, cjkRunes, cjkBytes int64) {
 	add := func(s string) {
 		chars += int64(len(s))
 		for _, r := range s {
@@ -129,7 +148,7 @@ func requestCalibrationTextShape(req provider.Request) (chars, cjkRunes, cjkByte
 		chars += 4
 		add(string(msg.Role))
 		add(msg.Content)
-		if msg.Role == provider.RoleAssistant && len(msg.ToolCalls) > 0 {
+		if msg.Role == provider.RoleAssistant && (len(msg.ToolCalls) > 0 || policy.ReplaysOrdinaryReasoning) {
 			add(msg.ReasoningContent)
 		}
 		add(msg.Name)
@@ -139,6 +158,11 @@ func requestCalibrationTextShape(req provider.Request) (chars, cjkRunes, cjkByte
 			add(call.ID)
 			add(call.Name)
 			add(call.Arguments)
+		}
+		if policy.ReplaysResponsesItems {
+			for _, item := range msg.ResponsesItems {
+				add(string(item))
+			}
 		}
 	}
 	for _, schema := range req.Tools {
@@ -185,14 +209,14 @@ func (a *Agent) estimatedPromptTokens(msgs []provider.Message) int {
 	if est <= 0 {
 		return 0
 	}
-	if calibrated, ok := a.calibratedPromptTokens(requestCalibrationShapeOf(provider.Request{Messages: msgs})); ok {
+	if calibrated, ok := a.calibratedPromptTokens(a.requestCalibrationShape(provider.Request{Messages: msgs})); ok {
 		return calibrated
 	}
 	return est + cjkRunesInMessages(msgs)
 }
 
 func (a *Agent) estimatedRequestTokens(req provider.Request) int {
-	if calibrated, ok := a.calibratedPromptTokens(requestCalibrationShapeOf(req)); ok {
+	if calibrated, ok := a.calibratedPromptTokens(a.requestCalibrationShape(req)); ok {
 		return calibrated
 	}
 	return a.estimatedPromptTokens(req.Messages) + estimateToolSchemaTokens(req.Tools)

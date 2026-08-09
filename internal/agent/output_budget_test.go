@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"strings"
 	"testing"
@@ -14,6 +15,7 @@ import (
 type sharedWindowTestProvider struct {
 	budget int
 	shared bool
+	policy provider.SharedWindowInputPolicy
 	last   provider.Request
 	calls  int
 	finish string
@@ -60,6 +62,10 @@ func TestSharedWindowFoldUsesGuardedInputBudget(t *testing.T) {
 
 func (p *sharedWindowTestProvider) OutputBudget() int         { return p.budget }
 func (p *sharedWindowTestProvider) SharesContextWindow() bool { return p.shared }
+
+func (p *sharedWindowTestProvider) SharedWindowInputPolicy() provider.SharedWindowInputPolicy {
+	return p.policy
+}
 
 func TestEffectiveOutputBudgetClipsSharedWindowRequest(t *testing.T) {
 	prov := &sharedWindowTestProvider{budget: 128 * 1024, shared: true}
@@ -154,6 +160,51 @@ func TestCalibrationIgnoresNonReplayableOrdinaryReasoning(t *testing.T) {
 
 	if got := a.estimatedPromptTokens(current); got < 160_000 {
 		t.Fatalf("replayable reasoning estimate = %d, want ordinary local reasoning excluded from calibration denominator", got)
+	}
+}
+
+func TestCalibratedResponsesBudgetIncludesNewOrdinaryReasoning(t *testing.T) {
+	prov := &sharedWindowTestProvider{budget: 128 * 1024, shared: true,
+		policy: provider.SharedWindowInputPolicy{ReplaysOrdinaryReasoning: true}}
+	a := &Agent{prov: prov, contextWindow: 200_000,
+		outputBudgetState: outputBudgetState{outputBudget: prov.budget}}
+	previous := provider.Request{Messages: []provider.Message{{
+		Role: provider.RoleUser, Content: strings.Repeat("x", 300_000),
+	}}}
+	a.setPromptTokenCalibration(75_000, a.requestCalibrationShape(previous))
+	current := previous
+	current.Messages = append(append([]provider.Message(nil), previous.Messages...), provider.Message{
+		Role: provider.RoleAssistant, ReasoningContent: strings.Repeat("r", 400_000),
+	})
+
+	if got := a.estimatedRequestTokens(current); got < 174_000 {
+		t.Fatalf("Responses ordinary reasoning estimate = %d, want newly replayed reasoning included", got)
+	}
+	if budget, clipped, err := a.effectiveOutputBudget(current); err != nil || !clipped || budget >= prov.budget {
+		t.Fatalf("Responses ordinary reasoning budget = %d clipped=%v err=%v, want a clipped budget", budget, clipped, err)
+	}
+}
+
+func TestCalibratedResponsesBudgetIncludesNewReplayItems(t *testing.T) {
+	prov := &sharedWindowTestProvider{budget: 128 * 1024, shared: true,
+		policy: provider.SharedWindowInputPolicy{ReplaysResponsesItems: true}}
+	a := &Agent{prov: prov, contextWindow: 200_000,
+		outputBudgetState: outputBudgetState{outputBudget: prov.budget}}
+	previous := provider.Request{Messages: []provider.Message{{
+		Role: provider.RoleUser, Content: strings.Repeat("x", 300_000),
+	}}}
+	a.setPromptTokenCalibration(75_000, a.requestCalibrationShape(previous))
+	item := json.RawMessage(`{"id":"ws_1","type":"web_search_call","status":"completed","action":{"query":"` + strings.Repeat("q", 400_000) + `"}}`)
+	current := previous
+	current.Messages = append(append([]provider.Message(nil), previous.Messages...), provider.Message{
+		Role: provider.RoleAssistant, ResponsesItems: []json.RawMessage{item},
+	})
+
+	if got := a.estimatedRequestTokens(current); got < 174_000 {
+		t.Fatalf("Responses replay-item estimate = %d, want newly replayed item included", got)
+	}
+	if budget, clipped, err := a.effectiveOutputBudget(current); err != nil || !clipped || budget >= prov.budget {
+		t.Fatalf("Responses replay-item budget = %d clipped=%v err=%v, want a clipped budget", budget, clipped, err)
 	}
 }
 
@@ -330,7 +381,8 @@ func TestEstimatedUsageDoesNotReplacePromptCalibration(t *testing.T) {
 
 func TestForkCaptureProviderPreservesOutputBudgetCapabilities(t *testing.T) {
 	t.Setenv("REASONIX_EXPERIMENT_FORK_CAPTURE_DIR", t.TempDir())
-	prov := &sharedWindowTestProvider{budget: 128 * 1024, shared: true}
+	prov := &sharedWindowTestProvider{budget: 128 * 1024, shared: true,
+		policy: provider.SharedWindowInputPolicy{ReplaysOrdinaryReasoning: true, ReplaysResponsesItems: true}}
 	a := New(prov, tool.NewRegistry(), NewSession(""), Options{}, event.Discard)
 
 	if !sharesContextWindow(a.prov) {
@@ -338,5 +390,8 @@ func TestForkCaptureProviderPreservesOutputBudgetCapabilities(t *testing.T) {
 	}
 	if got := outputBudgetOf(a.prov); got != prov.budget {
 		t.Fatalf("wrapped output budget = %d, want %d", got, prov.budget)
+	}
+	if got := sharedWindowInputPolicyOf(a.prov); got != prov.policy {
+		t.Fatalf("wrapped input policy = %+v, want %+v", got, prov.policy)
 	}
 }
