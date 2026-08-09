@@ -41,11 +41,20 @@ func TestWaitDestroyHandlesPrefersBoundedWait(t *testing.T) {
 
 func TestWaitDestroyHandlesBoundsLegacyWait(t *testing.T) {
 	release := make(chan struct{})
-	defer close(release)
+	returned := make(chan struct{})
+	defer func() {
+		close(release)
+		select {
+		case <-returned:
+		case <-time.After(time.Second):
+			t.Error("legacy wait goroutine did not finish after release")
+		}
+	}()
 	started := time.Now()
 	timedOut := waitDestroyHandles([]control.SessionDestroyHandle{{
 		Wait: func() jobs.TeardownResult {
 			<-release
+			close(returned)
 			return jobs.TeardownResult{}
 		},
 	}})

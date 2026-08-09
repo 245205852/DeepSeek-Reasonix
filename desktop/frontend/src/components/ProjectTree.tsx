@@ -19,6 +19,7 @@ import type { ShortcutPlatform } from "../lib/keyboardShortcuts";
 import { ContextMenu, contextMenuPointFromEvent, type ContextMenuItem, type ContextMenuPoint } from "./ContextMenu";
 import { Tooltip } from "./Tooltip";
 import { WorktreeBadge } from "./WorktreeBadge";
+
 type ProjectTreeVariant = "classic" | "workbench" | "creation";
 
 interface ProjectTreeProps {
