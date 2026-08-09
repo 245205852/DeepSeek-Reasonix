@@ -1170,6 +1170,95 @@ func TestSetProviderWebSearchRejectsWholeGroupBeforeWriting(t *testing.T) {
 	}
 }
 
+func TestSetProviderWebSearchRebuildsEveryVisibleRuntime(t *testing.T) {
+	isolateDesktopUserDirs(t)
+	setDesktopTestCredential(t, "DEEPSEEK_API_KEY", "sk-test")
+	enabled := true
+	cfg := config.Default()
+	cfg.DefaultModel = "deepseek/deepseek-v4-flash"
+	cfg.Desktop.ProviderAccess = []string{"deepseek"}
+	cfg.Providers = []config.ProviderEntry{{
+		Name: "deepseek", Kind: "anthropic", BaseURL: "https://api.deepseek.com/anthropic",
+		Models: []string{"deepseek-v4-flash", "deepseek-v4-pro"}, Default: "deepseek-v4-flash",
+		APIKeyEnv: "DEEPSEEK_API_KEY", WebSearch: &enabled,
+	}}
+	if err := cfg.SaveTo(config.UserConfigPath()); err != nil {
+		t.Fatalf("save config: %v", err)
+	}
+
+	app := NewApp()
+	app.ctx = context.Background()
+	app.readyHook = func() {}
+	newTab := func(id string) (*WorkspaceTab, *blockingSnapshotCtrl) {
+		old := newBlockingSnapshotCtrl(control.New(control.Options{Label: cfg.DefaultModel, Sink: event.Discard}))
+		close(old.releaseSnapshot)
+		tab := &WorkspaceTab{
+			ID: id, Scope: "global", Ready: true, Ctrl: old,
+			model: cfg.DefaultModel, Label: cfg.DefaultModel,
+			sink: &tabEventSink{tabID: id, app: app}, disabledMCP: map[string]ServerView{},
+		}
+		return tab, old
+	}
+	first, oldFirst := newTab("first")
+	second, oldSecond := newTab("second")
+	app.tabs = map[string]*WorkspaceTab{first.ID: first, second.ID: second}
+	app.tabOrder = []string{first.ID, second.ID}
+	app.activeTabID = first.ID
+	t.Cleanup(func() {
+		for _, tab := range []*WorkspaceTab{first, second} {
+			if tab.Ctrl != nil {
+				tab.Ctrl.Close()
+			}
+			tab.releaseSessionLease()
+		}
+	})
+
+	if err := app.SetProviderWebSearch([]string{"deepseek"}, false); err != nil {
+		t.Fatalf("SetProviderWebSearch: %v", err)
+	}
+	if first.Ctrl == oldFirst || second.Ctrl == oldSecond || oldFirst.closeCount.Load() != 1 || oldSecond.closeCount.Load() != 1 {
+		t.Fatalf("web-search refresh: first=%T/%d second=%T/%d; want both replaced once", first.Ctrl, oldFirst.closeCount.Load(), second.Ctrl, oldSecond.closeCount.Load())
+	}
+	got := config.LoadForEdit(config.UserConfigPath())
+	provider, ok := got.Provider("deepseek")
+	if !ok || provider.WebSearch == nil || *provider.WebSearch {
+		t.Fatalf("persisted DeepSeek web_search = %+v, want false", provider)
+	}
+}
+
+func TestSetProviderWebSearchRejectsDetachedRuntimeBeforeMutation(t *testing.T) {
+	isolateDesktopUserDirs(t)
+	setDesktopTestCredential(t, "DEEPSEEK_API_KEY", "sk-test")
+	enabled := true
+	cfg := config.Default()
+	cfg.DefaultModel = "deepseek/deepseek-v4-flash"
+	cfg.Desktop.ProviderAccess = []string{"deepseek"}
+	cfg.Providers = []config.ProviderEntry{{
+		Name: "deepseek", Kind: "anthropic", BaseURL: "https://api.deepseek.com/anthropic",
+		Model: "deepseek-v4-flash", APIKeyEnv: "DEEPSEEK_API_KEY", WebSearch: &enabled,
+	}}
+	if err := cfg.SaveTo(config.UserConfigPath()); err != nil {
+		t.Fatalf("save config: %v", err)
+	}
+
+	app := NewApp()
+	app.ctx = context.Background()
+	detachedCtrl := control.New(control.Options{Label: cfg.DefaultModel, Sink: event.Discard})
+	detached := &WorkspaceTab{ID: "detached", Scope: "global", Ctrl: detachedCtrl, model: cfg.DefaultModel}
+	app.detachedSessions = map[string]*WorkspaceTab{detached.ID: detached}
+	t.Cleanup(detachedCtrl.Close)
+
+	err := app.SetProviderWebSearch([]string{"deepseek"}, false)
+	if err == nil || !strings.Contains(err.Error(), "background session is still open") {
+		t.Fatalf("SetProviderWebSearch error = %v, want detached-runtime guard", err)
+	}
+	got := config.LoadForEdit(config.UserConfigPath())
+	provider, ok := got.Provider("deepseek")
+	if !ok || provider.WebSearch == nil || !*provider.WebSearch {
+		t.Fatalf("rejected web-search mutation changed provider: %+v", provider)
+	}
+}
+
 func TestSaveProviderPreservesHiddenCustomWebSearchOverride(t *testing.T) {
 	isolateDesktopUserDirs(t)
 

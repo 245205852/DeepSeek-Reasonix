@@ -170,8 +170,8 @@ system_prompt_file = "/outside-workspace/system.md"
 	})
 
 	err := app.applyProviderRemovalRuntime([]providerRemovalTab{
-		{id: broken.ID, ctrl: oldBroken},
-		{id: working.ID, ctrl: oldWorking},
+		{id: broken.ID, ctrl: oldBroken, retargetModel: true},
+		{id: working.ID, ctrl: oldWorking, retargetModel: true},
 	}, "good/model-b", "provider")
 	if err == nil || !strings.Contains(err.Error(), "relative path within the workspace") {
 		t.Fatalf("applyProviderRemovalRuntime error = %v, want first tab build failure", err)
@@ -181,6 +181,216 @@ system_prompt_file = "/outside-workspace/system.md"
 	}
 	if working.Ctrl == oldWorking || oldWorking.closeCount.Load() != 1 || working.model != "good/model-b" {
 		t.Fatalf("working sibling was not rebuilt: ctrl=%T closes=%d model=%q", working.Ctrl, oldWorking.closeCount.Load(), working.model)
+	}
+}
+
+func TestRemoveOfficialProviderAccessRetargetsLiveTabAfterReplacementBuild(t *testing.T) {
+	isolateDesktopUserDirs(t)
+	setDesktopTestCredential(t, "DEEPSEEK_API_KEY", "sk-test")
+	setDesktopTestCredential(t, "GOOD_KEY", "sk-test")
+
+	cfg := config.Default()
+	cfg.DefaultModel = "deepseek/deepseek-v4-flash"
+	cfg.Desktop.ProviderAccess = []string{"deepseek", "good"}
+	cfg.Providers = []config.ProviderEntry{
+		{
+			Name: "deepseek", Kind: "anthropic", BaseURL: "https://api.deepseek.com/anthropic",
+			Model: "deepseek-v4-flash", APIKeyEnv: "DEEPSEEK_API_KEY",
+		},
+		{Name: "good", Kind: "openai", BaseURL: "https://good.example.invalid/v1", Model: "good-model", APIKeyEnv: "GOOD_KEY"},
+	}
+	if err := cfg.SaveTo(config.UserConfigPath()); err != nil {
+		t.Fatalf("save config: %v", err)
+	}
+
+	old := newBlockingSnapshotCtrl(control.New(control.Options{Label: cfg.DefaultModel, Sink: event.Discard}))
+	close(old.releaseSnapshot)
+	app := NewApp()
+	app.ctx = context.Background()
+	app.readyHook = func() {}
+	tab := &WorkspaceTab{
+		ID: "active", Scope: "global", Ready: true, Ctrl: old,
+		model: cfg.DefaultModel, Label: cfg.DefaultModel,
+		sink: &tabEventSink{tabID: "active", app: app}, disabledMCP: map[string]ServerView{},
+	}
+	app.tabs = map[string]*WorkspaceTab{tab.ID: tab}
+	app.tabOrder = []string{tab.ID}
+	app.activeTabID = tab.ID
+	t.Cleanup(func() {
+		if tab.Ctrl != nil {
+			tab.Ctrl.Close()
+		}
+		tab.releaseSessionLease()
+	})
+
+	if err := app.RemoveProviderAccess("deepseek"); err != nil {
+		t.Fatalf("RemoveProviderAccess: %v", err)
+	}
+	if tab.model != "good/good-model" || tab.Ctrl == old || old.closeCount.Load() != 1 {
+		t.Fatalf("live tab after removal: model=%q ctrl=%T old closes=%d; want fallback replacement", tab.model, tab.Ctrl, old.closeCount.Load())
+	}
+	got := config.LoadForEdit(config.UserConfigPath())
+	if providerAccessSet(got.Desktop.ProviderAccess)["deepseek"] {
+		t.Fatalf("provider_access still contains DeepSeek: %v", got.Desktop.ProviderAccess)
+	}
+}
+
+func TestDeleteProviderRebuildsEveryVisibleRuntimeUsingAuxiliaryProvider(t *testing.T) {
+	isolateDesktopUserDirs(t)
+	setDesktopTestCredential(t, "REMOVED_KEY", "sk-test")
+	setDesktopTestCredential(t, "GOOD_KEY", "sk-test")
+
+	cfg := config.Default()
+	cfg.DefaultModel = "good/good-model"
+	cfg.Agent.SubagentModel = "removed/vision-model"
+	cfg.Desktop.ProviderAccess = []string{"removed", "good"}
+	cfg.Providers = []config.ProviderEntry{
+		{Name: "removed", Kind: "openai", BaseURL: "https://removed.example.invalid/v1", Model: "vision-model", APIKeyEnv: "REMOVED_KEY", Vision: true},
+		{Name: "good", Kind: "openai", BaseURL: "https://good.example.invalid/v1", Model: "good-model", APIKeyEnv: "GOOD_KEY"},
+	}
+	if err := cfg.SaveTo(config.UserConfigPath()); err != nil {
+		t.Fatalf("save config: %v", err)
+	}
+
+	app := NewApp()
+	app.ctx = context.Background()
+	app.readyHook = func() {}
+	newTab := func(id string) (*WorkspaceTab, *blockingSnapshotCtrl) {
+		old := newBlockingSnapshotCtrl(control.New(control.Options{Label: cfg.DefaultModel, Sink: event.Discard}))
+		close(old.releaseSnapshot)
+		tab := &WorkspaceTab{
+			ID: id, Scope: "global", Ready: true, Ctrl: old,
+			model: cfg.DefaultModel, Label: cfg.DefaultModel,
+			sink: &tabEventSink{tabID: id, app: app}, disabledMCP: map[string]ServerView{},
+		}
+		return tab, old
+	}
+	first, oldFirst := newTab("first")
+	second, oldSecond := newTab("second")
+	app.tabs = map[string]*WorkspaceTab{first.ID: first, second.ID: second}
+	app.tabOrder = []string{first.ID, second.ID}
+	app.activeTabID = first.ID
+	t.Cleanup(func() {
+		for _, tab := range []*WorkspaceTab{first, second} {
+			if tab.Ctrl != nil {
+				tab.Ctrl.Close()
+			}
+			tab.releaseSessionLease()
+		}
+	})
+
+	if err := app.DeleteProvider("removed"); err != nil {
+		t.Fatalf("DeleteProvider: %v", err)
+	}
+	if first.Ctrl == oldFirst || second.Ctrl == oldSecond || oldFirst.closeCount.Load() != 1 || oldSecond.closeCount.Load() != 1 {
+		t.Fatalf("auxiliary-provider refresh: first=%T/%d second=%T/%d; want both replaced once", first.Ctrl, oldFirst.closeCount.Load(), second.Ctrl, oldSecond.closeCount.Load())
+	}
+	if first.model != cfg.DefaultModel || second.model != cfg.DefaultModel {
+		t.Fatalf("unaffected chat models changed: first=%q second=%q", first.model, second.model)
+	}
+	got := config.LoadForEdit(config.UserConfigPath())
+	if _, ok := got.Provider("removed"); ok {
+		t.Fatal("removed auxiliary provider still exists")
+	}
+	if got.Agent.SubagentModel != "good" {
+		t.Fatalf("subagent_model = %q, want persisted visible fallback", got.Agent.SubagentModel)
+	}
+}
+
+func TestDeleteProviderRebuildsNonActiveWorkspaceWithProjectAuxiliaryProvider(t *testing.T) {
+	isolateDesktopUserDirs(t)
+	setDesktopTestCredential(t, "REMOVED_KEY", "sk-test")
+	setDesktopTestCredential(t, "GOOD_KEY", "sk-test")
+
+	cfg := config.Default()
+	cfg.DefaultModel = "good/good-model"
+	cfg.Desktop.ProviderAccess = []string{"removed", "good"}
+	cfg.Providers = []config.ProviderEntry{
+		{Name: "removed", Kind: "openai", BaseURL: "https://removed.example.invalid/v1", Model: "vision-model", APIKeyEnv: "REMOVED_KEY", Vision: true},
+		{Name: "good", Kind: "openai", BaseURL: "https://good.example.invalid/v1", Model: "good-model", APIKeyEnv: "GOOD_KEY"},
+	}
+	if err := cfg.SaveTo(config.UserConfigPath()); err != nil {
+		t.Fatalf("save config: %v", err)
+	}
+	activeRoot := t.TempDir()
+	backgroundRoot := t.TempDir()
+	if err := os.WriteFile(filepath.Join(backgroundRoot, "reasonix.toml"), []byte("[agent]\nsubagent_model = \"removed/vision-model\"\n"), 0o600); err != nil {
+		t.Fatalf("write project config: %v", err)
+	}
+
+	app := NewApp()
+	app.ctx = context.Background()
+	app.readyHook = func() {}
+	newTab := func(id, root string) (*WorkspaceTab, *blockingSnapshotCtrl) {
+		old := newBlockingSnapshotCtrl(control.New(control.Options{Label: cfg.DefaultModel, Sink: event.Discard}))
+		close(old.releaseSnapshot)
+		tab := &WorkspaceTab{
+			ID: id, Scope: "project", WorkspaceRoot: root, Ready: true, Ctrl: old,
+			model: cfg.DefaultModel, Label: cfg.DefaultModel,
+			sink: &tabEventSink{tabID: id, app: app}, disabledMCP: map[string]ServerView{},
+		}
+		return tab, old
+	}
+	active, oldActive := newTab("active", activeRoot)
+	background, oldBackground := newTab("background", backgroundRoot)
+	app.tabs = map[string]*WorkspaceTab{active.ID: active, background.ID: background}
+	app.tabOrder = []string{active.ID, background.ID}
+	app.activeTabID = active.ID
+	t.Cleanup(func() {
+		for _, tab := range []*WorkspaceTab{active, background} {
+			if tab.Ctrl != nil {
+				tab.Ctrl.Close()
+			}
+			tab.releaseSessionLease()
+		}
+	})
+
+	if err := app.DeleteProvider("removed"); err != nil {
+		t.Fatalf("DeleteProvider: %v", err)
+	}
+	if active.Ctrl == oldActive || background.Ctrl == oldBackground || oldActive.closeCount.Load() != 1 || oldBackground.closeCount.Load() != 1 {
+		t.Fatalf("workspace provider refresh: active=%T/%d background=%T/%d; want both replaced once", active.Ctrl, oldActive.closeCount.Load(), background.Ctrl, oldBackground.closeCount.Load())
+	}
+	projectRaw, err := os.ReadFile(filepath.Join(backgroundRoot, "reasonix.toml"))
+	if err != nil {
+		t.Fatalf("read project config: %v", err)
+	}
+	if !strings.Contains(string(projectRaw), "removed/vision-model") {
+		t.Fatalf("global provider deletion rewrote project-owned model reference: %s", projectRaw)
+	}
+}
+
+func TestDeleteProviderRejectsDetachedRuntimeUsingAuxiliaryProvider(t *testing.T) {
+	isolateDesktopUserDirs(t)
+	setDesktopTestCredential(t, "REMOVED_KEY", "sk-test")
+	setDesktopTestCredential(t, "GOOD_KEY", "sk-test")
+
+	cfg := config.Default()
+	cfg.DefaultModel = "good/good-model"
+	cfg.Agent.SubagentModel = "removed/vision-model"
+	cfg.Desktop.ProviderAccess = []string{"removed", "good"}
+	cfg.Providers = []config.ProviderEntry{
+		{Name: "removed", Kind: "openai", BaseURL: "https://removed.example.invalid/v1", Model: "vision-model", APIKeyEnv: "REMOVED_KEY", Vision: true},
+		{Name: "good", Kind: "openai", BaseURL: "https://good.example.invalid/v1", Model: "good-model", APIKeyEnv: "GOOD_KEY"},
+	}
+	if err := cfg.SaveTo(config.UserConfigPath()); err != nil {
+		t.Fatalf("save config: %v", err)
+	}
+
+	app := NewApp()
+	app.ctx = context.Background()
+	detachedCtrl := control.New(control.Options{Label: cfg.DefaultModel, Sink: event.Discard})
+	detached := &WorkspaceTab{ID: "detached", Scope: "global", Ctrl: detachedCtrl, model: cfg.DefaultModel}
+	app.detachedSessions = map[string]*WorkspaceTab{detached.ID: detached}
+	t.Cleanup(detachedCtrl.Close)
+
+	err := app.DeleteProvider("removed")
+	if err == nil || !strings.Contains(err.Error(), "background session is still using") {
+		t.Fatalf("DeleteProvider error = %v, want detached auxiliary-runtime guard", err)
+	}
+	got := config.LoadForEdit(config.UserConfigPath())
+	if _, ok := got.Provider("removed"); !ok || got.Agent.SubagentModel != "removed/vision-model" {
+		t.Fatalf("rejected removal mutated config: provider=%v subagent_model=%q", ok, got.Agent.SubagentModel)
 	}
 }
 

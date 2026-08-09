@@ -4,7 +4,7 @@ import { asArray } from "../lib/array";
 import { useDeferredClose } from "../lib/useMountTransition";
 import { app, openExternal } from "../lib/bridge";
 import { normalizeLangPref, useI18n, useT, type DictKey, type LangPref } from "../lib/i18n";
-import { apiKeyEnvFromProviderName, inferredVisionModels, mergedFetchedProviderModels, mergeProviderModelContextWindows, providerApiKeyEnvForSave, providerDefaultModel, providerIsConfigured, providerModelCandidates, providerModelContextWindowDrafts, providerModelContextWindowIsSmall, providerRequiresKey } from "../lib/providerModels";
+import { apiKeyEnvFromProviderName, createLatestRequestGate, inferredVisionModels, mergedFetchedProviderModels, mergeProviderModelContextWindows, providerApiKeyEnvForSave, providerDefaultModel, providerIsConfigured, providerModelCandidates, providerModelContextWindowDrafts, providerModelContextWindowIsSmall, providerRequiresKey } from "../lib/providerModels";
 import { cachedFetchProviderModels, invalidateProviderCacheByAPIKeyEnv, shouldSkipAutoRefresh } from "../lib/providerModelCache";
 import { useUpdater } from "../lib/useUpdater";
 import {
@@ -4806,7 +4806,8 @@ function ProvidersSection({ s, busy, apply }: SectionProps) {
   const [editing, setEditing] = useState<string | null>(null);
   const [adding, setAdding] = useState<AddProviderMode>(null);
   const [revealedProvider, setRevealedProvider] = useState<string | null>(null);
-  const [fetchingProvider, setFetchingProvider] = useState<string | null>(null);
+  const [fetchingProviders, setFetchingProviders] = useState<Set<string>>(() => new Set());
+  const fetchGate = useMemo(createLatestRequestGate, []);
   const [fetchResults, setFetchResults] = useState<Record<string, ProviderFetchResult>>({});
   const [modelDrafts, setModelDrafts] = useState<Record<string, ProviderModelDraft>>({});
   const visibleProviders = useMemo(() => s.providers.filter((p) => p.added || p.name === revealedProvider), [s.providers, revealedProvider]);
@@ -4833,6 +4834,41 @@ function ProvidersSection({ s, busy, apply }: SectionProps) {
       const next = { ...prev };
       if (draft) next[groupID] = draft;
       else delete next[groupID];
+      return next;
+    });
+  };
+
+  const beginGroupFetch = (groupID: string): number => {
+    const generation = fetchGate.begin(groupID);
+    setFetchingProviders((current) => {
+      if (current.has(groupID)) return current;
+      const next = new Set(current);
+      next.add(groupID);
+      return next;
+    });
+    return generation;
+  };
+
+  const groupFetchIsCurrent = (groupID: string, generation: number): boolean => (
+    fetchGate.isCurrent(groupID, generation)
+  );
+
+  const finishGroupFetch = (groupID: string, generation: number) => {
+    if (!groupFetchIsCurrent(groupID, generation)) return;
+    setFetchingProviders((current) => {
+      if (!current.has(groupID)) return current;
+      const next = new Set(current);
+      next.delete(groupID);
+      return next;
+    });
+  };
+
+  const cancelGroupFetch = (groupID: string) => {
+    fetchGate.cancel(groupID);
+    setFetchingProviders((current) => {
+      if (!current.has(groupID)) return current;
+      const next = new Set(current);
+      next.delete(groupID);
       return next;
     });
   };
@@ -4885,7 +4921,7 @@ function ProvidersSection({ s, busy, apply }: SectionProps) {
   };
 
   const refreshModels = async (group: ProviderAccessGroup, p: ProviderView) => {
-    setFetchingProvider(group.id);
+    const generation = beginGroupFetch(group.id);
     setGroupFetchResult(group.id, null);
     setGroupModelDraft(group.id, null);
     try {
@@ -4893,12 +4929,14 @@ function ProvidersSection({ s, busy, apply }: SectionProps) {
       try {
         fetched = await cachedFetchProviderModels((provider) => app.FetchProviderModels(provider), p, true);
       } catch (e) {
+        if (!groupFetchIsCurrent(group.id, generation)) return;
         setGroupFetchResult(group.id, {
           kind: "warn",
           text: t("settings.fetchModelsFailedForProvider", { provider: group.label, err: String((e as Error)?.message ?? e) }),
         });
         return;
       }
+      if (!groupFetchIsCurrent(group.id, generation)) return;
       if (fetched.length === 0) {
         setGroupFetchResult(group.id, {
           kind: "warn",
@@ -4915,14 +4953,14 @@ function ProvidersSection({ s, busy, apply }: SectionProps) {
         });
       });
     } finally {
-      setFetchingProvider(null);
+      finishGroupFetch(group.id, generation);
     }
   };
 
   const saveKeyEnvAndAutoRefresh = async (group: ProviderAccessGroup, apiKeyEnv: string, value: string) => {
     const probe = group.providers[0];
     if (!probe || !apiKeyEnv) return;
-    setFetchingProvider(group.id);
+    const generation = beginGroupFetch(group.id);
     setGroupFetchResult(group.id, null);
     setGroupModelDraft(group.id, null);
     try {
@@ -4931,6 +4969,7 @@ function ProvidersSection({ s, busy, apply }: SectionProps) {
         invalidateProviderCacheByAPIKeyEnv(apiKeyEnv);
         try {
           const fetched = await cachedFetchProviderModels((provider) => app.FetchProviderModels(provider), { ...probe, apiKeyEnv });
+          if (!groupFetchIsCurrent(group.id, generation)) return;
           if (fetched.length > 0) {
             const draft = modelDraftForFetch({ ...probe, apiKeyEnv }, fetched);
             setGroupModelDraft(group.id, draft);
@@ -4945,6 +4984,7 @@ function ProvidersSection({ s, busy, apply }: SectionProps) {
             text: t("settings.fetchModelsEmptyForProvider", { provider: group.label }),
           });
         } catch (e) {
+          if (!groupFetchIsCurrent(group.id, generation)) return;
           setGroupFetchResult(group.id, {
             kind: "warn",
             text: t("settings.fetchModelsAfterKeyFailedForProvider", { provider: group.label, err: String((e as Error)?.message ?? e) }),
@@ -4952,12 +4992,13 @@ function ProvidersSection({ s, busy, apply }: SectionProps) {
         }
       });
     } finally {
-      setFetchingProvider(null);
+      finishGroupFetch(group.id, generation);
     }
   };
 
   const saveProviderKey = async (group: ProviderAccessGroup, apiKeyEnv: string, value: string) => {
     if (!apiKeyEnv) return;
+    cancelGroupFetch(group.id);
     setGroupFetchResult(group.id, null);
     setGroupModelDraft(group.id, null);
     await apply(async () => {
@@ -4967,8 +5008,9 @@ function ProvidersSection({ s, busy, apply }: SectionProps) {
     });
   };
 
-  const clearProviderKey = async (apiKeyEnv: string) => {
+  const clearProviderKey = async (group: ProviderAccessGroup, apiKeyEnv: string) => {
     if (!apiKeyEnv) return;
+    cancelGroupFetch(group.id);
     await apply(async () => {
       await app.ClearProviderKey(apiKeyEnv);
       invalidateProviderCacheByAPIKeyEnv(apiKeyEnv);
@@ -5058,7 +5100,7 @@ function ProvidersSection({ s, busy, apply }: SectionProps) {
             key={group.id}
             group={group}
             busy={busy}
-            fetching={fetchingProvider === group.id || group.providers.some((p) => fetchingProvider === p.name)}
+            fetching={fetchingProviders.has(group.id)}
             fetchResult={fetchResults[group.id]}
             modelDraft={modelDrafts[group.id]}
             defaultProvider={defaultProvider}
@@ -5066,10 +5108,13 @@ function ProvidersSection({ s, busy, apply }: SectionProps) {
             kinds={s.providerKinds}
             onEdit={setEditing}
             onCancelEdit={() => setEditing(null)}
-            onSave={(pv, key) => apply(() => saveProvider(pv, key ?? "")).then(() => {
-              setEditing(null);
-              setGroupModelDraft(group.id, null);
-            })}
+            onSave={(pv, key) => {
+              cancelGroupFetch(group.id);
+              return apply(() => saveProvider(pv, key ?? "")).then(() => {
+                setEditing(null);
+                setGroupModelDraft(group.id, null);
+              });
+            }}
             onRefresh={(provider) => void refreshModels(group, provider)}
             onToggleDraftModel={(model) => updateModelDraftSelection(group.id, (draft) => (
               draft.selected.includes(model)
@@ -5086,15 +5131,19 @@ function ProvidersSection({ s, busy, apply }: SectionProps) {
               if (providerNames.length === 0) return;
               void apply(() => app.SetProviderWebSearch(providerNames, enabled));
             }}
-            onUpgradeRecommended={(name) => apply(() => app.UpgradeDeepSeekProviderAccess(name)).then((upgraded) => {
-              if (upgraded) {
-                setEditing(null);
-                setGroupModelDraft(group.id, null);
-              }
-            })}
+            onUpgradeRecommended={(name) => {
+              cancelGroupFetch(group.id);
+              return apply(() => app.UpgradeDeepSeekProviderAccess(name)).then((upgraded) => {
+                if (upgraded) {
+                  setEditing(null);
+                  setGroupModelDraft(group.id, null);
+                }
+              });
+            }}
             onSaveEditorKey={(env, value) => group.builtIn ? saveProviderKey(group, env, value) : saveKeyEnvAndAutoRefresh(group, env, value)}
-            onClearEditorKey={clearProviderKey}
+            onClearEditorKey={(env) => clearProviderKey(group, env)}
             onDelete={(providers) => {
+              cancelGroupFetch(group.id);
               const providerNames = providers.map(({ name }) => name);
               return apply(() => app.RemoveProviderAccesses(providerNames)).then(() => {
                 if (revealedProvider && providerNames.includes(revealedProvider)) {

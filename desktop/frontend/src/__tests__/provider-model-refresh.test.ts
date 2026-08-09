@@ -2,6 +2,7 @@
 
 import {
   apiKeyEnvFromProviderName,
+  createLatestRequestGate,
   inferredVisionModels,
   isLikelyChatModel,
   isLikelyVisionModel,
@@ -32,6 +33,21 @@ function eq(a: unknown, b: unknown, label: string) {
 }
 
 console.log("\nprovider model refresh");
+
+const requestGate = createLatestRequestGate();
+const firstRefresh = requestGate.begin("builtin:deepseek");
+const secondRefresh = requestGate.begin("builtin:deepseek");
+eq(
+  [requestGate.isCurrent("builtin:deepseek", firstRefresh), requestGate.isCurrent("builtin:deepseek", secondRefresh)],
+  [false, true],
+  "newer grouped-provider refresh invalidates an older in-flight completion",
+);
+requestGate.cancel("builtin:deepseek");
+eq(
+  requestGate.isCurrent("builtin:deepseek", secondRefresh),
+  false,
+  "provider edits invalidate an in-flight model refresh before it can publish stale state",
+);
 
 eq(
   mergedFetchedProviderModels(["coding-pro"], ["coding-pro", "chat", "vision"]),

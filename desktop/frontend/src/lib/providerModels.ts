@@ -1,5 +1,29 @@
 import type { ProviderModelOverrideView, ProviderView } from "./types";
 
+export type LatestRequestGate = {
+  begin(key: string): number;
+  cancel(key: string): void;
+  isCurrent(key: string, generation: number): boolean;
+};
+
+// Async provider discovery is last-request-wins per access card. A stale
+// completion may settle, but it cannot replace a newer draft or loading state.
+export function createLatestRequestGate(): LatestRequestGate {
+  const generations = new Map<string, number>();
+  const advance = (key: string) => {
+    const generation = (generations.get(key) ?? 0) + 1;
+    generations.set(key, generation);
+    return generation;
+  };
+  return {
+    begin: advance,
+    cancel: (key) => {
+      advance(key);
+    },
+    isCurrent: (key, generation) => generations.get(key) === generation,
+  };
+}
+
 export function removeProviderAccessesForMock(providers: ProviderView[], names: string[]): ProviderView[] {
   const requested = new Set(names);
   return providers.flatMap((provider) => {

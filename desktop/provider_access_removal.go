@@ -21,9 +21,10 @@ type providerRemovalPlan struct {
 }
 
 type providerRemovalTab struct {
-	id       string
-	ctrl     control.SessionAPI
-	readOnly bool
+	id            string
+	ctrl          control.SessionAPI
+	readOnly      bool
+	retargetModel bool
 }
 
 // DeleteProvider removes a provider and retargets open idle tabs that used it.
@@ -227,6 +228,23 @@ func providerReferencesAny(c *config.Config, names []string) bool {
 	return false
 }
 
+// providerAuxiliaryReferencesAny reports whether a controller's planner or
+// sub-agent wiring was assembled from a provider being removed. Unlike
+// default_model, these references affect the whole runtime regardless of the
+// tab's selected chat model.
+func providerAuxiliaryReferencesAny(c *config.Config, names []string) bool {
+	if providerRefMatchesAny(c, c.Agent.PlannerModel, names) ||
+		providerRefMatchesAny(c, c.Agent.SubagentModel, names) {
+		return true
+	}
+	for _, ref := range c.Agent.SubagentModels {
+		if providerRefMatchesAny(c, ref, names) {
+			return true
+		}
+	}
+	return false
+}
+
 func (a *App) planProviderRemoval(names []string, official bool) (providerRemovalPlan, error) {
 	root := a.activeWorkspaceRoot()
 	unlock, err := lockProviderRemovalState()
@@ -263,42 +281,55 @@ func (a *App) planProviderRemoval(names []string, official bool) (providerRemova
 	}, nil
 }
 
-func (a *App) affectedProviderRemovalTabs(plan providerRemovalPlan, label, action string) ([]providerRemovalTab, error) {
-	var affected []providerRemovalTab
+func (a *App) affectedProviderRemovalTabs(plan providerRemovalPlan, label, action string) ([]providerRemovalTab, bool, error) {
 	a.mu.RLock()
-	defer a.mu.RUnlock()
-	visible := make(map[*WorkspaceTab]bool, len(a.tabs))
-	for _, id := range a.orderedTabIDsLocked() {
-		tab := a.tabs[id]
-		if tab == nil {
-			continue
-		}
-		visible[tab] = true
-		ref := tab.model
-		if strings.TrimSpace(ref) == "" {
-			ref = plan.config.DefaultModel
-		}
-		if !providerRefMatchesAny(plan.config, ref, plan.targets) {
-			continue
-		}
-		if controllerHasActiveRuntimeWork(tab.Ctrl) {
-			return nil, fmt.Errorf("finish or cancel active work using %q before %s", label, action)
-		}
-		affected = append(affected, providerRemovalTab{id: id, ctrl: tab.Ctrl, readOnly: tab.ReadOnly})
-	}
 	for _, tab := range a.detachedSessions {
-		if tab == nil || visible[tab] {
-			continue
-		}
-		ref := tab.model
-		if strings.TrimSpace(ref) == "" {
-			ref = plan.config.DefaultModel
-		}
-		if providerRefMatchesAny(plan.config, ref, plan.targets) {
-			return nil, fmt.Errorf("background session is still using %q; reopen or close it before %s", label, action)
+		if tab != nil && tab.Ctrl != nil {
+			a.mu.RUnlock()
+			return nil, false, fmt.Errorf("background session is still using %q; reopen or close it before %s", label, action)
 		}
 	}
-	return affected, nil
+	visibleTabs := make([]*WorkspaceTab, 0, len(a.tabs))
+	for _, id := range a.orderedTabIDsLocked() {
+		if tab := a.tabs[id]; tab != nil {
+			visibleTabs = append(visibleTabs, tab)
+		}
+	}
+	a.mu.RUnlock()
+	affected := make([]providerRemovalTab, 0, len(visibleTabs))
+	referencesRemoved := providerReferencesAny(plan.config, plan.targets)
+	for _, tab := range visibleTabs {
+		snap := a.tabRuntimeSnapshot(tab)
+		root := strings.TrimSpace(snap.workspaceRoot)
+		if root == "" {
+			root = "."
+		}
+		effective, err := config.LoadForRootReadOnly(root)
+		if err != nil {
+			return nil, false, fmt.Errorf("load workspace config before %s: %w", action, err)
+		}
+		ref := snap.model
+		if strings.TrimSpace(ref) == "" {
+			ref = effective.DefaultModel
+		}
+		retargetModel := providerRefMatchesAny(effective, ref, plan.targets)
+		referencesRemoved = referencesRemoved || retargetModel || providerAuxiliaryReferencesAny(effective, plan.targets)
+		if controllerHasActiveRuntimeWork(snap.ctrl) {
+			return nil, false, fmt.Errorf("finish or cancel active work using %q before %s", label, action)
+		}
+		if snap.ctrl == nil && !retargetModel {
+			// A controller-less placeholder has no stale runtime. Its first
+			// build will read the updated global and project configuration.
+			continue
+		}
+		// Provider configuration is user-global. Rebuild every visible live
+		// controller so a non-active workspace cannot retain a project-level
+		// planner or sub-agent reference that the active workspace does not use.
+		affected = append(affected, providerRemovalTab{
+			id: tab.ID, ctrl: snap.ctrl, readOnly: snap.readOnly, retargetModel: retargetModel,
+		})
+	}
+	return affected, referencesRemoved, nil
 }
 
 func snapshotProviderRemovalTabs(affected []providerRemovalTab, label, action string) error {
@@ -408,7 +439,11 @@ func (a *App) applyProviderRemovalRuntime(affected []providerRemovalTab, fallbac
 			// outer runtime mutation owns runtimeRebuildMu plus admission. Reuse
 			// the settings build-and-swap core without reacquiring either lock so
 			// the old controller remains usable if replacement construction fails.
-			if err := a.rebuildSettingTurnLocked(setting, tab, true, false); err != nil {
+			modelOverride := ""
+			if item.retargetModel {
+				modelOverride = fallbackRef
+			}
+			if err := a.rebuildSettingTurnLockedWithModel(setting, tab, modelOverride, true, false); err != nil {
 				if _, ok := a.deferredRebuildWarningForTab(setting, err, tab); ok {
 					continue
 				}
@@ -448,8 +483,10 @@ func (a *App) resetProviderRemovalTabs(affected []providerRemovalTab, fallbackRe
 			releasedHostKeys = append(releasedHostKeys, key)
 		}
 		a.supersedeTabBuildLocked(tab)
-		tab.model = fallbackRef
-		tab.Label = fallbackRef
+		if item.retargetModel {
+			tab.model = fallbackRef
+			tab.Label = fallbackRef
+		}
 		clearTabStartupError(tab)
 		tab.Ready = a.ctx == nil
 		if a.ctx == nil {
@@ -476,11 +513,11 @@ func (a *App) removeBuiltInProviderAccessAndRetargetTabs(names []string) error {
 		return err
 	}
 	label := strings.Join(names, ", ")
-	affected, err := a.affectedProviderRemovalTabs(plan, label, "removing the provider access")
+	affected, referencesRemoved, err := a.affectedProviderRemovalTabs(plan, label, "removing the provider access")
 	if err != nil {
 		return err
 	}
-	if plan.fallbackRef == "" && (len(affected) > 0 || providerReferencesAny(plan.config, plan.targets)) {
+	if plan.fallbackRef == "" && referencesRemoved {
 		return fmt.Errorf("remove provider access: %q is in use and no other configured provider exists", label)
 	}
 	if len(affected) == 0 {
@@ -514,12 +551,11 @@ func (a *App) deleteProviderAndRetargetTabs(name string) error {
 	if err != nil {
 		return err
 	}
-	affected, err := a.affectedProviderRemovalTabs(plan, name, "deleting the provider")
+	affected, referencesRemoved, err := a.affectedProviderRemovalTabs(plan, name, "deleting the provider")
 	if err != nil {
 		return err
 	}
-	defaultInUse := providerRefMatchesAny(plan.config, plan.config.DefaultModel, plan.targets)
-	if plan.fallbackRef == "" && (len(affected) > 0 || defaultInUse) {
+	if plan.fallbackRef == "" && referencesRemoved {
 		return fmt.Errorf("remove provider: %q is in use and no other configured provider exists", name)
 	}
 	if len(affected) == 0 {

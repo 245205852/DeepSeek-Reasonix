@@ -1399,6 +1399,53 @@ func (a *App) applyConfigChangeWithWarning(setting string, mutate func(*config.C
 	return "", nil
 }
 
+// applyGlobalProviderConfigChange persists a provider-wide setting and refreshes
+// every visible runtime while runtime admission and all turn gates are frozen.
+// Detached runtimes cannot participate in the failure-atomic build-and-swap, so
+// reject before writing instead of leaving one session on stale provider state.
+func (a *App) applyGlobalProviderConfigChange(setting, operation, detachedAction string, mutate func(*config.Config) error) error {
+	defer a.lockRuntimeMutation(operation)()
+	releaseGates, err := a.lockRuntimeTurnGates(setting, nil)
+	if err != nil {
+		return err
+	}
+	defer releaseGates()
+	tabs, err := a.visibleTabsForGlobalRuntimeMutation(detachedAction)
+	if err != nil {
+		return err
+	}
+	if err := func() error {
+		unlock := config.LockUserConfigEdits()
+		defer unlock()
+		cfg, path, err := a.loadDesktopUserConfigForEdit()
+		if err != nil {
+			return err
+		}
+		if err := mutate(cfg); err != nil {
+			return err
+		}
+		return cfg.SaveTo(path)
+	}(); err != nil {
+		return err
+	}
+
+	var rebuildErrs []error
+	for _, tab := range tabs {
+		if a.controllerForTab(tab) == nil {
+			// A startup placeholder has no stale provider runtime. Its eventual
+			// build reads the just-persisted config.
+			continue
+		}
+		if err := a.rebuildSettingTurnLocked(setting, tab, true, false); err != nil {
+			if _, ok := a.deferredRebuildWarningForTab(setting, err, tab); ok {
+				continue
+			}
+			rebuildErrs = append(rebuildErrs, err)
+		}
+	}
+	return errors.Join(rebuildErrs...)
+}
+
 func (a *App) applyConfigOnly(mutate func(*config.Config) error) error {
 	unlock := config.LockUserConfigEdits()
 	defer unlock()
@@ -1843,6 +1890,14 @@ func (a *App) rebuildSettingLocked(setting string) error {
 // else — active-work guards, workspace prep, lease moves, swap, close-after-
 // swap, fence — is shared.
 func (a *App) rebuildSettingTurnLocked(setting string, tab *WorkspaceTab, admissionHeld bool, reload bool) error {
+	return a.rebuildSettingTurnLockedWithModel(setting, tab, "", admissionHeld, reload)
+}
+
+// rebuildSettingTurnLockedWithModel optionally builds the replacement for a
+// target model without changing tab.model before the swap. Provider removal
+// uses this to remain failure-atomic: a failed fallback build leaves both the
+// old controller and its visible model identity untouched.
+func (a *App) rebuildSettingTurnLockedWithModel(setting string, tab *WorkspaceTab, modelOverride string, admissionHeld bool, reload bool) error {
 	if a.ctx == nil {
 		return nil
 	}
@@ -1891,6 +1946,9 @@ func (a *App) rebuildSettingTurnLocked(setting string, tab *WorkspaceTab, admiss
 	snap := a.tabRuntimeSnapshot(tab)
 	runtime := snap.normalizedRuntime()
 	model := snap.model
+	if override := strings.TrimSpace(modelOverride); override != "" {
+		model = override
+	}
 	if cfg, err := config.LoadForRoot(snap.workspaceRoot); err == nil {
 		if resolved, fallback, ok := cfg.ResolveModelWithFallback(model); ok {
 			if fallback && strings.TrimSpace(model) != "" {
@@ -2478,33 +2536,37 @@ func (a *App) SaveProvider(p ProviderView) error {
 // remain separate when their custom transport fields differ, so changing only
 // the first profile would leave the grouped control in a contradictory state.
 func (a *App) SetProviderWebSearch(names []string, enabled bool) error {
-	return a.applyConfigChange(func(c *config.Config) error {
-		seen := make(map[string]bool, len(names))
-		providers := make([]*config.ProviderEntry, 0, len(names))
-		for _, rawName := range names {
-			name := strings.TrimSpace(rawName)
-			if name == "" || seen[name] {
-				continue
+	return a.applyGlobalProviderConfigChange(
+		"DeepSeek server-side web search",
+		"set-provider-web-search",
+		"changing DeepSeek server-side web search",
+		func(c *config.Config) error {
+			seen := make(map[string]bool, len(names))
+			providers := make([]*config.ProviderEntry, 0, len(names))
+			for _, rawName := range names {
+				name := strings.TrimSpace(rawName)
+				if name == "" || seen[name] {
+					continue
+				}
+				seen[name] = true
+				entry, ok := c.Provider(name)
+				if !ok {
+					return fmt.Errorf("provider %q not found", name)
+				}
+				if !config.IsOfficialDeepSeekWebSearchEndpoint(entry) {
+					return fmt.Errorf("provider %q does not support configurable server-side web search", name)
+				}
+				providers = append(providers, entry)
 			}
-			seen[name] = true
-			entry, ok := c.Provider(name)
-			if !ok {
-				return fmt.Errorf("provider %q not found", name)
+			if len(providers) == 0 {
+				return fmt.Errorf("provider list is empty")
 			}
-			if !config.IsOfficialDeepSeekWebSearchEndpoint(entry) {
-				return fmt.Errorf("provider %q does not support configurable server-side web search", name)
+			for _, entry := range providers {
+				value := enabled
+				entry.WebSearch = &value
 			}
-			providers = append(providers, entry)
-		}
-		if len(providers) == 0 {
-			return fmt.Errorf("provider list is empty")
-		}
-		for _, entry := range providers {
-			value := enabled
-			entry.WebSearch = &value
-		}
-		return nil
-	})
+			return nil
+		})
 }
 
 func providerModelOverridesForCatalog(overrides map[string]config.ProviderModelOverride, models []string) map[string]config.ProviderModelOverride {
@@ -2715,7 +2777,7 @@ func (a *App) UpgradeDeepSeekProviderAccess(name string) (string, error) {
 		return "", err
 	}
 	defer releaseGates()
-	visibleTabs, err := a.visibleTabsForGlobalRuntimeUpgrade()
+	visibleTabs, err := a.visibleTabsForGlobalRuntimeMutation("upgrading the DeepSeek provider protocol")
 	if err != nil {
 		return "", err
 	}
@@ -2756,12 +2818,12 @@ func (a *App) UpgradeDeepSeekProviderAccess(name string) (string, error) {
 // use rebuildSettingTurnLocked because it is intentionally absent from a.tabs;
 // reject before mutating config so it never remains silently pinned to the old
 // protocol. runtime mutation admission and all turn gates are held by callers.
-func (a *App) visibleTabsForGlobalRuntimeUpgrade() ([]*WorkspaceTab, error) {
+func (a *App) visibleTabsForGlobalRuntimeMutation(detachedAction string) ([]*WorkspaceTab, error) {
 	a.mu.RLock()
 	defer a.mu.RUnlock()
 	for _, tab := range a.detachedSessions {
 		if tab != nil && tab.Ctrl != nil {
-			return nil, fmt.Errorf("background session is still open; reopen or close it before upgrading the DeepSeek provider protocol")
+			return nil, fmt.Errorf("background session is still open; reopen or close it before %s", detachedAction)
 		}
 	}
 	tabs := make([]*WorkspaceTab, 0, len(a.tabs))
