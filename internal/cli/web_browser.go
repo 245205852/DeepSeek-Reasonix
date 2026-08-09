@@ -21,7 +21,7 @@ func runServeListenerAfterReady(ctx context.Context, srv *serve.Server, ln net.L
 	if err := waitForServeHTTPReady(serveCtx, addr); err != nil {
 		cancel()
 		if serveErr := <-done; serveErr != nil {
-			return fmt.Errorf("wait for Web server readiness: %w (server: %v)", err, serveErr)
+			return fmt.Errorf("wait for Web server readiness: %w (server: %w)", err, serveErr)
 		}
 		return fmt.Errorf("wait for Web server readiness: %w", err)
 	}
