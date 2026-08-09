@@ -18,8 +18,11 @@ func foldAgent(t *testing.T, prov provider.Provider, incremental bool) (*Agent, 
 	t.Helper()
 	sess := NewSession("sys")
 	sess.Add(provider.Message{Role: provider.RoleUser, Content: "task"})
+	// Sized so one generation of work outgrows the verbatim tail without a large
+	// fixture: these tests assert what a fold reads, not how much, and
+	// internal/agent already runs closest to the Windows CI timeout.
 	a := New(prov, tool.NewRegistry(), sess, Options{
-		ContextWindow: 128_000,
+		ContextWindow: 11_000,
 		RecentKeep:    2,
 		SessionPath:   t.TempDir() + "/session.jsonl",
 		ArchiveDir:    t.TempDir(),
@@ -36,11 +39,11 @@ func foldArmSet(incremental bool) ablation.Set {
 }
 
 func addWork(sess *Session, gen int) {
-	for i := range 8 {
+	for i := range 6 {
 		id := fmt.Sprintf("g%dc%d", gen, i)
 		sess.Add(provider.Message{Role: provider.RoleAssistant, ToolCalls: []provider.ToolCall{{ID: id, Name: "read_file", Arguments: "{}"}}})
 		sess.Add(provider.Message{Role: provider.RoleTool, ToolCallID: id, Name: "read_file",
-			Content: strings.Repeat(fmt.Sprintf("gen %d line %d\n", gen, i), 1200)})
+			Content: strings.Repeat(fmt.Sprintf("gen %d line %d\n", gen, i), 400)})
 	}
 }
 
@@ -83,18 +86,94 @@ func TestFullFoldRereadsTheOldestHistoryEveryTime(t *testing.T) {
 	}
 }
 
-func TestIncrementalFoldFeedsThePriorDigestInsteadOfRereading(t *testing.T) {
+func TestIncrementalFoldSummarizesOnlyTheNewWork(t *testing.T) {
+	// Re-summarizing a digest is the one step that can drop a fact for good, so
+	// an incremental fold sends the summarizer neither the old raw history nor
+	// the digest that replaced it — only what is new.
 	prov := &countingProvider{reply: "digest"}
 	a, sess := foldAgent(t, prov, true)
 	var last string
 	for gen := range 3 {
 		last = foldInput(t, a, sess, prov, gen)
 	}
-	if !strings.Contains(last, summaryTagOpen) {
-		t.Fatalf("an incremental fold must feed the prior digest back in:\n%.200q", last)
+	if strings.Contains(last, summaryTagOpen) {
+		t.Fatalf("a carried digest must not be re-summarized:\n%.200q", last)
 	}
 	if strings.Contains(last, "gen 0 line 0") {
-		t.Fatal("an incremental fold must not re-read history the prior digest already covers")
+		t.Fatal("an incremental fold must not re-read history a prior digest already covers")
+	}
+	if !strings.Contains(last, "gen 2 line 0") {
+		t.Fatal("the fold must still summarize the newest work")
+	}
+}
+
+func TestCarriedDigestsSurviveVerbatimAndInOrder(t *testing.T) {
+	prov := &countingProvider{reply: "digest"}
+	a, sess := foldAgent(t, prov, true)
+	var prev []string
+	for gen := range 3 {
+		foldInput(t, a, sess, prov, gen)
+		got := projectionDigests(a)
+		if len(got) != gen+1 {
+			t.Fatalf("after fold %d the projection carries %d digests, want %d", gen+1, len(got), gen+1)
+		}
+		for i, was := range prev {
+			if got[i] != was {
+				t.Fatalf("fold %d rewrote carried digest %d:\n was %.80q\n now %.80q", gen+1, i+1, was, got[i])
+			}
+		}
+		prev = got
+	}
+}
+
+func projectionDigests(a *Agent) []string {
+	var out []string
+	for _, m := range a.compactionState.Projection.Messages {
+		if isCompactionSummary(m) {
+			out = append(out, m.Content)
+		}
+	}
+	return out
+}
+
+// The reason to carry digests instead of merging them is not only fidelity: the
+// bytes ahead of the newest digest stop changing, so a fold appends to the
+// prefix instead of rewriting it.
+func TestCarriedDigestsKeepTheProjectionPrefixStable(t *testing.T) {
+	prov := &countingProvider{reply: "digest"}
+	a, sess := foldAgent(t, prov, true)
+	foldInput(t, a, sess, prov, 0)
+	before := renderTranscript(a.compactionState.Projection.Messages[:digestEnd(a)])
+	foldInput(t, a, sess, prov, 1)
+	after := renderTranscript(a.compactionState.Projection.Messages[:digestEnd(a)-1])
+	if !strings.HasPrefix(after, before) {
+		t.Fatalf("a fold rewrote the projection prefix instead of appending to it:\nbefore %.120q\nafter  %.120q", before, after)
+	}
+}
+
+// digestEnd is one past the last carried digest in the current projection.
+func digestEnd(a *Agent) int {
+	end := 0
+	for i, m := range a.compactionState.Projection.Messages {
+		if isCompactionSummary(m) {
+			end = i + 1
+		}
+	}
+	return end
+}
+
+func TestCarriedDigestsConsolidateWhenTheyOutgrowTheirBudget(t *testing.T) {
+	prov := &countingProvider{reply: strings.Repeat("carried digest body ", 400)} // ~8k tokens est. each
+	a, sess := foldAgent(t, prov, true)
+	var last string
+	for gen := range 3 {
+		last = foldInput(t, a, sess, prov, gen)
+	}
+	if !strings.Contains(last, summaryTagOpen) {
+		t.Fatal("digests past the carry budget must be merged by one consolidating fold")
+	}
+	if n := len(projectionDigests(a)); n != 1 {
+		t.Fatalf("projection carries %d digests after consolidation, want 1", n)
 	}
 }
 

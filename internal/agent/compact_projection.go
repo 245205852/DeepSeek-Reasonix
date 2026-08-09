@@ -409,7 +409,7 @@ func (a *Agent) compactToProjection(ctx context.Context, trigger, instructions s
 		return CompactionNoop, nil
 	}
 	region := msgs[head:start]
-	early, kept, fold := a.partitionFoldForProjection(region)
+	early, carried, kept, fold := a.partitionFoldForProjection(region)
 	if len(fold) == 0 {
 		return CompactionNoop, nil
 	}
@@ -468,9 +468,10 @@ func (a *Agent) compactToProjection(ctx context.Context, trigger, instructions s
 		return CompactionNoop, err
 	}
 
-	projMsgs := make([]provider.Message, 0, head+len(early)+1+len(kept)+len(msgs)-start)
+	projMsgs := make([]provider.Message, 0, head+len(early)+len(carried)+1+len(kept)+len(msgs)-start)
 	projMsgs = append(projMsgs, msgs[:head]...)
 	projMsgs = append(projMsgs, early...)
+	projMsgs = append(projMsgs, carried...)
 	projMsgs = append(projMsgs, formatSummaryMessage(summary))
 	projMsgs = append(projMsgs, kept...)
 	projMsgs = append(projMsgs, msgs[start:]...)
@@ -555,21 +556,51 @@ func (a *Agent) foldSource(canonical []provider.Message) []provider.Message {
 // the remainder that folds (prior digests included, so a merge yields one
 // summary). The groups partition the region — one pass decides each message
 // once, so no turn can fall between a hoist rule and a fold rule that disagree.
-func (a *Agent) partitionFoldForProjection(region []provider.Message) (early, kept, fold []provider.Message) {
+func (a *Agent) partitionFoldForProjection(region []provider.Message) (early, carried, kept, fold []provider.Message) {
 	policyKeep := keepIndexes(region, a.keepPolicy)
 	hoist := a.earlyUserTurns(region)
+	carryDigests := a.carryPriorDigests(region)
 	for i, m := range region {
 		switch {
 		case m.LocalOnly: // display-only output never reaches a provider
 		case hoist[i]:
 			early = append(early, m)
-		case policyKeep[i] && !isCompactionSummary(m):
+		case isCompactionSummary(m):
+			if carryDigests {
+				carried = append(carried, m)
+				continue
+			}
+			fold = append(fold, m)
+		case policyKeep[i]:
 			kept = append(kept, m)
 		default:
 			fold = append(fold, m)
 		}
 	}
-	return early, kept, fold
+	return early, carried, kept, fold
+}
+
+// carryPriorDigests reports whether the digests already in the region survive
+// this fold verbatim instead of being re-summarized. Re-summarizing a digest is
+// the only step in a fold where a fact can be dropped and never recovered, so
+// an incremental fold carries them — until they outgrow their budget, when one
+// consolidating fold merges them and the chain starts over.
+func (a *Agent) carryPriorDigests(region []provider.Message) bool {
+	if !a.ablation.Off(ablation.FullFold) {
+		return false
+	}
+	total := 0
+	for _, m := range region {
+		if isCompactionSummary(m) {
+			total += summaryInputTokens([]provider.Message{m})
+		}
+	}
+	if total > maxCarriedDigestTokens {
+		a.sink.Emit(event.Event{Kind: event.Notice, Level: event.LevelInfo, Text: fmt.Sprintf(
+			"consolidating %d tokens est. of carried digests into one; earlier facts now depend on this merge", total)})
+		return false
+	}
+	return true
 }
 
 // earlyUserTurns marks the region positions of the small user turns hoisted
