@@ -2659,7 +2659,7 @@ func (c *Controller) SetGoalDurable(goal string) error {
 	var data []byte
 	var persist bool
 	if setup.blockReason != "" {
-		path, data, persist = c.goals.setLegacyArchiveBlocked(resolved, setup.budgetClass, setup.blockReason, c.goalTodos())
+		path, data, persist = c.goals.setLegacyArchiveBlockedWithTaskID(resolved, setup.budgetClass, setup.blockReason, setup.legacyTaskID, c.goalTodos())
 		c.replaceLegacyRestore(legacyGoalRestore{taskID: setup.legacyTaskID, epoch: c.goals.continuationToken(), explicit: setup.explicit})
 	} else {
 		path, data, persist = c.goals.set(resolved, setup.budgetClass, c.goalTodos())
@@ -2695,7 +2695,7 @@ func (c *Controller) SetGoalWithResearchMode(goal string, researchMode GoalResea
 	var data []byte
 	var ok bool
 	if setup.blockReason != "" {
-		path, data, ok = c.goals.setLegacyArchiveBlocked(resolved, setup.budgetClass, setup.blockReason, c.goalTodos())
+		path, data, ok = c.goals.setLegacyArchiveBlockedWithTaskID(resolved, setup.budgetClass, setup.blockReason, setup.legacyTaskID, c.goalTodos())
 		c.replaceLegacyRestore(legacyGoalRestore{taskID: setup.legacyTaskID, epoch: c.goals.continuationToken(), explicit: setup.explicit})
 		c.notice("legacy research archive resume failed: " + setup.blockReason)
 	} else {

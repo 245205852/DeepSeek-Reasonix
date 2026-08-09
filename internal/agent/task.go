@@ -19,6 +19,7 @@ import (
 	"reasonix/internal/event"
 	"reasonix/internal/evidence"
 	"reasonix/internal/jobs"
+	"reasonix/internal/memory"
 	"reasonix/internal/permission"
 	"reasonix/internal/planmode"
 	"reasonix/internal/provider"
@@ -873,7 +874,7 @@ func (t *TaskTool) RunProfileSpec(ctx context.Context, spec ProfileExecSpec) (re
 	modelRef, effortRef := spec.Model, spec.Effort
 	usageModelRef := t.usageModelRef(modelRef, effortRef)
 	parentID, _, _, _ := CallContext(ctx)
-	run, err := t.prepareTranscriptRunWithPrompt(subReg, modelRef, effortRef, ParentSession(ctx), parentID, spec.ContinueFrom, spec.ForkFrom, spec.SystemPrompt, spec.Kind, spec.Name)
+	run, err := t.prepareTranscriptRunWithPrompt(ctx, subReg, modelRef, effortRef, ParentSession(ctx), parentID, spec.ContinueFrom, spec.ForkFrom, spec.SystemPrompt, spec.Kind, spec.Name)
 	if err != nil {
 		return "", err
 	}
@@ -1055,7 +1056,7 @@ func (t *TaskTool) bashCanEnforceWriteRoots() bool {
 	return false
 }
 
-func (t *TaskTool) prepareTranscriptRunWithPrompt(subReg *tool.Registry, modelRef, effortRef, parentSession, parentID, continueFrom, legacyForkFrom, systemPrompt, kind, name string) (*SubagentRun, error) {
+func (t *TaskTool) prepareTranscriptRunWithPrompt(ctx context.Context, subReg *tool.Registry, modelRef, effortRef, parentSession, parentID, continueFrom, legacyForkFrom, systemPrompt, kind, name string) (*SubagentRun, error) {
 	continueFrom = strings.TrimSpace(continueFrom)
 	legacyForkFrom = strings.TrimSpace(legacyForkFrom)
 	parentSession = strings.TrimSpace(parentSession)
@@ -1089,6 +1090,7 @@ func (t *TaskTool) prepareTranscriptRunWithPrompt(subReg *tool.Registry, modelRe
 		ParentToolCallID: parentID,
 		SystemPrompt:     systemPrompt,
 		Registry:         subReg,
+		ToolContext:      childToolIdentityContext(ctx),
 		Model:            identityModel,
 		Effort:           identityEffort,
 	}
@@ -1099,6 +1101,13 @@ func (t *TaskTool) prepareTranscriptRunWithPrompt(subReg *tool.Registry, modelRe
 		return t.transcripts.PrepareLegacyForkFrom(legacyForkFrom, spec)
 	}
 	return t.transcripts.PrepareFresh(spec)
+}
+
+func childToolIdentityContext(ctx context.Context) context.Context {
+	ctx = tool.WithoutGoalTurnRecorder(ctx)
+	ctx = memory.WithoutQueue(ctx)
+	ctx = jobs.WithoutManager(ctx)
+	return planmode.WithActive(ctx, PlanModeFromContext(ctx))
 }
 
 func (t *TaskTool) effectiveIdentity(modelRef, effort string) (string, string) {
@@ -1834,6 +1843,14 @@ func RunSubAgentWithSession(ctx context.Context, prov provider.Provider, reg *to
 	}
 	// Isolate temporary files for this run before any tool execution.
 	ctx = tool.WithoutGoalTurnRecorder(ctx)
+	if opts.MemoryQueue != nil {
+		ctx = memory.WithQueue(ctx, opts.MemoryQueue)
+	} else {
+		ctx = memory.WithoutQueue(ctx)
+	}
+	if opts.Jobs == nil {
+		ctx = jobs.WithoutManager(ctx)
+	}
 	ctx, releaseTemp := withSubagentSessionTemp(ctx)
 	defer releaseTemp()
 	if opts.SubagentDepth > 0 {

@@ -139,6 +139,27 @@ func PlanModeFromContext(ctx context.Context) bool {
 	return ok && cc.planMode
 }
 
+// withAgentContext establishes the agent-owned workflow capabilities for a
+// model round and for tool availability checks. Missing capabilities shadow
+// inherited values so child agents cannot reach parent Goal, Jobs, or memory
+// state accidentally.
+func (a *Agent) withAgentContext(ctx context.Context) context.Context {
+	if a == nil {
+		return ctx
+	}
+	if a.jobs != nil {
+		ctx = jobs.WithManager(ctx, a.jobs)
+	} else {
+		ctx = jobs.WithoutManager(ctx)
+	}
+	if a.memQueue != nil {
+		ctx = memory.WithQueue(ctx, a.memQueue)
+	} else {
+		ctx = memory.WithoutQueue(ctx)
+	}
+	return planmode.WithActive(ctx, a.planMode.Load())
+}
+
 // WithParentSession stamps the active parent session ID onto a turn context so
 // persisted sub-agents can record and enforce their owning conversation.
 func WithParentSession(ctx context.Context, parentSession string) context.Context {
@@ -1076,6 +1097,9 @@ type Options struct {
 
 	// Jobs is the session's background-job manager (nil disables background tools).
 	Jobs *jobs.Manager
+	// MemoryQueue optionally gives a child agent an explicitly owned live-memory
+	// queue. When nil, child construction shadows inherited queues.
+	MemoryQueue memory.Queue
 
 	// WriteScheduler is the session-scoped subagent concurrency/write-claim
 	// controller. When set on the parent executor, write-capable tools reserve
@@ -1246,6 +1270,7 @@ func New(prov provider.Provider, tools *tool.Registry, session *Session, opts Op
 		configWriteApprover:       configWriteApprover,
 		hooks:                     hooks,
 		jobs:                      opts.Jobs,
+		memQueue:                  opts.MemoryQueue,
 		writeScheduler:            opts.WriteScheduler,
 		writeWorkspaceRoot:        strings.TrimSpace(opts.WriteWorkspaceRoot),
 		workspaceLease:            opts.WorkspaceLease,
