@@ -243,10 +243,9 @@ func (a *App) externalOpenerWorkspacePathForTab(tabID string) (string, error) {
 	if !ok {
 		return "", os.ErrNotExist
 	}
-	// A bound tab with no root has no stable workspace to expose. Preserve the
-	// legacy no-tab call's current-directory fallback (workspaceTargetForTab
-	// returns "." for that case), but do not turn an incomplete tab into an
-	// opener for the Desktop process's launch directory.
+	// A bound tab with no root has no stable workspace to expose. Keep the legacy
+	// no-tab current-directory fallback, but do not turn an incomplete tab into
+	// an opener for the Desktop process's launch directory.
 	if strings.TrimSpace(root) == "" {
 		return "", os.ErrNotExist
 	}
