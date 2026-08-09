@@ -1,4 +1,12 @@
-import type { ProviderModelOverrideView } from "./types";
+import type { ProviderModelOverrideView, ProviderView } from "./types";
+
+export function removeProviderAccessesForMock(providers: ProviderView[], names: string[]): ProviderView[] {
+  const requested = new Set(names);
+  return providers.flatMap((provider) => {
+    if (!requested.has(provider.name)) return [provider];
+    return provider.builtIn ? [{ ...provider, added: false }] : [];
+  });
+}
 
 export function mergedFetchedProviderModels(current: string[], fetched: string[], options: { preserveCurated?: boolean } = {}): string[] {
   const saved = uniqueStrings(current);

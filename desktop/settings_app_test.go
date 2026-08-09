@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -9,9 +10,12 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
+	"reasonix/internal/agent"
 	"reasonix/internal/config"
 	"reasonix/internal/control"
+	"reasonix/internal/event"
 	fileencoding "reasonix/internal/fileutil/encoding"
 	"reasonix/internal/hook"
 	"reasonix/internal/provider"
@@ -1352,6 +1356,195 @@ price = { cache_hit = 0.2, input = 3.75, output = 6.75, currency = "T" }
 	if pro.ContextWindow != 800000 || pro.MaxOutputTokens != 222222 || pro.ReasoningProtocol != "none" ||
 		pro.DefaultEffort != "max" || pro.Price == nil || pro.Price.Output != 6.75 {
 		t.Fatalf("Pro model fields were not preserved: %+v", pro)
+	}
+}
+
+func TestUpgradeDeepSeekProviderAccessSerializesRuntimeMutation(t *testing.T) {
+	isolateDesktopUserDirs(t)
+	path := config.UserConfigPath()
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	raw := `[[providers]]
+name = "deepseek-flash"
+kind = "openai"
+base_url = "https://api.deepseek.com"
+model = "deepseek-v4-flash"
+api_key_env = "DEEPSEEK_API_KEY"
+`
+	if err := os.WriteFile(path, []byte(raw), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	app := NewApp()
+	app.runtimeRebuildMu.Lock()
+	rebuildLocked := true
+	defer func() {
+		if rebuildLocked {
+			app.runtimeRebuildMu.Unlock()
+		}
+	}()
+	entered := make(chan struct{})
+	app.runtimeMutationBeforeLockHook = func(operation string) {
+		if operation == "upgrade-deepseek-provider" {
+			close(entered)
+		}
+	}
+	done := make(chan error, 1)
+	go func() {
+		_, err := app.UpgradeDeepSeekProviderAccess("deepseek")
+		done <- err
+	}()
+	select {
+	case <-entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("protocol upgrade did not reach the runtime mutation barrier")
+	}
+	before, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(before), `kind = "openai"`) {
+		t.Fatalf("protocol changed before acquiring the runtime mutation lock:\n%s", before)
+	}
+
+	app.runtimeRebuildMu.Unlock()
+	rebuildLocked = false
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("UpgradeDeepSeekProviderAccess: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("protocol upgrade did not complete after releasing the runtime mutation lock")
+	}
+	after, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(after), `kind = "anthropic"`) {
+		t.Fatalf("protocol was not upgraded after acquiring the runtime mutation lock:\n%s", after)
+	}
+}
+
+func TestUpgradeDeepSeekProviderAccessRebuildsEveryVisibleRuntime(t *testing.T) {
+	isolateDesktopUserDirs(t)
+	setDesktopTestCredential(t, "DEEPSEEK_API_KEY", "sk-test")
+	path := config.UserConfigPath()
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	raw := `default_model = "deepseek-flash/deepseek-v4-flash"
+
+[desktop]
+provider_access = ["deepseek"]
+
+[[providers]]
+name = "deepseek-flash"
+kind = "openai"
+base_url = "https://api.deepseek.com"
+model = "deepseek-v4-flash"
+api_key_env = "DEEPSEEK_API_KEY"
+`
+	if err := os.WriteFile(path, []byte(raw), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	workspace := t.TempDir()
+	sessionDir := config.SessionDir()
+	if err := os.MkdirAll(sessionDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	newOldController := func(id string) *blockingSnapshotCtrl {
+		session := agent.NewSession("old system prompt")
+		session.Add(provider.Message{Role: provider.RoleUser, Content: "history " + id})
+		exec := agent.New(nil, nil, session, agent.Options{}, event.Discard)
+		ctrl := control.New(control.Options{
+			Executor: exec, SessionDir: sessionDir,
+			SessionPath: filepath.Join(sessionDir, id+".jsonl"), Label: id, Sink: event.Discard,
+		})
+		wrapped := newBlockingSnapshotCtrl(ctrl)
+		close(wrapped.releaseSnapshot)
+		return wrapped
+	}
+	oldA := newOldController("tab-a")
+	oldB := newOldController("tab-b")
+	app := NewApp()
+	app.ctx = context.Background()
+	app.readyHook = func() {}
+	tabA := &WorkspaceTab{
+		ID: "tab-a", Scope: "global", WorkspaceRoot: workspace, Ready: true,
+		Ctrl: oldA, model: "deepseek/deepseek-v4-flash", sink: &tabEventSink{tabID: "tab-a", app: app},
+		disabledMCP: map[string]ServerView{},
+	}
+	tabB := &WorkspaceTab{
+		ID: "tab-b", Scope: "global", WorkspaceRoot: workspace, Ready: true,
+		Ctrl: oldB, model: "deepseek/deepseek-v4-flash", sink: &tabEventSink{tabID: "tab-b", app: app},
+		disabledMCP: map[string]ServerView{},
+	}
+	app.tabs = map[string]*WorkspaceTab{tabA.ID: tabA, tabB.ID: tabB}
+	app.tabOrder = []string{tabA.ID, tabB.ID}
+	app.activeTabID = tabA.ID
+	t.Cleanup(func() {
+		for _, tab := range []*WorkspaceTab{tabA, tabB} {
+			if tab.Ctrl != nil {
+				tab.Ctrl.Close()
+			}
+			tab.releaseSessionLease()
+		}
+	})
+
+	if _, err := app.UpgradeDeepSeekProviderAccess("deepseek"); err != nil {
+		t.Fatalf("UpgradeDeepSeekProviderAccess: %v", err)
+	}
+	if tabA.Ctrl == oldA || tabB.Ctrl == oldB {
+		t.Fatalf("visible runtimes were not both rebuilt: active=%T inactive=%T", tabA.Ctrl, tabB.Ctrl)
+	}
+	if oldA.closeCount.Load() != 1 || oldB.closeCount.Load() != 1 {
+		t.Fatalf("old controller close counts = %d, %d; want one each", oldA.closeCount.Load(), oldB.closeCount.Load())
+	}
+	for _, tab := range []*WorkspaceTab{tabA, tabB} {
+		history := tab.Ctrl.History()
+		if len(history) < 2 || !strings.HasPrefix(history[1].Content, "history ") {
+			t.Fatalf("rebuilt tab %q lost history: %+v", tab.ID, history)
+		}
+	}
+}
+
+func TestUpgradeDeepSeekProviderAccessRejectsDetachedRuntimeBeforeMutation(t *testing.T) {
+	isolateDesktopUserDirs(t)
+	path := config.UserConfigPath()
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	raw := `[[providers]]
+name = "deepseek-flash"
+kind = "openai"
+base_url = "https://api.deepseek.com"
+model = "deepseek-v4-flash"
+api_key_env = "DEEPSEEK_API_KEY"
+`
+	if err := os.WriteFile(path, []byte(raw), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	app := NewApp()
+	detachedCtrl := control.New(control.Options{Label: "detached", Sink: event.Discard})
+	app.detachedSessions = map[string]*WorkspaceTab{
+		"detached": {ID: "detached", Scope: "global", Ready: true, Ctrl: detachedCtrl},
+	}
+	t.Cleanup(detachedCtrl.Close)
+
+	_, err := app.UpgradeDeepSeekProviderAccess("deepseek")
+	if err == nil || !strings.Contains(err.Error(), "background session is still open") {
+		t.Fatalf("UpgradeDeepSeekProviderAccess error = %v, want detached-runtime guard", err)
+	}
+	after, readErr := os.ReadFile(path)
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	if string(after) != raw {
+		t.Fatalf("protocol changed despite detached-runtime rejection:\n%s", after)
 	}
 }
 

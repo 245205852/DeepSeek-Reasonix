@@ -3002,6 +3002,7 @@ language = "zh"
 
 func TestRemoveBuiltInProviderAccessRetargetsDefaultToRemainingAccess(t *testing.T) {
 	isolateDesktopUserDirs(t)
+	setDesktopTestCredential(t, "MIMO_API_KEY", "sk-test")
 	if err := os.MkdirAll(filepath.Dir(config.UserConfigPath()), 0o755); err != nil {
 		t.Fatalf("mkdir config dir: %v", err)
 	}
@@ -3048,12 +3049,12 @@ func TestModelsForTabOnlyListsProviderAccessWhenConfigured(t *testing.T) {
 	setDesktopTestCredential(t, "MIMO_API_KEY", "sk-test")
 
 	cfg := config.Default()
-	cfg.DefaultModel = "deepseek-flash/deepseek-v4-flash"
-	cfg.Desktop.ProviderAccess = []string{"deepseek-flash", "mimo-pro"}
-	deepseek, _ := cfg.Provider("deepseek-flash")
-	deepseek.Model = ""
-	deepseek.Models = []string{"deepseek-v4-flash", "deepseek-v4-pro"}
-	deepseek.Default = "deepseek-v4-flash"
+	cfg.DefaultModel = "deepseek/deepseek-v4-flash"
+	cfg.Desktop.ProviderAccess = []string{"deepseek", "mimo-pro"}
+	cfg.Providers = append(cfg.Providers, config.ProviderEntry{
+		Name: "deepseek", Kind: "anthropic", BaseURL: "https://api.deepseek.com/anthropic",
+		Models: []string{"deepseek-v4-flash", "deepseek-v4-pro"}, Default: "deepseek-v4-flash", APIKeyEnv: "DEEPSEEK_API_KEY",
+	})
 	if err := cfg.SaveTo(config.UserConfigPath()); err != nil {
 		t.Fatalf("save config: %v", err)
 	}

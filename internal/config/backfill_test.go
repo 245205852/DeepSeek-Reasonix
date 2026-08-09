@@ -777,6 +777,9 @@ func TestNormalizeDesktopOfficialProviderAccessCanonicalizesOnlyDeepSeekIDs(t *t
 	if _, ok := c.Provider("deepseek"); !ok {
 		t.Fatal("canonical deepseek provider missing")
 	}
+	if resolved, ok := c.ResolveModel("deepseek-pro/deepseek-v4-pro"); !ok || resolved.Name != "deepseek" {
+		t.Fatalf("compatible legacy reference resolved to %+v, found=%v; want canonical DeepSeek", resolved, ok)
+	}
 	if _, ok := c.Provider("mimo-token-plan"); ok {
 		t.Fatal("mimo-token-plan should not be injected as an official provider")
 	}
@@ -888,6 +891,38 @@ func TestNormalizeDesktopOfficialProviderAccessKeepsIncompatibleOfficialAliases(
 	resolved, ok := c.ResolveModel(c.DefaultModel)
 	if !ok || resolved.Headers["X-Route"] != "pro" {
 		t.Fatalf("resolved Pro provider = %+v, found=%v; want its original transport", resolved, ok)
+	}
+}
+
+func TestNormalizeDesktopOfficialProviderAccessKeepsAliasIncompatibleWithExistingCanonical(t *testing.T) {
+	c := &Config{
+		DefaultModel: "deepseek-pro/deepseek-v4-pro",
+		Desktop:      DesktopConfig{ProviderAccess: []string{"deepseek", "deepseek-pro"}},
+		Providers: []ProviderEntry{
+			{
+				Name: "deepseek", Kind: "anthropic", BaseURL: deepSeekAnthropicBaseURL,
+				Models: []string{"deepseek-v4-flash", "deepseek-v4-pro"}, Default: "deepseek-v4-flash",
+				APIKeyEnv: "DEEPSEEK_API_KEY",
+			},
+			{
+				Name: "deepseek-pro", Kind: "openai", BaseURL: "https://api.deepseek.com",
+				Model: "deepseek-v4-pro", APIKeyEnv: "DEEPSEEK_API_KEY",
+				Headers: map[string]string{"X-Route": "legacy-pro"},
+			},
+		},
+	}
+
+	normalizeDesktopOfficialProviderAccess(c)
+
+	if got := c.Desktop.ProviderAccess; !reflect.DeepEqual(got, []string{"deepseek", "deepseek-pro"}) {
+		t.Fatalf("provider_access = %v, want canonical and incompatible alias preserved", got)
+	}
+	if c.DefaultModel != "deepseek-pro/deepseek-v4-pro" {
+		t.Fatalf("default_model = %q, want incompatible legacy reference preserved", c.DefaultModel)
+	}
+	resolved, ok := c.ResolveModel(c.DefaultModel)
+	if !ok || resolved.Kind != "openai" || resolved.Headers["X-Route"] != "legacy-pro" {
+		t.Fatalf("resolved legacy provider = %+v, found=%v; want original transport", resolved, ok)
 	}
 }
 

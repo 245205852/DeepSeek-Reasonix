@@ -537,17 +537,6 @@ func providerModelOverridesForSave(overrides []ProviderModelOverrideView, models
 	return out
 }
 
-func providerRemovalFallbackRef(c *config.Config, name string) string {
-	for i := range c.Providers {
-		p := &c.Providers[i]
-		if p.Name == name || !p.Configured() || len(p.ModelList()) == 0 {
-			continue
-		}
-		return p.Name + "/" + p.DefaultModel()
-	}
-	return ""
-}
-
 func desktopModelRefsProvider(c *config.Config, ref, name string) bool {
 	if config.ModelRefsProvider(ref, name) {
 		return true
@@ -1452,6 +1441,10 @@ func (a *App) ensureLiveControllersRuntimeMutationAllowed(setting string) error 
 }
 
 func (a *App) deferredRebuildWarning(setting string, err error) (string, bool) {
+	return a.deferredRebuildWarningForTab(setting, err, a.activeTab())
+}
+
+func (a *App) deferredRebuildWarningForTab(setting string, err error, tab *WorkspaceTab) (string, bool) {
 	if err == nil || !errors.Is(err, agent.ErrSessionLeaseHeld) {
 		return "", false
 	}
@@ -1462,10 +1455,9 @@ func (a *App) deferredRebuildWarning(setting string, err error) (string, bool) {
 	userErr := userFacingSessionLeaseError(setting, err)
 	warning := fmt.Sprintf("%s saved, but the current session could not refresh yet: %s", setting, userErr.Error())
 	slog.Warn("desktop: deferred settings rebuild", "setting", setting, "err", err)
-	// Bind both the warning and the retry to the tab whose refresh failed (the
-	// rebuild acts on the active tab), so a tab switch right after the failure
-	// cannot misroute the notice or the deferred rebuild.
-	if tab := a.activeTab(); tab != nil {
+	// Bind both the warning and the retry to the tab whose refresh failed, so a
+	// tab switch or a multi-tab mutation cannot misroute either one.
+	if tab != nil {
 		a.warnForTab(tab.ID, warning)
 		a.scheduleDeferredRebuild(tab.ID, setting)
 	}
@@ -2716,9 +2708,18 @@ func (a *App) AddOfficialProviderAccess(kind, key string) (string, error) {
 // official legacy OpenAI entry. The config package performs a narrow raw-TOML
 // edit so unrelated and future fields are not lost to a full config render.
 func (a *App) UpgradeDeepSeekProviderAccess(name string) (string, error) {
-	if err := a.ensureActiveTabRebuildAllowed("DeepSeek provider protocol"); err != nil {
+	const setting = "DeepSeek provider protocol"
+	defer a.lockRuntimeMutation("upgrade-deepseek-provider")()
+	releaseGates, err := a.lockRuntimeTurnGates(setting, nil)
+	if err != nil {
 		return "", err
 	}
+	defer releaseGates()
+	visibleTabs, err := a.visibleTabsForGlobalRuntimeUpgrade()
+	if err != nil {
+		return "", err
+	}
+
 	changed, err := config.UpgradeDeepSeekProviderProtocolUserConfig(name)
 	if err != nil {
 		return "", err
@@ -2726,13 +2727,39 @@ func (a *App) UpgradeDeepSeekProviderAccess(name string) (string, error) {
 	if !changed {
 		return "", fmt.Errorf("DeepSeek provider %q is not eligible for the recommended protocol upgrade", name)
 	}
-	if err := a.rebuildSetting("DeepSeek provider protocol"); err != nil {
-		if warning, ok := a.deferredRebuildWarning("DeepSeek provider protocol", err); ok {
-			return warning, nil
+	for _, tab := range visibleTabs {
+		if a.controllerForTab(tab) == nil {
+			// A visible startup placeholder has no stale provider runtime. Its
+			// eventual build will read the upgraded config directly.
+			continue
 		}
-		return "", err
+		if err := a.rebuildSettingTurnLocked(setting, tab, true, false); err != nil {
+			return "", err
+		}
 	}
 	return "", nil
+}
+
+// visibleTabsForGlobalRuntimeUpgrade returns every visible runtime that must
+// observe a user-global provider protocol change. A detached controller cannot
+// use rebuildSettingTurnLocked because it is intentionally absent from a.tabs;
+// reject before mutating config so it never remains silently pinned to the old
+// protocol. runtime mutation admission and all turn gates are held by callers.
+func (a *App) visibleTabsForGlobalRuntimeUpgrade() ([]*WorkspaceTab, error) {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	for _, tab := range a.detachedSessions {
+		if tab != nil && tab.Ctrl != nil {
+			return nil, fmt.Errorf("background session is still open; reopen or close it before upgrading the DeepSeek provider protocol")
+		}
+	}
+	tabs := make([]*WorkspaceTab, 0, len(a.tabs))
+	for _, id := range a.orderedTabIDsLocked() {
+		if tab := a.tabs[id]; tab != nil {
+			tabs = append(tabs, tab)
+		}
+	}
+	return tabs, nil
 }
 
 // AddProviderPresetAccess installs one editable custom-provider preset. Unlike
@@ -2921,346 +2948,6 @@ func (a *App) FetchAllProviderModels(providers []ProviderView) map[string][]stri
 	}
 	_ = g.Wait()
 	return results
-}
-
-// DeleteProvider removes a provider and retargets open idle tabs that used it.
-func (a *App) DeleteProvider(name string) error {
-	return a.deleteProviderAndRetargetTabs(name)
-}
-
-// RemoveProviderAccess hides a provider from Settings > Model > Access and from
-// settings model pickers. Built-in provider entries remain in the runtime config
-// for back-compat, but visible defaults and idle tabs are retargeted away from
-// the removed access entry when another accessed provider is available. Custom
-// providers are deleted outright.
-func (a *App) RemoveProviderAccess(name string) error {
-	name = strings.TrimSpace(name)
-	if name == "" {
-		return fmt.Errorf("remove provider access: empty provider name")
-	}
-	// Read-only dispatch check (built-in vs custom); the removal paths below
-	// reload and write under the config edit lock.
-	cfg, _, err := a.loadDesktopUserConfigForView()
-	if err != nil {
-		return err
-	}
-	if p, ok := cfg.Provider(name); ok && isOfficialBuiltInProvider(*p) {
-		return a.removeBuiltInProviderAccessAndRetargetTabs(name)
-	}
-	return a.deleteProviderAndRetargetTabs(name)
-}
-
-type providerRemovalTab struct {
-	id       string
-	ctrl     control.SessionAPI
-	readOnly bool
-}
-
-func providerAccessFallbackRef(c *config.Config, name string) string {
-	name = strings.TrimSpace(name)
-	for _, candidate := range c.Desktop.ProviderAccess {
-		candidate = strings.TrimSpace(candidate)
-		if candidate == "" || candidate == name {
-			continue
-		}
-		p, ok := c.Provider(candidate)
-		if !ok || len(p.ModelList()) == 0 {
-			continue
-		}
-		return p.Name + "/" + p.DefaultModel()
-	}
-	return ""
-}
-
-func retargetProviderReferences(c *config.Config, name, fallbackRef string) {
-	if strings.TrimSpace(fallbackRef) == "" {
-		return
-	}
-	if desktopModelRefsProvider(c, c.DefaultModel, name) {
-		c.DefaultModel = fallbackRef
-	}
-	if desktopModelRefsProvider(c, c.Agent.PlannerModel, name) {
-		c.Agent.PlannerModel = fallbackRef
-	}
-	if desktopModelRefsProvider(c, c.Agent.SubagentModel, name) {
-		c.Agent.SubagentModel = fallbackRef
-	}
-	for skill, ref := range c.Agent.SubagentModels {
-		if desktopModelRefsProvider(c, ref, name) {
-			c.Agent.SubagentModels[skill] = fallbackRef
-		}
-	}
-}
-
-func (a *App) removeBuiltInProviderAccessAndRetargetTabs(name string) error {
-	defer a.lockRuntimeMutation("remove-provider-access")()
-	releaseGates, err := a.lockRuntimeTurnGates("provider access", nil)
-	if err != nil {
-		return err
-	}
-	defer releaseGates()
-
-	// This first load is a read-only planning copy (fallback ref + affected-tab
-	// scan); it loads credentials because the fallback choice depends on which
-	// providers resolve a key. The saved edit below reloads under the config
-	// edit lock so the slow snapshot work in between cannot widen the
-	// read-modify-write window.
-	cfg, _, err := a.loadDesktopUserConfigForViewWithCredentials()
-	if err != nil {
-		return err
-	}
-	fallbackRef := providerAccessFallbackRef(cfg, name)
-
-	var affected []providerRemovalTab
-	if fallbackRef != "" {
-		a.mu.RLock()
-		for _, id := range a.orderedTabIDsLocked() {
-			tab := a.tabs[id]
-			if tab == nil {
-				continue
-			}
-			ref := tab.model
-			if strings.TrimSpace(ref) == "" {
-				ref = cfg.DefaultModel
-			}
-			if !desktopModelRefsProvider(cfg, ref, name) {
-				continue
-			}
-			if controllerHasActiveRuntimeWork(tab.Ctrl) {
-				a.mu.RUnlock()
-				return fmt.Errorf("finish or cancel active work using %q before removing the provider access", name)
-			}
-			affected = append(affected, providerRemovalTab{id: id, ctrl: tab.Ctrl, readOnly: tab.ReadOnly})
-		}
-		a.mu.RUnlock()
-	}
-
-	if len(affected) == 0 {
-		if err := a.ensureActiveTabRebuildAllowed("provider access"); err != nil {
-			return err
-		}
-	}
-	for _, item := range affected {
-		if item.ctrl != nil && !item.readOnly {
-			if err := item.ctrl.Snapshot(); err != nil {
-				slog.Warn("desktop: snapshot before removing provider access failed", "tab", item.id, "provider", name, "err", err)
-				return fmt.Errorf("save current session before removing provider access: %w", err)
-			}
-		}
-	}
-	// Reload-modify-save under the config edit lock: the pre-save snapshots
-	// above are slow and must not hold the lock, so mutate a fresh copy here
-	// instead of the stale planning copy loaded before them.
-	if err := func() error {
-		unlock := config.LockUserConfigEdits()
-		defer unlock()
-		fresh, path, err := a.loadDesktopUserConfigForEdit()
-		if err != nil {
-			return err
-		}
-		retargetProviderReferences(fresh, name, fallbackRef)
-		removeProviderAccess(fresh, name)
-		return fresh.SaveTo(path)
-	}(); err != nil {
-		return err
-	}
-	if len(affected) == 0 {
-		if err := a.rebuildActiveSettingRuntimeMutationLocked("provider access"); err != nil {
-			if _, ok := a.deferredRebuildWarning("provider access", err); ok {
-				return nil
-			}
-			return err
-		}
-		return nil
-	}
-	for _, item := range affected {
-		if item.ctrl != nil {
-			item.ctrl.Close()
-		}
-	}
-
-	var rebuildTabs []*WorkspaceTab
-	var releasedHostKeys []string
-	a.mu.Lock()
-	for _, item := range affected {
-		tab := a.tabs[item.id]
-		if tab == nil {
-			continue
-		}
-		if tab.Ctrl != item.ctrl {
-			// The tab swapped controllers while we worked off-lock; nil-ing the
-			// replacement would leak it. Leave the new runtime alone.
-			continue
-		}
-		tab.Ctrl = nil
-		if key := takeTabSharedHostKey(tab); key != "" {
-			releasedHostKeys = append(releasedHostKeys, key)
-		}
-		// Supersede any in-flight startup build: it was planned against the
-		// removed provider and would otherwise finish later, pass its
-		// generation check, and reinstall a controller for it.
-		a.supersedeTabBuildLocked(tab)
-		tab.model = fallbackRef
-		tab.Label = fallbackRef
-		clearTabStartupError(tab)
-		tab.Ready = a.ctx == nil
-		if a.ctx != nil {
-			a.setSessionRuntimePhaseLocked(tab, sessionRuntimeStarting, nil)
-		} else {
-			a.setSessionRuntimePhaseLocked(tab, sessionRuntimeFailed, fmt.Errorf("desktop runtime is not started"))
-		}
-		if a.ctx != nil {
-			rebuildTabs = append(rebuildTabs, tab)
-		}
-	}
-	a.saveTabsLocked()
-	a.mu.Unlock()
-	for _, key := range releasedHostKeys {
-		a.releaseSharedHost(key)
-	}
-
-	for _, tab := range rebuildTabs {
-		go a.buildTabController(tab)
-	}
-	return nil
-}
-
-func (a *App) deleteProviderAndRetargetTabs(name string) error {
-	name = strings.TrimSpace(name)
-	if name == "" {
-		return fmt.Errorf("remove provider: empty provider name")
-	}
-	defer a.lockRuntimeMutation("delete-provider")()
-	releaseGates, err := a.lockRuntimeTurnGates("provider", nil)
-	if err != nil {
-		return err
-	}
-	defer releaseGates()
-
-	// Read-only planning copy (with credentials — the fallback choice depends
-	// on which providers resolve a key); the saved edit below reloads under the
-	// config edit lock (see removeBuiltInProviderAccessAndRetargetTabs).
-	cfg, _, err := a.loadDesktopUserConfigForViewWithCredentials()
-	if err != nil {
-		return err
-	}
-	fallbackRef := providerRemovalFallbackRef(cfg, name)
-
-	var affected []providerRemovalTab
-	a.mu.RLock()
-	for _, id := range a.orderedTabIDsLocked() {
-		tab := a.tabs[id]
-		if tab == nil {
-			continue
-		}
-		ref := tab.model
-		if strings.TrimSpace(ref) == "" {
-			ref = cfg.DefaultModel
-		}
-		if !desktopModelRefsProvider(cfg, ref, name) {
-			continue
-		}
-		if controllerHasActiveRuntimeWork(tab.Ctrl) {
-			a.mu.RUnlock()
-			return fmt.Errorf("finish or cancel active work using %q before deleting the provider", name)
-		}
-		affected = append(affected, providerRemovalTab{id: id, ctrl: tab.Ctrl, readOnly: tab.ReadOnly})
-	}
-	a.mu.RUnlock()
-
-	if len(affected) > 0 && fallbackRef == "" {
-		return fmt.Errorf("remove provider: %q is used by open tabs and no other configured provider exists", name)
-	}
-	if len(affected) == 0 {
-		if err := a.ensureActiveTabRebuildAllowed("provider"); err != nil {
-			return err
-		}
-	}
-	for _, item := range affected {
-		if item.ctrl != nil && !item.readOnly {
-			if err := item.ctrl.Snapshot(); err != nil {
-				slog.Warn("desktop: snapshot before deleting provider failed", "tab", item.id, "provider", name, "err", err)
-				return fmt.Errorf("save current session before deleting provider: %w", err)
-			}
-		}
-	}
-	// Reload-modify-save under the config edit lock; the snapshots above ran
-	// off-lock against the stale planning copy.
-	if err := func() error {
-		unlock := config.LockUserConfigEdits()
-		defer unlock()
-		fresh, path, err := a.loadDesktopUserConfigForEdit()
-		if err != nil {
-			return err
-		}
-		if err := fresh.RemoveProvider(name); err != nil {
-			return err
-		}
-		removeProviderAccess(fresh, name)
-		return fresh.SaveTo(path)
-	}(); err != nil {
-		return err
-	}
-
-	if len(affected) == 0 {
-		if err := a.rebuildActiveSettingRuntimeMutationLocked("provider"); err != nil {
-			if _, ok := a.deferredRebuildWarning("provider", err); ok {
-				return nil
-			}
-			return err
-		}
-		return nil
-	}
-	for _, item := range affected {
-		if item.ctrl != nil {
-			item.ctrl.Close()
-		}
-	}
-
-	var rebuildTabs []*WorkspaceTab
-	var releasedHostKeys []string
-	a.mu.Lock()
-	for _, item := range affected {
-		tab := a.tabs[item.id]
-		if tab == nil {
-			continue
-		}
-		if tab.Ctrl != item.ctrl {
-			// The tab swapped controllers while we worked off-lock; nil-ing the
-			// replacement would leak it. Leave the new runtime alone.
-			continue
-		}
-		tab.Ctrl = nil
-		if key := takeTabSharedHostKey(tab); key != "" {
-			releasedHostKeys = append(releasedHostKeys, key)
-		}
-		// Supersede any in-flight startup build: it was planned against the
-		// removed provider and would otherwise finish later, pass its
-		// generation check, and reinstall a controller for it.
-		a.supersedeTabBuildLocked(tab)
-		tab.model = fallbackRef
-		tab.Label = fallbackRef
-		clearTabStartupError(tab)
-		tab.Ready = a.ctx == nil
-		if a.ctx != nil {
-			a.setSessionRuntimePhaseLocked(tab, sessionRuntimeStarting, nil)
-		} else {
-			a.setSessionRuntimePhaseLocked(tab, sessionRuntimeFailed, fmt.Errorf("desktop runtime is not started"))
-		}
-		if a.ctx != nil {
-			rebuildTabs = append(rebuildTabs, tab)
-		}
-	}
-	a.saveTabsLocked()
-	a.mu.Unlock()
-	for _, key := range releasedHostKeys {
-		a.releaseSharedHost(key)
-	}
-
-	for _, tab := range rebuildTabs {
-		go a.buildTabController(tab)
-	}
-	return nil
 }
 
 // rebuildActiveSettingRuntimeMutationLocked refreshes the active controller

@@ -165,7 +165,8 @@ ok(
 );
 ok(
   !settingsSource.includes("return p.baseUrl;") &&
-    settingsSource.includes("providerSupportsServerWebSearchForView(editableProvider)") &&
+    settingsSource.includes("group.providers.every(providerSupportsServerWebSearchForView)") &&
+    settingsSource.includes("group.providers.every((provider) => Boolean(provider.webSearch))") &&
     settingsSource.includes("supported={supportsServerWebSearch}"),
   "all provider cards keep endpoint details collapsed and use backend web-search capability authority",
 );
@@ -173,6 +174,18 @@ ok(
   /existing\.recommendedUpgradeAvailable = existing\.recommendedUpgradeAvailable \|\| Boolean\(p\.recommendedUpgradeAvailable\)/.test(settingsSource) &&
     /case "deepseek-flash":\s*case "deepseek-pro":\s*return "deepseek";/.test(settingsSource),
   "legacy DeepSeek aliases remain grouped into one official provider card",
+);
+ok(
+  settingsSource.includes('className="btn btn--small provider-profile-row__refresh"') &&
+    settingsSource.includes('className="btn btn--small provider-profile-row__configure"') &&
+    stylesSource.includes('"profile-refresh profile-configure"') &&
+    stylesSource.includes(".provider-profile-row__refresh") &&
+    stylesSource.includes(".provider-profile-row__configure"),
+  "multi-profile provider actions move into stable narrow-screen grid areas",
+);
+ok(
+  /@media \(max-width: 900px\)[\s\S]*?\.settings-section__head\s*\{[\s\S]*?flex-direction:\s*column;[\s\S]*?align-items:\s*stretch;/.test(stylesSource),
+  "narrow settings section headings stretch so descriptions wrap inside the viewport",
 );
 ok(
   [enLocaleSource, zhLocaleSource, zhTWLocaleSource].every((source) =>

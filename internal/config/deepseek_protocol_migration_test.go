@@ -4,7 +4,9 @@ import (
 	"bytes"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/BurntSushi/toml"
@@ -107,6 +109,101 @@ future_provider_field = "untouched"
 	}
 	if string(afterSecondRun) != beforeSecondRun {
 		t.Fatal("idempotent migration rewrote the config on its second run")
+	}
+}
+
+func TestUpgradeDeepSeekProviderProtocolWritesThroughSymlinkAndPreservesMode(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(dir, "shared-config.toml")
+	link := filepath.Join(dir, "config.toml")
+	raw := `[[providers]]
+name = "deepseek-flash"
+kind = "openai"
+base_url = "https://api.deepseek.com"
+model = "deepseek-v4-flash"
+api_key_env = "DEEPSEEK_API_KEY"
+`
+	if err := os.WriteFile(target, []byte(raw), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(target, link); err != nil {
+		t.Skipf("symlinks are unavailable: %v", err)
+	}
+
+	changed, err := UpgradeDeepSeekProviderProtocol(link, "deepseek")
+	if err != nil {
+		t.Fatalf("UpgradeDeepSeekProviderProtocol: %v", err)
+	}
+	if !changed {
+		t.Fatal("symlinked DeepSeek provider was not upgraded")
+	}
+	if info, err := os.Lstat(link); err != nil || info.Mode()&os.ModeSymlink == 0 {
+		t.Fatalf("logical config link was replaced: info=%v err=%v", info, err)
+	}
+	if runtime.GOOS != "windows" {
+		info, err := os.Stat(target)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := info.Mode().Perm(); got != 0o640 {
+			t.Fatalf("migrated target mode = %04o, want 0640", got)
+		}
+	}
+	got, err := os.ReadFile(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(got), `kind = "anthropic"`) ||
+		!strings.Contains(string(got), `base_url = "https://api.deepseek.com/anthropic"`) {
+		t.Fatalf("symlink target was not upgraded:\n%s", got)
+	}
+}
+
+func TestMigrateLegacyDeepSeekProtocolUserConfigSerializesConcurrentUpgrades(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("REASONIX_HOME", home)
+	path := filepath.Join(home, "config.toml")
+	raw := `[[providers]]
+name = "deepseek-flash"
+kind = "openai"
+base_url = "https://api.deepseek.com"
+model = "deepseek-v4-flash"
+api_key_env = "DEEPSEEK_API_KEY"
+`
+	if err := os.WriteFile(path, []byte(raw), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	const workers = 12
+	start := make(chan struct{})
+	errs := make(chan error, workers)
+	var wg sync.WaitGroup
+	for range workers {
+		wg.Go(func() {
+			<-start
+			_, err := MigrateLegacyDeepSeekProtocolUserConfig()
+			errs <- err
+		})
+	}
+	close(start)
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		if err != nil {
+			t.Fatalf("concurrent migration: %v", err)
+		}
+	}
+
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Count(string(got), `kind = "anthropic"`) != 1 ||
+		strings.Count(string(got), `base_url = "https://api.deepseek.com/anthropic"`) != 1 {
+		t.Fatalf("concurrent migration produced a corrupt or partial config:\n%s", got)
+	}
+	if _, err := LoadForEditReadOnlyStrict(path); err != nil {
+		t.Fatalf("concurrently migrated config is invalid: %v", err)
 	}
 }
 

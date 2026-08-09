@@ -12,7 +12,7 @@ import type { InvocationRequest } from "./invocationDisplay";
 
 import { addBreadcrumb } from "./breadcrumbs";
 import { t } from "./i18n";
-import { providerIsConfigured, providerRequiresKey } from "./providerModels";
+import { providerIsConfigured, providerRequiresKey, removeProviderAccessesForMock } from "./providerModels";
 import { DEFAULT_STATUS_BAR_ITEMS, normalizeStatusBarItems } from "./statusBarItems";
 import { registerTrustedThemeBackgroundURLs } from "./themePack";
 import { modeHasAutoApproveTools, modeWithAutoApproveTools, modeWithPlan, normalizeCollaborationMode, normalizeMode, normalizeTokenMode, normalizeToolApprovalMode } from "./types";
@@ -468,6 +468,7 @@ export interface AppBindings {
   FetchAllProviderModels(providers: ProviderView[]): Promise<Record<string, string[]>>;
   DeleteProvider(name: string): Promise<void>;
   RemoveProviderAccess(name: string): Promise<void>;
+  RemoveProviderAccesses(names: string[]): Promise<void>;
   SaveProviderKey(apiKeyEnv: string, value: string): Promise<string>;
   SetProviderKey(apiKeyEnv: string, value: string): Promise<string>;
   ClearProviderKey(apiKeyEnv: string): Promise<void>;
@@ -984,7 +985,7 @@ function bridgeBreadcrumb(method: string): string {
     return `model ${method}`;
   if (/^(SetDesktop|SetCloseBehavior|SetDisplayMode|SetStatusBar|SetExpandThinking|SetAutoPlan|SetDefaultToolApprovalMode|SetCompactRatio|SetReasoningLanguage)/.test(method))
     return `settings ${method}`;
-  if (/^(SaveProvider|SetProviderWebSearch|SaveProviderModelCatalogs|AddOfficialProviderAccess|UpgradeDeepSeekProviderAccess|AddProviderPresetAccess|ResetProviderPresetAccess|RemoveProviderAccess|DeleteProvider|SaveProviderKey|SetProviderKey|ClearProviderKey|FetchProviderModels|FetchAllProviderModels|ConnectKey)/.test(method))
+  if (/^(SaveProvider|SetProviderWebSearch|SaveProviderModelCatalogs|AddOfficialProviderAccess|UpgradeDeepSeekProviderAccess|AddProviderPresetAccess|ResetProviderPresetAccess|RemoveProviderAccess|RemoveProviderAccesses|DeleteProvider|SaveProviderKey|SetProviderKey|ClearProviderKey|FetchProviderModels|FetchAllProviderModels|ConnectKey)/.test(method))
     return `provider ${method}`;
   if (/^(CheckUpdate|ApplyUpdateRequest|OpenDownloadPage|OpenUserConfigPath|ReloadUserConfig)/.test(method)) return `update ${method}`;
   if (/^(AddMCPServer|InstallMCPServer|UpdateMCPServer|RemoveMCPServer|AuthorizeAndConnectMCPServer|AuthenticateMCPServer|ReconnectMCPServer|ClearMCPServerAuthentication|SetMCPServer)/.test(method))
@@ -4557,11 +4558,8 @@ function makeMockApp(): AppBindings {
     async DeleteProvider(name: string) {
       settings.providers = settings.providers.filter((p) => p.name !== name);
     },
-    async RemoveProviderAccess(name: string) {
-      const p = settings.providers.find((x) => x.name === name);
-      if (p?.builtIn) p.added = false;
-      else settings.providers = settings.providers.filter((x) => x.name !== name);
-    },
+    async RemoveProviderAccess(name: string) { settings.providers = removeProviderAccessesForMock(settings.providers, [name]); },
+    async RemoveProviderAccesses(names: string[]) { settings.providers = removeProviderAccessesForMock(settings.providers, names); },
     async SaveProviderKey(apiKeyEnv: string, _value: string) {
       settings.providers.forEach((p) => {
         if (p.apiKeyEnv === apiKeyEnv) p.keySet = true;

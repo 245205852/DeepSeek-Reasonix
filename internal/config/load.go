@@ -1830,7 +1830,7 @@ func normalizeDesktopOfficialProviderAccess(c *Config) {
 	}
 	normalizeLegacyMimoProviderCatalogs(c)
 	retargetAccess := maps.Clone(seen)
-	if p, ok := c.Provider("deepseek"); !ok || officialProviderKind(p) != "deepseek" {
+	if p, ok := c.Provider("deepseek"); !canCanonicalizeDeepSeek || !ok || officialProviderKind(p) != "deepseek" {
 		delete(retargetAccess, "deepseek")
 	}
 	retargetDesktopOfficialRefs(c, retargetAccess)
@@ -2071,10 +2071,18 @@ func canCanonicalizeLegacyDeepSeekProviders(c *Config) bool {
 	if c == nil {
 		return true
 	}
-	if p, ok := c.Provider("deepseek"); ok {
-		return officialProviderKind(p) == "deepseek"
-	}
 	legacy := officialLegacyDeepSeekProviders(c)
+	if canonical, ok := c.Provider("deepseek"); ok {
+		if officialProviderKind(canonical) != "deepseek" {
+			return false
+		}
+		for _, old := range legacy {
+			if !legacyDeepSeekProviderWideFieldsEqual(canonical, old) ||
+				!legacyDeepSeekModelFieldsCompatibleIgnoringDefault(canonical, old) {
+				return false
+			}
+		}
+	}
 	for i := 1; i < len(legacy); i++ {
 		if !legacyDeepSeekProviderWideFieldsEqual(legacy[0], legacy[i]) ||
 			!legacyDeepSeekModelFieldsCompatible(legacy[0], legacy[i]) {
@@ -2082,6 +2090,17 @@ func canCanonicalizeLegacyDeepSeekProviders(c *Config) bool {
 		}
 	}
 	return true
+}
+
+func legacyDeepSeekModelFieldsCompatibleIgnoringDefault(a, b *ProviderEntry) bool {
+	if a == nil || b == nil {
+		return a == b
+	}
+	left := cloneProviderEntry(*a)
+	right := cloneProviderEntry(*b)
+	left.Default = ""
+	right.Default = ""
+	return legacyDeepSeekModelFieldsCompatible(&left, &right)
 }
 
 func legacyDeepSeekProviderWideFieldsEqual(a, b *ProviderEntry) bool {

@@ -14,7 +14,9 @@ import {
   providerModelContextWindowDrafts,
   providerModelContextWindowIsSmall,
   providerRequiresKey,
+  removeProviderAccessesForMock,
 } from "../lib/providerModels";
+import type { ProviderView } from "../lib/types";
 
 let passed = 0;
 let failed = 0;
@@ -260,6 +262,22 @@ eq(
   ],
   [false, true, true, false, true],
   "separates provider selectability from key presence for no-auth providers",
+);
+
+const mockProviders = [
+  { name: "deepseek", builtIn: true, added: true },
+  { name: "custom", builtIn: false, added: true },
+] as ProviderView[];
+const removedMockProviders = removeProviderAccessesForMock(mockProviders, ["deepseek", "custom"]);
+eq(
+  removedMockProviders.map(({ name, added }) => ({ name, added })),
+  [{ name: "deepseek", added: false }],
+  "mock access removal hides built-ins and deletes custom providers",
+);
+eq(
+  mockProviders.map(({ name, added }) => ({ name, added })),
+  [{ name: "deepseek", added: true }, { name: "custom", added: true }],
+  "mock access removal does not mutate the previous settings snapshot",
 );
 
 console.log(`\n${passed} passed, ${failed} failed, ${passed + failed} total`);

@@ -1,11 +1,13 @@
 package control
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	"reasonix/internal/agent"
 	"reasonix/internal/config"
 )
 
@@ -177,6 +179,38 @@ func TestControllerResolveTurnImagesReusesCandidatesForVisionParent(t *testing.T
 	userImages, candidates = c.resolveTurnImages("inspect @diagram.png")
 	if len(userImages) != 0 || len(candidates) != 1 {
 		t.Fatalf("text parent turn images = %v, candidates = %v; want candidates only", userImages, candidates)
+	}
+}
+
+func TestGoalContinuationKeepsCurrentTurnImageCandidatesWithoutCrossTurnLeak(t *testing.T) {
+	workspace := t.TempDir()
+	writeVisionTestConfig(t, workspace)
+	path := filepath.Join(workspace, "diagram.png")
+	if err := os.WriteFile(path, mustBase64(t, tinyPNG), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	c := &Controller{workspaceRoot: workspace, modelRef: "custom/text-only"}
+	initial := c.prepareOrchestratedTurnImages(orchestratedTurn{
+		raw:       "inspect the diagnostic",
+		imageRefs: "@diagram.png",
+	})
+	if len(initial.userImages) != 0 || len(initial.imageCandidates) != 1 {
+		t.Fatalf("initial turn images = %v, candidates = %v; want child-only candidate", initial.userImages, initial.imageCandidates)
+	}
+
+	ctx := agent.WithSubagentImageCandidates(context.Background(), initial.imageCandidates)
+	continuation := orchestratedTurn{goalContinuation: &goalContinuationSnapshot{}, synthetic: true, raw: goalContinueTurn}
+	userImages, candidates := c.imagesForOrchestratedTurn(ctx, continuation)
+	if len(userImages) != 0 || len(candidates) != 1 || candidates[0] != initial.imageCandidates[0] {
+		t.Fatalf("Goal continuation images = %v, candidates = %v; want original child candidate only", userImages, candidates)
+	}
+
+	next := c.prepareOrchestratedTurnImages(orchestratedTurn{raw: "plain next user turn"})
+	ctx = agent.WithSubagentImageCandidates(ctx, next.imageCandidates)
+	userImages, candidates = c.imagesForOrchestratedTurn(ctx, continuation)
+	if len(userImages) != 0 || len(candidates) != 0 {
+		t.Fatalf("next user turn leaked prior image: images = %v, candidates = %v", userImages, candidates)
 	}
 }
 

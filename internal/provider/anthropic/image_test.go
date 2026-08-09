@@ -1,6 +1,7 @@
 package anthropic
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"strings"
@@ -66,6 +67,39 @@ func TestOfficialDeepSeekIgnoresVisionMetadata(t *testing.T) {
 	}
 	if strings.Contains(string(body), `"type":"image"`) || strings.Contains(string(body), "ZZZZ") || strings.Contains(string(body), "QUFB") {
 		t.Fatalf("official DeepSeek Anthropic request leaked image payload: %s", body)
+	}
+}
+
+func TestOfficialDeepSeekImageMetadataMatchesTextOnlyWireBytes(t *testing.T) {
+	p, err := New(provider.Config{
+		Name:    "deepseek-anthropic",
+		BaseURL: "https://api.deepseek.com/anthropic",
+		Model:   "deepseek-v4-pro",
+		Extra:   map[string]any{"vision": true},
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	c := p.(*client)
+	plain := []provider.Message{
+		{Role: provider.RoleUser, Content: "inspect"},
+		{Role: provider.RoleAssistant, ToolCalls: []provider.ToolCall{{ID: "c1", Name: "shot", Arguments: "{}"}}},
+		{Role: provider.RoleTool, ToolCallID: "c1", Name: "shot", Content: "vision result"},
+	}
+	withImages := append([]provider.Message(nil), plain...)
+	withImages[0].Images = []string{"data:image/png;base64," + strings.Repeat("QUFB", 20_000)}
+	withImages[2].Images = []string{"data:image/png;base64,VE9PTA=="}
+
+	plainBody, err := json.Marshal(c.buildRequest(context.Background(), provider.Request{Messages: plain}))
+	if err != nil {
+		t.Fatalf("marshal plain request: %v", err)
+	}
+	imageBody, err := json.Marshal(c.buildRequest(context.Background(), provider.Request{Messages: withImages}))
+	if err != nil {
+		t.Fatalf("marshal image request: %v", err)
+	}
+	if !bytes.Equal(imageBody, plainBody) {
+		t.Fatalf("official DeepSeek Anthropic image metadata changed provider-visible bytes:\nplain: %s\nimage: %s", plainBody, imageBody)
 	}
 }
 

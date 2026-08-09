@@ -16319,6 +16319,7 @@ body > .mermaid-diagram--fullscreen {
 
   .settings-section__head {
     flex-direction: column;
+    align-items: stretch;
     gap: 10px;
   }
 
@@ -17248,7 +17249,7 @@ body > .mermaid-diagram--fullscreen {
 }
 .provider-profile-row {
   display: grid;
-  grid-template-columns: minmax(120px, 0.8fr) minmax(0, 1.4fr) auto;
+  grid-template-columns: minmax(120px, 0.8fr) minmax(0, 1.4fr) auto auto;
   align-items: center;
   gap: 8px;
   padding: 7px 8px;
@@ -20428,6 +20429,31 @@ body > .mermaid-diagram--fullscreen {
   }
   .provider-access-card__actions {
     flex-wrap: wrap;
+  }
+  .provider-profile-row {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    grid-template-areas:
+      "profile-name profile-name"
+      "profile-models profile-models"
+      "profile-refresh profile-configure";
+  }
+  .provider-profile-row span:first-child {
+    grid-area: profile-name;
+  }
+  .provider-profile-row span:nth-child(2) {
+    grid-area: profile-models;
+  }
+  .provider-profile-row__refresh {
+    grid-area: profile-refresh;
+  }
+  .provider-profile-row__configure {
+    grid-area: profile-configure;
+  }
+  .provider-profile-row__refresh,
+  .provider-profile-row__configure {
+    width: 100%;
+    min-width: 0;
+    white-space: normal;
   }
   .set-hint {
     margin-left: 0;

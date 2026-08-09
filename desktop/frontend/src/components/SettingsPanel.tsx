@@ -940,10 +940,19 @@ function formatSettingsError(error: unknown, t: ReturnType<typeof useT>): string
   if (providerNotAdded) return t("settings.errorModelProviderMissing", { model: providerNotAdded[1], provider: providerNotAdded[2] });
   const providerNoKey = /^model (.+) is not available because provider (.+) has no key$/i.exec(msg);
   if (providerNoKey) return t("settings.errorModelProviderNoKey", { model: providerNoKey[1], provider: providerNoKey[2] });
+  if (/^background session is still open; reopen or close it before upgrading the DeepSeek provider protocol$/i.test(msg)) {
+    return t("settings.errorUpgradeProviderDetached");
+  }
   const removeAccessBusy = /^finish or cancel active work using (.+) before removing the provider access$/i.exec(msg);
   if (removeAccessBusy) return t("settings.errorRemoveAccessBusy", { provider: removeAccessBusy[1] });
+  const removeAccessDetached = /^background session is still using (.+); reopen or close it before removing the provider access$/i.exec(msg);
+  if (removeAccessDetached) return t("settings.errorRemoveAccessDetached", { provider: removeAccessDetached[1] });
+  const removeAccessNoFallback = /^remove provider access: (.+) is in use and no other configured provider exists$/i.exec(msg);
+  if (removeAccessNoFallback) return t("settings.errorRemoveAccessNoFallback", { provider: removeAccessNoFallback[1] });
   const deleteProviderBusy = /^finish or cancel active work using (.+) before deleting the provider$/i.exec(msg);
   if (deleteProviderBusy) return t("settings.errorDeleteProviderBusy", { provider: deleteProviderBusy[1] });
+  const deleteProviderDetached = /^background session is still using (.+); reopen or close it before deleting the provider$/i.exec(msg);
+  if (deleteProviderDetached) return t("settings.errorDeleteProviderDetached", { provider: deleteProviderDetached[1] });
   const saveBeforeRemoveAccess = /^save current session before removing provider access: (.+)$/is.exec(msg);
   if (saveBeforeRemoveAccess) return t("settings.errorSaveBeforeRemoveAccess", { err: saveBeforeRemoveAccess[1] });
   const saveBeforeDeleteProvider = /^save current session before deleting provider: (.+)$/is.exec(msg);
@@ -4897,12 +4906,6 @@ function ProvidersSection({ s, busy, apply }: SectionProps) {
     }
   };
 
-  const refreshGroup = async (group: ProviderAccessGroup) => {
-    const probe = group.providers[0];
-    if (!probe) return;
-    await refreshModels(group, probe);
-  };
-
   const saveKeyEnvAndAutoRefresh = async (group: ProviderAccessGroup, apiKeyEnv: string, value: string) => {
     const probe = group.providers[0];
     if (!probe || !apiKeyEnv) return;
@@ -5054,7 +5057,7 @@ function ProvidersSection({ s, busy, apply }: SectionProps) {
               setEditing(null);
               setGroupModelDraft(group.id, null);
             })}
-            onRefresh={() => void refreshGroup(group)}
+            onRefresh={(provider) => void refreshModels(group, provider)}
             onToggleDraftModel={(model) => updateModelDraftSelection(group.id, (draft) => (
               draft.selected.includes(model)
                 ? draft.selected.filter((candidate) => candidate !== model)
@@ -5078,12 +5081,15 @@ function ProvidersSection({ s, busy, apply }: SectionProps) {
             })}
             onSaveEditorKey={(env, value) => group.builtIn ? saveProviderKey(group, env, value) : saveKeyEnvAndAutoRefresh(group, env, value)}
             onClearEditorKey={clearProviderKey}
-            onDelete={(p) => apply(() => app.RemoveProviderAccess(p.name)).then(() => {
-              if (revealedProvider === p.name) {
-                setRevealedProvider(null);
-                setEditing(null);
-              }
-            })}
+            onDelete={(providers) => {
+              const providerNames = providers.map(({ name }) => name);
+              return apply(() => app.RemoveProviderAccesses(providerNames)).then(() => {
+                if (revealedProvider && providerNames.includes(revealedProvider)) {
+                  setRevealedProvider(null);
+                  setEditing(null);
+                }
+              });
+            }}
           />
         ))}
       </div>
@@ -5091,7 +5097,7 @@ function ProvidersSection({ s, busy, apply }: SectionProps) {
   );
 }
 
-type ProviderAccessGroup = {
+export type ProviderAccessGroup = {
   id: string;
   label: string;
   description: string;
@@ -5474,7 +5480,7 @@ function AddProviderPanel({
   return null;
 }
 
-function ProviderAccessCard({
+export function ProviderAccessCard({
   group,
   busy,
   fetching,
@@ -5510,7 +5516,7 @@ function ProviderAccessCard({
   onEdit: (name: string) => void;
   onCancelEdit: () => void;
   onSave: (p: ProviderView, key?: string) => void | Promise<void>;
-  onRefresh: () => void;
+  onRefresh: (p: ProviderView) => void;
   onToggleDraftModel: (model: string) => void;
   onToggleDraftVision: (model: string) => void;
   onSelectAllDraftModels: () => void;
@@ -5521,7 +5527,7 @@ function ProviderAccessCard({
   onUpgradeRecommended: (name: string) => void | Promise<void>;
   onSaveEditorKey: (apiKeyEnv: string, value: string) => Promise<void>;
   onClearEditorKey?: (apiKeyEnv: string) => Promise<void>;
-  onDelete?: (p: ProviderView) => Promise<void>;
+  onDelete?: (providers: ProviderView[]) => Promise<void>;
 }) {
   const t = useT();
   const editableProvider = group.providers[0];
@@ -5529,7 +5535,8 @@ function ProviderAccessCard({
   const editingProvider = group.providers.find((p) => editing === p.name);
   const upgradeProvider = group.providers.find((p) => p.recommendedUpgradeAvailable);
   const primaryProviderExpanded = Boolean(editableProvider && editing === editableProvider.name);
-  const supportsServerWebSearch = Boolean(editableProvider && providerSupportsServerWebSearchForView(editableProvider));
+  const supportsServerWebSearch = group.providers.length > 0 && group.providers.every(providerSupportsServerWebSearchForView);
+  const webSearchEnabled = supportsServerWebSearch && group.providers.every((provider) => Boolean(provider.webSearch));
   const visibleModels = group.models.slice(0, 6);
   const hiddenModelCount = Math.max(0, group.models.length - visibleModels.length);
   return (
@@ -5557,19 +5564,21 @@ function ProviderAccessCard({
               {primaryProviderExpanded ? t("common.collapse") : t("settings.configureProvider")}
             </button>
           )}
-          <button
-            className="btn btn--small"
-            disabled={busy || fetching || !group.baseUrl || !group.configured}
-            onClick={onRefresh}
-          >
-            {fetching ? t("settings.fetchingModels") : t("settings.fetchModels")}
-          </button>
+          {editableProvider && group.providers.length === 1 && (
+            <button
+              className="btn btn--small"
+              disabled={busy || fetching || !editableProvider.baseUrl || !group.configured}
+              onClick={() => onRefresh(editableProvider)}
+            >
+              {fetching ? t("settings.fetchingModels") : t("settings.fetchModels")}
+            </button>
+          )}
           {editableProvider && onDelete && (
             <ProviderAccessMoreMenu
               busy={busy}
               removeDisabled={isDefault && !group.builtIn}
               builtIn={group.builtIn}
-              onRemove={() => onDelete(editableProvider)}
+              onRemove={() => onDelete(group.providers)}
             />
           )}
         </div>
@@ -5637,16 +5646,13 @@ function ProviderAccessCard({
           models={visibleModels}
           hiddenModelCount={hiddenModelCount}
           showModelSummary
-          enabled={Boolean(editableProvider.webSearch)}
+          enabled={webSearchEnabled}
           disabled={busy}
           onChange={onToggleWebSearch}
         />
       )}
 
-      <ProviderTechnicalDetails
-        group={group}
-        imageInputUnsupported={Boolean(editableProvider && providerVisionCapabilityForView(editableProvider) === "unsupported")}
-      />
+      <ProviderTechnicalDetails group={group} />
 
       {group.providers.length > 1 && (
         <div className="provider-profiles">
@@ -5657,7 +5663,14 @@ function ProviderAccessCard({
                 <span>{p.name}</span>
                 <span>{p.models.join(", ") || t("common.none")}</span>
                 <button
-                  className="btn btn--small"
+                  className="btn btn--small provider-profile-row__refresh"
+                  disabled={busy || fetching || !p.baseUrl || !providerIsConfigured(p)}
+                  onClick={() => onRefresh(p)}
+                >
+                  {fetching ? t("settings.fetchingModels") : t("settings.fetchModels")}
+                </button>
+                <button
+                  className="btn btn--small provider-profile-row__configure"
                   disabled={busy}
                   aria-expanded={profileExpanded}
                   onClick={() => profileExpanded ? onCancelEdit() : onEdit(p.name)}
@@ -5718,26 +5731,21 @@ function ProviderModelSummary({
   );
 }
 
-function ProviderTechnicalDetails({
-  group,
-  imageInputUnsupported,
-}: {
-  group: ProviderAccessGroup;
-  imageInputUnsupported: boolean;
-}) {
+function ProviderTechnicalDetails({ group }: { group: ProviderAccessGroup }) {
   const t = useT();
+  const imageInputUnsupported = group.providers.length > 0 && group.providers.every((provider) => providerVisionCapabilityForView(provider) === "unsupported");
   return (
     <details className="provider-technical-details">
       <summary>{t("settings.providerTechnicalDetails")}</summary>
       <dl>
-        <div>
-          <dt>{t("settings.providerProtocol")}</dt>
-          <dd>{providerProtocolDisplayName(group.kind)}</dd>
-        </div>
-        <div>
-          <dt>{t("settings.providerEndpoint")}</dt>
-          <dd>{group.baseUrl || t("common.none")}</dd>
-        </div>
+        {group.providers.length === 1 ? (
+          <>
+            <div><dt>{t("settings.providerProtocol")}</dt><dd>{providerProtocolDisplayName(group.kind)}</dd></div>
+            <div><dt>{t("settings.providerEndpoint")}</dt><dd>{group.baseUrl || t("common.none")}</dd></div>
+          </>
+        ) : group.providers.map((provider) => (
+          <div key={provider.name}><dt>{provider.name}</dt><dd>{providerProtocolDisplayName(provider.kind)} · {provider.baseUrl || t("common.none")}</dd></div>
+        ))}
         <div>
           <dt>{t("settings.providerKeyEnvironment")}</dt>
           <dd>{group.apiKeyEnv || t("common.none")}</dd>

@@ -130,16 +130,19 @@ func TestOfficialDeepSeekDoesNotInjectToolResultImages(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	req := p.(*client).buildRequest(provider.Request{Messages: []provider.Message{
+	plainMessages := []provider.Message{
 		{Role: provider.RoleUser, Content: "take a screenshot"},
 		{Role: provider.RoleAssistant, ToolCalls: []provider.ToolCall{{
 			ID: "c1", Name: "shot", Arguments: "{}",
 		}}},
 		{
 			Role: provider.RoleTool, ToolCallID: "c1", Name: "shot",
-			Content: "[image: image/png]", Images: []string{"data:image/png;base64,AAAA"},
+			Content: "[image: image/png]",
 		},
-	}})
+	}
+	imageMessages := append([]provider.Message(nil), plainMessages...)
+	imageMessages[2].Images = []string{"data:image/png;base64,AAAA"}
+	req := p.(*client).buildRequest(provider.Request{Messages: imageMessages})
 	if len(req.Messages) != 3 {
 		t.Fatalf("messages = %d, want 3 without an injected image message", len(req.Messages))
 	}
@@ -149,6 +152,13 @@ func TestOfficialDeepSeekDoesNotInjectToolResultImages(t *testing.T) {
 	}
 	if strings.Contains(string(body), "image_url") || strings.Contains(string(body), "base64,AAAA") {
 		t.Fatalf("official DeepSeek request leaked tool image payload: %s", body)
+	}
+	plainBody, err := json.Marshal(p.(*client).buildRequest(provider.Request{Messages: plainMessages}))
+	if err != nil {
+		t.Fatalf("marshal plain request: %v", err)
+	}
+	if !bytes.Equal(body, plainBody) {
+		t.Fatalf("official DeepSeek tool image metadata changed provider-visible bytes:\nplain: %s\nimage: %s", plainBody, body)
 	}
 }
 

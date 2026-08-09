@@ -18,6 +18,25 @@ func (c *Controller) resolveTurnImages(line string) (userImages, imageCandidates
 	return userImages, imageCandidates
 }
 
+func (c *Controller) prepareOrchestratedTurnImages(turn orchestratedTurn) orchestratedTurn {
+	turn.userImages, turn.imageCandidates = c.resolveTurnImages(turn.imageReferenceInput())
+	turn.imagesResolved = true
+	return turn
+}
+
+func (c *Controller) imagesForOrchestratedTurn(ctx context.Context, turn orchestratedTurn) (userImages, imageCandidates []string) {
+	if turn.imagesResolved {
+		return turn.userImages, turn.imageCandidates
+	}
+	if turn.goalContinuation != nil {
+		// A Goal continuation belongs to the same visible user turn, so keep its
+		// child-only image candidates. Do not add them to the synthetic parent
+		// message: a vision parent already has the image in its earlier history.
+		return nil, agent.SubagentImageCandidates(ctx)
+	}
+	return c.resolveTurnImages(turn.imageReferenceInput())
+}
+
 func (c *Controller) withTurnImages(ctx context.Context, line string) context.Context {
 	userImages, imageCandidates := c.resolveTurnImages(line)
 	ctx = agent.WithUserImages(ctx, userImages)
