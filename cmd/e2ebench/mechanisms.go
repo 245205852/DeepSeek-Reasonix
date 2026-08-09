@@ -183,12 +183,15 @@ func renderCompletionReport(results []result) string {
 	verdicts := map[string]int{}
 	kinds := map[string]int{}
 	recorded, done, overclaim, failed, caught := 0, 0, 0, 0, 0
+	claimed, unbacked := 0, 0
 	for _, r := range results {
 		t := r.Trajectory
 		if t == nil || t.CompletionVerdict == "" {
 			continue
 		}
 		recorded++
+		claimed += t.ClaimsVerified
+		unbacked += t.ClaimsUnbacked
 		verdicts[t.CompletionVerdict]++
 		for _, kind := range t.CompletionGapKinds {
 			kinds[kind]++
@@ -219,6 +222,9 @@ func renderCompletionReport(results []result) string {
 		strings.Join(parts, " · "), pct(overclaim, done), overclaim, done)
 	if failed > 0 {
 		line += fmt.Sprintf(" · **caught** %s (%d/%d failed runs declared a gap)", pct(caught, failed), caught, failed)
+	}
+	if claimed > 0 {
+		line += fmt.Sprintf(" · **unbacked claims** %s (%d/%d asserted verifications the ledger denied)", pct(unbacked, claimed), unbacked, claimed)
 	}
 	if census := gapCensus(kinds); census != "" {
 		line += " · gaps " + census

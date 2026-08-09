@@ -174,6 +174,7 @@ func TestRenderCompletionReportPricesOverclaim(t *testing.T) {
 	warned.Trajectory = &trajectorySummary{
 		CompletionVerdict: "partial", CompletionGaps: 2,
 		CompletionGapKinds: []string{"unreviewed_change", "stale_verification"},
+		ClaimsVerified:     4, ClaimsUnbacked: 1,
 	}
 	got := renderCompletionReport([]result{honest, overclaimed, warned})
 	for _, want := range []string{
@@ -181,6 +182,7 @@ func TestRenderCompletionReportPricesOverclaim(t *testing.T) {
 		"**overclaim** 50% (1/2 done runs the grader failed)",
 		"**caught** 50% (1/2 failed runs declared a gap)",
 		"gaps stale_verification ×1 · unreviewed_change ×1",
+		"**unbacked claims** 25% (1/4 asserted verifications the ledger denied)",
 	} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("completion line missing %q:\n%s", want, got)

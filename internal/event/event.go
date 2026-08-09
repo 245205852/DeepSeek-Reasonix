@@ -636,6 +636,10 @@ type CompletionReportAudit struct {
 	VerificationsStale  int
 	Gaps                int
 	GapKinds            []string
+	// ClaimsVerified counts the turn's own asserted verifications;
+	// ClaimsUnbacked is how many of them the ledger did not support.
+	ClaimsVerified int
+	ClaimsUnbacked int
 }
 
 // CompletionReportAuditSink is an optional sink capability; implementations
