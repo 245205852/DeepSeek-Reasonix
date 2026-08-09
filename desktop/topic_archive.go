@@ -43,7 +43,8 @@ func (a *App) topicHasActiveRuntimeWork(topicID string) bool {
 }
 
 func (a *App) trashTopic(topicID string) (retErr error) {
-	if strings.TrimSpace(topicID) == "" {
+	topicID = strings.TrimSpace(topicID)
+	if topicID == "" {
 		return fmt.Errorf("topicID is required")
 	}
 	started := time.Now()
@@ -117,7 +118,7 @@ func (a *App) commitTopicArchive(topicID string, trace *topicArchiveTrace) (fall
 	}
 	defer ownership.release()
 	trace.phase = "mark_cleanup_pending"
-	rollbackMarkers, err := markTopicArchiveCleanupPending(targets)
+	rollbackMarkers, err := markTopicArchiveCleanupPending(topicID, targets)
 	if err != nil {
 		ownership.rollback()
 		return fallbackRuntimeTarget{}, nil, err
@@ -139,13 +140,18 @@ func (a *App) commitTopicArchive(topicID string, trace *topicArchiveTrace) (fall
 			a.closeRemainingRemovedSessionRuntimesAdmissionHeld(removed, closedRemoved)
 		}
 	}()
-	for _, target := range targets {
-		trace.phase = "teardown"
+	trace.phase = "teardown"
+	destroyBatches := make([][]control.SessionDestroyHandle, len(targets))
+	for i, target := range targets {
 		destroys := a.destroyHandlesForSession(target.dir, target.sessionPath, removed)
+		destroyBatches[i] = destroys
 		destroyBegun = destroyBegun || len(destroys) > 0
-		timedOut := waitDestroyHandles(destroys)
+	}
+	timedOutTargets := waitDestroyHandleBatches(destroyBatches)
+	for i, target := range targets {
+		destroys := destroyBatches[i]
 		a.closeRemovedSessionRuntimesForSessionAfterDestroyAdmissionHeld(removed, target.dir, target.sessionPath, closedRemoved)
-		if timedOut {
+		if timedOutTargets[i] {
 			guard := ownership.take(target.sessionPath)
 			go delayedDesktopTopicTrash(target.dir, target.sessionPath, target.key, guard, destroys)
 			continue
@@ -169,17 +175,25 @@ func (a *App) commitTopicArchive(topicID string, trace *topicArchiveTrace) (fall
 	trace.phase = "delete_topic_metadata"
 	if err := a.deleteTopic(topicID); err != nil {
 		slog.Warn("desktop: topic archive metadata cleanup remains pending")
+	} else if err := clearTopicArchiveMetadataPending(topicID); err != nil {
+		slog.Warn("desktop: topic archive metadata marker cleanup remains pending")
 	}
 	return fallback, changedDirs, nil
 }
 
-func markTopicArchiveCleanupPending(targets []topicTrashTarget) (func(), error) {
+func markTopicArchiveCleanupPending(topicID string, targets []topicTrashTarget) (func(), error) {
+	if err := markTopicArchiveMetadataPending(topicID, targets); err != nil {
+		return nil, err
+	}
 	marked := make([]string, 0, len(targets))
 	rollback := func() {
 		for _, path := range marked {
 			if err := agent.ClearCleanupPending(path); err != nil {
 				slog.Warn("desktop: rollback topic archive marker failed")
 			}
+		}
+		if err := clearTopicArchiveMetadataPending(topicID); err != nil {
+			slog.Warn("desktop: rollback topic archive metadata marker failed")
 		}
 	}
 	for _, target := range targets {

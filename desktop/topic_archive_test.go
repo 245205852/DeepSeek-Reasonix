@@ -236,7 +236,7 @@ func TestTrashTopicConvertsLocalLeaseWithoutUnlockWindow(t *testing.T) {
 	keep := &WorkspaceTab{ID: "keep", Scope: "project", WorkspaceRoot: projectRoot, TopicID: "keep", Ready: true}
 	app := &App{tabs: map[string]*WorkspaceTab{tab.ID: tab, keep.ID: keep}, tabOrder: []string{tab.ID, keep.ID}, activeTabID: tab.ID}
 
-	if err := app.TrashTopic(topicID); err != nil {
+	if err := app.TrashTopic("  " + topicID + "  "); err != nil {
 		t.Fatalf("TrashTopic: %v", err)
 	}
 	if agent.IsCleanupPending(sessionPath) {
@@ -293,6 +293,99 @@ func TestTrashTopicCommittedCleanupFailureReconcilesWithoutFailureResponse(t *te
 	}
 	if _, err := os.Stat(sessionPath); !os.IsNotExist(err) {
 		t.Fatalf("reconciled session still exists, err=%v", err)
+	}
+}
+
+func TestTrashTopicMetadataFailureReconcilesFromDurableIntent(t *testing.T) {
+	isolateDesktopUserDirs(t)
+	projectRoot := t.TempDir()
+	topicID := "topic_metadata_retry"
+	if err := addProject(projectRoot, ""); err != nil {
+		t.Fatalf("add project: %v", err)
+	}
+	if err := setTopicTitle(projectRoot, topicID, "Metadata retry"); err != nil {
+		t.Fatalf("set topic title: %v", err)
+	}
+	dir := config.SessionDir()
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("mkdir sessions: %v", err)
+	}
+	writeTopicSessionWithPrompt(t, dir, "metadata-retry.jsonl", topicID, "Metadata retry", projectRoot, "preserve me", time.Now())
+	blockedTempPath := topicTitleSourcesPath(projectRoot) + ".tmp"
+	if err := os.MkdirAll(blockedTempPath, 0o755); err != nil {
+		t.Fatalf("block metadata temp write: %v", err)
+	}
+
+	app := NewApp()
+	if err := app.TrashTopic(topicID); err != nil {
+		t.Fatalf("committed TrashTopic returned a failure: %v", err)
+	}
+	if got := loadTopicTitle(projectRoot, topicID); got != "Metadata retry" {
+		t.Fatalf("failed metadata cleanup title = %q, want retained retry locator", got)
+	}
+	if _, err := os.Stat(topicArchiveMetadataPendingPath(topicID)); err != nil {
+		t.Fatalf("metadata cleanup intent was not retained: %v", err)
+	}
+
+	if err := os.RemoveAll(blockedTempPath); err != nil {
+		t.Fatalf("unblock metadata temp write: %v", err)
+	}
+	if err := reconcileTopicArchiveMetadataPending(app.deleteTopic); err != nil {
+		t.Fatalf("reconcile topic metadata: %v", err)
+	}
+	if got := loadTopicTitle(projectRoot, topicID); got != "" {
+		t.Fatalf("reconciled archive retained topic title %q", got)
+	}
+	if _, err := os.Stat(topicArchiveMetadataPendingPath(topicID)); !os.IsNotExist(err) {
+		t.Fatalf("reconciled metadata marker still exists, err=%v", err)
+	}
+	projects := loadProjectsFile()
+	for _, project := range projects.Projects {
+		if containsDesktopString(project.Topics, topicID) || containsDesktopString(project.PinnedTopics, topicID) {
+			t.Fatalf("reconciled archive retained topic in project index: %+v", project)
+		}
+	}
+}
+
+func TestTopicArchiveIntentCompletesSessionsAndMetadataAfterRestart(t *testing.T) {
+	isolateDesktopUserDirs(t)
+	projectRoot := t.TempDir()
+	topicID := "topic_restart_commit"
+	if err := addProject(projectRoot, ""); err != nil {
+		t.Fatalf("add project: %v", err)
+	}
+	if err := setTopicTitle(projectRoot, topicID, "Restart commit"); err != nil {
+		t.Fatalf("set topic title: %v", err)
+	}
+	dir := config.SessionDir()
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("mkdir sessions: %v", err)
+	}
+	sessionPath := writeTopicSessionWithPrompt(t, dir, "restart-commit.jsonl", topicID, "Restart commit", projectRoot, "preserve me", time.Now())
+	targets := []topicTrashTarget{{dir: dir, sessionPath: sessionPath, key: filepath.Base(sessionPath)}}
+	if err := markTopicArchiveMetadataPending(topicID, targets); err != nil {
+		t.Fatalf("mark archive intent: %v", err)
+	}
+
+	app := NewApp()
+	if err := reconcileTopicArchiveMetadataPending(app.deleteTopic); err != nil {
+		t.Fatalf("reconcile archive intent: %v", err)
+	}
+	if _, err := os.Stat(sessionPath); !os.IsNotExist(err) {
+		t.Fatalf("reconciled live session still exists, err=%v", err)
+	}
+	trashPath := filepath.Join(sessionTrashPath(dir), filepath.Base(sessionPath), filepath.Base(sessionPath))
+	if _, err := os.Stat(trashPath); err != nil {
+		t.Fatalf("reconciled session was not preserved in trash: %v", err)
+	}
+	if got := loadTopicTitle(projectRoot, topicID); got != "" {
+		t.Fatalf("reconciled archive retained topic title %q", got)
+	}
+	if agent.IsCleanupPending(sessionPath) {
+		t.Fatal("reconciled archive retained session cleanup marker")
+	}
+	if _, err := os.Stat(topicArchiveMetadataPendingPath(topicID)); !os.IsNotExist(err) {
+		t.Fatalf("reconciled archive retained topic marker, err=%v", err)
 	}
 }
 

@@ -3824,6 +3824,13 @@ func TestTrashTopicValidTrashRemovesEmptyLiveStub(t *testing.T) {
 	if _, err := os.Stat(trashPath); err != nil {
 		t.Fatalf("existing trash should remain authoritative: %v", err)
 	}
+	trashed, err := listTrashedSessionFiles(dir)
+	if err != nil {
+		t.Fatalf("listTrashedSessionFiles: %v", err)
+	}
+	if len(trashed) != 1 || !sameDesktopPath(trashed[0], trashPath) {
+		t.Fatalf("trashed sessions = %v, want only authoritative copy %q", trashed, trashPath)
+	}
 }
 
 func hasHistoryContent(messages []HistoryMessage, content string) bool {

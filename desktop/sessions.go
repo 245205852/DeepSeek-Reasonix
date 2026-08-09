@@ -336,6 +336,10 @@ func liveSessionDiscardable(sessionPath string) (bool, error) {
 	if agent.IsCleanupPending(sessionPath) {
 		return true, nil
 	}
+	return liveSessionContentDiscardable(sessionPath)
+}
+
+func liveSessionContentDiscardable(sessionPath string) (bool, error) {
 	info, err := os.Stat(sessionPath)
 	if os.IsNotExist(err) {
 		return true, nil

@@ -66,3 +66,42 @@ func TestWaitDestroyHandlesBoundsLegacyWait(t *testing.T) {
 		t.Fatalf("legacy wait returned after %s, want a bounded wait near %s", elapsed, desktopSessionRemovalGrace)
 	}
 }
+
+func TestWaitDestroyHandleBatchesWaitsAcrossSessionsConcurrently(t *testing.T) {
+	started := make(chan int, 2)
+	release := make(chan struct{})
+	batches := make([][]control.SessionDestroyHandle, 2)
+	for i := range batches {
+		index := i
+		batches[i] = []control.SessionDestroyHandle{{
+			WaitFor: func(time.Duration) jobs.TeardownResult {
+				started <- index
+				<-release
+				return jobs.TeardownResult{}
+			},
+		}}
+	}
+	done := make(chan []bool, 1)
+	go func() { done <- waitDestroyHandleBatches(batches) }()
+	seen := map[int]bool{}
+	for range batches {
+		select {
+		case index := <-started:
+			seen[index] = true
+		case <-time.After(time.Second):
+			t.Fatal("session destroy batches did not start concurrently")
+		}
+	}
+	close(release)
+	if !seen[0] || !seen[1] {
+		t.Fatalf("started batches = %v, want both sessions", seen)
+	}
+	select {
+	case timedOut := <-done:
+		if timedOut[0] || timedOut[1] {
+			t.Fatalf("completed destroy batches timed out: %v", timedOut)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("concurrent destroy batches did not finish after release")
+	}
+}

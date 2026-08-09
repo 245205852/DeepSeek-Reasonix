@@ -26,10 +26,6 @@ func trashSessionArtifactsWithGuard(dir, sessionPath, key string, guard *agent.S
 		return errSessionBusyElsewhere
 	}
 	defer guard.Release()
-	defer invalidateTopicSessionIndexForPath(sessionPath)
-	if err := invalidateTopicDirMarkers(dir); err != nil {
-		return err
-	}
 	itemDir := filepath.Join(sessionTrashPath(dir), key)
 	if info, err := os.Stat(itemDir); err == nil {
 		if !info.IsDir() {
@@ -37,11 +33,25 @@ func trashSessionArtifactsWithGuard(dir, sessionPath, key string, guard *agent.S
 		}
 		trashPath := filepath.Join(itemDir, key)
 		if trashInfo, err := os.Stat(trashPath); err == nil && !trashInfo.IsDir() {
-			matches, err := trashSessionMatchesLive(sessionPath, trashPath)
-			if err != nil {
-				return err
+			_, liveErr := os.Stat(sessionPath)
+			if liveErr != nil && !os.IsNotExist(liveErr) {
+				return liveErr
 			}
-			if !matches {
+			if liveErr == nil {
+				discardable, err := liveSessionContentDiscardable(sessionPath)
+				if err != nil {
+					return err
+				}
+				if discardable {
+					return removeDesktopSessionArtifactsWithGuard(sessionPath, guard)
+				}
+				matches, err := trashSessionMatchesLive(sessionPath, trashPath)
+				if err != nil {
+					return err
+				}
+				if matches {
+					return removeDesktopSessionArtifactsWithGuard(sessionPath, guard)
+				}
 				itemDir, err = reserveUniqueSessionTrashItemDir(dir, key)
 				if err != nil {
 					return err
@@ -55,6 +65,10 @@ func trashSessionArtifactsWithGuard(dir, sessionPath, key string, guard *agent.S
 			return err
 		}
 	} else {
+		return err
+	}
+	defer invalidateTopicSessionIndexForPath(sessionPath)
+	if err := invalidateTopicDirMarkers(dir); err != nil {
 		return err
 	}
 	for _, artifact := range sessionTrashArtifacts(sessionPath, key) {
