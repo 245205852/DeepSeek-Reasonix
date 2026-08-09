@@ -177,9 +177,16 @@ type WorkspaceTab struct {
 	sink                *tabEventSink          // routes events with this tab's ID
 	buildCancel         context.CancelFunc     // cancels in-flight boot for tabs removed before Ready
 	buildGeneration     uint64                 // identifies the current in-flight build
-	removed             bool                   // set when the visible tab is pruned/closed before build completes
-	reconcileMu         sync.Mutex             // serializes stale controller workspace repair for this tab
-	turnStartMu         sync.Mutex             // serializes foreground turn admission for this tab
+	// buildDone is closed exactly once when the build that owns buildDoneGen
+	// terminates (success, failure, or superseded abandon). Topic-activation
+	// completions wait on it to learn that the controller build finished
+	// without polling. Guarded by App.mu alongside buildGeneration; always
+	// nil-ed after close so a replacement build can install a fresh channel.
+	buildDone    chan struct{}
+	buildDoneGen uint64
+	removed      bool       // set when the visible tab is pruned/closed before build completes
+	reconcileMu  sync.Mutex // serializes stale controller workspace repair for this tab
+	turnStartMu  sync.Mutex // serializes foreground turn admission for this tab
 
 	ActivityStatus string // transient project-tree status for the in-flight turn
 
@@ -228,6 +235,13 @@ type WorkspaceTab struct {
 	disabledMCP      map[string]ServerView
 	mcpOrder         []string
 	lastBuildResult  *boot.BuildResult // incremental extension reload
+
+	// metaExtras caches the expensive MetaForTab fields (git branch, image
+	// input capability) computed off the request path by
+	// refreshTabMetaExtras. Lock-free reads keep MetaForTab synchronous and
+	// cheap; refresh dedup goes through metaExtrasRefreshing.
+	metaExtras           atomic.Pointer[tabMetaExtras]
+	metaExtrasRefreshing atomic.Bool
 }
 
 const (
@@ -1535,7 +1549,7 @@ type tabEventSink struct {
 	runtimeEvents asyncRuntimeEmitter
 	botSink       event.Sink // optional: when set, events are also forwarded here
 	botSinkGen    uint64
-	turnInFlight  bool // stays true through the end of TurnDone fan-out
+	turn          turnSubmissionState // stays reserved through the end of TurnDone fan-out
 }
 
 type closeableEventSink interface {
@@ -1547,26 +1561,6 @@ func (s *tabEventSink) binding() (string, *App) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return s.tabID, s.app
-}
-
-// setBinding reroutes the sink to another tab. A nil app keeps the current
-// App pointer (detach/close paths only change the tab id).
-func (s *tabEventSink) setBinding(tabID string, app *App) {
-	s.mu.Lock()
-	s.tabID = tabID
-	if app != nil {
-		s.app = app
-	}
-	s.mu.Unlock()
-}
-
-func (s *tabEventSink) setRuntimeEpoch(epoch string) {
-	if s == nil {
-		return
-	}
-	s.mu.Lock()
-	s.runtimeEpoch = epoch
-	s.mu.Unlock()
 }
 
 func (s *tabEventSink) runtimeEpochSnapshot() string {
@@ -1581,7 +1575,7 @@ func (s *tabEventSink) runtimeEpochSnapshot() string {
 func (s *tabEventSink) Emit(e event.Event) {
 	if e.Kind == event.TurnStarted {
 		s.mu.Lock()
-		s.turnInFlight = true
+		s.turn.inFlight = true
 		s.mu.Unlock()
 	}
 	tabID, app := s.binding()
@@ -1609,7 +1603,7 @@ func (s *tabEventSink) Emit(e event.Event) {
 			s.flushDisplay(e.Cancelled)
 		}
 	}
-	s.emitRuntimeEvent(eventChannel, toWireTab(e, tabID, s.runtimeEpochSnapshot()))
+	s.emitRuntimeEvent(eventChannel, toWireTabWithSubmission(e, tabID, s.runtimeEpochSnapshot(), s.submissionIDSnapshot()))
 	if app != nil {
 		if status, update := topicActivityStatusFromEvent(e); update {
 			changed := app.setTabActivityStatus(tabID, status)
@@ -1649,7 +1643,7 @@ func (s *tabEventSink) Emit(e event.Event) {
 	}
 	if e.Kind == event.TurnDone {
 		s.mu.Lock()
-		s.turnInFlight = false
+		s.turn = turnSubmissionState{}
 		s.mu.Unlock()
 	}
 }
@@ -1698,19 +1692,19 @@ func (s *tabEventSink) clearBotSink(generation uint64) {
 // controller clears RuntimeStatus().Running before it emits TurnDone, so the
 // controller status alone leaves a window where a new turn can inherit the old
 // turn's forwarder or have its replacement cleared by the old completion.
-func (s *tabEventSink) tryBeginTurn() bool {
+func (s *tabEventSink) tryBeginTurn(submissionID ...string) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.turnInFlight {
+	if s.turn.inFlight {
 		return false
 	}
-	s.turnInFlight = true
+	s.turn = turnSubmissionState{inFlight: true, submissionID: firstSubmissionID(submissionID)}
 	return true
 }
 
 func (s *tabEventSink) cancelTurnStart() {
 	s.mu.Lock()
-	s.turnInFlight = false
+	s.turn = turnSubmissionState{}
 	s.mu.Unlock()
 }
 
@@ -1718,13 +1712,6 @@ func (s *tabEventSink) setContext(ctx context.Context) {
 	s.mu.Lock()
 	s.ctx = ctx
 	s.mu.Unlock()
-}
-
-func (s *tabEventSink) clearContext() {
-	s.mu.Lock()
-	s.ctx = nil
-	s.mu.Unlock()
-	s.runtimeEvents.Clear()
 }
 
 func (s *tabEventSink) context() context.Context {
@@ -2174,41 +2161,40 @@ type wireEventTab struct {
 
 // TabMeta is the frontend-facing shape of one tab.
 type TabMeta struct {
-	ID                string                   `json:"id"`
-	Scope             string                   `json:"scope"`
-	WorkspaceRoot     string                   `json:"workspaceRoot"`
-	WorkspaceName     string                   `json:"workspaceName"`
-	WorkspacePath     string                   `json:"workspacePath,omitempty"`
-	GitBranch         string                   `json:"gitBranch,omitempty"`
-	IsolatedWorktree  bool                     `json:"isolatedWorktree,omitempty"`
-	TopicID           string                   `json:"topicId"`
-	TopicTitle        string                   `json:"topicTitle"`
-	SessionPath       string                   `json:"sessionPath,omitempty"`
-	ReadOnly          bool                     `json:"readOnly,omitempty"`
-	ProjectColor      string                   `json:"projectColor,omitempty"`
-	Label             string                   `json:"label"`
-	Ready             bool                     `json:"ready"`
-	Runtime           SessionRuntimeView       `json:"runtime"`
-	Running           bool                     `json:"running"`
-	PendingPrompt     bool                     `json:"pendingPrompt,omitempty"`
-	RemoteControlled  bool                     `json:"remoteControlled,omitempty"`
-	BackgroundJobs    int                      `json:"backgroundJobs,omitempty"`
-	CancelRequested   bool                     `json:"cancelRequested,omitempty"`
-	Cancellable       bool                     `json:"cancellable"`
-	Mode              string                   `json:"mode"`
-	CollaborationMode string                   `json:"collaborationMode"`
-	ToolApprovalMode  string                   `json:"toolApprovalMode"`
-	TokenMode         string                   `json:"tokenMode"`
-	Goal              string                   `json:"goal,omitempty"`
-	GoalStatus        string                   `json:"goalStatus,omitempty"`
-	AutoResearch      *AutoResearchCompactView `json:"autoResearch,omitempty"`
-	Recovered         bool                     `json:"recovered,omitempty"`
-	RecoveryReason    string                   `json:"recoveryReason,omitempty"`
-	RecoveryDigest    string                   `json:"recoveryDigest,omitempty"`
-	RecoveryParentID  string                   `json:"recoveryParentId,omitempty"`
-	StartupErr        string                   `json:"startupErr,omitempty"`
-	Active            bool                     `json:"active"`
-	Cwd               string                   `json:"cwd"`
+	ID                string             `json:"id"`
+	Scope             string             `json:"scope"`
+	WorkspaceRoot     string             `json:"workspaceRoot"`
+	WorkspaceName     string             `json:"workspaceName"`
+	WorkspacePath     string             `json:"workspacePath,omitempty"`
+	GitBranch         string             `json:"gitBranch,omitempty"`
+	IsolatedWorktree  bool               `json:"isolatedWorktree,omitempty"`
+	TopicID           string             `json:"topicId"`
+	TopicTitle        string             `json:"topicTitle"`
+	SessionPath       string             `json:"sessionPath,omitempty"`
+	ReadOnly          bool               `json:"readOnly,omitempty"`
+	ProjectColor      string             `json:"projectColor,omitempty"`
+	Label             string             `json:"label"`
+	Ready             bool               `json:"ready"`
+	Runtime           SessionRuntimeView `json:"runtime"`
+	Running           bool               `json:"running"`
+	PendingPrompt     bool               `json:"pendingPrompt,omitempty"`
+	RemoteControlled  bool               `json:"remoteControlled,omitempty"`
+	BackgroundJobs    int                `json:"backgroundJobs,omitempty"`
+	CancelRequested   bool               `json:"cancelRequested,omitempty"`
+	Cancellable       bool               `json:"cancellable"`
+	Mode              string             `json:"mode"`
+	CollaborationMode string             `json:"collaborationMode"`
+	ToolApprovalMode  string             `json:"toolApprovalMode"`
+	TokenMode         string             `json:"tokenMode"`
+	Goal              string             `json:"goal,omitempty"`
+	GoalStatus        string             `json:"goalStatus,omitempty"`
+	Recovered         bool               `json:"recovered,omitempty"`
+	RecoveryReason    string             `json:"recoveryReason,omitempty"`
+	RecoveryDigest    string             `json:"recoveryDigest,omitempty"`
+	RecoveryParentID  string             `json:"recoveryParentId,omitempty"`
+	StartupErr        string             `json:"startupErr,omitempty"`
+	Active            bool               `json:"active"`
+	Cwd               string             `json:"cwd"`
 }
 
 func enrichTabMeta(meta TabMeta) TabMeta {
@@ -2248,7 +2234,6 @@ func (a *App) tabMeta(tab *WorkspaceTab, active bool) TabMeta {
 		TokenMode:         currentTabTokenMode(tab),
 		Goal:              currentTabGoal(tab),
 		GoalStatus:        currentTabGoalStatus(tab),
-		AutoResearch:      compactAutoResearch(tab),
 		StartupErr:        tab.StartupErr,
 		Active:            active,
 		Cwd:               tab.WorkspaceRoot,
@@ -2535,6 +2520,12 @@ func (a *App) openTopicSession(scope, workspaceRoot, topicID, sessionPath string
 // by layouts without a tab strip. It delegates the actual open/reuse behavior to
 // the classic tab path, then prunes every non-active visible tab so historical
 // clicks do not accumulate hidden startup work.
+//
+// Interop with StartTopicActivation: a legacy ActivateTopic call supersedes any
+// pending ticketed activation (its background completion becomes a no-op and a
+// "cancelled" event is emitted for the old requestId), and ticketed
+// activations supersede each other the same way. The synchronous return
+// contract — TabMeta after the prune — is unchanged.
 func (a *App) ActivateTopic(scope, workspaceRoot, topicID, sessionPath string) (TabMeta, error) {
 	a.singleSurfaceMu.Lock()
 	defer a.singleSurfaceMu.Unlock()
@@ -2550,6 +2541,11 @@ func (a *App) ActivateTopic(scope, workspaceRoot, topicID, sessionPath string) (
 	}
 	if err != nil {
 		return TabMeta{}, err
+	}
+	// A legacy activation supersedes any pending ticketed activation: its
+	// completion must not prune or publish after this call's own prune.
+	if reqID, tabID := a.supersedePendingTopicActivation(meta.ID); reqID != "" {
+		a.emitTopicActivation(TopicActivationEvent{RequestID: reqID, TabID: tabID, Phase: topicActivationPhaseCancelled})
 	}
 	return a.keepOnlyVisibleTab(meta.ID)
 }
@@ -2568,6 +2564,11 @@ func (a *App) ensureBlankSurface(scope, workspaceRoot, tokenMode string) (TabMet
 	meta, err := a.ensureBlankTab(scope, workspaceRoot, tokenMode)
 	if err != nil {
 		return TabMeta{}, err
+	}
+	// Same interop rule as ActivateTopic: this synchronous surface switch
+	// supersedes any pending ticketed activation.
+	if reqID, tabID := a.supersedePendingTopicActivation(meta.ID); reqID != "" {
+		a.emitTopicActivation(TopicActivationEvent{RequestID: reqID, TabID: tabID, Phase: topicActivationPhaseCancelled})
 	}
 	return a.keepOnlyVisibleTab(meta.ID)
 }
@@ -3114,12 +3115,20 @@ func (a *App) SetActiveTab(tabID string) error {
 		return nil
 	}
 	a.activeTabID = tabID
+	// A direct tab click supersedes a pending ticketed activation's
+	// publication (prune + ready event), but does not cancel its build: the
+	// tab stays open in this layout, so the build may legitimately complete.
+	// Switching to the pending activation's own tab keeps it alive.
+	supersededReq, supersededTab := a.supersedePendingTopicActivationLocked(tabID, false)
 	dir, entries, activeID, version := a.saveTabsCollectLocked()
 	a.mu.Unlock()
 
 	// I/O outside the lock — disk writes can block for hundreds of ms on
 	// Windows when antivirus or the search indexer briefly locks the file.
 	a.saveTabsWrite(dir, entries, activeID, version)
+	if supersededReq != "" {
+		a.emitTopicActivation(TopicActivationEvent{RequestID: supersededReq, TabID: supersededTab, Phase: topicActivationPhaseCancelled})
+	}
 	a.kickDeferredRebuildRetry()
 	return nil
 }
@@ -3575,6 +3584,14 @@ func (a *App) startTabControllerBuild(tab *WorkspaceTab) {
 	tab.buildGeneration++
 	generation := tab.buildGeneration
 	tab.buildCancel = cancel
+	if tab.buildDone != nil {
+		// Defensive: the owning build's terminal defer nils buildDone after
+		// closing it, so a non-nil channel here means that build never ran its
+		// defer. Close it anyway so activation completions never wait forever.
+		close(tab.buildDone)
+	}
+	tab.buildDone = make(chan struct{})
+	tab.buildDoneGen = generation
 	a.mu.Unlock()
 	if a.ctx == nil {
 		a.buildTabControllerWithContext(tab, loadedTabSession{}, buildCtx, generation, cancel)
@@ -3670,6 +3687,24 @@ func (a *App) recordTabStartupFailure(tab *WorkspaceTab, buildGeneration uint64,
 	a.emitReady(wailsCtx, tab.ID)
 }
 
+// closeTabBuildDone signals waiters (topic-activation completions) that the
+// build owning buildGeneration has terminated. Every build funnels through
+// buildTabControllerWithContextAdmissionHeld, whose deferred call guarantees
+// the channel startTabControllerBuild created is closed exactly once, on every
+// terminal path — success, failure, and superseded abandon alike. Synchronous
+// rebuild paths pass generation 0 and never created a channel.
+func (a *App) closeTabBuildDone(tab *WorkspaceTab, buildGeneration uint64) {
+	if tab == nil || buildGeneration == 0 {
+		return
+	}
+	a.mu.Lock()
+	if tab.buildDoneGen == buildGeneration && tab.buildDone != nil {
+		close(tab.buildDone)
+		tab.buildDone = nil
+	}
+	a.mu.Unlock()
+}
+
 func (a *App) buildTabControllerWithContext(tab *WorkspaceTab, loadedSession loadedTabSession, buildCtx context.Context, buildGeneration uint64, buildCancel context.CancelFunc) {
 	a.runtimeAdmissionMu.RLock()
 	defer a.runtimeAdmissionMu.RUnlock()
@@ -3686,6 +3721,13 @@ func (a *App) buildTabControllerWithContextAdmissionHeld(tab *WorkspaceTab, load
 	defer func() {
 		a.clearTabBuildCancel(tab, buildGeneration, buildCancel, keepBuildContext)
 	}()
+	defer a.closeTabBuildDone(tab, buildGeneration)
+	if hook := a.tabBuildStartHook; hook != nil && tab != nil {
+		// Test-only gate: lets activation-ordering tests hold builds in flight
+		// and release them out of order. Runs even for already-superseded
+		// builds so the test can observe every build it started.
+		hook(tab.ID)
+	}
 	wailsCtx := a.ctx
 	if a.tabBuildSuperseded(tab, buildGeneration) {
 		return

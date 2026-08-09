@@ -5,7 +5,8 @@ import React, { act } from "react";
 import { createRoot } from "react-dom/client";
 import type { AppBindings } from "../lib/bridge";
 import { useController } from "../lib/useController";
-import type { BalanceInfo, CheckpointMeta, ContextInfo, EffortInfo, HistoryMessage, JobView, Meta, TabMeta, WireEvent } from "../lib/types";
+import { historySliceFromMessages } from "./mockHistorySlice";
+import type { BalanceInfo, CheckpointMeta, ContextInfo, EffortInfo, HistoryMessage, HistorySliceRequest, JobView, Meta, TabMeta, TopicActivationEvent, TopicActivationRequest, WireEvent } from "../lib/types";
 
 let passed = 0;
 let failed = 0;
@@ -148,6 +149,7 @@ const setActiveFGate = deferred<void>();
 const staleSwitchFGate = deferred<void>();
 const staleSwitchReassertGGate = deferred<void>();
 const submitTabCGate = deferred<void>();
+let tabCSubmissionId = "";
 const forkResultGate = deferred<void>();
 const staleForkResultGate = deferred<void>();
 const staleForkReassertGGate = deferred<void>();
@@ -176,6 +178,7 @@ const runningTabs = new Set<string>();
 const tabsById = new Map([tabA, tabB, tabC, tabD, tabE, tabF, tabG, tabH, tabI].map((tab) => [tab.id, tab]));
 const eventHandlers: Array<(e: WireEvent) => void> = [];
 const readyHandlers: Array<(tabId?: string) => void> = [];
+const topicActivationHandlers: Array<(e: TopicActivationEvent) => void> = [];
 
 function currentTabs(): TabMeta[] {
   return Array.from(tabsById.values()).map((tab) => {
@@ -188,6 +191,7 @@ window.runtime = {
   EventsOn: (name: string, cb: (...data: unknown[]) => void) => {
     if (name === "agent:event") eventHandlers.push(cb as (e: WireEvent) => void);
     if (name === "agent:ready") readyHandlers.push(cb as (tabId?: string) => void);
+    if (name === "topic:activation") topicActivationHandlers.push(cb as (e: TopicActivationEvent) => void);
     return () => {};
   },
   BrowserOpenURL: () => {},
@@ -236,6 +240,8 @@ window.go = {
         const messages = await window.go.main.App.HistoryForTab(tabID);
         return { messages, startTurn: 0, endTurn: messages.filter((message) => message.role === "user").length, totalTurns: messages.filter((message) => message.role === "user").length, hasOlder: false };
       },
+      HistorySliceForTab: async (tabID: string, req: HistorySliceRequest) =>
+        historySliceFromMessages(tabID, await window.go.main.App.HistoryForTab(tabID), req),
       HistoryCheckpointTurnsForTab: async () => [],
       OpenProjectTab: async (workspaceRoot: string, topicId: string) => {
         const target = Array.from(tabsById.values()).find((tab) => tab.workspaceRoot === workspaceRoot && tab.topicId === topicId) ?? tabD;
@@ -246,6 +252,16 @@ window.go = {
         const target = Array.from(tabsById.values()).find((tab) => tab.workspaceRoot === workspaceRoot && tab.topicId === topicId) ?? tabG;
         backendActiveId = target.id;
         return { ...target, active: true };
+      },
+      StartTopicActivation: async (req: TopicActivationRequest) => {
+        const target = Array.from(tabsById.values()).find((tab) => tab.workspaceRoot === req.workspaceRoot && tab.topicId === req.topicId) ?? tabG;
+        backendActiveId = target.id;
+        const requestId = req.requestId || "mock-activation";
+        window.setTimeout(() => {
+          for (const handler of topicActivationHandlers) handler({ requestId, tabId: target.id, phase: "starting" });
+          for (const handler of topicActivationHandlers) handler({ requestId, tabId: target.id, phase: "ready" });
+        }, 0);
+        return { requestId, tabId: target.id, meta: { ...target, active: true } };
       },
       NewSession: async () => {
         newSessionCalls += 1;
@@ -319,7 +335,15 @@ window.go = {
         runningTabs.add(tabID);
         if (tabID === "tab-c") await submitTabCGate.promise;
       },
+      SubmitToTabWithID: async (tabID: string, _input: string, submissionID: string) => {
+        runningTabs.add(tabID);
+        if (tabID === "tab-c") tabCSubmissionId = submissionID;
+        if (tabID === "tab-c") await submitTabCGate.promise;
+      },
       SubmitDisplayToTab: async (tabID: string) => {
+        runningTabs.add(tabID);
+      },
+      SubmitDisplayToTabWithID: async (tabID: string) => {
         runningTabs.add(tabID);
       },
     } as Partial<AppBindings> as AppBindings,
@@ -550,6 +574,9 @@ await act(async () => {
 });
 eq(controller?.activeTabId, "tab-c", "switching to a cached running tab still updates the active tab");
 ok(controller?.state.items.some((item) => item.kind === "user" && item.text === "streaming C") ?? false, "cached running tab keeps its optimistic transcript");
+const tabCUser = controller?.state.items.find((item) => item.kind === "user" && item.text === "streaming C");
+eq(tabCUser?.kind === "user" && tabCUser.submissionId, tabCSubmissionId, "Wails receives the same opaque correlation stored on the optimistic user");
+ok(Boolean(tabCSubmissionId) && tabCSubmissionId !== tabCUser?.id, "opaque submission correlation is distinct from the render item id");
 ok(!historyCalls.includes("tab-c"), "cached running tab skips history hydration");
 await act(async () => {
   submitTabCGate.resolve();
