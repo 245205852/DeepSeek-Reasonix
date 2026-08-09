@@ -11,6 +11,7 @@ import type * as GeneratedApp from "../../wailsjs/go/main/App";
 import type { InvocationRequest } from "./invocationDisplay";
 
 import { addBreadcrumb } from "./breadcrumbs";
+import { maybeShare } from "./queryCoalesce";
 import { t } from "./i18n";
 import { providerIsConfigured, providerRequiresKey, removeProviderAccessesForMock } from "./providerModels";
 import { DEFAULT_STATUS_BAR_ITEMS, normalizeStatusBarItems } from "./statusBarItems";
@@ -1008,12 +1009,11 @@ export const app: AppBindings = new Proxy({} as AppBindings, {
     const v = (target as unknown as Record<string, unknown>)[String(prop)];
     if (typeof v !== "function") return v;
     return (...args: unknown[]) => {
-      const method = String(prop);
-      const crumb = bridgeBreadcrumb(method);
+      const method = String(prop), crumb = bridgeBreadcrumb(method);
       const startedAt = crumb ? (typeof performance !== "undefined" ? performance.now() : Date.now()) : 0;
       if (crumb) addBreadcrumb("bridge", crumb);
       try {
-        const result = (v as (...a: unknown[]) => unknown).apply(target, args);
+        const result = maybeShare(method, args, () => (v as (...a: unknown[]) => unknown).apply(target, args));
         if (result && typeof (result as Promise<unknown>).then === "function") {
           return (result as Promise<unknown>).then(
             (value) => {
