@@ -161,6 +161,7 @@ func sessionTrashArtifacts(sessionPath, key string) []sessionTrashArtifact {
 		{src: sessionTelemetryPath(sessionPath), name: key + ".telemetry.json"},
 		{src: store.SessionCheckpointDir(sessionPath), name: stem + ".ckpt"},
 		{src: store.SessionJobsDir(sessionPath), name: stem + ".jobs"},
+		{src: store.SessionInboxDir(sessionPath), name: stem + ".inbox"},
 	}
 }
 

@@ -351,6 +351,14 @@ func (sm *SessionManager) IsActive(key string) bool {
 	return sm.active[key]
 }
 
+// Debounce returns the collect-mode merge window.
+func (sm *SessionManager) Debounce() time.Duration {
+	if sm == nil {
+		return 1500 * time.Millisecond
+	}
+	return sm.debounce
+}
+
 // runIfIdle holds the per-gateway admission lock while fn switches runtime
 // ownership for key. A normal message cannot become active between the idle
 // check and the controller unlink/close sequence.

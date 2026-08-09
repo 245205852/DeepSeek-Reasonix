@@ -497,6 +497,7 @@ func (s *Server) handler() http.Handler {
 	mux.HandleFunc("GET /history", s.history)
 	mux.HandleFunc("GET /context", s.context)
 	mux.HandleFunc("POST /submit", s.submit)
+	s.registerInboxRoutes(mux)
 	mux.HandleFunc("POST /cancel", s.cancel)
 	mux.HandleFunc("POST /approve", s.approve)
 	mux.HandleFunc("POST /plan", s.plan)
@@ -751,7 +752,24 @@ func (s *Server) submit(w http.ResponseWriter, r *http.Request) {
 	// published replacement. This closes the check/build/swap race where a
 	// request could otherwise start on cur after reload's initial busy check.
 	s.bindMu.Lock()
-	s.ctl().SubmitHTTPFormat(body.Input, body.Format)
+	ctrl := s.ctl()
+	// Fix false 202 while a turn is active: SubmitHTTPFormat silently drops
+	// concurrent input. Clients must use POST /inbox/items for durable follow-up.
+	if ctrl.Running() {
+		s.bindMu.Unlock()
+		http.Error(w, "session is busy; use POST /inbox/items for durable follow-up", http.StatusConflict)
+		return
+	}
+	ctrl.SubmitHTTPFormat(body.Input, body.Format)
+	// After synchronous admission, a successful start sets Running. A silent
+	// drop (rotating/closed) leaves Running false — return 409 instead of 202.
+	// Finishing-window park also leaves Running false briefly; prefer 202 only
+	// when Running or a pending prompt is observed, else durable-queue guidance.
+	if !ctrl.Running() && !ctrl.RuntimeStatus().PendingPrompt {
+		s.bindMu.Unlock()
+		http.Error(w, "input was not admitted; session is rotating, closed, or finishing — use POST /inbox/items", http.StatusConflict)
+		return
+	}
 	s.bindMu.Unlock()
 	w.WriteHeader(http.StatusAccepted)
 }

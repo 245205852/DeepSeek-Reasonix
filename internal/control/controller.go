@@ -48,6 +48,7 @@ import (
 	"reasonix/internal/memory"
 	"reasonix/internal/nilutil"
 	"reasonix/internal/permission"
+	"reasonix/internal/sessioninbox"
 	"reasonix/internal/plugin"
 	"reasonix/internal/provider"
 	"reasonix/internal/recovery"
@@ -303,6 +304,10 @@ type Controller struct {
 	turn int
 
 	displayRecorder func(content, display string)
+
+	// inbox is the durable session-level instruction queue. Disk I/O never
+	// runs under c.mu; the store owns its own lock.
+	inbox inboxState
 }
 
 type approvalReply struct {
@@ -637,6 +642,14 @@ func New(opts Options) *Controller {
 	// Checkpoints: bind a store to the session and route writer pre-edits into it.
 	c.rebindCheckpoints(opts.SessionPath)
 	c.setActiveJobSession(opts.SessionPath)
+	c.rebindInbox()
+	// Observe Steer / unapplied-steer for durable inbox state transitions.
+	// Must wrap both the controller sink and the executor sink: agent.Steer
+	// emits on the executor path, TurnDone on the controller path.
+	c.sink = &inboxEventSink{inner: c.sink, c: c}
+	if c.executor != nil {
+		c.executor.SetSink(c.sink)
+	}
 	cmdsInit := opts.Commands
 	c.commands.Store(&cmdsInit)
 	if c.executor != nil {
@@ -700,13 +713,26 @@ func (c *Controller) ReplaceExtensions(d *dispatch.Dispatcher) {
 
 func (c *Controller) installExtensionsLocked(d *dispatch.Dispatcher) {
 	c.extensions = d
-	if existing, ok := c.sink.(*frontendEventSink); ok {
-		existing.setDispatcher(d)
-	} else {
-		c.sink = newFrontendEventSink(c.sink, d)
+	// Keep the inbox observer as the outermost sink so Steer/unapplied events
+	// always update durable state, while still installing/updating the
+	// frontendEventSink wrapper underneath for extension rulings.
+	switch sink := c.sink.(type) {
+	case *inboxEventSink:
+		if existing, ok := sink.inner.(*frontendEventSink); ok {
+			existing.setDispatcher(d)
+		} else {
+			sink.inner = newFrontendEventSink(sink.inner, d)
+		}
+	case *frontendEventSink:
+		sink.setDispatcher(d)
+		// Ensure inbox observer stays outer.
+		c.sink = &inboxEventSink{inner: sink, c: c}
+	default:
+		c.sink = &inboxEventSink{inner: newFrontendEventSink(c.sink, d), c: c}
 	}
 	if c.executor != nil {
 		c.executor.SetExtensions(d)
+		c.executor.SetSink(c.sink)
 	}
 }
 
@@ -913,11 +939,14 @@ func (c *Controller) finishGuardedTurn(err error, completion *guardedTurnComplet
 	defer func() {
 		c.mu.Lock()
 		c.finishing = false
-		if c.closed || len(c.parkedTurns) == 0 {
-			// A closed controller must not start a parked turn against freed
-			// resources; close() also cleared the queue, this guards the
-			// close-raced-with-delivery ordering.
+		if c.closed {
 			c.mu.Unlock()
+			return
+		}
+		if len(c.parkedTurns) == 0 {
+			c.mu.Unlock()
+			// No parked compatibility body: admit the next durable inbox item.
+			c.maybeDispatchInbox()
 			return
 		}
 		next := c.parkedTurns[0]
@@ -929,12 +958,23 @@ func (c *Controller) finishGuardedTurn(err error, completion *guardedTurnComplet
 		c.mu.Unlock()
 		c.spawnGuardedTurn(ctx, cancel, next)
 	}()
-	done := event.Event{Kind: event.TurnDone, Err: err, Cancelled: cancelRequested, Outcome: turnOutcome(err), CheckpointTurn: c.validatedCheckpointTurn(completion)}
+	c.inbox.mu.Lock()
+	// Prefer a single representative id for the wire event (first active).
+	// Full multi-item ack happens in onInboxTurnDone via activeItemIDs.
+	activeInboxID := ""
+	for id := range c.inbox.activeItemIDs {
+		activeInboxID = id
+		break
+	}
+	c.inbox.mu.Unlock()
+	done := event.Event{Kind: event.TurnDone, Err: err, Cancelled: cancelRequested, Outcome: turnOutcome(err), CheckpointTurn: c.validatedCheckpointTurn(completion), ItemID: activeInboxID}
 	var readinessErr *agent.FinalReadinessError
 	if errors.As(err, &readinessErr) {
 		done.Readiness = &event.FinalReadiness{Attempts: readinessErr.Attempts, Missing: append([]string(nil), readinessErr.Missing...)}
 	}
 	c.sink.Emit(done)
+	// Ack the active durable item; dispatch runs after finishing clears (above).
+	c.onInboxTurnDone()
 }
 
 func turnOutcome(err error) string {
@@ -2906,6 +2946,9 @@ func (c *Controller) NewSession() error {
 	c.resetRecoveryForNewSession(freshPath)
 	c.rotateSessionTemp()
 	c.snapshotMu.Unlock()
+	// Old session keeps its inbox (paused); the fresh session starts empty.
+	c.pauseInboxOnRotate()
+	c.rebindInbox()
 	// A new session starts with no active goal: without this, a running goal's
 	// text kept injecting into the fresh session's first turns. The old
 	// session's goal-state sidecar was persisted before the rotation and stays
@@ -2991,6 +3034,7 @@ func (c *Controller) ClearSession() error {
 	c.resetRecoveryForNewSession(freshPath)
 	c.rotateSessionTemp()
 	c.snapshotMu.Unlock()
+	c.rebindInbox()
 	// Same contract as NewSession: the fresh session starts with no active goal.
 	c.ClearGoal()
 	c.mu.Lock()
@@ -3046,6 +3090,9 @@ func removeSessionArtifacts(path string) error {
 		if err := os.Remove(p); err != nil && !os.IsNotExist(err) {
 			return err
 		}
+	}
+	if err := sessioninbox.RemoveDir(path); err != nil && !os.IsNotExist(err) {
+		return err
 	}
 	if dir := ckptDir(path); dir != "" {
 		if err := os.RemoveAll(dir); err != nil && !os.IsNotExist(err) {
@@ -3487,6 +3534,7 @@ func (c *Controller) Resume(s *agent.Session, path string) {
 		c.rotateSessionTemp()
 	}
 	c.snapshotMu.Unlock()
+	c.rebindInbox()
 	c.recoverCheckpointTransactions()
 	c.recoverInterruptedTurn(path)
 	c.maybeColdResumePrune(path)
@@ -4653,6 +4701,7 @@ func (c *Controller) setSessionPath(p string, fresh bool) {
 		c.loadRecoveryState(p)
 	}
 	c.snapshotMu.Unlock()
+	c.rebindInbox()
 	if !fresh {
 		c.recoverCheckpointTransactions()
 	}

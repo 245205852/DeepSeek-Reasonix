@@ -101,9 +101,14 @@ type PastedBlock = {
 };
 
 type PendingGuidance = {
-  id: number;
+  /** Durable session-inbox item id (server-assigned). */
+  id: string;
+  /** Bounded preview for the shelf — full body is fetched only when editing. */
   text: string;
+  /** Optional full submit text kept only until durable enqueue succeeds. */
   submitText: string;
+  state?: string;
+  intent?: string;
   structured?: StructuredInvocationSubmit;
 };
 
@@ -127,7 +132,7 @@ type ComposerDraft = {
   savedText: string;
   pendingGuidance: PendingGuidance[];
   guidanceExpanded: boolean;
-  guidanceSendingId: number | null;
+  guidanceSendingId: string | null;
   pendingPaste: number;
   submitting: boolean;
 };
@@ -583,7 +588,7 @@ export function Composer({
   onSteer?: (submitText: string, tabId?: string) => void | Promise<void>;
   // Returns the un-sent text when cancelling before the server replied (so it can
   // be restored to the input); undefined for a normal cancel.
-  onCancel: () => string | undefined;
+  onCancel: (queuedItemIDs?: string[]) => string | undefined;
   onCycleMode: () => void;
   onSetMode: (mode: Mode) => void;
   onSetCollaborationMode: (mode: CollaborationMode) => void;
@@ -711,13 +716,12 @@ export function Composer({
   const [selectedTextRefs, setSelectedTextRefs] = useState<SelectedTextReference[]>([]);
   const [pendingGuidance, setPendingGuidance] = useState<PendingGuidance[]>([]);
   const [guidanceExpanded, setGuidanceExpanded] = useState(false);
-  const [guidanceSendingId, setGuidanceSendingId] = useState<number | null>(null);
+  const [guidanceSendingId, setGuidanceSendingId] = useState<string | null>(null);
   const [guidanceRetryNonce, setGuidanceRetryNonce] = useState(0);
   const [guidanceDraftKey, setGuidanceDraftKey] = useState(draftKey);
   const pendingGuidanceRef = useRef<PendingGuidance[]>([]);
   const guidanceExpandedRef = useRef(false);
-  const guidanceSendingIdRef = useRef<number | null>(null);
-  const nextGuidanceId = useRef(1);
+  const guidanceSendingIdRef = useRef<string | null>(null);
   const [loadingPastChats, setLoadingPastChats] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [inputMenuPoint, setInputMenuPoint] = useState<ContextMenuPoint | null>(null);
@@ -1090,7 +1094,7 @@ export function Composer({
     draftsBySessionRef.current[targetDraftKey] = draft;
   };
 
-  const updateGuidanceSendingIdForDraft = (targetDraftKey: string, next: number | null) => {
+  const updateGuidanceSendingIdForDraft = (targetDraftKey: string, next: string | null) => {
     if (targetDraftKey === activeDraftKeyRef.current) {
       guidanceSendingIdRef.current = next;
       setGuidanceSendingId(next);
@@ -1171,39 +1175,61 @@ export function Composer({
     wasRunningByDraftRef.current[draftKey] = running;
   }, [draftKey, running, text]);
 
-  // A message queued while a turn was running (without the explicit "guide"
-  // steer click) is the user's next turn, not scratch text to discard — send
-  // it once the turn is done. Gated on submitDisabled, not just running:
-  // if the turn ends while the controller is still activating/hydrating,
-  // App's onSend silently no-ops on !controllerReady, but sendQueuedGuidance
-  // still removes the item as if it had sent — so wait for submitDisabled to
-  // clear instead of firing into that no-op window (#6210 follow-up). Once
-  // both conditions hold, a successful send removes the head and starts a
-  // new turn, which flips `running` true then false again, re-running this
-  // effect to drain the shelf one item at a time; a failed send is left in
-  // place (dismissible via the trash button) rather than silently dropped.
-  // guidanceDraftKey identifies which session the rendered queue belongs to:
-  // during a tab switch React still renders once with the previous queue, and
-  // that stale render must never submit through the new session's onSend.
+  // Legacy/local preview items still need the old frontend-owned send path.
+  // Durable items are dispatched exactly once by the Controller after TurnDone;
+  // Durable items are dispatched and acknowledged only by the Controller.
+  // This compatibility path drains legacy local preview items, while the
+  // draft-key guard prevents a stale tab render from submitting through the
+  // newly selected session's onSend.
   useEffect(() => {
     // Never auto-send guidance while a decision surface owns the footer —
     // the draft must stay intact until the user finishes the decision.
     if (guidanceDraftKey !== draftKey || running || submitDisabled || suspendedByDecision) return;
     const next = pendingGuidance[0];
-    if (next) void sendQueuedGuidance(next, draftKey);
+    if (next?.id.startsWith("local-")) void sendQueuedGuidance(next, draftKey);
   }, [draftKey, guidanceDraftKey, guidanceRetryNonce, running, submitDisabled, pendingGuidance, suspendedByDecision]);
 
   useEffect(() => {
-    if (guidanceDraftKey !== draftKey || !running || !guidanceQueuePreviewKey) return;
-    setGuidanceExpanded(false);
-    updatePendingGuidanceForDraft(
-      draftKey,
-      () =>
-        guidanceQueuePreviewKey
-          .split("\n")
-          .map((text) => ({ id: nextGuidanceId.current++, text, submitText: text })),
-    );
-  }, [draftKey, guidanceDraftKey, guidanceQueuePreviewKey, running]);
+    if (guidanceDraftKey !== draftKey) return;
+    let live = true;
+    const fallback = guidanceQueuePreviewKey
+      .split("\n")
+      .filter(Boolean)
+      .map((text, i) => ({ id: `local-${i}`, text, submitText: text }));
+    // Older Wails bindings and focused component tests do not expose the new
+    // inbox methods yet. Preserve their local preview contract.
+    if (typeof app.InboxSnapshot !== "function") {
+      updatePendingGuidanceForDraft(draftKey, () => fallback);
+      setGuidanceExpanded(false);
+      return;
+    }
+    // Refresh shelf from the durable server snapshot (metadata only). Running
+    // transitions are included so Controller-owned dispatch/ack is reflected.
+    void app.InboxSnapshot(tabId || "").then((snap) => {
+      if (!live) return;
+      const durable = (snap?.items ?? []).map((it: { id: string; preview: string; state?: string; intent?: string }) => ({
+        id: it.id,
+        text: it.preview,
+        submitText: "",
+        state: it.state,
+        intent: it.intent,
+      }));
+      updatePendingGuidanceForDraft(draftKey, () => durable.length > 0 ? durable : fallback);
+      setGuidanceExpanded(false);
+    }).catch(() => {
+      if (!live) return;
+      // Fallback: local preview lines without durable ids (will re-enqueue).
+      updatePendingGuidanceForDraft(
+        draftKey,
+        () =>
+          guidanceQueuePreviewKey
+            .split("\n")
+            .filter(Boolean)
+            .map((text, i) => ({ id: `local-${i}`, text, submitText: text })),
+      );
+    });
+    return () => { live = false; };
+  }, [draftKey, guidanceDraftKey, guidanceQueuePreviewKey, running, tabId, guidanceRetryNonce]);
 
   useEffect(() => {
     if (guidanceExpanded && pendingGuidance.length <= 2) setGuidanceExpanded(false);
@@ -2115,13 +2141,32 @@ export function Composer({
         const guidanceText = displayText.trim() || (structured?.display.trim() ?? "");
         const guidanceSubmitText = submitText.trim();
         if (guidanceText) {
-          const id = nextGuidanceId.current++;
-          updatePendingGuidanceForDraft(submitDraftKey, (items) => [
-            ...items,
-            { id, text: guidanceText, submitText: guidanceSubmitText || guidanceText, structured },
-          ]);
+          // Durable follow-up: only clear the composer after a durable receipt.
+          try {
+            const receipt = await app.EnqueueInboxFollowup(
+              submitTabId || "",
+              guidanceText,
+              guidanceSubmitText || guidanceText,
+              "",
+            );
+            if (receipt?.error) throw new Error(receipt.error);
+            updatePendingGuidanceForDraft(submitDraftKey, (items) => [
+              ...items,
+              {
+                id: receipt.itemId,
+                text: guidanceText.slice(0, 120),
+                submitText: "",
+                intent: "followup",
+                state: "queued",
+                structured,
+              },
+            ]);
+            clearSubmittedDraft(submitDraftKey);
+          } catch (error) {
+            showToast(error instanceof Error ? error.message : String(error), "warn");
+            // Keep draft on durable failure.
+          }
         }
-        clearSubmittedDraft(submitDraftKey);
         return;
       }
       await onSend(displayText, submitText, submitTabId, structured);
@@ -2139,39 +2184,76 @@ export function Composer({
     targetTabId = tabId,
   ) => {
     if (targetDraftKey !== activeDraftKeyRef.current || disabled || readOnly || guidanceSendingIdRef.current !== null) return;
+    const durable = !item.id.startsWith("local-");
     if (running && item.structured) return;
-    const displayText = item.text.trim();
-    const submitText = item.submitText.trim() || displayText;
-    if (!displayText || !submitText) return;
-    const attemptedSteer = running && onSteer !== undefined;
-    let retryRejectedSteer = false;
-    const selfDispatched = selfDispatchedGuidanceByDraftRef.current[targetDraftKey] ?? [];
-    selfDispatched.push(submitText);
-    selfDispatchedGuidanceByDraftRef.current[targetDraftKey] = selfDispatched;
     updateGuidanceSendingIdForDraft(targetDraftKey, item.id);
     try {
-      if (attemptedSteer) await onSteer(submitText, targetTabId);
-      else await onSend(displayText, submitText, targetTabId, item.structured);
-      updatePendingGuidanceForDraft(targetDraftKey, (items) => items.filter((queued) => queued.id !== item.id));
+      if (running && durable) {
+        const receipt = await app.SteerInboxItem(targetTabId || "", item.id);
+        if (receipt?.error) throw new Error(receipt.error);
+        if (receipt?.disposition === "steer_accepted") {
+          updatePendingGuidanceForDraft(targetDraftKey, (items) => items.filter((queued) => queued.id !== item.id));
+        } else {
+          // Rejected steers remain the same durable follow-up item. The
+          // Controller owns its later FIFO dispatch.
+          updatePendingGuidanceForDraft(targetDraftKey, (items) =>
+            items.map((queued) => queued.id === item.id
+              ? { ...queued, intent: "followup", state: "queued" }
+              : queued),
+          );
+          setGuidanceRetryNonce((value) => value + 1);
+        }
+        return;
+      }
+      if (durable) return;
+      // Prefer durable inbox paths: load body by id only when needed.
+      let displayText = item.text.trim();
+      let submitText = item.submitText.trim();
+      if (!submitText || submitText === displayText) {
+        try {
+          const env = await app.ReadInboxItem(targetTabId || "", item.id);
+          displayText = (env.displayText || env.submitText || displayText).trim();
+          submitText = (env.submitText || displayText).trim();
+        } catch {
+          // Fall back to preview-only shelf text.
+        }
+      }
+      if (!displayText || !submitText) return;
+      const attemptedSteer = running && onSteer !== undefined;
+      const selfDispatched = selfDispatchedGuidanceByDraftRef.current[targetDraftKey] ?? [];
+      selfDispatched.push(submitText);
+      selfDispatchedGuidanceByDraftRef.current[targetDraftKey] = selfDispatched;
+      if (attemptedSteer) {
+        await onSteer(submitText, targetTabId);
+        updatePendingGuidanceForDraft(targetDraftKey, (items) => items.filter((queued) => queued.id !== item.id));
+      } else {
+        await onSend(displayText, submitText, targetTabId, item.structured);
+        updatePendingGuidanceForDraft(targetDraftKey, (items) => items.filter((queued) => queued.id !== item.id));
+      }
       window.setTimeout(() => {
         takeSelfDispatchedGuidance(submitText, targetDraftKey);
       }, 5000);
     } catch (error) {
-      retryRejectedSteer = attemptedSteer;
-      takeSelfDispatchedGuidance(submitText, targetDraftKey);
       showToast(error instanceof Error ? error.message : String(error), "warn");
     } finally {
       const current = targetDraftKey === activeDraftKeyRef.current
         ? guidanceSendingIdRef.current
         : draftsBySessionRef.current[targetDraftKey]?.guidanceSendingId;
       if (current === item.id) updateGuidanceSendingIdForDraft(targetDraftKey, null);
-      // TurnDone may render while TrySteer is still pending. That render cannot
-      // auto-send because the guidance item is marked in flight, so re-run the
-      // idle-queue effect after a rejected steer settles. Ordinary onSend
-      // failures intentionally do not re-arm, avoiding an automatic retry loop.
-      if (retryRejectedSteer && targetDraftKey === activeDraftKeyRef.current) {
-        setGuidanceRetryNonce((value) => value + 1);
+    }
+  };
+
+  const dismissQueuedGuidance = async (item: PendingGuidance) => {
+    try {
+      if (!item.id.startsWith("local-")) {
+        await app.DeleteInboxItem(tabId || "", item.id);
       }
+      updatePendingGuidanceForDraft(
+        activeDraftKeyRef.current,
+        (items) => items.filter((queued) => queued.id !== item.id),
+      );
+    } catch (error) {
+      showToast(error instanceof Error ? error.message : String(error), "warn");
     }
   };
 
@@ -2676,7 +2758,10 @@ export function Composer({
   // handleCancel stops the in-flight turn; if it was cancelled before the server
   // replied, the just-sent text is handed back so we drop it back into the input.
   const handleCancel = () => {
-    const restored = onCancel();
+    const durableItemIDs = pendingGuidance
+      .map((item) => item.id)
+      .filter((id) => !id.startsWith("local-"));
+    const restored = onCancel(durableItemIDs);
     if (goalModeOn && activeGoal) onClearGoal();
     // A user-requested cancel must not let the natural-completion effect submit
     // the queued follow-up. Fold it back into the draft: cancelling means "stop
@@ -4253,10 +4338,7 @@ export function Composer({
                     type="button"
                     aria-label={t("composer.guidanceDismiss")}
                     disabled={guidanceSendingId === item.id}
-                    onClick={() => updatePendingGuidanceForDraft(
-                      activeDraftKeyRef.current,
-                      (items) => items.filter((queued) => queued.id !== item.id),
-                    )}
+                    onClick={() => void dismissQueuedGuidance(item)}
                   >
                     <Trash2 size={14} />
                   </button>

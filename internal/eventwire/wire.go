@@ -35,6 +35,9 @@ type Event struct {
 	RetryMax        int               `json:"retryMax,omitempty"`
 	RetryScope      string            `json:"retryScope,omitempty"` // "headers" | "stream"; omit for older clients
 	StreamAttempt   *StreamAttempt    `json:"streamAttempt,omitempty"`
+	// ItemID correlates Steer / TurnDone / unapplied-steer with a durable
+	// session-inbox entry. Empty for legacy text-only guidance.
+	ItemID string `json:"itemId,omitempty"`
 }
 
 // StreamAttempt is the JSON form of event.StreamAttemptInfo.
@@ -48,7 +51,7 @@ type StreamAttempt struct {
 
 // ToWire converts a typed runtime event into the shared frontend JSON contract.
 func ToWire(e event.Event) Event {
-	w := Event{Kind: kindNames[e.Kind], Text: e.Text, Detail: e.Detail, Reasoning: e.Reasoning}
+	w := Event{Kind: kindNames[e.Kind], Text: e.Text, Detail: e.Detail, Reasoning: e.Reasoning, ItemID: e.ItemID}
 	if len(e.MemoryCitations) > 0 {
 		w.MemoryCitations = ToWireMemoryCitations(e.MemoryCitations)
 	}

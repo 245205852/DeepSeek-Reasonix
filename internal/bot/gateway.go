@@ -18,6 +18,7 @@ import (
 	"reasonix/internal/control"
 	"reasonix/internal/event"
 	"reasonix/internal/secrets"
+	"reasonix/internal/sessioninbox"
 )
 
 // GatewayConfig 是 BotGateway 的配置。
@@ -779,45 +780,85 @@ func (gw *BotGateway) handleMessage(ctx context.Context, binding AdapterBinding,
 	cleanup := gw.addPendingReaction(ctx, binding.Platform, binding.Adapter, msg)
 
 	queueMode := gw.queueMode(key, msg)
+	warnDeprecatedQueueDrop(gw.cfg.QueueDrop)
 	if gw.sessions.IsActive(key) {
-		switch queueMode {
-		case QueueModeSteer:
-			if gw.steerActiveSession(ctx, binding.Adapter, key, msg) {
-				gw.logger.Info("bot message steered into active turn", "session", key[:8])
-				if cleanup != nil {
-					cleanup()
+		// Busy session: durable inbox is the authority (not SessionManager.pending).
+		if IsSlashBypass(msg.Text) {
+			// Slash commands still acquire through the session lock below.
+		} else {
+			switch queueMode {
+			case QueueModeSteer:
+				if rec, ok := gw.steerActiveSessionDurable(ctx, binding.Adapter, key, msg); ok {
+					gw.logger.Info("bot message steered into active turn", "session", key[:8], "item", rec.ItemID)
+					if cleanup != nil {
+						cleanup()
+					}
+					_ = gw.sendText(ctx, binding.Adapter, msg, formatQueuedReceipt(rec)+"（已并入当前任务）")
+					return
 				}
-				_ = gw.sendText(ctx, binding.Adapter, msg, "已收到，会并入当前任务。")
+			case QueueModeInterrupt:
+				gw.cancelActiveSession(key)
+				runReactionCleanups(gw.takeReactionCleanups(key))
+				rec, err := gw.interruptActiveSessionDurable(key, msg)
+				gw.storeReactionCleanup(key, cleanup)
+				if err != nil {
+					gw.logger.Warn("bot interrupt enqueue failed", "session", key[:8], "err", err)
+					_ = gw.sendText(ctx, binding.Adapter, msg, "排队失败："+err.Error())
+					return
+				}
+				gw.logger.Info("bot active turn interrupted; newest message durable-queued", "session", key[:8], "item", rec.ItemID)
+				_ = gw.sendText(ctx, binding.Adapter, msg, "已停止当前任务。"+formatQueuedReceipt(rec))
 				return
+			case QueueModeCollect:
+				if rec, err := gw.collectActiveSessionDurable(key, msg); err == nil {
+					gw.storeReactionCleanup(key, cleanup)
+					_ = gw.sendText(ctx, binding.Adapter, msg, formatQueuedReceipt(rec))
+					return
+				} else if errors.Is(err, sessioninbox.ErrCapacityItems) || errors.Is(err, sessioninbox.ErrCapacityBytes) || errors.Is(err, sessioninbox.ErrItemTooLarge) {
+					if cleanup != nil {
+						cleanup()
+					}
+					_ = gw.sendText(ctx, binding.Adapter, msg, "当前会话排队已满，请稍后再发，或使用 /queue pause 后清理。")
+					return
+				}
+			default: // followup
+				if rec, err := gw.followupActiveSessionDurable(key, msg); err == nil {
+					gw.storeReactionCleanup(key, cleanup)
+					_ = gw.sendText(ctx, binding.Adapter, msg, formatQueuedReceipt(rec))
+					return
+				} else if errors.Is(err, sessioninbox.ErrCapacityItems) || errors.Is(err, sessioninbox.ErrCapacityBytes) || errors.Is(err, sessioninbox.ErrItemTooLarge) {
+					if cleanup != nil {
+						cleanup()
+					}
+					_ = gw.sendText(ctx, binding.Adapter, msg, "当前会话排队已满，请稍后再发。")
+					return
+				}
 			}
-		case QueueModeInterrupt:
-			gw.cancelActiveSession(key)
-			runReactionCleanups(gw.takeReactionCleanups(key))
-			result := gw.sessions.ReplacePending(key, msg)
-			gw.storeReactionCleanup(key, cleanup)
-			gw.logger.Info("bot active turn interrupted; newest message queued", "session", key[:8], "pending", result.Pending)
-			_ = gw.sendText(ctx, binding.Adapter, msg, "已停止当前任务，稍后处理这条新消息。")
-			return
 		}
 	}
 
-	// session 并发控制
+	// session 并发控制 — only the active-turn lock remains here; bodies live in inbox.
 	result := gw.sessions.TryAcquireWithQueue(key, msg, QueueOptions{
-		Mode: queueMode,
-		Cap:  gw.cfg.QueueCap,
-		Drop: gw.cfg.QueueDrop,
+		Mode: QueueModeFollowup, // never drop_old; capacity enforced by inbox
+		Cap:  sessioninbox.DefaultMaxItems,
+		Drop: QueueDropNew,
 	})
 	if result.Rejected {
 		gw.logger.Warn("bot queue rejected message", "session", key[:8], "pending", result.Pending, "mode", result.Mode)
 		if cleanup != nil {
 			cleanup()
 		}
-		_ = gw.sendText(ctx, binding.Adapter, msg, "当前会话排队已满，请稍后再发，或使用 /queue interrupt 中断当前任务。")
+		_ = gw.sendText(ctx, binding.Adapter, msg, "当前会话排队已满，请稍后再发，或使用 /queue 管理队列。")
 		return
 	}
 	if result.Queued {
-		gw.logger.Debug("message queued", "session", key[:8], "mode", result.Mode, "pending", result.Pending, "dropped", result.Dropped)
-		gw.storeReactionCleanup(key, cleanup)
+		// Unexpected with Cap=max and Drop=new while idle path; durable-queue as fallback.
+		if rec, err := gw.followupActiveSessionDurable(key, msg); err == nil {
+			gw.storeReactionCleanup(key, cleanup)
+			_ = gw.sendText(ctx, binding.Adapter, msg, formatQueuedReceipt(rec))
+		} else {
+			gw.storeReactionCleanup(key, cleanup)
+		}
 		return
 	}
 	if !result.Acquired {
@@ -844,22 +885,105 @@ func (gw *BotGateway) queueMode(key string, msg InboundMessage) string {
 }
 
 func (gw *BotGateway) steerActiveSession(ctx context.Context, adapter Adapter, key string, msg InboundMessage) bool {
+	_, ok := gw.steerActiveSessionDurable(ctx, adapter, key, msg)
+	return ok
+}
+
+func (gw *BotGateway) sessionAPI(key string) control.SessionAPI {
+	gw.mu.Lock()
+	state, ok := gw.controllers[key]
+	gw.mu.Unlock()
+	if !ok || state == nil || state.ctrl == nil {
+		return nil
+	}
+	if api, ok := state.ctrl.(control.SessionAPI); ok {
+		return api
+	}
+	return nil
+}
+
+func (gw *BotGateway) steerActiveSessionDurable(ctx context.Context, adapter Adapter, key string, msg InboundMessage) (sessioninbox.InboxReceipt, bool) {
 	text := strings.TrimSpace(msg.Text)
 	if text == "" && len(msg.MediaURLs) == 0 && len(msg.Media) == 0 {
-		return false
+		return sessioninbox.InboxReceipt{}, false
 	}
 	gw.mu.Lock()
 	state, ok := gw.controllers[key]
 	gw.mu.Unlock()
 	if !ok || state.ctrl == nil {
-		return false
+		return sessioninbox.InboxReceipt{}, false
 	}
 	text = gw.inputTextWithMedia(ctx, adapter, msg, state)
 	if strings.TrimSpace(text) == "" {
-		return false
+		return sessioninbox.InboxReceipt{}, false
 	}
-	controller, ok := state.ctrl.(interface{ TrySteer(string) bool })
-	return ok && controller.TrySteer(text)
+	msg.Text = text
+	api, ok := state.ctrl.(control.SessionAPI)
+	if !ok {
+		// Legacy fallback.
+		if steerer, ok := state.ctrl.(interface{ TrySteer(string) bool }); ok && steerer.TrySteer(text) {
+			return sessioninbox.InboxReceipt{Disposition: sessioninbox.DispositionSteerAccepted}, true
+		}
+		return sessioninbox.InboxReceipt{}, false
+	}
+	rec, err := enqueueViaInbox(api, msg, sessioninbox.IntentSteer)
+	if err != nil {
+		return sessioninbox.InboxReceipt{}, false
+	}
+	return rec, true
+}
+
+func (gw *BotGateway) followupActiveSessionDurable(key string, msg InboundMessage) (sessioninbox.InboxReceipt, error) {
+	api := gw.sessionAPI(key)
+	if api == nil {
+		return sessioninbox.InboxReceipt{}, fmt.Errorf("no session controller")
+	}
+	return enqueueViaInbox(api, msg, sessioninbox.IntentFollowup)
+}
+
+func (gw *BotGateway) collectActiveSessionDurable(key string, msg InboundMessage) (sessioninbox.InboxReceipt, error) {
+	api := gw.sessionAPI(key)
+	if api == nil {
+		return sessioninbox.InboxReceipt{}, fmt.Errorf("no session controller")
+	}
+	return collectAppend(api, msg, gw.sessions.Debounce())
+}
+
+func (gw *BotGateway) interruptActiveSessionDurable(key string, msg InboundMessage) (sessioninbox.InboxReceipt, error) {
+	api := gw.sessionAPI(key)
+	if api == nil {
+		return sessioninbox.InboxReceipt{}, fmt.Errorf("no session controller")
+	}
+	return interruptEnqueue(api, msg)
+}
+
+// nextInboxMessage loads the next durable FIFO follow-up as an InboundMessage.
+func (gw *BotGateway) nextInboxMessage(key string) *InboundMessage {
+	api := gw.sessionAPI(key)
+	if api == nil {
+		return nil
+	}
+	snap := api.InboxSnapshot()
+	if snap.Paused {
+		return nil
+	}
+	for _, it := range snap.Items {
+		if it.State != sessioninbox.StateQueued {
+			continue
+		}
+		_, env, err := api.ReadInboxItem(it.ID)
+		if err != nil {
+			continue
+		}
+		// Mark running so TurnDone acks dequeue via controller; then submit body.
+		// Controller dispatcher also runs; we construct the bot turn explicitly.
+		text := env.SubmitText
+		if text == "" {
+			text = env.DisplayText
+		}
+		return &InboundMessage{Text: text, MessageID: it.Idempotency, Platform: Platform(""), ChatID: key}
+	}
+	return nil
 }
 
 func (gw *BotGateway) cancelActiveSession(key string) {
@@ -1589,9 +1713,13 @@ func (gw *BotGateway) handleSlashCommand(ctx context.Context, adapter Adapter, k
 		_ = gw.sendText(ctx, adapter, msg, text)
 
 	case strings.HasPrefix(msg.Text, "/queue"):
+		if reply, handled := gw.handleQueueInboxCommand(ctx, key, msg); handled {
+			_ = gw.sendText(ctx, adapter, msg, reply)
+			return
+		}
 		mode, clear, statusOnly, ok := parseQueueCommand(msg.Text)
 		if !ok {
-			_ = gw.sendText(ctx, adapter, msg, "用法: /queue steer|followup|collect|interrupt|status|default")
+			_ = gw.sendText(ctx, adapter, msg, "用法: /queue steer|followup|collect|interrupt|status|list|show|delete|move|pause|resume|retry|default")
 			return
 		}
 		if statusOnly {
@@ -1894,11 +2022,18 @@ func parseQueueCommand(text string) (mode string, clear bool, statusOnly bool, o
 }
 
 func (gw *BotGateway) queueStatusText(key string, msg InboundMessage) string {
-	return fmt.Sprintf("当前队列模式：%s\n当前会话排队: %d\n全局上限: %d\n溢出策略: %s\n用法：/queue steer|followup|collect|interrupt|status|default",
+	inboxN := 0
+	paused := false
+	if api := gw.sessionAPI(key); api != nil {
+		snap := api.InboxSnapshot()
+		inboxN = len(snap.Items)
+		paused = snap.Paused
+	}
+	return fmt.Sprintf("当前队列模式：%s\n持久化 Inbox: %d%s\n全局上限: %d\n溢出策略: 拒绝新消息（queue_drop 已弃用）\n用法：/queue steer|followup|collect|interrupt|status|list|show|delete|move|pause|resume|retry|default",
 		queueModeLabel(gw.queueMode(key, msg)),
-		gw.sessions.PendingCount(key),
-		gw.cfg.QueueCap,
-		queueDropLabel(gw.cfg.QueueDrop),
+		inboxN,
+		map[bool]string{true: " (paused)", false: ""}[paused],
+		sessioninbox.DefaultMaxItems,
 	)
 }
 
@@ -2069,8 +2204,15 @@ func toolApprovalModeLabel(mode string) string {
 func (gw *BotGateway) runTurn(ctx context.Context, adapter Adapter, key string, msg InboundMessage, cleanup func()) {
 	gw.logger.Info("bot turn started", "platform", msg.Platform, "chat_type", msg.ChatType, "chat", hashID(msg.ChatID), "session", key[:8])
 	defer func() {
-		// 检查是否有等待队列中的消息
+		// Legacy in-memory pending first (compat), then durable session inbox.
 		next := gw.sessions.Release(key)
+		if next == nil {
+			if n := gw.nextInboxMessage(key); n != nil {
+				next = n
+				// Keep the session active for the follow-up turn.
+				_ = gw.sessions.TryAcquireWithQueue(key, *next, QueueOptions{Mode: QueueModeFollowup, Cap: sessioninbox.DefaultMaxItems, Drop: QueueDropNew})
+			}
+		}
 		if next != nil {
 			if cleanup != nil {
 				cleanup()
