@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sync"
 	"testing"
 	"time"
@@ -65,12 +66,14 @@ func TestSessionSidecarSavesUseDurableAtomicWrite(t *testing.T) {
 			if !usedDurableWrite {
 				t.Fatalf("%s sidecar bypassed fileutil.AtomicWriteFile", tt.name)
 			}
-			info, err := os.Stat(path)
-			if err != nil {
-				t.Fatalf("stat %s sidecar: %v", tt.name, err)
-			}
-			if got := info.Mode().Perm(); got != 0o600 {
-				t.Fatalf("%s sidecar mode = %o, want 600", tt.name, got)
+			if runtime.GOOS != "windows" {
+				info, err := os.Stat(path)
+				if err != nil {
+					t.Fatalf("stat %s sidecar: %v", tt.name, err)
+				}
+				if got := info.Mode().Perm(); got != 0o600 {
+					t.Fatalf("%s sidecar mode = %o, want 600", tt.name, got)
+				}
 			}
 		})
 	}
