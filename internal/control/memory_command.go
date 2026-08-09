@@ -11,7 +11,7 @@ import (
 	"reasonix/internal/memory"
 )
 
-const memoryCommandUsage = "usage: /memory [recall|pin <id-or-name>|unpin <id-or-name>|revisions <id-or-name>|restore <id-or-name> <revision>|archived|recover <archive-path>|instructions]"
+const memoryCommandUsage = "usage: /memory [recall|pin <id-or-name>|unpin <id-or-name>|verify <id-or-name>|revisions <id-or-name>|restore <id-or-name> <revision>|archived|recover <archive-path>|instructions]"
 
 // MemoryCompletionData returns stable references for structured /memory
 // completion. IDs come first because they remain unambiguous if a fact is
@@ -67,6 +67,12 @@ func MemoryCommandText(api MemoryControl, input string) string {
 			return "usage: /memory " + subcommand + " <id-or-name>"
 		}
 		return setMemoryActivation(api, ref, subcommand == "pin")
+	case "verify":
+		ref, err := singleMemoryArgument(rest)
+		if err != nil {
+			return "usage: /memory verify <id-or-name>"
+		}
+		return verifyMemory(api, ref)
 	case "revisions":
 		ref, err := singleMemoryArgument(rest)
 		if err != nil {
@@ -134,6 +140,24 @@ func setMemoryActivation(api MemoryControl, ref string, pin bool) string {
 		return "memory activation: " + err.Error()
 	}
 	return fmt.Sprintf("%s is now %s (takes effect in the stable prefix at the next session)", fact.Name, activation)
+}
+
+// verifyMemory stamps last_verified_at through the normal save path: the
+// freshness clock renews, revision history honestly records the confirmation.
+func verifyMemory(api MemoryControl, ref string) string {
+	set := api.Memory()
+	if set == nil {
+		return i18n.M.ListMemoryNone
+	}
+	fact, ok := set.Store.Read(ref)
+	if !ok {
+		return fmt.Sprintf("memory %q not found", ref)
+	}
+	fact.LastVerifiedAt = time.Now().UTC()
+	if _, err := api.SaveMemory(fact); err != nil {
+		return "memory verify: " + err.Error()
+	}
+	return fmt.Sprintf("%s verified; freshness clock renewed (revision %d -> %d)", fact.Name, fact.Revision, fact.Revision+1)
 }
 
 func parseMemoryCommand(input string) (subcommand, rest string) {

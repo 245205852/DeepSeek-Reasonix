@@ -20,6 +20,7 @@ type SaveOptions struct {
 	ExpectedRevision        int
 	RequireExpectedRevision bool
 	RequireCreate           bool
+	ClearExpiry             bool // drop an inherited expires_at instead of preserving it
 }
 
 type SaveResult struct {
@@ -90,14 +91,26 @@ func (s Store) MigrateV2() (MigrationReport, error) {
 }
 
 // inheritOnUpdate keeps the update-omittable fields of an existing revision:
-// an update that leaves scope, activation, or keywords empty preserves them,
-// it does not clear them.
-func inheritOnUpdate(m Memory, existing Memory) Memory {
+// an update that leaves scope, activation, volatility, expiry, verification,
+// or keywords empty preserves them, it does not clear them. ClearExpiry is
+// the explicit exception — dropping a boundary must be a stated intent.
+func inheritOnUpdate(m Memory, existing Memory, clearExpiry bool) Memory {
 	if strings.TrimSpace(string(m.Scope)) == "" {
 		m.Scope = existing.Scope
 	}
 	if NormalizeActivation(string(m.Activation)) == "" {
 		m.Activation = existing.Activation
+	}
+	if NormalizeVolatility(string(m.Volatility)) == "" {
+		m.Volatility = existing.Volatility
+	}
+	if clearExpiry {
+		m.ExpiresAt = time.Time{}
+	} else if m.ExpiresAt.IsZero() {
+		m.ExpiresAt = existing.ExpiresAt
+	}
+	if m.LastVerifiedAt.IsZero() {
+		m.LastVerifiedAt = existing.LastVerifiedAt
 	}
 	if strings.TrimSpace(m.Keywords) == "" {
 		m.Keywords = existing.Keywords
@@ -180,7 +193,7 @@ func (s Store) SaveWithOptions(m Memory, opts SaveOptions) (SaveResult, error) {
 	now := time.Now().UTC()
 	if exists {
 		m.ID, m.Revision, m.CreatedAt = existing.ID, existing.Revision+1, existing.CreatedAt
-		m = inheritOnUpdate(m, existing)
+		m = inheritOnUpdate(m, existing, opts.ClearExpiry)
 	} else {
 		m.ID = newMemoryID(m.Name, now)
 		m.Revision = 1

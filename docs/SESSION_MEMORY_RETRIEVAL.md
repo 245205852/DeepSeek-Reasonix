@@ -140,13 +140,23 @@ Recall is conservative:
 - fact storage paths are omitted, and home-directory prefixes in snippets are
   replaced with `<local-home>`.
 
-Freshness depends on fact type:
+Freshness defaults depend on fact type:
 
 | Type | Fresh | Current | Stale after |
 | --- | ---: | ---: | ---: |
 | `reference` | 14 days | 45 days | 45 days |
 | `project` | 30 days | 180 days | 180 days |
 | `user`, `feedback` | 90 days | 365 days | 365 days |
+
+Type is a default, not a truth about volatility — a README location can hold
+for years while a release branch dies in days. An explicit `volatility`
+overrides the type windows: `volatile` (7 / 30 days), `stable` (90 / 365
+days), or `evergreen` (never ages). Two optional timestamps refine it further:
+`expires_at` is a hard boundary — past it the fact is `expired` and excluded
+from automatic recall entirely (explicit search still finds it) — and
+`last_verified_at`, stamped by `/memory verify <id-or-name>` or by the
+assistant re-confirming a fact, renews the freshness clock without changing
+what `updated_at` means.
 
 Freshness is a warning and ranking signal, not a truth claim. Recalled text
 explicitly tells the model that it may be wrong and cannot override the current
