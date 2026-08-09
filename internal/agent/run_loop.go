@@ -732,12 +732,7 @@ func (a *Agent) storeLatestRequestUsage(attempt *provider.Usage) {
 	clone := *attempt
 	// Keep the per-attempt RequestCount; context calculations do not use it.
 	a.lastUsage.Store(&clone)
-	// Estimated usage is reconstructed for accounting after an interrupted or
-	// incomplete stream. It is not provider tokenizer telemetry and must not
-	// replace a real calibration used for request admission.
-	if !clone.Estimated {
-		a.setPromptTokenCalibrationFromActive(clone.LatestPromptTokens())
-	}
+	a.setPromptTokenCalibrationFromUsage(&clone)
 }
 
 // finalizeSamplingUsage builds the Usage event payload for consumers that

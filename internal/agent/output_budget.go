@@ -65,6 +65,15 @@ func (a *Agent) setPromptTokenCalibrationFromActive(promptTokens int) {
 	}
 }
 
+// setPromptTokenCalibrationFromUsage trusts provider telemetry only;
+// reconstructed usage remains available for accounting but not admission.
+func (a *Agent) setPromptTokenCalibrationFromUsage(usage *provider.Usage) {
+	if a == nil || usage == nil || usage.Estimated {
+		return
+	}
+	a.setPromptTokenCalibrationFromActive(usage.LatestPromptTokens())
+}
+
 func outputBudgetOf(p provider.Provider) int {
 	if nilutil.IsNil(p) {
 		return 0
@@ -100,12 +109,9 @@ func requestCalibrationShapeOf(req provider.Request) requestCalibrationShape {
 	}
 }
 
-// requestCalibrationTextShape counts the provider-visible text common to all
-// shared-window DeepSeek transports. Adapter-only fields are deliberately
-// excluded: including text that one transport omits would dilute its observed
-// token/byte ratio and make a later replayable field look artificially cheap.
-// Reasoning is common only on assistant tool-call turns; Responses transports
-// may send more, which makes their observed ratio conservative here.
+// requestCalibrationTextShape counts text common to shared-window DeepSeek
+// transports. Excluding adapter-only text prevents omitted bytes from diluting
+// the observed ratio; extra Responses text only makes that ratio conservative.
 func requestCalibrationTextShape(req provider.Request) (chars, cjkRunes, cjkBytes int64) {
 	add := func(s string) {
 		chars += int64(len(s))
@@ -153,11 +159,9 @@ func (a *Agent) calibratedPromptTokens(shape requestCalibrationShape) (int, bool
 		if ratio > 0.05 && ratio < 2 {
 			trustedChars := shape.requestChars
 			excessCJKRunes := int64(0)
-			// A higher CJK share than the calibrated request cannot safely reuse
-			// its aggregate byte ratio. Scale the already represented share and
-			// price only the excess with the same two-tokens-per-rune safety floor
-			// used by the cold estimator. Equal or lower shares keep exact
-			// same-session calibration, so stable CJK sessions do not over-fold.
+			// A higher CJK share cannot safely reuse the aggregate ratio. Scale its
+			// represented share and apply the cold two-token floor only to excess,
+			// preserving exact calibration for stable CJK sessions.
 			if shape.cjkRunes*cal.requestChars > cal.cjkRunes*shape.requestChars {
 				trustedCJKBytes := cal.cjkBytes * shape.requestChars / cal.requestChars
 				trustedCJKRunes := cal.cjkRunes * shape.requestChars / cal.requestChars
