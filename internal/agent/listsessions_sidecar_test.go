@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -166,5 +167,53 @@ func TestListSessionsRecordsEmptyLegacySessionOnce(t *testing.T) {
 	}
 	if meta.SchemaVersion != BranchMetaCountsVersion || meta.Turns != 0 {
 		t.Fatalf("empty session not recorded as authoritative-empty: version=%d turns=%d", meta.SchemaVersion, meta.Turns)
+	}
+}
+
+func TestListSessionsKeepsUnreadableNonEmptySessionsVisible(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		cachedZero bool
+	}{
+		{name: "legacy"},
+		{name: "previously cached as empty", cachedZero: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			path := filepath.Join(dir, "20260101-000000-deepseek-chat.jsonl")
+			if err := os.WriteFile(path, []byte("not valid json\n"), 0o600); err != nil {
+				t.Fatalf("write corrupt session: %v", err)
+			}
+			if tc.cachedZero {
+				if err := SaveBranchMeta(path, BranchMeta{
+					ID:            BranchID(path),
+					Turns:         0,
+					SchemaVersion: BranchMetaCountsVersion,
+				}); err != nil {
+					t.Fatalf("SaveBranchMeta: %v", err)
+				}
+			}
+
+			infos, err := ListSessions(dir)
+			if err != nil {
+				t.Fatalf("ListSessions: %v", err)
+			}
+			if len(infos) != 1 {
+				t.Fatalf("unreadable non-empty session must remain visible; got %d entries", len(infos))
+			}
+			if infos[0].Turns != 0 || !strings.Contains(infos[0].Preview, "may be corrupted") {
+				t.Fatalf("unexpected corrupt-session listing: %+v", infos[0])
+			}
+
+			if !tc.cachedZero {
+				meta, ok, err := LoadBranchMeta(path)
+				if err != nil {
+					t.Fatalf("LoadBranchMeta: %v", err)
+				}
+				if ok && meta.SchemaVersion >= BranchMetaCountsVersion {
+					t.Fatalf("unreadable session was incorrectly stamped authoritative: %+v", meta)
+				}
+			}
+		})
 	}
 }

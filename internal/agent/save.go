@@ -2211,39 +2211,65 @@ func ListSessions(dir string) ([]SessionInfo, error) {
 	var out []SessionInfo
 	for _, session := range ordered {
 		preview, turns := session.Preview, session.Turns
+		var previewErr error
 		if session.SchemaVersion < BranchMetaCountsVersion {
 			// The sidecar's counts weren't recorded from content (a legacy session
 			// from before they were persisted). Decode the .jsonl once, then backfill
 			// + stamp the sidecar so every later listing is O(1) — and so a genuinely
 			// empty session is recorded once instead of being re-decoded forever.
-			preview, turns = previewSession(session.Path)
-			// Best-effort: a failure here just means we decode again next time.
-			_ = UpdateSessionMeta(session.Path, "", preview, turns, false)
+			preview, turns, previewErr = previewSessionWithError(session.Path)
+			if previewErr == nil {
+				// Best-effort: a failure here just means we decode again next time.
+				_ = UpdateSessionMeta(session.Path, "", preview, turns, false)
+			}
 		}
 		if turns == 0 {
+			// A previous build may already have mistaken a malformed non-empty
+			// transcript for an authoritative empty session. Re-probe such artifacts
+			// before hiding them so users can see and recover damaged data (#5841).
+			hasData := sessionArtifactsHaveContent(session.Path)
+			if previewErr == nil && session.SchemaVersion >= BranchMetaCountsVersion && hasData {
+				_, _, previewErr = previewSessionWithError(session.Path)
+			}
+			if previewErr != nil && hasData {
+				preview = "Session may be corrupted — " + filepath.Base(session.Path)
+				out = append(out, sessionInfoFromOrder(session, preview, 0))
+				continue
+			}
 			// Never had user interaction — an empty conversation that should not
 			// appear in the history panel or the resume picker.
 			continue
 		}
-		out = append(out, SessionInfo{
-			Path:           session.Path,
-			CreatedAt:      session.CreatedAt,
-			LastActivityAt: session.LastActivityAt,
-			ModTime:        session.ModTime,
-			Preview:        preview,
-			Turns:          turns,
-			Scope:          session.Scope,
-			WorkspaceRoot:  session.WorkspaceRoot,
-			TopicID:        session.TopicID,
-			TopicTitle:     session.TopicTitle,
-			CustomTitle:    session.CustomTitle,
-			Recovered:      session.Recovered,
-			RecoveryReason: session.RecoveryReason,
-			RecoveryDigest: session.RecoveryDigest,
-			ParentID:       session.ParentID,
-		})
+		out = append(out, sessionInfoFromOrder(session, preview, turns))
 	}
 	return out, nil
+}
+
+func sessionInfoFromOrder(session SessionOrderInfo, preview string, turns int) SessionInfo {
+	return SessionInfo{
+		Path:           session.Path,
+		CreatedAt:      session.CreatedAt,
+		LastActivityAt: session.LastActivityAt,
+		ModTime:        session.ModTime,
+		Preview:        preview,
+		Turns:          turns,
+		Scope:          session.Scope,
+		WorkspaceRoot:  session.WorkspaceRoot,
+		TopicID:        session.TopicID,
+		TopicTitle:     session.TopicTitle,
+		CustomTitle:    session.CustomTitle,
+		Recovered:      session.Recovered,
+		RecoveryReason: session.RecoveryReason,
+		RecoveryDigest: session.RecoveryDigest,
+		ParentID:       session.ParentID,
+	}
+}
+
+func sessionArtifactsHaveContent(path string) bool {
+	if info, err := os.Stat(path); err == nil && !info.IsDir() && info.Size() > 0 {
+		return true
+	}
+	return sessionEventLogSize(path) > 0
 }
 
 // SessionPreview returns the same preview and user-turn count used by
@@ -2275,9 +2301,14 @@ func SessionPreviewFromMessages(msgs []provider.Message) (string, int) {
 // user-role messages so the picker can show "5 turns · 'help me debug the…'".
 // Errors are swallowed — a malformed file just shows up with an empty preview.
 func previewSession(path string) (string, int) {
+	preview, turns, _ := previewSessionWithError(path)
+	return preview, turns
+}
+
+func previewSessionWithError(path string) (string, int, error) {
 	msgs, _, _, err := loadSessionMessages(path)
 	if err != nil {
-		return "", 0
+		return "", 0, err
 	}
 	first := ""
 	turns := 0
@@ -2289,7 +2320,7 @@ func previewSession(path string) (string, int) {
 			}
 		}
 	}
-	return first, turns
+	return first, turns, nil
 }
 
 // previewProse drops the leading @file references a prompt opens with so the
