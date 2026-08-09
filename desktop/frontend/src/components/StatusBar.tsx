@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
-import { Activity, ChevronsUpDown, CircleDollarSign, CircleGauge, Database, FileOutput, Folder, Gauge, GitBranch, HardDrive, Layers, Percent, Puzzle, RefreshCw, Server, Settings, Square, Unplug, Wallet, Zap } from "lucide-react";
+import { Activity, CircleDollarSign, CircleGauge, Database, FileOutput, Folder, Gauge, GitBranch, HardDrive, Layers, Percent, Puzzle, RefreshCw, Server, Settings, Square, Unplug, Wallet, Zap } from "lucide-react";
 import { AnchoredPopover } from "./AnchoredPopover";
 import { RemoteConnectionErrorDialog } from "./RemoteConnectionErrorDialog";
 import { Tooltip } from "./Tooltip";
@@ -672,25 +672,24 @@ function RemoteStatusBarChip({
   const worstHost = hosts.find((host) => host.id === worst.hostId) ?? hosts[0];
   const triggerState = isRemoteTerminalFailure(worst) ? "error" : worst.state;
   const triggerStatus = isRemoteTerminalFailure(worst) ? t("remote.status.failed") : t(`remote.status.${worst.state}`);
-  const triggerLabel = worst.state === "stopped" && !worst.error
-    ? t("remote.statusBar.disconnected")
-    : t("remote.statusBar.summary", { host: worstHost.label, status: triggerStatus });
+  const idleDisconnected = worst.state === "stopped" && !worst.error;
+  const triggerLabel = idleDisconnected ? t("remote.statusBar.disconnected") : t("remote.statusBar.summary", { host: worstHost.label, status: triggerStatus });
+  const triggerText = idleDisconnected ? "SSH" : triggerState === "connected" ? worstHost.label : triggerLabel;
 
   return (
     <span className="statusbar__remote-wrap">
       <button
         ref={triggerRef}
         type="button"
-        className={`statusbar__remote remote-chip remote-chip--${triggerState}`}
+        className={`statusbar__remote remote-chip remote-chip--${triggerState}${idleDisconnected ? " statusbar__remote--idle" : ""}`}
         onClick={() => setOpen((value) => !value)}
         aria-label={triggerLabel}
         aria-haspopup="dialog"
         aria-expanded={open}
         title={triggerLabel}
       >
-        <Server size={11} aria-hidden="true" />
-        <span>{triggerLabel}</span>
-        <ChevronsUpDown size={10} aria-hidden="true" />
+        {triggerState === "connected" ? <span className="statusbar__remote-state-dot" aria-hidden="true" /> : <Server size={11} aria-hidden="true" />}
+        <span className="statusbar__remote-label">{triggerText}</span>
       </button>
       <AnchoredPopover
         open={open}
