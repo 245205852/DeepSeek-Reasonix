@@ -41,6 +41,7 @@ type MemoryRecall struct {
 	UsedChars  int               `json:"used_chars,omitempty"`
 	Omitted    int               `json:"omitted,omitempty"`
 	Suppressed string            `json:"suppressed,omitempty"`
+	ShadowHits []MemoryRecallHit `json:"shadow_hits,omitempty"`
 }
 
 // MemoryRecallHit is one recalled fact's content-free fingerprint.
@@ -227,6 +228,9 @@ func (r *Recorder) RecordMemoryRecall(a event.MemoryRecallAudit) {
 			ID: hit.ID, Revision: hit.Revision, Scope: hit.Scope,
 			Type: hit.Type, Freshness: hit.Freshness, Score: hit.Score,
 		})
+	}
+	for _, hit := range a.Shadow {
+		rec.ShadowHits = append(rec.ShadowHits, MemoryRecallHit{ID: hit.ID, Score: hit.Score})
 	}
 	r.append(Record{MemoryRecall: rec})
 	event.RecordMemoryRecall(r.inner, a)
