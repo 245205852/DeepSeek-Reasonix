@@ -295,6 +295,16 @@ id 默认取 1 起的序号。重复 id、指向不存在任务的 id、自环�
 
 失败处理只有一个开关。失败或被跳过的任务永远会跳过其整条下游分支——在坏输入上跑依赖项，只会换来父智能体必须丢弃的结果。除非设置 `fail_fast`，独立分支继续推进；`fail_fast` 停止的是**启动**新任务，已在运行的任务留待自然结束，因此写入者绝不会被中途丢弃。
 
+### 3.15 只有一个子智能体构造原语
+
+对外能派生子智能体的 API 很多——`task`、`read_only_task`、`fleet`、`parallel_tasks`、`run_skill`、`/<profile>`、`reasonix subagent run|try`、桌面端预览。它们背后的执行原语必须只有一个：每个入口把请求编译成 `ProfileExecSpec`，交给 `TaskTool.RunProfileSpec`——那是唯一解析深度、工具范围、权限、sandbox、写声明、调度槽位、MCP 前端、transcript 与 capsule、evidence ledger 以及完成契约的地方。
+
+这不是风格偏好。散落在多条构造路径上的安全边界，只要被漏掉一次就够了：此前预览路径构造出未受约束的文件工具、profile 编辑器保存时丢掉 `read-only`，都是某一个入口少套了一层。
+
+必须不持久化 transcript 的入口用 `ContextRequest.Ephemeral` 声明，而不是自己造一个 session——它的承诺是 spec 上的一个字段，而不是第二条构造路径。
+
+`internal/agent/spawn_boundary_test.go` 登记了仍然直接调用底层 runner 的文件，出现新的就失败。剩余条目——`internal/boot`（skill runners）、`internal/cli/review.go`、`desktop/subagents_app.go`——是已知负债，不是先例。
+
 ## 4. 数据类型
 
 provider 层的核心类型包括 `Role`、`Message`、`ToolCall`、`ToolSchema`、`Request` 和 streaming `Chunk`。`Message` 保留 `tool_calls`、`tool_call_id` 与 `name`；`Chunk` 区分 text、tool call、done 和 error。字段定义以英文规范及 `internal/provider` 源码为准。

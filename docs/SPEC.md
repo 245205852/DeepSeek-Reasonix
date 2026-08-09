@@ -765,6 +765,30 @@ parent must discard. Independent branches keep going unless `fail_fast` is set,
 which stops *starting* new tasks; tasks already running are left to finish so a
 writer is never abandoned mid-write.
 
+### 3.15 One child-construction primitive
+
+The APIs that spawn a child are many — `task`, `read_only_task`, `fleet`,
+`parallel_tasks`, `run_skill`, `/<profile>`, `reasonix subagent run|try`,
+desktop preview. The execution primitive behind them must stay one. Each entry
+point compiles its request into a `ProfileExecSpec` and hands it to
+`TaskTool.RunProfileSpec`, which is the only place that resolves depth, tool
+scope, permissions, sandbox, write claims, scheduler slots, the MCP frontend,
+the transcript and capsule, the evidence ledger, and the completion contract.
+
+This is not a style preference. A safety boundary spread across several
+construction paths only has to be forgotten once: past regressions where a
+preview path built unconfined file tools, and where a profile editor dropped
+`read-only` on save, were both one entry point missing one layer.
+
+An entry point that must not persist a transcript says so with
+`ContextRequest.Ephemeral` rather than building its own session, so its promise
+is a field on the spec instead of a second construction path.
+
+`internal/agent/spawn_boundary_test.go` enumerates the files that still call the
+low-level runners directly and fails on any new one. The remaining entries —
+`internal/boot` (skill runners), `internal/cli/review.go`, and
+`desktop/subagents_app.go` — are known debt, not precedent.
+
 ## 4. Data Types (`internal/provider`)
 
 ```go

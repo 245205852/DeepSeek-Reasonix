@@ -588,22 +588,10 @@ func (r *ReadOnlyTaskTool) ResolveProfile(args json.RawMessage) *event.Profile {
 	return r.task.ResolveProfile(args)
 }
 
-func (r *ReadOnlyTaskTool) Execute(ctx context.Context, args json.RawMessage) (result string, err error) {
+func (r *ReadOnlyTaskTool) Execute(ctx context.Context, args json.RawMessage) (string, error) {
 	if r == nil || r.task == nil {
 		return "", fmt.Errorf("read_only_task is not configured")
 	}
-	// read_only_task shares the same progress tracker as RunProfileSpec so
-	// every sub-agent entry point emits the same phase machine. It owns its
-	// merger (no parent task group) and finishes on every exit path.
-	trk := newSubagentProgressTracker(ctx, subSink(ctx))
-	trk.running()
-	defer func() {
-		if p := recover(); p != nil {
-			trk.finish(nil, fmt.Errorf("panic: %v", p))
-			panic(p)
-		}
-		trk.finish(ctx.Err(), err)
-	}()
 	var p struct {
 		Prompt      string   `json:"prompt"`
 		Description string   `json:"description"`
@@ -615,48 +603,16 @@ func (r *ReadOnlyTaskTool) Execute(ctx context.Context, args json.RawMessage) (r
 	if err := json.Unmarshal(args, &p); err != nil {
 		return "", fmt.Errorf("invalid args: %w", err)
 	}
-	if strings.TrimSpace(p.Prompt) == "" {
-		return "", fmt.Errorf("prompt is required")
-	}
-
-	// Ordinary read_only_task keeps the concise default system prompt and does
-	// not accept profile/write_paths (use fleet with read_only for those).
-	releaseSlot, err := r.task.acquireSlot(ctx, AcquireRequest{
-		Writer: false,
-		Nested: SubagentDepth(ctx) > 0,
-		Label:  firstNonEmpty(p.Description, "read_only_task"),
-	})
+	// Every entry point compiles to a spec and runs through RunProfileSpec, so a
+	// boundary added there cannot be missed by one caller. read_only_task keeps
+	// its own promise of no durable side effects through Ephemeral.
+	spec, err := r.task.buildTaskSpec(ctx, p.Prompt, p.Description, "", nil, p.Tools, p.MaxSteps, p.Model, p.Effort, "", "", false, true)
 	if err != nil {
 		return "", err
 	}
-	defer releaseSlot()
-
-	maxSteps := r.task.childMaxSteps(p.MaxSteps)
-
-	childDepth, err := r.task.nextSubagentDepth(ctx)
-	if err != nil {
-		return "", err
-	}
-	subReg := ReadOnlySubagentToolRegistryForDepthWithRuntime(r.task.parentReg, p.Tools, childDepth, r.task.maxDepth(), r.task.capabilityRuntime)
-	if subReg.Len() == 0 {
-		return "", fmt.Errorf("read_only_task has no read-only tools available")
-	}
-	modelRef, effortRef := r.task.effectiveProfile(p.Model, p.Effort)
-	usageModelRef := r.task.usageModelRef(modelRef, effortRef)
-	prov, pricing, ctxWin, err := r.task.resolveSubSessionRuntime(modelRef, effortRef)
-	if err != nil {
-		return "", fmt.Errorf("read-only sub-agent profile: %w", err)
-	}
-	recoveryTaskID := subagentRecoveryTaskID(ctx, "")
-	var mutationObserver *checkpoint.MutationObserver
-	if r.task.mutationObserver != nil {
-		mutationObserver = r.task.mutationObserver.CloneForSubagent(recoveryTaskID, r.task.mutationObserver.OwnershipTurn(), false)
-	}
-	answer, err := r.task.runReadOnlySubSession(ctx, p.Prompt, subReg, trk.wrap(), maxSteps, prov, pricing, ctxWin, NewSession(DefaultReadOnlyTaskSystemPrompt), childDepth, recoveryTaskID, usageModelRef, mutationObserver)
-	if err != nil {
-		return "", err
-	}
-	return GuardSubagentHostDecisionText(answer), nil
+	spec.Worker.SystemPrompt = DefaultReadOnlyTaskSystemPrompt
+	spec.Context.Ephemeral = true
+	return r.task.RunProfileSpec(ctx, spec)
 }
 
 // childMaxSteps resolves a sub-agent's step budget. An explicit request wins.
@@ -869,7 +825,7 @@ func (t *TaskTool) RunProfileSpec(ctx context.Context, spec ProfileExecSpec) (re
 	modelRef, effortRef := spec.Worker.Model, spec.Worker.Effort
 	usageModelRef := t.usageModelRef(modelRef, effortRef)
 	parentID, _, _, _ := CallContext(ctx)
-	run, err := t.prepareTranscriptRunWithPrompt(ctx, subReg, modelRef, effortRef, ParentSession(ctx), parentID, spec.Context.ContinueFrom, spec.Context.ForkFrom, spec.Worker.SystemPrompt, spec.Worker.Kind, spec.Worker.Name)
+	run, err := t.prepareTranscriptRunWithPrompt(ctx, subReg, modelRef, effortRef, spec.Context.parentSession(ctx), parentID, spec.Context.ContinueFrom, spec.Context.ForkFrom, spec.Worker.SystemPrompt, spec.Worker.Kind, spec.Worker.Name)
 	if err != nil {
 		return "", err
 	}

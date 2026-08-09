@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"context"
 	"fmt"
 	"strings"
 
@@ -114,6 +115,9 @@ type ContextRequest struct {
 	// ContinueFrom / ForkFrom are transcript continuation refs (writer path).
 	ContinueFrom string
 	ForkFrom     string
+	// Ephemeral forces a non-persisted transcript for entry points that promise
+	// no durable host side effects, such as read_only_task.
+	Ephemeral bool
 }
 
 // SchedulerPolicy is when and how the run executes. It never changes what the
@@ -248,4 +252,13 @@ func NamedBuiltinProfile(name string) bool {
 	default:
 		return false
 	}
+}
+
+// parentSession returns the owning session, or empty when the caller asked for
+// an ephemeral run so the store never persists a transcript for it.
+func (c ContextRequest) parentSession(ctx context.Context) string {
+	if c.Ephemeral {
+		return ""
+	}
+	return ParentSession(ctx)
 }
