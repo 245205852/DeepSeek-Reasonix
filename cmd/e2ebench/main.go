@@ -34,7 +34,10 @@ type task struct {
 	// MemoryMarkers are unique tokens planted in seeded fact bodies; a marker
 	// found in tool args or answer text after a recall proves point of use.
 	MemoryMarkers []string `toml:"memory_markers" json:"memory_markers,omitempty"`
-	dir           string
+	// MemoryMarkersPrefix marks tasks whose seeded facts are pinned: their
+	// bodies arrive via the stable prefix, so markers count from turn one.
+	MemoryMarkersPrefix bool `toml:"memory_markers_prefix" json:"memory_markers_prefix,omitempty"`
+	dir                 string
 }
 
 type runMetrics struct {
@@ -104,6 +107,7 @@ type result struct {
 	MemoryRecallChars  int `json:"memory_recall_chars,omitempty"`
 	MemorySuppressed   int `json:"memory_suppressed,omitempty"`
 	MemoryMarkersUsed  int `json:"memory_markers_used,omitempty"`
+	MemoryShadowAgree  int `json:"memory_shadow_agree,omitempty"`
 	// WallMs is the harness's own clock, not the agent's self-report, so the
 	// number stays comparable when the same suite runs against another harness.
 	WallMs int64 `json:"wall_ms"`
@@ -552,7 +556,7 @@ func runTask(cfg suiteConfig, t task) result {
 		if summary, err := summarizeTrajectory(trajPath); err == nil {
 			r.Trajectory = summary
 		}
-		applyMemoryStats(&r, trajPath, t.MemoryMarkers)
+		applyMemoryStats(&r, trajPath, t)
 	}
 	// A killed child never writes metrics, so the deadline is the only place
 	// this failure mode is still observable.

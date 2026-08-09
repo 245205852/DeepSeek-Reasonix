@@ -124,6 +124,9 @@ func memoryRecallAudit(result memory.RecallResult) event.MemoryRecallAudit {
 			Freshness: hit.Freshness, Score: hit.Score,
 		})
 	}
+	for _, hit := range result.ShadowHits {
+		audit.Shadow = append(audit.Shadow, event.MemoryRecallHit{ID: hit.ID, Score: hit.Score})
+	}
 	return audit
 }
 

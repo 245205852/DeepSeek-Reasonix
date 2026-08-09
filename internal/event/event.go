@@ -628,6 +628,8 @@ type MemoryRecallAudit struct {
 	UsedChars  int
 	Omitted    int
 	Suppressed string // reason recall stayed silent; "" when hits were injected
+	// Shadow is the Retrieval V2 ranking (telemetry only, never served).
+	Shadow []MemoryRecallHit
 }
 
 // MemoryRecallHit is one recalled fact's content-free fingerprint.

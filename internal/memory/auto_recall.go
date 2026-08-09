@@ -54,8 +54,17 @@ type RecallResult struct {
 	CharBudget int
 	UsedChars  int
 	Suppressed string
+	// ShadowHits is the Retrieval V2 ranking over the same pool, telemetry
+	// only: it never reaches the model and never affects Hits.
+	ShadowHits []ShadowHit
 
 	block string
+}
+
+// ShadowHit is one V2-ranked fact fingerprint.
+type ShadowHit struct {
+	ID    string
+	Score float64
 }
 
 func (r RecallResult) Block() string { return r.block }
@@ -132,6 +141,9 @@ func AutoRecall(store Store, query string, opts RecallOptions) RecallResult {
 	}
 
 	memories := recallMemories(store.ListAll())
+	// The shadow ranks the full pool before any production gate: what V1
+	// misses entirely is exactly what the comparison must be able to see.
+	result.ShadowHits = shadowRankV2(result.Query, memories)
 	docs := make([]autoRecallDoc, 0, len(memories))
 	for _, memory := range memories {
 		text := autoRecallSearchText(memory)
@@ -220,6 +232,28 @@ func AutoRecall(store Store, query string, opts RecallOptions) RecallResult {
 		result.Suppressed = "matched facts exceeded recall budget"
 	}
 	return result
+}
+
+// shadowRankV2 runs the Retrieval V2 candidate (BM25F, code-symbol split,
+// mixed CJK grams) over the recall pool. Shadow only: recorded for offline
+// comparison, gated by MemoryBench before it can ever serve.
+func shadowRankV2(query string, memories []Memory) []ShadowHit {
+	docs := make([]retrieval.FieldedDoc, 0, len(memories))
+	for _, m := range memories {
+		docs = append(docs, retrieval.FieldedDoc{ID: m.ID, Fields: map[string]string{
+			"name": m.Name, "title": m.Title, "keywords": m.Keywords,
+			"subject": m.SubjectKey, "description": m.Description, "body": m.Body,
+		}})
+	}
+	ranked := retrieval.RankV2(query, docs)
+	if len(ranked) > maxAutoRecallLimit {
+		ranked = ranked[:maxAutoRecallLimit]
+	}
+	out := make([]ShadowHit, 0, len(ranked))
+	for _, hit := range ranked {
+		out = append(out, ShadowHit{ID: hit.ID, Score: hit.Score})
+	}
+	return out
 }
 
 func recallCharBudget(value int) int {
