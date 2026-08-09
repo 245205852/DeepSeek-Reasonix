@@ -228,13 +228,11 @@ func TestRunForegroundCombinedOutputCapIsConcurrentSafe(t *testing.T) {
 		Run: func(_ context.Context, cmd *exec.Cmd, _ proc.RunOptions) (*proc.TrackedCommand, error) {
 			var wg sync.WaitGroup
 			for range 4 {
-				wg.Add(1)
-				go func() {
-					defer wg.Done()
+				wg.Go(func() {
 					for range 32 {
 						_, _ = io.WriteString(cmd.Stdout, chunk)
 					}
-				}()
+				})
 			}
 			wg.Wait()
 			return nil, nil

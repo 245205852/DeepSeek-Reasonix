@@ -272,10 +272,7 @@ func (b *boundedBuffer) Write(p []byte) (int, error) {
 	}
 	if !b.truncated {
 		b.truncated = true
-		headLimit := b.limit - b.tailLimit - len(b.marker)
-		if headLimit < 0 {
-			headLimit = 0
-		}
+		headLimit := max(0, b.limit-b.tailLimit-len(b.marker))
 		previous := b.buf.Bytes()
 		b.tail = appendBoundedTail(b.tail, previous, b.tailLimit)
 		if b.buf.Len() > headLimit {
