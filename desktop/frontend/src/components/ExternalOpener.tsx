@@ -13,6 +13,36 @@ export interface ExternalOpenerBridge {
   OpenWorkspaceInExternalOpenerForTab(tabID: string, id: string): Promise<void>;
 }
 
+type ExternalOpenerPreferenceCoordinator = {
+  latestIntent: number;
+  writeTail: Promise<void>;
+};
+
+const externalOpenerPreferenceCoordinators = new WeakMap<ExternalOpenerBridge, ExternalOpenerPreferenceCoordinator>();
+
+function preferenceCoordinatorFor(bridge: ExternalOpenerBridge): ExternalOpenerPreferenceCoordinator {
+  const current = externalOpenerPreferenceCoordinators.get(bridge);
+  if (current) return current;
+  const created = { latestIntent: 0, writeTail: Promise.resolve() };
+  externalOpenerPreferenceCoordinators.set(bridge, created);
+  return created;
+}
+
+function persistPreferredExternalOpener(
+  bridge: ExternalOpenerBridge,
+  id: string,
+  coordinator: ExternalOpenerPreferenceCoordinator,
+  intent: number,
+): Promise<boolean> {
+  const write = coordinator.writeTail.then(async () => {
+    if (intent !== coordinator.latestIntent) return false;
+    await bridge.SetPreferredExternalOpener(id);
+    return true;
+  });
+  coordinator.writeTail = write.then(() => undefined, () => undefined);
+  return write;
+}
+
 function fallbackOpenerIcon(opener: ExternalOpenerView) {
   if (opener.kind === "file-manager") return <Folder size={15} strokeWidth={1.9} />;
   if (opener.kind === "terminal") return <SquareTerminal size={15} strokeWidth={1.9} />;
@@ -130,6 +160,8 @@ export function ExternalOpener({
   const openIn = useCallback(
     async (opener: ExternalOpenerView, persist: boolean) => {
       if (busyRef.current) return;
+      const preferenceCoordinator = persist ? preferenceCoordinatorFor(bridge) : undefined;
+      const preferenceIntent = preferenceCoordinator ? ++preferenceCoordinator.latestIntent : 0;
       busyRef.current = true;
       discoveryRequestRef.current += 1;
       setBusy(true);
@@ -143,10 +175,15 @@ export function ExternalOpener({
           showToast(t("externalOpener.failed", { name: opener.name, error: errorText(error) }), "error");
           return;
         }
-        if (persist && opener.id !== state.preferred) {
+        if (preferenceCoordinator) {
           try {
-            await bridge.SetPreferredExternalOpener(opener.id);
-            setState((current) => ({ ...current, preferred: opener.id }));
+            const persisted = await persistPreferredExternalOpener(
+              bridge,
+              opener.id,
+              preferenceCoordinator,
+              preferenceIntent,
+            );
+            if (persisted && mountedRef.current) setState((current) => ({ ...current, preferred: opener.id }));
           } catch (error) {
             showToast(t("externalOpener.persistFailed", { name: opener.name, error: errorText(error) }), "error");
           }
@@ -156,7 +193,7 @@ export function ExternalOpener({
         setBusy(false);
       }
     },
-    [bridge, showToast, state.preferred, tabId],
+    [bridge, showToast, tabId],
   );
 
   if (state.tabId !== tabId || state.workspaceOpenable !== true || !selected) return null;

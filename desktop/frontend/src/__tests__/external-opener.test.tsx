@@ -214,6 +214,76 @@ ok(raceContainer.textContent?.includes("Xcode") === true && !raceContainer.textC
 await act(async () => raceRoot.unmount());
 raceContainer.remove();
 
+const preferenceWrites: string[] = [];
+const preferenceLaunches: string[] = [];
+let resolveOlderLaunch: (() => void) | undefined;
+const preferenceRaceBridge: ExternalOpenerBridge = {
+  async ExternalOpenersForTab() {
+    return {
+      openers: [
+        { id: "finder", name: "Finder", kind: "file-manager" },
+        { id: "xcode", name: "Xcode", kind: "editor" },
+      ],
+      preferred: "finder",
+      workspaceOpenable: true,
+    };
+  },
+  async SetPreferredExternalOpener(id) {
+    preferenceWrites.push(id);
+  },
+  async OpenWorkspaceInExternalOpenerForTab(tabId, id) {
+    preferenceLaunches.push(`${tabId}:${id}`);
+    if (tabId === "older-tab") {
+      await new Promise<void>((resolve) => {
+        resolveOlderLaunch = resolve;
+      });
+    }
+  },
+};
+const preferenceContainer = document.createElement("div");
+document.body.append(preferenceContainer);
+const preferenceRoot = createRoot(preferenceContainer);
+const renderPreferenceTab = async (tabId: string) => {
+  await act(async () => {
+    preferenceRoot.render(
+      <LocaleProvider>
+        <ToastProvider>
+          <ExternalOpener key={tabId} tabId={tabId} dismissSignal={0} bridge={preferenceRaceBridge} />
+        </ToastProvider>
+      </LocaleProvider>,
+    );
+    await flush();
+  });
+};
+const choosePreference = async (name: string) => {
+  await act(async () => {
+    preferenceContainer.querySelector<HTMLButtonElement>('button[aria-haspopup="menu"]')
+      ?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    await flush();
+  });
+  await act(async () => {
+    Array.from(preferenceContainer.querySelectorAll<HTMLButtonElement>('button[role="menuitemradio"]'))
+      .find((button) => button.textContent?.includes(name))
+      ?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    await flush();
+  });
+};
+await renderPreferenceTab("older-tab");
+await choosePreference("Xcode");
+await renderPreferenceTab("newer-tab");
+await choosePreference("Finder");
+ok(
+  preferenceLaunches.join(",") === "older-tab:xcode,newer-tab:finder" && preferenceWrites.join(",") === "finder",
+  "a newer tab selection persists even when it matches the discovered preference",
+);
+await act(async () => {
+  resolveOlderLaunch?.();
+  await flush();
+});
+ok(preferenceWrites.join(",") === "finder", "an older tab completion cannot overwrite the latest opener preference");
+await act(async () => preferenceRoot.unmount());
+preferenceContainer.remove();
+
 const failureLog: string[] = [];
 let failOpen = true;
 let failPersist = false;
