@@ -3,6 +3,7 @@ package main
 import (
 	"errors"
 	"log/slog"
+	"slices"
 
 	"reasonix/internal/agent"
 	"reasonix/internal/control"
@@ -116,8 +117,7 @@ func (b *topicArchiveOwnershipBatch) rollback() {
 	if b == nil {
 		return
 	}
-	for i := len(b.entries) - 1; i >= 0; i-- {
-		entry := b.entries[i]
+	for _, entry := range slices.Backward(b.entries) {
 		if entry.guard == nil {
 			continue
 		}
