@@ -278,6 +278,23 @@ Profile 描述的是 worker，不是一次运行。委派由五个彼此独立�
 
 每次运行都会在其 transcript sidecar 中记录一份 `ContextCapsule`：workspace、系统提示来源与哈希、解析后的工具范围与 schema 哈希、model 与 effort、父会话与父工具调用 id、续接的 transcript，以及一个所有字段均为 false 的 `inherited` 块。`capsuleHash` 是它的稳定标识，因此"为什么这个 reviewer 没看到那条约束"可以从记录回答，两次行为不同的运行也可以直接比对而不是猜。capsule 只保存引用与摘要——绝不复制父上下文，这正是委派保持低成本、子前缀保持可缓存的原因。
 
+### 3.14 fleet 是一张小依赖图
+
+fleet item 可以声明 `id` 与 `depends_on`。图的词汇就这么多：没有条件、没有表达式、没有动态扩散。它足以表达
+
+```
+research ──▶ implement backend ──┐
+        └──▶ implement frontend ─┴──▶ integration test ──▶ review
+```
+
+id 默认取 1 起的序号。重复 id、指向不存在任务的 id、自环、成环都会在 preflight 失败——一个注定跑不完的 fleet 绝不会开始。依赖完成后条目立即启动；彼此无序的条目仍按既有 session scheduler 并发。
+
+依赖是图的性质，不是任务的性质：它只存在于 fleet plan 中，绝不进入 `ProfileExecSpec`。这正是让 `depends_on` 不至于成为某种 workflow 语言第一个关键字的原因。
+
+图恰好在该放松的地方放松了写声明 preflight：只有**可能同时运行**的条目才需要互不重叠的 `write_paths`；`implement → review` 这对被边串行化，可以共享路径——扁平 fleet 无法表达这一点。
+
+失败处理只有一个开关。失败或被跳过的任务永远会跳过其整条下游分支——在坏输入上跑依赖项，只会换来父智能体必须丢弃的结果。除非设置 `fail_fast`，独立分支继续推进；`fail_fast` 停止的是**启动**新任务，已在运行的任务留待自然结束，因此写入者绝不会被中途丢弃。
+
 ## 4. 数据类型
 
 provider 层的核心类型包括 `Role`、`Message`、`ToolCall`、`ToolSchema`、`Request` 和 streaming `Chunk`。`Message` 保留 `tool_calls`、`tool_call_id` 与 `name`；`Chunk` 区分 text、tool call、done 和 error。字段定义以英文规范及 `internal/provider` 源码为准。

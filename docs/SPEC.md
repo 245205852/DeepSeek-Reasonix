@@ -735,6 +735,36 @@ the record, and two runs that behaved differently can be diffed instead of
 guessed at. The capsule holds references and digests only — never copied parent
 context, which is what keeps delegation cheap and the child prefix cacheable.
 
+### 3.14 Fleet is a small dependency graph
+
+A fleet item may declare `id` and `depends_on`. That is the whole graph
+vocabulary: no conditions, no expressions, no dynamic fan-out. It is enough for
+
+```
+research ──▶ implement backend ──┐
+        └──▶ implement frontend ─┴──▶ integration test ──▶ review
+```
+
+Ids default to the 1-based position. A duplicate id, an id no task declares, a
+self-edge, or a cycle fails preflight, so a fleet that cannot finish never
+starts. Items run as soon as their dependencies complete; items with no ordering
+between them run in parallel under the same session scheduler as before.
+
+Dependencies are a property of the graph, never of a task: they live in the
+fleet plan and never reach `ProfileExecSpec`, which is what keeps `depends_on`
+from becoming the first keyword of a workflow language.
+
+The graph relaxes the write-claim preflight in the one place it should. Only
+items that can run at the same time need disjoint `write_paths`; an
+`implement → review` pair is serialised by its edge and may share paths, which
+a flat fleet could not express.
+
+Failure handling has one knob. A failed or skipped task always skips its whole
+downstream branch — running a dependent on a broken input only buys a result the
+parent must discard. Independent branches keep going unless `fail_fast` is set,
+which stops *starting* new tasks; tasks already running are left to finish so a
+writer is never abandoned mid-write.
+
 ## 4. Data Types (`internal/provider`)
 
 ```go

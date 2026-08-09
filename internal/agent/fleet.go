@@ -36,7 +36,7 @@ func NewFleetTool(taskTool *TaskTool) *FleetTool {
 func (*FleetTool) Name() string { return "fleet" }
 
 func (*FleetTool) Description() string {
-	return "Dispatch 2–64 sub-agent tasks in parallel and return bounded previews plus stable Subagent references for full-result retrieval from completed persisted children with read_subagent_result. Each item may select a profile, model, effort, tools, write_paths, or read_only. Multiple writers must declare non-overlapping write_paths; omitted write_paths claim the whole workspace, so two or more writers without paths fail preflight before any task starts. Independent failure is the default: one failure does not cancel others. Background mode returns a fleet job id collectable with wait."
+	return "Dispatch 2–64 sub-agent tasks as a small dependency graph and return bounded previews plus stable Subagent references for full-result retrieval from completed persisted children with read_subagent_result. Each item may select a profile, model, effort, tools, write_paths, or read_only, and may declare depends_on to run after other items (research → implement → review). Tasks with no dependency between them run in parallel and must declare non-overlapping write_paths; ordered tasks may share paths. Omitted write_paths claim the whole workspace, so two or more concurrent writers without paths fail preflight before any task starts. A failed task's dependents are skipped; independent branches keep going unless fail_fast is set. Background mode returns a fleet job id collectable with wait."
 }
 
 func (*FleetTool) Schema() json.RawMessage {
@@ -52,9 +52,11 @@ func (*FleetTool) Schema() json.RawMessage {
       "type":"object",
       "properties":{
         "prompt":{"type":"string","description":"Task prompt for the sub-agent."},
+        "id":{"type":"string","description":"Optional stable id for this task, referenced by other tasks' depends_on. Defaults to the 1-based position."},
+        "depends_on":{"type":"array","items":{"type":"string"},"description":"Ids of tasks that must complete before this one starts. Unknown ids, self-edges, and cycles fail preflight. A task whose dependency fails or is skipped is skipped too. Ordered tasks may share write_paths; only tasks that can run at the same time need disjoint claims."},
         "description":{"type":"string","description":"Optional short label shown in the job list."},
         "profile":{"type":"string","description":"Optional runAs=subagent profile name."},
-        "write_paths":{"type":"array","items":{"type":"string"},"description":"Write targets for this item. Parallel writers must declare non-overlapping paths. Omitting write_paths claims the whole workspace; multiple whole-workspace claims (or any path overlap) fail preflight and start nothing."},
+        "write_paths":{"type":"array","items":{"type":"string"},"description":"Write targets for this item. Writers that can run at the same time must declare non-overlapping paths; writers ordered by depends_on may share them. Omitting write_paths claims the whole workspace; two concurrent whole-workspace claims (or any overlap between concurrent writers) fail preflight and start nothing."},
         "read_only":{"type":"boolean","description":"Force the read-only registry even if the profile is writable."},
         "tools":{"type":"array","items":{"type":"string"},"description":"Optional tool whitelist (intersected with profile allowed-tools)."},
         "max_steps":{"type":"integer","description":"Optional max tool-call rounds.","minimum":1},
@@ -64,6 +66,7 @@ func (*FleetTool) Schema() json.RawMessage {
       "required":["prompt"]
     }
   },
+  "fail_fast":{"type":"boolean","description":"Stop starting new tasks after the first failure. Tasks already running are left to finish so partial writes are not abandoned mid-flight. Omitted (the default) means independent branches keep going; a failed task's dependents are skipped either way."},
   "run_in_background":{"type":"boolean","description":"Run the whole fleet asynchronously and return a job id collectable with wait. Items queue for concurrency/write slots inside the job."}
 },
 "required":["tasks"]
@@ -74,6 +77,8 @@ func (*FleetTool) ReadOnly() bool { return false }
 
 type fleetTaskItem struct {
 	Prompt      string   `json:"prompt"`
+	ID          string   `json:"id"`
+	DependsOn   []string `json:"depends_on"`
 	Description string   `json:"description"`
 	Profile     string   `json:"profile"`
 	WritePaths  []string `json:"write_paths"`
@@ -157,6 +162,7 @@ func (f *FleetTool) Execute(ctx context.Context, args json.RawMessage) (result s
 
 	var params struct {
 		Tasks           []fleetTaskItem `json:"tasks"`
+		FailFast        bool            `json:"fail_fast"`
 		RunInBackground bool            `json:"run_in_background"`
 	}
 	dec := json.NewDecoder(bytes.NewReader(args))
@@ -200,7 +206,11 @@ func (f *FleetTool) Execute(ctx context.Context, args json.RawMessage) (result s
 			claims[i] = spec.Grant.WritePaths
 		}
 	}
-	if err := ValidateNonOverlappingWriteClaims(claims); err != nil {
+	plan, err := newFleetPlan(params.Tasks, params.FailFast)
+	if err != nil {
+		return "", fmt.Errorf("fleet preflight: %w", err)
+	}
+	if err := plan.validateConcurrentWriteClaims(claims); err != nil {
 		return "", fmt.Errorf("fleet preflight: %w", err)
 	}
 
@@ -248,7 +258,7 @@ func (f *FleetTool) Execute(ctx context.Context, args json.RawMessage) (result s
 			// The job shares the Execute-level merger so the group lifecycle
 			// events and the child previews ride the same pacing budget.
 			jobCtx = withSubagentProgressMerger(jobCtx, merger)
-			return f.runFleet(jobCtx, groupSink, specs, parentID)
+			return f.runFleet(jobCtx, groupSink, specs, plan, parentID)
 		})
 		// runFleet (inside the job) owns the terminal and merger close from
 		// here on. Foreground runFleet hands off only the terminal; Execute
@@ -259,10 +269,10 @@ func (f *FleetTool) Execute(ctx context.Context, args json.RawMessage) (result s
 	}
 
 	lifecycleHandoff = true
-	return f.runFleet(ctx, groupSink, specs, groupParentID)
+	return f.runFleet(ctx, groupSink, specs, plan, groupParentID)
 }
 
-func (f *FleetTool) runFleet(ctx context.Context, sink event.Sink, specs []ProfileExecSpec, groupParentID string) (result string, err error) {
+func (f *FleetTool) runFleet(ctx context.Context, sink event.Sink, specs []ProfileExecSpec, plan fleetPlan, groupParentID string) (result string, err error) {
 	if sink == nil {
 		sink = event.Discard
 	}
@@ -351,43 +361,7 @@ func (f *FleetTool) runFleet(ctx context.Context, sink event.Sink, specs []Profi
 		})
 	}
 
-	// Mark only genuinely unstarted items skipped. Started items always publish
-	// a terminal result, including after cancellation, so partial writer work is
-	// never misreported as a task that did not run.
-	started := 0
-	for i := range specs {
-		if ctx.Err() != nil {
-			for j := i; j < n; j++ {
-				results[j].status = fleetItemSkipped
-				results[j].err = ctx.Err()
-			}
-			break
-		}
-		startOne(i)
-		started++
-	}
-
-	completed := 0
-	cancelled := false
-	for completed < started && !cancelled {
-		select {
-		case r := <-doneCh:
-			results[r.index] = r
-			completed++
-		case <-ctx.Done():
-			cancelled = true
-		}
-	}
-	// doneCh is buffered for every item, so workers can always publish their
-	// terminal result while this goroutine waits. Once they stop, drain exactly
-	// the outstanding started items and preserve their real completed/cancelled
-	// status instead of replacing it with skipped.
-	wg.Wait()
-	for completed < started {
-		r := <-doneCh
-		results[r.index] = r
-		completed++
-	}
+	cancelled := driveFleet(ctx, plan, results, doneCh, wg.Wait, startOne)
 	for _, r := range results {
 		if r.status == fleetItemCancelled || r.status == fleetItemSkipped {
 			cancelled = true
