@@ -822,6 +822,38 @@ per capability. Per-tool `parallel_safe` / `exclusive` hints and explicit
 `concurrency_key` grouping are the later refinement, once real servers show
 which tools within one server genuinely differ.
 
+### 3.17 Measuring whether delegation pays
+
+Orchestration is easy to add and hard to justify: more agents always cost more
+tokens, and the extra tokens alone can look like an improvement. Comparing arms
+therefore has to hold the model fixed and read host-recorded facts, not prose.
+
+`reasonix run --json` emits per-run delegation counters alongside the existing
+token, cache, cost, and duration totals:
+
+| Counter | Answers |
+| --- | --- |
+| `subagent_runs`, `subagent_nested_runs` | which shape actually ran, not which was configured |
+| `tool_calls` − `subagent_tool_calls` | parent versus child work split |
+| `subagent_mutations`, `duplicate_work_paths` | did two children redo the same file |
+| `completion_reports`, `completions_prose_only` | how much of the run ended in a checkable claim |
+| `false_completions`, `criterion_downgrades` | claims the host refused to back |
+| `write_scope_violations` | writes that escaped a declared claim |
+
+The control axis already exists: `--ablate subagent` removes delegation, so the
+same model and the same task run as a single agent, and `arm` labels the run.
+Nested depth is `agent.max_subagent_depth`.
+
+`false_completions` is the counter that matters most. It comes from the
+adjudication in §3.11, so it measures claims the host refused rather than a
+reviewer's opinion, and it is the one number that separates "the fleet finished
+faster" from "the fleet said it finished".
+
+Not yet measured, and deliberately not faked: task success rate needs a task
+corpus with per-task checkers, and rework-after-handoff needs mutation ordering
+across a whole run. Both belong to the harness that drives the arms, not to the
+instrument that records one run.
+
 ## 4. Data Types (`internal/provider`)
 
 ```go

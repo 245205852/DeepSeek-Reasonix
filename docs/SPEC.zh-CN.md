@@ -323,6 +323,27 @@ concurrency = "serial"   # parallel（默认）| serial
 
 这是刻意保守的第一版：**一个服务器一条策略，而非按 capability**。按工具的 `parallel_safe` / `exclusive` 提示与显式 `concurrency_key` 分组是后续细化，等真实服务器暴露出同一服务器内工具确有差异时再做。
 
+### 3.17 度量委派是否真的划算
+
+编排容易加、难证明：agent 越多 token 一定越多，而多烧的 token 本身就可能看起来像"变好了"。因此对比实验臂必须**固定模型**并读取 host 记录的事实，而不是散文。
+
+`reasonix run --json` 在既有的 token / cache / 成本 / 耗时之外，额外输出每次运行的委派计数：
+
+| 计数 | 回答什么 |
+| --- | --- |
+| `subagent_runs`、`subagent_nested_runs` | 实际跑成了什么形状（而非配置成什么） |
+| `tool_calls` − `subagent_tool_calls` | 父/子工作量切分 |
+| `subagent_mutations`、`duplicate_work_paths` | 是否有两个子智能体重做了同一个文件 |
+| `completion_reports`、`completions_prose_only` | 多少运行以可检验的主张收尾 |
+| `false_completions`、`criterion_downgrades` | host 拒绝背书的主张 |
+| `write_scope_violations` | 逃出声明的写入 |
+
+控制轴已经存在：`--ablate subagent` 关掉委派，于是同一个模型、同一个任务以单 agent 形态运行，`arm` 字段标注该次运行；嵌套深度由 `agent.max_subagent_depth` 控制。
+
+`false_completions` 是其中最关键的一个。它来自 §3.11 的裁决，因此度量的是 **host 拒绝背书**的主张，而不是某个评审者的观感——它是区分"fleet 更快完成了"与"fleet 声称完成了"的唯一数字。
+
+尚未度量、且刻意不伪造的两项：任务成功率需要带逐任务检查器的任务集，handoff 后返工需要整次运行的变更时序。两者都属于驱动实验臂的 harness，而不属于记录单次运行的仪器。
+
 ## 4. 数据类型
 
 provider 层的核心类型包括 `Role`、`Message`、`ToolCall`、`ToolSchema`、`Request` 和 streaming `Chunk`。`Message` 保留 `tool_calls`、`tool_call_id` 与 `name`；`Chunk` 区分 text、tool call、done 和 error。字段定义以英文规范及 `internal/provider` 源码为准。

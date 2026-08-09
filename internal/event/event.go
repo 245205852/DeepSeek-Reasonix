@@ -783,3 +783,18 @@ func (f FuncSink) Emit(e Event) {
 // Discard is a Sink that drops every event. Useful in tests and for runs that
 // only care about the final session state.
 var Discard Sink = FuncSink(func(Event) {})
+
+// DelegationAuditSink receives one receipt per completed sub-agent run.
+type DelegationAuditSink interface {
+	RecordDelegationAudit(a evidence.DelegationAudit)
+}
+
+// RecordDelegationAudit forwards a delegation receipt to sinks that opt in.
+func RecordDelegationAudit(s Sink, a evidence.DelegationAudit) {
+	if nilutil.IsNil(s) {
+		return
+	}
+	if ds, ok := s.(DelegationAuditSink); ok {
+		ds.RecordDelegationAudit(a)
+	}
+}

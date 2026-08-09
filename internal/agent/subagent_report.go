@@ -1,9 +1,11 @@
 package agent
 
 import (
+	"context"
 	"fmt"
 	"strings"
 
+	"reasonix/internal/event"
 	"reasonix/internal/evidence"
 	"reasonix/internal/tool"
 )
@@ -72,11 +74,34 @@ func decorateExecutionReceipt(rec *evidence.Receipt, result string, ex *tool.She
 // composeSubagentAnswer assembles everything the parent is shown for one child
 // run: the host-adjudicated completion claim when the child submitted one, the
 // child's own prose, then the host's receipts.
-func composeSubagentAnswer(answer string, sub *Agent, claims WritePathSet) string {
-	if report, reasons, ok := sub.CompletionReport(); ok {
+func composeSubagentAnswer(ctx context.Context, answer string, sub *Agent, claims WritePathSet) string {
+	summary := sub.EvidenceSummary()
+	report, reasons, hasReport := sub.CompletionReport()
+	if hasReport {
 		answer = strings.TrimSpace(formatCompletionReport(report, reasons) + "\n\n" + answer)
 	}
-	return appendHostReceipts(answer, sub.EvidenceSummary(), claims)
+	recordDelegationAudit(ctx, summary, claims, report, reasons, hasReport)
+	return appendHostReceipts(answer, summary, claims)
+}
+
+// recordDelegationAudit emits one structured receipt per child run. It reports
+// what the host observed and what it refused to back, so an orchestration
+// benchmark can separate real gains from extra tokens spent.
+func recordDelegationAudit(ctx context.Context, summary evidence.ChildEvidenceSummary, claims WritePathSet, report evidence.CompletionReport, reasons []string, hasReport bool) {
+	audit := evidence.DelegationAudit{
+		Depth:           SubagentDepth(ctx),
+		ToolCalls:       len(summary.Receipts),
+		MutationPaths:   summary.MutationPaths(),
+		ClaimViolations: len(claimViolations(summary, claims)),
+		HasReport:       hasReport,
+		Downgrades:      len(reasons),
+	}
+	audit.Mutations = len(audit.MutationPaths)
+	if hasReport {
+		audit.AdjudicatedStatus = string(report.Status)
+	}
+	_, sink, _, _ := CallContext(ctx)
+	event.RecordDelegationAudit(sink, audit)
 }
 
 // formatCompletionReport renders the child's claim after the host has lowered

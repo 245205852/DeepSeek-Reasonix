@@ -41,6 +41,10 @@ func (s *Sink) RecordProtocolRecovery(a event.ProtocolRecoveryAudit) {
 	event.RecordProtocolRecovery(s.inner, a)
 }
 
+func (s *Sink) RecordDelegationAudit(a evidence.DelegationAudit) {
+	event.RecordDelegationAudit(s.inner, a)
+}
+
 func (s *Sink) RecordReadinessAudit(a evidence.ReadinessAudit) {
 	event.RecordReadinessAudit(s.inner, a)
 }

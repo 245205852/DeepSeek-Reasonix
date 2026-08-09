@@ -127,6 +127,10 @@ func (s *sink) Emit(e event.Event) {
 	s.inner.Emit(e)
 }
 
+func (s *sink) RecordDelegationAudit(a evidence.DelegationAudit) {
+	event.RecordDelegationAudit(s.inner, a)
+}
+
 func (s *sink) RecordReadinessAudit(a evidence.ReadinessAudit) {
 	event.RecordReadinessAudit(s.inner, a)
 }
