@@ -2145,12 +2145,20 @@ export function Composer({
         if (guidanceText) {
           // Durable follow-up: only clear the composer after a durable receipt.
           try {
-            const receipt = await app.EnqueueInboxFollowup(
-              submitTabId || "",
-              guidanceText,
-              guidanceSubmitText || guidanceText,
-              "",
-            );
+            const receipt = structured
+              ? await app.EnqueueInboxFollowupWithInvocations(
+                  submitTabId || "",
+                  structured.display.trim() || guidanceText,
+                  structured.input.trim(),
+                  structured.invocations,
+                  "",
+                )
+              : await app.EnqueueInboxFollowup(
+                  submitTabId || "",
+                  guidanceText,
+                  guidanceSubmitText || guidanceText,
+                  "",
+                );
             if (receipt?.error) throw new Error(receipt.error);
             updatePendingGuidanceForDraft(submitDraftKey, (items) => [
               ...items,

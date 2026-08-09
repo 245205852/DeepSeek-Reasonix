@@ -3,8 +3,10 @@ package sessioninbox
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -22,8 +24,17 @@ func (s *Store) mutableLocked() error {
 	return nil
 }
 
-func (s *Store) blobPath(blobName string) string {
-	return filepath.Join(s.dir, blobsDirName, blobName+blobSuffix)
+func (s *Store) blobPath(blobName string) (string, error) {
+	if !validBlobStem(blobName) {
+		return "", fmt.Errorf("sessioninbox: invalid blob name")
+	}
+	base := filepath.Join(s.dir, blobsDirName)
+	path := filepath.Join(base, blobName+blobSuffix)
+	rel, err := filepath.Rel(base, path)
+	if err != nil || rel == "." || !filepath.IsLocal(rel) {
+		return "", fmt.Errorf("sessioninbox: blob path escapes inbox")
+	}
+	return path, nil
 }
 
 // blobNameFor returns the on-disk blob stem for a meta entry.
@@ -35,13 +46,16 @@ func blobNameFor(meta InboxItemMeta) string {
 }
 
 func (s *Store) writeBlobLocked(blobName string, data []byte) error {
-	if err := os.MkdirAll(filepath.Join(s.dir, blobsDirName), 0o700); err != nil {
-		return fmt.Errorf("sessioninbox: blobs dir: %w", err)
-	}
-	if err := os.MkdirAll(s.dir, 0o700); err != nil {
+	if err := ensurePrivateDir(s.dir); err != nil {
 		return err
 	}
-	path := s.blobPath(blobName)
+	if err := ensurePrivateDir(filepath.Join(s.dir, blobsDirName)); err != nil {
+		return fmt.Errorf("sessioninbox: blobs dir: %w", err)
+	}
+	path, err := s.blobPath(blobName)
+	if err != nil {
+		return err
+	}
 	fileutil.Crash("inbox-blob-write", path)
 	if err := fileutil.AtomicWriteFileStrict(path, data, 0o600); err != nil {
 		return fmt.Errorf("sessioninbox: write blob: %w", err)
@@ -51,7 +65,14 @@ func (s *Store) writeBlobLocked(blobName string, data []byte) error {
 }
 
 func (s *Store) readBlobLocked(blobName, wantChecksum string) (PromptEnvelope, error) {
-	data, err := os.ReadFile(s.blobPath(blobName))
+	if err := validatePrivateDir(filepath.Join(s.dir, blobsDirName)); err != nil {
+		return PromptEnvelope{}, fmt.Errorf("sessioninbox: blobs dir: %w", err)
+	}
+	path, err := s.blobPath(blobName)
+	if err != nil {
+		return PromptEnvelope{}, err
+	}
+	data, err := readRegularFile(path, s.limits.MaxItemBytes)
 	if err != nil {
 		return PromptEnvelope{}, fmt.Errorf("sessioninbox: read blob: %w", err)
 	}
@@ -66,11 +87,69 @@ func (s *Store) readBlobLocked(blobName, wantChecksum string) (PromptEnvelope, e
 	return env, nil
 }
 
+func ensurePrivateDir(path string) error {
+	if err := os.MkdirAll(path, 0o700); err != nil {
+		return err
+	}
+	return validatePrivateDir(path)
+}
+
+func validatePrivateDir(path string) error {
+	info, err := os.Lstat(path)
+	if err != nil {
+		return err
+	}
+	if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
+		return fmt.Errorf("refusing non-directory or symlink")
+	}
+	return nil
+}
+
+func readRegularFile(path string, maxBytes int64) ([]byte, error) {
+	before, err := os.Lstat(path)
+	if err != nil {
+		return nil, err
+	}
+	if before.Mode()&os.ModeSymlink != 0 || !before.Mode().IsRegular() {
+		return nil, fmt.Errorf("refusing non-regular file")
+	}
+	if maxBytes > 0 && before.Size() > maxBytes {
+		return nil, fmt.Errorf("file exceeds %d bytes", maxBytes)
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	opened, err := f.Stat()
+	if err != nil {
+		return nil, err
+	}
+	if !opened.Mode().IsRegular() || !os.SameFile(before, opened) {
+		return nil, fmt.Errorf("file changed while opening")
+	}
+	reader := io.Reader(f)
+	if maxBytes > 0 {
+		reader = io.LimitReader(f, maxBytes+1)
+	}
+	data, err := io.ReadAll(reader)
+	if err != nil {
+		return nil, err
+	}
+	if maxBytes > 0 && int64(len(data)) > maxBytes {
+		return nil, fmt.Errorf("file exceeds %d bytes", maxBytes)
+	}
+	return data, nil
+}
+
 func (s *Store) commitManifestLocked(next *manifest) error {
 	if next == nil {
 		return fmt.Errorf("sessioninbox: nil manifest")
 	}
-	if err := os.MkdirAll(s.dir, 0o700); err != nil {
+	if err := validateManifest(next, false); err != nil {
+		return fmt.Errorf("sessioninbox: invalid manifest: %w", err)
+	}
+	if err := ensurePrivateDir(s.dir); err != nil {
 		return fmt.Errorf("sessioninbox: mkdir: %w", err)
 	}
 	next.SchemaVersion = SchemaVersion
@@ -99,7 +178,7 @@ func (s *Store) commitManifestLocked(next *manifest) error {
 
 func (s *Store) quarantineFileLocked(path, tag string) error {
 	qdir := filepath.Join(s.dir, quarantineName)
-	if err := os.MkdirAll(qdir, 0o700); err != nil {
+	if err := ensurePrivateDir(qdir); err != nil {
 		return err
 	}
 	base := filepath.Base(path) + "." + tag + "." + fmt.Sprintf("%d", time.Now().UnixNano())
@@ -108,6 +187,9 @@ func (s *Store) quarantineFileLocked(path, tag string) error {
 
 func (s *Store) gcOrphansLocked() {
 	bdir := filepath.Join(s.dir, blobsDirName)
+	if err := validatePrivateDir(bdir); err != nil {
+		return
+	}
 	entries, err := os.ReadDir(bdir)
 	if err != nil {
 		return
@@ -131,7 +213,7 @@ func (s *Store) gcOrphansLocked() {
 			continue
 		}
 		// Orphan blob → quarantine (do not delete silently: crash recovery).
-		_ = os.MkdirAll(qdir, 0o700)
+		_ = ensurePrivateDir(qdir)
 		_ = os.Rename(filepath.Join(bdir, name), filepath.Join(qdir, name+"."+fmt.Sprintf("%d", time.Now().UnixNano())))
 	}
 }
@@ -140,6 +222,9 @@ func (s *Store) gcOrphansLocked() {
 // corrupt-manifest quarantine. Bodies stay on disk; the user reviews before resume.
 func (s *Store) salvageOrphanBlobsLocked() []InboxItemMeta {
 	bdir := filepath.Join(s.dir, blobsDirName)
+	if err := validatePrivateDir(bdir); err != nil {
+		return nil
+	}
 	entries, err := os.ReadDir(bdir)
 	if err != nil {
 		return nil
@@ -147,11 +232,14 @@ func (s *Store) salvageOrphanBlobsLocked() []InboxItemMeta {
 	now := time.Now().UTC()
 	var out []InboxItemMeta
 	for _, e := range entries {
-		if e.IsDir() || !strings.HasSuffix(e.Name(), blobSuffix) {
+		if e.IsDir() || e.Type()&os.ModeSymlink != 0 || !strings.HasSuffix(e.Name(), blobSuffix) {
 			continue
 		}
 		stem := strings.TrimSuffix(e.Name(), blobSuffix)
-		data, err := os.ReadFile(filepath.Join(bdir, e.Name()))
+		if !validBlobStem(stem) {
+			continue
+		}
+		data, err := readRegularFile(filepath.Join(bdir, e.Name()), s.limits.MaxItemBytes)
 		if err != nil {
 			continue
 		}
@@ -185,7 +273,7 @@ func (s *Store) salvageOrphanBlobsLocked() []InboxItemMeta {
 
 func (s *Store) quarantineUnknownLocked(path string) error {
 	qdir := filepath.Join(s.dir, quarantineName)
-	if err := os.MkdirAll(qdir, 0o700); err != nil {
+	if err := ensurePrivateDir(qdir); err != nil {
 		return err
 	}
 	return os.Rename(path, filepath.Join(qdir, filepath.Base(path)+"."+fmt.Sprintf("%d", time.Now().UnixNano())))
@@ -209,6 +297,56 @@ func encodeEnvelope(env PromptEnvelope) (data []byte, checksum string, size int6
 	return data, sha256Hex(data), int64(len(data)), nil
 }
 
+// idempotencyRequestHash fingerprints stable client intent. Enqueue-time
+// reference materialization is deliberately excluded so a network retry does
+// not conflict merely because the referenced workspace changed meanwhile.
+func idempotencyRequestHash(env PromptEnvelope) (string, error) {
+	type stableInvocation struct {
+		Name    string            `json:"name,omitempty"`
+		Args    map[string]string `json:"args,omitempty"`
+		Display string            `json:"display,omitempty"`
+	}
+	storedInvocations := append([]StructuredInvocation(nil), env.Invocations...)
+	if len(storedInvocations) == 0 && env.Invocation != nil {
+		storedInvocations = []StructuredInvocation{*env.Invocation}
+	}
+	sort.SliceStable(storedInvocations, func(i, j int) bool {
+		return storedInvocations[i].Offset < storedInvocations[j].Offset
+	})
+	invocations := make([]stableInvocation, 0, len(storedInvocations))
+	for _, invocation := range storedInvocations {
+		invocations = append(invocations, stableInvocation{
+			Name: invocation.Name, Args: invocation.Args, Display: invocation.Display,
+		})
+	}
+	stable := struct {
+		DisplayText  string             `json:"displayText"`
+		RawText      string             `json:"rawText"`
+		SubmitText   string             `json:"submitText"`
+		Invocations  []stableInvocation `json:"invocations,omitempty"`
+		Format       string             `json:"format,omitempty"`
+		Attachments  []string           `json:"attachments,omitempty"`
+		ExplicitRefs []string           `json:"explicitRefs,omitempty"`
+		Source       string             `json:"source,omitempty"`
+		Extra        map[string]string  `json:"extra,omitempty"`
+	}{
+		DisplayText:  env.DisplayText,
+		RawText:      env.RawText,
+		SubmitText:   env.SubmitText,
+		Invocations:  invocations,
+		Format:       env.Format,
+		Attachments:  env.Attachments,
+		ExplicitRefs: env.ExplicitRefs,
+		Source:       env.Source,
+		Extra:        env.Extra,
+	}
+	data, err := json.Marshal(stable)
+	if err != nil {
+		return "", err
+	}
+	return sha256Hex(data), nil
+}
+
 func normalizeEnvelope(env PromptEnvelope) PromptEnvelope {
 	env.DisplayText = strings.TrimSpace(env.DisplayText)
 	env.RawText = strings.TrimSpace(env.RawText)
@@ -216,6 +354,23 @@ func normalizeEnvelope(env PromptEnvelope) PromptEnvelope {
 	env.Format = strings.TrimSpace(env.Format)
 	env.Idempotency = strings.TrimSpace(env.Idempotency)
 	env.Source = strings.TrimSpace(env.Source)
+	return env
+}
+
+func completeEnqueueEnvelope(env PromptEnvelope) PromptEnvelope {
+	env = normalizeEnvelope(env)
+	if env.Invocation != nil || len(env.Invocations) > 0 {
+		return env
+	}
+	if env.SubmitText == "" {
+		env.SubmitText = firstNonEmpty(env.RawText, env.DisplayText)
+	}
+	if env.DisplayText == "" {
+		env.DisplayText = env.SubmitText
+	}
+	if env.RawText == "" {
+		env.RawText = env.SubmitText
+	}
 	return env
 }
 

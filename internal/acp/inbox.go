@@ -54,7 +54,10 @@ func (s *service) sessionInboxEnqueue(_ context.Context, raw json.RawMessage) (a
 	if intent == sessioninbox.IntentSteer {
 		rec, err = api.TryEnqueueAndSteer(req)
 	} else {
-		rec, err = api.TryEnqueueFollowup(req)
+		// ACP owns a blocking session/prompt response boundary. Keep follow-ups
+		// passive here so the prompt handler drains them with the same sink;
+		// detached Controller dispatch would race the transition between turns.
+		rec, err = api.EnqueueInbox(req)
 	}
 	if err != nil {
 		return nil, &RPCError{Code: ErrInvalidRequest, Message: err.Error()}

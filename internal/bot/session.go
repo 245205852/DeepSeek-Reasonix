@@ -253,6 +253,19 @@ func (sm *SessionManager) TryAcquireWithQueue(key string, msg InboundMessage, op
 	return QueueResult{Acquired: true, Mode: mode}
 }
 
+// TryAcquireIdle acquires an idle session without enqueueing when another
+// goroutine wins the race. Durable inbox items already live on disk, so adding
+// a second in-memory copy on a failed claim would execute them twice.
+func (sm *SessionManager) TryAcquireIdle(key string) bool {
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+	if sm.active[key] {
+		return false
+	}
+	sm.active[key] = true
+	return true
+}
+
 func (sm *SessionManager) ReplacePending(key string, msg InboundMessage) QueueResult {
 	sm.mu.Lock()
 	defer sm.mu.Unlock()

@@ -15,12 +15,13 @@ import (
 )
 
 const (
-	manifestName   = "manifest.json"
-	blobsDirName   = "blobs"
-	quarantineName = "quarantine"
-	blobSuffix     = ".json"
-	diskLockName   = "transaction.lock"
-	diskLockWait   = 5 * time.Second
+	manifestName     = "manifest.json"
+	blobsDirName     = "blobs"
+	quarantineName   = "quarantine"
+	blobSuffix       = ".json"
+	diskLockName     = "transaction.lock"
+	diskLockWait     = 5 * time.Second
+	maxManifestBytes = 8 << 20
 )
 
 // Store is the transactional durable inbox for one session path.
@@ -140,7 +141,7 @@ func (s *Store) loadOrInit() error {
 // other Store instances and processes, then refreshes the in-memory snapshot.
 // The caller must hold s.mu and call the returned release function.
 func (s *Store) beginDiskTransactionLocked() (func(), error) {
-	if err := os.MkdirAll(s.dir, 0o700); err != nil {
+	if err := ensurePrivateDir(s.dir); err != nil {
 		return nil, fmt.Errorf("sessioninbox: create inbox directory: %w", err)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), diskLockWait)
@@ -158,7 +159,7 @@ func (s *Store) beginDiskTransactionLocked() (func(), error) {
 
 func (s *Store) loadOrInitLocked() error {
 	path := filepath.Join(s.dir, manifestName)
-	data, err := os.ReadFile(path)
+	data, err := readRegularFile(path, maxManifestBytes)
 	if errors.Is(err, os.ErrNotExist) {
 		s.man = emptyManifest(s.runID)
 		s.readonly = false
@@ -186,7 +187,26 @@ func (s *Store) loadOrInitLocked() error {
 		s.man.Paused = true
 		return nil
 	}
-	if man.SchemaVersion == 0 {
+	migrated := man.SchemaVersion < SchemaVersion
+	if migrated {
+		for key, id := range man.Idempotency {
+			if man.IdempotencyHashes[key] != "" {
+				continue
+			}
+			meta, ok := man.item(id)
+			if !ok {
+				return fmt.Errorf("sessioninbox: migrate idempotency target: %w", ErrNotFound)
+			}
+			env, err := s.readBlobLocked(blobNameFor(meta), meta.Checksum)
+			if err != nil {
+				return fmt.Errorf("sessioninbox: migrate idempotency body: %w", err)
+			}
+			hash, err := idempotencyRequestHash(env)
+			if err != nil {
+				return fmt.Errorf("sessioninbox: migrate idempotency hash: %w", err)
+			}
+			man.IdempotencyHashes[key] = hash
+		}
 		man.SchemaVersion = SchemaVersion
 	}
 	// Cross-process recovery: another run left in-flight items.
@@ -211,7 +231,7 @@ func (s *Store) loadOrInitLocked() error {
 	man.RunID = s.runID
 	s.man = man
 	s.readonly = false
-	if recovered > 0 {
+	if recovered > 0 || migrated {
 		return s.commitManifestLocked(man)
 	}
 	// GC orphan blobs without holding callers longer than needed.
@@ -263,27 +283,26 @@ func (s *Store) Enqueue(req EnqueueRequest) (InboxReceipt, error) {
 	if s == nil {
 		return InboxReceipt{}, ErrClosed
 	}
-	env := normalizeEnvelope(req.Envelope)
-	if strings.TrimSpace(env.SubmitText) == "" && strings.TrimSpace(env.DisplayText) == "" && strings.TrimSpace(env.RawText) == "" {
+	env := completeEnqueueEnvelope(req.Envelope)
+	hasInvocation := env.Invocation != nil || len(env.Invocations) > 0
+	if strings.TrimSpace(env.SubmitText) == "" && strings.TrimSpace(env.DisplayText) == "" && strings.TrimSpace(env.RawText) == "" && !hasInvocation {
 		return InboxReceipt{}, ErrEmpty
-	}
-	if env.SubmitText == "" {
-		env.SubmitText = firstNonEmpty(env.RawText, env.DisplayText)
-	}
-	if env.DisplayText == "" {
-		env.DisplayText = env.SubmitText
-	}
-	if env.RawText == "" {
-		env.RawText = env.SubmitText
 	}
 	intent := req.Intent
 	if intent != IntentSteer {
 		intent = IntentFollowup
 	}
 	idem := strings.TrimSpace(firstNonEmpty(req.Idempotency, env.Idempotency))
+	if idem != "" && !validIdempotencyKey(idem) {
+		return InboxReceipt{}, fmt.Errorf("sessioninbox: invalid idempotency key")
+	}
 	source := strings.TrimSpace(firstNonEmpty(req.Source, env.Source))
 
 	blobBytes, checksum, byteSize, err := encodeEnvelope(env)
+	if err != nil {
+		return InboxReceipt{}, err
+	}
+	requestHash, err := idempotencyRequestHash(env)
 	if err != nil {
 		return InboxReceipt{}, err
 	}
@@ -304,6 +323,9 @@ func (s *Store) Enqueue(req EnqueueRequest) (InboxReceipt, error) {
 	if idem != "" {
 		if id, ok := s.man.Idempotency[idem]; ok {
 			if it, found := s.man.item(id); found {
+				if previous := s.man.IdempotencyHashes[idem]; previous != "" && previous != requestHash {
+					return InboxReceipt{}, ErrIdempotencyConflict
+				}
 				snap := s.snapshotLocked()
 				return InboxReceipt{
 					ItemID:      it.ID,
@@ -314,6 +336,18 @@ func (s *Store) Enqueue(req EnqueueRequest) (InboxReceipt, error) {
 					Idempotent:  true,
 				}, nil
 			}
+		}
+		if receipt, ok := s.man.Receipts[idem]; ok && time.Since(receipt.CompletedAt) <= idempotencyReceiptTTL {
+			if receipt.RequestHash != requestHash {
+				return InboxReceipt{}, ErrIdempotencyConflict
+			}
+			return InboxReceipt{
+				ItemID:      receipt.ItemID,
+				Disposition: DispositionIdempotentHit,
+				Paused:      s.man.Paused,
+				Capacity:    s.snapshotLocked().Capacity,
+				Idempotent:  true,
+			}, nil
 		}
 	}
 	if byteSize > s.limits.MaxItemBytes {
@@ -357,10 +391,14 @@ func (s *Store) Enqueue(req EnqueueRequest) (InboxReceipt, error) {
 		if next.Idempotency == nil {
 			next.Idempotency = map[string]string{}
 		}
+		if next.IdempotencyHashes == nil {
+			next.IdempotencyHashes = map[string]string{}
+		}
 		next.Idempotency[idem] = id
+		next.IdempotencyHashes[idem] = requestHash
 	}
 	if err := s.commitManifestLocked(next); err != nil {
-		_ = os.Remove(s.blobPath(blobName))
+		s.removeBlobLocked(blobName)
 		return InboxReceipt{}, err
 	}
 	snap := s.snapshotLocked()
@@ -405,17 +443,36 @@ func (s *Store) ReadItem(id string) (InboxItemMeta, PromptEnvelope, error) {
 // deletes the old blob. Pre-commit crashes leave only a GC-able orphan; after
 // commit the checksum always points at the new body.
 func (s *Store) UpdateItem(id string, env PromptEnvelope) (InboxItemMeta, error) {
+	return s.UpdateItemWithIdempotency(id, env, "", PromptEnvelope{})
+}
+
+// UpdateItemWithIdempotency atomically updates an item and optionally binds an
+// additional client idempotency key to it. aliasEnvelope is the original client
+// request, not the merged body, so collect-mode redelivery remains deduplicated.
+func (s *Store) UpdateItemWithIdempotency(id string, env PromptEnvelope, alias string, aliasEnvelope PromptEnvelope) (InboxItemMeta, error) {
 	if s == nil {
 		return InboxItemMeta{}, ErrClosed
 	}
 	id = strings.TrimSpace(id)
+	alias = strings.TrimSpace(alias)
+	if alias != "" && !validIdempotencyKey(alias) {
+		return InboxItemMeta{}, fmt.Errorf("sessioninbox: invalid idempotency key")
+	}
 	env = normalizeEnvelope(env)
-	if strings.TrimSpace(env.SubmitText) == "" {
+	if strings.TrimSpace(env.SubmitText) == "" && env.Invocation == nil && len(env.Invocations) == 0 {
 		return InboxItemMeta{}, ErrEmpty
 	}
 	blobBytes, checksum, byteSize, err := encodeEnvelope(env)
 	if err != nil {
 		return InboxItemMeta{}, err
+	}
+	aliasHash := ""
+	if alias != "" {
+		aliasEnvelope = completeEnqueueEnvelope(aliasEnvelope)
+		aliasHash, err = idempotencyRequestHash(aliasEnvelope)
+		if err != nil {
+			return InboxItemMeta{}, err
+		}
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -433,6 +490,23 @@ func (s *Store) UpdateItem(id string, env PromptEnvelope) (InboxItemMeta, error)
 	}
 	if !isPendingState(meta.State) {
 		return InboxItemMeta{}, ErrInvalidState
+	}
+	if alias != "" {
+		if existingID, ok := s.man.Idempotency[alias]; ok {
+			if existingHash := s.man.IdempotencyHashes[alias]; existingHash != "" && existingHash != aliasHash {
+				return InboxItemMeta{}, ErrIdempotencyConflict
+			}
+			if existingID != id {
+				return InboxItemMeta{}, ErrIdempotencyConflict
+			}
+			return meta, nil
+		}
+		if receipt, ok := s.man.Receipts[alias]; ok && time.Since(receipt.CompletedAt) <= idempotencyReceiptTTL {
+			if receipt.RequestHash != aliasHash || receipt.ItemID != id {
+				return InboxItemMeta{}, ErrIdempotencyConflict
+			}
+			return meta, nil
+		}
 	}
 	if byteSize > s.limits.MaxItemBytes {
 		return InboxItemMeta{}, ErrItemTooLarge
@@ -455,18 +529,38 @@ func (s *Store) UpdateItem(id string, env PromptEnvelope) (InboxItemMeta, error)
 	next.Items[i].Refs = refSummaries(env.Refs)
 	next.Items[i].UpdatedAt = time.Now().UTC()
 	next.Items[i].Revision = next.Revision + 1
+	if alias != "" {
+		if next.Idempotency == nil {
+			next.Idempotency = map[string]string{}
+		}
+		if next.IdempotencyHashes == nil {
+			next.IdempotencyHashes = map[string]string{}
+		}
+		next.Idempotency[alias] = id
+		next.IdempotencyHashes[alias] = aliasHash
+	}
 	if next.Items[i].State == StateBlocked {
 		next.Items[i].State = StateQueued
 		next.Items[i].BlockReason = ""
 	}
 	if err := s.commitManifestLocked(next); err != nil {
-		_ = os.Remove(s.blobPath(newBlob))
+		s.removeBlobLocked(newBlob)
 		return InboxItemMeta{}, err
 	}
 	if oldBlob != newBlob {
-		_ = os.Remove(s.blobPath(oldBlob))
+		s.removeBlobLocked(oldBlob)
 	}
 	updated := next.Items[i]
 	s.notifyLocked(s.snapshotLocked())
 	return updated, nil
+}
+
+func (s *Store) removeBlobLocked(blobName string) {
+	if err := validatePrivateDir(filepath.Join(s.dir, blobsDirName)); err != nil {
+		return
+	}
+	path, err := s.blobPath(blobName)
+	if err == nil {
+		_ = os.Remove(path)
+	}
 }

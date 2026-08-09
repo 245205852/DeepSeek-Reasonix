@@ -102,12 +102,18 @@ func (a *App) InboxSnapshot(tabID string) (InboxSnapshotView, error) {
 
 // EnqueueInboxFollowup durably queues a follow-up for the tab.
 func (a *App) EnqueueInboxFollowup(tabID, display, submit, idempotency string) (InboxReceiptView, error) {
-	return a.enqueueInbox(tabID, sessioninbox.IntentFollowup, display, submit, idempotency, false)
+	return a.enqueueInbox(tabID, sessioninbox.IntentFollowup, display, submit, nil, idempotency, false)
+}
+
+// EnqueueInboxFollowupWithInvocations preserves rich-composer Skill/Subagent
+// entities in the durable envelope instead of degrading them to slash text.
+func (a *App) EnqueueInboxFollowupWithInvocations(tabID, display, submit string, invocations []InvocationRequest, idempotency string) (InboxReceiptView, error) {
+	return a.enqueueInbox(tabID, sessioninbox.IntentFollowup, display, submit, invocations, idempotency, false)
 }
 
 // EnqueueInboxSteer durably queues and attempts mid-turn steer.
 func (a *App) EnqueueInboxSteer(tabID, display, submit, idempotency string) (InboxReceiptView, error) {
-	return a.enqueueInbox(tabID, sessioninbox.IntentSteer, display, submit, idempotency, true)
+	return a.enqueueInbox(tabID, sessioninbox.IntentSteer, display, submit, nil, idempotency, true)
 }
 
 // SteerInboxItem attempts to apply an existing durable queue item to the
@@ -145,7 +151,7 @@ func (a *App) CancelTabWithInboxItems(tabID string, itemIDs []string) error {
 	return nil
 }
 
-func (a *App) enqueueInbox(tabID string, intent sessioninbox.InboxIntent, display, submit, idempotency string, trySteer bool) (InboxReceiptView, error) {
+func (a *App) enqueueInbox(tabID string, intent sessioninbox.InboxIntent, display, submit string, invocations []InvocationRequest, idempotency string, trySteer bool) (InboxReceiptView, error) {
 	ctrl, err := a.inboxCtrl(tabID)
 	if err != nil {
 		return InboxReceiptView{}, err
@@ -155,7 +161,7 @@ func (a *App) enqueueInbox(tabID string, intent sessioninbox.InboxIntent, displa
 	}
 	submit = strings.TrimSpace(submit)
 	display = strings.TrimSpace(display)
-	if submit == "" {
+	if submit == "" && len(invocations) == 0 {
 		submit = display
 	}
 	if display == "" {
@@ -168,6 +174,7 @@ func (a *App) enqueueInbox(tabID string, intent sessioninbox.InboxIntent, displa
 		Submit:      submit,
 		Source:      "desktop",
 		Idempotency: strings.TrimSpace(idempotency),
+		Invocations: controlInvocationRequests(invocations),
 	}
 	var rec sessioninbox.InboxReceipt
 	if trySteer {

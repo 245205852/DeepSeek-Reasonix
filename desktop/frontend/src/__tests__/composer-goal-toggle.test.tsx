@@ -2295,6 +2295,8 @@ console.log("\ncomposer goal toggle");
   // rendered with its slash form — not be dropped silently while
   // clearSubmittedDraft wipes the composer.
   const dom = installDom();
+  let queuedInvocations: StructuredInvocationSubmit["invocations"] | undefined;
+  let queuedSubmit: string | undefined;
   mockApp({
     Commands: async () => [
       { name: "superpowers:writing-plans", description: "Write a plan", kind: "skill", plugin: "superpowers" },
@@ -2305,9 +2307,13 @@ console.log("\ncomposer goal toggle");
       revision: 0, paused: false, recovered: false, items: [], itemsCount: 0,
       bytes: 0, maxItems: 64, maxBytes: 64 * 1024 * 1024,
     }),
-    EnqueueInboxFollowup: async () => ({
+    EnqueueInboxFollowupWithInvocations: async (_tabId, _display, input, invocations) => {
+      queuedSubmit = input;
+      queuedInvocations = invocations;
+      return {
       itemId: "durable-entity", disposition: "queued_followup", position: 1, paused: false,
-    }),
+      };
+    },
   });
   const { root, calls, rerender } = await renderComposer();
   await replaceComposerDraft(rerender, 4000, "/writing-plans");
@@ -2331,6 +2337,9 @@ console.log("\ncomposer goal toggle");
     document.querySelector(".composer-guidance-item__text")?.textContent?.includes("/superpowers:writing-plans") === true,
     "the queued guidance shows the entity's slash form instead of dropping it silently",
   );
+  eq(queuedInvocations?.[0]?.name, "superpowers:writing-plans", "queued guidance durably preserves the selected skill invocation");
+  eq(queuedInvocations?.[0]?.kind, "skill", "queued guidance durably preserves the invocation kind");
+  eq(queuedSubmit, "", "entity-only guidance keeps an empty explicit task instead of degrading to slash text");
   ok(document.querySelector(".composer__rich-input") === null, "queueing an entity-only submit clears the draft");
 
   await act(async () => {

@@ -1,7 +1,6 @@
 package sessioninbox
 
 import (
-	"os"
 	"strings"
 	"time"
 )
@@ -30,11 +29,13 @@ func (s *Store) DeleteItem(id string) error {
 		return ErrInvalidState
 	}
 	next := s.man.clone()
+	keys := next.idempotencyKeysFor(id)
+	next.rememberReceipt(keys, id, Disposition("deleted"), time.Now().UTC())
 	removed, _ := next.removeItem(id)
 	if err := s.commitManifestLocked(next); err != nil {
 		return err
 	}
-	_ = os.Remove(s.blobPath(blobNameFor(removed)))
+	s.removeBlobLocked(blobNameFor(removed))
 	s.notifyLocked(s.snapshotLocked())
 	return nil
 }
@@ -103,11 +104,20 @@ func (s *Store) DiscardPendingItemsOwned(ids []string, source string) error {
 		return nil
 	}
 	next.Items = kept
+	now := time.Now().UTC()
+	for _, item := range removed {
+		keys := next.idempotencyKeysFor(item.ID)
+		next.rememberReceipt(keys, item.ID, Disposition("discarded"), now)
+		for _, key := range keys {
+			delete(next.Idempotency, key)
+			delete(next.IdempotencyHashes, key)
+		}
+	}
 	if err := s.commitManifestLocked(next); err != nil {
 		return err
 	}
 	for _, item := range removed {
-		_ = os.Remove(s.blobPath(blobNameFor(item)))
+		s.removeBlobLocked(blobNameFor(item))
 	}
 	s.notifyLocked(s.snapshotLocked())
 	return nil
@@ -221,6 +231,44 @@ func (s *Store) SetState(id string, state InboxState, blockReason string) error 
 	return nil
 }
 
+// ClaimItem atomically transitions one queued item to running. It is the
+// durable admission boundary for both asynchronous and synchronous frontends.
+func (s *Store) ClaimItem(id string) error {
+	if s == nil {
+		return ErrClosed
+	}
+	id = strings.TrimSpace(id)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	release, err := s.beginDiskTransactionLocked()
+	if err != nil {
+		return err
+	}
+	defer release()
+	if err := s.mutableLocked(); err != nil {
+		return err
+	}
+	if s.man.Paused {
+		return ErrPaused
+	}
+	next := s.man.clone()
+	i := next.indexOf(id)
+	if i < 0 {
+		return ErrNotFound
+	}
+	if next.Items[i].State != StateQueued {
+		return ErrInvalidState
+	}
+	next.Items[i].State = StateRunning
+	next.Items[i].BlockReason = ""
+	next.Items[i].UpdatedAt = time.Now().UTC()
+	if err := s.commitManifestLocked(next); err != nil {
+		return err
+	}
+	s.notifyLocked(s.snapshotLocked())
+	return nil
+}
+
 // ConvertIntent changes followup ↔ steer while keeping the item queued.
 func (s *Store) ConvertIntent(id string, intent InboxIntent) error {
 	if s == nil {
@@ -273,6 +321,8 @@ func (s *Store) AckDequeue(id string) error {
 		return err
 	}
 	next := s.man.clone()
+	keys := next.idempotencyKeysFor(id)
+	next.rememberReceipt(keys, id, Disposition("acknowledged"), time.Now().UTC())
 	removed, ok := next.removeItem(id)
 	if !ok {
 		return ErrNotFound
@@ -285,7 +335,7 @@ func (s *Store) AckDequeue(id string) error {
 	if err := s.commitManifestLocked(next); err != nil {
 		return err
 	}
-	_ = os.Remove(s.blobPath(blobNameFor(removed)))
+	s.removeBlobLocked(blobNameFor(removed))
 	s.notifyLocked(s.snapshotLocked())
 	return nil
 }

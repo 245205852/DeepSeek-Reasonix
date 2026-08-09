@@ -7,7 +7,7 @@ import (
 
 // SchemaVersion is the on-disk format version. Unknown higher versions load
 // read-only and force pause; they never auto-execute.
-const SchemaVersion = 1
+const SchemaVersion = 2
 
 // Default capacity limits.
 const (
@@ -53,15 +53,16 @@ const (
 
 // Sentinel errors for capacity and validation.
 var (
-	ErrCapacityItems  = errors.New("session inbox item limit reached")
-	ErrCapacityBytes  = errors.New("session inbox byte limit reached")
-	ErrItemTooLarge   = errors.New("inbox item exceeds single-item size limit")
-	ErrNotFound       = errors.New("inbox item not found")
-	ErrInvalidState   = errors.New("inbox item state does not allow this operation")
-	ErrSchemaReadonly = errors.New("inbox schema is newer and is read-only")
-	ErrClosed         = errors.New("inbox is closed")
-	ErrEmpty          = errors.New("inbox item body is empty")
-	ErrPaused         = errors.New("inbox is paused")
+	ErrCapacityItems       = errors.New("session inbox item limit reached")
+	ErrCapacityBytes       = errors.New("session inbox byte limit reached")
+	ErrItemTooLarge        = errors.New("inbox item exceeds single-item size limit")
+	ErrNotFound            = errors.New("inbox item not found")
+	ErrInvalidState        = errors.New("inbox item state does not allow this operation")
+	ErrSchemaReadonly      = errors.New("inbox schema is newer and is read-only")
+	ErrClosed              = errors.New("inbox is closed")
+	ErrEmpty               = errors.New("inbox item body is empty")
+	ErrPaused              = errors.New("inbox is paused")
+	ErrIdempotencyConflict = errors.New("idempotency key was already used for different input")
 )
 
 // InboxItemMeta is the durable metadata kept in the manifest (never the body).
@@ -115,19 +116,24 @@ type RefSnapshot struct {
 // StructuredInvocation is a frozen slash/command invocation.
 type StructuredInvocation struct {
 	Name    string            `json:"name,omitempty"`
+	Kind    string            `json:"kind,omitempty"`
+	Offset  int               `json:"offset,omitempty"`
 	Args    map[string]string `json:"args,omitempty"`
 	Display string            `json:"display,omitempty"`
 }
 
 // PromptEnvelope is the full durable body stored only in blobs/<id>.json.
 type PromptEnvelope struct {
-	DisplayText string                `json:"displayText"`
-	RawText     string                `json:"rawText"`
-	SubmitText  string                `json:"submitText"`
-	Invocation  *StructuredInvocation `json:"invocation,omitempty"`
-	Format      string                `json:"format,omitempty"`
-	Attachments []string              `json:"attachments,omitempty"`
-	Refs        []RefSnapshot         `json:"refs,omitempty"`
+	DisplayText string `json:"displayText"`
+	RawText     string `json:"rawText"`
+	SubmitText  string `json:"submitText"`
+	// Invocation is retained for schema-v1 compatibility. New writers use
+	// Invocations so multiple rich-composer entities preserve visual order.
+	Invocation  *StructuredInvocation  `json:"invocation,omitempty"`
+	Invocations []StructuredInvocation `json:"invocations,omitempty"`
+	Format      string                 `json:"format,omitempty"`
+	Attachments []string               `json:"attachments,omitempty"`
+	Refs        []RefSnapshot          `json:"refs,omitempty"`
 	// FrozenRefBlock is the exact typed reference context rendered at enqueue.
 	// FrozenImages contains already-authorized data URLs for direct image input.
 	FrozenRefBlock  string            `json:"frozenRefBlock,omitempty"`

@@ -1696,7 +1696,7 @@ func (m chatTUI) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "ctrl+b":
 			m.toggleShellOutput()
 			return m, finalize(m, cmds)
-		case "ctrl+enter", "ctrl+j":
+		case "ctrl+enter":
 			// Durable mid-turn steer (terminals without modified Enter use /steer).
 			if m.state == tuiRunning {
 				line := strings.TrimSpace(m.input.Value())

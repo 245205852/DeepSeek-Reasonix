@@ -2,6 +2,7 @@ package control
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -14,6 +15,7 @@ import (
 	"reasonix/internal/memory"
 	"reasonix/internal/provider"
 	"reasonix/internal/sessioninbox"
+	"reasonix/internal/skill"
 	"reasonix/internal/tool"
 )
 
@@ -85,7 +87,7 @@ func TestIdempotentEnqueue(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	b, err := c.EnqueueInbox(InboxRequest{Submit: "y", Idempotency: "k1"})
+	b, err := c.EnqueueInbox(InboxRequest{Submit: "x", Idempotency: "k1"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -110,11 +112,7 @@ func TestIdempotentEnqueueDoesNotReclassifyExistingItem(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	second, err := c.EnqueueInbox(InboxRequest{
-		Submit:      "replacement",
-		FreezeRefs:  []string{"../outside-workspace"},
-		Idempotency: "same",
-	})
+	second, err := c.EnqueueInbox(InboxRequest{Submit: "original", Idempotency: "same"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -124,6 +122,21 @@ func TestIdempotentEnqueueDoesNotReclassifyExistingItem(t *testing.T) {
 	snapshot := c.InboxSnapshot()
 	if snapshot.Paused || len(snapshot.Items) != 1 || snapshot.Items[0].State != sessioninbox.StateQueued {
 		t.Fatalf("idempotent replay reclassified original item: %+v", snapshot)
+	}
+}
+
+func TestIdempotentEnqueueRejectsDifferentInput(t *testing.T) {
+	dir := t.TempDir()
+	c := New(Options{
+		SessionPath: filepath.Join(dir, "s.jsonl"),
+		SessionDir:  dir,
+		Sink:        event.Discard,
+	})
+	if _, err := c.EnqueueInbox(InboxRequest{Submit: "original", Idempotency: "same"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.EnqueueInbox(InboxRequest{Submit: "replacement", Idempotency: "same"}); !errors.Is(err, sessioninbox.ErrIdempotencyConflict) {
+		t.Fatalf("conflicting replay error = %v, want ErrIdempotencyConflict", err)
 	}
 }
 
@@ -482,5 +495,134 @@ func TestCancelWithInboxItemsDiscardsOnlyOwnedPendingItems(t *testing.T) {
 	}
 	if len(snap.Items) != 1 || snap.Items[0].ID != unrelated.ItemID {
 		t.Fatalf("scoped cancel left items = %+v", snap.Items)
+	}
+}
+
+func TestRunTurnAcknowledgesAcceptedDurableItems(t *testing.T) {
+	dir := t.TempDir()
+	runner := &fakeTurnRunner{}
+	c := New(Options{
+		Runner:      runner,
+		SessionPath: filepath.Join(dir, "s.jsonl"),
+		SessionDir:  dir,
+		Sink:        event.Discard,
+	})
+	rec, err := c.EnqueueInbox(InboxRequest{Submit: "accepted steer", Idempotency: "steer-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	st, err := c.ensureInbox()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := st.SetState(rec.ItemID, sessioninbox.StateSteerConsumed, ""); err != nil {
+		t.Fatal(err)
+	}
+	c.inbox.mu.Lock()
+	c.inbox.trackActive(rec.ItemID)
+	c.inbox.mu.Unlock()
+
+	if err := c.RunTurn(context.Background(), "foreground"); err != nil {
+		t.Fatal(err)
+	}
+	if got := c.InboxSnapshot().Items; len(got) != 0 {
+		t.Fatalf("synchronous completion left accepted item queued: %+v", got)
+	}
+	if len(runner.inputs) != 1 || runner.inputs[0] != "foreground" {
+		t.Fatalf("runner inputs = %q", runner.inputs)
+	}
+}
+
+func TestRunInboxTurnClaimsAndAcknowledgesFIFOItems(t *testing.T) {
+	dir := t.TempDir()
+	runner := &fakeTurnRunner{}
+	c := New(Options{
+		Runner:      runner,
+		SessionPath: filepath.Join(dir, "s.jsonl"),
+		SessionDir:  dir,
+		Sink:        event.Discard,
+	})
+	var ids []string
+	for _, input := range []string{"first", "second"} {
+		rec, err := c.EnqueueInbox(InboxRequest{Submit: input, Idempotency: "msg-" + input})
+		if err != nil {
+			t.Fatal(err)
+		}
+		ids = append(ids, rec.ItemID)
+	}
+	for _, id := range ids {
+		if err := c.RunInboxTurn(context.Background(), id); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got := runner.inputs; len(got) != 2 || got[0] != "first" || got[1] != "second" {
+		t.Fatalf("durable FIFO inputs = %q", got)
+	}
+	if got := c.InboxSnapshot().Items; len(got) != 0 {
+		t.Fatalf("completed FIFO items remain queued: %+v", got)
+	}
+}
+
+func TestStructuredInboxInvocationSurvivesReopenAndRunsSkill(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "s.jsonl")
+	skills := []skill.Skill{{
+		Name: "init", Body: "INITIALIZE_FROM_DURABLE_INBOX", RunAs: skill.RunInline, Scope: skill.ScopeGlobal,
+	}}
+	first := New(Options{SessionPath: path, SessionDir: dir, Skills: skills, Sink: event.Discard})
+	rec, err := first.EnqueueInbox(InboxRequest{
+		Display:     "/init",
+		Idempotency: "desktop-submit-1",
+		Invocations: []InvocationRequest{{Name: "init", Kind: "skill", Offset: 0}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	first.inbox.mu.Lock()
+	first.inbox.store.Close()
+	first.inbox.store = nil
+	first.inbox.mu.Unlock()
+
+	runner := &fakeTurnRunner{}
+	reopened := New(Options{
+		Runner: runner, SessionPath: path, SessionDir: dir, Skills: skills, Sink: event.Discard,
+	})
+	if err := reopened.RunInboxTurn(context.Background(), rec.ItemID); err != nil {
+		t.Fatal(err)
+	}
+	if len(runner.inputs) != 1 || !strings.Contains(runner.inputs[0], "INITIALIZE_FROM_DURABLE_INBOX") {
+		t.Fatalf("reopened structured turn lost skill semantics: %q", runner.inputs)
+	}
+	if strings.Contains(runner.inputs[0], "/init") {
+		t.Fatalf("structured turn degraded to slash text: %q", runner.inputs[0])
+	}
+	if got := reopened.InboxSnapshot().Items; len(got) != 0 {
+		t.Fatalf("structured item was not acknowledged: %+v", got)
+	}
+}
+
+func TestLegacySingularInboxInvocationInfersSkillKind(t *testing.T) {
+	dir := t.TempDir()
+	runner := &fakeTurnRunner{}
+	c := New(Options{
+		Runner: runner, SessionPath: filepath.Join(dir, "s.jsonl"), SessionDir: dir, Sink: event.Discard,
+		Skills: []skill.Skill{{Name: "legacy", Body: "LEGACY_SKILL_BODY", RunAs: skill.RunInline, Scope: skill.ScopeGlobal}},
+	})
+	st, err := c.ensureInbox()
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec, err := st.Enqueue(sessioninbox.EnqueueRequest{Envelope: sessioninbox.PromptEnvelope{
+		DisplayText: "/legacy",
+		Invocation:  &sessioninbox.StructuredInvocation{Name: "legacy"},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := c.RunInboxTurn(context.Background(), rec.ItemID); err != nil {
+		t.Fatal(err)
+	}
+	if len(runner.inputs) != 1 || !strings.Contains(runner.inputs[0], "LEGACY_SKILL_BODY") {
+		t.Fatalf("legacy structured input = %q", runner.inputs)
 	}
 }

@@ -2,6 +2,7 @@ package bot
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"slices"
@@ -11,6 +12,68 @@ import (
 	"reasonix/internal/control"
 	"reasonix/internal/sessioninbox"
 )
+
+const botInboxMessageExtraKey = "reasonix.bot.inbound.v1"
+
+type durableBotMessage struct {
+	Platform     Platform `json:"platform"`
+	ConnectionID string   `json:"connectionId,omitempty"`
+	Domain       string   `json:"domain,omitempty"`
+	ChatType     ChatType `json:"chatType"`
+	ChatID       string   `json:"chatId"`
+	UserID       string   `json:"userId,omitempty"`
+	UserName     string   `json:"userName,omitempty"`
+	OperatorID   string   `json:"operatorId,omitempty"`
+	MessageID    string   `json:"messageId,omitempty"`
+	ThreadID     string   `json:"threadId,omitempty"`
+}
+
+func botInboxExtra(msg InboundMessage) map[string]string {
+	data, err := json.Marshal(durableBotMessage{
+		Platform: msg.Platform, ConnectionID: msg.ConnectionID, Domain: msg.Domain,
+		ChatType: msg.ChatType, ChatID: msg.ChatID, UserID: msg.UserID,
+		UserName: msg.UserName, OperatorID: msg.OperatorID, MessageID: msg.MessageID,
+		ThreadID: msg.ThreadID,
+	})
+	if err != nil {
+		return nil
+	}
+	return map[string]string{botInboxMessageExtraKey: string(data)}
+}
+
+func botMessageFromEnvelope(env sessioninbox.PromptEnvelope, fallback InboundMessage) InboundMessage {
+	msg := fallback
+	if raw := env.Extra[botInboxMessageExtraKey]; raw != "" {
+		var stored durableBotMessage
+		if json.Unmarshal([]byte(raw), &stored) == nil {
+			msg.Platform = stored.Platform
+			msg.ConnectionID = stored.ConnectionID
+			msg.Domain = stored.Domain
+			msg.ChatType = stored.ChatType
+			msg.ChatID = stored.ChatID
+			msg.UserID = stored.UserID
+			msg.UserName = stored.UserName
+			msg.OperatorID = stored.OperatorID
+			msg.MessageID = stored.MessageID
+			msg.ThreadID = stored.ThreadID
+		}
+	}
+	msg.Text = firstNonEmptyBotText(env.DisplayText, env.SubmitText, env.RawText)
+	msg.Media = nil
+	msg.MediaURLs = nil
+	msg.ResolveUserName = nil
+	msg.Raw = nil
+	return msg
+}
+
+func firstNonEmptyBotText(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return value
+		}
+	}
+	return ""
+}
 
 // enqueueViaInbox durably queues an inbound message on the controller's
 // session inbox. Platform message IDs are used as idempotency keys.
@@ -33,11 +96,14 @@ func enqueueViaInbox(ctrl control.SessionAPI, msg InboundMessage, intent session
 		Submit:      text,
 		Source:      "bot",
 		Idempotency: idem,
+		Extra:       botInboxExtra(msg),
 	}
 	if intent == sessioninbox.IntentSteer {
 		return ctrl.TryEnqueueAndSteer(req)
 	}
-	return ctrl.TryEnqueueFollowup(req)
+	// Bot owns synchronous response rendering and drains the durable FIFO itself;
+	// detached Controller dispatch would lose the platform sink.
+	return ctrl.EnqueueInbox(req)
 }
 
 // collectAppend tries to append text into the last queued follow-up blob within
@@ -57,23 +123,14 @@ func collectAppend(ctrl control.SessionAPI, msg InboundMessage, debounce time.Du
 	}
 	text := strings.TrimSpace(msg.Text)
 	if last != nil && debounce > 0 && time.Since(last.UpdatedAt) < debounce {
-		_, env, err := ctrl.ReadInboxItem(last.ID)
-		if err == nil {
-			merged := env.SubmitText
-			if merged != "" && text != "" {
-				merged = merged + "\n" + text
-			} else if text != "" {
-				merged = text
-			}
-			if _, err := ctrl.UpdateInboxItem(last.ID, merged, merged, merged); err == nil {
-				return sessioninbox.InboxReceipt{
-					ItemID:      last.ID,
-					Disposition: sessioninbox.DispositionQueuedFollowup,
-					Position:    snap.Capacity.Items,
-					Paused:      snap.Paused,
-					Capacity:    snap.Capacity,
-				}, nil
-			}
+		if _, err := ctrl.AppendInboxItem(last.ID, text, strings.TrimSpace(msg.MessageID), botInboxExtra(msg)); err == nil {
+			return sessioninbox.InboxReceipt{
+				ItemID:      last.ID,
+				Disposition: sessioninbox.DispositionQueuedFollowup,
+				Position:    snap.Capacity.Items,
+				Paused:      snap.Paused,
+				Capacity:    snap.Capacity,
+			}, nil
 		}
 	}
 	return enqueueViaInbox(ctrl, msg, sessioninbox.IntentFollowup)
@@ -118,41 +175,43 @@ func warnDeprecatedQueueDrop(drop string) {
 
 // handleQueueInboxCommand extends /queue with durable inbox management.
 // Returns handled=false for mode-switch forms of /queue.
-func (gw *BotGateway) handleQueueInboxCommand(ctx context.Context, key string, msg InboundMessage) (string, bool) {
+func (gw *BotGateway) handleQueueInboxCommand(ctx context.Context, key string, msg InboundMessage) (string, bool, bool) {
 	_ = ctx
 	parts := strings.Fields(msg.Text)
 	if len(parts) < 2 {
-		return "", false
+		return "", false, false
 	}
 	sub := strings.ToLower(parts[1])
 	if !isBotInboxCommand(sub) {
-		return "", false
+		return "", false, false
 	}
 	api := gw.sessionAPI(key)
 	if api == nil {
-		return "当前没有可管理的会话队列。", true
+		return "当前没有可管理的会话队列。", true, false
 	}
 	// Group chats: only the same session initiator or admins may read bodies.
 	// Mode-level admin gate is enforced by requireCommandRole on sensitive ops.
 	switch sub {
 	case "list", "ls":
-		return formatBotInboxList(api), true
+		return formatBotInboxList(api), true, false
 	case "show":
-		return showBotInboxItem(api, parts), true
+		return showBotInboxItem(api, parts), true, false
 	case "delete", "rm":
-		return deleteBotInboxItem(api, parts), true
+		return deleteBotInboxItem(api, parts), true, false
 	case "move":
-		return moveBotInboxItem(api, parts), true
+		return moveBotInboxItem(api, parts), true, false
 	case "pause":
-		return setBotInboxPaused(api, true), true
+		return setBotInboxPaused(api, true), true, false
 	case "resume":
-		return setBotInboxPaused(api, false), true
+		reply := setBotInboxPaused(api, false)
+		return reply, true, reply == "inbox resumed"
 	case "retry":
-		return retryBotInboxItem(api, parts), true
+		reply := retryBotInboxItem(api, parts)
+		return reply, true, strings.HasPrefix(reply, "retry #")
 	case "refresh":
-		return refreshBotInboxItem(api, parts), true
+		return refreshBotInboxItem(api, parts), true, false
 	}
-	return "", false
+	return "", false, false
 }
 
 func formatBotInboxList(api control.SessionAPI) string {
@@ -222,7 +281,14 @@ func moveBotInboxItem(api control.SessionAPI, parts []string) string {
 }
 
 func setBotInboxPaused(api control.SessionAPI, paused bool) string {
-	if err := api.SetInboxPaused(paused); err != nil {
+	setter, ok := any(api).(interface{ SetInboxPausedPassive(bool) error })
+	var err error
+	if ok {
+		err = setter.SetInboxPausedPassive(paused)
+	} else {
+		err = api.SetInboxPaused(paused)
+	}
+	if err != nil {
 		return err.Error()
 	}
 	if paused {
@@ -239,8 +305,15 @@ func retryBotInboxItem(api control.SessionAPI, parts []string) string {
 	if err != nil {
 		return err.Error()
 	}
-	if err := api.RetryInboxItem(id); err != nil {
-		return err.Error()
+	retrier, ok := any(api).(interface{ RetryInboxItemPassive(string) error })
+	var retryErr error
+	if ok {
+		retryErr = retrier.RetryInboxItemPassive(id)
+	} else {
+		retryErr = api.RetryInboxItem(id)
+	}
+	if retryErr != nil {
+		return retryErr.Error()
 	}
 	return "retry #" + shortItemID(id)
 }

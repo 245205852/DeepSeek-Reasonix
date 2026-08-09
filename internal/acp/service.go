@@ -259,6 +259,11 @@ type acpController interface {
 	control.Goals
 }
 
+type acpInboxController interface {
+	InboxSnapshot() sessioninbox.InboxSnapshot
+	RunInboxTurn(context.Context, string) error
+}
+
 // acpSession is one open session: its controller, the on-disk transcript path
 // (empty when persistence is off), and the cancel func of the in-flight turn
 // (nil when idle) so session/cancel can abort it.
@@ -1177,6 +1182,31 @@ func (s *service) sessionPrompt(ctx context.Context, raw json.RawMessage) (any, 
 		cancel()
 	}()
 	runErr := sess.ctrl.RunTurn(runCtx, text)
+	for runErr == nil {
+		inbox, ok := sess.ctrl.(acpInboxController)
+		if !ok {
+			break
+		}
+		snap := inbox.InboxSnapshot()
+		if snap.Paused {
+			break
+		}
+		nextID := ""
+		for _, item := range snap.Items {
+			if item.State == sessioninbox.StateQueued {
+				nextID = item.ID
+				break
+			}
+		}
+		if nextID == "" {
+			break
+		}
+		runErr = inbox.RunInboxTurn(runCtx, nextID)
+		if errors.Is(runErr, sessioninbox.ErrNotFound) || errors.Is(runErr, sessioninbox.ErrInvalidState) {
+			// A concurrent queue edit won the claim; refresh the FIFO snapshot.
+			runErr = nil
+		}
+	}
 
 	statusEvent := sess.status.finishTurn(
 		runErr,

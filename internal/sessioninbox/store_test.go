@@ -2,12 +2,14 @@ package sessioninbox
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 
 	"reasonix/internal/fileutil"
 	"reasonix/internal/store"
@@ -83,7 +85,7 @@ func TestIdempotentEnqueue(t *testing.T) {
 	}
 	b, err := s.Enqueue(EnqueueRequest{
 		Intent:      IntentFollowup,
-		Envelope:    PromptEnvelope{SubmitText: "y"},
+		Envelope:    PromptEnvelope{SubmitText: "x"},
 		Idempotency: "msg-1",
 	})
 	if err != nil {
@@ -94,6 +96,237 @@ func TestIdempotentEnqueue(t *testing.T) {
 	}
 	if len(s.Snapshot().Items) != 1 {
 		t.Fatalf("want 1 item, got %d", len(s.Snapshot().Items))
+	}
+}
+
+func TestIdempotencyConflictRejectsDifferentInput(t *testing.T) {
+	session := filepath.Join(t.TempDir(), "s.jsonl")
+	s, err := Open(session, Limits{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if _, err := s.Enqueue(EnqueueRequest{Envelope: PromptEnvelope{SubmitText: "first"}, Idempotency: "msg-1"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Enqueue(EnqueueRequest{Envelope: PromptEnvelope{SubmitText: "different"}, Idempotency: "msg-1"}); !errors.Is(err, ErrIdempotencyConflict) {
+		t.Fatalf("different input error = %v, want ErrIdempotencyConflict", err)
+	}
+}
+
+func TestIdempotencyHashTreatsLegacyAndModernInvocationAsEquivalent(t *testing.T) {
+	legacy, err := idempotencyRequestHash(completeEnqueueEnvelope(PromptEnvelope{
+		DisplayText: "/init", Invocation: &StructuredInvocation{Name: "init"},
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	modern, err := idempotencyRequestHash(completeEnqueueEnvelope(PromptEnvelope{
+		DisplayText: "/init", Invocations: []StructuredInvocation{{Name: "init", Kind: "skill", Offset: 7}},
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if legacy != modern {
+		t.Fatalf("legacy hash %q != modern hash %q", legacy, modern)
+	}
+}
+
+func TestIdempotencyReceiptSurvivesAckAndReopen(t *testing.T) {
+	session := filepath.Join(t.TempDir(), "s.jsonl")
+	s, err := Open(session, Limits{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, err := s.Enqueue(EnqueueRequest{Envelope: PromptEnvelope{SubmitText: "write once"}, Idempotency: "msg-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.ClaimItem(first.ItemID); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.AckDequeue(first.ItemID); err != nil {
+		t.Fatal(err)
+	}
+	s.Close()
+
+	reopened, err := Open(session, Limits{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reopened.Close()
+	retry, err := reopened.Enqueue(EnqueueRequest{Envelope: PromptEnvelope{SubmitText: "write once"}, Idempotency: "msg-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !retry.Idempotent || retry.ItemID != first.ItemID || len(reopened.Snapshot().Items) != 0 {
+		t.Fatalf("completed retry = %+v items=%+v", retry, reopened.Snapshot().Items)
+	}
+	if _, err := reopened.Enqueue(EnqueueRequest{Envelope: PromptEnvelope{SubmitText: "write twice"}, Idempotency: "msg-1"}); !errors.Is(err, ErrIdempotencyConflict) {
+		t.Fatalf("completed conflicting retry error = %v", err)
+	}
+}
+
+func TestCollectAliasReceiptSurvivesAck(t *testing.T) {
+	session := filepath.Join(t.TempDir(), "s.jsonl")
+	s, err := Open(session, Limits{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	first, err := s.Enqueue(EnqueueRequest{
+		Envelope: PromptEnvelope{SubmitText: "first"}, Idempotency: "msg-1",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondRequest := PromptEnvelope{SubmitText: "second", Source: "bot", Extra: map[string]string{"route": "chat-1"}}
+	if _, err := s.UpdateItemWithIdempotency(
+		first.ItemID,
+		PromptEnvelope{SubmitText: "first\nsecond"},
+		"msg-2",
+		secondRequest,
+	); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.ClaimItem(first.ItemID); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.AckDequeue(first.ItemID); err != nil {
+		t.Fatal(err)
+	}
+	retry, err := s.Enqueue(EnqueueRequest{Envelope: secondRequest, Idempotency: "msg-2"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !retry.Idempotent || retry.ItemID != first.ItemID || len(s.Snapshot().Items) != 0 {
+		t.Fatalf("completed collect replay = %+v snapshot=%+v", retry, s.Snapshot())
+	}
+}
+
+func TestV1ManifestMigratesIdempotencyFingerprint(t *testing.T) {
+	session := filepath.Join(t.TempDir(), "s.jsonl")
+	s, err := Open(session, Limits{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, err := s.Enqueue(EnqueueRequest{
+		Envelope: PromptEnvelope{SubmitText: "legacy durable input"}, Idempotency: "legacy-msg-1",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.Close()
+
+	manifestPath := filepath.Join(store.SessionInboxDir(session), manifestName)
+	data, err := os.ReadFile(manifestPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var legacy map[string]any
+	if err := json.Unmarshal(data, &legacy); err != nil {
+		t.Fatal(err)
+	}
+	legacy["schemaVersion"] = float64(1)
+	delete(legacy, "idempotencyHashes")
+	delete(legacy, "receipts")
+	data, err = json.MarshalIndent(legacy, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(manifestPath, append(data, '\n'), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	reopened, err := Open(session, Limits{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reopened.Close()
+	retry, err := reopened.Enqueue(EnqueueRequest{
+		Envelope: PromptEnvelope{SubmitText: "legacy durable input"}, Idempotency: "legacy-msg-1",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !retry.Idempotent || retry.ItemID != first.ItemID {
+		t.Fatalf("migrated replay = %+v, first = %+v", retry, first)
+	}
+	if reopened.man.SchemaVersion != SchemaVersion || !validSHA256(reopened.man.IdempotencyHashes["legacy-msg-1"]) {
+		t.Fatalf("manifest was not upgraded with fingerprint: %+v", reopened.man)
+	}
+}
+
+func TestManifestBlobPathEscapeIsQuarantinedWithoutTouchingTarget(t *testing.T) {
+	session := filepath.Join(t.TempDir(), "s.jsonl")
+	inboxDir := store.SessionInboxDir(session)
+	if err := os.MkdirAll(filepath.Join(inboxDir, blobsDirName), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	target := filepath.Join(inboxDir, "outside.json")
+	if err := os.WriteFile(target, []byte("do-not-touch"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	bad := manifest{
+		SchemaVersion: SchemaVersion,
+		RunID:         ProcessRunID(),
+		Items: []InboxItemMeta{{
+			ID:        newRandomID(),
+			BlobName:  "../outside",
+			Intent:    IntentFollowup,
+			State:     StateQueued,
+			CreatedAt: time.Now().UTC(),
+			UpdatedAt: time.Now().UTC(),
+		}},
+	}
+	data, err := json.Marshal(bad)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(inboxDir, manifestName), data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	s, err := Open(session, Limits{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if snap := s.Snapshot(); !snap.Paused || !snap.Recovered || len(snap.Items) != 0 {
+		t.Fatalf("invalid manifest was not quarantined: %+v", snap)
+	}
+	got, err := os.ReadFile(target)
+	if err != nil || string(got) != "do-not-touch" {
+		t.Fatalf("path escape target changed: %q err=%v", got, err)
+	}
+	if _, err := s.blobPath("../outside"); err == nil {
+		t.Fatal("blobPath accepted a parent traversal")
+	}
+}
+
+func TestValidateManifestRejectsSemanticCorruption(t *testing.T) {
+	id := newRandomID()
+	base := InboxItemMeta{
+		ID: id, BlobName: id, Intent: IntentFollowup, State: StateQueued,
+		CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC(),
+	}
+	for name, mutate := range map[string]func(*manifest){
+		"negative size": func(m *manifest) { m.Items[0].ByteSize = -1 },
+		"duplicate id":  func(m *manifest) { m.Items = append(m.Items, m.Items[0]) },
+		"invalid state": func(m *manifest) { m.Items[0].State = InboxState("mystery") },
+		"orphan idempotency": func(m *manifest) {
+			m.Idempotency["msg-1"] = newRandomID()
+			m.IdempotencyHashes["msg-1"] = strings.Repeat("a", 64)
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			m := emptyManifest(ProcessRunID())
+			m.Items = []InboxItemMeta{base}
+			mutate(m)
+			if err := validateManifest(m, false); err == nil {
+				t.Fatalf("semantic corruption %q was accepted", name)
+			}
+		})
 	}
 }
 
@@ -323,7 +556,11 @@ func TestUpdateUsesImmutableBlobRevision(t *testing.T) {
 	if blobNameFor(updated) == oldBlob {
 		t.Fatal("update must write a new blob name, not overwrite in place")
 	}
-	if _, err := os.Stat(s.blobPath(oldBlob)); !os.IsNotExist(err) {
+	oldPath, err := s.blobPath(oldBlob)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(oldPath); !os.IsNotExist(err) {
 		t.Fatalf("old blob should be removed after successful update, err=%v", err)
 	}
 	_, env, err := s.ReadItem(rec.ItemID)
@@ -361,6 +598,65 @@ func TestCorruptManifestSalvagesBlobs(t *testing.T) {
 	}
 	if len(snap.Items) == 0 || snap.RecoveredN == 0 {
 		t.Fatalf("salvage must surface blobs, got items=%d recoveredN=%d", len(snap.Items), snap.RecoveredN)
+	}
+}
+
+func TestCorruptManifestSalvageRefusesSymlinkBlob(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlink creation may require elevated privileges")
+	}
+	session := filepath.Join(t.TempDir(), "s.jsonl")
+	inboxDir := store.SessionInboxDir(session)
+	blobsDir := filepath.Join(inboxDir, blobsDirName)
+	if err := os.MkdirAll(blobsDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	target := filepath.Join(t.TempDir(), "external.json")
+	if err := os.WriteFile(target, []byte(`{"submitText":"external secret"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(target, filepath.Join(blobsDir, newRandomID()+blobSuffix)); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(inboxDir, manifestName), []byte("{broken"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	s, err := Open(session, Limits{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if got := s.Snapshot(); !got.Paused || !got.Recovered || len(got.Items) != 0 {
+		t.Fatalf("symlink blob was salvaged: %+v", got)
+	}
+	data, err := os.ReadFile(target)
+	if err != nil || !strings.Contains(string(data), "external secret") {
+		t.Fatalf("external symlink target changed: %q err=%v", data, err)
+	}
+}
+
+func TestEnqueueRefusesSymlinkBlobsDirectory(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlink creation may require elevated privileges")
+	}
+	session := filepath.Join(t.TempDir(), "s.jsonl")
+	s, err := Open(session, Limits{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	target := t.TempDir()
+	if err := os.Symlink(target, filepath.Join(store.SessionInboxDir(session), blobsDirName)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Enqueue(EnqueueRequest{Envelope: PromptEnvelope{SubmitText: "must stay scoped"}}); err == nil {
+		t.Fatal("enqueue accepted a symlink blobs directory")
+	}
+	entries, err := os.ReadDir(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("enqueue wrote through symlink: %+v", entries)
 	}
 }
 
