@@ -647,7 +647,25 @@ Headless runs remain ephemeral and return fair bounded previews without refs.
 See [Subagent profiles](./SUBAGENT_PROFILES.md)
 for the user-facing command and file-format contract.
 
-### 3.11 Write claims are enforced, not advisory
+### 3.11 Sub-agents close with a host-adjudicated claim
+
+A writer sub-agent ends its run by calling `complete_subtask` with a `status`,
+a `summary`, the `acceptance_criteria` it was held to (each with the command it
+ran or the paths it changed), and whatever it left `unresolved`. Prose alone is
+still accepted, but it is no longer the interface the parent reasons over.
+
+The submitted status is a claim, not a verdict. Before the parent sees it, the
+host checks every citation against its own receipts: a `verification` criterion
+must name a command the host recorded as run, `diff`/`files` must name paths the
+host observed written or read, and a `manual` note is never self-backing. Any
+criterion the receipts cannot back is lowered to `unsatisfied`, a report holding
+one cannot stay `complete`, and the downgrade is printed with its reason. The
+host never raises a status.
+
+The parent therefore receives, in order: the adjudicated status and criteria,
+the child's own prose, and the host's own receipts of what it changed and ran.
+
+### 3.12 Write claims are enforced, not advisory
 
 A declared `write_paths` is one truth source used for both scheduling and
 enforcement. When a writer sub-agent declares explicit paths, the host binds its

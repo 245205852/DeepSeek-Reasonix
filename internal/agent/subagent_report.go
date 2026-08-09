@@ -69,6 +69,58 @@ func decorateExecutionReceipt(rec *evidence.Receipt, result string, ex *tool.She
 	rec.Verification = ex.Verification
 }
 
+// composeSubagentAnswer assembles everything the parent is shown for one child
+// run: the host-adjudicated completion claim when the child submitted one, the
+// child's own prose, then the host's receipts.
+func composeSubagentAnswer(answer string, sub *Agent, claims WritePathSet) string {
+	if report, reasons, ok := sub.CompletionReport(); ok {
+		answer = strings.TrimSpace(formatCompletionReport(report, reasons) + "\n\n" + answer)
+	}
+	return appendHostReceipts(answer, sub.EvidenceSummary(), claims)
+}
+
+// formatCompletionReport renders the child's claim after the host has lowered
+// whatever its receipts could not back. Downgrades are shown, never silently
+// applied: a parent that cannot see the adjudication cannot trust the status.
+func formatCompletionReport(report evidence.CompletionReport, reasons []string) string {
+	var b strings.Builder
+	b.WriteString("status: ")
+	b.WriteString(string(report.Status))
+	if len(reasons) > 0 {
+		b.WriteString(" (lowered by the host: unbacked criterion claims)")
+	}
+	b.WriteString("\nsummary: ")
+	b.WriteString(report.Summary)
+	for _, c := range report.Criteria {
+		b.WriteString("\n  " + c.ID + " " + string(c.Status))
+		if proof := criterionProof(c); proof != "" {
+			b.WriteString(" — " + proof)
+		}
+	}
+	for _, reason := range reasons {
+		b.WriteString("\n  host lowered " + reason)
+	}
+	for _, u := range report.Unresolved {
+		b.WriteString("\nunresolved: " + u)
+	}
+	return b.String()
+}
+
+func criterionProof(c evidence.AcceptanceCriterion) string {
+	var parts []string
+	for _, e := range c.Evidence {
+		switch {
+		case strings.TrimSpace(e.Command) != "":
+			parts = append(parts, e.Command)
+		case len(e.Paths) > 0:
+			parts = append(parts, strings.Join(e.Paths, " "))
+		case strings.TrimSpace(e.Summary) != "":
+			parts = append(parts, e.Kind+": "+e.Summary)
+		}
+	}
+	return joinBoundedReceipts(parts)
+}
+
 // appendHostReceipts attaches the host's own attestation to a child's answer.
 // A child cannot write, suppress, or contradict these lines. An empty block is
 // omitted entirely, so read-only research children stay exactly as cheap as

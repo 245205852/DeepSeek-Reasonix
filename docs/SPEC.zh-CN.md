@@ -235,7 +235,15 @@ Bubble Tea TUI 的 modal overlay 必须隐藏 composer；slash/`@` autocomplete 
 
 `reasonix subagent try` 使用只读 Skill runner；`reasonix subagent run` 使用常规权限与 Sandbox。`task` 支持 `profile`、`model`、`effort` 和 `write_paths`；`fleet` 在 session scheduler 上并发调度多个任务。详见[子智能体 Profile](./SUBAGENT_PROFILES.zh-CN.md)。
 
-### 3.11 写入声明是强制执行的，不是建议
+### 3.11 子智能体以 host 裁决过的结论收尾
+
+写入型子智能体通过调用 `complete_subtask` 结束运行，提交 `status`、`summary`、它被要求满足的 `acceptance_criteria`（每条附上实际跑过的命令或改动的路径），以及尚未解决的 `unresolved`。纯散文仍然接受，但它不再是父智能体据以判断的接口。
+
+提交的 status 是主张，不是判决。在父智能体看到之前，host 会用自己的 receipt 核对每一条引用：`verification` 必须指向 host 记录为执行过的命令，`diff`/`files` 必须指向 host 观测到读写过的路径，而 `manual` 永远不能自证。receipt 无法背书的条目一律降级为 `unsatisfied`，含有此类条目的报告不能保持 `complete`，且降级连同原因一并打印。host 只会下调，永不上调。
+
+因此父智能体收到的顺序是：裁决后的 status 与条目、子智能体自己的散文、host 关于改了什么和跑了什么的 receipt。
+
+### 3.12 写入声明是强制执行的，不是建议
 
 `write_paths` 是调度与强制执行共用的同一个真相来源。写入型子智能体声明了显式路径后，host 会在子智能体启动前把它的工具注册表绑定到该声明：
 

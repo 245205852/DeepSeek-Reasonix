@@ -164,6 +164,7 @@ func SubagentToolRegistryForDepthWithRuntime(parent *tool.Registry, names []stri
 	exclude = append(exclude, subagentJobTools...)
 	sub := FilterRegistry(parent, names, exclude...)
 	stripDirectMCPTools(sub)
+	AttachCompleteSubtaskTool(sub)
 	attachSubagentCapabilityProxy(parent, sub, names, runtime)
 	if bash, ok := sub.Get("bash"); ok {
 		sub.Add(foregroundOnlyBash{inner: bash})
@@ -1656,7 +1657,7 @@ func (t *TaskTool) runSubSession(ctx context.Context, prompt string, subReg *too
 	// Capture the pristine task before host framing is prepended: delivery
 	// intent classification must judge the task, not the wrapper.
 	opts.ClassifierTaskText = prompt
-	prompt = t.withWorkspaceContext(prompt)
+	prompt = t.withWorkspaceContext(prompt) + "\n\n" + completeSubtaskContract
 	// The child provider owns the final vision decision. Text-only providers
 	// retain the attachment metadata but omit image parts during serialization.
 	ctx = WithUserImages(ctx, SubagentImageCandidates(ctx))
@@ -1875,7 +1876,7 @@ func RunSubAgentWithSession(ctx context.Context, prov provider.Provider, reg *to
 		// Still merge any partial child evidence so parent gates see real writes.
 		mergeChildEvidence(ctx, sub)
 		if answer, ok := salvageReadinessExhaustedAnswer(sub, sess, opts, err); ok {
-			return appendHostReceipts(answer, sub.EvidenceSummary(), SubagentWriteClaim(ctx)), nil
+			return composeSubagentAnswer(answer, sub, SubagentWriteClaim(ctx)), nil
 		}
 		return "", fmt.Errorf("sub-agent: %w", err)
 	}
@@ -1903,7 +1904,7 @@ func RunSubAgentWithSession(ctx context.Context, prov provider.Provider, reg *to
 	}
 	mergeChildEvidence(ctx, sub)
 	if answer := latestAssistantAnswer(sess); answer != "" {
-		return appendHostReceipts(answer, sub.EvidenceSummary(), SubagentWriteClaim(ctx)), nil
+		return composeSubagentAnswer(answer, sub, SubagentWriteClaim(ctx)), nil
 	}
 	return "", fmt.Errorf("sub-agent finished without producing a final answer")
 }
