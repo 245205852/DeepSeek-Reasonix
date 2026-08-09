@@ -799,6 +799,97 @@ await act(async () => {
   providerRaceRoot.unmount();
 });
 
+// Cancelling a freshly fetched model catalog must also clear the success copy
+// that asks the user to confirm and save that now-hidden draft.
+const providerRefreshCancelRootEl = document.createElement("div");
+document.body.appendChild(providerRefreshCancelRootEl);
+const providerRefreshCancelRoot = createRoot(providerRefreshCancelRootEl);
+const providerRefreshCancelSettings = baseSettings("standard");
+providerRefreshCancelSettings.defaultModel = "deepseek/deepseek-v4-flash";
+providerRefreshCancelSettings.providers = [{
+  name: "deepseek",
+  builtIn: true,
+  added: true,
+  kind: "anthropic",
+  baseUrl: "https://api.deepseek.com/anthropic",
+  chatUrl: "",
+  models: ["deepseek-v4-flash"],
+  visionModels: [],
+  visionModelsConfigured: true,
+  visionCapability: "unsupported",
+  modelsUrl: "https://api.deepseek.com/models",
+  default: "deepseek-v4-flash",
+  apiKeyEnv: "DEEPSEEK_API_KEY",
+  keySet: true,
+  requiresKey: true,
+  configured: true,
+  balanceUrl: "https://api.deepseek.com/user/balance",
+  contextWindow: 1_000_000,
+  reasoningProtocol: "",
+  thinking: "enabled",
+  webSearch: true,
+  serverWebSearchCapability: true,
+  supportedEfforts: [],
+  defaultEffort: "",
+}];
+window.go = {
+  main: {
+    App: {
+      Settings: async () => providerRefreshCancelSettings,
+      FetchAllProviderModels: async () => ({}),
+      FetchProviderModels: async () => ["deepseek-v4-flash", "deepseek-v4-pro"],
+    } as Partial<AppBindings> as AppBindings,
+  },
+};
+
+await act(async () => {
+  providerRefreshCancelRoot.render(
+    <LocaleProvider>
+      <SettingsPanel initialTab="models" desktopPlatform="linux" onClose={() => {}} onChanged={() => {}} />
+    </LocaleProvider>,
+  );
+  await flushPromises();
+});
+const providerRefreshCancelAccessButton = Array.from(providerRefreshCancelRootEl.querySelectorAll(".settings-subtab")).find(
+  (button) => button.textContent?.trim() === "Access",
+) as HTMLButtonElement | undefined;
+if (!providerRefreshCancelAccessButton) throw new Error("provider refresh cancel Access subtab did not render");
+await act(async () => {
+  providerRefreshCancelAccessButton.click();
+  await flushPromises();
+});
+const providerRefreshCancelButton = Array.from(providerRefreshCancelRootEl.querySelectorAll("button")).find(
+  (button) => button.textContent?.trim() === "Refresh models",
+) as HTMLButtonElement | undefined;
+if (!providerRefreshCancelButton) throw new Error("provider refresh action did not render");
+await act(async () => {
+  providerRefreshCancelButton.click();
+  await flushPromises();
+});
+await waitFor(
+  "provider model draft",
+  () => providerRefreshCancelRootEl.textContent?.includes("Found 2 models for DeepSeek Official. Review and save the enabled list.") === true,
+);
+const providerModelDraftCancelButton = providerRefreshCancelRootEl.querySelector<HTMLButtonElement>(
+  ".provider-model-draft__actions button",
+);
+if (!providerModelDraftCancelButton) throw new Error("provider model draft cancel action did not render");
+await act(async () => {
+  providerModelDraftCancelButton.click();
+  await flushPromises();
+});
+ok(
+  providerRefreshCancelRootEl.textContent?.includes("Found 2 models for DeepSeek Official. Review and save the enabled list.") === false,
+  "cancelling a provider model draft clears its stale save instruction",
+);
+ok(
+  providerRefreshCancelRootEl.querySelector(".provider-model-draft") === null,
+  "cancelling a provider model draft closes the candidate editor",
+);
+await act(async () => {
+  providerRefreshCancelRoot.unmount();
+});
+
 // A settings mutation may persist before a workspace-specific runtime rebuild
 // fails. The panel must re-read the authoritative snapshot on that error so an
 // already-completed protocol upgrade is not offered again.

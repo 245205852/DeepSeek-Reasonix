@@ -5124,7 +5124,10 @@ function ProvidersSection({ s, busy, apply }: SectionProps) {
             onToggleDraftVision={(model) => toggleModelDraftVision(group.id, model)}
             onSelectAllDraftModels={() => updateModelDraftSelection(group.id, (draft) => draft.candidates)}
             onClearDraftModels={() => updateModelDraftSelection(group.id, () => [])}
-            onCancelDraftModels={() => setGroupModelDraft(group.id, null)}
+            onCancelDraftModels={() => {
+              setGroupModelDraft(group.id, null);
+              setGroupFetchResult(group.id, null);
+            }}
             onSaveDraftModels={() => void saveModelDraft(group)}
             onToggleWebSearch={(enabled) => {
               const providerNames = group.providers.map((provider) => provider.name);
