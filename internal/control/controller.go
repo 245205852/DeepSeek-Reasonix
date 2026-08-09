@@ -4662,6 +4662,7 @@ func (c *Controller) setSessionPath(p string, fresh bool) {
 // destroy window, so callers can move/delete persistent artifacts in between.
 type SessionDestroyHandle struct {
 	Wait    func() jobs.TeardownResult
+	WaitFor func(time.Duration) jobs.TeardownResult
 	WaitAll func()
 	Finish  func()
 	Async   bool
@@ -4681,6 +4682,13 @@ func (c *Controller) BeginDestroySession(sessionPath string) SessionDestroyHandl
 	return SessionDestroyHandle{
 		Wait: func() jobs.TeardownResult {
 			return c.jobs.WaitTeardown(context.Background(), teardown, c.jobs.TeardownGrace())
+		},
+		WaitFor: func(requested time.Duration) jobs.TeardownResult {
+			grace := c.jobs.TeardownGrace()
+			if requested >= 0 && requested < grace {
+				grace = requested
+			}
+			return c.jobs.WaitTeardown(context.Background(), teardown, grace)
 		},
 		WaitAll: func() {
 			for _, ch := range teardown.DoneChannels() {

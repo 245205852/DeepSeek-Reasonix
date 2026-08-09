@@ -7660,7 +7660,10 @@ func (a *App) SetTopicPinned(topicID string, pinned bool) error {
 	return nil
 }
 
-var errTopicHasActiveWork = errors.New("wait for the session to finish, answer pending prompts, and stop background jobs before archiving this topic")
+var (
+	errTopicHasActiveWork = errors.New("wait for the session to finish, answer pending prompts, and stop background jobs before archiving this topic")
+	errTopicArchiveBusy   = errors.New("Reasonix is finishing another session change — wait a moment and retry archiving")
+)
 
 // TrashTopic removes an idle topic from the project tree and moves its saved
 // session records into the session trash. Idle in-process runtimes are detached
@@ -7682,34 +7685,95 @@ func (a *App) topicHasActiveRuntimeWork(topicID string) bool {
 	return false
 }
 
-func (a *App) trashTopic(topicID string) error {
+func (a *App) trashTopic(topicID string) (retErr error) {
 	if strings.TrimSpace(topicID) == "" {
 		return fmt.Errorf("topicID is required")
 	}
 
+	started := time.Now()
+	phase := "start"
+	targetCount := 0
+	runtimeCount := 0
+	defer func() {
+		outcome := "ok"
+		if retErr != nil {
+			outcome = "failed"
+		}
+		slog.Debug("desktop: topic archive timing",
+			"outcome", outcome,
+			"phase", phase,
+			"total_ms", time.Since(started).Milliseconds(),
+			"target_count", targetCount,
+			"runtime_count", runtimeCount,
+		)
+	}()
+
 	var fallback fallbackRuntimeTarget
 	var changedDirs []string
 	if err := func() error {
-		defer a.lockRuntimeMutation("trash-topic")()
-		a.sessionRemovalMu.Lock()
+		phase = "runtime_lock"
+		releaseRuntime, ok := a.tryLockRuntimeMutation("trash-topic")
+		if !ok {
+			return errTopicArchiveBusy
+		}
+		defer releaseRuntime()
+		phase = "removal_lock"
+		if !a.sessionRemovalMu.TryLock() {
+			return errTopicArchiveBusy
+		}
 		defer a.sessionRemovalMu.Unlock()
+		phase = "active_work_check"
 		if a.topicHasActiveRuntimeWork(topicID) {
 			return errTopicHasActiveWork
 		}
 
+		phase = "target_scan"
 		targets, err := a.topicTrashTargets(topicID)
 		if err != nil {
 			return err
 		}
+		targetCount = len(targets)
 		for _, target := range targets {
 			changedDirs = append(changedDirs, target.dir)
 		}
-		removed, nextFallback := a.removeTopicRuntimeBindings(topicID)
-		fallback = nextFallback
-		if err := a.prepareRemovedSessionRuntimes(removed); err != nil {
-			a.closeRemainingRemovedSessionRuntimesAdmissionHeld(removed, map[control.SessionAPI]bool{})
+
+		phase = "snapshot"
+		removed := a.captureTopicRuntimeBindings(topicID)
+		runtimeCount = len(removed)
+		if err := a.snapshotTopicRuntimeBindings(removed); err != nil {
 			return err
 		}
+
+		// Publish durable logical-removal markers before detaching runtimes or
+		// moving the first artifact. A crash or partial filesystem failure can
+		// then converge through the existing startup reconciler without losing
+		// the conversation. The legacy "delete" operation value is retained so
+		// supported older binaries continue to move these sessions to trash.
+		phase = "mark_cleanup_pending"
+		marked := make([]string, 0, len(targets))
+		rollbackMarkers := func() {
+			for _, path := range marked {
+				if err := agent.ClearCleanupPending(path); err != nil {
+					slog.Warn("desktop: rollback topic archive marker failed", "err", err)
+				}
+			}
+		}
+		for _, target := range targets {
+			if err := agent.MarkCleanupPending(target.sessionPath, "delete"); err != nil {
+				rollbackMarkers()
+				return err
+			}
+			marked = append(marked, target.sessionPath)
+		}
+
+		phase = "detach_runtimes"
+		nextFallback, unchanged := a.removeTopicRuntimeBindingsIfUnchanged(topicID, removed)
+		if !unchanged {
+			rollbackMarkers()
+			return errTopicArchiveBusy
+		}
+		fallback = nextFallback
+		a.finalizeRemovedTopicRuntimes(removed)
 		destroyBegun := false
 		closedRemoved := map[control.SessionAPI]bool{}
 		defer func() {
@@ -7721,6 +7785,7 @@ func (a *App) trashTopic(topicID string) error {
 		}()
 
 		for _, target := range targets {
+			phase = "teardown"
 			destroys := a.destroyHandlesForSession(target.dir, target.sessionPath, removed)
 			if len(destroys) > 0 {
 				destroyBegun = true
@@ -7728,11 +7793,9 @@ func (a *App) trashTopic(topicID string) error {
 			teardownTimedOut := waitDestroyHandles(destroys)
 			a.closeRemovedSessionRuntimesForSessionAfterDestroyAdmissionHeld(removed, target.dir, target.sessionPath, closedRemoved)
 			if teardownTimedOut {
-				if err := agent.MarkCleanupPending(target.sessionPath, "delete"); err != nil {
-					return err
-				}
 				go delayedDesktopSessionTrash(target.dir, target.sessionPath, target.key, destroys)
 			} else {
+				phase = "move_artifacts"
 				err := trashSessionArtifacts(target.dir, target.sessionPath, target.key)
 				finishDestroyHandles(destroys)
 				if err != nil {
@@ -7740,16 +7803,22 @@ func (a *App) trashTopic(topicID string) error {
 				}
 			}
 		}
+		phase = "delete_topic_metadata"
 		return a.deleteTopic(topicID)
 	}(); err != nil {
 		return err
 	}
 	if fallback.needs {
+		phase = "open_fallback"
 		fallback.topicID = ""
 		if err := a.openFallbackRuntime(fallback); err != nil {
-			return err
+			// The archive transaction is already committed. A blank-surface boot
+			// failure must not report the successful archive as failed or invite a
+			// duplicate destructive retry.
+			slog.Warn("desktop: open fallback after topic archive failed", "err", err)
 		}
 	}
+	phase = "notify"
 	if len(changedDirs) > 0 {
 		a.emitProjectTreeChangedForSessionDirs(changedDirs...)
 	} else {

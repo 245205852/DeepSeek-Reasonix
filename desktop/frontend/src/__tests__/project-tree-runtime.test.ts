@@ -9,6 +9,7 @@ import {
   projectTreeReadActivityKey,
   projectTreeTopicHasUnreadActivity,
   projectTreeTopicArchiveBlocked,
+  projectTreeTrashingTopics,
   projectTreeShouldRenderTopicActions,
   projectTreeTopicMetaLine,
   arrangeClassicProjectTree,
@@ -34,6 +35,14 @@ function eq(a: unknown, b: unknown, label: string) {
 }
 
 console.log("\nproject tree runtime sessions");
+
+const noTrashingTopics = new Set<string>();
+const topicATrashing = projectTreeTrashingTopics(noTrashingTopics, "topic-a", true);
+const twoTopicsTrashing = projectTreeTrashingTopics(topicATrashing, "topic-b", true);
+eq([...topicATrashing], ["topic-a"], "archive pending state is keyed by topic");
+eq([...twoTopicsTrashing], ["topic-a", "topic-b"], "another topic remains independently actionable");
+eq([...projectTreeTrashingTopics(twoTopicsTrashing, "topic-a", false)], ["topic-b"], "settling one archive leaves the other pending");
+eq(projectTreeTrashingTopics(topicATrashing, "topic-a", true) === topicATrashing, true, "same pending state preserves Set identity");
 
 const testT = (key: string, vars?: Record<string, string | number>) => {
   if (key === "history.turnOne") return `${vars?.n ?? 1} turn`;

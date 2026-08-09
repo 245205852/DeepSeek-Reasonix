@@ -452,7 +452,7 @@ func trashSessionArtifactsBeforeMove(dir, sessionPath, key string, beforeMove fu
 		return err
 	}
 	if !target.shouldMove {
-		return nil
+		return agent.ClearCleanupPending(sessionPath)
 	}
 	// Acquired after prepareSessionTrashTarget: the duplicate-trash path in
 	// there takes its own removal guard, and the guard is not reentrant.

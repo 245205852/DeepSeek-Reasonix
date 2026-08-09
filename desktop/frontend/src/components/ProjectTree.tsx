@@ -5,7 +5,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import type { CSSProperties, DragEvent as ReactDragEvent, KeyboardEvent as ReactKeyboardEvent, MouseEvent as ReactMouseEvent } from "react";
-import { Archive, ArrowDown, Pencil, Plus, Folder, FolderPlus, Search, BriefcaseBusiness, Copy, FolderOpen, XCircle, Check, ListCollapse, ListRestart, MessageSquare, Clock, Pin, MoreHorizontal, Minimize2, Maximize2, GitBranch } from "lucide-react";
+import { Archive, ArrowDown, Pencil, Plus, Folder, FolderPlus, Search, BriefcaseBusiness, Copy, FolderOpen, XCircle, Check, ListCollapse, ListRestart, MessageSquare, Clock, Pin, MoreHorizontal, Minimize2, Maximize2, GitBranch, LoaderCircle } from "lucide-react";
 import { asArray } from "../lib/array";
 import { useToast } from "../lib/toast";
 import { app } from "../lib/bridge";
@@ -200,6 +200,15 @@ export function projectTreeTopicArchiveBlocked(node: ProjectNode): boolean {
   if (status === "thinking" || status === "streaming" || status === "waiting_confirmation" || status === "background_job") return true;
   if (status === "paused" || status === "error") return false;
   return Boolean(node.running);
+}
+
+export function projectTreeTrashingTopics(previous: Set<string>, topicId: string, trashing: boolean): Set<string> {
+  const id = topicId.trim();
+  if (!id || previous.has(id) === trashing) return previous;
+  const next = new Set(previous);
+  if (trashing) next.add(id);
+  else next.delete(id);
+  return next;
 }
 
 function topicStatusLabel(node: ProjectNode, t: Translator): string {
@@ -650,7 +659,8 @@ export function ProjectTree({
   const [hoverCard, setHoverCard] = useState<{ key: string; card: ProjectTreeTopicHoverCard; left: number; top: number } | null>(null);
   const hoverCardTimerRef = useRef<number | null>(null);
   const creatingRef = useRef(false);
-  const trashingRef = useRef(false);
+  const trashingTopicsRef = useRef<Set<string>>(new Set());
+  const [trashingTopics, setTrashingTopics] = useState<Set<string>>(new Set());
   const clickTimerRef = useRef<ProjectTreePendingTopicOpen | null>(null);
   useEffect(() => {
     return () => {
@@ -1042,8 +1052,10 @@ export function ProjectTree({
   };
 
   const trashTopic = async (topicId: string) => {
-    if (trashingRef.current) return;
-    trashingRef.current = true;
+    if (trashingTopicsRef.current.has(topicId)) return;
+    const pending = projectTreeTrashingTopics(trashingTopicsRef.current, topicId, true);
+    trashingTopicsRef.current = pending;
+    setTrashingTopics(pending);
     try {
       await app.TrashTopic(topicId);
       setMenuTopic(null);
@@ -1054,7 +1066,9 @@ export function ProjectTree({
     } catch (err) {
       showToast(err instanceof Error ? err.message : String(err), "error");
     } finally {
-      trashingRef.current = false;
+      const settled = projectTreeTrashingTopics(trashingTopicsRef.current, topicId, false);
+      trashingTopicsRef.current = settled;
+      setTrashingTopics(settled);
     }
   };
 
@@ -1323,6 +1337,7 @@ export function ProjectTree({
       const showSideTime = sideTimeVisible && !showWaitingPill;
       const unread = projectTreeTopicHasUnreadActivity(node, readActivity, activeScope, activeWorkspaceRoot, activeTopicId, activeSessionPath);
       const topicId = node.topicId ?? "";
+      const topicTrashing = trashingTopics.has(topicId);
       const imSource = scope === "global" && topicId ? imTopicSources[topicId] : undefined;
       const imSourceLabel = imSource?.label || "";
       const imSourceTitle = imSourceLabel ? t("msg.fromIm", { source: imSourceLabel }) : "";
@@ -1361,9 +1376,9 @@ export function ProjectTree({
         },
         {
           key: "trash",
-          icon: <Archive size={13} />,
+          icon: topicTrashing ? <LoaderCircle className="project-tree__archive-spinner" size={13} /> : <Archive size={13} />,
           label: confirmAction?.topicId === topicId && confirmAction.action === "trash" ? t("history.confirmMoveToTrash") : t("history.moveToTrash"),
-          disabled: archiveBlocked,
+          disabled: archiveBlocked || topicTrashing,
           danger: true,
           onSelect: () => {
             if (confirmAction?.topicId === topicId && confirmAction.action === "trash") void trashTopic(topicId);
@@ -1529,17 +1544,18 @@ export function ProjectTree({
               </Tooltip>
               <Tooltip label={t("projectTree.archiveTopic")} side="top" className="project-tree__topic-action-slot">
                 <button
-                  className="project-tree__topic-action project-tree__topic-action--archive"
+                  className={`project-tree__topic-action project-tree__topic-action--archive${topicTrashing ? " project-tree__topic-action--busy" : ""}`}
                   type="button"
                   aria-label={t("projectTree.archiveTopic")}
-                  disabled={archiveBlocked}
+                  aria-busy={topicTrashing}
+                  disabled={archiveBlocked || topicTrashing}
                   onClick={(event) => {
                     event.preventDefault();
                     event.stopPropagation();
                     void trashTopic(topicId);
                   }}
                 >
-                  <Archive size={15} aria-hidden="true" />
+                  {topicTrashing ? <LoaderCircle size={15} aria-hidden="true" /> : <Archive size={15} aria-hidden="true" />}
                 </button>
               </Tooltip>
             </span>
@@ -1750,11 +1766,13 @@ export function ProjectTree({
       },
       {
         key: "archive-active-topic",
-        icon: <Archive size={13} />,
+        icon: activeTopicId && trashingTopics.has(activeTopicId)
+          ? <LoaderCircle className="project-tree__archive-spinner" size={13} />
+          : <Archive size={13} />,
         label: activeTopicId && confirmAction?.topicId === activeTopicId && confirmAction.action === "trash"
           ? t("history.confirmMoveToTrash")
           : t("projectTree.archiveConversation"),
-        disabled: !activeTopicInProject || !activeTopicId || activeTopicArchiveBlocked,
+        disabled: !activeTopicInProject || !activeTopicId || activeTopicArchiveBlocked || Boolean(activeTopicId && trashingTopics.has(activeTopicId)),
         danger: true,
         onSelect: () => {
           if (!activeTopicId) return;

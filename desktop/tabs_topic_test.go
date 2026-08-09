@@ -25,6 +25,13 @@ func (c *runtimeStatusSessionController) RuntimeStatus() control.RuntimeStatus {
 	return c.status
 }
 
+type snapshotErrorSessionController struct {
+	control.SessionAPI
+	err error
+}
+
+func (c *snapshotErrorSessionController) Snapshot() error { return c.err }
+
 func waitForTabReady(t *testing.T, app *App, tabID string) *WorkspaceTab {
 	t.Helper()
 	deadline := time.Now().Add(5 * time.Second)
@@ -3140,6 +3147,9 @@ func TestTrashTopicMovesOpenSessionToTrash(t *testing.T) {
 	if _, err := os.Stat(trashPath); err != nil {
 		t.Fatalf("open topic session should be moved to trash: %v", err)
 	}
+	if agent.IsCleanupPending(sessionPath) {
+		t.Fatal("completed topic archive left a cleanup-pending marker")
+	}
 	trashed := app.ListTrashedSessions()
 	if len(trashed) != 1 || trashed[0].Path != trashPath {
 		t.Fatalf("trashed sessions = %#v, want %q", trashed, trashPath)
@@ -3153,6 +3163,90 @@ func TestTrashTopicMovesOpenSessionToTrash(t *testing.T) {
 	}
 	if got := loadTopicTitle(projectRoot, topicID); got != "" {
 		t.Fatalf("topic title should be removed, got %q", got)
+	}
+}
+
+func TestTrashTopicSnapshotFailureKeepsRuntimeAndFiles(t *testing.T) {
+	isolateDesktopUserDirs(t)
+
+	projectRoot := t.TempDir()
+	topicID := "topic_snapshot_failure"
+	if err := addProject(projectRoot, ""); err != nil {
+		t.Fatalf("add project: %v", err)
+	}
+	if err := setTopicTitle(projectRoot, topicID, "Snapshot failure"); err != nil {
+		t.Fatalf("set topic title: %v", err)
+	}
+	dir := config.SessionDir()
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("mkdir sessions: %v", err)
+	}
+	sessionPath := writeTopicSessionWithPrompt(
+		t, dir, "snapshot-failure.jsonl", topicID, "Snapshot failure", projectRoot, "preserve me", time.Now(),
+	)
+	base := controllerWithContent(t, sessionPath)
+	defer base.Close()
+	snapshotErr := errors.New("snapshot blocked")
+	ctrl := &snapshotErrorSessionController{SessionAPI: base, err: snapshotErr}
+	tab := &WorkspaceTab{
+		ID:            "snapshot-failure",
+		Scope:         "project",
+		WorkspaceRoot: projectRoot,
+		TopicID:       topicID,
+		TopicTitle:    "Snapshot failure",
+		SessionPath:   sessionPath,
+		Ctrl:          ctrl,
+		Ready:         true,
+		disabledMCP:   map[string]ServerView{},
+	}
+	app := &App{
+		tabs:        map[string]*WorkspaceTab{tab.ID: tab},
+		tabOrder:    []string{tab.ID},
+		activeTabID: tab.ID,
+	}
+
+	if err := app.TrashTopic(topicID); !errors.Is(err, snapshotErr) {
+		t.Fatalf("TrashTopic snapshot error = %v, want %v", err, snapshotErr)
+	}
+	if got := app.tabs[tab.ID]; got != tab || tab.removed {
+		t.Fatalf("snapshot failure changed runtime binding: got=%p removed=%v", got, tab.removed)
+	}
+	if got := ctrl.SessionPath(); !sameDesktopPath(got, sessionPath) {
+		t.Fatalf("snapshot failure session path = %q, want %q", got, sessionPath)
+	}
+	if agent.IsCleanupPending(sessionPath) {
+		t.Fatal("snapshot failure must not publish a cleanup-pending marker")
+	}
+	if _, err := os.Stat(sessionPath); err != nil {
+		t.Fatalf("snapshot failure removed the session file: %v", err)
+	}
+	if got := loadTopicTitle(projectRoot, topicID); got != "Snapshot failure" {
+		t.Fatalf("snapshot failure topic title = %q", got)
+	}
+}
+
+func TestTrashTopicRejectsConcurrentRuntimeMutationWithoutWaiting(t *testing.T) {
+	isolateDesktopUserDirs(t)
+
+	topicID := "topic_runtime_mutation_busy"
+	if err := setTopicTitle("", topicID, "Runtime mutation busy"); err != nil {
+		t.Fatalf("set topic title: %v", err)
+	}
+	app := &App{}
+	app.runtimeRebuildMu.Lock()
+	started := time.Now()
+	err := app.TrashTopic(topicID)
+	elapsed := time.Since(started)
+	app.runtimeRebuildMu.Unlock()
+
+	if !errors.Is(err, errTopicArchiveBusy) {
+		t.Fatalf("TrashTopic error = %v, want %v", err, errTopicArchiveBusy)
+	}
+	if elapsed > time.Second {
+		t.Fatalf("TrashTopic waited %s behind another runtime mutation", elapsed)
+	}
+	if got := loadTopicTitle("", topicID); got != "Runtime mutation busy" {
+		t.Fatalf("busy archive changed topic title to %q", got)
 	}
 }
 
@@ -3288,7 +3382,7 @@ func TestTrashTopicRejectsRunningDetachedRuntime(t *testing.T) {
 	}
 }
 
-func TestTrashTopicWaitsForConcurrentTurnAdmission(t *testing.T) {
+func TestTrashTopicRejectsConcurrentTurnAdmissionWithoutWaiting(t *testing.T) {
 	isolateDesktopUserDirs(t)
 
 	topicID := "topic_concurrent_turn_trash"
@@ -3344,31 +3438,12 @@ func TestTrashTopicWaitsForConcurrentTurnAdmission(t *testing.T) {
 		time.Sleep(time.Millisecond)
 	}
 
-	trashEntered := make(chan struct{})
-	var trashEnteredOnce sync.Once
-	app.runtimeMutationBeforeLockHook = func(operation string) {
-		if operation == "trash-topic" {
-			trashEnteredOnce.Do(func() { close(trashEntered) })
-		}
+	started := time.Now()
+	if err := app.TrashTopic(topicID); !errors.Is(err, errTopicArchiveBusy) {
+		t.Fatalf("concurrent TrashTopic error = %v, want %v", err, errTopicArchiveBusy)
 	}
-	trashDone := make(chan error, 1)
-	go func() { trashDone <- app.TrashTopic(topicID) }()
-	select {
-	case <-trashEntered:
-	case <-time.After(5 * time.Second):
-		t.Fatal("TrashTopic did not reach the runtime mutation barrier")
-	}
-
-	// Wait until TrashTopic owns runtimeRebuildMu and is queued on the admission
-	// writer. Releasing the turn gate now must let SubmitToTab publish Running
-	// before TrashTopic can re-check active work.
-	deadline = time.Now().Add(5 * time.Second)
-	for app.runtimeRebuildMu.TryLock() {
-		app.runtimeRebuildMu.Unlock()
-		if time.Now().After(deadline) {
-			t.Fatal("TrashTopic never acquired the runtime rebuild lock")
-		}
-		time.Sleep(time.Millisecond)
+	if elapsed := time.Since(started); elapsed > time.Second {
+		t.Fatalf("concurrent TrashTopic waited %s instead of returning busy", elapsed)
 	}
 	tab.turnStartMu.Unlock()
 	turnGateHeld = false
@@ -3377,9 +3452,6 @@ func TestTrashTopicWaitsForConcurrentTurnAdmission(t *testing.T) {
 		t.Fatalf("SubmitToTab: %v", err)
 	}
 	<-runner.started
-	if err := <-trashDone; !errors.Is(err, errTopicHasActiveWork) {
-		t.Fatalf("concurrent TrashTopic error = %v, want %v", err, errTopicHasActiveWork)
-	}
 	if !ctrl.Running() {
 		t.Fatal("rejected archive should leave the concurrently admitted turn running")
 	}
