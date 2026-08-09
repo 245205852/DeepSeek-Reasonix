@@ -16,14 +16,15 @@ func TestFrontendEventSinkForwardsAuditCapabilities(t *testing.T) {
 	event.RecordMemoryRecall(s, event.MemoryRecallAudit{Suppressed: "probe"})
 	event.RecordDelegationAdmission(s, event.DelegationAdmissionAudit{Tool: "probe"})
 	event.RecordContractShadow(s, event.ContractShadowAudit{Verdict: "probe"})
-	if inner.outcome != 1 || inner.recall != 1 || inner.delegation != 1 || inner.contract != 1 {
+	event.RecordCompletionReport(s, event.CompletionReportAudit{Verdict: "probe"})
+	if inner.outcome != 1 || inner.recall != 1 || inner.delegation != 1 || inner.contract != 1 || inner.completion != 1 {
 		t.Fatalf("audits dropped by frontendEventSink: %+v", inner)
 	}
 }
 
 type capabilityProbeSink struct {
 	event.Sink
-	outcome, recall, delegation, contract int
+	outcome, recall, delegation, contract, completion int
 }
 
 func (p *capabilityProbeSink) RecordOutcomeProgress(evidence.OutcomeSample) { p.outcome++ }
@@ -32,3 +33,6 @@ func (p *capabilityProbeSink) RecordDelegationAdmission(event.DelegationAdmissio
 	p.delegation++
 }
 func (p *capabilityProbeSink) RecordContractShadow(event.ContractShadowAudit) { p.contract++ }
+func (p *capabilityProbeSink) RecordCompletionReport(event.CompletionReportAudit) {
+	p.completion++
+}

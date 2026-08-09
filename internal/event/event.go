@@ -621,6 +621,40 @@ func RecordContractShadow(s Sink, a ContractShadowAudit) {
 	}
 }
 
+// CompletionReportAudit is the host-authored completion report's end-of-turn
+// summary: counts, enums, and gap kinds only, never paths or command text.
+// The gap counters carry the point — what the turn left unproven.
+type CompletionReportAudit struct {
+	Verdict             string
+	Risk                string
+	Criteria            int
+	CriteriaSatisfied   int
+	Changes             int
+	ChangesUnreviewed   int
+	Verifications       int
+	VerificationsFailed int
+	VerificationsStale  int
+	Gaps                int
+	GapKinds            []string
+}
+
+// CompletionReportAuditSink is an optional sink capability; implementations
+// must keep it content-free, like every other audit channel.
+type CompletionReportAuditSink interface {
+	RecordCompletionReport(CompletionReportAudit)
+}
+
+// RecordCompletionReport forwards the completion summary only to sinks that
+// explicitly opt in. Ordinary UI sinks receive nothing.
+func RecordCompletionReport(s Sink, a CompletionReportAudit) {
+	if nilutil.IsNil(s) {
+		return
+	}
+	if cs, ok := s.(CompletionReportAuditSink); ok {
+		cs.RecordCompletionReport(a)
+	}
+}
+
 // MemoryRecallAudit summarizes one automatic-recall decision: identifiers,
 // scores, and budget numbers only — never the query or fact text.
 type MemoryRecallAudit struct {

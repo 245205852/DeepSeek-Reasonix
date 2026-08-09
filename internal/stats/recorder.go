@@ -179,6 +179,11 @@ func (r *Recorder) RecordContractShadow(a event.ContractShadowAudit) {
 	event.RecordContractShadow(r.inner, a)
 }
 
+// RecordCompletionReport preserves the wrapped sink's audit capability.
+func (r *Recorder) RecordCompletionReport(a event.CompletionReportAudit) {
+	event.RecordCompletionReport(r.inner, a)
+}
+
 // RecordOutcomeProgress preserves the wrapped sink's audit capability.
 func (r *Recorder) RecordOutcomeProgress(sample evidence.OutcomeSample) {
 	event.RecordOutcomeProgress(r.inner, sample)
