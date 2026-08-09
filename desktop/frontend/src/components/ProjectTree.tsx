@@ -694,23 +694,14 @@ export function ProjectTree({
     });
   }, []);
 
+  // Keyed by the data, not the selection: a switch cannot change the tree.
   const refresh = useCallback(async () => {
     try {
-      const nodes = await app.ListProjectTree();
-      const list = asArray(nodes);
-      setTree(list);
-      setExpanded((prev) => {
-        const next = new Set(prev);
-        const collapsed = manuallyCollapsedRef.current;
-        for (const key of defaultExpandedProjectTreeKeys(list, activeScope, activeWorkspaceRoot, activeTopicId, activeSessionPath)) {
-          if (!collapsed.has(key)) next.add(key);
-        }
-        return next;
-      });
+      setTree(asArray(await app.ListProjectTree()));
     } catch {
       /* bridge unavailable */
     }
-  }, [activeScope, activeWorkspaceRoot, activeTopicId, activeSessionPath]);
+  }, []);
 
   useEffect(() => {
     manuallyCollapsedRef.current = manuallyCollapsed;
@@ -726,6 +717,15 @@ export function ProjectTree({
   useEffect(() => {
     void refresh();
   }, [refresh, refreshSignal]);
+
+  // Following the active topic is a view concern over the tree already held.
+  useEffect(() => {
+    const collapsed = manuallyCollapsedRef.current;
+    const keys = defaultExpandedProjectTreeKeys(tree, activeScope, activeWorkspaceRoot, activeTopicId, activeSessionPath).filter((key) => !collapsed.has(key));
+    // Returning prev unchanged keeps a switch that expands nothing new from
+    // re-rendering the tree at all.
+    setExpanded((prev) => (keys.every((key) => prev.has(key)) ? prev : new Set([...prev, ...keys])));
+  }, [tree, activeScope, activeWorkspaceRoot, activeTopicId, activeSessionPath]);
 
   const markNodeRead = useCallback((node: ProjectNode) => {
     const key = projectTreeReadActivityKey(node);
