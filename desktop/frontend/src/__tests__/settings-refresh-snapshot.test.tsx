@@ -899,10 +899,10 @@ await act(async () => {
   upgradeFailureButton?.click();
   await flushPromises();
 });
-upgradeFailureButton = Array.from(upgradeFailureRootEl.querySelectorAll("button")).find(
-  (button) => button.textContent?.trim() === "Confirm upgrade",
-) as HTMLButtonElement | undefined;
-if (!upgradeFailureButton) throw new Error("DeepSeek protocol upgrade confirmation did not render");
+upgradeFailureButton = upgradeFailureRootEl.querySelector<HTMLButtonElement>(
+  ".provider-protocol-upgrade .inline-confirm > button",
+) ?? undefined;
+if (upgradeFailureButton?.textContent?.trim() !== "Confirm") throw new Error("DeepSeek protocol upgrade confirmation did not render");
 await act(async () => {
   upgradeFailureButton?.click();
   await flushPromises();

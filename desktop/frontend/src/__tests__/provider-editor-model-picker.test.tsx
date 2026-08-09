@@ -140,6 +140,22 @@ ok(
   providerVisionCapabilityForView({ kind: "openai", baseUrl: "https://api.deepseek.com" }) === "unsupported",
   "older backend payloads retain the endpoint-based vision fallback",
 );
+ok(
+  providerVisionCapabilityForView({ kind: "anthropic", baseUrl: "https://eu.deepseek.com/anthropic" }) === "unsupported",
+  "older backend payloads treat regional DeepSeek subdomains as text-only",
+);
+ok(
+  providerVisionCapabilityForView({ kind: "responses", baseUrl: "https://deepseek.com" }) === "configurable",
+  "the DeepSeek apex does not inherit official vision restrictions",
+);
+ok(
+  providerVisionCapabilityForView({ kind: "openai", baseUrl: "https://deepseek.com.example/v1" }) === "configurable",
+  "lookalike domains with a DeepSeek prefix do not inherit official vision restrictions",
+);
+ok(
+  providerVisionCapabilityForView({ kind: "openai", baseUrl: "https://api.deepseek.com.example/v1" }) === "configurable",
+  "lookalike domains with an official-host prefix remain configurable",
+);
 
 const builtInProvider: ProviderView = {
   name: "deepseek",

@@ -193,7 +193,7 @@ await act(async () => {
   }));
   await flushPromises();
 });
-const moreButton = rootEl.querySelector<HTMLButtonElement>('button[aria-label="More provider actions"]');
+const moreButton = rootEl.querySelector<HTMLButtonElement>('button[aria-haspopup="menu"]');
 await act(async () => {
   moreButton?.click();
   await flushPromises();
@@ -206,6 +206,7 @@ await act(async () => {
 });
 removeButton = Array.from(document.querySelectorAll("button"))
   .find((button) => button.textContent?.trim() === "Confirm remove access") as HTMLButtonElement | undefined;
+ok(removeButton !== undefined, "grouped provider removal requires inline confirmation");
 await act(async () => {
   removeButton?.click();
   await flushPromises();

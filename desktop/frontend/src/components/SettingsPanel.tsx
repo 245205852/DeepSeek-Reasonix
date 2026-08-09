@@ -6120,7 +6120,7 @@ function providerBaseHost(baseUrl: string): string {
 type ProviderVisionCapability = "configurable" | "unsupported";
 
 function isDeepSeekOfficialEndpoint(baseUrl: string): boolean {
-  return providerBaseHost(baseUrl) === "api.deepseek.com";
+  return providerBaseHost(baseUrl).endsWith(".deepseek.com");
 }
 
 export function providerSupportsServerWebSearch(kind: string, baseUrl: string): boolean {
