@@ -33,7 +33,6 @@ import (
 	"github.com/wailsapp/wails/v2/pkg/runtime"
 
 	"reasonix/internal/agent"
-	"reasonix/internal/autoresearch"
 	"reasonix/internal/billing"
 	"reasonix/internal/boot"
 	"reasonix/internal/botruntime"
@@ -1187,7 +1186,7 @@ func (admission *tabTurnAdmission) abort() {
 
 // beginTabTurn locks the tab's foreground-turn admission gate and reserves the
 // event sink until TurnDone has completed all of its fan-out.
-func (a *App) beginTabTurn(tabID string, reclaim bool) (*tabTurnAdmission, control.SessionAPI, error) {
+func (a *App) beginTabTurn(tabID string, reclaim bool, submissionID ...string) (*tabTurnAdmission, control.SessionAPI, error) {
 	tab, ctrl := a.tabAndCtrlByID(tabID)
 	if a.tabIsReadOnly(tab) {
 		return nil, nil, readOnlyChannelErr()
@@ -1227,7 +1226,7 @@ func (a *App) beginTabTurn(tabID string, reclaim bool) (*tabTurnAdmission, contr
 		abort()
 		return nil, nil, err
 	}
-	if ctrl.RuntimeStatus().Running || (tab.sink != nil && !tab.sink.tryBeginTurn()) {
+	if ctrl.RuntimeStatus().Running || (tab.sink != nil && !tab.sink.tryBeginTurn(submissionID...)) {
 		abort()
 		return nil, nil, control.ErrTurnRunning
 	}
@@ -1237,7 +1236,7 @@ func (a *App) beginTabTurn(tabID string, reclaim bool) (*tabTurnAdmission, contr
 // submitToTab is the shared submit body. fromBridge marks submissions driven
 // by the IM takeover bridge; local (frontend) submissions on a taken-over tab
 // reclaim remote control first — typing locally is the grab-back gesture.
-func (a *App) submitToTab(tabID, input string, fromBridge bool) error {
+func (a *App) submitToTab(tabID, input string, fromBridge bool, submissionID ...string) error {
 	trimmed := strings.TrimSpace(input)
 	if trimmed == "/effort" || strings.HasPrefix(trimmed, "/effort ") {
 		tab, _ := a.tabAndCtrlByID(tabID)
@@ -1253,7 +1252,7 @@ func (a *App) submitToTab(tabID, input string, fromBridge bool) error {
 		a.runEffortCommandForTab(tabID, trimmed)
 		return nil
 	}
-	admission, ctrl, err := a.beginTabTurn(tabID, !fromBridge)
+	admission, ctrl, err := a.beginTabTurn(tabID, !fromBridge, submissionID...)
 	if err != nil {
 		return err
 	}
@@ -1311,35 +1310,11 @@ func (a *App) SubmitDisplay(display, input string) error {
 }
 
 func (a *App) SubmitDisplayToTab(tabID, display, input string) error {
-	if err := validateTurnInput(input); err != nil {
-		return err
-	}
-	admission, ctrl, err := a.beginTabTurn(tabID, true)
-	if err != nil {
-		return err
-	}
-	defer admission.abort()
-	tab := admission.tab
-	a.ensureTabTopicIndexedForUserTurn(tab)
-	ctrl.SubmitDisplay(display, input)
-	admission.finish(ctrl)
-	return nil
+	return a.submitDisplayToTab(tabID, display, input, "")
 }
 
 func (a *App) SubmitDeliveryRecoveryToTab(tabID, display, input string) error {
-	if err := validateTurnInput(input); err != nil {
-		return err
-	}
-	admission, ctrl, err := a.beginTabTurn(tabID, true)
-	if err != nil {
-		return err
-	}
-	defer admission.abort()
-	tab := admission.tab
-	a.ensureTabTopicIndexedForUserTurn(tab)
-	ctrl.SubmitDeliveryRecovery(display, input)
-	admission.finish(ctrl)
-	return nil
+	return a.submitDeliveryRecoveryToTab(tabID, display, input, "")
 }
 
 // InvocationRequest is the Wails-bound form of a composer invocation entity.
@@ -1360,19 +1335,7 @@ func controlInvocationRequests(invocations []InvocationRequest) []control.Invoca
 }
 
 func (a *App) SubmitInvocationsToTab(tabID, display, input string, invocations []InvocationRequest) error {
-	if err := validateInvocationTurnInput(input, invocations); err != nil {
-		return err
-	}
-	admission, ctrl, err := a.beginTabTurn(tabID, true)
-	if err != nil {
-		return err
-	}
-	defer admission.abort()
-	tab := admission.tab
-	a.ensureTabTopicIndexedForUserTurn(tab)
-	ctrl.SubmitInvocationDisplay(display, input, controlInvocationRequests(invocations))
-	admission.finish(ctrl)
-	return nil
+	return a.submitInvocationsToTab(tabID, display, input, invocations, "")
 }
 
 func validateInvocationTurnInput(input string, invocations []InvocationRequest) error {
@@ -1388,8 +1351,9 @@ func validateInvocationTurnInput(input string, invocations []InvocationRequest) 
 func (a *App) submitInitialGoalToLocalTab(
 	tabID, toolApprovalMode, goal, display, input string,
 	invocations []InvocationRequest,
+	submissionID ...string,
 ) ([]string, error) {
-	admission, ctrl, err := a.beginTabTurn(tabID, true)
+	admission, ctrl, err := a.beginTabTurn(tabID, true, submissionID...)
 	if err != nil {
 		return []string{}, err
 	}
@@ -1441,19 +1405,7 @@ func (a *App) SubmitInitialGoalToTab(
 }
 
 func (a *App) SubmitEditedDisplayToTab(tabID, display, input, original string) error {
-	if err := validateTurnInput(input); err != nil {
-		return err
-	}
-	admission, ctrl, err := a.beginTabTurn(tabID, true)
-	if err != nil {
-		return err
-	}
-	defer admission.abort()
-	tab := admission.tab
-	a.ensureTabTopicIndexedForUserTurn(tab)
-	ctrl.SubmitEditedDisplay(display, input, original)
-	admission.finish(ctrl)
-	return nil
+	return a.submitEditedDisplayToTab(tabID, display, input, original, "")
 }
 
 func (a *App) bindControllerDisplayRecorder(ctrl control.SessionAPI) {
@@ -6958,29 +6910,28 @@ func (a *App) jobsForCtrl(ctrl control.SessionAPI, out []JobView) []JobView {
 
 // Meta describes the session for the frontend's header and status line.
 type Meta struct {
-	Label             string                   `json:"label"`
-	Ready             bool                     `json:"ready"`
-	Runtime           SessionRuntimeView       `json:"runtime"`
-	StartupErr        string                   `json:"startupErr,omitempty"`
-	EventChannel      string                   `json:"eventChannel"`
-	SessionPath       string                   `json:"sessionPath,omitempty"`
-	SessionRevision   int64                    `json:"sessionRevision,omitempty"`
-	SessionDigest     string                   `json:"sessionDigest,omitempty"`
-	Cwd               string                   `json:"cwd"`
-	WorkspaceRoot     string                   `json:"workspaceRoot,omitempty"`
-	WorkspaceName     string                   `json:"workspaceName,omitempty"`
-	WorkspacePath     string                   `json:"workspacePath,omitempty"`
-	GitBranch         string                   `json:"gitBranch,omitempty"`
-	ImageInputEnabled bool                     `json:"imageInputEnabled"`
-	AutoApproveTools  bool                     `json:"autoApproveTools"`
-	Bypass            bool                     `json:"bypass"` // legacy JSON key for YOLO/full-access tool auto-approval
-	CollaborationMode string                   `json:"collaborationMode"`
-	ToolApprovalMode  string                   `json:"toolApprovalMode"`
-	TokenMode         string                   `json:"tokenMode"`
-	Goal              string                   `json:"goal,omitempty"`
-	GoalStatus        string                   `json:"goalStatus,omitempty"`
-	GoalRuntime       *GoalRuntimeView         `json:"goalRuntime,omitempty"`
-	AutoResearch      *AutoResearchCompactView `json:"autoResearch,omitempty"`
+	Label             string             `json:"label"`
+	Ready             bool               `json:"ready"`
+	Runtime           SessionRuntimeView `json:"runtime"`
+	StartupErr        string             `json:"startupErr,omitempty"`
+	EventChannel      string             `json:"eventChannel"`
+	SessionPath       string             `json:"sessionPath,omitempty"`
+	SessionRevision   int64              `json:"sessionRevision,omitempty"`
+	SessionDigest     string             `json:"sessionDigest,omitempty"`
+	Cwd               string             `json:"cwd"`
+	WorkspaceRoot     string             `json:"workspaceRoot,omitempty"`
+	WorkspaceName     string             `json:"workspaceName,omitempty"`
+	WorkspacePath     string             `json:"workspacePath,omitempty"`
+	GitBranch         string             `json:"gitBranch,omitempty"`
+	ImageInputEnabled bool               `json:"imageInputEnabled"`
+	AutoApproveTools  bool               `json:"autoApproveTools"`
+	Bypass            bool               `json:"bypass"` // legacy JSON key for YOLO/full-access tool auto-approval
+	CollaborationMode string             `json:"collaborationMode"`
+	ToolApprovalMode  string             `json:"toolApprovalMode"`
+	TokenMode         string             `json:"tokenMode"`
+	Goal              string             `json:"goal,omitempty"`
+	GoalStatus        string             `json:"goalStatus,omitempty"`
+	GoalRuntime       *GoalRuntimeView   `json:"goalRuntime,omitempty"`
 	// A nil pointer means the controller cannot provide an authoritative snapshot;
 	// a non-nil pointer preserves an empty list as an explicit panel clear.
 	CanonicalTodos *[]evidence.TodoItem `json:"canonicalTodos,omitempty"`
@@ -7015,60 +6966,6 @@ func goalRuntimeViewFromController(ctrl control.SessionAPI) *GoalRuntimeView {
 		StopCause:        rt.StopCause,
 		BudgetExtensions: rt.BudgetExtensions,
 	}
-}
-
-type AutoResearchCompactView struct {
-	TaskID        string `json:"taskId"`
-	Status        string `json:"status"`
-	Iteration     int    `json:"iteration"`
-	PivotRequired bool   `json:"pivotRequired"`
-	StaleCount    int    `json:"staleCount"`
-}
-
-type AutoResearchCriterionView struct {
-	ID            string `json:"id"`
-	Description   string `json:"description"`
-	Required      bool   `json:"required"`
-	EvidenceCount int    `json:"evidenceCount"`
-	Status        string `json:"status"`
-}
-
-type AutoResearchStatusView struct {
-	TaskID             string                      `json:"taskId"`
-	Goal               string                      `json:"goal"`
-	Status             string                      `json:"status"`
-	Iteration          int                         `json:"iteration"`
-	CurrentDirection   string                      `json:"currentDirection"`
-	StaleCount         int                         `json:"staleCount"`
-	PivotCount         int                         `json:"pivotCount"`
-	PivotRequired      bool                        `json:"pivotRequired"`
-	LastHeartbeatAt    string                      `json:"lastHeartbeatAt"`
-	FindingCount       int                         `json:"findingCount"`
-	OpenCriteria       []AutoResearchCriterionView `json:"openCriteria"`
-	Blocker            string                      `json:"blocker"`
-	TaskPath           string                      `json:"taskPath"`
-	NextRequiredAction string                      `json:"nextRequiredAction"`
-}
-
-type AutoResearchFindingView struct {
-	ID        string   `json:"id"`
-	Kind      string   `json:"kind"`
-	Summary   string   `json:"summary"`
-	Source    string   `json:"source"`
-	Command   string   `json:"command,omitempty"`
-	Paths     []string `json:"paths,omitempty"`
-	Accepted  bool     `json:"accepted"`
-	CreatedAt string   `json:"createdAt"`
-}
-
-type AutoResearchEvidenceView struct {
-	ID       string   `json:"id"`
-	Kind     string   `json:"kind"`
-	Summary  string   `json:"summary"`
-	Source   string   `json:"source"`
-	Command  string   `json:"command,omitempty"`
-	Paths    []string `json:"paths,omitempty"`
-	Accepted bool     `json:"accepted"`
 }
 
 // Meta reports the model label, readiness, any startup error, the working
@@ -7156,26 +7053,7 @@ func (a *App) MetaForTab(tabID string) Meta {
 		Goal:              goal,
 		GoalStatus:        goalStatus,
 		GoalRuntime:       goalRuntimeViewFromController(snap.ctrl),
-		AutoResearch:      compactAutoResearchFromController(snap.ctrl),
 		CanonicalTodos:    ctrlTodos(snap.ctrl),
-	}
-}
-
-func compactAutoResearchFromController(ctrl control.SessionAPI) *AutoResearchCompactView {
-	if ctrl == nil {
-		return nil
-	}
-
-	summary, ok := ctrl.AutoResearchSummary()
-	if !ok || summary == nil || summary.TaskID == "" {
-		return nil
-	}
-	return &AutoResearchCompactView{
-		TaskID:        summary.TaskID,
-		Status:        summary.Status,
-		Iteration:     summary.Iteration,
-		PivotRequired: summary.PivotRequired,
-		StaleCount:    summary.StaleCount,
 	}
 }
 
@@ -7191,136 +7069,6 @@ func ctrlTodos(ctrl control.SessionAPI) *[]evidence.TodoItem {
 		todos = []evidence.TodoItem{}
 	}
 	return &todos
-}
-
-func compactAutoResearch(tab *WorkspaceTab) *AutoResearchCompactView {
-	if tab == nil || tab.Ctrl == nil {
-		return nil
-	}
-	summary, ok := tab.Ctrl.AutoResearchSummary()
-	if !ok || summary == nil || summary.TaskID == "" {
-		return nil
-	}
-	return &AutoResearchCompactView{
-		TaskID:        summary.TaskID,
-		Status:        summary.Status,
-		Iteration:     summary.Iteration,
-		PivotRequired: summary.PivotRequired,
-		StaleCount:    summary.StaleCount,
-	}
-}
-
-func autoResearchStatusView(summary *autoresearch.Summary) AutoResearchStatusView {
-	if summary == nil {
-		return AutoResearchStatusView{OpenCriteria: []AutoResearchCriterionView{}}
-	}
-	open := make([]AutoResearchCriterionView, 0, len(summary.OpenCriteria))
-	for _, criterion := range summary.OpenCriteria {
-		open = append(open, AutoResearchCriterionView{
-			ID:            criterion.ID,
-			Description:   criterion.Description,
-			Required:      criterion.Required,
-			EvidenceCount: criterion.EvidenceCount,
-			Status:        criterion.Status,
-		})
-	}
-	return AutoResearchStatusView{
-		TaskID:             summary.TaskID,
-		Goal:               summary.Goal,
-		Status:             summary.Status,
-		Iteration:          summary.Iteration,
-		CurrentDirection:   summary.CurrentDirection,
-		StaleCount:         summary.StaleCount,
-		PivotCount:         summary.PivotCount,
-		PivotRequired:      summary.PivotRequired,
-		LastHeartbeatAt:    summary.LastHeartbeatAt.Format(time.RFC3339),
-		FindingCount:       summary.FindingCount,
-		OpenCriteria:       open,
-		Blocker:            summary.Blocker,
-		TaskPath:           summary.TaskPath,
-		NextRequiredAction: summary.NextRequiredAction,
-	}
-}
-
-func (a *App) AutoResearchCurrent() AutoResearchStatusView {
-	return a.AutoResearchStatus("")
-}
-
-func (a *App) AutoResearchStatus(tabID string) AutoResearchStatusView {
-	ctrl := a.ctrlByTabID(tabID)
-	if ctrl == nil {
-		return AutoResearchStatusView{OpenCriteria: []AutoResearchCriterionView{}}
-	}
-	summary, ok := ctrl.AutoResearchSummary()
-	if !ok {
-		return AutoResearchStatusView{OpenCriteria: []AutoResearchCriterionView{}}
-	}
-	return autoResearchStatusView(summary)
-}
-
-func (a *App) AutoResearchList(tabID string) []AutoResearchStatusView {
-	ctrl := a.ctrlByTabID(tabID)
-	if ctrl == nil {
-		return []AutoResearchStatusView{}
-	}
-	summaries, ok := ctrl.AutoResearchList()
-	if !ok {
-		return []AutoResearchStatusView{}
-	}
-	out := make([]AutoResearchStatusView, 0, len(summaries))
-	for i := range summaries {
-		out = append(out, autoResearchStatusView(&summaries[i]))
-	}
-	return out
-}
-
-func (a *App) AutoResearchFindings(tabID string, limit int) []AutoResearchFindingView {
-	ctrl := a.ctrlByTabID(tabID)
-	if ctrl == nil {
-		return []AutoResearchFindingView{}
-	}
-	findings, ok := ctrl.AutoResearchFindings(limit)
-	if !ok {
-		return []AutoResearchFindingView{}
-	}
-	out := make([]AutoResearchFindingView, 0, len(findings))
-	for _, finding := range findings {
-		out = append(out, AutoResearchFindingView{
-			ID:        finding.ID,
-			Kind:      finding.Kind,
-			Summary:   finding.Summary,
-			Source:    finding.Source,
-			Command:   finding.Command,
-			Paths:     append([]string(nil), finding.Paths...),
-			Accepted:  finding.Accepted,
-			CreatedAt: finding.CreatedAt.Format(time.RFC3339),
-		})
-	}
-	return out
-}
-
-func (a *App) AutoResearchOpenTask(tabID string) error {
-	status := a.AutoResearchStatus(tabID)
-	if strings.TrimSpace(status.TaskPath) == "" {
-		return os.ErrInvalid
-	}
-	return a.RevealPath(status.TaskPath)
-}
-
-func (a *App) AutoResearchRecordEvidence(tabID, criterionID string, input AutoResearchEvidenceView) error {
-	ctrl := a.ctrlByTabID(tabID)
-	if ctrl == nil {
-		return os.ErrInvalid
-	}
-	return ctrl.RecordAutoResearchEvidence(criterionID, control.AutoResearchEvidenceInput{
-		ID:       input.ID,
-		Kind:     input.Kind,
-		Summary:  input.Summary,
-		Source:   input.Source,
-		Command:  input.Command,
-		Paths:    append([]string(nil), input.Paths...),
-		Accepted: input.Accepted,
-	})
 }
 
 func (a *App) SetGoal(goal string) error {

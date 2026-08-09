@@ -90,6 +90,8 @@ export async function createTranscriptHarness(options: TranscriptHarnessOptions 
   });
 
   const proto = dom.window.HTMLElement.prototype;
+  Object.defineProperty(proto, "attachEvent", { configurable: true, value: () => {} });
+  Object.defineProperty(proto, "detachEvent", { configurable: true, value: () => {} });
   Object.defineProperty(proto, "offsetHeight", {
     configurable: true,
     get(this: HTMLElement) {

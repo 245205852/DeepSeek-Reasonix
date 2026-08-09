@@ -942,17 +942,6 @@ func validSubagentRef(ref string) bool {
 	return true
 }
 
-func toolIdentity(reg *tool.Registry) ([]string, string) {
-	if reg == nil {
-		return nil, bytesHash(nil)
-	}
-	names := reg.Names()
-	sort.Strings(names)
-	schemas := normalizeToolSchemas(reg.Schemas())
-	data, _ := json.Marshal(schemas)
-	return names, bytesHash(data)
-}
-
 func bytesHash(data []byte) string {
 	h := sha256.Sum256(data)
 	return hex.EncodeToString(h[:])
