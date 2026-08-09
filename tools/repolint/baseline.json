@@ -4,8 +4,8 @@
     "commented-code": 0,
     "complexity": 2115,
     "essay": 4112,
-    "file-size": 111964,
-    "function-size": 9318,
+    "file-size": 111918,
+    "function-size": 9317,
     "layering": 1,
     "marker": 0,
     "narrative": 64,
@@ -14,7 +14,7 @@
   "files": {
     "cmd/e2ebench/main.go": {
       "essay": 1,
-      "function-size": 2
+      "function-size": 1
     },
     "cmd/e2ebench/mutation.go": {
       "essay": 1
@@ -575,8 +575,8 @@
     },
     "internal/agent/run_loop.go": {
       "complexity": 8,
-      "essay": 45,
-      "file-size": 339,
+      "essay": 32,
+      "file-size": 285,
       "function-size": 57
     },
     "internal/agent/save.go": {
@@ -657,6 +657,9 @@
       "complexity": 9,
       "essay": 9,
       "function-size": 2
+    },
+    "internal/agent/turnstate.go": {
+      "essay": 13
     },
     "internal/agent/usecapability.go": {
       "essay": 9,
@@ -1065,7 +1068,7 @@
     "internal/control/controller.go": {
       "complexity": 11,
       "essay": 165,
-      "file-size": 5504,
+      "file-size": 5512,
       "function-size": 85,
       "narrative": 4
     },

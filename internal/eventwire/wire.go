@@ -12,29 +12,30 @@ import (
 // externalizable:"true" marks large string payloads the Remote protocol may
 // offload via content refs without changing provider-visible semantics.
 type Event struct {
-	Kind            string            `json:"kind"`
-	Text            string            `json:"text,omitempty" externalizable:"true"`
-	Detail          string            `json:"detail,omitempty" externalizable:"true"`
-	Code            string            `json:"code,omitempty"`
-	Reasoning       string            `json:"reasoning,omitempty" externalizable:"true"`
-	MemoryCitations []MemoryCitation  `json:"memoryCitations,omitempty"`
-	Level           string            `json:"level,omitempty"`
-	Tool            *Tool             `json:"tool,omitempty"`
-	Usage           *Usage            `json:"usage,omitempty"`
-	Approval        *Approval         `json:"approval,omitempty"`
-	Ask             *Ask              `json:"ask,omitempty"`
-	Compaction      *Compaction       `json:"compaction,omitempty"`
-	Guardian        *Guardian         `json:"guardian,omitempty"`
-	DecisionReceipt *DecisionReceipt  `json:"decisionReceipt,omitempty"`
-	Extension       *ExtensionSurface `json:"extension,omitempty"`
-	Err             string            `json:"err,omitempty" externalizable:"true"`
-	Outcome         string            `json:"outcome,omitempty"`
-	Readiness       *FinalReadiness   `json:"readiness,omitempty"`
-	CheckpointTurn  *int              `json:"checkpointTurn,omitempty"`
-	RetryAttempt    int               `json:"retryAttempt,omitempty"`
-	RetryMax        int               `json:"retryMax,omitempty"`
-	RetryScope      string            `json:"retryScope,omitempty"` // "headers" | "stream"; omit for older clients
-	StreamAttempt   *StreamAttempt    `json:"streamAttempt,omitempty"`
+	Kind            string             `json:"kind"`
+	Text            string             `json:"text,omitempty" externalizable:"true"`
+	Detail          string             `json:"detail,omitempty" externalizable:"true"`
+	Code            string             `json:"code,omitempty"`
+	Reasoning       string             `json:"reasoning,omitempty" externalizable:"true"`
+	MemoryCitations []MemoryCitation   `json:"memoryCitations,omitempty"`
+	Level           string             `json:"level,omitempty"`
+	Tool            *Tool              `json:"tool,omitempty"`
+	Usage           *Usage             `json:"usage,omitempty"`
+	Approval        *Approval          `json:"approval,omitempty"`
+	Ask             *Ask               `json:"ask,omitempty"`
+	Compaction      *Compaction        `json:"compaction,omitempty"`
+	Guardian        *Guardian          `json:"guardian,omitempty"`
+	DecisionReceipt *DecisionReceipt   `json:"decisionReceipt,omitempty"`
+	Extension       *ExtensionSurface  `json:"extension,omitempty"`
+	Err             string             `json:"err,omitempty" externalizable:"true"`
+	Outcome         string             `json:"outcome,omitempty"`
+	Readiness       *FinalReadiness    `json:"readiness,omitempty"`
+	Receipt         *CompletionReceipt `json:"receipt,omitempty"`
+	CheckpointTurn  *int               `json:"checkpointTurn,omitempty"`
+	RetryAttempt    int                `json:"retryAttempt,omitempty"`
+	RetryMax        int                `json:"retryMax,omitempty"`
+	RetryScope      string             `json:"retryScope,omitempty"` // "headers" | "stream"; omit for older clients
+	StreamAttempt   *StreamAttempt     `json:"streamAttempt,omitempty"`
 	// ItemID correlates Steer / TurnDone / unapplied-steer with a durable
 	// session-inbox entry. Empty for legacy text-only guidance.
 	ItemID string `json:"itemId,omitempty"`
@@ -147,6 +148,7 @@ func ToWire(e event.Event) Event {
 	case event.TurnDone:
 		w.Outcome = e.Outcome
 		w.CheckpointTurn = e.CheckpointTurn
+		w.Receipt = completionReceiptWire(e.Receipt)
 		if e.Readiness != nil {
 			w.Readiness = &FinalReadiness{Attempts: e.Readiness.Attempts, Missing: append([]string(nil), e.Readiness.Missing...)}
 		}

@@ -967,7 +967,15 @@ func (c *Controller) finishGuardedTurn(err error, completion *guardedTurnComplet
 		break
 	}
 	c.inbox.mu.Unlock()
-	done := event.Event{Kind: event.TurnDone, Err: err, Cancelled: cancelRequested, Outcome: turnOutcome(err), CheckpointTurn: c.validatedCheckpointTurn(completion), ItemID: activeInboxID}
+	done := event.Event{
+		Kind:           event.TurnDone,
+		Err:            err,
+		Cancelled:      cancelRequested,
+		Outcome:        turnOutcome(err),
+		CheckpointTurn: c.validatedCheckpointTurn(completion),
+		Receipt:        c.executor.CompletionReceipt(),
+		ItemID:         activeInboxID,
+	}
 	var readinessErr *agent.FinalReadinessError
 	if errors.As(err, &readinessErr) {
 		done.Readiness = &event.FinalReadiness{Attempts: readinessErr.Attempts, Missing: append([]string(nil), readinessErr.Missing...)}
