@@ -45,13 +45,7 @@ func waitDestroyHandlesUntil(destroys []control.SessionDestroyHandle, deadline t
 	for _, destroy := range destroys {
 		wait := destroy.Wait
 		if destroy.WaitFor != nil {
-			remaining := time.Until(deadline)
-			if remaining < 0 {
-				remaining = 0
-			}
-			if remaining > desktopSessionRemovalGrace {
-				remaining = desktopSessionRemovalGrace
-			}
+			remaining := min(max(time.Until(deadline), time.Duration(0)), desktopSessionRemovalGrace)
 			wait = func() jobs.TeardownResult { return destroy.WaitFor(remaining) }
 		}
 		if wait == nil {
