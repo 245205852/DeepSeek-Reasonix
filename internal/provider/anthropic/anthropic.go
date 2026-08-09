@@ -297,6 +297,9 @@ func (c *client) Stream(ctx context.Context, req provider.Request) (<-chan provi
 			httpReq.Header.Set("x-api-key", c.apiKey)
 		}
 		httpReq.Header.Set("anthropic-version", anthropicVersion)
+		if req.ContextEditing != nil && req.ContextEditing.Mode == "native" && c.nativeAnthropic {
+			httpReq.Header.Set("anthropic-beta", anthropicContextManagementBeta)
+		}
 		applyCustomHeaders(httpReq.Header, c.headers)
 		return httpReq, nil
 	}
@@ -441,6 +444,7 @@ func (c *client) buildRequest(_ context.Context, req provider.Request) anthReque
 		Tools:     tools,
 		Stream:    true,
 	}
+	applyNativeContextEditing(&r, req, c.nativeAnthropic)
 	// Extended thinking is provider-specific. DeepSeek defaults to enabled and
 	// accepts output_config.effort alongside its binary toggle. Anthropic proper
 	// uses type=adaptive plus display/output_config. LongCat-style compatible
@@ -534,6 +538,7 @@ func (c *client) readStream(ctx context.Context, resp *http.Response, out chan<-
 	tools := map[int]*provider.ToolCall{} // tool_use blocks, keyed by content index
 	argBuckets := map[int]int{}           // last emitted 2KB progress bucket per block
 	var inTok, outTok, cacheCreate, cacheRead int
+	var contextEdits contextEditUsage
 	var stopReason string
 	haveUsage := false
 	mergeUsage := func(usage *wireUsage) {
@@ -654,6 +659,7 @@ func (c *client) readStream(ctx context.Context, resp *http.Response, out chan<-
 				stopReason = ev.Delta.StopReason
 			}
 			mergeUsage(ev.Usage)
+			contextEdits.observe(ev.ContextManagement)
 		case "message_stop":
 			// Anthropic's terminal event. Tool blocks may already have closed;
 			// without this, the attempt stays speculative and is not committed.
@@ -711,6 +717,7 @@ finalize:
 			CacheWriteBilledTokens: cacheWriteBilledTokens,
 			FinishReason:           mapStopReason(stopReason),
 		}
+		contextEdits.apply(usage)
 		provider.ApplyRequestAttemptCount(ctx, usage)
 		if !send(provider.Chunk{Type: provider.ChunkUsage, Usage: usage}) {
 			return
@@ -795,15 +802,16 @@ type cacheControl struct {
 }
 
 type anthRequest struct {
-	Model        string          `json:"model"`
-	MaxTokens    int             `json:"max_tokens"`
-	System       []textBlock     `json:"system,omitempty"`
-	Messages     []anthMessage   `json:"messages"`
-	Tools        []anthTool      `json:"tools,omitempty"`
-	Temperature  *float64        `json:"temperature,omitempty"`
-	Thinking     *thinkingConfig `json:"thinking,omitempty"`
-	OutputConfig *outputConfig   `json:"output_config,omitempty"`
-	Stream       bool            `json:"stream"`
+	Model             string             `json:"model"`
+	MaxTokens         int                `json:"max_tokens"`
+	System            []textBlock        `json:"system,omitempty"`
+	Messages          []anthMessage      `json:"messages"`
+	Tools             []anthTool         `json:"tools,omitempty"`
+	Temperature       *float64           `json:"temperature,omitempty"`
+	Thinking          *thinkingConfig    `json:"thinking,omitempty"`
+	OutputConfig      *outputConfig      `json:"output_config,omitempty"`
+	Stream            bool               `json:"stream"`
+	ContextManagement *contextManagement `json:"context_management,omitempty"`
 }
 
 type thinkingConfig struct {
@@ -897,8 +905,9 @@ type streamEvent struct {
 		StopReason       string          `json:"stop_reason"`  // message_delta
 		WebSearchResults json.RawMessage `json:"results"`      // web_search_tool_result_delta
 	} `json:"delta"`
-	Usage *wireUsage `json:"usage"` // message_delta (cumulative output_tokens)
-	Error *struct {
+	Usage             *wireUsage                 `json:"usage"` // message_delta (cumulative output_tokens)
+	ContextManagement *responseContextManagement `json:"context_management"`
+	Error             *struct {
 		Type    string `json:"type"`
 		Message string `json:"message"`
 	} `json:"error"`

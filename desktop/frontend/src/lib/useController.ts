@@ -1696,6 +1696,16 @@ function applyEvent(s: State, e: WireEvent): State {
     }
     case "notice":
       return appendNoticeToState(s, e.level ?? "info", e.text ?? "", e.detail, e.code, e.decisionReceipt);
+    case "context_maintenance": {
+      const m = e.maintenance;
+      if (!m || m.status === "noop") return s;
+      const action = m.action ?? "maintenance";
+      const saved = m.savedTokens && m.savedTokens > 0 ? ` (~${m.savedTokens.toLocaleString()} tokens)` : "";
+      const text = m.status === "blocked"
+        ? `Context maintenance paused: ${m.reason ?? "the current window cannot be reduced further"}`
+        : `Context ${action} applied${saved}`;
+      return appendNoticeToState(s, m.status === "failed" ? "warn" : "info", text, m.reason);
+    }
     case "phase":
       return { ...s, seq: s.seq + 1, items: [...s.items, { kind: "phase", id: `p${s.seq}`, text: e.text ?? "" }] };
     case "compaction_started":
@@ -3367,11 +3377,10 @@ export function useController() {
         textBatch.drain();
         dispatchTo(targetTabId, { type: "event", e });
       }
+      if (e.kind === "turn_done" || e.kind === "context_maintenance") {
+        void app.ContextUsageForTab(targetTabId).then((context) => dispatchTo(targetTabId, { type: "context", context })).catch(() => {});
+      }
       if (e.kind === "turn_done") {
-        app
-          .ContextUsageForTab(targetTabId)
-          .then((context) => dispatchTo(targetTabId, { type: "context", context }))
-          .catch(() => {});
         void refreshBalanceForTab(targetTabId);
         app.EffortForTab(targetTabId).then((effort) => dispatchTo(targetTabId, { type: "effort", effort })).catch(() => {});
         void refreshCheckpoints(targetTabId);
