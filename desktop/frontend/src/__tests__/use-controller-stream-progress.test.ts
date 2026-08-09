@@ -397,7 +397,7 @@ function ev(s: typeof initialState, e: WireEvent) {
       promptTokens: 10, completionTokens: 30, totalTokens: 40,
       cacheHitTokens: 0, cacheMissTokens: 10, source: "executor",
     } } as WireEvent);
-    eq(s.lastRequestTps, 20, "intervals under the 500ms gate keep the previous request TPS");
+    eq(s.lastRequestTps, null, "intervals under the 500ms gate clear stale request TPS");
 
     now = 53_000;
     s = ev(s, { kind: "text", text: "second" } as WireEvent);
@@ -430,7 +430,10 @@ function ev(s: typeof initialState, e: WireEvent) {
       promptTokens: 10, completionTokens: 8, totalTokens: 18,
       cacheHitTokens: 0, cacheMissTokens: 10, source: "executor",
     } } as WireEvent);
-    eq(s.lastRequestTps, 40, "a fresh turn does not inherit the previous pending interval");
+    eq(s.lastRequestTps, null, "usage without a provider interval clears stale request TPS");
+    now = 58_200;
+    s = ev(s, { kind: "tool_dispatch", tool: { id: "final-only", name: "read_file", args: "{}", readOnly: true } } as WireEvent);
+    eq(s.lastRequestTps, null, "a final-only tool dispatch after usage cannot resurrect stale TPS");
 
     now = 59_000;
     s = ev(s, { kind: "text", text: "toolcall" } as WireEvent);
@@ -446,13 +449,14 @@ function ev(s: typeof initialState, e: WireEvent) {
     now = 61_000;
     s = ev(s, { kind: "tool_dispatch", tool: { id: "t2", name: "write_file", readOnly: false, partial: true, argChars: 600 } } as WireEvent);
     now = 62_000;
-    s = ev(s, { kind: "tool_dispatch", tool: { id: "t2", name: "write_file", args: "{}", readOnly: false } } as WireEvent);
-    now = 62_100;
     s = ev(s, { kind: "usage", usage: {
       promptTokens: 10, completionTokens: 30, totalTokens: 40,
       cacheHitTokens: 0, cacheMissTokens: 10, source: "executor",
     } } as WireEvent);
-    eq(s.lastRequestTps, 30, "a partial dispatch starts the interval the full dispatch close pairs");
+    eq(s.lastRequestTps, 30, "usage closes the interval started by a partial tool dispatch");
+    now = 62_100;
+    s = ev(s, { kind: "tool_dispatch", tool: { id: "t2", name: "write_file", args: "{}", readOnly: false } } as WireEvent);
+    eq(s.lastRequestTps, 30, "the later full tool dispatch preserves the measured request TPS");
 
     now = 63_000;
     s = ev(s, { kind: "text", text: "closing" } as WireEvent);
@@ -470,6 +474,17 @@ function ev(s: typeof initialState, e: WireEvent) {
     // The partial restart begins a new interval; the full dispatch closes it
     // and overwrites the message-stashed pending with its own (≥500ms) tail.
     eq(s.lastRequestTps, 50, "a full dispatch overwrites a message-stashed pending with its own tail close");
+
+    now = 65_000;
+    s = ev(s, { kind: "text", text: "slow" } as WireEvent);
+    now = 68_000;
+    s = ev(s, { kind: "message", text: "slow" } as WireEvent);
+    now = 68_100;
+    s = ev(s, { kind: "usage", usage: {
+      promptTokens: 10, completionTokens: 1, totalTokens: 11,
+      cacheHitTokens: 0, cacheMissTokens: 10, source: "executor",
+    } } as WireEvent);
+    eq(s.lastRequestTps, 1 / 3, "slow measurable requests retain their raw sub-one TPS");
   } finally {
     Date.now = originalNow;
   }

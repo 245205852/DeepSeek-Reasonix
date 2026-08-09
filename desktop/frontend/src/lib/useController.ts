@@ -414,8 +414,8 @@ interface State {
   lastTurnWaitAccumMs: number;
   lastTurnModelMs: number;
   lastTurnOutputEstimated: boolean;
-  // Per-request rate and its pending provider interval are tab-local.
-  lastRequestTps?: number;
+  // Per-request rate (null when unmeasurable) and pending interval are tab-local.
+  lastRequestTps?: number | null;
   pendingRequestModelMs?: number;
   promptWaitStartedAt?: number;
   // promptEventClock() reading taken when the CURRENT pending prompt first
@@ -1666,8 +1666,7 @@ function applyEvent(s: State, e: WireEvent): State {
       const hasRequestContext = (e.usage?.contextPromptTokens ?? 0) > 0 || (e.usage?.contextCompletionTokens ?? 0) > 0;
       const requestModelMs = updateContextGauge ? (settled.pendingRequestModelMs ?? 0) : 0;
       const requestTokens = updateContextGauge ? (hasRequestContext ? (e.usage?.contextCompletionTokens ?? 0) : (e.usage?.completionTokens ?? 0)) : 0;
-      const requestTps = requestTokens > 0 && requestModelMs >= 500 ? Math.round(requestTokens / (requestModelMs / 1000)) : 0;
-      const lastRequestTps = requestTps > 0 ? requestTps : s.lastRequestTps;
+      const lastRequestTps = updateContextGauge ? (requestTokens > 0 && requestModelMs >= 500 ? requestTokens / (requestModelMs / 1000) : null) : s.lastRequestTps;
       // Context* is the latest sampling attempt; other token fields are billable aggregates.
       let used = settled.context.used;
       if (e.usage && settled.context.window && updateContextGauge) used = hasRequestContext
