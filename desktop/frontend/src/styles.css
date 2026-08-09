@@ -3734,7 +3734,7 @@ a[href] {
   margin: 2px auto;
 }
 
-/* expanded padding — parent --open class drives it while GSAP handles height */
+/* Expanded padding — the parent --open class drives it while native motion handles height. */
 .readonly-batch--open .readonly-batch__body,
 .turn-collapse--open .turn-collapse__body,
 .tool--open .tool__body {

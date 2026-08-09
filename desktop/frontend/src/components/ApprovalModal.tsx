@@ -10,7 +10,7 @@ import {
   PromptHeaderAction,
   PromptShelf,
 } from "./PromptShelf";
-import { DUR_FAST } from "../lib/gsapAnimations";
+import { CSS_EASE_IN, DUR_FAST } from "../lib/motion";
 import {
   FileReferenceMenu,
   insertTextAtSelection,
@@ -20,23 +20,41 @@ import {
 
 function animateShelfExit(
   el: HTMLDivElement,
-  options: { opacity: number; y: number; duration: number; ease: string; onComplete: () => void },
+  options: { opacity: number; y: number; duration: number; onComplete: () => void },
 ) {
-  if (typeof el.animate === "function") {
-    const animation = el.animate(
+  let completed = false;
+  const complete = () => {
+    if (completed) return;
+    completed = true;
+    options.onComplete();
+  };
+
+  if (typeof el.animate !== "function") {
+    complete();
+    return;
+  }
+
+  let animation: Animation;
+  try {
+    animation = el.animate(
       [
         { opacity: 1, transform: "translateY(0)" },
         { opacity: options.opacity, transform: `translateY(${options.y}px)` },
       ],
       {
         duration: options.duration * 1000,
-        easing: options.ease === "power2.out" ? "cubic-bezier(0.2, 0.72, 0.2, 1)" : options.ease,
+        easing: CSS_EASE_IN,
       },
     );
-    animation.onfinish = options.onComplete;
+  } catch {
+    // The shelf transition is cosmetic. A WebView animation failure must not
+    // prevent the selected approval, recovery, or stop action from running.
+    complete();
     return;
   }
-  options.onComplete();
+
+  animation.onfinish = complete;
+  animation.oncancel = complete;
 }
 
 function requiresFreshHumanApproval(tool: string): boolean {
@@ -322,9 +340,8 @@ export function ApprovalModal({
   const onRevisionActiveChangeRef = useRef(onRevisionActiveChange);
   const revisionActiveRef = useRef(false);
   onRevisionActiveChangeRef.current = onRevisionActiveChange;
-  // When consecutive approvals arrive, animate the old card out before
-  // the new one slides in.  GSAP fromTo on the shelf wrapper avoids the
-  // jarring pop when the API cycles through 4+ pending approvals.
+  // When consecutive approvals arrive, animate the old card out before the
+  // new one slides in so a queue of pending approvals does not visibly pop.
   const closingRef = useRef(false);
   const fileMenu = useFileReferenceMenu(revisionText, cwd, tabId, workspaceScopeKey);
 
@@ -338,7 +355,6 @@ export function ApprovalModal({
         opacity: 0,
         y: 8,
         duration: DUR_FAST,
-        ease: "power2.in",
         onComplete: fn,
       });
     } else {
