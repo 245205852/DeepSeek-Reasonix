@@ -237,10 +237,14 @@ func RenderMemorySummary(set *memory.Set, now time.Time) string {
 		for _, fact := range facts {
 			fmt.Fprintf(&b, "  [%s](%s.md)\n", memoryDisplayTitle(fact.Title, fact.Name), fact.Name)
 			fmt.Fprintf(&b, "    id=%s\n", fact.ID)
-			fmt.Fprintf(&b, "    revision=%d scope=%s type=%s activation=%s freshness=%s\n",
+			pinned := ""
+			if memory.ResolveActivation(fact) == memory.ActivationPinned {
+				pinned = " activation=pinned"
+			}
+			fmt.Fprintf(&b, "    revision=%d scope=%s type=%s freshness=%s%s\n",
 				fact.Revision,
 				memory.NormalizeFactScope(string(fact.Scope)), memory.NormalizeType(string(fact.Type)),
-				memory.ResolveActivation(fact), memory.FreshnessFor(fact, now))
+				memory.FreshnessFor(fact, now), pinned)
 			if description := memoryOneLine(fact.Description); description != "" {
 				fmt.Fprintf(&b, "    description=%s\n", description)
 			}
