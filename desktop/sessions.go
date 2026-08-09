@@ -33,6 +33,8 @@ const sessionPlannerDisplayFile = ".planner-display.json"
 const sessionTrashDir = ".trash"
 const sessionTrashMetaFile = ".trash-meta.json"
 
+var sessionTitlesLockTimeout = 750 * time.Millisecond
+
 func sessionTitlesPath(dir string) string  { return filepath.Join(dir, sessionTitlesFile) }
 func sessionDisplayPath(dir string) string { return filepath.Join(dir, sessionDisplayFile) }
 func sessionTrashPath(dir string) string   { return filepath.Join(dir, sessionTrashDir) }
@@ -73,7 +75,33 @@ func loadSessionTitlesForUpdate(dir string) (map[string]string, error) {
 	return loadStringMapForUpdate(sessionTitlesPath(dir))
 }
 
-// saveSessionTitles writes the map atomically (temp file + rename).
+func updateSessionTitles(dir string, mutate func(map[string]string) bool) error {
+	if strings.TrimSpace(dir) == "" {
+		return errors.New("title directory is empty")
+	}
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return err
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), sessionTitlesLockTimeout)
+	defer cancel()
+	release, err := filelock.Acquire(ctx, sessionTitlesPath(dir)+".lock")
+	if err != nil {
+		return fmt.Errorf("lock title sidecar: %w", err)
+	}
+	defer release()
+
+	m, err := loadSessionTitlesForUpdate(dir)
+	if err != nil {
+		return err
+	}
+	if !mutate(m) {
+		return nil
+	}
+	return saveSessionTitles(dir, m)
+}
+
+// saveSessionTitles writes the map durably and atomically. Keep this on the
+// shared helper so the temporary file is fsynced before it is published.
 func saveSessionTitles(dir string, m map[string]string) error {
 	b, err := json.MarshalIndent(m, "", "  ")
 	if err != nil {
@@ -82,21 +110,7 @@ func saveSessionTitles(dir string, m map[string]string) error {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
 	}
-	tmp, err := os.CreateTemp(dir, ".titles.*.tmp")
-	if err != nil {
-		return err
-	}
-	tmpPath := tmp.Name()
-	if _, err := tmp.Write(b); err != nil {
-		tmp.Close()
-		os.Remove(tmpPath)
-		return err
-	}
-	if err := tmp.Close(); err != nil {
-		os.Remove(tmpPath)
-		return err
-	}
-	return fileutil.ReplaceFile(tmpPath, sessionTitlesPath(dir))
+	return fileutil.AtomicWriteFile(sessionTitlesPath(dir), b, 0o600)
 }
 
 // setSessionTitle sets (or, with an empty title, clears) a session's custom name.
@@ -105,17 +119,22 @@ func setSessionTitle(dir, sessionPath, title string) error {
 	if err != nil {
 		return err
 	}
-	m, err := loadSessionTitlesForUpdate(dir)
-	if err != nil {
-		return err
-	}
 	key := filepath.Base(sessionPath)
-	if strings.TrimSpace(title) == "" {
-		delete(m, key)
-	} else {
-		m[key] = strings.TrimSpace(title)
-	}
-	return saveSessionTitles(dir, m)
+	return updateSessionTitles(dir, func(m map[string]string) bool {
+		title = strings.TrimSpace(title)
+		if title == "" {
+			if _, ok := m[key]; !ok {
+				return false
+			}
+			delete(m, key)
+			return true
+		}
+		if m[key] == title {
+			return false
+		}
+		m[key] = title
+		return true
+	})
 }
 
 // deleteSessionFile moves a session's .jsonl and file sidecars into the local
@@ -598,15 +617,14 @@ func purgeTrashedSessionFile(dir, path string) error {
 	if err := os.RemoveAll(itemDir); err != nil {
 		return err
 	}
-	m, err := loadSessionTitlesForUpdate(dir)
-	if err != nil {
-		return err
-	}
-	if _, ok := m[key]; ok {
-		delete(m, key)
-		if err := saveSessionTitles(dir, m); err != nil {
-			return err
+	if err := updateSessionTitles(dir, func(m map[string]string) bool {
+		if _, ok := m[key]; !ok {
+			return false
 		}
+		delete(m, key)
+		return true
+	}); err != nil {
+		return err
 	}
 	if err := removeSessionDisplayKey(dir, key); err != nil {
 		return err
@@ -1018,21 +1036,7 @@ func saveSessionPlannerDisplays(dir string, m sessionPlannerDisplayMap) error {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
 	}
-	tmp, err := os.CreateTemp(dir, ".planner-display.*.tmp")
-	if err != nil {
-		return err
-	}
-	tmpPath := tmp.Name()
-	if _, err := tmp.Write(b); err != nil {
-		tmp.Close()
-		os.Remove(tmpPath)
-		return err
-	}
-	if err := tmp.Close(); err != nil {
-		os.Remove(tmpPath)
-		return err
-	}
-	return fileutil.ReplaceFile(tmpPath, sessionPlannerDisplayPath(dir))
+	return fileutil.AtomicWriteFile(sessionPlannerDisplayPath(dir), b, 0o600)
 }
 
 func saveOrRemoveSessionPlannerDisplays(dir string, m sessionPlannerDisplayMap) error {
@@ -1155,21 +1159,7 @@ func saveSessionDisplays(dir string, m sessionDisplayMap) error {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
 	}
-	tmp, err := os.CreateTemp(dir, ".display.*.tmp")
-	if err != nil {
-		return err
-	}
-	tmpPath := tmp.Name()
-	if _, err := tmp.Write(b); err != nil {
-		tmp.Close()
-		os.Remove(tmpPath)
-		return err
-	}
-	if err := tmp.Close(); err != nil {
-		os.Remove(tmpPath)
-		return err
-	}
-	return fileutil.ReplaceFile(tmpPath, sessionDisplayPath(dir))
+	return fileutil.AtomicWriteFile(sessionDisplayPath(dir), b, 0o600)
 }
 
 func saveOrRemoveSessionDisplays(dir string, m sessionDisplayMap) error {
