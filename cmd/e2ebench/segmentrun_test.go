@@ -9,16 +9,23 @@ import (
 	"testing"
 )
 
-// fakeAgent stands in for the reasonix binary: it records the argv of every
-// invocation and writes the metrics file it was told to. That makes segment
-// accounting verifiable without a provider, which matters because the failure
-// mode being guarded against — a later leg's numbers replacing an earlier
-// leg's instead of adding to it — is invisible in any single run.
-func fakeAgent(t *testing.T, promptTokens, completionTokens int) (bin, argvLog string) {
+// requireShellStub skips where a #!/usr/bin/env bash stub cannot be executed.
+// Every test that writes its own stub must call it: exec fails silently enough
+// on Windows that the assertion which follows blames the code instead.
+func requireShellStub(t *testing.T) {
 	t.Helper()
 	if runtime.GOOS == "windows" {
 		t.Skip("the stub agent is a shell script")
 	}
+}
+
+// fakeAgent stands in for the reasonix binary: it records every invocation's
+// argv and writes the metrics file it was told to, making segment accounting
+// verifiable without a provider. The failure it guards — a later leg replacing
+// an earlier leg's numbers — is invisible in any single run.
+func fakeAgent(t *testing.T, promptTokens, completionTokens int) (bin, argvLog string) {
+	t.Helper()
+	requireShellStub(t)
 	dir := t.TempDir()
 	argvLog = filepath.Join(dir, "argv.log")
 	bin = filepath.Join(dir, "fake-agent")
@@ -104,6 +111,7 @@ func TestSegmentedRunKeepsPerLegMetricsApart(t *testing.T) {
 }
 
 func TestSegmentedRunStopsAtTheFirstFailedLeg(t *testing.T) {
+	requireShellStub(t)
 	dir := t.TempDir()
 	bin := filepath.Join(dir, "failing-agent")
 	log := filepath.Join(dir, "calls.log")
