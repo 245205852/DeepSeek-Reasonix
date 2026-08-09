@@ -412,7 +412,7 @@ func (a *Agent) compactToProjection(ctx context.Context, trigger, instructions s
 		}
 	}
 	region := msgs[head:start]
-	kept, fold := a.partitionFoldForProjection(region)
+	early, kept, fold := a.partitionFoldForProjection(region)
 	if len(fold) == 0 {
 		return CompactionNoop, nil
 	}
@@ -470,7 +470,6 @@ func (a *Agent) compactToProjection(ctx context.Context, trigger, instructions s
 		return CompactionNoop, err
 	}
 
-	early := a.fixedEarlyUserTurns(msgs, head)
 	projMsgs := make([]provider.Message, 0, head+len(early)+1+len(kept)+len(msgs)-start)
 	projMsgs = append(projMsgs, msgs[:head]...)
 	projMsgs = append(projMsgs, early...)
@@ -521,41 +520,50 @@ func (a *Agent) compactToProjection(ctx context.Context, trigger, instructions s
 	return CompactionInstalled, nil
 }
 
-// partitionFoldForProjection is like partitionFold but prior digests join the
-// fold so A1 rolling merge produces a single latest summary. Fixed early user
-// turns are excluded from both kept and fold — the caller re-inserts them from
-// the full transcript so their bytes stay position-stable.
-func (a *Agent) partitionFoldForProjection(region []provider.Message) (kept, fold []provider.Message) {
+// partitionFoldForProjection splits the fold region three ways: user turns
+// hoisted verbatim ahead of the digest, messages the keep policy protects, and
+// the remainder that folds (prior digests included, so a merge yields one
+// summary). The groups partition the region — one pass decides each message
+// once, so no turn can fall between a hoist rule and a fold rule that disagree.
+func (a *Agent) partitionFoldForProjection(region []provider.Message) (early, kept, fold []provider.Message) {
 	policyKeep := keepIndexes(region, a.keepPolicy)
-	earlySeen := 0
-	const maxEarly = 3
+	hoist := a.earlyUserTurns(region)
 	for i, m := range region {
-		if m.LocalOnly {
-			continue
-		}
-		// Skip the fixed early small user turns — they are re-added from the
-		// full transcript after the summary so the prefix stays byte-stable.
-		if m.Role == provider.RoleUser && !isCompactionSummary(m) && a.fixedPinnableUserTurn(m) && earlySeen < maxEarly {
-			earlySeen++
-			continue
-		}
-		if isCompactionSummary(m) {
-			fold = append(fold, m)
-			continue
-		}
-		if policyKeep[i] {
+		switch {
+		case m.LocalOnly: // display-only output never reaches a provider
+		case hoist[i]:
+			early = append(early, m)
+		case policyKeep[i] && !isCompactionSummary(m):
 			kept = append(kept, m)
-			continue
-		}
-		if m.Role == provider.RoleUser && a.fixedPinnableUserTurn(m) {
-			// Additional small user turns beyond the fixed early window fold so
-			// the projection does not grow unbounded with every user fact.
+		default:
 			fold = append(fold, m)
+		}
+	}
+	return early, kept, fold
+}
+
+// earlyUserTurns marks the region positions of the small user turns hoisted
+// verbatim ahead of the digest. Selecting from the fold region alone keeps the
+// set disjoint from the verbatim tail, and taking the first N (never the latest
+// N) keeps the hoisted bytes identical across folds: the region only ever grows
+// at its end, so the set can gain a member but never reorder or lose one.
+func (a *Agent) earlyUserTurns(region []provider.Message) []bool {
+	hoist := make([]bool, len(region))
+	n := 0
+	for i, m := range region {
+		if n == maxEarlyUserTurns {
+			break
+		}
+		if m.LocalOnly || m.Role != provider.RoleUser || isCompactionSummary(m) {
 			continue
 		}
-		fold = append(fold, m)
+		if !a.fixedPinnableUserTurn(m) {
+			continue
+		}
+		hoist[i] = true
+		n++
 	}
-	return kept, fold
+	return hoist
 }
 
 // runCompactionSummary tries native compaction first, then summarizeWithRetry.
