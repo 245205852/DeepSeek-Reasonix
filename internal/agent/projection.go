@@ -99,6 +99,8 @@ type CompactionTelemetry struct {
 	Mode              string `json:"mode"`
 	Native            bool   `json:"native"`
 	SourceTokens      int    `json:"source_tokens"`
+	FoldTokens        int    `json:"fold_tokens"` // summarizer input after any shortening
+	Spans             int    `json:"spans"`       // summarizer calls the fold needed; 1 unless it was split
 	ProjectionTokens  int    `json:"projection_tokens"`
 	InputTokens       int    `json:"input_tokens"`
 	OutputTokens      int    `json:"output_tokens"`

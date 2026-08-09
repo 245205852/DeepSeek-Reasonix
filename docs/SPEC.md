@@ -288,6 +288,14 @@ Long tasks eventually fill the model's context window. Reasonix manages this wit
   The tail boundary is aligned backward off any tool result so the recent tail
   never begins with an orphan tool message whose `tool_calls` were summarized
   away.
+- One fold never outgrows one summarizer call. A fold region larger than such a
+  call can hold — the window minus room for the digest it must return, the
+  summary prompt, and the caller's instructions — first gives up the bulk of its
+  stale tool results: head and tail lines are kept, and only in the summarizer's
+  copy, never in the transcript or the projection. A region still too large is summarized in
+  consecutive parts whose digests are merged in a final pass, capped so a single
+  compaction cannot cost an unbounded number of calls; whatever a part had to
+  drop is stated in the text the summarizer reads.
 - The dropped originals are archived under the user config dir
   (`reasonix/archive/<timestamp>.jsonl`; see §5 for its per-OS location), one
   message per line, so the full history stays traceable.
