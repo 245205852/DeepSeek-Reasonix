@@ -194,6 +194,7 @@ func renderBody(results []result) string {
 	b.WriteString(renderToolSurface(results))
 	b.WriteString(renderContractShadow(results))
 	b.WriteString(renderOutcomeProgress(results))
+	b.WriteString(renderMemoryShadow(results))
 	b.WriteString(renderCognition(results))
 	b.WriteString(renderDelegationAdmission(results))
 	b.WriteString(renderMechanismLedger(results))

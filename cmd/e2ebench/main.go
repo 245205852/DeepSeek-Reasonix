@@ -31,7 +31,10 @@ type task struct {
 	Class      string `toml:"class" json:"class,omitempty"`
 	MaxSteps   int    `toml:"max_steps"`
 	TimeoutSec int    `toml:"timeout_sec"`
-	dir        string
+	// MemoryMarkers are unique tokens planted in seeded fact bodies; a marker
+	// found in tool args or answer text after a recall proves point of use.
+	MemoryMarkers []string `toml:"memory_markers" json:"memory_markers,omitempty"`
+	dir           string
 }
 
 type runMetrics struct {
@@ -94,6 +97,13 @@ type result struct {
 	Passed  bool
 	Skipped bool
 	Note    string
+	// Memory shadow: recall decisions and point-of-use evidence extracted from
+	// the trajectory (see memorybench.go). Zero for suites without seeds.
+	MemoryRecallEvents int `json:"memory_recall_events,omitempty"`
+	MemoryRecallHits   int `json:"memory_recall_hits,omitempty"`
+	MemoryRecallChars  int `json:"memory_recall_chars,omitempty"`
+	MemorySuppressed   int `json:"memory_suppressed,omitempty"`
+	MemoryMarkersUsed  int `json:"memory_markers_used,omitempty"`
 	// WallMs is the harness's own clock, not the agent's self-report, so the
 	// number stays comparable when the same suite runs against another harness.
 	WallMs int64 `json:"wall_ms"`
@@ -205,7 +215,7 @@ func main() {
 	cacheArm := flag.String("cache", "cold", "suite mode: cold (fresh session per task) | warm (prefix-warming one-step run in the same workdir before the graded run)")
 	effort := flag.String("effort", "", "reasoning effort override passed to the agent (model-specific levels, e.g. disabled|low|high|max); empty = model default")
 	checkpoints := flag.Bool("checkpoints", false, "suite mode: snapshot the workdir on every change and grade each snapshot offline after the run, yielding first_correct_ms (TTFCS) and post_solve_waste_ms")
-	policyFlag := flag.String("policy", "", "suite mode: experiment arm — empty (baseline) | ebm (evidence-before-more-mutation nudge) | governor (exploration-phase reasoning governor)")
+	policyFlag := flag.String("policy", "", "suite mode: experiment arm — empty (baseline) | ebm (evidence-before-more-mutation nudge) | governor (exploration-phase reasoning governor) | memory-off (hide the memory store: MemoryBench counterfactual arm)")
 	forkCapture := flag.String("fork-capture", "", "suite mode: capture a fork bundle per task at first EBM eligibility into <dir>/<task-id>")
 	bundles := flag.String("bundles", "", "fork mode: directory of captured bundles (<task-id>/bundle.json)")
 	forkArms := flag.String("arm", "control,treatment", "fork mode: comma-separated continuation arms (control | treatment)")
@@ -509,18 +519,12 @@ func runTask(cfg suiteConfig, t task) result {
 
 	cmd := exec.CommandContext(ctx, cfg.bin, args...)
 	cmd.Dir = work
-	if cfg.policy != "" || cfg.forkCapture != "" {
-		env := os.Environ()
-		switch cfg.policy {
-		case "ebm":
-			env = append(env, "REASONIX_EXPERIMENT_EBM=1")
-		case "governor":
-			env = append(env, "REASONIX_EXPERIMENT_GOVERNOR=1")
-		}
-		if cfg.forkCapture != "" {
-			env = append(env, "REASONIX_EXPERIMENT_FORK_CAPTURE_DIR="+filepath.Join(cfg.forkCapture, t.ID))
-		}
-		cmd.Env = env
+	extraEnv, seedNote := taskExperimentEnv(cfg, t, work)
+	if seedNote != "" {
+		r.Note = seedNote
+	}
+	if len(extraEnv) > 0 {
+		cmd.Env = append(os.Environ(), extraEnv...)
 	}
 	cmd.Stdout = os.Stderr // stream the run to the job log, keep stdout clean for the report
 	cmd.Stderr = os.Stderr
@@ -548,6 +552,7 @@ func runTask(cfg suiteConfig, t task) result {
 		if summary, err := summarizeTrajectory(trajPath); err == nil {
 			r.Trajectory = summary
 		}
+		applyMemoryStats(&r, trajPath, t.MemoryMarkers)
 	}
 	// A killed child never writes metrics, so the deadline is the only place
 	// this failure mode is still observable.

@@ -621,6 +621,42 @@ func RecordContractShadow(s Sink, a ContractShadowAudit) {
 	}
 }
 
+// MemoryRecallAudit summarizes one automatic-recall decision: identifiers,
+// scores, and budget numbers only — never the query or fact text.
+type MemoryRecallAudit struct {
+	Hits       []MemoryRecallHit
+	UsedChars  int
+	Omitted    int
+	Suppressed string // reason recall stayed silent; "" when hits were injected
+}
+
+// MemoryRecallHit is one recalled fact's content-free fingerprint.
+type MemoryRecallHit struct {
+	ID        string
+	Revision  int
+	Scope     string
+	Type      string
+	Freshness string
+	Score     float64
+}
+
+// MemoryRecallSink is an optional sink capability; implementations must keep
+// it content-free, like every other audit channel.
+type MemoryRecallSink interface {
+	RecordMemoryRecall(MemoryRecallAudit)
+}
+
+// RecordMemoryRecall forwards a recall decision only to sinks that explicitly
+// opt in. Ordinary UI sinks receive nothing.
+func RecordMemoryRecall(s Sink, a MemoryRecallAudit) {
+	if nilutil.IsNil(s) {
+		return
+	}
+	if mr, ok := s.(MemoryRecallSink); ok {
+		mr.RecordMemoryRecall(a)
+	}
+}
+
 // DelegationAdmissionAudit is the shadow admission verdict for one expensive
 // delegation call: tool name and enums only, never the query or prompt text.
 // Shadow means observed, not enforced — no call is blocked.
