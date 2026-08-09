@@ -840,8 +840,12 @@ token, cache, cost, and duration totals:
 | `false_completions`, `criterion_downgrades` | claims the host refused to back |
 | `write_scope_violations` | writes that escaped a declared claim |
 
-The control axis already exists: `--ablate subagent` removes delegation, so the
-same model and the same task run as a single agent, and `arm` labels the run.
+The control axis is partial, and the counters are what revealed it.
+`--ablate subagent` removes `task`, `read_only_task`, `fleet`, and
+`parallel_tasks`, but a run can still delegate through a `runAs=subagent`
+profile skill: a measured `no-subagent` arm spent a child run on `explore`.
+Treat that arm as "no task-tool delegation", not "single agent", and read
+`subagent_runs` to see what actually happened rather than trusting the label.
 Nested depth is `agent.max_subagent_depth`.
 
 `false_completions` is the counter that matters most. It comes from the

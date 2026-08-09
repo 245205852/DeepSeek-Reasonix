@@ -98,6 +98,10 @@ func (t *goalUsageTee) RecordContractShadow(a event.ContractShadowAudit) {
 }
 
 // RecordCompletionReport forwards the completion report audit unchanged.
+func (t *goalUsageTee) RecordDelegationAudit(a evidence.DelegationAudit) {
+	event.RecordDelegationAudit(t.inner, a)
+}
+
 func (t *goalUsageTee) RecordCompletionReport(a event.CompletionReportAudit) {
 	if t == nil || t.inner == nil {
 		return

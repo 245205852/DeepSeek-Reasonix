@@ -338,7 +338,7 @@ concurrency = "serial"   # parallel（默认）| serial
 | `false_completions`、`criterion_downgrades` | host 拒绝背书的主张 |
 | `write_scope_violations` | 逃出声明的写入 |
 
-控制轴已经存在：`--ablate subagent` 关掉委派，于是同一个模型、同一个任务以单 agent 形态运行，`arm` 字段标注该次运行；嵌套深度由 `agent.max_subagent_depth` 控制。
+控制轴目前是**不完整**的，而这正是这些计数暴露出来的：`--ablate subagent` 移除 `task`、`read_only_task`、`fleet`、`parallel_tasks`，但运行仍可通过 `runAs=subagent` 的 profile skill 委派——实测中 `no-subagent` 臂就把一次子运行花在了 `explore` 上。因此该臂应理解为"无 task 工具委派"，而非"单 agent"；实际发生了什么要读 `subagent_runs`，不要相信臂的标签。嵌套深度由 `agent.max_subagent_depth` 控制。
 
 `false_completions` 是其中最关键的一个。它来自 §3.11 的裁决，因此度量的是 **host 拒绝背书**的主张，而不是某个评审者的观感——它是区分"fleet 更快完成了"与"fleet 声称完成了"的唯一数字。
 
