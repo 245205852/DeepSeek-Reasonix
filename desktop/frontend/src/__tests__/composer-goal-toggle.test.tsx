@@ -271,6 +271,9 @@ console.log("\ncomposer goal toggle");
 
   let textarea = document.querySelector("textarea") as HTMLTextAreaElement | null;
   if (!textarea) throw new Error("composer textarea did not render");
+  eq(textarea.getAttribute("spellcheck"), "false", "plain composer disables browser spellcheck");
+  eq(textarea.getAttribute("autocorrect"), "off", "plain composer disables browser autocorrect");
+  eq(textarea.getAttribute("autocapitalize"), "off", "plain composer disables browser autocapitalization");
 
   await rerender({ insertRequest: { id: 1, text: "ship the release notes", mode: "replace" } });
   eq(textarea.value, "ship the release notes", "insert request populates the composer draft");
@@ -604,6 +607,9 @@ console.log("\ncomposer goal toggle");
   let token = richInput?.querySelector<HTMLElement>(".composer-invocation-token");
   const invocationId = token?.dataset.invocationId;
   if (!richInput || !token || !invocationId) throw new Error("rich invocation did not render for paste undo selection");
+  eq(richInput.getAttribute("spellcheck"), "false", "rich composer disables browser spellcheck");
+  eq(richInput.getAttribute("autocorrect"), "off", "rich composer disables browser autocorrect");
+  eq(richInput.getAttribute("autocapitalize"), "off", "rich composer disables browser autocapitalization");
   const afterToken = document.createRange();
   afterToken.setStartAfter(token);
   afterToken.collapse(true);
