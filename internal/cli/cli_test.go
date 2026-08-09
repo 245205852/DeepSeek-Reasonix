@@ -290,9 +290,6 @@ func TestMetadataCommandsDoNotProbeTerminalTheme(t *testing.T) {
 	if !strings.Contains(out, "reasonix run [--model NAME] [--max-steps N] [-c|--continue] [--resume PATH] [--copy] [--output-format FORMAT] <task>") {
 		t.Fatalf("help output missing run resume flags:\n%s", out)
 	}
-	if !strings.Contains(out, "reasonix web") {
-		t.Fatalf("help output missing web command:\n%s", out)
-	}
 }
 
 func TestRunDispatchesACPLongFlagAlias(t *testing.T) {

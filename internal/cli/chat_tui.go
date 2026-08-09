@@ -50,16 +50,7 @@ type chatTUI struct {
 	ctrl    control.SessionAPI
 	label   string
 	missing string // missing-key warning surfaced once in the banner, "" when ready
-	// launchWebOnExit turns /web into a frontend handoff: the TUI snapshots and
-	// restores the terminal first, then chatREPL starts the blocking reasonix web
-	// entry point. launchWebResumePath is set only when Snapshot materialized a
-	// transcript. launchWebSessionID always carries the reserved identity so a
-	// never-used session can stay lazy on disk without becoming a different Web
-	// session after the handoff.
-	launchWebOnExit     bool
-	launchWebResumePath string
-	launchWebSessionID  string
-	launchWebModelRef   string
+	webHandoffState
 	// diagnostics is the process-owned TUI log/watchdog started before terminal
 	// takeover. Nil in unit tests that construct chatTUI without chatREPL.
 	diagnostics      *tuiDiagnostics
@@ -4690,42 +4681,8 @@ func (m *chatTUI) runSlashCommand(input string) tea.Cmd {
 	case "/currency":
 		m.echoLocalCommand(input)
 		return m.runCurrencySubcommand(input)
-	case "/help":
-		m.echoLocalCommand(input)
-		m.showHelp()
-	case "/web":
-		m.echoLocalCommand(input)
-		if m.runtimeSwitchBusy() {
-			m.notice("wait for active work to finish, then retry /web")
-			return nil
-		}
-		if err := m.ctrl.Snapshot(); err != nil {
-			m.notice("web: could not save the current session: " + err.Error())
-			return nil
-		}
-		resumePath := m.ctrl.SessionPath()
-		if resumePath != "" {
-			info, err := os.Stat(resumePath)
-			switch {
-			case err == nil && !info.Mode().IsRegular():
-				m.notice("web: the current session path is not a regular file")
-				return nil
-			case err == nil:
-				// Snapshot materialized a resumable transcript.
-			case os.IsNotExist(err):
-				// Fresh sessions intentionally stay off disk until their first turn.
-				resumePath = ""
-			default:
-				m.notice("web: could not inspect the current session: " + err.Error())
-				return nil
-			}
-		}
-		m.followSessionLease()
-		m.launchWebOnExit = true
-		m.launchWebResumePath = resumePath
-		m.launchWebSessionID = agent.BranchID(m.ctrl.SessionPath())
-		m.launchWebModelRef = m.modelRef
-		return shutdownNow
+	case "/help", "/web":
+		return m.runHelpOrWebSlash(input, typedCmd)
 	case "/memory":
 		m.echoLocalCommand(input)
 		m.showMemory(input)

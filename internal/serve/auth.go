@@ -224,10 +224,8 @@ func (ag *authGate) middleware(next http.Handler) http.Handler {
 				ag.handleTokenBootstrap(w, r)
 				return
 			}
-			// URL fragments are never sent in the HTTP request. Let the browser
-			// load only the inert HTML shell and its logo so the shell can trade a
-			// #token fragment for an HttpOnly cookie before any API or SSE call.
-			// Keep query-token requests on the legacy handoff path below.
+			// Let the inert shell trade its URL fragment for an HttpOnly cookie
+			// before API or SSE calls; query-token links use the legacy path below.
 			if r.URL.Query().Get("token") == "" && tokenBootstrapPublicPath(r) {
 				next.ServeHTTP(w, r)
 				return
@@ -247,9 +245,8 @@ func tokenBootstrapPublicPath(r *http.Request) bool {
 	if r.URL.Path == "/" || r.URL.Path == "/assets/logo-wordmark.svg" {
 		return true
 	}
-	// A session deep link is another inert HTML-shell entry point. Keep this to
-	// exactly one non-empty path segment so arbitrary API-like paths never become
-	// public in token mode.
+	// Only one non-empty session segment is an inert shell entry point; this
+	// prevents API-like paths from becoming public in token mode.
 	const prefix = "/sessions/"
 	id := strings.TrimPrefix(r.URL.Path, prefix)
 	return id != r.URL.Path && id != "" && !strings.Contains(id, "/")

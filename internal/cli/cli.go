@@ -14,8 +14,6 @@ import (
 	"io"
 	"log/slog"
 	"math"
-	"net"
-	"net/http"
 	"net/url"
 	"os"
 	"os/signal"
@@ -799,28 +797,6 @@ func runAgent(args []string, version string) int {
 	return completion.exitCode
 }
 
-// runServe exposes the controller over HTTP+SSE: events stream to the browser,
-// commands arrive as JSON POSTs. The Broadcaster is the controller's event sink,
-// so the same typed stream the chat TUI consumes reaches web clients — the
-// transport-agnostic controller driven by a second frontend.
-func runServe(args []string) int {
-	return runServeWithOptions(args, serveRunOptions{command: "serve"})
-}
-
-// runWeb is the local, user-facing browser entry point. It intentionally
-// shares the entire serve implementation; the only semantic difference is
-// that it opens the bound URL in the default browser after the HTTP server has
-// returned a readiness response. `reasonix serve` remains suitable for
-// supervisors and remote use.
-func runWeb(args []string) int {
-	return runServeWithOptions(args, serveRunOptions{command: "web", openBrowser: true})
-}
-
-type serveRunOptions struct {
-	command     string
-	openBrowser bool
-}
-
 func runServeWithOptions(args []string, opts serveRunOptions) int {
 	if opts.command == "" {
 		opts.command = "serve"
@@ -998,215 +974,12 @@ func runServeWithOptions(args []string, opts serveRunOptions) int {
 
 	srv := serve.New(ctrl, bc, serveCfg)
 	srv.SetSessionLeases(leases)
-
-	// With --port-file the supervisor needs the real bound port (--addr may be
-	// 127.0.0.1:0). The Web entry point also listens first so the browser is
-	// never opened for an address that failed to bind.
-	var ln net.Listener
-	displayAddr := *addr
-	if *portFile != "" || opts.command == "web" || (*openBrowser && !*noOpen) {
-		var lerr error
-		if opts.command == "web" {
-			ln, lerr = listenWebWithPortRetry(*addr)
-		} else {
-			ln, lerr = net.Listen("tcp", *addr)
-		}
-		if lerr != nil {
-			fmt.Fprintln(os.Stderr, i18n.M.ErrorPrefix, lerr)
-			return 1
-		}
-		displayAddr = ln.Addr().String()
-		if opts.command == "web" && requestedPort(*addr) != requestedPort(displayAddr) && requestedPort(*addr) != 0 {
-			fmt.Fprintf(os.Stderr, "  port %d is in use; using %d instead\n", requestedPort(*addr), requestedPort(displayAddr))
-		}
-		if *portFile != "" {
-			if err := writeServeAddrFile(*portFile, displayAddr); err != nil {
-				_ = ln.Close()
-				fmt.Fprintln(os.Stderr, i18n.M.ErrorPrefix, err)
-				return 1
-			}
-			defer os.Remove(*portFile)
-		}
-	}
-	if *pidFile != "" {
-		if err := writeServePidFile(*pidFile); err != nil {
-			if ln != nil {
-				_ = ln.Close()
-			}
-			fmt.Fprintln(os.Stderr, i18n.M.ErrorPrefix, err)
-			return 1
-		}
-		defer os.Remove(*pidFile)
-	}
-	var webRegistration *webInstanceRegistration
-	if opts.command == "web" {
-		var err error
-		webRegistration, err = registerWebInstance(config.ReasonixHomeDir(), displayAddr)
-		if err != nil {
-			if ln != nil {
-				_ = ln.Close()
-			}
-			fmt.Fprintln(os.Stderr, i18n.M.ErrorPrefix, err)
-			return 1
-		}
-		defer webRegistration.Release()
-	}
-	srv.EnableProviderSetupForListener(displayAddr)
-
-	fmt.Printf("reasonix %s — %s on http://%s\n", opts.command, ctrl.Label(), displayAddr)
-	if srv.AuthMode() == "token" {
-		fmt.Printf("  auth: token\n")
-		// Under --port-file the process is supervised (e.g. remote bootstrap):
-		// stdout is redirected to a log, so printing the token here would leak it
-		// into a file readable by other same-machine users. The supervisor
-		// already holds the token (it wrote --token-file), so suppress the share
-		// URL and print only the token-file reference.
-		if *portFile != "" && *tokenFile != "" {
-			fmt.Printf("  share: http://%s/ (token in %s)\n", displayAddr, *tokenFile)
-		} else {
-			fmt.Printf("  share: http://%s/#token=%s\n", displayAddr, url.QueryEscape(srv.AuthToken()))
-		}
-	} else if srv.AuthMode() == "password" {
-		fmt.Printf("  auth: password (login at http://%s/login)\n", displayAddr)
-	}
-	if warning := serve.PlainHTTPAuthWarning(serveCfg, displayAddr); warning != "" {
-		fmt.Fprintf(os.Stderr, "  %s\n", warning)
-	}
-	// Balance is diagnostics, not readiness. Run it off the serving path so a
-	// slow or unauthenticated Provider endpoint cannot leave a published port
-	// file pointing at a listener whose HTTP accept loop has not started yet.
-	go func() {
-		if b, err := ctrl.Balance(context.Background()); err != nil {
-			fmt.Fprintf(os.Stderr, "  balance: error — %v\n", err)
-		} else if b == nil {
-			fmt.Fprintf(os.Stderr, "  balance: not configured (no balance_url for this provider)\n")
-		} else {
-			fmt.Printf("  balance: %s\n", b.Display())
-		}
-	}()
-
-	// Use graceful shutdown so SIGINT/SIGTERM drain active connections.
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
-	if ln != nil {
-		var serveErr error
-		if *openBrowser && !*noOpen {
-			openSessionID := ""
-			if *resume != "" || *sessionID != "" {
-				openSessionID = agent.BranchID(ctrl.SessionPath())
-			}
-			serveErr = runServeListenerAfterReady(ctx, srv, ln, displayAddr, func() {
-				browserURL, err := launchWebBrowser(srv, displayAddr, openSessionID)
-				if err != nil {
-					fmt.Fprintf(os.Stderr, "  browser: could not open %s — %v\n", browserURL, err)
-				} else {
-					fmt.Printf("  browser: %s\n", browserURL)
-				}
-			})
-		} else {
-			serveErr = srv.RunGracefulListener(ctx, ln)
-		}
-		if serveErr != nil {
-			fmt.Fprintln(os.Stderr, i18n.M.ErrorPrefix, serveErr)
-			return 1
-		}
-		return 0
-	}
-	if err := srv.RunGraceful(ctx, *addr); err != nil {
-		fmt.Fprintln(os.Stderr, i18n.M.ErrorPrefix, err)
-		return 1
-	}
-	return 0
-}
-
-// runServeListenerAfterReady starts the HTTP accept loop, verifies that it can
-// return a response, and only then invokes onReady. This avoids opening a tab
-// against a merely-bound listener whose HTTP server has not started serving.
-func runServeListenerAfterReady(ctx context.Context, srv *serve.Server, ln net.Listener, addr string, onReady func()) error {
-	serveCtx, cancel := context.WithCancel(ctx)
-	defer cancel()
-	done := make(chan error, 1)
-	go func() {
-		done <- srv.RunGracefulListener(serveCtx, ln)
-	}()
-	if err := waitForServeHTTPReady(serveCtx, addr); err != nil {
-		cancel()
-		serveErr := <-done
-		if serveErr != nil {
-			return fmt.Errorf("wait for Web server readiness: %w (server: %v)", err, serveErr)
-		}
-		return fmt.Errorf("wait for Web server readiness: %w", err)
-	}
-	if onReady != nil {
-		onReady()
-	}
-	return <-done
-}
-
-func waitForServeHTTPReady(ctx context.Context, addr string) error {
-	readyCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
-	defer cancel()
-	req, err := http.NewRequestWithContext(readyCtx, http.MethodGet, "http://"+browserHostPort(addr)+"/", nil)
-	if err != nil {
-		return err
-	}
-	req.Close = true
-	client := &http.Client{
-		Transport: &http.Transport{DisableKeepAlives: true},
-		CheckRedirect: func(*http.Request, []*http.Request) error {
-			return http.ErrUseLastResponse
-		},
-	}
-	resp, err := client.Do(req)
-	if err != nil {
-		return err
-	}
-	_ = resp.Body.Close()
-	// The status code is intentionally not constrained: 200 (none/token shell),
-	// 302 (password login), and 401 (future auth modes) all prove the HTTP stack
-	// is accepting requests and returning headers.
-	return nil
-}
-
-// webBrowserURL converts a listen address into a URL a local browser can use.
-// Wildcard binds are valid server addresses but invalid browser destinations,
-// so they map to loopback. Token auth uses a URL fragment handoff so the secret
-// is absent from the initial request URL, browser history, referrers, and logs.
-func webBrowserURL(srv *serve.Server, addr, sessionID string) string {
-	hostPort := browserHostPort(addr)
-	base := "http://" + hostPort
-	entryPath := "/"
-	if sessionID != "" {
-		entryPath = "/sessions/" + url.PathEscape(sessionID)
-	}
-	switch srv.AuthMode() {
-	case "token":
-		return base + entryPath + "#token=" + url.QueryEscape(srv.AuthToken())
-	case "password":
-		if sessionID != "" {
-			return base + entryPath
-		}
-		return base + "/login"
-	default:
-		return base + entryPath
-	}
-}
-
-func launchWebBrowser(srv *serve.Server, addr, sessionID string) (string, error) {
-	browserURL := webBrowserURL(srv, addr, sessionID)
-	return browserURL, openBrowserURL(browserURL)
-}
-
-func browserHostPort(addr string) string {
-	host, port, err := net.SplitHostPort(addr)
-	if err != nil {
-		return addr
-	}
-	switch strings.TrimSpace(host) {
-	case "", "0.0.0.0", "::":
-		host = "127.0.0.1"
-	}
-	return net.JoinHostPort(host, port)
+	return runServeFrontend(ctrl, srv, serveCfg, serveFrontendOptions{
+		command: opts.command, address: *addr,
+		portFile: *portFile, tokenFile: *tokenFile, pidFile: *pidFile,
+		openBrowser: *openBrowser && !*noOpen,
+		hasSession:  *resume != "" || *sessionID != "",
+	})
 }
 
 // chatREPL is an interactive session: a single persistent agent/session and a
@@ -1577,24 +1350,6 @@ func chatREPL(args []string, version string) int {
 		return runWebCommand(webHandoffArgs(launchWebPath, launchWebSessionID, launchWebModelRef, launchWebProfile))
 	}
 	return 0
-}
-
-func webHandoffArgs(sessionPath, sessionID, modelRef, profile string) []string {
-	// The Web command owns deterministic port selection: start at 8787 and walk
-	// upward when sibling instances are already listening.
-	args := []string{}
-	if sessionPath != "" {
-		args = append(args, "--resume", sessionPath)
-	} else if sessionID != "" {
-		args = append(args, "--session-id", sessionID)
-	}
-	if modelRef != "" {
-		args = append(args, "--model", modelRef)
-	}
-	if profile != "" {
-		args = append(args, "--profile", profile)
-	}
-	return args
 }
 
 // adoptCarriedHistoryPreservingProfileAndGrants resumes c on the carried

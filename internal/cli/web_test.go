@@ -30,6 +30,17 @@ func TestRunDispatchesWebCommand(t *testing.T) {
 	}
 }
 
+func TestHelpListsWebCommand(t *testing.T) {
+	out := captureStdout(t, func() {
+		if rc := Run([]string{"help"}, "test-version"); rc != 0 {
+			t.Fatalf("help rc = %d, want 0", rc)
+		}
+	})
+	if !strings.Contains(out, "reasonix web") {
+		t.Fatalf("help output missing web command:\n%s", out)
+	}
+}
+
 func TestWebBrowserURLUsesReachableLoopbackAndAuthEntry(t *testing.T) {
 	tests := []struct {
 		name string

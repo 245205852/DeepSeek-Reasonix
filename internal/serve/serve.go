@@ -486,7 +486,6 @@ func (s *Server) Handler() http.Handler {
 func (s *Server) HandlerWithCORS(origin string) http.Handler {
 	return corsMiddleware(s.handler(), origin)
 }
-
 func (s *Server) handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /", s.index)
