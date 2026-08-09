@@ -17,6 +17,9 @@ type ExternalOpenerPreferenceCoordinator = {
   nextIntent: number;
   latestSuccessfulIntent: number;
   writeTail: Promise<void>;
+  preferred: string;
+  revision: number;
+  listeners: Set<(preferred: string) => void>;
 };
 
 const externalOpenerPreferenceCoordinators = new WeakMap<ExternalOpenerBridge, ExternalOpenerPreferenceCoordinator>();
@@ -24,7 +27,14 @@ const externalOpenerPreferenceCoordinators = new WeakMap<ExternalOpenerBridge, E
 function preferenceCoordinatorFor(bridge: ExternalOpenerBridge): ExternalOpenerPreferenceCoordinator {
   const current = externalOpenerPreferenceCoordinators.get(bridge);
   if (current) return current;
-  const created = { nextIntent: 0, latestSuccessfulIntent: 0, writeTail: Promise.resolve() };
+  const created: ExternalOpenerPreferenceCoordinator = {
+    nextIntent: 0,
+    latestSuccessfulIntent: 0,
+    writeTail: Promise.resolve(),
+    preferred: "",
+    revision: 0,
+    listeners: new Set(),
+  };
   externalOpenerPreferenceCoordinators.set(bridge, created);
   return created;
 }
@@ -38,6 +48,9 @@ function persistPreferredExternalOpener(
   const write = coordinator.writeTail.then(async () => {
     if (intent !== coordinator.latestSuccessfulIntent) return false;
     await bridge.SetPreferredExternalOpener(id);
+    coordinator.preferred = id;
+    coordinator.revision += 1;
+    for (const listener of coordinator.listeners) listener(id);
     return true;
   });
   coordinator.writeTail = write.then(() => undefined, () => undefined);
@@ -114,8 +127,13 @@ export function ExternalOpener({
 
   const refreshOpeners = useCallback(async () => {
     const request = ++discoveryRequestRef.current;
+    const preferenceCoordinator = preferenceCoordinatorFor(bridge);
+    const preferenceRevision = preferenceCoordinator.revision;
     try {
       const next = normalizeOpeners(await bridge.ExternalOpenersForTab(tabId));
+      if (preferenceCoordinator.revision !== preferenceRevision && preferenceCoordinator.preferred) {
+        next.preferred = preferenceCoordinator.preferred;
+      }
       if (mountedRef.current && request === discoveryRequestRef.current) setState({ ...next, tabId });
     } catch (error) {
       if (mountedRef.current && request === discoveryRequestRef.current) {
@@ -126,12 +144,18 @@ export function ExternalOpener({
 
   useEffect(() => {
     mountedRef.current = true;
+    const preferenceCoordinator = preferenceCoordinatorFor(bridge);
+    const syncPreferred = (preferred: string) => {
+      if (mountedRef.current) setState((current) => ({ ...current, preferred }));
+    };
+    preferenceCoordinator.listeners.add(syncPreferred);
     void refreshOpeners();
     return () => {
       mountedRef.current = false;
       discoveryRequestRef.current += 1;
+      preferenceCoordinator.listeners.delete(syncPreferred);
     };
-  }, [refreshOpeners]);
+  }, [bridge, refreshOpeners]);
 
   useEffect(() => setMenuOpen(false), [dismissSignal, tabId]);
 
