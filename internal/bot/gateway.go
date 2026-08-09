@@ -851,33 +851,7 @@ func (gw *BotGateway) handleMessage(ctx context.Context, binding AdapterBinding,
 		_ = gw.sendText(ctx, binding.Adapter, msg, "当前会话排队已满，请稍后再发，或使用 /queue 管理队列。")
 		return
 	}
-	if result.Queued {
-		// Unexpected with Cap=max and Drop=new while idle path; durable-queue as fallback.
-		if rec, err := gw.followupActiveSessionDurable(ctx, binding.Adapter, key, msg); err == nil {
-			gw.storeReactionCleanup(key, cleanup)
-			_ = gw.sendText(ctx, binding.Adapter, msg, formatQueuedReceipt(rec))
-		} else {
-			gw.storeReactionCleanup(key, cleanup)
-		}
-		return
-	}
-	if !result.Acquired {
-		gw.logger.Debug("session busy without queue action", "session", key[:8])
-		gw.storeReactionCleanup(key, cleanup)
-		return
-	}
-
-	// Run the turn on its own goroutine so the dispatch loop stays free to read
-	// the next inbound message. A turn that hits interactive approval/ask blocks
-	// inside RunTurn waiting for ctrl.Approve/AnswerQuestion — and the ONLY path
-	// that calls those is handleSlashCommand on this same dispatch goroutine. Run
-	// it inline and the loop can never deliver the /approve (or card) reply that
-	// would unblock it: the session wedges until restart (#4701, #4863, #4402).
-	// Per-session serialization is still held by the session lock (active[key]),
-	// which the deferred Release inside runTurn clears.
-	gw.turnWG.Go(func() {
-		gw.runTurn(ctx, binding.Adapter, key, msg, cleanup)
-	})
+	gw.dispatchQueueResult(ctx, binding.Adapter, key, msg, cleanup, result)
 }
 
 func (gw *BotGateway) queueMode(key string, msg InboundMessage) string {
@@ -927,103 +901,6 @@ func (gw *BotGateway) steerActiveSessionDurable(ctx context.Context, adapter Ada
 		return sessioninbox.InboxReceipt{}, false
 	}
 	return rec, true
-}
-
-func (gw *BotGateway) followupActiveSessionDurable(ctx context.Context, adapter Adapter, key string, msg InboundMessage) (sessioninbox.InboxReceipt, error) {
-	api := gw.sessionAPI(key)
-	if api == nil {
-		return sessioninbox.InboxReceipt{}, fmt.Errorf("no session controller")
-	}
-	gw.mu.Lock()
-	state := gw.controllers[key]
-	gw.mu.Unlock()
-	msg = gw.prepareDurableInboxMessage(ctx, adapter, msg, state)
-	return enqueueViaInbox(api, msg, sessioninbox.IntentFollowup)
-}
-
-func (gw *BotGateway) collectActiveSessionDurable(ctx context.Context, adapter Adapter, key string, msg InboundMessage) (sessioninbox.InboxReceipt, error) {
-	api := gw.sessionAPI(key)
-	if api == nil {
-		return sessioninbox.InboxReceipt{}, fmt.Errorf("no session controller")
-	}
-	gw.mu.Lock()
-	state := gw.controllers[key]
-	gw.mu.Unlock()
-	msg = gw.prepareDurableInboxMessage(ctx, adapter, msg, state)
-	return collectAppend(api, msg, gw.sessions.Debounce())
-}
-
-func (gw *BotGateway) interruptActiveSessionDurable(ctx context.Context, adapter Adapter, key string, msg InboundMessage) (sessioninbox.InboxReceipt, error) {
-	api := gw.sessionAPI(key)
-	if api == nil {
-		return sessioninbox.InboxReceipt{}, fmt.Errorf("no session controller")
-	}
-	gw.mu.Lock()
-	state := gw.controllers[key]
-	gw.mu.Unlock()
-	msg = gw.prepareDurableInboxMessage(ctx, adapter, msg, state)
-	return interruptEnqueue(api, msg)
-}
-
-func (gw *BotGateway) prepareDurableInboxMessage(ctx context.Context, adapter Adapter, msg InboundMessage, state *sessionState) InboundMessage {
-	msg.Text = gw.inputTextWithMedia(ctx, adapter, msg, state)
-	if msg.ChatType == ChatGroup {
-		userName := strings.TrimSpace(msg.UserName)
-		if msg.ResolveUserName != nil {
-			if resolved := strings.TrimSpace(msg.ResolveUserName(ctx)); resolved != "" {
-				userName = resolved
-			}
-		}
-		msg.Text = fmt.Sprintf("[%s] %s", userName, msg.Text)
-		msg.UserName = userName
-	}
-	msg.Media = nil
-	msg.MediaURLs = nil
-	msg.ResolveUserName = nil
-	msg.Raw = nil
-	return msg
-}
-
-type botInboxTurn struct {
-	itemID string
-	msg    InboundMessage
-}
-
-// nextInboxTurn loads the next durable FIFO follow-up with its original routing
-// metadata. RunInboxTurn performs the atomic queued -> running claim.
-func (gw *BotGateway) nextInboxTurn(key string, fallback InboundMessage) *botInboxTurn {
-	api := gw.sessionAPI(key)
-	if api == nil {
-		return nil
-	}
-	snap := api.InboxSnapshot()
-	if snap.Paused {
-		return nil
-	}
-	for _, it := range snap.Items {
-		if it.State != sessioninbox.StateQueued {
-			continue
-		}
-		_, env, err := api.ReadInboxItem(it.ID)
-		if err != nil {
-			continue
-		}
-		msg := botMessageFromEnvelope(env, fallback)
-		if _, hasStoredRoute := env.Extra[botInboxMessageExtraKey]; !hasStoredRoute && it.Idempotency != "" {
-			msg.MessageID = it.Idempotency
-		}
-		return &botInboxTurn{itemID: it.ID, msg: msg}
-	}
-	return nil
-}
-
-// nextInboxMessage is retained for focused queue inspection tests.
-func (gw *BotGateway) nextInboxMessage(key string) *InboundMessage {
-	next := gw.nextInboxTurn(key, InboundMessage{ChatID: key})
-	if next == nil {
-		return nil
-	}
-	return &next.msg
 }
 
 func (gw *BotGateway) cancelActiveSession(key string) {
@@ -2255,35 +2132,7 @@ func (gw *BotGateway) runTurn(ctx context.Context, adapter Adapter, key string, 
 
 func (gw *BotGateway) runTurnItem(ctx context.Context, adapter Adapter, key string, msg InboundMessage, inboxItemID string, cleanup func()) {
 	gw.logger.Info("bot turn started", "platform", msg.Platform, "chat_type", msg.ChatType, "chat", hashID(msg.ChatID), "session", key[:8])
-	defer func() {
-		// Legacy in-memory pending first (compat), then durable session inbox.
-		next := gw.sessions.Release(key)
-		nextInboxID := ""
-		if next == nil {
-			if queued := gw.nextInboxTurn(key, msg); queued != nil {
-				next = &queued.msg
-				nextInboxID = queued.itemID
-				// Release made the session idle. If a concurrent inbound message
-				// wins the lock, leave this disk-backed item queued for its drain.
-				if !gw.sessions.TryAcquireIdle(key) {
-					if cleanup != nil {
-						cleanup()
-					}
-					return
-				}
-			}
-		}
-		if next != nil {
-			if cleanup != nil {
-				cleanup()
-			}
-			nextCleanup := makeReactionCleanup(gw.takeReactionCleanups(key))
-			gw.logger.Info("bot pending message released", "platform", next.Platform, "chat_type", next.ChatType, "chat", hashID(next.ChatID), "session", key[:8])
-			gw.runTurnItem(ctx, adapter, key, *next, nextInboxID, nextCleanup)
-			return
-		}
-		gw.flushReactionCleanups(key, cleanup)
-	}()
+	defer gw.finishTurnItem(ctx, adapter, key, msg, cleanup)
 
 	// 获取或创建 Controller
 	state := gw.getOrCreateSession(ctx, key, msg)

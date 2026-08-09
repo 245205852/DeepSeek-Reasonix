@@ -5,6 +5,7 @@ import { asArray } from "../lib/array";
 import { filterAtMatches } from "../lib/atMatches";
 import { DedupIndex, sha256 } from "../lib/attachDedup";
 import { app, onFilesDropped } from "../lib/bridge";
+import { enqueueInboxGuidance } from "../lib/inboxSubmit";
 import { canUsePromptHistory, composerEnterAction, composerEscapeAction, composerMenuKeyAction, insertComposerNewline, isFnKeyEvent, isImeKeyEvent, promptHistoryDirectionFromEvent } from "../lib/composerKeyboard";
 import { cacheGeneration, loadOlder } from "../lib/composerHistory";
 import { SPINNER_WORDS, useI18n, type Translator } from "../lib/i18n";
@@ -2145,20 +2146,7 @@ export function Composer({
         if (guidanceText) {
           // Durable follow-up: only clear the composer after a durable receipt.
           try {
-            const receipt = structured
-              ? await app.EnqueueInboxFollowupWithInvocations(
-                  submitTabId || "",
-                  structured.display.trim() || guidanceText,
-                  structured.input.trim(),
-                  structured.invocations,
-                  "",
-                )
-              : await app.EnqueueInboxFollowup(
-                  submitTabId || "",
-                  guidanceText,
-                  guidanceSubmitText || guidanceText,
-                  "",
-                );
+            const receipt = await enqueueInboxGuidance(app, submitTabId || "", guidanceText, guidanceSubmitText, structured);
             if (receipt?.error) throw new Error(receipt.error);
             updatePendingGuidanceForDraft(submitDraftKey, (items) => [
               ...items,

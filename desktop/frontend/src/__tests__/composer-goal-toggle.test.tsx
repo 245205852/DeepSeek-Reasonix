@@ -2291,12 +2291,9 @@ console.log("\ncomposer goal toggle");
 }
 
 {
-  // An entity-only submit while a turn is running must queue as guidance,
-  // rendered with its slash form — not be dropped silently while
-  // clearSubmittedDraft wipes the composer.
+  // Entity-only input must remain structured while queued during a run.
   const dom = installDom();
-  let queuedInvocations: StructuredInvocationSubmit["invocations"] | undefined;
-  let queuedSubmit: string | undefined;
+  let queued: { submit?: string; invocations?: StructuredInvocationSubmit["invocations"] } = {};
   mockApp({
     Commands: async () => [
       { name: "superpowers:writing-plans", description: "Write a plan", kind: "skill", plugin: "superpowers" },
@@ -2308,11 +2305,8 @@ console.log("\ncomposer goal toggle");
       bytes: 0, maxItems: 64, maxBytes: 64 * 1024 * 1024,
     }),
     EnqueueInboxFollowupWithInvocations: async (_tabId, _display, input, invocations) => {
-      queuedSubmit = input;
-      queuedInvocations = invocations;
-      return {
-      itemId: "durable-entity", disposition: "queued_followup", position: 1, paused: false,
-      };
+      queued = { submit: input, invocations };
+      return { itemId: "durable-entity", disposition: "queued_followup", position: 1, paused: false };
     },
   });
   const { root, calls, rerender } = await renderComposer();
@@ -2326,7 +2320,6 @@ console.log("\ncomposer goal toggle");
   });
   const queueRichInput = document.querySelector(".composer__rich-input") as HTMLDivElement | null;
   if (!queueRichInput) throw new Error("rich composer did not render for the running-queue entity");
-
   await rerender({ running: true });
   await act(async () => {
     queueRichInput.dispatchEvent(new window.KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }));
@@ -2337,11 +2330,9 @@ console.log("\ncomposer goal toggle");
     document.querySelector(".composer-guidance-item__text")?.textContent?.includes("/superpowers:writing-plans") === true,
     "the queued guidance shows the entity's slash form instead of dropping it silently",
   );
-  eq(queuedInvocations?.[0]?.name, "superpowers:writing-plans", "queued guidance durably preserves the selected skill invocation");
-  eq(queuedInvocations?.[0]?.kind, "skill", "queued guidance durably preserves the invocation kind");
-  eq(queuedSubmit, "", "entity-only guidance keeps an empty explicit task instead of degrading to slash text");
+  eq(`${queued.invocations?.[0]?.name}:${queued.invocations?.[0]?.kind}`, "superpowers:writing-plans:skill", "queued guidance preserves the selected skill invocation");
+  eq(queued.submit, "", "entity-only guidance keeps an empty explicit task instead of degrading to slash text");
   ok(document.querySelector(".composer__rich-input") === null, "queueing an entity-only submit clears the draft");
-
   await act(async () => {
     root.unmount();
   });

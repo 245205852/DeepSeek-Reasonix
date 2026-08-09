@@ -320,35 +320,8 @@ func (s *Store) Enqueue(req EnqueueRequest) (InboxReceipt, error) {
 	if s.readonly {
 		return InboxReceipt{}, ErrSchemaReadonly
 	}
-	if idem != "" {
-		if id, ok := s.man.Idempotency[idem]; ok {
-			if it, found := s.man.item(id); found {
-				if previous := s.man.IdempotencyHashes[idem]; previous != "" && previous != requestHash {
-					return InboxReceipt{}, ErrIdempotencyConflict
-				}
-				snap := s.snapshotLocked()
-				return InboxReceipt{
-					ItemID:      it.ID,
-					Disposition: DispositionIdempotentHit,
-					Position:    s.man.indexOf(it.ID) + 1,
-					Paused:      s.man.Paused,
-					Capacity:    snap.Capacity,
-					Idempotent:  true,
-				}, nil
-			}
-		}
-		if receipt, ok := s.man.Receipts[idem]; ok && time.Since(receipt.CompletedAt) <= idempotencyReceiptTTL {
-			if receipt.RequestHash != requestHash {
-				return InboxReceipt{}, ErrIdempotencyConflict
-			}
-			return InboxReceipt{
-				ItemID:      receipt.ItemID,
-				Disposition: DispositionIdempotentHit,
-				Paused:      s.man.Paused,
-				Capacity:    s.snapshotLocked().Capacity,
-				Idempotent:  true,
-			}, nil
-		}
+	if receipt, found, err := s.idempotentReceiptLocked(idem, requestHash); err != nil || found {
+		return receipt, err
 	}
 	if byteSize > s.limits.MaxItemBytes {
 		return InboxReceipt{}, ErrItemTooLarge
@@ -387,16 +360,7 @@ func (s *Store) Enqueue(req EnqueueRequest) (InboxReceipt, error) {
 	}
 	next := s.man.clone()
 	next.Items = append(next.Items, meta)
-	if idem != "" {
-		if next.Idempotency == nil {
-			next.Idempotency = map[string]string{}
-		}
-		if next.IdempotencyHashes == nil {
-			next.IdempotencyHashes = map[string]string{}
-		}
-		next.Idempotency[idem] = id
-		next.IdempotencyHashes[idem] = requestHash
-	}
+	bindIdempotency(next, idem, id, requestHash)
 	if err := s.commitManifestLocked(next); err != nil {
 		s.removeBlobLocked(blobName)
 		return InboxReceipt{}, err
@@ -491,22 +455,12 @@ func (s *Store) UpdateItemWithIdempotency(id string, env PromptEnvelope, alias s
 	if !isPendingState(meta.State) {
 		return InboxItemMeta{}, ErrInvalidState
 	}
-	if alias != "" {
-		if existingID, ok := s.man.Idempotency[alias]; ok {
-			if existingHash := s.man.IdempotencyHashes[alias]; existingHash != "" && existingHash != aliasHash {
-				return InboxItemMeta{}, ErrIdempotencyConflict
-			}
-			if existingID != id {
-				return InboxItemMeta{}, ErrIdempotencyConflict
-			}
-			return meta, nil
-		}
-		if receipt, ok := s.man.Receipts[alias]; ok && time.Since(receipt.CompletedAt) <= idempotencyReceiptTTL {
-			if receipt.RequestHash != aliasHash || receipt.ItemID != id {
-				return InboxItemMeta{}, ErrIdempotencyConflict
-			}
-			return meta, nil
-		}
+	replayed, err := s.idempotentAliasReplayLocked(alias, aliasHash, id)
+	if err != nil {
+		return InboxItemMeta{}, err
+	}
+	if replayed {
+		return meta, nil
 	}
 	if byteSize > s.limits.MaxItemBytes {
 		return InboxItemMeta{}, ErrItemTooLarge
@@ -529,16 +483,7 @@ func (s *Store) UpdateItemWithIdempotency(id string, env PromptEnvelope, alias s
 	next.Items[i].Refs = refSummaries(env.Refs)
 	next.Items[i].UpdatedAt = time.Now().UTC()
 	next.Items[i].Revision = next.Revision + 1
-	if alias != "" {
-		if next.Idempotency == nil {
-			next.Idempotency = map[string]string{}
-		}
-		if next.IdempotencyHashes == nil {
-			next.IdempotencyHashes = map[string]string{}
-		}
-		next.Idempotency[alias] = id
-		next.IdempotencyHashes[alias] = aliasHash
-	}
+	bindIdempotency(next, alias, id, aliasHash)
 	if next.Items[i].State == StateBlocked {
 		next.Items[i].State = StateQueued
 		next.Items[i].BlockReason = ""

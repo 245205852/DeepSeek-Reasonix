@@ -223,15 +223,9 @@ export interface AppBindings {
     maxItems: number;
     maxBytes: number;
   }>;
-  EnqueueInboxFollowup(tabID: string, display: string, submit: string, idempotency: string): Promise<{
-    itemId: string; disposition: string; position: number; paused: boolean; idempotent?: boolean; error?: string;
-  }>;
-  EnqueueInboxFollowupWithInvocations(tabID: string, display: string, submit: string, invocations: InvocationRequest[], idempotency: string): Promise<{
-    itemId: string; disposition: string; position: number; paused: boolean; idempotent?: boolean; error?: string;
-  }>;
-  EnqueueInboxSteer(tabID: string, display: string, submit: string, idempotency: string): Promise<{
-    itemId: string; disposition: string; position: number; paused: boolean; idempotent?: boolean; error?: string;
-  }>;
+  EnqueueInboxFollowup(tabID: string, display: string, submit: string, idempotency: string): Promise<{ itemId: string; disposition: string; position: number; paused: boolean; idempotent?: boolean; error?: string }>;
+  EnqueueInboxFollowupWithInvocations(tabID: string, display: string, submit: string, invocations: InvocationRequest[], idempotency: string): Promise<{ itemId: string; disposition: string; position: number; paused: boolean; idempotent?: boolean; error?: string }>;
+  EnqueueInboxSteer(tabID: string, display: string, submit: string, idempotency: string): Promise<{ itemId: string; disposition: string; position: number; paused: boolean; idempotent?: boolean; error?: string }>;
   SteerInboxItem(tabID: string, itemID: string): Promise<{
     itemId: string; disposition: string; position: number; paused: boolean; idempotent?: boolean; error?: string;
   }>;
@@ -2940,12 +2934,10 @@ function makeMockApp(): AppBindings {
           };
         },
         async EnqueueInboxFollowup(_tabID, _display, _submit, _idempotency) {
-          const itemId = `mock-${Date.now()}`;
-          return { itemId, disposition: "queued_followup", position: 1, paused: false };
+          return { itemId: `mock-${Date.now()}`, disposition: "queued_followup", position: 1, paused: false };
         },
         async EnqueueInboxFollowupWithInvocations(_tabID, _display, _submit, _invocations, _idempotency) {
-          const itemId = `mock-invocation-${Date.now()}`;
-          return { itemId, disposition: "queued_followup", position: 1, paused: false };
+          return { itemId: `mock-invocation-${Date.now()}`, disposition: "queued_followup", position: 1, paused: false };
         },
         async EnqueueInboxSteer(_tabID, display, submit, _idempotency) {
           const itemId = `mock-steer-${Date.now()}`;
