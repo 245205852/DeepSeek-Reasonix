@@ -5,6 +5,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"testing"
 	"time"
@@ -127,7 +128,7 @@ func TestWebInstanceRegistryPreservesIndependentInstances(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if dirInfo.Mode().Perm() != 0o700 {
+	if runtime.GOOS != "windows" && dirInfo.Mode().Perm() != 0o700 {
 		t.Fatalf("registry directory mode = %o, want 700", dirInfo.Mode().Perm())
 	}
 
@@ -143,7 +144,7 @@ func TestWebInstanceRegistryPreservesIndependentInstances(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if info.Mode().Perm() != 0o600 {
+		if runtime.GOOS != "windows" && info.Mode().Perm() != 0o600 {
 			t.Fatalf("instance mode = %o, want 600", info.Mode().Perm())
 		}
 	}

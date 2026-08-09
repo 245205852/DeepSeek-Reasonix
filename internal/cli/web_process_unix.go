@@ -2,7 +2,14 @@
 
 package cli
 
-import "syscall"
+import (
+	"errors"
+	"syscall"
+)
+
+func webAddressInUse(err error) bool {
+	return errors.Is(err, syscall.EADDRINUSE)
+}
 
 func webInstanceProcessAlive(pid int) bool {
 	if pid <= 0 {

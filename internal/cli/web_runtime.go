@@ -13,7 +13,6 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"syscall"
 	"time"
 	"unicode/utf8"
 
@@ -57,7 +56,7 @@ func listenWebWithPortRetry(addr string) (net.Listener, error) {
 		if listenErr == nil {
 			return ln, nil
 		}
-		if !errors.Is(listenErr, syscall.EADDRINUSE) || attempt >= webPortRetryLimit || port >= 65535 {
+		if !webAddressInUse(listenErr) || attempt >= webPortRetryLimit || port >= 65535 {
 			return nil, listenErr
 		}
 		port++

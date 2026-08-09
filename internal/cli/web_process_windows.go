@@ -10,6 +10,10 @@ import (
 
 const webInstanceStillActiveExitCode = 259
 
+func webAddressInUse(err error) bool {
+	return errors.Is(err, windows.WSAEADDRINUSE)
+}
+
 func webInstanceProcessAlive(pid int) bool {
 	if pid <= 0 {
 		return false
