@@ -136,23 +136,6 @@ func (s Store) dirs() []string {
 	return []string{s.Dir}
 }
 
-// Index returns the MEMORY.md contents (the per-line index of saved memories),
-// or "" if there are none yet. This is what loads into the cached prefix.
-// When both GlobalDir and Dir have indexes, they are merged with deduplication
-// (global first).
-func (s Store) Index() string {
-	memories := s.List()
-	if len(memories) == 0 {
-		return ""
-	}
-	var b strings.Builder
-	for _, memory := range memories {
-		b.WriteString(renderIndexLine(memory.Name, memory))
-		b.WriteString("\n")
-	}
-	return b.String()
-}
-
 // Path returns the absolute file path a memory with the given name lives at.
 // It checks GlobalDir first, then Dir, returning the first match. If no file
 // exists yet, it returns the path in Dir (the default project scope).
