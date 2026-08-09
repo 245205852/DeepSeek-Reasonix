@@ -120,6 +120,10 @@ type result struct {
 	// agent was killed. The numbers are real but stop at the last snapshot, so
 	// they are counted as lower bounds rather than dropped.
 	Partial bool `json:"partial"`
+	// Meter is what the neutral proxy observed for this run, when metering was
+	// on. It is the authority for cross-harness spend; runMetrics is the
+	// harness's own account, kept only to be checked against it.
+	Meter *meterUsage `json:"meter,omitempty"`
 	// Trajectory is the digest of the run's recorded event trajectory; nil
 	// unless the harness ran with -trajectories.
 	Trajectory *trajectorySummary `json:"trajectory,omitempty"`
@@ -219,6 +223,8 @@ func main() {
 	cacheArm := flag.String("cache", "cold", "suite mode: cold (fresh session per task) | warm (prefix-warming one-step run in the same workdir before the graded run)")
 	effort := flag.String("effort", "", "reasoning effort override passed to the agent (model-specific levels, e.g. disabled|low|high|max); empty = model default")
 	checkpoints := flag.Bool("checkpoints", false, "suite mode: snapshot the workdir on every change and grade each snapshot offline after the run, yielding first_correct_ms (TTFCS) and post_solve_waste_ms")
+	meterConfig := flag.String("meter", "", "suite mode: route the benchmarked provider through the neutral measuring proxy, using this config.toml as the source (e.g. ~/.reasonix/config.toml). Spend is then counted at the request boundary instead of trusted from the harness")
+	faultSpec := flag.String("faults", "", "suite mode: inject provider failures at fixed request indices, e.g. 3:429,7:500 (requires -meter)")
 	policyFlag := flag.String("policy", "", "suite mode: experiment arm — empty (baseline) | ebm (evidence-before-more-mutation nudge) | governor (exploration-phase reasoning governor) | memory-off (hide the memory store: MemoryBench counterfactual arm)")
 	forkCapture := flag.String("fork-capture", "", "suite mode: capture a fork bundle per task at first EBM eligibility into <dir>/<task-id>")
 	bundles := flag.String("bundles", "", "fork mode: directory of captured bundles (<task-id>/bundle.json)")
@@ -301,11 +307,12 @@ func main() {
 		return
 	}
 
+	meterSource, faults := meterSettings(*meterConfig, *faultSpec)
 	runSuiteMode(suiteConfig{
 		bin: *bin, model: *model, profile: profile, arm: arm, budget: *budget,
 		trajDir: *trajDir, forcePlanner: *forcePlanner, attempts: *attempts,
 		cacheArm: cache, effort: *effort, checkpoints: *checkpoints, policy: *policyFlag,
-		forkCapture: *forkCapture,
+		forkCapture: *forkCapture, meterConfig: meterSource, meterFaults: faults,
 	}, *suite, *taskFilter, *outMD, *outJSON)
 }
 
@@ -441,6 +448,10 @@ type suiteConfig struct {
 	trajDir                               string
 	forcePlanner, checkpoints             bool
 	attempts, budget                      int
+	// meterConfig is the real config.toml whose provider endpoint each run is
+	// redirected through the neutral meter; empty leaves runs unmetered.
+	meterConfig string
+	meterFaults map[int]int
 }
 
 // runSuite runs each task in order until the token budget is exhausted;
@@ -527,6 +538,9 @@ func runTask(cfg suiteConfig, t task) result {
 	if seedNote != "" {
 		r.Note = seedNote
 	}
+	mtr := attachMeter(cfg, &r)
+	defer mtr.close()
+	extraEnv = append(extraEnv, mtr.env...)
 	if len(extraEnv) > 0 {
 		cmd.Env = append(os.Environ(), extraEnv...)
 	}
@@ -534,14 +548,8 @@ func runTask(cfg suiteConfig, t task) result {
 	cmd.Stderr = os.Stderr
 	cmd.WaitDelay = 10 * time.Second // bound the wait for a stuck child after ctx timeout
 	startedAt := time.Now()
-	var snap *snapshotter
-	if cfg.checkpoints {
-		snapDir, err := os.MkdirTemp("", "e2ebench-cp-"+t.ID+"-")
-		if err == nil {
-			defer os.RemoveAll(snapDir)
-			snap = startSnapshotter(work, snapDir, startedAt)
-		}
-	}
+	snap, dropSnapshots := attachSnapshotter(cfg, t, work, startedAt)
+	defer dropSnapshots()
 	runErr := cmd.Run()
 	r.WallMs = time.Since(startedAt).Milliseconds()
 	var taken []checkpoint
@@ -552,6 +560,7 @@ func runTask(cfg suiteConfig, t task) result {
 	if m, err := readMetrics(metricsPath); err == nil {
 		r.runMetrics = m
 	}
+	mtr.record(&r)
 	if trajPath != "" {
 		if summary, err := summarizeTrajectory(trajPath); err == nil {
 			r.Trajectory = summary
