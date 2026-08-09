@@ -5355,9 +5355,7 @@ export function AddProviderPanel({
   onResetPreset,
   onAddCustom,
 }: {
-  mode: AddProviderMode;
-  kinds: string[];
-  officialProviders: ProviderView[];
+  mode: AddProviderMode; kinds: string[]; officialProviders: ProviderView[];
   providerPresets: ProviderPresetView[];
   busy: boolean;
   onMode: (mode: AddProviderMode) => void;
@@ -5374,13 +5372,10 @@ export function AddProviderPanel({
       const state = officialProviders.find((provider) => officialProviderKind(provider) === choice.kind);
       return {
         id: `official:${choice.kind}`,
-        source: "official" as const,
-        kind: choice.kind,
-        label: t(choice.labelKey),
-        description: t(choice.descKey),
+        source: "official" as const, kind: choice.kind,
+        label: t(choice.labelKey), description: t(choice.descKey),
         keyEnv: state?.apiKeyEnv || choice.keyEnv,
-        added: Boolean(state?.added),
-        keySet: Boolean(state?.keySet),
+        added: Boolean(state?.added), keySet: Boolean(state?.keySet),
       };
     }),
     ...providerPresets.map((preset) => ({
