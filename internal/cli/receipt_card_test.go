@@ -94,3 +94,25 @@ func TestNoCardWithoutAReceiptOrAVerdict(t *testing.T) {
 		t.Fatalf("an incomplete turn with no gaps has nothing to say, got %v", got)
 	}
 }
+
+// Printed whole, a real agent command wraps four times and turns the card into
+// the wall of text it exists to replace.
+func TestLongCommandIsTrimmedToOneLine(t *testing.T) {
+	long := "cd /private/tmp/very/long/path/that/goes/on && python3 -m pytest tests/test_calc.py -q 2>&1 | tail -5 || python3 -m unittest tests.test_calc -v"
+	got := cardText(t, &event.CompletionReceipt{
+		Verdict: "partial",
+		Gaps:    []event.ReceiptGap{{Kind: "stale_verification", Detail: long}},
+	})
+	if strings.Contains(got, "/private/tmp/very/long") {
+		t.Fatalf("the cd prefix should be dropped; the run is already there:\n%s", got)
+	}
+	if !strings.Contains(got, "python3 -m pytest") {
+		t.Fatalf("the command itself must survive:\n%s", got)
+	}
+	// wrapForViewport pads to the viewport, so measure the content, not the pad.
+	for line := range strings.SplitSeq(got, "\n") {
+		if trimmed := strings.TrimRight(line, " "); len([]rune(trimmed)) > 100 {
+			t.Fatalf("gap line is %d runes, too long to stay on one row:\n%s", len([]rune(trimmed)), trimmed)
+		}
+	}
+}

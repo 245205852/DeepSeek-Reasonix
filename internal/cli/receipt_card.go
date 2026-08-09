@@ -20,7 +20,7 @@ func renderReceiptCard(r *event.CompletionReceipt, width int) []string {
 	if r == nil {
 		return nil
 	}
-	gaps := receiptGapLines(r)
+	gaps := receiptGapLines(r, width)
 	if len(gaps) == 0 {
 		if r.Verdict != "done" {
 			return nil
@@ -48,17 +48,17 @@ func renderReceiptCard(r *event.CompletionReceipt, width int) []string {
 // raw kind when a catalogue has no phrase for it — an unknown kind must still
 // be shown, because silently dropping one is the failure this card exists to
 // prevent.
-func receiptGapLines(r *event.CompletionReceipt) []string {
+func receiptGapLines(r *event.CompletionReceipt, width int) []string {
 	out := make([]string, 0, len(r.Gaps))
 	for _, gap := range r.Gaps {
 		phrase := i18n.M.ReceiptGapKinds[gap.Kind]
 		if phrase == "" {
 			phrase = gap.Kind
 		}
-		if detail := strings.TrimSpace(gap.Detail); detail != "" {
+		if detail := receiptDetail(gap.Detail); detail != "" {
 			phrase += ": " + detail
 		}
-		out = append(out, phrase)
+		out = append(out, clipToLine(phrase, width))
 	}
 	return out
 }
@@ -86,4 +86,32 @@ func (m *chatTUI) commitReceipt(r *event.CompletionReceipt) {
 	for _, line := range renderReceiptCard(r, m.width) {
 		m.commitLine(line)
 	}
+}
+
+// receiptGapIndent is the visual indent every gap line carries; the budget
+// below is what remains of the row after it.
+const receiptGapIndent = 6
+
+// clipToLine keeps one gap on one row. The phrase length varies by catalogue,
+// so the budget is the row, not the detail: a per-detail cap that fits English
+// overflows the moment a longer translation prefixes it.
+func clipToLine(s string, width int) string {
+	budget := max(width-receiptGapIndent-2, 24)
+	runes := []rune(s)
+	if len(runes) <= budget {
+		return s
+	}
+	return strings.TrimSpace(string(runes[:budget])) + "…"
+}
+
+// receiptDetail drops a leading `cd <path> &&`: the run is already there, so
+// the command itself is the part that identifies it.
+func receiptDetail(detail string) string {
+	detail = strings.TrimSpace(detail)
+	if rest, ok := strings.CutPrefix(detail, "cd "); ok {
+		if _, after, found := strings.Cut(rest, " && "); found {
+			detail = strings.TrimSpace(after)
+		}
+	}
+	return detail
 }
