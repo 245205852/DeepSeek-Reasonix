@@ -315,8 +315,10 @@ func recallMemories(all []Memory) []Memory {
 	project := make([]Memory, 0, len(all))
 	global := make([]Memory, 0, len(all))
 	for _, memory := range all {
-		if NormalizeFactScope(string(memory.Scope)) == FactScopeGlobal &&
-			(NormalizeType(string(memory.Type)) == TypeUser || NormalizeType(string(memory.Type)) == TypeFeedback) {
+		// Pinned bodies already ride the stable prefix; recalling them again
+		// would duplicate. Relevant facts of every scope and type stay in the
+		// retrieval pool.
+		if ResolveActivation(memory) == ActivationPinned {
 			continue
 		}
 		if NormalizeFactScope(string(memory.Scope)) == FactScopeProject {

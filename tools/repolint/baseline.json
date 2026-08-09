@@ -2,10 +2,10 @@
   "limits": {
     "banner": 15,
     "commented-code": 0,
-    "complexity": 2082,
+    "complexity": 2083,
     "essay": 4130,
-    "file-size": 110699,
-    "function-size": 9176,
+    "file-size": 110760,
+    "function-size": 9177,
     "layering": 1,
     "marker": 0,
     "narrative": 64,
@@ -1419,14 +1419,14 @@
     },
     "internal/memory/store.go": {
       "essay": 6,
-      "file-size": 22
+      "file-size": 83
     },
     "internal/memory/store_test.go": {
       "test-file-size": 138
     },
     "internal/memory/store_v2.go": {
-      "complexity": 16,
-      "function-size": 16
+      "complexity": 17,
+      "function-size": 17
     },
     "internal/permission/bash_decompose.go": {
       "essay": 23

@@ -1331,6 +1331,14 @@
     "ReadOnly": false,
     "Schema": {
       "properties": {
+        "activation": {
+          "description": "How the fact reaches the model: relevant (the default) is retrieval-only; pinned loads the body into every session's stable prefix. Use pinned ONLY when the user explicitly asks for an always-available fact — pinned space is budget-limited, and rules that must always hold belong in REASONIX.md/AGENTS.md instructions instead. Omit on update to preserve the current choice.",
+          "enum": [
+            "relevant",
+            "pinned"
+          ],
+          "type": "string"
+        },
         "body": {
           "description": "The fact itself (Markdown). For feedback/project, include a \"**Why:**\" line and a \"**How to apply:**\" line; link related memories with [[their-name]].",
           "type": "string"
