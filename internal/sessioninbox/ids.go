@@ -24,7 +24,7 @@ func newRandomID() string {
 	var b [16]byte
 	if _, err := rand.Read(b[:]); err != nil {
 		// crypto/rand failure is exceptional; fall back to a hashed time-ish value.
-		sum := sha256.Sum256([]byte(fmt.Sprintf("fallback-%p", &b)))
+		sum := sha256.Sum256(fmt.Appendf(nil, "fallback-%p", &b))
 		return hex.EncodeToString(sum[:16])
 	}
 	// UUID-like layout without external deps: xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx

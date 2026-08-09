@@ -1172,10 +1172,8 @@ func (s *Server) resume(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "session is pending cleanup", http.StatusBadRequest)
 		return
 	}
-	// Session-path-changing critical sequence: two interleaved resumes would
-	// leave the controller on one session and the lease on another; serialize
-	// with /new, /fork, and switchModel. Taken after body/path validation so a
-	// slow client cannot hold the binding lock while uploading.
+	// Serialize with /new, /fork, and switchModel so the controller and lease
+	// cannot land on different sessions. Validate first to avoid slow holders.
 	s.bindMu.Lock()
 	defer s.bindMu.Unlock()
 	// Snapshot the current session before switching away — while this process

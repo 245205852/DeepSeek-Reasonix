@@ -14,14 +14,23 @@ func (s *Store) DeleteItem(id string) error {
 	id = strings.TrimSpace(id)
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	release, err := s.beginDiskTransactionLocked()
+	if err != nil {
+		return err
+	}
+	defer release()
 	if err := s.mutableLocked(); err != nil {
 		return err
 	}
-	next := s.man.clone()
-	removed, ok := next.removeItem(id)
+	meta, ok := s.man.item(id)
 	if !ok {
 		return ErrNotFound
 	}
+	if !isPendingState(meta.State) {
+		return ErrInvalidState
+	}
+	next := s.man.clone()
+	removed, _ := next.removeItem(id)
 	if err := s.commitManifestLocked(next); err != nil {
 		return err
 	}
@@ -35,6 +44,12 @@ func (s *Store) DeleteItem(id string) error {
 // frontend may safely cancel from a slightly stale metadata snapshot. Items
 // that have crossed the admission boundary are never deleted here.
 func (s *Store) DiscardPendingItems(ids []string) error {
+	return s.DiscardPendingItemsOwned(ids, "")
+}
+
+// DiscardPendingItemsOwned atomically removes pending IDs belonging to source.
+// Foreign-source IDs are ignored so one frontend cannot cancel another.
+func (s *Store) DiscardPendingItemsOwned(ids []string, source string) error {
 	if s == nil {
 		return ErrClosed
 	}
@@ -50,11 +65,19 @@ func (s *Store) DiscardPendingItems(ids []string) error {
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	release, err := s.beginDiskTransactionLocked()
+	if err != nil {
+		return err
+	}
+	defer release()
 	if err := s.mutableLocked(); err != nil {
 		return err
 	}
 	for _, item := range s.man.Items {
 		if _, ok := wanted[item.ID]; !ok {
+			continue
+		}
+		if source != "" && item.Source != source {
 			continue
 		}
 		switch item.State {
@@ -68,7 +91,9 @@ func (s *Store) DiscardPendingItems(ids []string) error {
 	removed := make([]InboxItemMeta, 0, len(wanted))
 	kept := next.Items[:0]
 	for _, item := range next.Items {
-		if _, ok := wanted[item.ID]; ok {
+		_, selected := wanted[item.ID]
+		owned := source == "" || item.Source == source
+		if selected && owned {
 			removed = append(removed, item)
 			continue
 		}
@@ -96,6 +121,11 @@ func (s *Store) MoveItem(id string, toIndex int) error {
 	id = strings.TrimSpace(id)
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	release, err := s.beginDiskTransactionLocked()
+	if err != nil {
+		return err
+	}
+	defer release()
 	if err := s.mutableLocked(); err != nil {
 		return err
 	}
@@ -103,6 +133,9 @@ func (s *Store) MoveItem(id string, toIndex int) error {
 	from := next.indexOf(id)
 	if from < 0 {
 		return ErrNotFound
+	}
+	if !isPendingState(next.Items[from].State) {
+		return ErrInvalidState
 	}
 	if toIndex < 0 {
 		toIndex = 0
@@ -133,6 +166,11 @@ func (s *Store) SetPaused(paused bool) error {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	release, err := s.beginDiskTransactionLocked()
+	if err != nil {
+		return err
+	}
+	defer release()
 	if err := s.mutableLocked(); err != nil {
 		return err
 	}
@@ -160,6 +198,11 @@ func (s *Store) SetState(id string, state InboxState, blockReason string) error 
 	id = strings.TrimSpace(id)
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	release, err := s.beginDiskTransactionLocked()
+	if err != nil {
+		return err
+	}
+	defer release()
 	if err := s.mutableLocked(); err != nil {
 		return err
 	}
@@ -188,6 +231,11 @@ func (s *Store) ConvertIntent(id string, intent InboxIntent) error {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	release, err := s.beginDiskTransactionLocked()
+	if err != nil {
+		return err
+	}
+	defer release()
 	if err := s.mutableLocked(); err != nil {
 		return err
 	}
@@ -195,6 +243,9 @@ func (s *Store) ConvertIntent(id string, intent InboxIntent) error {
 	i := next.indexOf(id)
 	if i < 0 {
 		return ErrNotFound
+	}
+	if !isPendingState(next.Items[i].State) {
+		return ErrInvalidState
 	}
 	next.Items[i].Intent = intent
 	next.Items[i].UpdatedAt = time.Now().UTC()
@@ -207,7 +258,36 @@ func (s *Store) ConvertIntent(id string, intent InboxIntent) error {
 
 // AckDequeue removes a running/consumed item after durable transcript commit.
 func (s *Store) AckDequeue(id string) error {
-	return s.DeleteItem(id)
+	if s == nil {
+		return ErrClosed
+	}
+	id = strings.TrimSpace(id)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	release, err := s.beginDiskTransactionLocked()
+	if err != nil {
+		return err
+	}
+	defer release()
+	if err := s.mutableLocked(); err != nil {
+		return err
+	}
+	next := s.man.clone()
+	removed, ok := next.removeItem(id)
+	if !ok {
+		return ErrNotFound
+	}
+	switch removed.State {
+	case StateRunning, StateSteerAccepted, StateSteerConsumed:
+	default:
+		return ErrInvalidState
+	}
+	if err := s.commitManifestLocked(next); err != nil {
+		return err
+	}
+	_ = os.Remove(s.blobPath(blobNameFor(removed)))
+	s.notifyLocked(s.snapshotLocked())
+	return nil
 }
 
 // RetryItem resets uncertain/blocked items to queued.
@@ -218,6 +298,11 @@ func (s *Store) RetryItem(id string) error {
 	id = strings.TrimSpace(id)
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	release, err := s.beginDiskTransactionLocked()
+	if err != nil {
+		return err
+	}
+	defer release()
 	if err := s.mutableLocked(); err != nil {
 		return err
 	}
@@ -227,7 +312,7 @@ func (s *Store) RetryItem(id string) error {
 		return ErrNotFound
 	}
 	switch next.Items[i].State {
-	case StateUncertain, StateBlocked, StateSteerAccepted, StateSteerConsumed, StateRunning:
+	case StateUncertain, StateBlocked:
 		next.Items[i].State = StateQueued
 		next.Items[i].BlockReason = ""
 		next.Items[i].UpdatedAt = time.Now().UTC()
@@ -249,6 +334,9 @@ func (s *Store) NextQueued() (InboxItemMeta, bool) {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if release, err := s.beginDiskTransactionLocked(); err == nil {
+		release()
+	}
 	if s.man == nil || s.man.Paused || s.readonly {
 		return InboxItemMeta{}, false
 	}
@@ -275,6 +363,11 @@ func (s *Store) ForcePause(reasonRecovered bool, n int) error {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	release, err := s.beginDiskTransactionLocked()
+	if err != nil {
+		return err
+	}
+	defer release()
 	if s.closed || s.readonly {
 		if s.readonly {
 			return nil
@@ -294,4 +387,13 @@ func (s *Store) ForcePause(reasonRecovered bool, n int) error {
 	}
 	s.notifyLocked(s.snapshotLocked())
 	return nil
+}
+
+func isPendingState(state InboxState) bool {
+	switch state {
+	case StateQueued, StateBlocked, StateUncertain:
+		return true
+	default:
+		return false
+	}
 }

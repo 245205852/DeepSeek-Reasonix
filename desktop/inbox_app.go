@@ -138,7 +138,7 @@ func (a *App) CancelTabWithInboxItems(tabID string, itemIDs []string) error {
 	if err != nil {
 		return err
 	}
-	if err := ctrl.CancelWithInboxItems(itemIDs); err != nil {
+	if err := ctrl.CancelWithInboxItems(itemIDs, "desktop"); err != nil {
 		return err
 	}
 	a.emitInboxChanged(tabID)

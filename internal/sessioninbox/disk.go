@@ -163,31 +163,20 @@ func (s *Store) salvageOrphanBlobsLocked() []InboxItemMeta {
 		if preview == "" {
 			preview = "(salvaged body)"
 		}
-		// Item ID is the stable prefix before the first '.' of a revision blob.
+		// The corrupt manifest no longer provides a revision-to-item mapping.
+		// Use the complete blob stem as a collision-free recovered item ID.
 		itemID := stem
-		if i := strings.IndexByte(stem, '.'); i > 0 {
-			// revision form: <itemID>.<random>
-			// but UUID item IDs also contain dots — only treat as revision when
-			// the suffix after the last UUID-like segment is a second random id.
-			// Prefer the full stem as id when it already looks like a UUID.
-			if strings.Count(stem, "-") >= 4 {
-				// Legacy or plain UUID blob name.
-				itemID = stem
-			} else {
-				itemID = stem
-			}
-		}
 		out = append(out, InboxItemMeta{
-			ID:        itemID,
-			Intent:    IntentFollowup,
-			State:     StateUncertain,
-			BlobName:  stem,
-			CreatedAt: now,
-			UpdatedAt: now,
-			Preview:   preview,
-			ByteSize:  int64(len(data)),
-			Checksum:  sha256Hex(data),
-			RunID:     s.runID,
+			ID:          itemID,
+			Intent:      IntentFollowup,
+			State:       StateUncertain,
+			BlobName:    stem,
+			CreatedAt:   now,
+			UpdatedAt:   now,
+			Preview:     preview,
+			ByteSize:    int64(len(data)),
+			Checksum:    sha256Hex(data),
+			RunID:       s.runID,
 			BlockReason: "salvaged after corrupt manifest",
 		})
 	}

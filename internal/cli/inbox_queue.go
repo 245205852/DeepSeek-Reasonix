@@ -141,33 +141,7 @@ func (m *chatTUI) runQueueCommand(args []string) string {
 	rest := args[1:]
 	switch sub {
 	case "list", "ls", "status":
-		snap := m.inboxSnap()
-		if len(snap.Items) == 0 {
-			status := "inbox empty"
-			if snap.Paused {
-				status += " (paused)"
-			}
-			return status
-		}
-		var b strings.Builder
-		fmt.Fprintf(&b, "inbox rev=%d items=%d", snap.Revision, len(snap.Items))
-		if snap.Paused {
-			b.WriteString(" paused")
-		}
-		if snap.Recovered {
-			fmt.Fprintf(&b, " recovered=%d", snap.RecoveredN)
-		}
-		b.WriteByte('\n')
-		// Paginate: first 20 rows, previews only.
-		limit := min(len(snap.Items), 20)
-		for i := 0; i < limit; i++ {
-			it := snap.Items[i]
-			fmt.Fprintf(&b, "  %d. [%s/%s] %s #%s\n", i+1, it.Intent, it.State, it.Preview, shortID(it.ID))
-		}
-		if len(snap.Items) > limit {
-			fmt.Fprintf(&b, "  … and %d more (use /queue show <n>)\n", len(snap.Items)-limit)
-		}
-		return strings.TrimRight(b.String(), "\n")
+		return m.renderQueueList()
 	case "show":
 		id, err := m.resolveQueueRef(rest)
 		if err != nil {
@@ -179,18 +153,7 @@ func (m *chatTUI) runQueueCommand(args []string) string {
 		}
 		return env.SubmitText
 	case "edit":
-		if len(rest) < 2 {
-			return "usage: /queue edit <n|id> <text>"
-		}
-		id, err := m.resolveQueueRef(rest[:1])
-		if err != nil {
-			return err.Error()
-		}
-		text := strings.Join(rest[1:], " ")
-		if _, err := m.ctrl.UpdateInboxItem(id, text, text, text); err != nil {
-			return "edit: " + err.Error()
-		}
-		return "updated #" + shortID(id)
+		return m.editQueueItem(rest)
 	case "delete", "rm", "del":
 		id, err := m.resolveQueueRef(rest)
 		if err != nil {
@@ -201,22 +164,7 @@ func (m *chatTUI) runQueueCommand(args []string) string {
 		}
 		return "deleted #" + shortID(id)
 	case "move":
-		if len(rest) < 2 {
-			return "usage: /queue move <n|id> <to-index>"
-		}
-		id, err := m.resolveQueueRef(rest[:1])
-		if err != nil {
-			return err.Error()
-		}
-		var to int
-		if _, err := fmt.Sscanf(rest[1], "%d", &to); err != nil {
-			return "move: bad index"
-		}
-		// 1-based for users.
-		if err := m.ctrl.MoveInboxItem(id, to-1); err != nil {
-			return "move: " + err.Error()
-		}
-		return "moved #" + shortID(id)
+		return m.moveQueueItem(rest)
 	case "pause":
 		if err := m.ctrl.SetInboxPaused(true); err != nil {
 			return "pause: " + err.Error()
@@ -248,6 +196,68 @@ func (m *chatTUI) runQueueCommand(args []string) string {
 	default:
 		return "usage: /queue list|show|edit|delete|move|pause|resume|retry|refresh"
 	}
+}
+
+func (m *chatTUI) renderQueueList() string {
+	snap := m.inboxSnap()
+	if len(snap.Items) == 0 {
+		status := "inbox empty"
+		if snap.Paused {
+			status += " (paused)"
+		}
+		return status
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "inbox rev=%d items=%d", snap.Revision, len(snap.Items))
+	if snap.Paused {
+		b.WriteString(" paused")
+	}
+	if snap.Recovered {
+		fmt.Fprintf(&b, " recovered=%d", snap.RecoveredN)
+	}
+	b.WriteByte('\n')
+	limit := min(len(snap.Items), 20)
+	for i := range limit {
+		it := snap.Items[i]
+		fmt.Fprintf(&b, "  %d. [%s/%s] %s #%s\n", i+1, it.Intent, it.State, it.Preview, shortID(it.ID))
+	}
+	if len(snap.Items) > limit {
+		fmt.Fprintf(&b, "  … and %d more (use /queue show <n>)\n", len(snap.Items)-limit)
+	}
+	return strings.TrimRight(b.String(), "\n")
+}
+
+func (m *chatTUI) editQueueItem(args []string) string {
+	if len(args) < 2 {
+		return "usage: /queue edit <n|id> <text>"
+	}
+	id, err := m.resolveQueueRef(args[:1])
+	if err != nil {
+		return err.Error()
+	}
+	text := strings.Join(args[1:], " ")
+	if _, err := m.ctrl.UpdateInboxItem(id, text, text, text); err != nil {
+		return "edit: " + err.Error()
+	}
+	return "updated #" + shortID(id)
+}
+
+func (m *chatTUI) moveQueueItem(args []string) string {
+	if len(args) < 2 {
+		return "usage: /queue move <n|id> <to-index>"
+	}
+	id, err := m.resolveQueueRef(args[:1])
+	if err != nil {
+		return err.Error()
+	}
+	var to int
+	if _, err := fmt.Sscanf(args[1], "%d", &to); err != nil {
+		return "move: bad index"
+	}
+	if err := m.ctrl.MoveInboxItem(id, to-1); err != nil {
+		return "move: " + err.Error()
+	}
+	return "moved #" + shortID(id)
 }
 
 func (m *chatTUI) resolveQueueRef(args []string) (string, error) {

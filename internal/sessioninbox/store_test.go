@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -96,6 +97,35 @@ func TestIdempotentEnqueue(t *testing.T) {
 	}
 }
 
+func TestStoreInstancesReloadManifestBeforeMutation(t *testing.T) {
+	dir := t.TempDir()
+	session := filepath.Join(dir, "s.jsonl")
+	_ = os.WriteFile(session, []byte("{}\n"), 0o644)
+	first, err := Open(session, Limits{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer first.Close()
+	second, err := Open(session, Limits{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer second.Close()
+
+	a, err := first.Enqueue(EnqueueRequest{Envelope: PromptEnvelope{SubmitText: "from first"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := second.Enqueue(EnqueueRequest{Envelope: PromptEnvelope{SubmitText: "from second"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	items := first.Snapshot().Items
+	if len(items) != 2 || items[0].ID != a.ItemID || items[1].ID != b.ItemID {
+		t.Fatalf("cross-store writes lost or reordered an item: %+v", items)
+	}
+}
+
 func TestCapacityLimits(t *testing.T) {
 	dir := t.TempDir()
 	session := filepath.Join(dir, "s.jsonl")
@@ -105,7 +135,7 @@ func TestCapacityLimits(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer s.Close()
-	if _, err := s.Enqueue(EnqueueRequest{Envelope: PromptEnvelope{SubmitText: strings.Repeat("a", 400)}}); err != ErrItemTooLarge {
+	if _, err := s.Enqueue(EnqueueRequest{Envelope: PromptEnvelope{SubmitText: strings.Repeat("a", 400)}}); !errors.Is(err, ErrItemTooLarge) {
 		t.Fatalf("item too large: %v", err)
 	}
 	if _, err := s.Enqueue(EnqueueRequest{Envelope: PromptEnvelope{SubmitText: "one"}}); err != nil {
@@ -114,7 +144,7 @@ func TestCapacityLimits(t *testing.T) {
 	if _, err := s.Enqueue(EnqueueRequest{Envelope: PromptEnvelope{SubmitText: "two"}}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.Enqueue(EnqueueRequest{Envelope: PromptEnvelope{SubmitText: "three"}}); err != ErrCapacityItems {
+	if _, err := s.Enqueue(EnqueueRequest{Envelope: PromptEnvelope{SubmitText: "three"}}); !errors.Is(err, ErrCapacityItems) {
 		t.Fatalf("cap items: %v", err)
 	}
 }
@@ -166,6 +196,57 @@ func TestCrashAfterBlobBeforeManifestLeavesNoValidItem(t *testing.T) {
 	if n := len(s2.Snapshot().Items); n != 0 {
 		t.Fatalf("want 0 valid items after crash, got %d", n)
 	}
+}
+
+func TestUpdateCrashPointsPreserveCompleteRevision(t *testing.T) {
+	tests := []struct {
+		crashOp string
+		want    string
+	}{
+		{crashOp: "inbox-blob-write", want: "old body"},
+		{crashOp: "inbox-blob-rename", want: "old body"},
+		{crashOp: "inbox-manifest-write", want: "old body"},
+		{crashOp: "inbox-manifest-commit", want: "new body"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.crashOp, func(t *testing.T) {
+			dir := t.TempDir()
+			session := filepath.Join(dir, "s.jsonl")
+			s, err := Open(session, Limits{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			rec, err := s.Enqueue(EnqueueRequest{Envelope: PromptEnvelope{SubmitText: "old body"}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			fileutil.CrashPoint = func(op, _ string) {
+				if op == tt.crashOp {
+					panic("injected update crash")
+				}
+			}
+			func() {
+				defer func() { _ = recover() }()
+				_, _ = s.UpdateItem(rec.ItemID, PromptEnvelope{SubmitText: "new body"})
+			}()
+			fileutil.CrashPoint = nil
+			s.Close()
+
+			reopened, err := Open(session, Limits{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer reopened.Close()
+			_, env, err := reopened.ReadItem(rec.ItemID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if env.SubmitText != tt.want {
+				t.Fatalf("recovered body = %q, want %q", env.SubmitText, tt.want)
+			}
+		})
+	}
+	t.Cleanup(func() { fileutil.CrashPoint = nil })
 }
 
 func TestCrossProcessRecoveryPauses(t *testing.T) {
@@ -285,10 +366,6 @@ func TestCorruptManifestSalvagesBlobs(t *testing.T) {
 
 func TestFreezeRefsRejectsWorkspaceEscape(t *testing.T) {
 	ws := t.TempDir()
-	_, err := FreezeRefs(context.Background(), ws, []string{"/etc/passwd"})
-	if err != nil {
-		// FreezeRefs swallows per-path errors into frozen markers; check content.
-	}
 	refs, err := FreezeRefs(context.Background(), ws, []string{"/etc/passwd"})
 	if err != nil {
 		t.Fatal(err)
@@ -333,7 +410,7 @@ func TestApplyFrozenRefsIsDeterministic(t *testing.T) {
 		"a/file.txt": "a-body",
 	}
 	first := ApplyFrozenRefs("inspect refs", bodies)
-	for i := 0; i < 20; i++ {
+	for range 20 {
 		if got := ApplyFrozenRefs("inspect refs", bodies); got != first {
 			t.Fatalf("frozen reference serialization changed between calls:\n%s\n---\n%s", first, got)
 		}
@@ -399,4 +476,96 @@ func TestDiscardPendingItemsIsScopedAndAtomic(t *testing.T) {
 	if len(items) != 2 || items[0].ID != b.ItemID || items[1].ID != c.ItemID {
 		t.Fatalf("scoped discard left items = %+v", items)
 	}
+}
+
+func TestDiscardPendingItemsEnforcesSourceOwnership(t *testing.T) {
+	dir := t.TempDir()
+	session := filepath.Join(dir, "s.jsonl")
+	_ = os.WriteFile(session, []byte("{}\n"), 0o644)
+	s, err := Open(session, Limits{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	desktop, _ := s.Enqueue(EnqueueRequest{Envelope: PromptEnvelope{SubmitText: "desktop"}, Source: "desktop"})
+	bot, _ := s.Enqueue(EnqueueRequest{Envelope: PromptEnvelope{SubmitText: "bot"}, Source: "bot"})
+	if err := s.SetState(bot.ItemID, StateRunning, ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.DiscardPendingItemsOwned([]string{desktop.ItemID, bot.ItemID}, "desktop"); err != nil {
+		t.Fatal(err)
+	}
+	items := s.Snapshot().Items
+	if len(items) != 1 || items[0].ID != bot.ItemID || items[0].State != StateRunning {
+		t.Fatalf("source-scoped discard changed foreign work: %+v", items)
+	}
+}
+
+func TestAdmittedItemsRejectUserCRUD(t *testing.T) {
+	dir := t.TempDir()
+	session := filepath.Join(dir, "s.jsonl")
+	_ = os.WriteFile(session, []byte("{}\n"), 0o644)
+	s, err := Open(session, Limits{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	rec, _ := s.Enqueue(EnqueueRequest{Envelope: PromptEnvelope{SubmitText: "running"}})
+	if err := s.SetState(rec.ItemID, StateRunning, ""); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.UpdateItem(rec.ItemID, PromptEnvelope{SubmitText: "changed"}); !errors.Is(err, ErrInvalidState) {
+		t.Fatalf("update running item error = %v, want ErrInvalidState", err)
+	}
+	if err := s.MoveItem(rec.ItemID, 0); !errors.Is(err, ErrInvalidState) {
+		t.Fatalf("move running item error = %v, want ErrInvalidState", err)
+	}
+	if err := s.DeleteItem(rec.ItemID); !errors.Is(err, ErrInvalidState) {
+		t.Fatalf("delete running item error = %v, want ErrInvalidState", err)
+	}
+	if err := s.RetryItem(rec.ItemID); !errors.Is(err, ErrInvalidState) {
+		t.Fatalf("retry running item error = %v, want ErrInvalidState", err)
+	}
+	if err := s.AckDequeue(rec.ItemID); err != nil {
+		t.Fatalf("durable completion could not ack running item: %v", err)
+	}
+}
+
+func BenchmarkThirtyOneMiBItemsRetainedHeap(b *testing.B) {
+	body := strings.Repeat("x", 1<<20)
+	var retainedTotal uint64
+	for range b.N {
+		b.StopTimer()
+		session := filepath.Join(b.TempDir(), "s.jsonl")
+		s, err := Open(session, Limits{})
+		if err != nil {
+			b.Fatal(err)
+		}
+		runtime.GC()
+		var before runtime.MemStats
+		runtime.ReadMemStats(&before)
+
+		b.StartTimer()
+		for range 30 {
+			if _, err := s.Enqueue(EnqueueRequest{
+				Intent: IntentFollowup,
+				Envelope: PromptEnvelope{
+					DisplayText: "one MiB body",
+					SubmitText:  body,
+				},
+			}); err != nil {
+				b.Fatal(err)
+			}
+		}
+		b.StopTimer()
+
+		runtime.GC()
+		var after runtime.MemStats
+		runtime.ReadMemStats(&after)
+		if after.HeapAlloc > before.HeapAlloc {
+			retainedTotal += after.HeapAlloc - before.HeapAlloc
+		}
+		s.Close()
+	}
+	b.ReportMetric(float64(retainedTotal)/float64(b.N), "B/retained-op")
 }

@@ -884,11 +884,6 @@ func (gw *BotGateway) queueMode(key string, msg InboundMessage) string {
 	return gw.sessions.QueueMode(key, gw.cfg.QueueMode)
 }
 
-func (gw *BotGateway) steerActiveSession(ctx context.Context, adapter Adapter, key string, msg InboundMessage) bool {
-	_, ok := gw.steerActiveSessionDurable(ctx, adapter, key, msg)
-	return ok
-}
-
 func (gw *BotGateway) sessionAPI(key string) control.SessionAPI {
 	gw.mu.Lock()
 	state, ok := gw.controllers[key]
@@ -2047,17 +2042,6 @@ func queueModeLabel(mode string) string {
 		return "打断重跑"
 	default:
 		return "即时补充"
-	}
-}
-
-func queueDropLabel(drop string) string {
-	switch NormalizeQueueDrop(drop) {
-	case QueueDropOld:
-		return "丢弃最早消息"
-	case QueueDropNew:
-		return "拒绝新消息"
-	default:
-		return "压缩摘要"
 	}
 }
 

@@ -66,11 +66,11 @@ var (
 
 // InboxItemMeta is the durable metadata kept in the manifest (never the body).
 type InboxItemMeta struct {
-	ID          string       `json:"id"`
-	SessionID   string       `json:"sessionId,omitempty"`
-	Intent      InboxIntent  `json:"intent"`
-	State       InboxState   `json:"state"`
-	Revision    int64        `json:"revision"`
+	ID        string      `json:"id"`
+	SessionID string      `json:"sessionId,omitempty"`
+	Intent    InboxIntent `json:"intent"`
+	State     InboxState  `json:"state"`
+	Revision  int64       `json:"revision"`
 	// BlobName is the on-disk blob filename stem (without .json). Empty means
 	// legacy layout where the blob is named by item ID. Updates write a new
 	// immutable blob and switch this pointer after manifest commit.
@@ -128,9 +128,15 @@ type PromptEnvelope struct {
 	Format      string                `json:"format,omitempty"`
 	Attachments []string              `json:"attachments,omitempty"`
 	Refs        []RefSnapshot         `json:"refs,omitempty"`
-	Idempotency string                `json:"idempotencyKey,omitempty"`
-	Source      string                `json:"source,omitempty"`
-	Extra       map[string]string     `json:"extra,omitempty"`
+	// FrozenRefBlock is the exact typed reference context rendered at enqueue.
+	// FrozenImages contains already-authorized data URLs for direct image input.
+	FrozenRefBlock  string            `json:"frozenRefBlock,omitempty"`
+	FrozenImages    []string          `json:"frozenImages,omitempty"`
+	ReferenceErrors []string          `json:"referenceErrors,omitempty"`
+	ExplicitRefs    []string          `json:"explicitRefs,omitempty"`
+	Idempotency     string            `json:"idempotencyKey,omitempty"`
+	Source          string            `json:"source,omitempty"`
+	Extra           map[string]string `json:"extra,omitempty"`
 }
 
 // Capacity describes current usage against limits.

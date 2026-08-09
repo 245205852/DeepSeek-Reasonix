@@ -48,11 +48,11 @@ import (
 	"reasonix/internal/memory"
 	"reasonix/internal/nilutil"
 	"reasonix/internal/permission"
-	"reasonix/internal/sessioninbox"
 	"reasonix/internal/plugin"
 	"reasonix/internal/provider"
 	"reasonix/internal/recovery"
 	"reasonix/internal/sandbox"
+	"reasonix/internal/sessioninbox"
 	"reasonix/internal/sessiontemp"
 	"reasonix/internal/shellrun"
 	"reasonix/internal/skill"
@@ -972,9 +972,11 @@ func (c *Controller) finishGuardedTurn(err error, completion *guardedTurnComplet
 	if errors.As(err, &readinessErr) {
 		done.Readiness = &event.FinalReadiness{Attempts: readinessErr.Attempts, Missing: append([]string(nil), readinessErr.Missing...)}
 	}
-	c.sink.Emit(done)
-	// Ack the active durable item; dispatch runs after finishing clears (above).
+	// Ack active durable items before exposing TurnDone. Frontends commonly
+	// refresh the inbox from that event and must not observe already-consumed
+	// steers in the completed turn. Dispatch still waits for finishing to clear.
 	c.onInboxTurnDone()
+	c.sink.Emit(done)
 }
 
 func turnOutcome(err error) string {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"slices"
 	"strings"
 	"time"
 
@@ -48,8 +49,7 @@ func collectAppend(ctrl control.SessionAPI, msg InboundMessage, debounce time.Du
 	snap := ctrl.InboxSnapshot()
 	// Find last queued follow-up.
 	var last *sessioninbox.InboxItemMeta
-	for i := len(snap.Items) - 1; i >= 0; i-- {
-		it := snap.Items[i]
+	for i, it := range slices.Backward(snap.Items) {
 		if it.State == sessioninbox.StateQueued && it.Intent == sessioninbox.IntentFollowup {
 			last = &snap.Items[i]
 			break
@@ -125,10 +125,7 @@ func (gw *BotGateway) handleQueueInboxCommand(ctx context.Context, key string, m
 		return "", false
 	}
 	sub := strings.ToLower(parts[1])
-	switch sub {
-	case "list", "ls", "show", "delete", "rm", "move", "pause", "resume", "retry", "refresh":
-		// ok
-	default:
+	if !isBotInboxCommand(sub) {
 		return "", false
 	}
 	api := gw.sessionAPI(key)
@@ -139,99 +136,136 @@ func (gw *BotGateway) handleQueueInboxCommand(ctx context.Context, key string, m
 	// Mode-level admin gate is enforced by requireCommandRole on sensitive ops.
 	switch sub {
 	case "list", "ls":
-		snap := api.InboxSnapshot()
-		if len(snap.Items) == 0 {
-			return "inbox empty" + pausedSuffix(snap.Paused), true
-		}
-		var b strings.Builder
-		fmt.Fprintf(&b, "inbox items=%d", len(snap.Items))
-		if snap.Paused {
-			b.WriteString(" paused")
-		}
-		b.WriteByte('\n')
-		limit := min(len(snap.Items), 15)
-		for i := 0; i < limit; i++ {
-			it := snap.Items[i]
-			fmt.Fprintf(&b, "%d. [%s/%s] %s #%s\n", i+1, it.Intent, it.State, it.Preview, shortItemID(it.ID))
-		}
-		return strings.TrimRight(b.String(), "\n"), true
+		return formatBotInboxList(api), true
 	case "show":
-		if len(parts) < 3 {
-			return "用法: /queue show <n|id>", true
-		}
-		id, err := resolveBotInboxRef(api, parts[2])
-		if err != nil {
-			return err.Error(), true
-		}
-		_, env, err := api.ReadInboxItem(id)
-		if err != nil {
-			return "show: " + err.Error(), true
-		}
-		return env.SubmitText, true
+		return showBotInboxItem(api, parts), true
 	case "delete", "rm":
-		if len(parts) < 3 {
-			return "用法: /queue delete <n|id>", true
-		}
-		id, err := resolveBotInboxRef(api, parts[2])
-		if err != nil {
-			return err.Error(), true
-		}
-		if err := api.DeleteInboxItem(id); err != nil {
-			return "delete: " + err.Error(), true
-		}
-		return "deleted #" + shortItemID(id), true
+		return deleteBotInboxItem(api, parts), true
 	case "move":
-		if len(parts) < 4 {
-			return "用法: /queue move <n|id> <to>", true
-		}
-		id, err := resolveBotInboxRef(api, parts[2])
-		if err != nil {
-			return err.Error(), true
-		}
-		var to int
-		if _, err := fmt.Sscanf(parts[3], "%d", &to); err != nil {
-			return "move: bad index", true
-		}
-		if err := api.MoveInboxItem(id, to-1); err != nil {
-			return "move: " + err.Error(), true
-		}
-		return "moved #" + shortItemID(id), true
+		return moveBotInboxItem(api, parts), true
 	case "pause":
-		if err := api.SetInboxPaused(true); err != nil {
-			return err.Error(), true
-		}
-		return "inbox paused", true
+		return setBotInboxPaused(api, true), true
 	case "resume":
-		if err := api.SetInboxPaused(false); err != nil {
-			return err.Error(), true
-		}
-		return "inbox resumed", true
+		return setBotInboxPaused(api, false), true
 	case "retry":
-		if len(parts) < 3 {
-			return "用法: /queue retry <n|id>", true
-		}
-		id, err := resolveBotInboxRef(api, parts[2])
-		if err != nil {
-			return err.Error(), true
-		}
-		if err := api.RetryInboxItem(id); err != nil {
-			return err.Error(), true
-		}
-		return "retry #" + shortItemID(id), true
+		return retryBotInboxItem(api, parts), true
 	case "refresh":
-		if len(parts) < 3 {
-			return "用法: /queue refresh <n|id>", true
-		}
-		id, err := resolveBotInboxRef(api, parts[2])
-		if err != nil {
-			return err.Error(), true
-		}
-		if err := api.RefreshInboxReferences(id); err != nil {
-			return err.Error(), true
-		}
-		return "refs refreshed #" + shortItemID(id), true
+		return refreshBotInboxItem(api, parts), true
 	}
 	return "", false
+}
+
+func formatBotInboxList(api control.SessionAPI) string {
+	snap := api.InboxSnapshot()
+	if len(snap.Items) == 0 {
+		return "inbox empty" + pausedSuffix(snap.Paused)
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "inbox items=%d", len(snap.Items))
+	if snap.Paused {
+		b.WriteString(" paused")
+	}
+	b.WriteByte('\n')
+	limit := min(len(snap.Items), 15)
+	for i := range limit {
+		it := snap.Items[i]
+		fmt.Fprintf(&b, "%d. [%s/%s] %s #%s\n", i+1, it.Intent, it.State, it.Preview, shortItemID(it.ID))
+	}
+	return strings.TrimRight(b.String(), "\n")
+}
+
+func showBotInboxItem(api control.SessionAPI, parts []string) string {
+	if len(parts) < 3 {
+		return "用法: /queue show <n|id>"
+	}
+	id, err := resolveBotInboxRef(api, parts[2])
+	if err != nil {
+		return err.Error()
+	}
+	_, env, err := api.ReadInboxItem(id)
+	if err != nil {
+		return "show: " + err.Error()
+	}
+	return env.SubmitText
+}
+
+func deleteBotInboxItem(api control.SessionAPI, parts []string) string {
+	if len(parts) < 3 {
+		return "用法: /queue delete <n|id>"
+	}
+	id, err := resolveBotInboxRef(api, parts[2])
+	if err != nil {
+		return err.Error()
+	}
+	if err := api.DeleteInboxItem(id); err != nil {
+		return "delete: " + err.Error()
+	}
+	return "deleted #" + shortItemID(id)
+}
+
+func moveBotInboxItem(api control.SessionAPI, parts []string) string {
+	if len(parts) < 4 {
+		return "用法: /queue move <n|id> <to>"
+	}
+	id, err := resolveBotInboxRef(api, parts[2])
+	if err != nil {
+		return err.Error()
+	}
+	var to int
+	if _, err := fmt.Sscanf(parts[3], "%d", &to); err != nil {
+		return "move: bad index"
+	}
+	if err := api.MoveInboxItem(id, to-1); err != nil {
+		return "move: " + err.Error()
+	}
+	return "moved #" + shortItemID(id)
+}
+
+func setBotInboxPaused(api control.SessionAPI, paused bool) string {
+	if err := api.SetInboxPaused(paused); err != nil {
+		return err.Error()
+	}
+	if paused {
+		return "inbox paused"
+	}
+	return "inbox resumed"
+}
+
+func retryBotInboxItem(api control.SessionAPI, parts []string) string {
+	if len(parts) < 3 {
+		return "用法: /queue retry <n|id>"
+	}
+	id, err := resolveBotInboxRef(api, parts[2])
+	if err != nil {
+		return err.Error()
+	}
+	if err := api.RetryInboxItem(id); err != nil {
+		return err.Error()
+	}
+	return "retry #" + shortItemID(id)
+}
+
+func refreshBotInboxItem(api control.SessionAPI, parts []string) string {
+	if len(parts) < 3 {
+		return "用法: /queue refresh <n|id>"
+	}
+	id, err := resolveBotInboxRef(api, parts[2])
+	if err != nil {
+		return err.Error()
+	}
+	if err := api.RefreshInboxReferences(id); err != nil {
+		return err.Error()
+	}
+	return "refs refreshed #" + shortItemID(id)
+}
+
+func isBotInboxCommand(sub string) bool {
+	switch sub {
+	case "list", "ls", "show", "delete", "rm", "move", "pause", "resume", "retry", "refresh":
+		return true
+	default:
+		return false
+	}
 }
 
 func pausedSuffix(paused bool) string {

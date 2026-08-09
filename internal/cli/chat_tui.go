@@ -852,7 +852,7 @@ func (m chatTUI) renderQueueIndicator() string {
 	var lines []string
 	// Ordinary status: at most three rows; full list via /queue.
 	limit := min(len(items), 3)
-	for i := 0; i < limit; i++ {
+	for i := range limit {
 		it := items[i]
 		preview := it.Preview
 		if preview == "" {

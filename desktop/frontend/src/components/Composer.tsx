@@ -109,6 +109,7 @@ type PendingGuidance = {
   submitText: string;
   state?: string;
   intent?: string;
+  source?: string;
   structured?: StructuredInvocationSubmit;
 };
 
@@ -1207,12 +1208,13 @@ export function Composer({
     // transitions are included so Controller-owned dispatch/ack is reflected.
     void app.InboxSnapshot(tabId || "").then((snap) => {
       if (!live) return;
-      const durable = (snap?.items ?? []).map((it: { id: string; preview: string; state?: string; intent?: string }) => ({
+      const durable = (snap?.items ?? []).map((it: { id: string; preview: string; state?: string; intent?: string; source?: string }) => ({
         id: it.id,
         text: it.preview,
         submitText: "",
         state: it.state,
         intent: it.intent,
+        source: it.source,
       }));
       updatePendingGuidanceForDraft(draftKey, () => durable.length > 0 ? durable : fallback);
       setGuidanceExpanded(false);
@@ -2158,6 +2160,7 @@ export function Composer({
                 submitText: "",
                 intent: "followup",
                 state: "queued",
+                source: "desktop",
                 structured,
               },
             ]);
@@ -2758,7 +2761,8 @@ export function Composer({
   // handleCancel stops the in-flight turn; if it was cancelled before the server
   // replied, the just-sent text is handed back so we drop it back into the input.
   const handleCancel = () => {
-    const durableItemIDs = pendingGuidance
+    const ownedGuidance = pendingGuidance.filter((item) => item.id.startsWith("local-") || item.source === "desktop");
+    const durableItemIDs = ownedGuidance
       .map((item) => item.id)
       .filter((id) => !id.startsWith("local-"));
     const restored = onCancel(durableItemIDs);
@@ -2769,14 +2773,15 @@ export function Composer({
     // honors for un-sent text. Structured items fold back as their slash form
     // (structured.display is valid /name syntax) so the invocation survives the
     // round trip instead of degrading to its bare task text.
-    const queued = pendingGuidance
+    const queued = ownedGuidance
       .map((item) => item.structured?.display ?? item.text)
       .filter((part) => part.trim() !== "");
     if (queued.length === 0) {
       if (typeof restored === "string") setTextCaretEnd(restored);
       return;
     }
-    updatePendingGuidanceForDraft(activeDraftKeyRef.current, () => []);
+    const ownedIDs = new Set(ownedGuidance.map((item) => item.id));
+    updatePendingGuidanceForDraft(activeDraftKeyRef.current, (items) => items.filter((item) => !ownedIDs.has(item.id)));
     setGuidanceExpanded(false);
     const base = typeof restored === "string" ? restored : text;
     setTextCaretEnd([base, ...queued].filter((part) => part.trim() !== "").join("\n"));

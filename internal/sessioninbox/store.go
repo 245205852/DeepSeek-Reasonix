@@ -1,6 +1,7 @@
 package sessioninbox
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -9,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"reasonix/internal/filelock"
 	"reasonix/internal/store"
 )
 
@@ -17,6 +19,8 @@ const (
 	blobsDirName   = "blobs"
 	quarantineName = "quarantine"
 	blobSuffix     = ".json"
+	diskLockName   = "transaction.lock"
+	diskLockWait   = 5 * time.Second
 )
 
 // Store is the transactional durable inbox for one session path.
@@ -34,8 +38,9 @@ type Store struct {
 	listeners []func(InboxSnapshot)
 }
 
-// Open binds a Store to the session's inbox directory. Missing dirs are created
-// lazily on first write. Cross-process recovery marks uncertain items and pauses.
+// Open binds a Store to the session's inbox directory. The directory is created
+// for its transaction lock; body blobs remain lazy. Cross-process recovery
+// marks uncertain items and pauses.
 func Open(sessionPath string, limits Limits) (*Store, error) {
 	sessionPath = strings.TrimSpace(sessionPath)
 	if sessionPath == "" {
@@ -60,6 +65,8 @@ func (s *Store) Dir() string {
 	if s == nil {
 		return ""
 	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	return s.dir
 }
 
@@ -68,6 +75,8 @@ func (s *Store) SessionPath() string {
 	if s == nil {
 		return ""
 	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	return s.session
 }
 
@@ -88,7 +97,12 @@ func (s *Store) Rebind(sessionPath string) error {
 	}
 	s.session = sessionPath
 	s.dir = store.SessionInboxDir(sessionPath)
-	return s.loadOrInitLocked()
+	release, err := s.beginDiskTransactionLocked()
+	if err != nil {
+		return err
+	}
+	release()
+	return nil
 }
 
 // Close seals the store. Further mutations fail with ErrClosed.
@@ -114,7 +128,32 @@ func (s *Store) OnChange(fn func(InboxSnapshot)) {
 func (s *Store) loadOrInit() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.loadOrInitLocked()
+	release, err := s.beginDiskTransactionLocked()
+	if err != nil {
+		return err
+	}
+	release()
+	return nil
+}
+
+// beginDiskTransactionLocked serializes every manifest read/modify/write with
+// other Store instances and processes, then refreshes the in-memory snapshot.
+// The caller must hold s.mu and call the returned release function.
+func (s *Store) beginDiskTransactionLocked() (func(), error) {
+	if err := os.MkdirAll(s.dir, 0o700); err != nil {
+		return nil, fmt.Errorf("sessioninbox: create inbox directory: %w", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), diskLockWait)
+	defer cancel()
+	release, err := filelock.Acquire(ctx, filepath.Join(s.dir, diskLockName))
+	if err != nil {
+		return nil, fmt.Errorf("sessioninbox: acquire disk lock: %w", err)
+	}
+	if err := s.loadOrInitLocked(); err != nil {
+		release()
+		return nil, err
+	}
+	return release, nil
 }
 
 func (s *Store) loadOrInitLocked() error {
@@ -172,7 +211,7 @@ func (s *Store) loadOrInitLocked() error {
 	man.RunID = s.runID
 	s.man = man
 	s.readonly = false
-	if recovered > 0 || man.Recovered {
+	if recovered > 0 {
 		return s.commitManifestLocked(man)
 	}
 	// GC orphan blobs without holding callers longer than needed.
@@ -187,6 +226,9 @@ func (s *Store) Snapshot() InboxSnapshot {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if release, err := s.beginDiskTransactionLocked(); err == nil {
+		release()
+	}
 	return s.snapshotLocked()
 }
 
@@ -248,6 +290,11 @@ func (s *Store) Enqueue(req EnqueueRequest) (InboxReceipt, error) {
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	release, err := s.beginDiskTransactionLocked()
+	if err != nil {
+		return InboxReceipt{}, err
+	}
+	defer release()
 	if s.closed {
 		return InboxReceipt{}, ErrClosed
 	}
@@ -335,6 +382,11 @@ func (s *Store) ReadItem(id string) (InboxItemMeta, PromptEnvelope, error) {
 	id = strings.TrimSpace(id)
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	release, err := s.beginDiskTransactionLocked()
+	if err != nil {
+		return InboxItemMeta{}, PromptEnvelope{}, err
+	}
+	defer release()
 	if s.closed {
 		return InboxItemMeta{}, PromptEnvelope{}, ErrClosed
 	}
@@ -349,13 +401,9 @@ func (s *Store) ReadItem(id string) (InboxItemMeta, PromptEnvelope, error) {
 	return meta, env, nil
 }
 
-// UpdateItem rewrites the envelope and re-freezes refs. State stays unless
-// blocked items are refreshed successfully.
-//
-// Transaction order (crash-safe): write a NEW immutable blob under a unique
-// revision name, switch the manifest pointer, then delete the old blob. A
-// crash between blob write and manifest leaves an orphan (GC'd); a crash
-// after manifest never leaves a checksum pointing at missing/wrong content.
+// UpdateItem writes a new immutable blob, switches the manifest pointer, then
+// deletes the old blob. Pre-commit crashes leave only a GC-able orphan; after
+// commit the checksum always points at the new body.
 func (s *Store) UpdateItem(id string, env PromptEnvelope) (InboxItemMeta, error) {
 	if s == nil {
 		return InboxItemMeta{}, ErrClosed
@@ -371,12 +419,20 @@ func (s *Store) UpdateItem(id string, env PromptEnvelope) (InboxItemMeta, error)
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	release, err := s.beginDiskTransactionLocked()
+	if err != nil {
+		return InboxItemMeta{}, err
+	}
+	defer release()
 	if err := s.mutableLocked(); err != nil {
 		return InboxItemMeta{}, err
 	}
 	meta, ok := s.man.item(id)
 	if !ok {
 		return InboxItemMeta{}, ErrNotFound
+	}
+	if !isPendingState(meta.State) {
+		return InboxItemMeta{}, ErrInvalidState
 	}
 	if byteSize > s.limits.MaxItemBytes {
 		return InboxItemMeta{}, ErrItemTooLarge

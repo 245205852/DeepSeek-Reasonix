@@ -46,7 +46,7 @@ type Inbox interface {
 	ReadInboxItem(id string) (sessioninbox.InboxItemMeta, sessioninbox.PromptEnvelope, error)
 	UpdateInboxItem(id string, display, raw, submit string) (sessioninbox.InboxItemMeta, error)
 	DeleteInboxItem(id string) error
-	CancelWithInboxItems(ids []string) error
+	CancelWithInboxItems(ids []string, source string) error
 	MoveInboxItem(id string, toIndex int) error
 	SetInboxPaused(paused bool) error
 	RetryInboxItem(id string) error
@@ -64,12 +64,13 @@ var _ Inbox = (*Controller)(nil)
 type inboxState struct {
 	mu    sync.Mutex
 	store *sessioninbox.Store
-	// activeItemIDs tracks every item admitted during the current turn:
-	// the running follow-up (if any) plus every accepted steer. TurnDone
-	// durable-acks the whole set so multi-steer rounds never leave
-	// steer_consumed orphans.
+	// activeItemIDs includes the running follow-up and every accepted steer.
+	// TurnDone durable-acks the set so multi-steer rounds leave no orphans.
 	activeItemIDs map[string]struct{}
 	dispatching   bool
+	// beforePreparedAdmission is a deterministic test hook for the gap between
+	// durable preparation and Controller admission. Production leaves it nil.
+	beforePreparedAdmission func()
 }
 
 func (s *inboxState) trackActive(id string) {
@@ -203,27 +204,15 @@ func (c *Controller) EnqueueInbox(req InboxRequest) (sessioninbox.InboxReceipt, 
 	display := firstNonEmptyStr(req.Display, submit)
 	raw := firstNonEmptyStr(req.Raw, submit)
 	env := sessioninbox.PromptEnvelope{
-		DisplayText: display,
-		RawText:     raw,
-		SubmitText:  submit,
-		Format:      req.Format,
-		Source:      req.Source,
-		Idempotency: req.Idempotency,
+		DisplayText:  display,
+		RawText:      raw,
+		SubmitText:   submit,
+		Format:       req.Format,
+		Source:       req.Source,
+		Idempotency:  req.Idempotency,
+		ExplicitRefs: append([]string(nil), req.FreezeRefs...),
 	}
-	if len(req.FreezeRefs) > 0 {
-		refs, ferr := sessioninbox.FreezeRefs(context.Background(), c.WorkspaceRoot(), req.FreezeRefs)
-		if ferr != nil {
-			slog.Warn("controller: freeze inbox refs", "err", ferr)
-		}
-		env.Refs = refs
-	} else if c.HasRefs(submit) {
-		// Best-effort: extract path tokens from @-refs already present.
-		// Full resolution still happens at consumption time for clean git.
-		if tokens := extractRefPathTokens(submit); len(tokens) > 0 {
-			refs, _ := sessioninbox.FreezeRefs(context.Background(), c.WorkspaceRoot(), tokens)
-			env.Refs = refs
-		}
-	}
+	env.FrozenRefBlock, env.FrozenImages, env.ReferenceErrors = c.freezeInboxReferences(context.Background(), submit, req.FreezeRefs)
 	intent := req.Intent
 	if intent != sessioninbox.IntentSteer {
 		intent = sessioninbox.IntentFollowup
@@ -242,6 +231,16 @@ func (c *Controller) EnqueueInbox(req InboxRequest) (sessioninbox.InboxReceipt, 
 			sessioninbox.NoteTxFail()
 		}
 		return sessioninbox.InboxReceipt{}, err
+	}
+	if !rec.Idempotent && len(env.ReferenceErrors) > 0 {
+		reason := strings.Join(env.ReferenceErrors, "; ")
+		if stateErr := st.SetState(rec.ItemID, sessioninbox.StateBlocked, reason); stateErr != nil {
+			return sessioninbox.InboxReceipt{}, stateErr
+		}
+		if pauseErr := st.SetPaused(true); pauseErr != nil {
+			return sessioninbox.InboxReceipt{}, pauseErr
+		}
+		rec.Paused = true
 	}
 	sessioninbox.NoteEnqueue(int64(len(env.SubmitText)))
 	return rec, nil
@@ -271,18 +270,33 @@ func (c *Controller) UpdateInboxItem(id, display, raw, submit string) (sessionin
 	submit = strings.TrimSpace(firstNonEmptyStr(submit, raw, display))
 	display = firstNonEmptyStr(display, submit)
 	raw = firstNonEmptyStr(raw, submit)
+	_, previous, err := st.ReadItem(id)
+	if err != nil {
+		return sessioninbox.InboxItemMeta{}, err
+	}
 	env := sessioninbox.PromptEnvelope{
-		DisplayText: display,
-		RawText:     raw,
-		SubmitText:  submit,
+		DisplayText:  display,
+		RawText:      raw,
+		SubmitText:   submit,
+		Format:       previous.Format,
+		Source:       previous.Source,
+		ExplicitRefs: append([]string(nil), previous.ExplicitRefs...),
 	}
-	if c.HasRefs(submit) {
-		if tokens := extractRefPathTokens(submit); len(tokens) > 0 {
-			refs, _ := sessioninbox.FreezeRefs(context.Background(), c.WorkspaceRoot(), tokens)
-			env.Refs = refs
+	env.FrozenRefBlock, env.FrozenImages, env.ReferenceErrors = c.freezeInboxReferences(context.Background(), submit, env.ExplicitRefs)
+	updated, err := st.UpdateItem(id, env)
+	if err != nil {
+		return sessioninbox.InboxItemMeta{}, err
+	}
+	if len(env.ReferenceErrors) > 0 {
+		reason := strings.Join(env.ReferenceErrors, "; ")
+		if err := st.SetState(id, sessioninbox.StateBlocked, reason); err != nil {
+			return sessioninbox.InboxItemMeta{}, err
 		}
+		_ = st.SetPaused(true)
+		updated.State = sessioninbox.StateBlocked
+		updated.BlockReason = reason
 	}
-	return st.UpdateItem(id, env)
+	return updated, nil
 }
 
 func (c *Controller) DeleteInboxItem(id string) error {
@@ -290,9 +304,6 @@ func (c *Controller) DeleteInboxItem(id string) error {
 	if err != nil {
 		return err
 	}
-	c.inbox.mu.Lock()
-	c.inbox.untrackActive(id)
-	c.inbox.mu.Unlock()
 	return st.DeleteItem(id)
 }
 
@@ -300,30 +311,28 @@ func (c *Controller) DeleteInboxItem(id string) error {
 // pending items explicitly owned by the cancelling frontend. Admission is
 // paused around the batch deletion so TurnDone cannot race a cancelled item
 // into a new provider turn. Unrelated inbox items remain intact.
-func (c *Controller) CancelWithInboxItems(ids []string) error {
+func (c *Controller) CancelWithInboxItems(ids []string, source string) error {
 	st, err := c.ensureInbox()
 	if err != nil {
 		c.Cancel()
 		return err
 	}
+	wasPaused := st.Snapshot().Paused
 	if err := st.SetPaused(true); err != nil {
 		c.Cancel()
 		return err
 	}
-	if err := st.DiscardPendingItems(ids); err != nil {
+	if err := st.DiscardPendingItemsOwned(ids, strings.TrimSpace(source)); err != nil {
 		// Keep the inbox paused for inspection if an item already crossed the
 		// admission boundary. Cancellation still stops that in-flight turn.
 		c.Cancel()
 		return err
 	}
-	c.inbox.mu.Lock()
-	for _, id := range ids {
-		c.inbox.untrackActive(strings.TrimSpace(id))
-	}
-	c.inbox.mu.Unlock()
 	c.Cancel()
-	if err := st.SetPaused(false); err != nil {
-		return err
+	if !wasPaused {
+		if err := st.SetPaused(false); err != nil {
+			return err
+		}
 	}
 	return nil
 }
@@ -375,18 +384,14 @@ func (c *Controller) RefreshInboxReferences(id string) error {
 		return err
 	}
 	_ = meta
-	paths := make([]string, 0, len(env.Refs))
-	for _, r := range env.Refs {
-		if p := firstNonEmptyStr(r.Path, r.DisplayPath); p != "" {
-			paths = append(paths, p)
-		}
-	}
-	if len(paths) == 0 && c.HasRefs(env.SubmitText) {
-		paths = extractRefPathTokens(env.SubmitText)
-	}
-	refs, _ := sessioninbox.FreezeRefs(context.Background(), c.WorkspaceRoot(), paths)
-	env.Refs = refs
+	env.Refs = nil
+	env.FrozenRefBlock, env.FrozenImages, env.ReferenceErrors = c.freezeInboxReferences(context.Background(), env.SubmitText, env.ExplicitRefs)
 	_, err = st.UpdateItem(id, env)
+	if err == nil && len(env.ReferenceErrors) > 0 {
+		reason := strings.Join(env.ReferenceErrors, "; ")
+		err = st.SetState(id, sessioninbox.StateBlocked, reason)
+		_ = st.SetPaused(true)
+	}
 	return err
 }
 
@@ -400,20 +405,31 @@ func (c *Controller) TrySteerInboxItem(id string) (sessioninbox.InboxReceipt, er
 	if err != nil {
 		return sessioninbox.InboxReceipt{}, err
 	}
-	meta, _, err := st.ReadItem(id)
+	meta, env, err := st.ReadItem(id)
 	if err != nil {
 		return sessioninbox.InboxReceipt{}, err
 	}
 	if meta.State != sessioninbox.StateQueued && meta.State != sessioninbox.StateSteerAccepted {
 		return sessioninbox.InboxReceipt{}, sessioninbox.ErrInvalidState
 	}
+	if meta.State == sessioninbox.StateSteerAccepted {
+		return sessioninbox.InboxReceipt{
+			ItemID:      id,
+			Disposition: sessioninbox.DispositionSteerAccepted,
+			Paused:      st.Snapshot().Paused,
+			Capacity:    st.Snapshot().Capacity,
+			Idempotent:  true,
+		}, nil
+	}
+	snapshot := st.Snapshot()
+	if snapshot.Paused {
+		return sessioninbox.InboxReceipt{}, sessioninbox.ErrPaused
+	}
+	cap := snapshot.Capacity
 	c.mu.Lock()
-	exec := c.executor
-	running := c.running
 	rotating := c.rotating
 	closed := c.closed
 	c.mu.Unlock()
-	cap := st.Snapshot().Capacity
 	if closed {
 		return sessioninbox.InboxReceipt{ItemID: id, Disposition: sessioninbox.DispositionRejectedClosed, Capacity: cap}, nil
 	}
@@ -435,25 +451,35 @@ func (c *Controller) TrySteerInboxItem(id string) (sessioninbox.InboxReceipt, er
 		if text == "" {
 			return "", fmt.Errorf("inbox item %s has empty body", itemID)
 		}
-		// Apply frozen refs at consume so the model sees enqueue-time content.
-		if len(env.Refs) > 0 {
-			block, bodies, merr := sessioninbox.MaterializeRefs(context.Background(), c.WorkspaceRoot(), env.Refs)
-			if merr != nil {
-				return "", merr
-			}
-			if block != "" {
-				return "", fmt.Errorf("frozen reference unavailable: %s", block)
-			}
-			text = sessioninbox.ApplyFrozenRefs(text, bodies)
+		materialized, images, block, materializeErr := applyInboxReferences(env)
+		if materializeErr != nil {
+			return "", materializeErr
 		}
-		return text, nil
+		if block != "" {
+			return "", fmt.Errorf("frozen reference unavailable: %s", block)
+		}
+		if len(images) > 0 {
+			return "", fmt.Errorf("image guidance requires a follow-up turn")
+		}
+		return firstNonEmptyStr(materialized, text), nil
 	}
-	accepted := running && exec != nil && exec.SteerItem(id, loader)
+	// Persist the admission boundary before exposing the loader to the agent.
+	// Holding c.mu for the short in-memory enqueue serializes active tracking
+	// with finishGuardedTurn, so TurnDone cannot overtake an accepted steer.
+	if len(env.FrozenImages) == 0 {
+		if err := st.SetState(id, sessioninbox.StateSteerAccepted, ""); err != nil {
+			return sessioninbox.InboxReceipt{}, err
+		}
+	}
+	c.mu.Lock()
+	accepted := !c.closed && !c.rotating && c.running && c.executor != nil && len(env.FrozenImages) == 0 && c.executor.SteerItem(id, loader)
 	if accepted {
-		_ = st.SetState(id, sessioninbox.StateSteerAccepted, "")
 		c.inbox.mu.Lock()
 		c.inbox.trackActive(id)
 		c.inbox.mu.Unlock()
+	}
+	c.mu.Unlock()
+	if accepted {
 		sessioninbox.NoteSteerAccepted()
 		return sessioninbox.InboxReceipt{
 			ItemID:      id,
@@ -463,8 +489,15 @@ func (c *Controller) TrySteerInboxItem(id string) (sessioninbox.InboxReceipt, er
 		}, nil
 	}
 	// Rejected: keep as follow-up.
-	_ = st.ConvertIntent(id, sessioninbox.IntentFollowup)
-	_ = st.SetState(id, sessioninbox.StateQueued, "")
+	if len(env.FrozenImages) == 0 {
+		if err := st.SetState(id, sessioninbox.StateQueued, ""); err != nil {
+			_ = st.ForcePause(true, 1)
+			return sessioninbox.InboxReceipt{}, err
+		}
+	}
+	if err := st.ConvertIntent(id, sessioninbox.IntentFollowup); err != nil {
+		return sessioninbox.InboxReceipt{}, err
+	}
 	sessioninbox.NoteSteerRejected()
 	return sessioninbox.InboxReceipt{
 		ItemID:      id,
@@ -484,50 +517,44 @@ func (c *Controller) TrySubmitInboxItem(id string) (sessioninbox.InboxReceipt, e
 	if err != nil {
 		return sessioninbox.InboxReceipt{}, err
 	}
-	if meta.State != sessioninbox.StateQueued && meta.State != sessioninbox.StateUncertain {
+	if meta.State != sessioninbox.StateQueued {
 		return sessioninbox.InboxReceipt{}, sessioninbox.ErrInvalidState
 	}
-	// Blocked items must be refreshed first.
-	if meta.State == sessioninbox.StateBlocked {
-		return sessioninbox.InboxReceipt{}, sessioninbox.ErrInvalidState
+	if st.Snapshot().Paused {
+		return sessioninbox.InboxReceipt{}, sessioninbox.ErrPaused
 	}
-	// Materialize frozen refs and inject them into the model-visible submit text.
-	submit := env.SubmitText
-	if len(env.Refs) > 0 {
-		block, bodies, merr := sessioninbox.MaterializeRefs(context.Background(), c.WorkspaceRoot(), env.Refs)
-		if merr != nil {
-			return sessioninbox.InboxReceipt{}, merr
-		}
-		if block != "" {
-			_ = st.SetState(id, sessioninbox.StateBlocked, block)
-			_ = st.SetPaused(true)
-			return sessioninbox.InboxReceipt{}, fmt.Errorf("%w: %s", sessioninbox.ErrInvalidState, block)
-		}
-		submit = sessioninbox.ApplyFrozenRefs(submit, bodies)
+	submit, frozenImages, block, materializeErr := applyInboxReferences(env)
+	if materializeErr != nil {
+		return sessioninbox.InboxReceipt{}, materializeErr
 	}
-	// Mark running only after we know we will attempt admission; on reject restore queued.
-	_ = st.SetState(id, sessioninbox.StateRunning, "")
-	c.inbox.mu.Lock()
-	c.inbox.trackActive(id)
-	c.inbox.mu.Unlock()
-
+	if block != "" {
+		_ = st.SetState(id, sessioninbox.StateBlocked, block)
+		_ = st.SetPaused(true)
+		return sessioninbox.InboxReceipt{}, fmt.Errorf("%w: %s", sessioninbox.ErrInvalidState, block)
+	}
+	// Persist the in-flight state before admission. Active tracking is installed
+	// only after Controller admission is reserved and before the turn can finish.
+	if err := st.SetState(id, sessioninbox.StateRunning, ""); err != nil {
+		return sessioninbox.InboxReceipt{}, err
+	}
 	display := env.DisplayText
 	raw := env.RawText
-	c.mu.Lock()
-	busy := c.running || c.finishing || c.rotating || c.closed
-	c.mu.Unlock()
-	if busy {
-		_ = st.SetState(id, sessioninbox.StateQueued, "")
-		c.inbox.mu.Lock()
-		c.inbox.untrackActive(id)
-		c.inbox.mu.Unlock()
-		return c.busyReceipt(id, st), nil
+	c.inbox.mu.Lock()
+	beforeAdmission := c.inbox.beforePreparedAdmission
+	c.inbox.mu.Unlock()
+	if beforeAdmission != nil {
+		beforeAdmission()
 	}
-	// The envelope has already been classified and its references materialized.
-	// Start a prepared user turn directly: routing through Submit/SubmitDisplay
-	// would parse the original @tokens again and mix live workspace bytes with
-	// the enqueue-time snapshot.
-	c.submitPreparedInboxTurn(display, submit, raw, env.Format)
+	// Start the classified envelope directly. Submit would parse @tokens again
+	// and mix live workspace bytes with the enqueue-time snapshot.
+	result := c.submitPreparedInboxTurn(id, display, submit, raw, env.Format, frozenImages)
+	if result != turnStarted {
+		if err := st.SetState(id, sessioninbox.StateQueued, ""); err != nil {
+			_ = st.ForcePause(true, 1)
+			return sessioninbox.InboxReceipt{}, err
+		}
+		return c.receiptForAdmissionResult(id, st, result), nil
+	}
 	return sessioninbox.InboxReceipt{
 		ItemID:      id,
 		Disposition: sessioninbox.DispositionStarted,
@@ -539,26 +566,27 @@ func (c *Controller) TrySubmitInboxItem(id string) (sessioninbox.InboxReceipt, e
 // interpreting slash commands, shell shortcuts, or @references a second time.
 // Dynamic frozen bodies remain in the user turn and never alter the stable
 // system/tool prefix.
-func (c *Controller) submitPreparedInboxTurn(display, submit, raw, format string) {
+func (c *Controller) submitPreparedInboxTurn(itemID, display, submit, raw, format string, frozenImages []string) admissionResult {
 	display = firstNonEmptyStr(display, submit)
 	raw = firstNonEmptyStr(raw, submit)
-	c.runGuarded(func(ctx context.Context) error {
-		return c.runGoalLoopWithRawDisplay(c.withTurnFormat(ctx, strings.TrimSpace(format)), submit, raw, display)
+	return c.runGuardedInbox(func(ctx context.Context) error {
+		return c.runGoalLoopWithFrozenImagesRawDisplay(c.withTurnFormat(ctx, strings.TrimSpace(format)), submit, raw, display, frozenImages)
+	}, func() {
+		c.inbox.mu.Lock()
+		c.inbox.trackActive(itemID)
+		c.inbox.mu.Unlock()
 	})
 }
 
-func (c *Controller) busyReceipt(id string, st *sessioninbox.Store) sessioninbox.InboxReceipt {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	cap := st.Snapshot().Capacity
-	switch {
-	case c.closed:
-		return sessioninbox.InboxReceipt{ItemID: id, Disposition: sessioninbox.DispositionRejectedClosed, Capacity: cap}
-	case c.rotating:
-		return sessioninbox.InboxReceipt{ItemID: id, Disposition: sessioninbox.DispositionRejectedRotating, Capacity: cap}
-	default:
-		return sessioninbox.InboxReceipt{ItemID: id, Disposition: sessioninbox.DispositionRejectedBusy, Capacity: cap}
+func (c *Controller) receiptForAdmissionResult(id string, st *sessioninbox.Store, result admissionResult) sessioninbox.InboxReceipt {
+	disposition := sessioninbox.DispositionRejectedBusy
+	switch result {
+	case turnDroppedClosed:
+		disposition = sessioninbox.DispositionRejectedClosed
+	case turnDroppedRotating:
+		disposition = sessioninbox.DispositionRejectedRotating
 	}
+	return sessioninbox.InboxReceipt{ItemID: id, Disposition: disposition, Capacity: st.Snapshot().Capacity}
 }
 
 // onInboxTurnDone acknowledges durable completion of every active inbox item
@@ -583,11 +611,20 @@ func (c *Controller) onInboxTurnDone() {
 		sessioninbox.NoteUncertain()
 		return
 	}
+	ackFailed := false
 	for _, id := range ids {
 		if err := st.AckDequeue(id); err != nil {
-			// Already deleted or race: log and continue so remaining items still ack.
+			if errors.Is(err, sessioninbox.ErrNotFound) {
+				continue
+			}
 			slog.Warn("controller: inbox ack dequeue", "err", err, "id", id)
+			_ = st.SetState(id, sessioninbox.StateUncertain, "turn completed but inbox acknowledgement failed")
+			ackFailed = true
 		}
+	}
+	if ackFailed {
+		_ = st.SetPaused(true)
+		sessioninbox.NoteUncertain()
 	}
 }
 
@@ -663,9 +700,6 @@ func (c *Controller) TryEnqueueAndSteer(req InboxRequest) (sessioninbox.InboxRec
 	if err != nil {
 		return rec, err
 	}
-	if rec.Idempotent {
-		// Re-attempt steer on the existing item.
-	}
 	return c.TrySteerInboxItem(rec.ItemID)
 }
 
@@ -689,39 +723,4 @@ func firstNonEmptyStr(vals ...string) string {
 		}
 	}
 	return ""
-}
-
-// extractRefPathTokens is a lightweight @token scanner for freeze-at-enqueue.
-// Full classification still uses ResolveRefs at consumption.
-func extractRefPathTokens(line string) []string {
-	var out []string
-	seen := map[string]struct{}{}
-	for i := 0; i < len(line); i++ {
-		if line[i] != '@' {
-			continue
-		}
-		j := i + 1
-		for j < len(line) {
-			ch := line[j]
-			if ch == ' ' || ch == '\t' || ch == '\n' || ch == '\r' {
-				break
-			}
-			j++
-		}
-		tok := strings.TrimSpace(line[i+1 : j])
-		if tok == "" {
-			continue
-		}
-		// Strip trailing punctuation commonly attached to refs.
-		tok = strings.TrimRight(tok, ".,;:!?)]}>\"'")
-		if tok == "" {
-			continue
-		}
-		if _, ok := seen[tok]; ok {
-			continue
-		}
-		seen[tok] = struct{}{}
-		out = append(out, tok)
-	}
-	return out
 }

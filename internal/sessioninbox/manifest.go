@@ -2,6 +2,7 @@ package sessioninbox
 
 import (
 	"encoding/json"
+	"maps"
 	"time"
 )
 
@@ -36,9 +37,7 @@ func (m *manifest) clone() *manifest {
 	out.Items = append([]InboxItemMeta(nil), m.Items...)
 	if m.Idempotency != nil {
 		out.Idempotency = make(map[string]string, len(m.Idempotency))
-		for k, v := range m.Idempotency {
-			out.Idempotency[k] = v
-		}
+		maps.Copy(out.Idempotency, m.Idempotency)
 	} else {
 		out.Idempotency = map[string]string{}
 	}
@@ -68,15 +67,6 @@ func (m *manifest) item(id string) (InboxItemMeta, bool) {
 		return InboxItemMeta{}, false
 	}
 	return m.Items[i], true
-}
-
-func (m *manifest) setItem(it InboxItemMeta) {
-	i := m.indexOf(it.ID)
-	if i < 0 {
-		m.Items = append(m.Items, it)
-		return
-	}
-	m.Items[i] = it
 }
 
 func (m *manifest) removeItem(id string) (InboxItemMeta, bool) {
