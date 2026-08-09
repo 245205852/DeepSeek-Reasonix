@@ -626,7 +626,7 @@ Mode and display shortcuts:
 | `/theme [auto|light|dark|style]` | Shows or switches the CLI theme | Bare `/theme` lists background modes and named accent palettes. The choice is saved to the user config; `REASONIX_THEME` and `REASONIX_THEME_STYLE` can override it for one run. |
 | `Ctrl+O` | Toggles verbose reasoning display | Also available through `/verbose`. |
 | `Ctrl+B` | Expands or collapses long shell output | Long shell-output hint lines can also be clicked in the transcript; text selection is handled in-app while the full-screen TUI has mouse reporting enabled. |
-| `/goal <objective>`, `/goal --research <objective>`, `/goal --simple <objective>`, `/goal status`, `/goal clear` | Starts, checks, or clears Goal | Goal is not in any keyboard cycle; clearly long-horizon goals automatically enable AutoResearch after Goal is explicitly started. |
+| `/goal <objective>`, `/goal status`, `/goal pause`, `/goal resume`, `/goal clear` | Starts, checks, pauses, resumes, or clears Goal | Goal automatically selects a simple, write, or research turn budget. |
 | `/migrate`, `/migrate --from <legacy-dir>` | Retries legacy migration or imports sessions from a chosen v0.x source | Use `--from` for custom Windows v0.52 install/data directories; it imports sessions only. See [Configuration paths](./CONFIG_PATHS.md). |
 
 Picker and approval shortcuts:
@@ -1094,19 +1094,15 @@ permission, or tool behavior must declare whether embedded documentation was
 updated. When no documentation change is needed, the declaration must explain
 why the existing version-matched guidance remains correct.
 
-## Goal and AutoResearch
+## Goal
 
-Goal is the unified runtime for long-running objectives. Ordinary `/goal`
-objectives stay lightweight: Reasonix keeps working until the goal is complete,
-blocked, paused, or cleared. When a goal is clearly long-horizon, Goal
-automatically enables the AutoResearch strategy instead of requiring a separate
-`/auto-research` skill; `auto-research` is not listed as a standalone built-in
-skill in Settings -> Skills or the slash menu. Ordinary chat never changes the
-collaboration mode implicitly; choose Goal in the composer or use `/goal` to
-start a long-running objective.
+Goal is the unified runtime for long-running objectives. Reasonix keeps working
+until the goal is complete, blocked, paused, or cleared. Ordinary chat never
+changes collaboration mode implicitly; choose Goal in the composer or use
+`/goal` to start a long-running objective.
 
 Goal runs under a per-class **turn** budget: simple goals get 10 turns, write
-goals 20 turns, and AutoResearch goals 40 turns; four consecutive turns without
+goals 20 turns, and research goals 40 turns; four consecutive turns without
 host-verifiable progress pause the goal. Cumulative token usage is still tracked
 and shown for diagnostics, but there is **no token hard limit** and no
 pre-provider request admission. In Goal mode, a bare bug/crash/exception
@@ -1128,38 +1124,15 @@ for autonomous work. It keeps going with sensible defaults unless the next step
 requires an irreversible or externally visible operation, a scope change, or
 information only the user can provide.
 
-AutoResearch is enabled for goals with strong signals such as "keep
-researching", "long-running", "thoroughly", "debug until the root cause is
-clear", "do not spin", "run experiments", "verify repeatedly", or "turn this
-into a complete plan". It can also trigger when the objective combines multiple
-phases such as research/diagnosis, implementation/fixing, verification/testing,
-optimization/documentation/release, or when the user names an existing
-`.reasonix/autoresearch/<task-id>/` directory. Advanced users can force it with
-`/goal --research <objective>` or force lightweight Goal with
-`/goal --simple <objective>`. Outside an explicitly started Goal, those signals
-remain ordinary chat text and do not create durable AutoResearch state.
-
-Once AutoResearch is active, the agent treats the goal as a stateful research
-loop instead of a chat-only continuation. It creates or reuses a project-local
-`.reasonix/autoresearch/<task-id>/` directory. For new tasks, the default id
-shape is `YYYYMMDD-HHMMSS-slug`, such as `20260618-224530-cache-audit`; Reasonix
-checks the project directory first and appends `-2`, `-3`, and so on only if
-that id already exists. The task state includes `task_spec.md`, `progress.json`,
-`findings.jsonl`, `directions_tried.json`, and `iteration_log.jsonl`, records
-each iteration's direction, evidence, verification result, and blocker, and uses
-`stale_count` to detect repeated weak progress. Repeated stalls force a
-structural pivot, such as changing evidence source, entrypoint, test oracle,
-decomposition, benchmark, or worker strategy, rather than retrying the same
-tactic.
-
-Workers and subagents may explore independently, but the orchestrator owns the
-canonical state files. Completion requires a requirement-by-requirement evidence
-audit against `task_spec.md`; a passing narrow check is not treated as proof of a
-broad requirement. Dynamic run state stays in `.reasonix/autoresearch/...`, not
-in `REASONIX.md`, `AGENTS.md`, project memory, tool schemas, or the cache-stable
-system prompt. Public publishing, destructive operations, credentials, payments,
-and external notifications still follow the normal approval, privacy, and cache
-gates.
+Research budgets are selected automatically for goals with strong long-horizon
+signals or several distinct phases. There is no separate research mode or
+runtime to configure. Goal state stays in the normal session sidecar, progress
+comes only from host receipts, canonical todos, `complete_step`, review and the
+Delivery checkpoint, and completion is decided by Delivery readiness plus the
+bounded Goal evaluator. Legacy `.reasonix/autoresearch/<task-id>/` archives are
+read-only: an explicit old path can be recovered as an ordinary Goal, but new
+runs never create or update those directories. Deprecated budget flags are
+accepted for compatibility but are hidden from help and completion.
 
 ## @ references
 

@@ -1501,50 +1501,6 @@ func allowlistRequestsUnrestrictedProxy(names []string) bool {
 	return false
 }
 
-var plannerNonResearchTools = []string{
-	"ask",
-	"bash_output",
-	"complete_step",
-	"slash_command",
-	"todo_write",
-	"wait",
-}
-
-// PlannerToolRegistry returns the tool set exposed to the two-model planner:
-// built-in read-only research tools plus the stable use_capability proxy. Direct
-// mcp__* schemas are excluded so MCP connect/disconnect/tool-list churn never
-// changes the Planner provider-visible tool prefix. Workflow/meta tools that are
-// technically read-only but can prompt the user, update visible task state, wait
-// on jobs, or expand commands are also excluded.
-func PlannerToolRegistry(parent *tool.Registry) *tool.Registry {
-	exclude := append(SubagentMetaTools(), plannerNonResearchTools...)
-	base := FilterReadOnlyRegistry(parent, exclude...)
-	sub := tool.NewRegistry()
-	if base != nil {
-		for _, name := range base.Names() {
-			// Never copy the parent proxy or direct MCP: Delivery would share
-			// Executor ledger/audit; MCP schemas are proxy-only for the planner.
-			if name == "use_capability" || strings.HasPrefix(name, tool.MCPNamePrefix) {
-				continue
-			}
-			if tl, ok := base.Get(name); ok {
-				sub.Add(tl)
-			}
-		}
-	}
-	// Always install an isolated frontend (independent ledger/audit; shared Host).
-	if parent != nil {
-		if tl, ok := parent.Get("use_capability"); ok {
-			if uc, ok := tl.(*UseCapabilityTool); ok {
-				sub.Add(uc.CloneForAgent(nil, nil))
-			} else {
-				sub.Add(tl)
-			}
-		}
-	}
-	return sub
-}
-
 // ReadOnlySubagentToolRegistry returns the tool set exposed to read-only
 // sub-agents: read-only research tools plus a bash wrapper that enforces the
 // permission-layer read-only command policy at execution time. Workflow/meta tools are
@@ -1877,6 +1833,7 @@ func RunSubAgentWithSession(ctx context.Context, prov provider.Provider, reg *to
 		return "", fmt.Errorf("sub-agent session is nil")
 	}
 	// Isolate temporary files for this run before any tool execution.
+	ctx = tool.WithoutGoalTurnRecorder(ctx)
 	ctx, releaseTemp := withSubagentSessionTemp(ctx)
 	defer releaseTemp()
 	if opts.SubagentDepth > 0 {

@@ -1985,8 +1985,6 @@ export const zhTW: Record<DictKey, string> = {
   "notice.compactionNoSummary": "上下文已壓縮，但未產生摘要。",
   "notice.goalNotReady": "目標暫未達到完成條件，繼續處理剩餘工作。",
   "notice.goalUnfinished": "目標還有未完成的任務狀態，繼續處理。",
-  "notice.autoresearchStatusFailed": "AutoResearch 狀態更新失敗。",
-  "notice.autoresearchBlocked": "AutoResearch 任務已標記為阻塞。",
   "notice.backgroundJobFailed": "背景 {kind} 需要處理。",
   "notice.jobArtifactMigrationFailed": "任務產物遷移失敗。",
   "notice.jobTeardownTimeout": "背景任務清理逾時。",
