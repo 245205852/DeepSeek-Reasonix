@@ -724,7 +724,7 @@ func (t *TaskTool) buildTaskSpec(ctx context.Context, prompt, description, profi
 		Task:    TaskSpec{Objective: prompt, Description: description},
 		Worker:  WorkerSpec{Kind: "task", Name: "task", SystemPrompt: t.sysPrompt},
 		Grant:   CapabilityGrant{CallTools: tools},
-		Context: ContextCapsule{ContinueFrom: strings.TrimSpace(continueFrom), ForkFrom: strings.TrimSpace(forkFrom)},
+		Context: ContextRequest{ContinueFrom: strings.TrimSpace(continueFrom), ForkFrom: strings.TrimSpace(forkFrom)},
 		Sched:   SchedulerPolicy{MaxSteps: maxSteps, RunInBackground: background, Nested: SubagentDepth(ctx) > 0},
 	}
 	profile = strings.TrimSpace(profile)
@@ -1088,6 +1088,7 @@ func (t *TaskTool) prepareTranscriptRunWithPrompt(ctx context.Context, subReg *t
 		ToolContext:      childToolIdentityContext(ctx),
 		Model:            identityModel,
 		Effort:           identityEffort,
+		ResumedFrom:      firstNonEmpty(continueFrom, legacyForkFrom),
 	}
 	if continueFrom != "" {
 		return t.transcripts.PrepareContinue(continueFrom, spec)

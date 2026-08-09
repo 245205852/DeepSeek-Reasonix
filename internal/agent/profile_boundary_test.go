@@ -15,7 +15,7 @@ const profileBoundaryRule = `A field belongs to the member that DECIDES its valu
   ProfileDefinition / WorkerSpec — follows from the worker's identity (how it thinks, which model, its capability ceiling)
   TaskSpec                       — decided per call (objective, criteria, result contract)
   CapabilityGrant                — what this call may touch (ceiling ∩ request)
-  ContextCapsule                 — what the child starts from
+  ContextRequest                 — what the child starts from
   SchedulerPolicy                — when and how it runs
 Fields like max_turns, write_paths, retry or verification policy are decided by
 the task or the scheduler, never by the worker, so they must not enter a profile.`
@@ -64,7 +64,7 @@ func TestDelegationSpecMembersStaySeparate(t *testing.T) {
 	assertFieldSet(t, "CapabilityGrant", CapabilityGrant{}, []string{
 		"ReadOnly", "AllowNoTools", "CallTools", "ProfileTools", "WritePaths",
 	})
-	assertFieldSet(t, "ContextCapsule", ContextCapsule{}, []string{"ContinueFrom", "ForkFrom"})
+	assertFieldSet(t, "ContextRequest", ContextRequest{}, []string{"ContinueFrom", "ForkFrom"})
 	assertFieldSet(t, "SchedulerPolicy", SchedulerPolicy{}, []string{
 		"MaxSteps", "RunInBackground", "BackgroundWriter", "Nested",
 	})

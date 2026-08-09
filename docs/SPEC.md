@@ -706,6 +706,35 @@ leave the workspace are still reported as claim violations.
 Declaring paths is what buys parallelism; it costs `bash` on hosts where the OS
 sandbox cannot enforce write roots.
 
+### 3.13 Sub-agent context inheritance is explicit
+
+A child inherits nothing implicitly. What it receives is exactly this:
+
+| Given to the child | Where it comes from |
+| --- | --- |
+| System prompt | `DefaultTaskSystemPrompt`, `DefaultReadOnlyTaskSystemPrompt`, or the profile body — nothing else is composed into it |
+| Workspace root | `<workspace-context>` on the first user turn |
+| The task text | the user turn itself |
+| Completion contract | appended to a writer's task turn (§3.11) |
+| Delegation guidance | `<subagent-context>` on a nested child's fresh session |
+| Plan-mode marker, reasoning/response language | run options, when set |
+| A prior transcript | only via `continue_from` / `fork_from` |
+
+Not inherited, by construction: `REASONIX.md`, `AGENTS.md`, `CLAUDE.md`, project
+and global memory (the memory queue is disabled, so a child cannot record memory
+either), the parent conversation, the current Goal, planner output, and sibling
+sub-agent results. A constraint that must reach a child today has to be in its
+profile body or in the task text — there is no ambient channel.
+
+Every run records a `ContextCapsule` in its transcript sidecar: the workspace,
+the system-prompt source and hash, the resolved tool scope and schema hash, the
+model and effort, the parent session and tool-call id, any resumed transcript,
+and an `inherited` block whose fields are all false. `capsuleHash` is its stable
+identity, so *why did this reviewer not see that constraint* is answered from
+the record, and two runs that behaved differently can be diffed instead of
+guessed at. The capsule holds references and digests only — never copied parent
+context, which is what keeps delegation cheap and the child prefix cacheable.
+
 ## 4. Data Types (`internal/provider`)
 
 ```go

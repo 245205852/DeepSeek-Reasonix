@@ -260,6 +260,24 @@ Profile 描述的是 worker，不是一次运行。委派由五个彼此独立�
 
 声明路径换来的是并行能力；代价是在 OS sandbox 无法强制写根的宿主上失去 `bash`。
 
+### 3.13 子智能体的上下文继承是显式的
+
+子智能体不隐式继承任何东西。它拿到的恰好是这些：
+
+| 交给子智能体的 | 来源 |
+| --- | --- |
+| 系统提示 | `DefaultTaskSystemPrompt`、`DefaultReadOnlyTaskSystemPrompt` 或 profile body——不再合成任何其他内容 |
+| workspace 根目录 | 首个 user turn 里的 `<workspace-context>` |
+| 任务文本 | user turn 本身 |
+| 完成契约 | 追加在写入型子智能体的任务 turn 后（见 §3.11） |
+| 委派提示 | 嵌套子智能体全新会话上的 `<subagent-context>` |
+| plan-mode 标记、推理/回复语言 | 运行选项（设置时） |
+| 既有 transcript | 仅通过 `continue_from` / `fork_from` |
+
+按设计**不继承**：`REASONIX.md`、`AGENTS.md`、`CLAUDE.md`、项目与全局记忆（memory queue 被关闭，子智能体也无法写入记忆）、父对话、当前 Goal、planner 输出、同级子智能体的结果。今天要让一条约束抵达子智能体，只能写进它的 profile body 或任务文本——不存在环境通道。
+
+每次运行都会在其 transcript sidecar 中记录一份 `ContextCapsule`：workspace、系统提示来源与哈希、解析后的工具范围与 schema 哈希、model 与 effort、父会话与父工具调用 id、续接的 transcript，以及一个所有字段均为 false 的 `inherited` 块。`capsuleHash` 是它的稳定标识，因此"为什么这个 reviewer 没看到那条约束"可以从记录回答，两次行为不同的运行也可以直接比对而不是猜。capsule 只保存引用与摘要——绝不复制父上下文，这正是委派保持低成本、子前缀保持可缓存的原因。
+
 ## 4. 数据类型
 
 provider 层的核心类型包括 `Role`、`Message`、`ToolCall`、`ToolSchema`、`Request` 和 streaming `Chunk`。`Message` 保留 `tool_calls`、`tool_call_id` 与 `name`；`Chunk` 区分 text、tool call、done 和 error。字段定义以英文规范及 `internal/provider` 源码为准。

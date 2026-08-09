@@ -59,7 +59,7 @@ type ProfileExecSpec struct {
 	Task    TaskSpec
 	Worker  WorkerSpec
 	Grant   CapabilityGrant
-	Context ContextCapsule
+	Context ContextRequest
 	Sched   SchedulerPolicy
 }
 
@@ -108,9 +108,9 @@ type CapabilityGrant struct {
 	WritePaths WritePathSet
 }
 
-// ContextCapsule is the context a child starts from, as opposed to the task it
+// ContextRequest is the context a child starts from, as opposed to the task it
 // is given. Today that is only a prior transcript to resume.
-type ContextCapsule struct {
+type ContextRequest struct {
 	// ContinueFrom / ForkFrom are transcript continuation refs (writer path).
 	ContinueFrom string
 	ForkFrom     string
