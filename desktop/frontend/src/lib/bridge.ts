@@ -389,6 +389,7 @@ export interface AppBindings {
   OpenWorkspacePath(rel: string): Promise<void>;
   OpenWorkspacePathForTab(tabID: string, rel: string): Promise<void>;
   ExternalOpeners(): Promise<ExternalOpenersView>;
+  ExternalOpenersForTab(tabID: string): Promise<ExternalOpenersView>;
   SetPreferredExternalOpener(id: string): Promise<void>;
   OpenWorkspaceInExternalOpener(id: string): Promise<void>;
   OpenWorkspaceInExternalOpenerForTab(tabID: string, id: string): Promise<void>; OpenLocalPathInExternalOpener(path: string, id: string): Promise<void>; SaveLocalPathAs(path: string): Promise<string>;
@@ -3992,6 +3993,9 @@ function makeMockApp(): AppBindings {
         ],
         preferred: "vscode",
       } as ExternalOpenersView;
+    },
+    async ExternalOpenersForTab(_tabID: string) {
+      return { ...(await this.ExternalOpeners()), workspaceOpenable: true };
     },
     async SetPreferredExternalOpener(_id: string) {},
     async OpenWorkspaceInExternalOpener(_id: string) {},

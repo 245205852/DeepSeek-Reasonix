@@ -1,10 +1,11 @@
 // Run: tsx src/__tests__/external-opener.test.tsx
 
+import { readFileSync } from "node:fs";
 import { JSDOM } from "jsdom";
 import React, { act } from "react";
 import { createRoot } from "react-dom/client";
 
-import { ExternalOpener, type ExternalOpenerBridge } from "../components/ExternalOpener";
+import { ExternalOpener, shouldMountExternalOpener, type ExternalOpenerBridge } from "../components/ExternalOpener";
 import { LocaleProvider, t } from "../lib/i18n";
 import { ToastProvider } from "../lib/toast";
 import type { ExternalOpenersView } from "../lib/types";
@@ -45,7 +46,7 @@ const opened: Array<[string, string]> = [];
 const nativeIcon = "data:image/png;base64,iVBORw0KGgo=";
 let discoveryCalls = 0;
 const bridge: ExternalOpenerBridge = {
-  async ExternalOpeners() {
+  async ExternalOpenersForTab() {
     discoveryCalls += 1;
     return {
       openers: [
@@ -54,6 +55,7 @@ const bridge: ExternalOpenerBridge = {
         ...(discoveryCalls > 1 ? [{ id: "xcode", name: "Xcode", kind: "editor" as const, iconDataUrl: nativeIcon }] : []),
       ],
       preferred: "finder",
+      workspaceOpenable: true,
     };
   },
   async SetPreferredExternalOpener(id) {
@@ -66,13 +68,49 @@ const bridge: ExternalOpenerBridge = {
 
 console.log("\nexternal opener");
 
+const stylesSource = readFileSync(new URL("../styles.css", import.meta.url), "utf8");
+const sharedControlRule = stylesSource.match(/(?:^|\n)\.external-opener\s*\{([^}]*)\}/)?.[1] ?? "";
+const sharedSegmentRule = stylesSource.match(
+  /\.external-opener__primary,\s*\.external-opener__menu-trigger\s*\{([^}]*)\}/,
+)?.[1] ?? "";
+const creationControlRule = stylesSource.match(
+  /\.app--creation \.topicbar__actions \.external-opener,\s*:root\[data-theme-style\] \.app--creation \.topicbar__actions \.external-opener\s*\{([^}]*)\}/,
+)?.[1] ?? "";
+const sharedIconRule = stylesSource.match(/(?:^|\n)\.external-opener__app-icon\s*\{([^}]*)\}/)?.[1] ?? "";
+const creationIconRule = stylesSource.match(
+  /\.app--creation \.topicbar__actions \.external-opener__app-icon,\s*:root\[data-theme-style\] \.app--creation \.topicbar__actions \.external-opener__app-icon\s*\{([^}]*)\}/,
+)?.[1] ?? "";
+ok(
+  /height:\s*28px;/.test(sharedControlRule)
+    && /border-radius:\s*7px;/.test(sharedControlRule)
+    && /box-shadow:\s*none;/.test(sharedControlRule),
+  "uses the shared 28px / 7px topic-bar control geometry without an extra shadow",
+);
+ok(/height:\s*100%;/.test(sharedSegmentRule), "keeps both split-button segments within the shared control height");
+ok(
+  /height:\s*28px;/.test(creationControlRule) && /border-radius:\s*7px;/.test(creationControlRule),
+  "keeps Creation topic bars on the same 28px / 7px geometry",
+);
+ok(
+  /width:\s*18px;/.test(sharedIconRule) && /height:\s*18px;/.test(sharedIconRule),
+  "fits Workbench application artwork to the compact topic-bar control",
+);
+ok(
+  /width:\s*15px;/.test(creationIconRule) && /height:\s*15px;/.test(creationIconRule),
+  "preserves the slimmer Creation application artwork size",
+);
+
+ok(shouldMountExternalOpener({ id: "tab-project", scope: "project" }, false), "mounts for a Project tab");
+ok(shouldMountExternalOpener({ id: "tab-global", scope: "global" }, false), "mounts for a Global tab without guessing from scope");
+ok(!shouldMountExternalOpener({ id: "tab-global", scope: "global" }, true), "stays hidden while an IM detail surface owns the header");
+
 const container = document.getElementById("root")!;
 const root = createRoot(container);
 await act(async () => {
   root.render(
     <LocaleProvider>
       <ToastProvider>
-        <ExternalOpener tabId="tab-project" dismissSignal={0} bridge={bridge} />
+        <ExternalOpener tabId="tab-global" dismissSignal={0} bridge={bridge} />
       </ToastProvider>
     </LocaleProvider>,
   );
@@ -99,7 +137,7 @@ await act(async () => {
   await flush();
 });
 ok(selected.join(",") === "ghostty", "persists the selected application id");
-ok(JSON.stringify(opened) === JSON.stringify([["tab-project", "ghostty"]]), "opens the exact tab workspace with the selection");
+ok(JSON.stringify(opened) === JSON.stringify([["tab-global", "ghostty"]]), "opens the exact Global workspace with the selection");
 
 const primary = container.querySelector<HTMLButtonElement>('button.external-opener__primary');
 await act(async () => {
@@ -122,17 +160,17 @@ await act(async () => root.unmount());
 let staleResolve: ((value: ExternalOpenersView) => void) | undefined;
 let raceCalls = 0;
 const raceBridge: ExternalOpenerBridge = {
-  async ExternalOpeners() {
+  async ExternalOpenersForTab() {
     raceCalls += 1;
     if (raceCalls === 1) {
-      return { openers: [{ id: "finder", name: "Finder", kind: "file-manager" }], preferred: "finder" };
+      return { openers: [{ id: "finder", name: "Finder", kind: "file-manager" }], preferred: "finder", workspaceOpenable: true };
     }
     if (raceCalls === 2) {
       return new Promise<ExternalOpenersView>((resolve) => {
         staleResolve = resolve;
       });
     }
-    return { openers: [{ id: "xcode", name: "Xcode", kind: "editor" }], preferred: "xcode" };
+    return { openers: [{ id: "xcode", name: "Xcode", kind: "editor" }], preferred: "xcode", workspaceOpenable: true };
   },
   async SetPreferredExternalOpener() {},
   async OpenWorkspaceInExternalOpenerForTab() {},
@@ -169,7 +207,7 @@ await act(async () => {
 });
 ok(raceContainer.textContent?.includes("Xcode") === true, "the latest overlapping discovery result wins");
 await act(async () => {
-  staleResolve?.({ openers: [{ id: "stale", name: "Stale Editor", kind: "editor" }], preferred: "stale" });
+  staleResolve?.({ openers: [{ id: "stale", name: "Stale Editor", kind: "editor" }], preferred: "stale", workspaceOpenable: true });
   await flush();
 });
 ok(raceContainer.textContent?.includes("Xcode") === true && !raceContainer.textContent?.includes("Stale Editor"), "a stale discovery cannot replace the current menu");
@@ -180,13 +218,14 @@ const failureLog: string[] = [];
 let failOpen = true;
 let failPersist = false;
 const failureBridge: ExternalOpenerBridge = {
-  async ExternalOpeners() {
+  async ExternalOpenersForTab() {
     return {
       openers: [
         { id: "finder", name: "Finder", kind: "file-manager" },
         { id: "xcode", name: "Xcode", kind: "editor" },
       ],
       preferred: "finder",
+      workspaceOpenable: true,
     };
   },
   async SetPreferredExternalOpener(id) {
@@ -246,6 +285,34 @@ ok(
 );
 await act(async () => failureRoot.unmount());
 failureContainer.remove();
+
+const unavailableContainer = document.createElement("div");
+document.body.append(unavailableContainer);
+const unavailableRoot = createRoot(unavailableContainer);
+const unavailableBridge: ExternalOpenerBridge = {
+  async ExternalOpenersForTab() {
+    return {
+      openers: [{ id: "finder", name: "Finder", kind: "file-manager" }],
+      preferred: "finder",
+      workspaceOpenable: false,
+    };
+  },
+  async SetPreferredExternalOpener() {},
+  async OpenWorkspaceInExternalOpenerForTab() {},
+};
+await act(async () => {
+  unavailableRoot.render(
+    <LocaleProvider>
+      <ToastProvider>
+        <ExternalOpener tabId="tab-missing-workspace" dismissSignal={0} bridge={unavailableBridge} />
+      </ToastProvider>
+    </LocaleProvider>,
+  );
+  await flush();
+});
+ok(unavailableContainer.querySelector(".external-opener") == null, "hides when the backend reports no local workspace capability");
+await act(async () => unavailableRoot.unmount());
+unavailableContainer.remove();
 
 console.log(`\n${passed} passed, ${failed} failed, ${passed + failed} total`);
 if (failed > 0) process.exit(1);

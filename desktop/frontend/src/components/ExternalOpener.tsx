@@ -4,11 +4,11 @@ import { Check, ChevronDown, Code2, Folder, SquareTerminal } from "lucide-react"
 import { app as desktopApp } from "../lib/bridge";
 import { t } from "../lib/i18n";
 import { useToast } from "../lib/toast";
-import type { ExternalOpenerView, ExternalOpenersView } from "../lib/types";
+import type { ExternalOpenerView, ExternalOpenersView, TabMeta } from "../lib/types";
 import { Tooltip } from "./Tooltip";
 
 export interface ExternalOpenerBridge {
-  ExternalOpeners(): Promise<ExternalOpenersView>;
+  ExternalOpenersForTab(tabID: string): Promise<ExternalOpenersView>;
   SetPreferredExternalOpener(id: string): Promise<void>;
   OpenWorkspaceInExternalOpenerForTab(tabID: string, id: string): Promise<void>;
 }
@@ -42,7 +42,20 @@ function errorText(error: unknown): string {
 }
 
 function normalizeOpeners(next: ExternalOpenersView): ExternalOpenersView {
-  return { openers: Array.isArray(next.openers) ? next.openers : [], preferred: next.preferred ?? "" };
+  return {
+    openers: Array.isArray(next.openers) ? next.openers : [],
+    preferred: next.preferred ?? "",
+    workspaceOpenable: next.workspaceOpenable === true,
+  };
+}
+
+type ResolvedExternalOpeners = ExternalOpenersView & { tabId: string };
+
+export function shouldMountExternalOpener(
+  tab: Pick<TabMeta, "id" | "scope"> | null | undefined,
+  imDetailVisible: boolean,
+): boolean {
+  return !imDetailVisible && Boolean(tab?.id);
 }
 
 export function ExternalOpener({
@@ -59,21 +72,26 @@ export function ExternalOpener({
   const discoveryRequestRef = useRef(0);
   const mountedRef = useRef(true);
   const busyRef = useRef(false);
-  const [state, setState] = useState<ExternalOpenersView>({ openers: [], preferred: "" });
+  const [state, setState] = useState<ResolvedExternalOpeners>({
+    openers: [],
+    preferred: "",
+    workspaceOpenable: false,
+    tabId: "",
+  });
   const [menuOpen, setMenuOpen] = useState(false);
   const [busy, setBusy] = useState(false);
 
   const refreshOpeners = useCallback(async () => {
     const request = ++discoveryRequestRef.current;
     try {
-      const next = normalizeOpeners(await bridge.ExternalOpeners());
-      if (mountedRef.current && request === discoveryRequestRef.current) setState(next);
+      const next = normalizeOpeners(await bridge.ExternalOpenersForTab(tabId));
+      if (mountedRef.current && request === discoveryRequestRef.current) setState({ ...next, tabId });
     } catch (error) {
       if (mountedRef.current && request === discoveryRequestRef.current) {
         console.error("Failed to discover external openers", error);
       }
     }
-  }, [bridge]);
+  }, [bridge, tabId]);
 
   useEffect(() => {
     mountedRef.current = true;
@@ -103,8 +121,10 @@ export function ExternalOpener({
   }, [menuOpen]);
 
   const selected = useMemo(
-    () => state.openers.find((opener) => opener.id === state.preferred) ?? state.openers[0],
-    [state],
+    () => state.tabId === tabId
+      ? state.openers.find((opener) => opener.id === state.preferred) ?? state.openers[0]
+      : undefined,
+    [state, tabId],
   );
 
   const openIn = useCallback(
@@ -139,7 +159,7 @@ export function ExternalOpener({
     [bridge, showToast, state.preferred, tabId],
   );
 
-  if (!selected) return null;
+  if (state.tabId !== tabId || state.workspaceOpenable !== true || !selected) return null;
   const openLabel = t("externalOpener.openIn", { name: selected.name });
 
   return (
