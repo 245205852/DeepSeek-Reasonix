@@ -67,6 +67,19 @@ func (g *goalMachine) failLegacyRestorePersistence(expectedEpoch uint64, reason 
 	return g.continuationEpoch, true
 }
 
+// clearLegacyTaskID completes the sidecar migration after the Goal-only state
+// has been durably written. The epoch check prevents a late completion from
+// clearing the identity of a newer migration.
+func (g *goalMachine) clearLegacyTaskID(expectedEpoch uint64) bool {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if g.continuationEpoch != expectedEpoch {
+		return false
+	}
+	g.legacyTaskID = ""
+	return true
+}
+
 func (g *goalMachine) legacyArchiveBlockedState() (goal string, epoch uint64, ok bool) {
 	g.mu.Lock()
 	defer g.mu.Unlock()

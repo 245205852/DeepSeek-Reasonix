@@ -138,7 +138,7 @@ func TestGoalSetIdempotencyUsesEffectiveBudgetClass(t *testing.T) {
 	}
 }
 
-func TestLegacySidecarArchiveFailureBlocksWithoutPersistingTaskID(t *testing.T) {
+func TestLegacySidecarArchiveFailureBlocksWithRetryableTaskID(t *testing.T) {
 	root := t.TempDir()
 	if resolved, err := filepath.EvalSymlinks(root); err == nil {
 		root = resolved
@@ -184,7 +184,7 @@ func TestLegacySidecarArchiveFailureBlocksWithoutPersistingTaskID(t *testing.T) 
 	if err := json.Unmarshal(failedRaw, &failed); err != nil {
 		t.Fatal(err)
 	}
-	if failed.Status != GoalStatusBlocked || failed.ResearchMode != GoalResearchOff || failed.AutoResearchTaskID != "" || failed.StopCause != stopCauseLegacyArchive || failed.Block == "" {
+	if failed.Status != GoalStatusBlocked || failed.ResearchMode != GoalResearchOn || failed.AutoResearchTaskID != taskID || failed.StopCause != stopCauseLegacyArchive || failed.Block == "" {
 		t.Fatalf("failed restore state = %+v, want retryable blocked legacy migration", failed)
 	}
 	if failed.ScopeID != scopeID || failed.DeliveryCheckpoint != wantCheckpoint || len(failed.Todos) != 1 || failed.Todos[0] != wantTodo {
@@ -241,6 +241,53 @@ func TestLegacySidecarArchiveFailureBlocksWithoutPersistingTaskID(t *testing.T) 
 	}
 	if string(archiveAfter) != string(archiveBefore) {
 		t.Fatal("legacy archive changed during retry")
+	}
+}
+
+func TestLegacySidecarPendingTaskRetriesAfterRestart(t *testing.T) {
+	root := t.TempDir()
+	sessionPath := filepath.Join(root, "sessions", "restart.jsonl")
+	if err := os.MkdirAll(filepath.Dir(sessionPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	const taskID = "restartable-legacy"
+	raw, err := json.Marshal(goalState{
+		Status: GoalStatusRunning, ResearchMode: GoalResearchOn,
+		AutoResearchTaskID: taskID, BudgetClass: budgetClassResearch, TurnsUsed: 4, TurnsLimit: 40,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(goalStatePath(sessionPath), raw, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	firstSession := agent.NewSession("sys")
+	first := New(Options{WorkspaceRoot: root, SessionDir: root, Executor: agent.New(nil, nil, firstSession, agent.Options{}, event.Discard)})
+	first.Resume(firstSession, sessionPath)
+	if first.GoalStatus() != GoalStatusBlocked {
+		t.Fatalf("first restore status = %q, want blocked", first.GoalStatus())
+	}
+	first.Close()
+
+	writeLegacyGoalArchive(t, root, taskID, "recover after process restart")
+	secondSession := agent.NewSession("sys")
+	second := New(Options{WorkspaceRoot: root, SessionDir: root, Executor: agent.New(nil, nil, secondSession, agent.Options{}, event.Discard)})
+	defer second.Close()
+	second.Resume(secondSession, sessionPath)
+	if second.GoalStatus() != GoalStatusRunning || second.Goal() != "recover after process restart" {
+		t.Fatalf("restart migration = goal:%q status:%q", second.Goal(), second.GoalStatus())
+	}
+	persisted, err := os.ReadFile(goalStatePath(sessionPath))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var state goalState
+	if err := json.Unmarshal(persisted, &state); err != nil {
+		t.Fatal(err)
+	}
+	if state.AutoResearchTaskID != "" || state.ResearchMode != GoalResearchOff || state.BudgetClass != budgetClassResearch {
+		t.Fatalf("restart migration left compatibility fields: %+v", state)
 	}
 }
 
@@ -302,7 +349,7 @@ func TestLegacySidecarInvalidArchivesRemainRetryableAndReadOnly(t *testing.T) {
 			if err := json.Unmarshal(persistedRaw, &persisted); err != nil {
 				t.Fatal(err)
 			}
-			if persisted.AutoResearchTaskID != "" || persisted.ResearchMode != GoalResearchOff || persisted.StopCause != stopCauseLegacyArchive {
+			if persisted.AutoResearchTaskID != taskID || persisted.ResearchMode != GoalResearchOn || persisted.StopCause != stopCauseLegacyArchive {
 				t.Fatalf("retry state = %+v", persisted)
 			}
 			archiveAfter, err := os.ReadFile(target)
@@ -543,7 +590,7 @@ func TestExplicitLegacyGoalRetryNeverRunsArchivePathAsGoal(t *testing.T) {
 	if err := json.Unmarshal(persistedRaw, &blocked); err != nil {
 		t.Fatal(err)
 	}
-	if blocked.Status != GoalStatusBlocked || blocked.StopCause != stopCauseLegacyArchive {
+	if blocked.Status != GoalStatusBlocked || blocked.StopCause != stopCauseLegacyArchive || blocked.AutoResearchTaskID != taskID || blocked.ResearchMode != GoalResearchOn {
 		t.Fatalf("blocked sidecar = %+v", blocked)
 	}
 	if c.ResumeGoal() {

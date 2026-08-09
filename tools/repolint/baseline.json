@@ -2,10 +2,10 @@
   "limits": {
     "banner": 15,
     "commented-code": 0,
-    "complexity": 2079,
+    "complexity": 2083,
     "essay": 4130,
-    "file-size": 110620,
-    "function-size": 9162,
+    "file-size": 110760,
+    "function-size": 9177,
     "layering": 1,
     "marker": 0,
     "narrative": 64,
@@ -432,7 +432,7 @@
     "internal/agent/agent.go": {
       "complexity": 61,
       "essay": 109,
-      "file-size": 2718,
+      "file-size": 2743,
       "function-size": 124
     },
     "internal/agent/ask.go": {
@@ -493,9 +493,9 @@
       "function-size": 199
     },
     "internal/agent/execute_one.go": {
-      "complexity": 12,
+      "complexity": 13,
       "essay": 23,
-      "file-size": 115,
+      "file-size": 154,
       "function-size": 19
     },
     "internal/agent/extensions.go": {
@@ -570,10 +570,10 @@
       "essay": 1
     },
     "internal/agent/run_loop.go": {
-      "complexity": 5,
+      "complexity": 8,
       "essay": 45,
-      "file-size": 311,
-      "function-size": 46
+      "file-size": 335,
+      "function-size": 57
     },
     "internal/agent/save.go": {
       "complexity": 49,
@@ -631,7 +631,7 @@
     },
     "internal/agent/subagent_store.go": {
       "essay": 5,
-      "file-size": 160
+      "file-size": 162
     },
     "internal/agent/subagent_store_test.go": {
       "test-file-size": 250
@@ -639,7 +639,7 @@
     "internal/agent/task.go": {
       "complexity": 25,
       "essay": 55,
-      "file-size": 1334,
+      "file-size": 1351,
       "function-size": 114
     },
     "internal/agent/task_test.go": {
@@ -1086,8 +1086,8 @@
     "internal/control/goal.go": {
       "complexity": 7,
       "essay": 11,
-      "file-size": 287,
-      "function-size": 7
+      "file-size": 313,
+      "function-size": 11
     },
     "internal/control/goal_runtime_test.go": {
       "test-file-size": 14
@@ -1399,7 +1399,7 @@
     },
     "internal/jobs/jobs.go": {
       "essay": 42,
-      "file-size": 1264,
+      "file-size": 1271,
       "function-size": 12
     },
     "internal/jobs/jobs_extra_test.go": {
