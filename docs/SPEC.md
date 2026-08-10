@@ -861,6 +861,21 @@ variance before it is an effect. Budget repetitions, or restrict the comparison
 to tasks where `subagent_runs` shows delegation actually happened — in that
 experiment it happened on one task in six.
 
+What the counters have measured so far, on one model over four task shapes,
+each comparing a neutral prompt against a forced-delegation twin over identical
+work: three one-line fixes in separate modules cost 3.8x the tokens; a 24-file
+search 1.5x tokens and 2.2x wall; a 36-file three-package migration 2.6x tokens
+and 4.1x wall; three genuinely heterogeneous branches, the shape with the best
+theoretical case, 2.4x tokens and 3.7x wall over three repetitions. Success rate
+was 100% everywhere. One child run costs 100k-220k tokens before it produces
+anything, and the forced arm's spread was about twice the neutral arm's, so
+delegation also buys variance.
+
+The migration is the instructive one. Left alone the agent read a single file,
+wrote a script and changed 108 call sites in 28 seconds; split across three
+packages, no branch could see the transformation that solved all three. A task
+looking parallel-shaped is not evidence that splitting it is cheaper.
+
 Not yet measured, and deliberately not faked: rework-after-handoff needs
 mutation ordering across a whole run, which belongs to the harness driving the
 arms rather than the instrument recording one.
