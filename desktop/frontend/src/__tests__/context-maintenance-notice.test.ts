@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { formatContextMaintenanceNotice } from "../lib/contextMaintenanceTypes";
 import type { DictKey, Translator } from "../lib/i18n";
 
@@ -31,5 +32,15 @@ ok(!applied.includes("Context") && !applied.includes("applied"), "maintenance no
 
 const blocked = formatContextMaintenanceNotice({ status: "blocked" }, translate);
 ok(blocked === "上下文维护 · 已暂停", `unexpected blocked notice: ${blocked}`);
+
+const contextPanelSource = readFileSync(new URL("../components/ContextPanel.tsx", import.meta.url), "utf8");
+ok(
+  !contextPanelSource.includes('t("context.maintenanceProjected")'),
+  "ContextPanel must not render the internal context-maintenance composition block",
+);
+ok(
+  !contextPanelSource.includes("const maintenance = context?.maintenance"),
+  "ContextPanel must not derive hidden maintenance UI state",
+);
 
 console.log("context-maintenance-notice: ok");

@@ -57,6 +57,7 @@ type toolCallPlan struct {
 	mutationPath      string
 	mutationObserved  bool
 	mutationAfterDone bool
+	executed          bool
 }
 
 // executeOne runs a single tool call. It is pure with respect to the event sink
@@ -83,6 +84,7 @@ func (a *Agent) executeOne(ctx context.Context, call provider.ToolCall) (out too
 		out.capabilityID = plan.resolvedMeta.CapabilityID
 		out.resolvedReadOnly = plan.resolvedMeta.ReadOnly
 	}()
+	defer finalizeWorkspaceMutationOutcome(&out, plan)
 
 	if blocked, early := a.parseToolCall(ctx, plan); early {
 		return blocked
@@ -736,6 +738,7 @@ func toolHooksMayMutateWorkspace(hooks ToolHooks) bool {
 // finishToolExecution performs the concrete Execute, records evidence, runs
 // post hooks and recovery observation, and truncates the model-facing result.
 func (a *Agent) finishToolExecution(ctx context.Context, plan *toolCallPlan) toolOutcome {
+	plan.executed = true
 	cctx := plan.cctx
 	runTool := plan.runTool
 	runArgs := plan.runArgs
