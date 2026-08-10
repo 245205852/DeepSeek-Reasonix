@@ -12,15 +12,15 @@ import (
 	"reasonix/internal/event"
 )
 
-func TestDisableScrollOptimization(t *testing.T) {
+func TestUseLegacyViewportScrollClear(t *testing.T) {
 	for _, tt := range []struct {
 		name    string
 		goos    string
 		environ []string
 		want    bool
 	}{
-		{name: "windows", goos: "windows", environ: []string{"TERM_PROGRAM=Windows_Terminal"}, want: true},
-		{name: "windows warp", goos: "windows", environ: []string{"TERM_PROGRAM=WarpTerminal"}, want: true},
+		{name: "windows", goos: "windows", environ: []string{"TERM_PROGRAM=Windows_Terminal"}},
+		{name: "windows Warp", goos: "windows", environ: []string{"TERM_PROGRAM=WarpTerminal"}},
 		{name: "macOS Warp", goos: "darwin", environ: []string{"TERM_PROGRAM=WarpTerminal"}, want: true},
 		{name: "Linux Warp case and whitespace", goos: "linux", environ: []string{"TERM_PROGRAM=  warPterminal  "}, want: true},
 		{name: "SSH forwarded Warp", goos: "linux", environ: []string{"SSH_CONNECTION=client", "TERM_PROGRAM=WarpTerminal"}, want: true},
@@ -32,14 +32,18 @@ func TestDisableScrollOptimization(t *testing.T) {
 		{name: "lookalike variable", goos: "linux", environ: []string{"OTHER_TERM_PROGRAM=WarpTerminal"}},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			got := disableScrollOptimization(tt.goos, tt.environ)
+			got := useLegacyViewportScrollClear(tt.goos, tt.environ)
 			if got != tt.want {
-				t.Fatalf("disableScrollOptimization(%q, %q) = %v, want %v", tt.goos, tt.environ, got, tt.want)
-			}
-			if options := chatProgramOptions(tt.goos, tt.environ); (len(options) == 1) != tt.want {
-				t.Fatalf("chatProgramOptions(%q, %q) returned %d options, disabled=%v", tt.goos, tt.environ, len(options), tt.want)
+				t.Fatalf("useLegacyViewportScrollClear(%q, %q) = %v, want %v", tt.goos, tt.environ, got, tt.want)
 			}
 		})
+	}
+}
+
+func assertLegacyViewportClearCmd(t *testing.T, cmd tea.Cmd, want bool) {
+	t.Helper()
+	if got := cmd != nil; got != want {
+		t.Fatalf("viewport ClearScreen command = %v, want %v", got, want)
 	}
 }
 

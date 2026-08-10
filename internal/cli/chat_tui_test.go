@@ -1559,6 +1559,7 @@ func TestMouseWheelAndPageKeysScrollTranscript(t *testing.T) {
 	if bottom <= cur.viewport.Height()+3 {
 		t.Fatalf("test transcript did not overflow enough: bottom=%d height=%d", bottom, cur.viewport.Height())
 	}
+	cur.legacyScrollClear = false
 	cur = adv(cur, tea.MouseWheelMsg{Button: tea.MouseWheelUp})
 	if got, want := cur.viewport.YOffset(), bottom-3; got != want {
 		t.Fatalf("wheel-up YOffset = %d, want %d", got, want)
@@ -3103,7 +3104,6 @@ func TestForceGotoBottomScrollsWithoutTranscriptChange(t *testing.T) {
 		n, _ := adv(m, msg)
 		return n
 	}
-
 	cur := next(newChatTUI(ctrl, "", ch, 80), tea.WindowSizeMsg{Width: 80, Height: 8})
 	for range 12 {
 		cur = next(cur, notice)
@@ -3119,6 +3119,7 @@ func TestForceGotoBottomScrollsWithoutTranscriptChange(t *testing.T) {
 
 	cur.forceGotoBottom = true
 	cur.transcriptDirty = false
+	cur.legacyScrollClear = false
 	cur, cmd := adv(cur, tea.WindowSizeMsg{Width: 80, Height: 8})
 
 	if !cur.viewport.AtBottom() {
@@ -3127,12 +3128,10 @@ func TestForceGotoBottomScrollsWithoutTranscriptChange(t *testing.T) {
 	if cur.forceGotoBottom {
 		t.Fatal("forceGotoBottom should be cleared after scrolling")
 	}
-	if cmd != nil {
-		t.Fatal("forceGotoBottom should rely on the renderer diff, not request a scroll clear command")
-	}
+	assertLegacyViewportClearCmd(t, cmd, false)
 }
 
-func TestSessionSwitchRebuildNeedsNoScrollClear(t *testing.T) {
+func TestSessionSwitchSuppressesOneWarpClearScreen(t *testing.T) {
 	ctrl := control.New(control.Options{})
 	ch := make(chan event.Event, 1)
 	notice := agentEventMsg(event.Event{Kind: event.Notice, Level: event.LevelInfo, Text: "line"})
@@ -3153,30 +3152,27 @@ func TestSessionSwitchRebuildNeedsNoScrollClear(t *testing.T) {
 	if cur.viewport.AtBottom() {
 		t.Fatal("wheel-up should break the bottom pin")
 	}
-
-	cur.replayActiveBranch("switched branch")
+	cur.legacyScrollClear = true
+	cur.sessionSwitch = true
+	cur.forceGotoBottom = true
+	cur.transcriptDirty = false
 	cur, cmd := adv(cur, tea.WindowSizeMsg{Width: 80, Height: 8})
-
 	if cmd != nil {
-		t.Fatal("session switch rebuild should rely on the renderer diff, not request a scroll clear command")
+		t.Fatal("session switch rebuild should suppress the Warp ClearScreen workaround once")
+	}
+	if cur.sessionSwitch {
+		t.Fatal("sessionSwitch should be cleared after one Update")
 	}
 	if !cur.viewport.AtBottom() {
 		t.Fatalf("session switch should still land at bottom, YOffset=%d", cur.viewport.YOffset())
 	}
-	if out := strings.Join(cur.transcript, "\n"); !strings.Contains(out, "switched branch") || strings.Contains(out, "line") {
-		t.Fatalf("session switch transcript was not replaced cleanly:\n%s", out)
-	}
-}
 
-func TestConfirmClearContextKeepsSemanticClearScreen(t *testing.T) {
-	m := newTestChatTUI()
-	m.ctrl = control.New(control.Options{})
-	_, cmd := m.confirmClearContext()
-	if cmd == nil {
-		t.Fatal("/clear should still request a semantic full-screen clear")
-	}
-	if got, want := fmt.Sprintf("%T", cmd()), fmt.Sprintf("%T", tea.ClearScreen()); got != want {
-		t.Fatalf("/clear command message = %s, want %s", got, want)
+	cur = next(cur, tea.MouseWheelMsg{Button: tea.MouseWheelUp})
+	cur.forceGotoBottom = true
+	cur, cmd = adv(cur, tea.WindowSizeMsg{Width: 80, Height: 8})
+	assertLegacyViewportClearCmd(t, cmd, true)
+	if cur.sessionSwitch {
+		t.Fatal("sessionSwitch should remain false after the suppressed cycle")
 	}
 }
 
@@ -3238,24 +3234,20 @@ func TestChooserFreeTextWideInputChangeRequestsClearScreen(t *testing.T) {
 	}
 }
 
-func TestReplayActiveBranchClearsPlanModeAndRebuildsViewport(t *testing.T) {
+func TestReplayActiveBranchClearsPlanModeAndMarksSessionSwitch(t *testing.T) {
 	m := newTestChatTUI()
 	m.ctrl = control.New(control.Options{})
 	m.planMode = true
 	m.ctrl.SetPlanMode(true)
-	m.transcript = []string{"stale session content"}
-	m.wrappedLines = []string{"stale session content"}
+	m.sessionSwitch = false
 
 	m.replayActiveBranch("switched branch")
 
 	if m.planMode || m.ctrl.PlanMode() {
 		t.Fatalf("replay should clear plan mode on both TUI and controller, tui=%v controller=%v", m.planMode, m.ctrl.PlanMode())
 	}
-	if !m.forceGotoBottom {
-		t.Fatal("replay should request the rebuilt viewport to land at the bottom")
-	}
-	if out := strings.Join(m.transcript, "\n"); strings.Contains(out, "stale session content") || !strings.Contains(out, "switched branch") {
-		t.Fatalf("replay transcript = %q", out)
+	if !m.sessionSwitch {
+		t.Fatal("replay should mark the next Update as a session switch")
 	}
 }
 

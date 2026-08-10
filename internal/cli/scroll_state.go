@@ -1,11 +1,6 @@
 package cli
 
-import (
-	"runtime"
-	"strings"
-
-	tea "charm.land/bubbletea/v2"
-)
+import "strings"
 
 // scrollFollowMode is an explicit transcript tail-follow state machine.
 //
@@ -73,14 +68,14 @@ func (m *chatTUI) syncScrollModeAfterGesture() {
 	m.markUserScrolled()
 }
 
-// disableScrollOptimization keeps terminal-specific rendering policy at the
-// renderer boundary. Windows terminals and Warp have known incompatibilities
-// with scroll/insert/delete-line optimization; ordinary viewport movement must
-// still be rendered as a single diff frame rather than an application-level
-// ClearScreen command.
-func disableScrollOptimization(goos string, environ []string) bool {
+// useLegacyViewportScrollClear limits the application-level redraw workaround
+// to Warp, where Bubble Tea's scroll optimization can strand stale rows. It is
+// disabled on Windows even if Warp identifies itself there because Bubble Tea
+// already avoids the incompatible optimization on that platform, and an extra
+// asynchronous ClearScreen visibly flickers (#8090).
+func useLegacyViewportScrollClear(goos string, environ []string) bool {
 	if goos == "windows" {
-		return true
+		return false
 	}
 	for _, entry := range environ {
 		key, value, ok := strings.Cut(entry, "=")
@@ -89,15 +84,4 @@ func disableScrollOptimization(goos string, environ []string) bool {
 		}
 	}
 	return false
-}
-
-func chatProgramOptions(goos string, environ []string) []tea.ProgramOption {
-	if disableScrollOptimization(goos, environ) {
-		return []tea.ProgramOption{tea.WithScrollOptimization(false)}
-	}
-	return nil
-}
-
-func newChatProgram(m chatTUI, environ []string) *tea.Program {
-	return tea.NewProgram(m, chatProgramOptions(runtime.GOOS, environ)...)
 }

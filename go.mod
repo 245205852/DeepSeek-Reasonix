@@ -45,11 +45,6 @@ require (
 	mvdan.cc/sh/v3 v3.13.1
 )
 
-// Temporary integration pin for charmbracelet/bubbletea#1761. Replace with the
-// first official Bubble Tea patch release that contains WithScrollOptimization
-// before this branch is eligible to merge or ship.
-replace charm.land/bubbletea/v2 => github.com/SivanCola/bubbletea/v2 v2.0.0-20260810054426-ddfd585f9285
-
 require (
 	github.com/charmbracelet/ultraviolet v0.0.0-20260703014108-f5a850f9c2b7 // indirect
 	github.com/charmbracelet/x/term v0.2.2 // indirect
