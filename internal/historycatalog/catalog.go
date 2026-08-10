@@ -485,10 +485,7 @@ func (c *Catalog) indexPath(ctx context.Context, root Root, path string, generat
 		digest = hex.EncodeToString(h.Sum(nil))
 	}
 	meta, _, _ := agent.LoadBranchMeta(path)
-	lastActivity := agent.SessionContentModTime(path).UnixMilli()
-	if lastActivity < 0 {
-		lastActivity = 0
-	}
+	lastActivity := max(int64(0), agent.SessionContentModTime(path).UnixMilli())
 	// Hide stale terms as soon as the authoritative fingerprint changes. Rows
 	// remain available for retry and are atomically replaced below.
 	if _, err := c.db.ExecContext(ctx, `UPDATE history_sources SET health='stale',last_error='' WHERE path=?`, path); err != nil {
