@@ -8,7 +8,7 @@ import "fmt"
 func renderDelegation(results []result) string {
 	var runs, nested, childCalls, parentCalls, mutations, dupes int
 	var reports, prose, falseDone, downgrades, violations int
-	solved, total := 0, 0
+	solved, total, childTokens := 0, 0, 0
 	for _, r := range results {
 		if r.Skipped {
 			continue
@@ -28,6 +28,9 @@ func renderDelegation(results []result) string {
 		falseDone += r.FalseCompletions
 		downgrades += r.CriterionDowngrades
 		violations += r.WriteScopeViolations
+		if u, ok := r.UsageBySource["subagent"]; ok {
+			childTokens += u.PromptTokens + u.CompletionTokens
+		}
 	}
 	if runs == 0 {
 		// A single-agent arm is a legitimate result, not a missing section: say
@@ -42,6 +45,12 @@ func renderDelegation(results []result) string {
 		runs, nested, solved, total, pct(solved, total))
 	b += fmt.Sprintf("- work split: parent **%d** tool calls · children **%d** (%s) · child mutations **%d**\n",
 		parentCalls, childCalls, pct(childCalls, parentCalls+childCalls), mutations)
+	// The number that decides whether delegation can ever pay: what one child
+	// costs before it has produced anything.
+	if childTokens > 0 {
+		b += fmt.Sprintf("- **cost of a child run**: %s tokens each (%s across %d runs)\n",
+			comma(childTokens/runs), comma(childTokens), runs)
+	}
 	if dupes > 0 {
 		b += fmt.Sprintf("- **duplicate work**: %d file(s) mutated by more than one child\n", dupes)
 	}
