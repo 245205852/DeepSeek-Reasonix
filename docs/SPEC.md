@@ -871,6 +871,30 @@ was 100% everywhere. One child run costs 100k-220k tokens before it produces
 anything, and the forced arm's spread was about twice the neutral arm's, so
 delegation also buys variance.
 
+Why delegation is rare is answerable from the same runs, and the answer is not
+that the model weighs it and declines. Across 33 runs with delegation available,
+15% delegated and bash outnumbered every delegation-class call 10:1. The
+recorded reasoning shows the model deliberating over how to read efficiently —
+"that's 25 files... read them in parallel batches... I can read multiple files
+at once" — on a task built for `explore`, without delegation entering the
+decision at all.
+
+Three things explain that, and only one of them is a defect. The base system
+prompt never mentions delegation; every mention lives in the skills index, and
+each is a brake ("the heavy path... only when the task genuinely needs
+context-heavy work, not on weak relevance") next to an accelerator for inline
+skills ("even plausibly relevant... cheap"). The `task` tool description says
+what the tool does and never when to reach for it. And the model already has
+cheaper parallelism — several tool calls in one round trip, with no context
+duplicated — which is what it reasons in terms of.
+
+Given the measured 2.4-4.5x, a brake is the correct default; the gap is that
+nothing recognises the rare case where delegation would pay. Forcing it does not
+close that gap: in the forced fleet run the parent worked out all three fixes in
+its own reasoning before dispatching, so the children re-read the code to apply
+edits the parent had already derived. Delegation moved the typing, not the
+thinking.
+
 One hypothesis remains untested rather than disproved: delegation's isolation
 should pay when the parent is actually hurt by what it read. It could not be
 provoked here. Pinning a workspace `compact_ratio` down to 0.5% still produced
