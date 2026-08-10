@@ -16,39 +16,6 @@ import (
 	"reasonix/internal/tool"
 )
 
-// runLoopState holds per-Run loop counters and flags. It is package-private and
-// not shared across goroutines; the first extraction keeps the existing lock
-// model and only structures the sequential turn state machine.
-type runLoopState struct {
-	runMaxSteps        int
-	runMaxStepsKey     string
-	runLimitHostOwned  bool
-	runPauseAfterFinal bool
-
-	emptyFinalBlocks    int
-	handoffNudges       int
-	usedAnyTool         bool
-	contextToolRepairs  int
-	graceRound          bool
-	recoveryGraceRound  bool
-	goalStuckGraceRound bool
-	goalStuckLimit      int
-	goalStuckKey        string
-	goalStuckReason     string
-
-	todoProgress         int
-	trackingTodoProgress bool
-	todoStallRounds      int
-	seenTodoProgress     map[string]struct{}
-
-	executorHandoff bool
-	// input is the user turn text after withTurnPreferences (used by handoff
-	// nudges that inspect the original request wording).
-	input string
-
-	workDurationMs func() int64
-}
-
 // streamedTurn is one provider completion collected by stream. Keeping the
 // result together makes the missing-reasoning recovery path explicit: the
 // first, malformed completion is never committed before a safe replacement is
@@ -147,11 +114,7 @@ func (a *Agent) beginRunTurn(ctx context.Context, input string) (rawInput string
 	// values are computed below. Cross-turn state (checkpoint, scope, failure
 	// budgets) lives directly on Agent and is reconciled field by field.
 	a.perTurnState = perTurnState{}
-	// Structural stuck detection is deliberately per Run. Goal evidence and
-	// repeat-write safety may span synthetic continuations, but a resume/new Run
-	// always gets a fresh chance to make progress.
-	a.stormSig, a.stormCount, a.blockedTurnStreak = "", 0, 0
-	a.progress.reset()
+	a.resetStructuralRunGuards()
 	scope, scoped := DeliveryExecutionScopeFromContext(ctx)
 	preserveEvidence := a.preserveEvidenceOnce
 	// A run that starts with a pending readiness recovery (or an explicit
@@ -230,23 +193,7 @@ func (a *Agent) beginRunTurn(ctx context.Context, input string) (rawInput string
 	// transcript tail. Fold its bounded facts into this new user turn exactly
 	// once; the user's raw text remains the classifier source above.
 	providerInput = withInterruptedRecovery(providerInput, a.pendingInterruptedRecovery())
-	if !scoped || a.repeatFailureScope != scope.ID {
-		a.repeatFailureCounts = nil
-	} else {
-		// Only stale-anchor failures have a side-effect-free state recheck.
-		// Ordinary write failures may recover between Runs after user action or
-		// an external state change, so do not carry their retry budget forward.
-		for sig, failure := range a.repeatFailureCounts {
-			if !failure.stateRecheck {
-				delete(a.repeatFailureCounts, sig)
-			}
-		}
-	}
-	if scoped {
-		a.repeatFailureScope = scope.ID
-	} else {
-		a.repeatFailureScope = ""
-	}
+	a.prepareRepeatFailureScope(scoped, scope.ID)
 	a.sink.Emit(event.Event{Kind: event.TurnStarted})
 	input = a.withTurnPreferences(providerInput)
 	userCreatedAt := time.Now().UnixMilli()
@@ -911,39 +858,8 @@ func (a *Agent) handleToolRound(ctx context.Context, state *runLoopState, step i
 		return false, fmt.Errorf("model repeatedly called context-unavailable tools without a visible answer: %s", strings.Join(unavailableContextTools, ", "))
 	}
 
-	// Grace round guard: if we already gave the model one extra response
-	// and it still wants to call tools, stop here.
-	if state.graceRound {
-		a.pairUnexecutedGraceCalls(calls, "blocked: the tool-call round budget is exhausted; no more tools will run in this turn")
-		return false, &maxStepsPause{steps: state.runMaxSteps, key: state.runMaxStepsKey, hostOwned: state.runLimitHostOwned}
-	}
-	if state.goalStuckGraceRound {
-		a.pairUnexecutedGraceCalls(calls, "blocked: Goal structural progress guard paused this run; no more tools will run until the user resumes")
-		return false, &goalStuckPause{limit: state.goalStuckLimit, key: state.goalStuckKey, reason: state.goalStuckReason}
-	}
-	// Recovery Episode exhausted: one finalization round only. Further tool
-	// calls are not executed; return a typed pause so the host can surface
-	// recovery_paused without treating it as a send failure.
-	if state.recoveryGraceRound {
-		reason := ""
-		if ctrl := a.recoveryEpisodeControl(); ctrl != nil {
-			_, _ = ctrl.ConsumeFinalization(a.recoveryTaskID)
-		}
-		// Pair tool-call / tool-result without executing.
-		msg := "blocked: Auto recovery already paused this turn. Do not call tools; the user will continue in the next message."
-		for _, call := range calls {
-			a.session.Add(provider.Message{
-				Role:       provider.RoleTool,
-				Content:    msg,
-				ToolCallID: call.ID,
-				Name:       call.Name,
-			})
-		}
-		a.contextManager().ObserveUsage(usage)
-		return false, &RecoveryPauseError{
-			Message:    "Automatic retries paused. Reasonix stopped repeated attempts and kept completed work. Send \"continue\" to start a fresh attempt, or add instructions to change direction.",
-			StopReason: reason,
-		}
+	if boundaryErr, stop := a.stopUnexecutedBoundaryCalls(state, calls, usage); stop {
+		return false, boundaryErr
 	}
 
 	receiptMark := 0
@@ -981,56 +897,10 @@ func (a *Agent) handleToolRound(ctx context.Context, state *runLoopState, step i
 		nudge := fmt.Sprintf("The following tools are unavailable in the current workflow phase: %s. Do not call them again. Respond to the user's request with visible answer text now; call a different tool only if it is still needed to complete the request.", strings.Join(unavailableContextTools, ", "))
 		a.session.Add(provider.Message{Role: provider.RoleUser, Content: a.withTurnPreferences(nudge)})
 	}
-	if !a.planMode.Load() {
-		nextProgress, nextTracking := a.canonicalTodoProgress()
-		hostProgress := false
-		if a.evidence != nil {
-			for _, sig := range a.evidence.SuccessfulProgressSignaturesSince(receiptMark) {
-				if _, seen := state.seenTodoProgress[sig]; !seen {
-					hostProgress = true
-					state.seenTodoProgress[sig] = struct{}{}
-				}
-			}
-		}
-		switch {
-		case !nextTracking:
-			state.todoStallRounds = 0
-		case !state.trackingTodoProgress || nextProgress > state.todoProgress || hostProgress:
-			state.todoStallRounds = 0
-		default:
-			state.todoStallRounds++
-		}
-		state.todoProgress, state.trackingTodoProgress = nextProgress, nextTracking
-		if state.todoStallRounds == todoProgressNudgeRounds {
-			nudge := todoProgressNudgeMessage(state.todoStallRounds)
-			a.session.Add(provider.Message{Role: provider.RoleUser, Content: a.withTurnPreferences(nudge)})
-			a.sink.Emit(event.Event{
-				Kind: event.Notice, Level: event.LevelInfo, Code: event.NoticeCodeLoopGuard,
-				Text:   loopGuardNoticeText(),
-				Detail: fmt.Sprintf("the current todo has no new completion, unique read, command, or mutation for %d consecutive tool-call rounds; asking the assistant to reassess", state.todoStallRounds),
-			})
-		}
-		if state.todoStallRounds >= maxTodoStallRounds {
-			a.sink.Emit(event.Event{
-				Kind: event.Notice, Level: event.LevelInfo, Code: event.NoticeCodeLoopGuard,
-				Text:   "Task progress stalled; pausing before more tools are called.",
-				Detail: fmt.Sprintf("the current todo has no new completion, unique read, command, or mutation for %d consecutive tool-call rounds after a host reassessment; work is saved and can be resumed", state.todoStallRounds),
-			})
-			return false, &todoStallPause{rounds: state.todoStallRounds}
-		}
+	if err := a.trackTodoProgress(state, receiptMark); err != nil {
+		return false, err
 	}
-	if batch.goalStuck.reason != "" && !state.goalStuckGraceRound {
-		state.goalStuckGraceRound = true
-		state.goalStuckLimit = batch.goalStuck.limit
-		state.goalStuckKey = batch.goalStuck.key
-		state.goalStuckReason = batch.goalStuck.reason
-		nudge := "The Goal is caught in a host-detected no-progress loop. Do not call any more tools. Summarize what was completed, what remains unresolved, and what should change before the user resumes."
-		a.session.Add(provider.Message{Role: provider.RoleUser, Content: a.withTurnPreferences(nudge)})
-		a.sink.Emit(event.Event{
-			Kind: event.Notice, Level: event.LevelWarn, Code: event.NoticeCodeLoopGuard,
-			Text:   "Goal progress is structurally stuck; pausing after one summary response.",
-			Detail: batch.goalStuck.reason,
-		})
+	if a.armGoalStuckFinalization(state, batch.goalStuck) {
 		return true, nil
 	}
 

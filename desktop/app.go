@@ -6849,7 +6849,6 @@ type GoalRuntimeView struct {
 	StopCause        string `json:"stopCause,omitempty"`
 	BudgetExtensions int    `json:"budgetExtensions"`
 }
-
 func goalRuntimeViewFromController(ctrl control.SessionAPI) *GoalRuntimeView {
 	if ctrl == nil {
 		return nil
@@ -6868,7 +6867,6 @@ func goalRuntimeViewFromController(ctrl control.SessionAPI) *GoalRuntimeView {
 		BudgetExtensions: rt.BudgetExtensions,
 	}
 }
-
 // Meta reports the model label, readiness, any startup error, the working
 // directory (for the status line), and the runtime event channel the frontend
 // subscribes to.

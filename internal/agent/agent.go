@@ -1529,49 +1529,6 @@ func (a *Agent) observeMissingToolCallReasoning(calls []provider.ToolCall, reaso
 	return true, true
 }
 
-// maxStepsPause is the deliberate stop when a positive tool-call budget runs
-// out: the session already holds the completed work and the user is asked to
-// continue. It is a control-flow signal, not a provider failure. Coordinator
-// treats planner research budgets specially: ordinary plan-and-execute work
-// falls back to the executor, while explicit execution boundaries fail closed.
-type maxStepsPause struct {
-	steps     int
-	key       string
-	hostOwned bool
-}
-
-func (e *maxStepsPause) Error() string {
-	return fmt.Sprintf("paused after %d tool-call rounds (%s) — the work so far is saved; send another message to continue, or set %s higher or to 0 for no limit", e.steps, e.key, e.key)
-}
-
-type goalStuckPause struct {
-	limit  int
-	key    string
-	reason string
-}
-
-func (e *goalStuckPause) Error() string {
-	if e == nil || strings.TrimSpace(e.reason) == "" {
-		return "goal paused after a structural no-progress loop; completed work is saved"
-	}
-	return "goal paused after a structural no-progress loop: " + e.reason
-}
-
-type todoStallPause struct {
-	rounds int
-}
-
-func (e *todoStallPause) Error() string {
-	return fmt.Sprintf("paused after %d tool-call rounds without advancing the current todo — the work so far is saved; inspect the blocker or send another message to continue", e.rounds)
-}
-
-func isToolLoopPause(err error) bool {
-	var maxPause *maxStepsPause
-	var stallPause *todoStallPause
-	var stuckPause *goalStuckPause
-	return errors.As(err, &maxPause) || errors.As(err, &stallPause) || errors.As(err, &stuckPause)
-}
-
 // ReadinessResult is the host-consumable outcome of the Delivery final-answer
 // readiness check. The Controller reads it after each goal turn; plain turns
 // receive the same outcome as a FinalReadinessError.
@@ -1602,17 +1559,6 @@ func (a *Agent) ReadinessResult() ReadinessResult {
 		Reason:      check.reason,
 		ProgressKey: check.progressSignature(),
 	}
-}
-
-// HostProgressSignatures returns the host-observed evidence identities for the
-// current delivery scope. The Goal FSM owns the cross-turn novelty set: a new
-// read/result, mutation, task-state transition, or review advances the Goal,
-// while an exact successful replay does not.
-func (a *Agent) HostProgressSignatures() []string {
-	if a == nil || a.evidence == nil {
-		return nil
-	}
-	return a.evidence.SuccessfulProgressSignaturesSince(0)
 }
 
 type finalReadinessCheck struct {

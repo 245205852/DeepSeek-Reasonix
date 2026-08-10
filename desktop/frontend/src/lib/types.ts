@@ -854,7 +854,6 @@ export type ToolApprovalMode = "ask" | "auto" | "yolo";
 // "full" is the persisted compatibility value for the Balanced runtime profile.
 export type TokenMode = "full" | "economy" | "delivery";
 export type GoalStatus = "running" | "complete" | "blocked" | "stopped";
-
 // GoalRuntime is the optional Goal budget/runtime summary the backend attaches
 // to Meta. Absent for old hosts or when no goal is active.
 export interface GoalRuntime {
@@ -871,7 +870,6 @@ export interface GoalRuntime {
   stopCause?: string;
   budgetExtensions: number;
 }
-
 export function normalizeCollaborationMode(mode?: string, goal?: string, legacyMode?: Mode): CollaborationMode {
   if (mode === "plan" || mode === "goal" || mode === "normal") return mode;
   if (legacyMode && modeHasPlan(legacyMode)) return "plan";

@@ -614,38 +614,6 @@ func (r *ReadOnlyTaskTool) Execute(ctx context.Context, args json.RawMessage) (s
 	return r.task.RunProfileSpec(ctx, spec)
 }
 
-// childMaxSteps resolves a sub-agent's step budget. An explicit request wins.
-// Otherwise mirror the parent: a finite parent caps the child at half its
-// budget (min 5) so a delegated sub-task stays shorter than the whole turn; an
-// unbounded parent yields an unbounded child (it shares the parent's ctx, so
-// cancelling the turn stops it, and it compacts its own context — the same
-// bounds the parent has). Shared by task, read_only_task, and parallel_tasks
-// children so the default cannot drift per call site.
-func (t *TaskTool) childMaxSteps(requested int) int {
-	return childMaxStepsForParent(t.maxSteps, requested)
-}
-
-func childMaxStepsForParent(parent, requested int) int {
-	if requested > 0 {
-		return requested
-	}
-	if parent <= 0 {
-		return 0
-	}
-	half := max(parent/2, 5)
-	return half
-}
-
-func (t *TaskTool) childMaxStepsForContext(ctx context.Context, requested int) int {
-	if requested > 0 || t.maxSteps > 0 {
-		return t.childMaxSteps(requested)
-	}
-	if limit, ok := runStepLimitFromContext(ctx); ok && limit.inherit {
-		return childMaxStepsForParent(limit.steps, requested)
-	}
-	return 0
-}
-
 func (t *TaskTool) effectiveProfile(model, effort string) (string, string) {
 	model = strings.TrimSpace(model)
 	effort = strings.TrimSpace(effort)
