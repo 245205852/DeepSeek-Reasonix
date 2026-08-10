@@ -253,15 +253,16 @@ prefix cache-stable:
 Long tasks eventually fill the model's context window. Reasonix manages this with
 **low-frequency compaction** that respects the cache-first design:
 
-- Each provider declares its `context_window` (tokens). Context maintenance is
-  tiered: below `agent.tool_result_snip_ratio` (default `0.6`) the session is
-  left untouched apart from the soft notice; at the snip ratio, stale tool
-  results before the recent tail are archived and shortened with deterministic
-  head/tail markers; at `agent.compact_ratio` (default `0.8`) stale tool results
-  are archived and pruned to short placeholders before any summary call; only if
-  pruning still leaves the prompt above the threshold does summary compaction
-  run. At `agent.compact_force_ratio` (default `0.9`), the existing forced fold
-  may proceed even when the fold economics would normally skip it.
+- Each provider declares its `context_window` (tokens). There is one trigger:
+  `agent.compact_ratio` (default `0.8`). Below it the history is never
+  rewritten, because a rewrite invalidates the provider's prompt cache from that
+  point on; `agent.soft_compact_ratio` (default `0.5`) only emits a notice. At
+  the trigger, stale tool results before the recent tail are archived and pruned
+  to short placeholders first; if that alone brings the prompt below
+  `agent.tool_result_snip_ratio` (default `0.6`) it stands in for the summary and
+  no summarizer call is made, otherwise summary compaction runs. At
+  `agent.compact_force_ratio` (default `0.9`), the forced fold may proceed even
+  when the fold economics would normally skip it.
 - Users can inspect or change the 65–85% automatic threshold with
   `reasonix config compact-ratio [--local] [VALUE]`. The default is 80%; the
   project-local value overrides the shared user config used by desktop and new
