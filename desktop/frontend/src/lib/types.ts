@@ -2225,6 +2225,8 @@ export interface TaskSnapshot {
   error_summary?: string;
 }
 
+export type { TaskActionRequest, TaskCatalogItem, TaskCatalogStatus, TaskEventPage, TaskEventPageRequest, TaskPage, TaskPageRequest } from "./taskCatalogTypes";
+
 export interface ControlResult {
   schema_version: number;
   command: string;

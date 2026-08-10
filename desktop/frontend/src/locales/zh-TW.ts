@@ -3026,6 +3026,7 @@ export const zhTW: Record<DictKey, string> = {
   "palette.cmd.models": "模型",
   "palette.cmd.reloadRuntime": "重載執行階段",
   "palette.cmd.usageStats": "使用統計",
+  "palette.cmd.taskCenter": "任務中心",
   "palette.group.remote": "遠端 SSH",
   "palette.group.extensions": "擴充功能",
   "ext.form.defaultTitle": "擴充功能請求",

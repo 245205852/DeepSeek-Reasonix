@@ -1188,7 +1188,7 @@ export default function App() {
   const sidebarWidth = useLayoutStore((s) => s.sidebarWidth);
   const setSidebarWidth = useLayoutStore((s) => s.setSidebarWidth);
   const [sidebarResizing, setSidebarResizing] = useState(false);
-  const [tasksOpen, setTasksOpen] = useState(false);
+  const [tasksOpen, setTasksOpen] = useState<false | "session" | "all">(false);
   const [liveSidebarWidth, setLiveSidebarWidth] = useState<number | null>(null);
   const [viewportWidth, setViewportWidth] = useState(() => (typeof window === "undefined" ? 1440 : window.innerWidth));
   const [viewportHeight, setViewportHeight] = useState(() => (typeof window === "undefined" ? 720 : window.innerHeight));
@@ -3988,6 +3988,7 @@ export default function App() {
           setSettingsTarget("models");
         },
       },
+      { id: "cmd-task-center", group: t("palette.group.commands"), title: t("palette.cmd.taskCenter"), icon: <Activity size={15} />, compact: true, keywords: ["task", "tasks", "center", "任务", "任务中心"], run: () => setTasksOpen("all") },
       { id: "cmd-terminal", group: t("palette.group.commands"), title: t("rightDock.terminal"), icon: <TerminalSquare size={15} />, compact: true, keywords: ["terminal", "shell", "终端"], run: () => toggleTerminalPanel() },
       {
         id: "cmd-reload-runtime",
@@ -3999,8 +4000,7 @@ export default function App() {
         run: () => {
           const tabID = activeTab?.id;
           if (!tabID) return;
-          // Success/queued feedback arrives as a tab notice from the Go side;
-          // only hard failures need a toast here.
+          // Success/queued feedback arrives as a tab notice; only hard failures need a toast.
           void app.ReloadRuntime(tabID).catch((err) => showToast(err instanceof Error ? err.message : String(err), "error"));
         },
       },
@@ -4801,8 +4801,8 @@ export default function App() {
                   className={`topicbar__action-btn topicbar__action-btn--icon topicbar__action-btn--utility${tasksOpen ? " topicbar__action-btn--active" : ""}`}
                   type="button"
                   aria-label="Session summary"
-                  aria-expanded={tasksOpen}
-                  onClick={() => setTasksOpen((open) => !open)}
+                  aria-expanded={Boolean(tasksOpen)}
+                  onClick={() => setTasksOpen((open) => open ? false : "session")}
                 >
                   <Activity size={14} />
                 </button>
@@ -4811,9 +4811,9 @@ export default function App() {
                 <div className="taskmonitor-popover" role="dialog" aria-label="Session summary">
                   <Suspense fallback={null}>
                     <TaskMonitorPanel
-                      key={`${activeTab?.id || activeTabId || "none"}:${activeTab?.workspaceRoot || "global"}:${activeTab?.sessionPath || ""}`}
+                      key={`${activeTab?.id || activeTabId || "none"}:${activeTab?.workspaceRoot || "global"}:${activeTab?.sessionPath || ""}:${tasksOpen}`}
                       tabID={activeTab?.id || activeTabId || ""}
-                      initialOpen
+                      initialOpen initialScope={tasksOpen || "session"}
                       popover
                       summaryMode
                       onClose={() => setTasksOpen(false)}

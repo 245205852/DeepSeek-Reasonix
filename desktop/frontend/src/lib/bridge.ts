@@ -8,6 +8,7 @@ import type { InvocationRequest } from "./invocationDisplay";
 import { addBreadcrumb } from "./breadcrumbs";
 import { maybeShare } from "./queryCoalesce";
 import { makeMockSessionCatalogBindings } from "./sessionCatalogBridge";
+import { makeMockTaskCatalogBindings, type TaskCatalogBindings } from "./taskCatalogBridge";
 import { t } from "./i18n";
 import { providerIsConfigured, providerRequiresKey, removeProviderAccessesForMock } from "./providerModels";
 import { DEFAULT_STATUS_BAR_ITEMS, normalizeStatusBarItems } from "./statusBarItems";
@@ -162,7 +163,7 @@ interface DesktopWindowState {
 // added or renamed, the generated types shift, and a key present in GeneratedApp
 // but missing from AppBindings causes a type error here. Fix: add the new method
 // to AppBindings, then run `pnpm typecheck` to verify.
-export interface AppBindings extends SessionCatalogBindings {
+export interface AppBindings extends SessionCatalogBindings, TaskCatalogBindings {
   Platform(): Promise<string>;
   MinimiseMainWindow(): Promise<void>;
   ToggleMaximiseMainWindow(): Promise<void>;
@@ -4907,6 +4908,7 @@ function makeMockApp(): AppBindings {
     async RequeueTask() { return { schema_version: 1, command: "requeue", task_id: "", accepted: false, idempotent: false, error: { code: "mock", message: "not available in browser mock" } }; },
     async OpenTaskSession() { return { schema_version: 1, command: "open_session", task_id: "", accepted: false, idempotent: false, error: { code: "mock", message: "not available in browser mock" } }; },
     async ListTasksForTab() { return []; },
+    ...makeMockTaskCatalogBindings(),
     async ListTaskEventsForTab() { return []; },
     async StopTaskForTab() { return { schema_version: 1, command: "stop", task_id: "", accepted: false, idempotent: false, error: { code: "mock", message: "not available in browser mock" } }; },
     async CancelTaskForTab() { return { schema_version: 1, command: "cancel", task_id: "", accepted: false, idempotent: false, error: { code: "mock", message: "not available in browser mock" } }; },

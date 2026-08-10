@@ -2388,6 +2388,7 @@ export const zh: Record<DictKey, string> = {
   "palette.cmd.models": "模型",
   "palette.cmd.reloadRuntime": "重载运行时",
   "palette.cmd.usageStats": "使用统计",
+  "palette.cmd.taskCenter": "任务中心",
   "palette.group.remote": "远程 SSH",
   "palette.group.extensions": "扩展",
   "ext.form.defaultTitle": "扩展请求",

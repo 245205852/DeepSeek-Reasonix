@@ -10,6 +10,7 @@ import (
 
 	"reasonix/internal/config"
 	"reasonix/internal/sessioncatalog"
+	"reasonix/internal/taskcatalog"
 )
 
 type SessionCatalogStatus struct {
@@ -59,6 +60,13 @@ type ProjectTreeChangedV2 struct {
 	Reason   string   `json:"reason"`
 }
 
+func flushDesktopTaskCatalog(ctx context.Context) error {
+	if catalog := taskcatalog.Shared(); catalog != nil {
+		return catalog.Flush(ctx)
+	}
+	return nil
+}
+
 func sessionCatalogStatus(status sessioncatalog.Status) SessionCatalogStatus {
 	return SessionCatalogStatus{
 		State:           string(status.State),
@@ -106,6 +114,11 @@ func (a *App) startSessionCatalog(rebuild bool) {
 		defer a.catalogRebuilding.Store(false)
 		path := sessioncatalog.DefaultPath()
 		targets := a.sessionCatalogTargets()
+		projects := loadProjectsFile()
+		taskcatalog.RegisterSharedProject(globalWorkspaceRoot(), projects.GlobalTitle)
+		for _, project := range projects.Projects {
+			taskcatalog.RegisterSharedProject(project.Root, projectDisplayName(project))
+		}
 		if rebuild {
 			if _, err := sessioncatalog.Rebuild(ctx, path, targets); err != nil && !errors.Is(err, context.Canceled) {
 				slog.Warn("desktop: rebuild session catalog", "err", err)

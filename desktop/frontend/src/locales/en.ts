@@ -2385,6 +2385,7 @@ export const en = {
   "palette.cmd.models": "Models",
   "palette.cmd.reloadRuntime": "Reload Runtime",
   "palette.cmd.usageStats": "Usage statistics",
+  "palette.cmd.taskCenter": "Task Center",
   "palette.group.remote": "Remote SSH",
   "palette.group.extensions": "Extensions",
   "ext.form.defaultTitle": "Extension request",

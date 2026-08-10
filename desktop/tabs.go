@@ -3899,6 +3899,7 @@ func (a *App) buildTabControllerWithContextCore(tab *WorkspaceTab, loadedSession
 		RequireKey:               false,
 		AutoPricingCurrency:      a.desktopAutoPricingCurrency(),
 		StatsSource:              "desktop",
+		TaskStore:                a.taskStore(),
 		Sink:                     sink,
 		WorkspaceRoot:            root,
 		SessionDir:               sessionDir,

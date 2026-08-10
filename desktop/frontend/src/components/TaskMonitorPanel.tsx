@@ -14,6 +14,13 @@ import { app } from "../lib/bridge";
 import { useT } from "../lib/i18n";
 import type { TaskEvent, TaskSnapshot } from "../lib/types";
 
+type CatalogTask = TaskSnapshot & { __projectKey: string; __projectLabel: string; __catalogKey: string };
+
+function hasTaskCatalogBinding(): boolean {
+  const bound = (window as unknown as { go?: { main?: { App?: { ListTaskPage?: unknown } } } }).go?.main?.App?.ListTaskPage;
+  return typeof bound === "function";
+}
+
 // --- helpers ---
 
 type TaskTimerSnapshot = TaskSnapshot & { runtime_lease_until?: string };
@@ -107,6 +114,7 @@ export function TaskMonitorPanel({
   onClose,
   onOpenSession,
   initialOpen = false,
+  initialScope = "session",
   popover = false,
   summaryMode = false,
 }: {
@@ -114,11 +122,17 @@ export function TaskMonitorPanel({
   onClose?: () => void;
   onOpenSession?: (tabID: string, taskID: string) => Promise<boolean> | boolean;
   initialOpen?: boolean;
+  initialScope?: "session" | "project" | "all";
   popover?: boolean;
   summaryMode?: boolean;
 }) {
   const t = useT();
-  const [tasks, setTasks] = useState<TaskSnapshot[]>([]);
+  const [tasks, setTasks] = useState<CatalogTask[]>([]);
+	const [scope, setScope] = useState<"session" | "project" | "all">(initialScope);
+	const [query, setQuery] = useState("");
+	const [nextCursor, setNextCursor] = useState("");
+	const [indexProgress, setIndexProgress] = useState<{ indexed: number; total: number; partial: boolean }>({ indexed: 0, total: 0, partial: true });
+	const requestSeq = useRef(0);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
@@ -127,7 +141,7 @@ export function TaskMonitorPanel({
   const [actionError, setActionError] = useState<string | null>(null);
   const [actionMessage, setActionMessage] = useState<string | null>(null);
   const [nowMs, setNowMs] = useState(() => Date.now());
-  const [pendingAction, setPendingAction] = useState<{ task: TaskSnapshot; action: "stop" | "cancel" } | null>(null);
+  const [pendingAction, setPendingAction] = useState<{ task: CatalogTask; action: "stop" | "cancel" } | null>(null);
 
   // Per-task event state
   const [taskEvents, setTaskEvents] = useState<Map<string, TaskEvent[]>>(
@@ -139,20 +153,36 @@ export function TaskMonitorPanel({
   );
   const eventCursors = useRef<Map<string, number>>(new Map());
 
-  const fetchTasks = useCallback(async () => {
+  const fetchTasks = useCallback(async (cursor = "") => {
+	const seq = ++requestSeq.current;
     try {
       setError(null);
-      const list = await app.ListTasksForTab(tabID);
-      setTasks(list ?? []);
+			if (!hasTaskCatalogBinding()) {
+				const legacy = await app.ListTasksForTab(tabID);
+				if (seq !== requestSeq.current) return;
+				const filtered = legacy.filter((task) => !query.trim() || [task.task_id, task.session_id, task.error_code, task.error_summary].some((value) => (value || "").toLowerCase().includes(query.trim().toLowerCase())));
+				setTasks(filtered.map((task) => ({ ...task, __projectKey: "", __projectLabel: "", __catalogKey: task.task_id })));
+				setNextCursor("");
+				setIndexProgress({ indexed: filtered.length, total: filtered.length, partial: false });
+				return;
+			}
+			const page = await app.ListTaskPage({ scope, tabId: tabID, projectKey: "", states: [], query, cursor, limit: 50 });
+			if (seq !== requestSeq.current) return;
+			const decorated = (page.items ?? []).map((item) => ({ ...item.task, __projectKey: item.projectKey, __projectLabel: item.projectLabel, __catalogKey: `${item.projectKey}:${item.task.task_id}` }));
+			setTasks((current) => cursor ? [...current, ...decorated.filter((item) => !current.some((existing) => existing.__catalogKey === item.__catalogKey))] : decorated);
+			setNextCursor(page.nextCursor || "");
+			setIndexProgress({ indexed: page.status.indexed, total: page.status.total, partial: page.partial });
     } catch (e) {
+			if (seq !== requestSeq.current) return;
       setError(String(e));
     } finally {
       setLoading(false);
     }
-  }, [tabID]);
+  }, [query, scope, tabID]);
 
   // Fetch events for a single task, using afterSequence for incremental load.
-  const fetchEvents = useCallback(async (taskID: string) => {
+	const fetchEvents = useCallback(async (task: CatalogTask) => {
+		const taskID = task.__catalogKey;
     setEventsLoading((prev) => new Set(prev).add(taskID));
     setEventsError((prev) => {
       const next = new Map(prev);
@@ -161,7 +191,9 @@ export function TaskMonitorPanel({
     });
     try {
       const cursor = eventCursors.current.get(taskID) ?? 0;
-      const events = await app.ListTaskEventsForTab(tabID, taskID, cursor);
+			const events = hasTaskCatalogBinding()
+				? (await app.ListTaskEventPage({ projectKey: task.__projectKey, taskId: task.task_id, after: cursor, limit: 50 })).items ?? []
+				: await app.ListTaskEventsForTab(tabID, task.task_id, cursor);
       if (events.length > 0) {
         setTaskEvents((prev) => {
           const next = new Map(prev);
@@ -193,20 +225,16 @@ export function TaskMonitorPanel({
         return next;
       });
     }
-  }, [tabID]);
+	}, [tabID]);
 
   // Initial fetch + periodic polling
   useEffect(() => {
-    fetchTasks();
+		void fetchTasks("");
     const interval = setInterval(() => {
-      fetchTasks();
-      // Also refresh events for expanded tasks
-      expanded.forEach((id) => {
-        fetchEvents(id);
-      });
+			void fetchTasks("");
     }, POLL_INTERVAL_MS);
     return () => clearInterval(interval);
-  }, [fetchTasks, fetchEvents, expanded]);
+	}, [fetchTasks]);
 
   // Live tasks need a ticking clock; terminal and queued tasks stay frozen at
   // their persisted end/update time.
@@ -216,7 +244,8 @@ export function TaskMonitorPanel({
     return () => clearInterval(interval);
   }, [tasks]);
 
-  const toggleTask = (id: string) => {
+	const toggleTask = (task: CatalogTask) => {
+		const id = task.__catalogKey;
     setExpanded((prev) => {
       const next = new Set(prev);
       if (next.has(id)) {
@@ -225,14 +254,14 @@ export function TaskMonitorPanel({
         next.add(id);
         // Load events on first expand
         if (!taskEvents.has(id)) {
-          fetchEvents(id);
+			void fetchEvents(task);
         }
       }
       return next;
     });
   };
 
-  const controlTask = async (task: TaskSnapshot, action: "stop" | "cancel" | "requeue" | "open") => {
+  const controlTask = async (task: CatalogTask, action: "stop" | "cancel" | "requeue" | "open") => {
     if ((action === "stop" || action === "cancel") && (!pendingAction || pendingAction.task.task_id !== task.task_id || pendingAction.action !== action)) {
       setPendingAction({ task, action });
       return;
@@ -242,18 +271,27 @@ export function TaskMonitorPanel({
     setActionError(null);
     setActionMessage(null);
     try {
-      if (action === "open" && onOpenSession) {
+			if (action === "open" && onOpenSession && scope === "session") {
         const opened = await onOpenSession(tabID, task.task_id);
         if (opened) onClose?.();
         return;
       }
-      const result = action === "stop"
-        ? await app.StopTaskForTab(tabID, task.task_id, task.version, "desktop request", `desktop-${action}-${task.task_id}-${task.version}`)
-        : action === "cancel"
-          ? await app.CancelTaskForTab(tabID, task.task_id, task.version, "desktop request", `desktop-${action}-${task.task_id}-${task.version}`)
-          : action === "requeue"
-            ? await app.RequeueTaskForTab(tabID, task.task_id, task.version, `desktop-${action}-${task.task_id}-${task.version}`)
-            : await app.OpenTaskSessionForTab(tabID, task.task_id);
+			const request = { projectKey: task.__projectKey, taskId: task.task_id, expectedVersion: task.version, reason: "desktop request", idempotencyKey: `desktop-${action}-${task.task_id}-${task.version}` };
+			const result = hasTaskCatalogBinding()
+				? action === "stop"
+					? await app.StopTaskByKey(request)
+					: action === "cancel"
+						? await app.CancelTaskByKey(request)
+						: action === "requeue"
+							? await app.RequeueTaskByKey(request)
+							: await app.OpenTaskSessionByKey({ projectKey: task.__projectKey, taskId: task.task_id })
+				: action === "stop"
+					? await app.StopTaskForTab(tabID, task.task_id, task.version, request.reason, request.idempotencyKey)
+					: action === "cancel"
+						? await app.CancelTaskForTab(tabID, task.task_id, task.version, request.reason, request.idempotencyKey)
+						: action === "requeue"
+							? await app.RequeueTaskForTab(tabID, task.task_id, task.version, request.idempotencyKey)
+							: await app.OpenTaskSessionForTab(tabID, task.task_id);
       if (result.error) {
         setActionError(`${result.error.code}: ${result.error.message}`);
       } else if (action === "open") {
@@ -262,7 +300,7 @@ export function TaskMonitorPanel({
         setActionMessage(`Session: ${sessionID}`);
       } else {
         setActionMessage(result.idempotent ? "Already applied" : "Task updated");
-        await fetchTasks();
+				await fetchTasks("");
       }
     } catch (e) {
       setActionError(String(e));
@@ -291,9 +329,9 @@ export function TaskMonitorPanel({
         <span className="taskmonitor__count">{tasks.length}</span>
         <button
           className="taskmonitor__refresh"
-          onClick={() => {
+			onClick={() => {
             setLoading(true);
-            fetchTasks();
+				void fetchTasks("");
           }}
           title={t("summary.refresh")}
           aria-label={t("summary.refresh")}
@@ -314,6 +352,17 @@ export function TaskMonitorPanel({
 
       {open && (
         <div className="taskmonitor__body">
+			{!summaryMode && (
+				<div className="taskmonitor__filters">
+					<select value={scope} onChange={(event) => setScope(event.target.value as "session" | "project" | "all")} aria-label="Task scope">
+						<option value="session">Current session</option>
+						<option value="project">Current project</option>
+						<option value="all">All projects</option>
+					</select>
+					<input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Filter tasks" aria-label="Filter tasks" />
+				</div>
+			)}
+			{indexProgress.partial && <div className="taskmonitor__indexing">Indexing tasks ({indexProgress.indexed}/{indexProgress.total})</div>}
           {summaryMode && <div className="taskmonitor__category-title">{t("summary.tasks")}</div>}
           {actionError && <div className="taskmonitor__state taskmonitor__state--error">{actionError}</div>}
           {actionMessage && <div className="taskmonitor__state">{actionMessage}</div>}
@@ -342,21 +391,22 @@ export function TaskMonitorPanel({
             sorted.map((task) => {
               const cfg = stateConfig(task.state, t);
               const runtime = runtimeConfig(task.runtime_state, t);
-              const isOpen = expanded.has(task.task_id);
+				const taskKey = task.__catalogKey;
+				const isOpen = expanded.has(taskKey);
               const terminal = isTerminalState(task.state);
-              const evs = taskEvents.get(task.task_id) ?? [];
-              const evLoading = eventsLoading.has(task.task_id);
-              const evError = eventsError.get(task.task_id);
+				const evs = taskEvents.get(taskKey) ?? [];
+				const evLoading = eventsLoading.has(taskKey);
+				const evError = eventsError.get(taskKey);
 
               return (
                 <div
-                  key={task.task_id}
+					key={taskKey}
                   className={`taskmonitor__task taskmonitor__task--${safeStateClass(task.state)}`}
                 >
                   <div className="taskmonitor__task-head">
                     <button
                       className="taskmonitor__expand"
-                      onClick={() => toggleTask(task.task_id)}
+						onClick={() => toggleTask(task)}
                       aria-expanded={isOpen}
                       aria-label={t("summary.taskLabel", { id: shortID(task.task_id), state: cfg.label })}
                     >
@@ -369,6 +419,7 @@ export function TaskMonitorPanel({
                       <span className="taskmonitor__id">
                         {shortID(task.task_id)}
                       </span>
+							{scope === "all" && <span className="taskmonitor__project">{task.__projectLabel}</span>}
                       <span
                         className="taskmonitor__badge"
                         style={{
@@ -438,8 +489,8 @@ export function TaskMonitorPanel({
                             <span className="taskmonitor__events-count">
                               {evs.length}
                             </span>
-                          )}
-                        </div>
+	                      )}
+	                    </div>
 
                         {evLoading && evs.length === 0 && (
                           <div className="taskmonitor__state">
@@ -509,6 +560,11 @@ export function TaskMonitorPanel({
                 </div>
               );
             })}
+			{nextCursor && !loading && !error && (
+				<button className="taskmonitor__load-more" onClick={() => void fetchTasks(nextCursor)}>
+					Load more
+				</button>
+			)}
         </div>
       )}
     </div>
