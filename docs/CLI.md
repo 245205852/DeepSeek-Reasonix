@@ -476,6 +476,9 @@ reasonix catalogs reindex history [--dir PATH ...] [--json]
 ```
 
 See [History Search Catalog](./HISTORY_SEARCH_CATALOG.md).
+Usage statistics use a separate disposable rollup projection:
+reasonix catalogs reindex usage [--json]
+See [Usage Catalog](./USAGE_CATALOG.md).
 
 ### Memory diagnostics and recovery
 
