@@ -334,10 +334,7 @@ func (a *Agent) executeBatch(ctx context.Context, calls []provider.ToolCall) bat
 			a.sink.Emit(event.Event{Kind: event.Notice, Level: event.LevelInfo, Text: o.truncMsg})
 		}
 	}
-	goalStuck := goalStuckSignal{}
-	if !cancelled {
-		goalStuck = a.applyBatchGuards(ctx, calls, outcomes, results, receiptMark)
-	}
+	goalStuck := a.applyBatchGuards(ctx, cancelled, calls, outcomes, results, receiptMark)
 	images := make([][]string, len(calls))
 	executions := make([]*tool.ShellExecution, len(calls))
 	for i := range outcomes {

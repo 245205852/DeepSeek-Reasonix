@@ -58,7 +58,10 @@ type Receipt = evidence.Receipt
 // applyBatchGuards runs both post-batch guards: the storm breaker (failure
 // fixation) and the progress guard (zero-gain repetition). The outcome shadow
 // observes the same receipts afterwards without influencing either guard.
-func (a *Agent) applyBatchGuards(ctx context.Context, calls []provider.ToolCall, outcomes []toolOutcome, results []string, receiptMark int) goalStuckSignal {
+func (a *Agent) applyBatchGuards(ctx context.Context, cancelled bool, calls []provider.ToolCall, outcomes []toolOutcome, results []string, receiptMark int) goalStuckSignal {
+	if cancelled {
+		return goalStuckSignal{}
+	}
 	stormReason := a.applyStormBreaker(calls, outcomes, results, receiptMark)
 	progressReason := a.applyProgressGuard(results, outcomes, receiptMark)
 	a.observeOutcomeShadow(receiptMark, results, outcomes)
@@ -100,6 +103,7 @@ func (a *Agent) observeOutcomeShadow(receiptMark int, results []string, outcomes
 	a.applyGovernor(&sample)
 	a.armGovernorCapture(sample)
 	event.RecordOutcomeProgress(a.sink, sample)
+	a.observeContractRound()
 }
 
 // applyProgressGuard escalates when consecutive rounds stop producing new

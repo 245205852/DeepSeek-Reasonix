@@ -92,9 +92,31 @@ func intentName(i taskintent.Intent) string {
 	}
 }
 
-// emitTurnShadows records the end-of-turn shadow observations from one replay
-// of the turn's receipts: the contract's state, and the completion report
-// derived from it. Both observe; neither decides.
+// LiveContract is the contract as it stands right now: the same pure replay the
+// turn ends with, run against the receipts recorded so far. Rebuilding beats
+// keeping incremental state because one code path serves the per-round view and
+// the end-of-turn record, so the two can never disagree.
+func (a *Agent) LiveContract() *taskcontract.Contract {
+	if a == nil || a.evidence == nil {
+		return nil
+	}
+	return buildShadowContract(a.turnInput, a.evidence.Receipts(), a.planContractSnapshot())
+}
+
+// observeContractRound records the contract after one tool round, so a
+// trajectory carries how the evidence graph filled in rather than only where it
+// landed. It observes; it decides nothing.
+func (a *Agent) observeContractRound() {
+	c := a.LiveContract()
+	if c == nil || (len(c.Requirements) == 0 && len(c.Checks) == 0) {
+		return
+	}
+	event.RecordContractShadow(a.sink, contractShadowAudit(c))
+}
+
+// emitTurnShadows records the end-of-turn shadow observations: the contract's
+// state, and the completion report derived from it. Both observe; neither
+// decides.
 func (a *Agent) emitTurnShadows(input string) {
 	if a.evidence == nil {
 		return
