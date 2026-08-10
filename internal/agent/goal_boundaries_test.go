@@ -78,7 +78,7 @@ func TestGoalZeroEvidencePausesAfterSixRepeatedSuccesses(t *testing.T) {
 	reg := tool.NewRegistry()
 	reg.Add(fakeTool{name: "read_file", readOnly: true})
 	turns := make([]testutil.Turn, 0, progressStopStreak+2)
-	for i := 0; i < progressStopStreak+1; i++ {
+	for i := range progressStopStreak + 1 {
 		turns = append(turns, testutil.Turn{ToolCalls: []provider.ToolCall{{
 			ID: "same-" + string(rune('a'+i)), Name: "read_file", Arguments: `{"path":"same"}`,
 		}}})
