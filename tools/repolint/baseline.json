@@ -36,7 +36,7 @@
     },
     "desktop/app_test.go": {
       "essay": 2,
-      "test-file-size": 10227
+      "test-file-size": 10217
     },
     "desktop/bot_bridge.go": {
       "essay": 11
@@ -135,7 +135,7 @@
       "file-size": 91
     },
     "desktop/frontend/src/components/ProjectTree.tsx": {
-      "file-size": 1587
+      "file-size": 1445
     },
     "desktop/frontend/src/components/RichComposerInput.tsx": {
       "file-size": 141
@@ -322,7 +322,7 @@
     },
     "desktop/tabs_topic_test.go": {
       "essay": 1,
-      "test-file-size": 3409
+      "test-file-size": 3227
     },
     "desktop/temphelper_test.go": {
       "essay": 4
@@ -577,8 +577,8 @@
     },
     "internal/agent/save.go": {
       "complexity": 49,
-      "essay": 113,
-      "file-size": 1544,
+      "essay": 112,
+      "file-size": 1522,
       "function-size": 124
     },
     "internal/agent/save_test.go": {
@@ -924,7 +924,7 @@
       "file-size": 126
     },
     "internal/cli/shell_completion.go": {
-      "function-size": 117
+      "function-size": 112
     },
     "internal/cli/skill_hooks.go": {
       "essay": 1
@@ -1507,7 +1507,7 @@
     "internal/pluginpkg/pluginpkg.go": {
       "complexity": 1,
       "essay": 2,
-      "file-size": 426
+      "file-size": 407
     },
     "internal/pluginpkg/pluginpkg_test.go": {
       "test-file-size": 67

@@ -799,6 +799,8 @@ export interface SessionMeta {
   recoveryCopy?: boolean; // actual branch content is unchanged and covered by its parent
 }
 
+export type { HistoryIndexStatus, HistorySearchContextLine, HistorySearchContextRequest, HistorySearchHit, HistorySearchPage, HistorySearchRequest, HistorySessionPage, HistorySessionPageRequest } from "./historyCatalogTypes";
+
 export interface WorkspaceView {
   path: string;
   name: string;

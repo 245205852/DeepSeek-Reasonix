@@ -1,10 +1,46 @@
 package main
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
+
+	"reasonix/internal/sessioncatalog"
 )
+
+func installSessionCatalogForTest(t *testing.T, app *App, path, scope, workspaceRoot string) {
+	t.Helper()
+	catalog, err := sessioncatalog.Open(context.Background(), sessioncatalog.Options{InMemory: true, DisableRepair: true})
+	if err != nil {
+		t.Fatalf("open in-memory session catalog: %v", err)
+	}
+	target := sessioncatalog.DirectoryTarget{Path: path, Scope: scope, WorkspaceRoot: workspaceRoot}
+	if err := catalog.ReconcileDirectory(context.Background(), target); err != nil {
+		_ = catalog.Close(context.Background())
+		t.Fatalf("reconcile session catalog %q: %v", target.Path, err)
+	}
+	app.sessionCatalog.Store(catalog)
+	t.Cleanup(func() {
+		app.sessionCatalog.CompareAndSwap(catalog, nil)
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		_ = catalog.Close(ctx)
+	})
+}
+
+func reconcileSessionCatalogForTest(t *testing.T, app *App, path, scope, workspaceRoot string) {
+	t.Helper()
+	catalog := app.sessionCatalog.Load()
+	if catalog == nil {
+		t.Fatal("session catalog is not installed")
+	}
+	target := sessioncatalog.DirectoryTarget{Path: path, Scope: scope, WorkspaceRoot: workspaceRoot}
+	if err := catalog.ReconcileDirectory(context.Background(), target); err != nil {
+		t.Fatalf("reconcile session catalog %q: %v", path, err)
+	}
+}
 
 func TestProjectTreeSnapshotReturnsProjectShellWithoutMigratingSessions(t *testing.T) {
 	isolateDesktopUserDirs(t)

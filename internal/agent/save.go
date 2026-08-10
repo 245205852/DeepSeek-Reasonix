@@ -192,42 +192,28 @@ type RecoveryBranchInfo struct {
 // the append-only event log is authoritative once present, while the .jsonl
 // checkpoint also serves as the random-read model for history paging.
 func (s *Session) Save(path string) error {
-	return s.save(path, sessionSaveSnapshot)
+	return s.saveObserved(path, sessionSaveSnapshot)
 }
 
 // SaveSnapshot writes a normal autosave/snapshot only when doing so cannot hide
 // a newer transcript already on disk. Explicit history rewrites such as rewind,
 // compaction, and cancel recovery should call SaveRewrite instead.
 func (s *Session) SaveSnapshot(path string) error {
-	return s.save(path, sessionSaveSnapshot)
+	return s.saveObserved(path, sessionSaveSnapshot)
 }
 
 // SaveRewrite writes an intentional non-append history rewrite only while this
 // Session still owns the current on-disk transcript baseline. It prevents a
 // stale controller from force-rewinding a newer transcript written elsewhere.
 func (s *Session) SaveRewrite(path string) error {
-	return s.save(path, sessionSaveRewrite)
+	return s.saveObserved(path, sessionSaveRewrite)
 }
 
 // SaveRewriteCompact performs a CAS-protected rewrite and folds the event log
 // to one replace record. It is for destructive maintenance such as redaction:
 // retaining old WAL records would keep the removed bytes recoverable on disk.
 func (s *Session) SaveRewriteCompact(path string) error {
-	return s.save(path, sessionSaveRewriteCompact)
-}
-
-// SaveIfAbsent persists a newly imported or copied session without ever
-// replacing a destination another runtime created after the caller's scan.
-// The existence check and the full write share the same in-process and
-// cross-process save locks, so migration cannot regress a newer destination
-// during startup or an overlapping import.
-func (s *Session) SaveIfAbsent(path string) error {
-	return s.withSessionSaveLocks(path, func() error {
-		if sessionArtifactExists(path) {
-			return os.ErrExist
-		}
-		return s.saveLocked(path, sessionSaveSnapshot)
-	})
+	return s.saveObserved(path, sessionSaveRewriteCompact)
 }
 
 func (s *Session) save(path string, mode sessionSaveMode) error {

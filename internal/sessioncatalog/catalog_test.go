@@ -221,8 +221,42 @@ func TestSchemaMigrationLedgerRecordsEveryVersion(t *testing.T) {
 		}
 		versions = append(versions, version)
 	}
-	if fmt.Sprint(versions) != "[1 2]" {
+	if fmt.Sprint(versions) != "[1 2 3]" {
 		t.Fatalf("schema migration ledger = %v", versions)
+	}
+}
+
+func TestListSessionsUsesRevisionBoundKeysetCursor(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	catalog, err := Open(ctx, Options{Path: filepath.Join(t.TempDir(), "catalog.sqlite"), DisableRepair: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = catalog.Close(context.Background()) })
+	for i, name := range []string{"a", "b", "c"} {
+		if err := catalog.UpsertSession(ctx, SessionRecord{
+			Path: filepath.Join("/sessions", name+".jsonl"), Directory: "/sessions", Scope: "global",
+			TopicID: name, CustomTitle: "title " + name, LastActivityAt: int64(i + 1),
+			TurnsState: TurnsValid, Health: HealthOK,
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	first, err := catalog.ListSessions(ctx, SessionPageRequest{Scope: "all", Limit: 2})
+	if err != nil || len(first.Items) != 2 || first.NextCursor == "" {
+		t.Fatalf("first=%#v err=%v", first, err)
+	}
+	second, err := catalog.ListSessions(ctx, SessionPageRequest{Scope: "all", Limit: 2, Cursor: first.NextCursor})
+	if err != nil || len(second.Items) != 1 || second.Items[0].CustomTitle != "title a" {
+		t.Fatalf("second=%#v err=%v", second, err)
+	}
+	if err := catalog.UpsertSession(ctx, SessionRecord{Path: "/sessions/d.jsonl", Directory: "/sessions", Scope: "global", TopicID: "d", LastActivityAt: 4, TurnsState: TurnsValid, Health: HealthOK}); err != nil {
+		t.Fatal(err)
+	}
+	stale, err := catalog.ListSessions(ctx, SessionPageRequest{Scope: "all", Cursor: first.NextCursor})
+	if err != nil || !stale.StaleCursor || len(stale.Items) != 0 {
+		t.Fatalf("stale=%#v err=%v", stale, err)
 	}
 }
 

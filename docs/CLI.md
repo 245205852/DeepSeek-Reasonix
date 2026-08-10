@@ -468,6 +468,15 @@ Without `--dir`, reindex includes global sessions and all projects saved by the
 desktop app. See [Session Catalog and Desktop Startup](./SESSION_CATALOG.md) for
 failure, migration, and data-safety guarantees.
 
+History search uses a separate disposable projection:
+
+```sh
+reasonix doctor catalogs [--json]
+reasonix catalogs reindex history [--dir PATH ...] [--json]
+```
+
+See [History Search Catalog](./HISTORY_SEARCH_CATALOG.md).
+
 ### Memory diagnostics and recovery
 
 Bare `/memory` shows all active project/global facts without hiding same-name
