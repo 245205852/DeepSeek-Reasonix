@@ -72,7 +72,7 @@ for (const path of localeChunks) {
   // Task Monitor, Extension UI, Storage & paths, and shell execution cards
   // add their own labels. Reasoning display controls and status bar metrics add
   // the latest localized copy. Keep both dictionaries within narrow allowances.
-  const budget = name.startsWith("zh-TW-") ? 54.7 * 1024 : 53.9 * 1024;
+  const budget = name.startsWith("zh-TW-") ? 54.7 * 1024 : 54.0 * 1024;
   assertBudget(`${name} gzip`, gzipBytes(path), budget);
 }
 
@@ -80,7 +80,8 @@ const rawInitialBytes = [...initialJS, ...initialCSS, ...appShellCSS]
   .reduce((total, path) => total + statSync(path).size, 0);
 // Native Web Animations and frame-batched scrolling avoid an eager animation
 // runtime. Goal request observability plus transcript scroll arbitration,
-// logical selection state/DOM adapters, and measurement invalidation add small
-// always-available contracts; keep raw allowance tight while gzip stays flat.
+// logical selection state/DOM adapters, measurement invalidation, and the
+// catalog project shell add small always-available contracts; keep the raw
+// allowance tight while gzip stays flat.
 assertBudget("initial raw JavaScript and CSS", rawInitialBytes, 2_240 * 1024);
 assertBudget("largest initial JavaScript chunk raw", largestInitialJSRaw, 1_000 * 1024);

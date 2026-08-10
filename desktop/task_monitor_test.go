@@ -227,7 +227,7 @@ func TestListSessionsForTabKeepsSourceDirectoryAfterActiveTabSwitch(t *testing.T
 	}
 
 	sessions := app.ListSessionsForTab("tab-a")
-	if len(sessions) != 1 || sessions[0].Path != pathA || sessions[0].Preview != "workspace A" {
+	if len(sessions) != 1 || sessions[0].Path != pathA || sessions[0].TurnsState != "unknown" {
 		t.Fatalf("ListSessionsForTab(tab-a) = %+v", sessions)
 	}
 }

@@ -40,9 +40,14 @@ non-destructively when `<Reasonix home>/.env` is missing them.
 | Sessions | `<state root>/sessions/` |
 | Archives | `<state root>/archive/` |
 | Memory | `<state root>/memory/` and `<state root>/projects/` |
+| Disposable session catalog | `<cache root>/session-catalog/v1.sqlite` |
 
 `<state root>` defaults to `<Reasonix home>`. It only differs when
 `REASONIX_STATE_HOME` is set.
+
+The session catalog is a rebuildable query projection, not user data. Session
+JSONL, event logs, metadata sidecars, and `desktop-projects.json` remain
+authoritative. See [Session Catalog and Desktop Startup](./SESSION_CATALOG.md).
 
 The global user config is named `config.toml`. Project-local config files keep
 the name `reasonix.toml`. If someone says "global reasonix.toml", they usually

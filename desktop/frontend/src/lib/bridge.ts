@@ -1,7 +1,4 @@
-// bridge is the seam between React and the Go kernel. The Wails shell calls bound
-// App methods and subscribes to runtime events; in a plain browser (`pnpm dev`),
-// a mock streams a canned turn through the same contract so the whole UI can be
-// developed and laid out without rebuilding the Go side.
+// Wails and the browser mock share this React-to-Go contract.
 
 // @ts-ignore `wails generate module` creates this locally; fresh checkouts keep
 // typecheck green by falling back to a disabled drift check below.
@@ -10,6 +7,7 @@ import type { InvocationRequest } from "./invocationDisplay";
 
 import { addBreadcrumb } from "./breadcrumbs";
 import { maybeShare } from "./queryCoalesce";
+import { makeMockSessionCatalogBindings } from "./sessionCatalogBridge";
 import { t } from "./i18n";
 import { providerIsConfigured, providerRequiresKey, removeProviderAccessesForMock } from "./providerModels";
 import { DEFAULT_STATUS_BAR_ITEMS, normalizeStatusBarItems } from "./statusBarItems";
@@ -86,6 +84,7 @@ import type {
   PluginInstallOptions,
   PluginView,
   ProjectNode,
+  SessionCatalogBindings,
   PromptHistoryEntry,
   PromptHistoryResult,
   ProviderModelCatalogUpdate,
@@ -163,7 +162,7 @@ interface DesktopWindowState {
 // added or renamed, the generated types shift, and a key present in GeneratedApp
 // but missing from AppBindings causes a type error here. Fix: add the new method
 // to AppBindings, then run `pnpm typecheck` to verify.
-export interface AppBindings {
+export interface AppBindings extends SessionCatalogBindings {
   Platform(): Promise<string>;
   MinimiseMainWindow(): Promise<void>;
   ToggleMaximiseMainWindow(): Promise<void>;
@@ -2437,6 +2436,7 @@ function makeMockApp(): AppBindings {
     }
   };
   return {
+    ...makeMockSessionCatalogBindings(cloneProjectTree),
     async MinimiseMainWindow() {
       console.info("mock MinimiseMainWindow");
     },

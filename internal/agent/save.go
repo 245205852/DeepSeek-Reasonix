@@ -367,10 +367,10 @@ func (s *Session) saveLocked(path string, mode sessionSaveMode) error {
 					slog.Warn("session: keeping save after display index write failure", "path", path, "err", err)
 				}
 			}
-			s.markPersisted(path, digest, version, revision, rewriteVersion)
+			s.markPersistedWithListing(path, digest, version, revision, rewriteVersion, msgs)
 			return nil
 		}
-		s.markPersisted(path, digest, version, decision.revision, rewriteVersion)
+		s.markPersistedWithListing(path, digest, version, decision.revision, rewriteVersion, msgs)
 		return nil
 	}
 	if decision.appendOnly && probe.native && mode != sessionSaveRewriteCompact {
@@ -420,7 +420,7 @@ func (s *Session) saveLocked(path string, mode sessionSaveMode) error {
 				slog.Warn("session: keeping save after display index write failure", "path", path, "err", err)
 			}
 		}
-		s.markPersisted(path, digest, version, revision, rewriteVersion)
+		s.markPersistedWithListing(path, digest, version, revision, rewriteVersion, msgs)
 		return nil
 	}
 	baseRevision = decision.revision
@@ -480,7 +480,7 @@ func (s *Session) saveLocked(path string, mode sessionSaveMode) error {
 		// derived sidecar and must never fail a save.
 		slog.Warn("session: keeping save after display index write failure", "path", path, "err", err)
 	}
-	s.markPersisted(path, digest, version, revision, rewriteVersion)
+	s.markPersistedWithListing(path, digest, version, revision, rewriteVersion, msgs)
 	return nil
 }
 
@@ -1592,6 +1592,7 @@ type SessionInfo struct {
 	ModTime        time.Time // compatibility alias for LastActivityAt
 	Preview        string
 	Turns          int
+	CountsKnown    bool
 	Scope          string
 	WorkspaceRoot  string
 	TopicID        string
@@ -2213,8 +2214,9 @@ func ListSessionOrder(dir string) ([]SessionOrderInfo, error) {
 
 // ListSessions returns every non-empty *.jsonl session under dir,
 // most-recently-active first, each with a preview line so the picker can show
-// something the user recognises. A missing directory is not an error — it just
-// means there's nothing to resume yet.
+// something the user recognises. It never decodes a transcript: legacy counts
+// remain explicitly unknown until the session catalog's single repair worker
+// validates them. A missing directory is not an error.
 func ListSessions(dir string) ([]SessionInfo, error) {
 	ordered, err := ListSessionOrder(dir)
 	if err != nil {
@@ -2223,32 +2225,22 @@ func ListSessions(dir string) ([]SessionInfo, error) {
 	var out []SessionInfo
 	for _, session := range ordered {
 		preview, turns := session.Preview, session.Turns
-		var previewErr error
 		if sessionListingCountsNeedRefresh(session.SchemaVersion, turns) {
-			// The sidecar's counts weren't recorded from content (a legacy session
-			// from before they were persisted), or an old zero may have swallowed a
-			// decode error. Decode once, then backfill + stamp the sidecar so every
-			// later listing is O(1) and a recovered session becomes visible again.
-			preview, turns, previewErr = previewSessionWithError(session.Path)
-			if previewErr == nil {
-				// Compare-and-apply under the metadata lock. A turn-end save may have
-				// advanced the transcript and its counts while this listing decoded;
-				// never overwrite that newer state with a stale backfill.
-				preview, turns, _ = updateSessionListingCountsIfCurrent(session, preview, turns)
-			}
-		}
-		if turns == 0 {
-			hasData := sessionArtifactsHaveContent(session.Path)
-			if previewErr != nil && hasData {
-				preview = "Session may be corrupted — " + filepath.Base(session.Path)
-				out = append(out, sessionInfoFromOrder(session, preview, 0))
+			if !sessionArtifactsHaveContent(session.Path) {
 				continue
 			}
+			if strings.TrimSpace(preview) == "" {
+				preview = "History is being indexed — " + filepath.Base(session.Path)
+			}
+			out = append(out, sessionInfoFromOrder(session, preview, turns, false))
+			continue
+		}
+		if turns == 0 {
 			// Never had user interaction — an empty conversation that should not
 			// appear in the history panel or the resume picker.
 			continue
 		}
-		out = append(out, sessionInfoFromOrder(session, preview, turns))
+		out = append(out, sessionInfoFromOrder(session, preview, turns, true))
 	}
 	return out, nil
 }

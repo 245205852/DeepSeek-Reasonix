@@ -4,6 +4,7 @@
 import type { Todo } from "./tools";
 import type { ContextMaintenanceInfo, WireContextMaintenance } from "./contextMaintenanceTypes";
 export type { ContextMaintenanceInfo, ContextMaintenanceReceipt, WireContextMaintenance } from "./contextMaintenanceTypes";
+export type { ProjectTopicKey, ProjectTopicPage, ProjectTopicPageRequest, ProjectTreeChangedV2, ProjectTreeSnapshot, SessionCatalogBindings, SessionCatalogStatus, SessionReference } from "./sessionCatalogTypes";
 
 export type EventKind =
   | "turn_started"
@@ -443,6 +444,8 @@ export interface ProjectNode {
   sessionPath?: string;
   projectColor?: string;
   turns?: number;
+  turnsState?: "unknown" | "valid" | "corrupt" | string;
+  health?: "ok" | "missing" | "corrupt" | "degraded" | string;
   createdAt?: number;
   lastActivityAt?: number;
   open?: boolean;
@@ -773,6 +776,7 @@ export interface SessionMeta {
   preview: string;
   title?: string; // user-chosen name; falls back to preview when empty
   turns: number;
+  turnsState?: "unknown" | "valid" | "corrupt" | string;
   createdAt: number; // unix milliseconds
   lastActivityAt: number; // unix milliseconds
   modTime: number; // compatibility alias for lastActivityAt
@@ -793,16 +797,6 @@ export interface SessionMeta {
   sessionSource?: string;
   recovered?: boolean; // created by conflict recovery, including a continued branch
   recoveryCopy?: boolean; // actual branch content is unchanged and covered by its parent
-}
-
-// SessionReference is a session selected via @ past:chats for context injection.
-export interface SessionReference {
-  path: string;
-  title: string;
-  preview?: string;
-  turns?: number;
-  createdAt?: number;
-  lastActivityAt?: number;
 }
 
 export interface WorkspaceView {
