@@ -976,11 +976,10 @@ func (m chatTUI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 	}
 
-	// Any viewport scroll (wheel, PgUp/PgDn, edge auto-scroll, or tail-follow to
-	// newest output) shifts the whole window. Some terminals (Warp) mishandle
-	// the renderer's scroll/insert-line optimization and strand stale rows, so
-	// force a full clear+redraw whenever the offset actually moved.
-	if cm.viewport.YOffset() != prevYOff && !cm.nativeScrollback && !cm.sessionSwitch {
+	// Keep the legacy full redraw where Warp's scroll optimization can strand
+	// stale rows. Bubble Tea already disables that optimization on Windows,
+	// where an extra asynchronous ClearScreen visibly flickers (#8090).
+	if useLegacyViewportScrollClear(runtime.GOOS) && cm.viewport.YOffset() != prevYOff && !cm.nativeScrollback && !cm.sessionSwitch {
 		cm.sessionSwitch = false
 		return cm, batchCmds(tea.ClearScreen, mouseCmd, cmd)
 	}
