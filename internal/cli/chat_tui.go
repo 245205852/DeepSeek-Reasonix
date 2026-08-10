@@ -1477,13 +1477,7 @@ func (m chatTUI) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		case " ":
 			if m.inboxQueuedCount() > 0 && m.input.Value() == "" {
-				snap := m.inboxSnap()
-				_ = m.ctrl.SetInboxPaused(!snap.Paused)
-				if !snap.Paused {
-					m.notice("inbox paused")
-				} else {
-					m.notice("inbox resumed")
-				}
+				m.toggleInboxPaused()
 				return m, finalize(m, cmds)
 			}
 		case "r":
