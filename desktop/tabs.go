@@ -3891,6 +3891,11 @@ func (a *App) buildTabControllerWithContextCore(tab *WorkspaceTab, loadedSession
 		toolApprovalMode: buildToolApprovalMode,
 	}).normalizedRuntime()
 
+	// Capture the extension generation before the shared host is mutated by
+	// boot.Build. A concurrent plugin delete/update/reauth bumps the counter;
+	// if it moves before publication we abandon this controller rather than
+	// resurrecting removed tools on the shared host.
+	extensionGen := a.currentExtensionGeneration()
 	sharedHost := a.acquireSharedHost(rootKey)
 	sink := a.desktopControllerSink(buildSink, cfg.Notifications)
 
@@ -3939,6 +3944,14 @@ func (a *App) buildTabControllerWithContextCore(tab *WorkspaceTab, loadedSession
 	}
 	if a.tabBuildSuperseded(tab, buildGeneration) {
 		a.abandonSupersededBuild(tab, ctrl, rootKey, "")
+		return
+	}
+	if a.currentExtensionGeneration() != extensionGen {
+		// Plugin/MCP configuration changed during the off-lock build. Drop this
+		// controller and rebuild from the latest configuration so deleted tools
+		// cannot be re-published onto the shared host.
+		a.abandonSupersededBuild(tab, ctrl, rootKey, "")
+		a.scheduleDeferredStartupBuild(tab.ID)
 		return
 	}
 

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -239,7 +240,7 @@ func TestDirectWriteDuringScanIsNotMarkedMissing(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = catalog.Close(context.Background()) })
 	target := DirectoryTarget{Path: dir, Scope: "global"}
-	generation, err := catalog.beginDirectoryScan(ctx, target, now.UnixMilli())
+	generation, _, err := catalog.beginDirectoryScan(ctx, target, "test", now.UnixMilli())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -409,7 +410,7 @@ func BenchmarkListTopicsWarmCatalog10K(b *testing.B) {
 		}
 	}
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for range b.N {
 		page, err := catalog.ListTopics(ctx, TopicPageRequest{
 			Scope: "project", WorkspaceRoot: "/workspace", Limit: 50,
 		})
@@ -484,5 +485,114 @@ func TestOpenQuarantinesCorruptCatalogAndRebuildsProjection(t *testing.T) {
 	}
 	if _, err := os.Stat(status.QuarantinedPath); err != nil {
 		t.Fatalf("quarantined catalog: %v", err)
+	}
+}
+
+func TestOpenBlankPathUsesMemoryWithoutWritingCWD(t *testing.T) {
+	// A blank path (CacheDir unavailable or caller override) must use memory
+	// and must not create a relative session-catalog file under cwd.
+	wd := t.TempDir()
+	t.Chdir(wd)
+	catalog, err := Open(context.Background(), Options{Path: "   ", DisableRepair: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = catalog.Close(context.Background()) })
+	status := catalog.Status()
+	if status.Mode != ModeMemory {
+		t.Fatalf("status=%#v, want memory mode for blank path", status)
+	}
+	entries, err := os.ReadDir(wd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range entries {
+		if strings.Contains(entry.Name(), "session-catalog") || strings.HasSuffix(entry.Name(), ".sqlite") {
+			t.Fatalf("blank path wrote projection into cwd: %s", entry.Name())
+		}
+	}
+}
+
+func TestRebuildFailureKeepsExistingCatalog(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "catalog.sqlite")
+	catalog, err := Open(ctx, Options{Path: path, DisableRepair: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	session := filepath.Join(dir, "keep.jsonl")
+	if err := os.WriteFile(session, []byte(`{"role":"user","content":"hello"}`+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := catalog.UpsertSession(ctx, SessionRecord{
+		Path: session, Directory: dir, Scope: "global", TopicID: "keep",
+		Turns: 1, TurnsState: TurnsValid, Health: HealthOK, Preview: "hello",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := catalog.Close(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	// ListSessionOrder on a regular file fails; Rebuild must keep the old DB.
+	fileTarget := filepath.Join(t.TempDir(), "not-a-dir")
+	if err := os.WriteFile(fileTarget, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Rebuild(ctx, path, []DirectoryTarget{{Path: fileTarget, Scope: "global"}}); err == nil {
+		t.Fatal("expected rebuild failure for file path")
+	}
+	restored, err := Open(ctx, Options{Path: path, DisableRepair: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = restored.Close(context.Background()) })
+	topic, ok, err := restored.GetTopic(ctx, TopicKey{Scope: "global", TopicID: "keep"})
+	if err != nil || !ok || len(topic.Sessions) != 1 {
+		t.Fatalf("rebuild failure lost catalog: ok=%v topic=%#v err=%v", ok, topic, err)
+	}
+}
+
+func TestRepairDrainEventuallyCompletesBeyondQueue(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	dir := t.TempDir()
+	path := filepath.Join(t.TempDir(), "catalog.sqlite")
+	seed, err := Open(ctx, Options{Path: path, DisableRepair: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	const total = 8
+	for i := 0; i < total; i++ {
+		session := filepath.Join(dir, fmt.Sprintf("%02d.jsonl", i))
+		if err := os.WriteFile(session, []byte(`{"role":"user","content":"turn"}`+"\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := seed.UpsertSession(ctx, SessionRecord{
+			Path: session, Directory: dir, Scope: "global", TopicID: fmt.Sprintf("t%d", i),
+			TurnsState: TurnsUnknown, Health: HealthOK, LastActivityAt: int64(i + 1),
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := seed.Close(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	catalog, err := Open(ctx, Options{Path: path, QueueCapacity: 2, Now: time.Now})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = catalog.Close(context.Background()) })
+	deadline := time.Now().Add(15 * time.Second)
+	for {
+		status := catalog.Status()
+		if status.RepairPending == 0 {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("repair pending stuck at %d", status.RepairPending)
+		}
+		time.Sleep(50 * time.Millisecond)
 	}
 }

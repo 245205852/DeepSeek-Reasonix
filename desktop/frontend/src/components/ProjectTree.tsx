@@ -167,7 +167,26 @@ export function activeSessionAncestorKeys(
     }
     return null;
   };
-  return walk(nodes, []) ?? [];
+  const found = walk(nodes, []);
+  if (found) return found;
+  // Shell-only snapshots no longer embed topics. Expand the matching project or
+  // Global folder by workspace identity so the first lazy page can load.
+  const scope = (activeScope ?? "").trim();
+  const root = (activeWorkspaceRoot ?? "").trim();
+  for (const node of nodes) {
+    if (!node) continue;
+    if (scope === "global" && node.kind === "global_folder") {
+      return [projectNodeKey(node, 0)];
+    }
+    if (node.kind === "project" && root && (node.root === root || node.root === activeWorkspaceRoot)) {
+      return [projectNodeKey(node, 0)];
+    }
+    if (!scope && !root && activeTopicId && (node.kind === "project" || node.kind === "global_folder")) {
+      // Active topic without resolved scope still needs a folder open path.
+      return [projectNodeKey(node, 0)];
+    }
+  }
+  return [];
 }
 
 export function defaultExpandedProjectTreeKeys(
@@ -467,13 +486,17 @@ export function ProjectTree({
     });
   }, []);
 
+  const topicLoadSeqRef = useRef<Record<string, number>>({});
+
   const loadProjectTopics = useCallback(async (project: ProjectNode, append = false) => {
     if (project.kind !== "project" && project.kind !== "global_folder") return;
     const key = project.key;
     const pageState = topicPageStateRef.current[key];
-    if (pageState?.loading) return;
     const cursor = append ? pageState?.nextCursor ?? "" : "";
     if (append && !cursor) return;
+    // Last-query-wins: never drop a newer search because an older page is still loading.
+    const seq = (topicLoadSeqRef.current[key] ?? 0) + 1;
+    topicLoadSeqRef.current[key] = seq;
     updateTopicPageState(key, { ...pageState, loading: true });
     try {
       const page = await app.ListProjectTopics({
@@ -484,6 +507,7 @@ export function ProjectTree({
         query: query.trim(),
         timeFilter: timeFilter === "10" || timeFilter === "20" || timeFilter === "all" ? "" : timeFilter,
       });
+      if (topicLoadSeqRef.current[key] !== seq) return;
       if (!projectTreeRevisionIsFresh(latestRevisionRef.current, page.revision)) {
         updateTopicPageState(key, { ...topicPageStateRef.current[key], loading: false });
         return;
@@ -496,6 +520,7 @@ export function ProjectTree({
       }));
       updateTopicPageState(key, { nextCursor: page.nextCursor, loading: false });
     } catch {
+      if (topicLoadSeqRef.current[key] !== seq) return;
       updateTopicPageState(key, { ...topicPageStateRef.current[key], loading: false });
     }
   }, [query, timeFilter, updateTopicPageState]);
@@ -549,13 +574,18 @@ export function ProjectTree({
     }
   }), [expanded, loadProjectTopics]);
 
+  // Debounce query/timeFilter reloads so typing does not stampede the catalog.
+  // Expansion and tree shell arrival still load on the same path after the delay.
   useEffect(() => {
     const filtering = query.trim() !== "" || timeFilter !== "all";
-    for (const project of treeRef.current) {
-      const key = projectNodeKey(project, 0);
-      if (filtering || expanded.has(key)) void loadProjectTopics(project);
-    }
-  }, [expanded, loadProjectTopics, query, timeFilter]);
+    const timer = setTimeout(() => {
+      for (const project of treeRef.current) {
+        const key = projectNodeKey(project, 0);
+        if (filtering || expanded.has(key)) void loadProjectTopics(project);
+      }
+    }, 200);
+    return () => clearTimeout(timer);
+  }, [expanded, loadProjectTopics, query, timeFilter, tree]);
 
   // Following the active topic is a view concern over the tree already held.
   useEffect(() => {

@@ -3,8 +3,8 @@ package sessioncatalog
 import (
 	"context"
 	"database/sql"
-	"fmt"
-	"time"
+
+	"reasonix/internal/projectiondb"
 )
 
 const migrationV1 = `
@@ -96,54 +96,15 @@ const migrationV2 = `
 ALTER TABLE catalog_topics ADD COLUMN metadata_present INTEGER NOT NULL DEFAULT 0;
 `
 
-func migrateSchema(ctx context.Context, db *sql.DB) error {
-	if _, err := db.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS schema_migrations (
-        version INTEGER PRIMARY KEY,
-        applied_at INTEGER NOT NULL
-    )`); err != nil {
-		return err
+func sessionMigrations() []projectiondb.Migration {
+	return []projectiondb.Migration{
+		{Version: 1, Apply: func(ctx context.Context, tx *sql.Tx) error {
+			_, err := tx.ExecContext(ctx, migrationV1)
+			return err
+		}},
+		{Version: 2, Apply: func(ctx context.Context, tx *sql.Tx) error {
+			_, err := tx.ExecContext(ctx, migrationV2)
+			return err
+		}},
 	}
-	var version int
-	if err := db.QueryRowContext(ctx, `SELECT COALESCE(MAX(version), 0) FROM schema_migrations`).Scan(&version); err != nil {
-		return err
-	}
-	if version > SchemaVersion {
-		return fmt.Errorf("session catalog schema %d is newer than supported %d", version, SchemaVersion)
-	}
-	if version < 1 {
-		tx, err := db.BeginTx(ctx, nil)
-		if err != nil {
-			return err
-		}
-		if _, err := tx.ExecContext(ctx, migrationV1); err != nil {
-			_ = tx.Rollback()
-			return err
-		}
-		if _, err := tx.ExecContext(ctx, `INSERT INTO schema_migrations(version, applied_at) VALUES(1, ?)`, time.Now().UnixMilli()); err != nil {
-			_ = tx.Rollback()
-			return err
-		}
-		if err := tx.Commit(); err != nil {
-			return err
-		}
-		version = 1
-	}
-	if version < 2 {
-		tx, err := db.BeginTx(ctx, nil)
-		if err != nil {
-			return err
-		}
-		if _, err := tx.ExecContext(ctx, migrationV2); err != nil {
-			_ = tx.Rollback()
-			return err
-		}
-		if _, err := tx.ExecContext(ctx, `INSERT INTO schema_migrations(version, applied_at) VALUES(2, ?)`, time.Now().UnixMilli()); err != nil {
-			_ = tx.Rollback()
-			return err
-		}
-		if err := tx.Commit(); err != nil {
-			return err
-		}
-	}
-	return nil
 }

@@ -961,8 +961,20 @@ func TestTopicMigrationMarkerRescansWhenSessionFileChanges(t *testing.T) {
 	app := NewApp()
 	firstTopicID := legacySessionTopicID(filepath.Join(dir, "first.jsonl"))
 	waitForCatalogTopic(t, app, "global", "", firstTopicID)
-	if _, err := os.Stat(filepath.Join(dir, topicMigrationMarker)); err != nil {
-		t.Fatalf("expected migration marker after a complete pass: %v", err)
+	// Catalog publication and the migration marker are written on the same
+	// background path but not under one fsync barrier. Wait for the marker
+	// explicitly so Windows CI does not observe the topic before the stamp.
+	markerPath := filepath.Join(dir, topicMigrationMarker)
+	deadline := time.Now().Add(5 * time.Second)
+	var lastMarkerErr error
+	for {
+		if _, lastMarkerErr = os.Stat(markerPath); lastMarkerErr == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("expected migration marker after a complete pass: %v", lastMarkerErr)
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 
 	// A CLI-created session added after the marker invalidates the lightweight

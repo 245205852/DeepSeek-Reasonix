@@ -10,6 +10,23 @@ import (
 	"reasonix/internal/plugin"
 )
 
+// bumpExtensionGeneration records that plugin/MCP configuration changed while
+// controller builds may still be running off the lifecycle lock. In-flight
+// builds that finish with a stale generation must not publish.
+func (a *App) bumpExtensionGeneration() {
+	if a == nil {
+		return
+	}
+	a.extensionGeneration.Add(1)
+}
+
+func (a *App) currentExtensionGeneration() uint64 {
+	if a == nil {
+		return 0
+	}
+	return a.extensionGeneration.Load()
+}
+
 // sharedPluginHost is a reference-counted plugin.Host shared across tabs
 // that share the same workspace root. Multiple controllers (one per tab)
 // use the same Host so MCP subprocesses (CodeGraph, etc.) are spawned once.

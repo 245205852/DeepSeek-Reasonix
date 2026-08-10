@@ -1,6 +1,6 @@
 //go:build windows
 
-package sessioncatalog
+package projectiondb
 
 import (
 	"path/filepath"
@@ -9,7 +9,7 @@ import (
 	"golang.org/x/sys/windows"
 )
 
-func catalogFilesystemRemote(path string) bool {
+func filesystemRemote(path string) bool {
 	volume := filepath.VolumeName(filepath.Clean(path))
 	if volume == "" {
 		return false
@@ -19,8 +19,5 @@ func catalogFilesystemRemote(path string) bool {
 		root += `\`
 	}
 	rootPtr, err := windows.UTF16PtrFromString(root)
-	if err != nil {
-		return false
-	}
-	return windows.GetDriveType(rootPtr) == windows.DRIVE_REMOTE
+	return err == nil && windows.GetDriveType(rootPtr) == windows.DRIVE_REMOTE
 }

@@ -1,13 +1,13 @@
 //go:build darwin
 
-package sessioncatalog
+package projectiondb
 
 import (
 	"strings"
 	"syscall"
 )
 
-func catalogFilesystemRemote(path string) bool {
+func filesystemRemote(path string) bool {
 	var stat syscall.Statfs_t
 	if err := syscall.Statfs(path, &stat); err != nil {
 		return false

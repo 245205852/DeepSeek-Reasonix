@@ -267,6 +267,10 @@ type App struct {
 	// host, last Release closes it.
 	sharedHosts   map[string]*sharedPluginHost
 	sharedHostsMu sync.Mutex
+	// extensionGeneration advances whenever plugin/MCP configuration that
+	// feeds boot.Build changes. Off-lock builds capture the generation before
+	// registering on the shared host and abandon publication if it moved.
+	extensionGeneration atomic.Uint64
 
 	// tabsSaveMu serializes writes to desktop-tabs.json and its fixed .tmp path.
 	tabsSaveMu             sync.Mutex
@@ -9178,6 +9182,7 @@ func (a *App) SetMCPServerEnabled(name string, enabled bool) error {
 	if err := activationStore.SetServerEnabled(configuredEntry, root, enabled); err != nil {
 		return err
 	}
+	a.bumpExtensionGeneration()
 	if enabled {
 		// Restore cached tools (or a cache-miss connect stub) without forcing a
 		// process start. Explicit install/retry remains the readiness-probed path.
@@ -9277,6 +9282,7 @@ func (a *App) SetMCPServerTier(name, tier string) error {
 	if err := a.saveDesktopMCPServer(root, updated); err != nil {
 		return err
 	}
+	a.bumpExtensionGeneration()
 	if tab != nil && ctrl != nil && !mcpConnected(ctrl, name) {
 		if _, err := ctrl.ConnectMCPServer(updated); err != nil {
 			recordMCPFailure(ctrl, updated, err)

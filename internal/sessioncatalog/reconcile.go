@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"reasonix/internal/agent"
+	"reasonix/internal/projectiondb"
 )
 
 func (c *Catalog) ReconcileDirectory(ctx context.Context, target DirectoryTarget) error {
@@ -41,7 +42,7 @@ func (c *Catalog) ReconcileDirectory(ctx context.Context, target DirectoryTarget
 		return nil
 	}
 	now := c.opts.Now().UnixMilli()
-	generation, err := c.beginDirectoryScan(ctx, target, now)
+	generation, resumeCursor, err := c.beginDirectoryScan(ctx, target, signature, now)
 	if err != nil {
 		return err
 	}
@@ -50,8 +51,19 @@ func (c *Catalog) ReconcileDirectory(ctx context.Context, target DirectoryTarget
 		c.failDirectoryScan(ctx, target.Path, err)
 		return err
 	}
-	for start := 0; start < len(ordered); start += 64 {
+	start := 0
+	if resumeCursor != "" {
+		for i, info := range ordered {
+			if info.Path == resumeCursor {
+				start = i + 1
+				break
+			}
+		}
+	}
+	for ; start < len(ordered); start += 64 {
 		if err := ctx.Err(); err != nil {
+			// Preserve scan_cursor so the next process resumes instead of
+			// re-decoding the whole directory after a forced shutdown.
 			c.failDirectoryScan(context.Background(), target.Path, err)
 			return err
 		}
@@ -339,32 +351,58 @@ func fileFingerprint(path string) string {
 	return fmt.Sprintf("%d:%d", info.Size(), info.ModTime().UnixNano())
 }
 
-func (c *Catalog) beginDirectoryScan(ctx context.Context, target DirectoryTarget, now int64) (int64, error) {
+// beginDirectoryScan starts or resumes a directory scan. When the previous
+// scan for the same signature was interrupted mid-way, the stored scan_cursor
+// is returned so ReconcileDirectory continues instead of restarting from 0.
+func (c *Catalog) beginDirectoryScan(ctx context.Context, target DirectoryTarget, signature string, now int64) (int64, string, error) {
 	tx, err := c.db.BeginTx(ctx, nil)
 	if err != nil {
-		return 0, err
+		return 0, "", err
 	}
-	if _, err := tx.ExecContext(ctx, `INSERT INTO catalog_directories(path,scope,workspace_root,state,error)
-        VALUES(?,?,?,'scanning','') ON CONFLICT(path) DO UPDATE SET
-        scope=excluded.scope,workspace_root=excluded.workspace_root,state='scanning',error='',
-        scan_generation=catalog_directories.scan_generation+1,scan_cursor='',indexed=0`,
-		target.Path, target.Scope, target.WorkspaceRoot); err != nil {
+	var previousSig, previousState, previousCursor string
+	var previousGeneration int64
+	err = tx.QueryRowContext(ctx, `SELECT signature,state,scan_cursor,scan_generation FROM catalog_directories WHERE path=?`,
+		target.Path).Scan(&previousSig, &previousState, &previousCursor, &previousGeneration)
+	resume := err == nil && previousState == "scanning" && previousSig == signature && strings.TrimSpace(previousCursor) != ""
+	if errors.Is(err, sql.ErrNoRows) {
+		err = nil
+	}
+	if err != nil {
 		_ = tx.Rollback()
-		return 0, err
+		return 0, "", err
+	}
+	if resume {
+		if _, err := tx.ExecContext(ctx, `UPDATE catalog_directories SET scope=?,workspace_root=?,state='scanning',error='',signature=? WHERE path=?`,
+			target.Scope, target.WorkspaceRoot, signature, target.Path); err != nil {
+			_ = tx.Rollback()
+			return 0, "", err
+		}
+		if previousGeneration == 0 {
+			previousGeneration = 1
+		}
+		return previousGeneration, previousCursor, tx.Commit()
+	}
+	if _, err := tx.ExecContext(ctx, `INSERT INTO catalog_directories(path,scope,workspace_root,state,error,signature)
+        VALUES(?,?,?,'scanning','',?) ON CONFLICT(path) DO UPDATE SET
+        scope=excluded.scope,workspace_root=excluded.workspace_root,state='scanning',error='',
+        signature=excluded.signature,scan_generation=catalog_directories.scan_generation+1,scan_cursor='',indexed=0`,
+		target.Path, target.Scope, target.WorkspaceRoot, signature); err != nil {
+		_ = tx.Rollback()
+		return 0, "", err
 	}
 	var generation int64
 	if err := tx.QueryRowContext(ctx, `SELECT scan_generation FROM catalog_directories WHERE path=?`, target.Path).Scan(&generation); err != nil {
 		_ = tx.Rollback()
-		return 0, err
+		return 0, "", err
 	}
 	if generation == 0 {
 		generation = 1
 		if _, err := tx.ExecContext(ctx, `UPDATE catalog_directories SET scan_generation=1 WHERE path=?`, target.Path); err != nil {
 			_ = tx.Rollback()
-			return 0, err
+			return 0, "", err
 		}
 	}
-	return generation, tx.Commit()
+	return generation, "", tx.Commit()
 }
 
 func (c *Catalog) finishDirectoryScan(ctx context.Context, target DirectoryTarget, signature string, generation, now int64, total int) error {
@@ -453,12 +491,28 @@ func (c *Catalog) enqueueRepair(path string) {
 	case <-c.stop:
 		c.repairQueued.Delete(path)
 	default:
+		// Channel pressure must never permanently drop unknown rows. Leave them
+		// in the DB and clear the in-memory marker so the drain ticker requeues.
 		c.repairQueued.Delete(path)
 	}
 }
 
 func (c *Catalog) enqueuePersistedRepairs(ctx context.Context) {
-	rows, err := c.db.QueryContext(ctx, `SELECT path FROM catalog_sessions WHERE turns_state='unknown' ORDER BY last_activity_at DESC`)
+	c.drainUnknownRepairs(ctx, c.opts.QueueCapacity)
+}
+
+// drainUnknownRepairs pulls the next batch of turns_state=unknown paths from the
+// durable projection. Combined with the repair ticker this gives eventual
+// completeness even when more than QueueCapacity sessions need repair.
+func (c *Catalog) drainUnknownRepairs(ctx context.Context, limit int) {
+	if c == nil || c.db == nil || c.opts.DisableRepair || limit <= 0 {
+		return
+	}
+	if err := ctx.Err(); err != nil {
+		return
+	}
+	rows, err := c.db.QueryContext(ctx, `SELECT path FROM catalog_sessions
+        WHERE turns_state='unknown' ORDER BY last_activity_at DESC LIMIT ?`, limit)
 	if err != nil {
 		return
 	}
@@ -473,12 +527,17 @@ func (c *Catalog) enqueuePersistedRepairs(ctx context.Context) {
 
 func (c *Catalog) repairLoop() {
 	defer c.workers.Done()
+	ticker := time.NewTicker(2 * time.Second)
+	defer ticker.Stop()
 	for {
 		select {
 		case path := <-c.repairCh:
 			c.repairSession(c.workerCtx, path)
 			c.repairQueued.Delete(path)
+			c.drainUnknownRepairs(c.workerCtx, 32)
 			runtime.Gosched()
+		case <-ticker.C:
+			c.drainUnknownRepairs(c.workerCtx, 64)
 		case <-c.stop:
 			return
 		}
@@ -486,10 +545,15 @@ func (c *Catalog) repairLoop() {
 }
 
 func (c *Catalog) repairSession(workerCtx context.Context, path string) {
+	if workerCtx.Err() != nil {
+		return
+	}
 	ctx, cancel := context.WithTimeout(workerCtx, 30*time.Second)
 	defer cancel()
+	// LoadSessionDisplayMessages is not yet context-aware; check cancellation
+	// before and after so shutdown can abandon the result without writing.
 	msgs, _, _, err := agent.LoadSessionDisplayMessages(path)
-	if ctx.Err() != nil {
+	if ctx.Err() != nil || workerCtx.Err() != nil {
 		return
 	}
 	if err != nil {
@@ -504,6 +568,9 @@ func (c *Catalog) repairSession(workerCtx context.Context, path string) {
 		meta.SchemaVersion = agent.BranchMetaCountsVersion
 		return nil
 	}); err != nil {
+		return
+	}
+	if ctx.Err() != nil || workerCtx.Err() != nil {
 		return
 	}
 	_, _ = c.db.ExecContext(ctx, `UPDATE catalog_sessions SET preview=?,turns=?,turns_state='valid',
@@ -544,39 +611,67 @@ func (c *Catalog) recomputeTopicForSession(ctx context.Context, path, reason str
 }
 
 // Rebuild replaces only the disposable catalog. Authoritative sessions and
-// sidecars are never changed or removed by this operation.
+// sidecars are never changed or removed by this operation. The live database
+// stays in place until a fully-populated replacement is validated and swapped.
 func Rebuild(ctx context.Context, path string, targets []DirectoryTarget) (Status, error) {
 	if strings.TrimSpace(path) == "" {
 		path = DefaultPath()
 	}
-	backup := path + ".reindex-backup"
-	_ = os.Remove(backup)
-	if err := os.Rename(path, backup); err != nil && !os.IsNotExist(err) {
+	if strings.TrimSpace(path) == "" {
+		catalog, err := Open(ctx, Options{InMemory: true, DisableRepair: true})
+		if err != nil {
+			return Status{}, err
+		}
+		for _, target := range targets {
+			if err := catalog.ReconcileDirectory(ctx, target); err != nil {
+				closeCtx, cancel := context.WithTimeout(context.Background(), time.Second)
+				_ = catalog.Close(closeCtx)
+				cancel()
+				return catalog.Status(), err
+			}
+		}
+		status := catalog.Status()
+		closeCtx, cancel := context.WithTimeout(context.Background(), time.Second)
+		_ = catalog.Close(closeCtx)
+		cancel()
+		return status, nil
+	}
+	err := projectiondb.Rebuild(ctx, projectiondb.OpenOptions{
+		Path:       path,
+		MemoryName: "session-catalog-rebuild",
+		Migrations: sessionMigrations(),
+	}, func(ctx context.Context, db *sql.DB) error {
+		// Populate through a catalog that owns this temporary database handle
+		// without starting background repair workers.
+		temp := &Catalog{
+			db:             db,
+			opts:           Options{Path: path, DisableRepair: true, Now: time.Now, MissingGrace: defaultMissingGrace},
+			writeQueued:    map[string]SessionRecord{},
+			directoryLocks: map[string]*sync.Mutex{},
+			stop:           make(chan struct{}),
+			status:         Status{State: StateReady, Mode: ModeDisk, Path: path},
+		}
+		temp.workerCtx, temp.workerCancel = context.WithCancel(ctx)
+		defer temp.workerCancel()
+		for _, target := range targets {
+			if err := temp.ReconcileDirectory(ctx, target); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+	if err != nil {
 		return Status{}, err
 	}
-	for _, suffix := range []string{"-wal", "-shm"} {
-		_ = os.Rename(path+suffix, backup+suffix)
-	}
+	// Open the published replacement briefly for a status snapshot, then close.
 	catalog, err := Open(ctx, Options{Path: path, DisableRepair: true})
 	if err != nil {
-		_ = os.Rename(backup, path)
-		return Status{}, err
-	}
-	for _, target := range targets {
-		if err := catalog.ReconcileDirectory(ctx, target); err != nil {
-			closeCtx, cancel := context.WithTimeout(context.Background(), time.Second)
-			_ = catalog.Close(closeCtx)
-			cancel()
-			return catalog.Status(), err
-		}
+		return Status{State: StateReady, Mode: ModeDisk, Path: path}, nil
 	}
 	status := catalog.Status()
 	closeCtx, cancel := context.WithTimeout(context.Background(), time.Second)
 	_ = catalog.Close(closeCtx)
 	cancel()
-	_ = os.Remove(backup)
-	_ = os.Remove(backup + "-wal")
-	_ = os.Remove(backup + "-shm")
 	return status, nil
 }
 
@@ -587,12 +682,26 @@ func Inspect(ctx context.Context, path string) (Status, error) {
 		path = DefaultPath()
 	}
 	status := Status{State: StateDegraded, Mode: ModeDisk, Path: path}
-	if _, err := os.Stat(path); err != nil {
-		if os.IsNotExist(err) {
-			status.LastError = "catalog does not exist"
-			return status, nil
-		}
-		return status, err
+	if strings.TrimSpace(path) == "" {
+		status.LastError = "catalog path unavailable"
+		return status, nil
+	}
+	inspection := projectiondb.Inspect(ctx, path)
+	if inspection.Error != "" && !inspection.Exists {
+		status.LastError = inspection.Error
+		return status, nil
+	}
+	if !inspection.Exists {
+		status.LastError = "catalog does not exist"
+		return status, nil
+	}
+	if inspection.Integrity != "" && inspection.Integrity != "ok" {
+		status.LastError = inspection.Integrity
+		return status, nil
+	}
+	if inspection.Error != "" {
+		status.LastError = inspection.Error
+		return status, nil
 	}
 	u := &url.URL{Scheme: "file", Path: path}
 	db, err := sql.Open("sqlite", u.String()+"?mode=ro&_pragma=busy_timeout%28150%29")
@@ -600,14 +709,6 @@ func Inspect(ctx context.Context, path string) (Status, error) {
 		return status, err
 	}
 	defer db.Close()
-	var integrity string
-	if err := db.QueryRowContext(ctx, `PRAGMA integrity_check`).Scan(&integrity); err != nil {
-		return status, err
-	}
-	if integrity != "ok" {
-		status.LastError = integrity
-		return status, nil
-	}
 	status.State = StateReady
 	_ = db.QueryRowContext(ctx, `SELECT revision FROM catalog_state WHERE id=1`).Scan(&status.Revision)
 	_ = db.QueryRowContext(ctx, `SELECT COUNT(*) FROM catalog_sessions`).Scan(&status.Indexed)
