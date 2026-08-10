@@ -2,7 +2,6 @@ package agent
 
 import (
 	"reasonix/internal/event"
-	"reasonix/internal/evidence"
 )
 
 // nestedSink is the event view a fleet or parallel_tasks item runs under: tool
@@ -11,6 +10,9 @@ import (
 // capabilities are forwarded by method, and a bare func sink swallowed every
 // delegation audit a fleet child produced.
 type nestedSink struct {
+	// Audits are accounting, not presentation: the embedded forwarder passes
+	// every optional capability straight through to the parent.
+	event.AuditForwarder
 	parentID string
 	parent   event.Sink
 }
@@ -27,19 +29,4 @@ func (s nestedSink) Emit(e event.Event) {
 		}
 		s.parent.Emit(e)
 	}
-}
-
-// Audits are accounting, not presentation: they pass straight through so a
-// child's receipts reach the session's metrics rather than dying at the nesting
-// boundary.
-func (s nestedSink) RecordDelegationAudit(a evidence.DelegationAudit) {
-	event.RecordDelegationAudit(s.parent, a)
-}
-
-func (s nestedSink) RecordReadinessAudit(a evidence.ReadinessAudit) {
-	event.RecordReadinessAudit(s.parent, a)
-}
-
-func (s nestedSink) RecordCompletionReport(a event.CompletionReportAudit) {
-	event.RecordCompletionReport(s.parent, a)
 }

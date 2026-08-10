@@ -13,16 +13,41 @@ import (
 	"reasonix/internal/trajectory"
 )
 
-// Optional sink capabilities are forwarded by hand at every wrapper in the
-// chain, so a new one silently loses its data at whichever wrapper forgot it.
-// That is exactly how the delegation audit reached no metrics sink at all until
-// control's goal-usage tee was taught to forward it, while three layers of unit
-// tests passed. Every wrapper that forwards one audit must forward them all.
+// The shared forwarder is why a new capability no longer has to be repeated at
+// every layer, so it must itself be complete.
+func TestAuditForwarderCoversEveryCapability(t *testing.T) {
+	fwd := reflect.TypeFor[event.AuditForwarder]()
+	for name, want := range map[string]reflect.Type{
+		"DelegationAuditSink":       reflect.TypeFor[event.DelegationAuditSink](),
+		"ReadinessAuditSink":        reflect.TypeFor[event.ReadinessAuditSink](),
+		"ContractShadowAuditSink":   reflect.TypeFor[event.ContractShadowAuditSink](),
+		"CompletionReportAuditSink": reflect.TypeFor[event.CompletionReportAuditSink](),
+		"MemoryRecallSink":          reflect.TypeFor[event.MemoryRecallSink](),
+		"DelegationAdmissionSink":   reflect.TypeFor[event.DelegationAdmissionSink](),
+		"OutcomeProgressSink":       reflect.TypeFor[event.OutcomeProgressSink](),
+		"ProtocolRecoveryAuditSink": reflect.TypeFor[event.ProtocolRecoveryAuditSink](),
+		"TurnCompletionSink":        reflect.TypeFor[event.TurnCompletionSink](),
+	} {
+		if !fwd.Implements(want) {
+			t.Errorf("event.AuditForwarder does not forward %s; every embedder loses it", name)
+		}
+	}
+}
+
+// A wrapper that forwards one audit but forgets another drops its data
+// silently, with the tests still green. Pure forwarders should embed
+// event.AuditForwarder instead of repeating the nine methods.
 func TestAuditCapabilitiesAreForwardedByEveryWrapper(t *testing.T) {
 	reference := reflect.TypeFor[event.CompletionReportAuditSink]()
 	required := map[string]reflect.Type{
-		"DelegationAuditSink": reflect.TypeFor[event.DelegationAuditSink](),
-		"ReadinessAuditSink":  reflect.TypeFor[event.ReadinessAuditSink](),
+		"DelegationAuditSink":       reflect.TypeFor[event.DelegationAuditSink](),
+		"ReadinessAuditSink":        reflect.TypeFor[event.ReadinessAuditSink](),
+		"ContractShadowAuditSink":   reflect.TypeFor[event.ContractShadowAuditSink](),
+		"MemoryRecallSink":          reflect.TypeFor[event.MemoryRecallSink](),
+		"DelegationAdmissionSink":   reflect.TypeFor[event.DelegationAdmissionSink](),
+		"OutcomeProgressSink":       reflect.TypeFor[event.OutcomeProgressSink](),
+		"ProtocolRecoveryAuditSink": reflect.TypeFor[event.ProtocolRecoveryAuditSink](),
+		"TurnCompletionSink":        reflect.TypeFor[event.TurnCompletionSink](),
 	}
 	wrappers := []event.Sink{
 		event.Sync(event.Discard),

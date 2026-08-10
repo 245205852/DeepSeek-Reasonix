@@ -2091,5 +2091,5 @@ func subSinkFor(parentID string, parent event.Sink) event.Sink {
 	if parent == nil {
 		return event.Discard
 	}
-	return nestedSink{parentID: parentID, parent: parent}
+	return nestedSink{AuditForwarder: event.AuditForwarder{Inner: parent}, parentID: parentID, parent: parent}
 }
