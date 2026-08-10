@@ -17,6 +17,7 @@ import { STEER_NOTICE_PREFIX, isSteerNoticeText } from "../lib/useController";
 import { useTranscriptEntranceAnimation } from "../lib/useEntranceAnimation";
 import { useTranscriptScrollController } from "../lib/useTranscriptScrollController";
 import { useTranscriptSelectionRetention } from "../lib/useTranscriptSelectionRetention";
+import { useTranscriptMeasurementInvalidation } from "../lib/useTranscriptMeasurementInvalidation";
 import { compactQuestionText, lastQuestionTurn, questionAnchorId, questionTurnsById, scrollVersion, type QuestionAnchor } from "../lib/transcriptGrouping";
 import {
   buildTranscriptRows,
@@ -45,7 +46,7 @@ import { noteTranscriptRowCounts } from "../lib/sessionDiagnostics";
 import { useReasoningDisplayMode } from "../lib/reasoningDisplayPreference";
 import { InlineAssistantReasoning } from "./InlineAssistantReasoning";
 import { LiveStreamContext } from "./LiveStreamContext";
-import { estimateCachedTranscriptRowHeight, transcriptHeightCache, transcriptLayoutSignature } from "../lib/transcriptHeightCache";
+import { createTranscriptMeasureElement, estimateCachedTranscriptRowHeight, transcriptHeightCache, transcriptLayoutSignature } from "../lib/transcriptHeightCache";
 
 type OpenTurnAction = { turn: number; menu: "summary" | "rewind" };
 
@@ -630,11 +631,16 @@ export function Transcript({
     if (cached != null) return cached;
     return estimateCachedTranscriptRowHeight(row, scrollRef.current?.clientWidth ?? 0, estimateTranscriptRowSize(row));
   }, [rows, scrollRef, tabId]);
+  const measureRowSize = useMemo(() => createTranscriptMeasureElement({
+    tabId: tabId ?? "",
+    getLayoutElement: () => scrollRef.current,
+  }), [scrollRef, tabId]);
   const virtualizer = useVirtualizer({
     count: rows.length,
     getScrollElement: () => scrollRef.current,
     getItemKey: getRowKey,
     estimateSize: estimateRowSize,
+    measureElement: measureRowSize,
     overscan: VIRTUAL_OVERSCAN_ROWS,
     rangeExtractor: selectionRetention.rangeExtractor,
     // Key-anchored compensation: prepended history pages, fold toggles and
@@ -651,6 +657,7 @@ export function Transcript({
     useAnimationFrameWithResizeObserver: true,
   });
   virtualizer.shouldAdjustScrollPositionOnItemSizeChange = () => canVirtualizerAdjust();
+  useTranscriptMeasurementInvalidation({ scrollRef, virtualizer, selectionActive: selectionRetention.active });
 
   const sizerRef = useCallback(
     (el: HTMLDivElement | null) => {
@@ -659,18 +666,6 @@ export function Transcript({
     },
     [virtualizer, entranceRef],
   );
-  const measureRowElement = useCallback((element: HTMLDivElement | null) => {
-    virtualizer.measureElement(element);
-    if (!element) return;
-    const height = element.getBoundingClientRect().height || element.offsetHeight;
-    transcriptHeightCache.set(
-      tabId ?? "",
-      transcriptLayoutSignature(scrollRef.current),
-      element.dataset.rowKey ?? String(element.dataset.index ?? ""),
-      height,
-    );
-  }, [scrollRef, tabId, virtualizer]);
-
   const virtualItems = virtualizer.getVirtualItems();
   useEffect(() => {
     noteTranscriptRowCounts(virtualItems.length, rows.length);
@@ -868,7 +863,7 @@ export function Transcript({
                   key={virtualRow.key}
                   index={virtualRow.index}
                   row={row}
-                  measureElement={measureRowElement}
+                  measureElement={virtualizer.measureElement}
                   tabId={tabId}
                 >
                   {renderRow(row)}

@@ -33,6 +33,8 @@ const OWNED_ELSEWHERE = new Map(Object.entries({
   "settings-responsive-layout.test.ts": "test:settings-responsive",
   "transcript-virtualization.test.tsx": "test:transcript",
   "transcript-selection-runtime.test.ts": "test:transcript",
+  "scroll-manager.test.tsx": "test:transcript",
+  "transcript-selection-retention.test.tsx": "test:transcript",
   "composer-menu-viewport.test.ts": "test:composer-menu-viewport",
   "virtual-menu-identity.test.tsx": "test:composer-menu-viewport",
   "remote-workspace-launch.test.ts": "test:remote",

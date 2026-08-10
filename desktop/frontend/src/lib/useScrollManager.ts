@@ -200,7 +200,7 @@ export function useScrollManager() {
   /** Force-scroll to the bottom — used when a new question is sent. */
   const scrollToBottom = useCallback((force = false, owner: TranscriptScrollOwner = "stream") => {
     const el = scrollRef.current;
-    if (!el) return;
+    if (!el || !canTranscriptScrollOwnerWrite(modeRef.current, owner)) return;
     if (force) {
       modeRef.current = "tail-follow";
       stick.current = true;

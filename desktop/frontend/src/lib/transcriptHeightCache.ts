@@ -1,3 +1,6 @@
+import { measureElement as measureVirtualElement, type Virtualizer } from "@tanstack/react-virtual";
+import type { TranscriptRow } from "./transcriptRows";
+
 export interface TranscriptHeightCacheOptions {
   maxTabs?: number;
   maxRowsPerTab?: number;
@@ -55,6 +58,31 @@ export class TranscriptHeightCache {
 
 export const transcriptHeightCache = new TranscriptHeightCache();
 
+export function createTranscriptMeasureElement({
+  tabId,
+  getLayoutElement,
+  cache = transcriptHeightCache,
+}: {
+  tabId: string;
+  getLayoutElement: () => HTMLElement | null;
+  cache?: TranscriptHeightCache;
+}) {
+  return (
+    element: HTMLDivElement,
+    entry: ResizeObserverEntry | undefined,
+    instance: Virtualizer<HTMLDivElement, HTMLDivElement>,
+  ): number => {
+    const height = measureVirtualElement(element, entry, instance);
+    cache.set(
+      tabId,
+      transcriptLayoutSignature(getLayoutElement()),
+      element.dataset.rowKey ?? String(element.dataset.index ?? ""),
+      height,
+    );
+    return height;
+  };
+}
+
 export function transcriptLayoutSignature(element: HTMLElement | null): string {
   if (!element || typeof getComputedStyle !== "function") return "w:0";
   const style = getComputedStyle(element);
@@ -83,4 +111,3 @@ export function estimateCachedTranscriptRowHeight(row: TranscriptRow | undefined
   if (row.kind === "reasoning") return Math.max(fallback, estimateTranscriptContentHeight("answer", row.item.reasoning, width));
   return fallback;
 }
-import type { TranscriptRow } from "./transcriptRows";

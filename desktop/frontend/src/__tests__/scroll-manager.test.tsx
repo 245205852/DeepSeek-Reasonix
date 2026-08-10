@@ -142,6 +142,15 @@ await act(async () => {
 });
 eq(api.stick.current, false, "keyboard scroll intent from outside an editable field still breaks the bottom pin");
 
+scrollTop = 400;
+await act(async () => {
+  api!.setMode("native-selecting", "test-selection");
+  api!.scrollToBottom(true, "jump-bottom");
+  await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+});
+eq(api.modeRef.current, "native-selecting", "force-scroll cannot steal ownership from an active selection");
+eq(scrollTop, 400, "force-scroll cannot move the viewport during an active selection");
+
 await act(async () => {
   root.unmount();
 });

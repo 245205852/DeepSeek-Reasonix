@@ -36,14 +36,23 @@ export function useTranscriptSelectionRetention({
   const selectionRef = useRef<{ anchorKey: string; focusKey: string; dragging: boolean } | null>(null);
   const [, setRevision] = useState(0);
   const viewportAnchorRef = useRef<TranscriptViewportAnchor | null>(null);
+  const lifecycleGenerationRef = useRef(0);
+  const settleFramesRef = useRef(new Set<number>());
 
   const publish = useCallback(() => setRevision((value) => value + 1), []);
+  const cancelSettleFrames = useCallback(() => {
+    for (const frame of settleFramesRef.current) cancelAnimationFrame(frame);
+    settleFramesRef.current.clear();
+  }, []);
   const clear = useCallback((reason = "clear") => {
     if (!selectionRef.current) return;
+    lifecycleGenerationRef.current += 1;
+    cancelSettleFrames();
     selectionRef.current = null;
+    viewportAnchorRef.current = null;
     setScrollMode("manual", reason);
     publish();
-  }, [publish, setScrollMode]);
+  }, [cancelSettleFrames, publish, setScrollMode]);
 
   const onPointerDownCapture = useCallback((event: ReactPointerEvent<HTMLElement>) => {
     if (event.button !== 0) return;
@@ -55,12 +64,14 @@ export function useTranscriptSelectionRetention({
     }
     const anchorKey = selectable.closest<HTMLElement>(ROW_SELECTOR)?.dataset.rowKey;
     if (!anchorKey) return;
+    lifecycleGenerationRef.current += 1;
+    cancelSettleFrames();
     cancelStreamingScroll();
     viewportAnchorRef.current = captureViewportAnchor();
     selectionRef.current = { anchorKey, focusKey: anchorKey, dragging: true };
     setScrollMode("native-selecting", "pointerdown");
     publish();
-  }, [cancelStreamingScroll, captureViewportAnchor, clear, publish, setScrollMode]);
+  }, [cancelSettleFrames, cancelStreamingScroll, captureViewportAnchor, clear, publish, setScrollMode]);
 
   useEffect(() => {
     const onSelectionChange = () => {
@@ -85,13 +96,48 @@ export function useTranscriptSelectionRetention({
         clear("empty-pointerup");
         return;
       }
-      selectionRef.current = { ...selectionRef.current, dragging: false };
+      const settledSelection = { ...selectionRef.current, dragging: false };
+      const generation = lifecycleGenerationRef.current;
+      selectionRef.current = settledSelection;
       publish();
-      requestAnimationFrame(() => requestAnimationFrame(() => {
-        reconcileViewportAnchor(viewportAnchorRef.current);
-        viewportAnchorRef.current = null;
-        setScrollMode("manual", "native-selection-settled");
-      }));
+      const outerFrame = requestAnimationFrame(() => {
+        settleFramesRef.current.delete(outerFrame);
+        const innerFrame = requestAnimationFrame(() => {
+          settleFramesRef.current.delete(innerFrame);
+          if (generation !== lifecycleGenerationRef.current || selectionRef.current !== settledSelection) return;
+          reconcileViewportAnchor(viewportAnchorRef.current);
+          viewportAnchorRef.current = null;
+          setScrollMode("manual", "native-selection-settled");
+        });
+        settleFramesRef.current.add(innerFrame);
+      });
+      settleFramesRef.current.add(outerFrame);
+    };
+    const onCopy = () => {
+      const tracked = selectionRef.current;
+      const selection = document.getSelection();
+      if (!tracked || tracked.dragging || !selection || selection.isCollapsed) return;
+      const generation = lifecycleGenerationRef.current;
+      const anchorNode = selection.anchorNode;
+      const anchorOffset = selection.anchorOffset;
+      const focusNode = selection.focusNode;
+      const focusOffset = selection.focusOffset;
+      const frame = requestAnimationFrame(() => {
+        settleFramesRef.current.delete(frame);
+        const current = document.getSelection();
+        if (
+          generation !== lifecycleGenerationRef.current
+          || !current
+          || current.isCollapsed
+          || current.anchorNode !== anchorNode
+          || current.anchorOffset !== anchorOffset
+          || current.focusNode !== focusNode
+          || current.focusOffset !== focusOffset
+        ) return;
+        current.removeAllRanges();
+        clear("copy");
+      });
+      settleFramesRef.current.add(frame);
     };
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key !== "Escape") return;
@@ -101,19 +147,28 @@ export function useTranscriptSelectionRetention({
     document.addEventListener("selectionchange", onSelectionChange);
     document.addEventListener("pointerup", finish);
     document.addEventListener("pointercancel", finish);
+    document.addEventListener("copy", onCopy);
     document.addEventListener("keydown", onKeyDown);
     return () => {
       document.removeEventListener("selectionchange", onSelectionChange);
       document.removeEventListener("pointerup", finish);
       document.removeEventListener("pointercancel", finish);
+      document.removeEventListener("copy", onCopy);
       document.removeEventListener("keydown", onKeyDown);
     };
   }, [clear, publish, reconcileViewportAnchor, setScrollMode]);
 
   useEffect(() => {
+    lifecycleGenerationRef.current += 1;
+    cancelSettleFrames();
+    const hadSelection = selectionRef.current !== null;
+    selectionRef.current = null;
+    viewportAnchorRef.current = null;
     document.getSelection()?.removeAllRanges();
-    clear("transcript-reset");
-  }, [clear, revealSignal, tabId]);
+    if (hadSelection) publish();
+  }, [cancelSettleFrames, publish, revealSignal, tabId]);
+
+  useEffect(() => cancelSettleFrames, [cancelSettleFrames]);
 
   useEffect(() => {
     const tracked = selectionRef.current;
@@ -134,6 +189,7 @@ export function useTranscriptSelectionRetention({
 
   return {
     clear,
+    active: selectionRef.current !== null,
     onPointerDownCapture,
     rangeExtractor: (range: Range) => rangeExtractor(range),
   };

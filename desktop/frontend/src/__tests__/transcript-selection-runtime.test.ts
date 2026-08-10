@@ -1,13 +1,17 @@
 // Run: tsx src/__tests__/transcript-selection-runtime.test.ts
 
-import { defaultRangeExtractor, type Range } from "@tanstack/react-virtual";
+import { defaultRangeExtractor, type Range, type Virtualizer } from "@tanstack/react-virtual";
 import {
   canTranscriptScrollOwnerWrite,
   type TranscriptScrollMode,
   type TranscriptScrollOwner,
 } from "../lib/transcriptScrollController";
 import { createSelectionRangeExtractor } from "../lib/transcriptSelectionRange";
-import { TranscriptHeightCache, estimateTranscriptContentHeight } from "../lib/transcriptHeightCache";
+import {
+  TranscriptHeightCache,
+  createTranscriptMeasureElement,
+  estimateTranscriptContentHeight,
+} from "../lib/transcriptHeightCache";
 
 let passed = 0;
 let failed = 0;
@@ -39,6 +43,18 @@ function ok(condition: unknown, label: string) {
   equal(cache.get("a", "wide", "r3"), undefined, "tab LRU keeps only the configured recent sessions");
   ok(estimateTranscriptContentHeight("user", "x".repeat(10_000), 320) <= 360, "user estimate respects its upper bound");
   ok(estimateTranscriptContentHeight("answer", "x".repeat(100_000), 320) <= 1200, "answer estimate respects its upper bound");
+
+  const measuredCache = new TranscriptHeightCache();
+  const measure = createTranscriptMeasureElement({
+    tabId: "measured-tab",
+    getLayoutElement: () => null,
+    cache: measuredCache,
+  });
+  const element = { dataset: { rowKey: "measured-row" } } as unknown as HTMLDivElement;
+  const entry = { borderBoxSize: [{ blockSize: 246 }] } as unknown as ResizeObserverEntry;
+  const instance = { options: { horizontal: false } } as unknown as Virtualizer<HTMLDivElement, HTMLDivElement>;
+  equal(measure(element, entry, instance), 246, "official ResizeObserver measurements flow through the transcript adapter");
+  equal(measuredCache.get("measured-tab", "w:0", "measured-row"), 246, "ResizeObserver row growth refreshes the height cache");
 }
 
 function equal(actual: unknown, expected: unknown, label: string) {

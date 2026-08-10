@@ -85,10 +85,13 @@ function firstTextNode(root: Node): Text | null {
     const anchorIdBefore = Array.from(harness.container.querySelectorAll(".transcript__row"))
       .map((row) => {
         const match = /translate3d\(0(?:px)?, ([\d.-]+)px/.exec((row as HTMLElement).style.transform);
-        return { row, top: match ? Number(match[1]) : -1 };
+        return {
+          anchorId: row.querySelector("[data-question-anchor]")?.id,
+          top: match ? Number(match[1]) : -1,
+        };
       })
-      .filter(({ top }) => top >= before)
-      .sort((a, b) => a.top - b.top)[0]?.row.querySelector("[data-question-anchor]")?.id;
+      .filter(({ anchorId, top }) => anchorId != null && top >= before)
+      .sort((a, b) => a.top - b.top)[0]?.anchorId;
     ok(anchorIdBefore != null, "found a fully-visible anchor row before the prepend");
     // Prepend five older turns (15 rows) — the reading position must follow
     // the anchor row, not the row index.
