@@ -87,5 +87,33 @@ eq(
   "weekly default uses one weekday",
 );
 
+eq(
+  heartbeatNextRunAt(
+    { interval: "0 9 * * 1-5", lastRunAt: 0 },
+    localMs(2026, 6, 15, 10, 0),
+  ),
+  localMs(2026, 6, 16, 9, 0),
+  "cron weekday schedule computes next business-day run",
+);
+
+eq(
+  heartbeatNextRunAt(
+    { interval: "*/15 * * * *", lastRunAt: 0 },
+    localMs(2026, 6, 18, 10, 7),
+  ),
+  localMs(2026, 6, 18, 10, 15),
+  "cron every-15-minutes computes next slot",
+);
+
+eq(
+  heartbeatNextRunAt(
+    { interval: "0 9 * * 1-5", lastRunAt: localMs(2026, 6, 15, 9, 0) },
+    localMs(2026, 6, 15, 9, 0),
+  ),
+  localMs(2026, 6, 16, 9, 0),
+  "cron next run ignores lastRunAt and uses wall clock",
+);
+
 console.log(`\n${passed} passed, ${failed} failed, ${passed + failed} total`);
 if (failed > 0) process.exit(1);
+
