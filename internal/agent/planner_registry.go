@@ -6,8 +6,10 @@ import (
 	"reasonix/internal/tool"
 )
 
+// ask is deliberately absent: a planner that needs a user-owned decision asks
+// for it with the real tool, so the answer shapes the plan instead of being
+// stapled onto a finished one.
 var plannerNonResearchTools = []string{
-	"ask",
 	"bash_output",
 	"complete_step",
 	"slash_command",

@@ -28,13 +28,6 @@ type PlannerPlanApprover interface {
 	RunWithPlannerApproval(ctx context.Context, plan string, run func(context.Context) error) error
 }
 
-// PlannerUserDecisionAsker lets hosts turn planner-authored user questions into
-// a real AskRequest. The returned answer is host-authenticated user input that
-// Coordinator can safely pass to the executor as context.
-type PlannerUserDecisionAsker interface {
-	RunWithPlannerUserDecision(ctx context.Context, plan string, question event.AskQuestion, run func(context.Context, string) error) error
-}
-
 // DefaultPlannerPrompt steers the planner toward concise plans, not execution.
 const DefaultPlannerPrompt = `You are the planner in a two-model coding agent.
 Given a task, produce a concise, ordered plan for the executor model to carry out.
@@ -61,16 +54,13 @@ evidence to separate verified touchpoints from candidates, then also fill
 non-goals, per-step risks, acceptance criteria, and command-level verification.
 Label anything unproven in assumptions rather than stating it as fact.
 
+If execution needs a user-owned decision or a missing user-provided value
+before it can be safe, call ask and let the answer shape the plan; never ask in
+prose and never plan around a guess you could have settled.
+
 If submit_plan is unavailable to you, fall back to writing the plan as your
 reply, and end it with a final line containing exactly
-[planner_requires_approval] when execution must stop for user approval. If
-execution needs a user-owned decision or missing user-provided value before it
-can be safe, do not ask in prose; include one structured block:
-<planner-ask>
-question: the concrete question
-option: recommended safe/default choice
-option: alternative choice
-</planner-ask>
+[planner_requires_approval] when execution must stop for user approval.
 
 Crucial: You only have research tools plus the stable use_capability proxy for
 authorized MCP. You do NOT have bash, execute, file writers, or other
@@ -114,8 +104,6 @@ const (
 const noChangesMarker = "[no_changes]"
 
 const plannerRequiresApprovalMarker = "[planner_requires_approval]"
-const plannerAskStartMarker = "<planner-ask>"
-const plannerAskEndMarker = "</planner-ask>"
 
 // PlannerPromptWithContext appends cache-stable standing context, such as loaded
 // REASONIX.md / AGENTS.md memory, to the planner's smaller system prompt.
@@ -144,9 +132,8 @@ type Coordinator struct {
 	// plannerPolicy chooses executor-only, plan-and-execute, or plan-for-approval
 	// per turn. nil preserves the historical "plan every turn" constructor
 	// behavior used by direct Coordinator callers.
-	plannerPolicy            PlannerPolicy
-	plannerPlanApprover      PlannerPlanApprover
-	plannerUserDecisionAsker PlannerUserDecisionAsker
+	plannerPolicy       PlannerPolicy
+	plannerPlanApprover PlannerPlanApprover
 }
 
 // NewCoordinator wires a planner provider (with its own session) to an executor.
@@ -342,16 +329,6 @@ func (c *Coordinator) SetPlannerPlanApprover(g PlannerPlanApprover) {
 	c.plannerPlanApprover = g
 }
 
-// SetPlannerUserDecisionAsker connects planner-authored prose questions to the
-// host's structured AskRequest surface. Without one, legacy handoff behavior is
-// preserved so headless/non-interactive runs keep moving.
-func (c *Coordinator) SetPlannerUserDecisionAsker(g PlannerUserDecisionAsker) {
-	if c == nil {
-		return
-	}
-	c.plannerUserDecisionAsker = g
-}
-
 // Run plans with the planner model, then hands the plan to the executor.
 func (c *Coordinator) Run(ctx context.Context, input string) error {
 	c.sink.Emit(event.Event{Kind: event.TurnStarted})
@@ -465,25 +442,6 @@ func (c *Coordinator) deliverPlan(ctx context.Context, input string, outcome pla
 	if outcome.requestsApproval() {
 		return runWithPlanApproval()
 	}
-	// Prose-question detection only guards the unstructured path; a structured
-	// plan says what it needs in a field.
-	if !outcome.structured && c.plannerUserDecisionAsker != nil {
-		if question, ok := plannerPlanRequestsUserDecision(plan); ok {
-			executed := false
-			err := c.plannerUserDecisionAsker.RunWithPlannerUserDecision(ctx, plan, question, func(ctx context.Context, answer string) error {
-				if strings.TrimSpace(answer) == "" {
-					return nil
-				}
-				executed = true
-				return runExecutorWithPlan(ctx, planWithHostUserAnswer(plan, answer))
-			})
-			if err == nil && !executed && ctx.Err() == nil {
-				c.persistExecutorNoOp(ctx, input, plan+"\n\n"+plannerDecisionUnansweredNote)
-				c.sink.Emit(event.Event{Kind: event.Notice, Level: event.LevelInfo, Text: plannerDecisionUnansweredNotice, Source: event.UsageSourcePlanner})
-			}
-			return err
-		}
-	}
 	return runExecutorWithPlan(ctx, plan)
 }
 
@@ -500,18 +458,6 @@ const (
 	plannerDecisionUnansweredNote     = "(The user did not provide the requested decision; execution was not started.)"
 	plannerDecisionUnansweredNotice   = "Waiting for your decision; nothing was executed. Reply to continue."
 )
-
-func planWithHostUserAnswer(plan, answer string) string {
-	return strings.TrimSpace(plan) + "\n\nHost user answer to planner question:\n" + strings.TrimSpace(answer)
-}
-
-func truncateRunes(s string, max int) string {
-	rs := []rune(strings.TrimSpace(s))
-	if len(rs) <= max {
-		return string(rs)
-	}
-	return string(rs[:max]) + "..."
-}
 
 // isNoOpPlan reports whether the plan explicitly concludes that nothing needs
 // to change: the final non-empty line is exactly the [no_changes] marker that
@@ -843,4 +789,19 @@ func HandoffTask(s string) string {
 		return task
 	}
 	return s
+}
+
+// SetAsker gives both models the host's question surface. The planner needs it
+// as much as the executor: a decision that shapes the plan must be settled
+// while planning, not stapled to a finished plan.
+func (c *Coordinator) SetAsker(as Asker) {
+	if c == nil {
+		return
+	}
+	if c.plannerAgent != nil {
+		c.plannerAgent.SetAsker(as)
+	}
+	if c.executor != nil {
+		c.executor.SetAsker(as)
+	}
 }

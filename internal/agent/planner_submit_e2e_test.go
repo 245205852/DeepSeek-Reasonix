@@ -43,6 +43,7 @@ func submitPlanCoordinator(t *testing.T, planner, exec *mockProvider, sink event
 	t.Helper()
 	parentReg := tool.NewRegistry()
 	parentReg.Add(coordinatorTestTool{name: "read_file", readOnly: true, output: "contents"})
+	parentReg.Add(NewAskTool())
 	executor := New(exec, tool.NewRegistry(), NewSession("exec-sys"), Options{}, event.Discard)
 	coord := NewCoordinator(planner, NewSession("planner-sys"), nil, PlannerToolRegistry(parentReg),
 		Options{MaxSteps: 4}, executor, 0, sink, nil)
@@ -187,5 +188,58 @@ func TestPlannerThatWritesProseStillReachesTheExecutor(t *testing.T) {
 	}
 	if got := lastUser(exec.requests[0]); !strings.Contains(got, "edit the cache key") {
 		t.Errorf("executor handoff = %q, want the planner's prose plan", got)
+	}
+}
+
+// The planner asks with the real tool now, so a user-owned decision is settled
+// while planning and the answer shapes the plan the executor receives — the
+// prose-question path used to staple it onto a finished plan instead.
+func TestPlannerAsksWithTheRealToolAndPlansFromTheAnswer(t *testing.T) {
+	planner := &mockProvider{name: "planner", streams: [][]provider.Chunk{
+		{
+			{Type: provider.ChunkToolCall, ToolCall: &provider.ToolCall{ID: "ask-1", Name: "ask", Arguments: `{"questions":[{"header":"Store","question":"Which database?","options":[{"label":"Keep going"},{"label":"postgres"}]}]}`}},
+			{Type: provider.ChunkDone},
+		},
+		{
+			{Type: provider.ChunkToolCall, ToolCall: &provider.ToolCall{ID: "call-1", Name: "submit_plan", Arguments: `{"objective":"add the store","steps":[{"title":"wire the chosen database"}]}`}},
+			{Type: provider.ChunkDone},
+		},
+		{
+			{Type: provider.ChunkText, Text: "Submitted."},
+			{Type: provider.ChunkDone},
+		},
+	}}
+	exec := &mockProvider{name: "executor", chunks: []provider.Chunk{
+		{Type: provider.ChunkText, Text: "Done."},
+		{Type: provider.ChunkDone},
+	}}
+	coord, _ := submitPlanCoordinator(t, planner, exec, event.Discard)
+	asker := &recordingAsker{}
+	coord.SetAsker(asker)
+
+	if err := coord.Run(context.Background(), "add a store"); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if len(asker.questions) == 0 {
+		t.Fatal("the planner's ask never reached the host")
+	}
+	if got := asker.questions[0].Prompt; got != "Which database?" {
+		t.Errorf("question = %q, want the planner's own wording", got)
+	}
+	if len(exec.requests) == 0 {
+		t.Fatal("executor never ran after the decision was settled")
+	}
+	if got := lastUser(exec.requests[0]); !strings.Contains(got, "wire the chosen database") {
+		t.Errorf("executor handoff = %q, want the plan built after the answer", got)
+	}
+}
+
+func TestPlannerRegistryCarriesAsk(t *testing.T) {
+	parent := tool.NewRegistry()
+	parent.Add(NewAskTool())
+	parent.Add(coordinatorTestTool{name: "read_file", readOnly: true})
+	reg := PlannerToolRegistry(parent)
+	if _, ok := reg.Get("ask"); !ok {
+		t.Fatalf("planner registry lacks ask: %v", reg.Names())
 	}
 }
