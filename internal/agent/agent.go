@@ -301,7 +301,7 @@ type Agent struct {
 	// never nil because New defaults it to event.Discard.
 	sink                event.Sink
 	requireVisibleFinal bool // internal callers require final Content
-	// lastUsage caches the latest provider telemetry for the CLI context gauge.
+	// lastUsage caches the latest provider telemetry for per-turn readouts.
 	// The run loop writes it while a frontend reads it, so it is atomic.
 	lastUsage atomic.Pointer[provider.Usage]
 	outputBudgetState

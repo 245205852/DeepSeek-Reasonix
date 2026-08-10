@@ -16,6 +16,7 @@ type outputBudgetState struct {
 	outputBudget      int
 	activeReqShape    atomic.Pointer[requestCalibrationShape]
 	promptCalibration atomic.Pointer[promptTokenCalibration]
+	contextUsage      atomic.Pointer[contextUsage] // gauge's memoised prompt size
 }
 
 type promptTokenCalibration struct {

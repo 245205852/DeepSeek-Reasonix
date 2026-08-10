@@ -4740,19 +4740,15 @@ func (c *Controller) SessionPersistedState() (agent.PersistedState, bool) {
 	return c.executor.Session().PersistedState(c.SessionPath())
 }
 
-// ContextSnapshot returns (usedTokens, contextWindow) from the most recent
-// turn. Both zero means no data yet — a gauge hides itself.
-// usedTokens is promptTokens + completionTokens so the GUI breakdown and
-// gauge reflect the full token usage, not just the prompt fill.
+// ContextSnapshot returns (usedTokens, contextWindow) for the gauge. usedTokens
+// is what the next request will send, measured the way the compaction trigger
+// measures it, so the gauge and the trigger can never disagree. Both zero means
+// no data yet — a gauge hides itself.
 func (c *Controller) ContextSnapshot() (int, int) {
 	if c.executor == nil {
 		return 0, 0
 	}
-	u := c.executor.LastUsage()
-	if u == nil {
-		return 0, c.executor.ContextWindow()
-	}
-	return u.PromptTokens + u.CompletionTokens, c.executor.ContextWindow()
+	return c.executor.ContextUsedTokens(), c.executor.ContextWindow()
 }
 
 // CompactRatio returns the auto-compaction threshold as a fraction of the window
