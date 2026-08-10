@@ -2,6 +2,8 @@
 // One event channel carries every kind; `kind` discriminates the payload.
 
 import type { Todo } from "./tools";
+import type { ContextMaintenanceInfo, WireContextMaintenance } from "./contextMaintenanceTypes";
+export type { ContextMaintenanceInfo, ContextMaintenanceReceipt, WireContextMaintenance } from "./contextMaintenanceTypes";
 
 export type EventKind =
   | "turn_started"
@@ -25,7 +27,8 @@ export type EventKind =
   | "guardian_assessment"
   | "extension_surface"
   | "extension_status"
-  | "stream_attempt";
+  | "stream_attempt"
+  | "context_maintenance";
 
 export type StreamAttemptAction = "begin" | "discard" | "commit";
 
@@ -292,6 +295,7 @@ export interface WireEvent {
   approval?: WireApproval;
   ask?: WireAsk;
   compaction?: WireCompaction;
+  maintenance?: WireContextMaintenance;
   guardian?: WireGuardian;
   decisionReceipt?: WireDecisionReceipt;
   extension?: WireExtensionSurface;
@@ -789,6 +793,7 @@ export interface ContextInfo {
   cacheMissTokens?: number;
   estimated?: boolean;
   sources?: Record<string, UsageSourceStats>;
+  maintenance?: ContextMaintenanceInfo;
 }
 
 export interface Meta {
@@ -2128,7 +2133,7 @@ export interface ExternalOpenerView {
 
 export interface ExternalOpenersView {
   openers: ExternalOpenerView[];
-  preferred: string;
+  preferred: string; workspaceOpenable?: boolean;
 }
 
 // Auto-updater payloads (desktop/updater.go). UpdateInfo drives the update banner;

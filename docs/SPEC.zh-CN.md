@@ -155,6 +155,14 @@ Reasonix 通过低频 compaction 保持 cache-first：
 
 tool result 的 snip/prune 不删除消息，确保 assistant `tool_calls` 与 tool result 配对。
 
+每次自动维护只在模型请求前规划一次，输入是当前可见 projection 加上 canonical 的追加 tail；
+维护流程绝不改写 canonical transcript。失败或无法收敛的视图指纹会持久进入 blocked 状态，
+直到 transcript、模型、provider 策略或 projection lineage 变化，避免相同裁剪或摘要循环重试。
+
+`agent.context_editing` 默认为 `"local"`。显式设为 `"native"` 时，只有官方 Anthropic
+端点启用原生 tool-use clearing；DeepSeek 与其他 Anthropic 兼容网关仍使用本地维护。
+原生工具清理不会替代 Reasonix 的摘要折叠，也不会修改 canonical history。
+
 摘要折叠时，固定前缀与近期 tail 之间的区间被划分为三部分：开头若干条小体量用户回合原样提升到
 digest 之前，keep policy 保护的消息原样保留，其余全部——assistant/tool 工作、后续用户回合、以及
 已有 digest——折叠进同一条 digest。三者构成一个划分：区间内的消息要么原样保留，要么进入摘要输入，

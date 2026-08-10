@@ -8,7 +8,9 @@ import { asArray } from "./array";
 import { addBreadcrumb } from "./breadcrumbs";
 import { app, onEvent, onReady, onRuntimeRebuilt, onTabMeta, onTopicActivation } from "./bridge";
 import { invalidateCache } from "./composerHistory";
+import { formatContextMaintenanceNotice } from "./contextMaintenanceTypes";
 import { formatGuardianAssessmentNotice } from "./guardianEvents";
+import { invalidateSharedQuery } from "./queryCoalesce";
 import { createRafBatch } from "./rafBatch";
 import { aliasActivationRequest, noteActivationRequested, noteActivationSettled, noteActivationStarted } from "./sessionDiagnostics";
 import { applyLiveSegments, coalesceStreamDeltas, completeLiveReasoning, type StreamDeltaEntry, type StreamSegment } from "./streamDeltaBatch";
@@ -414,6 +416,9 @@ interface State {
   lastTurnWaitAccumMs: number;
   lastTurnModelMs: number;
   lastTurnOutputEstimated: boolean;
+  // Per-request rate (null when unmeasurable) and pending interval are tab-local.
+  lastRequestTps?: number | null;
+  pendingRequestModelMs?: number;
   promptWaitStartedAt?: number;
   // promptEventClock() reading taken when the CURRENT pending prompt first
   // arrived. Orders the prompt against reconciliation snapshots so a snapshot
@@ -1126,7 +1131,7 @@ function endPromptWaitIfIdle(s: State, now = Date.now()): State {
   return endPromptWait(s, now);
 }
 
-function resetTurnTiming(now = Date.now()): Pick<State, "turnStartAt" | "turnDoneAt" | "turnWaitAccumMs" | "promptWaitStartedAt" | "turnTokens" | "turnTotalTokens" | "turnOutputTokens" | "turnOutputChars" | "turnOutputCharsAtUsage" | "turnOutputEstimated" | "turnModelActiveAt" | "turnModelActiveMs" | "turnCost" | "turnArgChars"> {
+function resetTurnTiming(now = Date.now()): Pick<State, "turnStartAt" | "turnDoneAt" | "turnWaitAccumMs" | "promptWaitStartedAt" | "turnTokens" | "turnTotalTokens" | "turnOutputTokens" | "turnOutputChars" | "turnOutputCharsAtUsage" | "turnOutputEstimated" | "turnModelActiveAt" | "turnModelActiveMs" | "turnCost" | "turnArgChars" | "pendingRequestModelMs"> {
   return {
     turnStartAt: now,
     turnDoneAt: 0,
@@ -1139,7 +1144,7 @@ function resetTurnTiming(now = Date.now()): Pick<State, "turnStartAt" | "turnDon
     turnOutputCharsAtUsage: 0,
     turnOutputEstimated: false,
     turnModelActiveAt: undefined,
-    turnModelActiveMs: 0,
+    turnModelActiveMs: 0, pendingRequestModelMs: undefined,
     turnCost: 0,
     turnArgChars: 0,
   };
@@ -1156,13 +1161,11 @@ function beginTurnModelActivity(s: State, now = Date.now()): State {
     : { ...s, turnModelActiveAt: now };
 }
 
-function endTurnModelActivity(s: State, now = Date.now()): State {
+function endTurnModelActivity(s: State, now = Date.now(), stashForUsage = false): State {
   if (!s.turnModelActiveAt || s.turnModelActiveAt <= 0) return s;
-  return {
-    ...s,
-    turnModelActiveAt: undefined,
-    turnModelActiveMs: Math.max(0, s.turnModelActiveMs) + Math.max(0, now - s.turnModelActiveAt),
-  };
+  const closedMs = Math.max(0, now - s.turnModelActiveAt);
+  return { ...s, turnModelActiveAt: undefined, turnModelActiveMs: Math.max(0, s.turnModelActiveMs) + closedMs,
+    pendingRequestModelMs: stashForUsage ? closedMs : s.pendingRequestModelMs };
 }
 
 function snapshotCompletedTurnTelemetry(s: State, now = Date.now()): State {
@@ -1485,10 +1488,10 @@ function applyEvent(s: State, e: WireEvent): State {
           existingAssistant && existingAssistant.text.trim() === "" && existingAssistant.reasoning.trim() === "" && !existingAssistant.memoryCitations?.length
             ? s.items.filter((it) => !(it.kind === "assistant" && it.id === existingAssistant.id))
             : s.items;
-        return { ...endTurnModelActivity(s), items, live: undefined, currentAssistant: undefined, turnOutputCharsAtUsage: 0 };
+        return { ...endTurnModelActivity(s, Date.now(), true), items, live: undefined, currentAssistant: undefined, turnOutputCharsAtUsage: 0 };
       }
       const now = Date.now();
-      const settled = endTurnModelActivity(s, now);
+      const settled = endTurnModelActivity(s, now, true);
       const { items, id, seq } = ensureAssistant(settled);
       const streamedChars = settled.live?.id === id ? settled.live.text.length + settled.live.reasoning.length : 0;
       const turnOutputChars = Math.max(0, settled.turnOutputChars - streamedChars + text.length + reasoning.length);
@@ -1552,7 +1555,7 @@ function applyEvent(s: State, e: WireEvent): State {
           items: [...activeState.items, { kind: "tool", id, name: t.name, args: "", readOnly: t.readOnly, resolvedName: t.resolvedName, capabilityId: t.capabilityId, status: "running", argChars: t.argChars || undefined, parentId: t.parentId, subagentProgress: SUBAGENT_PROGRESS_TOOLS.has(t.name) ? freshSubagentProgress() : undefined }],
         }, id, false, undefined, { attemptId: t.attemptId, parentId: t.parentId, partial: true });
       }
-      const settled = t.parentId ? s : endTurnModelActivity(s);
+      const settled = t.parentId ? s : endTurnModelActivity(s, Date.now(), true);
       const id = t.id || `tool${s.seq}`;
       const idx = settled.items.findIndex((it) => it.kind === "tool" && it.id === id);
       if (idx >= 0) {
@@ -1661,18 +1664,16 @@ function applyEvent(s: State, e: WireEvent): State {
       // Only executor usage belongs to the foreground model stream. Planner,
       // subagent, and auxiliary usage still contributes to session totals and
       // usageSeq, but must not close or inflate the executor TPS interval.
-      const settled = updateContextGauge ? endTurnModelActivity(s) : s;
-      // Prefer Context* (latest attempt) over billable aggregates when multi-
-      // attempt sampling recovery folds several provider calls into one Usage.
-      // Matches Controller.ContextSnapshot: latest prompt + completion.
+      const settled = updateContextGauge ? endTurnModelActivity(s, Date.now(), true) : s;
+      const hasRequestContext = (e.usage?.contextPromptTokens ?? 0) > 0 || (e.usage?.contextCompletionTokens ?? 0) > 0;
+      const requestModelMs = updateContextGauge ? (settled.pendingRequestModelMs ?? 0) : 0;
+      const requestTokens = updateContextGauge ? (hasRequestContext ? (e.usage?.contextCompletionTokens ?? 0) : (e.usage?.completionTokens ?? 0)) : 0;
+      const lastRequestTps = updateContextGauge ? (requestTokens > 0 && requestModelMs >= 500 ? requestTokens / (requestModelMs / 1000) : null) : s.lastRequestTps;
+      // Context* is the latest sampling attempt; other token fields are billable aggregates.
       let used = settled.context.used;
-      if (e.usage && settled.context.window && updateContextGauge) {
-        const hasContext =
-          (e.usage.contextPromptTokens ?? 0) > 0 || (e.usage.contextCompletionTokens ?? 0) > 0;
-        used = hasContext
-          ? (e.usage.contextPromptTokens ?? 0) + (e.usage.contextCompletionTokens ?? 0)
-          : (e.usage.promptTokens ?? 0) + (e.usage.completionTokens ?? 0);
-      }
+      if (e.usage && settled.context.window && updateContextGauge) used = hasRequestContext
+        ? (e.usage.contextPromptTokens ?? 0) + (e.usage.contextCompletionTokens ?? 0)
+        : (e.usage.promptTokens ?? 0) + (e.usage.completionTokens ?? 0);
       const turnTokens = settled.turnTokens + (e.usage?.completionTokens ?? 0);
       const turnOutputTokens = updateContextGauge
         ? settled.turnOutputTokens + (e.usage?.completionTokens ?? 0)
@@ -1693,10 +1694,15 @@ function applyEvent(s: State, e: WireEvent): State {
       const usage = updateContextGauge ? e.usage : settled.usage;
       // The completed round's usage now accounts for the streamed tool-call
       // arguments, so drop the live estimate rather than double-count it.
-      return { ...settled, usage, context: { ...settled.context, used, sessionTokens }, turnTokens, turnOutputTokens, turnOutputCharsAtUsage, turnOutputEstimated, turnTotalTokens, turnCost, turnArgChars: updateContextGauge ? 0 : settled.turnArgChars, sessionTokens, sessionCost, sessionCurrency, usageSeq: settled.usageSeq + 1 };
+      return { ...settled, usage, context: { ...settled.context, used, sessionTokens }, turnTokens, turnOutputTokens, turnOutputCharsAtUsage, turnOutputEstimated, turnTotalTokens, turnCost, turnArgChars: updateContextGauge ? 0 : settled.turnArgChars, sessionTokens, sessionCost, sessionCurrency, usageSeq: settled.usageSeq + 1, lastRequestTps, pendingRequestModelMs: updateContextGauge ? undefined : settled.pendingRequestModelMs };
     }
     case "notice":
       return appendNoticeToState(s, e.level ?? "info", e.text ?? "", e.detail, e.code, e.decisionReceipt);
+    case "context_maintenance": {
+      const m = e.maintenance;
+      if (!m || m.status === "noop") return s;
+      return appendNoticeToState(s, m.status === "failed" ? "warn" : "info", formatContextMaintenanceNotice(m, t), m.reason);
+    }
     case "phase":
       return { ...s, seq: s.seq + 1, items: [...s.items, { kind: "phase", id: `p${s.seq}`, text: e.text ?? "" }] };
     case "compaction_started":
@@ -2267,6 +2273,7 @@ const noticeCodeKeys: Record<string, DictKey> = {
   session_recovery_depth_cap: "recovery.noticeKeptCurrent",
   session_shutdown_recovery_forked: "recovery.noticeSavedCopy",
   decision_receipt: "notice.decisionReceiptTitle",
+  context_editing_fallback: "notice.contextEditingFallback",
 };
 
 // localizedNoticeText localizes a notice's main copy by its stable code first,
@@ -2665,8 +2672,9 @@ export function useController() {
       if (!streamDeltaOnly) bump();
     }
   }, [bump, notifyLiveListeners]);
-
   const clearBalanceForTab = useCallback((tabId: string): void => {
+    invalidateSharedQuery("BalanceForTab", [tabId]);
+    invalidateSharedQuery("MetaForTab", [tabId]);
     const seq = (balanceRefreshSeqByTab.current.get(tabId) ?? 0) + 1;
     balanceRefreshSeqByTab.current.set(tabId, seq);
     dispatchTo(tabId, { type: "balance", balance: { available: false, display: "" } });
@@ -2765,10 +2773,8 @@ export function useController() {
     return metaRefreshSeq.current.get(tabId) === seq;
   }, []);
   const bumpSessionLoadSeq = useCallback((tabId: string): number => {
-    // A session transition changes the meaning of every tab-scoped Meta field.
-    // Invalidate requests that started against the previous session before
-    // resetting or hydrating the visible state.
     bumpMetaRefreshSeq(tabId);
+    invalidateSharedQuery("MetaForTab", [tabId]);
     const seq = (sessionLoadSeq.current.get(tabId) ?? 0) + 1;
     sessionLoadSeq.current.set(tabId, seq);
     return seq;
@@ -2814,8 +2820,9 @@ export function useController() {
   }, [dispatchTo, loadMetaForTab]);
   const refreshMetaForTab = useCallback(async (tabId: string): Promise<void> => {
     const sessionSeq = sessionLoadSeq.current.get(tabId) ?? 0;
-    const meta = await refreshMetaOnlyForTab(tabId);
+    const meta = await loadMetaForTab(tabId);
     if (meta === undefined || (sessionLoadSeq.current.get(tabId) ?? 0) !== sessionSeq) return;
+    dispatchTo(tabId, { type: "meta", meta });
     const [context, effort] = await Promise.all([
       app.ContextUsageForTab(tabId).catch(() => undefined),
       app.EffortForTab(tabId).catch(() => undefined),
@@ -2823,7 +2830,7 @@ export function useController() {
     if ((sessionLoadSeq.current.get(tabId) ?? 0) !== sessionSeq) return;
     if (context !== undefined) dispatchTo(tabId, { type: "context", context });
     if (effort !== undefined) dispatchTo(tabId, { type: "effort", effort });
-  }, [dispatchTo, refreshMetaOnlyForTab]);
+  }, [dispatchTo, loadMetaForTab]);
   const bumpCheckpointRefreshSeq = useCallback((tabId: string): number => {
     const seq = (checkpointRefreshSeq.current.get(tabId) ?? 0) + 1;
     checkpointRefreshSeq.current.set(tabId, seq);
@@ -3368,14 +3375,15 @@ export function useController() {
         textBatch.drain();
         dispatchTo(targetTabId, { type: "event", e });
       }
+      if (e.kind === "turn_done" || e.kind === "context_maintenance") {
+        void app.ContextUsageForTab(targetTabId).then((context) => dispatchTo(targetTabId, { type: "context", context })).catch(() => {});
+      }
       if (e.kind === "turn_done") {
-        app
-          .ContextUsageForTab(targetTabId)
-          .then((context) => dispatchTo(targetTabId, { type: "context", context }))
-          .catch(() => {});
+        invalidateSharedQuery("BalanceForTab", [targetTabId]);
         void refreshBalanceForTab(targetTabId);
         app.EffortForTab(targetTabId).then((effort) => dispatchTo(targetTabId, { type: "effort", effort })).catch(() => {});
         void refreshCheckpoints(targetTabId);
+        invalidateSharedQuery("MetaForTab", [targetTabId]);
         void refreshMetaForTab(targetTabId);
       }
       if (e.kind === "turn_done" || e.kind === "notice") {
@@ -3401,18 +3409,20 @@ export function useController() {
     // rebuild (settings-wide) affects every known tab.
     const offRebuilt = onRuntimeRebuilt((rebuiltTabId, runtimeEpoch) => {
       if (rebuiltTabId) {
+        invalidateSharedQuery("MetaForTab", [rebuiltTabId]);
         if (runtimeEpoch) runtimeEpochByTabRef.current.set(rebuiltTabId, runtimeEpoch);
         dispatchTo(rebuiltTabId, { type: "controller_rebuilt" });
       } else {
         if (runtimeEpoch) {
           for (const id of Array.from(statesRef.current.keys())) runtimeEpochByTabRef.current.set(id, runtimeEpoch);
         }
-        for (const id of Array.from(statesRef.current.keys())) dispatchTo(id, { type: "controller_rebuilt" });
+        for (const id of Array.from(statesRef.current.keys())) {
+          invalidateSharedQuery("MetaForTab", [id]);
+          dispatchTo(id, { type: "controller_rebuilt" });
+        }
       }
     });
-
     const offTopicActivation = onTopicActivation(handleTopicActivationEvent);
-
     // tab:meta carries a full refreshed Meta after the backend's background
     // refresh of the expensive fields (git branch, image-input capability) —
     // those arrive empty in the first MetaForTab response now. Merge it like a
@@ -3437,7 +3447,6 @@ export function useController() {
     // otherwise a session left mid-confirmation shows "waiting" with no modal
     // and no way to stop (#3844).
     void app.ReplayPendingPrompts().catch(() => {});
-
     return () => {
       textBatch.drain();
       for (const timer of cancelReconcileTimers.current.values()) {
@@ -4087,9 +4096,9 @@ export function useController() {
   const restoreSession = useCallback((path: string) => app.RestoreSession(path).catch(() => {}).finally(() => invalidateCache()), []);
   const purgeTrashedSession = useCallback((path: string) => app.PurgeTrashedSession(path).catch(() => {}).finally(() => invalidateCache()), []);
   const renameSession = useCallback((path: string, title: string) => app.RenameSession(path, title).catch(() => {}).finally(() => invalidateCache()), []);
-
   const refreshMeta = useCallback(async () => {
     if (!activeTabId) return;
+    invalidateSharedQuery("MetaForTab", [activeTabId]);
     await refreshMetaForTab(activeTabId);
   }, [activeTabId, refreshMetaForTab]);
 

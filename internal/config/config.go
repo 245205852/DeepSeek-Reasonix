@@ -1307,6 +1307,10 @@ type AgentConfig struct {
 	ToolResultSnipRatio float64 `toml:"tool_result_snip_ratio"`
 	CompactRatio        float64 `toml:"compact_ratio"`
 	CompactForceRatio   float64 `toml:"compact_force_ratio"`
+	// ContextEditing selects local maintenance (default) or explicitly opted-in
+	// Anthropic native tool clearing. Native is only honored by official
+	// Anthropic endpoints; compatible gateways remain local.
+	ContextEditing string `toml:"context_editing"`
 	// Keep controls which compactable messages stay verbatim beyond the current
 	// user-fact/digest floor and recent tail. Empty uses the conservative default
 	// of keeping error tool results.
@@ -1830,6 +1834,7 @@ func Default() *Config {
 			ToolResultSnipRatio:    0.6,
 			CompactRatio:           0.8,
 			CompactForceRatio:      0.9,
+			ContextEditing:         "local",
 			MaxSubagentDepth:       2,
 			MaxSubagentConcurrency: 6,
 			MaxParallelWriters:     3,

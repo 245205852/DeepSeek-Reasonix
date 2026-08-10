@@ -243,33 +243,32 @@ func (readOnlyBash) ReadOnly() bool { return true }
 // parallel research across independent areas (the parallel-dispatch path picks
 // these up only when readOnly, which task is not).
 type TaskTool struct {
-	prov                provider.Provider
-	pricing             *provider.Pricing
-	parentReg           *tool.Registry
-	maxSteps            int
-	contextWindow       int
-	softCompactRatio    float64
-	toolResultSnipRatio float64
-	compactRatio        float64
-	compactForceRatio   float64
-	recentKeep          int
-	temperature         float64
-	archiveDir          string
-	keepPolicy          KeepPolicy
-	sysPrompt           string
-	gate                Gate
-	subagentModel       string
-	subagentEffort      string
-	resolveProvider     func(modelRef, effort string) (provider.Provider, *provider.Pricing, int, error)
-	transcripts         *SubagentStore
-	workspaceRoot       string
-	baseModel           string
-	baseEffort          string
-	identityProfile     func(modelRef, effort string) (string, string)
-	maxSubagentDepth    int
-	deliveryProfile     bool
-	ablation            ablation.Set
-	workspaceLease      *workspacelease.Owner
+	prov                          provider.Provider
+	pricing                       *provider.Pricing
+	parentReg                     *tool.Registry
+	maxSteps                      int
+	contextWindow                 int
+	softCompactRatio              float64
+	toolResultSnipRatio           float64
+	compactRatio                  float64
+	compactForceRatio             float64
+	recentKeep                    int
+	temperature                   float64
+	contextEditing, archiveDir    string
+	keepPolicy                    KeepPolicy
+	sysPrompt                     string
+	gate                          Gate
+	subagentModel, subagentEffort string
+	resolveProvider               func(modelRef, effort string) (provider.Provider, *provider.Pricing, int, error)
+	transcripts                   *SubagentStore
+	workspaceRoot                 string
+	baseModel                     string
+	baseEffort                    string
+	identityProfile               func(modelRef, effort string) (string, string)
+	maxSubagentDepth              int
+	deliveryProfile               bool
+	ablation                      ablation.Set
+	workspaceLease                *workspacelease.Owner
 	// scheduler is the session-scoped concurrency + write-claim controller.
 	// nil falls back to the legacy jobs.ReserveStart cap for background tasks.
 	scheduler *SubagentScheduler
@@ -298,24 +297,23 @@ type TaskTool struct {
 // Prefer NewTaskToolWithOptions for new call sites; the positional NewTaskTool
 // remains as a compatibility wrapper for one full iteration cycle.
 type TaskToolOptions struct {
-	Provider            provider.Provider
-	Pricing             *provider.Pricing
-	ParentRegistry      *tool.Registry
-	MaxSteps            int
-	ContextWindow       int
-	RecentKeep          int
-	SoftCompactRatio    float64
-	ToolResultSnipRatio float64
-	CompactRatio        float64
-	CompactForceRatio   float64
-	Temperature         float64
-	ArchiveDir          string
-	SysPrompt           string
-	Gate                Gate
-	KeepPolicy          KeepPolicy
-	SubagentModel       string
-	SubagentEffort      string
-	ResolveProvider     func(string, string) (provider.Provider, *provider.Pricing, int, error)
+	Provider                              provider.Provider
+	Pricing                               *provider.Pricing
+	ParentRegistry                        *tool.Registry
+	MaxSteps                              int
+	ContextWindow                         int
+	RecentKeep                            int
+	SoftCompactRatio                      float64
+	ToolResultSnipRatio                   float64
+	CompactRatio                          float64
+	CompactForceRatio                     float64
+	Temperature                           float64
+	ContextEditing, ArchiveDir, SysPrompt string
+	Gate                                  Gate
+	KeepPolicy                            KeepPolicy
+	SubagentModel                         string
+	SubagentEffort                        string
+	ResolveProvider                       func(string, string) (provider.Provider, *provider.Pricing, int, error)
 }
 
 // NewTaskToolWithOptions is the internal standard constructor for TaskTool.
@@ -338,6 +336,7 @@ func NewTaskToolWithOptions(opts TaskToolOptions) *TaskTool {
 		toolResultSnipRatio: opts.ToolResultSnipRatio,
 		compactRatio:        opts.CompactRatio,
 		compactForceRatio:   opts.CompactForceRatio,
+		contextEditing:      normalizeContextEditing(opts.ContextEditing),
 		temperature:         opts.Temperature,
 		archiveDir:          opts.ArchiveDir,
 		keepPolicy:          opts.KeepPolicy,
@@ -1649,6 +1648,7 @@ func (t *TaskTool) subagentOptions(ctx context.Context, maxSteps int, pricing *p
 		ToolResultSnipRatio: t.toolResultSnipRatio,
 		CompactRatio:        t.compactRatio,
 		CompactForceRatio:   t.compactForceRatio,
+		ContextEditing:      t.contextEditing,
 		ArchiveDir:          t.archiveDir,
 		KeepPolicy:          t.keepPolicy,
 		ResponseLanguage:    ResponseLanguageFromContext(ctx),

@@ -1,6 +1,9 @@
 package event
 
-import "reasonix/internal/evidence"
+import (
+	"reasonix/internal/evidence"
+	"reasonix/internal/nilutil"
+)
 
 // AuditForwarder forwards every optional sink capability to Inner. Embed it in
 // a wrapper that only passes audits through, so a channel added here reaches
@@ -41,4 +44,19 @@ func (f AuditForwarder) RecordProtocolRecovery(a ProtocolRecoveryAudit) {
 
 func (f AuditForwarder) RecordDelegationAudit(a evidence.DelegationAudit) {
 	RecordDelegationAudit(f.Inner, a)
+}
+
+// DelegationAuditSink receives one receipt per completed sub-agent run.
+type DelegationAuditSink interface {
+	RecordDelegationAudit(a evidence.DelegationAudit)
+}
+
+// RecordDelegationAudit forwards a delegation receipt to sinks that opt in.
+func RecordDelegationAudit(s Sink, a evidence.DelegationAudit) {
+	if nilutil.IsNil(s) {
+		return
+	}
+	if ds, ok := s.(DelegationAuditSink); ok {
+		ds.RecordDelegationAudit(a)
+	}
 }
