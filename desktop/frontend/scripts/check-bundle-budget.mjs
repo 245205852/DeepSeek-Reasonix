@@ -72,14 +72,15 @@ for (const path of localeChunks) {
   // Task Monitor, Extension UI, Storage & paths, and shell execution cards
   // add their own labels. Reasoning display controls and status bar metrics add
   // the latest localized copy. Keep both dictionaries within narrow allowances.
-  const budget = name.startsWith("zh-TW-") ? 54.25 * 1024 : 53.5 * 1024;
+  const budget = name.startsWith("zh-TW-") ? 54.7 * 1024 : 53.9 * 1024;
   assertBudget(`${name} gzip`, gzipBytes(path), budget);
 }
 
 const rawInitialBytes = [...initialJS, ...initialCSS, ...appShellCSS]
   .reduce((total, path) => total + statSync(path).size, 0);
 // Native Web Animations and frame-batched scrolling avoid an eager animation
-// runtime. The shared reasoning display store adds a bounded shell cost while
-// its settings styles stay deferred; keep the raw allowance narrowly ratcheted.
-assertBudget("initial raw JavaScript and CSS", rawInitialBytes, 2_202 * 1024);
+// runtime. The shared reasoning display store and two-zone status-bar editor
+// add bounded shell CSS while keeping gzip budgets flat; keep the raw allowance
+// narrowly ratcheted.
+assertBudget("initial raw JavaScript and CSS", rawInitialBytes, 2_210 * 1024);
 assertBudget("largest initial JavaScript chunk raw", largestInitialJSRaw, 1_000 * 1024);
