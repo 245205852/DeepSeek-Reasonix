@@ -79,7 +79,7 @@ import { WorktreeBadge } from "./components/WorktreeBadge";
 import { HeartbeatPanel } from "./custom/features/heartbeat/HeartbeatPanel";
 import "./custom/features/heartbeat/heartbeat.css";
 import { CopyButton } from "./components/CopyButton";
-import { ExternalOpener } from "./components/ExternalOpener";
+import { ExternalOpener, shouldMountExternalOpener } from "./components/ExternalOpener";
 import { startTerminalEventBridge } from "./lib/terminalEvents";
 import { applyTerminalThemePreference } from "./lib/terminalTheme";
 import { formatTerminalOutputForComposer } from "./lib/terminalOutput";
@@ -4713,8 +4713,8 @@ export default function App() {
             </div>
             <div className="topicbar__spacer" />
             <div className="topicbar__actions">
-              {sidebarCreation && !sidebarImDetailConnection && activeTab?.scope === "project" && (
-                <ExternalOpener tabId={activeTab.id} dismissSignal={transientOverlayDismissSignal} />
+              {sidebarCreation && shouldMountExternalOpener(activeTab, Boolean(sidebarImDetailConnection)) && activeTab && (
+                <ExternalOpener key={activeTab.id} tabId={activeTab.id} dismissSignal={transientOverlayDismissSignal} />
               )}
               {!sidebarImDetailConnection && (
               <>
@@ -4790,8 +4790,8 @@ export default function App() {
                   </button>
                 </Tooltip>
               )}
-              {!sidebarCreation && !sidebarImDetailConnection && activeTab?.scope === "project" && (
-                <ExternalOpener tabId={activeTab.id} dismissSignal={transientOverlayDismissSignal} />
+              {!sidebarCreation && shouldMountExternalOpener(activeTab, Boolean(sidebarImDetailConnection)) && activeTab && (
+                <ExternalOpener key={activeTab.id} tabId={activeTab.id} dismissSignal={transientOverlayDismissSignal} />
               )}
               <Tooltip label={t("shortcuts.cheatsheetTitle")}>
                 <button

@@ -286,8 +286,7 @@ type Agent struct {
 	maxStepsKey        string
 	reasoningByteLimit int
 	maxOutputTokens    int
-	// executorHandoffGuard is enabled by Coordinator for the executor agent. The
-	// per-turn marker check in Run keeps ordinary single-model turns unaffected.
+	// executorHandoffGuard is enabled by Coordinator only for the executor agent.
 	executorHandoffGuard bool
 	temperature          float64
 	pricing              *provider.Pricing
@@ -297,15 +296,14 @@ type Agent struct {
 	reasoningLanguage    atomic.Value // string: auto|zh|en
 
 	// sink receives the turn's typed event stream (reasoning/text deltas, tool
-	// dispatch/results, usage, notices). The agent no longer formats output
-	// itself — a frontend's Sink decides how to render. Never nil; New defaults
-	// it to event.Discard.
+	// dispatch/results, usage, notices). Frontends decide how to render it;
+	// never nil because New defaults it to event.Discard.
 	sink                event.Sink
 	requireVisibleFinal bool // internal callers require final Content
-	// lastUsage caches the most recent per-turn telemetry the provider reported so
-	// the CLI can expose a context gauge without re-scraping the usage line. The
-	// run loop writes it while a frontend's status line reads it, so it is atomic.
+	// lastUsage caches the latest provider telemetry for the CLI context gauge.
+	// The run loop writes it while a frontend reads it, so it is atomic.
 	lastUsage atomic.Pointer[provider.Usage]
+	outputBudgetState
 
 	// sessCacheHit/sessCacheMiss accumulate cache tokens across every API call
 	// this session, so frontends can show the aggregate hit-rate (Σhit/Σ(hit+miss))
@@ -546,22 +544,32 @@ type Agent struct {
 	// under the window (consecutiveCompacts crosses the limit), so auto-compaction
 	// pauses instead of looping. softCompactNoticed gates the one-shot soft-ratio
 	// notice so it fires once per approach, not every turn.
-	contextWindow          int
-	softCompactRatio       float64
-	toolResultSnipRatio    float64
-	compactRatio           float64
-	compactForceRatio      float64
-	softCompactNoticed     bool
-	recentKeep             int
-	archiveDir             string
-	keepPolicy             KeepPolicy
-	compactStuck           bool
-	consecutiveCompacts    int
-	sessionPath            string // bound transcript path for projection sidecars
-	workspaceID            string // stable prompt-cache lineage component
-	cacheState             string // warm/cold/unknown; never provider-visible
-	compactionState        CompactionState
+	contextWindow       int
+	softCompactRatio    float64
+	toolResultSnipRatio float64
+	compactRatio        float64
+	compactForceRatio   float64
+	softCompactNoticed  bool
+	recentKeep          int
+	archiveDir          string
+	keepPolicy          KeepPolicy
+	compactStuck        bool
+	consecutiveCompacts int
+	sessionPath         string // bound transcript path for projection sidecars
+	workspaceID         string // stable prompt-cache lineage component
+	cacheState          string // warm/cold/unknown; never provider-visible
+	compactionState     CompactionState
+	// compactionMu guards projection snapshots/install and the in-memory sidecar
+	// generation. Network summarization never runs while this lock is held.
+	compactionMu sync.Mutex
+	// compactionRunMu singleflights the expensive summary transaction without
+	// holding the session lock during network I/O.
+	compactionRunMu sync.Mutex
+	// lastCompactionTurn prevents the post-turn observer and pre-send preflight
+	// from paying for two summaries during one active tool loop.
+	lastCompactionTurn     atomic.Int64
 	strictAlternatingRoles bool // coalesce adjacent user turns on provider request copies
+	contextEditingState
 	// activeTurnCreatedAt identifies the real/synthetic user message that began
 	// the currently running turn. Compaction may rewrite older history while a
 	// tool loop is active, but it must keep this message and everything after it
@@ -824,13 +832,19 @@ func (a *Agent) SetSession(s *Session) {
 	a.sessMu.Unlock()
 	a.sessCacheHit.Store(0)
 	a.sessCacheMiss.Store(0)
+	a.resetOutputBudgetState()
 	a.warnedMissingToolCallReasoning = false
 	a.missingReasoningWarnStateChecked = false
 	a.missingReasoningHealthyStreak = 0
 	a.repeatFailureCounts = nil
 	a.repeatFailureScope = ""
+	a.compactionMu.Lock()
 	a.compactionState = CompactionState{} // lineage change; disk reloaded on Resume
 	a.cacheState = CacheStateUnknown
+	a.compactionMu.Unlock()
+	a.compactStuck = false
+	a.consecutiveCompacts = 0
+	a.lastCompactionTurn.Store(0)
 	if s != nil {
 		a.rebuildTodoState(s.Snapshot())
 	}
@@ -838,8 +852,8 @@ func (a *Agent) SetSession(s *Session) {
 
 // LastUsage returns the most recent per-turn token telemetry the provider
 // reported (nil if no turn has run yet). The TUI uses it to show a context
-// gauge alongside the prompt; the actual cache decisions still live inside
-// maybeCompact.
+// gauge alongside the prompt; ContextManager.Prepare owns cache-breaking
+// maintenance decisions.
 func (a *Agent) LastUsage() *provider.Usage { return a.lastUsage.Load() }
 
 // SessionCache returns the cumulative cache hit/miss prompt tokens across every
@@ -1020,7 +1034,7 @@ func (a *Agent) CompactRatio() float64 { return a.compactRatio }
 
 // CompactNow forces one projection compaction (canonical transcript untouched).
 func (a *Agent) CompactNow(ctx context.Context, instructions string) error {
-	_, err := a.compactToProjection(ctx, "manual", instructions, true)
+	_, err := a.contextManager().Prepare(ctx, ContextPreparePolicy{Trigger: CompactionTriggerManual, Instructions: instructions, Force: true})
 	return err
 }
 
@@ -1083,6 +1097,7 @@ type Options struct {
 	SessionPath            string // projection sidecar path; empty = memory only
 	WorkspaceID            string // prompt-cache lineage component
 	StrictAlternatingRoles bool   // merge adjacent user turns for strict providers at request time
+	ContextEditing         string // local (default) or native (explicit opt-in)
 
 	// Hooks fires PreToolUse / PostToolUse shell hooks around tool calls. nil
 	// disables hook firing.
@@ -1294,10 +1309,12 @@ func New(prov provider.Provider, tools *tool.Registry, session *Session, opts Op
 		workspaceID:               strings.TrimSpace(opts.WorkspaceID),
 		cacheState:                CacheStateUnknown,
 		strictAlternatingRoles:    opts.StrictAlternatingRoles,
+		contextEditingState:       newContextEditingState(opts.ContextEditing, prov),
 		subagentDepth:             subagentDepth,
 		maxSubagentDepth:          maxSubagentDepth,
 		mutationObserver:          opts.MutationObserver,
 	}
+	a.outputBudget = outputBudgetOf(prov)
 	if a.sessionPath != "" {
 		a.LoadProjectionSidecar(a.sessionPath)
 	}
@@ -2333,7 +2350,7 @@ func (a *Agent) streamWithFrozen(ctx context.Context, turn int, sink event.Sink,
 	}
 	// Host stream cancels on generation drain (OpenAI/Anthropic HTTP reads).
 	defer trackPublishedHostStream(ctx, cancel)()
-	ch, err := a.prov.Stream(ctx, req)
+	ch, err := a.streamProviderRequest(ctx, req)
 	if err != nil {
 		return streamedTurn{usage: provider.UsageWithRequestAttemptCount(ctx, nil), err: err}
 	}
@@ -2459,7 +2476,7 @@ func (a *Agent) streamWithFrozen(ctx context.Context, turn int, sink event.Sink,
 				stored, _ := finishReasoning()
 				usage = bestEffortStreamUsage(usage, text.Len(), reasoning.Len(), finishReasonClientReasoningLimit)
 				usage = provider.UsageWithRequestAttemptCount(ctx, usage)
-				a.lastUsage.Store(usage)
+				a.storeLatestRequestUsage(usage)
 				return collect(stored, errReasoningByteLimitExceeded)
 			}
 		case provider.ChunkText:
@@ -2508,7 +2525,7 @@ func (a *Agent) streamWithFrozen(ctx context.Context, turn int, sink event.Sink,
 			}
 		case provider.ChunkUsage:
 			usage, a.lastReasoning = chunk.Usage, chunk.Usage.ReasoningTokens
-			a.lastUsage.Store(chunk.Usage)
+			a.storeLatestRequestUsage(chunk.Usage)
 			a.sessCacheHit.Add(int64(chunk.Usage.CacheHitTokens))
 			a.sessCacheMiss.Add(int64(chunk.Usage.CacheMissTokens))
 		case provider.ChunkError:

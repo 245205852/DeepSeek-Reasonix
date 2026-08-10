@@ -37,6 +37,11 @@ func TestCompactionStateAtomicSaveLoad(t *testing.T) {
 		LastCacheState: CacheStateCold,
 		LastTrigger:    CompactionTriggerPressure,
 		LastMode:       CompactionModeSummarized,
+		Generation:     7,
+		LastReceipt: &ContextMaintenanceReceipt{
+			Status: "applied", Action: "summary", ProjectionVersion: 1,
+			InputHash: "in", OutputHash: "out", SavedTokens: 800,
+		},
 	}
 	if err := SaveCompactionState(path, st); err != nil {
 		t.Fatalf("save: %v", err)
@@ -50,6 +55,9 @@ func TestCompactionStateAtomicSaveLoad(t *testing.T) {
 	}
 	if len(got.Projection.Messages) != 2 || got.Projection.CoveredCount != 10 {
 		t.Fatalf("projection = %+v", got.Projection)
+	}
+	if got.Generation != 7 || got.LastReceipt == nil || got.LastReceipt.OutputHash != "out" || got.LastReceipt.ProjectionVersion != 1 {
+		t.Fatalf("v3 maintenance receipt not round-tripped: %+v", got)
 	}
 }
 
@@ -241,6 +249,7 @@ func TestFixedEarlyUserTurnsStableAcrossCompactions(t *testing.T) {
 	// the pre-projection canonical estimate. This remains useful for tail sizing,
 	// but must not change which early turns define the stable prefix.
 	a.lastUsage.Store(&provider.Usage{PromptTokens: charsOfMessages(sess.Messages)})
+	a.setPromptTokenCalibration(charsOfMessages(sess.Messages), requestCalibrationShapeOf(provider.Request{Messages: sess.Messages}))
 	if got := a.tokPerChar(); got < 0.9 || got > 1.1 {
 		t.Fatalf("test did not install the intended dynamic calibration: %f", got)
 	}
