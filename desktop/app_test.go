@@ -30,6 +30,7 @@ import (
 	"reasonix/internal/control"
 	"reasonix/internal/event"
 	"reasonix/internal/evidence"
+	"reasonix/internal/history"
 	"reasonix/internal/instruction"
 	"reasonix/internal/jobs"
 	"reasonix/internal/mcplaunch"
@@ -39,7 +40,9 @@ import (
 	"reasonix/internal/provider"
 	"reasonix/internal/sandbox"
 	"reasonix/internal/skill"
+	"reasonix/internal/stats"
 	"reasonix/internal/store"
+	"reasonix/internal/taskcatalog"
 	"reasonix/internal/tool"
 )
 
@@ -234,6 +237,15 @@ func isolateDesktopUserDirs(t *testing.T) string {
 	t.Setenv("REASONIX_STATE_HOME", filepath.Join(home, "state"))
 	t.Setenv("REASONIX_CACHE_HOME", filepath.Join(home, "cache"))
 	t.Setenv("AppData", appData)
+	// Process-local catalog projections pin SQLite files under cache. Close them
+	// before TempDir cleanup so Windows does not fail unlinkat on open handles.
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		_ = history.CloseSharedCatalog(ctx)
+		_ = stats.CloseUsageCatalogs(ctx)
+		_ = taskcatalog.ShutdownShared(ctx)
+	})
 	return home
 }
 

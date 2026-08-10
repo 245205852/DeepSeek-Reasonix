@@ -65,6 +65,28 @@ func existingUsageManager(dir string) *usageManager {
 	return usageManagers.byDir[dir]
 }
 
+// CloseUsageCatalogs closes every process-local usage projection. Desktop
+// shutdown and test isolation call this so Windows can delete TempDir cache
+// files that would otherwise stay locked by open SQLite handles.
+func CloseUsageCatalogs(ctx context.Context) error {
+	usageManagers.Lock()
+	managers := make([]*usageManager, 0, len(usageManagers.byDir))
+	for dir, manager := range usageManagers.byDir {
+		managers = append(managers, manager)
+		delete(usageManagers.byDir, dir)
+	}
+	usageManagers.Unlock()
+	var first error
+	for _, manager := range managers {
+		if catalog := manager.catalog.Swap(nil); catalog != nil {
+			if err := catalog.Close(ctx); err != nil && first == nil {
+				first = err
+			}
+		}
+	}
+	return first
+}
+
 func usageEntry(day string, r record) usagecatalog.Entry {
 	turns := 0
 	if r.Turn {

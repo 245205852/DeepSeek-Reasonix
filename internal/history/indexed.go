@@ -49,6 +49,20 @@ func FlushSharedCatalog(ctx context.Context) error {
 	return nil
 }
 
+// CloseSharedCatalog flushes and closes the process history projection so
+// shutdown and tests release SQLite handles under the cache directory.
+func CloseSharedCatalog(ctx context.Context) error {
+	processHistoryCatalog.mu.Lock()
+	catalog := processHistoryCatalog.catalog
+	processHistoryCatalog.catalog = nil
+	processHistoryCatalog.mu.Unlock()
+	if catalog == nil {
+		return nil
+	}
+	_ = catalog.Flush(ctx)
+	return catalog.Close(ctx)
+}
+
 func (m *indexedCatalogManager) register(roots []historycatalog.Root) {
 	m.mu.Lock()
 	if m.roots == nil {

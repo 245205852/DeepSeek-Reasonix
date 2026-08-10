@@ -55,6 +55,22 @@ func waitForTabReady(t *testing.T, app *App, tabID string) *WorkspaceTab {
 	return nil
 }
 
+func waitForTopicDirMarker(t *testing.T, dir, marker string) {
+	t.Helper()
+	markerPath := filepath.Join(dir, marker)
+	deadline := time.Now().Add(5 * time.Second)
+	var last error
+	for {
+		if _, last = os.Stat(markerPath); last == nil {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("expected %s after migration: %v", marker, last)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
 func waitForCatalogTopic(t *testing.T, app *App, scope, workspaceRoot, topicID string) []ProjectNode {
 	t.Helper()
 	app.startSessionCatalog(false)
@@ -802,11 +818,8 @@ func TestCoveredRecoveryCopyBecomesVisibleAfterMigratedParentDeletion(t *testing
 	app := NewApp()
 
 	waitForCatalogTopic(t, app, "global", "", legacySessionTopicID(parent))
-	for _, marker := range []string{topicMigrationMarker, topicIndexRepairMarker} {
-		if _, err := os.Stat(filepath.Join(dir, marker)); err != nil {
-			t.Fatalf("expected %s after migration: %v", marker, err)
-		}
-	}
+	waitForTopicDirMarker(t, dir, topicMigrationMarker)
+	waitForTopicDirMarker(t, dir, topicIndexRepairMarker)
 	if meta, ok, err := agent.LoadBranchMeta(recovery); err != nil || !ok {
 		t.Fatalf("load skipped recovery meta: ok=%v err=%v", ok, err)
 	} else if strings.TrimSpace(meta.TopicID) != "" {
@@ -3733,9 +3746,7 @@ func TestProjectTreeMigratesNewCLISessionAfterProjectDirMarker(t *testing.T) {
 	if len(nodes) != 1 || nodes[0].Kind != "project" || len(nodes[0].Children) != 1 || nodes[0].Children[0].TopicID != firstTopicID {
 		t.Fatalf("first project CLI session should appear in project tree, got %#v; want topic %q", nodes, firstTopicID)
 	}
-	if _, err := os.Stat(filepath.Join(dir, topicMigrationMarker)); err != nil {
-		t.Fatalf("expected migration marker after first project pass: %v", err)
-	}
+	waitForTopicDirMarker(t, dir, topicMigrationMarker)
 
 	time.Sleep(10 * time.Millisecond)
 	second := writeLegacySession(t, dir, "second-cli-project.jsonl", "second cli project prompt", time.Now())

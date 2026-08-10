@@ -598,7 +598,7 @@ func TestRepairDrainEventuallyCompletesBeyondQueue(t *testing.T) {
 		t.Fatal(err)
 	}
 	const total = 8
-	for i := 0; i < total; i++ {
+	for i := range total {
 		session := filepath.Join(dir, fmt.Sprintf("%02d.jsonl", i))
 		if err := os.WriteFile(session, []byte(`{"role":"user","content":"turn"}`+"\n"), 0o600); err != nil {
 			t.Fatal(err)

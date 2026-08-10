@@ -12,6 +12,7 @@ import (
 	"reasonix/internal/config"
 	"reasonix/internal/history"
 	"reasonix/internal/sessioncatalog"
+	"reasonix/internal/stats"
 	"reasonix/internal/taskcatalog"
 )
 
@@ -65,6 +66,12 @@ type ProjectTreeChangedV2 struct {
 func flushDesktopDerivedCatalogs(ctx context.Context) error {
 	var first error
 	if err := history.FlushSharedCatalog(ctx); err != nil && first == nil {
+		first = err
+	}
+	if err := history.CloseSharedCatalog(ctx); err != nil && first == nil {
+		first = err
+	}
+	if err := stats.CloseUsageCatalogs(ctx); err != nil && first == nil {
 		first = err
 	}
 	if err := taskcatalog.ShutdownShared(ctx); err != nil && first == nil {

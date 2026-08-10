@@ -9,7 +9,7 @@
     "layering": 1,
     "marker": 0,
     "narrative": 64,
-    "test-file-size": 69740
+    "test-file-size": 69763
   },
   "files": {
     "cmd/e2ebench/main.go": {
@@ -36,7 +36,7 @@
     },
     "desktop/app_test.go": {
       "essay": 2,
-      "test-file-size": 10217
+      "test-file-size": 10229
     },
     "desktop/bot_bridge.go": {
       "essay": 11
@@ -322,7 +322,7 @@
     },
     "desktop/tabs_topic_test.go": {
       "essay": 1,
-      "test-file-size": 3239
+      "test-file-size": 3250
     },
     "desktop/temphelper_test.go": {
       "essay": 4

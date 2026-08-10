@@ -157,15 +157,16 @@ func (c *Catalog) directoryLock(path string) *sync.Mutex {
 	return lock
 }
 
-// RequestReconcile coalesces external writes by directory. Queue pressure is
-// intentionally lossy: fingerprints on the next scan recover missed requests,
-// while a session save never waits on catalog work.
+// RequestReconcile coalesces external writes by directory. The channel is
+// non-blocking so a session save never waits on catalog work; when the channel
+// is full the request is retained in reconcileDirty and drained by the worker.
 func (c *Catalog) RequestReconcile(target DirectoryTarget) bool {
 	if c == nil || strings.TrimSpace(target.Path) == "" {
 		return false
 	}
 	target.Path = filepath.Clean(target.Path)
 	if _, loaded := c.reconcileQueued.LoadOrStore(target.Path, target); loaded {
+		c.markReconcileDirty(target)
 		return true
 	}
 	select {
@@ -176,19 +177,47 @@ func (c *Catalog) RequestReconcile(target DirectoryTarget) bool {
 		return false
 	default:
 		c.reconcileQueued.Delete(target.Path)
+		c.markReconcileDirty(target)
 		return false
 	}
 }
 
+func (c *Catalog) markReconcileDirty(target DirectoryTarget) {
+	c.reconcileDirtyMu.Lock()
+	c.reconcileDirty[target.Path] = target
+	c.reconcileDirtyMu.Unlock()
+}
+
+func (c *Catalog) takeReconcileDirty() (DirectoryTarget, bool) {
+	c.reconcileDirtyMu.Lock()
+	defer c.reconcileDirtyMu.Unlock()
+	for path, target := range c.reconcileDirty {
+		delete(c.reconcileDirty, path)
+		return target, true
+	}
+	return DirectoryTarget{}, false
+}
+
 func (c *Catalog) reconcileLoop() {
 	defer c.workers.Done()
+	ticker := time.NewTicker(250 * time.Millisecond)
+	defer ticker.Stop()
 	for {
+		if target, ok := c.takeReconcileDirty(); ok {
+			c.reconcileQueued.Delete(target.Path)
+			ctx, cancel := context.WithTimeout(c.workerCtx, 2*time.Minute)
+			_ = c.ReconcileDirectory(ctx, target)
+			cancel()
+			continue
+		}
 		select {
 		case target := <-c.reconcileCh:
 			c.reconcileQueued.Delete(target.Path)
 			ctx, cancel := context.WithTimeout(c.workerCtx, 2*time.Minute)
 			_ = c.ReconcileDirectory(ctx, target)
 			cancel()
+		case <-ticker.C:
+			// Drain dirty map on the next loop iteration.
 		case <-c.stop:
 			return
 		}
@@ -313,6 +342,19 @@ func recordFromOrder(target DirectoryTarget, info agent.SessionOrderInfo) Sessio
 	}
 	contentFingerprint := fileFingerprint(info.Path)
 	metaFingerprint := fileFingerprint(agent.BranchMetaPath(info.Path))
+	createdAt := unixMilli(info.CreatedAt)
+	lastActivityAt := unixMilli(info.LastActivityAt)
+	// File mtime is a hard floor. Migration/meta can temporarily write zero
+	// UpdatedAt; without this, topics sort as inactive and look "missing".
+	if st, err := os.Stat(info.Path); err == nil {
+		fileMS := st.ModTime().UnixMilli()
+		if createdAt <= 0 {
+			createdAt = fileMS
+		}
+		if lastActivityAt <= 0 || fileMS > lastActivityAt {
+			lastActivityAt = fileMS
+		}
+	}
 	return normalizeSessionRecord(SessionRecord{
 		Path:               info.Path,
 		Directory:          target.Path,
@@ -321,8 +363,8 @@ func recordFromOrder(target DirectoryTarget, info agent.SessionOrderInfo) Sessio
 		TopicID:            info.TopicID,
 		TopicTitle:         info.TopicTitle,
 		CustomTitle:        info.CustomTitle,
-		CreatedAt:          unixMilli(info.CreatedAt),
-		LastActivityAt:     unixMilli(info.LastActivityAt),
+		CreatedAt:          createdAt,
+		LastActivityAt:     lastActivityAt,
 		Preview:            info.Preview,
 		Turns:              info.Turns,
 		TurnsState:         turnsState,

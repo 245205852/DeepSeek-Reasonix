@@ -34,6 +34,8 @@ type Catalog struct {
 	repairQueued     sync.Map
 	reconcileCh      chan DirectoryTarget
 	reconcileQueued  sync.Map
+	reconcileDirtyMu sync.Mutex
+	reconcileDirty   map[string]DirectoryTarget
 	pathCh           chan sessionPathRequest
 	pathQueued       sync.Map
 	directoryLocksMu sync.Mutex
@@ -88,6 +90,7 @@ func Open(ctx context.Context, opts Options) (*Catalog, error) {
 		writeQueued:    map[string]SessionRecord{},
 		repairCh:       make(chan string, opts.QueueCapacity),
 		reconcileCh:    make(chan DirectoryTarget, 64),
+		reconcileDirty: map[string]DirectoryTarget{},
 		pathCh:         make(chan sessionPathRequest, opts.QueueCapacity),
 		directoryLocks: map[string]*sync.Mutex{},
 		stop:           make(chan struct{}),
