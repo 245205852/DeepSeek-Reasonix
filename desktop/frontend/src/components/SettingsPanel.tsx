@@ -1840,36 +1840,36 @@ function GeneralSection({ s, busy, apply, agentRunning }: SectionProps & { agent
           ))}
         </div>
       </SettingsField>
-      <SettingsField label={t("settings.displayMode")}>
-        <div className="set-seg">
-          {(["standard", "compact"] as const).map((mode) => (
-            <button
-              key={mode}
-              className={`set-seg__btn${displayMode === mode ? " set-seg__btn--on" : ""}`}
-              disabled={busy}
-              onClick={() => {
-                setLocalDisplayMode(mode);
-                void apply(() => app.SetDisplayMode(mode));
-              }}
-            >
-              {t(`settings.displayMode.${mode}`)}
-            </button>
-          ))}
-        </div>
-      </SettingsField>
-      <SettingsField
-        label={t("settings.workProcess")}
-        hint={t("settings.workProcessHint")}
-        className="settings-work-process-field"
-        stacked
-      >
-        <div className="settings-work-process-control" role="group" aria-label={t("settings.workProcess")}>
-          <div className="settings-work-process-row">
-            <div className="settings-work-process-row__copy">
-              <div className="settings-work-process-row__label">{t("settings.reasoningDisplay")}</div>
+      <SettingsField label={t("settings.sessionContentDisplay")} hint={t("settings.sessionContentDisplayHint")} className="settings-session-display-field" stacked>
+        <div className="settings-session-display-control" role="group" aria-label={t("settings.sessionContentDisplay")}>
+          <div className="settings-session-display-row">
+            <div className="settings-session-display-row__copy">
+              <div className="settings-session-display-row__label">{t("settings.displayMode")}</div>
+            </div>
+            <div className="settings-session-display-row__control">
+              <div className="set-seg" role="radiogroup" aria-label={t("settings.displayMode")}>
+                {(["standard", "compact"] as const).map((mode) => (
+                  <button key={mode} type="button"
+                    className={`set-seg__btn${displayMode === mode ? " set-seg__btn--on" : ""}`}
+                    aria-pressed={displayMode === mode}
+                    disabled={busy}
+                    onClick={() => {
+                      setLocalDisplayMode(mode);
+                      void apply(() => app.SetDisplayMode(mode));
+                    }}
+                  >
+                    {t(`settings.displayMode.${mode}`)}
+                  </button>
+                ))}
+              </div>
+            </div>
+          </div>
+          <div className="settings-session-display-row">
+            <div className="settings-session-display-row__copy">
+              <div className="settings-session-display-row__label">{t("settings.reasoningDisplay")}</div>
               {reasoningDisplayMode === "legacy-collapsed" && <div className="settings-inline-hint" role="status">{t("settings.reasoningDisplay.legacy")}</div>}
             </div>
-            <div className="settings-work-process-row__control">
+            <div className="settings-session-display-row__control">
               <div className="set-seg" role="radiogroup" aria-label={t("settings.reasoningDisplay")}>
                 {(["hidden", "summary", "auto"] as const).map((mode) => (
                   <button
@@ -1886,11 +1886,11 @@ function GeneralSection({ s, busy, apply, agentRunning }: SectionProps & { agent
               </div>
             </div>
           </div>
-          <div className="settings-work-process-row">
-            <div className="settings-work-process-row__copy">
-              <div className="settings-work-process-row__label">{t("settings.processFold")}</div>
+          <div className="settings-session-display-row">
+            <div className="settings-session-display-row__copy">
+              <div className="settings-session-display-row__label">{t("settings.processFold")}</div>
             </div>
-            <div className="settings-work-process-row__control">
+            <div className="settings-session-display-row__control">
               <div className="set-seg" role="radiogroup" aria-label={t("settings.processFold")}>
                 {(["auto", "expanded"] as const).map((pref) => (
                   <button

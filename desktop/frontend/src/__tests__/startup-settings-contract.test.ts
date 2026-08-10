@@ -108,32 +108,44 @@ ok(
   "GLM reasoning protocol is localized in every supported locale",
 );
 ok(
-  settingsSource.includes('settings.workProcess') &&
-    settingsSource.includes('settings-work-process-control') &&
+  settingsSource.includes('settings.sessionContentDisplay') &&
+    settingsSource.includes('settings-session-display-control') &&
+    settingsSource.includes('settings.displayMode') &&
+    settingsSource.includes('["standard", "compact"]') &&
     settingsSource.includes('settings.reasoningDisplay') &&
     settingsSource.includes('["hidden", "summary", "auto"]') &&
     settingsSource.includes('settings.processFold') &&
     settingsSource.includes('["auto", "expanded"]') &&
     settingsSource.includes('setProcessFoldPreference(pref)') &&
     settingsSource.includes('app.SetReasoningDisplayMode(mode)'),
-  "General settings groups independent reasoning display and completed-work folding controls",
+  "General settings groups transcript density, reasoning display, and completed-work folding controls",
 );
 ok(
   [enLocaleSource, zhLocaleSource, zhTWLocaleSource].every((source) =>
-    source.includes('"settings.workProcess"') &&
-    source.includes('"settings.workProcessHint"') &&
+    source.includes('"settings.sessionContentDisplay"') &&
+    source.includes('"settings.sessionContentDisplayHint"') &&
+    source.includes('"settings.displayMode"') &&
     source.includes('"settings.reasoningDisplay"') &&
     source.includes('"settings.reasoningDisplay.hidden"') &&
     source.includes('"settings.reasoningDisplay.summary"') &&
     source.includes('"settings.reasoningDisplay.auto"') &&
     source.includes('"settings.processFold"'),
   ),
-  "work-process group labels are localized in every supported locale",
+  "conversation-content display group labels are localized in every supported locale",
 );
 ok(
-  stylesSource.includes(".settings-work-process-control") &&
-    stylesSource.includes(".settings-work-process-row + .settings-work-process-row"),
-  "work-process controls share one visual group with an internal divider",
+  stylesSource.includes(".settings-session-display-field") &&
+    stylesSource.includes("grid-template-columns: minmax(0, 1fr)") &&
+    stylesSource.includes(".settings-session-display-row") &&
+    stylesSource.includes("@media (max-width: 900px)"),
+  "conversation display controls use one full-width responsive visual group",
+);
+ok(
+  [settingsSource, enLocaleSource, zhLocaleSource, zhTWLocaleSource, stylesSource].every((source) =>
+    !source.includes("settings.workProcess") &&
+    !source.includes("settings-work-process"),
+  ),
+  "the superseded work-process-only visual group does not return",
 );
 ok(
   [settingsSource, enLocaleSource, zhLocaleSource, zhTWLocaleSource].every((source) =>
