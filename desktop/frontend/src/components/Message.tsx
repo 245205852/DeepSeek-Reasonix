@@ -434,7 +434,7 @@ export function UserMessage({
       data-history-restore={id && id.startsWith("h") ? "" : undefined}
       data-entrance={id || undefined}
     >
-      <div className={`msg__body${editing ? " msg__body--editing" : ""}`}>
+      <div className={`msg__body${editing ? " msg__body--editing" : ""}`} data-transcript-selectable="message">
         {editing ? (
           <form className="msg-edit" onSubmit={(event) => void submitEdit(event)}>
             {orderedDraftAttachments.length > 0 && (
@@ -876,7 +876,7 @@ export const AssistantMessage = memo(function AssistantMessage({
         />
       )}
       {hasText && (
-        <div className="msg__body">
+        <div className="msg__body" data-transcript-selectable="message">
           <Markdown
             text={item.text}
             plainStatusBlocks={creationMode}

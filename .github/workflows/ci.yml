@@ -351,6 +351,7 @@ jobs:
         run: |
           wails generate module
           pnpm --dir frontend install --frozen-lockfile
+          PLAYWRIGHT_BROWSERS_PATH=.pw-browsers pnpm --dir frontend exec playwright install --with-deps chromium
           pnpm --dir frontend build
 
       - name: Test desktop frontend
@@ -360,6 +361,7 @@ jobs:
           pnpm --dir frontend test:workspace
           pnpm --dir frontend test:motion
           pnpm --dir frontend test:transcript
+          pnpm --dir frontend test:transcript-browser
 
       - name: Test usage statistics frontend
         run: pnpm --dir frontend test:usage-stats
