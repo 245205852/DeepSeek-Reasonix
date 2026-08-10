@@ -33,9 +33,17 @@ Legacy 迁移、OS home 约定目录扫描以及其他 fallback 路径都会跳�
 | 会话 | `<state root>/sessions/` |
 | 归档 | `<state root>/archive/` |
 | 记忆 | `<state root>/memory/` 与 `<state root>/projects/` |
+| 可丢弃的会话 Catalog | `<cache root>/session-catalog/v1.sqlite` |
+| 可丢弃的 Task Catalog | `<cache root>/task-catalog/v1.sqlite` |
 
 `<state root>` 默认等于 `<Reasonix home>`；只有设置 `REASONIX_STATE_HOME`
 时才会不同。
+
+会话 Catalog 是可重建的查询投影，不是用户数据；JSONL、event log、
+metadata sidecar 和 `desktop-projects.json` 仍是权威数据。详见
+[Session Catalog and Desktop Startup](./SESSION_CATALOG.zh-CN.md)。Task snapshot 和
+event log 也仍是权威数据；可重建的跨项目投影见
+[Task Catalog](./TASK_CATALOG.zh-CN.md)。
 
 全局用户配置文件名是 `config.toml`。项目本地配置文件仍叫 `reasonix.toml`。
 如果有人说“全局 reasonix.toml”，通常指的是 `<Reasonix home>/config.toml`。

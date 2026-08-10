@@ -418,6 +418,16 @@ reasonix catalogs reindex history [--dir PATH ...] [--json]
 reasonix catalogs reindex usage [--json]
 详见 [用量 Catalog](./USAGE_CATALOG.zh-CN.md)。
 
+可以独立检查或重建可丢弃的 Task 投影：
+
+```sh
+reasonix doctor catalogs [--json]
+reasonix catalogs reindex tasks [--project PATH ...] [--json]
+```
+
+权威 FileStore 边界、跨项目路由和重建行为见
+[Task Catalog](./TASK_CATALOG.zh-CN.md)。
+
 ### 记忆诊断与恢复
 
 直接运行 `/memory` 会显示全部 project/global active facts，不会隐藏跨 scope 的同名条目。

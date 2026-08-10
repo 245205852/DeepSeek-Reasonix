@@ -480,6 +480,16 @@ Usage statistics use a separate disposable rollup projection:
 reasonix catalogs reindex usage [--json]
 See [Usage Catalog](./USAGE_CATALOG.md).
 
+Inspect or rebuild the disposable task projection independently:
+
+```sh
+reasonix doctor catalogs [--json]
+reasonix catalogs reindex tasks [--project PATH ...] [--json]
+```
+
+See [Task Catalog](./TASK_CATALOG.md) for the authoritative FileStore boundary,
+cross-project routing, and rebuild behavior.
+
 ### Memory diagnostics and recovery
 
 Bare `/memory` shows all active project/global facts without hiding same-name
