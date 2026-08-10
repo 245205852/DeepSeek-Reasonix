@@ -62,6 +62,26 @@ func TestEstimatedPromptTokensStayInTokenUnitBeforeCalibration(t *testing.T) {
 	}
 }
 
+// Desktop rebinds sessions constantly — tab switches, forks, and the snapshot
+// conflict path that adopts the newer disk transcript. Each rebind used to drop
+// the calibration and put the next turn back on the cold estimate.
+func TestSessionSwapKeepsPromptCalibration(t *testing.T) {
+	a := &Agent{contextWindow: 200_000}
+	msgs := []provider.Message{{Role: provider.RoleUser, Content: strings.Repeat("字", 60_000)}}
+	a.setPromptTokenCalibration(36_000, requestCalibrationShapeOf(provider.Request{Messages: msgs}))
+
+	before := a.estimatedPromptTokens(msgs)
+	a.SetSession(NewSession("system"))
+	after := a.estimatedPromptTokens(msgs)
+
+	if before != after {
+		t.Fatalf("estimate moved across a session swap: %d -> %d", before, after)
+	}
+	if after > 40_000 {
+		t.Fatalf("estimate = %d, want the calibrated ~36000 rather than a cold fallback", after)
+	}
+}
+
 func TestSharedWindowFoldUsesGuardedInputBudget(t *testing.T) {
 	prov := &sharedWindowTestProvider{budget: 128 * 1024, shared: true}
 	a := &Agent{
@@ -360,7 +380,7 @@ func TestSummarizeRejectsLengthTruncation(t *testing.T) {
 	}
 }
 
-func TestSetSessionResetsTokenCalibration(t *testing.T) {
+func TestSetSessionResetsPerTranscriptUsageState(t *testing.T) {
 	a := &Agent{}
 	a.lastUsage.Store(&provider.Usage{PromptTokens: 200_000})
 	active := requestCalibrationShape{requestChars: 900_000, compactChars: 850_000}
@@ -374,8 +394,8 @@ func TestSetSessionResetsTokenCalibration(t *testing.T) {
 	if got := a.activeReqShape.Load(); got != nil {
 		t.Fatalf("activeReqShape survived session switch: %+v", got)
 	}
-	if got := a.promptCalibration.Load(); got != nil {
-		t.Fatalf("promptCalibration survived session switch: %+v", got)
+	if got := a.promptCalibration.Load(); got == nil {
+		t.Fatal("promptCalibration was dropped on session switch; the tokenizer ratio outlives the transcript")
 	}
 }
 
