@@ -2,7 +2,6 @@ package cli
 
 import (
 	"fmt"
-	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -15,19 +14,36 @@ import (
 
 func TestUseLegacyViewportScrollClear(t *testing.T) {
 	for _, tt := range []struct {
-		goos string
-		want bool
-	}{{"windows", false}, {"linux", true}, {"darwin", true}} {
-		if got := useLegacyViewportScrollClear(tt.goos); got != tt.want {
-			t.Errorf("useLegacyViewportScrollClear(%q) = %v, want %v", tt.goos, got, tt.want)
-		}
+		name    string
+		goos    string
+		environ []string
+		want    bool
+	}{
+		{name: "windows", goos: "windows", environ: []string{"TERM_PROGRAM=Windows_Terminal"}},
+		{name: "windows Warp", goos: "windows", environ: []string{"TERM_PROGRAM=WarpTerminal"}},
+		{name: "macOS Warp", goos: "darwin", environ: []string{"TERM_PROGRAM=WarpTerminal"}, want: true},
+		{name: "Linux Warp case and whitespace", goos: "linux", environ: []string{"TERM_PROGRAM=  warPterminal  "}, want: true},
+		{name: "SSH forwarded Warp", goos: "linux", environ: []string{"SSH_CONNECTION=client", "TERM_PROGRAM=WarpTerminal"}, want: true},
+		{name: "Apple Terminal", goos: "darwin", environ: []string{"TERM_PROGRAM=Apple_Terminal"}},
+		{name: "iTerm", goos: "darwin", environ: []string{"TERM_PROGRAM=iTerm.app"}},
+		{name: "Ghostty", goos: "darwin", environ: []string{"TERM_PROGRAM=ghostty"}},
+		{name: "Kitty", goos: "linux", environ: []string{"TERM=xterm-kitty"}},
+		{name: "empty environment", goos: "linux"},
+		{name: "lookalike variable", goos: "linux", environ: []string{"OTHER_TERM_PROGRAM=WarpTerminal"}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			got := useLegacyViewportScrollClear(tt.goos, tt.environ)
+			if got != tt.want {
+				t.Fatalf("useLegacyViewportScrollClear(%q, %q) = %v, want %v", tt.goos, tt.environ, got, tt.want)
+			}
+		})
 	}
 }
 
-func assertLegacyViewportClearCmd(t *testing.T, cmd tea.Cmd) {
+func assertLegacyViewportClearCmd(t *testing.T, cmd tea.Cmd, want bool) {
 	t.Helper()
-	if got, want := cmd != nil, useLegacyViewportScrollClear(runtime.GOOS); got != want {
-		t.Fatalf("viewport ClearScreen command = %v, want %v on %s", got, want, runtime.GOOS)
+	if got := cmd != nil; got != want {
+		t.Fatalf("viewport ClearScreen command = %v, want %v", got, want)
 	}
 }
 
