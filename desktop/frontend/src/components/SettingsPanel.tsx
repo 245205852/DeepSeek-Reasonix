@@ -1,5 +1,5 @@
 import { lazy, memo, Suspense, startTransition, useCallback, useDeferredValue, useEffect, useId, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent as ReactMouseEvent, type PointerEvent, type ReactNode } from "react";
-import { ArrowRight, Bot as BotIcon, Check, CheckCircle2, ChevronDown, ChevronUp, Clipboard, ExternalLink, GripVertical, KeyRound, Loader2, MessageCircle, MoreHorizontal, Play, QrCode, RefreshCw, Send, Trash2 } from "lucide-react";
+import { ArrowRight, Bot as BotIcon, BrainCircuit, Check, CheckCircle2, ChevronDown, ChevronUp, CircleDollarSign, Clipboard, ExternalLink, GripVertical, KeyRound, Languages, ListChecks, Loader2, MessageCircle, Monitor, MoreHorizontal, PanelBottom, Play, Power, QrCode, RefreshCw, Send, ShieldCheck, SlidersHorizontal, Trash2, Volume2 } from "lucide-react";
 import { asArray } from "../lib/array";
 import { useDeferredClose } from "../lib/useMountTransition";
 import { app, openExternal } from "../lib/bridge";
@@ -72,8 +72,7 @@ import { SoundSelect } from "./SoundSelect";
 import { getSuccessPreference, setSuccessPreference, getAttentionPreference, setAttentionPreference, playSuccessChime, playAttentionChime, type SoundWavPref } from "../lib/sound";
 import { ModalCloseButton } from "./ModalCloseButton";
 import { ShortcutComboDisplay } from "./ShortcutComboDisplay";
-
-const SETTINGS_TABS: SettingsTab[] = ["general", "models", "bots", "mcp", "remote", "skills", "subagents", "plugins", "memory", "hooks", "diagnostics", "shortcuts", "permissions", "sandbox", "network", "appearance", "storage", "updates"];
+import { SettingsNavigation, SETTINGS_NAV_TABS } from "./SettingsNavigation";
 export type SettingsInitialFocus =
   | { target: "bot-allowlist"; connectionId?: string; requestId?: number }
   | { target: "model-access"; requestId?: number }
@@ -296,6 +295,16 @@ export function SettingsPanel({
   // These pages need SettingsView; capability pages load their own data.
   const needsSettings = tab === "general" || tab === "models" || tab === "bots" || tab === "subagents" || tab === "network" || tab === "permissions" || tab === "sandbox" || tab === "appearance" || tab === "updates";
   const lazySettingsPageFallback = <div className="empty">{t("settings.loading")}</div>;
+  const settingsNavigationItems = useMemo(() => SETTINGS_NAV_TABS.map((id) => ({
+    id,
+    label: settingsTabLabel(id, t),
+    meta: s ? settingsTabMeta(id, s, t) : "",
+    searchTerms: id === "general" ? [
+      "settings.desktopLayoutStyle", "settings.language", "settings.currency", "settings.displayMode",
+      "settings.reasoningDisplay", "settings.processFold", "settings.closeBehavior",
+      "settings.defaultToolApprovalMode", "settings.sound", "settings.statusBarStyle", "settings.statusBarItems",
+    ].map((key) => t(key as DictKey)).join(" ") : "",
+  })), [s, t]);
 
   return (
     <div className="management-modal-backdrop settings-modal-backdrop" data-state={status} onMouseDown={(e) => { if (e.target === e.currentTarget) requestClose(); }}>
@@ -306,18 +315,7 @@ export function SettingsPanel({
         </header>
 
         <div className="settings-center">
-          <nav className="settings-center__nav" aria-label={t("settings.title")}>
-            {SETTINGS_TABS.map((id) => (
-              <button
-                key={id}
-                className={`settings-center__navitem${tab === id ? " settings-center__navitem--active" : ""}`}
-                onClick={() => setTab(id)}
-              >
-                <span>{settingsTabLabel(id, t)}</span>
-                {s && <small>{settingsTabMeta(id, s, t)}</small>}
-              </button>
-            ))}
-          </nav>
+          <SettingsNavigation items={settingsNavigationItems} activeTab={tab} onSelect={setTab} />
           <main className="settings-center__content">
             {needsSettings && settingsLoadFailed && (
               <div className="banner banner--error settings-load-error" role="alert">
@@ -498,25 +496,30 @@ function SettingsSection({
 function SettingsField({
   label,
   hint,
+  icon,
   children,
   className,
   stacked = false,
 }: {
   label: ReactNode;
   hint?: ReactNode;
+  icon?: ReactNode;
   children: ReactNode;
   className?: string;
   stacked?: boolean;
 }) {
   return (
     <div className={`settings-field${stacked ? " settings-field--stacked" : ""}${className ? ` ${className}` : ""}`}>
-      <div className="settings-field__copy">
-        <div className="settings-field__label">{label}</div>
-        {hint && (
-          <div className="settings-field__hint">
-            <SettingsHint hint={hint} />
-          </div>
-        )}
+      <div className={`settings-field__copy${icon ? " settings-field__copy--icon" : ""}`}>
+        {icon && <span className="settings-field__icon" aria-hidden="true">{icon}</span>}
+        <div className="settings-field__copy-body">
+          <div className="settings-field__label">{label}</div>
+          {hint && (
+            <div className="settings-field__hint">
+              <SettingsHint hint={hint} />
+            </div>
+          )}
+        </div>
       </div>
       <div className="settings-field__control">{children}</div>
     </div>
@@ -1783,8 +1786,9 @@ function GeneralSection({ s, busy, apply, agentRunning }: SectionProps & { agent
     void apply(() => app.SetDesktopLanguage(next));
   };
   return (
-    <SettingsSection>
-      <SettingsField label={t("settings.desktopLayoutStyle")}>
+    <>
+      <SettingsSection title={t("settings.general.sectionAppearance")} description={t("settings.general.sectionAppearanceHint")}>
+      <SettingsField label={t("settings.desktopLayoutStyle")} hint={t("settings.desktopLayoutStyleHint")} icon={<Monitor size={18} />}>
         <div className="set-seg">
           {(["classic", "workbench", "creation"] as const).map((style) => (
             <button
@@ -1798,7 +1802,7 @@ function GeneralSection({ s, busy, apply, agentRunning }: SectionProps & { agent
           ))}
         </div>
       </SettingsField>
-      <SettingsField label={t("settings.language")}>
+      <SettingsField label={t("settings.language")} hint={t("settings.languageHint")} icon={<Languages size={18} />}>
         <div className="set-seg">
           {LANGUAGE_PREFS.map((pref) => (
             <button
@@ -1812,7 +1816,7 @@ function GeneralSection({ s, busy, apply, agentRunning }: SectionProps & { agent
           ))}
         </div>
       </SettingsField>
-      <SettingsField label={t("settings.currency")}>
+      <SettingsField label={t("settings.currency")} hint={t("settings.currencyHint")} icon={<CircleDollarSign size={18} />}>
         <div className="set-seg">
           {(["", "CNY", "USD"] as DesktopCurrency[]).map((currency) => (
             <button
@@ -1826,7 +1830,64 @@ function GeneralSection({ s, busy, apply, agentRunning }: SectionProps & { agent
           ))}
         </div>
       </SettingsField>
-      <SettingsField label={t("settings.closeBehavior")}>
+      </SettingsSection>
+
+      <SettingsSection title={t("settings.general.sectionConversation")} description={t("settings.sessionContentDisplayHint")}>
+        <SettingsField label={t("settings.displayMode")} hint={t("settings.displayModeHint")} icon={<SlidersHorizontal size={18} />}>
+          <div className="set-seg" role="radiogroup" aria-label={t("settings.displayMode")}>
+            {(["standard", "compact"] as const).map((mode) => (
+              <button key={mode} type="button"
+                className={`set-seg__btn${displayMode === mode ? " set-seg__btn--on" : ""}`}
+                aria-pressed={displayMode === mode}
+                disabled={busy}
+                onClick={() => {
+                  setLocalDisplayMode(mode);
+                  void apply(() => app.SetDisplayMode(mode));
+                }}
+              >
+                {t(`settings.displayMode.${mode}`)}
+              </button>
+            ))}
+          </div>
+        </SettingsField>
+        <SettingsField label={t("settings.reasoningDisplay")} hint={t("settings.reasoningDisplayHint")} icon={<BrainCircuit size={18} />}>
+          <div>
+            <div className="set-seg" role="radiogroup" aria-label={t("settings.reasoningDisplay")}>
+              {(["hidden", "summary", "auto"] as const).map((mode) => (
+                <button
+                  key={mode}
+                  type="button"
+                  className={`set-seg__btn${reasoningDisplayMode === mode ? " set-seg__btn--on" : ""}`}
+                  aria-pressed={reasoningDisplayMode === mode}
+                  disabled={busy}
+                  onClick={() => void saveReasoningDisplayMode(mode)}
+                >
+                  {t(`settings.reasoningDisplay.${mode}`)}
+                </button>
+              ))}
+            </div>
+            {reasoningDisplayMode === "legacy-collapsed" && <div className="settings-inline-hint" role="status">{t("settings.reasoningDisplay.legacy")}</div>}
+          </div>
+        </SettingsField>
+        <SettingsField label={t("settings.processFold")} hint={t("settings.processFoldHint")} icon={<ListChecks size={18} />}>
+          <div className="set-seg" role="radiogroup" aria-label={t("settings.processFold")}>
+            {(["auto", "expanded"] as const).map((pref) => (
+              <button
+                key={pref}
+                type="button"
+                className={`set-seg__btn${processFold === pref ? " set-seg__btn--on" : ""}`}
+                aria-pressed={processFold === pref}
+                onClick={() => setProcessFoldPreference(pref)}
+              >
+                {t(`settings.processFold.${pref}`)}
+              </button>
+            ))}
+          </div>
+        </SettingsField>
+      </SettingsSection>
+
+      <SettingsSection title={t("settings.general.sectionSystem")} description={t("settings.general.sectionSystemHint")}>
+      <SettingsField label={t("settings.closeBehavior")} hint={t("settings.closeBehaviorHint")} icon={<Power size={18} />}>
         <div className="set-seg">
           {(["background", "quit"] as const).map((mode) => (
             <button
@@ -1840,75 +1901,7 @@ function GeneralSection({ s, busy, apply, agentRunning }: SectionProps & { agent
           ))}
         </div>
       </SettingsField>
-      <SettingsField label={t("settings.sessionContentDisplay")} hint={t("settings.sessionContentDisplayHint")} className="settings-session-display-field" stacked>
-        <div className="settings-session-display-control" role="group" aria-label={t("settings.sessionContentDisplay")}>
-          <div className="settings-session-display-row">
-            <div className="settings-session-display-row__copy">
-              <div className="settings-session-display-row__label">{t("settings.displayMode")}</div>
-            </div>
-            <div className="settings-session-display-row__control">
-              <div className="set-seg" role="radiogroup" aria-label={t("settings.displayMode")}>
-                {(["standard", "compact"] as const).map((mode) => (
-                  <button key={mode} type="button"
-                    className={`set-seg__btn${displayMode === mode ? " set-seg__btn--on" : ""}`}
-                    aria-pressed={displayMode === mode}
-                    disabled={busy}
-                    onClick={() => {
-                      setLocalDisplayMode(mode);
-                      void apply(() => app.SetDisplayMode(mode));
-                    }}
-                  >
-                    {t(`settings.displayMode.${mode}`)}
-                  </button>
-                ))}
-              </div>
-            </div>
-          </div>
-          <div className="settings-session-display-row">
-            <div className="settings-session-display-row__copy">
-              <div className="settings-session-display-row__label">{t("settings.reasoningDisplay")}</div>
-              {reasoningDisplayMode === "legacy-collapsed" && <div className="settings-inline-hint" role="status">{t("settings.reasoningDisplay.legacy")}</div>}
-            </div>
-            <div className="settings-session-display-row__control">
-              <div className="set-seg" role="radiogroup" aria-label={t("settings.reasoningDisplay")}>
-                {(["hidden", "summary", "auto"] as const).map((mode) => (
-                  <button
-                    key={mode}
-                    type="button"
-                    className={`set-seg__btn${reasoningDisplayMode === mode ? " set-seg__btn--on" : ""}`}
-                    aria-pressed={reasoningDisplayMode === mode}
-                    disabled={busy}
-                    onClick={() => void saveReasoningDisplayMode(mode)}
-                  >
-                    {t(`settings.reasoningDisplay.${mode}`)}
-                  </button>
-                ))}
-              </div>
-            </div>
-          </div>
-          <div className="settings-session-display-row">
-            <div className="settings-session-display-row__copy">
-              <div className="settings-session-display-row__label">{t("settings.processFold")}</div>
-            </div>
-            <div className="settings-session-display-row__control">
-              <div className="set-seg" role="radiogroup" aria-label={t("settings.processFold")}>
-                {(["auto", "expanded"] as const).map((pref) => (
-                  <button
-                    key={pref}
-                    type="button"
-                    className={`set-seg__btn${processFold === pref ? " set-seg__btn--on" : ""}`}
-                    aria-pressed={processFold === pref}
-                    onClick={() => setProcessFoldPreference(pref)}
-                  >
-                    {t(`settings.processFold.${pref}`)}
-                  </button>
-                ))}
-              </div>
-            </div>
-          </div>
-        </div>
-      </SettingsField>
-      <SettingsField label={t("settings.defaultToolApprovalMode")} hint={t("settings.defaultToolApprovalModeHint")}>
+      <SettingsField label={t("settings.defaultToolApprovalMode")} hint={t("settings.defaultToolApprovalModeHint")} icon={<ShieldCheck size={18} />}>
         <div className="set-seg">
           {TOOL_APPROVAL_MODES.map((mode) => (
             <button
@@ -1922,7 +1915,7 @@ function GeneralSection({ s, busy, apply, agentRunning }: SectionProps & { agent
           ))}
         </div>
       </SettingsField>
-      <SettingsField label={t("settings.sound")} hint={t("settings.soundHint")} stacked>
+      <SettingsField label={t("settings.sound")} hint={t("settings.soundHint")} icon={<Volume2 size={18} />} stacked>
         <div className={`settings-sound-editor${soundExpanded ? " settings-sound-editor--expanded" : ""}`}>
           <div className="settings-sound-editor__summary">
             <span className={`settings-sound-editor__status settings-sound-editor__status--${soundStatus}`}>
@@ -1995,7 +1988,7 @@ function GeneralSection({ s, busy, apply, agentRunning }: SectionProps & { agent
           )}
         </div>
       </SettingsField>
-      <SettingsField label={t("settings.statusBarStyle")}>
+      <SettingsField label={t("settings.statusBarStyle")} hint={t("settings.statusBarStyleHint")} icon={<PanelBottom size={18} />}>
         <div className="set-seg">
           {(["icon", "text"] as const).map((style) => (
             <button
@@ -2009,7 +2002,7 @@ function GeneralSection({ s, busy, apply, agentRunning }: SectionProps & { agent
           ))}
         </div>
       </SettingsField>
-      <SettingsField label={t("settings.statusBarItems")} hint={t("settings.statusBarItemsHint")} stacked>
+      <SettingsField label={t("settings.statusBarItems")} hint={t("settings.statusBarItemsHint")} icon={<ListChecks size={18} />} stacked>
         <div className={`status-bar-items-editor${statusBarItemsExpanded ? " status-bar-items-editor--expanded" : ""}`}>
           <div className="status-bar-items-editor__summary">
             <span className="status-bar-items-editor__summary-text">
@@ -2112,6 +2105,7 @@ function GeneralSection({ s, busy, apply, agentRunning }: SectionProps & { agent
         </div>
       </SettingsField>
     </SettingsSection>
+    </>
   );
 }
 

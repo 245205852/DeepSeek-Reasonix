@@ -27,6 +27,7 @@ const here = dirname(fileURLToPath(import.meta.url));
 const appSource = readFileSync(resolve(here, "../App.tsx"), "utf8");
 const bridgeSource = readFileSync(resolve(here, "../lib/bridge.ts"), "utf8");
 const settingsSource = readFileSync(resolve(here, "../components/SettingsPanel.tsx"), "utf8");
+const settingsNavigationSource = readFileSync(resolve(here, "../components/SettingsNavigation.tsx"), "utf8");
 const stylesSource = readFileSync(resolve(here, "../styles.css"), "utf8") +
   readFileSync(resolve(here, "../components/ProviderAccessSettings.css"), "utf8") +
   readFileSync(resolve(here, "../components/SettingsPanel.css"), "utf8");
@@ -108,8 +109,7 @@ ok(
   "GLM reasoning protocol is localized in every supported locale",
 );
 ok(
-  settingsSource.includes('settings.sessionContentDisplay') &&
-    settingsSource.includes('settings-session-display-control') &&
+  settingsSource.includes('settings.general.sectionConversation') &&
     settingsSource.includes('settings.displayMode') &&
     settingsSource.includes('["standard", "compact"]') &&
     settingsSource.includes('settings.reasoningDisplay') &&
@@ -118,7 +118,7 @@ ok(
     settingsSource.includes('["auto", "expanded"]') &&
     settingsSource.includes('setProcessFoldPreference(pref)') &&
     settingsSource.includes('app.SetReasoningDisplayMode(mode)'),
-  "General settings groups transcript density, reasoning display, and completed-work folding controls",
+  "General settings presents transcript density, reasoning display, and completed-work folding in one conversation section",
 );
 ok(
   [enLocaleSource, zhLocaleSource, zhTWLocaleSource].every((source) =>
@@ -134,11 +134,22 @@ ok(
   "conversation-content display group labels are localized in every supported locale",
 );
 ok(
-  stylesSource.includes(".settings-session-display-field") &&
-    stylesSource.includes("grid-template-columns: minmax(0, 1fr)") &&
-    stylesSource.includes(".settings-session-display-row") &&
+  stylesSource.includes(".settings-page--general .settings-section") &&
+    stylesSource.includes("grid-template-columns: minmax(260px, 1fr) max-content") &&
+    stylesSource.includes(".settings-field__copy--icon") &&
     stylesSource.includes("@media (max-width: 900px)"),
-  "conversation display controls use one full-width responsive visual group",
+  "General controls use the selected flat responsive section layout",
+);
+ok(
+  settingsNavigationSource.includes('settings.searchPlaceholder') &&
+    settingsNavigationSource.includes('SETTINGS_TAB_GROUPS') &&
+    settingsNavigationSource.includes('settings-center__navgroup') &&
+    settingsNavigationSource.includes('settingsTabIcon(id)') &&
+    [enLocaleSource, zhLocaleSource, zhTWLocaleSource].every((source) =>
+      source.includes('"settings.navGroup.preferences"') &&
+      source.includes('"settings.searchNoResults"'),
+    ),
+  "settings navigation provides searchable localized groups and visible category icons",
 );
 ok(
   [settingsSource, enLocaleSource, zhLocaleSource, zhTWLocaleSource, stylesSource].every((source) =>

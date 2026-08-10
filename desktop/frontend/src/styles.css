@@ -15097,7 +15097,7 @@ body > .mermaid-diagram--fullscreen {
 /* ── settings centre layout ─────────────────────────────────────────────────── */
 .settings-center {
   display: grid;
-  grid-template-columns: clamp(180px, calc(248px - (900px - 100vw) * 0.486), 248px) minmax(0, 1fr);
+  grid-template-columns: clamp(220px, 20vw, 272px) minmax(0, 1fr);
   flex: 1;
   min-height: 0;
   overflow: hidden;
@@ -15106,19 +15106,117 @@ body > .mermaid-diagram--fullscreen {
 .settings-center__nav {
   border-right: 1px solid var(--border);
   background: var(--bg-soft);
-  padding: 10px;
+  padding: 14px 12px 18px;
   overflow-y: auto;
+}
+
+.settings-center__search {
+  --wails-draggable: no-drag;
+  position: sticky;
+  top: 0;
+  z-index: var(--z-local-raised);
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  min-height: 38px;
+  margin-bottom: 14px;
+  padding: 0 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-soft);
+  color: var(--fg-faint);
+}
+
+.settings-center__search:focus-within {
+  border-color: color-mix(in srgb, var(--accent) 42%, var(--border));
+  box-shadow: var(--focus-ring);
+  color: var(--fg-dim);
+}
+
+.settings-center__search input {
+  min-width: 0;
+  height: 36px;
+  padding: 0;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  color: var(--fg);
+  font: inherit;
+  font-size: var(--font-control-small);
+}
+
+.settings-center__search input::placeholder {
+  color: var(--fg-faint);
+}
+
+.settings-center__search button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--fg-faint);
+  cursor: pointer;
+}
+
+.settings-center__search button:hover,
+.settings-center__search button:focus-visible {
+  outline: none;
+  background: var(--bg-elev-2);
+  color: var(--fg);
+}
+
+.settings-center__navgroups,
+.settings-center__navgroup,
+.settings-center__navitems {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.settings-center__navgroups {
+  gap: 14px;
+}
+
+.settings-center__navgroup {
+  gap: 4px;
+}
+
+.settings-center__navgroup-label {
+  padding: 0 10px 3px;
+  color: var(--fg-faint);
+  font-size: var(--text-2xs);
+  font-weight: 650;
+  letter-spacing: 0.03em;
+}
+
+.settings-center__navitems {
+  gap: 2px;
+}
+
+.settings-center__navempty {
+  padding: 18px 10px;
+  color: var(--fg-faint);
+  font-size: var(--font-control-small);
+  line-height: 1.45;
+  text-align: center;
 }
 
 .settings-center__navitem {
   --wails-draggable: no-drag;
   position: relative;
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 3px;
   width: 100%;
   min-width: 0;
-  padding: 9px 10px;
+  min-height: 48px;
+  padding: 7px 10px;
   border: none;
   border-radius: 8px;
   background: transparent;
@@ -15150,19 +15248,37 @@ body > .mermaid-diagram--fullscreen {
   background: var(--accent);
 }
 
-.settings-center__navitem span,
+.settings-center__navitem-main > span,
 .settings-center__navitem small {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.settings-center__navitem span {
+.settings-center__navitem-main {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  min-width: 0;
+}
+
+.settings-center__navitem-main > svg {
+  flex: 0 0 auto;
+  color: var(--fg-faint);
+}
+
+.settings-center__navitem:hover .settings-center__navitem-main > svg,
+.settings-center__navitem--active .settings-center__navitem-main > svg {
+  color: var(--accent);
+}
+
+.settings-center__navitem-main > span {
   font-size: var(--font-control);
   font-weight: 650;
 }
 
 .settings-center__navitem small {
+  padding-left: 26px;
   color: var(--fg-dim);
   font-size: var(--text-2xs);
   font-family: inherit;
@@ -15173,7 +15289,7 @@ body > .mermaid-diagram--fullscreen {
   overflow-x: hidden;
   overflow-y: auto;
   scrollbar-gutter: stable;
-  padding: 24px 32px;
+  padding: 30px 40px 40px;
   background: var(--bg-elev);
 }
 
@@ -15185,7 +15301,7 @@ body > .mermaid-diagram--fullscreen {
 }
 
 .settings-page--form {
-  max-width: 920px;
+  max-width: 1040px;
 }
 
 .settings-page--manager {
@@ -15193,20 +15309,20 @@ body > .mermaid-diagram--fullscreen {
 }
 
 .settings-page__header {
-  margin-bottom: 18px;
-  padding-bottom: 14px;
+  margin-bottom: 24px;
+  padding-bottom: 18px;
   border-bottom: 1px solid var(--border-soft);
 }
 
 .settings-page__title {
-  font-size: var(--text-xl);
-  font-weight: 700;
+  font-size: clamp(24px, 2.2vw, 30px);
+  font-weight: 740;
   color: var(--fg);
   margin: 0 0 4px 0;
 }
 
 .settings-page__desc {
-  font-size: var(--font-control-small);
+  font-size: var(--font-control);
   color: var(--fg-dim);
   margin: 0;
   line-height: 1.45;
@@ -15375,6 +15491,81 @@ body > .mermaid-diagram--fullscreen {
 
 .settings-field__copy {
   min-width: 0;
+}
+
+.settings-field__copy--icon {
+  display: grid;
+  grid-template-columns: 22px minmax(0, 1fr);
+  gap: 12px;
+  align-items: start;
+}
+
+.settings-field__copy-body {
+  min-width: 0;
+}
+
+.settings-field__icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  color: var(--fg-faint);
+}
+
+.settings-page--general .settings-section {
+  margin-bottom: 30px;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+}
+
+.settings-page--general .settings-section__head {
+  margin-bottom: 0;
+  padding-bottom: 11px;
+  border-bottom: 1px solid var(--border-soft);
+}
+
+.settings-page--general .settings-section__title {
+  font-size: var(--font-control);
+  font-weight: 720;
+}
+
+.settings-page--general .settings-section__desc {
+  max-width: 680px;
+}
+
+.settings-page--general .settings-section__desc .settings-field__hint-line,
+.settings-page--general .settings-field__hint-line {
+  overflow: visible;
+  text-overflow: clip;
+  white-space: normal;
+}
+
+.settings-page--general .settings-field {
+  grid-template-columns: minmax(260px, 1fr) max-content;
+  gap: 32px;
+  min-height: 62px;
+  padding: 14px 0;
+}
+
+.settings-page--general .settings-field:first-child {
+  padding-top: 14px;
+}
+
+.settings-page--general .settings-field:last-child {
+  padding-bottom: 14px;
+}
+
+.settings-page--general .settings-field__control {
+  min-width: 260px;
+}
+
+.settings-page--general .settings-field--stacked .settings-field__control {
+  width: min(520px, 100%);
+  margin-left: auto;
 }
 
 .settings-field__label {
@@ -16332,6 +16523,20 @@ body > .mermaid-diagram--fullscreen {
   .settings-field__control,
   .settings-inline-controls {
     justify-content: flex-start;
+  }
+
+  .settings-page--general .settings-field {
+    grid-template-columns: 1fr;
+    gap: 10px;
+  }
+
+  .settings-page--general .settings-field__control {
+    min-width: 0;
+  }
+
+  .settings-page--general .settings-field--stacked .settings-field__control {
+    width: 100%;
+    margin-left: 0;
   }
 
   .settings-inline-controls {
@@ -28439,8 +28644,8 @@ body > .mermaid-diagram--fullscreen {
 }
 
 :root[data-theme-style] .settings-page__title {
-  font-size: 19px;
-  letter-spacing: 0;
+  font-size: clamp(24px, 2.2vw, 30px);
+  letter-spacing: -0.015em;
 }
 
 :root[data-theme-style] .settings-section,
@@ -28449,6 +28654,14 @@ body > .mermaid-diagram--fullscreen {
   border-radius: 8px;
   background: var(--bg-elev);
   box-shadow: var(--app-graphite-shadow);
+}
+
+:root[data-theme-style] .settings-page--general .settings-section {
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
 }
 
 :root[data-theme-style] .settings-field {
@@ -37712,6 +37925,21 @@ body > .mermaid-diagram--fullscreen {
     scrollbar-width: none;
   }
 
+  .settings-center__search,
+  .settings-center__navgroup-label {
+    display: none;
+  }
+
+  .settings-center__navgroups {
+    flex-direction: row;
+    gap: 4px;
+  }
+
+  .settings-center__navgroup,
+  .settings-center__navitems {
+    display: contents;
+  }
+
   .settings-center__nav::-webkit-scrollbar {
     display: none;
   }
@@ -37719,7 +37947,12 @@ body > .mermaid-diagram--fullscreen {
   .settings-center__navitem {
     flex: 0 0 auto;
     width: auto;
+    min-height: 38px;
     padding: 8px 10px;
+  }
+
+  .settings-center__navitem-main {
+    gap: 7px;
   }
 
   .settings-center__navitem small {
