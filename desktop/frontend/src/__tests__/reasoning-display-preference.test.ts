@@ -32,11 +32,14 @@ Object.defineProperty(globalThis, "localStorage", {
 });
 
 storage.clear();
-hydrateReasoningDisplayMode("summary", false);
-ok(getReasoningDisplayMode() === "summary", "missing preferences default to summary");
+hydrateReasoningDisplayMode(undefined, false);
+ok(getReasoningDisplayMode() === "auto", "missing preferences default to live follow");
+
+hydrateReasoningDisplayMode("future-mode", false);
+ok(getReasoningDisplayMode() === "auto", "unknown preferences use the live-follow fallback");
 
 storage.set("reasonix-reasoning-summary", "0");
-hydrateReasoningDisplayMode("summary", false);
+hydrateReasoningDisplayMode("auto", false);
 ok(getReasoningDisplayMode() === "legacy-collapsed", "legacy summary-off preserves the old compatible behavior");
 
 storage.set("reasonix-reasoning-summary", "1");
@@ -46,6 +49,9 @@ ok(getReasoningDisplayMode() === "summary", "legacy summary-on wins over the old
 storage.set("reasonix-reasoning-summary", "0");
 hydrateReasoningDisplayMode("hidden", true);
 ok(getReasoningDisplayMode() === "hidden", "explicit new mode wins over every legacy preference");
+
+hydrateReasoningDisplayMode("summary", true);
+ok(getReasoningDisplayMode() === "summary", "an explicit summary selection remains persisted");
 
 storage.set("reasonix-reasoning-summary", "0");
 ok(resolveReasoningDisplayMode("auto", false) === "legacy-collapsed", "resolver applies legacy precedence without hydration");

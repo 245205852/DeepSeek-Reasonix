@@ -1563,7 +1563,7 @@ export default function App() {
     void syncDesktopPreferences().catch((e) => {
       console.warn("desktop preferences sync failed", e);
       setStartupUpdateChecksEnabled(true);
-      hydrateReasoningDisplayMode("summary", false);
+      hydrateReasoningDisplayMode("auto", false);
     });
     return () => {
       cancelled = true;

@@ -46,8 +46,12 @@ ok(
   "App loads startup chrome preferences through the lightweight settings call",
 );
 ok(
-  appSource.includes('hydrateReasoningDisplayMode("summary", false);'),
+  appSource.includes('hydrateReasoningDisplayMode("auto", false);'),
   "startup failure preserves legacy reasoning-display migration precedence",
+);
+ok(
+  bridgeSource.includes('displayMode: "standard", reasoningDisplayMode: "auto", reasoningDisplayModeExplicit: false'),
+  "browser startup defaults match the classic standard/live-follow experience",
 );
 ok(
   !/const\s+reloadSidebarImConnections[\s\S]*?app\.Settings\(\)[\s\S]*?\}, \[t\]\);/.test(appSource),

@@ -55,6 +55,10 @@ const rootEl = document.getElementById("root");
 if (!rootEl) throw new Error("missing root");
 const root = createRoot(rootEl);
 
+// Most assertions in this file exercise the summary-mode disclosure behavior.
+// Select it explicitly so the test remains independent from the product default.
+hydrateReasoningDisplayMode("summary", true);
+
 type ReasoningItem = React.ComponentProps<typeof AssistantMessage>["item"];
 
 async function render(item: ReasoningItem, props: { defaultExpanded?: boolean } = {}) {

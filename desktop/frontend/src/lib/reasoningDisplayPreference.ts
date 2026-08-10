@@ -6,7 +6,7 @@ export type ResolvedReasoningDisplayMode = ReasoningDisplayMode | "legacy-collap
 const LEGACY_SUMMARY_KEY = "reasonix-reasoning-summary";
 const DISPLAY_EVENT = "reasonix:reasoning-display-mode";
 
-let currentMode: ResolvedReasoningDisplayMode = "summary";
+let currentMode: ResolvedReasoningDisplayMode = "auto";
 let currentModeExplicit = false;
 const listeners = new Set<() => void>();
 
@@ -39,11 +39,15 @@ export function resolveReasoningDisplayMode(
     case "on":
       return "summary";
   }
-  return normalized ?? "summary";
+  return normalized ?? "auto";
 }
 
 export function getReasoningDisplayMode(): ResolvedReasoningDisplayMode {
-  if (!currentModeExplicit && currentMode === "summary" && legacySummaryValue() === "off") return "legacy-collapsed";
+  if (!currentModeExplicit && currentMode !== "pending") {
+    const legacy = legacySummaryValue();
+    if (legacy === "off") return "legacy-collapsed";
+    if (legacy === "on") return "summary";
+  }
   return currentMode;
 }
 

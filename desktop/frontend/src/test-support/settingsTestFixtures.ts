@@ -96,7 +96,7 @@ export function baseSettings(displayMode: "standard" | "compact" = "standard"): 
     desktopTerminalTheme: "auto",
     closeBehavior: "background",
     displayMode,
-    reasoningDisplayMode: "summary",
+    reasoningDisplayMode: "auto",
     reasoningDisplayModeExplicit: false,
     statusBarStyle: "text",
     statusBarItems: ["model", "workspace", "git_branch", "cache", "balance"],

@@ -12,7 +12,7 @@ func desktopStartupSettingsFromConfig(cfg *config.Config) DesktopStartupSettings
 		return DesktopStartupSettingsView{
 			Bot: botSettingsView(config.BotConfig{}), DesktopLayoutStyle: "workbench",
 			DesktopTheme: "auto", DesktopThemeStyle: "graphite", DesktopTerminalTheme: "auto",
-			DisplayMode: "standard", ReasoningDisplayMode: "summary", StatusBarStyle: "text",
+			DisplayMode: "standard", ReasoningDisplayMode: "auto", StatusBarStyle: "text",
 			StatusBarItems: config.DefaultDesktopStatusBarItems(), CheckUpdates: true,
 			UpdateChannel: "stable", ConversationWidth: "standard",
 		}
@@ -45,7 +45,7 @@ func (a *App) defaultSettingsView() SettingsView {
 		},
 		Bot: botSettingsView(config.BotConfig{}), AutoPlan: "off", DesktopLayoutStyle: "workbench",
 		DesktopTheme: "auto", DesktopThemeStyle: "graphite", DesktopTerminalTheme: "auto",
-		CloseBehavior: "background", DisplayMode: "standard", ReasoningDisplayMode: "summary",
+		CloseBehavior: "background", DisplayMode: "standard", ReasoningDisplayMode: "auto",
 		StatusBarStyle: "text", StatusBarItems: config.DefaultDesktopStatusBarItems(),
 		DefaultToolApprovalMode: "auto", CheckUpdates: true, UpdateChannel: "stable",
 		Telemetry: true, Metrics: true, ExpandThinking: false, ConversationWidth: "standard",

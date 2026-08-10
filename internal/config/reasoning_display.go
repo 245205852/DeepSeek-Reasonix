@@ -12,13 +12,9 @@ func (c *Config) DesktopReasoningDisplayMode() string {
 	case "hidden", "summary", "auto":
 		return raw
 	}
-	if raw != "" {
-		return "summary"
-	}
-	if c.Desktop.ExpandThinking {
-		return "auto"
-	}
-	return "summary"
+	// Missing and unknown values use the classic live-follow behavior. A user
+	// selection is persisted as a valid enum and therefore returns above.
+	return "auto"
 }
 
 // DesktopReasoningDisplayModeExplicit reports whether a valid new enum was stored.
@@ -55,13 +51,7 @@ func (c *Config) SetExpandThinking(on bool) error {
 }
 
 func renderDesktopReasoningDisplayMode(b *strings.Builder, c *Config) {
-	legacyExpand := c.Desktop.ExpandThinking
-	if strings.TrimSpace(c.Desktop.ReasoningDisplayMode) != "" && !c.DesktopReasoningDisplayModeExplicit() {
-		// Unknown future/invalid enums read as summary. When another setting is
-		// saved, keep that safe fallback stable after the invalid field is omitted.
-		legacyExpand = false
-	}
-	fmt.Fprintf(b, "expand_thinking = %v   # desktop: legacy reasoning display alias; use reasoning_display_mode\n", legacyExpand)
+	fmt.Fprintf(b, "expand_thinking = %v   # desktop: legacy reasoning display alias; use reasoning_display_mode\n", c.Desktop.ExpandThinking)
 	if c.DesktopReasoningDisplayModeExplicit() {
 		fmt.Fprintf(b, "reasoning_display_mode = %q   # desktop: hidden|summary|auto reasoning presentation\n", c.DesktopReasoningDisplayMode())
 	}
