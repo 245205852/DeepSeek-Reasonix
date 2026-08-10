@@ -1540,10 +1540,14 @@ func TestMouseWheelAndPageKeysScrollTranscript(t *testing.T) {
 	ch := make(chan event.Event, 1)
 	notice := agentEventMsg(event.Event{Kind: event.Notice, Level: event.LevelInfo, Text: "line"})
 	adv := func(m chatTUI, msg tea.Msg) chatTUI {
-		n, _ := m.Update(msg)
+		n, cmd := m.Update(msg)
+		_, wheel := msg.(tea.MouseWheelMsg)
+		_, key := msg.(tea.KeyPressMsg)
+		if cmd != nil && (wheel || key) {
+			t.Fatalf("viewport update %T should rely on the renderer diff, got command %T", msg, cmd)
+		}
 		return n.(chatTUI)
 	}
-
 	cur := adv(newChatTUI(ctrl, "", ch, 80), tea.WindowSizeMsg{Width: 80, Height: 10})
 	for range 40 {
 		cur = adv(cur, notice)
@@ -1555,23 +1559,19 @@ func TestMouseWheelAndPageKeysScrollTranscript(t *testing.T) {
 	if bottom <= cur.viewport.Height()+3 {
 		t.Fatalf("test transcript did not overflow enough: bottom=%d height=%d", bottom, cur.viewport.Height())
 	}
-
 	cur = adv(cur, tea.MouseWheelMsg{Button: tea.MouseWheelUp})
 	if got, want := cur.viewport.YOffset(), bottom-3; got != want {
 		t.Fatalf("wheel-up YOffset = %d, want %d", got, want)
 	}
-
 	cur = adv(cur, tea.MouseWheelMsg{Button: tea.MouseWheelDown})
 	if got := cur.viewport.YOffset(); got != bottom {
 		t.Fatalf("wheel-down should return by one wheel step, YOffset=%d want bottom=%d", got, bottom)
 	}
-
 	cur = adv(cur, tea.KeyPressMsg{Code: tea.KeyPgUp})
 	pageUp := cur.viewport.YOffset()
 	if got, want := pageUp, bottom-cur.viewport.Height(); got != want {
 		t.Fatalf("PageUp YOffset = %d, want %d", got, want)
 	}
-
 	cur = adv(cur, tea.KeyPressMsg{Code: tea.KeyPgDown})
 	if got := cur.viewport.YOffset(); got != bottom {
 		t.Fatalf("PageDown should return to bottom from one page up, YOffset=%d want %d", got, bottom)
