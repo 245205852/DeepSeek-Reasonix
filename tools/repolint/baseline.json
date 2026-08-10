@@ -3,13 +3,13 @@
     "banner": 15,
     "commented-code": 0,
     "complexity": 2112,
-    "essay": 4090,
-    "file-size": 111363,
-    "function-size": 9254,
+    "essay": 4087,
+    "file-size": 110541,
+    "function-size": 9223,
     "layering": 1,
     "marker": 0,
     "narrative": 64,
-    "test-file-size": 70202
+    "test-file-size": 69919
   },
   "files": {
     "cmd/e2ebench/main.go": {
@@ -84,7 +84,7 @@
       "essay": 2
     },
     "desktop/frontend/src/App.tsx": {
-      "file-size": 4725
+      "file-size": 4733
     },
     "desktop/frontend/src/__tests__/app-chrome-tabs.test.ts": {
       "test-file-size": 19
@@ -123,13 +123,13 @@
       "file-size": 2658
     },
     "desktop/frontend/src/components/Composer.tsx": {
-      "file-size": 4042
+      "file-size": 4003
     },
     "desktop/frontend/src/components/MemoryPanel.tsx": {
       "file-size": 1088
     },
     "desktop/frontend/src/components/Message.tsx": {
-      "file-size": 185
+      "file-size": 91
     },
     "desktop/frontend/src/components/ProjectTree.tsx": {
       "file-size": 1587
@@ -138,7 +138,7 @@
       "file-size": 141
     },
     "desktop/frontend/src/components/SettingsPanel.tsx": {
-      "file-size": 6960
+      "file-size": 6768
     },
     "desktop/frontend/src/components/StatusBar.tsx": {
       "file-size": 20
@@ -150,7 +150,7 @@
       "file-size": 158
     },
     "desktop/frontend/src/components/Transcript.tsx": {
-      "file-size": 443
+      "file-size": 409
     },
     "desktop/frontend/src/components/UsageStatsPanel.tsx": {
       "file-size": 276
@@ -162,7 +162,7 @@
       "file-size": 415
     },
     "desktop/frontend/src/lib/bridge.ts": {
-      "file-size": 4751
+      "file-size": 4750
     },
     "desktop/frontend/src/lib/crash.ts": {
       "file-size": 225
@@ -273,7 +273,7 @@
     },
     "desktop/sessions.go": {
       "essay": 5,
-      "file-size": 459
+      "file-size": 422
     },
     "desktop/sessions_lease_guard_test.go": {
       "essay": 3
@@ -284,8 +284,7 @@
     "desktop/settings_app.go": {
       "complexity": 22,
       "essay": 26,
-      "file-size": 2868,
-      "function-size": 25
+      "file-size": 2801
     },
     "desktop/settings_app_test.go": {
       "test-file-size": 1857
@@ -439,7 +438,7 @@
     "internal/agent/agent.go": {
       "complexity": 61,
       "essay": 107,
-      "file-size": 2807,
+      "file-size": 2746,
       "function-size": 125
     },
     "internal/agent/ask.go": {
@@ -470,12 +469,12 @@
       "essay": 3
     },
     "internal/agent/coordinator.go": {
-      "essay": 17,
-      "file-size": 267
+      "essay": 15,
+      "file-size": 13
     },
     "internal/agent/coordinator_test.go": {
       "essay": 3,
-      "test-file-size": 1239
+      "test-file-size": 1025
     },
     "internal/agent/delivery_hardening_test.go": {
       "essay": 5
@@ -809,16 +808,16 @@
     },
     "internal/cli/chat_tui.go": {
       "complexity": 326,
-      "essay": 110,
-      "file-size": 4676,
-      "function-size": 1286
+      "essay": 109,
+      "file-size": 4669,
+      "function-size": 1280
     },
     "internal/cli/chat_tui_paste.go": {
       "essay": 9
     },
     "internal/cli/chat_tui_test.go": {
       "essay": 8,
-      "test-file-size": 3604
+      "test-file-size": 3596
     },
     "internal/cli/cli.go": {
       "complexity": 75,
@@ -997,7 +996,7 @@
     },
     "internal/config/edit.go": {
       "essay": 15,
-      "file-size": 1681
+      "file-size": 1673
     },
     "internal/config/edit_test.go": {
       "test-file-size": 2418
@@ -1071,13 +1070,13 @@
     "internal/control/controller.go": {
       "complexity": 10,
       "essay": 162,
-      "file-size": 5452,
+      "file-size": 5420,
       "function-size": 75,
       "narrative": 4
     },
     "internal/control/controller_test.go": {
       "essay": 10,
-      "test-file-size": 4671
+      "test-file-size": 4610
     },
     "internal/control/errmsg.go": {
       "essay": 2
@@ -1213,7 +1212,7 @@
     "internal/evidence/evidence.go": {
       "complexity": 6,
       "essay": 38,
-      "file-size": 2083
+      "file-size": 2079
     },
     "internal/evidence/evidence_test.go": {
       "essay": 1,
