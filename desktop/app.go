@@ -975,9 +975,8 @@ func (a *App) shutdown(context.Context) {
 		// Remote web window child: nothing to snapshot or stop locally.
 		return
 	}
-	// Freeze publication first, then cancel work that is deliberately outside
-	// the lifecycle barrier. A history scan, catalog repair, or plugin handshake
-	// must never make normal quit wait for its I/O.
+	// Freeze publication, then cancel off-barrier history, catalog, and plugin
+	// work so normal quit never waits for background I/O.
 	a.shuttingDown.Store(true)
 	a.cancelAllTabBuilds()
 	a.stopSessionCatalog(250 * time.Millisecond)
@@ -1221,11 +1220,8 @@ func (a *App) beginTabTurn(tabID string, reclaim bool, submissionID ...string) (
 	if err := a.workspaceRuntimeAdmissionErr(tab, ctrl); err != nil {
 		return nil, nil, a.workspaceNotReadyErr(tab)
 	}
-	// A stale workspace binding may require a full controller/plugin rebuild.
-	// Complete that cancellable work before entering the lifecycle barrier so
-	// shutdown and runtime mutations never wait behind filesystem or handshake
-	// I/O. The admission re-check below protects the short publication-to-turn
-	// boundary.
+	// Rebuild stale workspace bindings before admission so shutdown never waits
+	// behind filesystem or plugin I/O. The later re-check protects publication.
 	if err := a.ensureTabControllerWorkspace(tab); err != nil {
 		return nil, nil, err
 	}
@@ -3234,32 +3230,6 @@ func (a *App) sessionDirForPath(path string) (string, string, error) {
 		}
 	}
 	return "", "", fmt.Errorf("session path outside known session dirs: %s", path)
-}
-
-func sessionMetaFromInfo(s agent.SessionInfo, title string, current, open bool, deletedAt int64, parentDir string) SessionMeta {
-	turnsState := "unknown"
-	if s.CountsKnown {
-		turnsState = "valid"
-	}
-	return SessionMeta{
-		Path:           s.Path,
-		Preview:        s.Preview,
-		Title:          title,
-		Turns:          s.Turns,
-		TurnsState:     turnsState,
-		CreatedAt:      s.CreatedAt.UnixMilli(),
-		LastActivityAt: s.LastActivityAt.UnixMilli(),
-		ModTime:        s.LastActivityAt.UnixMilli(),
-		DeletedAt:      deletedAt,
-		Current:        current,
-		Open:           open,
-		Scope:          s.Scope,
-		WorkspaceRoot:  s.WorkspaceRoot,
-		TopicID:        s.TopicID,
-		TopicTitle:     s.TopicTitle,
-		Recovered:      sessionInfoIsAutomaticRecovery(s),
-		RecoveryCopy:   sessionInfoIsUnmodifiedRecoveryCopy(s, parentDir),
-	}
 }
 
 func applyChannelSessionRoute(meta *SessionMeta, route channelSessionRoute) {

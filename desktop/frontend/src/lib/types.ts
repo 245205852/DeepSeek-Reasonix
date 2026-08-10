@@ -4,6 +4,7 @@
 import type { Todo } from "./tools";
 import type { ContextMaintenanceInfo, WireContextMaintenance } from "./contextMaintenanceTypes";
 export type { ContextMaintenanceInfo, ContextMaintenanceReceipt, WireContextMaintenance } from "./contextMaintenanceTypes";
+export type { ProjectTopicKey, ProjectTopicPage, ProjectTopicPageRequest, ProjectTreeChangedV2, ProjectTreeSnapshot, SessionCatalogBindings, SessionCatalogStatus, SessionReference } from "./sessionCatalogTypes";
 
 export type EventKind =
   | "turn_started"
@@ -457,53 +458,6 @@ export interface ProjectNode {
   children?: ProjectNode[];
 }
 
-export interface SessionCatalogStatus {
-  state: "opening" | "ready" | "degraded" | "rebuilding" | "closed" | string;
-  mode?: "disk" | "memory" | string;
-  revision: number;
-  indexed: number;
-  total: number;
-  repairPending: number;
-  lastError?: string;
-  quarantinedPath?: string;
-}
-
-export interface ProjectTreeSnapshot {
-  revision: number;
-  projects: ProjectNode[];
-  catalog: SessionCatalogStatus;
-  indexed: number;
-  total: number;
-  indexingDone: boolean;
-}
-
-export interface ProjectTopicPageRequest {
-  scope: "global" | "project" | string;
-  workspaceRoot?: string;
-  cursor?: string;
-  limit?: number;
-  query?: string;
-  timeFilter?: string;
-}
-
-export interface ProjectTopicPage {
-  items: ProjectNode[];
-  nextCursor?: string;
-  revision: number;
-}
-
-export interface ProjectTopicKey {
-  scope: "global" | "project" | string;
-  workspaceRoot?: string;
-  topicId: string;
-}
-
-export interface ProjectTreeChangedV2 {
-  revision: number;
-  roots: string[];
-  reason: string;
-}
-
 export interface DeliveryWorktreeAvailability {
   available: boolean;
   reason?: string;
@@ -841,17 +795,6 @@ export interface SessionMeta {
   sessionSource?: string;
   recovered?: boolean; // created by conflict recovery, including a continued branch
   recoveryCopy?: boolean; // actual branch content is unchanged and covered by its parent
-}
-
-// SessionReference is a session selected via @ past:chats for context injection.
-export interface SessionReference {
-  path: string;
-  title: string;
-  preview?: string;
-  turns?: number;
-  turnsState?: "unknown" | "valid" | "corrupt" | string;
-  createdAt?: number;
-  lastActivityAt?: number;
 }
 
 export interface WorkspaceView {

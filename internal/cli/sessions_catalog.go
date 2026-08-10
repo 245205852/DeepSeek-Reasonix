@@ -13,6 +13,13 @@ import (
 	"reasonix/internal/sessioncatalog"
 )
 
+func sessionOrSessionsCommand(command string, args []string) int {
+	if command == "sessions" {
+		return sessionsCommand(args)
+	}
+	return sessionCommand(args)
+}
+
 func sessionsCommand(args []string) int {
 	if len(args) == 0 || args[0] != "reindex" {
 		fmt.Fprintln(os.Stderr, "usage: reasonix sessions reindex [--dir PATH] [--json]")

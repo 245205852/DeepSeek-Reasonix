@@ -201,18 +201,7 @@ func cliCompletionRootSpec() cliCompletionSpec {
 			completionSpec("try", []cliCompletionFlag{model, completionFlag("--max-steps --dir", cliCompletionStaticValue), help}),
 			completionSpec("run", []cliCompletionFlag{model, completionFlag("--max-steps --dir", cliCompletionStaticValue), help}),
 		),
-		completionSpec("doctor", []cliCompletionFlag{completionFlag("--json", cliCompletionNoValue), help},
-			completionSpec("sessions", []cliCompletionFlag{completionFlag("--json", cliCompletionNoValue), help}),
-			completionSpec("repair", []cliCompletionFlag{
-				completionFlag("--root", cliCompletionStaticValue), completionFlag("--apply --project --json", cliCompletionNoValue), help,
-			}),
-			completionSpec("quality", []cliCompletionFlag{completionFlag("--json", cliCompletionNoValue), help}),
-			completionSpec("session", []cliCompletionFlag{completionFlag("--zip", cliCompletionNoValue), completionFlag("--out", cliCompletionStaticValue), help}),
-			completionSpec("redact-sessions", []cliCompletionFlag{completionFlag("--dry-run --json", cliCompletionNoValue), completionFlag("--dir", cliCompletionPathValue), help}),
-			completionSpec("capabilities", []cliCompletionFlag{
-				completionFlag("--root --timeout", cliCompletionStaticValue), completionFlag("--json --live", cliCompletionNoValue), help,
-			}),
-		),
+		doctorCompletionSpec(help),
 		completionSpec("sessions", []cliCompletionFlag{help},
 			completionSpec("reindex", []cliCompletionFlag{
 				completionFlag("--json", cliCompletionNoValue), completionFlag("--dir", cliCompletionPathValue), help,
@@ -289,6 +278,21 @@ func cliCompletionRootSpec() cliCompletionSpec {
 		completionSpec("help", []cliCompletionFlag{help}),
 	}
 	return root
+}
+
+func doctorCompletionSpec(help cliCompletionFlag) cliCompletionSpec {
+	return completionSpec("doctor", []cliCompletionFlag{completionFlag("--json", cliCompletionNoValue), help},
+		completionSpec("sessions", []cliCompletionFlag{completionFlag("--json", cliCompletionNoValue), help}),
+		completionSpec("repair", []cliCompletionFlag{
+			completionFlag("--root", cliCompletionStaticValue), completionFlag("--apply --project --json", cliCompletionNoValue), help,
+		}),
+		completionSpec("quality", []cliCompletionFlag{completionFlag("--json", cliCompletionNoValue), help}),
+		completionSpec("session", []cliCompletionFlag{completionFlag("--zip", cliCompletionNoValue), completionFlag("--out", cliCompletionStaticValue), help}),
+		completionSpec("redact-sessions", []cliCompletionFlag{completionFlag("--dry-run --json", cliCompletionNoValue), completionFlag("--dir", cliCompletionPathValue), help}),
+		completionSpec("capabilities", []cliCompletionFlag{
+			completionFlag("--root --timeout", cliCompletionStaticValue), completionFlag("--json --live", cliCompletionNoValue), help,
+		}),
+	)
 }
 
 func cliServeCompletionFlags(model, profile, help cliCompletionFlag) []cliCompletionFlag {

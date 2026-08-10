@@ -3799,7 +3799,6 @@ func (a *App) buildTabControllerWithContextCore(tab *WorkspaceTab, loadedSession
 		// not mistaken for a deliberate empty placeholder afterward.
 		hasPinnedPath = false
 		pinnedPath = ""
-		tabSessionPath = ""
 	}
 	catalogTopicPath := ""
 	if hasPinnedPath {
@@ -6497,33 +6496,6 @@ func normalizeTopicStatus(status string) string {
 	}
 }
 
-func activityStatusForTab(tab *WorkspaceTab) string {
-	if tab == nil {
-		return ""
-	}
-	status := normalizeTopicStatus(tab.ActivityStatus)
-	if tab.Ctrl == nil {
-		return status
-	}
-	runtimeStatus := tab.Ctrl.RuntimeStatus()
-	if runtimeStatus.PendingPrompt {
-		return topicStatusWaitingConfirmation
-	}
-	if runtimeStatus.Running {
-		if status == "" || status == topicStatusError || status == topicStatusPaused {
-			return topicStatusThinking
-		}
-		return status
-	}
-	if runtimeStatus.BackgroundJobs > 0 {
-		return topicStatusBackgroundJob
-	}
-	if status == topicStatusError || status == topicStatusPaused {
-		return status
-	}
-	return ""
-}
-
 // migrateLegacySessionsIntoGlobalTopics makes pre-topic desktop history visible
 // in the v2 sidebar. Imported v0.x sessions and older desktop sessions are plain
 // .jsonl files, sometimes with branch metadata but no topic metadata; the
@@ -7664,19 +7636,8 @@ func (s topicSummary) displayTurns() int {
 // runtimeSessionStatus is one open or detached runtime session, as shown in
 // the sidebar tree.
 type runtimeSessionStatus struct {
-	sessionPath      string
-	label            string
-	titleSource      string
-	turns            int
-	createdAt        int64
-	lastActivityAt   int64
-	open             bool
-	running          bool
-	status           string
-	recovered        bool
-	recoveryReason   string
-	recoveryDigest   string
-	recoveryParentID string
+	open    bool
+	running bool
 }
 
 // topicHiddenAsRecoveryOnly hides topics whose only on-disk sessions are
@@ -7710,36 +7671,6 @@ func topicSummaryKey(scope, workspaceRoot, topicID string) string {
 func projectSessionNodeKey(scope, sessionPath string) string {
 	sum := sha256.Sum256([]byte(sessionRuntimeKey(sessionPath)))
 	return scope + "_session_" + hex.EncodeToString(sum[:8])
-}
-
-func runtimeSessionTreeLabel(tab *WorkspaceTab, info agent.SessionInfo, title string) string {
-	if title = strings.TrimSpace(title); title != "" {
-		return title
-	}
-	if preview := topicTitleFromText(info.Preview); preview != "" {
-		return preview
-	}
-	if tab != nil {
-		if title := strings.TrimSpace(tab.TopicTitle); title != "" {
-			return title
-		}
-	}
-	if path := strings.TrimSpace(info.Path); path != "" {
-		return strings.TrimSuffix(filepath.Base(path), filepath.Ext(path))
-	}
-	if tab != nil {
-		if path := strings.TrimSpace(tab.currentSessionPath()); path != "" {
-			return strings.TrimSuffix(filepath.Base(path), filepath.Ext(path))
-		}
-	}
-	return defaultTopicTitle
-}
-
-func unixMilliOrZero(t time.Time) int64 {
-	if t.IsZero() {
-		return 0
-	}
-	return t.UnixMilli()
 }
 
 // ContextPanelInfo is the right-side panel's data for one tab.

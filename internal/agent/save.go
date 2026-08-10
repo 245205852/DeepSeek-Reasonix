@@ -367,12 +367,10 @@ func (s *Session) saveLocked(path string, mode sessionSaveMode) error {
 					slog.Warn("session: keeping save after display index write failure", "path", path, "err", err)
 				}
 			}
-			s.markPersisted(path, digest, version, revision, rewriteVersion)
-			persistSessionListingProjection(path, msgs)
+			s.markPersistedWithListing(path, digest, version, revision, rewriteVersion, msgs)
 			return nil
 		}
-		s.markPersisted(path, digest, version, decision.revision, rewriteVersion)
-		persistSessionListingProjection(path, msgs)
+		s.markPersistedWithListing(path, digest, version, decision.revision, rewriteVersion, msgs)
 		return nil
 	}
 	if decision.appendOnly && probe.native && mode != sessionSaveRewriteCompact {
@@ -422,8 +420,7 @@ func (s *Session) saveLocked(path string, mode sessionSaveMode) error {
 				slog.Warn("session: keeping save after display index write failure", "path", path, "err", err)
 			}
 		}
-		s.markPersisted(path, digest, version, revision, rewriteVersion)
-		persistSessionListingProjection(path, msgs)
+		s.markPersistedWithListing(path, digest, version, revision, rewriteVersion, msgs)
 		return nil
 	}
 	baseRevision = decision.revision
@@ -483,24 +480,8 @@ func (s *Session) saveLocked(path string, mode sessionSaveMode) error {
 		// derived sidecar and must never fail a save.
 		slog.Warn("session: keeping save after display index write failure", "path", path, "err", err)
 	}
-	s.markPersisted(path, digest, version, revision, rewriteVersion)
-	persistSessionListingProjection(path, msgs)
+	s.markPersistedWithListing(path, digest, version, revision, rewriteVersion, msgs)
 	return nil
-}
-
-func persistSessionListingProjection(path string, msgs []provider.Message) {
-	preview, turns := SessionPreviewFromMessages(msgs)
-	if err := UpdateBranchMeta(path, false, func(meta *BranchMeta) error {
-		meta.Preview = preview
-		meta.Turns = turns
-		meta.SchemaVersion = BranchMetaCountsVersion
-		return nil
-	}); err != nil {
-		// JSONL/event log already committed. Listing metadata is a repairable
-		// projection and must never turn a successful transcript save into an
-		// application error.
-		slog.Warn("session: listing metadata update deferred", "path", path, "err", err)
-	}
 }
 
 func writeSessionMessages(path string, msgs []provider.Message) error {
