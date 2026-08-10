@@ -532,43 +532,6 @@ func trashedSessionDeletedAt(path string) int64 {
 	return meta.DeletedAt
 }
 
-func restoreTrashedSessionFile(dir, path string) error {
-	_, key, itemDir, err := validateTrashedSessionPath(dir, path)
-	if err != nil {
-		return err
-	}
-	target := filepath.Join(dir, key)
-	if _, err := os.Stat(target); err == nil {
-		discardable, err := liveSessionDiscardable(target)
-		if err != nil {
-			return err
-		}
-		if !discardable {
-			return fmt.Errorf("session already exists: %s", key)
-		}
-		if err := removeDesktopSessionArtifacts(target); err != nil {
-			return err
-		}
-	} else if !os.IsNotExist(err) {
-		return err
-	}
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return err
-	}
-	if err := checkRestoreSubagentConflicts(dir, itemDir); err != nil {
-		return err
-	}
-	for _, artifact := range sessionTrashArtifacts(target, key) {
-		if err := movePathIfExists(filepath.Join(itemDir, artifact.name), artifact.src); err != nil {
-			return err
-		}
-	}
-	if err := restoreSubagentArtifacts(dir, itemDir); err != nil {
-		return err
-	}
-	return os.RemoveAll(itemDir)
-}
-
 func purgeTrashedSessionFile(dir, path string) error {
 	_, key, itemDir, err := validateTrashedSessionPath(dir, path)
 	if err != nil {
