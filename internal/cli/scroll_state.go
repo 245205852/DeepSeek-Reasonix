@@ -1,5 +1,12 @@
 package cli
 
+import (
+	"runtime"
+	"strings"
+
+	tea "charm.land/bubbletea/v2"
+)
+
 // scrollFollowMode is an explicit transcript tail-follow state machine.
 //
 // Previously the post-Update path used a single wasAtBottom snapshot taken
@@ -64,4 +71,33 @@ func (m *chatTUI) syncScrollModeAfterGesture() {
 		return
 	}
 	m.markUserScrolled()
+}
+
+// disableScrollOptimization keeps terminal-specific rendering policy at the
+// renderer boundary. Windows terminals and Warp have known incompatibilities
+// with scroll/insert/delete-line optimization; ordinary viewport movement must
+// still be rendered as a single diff frame rather than an application-level
+// ClearScreen command.
+func disableScrollOptimization(goos string, environ []string) bool {
+	if goos == "windows" {
+		return true
+	}
+	for _, entry := range environ {
+		key, value, ok := strings.Cut(entry, "=")
+		if ok && key == "TERM_PROGRAM" && strings.EqualFold(strings.TrimSpace(value), "WarpTerminal") {
+			return true
+		}
+	}
+	return false
+}
+
+func chatProgramOptions(goos string, environ []string) []tea.ProgramOption {
+	if disableScrollOptimization(goos, environ) {
+		return []tea.ProgramOption{tea.WithScrollOptimization(false)}
+	}
+	return nil
+}
+
+func newChatProgram(m chatTUI, environ []string) *tea.Program {
+	return tea.NewProgram(m, chatProgramOptions(runtime.GOOS, environ)...)
 }

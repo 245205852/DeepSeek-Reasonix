@@ -117,10 +117,6 @@ type chatTUI struct {
 	// marker rides in outgoing user messages so the cache-stable prompt prefix is
 	// left untouched.
 	planMode bool
-	// sessionSwitch is set by replayActiveBranch to suppress the ClearScreen
-	// flicker when the viewport content is completely rebuilt during a session
-	// switch (#5441). Cleared after one Update cycle.
-	sessionSwitch bool
 	// yoloRestoreToolApprovalMode remembers the Ask/Auto base mode that Ctrl+Y
 	// should restore after a desktop-style YOLO toggle.
 	yoloRestoreToolApprovalMode string
@@ -976,15 +972,6 @@ func (m chatTUI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 	}
 
-	// Any viewport scroll (wheel, PgUp/PgDn, edge auto-scroll, or tail-follow to
-	// newest output) shifts the whole window. Some terminals (Warp) mishandle
-	// the renderer's scroll/insert-line optimization and strand stale rows, so
-	// force a full clear+redraw whenever the offset actually moved.
-	if cm.viewport.YOffset() != prevYOff && !cm.nativeScrollback && !cm.sessionSwitch {
-		cm.sessionSwitch = false
-		return cm, batchCmds(tea.ClearScreen, mouseCmd, cmd)
-	}
-	cm.sessionSwitch = false
 	return cm, batchCmds(mouseCmd, cmd)
 }
 

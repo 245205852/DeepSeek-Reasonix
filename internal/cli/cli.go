@@ -43,7 +43,6 @@ import (
 	"reasonix/internal/stats"
 	"reasonix/internal/telemetry"
 
-	tea "charm.land/bubbletea/v2"
 	"github.com/spf13/pflag"
 	"golang.org/x/term"
 )
@@ -1286,7 +1285,7 @@ func chatREPL(args []string, version string) int {
 	// in the normal buffer so native touch scrollback and soft-keyboard focus
 	// keep working; finalized transcript lines are emitted via tea.Println.
 	diagnostics.Milestone("terminal_takeover_begin")
-	p := tea.NewProgram(m)
+	p := newChatProgram(m, os.Environ())
 	diagnostics.StartWatchdog(p)
 	// SSH drop (SIGHUP) or service stop (SIGTERM): persist the conversation
 	// before the terminal goes away, then unwind through the normal close path

@@ -3127,12 +3127,12 @@ func TestForceGotoBottomScrollsWithoutTranscriptChange(t *testing.T) {
 	if cur.forceGotoBottom {
 		t.Fatal("forceGotoBottom should be cleared after scrolling")
 	}
-	if cmd == nil {
-		t.Fatal("regular forceGotoBottom scroll jump should request ClearScreen")
+	if cmd != nil {
+		t.Fatal("forceGotoBottom should rely on the renderer diff, not request a scroll clear command")
 	}
 }
 
-func TestSessionSwitchSuppressesOneClearScreen(t *testing.T) {
+func TestSessionSwitchRebuildNeedsNoScrollClear(t *testing.T) {
 	ctrl := control.New(control.Options{})
 	ch := make(chan event.Event, 1)
 	notice := agentEventMsg(event.Event{Kind: event.Notice, Level: event.LevelInfo, Text: "line"})
@@ -3154,29 +3154,29 @@ func TestSessionSwitchSuppressesOneClearScreen(t *testing.T) {
 		t.Fatal("wheel-up should break the bottom pin")
 	}
 
-	cur.sessionSwitch = true
-	cur.forceGotoBottom = true
-	cur.transcriptDirty = false
+	cur.replayActiveBranch("switched branch")
 	cur, cmd := adv(cur, tea.WindowSizeMsg{Width: 80, Height: 8})
 
 	if cmd != nil {
-		t.Fatal("session switch rebuild should suppress the ClearScreen scroll-jump workaround once")
-	}
-	if cur.sessionSwitch {
-		t.Fatal("sessionSwitch should be cleared after one Update")
+		t.Fatal("session switch rebuild should rely on the renderer diff, not request a scroll clear command")
 	}
 	if !cur.viewport.AtBottom() {
 		t.Fatalf("session switch should still land at bottom, YOffset=%d", cur.viewport.YOffset())
 	}
-
-	cur = next(cur, tea.MouseWheelMsg{Button: tea.MouseWheelUp})
-	cur.forceGotoBottom = true
-	cur, cmd = adv(cur, tea.WindowSizeMsg{Width: 80, Height: 8})
-	if cmd == nil {
-		t.Fatal("later scroll jumps must still request ClearScreen")
+	if out := strings.Join(cur.transcript, "\n"); !strings.Contains(out, "switched branch") || strings.Contains(out, "line") {
+		t.Fatalf("session switch transcript was not replaced cleanly:\n%s", out)
 	}
-	if cur.sessionSwitch {
-		t.Fatal("sessionSwitch should remain false after the suppressed cycle")
+}
+
+func TestConfirmClearContextKeepsSemanticClearScreen(t *testing.T) {
+	m := newTestChatTUI()
+	m.ctrl = control.New(control.Options{})
+	_, cmd := m.confirmClearContext()
+	if cmd == nil {
+		t.Fatal("/clear should still request a semantic full-screen clear")
+	}
+	if got, want := fmt.Sprintf("%T", cmd()), fmt.Sprintf("%T", tea.ClearScreen()); got != want {
+		t.Fatalf("/clear command message = %s, want %s", got, want)
 	}
 }
 
@@ -3238,20 +3238,24 @@ func TestChooserFreeTextWideInputChangeRequestsClearScreen(t *testing.T) {
 	}
 }
 
-func TestReplayActiveBranchClearsPlanModeAndMarksSessionSwitch(t *testing.T) {
+func TestReplayActiveBranchClearsPlanModeAndRebuildsViewport(t *testing.T) {
 	m := newTestChatTUI()
 	m.ctrl = control.New(control.Options{})
 	m.planMode = true
 	m.ctrl.SetPlanMode(true)
-	m.sessionSwitch = false
+	m.transcript = []string{"stale session content"}
+	m.wrappedLines = []string{"stale session content"}
 
 	m.replayActiveBranch("switched branch")
 
 	if m.planMode || m.ctrl.PlanMode() {
 		t.Fatalf("replay should clear plan mode on both TUI and controller, tui=%v controller=%v", m.planMode, m.ctrl.PlanMode())
 	}
-	if !m.sessionSwitch {
-		t.Fatal("replay should mark the next Update as a session switch")
+	if !m.forceGotoBottom {
+		t.Fatal("replay should request the rebuilt viewport to land at the bottom")
+	}
+	if out := strings.Join(m.transcript, "\n"); strings.Contains(out, "stale session content") || !strings.Contains(out, "switched branch") {
+		t.Fatalf("replay transcript = %q", out)
 	}
 }
 
@@ -3787,11 +3791,9 @@ func TestDoubleCtrlCQuit(t *testing.T) {
 	m := newChatTUI(ctrl, "", make(chan event.Event, 1), 80)
 	ctrlC := tea.KeyPressMsg{Code: 'c', Mod: 4} // 4 = ModCtrl
 
-	// First Ctrl+C while idle: arms quit, flushes hint via finalize cmd.
-	out, cmd := m.Update(ctrlC)
-	if cmd == nil {
-		t.Error("first Ctrl+C should return a finalize cmd to flush the hint")
-	}
+	// First Ctrl+C while idle arms quit and adds the hint to model state. A
+	// renderer command is not required for Bubble Tea to paint that state.
+	out, _ := m.Update(ctrlC)
 	m2, ok := out.(chatTUI)
 	if !ok {
 		t.Fatalf("Update returned %T, want chatTUI", out)
@@ -3807,13 +3809,10 @@ func TestDoubleCtrlCQuit(t *testing.T) {
 	}
 	_ = out2
 
-	// Window expired: re-arms instead of quitting (still flushes hint via finalize).
+	// Window expired: re-arms instead of quitting.
 	m3 := m2
 	m3.lastCtrlCAt = time.Now().Add(-2 * time.Second)
-	out4, cmd4 := m3.Update(ctrlC)
-	if cmd4 == nil {
-		t.Error("expired Ctrl+C should return a finalize cmd to flush the re-armed hint")
-	}
+	out4, _ := m3.Update(ctrlC)
 	m4, ok := out4.(chatTUI)
 	if !ok {
 		t.Fatalf("Update returned %T, want chatTUI", out4)
@@ -3990,10 +3989,11 @@ func TestCtrlCCopySelection(t *testing.T) {
 	// Execute the command (copyToClipboard → OSC 52).
 	cmd()
 
-	// Second Ctrl+C should now arm quit (selection is gone).
-	_, cmd2 := m2.Update(ctrlC)
-	if cmd2 == nil {
-		t.Error("Ctrl+C after copy should arm quit (return a finalize cmd)")
+	// Second Ctrl+C should now arm quit (selection is gone). Rendering the
+	// changed model does not require a command.
+	out2, _ := m2.Update(ctrlC)
+	if out2.(chatTUI).lastCtrlCAt.IsZero() {
+		t.Error("Ctrl+C after copy should arm quit")
 	}
 }
 
