@@ -141,7 +141,7 @@ func (a *Agent) beginRunTurn(ctx context.Context, input string) (rawInput string
 	// A fresh user turn starts from zeroed per-turn host state; the new turn's
 	// values are computed below. Cross-turn state (checkpoint, scope, failure
 	// budgets) lives directly on Agent and is reconciled field by field.
-	a.perTurnState = perTurnState{}
+	a.perTurnState = perTurnState{turnInput: input}
 	scope, scoped := DeliveryExecutionScopeFromContext(ctx)
 	preserveEvidence := a.preserveEvidenceOnce
 	// A run that starts with a pending readiness recovery (or an explicit
