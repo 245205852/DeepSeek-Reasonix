@@ -21,6 +21,7 @@ func TestDesktopReasoningDisplayModeDefaultsAndLegacy(t *testing.T) {
 		{name: "explicit summary wins over legacy", mode: "summary", expand: true, want: "summary", explicit: true},
 		{name: "explicit auto", mode: "auto", want: "auto", explicit: true},
 		{name: "unknown safely falls back", mode: "future-mode", want: "summary"},
+		{name: "unknown ignores legacy expand", mode: "future-mode", expand: true, want: "summary"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -90,6 +91,29 @@ func TestRenderTOMLIncludesExplicitReasoningDisplayMode(t *testing.T) {
 	}
 	if !strings.Contains(rendered, "expand_thinking = false") {
 		t.Fatalf("rendered config missing legacy expand_thinking alias:\n%s", rendered)
+	}
+}
+
+func TestRenderTOMLOmitsUnknownReasoningDisplayMode(t *testing.T) {
+	cfg := Default()
+	cfg.Desktop.ReasoningDisplayMode = "future-mode"
+	cfg.Desktop.ExpandThinking = true
+	rendered := RenderTOML(cfg)
+	if strings.Contains(rendered, "reasoning_display_mode =") {
+		t.Fatalf("unknown reasoning display mode was canonicalized into an explicit preference:\n%s", rendered)
+	}
+	if !strings.Contains(rendered, "expand_thinking = false") {
+		t.Fatalf("unknown mode was not normalized to the safe legacy summary alias:\n%s", rendered)
+	}
+	var decoded Config
+	if _, err := toml.Decode(rendered, &decoded); err != nil {
+		t.Fatalf("decode rendered config: %v", err)
+	}
+	if decoded.DesktopReasoningDisplayModeExplicit() {
+		t.Fatalf("unknown mode became explicit after round trip: %+v", decoded.Desktop)
+	}
+	if got := decoded.DesktopReasoningDisplayMode(); got != "summary" {
+		t.Fatalf("round-tripped unknown mode = %q, want stable summary fallback", got)
 	}
 }
 

@@ -46,6 +46,10 @@ ok(
   "App loads startup chrome preferences through the lightweight settings call",
 );
 ok(
+  appSource.includes('hydrateReasoningDisplayMode("summary", false);'),
+  "startup failure preserves legacy reasoning-display migration precedence",
+);
+ok(
   !/const\s+reloadSidebarImConnections[\s\S]*?app\.Settings\(\)[\s\S]*?\}, \[t\]\);/.test(appSource),
   "sidebar IM refresh avoids rebuilding the full Settings payload",
 );

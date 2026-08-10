@@ -222,7 +222,9 @@ export const ToolCard = memo(function ToolCard({ item, subcalls, tabId, displayN
   const [showErrorDetails, setShowErrorDetails] = useState(false);
   // The sub-agent reasoning preview opens as a one-line summary; the full
   // Markdown only mounts after the user expands the reasoning section.
-  const [subagentReasoningOpen, setSubagentReasoningOpen] = useState(false);
+  const [subagentReasoningOpen, setSubagentReasoningOpen] = useState(
+    () => reasoningDisplayMode === "auto" && subagentReasoningRunning,
+  );
   const subagentReasoningUserOverridden = useRef(false);
   const previousSubagentReasoningRunning = useRef(subagentReasoningRunning);
   const previousReasoningDisplayMode = useRef(reasoningDisplayMode);

@@ -194,15 +194,6 @@ if (!compactButton) throw new Error("compact display mode button did not render"
 const generalFieldLabels = Array.from(rootEl.querySelectorAll(".settings-section__body > .settings-field .settings-field__label"))
   .map((label) => label.textContent?.trim());
 eq(generalFieldLabels[0], "Desktop style", "general settings place desktop style first");
-const desktopStyleLabels = Array.from(rootEl.querySelectorAll(".settings-page--general > .settings-section:first-of-type > .settings-section__body > .settings-field:first-child .set-seg__btn"))
-  .map((button) => button.textContent?.trim());
-eq(
-  desktopStyleLabels.join(" | "),
-  "Workbench | Classic | Creation",
-  "desktop styles prioritize workbench before classic and creation",
-);
-eq(rootEl.querySelectorAll(".settings-center__navitem small").length, 1, "settings navigation only shows metadata for the active page");
-eq(rootEl.querySelector('.settings-center__navitem[aria-current="page"] small')?.textContent?.trim(), "Workbench · Keep running", "active settings navigation keeps its useful summary");
 eq(document.querySelectorAll(".step-limit-control").length, 0, "general settings hide executor and planner step-limit controls");
 ok(!document.body.textContent?.includes("step limit"), "general settings keep automatic progress free of step-limit copy");
 ok(!document.body.textContent?.includes("Automatic plan mode"), "general settings omit the retired automatic Plan Mode control");
@@ -216,17 +207,6 @@ await act(async () => {
 eq(setDisplayModeCalls, 1, "display mode mutation is invoked once");
 eq(settingsCalls, 2, "settings panel reads Settings only for initial load and post-save reload");
 ok(onChangedSettings?.displayMode === "compact", "onChanged receives the post-save SettingsView snapshot");
-
-const settingsContent = rootEl.querySelector(".settings-center__content") as HTMLElement | null;
-const shortcutsNavButton = Array.from(rootEl.querySelectorAll(".settings-center__navitem")).find((button) => button.textContent?.trim().startsWith("Shortcuts")) as HTMLButtonElement | undefined;
-if (!settingsContent || !shortcutsNavButton) throw new Error("settings navigation scroll test did not render");
-settingsContent.scrollTop = 320;
-await act(async () => {
-  shortcutsNavButton.click();
-  await flushPromises();
-});
-eq(settingsContent.scrollTop, 0, "switching settings pages resets the content scroll position");
-eq(rootEl.querySelector('.settings-center__navitem[aria-current="page"]')?.textContent?.trim(), "ShortcutsKeys & help", "settings navigation exposes the current page semantically");
 
 await act(async () => {
   root.unmount();

@@ -898,43 +898,6 @@ func officialProviderAddedSet(cfg *config.Config) map[string]bool {
 	return out
 }
 
-func desktopStartupSettingsFromConfig(cfg *config.Config) DesktopStartupSettingsView {
-	if cfg == nil {
-		return DesktopStartupSettingsView{
-			Bot:                  botSettingsView(config.BotConfig{}),
-			DesktopLayoutStyle:   "workbench",
-			DesktopTheme:         "auto",
-			DesktopThemeStyle:    "graphite",
-			DesktopTerminalTheme: "auto",
-			DisplayMode:          "standard",
-			ReasoningDisplayMode: "summary",
-			StatusBarStyle:       "text",
-			StatusBarItems:       config.DefaultDesktopStatusBarItems(),
-			CheckUpdates:         true,
-			UpdateChannel:        "stable",
-			ConversationWidth:    "standard",
-		}
-	}
-	return DesktopStartupSettingsView{
-		Bot:                          botSettingsView(cfg.Bot),
-		DesktopLanguage:              cfg.DesktopLanguage(),
-		DesktopLayoutStyle:           cfg.DesktopLayoutStyle(),
-		DesktopTheme:                 cfg.DesktopTheme(),
-		DesktopThemeStyle:            cfg.DesktopThemeStyle(),
-		DesktopTerminalTheme:         cfg.DesktopTerminalTheme(),
-		DisplayMode:                  cfg.DesktopDisplayMode(),
-		ReasoningDisplayMode:         cfg.DesktopReasoningDisplayMode(),
-		ReasoningDisplayModeExplicit: cfg.DesktopReasoningDisplayModeExplicit(),
-		StatusBarStyle:               cfg.DesktopStatusBarStyle(),
-		StatusBarItems:               cfg.DesktopStatusBarItems(),
-		CheckUpdates:                 cfg.DesktopCheckUpdates(),
-		UpdateChannel:                cfg.DesktopUpdateChannel(),
-		ConversationWidth:            cfg.DesktopConversationWidth(),
-		ConfigWarnings:               cfg.LoadWarnings(),
-		ConfigPath:                   config.UserConfigPath(),
-	}
-}
-
 // DesktopStartupSettings returns only the desktop chrome preferences needed at
 // app startup. Keep provider/key status in Settings(), where the Settings panel
 // actually needs it.
@@ -984,47 +947,7 @@ func (a *App) ReloadUserConfig() (DesktopStartupSettingsView, error) {
 func (a *App) Settings() SettingsView {
 	cfg, cfgPath, err := a.loadDesktopUserConfigForView()
 	if err != nil {
-		return SettingsView{
-			Providers:         []ProviderView{},
-			OfficialProviders: officialProviderViews(map[string]bool{}, ""),
-			ProviderPresets:   providerPresetViewsForRootWithResolver(nil, a.activeWorkspaceRoot(), nil),
-			ProviderKinds:     nonNil(provider.Kinds()),
-			Permissions: PermissionsView{
-				Mode:  "ask",
-				Allow: []string{},
-				Ask:   []string{},
-				Deny:  []string{},
-			},
-			Sandbox: SandboxView{Bash: config.Default().BashMode(), AllowWrite: []string{}, EffectiveWriteRoots: []string{}, Shell: "auto", EffectiveShell: sandboxEffectiveShellView(sandbox.ResolveShell("", "", nil))},
-			Agent: AgentView{
-				PlannerMaxSteps:        0,
-				MaxSubagentDepth:       agent.DefaultMaxSubagentDepth,
-				MaxSubagentConcurrency: agent.DefaultMaxSubagentConcurrency,
-				MaxParallelWriters:     agent.DefaultMaxParallelWriters,
-				ColdResumePrune:        true,
-				ReasoningLanguage:      "auto",
-				CompactRatio:           config.Default().Agent.CompactRatio,
-				EffectiveCompactRatio:  config.Default().Agent.CompactRatio,
-			},
-			Bot:                     botSettingsView(config.BotConfig{}),
-			AutoPlan:                "off",
-			DesktopLayoutStyle:      "workbench",
-			DesktopTheme:            "auto",
-			DesktopThemeStyle:       "graphite",
-			DesktopTerminalTheme:    "auto",
-			CloseBehavior:           "background",
-			DisplayMode:             "standard",
-			ReasoningDisplayMode:    "summary",
-			StatusBarStyle:          "text",
-			StatusBarItems:          config.DefaultDesktopStatusBarItems(),
-			DefaultToolApprovalMode: "auto",
-			CheckUpdates:            true,
-			UpdateChannel:           "stable",
-			Telemetry:               true,
-			Metrics:                 true,
-			ExpandThinking:          false,
-			ConversationWidth:       "standard",
-		}
+		return a.defaultSettingsView()
 	}
 	ctrl := a.activeCtrl()
 	bash := cfg.BashMode()
@@ -3324,12 +3247,6 @@ func (a *App) SetCloseBehavior(mode string) error {
 // SetDisplayMode updates the transcript display mode. UI-only, no rebuild needed.
 func (a *App) SetDisplayMode(mode string) error {
 	return a.applyConfigOnly(func(c *config.Config) error { return c.SetDesktopDisplayMode(mode) })
-}
-
-// SetReasoningDisplayMode updates desktop-only reasoning presentation without
-// rebuilding the active controller or changing provider-visible requests.
-func (a *App) SetReasoningDisplayMode(mode string) error {
-	return a.applyConfigOnly(func(c *config.Config) error { return c.SetDesktopReasoningDisplayMode(mode) })
 }
 
 // SetStatusBarStyle updates the desktop status bar metric label style. UI-only,
