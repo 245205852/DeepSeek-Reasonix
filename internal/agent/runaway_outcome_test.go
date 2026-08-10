@@ -115,15 +115,25 @@ func TestOutcomeVersusLegacyOnTheRunawayShape(t *testing.T) {
 		}
 	}
 
-	// The legacy scorer cannot separate the two: it reports positive gain on
-	// every wandering round, which is exactly why the streak never climbs.
+	// Exploration counts while it might still lead somewhere and then stops, so
+	// the ladder can finally climb. Both halves matter: never decaying is the
+	// runaway, decaying at once would nudge ordinary investigation.
+	scored, decayed := 0, 0
 	for i, s := range outcomeSeries(t, wandering) {
-		if s.LegacyGain <= 0 {
-			t.Fatalf("wandering round %d scored %d; the runaway depends on every round looking like progress", i+1, s.LegacyGain)
-		}
 		if s.Exploration == 0 || s.Discriminating != 0 || s.Churn != 0 || s.Objective != 0 {
 			t.Fatalf("wandering round %d = %+v; the shape under test is exploration and nothing else", i+1, s)
 		}
+		if s.LegacyGain > 0 {
+			scored++
+			continue
+		}
+		decayed++
+	}
+	if scored == 0 {
+		t.Fatal("exploration stopped counting immediately; ordinary investigation would be nudged on arrival")
+	}
+	if decayed == 0 {
+		t.Fatal("a look-only run never stopped counting as progress; the ladder can never climb")
 	}
 	// The decomposition can: real work reaches a discriminating observation,
 	// and never spends more than two rounds on exploration alone.

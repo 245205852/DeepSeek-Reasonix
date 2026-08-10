@@ -94,17 +94,13 @@ func runRunaway(t *testing.T, sameArg bool, maxRounds int32) (guardFired bool, r
 	return fired.Load(), prov.rounds.Load()
 }
 
-// The reported runaway, reproduced: a read-only turn that keeps restating one
-// intent while touching a new path each round runs as long as the model keeps
-// talking. Nothing caps the rounds and no guard ever fires.
-func TestReadOnlyWanderingNeverTripsTheProgressGuard(t *testing.T) {
-	const rounds = 40
-	guardFired, ran := runRunaway(t, false, rounds)
-	if ran < rounds {
-		t.Fatalf("the turn ended after %d rounds; the repro needs the uncapped loop", ran)
-	}
-	if guardFired {
-		t.Fatal("the progress guard fired on novel reads, so this shape would have been caught")
+// The reported runaway: a read-only turn restating one intent while touching a
+// new path each round. It used to score positive gain forever, so the ladder
+// could never climb; reading is progress only while it leads somewhere.
+func TestReadOnlyWanderingTripsTheProgressGuard(t *testing.T) {
+	guardFired, ran := runRunaway(t, false, 40)
+	if !guardFired {
+		t.Fatalf("wandering for %d rounds never reached the no-progress ladder", ran)
 	}
 }
 
