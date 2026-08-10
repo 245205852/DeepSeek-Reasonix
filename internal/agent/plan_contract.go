@@ -2,6 +2,8 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
+	"path/filepath"
 
 	"reasonix/internal/evidence"
 	"reasonix/internal/plancontract"
@@ -125,4 +127,34 @@ func (a *Agent) outstandingPlanCriteria() []string {
 		return nil
 	}
 	return c.Outstanding()
+}
+
+// mutationEscapesPlan reports whether a pending write touches a path the
+// approved plan never named. A plan that named no touchpoints says nothing
+// about scope, so nothing escapes it: silence is not a claim that everything is
+// out of bounds. Directory containment counts — a plan naming a file implies
+// its directory is in play, which is how a test file beside it stays in scope.
+func (a *Agent) mutationEscapesPlan(toolName string, args json.RawMessage) bool {
+	plan := a.planContractSnapshot()
+	if plan == nil {
+		return false
+	}
+	allowed := map[string]bool{}
+	for _, step := range plan.Steps {
+		for _, p := range append(append([]string{}, step.VerifiedFiles...), step.CandidateFiles...) {
+			clean := filepath.Clean(p)
+			allowed[clean] = true
+			allowed[filepath.Dir(clean)] = true
+		}
+	}
+	if len(allowed) == 0 {
+		return false
+	}
+	for _, p := range evidence.ReceiptFromToolCall(toolName, args, false, true).Paths {
+		clean := filepath.Clean(p)
+		if !allowed[clean] && !allowed[filepath.Dir(clean)] {
+			return true
+		}
+	}
+	return false
 }
