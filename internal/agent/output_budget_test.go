@@ -36,6 +36,32 @@ func (p *sharedWindowTestProvider) Stream(_ context.Context, req provider.Reques
 	return ch, nil
 }
 
+// Before any usage calibrates the session, the estimate compared against the
+// context window must still be tokens. It used to be characters, which reads
+// 3-4x high and compacted long before the configured ratio.
+func TestEstimatedPromptTokensStayInTokenUnitBeforeCalibration(t *testing.T) {
+	a := &Agent{contextWindow: 1_000_000}
+	cases := []struct {
+		name           string
+		text           string
+		realish, upper int
+	}{
+		// DeepSeek bills Chinese near 0.6 tokens per han rune, English near 0.25
+		// per character. The cold estimate may be conservative, never 3x.
+		{"chinese", strings.Repeat("上下文压缩策略", 8_000), 33_600, 50_000},
+		{"english", strings.Repeat("compact the context window ", 8_000), 54_000, 70_000},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := a.estimatedPromptTokens([]provider.Message{{Role: provider.RoleUser, Content: tc.text}})
+			if got < tc.realish/2 || got > tc.upper {
+				t.Fatalf("cold estimate = %d tokens, want between %d and %d (real ~%d)",
+					got, tc.realish/2, tc.upper, tc.realish)
+			}
+		})
+	}
+}
+
 func TestSharedWindowFoldUsesGuardedInputBudget(t *testing.T) {
 	prov := &sharedWindowTestProvider{budget: 128 * 1024, shared: true}
 	a := &Agent{
@@ -44,7 +70,9 @@ func TestSharedWindowFoldUsesGuardedInputBudget(t *testing.T) {
 		outputBudgetState: outputBudgetState{outputBudget: prov.budget},
 		sink:              event.Discard,
 	}
-	fold := []provider.Message{{Role: provider.RoleUser, Content: strings.Repeat("字", 50_000)}}
+	// 200K han runes is ~150K cold-start tokens against a 100K window: the fold
+	// genuinely cannot ride one call, which is what the guard exists to catch.
+	fold := []provider.Message{{Role: provider.RoleUser, Content: strings.Repeat("字", 200_000)}}
 
 	if _, err := a.foldToSummary(context.Background(), fold, ""); err != nil {
 		t.Fatalf("foldToSummary: %v", err)

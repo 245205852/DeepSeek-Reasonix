@@ -200,54 +200,27 @@ func (a *Agent) calibratedPromptTokens(shape requestCalibrationShape) (int, bool
 	return 0, false
 }
 
-// estimatedPromptTokens sizes the final provider-visible messages for overflow
-// protection. Real same-session usage calibrates the estimate; before that,
-// CJK text gets a conservative second token per rune to cover the measured
-// tokenizer gap that can otherwise postpone compaction past the hard limit.
+// estimatedPromptTokens sizes the provider-visible messages in real tokens —
+// the only unit comparable against the context window. Same-session usage
+// calibrates it; before that the wire character count carries the ~4 chars per
+// token shape. estimateMessagesTokens counts characters and is for internal
+// planning budgets only; against the window it would compact 4x early.
 func (a *Agent) estimatedPromptTokens(msgs []provider.Message) int {
-	est := estimateMessagesTokens(provider.ModelMessages(msgs))
-	if est <= 0 {
-		return 0
-	}
-	if calibrated, ok := a.calibratedPromptTokens(a.requestCalibrationShape(provider.Request{Messages: msgs})); ok {
-		return calibrated
-	}
-	return est + cjkRunesInMessages(msgs)
+	return a.estimatedShapeTokens(a.requestCalibrationShape(provider.Request{Messages: msgs}))
 }
 
 func (a *Agent) estimatedRequestTokens(req provider.Request) int {
-	if calibrated, ok := a.calibratedPromptTokens(a.requestCalibrationShape(req)); ok {
+	return a.estimatedShapeTokens(a.requestCalibrationShape(req))
+}
+
+func (a *Agent) estimatedShapeTokens(shape requestCalibrationShape) int {
+	if shape.requestChars <= 0 {
+		return 0
+	}
+	if calibrated, ok := a.calibratedPromptTokens(shape); ok {
 		return calibrated
 	}
-	return a.estimatedPromptTokens(req.Messages) + estimateToolSchemaTokens(req.Tools)
-}
-
-func cjkRunesInMessages(msgs []provider.Message) int {
-	total := 0
-	for _, msg := range msgs {
-		if msg.LocalOnly {
-			continue
-		}
-		total += cjkRunesIn(msg.Content) + cjkRunesIn(msg.ReasoningContent)
-		total += cjkRunesIn(msg.Name) + cjkRunesIn(msg.ToolCallID)
-		for _, call := range msg.ToolCalls {
-			total += cjkRunesIn(call.ID) + cjkRunesIn(call.Name) + cjkRunesIn(call.Arguments)
-		}
-		for _, item := range msg.ResponsesItems {
-			total += cjkRunesIn(string(item))
-		}
-	}
-	return total
-}
-
-func cjkRunesIn(s string) int {
-	total := 0
-	for _, r := range s {
-		if isCJKRune(r) {
-			total++
-		}
-	}
-	return total
+	return int(float64(shape.requestChars) * fallbackTokPerChar)
 }
 
 func isCJKRune(r rune) bool {
@@ -255,17 +228,6 @@ func isCJKRune(r rune) bool {
 		(r >= 0x3400 && r <= 0x4DBF) ||
 		(r >= 0x3040 && r <= 0x30FF) ||
 		(r >= 0xAC00 && r <= 0xD7AF)
-}
-
-func estimateToolSchemaTokens(schemas []provider.ToolSchema) int {
-	total := 0
-	for _, schema := range schemas {
-		total += 8
-		total += estimateTextTokens(schema.Name)
-		total += estimateTextTokens(schema.Description)
-		total += estimateTextTokens(string(schema.Parameters))
-	}
-	return total
 }
 
 // effectiveOutputBudget returns an explicit smaller output budget only when a
