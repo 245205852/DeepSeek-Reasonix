@@ -618,7 +618,7 @@ function settingsTabMeta(id: SettingsTab, s: SettingsView, t: ReturnType<typeof 
     case "remote":
       return t("remote.tabHint");
     case "skills":
-      return t("caps.skillsTab");
+      return t("settings.tabSub.skills");
     case "subagents":
       return t("subagents.tabHint");
     case "plugins":

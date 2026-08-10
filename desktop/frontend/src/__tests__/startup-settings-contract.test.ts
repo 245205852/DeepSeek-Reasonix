@@ -152,6 +152,16 @@ ok(
   "settings navigation provides searchable localized groups and visible category icons",
 );
 ok(
+  /function settingsTabMeta[\s\S]*?case "skills":\s+return t\("settings\.tabSub\.skills"\)/.test(settingsSource) &&
+    enLocaleSource.includes('"settings.tab.skills": "Agent Skills"') &&
+    enLocaleSource.includes('"settings.tabSub.skills": "Reusable instructions, tools & workflows"') &&
+    zhLocaleSource.includes('"settings.tab.skills": "Agent Skills"') &&
+    zhLocaleSource.includes('"settings.tabSub.skills": "可复用的指令、工具与工作流"') &&
+    zhTWLocaleSource.includes('"settings.tab.skills": "Agent Skills"') &&
+    zhTWLocaleSource.includes('"settings.tabSub.skills": "可重複使用的指令、工具與工作流程"'),
+  "Agent Skills navigation uses the dedicated reusable-workflow description in every supported locale",
+);
+ok(
   [settingsSource, enLocaleSource, zhLocaleSource, zhTWLocaleSource, stylesSource].every((source) =>
     !source.includes("settings.workProcess") &&
     !source.includes("settings-work-process"),
