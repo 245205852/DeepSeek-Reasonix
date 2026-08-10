@@ -783,33 +783,12 @@ func (a *Agent) finishToolExecution(ctx context.Context, plan *toolCallPlan) too
 	// before evidence, hooks, and recovery observation, so every downstream
 	// consumer sees the final (possibly replaced) outcome.
 	result, err = a.interceptToolAfter(ctx, call, result, err)
-	if a.evidence != nil {
-		// Always record the model-visible call for audit, then the real target
-		// attributes for mutation/read classification when they differ.
-		if call.Name == "complete_step" {
-			rec := evidence.ReceiptFromToolCall(call.Name, json.RawMessage(call.Arguments), err == nil, readOnly)
-			a.evidence.Record(rec)
-			if err == nil {
-				a.advanceCanonicalTodo(rec.Step)
-			}
-		} else if evidenceName != call.Name {
-			// Proxy: meta receipt (non-mutation) + real target receipt.
-			a.evidence.Record(evidence.ReceiptFromToolCall(call.Name, json.RawMessage(call.Arguments), err == nil, true))
-			rec := evidence.ReceiptFromToolCall(evidenceName, evidenceArgs, err == nil, readOnly)
-			decorateExecutionReceipt(&rec, result, execution)
-			a.evidence.Record(rec)
-		} else {
-			rec := evidence.ReceiptFromToolCall(call.Name, json.RawMessage(call.Arguments), err == nil, t.ReadOnly())
-			decorateExecutionReceipt(&rec, result, execution)
-			a.evidence.Record(rec)
-			if err == nil && call.Name == "todo_write" {
-				a.setTodoState(rec.Todos)
-				if len(rec.Todos) > 0 {
-					a.deliveryCriteriaEstablished = true
-				}
-			}
-		}
+	// A tool that refused its own call never ran: report it like the permission
+	// and plan-mode blocks above rather than as an execution failure.
+	if msg, refused := tool.BlockedMessage(err); refused {
+		return a.blockedToolOutcome(plan, msg)
 	}
+	a.recordToolReceipts(plan, result, execution, err)
 	// Track skill/capability outcomes for Delivery gates.
 	a.noteCapabilityInvocation(call.Name, json.RawMessage(call.Arguments), err)
 	// Success and failure hooks observe the result after the tool ran. Use the
@@ -859,31 +838,6 @@ func (a *Agent) finishToolExecution(ctx context.Context, plan *toolCallPlan) too
 		output: body, images: images, truncated: truncMsg != "", truncMsg: truncMsg,
 		execution: execution, recoveryGeneration: recoveryGen,
 	}
-}
-
-// shellPreflightExecution builds not_run/preflight metadata for a blocked bash call.
-func shellPreflightExecution(plan *toolCallPlan, hasVerification bool) *tool.ShellExecution {
-	ex := &tool.ShellExecution{
-		Kind:         "shell",
-		State:        tool.ShellStateNotRun,
-		FailurePhase: tool.ShellPhasePreflight,
-		MutationRisk: tool.ShellMutationNotStarted,
-		Verification: tool.ShellVerificationNotVerification,
-	}
-	if hasVerification {
-		ex.Verification = tool.ShellVerificationNotRun
-	}
-	if plan != nil {
-		if de, ok := plan.execTool.(tool.DetailedExecutor); ok {
-			if desc := de.ExecutionDescriptor(plan.execArgs); desc != nil {
-				ex.Shell = desc.Shell
-				ex.ShellVersion = desc.ShellVersion
-				ex.Platform = desc.Platform
-				ex.SupportsAndAnd = desc.SupportsAndAnd
-			}
-		}
-	}
-	return ex
 }
 
 // observeBeforeMutation captures preimages for Previewable writers and records
