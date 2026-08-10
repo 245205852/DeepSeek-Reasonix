@@ -124,7 +124,12 @@ type CompactionState struct {
 	LastReceipt        *ContextMaintenanceReceipt `json:"last_receipt,omitempty"`
 	BlockedInputHash   string                     `json:"blocked_input_hash,omitempty"`
 	BlockedReason      string                     `json:"blocked_reason,omitempty"`
-	UpdatedAt          time.Time                  `json:"updated_at"`
+	// NativeContextEditingAccepted latches the first successful native request.
+	// ContextEditingFallbackLocal persists the only allowed request-shape switch:
+	// an explicit unsupported response before that latch was set.
+	NativeContextEditingAccepted bool      `json:"native_context_editing_accepted,omitempty"`
+	ContextEditingFallbackLocal  bool      `json:"context_editing_fallback_local,omitempty"`
+	UpdatedAt                    time.Time `json:"updated_at"`
 }
 
 // CompactionTelemetry is the structured observability record for one

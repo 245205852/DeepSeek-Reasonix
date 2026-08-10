@@ -155,7 +155,6 @@ type visibleCompressionPlan struct {
 type preparedVisibleCompression struct {
 	fold         []provider.Message
 	instructions string
-	archive      string
 }
 
 func (a *Agent) compressVisibleRange(
@@ -167,6 +166,11 @@ func (a *Agent) compressVisibleRange(
 	preview string,
 	instructions string,
 ) (tool.CompressResult, error) {
+	a.compactionRunMu.Lock()
+	defer a.compactionRunMu.Unlock()
+	if !a.explicitCompressionSnapshotCurrent(snap) {
+		return tool.CompressResult{}, errCompressStaleContext
+	}
 	plan, ok := a.planVisibleCompression(snap, direction, anchorIndex, preview)
 	if !ok {
 		return plan.result, nil
@@ -215,7 +219,15 @@ func (a *Agent) compressVisibleRange(
 		return result, nil
 	}
 
-	if err := a.installVisibleCompression(snap, trigger, res.Mode, summary, projection, result.SourceTokens, projectionTokens, res.Usage); err != nil {
+	inputHash := providerVisibleFingerprint(provider.ModelMessages(snap.visible))
+	outputHash := providerVisibleFingerprint(projection)
+	state, err := a.commitSummaryProjection(summaryProjectionCommit{
+		canonical: snap.canonical, fold: prepared.fold, projected: projection, result: res,
+		transcriptVersion: snap.transcriptVersion, projectionVersion: snap.projectionVersion, generation: snap.generation,
+		activeTurn: a.activeTurnCreatedAt.Load(), trigger: trigger, summary: summary,
+		inputHash: inputHash, outputHash: outputHash, sourceTokens: result.SourceTokens, projectionTokens: projectionTokens,
+	})
+	if err != nil {
 		if errors.Is(err, errCompressStaleContext) {
 			tele.Error = err.Error()
 			a.emitCompactionTelemetry(tele)
@@ -223,14 +235,25 @@ func (a *Agent) compressVisibleRange(
 		a.emitCompactionAborted(trigger)
 		return tool.CompressResult{}, err
 	}
-	a.session.NoteContentRewrite("compact_" + trigger)
 	a.emitCompactionTelemetry(tele)
 	a.sink.Emit(event.Event{Kind: event.CompactionDone, Compaction: event.Compaction{
-		Trigger: trigger, Messages: len(plan.fold), Summary: summary, Archive: prepared.archive,
+		Trigger: trigger, Messages: len(plan.fold), Summary: summary, Archive: state.LastReceipt.Archive,
 	}})
 	result.Status = "ok"
 	result.Reason = ""
 	return result, nil
+}
+
+func (a *Agent) explicitCompressionSnapshotCurrent(snap explicitCompressionSnapshot) bool {
+	current, version := a.session.snapshotMessagesVersion()
+	a.compactionMu.Lock()
+	projectionVersion := a.compactionState.Projection.ProjectionVersion
+	generation := a.compactionState.Generation
+	a.compactionMu.Unlock()
+	return version == snap.transcriptVersion && len(current) == len(snap.canonical) &&
+		coveredPrefixHash(current, len(current)) == snap.coveredHash &&
+		projectionVersion == snap.projectionVersion && generation == snap.generation &&
+		a.currentPromptCacheKey() == snap.promptCacheKey
 }
 
 func (a *Agent) planVisibleCompression(snap explicitCompressionSnapshot, direction string, anchorIndex int, preview string) (visibleCompressionPlan, bool) {
@@ -307,15 +330,7 @@ func (a *Agent) prepareVisibleCompression(ctx context.Context, trigger string, f
 	if len(preparedFold) == 0 {
 		return preparedVisibleCompression{}, "compaction hook removed the selected range", nil
 	}
-	prepared := preparedVisibleCompression{fold: preparedFold, instructions: preparedInstructions}
-	if a.archiveDir == "" {
-		return prepared, "", nil
-	}
-	prepared.archive, err = archiveMessages(a.archiveDir, preparedFold)
-	if err != nil {
-		return preparedVisibleCompression{}, "", fmt.Errorf("archive: %w", err)
-	}
-	return prepared, "", nil
+	return preparedVisibleCompression{fold: preparedFold, instructions: preparedInstructions}, "", nil
 }
 
 func buildVisibleCompressionProjection(visible []provider.Message, plan visibleCompressionPlan, summary string) []provider.Message {
@@ -329,48 +344,6 @@ func buildVisibleCompressionProjection(visible []provider.Message, plan visibleC
 		}
 	}
 	return provider.ModelMessages(projection)
-}
-
-func (a *Agent) installVisibleCompression(snap explicitCompressionSnapshot, trigger, mode, summary string, projection []provider.Message, sourceTokens, projectionTokens int, usage *provider.Usage) error {
-	current, currentVersion := a.session.snapshotMessagesVersion()
-	a.compactionMu.Lock()
-	currentProjectionVersion := a.compactionState.Projection.ProjectionVersion
-	a.compactionMu.Unlock()
-	if currentVersion != snap.transcriptVersion || len(current) != len(snap.canonical) ||
-		coveredPrefixHash(current, len(current)) != snap.coveredHash ||
-		currentProjectionVersion != snap.projectionVersion {
-		return errCompressStaleContext
-	}
-	now := time.Now().UTC()
-	state := CompactionState{
-		SchemaVersion:     compactionStateSchemaCurrent,
-		TranscriptVersion: snap.transcriptVersion,
-		Projection: ContextProjection{
-			Messages:          projection,
-			TranscriptVersion: snap.transcriptVersion,
-			ProjectionVersion: snap.projectionVersion + 1,
-			CoveredCount:      len(snap.canonical),
-			CoveredPrefixHash: snap.coveredHash,
-			SummaryHash:       summaryContentHash(summary),
-			SourceTokens:      sourceTokens,
-			ProjectionTokens:  projectionTokens,
-			CreatedAt:         now,
-		},
-		PromptCacheKey:   snap.promptCacheKey,
-		LastCacheState:   a.CacheState(),
-		LastTrigger:      trigger,
-		LastMode:         mode,
-		LastSourceTokens: sourceTokens,
-		LastResultTokens: projectionTokens,
-		UpdatedAt:        now,
-	}
-	if a.pricing != nil && usage != nil {
-		state.LastCompactionCost = a.pricing.Cost(usage)
-	}
-	if err := a.installProjectionIfCurrent(state, snap.projectionVersion, snap.generation); err != nil {
-		return fmt.Errorf("persist projection: %w", err)
-	}
-	return nil
 }
 
 func compactionTelemetryFromSummary(trigger, cacheState string, sourceTokens int, res foldSummary) CompactionTelemetry {
@@ -672,27 +645,6 @@ func (a *Agent) runCompactionSummary(ctx context.Context, fold []provider.Messag
 	return summary, CompactionModeSummarized, usage, "", nil
 }
 
-// snipToProjection builds a projection that only snips stale tool results.
-func (a *Agent) snipToProjection(ctx context.Context) error {
-	_ = ctx
-	msgs := a.modelVisibleMessages()
-	snipped, st := a.applyToolResultMaintenanceView(msgs, toolResultSnip)
-	if st.Results == 0 {
-		return nil
-	}
-	ratio := a.tokPerChar()
-	saved := int(float64(st.SavedChars) * ratio)
-	before := a.currentProjectionVersion()
-	if err := a.installPruneProjection(snipped, st); err != nil {
-		return err
-	}
-	if a.currentProjectionVersion() > before {
-		a.sink.Emit(event.Event{Kind: event.Notice, Level: event.LevelInfo, Text: fmt.Sprintf(
-			"snipped %d stale tool results (~%d tokens est.) before compaction", st.Results, saved)})
-	}
-	return nil
-}
-
 // installPruneProjection stores a projection whose messages are a snipped/pruned
 // view of the canonical transcript (no summarizer call).
 func (a *Agent) installPruneProjection(view []provider.Message, st PruneStats) error {
@@ -766,9 +718,11 @@ func (a *Agent) installPruneProjection(view []provider.Message, st PruneStats) e
 	}
 	now := time.Now().UTC()
 	state := CompactionState{
-		SchemaVersion:     compactionStateSchemaCurrent,
-		TranscriptVersion: version,
-		Generation:        current.Generation + 1,
+		SchemaVersion:                compactionStateSchemaCurrent,
+		TranscriptVersion:            version,
+		Generation:                   current.Generation + 1,
+		NativeContextEditingAccepted: a.nativeContextEditingAccepted.Load(),
+		ContextEditingFallbackLocal:  a.contextEditingRuntimeFallback.Load(),
 		Projection: ContextProjection{
 			Messages:          view,
 			TranscriptVersion: version,

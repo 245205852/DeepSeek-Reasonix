@@ -280,9 +280,9 @@ function maintenanceActionLabel(action: string | undefined, t: Translator): stri
   switch (action) {
     case "snip": return t("context.maintenanceActionSnip");
     case "prune": return t("context.maintenanceActionPrune");
-    case "summary": return t("context.maintenanceActionSummary");
+    case "summary": return t("summary.detail");
     case "native_tool_clear": return t("context.maintenanceActionNative");
-    default: return t("context.maintenanceActionNone");
+    default: return t("common.none");
   }
 }
 
@@ -464,10 +464,10 @@ export function ContextPanel({
   const maintenance = context?.maintenance;
   const lastMaintenance = maintenance?.lastReceipt;
   const maintenanceStatus = maintenance?.blocked
-    ? t("context.maintenanceStatusBlocked")
+    ? t("projectTree.status.paused")
     : lastMaintenance?.status === "applied"
-      ? t("context.maintenanceStatusApplied")
-      : t("context.maintenanceStatusReady");
+      ? t("settings.typography.applied")
+      : t("remote.server.state.ready");
   const activeAnalysisView: UsageAnalysisView = showSourceUsageRows ? analysisView : "type";
   const tokenTypeRows = [
     { key: "prompt", label: t("context.prompt"), value: breakdown.promptTokens },
@@ -572,8 +572,8 @@ export function ContextPanel({
               <div className="context-panel__session-metrics">
                 <div className="context-panel__summary-rows">
                   <MiniStat label={t("context.maintenanceProjected")} value={formatOptionalTokens(maintenance.projectedTokens)} tone="accent" />
-                  <MiniStat label={t("context.maintenanceCanonical")} value={formatOptionalTokens(maintenance.canonicalTokens)} />
-                  <MiniStat label={t("context.maintenanceSummaryCurrent")} value={formatOptionalTokens(maintenance.summaryTokens)} />
+                  <MiniStat label={t("history.title")} value={formatOptionalTokens(maintenance.canonicalTokens)} />
+                  <MiniStat label={t("summary.detail")} value={formatOptionalTokens(maintenance.summaryTokens)} />
                   <MiniStat label={t("context.maintenanceLastSaved")} value={formatOptionalTokens(maintenance.lastSavedTokens)} tone={maintenance.lastSavedTokens ? "good" : undefined} />
                   <MiniStat label={t("context.maintenanceHeadroom")} value={formatOptionalTokens(maintenance.headroom)} wide />
                   <MiniStat label={t("context.maintenanceLastAction")} value={maintenanceActionLabel(lastMaintenance?.action, t)} />

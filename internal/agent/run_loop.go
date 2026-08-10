@@ -420,24 +420,11 @@ func (a *Agent) streamWithSamplingRecovery(ctx context.Context, turn int) stream
 		last.usage = finalizeSamplingUsage(billable, result.usage)
 
 		if result.err != nil {
-			if provider.IsStreamInterrupted(result.err) && attempt < maxSamplingAttempts {
-				streamSink.Discard()
-				reason := provider.StreamInterruptReason(result.err)
-				a.emitStreamAttempt(attemptID, event.StreamAttemptDiscard, attempt, reason, result.err)
-				a.sink.Emit(event.Event{
-					Kind: event.Retrying, RetryAttempt: attempt, RetryMax: maxStreamRecoveries,
-					RetryScope: event.RetryScopeStream,
-				})
-				if !streamRetrySleep(ctx, attempt) {
-					return streamedTurn{usage: finalizeSamplingUsage(billable, result.usage), interrupted: true, err: ctx.Err()}
-				}
+			retry, terminal := a.handleSamplingError(ctx, attemptID, attempt, streamSink, &frozen, result, last, billable)
+			if retry {
 				continue
 			}
-			// Exhausted retries or non-retryable error: leave the last
-			// speculative UI visible (no discard) so LocalOnly can mirror it.
-			streamSink.Flush()
-			last.usage = finalizeSamplingUsage(billable, result.usage)
-			return last
+			return terminal
 		}
 
 		// Clean terminal. Optionally repair missing reasoning with one extra

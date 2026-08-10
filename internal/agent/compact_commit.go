@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"errors"
 	"fmt"
 	"time"
 
@@ -22,10 +23,11 @@ func (a *Agent) commitSummaryProjection(commit summaryProjectionCommit) (Compact
 	current, currentVersion := a.session.snapshotMessagesVersion()
 	a.compactionMu.Lock()
 	currentProjectionVersion := a.compactionState.Projection.ProjectionVersion
+	currentGeneration := a.compactionState.Generation
 	a.compactionMu.Unlock()
 	if currentVersion != commit.transcriptVersion || len(current) != len(commit.canonical) ||
 		coveredPrefixHash(current, len(current)) != coveredPrefixHash(commit.canonical, len(commit.canonical)) ||
-		currentProjectionVersion != commit.projectionVersion {
+		currentProjectionVersion != commit.projectionVersion || currentGeneration != commit.generation {
 		return CompactionState{}, errCompressStaleContext
 	}
 
@@ -39,7 +41,7 @@ func (a *Agent) commitSummaryProjection(commit summaryProjectionCommit) (Compact
 	}
 	state := a.summaryProjectionState(commit, archive)
 	if err := a.installProjectionIfCurrent(state, commit.projectionVersion, commit.generation); err != nil {
-		if err == errCompressStaleContext {
+		if errors.Is(err, errCompressStaleContext) {
 			return CompactionState{}, err
 		}
 		return CompactionState{}, fmt.Errorf("persist projection: %w", err)
@@ -68,6 +70,8 @@ func (a *Agent) summaryProjectionState(commit summaryProjectionCommit, archive s
 	state := CompactionState{
 		SchemaVersion: compactionStateSchemaCurrent, TranscriptVersion: commit.transcriptVersion,
 		Generation: commit.generation + 1, PromptCacheKey: a.currentPromptCacheKey(),
+		NativeContextEditingAccepted: a.nativeContextEditingAccepted.Load(),
+		ContextEditingFallbackLocal:  a.contextEditingRuntimeFallback.Load(),
 		Projection: ContextProjection{
 			Messages: commit.projected, TranscriptVersion: commit.transcriptVersion,
 			ProjectionVersion: projectionVersion, CoveredCount: len(commit.canonical), CoveredPrefixHash: coveredHash,

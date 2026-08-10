@@ -72,3 +72,32 @@ func TestContextManagerPersistsAndRestoresBlockedFailureFingerprint(t *testing.T
 		t.Fatalf("resumed blocked fingerprint retried summary %d times", resumedProvider.calls)
 	}
 }
+
+func TestStrictAlternatingRolesStillConvergesBeforeSampling(t *testing.T) {
+	sess := &Session{Messages: []provider.Message{
+		{Role: provider.RoleSystem, Content: "system"},
+		{Role: provider.RoleUser, Content: "old request"},
+		{Role: provider.RoleAssistant, Content: strings.Repeat("old work ", 400)},
+		{Role: provider.RoleUser, Content: "recent request"},
+		{Role: provider.RoleAssistant, Content: "recent response"},
+	}}
+	a := New(&fakeProvider{reply: "old work summarized"}, tool.NewRegistry(), sess, Options{
+		ContextWindow: 200, RecentKeep: 2, StrictAlternatingRoles: true,
+	}, event.Discard)
+
+	prepared, err := a.prepareSamplingRequest(context.Background())
+	if err != nil {
+		t.Fatalf("prepareSamplingRequest: %v", err)
+	}
+	if got := a.currentProjectionVersion(); got != 1 {
+		t.Fatalf("projection version = %d, want pressure fold", got)
+	}
+	if len(prepared.req.Messages) >= len(sess.Snapshot()) {
+		t.Fatalf("strict request did not converge: %+v", prepared.req.Messages)
+	}
+	for i := 1; i < len(prepared.req.Messages); i++ {
+		if prepared.req.Messages[i-1].Role == prepared.req.Messages[i].Role {
+			t.Fatalf("strict request has adjacent %s roles: %+v", prepared.req.Messages[i].Role, prepared.req.Messages)
+		}
+	}
+}

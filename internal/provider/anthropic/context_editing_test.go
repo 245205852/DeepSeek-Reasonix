@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
@@ -37,6 +38,51 @@ func TestBuildRequestNativeContextEditingIsExplicitAndOfficialOnly(t *testing.T)
 	}
 	if strings.Contains(string(gb), `"context_management"`) {
 		t.Fatalf("compatible gateway must not receive native context editing: %s", gb)
+	}
+}
+
+func TestStreamClassifiesOnlyNativeContextEditingRejections(t *testing.T) {
+	responses := []struct {
+		name string
+		body string
+		want bool
+	}{
+		{name: "feature rejection", body: `{"error":{"message":"context_management: extra inputs are not permitted"}}`, want: true},
+		{name: "unrelated bad request", body: `{"error":{"message":"tools[0].input_schema is invalid"}}`, want: false},
+	}
+	for _, tc := range responses {
+		t.Run(tc.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if got := r.Header.Get("anthropic-beta"); got != anthropicContextManagementBeta {
+					t.Errorf("anthropic-beta = %q", got)
+				}
+				body, err := io.ReadAll(r.Body)
+				if err != nil {
+					t.Errorf("read request body: %v", err)
+				}
+				if !strings.Contains(string(body), `"context_management"`) {
+					t.Errorf("request lacks native context management: %s", body)
+				}
+				w.WriteHeader(http.StatusBadRequest)
+				_, _ = io.WriteString(w, tc.body)
+			}))
+			defer server.Close()
+
+			c := &client{
+				name: "anthropic-test", apiKey: "test", baseURL: server.URL, model: "claude-test",
+				nativeAnthropic: true, http: server.Client(),
+			}
+			_, err := c.Stream(context.Background(), provider.Request{
+				Messages: []provider.Message{{Role: provider.RoleUser, Content: "hello"}},
+				ContextEditing: &provider.ContextEditingPolicy{
+					Mode: "native", TriggerInputTokens: 12_000, KeepToolUses: 3,
+					ClearAtLeastInputTokens: 4_096,
+				},
+			})
+			if got := provider.IsNativeContextEditingUnsupported(err); got != tc.want {
+				t.Fatalf("IsNativeContextEditingUnsupported(%v) = %t, want %t", err, got, tc.want)
+			}
+		})
 	}
 }
 

@@ -33,7 +33,7 @@ func (a *Agent) contextMaintenanceBlocked(inputHash string) (bool, string) {
 }
 
 func (a *Agent) observeNativeContextEditing(u *provider.Usage) {
-	if a == nil || u == nil || a.contextEditing != "native" ||
+	if a == nil || u == nil || a.effectiveContextEditing() != "native" ||
 		u.ContextEditingType == "" || u.ContextEditingClearedTokens <= 0 {
 		return
 	}

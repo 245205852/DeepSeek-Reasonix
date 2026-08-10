@@ -2,7 +2,10 @@ package agent
 
 import (
 	"context"
+	"errors"
+	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 
 	"reasonix/internal/event"
@@ -19,6 +22,55 @@ func (p *nativeContextEditingProvider) ContextEditingCapabilities() provider.Con
 		NativeToolUseClear: true,
 		PolicyVersion:      "clear_tool_uses_test",
 	}
+}
+
+type nativeFallbackProvider struct {
+	mu           sync.Mutex
+	rejectNative bool
+	requestModes []string
+}
+
+func (p *nativeFallbackProvider) Name() string { return "native-fallback" }
+
+func (p *nativeFallbackProvider) ContextEditingCapabilities() provider.ContextEditingCapabilities {
+	return provider.ContextEditingCapabilities{
+		NativeToolUseClear: true,
+		PolicyVersion:      "clear_tool_uses_test",
+	}
+}
+
+func (p *nativeFallbackProvider) Stream(_ context.Context, req provider.Request) (<-chan provider.Chunk, error) {
+	mode := "local"
+	if req.ContextEditing != nil {
+		mode = req.ContextEditing.Mode
+	}
+	p.mu.Lock()
+	p.requestModes = append(p.requestModes, mode)
+	reject := p.rejectNative && mode == "native"
+	p.mu.Unlock()
+	if reject {
+		return nil, errors.Join(provider.ErrNativeContextEditingUnsupported, &provider.APIError{
+			Provider: "native-fallback", Status: 400,
+			Body: "context_management: extra inputs are not permitted",
+		})
+	}
+	ch := make(chan provider.Chunk, 2)
+	ch <- provider.Chunk{Type: provider.ChunkText, Text: "ok"}
+	ch <- provider.Chunk{Type: provider.ChunkDone}
+	close(ch)
+	return ch, nil
+}
+
+func (p *nativeFallbackProvider) setRejectNative(reject bool) {
+	p.mu.Lock()
+	p.rejectNative = reject
+	p.mu.Unlock()
+}
+
+func (p *nativeFallbackProvider) modes() []string {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return append([]string(nil), p.requestModes...)
 }
 
 func TestContextEditingResolvesProviderCapabilityBeforeRequestAndCacheLineage(t *testing.T) {
@@ -89,6 +141,101 @@ func TestUnsupportedNativeContextEditingNoticeIsOneShot(t *testing.T) {
 	}
 	if notices != 1 {
 		t.Fatalf("fallback notices = %d, want 1", notices)
+	}
+}
+
+func TestNativeContextEditingFallsBackOnceAndPersistsLocalLineage(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "session.jsonl")
+	prov := &nativeFallbackProvider{rejectNative: true}
+	sess := &Session{Messages: []provider.Message{{Role: provider.RoleUser, Content: "hello"}}}
+	opts := Options{
+		ContextEditing: "native", ContextWindow: 100_000, MaxOutputTokens: 1_024,
+		WorkspaceID: "workspace", ModelRef: "model",
+	}
+	a := New(prov, tool.NewRegistry(), sess, opts, event.Discard)
+	a.BindSessionPath(path, false)
+
+	got := a.streamWithSamplingRecovery(context.Background(), 1)
+	if got.err != nil || got.text != "ok" {
+		t.Fatalf("native fallback result = text %q err %v", got.text, got.err)
+	}
+	if modes := prov.modes(); len(modes) != 2 || modes[0] != "native" || modes[1] != "local" {
+		t.Fatalf("request modes = %v, want [native local]", modes)
+	}
+	if a.effectiveContextEditing() != "local" || !a.contextEditingRuntimeFallback.Load() || a.nativeContextEditingAccepted.Load() {
+		t.Fatalf("fallback state = effective %q fallback %t accepted %t",
+			a.effectiveContextEditing(), a.contextEditingRuntimeFallback.Load(), a.nativeContextEditingAccepted.Load())
+	}
+	state, ok, err := LoadCompactionState(path)
+	if err != nil || !ok {
+		t.Fatalf("load fallback sidecar: ok=%t err=%v", ok, err)
+	}
+	if !state.ContextEditingFallbackLocal || state.NativeContextEditingAccepted {
+		t.Fatalf("persisted fallback state = %+v", state)
+	}
+
+	localOpts := opts
+	localOpts.ContextEditing = "local"
+	local := New(&fakeProvider{}, tool.NewRegistry(), NewSession(""), localOpts, event.Discard)
+	local.SetSessionPath(path)
+	if a.currentPromptCacheKey() != local.currentPromptCacheKey() {
+		t.Fatalf("fallback lineage = %q, want local %q", a.currentPromptCacheKey(), local.currentPromptCacheKey())
+	}
+
+	resumed := New(&nativeFallbackProvider{}, tool.NewRegistry(), sess, opts, event.Discard)
+	resumed.BindSessionPath(path, true)
+	if resumed.effectiveContextEditing() != "local" || !resumed.contextEditingRuntimeFallback.Load() {
+		t.Fatalf("resumed fallback = effective %q fallback %t",
+			resumed.effectiveContextEditing(), resumed.contextEditingRuntimeFallback.Load())
+	}
+	prepared, err := resumed.prepareSamplingRequest(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if prepared.req.ContextEditing != nil {
+		t.Fatalf("resumed local request contains native policy: %+v", prepared.req.ContextEditing)
+	}
+}
+
+func TestNativeContextEditingSuccessLatchesRequestShapeAcrossResume(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "session.jsonl")
+	prov := &nativeFallbackProvider{}
+	sess := &Session{Messages: []provider.Message{{Role: provider.RoleUser, Content: "hello"}}}
+	opts := Options{
+		ContextEditing: "native", ContextWindow: 100_000, MaxOutputTokens: 1_024,
+		WorkspaceID: "workspace", ModelRef: "model",
+	}
+	a := New(prov, tool.NewRegistry(), sess, opts, event.Discard)
+	a.BindSessionPath(path, false)
+	first := a.streamWithSamplingRecovery(context.Background(), 1)
+	if first.err != nil || !a.nativeContextEditingAccepted.Load() {
+		t.Fatalf("first native request = err %v accepted %t", first.err, a.nativeContextEditingAccepted.Load())
+	}
+	prov.setRejectNative(true)
+	second := a.streamWithSamplingRecovery(context.Background(), 2)
+	if !provider.IsNativeContextEditingUnsupported(second.err) {
+		t.Fatalf("latched native rejection = %v, want unsupported error", second.err)
+	}
+	if modes := prov.modes(); len(modes) != 2 || modes[0] != "native" || modes[1] != "native" {
+		t.Fatalf("latched request modes = %v, want [native native]", modes)
+	}
+	if a.effectiveContextEditing() != "native" || a.contextEditingRuntimeFallback.Load() {
+		t.Fatalf("latched mode silently changed: effective %q fallback %t",
+			a.effectiveContextEditing(), a.contextEditingRuntimeFallback.Load())
+	}
+
+	resumed := New(&nativeFallbackProvider{}, tool.NewRegistry(), sess, opts, event.Discard)
+	resumed.BindSessionPath(path, true)
+	if resumed.effectiveContextEditing() != "native" || !resumed.nativeContextEditingAccepted.Load() {
+		t.Fatalf("resumed latch = effective %q accepted %t",
+			resumed.effectiveContextEditing(), resumed.nativeContextEditingAccepted.Load())
+	}
+	prepared, err := resumed.prepareSamplingRequest(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if prepared.req.ContextEditing == nil || prepared.req.ContextEditing.Mode != "native" {
+		t.Fatalf("resumed native policy = %+v", prepared.req.ContextEditing)
 	}
 }
 

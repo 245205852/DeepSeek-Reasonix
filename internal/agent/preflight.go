@@ -53,7 +53,7 @@ func (a *Agent) currentPromptCacheKey() string {
 
 func (a *Agent) currentPromptCacheKeyLocked() string {
 	key := promptCacheKey(a.workspaceID, BranchID(a.sessionPath), a.modelRef)
-	return key + a.contextEditingLineageSuffix()
+	return key + a.contextEditingLineageSuffixLocked()
 }
 
 // InvalidateProjection drops the in-memory and on-disk projection after
@@ -84,9 +84,15 @@ func (a *Agent) LoadProjectionSidecar(sessionPath string) {
 	if a == nil {
 		return
 	}
+	_, effective, policyVersion := resolveContextEditing(a.requestedContextEditing, a.prov)
 	a.compactionMu.Lock()
 	a.sessionPath = sessionPath
+	a.contextEditing = effective
+	a.contextEditingPolicyVersion = policyVersion
+	a.compactionState = CompactionState{}
 	a.compactionMu.Unlock()
+	a.nativeContextEditingAccepted.Store(false)
+	a.contextEditingRuntimeFallback.Store(false)
 	if sessionPath == "" {
 		a.resetCompactionState()
 		return
@@ -102,19 +108,27 @@ func (a *Agent) LoadProjectionSidecar(sessionPath string) {
 		a.resetCompactionState()
 		return
 	}
+	a.compactionMu.Lock()
+	if st.ContextEditingFallbackLocal && !st.NativeContextEditingAccepted && a.contextEditing == "native" {
+		a.contextEditing = "local"
+		a.contextEditingRuntimeFallback.Store(true)
+	}
 	// Fail closed: known lineage requires an exact stored key (including
 	// rejecting blank keys on early sidecars written before this field).
-	if key := a.currentPromptCacheKey(); key != "" && st.PromptCacheKey != key {
-		a.resetCompactionState()
+	key := a.currentPromptCacheKeyLocked()
+	if (key != "" && st.PromptCacheKey != key) ||
+		(st.Projection.CoveredPrefixHash == "" && st.BlockedInputHash == "" &&
+			!st.ContextEditingFallbackLocal && !st.NativeContextEditingAccepted) {
+		a.contextEditing = effective
+		a.contextEditingPolicyVersion = policyVersion
+		a.compactionState = CompactionState{}
+		a.contextEditingRuntimeFallback.Store(false)
+		a.compactionMu.Unlock()
 		return
 	}
-	if st.Projection.CoveredPrefixHash == "" && st.BlockedInputHash == "" {
-		a.resetCompactionState()
-		return
-	}
-	a.compactionMu.Lock()
 	a.compactionState = st
 	a.compactionMu.Unlock()
+	a.nativeContextEditingAccepted.Store(st.NativeContextEditingAccepted)
 }
 
 func (a *Agent) resetCompactionState() {
@@ -134,11 +148,16 @@ func (a *Agent) BindSessionPath(path string, loadSidecar bool) {
 		a.LoadProjectionSidecar(path)
 		return
 	}
+	_, effective, policyVersion := resolveContextEditing(a.requestedContextEditing, a.prov)
 	a.compactionMu.Lock()
 	a.sessionPath = path
+	a.contextEditing = effective
+	a.contextEditingPolicyVersion = policyVersion
 	a.compactionState = CompactionState{}
 	a.cacheState = CacheStateUnknown
 	a.compactionMu.Unlock()
+	a.nativeContextEditingAccepted.Store(false)
+	a.contextEditingRuntimeFallback.Store(false)
 	a.compactStuck = false
 	a.consecutiveCompacts = 0
 	a.lastCompactionTurn.Store(0)
@@ -197,16 +216,6 @@ func (a *Agent) CacheState() string {
 	return a.cacheState
 }
 
-// persistCompactionState writes the sidecar when a session path is bound.
-func (a *Agent) persistCompactionState() error {
-	if a == nil {
-		return nil
-	}
-	a.compactionMu.Lock()
-	defer a.compactionMu.Unlock()
-	return a.persistCompactionStateLocked()
-}
-
 func (a *Agent) persistCompactionStateLocked() error {
 	if a.sessionPath == "" {
 		return nil
@@ -257,21 +266,6 @@ func (a *Agent) applyToolResultMaintenanceView(msgs []provider.Message, mode too
 		return msgs, st
 	}
 	return next, st
-}
-
-// installProjection replaces the agent's projection and optionally persists it.
-// On persist failure the in-memory state is rolled back so half-written state
-// cannot be used for subsequent requests.
-func (a *Agent) installProjection(st CompactionState) error {
-	a.compactionMu.Lock()
-	defer a.compactionMu.Unlock()
-	prev := a.compactionState
-	a.compactionState = st
-	if err := a.persistCompactionStateLocked(); err != nil {
-		a.compactionState = prev
-		return err
-	}
-	return nil
 }
 
 // installProjectionIfCurrent closes the compare-and-install window for

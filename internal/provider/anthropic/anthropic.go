@@ -25,6 +25,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -305,7 +306,11 @@ func (c *client) Stream(ctx context.Context, req provider.Request) (<-chan provi
 	}
 	resp, err := provider.SendWithRetry(requestCtx, c.http, c.sendOpts(), newReq)
 	if err != nil {
-		return nil, provider.AnnotateToolSchemaError(err, req.Tools)
+		annotated := provider.AnnotateToolSchemaError(err, req.Tools)
+		if req.ContextEditing != nil && req.ContextEditing.Mode == "native" && c.nativeAnthropic && nativeContextEditingUnsupported(annotated) {
+			return nil, errors.Join(provider.ErrNativeContextEditingUnsupported, annotated)
+		}
+		return nil, annotated
 	}
 	c.authed.Store(true)
 

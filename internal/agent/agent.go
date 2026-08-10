@@ -2350,7 +2350,7 @@ func (a *Agent) streamWithFrozen(ctx context.Context, turn int, sink event.Sink,
 	}
 	// Host stream cancels on generation drain (OpenAI/Anthropic HTTP reads).
 	defer trackPublishedHostStream(ctx, cancel)()
-	ch, err := a.prov.Stream(ctx, req)
+	ch, err := a.streamProviderRequest(ctx, req)
 	if err != nil {
 		return streamedTurn{usage: provider.UsageWithRequestAttemptCount(ctx, nil), err: err}
 	}

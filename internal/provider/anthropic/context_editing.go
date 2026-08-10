@@ -1,6 +1,11 @@
 package anthropic
 
-import "reasonix/internal/provider"
+import (
+	"errors"
+	"strings"
+
+	"reasonix/internal/provider"
+)
 
 const (
 	anthropicContextManagementBeta  = "context-management-2025-06-27"
@@ -56,6 +61,31 @@ func applyNativeContextEditing(r *anthRequest, req provider.Request, nativeAnthr
 		ClearAtLeast:    &contextEditMinimum{Type: "input_tokens", Value: policy.ClearAtLeastInputTokens},
 		ClearToolInputs: policy.ClearToolInputs,
 	}}}
+}
+
+func nativeContextEditingUnsupported(err error) bool {
+	var apiErr *provider.APIError
+	if !errors.As(err, &apiErr) || (apiErr.Status != 400 && apiErr.Status != 422) {
+		return false
+	}
+	body := strings.ToLower(apiErr.Body)
+	mentionsFeature := strings.Contains(body, "context_management") ||
+		strings.Contains(body, "context management") ||
+		strings.Contains(body, anthropicContextManagementBeta) ||
+		strings.Contains(body, anthropicToolClearPolicyVersion) ||
+		strings.Contains(body, "anthropic-beta")
+	if !mentionsFeature {
+		return false
+	}
+	for _, marker := range []string{
+		"unsupported", "not supported", "unrecognized", "unknown", "not permitted",
+		"not allowed", "extra inputs", "invalid beta", "beta header",
+	} {
+		if strings.Contains(body, marker) {
+			return true
+		}
+	}
+	return false
 }
 
 type responseContextManagement struct {

@@ -57,7 +57,7 @@ func (m ContextManager) Prepare(ctx context.Context, policy ContextPreparePolicy
 	if policy.Trigger == "" {
 		policy.Trigger = CompactionTriggerPressure
 	}
-	for attempt := 0; attempt < 2; attempt++ {
+	for range 2 {
 		prepared, retry, err := m.prepareOnce(ctx, policy)
 		if !retry {
 			return prepared, err
@@ -80,10 +80,6 @@ func (m ContextManager) prepareOnce(ctx context.Context, policy ContextPreparePo
 	if a.contextWindow <= 0 || len(visible) == 0 {
 		return prepared, false, nil
 	}
-	if a.strictAlternatingRoles && policy.Trigger == CompactionTriggerPressure {
-		return prepared, false, nil
-	}
-
 	soft, snip, fold := a.compactThresholds()
 	force := a.forceCompactThreshold(fold)
 	est := prepared.InputTokens
@@ -132,7 +128,7 @@ func (m ContextManager) prepareOnce(ctx context.Context, policy ContextPreparePo
 
 func (m ContextManager) tryToolMaintenance(visible []provider.Message, prepared PreparedContext, policy ContextPreparePolicy, est, fold int, forceFold bool, inputHash string) (PreparedContext, bool, bool, error) {
 	a := m.agent
-	if a.contextEditing == "native" {
+	if a.effectiveContextEditing() == "native" {
 		return PreparedContext{}, false, false, nil
 	}
 	mode := toolResultSnip
@@ -179,7 +175,7 @@ func (m ContextManager) foldContext(ctx context.Context, prepared PreparedContex
 			return PreparedContext{}, false, err
 		}
 		if policy.Trigger == CompactionTriggerOverflow || (sharesContextWindow(a.prov) && est >= a.hardInputCeiling()) {
-			return PreparedContext{}, false, fmt.Errorf("%w: %v", ErrCompactionRequired, err)
+			return PreparedContext{}, false, fmt.Errorf("%w: %w", ErrCompactionRequired, err)
 		}
 		return prepared, false, nil
 	}
