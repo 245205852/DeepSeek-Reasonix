@@ -115,7 +115,3 @@ func schemaMigrations() []projectiondb.Migration {
 		{Version: 3, Apply: execMigration(migrationV3)},
 	}
 }
-
-func migrateSchema(ctx context.Context, db *sql.DB) error {
-	return projectiondb.ApplyMigrations(ctx, db, schemaMigrations(), nil)
-}
