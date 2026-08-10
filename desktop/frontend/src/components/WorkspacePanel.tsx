@@ -40,7 +40,7 @@ import {
 import { createRafResizeUpdater } from "../lib/resizeDrag";
 import { closeWorkspacePreviewTab } from "../lib/workspacePreviewTabs";
 import { useWorkspaceRefresh } from "../lib/workspaceRefreshStore";
-import { useWorkspaceRefreshInvalidation } from "../lib/workspaceRefreshInvalidation";
+import { useWorkspaceRefreshInvalidation, workspaceRefreshFallbackSequence } from "../lib/workspaceRefreshInvalidation";
 import { createWorkspaceRefreshScheduler } from "../lib/workspaceRefreshScheduler";
 import { shouldScrollWorkspaceTreeSelection } from "../lib/workspaceTreeReveal";
 import { mergeWorkspaceSearchResults } from "../lib/workspaceTreeSearch";
@@ -827,15 +827,12 @@ export function WorkspacePanel({
     };
   }, [selectedPath, workspaceScopeKey, workspaceTabId]);
 
-
-
   useEffect(() => {
     if (!open || !selectedPath) return;
     return refreshSelected();
   }, [open, refreshSelected, selectedPath]);
 
-  useWorkspaceRefreshInvalidation({
-    commitHistoryOpen,
+  useWorkspaceRefreshInvalidation({ commitHistoryOpen,
     filter,
     gitMetaSchedulerRef: gitMetaRefreshSchedulerRef,
     loadChangeDetail,
@@ -986,10 +983,7 @@ export function WorkspacePanel({
     : currentFileDir;
   const recentFiles = useMemo(() => [...openTabs].reverse(), [openTabs]);
 
-  const workspaceSearchFallbackSequence = workspaceRefresh.allPaths
-    && (workspaceRefresh.source === "reconcile" || workspaceRefresh.watchState !== "active")
-    ? workspaceRefresh.sequence
-    : 0;
+  const workspaceSearchFallbackSequence = workspaceRefreshFallbackSequence(workspaceRefresh);
 
   useEffect(() => {
     const q = filter.trim();
@@ -1004,8 +998,7 @@ export function WorkspacePanel({
       if (!cancelled) setSearchResults(null);
     });
     return () => { cancelled = true; };
-  }, [filter, viewMode, scopedFilePaths, open, workspaceRefresh.revisions.tree,
-    workspaceSearchFallbackSequence, workspaceScopeKey, workspaceTabId]);
+  }, [filter, viewMode, scopedFilePaths, open, workspaceRefresh.revisions.tree, workspaceSearchFallbackSequence, workspaceScopeKey, workspaceTabId]);
 
   const flattened = useMemo(() => {
     const q = filter.trim().toLowerCase();
@@ -1133,9 +1126,6 @@ export function WorkspacePanel({
   const actualTreeVisible = changedMode ? false : treeVisible && (!previewVisible || splitPanesFit);
   const previewModeActive = open && (filePreviewActive || changeDetailActive);
   const embeddedDockMode = !showViewTabs;
-  // The embedded workbench hides view tabs, but its refresh affordance remains
-  // visible even before a file is selected so users never depend on a blank
-  // tree context menu for recovery.
   const showFileTools = true;
   const effectiveTreeWidth = useMemo(
     () =>

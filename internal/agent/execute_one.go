@@ -84,23 +84,7 @@ func (a *Agent) executeOne(ctx context.Context, call provider.ToolCall) (out too
 		out.capabilityID = plan.resolvedMeta.CapabilityID
 		out.resolvedReadOnly = plan.resolvedMeta.ReadOnly
 	}()
-	defer func() {
-		out.executed = plan.executed
-		if plan.evidenceName != "" {
-			out.effectiveName = plan.evidenceName
-			out.effectiveArgs = append([]byte(nil), plan.evidenceArgs...)
-			out.effectiveReadOnly = plan.readOnly
-		}
-		if !plan.executed {
-			return
-		}
-		if isMCPLifecycleConnectTarget(plan.runTool) {
-			return
-		}
-		if mutation, ok := workspaceMutationForCall(plan.call.ID, plan.evidenceName, plan.evidenceArgs, plan.readOnly); ok {
-			out.workspaceMutation = &mutation
-		}
-	}()
+	defer finalizeWorkspaceMutationOutcome(&out, plan)
 
 	if blocked, early := a.parseToolCall(ctx, plan); early {
 		return blocked

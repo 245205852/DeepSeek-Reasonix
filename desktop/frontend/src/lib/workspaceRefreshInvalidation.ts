@@ -50,6 +50,10 @@ export function workspaceRefreshActions(
   };
 }
 
+export function workspaceRefreshFallbackSequence(snapshot: WorkspaceRefreshSnapshot): number {
+  return snapshot.allPaths && (snapshot.source === "reconcile" || snapshot.watchState !== "active") ? snapshot.sequence : 0;
+}
+
 function parentDirs(path: string): string[] {
   const parts = path.split("/").filter(Boolean);
   const dirs = [""];

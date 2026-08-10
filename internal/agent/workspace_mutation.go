@@ -4,11 +4,47 @@ import (
 	"encoding/json"
 	"path/filepath"
 	"strings"
+	"sync"
 
 	"reasonix/internal/event"
 	"reasonix/internal/evidence"
 	"reasonix/internal/shellparse"
 )
+
+type workspaceEffectiveCall struct {
+	name     string
+	args     json.RawMessage
+	readOnly bool
+}
+
+var workspaceMutationSignalMu sync.Mutex
+
+func finalizeWorkspaceMutationOutcome(out *toolOutcome, plan *toolCallPlan) {
+	out.executed = plan.executed
+	if plan.evidenceName != "" {
+		out.effective = workspaceEffectiveCall{
+			name: plan.evidenceName, args: append([]byte(nil), plan.evidenceArgs...), readOnly: plan.readOnly,
+		}
+	}
+	if !plan.executed || isMCPLifecycleConnectTarget(plan.runTool) {
+		return
+	}
+	if mutation, ok := workspaceMutationForCall(plan.call.ID, plan.evidenceName, plan.evidenceArgs, plan.readOnly); ok {
+		out.workspaceMutation = &mutation
+	}
+}
+
+// tool.before can turn nominally read-only parallel calls into writers. Keep
+// the optional sink callback serial while publishing from each worker as soon
+// as that concrete replacement completes.
+func recordWorkspaceMutation(sink event.Sink, mutation *event.WorkspaceMutation) {
+	if mutation == nil {
+		return
+	}
+	workspaceMutationSignalMu.Lock()
+	defer workspaceMutationSignalMu.Unlock()
+	event.RecordWorkspaceMutation(sink, *mutation)
+}
 
 // workspaceMutationForCall classifies host resource invalidation independently
 // from the delivery evidence ledger. Delivery asks whether a call invalidates a

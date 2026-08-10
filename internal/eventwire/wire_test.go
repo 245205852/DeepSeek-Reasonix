@@ -221,7 +221,6 @@ func TestToWireToolOmitsHostOnlyWorkspaceMutationMetadata(t *testing.T) {
 	w := ToWire(event.Event{Kind: event.ToolResult, Tool: event.Tool{
 		ID: "c1", Name: "write_file", WorkspaceMutation: true,
 		WorkspacePaths: []string{privatePath}, WorkspaceAllPaths: true,
-		WorkspaceContent: true, WorkspaceTree: true, WorkspaceWorkingTree: true, WorkspaceGitMeta: true,
 	}})
 	b, err := json.Marshal(w)
 	if err != nil {

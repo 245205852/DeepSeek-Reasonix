@@ -674,6 +674,15 @@ func (a *App) WorkspaceRevisionForTab(tabID string) WorkspaceRevisionView {
 	return a.workspaceHub.revisionForTab(tabID, a.workspaceRootForTab(tabID))
 }
 
+// RecordWorkspaceMutation bypasses ToolResult's provider-ordered presentation
+// stream so a later long-running tool cannot delay the host refresh signal.
+func (s *tabEventSink) RecordWorkspaceMutation(mutation event.WorkspaceMutation) {
+	tabID, app := s.binding()
+	if app != nil && app.workspaceHub != nil {
+		app.workspaceHub.observeAgentMutation(tabID, mutation)
+	}
+}
+
 func (a *App) reconcileWorkspaceForTab(tabID string) {
 	if a != nil && a.workspaceHub != nil {
 		a.workspaceHub.reconcile(tabID)

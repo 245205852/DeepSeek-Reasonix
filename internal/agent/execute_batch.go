@@ -53,12 +53,6 @@ func (a *Agent) executeBatch(ctx context.Context, calls []provider.ToolCall) bat
 	// previews. The first writer stays on the single-preview fast path.
 	earlierWriterRan := false
 	surfaceWriters := make([]bool, len(calls))
-	// A tool.before hook can turn members of a nominally read-only parallel
-	// segment into writers. Publish each completed writer from its worker instead
-	// of waiting for runParallel to join the entire segment. The mutex preserves
-	// the sink capability's serial-callback contract when multiple replacements
-	// finish together.
-	var workspaceSignalMu sync.Mutex
 	run := func(i int) {
 		t, _, ambiguous := a.tools.ResolveCall(calls[i].Name)
 		known := t != nil && len(ambiguous) == 0
@@ -84,11 +78,7 @@ func (a *Agent) executeBatch(ctx context.Context, calls []provider.ToolCall) bat
 			return
 		}
 		outcomes[i] = a.executeOne(ctx, calls[i])
-		if mutation := outcomes[i].workspaceMutation; mutation != nil {
-			workspaceSignalMu.Lock()
-			event.RecordWorkspaceMutation(a.sink, *mutation)
-			workspaceSignalMu.Unlock()
-		}
+		recordWorkspaceMutation(a.sink, outcomes[i].workspaceMutation)
 		if outcomes[i].executed {
 			surfaceWriters[i] = outcomes[i].workspaceMutation != nil
 		}
@@ -336,10 +326,6 @@ func (a *Agent) executeBatch(ctx context.Context, calls []provider.ToolCall) bat
 				tr.WorkspaceMutation = true
 				tr.WorkspacePaths = append([]string(nil), mutation.Paths...)
 				tr.WorkspaceAllPaths = mutation.AllPaths
-				tr.WorkspaceContent = mutation.Content
-				tr.WorkspaceTree = mutation.Tree
-				tr.WorkspaceWorkingTree = mutation.WorkingTree
-				tr.WorkspaceGitMeta = mutation.GitMeta
 			}
 		}
 		a.sink.Emit(event.Event{Kind: event.ToolResult, Tool: tr})
@@ -392,10 +378,10 @@ func batchCallIsMutatingFailure(a *Agent, call provider.ToolCall, o toolOutcome)
 	if o.resolved {
 		readOnly = o.resolvedReadOnly
 	}
-	if o.effectiveName != "" {
-		toolName = o.effectiveName
-		toolArgs = o.effectiveArgs
-		readOnly = o.effectiveReadOnly
+	if o.effective.name != "" {
+		toolName = o.effective.name
+		toolArgs = o.effective.args
+		readOnly = o.effective.readOnly
 	}
 	if toolName == "bash" && permission.BashCommandIsReadOnly(toolArgs) {
 		readOnly = true

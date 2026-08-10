@@ -1653,17 +1653,6 @@ func (s *tabEventSink) Emit(e event.Event) {
 	}
 }
 
-// RecordWorkspaceMutation is the host-only fast path for writer completion.
-// It intentionally bypasses ToolResult's provider-ordered presentation stream,
-// so a later long-running tool cannot delay workspace refresh.
-func (s *tabEventSink) RecordWorkspaceMutation(mutation event.WorkspaceMutation) {
-	tabID, app := s.binding()
-	if app == nil || app.workspaceHub == nil {
-		return
-	}
-	app.workspaceHub.observeAgentMutation(tabID, mutation)
-}
-
 // SetBotSink atomically sets or clears the bot event forwarder on this sink.
 // It is safe to call concurrently with Emit.
 func (s *tabEventSink) SetBotSink(sink event.Sink) uint64 {

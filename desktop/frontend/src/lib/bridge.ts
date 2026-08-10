@@ -650,11 +650,8 @@ interface WailsRuntime {
 
 declare global {
   interface Window {
-    runtime?: WailsRuntime;
+    runtime?: WailsRuntime; __REASONIX_WEBVIEW2_APPROVAL_SMOKE__?: boolean;
     go?: { main?: { App?: AppBindings; WebView2ApprovalSmokeBridge?: { Complete(ok: boolean, detail: string): Promise<void> } } };
-    // Keep the bridge independently type-safe in tsconfig.test.json, whose
-    // dependency graph may not include webView2ApprovalSmoke.ts.
-    __REASONIX_WEBVIEW2_APPROVAL_SMOKE__?: boolean;
   }
 }
 

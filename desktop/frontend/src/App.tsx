@@ -36,7 +36,8 @@ import { useToast } from "./lib/toast";
 import { useGoalActionHandler } from "./lib/goalAction";
 import { useWailsResizeFix } from "./lib/useWailsResizeFix";
 import { asArray } from "./lib/array";
-import { createBoundedRefreshCoordinator, sameTabMetaLists, shouldRefreshTabMetaForEvent, TAB_META_MAX_IN_FLIGHT, tabMetaFallbackDelay } from "./lib/tabMetaRefresh";
+import { createBoundedRefreshCoordinator, sameTabMetaLists, shouldRefreshTabMetaForEvent, TAB_META_MAX_IN_FLIGHT } from "./lib/tabMetaRefresh";
+import { useWorkspaceFocusReconciliation } from "./lib/useWorkspaceFocusReconciliation";
 import { clearLegacyLangPref, normalizeLangPref, readLegacyLangPref, t, useI18n, useT, type Translator } from "./lib/i18n";
 import { localizedNoticeText, useController, type Item, type LiveStream } from "./lib/useController";
 import { app, onEvent, onProjectTreeChanged, onReady, onRemoteForwards, onRemoteServer, onRemoteStatus, onRuntimeRebuilt, onSessionRecovered, openExternal } from "./lib/bridge";
@@ -2591,55 +2592,7 @@ export default function App() {
     return { scope, workspaceRoot: activeWorkspaceRoot };
   }, [activeTab?.scope, activeTab?.workspaceRoot]);
 
-  useEffect(() => {
-    let cancelled = false;
-    let timer: number | undefined;
-    let focusTimer: number | undefined;
-    const schedule = () => {
-      if (cancelled) return;
-      timer = window.setTimeout(() => {
-        void refreshTabMetas();
-        schedule();
-      }, tabMetaFallbackDelay(document.visibilityState));
-    };
-    const refreshAndSchedule = (forceVisible = false) => {
-      if (timer !== undefined) window.clearTimeout(timer);
-      timer = undefined;
-      void refreshTabMetas();
-      if (activeTabId) void import("./lib/workspaceRefreshStore").then(({ reconcileWorkspaceRefresh }) => reconcileWorkspaceRefresh(activeTabId, workspaceScopeKey, { forceVisible })).catch(() => undefined);
-      schedule();
-    };
-    const requestVisibleRefresh = () => {
-      if (cancelled || focusTimer !== undefined) return;
-      // Native focus and document visibility commonly fire together. Collapse
-      // them into one bounded reconciliation instead of issuing duplicate Git
-      // and file-tree loads for the same foreground transition.
-      focusTimer = window.setTimeout(() => {
-        focusTimer = undefined;
-        refreshAndSchedule(true);
-      }, 0);
-    };
-    const onVisibilityChange = () => {
-      if (document.visibilityState === "visible") requestVisibleRefresh();
-      else {
-        if (timer !== undefined) window.clearTimeout(timer);
-        schedule();
-      }
-    };
-    const onFocus = () => {
-      if (document.visibilityState === "visible") requestVisibleRefresh();
-    };
-    refreshAndSchedule(false);
-    document.addEventListener("visibilitychange", onVisibilityChange);
-    window.addEventListener("focus", onFocus);
-    return () => {
-      cancelled = true;
-      if (timer !== undefined) window.clearTimeout(timer);
-      if (focusTimer !== undefined) window.clearTimeout(focusTimer);
-      document.removeEventListener("visibilitychange", onVisibilityChange);
-      window.removeEventListener("focus", onFocus);
-    };
-  }, [activeTabId, refreshTabMetas, workspaceScopeKey]);
+  useWorkspaceFocusReconciliation(activeTabId, workspaceScopeKey, refreshTabMetas);
 
   useEffect(() => {
     return onProjectTreeChanged(() => {
