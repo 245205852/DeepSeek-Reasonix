@@ -182,19 +182,17 @@ func (a *Agent) calibratedPromptTokens(shape requestCalibrationShape) (int, bool
 		ratio := float64(cal.promptTokens) / float64(cal.requestChars)
 		if ratio > 0.05 && ratio < 2 {
 			trustedChars := shape.requestChars
-			excessCJKRunes := int64(0)
+			excessCJKBytes := int64(0)
 			// A higher CJK share cannot safely reuse the aggregate ratio. Scale its
-			// represented share and apply the cold two-token floor only to excess,
+			// represented share and price only the excess at the cold rate,
 			// preserving exact calibration for stable CJK sessions.
 			if shape.cjkRunes*cal.requestChars > cal.cjkRunes*shape.requestChars {
-				trustedCJKBytes := cal.cjkBytes * shape.requestChars / cal.requestChars
-				trustedCJKRunes := cal.cjkRunes * shape.requestChars / cal.requestChars
-				trustedCJKBytes = min(trustedCJKBytes, shape.cjkBytes)
-				trustedCJKRunes = min(trustedCJKRunes, shape.cjkRunes)
-				trustedChars -= shape.cjkBytes - trustedCJKBytes
-				excessCJKRunes = shape.cjkRunes - trustedCJKRunes
+				trustedCJKBytes := min(cal.cjkBytes*shape.requestChars/cal.requestChars, shape.cjkBytes)
+				excessCJKBytes = shape.cjkBytes - trustedCJKBytes
+				trustedChars -= excessCJKBytes
 			}
-			return int(math.Ceil(float64(trustedChars)*ratio)) + int(2*excessCJKRunes), true
+			cold := math.Ceil(float64(excessCJKBytes) * fallbackTokPerChar)
+			return int(math.Ceil(float64(trustedChars)*ratio) + cold), true
 		}
 	}
 	return 0, false

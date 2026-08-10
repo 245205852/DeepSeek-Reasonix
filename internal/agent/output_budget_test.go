@@ -152,14 +152,18 @@ func TestCalibratedOutputBudgetKeepsCJKConservativeFloor(t *testing.T) {
 		outputBudgetState: outputBudgetState{outputBudget: prov.budget}}
 	previous := []provider.Message{{Role: provider.RoleUser, Content: strings.Repeat("x", 300_000)}}
 	a.setPromptTokenCalibration(75_000, requestCalibrationShapeOf(provider.Request{Messages: previous}))
+	// Enough unrepresented CJK that the reply no longer fits beside it: at the
+	// corrected unit 430K runes leave most of a 1M window free.
 	current := append(append([]provider.Message(nil), previous...), provider.Message{
 		Role:             provider.RoleAssistant,
-		ReasoningContent: strings.Repeat("字", 430_000),
+		ReasoningContent: strings.Repeat("字", 1_200_000),
 		ToolCalls:        []provider.ToolCall{{ID: "call_1", Name: "bash", Arguments: `{}`}},
 	})
 
+	// The unrepresented CJK runes are priced at the cold rate: 3 bytes each at
+	// ~4 chars per token, i.e. 0.75 tokens per rune against a real ~0.6.
 	calibrated := a.estimatedPromptTokens(current)
-	wantFloor := 75_000 + 2*430_000
+	wantFloor := 75_000 + 1_200_000*3/4
 	if calibrated < wantFloor {
 		t.Fatalf("calibrated estimate %d fell below mixed-script safety floor %d", calibrated, wantFloor)
 	}
