@@ -443,7 +443,7 @@ func BenchmarkListTopicsWarmCatalog10K(b *testing.B) {
 		}
 	}
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for range b.N {
 		page, err := catalog.ListTopics(ctx, TopicPageRequest{
 			Scope: "project", WorkspaceRoot: "/workspace", Limit: 50,
 		})

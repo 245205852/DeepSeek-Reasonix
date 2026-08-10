@@ -83,7 +83,7 @@ func managedPluginRoot(reasonixHome string, installed InstalledPlugin, root stri
 		return false
 	}
 	current := managed
-	for _, part := range strings.Split(rel, string(filepath.Separator)) {
+	for part := range strings.SplitSeq(rel, string(filepath.Separator)) {
 		current = filepath.Join(current, part)
 		info, err := os.Lstat(current)
 		if err != nil || info.Mode()&os.ModeSymlink != 0 {
