@@ -8,9 +8,12 @@ import {
 } from "../lib/transcriptScrollController";
 import { createSelectionRangeExtractor } from "../lib/transcriptSelectionRange";
 import {
+  EMPTY_TRANSCRIPT_LAYOUT_SNAPSHOT,
   TranscriptHeightCache,
   createTranscriptMeasureElement,
+  estimateTranscriptRowHeightForLayout,
   estimateTranscriptContentHeight,
+  readTranscriptLayoutSnapshot,
 } from "../lib/transcriptHeightCache";
 
 let passed = 0;
@@ -47,7 +50,7 @@ function ok(condition: unknown, label: string) {
   const measuredCache = new TranscriptHeightCache();
   const measure = createTranscriptMeasureElement({
     tabId: "measured-tab",
-    getLayoutElement: () => null,
+    getLayoutSnapshot: () => EMPTY_TRANSCRIPT_LAYOUT_SNAPSHOT,
     cache: measuredCache,
   });
   const element = { dataset: { rowKey: "measured-row" } } as unknown as HTMLDivElement;
@@ -55,6 +58,41 @@ function ok(condition: unknown, label: string) {
   const instance = { options: { horizontal: false } } as unknown as Virtualizer<HTMLDivElement, HTMLDivElement>;
   equal(measure(element, entry, instance), 246, "official ResizeObserver measurements flow through the transcript adapter");
   equal(measuredCache.get("measured-tab", "w:0", "measured-row"), 246, "ResizeObserver row growth refreshes the height cache");
+}
+
+// Layout style reads happen once per layout epoch, not once per row while
+// TanStack materializes an unmeasured long transcript.
+{
+  const original = globalThis.getComputedStyle;
+  let styleReads = 0;
+  Object.defineProperty(globalThis, "getComputedStyle", {
+    configurable: true,
+    value: () => {
+      styleReads += 1;
+      return {
+        fontSize: "14px",
+        fontFamily: "sans-serif",
+        lineHeight: "20px",
+        letterSpacing: "normal",
+      } as CSSStyleDeclaration;
+    },
+  });
+  const layout = readTranscriptLayoutSnapshot({ clientWidth: 641 } as HTMLElement);
+  const cache = new TranscriptHeightCache();
+  for (let index = 0; index < 10_000; index += 1) {
+    estimateTranscriptRowHeightForLayout({
+      cache,
+      tabId: "long-tab",
+      layout,
+      rowKey: String(index),
+      row: undefined,
+      fallback: 100,
+    });
+  }
+  equal(styleReads, 1, "10,000 cold row estimates reuse one layout snapshot");
+  equal(layout.width, 640, "content estimates use the same width bucket as cached measurements");
+  if (original) Object.defineProperty(globalThis, "getComputedStyle", { configurable: true, value: original });
+  else Reflect.deleteProperty(globalThis, "getComputedStyle");
 }
 
 function equal(actual: unknown, expected: unknown, label: string) {

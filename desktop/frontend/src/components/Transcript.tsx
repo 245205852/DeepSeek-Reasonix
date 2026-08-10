@@ -18,11 +18,11 @@ import { useTranscriptEntranceAnimation } from "../lib/useEntranceAnimation";
 import { useTranscriptScrollController } from "../lib/useTranscriptScrollController";
 import { useTranscriptSelectionRetention } from "../lib/useTranscriptSelectionRetention";
 import { useTranscriptMeasurementInvalidation } from "../lib/useTranscriptMeasurementInvalidation";
+import { useTranscriptRowMeasurements } from "../lib/useTranscriptRowMeasurements";
 import { compactQuestionText, lastQuestionTurn, questionAnchorId, questionTurnsById, scrollVersion, type QuestionAnchor } from "../lib/transcriptGrouping";
 import {
   buildTranscriptRows,
   buildTurnModels,
-  estimateTranscriptRowSize,
   foldMapWithReasoningOpen,
   foldMapWithToggle,
   foldSegmentStates,
@@ -46,10 +46,9 @@ import { noteTranscriptRowCounts } from "../lib/sessionDiagnostics";
 import { useReasoningDisplayMode } from "../lib/reasoningDisplayPreference";
 import { InlineAssistantReasoning } from "./InlineAssistantReasoning";
 import { LiveStreamContext } from "./LiveStreamContext";
-import { createTranscriptMeasureElement, estimateCachedTranscriptRowHeight, transcriptHeightCache, transcriptLayoutSignature } from "../lib/transcriptHeightCache";
-
+import { useTranscriptSelectableRows } from "../lib/useTranscriptSelectableRows";
+import { TranscriptSelectionOverlay } from "./TranscriptSelectionOverlay";
 type OpenTurnAction = { turn: number; menu: "summary" | "rewind" };
-
 const QUESTION_NAV_MIN_COUNT = 2;
 type AssistantReasoningDisplay = "normal" | "hide";
 
@@ -102,7 +101,6 @@ const LiveAssistantMessage = memo(function LiveAssistantMessage({
     />
   );
 });
-
 const VIRTUAL_OVERSCAN_ROWS = 8;
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -116,7 +114,6 @@ function useTick(on: boolean): number {
   }, [on]);
   return Date.now();
 }
-
 function formatWorkDuration(durationMs: number, t: ReturnType<typeof useT>): string {
   if (!Number.isFinite(durationMs) || durationMs <= 0) return "";
   const totalSeconds = Math.max(1, Math.round(durationMs / 1000));
@@ -126,7 +123,6 @@ function formatWorkDuration(durationMs: number, t: ReturnType<typeof useT>): str
   if (seconds <= 0) return t("transcript.durationMinutes", { m: minutes });
   return t("transcript.durationMinutesSeconds", { m: minutes, s: seconds });
 }
-
 function workStatusLabel(durationMs: number, running: boolean, t: ReturnType<typeof useT>): string {
   const duration = formatWorkDuration(durationMs, t);
   if (running) {
@@ -134,7 +130,6 @@ function workStatusLabel(durationMs: number, running: boolean, t: ReturnType<typ
   }
   return duration ? t("transcript.workedDuration", { duration }) : t("transcript.worked");
 }
-
 function assistantAnswerOnly(item: AssistantItem): AssistantItem {
   return { ...item, reasoning: "", reasoningComplete: true, reasoningDurationMs: undefined };
 }
@@ -612,29 +607,22 @@ export function Transcript({
     rows.forEach((row, index) => map.set(String(row.key), index));
     return map;
   }, [rows]);
-
+  const [selectableRows, liveSelectableRows] = useTranscriptSelectableRows(rows, live);
   const selectionRetention = useTranscriptSelectionRetention({
     tabId,
     revealSignal,
     rowIndexByKey,
+    selectableRows,
+    selectableRowOverrides: liveSelectableRows,
+    scrollRef,
     setScrollMode,
+    writeOffset,
     cancelStreamingScroll: cancelStreamingAutoScroll,
     captureViewportAnchor,
     reconcileViewportAnchor,
   });
-
   const getRowKey = useCallback((index: number) => `${tabId ?? ""}:${String(rows[index]?.key ?? index)}`, [rows, tabId]);
-  const estimateRowSize = useCallback((index: number) => {
-    const row = rows[index];
-    const signature = transcriptLayoutSignature(scrollRef.current);
-    const cached = transcriptHeightCache.get(tabId ?? "", signature, String(row?.key ?? index));
-    if (cached != null) return cached;
-    return estimateCachedTranscriptRowHeight(row, scrollRef.current?.clientWidth ?? 0, estimateTranscriptRowSize(row));
-  }, [rows, scrollRef, tabId]);
-  const measureRowSize = useMemo(() => createTranscriptMeasureElement({
-    tabId: tabId ?? "",
-    getLayoutElement: () => scrollRef.current,
-  }), [scrollRef, tabId]);
+  const { estimateSize: estimateRowSize, layoutSnapshotRef, measureElement: measureRowSize } = useTranscriptRowMeasurements(tabId, rows);
   const virtualizer = useVirtualizer({
     count: rows.length,
     getScrollElement: () => scrollRef.current,
@@ -655,9 +643,15 @@ export function Transcript({
     directDomUpdates: true,
     // Batch ResizeObserver measurements into one layout read per frame.
     useAnimationFrameWithResizeObserver: true,
+    onChange: () => selectionRetention.reconcileLogicalFocus(),
   });
   virtualizer.shouldAdjustScrollPositionOnItemSizeChange = () => canVirtualizerAdjust();
-  useTranscriptMeasurementInvalidation({ scrollRef, virtualizer, selectionActive: selectionRetention.active });
+  useTranscriptMeasurementInvalidation({
+    scrollRef,
+    layoutSnapshotRef,
+    virtualizer,
+    selectionActive: selectionRetention.active,
+  });
 
   const sizerRef = useCallback(
     (el: HTMLDivElement | null) => {
@@ -667,6 +661,7 @@ export function Transcript({
     [virtualizer, entranceRef],
   );
   const virtualItems = virtualizer.getVirtualItems();
+  const virtualRevision = virtualItems.map((item) => `${item.key}:${item.start}:${item.size}`).join("|");
   useEffect(() => {
     noteTranscriptRowCounts(virtualItems.length, rows.length);
   }, [virtualItems.length, rows.length]);
@@ -855,6 +850,7 @@ export function Transcript({
 
         <LiveStreamContext.Provider value={live}>
           <div ref={sizerRef} className="transcript__virtual-sizer">
+            <TranscriptSelectionOverlay tabId={tabId ?? ""} scrollElement={scrollRef.current} virtualRevision={virtualRevision} />
             {virtualItems.map((virtualRow) => {
               const row = rows[virtualRow.index];
               if (!row) return null;

@@ -6,6 +6,16 @@ export interface TranscriptHeightCacheOptions {
   maxRowsPerTab?: number;
 }
 
+export type TranscriptLayoutSnapshot = {
+  signature: string;
+  width: number;
+};
+
+export const EMPTY_TRANSCRIPT_LAYOUT_SNAPSHOT: TranscriptLayoutSnapshot = {
+  signature: "w:0",
+  width: 0,
+};
+
 type TabMeasurements = Map<string, number>;
 
 export class TranscriptHeightCache {
@@ -60,11 +70,11 @@ export const transcriptHeightCache = new TranscriptHeightCache();
 
 export function createTranscriptMeasureElement({
   tabId,
-  getLayoutElement,
+  getLayoutSnapshot,
   cache = transcriptHeightCache,
 }: {
   tabId: string;
-  getLayoutElement: () => HTMLElement | null;
+  getLayoutSnapshot: () => TranscriptLayoutSnapshot;
   cache?: TranscriptHeightCache;
 }) {
   return (
@@ -75,7 +85,7 @@ export function createTranscriptMeasureElement({
     const height = measureVirtualElement(element, entry, instance);
     cache.set(
       tabId,
-      transcriptLayoutSignature(getLayoutElement()),
+      getLayoutSnapshot().signature,
       element.dataset.rowKey ?? String(element.dataset.index ?? ""),
       height,
     );
@@ -83,17 +93,25 @@ export function createTranscriptMeasureElement({
   };
 }
 
-export function transcriptLayoutSignature(element: HTMLElement | null): string {
-  if (!element || typeof getComputedStyle !== "function") return "w:0";
+export function readTranscriptLayoutSnapshot(element: HTMLElement | null): TranscriptLayoutSnapshot {
+  if (!element || typeof getComputedStyle !== "function") return EMPTY_TRANSCRIPT_LAYOUT_SNAPSHOT;
   const style = getComputedStyle(element);
-  const widthBucket = Math.round(element.clientWidth / 32) * 32;
-  return [
-    `w:${widthBucket}`,
-    `fs:${style.fontSize}`,
-    `ff:${style.fontFamily}`,
-    `lh:${style.lineHeight}`,
-    `ls:${style.letterSpacing}`,
-  ].join("|");
+  const width = element.clientWidth;
+  const widthBucket = Math.round(width / 32) * 32;
+  return {
+    signature: [
+      `w:${widthBucket}`,
+      `fs:${style.fontSize}`,
+      `ff:${style.fontFamily}`,
+      `lh:${style.lineHeight}`,
+      `ls:${style.letterSpacing}`,
+    ].join("|"),
+    width: widthBucket,
+  };
+}
+
+export function transcriptLayoutSignature(element: HTMLElement | null): string {
+  return readTranscriptLayoutSnapshot(element).signature;
 }
 
 export function estimateTranscriptContentHeight(kind: "user" | "answer" | "extension", text: string, width: number): number {
@@ -110,4 +128,23 @@ export function estimateCachedTranscriptRowHeight(row: TranscriptRow | undefined
   if (row.kind === "answer") return Math.max(fallback, estimateTranscriptContentHeight("answer", row.item.text, width));
   if (row.kind === "reasoning") return Math.max(fallback, estimateTranscriptContentHeight("answer", row.item.reasoning, width));
   return fallback;
+}
+
+export function estimateTranscriptRowHeightForLayout({
+  cache = transcriptHeightCache,
+  tabId,
+  layout,
+  rowKey,
+  row,
+  fallback,
+}: {
+  cache?: TranscriptHeightCache;
+  tabId: string;
+  layout: TranscriptLayoutSnapshot;
+  rowKey: string;
+  row: TranscriptRow | undefined;
+  fallback: number;
+}): number {
+  const cached = cache.get(tabId, layout.signature, rowKey);
+  return cached ?? estimateCachedTranscriptRowHeight(row, layout.width, fallback);
 }

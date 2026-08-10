@@ -1,6 +1,6 @@
-import { useEffect, useRef, type RefObject } from "react";
+import { useEffect, useRef, type MutableRefObject, type RefObject } from "react";
 import type { Virtualizer } from "@tanstack/react-virtual";
-import { transcriptLayoutSignature } from "./transcriptHeightCache";
+import { readTranscriptLayoutSnapshot, type TranscriptLayoutSnapshot } from "./transcriptHeightCache";
 
 /**
  * Invalidates TanStack's in-memory measurements when transcript width or root
@@ -9,10 +9,12 @@ import { transcriptLayoutSignature } from "./transcriptHeightCache";
  */
 export function useTranscriptMeasurementInvalidation({
   scrollRef,
+  layoutSnapshotRef,
   virtualizer,
   selectionActive,
 }: {
   scrollRef: RefObject<HTMLDivElement | null>;
+  layoutSnapshotRef: MutableRefObject<TranscriptLayoutSnapshot>;
   virtualizer: Virtualizer<HTMLDivElement, HTMLDivElement>;
   selectionActive: boolean;
 }) {
@@ -29,11 +31,17 @@ export function useTranscriptMeasurementInvalidation({
   useEffect(() => {
     const element = scrollRef.current;
     if (!element) return;
-    let signature = transcriptLayoutSignature(element);
+    const initial = readTranscriptLayoutSnapshot(element);
+    const initialChanged = initial.signature !== layoutSnapshotRef.current.signature;
+    layoutSnapshotRef.current = initial;
+    if (initialChanged) {
+      if (activeRef.current) pendingRef.current = true;
+      else virtualizer.measure();
+    }
     const invalidateIfChanged = () => {
-      const next = transcriptLayoutSignature(element);
-      if (next === signature) return;
-      signature = next;
+      const next = readTranscriptLayoutSnapshot(element);
+      if (next.signature === layoutSnapshotRef.current.signature) return;
+      layoutSnapshotRef.current = next;
       if (activeRef.current) {
         pendingRef.current = true;
         return;
@@ -51,5 +59,5 @@ export function useTranscriptMeasurementInvalidation({
       mutationObserver?.disconnect();
       window.removeEventListener("resize", invalidateIfChanged);
     };
-  }, [scrollRef, virtualizer]);
+  }, [layoutSnapshotRef, scrollRef, virtualizer]);
 }

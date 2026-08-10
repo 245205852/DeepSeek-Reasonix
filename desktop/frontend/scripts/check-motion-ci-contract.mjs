@@ -59,8 +59,20 @@ if (motionScript.includes("transcript-virtualization.test.tsx")) {
 }
 
 const transcriptScript = packageJSON.scripts?.["test:transcript"] ?? "";
-if (transcriptScript !== "tsx src/__tests__/transcript-selection-runtime.test.ts && tsx src/__tests__/scroll-manager.test.tsx && tsx src/__tests__/transcript-selection-retention.test.tsx && tsx src/__tests__/transcript-virtualization.test.tsx") {
-  throw new Error("motion-ci-contract: test:transcript must own the transcript selection and virtualization suites");
+for (const required of [
+  "transcript-selection-runtime.test.ts",
+  "scroll-manager.test.tsx",
+  "transcript-selection-retention.test.tsx",
+  "transcript-logical-selection.test.ts",
+  "markdown-pipeline.test.tsx",
+  "message-selection-copy.test.ts",
+  "transcript-selection-menu.test.tsx",
+  "transcript-store.test.ts",
+  "transcript-virtualization.test.tsx",
+]) {
+  if (!transcriptScript.includes(required)) {
+    throw new Error(`motion-ci-contract: test:transcript must include ${required}`);
+  }
 }
 
 const transcriptCommand = "pnpm --dir frontend test:transcript";

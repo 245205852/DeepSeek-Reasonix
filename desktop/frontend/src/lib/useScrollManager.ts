@@ -10,6 +10,12 @@ import {
   type TranscriptViewportAnchor,
 } from "./transcriptScrollController";
 
+declare global {
+  interface Window {
+    __REASONIX_TRANSCRIPT_SCROLL_WRITE__?: (owner: TranscriptScrollOwner, top: number) => void;
+  }
+}
+
 const BOTTOM_THRESHOLD_PX = 80;
 const TOUCH_SCROLL_THRESHOLD_PX = 2;
 const SCROLL_BREAK_KEYS = new Set([
@@ -99,6 +105,7 @@ export function useScrollManager() {
   const writeOffset = useCallback((owner: TranscriptScrollOwner, top: number, behavior: ScrollBehavior = "auto") => {
     const el = scrollRef.current;
     if (!el || !canTranscriptScrollOwnerWrite(modeRef.current, owner)) return false;
+    window.__REASONIX_TRANSCRIPT_SCROLL_WRITE__?.(owner, top);
     if (typeof el.scrollTo === "function") el.scrollTo({ top, behavior });
     else el.scrollTop = top;
     return true;
