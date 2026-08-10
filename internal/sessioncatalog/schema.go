@@ -3,8 +3,8 @@ package sessioncatalog
 import (
 	"context"
 	"database/sql"
-	"fmt"
-	"time"
+
+	"reasonix/internal/projectiondb"
 )
 
 const migrationV1 = `
@@ -96,54 +96,26 @@ const migrationV2 = `
 ALTER TABLE catalog_topics ADD COLUMN metadata_present INTEGER NOT NULL DEFAULT 0;
 `
 
+const migrationV3 = `
+CREATE INDEX IF NOT EXISTS idx_catalog_sessions_history
+ON catalog_sessions(scope, workspace_root, last_activity_at DESC, path ASC);
+`
+
+func execMigration(statement string) func(context.Context, *sql.Tx) error {
+	return func(ctx context.Context, tx *sql.Tx) error {
+		_, err := tx.ExecContext(ctx, statement)
+		return err
+	}
+}
+
+func schemaMigrations() []projectiondb.Migration {
+	return []projectiondb.Migration{
+		{Version: 1, Apply: execMigration(migrationV1)},
+		{Version: 2, Apply: execMigration(migrationV2)},
+		{Version: 3, Apply: execMigration(migrationV3)},
+	}
+}
+
 func migrateSchema(ctx context.Context, db *sql.DB) error {
-	if _, err := db.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS schema_migrations (
-        version INTEGER PRIMARY KEY,
-        applied_at INTEGER NOT NULL
-    )`); err != nil {
-		return err
-	}
-	var version int
-	if err := db.QueryRowContext(ctx, `SELECT COALESCE(MAX(version), 0) FROM schema_migrations`).Scan(&version); err != nil {
-		return err
-	}
-	if version > SchemaVersion {
-		return fmt.Errorf("session catalog schema %d is newer than supported %d", version, SchemaVersion)
-	}
-	if version < 1 {
-		tx, err := db.BeginTx(ctx, nil)
-		if err != nil {
-			return err
-		}
-		if _, err := tx.ExecContext(ctx, migrationV1); err != nil {
-			_ = tx.Rollback()
-			return err
-		}
-		if _, err := tx.ExecContext(ctx, `INSERT INTO schema_migrations(version, applied_at) VALUES(1, ?)`, time.Now().UnixMilli()); err != nil {
-			_ = tx.Rollback()
-			return err
-		}
-		if err := tx.Commit(); err != nil {
-			return err
-		}
-		version = 1
-	}
-	if version < 2 {
-		tx, err := db.BeginTx(ctx, nil)
-		if err != nil {
-			return err
-		}
-		if _, err := tx.ExecContext(ctx, migrationV2); err != nil {
-			_ = tx.Rollback()
-			return err
-		}
-		if _, err := tx.ExecContext(ctx, `INSERT INTO schema_migrations(version, applied_at) VALUES(2, ?)`, time.Now().UnixMilli()); err != nil {
-			_ = tx.Rollback()
-			return err
-		}
-		if err := tx.Commit(); err != nil {
-			return err
-		}
-	}
-	return nil
+	return projectiondb.ApplyMigrations(ctx, db, schemaMigrations(), nil)
 }

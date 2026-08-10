@@ -14,6 +14,9 @@ import (
 )
 
 func doctorCommand(args []string, version string) int {
+	if len(args) > 0 && args[0] == "catalogs" {
+		return doctorCatalogsCommand(args[1:])
+	}
 	if len(args) > 0 && args[0] == "sessions" {
 		return doctorSessionsCommand(args[1:])
 	}

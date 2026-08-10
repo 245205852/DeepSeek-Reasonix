@@ -1,0 +1,134 @@
+package projectiondb
+
+import (
+	"context"
+	"database/sql"
+	"errors"
+	"os"
+	"path/filepath"
+	"testing"
+	"time"
+)
+
+func testMigrations() []Migration {
+	return []Migration{{Version: 1, Apply: func(ctx context.Context, tx *sql.Tx) error {
+		_, err := tx.ExecContext(ctx, `CREATE TABLE values_table(value TEXT NOT NULL)`)
+		return err
+	}}}
+}
+
+func TestOpenAppliesLedgerAndPrivatePermissions(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join(t.TempDir(), "catalog", "v1.sqlite")
+	handle, err := Open(context.Background(), OpenOptions{Path: path, MemoryName: "test", Migrations: testMigrations()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = handle.DB.Close() })
+	var version int
+	if err := handle.DB.QueryRow(`SELECT MAX(version) FROM schema_migrations`).Scan(&version); err != nil || version != 1 {
+		t.Fatalf("version=%d err=%v", version, err)
+	}
+	if info, err := os.Stat(path); err != nil || info.Mode().Perm()&0o077 != 0 {
+		t.Fatalf("database permissions=%v err=%v", info.Mode().Perm(), err)
+	}
+}
+
+func TestFutureSchemaIsPreservedAndFallsBackToMemory(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join(t.TempDir(), "catalog.sqlite")
+	seed, err := Open(context.Background(), OpenOptions{Path: path, MemoryName: "seed", Migrations: testMigrations()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := seed.DB.Exec(`INSERT INTO schema_migrations(version, applied_at) VALUES(2, ?)`, time.Now().UnixMilli()); err != nil {
+		t.Fatal(err)
+	}
+	if err := seed.DB.Close(); err != nil {
+		t.Fatal(err)
+	}
+	handle, err := Open(context.Background(), OpenOptions{Path: path, MemoryName: "future", Migrations: testMigrations()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer handle.DB.Close()
+	if handle.Status.Mode != ModeMemory || handle.Status.State != StateDegraded || handle.Status.QuarantinedPath != "" {
+		t.Fatalf("status=%#v", handle.Status)
+	}
+	inspection := Inspect(context.Background(), path)
+	if !inspection.Exists || inspection.Schema != 2 {
+		t.Fatalf("inspection=%#v", inspection)
+	}
+}
+
+func TestInspectDoesNotCreateMissingDatabase(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join(t.TempDir(), "missing.sqlite")
+	inspection := Inspect(context.Background(), path)
+	if inspection.Exists {
+		t.Fatalf("inspection=%#v", inspection)
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("inspect created database: %v", err)
+	}
+}
+
+func TestRebuildPublishesOnlyValidatedReplacement(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join(t.TempDir(), "catalog.sqlite")
+	opts := OpenOptions{Path: path, MemoryName: "rebuild", Migrations: testMigrations()}
+	seed, err := Open(context.Background(), opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := seed.DB.Exec(`INSERT INTO values_table(value) VALUES('old')`); err != nil {
+		t.Fatal(err)
+	}
+	if err := seed.DB.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := Rebuild(context.Background(), opts, func(ctx context.Context, db *sql.DB) error {
+		_, err := db.ExecContext(ctx, `INSERT INTO values_table(value) VALUES('new')`)
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	rebuilt, err := Open(context.Background(), opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rebuilt.DB.Close()
+	var value string
+	if err := rebuilt.DB.QueryRow(`SELECT value FROM values_table`).Scan(&value); err != nil || value != "new" {
+		t.Fatalf("value=%q err=%v", value, err)
+	}
+}
+
+func TestRebuildFailureKeepsOldDatabase(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join(t.TempDir(), "catalog.sqlite")
+	opts := OpenOptions{Path: path, MemoryName: "rebuild-failure", Migrations: testMigrations()}
+	seed, err := Open(context.Background(), opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := seed.DB.Exec(`INSERT INTO values_table(value) VALUES('old')`); err != nil {
+		t.Fatal(err)
+	}
+	if err := seed.DB.Close(); err != nil {
+		t.Fatal(err)
+	}
+	wantErr := errors.New("populate failed")
+	if err := Rebuild(context.Background(), opts, func(context.Context, *sql.DB) error { return wantErr }); !errors.Is(err, wantErr) {
+		t.Fatalf("Rebuild error=%v", err)
+	}
+	current, err := Open(context.Background(), opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer current.DB.Close()
+	var value string
+	if err := current.DB.QueryRow(`SELECT value FROM values_table`).Scan(&value); err != nil || value != "old" {
+		t.Fatalf("value=%q err=%v", value, err)
+	}
+}
