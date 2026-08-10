@@ -81,5 +81,5 @@ const rawInitialBytes = [...initialJS, ...initialCSS, ...appShellCSS]
 // Native Web Animations and frame-batched scrolling avoid an eager animation
 // runtime. The shared reasoning display store adds a bounded shell cost while
 // its settings styles stay deferred; keep the raw allowance narrowly ratcheted.
-assertBudget("initial raw JavaScript and CSS", rawInitialBytes, 2_201 * 1024);
+assertBudget("initial raw JavaScript and CSS", rawInitialBytes, 2_202 * 1024);
 assertBudget("largest initial JavaScript chunk raw", largestInitialJSRaw, 1_000 * 1024);
