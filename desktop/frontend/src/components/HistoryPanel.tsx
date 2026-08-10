@@ -1,14 +1,17 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { MouseEvent as ReactMouseEvent } from "react";
 import { Archive, Pencil, Search, Trash2, RotateCcw } from "lucide-react";
+import { app } from "../lib/bridge";
 import { t, useT } from "../lib/i18n";
 import { historySessionDisplayTitle, sessionActivityTime } from "../lib/session";
-import type { HistoryMessage, SessionMeta } from "../lib/types";
+import type { HistoryMessage, HistorySearchContextLine, HistorySearchHit, SessionMeta } from "../lib/types";
 import { historyMessagesToItems, type Item } from "../lib/useController";
+import { useHistoryCatalog } from "../lib/useHistoryCatalog";
 import { Transcript } from "./Transcript";
 import { ContextMenu, contextMenuPointFromEvent, type ContextMenuItem, type ContextMenuPoint } from "./ContextMenu";
 import { useDeferredClose } from "../lib/useMountTransition";
 import { ModalCloseButton } from "./ModalCloseButton";
+import { HistoryFilterSelect } from "./HistoryFilterSelect";
 
 type HistoryScopeFilter = "all" | "project" | "global";
 type HistoryStatusFilter = "all" | "current" | "open";
@@ -19,7 +22,7 @@ type HistoryDateFilter = "all" | "today" | "yesterday" | "older";
 // rename, or delete the selected session.
 export function HistoryPanel({
   kind = "history",
-  sessions,
+  sessions: suppliedSessions,
   running,
   onResume,
   onPreview,
@@ -56,6 +59,10 @@ export function HistoryPanel({
   const [scopeFilter, setScopeFilter] = useState<HistoryScopeFilter>("all");
   const [statusFilter, setStatusFilter] = useState<HistoryStatusFilter>("all");
   const [dateFilter, setDateFilter] = useState<HistoryDateFilter>("all");
+  const [searchContext, setSearchContext] = useState<{ hit: HistorySearchHit; lines: HistorySearchContextLine[]; loading: boolean } | null>(null);
+  const { sessions, nextCursor, partial: catalogPartial, progress: catalogProgress, searchHits, loadMore } = useHistoryCatalog({
+    isTrash, suppliedSessions, scope: scopeFilter, status: statusFilter, timeFilter: dateFilter, query,
+  });
   const [menuSession, setMenuSession] = useState<SessionMeta | null>(null);
   const [menuPoint, setMenuPoint] = useState<ContextMenuPoint | null>(null);
   const [blankMenuPoint, setBlankMenuPoint] = useState<ContextMenuPoint | null>(null);
@@ -71,6 +78,14 @@ export function HistoryPanel({
   } | null>(null);
   const previewSeq = useRef(0);
 
+  const loadSearchContext = useCallback(async (hit: HistorySearchHit) => {
+    const seq = ++previewSeq.current;
+    setPreview(null);
+    setSearchContext({ hit, lines: [], loading: true });
+    const lines = await app.GetHistorySearchContext({ sessionPath: hit.sessionPath, messageIndex: hit.messageIndex, before: 2, after: 2 }).catch(() => []);
+    if (seq === previewSeq.current) setSearchContext({ hit, lines, loading: false });
+  }, []);
+
   const startRename = (s: SessionMeta) => {
     if (running) return;
     setEditing(s.path);
@@ -84,6 +99,7 @@ export function HistoryPanel({
   const loadPreview = useCallback(
     async (s: SessionMeta) => {
       const seq = ++previewSeq.current;
+      setSearchContext(null);
       setEditing(null);
       setPreview({
         path: s.path,
@@ -123,22 +139,24 @@ export function HistoryPanel({
   }, [isTrash, sessions]);
 
   useEffect(() => {
+    if (!isTrash) return;
     if (scopeFilter === "project" && scopeCounts.project === 0) setScopeFilter("all");
     if (scopeFilter === "global" && scopeCounts.global === 0) setScopeFilter("all");
-  }, [scopeCounts.global, scopeCounts.project, scopeFilter]);
+  }, [isTrash, scopeCounts.global, scopeCounts.project, scopeFilter]);
 
   useEffect(() => {
-    if (isTrash) return;
+    if (!isTrash) return;
     if (statusFilter === "current" && statusCounts.current === 0) setStatusFilter("all");
     if (statusFilter === "open" && statusCounts.open === 0) setStatusFilter("all");
   }, [isTrash, statusCounts.current, statusCounts.open, statusFilter]);
 
   useEffect(() => {
+    if (!isTrash) return;
     if (dateFilter !== "all" && dateCounts[dateFilter] === 0) setDateFilter("all");
-  }, [dateCounts, dateFilter]);
+  }, [dateCounts, dateFilter, isTrash]);
 
   const filteredSessions = useMemo(() => {
-    const q = query.trim().toLowerCase();
+    const q = isTrash ? query.trim().toLowerCase() : "";
     return sessions.filter((s) => {
       if (scopeFilter !== "all" && sessionScope(s) !== scopeFilter) return false;
       if (!isTrash && statusFilter === "current" && !s.current) return false;
@@ -483,6 +501,11 @@ export function HistoryPanel({
             onChange={(next) => setDateFilter(next as HistoryDateFilter)}
           />
         </div>
+        {!isTrash && catalogPartial && (
+          <div className="management-modal__summary history-modal__summary" role="status">
+            History index is still building ({catalogProgress.indexed}/{catalogProgress.total}); results may be incomplete.
+          </div>
+        )}
 
         <div className="history-content">
           <div className={`history-list${isTrash ? " history-list--trash" : ""}`}>
@@ -494,7 +517,28 @@ export function HistoryPanel({
             ) : filteredSessions.length === 0 ? (
               <div className="mem-empty">{tr("history.noResults")}</div>
             ) : (
-              groups.map((g) => (
+              <>
+              {!isTrash && searchHits.length > 0 && (
+                <section className="mem-section history-search-results">
+                  <div className="mem-section__title hist-group__title">
+                    <span>Content matches</span>
+                    <span className="hist-group__count">{searchHits.length}</span>
+                  </div>
+                  {searchHits.map((hit) => (
+                    <div className="hist-item" key={`${hit.sessionPath}:${hit.messageIndex}:${hit.kind}:${hit.toolName ?? ""}`}>
+                      <button className="hist-item__main" type="button" onClick={() => void loadSearchContext(hit)}>
+                        <div className="hist-item__preview">{hit.sessionTitle || hit.topicTitle || hit.sessionPath}</div>
+                        <div className="hist-item__meta">
+                          <span className="hist-item__badge">{hit.role} · {hit.kind}</span>
+                          {hit.toolName && <span className="hist-item__scope">{hit.toolName}</span>}
+                        </div>
+                        <div className="hist-item__meta">{hit.snippet}</div>
+                      </button>
+                    </div>
+                  ))}
+                </section>
+              )}
+              {groups.map((g) => (
                 <section className="mem-section" key={`${g.recoveryCopy ? "recovery-copy" : "normal"}-${g.label}`}>
                   <div className="mem-section__title hist-group__title">
                     <span>{g.recoveryCopy ? `${tr("history.recoveryCopiesGroup")} · ${g.label}` : g.label}</span>
@@ -563,12 +607,45 @@ export function HistoryPanel({
                     );
                   })}
                 </section>
-              ))
+              ))}
+              {!isTrash && nextCursor && (
+                <button
+                  className="btn btn--small"
+                  type="button"
+                  onClick={loadMore}
+                >
+                  Load more
+                </button>
+              )}
+              </>
             )}
           </div>
 
-          <section className={`history-preview${!preview ? " history-preview--empty" : ""}`}>
-            {preview ? (
+          <section className={`history-preview${!preview && !searchContext ? " history-preview--empty" : ""}`}>
+            {searchContext ? (
+              <>
+                <div className="history-preview__head">
+                  <div className="history-preview__copy">
+                    <div className="history-preview__title">{searchContext.hit.sessionTitle || searchContext.hit.topicTitle || searchContext.hit.sessionPath}</div>
+                    <div className="history-preview__meta">{searchContext.hit.role} · {searchContext.hit.kind}</div>
+                  </div>
+                </div>
+                <div className="history-preview__body">
+                  {searchContext.loading ? (
+                    <div className="mem-empty">{tr("common.loading")}</div>
+                  ) : searchContext.lines.length === 0 ? (
+                    <div className="mem-empty">{tr("history.previewEmpty")}</div>
+                  ) : (
+                    searchContext.lines.map((line) => (
+                      <div className="hist-item" key={line.index}>
+                        <div className="hist-item__meta"><span className="hist-item__badge">{line.role}</span></div>
+                        <div className="hist-item__preview">{line.text}</div>
+                      </div>
+                    ))
+                  )}
+                </div>
+              </>
+            ) : preview ? (
               <>
               <div className="history-preview__head">
                 <div className="history-preview__copy">
@@ -700,35 +777,4 @@ function sessionMetaLine(s: SessionMeta, tr: ReturnType<typeof useT>, isTrash = 
 
 function previewMessagesToItems(messages: HistoryMessage[]): Item[] {
   return historyMessagesToItems(messages, "hp").items;
-}
-
-function HistoryFilterSelect({
-  label,
-  options,
-  value,
-  onChange,
-}: {
-  label: string;
-  options: { id: string; label: string; count: number }[];
-  value: string;
-  onChange: (next: string) => void;
-}) {
-  const visibleOptions = options.filter((option) => option.id === "all" || option.id === value || option.count > 0);
-  return (
-    <div className="history-filter" role="group" aria-label={label}>
-      {visibleOptions.map((option) => (
-        <button
-          key={option.id}
-          type="button"
-          className={`history-filter__pill${value === option.id ? " history-filter__pill--on" : ""}`}
-          aria-pressed={value === option.id}
-          disabled={option.id !== "all" && option.count === 0}
-          onClick={() => onChange(option.id)}
-        >
-          {option.label}
-          <span className="history-filter__count">{option.count}</span>
-        </button>
-      ))}
-    </div>
-  );
 }

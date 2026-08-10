@@ -1139,7 +1139,7 @@ func build(ctx context.Context, opts Options) (*BuildResult, error) {
 			reg.Add(sessiontool.NewReadSessionTool(sessionDir))
 			return "enabled list_sessions, read_session."
 		}
-		reg.Add(history.NewTool(history.Options{SessionDir: sessionDir, GlobalSessionDir: config.SessionDir(), ArchiveDir: config.ArchiveDir()}))
+		reg.Add(history.NewIndexedTool(history.Options{SessionDir: sessionDir, GlobalSessionDir: config.SessionDir(), ArchiveDir: config.ArchiveDir()}))
 		reg.Add(sessiontool.NewListSessionsTool(sessionDir))
 		reg.Add(sessiontool.NewReadSessionTool(sessionDir))
 		return "enabled history, list_sessions, read_session."
@@ -1797,7 +1797,7 @@ func build(ctx context.Context, opts Options) (*BuildResult, error) {
 		return missing
 	})
 
-	execSess := agent.NewSession(sysPrompt)
+	execSess := newObservedSession(sysPrompt)
 	executor := agent.New(execProv, reg, execSess, agent.Options{
 		MaxSteps:    maxSteps,
 		MaxStepsKey: opts.MaxStepsKey,

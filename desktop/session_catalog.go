@@ -8,7 +8,9 @@ import (
 	"strings"
 	"time"
 
+	"reasonix/internal/agent"
 	"reasonix/internal/config"
+	"reasonix/internal/history"
 	"reasonix/internal/sessioncatalog"
 )
 
@@ -59,6 +61,10 @@ type ProjectTreeChangedV2 struct {
 	Reason   string   `json:"reason"`
 }
 
+func flushDesktopDerivedCatalogs(ctx context.Context) error {
+	return history.FlushSharedCatalog(ctx)
+}
+
 func sessionCatalogStatus(status sessioncatalog.Status) SessionCatalogStatus {
 	return SessionCatalogStatus{
 		State:           string(status.State),
@@ -106,6 +112,7 @@ func (a *App) startSessionCatalog(rebuild bool) {
 		defer a.catalogRebuilding.Store(false)
 		path := sessioncatalog.DefaultPath()
 		targets := a.sessionCatalogTargets()
+		history.RegisterCatalogRoots(historyCatalogRoots(targets))
 		if rebuild {
 			if _, err := sessioncatalog.Rebuild(ctx, path, targets); err != nil && !errors.Is(err, context.Canceled) {
 				slog.Warn("desktop: rebuild session catalog", "err", err)
@@ -240,6 +247,30 @@ func (a *App) sessionCatalogTargets() []sessioncatalog.DirectoryTarget {
 	return out
 }
 
+func listCatalogSessionsForDirectory(ctx context.Context, catalog *sessioncatalog.Catalog,
+	target sessioncatalog.DirectoryTarget, directory string) ([]sessioncatalog.SessionRecord, error) {
+	for range 2 {
+		records := []sessioncatalog.SessionRecord{}
+		cursor := ""
+		for {
+			page, err := catalog.ListSessions(ctx, sessioncatalog.SessionPageRequest{Scope: target.Scope,
+				WorkspaceRoot: target.WorkspaceRoot, Directory: directory, Cursor: cursor, Limit: sessioncatalog.MaxLimit})
+			if err != nil {
+				return nil, err
+			}
+			if page.StaleCursor {
+				break
+			}
+			records = append(records, page.Items...)
+			if page.NextCursor == "" {
+				return records, nil
+			}
+			cursor = page.NextCursor
+		}
+	}
+	return []sessioncatalog.SessionRecord{}, nil
+}
+
 func (a *App) indexRestoredSessionPaths(ctx context.Context, catalog *sessioncatalog.Catalog) {
 	type restored struct {
 		target sessioncatalog.DirectoryTarget
@@ -361,6 +392,9 @@ func sessionDirectoryForPath(path string) string {
 }
 
 func (a *App) requestSessionCatalogPath(scope, workspaceRoot, path string) {
+	if strings.TrimSpace(path) != "" {
+		_ = history.PersistObserver().EnqueueSessionPersist(agent.SessionPersistEvent{Path: path, Rewrite: true})
+	}
 	catalog := a.sessionCatalog.Load()
 	if catalog == nil || a.shuttingDown.Load() || strings.TrimSpace(path) == "" {
 		return
@@ -371,8 +405,12 @@ func (a *App) requestSessionCatalogPath(scope, workspaceRoot, path string) {
 }
 
 func (a *App) removeSessionCatalogPath(path, reason string) {
+	if strings.TrimSpace(path) == "" {
+		return
+	}
+	_ = history.PersistObserver().EnqueueSessionPersist(agent.SessionPersistEvent{Path: path, Removed: true})
 	catalog := a.sessionCatalog.Load()
-	if catalog == nil || strings.TrimSpace(path) == "" {
+	if catalog == nil {
 		return
 	}
 	ctx, cancel := context.WithTimeout(a.bootContext(), 150*time.Millisecond)
