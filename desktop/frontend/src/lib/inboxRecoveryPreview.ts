@@ -7,12 +7,13 @@ const PREVIEWS = [
   "对比现有设计与需求，提出最小改动方案后执行。",
 ] as const;
 
-export function isInboxRecoveryPreviewParam(value: string | null | undefined): boolean {
-  const normalized = value?.trim().toLowerCase();
-  return normalized === "recovery" || normalized === "inbox-recovery";
+let recoveryPaused = true;
+
+export function setInboxRecoveryPreviewPaused(paused: boolean): void {
+  recoveryPaused = paused;
 }
 
-export function inboxRecoveryPreviewSnapshot(paused: boolean) {
+export function inboxRecoveryPreviewSnapshot(paused = recoveryPaused) {
   const items = Array.from({ length: RECOVERED_INSTRUCTION_COUNT }, (_, index) => ({
     id: `recovered-${index + 1}`,
     intent: "followup",

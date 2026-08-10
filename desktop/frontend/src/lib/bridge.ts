@@ -7,6 +7,7 @@
 // typecheck green by falling back to a disabled drift check below.
 import type * as GeneratedApp from "../../wailsjs/go/main/App";
 import type { InvocationRequest } from "./invocationDisplay";
+
 import { addBreadcrumb } from "./breadcrumbs";
 import { maybeShare } from "./queryCoalesce";
 import { t } from "./i18n";
@@ -15,7 +16,6 @@ import { DEFAULT_STATUS_BAR_ITEMS, normalizeStatusBarItems } from "./statusBarIt
 import { registerTrustedThemeBackgroundURLs } from "./themePack";
 import { modeHasAutoApproveTools, modeWithAutoApproveTools, modeWithPlan, normalizeCollaborationMode, normalizeMode, normalizeTokenMode, normalizeToolApprovalMode } from "./types";
 import { decisionSurfaceMockFromInput, isLongDecisionOptionsMockInput } from "./decisionSurfaceMock";
-import { inboxRecoveryPreviewSnapshot, isInboxRecoveryPreviewParam } from "./inboxRecoveryPreview";
 import type {
   RemoteHostView,
   RemoteHostInput,
@@ -1160,7 +1160,7 @@ function mockScenario(): "demo" | "fresh" | "running" | "guidance" | "recovery" 
   if (typeof window === "undefined") return "demo";
   const value = new URLSearchParams(window.location.search).get("mock")?.trim().toLowerCase();
   if (value === "fresh" || value === "empty" || value === "first-run") return "fresh";
-  if (value === "guidance" || value === "guide" || value === "steer") return "guidance"; if (isInboxRecoveryPreviewParam(value)) return "recovery";
+  if (typeof import.meta.env !== "undefined" && import.meta.env.DEV && (value === "recovery" || value === "inbox-recovery")) return "recovery"; if (value === "guidance" || value === "guide" || value === "steer") return "guidance";
   if (value === "running" || value === "busy" || value === "streaming") return "running";
   if (value === "sandbox_escape" || value === "sandbox-escape" || value === "sandboxescape") return "sandbox_escape";
   if (value === "notice" || value === "notices" || value === "notice-preview") return "notice";
@@ -1329,14 +1329,14 @@ function mockExternalOpenerIconDataURL(color: string, label: string): string {
 function makeMockApp(): AppBindings {
   const scenario = mockScenario();
   const freshMock = scenario === "fresh";
-  const guidanceMock = scenario === "guidance", recoveryMock = scenario === "recovery";
+  const guidanceMock = scenario === "guidance", recoveryMock = typeof import.meta.env !== "undefined" && import.meta.env.DEV && scenario === "recovery";
   const runningMock = scenario === "running" || guidanceMock;
   const sandboxEscapeMock = scenario === "sandbox_escape";
   const noticePreviewMock = scenario === "notice";
   const deepSeekUpgradeMock = scenario === "deepseek_upgrade";
   const benchMock = scenario === "bench";
   const mockAttachmentDataURLs = new Map<string, string>();
-  let cancelled = false, mockInboxPaused = recoveryMock;
+  let cancelled = false;
   let pendingAskPreview = false;
   let pendingApprovalPreview = false;
   // Mirrors the last emitted approval preview so mode switches can mirror the
@@ -2923,7 +2923,7 @@ function makeMockApp(): AppBindings {
         async SteerForTab(_tabID, _text) {
           await this.Steer(_text);
         },
-        async InboxSnapshot(_tabID) { if (recoveryMock) return inboxRecoveryPreviewSnapshot(mockInboxPaused);
+        async InboxSnapshot(_tabID) { if (recoveryMock) return (await import("./inboxRecoveryPreview")).inboxRecoveryPreviewSnapshot();
           return {
             revision: 0,
             paused: false,
@@ -2956,7 +2956,7 @@ function makeMockApp(): AppBindings {
         async UpdateInboxItem() {},
         async DeleteInboxItem() {},
         async MoveInboxItem() {},
-        async SetInboxPaused(_tabID, paused) { mockInboxPaused = paused; },
+        async SetInboxPaused(_tabID, paused) { if (recoveryMock) (await import("./inboxRecoveryPreview")).setInboxRecoveryPreviewPaused(paused); },
         async RetryInboxItem() {},
         async RefreshInboxItem() {},
         async InboxHasItems() { return recoveryMock; },

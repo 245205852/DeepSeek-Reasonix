@@ -1,11 +1,7 @@
 // Run: tsx src/__tests__/inbox-recovery-preview.test.ts
 
 import assert from "node:assert/strict";
-import { inboxRecoveryPreviewSnapshot, isInboxRecoveryPreviewParam } from "../lib/inboxRecoveryPreview";
-
-assert.equal(isInboxRecoveryPreviewParam("recovery"), true);
-assert.equal(isInboxRecoveryPreviewParam(" INBOX-RECOVERY "), true);
-assert.equal(isInboxRecoveryPreviewParam("guidance"), false);
+import { inboxRecoveryPreviewSnapshot, setInboxRecoveryPreviewPaused } from "../lib/inboxRecoveryPreview";
 
 const paused = inboxRecoveryPreviewSnapshot(true);
 assert.equal(paused.paused, true);
@@ -20,5 +16,10 @@ assert.ok(paused.items.every((item) => item.state === "uncertain" && item.intent
 const resumed = inboxRecoveryPreviewSnapshot(false);
 assert.equal(resumed.paused, false);
 assert.equal(resumed.recovered, true);
+
+setInboxRecoveryPreviewPaused(false);
+assert.equal(inboxRecoveryPreviewSnapshot().paused, false);
+setInboxRecoveryPreviewPaused(true);
+assert.equal(inboxRecoveryPreviewSnapshot().paused, true);
 
 process.stdout.write("inbox recovery preview: PASS\n");
