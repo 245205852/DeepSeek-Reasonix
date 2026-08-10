@@ -1,6 +1,9 @@
 package agent
 
 import (
+	"context"
+
+	"reasonix/internal/evidence"
 	"reasonix/internal/plancontract"
 	"reasonix/internal/taskcontract"
 )
@@ -43,13 +46,14 @@ func planFacts(plan plancontract.Plan) taskcontract.PlanFacts {
 	seen := map[string]bool{}
 	for _, step := range plan.Steps {
 		for _, c := range step.Acceptance {
+			criterion := taskcontract.PlanCriterion{ID: c.ID, Text: c.Text}
 			switch {
 			case c.Optional:
-				facts.Optional = append(facts.Optional, c.Text)
+				facts.Optional = append(facts.Optional, criterion)
 			case c.Regression:
-				facts.Regressions = append(facts.Regressions, c.Text)
+				facts.Regressions = append(facts.Regressions, criterion)
 			default:
-				facts.AcceptanceCriteria = append(facts.AcceptanceCriteria, c.Text)
+				facts.AcceptanceCriteria = append(facts.AcceptanceCriteria, criterion)
 			}
 		}
 		for _, v := range step.Verification {
@@ -79,4 +83,31 @@ func appendUnseen(dst []string, seen map[string]bool, add []string) []string {
 		dst = append(dst, s)
 	}
 	return dst
+}
+
+// acceptanceCriterionIDs lists the approved plan's criterion ids so a tool call
+// can check a citation against the plan the user approved.
+func (a *Agent) acceptanceCriterionIDs() []string {
+	plan := a.planContractSnapshot()
+	if plan == nil {
+		return nil
+	}
+	var ids []string
+	for _, step := range plan.Steps {
+		for _, c := range step.Acceptance {
+			if c.ID != "" {
+				ids = append(ids, c.ID)
+			}
+		}
+	}
+	return ids
+}
+
+// withContractState attaches what a tool call needs to check a claim against the
+// approved work: the canonical task list, and the criterion ids a proof may
+// cite. They travel together because both answer "does this claim name
+// something real".
+func (a *Agent) withContractState(ctx context.Context) context.Context {
+	ctx = evidence.WithTodoState(ctx, a.CanonicalTodoState())
+	return evidence.WithAcceptanceCriteria(ctx, a.acceptanceCriterionIDs())
 }

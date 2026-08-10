@@ -681,7 +681,7 @@ func (a *Agent) prepareToolExecution(ctx context.Context, plan *toolCallPlan) (t
 		}
 	}
 	if !a.planMode.Load() {
-		cctx = evidence.WithTodoState(cctx, a.CanonicalTodoState())
+		cctx = a.withContractState(cctx)
 	}
 	if plan.planReplacementAuthorized {
 		cctx = tool.WithPlanReplacementAuthorization(cctx)
