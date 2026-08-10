@@ -4315,6 +4315,9 @@ func (a *App) applySessionBindingToTab(tab *WorkspaceTab, binding sessionBinding
 	}
 	sink := tab.sink
 	a.mu.Unlock()
+	if workspaceChanged && a.workspaceHub != nil {
+		a.workspaceHub.reconcileRoots()
+	}
 	if reopenTerminalGate {
 		a.terminals.reopenForTab(tab.ID)
 	}

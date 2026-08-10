@@ -5,6 +5,7 @@ package main
 // The hub emits bounded metadata; panels decide which resources to reload.
 
 import (
+	"context"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -21,6 +22,7 @@ const (
 	workspaceWatchQuiet    = 250 * time.Millisecond
 	workspaceWatchMaxDirs  = 4096
 	workspaceWatchMaxPaths = 512
+	workspaceGitProbeLimit = 2 * time.Second
 )
 
 type WorkspaceRevisionView struct {
@@ -29,20 +31,20 @@ type WorkspaceRevisionView struct {
 }
 
 type workspaceWatchRoot struct {
-	key            string
-	root           string
-	gitDirs        []string
-	watcher        *fsnotify.Watcher
-	dirs           int
-	state          event.WorkspaceWatchState
-	revisions      event.WorkspaceRevision
-	pending        map[string]event.WorkspacePathChange
-	recentAgent    map[string]time.Time
-	recentAgentAll time.Time
-	allPaths       bool
-	source         string
-	timer          *time.Timer
-	closed         bool
+	key        string
+	root       string
+	gitDirs    []string
+	watcher    *fsnotify.Watcher
+	watched    map[string]struct{}
+	dirs       int
+	state      event.WorkspaceWatchState
+	revisions  event.WorkspaceRevision
+	pending    map[string]event.WorkspacePathChange
+	allPaths   bool
+	source     string
+	timer      *time.Timer
+	publishGen uint64
+	closed     bool
 }
 
 type workspaceChangeHub struct {
@@ -85,7 +87,10 @@ func (h *workspaceChangeHub) ensureRoot(root string) string {
 	if _, ok := h.roots[key]; ok {
 		return key
 	}
-	r := &workspaceWatchRoot{key: key, root: key, state: event.WorkspaceWatchActive, pending: make(map[string]event.WorkspacePathChange), recentAgent: make(map[string]time.Time)}
+	r := &workspaceWatchRoot{
+		key: key, root: key, state: event.WorkspaceWatchActive,
+		pending: make(map[string]event.WorkspacePathChange), watched: make(map[string]struct{}),
+	}
 	h.roots[key] = r
 	h.startRootLocked(r)
 	return key
@@ -141,17 +146,45 @@ func (h *workspaceChangeHub) addTreeLocked(r *workspaceWatchRoot, root string) {
 		if !d.IsDir() {
 			return nil
 		}
-		if r.dirs >= workspaceWatchMaxDirs {
-			r.state = event.WorkspaceWatchDegraded
+		if !h.addWatchDirLocked(r, path) && r.dirs >= workspaceWatchMaxDirs {
 			return filepath.SkipDir
 		}
-		if err := r.watcher.Add(path); err != nil {
-			r.state = event.WorkspaceWatchDegraded
-			return nil
-		}
-		r.dirs++
 		return nil
 	})
+}
+
+func (h *workspaceChangeHub) addWatchDirLocked(r *workspaceWatchRoot, path string) bool {
+	path = filepath.Clean(path)
+	if _, ok := r.watched[path]; ok {
+		return true
+	}
+	if r.watcher == nil || r.dirs >= workspaceWatchMaxDirs {
+		r.state = event.WorkspaceWatchDegraded
+		return false
+	}
+	if err := r.watcher.Add(path); err != nil {
+		r.state = event.WorkspaceWatchDegraded
+		return false
+	}
+	r.watched[path] = struct{}{}
+	r.dirs++
+	return true
+}
+
+func (h *workspaceChangeHub) removeWatchTreeLocked(r *workspaceWatchRoot, root string) {
+	root = filepath.Clean(root)
+	for path := range r.watched {
+		if path != root && !strings.HasPrefix(path, root+string(filepath.Separator)) {
+			continue
+		}
+		if r.watcher != nil {
+			_ = r.watcher.Remove(path)
+		}
+		delete(r.watched, path)
+		if r.dirs > 0 {
+			r.dirs--
+		}
+	}
 }
 
 func (h *workspaceChangeHub) addGitMetadataLocked(r *workspaceWatchRoot) {
@@ -161,33 +194,69 @@ func (h *workspaceChangeHub) addGitMetadataLocked(r *workspaceWatchRoot) {
 	if len(r.gitDirs) == 0 || r.watcher == nil || r.dirs >= workspaceWatchMaxDirs {
 		return
 	}
-	// Watching the git directory itself catches HEAD/index replacement. The
-	// selected metadata subtrees cover refs, reflogs, and linked worktrees while
-	// avoiding the potentially enormous objects and LFS stores.
+	// Watch selected metadata trees recursively. fsnotify is non-recursive, so
+	// watching refs alone would miss refs/heads/* and logs/refs/* updates.
 	for _, gitDir := range r.gitDirs {
+		h.addWatchDirLocked(r, gitDir)
 		for _, rel := range []string{"", "refs", "logs", "worktrees"} {
-			path := gitDir
-			if rel != "" {
-				path = filepath.Join(gitDir, rel)
-			}
-			if info, err := os.Stat(path); err != nil || !info.IsDir() {
+			if rel == "" {
 				continue
 			}
-			if err := r.watcher.Add(path); err != nil {
-				r.state = event.WorkspaceWatchDegraded
-				continue
-			}
-			r.dirs++
+			h.addGitMetadataTreeLocked(r, filepath.Join(gitDir, rel))
 		}
 	}
+}
+
+func (h *workspaceChangeHub) addGitMetadataTreeLocked(r *workspaceWatchRoot, root string) {
+	_ = filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			if !os.IsNotExist(err) {
+				r.state = event.WorkspaceWatchDegraded
+			}
+			return nil
+		}
+		if d.Type()&os.ModeSymlink != 0 {
+			if d.IsDir() {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if !d.IsDir() {
+			return nil
+		}
+		if !h.addWatchDirLocked(r, path) && r.dirs >= workspaceWatchMaxDirs {
+			return filepath.SkipDir
+		}
+		return nil
+	})
+}
+
+func gitMetadataPathAllowed(gitDirs []string, path string) bool {
+	path = filepath.Clean(path)
+	for _, gitDir := range gitDirs {
+		rel, err := filepath.Rel(gitDir, path)
+		if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+			continue
+		}
+		if rel == "." {
+			return true
+		}
+		first := strings.SplitN(filepath.ToSlash(rel), "/", 2)[0]
+		if first == "refs" || first == "logs" || first == "worktrees" {
+			return true
+		}
+	}
+	return false
 }
 
 func gitMetadataDirsForWorkspace(root string) []string {
 	seen := make(map[string]struct{}, 2)
 	var dirs []string
 	for _, flag := range []string{"--git-dir", "--git-common-dir"} {
-		cmd := exec.Command("git", "-C", root, "rev-parse", flag)
+		ctx, cancel := context.WithTimeout(context.Background(), workspaceGitProbeLimit)
+		cmd := exec.CommandContext(ctx, "git", "-C", root, "rev-parse", flag)
 		out, err := cmd.Output()
+		cancel()
 		if err != nil {
 			continue
 		}
@@ -252,13 +321,12 @@ func (h *workspaceChangeHub) observeFilesystem(key string, ev fsnotify.Event) {
 	}
 	if isGit {
 		if ev.Op&fsnotify.Create != 0 {
-			if info, statErr := os.Stat(path); statErr == nil && info.IsDir() && r.dirs < workspaceWatchMaxDirs {
-				if addErr := r.watcher.Add(path); addErr == nil {
-					r.dirs++
-				} else {
-					r.state = event.WorkspaceWatchDegraded
-				}
+			if info, statErr := os.Stat(path); statErr == nil && info.IsDir() && gitMetadataPathAllowed(r.gitDirs, path) {
+				h.addGitMetadataTreeLocked(r, path)
 			}
+		}
+		if ev.Op&(fsnotify.Remove|fsnotify.Rename) != 0 {
+			h.removeWatchTreeLocked(r, path)
 		}
 		r.revisions.GitMeta++
 		r.revisions.WorkingTree++
@@ -266,25 +334,6 @@ func (h *workspaceChangeHub) observeFilesystem(key string, ev fsnotify.Event) {
 		r.allPaths = true
 	} else {
 		op := workspaceOp(ev.Op)
-		if !r.recentAgentAll.IsZero() && time.Since(r.recentAgentAll) <= 350*time.Millisecond {
-			r.recentAgentAll = time.Time{}
-			h.schedulePublishLocked(r)
-			h.mu.Unlock()
-			return
-		}
-		rel, relErr := filepath.Rel(r.root, path)
-		if relErr == nil {
-			rel = filepath.ToSlash(rel)
-			if at, ok := r.recentAgent[rel]; ok {
-				if time.Since(at) <= 350*time.Millisecond {
-					delete(r.recentAgent, rel)
-					h.schedulePublishLocked(r)
-					h.mu.Unlock()
-					return
-				}
-				delete(r.recentAgent, rel)
-			}
-		}
 		r.revisions.Content++
 		r.revisions.WorkingTree++
 		if op == "create" || op == "remove" || op == "rename" || op == "unknown" {
@@ -305,8 +354,8 @@ func (h *workspaceChangeHub) observeFilesystem(key string, ev fsnotify.Event) {
 				h.addTreeLocked(r, path)
 			}
 		}
-		if ev.Op&(fsnotify.Remove|fsnotify.Rename) != 0 && r.watcher != nil {
-			_ = r.watcher.Remove(path)
+		if ev.Op&(fsnotify.Remove|fsnotify.Rename) != 0 {
+			h.removeWatchTreeLocked(r, path)
 		}
 	}
 	h.schedulePublishLocked(r)
@@ -350,10 +399,12 @@ func mergeWorkspaceSource(old, next string) string {
 }
 
 func (h *workspaceChangeHub) schedulePublishLocked(r *workspaceWatchRoot) {
+	r.publishGen++
+	generation := r.publishGen
 	if r.timer != nil {
-		return
+		r.timer.Stop()
 	}
-	r.timer = time.AfterFunc(workspaceWatchQuiet, func() { h.publish(r.key) })
+	r.timer = time.AfterFunc(workspaceWatchQuiet, func() { h.publish(r.key, generation) })
 }
 
 func (h *workspaceChangeHub) observeAgentMutation(tabID string, paths []string, allPaths bool) {
@@ -377,20 +428,10 @@ func (h *workspaceChangeHub) observeAgentMutation(tabID string, paths []string, 
 	r.source = mergeWorkspaceSource(r.source, "agent")
 	if allPaths || len(paths) == 0 {
 		r.allPaths = true
-		r.recentAgentAll = time.Now()
 	} else {
 		for _, raw := range paths {
-			path := filepath.Clean(raw)
-			if filepath.IsAbs(path) {
-				if rel, err := filepath.Rel(r.root, path); err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
-					path = rel
-				} else {
-					r.allPaths = true
-					continue
-				}
-			}
-			path = filepath.ToSlash(path)
-			if path == "" || path == "." {
+			path, ok := workspaceMutationRelPath(r.root, raw)
+			if !ok {
 				r.allPaths = true
 				continue
 			}
@@ -399,7 +440,6 @@ func (h *workspaceChangeHub) observeAgentMutation(tabID string, paths []string, 
 				break
 			}
 			r.pending[path] = mergePathChange(r.pending[path], event.WorkspacePathChange{Path: path, Op: "write"})
-			r.recentAgent[path] = time.Now()
 		}
 	}
 	h.session[tabID]++
@@ -407,10 +447,28 @@ func (h *workspaceChangeHub) observeAgentMutation(tabID string, paths []string, 
 	h.mu.Unlock()
 }
 
-func (h *workspaceChangeHub) publish(key string) {
+func workspaceMutationRelPath(root, raw string) (string, bool) {
+	if strings.TrimSpace(raw) == "" {
+		return "", false
+	}
+	path := filepath.Clean(raw)
+	if path == "." {
+		return "", false
+	}
+	if !filepath.IsAbs(path) {
+		path = filepath.Join(root, path)
+	}
+	rel, err := filepath.Rel(root, path)
+	if err != nil || rel == "." || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return "", false
+	}
+	return filepath.ToSlash(rel), true
+}
+
+func (h *workspaceChangeHub) publish(key string, generation uint64) {
 	h.mu.Lock()
 	r := h.roots[key]
-	if r == nil || r.closed || h.closed {
+	if r == nil || r.closed || h.closed || r.publishGen != generation {
 		h.mu.Unlock()
 		return
 	}
@@ -420,14 +478,6 @@ func (h *workspaceChangeHub) publish(key string) {
 	}
 	allPaths, source, revisions, state := r.allPaths, r.source, r.revisions, r.state
 	r.pending = make(map[string]event.WorkspacePathChange)
-	for path, at := range r.recentAgent {
-		if time.Since(at) > time.Second {
-			delete(r.recentAgent, path)
-		}
-	}
-	if !r.recentAgentAll.IsZero() && time.Since(r.recentAgentAll) > time.Second {
-		r.recentAgentAll = time.Time{}
-	}
 	r.allPaths = false
 	r.source = ""
 	r.timer = nil
@@ -515,27 +565,39 @@ func (h *workspaceChangeHub) reconcileRoots() {
 	if h == nil || h.app == nil {
 		return
 	}
+	h.app.mu.RLock()
+	used := make(map[string]struct{}, len(h.app.tabs))
+	for _, tab := range h.app.tabs {
+		if tab == nil {
+			continue
+		}
+		root := tab.WorkspaceRoot
+		if root == "" {
+			root = globalWorkspaceRoot()
+		}
+		if key := canonicalWorkspaceRoot(root); key != "" {
+			used[key] = struct{}{}
+		}
+	}
 	h.mu.Lock()
-	keys := make([]string, 0, len(h.roots))
-	for key := range h.roots {
-		keys = append(keys, key)
+	watchers := make([]*fsnotify.Watcher, 0)
+	for key, r := range h.roots {
+		if _, ok := used[key]; ok {
+			continue
+		}
+		r.closed = true
+		if r.timer != nil {
+			r.timer.Stop()
+		}
+		if r.watcher != nil {
+			watchers = append(watchers, r.watcher)
+		}
+		delete(h.roots, key)
 	}
 	h.mu.Unlock()
-	for _, key := range keys {
-		if len(h.tabsForRoot(key)) == 0 {
-			h.mu.Lock()
-			if r := h.roots[key]; r != nil {
-				r.closed = true
-				if r.timer != nil {
-					r.timer.Stop()
-				}
-				if r.watcher != nil {
-					_ = r.watcher.Close()
-				}
-				delete(h.roots, key)
-			}
-			h.mu.Unlock()
-		}
+	h.app.mu.RUnlock()
+	for _, watcher := range watchers {
+		_ = watcher.Close()
 	}
 }
 
@@ -549,17 +611,21 @@ func (h *workspaceChangeHub) close() {
 		return
 	}
 	h.closed = true
+	watchers := make([]*fsnotify.Watcher, 0, len(h.roots))
 	for key, r := range h.roots {
 		r.closed = true
 		if r.timer != nil {
 			r.timer.Stop()
 		}
 		if r.watcher != nil {
-			_ = r.watcher.Close()
+			watchers = append(watchers, r.watcher)
 		}
 		delete(h.roots, key)
 	}
 	h.mu.Unlock()
+	for _, watcher := range watchers {
+		_ = watcher.Close()
+	}
 }
 
 func (a *App) workspaceRootForTab(tabID string) string {

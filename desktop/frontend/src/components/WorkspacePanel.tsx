@@ -40,6 +40,8 @@ import {
 import { createRafResizeUpdater } from "../lib/resizeDrag";
 import { closeWorkspacePreviewTab } from "../lib/workspacePreviewTabs";
 import { useWorkspaceRefresh } from "../lib/workspaceRefreshStore";
+import { useWorkspaceRefreshInvalidation } from "../lib/workspaceRefreshInvalidation";
+import { createWorkspaceRefreshScheduler } from "../lib/workspaceRefreshScheduler";
 import { shouldScrollWorkspaceTreeSelection } from "../lib/workspaceTreeReveal";
 import { mergeWorkspaceSearchResults } from "../lib/workspaceTreeSearch";
 import {
@@ -309,6 +311,14 @@ export function WorkspacePanel({
   const recentAnchorRef = useRef<HTMLButtonElement>(null);
   const openDirsRef = useRef(openDirs);
   const pendingTreeRevealPathRef = useRef<string | null>(null);
+  const workingTreeRefreshSchedulerRef = useRef<ReturnType<typeof createWorkspaceRefreshScheduler> | null>(null);
+  const gitMetaRefreshSchedulerRef = useRef<ReturnType<typeof createWorkspaceRefreshScheduler> | null>(null);
+  if (!workingTreeRefreshSchedulerRef.current) {
+    workingTreeRefreshSchedulerRef.current = createWorkspaceRefreshScheduler(300);
+  }
+  if (!gitMetaRefreshSchedulerRef.current) {
+    gitMetaRefreshSchedulerRef.current = createWorkspaceRefreshScheduler(750);
+  }
   currentWorkspaceScopeKeyRef.current = workspaceScopeKey;
 
   useEffect(() => {
@@ -530,6 +540,8 @@ export function WorkspacePanel({
     if (!open) return;
     if (lastWorkspaceScopeKeyRef.current === workspaceScopeKey) return;
     lastWorkspaceScopeKeyRef.current = workspaceScopeKey;
+    workingTreeRefreshSchedulerRef.current?.cancel();
+    gitMetaRefreshSchedulerRef.current?.cancel();
     workspaceChangesRequestIdRef.current += 1;
     changeDetailRequestIdRef.current += 1;
     gitHistoryRequestIdRef.current += 1;
@@ -553,6 +565,11 @@ export function WorkspacePanel({
       setPreview(null);
     }
   }, [open, viewMode, workspaceScopeKey]);
+
+  useEffect(() => () => {
+    workingTreeRefreshSchedulerRef.current?.cancel();
+    gitMetaRefreshSchedulerRef.current?.cancel();
+  }, []);
 
   // A tab/scope switch must discard the floating menus: their text and paths
   // were captured from the previous scope, while add-to-chat routes to
@@ -736,10 +753,6 @@ export function WorkspacePanel({
   }, [commitHistoryOpen, selectedPath, viewMode, loadChangeDetail, loadGitHistory, loadWorkspaceChanges, open]);
 
   useEffect(() => {
-    if (open && viewMode === "changed" && commitHistoryOpen) void loadGitHistory();
-  }, [commitHistoryOpen, loadGitHistory, open, viewMode]);
-
-  useEffect(() => {
     if (!selectionMenu && !treeMenu) return;
     const close = () => {
       setSelectionMenu(null);
@@ -769,6 +782,8 @@ export function WorkspacePanel({
     setSelectionMenu(null);
     setTreeMenu(null);
     if (viewMode === "changed") {
+      workingTreeRefreshSchedulerRef.current?.cancel();
+      gitMetaRefreshSchedulerRef.current?.cancel();
       void loadWorkspaceChanges();
       if (selectedPath) void loadChangeDetail();
       // Manual refresh is the explicit escape hatch and includes collapsed
@@ -819,64 +834,23 @@ export function WorkspacePanel({
     return refreshSelected();
   }, [open, refreshSelected, selectedPath]);
 
-  const lastWorkspaceRefreshRef = useRef(workspaceRefresh.sequence);
-  const lastWorkspaceRevisionsRef = useRef(workspaceRefresh.revisions);
-  useEffect(() => {
-    if (!open) return;
-    if (lastWorkspaceRefreshRef.current === workspaceRefresh.sequence) return;
-    const previous = lastWorkspaceRevisionsRef.current;
-    lastWorkspaceRefreshRef.current = workspaceRefresh.sequence;
-    const revisions = workspaceRefresh.revisions;
-    lastWorkspaceRevisionsRef.current = revisions;
-    const changes = workspaceRefresh.changes;
-    const contentChanged = revisions.content > previous.content;
-    const treeChanged = revisions.tree > previous.tree;
-    const workingTreeChanged = revisions.workingTree > previous.workingTree;
-    const sessionChanged = revisions.session > previous.session;
-    const affectsSelected = workspaceRefresh.allPaths || !selectedPath || changes.some((change) =>
-      change.path === selectedPath || change.oldPath === selectedPath || selectedPath.startsWith(`${change.path}/`),
-    );
-    if (contentChanged && affectsSelected && selectedPath) {
-      void refreshSelected();
-    }
-    if (treeChanged && (workspaceRefresh.allPaths || changes.length > 0)) {
-      const affectedDirs = workspaceRefresh.allPaths
-        ? openDirsRef.current
-        : new Set(changes.flatMap((change) => [change.path, change.oldPath].filter(Boolean).flatMap((path) => parentDirs(path as string))));
-      for (const dir of affectedDirs) {
-        if (openDirsRef.current.has(dir)) void loadDir(dir);
-      }
-      if (filter.trim()) {
-        setSearchResults(null);
-      }
-    }
-    if (viewMode === "changed") {
-      if (workingTreeChanged || sessionChanged) {
-        void loadWorkspaceChanges();
-        if (selectedPath) void loadChangeDetail();
-      }
-      if (revisions.gitMeta > previous.gitMeta) {
-        void loadGitHistory();
-      }
-    }
-    if (workspaceRefresh.watchState !== "active") {
-      // A degraded watcher requires a foreground resource check on every
-      // notification; the explicit refresh button remains the hard fallback.
-      openDirsRef.current.forEach((dir) => void loadDir(dir));
-      if (selectedPath) void refreshSelected();
-    }
-  }, [
+  useWorkspaceRefreshInvalidation({
     filter,
+    gitMetaSchedulerRef: gitMetaRefreshSchedulerRef,
     loadChangeDetail,
     loadDir,
     loadGitHistory,
     loadWorkspaceChanges,
     open,
+    openDirsRef,
     refreshSelected,
     selectedPath,
+    setSearchResults,
     viewMode,
+    workingTreeSchedulerRef: workingTreeRefreshSchedulerRef,
     workspaceRefresh,
-  ]);
+    workspaceScopeKey,
+  });
 
   const toggleDir = useCallback(
     (dir: string, compactPaths: string[] = [dir]) => {

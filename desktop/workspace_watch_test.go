@@ -2,9 +2,12 @@ package main
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/fsnotify/fsnotify"
 )
 
 func TestWorkspaceChangeHubSharesRootRevisionsAndIsolatesSessions(t *testing.T) {
@@ -67,4 +70,116 @@ func TestWorkspaceChangeHubFilesystemWritePublishesContentRevision(t *testing.T)
 		time.Sleep(10 * time.Millisecond)
 	}
 	t.Fatal("filesystem write did not advance content revision")
+}
+
+func TestWorkspaceChangeHubDoesNotDropFilesystemWriteAfterAgentMutation(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "file.txt")
+	if err := os.WriteFile(path, []byte("before"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	app := &App{tabs: map[string]*WorkspaceTab{"a": {ID: "a", WorkspaceRoot: root}}}
+	app.workspaceHub = newWorkspaceChangeHub(app)
+	t.Cleanup(func() { app.workspaceHub.close() })
+
+	before := app.WorkspaceRevisionForTab("a").Revisions.Content
+	app.workspaceHub.observeAgentMutation("a", []string{"file.txt"}, false)
+	key := canonicalWorkspaceRoot(root)
+	app.workspaceHub.observeFilesystem(key, fsnotify.Event{Name: path, Op: fsnotify.Write})
+	after := app.WorkspaceRevisionForTab("a").Revisions.Content
+	if after != before+2 {
+		t.Fatalf("content revision = %d, want %d (agent and filesystem writes are independently observable)", after, before+2)
+	}
+}
+
+func TestWorkspaceChangeHubRejectsRelativeTraversalMetadata(t *testing.T) {
+	root := t.TempDir()
+	app := &App{tabs: map[string]*WorkspaceTab{"a": {ID: "a", WorkspaceRoot: root}}}
+	app.workspaceHub = newWorkspaceChangeHub(app)
+	t.Cleanup(func() { app.workspaceHub.close() })
+	app.workspaceHub.observeAgentMutation("a", []string{"../outside.txt"}, false)
+
+	key := canonicalWorkspaceRoot(root)
+	app.workspaceHub.mu.Lock()
+	r := app.workspaceHub.roots[key]
+	allPaths := r != nil && r.allPaths
+	_, leaked := r.pending["../outside.txt"]
+	app.workspaceHub.mu.Unlock()
+	if !allPaths || leaked {
+		t.Fatalf("relative traversal was not safely degraded: allPaths=%v leaked=%v", allPaths, leaked)
+	}
+}
+
+func TestWorkspaceChangeHubUsesTrailingPublishGeneration(t *testing.T) {
+	root := t.TempDir()
+	app := &App{tabs: map[string]*WorkspaceTab{"a": {ID: "a", WorkspaceRoot: root}}}
+	app.workspaceHub = newWorkspaceChangeHub(app)
+	t.Cleanup(func() { app.workspaceHub.close() })
+	app.WorkspaceRevisionForTab("a")
+
+	key := canonicalWorkspaceRoot(root)
+	app.workspaceHub.mu.Lock()
+	r := app.workspaceHub.roots[key]
+	app.workspaceHub.schedulePublishLocked(r)
+	firstTimer, firstGeneration := r.timer, r.publishGen
+	app.workspaceHub.schedulePublishLocked(r)
+	secondTimer, secondGeneration := r.timer, r.publishGen
+	app.workspaceHub.mu.Unlock()
+	if firstTimer == secondTimer || secondGeneration != firstGeneration+1 {
+		t.Fatalf("quiet window was not reset: timersSame=%v generations=%d/%d", firstTimer == secondTimer, firstGeneration, secondGeneration)
+	}
+}
+
+func TestWorkspaceChangeHubReleasesRootAfterTabWorkspaceSwitch(t *testing.T) {
+	rootA, rootB := t.TempDir(), t.TempDir()
+	app := &App{tabs: map[string]*WorkspaceTab{"a": {ID: "a", WorkspaceRoot: rootA}}}
+	app.workspaceHub = newWorkspaceChangeHub(app)
+	t.Cleanup(func() { app.workspaceHub.close() })
+	app.WorkspaceRevisionForTab("a")
+	app.mu.Lock()
+	app.tabs["a"].WorkspaceRoot = rootB
+	app.mu.Unlock()
+	app.WorkspaceRevisionForTab("a")
+	app.workspaceHub.reconcileRoots()
+
+	app.workspaceHub.mu.Lock()
+	_, oldExists := app.workspaceHub.roots[canonicalWorkspaceRoot(rootA)]
+	_, newExists := app.workspaceHub.roots[canonicalWorkspaceRoot(rootB)]
+	app.workspaceHub.mu.Unlock()
+	if oldExists || !newExists {
+		t.Fatalf("root lifecycle after switch: oldExists=%v newExists=%v", oldExists, newExists)
+	}
+}
+
+func TestWorkspaceChangeHubRecursivelyWatchesGitMetadataOnly(t *testing.T) {
+	root := t.TempDir()
+	if out, err := exec.Command("git", "-C", root, "init").CombinedOutput(); err != nil {
+		t.Fatalf("git init: %v: %s", err, out)
+	}
+	gitDir := filepath.Join(root, ".git")
+	for _, rel := range []string{"refs/heads", "logs/refs/heads", "worktrees/linked", "objects/pack"} {
+		if err := os.MkdirAll(filepath.Join(gitDir, rel), 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	app := &App{tabs: map[string]*WorkspaceTab{"a": {ID: "a", WorkspaceRoot: root}}}
+	app.workspaceHub = newWorkspaceChangeHub(app)
+	t.Cleanup(func() { app.workspaceHub.close() })
+	view := app.WorkspaceRevisionForTab("a")
+	if view.WatchState == "unavailable" {
+		t.Fatalf("watcher unavailable: %+v", view)
+	}
+
+	key := canonicalWorkspaceRoot(root)
+	gitDir = canonicalWorkspaceRoot(gitDir)
+	app.workspaceHub.mu.Lock()
+	r := app.workspaceHub.roots[key]
+	_, refsWatched := r.watched[filepath.Join(gitDir, "refs", "heads")]
+	_, logsWatched := r.watched[filepath.Join(gitDir, "logs", "refs", "heads")]
+	_, worktreeWatched := r.watched[filepath.Join(gitDir, "worktrees", "linked")]
+	_, objectsWatched := r.watched[filepath.Join(gitDir, "objects")]
+	app.workspaceHub.mu.Unlock()
+	if !refsWatched || !logsWatched || !worktreeWatched || objectsWatched {
+		t.Fatalf("git watches refs=%v logs=%v worktrees=%v objects=%v", refsWatched, logsWatched, worktreeWatched, objectsWatched)
+	}
 }
