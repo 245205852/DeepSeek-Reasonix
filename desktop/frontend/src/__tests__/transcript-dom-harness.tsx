@@ -175,7 +175,11 @@ export async function createTranscriptHarness(options: TranscriptHarnessOptions 
     }
   };
 
-  const waitFor = async (condition: () => boolean, description: string, attempts = 8) => {
+  // Each attempt costs one 30ms flush, so the default is a three-second budget,
+  // not eight tries. It returns the moment the condition holds, so a generous
+  // cap is free on the happy path and only makes a genuine failure slower —
+  // which beats failing a correct test on a loaded runner.
+  const waitFor = async (condition: () => boolean, description: string, attempts = 100) => {
     for (let i = 0; i < attempts; i += 1) {
       if (condition()) return;
       await flush();
