@@ -144,9 +144,11 @@ type Tool interface {
 
 Reasonix 通过低频 compaction 保持 cache-first：
 
-- 低于 `agent.tool_result_snip_ratio` 时不改写历史；
-- 达到 snip ratio 后，归档并缩短较旧 tool result；
-- 达到 `agent.compact_ratio` 后，先把旧 tool result 修剪为占位符，仍超阈值才调用摘要；
+- 低于 `agent.compact_ratio` 时绝不改写历史：任何改写都会让该处之后的 prompt
+  缓存整体失效；`agent.soft_compact_ratio` 只发提示，不参与决策；
+- 达到 `agent.compact_ratio` 后，先归档并把旧 tool result 修剪为占位符；若仅此
+  就降到 `agent.tool_result_snip_ratio` 以下，则以它替代摘要，不调用摘要模型，
+  否则再执行摘要 compaction；
 - 达到 `agent.compact_force_ratio` 后，可执行强制折叠；
 - `context_window = 0` 会关闭该实例的 compaction。
 

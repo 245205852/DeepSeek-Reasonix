@@ -91,9 +91,10 @@ What is still in progress or unstarted, and the single most concrete next action
 Rules: be terse — bullet points and fragments, not prose. Preserve identifiers, paths, and numbers exactly. Do NOT invent anything not present in the messages; if something is unknown, leave it out rather than guessing.`
 
 // compactThresholds returns the prompt-token boundaries ContextManager switches
-// on. The compaction ablation arm collapses the snip and fold triggers onto
-// soft, so the cache-preserving deferral branch is unreachable and the session
-// folds as soon as it grows — what a harness with no prompt-cache strategy does.
+// on. Only high triggers maintenance: soft is a notice, and snip is how far a
+// tool-result pass must bring the prompt down to stand in for the summary. The
+// compaction ablation arm folds at soft instead, which is what a harness with
+// no prompt-cache strategy does.
 func (a *Agent) compactThresholds() (soft, snip, high int) {
 	hard := a.hardInputCeiling()
 	high = int(float64(a.contextWindow) * a.compactRatio)
