@@ -1401,11 +1401,11 @@ func TestDefaultPlannerPromptDefinesLightAndFullEvidenceContracts(t *testing.T) 
 	for _, want := range []string{
 		"depth=light",
 		"depth=full",
-		"verified touchpoints",
-		"candidate touchpoints",
+		"submit_plan",
 		"command-level verification",
-		"Label assumptions",
+		"assumptions",
 	} {
+		// The verified/candidate split is asserted where it is enforced: the schema.
 		if !strings.Contains(DefaultPlannerPrompt, want) {
 			t.Fatalf("DefaultPlannerPrompt missing %q planning contract", want)
 		}

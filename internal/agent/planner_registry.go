@@ -15,12 +15,15 @@ var plannerNonResearchTools = []string{
 	"wait",
 }
 
-// PlannerToolRegistry returns read-only research tools plus an isolated
-// use_capability proxy. Direct MCP schemas and selected workflow tools stay hidden.
+// PlannerToolRegistry returns read-only research tools, submit_plan, and an
+// isolated use_capability proxy. Direct MCP schemas and selected workflow tools
+// stay hidden. submit_plan is added only here, so the planner gaining a
+// structured exit leaves the executor's cache-stable tool prefix untouched.
 func PlannerToolRegistry(parent *tool.Registry) *tool.Registry {
 	exclude := append(SubagentMetaTools(), plannerNonResearchTools...)
 	base := FilterReadOnlyRegistry(parent, exclude...)
 	sub := tool.NewRegistry()
+	sub.Add(NewSubmitPlanTool())
 	if base != nil {
 		for _, name := range base.Names() {
 			if name == "use_capability" || strings.HasPrefix(name, tool.MCPNamePrefix) {
