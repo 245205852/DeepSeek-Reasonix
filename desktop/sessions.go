@@ -247,64 +247,6 @@ func reconcileDesktopCleanupPending(dir string) error {
 	})
 }
 
-func reconcileDesktopTrashSessionArtifacts(dir, sessionPath, key string) error {
-	// Hold the removal guard across the whole move so no runtime can acquire
-	// the session (or save into it) while its artifacts are relocated; the
-	// lock sidecars are deleted atomically with the guard release.
-	guard, err := acquireSessionRemovalGuard(sessionPath)
-	if err != nil {
-		return err
-	}
-	defer guard.Release()
-	itemDir := filepath.Join(sessionTrashPath(dir), key)
-	if info, err := os.Stat(itemDir); err == nil {
-		if !info.IsDir() {
-			return fmt.Errorf("session trash target is not a directory: %s", key)
-		}
-		trashPath := filepath.Join(itemDir, key)
-		if trashInfo, err := os.Stat(trashPath); err == nil && !trashInfo.IsDir() {
-			matches, err := trashSessionMatchesLive(sessionPath, trashPath)
-			if err != nil {
-				return err
-			}
-			if !matches {
-				itemDir, err = reserveUniqueSessionTrashItemDir(dir, key)
-				if err != nil {
-					return err
-				}
-			}
-		} else if err != nil && !os.IsNotExist(err) {
-			return err
-		}
-	} else if os.IsNotExist(err) {
-		if err := os.MkdirAll(itemDir, 0o755); err != nil {
-			return err
-		}
-	} else {
-		return err
-	}
-	for _, artifact := range sessionTrashArtifacts(sessionPath, key) {
-		if err := movePathIfExists(artifact.src, filepath.Join(itemDir, artifact.name)); err != nil {
-			return err
-		}
-	}
-	if err := trashSubagentArtifacts(dir, sessionPath, itemDir); err != nil {
-		return err
-	}
-	if err := guard.RemoveSidecarsAndRelease(); err != nil {
-		return err
-	}
-	meta := trashedSessionMeta{Key: key, DeletedAt: time.Now().UnixMilli()}
-	b, err := json.MarshalIndent(meta, "", "  ")
-	if err != nil {
-		return err
-	}
-	if err := os.WriteFile(filepath.Join(itemDir, sessionTrashMetaFile), b, 0o644); err != nil {
-		return err
-	}
-	return agent.ClearCleanupPending(sessionPath)
-}
-
 func validateSessionTrashTarget(dir, sessionPath, key string) error {
 	if _, err := os.Stat(sessionPath); os.IsNotExist(err) {
 		return nil
@@ -426,6 +368,10 @@ func liveSessionDiscardable(sessionPath string) (bool, error) {
 	if agent.IsCleanupPending(sessionPath) {
 		return true, nil
 	}
+	return liveSessionContentDiscardable(sessionPath)
+}
+
+func liveSessionContentDiscardable(sessionPath string) (bool, error) {
 	info, err := os.Stat(sessionPath)
 	if os.IsNotExist(err) {
 		return true, nil
@@ -484,7 +430,7 @@ func trashSessionArtifactsBeforeMove(dir, sessionPath, key string, beforeMove fu
 		return err
 	}
 	if !target.shouldMove {
-		return nil
+		return agent.ClearCleanupPending(sessionPath)
 	}
 	// Acquired after prepareSessionTrashTarget: the duplicate-trash path in
 	// there takes its own removal guard, and the guard is not reentrant.

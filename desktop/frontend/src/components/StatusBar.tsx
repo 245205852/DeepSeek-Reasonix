@@ -66,14 +66,8 @@ function formatTurnCount(turns: number | undefined, t: Translator): string {
   if (typeof turns !== "number" || turns < 0) return "-";
   return t(turns === 1 ? "history.turnOne" : "history.turnOther", { n: turns });
 }
-
-
-function formatTps(outputTokens?: number, modelMs?: number, estimated = false): string | null {
-  if (!outputTokens || outputTokens <= 0) return null;
-  if (!modelMs || modelMs <= 0) return null;
-  const elapsedSec = modelMs / 1000;
-  if (elapsedSec < 0.001) return null;
-  const tps = outputTokens / elapsedSec;
+function formatTps(tps?: number | null, estimated = false): string | null {
+  if (!tps || tps <= 0) return null;
   const prefix = estimated ? "≈" : "";
   if (tps < 1) return `${prefix}<1 t/s`;
   return `${prefix}${Math.round(tps)} t/s`;
@@ -176,6 +170,7 @@ export function StatusBar({
   lastTurnOutputTokens,
   lastTurnModelMs,
   lastTurnOutputEstimated = false,
+  lastRequestTps,
   turnCost,
   cost,
   currency,
@@ -209,6 +204,7 @@ export function StatusBar({
   lastTurnOutputTokens?: number;
   lastTurnModelMs?: number;
   lastTurnOutputEstimated?: boolean;
+  lastRequestTps?: number | null; // Null means the latest request was not measurable.
   turnCost?: number;
   cost?: number;
   currency?: string;
@@ -255,7 +251,9 @@ export function StatusBar({
   const tokenLabel = markEstimated(formatTokenCount(sessionTokens), sessionEstimated);
   const turnTokenLabel = markEstimated(formatTokenCount(turnTokens), turnEstimated);
   const balanceLabel = balance?.available && balance.display ? balance.display : "-";
-  const tpsLabel = formatTps(lastTurnOutputTokens, lastTurnModelMs, lastTurnOutputEstimated);
+  const tpsLabel = lastRequestTps === undefined
+    ? formatTps(lastTurnOutputTokens && lastTurnModelMs ? lastTurnOutputTokens / (lastTurnModelMs / 1_000) : null, lastTurnOutputEstimated)
+    : formatTps(lastRequestTps);
   const formatUsageToken = (value: number) => `${usage?.estimated ? "≈" : ""}${value.toLocaleString()}`;
   const outputTokensLabel = usage && typeof usage.completionTokens === "number"
     ? formatUsageToken(usage.completionTokens)

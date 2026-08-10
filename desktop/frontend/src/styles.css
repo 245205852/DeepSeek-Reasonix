@@ -22952,11 +22952,11 @@ body > .mermaid-diagram--fullscreen {
   position: relative;
   display: inline-flex;
   align-items: stretch;
-  height: 32px;
+  height: 28px;
   border: 1px solid var(--border);
-  border-radius: 10px;
+  border-radius: 7px;
   background: var(--bg-elev);
-  box-shadow: 0 1px 1px color-mix(in srgb, #000 9%, transparent);
+  box-shadow: none;
   overflow: visible;
   --wails-draggable: no-drag;
 }
@@ -22968,6 +22968,7 @@ body > .mermaid-diagram--fullscreen {
 
 .external-opener__primary-wrap {
   display: inline-flex;
+  height: 100%;
 }
 
 .external-opener__primary,
@@ -22975,7 +22976,7 @@ body > .mermaid-diagram--fullscreen {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  height: 30px;
+  height: 100%;
   padding: 0;
   border: none;
   background: transparent;
@@ -22984,13 +22985,13 @@ body > .mermaid-diagram--fullscreen {
 
 .external-opener__primary {
   width: 38px;
-  border-radius: 9px 0 0 9px;
+  border-radius: 6px 0 0 6px;
 }
 
 .external-opener__menu-trigger {
   width: 27px;
   border-left: 1px solid var(--border-soft);
-  border-radius: 0 9px 9px 0;
+  border-radius: 0 6px 6px 0;
 }
 
 .external-opener__primary:hover:not(:disabled),
@@ -23014,8 +23015,8 @@ body > .mermaid-diagram--fullscreen {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 23px;
-  height: 23px;
+  width: 18px;
+  height: 18px;
 }
 
 .external-opener__app-icon img {
@@ -30020,9 +30021,16 @@ body > .mermaid-diagram--fullscreen {
   }
 }
 
+.project-tree__topic-action--busy svg,
+.project-tree__archive-spinner {
+  animation: project-tree-spin 0.9s linear infinite;
+}
+
 @media (prefers-reduced-motion: reduce) {
   .sidebar--workbench .project-tree__topic-state--thinking,
-  .sidebar--workbench .project-tree__topic-state--streaming {
+  .sidebar--workbench .project-tree__topic-state--streaming,
+  .project-tree__topic-action--busy svg,
+  .project-tree__archive-spinner {
     animation: none;
   }
 }
@@ -30780,7 +30788,7 @@ body > .mermaid-diagram--fullscreen {
 :root[data-theme-style] .app--creation .topicbar__actions .external-opener {
   height: 28px;
   border: none;
-  border-radius: 8px;
+  border-radius: 7px;
   background: transparent;
   box-shadow: none;
 }

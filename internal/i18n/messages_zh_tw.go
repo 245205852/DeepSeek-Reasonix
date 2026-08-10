@@ -262,6 +262,7 @@ var ChineseTraditional = Messages{
 	CmdMouse:            "切換滑鼠接管（關閉後由終端原生處理選取/右鍵）",
 	CmdReasonLang:       "設定可見思考語言",
 	CmdHelp:             "檢視命令列表",
+	CmdWeb:              "在 Web UI 中繼續目前工作階段",
 	CmdTodo:             "清除任務清單",
 	CmdQuit:             "退出會話",
 	CmdCopy:             "選擇回覆複製到剪貼簿",
@@ -492,6 +493,7 @@ var ChineseTraditional = Messages{
   reasonix run [--model NAME] [--max-steps N] [-c|--continue] [--resume PATH] [--copy] [--output-format FORMAT] <task>
   reasonix run --events-jsonl [--model NAME] <task>      輸出脫敏結構化事件 JSONL
   reasonix review [--base BRANCH] [--commit SHA] [--model NAME]  AI 程式碼審查（基於本機 diff）
+  reasonix web [--model NAME] [--addr HOST:PORT] [--no-open]  啟動本機 Web UI 並用預設瀏覽器開啟
   reasonix serve [--model NAME] [--addr HOST:PORT] [--auth none|token|password] [--token STR] [--password STR] [--hash-password]  透過 HTTP+SSE 提供服務（支援可選認證）
   reasonix acp [--model NAME]                           透過 stdio 提供 Agent Client Protocol（也可用：reasonix --acp）
   reasonix setup [path]                                 互動式設定精靈；生成 reasonix.toml（及 .env）
@@ -521,6 +523,7 @@ var ChineseTraditional = Messages{
   reasonix
   reasonix --continue
   reasonix --resume provider-config
+  reasonix web
   reasonix run "把 main.go 裡的 TODO 實現掉"
   reasonix run --model mimo-pro "給這個函式補單元測試"
   reasonix -p "總結這個倉庫" --output-format json
