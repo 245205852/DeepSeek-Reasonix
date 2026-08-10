@@ -2,10 +2,10 @@
   "limits": {
     "banner": 15,
     "commented-code": 0,
-    "complexity": 2077,
+    "complexity": 2074,
     "essay": 4082,
-    "file-size": 109565,
-    "function-size": 8935,
+    "file-size": 109586,
+    "function-size": 8927,
     "layering": 1,
     "marker": 0,
     "narrative": 64,
@@ -150,7 +150,7 @@
       "file-size": 158
     },
     "desktop/frontend/src/components/Transcript.tsx": {
-      "file-size": 409
+      "file-size": 438
     },
     "desktop/frontend/src/components/UsageStatsPanel.tsx": {
       "file-size": 276
@@ -819,10 +819,10 @@
       "test-file-size": 3596
     },
     "internal/cli/cli.go": {
-      "complexity": 75,
+      "complexity": 72,
       "essay": 60,
-      "file-size": 1950,
-      "function-size": 505
+      "file-size": 1942,
+      "function-size": 497
     },
     "internal/cli/cli_test.go": {
       "essay": 9,
