@@ -111,3 +111,18 @@ func (a *Agent) withContractState(ctx context.Context) context.Context {
 	ctx = evidence.WithTodoState(ctx, a.CanonicalTodoState())
 	return evidence.WithAcceptanceCriteria(ctx, a.acceptanceCriterionIDs())
 }
+
+// outstandingPlanCriteria lists what the approved plan still lacks fresh
+// evidence for, empty when the turn is unplanned. It is the contract's answer to
+// "is this actually done", named criterion by criterion, including proofs that
+// went stale under a later mutation.
+func (a *Agent) outstandingPlanCriteria() []string {
+	if a == nil || a.planContractSnapshot() == nil {
+		return nil
+	}
+	c := a.LiveContract()
+	if c == nil {
+		return nil
+	}
+	return c.Outstanding()
+}

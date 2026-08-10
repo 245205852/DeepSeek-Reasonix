@@ -2,10 +2,10 @@
   "limits": {
     "banner": 15,
     "commented-code": 0,
-    "complexity": 2099,
-    "essay": 4085,
-    "file-size": 110345,
-    "function-size": 9165,
+    "complexity": 2096,
+    "essay": 4082,
+    "file-size": 110104,
+    "function-size": 9159,
     "layering": 1,
     "marker": 0,
     "narrative": 64,
@@ -436,10 +436,10 @@
       "essay": 7
     },
     "internal/agent/agent.go": {
-      "complexity": 61,
-      "essay": 107,
-      "file-size": 2711,
-      "function-size": 125
+      "complexity": 37,
+      "essay": 104,
+      "file-size": 2478,
+      "function-size": 103
     },
     "internal/agent/ask.go": {
       "essay": 4
@@ -508,6 +508,10 @@
       "essay": 4,
       "narrative": 1,
       "test-file-size": 1020
+    },
+    "internal/agent/final_readiness.go": {
+      "complexity": 24,
+      "function-size": 24
     },
     "internal/agent/fleet.go": {
       "essay": 3,
@@ -819,10 +823,10 @@
       "test-file-size": 3596
     },
     "internal/cli/cli.go": {
-      "complexity": 75,
+      "complexity": 72,
       "essay": 60,
-      "file-size": 1951,
-      "function-size": 506
+      "file-size": 1943,
+      "function-size": 498
     },
     "internal/cli/cli_test.go": {
       "essay": 9,

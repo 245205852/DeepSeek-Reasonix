@@ -548,7 +548,14 @@ func (c *Contract) Outstanding() []string {
 	var out []string
 	for _, req := range c.Requirements {
 		if req.Required && req.Status != Satisfied {
-			out = append(out, fmt.Sprintf("requirement %s: %s", req.ID, req.Text))
+			// Stale is said out loud here as it already is for checks: "verify
+			// it" and "re-verify it because the code moved" are different
+			// instructions, and only one of them is actionable after a change.
+			entry := fmt.Sprintf("requirement %s: %s", req.ID, req.Text)
+			if req.Status == Stale {
+				entry += " (stale: re-verify after the latest mutation)"
+			}
+			out = append(out, entry)
 		}
 	}
 	for _, check := range c.Checks {
