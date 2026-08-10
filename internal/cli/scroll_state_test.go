@@ -2,6 +2,7 @@ package cli
 
 import (
 	"fmt"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -11,6 +12,24 @@ import (
 	"reasonix/internal/control"
 	"reasonix/internal/event"
 )
+
+func TestUseLegacyViewportScrollClear(t *testing.T) {
+	for _, tt := range []struct {
+		goos string
+		want bool
+	}{{"windows", false}, {"linux", true}, {"darwin", true}} {
+		if got := useLegacyViewportScrollClear(tt.goos); got != tt.want {
+			t.Errorf("useLegacyViewportScrollClear(%q) = %v, want %v", tt.goos, got, tt.want)
+		}
+	}
+}
+
+func assertLegacyViewportClearCmd(t *testing.T, cmd tea.Cmd) {
+	t.Helper()
+	if got, want := cmd != nil, useLegacyViewportScrollClear(runtime.GOOS); got != want {
+		t.Fatalf("viewport ClearScreen command = %v, want %v on %s", got, want, runtime.GOOS)
+	}
+}
 
 func TestModalOpenDoesNotDisableTailFollow(t *testing.T) {
 	// Opening an approval banner shrinks the transcript viewport. Without an
