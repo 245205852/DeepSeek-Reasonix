@@ -11,7 +11,10 @@ import (
 )
 
 func init() {
-	registerCatalogCommand(catalogCommand{name: "usage", path: usagecatalog.DefaultPath, reindex: reindexUsageCatalog})
+	registerCatalogCommand(catalogCommand{
+		name: "usage", path: usagecatalog.DefaultPath, reindex: reindexUsageCatalog,
+		completionFlags: []cliCompletionFlag{completionFlag("--json", cliCompletionNoValue)},
+	})
 }
 
 func reindexUsageCatalog(args []string) int {
