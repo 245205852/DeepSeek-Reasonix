@@ -248,13 +248,10 @@ type TaskTool struct {
 	parentReg                     *tool.Registry
 	maxSteps                      int
 	contextWindow                 int
-	softCompactRatio              float64
-	toolResultSnipRatio           float64
 	compactRatio                  float64
-	compactForceRatio             float64
 	recentKeep                    int
 	temperature                   float64
-	contextEditing, archiveDir    string
+	archiveDir                    string
 	keepPolicy                    KeepPolicy
 	sysPrompt                     string
 	gate                          Gate
@@ -326,26 +323,22 @@ func NewTaskToolWithOptions(opts TaskToolOptions) *TaskTool {
 		sysPrompt = DefaultTaskSystemPrompt
 	}
 	return &TaskTool{
-		prov:                opts.Provider,
-		pricing:             opts.Pricing,
-		parentReg:           opts.ParentRegistry,
-		maxSteps:            opts.MaxSteps,
-		contextWindow:       opts.ContextWindow,
-		recentKeep:          opts.RecentKeep,
-		softCompactRatio:    opts.SoftCompactRatio,
-		toolResultSnipRatio: opts.ToolResultSnipRatio,
-		compactRatio:        opts.CompactRatio,
-		compactForceRatio:   opts.CompactForceRatio,
-		contextEditing:      normalizeContextEditing(opts.ContextEditing),
-		temperature:         opts.Temperature,
-		archiveDir:          opts.ArchiveDir,
-		keepPolicy:          opts.KeepPolicy,
-		sysPrompt:           sysPrompt,
-		gate:                opts.Gate,
-		subagentModel:       opts.SubagentModel,
-		subagentEffort:      opts.SubagentEffort,
-		resolveProvider:     opts.ResolveProvider,
-		maxSubagentDepth:    DefaultMaxSubagentDepth,
+		prov:             opts.Provider,
+		pricing:          opts.Pricing,
+		parentReg:        opts.ParentRegistry,
+		maxSteps:         opts.MaxSteps,
+		contextWindow:    opts.ContextWindow,
+		recentKeep:       opts.RecentKeep,
+		compactRatio:     opts.CompactRatio,
+		temperature:      opts.Temperature,
+		archiveDir:       opts.ArchiveDir,
+		keepPolicy:       opts.KeepPolicy,
+		sysPrompt:        sysPrompt,
+		gate:             opts.Gate,
+		subagentModel:    opts.SubagentModel,
+		subagentEffort:   opts.SubagentEffort,
+		resolveProvider:  opts.ResolveProvider,
+		maxSubagentDepth: DefaultMaxSubagentDepth,
 	}
 }
 
@@ -1619,31 +1612,27 @@ func (t *TaskTool) runReadOnlySubSession(ctx context.Context, prompt string, sub
 // must stay uniform across those paths — add new fields here, not at call sites.
 func (t *TaskTool) subagentOptions(ctx context.Context, maxSteps int, pricing *provider.Pricing, ctxWin, childDepth int, recoveryTaskID string, mutationObserver *checkpoint.MutationObserver) Options {
 	opts := Options{
-		MaxSteps:            maxSteps,
-		Temperature:         t.temperature,
-		Pricing:             pricing,
-		UsageSource:         event.UsageSourceSubagent,
-		Gate:                t.gate,
-		ContextWindow:       ctxWin,
-		RecentKeep:          t.recentKeep,
-		SoftCompactRatio:    t.softCompactRatio,
-		ToolResultSnipRatio: t.toolResultSnipRatio,
-		CompactRatio:        t.compactRatio,
-		CompactForceRatio:   t.compactForceRatio,
-		ContextEditing:      t.contextEditing,
-		ArchiveDir:          t.archiveDir,
-		KeepPolicy:          t.keepPolicy,
-		ResponseLanguage:    ResponseLanguageFromContext(ctx),
-		ReasoningLanguage:   ReasoningLanguageFromContext(ctx),
-		SubagentDepth:       childDepth,
-		MaxSubagentDepth:    t.maxDepth(),
-		DeliveryProfile:     t.deliveryProfile,
-		Ablation:            t.ablation,
-		WorkspaceLease:      t.workspaceLease,
-		RecoveryGate:        t.recoveryGate,
-		RecoveryAgentID:     "subagent",
-		RecoveryTaskID:      recoveryTaskID,
-		MutationObserver:    mutationObserver,
+		MaxSteps:          maxSteps,
+		Temperature:       t.temperature,
+		Pricing:           pricing,
+		UsageSource:       event.UsageSourceSubagent,
+		Gate:              t.gate,
+		ContextWindow:     ctxWin,
+		RecentKeep:        t.recentKeep,
+		CompactRatio:      t.compactRatio,
+		ArchiveDir:        t.archiveDir,
+		KeepPolicy:        t.keepPolicy,
+		ResponseLanguage:  ResponseLanguageFromContext(ctx),
+		ReasoningLanguage: ReasoningLanguageFromContext(ctx),
+		SubagentDepth:     childDepth,
+		MaxSubagentDepth:  t.maxDepth(),
+		DeliveryProfile:   t.deliveryProfile,
+		Ablation:          t.ablation,
+		WorkspaceLease:    t.workspaceLease,
+		RecoveryGate:      t.recoveryGate,
+		RecoveryAgentID:   "subagent",
+		RecoveryTaskID:    recoveryTaskID,
+		MutationObserver:  mutationObserver,
 	}
 	return opts
 }

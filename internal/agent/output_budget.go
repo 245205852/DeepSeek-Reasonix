@@ -233,11 +233,8 @@ func isCJKRune(r rune) bool {
 		(r >= 0xAC00 && r <= 0xD7AF)
 }
 
-// effectiveOutputBudget returns an explicit smaller output budget only when a
-// shared-window request would otherwise exceed the configured context window.
-// The final extension-adjusted request is measured, so later payload rewrites
-// cannot invalidate the decision. An exhausted window fails locally instead of
-// sending a request the provider will reject with HTTP 400.
+// effectiveOutputBudget clips completion tokens at send time only; it never
+// moves compact_ratio. Exhausted windows fail locally before HTTP 400.
 func (a *Agent) effectiveOutputBudget(req provider.Request) (int, bool, error) {
 	if a == nil || a.contextWindow <= 0 || !sharesContextWindow(a.prov) {
 		return 0, false, nil

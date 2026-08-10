@@ -69,7 +69,7 @@ runtime: turns 12/20, tokens 214000, requests 37, no-progress 6 (observational),
 
 `/goal resume` 恢复目标：只有 10/20/40 外层轮次型暂停才追加一档同类别轮数；`goal_run_budget` 与 `goal_stuck` 只开启一个新的 Run，不增加外层额度。累计 token、请求数与 `budget_extensions` 保留。旧版本因 `budget_tokens` 或 `no_progress` 暂停的 sidecar 在新版本加载时会自动改为 `running` 并立即持久化；旧 `noProgressLimit` 字段继续兼容读写但不再参与决策。
 
-上下文压缩继续使用全局既有策略（约 50% 提示、60% 工具结果清理、80% compact、90% 强制 compact）。Goal 开启本身不额外触发 summarizer，也不改变工具 Schema 或稳定 prompt 前缀。
+上下文压缩继续使用全局既有策略：仅由 `compact_ratio`（默认 85%）触发一次内容驱动摘要 checkpoint，不另设 soft/snip/force 多阈值。Goal 开启本身不额外触发 summarizer，也不改变工具 Schema 或稳定 prompt 前缀。
 
 ### 任务合约
 

@@ -538,19 +538,10 @@ type Agent struct {
 	subagentDepth    int
 	maxSubagentDepth int
 
-	// Context management: when a turn's prompt nears contextWindow, the older
-	// middle of the session is summarized away, keeping a token-bounded recent
-	// tail verbatim (recentKeep is the message floor) and archiving the originals
-	// under archiveDir. compactStuck latches when compaction can't get the prompt
-	// under the window (consecutiveCompacts crosses the limit), so auto-compaction
-	// pauses instead of looping. softCompactNoticed gates the one-shot soft-ratio
-	// notice so it fires once per approach, not every turn.
+	// Context management keeps the canonical transcript immutable and installs
+	// at most one provider-visible checkpoint each time compactRatio is crossed.
 	contextWindow       int
-	softCompactRatio    float64
-	toolResultSnipRatio float64
 	compactRatio        float64
-	compactForceRatio   float64
-	softCompactNoticed  bool
 	recentKeep          int
 	archiveDir          string
 	keepPolicy          KeepPolicy
@@ -558,7 +549,8 @@ type Agent struct {
 	consecutiveCompacts int
 	sessionPath         string // bound transcript path for projection sidecars
 	workspaceID         string // stable prompt-cache lineage component
-	cacheState          string // warm/cold/unknown; never provider-visible
+	cacheState          string // legacy resume telemetry; never provider-visible
+	checkpointState     string // none|restored|applied; runtime-only
 	compactionState     CompactionState
 	// compactionMu guards projection snapshots/install and the in-memory sidecar
 	// generation. Network summarization never runs while this lock is held.
@@ -570,7 +562,6 @@ type Agent struct {
 	// from paying for two summaries during one active tool loop.
 	lastCompactionTurn     atomic.Int64
 	strictAlternatingRoles bool // coalesce adjacent user turns on provider request copies
-	contextEditingState
 	// activeTurnCreatedAt identifies the real/synthetic user message that began
 	// the currently running turn. Compaction may rewrite older history while a
 	// tool loop is active, but it must keep this message and everything after it
@@ -1133,10 +1124,12 @@ type Options struct {
 
 	// Context management. ContextWindow <= 0 disables compaction. Ratios and
 	// RecentKeep fall back to defaults when unset.
-	ContextWindow          int
+	ContextWindow int
+	CompactRatio  float64
+	// Deprecated compatibility inputs. New agents ignore these fields; automatic
+	// maintenance is controlled only by CompactRatio.
 	SoftCompactRatio       float64
 	ToolResultSnipRatio    float64
-	CompactRatio           float64
 	CompactForceRatio      float64
 	RecentKeep             int
 	ArchiveDir             string
@@ -1144,7 +1137,7 @@ type Options struct {
 	SessionPath            string // projection sidecar path; empty = memory only
 	WorkspaceID            string // prompt-cache lineage component
 	StrictAlternatingRoles bool   // merge adjacent user turns for strict providers at request time
-	ContextEditing         string // local (default) or native (explicit opt-in)
+	ContextEditing         string // deprecated; native provider editing was removed
 
 	// Hooks fires PreToolUse / PostToolUse shell hooks around tool calls. nil
 	// disables hook firing.
@@ -1250,20 +1243,8 @@ type Options struct {
 // provider errors (compaction keeps the context bounded). A nil sink is replaced
 // with event.Discard so the agent can always emit unconditionally.
 func New(prov provider.Provider, tools *tool.Registry, session *Session, opts Options, sink event.Sink) *Agent {
-	if opts.SoftCompactRatio <= 0 {
-		opts.SoftCompactRatio = defaultSoftCompactRatio
-	}
-	if opts.ToolResultSnipRatio <= 0 {
-		opts.ToolResultSnipRatio = defaultToolResultSnipRatio
-	}
 	if opts.CompactRatio <= 0 {
 		opts.CompactRatio = defaultCompactRatio
-	}
-	if opts.ToolResultSnipRatio >= opts.CompactRatio {
-		opts.ToolResultSnipRatio = opts.CompactRatio
-	}
-	if opts.CompactForceRatio <= 0 {
-		opts.CompactForceRatio = defaultCompactForceRatio
 	}
 	if opts.RecentKeep <= 0 {
 		opts.RecentKeep = minRecentKeep
@@ -1345,10 +1326,7 @@ func New(prov provider.Provider, tools *tool.Registry, session *Session, opts Op
 		capabilityLedger:          opts.CapabilityLedger,
 		capabilityAudit:           opts.CapabilityAudit,
 		contextWindow:             opts.ContextWindow,
-		softCompactRatio:          opts.SoftCompactRatio,
-		toolResultSnipRatio:       opts.ToolResultSnipRatio,
 		compactRatio:              opts.CompactRatio,
-		compactForceRatio:         opts.CompactForceRatio,
 		recentKeep:                opts.RecentKeep,
 		archiveDir:                opts.ArchiveDir,
 		keepPolicy:                opts.KeepPolicy,
@@ -1356,7 +1334,6 @@ func New(prov provider.Provider, tools *tool.Registry, session *Session, opts Op
 		workspaceID:               strings.TrimSpace(opts.WorkspaceID),
 		cacheState:                CacheStateUnknown,
 		strictAlternatingRoles:    opts.StrictAlternatingRoles,
-		contextEditingState:       newContextEditingState(opts.ContextEditing, prov),
 		subagentDepth:             subagentDepth,
 		maxSubagentDepth:          maxSubagentDepth,
 		mutationObserver:          opts.MutationObserver,
@@ -2664,16 +2641,12 @@ func batchStormSignature(calls []provider.ToolCall, outcomes []toolOutcome) (str
 	return sb.String(), true
 }
 
-// toolOutcome is one tool call's result, split into the model-facing output and
-// the display-facing notice bits. errMsg is the short failure reason (empty on
-// success) — a refused call, an unknown tool, or an execution error — so a sink
-// renders the result as failed ("⊘ name <errMsg>" / a red card) instead of OK;
-// blocked narrows that to a refusal (plan mode / permission). truncMsg is set
-// (without the "· " prefix) when the output was head+tailed. images carries
-// data URLs from a tool.ImageTool result; they ride outside output so text
-// truncation can never corrupt an image payload.
+// toolOutcome is one tool call's result. output is the first-visible bounded
+// form the model sees; rawOutput is the full original when truncation applied
+// (empty when identical so we avoid double storage). images ride outside text.
 type toolOutcome struct {
 	output                     string
+	rawOutput                  string // full original when different from output
 	images                     []string
 	blocked                    bool
 	errMsg                     string
@@ -3227,20 +3200,77 @@ func firstLine(s string) string {
 	return s
 }
 
-// truncateToolOutput head+tails s when it exceeds maxToolOutputBytes, slicing
-// on rune boundaries so we never split a multibyte glyph. Returns the possibly
-// trimmed body plus a one-line user-facing notice when truncation happened
-// (empty when it didn't, without the "· " display prefix).
+// truncateToolOutput is the first-visible hard cap for a tool result. Under-cap
+// bodies are returned byte-identical. Over-cap bodies keep a tool-aware head and
+// tail under maxToolOutputBytes; the full original is stored separately as
+// RawContent by the session writer. The bounded form is stable for the message
+// lifetime and is never re-truncated by later maintenance.
 func truncateToolOutput(s string) (string, string) {
+	return truncateToolOutputFor(s, "", "")
+}
+
+// truncateToolOutputFor is the tool-aware first-visible limiter. toolName and
+// toolCallID populate the truncation marker so the model can re-fetch.
+func truncateToolOutputFor(s, toolName, toolCallID string) (string, string) {
 	if len(s) <= maxToolOutputBytes {
 		return s, ""
 	}
-	keep := maxToolOutputBytes / 2
-	head := snapToRuneBoundary(s, 0, keep)
-	tail := snapToRuneBoundary(s, len(s)-keep, len(s))
+	strategy := snipStrategy{head: 40, tail: 40, headChars: 8000, tailChars: 8000}
+	switch {
+	case toolName == "bash" || toolName == "shell" || strings.Contains(toolName, "bash"):
+		strategy = snipStrategy{head: 40, tail: 40, headChars: 8000, tailChars: 8000}
+	case toolName == "read_file" || toolName == "web_fetch" || strings.Contains(toolName, "read"):
+		strategy = snipStrategy{head: 120, tail: 12, headChars: 12000, tailChars: 2000}
+	case toolName == "grep" || toolName == "glob" || toolName == "ls" || toolName == "list_dir":
+		strategy = snipStrategy{head: 80, tail: 8, headChars: 10000, tailChars: 1000}
+	}
+	headKeep := strategy.headChars
+	tailKeep := strategy.tailChars
+	if headKeep+tailKeep > maxToolOutputBytes-512 {
+		headKeep = maxToolOutputBytes * 2 / 3
+		tailKeep = maxToolOutputBytes - headKeep - 512
+	}
+	if headKeep < 1024 {
+		headKeep = maxToolOutputBytes / 2
+		tailKeep = maxToolOutputBytes / 2
+	}
+	// Prefer more tail when the body looks like a failure.
+	lower := strings.ToLower(s)
+	if strings.Contains(lower, "error:") || strings.Contains(lower, "panic:") || strings.Contains(lower, "fatal:") {
+		tailKeep = max(tailKeep, maxToolOutputBytes/3)
+		if headKeep+tailKeep > maxToolOutputBytes-512 {
+			headKeep = maxToolOutputBytes - 512 - tailKeep
+		}
+	}
+	head := snapToRuneBoundary(s, 0, headKeep)
+	tail := snapToRuneBoundary(s, len(s)-tailKeep, len(s))
 	omitted := len(s) - len(head) - len(tail)
+	namePart := toolName
+	if namePart == "" {
+		namePart = "tool"
+	}
+	idPart := toolCallID
+	if idPart == "" {
+		idPart = "-"
+	}
 	notice := fmt.Sprintf("tool output truncated: %d of %d bytes elided", omitted, len(s))
-	body := head + fmt.Sprintf("\n\n…[truncated %d of %d bytes — rerun with narrower args to see the middle]…\n\n", omitted, len(s)) + tail
+	marker := fmt.Sprintf(
+		"\n\n…[truncated tool=%s call_id=%s original_bytes=%d kept_bytes=%d — full original retained in canonical transcript; re-read or retry with narrower args]…\n\n",
+		namePart, idPart, len(s), len(head)+len(tail),
+	)
+	body := head + marker + tail
+	if len(body) > maxToolOutputBytes {
+		overflow := len(body) - maxToolOutputBytes
+		trimHead := overflow / 2
+		trimTail := overflow - trimHead
+		if trimHead < len(head) {
+			head = snapToRuneBoundary(head, 0, len(head)-trimHead)
+		}
+		if trimTail < len(tail) {
+			tail = snapToRuneBoundary(tail, trimTail, len(tail))
+		}
+		body = head + marker + tail
+	}
 	return body, notice
 }
 

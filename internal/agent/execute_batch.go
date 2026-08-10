@@ -16,6 +16,7 @@ import (
 // batchExecution is the result of one provider tool-call batch.
 type batchExecution struct {
 	results            []string
+	outcomes           []toolOutcome
 	images             [][]string
 	executions         []*tool.ShellExecution
 	recoveryStopTurn   bool
@@ -349,6 +350,7 @@ func (a *Agent) executeBatch(ctx context.Context, calls []provider.ToolCall) bat
 	}
 	return batchExecution{
 		results:            results,
+		outcomes:           outcomes,
 		images:             images,
 		executions:         executions,
 		recoveryStopTurn:   recoveryBatchStop,

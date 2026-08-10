@@ -343,8 +343,12 @@ func (a *Agent) applyPlanModeAndProxy(ctx context.Context, plan *toolCallPlan) (
 			if rc.Unavailable {
 				return toolOutcome{output: result, errMsg: firstLine(rc.UnavailableReason)}, true
 			}
-			body, truncMsg := truncateToolOutput(result)
-			return toolOutcome{output: body, truncated: truncMsg != "", truncMsg: truncMsg}, true
+			body, truncMsg := truncateToolOutputFor(result, plan.call.Name, plan.call.ID)
+			out := toolOutcome{output: body, truncated: truncMsg != "", truncMsg: truncMsg}
+			if truncMsg != "" {
+				out.rawOutput = result
+			}
+			return out, true
 		}
 	} else if outcome, blocked := a.readOnlyExecutionBlock(t, nil); blocked {
 		return outcome, true
@@ -817,11 +821,16 @@ func (a *Agent) finishToolExecution(ctx context.Context, plan *toolCallPlan) too
 			detail = strings.TrimRight(detail, "\n") + "\nThe arguments were not valid JSON. Re-emit them exactly per this schema:\n" + string(t.Schema())
 		}
 		a.recordRepeatFailure(call, t, err)
-		body, truncMsg := truncateToolOutput(fmt.Sprintf("error: %v\n%s", err, detail))
-		return toolOutcome{
+		rawErr := fmt.Sprintf("error: %v\n%s", err, detail)
+		body, truncMsg := truncateToolOutputFor(rawErr, call.Name, call.ID)
+		out := toolOutcome{
 			output: body, errMsg: firstLine(err.Error()), truncated: truncMsg != "", truncMsg: truncMsg,
 			execution: execution, recoveryGeneration: recoveryGen,
 		}
+		if truncMsg != "" {
+			out.rawOutput = rawErr
+		}
+		return out
 	}
 	if mutates {
 		a.clearRepeatFailuresAfterMutation(evidenceName, evidenceArgs, readOnly)
@@ -833,11 +842,15 @@ func (a *Agent) finishToolExecution(ctx context.Context, plan *toolCallPlan) too
 	if a.hooks != nil && call.Name == "task" && !isBackgroundTaskCall(call.Arguments) {
 		a.hooks.SubagentStop(ctx, result)
 	}
-	body, truncMsg := truncateToolOutput(result)
-	return toolOutcome{
+	body, truncMsg := truncateToolOutputFor(result, call.Name, call.ID)
+	out := toolOutcome{
 		output: body, images: images, truncated: truncMsg != "", truncMsg: truncMsg,
 		execution: execution, recoveryGeneration: recoveryGen,
 	}
+	if truncMsg != "" {
+		out.rawOutput = result
+	}
+	return out
 }
 
 // observeBeforeMutation captures preimages for Previewable writers and records

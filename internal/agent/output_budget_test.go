@@ -90,9 +90,16 @@ func TestSharedWindowFoldUsesGuardedInputBudget(t *testing.T) {
 		outputBudgetState: outputBudgetState{outputBudget: prov.budget},
 		sink:              event.Discard,
 	}
-	// 200K han runes is ~150K cold-start tokens against a 100K window: the fold
-	// genuinely cannot ride one call, which is what the guard exists to catch.
-	fold := []provider.Message{{Role: provider.RoleUser, Content: strings.Repeat("字", 200_000)}}
+	// Oversized tool bodies are deterministically shortened for the single
+	// summarizer request (no multi-span). The guard must still fit one call.
+	toolBody := strings.Repeat("file line content here. ", 20_000) // ~480K chars
+	fold := []provider.Message{
+		{Role: provider.RoleUser, Content: "read large files"},
+		{Role: provider.RoleAssistant, ToolCalls: []provider.ToolCall{{ID: "1", Name: "read_file", Arguments: "{}"}}},
+		{Role: provider.RoleTool, ToolCallID: "1", Name: "read_file", Content: toolBody},
+		{Role: provider.RoleAssistant, ToolCalls: []provider.ToolCall{{ID: "2", Name: "read_file", Arguments: "{}"}}},
+		{Role: provider.RoleTool, ToolCallID: "2", Name: "read_file", Content: toolBody},
+	}
 
 	if _, err := a.foldToSummary(context.Background(), fold, ""); err != nil {
 		t.Fatalf("foldToSummary: %v", err)
@@ -100,11 +107,36 @@ func TestSharedWindowFoldUsesGuardedInputBudget(t *testing.T) {
 	if prov.calls == 0 || len(prov.last.Messages) < 2 {
 		t.Fatalf("guarded fold produced no summarizer request: calls=%d request=%+v", prov.calls, prov.last)
 	}
-	if got := prov.last.Messages[1].Content; len(got) >= len(renderTranscript(fold)) || !strings.Contains(got, "omitted") {
-		t.Fatalf("cold CJK fold was not bounded before summarize: len=%d original=%d", len(got), len(renderTranscript(fold)))
+	got := prov.last.Messages[1].Content
+	if len(got) >= len(renderTranscript(fold)) {
+		t.Fatalf("oversized tool fold was not shortened before summarize: len=%d original=%d", len(got), len(renderTranscript(fold)))
+	}
+	// Snip / omit markers prove the temporary request was bounded for the guard.
+	if !strings.Contains(got, "omitted") && !strings.Contains(got, "retained") && !strings.Contains(got, "snip") {
+		t.Fatalf("shortened fold missing a truncation marker:\n%.200q", got)
 	}
 	if got := prov.last.MaxTokens; got < summaryOutputReserve {
 		t.Fatalf("summarizer MaxTokens = %d, below summaryOutputReserve %d", got, summaryOutputReserve)
+	}
+}
+
+// A single unshortenable fold that still exceeds the single-request budget after
+// all deterministic shorteners must fail once (no multi-span split).
+func TestSharedWindowFoldRejectsUnshortenableOverBudgetInput(t *testing.T) {
+	prov := &sharedWindowTestProvider{budget: 128 * 1024, shared: true}
+	a := &Agent{
+		prov:              prov,
+		contextWindow:     100_000,
+		outputBudgetState: outputBudgetState{outputBudget: prov.budget},
+		sink:              event.Discard,
+	}
+	fold := []provider.Message{{Role: provider.RoleUser, Content: strings.Repeat("字", 200_000)}}
+	_, err := a.foldToSummary(context.Background(), fold, "")
+	if err == nil || !strings.Contains(err.Error(), "exceeds single-request budget") {
+		t.Fatalf("foldToSummary err = %v, want single-request budget failure", err)
+	}
+	if prov.calls != 0 {
+		t.Fatalf("over-budget unshortenable fold still called summarizer %d times", prov.calls)
 	}
 }
 
@@ -285,8 +317,7 @@ func TestPrepareSamplingRequestClipsSharedWindowOutput(t *testing.T) {
 		tools:             tool.NewRegistry(),
 		session:           sess,
 		contextWindow:     1_048_576,
-		compactRatio:      2,
-		compactForceRatio: 2,
+		compactRatio:      2, // disable auto maintenance for this output-clip test
 		outputBudgetState: outputBudgetState{outputBudget: prov.budget},
 	}
 	a.lastUsage.Store(&provider.Usage{PromptTokens: 950_000})
@@ -369,11 +400,11 @@ func TestSummarizeRejectsLengthTruncation(t *testing.T) {
 		sink:              event.Discard,
 	}
 
-	_, _, err := a.summarizeWithRetry(context.Background(), []provider.Message{{
+	_, _, err := a.summarizeOnce(context.Background(), []provider.Message{{
 		Role: provider.RoleUser, Content: "retain every durable fact",
 	}}, "")
 	if err == nil || !strings.Contains(err.Error(), "truncated") {
-		t.Fatalf("summarizeWithRetry error = %v, want truncation failure", err)
+		t.Fatalf("summarizeOnce error = %v, want truncation failure", err)
 	}
 	if prov.calls != 1 {
 		t.Fatalf("length-truncated summary calls = %d, want no identical retry", prov.calls)
