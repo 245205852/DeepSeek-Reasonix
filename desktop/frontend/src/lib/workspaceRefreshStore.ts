@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useSyncExternalStore } from "react";
 import { app, onEvent } from "./bridge";
+import { tabMetaFallbackDelay } from "./tabMetaRefresh";
 import type { WireWorkspaceChanged, WorkspaceRevisions, WorkspaceWatchState } from "./types";
 
 export interface WorkspaceRefreshSnapshot {
@@ -180,6 +181,61 @@ export async function reconcileWorkspaceRefresh(
     // A transient runtime rebuild must not erase the last good snapshot.
   }
 }
+
+export function startWorkspaceFocusReconciliation(
+  activeTabId: string | undefined,
+  workspaceScopeKey: string,
+  refreshTabMetas: () => unknown,
+): () => void {
+  let cancelled = false;
+  let timer: number | undefined;
+  let focusTimer: number | undefined;
+  const schedule = () => {
+    if (cancelled) return;
+    timer = window.setTimeout(() => {
+      void refreshTabMetas();
+      schedule();
+    }, tabMetaFallbackDelay(document.visibilityState));
+  };
+  const refreshAndSchedule = (forceVisible = false) => {
+    if (timer !== undefined) window.clearTimeout(timer);
+    timer = undefined;
+    void refreshTabMetas();
+    if (activeTabId) void reconcileWorkspaceRefresh(activeTabId, workspaceScopeKey, { forceVisible });
+    schedule();
+  };
+  const requestVisibleRefresh = () => {
+    if (cancelled || focusTimer !== undefined) return;
+    // Focus and visibility commonly fire together; collapse the pair into
+    // one bounded reconciliation for the foreground transition.
+    focusTimer = window.setTimeout(() => {
+      focusTimer = undefined;
+      refreshAndSchedule(true);
+    }, 0);
+  };
+  const onVisibilityChange = () => {
+    if (document.visibilityState === "visible") requestVisibleRefresh();
+    else {
+      if (timer !== undefined) window.clearTimeout(timer);
+      schedule();
+    }
+  };
+  const onFocus = () => {
+    if (document.visibilityState === "visible") requestVisibleRefresh();
+  };
+  refreshAndSchedule(false);
+  document.addEventListener("visibilitychange", onVisibilityChange);
+  window.addEventListener("focus", onFocus);
+  return () => {
+    cancelled = true;
+    if (timer !== undefined) window.clearTimeout(timer);
+    if (focusTimer !== undefined) window.clearTimeout(focusTimer);
+    document.removeEventListener("visibilitychange", onVisibilityChange);
+    window.removeEventListener("focus", onFocus);
+  };
+}
+
+export default startWorkspaceFocusReconciliation;
 
 // Deterministic seams for the store's scope and monotonicity contracts.
 export function resetWorkspaceRefreshStoreForTests(): void {
