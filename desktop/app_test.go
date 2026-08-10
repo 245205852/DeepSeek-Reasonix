@@ -4404,8 +4404,8 @@ func TestListSessionsUsesPinnedSessionOwnerBeforeStaleRuntimeDir(t *testing.T) {
 	app.tabs = map[string]*WorkspaceTab{tab.ID: tab}
 	app.tabOrder = []string{tab.ID}
 	app.activeTabID = tab.ID
+	installSessionCatalogForTest(t, app, sessionDirA, "project", projectA)
 	t.Cleanup(oldCtrl.Close)
-
 	sessions := app.ListSessions()
 	if len(sessions) == 0 {
 		t.Fatal("ListSessions() returned no sessions")
@@ -6692,7 +6692,7 @@ func TestDeleteSessionCancelsInactiveOpenRuntime(t *testing.T) {
 		tabOrder:    []string{"active", "inactive"},
 		activeTabID: "active",
 	}
-
+	installSessionCatalogForTest(t, app, dir, "global", "")
 	if err := app.DeleteSession(filepath.Base(inactivePath)); err != nil {
 		t.Fatalf("DeleteSession(inactive open basename): %v", err)
 	}
@@ -6918,7 +6918,6 @@ func TestRestoreSessionRejectsDestroyingSession(t *testing.T) {
 
 func TestDesktopSessionAPIsUseControllerSessionDir(t *testing.T) {
 	isolateDesktopUserDirs(t)
-
 	dirA := filepath.Join(t.TempDir(), "workspace-a-sessions")
 	dirB := filepath.Join(t.TempDir(), "workspace-b-sessions")
 	if err := os.MkdirAll(dirA, 0o755); err != nil {
@@ -6939,7 +6938,7 @@ func TestDesktopSessionAPIsUseControllerSessionDir(t *testing.T) {
 	app := NewApp()
 	app.setTestCtrl(control.New(control.Options{SessionDir: dirA, SessionPath: pathA, Label: "test"}), "")
 	defer app.activeCtrl().Close()
-
+	installSessionCatalogForTest(t, app, dirA, "global", "")
 	sessions := app.ListSessions()
 	if len(sessions) != 1 || sessions[0].Path != pathA || sessions[0].TurnsState != "unknown" ||
 		!strings.Contains(sessions[0].Preview, "being indexed") {
@@ -6955,6 +6954,7 @@ func TestDesktopSessionAPIsUseControllerSessionDir(t *testing.T) {
 	if meta.CustomTitle != "A title" {
 		t.Fatalf("custom title should be written to branch meta, got %q", meta.CustomTitle)
 	}
+	reconcileSessionCatalogForTest(t, app, dirA, "global", "")
 	sessions = app.ListSessions()
 	if len(sessions) != 1 || sessions[0].Title != "A title" {
 		t.Fatalf("ListSessions should return custom title from branch meta, got %+v", sessions)
@@ -6992,7 +6992,7 @@ func TestListSessionsMarksAutoBotSessionAsChannel(t *testing.T) {
 	app := NewApp()
 	app.setTestCtrl(control.New(control.Options{SessionDir: dir, SessionPath: filepath.Join(dir, "active.jsonl"), Label: "test"}), "")
 	defer app.activeCtrl().Close()
-
+	installSessionCatalogForTest(t, app, dir, "global", "")
 	sessions := app.ListSessions()
 	if len(sessions) != 1 {
 		t.Fatalf("ListSessions len = %d, want 1: %+v", len(sessions), sessions)

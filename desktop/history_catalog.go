@@ -139,11 +139,16 @@ func historyCatalogRoots(targets []sessioncatalog.DirectoryTarget) []historycata
 
 func sessionMetaFromCatalog(record sessioncatalog.SessionRecord, current, open bool) SessionMeta {
 	title := strings.TrimSpace(record.CustomTitle)
-	return SessionMeta{Path: record.Path, Preview: record.Preview, Title: title, Turns: record.Turns,
+	preview := record.Preview
+	if strings.TrimSpace(preview) == "" && record.TurnsState == sessioncatalog.TurnsUnknown {
+		preview = "History is being indexed — " + filepath.Base(record.Path)
+	}
+	recovered := record.Recovered || strings.TrimSpace(record.RecoveryDigest) != "" || isAutomaticRecoverySessionPath(record.Path)
+	return SessionMeta{Path: record.Path, Preview: preview, Title: title, Turns: record.Turns,
 		TurnsState: string(record.TurnsState), CreatedAt: record.CreatedAt, LastActivityAt: record.LastActivityAt,
 		ModTime: record.LastActivityAt, Current: current, Open: open, Scope: record.Scope,
 		WorkspaceRoot: record.WorkspaceRoot, TopicID: record.TopicID, TopicTitle: record.TopicTitle,
-		Recovered: record.Recovered}
+		Recovered: recovered}
 }
 
 func (a *App) ListHistorySessions(req HistorySessionPageRequest) HistorySessionPage {

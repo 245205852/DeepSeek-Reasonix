@@ -852,7 +852,7 @@ func TestHistoryMarksLegacyRecoverySessionsAsRecovered(t *testing.T) {
 	defer ctrl.Close()
 	app := NewApp()
 	app.setTestCtrl(ctrl, "")
-
+	installSessionCatalogForTest(t, app, dir, "global", "")
 	sessions := app.ListSessions()
 	for _, session := range sessions {
 		if filepath.Clean(session.Path) != filepath.Clean(recovery) {
