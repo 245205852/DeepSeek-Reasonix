@@ -117,9 +117,9 @@ type chatTUI struct {
 	// marker rides in outgoing user messages so the cache-stable prompt prefix is
 	// left untouched.
 	planMode bool
-	// sessionSwitch is set by replayActiveBranch to suppress the ClearScreen
-	// flicker when the viewport content is completely rebuilt during a session
-	// switch (#5441). Cleared after one Update cycle.
+	// legacyScrollClear keeps the per-offset ClearScreen workaround only for Warp.
+	legacyScrollClear bool
+	// sessionSwitch suppresses that workaround during a transcript rebuild (#5441).
 	sessionSwitch bool
 	// yoloRestoreToolApprovalMode remembers the Ask/Auto base mode that Ctrl+Y
 	// should restore after a desktop-style YOLO toggle.
@@ -628,6 +628,7 @@ func newChatTUI(ctrl control.SessionAPI, missing string, eventCh chan event.Even
 		modelRef:             ctrl.ModelRef(),
 		missing:              missing,
 		nativeScrollback:     nativeScrollback,
+		legacyScrollClear:    useLegacyViewportScrollClear(runtime.GOOS, os.Environ()),
 		mouseCaptureOff:      mouseCaptureOffByDefault(),
 		input:                ti,
 		spinner:              sp,
@@ -976,10 +977,9 @@ func (m chatTUI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 	}
 
-	// Keep the legacy full redraw where Warp's scroll optimization can strand
-	// stale rows. Bubble Tea already disables that optimization on Windows,
-	// where an extra asynchronous ClearScreen visibly flickers (#8090).
-	if useLegacyViewportScrollClear(runtime.GOOS) && cm.viewport.YOffset() != prevYOff && !cm.nativeScrollback && !cm.sessionSwitch {
+	// Keep the legacy full redraw only where Warp's scroll optimization can
+	// strand stale rows. Every other terminal relies on Bubble Tea's renderer.
+	if cm.legacyScrollClear && cm.viewport.YOffset() != prevYOff && !cm.nativeScrollback && !cm.sessionSwitch {
 		cm.sessionSwitch = false
 		return cm, batchCmds(tea.ClearScreen, mouseCmd, cmd)
 	}

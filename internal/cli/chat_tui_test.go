@@ -1540,10 +1540,14 @@ func TestMouseWheelAndPageKeysScrollTranscript(t *testing.T) {
 	ch := make(chan event.Event, 1)
 	notice := agentEventMsg(event.Event{Kind: event.Notice, Level: event.LevelInfo, Text: "line"})
 	adv := func(m chatTUI, msg tea.Msg) chatTUI {
-		n, _ := m.Update(msg)
+		n, cmd := m.Update(msg)
+		_, wheel := msg.(tea.MouseWheelMsg)
+		_, key := msg.(tea.KeyPressMsg)
+		if cmd != nil && (wheel || key) {
+			t.Fatalf("viewport update %T should rely on the renderer diff, got command %T", msg, cmd)
+		}
 		return n.(chatTUI)
 	}
-
 	cur := adv(newChatTUI(ctrl, "", ch, 80), tea.WindowSizeMsg{Width: 80, Height: 10})
 	for range 40 {
 		cur = adv(cur, notice)
@@ -1555,23 +1559,20 @@ func TestMouseWheelAndPageKeysScrollTranscript(t *testing.T) {
 	if bottom <= cur.viewport.Height()+3 {
 		t.Fatalf("test transcript did not overflow enough: bottom=%d height=%d", bottom, cur.viewport.Height())
 	}
-
+	cur.legacyScrollClear = false
 	cur = adv(cur, tea.MouseWheelMsg{Button: tea.MouseWheelUp})
 	if got, want := cur.viewport.YOffset(), bottom-3; got != want {
 		t.Fatalf("wheel-up YOffset = %d, want %d", got, want)
 	}
-
 	cur = adv(cur, tea.MouseWheelMsg{Button: tea.MouseWheelDown})
 	if got := cur.viewport.YOffset(); got != bottom {
 		t.Fatalf("wheel-down should return by one wheel step, YOffset=%d want bottom=%d", got, bottom)
 	}
-
 	cur = adv(cur, tea.KeyPressMsg{Code: tea.KeyPgUp})
 	pageUp := cur.viewport.YOffset()
 	if got, want := pageUp, bottom-cur.viewport.Height(); got != want {
 		t.Fatalf("PageUp YOffset = %d, want %d", got, want)
 	}
-
 	cur = adv(cur, tea.KeyPressMsg{Code: tea.KeyPgDown})
 	if got := cur.viewport.YOffset(); got != bottom {
 		t.Fatalf("PageDown should return to bottom from one page up, YOffset=%d want %d", got, bottom)
@@ -3103,7 +3104,6 @@ func TestForceGotoBottomScrollsWithoutTranscriptChange(t *testing.T) {
 		n, _ := adv(m, msg)
 		return n
 	}
-
 	cur := next(newChatTUI(ctrl, "", ch, 80), tea.WindowSizeMsg{Width: 80, Height: 8})
 	for range 12 {
 		cur = next(cur, notice)
@@ -3119,6 +3119,7 @@ func TestForceGotoBottomScrollsWithoutTranscriptChange(t *testing.T) {
 
 	cur.forceGotoBottom = true
 	cur.transcriptDirty = false
+	cur.legacyScrollClear = false
 	cur, cmd := adv(cur, tea.WindowSizeMsg{Width: 80, Height: 8})
 
 	if !cur.viewport.AtBottom() {
@@ -3127,10 +3128,10 @@ func TestForceGotoBottomScrollsWithoutTranscriptChange(t *testing.T) {
 	if cur.forceGotoBottom {
 		t.Fatal("forceGotoBottom should be cleared after scrolling")
 	}
-	assertLegacyViewportClearCmd(t, cmd)
+	assertLegacyViewportClearCmd(t, cmd, false)
 }
 
-func TestSessionSwitchSuppressesOneClearScreen(t *testing.T) {
+func TestSessionSwitchSuppressesOneWarpClearScreen(t *testing.T) {
 	ctrl := control.New(control.Options{})
 	ch := make(chan event.Event, 1)
 	notice := agentEventMsg(event.Event{Kind: event.Notice, Level: event.LevelInfo, Text: "line"})
@@ -3151,14 +3152,13 @@ func TestSessionSwitchSuppressesOneClearScreen(t *testing.T) {
 	if cur.viewport.AtBottom() {
 		t.Fatal("wheel-up should break the bottom pin")
 	}
-
+	cur.legacyScrollClear = true
 	cur.sessionSwitch = true
 	cur.forceGotoBottom = true
 	cur.transcriptDirty = false
 	cur, cmd := adv(cur, tea.WindowSizeMsg{Width: 80, Height: 8})
-
 	if cmd != nil {
-		t.Fatal("session switch rebuild should suppress the ClearScreen scroll-jump workaround once")
+		t.Fatal("session switch rebuild should suppress the Warp ClearScreen workaround once")
 	}
 	if cur.sessionSwitch {
 		t.Fatal("sessionSwitch should be cleared after one Update")
@@ -3170,7 +3170,7 @@ func TestSessionSwitchSuppressesOneClearScreen(t *testing.T) {
 	cur = next(cur, tea.MouseWheelMsg{Button: tea.MouseWheelUp})
 	cur.forceGotoBottom = true
 	cur, cmd = adv(cur, tea.WindowSizeMsg{Width: 80, Height: 8})
-	assertLegacyViewportClearCmd(t, cmd)
+	assertLegacyViewportClearCmd(t, cmd, true)
 	if cur.sessionSwitch {
 		t.Fatal("sessionSwitch should remain false after the suppressed cycle")
 	}
