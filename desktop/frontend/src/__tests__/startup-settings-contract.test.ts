@@ -27,7 +27,9 @@ const here = dirname(fileURLToPath(import.meta.url));
 const appSource = readFileSync(resolve(here, "../App.tsx"), "utf8");
 const bridgeSource = readFileSync(resolve(here, "../lib/bridge.ts"), "utf8");
 const settingsSource = readFileSync(resolve(here, "../components/SettingsPanel.tsx"), "utf8");
-const stylesSource = readFileSync(resolve(here, "../styles.css"), "utf8") + readFileSync(resolve(here, "../components/ProviderAccessSettings.css"), "utf8");
+const stylesSource = readFileSync(resolve(here, "../styles.css"), "utf8") +
+  readFileSync(resolve(here, "../components/ProviderAccessSettings.css"), "utf8") +
+  readFileSync(resolve(here, "../components/SettingsPanel.css"), "utf8");
 const enLocaleSource = readFileSync(resolve(here, "../locales/en.ts"), "utf8");
 const zhLocaleSource = readFileSync(resolve(here, "../locales/zh.ts"), "utf8");
 const zhTWLocaleSource = readFileSync(resolve(here, "../locales/zh-TW.ts"), "utf8");
@@ -106,21 +108,38 @@ ok(
   "GLM reasoning protocol is localized in every supported locale",
 );
 ok(
-  settingsSource.includes('settings.reasoningDisplay') &&
-    settingsSource.includes('settings.reasoningDisplay.hidden') &&
-    settingsSource.includes('settings.reasoningDisplay.auto') &&
+  settingsSource.includes('settings.workProcess') &&
+    settingsSource.includes('settings-work-process-control') &&
+    settingsSource.includes('settings.reasoningDisplay') &&
+    settingsSource.includes('["hidden", "summary", "auto"]') &&
+    settingsSource.includes('settings.processFold') &&
+    settingsSource.includes('["auto", "expanded"]') &&
+    settingsSource.includes('setProcessFoldPreference(pref)') &&
     settingsSource.includes('app.SetReasoningDisplayMode(mode)'),
-  "General settings exposes live three-mode reasoning display options",
+  "General settings groups independent reasoning display and completed-work folding controls",
 );
 ok(
   [enLocaleSource, zhLocaleSource, zhTWLocaleSource].every((source) =>
+    source.includes('"settings.workProcess"') &&
+    source.includes('"settings.workProcessHint"') &&
     source.includes('"settings.reasoningDisplay"') &&
-    source.includes('"settings.reasoningDisplayHint"') &&
     source.includes('"settings.reasoningDisplay.hidden"') &&
     source.includes('"settings.reasoningDisplay.summary"') &&
-    source.includes('"settings.reasoningDisplay.auto"'),
+    source.includes('"settings.reasoningDisplay.auto"') &&
+    source.includes('"settings.processFold"'),
   ),
-  "reasoning-display labels are localized in every supported locale",
+  "work-process group labels are localized in every supported locale",
+);
+ok(
+  stylesSource.includes(".settings-work-process-control") &&
+    stylesSource.includes(".settings-work-process-row + .settings-work-process-row"),
+  "work-process controls share one visual group with an internal divider",
+);
+ok(
+  [settingsSource, enLocaleSource, zhLocaleSource, zhTWLocaleSource].every((source) =>
+    !source.includes("settings.reasoningSummary"),
+  ),
+  "the retired standalone reasoning-summary setting does not return",
 );
 ok(
   !/mockPreset\("deepseek-anthropic",/.test(bridgeSource),

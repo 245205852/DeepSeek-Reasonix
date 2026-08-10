@@ -1857,36 +1857,55 @@ function GeneralSection({ s, busy, apply, agentRunning }: SectionProps & { agent
           ))}
         </div>
       </SettingsField>
-      <SettingsField label={t("settings.processFold")} hint={t("settings.processFoldHint")}>
-        <div className="set-seg">
-          {(["auto", "expanded"] as const).map((pref) => (
-            <button
-              key={pref}
-              className={`set-seg__btn${processFold === pref ? " set-seg__btn--on" : ""}`}
-              onClick={() => setProcessFoldPreference(pref)}
-            >
-              {t(`settings.processFold.${pref}`)}
-            </button>
-          ))}
-        </div>
-      </SettingsField>
-      <SettingsField label={t("settings.reasoningDisplay")} hint={t("settings.reasoningDisplayHint")}>
-        <div className="settings-reasoning-display-control">
-          <div className="set-seg" role="radiogroup" aria-label={t("settings.reasoningDisplay")}>
-            {(["hidden", "summary", "auto"] as const).map((mode) => (
-              <button
-                key={mode}
-                type="button"
-                className={`set-seg__btn${reasoningDisplayMode === mode ? " set-seg__btn--on" : ""}`}
-                aria-pressed={reasoningDisplayMode === mode}
-                disabled={busy}
-                onClick={() => void saveReasoningDisplayMode(mode)}
-              >
-                {t(`settings.reasoningDisplay.${mode}`)}
-              </button>
-            ))}
+      <SettingsField
+        label={t("settings.workProcess")}
+        hint={t("settings.workProcessHint")}
+        className="settings-work-process-field"
+        stacked
+      >
+        <div className="settings-work-process-control" role="group" aria-label={t("settings.workProcess")}>
+          <div className="settings-work-process-row">
+            <div className="settings-work-process-row__copy">
+              <div className="settings-work-process-row__label">{t("settings.reasoningDisplay")}</div>
+              {reasoningDisplayMode === "legacy-collapsed" && <div className="settings-inline-hint" role="status">{t("settings.reasoningDisplay.legacy")}</div>}
+            </div>
+            <div className="settings-work-process-row__control">
+              <div className="set-seg" role="radiogroup" aria-label={t("settings.reasoningDisplay")}>
+                {(["hidden", "summary", "auto"] as const).map((mode) => (
+                  <button
+                    key={mode}
+                    type="button"
+                    className={`set-seg__btn${reasoningDisplayMode === mode ? " set-seg__btn--on" : ""}`}
+                    aria-pressed={reasoningDisplayMode === mode}
+                    disabled={busy}
+                    onClick={() => void saveReasoningDisplayMode(mode)}
+                  >
+                    {t(`settings.reasoningDisplay.${mode}`)}
+                  </button>
+                ))}
+              </div>
+            </div>
           </div>
-          {reasoningDisplayMode === "legacy-collapsed" && <div className="settings-inline-hint" role="status">{t("settings.reasoningDisplay.legacy")}</div>}
+          <div className="settings-work-process-row">
+            <div className="settings-work-process-row__copy">
+              <div className="settings-work-process-row__label">{t("settings.processFold")}</div>
+            </div>
+            <div className="settings-work-process-row__control">
+              <div className="set-seg" role="radiogroup" aria-label={t("settings.processFold")}>
+                {(["auto", "expanded"] as const).map((pref) => (
+                  <button
+                    key={pref}
+                    type="button"
+                    className={`set-seg__btn${processFold === pref ? " set-seg__btn--on" : ""}`}
+                    aria-pressed={processFold === pref}
+                    onClick={() => setProcessFoldPreference(pref)}
+                  >
+                    {t(`settings.processFold.${pref}`)}
+                  </button>
+                ))}
+              </div>
+            </div>
+          </div>
         </div>
       </SettingsField>
       <SettingsField label={t("settings.defaultToolApprovalMode")} hint={t("settings.defaultToolApprovalModeHint")}>
