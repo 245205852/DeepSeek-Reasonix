@@ -412,6 +412,7 @@ var ChineseTraditional = Messages{
 	CustomPromptBaseURL:  "請輸入 Base URL",
 	CustomPromptKeyEnv:   "API Key 變數名稱（直接按 Enter 使用預設值，不是模型名稱）",
 	CustomPromptAPIKey:   "請輸入 API Key",
+	CustomPromptWindow:   "上下文視窗(tokens,填得比模型真實視窗小會導致過早壓縮)",
 	CustomAddedFmt:       "已新增自訂模型: %s",
 
 	// Anthropic 相容 provider
