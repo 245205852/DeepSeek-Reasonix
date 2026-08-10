@@ -108,6 +108,7 @@ type Catalog struct {
 	reconcileMu   sync.Mutex
 	reconciling   map[string]bool
 	registered    map[string]bool
+	reconcileDone bool
 }
 
 func DefaultPath() string { return filepath.Join(config.CacheDir(), "task-catalog", "v1.sqlite") }
@@ -302,7 +303,7 @@ func (c *Catalog) RequestReconcileProject(ctx context.Context, root, label strin
 
 func (c *Catalog) scheduleReconcile(project Project) {
 	c.reconcileMu.Lock()
-	if c.closing.Load() || c.reconciling[project.Key] {
+	if c.reconcileDone || c.reconciling[project.Key] {
 		c.reconcileMu.Unlock()
 		return
 	}
@@ -662,8 +663,8 @@ func (c *Catalog) Status() Status {
 func (c *Catalog) Close(ctx context.Context) error {
 	c.closing.Store(true)
 	c.cancel()
-	// Synchronize with scheduleReconcile so Wait cannot race a late Add.
 	c.reconcileMu.Lock()
+	c.reconcileDone = true
 	c.reconcileMu.Unlock()
 	done := make(chan struct{})
 	go func() { c.wg.Wait(); close(done) }()
