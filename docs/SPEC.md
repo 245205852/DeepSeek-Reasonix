@@ -871,6 +871,14 @@ was 100% everywhere. One child run costs 100k-220k tokens before it produces
 anything, and the forced arm's spread was about twice the neutral arm's, so
 delegation also buys variance.
 
+One hypothesis remains untested rather than disproved: delegation's isolation
+should pay when the parent is actually hurt by what it read. It could not be
+provoked here. Pinning a workspace `compact_ratio` down to 0.5% still produced
+zero compactions, because the agent keeps its session small by writing a script
+instead of reading — the same behaviour that wins it the comparisons. Context
+pressure needs a task that cannot be scripted away, which this corpus does not
+yet contain.
+
 The migration is the instructive one. Left alone the agent read a single file,
 wrote a script and changed 108 call sites in 28 seconds; split across three
 packages, no branch could see the transformation that solved all three. A task
