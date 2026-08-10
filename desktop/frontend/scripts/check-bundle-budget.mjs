@@ -81,7 +81,8 @@ const rawInitialBytes = [...initialJS, ...initialCSS, ...appShellCSS]
 // Native Web Animations and frame-batched scrolling avoid an eager animation
 // runtime. Shared reasoning-display state and Goal request observability add
 // small always-available contracts, while the catalog project shell adds
-// cursor, revision, and progress state. Keep their combined allowance tightly
+// cursor, revision, and progress state. The indexed history bridge adds one
+// more KiB of always-available contracts; keep the combined allowance tightly
 // ratcheted while the gzip gate stays flat.
-assertBudget("initial raw JavaScript and CSS", rawInitialBytes, 2_209 * 1024);
+assertBudget("initial raw JavaScript and CSS", rawInitialBytes, 2_210 * 1024);
 assertBudget("largest initial JavaScript chunk raw", largestInitialJSRaw, 1_000 * 1024);
