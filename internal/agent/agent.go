@@ -2719,24 +2719,24 @@ func completedMCPConnect(reg *tool.Registry, name string) (string, bool) {
 // task list. Initial plans and progress-only status updates stay on the fast
 // path; changing step identity, order, or hierarchy while work remains is a
 // semantic transition for the independent Auto reviewer.
-func (a *Agent) recoveryPlanTransition(toolName string, args json.RawMessage) (bool, string, string) {
+func (a *Agent) recoveryPlanTransition(toolName string, args json.RawMessage) (bool, string, string, string) {
 	if a == nil || toolName != "todo_write" || a.planMode.Load() {
-		return false, "", ""
+		return false, "", "", ""
 	}
 	before := a.CanonicalTodoState()
 	if len(before) == 0 || len(evidence.IncompleteTodos(before)) == 0 {
-		return false, "", ""
+		return false, "", "", ""
 	}
 	after := evidence.ReceiptFromToolCall("todo_write", args, true, true).Todos
 	if len(after) == 0 || evidence.ValidateSerialTodos(after) != nil || !evidence.PreservesCompletedTodoPositions(before, after) {
 		// Let todo_write report malformed or invalid state directly; an invalid
 		// task list is not a meaningful plan proposal for the reviewer.
-		return false, "", ""
+		return false, "", "", ""
 	}
 	if samePlanStructure(before, after) {
-		return false, "", ""
+		return false, "", "", ""
 	}
-	return true, planReviewText(before), planReviewText(after)
+	return true, planReviewText(before), planReviewText(after), planTransitionDiff(before, after)
 }
 
 func samePlanStructure(a, b []evidence.TodoItem) bool {

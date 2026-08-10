@@ -43,6 +43,7 @@ type toolCallPlan struct {
 	planTransition            bool
 	planBefore                string
 	planAfter                 string
+	planDiff                  string
 	planReplacementAuthorized bool
 	recoveryGen               uint64
 
@@ -477,7 +478,7 @@ func (a *Agent) applyRecoveryAndPermission(ctx context.Context, plan *toolCallPl
 	// is exhausted so host-proven read-only diagnosis can remain available while
 	// further execution is quarantined. Ask/Yolo still bypass inside the gate.
 	plan.verification = plan.evidenceName == "bash" && evidence.IsDeliveryVerificationCommand(bashCommandFromArgs(plan.evidenceArgs))
-	plan.planTransition, plan.planBefore, plan.planAfter = a.recoveryPlanTransition(plan.evidenceName, plan.evidenceArgs)
+	plan.planTransition, plan.planBefore, plan.planAfter, plan.planDiff = a.recoveryPlanTransition(plan.evidenceName, plan.evidenceArgs)
 	episodeStopped := false
 	if ctrl := a.recoveryEpisodeControl(); ctrl != nil {
 		plan.recoveryGen = ctrl.Generation()
@@ -499,23 +500,7 @@ func (a *Agent) applyRecoveryAndPermission(ctx context.Context, plan *toolCallPl
 		if ctrl := a.recoveryEpisodeControl(); ctrl != nil {
 			episodeID = ctrl.EpisodeID()
 		}
-		dec, rerr := a.recoveryGate.BeforeMutation(ctx, RecoveryProposal{
-			AgentID:        a.recoveryAgentID,
-			TaskID:         a.recoveryTaskID,
-			TaskScopeID:    recoveryTaskScopeID(a.deliveryScopeID, a.recoveryRunSeq.Load()),
-			EpisodeID:      episodeID,
-			TaskSummary:    a.recoveryTaskSummary,
-			Tool:           plan.evidenceName,
-			Args:           plan.evidenceArgs,
-			Subject:        subject,
-			Preview:        preview,
-			ReadOnly:       plan.readOnly,
-			Mutates:        plan.mutates,
-			Verification:   plan.verification,
-			PlanTransition: plan.planTransition,
-			PlanBefore:     plan.planBefore,
-			PlanAfter:      plan.planAfter,
-		})
+		dec, rerr := a.recoveryGate.BeforeMutation(ctx, a.recoveryProposal(plan, episodeID, subject, preview))
 		if dec.Generation != 0 {
 			plan.recoveryGen = dec.Generation
 		}
