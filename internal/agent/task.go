@@ -2091,17 +2091,5 @@ func subSinkFor(parentID string, parent event.Sink) event.Sink {
 	if parent == nil {
 		return event.Discard
 	}
-	return event.FuncSink(func(e event.Event) {
-		switch e.Kind {
-		case event.ToolDispatch, event.ToolResult, event.ToolProgress:
-			e.Tool.ParentID = parentID
-			e.Tool.ID = parentID + "/" + e.Tool.ID
-			parent.Emit(e)
-		case event.Usage:
-			if e.UsageSource == "" {
-				e.UsageSource = event.UsageSourceSubagent
-			}
-			parent.Emit(e)
-		}
-	})
+	return nestedSink{parentID: parentID, parent: parent}
 }
