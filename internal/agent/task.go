@@ -199,7 +199,7 @@ func (b foregroundOnlyBash) Execute(ctx context.Context, args json.RawMessage) (
 		return "", fmt.Errorf("invalid args: %w", err)
 	}
 	if p.RunInBackground {
-		return "", fmt.Errorf("background bash is unavailable in subagents; run a foreground command or ask the parent agent to start a background job")
+		return "", tool.Blocked("blocked: background bash is unavailable in subagents; run a foreground command or ask the parent agent to start a background job")
 	}
 	return b.inner.Execute(ctx, args)
 }
@@ -227,7 +227,7 @@ func (readOnlyBash) Schema() json.RawMessage {
 
 func (b readOnlyBash) Execute(ctx context.Context, args json.RawMessage) (string, error) {
 	if !permission.BashCommandIsReadOnly(args) {
-		return "blocked: read-only subagents can run only permission-classified foreground read-only commands", nil
+		return "", tool.Blocked("blocked: read-only subagents can run only permission-classified foreground read-only commands")
 	}
 	return b.inner.Execute(ctx, args)
 }
