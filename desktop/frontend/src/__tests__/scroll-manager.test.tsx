@@ -151,6 +151,26 @@ await act(async () => {
 eq(api.modeRef.current, "native-selecting", "force-scroll cannot steal ownership from an active selection");
 eq(scrollTop, 400, "force-scroll cannot move the viewport during an active selection");
 
+const jumpTarget = document.createElement("div");
+jumpTarget.getBoundingClientRect = () => ({
+  x: 0,
+  y: 240,
+  top: 240,
+  right: 100,
+  bottom: 260,
+  left: 0,
+  width: 100,
+  height: 20,
+  toJSON: () => ({}),
+});
+await act(async () => {
+  api!.setMode("manual", "prepare-jump");
+  api!.smoothScrollTo(jumpTarget);
+  api!.resetGeneration("next-tab", 1);
+  await new Promise((resolve) => setTimeout(resolve, 300));
+});
+eq(api.modeRef.current, "tail-follow", "tab reset rejects the previous session's smooth-scroll completion timer");
+
 await act(async () => {
   root.unmount();
 });

@@ -190,8 +190,10 @@ export function useScrollManager() {
     if (smoothScrollTimer.current !== null) clearTimeout(smoothScrollTimer.current);
     if (reduced) updateBottomState(el);
     else {
+      const generation = generationRef.current;
       smoothScrollTimer.current = window.setTimeout(() => {
         smoothScrollTimer.current = null;
+        if (generation !== generationRef.current) return;
         updateBottomState(el);
       }, DUR_FAST * 2 * 1000);
     }
@@ -299,12 +301,19 @@ export function useScrollManager() {
   const resetGeneration = useCallback((_tabId?: string, _revealSignal?: number) => {
     generationRef.current += 1;
     cancelPendingBottomScroll();
+    if (smoothScrollTimer.current !== null) {
+      clearTimeout(smoothScrollTimer.current);
+      smoothScrollTimer.current = null;
+      const el = scrollRef.current;
+      modeRef.current = "programmatic";
+      if (el) writeOffset("virtualizer", el.scrollTop);
+    }
     modeRef.current = "tail-follow";
     if (scrollRef.current) scrollRef.current.dataset.scrollMode = "tail-follow";
     stick.current = true;
     setIsAtBottom(true);
     return generationRef.current;
-  }, [cancelPendingBottomScroll]);
+  }, [cancelPendingBottomScroll, writeOffset]);
 
   const canVirtualizerAdjust = useCallback(() => !isTranscriptSelectionMode(modeRef.current), []);
 
