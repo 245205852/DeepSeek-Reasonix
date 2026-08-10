@@ -441,6 +441,7 @@ var Chinese = Messages{
 	CustomPromptBaseURL:  "请输入 Base URL",
 	CustomPromptKeyEnv:   "API Key 变量名（直接回车使用默认值，不是模型名）",
 	CustomPromptAPIKey:   "请输入 API Key",
+	CustomPromptWindow:   "上下文窗口(tokens,填得比模型真实窗口小会导致过早压缩)",
 	CustomAddedFmt:       "已添加自定义模型: %s",
 
 	// Anthropic 兼容 provider

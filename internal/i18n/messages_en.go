@@ -440,6 +440,7 @@ var English = Messages{
 	CustomPromptBaseURL:  "Enter Base URL",
 	CustomPromptKeyEnv:   "API Key variable name (press Enter to use the default; not the model name)",
 	CustomPromptAPIKey:   "Enter API Key",
+	CustomPromptWindow:   "Context window in tokens (a value below the model's real window makes compaction fire early)",
 	CustomAddedFmt:       "Added custom model: %s",
 
 	// Anthropic compatible provider
