@@ -407,7 +407,7 @@ func (h *workspaceChangeHub) schedulePublishLocked(r *workspaceWatchRoot) {
 	r.timer = time.AfterFunc(workspaceWatchQuiet, func() { h.publish(r.key, generation) })
 }
 
-func (h *workspaceChangeHub) observeAgentMutation(tabID string, paths []string, allPaths bool) {
+func (h *workspaceChangeHub) observeAgentMutation(tabID string, mutation event.WorkspaceMutation) {
 	root := h.app.workspaceRootForTab(tabID)
 	key := h.ensureRoot(root)
 	if key == "" {
@@ -419,17 +419,26 @@ func (h *workspaceChangeHub) observeAgentMutation(tabID string, paths []string, 
 		h.mu.Unlock()
 		return
 	}
-	r.revisions.Content++
+	if mutation.Content {
+		r.revisions.Content++
+	}
 	// A writer path does not carry an atomic create-vs-overwrite result. Treat
 	// the tree as possibly changed so newly-created files appear immediately;
 	// the frontend still reloads only affected open parents when paths are known.
-	r.revisions.Tree++
-	r.revisions.WorkingTree++
+	if mutation.Tree {
+		r.revisions.Tree++
+	}
+	if mutation.WorkingTree {
+		r.revisions.WorkingTree++
+	}
+	if mutation.GitMeta {
+		r.revisions.GitMeta++
+	}
 	r.source = mergeWorkspaceSource(r.source, "agent")
-	if allPaths || len(paths) == 0 {
+	if mutation.AllPaths || (mutation.Content && len(mutation.Paths) == 0) {
 		r.allPaths = true
 	} else {
-		for _, raw := range paths {
+		for _, raw := range mutation.Paths {
 			path, ok := workspaceMutationRelPath(r.root, raw)
 			if !ok {
 				r.allPaths = true
@@ -663,13 +672,6 @@ func (a *App) WorkspaceRevisionForTab(tabID string) WorkspaceRevisionView {
 		return WorkspaceRevisionView{WatchState: event.WorkspaceWatchUnavailable}
 	}
 	return a.workspaceHub.revisionForTab(tabID, a.workspaceRootForTab(tabID))
-}
-
-func (a *App) workspaceChangedFromTool(tabID string, tr event.Tool) {
-	if a == nil || a.workspaceHub == nil || !tr.WorkspaceMutation {
-		return
-	}
-	a.workspaceHub.observeAgentMutation(tabID, tr.WorkspacePaths, tr.WorkspaceAllPaths)
 }
 
 func (a *App) reconcileWorkspaceForTab(tabID string) {

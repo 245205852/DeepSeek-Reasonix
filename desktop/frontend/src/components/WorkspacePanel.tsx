@@ -835,6 +835,7 @@ export function WorkspacePanel({
   }, [open, refreshSelected, selectedPath]);
 
   useWorkspaceRefreshInvalidation({
+    commitHistoryOpen,
     filter,
     gitMetaSchedulerRef: gitMetaRefreshSchedulerRef,
     loadChangeDetail,
@@ -985,6 +986,11 @@ export function WorkspacePanel({
     : currentFileDir;
   const recentFiles = useMemo(() => [...openTabs].reverse(), [openTabs]);
 
+  const workspaceSearchFallbackSequence = workspaceRefresh.allPaths
+    && (workspaceRefresh.source === "reconcile" || workspaceRefresh.watchState !== "active")
+    ? workspaceRefresh.sequence
+    : 0;
+
   useEffect(() => {
     const q = filter.trim();
     if (!open || viewMode === "changed" || !q || scopedFilePaths) {
@@ -998,7 +1004,8 @@ export function WorkspacePanel({
       if (!cancelled) setSearchResults(null);
     });
     return () => { cancelled = true; };
-  }, [filter, viewMode, scopedFilePaths, open, workspaceRefresh.revisions.tree, workspaceScopeKey, workspaceTabId]);
+  }, [filter, viewMode, scopedFilePaths, open, workspaceRefresh.revisions.tree,
+    workspaceSearchFallbackSequence, workspaceScopeKey, workspaceTabId]);
 
   const flattened = useMemo(() => {
     const q = filter.trim().toLowerCase();

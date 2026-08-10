@@ -2957,18 +2957,21 @@ func batchStormSignature(calls []provider.ToolCall, outcomes []toolOutcome) (str
 // data URLs from a tool.ImageTool result; they ride outside output so text
 // truncation can never corrupt an image payload.
 type toolOutcome struct {
-	output           string
-	images           []string
-	blocked          bool
-	errMsg           string
-	truncated        bool
-	truncMsg         string
-	resolved         bool
-	resolvedName     string
-	capabilityID     string
-	resolvedReadOnly bool
-	resolvedArgs     json.RawMessage
-	executed         bool
+	output            string
+	images            []string
+	blocked           bool
+	errMsg            string
+	truncated         bool
+	truncMsg          string
+	resolved          bool
+	resolvedName      string
+	capabilityID      string
+	resolvedReadOnly  bool
+	executed          bool
+	workspaceMutation *event.WorkspaceMutation
+	effectiveName     string
+	effectiveArgs     json.RawMessage
+	effectiveReadOnly bool
 	// execution is local shell metadata (optional). Provider messages strip it
 	// via ModelMessages; UI/event sinks surface it on ToolResult cards.
 	execution *tool.ShellExecution

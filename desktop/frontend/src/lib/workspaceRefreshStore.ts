@@ -69,6 +69,40 @@ async function workspaceRevisionForTab(tabId: string) {
   return binding(tabId);
 }
 
+type WorkspaceRevisionResult = Awaited<ReturnType<typeof workspaceRevisionForTab>>;
+
+function applyWorkspaceReconciliation(tabId: string, scopeKey: string, result: WorkspaceRevisionResult, forceVisible: boolean): void {
+  if (!result || activeScopeByTab.get(tabId) !== scopeKey) return;
+  const snapshotKey = key(tabId, scopeKey);
+  if (!listeners.has(snapshotKey)) return;
+  const previous = snapshots.get(snapshotKey) ?? EMPTY_SNAPSHOT;
+  let revisions = result.revisions ?? zeroRevisions();
+  let watchState = result.watchState ?? "unavailable";
+  // An event may advance the store while this bridge request is in flight.
+  // Never let the older reconciliation response move a scope backwards. An
+  // explicit focus fallback still invalidates visible resources, but retains
+  // the newer event snapshot's revisions and watcher state.
+  if (revisionsOlder(revisions, previous.revisions)) {
+    if (!forceVisible) return;
+    revisions = previous.revisions;
+    watchState = previous.watchState;
+  }
+  const changed = revisionsOlder(previous.revisions, revisions);
+  if (!forceVisible && !changed && watchState === previous.watchState) return;
+  // Reconciliation is also the bounded fallback for degraded watchers and
+  // authorized external paths that are intentionally not watched. Re-issue
+  // an all-paths invalidation on explicit focus even when the hub revision is
+  // unchanged, while ordinary mount/runtime checks stay revision-driven.
+  replace(tabId, scopeKey, {
+    revisions,
+    changes: [],
+    allPaths: true,
+    source: "reconcile",
+    watchState,
+    sequence: previous.sequence + 1,
+  });
+}
+
 // Kept as an explicit lifecycle hook for tests and hot-reload hosts. Production
 // keeps the subscription for the lifetime of the webview.
 export function disposeWorkspaceRefreshStore(): void {
@@ -133,26 +167,15 @@ export function markWorkspaceRefresh(tabId: string, scopeKey: string): void {
   replace(tabId, scopeKey, { ...previous, allPaths: true, source: "reconcile", sequence: previous.sequence + 1 });
 }
 
-export async function reconcileWorkspaceRefresh(tabId: string, scopeKey: string): Promise<void> {
+export async function reconcileWorkspaceRefresh(
+  tabId: string,
+  scopeKey: string,
+  options?: { forceVisible?: boolean },
+): Promise<void> {
   try {
     activeScopeByTab.set(tabId, scopeKey);
     const result = await workspaceRevisionForTab(tabId);
-    if (!result) return;
-    if (activeScopeByTab.get(tabId) !== scopeKey) return;
-    const snapshotKey = key(tabId, scopeKey);
-    if (!listeners.has(snapshotKey)) return;
-    const previous = snapshots.get(snapshotKey) ?? EMPTY_SNAPSHOT;
-    const revisions = result?.revisions ?? zeroRevisions();
-    const changed = revisionsOlder(revisions, previous.revisions) || revisionsOlder(previous.revisions, revisions);
-    if (!changed && result?.watchState === previous.watchState) return;
-    replace(tabId, scopeKey, {
-      revisions,
-      changes: [],
-      allPaths: true,
-      source: "reconcile",
-      watchState: result?.watchState ?? "unavailable",
-      sequence: previous.sequence + 1,
-    });
+    applyWorkspaceReconciliation(tabId, scopeKey, result, options?.forceVisible === true);
   } catch {
     // A transient runtime rebuild must not erase the last good snapshot.
   }
@@ -170,6 +193,16 @@ export function activateWorkspaceRefreshScopeForTests(tabId: string, scopeKey: s
 
 export function acceptWorkspaceRefreshForTests(tabId: string, event: WireWorkspaceChanged): void {
   acceptEvent(tabId, event);
+}
+
+export function reconcileWorkspaceRefreshForTests(
+  tabId: string,
+  scopeKey: string,
+  result: NonNullable<WorkspaceRevisionResult>,
+  forceVisible = false,
+): void {
+  activeScopeByTab.set(tabId, scopeKey);
+  applyWorkspaceReconciliation(tabId, scopeKey, result, forceVisible);
 }
 
 export function workspaceRefreshSnapshotForTests(tabId: string, scopeKey: string): WorkspaceRefreshSnapshot {

@@ -53,6 +53,12 @@ func (a *Agent) executeBatch(ctx context.Context, calls []provider.ToolCall) bat
 	// previews. The first writer stays on the single-preview fast path.
 	earlierWriterRan := false
 	surfaceWriters := make([]bool, len(calls))
+	// A tool.before hook can turn members of a nominally read-only parallel
+	// segment into writers. Publish each completed writer from its worker instead
+	// of waiting for runParallel to join the entire segment. The mutex preserves
+	// the sink capability's serial-callback contract when multiple replacements
+	// finish together.
+	var workspaceSignalMu sync.Mutex
 	run := func(i int) {
 		t, _, ambiguous := a.tools.ResolveCall(calls[i].Name)
 		known := t != nil && len(ambiguous) == 0
@@ -78,6 +84,14 @@ func (a *Agent) executeBatch(ctx context.Context, calls []provider.ToolCall) bat
 			return
 		}
 		outcomes[i] = a.executeOne(ctx, calls[i])
+		if mutation := outcomes[i].workspaceMutation; mutation != nil {
+			workspaceSignalMu.Lock()
+			event.RecordWorkspaceMutation(a.sink, *mutation)
+			workspaceSignalMu.Unlock()
+		}
+		if outcomes[i].executed {
+			surfaceWriters[i] = outcomes[i].workspaceMutation != nil
+		}
 		if outcomes[i].resolved {
 			readOnly := outcomes[i].resolvedReadOnly
 			calls[i].ResolvedName = outcomes[i].resolvedName
@@ -318,19 +332,14 @@ func (a *Agent) executeBatch(ctx context.Context, calls []provider.ToolCall) bat
 		if startedAt[i] > 0 {
 			tr.StartedAt = startedAt[i]
 			tr.EndedAt = startedAt[i] + durations[i]
-			if o.executed && workspaceCallMutates(c, o, readOnly) {
+			if mutation := o.workspaceMutation; mutation != nil {
 				tr.WorkspaceMutation = true
-				pathArgs := json.RawMessage(c.Arguments)
-				if len(o.resolvedArgs) > 0 {
-					pathArgs = o.resolvedArgs
-				}
-				tr.WorkspacePaths = evidence.ToolCallPaths(pathArgs)
-				// Shell commands and opaque/proxy targets cannot be safely
-				// attributed to a path. Let the desktop hub coalesce them into
-				// one bounded all-paths invalidation instead.
-				if c.Name == "bash" || len(tr.WorkspacePaths) == 0 {
-					tr.WorkspaceAllPaths = true
-				}
+				tr.WorkspacePaths = append([]string(nil), mutation.Paths...)
+				tr.WorkspaceAllPaths = mutation.AllPaths
+				tr.WorkspaceContent = mutation.Content
+				tr.WorkspaceTree = mutation.Tree
+				tr.WorkspaceWorkingTree = mutation.WorkingTree
+				tr.WorkspaceGitMeta = mutation.GitMeta
 			}
 		}
 		a.sink.Emit(event.Event{Kind: event.ToolResult, Tool: tr})
@@ -362,19 +371,6 @@ func (a *Agent) executeBatch(ctx context.Context, calls []provider.ToolCall) bat
 	}
 }
 
-func workspaceCallMutates(call provider.ToolCall, outcome toolOutcome, readOnly bool) bool {
-	if call.ResolvedReadOnly != nil {
-		readOnly = *call.ResolvedReadOnly
-	}
-	if outcome.resolved {
-		readOnly = outcome.resolvedReadOnly
-	}
-	if outcome.resolved && !outcome.resolvedReadOnly {
-		return true
-	}
-	return evidence.ToolCallMutates(call.Name, json.RawMessage(call.Arguments), readOnly)
-}
-
 // batchCallIsMutatingFailure reports whether a finished call was a mutation
 // (file write / non-readonly bash mutation) that failed or was blocked, so later
 // mutations and verifications in the same batch must not run.
@@ -383,6 +379,8 @@ func batchCallIsMutatingFailure(a *Agent, call provider.ToolCall, o toolOutcome)
 		return false
 	}
 	readOnly := false
+	toolName := call.Name
+	toolArgs := json.RawMessage(call.Arguments)
 	t, _, ambiguous := a.tools.ResolveCall(call.Name)
 	known := t != nil && len(ambiguous) == 0
 	if known {
@@ -394,12 +392,17 @@ func batchCallIsMutatingFailure(a *Agent, call provider.ToolCall, o toolOutcome)
 	if o.resolved {
 		readOnly = o.resolvedReadOnly
 	}
-	if call.Name == "bash" && permission.BashCommandIsReadOnly(json.RawMessage(call.Arguments)) {
+	if o.effectiveName != "" {
+		toolName = o.effectiveName
+		toolArgs = o.effectiveArgs
+		readOnly = o.effectiveReadOnly
+	}
+	if toolName == "bash" && permission.BashCommandIsReadOnly(toolArgs) {
 		readOnly = true
 	}
 	// Verification failures do not open the dependency barrier by themselves —
 	// only a failed modification does.
-	if call.Name == "bash" && evidence.IsDeliveryVerificationCommand(bashCommandFromArgs(json.RawMessage(call.Arguments))) {
+	if toolName == "bash" && evidence.IsDeliveryVerificationCommand(bashCommandFromArgs(toolArgs)) {
 		return false
 	}
 	// Resolved writers (including MCP targets behind use_capability) count even
@@ -407,7 +410,7 @@ func batchCallIsMutatingFailure(a *Agent, call provider.ToolCall, o toolOutcome)
 	if o.resolved && !o.resolvedReadOnly {
 		return true
 	}
-	if evidence.ToolCallMutates(call.Name, json.RawMessage(call.Arguments), readOnly) {
+	if evidence.ToolCallMutates(toolName, toolArgs, readOnly) {
 		return true
 	}
 	// Fail closed only for a target the host could not classify: a blanket

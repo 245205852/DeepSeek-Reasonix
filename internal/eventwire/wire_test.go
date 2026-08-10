@@ -216,6 +216,22 @@ func TestToWireToolCarriesResolvedCapabilityMetadata(t *testing.T) {
 	}
 }
 
+func TestToWireToolOmitsHostOnlyWorkspaceMutationMetadata(t *testing.T) {
+	privatePath := "/Users/private/secret-project/file.go"
+	w := ToWire(event.Event{Kind: event.ToolResult, Tool: event.Tool{
+		ID: "c1", Name: "write_file", WorkspaceMutation: true,
+		WorkspacePaths: []string{privatePath}, WorkspaceAllPaths: true,
+		WorkspaceContent: true, WorkspaceTree: true, WorkspaceWorkingTree: true, WorkspaceGitMeta: true,
+	}})
+	b, err := json.Marshal(w)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if strings.Contains(string(b), privatePath) || strings.Contains(string(b), "workspaceMutation") || strings.Contains(string(b), "workspacePaths") {
+		t.Fatalf("host-only workspace metadata leaked into eventwire JSON: %s", b)
+	}
+}
+
 func TestToWireTurnOutcomeIsOptionalAndMachineReadable(t *testing.T) {
 	readiness := ToWire(event.Event{
 		Kind:      event.TurnDone,

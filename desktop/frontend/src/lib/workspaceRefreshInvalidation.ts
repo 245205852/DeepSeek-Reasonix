@@ -6,6 +6,7 @@ type SchedulerRef = { current: WorkspaceRefreshScheduler | null };
 type Load = () => Promise<void> | void;
 
 interface WorkspaceRefreshInvalidationOptions {
+  commitHistoryOpen: boolean;
   filter: string;
   gitMetaSchedulerRef: SchedulerRef;
   loadChangeDetail: Load;
@@ -23,6 +24,32 @@ interface WorkspaceRefreshInvalidationOptions {
   workspaceScopeKey: string;
 }
 
+export interface WorkspaceRefreshActions {
+  forceVisible: boolean;
+  content: boolean;
+  tree: boolean;
+  workingTree: boolean;
+  gitMeta: boolean;
+}
+
+export function workspaceRefreshActions(
+  previous: WorkspaceRefreshSnapshot["revisions"],
+  next: WorkspaceRefreshSnapshot,
+  commitHistoryOpen: boolean,
+): WorkspaceRefreshActions {
+  // Focus reconciliation is also the recovery path for authorized paths that
+  // intentionally live outside the watched root. Watcher failures publish an
+  // all-paths degraded event even when no resource revision could be advanced.
+  const forceVisible = next.allPaths && (next.source === "reconcile" || next.watchState !== "active");
+  return {
+    forceVisible,
+    content: next.revisions.content > previous.content || forceVisible,
+    tree: next.revisions.tree > previous.tree || forceVisible,
+    workingTree: next.revisions.workingTree > previous.workingTree || next.revisions.session > previous.session || forceVisible,
+    gitMeta: next.revisions.gitMeta > previous.gitMeta || (forceVisible && commitHistoryOpen),
+  };
+}
+
 function parentDirs(path: string): string[] {
   const parts = path.split("/").filter(Boolean);
   const dirs = [""];
@@ -35,6 +62,7 @@ function parentDirs(path: string): string[] {
 }
 
 export function useWorkspaceRefreshInvalidation({
+  commitHistoryOpen,
   filter,
   gitMetaSchedulerRef,
   loadChangeDetail,
@@ -67,12 +95,13 @@ export function useWorkspaceRefreshInvalidation({
     const previous = lastRevisionsRef.current;
     lastSequenceRef.current = workspaceRefresh.sequence;
     lastRevisionsRef.current = workspaceRefresh.revisions;
-    const { changes, revisions } = workspaceRefresh;
+    const { changes } = workspaceRefresh;
+    const actions = workspaceRefreshActions(previous, workspaceRefresh, commitHistoryOpen);
     const affectsSelected = workspaceRefresh.allPaths || !selectedPath || changes.some((change) =>
       change.path === selectedPath || change.oldPath === selectedPath || selectedPath.startsWith(`${change.path}/`),
     );
-    if (revisions.content > previous.content && affectsSelected && selectedPath) void refreshSelected();
-    if (revisions.tree > previous.tree && (workspaceRefresh.allPaths || changes.length > 0)) {
+    if (actions.content && (actions.forceVisible || affectsSelected) && selectedPath) void refreshSelected();
+    if (actions.tree && (actions.forceVisible || workspaceRefresh.allPaths || changes.length > 0)) {
       const affectedDirs = workspaceRefresh.allPaths
         ? openDirsRef.current
         : new Set(changes.flatMap((change) => [change.path, change.oldPath].filter(Boolean).flatMap((path) => parentDirs(path as string))));
@@ -82,19 +111,16 @@ export function useWorkspaceRefreshInvalidation({
       if (filter.trim()) setSearchResults(null);
     }
     if (viewMode === "changed") {
-      if (revisions.workingTree > previous.workingTree || revisions.session > previous.session) {
+      if (actions.workingTree) {
         workingTreeSchedulerRef.current?.trigger(async () => {
           await Promise.all([loadWorkspaceChanges(), selectedPath ? loadChangeDetail() : Promise.resolve()]);
         });
       }
-      if (revisions.gitMeta > previous.gitMeta) gitMetaSchedulerRef.current?.trigger(loadGitHistory);
-    }
-    if (workspaceRefresh.watchState !== "active") {
-      openDirsRef.current.forEach((dir) => void loadDir(dir));
-      if (selectedPath) void refreshSelected();
+      if (actions.gitMeta) gitMetaSchedulerRef.current?.trigger(loadGitHistory);
     }
   }, [
     filter,
+    commitHistoryOpen,
     gitMetaSchedulerRef,
     loadChangeDetail,
     loadDir,

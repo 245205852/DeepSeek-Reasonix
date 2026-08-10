@@ -2595,6 +2595,7 @@ export default function App() {
   useEffect(() => {
     let cancelled = false;
     let timer: number | undefined;
+    let focusTimer: number | undefined;
     const schedule = () => {
       if (cancelled) return;
       timer = window.setTimeout(() => {
@@ -2602,26 +2603,42 @@ export default function App() {
         schedule();
       }, tabMetaFallbackDelay(document.visibilityState));
     };
-    const refreshAndSchedule = () => {
+    const refreshAndSchedule = (forceVisible = false) => {
       if (timer !== undefined) window.clearTimeout(timer);
       timer = undefined;
       void refreshTabMetas();
-      if (activeTabId) void import("./lib/workspaceRefreshStore").then(({ reconcileWorkspaceRefresh }) => reconcileWorkspaceRefresh(activeTabId, workspaceScopeKey)).catch(() => undefined);
+      if (activeTabId) void import("./lib/workspaceRefreshStore").then(({ reconcileWorkspaceRefresh }) => reconcileWorkspaceRefresh(activeTabId, workspaceScopeKey, { forceVisible })).catch(() => undefined);
       schedule();
     };
+    const requestVisibleRefresh = () => {
+      if (cancelled || focusTimer !== undefined) return;
+      // Native focus and document visibility commonly fire together. Collapse
+      // them into one bounded reconciliation instead of issuing duplicate Git
+      // and file-tree loads for the same foreground transition.
+      focusTimer = window.setTimeout(() => {
+        focusTimer = undefined;
+        refreshAndSchedule(true);
+      }, 0);
+    };
     const onVisibilityChange = () => {
-      if (document.visibilityState === "visible") refreshAndSchedule();
+      if (document.visibilityState === "visible") requestVisibleRefresh();
       else {
         if (timer !== undefined) window.clearTimeout(timer);
         schedule();
       }
     };
-    refreshAndSchedule();
+    const onFocus = () => {
+      if (document.visibilityState === "visible") requestVisibleRefresh();
+    };
+    refreshAndSchedule(false);
     document.addEventListener("visibilitychange", onVisibilityChange);
+    window.addEventListener("focus", onFocus);
     return () => {
       cancelled = true;
       if (timer !== undefined) window.clearTimeout(timer);
+      if (focusTimer !== undefined) window.clearTimeout(focusTimer);
       document.removeEventListener("visibilitychange", onVisibilityChange);
+      window.removeEventListener("focus", onFocus);
     };
   }, [activeTabId, refreshTabMetas, workspaceScopeKey]);
 

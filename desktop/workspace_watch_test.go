@@ -8,7 +8,12 @@ import (
 	"time"
 
 	"github.com/fsnotify/fsnotify"
+	"reasonix/internal/event"
 )
+
+func contentWorkspaceMutation(paths []string, allPaths bool) event.WorkspaceMutation {
+	return event.WorkspaceMutation{Paths: paths, AllPaths: allPaths, Content: true, Tree: true, WorkingTree: true}
+}
 
 func TestWorkspaceChangeHubSharesRootRevisionsAndIsolatesSessions(t *testing.T) {
 	root := t.TempDir()
@@ -20,7 +25,7 @@ func TestWorkspaceChangeHubSharesRootRevisionsAndIsolatesSessions(t *testing.T) 
 
 	beforeA := app.WorkspaceRevisionForTab("a")
 	beforeB := app.WorkspaceRevisionForTab("b")
-	app.workspaceHub.observeAgentMutation("a", []string{"pkg/main.go"}, false)
+	app.workspaceHub.observeAgentMutation("a", contentWorkspaceMutation([]string{"pkg/main.go"}, false))
 	afterA := app.WorkspaceRevisionForTab("a")
 	afterB := app.WorkspaceRevisionForTab("b")
 	if afterA.Revisions.Content <= beforeA.Revisions.Content || afterB.Revisions.Content != afterA.Revisions.Content {
@@ -36,7 +41,7 @@ func TestWorkspaceChangeHubCapsOpaqueMutation(t *testing.T) {
 	app := &App{tabs: map[string]*WorkspaceTab{"a": {ID: "a", WorkspaceRoot: root}}}
 	app.workspaceHub = newWorkspaceChangeHub(app)
 	t.Cleanup(func() { app.workspaceHub.close() })
-	app.workspaceHub.observeAgentMutation("a", nil, true)
+	app.workspaceHub.observeAgentMutation("a", contentWorkspaceMutation(nil, true))
 	key := canonicalWorkspaceRoot(root)
 	app.workspaceHub.mu.Lock()
 	r := app.workspaceHub.roots[key]
@@ -83,7 +88,7 @@ func TestWorkspaceChangeHubDoesNotDropFilesystemWriteAfterAgentMutation(t *testi
 	t.Cleanup(func() { app.workspaceHub.close() })
 
 	before := app.WorkspaceRevisionForTab("a").Revisions.Content
-	app.workspaceHub.observeAgentMutation("a", []string{"file.txt"}, false)
+	app.workspaceHub.observeAgentMutation("a", contentWorkspaceMutation([]string{"file.txt"}, false))
 	key := canonicalWorkspaceRoot(root)
 	app.workspaceHub.observeFilesystem(key, fsnotify.Event{Name: path, Op: fsnotify.Write})
 	after := app.WorkspaceRevisionForTab("a").Revisions.Content
@@ -97,7 +102,7 @@ func TestWorkspaceChangeHubRejectsRelativeTraversalMetadata(t *testing.T) {
 	app := &App{tabs: map[string]*WorkspaceTab{"a": {ID: "a", WorkspaceRoot: root}}}
 	app.workspaceHub = newWorkspaceChangeHub(app)
 	t.Cleanup(func() { app.workspaceHub.close() })
-	app.workspaceHub.observeAgentMutation("a", []string{"../outside.txt"}, false)
+	app.workspaceHub.observeAgentMutation("a", contentWorkspaceMutation([]string{"../outside.txt"}, false))
 
 	key := canonicalWorkspaceRoot(root)
 	app.workspaceHub.mu.Lock()
@@ -107,6 +112,40 @@ func TestWorkspaceChangeHubRejectsRelativeTraversalMetadata(t *testing.T) {
 	app.workspaceHub.mu.Unlock()
 	if !allPaths || leaked {
 		t.Fatalf("relative traversal was not safely degraded: allPaths=%v leaked=%v", allPaths, leaked)
+	}
+}
+
+func TestWorkspaceChangeHubAdvancesOnlyDeclaredAgentResources(t *testing.T) {
+	root := t.TempDir()
+	app := &App{tabs: map[string]*WorkspaceTab{"a": {ID: "a", WorkspaceRoot: root}}}
+	app.workspaceHub = newWorkspaceChangeHub(app)
+	t.Cleanup(func() { app.workspaceHub.close() })
+	before := app.WorkspaceRevisionForTab("a").Revisions
+
+	app.workspaceHub.observeAgentMutation("a", event.WorkspaceMutation{WorkingTree: true, GitMeta: true})
+	after := app.WorkspaceRevisionForTab("a").Revisions
+	if after.Content != before.Content || after.Tree != before.Tree {
+		t.Fatalf("git-only invalidation advanced content/tree: before=%+v after=%+v", before, after)
+	}
+	if after.WorkingTree != before.WorkingTree+1 || after.GitMeta != before.GitMeta+1 || after.Session != before.Session+1 {
+		t.Fatalf("git-only revisions not advanced independently: before=%+v after=%+v", before, after)
+	}
+}
+
+func TestTabEventSinkForwardsImmediateWorkspaceMutation(t *testing.T) {
+	root := t.TempDir()
+	app := &App{tabs: map[string]*WorkspaceTab{"a": {ID: "a", WorkspaceRoot: root}}}
+	app.workspaceHub = newWorkspaceChangeHub(app)
+	t.Cleanup(func() { app.workspaceHub.close() })
+	sink := event.Sync(&tabEventSink{tabID: "a", app: app})
+	before := app.WorkspaceRevisionForTab("a").Revisions
+
+	event.RecordWorkspaceMutation(sink, event.WorkspaceMutation{
+		ToolID: "write", ToolName: "write_file", Paths: []string{"file.go"}, Content: true, Tree: true, WorkingTree: true,
+	})
+	after := app.WorkspaceRevisionForTab("a").Revisions
+	if after.Content != before.Content+1 || after.Tree != before.Tree+1 || after.WorkingTree != before.WorkingTree+1 || after.Session != before.Session+1 {
+		t.Fatalf("tab sink did not forward immediate workspace mutation: before=%+v after=%+v", before, after)
 	}
 }
 

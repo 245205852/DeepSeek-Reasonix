@@ -229,9 +229,13 @@ type Tool struct {
 	// model providers; omitempty keeps old wire readers compatible.
 	Execution *ShellExecution
 	// Workspace mutation metadata is host-only and is omitted from eventwire.
-	WorkspaceMutation bool
-	WorkspacePaths    []string
-	WorkspaceAllPaths bool
+	WorkspaceMutation    bool
+	WorkspacePaths       []string
+	WorkspaceAllPaths    bool
+	WorkspaceContent     bool
+	WorkspaceTree        bool
+	WorkspaceWorkingTree bool
+	WorkspaceGitMeta     bool
 }
 
 // ShellExecution mirrors tool.ShellExecution for event sinks without importing
@@ -592,6 +596,42 @@ type WorkspaceChangedPayload struct {
 	AllPaths   bool
 	Source     string
 	WatchState WorkspaceWatchState
+}
+
+// WorkspaceMutation is a host-only resource invalidation produced immediately
+// after one concrete writer finishes. It is deliberately separate from
+// ToolResult ordering and from the delivery evidence ledger: provider-visible
+// tool results may remain batch ordered, while desktop hosts can refresh the
+// affected workspace resources as soon as disk or Git state may have changed.
+type WorkspaceMutation struct {
+	ToolID      string
+	ToolName    string
+	Paths       []string
+	AllPaths    bool
+	Content     bool
+	Tree        bool
+	WorkingTree bool
+	GitMeta     bool
+}
+
+// WorkspaceMutationSink receives host-only workspace invalidations. Ordinary
+// CLI, remote, and provider transports do not implement this capability, so
+// paths never become a new wire or provider contract.
+type WorkspaceMutationSink interface {
+	RecordWorkspaceMutation(WorkspaceMutation)
+}
+
+// RecordWorkspaceMutation forwards a workspace invalidation to sinks that opt
+// in. Callers must invoke it only for a concrete writer that began execution;
+// failed writers still qualify because they may have partially changed state.
+func RecordWorkspaceMutation(s Sink, mutation WorkspaceMutation) {
+	if nilutil.IsNil(s) {
+		return
+	}
+	if ws, ok := s.(WorkspaceMutationSink); ok {
+		mutation.Paths = append([]string(nil), mutation.Paths...)
+		ws.RecordWorkspaceMutation(mutation)
+	}
 }
 
 // ReadinessAuditSink is an optional sink capability. Sinks that do not care

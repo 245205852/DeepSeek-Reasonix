@@ -2,10 +2,12 @@ import assert from "node:assert/strict";
 import {
   acceptWorkspaceRefreshForTests,
   activateWorkspaceRefreshScopeForTests,
+  reconcileWorkspaceRefreshForTests,
   resetWorkspaceRefreshStoreForTests,
   workspaceRefreshSnapshotForTests,
 } from "../lib/workspaceRefreshStore";
 import { createWorkspaceRefreshScheduler, type WorkspaceRefreshTimer } from "../lib/workspaceRefreshScheduler";
+import { workspaceRefreshActions } from "../lib/workspaceRefreshInvalidation";
 import type { WireWorkspaceChanged, WorkspaceRevisions } from "../lib/types";
 
 const revisions = (content: number): WorkspaceRevisions => ({ content, tree: content, workingTree: content, gitMeta: 0, session: content });
@@ -24,6 +26,47 @@ function workspaceScopesKeepIndependentRevisionBaselines() {
   assert.equal(workspaceRefreshSnapshotForTests("tab", "root-b").revisions.content, 1,
     "a new root must not inherit the old root's monotonic baseline");
   assert.equal(workspaceRefreshSnapshotForTests("tab", "root-a").revisions.content, 100);
+}
+
+async function reconciliationForcesVisibleResourcesWithoutMovingBackwards() {
+  resetWorkspaceRefreshStoreForTests();
+  activateWorkspaceRefreshScopeForTests("tab", "root");
+  acceptWorkspaceRefreshForTests("tab", event(5));
+  const initialSequence = workspaceRefreshSnapshotForTests("tab", "root").sequence;
+  reconcileWorkspaceRefreshForTests("tab", "root", { revisions: revisions(5), watchState: "active" });
+  assert.equal(workspaceRefreshSnapshotForTests("tab", "root").sequence, initialSequence,
+    "ordinary revision reconciliation must not reload an unchanged active workspace");
+  reconcileWorkspaceRefreshForTests("tab", "root", { revisions: revisions(5), watchState: "active" }, true);
+  const forced = workspaceRefreshSnapshotForTests("tab", "root");
+  assert.equal(forced.sequence, initialSequence + 1, "focus reconciliation must refresh unwatched external resources even at the same revision");
+  assert.equal(forced.allPaths, true);
+  assert.equal(forced.source, "reconcile");
+
+  acceptWorkspaceRefreshForTests("tab", event(6));
+  reconcileWorkspaceRefreshForTests("tab", "root", { revisions: revisions(5), watchState: "active" }, true);
+  const current = workspaceRefreshSnapshotForTests("tab", "root");
+  assert.equal(current.revisions.content, 6, "an older focus response must not overwrite a newer workspace event");
+  assert.equal(current.source, "reconcile", "the focus fallback must still invalidate visible resources after a newer event");
+  assert.equal(current.allPaths, true);
+}
+
+function focusReconciliationInvalidatesVisibleResourcesAtEqualRevisions() {
+  const current = revisions(5);
+  const focused: WireWorkspaceChanged = {
+    revisions: current, changes: [], allPaths: true, source: "reconcile", watchState: "active",
+  };
+  assert.deepEqual(workspaceRefreshActions(current, { ...focused, sequence: 2 }, false), {
+    forceVisible: true, content: true, tree: true, workingTree: true, gitMeta: false,
+  });
+  assert.equal(workspaceRefreshActions(current, { ...focused, sequence: 3 }, true).gitMeta, true,
+    "focus fallback refreshes history only while that resource is visible");
+
+  const ordinary: WireWorkspaceChanged = {
+    revisions: current, changes: [], allPaths: true, source: "filesystem", watchState: "active",
+  };
+  assert.deepEqual(workspaceRefreshActions(current, { ...ordinary, sequence: 4 }, true), {
+    forceVisible: false, content: false, tree: false, workingTree: false, gitMeta: false,
+  });
 }
 
 class FakeTimer implements WorkspaceRefreshTimer {
@@ -59,5 +102,7 @@ async function refreshSchedulerUsesTrailingQuietWindowAndBoundsConcurrency() {
 }
 
 await workspaceScopesKeepIndependentRevisionBaselines();
+await reconciliationForcesVisibleResourcesWithoutMovingBackwards();
+focusReconciliationInvalidatesVisibleResourcesAtEqualRevisions();
 await refreshSchedulerUsesTrailingQuietWindowAndBoundsConcurrency();
 console.log("ok  workspace refresh scope isolation and scheduling");

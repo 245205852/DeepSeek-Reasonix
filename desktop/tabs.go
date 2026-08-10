@@ -1580,9 +1580,6 @@ func (s *tabEventSink) Emit(e event.Event) {
 	}
 	tabID, app := s.binding()
 	if app != nil {
-		if e.Kind == event.ToolResult {
-			app.workspaceChangedFromTool(tabID, e.Tool)
-		}
 		if e.Kind == event.TurnDone {
 			// Keep the legacy completion as a cheap missed-event safety net. The
 			// hub owns the actual resource invalidation and coalesces this probe.
@@ -1654,6 +1651,17 @@ func (s *tabEventSink) Emit(e event.Event) {
 		s.turn = turnSubmissionState{}
 		s.mu.Unlock()
 	}
+}
+
+// RecordWorkspaceMutation is the host-only fast path for writer completion.
+// It intentionally bypasses ToolResult's provider-ordered presentation stream,
+// so a later long-running tool cannot delay workspace refresh.
+func (s *tabEventSink) RecordWorkspaceMutation(mutation event.WorkspaceMutation) {
+	tabID, app := s.binding()
+	if app == nil || app.workspaceHub == nil {
+		return
+	}
+	app.workspaceHub.observeAgentMutation(tabID, mutation)
 }
 
 // SetBotSink atomically sets or clears the bot event forwarder on this sink.
