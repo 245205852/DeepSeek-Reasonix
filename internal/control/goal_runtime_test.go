@@ -110,14 +110,13 @@ func TestEvaluatorOutcomesDriveFSM(t *testing.T) {
 			c.Submit("/goal assess the impact")
 			waitGoalTurnDone(t, events)
 			if tc.wantStatus == GoalStatusRunning {
-				// continue keeps the loop going; without host-verifiable
-				// progress it eventually pauses on the no-progress gate rather
-				// than stopping at turn 1.
+				// Continue keeps the loop going until the recoverable outer turn
+				// backstop; cross-turn no-progress is observational only.
 				if got := c.GoalStatus(); got != GoalStatusBlocked {
 					t.Fatalf("GoalStatus() = %q, want the loop to keep going until a pause", got)
 				}
-				if rt := c.GoalRuntime(); rt.StopCause != stopCauseNoProgress || rt.TurnsUsed < 2 {
-					t.Fatalf("runtime = %+v, want no-progress pause after multiple turns", rt)
+				if rt := c.GoalRuntime(); rt.StopCause != stopCauseBudgetTurns || rt.TurnsUsed != rt.TurnsLimit {
+					t.Fatalf("runtime = %+v, want outer turn-budget pause", rt)
 				}
 				return
 			}
@@ -183,37 +182,69 @@ func TestEvaluatorCompleteStillGatedByReadiness(t *testing.T) {
 	c.Submit("/goal fix everything")
 	<-done
 	// The evaluator's complete claim is rejected (incomplete todos) and the
-	// goal continues; without host-verifiable progress the no-progress gate
-	// pauses instead of looping forever.
+	// goal continues until the outer continuation backstop.
 	if got := c.GoalStatus(); got != GoalStatusBlocked {
-		t.Fatalf("GoalStatus() = %q, want blocked (no-progress after rejected complete)", got)
+		t.Fatalf("GoalStatus() = %q, want blocked (turn budget after rejected complete)", got)
 	}
-	if rt := c.GoalRuntime(); rt.StopCause != stopCauseNoProgress {
-		t.Fatalf("StopCause = %q, want %q", rt.StopCause, stopCauseNoProgress)
+	if rt := c.GoalRuntime(); rt.StopCause != stopCauseBudgetTurns {
+		t.Fatalf("StopCause = %q, want %q", rt.StopCause, stopCauseBudgetTurns)
 	}
 }
 
-// TestTurnTokenNoProgressPausesAndResumeExtendsBudget covers turn and
-// no-progress budgets at the FSM level and the resume extension contract.
+// TestTurnTokenNoProgressPausesAndResumeExtendsBudget covers the outer turn
+// budget, observational no-progress state, and the resume extension contract.
 // Token hard limits no longer pause goals.
+func TestNoProgressQuotaByBudgetClass(t *testing.T) {
+	cases := map[string]int{
+		budgetClassResearch: 10,
+		budgetClassWrite:    6,
+		budgetClassSimple:   defaultNoProgressLimit,
+	}
+	for class, want := range cases {
+		if got := noProgressQuota(class); got != want {
+			t.Fatalf("noProgressQuota(%q) = %d, want %d", class, got, want)
+		}
+	}
+	if got := resolvedNoProgressLimit(defaultNoProgressLimit, budgetClassResearch); got != 10 {
+		t.Fatalf("legacy research limit = %d, want 10", got)
+	}
+	if got := resolvedNoProgressLimit(7, budgetClassWrite); got != 7 {
+		t.Fatalf("custom write limit = %d, want 7", got)
+	}
+}
+
+func TestMergeGoalProgressEvidenceIsNovelAndBounded(t *testing.T) {
+	observed := make([]string, maxGoalProgressEvidence+25)
+	for i := range observed {
+		observed[i] = fmt.Sprintf("sig-%03d", i)
+	}
+	got, progressed := mergeGoalProgressEvidence([]string{"old"}, observed)
+	if !progressed || len(got) != maxGoalProgressEvidence {
+		t.Fatalf("merge = progressed:%v len:%d, want true/%d", progressed, len(got), maxGoalProgressEvidence)
+	}
+	if repeat, advanced := mergeGoalProgressEvidence(got, got); advanced || len(repeat) != maxGoalProgressEvidence {
+		t.Fatalf("exact repeat = advanced:%v len:%d", advanced, len(repeat))
+	}
+}
+
 func TestTurnTokenNoProgressPausesAndResumeExtendsBudget(t *testing.T) {
 	newMachine := func() *goalMachine {
 		g := &goalMachine{goal: "fix the parser", status: GoalStatusRunning}
 		g.budgetClass = budgetClassWrite
 		g.turnsLimit = budgetQuota(budgetClassWrite)
 		g.tokensLimit = 0
-		g.noProgressLimit = defaultNoProgressLimit
+		g.noProgressLimit = noProgressQuota(g.budgetClass)
 		return g
 	}
-	in := func(report *goalTurnReport, before, after string) goalAdvanceInput {
-		return goalAdvanceInput{report: report, progressBefore: before, progressAfter: after}
+	in := func(report *goalTurnReport, progress ...string) goalAdvanceInput {
+		return goalAdvanceInput{report: report, progressEvidence: progress}
 	}
 
 	t.Run("turn budget pauses", func(t *testing.T) {
 		g := newMachine()
 		for i := range g.turnsLimit {
 			// Progress changes every turn so only the turn budget can fire.
-			res := g.advance(in(&goalTurnReport{status: GoalStatusRunning, reason: "keep going"}, "s", "s"+fmt.Sprint(i)))
+			res := g.advance(in(&goalTurnReport{status: GoalStatusRunning, reason: "keep going"}, "sig-"+fmt.Sprint(i)))
 			if res.cont && i == g.turnsLimit-1 {
 				t.Fatal("last turn must pause")
 			}
@@ -227,7 +258,7 @@ func TestTurnTokenNoProgressPausesAndResumeExtendsBudget(t *testing.T) {
 		g := newMachine()
 		// Even a huge observational total must not stop the goal.
 		g.tokensUsed = 900_000
-		res := g.advance(in(&goalTurnReport{status: GoalStatusRunning, reason: "keep going"}, "s", "s2"))
+		res := g.advance(in(&goalTurnReport{status: GoalStatusRunning, reason: "keep going"}, "new-evidence"))
 		if !res.cont {
 			t.Fatal("token usage must not pause the goal")
 		}
@@ -236,22 +267,24 @@ func TestTurnTokenNoProgressPausesAndResumeExtendsBudget(t *testing.T) {
 		}
 	})
 
-	t.Run("no-progress pauses", func(t *testing.T) {
+	t.Run("no-progress is observational", func(t *testing.T) {
 		g := newMachine()
 		for range g.noProgressLimit {
-			g.advance(in(&goalTurnReport{status: GoalStatusRunning, reason: "still working"}, "sig", "sig"))
+			if res := g.advance(in(&goalTurnReport{status: GoalStatusRunning, reason: "still working"})); !res.cont {
+				t.Fatalf("legacy 4/6/10 metadata paused Goal: %+v", g)
+			}
 		}
-		if g.status != GoalStatusBlocked || g.stopCause != stopCauseNoProgress {
-			t.Fatalf("machine = (%q, %q), want blocked+no_progress", g.status, g.stopCause)
+		if g.status != GoalStatusRunning || g.stopCause != "" || g.noProgressTurns != g.noProgressLimit {
+			t.Fatalf("machine = (%q, %q, %d), want running with observational streak", g.status, g.stopCause, g.noProgressTurns)
 		}
 	})
 
 	t.Run("host-verifiable progress resets no-progress", func(t *testing.T) {
 		g := newMachine()
 		for range g.noProgressLimit - 1 {
-			g.advance(in(&goalTurnReport{status: GoalStatusRunning, reason: "still working"}, "sig", "sig"))
+			g.advance(in(&goalTurnReport{status: GoalStatusRunning, reason: "still working"}))
 		}
-		res := g.advance(in(&goalTurnReport{status: GoalStatusRunning, reason: "progress!"}, "sig", "sig2"))
+		res := g.advance(in(&goalTurnReport{status: GoalStatusRunning, reason: "progress!"}, "new-evidence"))
 		if !res.cont {
 			t.Fatalf("progress must reset the stall counter: %+v", g)
 		}
@@ -260,10 +293,37 @@ func TestTurnTokenNoProgressPausesAndResumeExtendsBudget(t *testing.T) {
 		}
 	})
 
+	t.Run("exact repeated evidence does not reset no-progress", func(t *testing.T) {
+		g := newMachine()
+		g.advance(in(&goalTurnReport{status: GoalStatusRunning, reason: "read"}, "same-read"))
+		for range g.noProgressLimit {
+			g.advance(in(&goalTurnReport{status: GoalStatusRunning, reason: "read again"}, "same-read"))
+		}
+		if g.status != GoalStatusRunning || g.stopCause != "" || g.noProgressTurns != g.noProgressLimit {
+			t.Fatalf("repeated evidence should remain observational: status=%q cause=%q streak=%d", g.status, g.stopCause, g.noProgressTurns)
+		}
+	})
+
+	t.Run("research accepts new read evidence but keeps a larger synthesis budget", func(t *testing.T) {
+		g := &goalMachine{
+			goal: "research the protocol", status: GoalStatusRunning,
+			budgetClass: budgetClassResearch, turnsLimit: budgetQuota(budgetClassResearch),
+			noProgressLimit: noProgressQuota(budgetClassResearch),
+		}
+		for i := range 8 {
+			if res := g.advance(in(&goalTurnReport{status: GoalStatusRunning, reason: "researching"}, "read-"+fmt.Sprint(i))); !res.cont {
+				t.Fatalf("new research evidence paused at turn %d", i+1)
+			}
+		}
+		if g.noProgressTurns != 0 || g.noProgressLimit != 10 {
+			t.Fatalf("research runtime = no-progress %d/%d", g.noProgressTurns, g.noProgressLimit)
+		}
+	})
+
 	t.Run("resume extends turn budget once", func(t *testing.T) {
 		g := newMachine()
 		for range g.turnsLimit {
-			g.advance(in(&goalTurnReport{status: GoalStatusRunning, reason: "keep going"}, "s", "s"))
+			g.advance(in(&goalTurnReport{status: GoalStatusRunning, reason: "keep going"}))
 		}
 		beforeLimit := g.turnsLimit
 		_, _, _, resumed, extended := g.resume(nil)
@@ -319,6 +379,20 @@ func TestGoalTurnRecorderProtocol(t *testing.T) {
 		}
 		if got := rec.validReport(rec.epoch); got == nil || got.status != GoalStatusRunning {
 			t.Fatalf("validReport = %+v", got)
+		}
+	})
+
+	t.Run("wire continue maps to the running FSM state", func(t *testing.T) {
+		_, rec := newRec(t)
+		got, err := rec.RecordGoalReport(report("continue", "working"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got != "update_goal: continue recorded for this turn." {
+			t.Fatalf("tool result = %q", got)
+		}
+		if got := rec.validReport(rec.epoch); got == nil || got.status != GoalStatusRunning {
+			t.Fatalf("validReport = %+v, want internal running status", got)
 		}
 	})
 
@@ -392,6 +466,39 @@ func TestGoalTurnRecorderProtocol(t *testing.T) {
 	})
 }
 
+func TestWireContinueDoesNotKeepExactRepeatedEvidenceAlive(t *testing.T) {
+	g := &goalMachine{
+		goal: "repeat the same read", status: GoalStatusRunning,
+		budgetClass: budgetClassSimple, turnsLimit: budgetQuota(budgetClassSimple),
+		noProgressLimit: noProgressQuota(budgetClassSimple), scopeID: newGoalScopeID(),
+	}
+	advance := func() goalAdvanceResult {
+		epoch := g.continuationEpoch
+		rec := g.newTurnRecorder(g.scopeID, epoch)
+		if _, err := rec.RecordGoalReport(tool.GoalReport{
+			Status: "continue", Reason: "same read", NextAction: "read it again",
+		}); err != nil {
+			t.Fatal(err)
+		}
+		return g.advance(goalAdvanceInput{
+			report: rec.validReport(epoch), progressEvidence: []string{"same-read"}, expectedEpoch: &epoch,
+		})
+	}
+
+	if res := advance(); !res.cont || g.noProgressTurns != 0 {
+		t.Fatalf("first read = %+v runtime=%+v", res, g.runtimeView())
+	}
+	for i := 1; i <= g.noProgressLimit; i++ {
+		res := advance()
+		if i < g.noProgressLimit && !res.cont {
+			t.Fatalf("repeat %d paused early: %+v", i, res)
+		}
+	}
+	if g.status != GoalStatusRunning || g.stopCause != "" || g.noProgressTurns != g.noProgressLimit {
+		t.Fatalf("wire continue should remain active with observational streak: status=%q cause=%q runtime=%+v", g.status, g.stopCause, g.runtimeView())
+	}
+}
+
 // TestGoalUsageTeeAttributesScopedBillableCallsAndExcludesTitle covers the
 // observational token accounting surface: executor/subagent-style usage counts,
 // title generation does not.
@@ -401,12 +508,12 @@ func TestGoalUsageTeeAttributesScopedBillableCallsAndExcludesTitle(t *testing.T)
 	g.budgetClass = budgetClassWrite
 	g.turnsLimit = budgetQuota(budgetClassWrite)
 	g.tokensLimit = 0
-	g.noProgressLimit = defaultNoProgressLimit
+	g.noProgressLimit = noProgressQuota(g.budgetClass)
 	g.scopeID = newGoalScopeID()
 	rec := g.newTurnRecorder(g.scopeID, g.continuationEpoch)
 	tee.setActiveRecorder(rec)
 
-	usage := func(tokens int) *provider.Usage { return &provider.Usage{TotalTokens: tokens} }
+	usage := func(tokens int) *provider.Usage { return &provider.Usage{TotalTokens: tokens, RequestCount: 1} }
 	tee.Emit(event.Event{Kind: event.Usage, Usage: usage(100), UsageSource: event.UsageSourceExecutor})
 	tee.Emit(event.Event{Kind: event.Usage, Usage: usage(200), UsageSource: event.UsageSourcePlanner})
 	tee.Emit(event.Event{Kind: event.Usage, Usage: usage(300), UsageSource: event.UsageSourceSubagent})
@@ -424,6 +531,9 @@ func TestGoalUsageTeeAttributesScopedBillableCallsAndExcludesTitle(t *testing.T)
 	}
 	if g.tokensUsed != 3600 {
 		t.Fatalf("live goal tokens = %d, want 3600", g.tokensUsed)
+	}
+	if g.requestsUsed != 8 || rec.requestsUsed != 8 {
+		t.Fatalf("requests = goal:%d recorder:%d, want 8", g.requestsUsed, rec.requestsUsed)
 	}
 
 	// No active goal turn → nothing folds.
@@ -527,6 +637,154 @@ func TestGoalLegacyBudgetTokensSidecarAutoResumes(t *testing.T) {
 	}
 }
 
+func TestGoalLegacyNoProgressSidecarAutoResumesWithoutExtension(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "session.jsonl")
+	state := goalState{
+		Goal: "finish the migration", Status: GoalStatusBlocked,
+		StopCause: stopCauseNoProgress, Block: "no host-verifiable progress",
+		BudgetClass: budgetClassWrite, TurnsUsed: 6, TurnsLimit: 20,
+		NoProgressTurns: 6, NoProgressLimit: 6, RequestsUsed: 12,
+	}
+	raw, err := json.Marshal(state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(store.SessionGoalState(path), raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	g := &goalMachine{}
+	_, data, migrated, _ := g.restoreFromState(path)
+	if !migrated {
+		t.Fatal("legacy no_progress pause must migrate")
+	}
+	if g.status != GoalStatusRunning || g.stopCause != "" || g.block != "" {
+		t.Fatalf("restored status = %q cause=%q block=%q", g.status, g.stopCause, g.block)
+	}
+	if g.turnsLimit != 20 || g.budgetExtensions != 0 || g.requestsUsed != 12 || g.noProgressTurns != 6 {
+		t.Fatalf("migration changed runtime counters: %+v", g.runtimeView())
+	}
+	var normalized goalState
+	if err := json.Unmarshal(data, &normalized); err != nil {
+		t.Fatal(err)
+	}
+	if normalized.Status != GoalStatusRunning || normalized.StopCause != "" || normalized.RequestsUsed != 12 {
+		t.Fatalf("normalized sidecar = %+v", normalized)
+	}
+}
+
+func TestGoalSidecarPreservesUnknownFieldsAndOldReaderIgnoresRequests(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "session.jsonl")
+	raw := []byte(`{"goal":"ship","status":"running","turnsLimit":10,"requestsUsed":7,"futurePolicy":{"mode":"adaptive"}}`)
+	if err := os.WriteFile(store.SessionGoalState(path), raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	g := &goalMachine{}
+	g.restoreFromState(path)
+	g.mu.Lock()
+	_, data, ok := g.buildStateLocked(nil)
+	g.mu.Unlock()
+	if !ok {
+		t.Fatal("expected persisted state")
+	}
+	var roundTrip map[string]json.RawMessage
+	if err := json.Unmarshal(data, &roundTrip); err != nil {
+		t.Fatal(err)
+	}
+	if string(roundTrip["futurePolicy"]) != `{"mode":"adaptive"}` {
+		t.Fatalf("unknown field was lost: %s", data)
+	}
+	var oldReader struct {
+		Goal       string `json:"goal"`
+		TurnsLimit int    `json:"turnsLimit"`
+	}
+	if err := json.Unmarshal(data, &oldReader); err != nil || oldReader.Goal != "ship" || oldReader.TurnsLimit != 10 {
+		t.Fatalf("old reader = %+v err=%v", oldReader, err)
+	}
+}
+
+func TestGoalRunBoundariesPauseAfterTerminalDecisions(t *testing.T) {
+	t.Run("continue pauses", func(t *testing.T) {
+		g := &goalMachine{goal: "ship", status: GoalStatusRunning, turnsLimit: 10}
+		res := g.advance(goalAdvanceInput{
+			report:     &goalTurnReport{status: GoalStatusRunning, reason: "more remains"},
+			pauseCause: stopCauseGoalRunBudget, pauseReason: "16 model rounds used",
+		})
+		if res.cont || g.status != GoalStatusBlocked || g.stopCause != stopCauseGoalRunBudget {
+			t.Fatalf("result=%+v runtime=%+v", res, g.runtimeView())
+		}
+		before := g.turnsLimit
+		_, _, _, resumed, extended := g.resume(nil)
+		if !resumed || extended || g.turnsLimit != before {
+			t.Fatalf("resume = resumed:%v extended:%v turns:%d/%d", resumed, extended, g.turnsUsed, g.turnsLimit)
+		}
+	})
+
+	t.Run("completion wins", func(t *testing.T) {
+		g := &goalMachine{goal: "ship", status: GoalStatusRunning, turnsLimit: 10}
+		res := g.advance(goalAdvanceInput{
+			report:     &goalTurnReport{status: GoalStatusComplete},
+			readiness:  agent.ReadinessResult{Ready: true},
+			pauseCause: stopCauseGoalStuck, pauseReason: "repeated host failure",
+		})
+		if res.notice != goalCompleteNotice || g.status != GoalStatusComplete || g.stopCause != "" {
+			t.Fatalf("result=%+v runtime=%+v", res, g.runtimeView())
+		}
+	})
+}
+
+func TestGoalProgressEvidenceRestoresAsBoundedNoveltyState(t *testing.T) {
+	dir := t.TempDir()
+	sessionPath := filepath.Join(dir, "session.jsonl")
+	state := goalState{
+		Goal: "research the protocol", Status: GoalStatusRunning,
+		BudgetClass: budgetClassResearch, TurnsLimit: budgetQuota(budgetClassResearch),
+		NoProgressTurns: 2, NoProgressLimit: defaultNoProgressLimit,
+		ProgressEvidence: []string{"read-a", "read-a", "read-b", strings.Repeat("x", 129)},
+	}
+	raw, err := json.Marshal(state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := writeGoalStateData(goalStatePath(sessionPath), raw); err != nil {
+		t.Fatal(err)
+	}
+
+	g := &goalMachine{}
+	_, migratedData, migrated, _ := g.restoreFromState(sessionPath)
+	if !migrated {
+		t.Fatal("legacy flat research limit must migrate to the class quota")
+	}
+	if g.noProgressLimit != 10 || len(g.progressEvidence) != 2 {
+		t.Fatalf("restored runtime = limit:%d evidence:%v", g.noProgressLimit, g.progressEvidence)
+	}
+	var normalized goalState
+	if err := json.Unmarshal(migratedData, &normalized); err != nil {
+		t.Fatal(err)
+	}
+	if normalized.NoProgressLimit != 10 || len(normalized.ProgressEvidence) != 2 {
+		t.Fatalf("normalized sidecar = limit:%d evidence:%v", normalized.NoProgressLimit, normalized.ProgressEvidence)
+	}
+
+	// A restored repeat is still zero-gain; a genuinely new identity resets the
+	// stall counter without requiring any mutation.
+	g.advance(goalAdvanceInput{
+		report:           &goalTurnReport{status: GoalStatusRunning, reason: "repeat"},
+		progressEvidence: []string{"read-a"},
+	})
+	if g.noProgressTurns != 3 {
+		t.Fatalf("restored repeat reset no-progress to %d", g.noProgressTurns)
+	}
+	g.advance(goalAdvanceInput{
+		report:           &goalTurnReport{status: GoalStatusRunning, reason: "new result"},
+		progressEvidence: []string{"read-c"},
+	})
+	if g.noProgressTurns != 0 {
+		t.Fatalf("new restored evidence left no-progress at %d", g.noProgressTurns)
+	}
+}
+
 func TestGoalLargeTokenUsageDoesNotExhaustBudget(t *testing.T) {
 	g := &goalMachine{
 		goal: "ship", status: GoalStatusRunning,
@@ -537,9 +795,8 @@ func TestGoalLargeTokenUsageDoesNotExhaustBudget(t *testing.T) {
 		t.Fatal("budgetExhausted must ignore tokensUsed")
 	}
 	res := g.advance(goalAdvanceInput{
-		report:         &goalTurnReport{status: GoalStatusRunning, reason: "progress"},
-		progressBefore: "a",
-		progressAfter:  "b",
+		report:           &goalTurnReport{status: GoalStatusRunning, reason: "progress"},
+		progressEvidence: []string{"new-evidence"},
 	})
 	if !res.cont {
 		t.Fatal("goal with large tokensUsed must continue while turns remain")
@@ -692,12 +949,12 @@ func TestFooterTextDoesNotDriveGoalState(t *testing.T) {
 	c.Submit("/goal migrate the storage")
 	waitGoalTurnDone(t, events)
 	// The footer alone must never complete the goal: the evaluator's continue
-	// keeps it going until the no-progress gate pauses it.
+	// keeps it going until the outer continuation backstop pauses it.
 	if got := c.GoalStatus(); got == GoalStatusComplete {
 		t.Fatal("a [goal:complete] footer must not complete the goal")
 	}
-	if rt := c.GoalRuntime(); rt.StopCause != stopCauseNoProgress {
-		t.Fatalf("runtime = %+v, want no-progress pause (footer ignored)", rt)
+	if rt := c.GoalRuntime(); rt.StopCause != stopCauseBudgetTurns {
+		t.Fatalf("runtime = %+v, want turn-budget pause (footer ignored)", rt)
 	}
 	c.ClearGoal()
 	for _, m := range c.History() {

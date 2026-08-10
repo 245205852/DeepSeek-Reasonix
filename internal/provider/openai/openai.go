@@ -297,6 +297,15 @@ type client struct {
 
 func (c *client) Name() string { return c.name }
 
+// CloseIdleConnections releases pooled HTTP connections held by this provider.
+// It is primarily useful to callers with a bounded lifetime, such as live
+// provider probes; normal long-lived clients should keep the pool warm.
+func (c *client) CloseIdleConnections() {
+	if c != nil && c.http != nil {
+		c.http.CloseIdleConnections()
+	}
+}
+
 func (c *client) RequiresToolCallReasoning() bool {
 	return c != nil && c.deepseek && c.thinkingType != "disabled"
 }

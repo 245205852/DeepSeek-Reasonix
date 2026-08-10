@@ -622,14 +622,28 @@ func (r *ReadOnlyTaskTool) Execute(ctx context.Context, args json.RawMessage) (s
 // bounds the parent has). Shared by task, read_only_task, and parallel_tasks
 // children so the default cannot drift per call site.
 func (t *TaskTool) childMaxSteps(requested int) int {
+	return childMaxStepsForParent(t.maxSteps, requested)
+}
+
+func childMaxStepsForParent(parent, requested int) int {
 	if requested > 0 {
 		return requested
 	}
-	if t.maxSteps <= 0 {
+	if parent <= 0 {
 		return 0
 	}
-	half := max(t.maxSteps/2, 5)
+	half := max(parent/2, 5)
 	return half
+}
+
+func (t *TaskTool) childMaxStepsForContext(ctx context.Context, requested int) int {
+	if requested > 0 || t.maxSteps > 0 {
+		return t.childMaxSteps(requested)
+	}
+	if limit, ok := runStepLimitFromContext(ctx); ok && limit.inherit {
+		return childMaxStepsForParent(limit.steps, requested)
+	}
+	return 0
 }
 
 func (t *TaskTool) effectiveProfile(model, effort string) (string, string) {
@@ -789,7 +803,7 @@ func (t *TaskTool) RunProfileSpec(ctx context.Context, spec ProfileExecSpec) (re
 		spec.Worker.SystemPrompt = t.sysPrompt
 	}
 
-	maxSteps := t.childMaxSteps(spec.Sched.MaxSteps)
+	maxSteps := t.childMaxStepsForContext(ctx, spec.Sched.MaxSteps)
 	childDepth, err := t.nextSubagentDepth(ctx)
 	if err != nil {
 		return "", err

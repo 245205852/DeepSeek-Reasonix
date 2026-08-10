@@ -527,9 +527,10 @@ func (l *Ledger) HasWriteOrCommandSince(index int) bool {
 }
 
 // SuccessfulProgressSignaturesSince returns stable identities for successful
-// host-observed work recorded at or after index. Callers can keep a per-turn set
-// of these signatures so a new read, command, or mutation renews an execution
-// lease while exact repeats do not masquerade as progress.
+// host-observed work recorded at or after index. Callers can keep a scoped set
+// of these signatures so new reads/results, task-state changes, reviews, and
+// mutations renew an execution lease while exact repeats do not masquerade as
+// progress.
 func (l *Ledger) SuccessfulProgressSignaturesSince(index int) []string {
 	if l == nil {
 		return nil
@@ -558,6 +559,12 @@ func progressReceiptSignature(r Receipt) (string, bool) {
 		kind = "mutation"
 	case r.Command != "":
 		kind = "command"
+	case r.ToolName == "todo_write" && len(r.Todos) > 0:
+		kind = "todo"
+	case r.ToolName == "complete_step" && r.StepProof:
+		kind = "signoff"
+	case successfulForegroundReviewReceipt(r) || completedStructuredReviewReceipt(r, nil):
+		kind = "review"
 	case r.Read && r.OutputBytes > 0:
 		kind = "read"
 	default:
@@ -569,6 +576,13 @@ func progressReceiptSignature(r Receipt) (string, bool) {
 		if canonical, err := json.Marshal(decoded); err == nil {
 			payload = string(canonical)
 		}
+	}
+	// Result identity matters for observational work: the same query producing
+	// changed content is new evidence, while the same query and output is not.
+	// Mutations and state transitions remain argument/state keyed so an exact
+	// successful replay cannot keep a Goal alive by itself.
+	if (kind == "read" || kind == "command") && r.OutputDigest != "" {
+		payload += "\x00output=" + r.OutputDigest
 	}
 	sum := sha256.Sum256([]byte(kind + "\x00" + r.ToolName + "\x00" + payload))
 	return fmt.Sprintf("%x", sum), true
