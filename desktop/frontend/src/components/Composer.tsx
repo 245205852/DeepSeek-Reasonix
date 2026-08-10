@@ -1,6 +1,6 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
+import { lazy, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import type { CSSProperties, ClipboardEvent, DragEvent, KeyboardEvent, MouseEvent as ReactMouseEvent, PointerEvent as ReactPointerEvent } from "react";
-import { ArrowRight, ArrowUp, AtSign, Check, ChevronDown, ChevronUp, ChevronsUpDown, CornerDownRight, Equal, Eye, FilePlus2, FileText, Flag, Folder, Gauge, Hash, List, MessageSquare, Plus, Search, Shield, ShieldAlert, ShieldCheck, Square, Target, Trash2, X } from "lucide-react";
+import { ArrowRight, ArrowUp, AtSign, Check, ChevronsUpDown, CornerDownRight, Equal, Eye, FilePlus2, FileText, Flag, Folder, Gauge, Hash, List, MessageSquare, Plus, Search, Shield, ShieldAlert, ShieldCheck, Square, Target, Trash2, X } from "lucide-react";
 import { asArray } from "../lib/array";
 import { filterAtMatches } from "../lib/atMatches";
 import { DedupIndex, sha256 } from "../lib/attachDedup";
@@ -46,6 +46,7 @@ import { Markdown } from "./Markdown";
 import { CodeViewer } from "./CodeViewer";
 import { ContextWindowRing } from "./ContextWindowRing";
 import { ImageViewer } from "./ImageViewer";
+import type { PendingGuidance } from "./ComposerGuidanceShelf";
 import {
   RichComposerInput,
   slashQueryAt,
@@ -95,23 +96,11 @@ const COMPOSER_MAX_VIEWPORT_RATIO = 0.4;
 const COMPOSER_AUTO_RESERVED_HEIGHT = 58;
 const PROMPT_HISTORY_PREFETCH_REMAINING = 3;
 const FILE_REF_SEARCH_CACHE_TTL_MS = 5000;
+const ComposerGuidanceShelf = lazy(() => import("./ComposerGuidanceShelf").then((module) => ({ default: module.ComposerGuidanceShelf })));
 
 type PastedBlock = {
   label: string;
   text: string;
-};
-
-type PendingGuidance = {
-  /** Durable session-inbox item id (server-assigned). */
-  id: string;
-  /** Bounded preview for the shelf — full body is fetched only when editing. */
-  text: string;
-  /** Optional full submit text kept only until durable enqueue succeeds. */
-  submitText: string;
-  state?: string;
-  intent?: string;
-  source?: string;
-  structured?: StructuredInvocationSubmit;
 };
 
 type FileRefSearchCacheEntry = {
@@ -1216,6 +1205,9 @@ export function Composer({
         state: it.state,
         intent: it.intent,
         source: it.source,
+        recoveredCount: snap?.paused && snap?.recovered
+          ? (snap.recoveredCount || snap.items.length)
+          : undefined,
       }));
       updatePendingGuidanceForDraft(draftKey, () => durable.length > 0 ? durable : fallback);
       setGuidanceExpanded(false);
@@ -3807,9 +3799,6 @@ export function Composer({
         : goalModeOn && !activeGoal
           ? t("composer.goalInputPlaceholder")
           : t("composer.placeholder");
-  const hiddenGuidanceCount = Math.max(0, pendingGuidance.length - 2);
-  const visibleGuidance = guidanceExpanded ? pendingGuidance : pendingGuidance.slice(0, 2);
-  const showGuidanceExpander = pendingGuidance.length > 2;
   const composerMetaClass = [
     "composer-meta",
     hasEffort ? "composer-meta--has-effort" : "composer-meta--no-effort",
@@ -4309,56 +4298,28 @@ export function Composer({
         ) : null
       )}
       {pendingGuidance.length > 0 && (
-        <div className="composer-guidance-shelf" aria-label={t("composer.guidanceQueue")}>
-          <div className="composer-guidance-head">
-            <span className="composer-guidance-head__label">
-              <CornerDownRight size={14} />
-              <span>{t("composer.guidanceCount", { n: pendingGuidance.length })}</span>
-            </span>
-          </div>
-          <div className="composer-guidance-list">
-            {visibleGuidance.map((item) => (
-              <div className="composer-guidance-item" key={item.id}>
-                <CornerDownRight size={14} className="composer-guidance-item__icon" />
-                <span className="composer-guidance-item__text">{item.text}</span>
-                <Tooltip label={t("composer.guidanceSend")}>
-                  <button
-                    className="composer-guidance-item__guide"
-                    type="button"
-                    aria-label={t("composer.guidanceSend")}
-                    disabled={!running || disabled || readOnly || guidanceSendingId !== null || Boolean(item.structured)}
-                    onClick={() => void sendQueuedGuidance(item)}
-                  >
-                    <CornerDownRight size={13} />
-                    <span>{t("composer.guidanceMode")}</span>
-                  </button>
-                </Tooltip>
-                <Tooltip label={t("composer.guidanceDismiss")}>
-                  <button
-                    className="composer-guidance-item__action"
-                    type="button"
-                    aria-label={t("composer.guidanceDismiss")}
-                    disabled={guidanceSendingId === item.id}
-                    onClick={() => void dismissQueuedGuidance(item)}
-                  >
-                    <Trash2 size={14} />
-                  </button>
-                </Tooltip>
-              </div>
-            ))}
-            {showGuidanceExpander && (
-              <button
-                className="composer-guidance-more"
-                type="button"
-                aria-expanded={guidanceExpanded}
-                onClick={() => setGuidanceExpanded((value) => !value)}
-              >
-                {guidanceExpanded ? <ChevronUp size={13} /> : <ChevronDown size={13} />}
-                <span>{guidanceExpanded ? t("composer.guidanceCollapse") : t("composer.guidanceRemaining", { n: hiddenGuidanceCount })}</span>
-              </button>
-            )}
-          </div>
-        </div>
+        <Suspense fallback={null}>
+          <ComposerGuidanceShelf
+            recovery={pendingGuidance[0]?.recoveredCount ? {
+              draftKey,
+              tabId: tabId || "",
+              count: pendingGuidance[0].recoveredCount,
+            } : null}
+            recoveryDisabled={Boolean(disabled || readOnly)}
+            items={pendingGuidance}
+            expanded={guidanceExpanded}
+            running={running}
+            disabled={Boolean(disabled)}
+            readOnly={readOnly}
+            sendingId={guidanceSendingId}
+            onReview={() => setGuidanceExpanded(true)}
+            onRecoveryResumed={() => setGuidanceRetryNonce((value) => value + 1)}
+            onRecoveryError={(error) => showToast(error instanceof Error ? error.message : String(error), "warn")}
+            onToggleExpanded={() => setGuidanceExpanded((value) => !value)}
+            onSend={(item) => void sendQueuedGuidance(item)}
+            onDismiss={(item) => void dismissQueuedGuidance(item)}
+          />
+        </Suspense>
       )}
       {(attachments.length > 0 || workspaceRefs.length > 0 || sessionRefs.length > 0 || selectedTextRefs.length > 0) && (
         <div className="composer-context" aria-label={t("composer.contextItems")}>
