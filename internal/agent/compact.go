@@ -41,6 +41,7 @@ const (
 	maxCarriedDigestTokens     = 12000 // ceiling on digests carried verbatim across folds before one consolidating fold merges them
 	maxEarlyUserTurns          = 3     // small user turns hoisted verbatim ahead of the digest; position-fixed (the first N of the fold region, never "the latest N") so the projection prefix stays byte-stable
 	protocolReserveTokens      = 256   // provider framing and control fields not represented by message estimates
+	maxOutputReserveRatio      = 0.25  // ceiling on the window share an output budget may reserve before the thresholds collapse
 )
 
 var errSummaryOutputTruncated = errors.New("summarizer output truncated")
@@ -119,14 +120,26 @@ func (a *Agent) hardInputCeiling() int {
 		return 0
 	}
 	hard := a.contextWindow
-	outputBudget := a.maxOutputTokens
-	if outputBudget <= 0 && sharesContextWindow(a.prov) {
-		outputBudget = a.outputBudget
-	}
-	if outputBudget > 0 {
+	if outputBudget := a.reservedOutputTokens(); outputBudget > 0 {
 		hard -= outputBudget + protocolReserveTokens
 	}
 	return max(1, hard)
+}
+
+// reservedOutputTokens is the window share the thresholds hold back for the
+// reply. An output budget can exceed the configured window entirely (DeepSeek
+// defaults to 128K), which would drive every threshold to the one-token floor.
+// effectiveOutputBudget clips the actual reply at send time, so reserving more
+// than a quarter of the window buys nothing here.
+func (a *Agent) reservedOutputTokens() int {
+	budget := a.maxOutputTokens
+	if budget <= 0 && sharesContextWindow(a.prov) {
+		budget = a.outputBudget
+	}
+	if budget <= 0 {
+		return 0
+	}
+	return minInt(budget, int(float64(a.contextWindow)*maxOutputReserveRatio))
 }
 
 func (a *Agent) forceCompactThreshold(high int) int {
