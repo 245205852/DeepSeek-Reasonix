@@ -36,7 +36,7 @@ import { useToast } from "./lib/toast";
 import { useGoalActionHandler } from "./lib/goalAction";
 import { useWailsResizeFix } from "./lib/useWailsResizeFix";
 import { asArray } from "./lib/array";
-import { createBoundedRefreshCoordinator, sameTabMetaLists, shouldRefreshTabMetaForEvent, TAB_META_MAX_IN_FLIGHT, tabMetaFallbackDelay } from "./lib/tabMetaRefresh";
+import { createBoundedRefreshCoordinator, sameTabMetaLists, shouldRefreshTabMetaForEvent, TAB_META_MAX_IN_FLIGHT } from "./lib/tabMetaRefresh";
 import { clearLegacyLangPref, normalizeLangPref, readLegacyLangPref, t, useI18n, useT, type Translator } from "./lib/i18n";
 import { localizedNoticeText, useController, type Item, type LiveStream } from "./lib/useController";
 import { app, onEvent, onProjectTreeChanged, onReady, onRemoteForwards, onRemoteServer, onRemoteStatus, onRuntimeRebuilt, onSessionRecovered, openExternal } from "./lib/bridge";
@@ -1224,8 +1224,8 @@ export default function App() {
   const workspaceScopeActiveTabRef = useRef(activeTabId);
   const [workspaceControllerEpoch, setWorkspaceControllerEpoch] = useState(0);
   workspaceScopeActiveTabRef.current = activeTabId;
-  // Bump dockRefreshKey after each turn so WorkspacePanel/ContextPanel re-fetch
-  // workspace changes, git history, and session metadata after AI tool writes.
+  // ContextPanel still uses this turn sequence for usage/session metadata;
+  // WorkspacePanel listens to resource-level workspace revisions instead.
   useEffect(() => {
     startTerminalEventBridge();
     const unsub = onEvent((e) => {
@@ -2592,43 +2592,20 @@ export default function App() {
   }, [activeTab?.scope, activeTab?.workspaceRoot]);
 
   useEffect(() => {
-    let cancelled = false;
-    let timer: number | undefined;
-    const schedule = () => {
-      if (cancelled) return;
-      timer = window.setTimeout(() => {
-        void refreshTabMetas();
-        schedule();
-      }, tabMetaFallbackDelay(document.visibilityState));
-    };
-    const refreshAndSchedule = () => {
-      if (timer !== undefined) window.clearTimeout(timer);
-      timer = undefined;
-      void refreshTabMetas();
-      schedule();
-    };
-    const onVisibilityChange = () => {
-      if (document.visibilityState === "visible") refreshAndSchedule();
-      else {
-        if (timer !== undefined) window.clearTimeout(timer);
-        schedule();
-      }
-    };
-    refreshAndSchedule();
-    document.addEventListener("visibilitychange", onVisibilityChange);
-    return () => {
-      cancelled = true;
-      if (timer !== undefined) window.clearTimeout(timer);
-      document.removeEventListener("visibilitychange", onVisibilityChange);
-    };
-  }, [refreshTabMetas]);
-
-  useEffect(() => {
-    return onProjectTreeChanged(() => {
+    let live = true;
+    const ready = import("./lib/workspaceRefreshStore")
+      .then(({ default: startWorkspaceFocusReconciliation }) => live ? startWorkspaceFocusReconciliation(activeTabId, workspaceScopeKey, refreshTabMetas) : undefined)
+      .catch(() => undefined);
+    const stopProjectTree = onProjectTreeChanged(() => {
       setProjectRevision((value) => value + 1);
       void refreshTabMetas(undefined, { afterMutation: true });
     });
-  }, [refreshTabMetas]);
+    return () => {
+      live = false;
+      stopProjectTree();
+      void ready.then((stop) => stop?.());
+    };
+  }, [activeTabId, refreshTabMetas, workspaceScopeKey]);
 
   // Bridge remote:* events into the remote store once, app-wide, so the
   // StatusBar chip, host manager, and explorer all see the same live state.
@@ -5350,7 +5327,6 @@ export default function App() {
                     onFileTreeRefresh={refreshComposerFileRefs}
                     onSessionRevertCommitted={handleSessionRevertCommitted}
                     onOpenInTerminal={openTerminalForPath}
-                    refreshKey={dockRefreshKey}
                     initialViewMode={rightDockMode === "changed" ? "changed" : "files"}
                     showViewTabs={false}
                     creationMode={sidebarCreation}
