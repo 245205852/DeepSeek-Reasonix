@@ -310,6 +310,8 @@ export interface WireEvent {
   /** Optional: "headers" | "stream". Older clients ignore unknown fields. */
   retryScope?: "headers" | "stream";
   streamAttempt?: WireStreamAttempt;
+  /** Durable session-inbox item id for steer / TurnDone correlation. */
+  itemId?: string;
   workspace?: WireWorkspaceChanged;
   tabId?: string; // Go's tabEventSink tags events for the correct per-tab reducer.
   runtimeEpoch?: string;
