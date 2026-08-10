@@ -280,12 +280,7 @@ func (o *turnOrchestrator) runOrchestratedTurn(ctx context.Context, turn orchest
 	// events during the turn fold into the goal's observational token total. The span stays
 	// active until the FSM commits (advanceGoalAfterTurn) so evaluator usage
 	// also counts; error paths that skip the FSM clear it explicitly.
-	if goalScopeID, ok := c.goals.goalScopeIDForTurn(continuation); ok {
-		ctx = agent.WithDefaultRunStepLimit(ctx, goalRunRoundLimit, goalRunRoundKey)
-		recorder := c.goals.newTurnRecorder(goalScopeID, c.goals.continuationToken())
-		ctx = tool.WithGoalTurnRecorder(ctx, recorder)
-		c.goalUsageTee.setActiveRecorder(recorder)
-	}
+	ctx = c.bindTurnScope(ctx, continuation)
 	modelInput := input
 	if !turn.synthetic {
 		modelInput = c.withCapabilityRoute(ctx, input, turn.raw)
