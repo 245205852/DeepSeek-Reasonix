@@ -37,10 +37,14 @@ type requestCalibrationShape struct {
 	cjkBytes     int64
 }
 
+// resetOutputBudgetState drops what belongs to the transcript being replaced.
+// The prompt-token calibration is a property of the model's tokenizer, and a
+// model switch rebuilds the agent, so it outlives the swap: dropping it sent
+// every rebind — resume, tab switch, recovery adopt — back to the cold
+// estimate for a turn.
 func (a *Agent) resetOutputBudgetState() {
 	a.lastUsage.Store(nil)
 	a.activeReqShape.Store(nil)
-	a.promptCalibration.Store(nil)
 }
 
 func (a *Agent) setPromptTokenCalibration(promptTokens int, shape requestCalibrationShape) {
