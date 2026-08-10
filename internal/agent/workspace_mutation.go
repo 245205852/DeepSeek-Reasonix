@@ -122,7 +122,7 @@ func stripWorkspaceEnvPrefix(fields []string) []string {
 }
 
 func commandMentionsGitExecutable(command string) bool {
-	for _, field := range strings.Fields(command) {
+	for field := range strings.FieldsSeq(command) {
 		field = strings.Trim(field, "'\"(){}[];|&")
 		if isGitExecutable(field) {
 			return true
