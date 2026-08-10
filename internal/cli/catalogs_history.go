@@ -12,7 +12,13 @@ import (
 )
 
 func init() {
-	registerCatalogCommand(catalogCommand{name: "history", path: historycatalog.DefaultPath, reindex: reindexHistoryCatalog})
+	registerCatalogCommand(catalogCommand{
+		name: "history", path: historycatalog.DefaultPath, reindex: reindexHistoryCatalog,
+		completionFlags: []cliCompletionFlag{
+			completionFlag("--json", cliCompletionNoValue),
+			completionFlag("--dir", cliCompletionPathValue),
+		},
+	})
 }
 
 func reindexHistoryCatalog(args []string) int {
