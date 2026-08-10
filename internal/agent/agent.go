@@ -1422,11 +1422,15 @@ func (a *Agent) Run(ctx context.Context, input string) (runErr error) {
 	runMaxSteps := a.maxSteps
 	runMaxStepsKey := a.maxStepsKey
 	runLimitHostOwned := false
+	runPauseAfterFinal := false
 	if limit, ok := runStepLimitFromContext(ctx); ok {
-		runMaxSteps = limit.steps
-		runLimitHostOwned = true
-		if limit.key != "" {
-			runMaxStepsKey = limit.key
+		if !limit.defaultOnly || a.maxSteps <= 0 {
+			runMaxSteps = limit.steps
+			runLimitHostOwned = true
+			runPauseAfterFinal = limit.pauseAfterFinal
+			if limit.key != "" {
+				runMaxStepsKey = limit.key
+			}
 		}
 	}
 	a.recoveryRunSeq.Add(1)
@@ -1479,6 +1483,7 @@ func (a *Agent) Run(ctx context.Context, input string) (runErr error) {
 	state.runMaxSteps = runMaxSteps
 	state.runMaxStepsKey = runMaxStepsKey
 	state.runLimitHostOwned = runLimitHostOwned
+	state.runPauseAfterFinal = runPauseAfterFinal
 	state.workDurationMs = workDurationMs
 	return a.runToolLoop(ctx, state)
 }
@@ -1571,34 +1576,6 @@ func (a *Agent) observeMissingToolCallReasoning(calls []provider.ToolCall, reaso
 	return true, true
 }
 
-// maxStepsPause is the deliberate stop when a positive tool-call budget runs
-// out: the session already holds the completed work and the user is asked to
-// continue. It is a control-flow signal, not a provider failure. Coordinator
-// treats planner research budgets specially: ordinary plan-and-execute work
-// falls back to the executor, while explicit execution boundaries fail closed.
-type maxStepsPause struct {
-	steps int
-	key   string
-}
-
-func (e *maxStepsPause) Error() string {
-	return fmt.Sprintf("paused after %d tool-call rounds (%s) — the work so far is saved; send another message to continue, or set %s higher or to 0 for no limit", e.steps, e.key, e.key)
-}
-
-type todoStallPause struct {
-	rounds int
-}
-
-func (e *todoStallPause) Error() string {
-	return fmt.Sprintf("paused after %d tool-call rounds without advancing the current todo — the work so far is saved; inspect the blocker or send another message to continue", e.rounds)
-}
-
-func isToolLoopPause(err error) bool {
-	var maxPause *maxStepsPause
-	var stallPause *todoStallPause
-	return errors.As(err, &maxPause) || errors.As(err, &stallPause)
-}
-
 // ReadinessResult is the host-consumable outcome of the Delivery final-answer
 // readiness check. The Controller reads it after each goal turn; plain turns
 // receive the same outcome as a FinalReadinessError.
@@ -1629,19 +1606,6 @@ func (a *Agent) ReadinessResult() ReadinessResult {
 		Reason:      check.reason,
 		ProgressKey: check.progressSignature(),
 	}
-}
-
-// HostProgressSignature returns a compact signature of host-observable progress
-// across the current delivery scope: successful writes, commands, todo writes,
-// signoffs, and reviews. Identical signatures across consecutive goal turns
-// mean no host-verifiable progress was made — reads, reworded answers, and
-// repeated continue reasons never reset the stall counter.
-func (a *Agent) HostProgressSignature() string {
-	if a == nil || a.evidence == nil {
-		return ""
-	}
-	s := a.evidence.ReceiptProgressSummary()
-	return fmt.Sprintf("w=%d;c=%d;t=%d;s=%d;r=%d", s.Writes, s.Commands, s.Todos, s.Signoffs, s.Reviews)
 }
 
 type finalReadinessCheck struct {
@@ -2829,7 +2793,7 @@ const loopGuardBlockErrMsg = "blocked by loop guard"
 // blocker (see loopGuardAllowsFinal). The hard maxSteps guard remains the
 // ultimate backstop; this just keeps the loop from burning that whole budget
 // bouncing off the same host refusals.
-func (a *Agent) applyStormBreaker(calls []provider.ToolCall, outcomes []toolOutcome, results []string, receiptMark int) {
+func (a *Agent) applyStormBreaker(calls []provider.ToolCall, outcomes []toolOutcome, results []string, receiptMark int) string {
 	allBlocked := len(outcomes) > 0
 	for _, outcome := range outcomes {
 		if !outcome.blocked {
@@ -2861,7 +2825,7 @@ func (a *Agent) applyStormBreaker(calls []provider.ToolCall, outcomes []toolOutc
 	stormHit := ok && a.stormCount >= stormBreakThreshold
 	streakHit := allBlocked && a.blockedTurnStreak >= stormBreakThreshold
 	if !stormHit && !streakHit {
-		return
+		return ""
 	}
 
 	const blockedAdvice = "Change approach: do not keep retrying a blocked tool by changing the tool, command, or arguments. Respect the permission, plan-mode, hook, or loop-guard blocker; use an already-allowed tool, ask the user for the specific approval or choice if appropriate, or explain the blocker in your final answer."
@@ -2903,6 +2867,7 @@ func (a *Agent) applyStormBreaker(calls []provider.ToolCall, outcomes []toolOutc
 	results[0] = outcomes[0].output + "\n\n" + guard
 	a.sink.Emit(event.Event{Kind: event.Notice, Level: event.LevelInfo, Code: event.NoticeCodeLoopGuard, Text: loopGuardNoticeText(), Detail: detail})
 	a.armLoopGuardPass(receiptMark)
+	return detail
 }
 
 func loopGuardNoticeText() string {
