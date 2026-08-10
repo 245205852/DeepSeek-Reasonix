@@ -111,7 +111,15 @@ type Catalog struct {
 	reconcileDone bool
 }
 
-func DefaultPath() string { return filepath.Join(config.CacheDir(), "task-catalog", "v1.sqlite") }
+// DefaultPath returns the disposable task projection path under CacheDir.
+// Empty when cache is unavailable so Open falls back to an in-memory projection.
+func DefaultPath() string {
+	cache := strings.TrimSpace(config.CacheDir())
+	if cache == "" {
+		return ""
+	}
+	return filepath.Join(cache, "task-catalog", "v1.sqlite")
+}
 
 func ProjectKey(root string) string {
 	root = filepath.Clean(strings.TrimSpace(root))
@@ -154,7 +162,13 @@ func Open(ctx context.Context, path string) (*Catalog, error) {
 	if path == "" {
 		path = DefaultPath()
 	}
-	handle, err := projectiondb.Open(ctx, projectiondb.OpenOptions{Path: path, MemoryName: "task-catalog", Migrations: migrations(), MaxOpenConns: 4})
+	inMemory := strings.TrimSpace(path) == ""
+	if inMemory {
+		path = ""
+	}
+	handle, err := projectiondb.Open(ctx, projectiondb.OpenOptions{
+		Path: path, MemoryName: "task-catalog", Migrations: migrations(), InMemory: inMemory, MaxOpenConns: 4,
+	})
 	if err != nil {
 		return nil, err
 	}

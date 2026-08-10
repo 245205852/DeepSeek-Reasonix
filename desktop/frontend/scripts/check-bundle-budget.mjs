@@ -72,7 +72,9 @@ for (const path of localeChunks) {
   // Task Monitor, Extension UI, Storage & paths, and shell execution cards
   // add their own labels. Reasoning display controls and status bar metrics add
   // the latest localized copy. Keep both dictionaries within narrow allowances.
-  const budget = name.startsWith("zh-TW-") ? 54.7 * 1024 : 54.0 * 1024;
+  // Indexed history + task-center locale strings push zh-TW just over the old
+  // 54.7 KiB gzip gate; keep a one-decimal ratchet while raw stays controlled.
+  const budget = name.startsWith("zh-TW-") ? 55.5 * 1024 : 54.5 * 1024;
   assertBudget(`${name} gzip`, gzipBytes(path), budget);
 }
 

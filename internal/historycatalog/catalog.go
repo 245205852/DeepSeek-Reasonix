@@ -52,6 +52,10 @@ func Open(ctx context.Context, opts Options) (*Catalog, error) {
 	if opts.Path == "" {
 		opts.Path = DefaultPath()
 	}
+	if strings.TrimSpace(opts.Path) == "" {
+		opts.Path = ""
+		opts.InMemory = true
+	}
 	if opts.Now == nil {
 		opts.Now = time.Now
 	}
@@ -62,7 +66,9 @@ func Open(ctx context.Context, opts Options) (*Catalog, error) {
 		opts.MissingGrace = defaultMissingGrace
 	}
 	if opts.ReconcileInterval <= 0 {
-		opts.ReconcileInterval = time.Minute
+		// Periodic root rescans are fingerprint-cheap when nothing changed; keep
+		// the interval longer so large installs are not re-walked every minute.
+		opts.ReconcileInterval = 5 * time.Minute
 	}
 	handle, err := projectiondb.Open(ctx, projectiondb.OpenOptions{
 		Path: opts.Path, MemoryName: "history-search", Migrations: migrations(), InMemory: opts.InMemory,
@@ -231,6 +237,7 @@ func (c *Catalog) worker() {
 		case <-ticker.C:
 			c.markAllRootsDirty()
 		case done := <-c.flushCh:
+			c.drainPending(c.ctx)
 			close(done)
 		case path := <-c.queue:
 			c.mu.Lock()
@@ -249,6 +256,9 @@ func (c *Catalog) worker() {
 	}
 }
 
+// Flush drains dirty roots and the path queue until empty or ctx cancels, then
+// waits for the worker to acknowledge. Callers use this on shutdown so pending
+// index work is not silently abandoned.
 func (c *Catalog) Flush(ctx context.Context) error {
 	if c == nil {
 		return nil
@@ -264,6 +274,41 @@ func (c *Catalog) Flush(ctx context.Context) error {
 		return nil
 	case <-ctx.Done():
 		return ctx.Err()
+	}
+}
+
+func (c *Catalog) drainPending(ctx context.Context) {
+	for {
+		if err := ctx.Err(); err != nil {
+			return
+		}
+		if root, ok := c.takeDirtyRoot(); ok {
+			_ = c.reconcileRoot(ctx, root)
+			continue
+		}
+		select {
+		case path := <-c.queue:
+			c.mu.Lock()
+			queued := c.paths[path]
+			delete(c.paths, path)
+			c.mu.Unlock()
+			_ = c.indexPath(ctx, queued.root, path, 0, queued.appendFrom)
+		default:
+			c.mu.Lock()
+			empty := len(c.paths) == 0 && len(c.dirtyRoots) == 0
+			c.mu.Unlock()
+			if empty && len(c.queue) == 0 {
+				return
+			}
+			// Another goroutine may have enqueued between checks; yield once.
+			runtime.Gosched()
+			c.mu.Lock()
+			empty = len(c.paths) == 0 && len(c.dirtyRoots) == 0
+			c.mu.Unlock()
+			if empty && len(c.queue) == 0 {
+				return
+			}
+		}
 	}
 }
 
@@ -292,6 +337,19 @@ func (c *Catalog) takeDirtyRoot() (Root, bool) {
 	return Root{}, false
 }
 
+func historyRootSignature(paths []string) string {
+	hash := sha256.New()
+	for _, path := range paths {
+		info, err := os.Stat(path)
+		if err != nil {
+			_, _ = fmt.Fprintf(hash, "%s\x00missing\n", path)
+			continue
+		}
+		_, _ = fmt.Fprintf(hash, "%s\x00%d\x00%d\n", path, info.Size(), info.ModTime().UnixNano())
+	}
+	return hex.EncodeToString(hash.Sum(nil))
+}
+
 func (c *Catalog) reconcileRoot(ctx context.Context, root Root) error {
 	entries, err := os.ReadDir(root.Path)
 	if err != nil && !errors.Is(err, os.ErrNotExist) {
@@ -310,16 +368,22 @@ func (c *Catalog) reconcileRoot(ctx context.Context, root Root) error {
 		paths = append(paths, path)
 	}
 	sort.Strings(paths)
+	signature := historyRootSignature(paths)
+	var previousSig, previousState string
+	_ = c.db.QueryRowContext(ctx, `SELECT signature,state FROM history_roots WHERE path=?`, root.Path).Scan(&previousSig, &previousState)
+	if previousState == "ready" && previousSig == signature && signature != "" {
+		return nil
+	}
 	now := c.opts.Now().UnixMilli()
 	tx, err := c.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
 	var generation int64
-	if err := tx.QueryRowContext(ctx, `INSERT INTO history_roots(path,source,scope,workspace_root,scan_generation,state,total)
-        VALUES(?,?,?,?,1,'scanning',?) ON CONFLICT(path) DO UPDATE SET source=excluded.source,scope=excluded.scope,
-        workspace_root=excluded.workspace_root,scan_generation=history_roots.scan_generation+1,state='scanning',error='',total=excluded.total
-        RETURNING scan_generation`, root.Path, root.Source, root.Scope, root.WorkspaceRoot, len(paths)).Scan(&generation); err != nil {
+	if err := tx.QueryRowContext(ctx, `INSERT INTO history_roots(path,source,scope,workspace_root,signature,scan_generation,state,total)
+        VALUES(?,?,?,?,?,1,'scanning',?) ON CONFLICT(path) DO UPDATE SET source=excluded.source,scope=excluded.scope,
+        workspace_root=excluded.workspace_root,signature=excluded.signature,scan_generation=history_roots.scan_generation+1,state='scanning',error='',total=excluded.total
+        RETURNING scan_generation`, root.Path, root.Source, root.Scope, root.WorkspaceRoot, signature, len(paths)).Scan(&generation); err != nil {
 		_ = tx.Rollback()
 		return err
 	}
@@ -366,7 +430,7 @@ func (c *Catalog) reconcileRoot(ctx context.Context, root Root) error {
 		_ = tx.Rollback()
 		return err
 	}
-	if _, err := tx.ExecContext(ctx, `UPDATE history_roots SET state='ready',indexed=?,completed_at=?,scan_cursor='' WHERE path=?`, indexed, now, root.Path); err != nil {
+	if _, err := tx.ExecContext(ctx, `UPDATE history_roots SET state='ready',signature=?,indexed=?,completed_at=?,scan_cursor='' WHERE path=?`, signature, indexed, now, root.Path); err != nil {
 		_ = tx.Rollback()
 		return err
 	}
@@ -411,11 +475,13 @@ func documents(messages []provider.Message) []indexedDocument {
 				appendDoc(i, part, string(msg.Role), "tool_input", call.Name, call.Name+" "+call.Arguments)
 			}
 		case provider.RoleTool:
+			// Index tool errors by default. Full tool_output is omitted so large
+			// or sensitive payloads never land in the disposable FTS projection
+			// unless a future opt-in path reindexes them explicitly.
 			lower := strings.ToLower(strings.TrimSpace(msg.Content))
 			if strings.HasPrefix(lower, "error:") || strings.HasPrefix(lower, "blocked:") || strings.Contains(lower, "permission denied") {
 				appendDoc(i, 0, string(msg.Role), "tool_error", msg.Name, msg.Name+" "+msg.Content)
 			}
-			appendDoc(i, 0, string(msg.Role), "tool_output", msg.Name, msg.Name+" "+msg.Content)
 		}
 	}
 	return out

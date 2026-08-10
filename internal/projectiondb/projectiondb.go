@@ -52,10 +52,14 @@ type Migration struct {
 }
 
 type OpenOptions struct {
-	Path         string
-	MemoryName   string
-	Migrations   []Migration
-	InMemory     bool
+	Path       string
+	MemoryName string
+	Migrations []Migration
+	InMemory   bool
+	// RequireDisk disables the process-local memory fallback. Rebuild uses this
+	// so a failed temporary open reports the real disk error instead of
+	// "could not use disk storage" after silently opening :memory:.
+	RequireDisk  bool
 	MaxOpenConns int
 	Now          func() time.Time
 	SecureDelete bool
@@ -83,22 +87,36 @@ func Open(ctx context.Context, opts OpenOptions) (*Handle, error) {
 	if opts.MemoryName == "" {
 		opts.MemoryName = "projection"
 	}
+	// Blank paths must never become relative "v1.sqlite" files under cwd.
+	if strings.TrimSpace(opts.Path) == "" {
+		opts.Path = ""
+		opts.InMemory = true
+	}
 	mode := ModeDisk
 	status := Status{State: StateReady, Mode: mode, Path: opts.Path}
 	useMemory := opts.InMemory || PathLooksRemote(opts.Path)
 	if !useMemory {
 		if err := os.MkdirAll(filepath.Dir(opts.Path), 0o700); err != nil {
+			if opts.RequireDisk {
+				return nil, fmt.Errorf("create projection directory: %w", err)
+			}
 			useMemory = true
 			status.LastError = err.Error()
 		} else {
 			_ = os.Chmod(filepath.Dir(opts.Path), 0o700)
 			if filesystemRemote(filepath.Dir(opts.Path)) {
+				if opts.RequireDisk {
+					return nil, errors.New("projection cache is on a remote filesystem")
+				}
 				useMemory = true
 				status.LastError = "projection cache is on a remote filesystem; using memory"
 			}
 		}
 	}
 	if useMemory {
+		if opts.RequireDisk {
+			return nil, errors.New("projection requires disk storage")
+		}
 		mode = ModeMemory
 	}
 
@@ -110,6 +128,9 @@ func Open(ctx context.Context, opts OpenOptions) (*Handle, error) {
 			// A newer process wrote this projection. Keep the file intact and
 			// serve an empty memory projection so startup never quarantines a
 			// healthy future schema.
+			if opts.RequireDisk {
+				return nil, err
+			}
 			status.State = StateDegraded
 			status.LastError = err.Error()
 			mode = ModeMemory
@@ -119,6 +140,9 @@ func Open(ctx context.Context, opts OpenOptions) (*Handle, error) {
 			status.QuarantinedPath = Quarantine(opts.Path, opts.Now())
 			db, err = open(ctx, opts, mode)
 			if err != nil {
+				if opts.RequireDisk {
+					return nil, err
+				}
 				status.State = StateDegraded
 				status.LastError = err.Error()
 				mode = ModeMemory
@@ -127,6 +151,9 @@ func Open(ctx context.Context, opts OpenOptions) (*Handle, error) {
 		default:
 			// Busy, permission, IO, or transient open errors must never rename
 			// a healthy database. Fall back to memory for this process only.
+			if opts.RequireDisk {
+				return nil, err
+			}
 			status.State = StateDegraded
 			status.LastError = err.Error()
 			mode = ModeMemory
@@ -143,13 +170,29 @@ func Open(ctx context.Context, opts OpenOptions) (*Handle, error) {
 	return &Handle{DB: db, Status: status}, nil
 }
 
+// diskFileDSN builds a cross-platform SQLite file URI. Windows drive paths must
+// be file:///C:/...; a bare file:C:\... URI fails to open and previously forced
+// silent memory fallback during rebuild.
+func diskFileDSN(path string) string {
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		abs = path
+	}
+	slash := filepath.ToSlash(abs)
+	if runtime.GOOS == "windows" && len(slash) >= 2 && slash[1] == ':' {
+		// C:/Users/... → /C:/Users/... so the URI becomes file:///C:/Users/...
+		slash = "/" + slash
+	}
+	u := &url.URL{Scheme: "file", Path: slash}
+	return u.String() + "?_pragma=busy_timeout%28150%29&_pragma=foreign_keys%281%29"
+}
+
 func open(ctx context.Context, opts OpenOptions, mode Mode) (*sql.DB, error) {
 	var dsn string
 	if mode == ModeMemory {
 		dsn = fmt.Sprintf("file:reasonix-%s-%d?mode=memory&cache=shared", url.PathEscape(opts.MemoryName), opts.Now().UnixNano())
 	} else {
-		u := &url.URL{Scheme: "file", Path: opts.Path}
-		dsn = u.String() + "?_pragma=busy_timeout%28150%29&_pragma=foreign_keys%281%29"
+		dsn = diskFileDSN(opts.Path)
 	}
 	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
@@ -179,14 +222,14 @@ func open(ctx context.Context, opts OpenOptions, mode Mode) (*sql.DB, error) {
 		}
 	}
 	if opts.SecureDelete {
-		if _, err := db.ExecContext(ctx, `PRAGMA secure_delete=ON`); err != nil {
-			return fail(err)
-		}
+		// Best-effort: some builds/filesystems reject the pragma without making
+		// the projection unusable.
+		_, _ = db.ExecContext(ctx, `PRAGMA secure_delete=ON`)
 	}
 	if opts.AutoVacuum {
-		if _, err := db.ExecContext(ctx, `PRAGMA auto_vacuum=INCREMENTAL`); err != nil {
-			return fail(err)
-		}
+		// auto_vacuum can only be changed on an empty database; ignore failures
+		// on already-initialized files so open does not degrade to memory.
+		_, _ = db.ExecContext(ctx, `PRAGMA auto_vacuum=INCREMENTAL`)
 	}
 	var integrity string
 	if err := db.QueryRowContext(ctx, `PRAGMA integrity_check`).Scan(&integrity); err != nil {
@@ -279,8 +322,7 @@ func Inspect(ctx context.Context, path string) Inspection {
 	}
 	out.Exists = true
 	out.Size = info.Size()
-	u := &url.URL{Scheme: "file", Path: path}
-	db, err := sql.Open("sqlite", u.String()+"?mode=ro&immutable=1")
+	db, err := sql.Open("sqlite", diskFileDSN(path)+"&mode=ro&immutable=1")
 	if err != nil {
 		out.Error = err.Error()
 		return out
@@ -359,6 +401,7 @@ func Rebuild(ctx context.Context, opts OpenOptions, populate func(context.Contex
 	replacement := opts
 	replacement.Path = temporary
 	replacement.InMemory = false
+	replacement.RequireDisk = true
 	handle, err := Open(ctx, replacement)
 	if err != nil {
 		return fmt.Errorf("open projection replacement: %w", err)
@@ -371,7 +414,11 @@ func Rebuild(ctx context.Context, opts OpenOptions, populate func(context.Contex
 	if handle.Status.Mode != ModeDisk {
 		_ = handle.DB.Close()
 		cleanupTemporary()
-		return errors.New("projection replacement could not use disk storage")
+		detail := strings.TrimSpace(handle.Status.LastError)
+		if detail == "" {
+			detail = "unknown open fallback"
+		}
+		return fmt.Errorf("projection replacement could not use disk storage: %s", detail)
 	}
 	if populate != nil {
 		if err := populate(ctx, handle.DB); err != nil {

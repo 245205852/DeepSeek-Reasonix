@@ -4,6 +4,7 @@ package historycatalog
 
 import (
 	"path/filepath"
+	"strings"
 	"time"
 
 	"reasonix/internal/config"
@@ -96,6 +97,12 @@ type SearchResult struct {
 	Partial  bool
 }
 
+// DefaultPath returns the disposable history FTS path under CacheDir.
+// Empty when the OS cache directory is unavailable so Open falls back to memory.
 func DefaultPath() string {
-	return filepath.Join(config.CacheDir(), "history-search", "v1.sqlite")
+	cache := strings.TrimSpace(config.CacheDir())
+	if cache == "" {
+		return ""
+	}
+	return filepath.Join(cache, "history-search", "v1.sqlite")
 }

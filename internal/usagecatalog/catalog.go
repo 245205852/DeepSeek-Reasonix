@@ -95,7 +95,15 @@ type receiptEntry struct {
 	flush   chan struct{}
 }
 
-func DefaultPath() string { return filepath.Join(config.CacheDir(), "usage-catalog", "v1.sqlite") }
+// DefaultPath returns the disposable usage rollup path under CacheDir.
+// Empty when cache is unavailable so Open falls back to an in-memory projection.
+func DefaultPath() string {
+	cache := strings.TrimSpace(config.CacheDir())
+	if cache == "" {
+		return ""
+	}
+	return filepath.Join(cache, "usage-catalog", "v1.sqlite")
+}
 
 const schema = `
 CREATE TABLE usage_state(id INTEGER PRIMARY KEY CHECK(id=1),revision INTEGER NOT NULL DEFAULT 0);
@@ -132,7 +140,13 @@ func Open(ctx context.Context, path string) (*Catalog, error) {
 	if path == "" {
 		path = DefaultPath()
 	}
-	handle, err := projectiondb.Open(ctx, projectiondb.OpenOptions{Path: path, MemoryName: "usage-catalog", Migrations: migrations(), MaxOpenConns: 4})
+	inMemory := strings.TrimSpace(path) == ""
+	if inMemory {
+		path = ""
+	}
+	handle, err := projectiondb.Open(ctx, projectiondb.OpenOptions{
+		Path: path, MemoryName: "usage-catalog", Migrations: migrations(), InMemory: inMemory, MaxOpenConns: 4,
+	})
 	if err != nil {
 		return nil, err
 	}
