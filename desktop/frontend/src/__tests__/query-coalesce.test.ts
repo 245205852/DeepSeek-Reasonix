@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { coalescesQuery, maybeShare, resetQueryCoalescing, shareQuery } from "../lib/queryCoalesce";
+import { coalescesQuery, invalidateSharedQuery, maybeShare, resetQueryCoalescing, shareQuery } from "../lib/queryCoalesce";
 
 function deferred<T>() {
   let resolve!: (v: T) => void;
@@ -30,15 +30,6 @@ async function differentArgumentsStayIndependent() {
   assert.equal(runs, 2, "another tab is another question");
 }
 
-async function settledAnswersAreNotReused() {
-  resetQueryCoalescing();
-  let runs = 0;
-  const run = async () => ++runs;
-  assert.equal(await shareQuery("MetaForTab", ["tab-1"], run), 1);
-  assert.equal(await shareQuery("MetaForTab", ["tab-1"], run), 2);
-  assert.equal(runs, 2, "a settled metadata answer must not survive a backend state change");
-}
-
 async function mutationsInvalidateInflightAnswers() {
   resetQueryCoalescing();
   const stale = deferred<string>();
@@ -61,6 +52,23 @@ async function rejectionIsNotSharedOnward() {
   assert.equal(runs, 2, "the next caller retries instead of inheriting the failure");
 }
 
+async function invalidationStartsAFreshRead() {
+  resetQueryCoalescing();
+  let runs = 0;
+  const run = async () => ++runs;
+  assert.equal(await shareQuery("MetaForTab", ["tab-1"], run), 1);
+  invalidateSharedQuery("MetaForTab", ["tab-1"]);
+  assert.equal(await shareQuery("MetaForTab", ["tab-1"], run), 2);
+}
+
+async function settledTabListsAreNotShared() {
+  resetQueryCoalescing();
+  let runs = 0;
+  const run = async () => ++runs;
+  assert.equal(await shareQuery("ListTabs", [], run), 1);
+  assert.equal(await shareQuery("ListTabs", [], run), 2, "tab mutations must be visible after the in-flight burst");
+}
+
 // Anything that mutates or starts work must never be collapsed.
 function onlyReadOnlyQueriesAreCoalesced() {
   for (const readOnly of ["ListProjectTree", "ContextPanel", "MetaForTab", "BalanceForTab"]) {
@@ -74,9 +82,10 @@ function onlyReadOnlyQueriesAreCoalesced() {
 const tests: Array<[string, () => unknown]> = [
   ["identical in-flight calls share one answer", identicalCallsInFlightShareOneAnswer],
   ["different arguments stay independent", differentArgumentsStayIndependent],
-  ["settled answers are not reused", settledAnswersAreNotReused],
   ["mutations invalidate in-flight answers", mutationsInvalidateInflightAnswers],
   ["a rejection is not shared onward", rejectionIsNotSharedOnward],
+  ["external state boundaries invalidate settled answers", invalidationStartsAFreshRead],
+  ["settled tab lists do not cross mutations", settledTabListsAreNotShared],
   ["only read-only queries are coalesced", onlyReadOnlyQueriesAreCoalesced],
 ];
 
