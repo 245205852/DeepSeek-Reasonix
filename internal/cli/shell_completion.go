@@ -46,6 +46,15 @@ func completionSpecWithAliases(name string, aliases []string, flags []cliComplet
 	return cliCompletionSpec{name: name, aliases: aliases, flags: flags, subcommands: subcommands}
 }
 
+func catalogCompletionSpec(help cliCompletionFlag) cliCompletionSpec {
+	reindex := make([]cliCompletionSpec, 0, len(catalogCommands))
+	for _, command := range catalogCommands {
+		flags := append(slices.Clone(command.completionFlags), help)
+		reindex = append(reindex, completionSpec(command.name, flags))
+	}
+	return completionSpec("catalogs", []cliCompletionFlag{help}, completionSpec("reindex", []cliCompletionFlag{help}, reindex...))
+}
+
 func cliCompletionRootSpec() cliCompletionSpec {
 	profile := completionFlag("--profile", cliCompletionStaticValue, "economy", "balanced", "delivery")
 	model := completionFlag("--model", cliCompletionModelValue)
@@ -89,7 +98,6 @@ func cliCompletionRootSpec() cliCompletionSpec {
 		completionFlag("--ablate", cliCompletionStaticValue, "none", "all", "evidence", "planner", "subagent", "retrieval", "compaction"),
 		help,
 	}
-
 	root := cliCompletionSpec{name: "reasonix", flags: append([]cliCompletionFlag{
 		model,
 		completionFlag("--max-steps", cliCompletionStaticValue),
@@ -207,6 +215,7 @@ func cliCompletionRootSpec() cliCompletionSpec {
 				completionFlag("--json", cliCompletionNoValue), completionFlag("--dir", cliCompletionPathValue), help,
 			}),
 		),
+		catalogCompletionSpec(help),
 		completionSpec("report", []cliCompletionFlag{help},
 			completionSpec("list", []cliCompletionFlag{help}),
 			completionSpec("show", []cliCompletionFlag{help}),

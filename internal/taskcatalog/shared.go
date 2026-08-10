@@ -13,6 +13,7 @@ type sharedManager struct {
 	mu      sync.RWMutex
 	catalog *Catalog
 	pending map[string]string
+	closing bool
 }
 
 var shared sharedManager
@@ -25,6 +26,11 @@ func ensureShared() {
 				return
 			}
 			shared.mu.Lock()
+			if shared.closing {
+				shared.mu.Unlock()
+				_ = catalog.Close(context.Background())
+				return
+			}
 			shared.catalog = catalog
 			pending := shared.pending
 			shared.pending = nil
@@ -43,10 +49,34 @@ func Shared() *Catalog {
 	return shared.catalog
 }
 
+// ShutdownShared drains accepted notifications and cancels every shared task
+// projection worker. It is only used during process shutdown; authoritative
+// task snapshots and event logs have already committed before notifications.
+func ShutdownShared(ctx context.Context) error {
+	shared.mu.Lock()
+	shared.closing = true
+	catalog := shared.catalog
+	shared.catalog = nil
+	shared.mu.Unlock()
+	if catalog == nil {
+		return nil
+	}
+	flushErr := catalog.Flush(ctx)
+	closeErr := catalog.Close(ctx)
+	if flushErr != nil {
+		return flushErr
+	}
+	return closeErr
+}
+
 func RegisterSharedProject(root, label string) string {
 	ensureShared()
 	key := ProjectKey(root)
 	shared.mu.Lock()
+	if shared.closing {
+		shared.mu.Unlock()
+		return key
+	}
 	if shared.catalog == nil {
 		if shared.pending == nil {
 			shared.pending = map[string]string{}
@@ -85,6 +115,9 @@ func sharedCatalogForNotification(projectRoot string) *Catalog {
 	ensureShared()
 	shared.mu.Lock()
 	defer shared.mu.Unlock()
+	if shared.closing {
+		return nil
+	}
 	if shared.catalog == nil {
 		if shared.pending == nil {
 			shared.pending = map[string]string{}

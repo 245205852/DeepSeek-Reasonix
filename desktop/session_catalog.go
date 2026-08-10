@@ -61,10 +61,7 @@ type ProjectTreeChangedV2 struct {
 }
 
 func flushDesktopTaskCatalog(ctx context.Context) error {
-	if catalog := taskcatalog.Shared(); catalog != nil {
-		return catalog.Flush(ctx)
-	}
-	return nil
+	return taskcatalog.ShutdownShared(ctx)
 }
 
 func sessionCatalogStatus(status sessioncatalog.Status) SessionCatalogStatus {

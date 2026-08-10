@@ -101,6 +101,7 @@ type Catalog struct {
 	dirtyWake     chan struct{}
 	dirtyProjects sync.Map
 	wg            sync.WaitGroup
+	closing       atomic.Bool
 	revision      atomic.Uint64
 	statusMu      sync.RWMutex
 	status        Status
@@ -180,6 +181,9 @@ func (c *Catalog) EventsChanged(projectRoot, taskID string) {
 }
 
 func (c *Catalog) enqueue(req request) {
+	if c.closing.Load() {
+		return
+	}
 	select {
 	case c.queue <- req:
 	default:
@@ -298,17 +302,19 @@ func (c *Catalog) RequestReconcileProject(ctx context.Context, root, label strin
 
 func (c *Catalog) scheduleReconcile(project Project) {
 	c.reconcileMu.Lock()
-	if c.reconciling[project.Key] {
+	if c.closing.Load() || c.reconciling[project.Key] {
 		c.reconcileMu.Unlock()
 		return
 	}
 	c.reconciling[project.Key] = true
+	c.wg.Add(1)
 	c.reconcileMu.Unlock()
 	go func() {
 		defer func() {
 			c.reconcileMu.Lock()
 			delete(c.reconciling, project.Key)
 			c.reconcileMu.Unlock()
+			c.wg.Done()
 		}()
 		_ = c.ReconcileProject(c.ctx, project)
 	}()
@@ -654,7 +660,11 @@ func (c *Catalog) Status() Status {
 }
 
 func (c *Catalog) Close(ctx context.Context) error {
+	c.closing.Store(true)
 	c.cancel()
+	// Synchronize with scheduleReconcile so Wait cannot race a late Add.
+	c.reconcileMu.Lock()
+	c.reconcileMu.Unlock()
 	done := make(chan struct{})
 	go func() { c.wg.Wait(); close(done) }()
 	select {

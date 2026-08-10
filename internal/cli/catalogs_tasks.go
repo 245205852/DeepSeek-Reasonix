@@ -12,7 +12,13 @@ import (
 )
 
 func init() {
-	registerCatalogCommand(catalogCommand{name: "tasks", path: taskcatalog.DefaultPath, reindex: reindexTaskCatalog})
+	registerCatalogCommand(catalogCommand{
+		name: "tasks", path: taskcatalog.DefaultPath, reindex: reindexTaskCatalog,
+		completionFlags: []cliCompletionFlag{
+			completionFlag("--json", cliCompletionNoValue),
+			completionFlag("--project", cliCompletionPathValue),
+		},
+	})
 }
 
 func reindexTaskCatalog(args []string) int {

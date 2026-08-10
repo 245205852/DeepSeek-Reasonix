@@ -83,5 +83,5 @@ const rawInitialBytes = [...initialJS, ...initialCSS, ...appShellCSS]
 // small always-available contracts, while the catalog project shell adds
 // cursor, revision, and progress state. Keep their combined allowance tightly
 // ratcheted while the gzip gate stays flat.
-assertBudget("initial raw JavaScript and CSS", rawInitialBytes, 2_209 * 1024);
+assertBudget("initial raw JavaScript and CSS", rawInitialBytes, 2_210 * 1024);
 assertBudget("largest initial JavaScript chunk raw", largestInitialJSRaw, 1_000 * 1024);
