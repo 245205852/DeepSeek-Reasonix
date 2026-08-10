@@ -16,6 +16,8 @@ import type { TaskEvent, TaskSnapshot } from "../lib/types";
 
 // --- helpers ---
 
+type TaskTimerSnapshot = TaskSnapshot & { runtime_lease_until?: string };
+
 const STATE_CONFIG: Record<
   string,
   { key: "queued" | "running" | "waiting" | "succeeded" | "failed" | "cancelled" | "stale"; color: string; dot: string }
@@ -56,7 +58,7 @@ function isTerminalState(state: string): boolean {
   return state === "succeeded" || state === "failed" || state === "cancelled" || state === "stale";
 }
 
-function elapsed(task: TaskSnapshot, nowMs: number): string {
+function elapsed(task: TaskTimerSnapshot, nowMs: number): string {
   if (!task.created_at) return "—";
   const startMs = new Date(task.created_at).getTime();
   if (task.state === "queued") return "—";

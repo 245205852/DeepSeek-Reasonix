@@ -1974,7 +1974,6 @@ export interface TaskSnapshot {
   session_id: string;
   state: TaskState;
   runtime_state?: RuntimeState; // absent in snapshots written before this field existed
-  runtime_lease_until?: string; // ISO 8601; absent on legacy snapshots
   version: number;
   created_at: string; // ISO 8601
   updated_at: string; // ISO 8601
