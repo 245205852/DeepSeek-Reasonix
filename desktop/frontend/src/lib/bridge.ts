@@ -490,7 +490,7 @@ export interface AppBindings {
   SetCloseBehavior(mode: string): Promise<void>;
   SetDisplayMode(mode: string): Promise<void>;
   SetStatusBarStyle(style: string): Promise<void>;
-  SetStatusBarItems(items: string[]): Promise<void>;
+  SetStatusBarItems(items: string[]): Promise<void>; SetReasoningDisplayMode(mode: "hidden" | "summary" | "auto"): Promise<void>;
   SetDesktopLanguage(lang: string): Promise<void>;
   SetDesktopCurrency(currency: string): Promise<void>;
   SetDesktopAppearance(theme: string, style: string): Promise<void>;
@@ -984,7 +984,7 @@ function bridgeBreadcrumb(method: string): string {
     return `turn ${method}`;
   if (/^(SetModel|SetEffort|SetTokenMode|SetDefaultModel|SetPlannerModel|SetSubagentModel|SetSubagentEffort|SetMaxSubagentDepth|SetMaxSubagentConcurrency|SetMaxParallelWriters)/.test(method))
     return `model ${method}`;
-  if (/^(SetDesktop|SetCloseBehavior|SetDisplayMode|SetStatusBar|SetExpandThinking|SetAutoPlan|SetDefaultToolApprovalMode|SetCompactRatio|SetReasoningLanguage)/.test(method))
+  if (/^(SetDesktop|SetCloseBehavior|SetDisplayMode|SetStatusBar|SetReasoningDisplayMode|SetExpandThinking|SetAutoPlan|SetDefaultToolApprovalMode|SetCompactRatio|SetReasoningLanguage)/.test(method))
     return `settings ${method}`;
   if (/^(SaveProvider|SetProviderWebSearch|SaveProviderModelCatalogs|AddOfficialProviderAccess|UpgradeDeepSeekProviderAccess|AddProviderPresetAccess|ResetProviderPresetAccess|RemoveProviderAccess|RemoveProviderAccesses|DeleteProvider|SaveProviderKey|SetProviderKey|ClearProviderKey|FetchProviderModels|FetchAllProviderModels|ConnectKey)/.test(method))
     return `provider ${method}`;
@@ -1723,7 +1723,7 @@ function makeMockApp(): AppBindings {
     desktopTerminalTheme: "auto",
     conversationWidth: "standard",
     closeBehavior: "background",
-    displayMode: "compact",
+    displayMode: "standard", reasoningDisplayMode: "auto", reasoningDisplayModeExplicit: false,
     statusBarStyle: "text",
     statusBarItems: [...DEFAULT_STATUS_BAR_ITEMS],
     defaultToolApprovalMode: "auto",
@@ -4285,7 +4285,7 @@ function makeMockApp(): AppBindings {
       return this.SaveDoc(path, body);
     },
     async DesktopStartupSettings() {
-      const { bot, desktopLanguage, desktopLayoutStyle, desktopTheme, desktopThemeStyle, desktopTerminalTheme, displayMode, statusBarStyle, statusBarItems, checkUpdates, conversationWidth } = settings;
+      const { bot, desktopLanguage, desktopLayoutStyle, desktopTheme, desktopThemeStyle, desktopTerminalTheme, displayMode, reasoningDisplayMode, reasoningDisplayModeExplicit, statusBarStyle, statusBarItems, checkUpdates, conversationWidth } = settings;
       return JSON.parse(JSON.stringify({
         bot,
         desktopLanguage,
@@ -4293,7 +4293,7 @@ function makeMockApp(): AppBindings {
         desktopTheme,
         desktopThemeStyle,
         desktopTerminalTheme,
-        displayMode,
+        displayMode, reasoningDisplayMode, reasoningDisplayModeExplicit,
         statusBarStyle,
         statusBarItems,
         checkUpdates,
@@ -4790,10 +4790,9 @@ function makeMockApp(): AppBindings {
         async SetDesktopMetrics(enabled: boolean) {
           settings.metrics = enabled;
         },
-        async SetDesktopConversationWidth(width: string) {
-          settings.conversationWidth = width;
-        },
-        async SetExpandThinking(_on: boolean) {},
+    async SetDesktopConversationWidth(width: string) { settings.conversationWidth = width; },
+    async SetReasoningDisplayMode(mode: "hidden" | "summary" | "auto") { if (!(["hidden", "summary", "auto"] as string[]).includes(mode)) throw new Error("invalid reasoning display mode"); settings.reasoningDisplayMode = mode; settings.reasoningDisplayModeExplicit = true; },
+        async SetExpandThinking(on: boolean) { settings.reasoningDisplayMode = on ? "auto" : "summary"; settings.reasoningDisplayModeExplicit = true; },
         async MigrateDesktopPreferences(language: string, theme: string, style: string) {
           if (!settings.desktopLanguage) settings.desktopLanguage = language === "en" || language === "zh" || language === "zh-TW" ? language : "";
           if (!settings.desktopTheme && !settings.desktopThemeStyle) {
