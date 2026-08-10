@@ -65,3 +65,7 @@ func (m *chatTUI) syncScrollModeAfterGesture() {
 	}
 	m.markUserScrolled()
 }
+
+// useLegacyViewportScrollClear excludes Windows, where Bubble Tea already
+// disables the scroll optimization and an extra ClearScreen flickers (#8090).
+func useLegacyViewportScrollClear(goos string) bool { return goos != "windows" }

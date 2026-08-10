@@ -3127,9 +3127,7 @@ func TestForceGotoBottomScrollsWithoutTranscriptChange(t *testing.T) {
 	if cur.forceGotoBottom {
 		t.Fatal("forceGotoBottom should be cleared after scrolling")
 	}
-	if cmd == nil {
-		t.Fatal("regular forceGotoBottom scroll jump should request ClearScreen")
-	}
+	assertLegacyViewportClearCmd(t, cmd)
 }
 
 func TestSessionSwitchSuppressesOneClearScreen(t *testing.T) {
@@ -3172,9 +3170,7 @@ func TestSessionSwitchSuppressesOneClearScreen(t *testing.T) {
 	cur = next(cur, tea.MouseWheelMsg{Button: tea.MouseWheelUp})
 	cur.forceGotoBottom = true
 	cur, cmd = adv(cur, tea.WindowSizeMsg{Width: 80, Height: 8})
-	if cmd == nil {
-		t.Fatal("later scroll jumps must still request ClearScreen")
-	}
+	assertLegacyViewportClearCmd(t, cmd)
 	if cur.sessionSwitch {
 		t.Fatal("sessionSwitch should remain false after the suppressed cycle")
 	}
@@ -3787,11 +3783,9 @@ func TestDoubleCtrlCQuit(t *testing.T) {
 	m := newChatTUI(ctrl, "", make(chan event.Event, 1), 80)
 	ctrlC := tea.KeyPressMsg{Code: 'c', Mod: 4} // 4 = ModCtrl
 
-	// First Ctrl+C while idle: arms quit, flushes hint via finalize cmd.
-	out, cmd := m.Update(ctrlC)
-	if cmd == nil {
-		t.Error("first Ctrl+C should return a finalize cmd to flush the hint")
-	}
+	// First Ctrl+C while idle arms quit and adds the hint to model state. A
+	// renderer command is not required for Bubble Tea to paint that state.
+	out, _ := m.Update(ctrlC)
 	m2, ok := out.(chatTUI)
 	if !ok {
 		t.Fatalf("Update returned %T, want chatTUI", out)
@@ -3807,13 +3801,10 @@ func TestDoubleCtrlCQuit(t *testing.T) {
 	}
 	_ = out2
 
-	// Window expired: re-arms instead of quitting (still flushes hint via finalize).
+	// Window expired: re-arms instead of quitting.
 	m3 := m2
 	m3.lastCtrlCAt = time.Now().Add(-2 * time.Second)
-	out4, cmd4 := m3.Update(ctrlC)
-	if cmd4 == nil {
-		t.Error("expired Ctrl+C should return a finalize cmd to flush the re-armed hint")
-	}
+	out4, _ := m3.Update(ctrlC)
 	m4, ok := out4.(chatTUI)
 	if !ok {
 		t.Fatalf("Update returned %T, want chatTUI", out4)
@@ -3990,10 +3981,11 @@ func TestCtrlCCopySelection(t *testing.T) {
 	// Execute the command (copyToClipboard → OSC 52).
 	cmd()
 
-	// Second Ctrl+C should now arm quit (selection is gone).
-	_, cmd2 := m2.Update(ctrlC)
-	if cmd2 == nil {
-		t.Error("Ctrl+C after copy should arm quit (return a finalize cmd)")
+	// Second Ctrl+C should now arm quit (selection is gone). Rendering the
+	// changed model does not require a command.
+	out2, _ := m2.Update(ctrlC)
+	if out2.(chatTUI).lastCtrlCAt.IsZero() {
+		t.Error("Ctrl+C after copy should arm quit")
 	}
 }
 
