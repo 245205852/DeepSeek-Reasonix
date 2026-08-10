@@ -164,11 +164,15 @@ type TaskSnapshot struct {
 	State             TaskState    `json:"state"`
 	RuntimeState      RuntimeState `json:"runtime_state,omitempty"`
 	RuntimeLeaseUntil time.Time    `json:"runtime_lease_until,omitempty"`
-	Version           uint64       `json:"version"`
-	CreatedAt         time.Time    `json:"created_at"`
-	UpdatedAt         time.Time    `json:"updated_at"`
-	ErrorCode         string       `json:"error_code,omitempty"`
-	ErrorSummary      string       `json:"error_summary,omitempty"`
+	// RuntimeOwnerID identifies the recorder generation that owns the live
+	// runtime lease. It prevents a delayed heartbeat from an older controller
+	// from renewing a newer lifecycle that reused the same session/job IDs.
+	RuntimeOwnerID string    `json:"runtime_owner_id,omitempty"`
+	Version        uint64    `json:"version"`
+	CreatedAt      time.Time `json:"created_at"`
+	UpdatedAt      time.Time `json:"updated_at"`
+	ErrorCode      string    `json:"error_code,omitempty"`
+	ErrorSummary   string    `json:"error_summary,omitempty"`
 }
 
 // Validate returns a non-nil error if required fields are missing or
@@ -208,6 +212,9 @@ func (ts TaskSnapshot) Validate() error {
 	}
 	if len(ts.RuntimeState) > maxFieldLen {
 		return fmt.Errorf("TaskSnapshot.RuntimeState exceeds max length %d", maxFieldLen)
+	}
+	if len(ts.RuntimeOwnerID) > maxFieldLen {
+		return fmt.Errorf("TaskSnapshot.RuntimeOwnerID exceeds max length %d", maxFieldLen)
 	}
 	if !ts.RuntimeLeaseUntil.IsZero() && ts.RuntimeLeaseUntil.Before(ts.CreatedAt) {
 		return fmt.Errorf("TaskSnapshot.RuntimeLeaseUntil is before CreatedAt")
