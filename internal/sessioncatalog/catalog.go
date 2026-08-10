@@ -7,16 +7,14 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"net/url"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 
-	_ "modernc.org/sqlite"
+	"reasonix/internal/projectiondb"
 )
 
 const defaultMissingGrace = 30 * time.Second
@@ -84,38 +82,25 @@ func Open(ctx context.Context, opts Options) (*Catalog, error) {
 		stop:           make(chan struct{}),
 		status:         Status{State: StateOpening, Path: opts.Path},
 	}
-	mode := ModeDisk
-	useMemory := opts.InMemory || catalogPathLooksRemote(opts.Path)
-	if !useMemory {
-		if err := os.MkdirAll(filepath.Dir(opts.Path), 0o755); err != nil {
-			useMemory = true
-			c.status.LastError = err.Error()
-		} else if catalogFilesystemRemote(filepath.Dir(opts.Path)) {
-			useMemory = true
-			c.status.LastError = "session catalog cache is on a remote filesystem; using memory"
-		}
-	}
-	if useMemory {
-		mode = ModeMemory
-	}
-	db, err := openDatabase(ctx, opts.Path, mode)
-	if err != nil && mode == ModeDisk {
-		quarantined := quarantineCatalog(opts.Path, opts.Now())
-		c.status.QuarantinedPath = quarantined
-		db, err = openDatabase(ctx, opts.Path, mode)
-	}
-	if err != nil && mode == ModeDisk {
-		mode = ModeMemory
-		c.status.LastError = err.Error()
-		db, err = openDatabase(ctx, opts.Path, mode)
-	}
+	handle, err := projectiondb.Open(ctx, projectiondb.OpenOptions{
+		Path: opts.Path, MemoryName: "session-catalog", Migrations: schemaMigrations(),
+		InMemory:     opts.InMemory || os.Getenv("REASONIX_SESSION_CATALOG_MEMORY") == "1",
+		MaxOpenConns: 4, Now: opts.Now,
+	})
 	if err != nil {
 		return nil, err
 	}
+	db := handle.DB
 	c.db = db
-	c.status.Mode = mode
-	c.status.State = StateReady
-	if mode == ModeMemory {
+	c.status.Mode = Mode(handle.Status.Mode)
+	c.status.LastError = handle.Status.LastError
+	c.status.QuarantinedPath = handle.Status.QuarantinedPath
+	if handle.Status.State == projectiondb.StateDegraded {
+		c.status.State = StateDegraded
+	} else {
+		c.status.State = StateReady
+	}
+	if handle.Status.Mode == projectiondb.ModeMemory {
 		c.status.Path = ""
 	}
 	if err := c.loadStatus(ctx); err != nil {
@@ -135,75 +120,6 @@ func Open(ctx context.Context, opts Options) (*Catalog, error) {
 		c.enqueuePersistedRepairs(ctx)
 	}
 	return c, nil
-}
-
-func openDatabase(ctx context.Context, path string, mode Mode) (*sql.DB, error) {
-	dsn := ""
-	if mode == ModeMemory {
-		dsn = fmt.Sprintf("file:reasonix-session-catalog-%d?mode=memory&cache=shared", time.Now().UnixNano())
-	} else {
-		u := &url.URL{Scheme: "file", Path: path}
-		dsn = u.String() + "?_pragma=busy_timeout%28150%29&_pragma=foreign_keys%281%29"
-	}
-	db, err := sql.Open("sqlite", dsn)
-	if err != nil {
-		return nil, err
-	}
-	db.SetMaxOpenConns(4)
-	db.SetMaxIdleConns(2)
-	if err := db.PingContext(ctx); err != nil {
-		_ = db.Close()
-		return nil, err
-	}
-	if mode == ModeDisk {
-		if _, err := db.ExecContext(ctx, `PRAGMA journal_mode=WAL`); err != nil {
-			_ = db.Close()
-			return nil, err
-		}
-	}
-	if _, err := db.ExecContext(ctx, `PRAGMA synchronous=NORMAL`); err != nil {
-		_ = db.Close()
-		return nil, err
-	}
-	var integrity string
-	if err := db.QueryRowContext(ctx, `PRAGMA integrity_check`).Scan(&integrity); err != nil || integrity != "ok" {
-		_ = db.Close()
-		if err != nil {
-			return nil, err
-		}
-		return nil, fmt.Errorf("session catalog integrity check: %s", integrity)
-	}
-	if err := migrateSchema(ctx, db); err != nil {
-		_ = db.Close()
-		return nil, err
-	}
-	return db, nil
-}
-
-func quarantineCatalog(path string, now time.Time) string {
-	if strings.TrimSpace(path) == "" {
-		return ""
-	}
-	quarantined := fmt.Sprintf("%s.corrupt-%d", path, now.UnixMilli())
-	if err := os.Rename(path, quarantined); err != nil {
-		return ""
-	}
-	for _, suffix := range []string{"-wal", "-shm"} {
-		_ = os.Rename(path+suffix, quarantined+suffix)
-	}
-	return quarantined
-}
-
-func catalogPathLooksRemote(path string) bool {
-	if os.Getenv("REASONIX_SESSION_CATALOG_MEMORY") == "1" {
-		return true
-	}
-	clean := filepath.Clean(path)
-	if runtime.GOOS == "windows" && strings.HasPrefix(clean, `\\`) {
-		return true
-	}
-	slash := filepath.ToSlash(clean)
-	return strings.HasPrefix(slash, "/net/") || strings.HasPrefix(slash, "/nfs/") || strings.HasPrefix(slash, "/afs/")
 }
 
 func (c *Catalog) loadStatus(ctx context.Context) error {

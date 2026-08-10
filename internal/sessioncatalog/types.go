@@ -11,7 +11,7 @@ import (
 )
 
 const (
-	SchemaVersion = 2
+	SchemaVersion = 3
 	DefaultLimit  = 50
 	MaxLimit      = 200
 )
@@ -156,6 +156,23 @@ type TopicPage struct {
 	Items      []TopicRecord `json:"items"`
 	NextCursor string        `json:"nextCursor,omitempty"`
 	Revision   uint64        `json:"revision"`
+}
+
+type SessionPageRequest struct {
+	Scope         string `json:"scope"`
+	WorkspaceRoot string `json:"workspaceRoot,omitempty"`
+	Directory     string `json:"-"`
+	Cursor        string `json:"cursor,omitempty"`
+	Limit         int    `json:"limit,omitempty"`
+	Query         string `json:"query,omitempty"`
+	TimeFilter    string `json:"timeFilter,omitempty"`
+}
+
+type SessionPage struct {
+	Items       []SessionRecord `json:"items"`
+	NextCursor  string          `json:"nextCursor,omitempty"`
+	Revision    uint64          `json:"revision"`
+	StaleCursor bool            `json:"staleCursor,omitempty"`
 }
 
 func DefaultPath() string {
