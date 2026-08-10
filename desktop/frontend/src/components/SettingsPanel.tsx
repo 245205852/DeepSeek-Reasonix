@@ -129,6 +129,7 @@ export function SettingsPanel({
   const [customFontName, setCustomFontNameState] = useState<string>(getCustomFontName());
   const [customMonoFontName, setCustomMonoFontNameState] = useState<string>(getCustomMonoFontName());
   const [tab, setTab] = useState<SettingsTab>(initialTab === "providers" ? "models" : initialTab ?? "general");
+  const settingsContentRef = useRef<HTMLElement>(null);
   const pendingSubagentCommandRef = useRef<string | null>(null);
   // Play the modal exit animation, then let the parent unmount us and focus
   // the composer with the selected slash command.
@@ -165,6 +166,12 @@ export function SettingsPanel({
     void reload();
     if (initialTab) setTab(initialTab === "providers" ? "models" : initialTab);
   }, [initialTab, reload]);
+  useEffect(() => {
+    const content = settingsContentRef.current;
+    if (!content) return;
+    content.scrollTop = 0;
+    content.scrollLeft = 0;
+  }, [tab]);
   useEffect(() => {
     if (!s) return;
     const nextTheme = normalizeThemePreference(s.desktopTheme);
@@ -317,7 +324,7 @@ export function SettingsPanel({
 
         <div className="settings-center">
           <SettingsNavigation items={settingsNavigationItems} activeTab={tab} onSelect={setTab} />
-          <main className="settings-center__content">
+          <main ref={settingsContentRef} className="settings-center__content">
             {needsSettings && settingsLoadFailed && (
               <div className="banner banner--error settings-load-error" role="alert">
                 <span>{t("settings.loadFailed")}</span>
@@ -1650,7 +1657,7 @@ function GeneralSection({ s, busy, apply, agentRunning }: SectionProps & { agent
       <SettingsSection title={t("settings.general.sectionAppearance")} description={t("settings.general.sectionAppearanceHint")}>
       <SettingsField label={t("settings.desktopLayoutStyle")} hint={t("settings.desktopLayoutStyleHint")} icon={<Monitor size={18} />}>
         <div className="set-seg">
-          {(["classic", "workbench", "creation"] as const).map((style) => (
+          {(["workbench", "classic", "creation"] as const).map((style) => (
             <button
               key={style}
               className={`set-seg__btn${desktopLayoutStyle === style ? " set-seg__btn--on" : ""}`}

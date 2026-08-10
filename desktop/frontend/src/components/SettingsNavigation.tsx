@@ -101,13 +101,14 @@ export function SettingsNavigation({
                   <button
                     key={id}
                     className={`settings-center__navitem${activeTab === id ? " settings-center__navitem--active" : ""}`}
+                    aria-current={activeTab === id ? "page" : undefined}
                     onClick={() => onSelect(id)}
                   >
                     <span className="settings-center__navitem-main">
                       {settingsTabIcon(id)}
                       <span>{item.label}</span>
                     </span>
-                    {item.meta && <small>{item.meta}</small>}
+                    {item.meta && (activeTab === id || query.trim()) && <small>{item.meta}</small>}
                   </button>
                 );
               })}
