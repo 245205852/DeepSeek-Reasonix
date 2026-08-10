@@ -441,6 +441,8 @@ export interface ProjectNode {
   sessionPath?: string;
   projectColor?: string;
   turns?: number;
+  turnsState?: "unknown" | "valid" | "corrupt" | string;
+  health?: "ok" | "missing" | "corrupt" | "degraded" | string;
   createdAt?: number;
   lastActivityAt?: number;
   open?: boolean;
@@ -453,6 +455,53 @@ export interface ProjectNode {
   recoveryParentId?: string;
   isolatedWorktree?: boolean;
   children?: ProjectNode[];
+}
+
+export interface SessionCatalogStatus {
+  state: "opening" | "ready" | "degraded" | "rebuilding" | "closed" | string;
+  mode?: "disk" | "memory" | string;
+  revision: number;
+  indexed: number;
+  total: number;
+  repairPending: number;
+  lastError?: string;
+  quarantinedPath?: string;
+}
+
+export interface ProjectTreeSnapshot {
+  revision: number;
+  projects: ProjectNode[];
+  catalog: SessionCatalogStatus;
+  indexed: number;
+  total: number;
+  indexingDone: boolean;
+}
+
+export interface ProjectTopicPageRequest {
+  scope: "global" | "project" | string;
+  workspaceRoot?: string;
+  cursor?: string;
+  limit?: number;
+  query?: string;
+  timeFilter?: string;
+}
+
+export interface ProjectTopicPage {
+  items: ProjectNode[];
+  nextCursor?: string;
+  revision: number;
+}
+
+export interface ProjectTopicKey {
+  scope: "global" | "project" | string;
+  workspaceRoot?: string;
+  topicId: string;
+}
+
+export interface ProjectTreeChangedV2 {
+  revision: number;
+  roots: string[];
+  reason: string;
 }
 
 export interface DeliveryWorktreeAvailability {
@@ -771,6 +820,7 @@ export interface SessionMeta {
   preview: string;
   title?: string; // user-chosen name; falls back to preview when empty
   turns: number;
+  turnsState?: "unknown" | "valid" | "corrupt" | string;
   createdAt: number; // unix milliseconds
   lastActivityAt: number; // unix milliseconds
   modTime: number; // compatibility alias for lastActivityAt
@@ -799,6 +849,7 @@ export interface SessionReference {
   title: string;
   preview?: string;
   turns?: number;
+  turnsState?: "unknown" | "valid" | "corrupt" | string;
   createdAt?: number;
   lastActivityAt?: number;
 }

@@ -167,6 +167,9 @@ func RunWithBuildInfo(args []string, info BuildInfo) int {
 	case "session":
 		configureCLIThemeFromConfig()
 		return sessionCommand(rest)
+	case "sessions":
+		configureCLIThemeFromConfig()
+		return sessionsCommand(rest)
 	case "hook", "hooks":
 		configureCLIThemeFromConfig()
 		return hookCommand(rest)

@@ -9,6 +9,7 @@ import type * as GeneratedApp from "../../wailsjs/go/main/App";
 import type { InvocationRequest } from "./invocationDisplay";
 
 import { addBreadcrumb } from "./breadcrumbs";
+import { asArray } from "./array";
 import { maybeShare } from "./queryCoalesce";
 import { t } from "./i18n";
 import { providerIsConfigured, providerRequiresKey, removeProviderAccessesForMock } from "./providerModels";
@@ -86,6 +87,12 @@ import type {
   PluginInstallOptions,
   PluginView,
   ProjectNode,
+  ProjectTreeSnapshot,
+  ProjectTopicPageRequest,
+  ProjectTopicPage,
+  ProjectTopicKey,
+  SessionCatalogStatus,
+  ProjectTreeChangedV2,
   PromptHistoryEntry,
   PromptHistoryResult,
   ProviderModelCatalogUpdate,
@@ -569,6 +576,11 @@ export interface AppBindings {
   CloseTerminalForTab(tabID: string, sessionID: string): Promise<void>;
   RenameTerminalForTab(tabID: string, sessionID: string, title: string): Promise<void>;
   ListProjectTree(): Promise<ProjectNode[]>;
+  GetProjectTreeSnapshot(): Promise<ProjectTreeSnapshot>;
+  ListProjectTopics(req: ProjectTopicPageRequest): Promise<ProjectTopicPage>;
+  GetTopicSummary(key: ProjectTopicKey): Promise<ProjectNode>;
+  GetSessionCatalogStatus(): Promise<SessionCatalogStatus>;
+  RebuildSessionCatalog(): Promise<void>;
   RenameProject(workspaceRoot: string, title: string): Promise<void>;
   SetProjectColor(workspaceRoot: string, color: string): Promise<void>;
   SetProjectPinned(workspaceRoot: string, pinned: boolean): Promise<void>;
@@ -882,6 +894,21 @@ export function onReady(cb: (tabId?: string) => void): () => void {
 export function onProjectTreeChanged(cb: () => void): () => void {
   if (realApp() && typeof window !== "undefined" && window.runtime) {
     return window.runtime.EventsOn("project-tree:changed", () => cb());
+  }
+  return () => {};
+}
+
+export function onProjectTreeChangedV2(cb: (event: ProjectTreeChangedV2) => void): () => void {
+  if (realApp() && typeof window !== "undefined" && window.runtime) {
+    return window.runtime.EventsOn("project-tree:changed-v2", (payload?: unknown) => {
+      if (!payload || typeof payload !== "object") return;
+      const event = payload as Partial<ProjectTreeChangedV2>;
+      cb({
+        revision: typeof event.revision === "number" ? event.revision : 0,
+        roots: asArray(event.roots).filter((root): root is string => typeof root === "string"),
+        reason: typeof event.reason === "string" ? event.reason : "changed",
+      });
+    });
   }
   return () => {};
 }
@@ -5146,6 +5173,35 @@ function makeMockApp(): AppBindings {
     async ListProjectTree() {
       return cloneProjectTree();
     },
+    async GetProjectTreeSnapshot() {
+      return {
+        revision: 1,
+        projects: cloneProjectTree().map((project) => ({ ...project, children: [] })),
+        catalog: { state: "ready", mode: "memory", revision: 1, indexed: 4, total: 4, repairPending: 0 },
+        indexed: 4,
+        total: 4,
+        indexingDone: true,
+      };
+    },
+    async ListProjectTopics(req: ProjectTopicPageRequest) {
+      const folder = req.scope === "global"
+        ? cloneProjectTree().find((item) => item.kind === "global_folder")
+        : cloneProjectTree().find((item) => item.kind === "project" && item.root === req.workspaceRoot);
+      const query = (req.query ?? "").trim().toLocaleLowerCase();
+      const all = asArray(folder?.children).filter((item) => !query || item.label.toLocaleLowerCase().includes(query));
+      const start = Math.max(0, Number.parseInt(req.cursor ?? "0", 10) || 0);
+      const limit = Math.min(200, Math.max(1, req.limit ?? 50));
+      const items = all.slice(start, start + limit);
+      return { items, nextCursor: start + items.length < all.length ? String(start + items.length) : undefined, revision: 1 };
+    },
+    async GetTopicSummary(key: ProjectTopicKey) {
+      const page = await this.ListProjectTopics({ scope: key.scope, workspaceRoot: key.workspaceRoot, limit: 200 });
+      return page.items.find((item) => item.topicId === key.topicId) ?? { key: "", kind: key.scope === "global" ? "global_topic" : "topic", label: "", children: [] };
+    },
+    async GetSessionCatalogStatus() {
+      return { state: "ready", mode: "memory", revision: 1, indexed: 4, total: 4, repairPending: 0 };
+    },
+    async RebuildSessionCatalog() {},
     async RenameProject(workspaceRoot: string, title: string) {
       const node = workspaceRoot
         ? mockProjectTree.find((item) => item.root === workspaceRoot)

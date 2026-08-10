@@ -105,7 +105,6 @@ import {
   type DesktopStartupSettingsView,
   type Mode,
   modeHasPlan,
-  type ProjectNode,
   type RewindResultView,
   type RemoteHostView,
   type SessionMeta,
@@ -882,30 +881,6 @@ function SidebarImConnectionDetail({ connection, onClose, onOpenSession, onOpenS
       </section>
     </div>
   );
-}
-
-function activeTopicTurnsFromTree(tree: ProjectNode[], tab?: TabMeta): number | undefined {
-  if (!tab?.topicId) return undefined;
-  const targetScope = tab.scope === "global" ? "global" : "project";
-  const walk = (nodes: ProjectNode[]): number | undefined => {
-    for (const node of nodes) {
-      if (!node) continue;
-      if (node.kind === "topic" || node.kind === "global_topic") {
-        const scope = node.kind === "global_topic" ? "global" : "project";
-        if (
-          scope === targetScope &&
-          node.topicId === tab.topicId &&
-          (scope === "global" || node.root === tab.workspaceRoot)
-        ) {
-          return node.turns;
-        }
-      }
-      const found = walk(asArray(node.children));
-      if (found !== undefined) return found;
-    }
-    return undefined;
-  };
-  return walk(tree);
 }
 
 function normalizeDesktopPlatform(value: string): DesktopPlatform {
@@ -1720,9 +1695,13 @@ export default function App() {
         cancelled = true;
       };
     }
-    void app.ListProjectTree()
-      .then((tree) => {
-        if (!cancelled) setActiveTopicTurns(activeTopicTurnsFromTree(asArray(tree), activeTab));
+    void app.GetTopicSummary({
+      scope: activeTab.scope === "global" ? "global" : "project",
+      workspaceRoot: activeTab.scope === "global" ? "" : activeTab.workspaceRoot,
+      topicId: activeTab.topicId,
+    })
+      .then((topic) => {
+        if (!cancelled) setActiveTopicTurns(topic.turns);
       })
       .catch(() => {
         if (!cancelled) setActiveTopicTurns(undefined);

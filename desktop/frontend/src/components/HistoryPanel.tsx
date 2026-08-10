@@ -542,7 +542,11 @@ export function HistoryPanel({
                               {s.recovered && <span className="hist-item__badge">{tr("recovery.badge")}</span>}
                               {sessionLocation(s, tr) && <span className="hist-item__scope">{sessionLocation(s, tr)}</span>}
                               <span className="hist-item__metaspacer" />
-                              <span className="hist-item__stat">{tr(s.turns === 1 ? "history.turnOne" : "history.turnOther", { n: s.turns })}</span>
+                              <span className="hist-item__stat">
+                                {s.turnsState === "unknown"
+                                  ? tr("history.indexing")
+                                  : tr(s.turns === 1 ? "history.turnOne" : "history.turnOther", { n: s.turns })}
+                              </span>
                               <span className="hist-item__dot">·</span>
                               <span className="hist-item__stat">{timeLabel(isTrash ? s.deletedAt || sessionActivityTime(s) : sessionActivityTime(s))}</span>
                               {!isTrash && running && (
@@ -688,7 +692,10 @@ function sessionMetaLine(s: SessionMeta, tr: ReturnType<typeof useT>, isTrash = 
   const time = timeLabel(isTrash ? s.deletedAt || sessionActivityTime(s) : sessionActivityTime(s));
   const suffix = isTrash && s.deletedAt ? ` · ${tr("history.deleted")}` : "";
   const prefix = isChannelSession(s) ? `${tr("history.channelReadOnly")} · ` : "";
-  return `${prefix}${tr(s.turns === 1 ? "history.turnOne" : "history.turnOther", { n: s.turns })} · ${time}${suffix}`;
+  const turns = s.turnsState === "unknown"
+    ? tr("history.indexing")
+    : tr(s.turns === 1 ? "history.turnOne" : "history.turnOther", { n: s.turns });
+  return `${prefix}${turns} · ${time}${suffix}`;
 }
 
 function previewMessagesToItems(messages: HistoryMessage[]): Item[] {

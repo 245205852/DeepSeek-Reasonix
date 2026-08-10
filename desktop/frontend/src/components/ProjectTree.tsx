@@ -8,8 +8,8 @@ import type { CSSProperties, DragEvent as ReactDragEvent, KeyboardEvent as React
 import { Archive, ArrowDown, Pencil, Plus, Folder, FolderPlus, Search, BriefcaseBusiness, Copy, FolderOpen, XCircle, Check, ListCollapse, ListRestart, MessageSquare, Clock, Pin, MoreHorizontal, Minimize2, Maximize2, GitBranch } from "lucide-react";
 import { asArray } from "../lib/array";
 import { useToast } from "../lib/toast";
-import { app } from "../lib/bridge";
-import type { ProjectNode, ProjectTopicStatus } from "../lib/types";
+import { app, onProjectTreeChangedV2 } from "../lib/bridge";
+import type { ProjectNode, ProjectTopicStatus, SessionCatalogStatus } from "../lib/types";
 import { topicActivityTime } from "../lib/session";
 import { getLocale, useT, type DictKey, type Translator } from "../lib/i18n";
 import { PROJECT_COLOR_OPTIONS, projectColorValue } from "../lib/projectColors";
@@ -62,6 +62,32 @@ function isRuntimeSessionNode(node: ProjectNode): boolean {
 
 function isTopicNode(node: ProjectNode): boolean {
   return node.kind === "topic" || node.kind === "global_topic";
+}
+
+export function projectTreeRevisionIsFresh(currentRevision: number, incomingRevision: number): boolean {
+  return incomingRevision >= currentRevision;
+}
+
+export function mergeProjectTopicPage(current: ProjectNode[], incoming: ProjectNode[], append: boolean): ProjectNode[] {
+  if (!append) return [...incoming];
+  const next = [...current];
+  const positions = new Map(next.map((node, index) => [node.key, index]));
+  for (const node of incoming) {
+    const index = positions.get(node.key);
+    if (index === undefined) {
+      positions.set(node.key, next.length);
+      next.push(node);
+    } else {
+      next[index] = node;
+    }
+  }
+  return next;
+}
+
+export function projectTreeEventAffectsFolder(project: ProjectNode, roots: string[]): boolean {
+  if (roots.length === 0) return true;
+  const root = project.kind === "global_folder" ? "" : project.root ?? "";
+  return roots.includes(root);
 }
 
 export type ProjectTreeTopicOpenRequest = {
@@ -134,7 +160,8 @@ function topicIsActive(node: ProjectNode, activeScope?: string, activeWorkspaceR
 export function projectTreeTopicMetaLine(node: ProjectNode, t: Translator, compact = false): string {
   const parts: string[] = [];
   const turns = node.turns ?? 0;
-  if (turns > 0) parts.push(t(turns === 1 ? "history.turnOne" : "history.turnOther", { n: turns }));
+  if (node.turnsState === "unknown") parts.push(t("history.indexing"));
+  else if (turns > 0) parts.push(t(turns === 1 ? "history.turnOne" : "history.turnOther", { n: turns }));
   const activityAt = node.lastActivityAt || node.createdAt || 0;
   if (activityAt) parts.push(topicActivityLabel(activityAt, t, compact));
   if (parts.length === 0) parts.push(t("projectTree.previously"));
@@ -617,6 +644,20 @@ export function ProjectTree({
   const compactTopics = variant === "workbench";
   const creationTopics = variant === "creation";
   const [tree, setTree] = useState<ProjectNode[]>([]);
+  const treeRef = useRef<ProjectNode[]>([]);
+  const latestRevisionRef = useRef(0);
+  const [catalogStatus, setCatalogStatus] = useState<SessionCatalogStatus>({
+    state: "opening", revision: 0, indexed: 0, total: 0, repairPending: 0,
+  });
+  const [topicPageState, setTopicPageState] = useState<Record<string, { nextCursor?: string; loading: boolean }>>({});
+  const topicPageStateRef = useRef(topicPageState);
+  const updateTopicPageState = useCallback((key: string, next: { nextCursor?: string; loading: boolean }) => {
+    setTopicPageState((current) => {
+      const updated = { ...current, [key]: next };
+      topicPageStateRef.current = updated;
+      return updated;
+    });
+  }, []);
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [manuallyCollapsed, setManuallyCollapsed] = useState<Set<string>>(new Set());
   const [creatingProject, setCreatingProject] = useState<string | null>(null);
@@ -695,14 +736,60 @@ export function ProjectTree({
     });
   }, []);
 
-  // Keyed by the data, not the selection: a switch cannot change the tree.
+  const loadProjectTopics = useCallback(async (project: ProjectNode, append = false) => {
+    if (project.kind !== "project" && project.kind !== "global_folder") return;
+    const key = project.key;
+    const pageState = topicPageStateRef.current[key];
+    if (pageState?.loading) return;
+    const cursor = append ? pageState?.nextCursor ?? "" : "";
+    if (append && !cursor) return;
+    updateTopicPageState(key, { ...pageState, loading: true });
+    try {
+      const page = await app.ListProjectTopics({
+        scope: project.kind === "global_folder" ? "global" : "project",
+        workspaceRoot: project.kind === "global_folder" ? "" : project.root ?? "",
+        cursor,
+        limit: timeFilter === "10" ? 10 : timeFilter === "20" ? 20 : 50,
+        query: query.trim(),
+        timeFilter: timeFilter === "10" || timeFilter === "20" || timeFilter === "all" ? "" : timeFilter,
+      });
+      if (!projectTreeRevisionIsFresh(latestRevisionRef.current, page.revision)) {
+        updateTopicPageState(key, { ...topicPageStateRef.current[key], loading: false });
+        return;
+      }
+      latestRevisionRef.current = Math.max(latestRevisionRef.current, page.revision);
+      const items = asArray(page.items);
+      setTree((current) => current.map((node) => {
+        if (node.key !== key) return node;
+        return { ...node, children: mergeProjectTopicPage(asArray(node.children), items, append) };
+      }));
+      updateTopicPageState(key, { nextCursor: page.nextCursor, loading: false });
+    } catch {
+      updateTopicPageState(key, { ...topicPageStateRef.current[key], loading: false });
+    }
+  }, [query, timeFilter, updateTopicPageState]);
+
+  // Snapshot is intentionally shells-only. Preserve already loaded pages by
+  // project key so a metadata refresh does not collapse or blank the sidebar.
   const refresh = useCallback(async () => {
     try {
-      setTree(asArray(await app.ListProjectTree()));
+      const snapshot = await app.GetProjectTreeSnapshot();
+      if (!projectTreeRevisionIsFresh(latestRevisionRef.current, snapshot.revision ?? 0)) return;
+      const projects = asArray(snapshot.projects);
+      latestRevisionRef.current = Math.max(latestRevisionRef.current, snapshot.revision ?? 0);
+      setCatalogStatus(snapshot.catalog);
+      setTree((current) => projects.map((project) => {
+        const previous = current.find((node) => node.key === project.key);
+        return { ...project, children: asArray(previous?.children) };
+      }));
     } catch {
       /* bridge unavailable */
     }
   }, []);
+
+  useEffect(() => {
+    treeRef.current = tree;
+  }, [tree]);
 
   useEffect(() => {
     manuallyCollapsedRef.current = manuallyCollapsed;
@@ -718,6 +805,26 @@ export function ProjectTree({
   useEffect(() => {
     void refresh();
   }, [refresh, refreshSignal]);
+
+  useEffect(() => onProjectTreeChangedV2((event) => {
+    if (event.revision <= latestRevisionRef.current) return;
+    latestRevisionRef.current = event.revision;
+    void app.GetSessionCatalogStatus().then(setCatalogStatus).catch(() => {});
+    const affected = asArray(event.roots);
+    for (const project of treeRef.current) {
+      const key = projectNodeKey(project, 0);
+      if (!expanded.has(key)) continue;
+      if (projectTreeEventAffectsFolder(project, affected)) void loadProjectTopics(project);
+    }
+  }), [expanded, loadProjectTopics]);
+
+  useEffect(() => {
+    const filtering = query.trim() !== "" || timeFilter !== "all";
+    for (const project of treeRef.current) {
+      const key = projectNodeKey(project, 0);
+      if (filtering || expanded.has(key)) void loadProjectTopics(project);
+    }
+  }, [expanded, loadProjectTopics, query, timeFilter]);
 
   // Following the active topic is a view concern over the tree already held.
   useEffect(() => {
@@ -852,7 +959,7 @@ export function ProjectTree({
     items[next]?.focus();
   };
 
-  const toggleExpand = (key: string) => {
+  const toggleExpand = (key: string, project?: ProjectNode) => {
     const willCollapse = expanded.has(key);
     setExpanded((prev) => {
       const next = new Set(prev);
@@ -866,6 +973,7 @@ export function ProjectTree({
       else next.delete(key);
       return next;
     });
+    if (!willCollapse && project) void loadProjectTopics(project);
   };
 
   const folderKeys = useMemo(() => collapsibleFolderKeys(tree), [tree]);
@@ -1291,7 +1399,9 @@ export function ProjectTree({
     const children = asArray(node.children);
     const isExpanded = query.trim() ? true : expanded.has(key);
     const hasChildren = children.length > 0;
-    const folderDisclosure = projectTreeFolderDisclosure(hasChildren, isExpanded, classicTopics);
+    // Snapshot rows are shells with no children until the first page is loaded,
+    // so every project folder must remain expandable while indexing.
+    const folderDisclosure = projectTreeFolderDisclosure(hasChildren, isExpanded, true);
 
     if (isTopicNode(node) || isRuntimeSessionNode(node)) {
       const isSessionNode = isRuntimeSessionNode(node);
@@ -1784,6 +1894,7 @@ export function ProjectTree({
       ? classicTopicWindow(children, folderShowAll)
       : { visible: children, hiddenCount: 0 };
     const windowToggleVisible = classicTruncationActive && (hiddenCount > 0 || (folderShowAll && children.length > CLASSIC_TOPIC_PREVIEW_LIMIT));
+    const backendPage = topicPageState[key];
     const renderFolderChildren = () => {
       if (!hasChildren) {
         if (!classicTopics) return null;
@@ -1809,6 +1920,17 @@ export function ProjectTree({
                 onClick={() => toggleShowAllTopics(key)}
               >
                 {hiddenCount > 0 ? t("projectTree.showMoreTopics", { n: hiddenCount }) : t("projectTree.showFewerTopics")}
+              </button>
+            )}
+            {backendPage?.nextCursor && (
+              <button
+                type="button"
+                className="project-tree__topic-window-toggle"
+                style={{ paddingLeft: 14 + (depth + 1) * 16 }}
+                disabled={backendPage.loading}
+                onClick={() => void loadProjectTopics(node, true)}
+              >
+                {backendPage.loading ? t("projectTree.indexing") : t("projectTree.loadMore")}
               </button>
             )}
           </div>
@@ -1861,7 +1983,7 @@ export function ProjectTree({
             className="project-tree__folder-main"
             style={{ paddingLeft: 8 + depth * 16 }}
             onClick={() => {
-              if (folderDisclosure.canExpand) toggleExpand(key);
+              if (folderDisclosure.canExpand) toggleExpand(key, node);
             }}
             onKeyDown={(event) => {
               if (event.key === "ContextMenu" || (event.shiftKey && event.key === "F10")) {
@@ -2316,6 +2438,11 @@ export function ProjectTree({
             placeholder={t("projectTree.searchPlaceholder")}
           />
         </label>
+      )}
+      {(catalogStatus.state === "opening" || catalogStatus.state === "rebuilding" || catalogStatus.repairPending > 0) && (
+        <div className="project-tree__catalog-progress" role="status">
+          {t("projectTree.indexingProgress", { done: catalogStatus.indexed, total: catalogStatus.total || "?" })}
+        </div>
       )}
       {compactTopics ? (
         <>

@@ -24670,6 +24670,13 @@ body > .mermaid-diagram--fullscreen {
   font-size: 13px;
 }
 
+.project-tree__catalog-progress {
+  padding: 4px 10px 6px;
+  color: var(--fg-muted);
+  font-size: 11px;
+  line-height: 1.35;
+}
+
 .project-tree__empty--subtle {
   padding: 8px 12px;
   font-size: 12px;
