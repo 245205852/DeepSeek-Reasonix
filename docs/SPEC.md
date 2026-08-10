@@ -278,6 +278,15 @@ Long tasks eventually fill the model's context window. Reasonix manages this wit
   tool results stay paired. `KeepErrors` preserves error/blocked tool outputs,
   and the recent tail is not rewritten. Snipped results can later be upgraded to
   pruned placeholders; already-pruned results are left alone.
+- Automatic maintenance is planned once before a sampling request from the
+  current visible projection plus its append-only canonical tail. It never
+  rewrites the canonical transcript. A failed or non-convergent view fingerprint
+  is durably blocked until the transcript, model, provider policy, or projection
+  lineage changes, preventing the same cleanup or summary from looping.
+- `agent.context_editing` defaults to `"local"`. Setting it to `"native"` opts
+  the official Anthropic endpoint into native tool-use clearing; DeepSeek and
+  other Anthropic-compatible gateways remain on local maintenance. Native tool
+  clearing does not replace Reasonix summary folding or canonical history.
 - When summary compaction runs, the fold region (everything between the pinned
   prefix and the recent tail) is split three ways: the first few **small user
   turns** are hoisted verbatim ahead of the digest, messages the keep policy
