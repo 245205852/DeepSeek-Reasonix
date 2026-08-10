@@ -79,9 +79,9 @@ for (const path of localeChunks) {
 const rawInitialBytes = [...initialJS, ...initialCSS, ...appShellCSS]
   .reduce((total, path) => total + statSync(path).size, 0);
 // Native Web Animations and frame-batched scrolling avoid an eager animation
-// runtime. Shared reasoning-display state and Goal request observability add
-// small always-available contracts, while the catalog project shell adds
-// cursor, revision, and progress state. Keep their combined allowance tightly
-// ratcheted while the gzip gate stays flat.
-assertBudget("initial raw JavaScript and CSS", rawInitialBytes, 2_209 * 1024);
+// runtime. Goal request observability plus transcript scroll arbitration,
+// selection lifecycle fencing, measurement invalidation, and the catalog
+// project shell add small always-available contracts. Keep their combined raw
+// allowance tightly ratcheted while the gzip gate stays flat.
+assertBudget("initial raw JavaScript and CSS", rawInitialBytes, 2_220 * 1024);
 assertBudget("largest initial JavaScript chunk raw", largestInitialJSRaw, 1_000 * 1024);
