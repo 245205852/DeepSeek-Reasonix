@@ -876,9 +876,15 @@ work: three one-line fixes in separate modules cost 3.8x the tokens; a 24-file
 search 1.5x tokens and 2.2x wall; a 36-file three-package migration 2.6x tokens
 and 4.1x wall; three genuinely heterogeneous branches, the shape with the best
 theoretical case, 2.4x tokens and 3.7x wall over three repetitions. Success rate
-was 100% everywhere. One child run costs 100k-220k tokens before it produces
-anything, and the forced arm's spread was about twice the neutral arm's, so
-delegation also buys variance.
+was 100% everywhere, and the forced arm's spread was about twice the neutral
+arm's, so delegation also buys variance.
+
+Read a child's token figure carefully: 27 measured child runs averaged 134k
+tokens each, but that is cumulative prompt tokens over 9.3 model calls with the
+same ~14k context re-sent each time, not 134k tokens of new material. At ~90%
+cache hit the real price of a child averaged ¥0.017. The 2-4x above is the
+number that matters, because both arms are counted the same way; the per-child
+total is not a threshold to compare a branch's size against.
 
 Why delegation is rare is answerable from the same runs, and the answer is not
 that the model weighs it and declines. Across 33 runs with delegation available,

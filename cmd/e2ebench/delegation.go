@@ -45,10 +45,10 @@ func renderDelegation(results []result) string {
 		runs, nested, solved, total, pct(solved, total))
 	b += fmt.Sprintf("- work split: parent **%d** tool calls · children **%d** (%s) · child mutations **%d**\n",
 		parentCalls, childCalls, pct(childCalls, parentCalls+childCalls), mutations)
-	// The number that decides whether delegation can ever pay: what one child
-	// costs before it has produced anything.
+	// Cumulative prompt tokens over a child's own model calls, so the same
+	// context counts once per call. Labelled as such: it is not fresh material.
 	if childTokens > 0 {
-		b += fmt.Sprintf("- **cost of a child run**: %s tokens each (%s across %d runs)\n",
+		b += fmt.Sprintf("- child context re-sent: %s tokens per child, cumulative over its calls (%s across %d runs)\n",
 			comma(childTokens/runs), comma(childTokens), runs)
 	}
 	if dupes > 0 {
