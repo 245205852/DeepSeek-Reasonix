@@ -2,14 +2,14 @@
   "limits": {
     "banner": 15,
     "commented-code": 0,
-    "complexity": 2112,
-    "essay": 4087,
-    "file-size": 110541,
-    "function-size": 9223,
+    "complexity": 2099,
+    "essay": 4085,
+    "file-size": 110316,
+    "function-size": 9165,
     "layering": 1,
     "marker": 0,
     "narrative": 64,
-    "test-file-size": 69919
+    "test-file-size": 69905
   },
   "files": {
     "cmd/e2ebench/main.go": {
@@ -438,7 +438,7 @@
     "internal/agent/agent.go": {
       "complexity": 61,
       "essay": 107,
-      "file-size": 2746,
+      "file-size": 2711,
       "function-size": 125
     },
     "internal/agent/ask.go": {
@@ -492,8 +492,8 @@
       "test-file-size": 501
     },
     "internal/agent/execute_batch.go": {
-      "complexity": 45,
-      "function-size": 208
+      "complexity": 44,
+      "function-size": 207
     },
     "internal/agent/execute_one.go": {
       "complexity": 13,
@@ -573,10 +573,9 @@
       "essay": 1
     },
     "internal/agent/run_loop.go": {
-      "complexity": 8,
+      "complexity": 1,
       "essay": 32,
-      "file-size": 258,
-      "function-size": 45
+      "file-size": 174
     },
     "internal/agent/save.go": {
       "complexity": 49,
@@ -641,8 +640,8 @@
     },
     "internal/agent/task.go": {
       "complexity": 25,
-      "essay": 55,
-      "file-size": 1295,
+      "essay": 53,
+      "file-size": 1277,
       "function-size": 114
     },
     "internal/agent/task_test.go": {
@@ -1093,13 +1092,10 @@
       "narrative": 2
     },
     "internal/control/goal.go": {
-      "complexity": 7,
+      "complexity": 3,
       "essay": 11,
-      "file-size": 313,
-      "function-size": 11
-    },
-    "internal/control/goal_runtime_test.go": {
-      "test-file-size": 14
+      "file-size": 274,
+      "function-size": 1
     },
     "internal/control/goal_test.go": {
       "test-file-size": 243
@@ -1166,9 +1162,9 @@
       "essay": 1
     },
     "internal/control/turn_orchestrator.go": {
-      "complexity": 3,
+      "complexity": 2,
       "essay": 13,
-      "function-size": 62
+      "function-size": 60
     },
     "internal/control/turn_orchestrator_test.go": {
       "essay": 1,
@@ -1212,7 +1208,7 @@
     "internal/evidence/evidence.go": {
       "complexity": 6,
       "essay": 38,
-      "file-size": 2079
+      "file-size": 2030
     },
     "internal/evidence/evidence_test.go": {
       "essay": 1,
