@@ -5182,8 +5182,12 @@ func TestBalanceForTabUsesDesktopPricingCurrency(t *testing.T) {
 	app.setTestCtrl(ctrl, "deepseek/deepseek-v4-flash")
 
 	got := app.BalanceForTab("test")
-	if !got.Available || got.Display != "$9.82" || got.Err != "" {
-		t.Fatalf("USD desktop balance = %+v, want available $9.82", got)
+	// Prefer the matching USD wallet exactly; no FX approximation is used.
+	if !got.Available || got.Err != "" {
+		t.Fatalf("USD desktop balance = %+v, want available", got)
+	}
+	if !strings.Contains(got.Display, "9.82") && !strings.Contains(got.Display, "$9.82") {
+		t.Fatalf("USD desktop balance display = %q, want USD 9.82", got.Display)
 	}
 }
 

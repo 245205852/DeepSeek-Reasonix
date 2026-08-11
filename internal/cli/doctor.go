@@ -8,10 +8,37 @@ import (
 	"os"
 	"strings"
 
+	"reasonix/internal/config"
 	"reasonix/internal/doctor"
 	"reasonix/internal/repair"
 	"reasonix/internal/sessioncatalog"
 )
+
+func doctorBillingCommand(args []string) int {
+	fs := flag.NewFlagSet("doctor billing", flag.ContinueOnError)
+	jsonOut := fs.Bool("json", false, "print billing diagnostics as JSON")
+	root := fs.String("root", ".", "project root for config resolution")
+	if code, ok := parseCommandFlags(fs, args); !ok {
+		return code
+	}
+	cfg, err := config.LoadForRoot(*root)
+	if err != nil {
+		// Still report with defaults so doctor stays useful offline.
+		cfg = config.Default()
+	}
+	report := doctor.CollectBilling(cfg)
+	if *jsonOut {
+		enc := json.NewEncoder(os.Stdout)
+		enc.SetIndent("", "  ")
+		if err := enc.Encode(report); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			return 1
+		}
+		return 0
+	}
+	fmt.Print(doctor.RenderBillingText(report))
+	return 0
+}
 
 func doctorCommand(args []string, version string) int {
 	if len(args) > 0 && args[0] == "catalogs" {
@@ -34,6 +61,9 @@ func doctorCommand(args []string, version string) int {
 	}
 	if len(args) > 0 && args[0] == "runtime" {
 		return doctorRuntimeCommand(args[1:])
+	}
+	if len(args) > 0 && args[0] == "billing" {
+		return doctorBillingCommand(args[1:])
 	}
 	if len(args) > 0 && args[0] == "repair" {
 		return doctorRepairCommand(args[1:])

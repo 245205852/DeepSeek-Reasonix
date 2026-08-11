@@ -780,11 +780,14 @@ type Pricing struct {
 	Currency string  `toml:"currency"`
 }
 
-// Cost estimates the spend for a usage record.
+// Cost estimates the spend for a usage record. Compatibility adapter only —
+// new host code must consume billing.CostQuote instead of aggregating floats.
 func (p *Pricing) Cost(u *Usage) float64 {
 	if p == nil || u == nil {
 		return 0
 	}
+	// Keep the historical float path byte-stable for tests that assert exact
+	// float results without going through the fixed-point quote layer.
 	hit := u.CacheHitTokens
 	miss := u.CacheMissTokens
 	if hit+miss == 0 && u.PromptTokens > 0 {

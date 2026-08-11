@@ -37675,8 +37675,8 @@ body > .mermaid-diagram--fullscreen {
 .taskmonitor { background:var(--bg,#111); }
 .taskmonitor--popover { max-height:inherit; }
 .taskmonitor__head { display:flex; align-items:center; gap:6px; width:100%; padding:8px 12px; font-size:13px; }
-.taskmonitor__toggle,.taskmonitor__refresh,.taskmonitor__close { background:none; border:0; color:inherit; cursor:pointer; }
-.taskmonitor__toggle { display:flex; padding:0; }
+.taskmonitor__toggle,.taskmonitor__refresh,.taskmonitor__close { display:inline-flex; align-items:center; justify-content:center; width:28px; height:28px; padding:0; border:0; border-radius:6px; background:none; color:inherit; cursor:pointer; }
+.taskmonitor__toggle:hover,.taskmonitor__refresh:hover,.taskmonitor__close:hover,.taskmonitor__toggle:focus-visible,.taskmonitor__refresh:focus-visible,.taskmonitor__close:focus-visible { background:var(--bg-elev-2); outline:none; }
 .taskmonitor__title { flex:1; text-align:left; font-weight:600; }
 .taskmonitor__count { background:var(--muted,#555); color:#fff; border-radius:10px; padding:0 6px; font-size:11px; line-height:18px; }
 .taskmonitor__body { max-height:360px; overflow-y:auto; }
@@ -37686,7 +37686,8 @@ body > .mermaid-diagram--fullscreen {
 .taskmonitor__state--error { color:#ef4444; }
 .taskmonitor__task { border-bottom:1px solid var(--border,#2a2a2a); }
 .taskmonitor__task-head { display:flex; align-items:center; }
-.taskmonitor__expand { display:flex; align-items:center; gap:6px; width:100%; padding:6px 12px; background:none; border:0; color:inherit; cursor:pointer; font-size:12px; }
+.taskmonitor__expand { display:flex; align-items:center; gap:6px; width:100%; min-height:32px; padding:6px 12px; background:none; border:0; color:inherit; cursor:pointer; font-size:12px; }
+.taskmonitor__expand:hover,.taskmonitor__expand:focus-visible { background:var(--bg-elev-2); outline:none; }
 .taskmonitor__dot { font-size:10px; width:14px; text-align:center; }
 .taskmonitor__id { font-family:monospace; font-size:11px; color:var(--muted,#888); }
 .taskmonitor__badge { font-size:10px; padding:1px 6px; border-radius:8px; font-weight:600; text-transform:uppercase; }
@@ -37699,7 +37700,15 @@ body > .mermaid-diagram--fullscreen {
 .taskmonitor__events { margin-top:8px; border-top:1px solid var(--border,#333); padding-top:6px; }
 .taskmonitor__event { display:flex; gap:8px; line-height:20px; }
 .taskmonitor__actions { display:flex; gap:8px; margin-top:10px; }
-.taskmonitor__actions button,.taskmonitor__confirm button { padding:4px 10px; border:1px solid var(--border,#555); border-radius:4px; background:var(--surface,#222); color:inherit; cursor:pointer; }
+.taskmonitor__actions button,.taskmonitor__confirm button { min-height:32px; padding:0 12px; border:1px solid var(--border,#555); border-radius:6px; background:var(--surface,#222); color:inherit; cursor:pointer; }
+.taskmonitor__actions button:hover:not(:disabled),.taskmonitor__confirm button:hover:not(:disabled),.taskmonitor__actions button:focus-visible,.taskmonitor__confirm button:focus-visible { border-color:var(--accent); outline:2px solid color-mix(in srgb,var(--accent) 38%,transparent); outline-offset:1px; }
+.taskmonitor__actions button:disabled,.taskmonitor__confirm button:disabled { cursor:not-allowed; opacity:.55; }
+.taskmonitor__actions .taskmonitor__stop { border-color:color-mix(in srgb,var(--danger,#ef4444) 48%,var(--border)); color:var(--danger,#ef4444); }
+.taskmonitor__confirm { display:flex; align-items:center; gap:10px; flex-wrap:wrap; margin-top:10px; padding:10px 12px; border:1px solid color-mix(in srgb,var(--danger,#ef4444) 30%,var(--border)); border-radius:8px; background:color-mix(in srgb,var(--danger,#ef4444) 7%,var(--surface,#222)); }
+.taskmonitor__confirm-copy { flex:1 1 150px; font-weight:600; line-height:1.4; }
+.taskmonitor__confirm-actions { display:flex; gap:8px; }
+.taskmonitor__confirm .taskmonitor__confirm-stop { border-color:var(--danger,#ef4444); background:var(--danger,#ef4444); color:#fff; font-weight:650; }
+.taskmonitor__confirm .taskmonitor__confirm-stop:hover:not(:disabled),.taskmonitor__confirm .taskmonitor__confirm-stop:focus-visible { border-color:var(--danger,#ef4444); outline-color:color-mix(in srgb,var(--danger,#ef4444) 42%,transparent); }
 .taskmonitor__error { color:#ef4444; margin-top:6px; }
 .taskmonitor__message { color:#4ade80; margin-top:6px; }
 

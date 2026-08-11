@@ -12,6 +12,7 @@
 ## Contents
 
 - [Configuration](#configuration)
+- [Billing and display currency](./BILLING.md)
 - [CLI reference](./CLI.md)
 - [Environment variables](#environment-variables)
 - [Web frontend](#web-frontend)

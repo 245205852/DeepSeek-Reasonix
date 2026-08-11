@@ -1926,9 +1926,6 @@ func (a *App) rebuildSettingTurnLockedWithModel(setting string, tab *WorkspaceTa
 		oldCtrl.Close()
 	}
 	a.persistTabSessionPath(tab, path)
-	if setting == "currency" {
-		a.repriceTabUsageForCurrentCurrency(tab)
-	}
 	a.clearDeferredRebuild(tab.ID)
 	a.notifyTabRuntimeRebuilt(tab)
 	a.emitReady(a.ctx)
@@ -1947,9 +1944,10 @@ func (a *App) rebuildSettingTurnLockedWithModel(setting string, tab *WorkspaceTa
 func (a *App) buildSettingReplacementController(tab *WorkspaceTab, snap tabRuntimeSnapshot, runtime normalizedTabRuntime, model, prevPath, setting string, oldCtrl control.SessionAPI, carried []provider.Message, reload bool) (control.SessionAPI, normalizedTabRuntime, string, error) {
 	opts := boot.Options{
 		Model: model, RequireKey: false,
-		RuntimeReload:       boot.RuntimeReload{ForceFullRebuild: reload},
-		AutoPricingCurrency: a.desktopAutoPricingCurrency(),
-		StatsSource:         "desktop", TaskStore: a.taskStore(), OnConfigLoadWarnings: a.configLoadWarningsHandler(),
+		RuntimeReload:            boot.RuntimeReload{ForceFullRebuild: reload},
+		StatsSource:              "desktop",
+		TaskStore:                a.taskStore(),
+		OnConfigLoadWarnings:     a.configLoadWarningsHandler(),
 		Sink:                     snap.sink,
 		WorkspaceRoot:            snap.workspaceRoot,
 		SessionDir:               sessionDirForSnapshot(snap),
@@ -2317,21 +2315,25 @@ func (a *App) SetDefaultToolApprovalMode(mode string) error {
 func (a *App) SetDefaultAutoRecoveryCheckpoint(_ bool) error { return nil }
 
 func officialProviderTemplate(kind, pricingLanguage string) ([]config.ProviderEntry, string, error) {
+	_ = pricingLanguage // display language no longer selects list-price tables
 	webSearchEnabled := true
 	switch strings.ToLower(strings.TrimSpace(kind)) {
 	case "deepseek", "deepseek-official":
+		// Freeze the official USD regional table; display currency is independent.
 		return []config.ProviderEntry{{
-			Name:          "deepseek",
-			Kind:          "anthropic",
-			BaseURL:       "https://api.deepseek.com/anthropic",
-			Models:        []string{"deepseek-v4-flash", "deepseek-v4-pro"},
-			Default:       "deepseek-v4-flash",
-			APIKeyEnv:     "DEEPSEEK_API_KEY",
-			BalanceURL:    "https://api.deepseek.com/user/balance",
-			Thinking:      "enabled",
-			WebSearch:     &webSearchEnabled,
-			ContextWindow: 1_000_000,
-			Prices:        config.DeepSeekV4PricesForLanguage(pricingLanguage),
+			Name:            "deepseek",
+			Kind:            "anthropic",
+			BaseURL:         "https://api.deepseek.com/anthropic",
+			Models:          []string{"deepseek-v4-flash", "deepseek-v4-pro"},
+			Default:         "deepseek-v4-flash",
+			APIKeyEnv:       "DEEPSEEK_API_KEY",
+			BalanceURL:      "https://api.deepseek.com/user/balance",
+			Thinking:        "enabled",
+			WebSearch:       &webSearchEnabled,
+			ContextWindow:   1_000_000,
+			BillingCurrency: "USD",
+			BillingMode:     "payg",
+			Prices:          config.DeepSeekV4PricesForCurrency("USD"),
 			ModelOverrides: map[string]config.ProviderModelOverride{
 				"deepseek-v4-flash": {SupportedEfforts: []string{"disabled", "low", "high", "max"}, DefaultEffort: "high"},
 				"deepseek-v4-pro":   {SupportedEfforts: []string{"disabled", "high", "max"}, DefaultEffort: "high"},
@@ -3258,17 +3260,6 @@ func (a *App) SetStatusBarItems(items []string) error {
 // language preference used by model-facing desktop sessions.
 func (a *App) SetDesktopLanguage(lang string) error {
 	responseLanguage := ""
-	pricingChanged := false
-	if cfg, _, err := a.loadDesktopUserConfigForView(); err == nil && cfg.DesktopCurrency() == "" {
-		targetCurrency := a.desktopAutoPricingCurrency()
-		switch strings.ToLower(strings.TrimSpace(lang)) {
-		case "zh":
-			targetCurrency = "CNY"
-		case "en":
-			targetCurrency = "USD"
-		}
-		pricingChanged = a.desktopEffectivePricingCurrency(cfg) != targetCurrency
-	}
 	mutate := func(c *config.Config) error {
 		if err := c.SetDesktopLanguage(lang); err != nil {
 			return err
@@ -3279,17 +3270,9 @@ func (a *App) SetDesktopLanguage(lang string) error {
 		responseLanguage = c.ResponseLanguage()
 		return nil
 	}
-	var err error
-	if pricingChanged {
-		_, err = a.applyConfigChangeWithWarning("currency", mutate)
-	} else {
-		err = a.applyConfigOnly(mutate)
-	}
+	err := a.applyConfigOnly(mutate)
 	if err != nil {
 		return err
-	}
-	if pricingChanged {
-		a.scheduleCurrencyRefreshForOtherTabs()
 	}
 	if strings.TrimSpace(lang) != "" && !strings.EqualFold(strings.TrimSpace(lang), "auto") {
 		a.setDesktopLocale(lang)
@@ -3299,70 +3282,41 @@ func (a *App) SetDesktopLanguage(lang string) error {
 	return nil
 }
 
-// SetDesktopCurrency updates the official pricing region independently from UI
-// language. Rebuild the active controller so subsequent usage carries the new
-// currency and regional rates through the existing structured cost fields.
+// SetDesktopCurrency persists a display-only preference and re-selects the
+// occurrence-time valuations already stored in each tab. Provider price tables
+// and live controllers are intentionally untouched.
 func (a *App) SetDesktopCurrency(currency string) error {
-	_, err := a.applyConfigChangeWithWarning("currency", func(c *config.Config) error {
+	err := a.applyConfigOnly(func(c *config.Config) error {
 		return c.SetDesktopCurrency(currency)
 	})
-	if err == nil {
-		a.scheduleCurrencyRefreshForOtherTabs()
+	if err != nil {
+		return err
 	}
-	return err
-}
 
-func (a *App) scheduleCurrencyRefreshForOtherTabs() {
-	if a == nil || a.ctx == nil {
-		return
-	}
+	a.sessionRemovalMu.Lock()
+	defer a.sessionRemovalMu.Unlock()
 	a.mu.RLock()
-	activeID := a.activeTabID
-	tabIDs := make([]string, 0, len(a.tabs))
-	for id, tab := range a.tabs {
-		if id != activeID && tab != nil && tab.Ctrl != nil && !tab.removed {
-			tabIDs = append(tabIDs, id)
-		}
-	}
+	tabs := append([]*WorkspaceTab(nil), a.runtimeTabsLocked()...)
 	a.mu.RUnlock()
-	for _, id := range tabIDs {
-		a.scheduleDeferredRebuild(id, "currency")
+	for _, tab := range tabs {
+		a.repriceTabUsageForCurrentCurrency(tab)
 	}
-}
-
-func (a *App) scheduleCurrencyRefreshForAllTabs() {
-	if a == nil {
-		return
-	}
-	a.mu.RLock()
-	tabIDs := make([]string, 0, len(a.tabs))
-	for id, tab := range a.tabs {
-		if tab != nil && tab.Ctrl != nil && !tab.removed {
-			tabIDs = append(tabIDs, id)
-		}
-	}
-	a.mu.RUnlock()
-	for _, id := range tabIDs {
-		a.scheduleDeferredRebuild(id, "currency")
-	}
-}
-
-func (a *App) desktopPricingFollowsDetectedLocale() bool {
-	cfg, _, err := a.loadDesktopUserConfigForView()
-	return err == nil && cfg.DesktopPricingFollowsDetectedLocale()
+	return nil
 }
 
 func (a *App) desktopEffectivePricingCurrency(cfg *config.Config) string {
+	// Display currency only — never the provider list-price region.
 	if cfg == nil {
-		return a.desktopAutoPricingCurrency()
+		return ""
 	}
-	if cfg.DesktopPricingFollowsDetectedLocale() {
-		return a.desktopAutoPricingCurrency()
+	if pref := cfg.DisplayCurrencyPref(); pref != "" {
+		return pref
 	}
-	return cfg.DeepSeekOfficialPricingCurrency()
+	return cfg.ExplicitDisplayCurrency()
 }
 
 func (a *App) desktopOfficialPricingLanguage(cfg *config.Config) string {
+	// Used only for display-language adjacent UI; list prices use billing_currency.
 	if a.desktopEffectivePricingCurrency(cfg) == "CNY" {
 		return "zh"
 	}
@@ -3372,18 +3326,12 @@ func (a *App) desktopOfficialPricingLanguage(cfg *config.Config) string {
 // SetTrayLocale mirrors the resolved desktop UI language into the native tray
 // menu. It is runtime-only; the persisted preference remains [desktop].language.
 func (a *App) SetTrayLocale(locale string) error {
-	previousCurrency := a.desktopAutoPricingCurrency()
 	a.setDesktopLocale(locale)
-	pricingCurrencyChanged := previousCurrency != a.desktopAutoPricingCurrency()
 	trayLocale := "en"
 	if strings.HasPrefix(strings.ToLower(strings.TrimSpace(locale)), "zh") {
 		trayLocale = "zh"
 	}
 	a.updateTrayLocale(trayLocale)
-	if pricingCurrencyChanged && a.desktopPricingFollowsDetectedLocale() {
-		a.scheduleCurrencyRefreshForAllTabs()
-		a.kickDeferredRebuildRetry()
-	}
 	a.emitProjectTreeChanged()
 	return nil
 }

@@ -65,6 +65,10 @@ function isTerminalState(state: string): boolean {
   return state === "succeeded" || state === "failed" || state === "cancelled" || state === "stale";
 }
 
+function isStoppableState(state: string): boolean {
+  return state === "queued" || state === "running" || state === "waiting";
+}
+
 function elapsed(task: TaskTimerSnapshot, nowMs: number): string {
   if (!task.created_at) return "—";
   const startMs = new Date(task.created_at).getTime();
@@ -97,7 +101,7 @@ function eventSummary(ev: TaskEvent, t: ReturnType<typeof useT>): string {
   if (ev.error_code) return t("task.event.error", { code: ev.error_code });
   switch (ev.event_type) {
     case "state_change":
-      return t("task.event.stateChange", { state: ev.state, runtime: runtimeConfig(ev.runtime_state, t).label });
+      return t("task.event.stateChange", { state: stateConfig(ev.state, t).label, runtime: runtimeConfig(ev.runtime_state, t).label });
     case "error":
       return ev.error_summary || t("task.error");
     default:
@@ -141,7 +145,9 @@ export function TaskMonitorPanel({
   const [actionError, setActionError] = useState<string | null>(null);
   const [actionMessage, setActionMessage] = useState<string | null>(null);
   const [nowMs, setNowMs] = useState(() => Date.now());
-  const [pendingAction, setPendingAction] = useState<{ task: CatalogTask; action: "stop" | "cancel" } | null>(null);
+  const [pendingStop, setPendingStop] = useState<CatalogTask | null>(null);
+  const stopButtonRefs = useRef<Map<string, HTMLButtonElement>>(new Map());
+  const confirmStopRef = useRef<HTMLButtonElement | null>(null);
 
   // Per-task event state
   const [taskEvents, setTaskEvents] = useState<Map<string, TaskEvent[]>>(
@@ -244,8 +250,26 @@ export function TaskMonitorPanel({
     return () => clearInterval(interval);
   }, [tasks]);
 
-	const toggleTask = (task: CatalogTask) => {
-		const id = task.__catalogKey;
+  useEffect(() => {
+    if (pendingStop) confirmStopRef.current?.focus();
+  }, [pendingStop]);
+
+  useEffect(() => {
+    if (!pendingStop) return;
+    const current = tasks.find((task) => task.__catalogKey === pendingStop.__catalogKey);
+    if (!current || !isStoppableState(current.state)) setPendingStop(null);
+  }, [pendingStop, tasks]);
+
+  const dismissStopConfirmation = () => {
+    const taskKey = pendingStop?.__catalogKey;
+    setPendingStop(null);
+    if (taskKey) {
+      requestAnimationFrame(() => stopButtonRefs.current.get(taskKey)?.focus());
+    }
+  };
+
+  const toggleTask = (task: CatalogTask) => {
+    const id = task.__catalogKey;
     setExpanded((prev) => {
       const next = new Set(prev);
       if (next.has(id)) {
@@ -261,13 +285,9 @@ export function TaskMonitorPanel({
     });
   };
 
-  const controlTask = async (task: CatalogTask, action: "stop" | "cancel" | "requeue" | "open") => {
-    if ((action === "stop" || action === "cancel") && (!pendingAction || pendingAction.task.task_id !== task.task_id || pendingAction.action !== action)) {
-      setPendingAction({ task, action });
-      return;
-    }
-    setPendingAction(null);
-    setActionTask(task.task_id);
+  const controlTask = async (task: CatalogTask, action: "stop" | "requeue" | "open") => {
+    setPendingStop(null);
+    setActionTask(task.__catalogKey);
     setActionError(null);
     setActionMessage(null);
     try {
@@ -280,18 +300,14 @@ export function TaskMonitorPanel({
 			const result = hasTaskCatalogBinding()
 				? action === "stop"
 					? await app.StopTaskByKey(request)
-					: action === "cancel"
-						? await app.CancelTaskByKey(request)
-						: action === "requeue"
-							? await app.RequeueTaskByKey(request)
-							: await app.OpenTaskSessionByKey({ projectKey: task.__projectKey, taskId: task.task_id })
+					: action === "requeue"
+						? await app.RequeueTaskByKey(request)
+						: await app.OpenTaskSessionByKey({ projectKey: task.__projectKey, taskId: task.task_id })
 				: action === "stop"
 					? await app.StopTaskForTab(tabID, task.task_id, task.version, request.reason, request.idempotencyKey)
-					: action === "cancel"
-						? await app.CancelTaskForTab(tabID, task.task_id, task.version, request.reason, request.idempotencyKey)
-						: action === "requeue"
-							? await app.RequeueTaskForTab(tabID, task.task_id, task.version, request.idempotencyKey)
-							: await app.OpenTaskSessionForTab(tabID, task.task_id);
+					: action === "requeue"
+						? await app.RequeueTaskForTab(tabID, task.task_id, task.version, request.idempotencyKey)
+						: await app.OpenTaskSessionForTab(tabID, task.task_id);
       if (result.error) {
         setActionError(`${result.error.code}: ${result.error.message}`);
       } else if (action === "open") {
@@ -459,7 +475,7 @@ export function TaskMonitorPanel({
                         <dt>{t("summary.sessionId")}</dt>
                         <dd>{task.session_id || "—"}</dd>
                         <dt>{t("summary.state")}</dt>
-                        <dd>{task.state}</dd>
+                        <dd>{cfg.label}</dd>
                         <dt>{t("summary.runtime")}</dt>
                         <dd>{runtime.label}</dd>
                         <dt>{t("summary.updated")}</dt>
@@ -536,23 +552,51 @@ export function TaskMonitorPanel({
                           </ul>
                         )}
                       </div>
-                      <div className="taskmonitor__actions">
-                        {(task.state === "queued" || task.state === "running" || task.state === "waiting") && (
-                          <>
-                            <button disabled={actionTask === task.task_id} onClick={() => void controlTask(task, "stop")}>{t("summary.stop")}</button>
-                            <button disabled={actionTask === task.task_id} onClick={() => void controlTask(task, "cancel")}>{t("summary.cancel")}</button>
-                          </>
-                        )}
-                        {(task.state === "failed" || task.state === "stale") && (
-                          <button disabled={actionTask === task.task_id || task.runtime_state === "alive"} onClick={() => void controlTask(task, "requeue")}>{t("summary.requeue")}</button>
-                        )}
-                        <button disabled={actionTask === task.task_id} onClick={() => void controlTask(task, "open")}>{t("summary.openSession")}</button>
-                      </div>
-                      {pendingAction?.task.task_id === task.task_id && (
-                        <div className="taskmonitor__confirm">
-                          <span>{t(pendingAction.action === "stop" ? "summary.confirmStop" : "summary.confirmCancel")}</span>
-                          <button type="button" onClick={() => void controlTask(task, pendingAction.action)}>{t("common.confirm")}</button>
-                          <button type="button" onClick={() => setPendingAction(null)}>{t("summary.keep")}</button>
+                      {pendingStop?.__catalogKey === taskKey ? (
+                        <div
+                          className="taskmonitor__confirm"
+                          role="group"
+                          aria-label={t("summary.confirmStop")}
+                          onKeyDown={(event) => {
+                            if (event.key === "Escape") {
+                              event.preventDefault();
+                              dismissStopConfirmation();
+                            }
+                          }}
+                        >
+                          <span className="taskmonitor__confirm-copy">{t("summary.confirmStop")}</span>
+                          <div className="taskmonitor__confirm-actions">
+                            <button
+                              ref={confirmStopRef}
+                              type="button"
+                              className="taskmonitor__confirm-stop"
+                              disabled={actionTask === taskKey}
+                              onClick={() => void controlTask(task, "stop")}
+                            >
+                              {t("summary.stop")}
+                            </button>
+                            <button type="button" onClick={dismissStopConfirmation}>{t("summary.keep")}</button>
+                          </div>
+                        </div>
+                      ) : (
+                        <div className="taskmonitor__actions">
+                          {isStoppableState(task.state) && (
+                            <button
+                              ref={(node) => {
+                                if (node) stopButtonRefs.current.set(taskKey, node);
+                                else stopButtonRefs.current.delete(taskKey);
+                              }}
+                              className="taskmonitor__stop"
+                              disabled={actionTask === taskKey}
+                              onClick={() => setPendingStop(task)}
+                            >
+                              {t("summary.stop")}
+                            </button>
+                          )}
+                          {(task.state === "failed" || task.state === "stale") && (
+                            <button disabled={actionTask === taskKey || task.runtime_state === "alive"} onClick={() => void controlTask(task, "requeue")}>{t("summary.requeue")}</button>
+                          )}
+                          <button disabled={actionTask === taskKey} onClick={() => void controlTask(task, "open")}>{t("summary.openSession")}</button>
                         </div>
                       )}
                     </div>

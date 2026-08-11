@@ -9,8 +9,10 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"time"
 
 	"reasonix/internal/agent"
+	"reasonix/internal/billing"
 	"reasonix/internal/control"
 	"reasonix/internal/event"
 	"reasonix/internal/provider"
@@ -101,16 +103,22 @@ type ReasonixFinalReadiness struct {
 }
 
 type ReasonixUsage struct {
-	PromptTokens     int      `json:"promptTokens"`
-	CompletionTokens int      `json:"completionTokens"`
-	ReasoningTokens  int      `json:"reasoningTokens"`
-	CacheHitTokens   int      `json:"cacheHitTokens"`
-	CacheMissTokens  int      `json:"cacheMissTokens"`
-	Estimated        bool     `json:"estimated,omitempty"`
-	CacheHitRatio    *float64 `json:"cacheHitRatio"`
-	EstimatedCost    *float64 `json:"estimatedCost"`
-	Currency         *string  `json:"currency"`
-	UsageSource      string   `json:"usageSource"`
+	PromptTokens     int                `json:"promptTokens"`
+	CompletionTokens int                `json:"completionTokens"`
+	ReasoningTokens  int                `json:"reasoningTokens"`
+	CacheHitTokens   int                `json:"cacheHitTokens"`
+	CacheMissTokens  int                `json:"cacheMissTokens"`
+	Estimated        bool               `json:"estimated,omitempty"`
+	CacheHitRatio    *float64           `json:"cacheHitRatio"`
+	EstimatedCost    *float64           `json:"estimatedCost"`
+	Currency         *string            `json:"currency"`
+	CostComplete     *bool              `json:"costComplete,omitempty"`
+	DisplayComplete  *bool              `json:"displayComplete,omitempty"`
+	DisplayStatus    string             `json:"displayStatus,omitempty"`
+	AggregateMode    string             `json:"aggregateMode,omitempty"`
+	OriginalTotals   []billing.Money    `json:"originalTotals,omitempty"`
+	CostQuote        *billing.CostQuote `json:"costQuote,omitempty"`
+	UsageSource      string             `json:"usageSource"`
 }
 
 type ReasonixStatusUsage struct {
@@ -158,9 +166,12 @@ type usageAccumulator struct {
 	estimatedCost    float64
 	currency         string
 	source           string
+	costComplete     bool
+	quoteEvents      int
+	quoteLedger      *billing.Ledger
 }
 
-func (a *usageAccumulator) add(u *provider.Usage, pricing *provider.Pricing, source string) {
+func (a *usageAccumulator) addQuoted(u *provider.Usage, pricing *provider.Pricing, quote *billing.CostQuote, source string) {
 	if u == nil {
 		return
 	}
@@ -180,15 +191,59 @@ func (a *usageAccumulator) add(u *provider.Usage, pricing *provider.Pricing, sou
 	} else if a.source != source {
 		a.source = "mixed"
 	}
+	if quote == nil && pricing != nil {
+		quote = event.EnsureCostQuote(event.Event{Kind: event.Usage, Usage: u, Pricing: pricing, UsageSource: source}, nil)
+	}
+	if quote != nil {
+		a.pricedEvents++
+		a.quoteEvents++
+		a.estimated = true
+		if a.quoteLedger == nil {
+			a.quoteLedger = billing.NewLedger()
+		}
+		a.quoteLedger.Add(*quote, billing.UsageTokens{
+			PromptTokens:           u.PromptTokens,
+			CompletionTokens:       u.CompletionTokens,
+			CacheHitTokens:         u.CacheHitTokens,
+			CacheMissTokens:        u.CacheMissTokens,
+			CacheWriteTokens:       u.CacheWriteTokens,
+			CacheWriteBilledTokens: u.CacheWriteBilledTokens,
+			Estimated:              u.Estimated,
+		}, time.Time{})
+		if quote.Selected != nil {
+			cur := quote.LegacyCurrencyCode()
+			if a.pricedEvents == 1 {
+				a.currency = cur
+				a.costComplete = quote.Complete
+			} else if a.currency != cur {
+				// Different selected currencies — re-aggregate later via quotes.
+				a.currency = cur
+			}
+			if !quote.Complete {
+				a.costComplete = false
+			}
+			a.estimatedCost += quote.Selected.Float64()
+		} else if pricing != nil {
+			// Incomplete display valuation: keep original, mark incomplete.
+			a.costComplete = false
+			a.estimatedCost += quote.Original.Float64()
+			if a.currency == "" {
+				a.currency = billing.NormalizeCurrency(quote.Original.Currency)
+			}
+		}
+		return
+	}
 	if pricing != nil {
-		currency := strings.TrimSpace(pricing.Currency)
+		currency := billing.NormalizeCurrency(pricing.Currency)
 		if currency == "" {
 			currency = pricing.Symbol()
 		}
 		if a.pricedEvents == 0 {
 			a.currency = currency
+			a.costComplete = true
 		} else if a.currency != currency {
 			a.currency = ""
+			a.costComplete = false
 		}
 		a.estimatedCost += pricing.Cost(u)
 		a.pricedEvents++
@@ -212,11 +267,31 @@ func (a usageAccumulator) wire() ReasonixUsage {
 		ratio := float64(a.cacheHitTokens) / float64(total)
 		usage.CacheHitRatio = &ratio
 	}
+	if a.quoteLedger != nil && a.quoteEvents == a.pricedEvents && len(a.quoteLedger.Entries) > 0 {
+		agg := a.quoteLedger.Total("")
+		usage.CostQuote = &agg
+		costComplete := agg.CostComplete
+		displayComplete := agg.DisplayComplete
+		usage.CostComplete = &costComplete
+		usage.DisplayComplete = &displayComplete
+		usage.DisplayStatus = agg.DisplayStatus
+		usage.AggregateMode = agg.AggregateMode
+		usage.OriginalTotals = append([]billing.Money(nil), agg.OriginalTotals...)
+		if agg.Selected != nil && !math.IsNaN(agg.Selected.Float64()) && !math.IsInf(agg.Selected.Float64(), 0) {
+			cost := agg.Selected.Float64()
+			currency := agg.LegacyCurrencyCode()
+			usage.EstimatedCost = &cost
+			usage.Currency = &currency
+		}
+		return usage
+	}
 	if a.events > 0 && a.pricedEvents == a.events && a.currency != "" && !math.IsNaN(a.estimatedCost) && !math.IsInf(a.estimatedCost, 0) {
 		cost := a.estimatedCost
 		currency := a.currency
 		usage.EstimatedCost = &cost
 		usage.Currency = &currency
+		complete := a.costComplete
+		usage.CostComplete = &complete
 	}
 	return usage
 }
@@ -272,8 +347,8 @@ func (t *statusTelemetry) onEvent(e event.Event) (string, bool) {
 		return "phase", true
 	case event.Usage:
 		t.mutate(func(t *statusTelemetry) {
-			t.turnUsage.add(e.Usage, e.Pricing, e.UsageSource)
-			t.cumulative.add(e.Usage, e.Pricing, e.UsageSource)
+			t.turnUsage.addQuoted(e.Usage, e.Pricing, e.CostQuote, e.UsageSource)
+			t.cumulative.addQuoted(e.Usage, e.Pricing, e.CostQuote, e.UsageSource)
 		})
 		return "usage", true
 	case event.ApprovalRequest:
@@ -369,6 +444,7 @@ type persistedUsageAccumulator struct {
 	EstimatedCost    float64 `json:"estimatedCost"`
 	Currency         string  `json:"currency,omitempty"`
 	Source           string  `json:"source,omitempty"`
+	CostComplete     *bool   `json:"costComplete,omitempty"`
 }
 
 type persistedStatusTelemetry struct {
@@ -383,22 +459,31 @@ type persistedStatusTelemetry struct {
 }
 
 func persistUsage(a usageAccumulator) persistedUsageAccumulator {
+	var costComplete *bool
+	if a.pricedEvents > 0 {
+		complete := a.costComplete
+		costComplete = &complete
+	}
 	return persistedUsageAccumulator{
 		PromptTokens: a.promptTokens, CompletionTokens: a.completionTokens,
 		ReasoningTokens: a.reasoningTokens, CacheHitTokens: a.cacheHitTokens,
 		CacheMissTokens: a.cacheMissTokens, Estimated: a.estimated, Events: a.events,
 		PricedEvents: a.pricedEvents, EstimatedCost: a.estimatedCost,
-		Currency: a.currency, Source: a.source,
+		Currency: a.currency, Source: a.source, CostComplete: costComplete,
 	}
 }
 
 func restoreUsage(a persistedUsageAccumulator) usageAccumulator {
+	costComplete := a.PricedEvents > 0 && a.Currency != ""
+	if a.CostComplete != nil {
+		costComplete = *a.CostComplete
+	}
 	return usageAccumulator{
 		promptTokens: a.PromptTokens, completionTokens: a.CompletionTokens,
 		reasoningTokens: a.ReasoningTokens, cacheHitTokens: a.CacheHitTokens,
 		cacheMissTokens: a.CacheMissTokens, estimated: a.Estimated, events: a.Events,
 		pricedEvents: a.PricedEvents, estimatedCost: a.EstimatedCost,
-		currency: a.Currency, source: a.Source,
+		currency: a.Currency, source: a.Source, costComplete: costComplete,
 	}
 }
 
