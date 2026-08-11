@@ -2298,7 +2298,7 @@ model = "x"
 		t.Fatalf("read tool contract doc: %v", err)
 	}
 	text := string(doc)
-	for _, heading := range []string{"## Default Full Boot Surface", "## Unified Boot Surface (all role settings)"} {
+	for _, heading := range []string{"## Default Full Boot Surface", "## Unified Boot Surface (all execution settings)"} {
 		if !strings.Contains(text, heading) {
 			t.Fatalf("tool contract doc missing %q", heading)
 		}
