@@ -3031,7 +3031,7 @@ export const en = {
   "updater.officialDownload": "Download from official site",
   "updater.privacyAndUpdatePreferences": "Privacy & update preferences",
   "settings.telemetryLabel": "Anonymous usage ping",
-  "settings.telemetryHint": "On launch, send a random install id plus version and OS to count active installs. After an abnormal exit, the next normal launch may also send a scrubbed native diagnostic with lifecycle phase, symbolized stack, and Windows/WebView2 failure kind. Panic values, personal path segments, and secrets are removed; conversations and file contents are never included.",
+  "settings.telemetryHint": "On launch, send a random anonymous install ID, version, OS/build or Linux distribution/session, Web Runtime, and GPU mode to count active installs. After an abnormal exit, the next launch may send scrubbed native diagnostics: lifecycle phase, symbolized stack, runtime reason, exit code, and recovery result. This is not an account ID and never includes conversations, accounts, keys, file contents, full paths, or GPU drivers.",
   "settings.metricsLabel": "Share aggregate quality metrics",
   "settings.metricsHint": "On by default. Sends anonymous turn-end counts, updater error categories, lifecycle/window health buckets, and settings preference snapshots. Includes the random install id used to de-duplicate DAU. Buckets may include normalized custom provider and model names — never conversations, prompts, keys, paths, base URLs, memory text, tool outputs, or file contents.",
   "updater.currentVersion": "Current version: {v}",

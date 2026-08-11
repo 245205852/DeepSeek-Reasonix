@@ -3171,7 +3171,7 @@ export const zhTW: Record<DictKey, string> = {
   "updater.officialDownload": "前往官網下載",
   "updater.privacyAndUpdatePreferences": "隱私與更新偏好",
   "settings.telemetryLabel": "匿名啟動統計",
-  "settings.telemetryHint": "啟動時傳送隨機安裝 ID、版本號和作業系統用於統計活躍安裝量。異常退出後，下次正常啟動還可能傳送脫敏的原生診斷，包括生命週期階段、符號化堆疊及 Windows/WebView2 故障類型。傳送前會移除 panic 值、個人路徑片段和金鑰，絕不包含對話或檔案內容。",
+  "settings.telemetryHint": "啟動時傳送匿名ID、版本、系統/發行版、會話、Runtime、GPU模式。異常退出後下次啟動傳送階段、堆疊、原因、結束碼、復原結果。不含帳號、對話、金鑰、檔案、完整路徑、顯示卡驅動",
   "settings.metricsLabel": "共享聚合品質指標",
   "settings.metricsHint": "預設開啟。傳送匿名的輪次結束統計、更新器錯誤類別、生命週期/視窗健康分桶與設定偏好快照。包含用於 DAU 去重的隨機安裝 ID。Bucket 可能包含正規化後的自訂 Provider 名和模型名——絕不包含對話、提示詞、金鑰、路徑、base URL、記憶正文、工具輸出或檔案內容。",
   "context.windowTitle": "上下文視窗",
