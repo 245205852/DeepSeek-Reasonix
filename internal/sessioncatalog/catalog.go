@@ -20,15 +20,18 @@ import (
 const defaultMissingGrace = 30 * time.Second
 
 type Catalog struct {
-	db               *sql.DB
-	opts             Options
-	revision         atomic.Uint64
-	statusMu         sync.RWMutex
-	status           Status
-	writeCh          chan string
-	writeMu          sync.Mutex
-	writeQueued      map[string]SessionRecord
-	mutationMu       sync.RWMutex
+	db          *sql.DB
+	opts        Options
+	revision    atomic.Uint64
+	statusMu    sync.RWMutex
+	status      Status
+	writeCh     chan string
+	writeMu     sync.Mutex
+	writeQueued map[string]SessionRecord
+	// mutationMu is the process-local SQLite single-writer boundary. WAL permits
+	// concurrent readers, but repair, metadata, and reconcile mutations must not
+	// race into avoidable SQLITE_BUSY failures.
+	mutationMu       sync.Mutex
 	removedPaths     sync.Map
 	repairCh         chan string
 	repairQueued     sync.Map
@@ -293,8 +296,8 @@ func (c *Catalog) upsertSessions(ctx context.Context, records []SessionRecord, g
 	if len(records) == 0 {
 		return nil
 	}
-	c.mutationMu.RLock()
-	defer c.mutationMu.RUnlock()
+	c.mutationMu.Lock()
+	defer c.mutationMu.Unlock()
 	filtered := records[:0]
 	for _, record := range records {
 		if _, removed := c.removedPaths.Load(filepath.Clean(record.Path)); !removed {

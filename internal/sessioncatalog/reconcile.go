@@ -87,8 +87,11 @@ func (c *Catalog) ReconcileDirectory(ctx context.Context, target DirectoryTarget
 		if len(records) > 0 {
 			cursor = records[len(records)-1].Path
 		}
-		if _, err := c.db.ExecContext(ctx, `UPDATE catalog_directories SET scan_cursor=?,indexed=? WHERE path=?`, cursor, end, target.Path); err != nil {
-			return err
+		c.mutationMu.Lock()
+		_, cursorErr := c.db.ExecContext(ctx, `UPDATE catalog_directories SET scan_cursor=?,indexed=? WHERE path=?`, cursor, end, target.Path)
+		c.mutationMu.Unlock()
+		if cursorErr != nil {
+			return cursorErr
 		}
 		for _, record := range records {
 			if record.TurnsState == TurnsUnknown {
@@ -278,7 +281,16 @@ func (c *Catalog) IndexSessionPath(ctx context.Context, target DirectoryTarget, 
 	if path == "." || path == "" {
 		return nil
 	}
-	c.removedPaths.Delete(path)
+	target.Path = filepath.Clean(strings.TrimSpace(target.Path))
+	if target.Path == "." || target.Path == "" {
+		target.Path = filepath.Dir(path)
+	}
+	// Serialize exact indexing with reconciliation so an older scan cannot mark
+	// the new projection missing. Authoritative writes complete before this
+	// projection-only lock is acquired.
+	lock := c.directoryLock(target.Path)
+	lock.Lock()
+	defer lock.Unlock()
 	info, err := os.Stat(path)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -286,6 +298,10 @@ func (c *Catalog) IndexSessionPath(ctx context.Context, target DirectoryTarget, 
 		}
 		return err
 	}
+	// Only a path that still exists may supersede a removal tombstone. Doing
+	// this after Stat also prevents a delayed exact-index request from exposing
+	// an already archived row while its durable DELETE is pending.
+	c.removedPaths.Delete(path)
 	meta, ok, err := agent.LoadBranchMeta(path)
 	if err != nil {
 		return err
@@ -397,6 +413,8 @@ func fileFingerprint(path string) string {
 // scan for the same signature was interrupted mid-way, the stored scan_cursor
 // is returned so ReconcileDirectory continues instead of restarting from 0.
 func (c *Catalog) beginDirectoryScan(ctx context.Context, target DirectoryTarget, signature string, now int64) (int64, string, error) {
+	c.mutationMu.Lock()
+	defer c.mutationMu.Unlock()
 	tx, err := c.db.BeginTx(ctx, nil)
 	if err != nil {
 		return 0, "", err
@@ -448,6 +466,8 @@ func (c *Catalog) beginDirectoryScan(ctx context.Context, target DirectoryTarget
 }
 
 func (c *Catalog) finishDirectoryScan(ctx context.Context, target DirectoryTarget, signature string, generation, now int64, total int) error {
+	c.mutationMu.Lock()
+	defer c.mutationMu.Unlock()
 	tx, err := c.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
@@ -514,7 +534,9 @@ func (c *Catalog) finishDirectoryScan(ctx context.Context, target DirectoryTarge
 }
 
 func (c *Catalog) failDirectoryScan(ctx context.Context, path string, scanErr error) {
+	c.mutationMu.Lock()
 	_, _ = c.db.ExecContext(ctx, `UPDATE catalog_directories SET state='degraded',error=? WHERE path=?`, scanErr.Error(), path)
+	c.mutationMu.Unlock()
 	c.statusMu.Lock()
 	c.status.State = StateDegraded
 	c.status.LastError = scanErr.Error()
@@ -599,8 +621,7 @@ func (c *Catalog) repairSession(workerCtx context.Context, path string) {
 		return
 	}
 	if err != nil {
-		_, _ = c.db.ExecContext(ctx, `UPDATE catalog_sessions SET turns_state='corrupt',health='corrupt' WHERE path=?`, path)
-		_ = c.recomputeTopicForSession(ctx, path, "repair_corrupt")
+		_ = c.applyRepairResult(ctx, path, "", 0, false, "repair_corrupt")
 		return
 	}
 	preview, turns := agent.SessionPreviewFromMessages(msgs)
@@ -615,12 +636,12 @@ func (c *Catalog) repairSession(workerCtx context.Context, path string) {
 	if ctx.Err() != nil || workerCtx.Err() != nil {
 		return
 	}
-	_, _ = c.db.ExecContext(ctx, `UPDATE catalog_sessions SET preview=?,turns=?,turns_state='valid',
-        health='ok',meta_fingerprint=? WHERE path=?`, preview, turns, fileFingerprint(agent.BranchMetaPath(path)), path)
-	_ = c.recomputeTopicForSession(ctx, path, "repair")
+	_ = c.applyRepairResult(ctx, path, preview, turns, true, "repair")
 }
 
-func (c *Catalog) recomputeTopicForSession(ctx context.Context, path, reason string) error {
+func (c *Catalog) applyRepairResult(ctx context.Context, path, preview string, turns int, valid bool, reason string) error {
+	c.mutationMu.Lock()
+	defer c.mutationMu.Unlock()
 	tx, err := c.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
@@ -631,6 +652,16 @@ func (c *Catalog) recomputeTopicForSession(ctx context.Context, path, reason str
 		if err == sql.ErrNoRows {
 			return nil
 		}
+		return err
+	}
+	if valid {
+		if _, err := tx.ExecContext(ctx, `UPDATE catalog_sessions SET preview=?,turns=?,turns_state='valid',
+            health='ok',meta_fingerprint=? WHERE path=?`, preview, turns, fileFingerprint(agent.BranchMetaPath(path)), path); err != nil {
+			_ = tx.Rollback()
+			return err
+		}
+	} else if _, err := tx.ExecContext(ctx, `UPDATE catalog_sessions SET turns_state='corrupt',health='corrupt' WHERE path=?`, path); err != nil {
+		_ = tx.Rollback()
 		return err
 	}
 	if key.TopicID != "" {

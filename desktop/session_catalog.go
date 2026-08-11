@@ -400,12 +400,15 @@ func (a *App) requestSessionCatalogReconcile(dir string) {
 		migrated, migratedPaths := forceMigrateLegacySessionsIntoGlobalTopicsWithPaths(target.Path)
 		if len(migrated) > 0 {
 			ctx, cancel := context.WithTimeout(a.bootContext(), 30*time.Second)
-			_ = a.syncSessionCatalogMetadata(ctx, catalog)
+			// Publish the exact migrated sessions before the broader metadata
+			// projection. On large stores (and especially Windows), the metadata
+			// pass can take long enough to defeat this interactive fast path.
 			for _, path := range migratedPaths {
 				if err := catalog.IndexSessionPath(ctx, target, path); err != nil && !errors.Is(err, context.Canceled) {
 					slog.Debug("desktop: index migrated session", "path", path, "err", err)
 				}
 			}
+			_ = a.syncSessionCatalogMetadata(ctx, catalog)
 			cancel()
 		}
 		catalog.RequestReconcile(target)

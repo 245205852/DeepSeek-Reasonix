@@ -13,6 +13,8 @@ func (c *Catalog) SyncMetadata(ctx context.Context, projects []ProjectRecord, to
 	if c == nil || c.db == nil {
 		return nil
 	}
+	c.mutationMu.Lock()
+	defer c.mutationMu.Unlock()
 	tx, err := c.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
