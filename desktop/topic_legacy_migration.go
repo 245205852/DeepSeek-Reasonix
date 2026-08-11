@@ -18,15 +18,11 @@ func migrateLegacySessionsIntoGlobalTopics(dir string) []string {
 	return migrateLegacySessionsIntoGlobalTopicsWithGates(dir, topicMigrationDone, topicIndexRepairDone, ignoreMigratedSession)
 }
 
-// forceMigrateLegacySessionsIntoGlobalTopics bypasses disposable completion
-// markers for explicit reconciliation. The directory signature normally keeps
-// background passes cheap, but no signature can be an authority boundary: an
-// old CLI, restored backup, or coarse filesystem timestamp must still have a
-// path that deterministically re-evaluates every session.
-func forceMigrateLegacySessionsIntoGlobalTopics(dir string) []string {
-	return migrateLegacySessionsIntoGlobalTopicsWithGates(dir, topicMigrationNeverDone, topicMigrationNeverDone, ignoreMigratedSession)
-}
-
+// forceMigrateLegacySessionsIntoGlobalTopicsWithPaths bypasses disposable
+// completion markers for explicit reconciliation. The directory signature
+// normally keeps background passes cheap, but no signature can be an authority
+// boundary: an old CLI, restored backup, or coarse filesystem timestamp must
+// still have a path that deterministically re-evaluates every session.
 func forceMigrateLegacySessionsIntoGlobalTopicsWithPaths(dir string) ([]string, []string) {
 	paths := []string{}
 	topics := migrateLegacySessionsIntoGlobalTopicsWithGates(dir, topicMigrationNeverDone, topicMigrationNeverDone,
