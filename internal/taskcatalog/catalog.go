@@ -109,6 +109,9 @@ type Catalog struct {
 	reconciling   map[string]bool
 	registered    map[string]bool
 	reconcileDone bool
+	closeOnce     sync.Once
+	closeDone     chan struct{}
+	closeErr      error
 }
 
 // DefaultPath returns the disposable task projection path under CacheDir.
@@ -174,7 +177,8 @@ func Open(ctx context.Context, path string) (*Catalog, error) {
 	}
 	workerCtx, cancel := context.WithCancel(context.Background())
 	c := &Catalog{db: handle.DB, store: taskmonitor.NewFileStore(filepath.Join(".reasonix", "tasks")), ctx: workerCtx, cancel: cancel,
-		queue: make(chan request, 1024), dirtyWake: make(chan struct{}, 1), reconciling: map[string]bool{}, registered: map[string]bool{}, status: Status{State: string(handle.Status.State), Mode: handle.Status.Mode, Path: handle.Status.Path, LastError: handle.Status.LastError}}
+		queue: make(chan request, 1024), dirtyWake: make(chan struct{}, 1), reconciling: map[string]bool{}, registered: map[string]bool{}, closeDone: make(chan struct{}),
+		status: Status{State: string(handle.Status.State), Mode: handle.Status.Mode, Path: handle.Status.Path, LastError: handle.Status.LastError}}
 	var revision uint64
 	_ = c.db.QueryRowContext(ctx, `SELECT revision FROM task_state WHERE id=1`).Scan(&revision)
 	c.revision.Store(revision)
@@ -675,16 +679,24 @@ func (c *Catalog) Status() Status {
 }
 
 func (c *Catalog) Close(ctx context.Context) error {
-	c.closing.Store(true)
-	c.cancel()
-	c.reconcileMu.Lock()
-	c.reconcileDone = true
-	c.reconcileMu.Unlock()
-	done := make(chan struct{})
-	go func() { c.wg.Wait(); close(done) }()
+	if c == nil {
+		return nil
+	}
+	c.closeOnce.Do(func() {
+		c.closing.Store(true)
+		c.cancel()
+		c.reconcileMu.Lock()
+		c.reconcileDone = true
+		c.reconcileMu.Unlock()
+		go func() {
+			c.wg.Wait()
+			c.closeErr = c.db.Close()
+			close(c.closeDone)
+		}()
+	})
 	select {
-	case <-done:
-		return c.db.Close()
+	case <-c.closeDone:
+		return c.closeErr
 	case <-ctx.Done():
 		return ctx.Err()
 	}

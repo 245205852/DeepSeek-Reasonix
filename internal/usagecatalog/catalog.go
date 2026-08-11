@@ -87,6 +87,9 @@ type Catalog struct {
 	ctx        context.Context
 	cancel     context.CancelFunc
 	wg         sync.WaitGroup
+	closeOnce  sync.Once
+	closeDone  chan struct{}
+	closeErr   error
 }
 
 type receiptEntry struct {
@@ -152,7 +155,8 @@ func Open(ctx context.Context, path string) (*Catalog, error) {
 	}
 	workerCtx, cancel := context.WithCancel(context.Background())
 	c := &Catalog{db: handle.DB, queue: make(chan receiptEntry, 1024), dirtyWake: make(chan struct{}, 1), ctx: workerCtx, cancel: cancel,
-		status: Status{State: string(handle.Status.State), Mode: handle.Status.Mode, Path: handle.Status.Path, LastError: handle.Status.LastError}}
+		closeDone: make(chan struct{}),
+		status:    Status{State: string(handle.Status.State), Mode: handle.Status.Mode, Path: handle.Status.Path, LastError: handle.Status.LastError}}
 	var revision uint64
 	_ = c.db.QueryRowContext(ctx, `SELECT revision FROM usage_state WHERE id=1`).Scan(&revision)
 	c.revision.Store(revision)
@@ -534,12 +538,20 @@ func (c *Catalog) Status() Status {
 }
 
 func (c *Catalog) Close(ctx context.Context) error {
-	c.cancel()
-	done := make(chan struct{})
-	go func() { c.wg.Wait(); close(done) }()
+	if c == nil {
+		return nil
+	}
+	c.closeOnce.Do(func() {
+		c.cancel()
+		go func() {
+			c.wg.Wait()
+			c.closeErr = c.db.Close()
+			close(c.closeDone)
+		}()
+	})
 	select {
-	case <-done:
-		return c.db.Close()
+	case <-c.closeDone:
+		return c.closeErr
 	case <-ctx.Done():
 		return ctx.Err()
 	}

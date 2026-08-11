@@ -101,12 +101,9 @@ func migrationSignatureArtifact(name string) bool {
 		strings.HasSuffix(name, ".jsonl.meta")
 }
 
-// migrationArtifactSignature deliberately hashes only bounded transcript
-// windows: the migration gate must detect same-size rewrites without turning a
-// 100 GB history directory into a full-content hashing pass. Branch metadata
-// is small and gets a full digest under the defensive size cap. mtime_ns and
-// size cover ordinary appends/rewrites; prefix+tail cover restored/coarse
-// mtimes and the append-oriented event log.
+// migrationArtifactSignature hashes bounded transcript windows so a large
+// history is never fully read. Metadata gets a full digest under the size cap;
+// mtime, size, prefix, and tail cover ordinary and restored-time rewrites.
 func migrationArtifactSignature(path, name string) (string, error) {
 	f, err := os.Open(path)
 	if err != nil {

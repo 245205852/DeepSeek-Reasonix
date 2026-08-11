@@ -139,6 +139,20 @@ func TestOpenBlankPathUsesMemoryWithoutRequireDisk(t *testing.T) {
 	}
 }
 
+func TestMemoryOpenUsesOneConnectionDespiteRequestedPool(t *testing.T) {
+	t.Parallel()
+	handle, err := Open(context.Background(), OpenOptions{
+		InMemory: true, MemoryName: "single-connection", Migrations: testMigrations(), MaxOpenConns: 4,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = handle.DB.Close() })
+	if got := handle.DB.Stats().MaxOpenConnections; got != 1 {
+		t.Fatalf("memory max open connections = %d, want 1 to avoid shared-cache table deadlocks", got)
+	}
+}
+
 func TestRebuildRequireDiskSurfacesOpenErrors(t *testing.T) {
 	t.Parallel()
 	// RequireDisk rebuild of an unwritable parent should not silently memory-open.

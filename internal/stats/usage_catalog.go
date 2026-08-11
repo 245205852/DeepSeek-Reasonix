@@ -12,7 +12,13 @@ import (
 )
 
 type usageManager struct {
-	catalog atomic.Pointer[usagecatalog.Catalog]
+	catalog    atomic.Pointer[usagecatalog.Catalog]
+	mu         sync.Mutex
+	generation uint64
+	opening    bool
+	openDone   chan struct{}
+	openCancel context.CancelFunc
+	open       func(context.Context, string) (*usagecatalog.Catalog, error)
 }
 
 var usageManagers = struct {
@@ -30,17 +36,78 @@ func managerForUsage(dir string) *usageManager {
 	if manager == nil {
 		manager = &usageManager{}
 		usageManagers.byDir[dir] = manager
-		go func() {
-			catalog, err := usagecatalog.Open(context.Background(), "")
-			if err != nil {
-				return
-			}
-			manager.catalog.Store(catalog)
-			_ = catalog.ReconcileDir(context.Background(), dir)
-		}()
 	}
 	usageManagers.Unlock()
+	manager.start(dir)
 	return manager
+}
+
+func (m *usageManager) start(dir string) {
+	m.mu.Lock()
+	if m.catalog.Load() != nil || m.opening {
+		m.mu.Unlock()
+		return
+	}
+	m.generation++
+	generation := m.generation
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	m.opening, m.openDone, m.openCancel = true, done, cancel
+	openCatalog := m.open
+	if openCatalog == nil {
+		openCatalog = usagecatalog.Open
+	}
+	m.mu.Unlock()
+	go m.openGeneration(ctx, generation, done, dir, openCatalog)
+}
+
+func (m *usageManager) openGeneration(ctx context.Context, generation uint64, done chan struct{}, dir string, openCatalog func(context.Context, string) (*usagecatalog.Catalog, error)) {
+	catalog, err := openCatalog(ctx, "")
+	if err == nil {
+		_ = catalog.ReconcileDir(ctx, dir)
+	}
+	m.mu.Lock()
+	stale := generation != m.generation || ctx.Err() != nil
+	if err == nil && !stale {
+		m.catalog.Store(catalog)
+	}
+	m.mu.Unlock()
+	if catalog != nil && (err != nil || stale) {
+		_ = catalog.Close(context.Background())
+	}
+	m.mu.Lock()
+	if m.openDone == done {
+		m.opening = false
+		m.openDone = nil
+		m.openCancel = nil
+	}
+	close(done)
+	m.mu.Unlock()
+}
+
+func (m *usageManager) close(ctx context.Context) error {
+	m.mu.Lock()
+	m.generation++
+	if m.openCancel != nil {
+		m.openCancel()
+	}
+	done := m.openDone
+	catalog := m.catalog.Swap(nil)
+	m.mu.Unlock()
+	var closeErr error
+	if catalog != nil {
+		closeErr = catalog.Close(ctx)
+	}
+	if done != nil {
+		select {
+		case <-done:
+		case <-ctx.Done():
+			if closeErr == nil {
+				closeErr = ctx.Err()
+			}
+		}
+	}
+	return closeErr
 }
 
 // The single usage catalog projects the single authoritative Reasonix stats
@@ -78,10 +145,8 @@ func CloseUsageCatalogs(ctx context.Context) error {
 	usageManagers.Unlock()
 	var first error
 	for _, manager := range managers {
-		if catalog := manager.catalog.Swap(nil); catalog != nil {
-			if err := catalog.Close(ctx); err != nil && first == nil {
-				first = err
-			}
+		if err := manager.close(ctx); err != nil && first == nil {
+			first = err
 		}
 	}
 	return first

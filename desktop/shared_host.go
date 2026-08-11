@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"log/slog"
 	"os"
 	"os/exec"
@@ -28,23 +29,47 @@ func (a *App) currentExtensionGeneration() uint64 {
 	return a.extensionGeneration.Load()
 }
 
-// rollbackSharedHostMCPRegistration aborts the per-build RegistrationScope so
-// late LazyToolset kicks are rejected, then RemoveIfInstance-rolls back only
-// clients that carried this build's token. Sibling hot-adds without the token
-// are never attributed or deleted.
-func rollbackSharedHostMCPRegistration(scope *plugin.RegistrationScope) {
-	if scope == nil {
-		return
-	}
-	scope.AbortAndRollback()
+type sharedHostMCPRegistration struct {
+	scope     *plugin.RegistrationScope
+	finished  bool
+	committed bool
 }
 
-// commitSharedHostMCPRegistration promotes every client created or reused by
-// the build to ordinary Host ownership. It is called only at the controller
-// compare-and-publish boundary; committed scopes also accept late lazy MCP
-// connections without making them rollback candidates.
-func commitSharedHostMCPRegistration(scope *plugin.RegistrationScope) bool {
-	return scope == nil || scope.Commit()
+// beginSharedHostMCPRegistration attributes only context-scoped connections to
+// this build. Unrelated Host writes never become rollback candidates.
+func beginSharedHostMCPRegistration(ctx context.Context, host *plugin.Host) (context.Context, *sharedHostMCPRegistration) {
+	registration := &sharedHostMCPRegistration{}
+	if host == nil {
+		return ctx, registration
+	}
+	registration.scope = host.BeginRegistrationScope()
+	return plugin.ContextWithRegistrationScope(ctx, registration.scope), registration
+}
+
+func (r *sharedHostMCPRegistration) rollback() {
+	if r == nil || r.finished {
+		return
+	}
+	r.finished = true
+	if r.scope != nil {
+		r.scope.AbortAndRollback()
+	}
+}
+
+func (r *sharedHostMCPRegistration) commit() bool {
+	if r == nil {
+		return true
+	}
+	if r.finished {
+		return r.committed
+	}
+	if r.scope != nil && !r.scope.Commit() {
+		r.finished = true
+		return false
+	}
+	r.finished = true
+	r.committed = true
+	return true
 }
 
 func (a *App) saveDesktopMCPServerAndBump(root string, entry config.PluginEntry) error {

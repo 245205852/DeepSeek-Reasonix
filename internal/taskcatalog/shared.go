@@ -9,37 +9,79 @@ import (
 )
 
 type sharedManager struct {
-	once    sync.Once
-	mu      sync.RWMutex
-	catalog *Catalog
-	pending map[string]string
-	closing bool
+	mu         sync.RWMutex
+	catalog    *Catalog
+	pending    map[string]string
+	closing    bool
+	generation uint64
+	opening    bool
+	openDone   chan struct{}
+	openCancel context.CancelFunc
+	open       func(context.Context, string) (*Catalog, error)
 }
 
 var shared sharedManager
 
 func ensureShared() {
-	shared.once.Do(func() {
-		go func() {
-			catalog, err := Open(context.Background(), "")
-			if err != nil {
-				return
+	shared.start()
+}
+
+func (m *sharedManager) start() {
+	m.mu.Lock()
+	if m.catalog != nil || m.opening || m.closing {
+		m.mu.Unlock()
+		return
+	}
+	m.generation++
+	generation := m.generation
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	m.opening, m.openDone, m.openCancel = true, done, cancel
+	openCatalog := m.open
+	if openCatalog == nil {
+		openCatalog = Open
+	}
+	m.mu.Unlock()
+	go m.openGeneration(ctx, generation, done, openCatalog)
+}
+
+func (m *sharedManager) openGeneration(ctx context.Context, generation uint64, done chan struct{}, openCatalog func(context.Context, string) (*Catalog, error)) {
+	catalog, err := openCatalog(ctx, "")
+	seen := map[string]bool{}
+	for err == nil {
+		m.mu.Lock()
+		if m.closing || generation != m.generation || ctx.Err() != nil {
+			m.mu.Unlock()
+			_ = catalog.Close(context.Background())
+			catalog = nil
+			break
+		}
+		pending := map[string]string{}
+		for root, label := range m.pending {
+			if !seen[root] {
+				seen[root] = true
+				pending[root] = label
 			}
-			shared.mu.Lock()
-			if shared.closing {
-				shared.mu.Unlock()
-				_ = catalog.Close(context.Background())
-				return
-			}
-			shared.catalog = catalog
-			pending := shared.pending
-			shared.pending = nil
-			shared.mu.Unlock()
-			for root, label := range pending {
-				_, _ = catalog.RegisterProject(context.Background(), root, label)
-			}
-		}()
-	})
+		}
+		if len(pending) == 0 {
+			m.catalog = catalog
+			m.pending = nil
+			m.mu.Unlock()
+			break
+		}
+		m.mu.Unlock()
+		for root, label := range pending {
+			_, _ = catalog.RegisterProject(ctx, root, label)
+		}
+	}
+	m.mu.Lock()
+	if m.openDone == done {
+		m.opening = false
+		m.openDone = nil
+		m.openCancel = nil
+	}
+	close(done)
+	m.mu.Unlock()
 }
 
 func Shared() *Catalog {
@@ -53,16 +95,38 @@ func Shared() *Catalog {
 // projection worker. It is only used during process shutdown; authoritative
 // task snapshots and event logs have already committed before notifications.
 func ShutdownShared(ctx context.Context) error {
-	shared.mu.Lock()
-	shared.closing = true
-	catalog := shared.catalog
-	shared.catalog = nil
-	shared.mu.Unlock()
-	if catalog == nil {
-		return nil
+	return shared.close(ctx)
+}
+
+func (m *sharedManager) close(ctx context.Context) error {
+	m.mu.Lock()
+	m.closing = true
+	m.generation++
+	if m.openCancel != nil {
+		m.openCancel()
 	}
-	flushErr := catalog.Flush(ctx)
-	closeErr := catalog.Close(ctx)
+	done := m.openDone
+	catalog := m.catalog
+	m.catalog = nil
+	m.pending = nil
+	m.mu.Unlock()
+	var flushErr, closeErr error
+	if catalog != nil {
+		flushErr = catalog.Flush(ctx)
+		closeErr = catalog.Close(ctx)
+	}
+	if done != nil {
+		select {
+		case <-done:
+		case <-ctx.Done():
+			if closeErr == nil {
+				closeErr = ctx.Err()
+			}
+		}
+	}
+	m.mu.Lock()
+	m.closing = false
+	m.mu.Unlock()
 	if flushErr != nil {
 		return flushErr
 	}

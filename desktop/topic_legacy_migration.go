@@ -15,7 +15,7 @@ import (
 var legacyMigrationMu sync.Mutex
 
 func migrateLegacySessionsIntoGlobalTopics(dir string) []string {
-	return migrateLegacySessionsIntoGlobalTopicsWithForce(dir, false)
+	return migrateLegacySessionsIntoGlobalTopicsWithGates(dir, topicMigrationDone, topicIndexRepairDone)
 }
 
 // forceMigrateLegacySessionsIntoGlobalTopics bypasses disposable completion
@@ -24,17 +24,19 @@ func migrateLegacySessionsIntoGlobalTopics(dir string) []string {
 // old CLI, restored backup, or coarse filesystem timestamp must still have a
 // path that deterministically re-evaluates every session.
 func forceMigrateLegacySessionsIntoGlobalTopics(dir string) []string {
-	return migrateLegacySessionsIntoGlobalTopicsWithForce(dir, true)
+	return migrateLegacySessionsIntoGlobalTopicsWithGates(dir, topicMigrationNeverDone, topicMigrationNeverDone)
 }
 
-func migrateLegacySessionsIntoGlobalTopicsWithForce(dir string, force bool) []string {
+func topicMigrationNeverDone(string) bool { return false }
+
+func migrateLegacySessionsIntoGlobalTopicsWithGates(dir string, migrationDone, repairDone func(string) bool) []string {
 	if strings.TrimSpace(dir) == "" {
 		return nil
 	}
-	repairedTopicIDs := repairIndexedSessionTopicsWithForce(dir, force)
+	repairedTopicIDs := repairIndexedSessionTopicsWithGate(dir, repairDone)
 	// One-shot per dir: once the migration pass has completed, skip the full
 	// per-render session scan entirely.
-	if !force && topicMigrationDone(dir) {
+	if migrationDone(dir) {
 		return repairedTopicIDs
 	}
 	scope, workspaceRoot, topicTitleRoot, ok := legacyMigrationTargetForDir(dir)
@@ -45,7 +47,7 @@ func migrateLegacySessionsIntoGlobalTopicsWithForce(dir string, force bool) []st
 	defer legacyMigrationMu.Unlock()
 	// Re-check under the lock: another render may have completed the pass while
 	// this one waited.
-	if !force && topicMigrationDone(dir) {
+	if migrationDone(dir) {
 		return nil
 	}
 	infos, err := agent.ListSessionOrder(dir)
@@ -189,12 +191,8 @@ func pruneDeletedTopicEntries(maps ...map[string]string) []string {
 	return deleted
 }
 
-func repairIndexedSessionTopics(dir string) []string {
-	return repairIndexedSessionTopicsWithForce(dir, false)
-}
-
-func repairIndexedSessionTopicsWithForce(dir string, force bool) []string {
-	if strings.TrimSpace(dir) == "" || (!force && topicIndexRepairDone(dir)) {
+func repairIndexedSessionTopicsWithGate(dir string, repairDone func(string) bool) []string {
+	if strings.TrimSpace(dir) == "" || repairDone(dir) {
 		return nil
 	}
 	scope, workspaceRoot, topicTitleRoot, ok := legacyMigrationTargetForDir(dir)
@@ -203,7 +201,7 @@ func repairIndexedSessionTopicsWithForce(dir string, force bool) []string {
 	}
 	legacyMigrationMu.Lock()
 	defer legacyMigrationMu.Unlock()
-	if !force && topicIndexRepairDone(dir) {
+	if repairDone(dir) {
 		return nil
 	}
 	infos, err := agent.ListSessionOrder(dir)

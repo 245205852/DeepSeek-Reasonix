@@ -22,7 +22,6 @@ import (
 	"reasonix/internal/extension/providerext"
 	"reasonix/internal/fileutil"
 	"reasonix/internal/notify"
-	"reasonix/internal/plugin"
 	"reasonix/internal/provider"
 	"reasonix/internal/store"
 	"reasonix/internal/worktree"
@@ -1744,10 +1743,9 @@ type runtimeEventEnvelope struct {
 	payload []any
 }
 
-// asyncRuntimeEmitter decouples Wails' runtime event bridge from agent
-// emission. runtime.EventsEmit can block when the single webview event channel
-// backs up; callers enqueue in-order work and return without holding the
-// agent's event.Sync lock.
+// asyncRuntimeEmitter decouples Wails' runtime event bridge from agent emission.
+// runtime.EventsEmit can block when the single webview event channel backs up;
+// callers enqueue in-order work and return without holding the agent event lock.
 // runtimeEventsEmitFallback is the emit used when no per-instance override is
 // installed. Production keeps the real Wails bridge; the test binary swaps in
 // a no-op via TestMain, because Wails EventsEmit log.Fatals outside a running
@@ -1756,11 +1754,12 @@ type runtimeEventEnvelope struct {
 var runtimeEventsEmitFallback runtimeEventEmitFunc = runtime.EventsEmit
 
 type asyncRuntimeEmitter struct {
-	mu      sync.Mutex
-	emit    runtimeEventEmitFunc
-	queue   []runtimeEventEnvelope
-	head    int
-	running bool
+	mu                     sync.Mutex
+	emit                   runtimeEventEmitFunc
+	queue                  []runtimeEventEnvelope
+	head                   int
+	running                bool
+	configWarningsRevision atomic.Uint64
 }
 
 func (e *asyncRuntimeEmitter) Emit(ctx context.Context, name string, payload ...any) {
@@ -3900,27 +3899,13 @@ func (a *App) buildTabControllerWithContextCore(tab *WorkspaceTab, loadedSession
 	extensionGen := a.currentExtensionGeneration()
 	sharedHost := a.acquireSharedHost(rootKey)
 	sink := a.desktopControllerSink(buildSink, cfg.Notifications)
-	// Per-build RegistrationScope token attributes only MCP clients connected
-	// through this build's context (sync + LazyToolset async kicks). Sibling
-	// hot-adds omit the token and are never rolled back with a lost build.
-	// Scopes intentionally do not serialize concurrent tab builds.
-	var regScope *plugin.RegistrationScope
-	regScopePublished := false
-	if sharedHost != nil {
-		regScope = sharedHost.BeginRegistrationScope()
-		buildCtx = plugin.ContextWithRegistrationScope(buildCtx, regScope)
-	}
-	defer func() {
-		if !regScopePublished {
-			rollbackSharedHostMCPRegistration(regScope)
-		}
-	}()
+	buildCtx, registration := beginSharedHostMCPRegistration(buildCtx, sharedHost)
+	defer registration.rollback()
 	ctrl, err := a.buildTabControllerBoot(buildCtx, boot.Options{
-		Model:                    model,
-		RequireKey:               false,
-		AutoPricingCurrency:      a.desktopAutoPricingCurrency(),
-		StatsSource:              "desktop",
-		TaskStore:                a.taskStore(),
+		Model:               model,
+		RequireKey:          false,
+		AutoPricingCurrency: a.desktopAutoPricingCurrency(),
+		StatsSource:         "desktop", TaskStore: a.taskStore(), OnConfigLoadWarnings: a.configLoadWarningsHandler(),
 		Sink:                     sink,
 		WorkspaceRoot:            root,
 		SessionDir:               sessionDir,
@@ -3933,7 +3918,7 @@ func (a *App) buildTabControllerWithContextCore(tab *WorkspaceTab, loadedSession
 		OnSessionRecovered:       a.handleTabSessionRecovered(tab),
 	})
 	if err != nil {
-		rollbackSharedHostMCPRegistration(regScope)
+		registration.rollback()
 		leaseHeld := false
 		a.mu.Lock()
 		if a.tabBuildSupersededLocked(tab, buildGeneration) {
@@ -3961,12 +3946,12 @@ func (a *App) buildTabControllerWithContextCore(tab *WorkspaceTab, loadedSession
 		return
 	}
 	if a.tabBuildSuperseded(tab, buildGeneration) {
-		rollbackSharedHostMCPRegistration(regScope)
+		registration.rollback()
 		a.abandonSupersededBuild(tab, ctrl, rootKey, "")
 		return
 	}
 	if a.currentExtensionGeneration() != extensionGen {
-		rollbackSharedHostMCPRegistration(regScope)
+		registration.rollback()
 		a.abandonSupersededBuild(tab, ctrl, rootKey, "")
 		a.scheduleDeferredStartupBuild(tab.ID)
 		return
@@ -4164,15 +4149,13 @@ func (a *App) buildTabControllerWithContextCore(tab *WorkspaceTab, loadedSession
 		return
 	}
 	// Commit the scope while the final tab-generation check is still guarded.
-	// RegistrationScope.Commit only takes the plugin Host leaf lock and cannot
-	// call back into App, so this does not invert the runtime/App lock order.
-	if !commitSharedHostMCPRegistration(regScope) {
+	// It only takes the plugin Host leaf lock and cannot call back into App.
+	if !registration.commit() {
 		a.mu.Unlock()
 		a.abandonSupersededBuild(tab, ctrl, rootKey, acquiredLeaseKey)
 		a.scheduleDeferredStartupBuild(tab.ID)
 		return
 	}
-	regScopePublished = true
 	tab.Ctrl = ctrl
 	tab.Label = ctrl.Label()
 	applyNormalizedRuntimeToTabLocked(tab, restoredRuntime)

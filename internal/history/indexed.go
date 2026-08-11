@@ -14,11 +14,15 @@ import (
 )
 
 type indexedCatalogManager struct {
-	once      sync.Once
-	mu        sync.RWMutex
-	catalog   *historycatalog.Catalog
-	roots     map[string]historycatalog.Root
-	observers []func(historycatalog.Status, []string, string)
+	mu         sync.RWMutex
+	catalog    *historycatalog.Catalog
+	roots      map[string]historycatalog.Root
+	observers  []func(historycatalog.Status, []string, string)
+	generation uint64
+	opening    map[uint64]chan struct{}
+	openCancel map[uint64]context.CancelFunc
+	closing    bool
+	open       func(context.Context, historycatalog.Options) (*historycatalog.Catalog, error)
 }
 
 var processHistoryCatalog indexedCatalogManager
@@ -52,15 +56,7 @@ func FlushSharedCatalog(ctx context.Context) error {
 // CloseSharedCatalog flushes and closes the process history projection so
 // shutdown and tests release SQLite handles under the cache directory.
 func CloseSharedCatalog(ctx context.Context) error {
-	processHistoryCatalog.mu.Lock()
-	catalog := processHistoryCatalog.catalog
-	processHistoryCatalog.catalog = nil
-	processHistoryCatalog.mu.Unlock()
-	if catalog == nil {
-		return nil
-	}
-	_ = catalog.Flush(ctx)
-	return catalog.Close(ctx)
+	return processHistoryCatalog.close(ctx)
 }
 
 func (m *indexedCatalogManager) register(roots []historycatalog.Root) {
@@ -75,30 +71,108 @@ func (m *indexedCatalogManager) register(roots []historycatalog.Root) {
 		}
 	}
 	catalog := m.catalog
+	if catalog == nil {
+		m.startOpenLocked()
+	}
 	m.mu.Unlock()
 	if catalog != nil {
 		for _, root := range roots {
 			catalog.RegisterRoot(root)
 		}
 	}
-	m.once.Do(func() {
-		go func() {
-			catalog, err := historycatalog.Open(context.Background(), historycatalog.Options{OnRevision: processHistoryCatalog.publish})
-			if err != nil {
-				return
-			}
+}
+
+func (m *indexedCatalogManager) startOpenLocked() {
+	if m.catalog != nil || m.closing || len(m.opening) != 0 {
+		return
+	}
+	m.generation++
+	generation := m.generation
+	if m.opening == nil {
+		m.opening = map[uint64]chan struct{}{}
+		m.openCancel = map[uint64]context.CancelFunc{}
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	m.opening[generation] = done
+	m.openCancel[generation] = cancel
+	openCatalog := m.open
+	if openCatalog == nil {
+		openCatalog = historycatalog.Open
+	}
+	go m.openGeneration(ctx, generation, done, openCatalog)
+}
+
+func (m *indexedCatalogManager) openGeneration(ctx context.Context, generation uint64, done chan struct{}, openCatalog func(context.Context, historycatalog.Options) (*historycatalog.Catalog, error)) {
+	catalog, err := openCatalog(ctx, historycatalog.Options{OnRevision: m.publish})
+	if err == nil {
+		seen := map[string]bool{}
+		for {
 			m.mu.Lock()
-			m.catalog = catalog
+			if m.closing || generation != m.generation || ctx.Err() != nil {
+				m.mu.Unlock()
+				_ = catalog.Close(context.Background())
+				catalog = nil
+				break
+			}
 			pending := make([]historycatalog.Root, 0, len(m.roots))
-			for _, root := range m.roots {
-				pending = append(pending, root)
+			for path, root := range m.roots {
+				if !seen[path] {
+					seen[path] = true
+					pending = append(pending, root)
+				}
+			}
+			if len(pending) == 0 {
+				m.catalog = catalog
+				m.mu.Unlock()
+				break
 			}
 			m.mu.Unlock()
 			for _, root := range pending {
 				catalog.RegisterRoot(root)
 			}
-		}()
-	})
+		}
+	}
+	m.mu.Lock()
+	delete(m.opening, generation)
+	delete(m.openCancel, generation)
+	close(done)
+	m.mu.Unlock()
+}
+
+func (m *indexedCatalogManager) close(ctx context.Context) error {
+	m.mu.Lock()
+	m.closing = true
+	m.generation++
+	catalog := m.catalog
+	m.catalog = nil
+	m.roots = nil
+	m.observers = nil
+	done := make([]chan struct{}, 0, len(m.opening))
+	for generation, opening := range m.opening {
+		m.openCancel[generation]()
+		done = append(done, opening)
+	}
+	m.mu.Unlock()
+
+	var closeErr error
+	if catalog != nil {
+		_ = catalog.Flush(ctx)
+		closeErr = catalog.Close(ctx)
+	}
+	for _, opening := range done {
+		select {
+		case <-opening:
+		case <-ctx.Done():
+			if closeErr == nil {
+				closeErr = ctx.Err()
+			}
+		}
+	}
+	m.mu.Lock()
+	m.closing = false
+	m.mu.Unlock()
+	return closeErr
 }
 
 func (m *indexedCatalogManager) publish(status historycatalog.Status, roots []string, reason string) {

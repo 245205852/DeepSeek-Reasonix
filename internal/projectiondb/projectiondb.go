@@ -202,6 +202,15 @@ func open(ctx context.Context, opts OpenOptions, mode Mode) (*sql.DB, error) {
 	if maxOpen <= 0 {
 		maxOpen = 4
 	}
+	// A named in-memory database uses SQLite shared-cache mode so every
+	// database/sql connection sees the same projection. Shared-cache table
+	// locks return SQLITE_LOCKED (not SQLITE_BUSY), which bypasses
+	// busy_timeout and can deadlock concurrent catalog writers. Keep memory
+	// fallback on one connection; disk catalogs retain their requested pool
+	// and WAL read concurrency.
+	if mode == ModeMemory {
+		maxOpen = 1
+	}
 	db.SetMaxOpenConns(maxOpen)
 	db.SetMaxIdleConns(min(maxOpen, 2))
 	fail := func(err error) (*sql.DB, error) {

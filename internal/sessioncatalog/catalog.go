@@ -45,7 +45,8 @@ type Catalog struct {
 	stop             chan struct{}
 	stopOnce         sync.Once
 	workers          sync.WaitGroup
-	closeDBOnce      sync.Once
+	closeDone        chan struct{}
+	closeErr         error
 }
 
 type sessionPathRequest struct {
@@ -94,6 +95,7 @@ func Open(ctx context.Context, opts Options) (*Catalog, error) {
 		pathCh:         make(chan sessionPathRequest, opts.QueueCapacity),
 		directoryLocks: map[string]*sync.Mutex{},
 		stop:           make(chan struct{}),
+		closeDone:      make(chan struct{}),
 		status:         Status{State: StateOpening, Path: opts.Path},
 	}
 	handle, err := projectiondb.Open(ctx, projectiondb.OpenOptions{
@@ -469,10 +471,7 @@ func (c *Catalog) ListTopics(ctx context.Context, req TopicPageRequest) (TopicPa
 		args = append(args, cutoff)
 	}
 	scanCursor := cursor
-	scanLimit := req.Limit + 1
-	if scanLimit < 64 {
-		scanLimit = 64
-	}
+	scanLimit := max(req.Limit+1, 64)
 	for len(out.Items) <= req.Limit {
 		pageWhere := where
 		pageArgs := append([]any(nil), args...)
@@ -671,20 +670,18 @@ func (c *Catalog) Close(ctx context.Context) error {
 			c.workerCancel()
 		}
 		close(c.stop)
+		go func() {
+			c.workers.Wait()
+			c.closeErr = c.db.Close()
+			c.statusMu.Lock()
+			c.status.State = StateClosed
+			c.statusMu.Unlock()
+			close(c.closeDone)
+		}()
 	})
-	done := make(chan struct{})
-	go func() {
-		c.workers.Wait()
-		close(done)
-	}()
 	select {
-	case <-done:
-		var err error
-		c.closeDBOnce.Do(func() { err = c.db.Close() })
-		c.statusMu.Lock()
-		c.status.State = StateClosed
-		c.statusMu.Unlock()
-		return err
+	case <-c.closeDone:
+		return c.closeErr
 	case <-ctx.Done():
 		return ctx.Err()
 	}

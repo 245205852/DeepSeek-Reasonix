@@ -5110,12 +5110,63 @@ button.reasoning-summary:focus-visible {
   border-radius: 5px;
   padding: 1px 5px;
 }
+/* Horizontal overflow only: never create a vertical nested scroller. CSS
+   forces overflow-y to "auto" when overflow-x is non-visible, so tables use a
+   wrapper (below) for x-scroll and the table itself stays overflow:visible. */
+.md-table-scroll {
+  display: block;
+  max-width: 100%;
+  overflow-x: auto;
+  overflow-y: hidden;
+  margin: 0 0 12px;
+}
+/* Large tables default to an in-flow preview; expand mounts the virtual
+   scroller only when the user opts in (see MarkdownTable.tsx). */
+.md-table-fold {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 0 0 12px;
+}
+.md-table-fold > .md-table-scroll,
+.md-table-fold > .md-table-virtual {
+  margin-bottom: 0;
+}
+.md-table-fold__toggle {
+  --wails-draggable: no-drag;
+  align-self: flex-start;
+  margin: 0;
+  padding: 4px 10px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--bg-soft);
+  color: var(--fg-dim);
+  font-size: var(--text-xs, 12px);
+  line-height: 1.4;
+  cursor: pointer;
+}
+.md-table-fold__toggle:hover {
+  color: var(--fg);
+  border-color: color-mix(in srgb, var(--accent) 28%, var(--border));
+  background: color-mix(in srgb, var(--accent-soft) 40%, var(--bg-soft));
+}
+.md-table-fold__toggle:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--accent) 55%, transparent);
+  outline-offset: 2px;
+}
 .md table {
   border-collapse: collapse;
   margin: 0 0 12px;
   font-size: var(--font-content);
-  display: block;
-  overflow-x: auto;
+  width: 100%;
+  /* Keep tables in normal document flow so trackpad Y always drives .transcript.
+     Wide tables sit inside .md-table-scroll when a horizontal scroller is needed. */
+  overflow: visible;
+}
+.md-table-scroll > table {
+  margin-bottom: 0;
+  width: max-content;
+  min-width: 100%;
 }
 .md th,
 .md td {
@@ -5130,10 +5181,12 @@ button.reasoning-summary:focus-visible {
 /* Row-virtualized oversized markdown tables (see MarkdownTable.tsx): the
    wrapper owns vertical scroll, the thead stays pinned, and body rows are
    absolutely positioned by the virtualizer. Flex rows keep header/body cells
-   column-aligned without a full-table layout pass. */
+   column-aligned without a full-table layout pass. Marked data-nested-scroll
+   so transcript wheel handoff promotes edge gestures to .transcript. */
 .md-table-virtual {
   overflow-y: auto;
   overflow-x: auto;
+  overscroll-behavior: contain;
   margin: 0 0 12px;
   border: 1px solid var(--border);
   border-radius: 6px;
@@ -5176,9 +5229,17 @@ button.reasoning-summary:focus-visible {
   font-family: var(--font-code-family);
   font-size: var(--font-code);
   line-height: 1.55;
-  overflow: auto;
+  /* Horizontal scroll only by default so trackpad Y drives the transcript.
+     Extremely tall blocks opt into nested Y via .code--scroll-y + handoff. */
+  overflow-x: auto;
+  overflow-y: hidden;
   white-space: pre;
   color: var(--code-fg, var(--fg));
+}
+.code--scroll-y {
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  max-height: min(60vh, 28rem);
 }
 .code--loading {
   opacity: 0.55;
@@ -10186,6 +10247,11 @@ body > .mermaid-diagram--fullscreen {
 }
 .floating-menu button:hover {
   background: var(--bg-soft);
+}
+.floating-menu__separator {
+  height: 1px;
+  margin: 5px 4px;
+  background: var(--border-soft);
 }
 .tooltip-trigger {
   display: inline-flex;
@@ -25043,19 +25109,6 @@ body > .mermaid-diagram--fullscreen {
   border-radius: 8px;
   background:
     linear-gradient(180deg, color-mix(in srgb, var(--accent) 5%, var(--bg)) 0%, var(--bg) 100%);
-}
-
-.context-panel__maintenance {
-  min-width: 0;
-  margin-top: 10px;
-  display: grid;
-  gap: 8px;
-}
-
-.context-panel__maintenance-rows {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 6px 8px;
 }
 
 .context-panel__capacity-card--good {

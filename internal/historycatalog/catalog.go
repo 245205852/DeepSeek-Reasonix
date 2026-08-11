@@ -40,6 +40,9 @@ type Catalog struct {
 	roots      map[string]Root
 	dirtyRoots map[string]bool
 	wg         sync.WaitGroup
+	closeOnce  sync.Once
+	closeDone  chan struct{}
+	closeErr   error
 }
 
 type queuedPath struct {
@@ -81,6 +84,7 @@ func Open(ctx context.Context, opts Options) (*Catalog, error) {
 		queue: make(chan string, opts.QueueCapacity), rootCh: make(chan string, 64),
 		flushCh: make(chan chan struct{}, 1),
 		paths:   map[string]queuedPath{}, roots: map[string]Root{}, dirtyRoots: map[string]bool{},
+		closeDone: make(chan struct{}),
 		status: Status{State: string(handle.Status.State), Mode: handle.Status.Mode, Path: handle.Status.Path,
 			LastError: handle.Status.LastError, QuarantinedPath: handle.Status.QuarantinedPath}}
 	if err := c.db.QueryRowContext(ctx, `SELECT revision FROM history_state WHERE id=1`).Scan(new(uint64)); err != nil {
@@ -756,12 +760,17 @@ func (c *Catalog) Close(ctx context.Context) error {
 	if c == nil {
 		return nil
 	}
-	c.cancel()
-	done := make(chan struct{})
-	go func() { c.wg.Wait(); close(done) }()
+	c.closeOnce.Do(func() {
+		c.cancel()
+		go func() {
+			c.wg.Wait()
+			c.closeErr = c.db.Close()
+			close(c.closeDone)
+		}()
+	})
 	select {
-	case <-done:
-		return c.db.Close()
+	case <-c.closeDone:
+		return c.closeErr
 	case <-ctx.Done():
 		return ctx.Err()
 	}

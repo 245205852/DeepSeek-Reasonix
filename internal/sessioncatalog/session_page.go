@@ -75,10 +75,7 @@ func (c *Catalog) ListSessions(ctx context.Context, req SessionPageRequest) (Ses
 	}
 	appendSessionTimeFilter(&where, &args, req.TimeFilter, c.opts.Now())
 	scanCursor := cursor
-	scanLimit := req.Limit + 1
-	if scanLimit < 64 {
-		scanLimit = 64
-	}
+	scanLimit := max(req.Limit+1, 64)
 	for len(out.Items) <= req.Limit {
 		pageWhere := append([]string(nil), where...)
 		pageArgs := append([]any(nil), args...)

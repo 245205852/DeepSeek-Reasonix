@@ -9,10 +9,8 @@ import (
 	"time"
 )
 
-// RemoveSession removes one projection row after an authoritative archive.
-// It records a read-visible tombstone before any mutex wait so short caller
-// contexts cannot leave archived paths queryable; SQLite DELETE is retried
-// asynchronously when locks are busy or the context expires.
+// RemoveSession records a tombstone before any mutex wait so archived paths
+// stop being queryable immediately. SQLite deletion retries asynchronously.
 func (c *Catalog) RemoveSession(ctx context.Context, path, reason string) error {
 	if c == nil || c.db == nil {
 		return nil
@@ -29,10 +27,9 @@ func (c *Catalog) RemoveSession(ctx context.Context, path, reason string) error 
 	c.writeMu.Unlock()
 	c.pathQueued.Delete(path)
 	c.repairQueued.Delete(path)
-	// Wake project-tree listeners without waiting for SQLite. The equal revision
-	// deliberately identifies an in-memory overlay change; empty roots tell the
-	// frontend to refresh every expanded folder because resolving workspace_root
-	// from SQLite would put the interactive path back behind the busy DB.
+	// Wake listeners without SQLite. Equal revision identifies an overlay change;
+	// empty roots refresh every expanded folder without querying the busy DB for
+	// workspace_root.
 	if c.opts.OnRevision != nil {
 		c.opts.OnRevision(c.revision.Load(), []string{}, reason)
 	}
@@ -58,9 +55,7 @@ func (c *Catalog) scheduleSessionRemovalRetry(path, reason string) {
 	if c == nil || c.workerCtx == nil {
 		return
 	}
-	c.workers.Add(1)
-	go func() {
-		defer c.workers.Done()
+	c.workers.Go(func() {
 		select {
 		case <-c.stop:
 			return
@@ -76,7 +71,7 @@ func (c *Catalog) scheduleSessionRemovalRetry(path, reason string) {
 		}
 		// Blocking apply is fine on the background worker.
 		_ = c.applySessionRemovalLocked(ctx, path, reason+"-retry", true)
-	}()
+	})
 }
 
 // tryApplySessionRemoval attempts a non-blocking durable delete. When directory

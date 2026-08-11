@@ -3,8 +3,6 @@ package plugin
 import (
 	"context"
 	"errors"
-	"sync"
-	"sync/atomic"
 	"testing"
 )
 
@@ -222,43 +220,19 @@ func TestCommittedScopeAcceptsLateLazyRegistration(t *testing.T) {
 	}
 }
 
-func TestRegistrationScopesDoNotSerializeUnrelatedBuilds(t *testing.T) {
+func TestRegistrationScopesRemainIndependentWhileBothActive(t *testing.T) {
 	host := NewHost()
-	started := make(chan struct{})
-	release := make(chan struct{})
-	var secondEntered atomic.Bool
-	var wg sync.WaitGroup
-	wg.Add(2)
-
-	go func() {
-		defer wg.Done()
-		scope := host.BeginRegistrationScope()
-		ctx := ContextWithRegistrationScope(context.Background(), scope)
-		close(started)
-		<-release
-		_ = host.ReplaceServerBackend(ctx, "a", &Client{name: "a"}, 1)
-	}()
-	go func() {
-		defer wg.Done()
-		<-started
-		// Second scope must not block on the first (no regJournalMu).
-		scope := host.BeginRegistrationScope()
-		ctx := ContextWithRegistrationScope(context.Background(), scope)
-		secondEntered.Store(true)
-		_ = host.ReplaceServerBackend(ctx, "b", &Client{name: "b"}, 1)
-	}()
-
-	<-started
-	// Give the second goroutine a chance to enter without waiting on first.
-	for i := 0; i < 50 && !secondEntered.Load(); i++ {
-		// busy wait briefly without sleep dependency for CI
+	first := host.BeginRegistrationScope()
+	second := host.BeginRegistrationScope()
+	firstCtx := ContextWithRegistrationScope(context.Background(), first)
+	secondCtx := ContextWithRegistrationScope(context.Background(), second)
+	if err := host.ReplaceServerBackend(firstCtx, "a", &Client{name: "a"}, 1); err != nil {
+		t.Fatal(err)
 	}
-	if !secondEntered.Load() {
-		// Still allow scheduling; unlock first so test can finish.
+	if err := host.ReplaceServerBackend(secondCtx, "b", &Client{name: "b"}, 1); err != nil {
+		t.Fatal(err)
 	}
-	close(release)
-	wg.Wait()
-	if !secondEntered.Load() {
-		t.Fatal("second registration scope was serialized behind the first build")
+	if len(first.Snapshot()) != 1 || len(second.Snapshot()) != 1 {
+		t.Fatalf("active scope claims leaked: first=%+v second=%+v", first.Snapshot(), second.Snapshot())
 	}
 }

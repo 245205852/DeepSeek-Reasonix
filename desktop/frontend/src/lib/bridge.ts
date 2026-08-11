@@ -571,7 +571,7 @@ export interface AppBindings extends SessionCatalogBindings, HistoryCatalogBindi
   AbandonPendingUpdate?(): Promise<void>;
   OpenDownloadPage(): Promise<void>;
   OpenUserConfigPath?(): Promise<void>;
-  ReloadUserConfig?(): Promise<{ configWarnings?: string[]; configPath?: string } | null>;
+  ReloadUserConfig?(): Promise<{ configWarnings?: string[]; configWarningsRevision?: number; configPath?: string } | null>;
   StorageSettings(): Promise<{ defaultWorkspace: string; statePath: string; cachePath: string; extensionsPath: string }>;
   NeedsOnboarding(): Promise<boolean>;
   ConnectKey(apiKey: string): Promise<string>;
@@ -4962,7 +4962,7 @@ function makeMockApp(): AppBindings {
     },
     async OpenUserConfigPath() {},
     async ReloadUserConfig() {
-      return { configWarnings: [], configPath: "" };
+      return { configWarnings: [], configWarningsRevision: 0, configPath: "" };
     },
     // Dev seam: match the backend's provider-agnostic onboarding predicate.
     async NeedsOnboarding() {
