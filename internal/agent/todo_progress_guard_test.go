@@ -53,7 +53,7 @@ func TestGoalTodoProgressGuardReplansWithoutPausing(t *testing.T) {
 	}}}}
 	// The first unique read renews the lease; maxTodoStallRounds exact repeats
 	// after it reach the Goal redirect threshold.
-	for i := 0; i < maxTodoStallRounds+1; i++ {
+	for i := range maxTodoStallRounds + 1 {
 		turns = append(turns, testutil.Turn{ToolCalls: []provider.ToolCall{{
 			ID: fmt.Sprintf("read-%d", i), Name: "inspect", Arguments: `{"path":"same"}`,
 		}}})

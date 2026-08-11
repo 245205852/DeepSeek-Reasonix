@@ -15,7 +15,7 @@ func TestGoalRunHasNoDefaultModelRoundCeiling(t *testing.T) {
 	reg := tool.NewRegistry()
 	reg.Add(fakeTool{name: "read_file", readOnly: true})
 	turns := make([]testutil.Turn, 0, 102)
-	for i := 0; i < 101; i++ {
+	for i := range 101 {
 		turns = append(turns, testutil.Turn{ToolCalls: []provider.ToolCall{{
 			ID: fmt.Sprintf("r%d", i), Name: "read_file", Arguments: fmt.Sprintf(`{"path":"file-%d"}`, i),
 		}}})

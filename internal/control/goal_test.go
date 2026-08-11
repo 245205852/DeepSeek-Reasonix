@@ -885,7 +885,7 @@ func TestCompleteRemainingGoalTodosEdgeCases(t *testing.T) {
 func TestRepeatedCompleteWithIncompleteTodosKeepsWorking(t *testing.T) {
 	g := &goalMachine{goal: "fix everything", status: GoalStatusRunning, turnsLimit: unlimitedGoalTurns}
 	todos := []evidence.TodoItem{{Content: "Fix the parser", Status: "in_progress"}}
-	for i := 0; i < 101; i++ {
+	for i := range 101 {
 		res := g.advance(goalAdvanceInput{report: &goalTurnReport{status: GoalStatusComplete}, todos: todos})
 		if !res.cont || g.status != GoalStatusRunning || g.stopCause != "" {
 			t.Fatalf("readiness rejection paused at turn %d: result=%+v runtime=%+v", i+1, res, g.runtimeView())

@@ -32,7 +32,7 @@ func TestGoalTurnsAndNoProgressAreObservationalOnly(t *testing.T) {
 	for _, class := range []string{budgetClassSimple, budgetClassWrite, budgetClassResearch} {
 		t.Run(class, func(t *testing.T) {
 			g := &goalMachine{goal: "keep working", status: GoalStatusRunning, budgetClass: class, turnsLimit: unlimitedGoalTurns}
-			for i := 0; i < 101; i++ {
+			for i := range 101 {
 				res := g.advance(goalAdvanceInput{report: &goalTurnReport{status: GoalStatusRunning, reason: "continue"}})
 				if !res.cont || g.status != GoalStatusRunning || g.stopCause != "" {
 					t.Fatalf("Goal paused at turn %d: result=%+v runtime=%+v", i+1, res, g.runtimeView())
@@ -59,7 +59,7 @@ func TestGoalResumeNeverExtendsNumericQuota(t *testing.T) {
 
 func TestWireContinueWithRepeatedEvidenceKeepsRunning(t *testing.T) {
 	g := &goalMachine{goal: "repeat", status: GoalStatusRunning, turnsLimit: unlimitedGoalTurns, scopeID: newGoalScopeID()}
-	for i := 0; i < 100; i++ {
+	for i := range 100 {
 		epoch := g.continuationEpoch
 		rec := g.newTurnRecorder(g.scopeID, epoch)
 		if _, err := rec.RecordGoalReport(tool.GoalReport{Status: "continue", Reason: "same", NextAction: "repeat"}); err != nil {
