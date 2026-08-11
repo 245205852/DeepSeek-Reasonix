@@ -41,9 +41,9 @@ const (
 // causes remain migration-only constants so old sidecars can be normalized.
 const (
 	stopCauseBudgetTurns   = "budget_turns"
-	stopCauseBudgetTokens  = "budget_tokens" // legacy; never written by current runtime
-	stopCauseNoProgress    = "no_progress"   // legacy; never written by current runtime
-	stopCauseGoalRunBudget = "goal_run_budget"
+	stopCauseBudgetTokens  = "budget_tokens"   // legacy; never written by current runtime
+	stopCauseNoProgress    = "no_progress"     // legacy; never written by current runtime
+	stopCauseGoalRunBudget = "goal_run_budget" // legacy; the per-Run round ceiling is gone
 	stopCauseGoalStuck     = "goal_stuck"
 	stopCauseEvaluator     = "evaluator_unavailable"
 	stopCauseLegacyArchive = "legacy_archive"

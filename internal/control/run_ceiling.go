@@ -6,9 +6,11 @@ import (
 	"reasonix/internal/tool"
 )
 
-// bindTurnScope binds the Goal usage recorder whose span stays active until the
-// FSM commits. Goal and ordinary chat install no host-owned round ceiling;
-// explicit max_steps remains owned by the caller that configured the Agent.
+// bindTurnScope binds a Goal turn's usage recorder, whose span stays active
+// until the FSM commits. Neither chat nor Goal gets a round ceiling: rounds
+// carry no information the spend axes lack, and a turn that reaches a high
+// count without crossing them is one whose rounds are cheap and fast. An
+// explicit max_steps still owns either turn.
 func (c *Controller) bindTurnScope(ctx context.Context, continuation *goalContinuationSnapshot) context.Context {
 	goalScopeID, goalScoped := c.goals.goalScopeIDForTurn(continuation)
 	if !goalScoped {

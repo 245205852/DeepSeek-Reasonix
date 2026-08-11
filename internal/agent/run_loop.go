@@ -636,9 +636,7 @@ func (a *Agent) handleToolRound(ctx context.Context, state *runLoopState, step i
 		nudge := fmt.Sprintf("The following tools are unavailable in the current workflow phase: %s. Do not call them again. Respond to the user's request with visible answer text now; call a different tool only if it is still needed to complete the request.", strings.Join(unavailableContextTools, ", "))
 		a.session.Add(provider.Message{Role: provider.RoleUser, Content: a.withTurnPreferences(nudge)})
 	}
-	if err := a.trackTodoProgress(ctx, state, receiptMark); err != nil {
-		return false, err
-	}
+	a.trackTodoProgress(ctx, state, receiptMark)
 
 	// The prompt only grows from here; compact before the next turn so it
 	// stays within the model's window.
