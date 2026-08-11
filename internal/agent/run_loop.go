@@ -113,7 +113,7 @@ func (a *Agent) beginRunTurn(ctx context.Context, input string) (rawInput string
 	// A fresh user turn starts from zeroed per-turn host state; the new turn's
 	// values are computed below. Cross-turn state (checkpoint, scope, failure
 	// budgets) lives directly on Agent and is reconciled field by field.
-	a.perTurnState = perTurnState{turnInput: input}
+	a.perTurnState = perTurnState{}
 	a.resetStructuralRunGuards()
 	scope, scoped := DeliveryExecutionScopeFromContext(ctx)
 	preserveEvidence := a.preserveEvidenceOnce
@@ -178,17 +178,17 @@ func (a *Agent) beginRunTurn(ctx context.Context, input string) (rawInput string
 	// deadlocked read-only subagents. Without the override the raw input is
 	// classified verbatim: stripping user-controllable markup here would let
 	// input dressed up as host framing disarm the delivery gates.
-	classifierInput := a.classifierTaskText
+	a.turnInput = a.classifierTaskText
 	if scoped && strings.TrimSpace(scope.TaskText) != "" {
-		classifierInput = scope.TaskText
-	} else if strings.TrimSpace(classifierInput) == "" {
-		classifierInput = rawInput
+		a.turnInput = scope.TaskText
+	} else if strings.TrimSpace(a.turnInput) == "" {
+		a.turnInput = rawInput
 	}
-	intent := taskintent.Classify(classifierInput)
+	intent := taskintent.Classify(a.turnInput)
 	a.deliveryTaskExpected = intent.NeedsEvidence()
 	a.deliveryMutationExpected = intent == taskintent.Mutation && registryHasWriterTools(a.tools)
-	a.deliveryPersistentExpected = taskintent.NeedsPersistentAction(classifierInput)
-	a.recoveryTaskSummary = boundedRecoveryTaskSummary(classifierInput)
+	a.deliveryPersistentExpected = taskintent.NeedsPersistentAction(a.turnInput)
+	a.recoveryTaskSummary = boundedRecoveryTaskSummary(a.turnInput)
 	// A cancelled/error turn leaves a provider-excluded recovery record at the
 	// transcript tail. Fold its bounded facts into this new user turn exactly
 	// once; the user's raw text remains the classifier source above.
@@ -563,7 +563,7 @@ func (a *Agent) handleFinalResponse(ctx context.Context, state *runLoopState, te
 	if readiness.applies {
 		event.RecordReadinessAudit(a.sink, readiness.audit(evidence.ReadinessAllowed, a.readinessRecovered))
 	}
-	a.emitTurnShadows(state.input)
+	a.emitTurnShadows(a.turnInput)
 	if !a.closeSteerIntakeIfIdle() {
 		return true, nil
 	}
