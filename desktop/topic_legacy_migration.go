@@ -15,13 +15,26 @@ import (
 var legacyMigrationMu sync.Mutex
 
 func migrateLegacySessionsIntoGlobalTopics(dir string) []string {
+	return migrateLegacySessionsIntoGlobalTopicsWithForce(dir, false)
+}
+
+// forceMigrateLegacySessionsIntoGlobalTopics bypasses disposable completion
+// markers for explicit reconciliation. The directory signature normally keeps
+// background passes cheap, but no signature can be an authority boundary: an
+// old CLI, restored backup, or coarse filesystem timestamp must still have a
+// path that deterministically re-evaluates every session.
+func forceMigrateLegacySessionsIntoGlobalTopics(dir string) []string {
+	return migrateLegacySessionsIntoGlobalTopicsWithForce(dir, true)
+}
+
+func migrateLegacySessionsIntoGlobalTopicsWithForce(dir string, force bool) []string {
 	if strings.TrimSpace(dir) == "" {
 		return nil
 	}
-	repairedTopicIDs := repairIndexedSessionTopics(dir)
+	repairedTopicIDs := repairIndexedSessionTopicsWithForce(dir, force)
 	// One-shot per dir: once the migration pass has completed, skip the full
 	// per-render session scan entirely.
-	if topicMigrationDone(dir) {
+	if !force && topicMigrationDone(dir) {
 		return repairedTopicIDs
 	}
 	scope, workspaceRoot, topicTitleRoot, ok := legacyMigrationTargetForDir(dir)
@@ -32,7 +45,7 @@ func migrateLegacySessionsIntoGlobalTopics(dir string) []string {
 	defer legacyMigrationMu.Unlock()
 	// Re-check under the lock: another render may have completed the pass while
 	// this one waited.
-	if topicMigrationDone(dir) {
+	if !force && topicMigrationDone(dir) {
 		return nil
 	}
 	infos, err := agent.ListSessionOrder(dir)
@@ -177,7 +190,11 @@ func pruneDeletedTopicEntries(maps ...map[string]string) []string {
 }
 
 func repairIndexedSessionTopics(dir string) []string {
-	if strings.TrimSpace(dir) == "" || topicIndexRepairDone(dir) {
+	return repairIndexedSessionTopicsWithForce(dir, false)
+}
+
+func repairIndexedSessionTopicsWithForce(dir string, force bool) []string {
+	if strings.TrimSpace(dir) == "" || (!force && topicIndexRepairDone(dir)) {
 		return nil
 	}
 	scope, workspaceRoot, topicTitleRoot, ok := legacyMigrationTargetForDir(dir)
@@ -186,7 +203,7 @@ func repairIndexedSessionTopics(dir string) []string {
 	}
 	legacyMigrationMu.Lock()
 	defer legacyMigrationMu.Unlock()
-	if topicIndexRepairDone(dir) {
+	if !force && topicIndexRepairDone(dir) {
 		return nil
 	}
 	infos, err := agent.ListSessionOrder(dir)

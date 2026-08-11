@@ -3905,10 +3905,16 @@ func (a *App) buildTabControllerWithContextCore(tab *WorkspaceTab, loadedSession
 	// hot-adds omit the token and are never rolled back with a lost build.
 	// Scopes intentionally do not serialize concurrent tab builds.
 	var regScope *plugin.RegistrationScope
+	regScopePublished := false
 	if sharedHost != nil {
 		regScope = sharedHost.BeginRegistrationScope()
 		buildCtx = plugin.ContextWithRegistrationScope(buildCtx, regScope)
 	}
+	defer func() {
+		if !regScopePublished {
+			rollbackSharedHostMCPRegistration(regScope)
+		}
+	}()
 	ctrl, err := a.buildTabControllerBoot(buildCtx, boot.Options{
 		Model:                    model,
 		RequireKey:               false,
@@ -4157,6 +4163,16 @@ func (a *App) buildTabControllerWithContextCore(tab *WorkspaceTab, loadedSession
 		a.abandonSupersededBuild(tab, ctrl, rootKey, acquiredLeaseKey)
 		return
 	}
+	// Commit the scope while the final tab-generation check is still guarded.
+	// RegistrationScope.Commit only takes the plugin Host leaf lock and cannot
+	// call back into App, so this does not invert the runtime/App lock order.
+	if !commitSharedHostMCPRegistration(regScope) {
+		a.mu.Unlock()
+		a.abandonSupersededBuild(tab, ctrl, rootKey, acquiredLeaseKey)
+		a.scheduleDeferredStartupBuild(tab.ID)
+		return
+	}
+	regScopePublished = true
 	tab.Ctrl = ctrl
 	tab.Label = ctrl.Label()
 	applyNormalizedRuntimeToTabLocked(tab, restoredRuntime)

@@ -562,8 +562,8 @@ export function ProjectTree({
   }, [refresh, refreshSignal]);
 
   useEffect(() => onProjectTreeChangedV2((event) => {
-    if (event.revision <= latestRevisionRef.current) return;
-    latestRevisionRef.current = event.revision;
+    if (!projectTreeRevisionIsFresh(latestRevisionRef.current, event.revision)) return;
+    latestRevisionRef.current = Math.max(latestRevisionRef.current, event.revision);
     void app.GetSessionCatalogStatus().then(setCatalogStatus).catch(() => {});
     if (treeRef.current.length === 0) { void refresh(); return; } // race: event before shell
     const affected = asArray(event.roots);

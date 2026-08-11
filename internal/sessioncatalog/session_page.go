@@ -74,29 +74,51 @@ func (c *Catalog) ListSessions(ctx context.Context, req SessionPageRequest) (Ses
 		args = append(args, like, like, like, like)
 	}
 	appendSessionTimeFilter(&where, &args, req.TimeFilter, c.opts.Now())
-	if cursor != nil {
-		where = append(where, `(last_activity_at<? OR (last_activity_at=? AND path>?))`)
-		args = append(args, cursor.Activity, cursor.Activity, cursor.Path)
+	scanCursor := cursor
+	scanLimit := req.Limit + 1
+	if scanLimit < 64 {
+		scanLimit = 64
 	}
-	args = append(args, req.Limit+1)
-	rows, err := c.db.QueryContext(ctx, `SELECT `+sessionSelectColumns+` FROM catalog_sessions WHERE `+
-		strings.Join(where, ` AND `)+` ORDER BY last_activity_at DESC,path ASC LIMIT ?`, args...)
-	if err != nil {
-		return out, err
-	}
-	defer rows.Close()
-	for rows.Next() {
-		record, err := scanSession(rows)
+	for len(out.Items) <= req.Limit {
+		pageWhere := append([]string(nil), where...)
+		pageArgs := append([]any(nil), args...)
+		if scanCursor != nil {
+			pageWhere = append(pageWhere, `(last_activity_at<? OR (last_activity_at=? AND path>?))`)
+			pageArgs = append(pageArgs, scanCursor.Activity, scanCursor.Activity, scanCursor.Path)
+		}
+		pageArgs = append(pageArgs, scanLimit)
+		rows, err := c.db.QueryContext(ctx, `SELECT `+sessionSelectColumns+` FROM catalog_sessions WHERE `+
+			strings.Join(pageWhere, ` AND `)+` ORDER BY last_activity_at DESC,path ASC LIMIT ?`, pageArgs...)
 		if err != nil {
 			return out, err
 		}
-		if c.pathRemoved(record.Path) {
-			continue
+		rawCount := 0
+		var lastScanned SessionRecord
+		for rows.Next() {
+			record, err := scanSession(rows)
+			if err != nil {
+				_ = rows.Close()
+				return out, err
+			}
+			rawCount++
+			lastScanned = record
+			if c.pathRemoved(record.Path) {
+				continue
+			}
+			out.Items = append(out.Items, record)
+			if len(out.Items) > req.Limit {
+				break
+			}
 		}
-		out.Items = append(out.Items, record)
-	}
-	if err := rows.Err(); err != nil {
-		return out, err
+		rowsErr := rows.Err()
+		_ = rows.Close()
+		if rowsErr != nil {
+			return out, rowsErr
+		}
+		if len(out.Items) > req.Limit || rawCount < scanLimit || rawCount == 0 {
+			break
+		}
+		scanCursor = &sessionPageCursor{Activity: lastScanned.LastActivityAt, Path: lastScanned.Path}
 	}
 	if len(out.Items) > req.Limit {
 		out.Items = out.Items[:req.Limit]

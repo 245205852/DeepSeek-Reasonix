@@ -590,6 +590,12 @@ type Client struct {
 	t          transport
 	spec       Spec
 
+	// registrationClaims and registrationCommitted are guarded by Host.mu.
+	// Claims keep a tentative shared instance alive across overlapping builds;
+	// the first published controller promotes it to ordinary Host ownership.
+	registrationClaims    map[uint64]struct{}
+	registrationCommitted bool
+
 	// Capabilities advertised by the server at initialize. prompts/list and
 	// resources/list are only called when advertised, so we never provoke a
 	// "method not found" on a tools-only server.
@@ -975,6 +981,9 @@ func (h *Host) ToolsFor(ctx context.Context, name string) ([]tool.Tool, error) {
 	if c == nil {
 		return nil, fmt.Errorf("client %q not found on shared host", name)
 	}
+	if err := h.claimClientFromContext(ctx, c); err != nil {
+		return nil, err
+	}
 	if tools, ok := c.cachedTools(); ok {
 		return tools, nil
 	}
@@ -998,6 +1007,9 @@ func (h *Host) ToolsForSpec(ctx context.Context, spec Spec) ([]tool.Tool, error)
 	}
 	if !MCPRuntimeSpecMatches(c.spec, spec) {
 		return nil, fmt.Errorf("connected MCP server %q identity does not match the current runtime configuration", spec.Name)
+	}
+	if err := h.claimClientFromContext(ctx, c); err != nil {
+		return nil, err
 	}
 	if tools, ok := c.cachedTools(); ok {
 		return tools, nil
@@ -1312,25 +1324,7 @@ func (h *Host) Remove(name string) (toolPrefix string, found bool) {
 		}
 		return ToolPrefix(name), true
 	}
-	removed := h.clients[idx]
-	h.clients = append(h.clients[:idx], h.clients[idx+1:]...)
-
-	keptP := h.prompts[:0]
-	for _, p := range h.prompts {
-		if p.Server != name {
-			keptP = append(keptP, p)
-		}
-	}
-	h.prompts = keptP
-
-	keptR := h.resources[:0]
-	for _, r := range h.resources {
-		if r.Server != name {
-			keptR = append(keptR, r)
-		}
-	}
-	h.resources = keptR
-	h.clearFailure(name)
+	removed := h.removeClientAtLocked(idx)
 	h.mu.Unlock()
 
 	for _, cancel := range cancels {

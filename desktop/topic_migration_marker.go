@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
@@ -14,11 +15,17 @@ import (
 )
 
 // topicMigrationMarker records a completed legacy→topic migration for the
-// directory's current session signature (name+size hash). New CLI sessions
-// change the signature and force re-migration without mtime ordering.
+// directory's current session signature. New CLI sessions and same-size
+// rewrites change the signature and force re-migration without relying only on
+// coarse directory mtimes.
 // v2 also re-evaluates recovery-named sessions that v1 skipped by filename.
 const topicMigrationMarker = ".topics-migrated-v2"
 const topicIndexRepairMarker = ".topic-indexes-repaired-v2"
+
+const (
+	migrationFingerprintWindow    = int64(2 << 10)
+	migrationFullFingerprintLimit = int64(256 << 10)
+)
 
 func invalidateTopicDirMarkers(dir string) error {
 	dir = strings.TrimSpace(dir)
@@ -74,21 +81,89 @@ func sessionDirMigrationSignature(dir string) (string, error) {
 			continue
 		}
 		name := entry.Name()
-		if !store.IsSessionTranscriptName(name) && !strings.HasSuffix(name, ".jsonl.meta") {
+		if !migrationSignatureArtifact(name) {
 			continue
 		}
-		info, err := entry.Info()
+		record, err := migrationArtifactSignature(filepath.Join(dir, name), name)
 		if err != nil {
 			return "", err
 		}
-		// Name + size form a durable identity. Omit mtime so coarse FS clocks
-		// cannot produce equal signatures for distinct files, and so two
-		// writes within the same timestamp tick still differ by size/name.
-		lines = append(lines, fmt.Sprintf("%s\t%d", name, info.Size()))
+		lines = append(lines, record)
 	}
 	sort.Strings(lines)
 	sum := sha256.Sum256([]byte(strings.Join(lines, "\n")))
 	return hex.EncodeToString(sum[:]), nil
+}
+
+func migrationSignatureArtifact(name string) bool {
+	return store.IsSessionTranscriptName(name) ||
+		strings.HasSuffix(name, ".events.jsonl") ||
+		strings.HasSuffix(name, ".jsonl.meta")
+}
+
+// migrationArtifactSignature deliberately hashes only bounded transcript
+// windows: the migration gate must detect same-size rewrites without turning a
+// 100 GB history directory into a full-content hashing pass. Branch metadata
+// is small and gets a full digest under the defensive size cap. mtime_ns and
+// size cover ordinary appends/rewrites; prefix+tail cover restored/coarse
+// mtimes and the append-oriented event log.
+func migrationArtifactSignature(path, name string) (string, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return "", err
+	}
+	defer f.Close()
+
+	before, err := f.Stat()
+	if err != nil {
+		return "", err
+	}
+	if before.IsDir() {
+		return "", fmt.Errorf("migration signature artifact %q is a directory", path)
+	}
+	digest, err := migrationArtifactContentDigest(f, before.Size(), strings.HasSuffix(name, ".jsonl.meta"))
+	if err != nil {
+		return "", err
+	}
+	after, err := f.Stat()
+	if err != nil {
+		return "", err
+	}
+	if before.Size() != after.Size() || !before.ModTime().Equal(after.ModTime()) {
+		return "", fmt.Errorf("migration signature artifact changed while reading: %q", path)
+	}
+	return fmt.Sprintf("%q\t%d\t%d\t%s", name, before.Size(), before.ModTime().UnixNano(), digest), nil
+}
+
+func migrationArtifactContentDigest(f *os.File, size int64, preferFull bool) (string, error) {
+	h := sha256.New()
+	if size <= migrationFingerprintWindow*2 || (preferFull && size <= migrationFullFingerprintLimit) {
+		if _, err := f.Seek(0, io.SeekStart); err != nil {
+			return "", err
+		}
+		if _, err := io.CopyN(h, f, size); err != nil {
+			return "", err
+		}
+		return hex.EncodeToString(h.Sum(nil)), nil
+	}
+	for _, sample := range []struct {
+		offset int64
+		length int64
+	}{
+		{offset: 0, length: migrationFingerprintWindow},
+		{offset: size - migrationFingerprintWindow, length: migrationFingerprintWindow},
+	} {
+		if _, err := fmt.Fprintf(h, "@%d:%d\n", sample.offset, sample.length); err != nil {
+			return "", err
+		}
+		if _, err := f.Seek(sample.offset, io.SeekStart); err != nil {
+			return "", err
+		}
+		if _, err := io.CopyN(h, f, sample.length); err != nil {
+			return "", err
+		}
+	}
+	return hex.EncodeToString(h.Sum(nil)), nil
 }
 
 func topicMigrationDone(dir string) bool {

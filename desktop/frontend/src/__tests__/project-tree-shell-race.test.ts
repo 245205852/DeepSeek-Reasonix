@@ -13,5 +13,15 @@ assert.match(topic, /treeEmpty/, "empty-tree shells bypass catalog revision wate
 assert.match(panel, /projectTreeShouldApplyShellSnapshot/, "ProjectTree uses shell race helper");
 assert.match(panel, /treeRef\.current\.length === 0/, "v2 event re-fetches shell when tree is empty");
 assert.match(panel, /void refresh\(\)/, "empty-tree event path calls refresh");
+assert.match(
+  panel,
+  /onProjectTreeChangedV2[\s\S]*projectTreeRevisionIsFresh\(latestRevisionRef\.current, event\.revision\)/,
+  "equal-revision overlay events use the shared freshness contract",
+);
+assert.doesNotMatch(
+  panel,
+  /event\.revision\s*<=\s*latestRevisionRef\.current/,
+  "equal-revision tombstone overlays are not discarded",
+);
 
 console.log("  PASS  project tree shell race contract");

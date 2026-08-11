@@ -152,6 +152,76 @@ func TestRegistrationScopeRejectsLateRegistrationAfterAbort(t *testing.T) {
 	}
 }
 
+func TestRegistrationScopeCommitPreservesClientReusedByNewerBuild(t *testing.T) {
+	host := NewHost()
+	older := host.BeginRegistrationScope()
+	olderCtx := ContextWithRegistrationScope(context.Background(), older)
+	client := &Client{name: "shared", toolsListed: true}
+	if err := host.ReplaceServerBackend(olderCtx, "shared", client, 1); err != nil {
+		t.Fatal(err)
+	}
+
+	newer := host.BeginRegistrationScope()
+	newerCtx := ContextWithRegistrationScope(context.Background(), newer)
+	if _, err := host.ToolsFor(newerCtx, "shared"); err != nil {
+		t.Fatalf("newer build failed to reuse shared client: %v", err)
+	}
+	if !newer.Commit() {
+		t.Fatal("newer build could not commit its shared-client claim")
+	}
+
+	older.AbortAndRollback()
+	if got := host.lookupClient("shared"); got != client {
+		t.Fatalf("older rollback removed client committed by newer build: got=%p want=%p", got, client)
+	}
+}
+
+func TestRegistrationScopeActiveClaimDefersCreatorRollback(t *testing.T) {
+	host := NewHost()
+	creator := host.BeginRegistrationScope()
+	creatorCtx := ContextWithRegistrationScope(context.Background(), creator)
+	client := &Client{name: "shared", toolsListed: true}
+	if err := host.ReplaceServerBackend(creatorCtx, "shared", client, 1); err != nil {
+		t.Fatal(err)
+	}
+
+	consumer := host.BeginRegistrationScope()
+	consumerCtx := ContextWithRegistrationScope(context.Background(), consumer)
+	if _, err := host.ToolsFor(consumerCtx, "shared"); err != nil {
+		t.Fatal(err)
+	}
+	creator.AbortAndRollback()
+	if !host.HasClient("shared") {
+		t.Fatal("creator rollback removed a client claimed by an active consumer")
+	}
+
+	consumer.AbortAndRollback()
+	if host.HasClient("shared") {
+		t.Fatal("client survived after every uncommitted scope aborted")
+	}
+	if got := host.lookupClient("shared"); got != nil {
+		t.Fatalf("proxy still exposed rolled-back client: %+v", got)
+	}
+}
+
+func TestCommittedScopeAcceptsLateLazyRegistration(t *testing.T) {
+	host := NewHost()
+	scope := host.BeginRegistrationScope()
+	ctx := ContextWithRegistrationScope(context.Background(), scope)
+	if !scope.Commit() {
+		t.Fatal("commit failed")
+	}
+
+	late := &Client{name: "late"}
+	if err := host.ReplaceServerBackend(ctx, "late", late, 1); err != nil {
+		t.Fatalf("published scope rejected a late lazy registration: %v", err)
+	}
+	scope.AbortAndRollback()
+	if got := host.lookupClient("late"); got != late {
+		t.Fatal("committed scope rollback removed its late lazy registration")
+	}
+}
+
 func TestRegistrationScopesDoNotSerializeUnrelatedBuilds(t *testing.T) {
 	host := NewHost()
 	started := make(chan struct{})

@@ -29,10 +29,12 @@ func (c *Catalog) RemoveSession(ctx context.Context, path, reason string) error 
 	c.writeMu.Unlock()
 	c.pathQueued.Delete(path)
 	c.repairQueued.Delete(path)
-	// Wake project-tree listeners without waiting for SQLite. Revision value is
-	// unchanged until the durable path commits (or the async retry does).
+	// Wake project-tree listeners without waiting for SQLite. The equal revision
+	// deliberately identifies an in-memory overlay change; empty roots tell the
+	// frontend to refresh every expanded folder because resolving workspace_root
+	// from SQLite would put the interactive path back behind the busy DB.
 	if c.opts.OnRevision != nil {
-		c.opts.OnRevision(c.revision.Load(), []string{filepath.Dir(path)}, reason)
+		c.opts.OnRevision(c.revision.Load(), []string{}, reason)
 	}
 
 	if err := c.tryApplySessionRemoval(ctx, path, reason); err != nil {

@@ -394,9 +394,10 @@ func (a *App) requestSessionCatalogReconcile(dir string) {
 		}
 	}
 	go func() {
-		// Explicit reconcile always re-evaluates migration against the current
-		// directory signature. Do not trust a stale mtime-based marker.
-		if migrated := migrateLegacySessionsIntoGlobalTopics(target.Path); len(migrated) > 0 {
+		// Explicit reconcile bypasses disposable migration markers. Signatures
+		// keep periodic passes cheap, but an old CLI or restored backup must
+		// never be permanently hidden by a timestamp/content collision.
+		if migrated := forceMigrateLegacySessionsIntoGlobalTopics(target.Path); len(migrated) > 0 {
 			ctx, cancel := context.WithTimeout(a.bootContext(), 5*time.Second)
 			_ = a.syncSessionCatalogMetadata(ctx, catalog)
 			cancel()

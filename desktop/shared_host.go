@@ -39,6 +39,14 @@ func rollbackSharedHostMCPRegistration(scope *plugin.RegistrationScope) {
 	scope.AbortAndRollback()
 }
 
+// commitSharedHostMCPRegistration promotes every client created or reused by
+// the build to ordinary Host ownership. It is called only at the controller
+// compare-and-publish boundary; committed scopes also accept late lazy MCP
+// connections without making them rollback candidates.
+func commitSharedHostMCPRegistration(scope *plugin.RegistrationScope) bool {
+	return scope == nil || scope.Commit()
+}
+
 func (a *App) saveDesktopMCPServerAndBump(root string, entry config.PluginEntry) error {
 	if err := a.saveDesktopMCPServer(root, entry); err != nil {
 		return err

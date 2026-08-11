@@ -468,48 +468,69 @@ func (c *Catalog) ListTopics(ctx context.Context, req TopicPageRequest) (TopicPa
 		where += ` AND last_activity_at>=?`
 		args = append(args, cutoff)
 	}
-	if cursor != nil {
-		where += ` AND (pinned<? OR (pinned=? AND last_activity_at<?) OR (pinned=? AND last_activity_at=? AND topic_id>?))`
-		args = append(args, cursor.Pinned, cursor.Pinned, cursor.Activity, cursor.Pinned, cursor.Activity, cursor.TopicID)
+	scanCursor := cursor
+	scanLimit := req.Limit + 1
+	if scanLimit < 64 {
+		scanLimit = 64
 	}
-	args = append(args, req.Limit+1)
-	rows, err := c.db.QueryContext(ctx, `SELECT scope,workspace_root,topic_id,title,pinned,sort_order,
-        turns,turns_state,created_at,last_activity_at,recovery_state,health
-        FROM catalog_topics WHERE `+where+`
-        ORDER BY pinned DESC,last_activity_at DESC,topic_id ASC LIMIT ?`, args...)
-	if err != nil {
-		return out, err
-	}
-	defer rows.Close()
-	for rows.Next() {
-		var item TopicRecord
-		if err := rows.Scan(&item.Scope, &item.WorkspaceRoot, &item.TopicID, &item.Title,
-			&item.Pinned, &item.SortOrder, &item.Turns, &item.TurnsState,
-			&item.CreatedAt, &item.LastActivityAt, &item.RecoveryState, &item.Health); err != nil {
+	for len(out.Items) <= req.Limit {
+		pageWhere := where
+		pageArgs := append([]any(nil), args...)
+		if scanCursor != nil {
+			pageWhere += ` AND (pinned<? OR (pinned=? AND last_activity_at<?) OR (pinned=? AND last_activity_at=? AND topic_id>?))`
+			pageArgs = append(pageArgs, scanCursor.Pinned, scanCursor.Pinned, scanCursor.Activity,
+				scanCursor.Pinned, scanCursor.Activity, scanCursor.TopicID)
+		}
+		pageArgs = append(pageArgs, scanLimit)
+		rows, err := c.db.QueryContext(ctx, `SELECT scope,workspace_root,topic_id,title,pinned,sort_order,
+            turns,turns_state,created_at,last_activity_at,recovery_state,health
+            FROM catalog_topics WHERE `+pageWhere+`
+            ORDER BY pinned DESC,last_activity_at DESC,topic_id ASC LIMIT ?`, pageArgs...)
+		if err != nil {
 			return out, err
 		}
-		item.Sessions = []SessionRecord{}
-		out.Items = append(out.Items, item)
-	}
-	if err := rows.Err(); err != nil {
-		return out, err
-	}
-	// Apply tombstone overlay before pagination trim so a removed session cannot
-	// keep its topic visible after authoritative archive while SQL lags.
-	visible := out.Items[:0]
-	for _, item := range out.Items {
-		sessions, err := c.listTopicSessions(ctx, TopicKey{Scope: item.Scope, WorkspaceRoot: item.WorkspaceRoot, TopicID: item.TopicID})
-		if err != nil {
-			return TopicPage{Items: []TopicRecord{}, Revision: out.Revision}, err
+		rawCount := 0
+		var lastScanned TopicRecord
+		for rows.Next() {
+			var item TopicRecord
+			if err := rows.Scan(&item.Scope, &item.WorkspaceRoot, &item.TopicID, &item.Title,
+				&item.Pinned, &item.SortOrder, &item.Turns, &item.TurnsState,
+				&item.CreatedAt, &item.LastActivityAt, &item.RecoveryState, &item.Health); err != nil {
+				_ = rows.Close()
+				return out, err
+			}
+			rawCount++
+			lastScanned = item
+			sessions, err := c.listTopicSessions(ctx, TopicKey{
+				Scope: item.Scope, WorkspaceRoot: item.WorkspaceRoot, TopicID: item.TopicID,
+			})
+			if err != nil {
+				_ = rows.Close()
+				return TopicPage{Items: []TopicRecord{}, Revision: out.Revision}, err
+			}
+			if len(sessions) == 0 {
+				continue
+			}
+			item.Sessions = sessions
+			out.Items = append(out.Items, item)
+			if len(out.Items) > req.Limit {
+				break
+			}
 		}
-		if len(sessions) == 0 {
-			// All sessions tombstoned or topic empty — hide from project tree.
-			continue
+		rowsErr := rows.Err()
+		_ = rows.Close()
+		if rowsErr != nil {
+			return out, rowsErr
 		}
-		item.Sessions = sessions
-		visible = append(visible, item)
+		if len(out.Items) > req.Limit || rawCount < scanLimit || rawCount == 0 {
+			break
+		}
+		pinned := 0
+		if lastScanned.Pinned {
+			pinned = 1
+		}
+		scanCursor = &pageCursor{Pinned: pinned, Activity: lastScanned.LastActivityAt, TopicID: lastScanned.TopicID}
 	}
-	out.Items = visible
 	more := len(out.Items) > req.Limit
 	if more {
 		out.Items = out.Items[:req.Limit]
@@ -526,35 +547,50 @@ func (c *Catalog) ListTopics(ctx context.Context, req TopicPageRequest) (TopicPa
 }
 
 func (c *Catalog) listTopicSessions(ctx context.Context, key TopicKey) ([]SessionRecord, error) {
-	// Bound per-topic payload size so a recovery-heavy topic cannot emit an
-	// unbounded Wails payload on a single page fetch.
-	rows, err := c.db.QueryContext(ctx, `SELECT path,directory,scope,workspace_root,topic_id,topic_title,
-        custom_title,created_at,last_activity_at,preview,turns,turns_state,recovered,
-        recovery_reason,recovery_digest,parent_id,content_fingerprint,meta_fingerprint,
-        health,missing_since FROM catalog_sessions
-        WHERE scope=? AND workspace_root=? AND topic_id=?
-        ORDER BY last_activity_at DESC,path ASC LIMIT ?`, key.Scope, key.WorkspaceRoot, key.TopicID, MaxLimit)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
 	out := []SessionRecord{}
-	for rows.Next() {
-		var record SessionRecord
-		if err := rows.Scan(&record.Path, &record.Directory, &record.Scope, &record.WorkspaceRoot,
-			&record.TopicID, &record.TopicTitle, &record.CustomTitle, &record.CreatedAt,
-			&record.LastActivityAt, &record.Preview, &record.Turns, &record.TurnsState,
-			&record.Recovered, &record.RecoveryReason, &record.RecoveryDigest,
-			&record.ParentID, &record.ContentFingerprint, &record.MetaFingerprint,
-			&record.Health, &record.MissingSince); err != nil {
+	var cursor *sessionPageCursor
+	for len(out) < MaxLimit {
+		where := `scope=? AND workspace_root=? AND topic_id=?`
+		args := []any{key.Scope, key.WorkspaceRoot, key.TopicID}
+		if cursor != nil {
+			where += ` AND (last_activity_at<? OR (last_activity_at=? AND path>?))`
+			args = append(args, cursor.Activity, cursor.Activity, cursor.Path)
+		}
+		args = append(args, MaxLimit)
+		rows, err := c.db.QueryContext(ctx, `SELECT `+sessionSelectColumns+` FROM catalog_sessions
+            WHERE `+where+` ORDER BY last_activity_at DESC,path ASC LIMIT ?`, args...)
+		if err != nil {
 			return nil, err
 		}
-		if c.pathRemoved(record.Path) {
-			continue
+		rawCount := 0
+		var lastScanned SessionRecord
+		for rows.Next() {
+			record, err := scanSession(rows)
+			if err != nil {
+				_ = rows.Close()
+				return nil, err
+			}
+			rawCount++
+			lastScanned = record
+			if c.pathRemoved(record.Path) {
+				continue
+			}
+			out = append(out, record)
+			if len(out) == MaxLimit {
+				break
+			}
 		}
-		out = append(out, record)
+		rowsErr := rows.Err()
+		_ = rows.Close()
+		if rowsErr != nil {
+			return nil, rowsErr
+		}
+		if len(out) == MaxLimit || rawCount < MaxLimit || rawCount == 0 {
+			break
+		}
+		cursor = &sessionPageCursor{Activity: lastScanned.LastActivityAt, Path: lastScanned.Path}
 	}
-	return out, rows.Err()
+	return out, nil
 }
 
 func (c *Catalog) GetTopic(ctx context.Context, key TopicKey) (TopicRecord, bool, error) {
