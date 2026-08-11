@@ -1,7 +1,6 @@
 package main
 
 import (
-	"context"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -9,12 +8,10 @@ import (
 	"strings"
 	"time"
 
-	"reasonix/internal/agent"
 	"reasonix/internal/config"
 	"reasonix/internal/history"
 	"reasonix/internal/historycatalog"
 	"reasonix/internal/provider"
-	"reasonix/internal/retrieval"
 	"reasonix/internal/sessioncatalog"
 )
 
@@ -186,7 +183,8 @@ func (a *App) ListHistorySessions(req HistorySessionPageRequest) HistorySessionP
 		}
 		for i, record := range page.Items {
 			overlay := overlays[sessionRuntimeKey(record.Path)]
-			if statusFilter == "open" && !overlay.open {
+			// Match frontend HistoryPanel: "open" means open-but-not-current.
+			if statusFilter == "open" && (!overlay.open || record.Path == active) {
 				continue
 			}
 			if statusFilter == "current" && record.Path != active {
@@ -293,98 +291,18 @@ func (a *App) SearchHistoryContent(req HistorySearchRequest) HistorySearchPage {
 	if len(kinds) == 0 {
 		kinds = []string{"user_text", "assistant_text", "tool_input", "tool_error"}
 	}
-	rootFilter := []string{}
-	for _, root := range historyCatalogRoots(a.sessionCatalogTargets()) {
-		if req.Scope == "project" && (root.Scope != "project" || !sameProjectRoot(root.WorkspaceRoot, req.WorkspaceRoot)) {
-			continue
-		}
-		if req.Scope == "global" && root.Scope == "project" {
-			continue
-		}
-		rootFilter = append(rootFilter, root.Path)
-	}
 	var after *historycatalog.SearchCursor
 	if cursor != nil {
 		after = &historycatalog.SearchCursor{Rank: cursor.Rank, SessionPath: cursor.Path, MessageIndex: cursor.Message,
 			PartIndex: cursor.Part, RowID: cursor.RowID}
 	}
-	// Keep pulling FTS candidates until the filtered page is full. Status/time
-	// filters are applied after ranking, so a single 200-row window can miss
-	// valid later hits (for example open/current on a lower BM25 rank).
-	const batchLimit = 200
-	need := limit + 1
-	_, overlays := a.catalogRuntimeOverlays()
-	active := a.activeSessionPath(a.activeSessionDir())
-	queryTerms, _ := retrieval.QueryTerms(req.Query)
-	loaded := map[string][]provider.Message{}
-	items := []HistorySearchHit{}
-	var cursorCandidate historycatalog.Candidate
-	for len(items) < need {
-		result, searchErr := catalog.Search(a.bootContext(), historycatalog.SearchRequest{Query: req.Query, Scope: req.Scope,
-			WorkspaceRoot: req.WorkspaceRoot, Kinds: kinds, ToolName: req.ToolName, Limit: batchLimit, Roots: rootFilter, After: after})
-		if searchErr != nil {
-			out.Status.LastError = searchErr.Error()
-			return out
-		}
-		if len(result.Items) == 0 {
-			break
-		}
-		for _, candidate := range result.Items {
-			overlay := overlays[sessionRuntimeKey(candidate.SessionPath)]
-			if req.Status == "open" && !overlay.open || req.Status == "current" && candidate.SessionPath != active {
-				continue
-			}
-			if !historyTimeMatches(candidate.LastActivityAt, req.TimeFilter) {
-				continue
-			}
-			messages, ok := loaded[candidate.SessionPath]
-			if !ok {
-				if identity, known, identityErr := agent.SessionContentIdentity(candidate.SessionPath); identityErr == nil && known &&
-					candidate.ContentDigest != "" && identity.DigestHex != candidate.ContentDigest {
-					catalog.EnqueueExisting(context.Background(), candidate.SessionPath)
-					continue
-				}
-				session, loadErr := agent.LoadSession(candidate.SessionPath)
-				if loadErr != nil {
-					continue
-				}
-				messages = session.Snapshot()
-				loaded[candidate.SessionPath] = messages
-			}
-			text, ok := desktopHistoryText(messages, candidate)
-			if !ok {
-				catalog.EnqueueExisting(context.Background(), candidate.SessionPath)
-				continue
-			}
-			items = append(items, HistorySearchHit{SessionPath: candidate.SessionPath,
-				SessionID: strings.TrimSuffix(filepath.Base(candidate.SessionPath), filepath.Ext(candidate.SessionPath)), Source: candidate.Source,
-				MessageIndex: candidate.MessageIndex, Role: candidate.Role, Kind: candidate.Kind, ToolName: candidate.ToolName,
-				Snippet: retrieval.MakeSnippet(text, req.Query, queryTerms, 240), Score: candidate.Score,
-				SessionTitle: candidate.SessionTitle, TopicTitle: candidate.TopicTitle, WorkspaceRoot: candidate.WorkspaceRoot,
-				LastActivityAt: candidate.LastActivityAt, Open: overlay.open, Running: overlay.running, Current: candidate.SessionPath == active})
-			if len(items) == limit {
-				cursorCandidate = candidate
-			}
-			if len(items) == need {
-				break
-			}
-		}
-		if len(items) == need {
-			break
-		}
-		last := result.Items[len(result.Items)-1]
-		after = &historycatalog.SearchCursor{Rank: last.Rank, SessionPath: last.SessionPath, MessageIndex: last.MessageIndex,
-			PartIndex: last.PartIndex, RowID: last.RowID}
-		if len(result.Items) < batchLimit {
-			break
-		}
+	// Keep pulling FTS candidates until the filtered page is full.
+	items, nextCursor, lastErr := a.collectHistorySearchItems(req, catalog, kinds, historySearchRootFilter(a, req), after, limit, status.Revision)
+	if lastErr != "" {
+		out.Status.LastError = lastErr
+		return out
 	}
-	if len(items) > limit {
-		items = items[:limit]
-		out.NextCursor = encodeHistoryCursor(historySearchCursor{Revision: status.Revision, Rank: cursorCandidate.Rank, Score: cursorCandidate.Score,
-			Path: cursorCandidate.SessionPath, Message: cursorCandidate.MessageIndex, Part: cursorCandidate.PartIndex, RowID: cursorCandidate.RowID})
-	}
-	out.Items = items
+	out.Items, out.NextCursor = items, nextCursor
 	return out
 }
 

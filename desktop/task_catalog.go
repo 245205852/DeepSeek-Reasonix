@@ -240,15 +240,12 @@ func (a *App) taskActionProject(key string) (taskcatalog.Project, error) {
 	if !ok {
 		return taskcatalog.Project{}, fmt.Errorf("unknown project key")
 	}
-	// Prefer catalog label when available, but never require catalog readiness
-	// for Stop/Cancel/Requeue/Open — FileStore remains authoritative.
+	// Catalog may supply a display label only. Never override the allowlisted
+	// root — a stale or damaged SQLite projection must not redirect FileStore.
 	if catalog := taskcatalog.Shared(); catalog != nil {
 		if row, found, err := catalog.Project(a.bootContext(), project.Key); err == nil && found {
 			if strings.TrimSpace(row.Label) != "" {
 				project.Label = row.Label
-			}
-			if strings.TrimSpace(row.Root) != "" {
-				project.Root = row.Root
 			}
 		}
 	}

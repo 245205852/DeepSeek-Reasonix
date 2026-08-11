@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"strings"
 
+	"reasonix/internal/config"
 	"reasonix/internal/plugin"
 )
 
@@ -25,6 +26,40 @@ func (a *App) currentExtensionGeneration() uint64 {
 		return 0
 	}
 	return a.extensionGeneration.Load()
+}
+
+// purgeUnwantedSharedHostServers removes Host clients that are no longer
+// enabled. Used when an off-lock controller build mutates the shared Host and
+// is later abandoned due to a configuration generation bump: controller cleanup
+// is a no-op for SharedHost, so deleted MCP servers would otherwise stick.
+func (a *App) purgeUnwantedSharedHostServers(root string, host *plugin.Host) {
+	if a == nil || host == nil {
+		return
+	}
+	cfg, err := config.LoadForRoot(root)
+	if err != nil || cfg == nil {
+		return
+	}
+	wanted := map[string]bool{}
+	for _, entry := range cfg.EnabledPlugins(root, config.DefaultMCPActivationStore()) {
+		if name := strings.TrimSpace(entry.Name); name != "" {
+			wanted[name] = true
+		}
+	}
+	for _, name := range host.ServerNames() {
+		if wanted[name] {
+			continue
+		}
+		host.Remove(name)
+	}
+}
+
+func (a *App) saveDesktopMCPServerAndBump(root string, entry config.PluginEntry) error {
+	if err := a.saveDesktopMCPServer(root, entry); err != nil {
+		return err
+	}
+	a.bumpExtensionGeneration()
+	return nil
 }
 
 // sharedPluginHost is a reference-counted plugin.Host shared across tabs

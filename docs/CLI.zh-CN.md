@@ -465,4 +465,3 @@ reasonix catalogs reindex usage [--json]
 
 直接运行 `/memory` 会显示全部 project/global active facts，不会隐藏跨 scope 的同名条目。
 每条事实包含稳定 ID、revision、scope、type、freshness 和 description。斜杠补全会提供
-

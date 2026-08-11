@@ -51,10 +51,8 @@ import { ExtensionFormDialog } from "./components/ExtensionFormDialog";
 import { ClearContextCard } from "./components/ClearContextCard";
 import { RuntimeDecisionCard } from "./components/RuntimeDecisionCard";
 import { decisionSurfaceMockFromInput, type DecisionSurfaceKind as MockDecisionSurfaceKind } from "./lib/decisionSurfaceMock";
-
 const UndoRewindBanner = lazy(() => import("./components/UndoRewindBanner").then((module) => ({ default: module.UndoRewindBanner })));
 const WebView2ApprovalSmoke = lazy(() => import("./lib/useWebView2ApprovalSmoke").then((module) => ({ default: module.WebView2ApprovalSmoke })));
-
 /** Footer decision surface kinds. Runtime blockers are explicit recovery choices. */
 type DecisionSurfaceKind = MockDecisionSurfaceKind | "extension_form";
 import { StatusBar } from "./components/StatusBar";
@@ -4925,18 +4923,7 @@ export default function App() {
                 onLoadOlderHistory={() => activeTabId && loadOlderHistory(activeTabId)}
                 invocationMetadata={activeTabId ? invocationMetadataByTab[activeTabId] : undefined}
               />
-              {state.hydrateError && (
-                <div className="history-load-error" role="alert">
-                  <span>{state.hydrateError}</span>
-                  <button
-                    type="button"
-                    className="btn btn--small"
-                    onClick={() => { void retrySessionHistory(activeTabId); }}
-                  >
-                    {t("common.retry")}
-                  </button>
-                </div>
-              )}
+              {state.hydrateError ? <div className="history-load-error" role="alert"><span>{state.hydrateError}</span><button type="button" className="btn btn--small" onClick={() => void retrySessionHistory(activeTabId)}>{t("common.retry")}</button></div> : null}
             )}
           </main>
 

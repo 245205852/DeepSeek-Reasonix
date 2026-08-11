@@ -100,8 +100,12 @@ func TestReadyRejectsSameSizeRewriteWithDifferentMtime(t *testing.T) {
 	if len(replacement) != len(original) {
 		t.Fatalf("test fixture length mismatch: %d vs %d", len(replacement), len(original))
 	}
-	time.Sleep(5 * time.Millisecond)
 	if err := os.WriteFile(path, replacement, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// Force a distinct mtime on filesystems with coarse timestamps.
+	later := time.Now().Add(2 * time.Second)
+	if err := os.Chtimes(path, later, later); err != nil {
 		t.Fatal(err)
 	}
 	if catalog.Ready(ctx, dir, []string{"2026-08-10"}) {

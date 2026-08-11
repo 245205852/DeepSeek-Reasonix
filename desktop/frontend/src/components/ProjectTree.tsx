@@ -22,7 +22,6 @@ import type { ShortcutPlatform } from "../lib/keyboardShortcuts";
 import { ContextMenu, contextMenuPointFromEvent, type ContextMenuItem, type ContextMenuPoint } from "./ContextMenu";
 import { Tooltip } from "./Tooltip";
 import { WorktreeBadge } from "./WorktreeBadge";
-
 interface ProjectTreeProps {
   activeScope?: string;
   activeWorkspaceRoot?: string;
@@ -524,27 +523,15 @@ export function ProjectTree({
       updateTopicPageState(key, { ...topicPageStateRef.current[key], loading: false });
     }
   }, [query, timeFilter, updateTopicPageState]);
-
   // Snapshot is intentionally shells-only. Preserve already loaded pages by
   // project key so a metadata refresh does not collapse or blank the sidebar.
   const refresh = useCallback(async () => {
     try {
       const snapshot = await app.GetProjectTreeSnapshot();
-      const incomingRevision = snapshot.revision ?? 0;
-      const treeEmpty = treeRef.current.length === 0;
-      if (!projectTreeShouldApplyShellSnapshot({
-        currentRevision: latestRevisionRef.current,
-        incomingRevision,
-        treeEmpty,
-      })) {
-        return;
-      }
+      const rev = snapshot.revision ?? 0, empty = treeRef.current.length === 0;
+      if (!projectTreeShouldApplyShellSnapshot({ currentRevision: latestRevisionRef.current, incomingRevision: rev, treeEmpty: empty })) return;
+      if (projectTreeRevisionIsFresh(latestRevisionRef.current, rev)) latestRevisionRef.current = Math.max(latestRevisionRef.current, rev);
       const projects = asArray(snapshot.projects);
-      // Never let a late revision-0 shell lower the catalog watermark; still
-      // paint the shell when the tree is empty after a faster v2 event.
-      if (projectTreeRevisionIsFresh(latestRevisionRef.current, incomingRevision)) {
-        latestRevisionRef.current = Math.max(latestRevisionRef.current, incomingRevision);
-      }
       setCatalogStatus(snapshot.catalog);
       setTree((current) => projects.map((project) => {
         const previous = current.find((node) => node.key === project.key);
@@ -578,12 +565,7 @@ export function ProjectTree({
     if (event.revision <= latestRevisionRef.current) return;
     latestRevisionRef.current = event.revision;
     void app.GetSessionCatalogStatus().then(setCatalogStatus).catch(() => {});
-    // Catalog revision can advance before the initial shell snapshot lands.
-    // Re-fetch the projects.json shell so the sidebar never stays permanently empty.
-    if (treeRef.current.length === 0) {
-      void refresh();
-      return;
-    }
+    if (treeRef.current.length === 0) { void refresh(); return; } // race: event before shell
     const affected = asArray(event.roots);
     for (const project of treeRef.current) {
       const key = projectNodeKey(project, 0);

@@ -8913,7 +8913,6 @@ func (a *App) InstallMCPServer(in MCPServerInput) (plugin.MCPInstallResult, erro
 		recordMCPFailure(ctrl, entry, connectErr)
 		return result, nil
 	}
-
 	var publishErrs []error
 	for _, target := range controllers {
 		if target.ctrl == ctrl || !target.enabled {
@@ -8927,7 +8926,6 @@ func (a *App) InstallMCPServer(in MCPServerInput) (plugin.MCPInstallResult, erro
 		disconnectMCPServerControllers(entry.Name, ctrl, controllers)
 		return plugin.MCPInstallResult{}, fmt.Errorf("publish MCP tools: %w", err)
 	}
-
 	if err := a.saveDesktopMCPServer(root, entry); err != nil {
 		disconnectMCPServerControllers(entry.Name, ctrl, controllers)
 		return plugin.MCPInstallResult{}, err
@@ -8944,7 +8942,6 @@ func (a *App) InstallMCPServer(in MCPServerInput) (plugin.MCPInstallResult, erro
 	a.bumpExtensionGeneration()
 	return plugin.ReadyInstallResult(entry.Name, toolCount), nil
 }
-
 func persistMCPInstallActivation(entry config.PluginEntry, root string) error {
 	store := config.DefaultMCPActivationStore()
 	if !entry.ShouldAutoStart() {
@@ -8952,7 +8949,6 @@ func persistMCPInstallActivation(entry config.PluginEntry, root string) error {
 	}
 	return store.SetServerEnabled(entry, root, true)
 }
-
 // AddMCPServer is retained for old generated Wails clients. New clients use
 // InstallMCPServer so authentication and retry states remain structured.
 func (a *App) AddMCPServer(in MCPServerInput) (int, error) {
@@ -8965,7 +8961,6 @@ func (a *App) AddMCPServer(in MCPServerInput) (int, error) {
 	}
 	return result.ToolCount, nil
 }
-
 // UpdateMCPServer edits a persisted external MCP server. The name is the stable
 // identity; callers must remove + add if they want to rename a server.
 func (a *App) UpdateMCPServer(name string, in MCPServerInput) error {
@@ -9025,11 +9020,7 @@ func (a *App) UpdateMCPServer(name string, in MCPServerInput) error {
 		enabled = enabled || target.enabled
 	}
 	if !enabled {
-		if err := a.saveDesktopMCPServer(root, updated); err != nil {
-			return err
-		}
-		a.bumpExtensionGeneration()
-		return nil
+		return a.saveDesktopMCPServerAndBump(root, updated)
 	}
 	spec, specErr := a.mcpLaunchSpecForEntry(root, updated)
 	if specErr != nil {
@@ -9157,7 +9148,6 @@ func (a *App) ReconnectMCPServer(name string) error {
 	a.mu.Lock()
 	delete(tab.disabledMCP, name)
 	a.mu.Unlock()
-	// Host tools changed even when config bytes did not; invalidate in-flight builds.
 	a.bumpExtensionGeneration()
 	return nil
 }

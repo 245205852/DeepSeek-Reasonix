@@ -3948,14 +3948,14 @@ func (a *App) buildTabControllerWithContextCore(tab *WorkspaceTab, loadedSession
 		return
 	}
 	if a.currentExtensionGeneration() != extensionGen {
-		// Plugin/MCP configuration changed during the off-lock build. Drop this
-		// controller and rebuild from the latest configuration so deleted tools
-		// cannot be re-published onto the shared host.
+		// Plugin/MCP configuration changed during the off-lock build. SharedHost
+		// cleanup is a no-op, so drop any Host clients the stale build may have
+		// re-registered after a concurrent Remove/Update before abandoning.
+		a.purgeUnwantedSharedHostServers(root, sharedHost)
 		a.abandonSupersededBuild(tab, ctrl, rootKey, "")
 		a.scheduleDeferredStartupBuild(tab.ID)
 		return
 	}
-
 	a.bindControllerDisplayRecorder(ctrl)
 	configureControllerRuntime(ctrl, nil, buildRuntime)
 

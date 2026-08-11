@@ -461,7 +461,14 @@ export function HistoryPanel({
         onContextMenu={openTrashBlankMenu}
       >
         <div className="history-toolbar" aria-label={tr("history.filters")}>
-          {sessions.length > 0 && (
+          {/* Keep search available for body-only hits (metadata sessions may be empty). */}
+          {!isTrash && (
+            <label className="mem-search history-search">
+              <Search size={13} />
+              <input value={query} onChange={(e) => setQuery(e.target.value)} placeholder={tr("history.searchPlaceholder")} />
+            </label>
+          )}
+          {isTrash && sessions.length > 0 && (
             <label className="mem-search history-search">
               <Search size={13} />
               <input value={query} onChange={(e) => setQuery(e.target.value)} placeholder={tr("history.searchPlaceholder")} />

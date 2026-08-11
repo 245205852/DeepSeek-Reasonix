@@ -144,15 +144,10 @@ type HistorySlice struct {
 	// invalidated after another process advances or rewrites the session.
 	RevisionKnown bool   `json:"revisionKnown,omitempty"`
 	Digest        string `json:"digest,omitempty"`
-	// Source names the read path that produced the page, for diagnostics:
-	// "index" (cold, display-index hit), "scan" (cold, streaming rebuild or
-	// legacy event-format decode), "live-index" (live controller + index), or
-	// "live-fallback" (live controller, full-snapshot classification). Empty
-	// when no session was readable.
+	// Source: index|scan|live-index|live-fallback. Error marks a failed read
+	// (empty Entries alone means a genuinely empty session).
 	Source string `json:"source,omitempty"`
-	// Error is set when the read path failed. Empty entries alone mean a
-	// genuinely empty session; callers must not treat Error as success.
-	Error string `json:"error,omitempty"`
+	Error  string `json:"error,omitempty"`
 }
 
 // HistoryContentChunk is one chunk of a ref-replaced field's full value.
@@ -185,9 +180,7 @@ func (e HistoryEntry) MarshalJSON() ([]byte, error) {
 	return json.Marshal(alias(e))
 }
 
-func emptyHistorySlice() HistorySlice {
-	return HistorySlice{Entries: []HistoryEntry{}}
-}
+func emptyHistorySlice() HistorySlice { return HistorySlice{Entries: []HistoryEntry{}} }
 
 func failedHistorySlice(message string) HistorySlice {
 	return HistorySlice{Entries: []HistoryEntry{}, Error: strings.TrimSpace(message)}

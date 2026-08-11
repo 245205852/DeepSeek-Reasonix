@@ -657,11 +657,9 @@ export interface HistorySlice {
   revision: number;
   revisionKnown?: boolean;
   digest?: string;
-  // Diagnostic read path: index|scan|event-log|live-index|live-fallback (empty when the
-  // backend predates the field or no session was readable).
+  // Diagnostic read path: index|scan|event-log|live-index|live-fallback.
   source?: string;
-  // Present when the backend failed to read the session. Empty entries alone are not an error.
-  error?: string;
+  error?: string; // failed read; empty entries alone are not an error
 }
 
 export interface HistoryContentChunk {

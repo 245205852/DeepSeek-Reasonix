@@ -2,7 +2,6 @@
 // maintains per-tab state so background tabs preserve their streaming output, tool
 // states, and approvals when the user switches away and back. The active tab's state
 // is what components render.
-
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { asArray } from "./array";
 import { addBreadcrumb } from "./breadcrumbs";
@@ -17,6 +16,7 @@ import { applyLiveSegments, coalesceStreamDeltas, completeLiveReasoning, type St
 import { getTranscriptStore } from "./transcriptStore";
 import { uiPerfTracker } from "./uiPerf";
 import { t, type DictKey } from "./i18n";
+import { applyHydrateErrorState, hydratePlaceholderItems as resolveHydratePlaceholders } from "./hydrateErrorState";
 import { sameTodoList } from "./todoVisibility";
 import { fileDiffFromWire, summarize, summarizeFileDiff, type ToolFileDiff } from "./tools";
 import { modeHasAutoApproveTools, normalizeMode, normalizeToolApprovalMode } from "./types";
@@ -53,41 +53,33 @@ import type {
   WireUsage,
   WireShellExecution,
 } from "./types";
-
 export type ToolStatus = "running" | "done" | "error" | "stopped";
-
 // Reserved ToolProgress channel names for sub-agent progress previews (the Go
 // tracker emits these; ordinary tool progress must never use them).
 export const SUBAGENT_PROGRESS_STATUS = "reasonix.subagent.status";
 export const SUBAGENT_PROGRESS_REASONING = "reasonix.subagent.reasoning";
 export const SUBAGENT_PROGRESS_TEXT = "reasonix.subagent.text";
 export const SUBAGENT_PROGRESS_NOTICE = "reasonix.subagent.notice";
-
 // Reserved names are matched by prefix so a future channel never falls back
 // to ordinary tool output on older frontends.
 const SUBAGENT_PROGRESS_PREFIX = "reasonix.subagent.";
 const TURN_ACTIVITY_KINDS = new Set(["turn_started", "text", "reasoning", "message", "tool_dispatch", "tool_progress", "tool_result"]);
-
 const SUBAGENT_PROGRESS_PHASES = new Set([
   "queued", "running", "reasoning", "responding", "tool", "retrying", "completed", "failed", "cancelled",
 ]);
-
 // Tool names that initialize a sub-agent progress card. parallel_tasks/fleet
 // are group cards: they settle when their whole child progress tree is
 // terminal, since they never receive a terminal status of their own.
 const SUBAGENT_PROGRESS_TOOLS = new Set(["task", "read_only_task", "parallel_tasks", "fleet"]);
-
 // Per-channel preview retention. The backend already bounds what it sends
 // (8 KiB pending per child); these caps keep one hot card from dominating the
 // live conversation memory.
 const SUBAGENT_PREVIEW_REASONING_LIMIT = 8 << 10;
 const SUBAGENT_PREVIEW_TEXT_LIMIT = 8 << 10;
 const SUBAGENT_PREVIEW_NOTICE_LIMIT = 2 << 10;
-
 export type SubagentPhase =
   | "queued" | "running" | "reasoning" | "responding" | "tool" | "retrying"
   | "completed" | "failed" | "cancelled";
-
 // In-memory-only sub-agent progress preview. Never persisted: history
 // hydration rebuilds tool items from the transcript without these fields, and
 // the full sub-agent transcript stays the source of truth after a restart.
@@ -101,19 +93,15 @@ export type SubagentProgress = {
   durationMs?: number;
   startedAt: number;
 };
-
 export function isSubagentProgressName(name: string | undefined): boolean {
   return !!name && name.startsWith(SUBAGENT_PROGRESS_PREFIX);
 }
-
 export function isTerminalSubagentPhase(phase: string | undefined): boolean {
   return phase === "completed" || phase === "failed" || phase === "cancelled";
 }
-
 function isGroupSubagentTool(name: string): boolean {
   return name === "parallel_tasks" || name === "fleet";
 }
-
 function terminalStatusOf(phase: string): ToolStatus {
   switch (phase) {
     case "completed": return "done";
@@ -122,21 +110,17 @@ function terminalStatusOf(phase: string): ToolStatus {
   }
   return "running";
 }
-
 function freshSubagentProgress(): SubagentProgress {
   const now = Date.now();
   return { phase: "running", reasoning: "", text: "", notice: "", lastActivityAt: now, truncated: false, startedAt: now };
 }
-
 /** Keeps the most recent `limit` code points; surrogate pairs stay intact. */
 function tailPreview(text: string, limit: number): string {
   if (text.length <= limit) return text;
   const pts = Array.from(text);
   return pts.slice(pts.length - limit).join("");
 }
-
 // --- Sub-agent progress reducer helpers --------------------------------------
-
 // Applies one reserved ToolProgress event to the target card's in-memory
 // preview. The card must exist (its dispatch always precedes progress events)
 // and have been initialized by the dispatch. Never writes tool.output, never
@@ -176,7 +160,6 @@ function applySubagentProgress(s: State, t: WireTool): State {
   next[idx] = { ...it, subagentProgress: sp, status };
   return { ...s, items: next };
 }
-
 // Nested real tool activity refreshes its sub-agent parent's recent activity
 // and switches the phase to "tool". Terminal parents are left untouched.
 function touchSubagentParent(next: Item[], parentId: string): void {
@@ -186,7 +169,6 @@ function touchSubagentParent(next: Item[], parentId: string): void {
   if (it.kind !== "tool" || !it.subagentProgress || isTerminalSubagentPhase(it.subagentProgress.phase)) return;
   next[idx] = { ...it, subagentProgress: { ...it.subagentProgress, phase: "tool", lastActivityAt: Date.now() } };
 }
-
 export type LiveStream = {
   id: string;
   text: string;
@@ -195,7 +177,6 @@ export type LiveStream = {
   reasoningStartedAt?: number;
   reasoningCompletedAt?: number;
 };
-
 /** Speculative journal for one sampling attempt — rolled back on discard. */
 type StreamAttemptJournal = {
   id: string;
@@ -2024,22 +2005,7 @@ export function reducer(s: State, a: Action): State {
     case "hydrate_done": return s.hydrating || s.hydrateReason || s.hydrateError || s.hydrateHistoryLoaded || s.hydratePlaceholderItems
       ? { ...s, hydrating: false, hydrateReason: undefined, hydrateError: undefined, hydrateHistoryLoaded: undefined, hydratePlaceholderItems: undefined }
       : s;
-    case "hydrate_error": {
-      // Keep already-visible transcript or placeholders; a failed load must not
-      // look like a successful empty session.
-      const keptItems = s.items.length > 0
-        ? s.items
-        : (s.hydratePlaceholderItems?.length ? s.hydratePlaceholderItems : s.items);
-      return {
-        ...s,
-        items: keptItems,
-        hydrating: false,
-        hydrateReason: a.reason,
-        hydrateError: a.error,
-        hydrateHistoryLoaded: s.hydrateHistoryLoaded || keptItems.length > 0 || undefined,
-        hydratePlaceholderItems: undefined,
-      };
-    }
+    case "hydrate_error": return applyHydrateErrorState(s, a.reason, a.error);
     case "backend_activation_start": return {
       ...s,
       // The target tab may contain a prompt event that was routed there while
@@ -2901,8 +2867,6 @@ export function useController() {
         options.skipHistory ||
         (options.preserveCachedHistory && !reset && hasReusableCachedTranscript(statesRef.current.get(tabId), sessionPath, sessionRevision, sessionDigest)),
       );
-      // Defer reset until history succeeds so a failed cold/live load cannot
-      // paint a successful empty transcript over recoverable disk content.
       const deferResetUntilHistory = Boolean((options.deferResetUntilHistory ?? true) && reset && !skipHistory);
       const stillCurrent = () =>
         sessionLoadCurrent(tabId, seq) &&
@@ -2910,13 +2874,7 @@ export function useController() {
       if (!stillCurrent()) return;
       addBreadcrumb("tab.hydrate", `start ${reason} ${tabId}`);
       ensureTranscriptSubscription(tabId);
-      // Prefer already-visible items as placeholders when the caller did not
-      // supply any, so retries and failed reloads keep the last good page.
-      const existingItems = statesRef.current.get(tabId)?.items;
-      const placeholderItems = options.placeholderItems?.length
-        ? options.placeholderItems
-        : (existingItems?.length ? existingItems : undefined);
-      dispatchTo(tabId, { type: "hydrate_start", reason, placeholderItems });
+      dispatchTo(tabId, { type: "hydrate_start", reason, placeholderItems: resolveHydratePlaceholders(options.placeholderItems, statesRef.current.get(tabId)?.items) });
       if (reset && !deferResetUntilHistory && stillCurrent()) dispatchTo(tabId, { type: "reset" });
       const requiresVisibleTab = reason === "startup" || reason === "switch-tab" || reason === "open-topic";
       const stillVisible = () => !requiresVisibleTab || activeTabIdRef.current === tabId;
@@ -2942,8 +2900,6 @@ export function useController() {
       };
 
       const historyStartedAt = Date.now();
-      // HistorySliceForTab cold-reads disk when the controller is not ready yet,
-      // so we never wait on waitForTabReady before the first transcript paint.
       let projection = skipHistory
         ? undefined
         : await loadTimed("history", () =>
@@ -2964,8 +2920,7 @@ export function useController() {
         const errText = t("history.failedLoadHistory");
         dispatchTo(tabId, { type: "hydrate_error", reason, error: errText });
         dispatchTo(tabId, { type: "local_notice", level: "warn", text: errText });
-        addBreadcrumb("tab.hydrate", `history failed ${tabId} ms=${Date.now() - historyStartedAt}`);
-        return;
+        addBreadcrumb("tab.hydrate", `history failed ${tabId} ms=${Date.now() - historyStartedAt}`); return;
       }
       if (!skipHistory && projection !== undefined && !foregroundTurnActive()) {
         if (deferResetUntilHistory && stillCurrent()) dispatchTo(tabId, { type: "reset" });
@@ -4074,38 +4029,22 @@ export function useController() {
   }, [activeTabId, bumpCheckpointRefreshSeq, bumpSessionLoadSeq, dispatchTo, loadSessionDataForTab, waitForTabReady]);
 
   const listSessions = useCallback(async (): Promise<SessionMeta[]> => {
-    // Failures must surface to callers. Swallowing them as [] paints a false
-    // "no history" empty state and hides catalog outages.
-    const page = await app.ListHistorySessions({
-      scope: "all", workspaceRoot: "", status: "all", timeFilter: "all", query: "", cursor: "", limit: 200,
-    });
-    if (!page) {
-      throw new Error(t("history.failedLoadHistory"));
-    }
+    const page = await app.ListHistorySessions({ scope: "all", workspaceRoot: "", status: "all", timeFilter: "all", query: "", cursor: "", limit: 200 });
+    if (!page) throw new Error(t("history.failedLoadHistory"));
     return asArray<SessionMeta>(page.items);
   }, []);
   const listTrashedSessions = useCallback(async (): Promise<SessionMeta[]> => asArray<SessionMeta>(await app.ListTrashedSessions().catch(() => [])), []);
   const retrySessionHistory = useCallback(async (tabId?: string) => {
-    const targetTabId = tabId || activeTabIdRef.current;
-    if (!targetTabId) return;
-    const state = statesRef.current.get(targetTabId);
-    await loadSessionDataForTab(targetTabId, false, "startup", {
-      sessionPath: state?.meta?.sessionPath,
-      sessionRevision: state?.meta?.sessionRevision,
-      sessionDigest: state?.meta?.sessionDigest,
-      preserveCachedHistory: false,
-    });
+    const id = tabId || activeTabIdRef.current; if (!id) return;
+    const m = statesRef.current.get(id)?.meta;
+    await loadSessionDataForTab(id, false, "startup", { sessionPath: m?.sessionPath, sessionRevision: m?.sessionRevision, sessionDigest: m?.sessionDigest, preserveCachedHistory: false });
   }, [loadSessionDataForTab]);
   const resumeSession = useCallback(async (path: string, tabId?: string, navigationIntentSeq?: number) => {
     const targetTabId = tabId || activeTabId;
     if (!targetTabId) return;
     const navigationSeq = navigationIntentSeq ?? beginActiveNavigation();
-    // Cold-paint disk history immediately via HistorySliceForTab (works with
-    // ctrl==nil). Do not wait for controller ready before the first paint.
     const existingMeta = statesRef.current.get(targetTabId)?.meta;
-    if (existingMeta) {
-      dispatchTo(targetTabId, { type: "optimistic_meta", meta: { ...existingMeta, sessionPath: path } });
-    }
+    if (existingMeta) dispatchTo(targetTabId, { type: "optimistic_meta", meta: { ...existingMeta, sessionPath: path } });
     void loadSessionDataForTab(targetTabId, false, "resume-session", { sessionPath: path, preserveCachedHistory: true });
     if (tabId) await waitForTabReady(tabId);
     else if (!(await waitForBackendActiveTab(targetTabId))) return;
