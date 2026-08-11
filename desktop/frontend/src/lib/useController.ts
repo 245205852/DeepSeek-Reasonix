@@ -10,6 +10,7 @@ import { invalidateCache } from "./composerHistory";
 import { formatInboxCancelError, inboxSteerQueuedMessage } from "./inboxError";
 import { formatContextMaintenanceNotice, isNewMaintenanceOperation, rememberMaintenanceOperation } from "./contextMaintenanceTypes";
 import { formatGuardianAssessmentNotice } from "./guardianEvents";
+import { completionSummaryNeedsAttention, completionSummaryNotice, normalizeCompletionSummary } from "./completionSummary";
 import { invalidateSharedQuery } from "./queryCoalesce";
 import { createRafBatch } from "./rafBatch";
 import { aliasActivationRequest, noteActivationRequested, noteActivationSettled, noteActivationStarted } from "./sessionDiagnostics";
@@ -42,6 +43,7 @@ import type {
   TopicActivationEvent,
   WireApproval,
   WireAsk,
+  WireCompletionSummary,
   WireDecisionReceipt,
   WireEvent,
   WireExtensionCard,
@@ -251,7 +253,7 @@ export type Item =
   | { kind: "user"; id: string; submissionId?: string; text: string; submitText?: string; failed?: boolean; createdAt?: number; checkpointTurn?: number }
   | { kind: "assistant"; id: string; text: string; reasoning: string; streaming: boolean; reasoningComplete?: boolean; reasoningDurationMs?: number; workDurationMs?: number; memoryCitations?: MemoryCitation[] }
   | { kind: "phase"; id: string; text: string }
-  | { kind: "notice"; id: string; level: "info" | "warn"; text: string; detail?: string; title?: string; variant?: "delivery"; action?: "continue_delivery"; decisionReceipt?: WireDecisionReceipt }
+  | { kind: "notice"; id: string; level: "info" | "warn"; text: string; detail?: string; title?: string; variant?: "delivery" | "completion"; action?: "continue_delivery" | "open_changes"; decisionReceipt?: WireDecisionReceipt }
   | {
       kind: "compaction";
       id: string;
@@ -364,6 +366,8 @@ interface State {
   cancellable: boolean;
   /** Host turn phase from turn_phase events (working|checking|verifying|reviewing). */
   turnPhase?: TurnPhaseName;
+  /** Latest content-free turn quality summary, shown on demand in the change panel. */
+  completionSummary?: WireCompletionSummary;
   approval?: WireApproval;
   ask?: WireAsk;
   usage?: WireUsage;
@@ -1475,6 +1479,7 @@ function applyEvent(s: State, e: WireEvent): State {
         running: true,
         turnActive: true,
         turnPhase: "working",
+        completionSummary: undefined,
         pendingPrompt: false,
         cancelRequested: false,
         cancellable: true,
@@ -1487,8 +1492,26 @@ function applyEvent(s: State, e: WireEvent): State {
       return { ...s, turnPhase: phase, running: true, turnActive: true, cancellable: true };
     }
     case "completion_summary": {
-      // The desktop transcript intentionally omits end-of-turn quality receipts.
-      return s;
+      if (!e.completion) return s;
+      const completionSummary = normalizeCompletionSummary(e.completion);
+      if (!completionSummaryNeedsAttention(completionSummary)) {
+        return { ...s, completionSummary };
+      }
+      const notice = completionSummaryNotice(completionSummary, t);
+      return {
+        ...s,
+        completionSummary,
+        seq: s.seq + 1,
+        items: [...s.items, {
+          kind: "notice",
+          id: `q${s.seq}`,
+          level: "warn",
+          variant: "completion",
+          title: notice.title,
+          text: notice.body,
+          action: "open_changes",
+        }],
+      };
     }
     case "text":
     case "reasoning": {

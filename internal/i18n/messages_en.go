@@ -49,6 +49,8 @@ var English = Messages{
 	TurnPhaseChecking:                      "checking",
 	TurnPhaseVerifying:                     "verifying",
 	TurnPhaseReviewing:                     "reviewing",
+	CompletionSummaryBlocked:               "This turn is blocked; review the changes for details.",
+	CompletionSummaryNeedsAttention:        "This turn still has verification or review gaps.",
 	ChatToolWorkingFmt:                     "%s working · %ds",
 	ChatSubagentPhaseQueued:                "queued",
 	ChatSubagentPhaseRunning:               "running",

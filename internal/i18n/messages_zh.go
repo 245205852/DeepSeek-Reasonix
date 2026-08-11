@@ -50,6 +50,8 @@ var Chinese = Messages{
 	TurnPhaseChecking:                      "检查中",
 	TurnPhaseVerifying:                     "验证中",
 	TurnPhaseReviewing:                     "复审中",
+	CompletionSummaryBlocked:               "本轮任务受阻，请查看改动详情。",
+	CompletionSummaryNeedsAttention:        "本轮仍有验证或复审缺口。",
 	ChatToolWorkingFmt:                     "%s 运行中 · %d 秒",
 	ChatSubagentPhaseQueued:                "排队中",
 	ChatSubagentPhaseRunning:               "运行中",

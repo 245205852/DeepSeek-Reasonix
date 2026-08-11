@@ -3824,6 +3824,25 @@ func formatCompletionSummaryLine(c *event.CompletionSummaryInfo) string {
 	return line
 }
 
+func completionSummaryNeedsAttention(c *event.CompletionSummaryInfo) bool {
+	if c == nil {
+		return false
+	}
+	verdict := strings.ToLower(strings.TrimSpace(c.Verdict))
+	review := strings.ToLower(strings.TrimSpace(c.Review))
+	return verdict == "partial" || verdict == "blocked" ||
+		c.ChecksFailed > 0 || c.ChecksSuppressed > 0 ||
+		review == "warned" || review == "failed" || review == "unavailable" ||
+		len(c.GapKinds) > 0 || c.ConstraintDegraded
+}
+
+func completionSummaryWarning(c *event.CompletionSummaryInfo) string {
+	if c != nil && strings.EqualFold(strings.TrimSpace(c.Verdict), "blocked") {
+		return i18n.M.CompletionSummaryBlocked
+	}
+	return i18n.M.CompletionSummaryNeedsAttention
+}
+
 // renderApprovalBanner is the slim notice shown above the input while a tool
 // call (or a plan) awaits the user's decision.
 func (m chatTUI) renderApprovalBanner() string {
@@ -4559,8 +4578,14 @@ func (m *chatTUI) ingestEvent(e event.Event) {
 
 	case event.CompletionSummary:
 		if e.Completion != nil {
-			m.finalizeStreamed()
-			m.commitLine(dim("  · " + formatCompletionSummaryLine(e.Completion)))
+			if completionSummaryNeedsAttention(e.Completion) {
+				m.finalizeStreamed()
+				m.commitLine(fmt.Sprintf("  ! %s", completionSummaryWarning(e.Completion)))
+			}
+			if m.showReasoning {
+				m.finalizeStreamed()
+				m.commitLine(dim("  · " + formatCompletionSummaryLine(e.Completion)))
+			}
 		}
 
 	case event.Notice:

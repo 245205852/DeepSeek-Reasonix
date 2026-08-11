@@ -4914,6 +4914,7 @@ export default function App() {
                 footerHeight={footerHeight}
                 onPrompt={handleTranscriptPrompt}
                 onDeliveryContinue={() => void handleDeliveryContinue()}
+                onOpenChanges={() => openRightDockMode("changed")}
                 onEditPrompt={handleEditPrompt}
                 onRewind={handleMessageAction}
                 checkpoints={state.checkpoints}
@@ -5327,6 +5328,7 @@ export default function App() {
                     onSessionRevertCommitted={handleSessionRevertCommitted}
                     onOpenInTerminal={openTerminalForPath}
                     initialViewMode={rightDockMode === "changed" ? "changed" : "files"}
+                    completionSummary={state.completionSummary}
                     showViewTabs={false}
                     creationMode={sidebarCreation}
                   />

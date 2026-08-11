@@ -46,6 +46,8 @@ var ChineseTraditional = Messages{
 	TurnPhaseChecking:                      "檢查中",
 	TurnPhaseVerifying:                     "驗證中",
 	TurnPhaseReviewing:                     "複審中",
+	CompletionSummaryBlocked:               "本輪任務受阻，請查看變更詳情。",
+	CompletionSummaryNeedsAttention:        "本輪仍有驗證或複審缺口。",
 	ChatToolWorkingFmt:                     "%s 執行中 · %d 秒",
 	ChatSubagentPhaseQueued:                "排隊中",
 	ChatSubagentPhaseRunning:               "執行中",

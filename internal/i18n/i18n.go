@@ -67,6 +67,8 @@ type Messages struct {
 	TurnPhaseChecking                      string // host turn_phase label: checking
 	TurnPhaseVerifying                     string // host turn_phase label: verifying
 	TurnPhaseReviewing                     string // host turn_phase label: reviewing
+	CompletionSummaryBlocked               string // concise non-verbose alert for a blocked turn
+	CompletionSummaryNeedsAttention        string // concise non-verbose alert for verification/review gaps
 	ChatToolWorkingFmt                     string // "%s working · %ds" under a running tool — %s = spinner, %d = elapsed s
 	ChatSubagentPhaseQueued                string // sub-agent progress phase label ("queued")
 	ChatSubagentPhaseRunning               string // ("running")
