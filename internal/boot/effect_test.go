@@ -12,6 +12,7 @@ import (
 	"testing"
 
 	"reasonix/internal/ablation"
+	"reasonix/internal/agent"
 	"reasonix/internal/event"
 	"reasonix/internal/provider"
 )
@@ -208,12 +209,13 @@ model = "x"
 	}
 	defer ctrl.Close()
 
-	_ = ctrl.Run(context.Background(), "read every file you can find")
+	runErr := ctrl.Run(context.Background(), "read every file you can find")
 
-	// Ordinary chat has no round ceiling, so a gate that never reached the
-	// executor would leave this provider looping until the test times out.
-	if got := rec.roundCount(); got > 50 {
-		t.Fatalf("provider saw %d rounds; the configured spend budget never reached the executor", got)
+	// Assert the final boundary directly. A round-count proxy is timing-sensitive:
+	// the unified core schema can complete more no-op fixture rounds inside the
+	// same 30 ms budget on fast runners.
+	if got := agent.PauseClass(runErr); got != "task_budget" {
+		t.Fatalf("pause class = %q (err %v), want task_budget", got, runErr)
 	}
 	if rec.roundCount() == 0 {
 		t.Fatal("no round reached the provider; the run never started")
