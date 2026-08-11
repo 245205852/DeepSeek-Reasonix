@@ -1941,6 +1941,8 @@ export const zhTW: Record<DictKey, string> = {
   "turnActions.summary": "壓縮",
   "turnActions.rewind": "回溯",
   "transcript.jumpToBottom": "跳到底部",
+  "markdown.tableExpandAll": "展開全部 {n} 行",
+  "markdown.tableCollapse": "收起表格",
   "transcript.showEarlierHistory": "展開前 {n} 輪對話",
   "transcript.toolCount": "{n} 個工具",
   "transcript.thoughtCount": "{n} 段思考",

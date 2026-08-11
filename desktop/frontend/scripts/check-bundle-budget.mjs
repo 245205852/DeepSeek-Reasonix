@@ -80,7 +80,9 @@ const rawInitialBytes = [...initialJS, ...initialCSS, ...appShellCSS]
   .reduce((total, path) => total + statSync(path).size, 0);
 // Native Web Animations and frame-batched scrolling avoid an eager animation
 // runtime. Goal request observability plus transcript scroll arbitration,
-// logical selection state/DOM adapters, and measurement invalidation add small
-// always-available contracts; keep raw allowance tight while gzip stays flat.
-assertBudget("initial raw JavaScript and CSS", rawInitialBytes, 2_240 * 1024);
+// logical selection state/DOM adapters, native input-session ownership, and
+// measurement invalidation and deferred tail replay add small always-available
+// contracts. The expanded contract remains tightly bounded while the gzip
+// startup budgets stay flat.
+assertBudget("initial raw JavaScript and CSS", rawInitialBytes, 2_246 * 1024);
 assertBudget("largest initial JavaScript chunk raw", largestInitialJSRaw, 1_000 * 1024);
