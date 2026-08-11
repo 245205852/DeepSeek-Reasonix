@@ -3048,7 +3048,7 @@ export const zh: Record<DictKey, string> = {
   "updater.officialDownload": "前往官网下载",
   "updater.privacyAndUpdatePreferences": "隐私与更新偏好",
   "settings.telemetryLabel": "匿名启动统计",
-  "settings.telemetryHint": "启动时发送随机安装 ID、版本和系统以统计活跃量。异常退出后可能发送脱敏诊断，包括生命周期、堆栈及 Windows/WebView2 故障。发送前会移除 panic、路径和密钥，不含对话或文件内容。",
+  "settings.telemetryHint": "启动时发送匿名ID、版本、系统/发行版、会话、Runtime、GPU模式。异常退出后下次启动可发送阶段、堆栈、原因、退出码、恢复结果。不含账号、对话、密钥、文件、完整路径、显卡驱动",
   "settings.metricsLabel": "共享聚合质量指标",
   "settings.metricsHint": "默认开启。发送匿名轮次统计、更新错误、运行健康与设置快照，并用随机安装 ID 统计 DAU。可能包含归一化的自定义 Provider 和模型名；不含对话、提示词、密钥、路径、URL、记忆、工具输出或文件内容。",
   "updater.currentVersion": "当前版本：{v}",

@@ -3,13 +3,13 @@
     "banner": 15,
     "commented-code": 0,
     "complexity": 2100,
-    "essay": 4064,
-    "file-size": 110050,
-    "function-size": 9078,
+    "essay": 4063,
+    "file-size": 109873,
+    "function-size": 9083,
     "layering": 1,
     "marker": 0,
     "narrative": 64,
-    "test-file-size": 69361
+    "test-file-size": 69379
   },
   "files": {
     "cmd/e2ebench/main.go": {
@@ -27,8 +27,8 @@
     },
     "desktop/app.go": {
       "complexity": 63,
-      "essay": 95,
-      "file-size": 11419,
+      "essay": 94,
+      "file-size": 11343,
       "function-size": 371
     },
     "desktop/app_autosave_test.go": {
@@ -84,7 +84,7 @@
       "essay": 2
     },
     "desktop/frontend/src/App.tsx": {
-      "file-size": 4731
+      "file-size": 4725
     },
     "desktop/frontend/src/__tests__/app-chrome-tabs.test.ts": {
       "test-file-size": 19
@@ -120,7 +120,7 @@
       "file-size": 238
     },
     "desktop/frontend/src/components/CapabilitiesPanel.tsx": {
-      "file-size": 2658
+      "file-size": 2653
     },
     "desktop/frontend/src/components/Composer.tsx": {
       "file-size": 4020
@@ -679,8 +679,8 @@
     "internal/boot/boot.go": {
       "complexity": 249,
       "essay": 100,
-      "file-size": 2077,
-      "function-size": 1692,
+      "file-size": 2079,
+      "function-size": 1694,
       "narrative": 3
     },
     "internal/boot/boot_test.go": {
@@ -981,7 +981,7 @@
     },
     "internal/config/config.go": {
       "essay": 54,
-      "file-size": 1507,
+      "file-size": 1510,
       "narrative": 2
     },
     "internal/config/credentials.go": {
@@ -1076,13 +1076,13 @@
     "internal/control/controller.go": {
       "complexity": 10,
       "essay": 162,
-      "file-size": 5533,
-      "function-size": 75,
+      "file-size": 5545,
+      "function-size": 78,
       "narrative": 4
     },
     "internal/control/controller_test.go": {
       "essay": 10,
-      "test-file-size": 4608
+      "test-file-size": 4610
     },
     "internal/control/errmsg.go": {
       "essay": 2
@@ -1101,11 +1101,11 @@
     "internal/control/goal.go": {
       "complexity": 3,
       "essay": 11,
-      "file-size": 274,
+      "file-size": 277,
       "function-size": 1
     },
     "internal/control/goal_test.go": {
-      "test-file-size": 243
+      "test-file-size": 249
     },
     "internal/control/goalusage.go": {
       "essay": 2
@@ -1175,7 +1175,7 @@
     },
     "internal/control/turn_orchestrator_test.go": {
       "essay": 1,
-      "test-file-size": 429
+      "test-file-size": 439
     },
     "internal/control/yolo_test.go": {
       "test-file-size": 473
@@ -1913,10 +1913,10 @@
       "essay": 1
     },
     "workers/crash-report/src/index.ts": {
-      "file-size": 902
+      "file-size": 899
     },
     "workers/crash-report/src/stats.ts": {
-      "file-size": 183
+      "file-size": 76
     }
   }
 }
