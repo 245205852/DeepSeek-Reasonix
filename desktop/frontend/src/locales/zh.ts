@@ -2839,6 +2839,8 @@ export const zh: Record<DictKey, string> = {
   "turnActions.summary": "压缩",
   "turnActions.rewind": "回溯",
   "transcript.jumpToBottom": "跳到底部",
+  "markdown.tableExpandAll": "展开全部 {n} 行",
+  "markdown.tableCollapse": "收起表格",
   "transcript.showEarlierHistory": "展开前 {n} 轮对话",
   "transcript.toolCount": "{n} 个工具",
   "transcript.thoughtCount": "{n} 段思考",
