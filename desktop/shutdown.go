@@ -32,9 +32,10 @@ func (a *App) shutdownBody() {
 	// Run after controller teardown (and after its deferred lifecycle unlocks)
 	// so every accepted usage record reaches disk before a normal app exit.
 	defer func() {
-		flushCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		flushCtx, cancel := context.WithTimeout(context.Background(), 250*time.Millisecond)
 		defer cancel()
 		_ = stats.Flush(flushCtx, config.StatsDir())
+		_ = flushDesktopDerivedCatalogs(flushCtx)
 	}()
 	a.stopDeferredRebuildRetry()
 	a.stopHistoryIndexMigration()

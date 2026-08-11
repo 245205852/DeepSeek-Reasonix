@@ -9,8 +9,10 @@ import (
 	"fmt"
 	"sync"
 	"testing"
+	"time"
 
 	"reasonix/internal/ablation"
+	"reasonix/internal/agent"
 	"reasonix/internal/event"
 	"reasonix/internal/provider"
 )
@@ -190,12 +192,16 @@ model = "x"
 	}
 	defer ctrl.Close()
 
-	_ = ctrl.Run(context.Background(), "read every file you can find")
+	runCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	runErr := ctrl.Run(runCtx, "read every file you can find")
 
 	// Ordinary chat has no round ceiling, so a gate that never reached the
-	// executor would leave this provider looping until the test times out.
-	if got := rec.roundCount(); got > 50 {
-		t.Fatalf("provider saw %d rounds; the configured spend budget never reached the executor", got)
+	// executor would run until the context deadline. Assert the typed boundary
+	// instead of a machine-speed-dependent round count.
+	pause, ok := agent.InspectRunPause(runErr)
+	if !ok || pause.Kind != "task_budget" || pause.Key != "time" {
+		t.Fatalf("Run error = %v (pause=%+v, ok=%v), want time task-budget pause", runErr, pause, ok)
 	}
 	if rec.roundCount() == 0 {
 		t.Fatal("no round reached the provider; the run never started")

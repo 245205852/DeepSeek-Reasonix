@@ -116,6 +116,7 @@ func (d *recordDispatcher) flush(ctx context.Context) error {
 // (desktop/cli/serve/...); an empty source keeps records unlabelled.
 func NewRecorder(inner event.Sink, dir, source string) *Recorder {
 	writer := NewWriter(dir)
+	writer.usage = managerForUsage(writer.dir)
 	return &Recorder{
 		inner: inner, writer: writer, dispatcher: dispatcherFor(writer), source: strings.TrimSpace(source),
 	}
@@ -155,14 +156,30 @@ func (r *Recorder) Flush(ctx context.Context) error {
 	if r == nil {
 		return nil
 	}
-	return r.dispatcher.flush(ctx)
+	if err := r.dispatcher.flush(ctx); err != nil {
+		return err
+	}
+	if r.writer != nil && r.writer.usage != nil {
+		if catalog := r.writer.usage.catalog.Load(); catalog != nil {
+			return catalog.Flush(ctx)
+		}
+	}
+	return nil
 }
 
 // Flush waits for records already queued for dir. It is primarily useful when
 // a caller must read its own just-recorded statistics deterministically.
 func Flush(ctx context.Context, dir string) error {
-	writer := NewWriter(dir)
-	return existingDispatcher(writer.dir).flush(ctx)
+	dir = strings.TrimSpace(dir)
+	if err := existingDispatcher(dir).flush(ctx); err != nil {
+		return err
+	}
+	if manager := existingUsageManager(dir); manager != nil {
+		if catalog := manager.catalog.Load(); catalog != nil {
+			return catalog.Flush(ctx)
+		}
+	}
+	return nil
 }
 
 // RecordReadinessAudit forwards audit receipts to the wrapped sink.

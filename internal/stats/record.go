@@ -17,6 +17,7 @@ package stats
 import (
 	"bufio"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"io"
@@ -26,6 +27,7 @@ import (
 	"time"
 
 	"reasonix/internal/filelock"
+	"reasonix/internal/usagecatalog"
 )
 
 // dayLayout names one stats file per UTC-free local day, e.g. 2026-08-02.jsonl.
@@ -73,13 +75,15 @@ type record struct {
 
 // Writer appends records to the daily stats file for a given stats dir.
 type Writer struct {
-	dir string
+	dir   string
+	usage *usageManager
 }
 
 // NewWriter returns a Writer rooted at dir. An empty dir disables recording
 // (query-only usage).
 func NewWriter(dir string) *Writer {
-	return &Writer{dir: strings.TrimSpace(dir)}
+	dir = strings.TrimSpace(dir)
+	return &Writer{dir: dir}
 }
 
 // Append writes one record, appending to the daily file (O_APPEND) so records
@@ -105,17 +109,53 @@ func (w *Writer) Append(r record) error {
 	if err != nil {
 		return err
 	}
-	defer release()
+	released := false
+	defer func() {
+		if !released {
+			release()
+		}
+	}()
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR|os.O_APPEND, 0o600)
 	if err != nil {
 		return err
 	}
-	defer f.Close()
 	if err := ensureRecordBoundary(f); err != nil {
+		_ = f.Close()
 		return err
 	}
-	_, err = f.Write(append(b, '\n'))
-	return err
+	info, err := f.Stat()
+	if err != nil {
+		_ = f.Close()
+		return err
+	}
+	offset := info.Size()
+	line := append(b, '\n')
+	if _, err = f.Write(line); err != nil {
+		_ = f.Close()
+		return err
+	}
+	if err := f.Close(); err != nil {
+		return err
+	}
+	release()
+	released = true
+	if w.usage != nil {
+		if catalog := w.usage.catalog.Load(); catalog != nil {
+			hash := sha256.Sum256(b)
+			catalog.Enqueue(usagecatalog.AppendReceipt{Path: path, Day: day, Offset: offset, Length: len(line), LineHash: fmtHash(hash[:])}, usageEntry(day, r))
+		}
+	}
+	return nil
+}
+
+func fmtHash(hash []byte) string {
+	const digits = "0123456789abcdef"
+	out := make([]byte, len(hash)*2)
+	for i, value := range hash {
+		out[i*2] = digits[value>>4]
+		out[i*2+1] = digits[value&15]
+	}
+	return string(out)
 }
 
 // ensureRecordBoundary separates a torn trailing JSON object from the next

@@ -1,10 +1,9 @@
 // Wire contract — mirrors desktop/wire.go (itself mirroring internal/serve/wire.go).
 // One event channel carries every kind; `kind` discriminates the payload.
-
 import type { Todo } from "./tools";
 import type { ContextMaintenanceInfo, WireContextMaintenance } from "./contextMaintenanceTypes";
 export type { ContextMaintenanceInfo, ContextMaintenanceReceipt, WireContextMaintenance } from "./contextMaintenanceTypes";
-
+export type { ProjectTopicKey, ProjectTopicPage, ProjectTopicPageRequest, ProjectTreeChangedV2, ProjectTreeSnapshot, SessionCatalogBindings, SessionCatalogStatus, SessionReference } from "./sessionCatalogTypes";
 export type EventKind =
   | "turn_started"
   | "reasoning"
@@ -30,9 +29,7 @@ export type EventKind =
   | "stream_attempt"
   | "context_maintenance"
   | "workspace_changed";
-
 export type StreamAttemptAction = "begin" | "discard" | "commit";
-
 export interface WireStreamAttempt {
   id: string;
   action: StreamAttemptAction;
@@ -41,14 +38,12 @@ export interface WireStreamAttempt {
   /** Fixed enum only: connection_reset | premature_eof | idle_timeout */
   reason?: string;
 }
-
 export interface WireCompaction {
   trigger?: string; // "auto" | "manual"
   messages?: number; // done: how many messages were folded into the summary
   summary?: string; // done: the briefing (empty on an aborted pass)
   archive?: string; // done: archive path, if any
 }
-
 export interface WireProfile {
   model?: string;
   effort?: string;
@@ -426,6 +421,7 @@ export interface TabMeta {
   sessionPath?: string;
   sessionRevision?: number;
   sessionDigest?: string;
+  sessionGeneration?: number;
   readOnly?: boolean;
   filePath?: string;
   projectColor?: string;
@@ -484,6 +480,8 @@ export interface ProjectNode {
   sessionPath?: string;
   projectColor?: string;
   turns?: number;
+  turnsState?: "unknown" | "valid" | "corrupt" | string;
+  health?: "ok" | "missing" | "corrupt" | "degraded" | string;
   createdAt?: number;
   lastActivityAt?: number;
   open?: boolean;
@@ -688,6 +686,8 @@ export interface HistoryEntry {
   refs: HistoryContentRef[];
 }
 
+export interface SessionClearResult { sessionPath: string; sessionRevision?: number; sessionDigest?: string; sessionGeneration: number }
+
 export interface HistorySlice {
   entries: HistoryEntry[];
   nextCursor: string; // toward older; empty when none
@@ -699,9 +699,9 @@ export interface HistorySlice {
   revision: number;
   revisionKnown?: boolean;
   digest?: string;
-  // Diagnostic read path: index|scan|event-log|live-index|live-fallback (empty when the
-  // backend predates the field or no session was readable).
+  // Diagnostic read path: index|scan|event-log|live-index|live-fallback.
   source?: string;
+  error?: string; // failed read; empty entries alone are not an error
 }
 
 export interface HistoryContentChunk {
@@ -818,6 +818,7 @@ export interface SessionMeta {
   preview: string;
   title?: string; // user-chosen name; falls back to preview when empty
   turns: number;
+  turnsState?: "unknown" | "valid" | "corrupt" | string;
   createdAt: number; // unix milliseconds
   lastActivityAt: number; // unix milliseconds
   modTime: number; // compatibility alias for lastActivityAt
@@ -840,15 +841,7 @@ export interface SessionMeta {
   recoveryCopy?: boolean; // actual branch content is unchanged and covered by its parent
 }
 
-// SessionReference is a session selected via @ past:chats for context injection.
-export interface SessionReference {
-  path: string;
-  title: string;
-  preview?: string;
-  turns?: number;
-  createdAt?: number;
-  lastActivityAt?: number;
-}
+export type { HistoryIndexStatus, HistorySearchContextLine, HistorySearchContextRequest, HistorySearchHit, HistorySearchPage, HistorySearchRequest, HistorySessionPage, HistorySessionPageRequest } from "./historyCatalogTypes";
 
 export interface WorkspaceView {
   path: string;
@@ -881,6 +874,7 @@ export interface Meta {
   sessionPath?: string;
   sessionRevision?: number;
   sessionDigest?: string;
+  sessionGeneration?: number;
   cwd: string;
   workspaceRoot?: string;
   workspaceName?: string;
@@ -2285,6 +2279,8 @@ export interface TaskSnapshot {
   error_code?: string;
   error_summary?: string;
 }
+
+export type { TaskActionRequest, TaskCatalogItem, TaskCatalogStatus, TaskEventPage, TaskEventPageRequest, TaskPage, TaskPageRequest } from "./taskCatalogTypes";
 
 export interface ControlResult {
   schema_version: number;

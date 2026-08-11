@@ -61,6 +61,7 @@ import (
 	"reasonix/internal/sessiontemp"
 	"reasonix/internal/skill"
 	"reasonix/internal/stats"
+	"reasonix/internal/taskmonitor"
 	"reasonix/internal/tool"
 	"reasonix/internal/tool/builtin"
 	"reasonix/internal/tool/sessiontool"
@@ -124,6 +125,7 @@ type Options struct {
 	// StatsSource labels this frontend's usage records (desktop/cli/serve).
 	// Empty disables usage recording for this controller.
 	StatsSource string
+	TaskStore   taskmonitor.WriteStore // Authoritative store, never a SQLite catalog.
 	// OnConfigLoadWarnings accepts resilient-loader warnings. Returning true
 	// lets boot suppress the duplicate migration diagnostic.
 	OnConfigLoadWarnings func([]string) bool
@@ -1167,7 +1169,7 @@ func build(ctx context.Context, opts Options) (*BuildResult, error) {
 			reg.Add(sessiontool.NewReadSessionTool(sessionDir))
 			return "enabled list_sessions, read_session."
 		}
-		reg.Add(history.NewTool(history.Options{SessionDir: sessionDir, GlobalSessionDir: config.SessionDir(), ArchiveDir: config.ArchiveDir()}))
+		reg.Add(history.NewIndexedTool(history.Options{SessionDir: sessionDir, GlobalSessionDir: config.SessionDir(), ArchiveDir: config.ArchiveDir()}))
 		reg.Add(sessiontool.NewListSessionsTool(sessionDir))
 		reg.Add(sessiontool.NewReadSessionTool(sessionDir))
 		return "enabled history, list_sessions, read_session."
@@ -1825,7 +1827,7 @@ func build(ctx context.Context, opts Options) (*BuildResult, error) {
 		return missing
 	})
 
-	execSess := agent.NewSession(sysPrompt)
+	execSess := newObservedSession(sysPrompt)
 	executor := agent.New(execProv, reg, execSess, agent.Options{
 		MaxSteps:    maxSteps,
 		MaxStepsKey: opts.MaxStepsKey,
@@ -1954,6 +1956,7 @@ func build(ctx context.Context, opts Options) (*BuildResult, error) {
 		BalanceKey:            entry.APIKey(),
 		BalanceClient:         balanceClient,
 		Jobs:                  jm,
+		TaskStore:             opts.TaskStore,
 		WorkspaceLease:        workspaceLease,
 		Registry:              reg,
 		PluginCtx:             ctx,
