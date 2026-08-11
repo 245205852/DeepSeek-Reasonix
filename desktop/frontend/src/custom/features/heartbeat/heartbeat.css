@@ -21,7 +21,7 @@
   overflow: hidden;
   position: relative;
   /* 背景全宽（左右两侧与列表内容区一致），列表内容区内部限宽居中 */
-  background: #fafafa;
+  background: var(--bg-soft);
 }
 
 /* 无详情时：页面顶部一条全宽透明拖拽条（可拖窗口），无独立背景色块 */
@@ -273,7 +273,7 @@
   display: flex;
   flex-direction: column;
   overflow: hidden;
-  background: #fafafa;
+  background: var(--bg-soft);
 }
 
 .heartbeat-split__right .heartbeat-editor {

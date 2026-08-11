@@ -1,6 +1,6 @@
 // Run: tsx src/__tests__/heartbeat-next-run.test.ts
 
-import { heartbeatBuildCycleInterval, heartbeatNextRunAt } from "../custom/features/heartbeat/HeartbeatPanel";
+import { heartbeatBuildCycleInterval, heartbeatNextRunAt, intervalToCron, nextCycleRunAt } from "../custom/features/heartbeat/HeartbeatPanel";
 
 let passed = 0;
 let failed = 0;
@@ -117,3 +117,65 @@ eq(
 console.log(`\n${passed} passed, ${failed} failed, ${passed + failed} total`);
 if (failed > 0) process.exit(1);
 
+
+// ── 周期转 cron / 周期 next-run 语义（SivanCola review 回归） ──
+
+console.log("cycle → cron conversion guards");
+
+// biweekly 无法无损转 cron → null
+eq(intervalToCron("336h|biweekly:mon@09:00"), null, "biweekly refuses cron conversion");
+
+// 秒级任务无法转 cron → null
+eq(intervalToCron("30s"), null, "seconds refuse cron conversion");
+
+// 跨午夜窗口 22:00–06:00 无法表达 → null
+eq(intervalToCron("1h", "22:00", "06:00"), null, "cross-midnight window refuses conversion");
+
+// 时间窗口结束时刻 exclusive：09:00–17:00 → 小时 9-16（不含 17 点）
+eq(intervalToCron("1h", "09:00", "17:00"), "0 9-16 * * *", "window end hour is exclusive");
+
+// daily 周期正常转换（无窗口）
+eq(intervalToCron("24h|daily@09:00"), "0 9 * * *", "daily converts to cron");
+
+// weekly 周期正常转换
+eq(intervalToCron("168h|weekly:mon,wed@09:00"), "0 9 * * 1,3", "weekly converts to cron");
+
+// monthly 周期正常转换
+eq(intervalToCron("720h|monthly:15@09:00"), "0 9 15 * *", "monthly converts to cron");
+
+console.log("cycle next-run (schedule semantics, not cron)");
+
+// daily: 下个 22:00
+eq(
+  nextCycleRunAt("24h|daily@22:00", localMs(2026, 8, 11, 10, 0)),
+  localMs(2026, 8, 11, 22, 0),
+  "daily next run is today's 22:00",
+);
+
+// daily: 已过 22:00 → 明天 22:00
+eq(
+  nextCycleRunAt("24h|daily@22:00", localMs(2026, 8, 11, 23, 0)),
+  localMs(2026, 8, 12, 22, 0),
+  "daily next run rolls to tomorrow after 22:00",
+);
+
+// weekly: 下个周五 16:00（2026-08-14 是周五）
+eq(
+  nextCycleRunAt("168h|weekly:fri@16:00", localMs(2026, 8, 11, 10, 0)),
+  localMs(2026, 8, 14, 16, 0),
+  "weekly next run is next Friday 16:00",
+);
+
+// monthly: 下个 15 号 09:00
+eq(
+  nextCycleRunAt("720h|monthly:15@09:00", localMs(2026, 8, 11, 10, 0)),
+  localMs(2026, 8, 15, 9, 0),
+  "monthly next run is 15th 09:00",
+);
+
+// yearly: 下个 1-1 09:00（2027-01-01）
+eq(
+  nextCycleRunAt("8760h|yearly:1-1@09:00", localMs(2026, 8, 11, 10, 0)),
+  localMs(2027, 1, 1, 9, 0),
+  "yearly next run is next Jan 1st 09:00",
+);

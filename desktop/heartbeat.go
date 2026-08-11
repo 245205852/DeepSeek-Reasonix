@@ -851,21 +851,45 @@ func parseInterval(s string) (time.Duration, error) {
 	}
 }
 
-// isCronExpr returns true when s looks like a 5-field cron expression
-// (e.g. "0 * * * *", "*/15 * * * *", "0 9 * * 1-5").
+// isCronExpr returns true when s looks like a valid 5-field cron expression
+// (e.g. "0 * * * *", "*/15 * * * *", "0 9 * * 1-5"). Rejects expressions with
+// out-of-range values (e.g. "99 * * * *") that would never match.
 func isCronExpr(s string) bool {
 	fields := strings.Fields(s)
 	if len(fields) != 5 {
 		return false
 	}
-	// Each field must be non-empty and contain only cron-valid characters
-	for _, f := range fields {
+	limits := []int{59, 23, 31, 12, 7} // min, hour, dom, month, dow (0-7)
+	for i, f := range fields {
 		if f == "" {
 			return false
 		}
 		for _, c := range f {
 			if !strings.ContainsRune("0123456789*/-,", c) {
 				return false
+			}
+		}
+		// Reject out-of-range literal/range values in each field.
+		for _, part := range strings.Split(f, ",") {
+			part = strings.TrimSpace(part)
+			base := part
+			if idx := strings.Index(part, "/"); idx >= 0 {
+				base = part[:idx]
+			}
+			if base == "*" {
+				continue
+			}
+			if idx := strings.Index(base, "-"); idx >= 0 {
+				lo, err1 := strconv.Atoi(base[:idx])
+				hi, err2 := strconv.Atoi(base[idx+1:])
+				if err1 != nil || err2 != nil || lo < 0 || hi > limits[i] {
+					return false
+				}
+			} else {
+				v, err := strconv.Atoi(base)
+				if err != nil || v < 0 || v > limits[i] {
+					return false
+				}
 			}
 		}
 	}

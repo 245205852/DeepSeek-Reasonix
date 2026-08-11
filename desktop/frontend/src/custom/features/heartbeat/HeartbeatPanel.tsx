@@ -37,11 +37,9 @@ import {
 import type { HeartbeatTask } from "./heartbeat.types";
 import type { WorkspaceView } from "../../../lib/types";
 // 样式跟着组件走：App.tsx 通过 React.lazy 按需加载本组件，CSS 在此动态
-// import 会被 vite 静态分析拆成独立 chunk，进入自动化页时才下载。
-// node 单测环境（无 document）跳过，避免 tsx 解析 .css 报错。
-if (typeof document !== "undefined") {
-  void import("./heartbeat.css");
-}
+// 静态导入：Vite 保证 CSS 在模块 evaluate 前注入 DOM，避免首次访问自动化页
+// 无样式闪烁（FOUC）。node 单测通过 css-stub-register.mjs 的 loader hook 解析。
+import "./heartbeat.css";
 
 interface HeartbeatPanelProps {
   onOpenTopic?: (scope: string, workspaceRoot: string, topicId: string) => void;
@@ -200,7 +198,21 @@ function formatRelativeTime(at: number, now: number, t: Translator): string {
 function isCronExpr(s: string): boolean {
   const fields = s.trim().split(/\s+/);
   if (fields.length !== 5) return false;
-  return fields.every((f) => f !== "" && /^[0-9*/\-,]+$/.test(f));
+  if (!fields.every((f) => f !== "" && /^[0-9*/\-,]+$/.test(f))) return false;
+  // Reject out-of-range values (e.g. "99 * * * *") that never match.
+  const limits = [59, 23, 31, 12, 7]; // min, hour, dom, month, dow
+  return fields.every((f, i) =>
+    f.split(",").every((part) => {
+      const base = part.includes("/") ? part.slice(0, part.indexOf("/")) : part;
+      if (base === "*") return true;
+      if (base.includes("-")) {
+        const [lo, hi] = base.split("-").map(Number);
+        return Number.isInteger(lo) && Number.isInteger(hi) && lo >= 0 && hi <= limits[i];
+      }
+      const v = Number(base);
+      return Number.isInteger(v) && v >= 0 && v <= limits[i];
+    })
+  );
 }
 
 function cronFieldMatch(pattern: string, value: number): boolean {
@@ -277,15 +289,26 @@ function formatCronNext(ts: number | null): string {
 
 // intervalToCron converts a cycle ("24h|daily@09:00") or simple ("30m", "1h")
 // interval into a 5-field cron expression. Already-cron values pass through.
-function intervalToCron(interval: string, timeWindowStart?: string, timeWindowEnd?: string): string {
+export function intervalToCron(interval: string, timeWindowStart?: string, timeWindowEnd?: string): string | null {
+  // Guard: biweekly cannot be losslessly expressed in 5-field cron (DOM/DOW
+  // are OR-ed, so a biweekly rule like "1-15 * 1" becomes "1st-15th OR Monday",
+  // doubling the actual frequency). Seconds cannot be expressed either (cron
+  // has no seconds field). Cross-midnight windows (22:00–06:00) produce a
+  // descending range "22-6" that no matcher handles. Return null for these so
+  // callers can refuse the conversion instead of silently corrupting semantics.
   const cycleMatch = interval.match(/^\d+[smh]\|(daily|weekly|biweekly|monthly|yearly)(?::([^@]*))?(?:@(\d{2}:\d{2}))?$/);
   if (cycleMatch) {
     const kind = cycleMatch[1];
+    if (kind === "biweekly") return null;
     const days = cycleMatch[2] || "";
     const time = cycleMatch[3] || "09:00";
     const [h, m] = time.split(":").map(Number);
+    const winOk = !timeWindowStart || !timeWindowEnd
+      || (parseInt(timeWindowStart.split(":")[0]) <= parseInt(timeWindowEnd.split(":")[0]));
+    if (!winOk) return null; // cross-midnight window: not expressible
     const hExpr = timeWindowStart && timeWindowEnd
-      ? `${Math.max(0, parseInt(timeWindowStart.split(":")[0]))}-${Math.min(23, parseInt(timeWindowEnd.split(":")[0]))}`
+      // End is exclusive: "09:00–17:00" → hour range 9-16 (17:00 excluded).
+      ? `${Math.max(0, parseInt(timeWindowStart.split(":")[0]))}-${Math.max(0, Math.min(23, parseInt(timeWindowEnd.split(":")[0]) - 1))}`
       : h.toString();
     const dayMap: Record<string, number> = { mon: 1, tue: 2, wed: 3, thu: 4, fri: 5, sat: 6, sun: 0 };
     switch (kind) {
@@ -293,10 +316,6 @@ function intervalToCron(interval: string, timeWindowStart?: string, timeWindowEn
       case "weekly": {
         const d = days.split(",").map((x) => dayMap[x.toLowerCase()] ?? "*").join(",");
         return `${m} ${timeWindowStart ? hExpr : h} * * ${d}`;
-      }
-      case "biweekly": {
-        const d = days.split(",").map((x) => dayMap[x.toLowerCase()] ?? "*").join(",");
-        return `${m} ${timeWindowStart ? hExpr : h} 1-15 * ${d}`;
       }
       case "monthly": return `${m} ${timeWindowStart ? hExpr : h} ${days || "1"} * *`;
       case "yearly": {
@@ -309,21 +328,24 @@ function intervalToCron(interval: string, timeWindowStart?: string, timeWindowEn
   if (simple) {
     const n = parseInt(simple[1]);
     const unit = simple[2];
+    const winOk = !timeWindowStart || !timeWindowEnd
+      || (parseInt(timeWindowStart.split(":")[0]) <= parseInt(timeWindowEnd.split(":")[0]));
+    if (!winOk) return null; // cross-midnight window: not expressible
     const hExpr = timeWindowStart && timeWindowEnd
-      ? `${Math.max(0, parseInt(timeWindowStart.split(":")[0]))}-${Math.min(23, parseInt(timeWindowEnd.split(":")[0]))}`
+      ? `${Math.max(0, parseInt(timeWindowStart.split(":")[0]))}-${Math.max(0, Math.min(23, parseInt(timeWindowEnd.split(":")[0]) - 1))}`
       : "*";
     if (unit === "m") return `*/${n} ${hExpr} * * *`;
     // 5-field cron: minute hour dom mon dow. Hourly tasks run at minute 0 of
     // every n-th hour (`0 */n * * *`); with a time window the hour field
-    // carries the window range so runs stay inside it (`0 9-17 * * *`).
+    // carries the window range so runs stay inside it (`0 9-16 * * *`).
     if (unit === "h") {
       const hourField = timeWindowStart && timeWindowEnd ? hExpr : `*/${n}`;
       return `0 ${hourField} * * *`;
     }
-    if (unit === "s") return `*/${n} ${hExpr} * * *`;
+    if (unit === "s") return null; // seconds cannot be expressed in cron
   }
   if (isCronExpr(interval)) return interval.trim();
-  return interval;
+  return null;
 }
 
 // cronToInterval reverse-converts a cron expression back to a simple interval.
@@ -391,15 +413,68 @@ function describeCron(expr: string, t: Translator): string {
   return `${hour.padStart(2, "0")}:${min.padStart(2, "0")}${suffix}`;
 }
 
+// nextCycleRunAt returns the next wall-clock time matching a cycle interval
+// ("24h|daily@22:00", "168h|weekly:fri@16:00", "336h|biweekly:mon@09:00",
+// "720h|monthly:15@09:00", "8760h|yearly:1-1@09:00"). Mirrors the backend's
+// previousHeartbeatScheduleAt semantics (next occurrence, not rolling offset),
+// so the displayed next run matches actual scheduling. Returns null for
+// non-cycle intervals.
+const WEEK_MS = 7 * 86400000;
+export function nextCycleRunAt(interval: string, from = Date.now(), createdAt?: number): number | null {
+  const m = interval.match(/^\d+[smh]\|(daily|weekly|biweekly|monthly|yearly)(?::([^@]*))?(?:@(\d{2}:\d{2}))?$/);
+  if (!m) return null;
+  const kind = m[1];
+  const rule = m[2] || "";
+  const at = m[3] || "09:00";
+  const [hh, mm] = at.split(":").map(Number);
+  const dayMap: Record<string, number> = { sun: 0, mon: 1, tue: 2, wed: 3, thu: 4, fri: 5, sat: 6 };
+  const base = new Date(from);
+  const atTime = (d: Date): Date => {
+    const r = new Date(d);
+    r.setHours(hh, mm, 0, 0);
+    return r;
+  };
+  // Biweekly anchor: the backend alternates on the task's creation week.
+  const anchorWeek = createdAt ? Math.floor(createdAt / WEEK_MS) : Math.floor(from / WEEK_MS);
+
+  // Search forward up to 400 days (covers yearly + biweekly parity windows).
+  for (let offset = 0; offset <= 400; offset++) {
+    const day = new Date(base);
+    day.setDate(day.getDate() + offset);
+    let matches = false;
+    if (kind === "daily") {
+      matches = true;
+    } else if (kind === "weekly" || kind === "biweekly") {
+      const days = rule.split(",").map((x) => dayMap[x.trim().toLowerCase()]);
+      matches = days.includes(day.getDay());
+      if (matches && kind === "biweekly") {
+        const candWeek = Math.floor(day.getTime() / WEEK_MS);
+        if ((candWeek - anchorWeek) % 2 !== 0) matches = false;
+      }
+    } else if (kind === "monthly") {
+      matches = day.getDate() === (parseInt(rule, 10) || 1);
+    } else if (kind === "yearly") {
+      const [mo, dy] = rule.split("-");
+      matches = day.getMonth() + 1 === (parseInt(mo, 10) || 1) && day.getDate() === (parseInt(dy, 10) || 1);
+    }
+    if (!matches) continue;
+    const candidate = atTime(day).getTime();
+    if (candidate <= from) continue;
+    return candidate;
+  }
+  return null;
+}
+
 function taskNextRun(task: HeartbeatTask, t: Translator): string | null {
   if (!task.enabled) return null;
   const interval = task.interval || "";
   let next: number | null = null;
-  // 周期任务（"24h|daily@22:00" / "168h|weekly:fri@16:00"）：转 cron 计算下一个
-  // 匹配时刻——不依赖 lastRunAt（新建/从未执行也能显示「明天 22:00」）。
+  // 周期任务（"24h|daily@22:00" / "168h|weekly:fri@16:00"）：按调度语义计算
+  // 下一个匹配时刻（与后端 previousHeartbeatScheduleAt 一致）——不依赖
+  // lastRunAt，也避免转 cron 引入 biweekly/窗口/秒级语义失真。
   const cycleMatch = interval.match(/^\d+[smh]\|(daily|weekly|biweekly|monthly|yearly)(?::([^@]*))?(?:@(\d{2}:\d{2}))?$/);
   if (cycleMatch) {
-    next = nextCronRunAt(intervalToCron(interval, task.timeWindowStart, task.timeWindowEnd));
+    next = nextCycleRunAt(interval, Date.now(), task.createdAt);
   } else {
     const cleaned = interval.replace(/\|.*$/, "");
     const m = cleaned.match(/^(\d+)([smh])$/);
@@ -679,22 +754,26 @@ export function HeartbeatView({ onOpenTopic }: HeartbeatPanelProps) {
       } catch {
         // 生成失败时使用本地 fallback id
       }
+      // 推荐卡片只打开编辑器，不直接创建并启用任务：预置 prompt 可能涉及
+      // 读取对话/扫描本地文件/访问网络等敏感操作，默认禁用 + ask 审批，
+      // 由用户在编辑器中确认作用域与权限后再启用。
       const task: HeartbeatTask = {
         id,
         title: sug.title,
         prompt: sug.prompt,
         interval: sug.interval,
-        enabled: true,
-        approvalMode: "yolo",
+        enabled: false,
+        approvalMode: "ask",
         newConversationEachRun: false,
         notifyChannels: false,
         scope: "global",
         workspaceRoot: "",
         createdAt: Date.now(),
       };
-      await save([...tasks, task]);
+      setEditing(task);
+      setDetailOpen(true);
     },
-    [tasks, save],
+    [],
   );
 
   const handleEdit = useCallback((task: HeartbeatTask) => {
@@ -1021,6 +1100,7 @@ export function HeartbeatView({ onOpenTopic }: HeartbeatPanelProps) {
                   <div className="worktree-tree heartbeat-flat">
                     {filtered.map((task) => {
                       const isSelected = detailOpen && editing?.id === task.id;
+                      const nextRun = taskNextRun(task, t);
                       const scopeLabel = task.scope === "project" && task.workspaceRoot
                         ? (workspaceMap[task.workspaceRoot] || task.workspaceRoot.split("/").pop() || task.workspaceRoot)
                         : t("heartbeat.scopeGlobal");
@@ -1094,7 +1174,7 @@ export function HeartbeatView({ onOpenTopic }: HeartbeatPanelProps) {
                           </div>
                           <div className="worktree-node__meta">
                             <span className="worktree-node__scope-tag">{scopeLabel}</span>
-                            <span className="worktree-node__interval">{formatInterval(task.interval, t)}{taskNextRun(task, t) ? ` · ${taskNextRun(task, t)}` : ""}</span>
+                            <span className="worktree-node__interval">{formatInterval(task.interval, t)}{nextRun ? ` · ${nextRun}` : ""}</span>
                           </div>
                         </div>
                       );
@@ -1128,6 +1208,7 @@ export function HeartbeatView({ onOpenTopic }: HeartbeatPanelProps) {
                           {/* ── Tasks under group (depth 1: 14 + 16 = 30px indent) ── */}
                           {isExpanded && groupTasks.map((task) => {
                             const isSelected = detailOpen && editing?.id === task.id;
+                            const nextRun = taskNextRun(task, t);
                             return (
                               <div
                                 key={task.id}
@@ -1196,7 +1277,7 @@ export function HeartbeatView({ onOpenTopic }: HeartbeatPanelProps) {
                                 </span>
                                 </div>
                                 <div className="worktree-node__meta">
-                                  <span className="worktree-node__interval">{formatInterval(task.interval, t)}{taskNextRun(task, t) ? ` · ${taskNextRun(task, t)}` : ""}</span>
+                                  <span className="worktree-node__interval">{formatInterval(task.interval, t)}{nextRun ? ` · ${nextRun}` : ""}</span>
                                 </div>
                               </div>
                             );
@@ -1639,6 +1720,17 @@ function TaskEditor({
     setDraft((prev) => ({ ...prev, [field]: value }));
   }, []);
 
+  // 启用/暂停切换（状态文字入口 + 右侧按钮共用）：
+  // 只持久化 enabled 变更，基于最近保存基线（initialTaskRef）翻转，
+  // 不携带 draft 中尚未保存的 title/prompt/schedule 编辑。
+  const toggleEnabled = useCallback(() => {
+    const saved = initialTaskRef.current;
+    const updated = { ...saved, enabled: !saved.enabled };
+    setDraft(updated);
+    initialTaskRef.current = updated;
+    onSave(updated);
+  }, [onSave]);
+
   // Detect frequency type from interval value
   const [freqType, setFreqType] = useState<"interval" | "daily" | "weekly" | "biweekly" | "monthly" | "yearly" | "cron">(
     (() => {
@@ -1662,7 +1754,10 @@ function TaskEditor({
       if (ft === "yearly") return { ...prev, interval: "8760h|yearly:1-1@09:00" };
       if (ft === "cron") {
         if (isCronExpr(cur)) return prev;
-        return { ...prev, interval: intervalToCron(cur, prev.timeWindowStart, prev.timeWindowEnd) };
+        const converted = intervalToCron(cur, prev.timeWindowStart, prev.timeWindowEnd);
+        // biweekly / seconds / cross-midnight windows cannot be losslessly
+        // expressed in cron — keep the current interval instead of corrupting it.
+        return converted === null ? prev : { ...prev, interval: converted };
       }
       // interval：从周期/自定义还原为简单间隔
       if (isCronExpr(cur)) return { ...prev, interval: cronToInterval(cur) };
@@ -1687,18 +1782,7 @@ function TaskEditor({
             className={`heartbeat-editor__status${draft.enabled ? " heartbeat-editor__status--on" : ""}`}
             type="button"
             title={draft.enabled ? t("heartbeat.statusDisabled") : t("heartbeat.statusEnabled")}
-            onClick={() => {
-              // 状态切换即时保存，但只持久化 enabled 的变更：
-              // 基于最近保存的基线（initialTaskRef）翻转 enabled，不携带
-              // draft 中尚未保存的 title/prompt/schedule 编辑——否则一次
-              // 状态点击会把所有未保存改动一起落盘，且隐藏 Save/Cancel。
-              const saved = initialTaskRef.current;
-              const updated = { ...saved, enabled: !saved.enabled };
-              setDraft(updated);
-              // 同步基线使 isDirty 不再把 enabled 当作未保存改动。
-              initialTaskRef.current = updated;
-              onSave(updated);
-            }}
+            onClick={toggleEnabled}
           >
             {draft.enabled ? t("heartbeat.statusEnabled") : t("heartbeat.statusDisabled")}
           </button>
@@ -1729,12 +1813,7 @@ function TaskEditor({
             <button
               className={`heartbeat-editor__header-action${draft.enabled ? " heartbeat-editor__header-action--on" : ""}`}
               type="button"
-              onClick={() => {
-                const updated = { ...draft, enabled: !draft.enabled };
-                setDraft(updated);
-                initialTaskRef.current = updated;
-                onSave(updated);
-              }}
+              onClick={toggleEnabled}
             >
               {draft.enabled ? (
                 <CirclePause size={14} strokeWidth={2.4} />
