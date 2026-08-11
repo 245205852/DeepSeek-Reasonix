@@ -6,10 +6,13 @@ package boot
 
 import (
 	"context"
+	"fmt"
 	"sync"
 	"testing"
+	"time"
 
 	"reasonix/internal/ablation"
+	"reasonix/internal/agent"
 	"reasonix/internal/event"
 	"reasonix/internal/provider"
 )
@@ -120,5 +123,87 @@ func TestEffectSubagentAblationRemovesChildToolSchemas(t *testing.T) {
 		if names[spawn] {
 			t.Fatalf("subagent-ablated surface still offers %q — the model can spawn children the arm claims to disable", spawn)
 		}
+	}
+}
+
+// budgetRunawayProvider never repeats itself and never fails, so every
+// adaptive guard stays quiet. Only the spend gate can stop it.
+type budgetRunawayProvider struct {
+	mu     sync.Mutex
+	rounds int
+}
+
+func (p *budgetRunawayProvider) Name() string { return "boot-budget-runaway" }
+
+func (p *budgetRunawayProvider) Stream(_ context.Context, _ provider.Request) (<-chan provider.Chunk, error) {
+	p.mu.Lock()
+	p.rounds++
+	round := p.rounds
+	p.mu.Unlock()
+	ch := make(chan provider.Chunk, 4)
+	ch <- provider.Chunk{Type: provider.ChunkToolCall, ToolCall: &provider.ToolCall{
+		ID:        fmt.Sprintf("call-%d", round),
+		Name:      "read_file",
+		Arguments: fmt.Sprintf(`{"path":"file%d.txt"}`, round),
+	}}
+	ch <- provider.Chunk{Type: provider.ChunkUsage, Usage: &provider.Usage{
+		PromptTokens: 1000, CompletionTokens: 100, TotalTokens: 1100, RequestCount: 1,
+	}}
+	ch <- provider.Chunk{Type: provider.ChunkDone}
+	close(ch)
+	return ch, nil
+}
+
+func (p *budgetRunawayProvider) roundCount() int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.rounds
+}
+
+// TestEffectTaskBudgetLandsARunawayThroughRealBuild pins the gate at its final
+// boundary: a configured spend budget must stop a wandering turn through the
+// real Build assembly. Nothing else would stop it: ordinary chat has no round
+// ceiling, and this provider never repeats itself.
+func TestEffectTaskBudgetLandsARunawayThroughRealBuild(t *testing.T) {
+	isolateConfigHome(t)
+	dir := robustTempDir(t)
+	t.Chdir(dir)
+
+	rec := &budgetRunawayProvider{}
+	provider.Register("boot-budget-gate", func(provider.Config) (provider.Provider, error) {
+		return rec, nil
+	})
+	writeFile(t, dir, "reasonix.toml", `
+default_model = "test-model"
+
+[agent]
+system_prompt = "BASE"
+task_time_budget_minutes = 0.0005
+
+[[providers]]
+name = "test-model"
+kind = "boot-budget-gate"
+model = "x"
+`)
+
+	ctrl, err := Build(context.Background(), Options{Sink: event.Discard})
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	defer ctrl.Close()
+
+	runCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	runErr := ctrl.Run(runCtx, "read every file you can find")
+
+	// Ordinary chat has no round ceiling, so a gate that never reached the
+	// executor would run until the context deadline. Assert the typed boundary
+	// instead of a machine-speed-dependent round count.
+	pause, ok := agent.InspectRunPause(runErr)
+	if !ok || pause.Kind != "task_budget" || pause.Key != "time" {
+		t.Fatalf("Run error = %v (pause=%+v, ok=%v), want time task-budget pause", runErr, pause, ok)
+	}
+	if rec.roundCount() == 0 {
+		t.Fatal("no round reached the provider; the run never started")
 	}
 }
