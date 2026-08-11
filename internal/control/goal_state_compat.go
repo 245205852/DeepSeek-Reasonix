@@ -53,6 +53,15 @@ func cloneGoalStateExtra(in map[string]json.RawMessage) map[string]json.RawMessa
 	return out
 }
 
+func (g *goalMachine) grantSpendSliceLocked(fresh bool) {
+	switch {
+	case g.tokenBudget <= 0:
+		g.tokensLimit = 0
+	case fresh || g.tokensLimit <= g.tokensUsed:
+		g.tokensLimit = g.tokensUsed + g.tokenBudget
+	}
+}
+
 // migrateRemovedGoalPause clears pauses produced by gates no longer enforced.
 func (g *goalMachine) migrateRemovedGoalPause() bool {
 	if g.status != GoalStatusBlocked {

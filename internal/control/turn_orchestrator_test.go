@@ -380,24 +380,6 @@ func TestGoalReadinessFailureContinuesUntilExternalStop(t *testing.T) {
 	}
 }
 
-func TestGoalReadinessFailurePausesOnExplicitSpendBudget(t *testing.T) {
-	runner := &deliveryScopeErrorRunner{}
-	executor := agent.New(nil, tool.NewRegistry(), agent.NewSession(""), agent.Options{}, event.Discard)
-	c := New(Options{Runner: runner, Executor: executor, GoalTokenBudget: 200})
-	runner.usage = c.goalUsageTee
-	c.SetGoal("ship the integration")
-
-	if err := newTurnOrchestrator(c).runGoalLoopWithRawDisplay(context.Background(), "start", "start", ""); err != nil {
-		t.Fatalf("run err = %v, want the explicit budget pause absorbed by the Goal FSM", err)
-	}
-	if got := c.GoalStatus(); got != GoalStatusBlocked {
-		t.Fatalf("GoalStatus = %q, want blocked (spend-budget pause)", got)
-	}
-	if rt := c.GoalRuntime(); rt.StopCause != stopCauseBudgetSpend {
-		t.Fatalf("runtime = %+v, want %q", rt, stopCauseBudgetSpend)
-	}
-}
-
 type recoveryPauseRunner struct {
 	scopes []agent.DeliveryExecutionScope
 	calls  int

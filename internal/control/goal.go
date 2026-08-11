@@ -409,13 +409,7 @@ func (g *goalMachine) resume(todos []evidence.TodoItem) (path string, data []byt
 	g.turnsLimit = unlimitedGoalTurns
 	g.noProgressLimit = 0
 	g.budgetExtensions = 0
-	if spentBudget && g.tokenBudget > 0 {
-		g.tokensLimit = g.tokensUsed + g.tokenBudget
-	} else if g.tokenBudget <= 0 {
-		g.tokensLimit = 0
-	} else if g.tokensLimit <= g.tokensUsed {
-		g.tokensLimit = g.tokensUsed + g.tokenBudget
-	}
+	g.grantSpendSliceLocked(spentBudget)
 	if g.scopeID == "" {
 		g.scopeID = newGoalScopeID()
 	}
