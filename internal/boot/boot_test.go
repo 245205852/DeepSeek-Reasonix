@@ -170,6 +170,7 @@ func TestBuildRunsCleanupPendingDespiteSafeModeEnv(t *testing.T) {
 
 func TestBuildRegistersUsableHistoryAndMemoryRetrievalTools(t *testing.T) {
 	isolateConfigHome(t)
+	historyIndexReady := bootTestHistoryIndexReady(t)
 	dir := robustTempDir(t)
 	t.Chdir(dir)
 
@@ -221,6 +222,7 @@ model = "x"
 		t.Fatalf("Build: %v", err)
 	}
 	defer ctrl.Close()
+	waitForBootTestHistoryIndex(t, historyIndexReady)
 
 	sys := systemMessage(ctrl.History())
 	for _, forbidden := range []string{
@@ -4469,23 +4471,6 @@ func TestBuildSkipsLegacySessionMigrationWhenIsolated(t *testing.T) {
 	if _, err := os.Stat(projectPath); !os.IsNotExist(err) {
 		t.Fatal("legacy project session was imported but must not be when REASONIX_HOME is set")
 	}
-}
-
-// isolateConfigHome redirects os.UserConfigDir() (and the cache subtree under
-// it) at a per-test temp dir by overriding the env vars Go's stdlib reads on
-// macOS, Linux, and Windows. Without this, Build's config, plugin stats, and
-// cached schemas can bleed across tests. Mirrors the withTempCache helper in
-// internal/plugin/stats_test.go.
-func isolateConfigHome(t *testing.T) string {
-	t.Helper()
-	dir := robustTempDir(t)
-	t.Setenv("HOME", dir)
-	t.Setenv("USERPROFILE", dir)
-	t.Setenv("XDG_CONFIG_HOME", dir)
-	t.Setenv("AppData", filepath.Join(dir, "AppData"))
-	t.Setenv("LocalAppData", filepath.Join(dir, "LocalAppData"))
-	t.Setenv("REASONIX_CREDENTIALS_STORE", "file")
-	return dir
 }
 
 // TestPartitionByTier pins the bucket assignment contract that the rest of

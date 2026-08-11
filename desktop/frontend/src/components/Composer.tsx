@@ -10,6 +10,7 @@ import { formatInboxError } from "../lib/inboxError";
 import { guidanceNeedsRetry, guidanceTextMatches, kickIdleGuidance, markGuidanceQueued } from "../lib/composerGuidance";
 import { canUsePromptHistory, composerEnterAction, composerEscapeAction, composerMenuKeyAction, insertComposerNewline, isFnKeyEvent, isImeKeyEvent, promptHistoryDirectionFromEvent } from "../lib/composerKeyboard";
 import { cacheGeneration, loadOlder } from "../lib/composerHistory";
+import { sessionTurnsLabel } from "../lib/sessionCatalogPresentation";
 import { SPINNER_WORDS, useI18n, type Translator } from "../lib/i18n";
 import { detectShortcutPlatform, formatShortcutCombo, isReservedComposerHistoryShortcut, matchesShortcut, useShortcutComboLabel } from "../lib/keyboardShortcuts";
 import { fallbackCopyText } from "../lib/clipboard";
@@ -3249,6 +3250,7 @@ export function Composer({
           title: session.title || session.topicTitle || session.preview || "Untitled",
           preview: session.preview,
           turns: session.turns,
+          turnsState: session.turnsState,
           createdAt: session.createdAt,
           lastActivityAt: session.lastActivityAt,
         },
@@ -4192,21 +4194,19 @@ export function Composer({
                   </div>
                 ) : (
                   filteredPastChats.map((session, i) => {
-                    // PR-C2: hover preview uses only the SessionMeta fields we
-                    // already have on hand — no extra PreviewSession call, no
-                    // backend round-trip, no read of the full transcript.
-                    const turns = typeof session.turns === "number";
+                    // Hover preview stays on SessionMeta and never reads the transcript.
+                    const turnsLabel = sessionTurnsLabel(session, t);
                     const ts = session.lastActivityAt || session.modTime || session.createdAt;
                     const preview = truncatePreview(session.preview);
                     const pathText = session.workspaceRoot || session.path;
                     const tooltipLabel =
-                      turns || ts || preview || pathText ? (
+                      turnsLabel || ts || preview || pathText ? (
                         <div className="past-chat-hover">
                           <div className="past-chat-hover__title">{pastChatTitle(session)}</div>
                           {preview && <div className="past-chat-hover__preview">{preview}</div>}
-                          {(turns || ts) && (
+                          {(turnsLabel || ts) && (
                             <div className="past-chat-hover__meta">
-                              {turns && <span>{t("composer.sessionTurns", { n: session.turns })}</span>}
+                              {turnsLabel && <span>{turnsLabel}</span>}
                               {ts && <span>· {fmtSessionTime(ts)}</span>}
                             </div>
                           )}
@@ -4226,7 +4226,7 @@ export function Composer({
                           <MessageSquare size={13} className="filemenu__icon" />
                           <span className="slashmenu__name slashmenu__name--file">
                             {pastChatTitle(session)}
-                            {turns ? ` (${t("composer.sessionTurns", { n: session.turns })})` : ""}
+                            {turnsLabel ? ` (${turnsLabel})` : ""}
                           </span>
                         </button>
                       </Tooltip>
@@ -4361,7 +4361,7 @@ export function Composer({
                   <MessageSquare size={15} />
                   <span>
                     {ref.title}
-                    {typeof ref.turns === "number" ? ` (${t("composer.sessionTurns", { n: ref.turns })})` : ""}
+                    {sessionTurnsLabel(ref, t) ? ` (${sessionTurnsLabel(ref, t)})` : ""}
                   </span>
                 </span>
               </Tooltip>
