@@ -96,7 +96,10 @@ func (o *turnOrchestrator) runSubagentSkillTurnsGoalLoop(ctx context.Context, sk
 		recorder := o.c.goals.newTurnRecorder(scopeID, o.c.goals.continuationToken())
 		o.c.goalUsageTee.setActiveRecorder(recorder)
 	}
-	if err := o.runSubagentSkillTurns(ctx, skills, task, raw, display, runner, planMode, userImages, imageCandidates); err != nil {
+	startMessages := o.c.sessionMessageCount()
+	err := o.runSubagentSkillTurns(ctx, skills, task, raw, display, runner, planMode, userImages, imageCandidates)
+	o.c.captureGoalRunWorkDuration(startMessages)
+	if err != nil {
 		if ctx.Err() != nil {
 			o.c.goalUsageTee.setActiveRecorder(nil)
 			o.c.stopGoal(GoalStatusStopped)
@@ -116,6 +119,7 @@ func (o *turnOrchestrator) runSubagentSkillTurnsGoalLoop(ctx context.Context, sk
 // top-level run_skill cards.
 func (o *turnOrchestrator) runSubagentSkillTurns(ctx context.Context, skills []skill.Skill, task, raw, display string, runner skill.SubagentRunner, planMode bool, images, imageCandidates []string) (err error) {
 	c := o.c
+	turnStartedAt := time.Now()
 	c.maybeSessionStart(ctx)
 	parentSession := c.parentSessionID()
 	ctx = agent.WithParentSession(ctx, parentSession)
@@ -181,7 +185,8 @@ func (o *turnOrchestrator) runSubagentSkillTurns(ctx context.Context, skills []s
 		answer = tool.GuardSubagentHostDecisionText(answer)
 		toolEvent.Output = answer
 		c.sink.Emit(event.Event{Kind: event.ToolResult, Tool: toolEvent})
-		c.executor.Session().Add(provider.Message{Role: provider.RoleAssistant, Content: answer})
+		workDurationMs := max(int64(1), time.Since(turnStartedAt).Milliseconds())
+		c.executor.Session().Add(provider.Message{Role: provider.RoleAssistant, Content: answer, WorkDurationMs: workDurationMs})
 		display := agent.DisplayAssistantText(answer)
 		c.sink.Emit(event.Event{Kind: event.Text, Text: display})
 		c.sink.Emit(event.Event{Kind: event.Message, Text: display})
