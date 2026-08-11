@@ -5869,7 +5869,32 @@ body > .mermaid-diagram--fullscreen {
   font: inherit;
   font-size: 11px;
   line-height: 1.25;
-  transition: color 0.12s, border-color 0.12s, background 0.12s;
+  transition: color 0.12s, border-color 0.12s, background 0.12s, gap 0.12s;
+}
+.turn-actions__label-inline {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  max-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  transition: max-width 0.12s;
+}
+.turn-actions__label-inline > span,
+.turn-actions__label-inline > svg {
+  flex-shrink: 0;
+}
+.turn-actions__btn:hover .turn-actions__label-inline,
+.turn-actions__btn:focus-visible .turn-actions__label-inline,
+.turn-actions__group--open .turn-actions__label-inline,
+.turn-actions__btn--confirm .turn-actions__label-inline {
+  max-width: 240px;
+}
+.turn-actions__btn:hover,
+.turn-actions__btn:focus-visible,
+.turn-actions__group--open .turn-actions__btn,
+.turn-actions__btn--confirm {
+  gap: 6px;
 }
 .turn-actions__btn:hover:not(:disabled),
 .turn-actions__btn:focus-visible:not(:disabled),

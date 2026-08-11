@@ -853,19 +853,20 @@ func TestSaveProviderPersistsAuthHeader(t *testing.T) {
 	}
 }
 
-func TestSaveProviderPersistsCustomEndpointURLs(t *testing.T) {
+func TestSaveProviderPersistsAndMirrorsCustomEndpointURLs(t *testing.T) {
 	isolateDesktopUserDirs(t)
 
 	app := NewApp()
 	if err := app.SaveProvider(ProviderView{
-		Name:      "sub2api",
-		Kind:      "openai",
-		BaseURL:   "https://proxy.example.com/v1",
-		ChatURL:   " https://proxy.example.com/custom/chat/completions ",
-		ModelsURL: " https://proxy.example.com/v1/models ",
-		Models:    []string{"model-a"},
-		Default:   "model-a",
-		APIKeyEnv: "SUB2API_KEY",
+		Name:       "sub2api",
+		Kind:       "openai",
+		BaseURL:    "https://proxy.example.com/v1",
+		ChatURL:    " https://legacy.example.com/chat/completions/ ",
+		RequestURL: " https://proxy.example.com/custom/chat/completions/?token=1 ",
+		ModelsURL:  " https://proxy.example.com/v1/models ",
+		Models:     []string{"model-a"},
+		Default:    "model-a",
+		APIKeyEnv:  "SUB2API_KEY",
 	}); err != nil {
 		t.Fatalf("SaveProvider: %v", err)
 	}
@@ -875,8 +876,11 @@ func TestSaveProviderPersistsCustomEndpointURLs(t *testing.T) {
 	if !ok {
 		t.Fatal("saved provider not found")
 	}
-	if got.ChatURL != "https://proxy.example.com/custom/chat/completions" {
+	if got.ChatURL != "https://proxy.example.com/custom/chat/completions/?token=1" {
 		t.Fatalf("saved chat_url = %q", got.ChatURL)
+	}
+	if got.RequestURL != "https://proxy.example.com/custom/chat/completions/?token=1" {
+		t.Fatalf("saved request_url = %q", got.RequestURL)
 	}
 	if got.ModelsURL != "https://proxy.example.com/v1/models" {
 		t.Fatalf("saved models_url = %q", got.ModelsURL)
@@ -887,8 +891,11 @@ func TestSaveProviderPersistsCustomEndpointURLs(t *testing.T) {
 		if provider.Name != "sub2api" {
 			continue
 		}
-		if provider.ChatURL != "https://proxy.example.com/custom/chat/completions" {
+		if provider.ChatURL != "https://proxy.example.com/custom/chat/completions/?token=1" {
 			t.Fatalf("Settings chatUrl = %q", provider.ChatURL)
+		}
+		if provider.RequestURL != "https://proxy.example.com/custom/chat/completions/?token=1" {
+			t.Fatalf("Settings requestUrl = %q", provider.RequestURL)
 		}
 		if provider.ModelsURL != "https://proxy.example.com/v1/models" {
 			t.Fatalf("Settings modelsUrl = %q", provider.ModelsURL)

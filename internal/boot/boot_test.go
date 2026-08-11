@@ -1582,7 +1582,7 @@ func TestNewProviderPropagatesConfiguredMaxOutputTokens(t *testing.T) {
 
 	p, err := NewProvider(&config.ProviderEntry{
 		Name: "openai", Kind: "openai", BaseURL: "https://api.openai.com/v1",
-		ChatURL: srv.URL, Model: "o3", MaxOutputTokens: 4096,
+		ChatURL: "https://legacy.invalid/chat/completions/", RequestURL: srv.URL, Model: "o3", MaxOutputTokens: 4096,
 	})
 	if err != nil {
 		t.Fatalf("NewProvider: %v", err)

@@ -92,9 +92,10 @@ type Config struct {
   differing only in `base_url` / `model` / `api_key_env`. Adding another OpenAI-
   compatible model is a config edit, not a code change.
 - **A provider is a vendor endpoint** (one `base_url` + `api_key_env`) that offers
-  one or more models. OpenAI-compatible chat normally posts to
-  `base_url + "/chat/completions"`; set `chat_url` only for gateways that require a
-  full request URL. An entry declares either a single `model = "..."` or a
+  one or more models. `request_url`, when set, is the exact request target for
+  OpenAI-compatible, Anthropic-compatible, and Responses providers. Legacy
+  `chat_url` retains its historical OpenAI-only behavior; other legacy entries
+  derive the protocol path from `base_url`. An entry declares either a single `model = "..."` or a
   `models = ["...", "..."]` list (with an optional `default`); the list form lets
   one vendor expose several models without re-declaring the endpoint/key. A
   **model reference** (`default_model`, the `--model` flag, the desktop switcher)
@@ -998,7 +999,7 @@ reasoning_language = "auto"       # visible reasoning text: auto|zh|en
 name           = "deepseek"
 kind           = "anthropic"
 base_url       = "https://api.deepseek.com/anthropic"
-# chat_url     = "https://proxy.example.com/v1/chat/completions"   # optional full chat request URL
+# request_url  = "https://proxy.example.com/anthropic/v1/messages" # optional exact provider request URL
 # models_url   = "https://proxy.example.com/v1/models"             # optional model discovery URL
 models         = ["deepseek-v4-flash", "deepseek-v4-pro"]
 default        = "deepseek-v4-flash"   # optional; defaults to models[0]

@@ -2201,6 +2201,7 @@ func legacyDeepSeekProviderWideProjection(entry *ProviderEntry) ProviderEntry {
 	out.Kind = strings.ToLower(strings.TrimSpace(out.Kind))
 	out.BaseURL = normalizedBaseURLForMigration(out.BaseURL)
 	out.ChatURL = strings.TrimSpace(out.ChatURL)
+	out.RequestURL = strings.TrimSpace(out.RequestURL)
 	out.ModelsURL = strings.TrimSpace(out.ModelsURL)
 	out.APIKeyEnv = strings.TrimSpace(out.APIKeyEnv)
 	out.BalanceURL = normalizedDeepSeekBalanceURL(out.BalanceURL)

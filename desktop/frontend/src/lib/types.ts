@@ -1711,7 +1711,8 @@ export interface ProviderView {
   added: boolean;
   kind: string;
   baseUrl: string;
-  chatUrl?: string; // optional full chat completions URL; empty derives from baseUrl
+  chatUrl?: string; // legacy OpenAI chat endpoint override; preserved for old-config compatibility
+  requestUrl?: string; // exact provider request URL written by the current settings UI
   models: string[];
   visionModels: string[]; // subset of models that accepts image input
   visionModelsConfigured: boolean; // true when an empty list is an explicit choice

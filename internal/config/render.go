@@ -306,7 +306,10 @@ func RenderTOMLForScope(c *Config, scope RenderScope) string {
 			fmt.Fprintf(&b, "kind        = %q\n", p.Kind)
 			fmt.Fprintf(&b, "base_url    = %q\n", p.BaseURL)
 			if p.ChatURL != "" {
-				fmt.Fprintf(&b, "chat_url    = %q   # optional full chat completions URL; disables automatic /chat/completions suffix\n", p.ChatURL)
+				fmt.Fprintf(&b, "chat_url    = %q   # legacy OpenAI chat endpoint override\n", p.ChatURL)
+			}
+			if p.RequestURL != "" {
+				fmt.Fprintf(&b, "request_url = %q   # exact provider request URL; no path completion\n", p.RequestURL)
 			}
 			if len(p.Models) > 0 {
 				fmt.Fprintf(&b, "models      = %s\n", renderStringArray(p.Models))
@@ -1002,6 +1005,9 @@ func RenderTOMLProjectDelta(c *Config) string {
 			fmt.Fprintf(&b, "base_url    = %q\n", p.BaseURL)
 			if p.ChatURL != "" {
 				fmt.Fprintf(&b, "chat_url    = %q\n", p.ChatURL)
+			}
+			if p.RequestURL != "" {
+				fmt.Fprintf(&b, "request_url = %q\n", p.RequestURL)
 			}
 			if len(p.Models) > 0 {
 				fmt.Fprintf(&b, "models      = %s\n", renderStringArray(p.Models))

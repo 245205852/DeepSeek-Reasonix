@@ -80,8 +80,9 @@ const rawInitialBytes = [...initialJS, ...initialCSS, ...appShellCSS]
 // Native Web Animations and frame-batched scrolling avoid an eager animation
 // runtime. Goal request observability plus transcript scroll arbitration,
 // logical selection state/DOM adapters, native input-session ownership,
-// durable inbox recovery, indexed catalogs, Task Center, and structured
-// billing states add small always-available contracts. Keep the raw allowance
-// ratcheted while gzip startup budgets stay flat.
-assertBudget("initial raw JavaScript and CSS", rawInitialBytes, 2_263.5 * 1024);
+// durable inbox recovery, indexed catalogs, Task Center, structured billing,
+// startup config warnings, and hover-revealed turn-action labels add small
+// always-available contracts. Keep the raw allowance ratcheted while gzip
+// startup budgets stay flat.
+assertBudget("initial raw JavaScript and CSS", rawInitialBytes, 2_264.5 * 1024);
 assertBudget("largest initial JavaScript chunk raw", largestInitialJSRaw, 1_000 * 1024);
