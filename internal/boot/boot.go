@@ -2580,19 +2580,6 @@ func addBuiltins(reg *tool.Registry, enabled, writeRoots []string, bashSpec sand
 	}
 }
 
-func builtinToolEnabled(enabled []string, name string) bool {
-	if len(enabled) == 0 {
-		return true
-	}
-	name = strings.TrimSpace(name)
-	for _, candidate := range enabled {
-		if strings.TrimSpace(candidate) == name {
-			return true
-		}
-	}
-	return false
-}
-
 // partitionByTier splits configured plugin entries into eager (block boot until
 // ready) and background (placeholder + start spawn now). Entries with an empty,
 // legacy lazy, or unrecognised tier land in background.

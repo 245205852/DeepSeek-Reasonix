@@ -157,13 +157,9 @@ func Derive(in Input) TaskPolicy {
 	if intent == taskintent.PersistentAction && risk < RiskMedium {
 		risk = RiskMedium
 	}
-	if intent == taskintent.Mutation && constraints.ForbidExternal && risk < RiskMedium {
-		// forbid-push alone does not raise risk for local edits.
-	}
-
 	route := chooseRoute(policy, intent, risk, in)
 	verification := policy.VerificationPolicy.Level
-	if constraints.RequireFullVerification || constraints.ForbidTests == false && risk >= RiskHigh {
+	if constraints.RequireFullVerification || !constraints.ForbidTests && risk >= RiskHigh {
 		if policy.VerificationPolicy.Level < VerifyFull && (constraints.RequireFullVerification || risk >= RiskHigh) {
 			if constraints.RequireFullVerification || securityClass || preset == agentpreset.Delivery {
 				verification = VerifyFull
@@ -452,7 +448,7 @@ func StripQuotedConstraints(raw string) string {
 func stripFences(s string) string {
 	var b strings.Builder
 	inFence := false
-	for _, line := range strings.Split(s, "\n") {
+	for line := range strings.SplitSeq(s, "\n") {
 		trim := strings.TrimSpace(line)
 		if strings.HasPrefix(trim, "```") {
 			inFence = !inFence

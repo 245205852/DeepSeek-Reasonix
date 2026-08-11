@@ -1386,9 +1386,10 @@ func (a *Agent) SetAgentPreset(preset string) {
 	a.agentPreset.Store(string(p))
 	// Keep baseline deliveryProfile aligned with Delivery role setting so
 	// legacy gates that still read the bool stay coherent until fully migrated.
-	if p == agentpreset.Delivery {
+	switch p {
+	case agentpreset.Delivery:
 		a.deliveryProfile = true
-	} else if p == agentpreset.Light || p == agentpreset.Balanced {
+	case agentpreset.Light, agentpreset.Balanced:
 		// Light may still elevate per-turn; baseline stays non-delivery.
 		a.deliveryProfile = false
 	}

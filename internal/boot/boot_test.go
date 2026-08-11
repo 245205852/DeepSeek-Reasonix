@@ -432,20 +432,6 @@ func toolSchemaNames(tools []provider.ToolSchema) []string {
 	return names
 }
 
-func assertToolOrder(t *testing.T, tools []provider.ToolSchema, want []string) {
-	t.Helper()
-	names := toolSchemaNames(tools)
-	next := 0
-	for _, name := range names {
-		if next < len(want) && name == want[next] {
-			next++
-		}
-	}
-	if next != len(want) {
-		t.Fatalf("tool order changed; provider-visible tool schema order affects prompt-cache shape.\nwant subsequence: %v\n got: %v", want, names)
-	}
-}
-
 func firstTokenProfileRequest(t *testing.T, tokenMode string) provider.Request {
 	t.Helper()
 	registerBootTokenProfileTestProvider()
@@ -2356,67 +2342,6 @@ func unifiedBootToolNames() []string {
 	}
 }
 
-func defaultFullBootToolNames() []string {
-	return unifiedBootToolNames()
-}
-
-func legacyFullBootToolNames() []string {
-	return []string{
-		"ask",
-		"bash",
-		"bash_output",
-		"code_index",
-		"complete_step", "compress",
-		"delete_range",
-		"delete_symbol",
-		"docs",
-		"edit_file",
-		"explore",
-		"fleet",
-		"forget",
-		"glob",
-		"grep",
-		"history",
-		"install_skill",
-		"install_source",
-		"kill_shell",
-		"list_sessions",
-		"ls",
-		"lsp_definition",
-		"lsp_diagnostics",
-		"lsp_hover",
-		"lsp_references",
-		"memory",
-		"move_file",
-		"multi_edit",
-		"notebook_edit",
-		"parallel_tasks",
-		"read_file",
-		"read_only_skill",
-		"read_only_task",
-		"read_session",
-		"read_skill",
-		"read_subagent_result",
-		"remember",
-		"research",
-		"review",
-		"run_skill",
-		"security_review",
-		"slash_command",
-		"task",
-		"todo_write",
-		"update_goal",
-		"wait",
-		"web_fetch",
-		"write_file",
-	}
-}
-
-func economyBootToolNames() []string {
-	// Economy maps to the Light role setting and shares the unified surface.
-	return unifiedBootToolNames()
-}
-
 func TestBuildTokenEconomyStartsWithLeanToolSurface(t *testing.T) {
 	// Light (legacy economy) shares the unified provider-visible surface with
 	// Balanced/Delivery: core tools + host-control + use_capability.
@@ -2556,14 +2481,14 @@ model = "x"
 					t.Fatalf("use_capability missing: %v", toolSchemaNames(req.Tools))
 				}
 			}
-			var toolOut string
+			var toolOut strings.Builder
 			for _, msg := range ctrl.History() {
 				if msg.Role == provider.RoleTool {
-					toolOut += msg.Content
+					toolOut.WriteString(msg.Content)
 				}
 			}
-			if !strings.Contains(toolOut, tc.want) {
-				t.Fatalf("use_capability(%s) output missing %q:\n%s", tc.id, tc.want, toolOut)
+			if !strings.Contains(toolOut.String(), tc.want) {
+				t.Fatalf("use_capability(%s) output missing %q:\n%s", tc.id, tc.want, toolOut.String())
 			}
 		})
 	}
@@ -2663,17 +2588,17 @@ model = "x"
 	if err := ctrl.Run(context.Background(), "search in plan"); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
-	var toolOut string
+	var toolOut strings.Builder
 	for _, msg := range ctrl.History() {
 		if msg.Role == provider.RoleTool {
-			toolOut += msg.Content
+			toolOut.WriteString(msg.Content)
 		}
 	}
-	if strings.Contains(toolOut, "blocked:") && strings.Contains(toolOut, "use_capability") {
-		t.Fatalf("use_capability should not be blocked in plan mode:\n%s", toolOut)
+	if strings.Contains(toolOut.String(), "blocked:") && strings.Contains(toolOut.String(), "use_capability") {
+		t.Fatalf("use_capability should not be blocked in plan mode:\n%s", toolOut.String())
 	}
-	if !strings.Contains(toolOut, "plan_needle") {
-		t.Fatalf("plan-mode use_capability/grep missing result:\n%s", toolOut)
+	if !strings.Contains(toolOut.String(), "plan_needle") {
+		t.Fatalf("plan-mode use_capability/grep missing result:\n%s", toolOut.String())
 	}
 }
 

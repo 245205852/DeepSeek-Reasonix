@@ -2,14 +2,14 @@
   "limits": {
     "banner": 15,
     "commented-code": 0,
-    "complexity": 2103,
+    "complexity": 2100,
     "essay": 4065,
-    "file-size": 110472,
+    "file-size": 110452,
     "function-size": 9078,
     "layering": 1,
     "marker": 0,
     "narrative": 64,
-    "test-file-size": 69436
+    "test-file-size": 69361
   },
   "files": {
     "cmd/e2ebench/main.go": {
@@ -438,7 +438,7 @@
     "internal/agent/agent.go": {
       "complexity": 37,
       "essay": 97,
-      "file-size": 2577,
+      "file-size": 2578,
       "function-size": 102
     },
     "internal/agent/ask.go": {
@@ -673,13 +673,13 @@
     "internal/boot/boot.go": {
       "complexity": 249,
       "essay": 101,
-      "file-size": 2089,
+      "file-size": 2076,
       "function-size": 1691,
       "narrative": 3
     },
     "internal/boot/boot_test.go": {
       "essay": 10,
-      "test-file-size": 3915
+      "test-file-size": 3840
     },
     "internal/boot/extension_dispatch_test.go": {
       "essay": 3,
@@ -822,7 +822,7 @@
     "internal/cli/cli.go": {
       "complexity": 75,
       "essay": 60,
-      "file-size": 1976,
+      "file-size": 1968,
       "function-size": 519
     },
     "internal/cli/cli_test.go": {
@@ -1804,7 +1804,7 @@
       "essay": 8
     },
     "internal/taskpolicy/policy.go": {
-      "complexity": 11
+      "complexity": 8
     },
     "internal/tool/builtin/bash.go": {
       "essay": 14,

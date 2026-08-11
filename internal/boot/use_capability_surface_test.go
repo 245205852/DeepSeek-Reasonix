@@ -114,16 +114,16 @@ model = "x"
 			t.Fatalf("grep must not appear top-level after use_capability: %v", toolSchemaNames(req.Tools))
 		}
 	}
-	var toolOut string
+	var toolOut strings.Builder
 	for _, msg := range ctrl.History() {
 		if msg.Role == provider.RoleTool {
-			toolOut += msg.Content
+			toolOut.WriteString(msg.Content)
 		}
 	}
-	if toolOut == "" {
+	if toolOut.Len() == 0 {
 		t.Fatal("expected use_capability/grep tool output")
 	}
-	if strings.Contains(toolOut, "unavailable") || strings.Contains(toolOut, "not registered") {
-		t.Fatalf("use_capability failed to dispatch grep: %s", toolOut)
+	if strings.Contains(toolOut.String(), "unavailable") || strings.Contains(toolOut.String(), "not registered") {
+		t.Fatalf("use_capability failed to dispatch grep: %s", toolOut.String())
 	}
 }

@@ -425,14 +425,6 @@ func parseRuntimeProfile(value string) (string, error) {
 	}
 }
 
-func parseAgentPresetFlag(value string) (string, error) {
-	mode, err := parseRuntimeProfile(value)
-	if err != nil {
-		return "", err
-	}
-	return boot.NormalizeAgentPreset(mode), nil
-}
-
 // chdirTo honours --dir: it switches the working directory before anything reads
 // it, so config discovery, the sandbox root, and file tools all resolve from the
 // chosen project root. Returns 2 (already reported) on failure, 0 otherwise.

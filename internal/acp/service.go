@@ -1671,7 +1671,7 @@ func (s *service) switchSessionRuntimeProfile(ctx context.Context, sess *acpSess
 		ctrl.SetAgentPreset(profile)
 	}
 	// Dual-write session runtime profile label for config option responses.
-	normalized := profile
+	var normalized string
 	switch strings.ToLower(strings.TrimSpace(profile)) {
 	case "light", "economy", "eco", "lite":
 		normalized = "economy"

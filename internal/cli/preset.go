@@ -15,9 +15,6 @@ type presetOption struct {
 	desc string
 }
 
-// workModeOption is the legacy alias used by older completion helpers.
-type workModeOption = presetOption
-
 func agentPresetName(preset string) string {
 	switch boot.NormalizeAgentPreset(preset) {
 	case boot.AgentPresetLight:
@@ -127,7 +124,6 @@ func (m *chatTUI) runPresetCommand(input string) tea.Cmd {
 }
 
 // Compatibility wrappers keep existing work-mode call sites compiling.
-func runtimeProfileName(profile string) string    { return agentPresetName(profile) }
 func runtimeProfileDisplay(profile string) string { return agentPresetDisplay(profile) }
 func parseWorkMode(value string) (string, bool) {
 	preset, ok := parseAgentPreset(value)
@@ -135,13 +131,6 @@ func parseWorkMode(value string) (string, bool) {
 		return "", false
 	}
 	return boot.TokenModeFromAgentPreset(preset), true
-}
-func workModeOptions() []workModeOption {
-	out := make([]workModeOption, 0, 3)
-	for _, o := range agentPresetOptions() {
-		out = append(out, workModeOption{name: o.name, desc: o.desc})
-	}
-	return out
 }
 func renderWorkModes(width int, current string) string { return renderAgentPresets(width, current) }
 func (m *chatTUI) runWorkModeCommand(input string) tea.Cmd {
