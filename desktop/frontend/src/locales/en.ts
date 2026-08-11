@@ -3102,6 +3102,7 @@ export const en = {
   "context.windowStatusWatch": "Compression soon",
   "context.windowStatusPastCompact": "Compression threshold reached",
   "context.windowStatusNearLimit": "Near context limit",
+  "context.windowStatusOverLimit": "Over context limit",
   "context.windowUsageSummary": "{pct}% used",
   "context.windowCompactRemaining": "{used} / {window} · {tokens} until compression",
   "context.windowCompactDistance": "To compact",
