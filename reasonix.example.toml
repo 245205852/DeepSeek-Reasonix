@@ -189,7 +189,7 @@ stalled_warning_seconds = 900   # warn once per background job after this many q
 # [bot]
 # enabled    = false
 # model      = ""        # 用于 bot 的模型，空则用 default_model
-# max_steps  = 25
+# max_steps  = 0         # 0 表示自动持续执行；正数为显式轮数上限
 # debounce_ms = 1500      # 消息合并窗口（毫秒）
 # queue_mode = "steer"    # steer|followup|collect|interrupt
 # queue_cap  = 20         # 每个会话最多保留的排队消息数

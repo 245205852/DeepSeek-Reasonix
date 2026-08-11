@@ -802,8 +802,8 @@ func TestResumeRestoresRunningAutoResearchGoalFromSidecar(t *testing.T) {
 	if strings.Contains(strings.ToLower(composed), "autoresearch") {
 		t.Fatalf("Compose after resume exposed removed AutoResearch protocol:\n%s", composed)
 	}
-	if got := c.GoalRuntime().TurnsLimit; got != 40 {
-		t.Fatalf("resumed legacy Goal budget = %d, want 40", got)
+	if got := c.GoalRuntime().TurnsLimit; got != 0 {
+		t.Fatalf("resumed legacy Goal limit = %d, want unlimited", got)
 	}
 }
 

@@ -232,7 +232,7 @@ func (a *Agent) beginRunTurn(ctx context.Context, input string) (rawInput string
 // assistant turn into final-response or tool-round handling.
 func (a *Agent) runToolLoop(ctx context.Context, state *runLoopState) error {
 	ctx = a.withAgentContext(ctx)
-	for step := 0; state.runMaxSteps <= 0 || step < state.runMaxSteps || state.graceRound || state.recoveryGraceRound || state.goalStuckGraceRound; step++ {
+	for step := 0; state.runMaxSteps <= 0 || step < state.runMaxSteps || state.graceRound || state.recoveryGraceRound; step++ {
 		// Consume a queued steer and persist it to the session so it
 		// survives tab switches and history replay. The model sees it as
 		// guidance (with a prefix), not a new task. One cache miss per
@@ -507,21 +507,17 @@ func (a *Agent) handleFinalResponse(ctx context.Context, state *runLoopState, te
 			StopReason: reason,
 		}
 	}
-	if state.goalStuckGraceRound {
-		a.contextManager().ObserveUsage(usage)
-		return false, &goalStuckPause{limit: state.goalStuckLimit, key: state.goalStuckKey, reason: state.goalStuckReason}
-	}
 	readiness := a.finalReadinessCheckFor()
 	if state.graceRound && (readiness.reason != "" || !hasVisibleFinalAnswer(text)) {
 		a.contextManager().ObserveUsage(usage)
 		return false, a.gracePause(state)
 	}
-	if state.graceRound && state.runPauseAfterFinal {
-		// A host-owned limit is a real Goal yield boundary even when the model
-		// produced a useful summary. Controller still evaluates that final text and
-		// may complete the Goal; otherwise it persists a resumable budget pause.
+	if state.graceRound && (state.landCause.kind == "task_budget" || !state.runLimitHostOwned) {
+		// Explicit max_steps and spend budgets are user-selected boundaries.
+		// Preserve the summary, then return a resumable pause so Goal does not
+		// immediately open another Run and silently bypass the chosen limit.
 		a.contextManager().ObserveUsage(usage)
-		return false, &maxStepsPause{steps: state.runMaxSteps, key: state.runMaxStepsKey, hostOwned: true}
+		return false, a.gracePause(state)
 	}
 	if readiness.reason != "" {
 		// Delivery no longer retries readiness with hidden model messages: the
@@ -640,11 +636,8 @@ func (a *Agent) handleToolRound(ctx context.Context, state *runLoopState, step i
 		nudge := fmt.Sprintf("The following tools are unavailable in the current workflow phase: %s. Do not call them again. Respond to the user's request with visible answer text now; call a different tool only if it is still needed to complete the request.", strings.Join(unavailableContextTools, ", "))
 		a.session.Add(provider.Message{Role: provider.RoleUser, Content: a.withTurnPreferences(nudge)})
 	}
-	if err := a.trackTodoProgress(state, receiptMark); err != nil {
+	if err := a.trackTodoProgress(ctx, state, receiptMark); err != nil {
 		return false, err
-	}
-	if a.armGoalStuckFinalization(state, batch.goalStuck) {
-		return true, nil
 	}
 
 	// The prompt only grows from here; compact before the next turn so it

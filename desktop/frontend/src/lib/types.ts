@@ -856,13 +856,13 @@ export type ToolApprovalMode = "ask" | "auto" | "yolo";
 // "full" is the persisted compatibility value for the Balanced runtime profile.
 export type TokenMode = "full" | "economy" | "delivery";
 export type GoalStatus = "running" | "complete" | "blocked" | "stopped";
-// GoalRuntime is the optional Goal budget/runtime summary the backend attaches
-// to Meta. Absent for old hosts or when no goal is active.
+// Optional Goal runtime summary; absent for old hosts or when no goal is active.
 export interface GoalRuntime {
   turnsUsed: number;
-  turnsLimit: number;
+  turnsLimit: number; // Deprecated: Goal exposes no turn limit and returns 0.
   tokensUsed: number;
   requestsUsed?: number;
+  workDurationMs?: number;
   /** @deprecated Goal has no hard token limit; retained as 0 for old hosts/clients. */
   tokensLimit: number;
   noProgressTurns: number;
@@ -870,7 +870,7 @@ export interface GoalRuntime {
   noProgressLimit: number;
   lastReason?: string;
   stopCause?: string;
-  budgetExtensions: number;
+  budgetExtensions: number; // Deprecated: resumes no longer extend a numeric quota.
 }
 export function normalizeCollaborationMode(mode?: string, goal?: string, legacyMode?: Mode): CollaborationMode {
   if (mode === "plan" || mode === "goal" || mode === "normal") return mode;

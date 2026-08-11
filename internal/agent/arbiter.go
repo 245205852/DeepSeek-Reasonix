@@ -25,9 +25,6 @@ type intervention struct {
 	verdict  verdict
 	guidance string
 	notice   *event.Event
-	// stuckReason is what this signal contributes to a Goal structural-stuck
-	// pause. Ordinary turns carry it and ignore it.
-	stuckReason string
 }
 
 func (i intervention) fired() bool {

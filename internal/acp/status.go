@@ -71,22 +71,23 @@ type SessionRuntimeStateProvider interface {
 type ReasonixStatusGoal struct {
 	Status    string `json:"status"`
 	Objective string `json:"objective,omitempty"`
-	// Runtime is the optional Goal budget/runtime summary; absent for old
+	// Runtime is the optional Goal usage/runtime summary; absent for old
 	// hosts or when no goal is active.
 	Runtime *ReasonixGoalRuntime `json:"runtime,omitempty"`
 }
 
 type ReasonixGoalRuntime struct {
 	TurnsUsed        int    `json:"turnsUsed"`
-	TurnsLimit       int    `json:"turnsLimit"`
+	TurnsLimit       int    `json:"turnsLimit"` // Deprecated: always 0.
 	TokensUsed       int    `json:"tokensUsed"`
 	RequestsUsed     int    `json:"requestsUsed,omitempty"`
+	WorkDurationMs   int64  `json:"workDurationMs,omitempty"`
 	TokensLimit      int    `json:"tokensLimit"` // Deprecated: always 0; retained for protocol compatibility.
 	NoProgressTurns  int    `json:"noProgressTurns"`
-	NoProgressLimit  int    `json:"noProgressLimit"`
+	NoProgressLimit  int    `json:"noProgressLimit"` // Deprecated: always 0.
 	LastReason       string `json:"lastReason,omitempty"`
 	StopCause        string `json:"stopCause,omitempty"`
-	BudgetExtensions int    `json:"budgetExtensions"`
+	BudgetExtensions int    `json:"budgetExtensions"` // Deprecated: always 0.
 }
 
 type ReasonixTurnOutcome struct {
@@ -649,6 +650,7 @@ func (s *acpSession) statusSnapshot() ReasonixSessionStatus {
 				TurnsLimit:       rt.TurnsLimit,
 				TokensUsed:       rt.TokensUsed,
 				RequestsUsed:     rt.RequestsUsed,
+				WorkDurationMs:   rt.WorkDurationMs,
 				TokensLimit:      rt.TokensLimit,
 				NoProgressTurns:  rt.NoProgressTurns,
 				NoProgressLimit:  rt.NoProgressLimit,

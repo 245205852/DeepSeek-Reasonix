@@ -1618,7 +1618,7 @@ function makeMockApp(): AppBindings {
       enabled: !freshMock,
       model: "",
       toolApprovalMode: "ask",
-      maxSteps: 25,
+      maxSteps: 0,
       debounceMs: 1500,
       queueMode: "steer",
       queueCap: 20,

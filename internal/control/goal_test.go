@@ -226,7 +226,7 @@ func TestPlainInputWithStrongResearchSignalPreservesRefsWithoutStartingGoal(t *t
 	}
 }
 
-func TestResearchGoalUsesUnifiedGoalBudgetWithoutArchive(t *testing.T) {
+func TestResearchGoalUsesContinuousRuntimeWithoutArchive(t *testing.T) {
 	root := t.TempDir()
 	sessionPath := filepath.Join(root, "sessions", "s.jsonl")
 	sess := agent.NewSession("sys")
@@ -235,8 +235,8 @@ func TestResearchGoalUsesUnifiedGoalBudgetWithoutArchive(t *testing.T) {
 	c.Resume(sess, sessionPath)
 	c.SetGoalWithResearchMode("fix the typo and add a test", GoalResearchOn)
 	defer c.Close()
-	if got := c.GoalRuntime().TurnsLimit; got != 40 {
-		t.Fatalf("research Goal turns limit = %d, want 40", got)
+	if got := c.GoalRuntime().TurnsLimit; got != 0 {
+		t.Fatalf("research Goal turns limit = %d, want unlimited", got)
 	}
 	if _, err := os.Stat(filepath.Join(root, ".reasonix", "autoresearch")); !os.IsNotExist(err) {
 		t.Fatalf("research Goal created legacy archive: %v", err)
@@ -246,7 +246,7 @@ func TestResearchGoalUsesUnifiedGoalBudgetWithoutArchive(t *testing.T) {
 	}
 }
 
-func TestLegacyGoalSidecarMigratesToResearchBudgetWithoutTaskID(t *testing.T) {
+func TestLegacyGoalSidecarMigratesToContinuousRuntimeWithoutTaskID(t *testing.T) {
 	root := t.TempDir()
 	sessionPath := filepath.Join(root, "sessions", "s.jsonl")
 	if err := os.MkdirAll(filepath.Dir(sessionPath), 0o755); err != nil {
@@ -261,8 +261,8 @@ func TestLegacyGoalSidecarMigratesToResearchBudgetWithoutTaskID(t *testing.T) {
 	c := New(Options{WorkspaceRoot: root, SessionDir: root, Executor: exec})
 	c.Resume(sess, sessionPath)
 	defer c.Close()
-	if got := c.GoalRuntime().TurnsLimit; got != 40 {
-		t.Fatalf("migrated Goal turns limit = %d, want 40", got)
+	if got := c.GoalRuntime().TurnsLimit; got != 0 {
+		t.Fatalf("migrated Goal turns limit = %d, want unlimited", got)
 	}
 	if got := c.Goal(); got != "investigate runtime" {
 		t.Fatalf("migrated Goal = %q, want sidecar goal", got)
@@ -361,8 +361,8 @@ func TestExplicitLegacyTaskPathRestoresOriginalGoal(t *testing.T) {
 	if got := c.Goal(); got != "find the original root cause" {
 		t.Fatalf("Goal() = %q, want original archive goal", got)
 	}
-	if got := c.GoalRuntime().TurnsLimit; got != 40 {
-		t.Fatalf("turns limit = %d, want research budget", got)
+	if got := c.GoalRuntime().TurnsLimit; got != 0 {
+		t.Fatalf("turns limit = %d, want unlimited", got)
 	}
 	if got := c.GoalStatus(); got != GoalStatusRunning {
 		t.Fatalf("status = %q", got)
@@ -510,8 +510,8 @@ func TestGoalRepeatedBlockedStopsAfterThreeTurns(t *testing.T) {
 // no intercept.
 func TestGoalBlockedReportTransitionsImmediately(t *testing.T) {
 	g := &goalMachine{goal: "wait for user review", status: GoalStatusRunning}
-	g.turnsLimit = 10
-	g.noProgressLimit = defaultNoProgressLimit
+	g.turnsLimit = unlimitedGoalTurns
+	g.noProgressLimit = 0
 
 	res := g.advance(goalAdvanceInput{
 		report: &goalTurnReport{status: GoalStatusBlocked, reason: "waiting for user review"},
@@ -719,7 +719,7 @@ func TestGoalAdvanceResultCannotCrossGoalLifecycle(t *testing.T) {
 		var g goalMachine
 		res := newResult(t, &g)
 		g.stop(GoalStatusStopped, nil)
-		if _, _, _, resumed, _ := g.resume(nil); !resumed {
+		if _, _, _, resumed := g.resume(nil); !resumed {
 			t.Fatal("test setup: goal did not resume")
 		}
 		if got, ok := g.acceptContinuation(res); ok {
@@ -880,49 +880,16 @@ func TestCompleteRemainingGoalTodosEdgeCases(t *testing.T) {
 	})
 }
 
-// TestRepeatedCompleteWithIncompleteTodosPausesOnBudget verifies that a goal
-// whose model keeps reporting complete while todos stay unfinished is
-// intercepted every turn (no override path) and finally pauses on the turn
-// budget instead of completing.
-func TestRepeatedCompleteWithIncompleteTodosPausesOnBudget(t *testing.T) {
-	// The write-class budget is 20 turns; give the scripted provider a full
-	// pair per turn so the model keeps reporting complete each time.
-	turns := flattenTurns()
-	for range 21 {
-		turns = append(turns, goalToolTurn(GoalStatusComplete, "", "")...)
-	}
-	prov := &scriptedTurns{turns: turns}
-	ag := agent.New(prov, goalRegistry(), agent.NewSession(""), agent.Options{}, event.Discard)
-	ag.SeedTodoState([]evidence.TodoItem{
-		{Content: "Fix the parser", Status: "in_progress"},
-	})
-
-	done := make(chan event.Event, 1)
-	c := New(Options{
-		Runner:   ag,
-		Executor: ag,
-		Sink: event.FuncSink(func(e event.Event) {
-			if e.Kind == event.TurnDone {
-				done <- e
-			}
-		}),
-	})
-
-	c.Submit("/goal fix everything")
-	<-done // wait for the whole loop (intercept until the turn budget pauses)
-
-	if c.GoalStatus() == GoalStatusComplete {
-		t.Fatal("goal must not complete with incomplete todos")
-	}
-	if got := c.GoalStatus(); got != GoalStatusBlocked {
-		t.Fatalf("GoalStatus() = %q, want blocked (budget pause)", got)
-	}
-	rt := c.GoalRuntime()
-	if rt.StopCause == "" {
-		t.Fatal("expected a stop cause for the budget pause")
-	}
-	if rt.TurnsUsed != rt.TurnsLimit {
-		t.Fatalf("turn budget was not enforced: %d/%d", rt.TurnsUsed, rt.TurnsLimit)
+// TestRepeatedCompleteWithIncompleteTodosKeepsWorking verifies that readiness
+// rejection cannot be converted into a numeric pause.
+func TestRepeatedCompleteWithIncompleteTodosKeepsWorking(t *testing.T) {
+	g := &goalMachine{goal: "fix everything", status: GoalStatusRunning, turnsLimit: unlimitedGoalTurns}
+	todos := []evidence.TodoItem{{Content: "Fix the parser", Status: "in_progress"}}
+	for i := 0; i < 101; i++ {
+		res := g.advance(goalAdvanceInput{report: &goalTurnReport{status: GoalStatusComplete}, todos: todos})
+		if !res.cont || g.status != GoalStatusRunning || g.stopCause != "" {
+			t.Fatalf("readiness rejection paused at turn %d: result=%+v runtime=%+v", i+1, res, g.runtimeView())
+		}
 	}
 }
 

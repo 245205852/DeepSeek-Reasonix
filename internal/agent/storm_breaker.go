@@ -129,10 +129,9 @@ func (a *Agent) applyStormBreaker(calls []provider.ToolCall, outcomes []toolOutc
 	}
 	a.armLoopGuardPass(receiptMark)
 	return intervention{
-		verdict:     verdictRedirect,
-		guidance:    guard,
-		notice:      noticeFor(event.NoticeCodeLoopGuard, event.LevelInfo, loopGuardNoticeText(), detail),
-		stuckReason: detail,
+		verdict:  verdictRedirect,
+		guidance: guard,
+		notice:   noticeFor(event.NoticeCodeLoopGuard, event.LevelInfo, loopGuardNoticeText(), detail),
 	}
 }
 

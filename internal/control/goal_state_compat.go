@@ -7,7 +7,8 @@ var goalStateKnownFields = map[string]struct{}{
 	"scopeID": {}, "deliveryCheckpoint": {}, "turns": {}, "blocks": {},
 	"block": {}, "strict": {}, "todos": {}, "budgetClass": {},
 	"turnsUsed": {}, "turnsLimit": {}, "tokensUsed": {}, "requestsUsed": {},
-	"tokensLimit": {}, "noProgressTurns": {}, "noProgressLimit": {},
+	"workDurationMs": {},
+	"tokensLimit":    {}, "noProgressTurns": {}, "noProgressLimit": {},
 	"lastContinuationReason": {}, "lastEvaluatorReason": {}, "stopCause": {},
 	"budgetExtensions": {}, "progressEvidence": {},
 }
@@ -57,11 +58,34 @@ func (g *goalMachine) migrateRemovedGoalPause() bool {
 	if g.status != GoalStatusBlocked {
 		return false
 	}
-	if g.stopCause != stopCauseBudgetTokens && g.stopCause != stopCauseNoProgress {
+	switch g.stopCause {
+	case stopCauseBudgetTurns, stopCauseBudgetTokens, stopCauseGoalRunBudget, stopCauseGoalStuck, stopCauseNoProgress:
+	default:
 		return false
 	}
 	g.status = GoalStatusRunning
 	g.stopCause = ""
 	g.block = ""
 	return true
+}
+
+// normalizeContinuousState runs under g.mu while loading an active sidecar.
+func (g *goalMachine) normalizeContinuousState(legacyMode GoalResearchMode, legacyTaskID string) bool {
+	if g.goal == "" {
+		return false
+	}
+	migrated := false
+	if g.budgetClass == "" {
+		g.budgetClass = budgetClassForLegacyMode(g.goal, legacyMode)
+	}
+	if legacyTaskID != "" {
+		g.budgetClass = budgetClassResearch
+	}
+	if g.turnsLimit != unlimitedGoalTurns {
+		g.turnsLimit, migrated = unlimitedGoalTurns, true
+	}
+	if g.noProgressLimit != 0 {
+		g.noProgressLimit, migrated = 0, true
+	}
+	return g.migrateRemovedGoalPause() || migrated
 }

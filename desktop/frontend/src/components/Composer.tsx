@@ -70,6 +70,8 @@ import {
   type SelectedTextInsertRequest,
   type SelectedTextReference,
 } from "../lib/selectedTextContext";
+import { formatGoalWorkTime } from "../lib/goalRuntime";
+
 interface Attachment {
   path: string;
   previewUrl?: string;
@@ -4006,11 +4008,9 @@ export function Composer({
                   <span className="composer-intent-menu__goal-runtime-line">
                     {t("composer.goalRuntimeLine", {
                       turnsUsed: goalRuntime.turnsUsed,
-                      turnsLimit: goalRuntime.turnsLimit,
                       tokensUsed: formatTokens(goalRuntime.tokensUsed),
                       requestsUsed: goalRuntime.requestsUsed ?? 0,
-                      noProgressTurns: goalRuntime.noProgressTurns,
-                      extensions: goalRuntime.budgetExtensions,
+                      workTime: formatGoalWorkTime(goalRuntime.workDurationMs),
                     })}
                   </span>
                 )}

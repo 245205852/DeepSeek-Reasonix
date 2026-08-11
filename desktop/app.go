@@ -6832,15 +6832,16 @@ type Meta struct {
 
 type GoalRuntimeView struct {
 	TurnsUsed        int    `json:"turnsUsed"`
-	TurnsLimit       int    `json:"turnsLimit"`
+	TurnsLimit       int    `json:"turnsLimit"` // Deprecated: always 0.
 	TokensUsed       int    `json:"tokensUsed"`
 	RequestsUsed     int    `json:"requestsUsed,omitempty"`
+	WorkDurationMs   int64  `json:"workDurationMs,omitempty"`
 	TokensLimit      int    `json:"tokensLimit"` // Deprecated: always 0; retained for bridge compatibility.
 	NoProgressTurns  int    `json:"noProgressTurns"`
-	NoProgressLimit  int    `json:"noProgressLimit"`
+	NoProgressLimit  int    `json:"noProgressLimit"` // Deprecated: always 0.
 	LastReason       string `json:"lastReason,omitempty"`
 	StopCause        string `json:"stopCause,omitempty"`
-	BudgetExtensions int    `json:"budgetExtensions"`
+	BudgetExtensions int    `json:"budgetExtensions"` // Deprecated: always 0.
 }
 
 func goalRuntimeViewFromController(ctrl control.SessionAPI) *GoalRuntimeView {
@@ -6853,6 +6854,7 @@ func goalRuntimeViewFromController(ctrl control.SessionAPI) *GoalRuntimeView {
 		TurnsLimit:       rt.TurnsLimit,
 		TokensUsed:       rt.TokensUsed,
 		RequestsUsed:     rt.RequestsUsed,
+		WorkDurationMs:   rt.WorkDurationMs,
 		TokensLimit:      rt.TokensLimit,
 		NoProgressTurns:  rt.NoProgressTurns,
 		NoProgressLimit:  rt.NoProgressLimit,
@@ -7032,7 +7034,7 @@ func (a *App) ClearGoalForTab(tabID string) error {
 }
 
 // ResumeGoalForTab re-enters a blocked or stopped Goal while preserving its
-// delivery scope, budget history, and persisted verification checkpoint.
+// delivery scope, runtime history, and persisted verification checkpoint.
 func (a *App) ResumeGoalForTab(tabID string) bool {
 	tab := a.tabByID(tabID)
 	if tab == nil {

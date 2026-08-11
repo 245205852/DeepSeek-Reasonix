@@ -1586,8 +1586,8 @@ func (c *Controller) applyGoalCommand(input, display string) bool {
 		rt := c.GoalRuntime()
 		c.notice(fmt.Sprintf(i18n.M.GoalCurrentFmt, goal))
 		c.notice(fmt.Sprintf(i18n.M.GoalRuntimeFmt,
-			rt.TurnsUsed, rt.TurnsLimit, rt.TokensUsed, rt.RequestsUsed,
-			rt.NoProgressTurns, rt.BudgetExtensions))
+			rt.TurnsUsed, rt.RequestsUsed, rt.TokensUsed,
+			GoalWorkDurationText(rt.WorkDurationMs)))
 		if rt.LastReason != "" {
 			c.noticeDetail(i18n.M.GoalRuntimeLastReason, rt.LastReason)
 		}
@@ -2726,20 +2726,16 @@ func (c *Controller) resolveGoalText(goal string, researchMode GoalResearchMode)
 }
 
 // ResumeGoal re-enters a recoverable blocked/stopped Goal without resetting its
-// delivery evidence scope. A budget-paused Goal gets one extra slice of its
-// budget class; accumulated consumption is preserved.
+// delivery evidence scope or accumulated usage statistics.
 func (c *Controller) ResumeGoal() bool {
 	if handled, resumed := c.retryBlockedLegacyGoal(); handled {
 		return resumed
 	}
-	path, data, persist, resumed, extended := c.goals.resume(c.goalTodos())
+	path, data, persist, resumed := c.goals.resume(c.goalTodos())
 	if !resumed {
 		return false
 	}
 	c.persistGoalState(path, data, persist)
-	if extended {
-		c.notice(i18n.M.GoalBudgetExtended)
-	}
 	if c.executor != nil {
 		c.executor.RestoreDeliveryCheckpoint(c.goals.deliveryState())
 	}
@@ -2747,7 +2743,7 @@ func (c *Controller) ResumeGoal() bool {
 }
 
 // PauseGoal suspends a running Goal without losing its todo list, Delivery
-// checkpoint, or budget history; ResumeGoal restores it. Returns false when no
+// checkpoint, or runtime history; ResumeGoal restores it. Returns false when no
 // running Goal exists.
 func (c *Controller) PauseGoal() bool {
 	if !c.goals.active() {
@@ -2759,7 +2755,7 @@ func (c *Controller) PauseGoal() bool {
 	return true
 }
 
-// GoalRuntime returns the active Goal's budget/runtime summary for frontends.
+// GoalRuntime returns the active Goal's usage/runtime summary for frontends.
 func (c *Controller) GoalRuntime() GoalRuntimeView {
 	return c.goals.runtimeView()
 }

@@ -46,6 +46,34 @@ func TestTodoProgressGuardPausesSemanticToolDrift(t *testing.T) {
 	}
 }
 
+func TestGoalTodoProgressGuardReplansWithoutPausing(t *testing.T) {
+	turns := []testutil.Turn{{ToolCalls: []provider.ToolCall{{
+		ID: "todo", Name: "todo_write",
+		Arguments: `{"todos":[{"content":"finish the task","status":"in_progress"}]}`,
+	}}}}
+	// The first unique read renews the lease; maxTodoStallRounds exact repeats
+	// after it reach the Goal redirect threshold.
+	for i := 0; i < maxTodoStallRounds+1; i++ {
+		turns = append(turns, testutil.Turn{ToolCalls: []provider.ToolCall{{
+			ID: fmt.Sprintf("read-%d", i), Name: "inspect", Arguments: `{"path":"same"}`,
+		}}})
+	}
+	turns = append(turns, testutil.Turn{Text: "Replanned; a real blocker would be reported through update_goal."})
+
+	reg := tool.NewRegistry()
+	reg.Add(fakeTool{name: "inspect", readOnly: true})
+	reg.Add(mustBuiltinTool(t, "todo_write"))
+	mp := testutil.NewMock("m", turns...)
+	a := New(mp, reg, NewSession(""), Options{}, event.Discard)
+	ctx := WithDeliveryExecutionScope(context.Background(), DeliveryExecutionScope{ID: "goal-1", TaskText: "finish the task"})
+	if err := a.Run(ctx, "work until the todo is complete"); err != nil {
+		t.Fatalf("Goal todo stall must redirect, not pause: %v", err)
+	}
+	if !sessionContains(a, "Host progress redirect") {
+		t.Fatal("Goal todo stall did not inject a re-plan redirect")
+	}
+}
+
 func TestTodoProgressGuardRenewsOnUniqueHostWork(t *testing.T) {
 	turns := []testutil.Turn{{ToolCalls: []provider.ToolCall{{
 		ID: "todo", Name: "todo_write",

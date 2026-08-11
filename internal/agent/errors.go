@@ -22,10 +22,6 @@ func PauseClass(err error) string {
 	if errors.As(err, &stall) {
 		return "todo_stall"
 	}
-	var stuck *goalStuckPause
-	if errors.As(err, &stuck) {
-		return "goal_stuck"
-	}
 	var readiness *FinalReadinessError
 	if errors.As(err, &readiness) {
 		return "final_readiness"
@@ -48,15 +44,11 @@ type RunPauseInfo struct {
 	Reason    string
 }
 
-// InspectRunPause unwraps a deliberate max-round or Goal-stuck pause.
+// InspectRunPause unwraps a deliberate explicit run boundary.
 func InspectRunPause(err error) (RunPauseInfo, bool) {
 	var maxSteps *maxStepsPause
 	if errors.As(err, &maxSteps) {
 		return RunPauseInfo{Kind: "max_steps", Limit: maxSteps.steps, Key: maxSteps.key, HostOwned: maxSteps.hostOwned}, true
-	}
-	var stuck *goalStuckPause
-	if errors.As(err, &stuck) {
-		return RunPauseInfo{Kind: "goal_stuck", Limit: stuck.limit, Key: stuck.key, HostOwned: true, Reason: stuck.reason}, true
 	}
 	var stall *todoStallPause
 	if errors.As(err, &stall) {
