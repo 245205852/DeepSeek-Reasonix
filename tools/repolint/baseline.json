@@ -3,8 +3,8 @@
     "banner": 15,
     "commented-code": 0,
     "complexity": 2100,
-    "essay": 4065,
-    "file-size": 110239,
+    "essay": 4066,
+    "file-size": 110090,
     "function-size": 9079,
     "layering": 1,
     "marker": 0,
@@ -437,8 +437,8 @@
     },
     "internal/agent/agent.go": {
       "complexity": 37,
-      "essay": 97,
-      "file-size": 2578,
+      "essay": 85,
+      "file-size": 2429,
       "function-size": 102
     },
     "internal/agent/ask.go": {
@@ -621,6 +621,9 @@
     },
     "internal/agent/steer_flush_test.go": {
       "essay": 1
+    },
+    "internal/agent/storm_breaker.go": {
+      "essay": 13
     },
     "internal/agent/storm_test.go": {
       "essay": 1
