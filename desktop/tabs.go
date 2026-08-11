@@ -8858,6 +8858,7 @@ func saveTabSessionMetaSnapshot(snap tabSessionMetaSnapshot) error {
 	m.TopicID = snap.topicID
 	m.TopicTitle = snap.topicTitle
 	m.TokenMode = persistedTabTokenMode(snap.tokenMode)
+	m.AgentPreset = boot.NormalizeAgentPreset(snap.tokenMode)
 	m.Mode = persistedTabMode(snap.mode)
 	m.ToolApprovalMode = persistedToolApprovalMode(snap.toolApprovalMode)
 	m.Goal = strings.TrimSpace(snap.goal)

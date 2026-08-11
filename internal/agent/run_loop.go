@@ -193,14 +193,16 @@ func (a *Agent) beginRunTurn(ctx context.Context, input string) (rawInput string
 	a.recoveryTaskSummary = boundedRecoveryTaskSummary(classifierInput)
 	// Freeze TaskPolicy for this turn from the session role setting. Subsequent
 	// SetAgentPreset calls must not change this turn's route/review floor.
-	a.turnPolicy = taskpolicy.Derive(taskpolicy.Input{
-		Raw:             classifierInput,
-		Instruction:     taskpolicy.StripQuotedConstraints(classifierInput),
-		Preset:          agentpreset.AgentPreset(a.AgentPreset()),
-		PlanMode:        a.planMode.Load(),
-		HighRiskHints:   false,
-		MediumRiskHints: false,
-	})
+	if policy, ok := taskpolicy.FromContext(ctx); ok {
+		a.turnPolicy = policy
+	} else {
+		a.turnPolicy = taskpolicy.Derive(taskpolicy.Input{
+			Raw:         classifierInput,
+			Instruction: taskpolicy.StripQuotedConstraints(classifierInput),
+			Preset:      agentpreset.AgentPreset(a.AgentPreset()),
+			PlanMode:    a.planMode.Load(),
+		})
+	}
 	a.turnPolicySet = true
 	// Align legacy delivery gates with the frozen role setting. Delivery always
 	// enables the full readiness contract. Light/Balanced only elevate when the

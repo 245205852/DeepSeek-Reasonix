@@ -107,6 +107,9 @@ func TestConstraintsOnlyRun(t *testing.T) {
 	if p.AllowsCommand("npm test") {
 		t.Fatal("other checks should be blocked")
 	}
+	if p.AllowsCommand("go test ./internal/parser && npm test") {
+		t.Fatal("a second shell command must not inherit the go test allowance")
+	}
 }
 
 func TestConstraintsNoPush(t *testing.T) {

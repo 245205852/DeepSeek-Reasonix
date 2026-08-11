@@ -44,7 +44,6 @@ var leaves = []string{
 	"internal/store",
 	"internal/sysproxy",
 	"internal/taskintent",
-	"internal/taskpolicy",
 	"internal/textutil",
 	"internal/workspacelease",
 }

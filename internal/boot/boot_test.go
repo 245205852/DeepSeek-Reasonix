@@ -1309,7 +1309,7 @@ model = "x"
 		}
 		defer ctrl.Close()
 
-		if err := ctrl.Run(context.Background(), "use a task subagent to write a file"); err != nil {
+		if err := ctrl.Run(context.Background(), "use a task subagent to write a file without tests"); err != nil {
 			t.Fatalf("Run: %v", err)
 		}
 		_, statErr := os.Stat(filepath.Join(dir, "sub.txt"))
@@ -4418,7 +4418,7 @@ model = "x"
 		t.Fatalf("Build writer: %v", err)
 	}
 	defer ctrl.Close()
-	if err := ctrl.Run(context.Background(), "write into the additional directory"); err != nil {
+	if err := ctrl.Run(context.Background(), "write into the additional directory without tests"); err != nil {
 		t.Fatalf("Run writer: %v", err)
 	}
 	if got, err := os.ReadFile(target); err != nil || string(got) != "ok" {

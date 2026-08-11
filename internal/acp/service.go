@@ -320,6 +320,14 @@ type acpSession struct {
 
 func (s *acpSession) begin(ctx context.Context) (context.Context, context.CancelFunc, bool) {
 	runCtx, cancel := context.WithCancel(ctx)
+	// Prompt admission and config-axis changes share this lock. TryLock keeps
+	// ACP admission non-blocking while closing the idle-check/use window in an
+	// in-place role switch.
+	if !s.stateChangeMu.TryLock() {
+		cancel()
+		return nil, nil, false
+	}
+	defer s.stateChangeMu.Unlock()
 	s.mu.Lock()
 	// A queued pendingConfig blocks new turns so a prompt never runs on the
 	// outgoing config. The turn or maintenance that queued it applies it from

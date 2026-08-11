@@ -9,6 +9,7 @@ import (
 	"unicode"
 
 	"reasonix/internal/agentpreset"
+	"reasonix/internal/shellparse"
 	"reasonix/internal/taskintent"
 )
 
@@ -257,14 +258,32 @@ func (p TaskPolicy) AllowsCommand(command string) bool {
 			return true
 		}
 	}
-	// Prefix match: "only run go test" may allow "go test ./..."
+	// Static argv prefix match: "only run go test" may allow "go test ./...",
+	// but shell operators, substitutions, redirects, and extra commands do not
+	// inherit that allowance.
+	commandFields, malformed := shellparse.StaticFields(command)
+	if malformed != "" || len(commandFields) == 0 {
+		return false
+	}
 	for _, allowed := range p.Constraints.AllowedChecks {
-		a := strings.TrimSpace(allowed)
-		if a != "" && strings.HasPrefix(command, a) {
+		allowedFields, malformed := shellparse.StaticFields(strings.TrimSpace(allowed))
+		if malformed == "" && len(allowedFields) > 0 && hasFieldPrefix(commandFields, allowedFields) {
 			return true
 		}
 	}
 	return false
+}
+
+func hasFieldPrefix(fields, prefix []string) bool {
+	if len(prefix) > len(fields) {
+		return false
+	}
+	for i := range prefix {
+		if !strings.EqualFold(fields[i], prefix[i]) {
+			return false
+		}
+	}
+	return true
 }
 
 // AllowsExternal reports whether push/publish-style actions may run.

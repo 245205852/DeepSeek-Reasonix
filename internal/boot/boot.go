@@ -1575,13 +1575,6 @@ func build(ctx context.Context, opts Options) (*BuildResult, error) {
 	})
 	// Detect dual-model planner early so Balanced/Delivery can attach the same
 	// stable use_capability surface to both Planner and Executor.
-	lightPreset := agentPreset == AgentPresetLight
-	dualModelPlanner := false
-	if pm := effectivePlannerModel(cfg, opts, lightPreset); pm != "" {
-		if pe, ok := resolveOptionalEntry(effectiveResolver, cfg, pm); ok && pe.Model != entry.Model {
-			dualModelPlanner = true
-		}
-	}
 	profile := runtimeProfile
 	var capProxy *agent.UseCapabilityTool
 	// Catalog closes over capRuntime so proxy-connected tools stay routable.
@@ -1693,7 +1686,7 @@ func build(ctx context.Context, opts Options) (*BuildResult, error) {
 	// Coordinator with its own session, kept separate for cache stability. The
 	// planner gets the same standing memory context and a filtered read-only
 	// research tool set, so it can inspect rules/code without side effects.
-	pm := effectivePlannerModel(cfg, opts, lightPreset)
+	pm := effectivePlannerModel(cfg, opts)
 	pe, plannerResolved := resolveOptionalEntry(effectiveResolver, cfg, pm)
 	if pm != "" && !plannerResolved {
 		// An unusable optional planner must not take the session down with it —
@@ -1918,21 +1911,19 @@ func build(ctx context.Context, opts Options) (*BuildResult, error) {
 	if taskTool != nil && capRuntime != nil {
 		taskTool.WithCapabilityRuntime(capRuntime)
 	}
-	// All role settings share use_capability proxy routing. Semantic router is
-	// enabled for Delivery always, and for Balanced on dual-model or when the
-	// host later elevates mid/high-risk turns (deterministic route is primary).
+	// Build one role-neutral semantic router so an in-place switch never needs a
+	// controller rebuild. The frozen TaskPolicy decides whether a turn may call
+	// it; construction alone does not add a provider request.
 	var router *capability.SemanticRouter
-	if tokenDelivery || (!lightPreset && dualModelPlanner) {
-		if modelRef := strings.TrimSpace(cfg.Agent.SubagentModels["capability-router"]); modelRef != "" {
-			effortRef := strings.TrimSpace(cfg.Agent.SubagentEfforts["capability-router"])
-			if p, price, _, err := resolveSubagentProvider(modelRef, effortRef); err == nil && p != nil {
-				usageModelRef, _ := subagentIdentity(modelRef, effortRef)
-				router = &capability.SemanticRouter{Provider: p, Sink: sink, Model: usageModelRef, Pricing: price, Audit: capAudit}
-			}
+	if modelRef := strings.TrimSpace(cfg.Agent.SubagentModels["capability-router"]); modelRef != "" {
+		effortRef := strings.TrimSpace(cfg.Agent.SubagentEfforts["capability-router"])
+		if p, price, _, err := resolveSubagentProvider(modelRef, effortRef); err == nil && p != nil {
+			usageModelRef, _ := subagentIdentity(modelRef, effortRef)
+			router = &capability.SemanticRouter{Provider: p, Sink: sink, Model: usageModelRef, Pricing: price, Audit: capAudit}
 		}
-		if router == nil && tokenDelivery {
-			router = &capability.SemanticRouter{Provider: execProv, Sink: sink, Model: modelRef, Pricing: entry.Price, Audit: capAudit}
-		}
+	}
+	if router == nil {
+		router = &capability.SemanticRouter{Provider: execProv, Sink: sink, Model: modelRef, Pricing: entry.Price, Audit: capAudit}
 	}
 	ctrl.WireCapabilityRouting(cfg.Plugins, capSpecs, router, capAudit)
 	ctrl.SetCapabilityProxyRouting(true)
@@ -2056,11 +2047,11 @@ func applyUnifiedProviderToolSurface(reg *tool.Registry) {
 	reg.SetProviderVisibleTools(allow)
 }
 
-// effectivePlannerModel centralizes planner precedence. Light role settings
-// skip the dual-model planner (host uses light/full planning routes instead).
-// The explicit ACP hard override is checked before user/project config.
-func effectivePlannerModel(cfg *config.Config, opts Options, lightPreset bool) string {
-	if cfg == nil || opts.Ablation.Off(ablation.Planner) || lightPreset {
+// effectivePlannerModel centralizes planner precedence. Every role setting
+// builds the configured planner so later in-place switches retain the same
+// runtime; the per-turn TaskPolicy decides whether it is invoked.
+func effectivePlannerModel(cfg *config.Config, opts Options) string {
+	if cfg == nil || opts.Ablation.Off(ablation.Planner) {
 		return ""
 	}
 	return strings.TrimSpace(cfg.Agent.PlannerModel)

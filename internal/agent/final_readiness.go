@@ -8,6 +8,7 @@ import (
 	"reasonix/internal/event"
 	"reasonix/internal/evidence"
 	"reasonix/internal/instruction"
+	"reasonix/internal/taskpolicy"
 )
 
 // Final readiness: whether a turn has earned the right to stop. It reads the
@@ -165,6 +166,13 @@ func (a *Agent) finalReadinessCheckFor() finalReadinessCheck {
 			out.reason = strings.Join(missing, "; ")
 		}
 		return out
+	}
+	if !a.deliveryProfile && a.turnPolicySet && a.turnPolicy.Verification >= taskpolicy.VerifyTargeted &&
+		a.turnPolicy.AllowsTests() && toolPresent(a.tools, "bash") &&
+		!a.evidence.HasSuccessfulVerificationCommandAfter(writer) {
+		out.applies = true
+		out.missingVerification++
+		missing = append(missing, "run a relevant verification command after the latest write for the current role setting")
 	}
 	hasProjectChecks := len(a.projectChecks) > 0
 	hasTodoReceipt := a.evidence.HasSuccessfulTodoWrite()
