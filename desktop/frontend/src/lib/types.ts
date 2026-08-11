@@ -2192,7 +2192,7 @@ export interface DesktopStartupSettingsView {
   checkUpdates: boolean; // check for new versions on startup
   updateChannel: string; // compatibility field; always "stable"
   conversationWidth?: string; // "standard" | "full"; absent from older Wails payloads
-  configWarnings?: string[]; // non-blocking load recovery notices
+  configWarnings?: string[]; configWarningsRevision?: number; // load recovery notices and async delivery barrier
   configPath?: string;
 }
 

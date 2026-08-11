@@ -40,6 +40,7 @@ import { createBoundedRefreshCoordinator, sameTabMetaLists, shouldRefreshTabMeta
 import { clearLegacyLangPref, normalizeLangPref, readLegacyLangPref, t, useI18n, useT, type Translator } from "./lib/i18n";
 import { localizedNoticeText, useController, type Item, type LiveStream } from "./lib/useController";
 import { app, onEvent, onProjectTreeChanged, onReady, onRemoteForwards, onRemoteServer, onRemoteStatus, onRuntimeRebuilt, onSessionRecovered, openExternal } from "./lib/bridge";
+import { useConfigLoadWarnings } from "./lib/useConfigLoadWarnings";
 import { generativeMusic, isGenerativeMusicEnabled } from "./lib/generative-music";
 import { clearAttentionChimeKeys, playAttentionChime, playSuccessChime, shouldPlayAttentionChimeForEvent } from "./lib/sound";
 import { NoticeCard, Transcript } from "./components/Transcript";
@@ -1166,7 +1167,7 @@ export default function App() {
   const setSettingsFocus = useOverlayStore((s) => s.setSettingsFocus);
   const [desktopLayoutStyle, setDesktopLayoutStyle] = useState<DesktopLayoutStyle>("workbench");
   const singleSurfaceLayout = desktopLayoutStyle === "workbench" || desktopLayoutStyle === "creation";
-  const [configLoadWarnings, setConfigLoadWarnings] = useState<string[]>([]);
+  const { configLoadWarnings, applySnapshot: applyConfigWarningSnapshot, reload: reloadConfigWarnings, dismiss: dismissConfigWarnings } = useConfigLoadWarnings();
   const [startupUpdateChecksEnabled, setStartupUpdateChecksEnabled] = useState<boolean | null>(null);
   const [histView, setHistView] = useState<HistoryViewState | null>(null);
   const paletteOpen = useOverlayStore((s) => s.paletteOpen);
@@ -1532,11 +1533,7 @@ export default function App() {
       ]);
       if (cancelled) return;
       applyDesktopPreferences(settings);
-      setConfigLoadWarnings(
-        Array.isArray(settings.configWarnings)
-          ? settings.configWarnings.filter((w): w is string => typeof w === "string" && w.trim() !== "")
-          : [],
-      );
+      applyConfigWarningSnapshot(settings.configWarnings, settings.configWarningsRevision);
       hydrateDisplayMode(settings.displayMode);
       setSidebarImConnections(sidebarImConnectionsFromBot(settings.bot, t, runtimeStatus));
       setImTopicSources(sidebarImTopicSourcesFromBot(settings.bot, t));
@@ -1568,7 +1565,7 @@ export default function App() {
     return () => {
       cancelled = true;
     };
-  }, [applyDesktopPreferences, t]);
+  }, [applyConfigWarningSnapshot, applyDesktopPreferences, t]);
 
   useEffect(() => {
     setSidebarImDetailConnectionId((current) => {
@@ -4869,8 +4866,7 @@ export default function App() {
                   void (async () => {
                     try {
                       const view = await app.ReloadUserConfig?.();
-                      if (view?.configWarnings) setConfigLoadWarnings(view.configWarnings);
-                      else setConfigLoadWarnings([]);
+                      reloadConfigWarnings(view?.configWarnings, view?.configWarningsRevision);
                     } catch {
                       /* keep banner */
                     }
@@ -4880,7 +4876,7 @@ export default function App() {
                 {t("config.reloadConfig")}
               </button>
               <span className="banner__hint">{t("config.doctorHint")}</span>
-              <button type="button" className="btn btn--small" onClick={() => setConfigLoadWarnings([])}>
+              <button type="button" className="btn btn--small" onClick={dismissConfigWarnings}>
                 {t("updater.dismiss")}
               </button>
             </div>

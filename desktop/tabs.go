@@ -1744,10 +1744,9 @@ type runtimeEventEnvelope struct {
 	payload []any
 }
 
-// asyncRuntimeEmitter decouples Wails' runtime event bridge from agent
-// emission. runtime.EventsEmit can block when the single webview event channel
-// backs up; callers enqueue in-order work and return without holding the
-// agent's event.Sync lock.
+// asyncRuntimeEmitter decouples Wails' runtime event bridge from agent emission.
+// runtime.EventsEmit can block when the single webview event channel backs up;
+// callers enqueue in-order work and return without holding the agent event lock.
 // runtimeEventsEmitFallback is the emit used when no per-instance override is
 // installed. Production keeps the real Wails bridge; the test binary swaps in
 // a no-op via TestMain, because Wails EventsEmit log.Fatals outside a running
@@ -1756,11 +1755,12 @@ type runtimeEventEnvelope struct {
 var runtimeEventsEmitFallback runtimeEventEmitFunc = runtime.EventsEmit
 
 type asyncRuntimeEmitter struct {
-	mu      sync.Mutex
-	emit    runtimeEventEmitFunc
-	queue   []runtimeEventEnvelope
-	head    int
-	running bool
+	mu                     sync.Mutex
+	emit                   runtimeEventEmitFunc
+	queue                  []runtimeEventEnvelope
+	head                   int
+	running                bool
+	configWarningsRevision atomic.Uint64
 }
 
 func (e *asyncRuntimeEmitter) Emit(ctx context.Context, name string, payload ...any) {
@@ -3917,10 +3917,10 @@ func (a *App) buildTabControllerWithContextAdmissionHeld(tab *WorkspaceTab, load
 	sink := a.desktopControllerSink(buildSink, cfg.Notifications)
 
 	ctrl, err := boot.Build(buildCtx, boot.Options{
-		Model:                    model,
-		RequireKey:               false,
-		AutoPricingCurrency:      a.desktopAutoPricingCurrency(),
-		StatsSource:              "desktop",
+		Model:               model,
+		RequireKey:          false,
+		AutoPricingCurrency: a.desktopAutoPricingCurrency(),
+		StatsSource:         "desktop", OnConfigLoadWarnings: a.configLoadWarningsHandler(),
 		Sink:                     sink,
 		WorkspaceRoot:            root,
 		SessionDir:               sessionDir,
