@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"strings"
 	"testing"
 
@@ -39,6 +40,52 @@ func TestTaskPolicyBlocksDisallowedExploreSubagent(t *testing.T) {
 	got := a.executeOne(context.Background(), provider.ToolCall{Name: "explore", Arguments: `{}`})
 	if !got.blocked || !strings.Contains(got.errMsg, "exploration sub-agent") {
 		t.Fatalf("explore outcome = %+v, want task-policy block", got)
+	}
+}
+
+func TestTaskPolicyBlocksExternalActionCommandVariants(t *testing.T) {
+	reg := tool.NewRegistry()
+	reg.Add(fakeTool{name: "bash", readOnly: false})
+	a := New(&scriptedProvider{name: "p"}, reg, NewSession("sys"), Options{}, event.Discard)
+	a.turnPolicy = taskpolicy.Derive(taskpolicy.Input{Raw: "fix it, but don't push"})
+	a.turnPolicySet = true
+
+	for _, command := range []string{
+		"git -C ../repo push origin HEAD",
+		"npm --workspace pkg publish",
+		"kubectl -n production apply -f deploy.yaml",
+	} {
+		args, err := json.Marshal(map[string]string{"command": command})
+		if err != nil {
+			t.Fatal(err)
+		}
+		got := a.executeOne(context.Background(), provider.ToolCall{Name: "bash", Arguments: string(args)})
+		if !got.blocked || !strings.Contains(got.errMsg, "external action") {
+			t.Fatalf("command %q outcome = %+v, want task-policy block", command, got)
+		}
+	}
+}
+
+func TestTaskPolicyBlocksResolvedExternalCapability(t *testing.T) {
+	calls := 0
+	target := readOnlyBoundaryTarget{name: "mcp__vercel__deploy_project", readOnly: false, calls: &calls}
+	proxy := readOnlyBoundaryProxy{resolved: tool.ResolvedCall{
+		ProxyAction: "call", TargetName: target.Name(), Target: target, ReadOnly: false, Args: json.RawMessage(`{}`),
+	}}
+	reg := tool.NewRegistry()
+	reg.Add(proxy)
+	a := New(nil, reg, NewSession("sys"), Options{}, event.Discard)
+	a.turnPolicy = taskpolicy.Derive(taskpolicy.Input{Raw: "prepare the release, but don't deploy"})
+	a.turnPolicySet = true
+
+	got := a.executeOne(context.Background(), provider.ToolCall{
+		ID: "deploy-1", Name: "use_capability", Arguments: `{"action":"call","capability_id":"mcp-tool:vercel/deploy_project"}`,
+	})
+	if !got.blocked || !strings.Contains(got.errMsg, "external action") {
+		t.Fatalf("resolved deploy outcome = %+v, want task-policy block", got)
+	}
+	if calls != 0 {
+		t.Fatalf("resolved deploy Execute calls = %d, want 0", calls)
 	}
 }
 

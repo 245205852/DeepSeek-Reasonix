@@ -35,20 +35,6 @@ func policyBlock(output, reason string) (toolOutcome, bool) {
 	return toolOutcome{output: "blocked: " + output, blocked: true, errMsg: "blocked: " + reason}, true
 }
 
-func isExternalActionTool(evidenceName, permName string, args json.RawMessage) bool {
-	name := strings.ToLower(strings.TrimSpace(evidenceName))
-	if name == "" {
-		name = strings.ToLower(strings.TrimSpace(permName))
-	}
-	lower := strings.ToLower(bashCommandFromArgs(args))
-	for _, action := range []string{"git push", "git publish", "npm publish", "gh release", "docker push", "kubectl apply"} {
-		if strings.Contains(lower, action) {
-			return true
-		}
-	}
-	return name == "publish" || name == "deploy"
-}
-
 func isVerificationCommandTool(evidenceName, permName string, args json.RawMessage) bool {
 	name := strings.ToLower(strings.TrimSpace(evidenceName))
 	if name == "" {
