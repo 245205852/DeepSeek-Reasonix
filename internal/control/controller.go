@@ -2059,12 +2059,6 @@ func (c *Controller) beginRotation() error {
 	return nil
 }
 
-func (c *Controller) endRotation() {
-	c.mu.Lock()
-	c.rotating = false
-	c.mu.Unlock()
-}
-
 // CancelRequested reports whether Cancel has been requested for the active turn.
 func (c *Controller) CancelRequested() bool {
 	c.mu.Lock()
