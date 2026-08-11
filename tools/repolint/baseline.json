@@ -4,8 +4,8 @@
     "commented-code": 0,
     "complexity": 2100,
     "essay": 4065,
-    "file-size": 110452,
-    "function-size": 9078,
+    "file-size": 110239,
+    "function-size": 9079,
     "layering": 1,
     "marker": 0,
     "narrative": 64,
@@ -569,10 +569,13 @@
       "essay": 1
     },
     "internal/agent/run_loop.go": {
-      "complexity": 6,
-      "essay": 32,
-      "file-size": 213,
-      "function-size": 30
+      "complexity": 5,
+      "essay": 27,
+      "function-size": 31
+    },
+    "internal/agent/run_usage.go": {
+      "complexity": 1,
+      "essay": 5
     },
     "internal/agent/save.go": {
       "complexity": 49,
