@@ -262,7 +262,6 @@ function noticePreviewItems(): Item[] {
     notice(26, "warn", "Guardian was disabled because it could not start.", "guardian startup failed: provider returned 401 unauthorized"),
   ];
 }
-
 function NoticePreviewPanel() {
   return (
     <div
