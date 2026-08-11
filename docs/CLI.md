@@ -445,10 +445,10 @@ the displayed list matches the commands the TUI accepts.
 | `/output-style` | Select an answer style. |
 | `/verbose` | Toggle expanded reasoning display. |
 | `/sandbox` | Inspect sandbox status. |
-| `/goal [objective]` | Start a long-running goal, or inspect the current goal and its budget runtime. |
-| `/goal status` | Show the active goal plus outer turns, observational tokens/requests/no-progress, extensions, and the last continuation/evaluator reason. |
-| `/goal pause` | Pause the running goal (keeps todos, Delivery checkpoint, and budget). |
-| `/goal resume` | Resume a paused or blocked goal (budget pauses add one more budget slice). |
+| `/goal [objective]` | Start a continuous goal, or inspect its runtime statistics. |
+| `/goal status` | Show the active goal plus turns, requests, tokens, work time, and the last continuation/evaluator reason. |
+| `/goal pause` | Pause the running goal (keeps todos, Delivery checkpoint, and runtime history). |
+| `/goal resume` | Resume a manually paused or genuinely blocked goal without changing a numeric quota. |
 | `/goal clear` | End goal mode permanently. |
 | `/docs [question]` | Show the embedded corpus identity, or search it locally and ask the configured AI to answer from version-matched evidence. |
 | `/reasonix:docs [question]` | Preferred built-in fallback when an existing custom command or compatible plugin/skill alias owns `/docs`; if this spelling is also owned, the menu selects the next free `reasonix:`-qualified name without displacing it. |

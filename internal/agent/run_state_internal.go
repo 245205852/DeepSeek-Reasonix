@@ -2,21 +2,16 @@ package agent
 
 // runLoopState holds sequential state for one Agent.Run invocation.
 type runLoopState struct {
-	runMaxSteps        int
-	runMaxStepsKey     string
-	runLimitHostOwned  bool
-	runPauseAfterFinal bool
+	runMaxSteps       int
+	runMaxStepsKey    string
+	runLimitHostOwned bool
 
-	emptyFinalBlocks    int
-	handoffNudges       int
-	usedAnyTool         bool
-	contextToolRepairs  int
-	graceRound          bool
-	recoveryGraceRound  bool
-	goalStuckGraceRound bool
-	goalStuckLimit      int
-	goalStuckKey        string
-	goalStuckReason     string
+	emptyFinalBlocks   int
+	handoffNudges      int
+	usedAnyTool        bool
+	contextToolRepairs int
+	graceRound         bool
+	recoveryGraceRound bool
 
 	todoProgress         int
 	trackingTodoProgress bool

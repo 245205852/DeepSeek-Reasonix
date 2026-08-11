@@ -26,6 +26,9 @@ const (
 	// todoProgressNudgeRounds is the first adaptive checkpoint. The host asks
 	// the model to reassess, but keeps the turn alive so it can recover.
 	todoProgressNudgeRounds = 8
+	// maxTodoStallRounds is the second Goal-only adaptive checkpoint. It resets
+	// the intervention epoch and asks for a new plan without ending the run.
+	maxTodoStallRounds = 16
 )
 
 func todoProgressNudgeMessage(rounds int) string {
@@ -126,10 +129,9 @@ func (a *Agent) applyStormBreaker(calls []provider.ToolCall, outcomes []toolOutc
 	}
 	a.armLoopGuardPass(receiptMark)
 	return intervention{
-		verdict:     verdictRedirect,
-		guidance:    guard,
-		notice:      noticeFor(event.NoticeCodeLoopGuard, event.LevelInfo, loopGuardNoticeText(), detail),
-		stuckReason: detail,
+		verdict:  verdictRedirect,
+		guidance: guard,
+		notice:   noticeFor(event.NoticeCodeLoopGuard, event.LevelInfo, loopGuardNoticeText(), detail),
 	}
 }
 

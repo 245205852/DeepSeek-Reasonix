@@ -1473,15 +1473,11 @@ func (a *Agent) Run(ctx context.Context, input string) (runErr error) {
 	runMaxSteps := a.maxSteps
 	runMaxStepsKey := a.maxStepsKey
 	runLimitHostOwned := false
-	runPauseAfterFinal := false
 	if limit, ok := runStepLimitFromContext(ctx); ok {
-		if !limit.defaultOnly || a.maxSteps <= 0 {
-			runMaxSteps = limit.steps
-			runLimitHostOwned = true
-			runPauseAfterFinal = limit.pauseAfterFinal
-			if limit.key != "" {
-				runMaxStepsKey = limit.key
-			}
+		runMaxSteps = limit.steps
+		runLimitHostOwned = true
+		if limit.key != "" {
+			runMaxStepsKey = limit.key
 		}
 	}
 	a.recoveryRunSeq.Add(1)
@@ -1536,7 +1532,6 @@ func (a *Agent) Run(ctx context.Context, input string) (runErr error) {
 	state.runMaxSteps = runMaxSteps
 	state.runMaxStepsKey = runMaxStepsKey
 	state.runLimitHostOwned = runLimitHostOwned
-	state.runPauseAfterFinal = runPauseAfterFinal
 	state.workDurationMs = workDurationMs
 	return a.runToolLoop(ctx, state)
 }

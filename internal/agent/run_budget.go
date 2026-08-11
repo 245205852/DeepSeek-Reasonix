@@ -123,6 +123,13 @@ func (a *Agent) taskBudgetLimit(ctx context.Context) TaskBudget {
 	return a.taskBudget.limit
 }
 
+// ResetTaskBudget starts a fresh user-approved spend slice without touching
+// Delivery evidence or the persisted Goal usage totals. Callers use this only
+// after a resumable explicit-budget pause, while no Agent Run is active.
+func (a *Agent) ResetTaskBudget() {
+	a.taskBudget = runBudget{limit: a.taskBudget.limit}
+}
+
 // observeRunBudget folds a round into both scopes and reports them.
 func (a *Agent) observeRunBudget(state *runLoopState, usage *provider.Usage) {
 	if state == nil {
