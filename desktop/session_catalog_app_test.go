@@ -89,3 +89,30 @@ func TestCompatibilityProjectTreeDoesNotMigrateLegacySession(t *testing.T) {
 		t.Fatalf("ListProjectTree migrated legacy session: %v", err)
 	}
 }
+
+func TestProjectTreeShellSurvivesCatalogRevisionRace(t *testing.T) {
+	isolateDesktopUserDirs(t)
+	root := t.TempDir()
+	if err := addProject(root, "Shell Race"); err != nil {
+		t.Fatal(err)
+	}
+	app := NewApp()
+	// Catalog not open yet: revision stays 0 while the shell still returns projects.
+	snapshot := app.GetProjectTreeSnapshot()
+	if snapshot.Revision != 0 {
+		t.Fatalf("revision = %d, want 0 while catalog is opening", snapshot.Revision)
+	}
+	if len(snapshot.Projects) == 0 {
+		t.Fatal("project shell empty while catalog opening")
+	}
+	found := false
+	for _, project := range snapshot.Projects {
+		if project.Root == root || project.Label == "Shell Race" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("snapshot projects = %#v, want Shell Race", snapshot.Projects)
+	}
+}

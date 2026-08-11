@@ -150,6 +150,9 @@ type HistorySlice struct {
 	// "live-fallback" (live controller, full-snapshot classification). Empty
 	// when no session was readable.
 	Source string `json:"source,omitempty"`
+	// Error is set when the read path failed. Empty entries alone mean a
+	// genuinely empty session; callers must not treat Error as success.
+	Error string `json:"error,omitempty"`
 }
 
 // HistoryContentChunk is one chunk of a ref-replaced field's full value.
@@ -184,6 +187,10 @@ func (e HistoryEntry) MarshalJSON() ([]byte, error) {
 
 func emptyHistorySlice() HistorySlice {
 	return HistorySlice{Entries: []HistoryEntry{}}
+}
+
+func failedHistorySlice(message string) HistorySlice {
+	return HistorySlice{Entries: []HistoryEntry{}, Error: strings.TrimSpace(message)}
 }
 
 func staleHistorySlice(revision int64, revisionKnown bool, digest string) HistorySlice {
@@ -409,12 +416,12 @@ func (a *App) HistorySliceForTab(tabID string, req HistorySliceRequest) HistoryS
 
 	if ctrl == nil {
 		if strings.TrimSpace(sessionPath) == "" {
-			return emptyHistorySlice()
+			return failedHistorySlice("session path unavailable before controller ready")
 		}
 		slice, err := a.coldHistorySlice(sessionDir, sessionPath, req)
 		if err != nil {
 			slog.Debug("desktop: cold history slice failed", "path", sessionPath, "err", err)
-			return emptyHistorySlice()
+			return failedHistorySlice(err.Error())
 		}
 		return slice
 	}
@@ -441,7 +448,7 @@ func (a *App) liveHistorySlice(ctrl control.SessionAPI, sessionDir, sessionPath 
 	slice, err := a.pageHistorySliceSource(src, req, resolver, sessionPlannerDisplayTurns(sessionDir, sessionPath), ctrl.CheckpointTurnsByMessageIndex(), sessionPath)
 	if err != nil {
 		slog.Debug("desktop: live history slice failed", "path", sessionPath, "err", err)
-		return emptyHistorySlice()
+		return failedHistorySlice(err.Error())
 	}
 	if indexUsed {
 		slice.Source = "live-index"

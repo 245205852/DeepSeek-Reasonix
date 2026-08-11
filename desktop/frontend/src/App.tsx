@@ -1094,6 +1094,7 @@ export default function App() {
     purgeTrashedSession,
     renameSession,
     loadOlderHistory,
+    retrySessionHistory,
     refreshMeta,
     pickWorkspace,
     switchWorkspace,
@@ -4924,6 +4925,18 @@ export default function App() {
                 onLoadOlderHistory={() => activeTabId && loadOlderHistory(activeTabId)}
                 invocationMetadata={activeTabId ? invocationMetadataByTab[activeTabId] : undefined}
               />
+              {state.hydrateError && (
+                <div className="history-load-error" role="alert">
+                  <span>{state.hydrateError}</span>
+                  <button
+                    type="button"
+                    className="btn btn--small"
+                    onClick={() => { void retrySessionHistory(activeTabId); }}
+                  >
+                    {t("common.retry")}
+                  </button>
+                </div>
+              )}
             )}
           </main>
 

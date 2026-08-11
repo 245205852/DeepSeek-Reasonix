@@ -16,6 +16,18 @@ export function projectTreeRevisionIsFresh(currentRevision: number, incomingRevi
   return incomingRevision >= currentRevision;
 }
 
+// Project shells come from desktop-projects.json and are valid even when the
+// disposable catalog still reports revision 0. Catalog revision only gates
+// topic pages and non-empty tree refreshes after the first shell is painted.
+export function projectTreeShouldApplyShellSnapshot(options: {
+  currentRevision: number;
+  incomingRevision: number;
+  treeEmpty: boolean;
+}): boolean {
+  if (options.treeEmpty) return true;
+  return projectTreeRevisionIsFresh(options.currentRevision, options.incomingRevision);
+}
+
 export function mergeProjectTopicPage(current: ProjectNode[], incoming: ProjectNode[], append: boolean): ProjectNode[] {
   if (!append) return [...incoming];
   const next = [...current];

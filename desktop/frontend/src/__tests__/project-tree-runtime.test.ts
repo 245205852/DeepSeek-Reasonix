@@ -5,6 +5,7 @@ import {
   mergeProjectTopicPage,
   projectTreeEventAffectsFolder,
   projectTreeRevisionIsFresh,
+  projectTreeShouldApplyShellSnapshot,
   defaultExpandedProjectTreeKeys,
   activeSessionAncestorKeys,
   projectTreeTopicOpenRequest,
@@ -628,6 +629,16 @@ eq(
   [projectTreeRevisionIsFresh(12, 11), projectTreeRevisionIsFresh(12, 12), projectTreeRevisionIsFresh(12, 13)],
   [false, true, true],
   "project tree ignores stale snapshots and pages while accepting the current revision",
+);
+
+eq(
+  [
+    projectTreeShouldApplyShellSnapshot({ currentRevision: 1, incomingRevision: 0, treeEmpty: true }),
+    projectTreeShouldApplyShellSnapshot({ currentRevision: 1, incomingRevision: 0, treeEmpty: false }),
+    projectTreeShouldApplyShellSnapshot({ currentRevision: 1, incomingRevision: 2, treeEmpty: false }),
+  ],
+  [true, false, true],
+  "empty-tree shell snapshots apply even after a faster catalog revision event",
 );
 
 eq(

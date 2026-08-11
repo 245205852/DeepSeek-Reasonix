@@ -1225,6 +1225,7 @@ export const zh: Record<DictKey, string> = {
   "history.channelReadOnly": "只读渠道",
   "history.failedOpenProject": "无法打开会话，{name}不存在：{path}",
   "history.failedOpenSession": "无法打开会话",
+  "history.failedLoadHistory": "加载会话历史失败。若本地仍有内容会保留显示 — 可重试。",
   "history.failedOpenGlobal": "无法打开全局会话",
   "history.missingWorkspaceRoot": "无法打开会话：缺少工作区路径。",
   "history.selectSession": "选择一个会话以预览。",

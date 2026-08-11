@@ -1224,6 +1224,7 @@ export const en = {
   "history.channelReadOnly": "Read-only channel",
   "history.failedOpenProject": "Cannot open session, \"{name}\" does not exist: {path}",
   "history.failedOpenSession": "Cannot open session",
+  "history.failedLoadHistory": "Failed to load conversation history. Previous content was kept when available — retry to try again.",
   "history.failedOpenGlobal": "Cannot open global session",
   "history.missingWorkspaceRoot": "Cannot open session because its workspace path is missing.",
   "history.selectSession": "Select a session to preview.",

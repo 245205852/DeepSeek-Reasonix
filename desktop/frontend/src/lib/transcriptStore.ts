@@ -600,6 +600,9 @@ export class TranscriptStore {
   private async fetchSlice(tabId: string, req: HistorySliceRequest): Promise<HistorySlice> {
     const startedAt = typeof performance !== "undefined" ? performance.now() : Date.now();
     const slice = await this.backend.HistorySliceForTab(tabId, req);
+    if (typeof slice.error === "string" && slice.error.trim()) {
+      throw new Error(slice.error.trim());
+    }
     const endedAt = typeof performance !== "undefined" ? performance.now() : Date.now();
     const entries = asArray<HistoryEntry>(slice.entries);
     let inlineBytes = 0;

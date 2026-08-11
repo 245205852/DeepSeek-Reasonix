@@ -10,7 +10,7 @@ import { asArray } from "../lib/array";
 import { useToast } from "../lib/toast";
 import { app } from "../lib/bridge";
 import { onProjectTreeChangedV2 } from "../lib/sessionCatalogBridge";
-import { isRuntimeSessionNode, isTopicNode, mergeProjectTopicPage, projectTreeDedupedExactTime, projectTreeEventAffectsFolder, projectTreeFolderDisclosure, projectTreeReadActivityKey, projectTreeRevisionIsFresh, projectTreeShouldRenderTopicActions, projectTreeShouldSuppressOpenForRename, projectTreeTopicArchiveBlocked, projectTreeTopicHasUnreadActivity, projectTreeTopicHoverCardModel, projectTreeTopicMenuOffersPin, projectTreeTopicMetaLine, projectTreeTopicOpenRequest, topicActivityAt, topicActivityDateLabel, topicActivityLabel, topicIsActive, topicStatus, topicStatusLabel, topicUnknownTimeLabel, type ProjectTreePendingTopicOpen, type ProjectTreeReadActivity, type ProjectTreeTopicHoverCard, type ProjectTreeVariant } from "../lib/projectTreeTopic";
+import { isRuntimeSessionNode, isTopicNode, mergeProjectTopicPage, projectTreeDedupedExactTime, projectTreeEventAffectsFolder, projectTreeFolderDisclosure, projectTreeReadActivityKey, projectTreeRevisionIsFresh, projectTreeShouldApplyShellSnapshot, projectTreeShouldRenderTopicActions, projectTreeShouldSuppressOpenForRename, projectTreeTopicArchiveBlocked, projectTreeTopicHasUnreadActivity, projectTreeTopicHoverCardModel, projectTreeTopicMenuOffersPin, projectTreeTopicMetaLine, projectTreeTopicOpenRequest, topicActivityAt, topicActivityDateLabel, topicActivityLabel, topicIsActive, topicStatus, topicStatusLabel, topicUnknownTimeLabel, type ProjectTreePendingTopicOpen, type ProjectTreeReadActivity, type ProjectTreeTopicHoverCard, type ProjectTreeVariant } from "../lib/projectTreeTopic";
 export * from "../lib/projectTreeTopic";
 import type { ProjectNode, SessionCatalogStatus } from "../lib/types";
 import { topicActivityTime } from "../lib/session";
@@ -530,9 +530,21 @@ export function ProjectTree({
   const refresh = useCallback(async () => {
     try {
       const snapshot = await app.GetProjectTreeSnapshot();
-      if (!projectTreeRevisionIsFresh(latestRevisionRef.current, snapshot.revision ?? 0)) return;
+      const incomingRevision = snapshot.revision ?? 0;
+      const treeEmpty = treeRef.current.length === 0;
+      if (!projectTreeShouldApplyShellSnapshot({
+        currentRevision: latestRevisionRef.current,
+        incomingRevision,
+        treeEmpty,
+      })) {
+        return;
+      }
       const projects = asArray(snapshot.projects);
-      latestRevisionRef.current = Math.max(latestRevisionRef.current, snapshot.revision ?? 0);
+      // Never let a late revision-0 shell lower the catalog watermark; still
+      // paint the shell when the tree is empty after a faster v2 event.
+      if (projectTreeRevisionIsFresh(latestRevisionRef.current, incomingRevision)) {
+        latestRevisionRef.current = Math.max(latestRevisionRef.current, incomingRevision);
+      }
       setCatalogStatus(snapshot.catalog);
       setTree((current) => projects.map((project) => {
         const previous = current.find((node) => node.key === project.key);
@@ -566,13 +578,19 @@ export function ProjectTree({
     if (event.revision <= latestRevisionRef.current) return;
     latestRevisionRef.current = event.revision;
     void app.GetSessionCatalogStatus().then(setCatalogStatus).catch(() => {});
+    // Catalog revision can advance before the initial shell snapshot lands.
+    // Re-fetch the projects.json shell so the sidebar never stays permanently empty.
+    if (treeRef.current.length === 0) {
+      void refresh();
+      return;
+    }
     const affected = asArray(event.roots);
     for (const project of treeRef.current) {
       const key = projectNodeKey(project, 0);
       if (!expanded.has(key)) continue;
       if (projectTreeEventAffectsFolder(project, affected)) void loadProjectTopics(project);
     }
-  }), [expanded, loadProjectTopics]);
+  }), [expanded, loadProjectTopics, refresh]);
 
   // Debounce query/timeFilter reloads so typing does not stampede the catalog.
   // Expansion and tree shell arrival still load on the same path after the delay.

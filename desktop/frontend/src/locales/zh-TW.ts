@@ -968,6 +968,7 @@ export const zhTW: Record<DictKey, string> = {
   "history.channelReadOnly": "唯讀渠道",
   "history.failedOpenProject": "無法開啟會話，{name}不存在：{path}",
   "history.failedOpenSession": "無法開啟會話",
+  "history.failedLoadHistory": "載入會話歷史失敗。若本地仍有內容會保留顯示 — 可重試。",
   "history.failedOpenGlobal": "無法開啟全域會話",
   "history.missingWorkspaceRoot": "無法開啟會話：缺少工作區路徑。",
   "history.selectSession": "選擇一個會話以預覽。",

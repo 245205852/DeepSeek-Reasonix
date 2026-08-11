@@ -2024,7 +2024,22 @@ export function reducer(s: State, a: Action): State {
     case "hydrate_done": return s.hydrating || s.hydrateReason || s.hydrateError || s.hydrateHistoryLoaded || s.hydratePlaceholderItems
       ? { ...s, hydrating: false, hydrateReason: undefined, hydrateError: undefined, hydrateHistoryLoaded: undefined, hydratePlaceholderItems: undefined }
       : s;
-    case "hydrate_error": return { ...s, hydrating: false, hydrateReason: a.reason, hydrateError: a.error, hydrateHistoryLoaded: undefined, hydratePlaceholderItems: undefined };
+    case "hydrate_error": {
+      // Keep already-visible transcript or placeholders; a failed load must not
+      // look like a successful empty session.
+      const keptItems = s.items.length > 0
+        ? s.items
+        : (s.hydratePlaceholderItems?.length ? s.hydratePlaceholderItems : s.items);
+      return {
+        ...s,
+        items: keptItems,
+        hydrating: false,
+        hydrateReason: a.reason,
+        hydrateError: a.error,
+        hydrateHistoryLoaded: s.hydrateHistoryLoaded || keptItems.length > 0 || undefined,
+        hydratePlaceholderItems: undefined,
+      };
+    }
     case "backend_activation_start": return {
       ...s,
       // The target tab may contain a prompt event that was routed there while
@@ -2886,14 +2901,22 @@ export function useController() {
         options.skipHistory ||
         (options.preserveCachedHistory && !reset && hasReusableCachedTranscript(statesRef.current.get(tabId), sessionPath, sessionRevision, sessionDigest)),
       );
-      const deferResetUntilHistory = Boolean(options.deferResetUntilHistory && reset && !skipHistory);
+      // Defer reset until history succeeds so a failed cold/live load cannot
+      // paint a successful empty transcript over recoverable disk content.
+      const deferResetUntilHistory = Boolean((options.deferResetUntilHistory ?? true) && reset && !skipHistory);
       const stillCurrent = () =>
         sessionLoadCurrent(tabId, seq) &&
         (cancelHydrateGeneration === undefined || cancelHydrateCurrent(tabId, cancelHydrateGeneration));
       if (!stillCurrent()) return;
       addBreadcrumb("tab.hydrate", `start ${reason} ${tabId}`);
       ensureTranscriptSubscription(tabId);
-      dispatchTo(tabId, { type: "hydrate_start", reason, placeholderItems: options.placeholderItems });
+      // Prefer already-visible items as placeholders when the caller did not
+      // supply any, so retries and failed reloads keep the last good page.
+      const existingItems = statesRef.current.get(tabId)?.items;
+      const placeholderItems = options.placeholderItems?.length
+        ? options.placeholderItems
+        : (existingItems?.length ? existingItems : undefined);
+      dispatchTo(tabId, { type: "hydrate_start", reason, placeholderItems });
       if (reset && !deferResetUntilHistory && stillCurrent()) dispatchTo(tabId, { type: "reset" });
       const requiresVisibleTab = reason === "startup" || reason === "switch-tab" || reason === "open-topic";
       const stillVisible = () => !requiresVisibleTab || activeTabIdRef.current === tabId;
@@ -2919,6 +2942,8 @@ export function useController() {
       };
 
       const historyStartedAt = Date.now();
+      // HistorySliceForTab cold-reads disk when the controller is not ready yet,
+      // so we never wait on waitForTabReady before the first transcript paint.
       let projection = skipHistory
         ? undefined
         : await loadTimed("history", () =>
@@ -2935,6 +2960,13 @@ export function useController() {
           );
 
       if (!stillCurrent()) return;
+      if (!skipHistory && projection === undefined) {
+        const errText = t("history.failedLoadHistory");
+        dispatchTo(tabId, { type: "hydrate_error", reason, error: errText });
+        dispatchTo(tabId, { type: "local_notice", level: "warn", text: errText });
+        addBreadcrumb("tab.hydrate", `history failed ${tabId} ms=${Date.now() - historyStartedAt}`);
+        return;
+      }
       if (!skipHistory && projection !== undefined && !foregroundTurnActive()) {
         if (deferResetUntilHistory && stillCurrent()) dispatchTo(tabId, { type: "reset" });
         dispatchTo(tabId, {
@@ -4041,12 +4073,40 @@ export function useController() {
     }
   }, [activeTabId, bumpCheckpointRefreshSeq, bumpSessionLoadSeq, dispatchTo, loadSessionDataForTab, waitForTabReady]);
 
-  const listSessions = useCallback(async (): Promise<SessionMeta[]> => asArray<SessionMeta>((await app.ListHistorySessions({ scope: "all", workspaceRoot: "", status: "all", timeFilter: "all", query: "", cursor: "", limit: 200 }).catch(() => null))?.items), []);
+  const listSessions = useCallback(async (): Promise<SessionMeta[]> => {
+    // Failures must surface to callers. Swallowing them as [] paints a false
+    // "no history" empty state and hides catalog outages.
+    const page = await app.ListHistorySessions({
+      scope: "all", workspaceRoot: "", status: "all", timeFilter: "all", query: "", cursor: "", limit: 200,
+    });
+    if (!page) {
+      throw new Error(t("history.failedLoadHistory"));
+    }
+    return asArray<SessionMeta>(page.items);
+  }, []);
   const listTrashedSessions = useCallback(async (): Promise<SessionMeta[]> => asArray<SessionMeta>(await app.ListTrashedSessions().catch(() => [])), []);
+  const retrySessionHistory = useCallback(async (tabId?: string) => {
+    const targetTabId = tabId || activeTabIdRef.current;
+    if (!targetTabId) return;
+    const state = statesRef.current.get(targetTabId);
+    await loadSessionDataForTab(targetTabId, false, "startup", {
+      sessionPath: state?.meta?.sessionPath,
+      sessionRevision: state?.meta?.sessionRevision,
+      sessionDigest: state?.meta?.sessionDigest,
+      preserveCachedHistory: false,
+    });
+  }, [loadSessionDataForTab]);
   const resumeSession = useCallback(async (path: string, tabId?: string, navigationIntentSeq?: number) => {
     const targetTabId = tabId || activeTabId;
     if (!targetTabId) return;
     const navigationSeq = navigationIntentSeq ?? beginActiveNavigation();
+    // Cold-paint disk history immediately via HistorySliceForTab (works with
+    // ctrl==nil). Do not wait for controller ready before the first paint.
+    const existingMeta = statesRef.current.get(targetTabId)?.meta;
+    if (existingMeta) {
+      dispatchTo(targetTabId, { type: "optimistic_meta", meta: { ...existingMeta, sessionPath: path } });
+    }
+    void loadSessionDataForTab(targetTabId, false, "resume-session", { sessionPath: path, preserveCachedHistory: true });
     if (tabId) await waitForTabReady(tabId);
     else if (!(await waitForBackendActiveTab(targetTabId))) return;
     if (!navigationCompletionCurrent(navigationSeq, "session.resume", targetTabId)) return;
@@ -4072,7 +4132,7 @@ export function useController() {
     if (!isNavigationIntentCurrent(navigationSeq) || !sessionLoadCurrent(targetTabId, seq)) return;
     app.ContextUsageForTab(targetTabId).then((context) => dispatchTo(targetTabId, { type: "context", context })).catch(() => {});
     void refreshCheckpoints(targetTabId);
-  }, [activeTabId, beginActiveNavigation, bumpSessionLoadSeq, dispatchTo, isNavigationIntentCurrent, navigationCompletionCurrent, refreshCheckpoints, refreshMetaOnlyForTab, sessionLoadCurrent, waitForBackendActiveTab, waitForTabReady]);
+  }, [activeTabId, beginActiveNavigation, bumpSessionLoadSeq, dispatchTo, isNavigationIntentCurrent, loadSessionDataForTab, navigationCompletionCurrent, refreshCheckpoints, refreshMetaOnlyForTab, sessionLoadCurrent, waitForBackendActiveTab, waitForTabReady]);
 
   const openChannelSession = useCallback(async (path: string, tabId: string, navigationIntentSeq?: number) => {
     if (!tabId) return;
@@ -4716,7 +4776,7 @@ export function useController() {
     send, sendToTab, recoverDeliveryToTab, runShell, runShellForTab, steer, steerForTab, notice, cancel, approve, resolvePlanDecision, resolveRecovery, answerQuestion, setControllerMode,
     dismissExtensionForm, drainExtensionNotifications,
     setCollaborationMode, setCollaborationModeForTab, setToolApprovalMode, setToolApprovalModeForTab, setComposerProfileForTab, setGoal, setGoalForTab, clearGoal, clearGoalForTab, resumeGoal, resumeGoalForTab, pauseGoal, pauseGoalForTab,
-    newSession, clearSession, listSessions, listTrashedSessions, resumeSession, openChannelSession, previewSession, deleteSession, restoreSession, purgeTrashedSession, renameSession,
+    newSession, clearSession, listSessions, listTrashedSessions, retrySessionHistory, resumeSession, openChannelSession, previewSession, deleteSession, restoreSession, purgeTrashedSession, renameSession,
     loadOlderHistory,
     requestHistoryFullContent,
     refreshMeta, pickWorkspace, switchWorkspace, compact, rewind, rewindForTab, rewindForTabDetailed, undoRewindForTab, setModel, setEffort, setTokenMode, cancelJob,
