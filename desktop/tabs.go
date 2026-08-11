@@ -22,6 +22,7 @@ import (
 	"reasonix/internal/extension/providerext"
 	"reasonix/internal/fileutil"
 	"reasonix/internal/notify"
+	"reasonix/internal/plugin"
 	"reasonix/internal/provider"
 	"reasonix/internal/store"
 	"reasonix/internal/worktree"
@@ -3898,27 +3899,54 @@ func (a *App) buildTabControllerWithContextCore(tab *WorkspaceTab, loadedSession
 	// resurrecting removed tools on the shared host.
 	extensionGen := a.currentExtensionGeneration()
 	sharedHost := a.acquireSharedHost(rootKey)
-	beforeMCP := sharedHostServerSnapshot(sharedHost)
 	sink := a.desktopControllerSink(buildSink, cfg.Notifications)
-	ctrl, err := boot.Build(buildCtx, boot.Options{
-		Model:                    model,
-		RequireKey:               false,
-		AutoPricingCurrency:      a.desktopAutoPricingCurrency(),
-		StatsSource:              "desktop",
-		TaskStore:                a.taskStore(),
-		Sink:                     sink,
-		WorkspaceRoot:            root,
-		SessionDir:               sessionDir,
-		EffortOverride:           cloneStringPtr(buildEffort),
-		TokenMode:                buildTokenMode,
-		SharedHost:               sharedHost,
-		CleanupPendingReconciler: reconcileDesktopCleanupPending,
-		SubagentParentLive:       a.subagentParentProbeForBuild(tab),
-		SessionRecoveryMeta:      a.tabSessionRecoveryMeta(tab),
-		OnSessionRecovered:       a.handleTabSessionRecovered(tab),
-	})
+	// Journal Host client instances this build registers so generation-loss
+	// rollback can RemoveIfInstance only those instances, never sibling/new
+	// generation clients that merely share a server name.
+	var ctrl control.SessionAPI
+	var registered []plugin.HostClientRef
+	if sharedHost != nil {
+		registered, _ = sharedHost.RunWithRegistrationJournal(func() error {
+			ctrl, err = boot.Build(buildCtx, boot.Options{
+				Model:                    model,
+				RequireKey:               false,
+				AutoPricingCurrency:      a.desktopAutoPricingCurrency(),
+				StatsSource:              "desktop",
+				TaskStore:                a.taskStore(),
+				Sink:                     sink,
+				WorkspaceRoot:            root,
+				SessionDir:               sessionDir,
+				EffortOverride:           cloneStringPtr(buildEffort),
+				TokenMode:                buildTokenMode,
+				SharedHost:               sharedHost,
+				CleanupPendingReconciler: reconcileDesktopCleanupPending,
+				SubagentParentLive:       a.subagentParentProbeForBuild(tab),
+				SessionRecoveryMeta:      a.tabSessionRecoveryMeta(tab),
+				OnSessionRecovered:       a.handleTabSessionRecovered(tab),
+			})
+			return nil
+		})
+	} else {
+		ctrl, err = boot.Build(buildCtx, boot.Options{
+			Model:                    model,
+			RequireKey:               false,
+			AutoPricingCurrency:      a.desktopAutoPricingCurrency(),
+			StatsSource:              "desktop",
+			TaskStore:                a.taskStore(),
+			Sink:                     sink,
+			WorkspaceRoot:            root,
+			SessionDir:               sessionDir,
+			EffortOverride:           cloneStringPtr(buildEffort),
+			TokenMode:                buildTokenMode,
+			SharedHost:               sharedHost,
+			CleanupPendingReconciler: reconcileDesktopCleanupPending,
+			SubagentParentLive:       a.subagentParentProbeForBuild(tab),
+			SessionRecoveryMeta:      a.tabSessionRecoveryMeta(tab),
+			OnSessionRecovered:       a.handleTabSessionRecovered(tab),
+		})
+	}
 	if err != nil {
-		rollbackSharedHostMCPCreatedByBuild(sharedHost, beforeMCP)
+		rollbackSharedHostMCPRegistration(sharedHost, registered)
 		leaseHeld := false
 		a.mu.Lock()
 		if a.tabBuildSupersededLocked(tab, buildGeneration) {
@@ -3946,12 +3974,12 @@ func (a *App) buildTabControllerWithContextCore(tab *WorkspaceTab, loadedSession
 		return
 	}
 	if a.tabBuildSuperseded(tab, buildGeneration) {
-		rollbackSharedHostMCPCreatedByBuild(sharedHost, beforeMCP)
+		rollbackSharedHostMCPRegistration(sharedHost, registered)
 		a.abandonSupersededBuild(tab, ctrl, rootKey, "")
 		return
 	}
 	if a.currentExtensionGeneration() != extensionGen {
-		rollbackSharedHostMCPCreatedByBuild(sharedHost, beforeMCP)
+		rollbackSharedHostMCPRegistration(sharedHost, registered)
 		a.abandonSupersededBuild(tab, ctrl, rootKey, "")
 		a.scheduleDeferredStartupBuild(tab.ID)
 		return

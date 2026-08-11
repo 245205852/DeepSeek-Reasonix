@@ -28,58 +28,15 @@ func (a *App) currentExtensionGeneration() uint64 {
 	return a.extensionGeneration.Load()
 }
 
-// sharedHostServerSnapshot is the set of MCP server names known on a Host
-// before an off-lock boot.Build. A stale build may register additional names
-// onto the shared Host; rollback must remove only those names, never clients
-// that already belonged to a newer generation or sibling tab.
-func sharedHostServerSnapshot(host *plugin.Host) map[string]bool {
-	out := map[string]bool{}
-	if host == nil {
-		return out
-	}
-	for _, name := range host.ServerNames() {
-		out[name] = true
-	}
-	for _, name := range host.ConnectingServers() {
-		out[name] = true
-	}
-	for _, failure := range host.Failures() {
-		if name := strings.TrimSpace(failure.Name); name != "" {
-			out[name] = true
-		}
-	}
-	return out
-}
-
-// rollbackSharedHostMCPCreatedByBuild removes Host servers that appeared after
-// before. Pre-existing names are left alone so a lost generation race cannot
-// tear down connections owned by other tabs or a newer rebuild.
-func rollbackSharedHostMCPCreatedByBuild(host *plugin.Host, before map[string]bool) {
-	if host == nil {
+// rollbackSharedHostMCPRegistration removes only Host client instances that
+// this controller build journaled. Same-name servers owned by sibling tabs or
+// a newer generation keep their live instances (RemoveIfInstance is a no-op
+// when the instance ID no longer matches).
+func rollbackSharedHostMCPRegistration(host *plugin.Host, created []plugin.HostClientRef) {
+	if host == nil || len(created) == 0 {
 		return
 	}
-	if before == nil {
-		before = map[string]bool{}
-	}
-	names := map[string]bool{}
-	for _, name := range host.ServerNames() {
-		names[name] = true
-	}
-	for _, name := range host.ConnectingServers() {
-		names[name] = true
-	}
-	for _, failure := range host.Failures() {
-		if name := strings.TrimSpace(failure.Name); name != "" {
-			names[name] = true
-		}
-	}
-	for name := range names {
-		if before[name] {
-			continue
-		}
-		host.Remove(name)
-		host.ClearFailure(name)
-	}
+	host.RollbackRegistration(created)
 }
 
 func (a *App) saveDesktopMCPServerAndBump(root string, entry config.PluginEntry) error {

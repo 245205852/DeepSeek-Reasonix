@@ -4,7 +4,6 @@ import (
 	"path/filepath"
 	"testing"
 
-	"reasonix/internal/plugin"
 	"reasonix/internal/provider"
 )
 
@@ -47,21 +46,3 @@ func TestClearSessionForTabReturnsReplacementIdentity(t *testing.T) {
 		t.Fatal("replacement path collided with destroyed session")
 	}
 }
-
-func TestRollbackSharedHostMCPOnlyRemovesBuildCreatedServers(t *testing.T) {
-	host := plugin.NewHost()
-	// Pre-existing sibling-tab failure must survive a stale-build rollback.
-	host.RecordFailure(plugin.Spec{Name: "sibling"}, assertError("pre-existing"))
-	before := sharedHostServerSnapshot(host)
-	// Stale build introduced a new server name after the snapshot.
-	host.RecordFailure(plugin.Spec{Name: "stale-new"}, assertError("registered by stale build"))
-	rollbackSharedHostMCPCreatedByBuild(host, before)
-	failures := host.Failures()
-	if len(failures) != 1 || failures[0].Name != "sibling" {
-		t.Fatalf("failures after rollback = %+v, want only pre-existing sibling", failures)
-	}
-}
-
-type assertError string
-
-func (e assertError) Error() string { return string(e) }

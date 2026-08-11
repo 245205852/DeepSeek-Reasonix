@@ -163,6 +163,14 @@ type transport interface {
 	close()
 }
 
+// HostClientRef identifies one live Client instance on a Host. Desktop
+// generation-rollback uses RemoveIfInstance so a lost build cannot tear down
+// sibling or newer-generation connections that only share a server name.
+type HostClientRef struct {
+	Name string
+	ID   uint64
+}
+
 // Host owns the running plugin connections and closes them together. It also
 // aggregates the prompts and resources discovered across servers, which the
 // chat UI surfaces (prompts as slash commands, resources as @-references).
@@ -176,6 +184,16 @@ type Host struct {
 	resources []Resource
 	failures  []Failure
 	closed    bool
+
+	// nextInstanceID assigns stable IDs to Client values appended to this Host.
+	nextInstanceID atomic.Uint64
+
+	// Registration journal: RunWithRegistrationJournal serializes ownership of
+	// the journal so a desktop controller build can roll back only clients it
+	// registered, even when server names collide with pre-existing instances.
+	regJournalMu     sync.Mutex
+	regJournalActive bool
+	regJournal       []HostClientRef
 
 	// Lazy/background servers may still be handshaking when a session closes.
 	// Close cancels those startup contexts and waits for their goroutines before
@@ -463,7 +481,7 @@ func Start(ctx context.Context, specs []Spec, p StartPolicy) (*Host, []tool.Tool
 			}
 			continue
 		}
-		h.clients = append(h.clients, r.client)
+		h.noteClientLocked(r.client)
 		tools = append(tools, r.tools...)
 		// prompts/resources are filled in later by StartPhaseB.
 	}
@@ -472,6 +490,114 @@ func Start(ctx context.Context, specs []Spec, p StartPolicy) (*Host, []tool.Tool
 		return nil, nil, firstErr
 	}
 	return h, tools, nil
+}
+
+// RunWithRegistrationJournal runs fn while recording every Client this Host
+// accepts. Concurrent journals serialize on regJournalMu so ownership is
+// unambiguous for generation-rollback. fn must not call this method re-entrantly.
+func (h *Host) RunWithRegistrationJournal(fn func() error) ([]HostClientRef, error) {
+	if h == nil {
+		if fn != nil {
+			return nil, fn()
+		}
+		return nil, nil
+	}
+	h.regJournalMu.Lock()
+	defer h.regJournalMu.Unlock()
+	h.mu.Lock()
+	h.regJournalActive = true
+	h.regJournal = nil
+	h.mu.Unlock()
+	err := error(nil)
+	if fn != nil {
+		err = fn()
+	}
+	h.mu.Lock()
+	created := append([]HostClientRef(nil), h.regJournal...)
+	h.regJournalActive = false
+	h.regJournal = nil
+	h.mu.Unlock()
+	return created, err
+}
+
+// noteClientLocked assigns an instance ID, appends c to clients, and journals
+// the registration when a journal is active. Caller must hold h.mu.
+func (h *Host) noteClientLocked(c *Client) {
+	if c == nil {
+		return
+	}
+	if c.instanceID == 0 {
+		c.instanceID = h.nextInstanceID.Add(1)
+	}
+	h.clients = append(h.clients, c)
+	if h.regJournalActive {
+		h.regJournal = append(h.regJournal, HostClientRef{Name: c.name, ID: c.instanceID})
+	}
+}
+
+// RemoveIfInstance disconnects name only when the live client instance ID still
+// matches. Returns whether a matching client was removed.
+func (h *Host) RemoveIfInstance(name string, instanceID uint64) bool {
+	if h == nil || instanceID == 0 {
+		return false
+	}
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return false
+	}
+	h.mu.Lock()
+	idx := -1
+	var removed *Client
+	for i, c := range h.clients {
+		if c != nil && c.name == name && c.instanceID == instanceID {
+			idx = i
+			removed = c
+			break
+		}
+	}
+	if idx < 0 || removed == nil {
+		h.mu.Unlock()
+		return false
+	}
+	cancels := append([]context.CancelFunc(nil), h.deferredCancels[name]...)
+	delete(h.deferredCancels, name)
+	if h.deferredGenerations == nil {
+		h.deferredGenerations = make(map[string]uint64)
+	}
+	h.deferredGenerations[name]++
+	if h.deferredGenerations[name] == 0 {
+		h.deferredGenerations[name] = 1
+	}
+	h.clients = append(h.clients[:idx], h.clients[idx+1:]...)
+	keptP := h.prompts[:0]
+	for _, p := range h.prompts {
+		if p.Server != name {
+			keptP = append(keptP, p)
+		}
+	}
+	h.prompts = keptP
+	keptR := h.resources[:0]
+	for _, r := range h.resources {
+		if r.Server != name {
+			keptR = append(keptR, r)
+		}
+	}
+	h.resources = keptR
+	h.clearFailure(name)
+	h.mu.Unlock()
+	for _, cancel := range cancels {
+		cancel()
+	}
+	removed.close()
+	return true
+}
+
+// RollbackRegistration removes every journaled client instance. Safe when a
+// ref is already gone (RemoveIfInstance is a no-op).
+func (h *Host) RollbackRegistration(refs []HostClientRef) {
+	for _, ref := range refs {
+		h.RemoveIfInstance(ref.Name, ref.ID)
+	}
 }
 
 // Close terminates all plugin connections.
@@ -599,9 +725,10 @@ func (h *Host) fetchResources(ctx context.Context, c *Client, sink event.Sink) {
 // JSON-RPC. The MCP-level methods (initialize, listTools, …) are transport-
 // agnostic — they go through t.
 type Client struct {
-	name string
-	t    transport
-	spec Spec
+	name       string
+	instanceID uint64 // Host-local identity for RemoveIfInstance rollback
+	t          transport
+	spec       Spec
 
 	// Capabilities advertised by the server at initialize. prompts/list and
 	// resources/list are only called when advertised, so we never provoke a
@@ -1302,7 +1429,7 @@ func (h *Host) addConnectedWithLifecycle(lifeCtx, callCtx context.Context, s Spe
 		c.close()
 		return nil, serverAlreadyConnectedError(s.Name)
 	}
-	h.clients = append(h.clients, c)
+	h.noteClientLocked(c)
 	h.clearFailure(s.Name)
 	h.mu.Unlock()
 	// Prompts and resources stream in on the long lifeCtx the caller passed (Host.Add
@@ -1621,7 +1748,12 @@ func (c *Client) notify(ctx context.Context, method string, params any) error {
 	return c.t.notify(ctx, method, params)
 }
 
-func (c *Client) close() { c.t.close() }
+func (c *Client) close() {
+	if c == nil || c.t == nil {
+		return
+	}
+	c.t.close()
+}
 
 func isHTTPSessionExpired(err error) bool {
 	var expired *httpSessionExpiredError

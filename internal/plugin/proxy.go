@@ -131,7 +131,7 @@ func (h *Host) ReplaceServerBackend(ctx context.Context, name string, next *Clie
 		}
 	}
 	if next != nil {
-		h.clients = append(h.clients, next)
+		h.noteClientLocked(next)
 	}
 	h.mu.Unlock()
 	return p.replace(ctx, next, generation)
