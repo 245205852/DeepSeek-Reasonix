@@ -32,6 +32,30 @@ function ev(s: typeof initialState, e: WireEvent) {
   return reducer(s, { type: "event", e });
 }
 
+// Desktop keeps completion receipts off the transcript while preserving the wire event.
+{
+  const before = {
+    ...initialState,
+    seq: 2,
+    items: [{ kind: "user" as const, id: "u1", text: "update it" }],
+  };
+  const after = ev(before, {
+    kind: "completion_summary",
+    completion: {
+      preset: "balanced",
+      verdict: "partial",
+      mutations: 3,
+      checks_passed: 12,
+      checks_failed: 1,
+      checks_suppressed: 2,
+      review: "passed",
+      gap_kinds: ["stale_check"],
+      constraint_degraded: true,
+    },
+  });
+  eq(after, before, "completion summary does not add a desktop transcript item");
+}
+
 // --- 1. partial dispatch upserts a running card with argChars ---
 {
   let s = { ...initialState, running: true, turnActive: true };

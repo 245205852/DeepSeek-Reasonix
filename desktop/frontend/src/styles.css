@@ -3561,41 +3561,6 @@ a[href] {
   color: var(--fg-faint);
   margin-top: 2px;
 }
-.notice-line--completion {
-  --completion-tone: var(--accent);
-  background: color-mix(in srgb, var(--completion-tone) 7%, var(--bg-soft));
-  border: 1px solid color-mix(in srgb, var(--completion-tone) 28%, var(--border-soft));
-}
-.notice-line--completion[data-verdict="complete"] {
-  --completion-tone: var(--ok);
-}
-.notice-line--completion[data-verdict="partial"] {
-  --completion-tone: var(--warn);
-}
-.notice-line--completion[data-verdict="blocked"] {
-  --completion-tone: var(--err);
-}
-.notice-line--completion .notice-line__icon,
-.completion-summary__verdict {
-  color: var(--completion-tone);
-}
-.completion-summary__header {
-  display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 5px 7px;
-}
-.completion-summary__verdict {
-  font-weight: 650;
-}
-.completion-summary__metrics {
-  margin-top: 4px;
-  color: var(--fg);
-}
-.completion-summary__details {
-  margin-top: 2px;
-  color: var(--fg-dim);
-}
 .notice-line__icon {
   flex: 0 0 auto;
 }

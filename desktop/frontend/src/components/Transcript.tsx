@@ -8,7 +8,7 @@ import { AssistantMessage, InvocationMetadataContext, TurnActions, UserMessage }
 import { ProcessCompactIcon, ProcessPhaseIcon } from "./ProcessCard";
 import { ToolCard } from "./ToolCard";
 import { ExtensionCard } from "./ExtensionCard";
-import { ArrowDown, CheckCircle2, ChevronRight, CirclePlay, Info, TriangleAlert } from "lucide-react";
+import { ArrowDown, ChevronRight, CirclePlay, Info, TriangleAlert } from "lucide-react";
 import { Welcome } from "./Welcome";
 import { ReadOnlyBatch } from "./ReadOnlyBatch";
 import { ToolGroup } from "./ToolGroup";
@@ -50,7 +50,6 @@ import { useTranscriptSelectableRows } from "../lib/useTranscriptSelectableRows"
 import { TranscriptSelectionOverlay } from "./TranscriptSelectionOverlay";
 import { useCreationTranscriptScrollbar } from "../lib/useCreationTranscriptScrollbar";
 import { useTranscriptScrollInteractions } from "../lib/useTranscriptScrollInteractions";
-import { completionSummaryDisplay } from "../lib/completionSummary";
 type OpenTurnAction = { turn: number; menu: "summary" | "rewind" };
 const QUESTION_NAV_MIN_COUNT = 2;
 type AssistantReasoningDisplay = "normal" | "hide";
@@ -689,8 +688,6 @@ export function Transcript({
             onAction={row.item.action === "continue_delivery" ? (onDeliveryContinue ?? (() => onPrompt(t("notice.deliveryIncompleteContinuePrompt")))) : undefined}
           />
         );
-      case "completion_summary":
-        return <CompletionSummaryCard item={row.item} />;
       case "extension":
         return <ExtensionCard item={row.item} tabId={tabId} />;
       case "turn-actions": {
@@ -1011,42 +1008,6 @@ type CompactionItem = Extract<Item, { kind: "compaction" }>;
 
 function PhaseCard({ id, text }: { id: string; text: string }) {
   return <div className="phase" data-entrance={id}><ProcessPhaseIcon size={12} /><span>{text}</span></div>;
-}
-
-type CompletionSummaryItem = Extract<Item, { kind: "completion_summary" }>;
-
-function CompletionSummaryCard({ item }: { item: CompletionSummaryItem }) {
-  const t = useT();
-  const display = completionSummaryDisplay(item, t);
-  const StatusIcon = display.tone === "complete"
-    ? CheckCircle2
-    : display.tone === "partial" || display.tone === "blocked"
-      ? TriangleAlert
-      : Info;
-  return (
-    <div
-      className="notice-line notice-line--delivery notice-line--completion"
-      data-entrance={item.id}
-      data-verdict={display.tone}
-      role="status"
-      aria-label={`${display.title}：${display.verdict}`}
-    >
-      <StatusIcon className="notice-line__icon" size={15} aria-hidden="true" />
-      <div className="notice-line__text">
-        <div className="completion-summary__header">
-          <span className="notice-line__title">{display.title}</span>
-          <span className="completion-summary__verdict">{display.verdict}</span>
-          <span className="badge">{display.preset}</span>
-        </div>
-        {display.metrics.length > 0 ? (
-          <div className="completion-summary__metrics">{display.metrics.join(" · ")}</div>
-        ) : null}
-        {display.details.length > 0 ? (
-          <div className="completion-summary__details">{display.details.join(" · ")}</div>
-        ) : null}
-      </div>
-    </div>
-  );
 }
 
 // A mid-turn steer is the user's own message, so it renders on the user side

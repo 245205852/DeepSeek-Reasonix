@@ -251,19 +251,6 @@ export type Item =
   | { kind: "user"; id: string; submissionId?: string; text: string; submitText?: string; failed?: boolean; createdAt?: number; checkpointTurn?: number }
   | { kind: "assistant"; id: string; text: string; reasoning: string; streaming: boolean; reasoningComplete?: boolean; reasoningDurationMs?: number; workDurationMs?: number; memoryCitations?: MemoryCitation[] }
   | { kind: "phase"; id: string; text: string }
-  | {
-      kind: "completion_summary";
-      id: string;
-      preset: string;
-      verdict: string;
-      mutations: number;
-      checksPassed: number;
-      checksFailed: number;
-      checksSuppressed: number;
-      review: string;
-      gapKinds?: string[];
-      constraintDegraded: boolean;
-    }
   | { kind: "notice"; id: string; level: "info" | "warn"; text: string; detail?: string; title?: string; variant?: "delivery"; action?: "continue_delivery"; decisionReceipt?: WireDecisionReceipt }
   | {
       kind: "compaction";
@@ -1500,22 +1487,8 @@ function applyEvent(s: State, e: WireEvent): State {
       return { ...s, turnPhase: phase, running: true, turnActive: true, cancellable: true };
     }
     case "completion_summary": {
-      const c = e.completion;
-      if (!c) return s;
-      const item: Item = {
-        kind: "completion_summary",
-        id: `cs${s.seq}`,
-        preset: c.preset ?? "",
-        verdict: c.verdict ?? "",
-        mutations: c.mutations ?? 0,
-        checksPassed: c.checks_passed ?? 0,
-        checksFailed: c.checks_failed ?? 0,
-        checksSuppressed: c.checks_suppressed ?? 0,
-        review: c.review ?? "none",
-        gapKinds: c.gap_kinds,
-        constraintDegraded: !!c.constraint_degraded,
-      };
-      return { ...s, seq: s.seq + 1, items: [...s.items, item] };
+      // The desktop transcript intentionally omits end-of-turn quality receipts.
+      return s;
     }
     case "text":
     case "reasoning": {
