@@ -11,6 +11,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 
 	"reasonix/internal/diff"
 	"reasonix/internal/provider"
@@ -290,6 +291,7 @@ type Registry struct {
 	// schema. Nil means every registered tool is provider-visible (tests and
 	// legacy direct construction).
 	providerVisible map[string]bool
+	schemaRev       atomic.Uint64
 }
 
 // NewRegistry returns an empty registry.
@@ -307,7 +309,10 @@ func (r *Registry) SetProviderVisibleTools(names []string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if names == nil {
-		r.providerVisible = nil
+		if r.providerVisible != nil {
+			r.providerVisible = nil
+			r.schemaRev.Add(1)
+		}
 		return
 	}
 	visible := make(map[string]bool, len(names))
@@ -317,7 +322,19 @@ func (r *Registry) SetProviderVisibleTools(names []string) {
 			visible[name] = true
 		}
 	}
+	changed := len(visible) != len(r.providerVisible) || r.providerVisible == nil
+	if !changed {
+		for name := range visible {
+			if !r.providerVisible[name] {
+				changed = true
+				break
+			}
+		}
+	}
 	r.providerVisible = visible
+	if changed {
+		r.schemaRev.Add(1)
+	}
 }
 
 // ProviderVisible reports whether name is currently provider-visible.
@@ -358,6 +375,7 @@ func (r *Registry) Add(t Tool) {
 	}
 	r.tools[name] = t
 	r.canon[name] = provider.CanonicalizeSchema(t.Schema())
+	r.schemaRev.Add(1)
 }
 
 // MCPNamePrefix is the namespace every MCP tool name carries: the
@@ -398,6 +416,9 @@ func (r *Registry) RemovePrefix(prefix string) int {
 		kept = append(kept, name)
 	}
 	r.order = kept
+	if removed > 0 {
+		r.schemaRev.Add(1)
+	}
 	return removed
 }
 
@@ -422,6 +443,9 @@ func (r *Registry) SuspendPrefix(prefix string) int {
 		kept = append(kept, name)
 	}
 	r.order = kept
+	if removed > 0 {
+		r.schemaRev.Add(1)
+	}
 	return removed
 }
 
@@ -562,6 +586,14 @@ func (r *Registry) Len() int {
 	defer r.mu.RUnlock()
 
 	return len(r.order)
+}
+
+// SchemaRevision changes whenever the provider-visible tool set changes.
+func (r *Registry) SchemaRevision() uint64 {
+	if r == nil {
+		return 0
+	}
+	return r.schemaRev.Load()
 }
 
 // Names returns the registered tool names in insertion order.
