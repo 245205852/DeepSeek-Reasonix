@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -963,5 +964,64 @@ func TestCronDueDomDowOrSemantics(t *testing.T) {
 	// "0 9 1 * *": only dom restricted → 1st only
 	if cronDue("0 9 1 * *", mon) {
 		t.Fatalf("Monday (not 1st) should not match dom-only")
+	}
+}
+
+// TestHeartbeatConfigSchemaVersionWritten: 新版本保存的配置必须带 schemaVersion=2，
+// 供未来版本识别格式；旧配置（无字段）读取兼容且升级保存后带版本号。
+func TestHeartbeatConfigSchemaVersionWritten(t *testing.T) {
+	isolateDesktopUserDirs(t)
+	engine := &HeartbeatEngine{}
+	if err := engine.saveTasks([]HeartbeatTask{{ID: "t1", Title: "task", Interval: "1h", Enabled: false}}); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+	data, err := os.ReadFile(engine.configPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var cfg heartbeatConfig
+	if err := json.Unmarshal(data, &cfg); err != nil {
+		t.Fatal(err)
+	}
+	if cfg.SchemaVersion != heartbeatSchemaVersion {
+		t.Fatalf("schemaVersion = %d, want %d", cfg.SchemaVersion, heartbeatSchemaVersion)
+	}
+	// 旧格式（无 schemaVersion）仍可读：模拟 v1 配置
+	legacy := `{"tasks":[{"id":"legacy","title":"L","interval":"1h","enabled":false}]}`
+	if err := os.WriteFile(engine.configPath(), []byte(legacy), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	engine.ReloadTasks()
+	if err := engine.ReplaceTasks(engine.ListTasks()); err != nil {
+		t.Fatalf("legacy upgrade save: %v", err)
+	}
+	data, _ = os.ReadFile(engine.configPath())
+	_ = json.Unmarshal(data, &cfg)
+	if cfg.SchemaVersion != heartbeatSchemaVersion {
+		t.Fatalf("legacy upgrade schemaVersion = %d, want %d", cfg.SchemaVersion, heartbeatSchemaVersion)
+	}
+}
+
+// TestHeartbeatConfigForwardProtection: 未来版本（更高 schemaVersion）写入的配置，
+// 当前二进制整表保存必须拒绝，不能静默降级覆盖 runHistory 等未来字段。
+func TestHeartbeatConfigForwardProtection(t *testing.T) {
+	isolateDesktopUserDirs(t)
+	engine := &HeartbeatEngine{}
+	future := `{"schemaVersion":99,"tasks":[{"id":"f","title":"future","interval":"1h","enabled":false,"runHistory":[{"at":100,"topicId":"x"}]}]}`
+	if err := os.MkdirAll(filepath.Dir(engine.configPath()), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(engine.configPath(), []byte(future), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	engine.ReloadTasks() // 读取成功（未知高版本不阻塞读取）
+	err := engine.ReplaceTasks([]HeartbeatTask{{ID: "f", Title: "edited", Interval: "2h", Enabled: true}})
+	if err == nil {
+		t.Fatal("ReplaceTasks on future-schema config must be refused")
+	}
+	// 磁盘内容未被覆盖
+	data, _ := os.ReadFile(engine.configPath())
+	if !bytes.Contains(data, []byte(`"schemaVersion":99`)) {
+		t.Fatalf("future config was overwritten: %s", data)
 	}
 }

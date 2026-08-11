@@ -68,10 +68,24 @@ type HeartbeatRun struct {
 // maxRunHistory caps how many recent executions are kept per task.
 const maxRunHistory = 20
 
+// heartbeatSchemaVersion is the current on-disk config schema version.
+// v1 (schemaVersion absent/0): interval-only tasks, no runHistory.
+// v2: adds runHistory per task (execution history, capped at maxRunHistory).
+//
+// Migration boundary: configs written by v2+ binaries are read fine by older
+// binaries (unknown fields are ignored by json.Unmarshal), but an older
+// binary doing a full-table save (ReplaceTasks/ReplaceConfig) will silently
+// drop runHistory because it doesn't know the field. This is a one-way
+// upgrade — once a v2+ binary has saved, do not run an older binary that
+// writes the config. writeTasks refuses to overwrite a config with a
+// schemaVersion newer than this binary understands (forward protection).
+const heartbeatSchemaVersion = 2
+
 // heartbeatConfig is the on-disk format.
 type heartbeatConfig struct {
-	Revision uint64          `json:"revision,omitempty"`
-	Tasks    []HeartbeatTask `json:"tasks"`
+	SchemaVersion int             `json:"schemaVersion,omitempty"`
+	Revision      uint64          `json:"revision,omitempty"`
+	Tasks         []HeartbeatTask `json:"tasks"`
 }
 
 // ErrHeartbeatConfigConflict means another writer changed the config after
@@ -246,6 +260,12 @@ func (e *HeartbeatEngine) writeTasks(tasks []HeartbeatTask, expected heartbeatCo
 	if err != nil {
 		return err
 	}
+	// Forward protection: a config written by a future binary carries a
+	// schemaVersion this binary does not understand. Refuse to overwrite it
+	// with a full-table save instead of silently downgrading the schema.
+	if current.exists && current.cfg.SchemaVersion > heartbeatSchemaVersion {
+		return fmt.Errorf("heartbeat config schemaVersion %d is newer than this binary supports (%d); upgrade Reasonix before editing", current.cfg.SchemaVersion, heartbeatSchemaVersion)
+	}
 	if compare && (current.exists != expected.exists || current.digest != expected.digest || current.cfg.Revision != expected.cfg.Revision) {
 		return ErrHeartbeatConfigConflict
 	}
@@ -253,7 +273,7 @@ func (e *HeartbeatEngine) writeTasks(tasks []HeartbeatTask, expected heartbeatCo
 	if !current.exists {
 		revision = 1
 	}
-	cfg := heartbeatConfig{Revision: revision, Tasks: tasks}
+	cfg := heartbeatConfig{SchemaVersion: heartbeatSchemaVersion, Revision: revision, Tasks: tasks}
 	b, err := json.MarshalIndent(cfg, "", "  ")
 	if err != nil {
 		return err
