@@ -164,6 +164,7 @@ type WorkspaceTab struct {
 	TopicTitle          string             // display title
 	topicTitleSource    string             // auto or manual; controls localization at API boundaries
 	SessionPath         string             // exact .jsonl file this tab continues
+	SessionGeneration   uint64             // bumps on session rotation (clear/new); frontend hydrate identity
 	ReadOnly            bool               // true for external channel transcripts opened for browsing
 	Ctrl                control.SessionAPI // nil while booting / on error
 	Label               string             // model label (for the tab badge)
@@ -2178,6 +2179,7 @@ type TabMeta struct {
 	SessionPath       string             `json:"sessionPath,omitempty"`
 	SessionRevision   int64              `json:"sessionRevision,omitempty"`
 	SessionDigest     string             `json:"sessionDigest,omitempty"`
+	SessionGeneration uint64             `json:"sessionGeneration,omitempty"`
 	ReadOnly          bool               `json:"readOnly,omitempty"`
 	ProjectColor      string             `json:"projectColor,omitempty"`
 	Label             string             `json:"label"`
@@ -2240,6 +2242,7 @@ func (a *App) tabMeta(tab *WorkspaceTab, active bool) TabMeta {
 		SessionPath:       sessionPath,
 		SessionRevision:   sessionRevision,
 		SessionDigest:     sessionDigest,
+		SessionGeneration: tab.SessionGeneration,
 		ReadOnly:          tab.ReadOnly,
 		Label:             tab.Label,
 		Ready:             runtimeView.Phase == sessionRuntimeReady && tab.Ctrl != nil,
@@ -3898,7 +3901,6 @@ func (a *App) buildTabControllerWithContextCore(tab *WorkspaceTab, loadedSession
 	extensionGen := a.currentExtensionGeneration()
 	sharedHost := a.acquireSharedHost(rootKey)
 	sink := a.desktopControllerSink(buildSink, cfg.Notifications)
-
 	ctrl, err := boot.Build(buildCtx, boot.Options{
 		Model:                    model,
 		RequireKey:               false,
@@ -3948,10 +3950,8 @@ func (a *App) buildTabControllerWithContextCore(tab *WorkspaceTab, loadedSession
 		return
 	}
 	if a.currentExtensionGeneration() != extensionGen {
-		// Plugin/MCP configuration changed during the off-lock build. SharedHost
-		// cleanup is a no-op, so drop any Host clients the stale build may have
-		// re-registered after a concurrent Remove/Update before abandoning.
-		a.purgeUnwantedSharedHostServers(root, sharedHost)
+		// Stale build lost the MCP config race; reset SharedHost then rebuild.
+		a.resetSharedHostMCP(sharedHost)
 		a.abandonSupersededBuild(tab, ctrl, rootKey, "")
 		a.scheduleDeferredStartupBuild(tab.ID)
 		return

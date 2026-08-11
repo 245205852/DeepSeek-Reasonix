@@ -4695,7 +4695,7 @@ func TestClearActiveSessionRuntimeSupersedesInFlightStartupBuild(t *testing.T) {
 	app.activeTabID = tab.ID
 	t.Cleanup(tab.releaseSessionLease)
 
-	if err := app.clearActiveSessionRuntime(tab, oldCtrl); err != nil {
+	if _, err := app.clearActiveSessionRuntime(tab, oldCtrl); err != nil {
 		t.Fatalf("clearActiveSessionRuntime: %v", err)
 	}
 	if tab.Ctrl == nil || tab.Ctrl == oldCtrl {
@@ -4755,7 +4755,7 @@ func TestClearActiveSessionRuntimeReleasesResourcesWhenTabReplaced(t *testing.T)
 	app.activeTabID = tab.ID
 	t.Cleanup(tab.releaseSessionLease)
 
-	err := app.clearActiveSessionRuntime(tab, oldCtrl)
+	_, err := app.clearActiveSessionRuntime(tab, oldCtrl)
 	if err == nil || !strings.Contains(err.Error(), "changed while clearing") {
 		t.Fatalf("clearActiveSessionRuntime error = %v, want tab-changed error", err)
 	}
@@ -5897,7 +5897,7 @@ func TestClearSessionCancelsRunningRuntimeAndKeepsTopic(t *testing.T) {
 
 	oldCtrl.Submit("work")
 	<-runner.started
-	if err := app.ClearSession(); err != nil {
+	if _, err := app.ClearSession(); err != nil {
 		t.Fatalf("ClearSession: %v", err)
 	}
 	waitNotRunning(t, oldCtrl)
@@ -5953,7 +5953,7 @@ func TestClearSessionRemovesRunningJobArtifacts(t *testing.T) {
 		t.Fatalf("job sidecar should exist before clear: %v", err)
 	}
 
-	if err := app.ClearSession(); err != nil {
+	if _, err := app.ClearSession(); err != nil {
 		t.Fatalf("ClearSession: %v", err)
 	}
 	if _, err := os.Stat(jobsDir); !os.IsNotExist(err) {
@@ -10333,7 +10333,7 @@ func TestSessionActionsWithoutControllerReturnError(t *testing.T) {
 	if err := app.NewSession(); err == nil {
 		t.Error("NewSession with no controller must surface an error, not silently no-op")
 	}
-	if err := app.ClearSession(); err == nil {
+	if _, err := app.ClearSession(); err == nil {
 		t.Error("ClearSession with no controller must surface an error")
 	}
 

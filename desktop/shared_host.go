@@ -28,10 +28,31 @@ func (a *App) currentExtensionGeneration() uint64 {
 	return a.extensionGeneration.Load()
 }
 
-// purgeUnwantedSharedHostServers removes Host clients that are no longer
-// enabled. Used when an off-lock controller build mutates the shared Host and
-// is later abandoned due to a configuration generation bump: controller cleanup
-// is a no-op for SharedHost, so deleted MCP servers would otherwise stick.
+// resetSharedHostMCP drops SharedHost MCP clients after a stale build loses the
+// extension generation race (SharedHost cleanup is a no-op on controller close).
+func (a *App) resetSharedHostMCP(host *plugin.Host) {
+	if host == nil {
+		return
+	}
+	names := map[string]bool{}
+	for _, name := range host.ServerNames() {
+		names[name] = true
+	}
+	for _, name := range host.ConnectingServers() {
+		names[name] = true
+	}
+	for _, failure := range host.Failures() {
+		if name := strings.TrimSpace(failure.Name); name != "" {
+			names[name] = true
+		}
+	}
+	for name := range names {
+		host.Remove(name)
+		host.ClearFailure(name)
+	}
+}
+
+// purgeUnwantedSharedHostServers removes Host clients no longer enabled.
 func (a *App) purgeUnwantedSharedHostServers(root string, host *plugin.Host) {
 	if a == nil || host == nil {
 		return
