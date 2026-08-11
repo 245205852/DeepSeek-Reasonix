@@ -90,6 +90,9 @@ func (c *Catalog) ListSessions(ctx context.Context, req SessionPageRequest) (Ses
 		if err != nil {
 			return out, err
 		}
+		if c.pathRemoved(record.Path) {
+			continue
+		}
 		out.Items = append(out.Items, record)
 	}
 	if err := rows.Err(); err != nil {
@@ -128,6 +131,9 @@ func appendSessionTimeFilter(where *[]string, args *[]any, filter string, now ti
 func (c *Catalog) GetSession(ctx context.Context, path string) (SessionRecord, bool, error) {
 	path = filepath.Clean(strings.TrimSpace(path))
 	if path == "." || path == "" {
+		return SessionRecord{}, false, nil
+	}
+	if c.pathRemoved(path) {
 		return SessionRecord{}, false, nil
 	}
 	record, err := scanSession(c.db.QueryRowContext(ctx, `SELECT `+sessionSelectColumns+` FROM catalog_sessions WHERE path=?`, path))

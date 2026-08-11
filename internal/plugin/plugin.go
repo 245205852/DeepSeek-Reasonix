@@ -163,14 +163,6 @@ type transport interface {
 	close()
 }
 
-// HostClientRef identifies one live Client instance on a Host. Desktop
-// generation-rollback uses RemoveIfInstance so a lost build cannot tear down
-// sibling or newer-generation connections that only share a server name.
-type HostClientRef struct {
-	Name string
-	ID   uint64
-}
-
 // Host owns the running plugin connections and closes them together. It also
 // aggregates the prompts and resources discovered across servers, which the
 // chat UI surfaces (prompts as slash commands, resources as @-references).
@@ -186,14 +178,9 @@ type Host struct {
 	closed    bool
 
 	// nextInstanceID assigns stable IDs to Client values appended to this Host.
+	// nextScopeID assigns IDs to per-build RegistrationScope tokens.
 	nextInstanceID atomic.Uint64
-
-	// Registration journal: RunWithRegistrationJournal serializes ownership of
-	// the journal so a desktop controller build can roll back only clients it
-	// registered, even when server names collide with pre-existing instances.
-	regJournalMu     sync.Mutex
-	regJournalActive bool
-	regJournal       []HostClientRef
+	nextScopeID    atomic.Uint64
 
 	// Lazy/background servers may still be handshaking when a session closes.
 	// Close cancels those startup contexts and waits for their goroutines before
@@ -217,31 +204,6 @@ type Host struct {
 	// Detached stats/schema-cache writers from Start; off the boot path but
 	// drained by Close so cleanup can't race a still-open cache file.
 	bgWrites sync.WaitGroup
-}
-
-// Prompts returns every MCP prompt discovered across connected servers.
-func (h *Host) Prompts() []Prompt {
-	h.mu.RLock()
-	defer h.mu.RUnlock()
-	return append([]Prompt(nil), h.prompts...)
-}
-
-// Resources returns every MCP resource discovered across connected servers.
-func (h *Host) Resources() []Resource {
-	h.mu.RLock()
-	defer h.mu.RUnlock()
-	return append([]Resource(nil), h.resources...)
-}
-
-// ServerNames returns the connected servers' names, in connection order.
-func (h *Host) ServerNames() []string {
-	h.mu.RLock()
-	defer h.mu.RUnlock()
-	names := make([]string, len(h.clients))
-	for i, c := range h.clients {
-		names[i] = c.name
-	}
-	return names
 }
 
 // ReadResource reads a resource uri from the named server. It is how the chat
@@ -481,7 +443,13 @@ func Start(ctx context.Context, specs []Spec, p StartPolicy) (*Host, []tool.Tool
 			}
 			continue
 		}
-		h.noteClientLocked(r.client)
+		if err := h.noteClientLocked(r.client, nil); err != nil {
+			r.client.close()
+			if firstErr == nil {
+				firstErr = err
+			}
+			continue
+		}
 		tools = append(tools, r.tools...)
 		// prompts/resources are filled in later by StartPhaseB.
 	}
@@ -490,114 +458,6 @@ func Start(ctx context.Context, specs []Spec, p StartPolicy) (*Host, []tool.Tool
 		return nil, nil, firstErr
 	}
 	return h, tools, nil
-}
-
-// RunWithRegistrationJournal runs fn while recording every Client this Host
-// accepts. Concurrent journals serialize on regJournalMu so ownership is
-// unambiguous for generation-rollback. fn must not call this method re-entrantly.
-func (h *Host) RunWithRegistrationJournal(fn func() error) ([]HostClientRef, error) {
-	if h == nil {
-		if fn != nil {
-			return nil, fn()
-		}
-		return nil, nil
-	}
-	h.regJournalMu.Lock()
-	defer h.regJournalMu.Unlock()
-	h.mu.Lock()
-	h.regJournalActive = true
-	h.regJournal = nil
-	h.mu.Unlock()
-	err := error(nil)
-	if fn != nil {
-		err = fn()
-	}
-	h.mu.Lock()
-	created := append([]HostClientRef(nil), h.regJournal...)
-	h.regJournalActive = false
-	h.regJournal = nil
-	h.mu.Unlock()
-	return created, err
-}
-
-// noteClientLocked assigns an instance ID, appends c to clients, and journals
-// the registration when a journal is active. Caller must hold h.mu.
-func (h *Host) noteClientLocked(c *Client) {
-	if c == nil {
-		return
-	}
-	if c.instanceID == 0 {
-		c.instanceID = h.nextInstanceID.Add(1)
-	}
-	h.clients = append(h.clients, c)
-	if h.regJournalActive {
-		h.regJournal = append(h.regJournal, HostClientRef{Name: c.name, ID: c.instanceID})
-	}
-}
-
-// RemoveIfInstance disconnects name only when the live client instance ID still
-// matches. Returns whether a matching client was removed.
-func (h *Host) RemoveIfInstance(name string, instanceID uint64) bool {
-	if h == nil || instanceID == 0 {
-		return false
-	}
-	name = strings.TrimSpace(name)
-	if name == "" {
-		return false
-	}
-	h.mu.Lock()
-	idx := -1
-	var removed *Client
-	for i, c := range h.clients {
-		if c != nil && c.name == name && c.instanceID == instanceID {
-			idx = i
-			removed = c
-			break
-		}
-	}
-	if idx < 0 || removed == nil {
-		h.mu.Unlock()
-		return false
-	}
-	cancels := append([]context.CancelFunc(nil), h.deferredCancels[name]...)
-	delete(h.deferredCancels, name)
-	if h.deferredGenerations == nil {
-		h.deferredGenerations = make(map[string]uint64)
-	}
-	h.deferredGenerations[name]++
-	if h.deferredGenerations[name] == 0 {
-		h.deferredGenerations[name] = 1
-	}
-	h.clients = append(h.clients[:idx], h.clients[idx+1:]...)
-	keptP := h.prompts[:0]
-	for _, p := range h.prompts {
-		if p.Server != name {
-			keptP = append(keptP, p)
-		}
-	}
-	h.prompts = keptP
-	keptR := h.resources[:0]
-	for _, r := range h.resources {
-		if r.Server != name {
-			keptR = append(keptR, r)
-		}
-	}
-	h.resources = keptR
-	h.clearFailure(name)
-	h.mu.Unlock()
-	for _, cancel := range cancels {
-		cancel()
-	}
-	removed.close()
-	return true
-}
-
-// RollbackRegistration removes every journaled client instance. Safe when a
-// ref is already gone (RemoveIfInstance is a no-op).
-func (h *Host) RollbackRegistration(refs []HostClientRef) {
-	for _, ref := range refs {
-		h.RemoveIfInstance(ref.Name, ref.ID)
-	}
 }
 
 // Close terminates all plugin connections.
@@ -898,37 +758,6 @@ func (h *Host) Servers() []ServerStatus {
 		}
 		out = append(out, s)
 	}
-	return out
-}
-
-// Failures returns configured MCP servers that failed to connect.
-func (h *Host) Failures() []Failure {
-	h.mu.RLock()
-	defer h.mu.RUnlock()
-	out := make([]Failure, len(h.failures))
-	copy(out, h.failures)
-	return out
-}
-
-// ConnectingServers returns server names whose startup handshake is currently in
-// flight. It is intentionally status-only: connected clients and failures remain
-// the source of truth for ready/issue states.
-func (h *Host) ConnectingServers() []string {
-	h.spawningMu.Lock()
-	defer h.spawningMu.Unlock()
-	names := make(map[string]struct{}, len(h.spawning))
-	for key, attempt := range h.spawning {
-		name := key
-		if attempt != nil && strings.TrimSpace(attempt.server) != "" {
-			name = attempt.server
-		}
-		names[name] = struct{}{}
-	}
-	out := make([]string, 0, len(names))
-	for name := range names {
-		out = append(out, name)
-	}
-	sort.Strings(out)
 	return out
 }
 
@@ -1429,7 +1258,14 @@ func (h *Host) addConnectedWithLifecycle(lifeCtx, callCtx context.Context, s Spe
 		c.close()
 		return nil, serverAlreadyConnectedError(s.Name)
 	}
-	h.noteClientLocked(c)
+	// Attribute ownership from lifeCtx so LazyToolset background kicks and
+	// boot.Build share the same RegistrationScope token. Sibling hot-adds
+	// without a scope are never journaled to a concurrent build.
+	if err := h.noteClientFromContext(lifeCtx, c); err != nil {
+		h.mu.Unlock()
+		c.close()
+		return nil, err
+	}
 	h.clearFailure(s.Name)
 	h.mu.Unlock()
 	// Prompts and resources stream in on the long lifeCtx the caller passed (Host.Add
@@ -1746,13 +1582,6 @@ func formatTimeout(timeout time.Duration) string {
 
 func (c *Client) notify(ctx context.Context, method string, params any) error {
 	return c.t.notify(ctx, method, params)
-}
-
-func (c *Client) close() {
-	if c == nil || c.t == nil {
-		return
-	}
-	c.t.close()
 }
 
 func isHTTPSessionExpired(err error) bool {

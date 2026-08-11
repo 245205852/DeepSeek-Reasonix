@@ -28,15 +28,15 @@ func (a *App) currentExtensionGeneration() uint64 {
 	return a.extensionGeneration.Load()
 }
 
-// rollbackSharedHostMCPRegistration removes only Host client instances that
-// this controller build journaled. Same-name servers owned by sibling tabs or
-// a newer generation keep their live instances (RemoveIfInstance is a no-op
-// when the instance ID no longer matches).
-func rollbackSharedHostMCPRegistration(host *plugin.Host, created []plugin.HostClientRef) {
-	if host == nil || len(created) == 0 {
+// rollbackSharedHostMCPRegistration aborts the per-build RegistrationScope so
+// late LazyToolset kicks are rejected, then RemoveIfInstance-rolls back only
+// clients that carried this build's token. Sibling hot-adds without the token
+// are never attributed or deleted.
+func rollbackSharedHostMCPRegistration(scope *plugin.RegistrationScope) {
+	if scope == nil {
 		return
 	}
-	host.RollbackRegistration(created)
+	scope.AbortAndRollback()
 }
 
 func (a *App) saveDesktopMCPServerAndBump(root string, entry config.PluginEntry) error {

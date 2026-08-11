@@ -2,10 +2,10 @@
   "limits": {
     "banner": 15,
     "commented-code": 0,
-    "complexity": 2074,
-    "essay": 4070,
-    "file-size": 109418,
-    "function-size": 8929,
+    "complexity": 2075,
+    "essay": 4049,
+    "file-size": 108844,
+    "function-size": 8935,
     "layering": 1,
     "marker": 0,
     "narrative": 64,
@@ -28,7 +28,7 @@
     "desktop/app.go": {
       "complexity": 63,
       "essay": 95,
-      "file-size": 11487,
+      "file-size": 11435,
       "function-size": 383
     },
     "desktop/app_autosave_test.go": {
@@ -84,7 +84,7 @@
       "essay": 2
     },
     "desktop/frontend/src/App.tsx": {
-      "file-size": 4715
+      "file-size": 4712
     },
     "desktop/frontend/src/__tests__/app-chrome-tabs.test.ts": {
       "test-file-size": 19
@@ -165,7 +165,7 @@
       "file-size": 415
     },
     "desktop/frontend/src/lib/bridge.ts": {
-      "file-size": 4750
+      "file-size": 4749
     },
     "desktop/frontend/src/lib/crash.ts": {
       "file-size": 225
@@ -174,10 +174,10 @@
       "file-size": 269
     },
     "desktop/frontend/src/lib/types.ts": {
-      "file-size": 1454
+      "file-size": 1452
     },
     "desktop/frontend/src/lib/useController.ts": {
-      "file-size": 3935
+      "file-size": 3930
     },
     "desktop/heartbeat.go": {
       "essay": 20,
@@ -187,7 +187,7 @@
     "desktop/history_slice.go": {
       "banner": 2,
       "complexity": 8,
-      "essay": 37,
+      "essay": 35,
       "file-size": 1025,
       "function-size": 20
     },
@@ -309,10 +309,10 @@
       "essay": 1
     },
     "desktop/tabs.go": {
-      "complexity": 53,
-      "essay": 132,
-      "file-size": 8189,
-      "function-size": 422
+      "complexity": 44,
+      "essay": 113,
+      "file-size": 7727,
+      "function-size": 393
     },
     "desktop/tabs_order_test.go": {
       "test-file-size": 395
@@ -357,6 +357,10 @@
     },
     "desktop/topic_activation_test.go": {
       "essay": 3
+    },
+    "desktop/topic_legacy_migration.go": {
+      "complexity": 10,
+      "function-size": 29
     },
     "desktop/tray.go": {
       "essay": 1
@@ -1345,9 +1349,6 @@
     "internal/guardian/guardian.go": {
       "essay": 25
     },
-    "internal/historycatalog/catalog.go": {
-      "file-size": 10
-    },
     "internal/hook/hook.go": {
       "complexity": 15,
       "essay": 44,
@@ -1469,8 +1470,8 @@
     },
     "internal/plugin/plugin.go": {
       "essay": 29,
-      "file-size": 1315,
-      "function-size": 14
+      "file-size": 1276,
+      "function-size": 20
     },
     "internal/plugin/plugin_test.go": {
       "essay": 10,

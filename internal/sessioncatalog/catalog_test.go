@@ -353,6 +353,64 @@ func TestWriterQueueCoalescesBySessionPath(t *testing.T) {
 	t.Fatal("coalesced writer did not persist the latest record")
 }
 
+func TestRemoveSessionTombstoneHidesTopicBeforeDurableDelete(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "session.jsonl")
+	catalog, err := Open(ctx, Options{
+		Path: filepath.Join(t.TempDir(), "catalog.sqlite"), DisableRepair: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = catalog.Close(context.Background()) })
+	record := SessionRecord{
+		Path: path, Directory: dir, Scope: "global", TopicID: "topic_tombstone",
+		Turns: 1, TurnsState: TurnsValid, Health: HealthOK, LastActivityAt: time.Now().UnixMilli(),
+	}
+	if err := catalog.UpsertSession(ctx, record); err != nil {
+		t.Fatal(err)
+	}
+	// Hold the directory lock so durable DELETE blocks while the short caller
+	// context expires — the read-visible tombstone must still hide the topic.
+	dirLock := catalog.directoryLock(dir)
+	dirLock.Lock()
+	defer dirLock.Unlock()
+
+	short, cancel := context.WithTimeout(ctx, 30*time.Millisecond)
+	defer cancel()
+	// RemoveSession should return promptly (overlay path) without waiting for
+	// the held directory lock forever.
+	done := make(chan error, 1)
+	go func() {
+		done <- catalog.RemoveSession(short, path, "test_tombstone_overlay")
+	}()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("RemoveSession: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("RemoveSession blocked on directory lock instead of recording tombstone first")
+	}
+	if page, err := catalog.ListTopics(ctx, TopicPageRequest{Scope: "global", Limit: 50}); err != nil {
+		t.Fatal(err)
+	} else {
+		for _, item := range page.Items {
+			if item.TopicID == "topic_tombstone" {
+				t.Fatalf("tombstoned topic still visible in ListTopics: %+v", page.Items)
+			}
+		}
+	}
+	if _, ok, err := catalog.GetTopic(ctx, TopicKey{Scope: "global", TopicID: "topic_tombstone"}); err != nil || ok {
+		t.Fatalf("GetTopic after tombstone: ok=%v err=%v", ok, err)
+	}
+	if _, ok, err := catalog.GetSession(ctx, path); err != nil || ok {
+		t.Fatalf("GetSession after tombstone: ok=%v err=%v", ok, err)
+	}
+}
+
 func TestRemoveSessionWinsOverQueuedStaleWriteAndAllowsLaterRecreation(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()

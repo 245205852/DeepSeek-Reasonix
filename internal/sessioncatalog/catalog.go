@@ -380,66 +380,6 @@ func (c *Catalog) upsertSessions(ctx context.Context, records []SessionRecord, g
 	return nil
 }
 
-// RemoveSession immediately removes one projection row after an authoritative
-// archive/delete. It never touches the transcript or sidecars. A tombstone
-// suppresses writer work captured before the removal; a later exact index,
-// save, or fresh directory scan clears it when the path is recreated.
-func (c *Catalog) RemoveSession(ctx context.Context, path, reason string) error {
-	if c == nil || c.db == nil {
-		return nil
-	}
-	path = filepath.Clean(strings.TrimSpace(path))
-	if path == "." || path == "" {
-		return nil
-	}
-	// Serialize an authoritative removal with directory reconciliation. Without
-	// this boundary a scan that captured the old path just before an archive
-	// could clear the tombstone and reinsert the stale projection afterwards.
-	directoryLock := c.directoryLock(filepath.Dir(path))
-	directoryLock.Lock()
-	defer directoryLock.Unlock()
-	c.mutationMu.Lock()
-	defer c.mutationMu.Unlock()
-	c.removedPaths.Store(path, struct{}{})
-	c.writeMu.Lock()
-	delete(c.writeQueued, path)
-	c.writeMu.Unlock()
-	c.pathQueued.Delete(path)
-	c.repairQueued.Delete(path)
-	tx, err := c.db.BeginTx(ctx, nil)
-	if err != nil {
-		return err
-	}
-	var key TopicKey
-	err = tx.QueryRowContext(ctx, `SELECT scope,workspace_root,topic_id FROM catalog_sessions WHERE path=?`, path).
-		Scan(&key.Scope, &key.WorkspaceRoot, &key.TopicID)
-	if err != nil && !errors.Is(err, sql.ErrNoRows) {
-		_ = tx.Rollback()
-		return err
-	}
-	if _, err := tx.ExecContext(ctx, `DELETE FROM catalog_sessions WHERE path=?`, path); err != nil {
-		_ = tx.Rollback()
-		return err
-	}
-	if key.TopicID != "" {
-		if err := recomputeTopic(ctx, tx, key); err != nil {
-			_ = tx.Rollback()
-			return err
-		}
-	}
-	revision, err := bumpRevision(ctx, tx)
-	if err != nil {
-		_ = tx.Rollback()
-		return err
-	}
-	if err := tx.Commit(); err != nil {
-		return err
-	}
-	c.publishRevision(revision, []string{key.WorkspaceRoot}, reason)
-	c.refreshCounts(ctx)
-	return nil
-}
-
 func recomputeTopic(ctx context.Context, tx *sql.Tx, key TopicKey) error {
 	var count int
 	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM catalog_sessions WHERE scope=? AND workspace_root=? AND topic_id=?`, key.Scope, key.WorkspaceRoot, key.TopicID).Scan(&count); err != nil {
@@ -554,16 +494,25 @@ func (c *Catalog) ListTopics(ctx context.Context, req TopicPageRequest) (TopicPa
 	if err := rows.Err(); err != nil {
 		return out, err
 	}
-	more := len(out.Items) > req.Limit
-	if more {
-		out.Items = out.Items[:req.Limit]
-	}
-	for i := range out.Items {
-		sessions, err := c.listTopicSessions(ctx, TopicKey{Scope: out.Items[i].Scope, WorkspaceRoot: out.Items[i].WorkspaceRoot, TopicID: out.Items[i].TopicID})
+	// Apply tombstone overlay before pagination trim so a removed session cannot
+	// keep its topic visible after authoritative archive while SQL lags.
+	visible := out.Items[:0]
+	for _, item := range out.Items {
+		sessions, err := c.listTopicSessions(ctx, TopicKey{Scope: item.Scope, WorkspaceRoot: item.WorkspaceRoot, TopicID: item.TopicID})
 		if err != nil {
 			return TopicPage{Items: []TopicRecord{}, Revision: out.Revision}, err
 		}
-		out.Items[i].Sessions = sessions
+		if len(sessions) == 0 {
+			// All sessions tombstoned or topic empty — hide from project tree.
+			continue
+		}
+		item.Sessions = sessions
+		visible = append(visible, item)
+	}
+	out.Items = visible
+	more := len(out.Items) > req.Limit
+	if more {
+		out.Items = out.Items[:req.Limit]
 	}
 	if more && len(out.Items) > 0 {
 		last := out.Items[len(out.Items)-1]
@@ -600,6 +549,9 @@ func (c *Catalog) listTopicSessions(ctx context.Context, key TopicKey) ([]Sessio
 			&record.Health, &record.MissingSince); err != nil {
 			return nil, err
 		}
+		if c.pathRemoved(record.Path) {
+			continue
+		}
 		out = append(out, record)
 	}
 	return out, rows.Err()
@@ -625,6 +577,11 @@ func (c *Catalog) GetTopic(ctx context.Context, key TopicKey) (TopicRecord, bool
 	item.Sessions, err = c.listTopicSessions(ctx, key)
 	if err != nil {
 		return TopicRecord{Sessions: []SessionRecord{}}, false, err
+	}
+	// Tombstone overlay: topic rows may lag behind RemoveSession while the
+	// durable DELETE waits on locks or a short caller context.
+	if len(item.Sessions) == 0 {
+		return TopicRecord{Sessions: []SessionRecord{}}, false, nil
 	}
 	return item, true, nil
 }
