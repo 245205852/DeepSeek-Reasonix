@@ -29,6 +29,25 @@ func (a *App) currentExtensionGeneration() uint64 {
 	return a.extensionGeneration.Load()
 }
 
+// lockMCPMutation serializes shared-Host boot with live MCP mutations without
+// holding runtimeAdmissionMu while an optimistic controller build finishes its
+// extension startup. A final generation bump invalidates builds that loaded
+// configuration while the mutation held the gate.
+func (a *App) lockMCPMutation(operation string) func() {
+	if hook := a.runtimeMutationBeforeLockHook; hook != nil {
+		hook(operation)
+	}
+	a.runtimeRebuildMu.Lock()
+	a.extensionBuildMu.Lock()
+	a.runtimeAdmissionMu.Lock()
+	return func() {
+		a.bumpExtensionGeneration()
+		a.runtimeAdmissionMu.Unlock()
+		a.extensionBuildMu.Unlock()
+		a.runtimeRebuildMu.Unlock()
+	}
+}
+
 type sharedHostMCPRegistration struct {
 	scope     *plugin.RegistrationScope
 	finished  bool

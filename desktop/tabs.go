@@ -3901,7 +3901,7 @@ func (a *App) buildTabControllerWithContextCore(tab *WorkspaceTab, loadedSession
 	sink := a.desktopControllerSink(buildSink, cfg.Notifications)
 	buildCtx, registration := beginSharedHostMCPRegistration(buildCtx, sharedHost)
 	defer registration.rollback()
-	ctrl, err := a.buildTabControllerBoot(buildCtx, boot.Options{
+	ctrl, err := a.buildTabControllerBootFenced(buildCtx, extensionGen, boot.Options{
 		Model:               model,
 		RequireKey:          false,
 		AutoPricingCurrency: a.desktopAutoPricingCurrency(),
@@ -3917,32 +3917,7 @@ func (a *App) buildTabControllerWithContextCore(tab *WorkspaceTab, loadedSession
 		SessionRecoveryMeta:      a.tabSessionRecoveryMeta(tab),
 		OnSessionRecovered:       a.handleTabSessionRecovered(tab),
 	})
-	if err != nil {
-		registration.rollback()
-		leaseHeld := false
-		a.mu.Lock()
-		if a.tabBuildSupersededLocked(tab, buildGeneration) {
-			a.mu.Unlock()
-			a.abandonSupersededBuild(tab, nil, rootKey, "")
-			return
-		}
-		leaseHeld = setTabStartupError(tab, err)
-		tab.Ready = false
-		if leaseHeld {
-			a.setSessionRuntimePhaseLocked(tab, sessionRuntimeLeaseBlocked, err)
-		} else {
-			a.setSessionRuntimePhaseLocked(tab, sessionRuntimeFailed, err)
-		}
-		hostKey := takeTabSharedHostKey(tab)
-		tab.releaseSessionLease()
-		a.mu.Unlock()
-		if hostKey != "" {
-			a.releaseSharedHost(hostKey)
-		}
-		if leaseHeld {
-			a.scheduleDeferredStartupBuild(tab.ID)
-		}
-		a.emitReady(wailsCtx, tab.ID)
+	if a.handleTabControllerBootError(tab, registration, rootKey, buildGeneration, wailsCtx, err) {
 		return
 	}
 	if a.tabBuildSuperseded(tab, buildGeneration) {
@@ -4140,8 +4115,14 @@ func (a *App) buildTabControllerWithContextCore(tab *WorkspaceTab, loadedSession
 	// Lifecycle admission protects only the compare-and-publish boundary. Slow
 	// config, history, lease, and extension work above remains cancellable and
 	// cannot prevent shutdown from acquiring the write side.
-	a.runtimeAdmissionMu.RLock()
-	defer a.runtimeAdmissionMu.RUnlock()
+	releasePublication, extensionsCurrent := a.lockTabControllerPublication(extensionGen)
+	if !extensionsCurrent {
+		registration.rollback()
+		a.abandonSupersededBuild(tab, ctrl, rootKey, acquiredLeaseKey)
+		a.scheduleDeferredStartupBuild(tab.ID)
+		return
+	}
+	defer releasePublication()
 	a.mu.Lock()
 	if a.tabBuildSupersededLocked(tab, buildGeneration) {
 		a.mu.Unlock()

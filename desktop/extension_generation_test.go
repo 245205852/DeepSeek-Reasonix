@@ -53,6 +53,38 @@ func TestExtensionGenerationBumpsOnMCPMutationSites(t *testing.T) {
 	}
 }
 
+func TestControllerPublicationRejectsMutationThatCompletesAfterBoot(t *testing.T) {
+	app := NewApp()
+	generation := app.currentExtensionGeneration()
+
+	// Model a build that has finished extension boot while an MCP mutation is
+	// queued. The writer must finish and bump the generation before publication.
+	app.extensionBuildMu.RLock()
+	mutationLocked := make(chan struct{})
+	releaseMutation := make(chan struct{})
+	go func() {
+		unlock := app.lockMCPMutation("test-publication-fence")
+		close(mutationLocked)
+		<-releaseMutation
+		unlock()
+	}()
+	app.extensionBuildMu.RUnlock()
+	<-mutationLocked
+
+	publication := make(chan bool, 1)
+	go func() {
+		unlock, ok := app.lockTabControllerPublication(generation)
+		if ok {
+			unlock()
+		}
+		publication <- ok
+	}()
+	close(releaseMutation)
+	if <-publication {
+		t.Fatal("controller published after an MCP mutation changed its extension generation")
+	}
+}
+
 func TestTaskActionProjectKeepsAllowlistedRoot(t *testing.T) {
 	root := t.TempDir()
 	app := &App{

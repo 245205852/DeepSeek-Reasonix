@@ -207,8 +207,8 @@ type App struct {
 	// and MCP lifecycle mutations. Two concurrent rebuilds of the same tab both
 	// pass the tab-identity check at swap time, while MCP launch authorization racing
 	// a toggle/reconnect can restore stale tools or launch a second single-instance
-	// server. Keep the lock order runtimeRebuildMu -> runtimeAdmissionMu -> App.mu
-	// -> Host/Registry.
+	// server. MCP paths insert extensionBuildMu between runtimeRebuildMu and
+	// runtimeAdmissionMu; both orders end at App.mu -> Host/Registry.
 	runtimeRebuildMu sync.Mutex
 	// runtimeAdmissionMu is the runtime lifecycle barrier. Foreground turn-start
 	// tokens and the short publication phase of asynchronous controller builds
@@ -268,10 +268,10 @@ type App struct {
 	// host, last Release closes it.
 	sharedHosts   map[string]*sharedPluginHost
 	sharedHostsMu sync.Mutex
-	// extensionGeneration advances whenever plugin/MCP configuration that
-	// feeds boot.Build changes. Off-lock builds capture the generation before
-	// registering on the shared host and abandon publication if it moved.
+	// extensionGeneration fences off-lock shared-host boot against MCP mutations;
+	// stale generations abandon publication instead of restoring old tools.
 	extensionGeneration atomic.Uint64
+	extensionBuildMu    sync.RWMutex
 
 	// tabsSaveMu serializes writes to desktop-tabs.json and its fixed .tmp path.
 	tabsSaveMu             sync.Mutex
@@ -7476,11 +7476,6 @@ func (a *App) lockRuntimeMutation(operation string) func() {
 		a.runtimeAdmissionMu.Unlock()
 		a.runtimeRebuildMu.Unlock()
 	}
-}
-
-// lockMCPMutation is the MCP-specific spelling retained at lifecycle call sites.
-func (a *App) lockMCPMutation(operation string) func() {
-	return a.lockRuntimeMutation(operation)
 }
 
 // AuthorizeAndConnectMCPServer is retained for older generated Wails clients.
