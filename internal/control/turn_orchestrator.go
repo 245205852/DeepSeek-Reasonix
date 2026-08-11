@@ -23,11 +23,6 @@ type turnOrchestrator struct {
 	c *Controller
 }
 
-const (
-	goalRunRoundLimit = 16
-	goalRunRoundKey   = "goal model rounds"
-)
-
 type orchestratedTurn struct {
 	input            string
 	raw              string
@@ -99,7 +94,6 @@ func (o *turnOrchestrator) runSubagentSkillTurnsGoalLoop(ctx context.Context, sk
 	// call update_goal itself.
 	if scopeID, goal, ok := o.c.goals.deliveryScope(); ok {
 		ctx = agent.WithDeliveryExecutionScope(ctx, agent.DeliveryExecutionScope{ID: scopeID, TaskText: goal})
-		ctx = agent.WithDefaultRunStepLimit(ctx, goalRunRoundLimit, goalRunRoundKey)
 		recorder := o.c.goals.newTurnRecorder(scopeID, o.c.goals.continuationToken())
 		o.c.goalUsageTee.setActiveRecorder(recorder)
 	}
@@ -511,18 +505,12 @@ func goalPauseFromRunError(err error) (cause, reason string, ok bool) {
 		return "", "", false
 	}
 	switch {
-	case info.Kind == "max_steps" && info.HostOwned && info.Key == goalRunRoundKey:
-		return stopCauseGoalRunBudget,
-			fmt.Sprintf("Goal run budget exhausted (%d model rounds); completed work is saved", info.Limit), true
 	case info.Kind == "goal_stuck" && info.HostOwned:
 		reason := strings.TrimSpace(info.Reason)
 		if reason == "" {
 			reason = "host-detected structural no-progress loop"
 		}
 		return stopCauseGoalStuck, reason, true
-	case info.Kind == "todo_stall" && info.HostOwned:
-		return stopCauseGoalStuck,
-			fmt.Sprintf("current todo stalled for %d model rounds without host-observed progress", info.Limit), true
 	default:
 		return "", "", false
 	}
