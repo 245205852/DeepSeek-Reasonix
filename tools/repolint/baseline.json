@@ -4,8 +4,8 @@
     "commented-code": 0,
     "complexity": 2100,
     "essay": 4064,
-    "file-size": 110026,
-    "function-size": 9080,
+    "file-size": 110050,
+    "function-size": 9078,
     "layering": 1,
     "marker": 0,
     "narrative": 64,
@@ -84,7 +84,7 @@
       "essay": 2
     },
     "desktop/frontend/src/App.tsx": {
-      "file-size": 4733
+      "file-size": 4731
     },
     "desktop/frontend/src/__tests__/app-chrome-tabs.test.ts": {
       "test-file-size": 19
@@ -162,7 +162,7 @@
       "file-size": 415
     },
     "desktop/frontend/src/lib/bridge.ts": {
-      "file-size": 4754
+      "file-size": 4753
     },
     "desktop/frontend/src/lib/crash.ts": {
       "file-size": 225
@@ -174,7 +174,7 @@
       "file-size": 1502
     },
     "desktop/frontend/src/lib/useController.ts": {
-      "file-size": 3977
+      "file-size": 3978
     },
     "desktop/heartbeat.go": {
       "essay": 20,
@@ -204,7 +204,7 @@
     },
     "desktop/main.go": {
       "essay": 7,
-      "function-size": 9
+      "function-size": 7
     },
     "desktop/main_test.go": {
       "essay": 2
@@ -468,7 +468,7 @@
     },
     "internal/agent/coordinator.go": {
       "essay": 15,
-      "file-size": 13
+      "file-size": 6
     },
     "internal/agent/coordinator_test.go": {
       "essay": 3,
@@ -981,7 +981,7 @@
     },
     "internal/config/config.go": {
       "essay": 54,
-      "file-size": 1508,
+      "file-size": 1507,
       "narrative": 2
     },
     "internal/config/credentials.go": {
@@ -1076,7 +1076,7 @@
     "internal/control/controller.go": {
       "complexity": 10,
       "essay": 162,
-      "file-size": 5492,
+      "file-size": 5533,
       "function-size": 75,
       "narrative": 4
     },
@@ -1200,7 +1200,7 @@
     },
     "internal/event/event.go": {
       "essay": 10,
-      "file-size": 81,
+      "file-size": 82,
       "narrative": 1
     },
     "internal/event/subagent_progress.go": {
@@ -1562,7 +1562,7 @@
     },
     "internal/provider/provider.go": {
       "essay": 51,
-      "file-size": 362
+      "file-size": 354
     },
     "internal/provider/responses/responses.go": {
       "complexity": 54,
