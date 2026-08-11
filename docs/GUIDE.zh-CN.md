@@ -496,10 +496,10 @@ CLI/TUI 文本输入可通过 `[ui].cursor_shape` 设置光标形状，支持 `u
 命名配色，再用 `/theme <style>` 选择强调色。
 
 响应式底栏左侧保留当前 Ask/Auto/Plan 或 YOLO 姿态和交互状态；终端较宽时，模型、推理
-强度和角色设定作为一组靠右显示，第二行按可用性显示 Git 标识、缓存命中率、上下文占用、
+强度和执行设定作为一组靠右显示，第二行按可用性显示 Git 标识、缓存命中率、上下文占用、
 压缩余量、后台任务和余额。“就绪”只表示输入框空闲，并不是模型健康检查；选择器、审批、
 图片粘贴、shell 模式等活动会替换这个状态。窄终端会按完整信息组移动、换行或压缩。
-标签和展示用的角色设定值跟随 `/language`，但 `/preset`（及兼容的 `/work-mode`）命令
+标签和展示用的执行设定值跟随 `/language`，但 `/preset`（及兼容的 `/work-mode`）命令
 参数继续使用稳定的英文标识 `light|balanced|delivery`。
 
 聊天与 transcript：
@@ -532,7 +532,7 @@ CLI/TUI 文本输入可通过 `[ui].cursor_shape` 设置光标形状，支持 `u
 | `Shift+Tab` | 按 Ask → Auto → Plan → Ask 循环 | YOLO 不进入这个输入模式循环；底部状态栏会显示当前模式。 |
 | `Ctrl+Y` | 切换 YOLO 开/关 | 关闭 YOLO 时会尽量恢复之前的 Ask/Auto 基底。终端若能转发 Command/Super，也可能识别 `Cmd+Y`，但稳定可用的是 `Ctrl+Y`。 |
 | `--yolo`、`--dangerously-skip-permissions` | 启动时进入 YOLO | 和 `Ctrl+Y` 是同一个运行时模式。 |
-| `/preset [light|balanced|delivery]` | 查看或切换当前会话的角色设定 | `/work-mode` 与 `/profile` 是兼容别名（`economy` → `light`）。切换就地更新角色设定、不重建 Controller；有回合、审批或后台任务时会拒绝。 |
+| `/preset [light|balanced|delivery]` | 查看或切换当前会话的执行设定 | `/work-mode` 与 `/profile` 是兼容别名（`economy` → `light`）。切换就地更新执行设定、不重建 Controller；有回合、审批或后台任务时会拒绝。 |
 | `/theme [auto|light|dark|style]` | 查看或切换 CLI 主题 | 不带参数会列出背景模式和命名配色。选择会保存到用户配置；单次运行可用 `REASONIX_THEME` 和 `REASONIX_THEME_STYLE` 覆盖。 |
 | `Ctrl+O` | 切换详细 reasoning 显示 | 也可通过 `/verbose` 使用。 |
 | `Ctrl+B` | 展开或收起较长 shell 输出 | 较长 shell 输出的提示行也可点击；全屏 TUI 开启鼠标接管时，文本选区由应用内处理。 |
@@ -1010,7 +1010,7 @@ workflow skill 派发 reviewer subagent 的场景，同时避免无限递归和�
 用 `read_only_skill`。两者都会启动
 ephemeral 只读 subagent，只暴露只读研究工具和安全前台 bash，只返回最终答案，不创建
 可续接的 subagent transcript。只读嵌套委派会在 `max_subagent_depth` 内可用，其内部仍不提供
-可写的 `task` / `run_skill`。角色设定不再改变 provider 可见工具面；通过
+可写的 `task` / `run_skill`。执行设定不再改变 provider 可见工具面；通过
 `use_capability` 调度 `read_only_skill` 等可选能力，后续 writer 调用仍通过
 Permissions/Sandbox。
 
@@ -1057,24 +1057,24 @@ enable、授权与完整连接身份，因此共享 Host 中另一个项目/tab 
 server 无法在这里提升权限。严格只读边界比独立 Planner 更窄：Planner 接受已授权的 opaque
 非 destructive MCP，而严格只读子会话必须有明确 reader hint，且根本不暴露 writer。
 
-启动会话时可以用 `--preset light|balanced|delivery` 选择角色设定，例如
+启动会话时可以用 `--preset light|balanced|delivery` 选择执行设定，例如
 `reasonix run --preset delivery "修复并验证这个 bug"`。兼容的 `--profile
-economy|balanced|delivery` 仍可用（`economy` → `light`）。三种角色设定共享同一套
+economy|balanced|delivery` 仍可用（`economy` → `light`）。三种执行设定共享同一套
 provider 可见核心工具面（直接读/bash/编辑/写入、后台 shell 生命周期工具，以及稳定的
 `use_capability` 代理）。可选工具（搜索、MCP、skills、subagents、docs、web_fetch 等）
-通过 `use_capability` 调度，不会扩展 top-level provider schema，因此角色设定切换不会
+通过 `use_capability` 调度，不会扩展 top-level provider schema，因此执行设定切换不会
 制造新的工具 schema 缓存前缀。
 
-角色设定差异在宿主策略，不在工具列表：
+执行设定差异在宿主策略，不在工具列表：
 
 - **Light（轻量）**：优先直接执行，定向验证，仅在高风险/安全类任务上强制独立复审。
 - **Balanced（均衡，默认）**：按风险自动轻/全规划，分档验证，中风险多文件变更可条件触发独立复审。
 - **Delivery（交付）**：完整验收标准、完整验证、中风险及以上强制独立复审；没有具体
   `todo_write` 验收清单时会阻止变更和验证；变更后须复查、验证并以 `complete_step` 签收。
 
-交互式 TUI 会话内可用 `/preset` 查看当前角色设定，或用
+交互式 TUI 会话内可用 `/preset` 查看当前执行设定，或用
 `/preset light|balanced|delivery` 热切换；`/work-mode` 与 `/profile` 是兼容别名。切换就地
-更新角色设定、不重建 Controller，同时保留 history、session 路径、Lease 和 Ask/Auto/Yolo
+更新执行设定、不重建 Controller，同时保留 history、session 路径、Lease 和 Ask/Auto/Yolo
 审批姿态；当前 turn、审批/询问、后台任务或另一场运行时切换尚未结束时会拒绝切换。该命令只
 修改当前会话，不持久化新的全局默认值。
 

@@ -250,7 +250,7 @@ func (f *configurableFactory) SessionConfigState(_ context.Context, p SessionCon
 		ConfigOptions: []SessionConfigOption{
 			{ID: "model", Name: "Model", Category: "model", Type: "select", CurrentValue: model, Options: modelOptions},
 			{ID: "effort", Name: "Effort", Category: "thought_level", Type: "select", CurrentValue: effort, Options: effortOptions},
-			{ID: "agent_preset", Name: "Role Setting", Category: "agent_preset", Type: "select", CurrentValue: agentPreset, Options: []SessionConfigSelectOption{
+			{ID: "agent_preset", Name: "Execution Setting", Category: "agent_preset", Type: "select", CurrentValue: agentPreset, Options: []SessionConfigSelectOption{
 				{Value: "light", Name: "Light"}, {Value: "balanced", Name: "Balanced"}, {Value: "delivery", Name: "Delivery"},
 			}},
 			{ID: "work_mode", Name: "Work Mode", Category: "work_mode", Type: "select", CurrentValue: runtimeProfile, Options: []SessionConfigSelectOption{

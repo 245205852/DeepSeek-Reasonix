@@ -24,7 +24,7 @@ reasonix acp --preset delivery
 ```
 
 `--model` selects the startup model when the client does not override it.
-`--preset` sets the startup role setting to `light`, `balanced`, or `delivery`
+`--preset` sets the startup execution setting to `light`, `balanced`, or `delivery`
 (default `balanced`). Legacy `--profile economy|balanced|delivery` still works
 (`economy` → `light`). Both remain session-configurable after initialization.
 
@@ -82,7 +82,7 @@ tools run locally inside the Reasonix process.
 ## Session lifecycle
 
 Each ACP session owns an independent Reasonix controller, workspace root, model,
-role setting (agent preset), collaboration mode, approval mode, MCP set, and
+execution setting (agent preset), collaboration mode, approval mode, MCP set, and
 persisted transcript. State does not leak between sessions.
 
 | Method | Behavior |
@@ -111,10 +111,10 @@ one mode selector:
 | Collaboration mode | `normal`, `plan`, `goal` | `modes` and `session/set_mode` |
 | Model | Configured `provider/model` entries | `configOptions` with id `model` |
 | Reasoning effort | Provider-supported levels or `auto` | `configOptions` with id `effort` |
-| Role setting | `light`, `balanced`, `delivery` | `configOptions` with id `agent_preset` (legacy id `work_mode` still accepted: `economy` → `light`) |
+| Execution setting | `light`, `balanced`, `delivery` | `configOptions` with id `agent_preset` (legacy id `work_mode` still accepted: `economy` → `light`) |
 | Tool approval | `ask`, `auto`, `yolo` | `configOptions` with id `tool_approval` |
 
-Use `session/set_config_option` for model, effort, role setting, and tool approval.
+Use `session/set_config_option` for model, effort, execution setting, and tool approval.
 Its parameters are `sessionId`, `configId` and `value`, where `configId` is the
 `id` of the option as advertised in `configOptions`:
 
@@ -135,7 +135,7 @@ Note that the field is `configId`, not `optionId`. The result is the full
 refreshed `configOptions` array. An unknown id returns `-32602 InvalidParams`.
 
 Model and effort changes rebuild the session controller while preserving its
-history and the other axes. Role-setting (`agent_preset`) and tool-approval
+history and the other axes. Execution-setting (`agent_preset`) and tool-approval
 changes update the gate in place without rebuilding the controller.
 
 For older clients, `session/set_model` remains available. The legacy

@@ -10370,7 +10370,7 @@ func (a *App) SetAgentPresetForTab(tabID, preset string) error {
 	if a.controllerForTab(tab) == nil && prevPath != "" {
 		a.attachExistingSessionRuntime(tab, prevPath, a.ctx)
 	}
-	if err := rebuildControllerActiveWorkErrorFor(a.controllerForTab(tab), "角色设定"); err != nil {
+	if err := rebuildControllerActiveWorkErrorFor(a.controllerForTab(tab), "执行设定"); err != nil {
 		return err
 	}
 	if err := a.ensureTabControllerWorkspace(tab); err != nil {

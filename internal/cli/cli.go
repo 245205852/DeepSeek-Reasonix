@@ -421,7 +421,7 @@ func parseRuntimeProfile(value string) (string, error) {
 	case boot.TokenModeDelivery, "deliver", "quality":
 		return boot.TokenModeDelivery, nil
 	default:
-		return "", fmt.Errorf("unknown role setting %q (want light, balanced, or delivery; legacy: economy, full)", value)
+		return "", fmt.Errorf("unknown execution setting %q (want light, balanced, or delivery; legacy: economy, full)", value)
 	}
 }
 
@@ -503,7 +503,7 @@ func runAgent(args []string, version string) int {
 	fs.SetInterspersed(true)
 	model := fs.String("model", "", "provider name (default: config default_model)")
 	profileFlag := fs.String("profile", "", "deprecated: use --preset (economy|balanced|delivery)")
-	presetFlag := fs.String("preset", "balanced", "agent role setting: light | balanced | delivery")
+	presetFlag := fs.String("preset", "balanced", "agent execution setting: light | balanced | delivery")
 	maxSteps := fs.Int("max-steps", 0, "one-off max tool-call rounds (0 = automatic)")
 	showThinking := fs.Bool("show-thinking", false, "show thinking text instead of the collapsed thinking marker")
 	metricsPath := fs.String("metrics", "", "write a JSON token/cache/cost summary of the run to this path")
@@ -807,7 +807,7 @@ func runServeWithOptions(args []string, opts serveRunOptions) int {
 	fs := flag.NewFlagSet(opts.command, flag.ContinueOnError)
 	model := fs.String("model", "", "provider name (default: config default_model)")
 	profileFlag := fs.String("profile", "", "deprecated: use --preset (economy|balanced|delivery)")
-	presetFlag := fs.String("preset", "balanced", "agent role setting: light | balanced | delivery")
+	presetFlag := fs.String("preset", "balanced", "agent execution setting: light | balanced | delivery")
 	maxSteps := fs.Int("max-steps", 0, "one-off max tool-call rounds (0 = automatic)")
 	addr := fs.String("addr", "127.0.0.1:8787", "listen address")
 	resume := fs.String("resume", "", "resume a saved session file")
@@ -1000,7 +1000,7 @@ func chatREPL(args []string, version string) int {
 	fs.SetInterspersed(true)
 	model := fs.String("model", "", "provider name (default: config default_model)")
 	profileFlag := fs.String("profile", "", "deprecated: use --preset (economy|balanced|delivery)")
-	presetFlag := fs.String("preset", "balanced", "agent role setting: light | balanced | delivery")
+	presetFlag := fs.String("preset", "balanced", "agent execution setting: light | balanced | delivery")
 	maxSteps := fs.Int("max-steps", 0, "one-off max tool-call rounds (0 = automatic)")
 	cont := registerContinueFlag(fs)
 	resume := fs.StringP("resume", "r", "", "resume by session ID/query, or open the picker when no value is given")

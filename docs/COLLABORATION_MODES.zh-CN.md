@@ -69,12 +69,12 @@ Goal 模式会把这些部分当作任务边界；除非下一步涉及不可逆
 - 旧 `.reasonix/autoresearch/...` 目录不会被新版本创建或改写；显式引用旧任务路径时只会读取并恢复成普通 Goal。
 - 目标模式和计划模式是同一协作轴。切到计划模式时，会退出目标草稿/目标显示状态；运行模式不会因此改变。
 
-## 角色设定（Agent Preset）
+## 执行设定（Agent Preset）
 
-角色设定决定会话的宿主规划 / 验证 / 独立复审策略。三种角色设定共享同一套 provider
+执行设定决定会话的宿主规划 / 验证 / 独立复审策略。三种执行设定共享同一套 provider
 可见核心工具面（直接编码工具 + 后台 shell 生命周期 + 稳定的 `use_capability` 代理）；
 可选能力一律经 `use_capability` 调度，不扩展 top-level schema。每个标签页独立保存选择；
-会话内切换就地更新角色设定，不重建 Controller。
+会话内切换就地更新执行设定，不重建 Controller。
 
 ### 轻量（Light）
 
@@ -110,14 +110,14 @@ Delivery 使用与其他档相同的统一工具面，并增加稳定交付合�
 
 ### 怎么选择
 
-- 桌面端点击输入框左下角菜单，在“角色设定”下选择“轻量”“均衡”或“交付”。
+- 桌面端点击输入框左下角菜单，在“执行设定”下选择“轻量”“均衡”或“交付”。
 - CLI 启动时使用 `reasonix --preset light|balanced|delivery`，非交互运行使用
   `reasonix run --preset ...`。兼容 `--profile economy|balanced|delivery`。
 - TUI 会话内使用 `/preset light|balanced|delivery` 热切换；不带参数的 `/preset` 会列出
   三档并标记当前项。`/work-mode` 与 `/profile` 保留为兼容别名。
 - 会话内切换保留 history、session 路径、审批/Yolo 状态，不重建 Controller。当前 turn、
   审批/询问或后台任务仍在运行时不能切换。
-- `/preset` 只修改当前会话，不写入全局默认值。三种角色设定共享统一工具 schema，切换不会
+- `/preset` 只修改当前会话，不写入全局默认值。三种执行设定共享统一工具 schema，切换不会
   制造新的工具面缓存前缀。
 
 ## 协作方式与 Profile 如何组合

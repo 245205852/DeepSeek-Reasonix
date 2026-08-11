@@ -1651,15 +1651,15 @@ func (s *service) switchSessionRuntimeProfile(ctx context.Context, sess *acpSess
 	status := sess.ctrl.RuntimeStatus()
 	if status.PendingPrompt {
 		sess.mu.Unlock()
-		return SessionConfigState{}, sessionConfigActiveWorkError("answer pending prompts before switching role setting")
+		return SessionConfigState{}, sessionConfigActiveWorkError("answer pending prompts before switching execution setting")
 	}
 	if sess.running || status.Running {
 		sess.mu.Unlock()
-		return SessionConfigState{}, sessionConfigActiveWorkError("finish or cancel the active turn before switching role setting")
+		return SessionConfigState{}, sessionConfigActiveWorkError("finish or cancel the active turn before switching execution setting")
 	}
 	if status.BackgroundJobs > 0 {
 		sess.mu.Unlock()
-		return SessionConfigState{}, sessionConfigActiveWorkError("stop background jobs before switching role setting")
+		return SessionConfigState{}, sessionConfigActiveWorkError("stop background jobs before switching execution setting")
 	}
 	if sess.maintenanceDone != nil {
 		sess.mu.Unlock()

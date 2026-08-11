@@ -110,7 +110,7 @@ without injecting every report into the parent context at once. References are
 restricted to the current conversation lineage and workspace.
 
 `use_capability` (`action` = `list` | `inspect` | `call` | `decline`) is on the
-provider-visible surface for every role setting (`light` | `balanced` |
+provider-visible surface for every execution setting (`light` | `balanced` |
 `delivery`). Optional tools stay registered for host dispatch but are not
 expanded into the top-level provider schema; the model reaches them through
 `use_capability` without cache-breaking schema churn.
@@ -119,9 +119,9 @@ expanded into the top-level provider schema; the model reaches them through
 actual boot registry contract against the provider request, including read-only
 flags and canonical schemas.
 
-## Unified Boot Surface (all role settings)
+## Unified Boot Surface (all execution settings)
 
-Every role setting starts with the same lean provider-visible core: direct
+Every execution setting starts with the same lean provider-visible core: direct
 coding tools, background-shell lifecycle tools, and the stable capability proxy:
 
 `bash`, `bash_output`, `edit_file`, `kill_shell`, `read_file`, `wait`,
@@ -130,7 +130,7 @@ coding tools, background-shell lifecycle tools, and the stable capability proxy:
 Optional tools (`glob`, `grep`, `ls`, `web_fetch`, MCP, skills, subagents, docs,
 session history, memory mutation, workflow, and so on) remain in the host
 registry for dispatch. The model lists, inspects, calls, or declines them via
-`use_capability` without changing the provider tool list. Role settings change
+`use_capability` without changing the provider tool list. Execution settings change
 host planning / verification / review policy, not which tools appear on the
 provider-visible surface. The retired `connect_tool_source` path is no longer
 registered.

@@ -87,16 +87,16 @@ Executor 刻意保留直接 `mcp__*` 工具，因此安装、连接或刷新这�
 按 UTF-8 字节偏移分页读取某个引用对应的完整最终答案，因此长篇并行调研无需一次性全部
 注入父会话也不会丢失。引用只允许在当前会话 lineage 和工作区内读取。
 
-`use_capability`（`action` = `list` | `inspect` | `call` | `decline`）在所有角色设定
+`use_capability`（`action` = `list` | `inspect` | `call` | `decline`）在所有执行设定
 （`light` | `balanced` | `delivery`）下都出现在 provider 可见工具面。可选工具仍在 host
 registry 中供调度，但不会展开到 top-level provider schema；模型通过 `use_capability`
 调用，避免缓存前缀因 schema 变化而失效。
 
 `internal/boot.TestBootToolContractMatchesProviderVisibleSurface` 会校验真实 boot registry 合约和 provider request 一致，包括 read-only 标记和 canonical schema。
 
-## 统一启动工具面（所有角色设定）
+## 统一启动工具面（所有执行设定）
 
-三种角色设定共享同一套精简的 provider 可见核心：直接编码工具、后台 shell 生命周期工具，
+三种执行设定共享同一套精简的 provider 可见核心：直接编码工具、后台 shell 生命周期工具，
 以及稳定的能力代理：
 
 `bash`, `bash_output`, `edit_file`, `kill_shell`, `read_file`, `wait`,
@@ -104,5 +104,5 @@ registry 中供调度，但不会展开到 top-level provider schema；模型通
 
 可选工具（`glob`、`grep`、`ls`、`web_fetch`、MCP、skills、subagents、docs、会话历史、
 记忆写入、workflow 等）仍在 host registry 中可调度；模型通过 `use_capability` 列举、
-检查、调用或拒绝它们，且不会改变 provider 工具列表。角色设定改变的是规划 / 验证 /
+检查、调用或拒绝它们，且不会改变 provider 工具列表。执行设定改变的是规划 / 验证 /
 独立复审策略，而不是 provider 可见工具集合。已退役的 `connect_tool_source` 不再注册。

@@ -386,7 +386,7 @@ func (f *acpFactory) SessionConfigState(_ context.Context, p acp.SessionConfigSt
 	}
 	options = append(options, acp.SessionConfigOption{
 		ID:           "agent_preset",
-		Name:         "Role Setting",
+		Name:         "Execution Setting",
 		Category:     "agent_preset",
 		Type:         "select",
 		CurrentValue: agentPreset,
