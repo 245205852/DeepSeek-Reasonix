@@ -95,6 +95,42 @@ const warningTurn: Item[] = [
       ok(Boolean(deliveryCard?.querySelector("button")), "delivery status card keeps its continue action reachable");
     }
 
+    await render(harness, [
+      { kind: "user", id: "u-completion", text: "update it" },
+      { kind: "assistant", id: "a-completion", text: "updated", reasoning: "implemented and checked", streaming: false },
+      {
+        kind: "completion_summary",
+        id: "cs-completion",
+        preset: "balanced",
+        verdict: "partial",
+        mutations: 3,
+        checksPassed: 12,
+        checksFailed: 0,
+        checksSuppressed: 2,
+        review: "passed",
+        gapKinds: ["suppressed", "stale_check"],
+        constraintDegraded: true,
+      },
+    ]);
+    {
+      const completionCard = container.querySelector(".notice-line--completion");
+      const text = completionCard?.textContent ?? "";
+      ok(completionCard && !completionCard.closest(".turn-collapse__body"), "turn result renders outside the work fold");
+      ok(completionCard?.getAttribute("data-verdict") === "partial", "turn result exposes its semantic visual tone");
+      ok(
+        text.includes("Turn result") && text.includes("Partially complete") && text.includes("Balanced"),
+        "turn result renders localized title, outcome, and execution setting",
+      );
+      ok(
+        text.includes("3 mutations") && text.includes("12 checks passed") && text.includes("2 checks skipped") && !text.includes("0 checks failed"),
+        "turn result keeps useful counts and hides zero-value metrics",
+      );
+      ok(
+        text.includes("Independent review passed") && text.includes("Check results are stale") && !text.includes("stale_check"),
+        "turn result converts review and gap identifiers into readable labels",
+      );
+    }
+
     const originalNow = Date.now;
     Date.now = () => 25_000;
     try {

@@ -8,7 +8,7 @@ import { AssistantMessage, InvocationMetadataContext, TurnActions, UserMessage }
 import { ProcessCompactIcon, ProcessPhaseIcon } from "./ProcessCard";
 import { ToolCard } from "./ToolCard";
 import { ExtensionCard } from "./ExtensionCard";
-import { ArrowDown, ChevronRight, CirclePlay, Info, TriangleAlert } from "lucide-react";
+import { ArrowDown, CheckCircle2, ChevronRight, CirclePlay, Info, TriangleAlert } from "lucide-react";
 import { Welcome } from "./Welcome";
 import { ReadOnlyBatch } from "./ReadOnlyBatch";
 import { ToolGroup } from "./ToolGroup";
@@ -50,6 +50,7 @@ import { useTranscriptSelectableRows } from "../lib/useTranscriptSelectableRows"
 import { TranscriptSelectionOverlay } from "./TranscriptSelectionOverlay";
 import { useCreationTranscriptScrollbar } from "../lib/useCreationTranscriptScrollbar";
 import { useTranscriptScrollInteractions } from "../lib/useTranscriptScrollInteractions";
+import { completionSummaryDisplay } from "../lib/completionSummary";
 type OpenTurnAction = { turn: number; menu: "summary" | "rewind" };
 const QUESTION_NAV_MIN_COUNT = 2;
 type AssistantReasoningDisplay = "normal" | "hide";
@@ -1016,38 +1017,33 @@ type CompletionSummaryItem = Extract<Item, { kind: "completion_summary" }>;
 
 function CompletionSummaryCard({ item }: { item: CompletionSummaryItem }) {
   const t = useT();
-  const verdictKey =
-    item.verdict === "complete"
-      ? "notice.completionVerdictComplete"
-      : item.verdict === "partial"
-        ? "notice.completionVerdictPartial"
-        : item.verdict === "blocked"
-          ? "notice.completionVerdictBlocked"
-          : "notice.completionVerdictContinue";
-  const parts: string[] = [
-    t(verdictKey as never),
-    t("notice.completionMutations", { n: String(item.mutations) }),
-    t("notice.completionChecks", {
-      passed: String(item.checksPassed),
-      failed: String(item.checksFailed),
-      suppressed: String(item.checksSuppressed),
-    }),
-  ];
-  if (item.review && item.review !== "none") {
-    parts.push(t("notice.completionReview", { status: item.review }));
-  }
-  if (item.gapKinds && item.gapKinds.length > 0) {
-    parts.push(t("notice.completionGaps", { gaps: item.gapKinds.join(", ") }));
-  }
-  if (item.constraintDegraded) {
-    parts.push(t("notice.completionConstraintDegraded"));
-  }
+  const display = completionSummaryDisplay(item, t);
+  const StatusIcon = display.tone === "complete"
+    ? CheckCircle2
+    : display.tone === "partial" || display.tone === "blocked"
+      ? TriangleAlert
+      : Info;
   return (
-    <div className="notice-line notice-line--info notice-line--completion" data-entrance={item.id}>
-      <Info className="notice-line__icon" size={14} aria-hidden="true" />
+    <div
+      className="notice-line notice-line--delivery notice-line--completion"
+      data-entrance={item.id}
+      data-verdict={display.tone}
+      role="status"
+      aria-label={`${display.title}：${display.verdict}`}
+    >
+      <StatusIcon className="notice-line__icon" size={15} aria-hidden="true" />
       <div className="notice-line__text">
-        <div className="notice-line__title">{t("notice.completionSummaryTitle", { preset: item.preset || "balanced" })}</div>
-        <div className="notice-line__body">{parts.join(" · ")}</div>
+        <div className="completion-summary__header">
+          <span className="notice-line__title">{display.title}</span>
+          <span className="completion-summary__verdict">{display.verdict}</span>
+          <span className="badge">{display.preset}</span>
+        </div>
+        {display.metrics.length > 0 ? (
+          <div className="completion-summary__metrics">{display.metrics.join(" · ")}</div>
+        ) : null}
+        {display.details.length > 0 ? (
+          <div className="completion-summary__details">{display.details.join(" · ")}</div>
+        ) : null}
       </div>
     </div>
   );
