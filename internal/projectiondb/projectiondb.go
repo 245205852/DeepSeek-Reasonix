@@ -15,6 +15,8 @@ import (
 	"strings"
 	"time"
 
+	"reasonix/internal/filelock"
+
 	moderncsqlite "modernc.org/sqlite"
 	sqlite3 "modernc.org/sqlite/lib"
 )
@@ -399,6 +401,14 @@ func Rebuild(ctx context.Context, opts OpenOptions, populate func(context.Contex
 	if strings.TrimSpace(opts.Path) == "" || opts.InMemory {
 		return errors.New("projection rebuild requires a disk path")
 	}
+	if err := os.MkdirAll(filepath.Dir(opts.Path), 0o700); err != nil {
+		return fmt.Errorf("create projection rebuild directory: %w", err)
+	}
+	release, err := filelock.Acquire(ctx, opts.Path+".rebuild.lock")
+	if err != nil {
+		return fmt.Errorf("lock projection rebuild: %w", err)
+	}
+	defer release()
 	if opts.Now == nil {
 		opts.Now = time.Now
 	}

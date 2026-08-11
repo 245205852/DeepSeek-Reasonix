@@ -376,8 +376,8 @@ func desktopHistoryPathWithin(path, root string) bool {
 }
 
 func (a *App) RebuildHistoryIndex() error {
-	for _, root := range historyCatalogRoots(a.sessionCatalogTargets()) {
-		history.RegisterCatalogRoots([]historycatalog.Root{root})
+	if a == nil || a.shuttingDown.Load() {
+		return errors.New("application is shutting down")
 	}
-	return nil
+	return history.RebuildSharedCatalog(a.bootContext(), historyCatalogRoots(a.sessionCatalogTargets()))
 }

@@ -343,12 +343,14 @@ func (c *Catalog) takeDirtyRoot() (Root, bool) {
 func historyRootSignature(paths []string) string {
 	hash := sha256.New()
 	for _, path := range paths {
-		info, err := os.Stat(path)
-		if err != nil {
-			_, _ = fmt.Fprintf(hash, "%s\x00missing\n", path)
-			continue
+		for _, candidate := range []string{path, agent.BranchMetaPath(path)} {
+			info, err := os.Stat(candidate)
+			if err != nil {
+				_, _ = fmt.Fprintf(hash, "%s\x00missing\n", candidate)
+				continue
+			}
+			_, _ = fmt.Fprintf(hash, "%s\x00%d\x00%d\n", candidate, info.Size(), info.ModTime().UnixNano())
 		}
-		_, _ = fmt.Fprintf(hash, "%s\x00%d\x00%d\n", path, info.Size(), info.ModTime().UnixNano())
 	}
 	return hex.EncodeToString(hash.Sum(nil))
 }

@@ -287,18 +287,13 @@ func (a *App) OpenTaskSessionByKey(req TaskOpenRequest) (taskmonitor.ControlResu
 }
 
 func (a *App) RebuildTaskCatalog() error {
+	if a == nil || a.shuttingDown.Load() {
+		return fmt.Errorf("application is shutting down")
+	}
 	projects := loadProjectsFile()
-	items := []struct{ root, label string }{{globalWorkspaceRoot(), projects.GlobalTitle}}
+	items := []taskcatalog.Project{{Root: globalWorkspaceRoot(), Label: projects.GlobalTitle}}
 	for _, project := range projects.Projects {
-		items = append(items, struct{ root, label string }{project.Root, projectDisplayName(project)})
+		items = append(items, taskcatalog.Project{Root: project.Root, Label: projectDisplayName(project)})
 	}
-	for _, item := range items {
-		taskcatalog.RegisterSharedProject(item.root, item.label)
-		if catalog := taskcatalog.Shared(); catalog != nil {
-			if err := catalog.RequestReconcileProject(a.bootContext(), item.root, item.label); err != nil {
-				return err
-			}
-		}
-	}
-	return nil
+	return taskcatalog.RebuildSharedCatalog(a.bootContext(), items)
 }

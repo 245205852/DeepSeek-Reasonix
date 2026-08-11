@@ -30,12 +30,6 @@ func reindexHistoryCatalog(args []string) int {
 		return code
 	}
 	ctx := context.Background()
-	catalog, err := historycatalog.Open(ctx, historycatalog.Options{})
-	if err != nil {
-		fmt.Fprintln(os.Stderr, "error:", err)
-		return 1
-	}
-	defer catalog.Close(context.Background())
 	roots := []historycatalog.Root{}
 	if len(dirs) > 0 {
 		for _, dir := range dirs {
@@ -48,11 +42,10 @@ func reindexHistoryCatalog(args []string) int {
 		}
 		roots = append(roots, historycatalog.Root{Path: config.ArchiveDir(), Source: "archive", Scope: "global", Archive: true})
 	}
-	for _, root := range roots {
-		if err := catalog.ReconcileRoot(ctx, root); err != nil {
-			fmt.Fprintln(os.Stderr, "error:", err)
-			return 1
-		}
+	status, err := historycatalog.Rebuild(ctx, historycatalog.Options{}, roots)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		return 1
 	}
-	return printCatalogStatus(catalog.Status(), *jsonOut)
+	return printCatalogStatus(status, *jsonOut)
 }

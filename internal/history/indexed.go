@@ -14,15 +14,17 @@ import (
 )
 
 type indexedCatalogManager struct {
-	mu         sync.RWMutex
-	catalog    *historycatalog.Catalog
-	roots      map[string]historycatalog.Root
-	observers  []func(historycatalog.Status, []string, string)
-	generation uint64
-	opening    map[uint64]chan struct{}
-	openCancel map[uint64]context.CancelFunc
-	closing    bool
-	open       func(context.Context, historycatalog.Options) (*historycatalog.Catalog, error)
+	lifecycleMu sync.Mutex
+	mu          sync.RWMutex
+	catalog     *historycatalog.Catalog
+	roots       map[string]historycatalog.Root
+	observers   []func(historycatalog.Status, []string, string)
+	generation  uint64
+	opening     map[uint64]chan struct{}
+	openCancel  map[uint64]context.CancelFunc
+	closing     bool
+	open        func(context.Context, historycatalog.Options) (*historycatalog.Catalog, error)
+	rebuild     func(context.Context, historycatalog.Options, []historycatalog.Root) (historycatalog.Status, error)
 }
 
 var processHistoryCatalog indexedCatalogManager
@@ -141,6 +143,8 @@ func (m *indexedCatalogManager) openGeneration(ctx context.Context, generation u
 }
 
 func (m *indexedCatalogManager) close(ctx context.Context) error {
+	m.lifecycleMu.Lock()
+	defer m.lifecycleMu.Unlock()
 	m.mu.Lock()
 	m.closing = true
 	m.generation++

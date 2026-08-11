@@ -9,6 +9,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"reasonix/internal/filelock"
 )
 
 func testMigrations() []Migration {
@@ -236,4 +238,41 @@ func TestRebuildFailureKeepsOldDatabase(t *testing.T) {
 	if err := current.DB.QueryRow(`SELECT value FROM values_table`).Scan(&value); err != nil || value != "old" {
 		t.Fatalf("value=%q err=%v", value, err)
 	}
+}
+
+func TestRebuildHoldsExclusiveLifecycleLock(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join(t.TempDir(), "catalog.sqlite")
+	opts := OpenOptions{Path: path, MemoryName: "rebuild-lock", Migrations: testMigrations()}
+	entered := make(chan struct{})
+	releasePopulate := make(chan struct{})
+	firstDone := make(chan error, 1)
+	go func() {
+		firstDone <- Rebuild(context.Background(), opts, func(context.Context, *sql.DB) error {
+			close(entered)
+			<-releasePopulate
+			return nil
+		})
+	}()
+	<-entered
+	if release, err := filelock.TryAcquire(path + ".rebuild.lock"); !errors.Is(err, filelock.ErrHeld) {
+		if err == nil {
+			release()
+		}
+		t.Fatalf("rebuild lifecycle lock error = %v, want held", err)
+	}
+	canceled, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := Rebuild(canceled, opts, nil); !errors.Is(err, context.Canceled) {
+		t.Fatalf("contended rebuild error = %v, want context canceled", err)
+	}
+	close(releasePopulate)
+	if err := <-firstDone; err != nil {
+		t.Fatalf("first rebuild: %v", err)
+	}
+	release, err := filelock.TryAcquire(path + ".rebuild.lock")
+	if err != nil {
+		t.Fatalf("lifecycle lock remained held: %v", err)
+	}
+	release()
 }

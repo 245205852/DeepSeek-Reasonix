@@ -23,14 +23,10 @@ func reindexUsageCatalog(args []string) int {
 	if code, ok := parseCommandFlags(fs, args); !ok {
 		return code
 	}
-	catalog, err := usagecatalog.Open(context.Background(), "")
-	if err == nil {
-		err = catalog.ReconcileDir(context.Background(), config.StatsDir())
-	}
+	status, err := usagecatalog.Rebuild(context.Background(), "", config.StatsDir())
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
 		return 1
 	}
-	defer catalog.Close(context.Background())
-	return printCatalogStatus(catalog.Status(), *jsonOut)
+	return printCatalogStatus(status, *jsonOut)
 }

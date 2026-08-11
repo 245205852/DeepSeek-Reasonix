@@ -9,15 +9,18 @@ import (
 )
 
 type sharedManager struct {
-	mu         sync.RWMutex
-	catalog    *Catalog
-	pending    map[string]string
-	closing    bool
-	generation uint64
-	opening    bool
-	openDone   chan struct{}
-	openCancel context.CancelFunc
-	open       func(context.Context, string) (*Catalog, error)
+	lifecycleMu sync.Mutex
+	mu          sync.RWMutex
+	catalog     *Catalog
+	pending     map[string]string
+	closing     bool
+	rebuilding  bool
+	generation  uint64
+	opening     bool
+	openDone    chan struct{}
+	openCancel  context.CancelFunc
+	open        func(context.Context, string) (*Catalog, error)
+	rebuild     func(context.Context, string, []Project) (Status, error)
 }
 
 var shared sharedManager
@@ -28,7 +31,7 @@ func ensureShared() {
 
 func (m *sharedManager) start() {
 	m.mu.Lock()
-	if m.catalog != nil || m.opening || m.closing {
+	if m.catalog != nil || m.opening || m.closing || m.rebuilding {
 		m.mu.Unlock()
 		return
 	}
@@ -50,7 +53,7 @@ func (m *sharedManager) openGeneration(ctx context.Context, generation uint64, d
 	seen := map[string]bool{}
 	for err == nil {
 		m.mu.Lock()
-		if m.closing || generation != m.generation || ctx.Err() != nil {
+		if m.closing || m.rebuilding || generation != m.generation || ctx.Err() != nil {
 			m.mu.Unlock()
 			_ = catalog.Close(context.Background())
 			catalog = nil
@@ -99,8 +102,15 @@ func ShutdownShared(ctx context.Context) error {
 }
 
 func (m *sharedManager) close(ctx context.Context) error {
+	m.lifecycleMu.Lock()
+	defer m.lifecycleMu.Unlock()
+	return m.closeLocked(ctx, false)
+}
+
+func (m *sharedManager) closeLocked(ctx context.Context, rebuild bool) error {
 	m.mu.Lock()
 	m.closing = true
+	m.rebuilding = rebuild
 	m.generation++
 	if m.openCancel != nil {
 		m.openCancel()
@@ -108,7 +118,9 @@ func (m *sharedManager) close(ctx context.Context) error {
 	done := m.openDone
 	catalog := m.catalog
 	m.catalog = nil
-	m.pending = nil
+	if !rebuild {
+		m.pending = nil
+	}
 	m.mu.Unlock()
 	var flushErr, closeErr error
 	if catalog != nil {
@@ -126,6 +138,7 @@ func (m *sharedManager) close(ctx context.Context) error {
 	}
 	m.mu.Lock()
 	m.closing = false
+	m.rebuilding = rebuild
 	m.mu.Unlock()
 	if flushErr != nil {
 		return flushErr
@@ -134,23 +147,35 @@ func (m *sharedManager) close(ctx context.Context) error {
 }
 
 func RegisterSharedProject(root, label string) string {
-	ensureShared()
+	return shared.registerProject(root, label)
+}
+
+func (m *sharedManager) registerProject(root, label string) string {
+	m.start()
 	key := ProjectKey(root)
-	shared.mu.Lock()
-	if shared.closing {
-		shared.mu.Unlock()
-		return key
-	}
-	if shared.catalog == nil {
-		if shared.pending == nil {
-			shared.pending = map[string]string{}
+	m.mu.Lock()
+	if m.rebuilding {
+		if m.pending == nil {
+			m.pending = map[string]string{}
 		}
-		shared.pending[root] = label
-		shared.mu.Unlock()
+		m.pending[root] = label
+		m.mu.Unlock()
 		return key
 	}
-	catalog := shared.catalog
-	shared.mu.Unlock()
+	if m.closing {
+		m.mu.Unlock()
+		return key
+	}
+	if m.catalog == nil {
+		if m.pending == nil {
+			m.pending = map[string]string{}
+		}
+		m.pending[root] = label
+		m.mu.Unlock()
+		return key
+	}
+	catalog := m.catalog
+	m.mu.Unlock()
 	_, _ = catalog.RegisterProject(context.Background(), root, label)
 	return key
 }
@@ -176,20 +201,31 @@ func (sharedSink) EventsChanged(projectRoot, taskID string) {
 // still must never wait for catalog I/O. A notification received while the
 // catalog is opening is recovered by the pending project's initial reconcile.
 func sharedCatalogForNotification(projectRoot string) *Catalog {
-	ensureShared()
-	shared.mu.Lock()
-	defer shared.mu.Unlock()
-	if shared.closing {
-		return nil
-	}
-	if shared.catalog == nil {
-		if shared.pending == nil {
-			shared.pending = map[string]string{}
+	return shared.catalogForNotification(projectRoot)
+}
+
+func (m *sharedManager) catalogForNotification(projectRoot string) *Catalog {
+	m.start()
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.rebuilding {
+		if m.pending == nil {
+			m.pending = map[string]string{}
 		}
-		shared.pending[projectRoot] = filepath.Base(projectRoot)
+		m.pending[projectRoot] = filepath.Base(projectRoot)
 		return nil
 	}
-	return shared.catalog
+	if m.closing {
+		return nil
+	}
+	if m.catalog == nil {
+		if m.pending == nil {
+			m.pending = map[string]string{}
+		}
+		m.pending[projectRoot] = filepath.Base(projectRoot)
+		return nil
+	}
+	return m.catalog
 }
 
 // ObservedStore remains an authoritative FileStore; only its post-commit sink

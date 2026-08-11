@@ -36,21 +36,14 @@ func reindexTaskCatalog(args []string) int {
 			}
 		}
 	}
-	catalog, err := taskcatalog.Open(context.Background(), "")
+	items := make([]taskcatalog.Project, 0, len(projects))
+	for _, root := range projects {
+		items = append(items, taskcatalog.Project{Root: root, Label: filepath.Base(root)})
+	}
+	status, err := taskcatalog.Rebuild(context.Background(), "", items)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
 		return 1
 	}
-	defer catalog.Close(context.Background())
-	for _, root := range projects {
-		project, err := catalog.RegisterProject(context.Background(), root, filepath.Base(root))
-		if err == nil {
-			err = catalog.ReconcileProject(context.Background(), project)
-		}
-		if err != nil {
-			fmt.Fprintln(os.Stderr, "error:", err)
-			return 1
-		}
-	}
-	return printCatalogStatus(catalog.Status(), *jsonOut)
+	return printCatalogStatus(status, *jsonOut)
 }

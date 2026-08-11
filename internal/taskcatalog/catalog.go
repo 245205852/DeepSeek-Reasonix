@@ -291,11 +291,7 @@ func (c *Catalog) Flush(ctx context.Context) error {
 }
 
 func (c *Catalog) RegisterProject(ctx context.Context, root, label string) (Project, error) {
-	root = filepath.Clean(strings.TrimSpace(root))
-	if abs, err := filepath.Abs(root); err == nil {
-		root = abs
-	}
-	project := Project{Key: ProjectKey(root), Root: root, Label: strings.TrimSpace(label)}
+	project := normalizeProject(Project{Root: root, Label: label})
 	_, err := c.db.ExecContext(ctx, `INSERT INTO task_projects(project_key,project_root,project_label,state) VALUES(?,?,?,'pending')
         ON CONFLICT(project_key) DO UPDATE SET project_root=excluded.project_root,project_label=excluded.project_label`, project.Key, project.Root, project.Label)
 	c.reconcileMu.Lock()
