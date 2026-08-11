@@ -10,6 +10,7 @@ import (
 	"reflect"
 	"sync"
 	"testing"
+	"time"
 
 	"reasonix/internal/ablation"
 	"reasonix/internal/agent"
@@ -209,13 +210,16 @@ model = "x"
 	}
 	defer ctrl.Close()
 
-	runErr := ctrl.Run(context.Background(), "read every file you can find")
+	runCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	runErr := ctrl.Run(runCtx, "read every file you can find")
 
-	// Assert the final boundary directly. A round-count proxy is timing-sensitive:
-	// the unified core schema can complete more no-op fixture rounds inside the
-	// same 30 ms budget on fast runners.
-	if got := agent.PauseClass(runErr); got != "task_budget" {
-		t.Fatalf("pause class = %q (err %v), want task_budget", got, runErr)
+	// Ordinary chat has no round ceiling, so a gate that never reached the
+	// executor would run until the context deadline. Assert the typed boundary
+	// instead of a machine-speed-dependent round count.
+	pause, ok := agent.InspectRunPause(runErr)
+	if !ok || pause.Kind != "task_budget" || pause.Key != "time" {
+		t.Fatalf("Run error = %v (pause=%+v, ok=%v), want time task-budget pause", runErr, pause, ok)
 	}
 	if rec.roundCount() == 0 {
 		t.Fatal("no round reached the provider; the run never started")

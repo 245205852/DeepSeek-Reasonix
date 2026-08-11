@@ -1,10 +1,9 @@
 // Wire contract — mirrors desktop/wire.go (itself mirroring internal/serve/wire.go).
 // One event channel carries every kind; `kind` discriminates the payload.
-
 import type { Todo } from "./tools";
 import type { ContextMaintenanceInfo, WireContextMaintenance } from "./contextMaintenanceTypes";
 export type { ContextMaintenanceInfo, ContextMaintenanceReceipt, WireContextMaintenance } from "./contextMaintenanceTypes";
-
+export type { ProjectTopicKey, ProjectTopicPage, ProjectTopicPageRequest, ProjectTreeChangedV2, ProjectTreeSnapshot, SessionCatalogBindings, SessionCatalogStatus, SessionReference } from "./sessionCatalogTypes";
 export type EventKind =
   | "turn_started"
   | "reasoning"
@@ -32,9 +31,7 @@ export type EventKind =
   | "workspace_changed"
   | "turn_phase"
   | "completion_summary";
-
 export type StreamAttemptAction = "begin" | "discard" | "commit";
-
 export interface WireStreamAttempt {
   id: string;
   action: StreamAttemptAction;
@@ -43,14 +40,12 @@ export interface WireStreamAttempt {
   /** Fixed enum only: connection_reset | premature_eof | idle_timeout */
   reason?: string;
 }
-
 export interface WireCompaction {
   trigger?: string; // "auto" | "manual"
   messages?: number; // done: how many messages were folded into the summary
   summary?: string; // done: the briefing (empty on an aborted pass)
   archive?: string; // done: archive path, if any
 }
-
 export interface WireProfile {
   model?: string;
   effort?: string;
@@ -129,8 +124,49 @@ export interface WireUsage {
   contextCacheMissTokens?: number;
   cost?: number;
   currency?: string;
-  // Deprecated compatibility alias. Prefer cost + currency.
+  currencyCode?: string;
+  // Deprecated compatibility alias. Prefer cost + currencyCode / costQuote.
   costUsd?: number;
+  costComplete?: boolean;
+  displayComplete?: boolean;
+  displayStatus?: string;
+  aggregateMode?: string;
+  originalTotals?: Money[];
+  /** Host-side structured quote; prefer over cost/currency aliases. */
+  costQuote?: CostQuote;
+}
+
+export interface Money {
+  amount: string;
+  currency: string;
+}
+
+export interface CostQuote {
+  original: Money;
+  originalTotals?: Money[];
+  valuations?: Record<string, {
+    money: Money;
+    basis: string;
+    source: string;
+    asOf: string;
+    rateSnapshot?: { base: string; quote: string; rate: number; source: string; asOf: string; stale?: boolean };
+    stale?: boolean;
+  }>;
+  selected?: Money;
+  billingMode?: string;
+  estimated: boolean;
+  costComplete?: boolean;
+  displayComplete?: boolean;
+  complete: boolean;
+  displayStatus?: "matched" | "fallback_original" | "bucketed" | "unavailable" | string;
+  aggregateMode?: "single_currency" | "common_valuation" | "currency_buckets" | string;
+  modelRef?: string;
+  usageSource?: string;
+  pricingFingerprint?: string;
+  rateDate?: string;
+  incompleteReason?: string;
+  legacyEstimate?: boolean;
+  catalogSource?: string;
 }
 
 export interface WireRecoveryApproval {
@@ -403,6 +439,7 @@ export interface TabMeta {
   sessionPath?: string;
   sessionRevision?: number;
   sessionDigest?: string;
+  sessionGeneration?: number;
   readOnly?: boolean;
   filePath?: string;
   projectColor?: string;
@@ -463,6 +500,8 @@ export interface ProjectNode {
   sessionPath?: string;
   projectColor?: string;
   turns?: number;
+  turnsState?: "unknown" | "valid" | "corrupt" | string;
+  health?: "ok" | "missing" | "corrupt" | "degraded" | string;
   createdAt?: number;
   lastActivityAt?: number;
   open?: boolean;
@@ -539,6 +578,10 @@ export interface ContextPanelInfo {
   sessionCurrency?: string;
   // Deprecated compatibility alias. Prefer sessionCost + sessionCurrency.
   sessionCostUsd?: number;
+  sessionCostComplete?: boolean;
+  sessionCostEstimated?: boolean;
+  sessionBillingMode?: string;
+  sessionCostQuote?: CostQuote;
   sources?: Record<string, UsageSourceStats>;
   mock?: boolean;
   readFiles: ReadFileRecord[];
@@ -663,6 +706,8 @@ export interface HistoryEntry {
   refs: HistoryContentRef[];
 }
 
+export interface SessionClearResult { sessionPath: string; sessionRevision?: number; sessionDigest?: string; sessionGeneration: number }
+
 export interface HistorySlice {
   entries: HistoryEntry[];
   nextCursor: string; // toward older; empty when none
@@ -674,9 +719,9 @@ export interface HistorySlice {
   revision: number;
   revisionKnown?: boolean;
   digest?: string;
-  // Diagnostic read path: index|scan|event-log|live-index|live-fallback (empty when the
-  // backend predates the field or no session was readable).
+  // Diagnostic read path: index|scan|event-log|live-index|live-fallback.
   source?: string;
+  error?: string; // failed read; empty entries alone are not an error
 }
 
 export interface HistoryContentChunk {
@@ -793,6 +838,7 @@ export interface SessionMeta {
   preview: string;
   title?: string; // user-chosen name; falls back to preview when empty
   turns: number;
+  turnsState?: "unknown" | "valid" | "corrupt" | string;
   createdAt: number; // unix milliseconds
   lastActivityAt: number; // unix milliseconds
   modTime: number; // compatibility alias for lastActivityAt
@@ -815,15 +861,7 @@ export interface SessionMeta {
   recoveryCopy?: boolean; // actual branch content is unchanged and covered by its parent
 }
 
-// SessionReference is a session selected via @ past:chats for context injection.
-export interface SessionReference {
-  path: string;
-  title: string;
-  preview?: string;
-  turns?: number;
-  createdAt?: number;
-  lastActivityAt?: number;
-}
+export type { HistoryIndexStatus, HistorySearchContextLine, HistorySearchContextRequest, HistorySearchHit, HistorySearchPage, HistorySearchRequest, HistorySessionPage, HistorySessionPageRequest } from "./historyCatalogTypes";
 
 export interface WorkspaceView {
   path: string;
@@ -841,6 +879,8 @@ export interface ContextInfo {
   cacheHitTokens?: number;
   cacheMissTokens?: number;
   estimated?: boolean;
+  sessionCostComplete?: boolean;
+  sessionCostQuote?: CostQuote;
   sources?: Record<string, UsageSourceStats>;
   maintenance?: ContextMaintenanceInfo;
 }
@@ -854,6 +894,7 @@ export interface Meta {
   sessionPath?: string;
   sessionRevision?: number;
   sessionDigest?: string;
+  sessionGeneration?: number;
   cwd: string;
   workspaceRoot?: string;
   workspaceName?: string;
@@ -1716,7 +1757,8 @@ export interface ProviderView {
   added: boolean;
   kind: string;
   baseUrl: string;
-  chatUrl?: string; // optional full chat completions URL; empty derives from baseUrl
+  chatUrl?: string; // legacy OpenAI chat endpoint override; preserved for old-config compatibility
+  requestUrl?: string; // exact provider request URL written by the current settings UI
   models: string[];
   visionModels: string[]; // subset of models that accepts image input
   visionModelsConfigured: boolean; // true when an empty list is an explicit choice
@@ -1782,10 +1824,18 @@ export interface ProviderModelOverrideView {
 
 // BalanceInfo is the wallet-balance readout (desktop/app.go Balance). available
 // is false when the provider declares no balanceUrl or a fetch failed; display is
-// the formatted amount (e.g. "¥110.00").
+// the formatted amount in an original wallet currency; no implicit FX conversion.
 export interface BalanceInfo {
   available: boolean;
   display: string;
+  detail?: string;
+  complete?: boolean;
+  rateDate?: string;
+  approx?: boolean;
+  currencies?: string[];
+  primaryCurrency?: string;
+  costDisplayCurrency?: string;
+  multiCurrency?: boolean;
   err?: string;
 }
 
@@ -2275,6 +2325,8 @@ export interface TaskSnapshot {
   error_code?: string;
   error_summary?: string;
 }
+
+export type { TaskActionRequest, TaskCatalogItem, TaskCatalogStatus, TaskEventPage, TaskEventPageRequest, TaskPage, TaskPageRequest } from "./taskCatalogTypes";
 
 export interface ControlResult {
   schema_version: number;

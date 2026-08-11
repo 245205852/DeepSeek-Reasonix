@@ -57,45 +57,6 @@ func TestAgentKeepPolicyFromConfig(t *testing.T) {
 	}
 }
 
-func TestApplyRuntimeAutoPricingCurrency(t *testing.T) {
-	tests := []struct {
-		name            string
-		runtimeCurrency string
-		desktopCurrency string
-		desktopLanguage string
-		language        string
-		wantCurrency    string
-		wantOutput      float64
-	}{
-		{name: "auto Chinese locale", runtimeCurrency: "CNY", wantCurrency: "¥", wantOutput: 2},
-		{name: "auto English locale", runtimeCurrency: "USD", wantCurrency: "$", wantOutput: 0.28},
-		{name: "explicit USD wins", runtimeCurrency: "CNY", desktopCurrency: "USD", wantCurrency: "$", wantOutput: 0.28},
-		{name: "explicit CNY wins", runtimeCurrency: "USD", desktopCurrency: "CNY", wantCurrency: "¥", wantOutput: 2},
-		{name: "desktop language wins", runtimeCurrency: "USD", desktopLanguage: "zh", wantCurrency: "¥", wantOutput: 2},
-		{name: "CLI language wins", runtimeCurrency: "USD", language: "zh", wantCurrency: "¥", wantOutput: 2},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			cfg := config.Default()
-			cfg.Desktop.Currency = tt.desktopCurrency
-			cfg.Desktop.Language = tt.desktopLanguage
-			cfg.Language = tt.language
-			cfg.ApplyDeepSeekOfficialDefaultPricing()
-
-			applyRuntimeAutoPricingCurrency(cfg, tt.runtimeCurrency)
-
-			deepseek, ok := cfg.Provider("deepseek-flash")
-			if !ok {
-				t.Fatal("default DeepSeek provider is missing")
-			}
-			price := deepseek.PriceForModel("deepseek-v4-flash")
-			if price == nil || price.Currency != tt.wantCurrency || price.Output != tt.wantOutput {
-				t.Fatalf("flash price = %#v, want currency %q output %v", price, tt.wantCurrency, tt.wantOutput)
-			}
-		})
-	}
-}
-
 // TestBuildFoldsProjectMemoryIntoSystemPrompt is the end-to-end proof of the
 // cache-first wiring: a project REASONIX.md is discovered at boot and folded
 // into the session's system message (the cached prefix), and the `remember`
@@ -209,6 +170,7 @@ func TestBuildRunsCleanupPendingDespiteSafeModeEnv(t *testing.T) {
 
 func TestBuildRegistersUsableHistoryAndMemoryRetrievalTools(t *testing.T) {
 	isolateConfigHome(t)
+	historyIndexReady := bootTestHistoryIndexReady(t)
 	dir := robustTempDir(t)
 	t.Chdir(dir)
 
@@ -262,6 +224,7 @@ model = "x"
 		t.Fatalf("Build: %v", err)
 	}
 	defer ctrl.Close()
+	waitForBootTestHistoryIndex(t, historyIndexReady)
 
 	sys := systemMessage(ctrl.History())
 	for _, forbidden := range []string{
@@ -1639,7 +1602,7 @@ func TestNewProviderPropagatesConfiguredMaxOutputTokens(t *testing.T) {
 
 	p, err := NewProvider(&config.ProviderEntry{
 		Name: "openai", Kind: "openai", BaseURL: "https://api.openai.com/v1",
-		ChatURL: srv.URL, Model: "o3", MaxOutputTokens: 4096,
+		ChatURL: "https://legacy.invalid/chat/completions/", RequestURL: srv.URL, Model: "o3", MaxOutputTokens: 4096,
 	})
 	if err != nil {
 		t.Fatalf("NewProvider: %v", err)
@@ -3833,23 +3796,6 @@ func TestBuildSkipsLegacySessionMigrationWhenIsolated(t *testing.T) {
 	if _, err := os.Stat(projectPath); !os.IsNotExist(err) {
 		t.Fatal("legacy project session was imported but must not be when REASONIX_HOME is set")
 	}
-}
-
-// isolateConfigHome redirects os.UserConfigDir() (and the cache subtree under
-// it) at a per-test temp dir by overriding the env vars Go's stdlib reads on
-// macOS, Linux, and Windows. Without this, Build's config, plugin stats, and
-// cached schemas can bleed across tests. Mirrors the withTempCache helper in
-// internal/plugin/stats_test.go.
-func isolateConfigHome(t *testing.T) string {
-	t.Helper()
-	dir := robustTempDir(t)
-	t.Setenv("HOME", dir)
-	t.Setenv("USERPROFILE", dir)
-	t.Setenv("XDG_CONFIG_HOME", dir)
-	t.Setenv("AppData", filepath.Join(dir, "AppData"))
-	t.Setenv("LocalAppData", filepath.Join(dir, "LocalAppData"))
-	t.Setenv("REASONIX_CREDENTIALS_STORE", "file")
-	return dir
 }
 
 // TestPartitionByTier pins the bucket assignment contract that the rest of

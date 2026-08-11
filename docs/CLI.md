@@ -85,23 +85,22 @@ different keys. Providers added or removed through setup are also added to or
 removed from desktop provider access, so the same models are available in the
 desktop app.
 
-### Configure regional pricing currency
+### Configure fee display currency
 
-Use the user-global currency command to inspect or select the official DeepSeek
-regional price table:
+Use the user-global command to inspect or select the display currency:
 
 ```sh
 reasonix config currency             # show the saved and resolved currency
-reasonix config currency auto        # follow the resolved locale
+reasonix config currency auto        # wallet hint, then original price currency
 reasonix config currency CNY
 reasonix config currency USD
 ```
 
-`auto` resolves Simplified or Traditional Chinese locales to CNY and English or
-other locales to USD. An explicit `CNY` or `USD` selection remains independent
-from the UI language. This preference is stored in the user config and cannot
-be overridden by project `reasonix.toml`; `--local` is therefore not supported.
-Custom provider prices are preserved.
+`auto` remains unresolved in configuration. With one valid wallet currency it
+can become a runtime session hint; otherwise CLI uses the original currency or
+sorted currency buckets. Language and host locale never select a price table.
+The preference is user-global and cannot be overridden by project
+`reasonix.toml`; `--local` is therefore not supported. Custom prices are preserved.
 
 In an interactive session, `/currency` shows the saved and resolved values, and
 `/currency auto|CNY|USD` changes the preference and refreshes the current
@@ -211,12 +210,23 @@ The final structured object has this shape:
 }
 ```
 
-`total_cost` is denominated in the ISO currency code from `currency`, currently
-`CNY` or `USD` for official DeepSeek pricing. `total_cost_usd` remains as a
-numeric compatibility alias and mirrors `total_cost`; despite its legacy name,
-it is not converted to USD when `currency` is `CNY`. New consumers must use
-`total_cost` together with `currency`. A structured run fails instead of
-reporting a misleading total if usage contains mixed currencies.
+`total_cost` is present only when a single `selected` display amount exists (ISO
+code in `currency`). Prefer the structured `cost_quote` field when present: it
+carries the original estimate, `original_totals`, occurrence-time valuations
+(`official_table` for dual-region public prices), `cost_complete`,
+`display_complete`, `display_status`, and `billing_mode` (`payg` or `subscription_equivalent` for
+pay-as-you-go equivalent estimates such as MiMo Token Plan).
+
+`total_cost_usd` remains a numeric compatibility alias when `total_cost` exists
+and does **not** imply USD. Mixed original currencies no longer fail the run:
+`cost_complete` remains true when usage/pricing facts are known,
+`display_complete` is false, and `original_costs`/`original_totals` list per-ISO
+totals so clients never invent a cross-currency sum.
+
+Global display preference is `[billing].display_currency` (`auto|CNY|USD`);
+legacy `[desktop].currency` still migrates. Provider list prices use each
+entry's frozen `billing_currency` and are never rewritten by display switches.
+Diagnose with `reasonix doctor billing`.
 
 Execution failures use `subtype: "error_during_execution"` and
 `is_error: true`. Structured modes keep runtime errors in JSON instead of also
@@ -428,7 +438,7 @@ the displayed list matches the commands the TUI accepts.
 | `/status` | Show model, effort, cache, Git, background jobs, and execution setting or balance details. |
 | `/preset [light\|balanced\|delivery]` | View or change the agent execution setting without rebuilding the controller. `/work-mode` and `/profile` remain compatibility aliases (`economy` → `light`). |
 | `/theme [auto\|light\|dark\|style]` | View or change the CLI background mode and accent palette. |
-| `/currency [auto\|CNY\|USD]` | View or change the user-global official pricing currency and refresh the runtime. |
+| `/currency [auto\|CNY\|USD]` | View or change the user-global fee display currency and refresh the runtime. |
 | `/paste-image` | Read a clipboard image and insert an editable attachment token. |
 | `/mouse` | Toggle in-app mouse selection, scrollbar, and wheel handling. |
 | `/effort` | View or change reasoning effort. |
@@ -455,6 +465,44 @@ access, and session ownership. `/reload` uses the same fail-atomic rebuild.
 `/preset` (and legacy `/work-mode` / `/profile`) updates the execution setting
 in place without rebuilding the controller; all three execution settings share the
 same provider-visible tool surface (`use_capability` for optional tools).
+
+## Session catalog diagnostics
+
+The desktop session catalog is a disposable SQLite query projection; transcript
+JSONL and sidecars remain authoritative. Inspect it read-only or replace only
+the projection:
+
+```sh
+reasonix doctor sessions [--json]
+reasonix sessions reindex [--json]
+reasonix sessions reindex --dir /path/to/sessions --dir /another/path
+```
+
+Without `--dir`, reindex includes global sessions and all projects saved by the
+desktop app. See [Session Catalog and Desktop Startup](./SESSION_CATALOG.md) for
+failure, migration, and data-safety guarantees.
+
+History search uses a separate disposable projection:
+
+```sh
+reasonix doctor catalogs [--json]
+reasonix catalogs reindex history [--dir PATH ...] [--json]
+```
+
+See [History Search Catalog](./HISTORY_SEARCH_CATALOG.md).
+Usage statistics use a separate disposable rollup projection:
+reasonix catalogs reindex usage [--json]
+See [Usage Catalog](./USAGE_CATALOG.md).
+
+Inspect or rebuild the disposable task projection independently:
+
+```sh
+reasonix doctor catalogs [--json]
+reasonix catalogs reindex tasks [--project PATH ...] [--json]
+```
+
+See [Task Catalog](./TASK_CATALOG.md) for the authoritative FileStore boundary,
+cross-project routing, and rebuild behavior.
 
 ### Memory diagnostics and recovery
 

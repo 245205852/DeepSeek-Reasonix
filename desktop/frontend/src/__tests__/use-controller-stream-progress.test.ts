@@ -72,7 +72,7 @@ function ev(s: typeof initialState, e: WireEvent) {
     },
   });
   eq(after.items.length, before.items.length + 1, "actionable completion summary adds one compact transcript notice");
-  const notice = after.items.at(-1);
+  const notice = after.items[after.items.length - 1];
   eq(notice?.kind === "notice" ? notice.variant : "", "completion", "quality gap uses the completion notice variant");
   eq(notice?.kind === "notice" ? notice.action : "", "open_changes", "quality gap links to the change panel");
   eq(notice?.kind === "notice" ? notice.text.includes("balanced") : true, false, "compact notice does not expose internal preset values");

@@ -571,13 +571,19 @@ type modelSwitchMsg struct {
 // fetchBalance queries the provider's wallet balance off the event loop. It's a
 // no-op readout ("") when the provider declares no balance_url or the fetch
 // fails, so the status line stays quiet rather than surfacing an error.
+// Wallets are displayed in their original currencies; no conversion or sum is
+// attempted when more than one currency is returned.
 func fetchBalance(ctrl control.Status) tea.Cmd {
 	return func() tea.Msg {
 		b, err := ctrl.Balance(context.Background())
 		if err != nil || b == nil {
 			return balanceMsg{}
 		}
-		return balanceMsg{text: b.Display()}
+		displayCurrency := ""
+		if cfg, err := config.LoadForRootReadOnly("."); err == nil && cfg != nil {
+			displayCurrency = cfg.ExplicitDisplayCurrency()
+		}
+		return balanceMsg{text: b.DisplayForCurrency(displayCurrency)}
 	}
 }
 
