@@ -91,21 +91,45 @@ func (a *App) taskProjectKeys(req TaskPageRequest) ([]string, string, error) {
 	}
 }
 
+func (a *App) allowedTaskProjectRoots() []string {
+	roots := []string{globalWorkspaceRoot(), a.projectDir()}
+	for _, project := range loadProjectsFile().Projects {
+		roots = append(roots, project.Root)
+	}
+	return roots
+}
+
 func (a *App) allowedTaskProjectKey(key string) bool {
+	_, ok := a.resolveTaskProject(key)
+	return ok
+}
+
+// resolveTaskProject maps a project key to an allowlisted workspace root without
+// consulting the SQLite task catalog. Control actions use FileStore as authority.
+func (a *App) resolveTaskProject(key string) (taskcatalog.Project, bool) {
 	key = strings.TrimSpace(key)
 	if key == "" {
-		return false
+		return taskcatalog.Project{}, false
 	}
-	allowedRoots := []string{globalWorkspaceRoot(), a.projectDir()}
-	for _, project := range loadProjectsFile().Projects {
-		allowedRoots = append(allowedRoots, project.Root)
+	projects := loadProjectsFile()
+	labels := map[string]string{
+		globalWorkspaceRoot(): projects.GlobalTitle,
+		a.projectDir():        workspaceName(a.projectDir()),
 	}
-	for _, root := range allowedRoots {
-		if taskcatalog.ProjectKey(root) == key {
-			return true
+	for _, project := range projects.Projects {
+		labels[project.Root] = projectDisplayName(project)
+	}
+	for _, root := range a.allowedTaskProjectRoots() {
+		if taskcatalog.ProjectKey(root) != key {
+			continue
 		}
+		label := labels[root]
+		if strings.TrimSpace(label) == "" {
+			label = workspaceName(root)
+		}
+		return taskcatalog.Project{Key: key, Root: root, Label: label}, true
 	}
-	return false
+	return taskcatalog.Project{}, false
 }
 
 func (a *App) ListTaskPage(req TaskPageRequest) TaskPage {
@@ -212,19 +236,21 @@ func (a *App) ListTaskEventPage(req TaskEventPageRequest) TaskEventPage {
 }
 
 func (a *App) taskActionProject(key string) (taskcatalog.Project, error) {
-	if !a.allowedTaskProjectKey(key) {
+	project, ok := a.resolveTaskProject(key)
+	if !ok {
 		return taskcatalog.Project{}, fmt.Errorf("unknown project key")
 	}
-	catalog := taskcatalog.Shared()
-	if catalog == nil {
-		return taskcatalog.Project{}, fmt.Errorf("task catalog is still opening")
-	}
-	project, ok, err := catalog.Project(a.bootContext(), strings.TrimSpace(key))
-	if err != nil {
-		return project, err
-	}
-	if !ok {
-		return project, fmt.Errorf("unknown project key")
+	// Prefer catalog label when available, but never require catalog readiness
+	// for Stop/Cancel/Requeue/Open — FileStore remains authoritative.
+	if catalog := taskcatalog.Shared(); catalog != nil {
+		if row, found, err := catalog.Project(a.bootContext(), project.Key); err == nil && found {
+			if strings.TrimSpace(row.Label) != "" {
+				project.Label = row.Label
+			}
+			if strings.TrimSpace(row.Root) != "" {
+				project.Root = row.Root
+			}
+		}
 	}
 	return project, nil
 }

@@ -475,13 +475,14 @@ func documents(messages []provider.Message) []indexedDocument {
 				appendDoc(i, part, string(msg.Role), "tool_input", call.Name, call.Name+" "+call.Arguments)
 			}
 		case provider.RoleTool:
-			// Index tool errors by default. Full tool_output is omitted so large
-			// or sensitive payloads never land in the disposable FTS projection
-			// unless a future opt-in path reindexes them explicitly.
+			// Index both tool_error and tool_output so explicit kind filters stay
+			// honest. Default search kinds still exclude tool_output.
+			text := msg.Name + " " + msg.Content
 			lower := strings.ToLower(strings.TrimSpace(msg.Content))
 			if strings.HasPrefix(lower, "error:") || strings.HasPrefix(lower, "blocked:") || strings.Contains(lower, "permission denied") {
-				appendDoc(i, 0, string(msg.Role), "tool_error", msg.Name, msg.Name+" "+msg.Content)
+				appendDoc(i, 0, string(msg.Role), "tool_error", msg.Name, text)
 			}
+			appendDoc(i, 0, string(msg.Role), "tool_output", msg.Name, text)
 		}
 	}
 	return out

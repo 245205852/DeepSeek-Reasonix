@@ -175,6 +175,51 @@ func TestSearchKeysetContinuesPastCatalogLimit(t *testing.T) {
 	}
 }
 
+func TestToolOutputIsIndexedAndSearchableByExplicitKind(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	root := t.TempDir()
+	path := filepath.Join(root, "tools.jsonl")
+	saveMessages(t, path,
+		provider.Message{Role: provider.RoleAssistant, ToolCalls: []provider.ToolCall{{ID: "1", Name: "bash", Arguments: `{"cmd":"echo hello"}`}}},
+		provider.Message{Role: provider.RoleTool, ToolCallID: "1", Name: "bash", Content: "zephyroutputtokenxyz hello"},
+		provider.Message{Role: provider.RoleTool, ToolCallID: "2", Name: "bash", Content: "error: permission denied on quasarerrortokenabc"},
+	)
+	catalog, err := Open(ctx, Options{Path: filepath.Join(t.TempDir(), "history.sqlite")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = catalog.Close(context.Background()) })
+	if err := catalog.ReconcileRoot(ctx, Root{Path: root, Source: "project", Scope: "project", WorkspaceRoot: root}); err != nil {
+		t.Fatal(err)
+	}
+
+	defaultKinds := []string{"user_text", "assistant_text", "tool_input", "tool_error"}
+	defaultResult, err := catalog.Search(ctx, SearchRequest{Query: "zephyroutputtokenxyz", Kinds: defaultKinds, Roots: []string{root}, Limit: 5})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(defaultResult.Items) != 0 {
+		t.Fatalf("default kinds unexpectedly returned tool_output hits: %#v", defaultResult.Items)
+	}
+
+	outputResult, err := catalog.Search(ctx, SearchRequest{Query: "zephyroutputtokenxyz", Kinds: []string{"tool_output"}, Roots: []string{root}, Limit: 5})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(outputResult.Items) != 1 || outputResult.Items[0].Kind != "tool_output" {
+		t.Fatalf("tool_output result=%#v", outputResult.Items)
+	}
+
+	errorResult, err := catalog.Search(ctx, SearchRequest{Query: "quasarerrortokenabc", Kinds: []string{"tool_error"}, Roots: []string{root}, Limit: 5})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(errorResult.Items) != 1 || errorResult.Items[0].Kind != "tool_error" {
+		t.Fatalf("tool_error result=%#v", errorResult.Items)
+	}
+}
+
 func TestTokenizerVersionMismatchClearsMixedProjection(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()

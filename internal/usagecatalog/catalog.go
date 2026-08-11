@@ -277,11 +277,16 @@ func (c *Catalog) applyReceipt(ctx context.Context, receipt AppendReceipt, entry
 		return err
 	}
 	end := receipt.Offset + int64(receipt.Length)
-	_, err = tx.ExecContext(ctx, `INSERT INTO usage_files(path,day,size,indexed_offset,state,completed_at) VALUES(?,?,?,?,'ready',?)
+	mtime := int64(0)
+	if info, statErr := os.Stat(receipt.Path); statErr == nil {
+		mtime = info.ModTime().UnixNano()
+	}
+	_, err = tx.ExecContext(ctx, `INSERT INTO usage_files(path,day,size,mtime_ns,indexed_offset,state,completed_at) VALUES(?,?,?,?,?,'ready',?)
         ON CONFLICT(path) DO UPDATE SET day=excluded.day,size=MAX(usage_files.size,excluded.size),
+        mtime_ns=CASE WHEN usage_files.indexed_offset=? THEN excluded.mtime_ns ELSE usage_files.mtime_ns END,
         indexed_offset=CASE WHEN usage_files.indexed_offset=? THEN excluded.indexed_offset ELSE usage_files.indexed_offset END,
         state=CASE WHEN usage_files.indexed_offset=? THEN 'ready' ELSE 'pending' END,completed_at=excluded.completed_at`,
-		receipt.Path, receipt.Day, end, end, time.Now().UnixMilli(), receipt.Offset, receipt.Offset)
+		receipt.Path, receipt.Day, end, mtime, end, time.Now().UnixMilli(), receipt.Offset, receipt.Offset, receipt.Offset)
 	if err != nil {
 		_ = tx.Rollback()
 		return err
@@ -461,12 +466,14 @@ func (c *Catalog) Ready(ctx context.Context, dir string, days []string) bool {
 		if err != nil {
 			return false
 		}
-		var size, offset int64
+		var size, offset, mtime int64
 		var state string
-		if err := c.db.QueryRowContext(ctx, `SELECT size,indexed_offset,state FROM usage_files WHERE path=?`, path).Scan(&size, &offset, &state); err != nil {
+		if err := c.db.QueryRowContext(ctx, `SELECT size,indexed_offset,state,mtime_ns FROM usage_files WHERE path=?`, path).Scan(&size, &offset, &state, &mtime); err != nil {
 			return false
 		}
-		if state != "ready" || size != info.Size() || offset != info.Size() {
+		// Same-size in-place rewrites must invalidate Ready so callers fall back
+		// to authoritative JSONL until the catalog rescan catches up.
+		if state != "ready" || size != info.Size() || offset != info.Size() || mtime != info.ModTime().UnixNano() {
 			return false
 		}
 	}

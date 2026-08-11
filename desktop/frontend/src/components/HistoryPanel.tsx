@@ -509,16 +509,22 @@ export function HistoryPanel({
 
         <div className="history-content">
           <div className={`history-list${isTrash ? " history-list--trash" : ""}`}>
-            {sessions.length === 0 ? (
-              <div className={`mem-empty${isTrash ? " mem-empty--trash" : ""}`}>
-                {isTrash && <Trash2 size={22} />}
-                <span>{tr(isTrash ? "history.trashEmpty" : "history.empty")}</span>
-              </div>
-            ) : filteredSessions.length === 0 ? (
-              <div className="mem-empty">{tr("history.noResults")}</div>
-            ) : (
+            {(() => {
+              const hasBodyHits = !isTrash && searchHits.length > 0;
+              if (sessions.length === 0 && !hasBodyHits) {
+                return (
+                  <div className={`mem-empty${isTrash ? " mem-empty--trash" : ""}`}>
+                    {isTrash && <Trash2 size={22} />}
+                    <span>{tr(isTrash ? "history.trashEmpty" : "history.empty")}</span>
+                  </div>
+                );
+              }
+              if (filteredSessions.length === 0 && !hasBodyHits) {
+                return <div className="mem-empty">{tr("history.noResults")}</div>;
+              }
+              return (
               <>
-              {!isTrash && searchHits.length > 0 && (
+              {hasBodyHits && (
                 <section className="mem-section history-search-results">
                   <div className="mem-section__title hist-group__title">
                     <span>Content matches</span>
@@ -618,7 +624,8 @@ export function HistoryPanel({
                 </button>
               )}
               </>
-            )}
+              );
+            })()}
           </div>
 
           <section className={`history-preview${!preview && !searchContext ? " history-preview--empty" : ""}`}>

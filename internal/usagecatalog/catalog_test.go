@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 func TestReconcileFileAndDuplicateReceiptAreIdempotent(t *testing.T) {
@@ -70,5 +71,40 @@ func TestReadyRejectsExternalAppendUntilReconciled(t *testing.T) {
 	_ = f.Close()
 	if catalog.Ready(ctx, dir, []string{"2026-08-10"}) {
 		t.Fatal("external append was treated as indexed")
+	}
+}
+
+func TestReadyRejectsSameSizeRewriteWithDifferentMtime(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "2026-08-10.jsonl")
+	original := []byte("{\"ts\":\"2026-08-10T10:00:00Z\",\"total\":1,\"source\":\"desktop\"}\n")
+	if err := os.WriteFile(path, original, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	catalog, err := Open(ctx, filepath.Join(t.TempDir(), "usage.sqlite"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = catalog.Close(context.Background()) })
+	if err := catalog.ReconcileFile(ctx, path, "2026-08-10"); err != nil {
+		t.Fatal(err)
+	}
+	if !catalog.Ready(ctx, dir, []string{"2026-08-10"}) {
+		t.Fatal("catalog should be ready after reconcile")
+	}
+	// Same byte length, different content and mtime — Ready must fail so JSONL
+	// remains the authority until the projection is rescanned.
+	replacement := []byte("{\"ts\":\"2026-08-10T12:00:00Z\",\"total\":9,\"source\":\"desktop\"}\n")
+	if len(replacement) != len(original) {
+		t.Fatalf("test fixture length mismatch: %d vs %d", len(replacement), len(original))
+	}
+	time.Sleep(5 * time.Millisecond)
+	if err := os.WriteFile(path, replacement, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if catalog.Ready(ctx, dir, []string{"2026-08-10"}) {
+		t.Fatal("same-size rewrite was treated as still ready")
 	}
 }

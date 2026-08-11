@@ -8909,6 +8909,7 @@ func (a *App) InstallMCPServer(in MCPServerInput) (plugin.MCPInstallResult, erro
 			}
 			return plugin.MCPInstallResult{}, errors.Join(err, rollbackErr)
 		}
+		a.bumpExtensionGeneration()
 		recordMCPFailure(ctrl, entry, connectErr)
 		return result, nil
 	}
@@ -8940,6 +8941,7 @@ func (a *App) InstallMCPServer(in MCPServerInput) (plugin.MCPInstallResult, erro
 		disconnectMCPServerControllers(entry.Name, ctrl, controllers)
 		return plugin.MCPInstallResult{}, errors.Join(err, rollbackErr)
 	}
+	a.bumpExtensionGeneration()
 	return plugin.ReadyInstallResult(entry.Name, toolCount), nil
 }
 
@@ -9023,7 +9025,11 @@ func (a *App) UpdateMCPServer(name string, in MCPServerInput) error {
 		enabled = enabled || target.enabled
 	}
 	if !enabled {
-		return a.saveDesktopMCPServer(root, updated)
+		if err := a.saveDesktopMCPServer(root, updated); err != nil {
+			return err
+		}
+		a.bumpExtensionGeneration()
+		return nil
 	}
 	spec, specErr := a.mcpLaunchSpecForEntry(root, updated)
 	if specErr != nil {
@@ -9047,6 +9053,7 @@ func (a *App) UpdateMCPServer(name string, in MCPServerInput) error {
 		rollbackErr := reconnectMCPServerControllers(original, controllers)
 		return errors.Join(err, rollbackErr)
 	}
+	a.bumpExtensionGeneration()
 	return nil
 }
 
@@ -9086,6 +9093,7 @@ func (a *App) RemoveMCPServer(name string) error {
 	}
 	restoreMCPServerFallbacks(name, controllers)
 	a.clearMCPServerTabState(name, controllers)
+	a.bumpExtensionGeneration()
 	return authCleanupErr
 }
 
@@ -9149,6 +9157,8 @@ func (a *App) ReconnectMCPServer(name string) error {
 	a.mu.Lock()
 	delete(tab.disabledMCP, name)
 	a.mu.Unlock()
+	// Host tools changed even when config bytes did not; invalidate in-flight builds.
+	a.bumpExtensionGeneration()
 	return nil
 }
 

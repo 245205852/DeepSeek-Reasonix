@@ -10,6 +10,7 @@ import (
 
 	"reasonix/internal/agent"
 	"reasonix/internal/control"
+	"reasonix/internal/taskcatalog"
 	"reasonix/internal/taskmonitor"
 )
 
@@ -120,6 +121,31 @@ func TestTaskMonitorUsesActiveWorkspaceRoot(t *testing.T) {
 	}
 	if got := app.projectDir(); got != root {
 		t.Fatalf("projectDir = %q, want active workspace %q", got, root)
+	}
+}
+
+func TestTaskActionProjectResolvesAllowlistWithoutCatalog(t *testing.T) {
+	root := t.TempDir()
+	app := &App{
+		ctx: context.Background(),
+		tabs: map[string]*WorkspaceTab{
+			"active": {ID: "active", Scope: "project", WorkspaceRoot: root},
+		},
+		activeTabID: "active",
+	}
+	key := taskcatalog.ProjectKey(root)
+	project, err := app.taskActionProject(key)
+	if err != nil {
+		t.Fatalf("taskActionProject without catalog: %v", err)
+	}
+	if abs, err := filepath.Abs(root); err == nil {
+		root = abs
+	}
+	if project.Root != root || project.Key != key {
+		t.Fatalf("project=%#v, want root=%q key=%q", project, root, key)
+	}
+	if _, err := app.taskActionProject("not-a-real-project-key"); err == nil {
+		t.Fatal("expected unknown project key error")
 	}
 }
 

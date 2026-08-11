@@ -2,6 +2,10 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { app } from "./bridge";
 import type { HistorySearchHit, SessionMeta } from "./types";
 
+function hitKey(hit: HistorySearchHit): string {
+  return `${hit.sessionPath}:${hit.messageIndex}:${hit.kind}:${hit.toolName ?? ""}`;
+}
+
 export function useHistoryCatalog({
   isTrash,
   suppliedSessions,
@@ -18,7 +22,8 @@ export function useHistoryCatalog({
   query: string;
 }) {
   const [catalogSessions, setCatalogSessions] = useState<SessionMeta[]>(suppliedSessions);
-  const [nextCursor, setNextCursor] = useState("");
+  const [nextSessionCursor, setNextSessionCursor] = useState("");
+  const [nextSearchCursor, setNextSearchCursor] = useState("");
   const [partial, setPartial] = useState(false);
   const [progress, setProgress] = useState({ indexed: 0, total: 0 });
   const [searchHits, setSearchHits] = useState<HistorySearchHit[]>([]);
@@ -32,34 +37,69 @@ export function useHistoryCatalog({
     if (isTrash) setCatalogSessions(suppliedSessions);
   }, [isTrash, suppliedSessions]);
 
-  const fetchPage = useCallback(async (cursor: string, append: boolean, seq: number) => {
-    const request = { scope, workspaceRoot, status, timeFilter, query: query.trim(), cursor, limit: 50 };
-    const [page, bodyPage] = await Promise.all([
-      app.ListHistorySessions(request),
-      query.trim() ? app.SearchHistoryContent({ ...request, kinds: [], toolName: "" }) : Promise.resolve(null),
-    ]);
+  const fetchPage = useCallback(async (
+    sessionCursor: string,
+    searchCursor: string,
+    append: boolean,
+    seq: number,
+  ) => {
+    const base = { scope, workspaceRoot, status, timeFilter, query: query.trim(), limit: 50 };
+    const sessionPromise = (!append || sessionCursor)
+      ? app.ListHistorySessions({ ...base, cursor: sessionCursor })
+      : Promise.resolve(null);
+    const searchPromise = query.trim() && (!append || searchCursor)
+      ? app.SearchHistoryContent({ ...base, cursor: searchCursor, kinds: [], toolName: "" })
+      : Promise.resolve(null);
+    const [page, bodyPage] = await Promise.all([sessionPromise, searchPromise]);
     if (seq !== requestSeq.current) return;
-    if (page.staleCursor && cursor) {
-      void fetchPage("", false, seq);
+    if (page?.staleCursor && sessionCursor) {
+      void fetchPage("", "", false, seq);
       return;
     }
-    setCatalogSessions((current) => append
-      ? [...current, ...page.items.filter((item) => !current.some((existing) => existing.path === item.path))]
-      : page.items);
-    setNextCursor(page.nextCursor);
-    setPartial(page.partial || Boolean(bodyPage?.partial));
-    if (!append) setSearchHits(bodyPage?.items ?? []);
-    if (bodyPage) setProgress({ indexed: bodyPage.status.indexed, total: bodyPage.status.total });
+    if (bodyPage?.staleCursor && searchCursor) {
+      void fetchPage("", "", false, seq);
+      return;
+    }
+    if (page) {
+      setCatalogSessions((current) => append
+        ? [...current, ...page.items.filter((item) => !current.some((existing) => existing.path === item.path))]
+        : page.items);
+      setNextSessionCursor(page.nextCursor || "");
+    } else if (!append) {
+      setCatalogSessions([]);
+      setNextSessionCursor("");
+    }
+    setPartial(Boolean(page?.partial) || Boolean(bodyPage?.partial));
+    if (bodyPage) {
+      setSearchHits((current) => {
+        if (!append) return bodyPage.items ?? [];
+        const seen = new Set(current.map(hitKey));
+        const merged = [...current];
+        for (const hit of bodyPage.items ?? []) {
+          const key = hitKey(hit);
+          if (seen.has(key)) continue;
+          seen.add(key);
+          merged.push(hit);
+        }
+        return merged;
+      });
+      setNextSearchCursor(bodyPage.nextCursor || "");
+      setProgress({ indexed: bodyPage.status.indexed, total: bodyPage.status.total });
+    } else if (!append) {
+      setSearchHits([]);
+      setNextSearchCursor("");
+    }
   }, [query, scope, status, timeFilter, workspaceRoot]);
 
   useEffect(() => {
     if (isTrash || typeof window === "undefined" || !window.runtime) return;
     const seq = ++requestSeq.current;
     const timer = window.setTimeout(() => {
-      void fetchPage("", false, seq).catch(() => {
+      void fetchPage("", "", false, seq).catch(() => {
         if (seq !== requestSeq.current) return;
         setCatalogSessions(suppliedSessions);
-        setNextCursor("");
+        setNextSessionCursor("");
+        setNextSearchCursor("");
         setSearchHits([]);
       });
     }, query.trim() ? 200 : 0);
@@ -91,9 +131,16 @@ export function useHistoryCatalog({
   }, [isTrash]);
 
   const loadMore = useCallback(() => {
-    if (!nextCursor) return;
-    void fetchPage(nextCursor, true, requestSeq.current);
-  }, [fetchPage, nextCursor]);
+    if (!nextSessionCursor && !nextSearchCursor) return;
+    void fetchPage(nextSessionCursor, nextSearchCursor, true, requestSeq.current);
+  }, [fetchPage, nextSearchCursor, nextSessionCursor]);
 
-  return { sessions: isTrash ? suppliedSessions : catalogSessions, nextCursor, partial, progress, searchHits, loadMore };
+  return {
+    sessions: isTrash ? suppliedSessions : catalogSessions,
+    nextCursor: nextSessionCursor || nextSearchCursor,
+    partial,
+    progress,
+    searchHits,
+    loadMore,
+  };
 }

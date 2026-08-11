@@ -142,6 +142,11 @@ func encodeSessionCursor(cursor sessionPageCursor) string {
 	return base64.RawURLEncoding.EncodeToString(b)
 }
 
+// CursorAfter returns an exclusive pagination cursor after the given session.
+func CursorAfter(revision uint64, lastActivityAt int64, path string) string {
+	return encodeSessionCursor(sessionPageCursor{Revision: revision, Activity: lastActivityAt, Path: path})
+}
+
 func decodeSessionCursor(encoded string) (*sessionPageCursor, error) {
 	if strings.TrimSpace(encoded) == "" {
 		return nil, nil
