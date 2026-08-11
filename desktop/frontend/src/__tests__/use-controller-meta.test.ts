@@ -97,7 +97,7 @@ console.log("\nuse controller meta");
 {
   eq(
     modelSwitchNoticeText("active work is still running; running=false; pending_prompt=false; background_jobs=2; finish or cancel the current turn, answer pending prompts, and stop background jobs before changing model"),
-    "The model cannot change while 2 background jobs are running. Open Background jobs in the status bar to stop them.",
+    "The model cannot change while background work is active. Active jobs: 2. Open Background jobs in the status bar to stop them.",
     "model busy guard names the background-job blocker",
   );
   eq(
@@ -108,7 +108,7 @@ console.log("\nuse controller meta");
   eq(
     tokenModeSwitchNoticeText("active work is still running; running=true; pending_prompt=true; background_jobs=0; finish or cancel the current turn, answer pending prompts, and stop background jobs before changing token mode"),
     "Execution setting cannot change while a prompt is waiting for your response. Handle it first.",
-    "work mode busy guard prioritizes the pending prompt blocker",
+    "execution-setting busy guard prioritizes the pending prompt blocker",
   );
   eq(
     modelSwitchNoticeText("finish or cancel the current turn, answer pending prompts, and stop background jobs before changing model"),
@@ -174,12 +174,12 @@ console.log("\nuse controller meta");
   eq(
     tokenModeSwitchNoticeText("finish or cancel the current turn, answer pending prompts, and stop background jobs before changing token mode"),
     "Execution setting cannot change yet. Stop the current answer, handle pending prompts, or wait for background jobs to finish.",
-    "work mode busy guard is localized",
+    "execution-setting busy guard is localized",
   );
   eq(
     tokenModeSwitchNoticeText('tab "tab-a" changed while switching token mode; retry'),
     "The current session changed while switching execution setting. Try once more.",
-    "work mode tab race asks the user to retry",
+    "execution-setting tab race asks the user to retry",
   );
 }
 
