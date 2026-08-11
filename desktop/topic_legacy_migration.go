@@ -15,7 +15,7 @@ import (
 var legacyMigrationMu sync.Mutex
 
 func migrateLegacySessionsIntoGlobalTopics(dir string) []string {
-	return migrateLegacySessionsIntoGlobalTopicsWithGates(dir, topicMigrationDone, topicIndexRepairDone)
+	return migrateLegacySessionsIntoGlobalTopicsWithGates(dir, topicMigrationDone, topicIndexRepairDone, ignoreMigratedSession)
 }
 
 // forceMigrateLegacySessionsIntoGlobalTopics bypasses disposable completion
@@ -24,12 +24,25 @@ func migrateLegacySessionsIntoGlobalTopics(dir string) []string {
 // old CLI, restored backup, or coarse filesystem timestamp must still have a
 // path that deterministically re-evaluates every session.
 func forceMigrateLegacySessionsIntoGlobalTopics(dir string) []string {
-	return migrateLegacySessionsIntoGlobalTopicsWithGates(dir, topicMigrationNeverDone, topicMigrationNeverDone)
+	return migrateLegacySessionsIntoGlobalTopicsWithGates(dir, topicMigrationNeverDone, topicMigrationNeverDone, ignoreMigratedSession)
+}
+
+func forceMigrateLegacySessionsIntoGlobalTopicsWithPaths(dir string) ([]string, []string) {
+	paths := []string{}
+	topics := migrateLegacySessionsIntoGlobalTopicsWithGates(dir, topicMigrationNeverDone, topicMigrationNeverDone,
+		func(path string) { paths = append(paths, path) })
+	return topics, paths
 }
 
 func topicMigrationNeverDone(string) bool { return false }
+func ignoreMigratedSession(string)        {}
 
-func migrateLegacySessionsIntoGlobalTopicsWithGates(dir string, migrationDone, repairDone func(string) bool) []string {
+func noteMigratedSession(topics []string, topicID, path string, onMigrated func(string)) []string {
+	onMigrated(path)
+	return append(topics, topicID)
+}
+
+func migrateLegacySessionsIntoGlobalTopicsWithGates(dir string, migrationDone, repairDone func(string) bool, onMigrated func(string)) []string {
 	if strings.TrimSpace(dir) == "" {
 		return nil
 	}
@@ -147,7 +160,7 @@ func migrateLegacySessionsIntoGlobalTopicsWithGates(dir string, migrationDone, r
 			topicTitles[topicID] = title
 			topicSources[topicID] = topicTitleSourceManual
 		}
-		migratedTopicIDs = append(migratedTopicIDs, topicID)
+		migratedTopicIDs = noteMigratedSession(migratedTopicIDs, topicID, info.Path, onMigrated)
 	}
 	if len(migratedTopicIDs) == 0 {
 		if !deferred {

@@ -61,10 +61,13 @@ func TestForcedTopicMigrationBypassesMatchingMarker(t *testing.T) {
 		t.Fatal("matching marker should have kept ordinary migration from creating meta")
 	}
 
-	migrated := forceMigrateLegacySessionsIntoGlobalTopics(dir)
+	migrated, migratedPaths := forceMigrateLegacySessionsIntoGlobalTopicsWithPaths(dir)
 	wantTopicID := legacySessionTopicID(path)
 	if len(migrated) != 1 || migrated[0] != wantTopicID {
 		t.Fatalf("forced migration = %v, want %q", migrated, wantTopicID)
+	}
+	if len(migratedPaths) != 1 || !sameDesktopPath(migratedPaths[0], path) {
+		t.Fatalf("forced migration paths = %v, want %q", migratedPaths, path)
 	}
 	meta, ok, err := agent.LoadBranchMeta(path)
 	if err != nil || !ok {

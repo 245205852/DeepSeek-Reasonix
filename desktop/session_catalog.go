@@ -397,9 +397,15 @@ func (a *App) requestSessionCatalogReconcile(dir string) {
 		// Explicit reconcile bypasses disposable migration markers. Signatures
 		// keep periodic passes cheap, but an old CLI or restored backup must
 		// never be permanently hidden by a timestamp/content collision.
-		if migrated := forceMigrateLegacySessionsIntoGlobalTopics(target.Path); len(migrated) > 0 {
-			ctx, cancel := context.WithTimeout(a.bootContext(), 5*time.Second)
+		migrated, migratedPaths := forceMigrateLegacySessionsIntoGlobalTopicsWithPaths(target.Path)
+		if len(migrated) > 0 {
+			ctx, cancel := context.WithTimeout(a.bootContext(), 30*time.Second)
 			_ = a.syncSessionCatalogMetadata(ctx, catalog)
+			for _, path := range migratedPaths {
+				if err := catalog.IndexSessionPath(ctx, target, path); err != nil && !errors.Is(err, context.Canceled) {
+					slog.Debug("desktop: index migrated session", "path", path, "err", err)
+				}
+			}
 			cancel()
 		}
 		catalog.RequestReconcile(target)
