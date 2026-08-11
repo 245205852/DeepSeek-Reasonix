@@ -55,8 +55,10 @@ func FlushSharedCatalog(ctx context.Context) error {
 	return nil
 }
 
-// CloseSharedCatalog flushes and closes the process history projection so
-// shutdown and tests release SQLite handles under the cache directory.
+// CloseSharedCatalog cancels work and closes the process history catalog.
+// Callers with time to persist queued projection work may invoke
+// FlushSharedCatalog first. Close itself must not drain a potentially large
+// backlog because JSONL remains authoritative and the projection is rebuilt.
 func CloseSharedCatalog(ctx context.Context) error {
 	return processHistoryCatalog.close(ctx)
 }
@@ -161,7 +163,6 @@ func (m *indexedCatalogManager) close(ctx context.Context) error {
 
 	var closeErr error
 	if catalog != nil {
-		_ = catalog.Flush(ctx)
 		closeErr = catalog.Close(ctx)
 	}
 	for _, opening := range done {
