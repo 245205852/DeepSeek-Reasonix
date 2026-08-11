@@ -28,11 +28,38 @@ func (a *App) currentExtensionGeneration() uint64 {
 	return a.extensionGeneration.Load()
 }
 
-// resetSharedHostMCP drops SharedHost MCP clients after a stale build loses the
-// extension generation race (SharedHost cleanup is a no-op on controller close).
-func (a *App) resetSharedHostMCP(host *plugin.Host) {
+// sharedHostServerSnapshot is the set of MCP server names known on a Host
+// before an off-lock boot.Build. A stale build may register additional names
+// onto the shared Host; rollback must remove only those names, never clients
+// that already belonged to a newer generation or sibling tab.
+func sharedHostServerSnapshot(host *plugin.Host) map[string]bool {
+	out := map[string]bool{}
+	if host == nil {
+		return out
+	}
+	for _, name := range host.ServerNames() {
+		out[name] = true
+	}
+	for _, name := range host.ConnectingServers() {
+		out[name] = true
+	}
+	for _, failure := range host.Failures() {
+		if name := strings.TrimSpace(failure.Name); name != "" {
+			out[name] = true
+		}
+	}
+	return out
+}
+
+// rollbackSharedHostMCPCreatedByBuild removes Host servers that appeared after
+// before. Pre-existing names are left alone so a lost generation race cannot
+// tear down connections owned by other tabs or a newer rebuild.
+func rollbackSharedHostMCPCreatedByBuild(host *plugin.Host, before map[string]bool) {
 	if host == nil {
 		return
+	}
+	if before == nil {
+		before = map[string]bool{}
 	}
 	names := map[string]bool{}
 	for _, name := range host.ServerNames() {
@@ -47,31 +74,11 @@ func (a *App) resetSharedHostMCP(host *plugin.Host) {
 		}
 	}
 	for name := range names {
-		host.Remove(name)
-		host.ClearFailure(name)
-	}
-}
-
-// purgeUnwantedSharedHostServers removes Host clients no longer enabled.
-func (a *App) purgeUnwantedSharedHostServers(root string, host *plugin.Host) {
-	if a == nil || host == nil {
-		return
-	}
-	cfg, err := config.LoadForRoot(root)
-	if err != nil || cfg == nil {
-		return
-	}
-	wanted := map[string]bool{}
-	for _, entry := range cfg.EnabledPlugins(root, config.DefaultMCPActivationStore()) {
-		if name := strings.TrimSpace(entry.Name); name != "" {
-			wanted[name] = true
-		}
-	}
-	for _, name := range host.ServerNames() {
-		if wanted[name] {
+		if before[name] {
 			continue
 		}
 		host.Remove(name)
+		host.ClearFailure(name)
 	}
 }
 

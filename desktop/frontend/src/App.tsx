@@ -205,18 +205,14 @@ import { composerDraftKeyForTab } from "./lib/composerDraftKey";
 import { continueDelivery } from "./lib/deliveryContinue";
 import { activateGoalAndSubmitOnTab } from "./lib/goalSubmit";
 import logoWordmark from "./assets/logo-wordmark.svg";
-
 // Hold reasoning UI until the authoritative desktop startup settings arrive;
 // this prevents a hidden preference from flashing content during first paint.
 setReasoningDisplayPending();
-
 const TERMINAL_CLOSE_TRANSITION_MS = 250;
-
 function noticePreviewMockEnabled(): boolean {
   const value = browserMockScenarioParam();
   return value === "notice" || value === "notices" || value === "notice-preview";
 }
-
 function runtimeProfileShortKey(mode: TokenMode) {
   return mode === "economy"
     ? "composer.runtimeProfileEconomyShort" as const
@@ -224,7 +220,6 @@ function runtimeProfileShortKey(mode: TokenMode) {
       ? "composer.runtimeProfileDeliveryShort" as const
       : "composer.runtimeProfileBalancedShort" as const;
 }
-
 function noticePreviewItems(): Item[] {
   const notice = (index: number, level: "info" | "warn", text: string, detail: string, code?: string): Item => ({
     kind: "notice",
@@ -4896,34 +4891,36 @@ export default function App() {
             ) : noticePreviewMockEnabled() ? (
               <NoticePreviewPanel />
             ) : (
-              <Transcript
-                items={displayItems}
-                live={state.live}
-                liveStore={liveStore}
-                tabId={activeTabId}
-                footerHeight={footerHeight}
-                onPrompt={handleTranscriptPrompt}
-                onDeliveryContinue={() => void handleDeliveryContinue()}
-                onEditPrompt={handleEditPrompt}
-                onRewind={handleMessageAction}
-                checkpoints={state.checkpoints}
-                actionPending={state.messageAction != null}
-                rewindDisabled={Boolean(activeTab?.readOnly) || !controllerReady || hydratePlaceholderActive || rewindState != null || rewindCommitting || state.running || state.messageAction != null || state.approval != null || state.ask != null || clearContextPending}
-                running={state.running || rewindCommitting}
-                turnStartAt={state.turnStartAt}
-                welcomeVariant={sidebarCreation ? "creation" : "default"}
-                creationMode={sidebarCreation}
-                actionHoverMenus={sidebarCreation && !hydratePlaceholderActive}
-                rewindSignal={rewindSignal}
-                revealSignal={transcriptRevealSignal}
-                hydrating={transcriptHydrating}
-                hasOlderHistory={state.historyHasOlder && !rewindState}
-                olderHistoryCount={state.historyStartTurn}
-                loadingOlderHistory={state.historyOlderLoading}
-                onLoadOlderHistory={() => activeTabId && loadOlderHistory(activeTabId)}
-                invocationMetadata={activeTabId ? invocationMetadataByTab[activeTabId] : undefined}
-              />
-              {state.hydrateError ? <div className="history-load-error" role="alert"><span>{state.hydrateError}</span><button type="button" className="btn btn--small" onClick={() => void retrySessionHistory(activeTabId)}>{t("common.retry")}</button></div> : null}
+              <>
+                <Transcript
+                  items={displayItems}
+                  live={state.live}
+                  liveStore={liveStore}
+                  tabId={activeTabId}
+                  footerHeight={footerHeight}
+                  onPrompt={handleTranscriptPrompt}
+                  onDeliveryContinue={() => void handleDeliveryContinue()}
+                  onEditPrompt={handleEditPrompt}
+                  onRewind={handleMessageAction}
+                  checkpoints={state.checkpoints}
+                  actionPending={state.messageAction != null}
+                  rewindDisabled={Boolean(activeTab?.readOnly) || !controllerReady || hydratePlaceholderActive || rewindState != null || rewindCommitting || state.running || state.messageAction != null || state.approval != null || state.ask != null || clearContextPending}
+                  running={state.running || rewindCommitting}
+                  turnStartAt={state.turnStartAt}
+                  welcomeVariant={sidebarCreation ? "creation" : "default"}
+                  creationMode={sidebarCreation}
+                  actionHoverMenus={sidebarCreation && !hydratePlaceholderActive}
+                  rewindSignal={rewindSignal}
+                  revealSignal={transcriptRevealSignal}
+                  hydrating={transcriptHydrating}
+                  hasOlderHistory={state.historyHasOlder && !rewindState}
+                  olderHistoryCount={state.historyStartTurn}
+                  loadingOlderHistory={state.historyOlderLoading}
+                  onLoadOlderHistory={() => activeTabId && loadOlderHistory(activeTabId)}
+                  invocationMetadata={activeTabId ? invocationMetadataByTab[activeTabId] : undefined}
+                />
+                {state.hydrateError ? <div className="history-load-error" role="alert"><span>{state.hydrateError}</span><button type="button" className="btn btn--small" onClick={() => void retrySessionHistory(activeTabId)}>{t("common.retry")}</button></div> : null}
+              </>
             )}
           </main>
 

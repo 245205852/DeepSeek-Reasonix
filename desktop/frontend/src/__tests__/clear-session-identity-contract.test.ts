@@ -21,8 +21,7 @@ assert.match(controller, /evictTab\(tabId\)/, "clear evicts TranscriptStore for 
 assert.match(controller, /sessionGeneration:\s*cleared\.sessionGeneration/, "clear applies returned generation");
 assert.match(controller, /sessionPath:\s*cleared\.sessionPath/, "clear applies returned path");
 assert.match(controller, /optimistic_meta[\s\S]*reset/, "meta is updated before reset so identity survives");
-assert.match(controller, /meta\.sessionPath !== sessionPath/, "hydrate rejects path identity drift");
-assert.match(controller, /meta\.sessionGeneration !== sessionGeneration/, "hydrate rejects generation drift");
+assert.match(controller, /hydrateIdentityCurrent\(/, "hydrate rejects path/generation identity drift");
 assert.match(store, /evictTab\(tabId/, "TranscriptStore can drop a tab's resident sessions");
 
 console.log("  PASS  clear-session identity contract");

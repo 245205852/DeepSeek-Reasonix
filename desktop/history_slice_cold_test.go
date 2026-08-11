@@ -17,7 +17,7 @@ func TestHistorySliceColdPathBeforeControllerReady(t *testing.T) {
 		t.Fatal(err)
 	}
 	messages := make([]provider.Message, 0, 80)
-	for i := 0; i < 40; i++ {
+	for i := range 40 {
 		messages = append(messages,
 			provider.Message{Role: provider.RoleUser, Content: fmt.Sprintf("cold user turn %d large-session marker", i)},
 			provider.Message{Role: provider.RoleAssistant, Content: fmt.Sprintf("cold assistant turn %d large-session marker", i)},

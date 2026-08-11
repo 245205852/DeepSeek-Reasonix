@@ -48,20 +48,17 @@ func TestClearSessionForTabReturnsReplacementIdentity(t *testing.T) {
 	}
 }
 
-func TestResetSharedHostMCPClearsStillEnabledFailure(t *testing.T) {
+func TestRollbackSharedHostMCPOnlyRemovesBuildCreatedServers(t *testing.T) {
 	host := plugin.NewHost()
-	// Same-name server remains "enabled" after ClearAuth; a stale build must
-	// not keep the pre-clear Host failure/client around.
-	host.RecordFailure(plugin.Spec{Name: "time"}, assertError("auth cleared"))
-	if len(host.Failures()) == 0 {
-		t.Fatal("expected recorded failure before reset")
-	}
-	(&App{}).resetSharedHostMCP(host)
-	if got := host.Failures(); len(got) != 0 {
-		t.Fatalf("failures after reset = %+v, want empty", got)
-	}
-	if names := host.ServerNames(); len(names) != 0 {
-		t.Fatalf("servers after reset = %v, want empty", names)
+	// Pre-existing sibling-tab failure must survive a stale-build rollback.
+	host.RecordFailure(plugin.Spec{Name: "sibling"}, assertError("pre-existing"))
+	before := sharedHostServerSnapshot(host)
+	// Stale build introduced a new server name after the snapshot.
+	host.RecordFailure(plugin.Spec{Name: "stale-new"}, assertError("registered by stale build"))
+	rollbackSharedHostMCPCreatedByBuild(host, before)
+	failures := host.Failures()
+	if len(failures) != 1 || failures[0].Name != "sibling" {
+		t.Fatalf("failures after rollback = %+v, want only pre-existing sibling", failures)
 	}
 }
 

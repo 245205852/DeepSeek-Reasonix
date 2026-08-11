@@ -17,6 +17,7 @@ import { getTranscriptStore } from "./transcriptStore";
 import { uiPerfTracker } from "./uiPerf";
 import { t, type DictKey } from "./i18n";
 import { applyHydrateErrorState, hydratePlaceholderItems as resolveHydratePlaceholders } from "./hydrateErrorState";
+import { hydrateIdentityCurrent } from "./sessionIdentity";
 import { sameTodoList } from "./todoVisibility";
 import { fileDiffFromWire, summarize, summarizeFileDiff, type ToolFileDiff } from "./tools";
 import { modeHasAutoApproveTools, normalizeMode, normalizeToolApprovalMode } from "./types";
@@ -608,6 +609,7 @@ export function sameMeta(a?: Meta, b?: Meta): boolean {
     a.sessionPath === b.sessionPath &&
     a.sessionRevision === b.sessionRevision &&
     a.sessionDigest === b.sessionDigest &&
+    a.sessionGeneration === b.sessionGeneration &&
     a.gitBranch === b.gitBranch &&
     a.imageInputEnabled === b.imageInputEnabled &&
     a.autoApproveTools === b.autoApproveTools &&
@@ -2850,9 +2852,7 @@ export function useController() {
         if (!sessionLoadCurrent(tabId, seq)) return false;
         if (cancelHydrateGeneration !== undefined && !cancelHydrateCurrent(tabId, cancelHydrateGeneration)) return false;
         const meta = statesRef.current.get(tabId)?.meta;
-        if (sessionPath && meta?.sessionPath && meta.sessionPath !== sessionPath) return false;
-        if (sessionGeneration !== undefined && meta?.sessionGeneration !== undefined && meta.sessionGeneration !== sessionGeneration) return false;
-        return true;
+        return hydrateIdentityCurrent(sessionPath, sessionGeneration, meta?.sessionPath, meta?.sessionGeneration);
       };
       if (!stillCurrent()) return;
       addBreadcrumb("tab.hydrate", `start ${reason} ${tabId}`);

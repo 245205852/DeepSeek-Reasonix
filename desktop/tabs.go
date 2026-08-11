@@ -8,20 +8,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/wailsapp/wails/v2/pkg/runtime"
 	"log/slog"
 	"maps"
 	"os"
 	"path/filepath"
-	"slices"
-	"sort"
-	"strings"
-	"sync"
-	"sync/atomic"
-	"time"
-	"unicode"
-
-	"github.com/wailsapp/wails/v2/pkg/runtime"
-
 	"reasonix/internal/agent"
 	"reasonix/internal/boot"
 	"reasonix/internal/config"
@@ -34,6 +25,13 @@ import (
 	"reasonix/internal/provider"
 	"reasonix/internal/store"
 	"reasonix/internal/worktree"
+	"slices"
+	"sort"
+	"strings"
+	"sync"
+	"sync/atomic"
+	"time"
+	"unicode"
 )
 
 // WorkspaceTab
@@ -3900,6 +3898,7 @@ func (a *App) buildTabControllerWithContextCore(tab *WorkspaceTab, loadedSession
 	// resurrecting removed tools on the shared host.
 	extensionGen := a.currentExtensionGeneration()
 	sharedHost := a.acquireSharedHost(rootKey)
+	beforeMCP := sharedHostServerSnapshot(sharedHost)
 	sink := a.desktopControllerSink(buildSink, cfg.Notifications)
 	ctrl, err := boot.Build(buildCtx, boot.Options{
 		Model:                    model,
@@ -3919,6 +3918,7 @@ func (a *App) buildTabControllerWithContextCore(tab *WorkspaceTab, loadedSession
 		OnSessionRecovered:       a.handleTabSessionRecovered(tab),
 	})
 	if err != nil {
+		rollbackSharedHostMCPCreatedByBuild(sharedHost, beforeMCP)
 		leaseHeld := false
 		a.mu.Lock()
 		if a.tabBuildSupersededLocked(tab, buildGeneration) {
@@ -3946,12 +3946,12 @@ func (a *App) buildTabControllerWithContextCore(tab *WorkspaceTab, loadedSession
 		return
 	}
 	if a.tabBuildSuperseded(tab, buildGeneration) {
+		rollbackSharedHostMCPCreatedByBuild(sharedHost, beforeMCP)
 		a.abandonSupersededBuild(tab, ctrl, rootKey, "")
 		return
 	}
 	if a.currentExtensionGeneration() != extensionGen {
-		// Stale build lost the MCP config race; reset SharedHost then rebuild.
-		a.resetSharedHostMCP(sharedHost)
+		rollbackSharedHostMCPCreatedByBuild(sharedHost, beforeMCP)
 		a.abandonSupersededBuild(tab, ctrl, rootKey, "")
 		a.scheduleDeferredStartupBuild(tab.ID)
 		return
