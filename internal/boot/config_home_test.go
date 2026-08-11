@@ -38,6 +38,15 @@ func closeBootTestHistoryCatalog(t *testing.T) {
 	}
 }
 
+// fenceBootTestHistoryCatalog releases a process-global projection inherited
+// from an earlier test and closes the replacement before t.TempDir cleanup.
+// Windows cannot remove a temporary REASONIX_HOME while SQLite still owns it.
+func fenceBootTestHistoryCatalog(t *testing.T) {
+	t.Helper()
+	closeBootTestHistoryCatalog(t)
+	t.Cleanup(func() { closeBootTestHistoryCatalog(t) })
+}
+
 func bootTestHistoryIndexReady(t *testing.T) <-chan struct{} {
 	t.Helper()
 	ready := make(chan struct{})
