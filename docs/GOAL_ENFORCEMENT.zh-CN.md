@@ -11,8 +11,8 @@ Reasonix 的 Goal 模式（`/goal`）将目标推进（Goal）、验收（Delive
 | 完成自述与对账 | `update_goal` 的 `completion` | `complete` 可附带自述：`verified` 命令逐条与本会话真实 receipt 对账，没跑过 / 跑失败 / 早于最后一次改动都记为 unbacked claim；`unverified` 与 `risks` 是宿主推断不出的声明，只增不减，永远不阻塞完成 |
 | 独立评审 | 无报告时 | 模型未调用 `update_goal` 时，宿主调用一次独立 bounded evaluator 判定；评审不可用/出错/不确定时安全暂停，绝不默认继续 |
 | 连续执行 | 默认 | 不设默认 model rounds、Goal turns、墙钟时长或数字式卡死上限；相同宿主失败、零新增证据和 Todo 停滞只触发重新规划，不暂停 Goal |
-| 显式预算 | `--max-steps` / 正数时间或成本预算 | 用户可选的边界耗尽后执行一次无工具总结并结束当前 Run；Goal 与进度保留，可继续 |
-| 暂停/恢复 | `/goal pause` / `/goal resume` | 暂停保留 Goal、todo、Delivery checkpoint 与运行历史；恢复不追加或重建任何数字额度 |
+| 显式预算 | `[agent].goal_token_budget` / `--max-steps` / 正数时间或成本预算 | 用户可选的边界耗尽后执行一次无工具总结并暂停当前执行；Goal 与进度保留，可继续。token 预算默认 `0`（关闭） |
+| 暂停/恢复 | `/goal pause` / `/goal resume` | 暂停保留 Goal、todo、Delivery checkpoint 与累计运行历史；恢复 `budget_spend` 时授予新的显式预算切片，但不清零累计统计 |
 | 立即阻塞 | `blocked` 报告 | 单个 blocked 报告立即结束目标，不再重复三轮确认 |
 | 并行调度 | `parallel_tasks` 工具 | 并发派发多个子 agent，各自独立显示结果 |
 
@@ -49,26 +49,29 @@ Reasonix 的 Goal 模式（`/goal`）将目标推进（Goal）、验收（Delive
 旧的 simple/write/research 类别和 `/goal --simple`、`--research` 参数只为 sidecar/CLI 兼容保留，
 不再改变执行额度。executor、planner、subagent、compaction、router、reviewer、evaluator 等计费用量
 累计到 `tokensUsed`，真实 HTTP 请求（含重试）累计到 `requestsUsed`，Goal Run 的实际工作时间累计到
-`workDurationMs`。这些字段与 `turnsUsed` 都只做统计：
+`workDurationMs`。默认情况下这些字段与 `turnsUsed` 都只做统计：
 
-- 不存在 `tokensLimit` 硬上限（对外字段固定为 `0`）；
+- 未配置 `goal_token_budget` 时 `tokensLimit` 为 `0`；配置正数后只表示用户选择的累计 token 阈值；
 - 没有 provider 请求前的 token 预留/准入；
-- 累计 turn/token/request/work time 再大也不会单独暂停 Goal；
+- 未配置对应预算时，累计 turn/token/request/work time 再大也不会单独暂停 Goal；
 - `turnsLimit`、`noProgressLimit`、`budgetExtensions` 继续对外保留为 deprecated 兼容字段，固定返回 `0`。
 
 可停止连续执行的条件：完成、模型通过 `update_goal(blocked)` 报告真实用户/外部阻塞、evaluator
 故障或不确定、用户主动 pause/stop/clear、Provider/权限/宿主不可恢复错误，以及用户显式设置的
-正数步数/时间/成本预算。`task_time_budget_minutes = 0`（以及兼容读取的负数）关闭时间边界，只有
-正数才启用。`/goal status` 显示纯统计：
+正数 token/步数/时间/成本预算。`task_time_budget_minutes = 0`（以及兼容读取的负数）关闭时间边界，
+只有正数才启用。结构化卡死检测、Todo stall 与 `noProgressTurns` 只注入策略纠偏，不改变 Goal 状态。
+**轮数不再是任何停止条件。** `/goal status` 在未设置 token 预算时显示纯统计：
 
 ```
 runtime: turns 57 · requests 143 · tokens 2800000 · work time 42m
 ```
 
-`/goal resume` 恢复目标但不改变数字额度。旧版本因 `budget_turns`、`budget_tokens`、
+配置 `goal_token_budget` 时 token 统计会显示当前显式阈值；`/goal resume` 从 `budget_spend` 暂停
+恢复时授予一个新的完整预算切片，但 turns、tokens、requests 与 work time 继续累计。旧版本因 `budget_turns`、`budget_tokens`、
 `goal_run_budget`、`goal_stuck` 或 `no_progress` 暂停的 sidecar 在加载时自动改为 `running` 并原子持久化，
 但加载本身不会发送模型请求。活动 Goal 在磁盘写 `turnsLimit: -1` 作为旧 reader 的无限制哨兵；
-新 API 将其解释为 `0`。manual pause、evaluator failure、legacy archive block 和真实 blocker 不自动解锁。
+新 API 将其解释为 `0`。新的 `budget_spend`（用户显式预算）不会被自动迁移；manual pause、evaluator
+failure、legacy archive block 和真实 blocker 同样不自动解锁。
 
 上下文压缩继续使用全局既有策略：仅由 `compact_ratio`（默认 85%）触发一次内容驱动摘要 checkpoint，不另设 soft/snip/force 多阈值。Goal 开启本身不额外触发 summarizer，也不改变工具 Schema 或稳定 prompt 前缀。
 

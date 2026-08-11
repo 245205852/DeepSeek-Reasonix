@@ -238,6 +238,10 @@ func TestResearchGoalUsesContinuousRuntimeWithoutArchive(t *testing.T) {
 	if got := c.GoalRuntime().TurnsLimit; got != 0 {
 		t.Fatalf("research Goal turns limit = %d, want unlimited", got)
 	}
+	// The class still drives behaviour; it just no longer mints a turn quota.
+	if got := c.goals.budgetClass; got != budgetClassResearch {
+		t.Fatalf("research Goal budget class = %q, want %q", got, budgetClassResearch)
+	}
 	if _, err := os.Stat(filepath.Join(root, ".reasonix", "autoresearch")); !os.IsNotExist(err) {
 		t.Fatalf("research Goal created legacy archive: %v", err)
 	}
@@ -263,6 +267,9 @@ func TestLegacyGoalSidecarMigratesToContinuousRuntimeWithoutTaskID(t *testing.T)
 	defer c.Close()
 	if got := c.GoalRuntime().TurnsLimit; got != 0 {
 		t.Fatalf("migrated Goal turns limit = %d, want unlimited", got)
+	}
+	if got := c.goals.budgetClass; got != budgetClassResearch {
+		t.Fatalf("migrated Goal budget class = %q, want %q", got, budgetClassResearch)
 	}
 	if got := c.Goal(); got != "investigate runtime" {
 		t.Fatalf("migrated Goal = %q, want sidecar goal", got)
@@ -363,6 +370,9 @@ func TestExplicitLegacyTaskPathRestoresOriginalGoal(t *testing.T) {
 	}
 	if got := c.GoalRuntime().TurnsLimit; got != 0 {
 		t.Fatalf("turns limit = %d, want unlimited", got)
+	}
+	if got := c.goals.budgetClass; got != budgetClassResearch {
+		t.Fatalf("budget class = %q, want %q", got, budgetClassResearch)
 	}
 	if got := c.GoalStatus(); got != GoalStatusRunning {
 		t.Fatalf("status = %q", got)

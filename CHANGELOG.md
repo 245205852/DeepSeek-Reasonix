@@ -13,11 +13,13 @@ branch.
   no-progress/Todo-stall pauses no longer stop valid work. Progress guards still
   detect repeated host outcomes and zero-evidence work, but redirect the model
   to re-plan instead of producing `goal_run_budget` or `goal_stuck`. Explicit
-  `--max-steps`, positive time/cost budgets, manual pause/stop, genuine
-  user/external blockers, and evaluator fail-closed behavior remain available.
-  Goal status now reports turns, provider requests, tokens, and cumulative
-  active work time as statistics only. Bot `max_steps` also defaults to `0`
-  (continuous), while positive user configuration is still enforced.
+  `[agent].goal_token_budget`, `--max-steps`, positive time/cost budgets, manual
+  pause/stop, genuine user/external blockers, and evaluator fail-closed behavior
+  remain available. The Goal token budget defaults to `0` (off); resuming its
+  `budget_spend` pause grants a fresh slice without clearing cumulative usage.
+  Goal status reports turns, provider requests, tokens, the optional configured
+  token threshold, and cumulative active work time. Bot `max_steps` also
+  defaults to `0` (continuous), while positive user configuration is enforced.
 
 - Removed numeric Goal pauses in existing sidecars automatically normalize to
   `running` without sending a model request. Active Goal sidecars write

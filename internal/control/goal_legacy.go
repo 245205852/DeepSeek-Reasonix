@@ -30,10 +30,10 @@ func goalStateNeedsMigration(state goalState, normalizedBudgetClass string) bool
 	if strings.TrimSpace(state.AutoResearchTaskID) != "" {
 		expectedMode = GoalResearchOn
 	}
-	return state.TokensLimit != 0 || state.ResearchMode != expectedMode ||
+	return state.ResearchMode != expectedMode ||
 		(state.BudgetClass != "" && state.BudgetClass != normalizedBudgetClass) ||
 		(strings.TrimSpace(state.Goal) != "" && state.TurnsLimit != unlimitedGoalTurns) ||
-		state.NoProgressLimit != 0
+		state.NoProgressLimit != 0 || state.BudgetExtensions != 0
 }
 
 // blockLegacyRestore fails closed only while the decoded sidecar still owns the
@@ -141,6 +141,9 @@ func (g *goalMachine) fillGoalTextIfEmpty(expectedEpoch uint64, goal string) (ui
 	g.budgetClass = budgetClassResearch
 	g.turnsLimit = unlimitedGoalTurns
 	g.noProgressLimit = 0
+	if g.tokenBudget > 0 && g.tokensLimit <= g.tokensUsed {
+		g.tokensLimit = g.tokensUsed + g.tokenBudget
+	}
 	if g.scopeID == "" {
 		g.scopeID = newGoalScopeID()
 		g.deliveryCheckpoint = evidence.DeliveryCheckpoint{ScopeID: g.scopeID}
@@ -168,6 +171,9 @@ func (g *goalMachine) resumeLegacyArchive(expectedEpoch uint64, goal string) (ui
 	g.budgetClass = budgetClassResearch
 	g.turnsLimit = unlimitedGoalTurns
 	g.noProgressLimit = 0
+	if g.tokenBudget > 0 && g.tokensLimit <= g.tokensUsed {
+		g.tokensLimit = g.tokensUsed + g.tokenBudget
+	}
 	if g.scopeID == "" {
 		g.scopeID = newGoalScopeID()
 		g.deliveryCheckpoint = evidence.DeliveryCheckpoint{ScopeID: g.scopeID}

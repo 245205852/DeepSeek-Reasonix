@@ -21,12 +21,18 @@ import (
 // returns the TurnDone/Notice channel for waiting.
 func goalRuntimeController(t *testing.T, prov provider.Provider, eval goaleval.Evaluator) (*Controller, *agent.Agent, <-chan event.Event) {
 	t.Helper()
+	return goalRuntimeControllerWithTokenBudget(t, prov, eval, 0)
+}
+
+func goalRuntimeControllerWithTokenBudget(t *testing.T, prov provider.Provider, eval goaleval.Evaluator, tokens int) (*Controller, *agent.Agent, <-chan event.Event) {
+	t.Helper()
 	ag := agent.New(prov, goalRegistry(), agent.NewSession(""), agent.Options{}, event.Discard)
 	events := make(chan event.Event, 8)
 	c := New(Options{
-		Runner:        ag,
-		Executor:      ag,
-		GoalEvaluator: eval,
+		Runner:          ag,
+		Executor:        ag,
+		GoalEvaluator:   eval,
+		GoalTokenBudget: tokens,
 		Sink: event.FuncSink(func(e event.Event) {
 			if e.Kind == event.TurnDone || e.Kind == event.Notice {
 				events <- e
@@ -102,8 +108,19 @@ func TestEvaluatorOutcomesDriveFSM(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			prov := &scriptedTurns{turns: [][]provider.Chunk{textTurn("done.")}}
-			c, _, events := goalRuntimeController(t, prov, &fakeGoalEvaluator{outcome: tc.outcome, reason: "verdict"})
+			turn := textTurn("done.")
+			// A continue verdict loops forever unless a budget is configured.
+			budget := 0
+			if tc.wantStatus == GoalStatusRunning {
+				budget = 1
+				turn = []provider.Chunk{
+					{Type: provider.ChunkText, Text: "done."},
+					{Type: provider.ChunkUsage, Usage: &provider.Usage{PromptTokens: 100, CompletionTokens: 10, TotalTokens: 110, RequestCount: 1}},
+					{Type: provider.ChunkDone},
+				}
+			}
+			prov := &scriptedTurns{turns: [][]provider.Chunk{turn}}
+			c, _, events := goalRuntimeControllerWithTokenBudget(t, prov, &fakeGoalEvaluator{outcome: tc.outcome, reason: "verdict"}, budget)
 			c.Submit("/goal assess the impact")
 			waitGoalTurnDone(t, events)
 			if got := c.GoalStatus(); got != tc.wantStatus {
@@ -501,7 +518,7 @@ func TestGoalSidecarCompatRestoresOldAndNewFields(t *testing.T) {
 			t.Fatalf("removed limits resurfaced: %+v", rt)
 		}
 		if rt.TokensLimit != 0 {
-			t.Fatalf("TokensLimit = %d, want 0 (no hard token limit)", rt.TokensLimit)
+			t.Fatalf("TokensLimit = %d, want 0 when no budget is configured", rt.TokensLimit)
 		}
 	})
 

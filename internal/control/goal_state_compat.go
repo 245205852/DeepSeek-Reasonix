@@ -87,5 +87,20 @@ func (g *goalMachine) normalizeContinuousState(legacyMode GoalResearchMode, lega
 	if g.noProgressLimit != 0 {
 		g.noProgressLimit, migrated = 0, true
 	}
+	if g.budgetExtensions != 0 {
+		g.budgetExtensions, migrated = 0, true
+	}
+	legacyNumericPause := false
+	switch g.stopCause {
+	case stopCauseBudgetTurns, stopCauseBudgetTokens, stopCauseGoalRunBudget, stopCauseGoalStuck, stopCauseNoProgress:
+		legacyNumericPause = true
+	}
+	if g.tokenBudget <= 0 {
+		if g.tokensLimit != 0 {
+			g.tokensLimit, migrated = 0, true
+		}
+	} else if legacyNumericPause || g.tokensLimit <= 0 {
+		g.tokensLimit, migrated = g.tokensUsed+g.tokenBudget, true
+	}
 	return g.migrateRemovedGoalPause() || migrated
 }

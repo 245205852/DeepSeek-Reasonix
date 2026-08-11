@@ -399,7 +399,7 @@ func TestLegacySidecarArchiveCanRetryInSameController(t *testing.T) {
 		t.Fatalf("Goal() = %q, want recovered archive objective", got)
 	}
 	if runtime := c.GoalRuntime(); runtime.TurnsUsed != 5 || runtime.TurnsLimit != 0 {
-		t.Fatalf("runtime = %+v, want preserved use with research quota", runtime)
+		t.Fatalf("runtime = %+v, want preserved use without a turn quota", runtime)
 	}
 	persisted, err := os.ReadFile(goalStatePath(sessionPath))
 	if err != nil {

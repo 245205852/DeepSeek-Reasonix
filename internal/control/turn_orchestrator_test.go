@@ -335,11 +335,18 @@ type recordingSessionRunner struct {
 type deliveryScopeErrorRunner struct {
 	scopes        []agent.DeliveryExecutionScope
 	terminalAfter int
+	// usage stands in for the billable work a real executor would report; the
+	// goal's spend budget is measured in it.
+	usage event.Sink
 }
 
 func (r *deliveryScopeErrorRunner) Run(ctx context.Context, _ string) error {
 	if scope, ok := agent.DeliveryExecutionScopeFromContext(ctx); ok {
 		r.scopes = append(r.scopes, scope)
+	}
+	if r.usage != nil {
+		r.usage.Emit(event.Event{Kind: event.Usage, UsageSource: event.UsageSourceExecutor,
+			Usage: &provider.Usage{PromptTokens: 100, CompletionTokens: 10, TotalTokens: 110, RequestCount: 1}})
 	}
 	if r.terminalAfter > 0 && len(r.scopes) >= r.terminalAfter {
 		return errors.New("external provider stop")
@@ -370,6 +377,24 @@ func TestGoalReadinessFailureContinuesUntilExternalStop(t *testing.T) {
 	}
 	if id, task, ok := c.goals.deliveryScope(); !ok || id != runner.scopes[0].ID || task != "ship the integration" {
 		t.Fatalf("preserved scope = (%q, %q, %v), want original id/task", id, task, ok)
+	}
+}
+
+func TestGoalReadinessFailurePausesOnExplicitSpendBudget(t *testing.T) {
+	runner := &deliveryScopeErrorRunner{}
+	executor := agent.New(nil, tool.NewRegistry(), agent.NewSession(""), agent.Options{}, event.Discard)
+	c := New(Options{Runner: runner, Executor: executor, GoalTokenBudget: 200})
+	runner.usage = c.goalUsageTee
+	c.SetGoal("ship the integration")
+
+	if err := newTurnOrchestrator(c).runGoalLoopWithRawDisplay(context.Background(), "start", "start", ""); err != nil {
+		t.Fatalf("run err = %v, want the explicit budget pause absorbed by the Goal FSM", err)
+	}
+	if got := c.GoalStatus(); got != GoalStatusBlocked {
+		t.Fatalf("GoalStatus = %q, want blocked (spend-budget pause)", got)
+	}
+	if rt := c.GoalRuntime(); rt.StopCause != stopCauseBudgetSpend {
+		t.Fatalf("runtime = %+v, want %q", rt, stopCauseBudgetSpend)
 	}
 }
 

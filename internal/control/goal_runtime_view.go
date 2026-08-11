@@ -28,7 +28,7 @@ func (g *goalMachine) runtimeView() GoalRuntimeView {
 		TurnsUsed: g.turnsUsed, TurnsLimit: 0,
 		TokensUsed: g.tokensUsed, RequestsUsed: g.requestsUsed,
 		WorkDurationMs: g.workDurationMs,
-		TokensLimit:    0, NoProgressTurns: g.noProgressTurns,
+		TokensLimit:    g.tokensLimit, NoProgressTurns: g.noProgressTurns,
 		NoProgressLimit: 0, LastReason: last,
 		StopCause: g.stopCause, BudgetExtensions: 0,
 	}
@@ -46,6 +46,10 @@ func (g *goalMachine) lastContinuationReasonText() string {
 func (g *goalMachine) budgetStatusText() string {
 	g.mu.Lock()
 	defer g.mu.Unlock()
+	if g.tokensLimit > 0 {
+		return fmt.Sprintf("turns: %d, requests: %d, tokens: %d/%d, work time: %s",
+			g.turnsUsed, g.requestsUsed, g.tokensUsed, g.tokensLimit, GoalWorkDurationText(g.workDurationMs))
+	}
 	return fmt.Sprintf("turns: %d, requests: %d, tokens: %d, work time: %s (observational)",
 		g.turnsUsed, g.requestsUsed, g.tokensUsed, GoalWorkDurationText(g.workDurationMs))
 }

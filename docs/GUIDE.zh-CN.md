@@ -896,13 +896,22 @@ Goal 是长期目标的统一运行机制。Reasonix 会持续推进，直到完
 
 Goal 默认不设模型轮数、跨 Run turn 数、墙钟时长或数字式无进展上限。它会持续执行，直到完成、
 确实只有用户/外部条件能解除阻塞、用户主动暂停/停止、发生不可恢复的外部错误，或耗尽用户显式预算。
+如需给无人值守 Goal 增加可选 token 边界，可配置：
+
+```toml
+[agent]
+goal_token_budget = 20000000
+```
+
+默认值 `0` 表示关闭。达到正数阈值后，Goal 会先生成一次总结再进入可恢复的 `budget_spend` 暂停；
+`/goal resume` 会授予新的完整预算切片，但累计 turn、token、请求数和实际工作时间不会清零。
 进展按 Goal 范围的新颖性计算：新的读取/搜索
 结果、mutation、verification、todo/签收变化和 review 会推进目标；完全相同的工具、参数与
 结果重复不会推进。相同宿主失败、零新增证据和 Todo 停滞的数字阈值只会注入纠偏提示、重置干预周期
-并要求缩小步骤、切换策略或说明真实 blocker，不会暂停 Goal。累计 turn、token、真实 provider 请求数
-与实际工作时间只做统计展示。暂停会保留 Goal、todo、Delivery checkpoint 与运行历史——用
+并要求缩小步骤、切换策略或说明真实 blocker，不会暂停 Goal。未配置对应预算时，累计 turn、token、
+真实 provider 请求数与实际工作时间只做统计展示。暂停会保留 Goal、todo、Delivery checkpoint 与运行历史——用
 `/goal resume` 继续，`/goal pause` 可手动暂停运行中的目标；`/goal status` 只显示轮次、请求数、
-token 和工作时间。每个目标 turn 结束时，模型通过结构化的 `update_goal` 工具报告
+token、可选的显式 token 阈值和工作时间。每个目标 turn 结束时，模型通过结构化的 `update_goal` 工具报告
 continue/complete/blocked；没有报告时由独立的有界 evaluator 判定一次，任何 evaluator
 故障都会安全暂停目标而不是静默继续。
 

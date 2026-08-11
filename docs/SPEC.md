@@ -515,10 +515,13 @@ func (p Policy) Decide(toolName string, readOnly bool, args json.RawMessage) Dec
   must choose Goal or use `/goal` explicitly.
   Repeated host failures, zero-evidence rounds, and Todo stalls trigger bounded
   strategy redirects and intervention-epoch resets, never a Goal pause. Turns,
-  tokens, provider requests, and active work duration remain observational.
-  Positive user-selected `max_steps`, time, and cost budgets remain explicit
-  resumable boundaries. `task_time_budget_minutes = 0` (and legacy negative
-  values) disables the time boundary.
+  tokens, provider requests, and active work duration remain observational when
+  the corresponding budget is not configured. Positive user-selected
+  `[agent].goal_token_budget`, `max_steps`, time, and cost budgets remain
+  explicit resumable boundaries. The Goal token budget defaults to `0` (off);
+  resuming a `budget_spend` pause grants a fresh slice without clearing
+  cumulative Goal statistics. `task_time_budget_minutes = 0` (and legacy
+  negative values) disables the time boundary.
   `/goal clear` removes the active goal. Switching into plan/normal mode clears
   the active goal in the desktop UI so the collaboration mode remains one of
   the three choices, while the underlying tool approval posture is preserved.

@@ -664,7 +664,7 @@ Mode and display shortcuts:
 | `/theme [auto|light|dark|style]` | Shows or switches the CLI theme | Bare `/theme` lists background modes and named accent palettes. The choice is saved to the user config; `REASONIX_THEME` and `REASONIX_THEME_STYLE` can override it for one run. |
 | `Ctrl+O` | Toggles verbose reasoning display | Also available through `/verbose`. |
 | `Ctrl+B` | Expands or collapses long shell output | Long shell-output hint lines can also be clicked in the transcript; text selection is handled in-app while the full-screen TUI has mouse reporting enabled. |
-| `/goal <objective>`, `/goal status`, `/goal pause`, `/goal resume`, `/goal clear` | Starts, checks, pauses, resumes, or clears Goal | Goal runs continuously unless the user selects an explicit budget. |
+| `/goal <objective>`, `/goal status`, `/goal pause`, `/goal resume`, `/goal clear` | Starts, checks, pauses, resumes, or clears Goal | A Goal is unbounded unless `[agent].goal_token_budget` is set. |
 | `/migrate`, `/migrate --from <legacy-dir>` | Retries legacy migration or imports sessions from a chosen v0.x source | Use `--from` for custom Windows v0.52 install/data directories; it imports sessions only. See [Configuration paths](./CONFIG_PATHS.md). |
 
 Picker and approval shortcuts:
@@ -1142,11 +1142,23 @@ changes collaboration mode implicitly; choose Goal in the composer or use
 Goal has no default model-round, cross-Run turn, wall-clock, or numeric
 no-progress limit. It continues until completion, a genuine user/external
 blocker, manual stop/pause, an unrecoverable external error, or an explicit
-user-selected budget. Progress is goal-scoped and novelty based:
+user-selected budget. To place an optional ceiling on an unattended loop, set:
+
+```toml
+[agent]
+goal_token_budget = 20000000
+```
+
+The default is `0` (off). Reaching a positive token budget produces one summary
+and a resumable `budget_spend` pause. `/goal resume` grants a fresh configured
+slice while cumulative Goal statistics remain intact. Explicit positive
+`max_steps`, task time, and task cost budgets remain available as well.
+Progress is goal-scoped and novelty based:
 new read/search results, mutations, verification, todo/signoff changes, and
 reviews advance the goal; an exact tool/argument/result repeat does not.
 Cumulative turns, tokens, real provider requests, and active work time are
-tracked and shown as statistics only. A paused goal keeps its todos, Delivery
+tracked and shown as statistics; a token limit appears only when explicitly
+configured. A paused goal keeps its todos, Delivery
 checkpoint, and runtime history — use `/goal resume` to continue, or `/goal
 pause` to pause a running goal manually. `/goal status` shows turns, requests,
 tokens, and work time. Repeated host failures, zero-evidence rounds, and Todo
@@ -1164,9 +1176,9 @@ for autonomous work. It keeps going with sensible defaults unless the next step
 requires an irreversible or externally visible operation, a scope change, or
 information only the user can provide.
 
-Research budgets are selected automatically for goals with strong long-horizon
-signals or several distinct phases. There is no separate research mode or
-runtime to configure. Goal state stays in the normal session sidecar, progress
+Legacy simple/write/research classes are still inferred for sidecar and CLI
+compatibility, but they no longer select an execution quota. There is no
+separate research runtime to configure. Goal state stays in the normal session sidecar, progress
 comes only from novel host receipts, canonical todos, `complete_step`, review
 and the Delivery checkpoint, and completion is decided by Delivery readiness
 plus the bounded Goal evaluator. Legacy `.reasonix/autoresearch/<task-id>/` archives are

@@ -98,7 +98,7 @@ func TestRemovedNumericPauseSidecarsMigrateToRunning(t *testing.T) {
 			if !migrated || g.status != GoalStatusRunning || g.stopCause != "" || g.block != "" {
 				t.Fatalf("legacy pause did not migrate: %+v", g)
 			}
-			if g.turnsLimit != unlimitedGoalTurns || g.requestsUsed != 143 || g.workDurationMs != 42_000 || g.budgetExtensions != 2 {
+			if g.turnsLimit != unlimitedGoalTurns || g.requestsUsed != 143 || g.workDurationMs != 42_000 || g.budgetExtensions != 0 {
 				t.Fatalf("migration changed history: %+v", g.runtimeView())
 			}
 			var normalized map[string]json.RawMessage

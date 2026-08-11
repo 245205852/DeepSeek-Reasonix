@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"reasonix/internal/agent"
@@ -521,7 +522,26 @@ func (o *turnOrchestrator) continueGoal(ctx context.Context, expectedContinuatio
 
 func goalTurnErrorAbsorbable(err error) bool {
 	var readinessErr *agent.FinalReadinessError
-	return errors.As(err, &readinessErr)
+	if errors.As(err, &readinessErr) {
+		return true
+	}
+	_, _, ok := goalPauseFromRunError(err)
+	return ok
+}
+
+func goalPauseFromRunError(err error) (cause, reason string, ok bool) {
+	info, ok := agent.InspectRunPause(err)
+	if !ok {
+		return "", "", false
+	}
+	if info.Kind == "task_budget" && info.HostOwned {
+		reason := strings.TrimSpace(info.Reason)
+		if reason == "" {
+			reason = "the Goal reached its spend budget"
+		}
+		return stopCauseBudgetSpend, reason, true
+	}
+	return "", "", false
 }
 
 // advanceGoalAfterTurn gathers every input the FSM needs off the goal lock —
@@ -543,6 +563,7 @@ func (o *turnOrchestrator) advanceGoalAfterTurn(ctx context.Context, expectedCon
 
 	var readiness agent.ReadinessResult
 	var readinessErr *agent.FinalReadinessError
+	pauseCause, pauseReason, runPaused := goalPauseFromRunError(turnErr)
 	if errors.As(turnErr, &readinessErr) {
 		readiness = agent.ReadinessResult{
 			Ready:       false,
@@ -550,7 +571,7 @@ func (o *turnOrchestrator) advanceGoalAfterTurn(ctx context.Context, expectedCon
 			Reason:      readinessErr.Reason,
 			ProgressKey: readinessErr.Reason,
 		}
-	} else if turnErr != nil {
+	} else if turnErr != nil && !runPaused {
 		// Terminal provider/host error: stop auto-continue without an FSM
 		// transition; the goal stays running for the next user turn.
 		return goalAdvanceResult{cont: false}
@@ -567,7 +588,7 @@ func (o *turnOrchestrator) advanceGoalAfterTurn(ctx context.Context, expectedCon
 	// readiness has no definite missing list. Failures fail closed in the FSM.
 	var evaluator *goalEvaluatorVerdict
 	var evaluatorFailed string
-	if report == nil && len(readiness.Missing) == 0 {
+	if !runPaused && report == nil && len(readiness.Missing) == 0 {
 		if c.evaluator == nil {
 			evaluatorFailed = "goal evaluator unavailable"
 		} else if verdict, err := c.evaluator.Evaluate(ctx, c.goalEvaluatorEvidence()); err != nil {
@@ -589,6 +610,8 @@ func (o *turnOrchestrator) advanceGoalAfterTurn(ctx context.Context, expectedCon
 		evaluatorFailed:  evaluatorFailed,
 		todos:            c.goalTodos(),
 		progressEvidence: progressEvidence,
+		pauseCause:       pauseCause,
+		pauseReason:      pauseReason,
 		expectedEpoch:    &expectedContinuationEpoch,
 	})
 	c.persistGoalState(res.path, res.data, res.ok)

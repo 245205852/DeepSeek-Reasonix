@@ -40,7 +40,8 @@ const (
 // Stop causes distinguish a safe pause from a genuine block. Removed numeric
 // causes remain migration-only constants so old sidecars can be normalized.
 const (
-	stopCauseBudgetTurns   = "budget_turns"
+	stopCauseBudgetTurns   = "budget_turns" // legacy; the class-derived turn quota is gone
+	stopCauseBudgetSpend   = "budget_spend"
 	stopCauseBudgetTokens  = "budget_tokens"   // legacy; never written by current runtime
 	stopCauseNoProgress    = "no_progress"     // legacy; never written by current runtime
 	stopCauseGoalRunBudget = "goal_run_budget" // legacy; the per-Run round ceiling is gone
@@ -81,9 +82,11 @@ type goalMachine struct {
 	strict             bool
 	continuationEpoch  uint64
 
-	// Runtime budget state, persisted across turns and restarts.
-	// tokensUsed is observational only (no hard limit). tokensLimit is kept at
-	// 0 for wire/sidecar compatibility and is never enforced.
+	tokenBudget int // configured ceiling for an unattended loop; 0 = unbounded
+
+	// Runtime statistics and optional user-selected spend state, persisted
+	// across turns and restarts. turnsUsed and noProgressTurns are observational;
+	// tokensLimit is non-zero only when the user configured a Goal token budget.
 	budgetClass            string
 	turnsUsed              int
 	turnsLimit             int
@@ -157,6 +160,8 @@ type goalAdvanceInput struct {
 	evaluatorFailed  string                // evaluator error/timeout text; pause fail-closed
 	todos            []evidence.TodoItem
 	progressEvidence []string // host evidence identities visible after this turn
+	pauseCause       string   // explicit spend boundary reported by the Agent
+	pauseReason      string
 	expectedEpoch    *uint64
 }
 
@@ -335,7 +340,7 @@ func (g *goalMachine) installGoalLocked(goal, preferredBudgetClass string) {
 		g.deliveryCheckpoint = evidence.DeliveryCheckpoint{ScopeID: g.scopeID}
 		g.budgetClass = preferredBudgetClass
 		g.turnsLimit = unlimitedGoalTurns
-		g.tokensLimit = 0 // no token hard limit
+		g.tokensLimit = g.tokenBudget
 		g.noProgressLimit = 0
 	}
 	// Installing a normal Goal always abandons any pending legacy migration.
@@ -393,14 +398,24 @@ func (g *goalMachine) resume(todos []evidence.TodoItem) (path string, data []byt
 	if strings.TrimSpace(g.goal) == "" || g.status == GoalStatusComplete {
 		return "", nil, false, false
 	}
+	// A user-selected spend pause grants one fresh configured slice. Usage
+	// remains cumulative; only the absolute threshold moves forward.
+	spentBudget := g.stopCause == stopCauseBudgetSpend
 	g.continuationEpoch++
 	g.status = GoalStatusRunning
 	g.block = ""
 	g.stopCause = ""
 	g.noProgressTurns = 0
-	g.tokensLimit = 0
 	g.turnsLimit = unlimitedGoalTurns
 	g.noProgressLimit = 0
+	g.budgetExtensions = 0
+	if spentBudget && g.tokenBudget > 0 {
+		g.tokensLimit = g.tokensUsed + g.tokenBudget
+	} else if g.tokenBudget <= 0 {
+		g.tokensLimit = 0
+	} else if g.tokensLimit <= g.tokensUsed {
+		g.tokensLimit = g.tokensUsed + g.tokenBudget
+	}
 	if g.scopeID == "" {
 		g.scopeID = newGoalScopeID()
 	}
@@ -526,6 +541,12 @@ func (g *goalMachine) advance(in goalAdvanceInput) goalAdvanceResult {
 		g.progressEvidence = nil
 		g.lastContinuationReason, g.lastEvaluatorReason = "", ""
 		notice = goalCompleteNotice
+	case g.tokensLimit > 0 && g.tokensUsed >= g.tokensLimit:
+		reason := fmt.Sprintf("token budget reached (%d/%d tokens used)", g.tokensUsed, g.tokensLimit)
+		g.status = GoalStatusBlocked
+		g.stopCause = stopCauseBudgetSpend
+		g.block = clipGoalReason(reason)
+		notice = "goal paused: " + reason
 	case in.evaluatorFailed != "" || (in.evaluator != nil && in.evaluator.outcome == goaleval.OutcomeUncertain):
 		// Fail closed: an unavailable, erroring, or uncertain evaluator pauses
 		// the goal instead of defaulting to continue.
@@ -537,6 +558,15 @@ func (g *goalMachine) advance(in goalAdvanceInput) goalAdvanceResult {
 		g.stopCause = stopCauseEvaluator
 		g.block = clipGoalReason(reason)
 		g.lastEvaluatorReason = clipGoalReason(reason)
+		notice = "goal paused: " + reason
+	case in.pauseCause != "":
+		reason := strings.TrimSpace(in.pauseReason)
+		if reason == "" {
+			reason = "the current Goal run reached a recoverable execution boundary"
+		}
+		g.status = GoalStatusBlocked
+		g.stopCause = in.pauseCause
+		g.block = clipGoalReason(reason)
 		notice = "goal paused: " + reason
 	default:
 		// Continue. A complete claim rejected by readiness, or a turn with no
@@ -794,9 +824,7 @@ func (g *goalMachine) restoreFromState(sessionPath string) (path string, data []
 	g.turnsLimit = state.TurnsLimit
 	g.noProgressTurns = state.NoProgressTurns
 	g.noProgressLimit = state.NoProgressLimit
-	// Token hard limits are gone: keep the field at 0. Old non-zero sidecar
-	// values are read and ignored so downgrade/upgrade never loses other state.
-	g.tokensLimit = 0
+	g.tokensLimit = state.TokensLimit
 	// Roll back to the loaded, still-paused semantics if the atomic
 	// normalization write fails. This prevents a session from appearing
 	// unlocked only in memory while its sidecar remains blocked on disk.
