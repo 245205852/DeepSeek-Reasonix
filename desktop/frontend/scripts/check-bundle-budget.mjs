@@ -69,10 +69,10 @@ if (localeChunks.length !== 2) {
 }
 for (const path of localeChunks) {
   const name = basename(path);
-  // Task Monitor, Extension UI, Storage & paths, and shell execution cards
-  // add their own labels. Reasoning display controls and status bar metrics add
-  // the latest localized copy. Keep both dictionaries within narrow allowances.
-  const budget = name.startsWith("zh-TW-") ? 54.7 * 1024 : 53.9 * 1024;
+  // Task Monitor, Extension UI, Storage & paths, shell execution cards, role
+  // receipts, and Inbox recovery add localized copy. Keep both dictionaries
+  // within narrow allowances.
+  const budget = name.startsWith("zh-TW-") ? 54.8 * 1024 : 54.0 * 1024;
   assertBudget(`${name} gzip`, gzipBytes(path), budget);
 }
 
@@ -80,10 +80,10 @@ const rawInitialBytes = [...initialJS, ...initialCSS, ...appShellCSS]
   .reduce((total, path) => total + statSync(path).size, 0);
 // Native Web Animations and frame-batched scrolling avoid an eager animation
 // runtime. Goal request observability plus transcript scroll arbitration,
-// logical selection state/DOM adapters, native input-session ownership, and
-// measurement invalidation, deferred tail replay, and role-setting completion
-// receipts plus startup config-warning delivery add small always-available
-// contracts. The expanded contract remains tightly bounded while the gzip
-// startup budgets stay flat.
-assertBudget("initial raw JavaScript and CSS", rawInitialBytes, 2_250 * 1024);
+// logical selection state/DOM adapters, native input-session ownership,
+// durable inbox recovery controls, measurement invalidation and deferred tail
+// replay, role-setting completion receipts, and startup config-warning delivery
+// add small always-available contracts. The expanded contract remains tightly
+// bounded while the gzip startup budgets stay flat.
+assertBudget("initial raw JavaScript and CSS", rawInitialBytes, 2_254 * 1024);
 assertBudget("largest initial JavaScript chunk raw", largestInitialJSRaw, 1_000 * 1024);
