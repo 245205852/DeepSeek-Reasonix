@@ -108,11 +108,20 @@ func (c *Catalog) ReconcileDirectory(ctx context.Context, target DirectoryTarget
 }
 
 func directorySignature(dir string) (string, error) {
-	entries, err := os.ReadDir(dir)
+	// os.ReadDir of a plain file returns the file itself on Windows but
+	// ENOTDIR on POSIX; stat first so both platforms reject non-directories.
+	info, err := os.Stat(dir)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return "missing", nil
 		}
+		return "", err
+	}
+	if !info.IsDir() {
+		return "", fmt.Errorf("not a directory: %s", dir)
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
 		return "", err
 	}
 	hash := sha256.New()
