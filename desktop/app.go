@@ -2311,10 +2311,10 @@ func (a *App) clearActiveSessionRuntime(tab *WorkspaceTab, oldCtrl control.Sessi
 	newSink := &tabEventSink{tabID: tab.ID, app: a, ctx: a.ctx}
 	sharedHost := a.lookupSharedHost(snap.sharedHostKey)
 	newCtrl, err := boot.Build(a.bootContext(), boot.Options{
-		Model:               snap.model,
-		RequireKey:          false,
-		AutoPricingCurrency: a.desktopAutoPricingCurrency(),
-		StatsSource:         "desktop", OnConfigLoadWarnings: a.configLoadWarningsHandler(),
+		Model:                    snap.model,
+		RequireKey:               false,
+		StatsSource:              "desktop",
+		OnConfigLoadWarnings:     a.configLoadWarningsHandler(),
 		Sink:                     newSink,
 		WorkspaceRoot:            snap.workspaceRoot,
 		SessionDir:               sessionDirForSnapshot(snap),
@@ -4223,11 +4223,7 @@ func (a *App) rebindTabToLoadedSessionPath(tab *WorkspaceTab, sessionPath string
 	tab.Ready = true
 	clearTabStartupError(tab)
 	tab.ActivityStatus = ""
-	tab.telemMu.Lock()
-	tab.readTelemetry = append([]readFileRecord(nil), candidate.telemetry.ReadFiles...)
-	tab.usageTelemetry = cloneSessionUsageStats(candidate.telemetry.Usage)
-	tab.telemetrySessionKey = sessionRuntimeKey(sessionPath)
-	tab.telemMu.Unlock()
+	tab.replaceTelemetry(candidate.telemetry, sessionRuntimeKey(sessionPath))
 	if tab.sink != nil {
 		tab.sink.setBinding(tab.ID, a)
 		tab.sink.setContext(a.ctx)
@@ -4430,10 +4426,10 @@ func (a *App) buildSessionRebindCandidate(
 		ownsSharedHostRef = true
 	}
 	ctrl, err := boot.Build(a.bootContext(), boot.Options{
-		Model:               model,
-		RequireKey:          false,
-		AutoPricingCurrency: a.desktopAutoPricingCurrency(),
-		StatsSource:         "desktop", OnConfigLoadWarnings: a.configLoadWarningsHandler(),
+		Model:                    model,
+		RequireKey:               false,
+		StatsSource:              "desktop",
+		OnConfigLoadWarnings:     a.configLoadWarningsHandler(),
 		Sink:                     a.desktopControllerSink(sink, cfg.Notifications),
 		WorkspaceRoot:            root,
 		SessionDir:               sessionDir,
@@ -6594,13 +6590,15 @@ func (a *App) ContextUsageForTab(tabID string) ContextInfo {
 				tab.syncTelemetryToSession(sp)
 			}
 		}
-		snap = tab.telemetrySnapshot()
+		snap = tab.displayTelemetrySnapshot()
 		info.SessionTokens = snap.Usage.TotalTokens
 		info.SessionCost = snap.Usage.SessionCost
 		info.SessionCurrency = snap.Usage.SessionCurrency
 		info.CacheHitTokens = snap.Usage.CacheHitTokens
 		info.CacheMissTokens = snap.Usage.CacheMissTokens
 		info.Estimated = snap.Usage.Estimated
+		info.SessionCostComplete = snap.Usage.SessionCostComplete
+		info.SessionCostQuote = snap.Usage.SessionCostQuote
 		info.Sources = snap.Usage.Sources
 	}
 	if ctrl == nil {
@@ -6617,13 +6615,24 @@ func (a *App) ContextUsageForTab(tabID string) ContextInfo {
 }
 
 // BalanceInfo is the wallet-balance readout for the status bar. Available is true
-// only when a balance was fetched; Display is the formatted amount (e.g. "¥110.00")
+// only when a balance was fetched; Display is the exact formatted amount (e.g.
+// "¥110.00")
 // and is "" when the active provider declares no balance_url — the frontend then
 // omits the readout. Err carries a fetch failure for an optional tooltip.
+// Wallet balances are displayed in their original currencies; no conversion
+// or cross-currency sum is performed.
 type BalanceInfo struct {
-	Available bool   `json:"available"`
-	Display   string `json:"display"`
-	Err       string `json:"err,omitempty"`
+	Available           bool     `json:"available"`
+	Display             string   `json:"display"`
+	Detail              string   `json:"detail,omitempty"` // per-wallet original balances
+	Complete            bool     `json:"complete"`
+	RateDate            string   `json:"rateDate,omitempty"`
+	Approx              bool     `json:"approx,omitempty"`
+	Currencies          []string `json:"currencies,omitempty"`
+	PrimaryCurrency     string   `json:"primaryCurrency,omitempty"`
+	CostDisplayCurrency string   `json:"costDisplayCurrency,omitempty"`
+	MultiCurrency       bool     `json:"multiCurrency,omitempty"`
+	Err                 string   `json:"err,omitempty"`
 }
 
 // Balance queries the active provider's wallet balance (a network call). It
@@ -6636,7 +6645,7 @@ func (a *App) Balance() BalanceInfo {
 
 func (a *App) BalanceForTab(tabID string) BalanceInfo {
 	currency := a.balanceDisplayCurrency()
-	ctrl := a.ctrlByTabID(tabID)
+	tab, ctrl, generation := a.balanceRequestTarget(tabID)
 	if ctrl == nil {
 		return BalanceInfo{}
 	}
@@ -6647,18 +6656,58 @@ func (a *App) BalanceForTab(tabID string) BalanceInfo {
 	if b == nil {
 		return BalanceInfo{} // provider declares no balance endpoint
 	}
-	return BalanceInfo{Available: true, Display: b.DisplayForCurrency(currency)}
+	display := b.DisplayForCurrency(currency)
+	currencies := b.Currencies()
+	primary := b.PrimaryCurrency()
+	a.applyBalanceDisplayHint(tabID, tab, ctrl, currency, primary, generation)
+	detail := balanceDetail(b)
+	return BalanceInfo{
+		Available:           true,
+		Display:             display,
+		Detail:              detail,
+		Complete:            true,
+		Currencies:          currencies,
+		PrimaryCurrency:     primary,
+		CostDisplayCurrency: firstNonEmptyString(currency, primary),
+		MultiCurrency:       len(currencies) > 1,
+	}
 }
 
-// balanceDisplayCurrency mirrors the effective pricing currency selected in
-// Settings. Auto resolves through the current desktop locale, matching the
-// controller rebuild path used by cost telemetry.
+func balanceDetail(b *billing.Balance) string {
+	if b == nil || len(b.Infos) == 0 {
+		return ""
+	}
+	parts := make([]string, 0, len(b.Infos))
+	for _, info := range b.Infos {
+		cur := strings.ToUpper(strings.TrimSpace(info.Currency))
+		if cur == "" {
+			cur = "UNKNOWN"
+		}
+		parts = append(parts, cur+" "+strings.TrimSpace(info.TotalBalance))
+	}
+	return strings.Join(parts, "\n")
+}
+
+func firstNonEmptyString(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return value
+		}
+	}
+	return ""
+}
+
+// balanceDisplayCurrency resolves only an explicit global display currency.
+// Automatic mode leaves the wallet in its original currency.
 func (a *App) balanceDisplayCurrency() string {
 	cfg, _, err := a.loadDesktopUserConfigForView()
 	if err != nil {
 		return ""
 	}
-	return a.desktopEffectivePricingCurrency(cfg)
+	if pref := cfg.DisplayCurrencyPref(); pref != "" {
+		return pref
+	}
+	return cfg.ExplicitDisplayCurrency()
 }
 
 // JobView is one running background job (bash/task started with
@@ -9995,10 +10044,10 @@ func (a *App) SetModelForTab(tabID, name string) (retErr error) {
 
 	stageStarted = time.Now()
 	newCtrl, err := boot.Build(a.bootContext(), boot.Options{
-		Model:               name,
-		RequireKey:          false,
-		AutoPricingCurrency: a.desktopAutoPricingCurrency(),
-		StatsSource:         "desktop", OnConfigLoadWarnings: a.configLoadWarningsHandler(),
+		Model:                    name,
+		RequireKey:               false,
+		StatsSource:              "desktop",
+		OnConfigLoadWarnings:     a.configLoadWarningsHandler(),
 		Sink:                     snap.sink,
 		WorkspaceRoot:            snap.workspaceRoot,
 		SessionDir:               sessionDirForSnapshot(snap),
@@ -10070,6 +10119,9 @@ func (a *App) SetModelForTab(tabID, name string) (retErr error) {
 			return fmt.Errorf("persist selected model: %w", err)
 		}
 	}
+	// A model switch changes the pricing context; discard the session-local
+	// automatic wallet hint and let the next balance response rebind it.
+	tab.clearRuntimeDisplayCurrency()
 	a.notifyTabRuntimeRebuilt(tab)
 	timing.SwapAndPersist = time.Since(stageStarted)
 	return nil
@@ -10178,10 +10230,10 @@ func (a *App) SetEffortForTab(tabID, level string) error {
 	}
 	sharedHost := a.lookupSharedHost(snap.sharedHostKey)
 	newCtrl, err := boot.Build(a.bootContext(), boot.Options{
-		Model:               modelRef,
-		RequireKey:          false,
-		AutoPricingCurrency: a.desktopAutoPricingCurrency(),
-		StatsSource:         "desktop", OnConfigLoadWarnings: a.configLoadWarningsHandler(),
+		Model:                    modelRef,
+		RequireKey:               false,
+		StatsSource:              "desktop",
+		OnConfigLoadWarnings:     a.configLoadWarningsHandler(),
 		Sink:                     snap.sink,
 		WorkspaceRoot:            snap.workspaceRoot,
 		SessionDir:               sessionDirForSnapshot(snap),
@@ -10318,10 +10370,10 @@ func (a *App) SetTokenModeForTab(tabID, mode string) error {
 	}
 	sharedHost := a.lookupSharedHost(snap.sharedHostKey)
 	newCtrl, err := boot.Build(a.bootContext(), boot.Options{
-		Model:               modelRef,
-		RequireKey:          false,
-		AutoPricingCurrency: a.desktopAutoPricingCurrency(),
-		StatsSource:         "desktop", OnConfigLoadWarnings: a.configLoadWarningsHandler(),
+		Model:                    modelRef,
+		RequireKey:               false,
+		StatsSource:              "desktop",
+		OnConfigLoadWarnings:     a.configLoadWarningsHandler(),
 		Sink:                     snap.sink,
 		WorkspaceRoot:            snap.workspaceRoot,
 		SessionDir:               sessionDirForSnapshot(snap),

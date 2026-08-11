@@ -2,7 +2,6 @@ import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState, type
 import { ShellExpandProvider, useShellExpand } from "./lib/shellExpand";
 import {
   Activity,
-  CircleHelp,
   Command,
   Copy as RestoreIcon,
   Download,
@@ -4759,33 +4758,15 @@ export default function App() {
               {!sidebarCreation && shouldMountExternalOpener(activeTab, Boolean(sidebarImDetailConnection)) && activeTab && (
                 <ExternalOpener key={activeTab.id} tabId={activeTab.id} dismissSignal={transientOverlayDismissSignal} />
               )}
-              <Tooltip label={t("shortcuts.cheatsheetTitle")}>
+              <Tooltip label={t("summary.session")}>
                 <button
-                  className="topicbar__action-btn topicbar__action-btn--icon topicbar__action-btn--utility"
+                  className={`topicbar__action-btn topicbar__action-btn--icon topicbar__action-btn--utility${tasksOpen ? " topicbar__action-btn--active" : ""}`}
                   type="button"
-                  aria-label={t("shortcuts.cheatsheetTitle")}
-                  onClick={() => {
-                    closeTransientOverlays();
-                    setSettingsFocus(null);
-                    setSettingsTarget("shortcuts");
-                  }}
+                  aria-label={t("summary.session")}
+                  aria-expanded={tasksOpen}
+                  onClick={() => setTasksOpen((open) => !open)}
                 >
-                  <CircleHelp size={14} />
-                </button>
-              </Tooltip>
-              <Tooltip label={t("topicBar.command")}>
-                <button
-                  className={
-                    sidebarCreation
-                      ? "topicbar__action-btn topicbar__action-btn--icon topicbar__action-btn--utility"
-                      : "topicbar__action-btn topicbar__action-btn--label topicbar__action-btn--accent"
-                  }
-                  type="button"
-                  aria-label={t("topicBar.command")}
-                  onClick={() => void openPalette()}
-                >
-                  <Command size={14} />
-                  {!sidebarCreation && <span>{t("topicBar.command")}</span>}
+                  <Activity size={14} />
                 </button>
               </Tooltip>
               {(sidebarCreation || workbenchChromeHidden) && (
@@ -4806,19 +4787,8 @@ export default function App() {
                   </button>
                 </Tooltip>
               )}
-              <Tooltip label="Session summary">
-                <button
-                  className={`topicbar__action-btn topicbar__action-btn--icon topicbar__action-btn--utility${tasksOpen ? " topicbar__action-btn--active" : ""}`}
-                  type="button"
-                  aria-label="Session summary"
-                  aria-expanded={tasksOpen}
-                  onClick={() => setTasksOpen((open) => !open)}
-                >
-                  <Activity size={14} />
-                </button>
-              </Tooltip>
               {tasksOpen && (
-                <div className="taskmonitor-popover" role="dialog" aria-label="Session summary">
+                <div className="taskmonitor-popover" role="dialog" aria-label={t("summary.session")}>
                   <Suspense fallback={null}>
                     <TaskMonitorPanel
                       key={`${activeTab?.id || activeTabId || "none"}:${activeTab?.workspaceRoot || "global"}:${activeTab?.sessionPath || ""}`}

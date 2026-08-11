@@ -12,6 +12,11 @@ Reasonix 实现了 Agent Client Protocol（ACP）v1，通过标准输入输出�
 JSON-RPC 2.0 agent。编辑器和其他 ACP host 负责启动进程、打开一个或多个工作区会话，
 并接收流式消息、工具活动、计划、权限请求和配置更新。
 
+会话状态 usage 可携带结构化 `costQuote`（原币、`originalTotals`、identity/官方区域价表
+估值、`costComplete`、`displayComplete`、`displayStatus`、`billingMode`），同时保留镜像所选
+展示估值的旧字段 `estimatedCost` / `currency`。
+详见 [计费文档](./BILLING.zh-CN.md)。
+
 ## 启动 agent
 
 ACP host 应启动以下命令之一：
