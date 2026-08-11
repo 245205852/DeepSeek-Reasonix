@@ -120,14 +120,14 @@ type Options struct {
 	// so each tab loads its own config/skills/hooks without changing the process
 	// cwd — enabling concurrent multi-project sessions.
 	WorkspaceRoot string
-	// AutoPricingCurrency supplies a frontend-resolved pricing region when the
-	// persisted desktop currency and language settings are all automatic. It is
-	// applied to the in-memory config only and never turns Auto into a persisted
-	// CNY/USD choice.
+	// AutoPricingCurrency applies a frontend-resolved pricing region in memory
+	// without persisting an automatic choice.
 	AutoPricingCurrency string
-	// StatsSource labels this frontend's usage records (desktop/cli/serve).
-	// Empty disables usage recording for this controller.
+	// StatsSource labels usage records; empty disables usage recording.
 	StatsSource string
+	// OnConfigLoadWarnings accepts resilient-loader warnings. Returning true
+	// lets boot suppress the duplicate migration diagnostic.
+	OnConfigLoadWarnings func([]string) bool
 	// ExtraPlugins are session-scoped MCP servers supplied by a host transport
 	// (for example ACP session/new). They are connected eagerly for this
 	// controller but are not persisted to reasonix.toml.
@@ -219,9 +219,8 @@ func build(ctx context.Context, opts Options) (*BuildResult, error) {
 	if err != nil {
 		return nil, err
 	}
-	// One-time import of v1/v0.5 legacy config — runs before Load so the freshly
-	// written config + ~/.env are picked up this same boot. CLI Run also calls this
-	// before config-only commands; this call stays as the shared frontend fallback.
+	// Import v1/v0.5 config before Load so this boot sees the new config + ~/.env.
+	// CLI Run also calls this before config-only commands; keep a shared fallback.
 	migrated, migErr := config.MigrateLegacyIfNeededForRoot(root)
 	deepSeekProtocolMigrated, deepSeekProtocolMigErr := config.MigrateLegacyDeepSeekProtocolUserConfig()
 	stepLimitsMigrated, stepLimitMigErr := config.MigrateLegacyAgentStepLimitsForRoot(root)
@@ -232,6 +231,7 @@ func build(ctx context.Context, opts Options) (*BuildResult, error) {
 	if err != nil {
 		return nil, err
 	}
+	deepSeekProtocolMigErr = deepSeekProtocolMigrationNoticeError(handleConfigLoadWarnings(opts, cfg), deepSeekProtocolMigErr)
 	applyRuntimeAutoPricingCurrency(cfg, opts.AutoPricingCurrency)
 	// Arm the credential-protection layers from the user-global [secrets]
 	// section before any tool, hook, or plugin subprocess can spawn. Package
