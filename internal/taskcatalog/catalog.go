@@ -105,6 +105,7 @@ type Catalog struct {
 	revision      atomic.Uint64
 	statusMu      sync.RWMutex
 	status        Status
+	projectLocks  sync.Map
 	reconcileMu   sync.Mutex
 	reconciling   map[string]bool
 	registered    map[string]bool
@@ -336,6 +337,10 @@ func (c *Catalog) scheduleReconcile(project Project) {
 }
 
 func (c *Catalog) ReconcileProject(ctx context.Context, project Project) error {
+	project = normalizeProject(project)
+	unlock := c.lockProject(project.Key)
+	defer unlock()
+
 	tasks, err := c.store.ListTasks(ctx, project.Root)
 	if err != nil {
 		return err
@@ -394,6 +399,9 @@ func (c *Catalog) indexSnapshot(ctx context.Context, root, taskID string, genera
 			return err
 		}
 	}
+	unlock := c.lockProject(project.Key)
+	defer unlock()
+
 	task, err := c.store.GetTask(ctx, project.Root, taskID)
 	if err != nil || task == nil {
 		return err
@@ -447,6 +455,9 @@ func (c *Catalog) indexEvents(ctx context.Context, root, taskID string) error {
 	if err != nil || !ok {
 		return err
 	}
+	unlock := c.lockProject(project.Key)
+	defer unlock()
+
 	path := filepath.Join(project.Root, ".reasonix", "tasks", taskID, "events.jsonl")
 	info, statErr := os.Stat(path)
 	if errors.Is(statErr, os.ErrNotExist) {
