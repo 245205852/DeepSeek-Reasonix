@@ -1,5 +1,21 @@
 /* heartbeat 模块 — 定时任务配置面板；选择器以 .heartbeat- 为前缀 */
 
+/* 面板分栏背景：浅色主题保持历史观感 #fafafa（接近主背景的近白），
+   暗色主题（data-theme=dark 或 OS 深色）跟随主背景 var(--bg)，
+   避免 #fafafa 硬编码在暗色下刺眼。 */
+:root[data-theme="light"],
+:root:not([data-theme]) {
+  --heartbeat-split-bg: #fafafa;
+}
+:root[data-theme="dark"] {
+  --heartbeat-split-bg: var(--bg);
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme]) {
+    --heartbeat-split-bg: var(--bg);
+  }
+}
+
 /* ── page（页面式容器，替换原 backdrop/modal 弹窗）────────────── */
 
 .heartbeat-page {
@@ -20,8 +36,8 @@
   min-height: 0;
   overflow: hidden;
   position: relative;
-  /* 背景全宽（左右两侧与列表内容区一致），列表内容区内部限宽居中 */
-  background: var(--bg-soft);
+  /* 面板分栏背景：浅色 #fafafa、暗色 var(--bg)，见顶部变量定义 */
+  background: var(--heartbeat-split-bg);
 }
 
 /* 无详情时：页面顶部一条全宽透明拖拽条（可拖窗口），无独立背景色块 */
@@ -273,7 +289,7 @@
   display: flex;
   flex-direction: column;
   overflow: hidden;
-  background: var(--bg-soft);
+  background: var(--heartbeat-split-bg);
 }
 
 .heartbeat-split__right .heartbeat-editor {
