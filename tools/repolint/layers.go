@@ -23,6 +23,7 @@ var frontends = []string{
 // stay importable from anywhere without dragging a dependency graph along.
 var leaves = []string{
 	"internal/ablation",
+	"internal/agentpreset",
 	"internal/billing",
 	"internal/diff",
 	"internal/extension/rpcwire",
@@ -43,6 +44,7 @@ var leaves = []string{
 	"internal/store",
 	"internal/sysproxy",
 	"internal/taskintent",
+	"internal/taskpolicy",
 	"internal/textutil",
 	"internal/workspacelease",
 }

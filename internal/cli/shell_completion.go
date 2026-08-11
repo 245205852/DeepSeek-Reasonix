@@ -48,6 +48,7 @@ func completionSpecWithAliases(name string, aliases []string, flags []cliComplet
 
 func cliCompletionRootSpec() cliCompletionSpec {
 	profile := completionFlag("--profile", cliCompletionStaticValue, "economy", "balanced", "delivery")
+	preset := completionFlag("--preset", cliCompletionStaticValue, "light", "balanced", "delivery")
 	model := completionFlag("--model", cliCompletionModelValue)
 	resume := completionFlag("--resume -r", cliCompletionOptionalValue) // optional QUERY
 	effort := completionFlag("--effort", cliCompletionStaticValue, "auto", "low", "medium", "high", "max")
@@ -56,7 +57,7 @@ func cliCompletionRootSpec() cliCompletionSpec {
 	help := completionFlag("--help -h", cliCompletionNoValue)
 
 	interactiveFlags := []cliCompletionFlag{
-		model, profile,
+		model, preset, profile,
 		completionFlag("--max-steps", cliCompletionStaticValue),
 		completionFlag("--continue -c", cliCompletionNoValue),
 		resume,

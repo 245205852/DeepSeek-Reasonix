@@ -561,7 +561,7 @@ func (s *service) sessionRuntimeState(ctx context.Context, p SessionRuntimeState
 		if err != nil {
 			return SessionRuntimeState{}, err
 		}
-		if strings.EqualFold(strings.TrimSpace(p.RuntimeProfile), "economy") {
+		if isLightRuntimeProfile(p.RuntimeProfile) {
 			state.PlannerMode = "off"
 		}
 		if strings.TrimSpace(state.PlannerMode) == "" {
@@ -573,10 +573,19 @@ func (s *service) sessionRuntimeState(ctx context.Context, p SessionRuntimeState
 		return state, nil
 	}
 	state := defaultSessionRuntimeState(p.Cwd)
-	if strings.EqualFold(strings.TrimSpace(p.RuntimeProfile), "economy") {
+	if isLightRuntimeProfile(p.RuntimeProfile) {
 		state.PlannerMode = "off"
 	}
 	return state, nil
+}
+
+func isLightRuntimeProfile(profile string) bool {
+	switch strings.ToLower(strings.TrimSpace(profile)) {
+	case "economy", "light", "lite", "eco":
+		return true
+	default:
+		return false
+	}
 }
 
 func (s *service) bindStatusEvents(sess *acpSession) {
@@ -664,11 +673,18 @@ func (s *acpSession) statusSnapshot() ReasonixSessionStatus {
 	mode = normalizeACPCollaborationMode(mode)
 	workMode = strings.ToLower(strings.TrimSpace(workMode))
 	switch workMode {
-	case "economy", "delivery":
+	case "economy", "light", "delivery":
+		if workMode == "light" {
+			workMode = "economy" // dual-write public status label
+		}
 	default:
 		workMode = "balanced"
 	}
-	if runtimeState.PlannerMode != "off" {
+	// Recompute planner mode from the live role setting so in-place switches
+	// do not leave a stale on/off flag from the last controller rebuild.
+	if isLightRuntimeProfile(workMode) {
+		runtimeState.PlannerMode = "off"
+	} else if runtimeState.PlannerMode != "off" {
 		runtimeState.PlannerMode = "on"
 	}
 	if runtimeState.Sandbox.WriteRoots == nil {

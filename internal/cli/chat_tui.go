@@ -97,6 +97,9 @@ type chatTUI struct {
 	// the provider re-attempts the connection; cleared by the next stream event.
 	retryAttempt int
 	retryMax     int
+	// turnPhase is the host turn phase from turn_phase events
+	// (working|checking|verifying|reviewing). Cleared on TurnDone.
+	turnPhase string
 	// turnTokens accumulates this turn's output tokens (summed from per-step Usage
 	// events) for the live "↓N" readout in the running status line.
 	turnTokens int
@@ -3405,7 +3408,12 @@ func (m chatTUI) runningWorkingLine(cancelRequested, styled bool) string {
 	if cancelRequested {
 		working = fmt.Sprintf("  "+i18n.M.ChatStatusCancellingFmt, m.spinner.View(), m.elapsed)
 	} else {
-		working = fmt.Sprintf("  "+i18n.M.ChatStatusThinkingFmt, m.spinner.View(), m.elapsed)
+		phaseLabel := turnPhaseStatusLabel(m.turnPhase)
+		if phaseLabel != "" {
+			working = fmt.Sprintf("  %s %s · %ds", m.spinner.View(), phaseLabel, m.elapsed)
+		} else {
+			working = fmt.Sprintf("  "+i18n.M.ChatStatusThinkingFmt, m.spinner.View(), m.elapsed)
+		}
 	}
 	if m.turnTokens > 0 {
 		working += " · ↓" + shortTokens(m.turnTokens)
@@ -3774,6 +3782,46 @@ func shortTokens(n int) string {
 	default:
 		return fmt.Sprintf("%d", n)
 	}
+}
+
+// turnPhaseStatusLabel maps host turn_phase values to a short status label.
+// Empty when the phase is unknown so callers fall back to the default thinking line.
+func turnPhaseStatusLabel(phase string) string {
+	switch strings.ToLower(strings.TrimSpace(phase)) {
+	case "working":
+		return i18n.M.TurnPhaseWorking
+	case "checking":
+		return i18n.M.TurnPhaseChecking
+	case "verifying":
+		return i18n.M.TurnPhaseVerifying
+	case "reviewing":
+		return i18n.M.TurnPhaseReviewing
+	default:
+		return ""
+	}
+}
+
+// formatCompletionSummaryLine renders a content-free quality summary for TUI scrollback.
+func formatCompletionSummaryLine(c *event.CompletionSummaryInfo) string {
+	if c == nil {
+		return ""
+	}
+	preset := strings.TrimSpace(c.Preset)
+	if preset == "" {
+		preset = "balanced"
+	}
+	line := fmt.Sprintf("%s · %s · mut=%d · checks %d✓/%d✗/%d⊘",
+		preset, c.Verdict, c.Mutations, c.ChecksPassed, c.ChecksFailed, c.ChecksSuppressed)
+	if c.Review != "" && c.Review != "none" {
+		line += " · review=" + c.Review
+	}
+	if len(c.GapKinds) > 0 {
+		line += " · gaps=" + strings.Join(c.GapKinds, ",")
+	}
+	if c.ConstraintDegraded {
+		line += " · constraints"
+	}
+	return line
 }
 
 // renderApprovalBanner is the slim notice shown above the input while a tool
@@ -4501,6 +4549,20 @@ func (m *chatTUI) ingestEvent(e event.Event) {
 			}
 		}
 
+	case event.TurnPhase:
+		// Content-free host phase for the live status line only.
+		if phase := strings.TrimSpace(string(e.PhaseName)); phase != "" {
+			m.turnPhase = phase
+		} else if phase := strings.TrimSpace(e.Text); phase != "" {
+			m.turnPhase = phase
+		}
+
+	case event.CompletionSummary:
+		if e.Completion != nil {
+			m.finalizeStreamed()
+			m.commitLine(dim("  · " + formatCompletionSummaryLine(e.Completion)))
+		}
+
 	case event.Notice:
 		glyph := "·"
 		if e.Level == event.LevelWarn {
@@ -4611,6 +4673,7 @@ func (m *chatTUI) ingestEvent(e event.Event) {
 		// just clear the un-sendable flag.
 		m.confirmBubbleSent()
 		m.state = tuiIdle
+		m.turnPhase = ""
 		m.noteWatchdogIdle()
 		m.queueEditCursor, m.queueEditDraft = -1, ""
 		m.clearSubmittedPastes()
@@ -4710,9 +4773,9 @@ func (m *chatTUI) runSlashCommand(input string) tea.Cmd {
 		m.showSandboxStatus()
 	case "/effort":
 		return m.runEffortCommand(input)
-	case "/work-mode", "/profile":
+	case "/preset", "/work-mode", "/profile":
 		m.echoLocalCommand(input)
-		return m.runWorkModeCommand(input)
+		return m.runPresetCommand(input)
 	case "/reasoning-language":
 		m.echoLocalCommand(input)
 		m.runReasoningLanguageCommand(input)

@@ -245,10 +245,25 @@ type ModelSwitchQueueState = {
 
 const HISTORY_PAGE_TURNS = 60;
 
+export type TurnPhaseName = "working" | "checking" | "verifying" | "reviewing" | string;
+
 export type Item =
   | { kind: "user"; id: string; submissionId?: string; text: string; submitText?: string; failed?: boolean; createdAt?: number; checkpointTurn?: number }
   | { kind: "assistant"; id: string; text: string; reasoning: string; streaming: boolean; reasoningComplete?: boolean; reasoningDurationMs?: number; workDurationMs?: number; memoryCitations?: MemoryCitation[] }
   | { kind: "phase"; id: string; text: string }
+  | {
+      kind: "completion_summary";
+      id: string;
+      preset: string;
+      verdict: string;
+      mutations: number;
+      checksPassed: number;
+      checksFailed: number;
+      checksSuppressed: number;
+      review: string;
+      gapKinds?: string[];
+      constraintDegraded: boolean;
+    }
   | { kind: "notice"; id: string; level: "info" | "warn"; text: string; detail?: string; title?: string; variant?: "delivery"; action?: "continue_delivery"; decisionReceipt?: WireDecisionReceipt }
   | {
       kind: "compaction";
@@ -360,6 +375,8 @@ interface State {
   backgroundJobs: number;
   cancelRequested: boolean;
   cancellable: boolean;
+  /** Host turn phase from turn_phase events (working|checking|verifying|reviewing). */
+  turnPhase?: TurnPhaseName;
   approval?: WireApproval;
   ask?: WireAsk;
   usage?: WireUsage;
@@ -1470,11 +1487,35 @@ function applyEvent(s: State, e: WireEvent): State {
         live: { id, text: "", reasoning: "", reasoningComplete: false },
         running: true,
         turnActive: true,
+        turnPhase: "working",
         pendingPrompt: false,
         cancelRequested: false,
         cancellable: true,
         ...resetTurnTiming(),
       };
+    }
+    case "turn_phase": {
+      const phase = (e.phase ?? e.text ?? "").trim();
+      if (!phase) return s;
+      return { ...s, turnPhase: phase, running: true, turnActive: true, cancellable: true };
+    }
+    case "completion_summary": {
+      const c = e.completion;
+      if (!c) return s;
+      const item: Item = {
+        kind: "completion_summary",
+        id: `cs${s.seq}`,
+        preset: c.preset ?? "",
+        verdict: c.verdict ?? "",
+        mutations: c.mutations ?? 0,
+        checksPassed: c.checks_passed ?? 0,
+        checksFailed: c.checks_failed ?? 0,
+        checksSuppressed: c.checks_suppressed ?? 0,
+        review: c.review ?? "none",
+        gapKinds: c.gap_kinds,
+        constraintDegraded: !!c.constraint_degraded,
+      };
+      return { ...s, seq: s.seq + 1, items: [...s.items, item] };
     }
     case "text":
     case "reasoning": {
@@ -1846,6 +1887,7 @@ function applyEvent(s: State, e: WireEvent): State {
         streamAttemptJournal: undefined,
         running: keepPlanApproval,
         turnActive: keepPlanApproval,
+        turnPhase: keepPlanApproval ? s.turnPhase : undefined,
         pendingPrompt: keepPlanApproval,
         cancelRequested: false,
         cancellable: keepPlanApproval,

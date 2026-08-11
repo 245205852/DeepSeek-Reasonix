@@ -5155,6 +5155,7 @@ export default function App() {
               collaborationMode={collaborationMode}
               toolApprovalMode={toolApprovalMode}
               tokenMode={tokenMode}
+              turnPhase={state.turnPhase}
               goal={goal}
               goalStatus={state.meta?.goalStatus}
               goalRuntime={state.meta?.goalRuntime}

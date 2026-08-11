@@ -1486,7 +1486,7 @@ func (s *service) sessionSetConfigOption(ctx context.Context, raw json.RawMessag
 		next, err = s.switchSessionModel(ctx, sess, p.Value)
 	case "thought_level":
 		next, err = s.switchSessionEffort(ctx, sess, p.Value)
-	case "work_mode":
+	case "work_mode", "agent_preset":
 		next, err = s.switchSessionRuntimeProfile(ctx, sess, p.Value)
 	case "tool_approval":
 		next, err = s.switchSessionToolApproval(ctx, sess, p.Value)
@@ -1592,7 +1592,7 @@ func (d sessionConfigDelta) applyTo(p *SessionConfigStateParams) {
 		p.Model = d.model
 	case "thought_level":
 		p.EffortOverride = cloneStringPtr(d.effortOverride)
-	case "work_mode":
+	case "work_mode", "agent_preset":
 		p.RuntimeProfile = d.runtimeProfile
 	}
 }
@@ -1628,8 +1628,66 @@ func (s *service) switchSessionEffort(ctx context.Context, sess *acpSession, eff
 }
 
 func (s *service) switchSessionRuntimeProfile(ctx context.Context, sess *acpSession, profile string) (SessionConfigState, error) {
-	deltas := []sessionConfigDelta{{axis: "work_mode", runtimeProfile: profile}}
-	return s.switchSessionConfig(ctx, sess, deltas)
+	// Role settings switch in place without rebuilding the controller when
+	// the session is idle. Busy sessions return an explicit error (no silent
+	// queue). TryLock so a concurrent model/effort rebuild cannot deadlock us.
+	if !sess.stateChangeMu.TryLock() {
+		return SessionConfigState{}, sessionConfigActiveWorkError("session is busy; retry when idle")
+	}
+	defer sess.stateChangeMu.Unlock()
+	sess.mu.Lock()
+	if sess.deleted {
+		sess.mu.Unlock()
+		return SessionConfigState{}, &RPCError{Code: ErrInvalidRequest, Message: "session/set_config_option: session is deleted"}
+	}
+	status := sess.ctrl.RuntimeStatus()
+	if status.PendingPrompt {
+		sess.mu.Unlock()
+		return SessionConfigState{}, sessionConfigActiveWorkError("answer pending prompts before switching role setting")
+	}
+	if sess.running || status.Running {
+		sess.mu.Unlock()
+		return SessionConfigState{}, sessionConfigActiveWorkError("finish or cancel the active turn before switching role setting")
+	}
+	if status.BackgroundJobs > 0 {
+		sess.mu.Unlock()
+		return SessionConfigState{}, sessionConfigActiveWorkError("stop background jobs before switching role setting")
+	}
+	if sess.maintenanceDone != nil {
+		sess.mu.Unlock()
+		return SessionConfigState{}, sessionConfigActiveWorkError("session is busy; retry when idle")
+	}
+	ctrl := sess.ctrl
+	sess.mu.Unlock()
+	if ctrl != nil {
+		ctrl.SetAgentPreset(profile)
+	}
+	// Dual-write session runtime profile label for config option responses.
+	normalized := profile
+	switch strings.ToLower(strings.TrimSpace(profile)) {
+	case "light", "economy", "eco", "lite":
+		normalized = "economy"
+	case "delivery", "deliver", "quality":
+		normalized = "delivery"
+	default:
+		normalized = "balanced"
+	}
+	sess.mu.Lock()
+	sess.runtimeProfile = normalized
+	// Keep status planner mode aligned without a controller rebuild.
+	if isLightRuntimeProfile(normalized) {
+		sess.runtimeState.PlannerMode = "off"
+	} else {
+		sess.runtimeState.PlannerMode = "on"
+	}
+	sess.mu.Unlock()
+	sess.saveMetaIfPresent()
+	cfgState, err := s.configStateForSession(ctx, sess)
+	if err != nil {
+		return SessionConfigState{}, &RPCError{Code: ErrInternal, Message: "session/set_config_option: " + err.Error()}
+	}
+	sess.sink.send(configOptionUpdate{SessionUpdate: "config_option_update", ConfigOptions: cfgState.ConfigOptions})
+	return cfgState, nil
 }
 
 // switchSessionConfig resolves and applies one explicit config request without

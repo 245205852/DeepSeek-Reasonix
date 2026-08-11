@@ -807,6 +807,8 @@ export function Transcript({
             onAction={row.item.action === "continue_delivery" ? (onDeliveryContinue ?? (() => onPrompt(t("notice.deliveryIncompleteContinuePrompt")))) : undefined}
           />
         );
+      case "completion_summary":
+        return <CompletionSummaryCard item={row.item} />;
       case "extension":
         return <ExtensionCard item={row.item} tabId={tabId} />;
       case "turn-actions": {
@@ -1127,6 +1129,47 @@ type CompactionItem = Extract<Item, { kind: "compaction" }>;
 
 function PhaseCard({ id, text }: { id: string; text: string }) {
   return <div className="phase" data-entrance={id}><ProcessPhaseIcon size={12} /><span>{text}</span></div>;
+}
+
+type CompletionSummaryItem = Extract<Item, { kind: "completion_summary" }>;
+
+function CompletionSummaryCard({ item }: { item: CompletionSummaryItem }) {
+  const t = useT();
+  const verdictKey =
+    item.verdict === "complete"
+      ? "notice.completionVerdictComplete"
+      : item.verdict === "partial"
+        ? "notice.completionVerdictPartial"
+        : item.verdict === "blocked"
+          ? "notice.completionVerdictBlocked"
+          : "notice.completionVerdictContinue";
+  const parts: string[] = [
+    t(verdictKey as never),
+    t("notice.completionMutations", { n: String(item.mutations) }),
+    t("notice.completionChecks", {
+      passed: String(item.checksPassed),
+      failed: String(item.checksFailed),
+      suppressed: String(item.checksSuppressed),
+    }),
+  ];
+  if (item.review && item.review !== "none") {
+    parts.push(t("notice.completionReview", { status: item.review }));
+  }
+  if (item.gapKinds && item.gapKinds.length > 0) {
+    parts.push(t("notice.completionGaps", { gaps: item.gapKinds.join(", ") }));
+  }
+  if (item.constraintDegraded) {
+    parts.push(t("notice.completionConstraintDegraded"));
+  }
+  return (
+    <div className="notice-line notice-line--info notice-line--completion" data-entrance={item.id}>
+      <Info className="notice-line__icon" size={14} aria-hidden="true" />
+      <div className="notice-line__text">
+        <div className="notice-line__title">{t("notice.completionSummaryTitle", { preset: item.preset || "balanced" })}</div>
+        <div className="notice-line__body">{parts.join(" · ")}</div>
+      </div>
+    </div>
+  );
 }
 
 // A mid-turn steer is the user's own message, so it renders on the user side

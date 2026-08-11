@@ -132,10 +132,14 @@ type Options struct {
 	// (for example ACP session/new). They are connected eagerly for this
 	// controller but are not persisted to reasonix.toml.
 	ExtraPlugins []plugin.Spec
-	// TokenMode selects the session's runtime profile. Empty/full/balanced preserves
-	// the normal capability surface. "economy" keeps the core coding tools visible
-	// and moves optional sources behind connect_tool_source. "delivery" keeps the
-	// full surface and adds a stable completion-and-verification contract.
+	// AgentPreset selects the session role setting (light|balanced|delivery).
+	// Empty falls back to balanced. It controls planning depth, verification
+	// breadth, and independent review frequency without changing the
+	// provider-visible tool schema or base system prompt.
+	AgentPreset string
+	// TokenMode is the deprecated one-version fallback for AgentPreset.
+	// When AgentPreset is empty, TokenMode is normalized through the legacy
+	// economy/full/delivery mapping. Prefer AgentPreset.
 	TokenMode string
 	// SessionDir overrides where persisted chat transcripts are written. When
 	// empty, the shared CLI/global session directory is used.
@@ -387,13 +391,19 @@ func build(ctx context.Context, opts Options) (*BuildResult, error) {
 		}
 	}
 	config.NormalizeLegacyMimoCustomProvidersForRefs(cfg, modelName)
-	tokenMode := NormalizeTokenMode(opts.TokenMode)
-	tokenEconomy := tokenMode == TokenModeEconomy
-	tokenDelivery := tokenMode == TokenModeDelivery
+	agentPreset := strings.TrimSpace(opts.AgentPreset)
+	if agentPreset == "" {
+		agentPreset = AgentPresetFromTokenMode(opts.TokenMode)
+	}
+	agentPreset = NormalizeAgentPreset(agentPreset)
+	// tokenMode is dual-write compatibility only; policy uses agentPreset.
+	tokenMode := TokenModeFromAgentPreset(agentPreset)
+	tokenDelivery := agentPreset == AgentPresetDelivery
 	runtimeProfile := capability.ProfileBalanced
-	if tokenEconomy {
+	switch agentPreset {
+	case AgentPresetLight:
 		runtimeProfile = capability.ProfileEconomy
-	} else if tokenDelivery {
+	case AgentPresetDelivery:
 		runtimeProfile = capability.ProfileDelivery
 	}
 	keepPolicy := agentKeepPolicy(cfg.Agent.Keep)
@@ -508,26 +518,26 @@ func build(ctx context.Context, opts Options) (*BuildResult, error) {
 	if !opts.RequireKey && entry.RequiresAPIKey() && entry.APIKey() == "" {
 		sink.Emit(event.Event{Kind: event.Notice, Text: "Selected model is missing its API key.", Detail: fmt.Sprintf("model %q is selected but its API key %s is not set — requests will fail until you set it", modelName, entry.APIKeyEnv)})
 	}
+	// Every role setting lazily acquires a workspace write lease on the first
+	// real writer. Read-only turns never take the lease.
 	var workspaceLease *workspacelease.Owner
 	jobOptions := []jobs.Option{
 		jobs.WithStalledWarningAfter(time.Duration(cfg.BackgroundJobStalledWarningSeconds()) * time.Second),
 		jobs.WithSessionOwnershipProbe(agent.SessionLeaseHeldByCurrentRuntime),
 	}
-	if tokenDelivery {
-		workspaceLease, err = workspacelease.New(root, config.WorkspaceLeaseDir(), func() {
-			sink.Emit(event.Event{
-				Kind:   event.Notice,
-				Level:  event.LevelInfo,
-				Code:   event.NoticeCodeWorkspaceLease,
-				Text:   "Another Delivery session is writing to this workspace; this session will continue automatically when it is safe.",
-				Detail: "workspace write lease is busy; read-only work remains concurrent",
-			})
+	workspaceLease, err = workspacelease.New(root, config.WorkspaceLeaseDir(), func() {
+		sink.Emit(event.Event{
+			Kind:   event.Notice,
+			Level:  event.LevelInfo,
+			Code:   event.NoticeCodeWorkspaceLease,
+			Text:   "Another session is writing to this workspace; this session will continue automatically when it is safe.",
+			Detail: "workspace write lease is busy; read-only work remains concurrent",
 		})
-		if err != nil {
-			return nil, fmt.Errorf("initialize Delivery workspace lease: %w", err)
-		}
-		jobOptions = append(jobOptions, jobs.WithJobStartObserver(workspaceLease.RetainUntil))
+	})
+	if err != nil {
+		return nil, fmt.Errorf("initialize workspace write lease: %w", err)
 	}
+	jobOptions = append(jobOptions, jobs.WithJobStartObserver(workspaceLease.RetainUntil))
 	jm := jobs.NewManager(sink, jobOptions...)
 	sessionDir := opts.SessionDir
 	if sessionDir == "" {
@@ -577,11 +587,10 @@ func build(ctx context.Context, opts Options) (*BuildResult, error) {
 	if workspaceLine := currentWorkspacePromptLine(root); workspaceLine != "" {
 		sysPrompt += "\n\n" + workspaceLine
 	}
-	if tokenEconomy {
-		sysPrompt += "\n\n" + tokenEconomyPrompt
-	} else if tokenDelivery {
-		sysPrompt += "\n\n" + tokenDeliveryPrompt
-	}
+	// Role settings no longer inject mode-specific system prompts. Planning,
+	// verification, and review intensity travel in the per-turn transient
+	// <execution-policy> user block so the cache-stable prefix stays shared.
+	_ = tokenMode
 	if cfg.EnvironmentEnabled() {
 		shellLabel := shell.Kind.String()
 		if strings.TrimSpace(cfg.Tools.Shell.Path) != "" {
@@ -646,7 +655,7 @@ func build(ctx context.Context, opts Options) (*BuildResult, error) {
 		skills = skillStore.List()
 		allSkillStore = skill.New(skill.Options{ProjectRoot: root, CustomPaths: cfg.SkillCustomPaths(), PluginPaths: cfg.PluginPackageSkillOwners(), PluginAgentPaths: cfg.PluginPackageAgentOwners(), ExcludedPaths: cfg.SkillExcludedPaths(), MaxDepth: cfg.SkillMaxDepth(), Stderr: io.Discard})
 		allSkills = allSkillStore.List()
-		if !tokenEconomy && implicitSkillInvocation {
+		if implicitSkillInvocation {
 			sysPrompt = skill.ApplyIndex(sysPrompt, skills)
 		}
 	}
@@ -691,9 +700,6 @@ func build(ctx context.Context, opts Options) (*BuildResult, error) {
 	searchSpec := builtin.ResolveSearch(cfg.Tools.Search.Engine, cfg.Tools.Search.RgPath, stderr)
 	bashTimeout := time.Duration(cfg.BashTimeoutSeconds()) * time.Second
 	enabledBuiltins := cfg.Tools.Enabled
-	if tokenEconomy {
-		enabledBuiltins = tokenEconomyBuiltins(enabledBuiltins)
-	}
 	readPathResolver := builtin.NewPathResolver()
 	// Session-private temporary directory manager for Bash/grep. Rebuild
 	// reuses the previous Controller's Manager; a fresh build creates one
@@ -702,12 +708,9 @@ func build(ctx context.Context, opts Options) (*BuildResult, error) {
 	if sessionTemp == nil {
 		sessionTemp = sessiontemp.New()
 	}
-	// An explicit Economy allowlist can contain only on-demand tools, leaving no
-	// startup built-ins. Do not pass that filtered empty slice to addBuiltins,
-	// where an empty list intentionally means "all built-ins".
-	if !tokenEconomy || len(cfg.Tools.Enabled) == 0 || len(enabledBuiltins) > 0 {
-		addBuiltins(reg, enabledBuiltins, writeRoots, bashSpec, bashTimeout, searchSpec, stderr, root, proxySpec, forbidReadRoots, readPathResolver, sessionGuard, managedConfig, opts.FileOverlay, opts.TerminalRunner, sessionTemp, fileWriteReceipt)
-	}
+	// Register the full built-in inventory for use_capability dispatch. The
+	// provider-visible surface is narrowed later via SetProviderVisibleTools.
+	addBuiltins(reg, enabledBuiltins, writeRoots, bashSpec, bashTimeout, searchSpec, stderr, root, proxySpec, forbidReadRoots, readPathResolver, sessionGuard, managedConfig, opts.FileOverlay, opts.TerminalRunner, sessionTemp, fileWriteReceipt)
 	// Use the caller-supplied shared host when set, so controllers for the same
 	// workspace root reuse running MCP processes (e.g. one CodeGraph daemon
 	// instead of one per tab). Otherwise construct a private host per controller.
@@ -768,21 +771,6 @@ func build(ctx context.Context, opts Options) (*BuildResult, error) {
 		}
 		applyMCPIsolation(&extraSpecs[i], root, pluginSpecOptions)
 	}
-	onDemandMCPSpecs := map[string]plugin.Spec{}
-	onDemandMCPNames := []string{}
-	if tokenEconomy {
-		for _, spec := range append(PluginSpecsForRootWithOptions(autoStartEntries, root, pluginSpecOptions), extraSpecs...) {
-			name := strings.TrimSpace(spec.Name)
-			if name == "" {
-				continue
-			}
-			if _, exists := onDemandMCPSpecs[name]; !exists {
-				onDemandMCPNames = append(onDemandMCPNames, name)
-			}
-			onDemandMCPSpecs[name] = spec
-		}
-		eagerEntries, bgEntries = nil, nil
-	}
 	// Auto-demote: any eager plugin that has been chronically slow (recent
 	// samples repeatedly hit the blocking startup budget) drops to background
 	// for this session. The user keeps eager intent, just doesn't pay for it
@@ -804,9 +792,7 @@ func build(ctx context.Context, opts Options) (*BuildResult, error) {
 	eagerSpecs := PluginSpecsForRootWithOptions(eagerEntries, root, pluginSpecOptions)
 	bgSpecs := PluginSpecsForRootWithOptions(bgEntries, root, pluginSpecOptions)
 
-	if !tokenEconomy {
-		eagerSpecs = append(eagerSpecs, extraSpecs...)
-	}
+	eagerSpecs = append(eagerSpecs, extraSpecs...)
 
 	// Apply caller-supplied stderr override to every spec across tiers.
 	if opts.Stderr != nil {
@@ -822,7 +808,7 @@ func build(ctx context.Context, opts Options) (*BuildResult, error) {
 	// for this controller and still take a short readiness probe so recovery and
 	// session-scoped servers are deterministic. User/project config MCP stays
 	// catalog-first and process-idle until first real tool call.
-	if len(extraSpecs) > 0 && !tokenEconomy {
+	if len(extraSpecs) > 0 {
 		for _, s := range extraSpecs {
 			if pluginHost.HasClient(s.Name) {
 				if tools, err := pluginHost.ToolsFor(ctx, s.Name); err == nil {
@@ -881,10 +867,10 @@ func build(ctx context.Context, opts Options) (*BuildResult, error) {
 			}
 		}
 	}
-	// eagerSpecs already includes extraSpecs when !tokenEconomy; avoid double
+	// eagerSpecs already includes extraSpecs; avoid double
 	// registration of host-session servers that connected above.
 	configSpecs := append(append([]plugin.Spec{}, eagerSpecs...), bgSpecs...)
-	if len(extraSpecs) > 0 && !tokenEconomy {
+	if len(extraSpecs) > 0 {
 		extraNames := map[string]bool{}
 		for _, s := range extraSpecs {
 			extraNames[s.Name] = true
@@ -912,6 +898,19 @@ func build(ctx context.Context, opts Options) (*BuildResult, error) {
 		cleanup = func() {}
 	}
 
+	// addTools registers tools on reg and returns the names that were added.
+	addTools := func(reg *tool.Registry, tools []tool.Tool) []string {
+		names := make([]string, 0, len(tools))
+		for _, t := range tools {
+			if t == nil {
+				continue
+			}
+			reg.Add(t)
+			names = append(names, t.Name())
+		}
+		return names
+	}
+
 	// LSP tools resolve their servers on PATH and spawn lazily on first query, so
 	// registering them is cheap even when no server is installed (a query then
 	// returns an install hint). The manager is session-scoped; chain its shutdown
@@ -927,9 +926,7 @@ func build(ctx context.Context, opts Options) (*BuildResult, error) {
 	}
 	if cfg.LSP.Enabled {
 		lspMgr = lsp.NewManager(root, LSPSpecs(cfg.LSP))
-		if !tokenEconomy {
-			addLSPTools()
-		}
+		addLSPTools()
 		prev := cleanup
 		cleanup = func() { prev(); lspMgr.Close() }
 	}
@@ -1119,15 +1116,12 @@ func build(ctx context.Context, opts Options) (*BuildResult, error) {
 		reg.Add(agent.NewReadOnlyTaskTool(taskTool))
 		return "enabled read_only_task."
 	}
-	if !tokenEconomy {
-		addTaskTool()
-		addReadOnlyTaskTool()
-	}
+	addTaskTool()
+	addReadOnlyTaskTool()
 
-	// Product documentation, session, and memory tools are always present in
-	// Balanced/Delivery. Economy installs them only after connect_tool_source
-	// requests that capability, so simple coding turns do not pay for unrelated
-	// schemas.
+	// Product documentation, session, and memory tools are always present on the
+	// unified host registry for every role setting. Provider-visible surface stays
+	// lean via use_capability; these tools are dispatchable without schema growth.
 	docsToolAdded := false
 	addDocsTool := func() string {
 		if docsToolAdded {
@@ -1172,11 +1166,9 @@ func build(ctx context.Context, opts Options) (*BuildResult, error) {
 		reg.Add(memory.NewForgetTool(mem.Store))
 		return "enabled memory, remember, forget."
 	}
-	if !tokenEconomy {
-		addDocsTool()
-		addSessionTools()
-		addMemoryTools()
-	}
+	addDocsTool()
+	addSessionTools()
+	addMemoryTools()
 
 	// The `ask` tool puts structured multiple-choice questions to the user. It
 	// reaches them through the Asker on the call context, which interactive
@@ -1562,153 +1554,11 @@ func build(ctx context.Context, opts Options) (*BuildResult, error) {
 		addSlashCommandTool(implicitSkillInvocation)
 		return "enabled skills. Use run_skill/read_skill/read_only_skill or the dedicated skill tools on the next model request.\n\n" + skill.IndexBlock(skills)
 	}
-	if !tokenEconomy {
-		addInstallSourceTool()
-		if implicitSkillInvocation {
-			addSkillTools()
-		} else {
-			addSlashCommandTool(false)
-		}
-	}
-	if tokenEconomy {
-		addBuiltinSourceTools := func(source string, names ...string) string {
-			var missing []string
-			for _, name := range names {
-				if !builtinToolEnabled(cfg.Tools.Enabled, name) {
-					continue
-				}
-				if _, exists := reg.Get(name); !exists {
-					missing = append(missing, name)
-				}
-			}
-			if len(missing) == 0 {
-				return source + " tools are already enabled or disabled by [tools].enabled."
-			}
-			installed := addTools(reg, builtin.Workspace{
-				Dir:              root,
-				WriteRoots:       writeRoots,
-				ForbidReadRoots:  forbidReadRoots,
-				Bash:             bashSpec,
-				BashTimeout:      bashTimeout,
-				Search:           searchSpec,
-				ProxySpec:        proxySpec,
-				ReadPaths:        readPathResolver,
-				SessionGuard:     sessionGuard,
-				ManagedConfig:    managedConfig,
-				FileOverlay:      opts.FileOverlay,
-				Terminal:         opts.TerminalRunner,
-				SessionTemp:      sessionTemp,
-				FileWriteReceipt: fileWriteReceipt,
-			}.Tools(missing...))
-			return "enabled " + strings.Join(installed, ", ") + "."
-		}
-		reg.Add(&toolSourceConnector{
-			docs: func(context.Context) (string, error) {
-				return addDocsTool(), nil
-			},
-			skills: func(context.Context) (string, error) {
-				return addSkillTools(), nil
-			},
-			task: func(context.Context) (string, error) {
-				return addTaskTool(), nil
-			},
-			readOnlyTask: func(context.Context) (string, error) {
-				return addReadOnlyTaskTool(), nil
-			},
-			readOnlySkill: func(context.Context) (string, error) {
-				return addReadOnlySkillTools(), nil
-			},
-			install: func(context.Context) (string, error) {
-				return addInstallSourceTool(), nil
-			},
-			webFetch: func(context.Context) (string, error) {
-				if !builtinToolEnabled(cfg.Tools.Enabled, "web_fetch") {
-					return "web_fetch is disabled by [tools].enabled.", nil
-				}
-				names := addTools(reg, builtin.Workspace{
-					Dir:         root,
-					WriteRoots:  writeRoots,
-					Bash:        bashSpec,
-					BashTimeout: bashTimeout,
-					Search:      searchSpec,
-					ProxySpec:   proxySpec,
-				}.Tools("web_fetch"))
-				if len(names) == 0 {
-					return "web_fetch is already enabled or unavailable.", nil
-				}
-				return "enabled " + strings.Join(names, ", ") + ".", nil
-			},
-			lsp: func(context.Context) (string, error) {
-				if lspMgr == nil {
-					return "", fmt.Errorf("LSP is disabled in config")
-				}
-				names := addLSPTools()
-				if len(names) == 0 {
-					return "LSP tools are already enabled.", nil
-				}
-				return "enabled " + strings.Join(names, ", ") + ".", nil
-			},
-			sessions: func(context.Context) (string, error) {
-				return addSessionTools(), nil
-			},
-			memory: func(context.Context) (string, error) {
-				return addMemoryTools(), nil
-			},
-			commands: func(context.Context) (string, error) {
-				return addSlashCommandTool(false), nil
-			},
-			search: func(context.Context) (string, error) {
-				return addBuiltinSourceTools("search", "code_index", "glob", "grep", "ls"), nil
-			},
-			files: func(context.Context) (string, error) {
-				return addBuiltinSourceTools("files", "delete_range", "delete_symbol", "move_file", "multi_edit", "notebook_edit"), nil
-			},
-			workflow: func(ctx context.Context) (string, error) {
-				// complete_step is explicitly execution-phase-only. Keep todo_write
-				// available while planning, then expose complete_step on a fresh
-				// workflow connect after approval.
-				if agent.PlanModeFromContext(ctx) {
-					return addBuiltinSourceTools("workflow", "todo_write") +
-						" complete_step stays blocked in plan mode; connect workflow again after plan approval to enable it.", nil
-				}
-				return addBuiltinSourceTools("workflow", "complete_step", "todo_write"), nil
-			},
-			mcp: func(_ context.Context, name string) (string, error) {
-				spec, ok := onDemandMCPSpecs[name]
-				if !ok {
-					return "", fmt.Errorf("no configured MCP server named %q", name)
-				}
-				if opts.Stderr != nil {
-					spec.Stderr = opts.Stderr
-				}
-				tools, err := pluginHost.Add(ctx, spec)
-				if err != nil {
-					// On a shared host the server may already be connected
-					// (e.g. another tab started it). Fall back to fetching
-					// its tools from the existing client.
-					if errors.Is(err, plugin.ErrServerAlreadyConnected) || errors.Is(err, plugin.ErrSpawningInFlight) {
-						tools, err2 := pluginHost.ToolsFor(ctx, spec.Name)
-						if err2 != nil {
-							return "", err2
-						}
-						reg.RemovePrefix(plugin.ToolPrefix(spec.Name))
-						names := addTools(reg, tools)
-						if len(names) == 0 {
-							return fmt.Sprintf("MCP server %q connected but exposed no tools.", spec.Name), nil
-						}
-						return fmt.Sprintf("enabled MCP server %q tools: %s.", spec.Name, strings.Join(names, ", ")), nil
-					}
-					return "", err
-				}
-				reg.RemovePrefix(plugin.ToolPrefix(spec.Name))
-				names := addTools(reg, tools)
-				if len(names) == 0 {
-					return fmt.Sprintf("MCP server %q connected but exposed no tools.", spec.Name), nil
-				}
-				return fmt.Sprintf("enabled MCP server %q tools: %s.", spec.Name, strings.Join(names, ", ")), nil
-			},
-			mcpNames: onDemandMCPNames,
-		})
+	addInstallSourceTool()
+	if implicitSkillInvocation {
+		addSkillTools()
+	} else {
+		addSlashCommandTool(false)
 	}
 
 	// Session-shared MCP runtime: Host, specs, and connection snapshots. Each
@@ -1723,23 +1573,20 @@ func build(ctx context.Context, opts Options) (*BuildResult, error) {
 	skillStore.ConfigureToolBindings(func(sk skill.Skill) []tool.MCPBinding {
 		return skillMCPBindings(sk, reg, capSpecs, cachedTools, cacheKeyOK)
 	})
-	// Detect dual-model planner early so Balanced can attach the same stable
-	// use_capability surface to both Planner and Executor. Their frontends keep
-	// independent ledgers/audits while sharing the session MCP runtime.
+	// Detect dual-model planner early so Balanced/Delivery can attach the same
+	// stable use_capability surface to both Planner and Executor.
+	lightPreset := agentPreset == AgentPresetLight
 	dualModelPlanner := false
-	if pm := effectivePlannerModel(cfg, opts, tokenEconomy); pm != "" {
+	if pm := effectivePlannerModel(cfg, opts, lightPreset); pm != "" {
 		if pe, ok := resolveOptionalEntry(effectiveResolver, cfg, pm); ok && pe.Model != entry.Model {
 			dualModelPlanner = true
 		}
 	}
-	profile := capability.ProfileBalanced
-	if tokenDelivery {
-		profile = capability.ProfileDelivery
-	} else if tokenEconomy {
-		profile = capability.ProfileEconomy
-	}
+	profile := runtimeProfile
 	var capProxy *agent.UseCapabilityTool
 	// Catalog closes over capRuntime so proxy-connected tools stay routable.
+	// Use AllContractEntries so tool: capabilities include non-provider-visible
+	// tools that use_capability can still dispatch.
 	catalogFn := func() capability.Catalog {
 		conn := map[string]bool{}
 		failedNow := map[string]string{}
@@ -1752,7 +1599,7 @@ func build(ctx context.Context, opts Options) (*BuildResult, error) {
 			}
 		}
 		catOpts := capability.CatalogOptions{
-			Tools:       reg.ContractEntries(),
+			Tools:       reg.AllContractEntries(),
 			Skills:      skillStore.List(),
 			Plugins:     cfg.Plugins,
 			Profile:     profile,
@@ -1766,20 +1613,14 @@ func build(ctx context.Context, opts Options) (*BuildResult, error) {
 		}
 		return capability.BuildCatalog(catOpts)
 	}
-	// Always build the runtime when a plugin host exists so task/fleet children
-	// can use the stable proxy even in Balanced/Economy without Delivery.
-	if pluginHost != nil || len(capSpecs) > 0 || tokenDelivery || dualModelPlanner {
-		capRuntime = agent.NewMCPCapabilityRuntime(ctx, pluginHost, capSpecs, reg, catalogFn)
-		capRuntime.ConfigureServers(cfg.Plugins, capSpecs, enabledMCPNames)
-	}
-	if tokenDelivery || dualModelPlanner {
-		capLedger = capability.NewLedger()
-		capAudit = &capability.Audit{}
-		if capRuntime != nil {
-			capProxy = capRuntime.NewFrontend(capLedger, capAudit)
-			reg.Add(capProxy)
-		}
-	}
+	// Always build the capability runtime and provider-visible use_capability
+	// proxy so all three role settings share one tool schema.
+	capRuntime = agent.NewMCPCapabilityRuntime(ctx, pluginHost, capSpecs, reg, catalogFn)
+	capRuntime.ConfigureServers(cfg.Plugins, capSpecs, enabledMCPNames)
+	capLedger = capability.NewLedger()
+	capAudit = &capability.Audit{}
+	capProxy = capRuntime.NewFrontend(capLedger, capAudit)
+	reg.Add(capProxy)
 	skillStore.ConfigureInvocationPolicy(string(runtimeProfile), func(requires []string) []string {
 		connected := map[string]bool{}
 		failedNow := map[string]string{}
@@ -1792,7 +1633,7 @@ func build(ctx context.Context, opts Options) (*BuildResult, error) {
 			}
 		}
 		catOpts := capability.CatalogOptions{
-			Tools:       reg.ContractEntries(),
+			Tools:       reg.AllContractEntries(),
 			Skills:      skillStore.List(),
 			Plugins:     cfg.Plugins,
 			Profile:     runtimeProfile,
@@ -1824,6 +1665,7 @@ func build(ctx context.Context, opts Options) (*BuildResult, error) {
 		WriteScheduler:               subagentScheduler,
 		WriteWorkspaceRoot:           root,
 		ProjectChecks:                projectChecks,
+		AgentPreset:                  agentPreset,
 		DeliveryProfile:              tokenDelivery,
 		Ablation:                     opts.Ablation,
 		WorkspaceLease:               workspaceLease,
@@ -1851,7 +1693,7 @@ func build(ctx context.Context, opts Options) (*BuildResult, error) {
 	// Coordinator with its own session, kept separate for cache stability. The
 	// planner gets the same standing memory context and a filtered read-only
 	// research tool set, so it can inspect rules/code without side effects.
-	pm := effectivePlannerModel(cfg, opts, tokenEconomy)
+	pm := effectivePlannerModel(cfg, opts, lightPreset)
 	pe, plannerResolved := resolveOptionalEntry(effectiveResolver, cfg, pm)
 	if pm != "" && !plannerResolved {
 		// An unusable optional planner must not take the session down with it —
@@ -2076,9 +1918,11 @@ func build(ctx context.Context, opts Options) (*BuildResult, error) {
 	if taskTool != nil && capRuntime != nil {
 		taskTool.WithCapabilityRuntime(capRuntime)
 	}
-	if tokenDelivery {
-		var router *capability.SemanticRouter
-		// Prefer agent.subagent_models["capability-router"] when configured.
+	// All role settings share use_capability proxy routing. Semantic router is
+	// enabled for Delivery always, and for Balanced on dual-model or when the
+	// host later elevates mid/high-risk turns (deterministic route is primary).
+	var router *capability.SemanticRouter
+	if tokenDelivery || (!lightPreset && dualModelPlanner) {
 		if modelRef := strings.TrimSpace(cfg.Agent.SubagentModels["capability-router"]); modelRef != "" {
 			effortRef := strings.TrimSpace(cfg.Agent.SubagentEfforts["capability-router"])
 			if p, price, _, err := resolveSubagentProvider(modelRef, effortRef); err == nil && p != nil {
@@ -2086,22 +1930,16 @@ func build(ctx context.Context, opts Options) (*BuildResult, error) {
 				router = &capability.SemanticRouter{Provider: p, Sink: sink, Model: usageModelRef, Pricing: price, Audit: capAudit}
 			}
 		}
-		if router == nil {
-			// Fallback to the executor's provider — and its pricing, so router
-			// usage events never display as zero-cost.
+		if router == nil && tokenDelivery {
 			router = &capability.SemanticRouter{Provider: execProv, Sink: sink, Model: modelRef, Pricing: entry.Price, Audit: capAudit}
 		}
-		ctrl.WireCapabilityRouting(cfg.Plugins, capSpecs, router, capAudit)
-		ctrl.SetCapabilityProxyRouting(true)
-	} else if tokenEconomy {
-		ctrl.WireCapabilityRouting(cfg.Plugins, capSpecs, nil, nil)
-	} else if dualModelPlanner {
-		// Balanced dual-model: load plugin config + schema cache so not-yet-
-		// started MCP can route through the stable Planner/Executor proxy.
-		// No semantic router — deterministic route only.
-		ctrl.WireCapabilityRouting(cfg.Plugins, capSpecs, nil, capAudit)
-		ctrl.SetCapabilityProxyRouting(true)
 	}
+	ctrl.WireCapabilityRouting(cfg.Plugins, capSpecs, router, capAudit)
+	ctrl.SetCapabilityProxyRouting(true)
+
+	// Provider-visible tool surface is identical for every role setting before
+	// the extension snapshot freezes registry schemas for cache diagnostics.
+	applyUnifiedProviderToolSurface(reg)
 
 	// Freeze the extension kernel's snapshot of exactly what this build wired.
 	// The snapshot is assembled from the in-hand objects above — discovery
@@ -2113,7 +1951,7 @@ func build(ctx context.Context, opts Options) (*BuildResult, error) {
 	// provider catalog is the BASE catalog, exactly as before the preflight
 	// refactor: sidecar providers enter the snapshot through the Manager's own
 	// contributions, not through the legacy provider list.
-	mcpSpecs := enabledMCPSpecs(configSpecs, extraSpecs, onDemandMCPNames, onDemandMCPSpecs, tokenEconomy)
+	mcpSpecs := enabledMCPSpecs(configSpecs, extraSpecs)
 	snap, runtimeSet, extensionDispatcher, snapErr := assembleLegacySnapshot(ctx, legacyAssembly{
 		systemPrompt: sysPrompt,
 		registry:     reg,
@@ -2196,11 +2034,33 @@ func build(ctx context.Context, opts Options) (*BuildResult, error) {
 	return finalizeBuildResult(&BuildResult{Controller: ctrl, Snapshot: snap, Runtime: runtimeSet, Owner: owner, Extensions: extensionMgr, Dispatcher: extensionDispatcher, ExtensionUI: extUIHub, ProviderResolver: providerResolver, BaseProviderResolver: baseResolver, Assembly: assembly}, !opts.deferPublish), nil
 }
 
-// effectivePlannerModel centralizes planner precedence. The explicit ACP hard
-// override is checked before user/project config and cannot be reversed by a
-// later assembly branch.
-func effectivePlannerModel(cfg *config.Config, opts Options, tokenEconomy bool) string {
-	if cfg == nil || opts.Ablation.Off(ablation.Planner) || tokenEconomy {
+// applyUnifiedProviderToolSurface restricts Schemas/ContractEntries to the
+// shared core + host-control tools. use_capability can still Get every
+// registered tool, including those hidden from the provider schema.
+func applyUnifiedProviderToolSurface(reg *tool.Registry) {
+	if reg == nil {
+		return
+	}
+	allow := make([]string, 0, 16)
+	for _, name := range UnifiedProviderToolNames() {
+		if _, ok := reg.Get(name); ok {
+			allow = append(allow, name)
+		}
+	}
+	// Always keep use_capability if somehow only that remains.
+	if len(allow) == 0 {
+		if _, ok := reg.Get("use_capability"); ok {
+			allow = []string{"use_capability"}
+		}
+	}
+	reg.SetProviderVisibleTools(allow)
+}
+
+// effectivePlannerModel centralizes planner precedence. Light role settings
+// skip the dual-model planner (host uses light/full planning routes instead).
+// The explicit ACP hard override is checked before user/project config.
+func effectivePlannerModel(cfg *config.Config, opts Options, lightPreset bool) string {
+	if cfg == nil || opts.Ablation.Off(ablation.Planner) || lightPreset {
 		return ""
 	}
 	return strings.TrimSpace(cfg.Agent.PlannerModel)

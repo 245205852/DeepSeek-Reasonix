@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"reasonix/internal/ablation"
+	"reasonix/internal/event"
 	"reasonix/internal/evidence"
 	"reasonix/internal/instruction"
 )
@@ -172,6 +173,7 @@ func (a *Agent) finalReadinessCheckFor() finalReadinessCheck {
 	}
 	out.applies = true
 	if a.deliveryProfile {
+		a.emitTurnPhase(event.TurnPhaseVerifying)
 		criteriaEstablished := a.deliveryCriteriaEstablished || (checkpointApplies && checkpoint.CriteriaEstablished)
 		if !criteriaEstablished {
 			out.missingAcceptanceCriteria++

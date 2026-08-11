@@ -586,14 +586,42 @@ func (a *Agent) applyRecoveryAndPermission(ctx context.Context, plan *toolCallPl
 // PreToolUse hooks and preview checkpoints, and injects call context. All of
 // this happens after permission and before the concrete Execute call.
 func (a *Agent) prepareToolExecution(ctx context.Context, plan *toolCallPlan) (toolOutcome, bool) {
+	// TaskPolicy natural-language constraints bind both direct tools and
+	// use_capability-resolved writers before any workspace mutation.
+	if a.turnPolicySet && plan.mutates && !a.turnPolicy.AllowsMutation() {
+		return toolOutcome{
+			output:  "blocked: the current task policy forbids workspace modifications (user constraint or plan mode)",
+			blocked: true,
+			errMsg:  "blocked: task policy forbids mutation",
+		}, true
+	}
+	policyArgs := plan.permArgs
+	if len(plan.resolved.Args) > 0 {
+		policyArgs = plan.resolved.Args
+	}
+	if a.turnPolicySet && !a.turnPolicy.AllowsExternal() && isExternalActionTool(plan.evidenceName, plan.permName, policyArgs) {
+		return toolOutcome{
+			output:  "blocked: the current task policy forbids push/publish/deploy-style external actions",
+			blocked: true,
+			errMsg:  "blocked: task policy forbids external action",
+		}, true
+	}
+	if a.turnPolicySet && !a.turnPolicy.AllowsTests() && isVerificationCommandTool(plan.evidenceName, plan.permName, policyArgs) {
+		return toolOutcome{
+			output:  "blocked: the current task policy forbids running tests (user constraint)",
+			blocked: true,
+			errMsg:  "blocked: task policy forbids tests",
+		}, true
+	}
 	// Acquire after permission is granted but before PreToolUse: hooks are user
 	// shell code and can themselves change the workspace. This keeps readers
 	// concurrent and avoids holding the workspace during an approval prompt while
 	// still covering every write-side action that follows authorization.
-	if a.deliveryProfile && plan.mutates && a.workspaceLease != nil {
+	// Lazy workspace lease on the first real writer for every role setting.
+	if plan.mutates && a.workspaceLease != nil {
 		if err := a.workspaceLease.AcquireWrite(ctx); err != nil {
 			return toolOutcome{
-				output:  fmt.Sprintf("blocked: the workspace did not become available for Delivery writing: %v", err),
+				output:  fmt.Sprintf("blocked: the workspace did not become available for writing: %v", err),
 				blocked: true,
 				errMsg:  "blocked: workspace write lease unavailable",
 			}, true
@@ -906,4 +934,53 @@ func (a *Agent) observeAfterMutation(plan *toolCallPlan) {
 		toolName = plan.call.Name
 	}
 	a.mutationObserver.AfterMutation(plan.mutationPath, toolName)
+}
+
+func isExternalActionTool(evidenceName, permName string, args json.RawMessage) bool {
+	name := strings.ToLower(strings.TrimSpace(evidenceName))
+	if name == "" {
+		name = strings.ToLower(strings.TrimSpace(permName))
+	}
+	cmd := bashCommandFromArgs(args)
+	lower := strings.ToLower(cmd)
+	if strings.Contains(lower, "git push") || strings.Contains(lower, "git publish") {
+		return true
+	}
+	if strings.Contains(lower, "npm publish") || strings.Contains(lower, "gh release") {
+		return true
+	}
+	if strings.Contains(lower, "docker push") || strings.Contains(lower, "kubectl apply") {
+		return true
+	}
+	// Heuristic on tool names used by install/publish skills.
+	switch name {
+	case "publish", "deploy":
+		return true
+	}
+	return false
+}
+
+func isVerificationCommandTool(evidenceName, permName string, args json.RawMessage) bool {
+	name := strings.ToLower(strings.TrimSpace(evidenceName))
+	if name == "" {
+		name = strings.ToLower(strings.TrimSpace(permName))
+	}
+	if name != "bash" && name != "shell" {
+		return false
+	}
+	cmd := strings.ToLower(bashCommandFromArgs(args))
+	if cmd == "" {
+		return false
+	}
+	needles := []string{
+		"go test", "npm test", "npm run test", "pnpm test", "yarn test",
+		"pytest", "cargo test", "mvn test", "gradle test", "make test",
+		"bun test", "deno test",
+	}
+	for _, n := range needles {
+		if strings.Contains(cmd, n) {
+			return true
+		}
+	}
+	return false
 }

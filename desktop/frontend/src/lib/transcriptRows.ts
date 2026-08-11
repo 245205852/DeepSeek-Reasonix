@@ -21,6 +21,7 @@ export type ToolItem = Extract<Item, { kind: "tool" }>;
 export type NoticeItem = Extract<Item, { kind: "notice" }>;
 export type PhaseItem = Extract<Item, { kind: "phase" }>;
 export type CompactionItem = Extract<Item, { kind: "compaction" }>;
+export type CompletionSummaryItem = Extract<Item, { kind: "completion_summary" }>;
 
 // ── Live presence flags ───────────────────────────────────────────────────────
 // The model only depends on PRESENCE of live text/reasoning (which rows exist
@@ -41,7 +42,7 @@ export const NO_LIVE: TranscriptLiveFlags = { hasAnswerText: false, hasReasoning
 
 export type TurnDisplayParts = {
   processItems: Item[];
-  outsideItems: Array<NoticeItem | AssistantItem | ExtensionItem>;
+  outsideItems: Array<NoticeItem | AssistantItem | ExtensionItem | CompletionSummaryItem>;
 };
 
 function assistantHasVisibleAnswer(item: AssistantItem, live: TranscriptLiveFlags): boolean {
@@ -87,6 +88,11 @@ export function partitionTurnItems(items: readonly Item[], live: TranscriptLiveF
       } else {
         pushProcess(item);
       }
+      continue;
+    }
+    if (item.kind === "completion_summary") {
+      // End-of-turn quality summary stays visible outside the process fold.
+      current.outsideItems.push(item);
       continue;
     }
     if (item.kind === "extension") {
@@ -387,6 +393,7 @@ export type TranscriptRow =
   | { kind: "compaction"; key: string; item: CompactionItem }
   | { kind: "answer"; key: string; item: AssistantItem }
   | { kind: "notice"; key: string; item: NoticeItem }
+  | { kind: "completion_summary"; key: string; item: CompletionSummaryItem }
   | { kind: "extension"; key: string; item: ExtensionItem }
   | { kind: "turn-actions"; key: string; turn: number; text: string };
 
@@ -496,6 +503,8 @@ export function buildTranscriptRows(models: readonly TurnModel[], options: Build
           rows.push({ kind: "extension", key: `x:${item.id}`, item });
         } else if (item.kind === "notice") {
           rows.push({ kind: "notice", key: `n:${item.id}`, item });
+        } else if (item.kind === "completion_summary") {
+          rows.push({ kind: "completion_summary", key: `cs:${item.id}`, item });
         } else {
           rows.push({ kind: "answer", key: `a:${item.id}`, item });
         }
@@ -539,6 +548,7 @@ export function estimateTranscriptRowSize(row: TranscriptRow | undefined): numbe
       return 28;
     case "process-notice":
     case "notice":
+    case "completion_summary":
       return 44;
     case "compaction":
       return 36;
