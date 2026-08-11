@@ -46,6 +46,7 @@ type ProviderView struct {
 	Kind                        string                      `json:"kind"`
 	BaseURL                     string                      `json:"baseUrl"`
 	ChatURL                     string                      `json:"chatUrl"`
+	RequestURL                  string                      `json:"requestUrl"`
 	Models                      []string                    `json:"models"`
 	VisionModels                []string                    `json:"visionModels"`
 	VisionModelsSet             bool                        `json:"visionModelsConfigured"`
@@ -639,7 +640,7 @@ func providerViewFromEntryForRootWithResolverAndCredentials(p config.ProviderEnt
 		visionCapability = "unsupported"
 	}
 	return ProviderView{
-		Name: p.Name, BuiltIn: builtIn, Added: added, Kind: p.Kind, BaseURL: p.BaseURL, ChatURL: p.ChatURL,
+		Name: p.Name, BuiltIn: builtIn, Added: added, Kind: p.Kind, BaseURL: p.BaseURL, ChatURL: p.ChatURL, RequestURL: p.RequestURL,
 		Models: nonNil(models), VisionModels: nonNil(providerVisionModels(models, visionModels)), VisionModelsSet: visionModelsSet, VisionCapability: visionCapability, ModelsURL: p.ModelsURL, Default: p.DefaultModel(),
 		APIKeyEnv:                   p.APIKeyEnv,
 		Headers:                     nonNilStringMap(p.Headers),
@@ -840,6 +841,7 @@ func providerEntryCoreMatches(existing, preset config.ProviderEntry) bool {
 	return strings.EqualFold(strings.TrimSpace(existing.Kind), strings.TrimSpace(preset.Kind)) &&
 		normalizeProviderURL(existing.BaseURL) == normalizeProviderURL(preset.BaseURL) &&
 		strings.TrimSpace(existing.ChatURL) == strings.TrimSpace(preset.ChatURL) &&
+		strings.TrimSpace(existing.RequestURL) == strings.TrimSpace(preset.RequestURL) &&
 		strings.TrimSpace(existing.APIKeyEnv) == strings.TrimSpace(preset.APIKeyEnv) &&
 		existing.AuthHeader == preset.AuthHeader
 }
@@ -2407,6 +2409,10 @@ func saveProviderConfig(c *config.Config, p ProviderView) error {
 	e.Kind = p.Kind
 	e.BaseURL = p.BaseURL
 	e.ChatURL = strings.TrimSpace(p.ChatURL)
+	e.RequestURL = strings.TrimSpace(p.RequestURL)
+	if strings.EqualFold(strings.TrimSpace(e.Kind), "openai") && e.RequestURL != "" {
+		e.ChatURL = e.RequestURL
+	}
 	e.ModelsURL = strings.TrimSpace(p.ModelsURL)
 	e.APIKeyEnv = p.APIKeyEnv
 	e.Headers = p.Headers

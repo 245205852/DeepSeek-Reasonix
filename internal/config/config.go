@@ -1337,11 +1337,12 @@ type ProviderEntry struct {
 	Name          string            `toml:"name"`
 	Kind          string            `toml:"kind"`
 	BaseURL       string            `toml:"base_url"`
-	ChatURL       string            `toml:"chat_url"`
-	Model         string            `toml:"model"`      // a single model (back-compat)
-	Models        []string          `toml:"models"`     // a vendor's model list (one base_url/key, many models)
-	ModelsURL     string            `toml:"models_url"` // auto-fetch models from this URL on startup
-	Default       string            `toml:"default"`    // default model when Models is set (else Models[0])
+	ChatURL       string            `toml:"chat_url"`    // legacy OpenAI chat endpoint override; retained with its historical semantics
+	RequestURL    string            `toml:"request_url"` // exact provider request URL written by current settings UI
+	Model         string            `toml:"model"`       // a single model (back-compat)
+	Models        []string          `toml:"models"`      // a vendor's model list (one base_url/key, many models)
+	ModelsURL     string            `toml:"models_url"`  // auto-fetch models from this URL on startup
+	Default       string            `toml:"default"`     // default model when Models is set (else Models[0])
 	APIKeyEnv     string            `toml:"api_key_env"`
 	PresetID      string            `toml:"preset_id"`      // curated preset identity; UI-only metadata, not sent to model providers.
 	PresetVersion int               `toml:"preset_version"` // curated preset schema version for future migrations.

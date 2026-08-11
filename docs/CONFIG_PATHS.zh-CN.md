@@ -114,11 +114,14 @@ provider-name 规则。例如 `https://token.sensenova.cn/v1` 会生成 provider
 
 ### 自定义 provider 的端点 URL
 
-自定义 OpenAI-compatible provider 通常只需要在 `base_url` 中填写 API 端点。
-Reasonix 会把聊天请求发送到 `base_url + "/chat/completions"`，并尝试 `/models`
-和 `/v1/models` 等模型发现地址。如果网关给的是完整聊天请求 URL，可以设置
-`chat_url`；Reasonix 会直接使用这个地址，不再追加 `/chat/completions`。如果模型
-发现需要使用单独地址，可以设置 `models_url`。
+桌面端自定义 provider 表单会把「API 地址」作为完整请求地址写入 `request_url`，
+Reasonix 不会追加或改写路径。已有 TOML 配置不会被重新解释：旧 `chat_url` 继续
+保持原来的 OpenAI 专用行为，Anthropic 和 Responses 仍会根据 `base_url` 推导请求
+路径；只有用户在新版桌面端明确保存该 provider 后，才会写入并启用 `request_url`。
+保存 OpenAI-compatible provider 时还会把完整地址同步到旧 `chat_url`，使旧版本
+继续使用同一请求目标。旧版本无法识别 Anthropic 或 Responses 的任意自定义请求路径。
+模型发现需要单独地址时可设置 `models_url`；否则 Reasonix 会继续从 `base_url`
+推测模型发现地址。
 
 ## 全局 `.env`
 

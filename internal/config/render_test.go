@@ -308,6 +308,7 @@ func TestRenderTOMLRoundTrips(t *testing.T) {
 	mm, _ := orig.Provider("mimo-pro")
 	mm.BaseURL = "http://localhost:8000/v1"
 	mm.ChatURL = "http://localhost:8000/v1/chat/completions"
+	mm.RequestURL = "http://localhost:8000/custom/chat/completions/?token=1"
 	mm.ModelsURL = "http://localhost:8000/v1/models"
 	mm.ReasoningProtocol = "openai"
 	mm.PresetID = "mimo-api"
@@ -481,7 +482,7 @@ func TestRenderTOMLRoundTrips(t *testing.T) {
 	if got.Tools.Shell.Path != "/usr/local/bin/bash" {
 		t.Errorf("tools.shell.path = %q, want /usr/local/bin/bash", got.Tools.Shell.Path)
 	}
-	if g, _ := got.Provider("mimo-pro"); g == nil || g.BaseURL != "http://localhost:8000/v1" || g.ChatURL != "http://localhost:8000/v1/chat/completions" || g.ModelsURL != "http://localhost:8000/v1/models" || g.ReasoningProtocol != "openai" {
+	if g, _ := got.Provider("mimo-pro"); g == nil || g.BaseURL != "http://localhost:8000/v1" || g.ChatURL != "http://localhost:8000/v1/chat/completions" || g.RequestURL != "http://localhost:8000/custom/chat/completions/?token=1" || g.ModelsURL != "http://localhost:8000/v1/models" || g.ReasoningProtocol != "openai" {
 		t.Errorf("mimo-pro endpoint fields not preserved: %+v", g)
 	}
 	if g, _ := got.Provider("mimo-pro"); g == nil || g.PresetID != "mimo-api" || g.PresetVersion != ProviderPresetVersion {
@@ -912,6 +913,7 @@ func TestResponsesProviderModeRoundTripsInUserAndProjectRender(t *testing.T) {
 	cfg := Default()
 	cfg.Providers = append(cfg.Providers, ProviderEntry{
 		Name: "responses-test", Kind: "responses", BaseURL: "https://example.com/v1",
+		ChatURL: "https://legacy.example.com/chat/completions", RequestURL: "https://example.com/v1/custom/responses",
 		Model: "model", APIKeyEnv: "RESPONSES_API_KEY",
 		ResponsesMode: "stateful", ResponsesStateful: &legacyFalse,
 	})
@@ -925,7 +927,7 @@ func TestResponsesProviderModeRoundTripsInUserAndProjectRender(t *testing.T) {
 			t.Fatalf("decode responses config: %v\n%s", err, rendered)
 		}
 		entry, ok := decoded.Provider("responses-test")
-		if !ok || entry.ResponsesMode != "stateful" || entry.ResponsesStateful == nil || *entry.ResponsesStateful {
+		if !ok || entry.ChatURL != "https://legacy.example.com/chat/completions" || entry.RequestURL != "https://example.com/v1/custom/responses" || entry.ResponsesMode != "stateful" || entry.ResponsesStateful == nil || *entry.ResponsesStateful {
 			t.Fatalf("responses settings did not round-trip: %+v, found=%v", entry, ok)
 		}
 	}
