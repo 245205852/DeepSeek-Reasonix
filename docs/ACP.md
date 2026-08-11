@@ -13,6 +13,12 @@ agent over standard input and output. Editors and other ACP hosts launch the
 process, open one or more workspace-scoped sessions, and receive streamed
 messages, tool activity, plans, permission requests, and configuration updates.
 
+Session status usage objects may include structured `costQuote` (original
+currency, `originalTotals`, identity/official-table valuations,
+`costComplete`, `displayComplete`, `displayStatus`, and `billingMode`) alongside legacy
+`estimatedCost` / `currency` aliases that mirror the selected display valuation.
+See [Billing](./BILLING.md).
+
 ## Start the agent
 
 An ACP host should launch one of these commands:

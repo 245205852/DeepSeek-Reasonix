@@ -127,8 +127,49 @@ export interface WireUsage {
   contextCacheMissTokens?: number;
   cost?: number;
   currency?: string;
-  // Deprecated compatibility alias. Prefer cost + currency.
+  currencyCode?: string;
+  // Deprecated compatibility alias. Prefer cost + currencyCode / costQuote.
   costUsd?: number;
+  costComplete?: boolean;
+  displayComplete?: boolean;
+  displayStatus?: string;
+  aggregateMode?: string;
+  originalTotals?: Money[];
+  /** Host-side structured quote; prefer over cost/currency aliases. */
+  costQuote?: CostQuote;
+}
+
+export interface Money {
+  amount: string;
+  currency: string;
+}
+
+export interface CostQuote {
+  original: Money;
+  originalTotals?: Money[];
+  valuations?: Record<string, {
+    money: Money;
+    basis: string;
+    source: string;
+    asOf: string;
+    rateSnapshot?: { base: string; quote: string; rate: number; source: string; asOf: string; stale?: boolean };
+    stale?: boolean;
+  }>;
+  selected?: Money;
+  billingMode?: string;
+  estimated: boolean;
+  costComplete?: boolean;
+  displayComplete?: boolean;
+  complete: boolean;
+  displayStatus?: "matched" | "fallback_original" | "bucketed" | "unavailable" | string;
+  aggregateMode?: "single_currency" | "common_valuation" | "currency_buckets" | string;
+  modelRef?: string;
+  usageSource?: string;
+  pricingFingerprint?: string;
+  rateDate?: string;
+  incompleteReason?: string;
+  legacyEstimate?: boolean;
+  catalogSource?: string;
 }
 
 export interface WireRecoveryApproval {
@@ -519,6 +560,10 @@ export interface ContextPanelInfo {
   sessionCurrency?: string;
   // Deprecated compatibility alias. Prefer sessionCost + sessionCurrency.
   sessionCostUsd?: number;
+  sessionCostComplete?: boolean;
+  sessionCostEstimated?: boolean;
+  sessionBillingMode?: string;
+  sessionCostQuote?: CostQuote;
   sources?: Record<string, UsageSourceStats>;
   mock?: boolean;
   readFiles: ReadFileRecord[];
@@ -821,6 +866,8 @@ export interface ContextInfo {
   cacheHitTokens?: number;
   cacheMissTokens?: number;
   estimated?: boolean;
+  sessionCostComplete?: boolean;
+  sessionCostQuote?: CostQuote;
   sources?: Record<string, UsageSourceStats>;
   maintenance?: ContextMaintenanceInfo;
 }
@@ -1736,10 +1783,18 @@ export interface ProviderModelOverrideView {
 
 // BalanceInfo is the wallet-balance readout (desktop/app.go Balance). available
 // is false when the provider declares no balanceUrl or a fetch failed; display is
-// the formatted amount (e.g. "¥110.00").
+// the formatted amount in an original wallet currency; no implicit FX conversion.
 export interface BalanceInfo {
   available: boolean;
   display: string;
+  detail?: string;
+  complete?: boolean;
+  rateDate?: string;
+  approx?: boolean;
+  currencies?: string[];
+  primaryCurrency?: string;
+  costDisplayCurrency?: string;
+  multiCurrency?: boolean;
   err?: string;
 }
 

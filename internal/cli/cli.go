@@ -319,21 +319,11 @@ func cliProfileBuildOptions(modelName string, maxStepsOverride int, requireKey b
 		PermissionAllow:      overrides.PermissionAllow,
 		AdditionalDirs:       overrides.AdditionalDirs,
 		HeadlessApprovalMode: overrides.HeadlessApprovalMode,
-		AutoPricingCurrency:  cliAutoPricingCurrency(),
 		StatsSource:          "cli",
 		Stderr:               overrides.Stderr,
 		OnSessionRecovered:   overrides.OnSessionRecovered,
 		Ablation:             overrides.Ablation,
 		SessionTemp:          overrides.SessionTemp,
-	}
-}
-
-func cliAutoPricingCurrency() string {
-	switch i18n.CurrentLanguage() {
-	case "zh", "zh-TW":
-		return "CNY"
-	default:
-		return "USD"
 	}
 }
 
@@ -2355,8 +2345,7 @@ func configCurrencyCommand(args []string) int {
 			fmt.Fprintln(os.Stderr, i18n.M.ErrorPrefix, err)
 			return 1
 		}
-		cfg.ApplyRuntimeAutoPricingCurrency(cliAutoPricingCurrency())
-		fmt.Printf("currency = %q (resolved: %s)\n", pricingCurrencyDisplay(cfg.DesktopCurrency()), cfg.DeepSeekOfficialPricingCurrency())
+		fmt.Printf("currency = %q (display: %s)\n", pricingCurrencyDisplay(cfg.DisplayCurrencyPref()), cfg.ResolveDisplayCurrency())
 		return 0
 	}
 	mode, err := parseCLIPricingCurrency(rest[0])
@@ -2372,19 +2361,16 @@ func configCurrencyCommand(args []string) int {
 	unlock := config.LockUserConfigEdits()
 	defer unlock()
 	cfg := config.LoadForEdit(path)
-	if err := cfg.SetDesktopCurrency(mode); err != nil {
+	if err := cfg.SetDisplayCurrency(mode); err != nil {
 		fmt.Fprintln(os.Stderr, i18n.M.ErrorPrefix, err)
 		return 2
 	}
-	resolved := cfg.DeepSeekOfficialPricingCurrency()
-	if mode == "" && cfg.DesktopLanguage() == "" {
-		resolved = cliAutoPricingCurrency()
-	}
+	resolved := cfg.ResolveDisplayCurrency()
 	if err := cfg.SaveTo(path); err != nil {
 		fmt.Fprintln(os.Stderr, i18n.M.ErrorPrefix, err)
 		return 1
 	}
-	fmt.Printf("currency = %q (resolved: %s, %s)\n", pricingCurrencyDisplay(mode), resolved, displayPath(path))
+	fmt.Printf("currency = %q (display: %s, %s)\n", pricingCurrencyDisplay(mode), resolved, displayPath(path))
 	return 0
 }
 

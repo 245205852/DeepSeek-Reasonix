@@ -47,6 +47,28 @@ type record struct {
 	Total      int       `json:"total,omitempty"`
 	Requests   int       `json:"requests,omitempty"` // provider requests represented by this row
 	Turn       bool      `json:"turn,omitempty"`     // true for TurnDone marker rows
+	// Cost quote fields (additive; older readers ignore them).
+	UsageSource        string   `json:"usage_source,omitempty"`
+	CostAmount         string   `json:"cost_amount,omitempty"`     // original amount decimal
+	CostCurrency       string   `json:"cost_currency,omitempty"`   // original ISO
+	SelectedAmount     string   `json:"selected_amount,omitempty"` // display valuation
+	SelectedCurrency   string   `json:"selected_currency,omitempty"`
+	CostComplete       *bool    `json:"cost_complete,omitempty"`
+	DisplayComplete    *bool    `json:"display_complete,omitempty"`
+	DisplayStatus      string   `json:"display_status,omitempty"`
+	AggregateMode      string   `json:"aggregate_mode,omitempty"`
+	OriginalTotals     []string `json:"original_totals,omitempty"`
+	CostEstimated      bool     `json:"cost_estimated,omitempty"`
+	LegacyEstimate     bool     `json:"legacy_estimate,omitempty"`
+	PricingFingerprint string   `json:"pricing_fingerprint,omitempty"`
+	RateDate           string   `json:"rate_date,omitempty"`
+	IncompleteReason   string   `json:"incomplete_reason,omitempty"`
+	BillingMode        string   `json:"billing_mode,omitempty"`
+	// ValuationCNY/USD amounts when present (occurrence-time).
+	ValuationCNY string `json:"valuation_cny,omitempty"`
+	ValuationUSD string `json:"valuation_usd,omitempty"`
+	// SelectedCost is a float compatibility mirror of SelectedAmount.
+	SelectedCost float64 `json:"selected_cost,omitempty"`
 }
 
 // Writer appends records to the daily stats file for a given stats dir.

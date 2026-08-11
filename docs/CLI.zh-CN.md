@@ -78,20 +78,20 @@ setup 会询问是否共享该凭据；两个 provider 使用不同 Key 时，�
 setup 添加或删除 provider 时，也会同步维护桌面端 provider access，因此相同模型可以
 直接在桌面端使用。
 
-### 配置区域定价货币
+### 配置费用展示币种
 
-使用用户全局货币命令查看或选择 DeepSeek 官方区域价格表：
+使用用户全局货币命令查看或选择费用展示币种：
 
 ```sh
 reasonix config currency             # 显示已保存值和最终解析结果
-reasonix config currency auto        # 跟随解析后的 locale
+reasonix config currency auto        # 钱包币种优先，否则原币价表币种
 reasonix config currency CNY
 reasonix config currency USD
 ```
 
-`auto` 会把简体或繁体中文 locale 解析为 CNY，把英文及其他 locale 解析为 USD。显式
-选择 `CNY` 或 `USD` 后，货币不再跟随界面语言。该偏好只保存在用户全局配置中，项目
-`reasonix.toml` 无法覆盖，因此不支持 `--local`。自定义 provider 价格不会被修改。
+`auto` 在配置中保持未解析。只有一个有效钱包币种时，它才会成为当前运行时提示；否则
+CLI 使用原币或按 ISO 排序的币种桶。语言和主机 locale 不再选择价表。该偏好只保存在
+用户全局配置中，项目 `reasonix.toml` 无法覆盖，因此不支持 `--local`。自定义价格不会被修改。
 
 在交互式会话中，`/currency` 显示已保存值和最终解析结果；
 `/currency auto|CNY|USD` 会修改偏好并刷新当前运行时，同时保留当前对话。
@@ -192,11 +192,20 @@ reasonix run "运行测试" --output-format stream-json
 }
 ```
 
-`total_cost` 使用 `currency` 给出的 ISO 货币代码计价；DeepSeek 官方价格目前会输出
-`CNY` 或 `USD`。`total_cost_usd` 作为数字兼容别名继续保留，并与 `total_cost` 数值
-相同；即使 `currency` 为 `CNY`，它也不会按旧字段名自动换算为美元。新接入必须同时读取
-`total_cost` 和 `currency`。如果一次结构化运行包含多种货币，Reasonix 会直接报错，
-不会输出容易误解的合计金额。
+`total_cost` 仅在形成单一 `selected` 展示金额时存在（ISO 代码见 `currency`）。有
+`cost_quote` 时优先读它：含原币费用、`original_totals`、发生时的官方双区域
+`official_table` 估值、`cost_complete`、`display_complete`、`display_status`，以及
+`billing_mode`（`payg` 或 `subscription_equivalent`，后者表示如 MiMo Token Plan
+的「按量等效估算」）。
+
+`total_cost_usd` 仅为兼容别名，数值镜像 `total_cost`，**不表示一定是美元**。混用
+多种原币时不会再报错：若 usage/价表事实完整则 `cost_complete=true`、
+`display_complete=false`，并用 `original_costs`/`original_totals` 给出各原币明细，
+绝不伪造跨币种合计。
+
+全局展示偏好为 `[billing].display_currency`（`auto|CNY|USD`）；旧
+`[desktop].currency` 仍会迁移。供应商原币价表由各条目冻结的 `billing_currency`
+决定，切换展示币种不会改写价表。可用 `reasonix doctor billing` 排查。
 
 执行失败时使用 `subtype: "error_during_execution"` 和 `is_error: true`。
 结构化模式会把运行时错误保留在 JSON 中，不再额外重复输出一份人类可读错误。
@@ -372,7 +381,7 @@ SSH 下远端进程无法读取本机剪贴板，请使用终端粘贴快捷键�
 | `/status` | 显示模型、effort、cache、Git、后台任务，以及工作模式或余额信息。 |
 | `/work-mode [economy\|balanced\|delivery]` | 查看或切换运行时工作模式；`/profile` 是别名。 |
 | `/theme [auto\|light\|dark\|style]` | 查看或切换 CLI 背景模式和强调色。 |
-| `/currency [auto\|CNY\|USD]` | 查看或切换用户全局官方定价货币，并刷新当前运行时。 |
+| `/currency [auto\|CNY\|USD]` | 查看或切换用户全局费用展示币种，并刷新当前运行时。 |
 | `/paste-image` | 读取剪贴板图片并插入可编辑的附件标记。 |
 | `/mouse` | 切换应用内鼠标选区、滚动条和滚轮处理。 |
 | `/effort` | 查看或切换 reasoning effort。 |
