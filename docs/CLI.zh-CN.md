@@ -14,7 +14,7 @@
 ```sh
 reasonix
 reasonix --model deepseek-pro
-reasonix --profile delivery --effort high
+reasonix --preset delivery --effort high
 reasonix --dir /path/to/project
 ```
 
@@ -24,7 +24,8 @@ reasonix --dir /path/to/project
 | 参数 | 用途 |
 | --- | --- |
 | `--model NAME` | 选择已配置的 provider 或 `provider/model` 引用。 |
-| `--profile economy\|balanced\|delivery` | 选择运行时工作模式。 |
+| `--preset light\|balanced\|delivery` | 选择 Agent 执行设定。默认 `balanced`。 |
+| `--profile economy\|balanced\|delivery` | 已弃用，等同 `--preset`（`economy` → `light`）。 |
 | `--effort LEVEL` | 覆盖当前会话的 reasoning effort。 |
 | `--max-steps N` | 为本次运行设置工具调用轮数上限；`0` 使用自动执行。 |
 | `--dir PATH` | 加载配置和工具前切换 workspace 根目录。 |
@@ -124,8 +125,8 @@ echo "解释这段代码" | reasonix run
 ```
 
 未使用 `-p` 或结构化输出格式时，`reasonix run` 保持正常的终端流式展示。它也接受
-`--model`、`--profile`、`--max-steps`、`--effort`、`--dir`、`--add-dir`、
-`--continue`、`--resume QUERY`、`--copy`、`--allowed-tools` 和
+`--model`、`--preset`（或兼容的 `--profile`）、`--max-steps`、`--effort`、`--dir`、
+`--add-dir`、`--continue`、`--resume QUERY`、`--copy`、`--allowed-tools` 和
 `--permission-mode`，以及作为 `--permission-mode auto` 别名的 `--auto` / `-y`。
 
 ### 基准对照组
@@ -350,11 +351,11 @@ reasonix -p "同时更新两个项目" \
 | `Shift+Tab` | 按 `Ask → Auto → Plan → Ask` 循环。 |
 | `Ctrl+Y` | 独立切换 YOLO，不进入安全模式循环。 |
 
-响应式底栏左侧显示当前交互状态；空间足够时，右侧显示模型、推理强度和工作模式。第二行按
+响应式底栏左侧显示当前交互状态；空间足够时，右侧显示模型、推理强度和执行设定。第二行按
 可用性显示仓库与会话遥测，例如缓存命中率、上下文占用、压缩余量、后台任务和余额。
 “就绪”表示输入框当前空闲；进入选择器、审批、图片粘贴、shell 模式等需要用户关注的状态
-时，这个位置会切换。窄终端会移动或压缩完整信息组，不会从中间截断标签。可见标签和工作
-模式值会跟随 `/language`。
+时，这个位置会切换。窄终端会移动或压缩完整信息组，不会从中间截断标签。可见标签和执行
+设定值会跟随 `/language`。
 
 使用 `/theme auto|light|dark` 选择终端背景模式，也可以从 `/theme` 列出的命名配色中选择
 强调色。输入框上下边线、插入光标、选区、滚动条和底栏都会使用当前 CLI 主题。Transcript
@@ -378,8 +379,8 @@ SSH 下远端进程无法读取本机剪贴板，请使用终端粘贴快捷键�
 | `/model` | 搜索已配置模型并切换当前模型。 |
 | `/provider` | 选择 provider，再选择该 provider 下的模型。 |
 | `/resume` | 搜索最近会话并切换。 |
-| `/status` | 显示模型、effort、cache、Git、后台任务，以及工作模式或余额信息。 |
-| `/work-mode [economy\|balanced\|delivery]` | 查看或切换运行时工作模式；`/profile` 是别名。 |
+| `/status` | 显示模型、effort、cache、Git、后台任务，以及执行设定或余额信息。 |
+| `/preset [light\|balanced\|delivery]` | 查看或切换 Agent 执行设定（不重建 Controller）；`/work-mode` 与 `/profile` 为兼容别名（`economy` → `light`）。 |
 | `/theme [auto\|light\|dark\|style]` | 查看或切换 CLI 背景模式和强调色。 |
 | `/currency [auto\|CNY\|USD]` | 查看或切换用户全局费用展示币种，并刷新当前运行时。 |
 | `/paste-image` | 读取剪贴板图片并插入可编辑的附件标记。 |
@@ -398,8 +399,11 @@ SSH 下远端进程无法读取本机剪贴板，请使用终端粘贴快捷键�
 | `/tree`、`/branch`、`/switch` | 查看或切换会话分支。 |
 | `/reload` | 重载 agent 运行时（扩展、工具、skills、commands、hooks、providers），保留当前会话。回合运行中只排队一次；失败原子——重建失败时当前运行时不受影响。 |
 
-切换模型、effort 或工作模式会重建运行时，同时保留当前对话、会话级权限覆盖、附加目录
+切换模型或 effort 会重建运行时，同时保留当前对话、会话级权限覆盖、附加目录
 访问权限和 session ownership。`/reload` 使用同一套失败原子重建语义。
+`/preset`（及兼容的 `/work-mode` / `/profile`）就地更新执行设定，不重建
+Controller；三种执行设定共享同一套 provider 可见工具面（可选能力经
+`use_capability` 调度）。
 
 ## 会话目录索引诊断
 

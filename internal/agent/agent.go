@@ -15,6 +15,7 @@ import (
 	"mvdan.cc/sh/v3/syntax"
 
 	"reasonix/internal/ablation"
+	"reasonix/internal/agentpreset"
 	"reasonix/internal/capability"
 	"reasonix/internal/checkpoint"
 	"reasonix/internal/diff"
@@ -30,6 +31,7 @@ import (
 	"reasonix/internal/provider"
 	"reasonix/internal/sandbox"
 	"reasonix/internal/shellparse"
+	"reasonix/internal/taskpolicy"
 	"reasonix/internal/tool"
 	"reasonix/internal/workspacelease"
 )
@@ -484,9 +486,21 @@ type Agent struct {
 	// the provider-cached prefix. deliveryScopeID and deliveryCheckpoint survive
 	// turns while a stable delivery scope continues; the per-turn expectations
 	// live in perTurnState.
+	// When agentPreset is set, deliveryProfile is derived for baseline Delivery
+	// and may be elevated per-turn by TaskPolicy (e.g. Light high-risk).
 	deliveryProfile    bool
 	deliveryScopeID    string
 	deliveryCheckpoint evidence.DeliveryCheckpoint
+
+	// agentPreset is the session role setting. Atomic so SetAgentPreset can
+	// update subsequent turns without rebuilding the agent.
+	agentPreset atomic.Value // string light|balanced|delivery
+
+	// turnPolicy is frozen at the start of the current Run and never observes
+	// mid-turn SetAgentPreset changes.
+	turnPolicy taskpolicy.TaskPolicy
+	// turnPolicySet is true once beginRunTurn derived turnPolicy.
+	turnPolicySet bool
 
 	// perTurnState groups the host flags that are valid for exactly one
 	// Agent.Run. beginRunTurn zeroes the whole struct in one assignment, so a
@@ -767,9 +781,8 @@ func (a *Agent) withTurnPreferences(input string) string {
 		}
 	}
 	input = WithReasoningLanguage(input, lang)
-	if a.deliveryProfile && !strings.Contains(input, "<delivery-runtime>") {
-		input = strings.TrimSpace(input) + "\n\n" + DeliveryRuntimeMarker
-	}
+	// Role settings no longer inject a stable delivery-runtime system-like
+	// marker. Per-turn <execution-policy> carries the frozen role setting.
 	return input
 }
 
@@ -1183,7 +1196,15 @@ type Options struct {
 	// DeliveryProfile enforces acceptance criteria before mutations and requires
 	// post-change review, verification, and evidence-backed sign-off before a
 	// final answer. It changes host control flow, not tool schemas.
+	// Deprecated: prefer AgentPreset + turn TaskPolicy. Still honored when
+	// AgentPreset is empty for one compatibility version of direct constructors.
 	DeliveryProfile bool
+
+	// AgentPreset is the session role setting (light|balanced|delivery). Empty
+	// falls back to balanced unless DeliveryProfile is true (then delivery).
+	// Switching the preset mid-session does not rebuild the agent; the value is
+	// frozen at turn admission into TaskPolicy.
+	AgentPreset string
 
 	// Ablation switches subsystems off for a benchmark arm. The zero value runs
 	// everything, so ordinary callers leave it unset.
@@ -1329,7 +1350,7 @@ func New(prov provider.Provider, tools *tool.Registry, session *Session, opts Op
 		missingReasoningWarnState: missingReasoningWarnStateFor(opts.MissingReasoningWarnStateDir),
 		evidence:                  evidence.NewLedger(),
 		projectChecks:             append([]instruction.VerifyCheck(nil), opts.ProjectChecks...),
-		deliveryProfile:           opts.DeliveryProfile,
+		deliveryProfile:           opts.DeliveryProfile || agentpreset.Normalize(opts.AgentPreset) == agentpreset.Delivery,
 		ablation:                  opts.Ablation,
 		classifierTaskText:        opts.ClassifierTaskText,
 		capabilityLedger:          opts.CapabilityLedger,
@@ -1351,11 +1372,60 @@ func New(prov provider.Provider, tools *tool.Registry, session *Session, opts Op
 	if a.sessionPath != "" {
 		a.LoadProjectionSidecar(a.sessionPath)
 	}
+	preset := strings.TrimSpace(opts.AgentPreset)
+	if preset == "" && opts.DeliveryProfile {
+		preset = string(agentpreset.Delivery)
+	}
+	a.SetAgentPreset(preset)
 	a.SetResponseLanguage(opts.ResponseLanguage)
 	a.SetReasoningLanguage(opts.ReasoningLanguage)
 	a.maybeArmForkFromEnv()
 	a.maybeWrapForkCaptureProvider()
 	return a
+}
+
+// SetAgentPreset updates the role setting used by subsequent turns. It does not
+// rebuild providers, tools, or history. The in-flight turn keeps its frozen
+// TaskPolicy.
+func (a *Agent) SetAgentPreset(preset string) {
+	if a == nil {
+		return
+	}
+	p := agentpreset.Normalize(preset)
+	a.agentPreset.Store(string(p))
+	// Keep baseline deliveryProfile aligned with Delivery role setting so
+	// legacy gates that still read the bool stay coherent until fully migrated.
+	switch p {
+	case agentpreset.Delivery:
+		a.deliveryProfile = true
+	case agentpreset.Light, agentpreset.Balanced:
+		// Light may still elevate per-turn; baseline stays non-delivery.
+		a.deliveryProfile = false
+	}
+}
+
+// AgentPreset returns the current session role setting (never empty).
+func (a *Agent) AgentPreset() string {
+	if a == nil {
+		return string(agentpreset.Balanced)
+	}
+	if v := a.agentPreset.Load(); v != nil {
+		if s, ok := v.(string); ok && s != "" {
+			return string(agentpreset.Normalize(s))
+		}
+	}
+	if a.deliveryProfile {
+		return string(agentpreset.Delivery)
+	}
+	return string(agentpreset.Balanced)
+}
+
+// TurnPolicy returns the frozen TaskPolicy for the active turn, if any.
+func (a *Agent) TurnPolicy() (taskpolicy.TaskPolicy, bool) {
+	if a == nil || !a.turnPolicySet {
+		return taskpolicy.TaskPolicy{}, false
+	}
+	return a.turnPolicy, true
 }
 
 func usageSourceOrDefault(source, fallback string) string {
@@ -1411,7 +1481,9 @@ func (a *Agent) Run(ctx context.Context, input string) (runErr error) {
 		}
 	}
 	a.recoveryRunSeq.Add(1)
-	if a.deliveryProfile && a.workspaceLease != nil {
+	// All role settings participate in the workspace lease for the run; the
+	// exclusive write lock is still acquired lazily on the first real writer.
+	if a.workspaceLease != nil {
 		a.workspaceLease.BeginRun()
 		defer a.workspaceLease.EndRun()
 	}

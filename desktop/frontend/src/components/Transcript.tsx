@@ -8,7 +8,7 @@ import { AssistantMessage, InvocationMetadataContext, TurnActions, UserMessage }
 import { ProcessCompactIcon, ProcessPhaseIcon } from "./ProcessCard";
 import { ToolCard } from "./ToolCard";
 import { ExtensionCard } from "./ExtensionCard";
-import { ArrowDown, ChevronRight, CirclePlay, Info, TriangleAlert } from "lucide-react";
+import { ArrowDown, ChevronRight, CirclePlay, FileSearch, Info, TriangleAlert } from "lucide-react";
 import { Welcome } from "./Welcome";
 import { ReadOnlyBatch } from "./ReadOnlyBatch";
 import { ToolGroup } from "./ToolGroup";
@@ -146,6 +146,7 @@ export function Transcript({
   footerHeight = 0,
   onPrompt,
   onDeliveryContinue,
+  onOpenChanges,
   onEditPrompt,
   onRewind,
   checkpoints = [],
@@ -173,6 +174,7 @@ export function Transcript({
   footerHeight?: number;
   onPrompt: (text: string) => void;
   onDeliveryContinue?: () => void;
+  onOpenChanges?: () => void;
   onEditPrompt?: (turn: number, displayText: string, submitText?: string) => boolean | void | Promise<boolean | void>;
   onRewind?: (turn: number, scope: string) => void;
   checkpoints?: CheckpointMeta[];
@@ -685,7 +687,11 @@ export function Transcript({
           <NoticeCard
             item={row.item}
             actionDisabled={running}
-            onAction={row.item.action === "continue_delivery" ? (onDeliveryContinue ?? (() => onPrompt(t("notice.deliveryIncompleteContinuePrompt")))) : undefined}
+            onAction={row.item.action === "continue_delivery"
+              ? (onDeliveryContinue ?? (() => onPrompt(t("notice.deliveryIncompleteContinuePrompt"))))
+              : row.item.action === "open_changes"
+                ? onOpenChanges
+                : undefined}
           />
         );
       case "extension":
@@ -1064,6 +1070,7 @@ function DecisionReceiptLine({ receipt }: { receipt: NonNullable<NoticeItem["dec
 export function NoticeCard({ item, onAction, actionDisabled = false }: { item: NoticeItem; onAction?: () => void; actionDisabled?: boolean }) {
   const t = useT();
   const StatusIcon = item.level === "warn" ? TriangleAlert : Info;
+  const ActionIcon = item.action === "open_changes" ? FileSearch : CirclePlay;
   return (
     <div className={`notice-line notice-line--${item.level}${item.variant ? ` notice-line--${item.variant}` : ""}`} data-entrance={item.id}>
       <StatusIcon className="notice-line__icon" size={14} aria-hidden="true" />
@@ -1079,8 +1086,8 @@ export function NoticeCard({ item, onAction, actionDisabled = false }: { item: N
         {item.action && onAction ? (
           <div className="notice-line__actions">
             <button className="btn btn--small" type="button" onClick={onAction} disabled={actionDisabled}>
-              <CirclePlay size={13} aria-hidden="true" />
-              <span>{t("notice.deliveryIncompleteContinue")}</span>
+              <ActionIcon size={13} aria-hidden="true" />
+              <span>{item.action === "open_changes" ? t("notice.completionViewChanges") : t("notice.deliveryIncompleteContinue")}</span>
             </button>
           </div>
         ) : null}

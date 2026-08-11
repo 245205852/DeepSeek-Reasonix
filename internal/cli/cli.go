@@ -301,13 +301,15 @@ func setupProfileWithOverrides(ctx context.Context, modelName string, maxStepsOv
 }
 
 func cliProfileBuildOptions(modelName string, maxStepsOverride int, requireKey bool, sink event.Sink, profile string, overrides cliBuildOverrides) boot.Options {
+	// profile is dual-write TokenMode; also set AgentPreset for the new path.
 	return boot.Options{
 		Model:                modelName,
 		MaxSteps:             maxStepsOverride,
 		MaxStepsKey:          "--max-steps",
 		RequireKey:           requireKey,
 		Sink:                 sink,
-		TokenMode:            profile,
+		AgentPreset:          boot.NormalizeAgentPreset(profile),
+		TokenMode:            boot.NormalizeTokenMode(profile),
 		SessionDir:           resolveCLISessionDir(),
 		WorkspaceRoot:        overrides.WorkspaceRoot,
 		EffortOverride:       overrides.Effort,
@@ -394,15 +396,17 @@ func setupQuietProfile(ctx context.Context, modelName string, maxStepsOverride i
 }
 
 func parseRuntimeProfile(value string) (string, error) {
+	// Accept both --preset light|balanced|delivery and legacy --profile
+	// economy|full|delivery. Returns dual-write TokenMode values.
 	switch strings.ToLower(strings.TrimSpace(value)) {
 	case "", "balanced", boot.TokenModeFull:
 		return boot.TokenModeFull, nil
-	case boot.TokenModeEconomy:
+	case boot.TokenModeEconomy, "light", "lite", "eco":
 		return boot.TokenModeEconomy, nil
-	case boot.TokenModeDelivery:
+	case boot.TokenModeDelivery, "deliver", "quality":
 		return boot.TokenModeDelivery, nil
 	default:
-		return "", fmt.Errorf("unknown runtime profile %q (want economy, balanced, or delivery)", value)
+		return "", fmt.Errorf("unknown execution setting %q (want light, balanced, or delivery; legacy: economy, full)", value)
 	}
 }
 
@@ -484,7 +488,8 @@ func runAgent(args []string, version string) int {
 	fs := pflag.NewFlagSet("run", pflag.ContinueOnError)
 	fs.SetInterspersed(true)
 	model := fs.String("model", "", "provider name (default: config default_model)")
-	profileFlag := fs.String("profile", "balanced", "runtime profile: economy | balanced | delivery")
+	profileFlag := fs.String("profile", "", "deprecated: use --preset (economy|balanced|delivery)")
+	presetFlag := fs.String("preset", "balanced", "agent execution setting: light | balanced | delivery")
 	maxSteps := fs.Int("max-steps", 0, "one-off max tool-call rounds (0 = automatic)")
 	showThinking := fs.Bool("show-thinking", false, "show thinking text instead of the collapsed thinking marker")
 	metricsPath := fs.String("metrics", "", "write a JSON token/cache/cost summary of the run to this path")
@@ -531,7 +536,13 @@ func runAgent(args []string, version string) int {
 		}
 		format = runOutputEventsJSONL
 	}
-	profile, err := parseRuntimeProfile(*profileFlag)
+	profileRaw := strings.TrimSpace(*profileFlag)
+	if profileRaw != "" {
+		fmt.Fprintln(os.Stderr, "warning: --profile is deprecated; use --preset light|balanced|delivery")
+	} else {
+		profileRaw = strings.TrimSpace(*presetFlag)
+	}
+	profile, err := parseRuntimeProfile(profileRaw)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, i18n.M.ErrorPrefix, err)
 		return 2
@@ -781,7 +792,8 @@ func runServeWithOptions(args []string, opts serveRunOptions) int {
 	}
 	fs := flag.NewFlagSet(opts.command, flag.ContinueOnError)
 	model := fs.String("model", "", "provider name (default: config default_model)")
-	profileFlag := fs.String("profile", "balanced", "runtime profile: economy | balanced | delivery")
+	profileFlag := fs.String("profile", "", "deprecated: use --preset (economy|balanced|delivery)")
+	presetFlag := fs.String("preset", "balanced", "agent execution setting: light | balanced | delivery")
 	maxSteps := fs.Int("max-steps", 0, "one-off max tool-call rounds (0 = automatic)")
 	addr := fs.String("addr", "127.0.0.1:8787", "listen address")
 	resume := fs.String("resume", "", "resume a saved session file")
@@ -823,7 +835,13 @@ func runServeWithOptions(args []string, opts serveRunOptions) int {
 			return 2
 		}
 	}
-	profile, err := parseRuntimeProfile(*profileFlag)
+	profileRaw := strings.TrimSpace(*profileFlag)
+	if profileRaw != "" {
+		fmt.Fprintln(os.Stderr, "warning: --profile is deprecated; use --preset light|balanced|delivery")
+	} else {
+		profileRaw = strings.TrimSpace(*presetFlag)
+	}
+	profile, err := parseRuntimeProfile(profileRaw)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, i18n.M.ErrorPrefix, err)
 		return 2
@@ -967,7 +985,8 @@ func chatREPL(args []string, version string) int {
 	fs := pflag.NewFlagSet("reasonix", pflag.ContinueOnError)
 	fs.SetInterspersed(true)
 	model := fs.String("model", "", "provider name (default: config default_model)")
-	profileFlag := fs.String("profile", "balanced", "runtime profile: economy | balanced | delivery")
+	profileFlag := fs.String("profile", "", "deprecated: use --preset (economy|balanced|delivery)")
+	presetFlag := fs.String("preset", "balanced", "agent execution setting: light | balanced | delivery")
 	maxSteps := fs.Int("max-steps", 0, "one-off max tool-call rounds (0 = automatic)")
 	cont := registerContinueFlag(fs)
 	resume := fs.StringP("resume", "r", "", "resume by session ID/query, or open the picker when no value is given")
@@ -991,7 +1010,13 @@ func chatREPL(args []string, version string) int {
 		fmt.Fprintln(os.Stderr, i18n.M.ErrorPrefix, err)
 		return 2
 	}
-	profile, err := parseRuntimeProfile(*profileFlag)
+	profileRaw := strings.TrimSpace(*profileFlag)
+	if profileRaw != "" {
+		fmt.Fprintln(os.Stderr, "warning: --profile is deprecated; use --preset light|balanced|delivery")
+	} else {
+		profileRaw = strings.TrimSpace(*presetFlag)
+	}
+	profile, err := parseRuntimeProfile(profileRaw)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, i18n.M.ErrorPrefix, err)
 		return 2

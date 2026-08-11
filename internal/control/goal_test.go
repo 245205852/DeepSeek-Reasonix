@@ -171,7 +171,7 @@ func TestPlainInputWithStrongResearchSignalStaysNormal(t *testing.T) {
 	if prov.call != 1 {
 		t.Fatalf("provider calls = %d, want 1", prov.call)
 	}
-	first := firstUserMessage(ag.Session().Messages)
+	first := agent.StripTransientUserBlocks(firstUserMessage(ag.Session().Messages))
 	if !strings.HasSuffix(first, "持续排查这个线上卡顿直到根因明确，并验证修复") {
 		t.Fatalf("ordinary turn should preserve the original prompt suffix: %q", first)
 	}

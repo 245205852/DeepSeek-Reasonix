@@ -54,7 +54,7 @@ func TestTurnOrchestratorAttachesTrustedPlannerMetadata(t *testing.T) {
 	sess := agent.NewSession("sys")
 	sess.Add(provider.Message{Role: provider.RoleUser, Content: "explain the bug"})
 	sess.Add(provider.Message{Role: provider.RoleAssistant, Content: "the bug is in parser.go"})
-	exec := agent.New(nil, tool.NewRegistry(), sess, agent.Options{}, event.Discard)
+	exec := agent.New(nil, tool.NewRegistry(), sess, agent.Options{AgentPreset: "delivery"}, event.Discard)
 	runner := &plannerMetadataRunner{}
 	c := New(Options{
 		Runner:         runner,
