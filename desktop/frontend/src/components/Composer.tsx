@@ -495,6 +495,7 @@ export function Composer({
   collaborationMode,
   toolApprovalMode,
   tokenMode,
+  turnPhase,
   goal,
   goalStatus,
   goalRuntime,
@@ -559,6 +560,8 @@ export function Composer({
   collaborationMode: CollaborationMode;
   toolApprovalMode: ToolApprovalMode;
   tokenMode: TokenMode;
+  /** Host turn phase: working | checking | verifying | reviewing */
+  turnPhase?: string;
   goal?: string;
   goalStatus?: string;
   goalRuntime?: GoalRuntime;
@@ -3754,6 +3757,20 @@ export function Composer({
     subscribeLiveText,
     () => liveStore?.getModelActiveAt?.(tabId),
   );
+  const turnPhaseLabel = (() => {
+    switch ((turnPhase ?? "").trim()) {
+      case "checking":
+        return t("composer.turnPhaseChecking");
+      case "verifying":
+        return t("composer.turnPhaseVerifying");
+      case "reviewing":
+        return t("composer.turnPhaseReviewing");
+      case "working":
+        return t("composer.turnPhaseWorking");
+      default:
+        return t("composer.runAnnounceRunning");
+    }
+  })();
   const runStateText = retry
     ? t("status.retrying", { attempt: retry.attempt, max: retry.max })
     : waitingPrompt === "approval"
@@ -3761,7 +3778,7 @@ export function Composer({
       : waitingPrompt === "ask"
         ? t("composer.runWaitingAsk")
         : running && !suspendedByDecision
-          ? t("composer.runAnnounceRunning")
+          ? turnPhaseLabel
           : null;
   const runTicker = !retry && !pauseWorkClock && running && turnStartAt
     ? (() => {
@@ -4076,8 +4093,8 @@ export function Composer({
         >
           <div className="composer-access-menu__label">{t("composer.runtimeProfileTitle")}</div>
           {([
-            ["economy", Gauge, "composer.runtimeProfileEconomy", "composer.runtimeProfileEconomyDesc"],
-            ["full", Equal, "composer.runtimeProfileBalanced", "composer.runtimeProfileBalancedDesc"],
+            ["economy", Gauge, "composer.runtimeProfileEconomy", "composer.runtimeProfileEconomyDesc"], // light wire dual-write
+            ["full", Equal, "composer.runtimeProfileBalanced", "composer.runtimeProfileBalancedDesc"], // balanced wire dual-write
             ["delivery", Flag, "composer.runtimeProfileDelivery", "composer.runtimeProfileDeliveryDesc"],
           ] as const).map(([profile, Icon, titleKey, descKey]) => (
             <button

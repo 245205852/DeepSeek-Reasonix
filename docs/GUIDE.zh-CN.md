@@ -497,11 +497,11 @@ CLI/TUI 文本输入可通过 `[ui].cursor_shape` 设置光标形状，支持 `u
 命名配色，再用 `/theme <style>` 选择强调色。
 
 响应式底栏左侧保留当前 Ask/Auto/Plan 或 YOLO 姿态和交互状态；终端较宽时，模型、推理
-强度和工作模式作为一组靠右显示，第二行按可用性显示 Git 标识、缓存命中率、上下文占用、
+强度和执行设定作为一组靠右显示，第二行按可用性显示 Git 标识、缓存命中率、上下文占用、
 压缩余量、后台任务和余额。“就绪”只表示输入框空闲，并不是模型健康检查；选择器、审批、
 图片粘贴、shell 模式等活动会替换这个状态。窄终端会按完整信息组移动、换行或压缩。
-标签和展示用的工作模式值跟随 `/language`，但 `/work-mode` 的命令参数继续使用稳定的
-英文标识。
+标签和展示用的执行设定值跟随 `/language`，但 `/preset`（及兼容的 `/work-mode`）命令
+参数继续使用稳定的英文标识 `light|balanced|delivery`。
 
 聊天与 transcript：
 
@@ -533,7 +533,7 @@ CLI/TUI 文本输入可通过 `[ui].cursor_shape` 设置光标形状，支持 `u
 | `Shift+Tab` | 按 Ask → Auto → Plan → Ask 循环 | YOLO 不进入这个输入模式循环；底部状态栏会显示当前模式。 |
 | `Ctrl+Y` | 切换 YOLO 开/关 | 关闭 YOLO 时会尽量恢复之前的 Ask/Auto 基底。终端若能转发 Command/Super，也可能识别 `Cmd+Y`，但稳定可用的是 `Ctrl+Y`。 |
 | `--yolo`、`--dangerously-skip-permissions` | 启动时进入 YOLO | 和 `Ctrl+Y` 是同一个运行时模式。 |
-| `/work-mode [economy|balanced|delivery]` | 查看或切换当前会话的工作模式 | `/profile` 是兼容别名。切换会原子重建运行时，保留对话和审批姿态；有工作正在进行时会拒绝切换。 |
+| `/preset [light|balanced|delivery]` | 查看或切换当前会话的执行设定 | `/work-mode` 与 `/profile` 是兼容别名（`economy` → `light`）。切换就地更新执行设定、不重建 Controller；有回合、审批或后台任务时会拒绝。 |
 | `/theme [auto|light|dark|style]` | 查看或切换 CLI 主题 | 不带参数会列出背景模式和命名配色。选择会保存到用户配置；单次运行可用 `REASONIX_THEME` 和 `REASONIX_THEME_STYLE` 覆盖。 |
 | `Ctrl+O` | 切换详细 reasoning 显示 | 也可通过 `/verbose` 使用。 |
 | `Ctrl+B` | 展开或收起较长 shell 输出 | 较长 shell 输出的提示行也可点击；全屏 TUI 开启鼠标接管时，文本选区由应用内处理。 |
@@ -1011,9 +1011,9 @@ workflow skill 派发 reviewer subagent 的场景，同时避免无限递归和�
 用 `read_only_skill`。两者都会启动
 ephemeral 只读 subagent，只暴露只读研究工具和安全前台 bash，只返回最终答案，不创建
 可续接的 subagent transcript。只读嵌套委派会在 `max_subagent_depth` 内可用，其内部仍不提供
-可写的 `task` / `run_skill`。在 token economy 模式下，只用
-`connect_tool_source(source="read_only_skill")` 连接这条窄入口；完整的 `skills`
-source 也可在 Plan 中加载，后续 writer 调用仍通过 Permissions/Sandbox。
+可写的 `task` / `run_skill`。执行设定不再改变 provider 可见工具面；通过
+`use_capability` 调度 `read_only_skill` 等可选能力，后续 writer 调用仍通过
+Permissions/Sandbox。
 
 所有严格只读子会话都经过同一对共享构造入口——`RunReadOnlySubAgentWithSession` /
 `NewReadOnlyAgent`——两者都会把子会话标记为永久只读并做最终 registry 过滤：移除 writer、
@@ -1058,33 +1058,29 @@ enable、授权与完整连接身份，因此共享 Host 中另一个项目/tab 
 server 无法在这里提升权限。严格只读边界比独立 Planner 更窄：Planner 接受已授权的 opaque
 非 destructive MCP，而严格只读子会话必须有明确 reader hint，且根本不暴露 writer。
 
-启动会话时可以用 `--profile economy|balanced|delivery` 选择运行模式，例如
-`reasonix run --profile delivery "修复并验证这个 bug"`。Economy（轻量）初始只带 9 个工具：
-直接读/bash/编辑/写入、后台 shell 生命周期控制、`ask` 和 `connect_tool_source`；内置文档、
-专用搜索/文件/
-workflow 工具、session history、memory 写入、slash command、Skills、MCP、LSP、网络、安装与
-subagent 都在任务需要时才连接。
-Balanced（均衡）是提供完整工具面的默认档；配置独立 Planner 时，Planner 与 Executor 都会获得各自的
-`use_capability` frontend，规划阶段发现的 capability 可在 handoff 后按同一 ID 直接执行，同时保留
-Executor 的完整直接 MCP 工具面。固定代理自身的 schema 保持稳定，但由于 Balanced Executor 刻意保留
-直接 `mcp__*`，安装、连接或刷新这些直接工具时，Executor 的整体 provider 工具前缀仍可能变化。Delivery（交付优先）
-保留完整工具面，额外增加稳定能力代理 `use_capability`（list/inspect/call MCP，包括
-`auto_start=false`，且不改变主工具 Schema），并增加“明确验收标准、修复根因、运行验证、复审最终
-diff”的稳定交付合约。该合约由宿主运行时强制执行：没有具体 `todo_write` 验收清单时会阻止变更和验证
-命令；发生变更后，必须复查结果、在最后一次变更之后运行验证，并用带证据的 `complete_step` 签收后才能
-结束；Skill/MCP 的 require/prefer 路由会被门禁；中/高风险改动强制结构化 review；`task`/`run_skill`
-等元工具本身不算 mutation。纯只读分析不会被迫产生写入。
+启动会话时可以用 `--preset light|balanced|delivery` 选择执行设定，例如
+`reasonix run --preset delivery "修复并验证这个 bug"`。兼容的 `--profile
+economy|balanced|delivery` 仍可用（`economy` → `light`）。三种执行设定共享同一套
+provider 可见核心工具面（直接读/bash/编辑/写入、后台 shell 生命周期工具，以及稳定的
+`use_capability` 代理）。可选工具（搜索、MCP、skills、subagents、docs、web_fetch 等）
+通过 `use_capability` 调度，不会扩展 top-level provider schema，因此执行设定切换不会
+制造新的工具 schema 缓存前缀。
 
-交互式 TUI 会话内可用 `/work-mode` 查看当前模式，或用
-`/work-mode economy|balanced|delivery` 热切换；`/profile` 是兼容别名。切换会原子重建
-Controller，同时保留 history、session 路径、Lease 和 Ask/Auto/Yolo 审批姿态；当前 turn、审批/询问、
-后台任务或另一场运行时切换尚未结束时会拒绝切换。构建失败时旧 Controller 继续可用。该命令只修改当前
-会话，不持久化新的全局默认值。跨 Profile 切换会产生一次新的 provider 缓存前缀。均衡与交付优先模式下，
-system contract 和工具 Schema 在后续轮次保持稳定；轻量模式下，每次成功调用 `connect_tool_source`
-都会在下一次请求加入对应工具 Schema，形成一次新前缀，之后在工具面再次变化前保持稳定。
+执行设定差异在宿主策略，不在工具列表：
 
-桌面端标签页提供相同三档并持久化轻量或交付优先
-模式；旧的空值/`full` 继续解释为均衡模式。
+- **Light（轻量）**：优先直接执行，定向验证，仅在高风险/安全类任务上强制独立复审。
+- **Balanced（均衡，默认）**：按风险自动轻/全规划，分档验证，中风险多文件变更可条件触发独立复审。
+- **Delivery（交付）**：完整验收标准、完整验证、中风险及以上强制独立复审；没有具体
+  `todo_write` 验收清单时会阻止变更和验证；变更后须复查、验证并以 `complete_step` 签收。
+
+交互式 TUI 会话内可用 `/preset` 查看当前执行设定，或用
+`/preset light|balanced|delivery` 热切换；`/work-mode` 与 `/profile` 是兼容别名。切换就地
+更新执行设定、不重建 Controller，同时保留 history、session 路径、Lease 和 Ask/Auto/Yolo
+审批姿态；当前 turn、审批/询问、后台任务或另一场运行时切换尚未结束时会拒绝切换。该命令只
+修改当前会话，不持久化新的全局默认值。
+
+桌面端标签页提供相同三档（轻量 / 均衡 / 交付），并 dual-write `agentPreset` 与兼容
+`tokenMode`（`economy`/`full`/`delivery`）一版。
 
 交互式前端中的计划模式始终由用户显式选择：桌面端在“协作方式”中选择计划模式，CLI 用
 `Shift+Tab` 切换到 Plan。Reasonix 先生成计划，待用户批准后工作流才切换到实施；规划期间的

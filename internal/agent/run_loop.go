@@ -8,11 +8,13 @@ import (
 	"strings"
 	"time"
 
+	"reasonix/internal/agentpreset"
 	"reasonix/internal/event"
 	"reasonix/internal/evidence"
 	"reasonix/internal/jobs"
 	"reasonix/internal/provider"
 	"reasonix/internal/taskintent"
+	"reasonix/internal/taskpolicy"
 	"reasonix/internal/tool"
 )
 
@@ -189,18 +191,50 @@ func (a *Agent) beginRunTurn(ctx context.Context, input string) (rawInput string
 	a.deliveryMutationExpected = intent == taskintent.Mutation && registryHasWriterTools(a.tools)
 	a.deliveryPersistentExpected = taskintent.NeedsPersistentAction(a.turnInput)
 	a.recoveryTaskSummary = boundedRecoveryTaskSummary(a.turnInput)
+	// Freeze TaskPolicy for this turn from the session role setting. Subsequent
+	// SetAgentPreset calls must not change this turn's route/review floor.
+	if policy, ok := taskpolicy.FromContext(ctx); ok {
+		a.turnPolicy = policy
+	} else {
+		a.turnPolicy = taskpolicy.Derive(taskpolicy.Input{
+			Raw:         a.turnInput,
+			Instruction: taskpolicy.StripQuotedConstraints(a.turnInput),
+			Preset:      agentpreset.AgentPreset(a.AgentPreset()),
+			PlanMode:    a.planMode.Load(),
+		})
+	}
+	a.turnPolicySet = true
+	// Align legacy delivery gates with the frozen role setting. Delivery always
+	// enables the full readiness contract. Light/Balanced only elevate when the
+	// turn is a mutation that requires forced review or is high-risk.
+	switch {
+	case a.AgentPreset() == string(agentpreset.Delivery):
+		a.deliveryProfile = true
+	case a.turnPolicy.Intent == taskintent.Mutation &&
+		(a.turnPolicy.RequiresIndependentReview() || a.turnPolicy.Risk >= taskpolicy.RiskHigh):
+		a.deliveryProfile = true
+	default:
+		a.deliveryProfile = false
+	}
 	// A cancelled/error turn leaves a provider-excluded recovery record at the
 	// transcript tail. Fold its bounded facts into this new user turn exactly
 	// once; the user's raw text remains the classifier source above.
 	providerInput = withInterruptedRecovery(providerInput, a.pendingInterruptedRecovery())
 	a.prepareRepeatFailureScope(scoped, scope.ID)
 	a.sink.Emit(event.Event{Kind: event.TurnStarted})
+	a.emitTurnPhase(event.TurnPhaseWorking)
 	input = a.withTurnPreferences(providerInput)
+	// Persist the short execution-policy block in provider Content; keep the
+	// original user text in RawContent for history/title/rewind stripping.
+	policyBlock := taskpolicy.ExecutionPolicyBlock(a.turnPolicy)
+	if !strings.Contains(input, "<execution-policy") {
+		input = strings.TrimSpace(input) + "\n\n" + policyBlock
+	}
 	userCreatedAt := time.Now().UnixMilli()
 	a.activeTurnCreatedAt.Store(userCreatedAt)
-	rawContent := ""
-	if input != rawInput {
-		rawContent = rawInput
+	rawContent := rawInput
+	if rawContent == "" {
+		rawContent = a.turnInput
 	}
 	a.session.Add(provider.Message{
 		Role: provider.RoleUser, Content: input, RawContent: rawContent,

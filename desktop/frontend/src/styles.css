@@ -10244,6 +10244,30 @@ body > .mermaid-diagram--fullscreen {
   padding: 6px 8px;
   font-size: 11.5px;
 }
+.workspace-completion-summary--attention {
+  border-color: color-mix(in srgb, var(--warn) 35%, var(--border-soft));
+}
+.workspace-completion-summary__head,
+.workspace-completion-summary__metrics,
+.workspace-completion-summary__details {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 8px;
+}
+.workspace-completion-summary__head strong {
+  margin-right: auto;
+  color: var(--fg);
+}
+.workspace-completion-summary__metrics {
+  margin-top: 6px;
+  color: var(--fg);
+}
+.workspace-completion-summary__details {
+  margin-top: 4px;
+}
+.workspace-completion-summary__metric--attention {
+  color: var(--warn);
+}
 .floating-menu {
   --wails-draggable: no-drag;
   position: fixed;

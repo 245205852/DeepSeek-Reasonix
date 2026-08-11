@@ -661,7 +661,7 @@ Mode and display shortcuts:
 | `Shift+Tab` | Cycles Ask → Auto → Plan → Ask | YOLO remains outside this composer-mode cycle; the footer shows the active mode. |
 | `Ctrl+Y` | Toggles YOLO on/off | Turning YOLO off restores the previous Ask/Auto base when known. Terminals that forward Command/Super may also send `Cmd+Y`, but `Ctrl+Y` is the reliable terminal shortcut. |
 | `--yolo`, `--dangerously-skip-permissions` | Starts chat in YOLO | Same runtime mode as `Ctrl+Y`. |
-| `/work-mode [economy|balanced|delivery]` | Shows or switches the current session's work mode | `/profile` is a compatibility alias. Switching rebuilds the runtime atomically, preserves the conversation and approval posture, and is blocked while work is active. |
+| `/preset [light|balanced|delivery]` | Shows or switches the current session's execution setting (执行设定) | `/work-mode` and `/profile` are compatibility aliases (`economy` → `light`). Switching updates the execution setting in place without rebuilding the controller; blocked while a turn, approval, or background job is active. |
 | `/theme [auto|light|dark|style]` | Shows or switches the CLI theme | Bare `/theme` lists background modes and named accent palettes. The choice is saved to the user config; `REASONIX_THEME` and `REASONIX_THEME_STYLE` can override it for one run. |
 | `Ctrl+O` | Toggles verbose reasoning display | Also available through `/verbose`. |
 | `Ctrl+B` | Expands or collapses long shell output | Long shell-output hint lines can also be clicked in the transcript; text selection is handled in-app while the full-screen TUI has mouse reporting enabled. |
@@ -1313,9 +1313,8 @@ subagents with only read-only research tools plus safe foreground bash, return
 only the final answer, and do not create resumable subagent transcripts.
 Read-only nested delegation may be available until `max_subagent_depth` is
 reached, but writer-capable `task` / `run_skill` remain unavailable inside these
-read-only child registries. In token economy mode, connect this narrow surface
-with `connect_tool_source(source="read_only_skill")` when that isolation is
-required; loading the full `skills` source in Plan is allowed, and subsequent
+read-only child registries. Execution settings share one tool surface: call
+`use_capability` for `read_only_skill` and other optional tools. Subsequent
 writer calls still pass through Permissions/Sandbox.
 
 Every strict read-only child is built through one shared construction
@@ -1383,45 +1382,47 @@ is narrower than the dedicated Planner: the Planner accepts authorized opaque
 non-destructive MCP, while a strict child requires an explicit reader hint and
 never exposes writers at all.
 
-Choose the startup runtime profile with
-`--profile economy|balanced|delivery` (for example, `reasonix run --profile
-delivery "fix and verify this bug"`). Economy starts with nine tools: direct
-read/bash/edit/write, background-shell lifecycle controls, `ask`, and
-`connect_tool_source`. Embedded docs, dedicated search/file/workflow tools,
-session history, memory mutation, slash commands, Skills, MCP, LSP, web access,
-installation, and subagents are connected only when the task needs them.
-Balanced is the default with the complete tool surface; when a distinct Planner is configured, both
-Planner and Executor add the fixed `use_capability` proxy. The proxy schema is
-stable, but the Balanced Executor deliberately retains direct `mcp__*` tools,
-so its overall provider tool prefix may still change when those direct tools
-are installed, connected, or refreshed. Delivery keeps that complete surface,
-adds one stable proxy tool (`use_capability`) for on-demand MCP inspect/call
-without schema churn, and adds a stable contract to establish acceptance
-criteria, fix root causes, verify the result, and review the final diff. The
-host enforces that contract: mutations and verification commands are blocked
-until a concrete `todo_write` acceptance list exists; a changed result cannot
-finalize until it has been reviewed, verified after the latest mutation, and
-signed off with `complete_step`; Skill/MCP `require`/`prefer` routes must be
-invoked or declined with host-proven reasons; and medium/high-risk changes
-require structured review (and security review when high). Meta tools such as
-`task`, `run_skill`, and `review` are not counted as mutations by themselves —
-only real child writes are. Read-only analysis remains available without
-forcing a write.
-Inside an interactive TUI session, use `/work-mode` to inspect the current
-choice or `/work-mode economy|balanced|delivery` to switch it. `/profile` is a
-compatibility alias. The switch atomically rebuilds the controller while
-preserving history, the session path, leases, and the Ask/Auto/YOLO posture; it
-is rejected while a turn, approval/question, background job, or another runtime
-switch is active. A failed build leaves the previous controller usable. This
-command changes only the current session and does not persist a new global
-default. Crossing profiles creates one new provider cache prefix. Within
-Balanced and Delivery the system contract and tool schema then stay stable; in
-Economy each successful `connect_tool_source` call adds the connected schemas
-to the next request, creating one more prefix that stays stable until the tool
-surface changes again.
+Choose the startup execution setting with
+`--preset light|balanced|delivery` (for example, `reasonix run --preset
+delivery "fix and verify this bug"`). Legacy `--profile economy|balanced|delivery`
+still works (`economy` maps to `light`). All three execution settings share the same
+provider-visible core tool surface: direct read/bash/edit/write, background-shell
+lifecycle tools, `ask`/`compress` when registered, and the stable
+`use_capability` proxy for optional tools (search, MCP, skills, subagents, docs,
+web_fetch, and so on). Calling `use_capability` never expands the top-level
+provider schema, so the prompt-cache tool prefix stays stable across execution
+settings.
 
-Desktop tabs expose the same three choices and persist Economy or Delivery;
-legacy empty/`full` values remain Balanced.
+What differs by execution setting is host policy (planning route, verification
+intensity, independent review floor), not the tool list:
+
+- **Light** — direct-first planning, targeted verification, independent review only
+  on high-risk/security class work; optional capabilities stay on-demand.
+- **Balanced** (default) — auto light/full planning by risk, risk-tiered
+  verification, conditional independent review on medium-risk multi-file work.
+- **Delivery** — full acceptance criteria, full verification, forced independent
+  review on medium+ risk, and security review on high-risk work. Mutations and
+  verification commands are blocked until a concrete acceptance list exists; a
+  changed result cannot finalize until it has been reviewed, verified after the
+  latest mutation, and signed off with `complete_step`.
+
+Meta tools such as `task`, `run_skill`, and `review` are not counted as mutations
+by themselves — only real child writes are. Read-only analysis remains available
+without forcing a write.
+
+Inside an interactive TUI session, use `/preset` to inspect the current choice or
+`/preset light|balanced|delivery` to switch it. `/work-mode` and `/profile` are
+compatibility aliases. The switch updates the execution setting in place without
+rebuilding the controller, preserves history, the session path, leases, and the
+Ask/Auto/YOLO posture, and is rejected while a turn, approval/question, background
+job, or another runtime switch is active. This command changes only the current
+session and does not persist a new global default. Because the provider-visible
+tool surface is unified, switching execution settings does not create a new tool-schema
+cache prefix.
+
+Desktop tabs expose the same three choices (shown as Light / Balanced / Delivery)
+and dual-write `agentPreset` with legacy `tokenMode` (`economy`/`full`/`delivery`)
+for one compatibility version.
 
 For interactive frontends, Plan Mode is always an explicit user choice. Select
 Plan in the desktop collaboration-mode control or cycle to Plan with

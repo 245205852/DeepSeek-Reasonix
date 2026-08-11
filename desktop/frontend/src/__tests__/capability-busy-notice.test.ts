@@ -35,8 +35,8 @@ ok(
   "effort switching uses grammatically neutral single-job guidance",
 );
 ok(
-  tokenModeSwitchNoticeText(activeWorkError(false, false, 1).message.replace("MCP server", "token mode")) === "Work mode cannot change while background work is active. Active jobs: 1. Open Background jobs in the status bar to stop them.",
-  "work-mode switching uses grammatically neutral single-job guidance",
+  tokenModeSwitchNoticeText(activeWorkError(false, false, 1).message.replace("MCP server", "token mode")) === "Execution setting cannot change while background work is active. Active jobs: 1. Open Background jobs in the status bar to stop them.",
+  "execution-setting switching uses grammatically neutral single-job guidance",
 );
 ok(
   activeWorkBusyNoticeText(

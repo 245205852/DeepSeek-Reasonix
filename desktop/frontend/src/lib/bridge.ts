@@ -449,6 +449,8 @@ export interface AppBindings extends SessionCatalogBindings, HistoryCatalogBindi
   SetEffortForTab(tabID: string, level: string): Promise<void>;
   SetTokenMode(mode: string): Promise<void>;
   SetTokenModeForTab(tabID: string, mode: string): Promise<void>;
+  SetAgentPreset(preset: string): Promise<void>;
+  SetAgentPresetForTab(tabID: string, preset: string): Promise<void>;
   // ReloadRuntime rebuilds the tab's agent runtime in place (tools, skills,
   // commands, hooks, providers, MCP servers) via boot.Rebuild, keeping the
   // session. Busy tabs queue one reload for when they go idle.
@@ -4177,11 +4179,17 @@ function makeMockApp(): AppBindings {
           await this.SetEffort(level);
         },
         async SetTokenMode(mode: string) {
-          const active = mockTabs.find((tab) => tab.active);
-          if (active) await this.SetTokenModeForTab(active.id, mode);
+          await this.SetAgentPreset(mode);
         },
         async SetTokenModeForTab(tabID, mode) {
-          const tokenMode = normalizeTokenMode(mode);
+          await this.SetAgentPresetForTab(tabID, mode);
+        },
+        async SetAgentPreset(preset: string) {
+          const active = mockTabs.find((tab) => tab.active);
+          if (active) await this.SetAgentPresetForTab(active.id, preset);
+        },
+        async SetAgentPresetForTab(tabID, preset) {
+          const tokenMode = normalizeTokenMode(preset);
           mockTabs = mockTabs.map((tab) => (tab.id === tabID ? { ...tab, tokenMode } : tab));
         },
         async ReloadRuntime(_tabID) {},

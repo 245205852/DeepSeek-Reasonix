@@ -28,7 +28,9 @@ export type EventKind =
   | "extension_status"
   | "stream_attempt"
   | "context_maintenance"
-  | "workspace_changed";
+  | "workspace_changed"
+  | "turn_phase"
+  | "completion_summary";
 export type StreamAttemptAction = "begin" | "discard" | "commit";
 export interface WireStreamAttempt {
   id: string;
@@ -349,6 +351,10 @@ export interface WireEvent {
   /** Durable session-inbox item id for steer / TurnDone correlation. */
   itemId?: string;
   workspace?: WireWorkspaceChanged;
+  /** turn_phase: working | checking | verifying | reviewing */
+  phase?: string;
+  /** completion_summary: content-free quality summary for role settings */
+  completion?: WireCompletionSummary;
   tabId?: string; // Go's tabEventSink tags events for the correct per-tab reducer.
   runtimeEpoch?: string;
   sessionHitTokens?: number;
@@ -357,6 +363,18 @@ export interface WireEvent {
   sessionCurrency?: string;
   // Deprecated compatibility alias. Prefer sessionCost + sessionCurrency.
   sessionCostUsd?: number;
+}
+
+export interface WireCompletionSummary {
+  preset: string;
+  verdict: string;
+  mutations: number;
+  checks_passed: number;
+  checks_failed: number;
+  checks_suppressed: number;
+  review: string;
+  gap_kinds?: string[];
+  constraint_degraded: boolean;
 }
 
 export type WorkspaceWatchState = "active" | "degraded" | "unavailable";
@@ -437,6 +455,8 @@ export interface TabMeta {
   collaborationMode?: CollaborationMode;
   toolApprovalMode?: ToolApprovalMode;
   tokenMode?: TokenMode;
+  /** Canonical role setting (light|balanced|delivery). Prefer over tokenMode. */
+  agentPreset?: AgentPreset;
   goal?: string;
   goalStatus?: GoalStatus;
   recovered?: boolean;
@@ -886,6 +906,8 @@ export interface Meta {
   collaborationMode?: CollaborationMode;
   toolApprovalMode?: ToolApprovalMode;
   tokenMode?: TokenMode;
+  /** Canonical role setting (light|balanced|delivery). Prefer over tokenMode. */
+  agentPreset?: AgentPreset;
   goal?: string;
   goalStatus?: GoalStatus;
   goalRuntime?: GoalRuntime;
@@ -894,8 +916,11 @@ export interface Meta {
 
 export type CollaborationMode = "normal" | "plan" | "goal";
 export type ToolApprovalMode = "ask" | "auto" | "yolo";
-// "full" is the persisted compatibility value for the Balanced runtime profile.
-export type TokenMode = "full" | "economy" | "delivery";
+// TokenMode is the dual-write wire value for Agent role settings (角色设定).
+// Canonical product ids are light|balanced|delivery; economy/full remain one
+// compatibility version of persisted/API values.
+export type TokenMode = "full" | "economy" | "delivery" | "light" | "balanced";
+export type AgentPreset = "light" | "balanced" | "delivery";
 export type GoalStatus = "running" | "complete" | "blocked" | "stopped";
 // GoalRuntime is the optional Goal budget/runtime summary the backend attaches
 // to Meta. Absent for old hosts or when no goal is active.
@@ -934,9 +959,30 @@ export function normalizeToolApprovalMode(
 }
 
 export function normalizeTokenMode(mode?: string): TokenMode {
-  if (mode === "economy") return "economy";
-  if (mode === "delivery") return "delivery";
+  const m = (mode ?? "").trim().toLowerCase();
+  if (m === "economy" || m === "light" || m === "lite" || m === "eco") return "economy";
+  if (m === "delivery" || m === "deliver" || m === "quality") return "delivery";
+  // balanced | full | empty | unknown → balanced wire value "full"
   return "full";
+}
+
+/** Canonical product id for the three Agent role settings. */
+export function normalizeAgentPreset(mode?: string): AgentPreset {
+  const wire = normalizeTokenMode(mode);
+  if (wire === "economy" || wire === "light") return "light";
+  if (wire === "delivery") return "delivery";
+  return "balanced";
+}
+
+export function tokenModeFromAgentPreset(preset: AgentPreset): TokenMode {
+  switch (preset) {
+    case "light":
+      return "economy";
+    case "delivery":
+      return "delivery";
+    default:
+      return "full";
+  }
 }
 
 // Mode is the compatibility string for two independent composer axes:

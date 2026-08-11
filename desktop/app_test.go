@@ -5364,6 +5364,7 @@ func TestSetEffortMigratesStaleOfficialDeepSeekTabModel(t *testing.T) {
 }
 
 func TestSetTokenModeRebuildsController(t *testing.T) {
+	// Name kept for history; role settings now switch in place without rebuild.
 	isolateDesktopUserDirs(t)
 
 	app := NewApp()
@@ -5381,10 +5382,13 @@ func TestSetTokenModeRebuildsController(t *testing.T) {
 		t.Fatalf("SetTokenMode(economy): %v", err)
 	}
 	if c := app.activeCtrl(); c == nil {
-		t.Fatal("SetTokenMode should leave a rebuilt controller")
+		t.Fatal("SetTokenMode should keep a live controller")
 	}
-	if c := app.activeCtrl(); c == old {
-		t.Fatal("SetTokenMode should rebuild the active controller so the provider sees the new tool profile")
+	if c := app.activeCtrl(); c != old {
+		t.Fatal("SetTokenMode/role setting must switch in place without rebuilding the controller")
+	}
+	if got := old.AgentPreset(); got != boot.AgentPresetLight {
+		t.Fatalf("controller AgentPreset = %q, want light", got)
 	}
 	tab := app.activeTab()
 	if tab == nil {
@@ -5396,13 +5400,20 @@ func TestSetTokenModeRebuildsController(t *testing.T) {
 	if got := app.Meta().TokenMode; got != "economy" {
 		t.Fatalf("Meta token mode = %q, want economy", got)
 	}
+	if got := app.Meta().AgentPreset; got != boot.AgentPresetLight {
+		t.Fatalf("Meta agentPreset = %q, want light", got)
+	}
 	saved := loadTabsFile()
 	if len(saved.Tabs) != 1 || saved.Tabs[0].TokenMode != "economy" {
 		t.Fatalf("saved tabs = %+v, want economy token mode", saved.Tabs)
 	}
+	if saved.Tabs[0].AgentPreset != boot.AgentPresetLight {
+		t.Fatalf("saved agentPreset = %q, want light", saved.Tabs[0].AgentPreset)
+	}
 }
 
 func TestSetTokenModeDeliveryRebuildsAndPersistsProfile(t *testing.T) {
+	// Name kept for history; delivery role setting switches in place and dual-writes.
 	isolateDesktopUserDirs(t)
 
 	app := NewApp()
@@ -5419,8 +5430,11 @@ func TestSetTokenModeDeliveryRebuildsAndPersistsProfile(t *testing.T) {
 	if err := app.SetTokenMode(boot.TokenModeDelivery); err != nil {
 		t.Fatalf("SetTokenMode(delivery): %v", err)
 	}
-	if c := app.activeCtrl(); c == nil || c == old {
-		t.Fatal("delivery profile should rebuild the active controller")
+	if c := app.activeCtrl(); c == nil || c != old {
+		t.Fatal("delivery role setting should keep the same controller (in-place switch)")
+	}
+	if got := old.AgentPreset(); got != boot.AgentPresetDelivery {
+		t.Fatalf("controller AgentPreset = %q, want delivery", got)
 	}
 	tab := app.activeTab()
 	if got := currentTabTokenMode(tab); got != boot.TokenModeDelivery {
@@ -5429,9 +5443,15 @@ func TestSetTokenModeDeliveryRebuildsAndPersistsProfile(t *testing.T) {
 	if got := app.Meta().TokenMode; got != boot.TokenModeDelivery {
 		t.Fatalf("Meta token mode = %q, want delivery", got)
 	}
+	if got := app.Meta().AgentPreset; got != boot.AgentPresetDelivery {
+		t.Fatalf("Meta agentPreset = %q, want delivery", got)
+	}
 	saved := loadTabsFile()
 	if len(saved.Tabs) != 1 || saved.Tabs[0].TokenMode != boot.TokenModeDelivery {
 		t.Fatalf("saved tabs = %+v, want delivery profile", saved.Tabs)
+	}
+	if saved.Tabs[0].AgentPreset != boot.AgentPresetDelivery {
+		t.Fatalf("saved agentPreset = %q, want delivery", saved.Tabs[0].AgentPreset)
 	}
 
 	// Leaving delivery must clear the persisted tokenMode so a restart does not
@@ -5505,8 +5525,12 @@ func TestSetTokenModeReusesCurrentSessionLease(t *testing.T) {
 	if err := app.SetTokenModeForTab(tab.ID, "economy"); err != nil {
 		t.Fatalf("SetTokenModeForTab: %v", err)
 	}
-	if tab.Ctrl == nil || tab.Ctrl == oldCtrl {
-		t.Fatalf("tab controller was not rebuilt")
+	// Role setting switches in place: same controller, same lease, same history.
+	if tab.Ctrl == nil || tab.Ctrl != oldCtrl {
+		t.Fatalf("tab controller should be reused in place, got %p want %p", tab.Ctrl, oldCtrl)
+	}
+	if got := oldCtrl.AgentPreset(); got != boot.AgentPresetLight {
+		t.Fatalf("controller AgentPreset = %q, want light", got)
 	}
 	if got := currentTabTokenMode(tab); got != "economy" {
 		t.Fatalf("token mode = %q, want economy", got)
@@ -5569,22 +5593,23 @@ func TestSetTokenModeLeaseHeldKeepsCurrentController(t *testing.T) {
 	app.tabOrder = []string{tab.ID}
 	app.activeTabID = tab.ID
 
-	err = app.SetTokenModeForTab(tab.ID, "economy")
-	if !errors.Is(err, agent.ErrSessionLeaseHeld) {
-		t.Fatalf("SetTokenModeForTab err = %v, want ErrSessionLeaseHeld", err)
-	}
-	if strings.Contains(err.Error(), path) || strings.Contains(err.Error(), "held by") {
-		t.Fatalf("SetTokenModeForTab surfaced raw lease details: %v", err)
+	// Role setting switches in place and does not re-acquire the session lease,
+	// so an externally held lease does not block the switch.
+	if err := app.SetTokenModeForTab(tab.ID, "economy"); err != nil {
+		t.Fatalf("SetTokenModeForTab: %v", err)
 	}
 	if tab.Ctrl != oldCtrl {
-		t.Fatalf("tab controller changed after failed switch")
+		t.Fatalf("tab controller changed after in-place role switch")
 	}
-	if got := currentTabTokenMode(tab); got != "full" {
-		t.Fatalf("token mode = %q, want full", got)
+	if got := currentTabTokenMode(tab); got != "economy" {
+		t.Fatalf("token mode = %q, want economy", got)
+	}
+	if got := oldCtrl.AgentPreset(); got != boot.AgentPresetLight {
+		t.Fatalf("controller AgentPreset = %q, want light", got)
 	}
 	meta := app.MetaForTab(tab.ID)
 	if !meta.Ready || meta.Runtime.Phase != sessionRuntimeReady {
-		t.Fatalf("failed switch disabled current runtime: ready=%v phase=%q", meta.Ready, meta.Runtime.Phase)
+		t.Fatalf("role switch disabled current runtime: ready=%v phase=%q", meta.Ready, meta.Runtime.Phase)
 	}
 }
 
@@ -5624,11 +5649,16 @@ func TestSetTokenModeMigratesStaleOfficialDeepSeekTabModel(t *testing.T) {
 	if tab == nil {
 		t.Fatal("active tab missing")
 	}
-	if tab.model != "deepseek/deepseek-v4-flash" {
-		t.Fatalf("tab model = %q, want migrated official ref", tab.model)
+	// Role setting no longer rebuilds the controller, so stale model aliases
+	// are not migrated on this path (migration still runs on model/effort rebuilds).
+	if tab.model != "deepseek-flash/deepseek-v4-flash" {
+		t.Fatalf("tab model = %q, want unchanged stale ref without rebuild", tab.model)
 	}
 	if got := currentTabTokenMode(tab); got != "economy" {
 		t.Fatalf("token mode = %q, want economy", got)
+	}
+	if c := app.activeCtrl(); c != old {
+		t.Fatal("role setting must keep the same controller")
 	}
 }
 
@@ -5722,6 +5752,7 @@ func TestMetaForTabImageInputCapabilityUsesCurrentRef(t *testing.T) {
 }
 
 func TestSetTokenModeKeepsControllerWhenRebuildFails(t *testing.T) {
+	// Role setting no longer rebuilds; an unknown model must not block the switch.
 	isolateDesktopUserDirs(t)
 	t.Setenv("DEEPSEEK_API_KEY", "")
 	t.Setenv("MIMO_API_KEY", "")
@@ -5737,22 +5768,21 @@ func TestSetTokenModeKeepsControllerWhenRebuildFails(t *testing.T) {
 		}
 	}()
 
-	err := app.SetTokenMode("economy")
-	if err == nil {
-		t.Fatal("SetTokenMode(economy) with an unknown model should fail")
+	if err := app.SetTokenMode("economy"); err != nil {
+		t.Fatalf("SetTokenMode(economy) in-place switch: %v", err)
 	}
 	if c := app.activeCtrl(); c != old {
-		t.Fatalf("SetTokenMode failure replaced controller: got %p want %p", c, old)
+		t.Fatalf("SetTokenMode replaced controller: got %p want %p", c, old)
 	}
 	tab := app.activeTab()
 	if tab == nil {
 		t.Fatal("active tab missing")
 	}
-	if got := currentTabTokenMode(tab); got != "full" {
-		t.Fatalf("token mode after failed rebuild = %q, want full", got)
+	if got := currentTabTokenMode(tab); got != "economy" {
+		t.Fatalf("token mode after in-place switch = %q, want economy", got)
 	}
-	if got := app.Meta().TokenMode; got != "full" {
-		t.Fatalf("Meta token mode after failed rebuild = %q, want full", got)
+	if got := app.Meta().TokenMode; got != "economy" {
+		t.Fatalf("Meta token mode after in-place switch = %q, want economy", got)
 	}
 }
 

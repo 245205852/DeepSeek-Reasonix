@@ -42,6 +42,23 @@ type Event struct {
 	// session-inbox entry. Empty for legacy text-only guidance.
 	ItemID    string            `json:"itemId,omitempty"`
 	Workspace *WorkspaceChanged `json:"workspace,omitempty"`
+	// Phase is set on turn_phase events: working | checking | verifying | reviewing.
+	Phase string `json:"phase,omitempty"`
+	// Completion is set on completion_summary events (content-free quality summary).
+	Completion *CompletionSummary `json:"completion,omitempty"`
+}
+
+// CompletionSummary is the JSON form of event.CompletionSummaryInfo.
+type CompletionSummary struct {
+	Preset             string   `json:"preset"`
+	Verdict            string   `json:"verdict"`
+	Mutations          int      `json:"mutations"`
+	ChecksPassed       int      `json:"checks_passed"`
+	ChecksFailed       int      `json:"checks_failed"`
+	ChecksSuppressed   int      `json:"checks_suppressed"`
+	Review             string   `json:"review"`
+	GapKinds           []string `json:"gap_kinds,omitempty"`
+	ConstraintDegraded bool     `json:"constraint_degraded"`
 }
 
 type WorkspaceChanged struct {
@@ -194,6 +211,25 @@ func ToWire(e event.Event) Event {
 			Attempt: e.StreamAttempt.Attempt,
 			Max:     e.StreamAttempt.Max,
 			Reason:  e.StreamAttempt.Reason,
+		}
+	case event.TurnPhase:
+		w.Phase = string(e.PhaseName)
+		if w.Phase == "" {
+			w.Phase = e.Text
+		}
+	case event.CompletionSummary:
+		if c := e.Completion; c != nil {
+			w.Completion = &CompletionSummary{
+				Preset:             c.Preset,
+				Verdict:            c.Verdict,
+				Mutations:          c.Mutations,
+				ChecksPassed:       c.ChecksPassed,
+				ChecksFailed:       c.ChecksFailed,
+				ChecksSuppressed:   c.ChecksSuppressed,
+				Review:             c.Review,
+				GapKinds:           append([]string(nil), c.GapKinds...),
+				ConstraintDegraded: c.ConstraintDegraded,
+			}
 		}
 	}
 	return w
@@ -584,6 +620,8 @@ var kindNames = map[event.Kind]string{
 	event.StreamAttempt:           "stream_attempt",
 	event.ContextMaintenanceEvent: "context_maintenance",
 	event.WorkspaceChanged:        "workspace_changed",
+	event.TurnPhase:               "turn_phase",
+	event.CompletionSummary:       "completion_summary",
 }
 
 // ContextMaintenance is the JSON form of event.ContextMaintenance.

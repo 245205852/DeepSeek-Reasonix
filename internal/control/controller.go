@@ -830,6 +830,19 @@ func (c *Controller) ToolContractEntries() []tool.ContractEntry {
 	return reg.ContractEntries()
 }
 
+// AllToolContractEntries returns every registered tool, including those hidden
+// from the provider-visible schema and only reachable via use_capability.
+func (c *Controller) AllToolContractEntries() []tool.ContractEntry {
+	if c == nil {
+		return nil
+	}
+	reg := c.mcp.registry()
+	if reg == nil {
+		return nil
+	}
+	return reg.AllContractEntries()
+}
+
 // ProviderCatalog returns the session's merged provider catalog: the config
 // (or broker) base plus every provider a live extension sidecar declared,
 // keyed by ref — extension refs carry their plugin/<plugin>/<provider>/<model>
@@ -2646,6 +2659,69 @@ func (c *Controller) emitPendingPrompts(sink event.Sink, approvals []event.Appro
 // the plan-mode marker to outgoing user turns.
 func (c *Controller) SetPlanMode(v bool) {
 	c.applyPlanMode(v)
+}
+
+// SetAgentPreset updates the session role setting for subsequent turns without
+// rebuilding the controller, provider, or tool schemas. Callers must already
+// hold active-work guards (no foreground turn, background jobs, or pending
+// approvals/asks).
+func (c *Controller) SetAgentPreset(preset string) {
+	if c == nil {
+		return
+	}
+	preset = strings.TrimSpace(preset)
+	if preset == "" {
+		preset = "balanced"
+	}
+	// Map legacy economy/full names through the dual-write helper if available.
+	if normalized := strings.ToLower(preset); normalized == "economy" || normalized == "full" {
+		switch normalized {
+		case "economy":
+			preset = "light"
+		case "full":
+			preset = "balanced"
+		}
+	}
+	if setter, ok := c.runner.(interface{ SetAgentPreset(string) }); ok {
+		setter.SetAgentPreset(preset)
+	}
+	if c.executor != nil {
+		c.executor.SetAgentPreset(preset)
+	}
+	// Keep capability runtimeProfile labels coherent for diagnostics.
+	c.mu.Lock()
+	switch strings.ToLower(preset) {
+	case "light", "economy":
+		c.runtimeProfile = capability.ProfileEconomy
+	case "delivery":
+		c.runtimeProfile = capability.ProfileDelivery
+	default:
+		c.runtimeProfile = capability.ProfileBalanced
+	}
+	c.mu.Unlock()
+}
+
+// AgentPreset returns the current session role setting.
+func (c *Controller) AgentPreset() string {
+	if c == nil {
+		return "balanced"
+	}
+	if c.executor != nil {
+		return c.executor.AgentPreset()
+	}
+	if getter, ok := c.runner.(interface{ AgentPreset() string }); ok {
+		return getter.AgentPreset()
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	switch c.runtimeProfile {
+	case capability.ProfileEconomy:
+		return "light"
+	case capability.ProfileDelivery:
+		return "delivery"
+	default:
+		return "balanced"
+	}
 }
 
 func (c *Controller) applyPlanMode(v bool) {

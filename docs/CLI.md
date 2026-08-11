@@ -15,7 +15,7 @@ configuration, plugins, and sandbox policy, see the [Guide](./GUIDE.md).
 ```sh
 reasonix
 reasonix --model deepseek-pro
-reasonix --profile delivery --effort high
+reasonix --preset delivery --effort high
 reasonix --dir /path/to/project
 ```
 
@@ -25,7 +25,8 @@ Running `reasonix` without a subcommand starts the interactive terminal UI. Use
 | Flag | Purpose |
 | --- | --- |
 | `--model NAME` | Select a configured provider or `provider/model` reference. |
-| `--profile economy\|balanced\|delivery` | Select the runtime work profile. |
+| `--preset light\|balanced\|delivery` | Select the agent execution setting (执行设定). Default: `balanced`. |
+| `--profile economy\|balanced\|delivery` | Deprecated alias for `--preset` (`economy` → `light`). |
 | `--effort LEVEL` | Override reasoning effort for this session. |
 | `--max-steps N` | Set a one-off maximum tool-call round budget; `0` uses automatic execution. |
 | `--dir PATH` | Change the workspace root before loading config and tools. |
@@ -136,10 +137,10 @@ echo "explain this code" | reasonix run
 ```
 
 `reasonix run` keeps the normal streamed terminal presentation unless `-p` or a
-structured output format is selected. It also accepts `--model`, `--profile`,
-`--max-steps`, `--effort`, `--dir`, `--add-dir`, `--continue`, `--resume QUERY`,
-`--copy`, `--allowed-tools`, `--permission-mode`, and `--auto` / `-y` (an alias
-for `--permission-mode auto`).
+structured output format is selected. It also accepts `--model`, `--preset`
+(or legacy `--profile`), `--max-steps`, `--effort`, `--dir`, `--add-dir`,
+`--continue`, `--resume QUERY`, `--copy`, `--allowed-tools`, `--permission-mode`,
+and `--auto` / `-y` (an alias for `--permission-mode auto`).
 
 ### Benchmark arms
 
@@ -396,12 +397,12 @@ single-key shortcuts.
 | `Ctrl+Y` | Toggle YOLO independently of the composer-mode cycle. |
 
 The responsive footer keeps interaction state on the left and, when space
-allows, places model, effort, and work mode on the right. Its second row shows
+allows, places model, effort, and execution setting on the right. Its second row shows
 available repository and session telemetry such as cache hit rate, context use,
 compaction headroom, background jobs, and balance. `ready` means the composer is
 idle; that slot changes when a picker, approval, image paste, shell mode, or
 other interaction needs attention. Narrow terminals move or compact complete
-groups instead of cutting labels in half. Visible labels and work-mode values
+groups instead of cutting labels in half. Visible labels and execution-setting values
 follow `/language`.
 
 Use `/theme auto|light|dark` to select the terminal background mode, or choose a
@@ -434,8 +435,8 @@ the displayed list matches the commands the TUI accepts.
 | `/model` | Search configured models and switch the active model. |
 | `/provider` | Choose a provider, then choose one of its configured models. |
 | `/resume` | Search recent sessions and switch to one. |
-| `/status` | Show model, effort, cache, Git, background jobs, and profile or balance details. |
-| `/work-mode [economy\|balanced\|delivery]` | View or change the runtime profile; `/profile` is an alias. |
+| `/status` | Show model, effort, cache, Git, background jobs, and execution setting or balance details. |
+| `/preset [light\|balanced\|delivery]` | View or change the agent execution setting without rebuilding the controller. `/work-mode` and `/profile` remain compatibility aliases (`economy` → `light`). |
 | `/theme [auto\|light\|dark\|style]` | View or change the CLI background mode and accent palette. |
 | `/currency [auto\|CNY\|USD]` | View or change the user-global fee display currency and refresh the runtime. |
 | `/paste-image` | Read a clipboard image and insert an editable attachment token. |
@@ -458,9 +459,12 @@ the displayed list matches the commands the TUI accepts.
 | `/tree`, `/branch`, `/switch` | Inspect or navigate conversation branches. |
 | `/reload` | Reload the agent runtime (extensions, tools, skills, commands, hooks, providers) while keeping the session. Queued once while a turn runs, then fail-atomic: a failed rebuild keeps the current runtime. |
 
-Switching model, effort, or work mode rebuilds the runtime while preserving the
+Switching model or effort rebuilds the runtime while preserving the
 active conversation, session-scoped permission overrides, additional directory
 access, and session ownership. `/reload` uses the same fail-atomic rebuild.
+`/preset` (and legacy `/work-mode` / `/profile`) updates the execution setting
+in place without rebuilding the controller; all three execution settings share the
+same provider-visible tool surface (`use_capability` for optional tools).
 
 ## Session catalog diagnostics
 

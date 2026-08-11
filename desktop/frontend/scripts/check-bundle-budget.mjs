@@ -57,7 +57,9 @@ const localeChunks = readdirSync(resolve(distDir, "assets"))
   .map((name) => resolve(distDir, "assets", name));
 
 console.log("\nbundle budgets");
-assertBudget("initial JavaScript gzip", initialJSGzip, 400.9 * 1024);
+// The merged execution-setting controller adds 1.1 KiB gzip (0.27%) over the
+// 400.8 KiB base while keeping the interaction on the existing startup path.
+assertBudget("initial JavaScript gzip", initialJSGzip, 402 * 1024);
 assertBudget("largest initial JavaScript chunk gzip", largestInitialJS, 280 * 1024);
 assertBudget("render-blocking CSS gzip", initialCSSGzip, 4 * 1024);
 // Extension surfaces, Task Monitor, and compact decision receipts share the
@@ -70,7 +72,8 @@ if (localeChunks.length !== 2) {
 for (const path of localeChunks) {
   const name = basename(path);
   // Task Monitor, billing, indexed history, Task Center, Extension UI, and
-  // runtime controls add localized copy. Keep both dictionaries bounded.
+  // runtime controls plus execution-setting receipts add localized copy. Keep
+  // both dictionaries bounded.
   const budget = name.startsWith("zh-TW-") ? 55.5 * 1024 : 54.5 * 1024;
   assertBudget(`${name} gzip`, gzipBytes(path), budget);
 }
@@ -81,8 +84,9 @@ const rawInitialBytes = [...initialJS, ...initialCSS, ...appShellCSS]
 // runtime. Goal request observability plus transcript scroll arbitration,
 // logical selection state/DOM adapters, native input-session ownership,
 // durable inbox recovery, indexed catalogs, Task Center, structured billing,
-// startup config warnings, and hover-revealed turn-action labels add small
-// always-available contracts. Keep the raw allowance ratcheted while gzip
-// startup budgets stay flat.
-assertBudget("initial raw JavaScript and CSS", rawInitialBytes, 2_264.5 * 1024);
+// startup config warnings, hover-revealed turn-action labels, and compact
+// execution-setting receipts add small always-available contracts. Keep the
+// raw allowance ratcheted while gzip startup budgets stay flat.
+// The same contract adds 4.2 KiB raw (0.19%) over the 2,264.0 KiB base.
+assertBudget("initial raw JavaScript and CSS", rawInitialBytes, 2_268.5 * 1024);
 assertBudget("largest initial JavaScript chunk raw", largestInitialJSRaw, 1_000 * 1024);
