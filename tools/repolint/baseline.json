@@ -4,7 +4,7 @@
     "commented-code": 0,
     "complexity": 2103,
     "essay": 4065,
-    "file-size": 110591,
+    "file-size": 110472,
     "function-size": 9078,
     "layering": 1,
     "marker": 0,
@@ -28,7 +28,7 @@
     "desktop/app.go": {
       "complexity": 63,
       "essay": 95,
-      "file-size": 11422,
+      "file-size": 11419,
       "function-size": 371
     },
     "desktop/app_autosave_test.go": {
@@ -150,7 +150,7 @@
       "file-size": 158
     },
     "desktop/frontend/src/components/Transcript.tsx": {
-      "file-size": 477
+      "file-size": 358
     },
     "desktop/frontend/src/components/UsageStatsPanel.tsx": {
       "file-size": 276
@@ -438,7 +438,7 @@
     "internal/agent/agent.go": {
       "complexity": 37,
       "essay": 97,
-      "file-size": 2574,
+      "file-size": 2577,
       "function-size": 102
     },
     "internal/agent/ask.go": {
