@@ -28,7 +28,7 @@
     "desktop/app.go": {
       "complexity": 63,
       "essay": 96,
-      "file-size": 11457,
+      "file-size": 11459,
       "function-size": 380
     },
     "desktop/app_autosave_test.go": {
@@ -436,7 +436,7 @@
       "test-file-size": 238
     },
     "internal/acp/status.go": {
-      "file-size": 7
+      "file-size": 9
     },
     "internal/acp/switch_recovery_test.go": {
       "essay": 7
