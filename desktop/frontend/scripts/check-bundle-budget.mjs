@@ -70,10 +70,10 @@ if (localeChunks.length !== 2) {
 for (const path of localeChunks) {
   const name = basename(path);
   // Task Monitor, Extension UI, Storage & paths, and shell execution cards
-  // add their own labels. Reasoning display controls and status bar metrics add
-  // the latest localized copy. Keep both dictionaries within narrow allowances.
-  // Indexed history, Task Center, and inbox recovery copy remain within the
-  // existing half-KiB ratchet while raw startup stays controlled.
+  // add their own labels. Reasoning display controls, status bar metrics,
+  // capability busy guidance, indexed history, Task Center, and inbox recovery
+  // remain within the existing narrow allowances while raw startup stays
+  // controlled.
   const budget = name.startsWith("zh-TW-") ? 55.5 * 1024 : 54.5 * 1024;
   assertBudget(`${name} gzip`, gzipBytes(path), budget);
 }
