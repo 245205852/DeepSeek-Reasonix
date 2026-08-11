@@ -83,8 +83,8 @@ const rawInitialBytes = [...initialJS, ...initialCSS, ...appShellCSS]
 // runtime. Goal request observability plus transcript scroll arbitration,
 // logical selection state/DOM adapters, native input-session ownership,
 // durable inbox recovery controls, measurement invalidation and deferred tail
-// replay, startup config-warning delivery, and structured billing display
-// states add small always-available contracts. The expanded contract remains
-// tightly bounded while the gzip startup budgets stay flat.
-assertBudget("initial raw JavaScript and CSS", rawInitialBytes, 2_254 * 1024);
+// replay, startup config-warning delivery, structured billing display states,
+// and hover-revealed turn-action labels add small always-available contracts.
+// The expanded contract remains tightly bounded while gzip budgets stay flat.
+assertBudget("initial raw JavaScript and CSS", rawInitialBytes, 2_255 * 1024);
 assertBudget("largest initial JavaScript chunk raw", largestInitialJSRaw, 1_000 * 1024);
