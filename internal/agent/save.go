@@ -271,7 +271,17 @@ func sessionArtifactExists(path string) bool {
 
 func (s *Session) saveLocked(path string, mode sessionSaveMode) error {
 	baseRevision := int64(0)
+	releaseAuth, err := s.requireWriteAuthorityForSave(path)
+	if err != nil {
+		return err
+	}
+	defer releaseAuth()
 	observeUnleasedSessionWrite(path, mode)
+	// Heal an empty/missing checkpoint from a valid WAL before classification
+	// so a 0-byte .jsonl never forces a false diverged recovery.
+	if err := healEmptyCheckpointFromWAL(path); err != nil {
+		return err
+	}
 	if mode == sessionSaveSnapshot && s.snapshotUpToDate(path) {
 		// Nothing changed since the last successful save to this exact path:
 		// skip the rest of the save — including the full transcript serialize
@@ -558,16 +568,9 @@ func (s *Session) checkSnapshotWrite(path string, next []provider.Message, nextD
 	}
 	if !appendShaped && baseState.ok && baseState.revisionKnown &&
 		baseState.revision == currentRevision && !contentUnchanged {
-		// Revision equality alone is not ownership proof: another writer can
-		// land transcript/event-log bytes and crash before advancing the
-		// ledger. Require the current bytes to still match this Session's
-		// persisted digest (or its pre-normalization raw form) before treating
-		// an internally reshaped snapshot as a safe full rewrite.
-		owned := s.ownsPersistedState(path, existingDigest, currentRevision, currentLedgerDigest, nextVersion)
-		if !owned && rawDiffers {
-			owned = s.ownsPersistedState(path, rawDigest, currentRevision, currentLedgerDigest, nextVersion)
-		}
-		if owned {
+		// Revision equality alone is not ownership proof. Require digest
+		// ancestry or a live generation-bound write authority covering path.
+		if s.ownsWritableBaseline(path, existingDigest, rawDigest, rawDiffers, currentRevision, currentLedgerDigest, nextVersion) {
 			appendShaped = true
 		}
 	}
@@ -618,16 +621,13 @@ func (s *Session) checkSnapshotWrite(path string, next []provider.Message, nextD
 		return decision, nil
 	}
 	if allowOwnedRewrite {
-		owned := s.ownsPersistedState(path, existingDigest, currentRevision, currentLedgerDigest, nextVersion)
-		if !owned && rawDiffers {
-			// The persisted baseline describes the bytes this session wrote, so
-			// a repaired view can never match it; ownership is judged against
-			// the raw transcript.
-			owned = s.ownsPersistedState(path, rawDigest, currentRevision, currentLedgerDigest, nextVersion)
-		}
-		if owned {
+		if s.ownsWritableBaseline(path, existingDigest, rawDigest, rawDiffers, currentRevision, currentLedgerDigest, nextVersion) {
 			return snapshotWriteDecision{revision: currentRevision, repairLog: current.eventLogDamaged}, nil
 		}
+	}
+	// Bound controllers: missing/stale authority must not fork recovery.
+	if err := s.authorityErrorForPath(path); err != nil {
+		return snapshotWriteDecision{}, err
 	}
 	if messagesHavePrefix(existing, next) || messagesHavePrefixWithCompatibleSystem(existing, next) ||
 		(rawDiffers && (messagesHavePrefix(raw, next) || messagesHavePrefixWithCompatibleSystem(raw, next))) {
@@ -675,18 +675,16 @@ func (s *Session) SaveRecoveryBranch(opts RecoveryBranchOptions) (RecoveryBranch
 // original session file: doing so would repeat the same bounded timeout and
 // let process teardown discard the only remaining in-memory copy.
 //
-// The recovery filename includes this process writer ID, so a stalled writer
-// on the digest-deduplicated conflict path cannot block the emergency copy too.
+// The recovery filename includes this live Session's isolated lane, so another
+// controller in the same process cannot replace the emergency copy.
 // The result still uses the normal session, event-log, and branch-meta formats
 // and is therefore discoverable and resumable through existing flows.
 func (s *Session) SaveShutdownRecoveryBranch(opts RecoveryBranchOptions) (RecoveryBranchInfo, error) {
 	return s.saveRecoveryBranch(opts, true)
 }
 
-// SaveConflictRecoveryBranch persists an isolated copy when the ordinary
-// recovery chain has reached its depth cap. It deliberately uses a writer-
-// specific path; the caller must never force an older in-memory snapshot back
-// onto the contested canonical branch just to stop creating nested branches.
+// SaveConflictRecoveryBranch writes the depth-cap isolated copy (one path per
+// live Session). Subsequent conflicts from that Session rewrite it in place.
 func (s *Session) SaveConflictRecoveryBranch(opts RecoveryBranchOptions) (RecoveryBranchInfo, error) {
 	return s.saveRecoveryBranch(opts, true)
 }
@@ -696,6 +694,7 @@ func (s *Session) saveRecoveryBranch(opts RecoveryBranchOptions, shutdown bool) 
 	if originalPath == "" {
 		return RecoveryBranchInfo{}, fmt.Errorf("empty original session path")
 	}
+	opts.OriginalPath = originalPath
 	msgs, version, rewriteVersion := s.snapshotWithVersion()
 	preview, turns := SessionPreviewFromMessages(msgs)
 	if turns == 0 {
@@ -773,66 +772,22 @@ func (s *Session) saveRecoveryBranch(opts RecoveryBranchOptions, shutdown bool) 
 		// still enforce the existing anti-cascade policy.
 		SessionRecoveryMaxDepth)
 
-	recoveryPath := recoverySessionPath(originalPath, digest)
-	if shutdown {
-		recoveryPath = shutdownRecoverySessionPath(originalPath, digest)
-	}
-	unlockRecovery := lockSessionSavePath(recoveryPath)
-	defer unlockRecovery()
-	unlockRecoveryFile, err := lockSessionFile(recoveryPath)
-	if err != nil {
-		return RecoveryBranchInfo{}, fmt.Errorf("lock recovery session file: %w", err)
-	}
-	defer unlockRecoveryFile()
-	if loaded, loadErr := loadSessionUnlocked(recoveryPath); loadErr == nil && loaded != nil {
-		existingDigest, digestErr := digestSessionMessages(loaded.Snapshot())
-		if digestErr != nil {
-			return RecoveryBranchInfo{}, digestErr
-		}
-		if bytes.Equal(existingDigest[:], digest[:]) {
-			meta, err := s.saveRecoveryBranchMeta(recoveryPath, opts, preview, turns, digestText, recoveryDepth)
-			if err != nil {
-				return RecoveryBranchInfo{}, err
-			}
-			s.markPersisted(recoveryPath, digest, version, meta.Revision, rewriteVersion)
-			return RecoveryBranchInfo{Path: recoveryPath, Digest: digestText, Existing: true, Meta: meta, Preview: preview, Turns: turns}, nil
-		}
-	} else if loadErr != nil && !os.IsNotExist(loadErr) {
-		return RecoveryBranchInfo{}, loadErr
-	}
-
-	if err := os.MkdirAll(filepath.Dir(recoveryPath), 0o755); err != nil {
-		return RecoveryBranchInfo{}, fmt.Errorf("create recovery session dir: %w", err)
-	}
-	// Log first, anchor second: a crash in between leaves the (authoritative)
-	// log holding the recovered transcript. A foreign file at the log path is
-	// left alone; the recovery stays checkpoint-only then.
-	recoveryProbe, err := probeSessionEventLog(recoveryPath)
-	if err != nil {
-		return RecoveryBranchInfo{}, err
-	}
-	if recoveryProbe.native {
-		if err := appendSessionReplaceEvent(recoveryPath, msgs, digest, 0, "recovery"); err != nil {
+	// A live Session gets one stable lane. A different live Session in the same
+	// process gets a different lane, so it never overwrites an independent
+	// recovery branch merely because the process-wide writer ID matches.
+	for range 8 {
+		recoveryPath, lane := s.isolatedRecoverySessionPath(originalPath)
+		info, collision, err := s.writeRecoveryBranchAtPath(recoveryPath, opts, msgs, digest,
+			version, rewriteVersion, preview, turns, digestText, recoveryDepth, shutdown)
+		if err != nil {
 			return RecoveryBranchInfo{}, err
 		}
+		if !collision {
+			return info, nil
+		}
+		s.rotateRecoveryLane(lane)
 	}
-	if err := writeSessionMessages(recoveryPath, msgs); err != nil {
-		return RecoveryBranchInfo{}, err
-	}
-	meta, err := s.saveRecoveryBranchMeta(recoveryPath, opts, preview, turns, digestText, recoveryDepth)
-	if err != nil {
-		return RecoveryBranchInfo{}, err
-	}
-	if err := writeSessionEventIndex(recoveryPath, msgs, digest, meta.Revision); err != nil {
-		// The recovery transcript (log + checkpoint) and its meta are already
-		// durable; the index is only a listing accelerator. Failing here would
-		// discard a recovery that in fact succeeded and re-run the whole
-		// conflict path on the next save.
-		slog.Warn("session: keeping recovery branch after event index write failure",
-			"path", recoveryPath, "err", err)
-	}
-	s.markPersisted(recoveryPath, digest, version, meta.Revision, rewriteVersion)
-	return RecoveryBranchInfo{Path: recoveryPath, Digest: digestText, Meta: meta, Preview: preview, Turns: turns}, nil
+	return RecoveryBranchInfo{}, fmt.Errorf("allocate isolated recovery lane: too many existing collisions")
 }
 
 func (s *Session) saveRecoveryBranchMeta(path string, opts RecoveryBranchOptions, preview string, turns int, digest string, depth int) (BranchMeta, error) {
@@ -864,7 +819,8 @@ func (s *Session) saveRecoveryBranchMeta(path string, opts RecoveryBranchOptions
 	if strings.TrimSpace(meta.WriterID) == "" {
 		meta.WriterID = SessionWriterID()
 	}
-	if err := SaveBranchMeta(path, meta); err != nil {
+	// Keep any in-flight turn marker across isolated in-place rewrites.
+	if err := saveBranchMetaKeepInFlightTurn(path, meta); err != nil {
 		return BranchMeta{}, err
 	}
 	if stored, ok, err := LoadBranchMeta(path); err != nil {
@@ -873,18 +829,6 @@ func (s *Session) saveRecoveryBranchMeta(path string, opts RecoveryBranchOptions
 		return stored, nil
 	}
 	return meta, nil
-}
-
-func recoverySessionPath(originalPath string, digest [sha256.Size]byte) string {
-	parent := recoveryParentStem(BranchID(originalPath))
-	return filepath.Join(filepath.Dir(originalPath), fmt.Sprintf("%s-recovery-%x.jsonl", parent, digest[:8]))
-}
-
-func shutdownRecoverySessionPath(originalPath string, digest [sha256.Size]byte) string {
-	parent := recoveryParentStem(BranchID(originalPath))
-	writerDigest := sha256.Sum256([]byte(SessionWriterID()))
-	return filepath.Join(filepath.Dir(originalPath),
-		fmt.Sprintf("%s-recovery-%x-%x.jsonl", parent, digest[:8], writerDigest[:6]))
 }
 
 func recoveryParentStem(parent string) string {

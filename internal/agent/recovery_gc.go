@@ -22,9 +22,14 @@ import (
 // only those — are safe to reclaim automatically.
 
 // RecoveryGCGracePeriod is how long a reclaimable recovery branch must sit
-// idle before GC may collect it. A fresh fork is part of an active conflict
-// flow — the user may be comparing it against the original right now.
+// idle before the periodic GC may collect it. A fresh fork is part of an
+// active conflict flow — the user may be comparing it against the original.
 const RecoveryGCGracePeriod = 24 * time.Hour
+
+// RecoveryGCStartupGracePeriod is used for the first post-restore sweep so
+// upgrade storms of covered copies are cleared within minutes rather than a
+// full day, while still protecting a conflict the user is actively inspecting.
+const RecoveryGCStartupGracePeriod = 15 * time.Minute
 
 const (
 	recoveryTrashDir             = ".trash"
@@ -77,6 +82,24 @@ func RecoveryBranchCoveredByParent(path, parentDir string) bool {
 		return false
 	}
 	return recoveryBranchCoveredByParent(path, parentDir, meta)
+}
+
+// SessionContentCovers reports whether covering contains the complete message
+// history stored in covered. It is intentionally conservative for catalog
+// canonical promotion: repaired or damaged loads cannot authorize a redirect.
+func SessionContentCovers(coveringPath, coveredPath string) bool {
+	covering, err := LoadSession(coveringPath)
+	if err != nil || covering == nil || covering.normalizedDirty || covering.eventLogDamaged {
+		return false
+	}
+	covered, err := LoadSession(coveredPath)
+	if err != nil || covered == nil || covered.normalizedDirty || covered.eventLogDamaged {
+		return false
+	}
+	coveringMessages := covering.Snapshot()
+	coveredMessages := covered.Snapshot()
+	return messagesHavePrefix(coveringMessages, coveredMessages) ||
+		messagesHavePrefixWithCompatibleSystem(coveringMessages, coveredMessages)
 }
 
 // TryAcquireRecoveryParentGuard verifies that a recovery branch is covered by

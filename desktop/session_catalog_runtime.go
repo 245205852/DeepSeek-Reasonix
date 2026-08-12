@@ -333,6 +333,18 @@ func (a *App) projectNodeFromCatalogTopic(topic sessioncatalog.TopicRecord, topi
 	if len(visible) <= 1 {
 		return node, true
 	}
+	diverged := 0
+	for _, session := range visible {
+		if session.RecoveryRole == sessioncatalog.RecoveryRoleDiverged ||
+			(session.Recovered && !session.RecoveryCopy && session.RecoveryRole != sessioncatalog.RecoveryRoleAdopted) {
+			diverged++
+		}
+	}
+	if diverged >= 2 {
+		// Non-destructive choice prompt. The frontend renders the label from
+		// this status so it stays translated.
+		node.Status = topicStatusDivergedRecovery
+	}
 	for _, session := range visible {
 		sessionKind := "session"
 		if topic.Scope == "global" {

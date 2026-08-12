@@ -1395,7 +1395,7 @@ func (c *Controller) submitHTTPWithFormat(input, display, format string) {
 	c.submitCommandOrTurn(trimmed, input, display, true, "", format)
 }
 
-func (c *Controller) submitCommandOrTurn(trimmed, input, display string, scopedRefsOnly bool, editedOriginal, format string) {
+func (c *Controller) submitCommandOrTurnReady(trimmed, input, display string, scopedRefsOnly bool, editedOriginal, format string) {
 	runRefTurn := func(input, display string) {
 		c.runRefTurnWithFormat(input, display, format)
 	}
@@ -1947,7 +1947,7 @@ func (c *Controller) noticeDetail(text, detail string) {
 // Run executes a turn synchronously, returning the agent's error. Used by the
 // headless `reasonix run` path, where the Sink renders to stdout and the caller
 // just needs the exit status — no TurnDone event, no cancel bookkeeping.
-func (c *Controller) Run(ctx context.Context, input string) (err error) {
+func (c *Controller) runReady(ctx context.Context, input string) (err error) {
 	ctx = extension.ContextWithRuntimeOwner(ctx, c.RuntimeOwner())
 	if c.RuntimePhase() == RuntimePhaseDraining {
 		c.emitDrainingNotice()
@@ -3827,22 +3827,11 @@ func (c *Controller) snapshotWithDurability(markActivity, forceRewrite, shutdown
 	if strategyErr != nil {
 		return false, strategyErr
 	}
-	forceRewrite = forceRewrite || s.NeedsRewriteSave()
-	var err error
-	if forceRewrite {
-		err = s.SaveRewrite(path)
-	} else {
-		err = s.SaveSnapshot(path)
-		if errors.Is(err, agent.ErrSessionSnapshotConflict) {
-			// The no-rewrite decision may already be stale: auto-compaction
-			// can rewrite history between the decision and the write. Re-check
-			// and retry once as an owned rewrite before treating the failure as
-			// a real cross-runtime conflict.
-			if s.NeedsRewriteSave() {
-				forceRewrite = true
-				err = s.SaveRewrite(path)
-			}
-		}
+	err, forceRewrite := persistSessionSnapshot(s, path, forceRewrite)
+	if authoritySaveError(err) {
+		// Missing/stale authority must not enter diverged/recovery. Frontends
+		// rebind the lease or surface the typed error.
+		return false, err
 	}
 	if err != nil {
 		if shutdownRecovery && errors.Is(err, agent.ErrSessionFileLockHeld) {
@@ -3926,59 +3915,6 @@ func snapshotConflictLogAttrs(saveErr error, path, mode string) []any {
 		)
 	}
 	return attrs
-}
-
-type snapshotConflictDiagnostic struct {
-	At               time.Time `json:"at"`
-	BranchID         string    `json:"branch_id"`
-	Mode             string    `json:"mode"`
-	Outcome          string    `json:"outcome"`
-	Kind             string    `json:"kind,omitempty"`
-	DiskMessages     int       `json:"disk_messages,omitempty"`
-	SnapshotMessages int       `json:"snapshot_messages,omitempty"`
-	BaseRevision     int64     `json:"base_revision,omitempty"`
-	DiskRevision     int64     `json:"disk_revision,omitempty"`
-	RecoveryBranchID string    `json:"recovery_branch_id,omitempty"`
-	ExistingRecovery bool      `json:"existing_recovery,omitempty"`
-}
-
-func appendSnapshotConflictDiagnostic(path, mode, outcome string, saveErr error, recoveryPath string, existing bool) {
-	path = strings.TrimSpace(path)
-	if path == "" {
-		return
-	}
-	rec := snapshotConflictDiagnostic{
-		At:       time.Now(),
-		BranchID: agent.BranchID(path),
-		Mode:     mode,
-		Outcome:  outcome,
-	}
-	var conflict *agent.SessionSnapshotConflictError
-	if errors.As(saveErr, &conflict) && conflict != nil {
-		rec.Kind = string(conflict.Kind)
-		rec.DiskMessages = conflict.ExistingMessages
-		rec.SnapshotMessages = conflict.SnapshotMessages
-		rec.BaseRevision = conflict.BaseRevision
-		rec.DiskRevision = conflict.DiskRevision
-	}
-	if recoveryPath != "" {
-		rec.RecoveryBranchID = agent.BranchID(recoveryPath)
-		rec.ExistingRecovery = existing
-	}
-	data, err := json.Marshal(rec)
-	if err != nil {
-		return
-	}
-	logPath := store.SessionConflictLog(path)
-	if err := os.MkdirAll(filepath.Dir(logPath), 0o755); err != nil {
-		return
-	}
-	f, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
-	if err != nil {
-		return
-	}
-	defer f.Close()
-	_, _ = f.Write(append(data, '\n'))
 }
 
 // conflictOutcome is recoverSnapshotConflict's declared result. Callers act
@@ -4154,9 +4090,9 @@ func (c *Controller) commitRecoveredSession(originalPath, reason string, info ag
 	c.sessionPath = info.Path
 	c.guardianPath = guardian.PathFor(info.Path)
 	c.mu.Unlock()
-	// Recovery branch is a new lineage path; do not keep writing the original
-	// session's projection sidecar.
-	c.bindExecutorProjection(info.Path, false)
+	// Recovery branch is a new lineage path. Load an inherited projection
+	// sidecar when present so the model view stays compressed across the fork.
+	c.bindExecutorProjection(info.Path, true)
 	c.setActiveJobSession(info.Path)
 	c.rebindCheckpoints(info.Path)
 	c.transplantInFlightTurnMarker(originalPath, info.Path)
