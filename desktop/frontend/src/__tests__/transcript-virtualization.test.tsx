@@ -60,8 +60,7 @@ function firstTextNode(root: Node): Text | null {
     const mountedAnswers = container.querySelectorAll(".msg--assistant").length;
     ok(mountedRows > 0 && mountedRows <= 24, `small viewport mounts only a window of rows (mounted ${mountedRows} of 90)`);
     ok(mountedAnswers > 0 && mountedAnswers < 30, `offscreen answers mount no Markdown subtree (mounted ${mountedAnswers} of 30)`);
-    const sizer = container.querySelector<HTMLElement>(".transcript__virtual-sizer");
-    ok(Number.parseFloat(sizer?.style.height ?? "0") > 2000, "sizer carries the full virtual height so the scrollbar maps the whole transcript");
+    ok(harness.scrollElement().scrollHeight > 2000, "Virtuoso exposes the full virtual height to the transcript scrollbar");
   } finally {
     await harness.unmount();
     await harness.close();
@@ -81,18 +80,10 @@ function firstTextNode(root: Node): Text | null {
     dispatchScroll(el);
     await harness.flush();
     const before = el.scrollTop;
-    // The first fully-visible row before the prepend is the anchor.
-    const anchorIdBefore = Array.from(harness.container.querySelectorAll(".transcript__row"))
-      .map((row) => {
-        const match = /translate3d\(0(?:px)?, ([\d.-]+)px/.exec((row as HTMLElement).style.transform);
-        return {
-          anchorId: row.querySelector("[data-question-anchor]")?.id,
-          top: match ? Number(match[1]) : -1,
-        };
-      })
-      .filter(({ anchorId, top }) => anchorId != null && top >= before)
-      .sort((a, b) => a.top - b.top)[0]?.anchorId;
-    ok(anchorIdBefore != null, "found a fully-visible anchor row before the prepend");
+    const anchor = harness.container.querySelector<HTMLElement>("#question-anchor-u5")?.closest<HTMLElement>(".transcript__row") ?? null;
+    const anchorIdBefore = anchor?.querySelector("[data-question-anchor]")?.id;
+    const absoluteIndexBefore = anchor?.dataset.itemIndex;
+    ok(anchorIdBefore != null && absoluteIndexBefore != null, "found a stable mounted anchor row before the prepend");
     // Prepend five older turns (15 rows) — the reading position must follow
     // the anchor row, not the row index.
     await harness.render([...turns(5, "old-"), ...turns(20)], { running: false });
@@ -106,15 +97,11 @@ function firstTextNode(root: Node): Text | null {
       anchorIdBefore != null && harness.container.querySelector(`#${anchorIdBefore}`) !== null,
       "the pre-prepend anchor row is still mounted after the prepend",
     );
-    const anchorRow = anchorIdBefore ? harness.container.querySelector(`#${anchorIdBefore}`)?.closest(".transcript__row") : null;
-    if (anchorRow) {
-      const transform = (anchorRow as HTMLElement).style.transform;
-      const match = /translate3d\(0(?:px)?, ([\d.-]+)px/.exec(transform);
-      const top = match ? Number(match[1]) : Number.NaN;
-      // The anchor question keeps its viewport position: row start ≈ scrollTop
-      // plus the same intra-row offset as before (it was exactly at 2000).
-      ok(Math.abs(el.scrollTop - top) < 200, `anchor row stays at the reading position (scrollTop ${el.scrollTop}, row top ${top})`);
-    }
+    const anchorRow = anchorIdBefore ? harness.container.querySelector(`#${anchorIdBefore}`)?.closest<HTMLElement>(".transcript__row") : null;
+    ok(
+      anchorRow?.dataset.itemIndex === absoluteIndexBefore,
+      `prepend preserves the anchor's absolute Virtuoso index (${absoluteIndexBefore} → ${anchorRow?.dataset.itemIndex})`,
+    );
   } finally {
     await harness.unmount();
     await harness.close();
@@ -133,16 +120,18 @@ function firstTextNode(root: Node): Text | null {
     const live: LiveStream = { id: "live-1", text: "token", reasoning: "", reasoningComplete: true };
     await harness.render(items, { running: true, live });
     const el = harness.scrollElement();
-    const historyRow = harness.container.querySelector("#question-anchor-u0")?.closest(".transcript__row") ?? null;
+    const historyRow = Array.from(harness.container.querySelectorAll<HTMLElement>(".transcript__row"))
+      .find((row) => row.dataset.rowKey !== "a:live-1") ?? null;
 
-    // Scroll away programmatically WITHOUT a scroll event: the pin intent is
-    // still set, so the next streaming update must re-pin to the tail.
-    el.scrollTop = 0;
+    const beforeDistance = el.scrollHeight - el.clientHeight - el.scrollTop;
+    ok(Math.abs(beforeDistance) <= 1, "the live transcript starts pinned to the tail");
     await harness.render(items, { running: true, live: { ...live, text: "token token token token token" } });
-    const sizer = harness.container.querySelector<HTMLElement>(".transcript__virtual-sizer");
-    const total = Number.parseFloat(sizer?.style.height ?? "0");
-    ok(total > 0 && el.scrollTop === total, `streaming update re-pins to the tail (scrollTop ${el.scrollTop}, total ${total})`);
-    const historyRowAfter = harness.container.querySelector("#question-anchor-u0")?.closest(".transcript__row") ?? null;
+    await harness.flush();
+    const distance = el.scrollHeight - el.clientHeight - el.scrollTop;
+    ok(Math.abs(distance) <= 1, `streaming update re-pins to the tail (bottom distance ${distance})`);
+    const historyRowAfter = historyRow?.dataset.rowKey
+      ? Array.from(harness.container.querySelectorAll<HTMLElement>(".transcript__row")).find((row) => row.dataset.rowKey === historyRow.dataset.rowKey) ?? null
+      : null;
     ok(historyRow !== null && historyRow === historyRowAfter, "streaming tokens never remount history rows");
   } finally {
     await harness.unmount();
@@ -175,7 +164,7 @@ function firstTextNode(root: Node): Text | null {
   }
 }
 
-// ── Native cross-page selection keeps a continuous DOM range ─────────────────
+// ── Cross-page selection promotes to the logical model ───────────────────────
 {
   const harness = await createTranscriptHarness({ viewportHeight: 200, rowHeight: 100 });
   try {
@@ -193,21 +182,19 @@ function firstTextNode(root: Node): Text | null {
     anchorBody?.dispatchEvent(new MouseEvent("pointerdown", { bubbles: true, button: 0 }));
     await harness.flush();
 
-    let focusBody: HTMLElement | null = null;
-    for (let top = 1000; top <= 8000 && !focusBody; top += 500) {
-      el.scrollTop = top;
-      dispatchScroll(el);
-      await harness.flush();
-      focusBody = harness.container.querySelector<HTMLElement>("#question-anchor-u20 .msg__body")
-        ?? harness.container.querySelector<HTMLElement>("#question-anchor-u20")?.closest<HTMLElement>(".msg")?.querySelector(".msg__body")
-        ?? null;
-    }
-    ok(focusBody != null, "selection focus row mounts after crossing virtual pages");
+    const focusBody = harness.container.querySelector<HTMLElement>("#question-anchor-u1 .msg__body")
+      ?? harness.container.querySelector<HTMLElement>("#question-anchor-u1")?.closest<HTMLElement>(".msg")?.querySelector(".msg__body")
+      ?? null;
+    ok(focusBody != null, "a neighboring focus row is mounted before logical promotion");
 
     const anchorText = anchorBody ? firstTextNode(anchorBody) : null;
     const focusText = focusBody ? firstTextNode(focusBody) : null;
     const selection = document.getSelection();
     if (anchorText && focusText && selection) {
+      const caretDocument = document as Document & {
+        caretPositionFromPoint?: () => { offsetNode: Node; offset: number };
+      };
+      caretDocument.caretPositionFromPoint = () => ({ offsetNode: focusText, offset: focusText.data.length });
       const range = document.createRange();
       range.setStart(anchorText, 0);
       range.setEnd(focusText, focusText.data.length);
@@ -215,14 +202,20 @@ function firstTextNode(root: Node): Text | null {
       selection.addRange(range);
       document.dispatchEvent(new Event("selectionchange"));
       await harness.flush();
-      ok(selection.anchorNode?.isConnected && selection.focusNode?.isConnected, "native selection endpoints stay connected");
-      ok(harness.container.querySelectorAll(".transcript__row").length >= 61, "every intervening row stays mounted while native selection is active");
+      const storeModule = await harness.loadModule<typeof import("../lib/transcriptSelectionStore")>("/src/lib/transcriptSelectionStore.ts");
+      ok(storeModule.transcriptSelectionStore.getSnapshot().mode === "logical-dragging", "cross-row selection promotes before virtualization can unmount its anchor");
+
+      el.scrollTop = 6000;
+      dispatchScroll(el);
+      await harness.flush();
+      ok(harness.container.querySelectorAll(".transcript__row").length <= 30, "logical selection keeps the transcript windowed across virtual pages");
+      ok(storeModule.transcriptSelectionStore.getSnapshot().mode === "logical-dragging", "logical selection survives its native anchor row unmounting");
 
       document.dispatchEvent(new MouseEvent("pointerup", { bubbles: true, button: 0 }));
-      selection.removeAllRanges();
-      document.dispatchEvent(new Event("selectionchange"));
       await harness.flush();
-      ok(harness.container.querySelectorAll(".transcript__row").length <= 24, "clearing selection releases retained rows");
+      ok(storeModule.transcriptSelectionStore.getSnapshot().mode === "logical-settled", "cross-page logical selection settles after pointerup");
+      delete caretDocument.caretPositionFromPoint;
+      storeModule.transcriptSelectionStore.clear("test-cleanup");
     } else {
       ok(false, "selection endpoint text nodes are available");
     }

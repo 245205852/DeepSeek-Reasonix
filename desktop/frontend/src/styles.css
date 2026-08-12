@@ -3395,11 +3395,9 @@ a[href] {
 }
 
 /* ── Virtual transcript rows ─────────────────────────────────────── */
-/* The transcript content is a single flat virtual list: the sizer carries the
-   total height, rows are absolutely positioned by the virtualizer. The row
-   wrapper forms a block formatting context (absolute positioning), so child
-   margins stay inside the measured height; the top margin moves to the row's
-   bottom margin only, preserving the old collapsed-sibling spacing. */
+/* React Virtuoso owns list offsets and row measurement. Rows stay in normal
+   flow; flow-root contains child margins so ResizeObserver sees the complete
+   dynamic height instead of a collapsed margin outside the measured item. */
 .transcript__virtual-sizer {
   position: relative;
   width: 100%;
@@ -3409,11 +3407,24 @@ a[href] {
   margin-left: 0;
   margin-right: 0;
 }
+.transcript > [data-viewport-type="element"] {
+  max-width: none;
+  margin-left: 0;
+  margin-right: 0;
+}
 .transcript__row {
-  position: absolute;
-  top: 0;
-  left: 0;
+  position: relative;
+  display: flow-root;
   width: 100%;
+}
+.transcript__header {
+  display: flow-root;
+  width: 100%;
+}
+.transcript__header > * {
+  max-width: var(--maxw);
+  margin-left: auto;
+  margin-right: auto;
 }
 .transcript-selection-overlay {
   position: absolute;

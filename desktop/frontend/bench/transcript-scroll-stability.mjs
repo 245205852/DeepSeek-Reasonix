@@ -45,156 +45,108 @@ try {
   browser = await chromium.launch({ headless: true });
   const page = await browser.newPage({ viewport: { width: 1280, height: 800 } });
   await page.goto(url, { waitUntil: "domcontentloaded" });
-  await page.waitForFunction(() => document.querySelectorAll(".transcript__row").length > 4, undefined, { timeout: 30_000 });
   await page.waitForFunction(() => !document.querySelector(".startup-splash"), undefined, { timeout: 30_000 });
   await page.click('.project-tree__topic-main:has-text("bench:tools-38t")');
+  await page.waitForFunction(() => document.querySelectorAll(".transcript__row").length > 4, undefined, { timeout: 30_000 });
   await page.waitForFunction(() => document.querySelector(".transcript")?.textContent?.includes("pkg-41/mod.go"), undefined, { timeout: 30_000 });
 
-  await page.evaluate(() => {
-    const transcript = document.querySelector(".transcript");
-    if (!transcript) return;
-    transcript.scrollTop = Math.max(0, transcript.scrollHeight - transcript.clientHeight * 2);
-    window.__scrollWrites = [];
-    window.__scrollGestureTrace = [];
-    window.__REASONIX_TRANSCRIPT_SCROLL_WRITE__ = (owner, top) => window.__scrollWrites.push({ owner, top });
-    new MutationObserver(() => {
-      window.__scrollGestureTrace.push(transcript.dataset.scrollGesture ?? "idle");
-    }).observe(transcript, { attributes: true, attributeFilter: ["data-scroll-gesture"] });
-  });
+  const transcript = page.locator(".transcript");
+  const box = await transcript.boundingBox();
+  assert(box != null, "bench exposes the Virtuoso transcript viewport");
+  assert(await page.locator('[data-virtuoso-scroller="true"]').count() === 1, "Transcript is backed by React Virtuoso");
 
-  const box = await page.locator(".transcript").boundingBox();
-  assert(box != null, "bench exposes the transcript viewport");
+  // Start away from either edge and record a visible stable row. Growing an
+  // already-mounted row above it reproduces async Markdown/tool hydration.
+  const beforeGrowth = await transcript.evaluate((element) => {
+    element.scrollTop = Math.max(0, element.scrollHeight - element.clientHeight * 2);
+    element.dispatchEvent(new Event("scroll"));
+    const viewport = element.getBoundingClientRect();
+    const rows = [...element.querySelectorAll(".transcript__row")];
+    const visible = rows
+      .filter((row) => row.getBoundingClientRect().bottom > viewport.top && row.getBoundingClientRect().top < viewport.bottom)
+      .sort((left, right) => left.getBoundingClientRect().top - right.getBoundingClientRect().top);
+    const anchor = visible.find((row) => row.getBoundingClientRect().top >= viewport.top) ?? visible[0];
+    const above = rows
+      .filter((row) => row.getBoundingClientRect().bottom <= anchor?.getBoundingClientRect().top)
+      .sort((left, right) => right.getBoundingClientRect().bottom - left.getBoundingClientRect().bottom)[0];
+    return {
+      top: element.scrollTop,
+      anchorKey: anchor?.dataset.rowKey ?? null,
+      anchorOffset: anchor ? anchor.getBoundingClientRect().top - viewport.top : null,
+      grownKey: above?.dataset.rowKey ?? null,
+    };
+  });
+  assert(beforeGrowth.anchorKey && beforeGrowth.grownKey, "bench exposes a visible anchor and mounted dynamic row above it");
+
   await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
-  await page.mouse.wheel(0, -420);
-  await page.waitForFunction(() => window.__scrollGestureTrace?.includes("wheel"), undefined, { timeout: 3_000 });
-  assert(true, "real Chromium wheel input enters the user scroll session");
-
-  const midGesture = await page.evaluate(() => {
-    const transcript = document.querySelector(".transcript");
-    if (!transcript) return null;
-    window.__scrollWrites = [];
-    transcript.dispatchEvent(new WheelEvent("wheel", { deltaY: -240, bubbles: true, cancelable: true }));
-    transcript.scrollTop = Math.max(0, transcript.scrollTop - 240);
-    transcript.dispatchEvent(new Event("scroll"));
-    const row = [...transcript.querySelectorAll(".transcript__row")].find((candidate) => {
-      const rect = candidate.getBoundingClientRect();
-      return rect.bottom > transcript.getBoundingClientRect().top;
-    });
-    if (row instanceof HTMLElement) row.style.paddingTop = "180px";
-    return { gesture: transcript.dataset.scrollGesture, top: transcript.scrollTop, rowKey: row?.dataset.rowKey ?? null };
+  await page.mouse.wheel(0, -360);
+  const gestureStart = await transcript.evaluate((element) => element.scrollTop);
+  await transcript.evaluate((element) => {
+    const viewport = element.getBoundingClientRect();
+    const rows = [...element.querySelectorAll(".transcript__row")];
+    const visible = rows
+      .filter((row) => row.getBoundingClientRect().bottom > viewport.top && row.getBoundingClientRect().top < viewport.bottom)
+      .sort((left, right) => left.getBoundingClientRect().top - right.getBoundingClientRect().top);
+    const above = rows
+      .filter((row) => row.getBoundingClientRect().bottom <= viewport.top)
+      .sort((left, right) => right.getBoundingClientRect().bottom - left.getBoundingClientRect().bottom)[0];
+    if (above instanceof HTMLElement) above.style.paddingBottom = `${Number.parseFloat(above.style.paddingBottom || "0") + 1200}px`;
+    window.__reasonixScrollSamples = [];
+    const sample = () => {
+      const currentRows = [...element.querySelectorAll(".transcript__row")];
+      const rect = element.getBoundingClientRect();
+      const occupied = currentRows.some((row) => {
+        const rowRect = row.getBoundingClientRect();
+        return rowRect.bottom > rect.top && rowRect.top < rect.bottom;
+      });
+      window.__reasonixScrollSamples.push({ top: element.scrollTop, occupied });
+    };
+    element.addEventListener("scroll", sample, { passive: true });
+    sample();
   });
-  assert(midGesture?.gesture === "wheel", "variable-height mutation occurs while wheel ownership is active");
   await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
-  const during = await page.evaluate(() => ({
-    writes: window.__scrollWrites ?? [],
-    gesture: document.querySelector(".transcript")?.dataset.scrollGesture,
+  const afterGrowth = await transcript.evaluate((element) => ({
+    top: element.scrollTop,
+    samples: window.__reasonixScrollSamples ?? [],
   }));
-  assert(during.writes.every((write) => !["virtualizer", "stream", "container-resize", "footer-resize", "row-size"].includes(write.owner)),
-    `compensating owners stay silent during variable-height scroll (${JSON.stringify(during.writes)})`);
+  assert(afterGrowth.top >= gestureStart - 2, `dynamic measurement never reverses an upward gesture into a multi-screen jump (${gestureStart} → ${afterGrowth.top})`);
+  assert(afterGrowth.samples.every((sample) => sample.occupied), "dynamic measurement never exposes a blank transcript viewport");
 
-  await page.evaluate(() => document.querySelector(".transcript")?.dispatchEvent(new Event("scrollend")));
-  await page.waitForFunction(() => !document.querySelector(".transcript")?.dataset.scrollGesture);
-  const settledTop = await page.locator(".transcript").evaluate((element) => element.scrollTop);
-  await page.waitForTimeout(260);
-  const lateTop = await page.locator(".transcript").evaluate((element) => element.scrollTop);
-  assert(Math.abs(lateTop - settledTop) <= 1, `scrollend has no delayed full-measure jump (${settledTop} → ${lateTop})`);
-
-  const middle = await page.evaluate(() => {
-    const transcript = document.querySelector(".transcript");
-    if (!transcript) return null;
-    window.__scrollWrites = [];
-    transcript.dispatchEvent(new PointerEvent("pointerdown", { button: 1, buttons: 4, pointerId: 9, bubbles: true }));
-    const started = transcript.dataset.scrollGesture;
-    transcript.scrollTop = Math.max(0, transcript.scrollTop - 160);
-    transcript.dispatchEvent(new Event("scroll"));
-    return { started, continued: transcript.dataset.scrollGesture, top: transcript.scrollTop };
+  // Rapid direction changes are the exact user report. Sample every frame and
+  // require that Virtuoso always maintains mounted coverage.
+  for (const delta of [-700, -700, 480, -600, 520, -460]) {
+    await page.mouse.wheel(0, delta);
+    await page.waitForTimeout(24);
+  }
+  const rapid = await transcript.evaluate((element) => {
+    const rect = element.getBoundingClientRect();
+    const visible = [...element.querySelectorAll(".transcript__row")].filter((row) => {
+      const rowRect = row.getBoundingClientRect();
+      return rowRect.bottom > rect.top && rowRect.top < rect.bottom;
+    });
+    return { visible: visible.length, top: element.scrollTop, max: element.scrollHeight - element.clientHeight };
   });
-  assert(middle?.started === "middle-button", "middle-button activation owns Windows auto-scroll");
-  assert(middle?.continued === "middle-button", "unowned native scroll refreshes middle-button ownership");
-  const middleWrites = await page.evaluate(() => window.__scrollWrites ?? []);
-  assert(middleWrites.length === 0, "middle-button auto-scroll admits no compensating programmatic writes");
-  await page.evaluate(() => document.querySelector(".transcript")?.dispatchEvent(new Event("scrollend")));
-  await page.waitForFunction(() => !document.querySelector(".transcript")?.dataset.scrollGesture);
-  assert(true, "middle-button session terminates on native scrollend");
+  assert(rapid.visible > 0, `rapid bidirectional scrolling leaves rendered coverage (${rapid.visible} visible rows)`);
+  assert(rapid.top >= 0 && rapid.top <= rapid.max + 1, `rapid scrolling stays within the native scroll range (${rapid.top}/${rapid.max})`);
 
-  // Reproduce the subtle tail-follow race: a short upward wheel stays inside
-  // the 80px near-bottom band, then the gesture settles before more content
-  // arrives. User intent must remain manual across that quiet boundary.
+  // Explicit bottom owns the tail. Subsequent async growth must use Virtuoso's
+  // autoscroll API and remain at the physical bottom without Reasonix scrollTop
+  // correction loops.
   const jumpBottom = page.locator(".transcript__jump-bottom");
-  await jumpBottom.click();
+  if (await jumpBottom.count()) await jumpBottom.click();
   await page.waitForFunction(() => {
-    const transcript = document.querySelector(".transcript");
-    return transcript && transcript.scrollHeight - transcript.scrollTop - transcript.clientHeight <= 0.5;
+    const element = document.querySelector(".transcript");
+    return element && element.scrollHeight - element.scrollTop - element.clientHeight <= 1;
   });
-  await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
-  await page.mouse.wheel(0, -24);
+  await transcript.evaluate((element) => {
+    const tail = [...element.querySelectorAll(".transcript__row")].at(-1);
+    if (tail instanceof HTMLElement) tail.style.paddingBottom = `${Number.parseFloat(tail.style.paddingBottom || "0") + 320}px`;
+  });
   await page.waitForFunction(() => {
-    const transcript = document.querySelector(".transcript");
-    if (!transcript) return false;
-    const distance = transcript.scrollHeight - transcript.scrollTop - transcript.clientHeight;
-    return distance > 0.5 && distance < 80 && transcript.dataset.scrollGesture === "wheel";
+    const element = document.querySelector(".transcript");
+    return element && element.scrollHeight - element.scrollTop - element.clientHeight <= 1;
   });
-  await page.waitForTimeout(64);
-  await page.evaluate(() => document.querySelector(".transcript")?.dispatchEvent(new Event("scrollend")));
-  await page.waitForFunction(() => !document.querySelector(".transcript")?.dataset.scrollGesture);
-  const shortUpward = await page.locator(".transcript").evaluate((element) => ({
-    distance: element.scrollHeight - element.scrollTop - element.clientHeight,
-    mode: element.dataset.scrollMode,
-    top: element.scrollTop,
-  }));
-  assert(shortUpward.mode === "manual", `short upward wheel remains manual inside the bottom threshold (${JSON.stringify(shortUpward)})`);
-  await page.waitForTimeout(260);
-  const shortUpwardSettled = await page.locator(".transcript").evaluate((element) => ({
-    mode: element.dataset.scrollMode,
-    top: element.scrollTop,
-  }));
-  assert(shortUpwardSettled.mode === "manual" && Math.abs(shortUpwardSettled.top - shortUpward.top) <= 1,
-    `quiet-window expiry does not re-pin the short upward gesture (${JSON.stringify(shortUpwardSettled)})`);
-
-  await page.mouse.wheel(0, 120);
-  await page.waitForFunction(() => {
-    const transcript = document.querySelector(".transcript");
-    return transcript
-      && transcript.scrollHeight - transcript.scrollTop - transcript.clientHeight <= 0.5
-      && transcript.dataset.scrollMode === "tail-follow";
-  });
-  assert(true, "user wheel back to the physical bottom explicitly restores tail-follow");
-
-  // A harmless downward wheel at the physical bottom still freezes passive
-  // writers. If the final row grows during that lock, the repin is deferred and
-  // replayed once after idle using the latest scrollHeight.
-  const harmlessDown = await page.evaluate(() => {
-    const transcript = document.querySelector(".transcript");
-    const rows = transcript ? [...transcript.querySelectorAll(".transcript__row")] : [];
-    const tailRow = rows.at(-1);
-    if (!(transcript instanceof HTMLElement) || !(tailRow instanceof HTMLElement)) return null;
-    transcript.scrollTop = transcript.scrollHeight;
-    window.__scrollWrites = [];
-    transcript.dispatchEvent(new WheelEvent("wheel", { deltaY: 48, bubbles: true, cancelable: true }));
-    tailRow.style.paddingBottom = `${Number.parseFloat(tailRow.style.paddingBottom || "0") + 160}px`;
-    return { gesture: transcript.dataset.scrollGesture, mode: transcript.dataset.scrollMode };
-  });
-  assert(harmlessDown?.gesture === "wheel" && harmlessDown.mode === "tail-follow",
-    `wheel-down at the physical bottom preserves tail-follow (${JSON.stringify(harmlessDown)})`);
-  await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => requestAnimationFrame(resolve)))));
-  const harmlessDuring = await page.evaluate(() => window.__scrollWrites ?? []);
-  assert(harmlessDuring.every((write) => !["virtualizer", "stream", "container-resize", "footer-resize", "row-size"].includes(write.owner)),
-    `tail growth stays write-free during the downward gesture (${JSON.stringify(harmlessDuring)})`);
-  await page.waitForTimeout(64);
-  await page.evaluate(() => document.querySelector(".transcript")?.dispatchEvent(new Event("scrollend")));
-  await page.waitForFunction(() => {
-    const transcript = document.querySelector(".transcript");
-    return transcript
-      && !transcript.dataset.scrollGesture
-      && transcript.dataset.scrollMode === "tail-follow"
-      && transcript.scrollHeight - transcript.scrollTop - transcript.clientHeight <= 0.5;
-  });
-  const harmlessSettled = await page.locator(".transcript").evaluate((element) => ({
-    distance: element.scrollHeight - element.scrollTop - element.clientHeight,
-    mode: element.dataset.scrollMode,
-  }));
-  assert(harmlessSettled.distance <= 0.5 && harmlessSettled.mode === "tail-follow",
-    `deferred tail growth replays once after gesture idle (${JSON.stringify(harmlessSettled)})`);
+  assert(true, "pinned dynamic tail growth remains at the physical bottom");
 
   process.stdout.write("\ntranscript scroll stability browser gate passed\n");
 } finally {
