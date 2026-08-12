@@ -248,5 +248,31 @@ function firstTextNode(root: Node): Text | null {
   }
 }
 
+// ── Short transcripts must not clone the first user bubble at the top ────────
+// Virtuoso alignToBottom uses margin-top:auto to pin short lists to the
+// composer. Combined with firstItemIndex it also paints a second copy of the
+// first user row at the scroller top, leaving a large empty band in between.
+{
+  const harness = await createTranscriptHarness({ viewportHeight: 600, rowHeight: 80 });
+  try {
+    await harness.render(
+      [
+        { kind: "user", id: "u-short", text: "你好" },
+        { kind: "assistant", id: "a-short", text: "hello", reasoning: "", streaming: false },
+      ],
+      { running: false },
+    );
+    await harness.settle();
+    const users = harness.container.querySelectorAll(".msg--user");
+    ok(users.length === 1, `a one-turn transcript mounts the user bubble once (got ${users.length})`);
+    const list = harness.container.querySelector<HTMLElement>('[data-testid="virtuoso-item-list"]');
+    ok(list != null, "short transcript mounts the Virtuoso item list");
+    ok(list?.style.marginTop !== "auto", `short content is not bottom-shifted (marginTop=${JSON.stringify(list?.style.marginTop ?? null)})`);
+  } finally {
+    await harness.unmount();
+    await harness.close();
+  }
+}
+
 console.log(`\n${passed} passed, ${failed} failed`);
 if (failed > 0) process.exit(1);

@@ -721,7 +721,9 @@ export function Transcript({
             components={hasOlderHistory ? TRANSCRIPT_VIRTUOSO_COMPONENTS_WITH_HEADER : TRANSCRIPT_VIRTUOSO_COMPONENTS}
             computeItemKey={(_index, row) => `${tabId ?? ""}:${String(row.key)}`}
             firstItemIndex={firstItemIndex}
-            alignToBottom
+            // Do not set alignToBottom: Virtuoso's margin-top:auto plus
+            // firstItemIndex paints a ghost first-user bubble and empty band
+            // in short chats. Tail pin stays followOutput + scrollToBottom.
             followOutput={(atBottom) => atBottom ? "auto" : false}
             atBottomThreshold={TRANSCRIPT_AT_BOTTOM_THRESHOLD_PX}
             atBottomStateChange={atBottomStateChange}
