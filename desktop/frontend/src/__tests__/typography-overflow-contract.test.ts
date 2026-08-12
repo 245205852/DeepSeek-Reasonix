@@ -3,6 +3,7 @@
 import { readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { JSDOM } from "jsdom";
 import { TEXT_SIZES } from "../lib/textSize";
 
 const testDir = dirname(fileURLToPath(import.meta.url));
@@ -98,6 +99,39 @@ eq(
 );
 eq(finalDeclaration(".transcript--empty", "overflow-y"), "auto", "empty transcript can scroll instead of clipping");
 eq(finalDeclaration(".welcome", "overflow"), "visible", "welcome empty state is not clipped by its own box");
+ok(
+  /\.md\s*>\s*:where\([^)]*p[^)]*ul[^)]*ol[^)]*\)\s*\{[^}]*content-visibility:\s*auto;[^}]*contain-intrinsic-size:\s*auto 72px;/.test(styles),
+  "non-transcript markdown still culls offscreen blocks with a 72px placeholder",
+);
+ok(
+  /\.transcript__row\s+\.md\s*>\s*\*\s*(?:,[^{]*)?\{[^}]*content-visibility:\s*visible;[^}]*contain-intrinsic-size:\s*none;/.test(styles),
+  "virtual transcript rows do not measure markdown through 72px placeholders",
+);
+ok(
+  hasDeclaration(".transcript__row .msg", "content-visibility", "visible") &&
+    hasDeclaration(".transcript__row .turn-collapse", "content-visibility", "visible"),
+  "virtual transcript cards stay measurable after the markdown override",
+);
+
+{
+  const stylesheet = readFileSync(resolve(testDir, "../styles.css"), "utf8");
+  const dom = new JSDOM(
+    `<!doctype html><html><head><style>${stylesheet}</style></head><body>
+      <div class="transcript__row"><div class="md"><p id="inside">inside</p></div></div>
+      <div class="md"><p id="outside">outside</p></div>
+    </body></html>`,
+    { pretendToBeVisual: true },
+  );
+  const inside = dom.window.getComputedStyle(dom.window.document.getElementById("inside")!);
+  const outside = dom.window.getComputedStyle(dom.window.document.getElementById("outside")!);
+  // jsdom may not implement content-visibility; treat an empty computed value
+  // as "engine gap" and still require the source contract above.
+  if (inside.contentVisibility || outside.contentVisibility) {
+    eq(inside.contentVisibility, "visible", "computed style keeps transcript markdown measurable");
+    eq(outside.contentVisibility, "auto", "computed style still culls markdown outside the transcript");
+  }
+  dom.window.close();
+}
 ok(
   hasDeclaration(".transcript--empty > .welcome", "margin-block", "auto"),
   "empty-state auto margins apply only to the welcome content",

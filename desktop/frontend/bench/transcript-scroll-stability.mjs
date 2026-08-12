@@ -52,6 +52,29 @@ try {
   await page.click('.project-tree__topic-main:has-text("bench:tools-38t")');
   await page.waitForFunction(() => document.querySelectorAll(".transcript__row").length > 4, undefined, { timeout: 30_000 });
   await page.waitForFunction(() => document.querySelector(".transcript")?.textContent?.includes("pkg-41/mod.go"), undefined, { timeout: 30_000 });
+  const markdownVisibility = await page.evaluate(() => {
+    const row = document.querySelector(".transcript__row");
+    if (!(row instanceof HTMLElement)) return { inside: null, outside: null };
+    const mount = (parent) => {
+      const host = document.createElement("div");
+      host.className = "md";
+      const probe = document.createElement("p");
+      host.append(probe);
+      parent.append(host);
+      const value = getComputedStyle(probe).contentVisibility;
+      host.remove();
+      return value;
+    };
+    return { inside: mount(row), outside: mount(document.body) };
+  });
+  assert(
+    markdownVisibility.inside === "visible",
+    `mounted transcript markdown stays measurable (${markdownVisibility.inside})`,
+  );
+  assert(
+    markdownVisibility.outside === "auto",
+    `markdown outside the transcript still culls with content-visibility (${markdownVisibility.outside})`,
+  );
 
   const transcript = page.locator(".transcript");
   const box = await transcript.boundingBox();

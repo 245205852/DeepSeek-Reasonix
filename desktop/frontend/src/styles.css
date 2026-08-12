@@ -3458,7 +3458,8 @@ a[href] {
 .transcript__row .tool,
 .transcript__row .process-card,
 .transcript__row .readonly-batch,
-.transcript__row .tool-group {
+.transcript__row .tool-group,
+.transcript__row .md > * {
   content-visibility: visible;
   contain-intrinsic-size: none;
 }
