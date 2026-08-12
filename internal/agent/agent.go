@@ -308,12 +308,12 @@ type Agent struct {
 	// for the agent's lifetime and validates proxy calls after resolution.
 	readOnlyExecution bool
 
-	// mutationDependencyBarrier is set for the remainder of a provider tool
-	// batch after any mutating call fails or is blocked. executeOne re-checks
-	// it after proxy resolution so use_capability cannot bypass the barrier by
-	// advertising schema-level ReadOnly()==true. Parallel read-only segments
-	// never set it. Cleared at the start of each executeBatch.
-	mutationDependencyBarrier atomic.Bool
+	// mutationDependencyBarrier records the first durable-state write that
+	// failed or was blocked in the current provider tool batch. executeOne
+	// re-checks it after proxy resolution so use_capability cannot bypass the
+	// barrier by advertising schema-level ReadOnly()==true. The pointed-to
+	// cause is immutable and contains no arguments, paths, or remote addresses.
+	mutationDependencyBarrier atomic.Pointer[mutationBarrierCause]
 
 	// plannerMCPExecution relaxes the strict read-only MCP boundary for the
 	// two-model Planner only: authorized, non-destructive MCP targets may run
