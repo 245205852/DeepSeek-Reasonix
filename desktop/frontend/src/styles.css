@@ -3372,13 +3372,18 @@ a[href] {
   }
 }
 .transcript {
+  /* Virtuoso sizes rows from the scroller clientWidth (padding included) but
+     lays them out in the content box. Horizontal padding here therefore makes
+     right-aligned bubbles extend under the workspace dock. Keep only vertical
+     inset on the scroller; rows own --transcript-inline-pad. */
+  --transcript-inline-pad: 32px;
   position: relative;
   height: 100%;
   overflow-y: auto;
   overflow-y: overlay;
   overflow-x: hidden;
   scrollbar-gutter: stable both-edges;
-  padding: 24px 32px 32px;
+  padding: 24px 0 32px;
   scrollbar-width: thin;
   scrollbar-color: var(--scrollbar-thumb) var(--scrollbar-track);
 }
@@ -3415,11 +3420,17 @@ a[href] {
 .transcript__row {
   position: relative;
   display: flow-root;
+  box-sizing: border-box;
   width: 100%;
+  padding-left: var(--transcript-inline-pad, 32px);
+  padding-right: var(--transcript-inline-pad, 32px);
 }
 .transcript__header {
   display: flow-root;
+  box-sizing: border-box;
   width: 100%;
+  padding-left: var(--transcript-inline-pad, 32px);
+  padding-right: var(--transcript-inline-pad, 32px);
 }
 .transcript__header > * {
   max-width: var(--maxw);
@@ -15130,7 +15141,8 @@ body > .mermaid-diagram--fullscreen {
   font-size: var(--font-control);
 }
 .history-preview__body .transcript {
-  padding: 14px 14px 18px;
+  --transcript-inline-pad: 14px;
+  padding: 14px 0 18px;
 }
 .history-preview__body .transcript > * {
   max-width: none;
@@ -21363,7 +21375,8 @@ body > .mermaid-diagram--fullscreen {
     display: flex;
   }
   .transcript {
-    padding: 18px 16px 28px;
+    --transcript-inline-pad: 16px;
+    padding: 18px 0 28px;
   }
   .jump-bar {
     display: none;
@@ -26720,7 +26733,7 @@ body > .mermaid-diagram--fullscreen {
 }
 
 .transcript {
-  padding: 24px 32px 28px;
+  padding: 24px 0 28px;
 }
 
 .transcript > * {
@@ -27999,7 +28012,7 @@ body > .mermaid-diagram--fullscreen {
 }
 
 :root[data-theme-style] .transcript {
-  padding: 24px 32px 28px;
+  padding: 24px 0 28px;
 }
 
 :root[data-theme-style] .transcript--empty {
@@ -28606,7 +28619,8 @@ body > .mermaid-diagram--fullscreen {
 }
 
 :root[data-theme-style] .history-preview__body .transcript {
-  padding: 14px;
+  --transcript-inline-pad: 14px;
+  padding: 14px 0;
 }
 
 :root[data-theme-style] .settings-center__nav {

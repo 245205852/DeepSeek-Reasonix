@@ -113,6 +113,36 @@ ok(
   "virtual transcript cards stay measurable after the markdown override",
 );
 
+function paddingSides(value: string) {
+  const parts = value.trim().split(/\s+/);
+  if (parts.length === 1) return { right: parts[0], left: parts[0] };
+  if (parts.length === 2 || parts.length === 3) return { right: parts[1], left: parts[1] };
+  return { right: parts[1], left: parts[3] };
+}
+function isZeroPad(value: string | undefined) {
+  return value === undefined || value === "0" || value === "0px";
+}
+for (const block of matchingBlocks(".transcript")) {
+  const shorthand = /(?:^|;)\s*padding\s*:\s*([^;]+)/.exec(block);
+  if (shorthand) {
+    const sides = paddingSides(shorthand[1]);
+    ok(
+      isZeroPad(sides.left) && isZeroPad(sides.right),
+      `Virtuoso scroller padding stays vertical-only (${shorthand[1].trim()})`,
+    );
+  }
+  const padLeft = /(?:^|;)\s*padding-left\s*:\s*([^;]+)/.exec(block);
+  const padRight = /(?:^|;)\s*padding-right\s*:\s*([^;]+)/.exec(block);
+  ok(isZeroPad(padLeft?.[1].trim()), "Virtuoso scroller does not set padding-left");
+  ok(isZeroPad(padRight?.[1].trim()), "Virtuoso scroller does not set padding-right");
+}
+ok(hasDeclaration(".transcript", "--transcript-inline-pad", "32px"), "default transcript inline inset is 32px");
+ok(hasDeclaration(".transcript", "--transcript-inline-pad", "16px"), "narrow viewports tighten the transcript inline inset");
+eq(finalDeclaration(".transcript__row", "padding-left"), "var(--transcript-inline-pad, 32px)", "virtual rows own the left inset");
+eq(finalDeclaration(".transcript__row", "padding-right"), "var(--transcript-inline-pad, 32px)", "virtual rows own the right inset");
+eq(finalDeclaration(".transcript__header", "padding-left"), "var(--transcript-inline-pad, 32px)", "load-older header uses the same inline inset");
+eq(finalDeclaration(".transcript--empty", "padding"), "16px 32px", "empty transcript keeps its own horizontal inset");
+
 {
   const stylesheet = readFileSync(resolve(testDir, "../styles.css"), "utf8");
   const dom = new JSDOM(

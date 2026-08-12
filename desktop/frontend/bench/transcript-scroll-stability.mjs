@@ -81,6 +81,71 @@ try {
   assert(box != null, "bench exposes the Virtuoso transcript viewport");
   assert(await page.locator('[data-virtuoso-scroller="true"]').count() === 1, "Transcript is backed by React Virtuoso");
 
+  // Stay on the tail. Opening the workspace dock must not crop right-aligned
+  // user bubbles — that is a width/padding bug, not the scroll-up overlap.
+  const measureDockCrop = () => page.evaluate(() => {
+    const layout = document.querySelector(".layout");
+    const chat = document.querySelector(".chat-pane");
+    const dock = document.querySelector(".workbench-dock");
+    const scroller = document.querySelector(".transcript");
+    const bubbles = [...document.querySelectorAll(".msg--user .msg__body")];
+    const bubble = bubbles.at(-1);
+    if (!(chat instanceof HTMLElement) || !(bubble instanceof HTMLElement) || !(scroller instanceof HTMLElement)) {
+      return { ok: false };
+    }
+    const chatBox = chat.getBoundingClientRect();
+    const bubbleBox = bubble.getBoundingClientRect();
+    const dockBox = dock instanceof HTMLElement ? dock.getBoundingClientRect() : null;
+    return {
+      ok: true,
+      workspaceOpen: Boolean(layout?.classList.contains("layout--workspace-open")),
+      overflowChatRight: +(bubbleBox.right - chatBox.right).toFixed(2),
+      overflowDock: dockBox ? +(bubbleBox.right - dockBox.left).toFixed(2) : null,
+      fromBottom: +(scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight).toFixed(2),
+    };
+  });
+  const dockOpen = await measureDockCrop();
+  assert(dockOpen.ok, "tail-follow dock check can see the chat and a user bubble");
+  assert(dockOpen.workspaceOpen === true, "bench starts with the workspace dock open");
+  assert(dockOpen.fromBottom <= 1, `dock-open check stays on the tail without scrolling up (${dockOpen.fromBottom})`);
+  assert(dockOpen.overflowChatRight <= 1, `user bubble stays inside the chat column with the dock open (${dockOpen.overflowChatRight})`);
+  assert(
+    dockOpen.overflowDock == null || dockOpen.overflowDock <= 1,
+    `user bubble does not extend into the workspace dock (${dockOpen.overflowDock})`,
+  );
+
+  // Width changes remasure Virtuoso and can leave a few pixels off the
+  // physical bottom. Keep the crop assertions tight; only the post-resize
+  // stick-to-tail check gets this slack (CI saw 7px after collapse).
+  const tailAfterResizePx = 16;
+  const waitNearTailAfterResize = () => page.waitForFunction((limit) => {
+    const scroller = document.querySelector(".transcript");
+    return Boolean(scroller && scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight <= limit);
+  }, tailAfterResizePx);
+
+  const collapse = page.getByRole("button", { name: /Collapse workspace|收起工作区/ });
+  if (await collapse.count()) {
+    await collapse.click();
+    await page.waitForFunction(() => !document.querySelector(".layout")?.classList.contains("layout--workspace-open"));
+    await waitNearTailAfterResize();
+    const dockClosed = await measureDockCrop();
+    assert(dockClosed.ok && dockClosed.workspaceOpen === false, "workspace toggle collapses the dock");
+    assert(dockClosed.fromBottom <= tailAfterResizePx, `collapsing the dock does not require scrolling up (${dockClosed.fromBottom})`);
+    assert(dockClosed.overflowChatRight <= 1, `user bubble stays inside the chat column with the dock closed (${dockClosed.overflowChatRight})`);
+    const expand = page.getByRole("button", { name: /Expand workspace|展开工作区/ });
+    await expand.click();
+    await page.waitForFunction(() => Boolean(document.querySelector(".layout")?.classList.contains("layout--workspace-open")));
+    await waitNearTailAfterResize();
+    const dockReopen = await measureDockCrop();
+    assert(dockReopen.ok && dockReopen.workspaceOpen === true, "workspace toggle reopens the dock");
+    assert(dockReopen.fromBottom <= tailAfterResizePx, `reopening the dock stays on the tail (${dockReopen.fromBottom})`);
+    assert(dockReopen.overflowChatRight <= 1, `user bubble stays inside the chat column after reopening the dock (${dockReopen.overflowChatRight})`);
+    assert(
+      dockReopen.overflowDock == null || dockReopen.overflowDock <= 1,
+      `user bubble still does not enter the dock after reopen (${dockReopen.overflowDock})`,
+    );
+  }
+
   // Start away from either edge and record a visible stable row. Growing an
   // already-mounted row above it reproduces async Markdown/tool hydration.
   const beforeGrowth = await transcript.evaluate((element) => {
