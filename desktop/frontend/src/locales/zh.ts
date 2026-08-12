@@ -2607,7 +2607,7 @@ export const zh: Record<DictKey, string> = {
   "settings.addProvider.official.deepseek": "DeepSeek 官方（推荐）",
   "settings.addProvider.official.deepseekDesc": "Anthropic Messages API，支持 Flash / Pro，默认开启网页搜索。",
   "settings.addProvider.preset.deepseekResponsesLabel": "DeepSeek 官方 Responses API",
-  "settings.addProvider.preset.deepseekResponsesDesc": "无状态 Responses API，仅支持 Flash，默认开启网页搜索。",
+  "settings.addProvider.preset.deepseekResponsesDesc": "无状态 Responses API，支持 Flash / Pro，默认开启网页搜索。",
   "settings.addProvider.preset.longcatOpenAIDesc": "LongCat 开放平台 OpenAI-compatible 端点，默认 LongCat-2.0。",
   "settings.addProvider.preset.longcatAnthropicDesc": "LongCat 开放平台 Anthropic-compatible Messages 端点，使用 Bearer 认证。",
   "settings.addProvider.preset.tokenRhythmLabel": "基元律动",

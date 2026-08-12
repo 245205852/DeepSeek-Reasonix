@@ -2604,7 +2604,7 @@ export const en = {
   "settings.addProvider.official.deepseek": "DeepSeek Official (Recommended)",
   "settings.addProvider.official.deepseekDesc": "Default Anthropic Messages API for Flash and Pro; server-side web search is enabled.",
   "settings.addProvider.preset.deepseekResponsesLabel": "DeepSeek Official Responses API",
-  "settings.addProvider.preset.deepseekResponsesDesc": "Stateless Responses API for Flash; server-side web search is enabled and may add cost.",
+  "settings.addProvider.preset.deepseekResponsesDesc": "Stateless Responses API for Flash and Pro; server-side web search is enabled and may add cost.",
   "settings.addProvider.preset.longcatOpenAIDesc": "LongCat Platform OpenAI-compatible endpoint with LongCat-2.0 default.",
   "settings.addProvider.preset.longcatAnthropicDesc": "LongCat Platform Anthropic-compatible Messages endpoint using Bearer auth.",
   "settings.addProvider.preset.tokenRhythmLabel": "Token Rhythm",
