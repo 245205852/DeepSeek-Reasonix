@@ -43,6 +43,53 @@ export function isPinnedTranscriptLayoutGrowth({
     && scrollTop >= previousScrollTop - 1;
 }
 
+export function isPinnedTranscriptViewportChange({
+  pinned,
+  previousClientHeight,
+  clientHeight,
+}: {
+  pinned: boolean;
+  previousClientHeight: number;
+  clientHeight: number;
+}) {
+  // Composer chrome such as the todo shelf changes the transcript viewport
+  // without a user scroll. Virtuoso can then publish atBottom=false and even
+  // reset scrollTop to the start of the loaded window.
+  return pinned
+    && previousClientHeight > 0
+    && Math.abs(clientHeight - previousClientHeight) > 1;
+}
+
+export function shouldKeepPinnedOnAtBottomFalse({
+  pinned,
+  previousScrollHeight,
+  previousScrollTop,
+  previousClientHeight,
+  scrollHeight,
+  scrollTop,
+  clientHeight,
+}: {
+  pinned: boolean;
+  previousScrollHeight: number;
+  previousScrollTop: number;
+  previousClientHeight: number;
+  scrollHeight: number;
+  scrollTop: number;
+  clientHeight: number;
+}) {
+  return isPinnedTranscriptLayoutGrowth({
+    pinned,
+    previousScrollHeight,
+    previousScrollTop,
+    scrollHeight,
+    scrollTop,
+  }) || isPinnedTranscriptViewportChange({
+    pinned,
+    previousClientHeight,
+    clientHeight,
+  });
+}
+
 /**
  * Product-level scroll intent around React Virtuoso.
  *
@@ -56,7 +103,7 @@ export function useTranscriptVirtuosoScroll() {
   const pinnedRef = useRef(true);
   const bottomRequestRef = useRef(false);
   const bottomRequestTimerRef = useRef<number | null>(null);
-  const pinnedMetricsRef = useRef({ scrollHeight: 0, scrollTop: 0 });
+  const pinnedMetricsRef = useRef({ scrollHeight: 0, scrollTop: 0, clientHeight: 0 });
   const modeRef = useRef<TranscriptScrollMode>("tail-follow");
   const touchStartYRef = useRef<number | null>(null);
   const nativeScrollbarDragRef = useRef(false);
@@ -136,7 +183,11 @@ export function useTranscriptVirtuosoScroll() {
     if (element) {
       element.dataset.scrollMode = modeRef.current;
       if (pinnedRef.current) {
-        pinnedMetricsRef.current = { scrollHeight: element.scrollHeight, scrollTop: element.scrollTop };
+        pinnedMetricsRef.current = {
+          scrollHeight: element.scrollHeight,
+          scrollTop: element.scrollTop,
+          clientHeight: element.clientHeight,
+        };
       }
     }
     setScrollElement((current) => current === element ? current : element);
@@ -162,17 +213,23 @@ export function useTranscriptVirtuosoScroll() {
 
   const atBottomStateChange = useCallback((atBottom: boolean) => {
     const element = scrollRef.current;
-    if (!atBottom && element && isPinnedTranscriptLayoutGrowth({
+    if (!atBottom && element && shouldKeepPinnedOnAtBottomFalse({
       pinned: pinnedRef.current,
       previousScrollHeight: pinnedMetricsRef.current.scrollHeight,
       previousScrollTop: pinnedMetricsRef.current.scrollTop,
+      previousClientHeight: pinnedMetricsRef.current.clientHeight,
       scrollHeight: element.scrollHeight,
       scrollTop: element.scrollTop,
+      clientHeight: element.clientHeight,
     })) {
-      // A mounted row grew while the reader still owned the tail. Virtuoso can
-      // publish `false` before totalListHeightChanged asks us to follow the new
-      // extent; preserve intent through that callback ordering race.
-      pinnedMetricsRef.current = { scrollHeight: element.scrollHeight, scrollTop: element.scrollTop };
+      // A mounted row grew, or composer chrome resized the viewport, while the
+      // reader still owned the tail. Virtuoso can publish `false` and even jump
+      // scrollTop to the loaded-window start before we follow the new extent.
+      pinnedMetricsRef.current = {
+        scrollHeight: element.scrollHeight,
+        scrollTop: element.scrollTop,
+        clientHeight: element.clientHeight,
+      };
       followGrowingTail();
       return;
     }
@@ -196,7 +253,11 @@ export function useTranscriptVirtuosoScroll() {
     if (atBottom) {
       clearBottomRequest();
       if (element) {
-        pinnedMetricsRef.current = { scrollHeight: element.scrollHeight, scrollTop: element.scrollTop };
+        pinnedMetricsRef.current = {
+          scrollHeight: element.scrollHeight,
+          scrollTop: element.scrollTop,
+          clientHeight: element.clientHeight,
+        };
       }
     }
     pinnedRef.current = atBottom;

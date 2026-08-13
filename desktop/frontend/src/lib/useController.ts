@@ -19,7 +19,7 @@ import { uiPerfTracker } from "./uiPerf";
 import { getLocale, t, type DictKey } from "./i18n";
 import { applyHydrateErrorState, hydratePlaceholderItems as resolveHydratePlaceholders } from "./hydrateErrorState";
 import { isHostRecoveryGuidance } from "./hostRecoverySteer";
-import { duplicateLiveItemIds, hasCachedLiveTurn, hydratedHistoryApplyMode, sameSessionPlaceholderItems } from "./hydrateHistoryApply";
+import { duplicateLiveItemIds, hasCachedLiveTurn, hydratedHistoryApplyMode, sameSessionPlaceholderItems, shouldPreferResidentHistory } from "./hydrateHistoryApply";
 import { hydrateIdentityCurrent } from "./sessionIdentity";
 import { sameTodoList } from "./todoVisibility";
 import type { SearchSource } from "./searchSources";
@@ -2935,13 +2935,10 @@ export function useController() {
       let projection = skipHistory
         ? undefined
         : await loadTimed("history", () =>
-            // Windowed slice load through the transcript store. A resident
-            // session (LRU hit) projects synchronously with no backend round
-            // trip; reset loads always re-fetch so a rebound session can never
-            // serve the previous session's rows.
+            // Resident LRU only when the caller keeps cache; reset/no-cache re-fetch.
             getTranscriptStore().loadLatest(tabId, sessionPath, {
               turns: HISTORY_PAGE_TURNS,
-              preferResident: !reset,
+              preferResident: shouldPreferResidentHistory(reset, options.preserveCachedHistory),
               expectedRevision: sessionRevision,
               expectedDigest: sessionDigest,
             }),
@@ -2954,7 +2951,10 @@ export function useController() {
         dispatchTo(tabId, { type: "local_notice", level: "warn", text: errText });
         addBreadcrumb("tab.hydrate", `history failed ${tabId} ms=${Date.now() - historyStartedAt}`); return;
       }
-      const applyMode = hydratedHistoryApplyMode(skipHistory, projection !== undefined, foregroundTurnActive(), statesRef.current.get(tabId));
+      const applyProj = projection && {
+        items: projection.items, revision: projection.revisionKnown ? projection.revision : undefined, digest: projection.digest || undefined,
+      };
+      const applyMode = hydratedHistoryApplyMode(skipHistory, projection !== undefined, foregroundTurnActive(), statesRef.current.get(tabId), applyProj);
       if (projection !== undefined && applyMode !== "skip") {
         if (deferResetUntilHistory && stillCurrent() && !foregroundTurnActive()) dispatchTo(tabId, { type: "reset" });
         const page = {
@@ -4051,7 +4051,7 @@ export function useController() {
     try {
       cleared = tabId ? await app.ClearSessionForTab(tabId) : await app.ClearSession();
     } catch {
-      if (tabId) void loadSessionDataForTab(tabId);
+      if (tabId) void loadSessionDataForTab(tabId, false, "startup", { preserveCachedHistory: true });
       return;
     }
     if (tabId) bumpSessionLoadSeq(tabId);
