@@ -253,8 +253,14 @@ func saveBranchMeta(sessionPath string, m BranchMeta, touchUpdated bool) error {
 	if m.CreatedAt.IsZero() {
 		m.CreatedAt = now
 	}
-	if touchUpdated || m.UpdatedAt.IsZero() {
+	if touchUpdated {
 		m.UpdatedAt = now
+	} else if m.UpdatedAt.IsZero() {
+		if info, err := os.Stat(sessionPath); err == nil {
+			m.UpdatedAt = info.ModTime().UTC()
+		} else {
+			m.UpdatedAt = now
+		}
 	}
 	if existing, ok, err := LoadBranchMeta(sessionPath); err == nil && ok {
 		preserveBranchMetaPersistence(&m, existing)

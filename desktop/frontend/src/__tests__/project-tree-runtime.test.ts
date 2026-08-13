@@ -12,6 +12,7 @@ import {
   projectTreeShouldSuppressOpenForRename,
   projectTreeReadActivityKey,
   projectTreeTopicHasUnreadActivity,
+  topicIsActive,
   projectTreeTopicArchiveBlocked,
   projectTreeShouldRenderTopicActions,
   projectTreeTopicMetaLine,
@@ -209,6 +210,34 @@ eq(
   projectTreeTopicHasUnreadActivity({ ...completedTopic, status: "streaming", running: true }, { [completedTopicKey]: 1000 }, "project", "/repo", "other-topic"),
   false,
   "running topic keeps runtime status instead of completed-unread attention",
+);
+
+const relocatedTopic = { ...completedTopic, sessionPath: "/s/b.jsonl" };
+const relocatedKey = projectTreeReadActivityKey({ ...completedTopic, sessionPath: "/s/a.jsonl" }) ?? "";
+eq(
+  projectTreeReadActivityKey(relocatedTopic),
+  relocatedKey,
+  "unread key stays on the logical topic when the representative path changes",
+);
+eq(
+  projectTreeTopicHasUnreadActivity(relocatedTopic, { [relocatedKey]: 2000 }, "project", "/repo", "other-topic"),
+  false,
+  "marking a topic read survives a later representative-path refresh",
+);
+eq(
+  projectTreeTopicHasUnreadActivity(completedTopic, {}, "project", "/repo", "other-topic", undefined, 2000),
+  false,
+  "activity at or before the first-seen baseline is not unread",
+);
+eq(
+  projectTreeTopicHasUnreadActivity(completedTopic, {}, "project", "/repo", "other-topic", undefined, 1999),
+  true,
+  "activity newer than the first-seen baseline is unread",
+);
+eq(
+  topicIsActive({ ...completedTopic, sessionPath: "/s/a.jsonl" }, "project", "/repo", "topic-complete", "/s/other.jsonl"),
+  true,
+  "logical topic stays active when the representative path is not the open file",
 );
 
 for (const status of ["thinking", "streaming", "waiting_confirmation", "background_job"] as const) {

@@ -105,16 +105,21 @@ export function projectTreeFolderDisclosure(hasChildren: boolean, isExpanded: bo
   };
 }
 
+function topicMatchesActiveIdentity(node: ProjectNode, activeScope?: string, activeWorkspaceRoot?: string, activeTopicId?: string): boolean {
+  if (!node.topicId || !activeTopicId) return false;
+  const scope = node.kind === "global_topic" || node.kind === "global_session" ? "global" : "project";
+  if (scope === "global") return activeScope === "global" && activeTopicId === node.topicId;
+  return activeScope === "project" && activeTopicId === node.topicId && activeWorkspaceRoot === node.root;
+}
+
 export function topicIsActive(node: ProjectNode, activeScope?: string, activeWorkspaceRoot?: string, activeTopicId?: string, activeSessionPath?: string): boolean {
-  if (!isTopicNode(node) && !isRuntimeSessionNode(node)) return false;
-  if (node.sessionPath) return Boolean(activeSessionPath && activeSessionPath === node.sessionPath);
+  if (isRuntimeSessionNode(node)) {
+    return Boolean(node.sessionPath && activeSessionPath && activeSessionPath === node.sessionPath);
+  }
+  if (!isTopicNode(node)) return false;
   if (activeSessionPath && asArray(node.children).some(isRuntimeSessionNode)) return false;
-  const scope = node.kind === "global_topic" ? "global" : "project";
-  return (
-    activeTopicId === node.topicId &&
-    activeScope === scope &&
-    (scope === "global" || activeWorkspaceRoot === node.root)
-  );
+  if (topicMatchesActiveIdentity(node, activeScope, activeWorkspaceRoot, activeTopicId)) return true;
+  return Boolean(node.sessionPath && activeSessionPath && activeSessionPath === node.sessionPath);
 }
 
 export function projectTreeTopicMetaLine(node: ProjectNode, t: Translator, compact = false): string {
@@ -208,12 +213,7 @@ export function topicActivityAt(node: ProjectNode): number {
 export function projectTreeReadActivityKey(node: ProjectNode): string | null {
   const request = projectTreeTopicOpenRequest(node);
   if (!request?.topicId) return null;
-  return [
-    request.scope,
-    request.workspaceRoot,
-    request.topicId,
-    request.sessionPath ?? "",
-  ].join("\u001f");
+  return [request.scope, request.workspaceRoot, request.topicId].join("\u001f");
 }
 
 export type ProjectTreeReadActivity = Record<string, number>;
@@ -225,13 +225,16 @@ export function projectTreeTopicHasUnreadActivity(
   activeWorkspaceRoot?: string,
   activeTopicId?: string,
   activeSessionPath?: string,
+  baselineAt = 0,
 ): boolean {
   if (!isTopicNode(node) && !isRuntimeSessionNode(node)) return false;
   if (topicIsActive(node, activeScope, activeWorkspaceRoot, activeTopicId, activeSessionPath)) return false;
+  if (topicMatchesActiveIdentity(node, activeScope, activeWorkspaceRoot, activeTopicId)) return false;
   if (topicStatus(node) !== "") return false;
   const key = projectTreeReadActivityKey(node);
   const activityAt = topicActivityAt(node);
-  return Boolean(key && activityAt > 0 && (readActivity[key] ?? 0) < activityAt);
+  if (!key || activityAt <= 0) return false;
+  return Math.max(readActivity[key] ?? 0, baselineAt) < activityAt;
 }
 
 export function projectTreeShouldRenderTopicActions(isSessionNode: boolean, variant: ProjectTreeVariant, unread: boolean): boolean {

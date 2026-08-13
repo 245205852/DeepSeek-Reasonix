@@ -77,7 +77,7 @@ const WORKBENCH_ORGANIZE_KEY = "projectTree:workbenchOrganize";
 // Shared by classic and workbench; key string kept for existing saved choices.
 const WORKBENCH_SORT_KEY = "projectTree:workbenchSort";
 const READ_ACTIVITY_KEY = "projectTree:readActivity";
-const READ_ACTIVITY_INIT_KEY = "projectTree:readActivityInitialized";
+const READ_ACTIVITY_BASELINE_KEY = "projectTree:readActivityBaselineAt";
 
 function loadReadActivity(): ProjectTreeReadActivity {
   try {
@@ -99,6 +99,18 @@ function saveReadActivity(readActivity: ProjectTreeReadActivity) {
     localStorage.setItem(READ_ACTIVITY_KEY, JSON.stringify(readActivity));
   } catch {
     /* localStorage unavailable */
+  }
+}
+
+function loadReadActivityBaselineAt(): number {
+  try {
+    const parsed = Number(localStorage.getItem(READ_ACTIVITY_BASELINE_KEY));
+    if (Number.isFinite(parsed) && parsed > 0) return parsed;
+    const now = Date.now();
+    localStorage.setItem(READ_ACTIVITY_BASELINE_KEY, String(now));
+    return now;
+  } catch {
+    return Date.now();
   }
 }
 
@@ -431,6 +443,7 @@ export function ProjectTree({
   const [workbenchOrganizeMode, setWorkbenchOrganizeMode] = useState<WorkbenchOrganizeMode>(loadWorkbenchOrganizeMode);
   const [workbenchSortMode, setWorkbenchSortMode] = useState<WorkbenchSortMode>(loadWorkbenchSortMode);
   const [readActivity, setReadActivity] = useState<ProjectTreeReadActivity>(loadReadActivity);
+  const [readBaselineAt] = useState(loadReadActivityBaselineAt);
   const filterRef = useRef<HTMLDivElement>(null);
   const filterTriggerRef = useRef<HTMLButtonElement>(null);
   const searchInputRef = useRef<HTMLInputElement>(null);
@@ -601,51 +614,13 @@ export function ProjectTree({
     const activityAt = topicActivityAt(node);
     if (!key || activityAt <= 0) return;
     setReadActivity((prev) => {
-      if ((prev[key] ?? 0) >= activityAt) return prev;
-      const next = { ...prev, [key]: activityAt };
+      const readAt = Math.max(activityAt, Date.now());
+      if ((prev[key] ?? 0) >= readAt) return prev;
+      const next = { ...prev, [key]: readAt };
       saveReadActivity(next);
       return next;
     });
   }, []);
-
-  useEffect(() => {
-    if (tree.length === 0) return;
-    try {
-      if (localStorage.getItem(READ_ACTIVITY_INIT_KEY)) return;
-    } catch {
-      return;
-    }
-    const baseline: ProjectTreeReadActivity = {};
-    const collectBaseline = (nodes: ProjectNode[]) => {
-      for (const node of nodes) {
-        if ((isTopicNode(node) || isRuntimeSessionNode(node)) && topicStatus(node) === "") {
-          const key = projectTreeReadActivityKey(node);
-          const activityAt = topicActivityAt(node);
-          if (key && activityAt > 0) baseline[key] = Math.max(baseline[key] ?? 0, activityAt);
-        }
-        collectBaseline(asArray(node.children));
-      }
-    };
-    collectBaseline(tree);
-    try {
-      localStorage.setItem(READ_ACTIVITY_INIT_KEY, "1");
-    } catch {
-      /* localStorage unavailable */
-    }
-    if (Object.keys(baseline).length === 0) return;
-    setReadActivity((prev) => {
-      const next = { ...prev };
-      let changed = false;
-      for (const [key, value] of Object.entries(baseline)) {
-        if ((next[key] ?? 0) >= value) continue;
-        next[key] = value;
-        changed = true;
-      }
-      if (!changed) return prev;
-      saveReadActivity(next);
-      return next;
-    });
-  }, [tree]);
 
   useEffect(() => {
     const markActive = (nodes: ProjectNode[]) => {
@@ -1191,7 +1166,7 @@ export function ProjectTree({
       const showStatusInSide = status === "thinking" || status === "streaming" || status === "waiting_confirmation" || status === "background_job";
       const showWaitingPill = waitingConfirmation;
       const showSideTime = sideTimeVisible && !showWaitingPill;
-      const unread = projectTreeTopicHasUnreadActivity(node, readActivity, activeScope, activeWorkspaceRoot, activeTopicId, activeSessionPath);
+      const unread = projectTreeTopicHasUnreadActivity(node, readActivity, activeScope, activeWorkspaceRoot, activeTopicId, activeSessionPath, readBaselineAt);
       const topicId = node.topicId ?? "";
       const topicTrashing = trashingTopics.has(topicId);
       const imSource = scope === "global" && topicId ? imTopicSources[topicId] : undefined;
