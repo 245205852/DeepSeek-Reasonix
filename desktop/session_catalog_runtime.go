@@ -384,7 +384,9 @@ func (a *App) projectNodeFromCatalogTopic(topic sessioncatalog.TopicRecord, topi
 	// Ordinary list is always one logical row. Multiple normal non-recovery
 	// sessions under one topic also collapse: open/running already aggregated.
 	// History "other saved versions" is the only place physical forks appear.
-	if rep := strings.TrimSpace(topic.RepresentativePath); rep != "" {
+	if live := a.liveSessionPathForTopic(topic.Scope, topic.WorkspaceRoot, topic.TopicID); live != "" {
+		node.SessionPath = live
+	} else if rep := strings.TrimSpace(topic.RepresentativePath); rep != "" {
 		node.SessionPath = rep
 	} else if path := sessioncatalog.CanonicalSessionPathForTopic(visible, ""); path != "" {
 		node.SessionPath = path

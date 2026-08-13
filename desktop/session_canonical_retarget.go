@@ -45,11 +45,10 @@ func (a *App) resolveOpenTopicSessionPath(scope, workspaceRoot, sessionPath stri
 	if scope == "global" {
 		actualRoot = globalWorkspaceRoot()
 	}
-	// Only suppress covering-leaf continue when the live runtime is already
-	// on this path. Opening a different ordinary session of the same topic
-	// must still detach and switch (OpenGlobalTab latest-session contract).
+	// Keep a live controller on this path (including paused). Opening a
+	// different ordinary session of the same topic must still switch.
 	if continued := a.continuePathForOpen(sessionPath); continued != "" {
-		if a.sessionHasActiveRuntimeWork(sessionPath) {
+		if a.sessionHasLiveController(sessionPath) {
 			return actualRoot, sessionPath
 		}
 		sessionPath = continued
@@ -57,7 +56,7 @@ func (a *App) resolveOpenTopicSessionPath(scope, workspaceRoot, sessionPath stri
 	return actualRoot, sessionPath
 }
 
-func (a *App) sessionHasActiveRuntimeWork(path string) bool {
+func (a *App) sessionHasLiveController(path string) bool {
 	key := sessionRuntimeKey(path)
 	if a == nil || key == "" {
 		return false
@@ -66,7 +65,7 @@ func (a *App) sessionHasActiveRuntimeWork(path string) bool {
 	defer a.mu.RUnlock()
 	for _, tabs := range []map[string]*WorkspaceTab{a.tabs, a.detachedSessions} {
 		for _, tab := range tabs {
-			if tab != nil && sessionRuntimeKey(tab.currentSessionPath()) == key && tab.hasActiveRuntimeWork() {
+			if tab != nil && tab.Ctrl != nil && sessionRuntimeKey(tab.currentSessionPath()) == key {
 				return true
 			}
 		}
@@ -75,7 +74,7 @@ func (a *App) sessionHasActiveRuntimeWork(path string) bool {
 }
 
 func (a *App) skipCoveringLeafRebind(tab *WorkspaceTab, target string) bool {
-	if tab == nil || !tab.hasActiveRuntimeWork() {
+	if tab == nil || tab.Ctrl == nil {
 		return false
 	}
 	next := a.continuePathForOpen(tab.currentSessionPath())
