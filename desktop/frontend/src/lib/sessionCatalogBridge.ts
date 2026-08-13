@@ -29,7 +29,13 @@ export function makeMockSessionCatalogBindings(cloneProjectTree: () => ProjectNo
       ? cloneProjectTree().find((item) => item.kind === "global_folder")
       : cloneProjectTree().find((item) => item.kind === "project" && item.root === req.workspaceRoot);
     const query = (req.query ?? "").trim().toLocaleLowerCase();
-    const all = asArray(folder?.children).filter((item) => !query || item.label.toLocaleLowerCase().includes(query));
+    const created = req.sortMode === "created";
+    const all = asArray(folder?.children)
+      .filter((item) => !query || item.label.toLocaleLowerCase().includes(query))
+      .sort((left, right) => Number(Boolean(right.pinned)) - Number(Boolean(left.pinned))
+        || (created ? right.createdAt || right.lastActivityAt || 0 : right.lastActivityAt || right.createdAt || 0)
+          - (created ? left.createdAt || left.lastActivityAt || 0 : left.lastActivityAt || left.createdAt || 0)
+        || (left.topicId ?? "").localeCompare(right.topicId ?? ""));
     const start = Math.max(0, Number.parseInt(req.cursor ?? "0", 10) || 0);
     const limit = Math.min(200, Math.max(1, req.limit ?? 50));
     const items = all.slice(start, start + limit);

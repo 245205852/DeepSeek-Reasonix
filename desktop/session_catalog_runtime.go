@@ -295,6 +295,17 @@ func (a *App) metadataTopicPage(req ProjectTopicPageRequest) ProjectTopicPage {
 		}
 		items = filtered
 	}
+	sort.SliceStable(items, func(i, j int) bool {
+		if items[i].Pinned != items[j].Pinned {
+			return items[i].Pinned
+		}
+		left := projectTopicSortValue(items[i].CreatedAt, items[i].LastActivityAt, req.SortMode)
+		right := projectTopicSortValue(items[j].CreatedAt, items[j].LastActivityAt, req.SortMode)
+		if left != right {
+			return left > right
+		}
+		return items[i].TopicID < items[j].TopicID
+	})
 	start := 0
 	if lastID, ok := strings.CutPrefix(req.Cursor, "meta:"); ok {
 		for index, item := range items {
@@ -600,7 +611,7 @@ func (a *App) catalogTopicPage(catalog *sessioncatalog.Catalog, req ProjectTopic
 	for {
 		page, err := catalog.ListTopics(ctx, sessioncatalog.TopicPageRequest{
 			Scope: req.Scope, WorkspaceRoot: req.WorkspaceRoot, Cursor: cursor,
-			Limit: limit, Query: req.Query, TimeFilter: req.TimeFilter,
+			Limit: limit, Query: req.Query, TimeFilter: req.TimeFilter, SortMode: req.SortMode,
 		})
 		if err != nil {
 			return out, err
@@ -614,7 +625,7 @@ func (a *App) catalogTopicPage(catalog *sessioncatalog.Catalog, req ProjectTopic
 			out.Items = append(out.Items, node)
 			if len(out.Items) == limit {
 				if i+1 < len(page.Items) || page.NextCursor != "" {
-					out.NextCursor = encodeProjectTopicCursor(topic)
+					out.NextCursor = encodeProjectTopicCursor(topic, req.SortMode)
 				}
 				return out, nil
 			}
@@ -627,14 +638,27 @@ func (a *App) catalogTopicPage(catalog *sessioncatalog.Catalog, req ProjectTopic
 	}
 }
 
-func encodeProjectTopicCursor(topic sessioncatalog.TopicRecord) string {
+func projectTopicSortValue(createdAt, lastActivityAt int64, sortMode string) int64 {
+	if strings.TrimSpace(sortMode) == "created" {
+		if createdAt > 0 {
+			return createdAt
+		}
+		return lastActivityAt
+	}
+	if lastActivityAt > 0 {
+		return lastActivityAt
+	}
+	return createdAt
+}
+
+func encodeProjectTopicCursor(topic sessioncatalog.TopicRecord, sortMode string) string {
 	// Reuse the catalog's keyset cursor encoding by asking for the next page
 	// after this topic. ListTopics accepts the same opaque cursor it emits.
 	pinned := 0
 	if topic.Pinned {
 		pinned = 1
 	}
-	return sessioncatalog.EncodeTopicCursor(pinned, topic.LastActivityAt, topic.TopicID)
+	return sessioncatalog.EncodeTopicCursor(pinned, projectTopicSortValue(topic.CreatedAt, topic.LastActivityAt, sortMode), topic.TopicID)
 }
 
 func (a *App) GetTopicSummary(key ProjectTopicKey) (ProjectNode, error) {

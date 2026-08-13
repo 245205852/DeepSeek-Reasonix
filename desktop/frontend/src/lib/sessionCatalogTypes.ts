@@ -27,6 +27,7 @@ export interface ProjectTopicPageRequest {
   limit?: number;
   query?: string;
   timeFilter?: string;
+  sortMode?: "created" | "updated" | string;
 }
 
 export interface ProjectTopicPage {

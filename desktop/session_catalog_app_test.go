@@ -247,6 +247,47 @@ func TestListProjectTopicsDoesNotDuplicateIndexedLiveTab(t *testing.T) {
 	}
 }
 
+func TestListProjectTopicsHonorsConversationSortMode(t *testing.T) {
+	isolateDesktopUserDirs(t)
+	root := t.TempDir()
+	if err := addProject(root, "Sortable Conversations"); err != nil {
+		t.Fatal(err)
+	}
+	sessionDir := desktopSessionDir(root)
+	if err := os.MkdirAll(sessionDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	app := NewApp()
+	installSessionCatalogForTest(t, app, sessionDir, "project", root)
+	catalog := app.sessionCatalog.Load()
+	if catalog == nil {
+		t.Fatal("session catalog not installed")
+	}
+	for _, record := range []sessioncatalog.SessionRecord{
+		{Path: filepath.Join(sessionDir, "created-new.jsonl"), Directory: sessionDir, Scope: "project", WorkspaceRoot: root, TopicID: "created-new", TopicTitle: "Created New", CreatedAt: 300, LastActivityAt: 100, Turns: 1, TurnsState: sessioncatalog.TurnsValid, Health: sessioncatalog.HealthOK},
+		{Path: filepath.Join(sessionDir, "updated-new.jsonl"), Directory: sessionDir, Scope: "project", WorkspaceRoot: root, TopicID: "updated-new", TopicTitle: "Updated New", CreatedAt: 100, LastActivityAt: 300, Turns: 1, TurnsState: sessioncatalog.TurnsValid, Health: sessioncatalog.HealthOK},
+	} {
+		if err := catalog.UpsertSession(context.Background(), record); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	created, err := app.ListProjectTopics(ProjectTopicPageRequest{Scope: "project", WorkspaceRoot: root, SortMode: "created"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	updated, err := app.ListProjectTopics(ProjectTopicPageRequest{Scope: "project", WorkspaceRoot: root, SortMode: "updated"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(created.Items) != 2 || created.Items[0].TopicID != "created-new" {
+		t.Fatalf("created sort = %#v, want created-new first", created.Items)
+	}
+	if len(updated.Items) != 2 || updated.Items[0].TopicID != "updated-new" {
+		t.Fatalf("updated sort = %#v, want updated-new first", updated.Items)
+	}
+}
+
 func TestListProjectTopicsFoldsRestoredLegacyTopicTabIntoOneRow(t *testing.T) {
 	isolateDesktopUserDirs(t)
 	dir := desktopSessionDir(globalWorkspaceRoot())

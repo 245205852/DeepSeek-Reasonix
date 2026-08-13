@@ -28,6 +28,7 @@ import {
   projectTreeShellSignature,
 } from "../components/ProjectTree";
 import { projectTreeTrashingTopics } from "../lib/projectTreeArchive";
+import { runProjectTreeSortRuntimeTests } from "./project-tree-sort-runtime.test";
 import type { ProjectNode } from "../lib/types";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
@@ -744,6 +745,7 @@ eq(
   true,
   "shell refresh never clears loaded folders while asynchronous topic reloads are pending",
 );
+await runProjectTreeSortRuntimeTests(eq, projectTreeSource);
 
 eq(
   [
