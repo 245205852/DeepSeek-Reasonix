@@ -725,19 +725,24 @@ eq(
 
 eq(
   projectTreeShellChildren(
-    [{ key: "topic_archive", kind: "topic", label: "Archive me", topicId: "topic_archive" }],
-    { keepLoadedTopics: false },
+    [{ key: "topic_keep", kind: "topic", label: "Keep me", topicId: "topic_keep" }],
   ),
-  [],
-  "a mutation refresh does not restore stale topic children from the previous page",
+  [{ key: "topic_keep", kind: "topic", label: "Keep me", topicId: "topic_keep" }],
+  "a mutation refresh keeps sibling conversations visible until the replacement page arrives",
 );
 
 const projectTreeSource = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "../components/ProjectTree.tsx"), "utf8");
+const projectTreeArchiveSource = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "../lib/projectTreeArchive.ts"), "utf8");
 eq(projectTreeSource.includes("projectTreeWithoutTopic("), true, "TrashTopic removes the archived row before the shell refresh");
 eq(
-  projectTreeSource.includes("keepLoadedTopics: false") || projectTreeSource.includes("reloadTopics"),
+  projectTreeArchiveSource.includes("reloadTopicKeys"),
   true,
-  "archive refresh reloads topic pages instead of preserving stale children",
+  "archive refresh reloads only the affected topic folder after preserving the painted siblings",
+);
+eq(
+  projectTreeSource.includes("children: projectTreeShellChildren(previous?.children)"),
+  true,
+  "shell refresh never clears loaded folders while asynchronous topic reloads are pending",
 );
 
 eq(

@@ -56,18 +56,51 @@ export function projectTreeShellSignature(tree: ProjectNode[]): string {
 export function projectTreeWithoutTopic(tree: ProjectNode[], topicId: string): ProjectNode[] {
   const id = topicId.trim();
   if (!id) return tree;
-  return tree.map((node) => {
-    if (node.kind !== "project" && node.kind !== "global_folder") return node;
-    return { ...node, children: asArray(node.children).filter((child) => child.topicId !== id) };
-  });
+  return projectTreeWithoutTopics(tree, new Set([id]));
+}
+
+// Pending archive IDs are a client-side tombstone overlay. Apply it to every
+// incoming page as well as the resident tree so an older request cannot paint
+// a topic back while its backend mutation is still queued or running.
+export function projectTreeWithoutTopics(tree: ProjectNode[], topicIds: ReadonlySet<string>): ProjectNode[] {
+  if (topicIds.size === 0) return tree;
+  let changed = false;
+  const next: ProjectNode[] = [];
+  for (const node of tree) {
+    if (node.topicId && topicIds.has(node.topicId) && (isTopicNode(node) || isRuntimeSessionNode(node))) {
+      changed = true;
+      continue;
+    }
+    const children = asArray(node.children);
+    const filteredChildren = projectTreeWithoutTopics(children, topicIds);
+    if (filteredChildren !== children) {
+      changed = true;
+      next.push({ ...node, children: filteredChildren });
+    } else {
+      next.push(node);
+    }
+  }
+  return changed ? next : tree;
+}
+
+export function projectTreeFolderKeyForTopic(tree: ProjectNode[], topicId: string): string {
+  const id = topicId.trim();
+  if (!id) return "";
+  for (const node of tree) {
+    if (node.kind !== "project" && node.kind !== "global_folder") continue;
+    if (asArray(node.children).some((child) => child.topicId === id)) return node.key;
+  }
+  return "";
+}
+
+export function invalidateProjectTreeTopicLoads(sequences: Record<string, number>, keys: Iterable<string>): void {
+  for (const key of keys) sequences[key] = (sequences[key] ?? 0) + 1;
 }
 
 export function projectTreeShellChildren(
   previous: ProjectNode[] | undefined,
-  options: { keepLoadedTopics: boolean },
 ): ProjectNode[] {
-  if (options.keepLoadedTopics) return asArray(previous);
-  return [];
+  return asArray(previous);
 }
 
 export function projectTreeEventAffectsFolder(project: ProjectNode, roots: string[]): boolean {

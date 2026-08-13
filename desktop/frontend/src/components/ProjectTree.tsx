@@ -16,7 +16,7 @@ import type { ProjectNode, SessionCatalogStatus } from "../lib/types";
 import { topicActivityTime } from "../lib/session";
 import { useT, type Translator } from "../lib/i18n";
 import { PROJECT_COLOR_OPTIONS, projectColorValue } from "../lib/projectColors";
-import { useProjectTreeArchiveState } from "../lib/projectTreeArchive";
+import { projectTreeWithoutTopics, reloadProjectTreeTopics, useProjectTreeArchiveController, type ProjectTreeRefresh, type ProjectTreeRefreshOptions } from "../lib/projectTreeArchive";
 import { topicShortcutLabel, type TopicShortcutEntry } from "../lib/topicShortcuts";
 import type { ShortcutPlatform } from "../lib/keyboardShortcuts";
 import { ContextMenu, contextMenuPointFromEvent, type ContextMenuItem, type ContextMenuPoint } from "./ContextMenu";
@@ -456,7 +456,21 @@ export function ProjectTree({
   const [hoverCard, setHoverCard] = useState<{ key: string; card: ProjectTreeTopicHoverCard; left: number; top: number } | null>(null);
   const hoverCardTimerRef = useRef<number | null>(null);
   const creatingRef = useRef(false);
-  const { trashingTopics, beginTrashingTopic, endTrashingTopic } = useProjectTreeArchiveState();
+  const closeMenu = useCallback(() => {
+    setMenuTopic(null);
+    setMenuProject(null);
+    setMenuPoint(null);
+    setConfirmAction(null);
+    setConfirmRemoveProject(null);
+    setWorkbenchHeaderMenu(null);
+  }, []);
+  const topicLoadSeqRef = useRef<Record<string, number>>({});
+  const refreshRef = useRef<ProjectTreeRefresh>(async () => {});
+  const { trashingTopics, currentArchiveTombstones, trashTopic } = useProjectTreeArchiveController({
+    treeRef, topicLoadSeqRef, topicPageStateRef, updateTopicPageState, refreshRef,
+    optimisticallyRemoveTopic: (topicId) => setTree((current) => projectTreeWithoutTopic(current, topicId)),
+    closeMenu, onTopicsChanged, showToast,
+  });
   const clickTimerRef = useRef<ProjectTreePendingTopicOpen | null>(null);
   useEffect(() => {
     return () => {
@@ -483,15 +497,6 @@ export function ProjectTree({
     });
   }, []);
 
-  const closeMenu = useCallback(() => {
-    setMenuTopic(null);
-    setMenuProject(null);
-    setMenuPoint(null);
-    setConfirmAction(null);
-    setConfirmRemoveProject(null);
-    setWorkbenchHeaderMenu(null);
-  }, []);
-
   const updateManuallyCollapsed = useCallback((updater: (prev: Set<string>) => Set<string>) => {
     setManuallyCollapsed((prev) => {
       const next = updater(prev);
@@ -500,7 +505,6 @@ export function ProjectTree({
     });
   }, []);
 
-  const topicLoadSeqRef = useRef<Record<string, number>>({});
   const loadProjectTopicsRef = useRef<(project: ProjectNode, append?: boolean) => Promise<void>>(async () => {});
 
   const loadProjectTopics = useCallback(async (project: ProjectNode, append = false) => {
@@ -528,7 +532,7 @@ export function ProjectTree({
         return;
       }
       latestRevisionRef.current = Math.max(latestRevisionRef.current, page.revision);
-      const items = asArray(page.items);
+      const items = projectTreeWithoutTopics(asArray(page.items), currentArchiveTombstones());
       setTree((current) => current.map((node) => {
         if (node.key !== key) return node;
         return { ...node, children: mergeProjectTopicPage(asArray(node.children), items, append) };
@@ -538,33 +542,38 @@ export function ProjectTree({
       if (topicLoadSeqRef.current[key] !== seq) return;
       updateTopicPageState(key, { ...topicPageStateRef.current[key], loading: false });
     }
-  }, [query, timeFilter, updateTopicPageState]);
+  }, [currentArchiveTombstones, query, timeFilter, updateTopicPageState]);
   loadProjectTopicsRef.current = loadProjectTopics;
   // Snapshot is intentionally shells-only. Preserve already loaded pages by
   // project key so a metadata refresh does not collapse or blank the sidebar.
-  const refresh = useCallback(async (options?: { reloadTopics?: boolean }) => {
+  const refresh = useCallback(async (options?: ProjectTreeRefreshOptions) => {
+    const reloadRequestedProjects = (projects: ProjectNode[]) => reloadProjectTreeTopics(projects, options, loadProjectTopicsRef.current);
     try {
       const snapshot = await app.GetProjectTreeSnapshot();
       const rev = snapshot.revision ?? 0, empty = treeRef.current.length === 0;
-      if (!projectTreeShouldApplyShellSnapshot({ currentRevision: latestRevisionRef.current, incomingRevision: rev, treeEmpty: empty })) return;
+      if (!projectTreeShouldApplyShellSnapshot({ currentRevision: latestRevisionRef.current, incomingRevision: rev, treeEmpty: empty })) {
+        await reloadRequestedProjects(treeRef.current);
+        return;
+      }
       if (projectTreeRevisionIsFresh(latestRevisionRef.current, rev)) latestRevisionRef.current = Math.max(latestRevisionRef.current, rev);
       const projects = asArray(snapshot.projects);
       setCatalogStatus(snapshot.catalog);
       setIndexingDone(Boolean(snapshot.indexingDone));
-      const keepLoadedTopics = !options?.reloadTopics;
       setTree((current) => projects.map((project) => {
         const previous = current.find((node) => node.key === project.key);
-        return { ...project, children: projectTreeShellChildren(previous?.children, { keepLoadedTopics }) };
+        // Topic pages reload asynchronously. Keep the last painted children
+        // until their replacement arrives so a mutation cannot blank every
+        // expanded folder for the duration of a catalog scan.
+        return { ...project, children: projectTreeShellChildren(previous?.children) };
       }));
-      if (options?.reloadTopics) {
-        for (const project of projects) {
-          void loadProjectTopicsRef.current(project);
-        }
-      }
+      await reloadRequestedProjects(projects);
     } catch {
-      /* bridge unavailable */
+      // A shell snapshot is metadata-only. If it fails, the resident folder
+      // identity can still drive the requested canonical topic reload.
+      await reloadRequestedProjects(treeRef.current);
     }
   }, []);
+  refreshRef.current = refresh;
   const { addingProject, handleAddProject, openBlankProjectFlow, blankProjectFlow } = useProjectCreation({
     onAddProject,
     onRefresh: refresh,
@@ -904,23 +913,6 @@ export function ProjectTree({
     }
   };
 
-  const trashTopic = async (topicId: string) => {
-    if (!beginTrashingTopic(topicId)) return;
-    try {
-      setTree((current) => projectTreeWithoutTopic(current, topicId));
-      await app.TrashTopic(topicId);
-      setMenuTopic(null);
-      setMenuPoint(null);
-      setConfirmAction(null);
-      await refresh({ reloadTopics: true });
-      await onTopicsChanged?.();
-    } catch (err) {
-      showToast(err instanceof Error ? err.message : String(err), "error");
-      await refresh({ reloadTopics: true });
-    } finally {
-      endTrashingTopic(topicId);
-    }
-  };
   const setTopicPinned = async (topicId: string, pinned: boolean) => {
     try {
       await app.SetTopicPinned(topicId, pinned);
