@@ -44,6 +44,13 @@ export function mergeProjectTopicPage(current: ProjectNode[], incoming: ProjectN
   return next;
 }
 
+// Topic page loads rewrite children, so a signature keyed only on the project
+// shells lets the debounced reload effect observe arrivals without re-arming
+// itself on its own writes.
+export function projectTreeShellSignature(tree: ProjectNode[]): string {
+  return tree.map((node) => node.key).join("\u001f");
+}
+
 // After archive, drop that topic immediately so a shell-only refresh cannot
 // resurrect it from the previously loaded children.
 export function projectTreeWithoutTopic(tree: ProjectNode[], topicId: string): ProjectNode[] {
