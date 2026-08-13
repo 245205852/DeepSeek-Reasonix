@@ -136,6 +136,20 @@ const keys = (rows: TranscriptRow[]) => rows.map((row) => row.key).join(",");
 }
 
 {
+  const models = buildTurnModels([
+    { kind: "user", id: "u-search", text: "search" },
+    { kind: "tool", id: "s1", name: "web_search", args: `{"query":"bitcoin"}`, readOnly: true, status: "done" },
+    { kind: "tool", id: "r1", name: "read_file", args: "{}", readOnly: true, status: "done" },
+    { kind: "assistant", id: "a-search", text: "answer only", reasoning: "", streaming: false },
+  ]);
+  const rows = buildTranscriptRows(models, rowOptions(EMPTY_FOLDS, "expanded"));
+  const searchRow = rows.find((row) => row.kind === "tool" && "item" in row && row.item.id === "s1");
+  const batch = rows.find((row) => row.kind === "tool-batch");
+  ok(Boolean(searchRow), "provider web search stays a standalone tool card");
+  eq(batch && "items" in batch ? batch.items.map((item) => item.name).join(",") : "", "read_file", "ordinary readers still batch beside the search card");
+}
+
+{
   // A fold whose process items are all filtered out (sub-agent subcalls,
   // todo_write) renders no header row at all.
   const models = buildTurnModels([

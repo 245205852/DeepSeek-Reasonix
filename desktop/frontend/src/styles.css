@@ -4739,6 +4739,16 @@ button.reasoning-summary:focus-visible {
   color: color-mix(in srgb, var(--fg-faint) 88%, transparent);
 }
 
+.msg-search-sources {
+  margin-top: 0.75em;
+}
+.msg-search-sources .md {
+  color: var(--fg);
+}
+.msg-search-sources .md a {
+  color: var(--accent);
+}
+
 .msg-memory-citations {
   display: flex;
   flex-direction: column;

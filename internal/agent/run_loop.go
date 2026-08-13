@@ -31,6 +31,7 @@ type streamedTurn struct {
 	reasoningStatus    string
 	calls              []provider.ToolCall
 	responsesItems     []json.RawMessage
+	serverSearch       []provider.ServerSearchCall
 	usage              *provider.Usage
 	interrupted        bool
 	partialToolStarted bool
@@ -293,7 +294,7 @@ func (a *Agent) runToolLoop(ctx context.Context, state *turnRuntime) error {
 		// whole attempt lifecycle — stream retries must not rewrite session
 		// history mid-round, so the shape stays stable across body replays.
 		streamed := a.streamWithSamplingRecovery(ctx, step+1)
-		text, reasoning, signature, calls, responsesItems, usage := streamed.text, streamed.reasoning, streamed.signature, streamed.calls, streamed.responsesItems, streamed.usage
+		text, reasoning, signature, calls, responsesItems, serverSearch, usage := streamed.text, streamed.reasoning, streamed.signature, streamed.calls, streamed.responsesItems, streamed.serverSearch, streamed.usage
 		partialCalls, err := streamed.partialCalls, streamed.err
 		cacheDiagnostics := CompareShape(prevPrefixShape, prefixShape, usage, contentReasons)
 		if err != nil {
@@ -330,6 +331,7 @@ func (a *Agent) runToolLoop(ctx context.Context, state *turnRuntime) error {
 			ReasoningStatus:    streamed.reasoningStatus,
 			ToolCalls:          calls,
 			ResponsesItems:     responsesItems,
+			ServerSearch:       serverSearch,
 			WorkDurationMs:     state.workDurationMs(),
 		})
 

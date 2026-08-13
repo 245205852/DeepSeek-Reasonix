@@ -650,7 +650,7 @@ func (c *client) readStream(ctx context.Context, resp *http.Response, out chan<-
 						seenSearchItems[key] = struct{}{}
 						raw := append(json.RawMessage(nil), event.Item.Raw...)
 						responsesItems = append(responsesItems, raw)
-						if !sendChunk(ctx, out, provider.Chunk{Type: provider.ChunkResponsesItem, ResponsesItem: raw}) {
+						if !emitSearchReplay(ctx, out, raw) {
 							return
 						}
 					}

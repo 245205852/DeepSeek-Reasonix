@@ -21,6 +21,8 @@ import { applyHydrateErrorState, hydratePlaceholderItems as resolveHydratePlaceh
 import { hasCachedLiveTurn, sameSessionPlaceholderItems, shouldApplyHydratedHistory } from "./hydrateHistoryApply";
 import { hydrateIdentityCurrent } from "./sessionIdentity";
 import { sameTodoList } from "./todoVisibility";
+import type { SearchSource } from "./searchSources";
+import { attachWebSearchOutput, historySearchAndAnswer } from "./searchTranscript";
 import { fileDiffFromWire, summarize, summarizeFileDiff, type ToolFileDiff } from "./tools";
 import { modeHasAutoApproveTools, normalizeMode, normalizeToolApprovalMode } from "./types";
 import type {
@@ -228,7 +230,7 @@ const HISTORY_PAGE_TURNS = 60;
 export type TurnPhaseName = "working" | "checking" | "verifying" | "reviewing" | string;
 export type Item =
   | { kind: "user"; id: string; submissionId?: string; text: string; submitText?: string; failed?: boolean; createdAt?: number; checkpointTurn?: number }
-  | { kind: "assistant"; id: string; text: string; reasoning: string; streaming: boolean; reasoningComplete?: boolean; reasoningDurationMs?: number; workDurationMs?: number; memoryCitations?: MemoryCitation[] }
+  | { kind: "assistant"; id: string; text: string; reasoning: string; streaming: boolean; reasoningComplete?: boolean; reasoningDurationMs?: number; workDurationMs?: number; memoryCitations?: MemoryCitation[]; searchSources?: SearchSource[] }
   | { kind: "phase"; id: string; text: string }
   | { kind: "notice"; id: string; level: "info" | "warn"; text: string; detail?: string; title?: string; variant?: "delivery" | "completion"; action?: "continue_delivery" | "open_changes"; decisionReceipt?: WireDecisionReceipt }
   | {
@@ -359,6 +361,7 @@ interface State {
   backendActivationPending: boolean;
   messageAction?: MessageActionState;
   currentAssistant?: string;
+  pendingSearchSources?: SearchSource[];
   live?: LiveStream;
   pendingUser?: string;
   pendingSubmissionId?: string;
@@ -729,6 +732,7 @@ export function isReadOnlyTool(name: string): boolean {
     case "grep":
     case "glob":
     case "web_fetch":
+    case "web_search":
     case "code_index":
     case "bash_output":
     case "waitJob":
@@ -739,6 +743,8 @@ export function isReadOnlyTool(name: string): boolean {
       return false;
   }
 }
+
+export { isBatchedReadOnlyTool } from "./searchTranscript";
 
 const ARCHIVED_TOOL_ARG_LIMIT = 200;
 
@@ -883,18 +889,17 @@ export function historyMessagesToItems(messages: HistoryMessage[], idPrefix: str
       continue;
     }
     if (m.role === "assistant") {
-      const hasText = m.content.trim() !== "" || (m.reasoning ?? "").trim() !== "";
-      if (hasText) {
-        const memoryCitations = asArray<MemoryCitation>(m.memoryCitations);
-        items.push({
-          kind: "assistant",
-          id: `${idPrefix}${seq}`,
-          text: m.content,
-          reasoning: m.reasoning ?? "",
-          streaming: false,
-          workDurationMs: m.workDurationMs,
-          memoryCitations: memoryCitations.length > 0 ? memoryCitations : undefined,
-        });
+      const memoryCitations = asArray<MemoryCitation>(m.memoryCitations);
+      const built = historySearchAndAnswer(`${idPrefix}${seq}`, {
+        content: m.content,
+        reasoning: m.reasoning,
+        workDurationMs: m.workDurationMs,
+        memoryCitations: memoryCitations.length > 0 ? memoryCitations : undefined,
+        serverSearch: m.serverSearch,
+      });
+      for (const item of built) {
+        if (item.kind === "assistant") item.id = `${idPrefix}${seq}`;
+        items.push(item);
         seq++;
       }
       const toolCalls = m.toolCalls ?? [];
@@ -1020,7 +1025,14 @@ function ensureAssistant(s: State): { items: Item[]; id: string; seq: number } {
     if (exists) return { items: s.items, id: s.currentAssistant, seq: s.seq };
   }
   const id = `a${s.seq}`;
-  const item: Item = { kind: "assistant", id, text: "", reasoning: "", streaming: true };
+  const item: Item = {
+    kind: "assistant",
+    id,
+    text: "",
+    reasoning: "",
+    streaming: true,
+    searchSources: s.pendingSearchSources?.length ? s.pendingSearchSources : undefined,
+  };
   return { items: [...s.items, item], id, seq: s.seq + 1 };
 }
 
@@ -1418,9 +1430,10 @@ function applyEvent(s: State, e: WireEvent): State {
       // immediately so the user sees their message + a blinking cursor the
       // instant the backend acknowledges the turn — no dead gap waiting for
       // the first text/reasoning token.
-      const { items, id, seq } = ensureAssistant(s);
+      const fresh = { ...s, pendingSearchSources: undefined };
+      const { items, id, seq } = ensureAssistant(fresh);
       return {
-        ...s,
+        ...fresh,
         items,
         currentAssistant: id,
         seq,
@@ -1474,8 +1487,10 @@ function applyEvent(s: State, e: WireEvent): State {
       const text = e.text ?? s.live?.text ?? existingAssistant?.text ?? "";
       const reasoning = e.reasoning ?? s.live?.reasoning ?? existingAssistant?.reasoning ?? "";
       if (text.trim() === "" && reasoning.trim() === "") {
+        const keepEmpty =
+          Boolean(existingAssistant?.memoryCitations?.length) || Boolean(existingAssistant?.searchSources?.length);
         const items =
-          existingAssistant && existingAssistant.text.trim() === "" && existingAssistant.reasoning.trim() === "" && !existingAssistant.memoryCitations?.length
+          existingAssistant && existingAssistant.text.trim() === "" && existingAssistant.reasoning.trim() === "" && !keepEmpty
             ? s.items.filter((it) => !(it.kind === "assistant" && it.id === existingAssistant.id))
             : s.items;
         return { ...endTurnModelActivity(s, Date.now(), true), items, live: undefined, currentAssistant: undefined, turnOutputCharsAtUsage: 0 };
@@ -1501,6 +1516,7 @@ function applyEvent(s: State, e: WireEvent): State {
                 reasoningDurationMs: reasoningDurationMs ?? it.reasoningDurationMs,
                 workDurationMs: Math.max(it.workDurationMs ?? 0, workDurationMs ?? 0) || undefined,
                 memoryCitations: memoryCitations.length > 0 ? memoryCitations : undefined,
+                searchSources: it.searchSources,
               };
             })()
           : it,
@@ -1629,7 +1645,7 @@ function applyEvent(s: State, e: WireEvent): State {
       }
       // A nested result refreshes its sub-agent parent's recent activity.
       if (t.parentId) touchSubagentParent(next, t.parentId);
-      return { ...s, items: compactArchivedToolItems(next) };
+      return attachWebSearchOutput({ ...s, items: compactArchivedToolItems(next) }, t.name, t.output, t.err);
     }
     case "tool_progress": {
       const t = e.tool;

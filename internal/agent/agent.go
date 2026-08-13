@@ -1791,6 +1791,7 @@ func (a *Agent) streamWithFrozen(ctx context.Context, turn int, sink event.Sink,
 	var reasoningID, reasoningStatus string // Responses reasoning item id/status (meta chunk)
 	var calls []provider.ToolCall
 	var responsesItems []json.RawMessage
+	search := newSearchTurn()
 	var partialCalls []provider.ToolCall
 	var usage *provider.Usage
 	var partialToolStarted bool
@@ -1802,7 +1803,7 @@ func (a *Agent) streamWithFrozen(ctx context.Context, turn int, sink event.Sink,
 		return streamedTurn{
 			text: text.String(), reasoning: stored, signature: signature,
 			reasoningID: reasoningID, reasoningStatus: reasoningStatus,
-			calls: calls, responsesItems: responsesItems, usage: usage,
+			calls: calls, responsesItems: responsesItems, serverSearch: search.calls, usage: usage,
 			partialToolStarted: partialToolStarted, partialCalls: partialCalls,
 			maxArgChars: maxArgChars, err: err,
 		}
@@ -1874,7 +1875,7 @@ func (a *Agent) streamWithFrozen(ctx context.Context, turn int, sink event.Sink,
 				return streamedTurn{
 					text: finalText, reasoning: finalReasoning, signature: signature,
 					reasoningID: reasoningID, reasoningStatus: reasoningStatus,
-					calls: calls, responsesItems: responsesItems, usage: usage,
+					calls: calls, responsesItems: responsesItems, serverSearch: search.calls, usage: usage,
 					partialCalls: partialCalls, maxArgChars: maxArgChars,
 				}
 			}
@@ -1948,6 +1949,8 @@ func (a *Agent) streamWithFrozen(ctx context.Context, turn int, sink event.Sink,
 			if len(chunk.ResponsesItem) > 0 {
 				responsesItems = append(responsesItems, append(json.RawMessage(nil), chunk.ResponsesItem...))
 			}
+		case provider.ChunkServerSearch:
+			search.onChunk(sink, chunk, attemptID)
 		case provider.ChunkUsage:
 			usage, a.turn.lastReasoning = chunk.Usage, chunk.Usage.ReasoningTokens
 			a.storeLatestRequestUsage(chunk.Usage)

@@ -5274,13 +5274,14 @@ type HistoryMessage struct {
 	ToolResultError    string                    `json:"toolResultError,omitempty"`
 	// Execution is local shell metadata restored onto ToolCards after history
 	// reload. Omitted when absent so older frontends ignore it safely.
-	Execution       *provider.ToolExecution   `json:"execution,omitempty"`
-	Pending         bool                      `json:"pending,omitempty"`
-	Trigger         string                    `json:"trigger,omitempty"`
-	Messages        int                       `json:"messages,omitempty"`
-	Summary         string                    `json:"summary,omitempty"`
-	Archive         string                    `json:"archive,omitempty"`
-	DecisionReceipt *provider.DecisionReceipt `json:"decisionReceipt,omitempty"`
+	Execution       *provider.ToolExecution     `json:"execution,omitempty"`
+	Pending         bool                        `json:"pending,omitempty"`
+	Trigger         string                      `json:"trigger,omitempty"`
+	Messages        int                         `json:"messages,omitempty"`
+	Summary         string                      `json:"summary,omitempty"`
+	Archive         string                      `json:"archive,omitempty"`
+	DecisionReceipt *provider.DecisionReceipt   `json:"decisionReceipt,omitempty"`
+	ServerSearch    []provider.ServerSearchCall `json:"serverSearch,omitempty"`
 }
 
 type HistoryToolCall struct {
@@ -5741,6 +5742,7 @@ func (state *historyMessageConvertState) convertHistoryMessage(
 			hm.SubmitText = replay
 		}
 	}
+	hm.ServerSearch = historyServerSearch(m.ServerSearch)
 	if (m.Role == provider.RoleAssistant || m.LocalOnly) && len(m.ToolCalls) > 0 {
 		hm.ToolCalls = make([]HistoryToolCall, len(m.ToolCalls))
 		for i, tc := range m.ToolCalls {

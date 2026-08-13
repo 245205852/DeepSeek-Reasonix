@@ -118,6 +118,11 @@ func estimateSamplingRequestInputTokens(req provider.Request) int {
 		for _, item := range msg.ResponsesItems {
 			total += estimateTextTokens(string(item))
 		}
+		for _, search := range msg.ServerSearch {
+			total += estimateTextTokens(search.ID)
+			total += estimateTextTokens(search.Query)
+			total += estimateTextTokens(string(search.Raw))
+		}
 	}
 	for _, schema := range req.Tools {
 		encoded, _ := json.Marshal(schema)
