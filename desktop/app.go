@@ -5681,13 +5681,8 @@ func (state *historyMessageConvertState) convertHistoryMessage(
 		})
 	}
 	if m.LocalOnly {
-		if steerText, isSteer := agent.SteerText(agent.UserMessageText(m)); isSteer {
-			return append(out, HistoryMessage{
-				Role:    "notice",
-				Content: agent.UnappliedSteerNotice(steerText),
-				Code:    event.NoticeCodeUnappliedSteer,
-				Level:   "warn",
-			})
+		if rows, handled := historySteerRows(agent.UserMessageText(m), true); handled {
+			return append(out, rows...)
 		}
 	}
 	if state.suppressCanonicalTurn {
@@ -5705,8 +5700,8 @@ func (state *historyMessageConvertState) convertHistoryMessage(
 		// regular user bubble or being filtered as synthetic (#4044).
 		// Check against the raw m.Content: resolveUserContent applies
 		// StripComposePrefixes which trims trailing whitespace.
-		if steerText, isSteer := agent.SteerText(agent.UserMessageText(m)); isSteer {
-			return append(out, HistoryMessage{Role: "notice", Content: "↪ " + steerText})
+		if rows, handled := historySteerRows(agent.UserMessageText(m), false); handled {
+			return append(out, rows...)
 		}
 		content = historyUserDisplayContent(m, resolveUserContent)
 		if control.IsSyntheticUserMessage(content) {

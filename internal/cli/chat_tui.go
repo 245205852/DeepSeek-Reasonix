@@ -5485,8 +5485,10 @@ func replaySectionsForWithAssistantRenderer(
 		switch m.Role {
 		case provider.RoleUser:
 			// Steer messages are surfaced as a notice line, not a user bubble.
-			if steerText, isSteer := agent.SteerText(m.Content); isSteer {
-				out = append(out, fmt.Sprintf("  ↪ %s\n\n", steerText))
+			if text, handled := agent.ReplaySteerText(m.Content); handled {
+				if text != "" {
+					out = append(out, fmt.Sprintf("  ↪ %s\n\n", text))
+				}
 				continue
 			}
 			content := control.StripComposePrefixes(m.Content)

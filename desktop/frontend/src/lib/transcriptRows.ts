@@ -10,6 +10,7 @@
 // auto-close on completion (unless the user toggled or the preference is
 // "expanded"), and preference switches applying to folds already on screen.
 
+import { isHostRecoveryGuidance } from "./hostRecoverySteer";
 import { isBatchedReadOnlyTool, isSteerNoticeText, type ExtensionItem, type Item } from "./useController";
 import { appendTurnActionCopyText } from "./turnActionCopy";
 import { isCreationGroupableTool, toolGroupKind, type ToolGroupKind } from "../components/ToolGroup";
@@ -79,6 +80,9 @@ export function partitionTurnItems(items: readonly Item[], live: TranscriptLiveF
   for (const item of items) {
     if (item.kind === "user") continue;
     if (item.kind === "notice") {
+      if (isHostRecoveryGuidance(item.text)) {
+        continue;
+      }
       if (isSteerNoticeText(item.text)) {
         current.outsideItems.push(item);
         currentHasConversation = true;

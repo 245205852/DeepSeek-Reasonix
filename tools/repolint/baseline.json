@@ -182,7 +182,7 @@
       "file-size": 1580
     },
     "desktop/frontend/src/lib/useController.ts": {
-      "file-size": 3976
+      "file-size": 3980
     },
     "desktop/heartbeat.go": {
       "essay": 20,
@@ -840,7 +840,7 @@
     "internal/cli/chat_tui.go": {
       "complexity": 333,
       "essay": 109,
-      "file-size": 4767,
+      "file-size": 4769,
       "function-size": 1304
     },
     "internal/cli/chat_tui_paste.go": {
@@ -1758,7 +1758,7 @@
     },
     "internal/serve/serve.go": {
       "essay": 27,
-      "file-size": 882
+      "file-size": 884
     },
     "internal/serve/serve_lease_test.go": {
       "essay": 3
