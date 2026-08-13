@@ -107,6 +107,13 @@ export function nativeTranscriptBottomTop(element: {
   return Math.max(0, element.scrollHeight - element.clientHeight);
 }
 
+export function hasTranscriptScrollableRange(
+  element: { scrollHeight: number; clientHeight: number },
+  threshold = TRANSCRIPT_AT_BOTTOM_THRESHOLD_PX,
+) {
+  return nativeTranscriptBottomTop(element) > threshold;
+}
+
 export function isPhysicallyAtTranscriptBottom(
   element: { scrollHeight: number; scrollTop: number; clientHeight: number },
   threshold = TRANSCRIPT_AT_BOTTOM_THRESHOLD_PX,
@@ -359,8 +366,21 @@ export function useTranscriptVirtuosoScroll() {
     });
   }, [finishTailAtNativeBottom]);
 
+  const restoreTailIfNotScrollable = useCallback(() => {
+    const element = scrollRef.current;
+    if (!element || hasTranscriptScrollableRange(element)) return false;
+    clearBottomRequest();
+    if (!isTranscriptSelectionMode(modeRef.current)) {
+      pinnedRef.current = true;
+      setIsAtBottom(true);
+      publishMode("tail-follow");
+    }
+    return true;
+  }, [clearBottomRequest, publishMode]);
+
   const atBottomStateChange = useCallback((atBottom: boolean) => {
     const element = scrollRef.current;
+    if (!atBottom && restoreTailIfNotScrollable()) return;
     if (!atBottom && element && shouldKeepPinnedOnAtBottomFalse({
       pinned: pinnedRef.current,
       previousScrollHeight: pinnedMetricsRef.current.scrollHeight,
@@ -418,7 +438,7 @@ export function useTranscriptVirtuosoScroll() {
     if (!isTranscriptSelectionMode(modeRef.current)) {
       publishMode(atBottom ? "tail-follow" : "manual");
     }
-  }, [clearBottomRequest, finishTailAtNativeBottom, followGrowingTail, publishMode]);
+  }, [clearBottomRequest, finishTailAtNativeBottom, followGrowingTail, publishMode, restoreTailIfNotScrollable]);
 
   const reset = useCallback(() => {
     clearBottomRequest();
@@ -478,6 +498,7 @@ export function useTranscriptVirtuosoScroll() {
 
   const onWheelIntent = useCallback((event: ReactWheelEvent<HTMLElement>) => {
     if (event.ctrlKey || event.deltaY === 0 || Math.abs(event.deltaX) > Math.abs(event.deltaY)) return false;
+    if (restoreTailIfNotScrollable()) return false;
     if (event.deltaY < 0 || !pinnedRef.current) {
       releaseTailFollow();
       return true;
@@ -492,7 +513,7 @@ export function useTranscriptVirtuosoScroll() {
       return true;
     }
     return false;
-  }, [finishTailAtNativeBottom, releaseTailFollow]);
+  }, [finishTailAtNativeBottom, releaseTailFollow, restoreTailIfNotScrollable]);
 
   const onTouchStartIntent = useCallback((event: ReactTouchEvent<HTMLElement>) => {
     touchStartYRef.current = event.touches[0]?.clientY ?? null;
@@ -502,15 +523,18 @@ export function useTranscriptVirtuosoScroll() {
     const start = touchStartYRef.current;
     const current = event.touches[0]?.clientY;
     if (start == null || current == null || Math.abs(current - start) < 2) return false;
+    if (restoreTailIfNotScrollable()) return false;
     if (current > start || !pinnedRef.current) {
       releaseTailFollow();
       return true;
     }
     return false;
-  }, [releaseTailFollow]);
+  }, [releaseTailFollow, restoreTailIfNotScrollable]);
 
   const onKeyScrollIntent = useCallback((event: ReactKeyboardEvent<HTMLElement>) => {
     if (isEditableTarget(event.target)) return false;
+    if (!SCROLL_UP_KEYS.has(event.key) && !SCROLL_DOWN_KEYS.has(event.key)) return false;
+    if (restoreTailIfNotScrollable()) return false;
     if (SCROLL_UP_KEYS.has(event.key) || (SCROLL_DOWN_KEYS.has(event.key) && !pinnedRef.current)) {
       releaseTailFollow();
       return true;
@@ -525,7 +549,7 @@ export function useTranscriptVirtuosoScroll() {
       return true;
     }
     return false;
-  }, [finishTailAtNativeBottom, releaseTailFollow]);
+  }, [finishTailAtNativeBottom, releaseTailFollow, restoreTailIfNotScrollable]);
 
   const onPointerDownIntent = useCallback((event: ReactPointerEvent<HTMLElement>) => {
     const element = scrollRef.current;
@@ -539,11 +563,13 @@ export function useTranscriptVirtuosoScroll() {
       return true;
     }
     if (event.button !== 1) return false;
+    if (restoreTailIfNotScrollable()) return false;
     releaseTailFollow();
     return true;
-  }, [releaseTailFollow]);
+  }, [releaseTailFollow, restoreTailIfNotScrollable]);
 
   const onNestedScrollIntent = useCallback((deltaY: number) => {
+    if (deltaY === 0 || restoreTailIfNotScrollable()) return false;
     if (deltaY < 0 || !pinnedRef.current) {
       releaseTailFollow();
       return true;
@@ -558,7 +584,7 @@ export function useTranscriptVirtuosoScroll() {
       return true;
     }
     return false;
-  }, [finishTailAtNativeBottom, releaseTailFollow]);
+  }, [finishTailAtNativeBottom, releaseTailFollow, restoreTailIfNotScrollable]);
 
   return {
     virtuosoRef,

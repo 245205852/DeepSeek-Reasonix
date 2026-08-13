@@ -277,5 +277,70 @@ function firstTextNode(root: Node): Text | null {
   }
 }
 
+// ── A short interrupted turn has no phantom "bottom" to jump to ─────────────
+// Once alignToBottom was removed, short content correctly stayed at the top.
+// An upward wheel intent still unpinned it even though the scroller had no
+// overflow, exposing a jump-bottom button whose click could not move anywhere.
+{
+  const harness = await createTranscriptHarness({ viewportHeight: 700, rowHeight: 60 });
+  try {
+    const interrupted: Item[] = [
+      { kind: "user", id: "u-interrupted", text: "inspect the four metrics" },
+      { kind: "assistant", id: "r1", text: "", reasoning: "checking the first source", streaming: false },
+      { kind: "tool", id: "t1", name: "read_file", args: "{}", output: "ok", status: "done", readOnly: true },
+      { kind: "assistant", id: "r2", text: "", reasoning: "checking the second source", streaming: false },
+      { kind: "tool", id: "t2", name: "read_file", args: "{}", output: "ok", status: "done", readOnly: true },
+      { kind: "notice", id: "cancelled", level: "info", code: "cancelled_turn_display", text: "This turn was interrupted." },
+    ];
+    await harness.render(interrupted, { running: false });
+    await harness.settle();
+    const el = harness.scrollElement();
+    ok(el.scrollHeight <= el.clientHeight, `interrupted fixture has no scroll range (${el.scrollHeight}/${el.clientHeight})`);
+
+    el.dispatchEvent(new WheelEvent("wheel", { deltaY: -40, bubbles: true }));
+    dispatchScroll(el);
+    await harness.flush();
+
+    ok(
+      el.dataset.scrollMode === "tail-follow",
+      "wheel-up on a non-overflowing interrupted turn preserves tail-follow state",
+    );
+    ok(
+      harness.container.querySelector(".transcript__jump-bottom") === null,
+      "wheel-up on a non-overflowing interrupted turn does not expose a dead jump-bottom button",
+    );
+  } finally {
+    await harness.unmount();
+    await harness.close();
+  }
+}
+
+// ── Real overflow still exposes a working jump-bottom control ──────────────
+{
+  const harness = await createTranscriptHarness({ viewportHeight: 200, rowHeight: 100 });
+  try {
+    await harness.render(turns(10), { running: false });
+    await harness.settle();
+    const el = harness.scrollElement();
+    el.scrollTop = Math.max(0, el.scrollHeight - el.clientHeight - 400);
+    el.dispatchEvent(new WheelEvent("wheel", { deltaY: -40, bubbles: true }));
+    dispatchScroll(el);
+    await harness.flush();
+
+    const jump = harness.container.querySelector<HTMLButtonElement>(".transcript__jump-bottom");
+    ok(jump != null, "a transcript with real overflow still exposes jump-bottom after wheel-up");
+    jump?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    await harness.settle();
+
+    ok(
+      el.scrollHeight - el.scrollTop - el.clientHeight <= 1,
+      "jump-bottom still reaches the native bottom when overflow exists",
+    );
+  } finally {
+    await harness.unmount();
+    await harness.close();
+  }
+}
+
 console.log(`\n${passed} passed, ${failed} failed`);
 if (failed > 0) process.exit(1);
