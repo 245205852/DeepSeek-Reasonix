@@ -210,7 +210,7 @@ export interface AppBindings extends SessionCatalogBindings, HistoryCatalogBindi
     revision: number;
     paused: boolean;
     recovered: boolean;
-    recoveredCount?: number;
+    recoveredCount?: number; sessionPath?: string;
     items: Array<{
       id: string;
       intent: string;
@@ -2934,7 +2934,7 @@ function makeMockApp(): AppBindings {
           return {
             revision: 0,
             paused: false,
-            recovered: false,
+            recovered: false, sessionPath: "",
             items: [],
             itemsCount: 0,
             bytes: 0,

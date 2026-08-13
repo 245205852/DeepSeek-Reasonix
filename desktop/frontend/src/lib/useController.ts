@@ -6,7 +6,7 @@ import { asArray } from "./array";
 import { addBreadcrumb } from "./breadcrumbs";
 import { app, onEvent, onReady, onRuntimeRebuilt, onTabMeta, onTopicActivation } from "./bridge";
 import { invalidateCache } from "./composerHistory";
-import { formatInboxCancelError, inboxSteerQueuedMessage } from "./inboxError";
+import { formatInboxCancelError } from "./inboxError";
 import { formatContextMaintenanceNotice, isNewMaintenanceOperation, rememberMaintenanceOperation } from "./contextMaintenanceTypes";
 import { formatGuardianAssessmentNotice } from "./guardianEvents";
 import { completionSummaryNeedsAttention, completionSummaryNotice, normalizeCompletionSummary } from "./completionSummary";
@@ -3724,9 +3724,8 @@ export function useController() {
     // become follow-ups automatically (disposition queued_followup).
     const receipt = await app.EnqueueInboxSteer(tabId, text, text, "");
     if (receipt?.error) throw new Error(receipt.error);
-    if (receipt?.disposition && receipt.disposition !== "steer_accepted") {
-      throw new Error(inboxSteerQueuedMessage(getLocale()));
-    }
+    // queued_followup is success: the instruction is durable and will run at
+    // the next idle/tool-boundary kick. Do not surface it as a send failure.
   }, []);
 
   const steer = useCallback(async (text: string) => {
