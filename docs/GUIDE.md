@@ -1182,7 +1182,10 @@ compatibility, but they no longer select an execution quota. There is no
 separate research runtime to configure. Goal state stays in the normal session sidecar, progress
 comes only from novel host receipts, canonical todos, `complete_step`, review
 and the Delivery checkpoint, and completion is decided by Delivery readiness
-plus the bounded Goal evaluator. Legacy `.reasonix/autoresearch/<task-id>/` archives are
+plus the bounded Goal evaluator. Light/Balanced honor an `update_goal`
+`completion.unverified` account for checks the model could not run; a second
+identical complete on the same leftover checks finishes the Goal instead of
+looping. Legacy `.reasonix/autoresearch/<task-id>/` archives are
 read-only: an explicit old path can be recovered as an ordinary Goal, but new
 runs never create or update those directories. Deprecated budget flags are
 accepted for compatibility but are hidden from help and completion.
