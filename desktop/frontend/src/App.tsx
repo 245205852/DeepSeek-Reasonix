@@ -4435,8 +4435,8 @@ export default function App() {
               onTopicsChanged={refreshProjectsAndTabs}
               onRenameTopic={renameTopic}
               refreshSignal={projectRevision}
-              onAddProject={async () => {
-                await switchFolder();
+              onAddProject={async (path) => {
+                await switchFolder(path);
               }}
               timeFilter={topicTimeFilter}
               onTimeFilterChange={setTopicTimeFilter}

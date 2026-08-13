@@ -8543,6 +8543,57 @@ body > .mermaid-diagram--fullscreen {
 }
 .reasonix-confirm-dialog__actions .btn { min-width: 84px; }
 .reasonix-confirm-dialog__actions .btn--danger { font-weight: 600; }
+.blank-project-backdrop {
+  --wails-draggable: no-drag;
+  z-index: var(--z-overlay-backdrop);
+}
+.blank-project-dialog {
+  max-width: 460px;
+  color: var(--fg);
+}
+.blank-project-dialog__field {
+  display: grid;
+  gap: 6px;
+  margin-bottom: 14px;
+}
+.blank-project-dialog__label {
+  color: var(--fg-dim);
+  font-size: var(--font-caption);
+  font-weight: 600;
+}
+.blank-project-dialog__path {
+  display: block;
+  overflow: hidden;
+  padding: 8px 9px;
+  border: 1px solid var(--border-soft);
+  border-radius: 7px;
+  background: var(--bg-soft);
+  color: var(--fg);
+  font-family: var(--mono);
+  font-size: var(--font-caption);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.blank-project-dialog__input {
+  width: 100%;
+}
+.blank-project-dialog__created,
+.blank-project-dialog__error {
+  margin: 0 0 12px;
+  font-size: var(--font-caption);
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+.blank-project-dialog__created {
+  color: var(--fg-dim);
+}
+.blank-project-dialog__error {
+  min-height: 1.45em;
+  color: var(--err);
+}
+.blank-project-dialog__actions .btn {
+  min-width: 92px;
+}
 .btn {
   display: inline-flex;
   align-items: center;

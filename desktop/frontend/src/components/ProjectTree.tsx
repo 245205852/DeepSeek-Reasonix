@@ -22,6 +22,8 @@ import type { ShortcutPlatform } from "../lib/keyboardShortcuts";
 import { ContextMenu, contextMenuPointFromEvent, type ContextMenuItem, type ContextMenuPoint } from "./ContextMenu";
 import { Tooltip } from "./Tooltip";
 import { WorktreeBadge } from "./WorktreeBadge";
+import { useProjectCreation } from "./useProjectCreation";
+
 interface ProjectTreeProps {
   activeScope?: string;
   activeWorkspaceRoot?: string;
@@ -30,7 +32,7 @@ interface ProjectTreeProps {
   imTopicSources?: Record<string, ProjectTreeImTopicSource>;
   variant?: ProjectTreeVariant;
   onOpenTopic: (scope: string, workspaceRoot: string, topicId: string, sessionPath?: string) => Promise<void> | void;
-  onAddProject: () => Promise<void>;
+  onAddProject: (path?: string) => Promise<void>;
   onCreateTopic?: (scope: string, workspaceRoot: string) => Promise<void> | void;
   onCreateDeliveryWorktree?: (workspaceRoot: string) => Promise<void> | void;
   onRenameTopic?: (topicId: string, title: string) => Promise<void> | void;
@@ -431,7 +433,6 @@ export function ProjectTree({
   const [menuPoint, setMenuPoint] = useState<ContextMenuPoint | null>(null);
   const [editingProject, setEditingProject] = useState<{ key: string; root: string } | null>(null);
   const [projectDraft, setProjectDraft] = useState("");
-  const [addingProject, setAddingProject] = useState(false);
   const [isolatingProject, setIsolatingProject] = useState<string | null>(null);
   const [worktreeAvailability, setWorktreeAvailability] = useState<Record<string, { available: boolean; reason?: string }>>({});
   const [confirmAction, setConfirmAction] = useState<{ topicId: string; action: "trash" } | null>(null);
@@ -564,6 +565,11 @@ export function ProjectTree({
       /* bridge unavailable */
     }
   }, []);
+  const { addingProject, handleAddProject, openBlankProjectFlow, blankProjectFlow } = useProjectCreation({
+    onAddProject,
+    onRefresh: refresh,
+    showToast,
+  });
 
   useEffect(() => {
     treeRef.current = tree;
@@ -789,17 +795,6 @@ export function ProjectTree({
       return changed ? next : prev;
     });
   }, [collapseSnapshot, expanded, folderKeys, hasExpandedFolders, manuallyCollapsed, searchActive, updateManuallyCollapsed]);
-
-  const handleAddProject = async () => {
-    if (addingProject) return;
-    setAddingProject(true);
-    try {
-      await onAddProject();
-      await refresh();
-    } finally {
-      setAddingProject(false);
-    }
-  };
 
   const openWorkbenchHeaderMenu = (
     event: ReactMouseEvent<HTMLElement> | ReactKeyboardEvent<HTMLElement>,
@@ -1892,8 +1887,8 @@ export function ProjectTree({
       key: "blank-project",
       icon: <FolderPlus size={13} />,
       label: t("projectTree.createBlankProject"),
-      disabled: true,
-      onSelect: () => {},
+      disabled: addingProject,
+      onSelect: () => { closeMenu(); openBlankProjectFlow(); },
     },
     {
       key: "existing-folder",
@@ -2269,6 +2264,7 @@ export function ProjectTree({
         </div>,
         document.body,
       )}
+      {blankProjectFlow}
     </div>
   );
 }

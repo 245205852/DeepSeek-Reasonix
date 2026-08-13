@@ -4165,12 +4165,12 @@ export function useController() {
 
   const pickWorkspace = useCallback(async (): Promise<string> => {
     beginActiveNavigation();
-    const path = await app.PickWorkspace().catch(() => "");
+    const path = await app.PickWorkspace();
     return refreshWorkspaceState(path);
   }, [beginActiveNavigation, refreshWorkspaceState]);
   const switchWorkspace = useCallback(async (path: string): Promise<string> => {
     beginActiveNavigation();
-    const next = await app.SwitchWorkspace(path).catch(() => "");
+    const next = await app.SwitchWorkspace(path);
     return refreshWorkspaceState(next);
   }, [beginActiveNavigation, refreshWorkspaceState]);
 
