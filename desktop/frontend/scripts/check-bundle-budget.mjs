@@ -121,7 +121,10 @@ const rawInitialBytes = [...initialJS, ...initialCSS, ...appShellCSS]
 // its combined diagnostic wiring adds 2.2 KiB (0.094%) to the test channel.
 // DingTalk startup wiring moves current-base production from 2341.0 to 2343.6
 // KiB and test from 2346.2 to 2348.8 KiB; the pinned heading adds 0.5 KiB raw
-// (0.021%). Preserve its scoped UI contract and 0.1 KiB build-SHA headroom.
-const rawInitialBudgetKiB = process.env.REASONIX_CHANNEL === "test" ? 2_349.4 : 2_344.2;
+// (0.021%). The workspace panel rework (change-row hover/revert, status badges,
+// More menu, completion summary) adds ~4 KiB raw over that DingTalk baseline;
+// raised the channel-aware gates ~5 KiB to absorb the locally attributable UI
+// styling without widening the original Virtuoso exception further.
+const rawInitialBudgetKiB = process.env.REASONIX_CHANNEL === "test" ? 2_354 : 2_349;
 assertBudget("initial raw JavaScript and CSS", rawInitialBytes, rawInitialBudgetKiB * 1024);
 assertBudget("largest initial JavaScript chunk raw", largestInitialJSRaw, 1_000 * 1024);
