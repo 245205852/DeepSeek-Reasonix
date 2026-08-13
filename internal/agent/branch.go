@@ -74,6 +74,8 @@ type BranchMeta struct {
 	Turns        int               `json:"turns,omitempty"`
 	Preview      string            `json:"preview,omitempty"`
 	InFlightTurn *InFlightTurnMeta `json:"in_flight_turn,omitempty"`
+	// Closed completed todo shelves; desktop remounts hide the same fingerprint.
+	DismissedTodoBatches []string `json:"dismissed_todo_batches,omitempty"`
 }
 
 const (
@@ -298,6 +300,7 @@ func preserveBranchMetaPersistence(next *BranchMeta, existing BranchMeta) {
 	if next == nil {
 		return
 	}
+	next.DismissedTodoBatches = MergeDismissedTodoBatches(existing.DismissedTodoBatches, next.DismissedTodoBatches)
 	if existing.Revision > next.Revision {
 		next.Revision = existing.Revision
 		next.ContentDigest = existing.ContentDigest

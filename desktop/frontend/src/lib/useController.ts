@@ -21,7 +21,7 @@ import { applyHydrateErrorState, hydratePlaceholderItems as resolveHydratePlaceh
 import { isHostRecoveryGuidance } from "./hostRecoverySteer";
 import { duplicateLiveItemIds, hasCachedLiveTurn, hydratedHistoryApplyMode, sameSessionPlaceholderItems, shouldPreferResidentHistory } from "./hydrateHistoryApply";
 import { hydrateIdentityCurrent } from "./sessionIdentity";
-import { sameTodoList } from "./todoVisibility";
+import { sameStringList, sameTodoList } from "./todoVisibility";
 import type { SearchSource } from "./searchSources";
 import { attachWebSearchOutput, historySearchAndAnswer } from "./searchTranscript";
 import { fileDiffFromWire, summarize, summarizeFileDiff, type ToolFileDiff } from "./tools";
@@ -593,7 +593,7 @@ export function metaFromTab(tab: TabMeta, existing?: Meta): Meta {
     tokenMode: tab.tokenMode ?? existing?.tokenMode ?? "full",
     goal: tab.goal ?? existing?.goal,
     goalStatus: tab.goalStatus ?? existing?.goalStatus,
-    canonicalTodos: existing?.canonicalTodos,
+    canonicalTodos: existing?.canonicalTodos, dismissedTodoBatches: (tab.sessionPath !== undefined ? tab.sessionPath : existing?.sessionPath) === existing?.sessionPath ? existing?.dismissedTodoBatches : undefined,
   };
 }
 function countsTowardCurrentTurn(state: State): boolean {
@@ -633,7 +633,7 @@ export function sameMeta(a?: Meta, b?: Meta): boolean {
     a.tokenMode === b.tokenMode &&
     a.goal === b.goal &&
     a.goalStatus === b.goalStatus &&
-    sameTodoList(a.canonicalTodos, b.canonicalTodos)
+    sameTodoList(a.canonicalTodos, b.canonicalTodos) && sameStringList(a.dismissedTodoBatches, b.dismissedTodoBatches)
   );
 }
 
@@ -677,8 +677,8 @@ export function composerProfileApplicationKey(
 }
 
 function metaWithoutCanonicalTodos(meta?: Meta): Meta | undefined {
-  if (!meta || meta.canonicalTodos === undefined) return meta;
-  return { ...meta, canonicalTodos: undefined };
+  if (!meta || (meta.canonicalTodos === undefined && meta.dismissedTodoBatches === undefined)) return meta;
+  return { ...meta, canonicalTodos: undefined, dismissedTodoBatches: undefined };
 }
 
 const STALE_TURN_RECONCILE_MS = 30_000;

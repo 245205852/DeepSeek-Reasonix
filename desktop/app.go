@@ -6700,6 +6700,8 @@ type Meta struct {
 	GoalRuntime *GoalRuntimeView `json:"goalRuntime,omitempty"`
 	// Nil means no authoritative snapshot; non-nil empty means clear the panel.
 	CanonicalTodos *[]evidence.TodoItem `json:"canonicalTodos,omitempty"`
+	// Closed completed todo fingerprints from this session and its lineage.
+	DismissedTodoBatches []string `json:"dismissedTodoBatches,omitempty"`
 }
 
 type GoalRuntimeView struct {
@@ -6799,30 +6801,31 @@ func (a *App) MetaForTab(tabID string) Meta {
 		sessionDigest = branchMeta.ContentDigest
 	}
 	return Meta{
-		Label:             snap.label,
-		Ready:             runtimeView.Phase == sessionRuntimeReady && snap.ctrl != nil,
-		Runtime:           runtimeView,
-		StartupErr:        snap.startupErr,
-		EventChannel:      eventChannel,
-		SessionPath:       sessionPath,
-		SessionRevision:   sessionRevision,
-		SessionDigest:     sessionDigest,
-		Cwd:               cwd,
-		WorkspaceRoot:     cwd,
-		WorkspaceName:     tabWorkspaceNameForScope(snap.scope, cwd),
-		WorkspacePath:     cwd,
-		GitBranch:         extras.gitBranch,
-		ImageInputEnabled: extras.imageInputEnabled,
-		AutoApproveTools:  autoApproveTools,
-		Bypass:            autoApproveTools,
-		CollaborationMode: collaborationMode,
-		ToolApprovalMode:  toolApprovalMode,
-		AgentPreset:       boot.NormalizeAgentPreset(tokenMode),
-		TokenMode:         tokenMode,
-		Goal:              goal,
-		GoalStatus:        goalStatus,
-		GoalRuntime:       goalRuntimeViewFromController(snap.ctrl),
-		CanonicalTodos:    ctrlTodos(snap.ctrl),
+		Label:                snap.label,
+		Ready:                runtimeView.Phase == sessionRuntimeReady && snap.ctrl != nil,
+		Runtime:              runtimeView,
+		StartupErr:           snap.startupErr,
+		EventChannel:         eventChannel,
+		SessionPath:          sessionPath,
+		SessionRevision:      sessionRevision,
+		SessionDigest:        sessionDigest,
+		Cwd:                  cwd,
+		WorkspaceRoot:        cwd,
+		WorkspaceName:        tabWorkspaceNameForScope(snap.scope, cwd),
+		WorkspacePath:        cwd,
+		GitBranch:            extras.gitBranch,
+		ImageInputEnabled:    extras.imageInputEnabled,
+		AutoApproveTools:     autoApproveTools,
+		Bypass:               autoApproveTools,
+		CollaborationMode:    collaborationMode,
+		ToolApprovalMode:     toolApprovalMode,
+		AgentPreset:          boot.NormalizeAgentPreset(tokenMode),
+		TokenMode:            tokenMode,
+		Goal:                 goal,
+		GoalStatus:           goalStatus,
+		GoalRuntime:          goalRuntimeViewFromController(snap.ctrl),
+		CanonicalTodos:       ctrlTodos(snap.ctrl),
+		DismissedTodoBatches: a.dismissedTodoBatchesForSession(sessionPath),
 	}
 }
 
