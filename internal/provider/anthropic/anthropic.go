@@ -26,7 +26,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
 	"strings"
 	"sync"
@@ -675,27 +674,11 @@ func (c *client) readStream(ctx context.Context, resp *http.Response, out chan<-
 	if ctx.Err() != nil {
 		return
 	}
-	if stalled.Load() {
-		err := fmt.Errorf("%s: stream stalled — no data for %s, connection likely dropped", c.name, idleTimeout)
-		send(provider.Chunk{Type: provider.ChunkError, Err: provider.StreamInterrupt(err, provider.StreamInterruptIdleTimeout)})
+	if err := streamScanEndError(c.name, idleTimeout, stalled.Load(), scanner.Err(), stopReason); err != nil {
+		send(provider.Chunk{Type: provider.ChunkError, Err: err})
 		return
 	}
-	if err := scanner.Err(); err != nil {
-		wrapped := fmt.Errorf("%s: read stream: %w", c.name, err)
-		if provider.IsConnReset(err) {
-			send(provider.Chunk{Type: provider.ChunkError, Err: provider.StreamInterrupt(wrapped, provider.ClassifyStreamInterrupt(err))})
-			return
-		}
-		send(provider.Chunk{Type: provider.ChunkError, Err: wrapped})
-		return
-	}
-	// EOF / clean close before message_stop is an uncommitted attempt. Complete
-	// ChunkToolCall blocks that arrived earlier remain speculative.
-	send(provider.Chunk{Type: provider.ChunkError, Err: provider.StreamInterrupt(
-		fmt.Errorf("%s: stream ended before message_stop: %w", c.name, io.ErrUnexpectedEOF),
-		provider.StreamInterruptPrematureEOF,
-	)})
-	return
+	goto finalize
 
 finalize:
 	if haveUsage {

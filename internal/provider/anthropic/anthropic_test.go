@@ -436,8 +436,8 @@ data: {"type":"message_stop"}
 }
 
 // TestReadStreamRequiresMessageStop: EOF after a complete tool block but before
-// message_stop must surface StreamInterruptedError so the attempt stays
-// uncommitted (tool calls remain speculative).
+// message_stop or message_delta.stop_reason must surface StreamInterruptedError
+// so the attempt stays uncommitted (tool calls remain speculative).
 func TestReadStreamRequiresMessageStop(t *testing.T) {
 	sse := `event: message_start
 data: {"type":"message_start","message":{"id":"msg_1","usage":{"input_tokens":10}}}
