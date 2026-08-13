@@ -174,6 +174,22 @@ func ServerSearchFromResponsesItem(raw json.RawMessage) *ServerSearchCall {
 	return call
 }
 
+// WalkServerSearchEstimate visits the compact and overflow-estimate surface
+// for one provider search: id, query, and visible hit titles/URLs. Encrypted
+// Raw is omitted because Anthropic does not count it toward input tokens
+// when the block is replayed. Replay still sends Raw verbatim.
+func WalkServerSearchEstimate(search ServerSearchCall, visit func(string)) {
+	if visit == nil {
+		return
+	}
+	visit(search.ID)
+	visit(search.Query)
+	for _, hit := range search.Results {
+		visit(hit.Title)
+		visit(hit.URL)
+	}
+}
+
 // MergeServerSearch upserts call into dst by ID, filling query/results/raw.
 func MergeServerSearch(dst []ServerSearchCall, call ServerSearchCall) []ServerSearchCall {
 	if strings.TrimSpace(call.ID) == "" {

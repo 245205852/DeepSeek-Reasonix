@@ -182,9 +182,9 @@ func estimateMessagesTokens(msgs []provider.Message) int {
 			total += estimateTextTokens(string(item))
 		}
 		for _, search := range m.ServerSearch {
-			total += estimateTextTokens(search.ID)
-			total += estimateTextTokens(search.Query)
-			total += estimateTextTokens(string(search.Raw))
+			provider.WalkServerSearchEstimate(search, func(s string) {
+				total += estimateTextTokens(s)
+			})
 		}
 	}
 	return total

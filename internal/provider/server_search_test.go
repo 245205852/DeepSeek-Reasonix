@@ -62,6 +62,22 @@ func TestFormatServerSearchArgs(t *testing.T) {
 	}
 }
 
+func TestWalkServerSearchEstimateOmitsEncryptedRaw(t *testing.T) {
+	var got []string
+	WalkServerSearchEstimate(ServerSearchCall{
+		ID: "s1", Query: "latest",
+		Results: []ServerSearchHit{{Title: "Change Log", URL: "https://api-docs.deepseek.com/updates/"}},
+		Raw:     json.RawMessage(`[{"encrypted_content":"xxx"}]`),
+	}, func(s string) {
+		if s != "" {
+			got = append(got, s)
+		}
+	})
+	if len(got) != 4 || got[0] != "s1" || got[1] != "latest" || got[2] != "Change Log" || got[3] != "https://api-docs.deepseek.com/updates/" {
+		t.Fatalf("estimate fields = %#v", got)
+	}
+}
+
 func TestServerSearchFromResponsesItem(t *testing.T) {
 	raw := json.RawMessage(`{"id":"ws_1","type":"web_search_call","status":"completed","action":{"type":"search","query":"latest","sources":[{"title":"Change Log","url":"https://api-docs.deepseek.com/updates/"}]}}`)
 	got := ServerSearchFromResponsesItem(raw)

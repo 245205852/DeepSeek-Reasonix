@@ -173,9 +173,7 @@ func requestCalibrationTextShape(req provider.Request, policy provider.SharedWin
 			}
 		}
 		for _, search := range msg.ServerSearch {
-			add(search.ID)
-			add(search.Query)
-			add(string(search.Raw))
+			provider.WalkServerSearchEstimate(search, add)
 		}
 	}
 	for _, schema := range req.Tools {
