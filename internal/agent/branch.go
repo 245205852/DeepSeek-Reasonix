@@ -32,10 +32,9 @@ type BranchMeta struct {
 	TopicTitle       string    `json:"topic_title,omitempty"`
 	CustomTitle      string    `json:"custom_title,omitempty"`
 	Model            string    `json:"model,omitempty"`
-	// TokenMode is the legacy dual-write value (economy|full|delivery). Prefer
-	// AgentPreset (light|balanced|delivery) when both are present.
+	// TokenMode is a deprecated dual-write field; new writes pin it to "full".
 	TokenMode string `json:"token_mode,omitempty"`
-	// AgentPreset is the session role setting (角色设定): light|balanced|delivery.
+	// AgentPreset is a deprecated dual-write field; new writes pin it to "balanced".
 	AgentPreset      string `json:"agent_preset,omitempty"`
 	Mode             string `json:"mode,omitempty"`
 	ToolApprovalMode string `json:"tool_approval_mode,omitempty"`

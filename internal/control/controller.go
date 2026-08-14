@@ -29,6 +29,7 @@ import (
 
 	"reasonix/internal/ablation"
 	"reasonix/internal/agent"
+	"reasonix/internal/agentpreset"
 	"reasonix/internal/autoresearch"
 	"reasonix/internal/billing"
 	"reasonix/internal/capability"
@@ -212,10 +213,9 @@ type Controller struct {
 	// transient route block (Delivery and dual-model Planner).
 	capabilityProxy bool
 	// proxyToolsFn returns live tools observed through use_capability without
-	// entering the provider-visible registry (Balanced dual-model Planner).
-	proxyToolsFn   func() map[string][]plugin.CachedTool
-	runtimeProfile capability.Profile
-	ablation       ablation.Set
+	// entering the provider-visible registry (dual-model Planner).
+	proxyToolsFn func() map[string][]plugin.CachedTool
+	ablation     ablation.Set
 
 	// goals owns the active goal's FSM (status, intercepts, idle/turn counters)
 	// and its persistence, behind its own mutex so a per-turn goal save never
@@ -538,9 +538,6 @@ type Options struct {
 	// terminal. Bot/headless frontends set a positive value so an unanswered
 	// prompt can't wedge the session indefinitely (#4626, #4402).
 	ApprovalTimeout time.Duration
-	// RuntimeProfile selects capability routing/filtering behavior. Empty keeps
-	// the backward-compatible Balanced profile.
-	RuntimeProfile capability.Profile
 	// Extensions is the frozen extension dispatcher for this controller
 	// generation (Extension Protocol v2, stage 6b1). Nil means no v2 runtime
 	// packages are installed: every extension wiring point takes an untouched
@@ -582,10 +579,6 @@ func New(opts Options) *Controller {
 	}
 	runtimeOwner := runtimeOwnerOrDefault(opts.RuntimeOwner)
 	pluginCtx = extension.ContextWithRuntimeOwner(pluginCtx, runtimeOwner)
-	runtimeProfile := opts.RuntimeProfile
-	if runtimeProfile == "" {
-		runtimeProfile = capability.ProfileBalanced
-	}
 	if opts.Hooks != nil {
 		opts.Hooks.SetSessionID(agent.BranchID(opts.SessionPath))
 	}
@@ -633,7 +626,6 @@ func New(opts Options) *Controller {
 		mcpDefaultCallTimeout:             opts.MCPDefaultCallTimeout,
 		mcpConfigureSpec:                  opts.MCPConfigureSpec,
 		capabilityRuntime:                 opts.CapabilityRuntime,
-		runtimeProfile:                    runtimeProfile,
 		ablation:                          opts.Ablation,
 		workspaceRoot:                     opts.WorkspaceRoot,
 		externalFolderToolRefs:            opts.ExternalFolderToolRefs,
@@ -2652,67 +2644,22 @@ func (c *Controller) SetPlanMode(v bool) {
 	c.applyPlanMode(v)
 }
 
-// SetAgentPreset updates the session role setting for subsequent turns without
-// rebuilding the controller, provider, or tool schemas. Callers must already
-// hold active-work guards (no foreground turn, background jobs, or pending
-// approvals/asks).
+// SetAgentPreset is a deprecated compatibility shim. Reasonix runs one
+// adaptive standard execution; the preset no longer exists at runtime. The
+// call is accepted, validated for diagnostics, and ignored: it never rebuilds
+// the agent, never changes tool schemas, and never alters planning,
+// verification, or review behavior.
 func (c *Controller) SetAgentPreset(preset string) {
 	if c == nil {
 		return
 	}
-	preset = strings.TrimSpace(preset)
-	if preset == "" {
-		preset = "balanced"
-	}
-	// Map legacy economy/full names through the dual-write helper if available.
-	if normalized := strings.ToLower(preset); normalized == "economy" || normalized == "full" {
-		switch normalized {
-		case "economy":
-			preset = "light"
-		case "full":
-			preset = "balanced"
-		}
-	}
-	if setter, ok := c.runner.(interface{ SetAgentPreset(string) }); ok {
-		setter.SetAgentPreset(preset)
-	}
-	if c.executor != nil {
-		c.executor.SetAgentPreset(preset)
-	}
-	// Keep capability runtimeProfile labels coherent for diagnostics.
-	c.mu.Lock()
-	switch strings.ToLower(preset) {
-	case "light", "economy":
-		c.runtimeProfile = capability.ProfileEconomy
-	case "delivery":
-		c.runtimeProfile = capability.ProfileDelivery
-	default:
-		c.runtimeProfile = capability.ProfileBalanced
-	}
-	c.mu.Unlock()
+	_ = agentpreset.Normalize(preset)
 }
 
-// AgentPreset returns the current session role setting.
+// AgentPreset returns the fixed compatibility label. One-version-old clients
+// read it from status snapshots; new code must not branch on it.
 func (c *Controller) AgentPreset() string {
-	if c == nil {
-		return "balanced"
-	}
-	if c.executor != nil {
-		return c.executor.AgentPreset()
-	}
-	if getter, ok := c.runner.(interface{ AgentPreset() string }); ok {
-		return getter.AgentPreset()
-	}
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	switch c.runtimeProfile {
-	case capability.ProfileEconomy:
-		return "light"
-	case capability.ProfileDelivery:
-		return "delivery"
-	default:
-		return "balanced"
-	}
+	return string(agentpreset.Balanced)
 }
 
 func (c *Controller) applyPlanMode(v bool) {

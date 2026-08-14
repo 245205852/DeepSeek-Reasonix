@@ -94,7 +94,7 @@ func (a *Agent) beginFinalReadinessRecovery() (preserveEvidence, recovered bool)
 
 // PrepareDeliveryRecovery is the v1.25 compatibility name retained for older
 // desktop bindings and external integrations. Final readiness also applies to
-// targeted Light/Balanced turns, so new code should use the generic method.
+// targeted standard turns, so new code should use the generic method.
 func (a *Agent) PrepareDeliveryRecovery() bool {
 	return a.PrepareFinalReadinessRecovery()
 }

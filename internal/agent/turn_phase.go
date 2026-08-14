@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"reasonix/internal/agentpreset"
 	"reasonix/internal/event"
 	"reasonix/internal/taskcontract"
 	"reasonix/internal/taskpolicy"
@@ -95,7 +96,10 @@ func (a *Agent) emitCompletionSummary(c *taskcontract.Contract) {
 	a.svc.sink.Emit(event.Event{
 		Kind: event.CompletionSummary,
 		Completion: &event.CompletionSummaryInfo{
-			Preset:             a.AgentPreset(),
+			// Preset is a deprecated wire-compat field: it is pinned to the
+			// historical default so one-version-old clients keep parsing. New
+			// surfaces read the verdict/check/review/gap fields instead.
+			Preset:             string(agentpreset.Balanced),
 			Verdict:            summaryVerdict,
 			Mutations:          mutations,
 			ChecksPassed:       passed,

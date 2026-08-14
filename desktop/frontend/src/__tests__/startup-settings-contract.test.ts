@@ -149,6 +149,7 @@ ok(
     source.includes('"settings.reasoningDisplay.hidden"') &&
     source.includes('"settings.reasoningDisplay.summary"') &&
     source.includes('"settings.reasoningDisplay.auto"') &&
+    source.includes('"settings.reasoningDisplay.expanded"') &&
     source.includes('"settings.processFold"'),
   ),
   "conversation-content display group labels are localized in every supported locale",

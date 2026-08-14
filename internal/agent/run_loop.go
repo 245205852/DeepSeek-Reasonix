@@ -9,7 +9,6 @@ import (
 	"strings"
 	"time"
 
-	"reasonix/internal/agentpreset"
 	"reasonix/internal/event"
 	"reasonix/internal/evidence"
 	"reasonix/internal/jobs"
@@ -186,31 +185,20 @@ func (a *Agent) beginRunTurn(ctx context.Context, input string) (rawInput string
 	a.turn.deliveryMutationExpected = intent == taskintent.Mutation && registryHasWriterTools(a.svc.tools)
 	a.turn.deliveryPersistentExpected = taskintent.NeedsPersistentAction(a.turn.turnInput)
 	a.turn.recoveryTaskSummary = boundedRecoveryTaskSummary(a.turn.turnInput)
-	// Freeze TaskPolicy for this turn from the session role setting. Subsequent
-	// SetAgentPreset calls must not change this turn's route/review floor.
+	// Planner-gate policy wins; otherwise derive. Writer children inherit floors.
 	if policy, ok := taskpolicy.FromContext(ctx); ok {
 		a.turn.policy = policy
 	} else {
 		a.turn.policy = taskpolicy.Derive(taskpolicy.Input{
 			Raw:         a.turn.turnInput,
 			Instruction: taskpolicy.StripQuotedConstraints(a.turn.turnInput),
-			Preset:      agentpreset.AgentPreset(a.AgentPreset()),
 			PlanMode:    a.planMode.Load(),
 		})
 	}
-	a.turn.policySet = true
-	// Align legacy delivery gates with the frozen role setting. Delivery always
-	// enables the full readiness contract. Light/Balanced only elevate when the
-	// turn is a mutation that requires forced review or is high-risk.
-	switch {
-	case a.AgentPreset() == string(agentpreset.Delivery):
-		a.deliveryProfile = true
-	case a.turn.policy.Intent == taskintent.Mutation &&
-		(a.turn.policy.RequiresIndependentReview() || a.turn.policy.Risk >= taskpolicy.RiskHigh):
-		a.deliveryProfile = true
-	default:
-		a.deliveryProfile = false
+	if a.inheritedPolicy != nil && !a.readOnlyExecution {
+		a.turn.policy.InheritFrom(*a.inheritedPolicy)
 	}
+	a.turn.policySet = true
 	// A cancelled/error turn leaves a provider-excluded recovery record at the
 	// transcript tail. Fold its bounded facts into this new user turn exactly
 	// once; the user's raw text remains the classifier source above.

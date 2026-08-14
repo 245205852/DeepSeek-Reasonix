@@ -217,7 +217,7 @@ func (t startBackgroundJobTool) Description() string { return "start background 
 func (t startBackgroundJobTool) Schema() json.RawMessage {
 	return json.RawMessage(`{"type":"object"}`)
 }
-func (t startBackgroundJobTool) ReadOnly() bool { return false }
+func (t startBackgroundJobTool) ReadOnly() bool { return true }
 func (t startBackgroundJobTool) Execute(ctx context.Context, _ json.RawMessage) (string, error) {
 	jm, ok := jobs.FromContext(ctx)
 	if !ok {
@@ -593,7 +593,7 @@ func TestSetSessionPathAdoptsTemporaryBackgroundJobs(t *testing.T) {
 	c := New(Options{Runner: ag, Executor: ag, SessionDir: dir, Label: "test", Jobs: jm})
 	defer c.Close()
 
-	if err := c.Run(context.Background(), "start background job"); err != nil {
+	if err := c.Run(context.Background(), "start background job"); err != nil && !errors.As(err, new(*agent.FinalReadinessError)) {
 		t.Fatal(err)
 	}
 	jobID := <-started

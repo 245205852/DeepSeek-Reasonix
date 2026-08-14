@@ -13,21 +13,20 @@ import (
 
 func TestTargetedVerificationRecoveryPreservesEvidenceOnce(t *testing.T) {
 	reg := evidenceRegistry()
-	prov := &scriptedProvider{name: "balanced", turns: [][]provider.Chunk{
-		{toolCallChunk("write", "write_file", `{"path":"verify_v070.py"}`), {Type: provider.ChunkDone}},
-		{toolCallChunk("custom-check", "bash", `{"command":"python3 verify_v070.py"}`), {Type: provider.ChunkDone}},
+	prov := &scriptedProvider{name: "standard", turns: [][]provider.Chunk{
+		{toolCallChunk("write", "write_file", `{"path":"docs/verify_v070.md"}`), {Type: provider.ChunkDone}},
 		{{Type: provider.ChunkText, Text: "validation script passed"}, {Type: provider.ChunkDone}},
 		{toolCallChunk("recognized-check", "bash", `{"command":"git diff --check"}`), {Type: provider.ChunkDone}},
 		{{Type: provider.ChunkText, Text: "checks complete"}, {Type: provider.ChunkDone}},
 	}}
-	a := New(prov, reg, NewSession("sys"), Options{AgentPreset: "balanced"}, event.Discard)
+	a := New(prov, reg, NewSession("sys"), Options{}, event.Discard)
 
 	var readinessErr *FinalReadinessError
-	if err := a.Run(context.Background(), "write verify_v070.py and run the validation script"); !errors.As(err, &readinessErr) {
+	if err := a.Run(context.Background(), "write docs/verify_v070.md and run the validation script"); !errors.As(err, &readinessErr) {
 		t.Fatalf("first Run error = %v, want targeted-verification readiness failure", err)
 	}
-	if a.deliveryProfile {
-		t.Fatal("balanced targeted-verification turn unexpectedly elevated to Delivery")
+	if policy, ok := a.TurnPolicy(); !ok || policy.ClosedLoop() {
+		t.Fatalf("targeted standard turn unexpectedly elevated to closed loop: %+v", policy)
 	}
 	if !a.PrepareDeliveryRecovery() {
 		t.Fatal("targeted-verification recovery should preserve the failed turn's evidence")
@@ -46,16 +45,15 @@ func TestTargetedVerificationRecoveryPreservesEvidenceOnce(t *testing.T) {
 
 func TestTargetedVerificationRecoverySurvivesAgentRebuild(t *testing.T) {
 	reg := evidenceRegistry()
-	first := &scriptedProvider{name: "balanced", turns: [][]provider.Chunk{
-		{toolCallChunk("write", "write_file", `{"path":"verify_v070.py","content":"sensitive-payload"}`), {Type: provider.ChunkDone}},
-		{toolCallChunk("opaque-check", "bash", `{"command":"python3 verify_v070.py"}`), {Type: provider.ChunkDone}},
+	first := &scriptedProvider{name: "standard", turns: [][]provider.Chunk{
+		{toolCallChunk("write", "write_file", `{"path":"docs/verify_v070.md","content":"sensitive-payload"}`), {Type: provider.ChunkDone}},
 		{{Type: provider.ChunkText, Text: "validation script passed"}, {Type: provider.ChunkDone}},
 	}}
 	session := NewSession("sys")
-	a := New(first, reg, session, Options{AgentPreset: "balanced"}, event.Discard)
+	a := New(first, reg, session, Options{}, event.Discard)
 
 	var readinessErr *FinalReadinessError
-	if err := a.Run(context.Background(), "write verify_v070.py and run the validation script"); !errors.As(err, &readinessErr) {
+	if err := a.Run(context.Background(), "write docs/verify_v070.md and run the validation script"); !errors.As(err, &readinessErr) {
 		t.Fatalf("first Run error = %v, want final readiness failure", err)
 	}
 	var marker *provider.FinalReadinessRecovery
@@ -76,11 +74,11 @@ func TestTargetedVerificationRecoverySurvivesAgentRebuild(t *testing.T) {
 		t.Fatalf("LoadSession: %v", err)
 	}
 
-	recoveryProvider := &scriptedProvider{name: "balanced-reloaded", turns: [][]provider.Chunk{
+	recoveryProvider := &scriptedProvider{name: "standard-reloaded", turns: [][]provider.Chunk{
 		{toolCallChunk("recognized-check", "bash", `{"command":"git diff --check"}`), {Type: provider.ChunkDone}},
 		{{Type: provider.ChunkText, Text: "checks complete"}, {Type: provider.ChunkDone}},
 	}}
-	reloaded := New(recoveryProvider, reg, loaded, Options{AgentPreset: "balanced"}, event.Discard)
+	reloaded := New(recoveryProvider, reg, loaded, Options{}, event.Discard)
 	if !reloaded.PrepareFinalReadinessRecovery() || reloaded.PrepareFinalReadinessRecovery() {
 		t.Fatal("rebuilt recovery authorization was not one-shot")
 	}
@@ -100,18 +98,18 @@ func TestTargetedVerificationRecoverySurvivesAgentRebuild(t *testing.T) {
 
 func TestFinalReadinessRecoveryRejectsStaleMarkerAfterUserTurn(t *testing.T) {
 	reg := evidenceRegistry()
-	prov := &scriptedProvider{name: "balanced", turns: [][]provider.Chunk{
-		{toolCallChunk("write", "write_file", `{"path":"a.go"}`), {Type: provider.ChunkDone}},
+	prov := &scriptedProvider{name: "standard", turns: [][]provider.Chunk{
+		{toolCallChunk("write", "write_file", `{"path":"README.md"}`), {Type: provider.ChunkDone}},
 		{{Type: provider.ChunkText, Text: "done"}, {Type: provider.ChunkDone}},
 	}}
 	session := NewSession("sys")
-	a := New(prov, reg, session, Options{AgentPreset: "balanced"}, event.Discard)
+	a := New(prov, reg, session, Options{}, event.Discard)
 	var readinessErr *FinalReadinessError
-	if err := a.Run(context.Background(), "change a.go"); !errors.As(err, &readinessErr) {
+	if err := a.Run(context.Background(), "change README.md"); !errors.As(err, &readinessErr) {
 		t.Fatalf("Run error = %v, want final readiness failure", err)
 	}
 	session.Add(provider.Message{Role: provider.RoleUser, Content: "unrelated follow-up"})
-	reloaded := New(nil, reg, session, Options{AgentPreset: "balanced"}, event.Discard)
+	reloaded := New(nil, reg, session, Options{}, event.Discard)
 	if reloaded.PrepareFinalReadinessRecovery() {
 		t.Fatal("stale readiness marker after a newer user turn must be rejected")
 	}

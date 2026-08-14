@@ -92,7 +92,6 @@ type Messages struct {
 	ChatTurnReceiptLabel                   string // compact per-turn usage receipt attached to the completed assistant response
 	ChatStatusModelLabel                   string
 	ChatStatusEffortLabel                  string
-	ChatStatusWorkLabel                    string
 	ChatStatusCacheLabel                   string
 	ChatStatusContextLabel                 string
 	ChatStatusCompactLabel                 string
@@ -339,21 +338,7 @@ type Messages struct {
 	RuntimeReloadQueued          string // /reload queued behind active work; the idle drain runs it
 	RuntimeReloaded              string // /reload completed (no generation available)
 	RuntimeReloadedGenerationFmt string // /reload completed; %d is the runtime build generation
-	WorkModeStatusFmt            string
-	WorkModeListHeaderFmt        string
-	WorkModeListHint             string
-	WorkModeEconomyLabel         string
-	WorkModeBalancedLabel        string
-	WorkModeDeliveryLabel        string
-	WorkModeEconomyDesc          string
-	WorkModeBalancedDesc         string
-	WorkModeDeliveryDesc         string
 	WorkModeUsage                string
-	WorkModeSwitchUnavailable    string
-	WorkModeSwitchBusy           string
-	WorkModeAlreadyOnFmt         string
-	WorkModeSwitchingFmt         string
-	WorkModeSwitchedFmt          string
 	// WorkModeDeprecatedNotice is shown once when a legacy /work-mode or
 	// /profile command is used. Prefer /preset.
 	WorkModeDeprecatedNotice string

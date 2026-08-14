@@ -293,19 +293,14 @@ eq(
   "collaboration mode changes always reconcile the remembered plan restore intent",
 );
 eq(
-  appSource.includes("runtimeTransitionTabsRef.current.has(tabId)"),
+  !appSource.includes("runtimeTransitionTabsRef") && !appSource.includes("pending.tokenMode"),
   true,
-  "runtime profile transitions reject rapid duplicate switches for one tab",
-);
-eq(
-  appSource.includes("delete pending.tokenMode") && appSource.includes("tokenMode: previous"),
-  true,
-  "failed runtime profile transitions roll back the optimistic token mode",
+  "execution-mode switch state is gone from the app shell",
 );
 eq(
   appSource.includes("!state.backendActivationPending &&") && appSource.includes("!runtimeTransitioning"),
   true,
-  "runtime profile transitions keep submit behind the controller-ready gate",
+  "composer submit stays behind the controller-ready gate",
 );
 eq(
     appSource.includes("activateGoalAndSubmitOnTab({") &&

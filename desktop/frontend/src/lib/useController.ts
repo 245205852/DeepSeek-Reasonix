@@ -45,7 +45,6 @@ import type {
   QuestionAnswer,
   SessionMeta,
   TabMeta,
-  TokenMode,
   ToolApprovalMode,
   TopicActivationEvent,
   WireApproval,
@@ -2259,20 +2258,6 @@ export function modelSwitchNoticeText(err: unknown): string {
   });
 }
 
-export function tokenModeSwitchNoticeText(err: unknown): string {
-  return settingSwitchNoticeText(err, "token mode", {
-    busy: "status.tokenModeSwitchBusy",
-    busyRunning: "status.tokenModeSwitchBusyRunning",
-    busyPrompt: "status.tokenModeSwitchBusyPrompt",
-    busyJobs: "status.tokenModeSwitchBusyJobs",
-    leaseHeld: "status.tokenModeSwitchLeaseHeld",
-    starting: "status.tokenModeSwitchStarting",
-    startupFailed: "status.tokenModeSwitchStartupFailed",
-    retry: "status.tokenModeSwitchRetry",
-    failed: "status.tokenModeSwitchFailed",
-  });
-}
-
 // noticeCodeKeys maps the backend's stable notice codes (event.NoticeCode*) to
 // dictionary keys. Codes survive backend copy edits, unlike the exact-text
 // matching in backendNoticeKey, which stays only as the fallback for events
@@ -2515,8 +2500,6 @@ function localizedSessionAction(action: string): string {
       return t("status.actionChangingModel");
     case "changing effort":
       return t("status.actionChangingEffort");
-    case "changing token mode":
-      return t("status.actionChangingTokenMode");
     case "rebuilding settings":
       return t("status.actionRebuildingSettings");
     case "switching sessions":
@@ -4289,18 +4272,6 @@ export function useController() {
     await refreshMetaForTab(activeTabId);
   }, [activeTabId, dispatchTo, refreshMetaForTab]);
 
-  const setTokenMode = useCallback(async (mode: TokenMode): Promise<boolean> => {
-    if (!activeTabId) return false;
-    try {
-      await app.SetTokenModeForTab(activeTabId, mode);
-    } catch (err) {
-      dispatchTo(activeTabId, { type: "local_notice", level: "warn", text: tokenModeSwitchNoticeText(err) });
-      return false;
-    }
-    await refreshMetaForTab(activeTabId);
-    return true;
-  }, [activeTabId, dispatchTo, refreshMetaForTab]);
-
   const cancelJob = useCallback(async (jobID: string): Promise<boolean> => {
     const tabId = activeTabId;
     if (!tabId || !jobID.trim()) return false;
@@ -4721,13 +4692,13 @@ export function useController() {
     return meta;
   }, [beginActiveNavigation, confirmBackendActiveTab, dispatchRuntimeStatusForTab, dispatchTo, disposeComposerProfileState, invalidateProviderStateForTab, loadSessionDataForTab, navigationCompletionCurrent, reassertVisibleTabAfterStaleNavigation, reconcileTabRuntime, releaseTranscriptState]);
 
-  const createDeliveryWorktree = useCallback(async (workspaceRoot: string, navigationIntentSeq?: number): Promise<DeliveryWorktreeOpenResult> => {
+  const createIsolatedWorktree = useCallback(async (workspaceRoot: string, navigationIntentSeq?: number): Promise<DeliveryWorktreeOpenResult> => {
     const navigationSeq = navigationIntentSeq ?? beginActiveNavigation();
     const snapshotAt = promptEventClock();
-    const result = await app.CreateDeliveryWorktree(workspaceRoot);
+    const result = await app.CreateIsolatedWorktree(workspaceRoot);
     const meta = result.tab;
-    if (!navigationCompletionCurrent(navigationSeq, "tab.delivery-worktree", meta.id)) {
-      await reassertVisibleTabAfterStaleNavigation("tab.delivery-worktree", meta.id);
+    if (!navigationCompletionCurrent(navigationSeq, "tab.isolated-worktree", meta.id)) {
+      await reassertVisibleTabAfterStaleNavigation("tab.isolated-worktree", meta.id);
       return result;
     }
     const isNewTab = !statesRef.current.has(meta.id);
@@ -4778,9 +4749,9 @@ export function useController() {
     newSession, clearSession, listSessions, listTrashedSessions, retrySessionHistory, resumeSession, openChannelSession, previewSession, deleteSession, restoreSession, purgeTrashedSession, renameSession,
     loadOlderHistory,
     requestHistoryFullContent,
-    refreshMeta, pickWorkspace, switchWorkspace, compact, rewind, rewindForTab, rewindForTabDetailed, undoRewindForTab, setModel, setEffort, setTokenMode, cancelJob,
+    refreshMeta, pickWorkspace, switchWorkspace, compact, rewind, rewindForTab, rewindForTabDetailed, undoRewindForTab, setModel, setEffort, cancelJob,
     fetchMemory, remember, forget, saveDoc,
-    switchTab, openProjectTab, openGlobalTab, openTopicSession, ensureBlankTab, activateTopic, ensureBlankSurface, createDeliveryWorktree, closeTab, reorderTabs,
+    switchTab, openProjectTab, openGlobalTab, openTopicSession, ensureBlankTab, activateTopic, ensureBlankSurface, createIsolatedWorktree, closeTab, reorderTabs,
     // Invalidate in-flight navigation completions (activateTopic's stale
     // guard) from outside the hook. The App-level navigation queue must call
     // this at ENQUEUE time: a queued click does not run — and so does not

@@ -50,7 +50,7 @@ type Event struct {
 
 // CompletionSummary is the JSON form of event.CompletionSummaryInfo.
 type CompletionSummary struct {
-	Preset             string   `json:"preset"`
+	Preset             string   `json:"preset"` // deprecated; pinned compat value
 	Verdict            string   `json:"verdict"`
 	Mutations          int      `json:"mutations"`
 	ChecksPassed       int      `json:"checks_passed"`

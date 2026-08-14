@@ -704,12 +704,10 @@ func (a *App) restoreOrBuildTabs() {
 			}
 			tab.model = entry.Model
 			tab.effort = cloneStringPtr(entry.Effort)
-			// Prefer agentPreset; fall back to legacy tokenMode for one version.
-			if strings.TrimSpace(entry.AgentPreset) != "" {
-				tab.tokenMode = boot.TokenModeFromAgentPreset(entry.AgentPreset)
-			} else {
-				tab.tokenMode = boot.NormalizeTokenMode(entry.TokenMode)
-			}
+			// Execution modes are gone: old agentPreset/tokenMode entries are
+			// parsed for compatibility but never applied. The tab keeps the
+			// pinned dual-write compat value.
+			tab.tokenMode = boot.TokenModeFull
 			tab.mode = persistedTabMode(entry.Mode)
 			// Validate the persisted goal against the session's goal-state
 			// sidecar: a typed /new or /clear rotates the session through the
@@ -2065,8 +2063,6 @@ func (a *App) clearActiveSessionRuntime(tab *WorkspaceTab, oldCtrl control.Sessi
 		WorkspaceRoot:            snap.workspaceRoot,
 		SessionDir:               sessionDirForSnapshot(snap),
 		EffortOverride:           cloneStringPtr(snap.effort),
-		AgentPreset:              boot.NormalizeAgentPreset(snap.currentTokenMode()),
-		TokenMode:                snap.currentTokenMode(),
 		SharedHost:               sharedHost,
 		CleanupPendingReconciler: reconcileDesktopCleanupPending,
 		SubagentParentLive:       a.subagentParentProbeForBuild(tab),
@@ -3423,6 +3419,17 @@ func (a *App) restoreSession(path string) error {
 	if a.sessionDestroying(dir, target) {
 		return fmt.Errorf("session cleanup is still in progress: %s", key)
 	}
+	// A committed archive may have moved the transcript into trash while a
+	// Windows file handle temporarily kept one of its sidecars at the live
+	// path. The durable cleanup marker makes that partial move recoverable.
+	// Finish it before restore preflights the live destinations; otherwise the
+	// leftover sidecar is misreported as an unrelated restore conflict.
+	if agent.IsCleanupPending(target) {
+		_ = reconcileDesktopCleanupPending(dir)
+		if agent.IsCleanupPending(target) {
+			return fmt.Errorf("session cleanup is still in progress: %s", key)
+		}
+	}
 	if a.sessionOpen(dir, target) {
 		return fmt.Errorf("session is open: %s", key)
 	}
@@ -4111,8 +4118,6 @@ func (a *App) buildSessionRebindCandidate(
 		WorkspaceRoot:            root,
 		SessionDir:               sessionDir,
 		EffortOverride:           cloneStringPtr(source.effort),
-		AgentPreset:              boot.NormalizeAgentPreset(runtimeProfile.tokenMode),
-		TokenMode:                runtimeProfile.tokenMode,
 		SharedHost:               sharedHost,
 		CleanupPendingReconciler: reconcileDesktopCleanupPending,
 		SubagentParentLive:       a.subagentParentProbeForBuild(tab),
@@ -6468,9 +6473,9 @@ type Meta struct {
 	Bypass            bool               `json:"bypass"` // legacy JSON key for YOLO/full-access tool auto-approval
 	CollaborationMode string             `json:"collaborationMode"`
 	ToolApprovalMode  string             `json:"toolApprovalMode"`
-	TokenMode         string             `json:"tokenMode"`
-	// AgentPreset is the canonical role setting (light|balanced|delivery).
-	// TokenMode remains the dual-write legacy wire value for one version.
+	// TokenMode and AgentPreset are deprecated dual-write wire values pinned to
+	// their safe defaults; one-version-old frontends still parse them.
+	TokenMode   string           `json:"tokenMode"`
 	AgentPreset string           `json:"agentPreset,omitempty"`
 	Goal        string           `json:"goal,omitempty"`
 	GoalStatus  string           `json:"goalStatus,omitempty"`
@@ -6567,7 +6572,10 @@ func (a *App) MetaForTab(tabID string) Meta {
 	autoApproveTools := snap.ctrl != nil && snap.ctrl.AutoApproveTools()
 	collaborationMode := snap.collaborationMode()
 	toolApprovalMode := snap.currentToolApprovalMode()
-	tokenMode := snap.currentTokenMode()
+	// Deprecated dual-write wire values: pinned so one-version-old frontends
+	// keep parsing meta; nothing branches on them anymore.
+	tokenMode := boot.TokenModeFull
+	agentPreset := boot.AgentPresetBalanced
 	goal := snap.currentGoal()
 	goalStatus := snap.currentGoalStatus()
 	sessionPath := strings.TrimSpace(snap.sessionPath)
@@ -6595,9 +6603,9 @@ func (a *App) MetaForTab(tabID string) Meta {
 		AutoApproveTools:     autoApproveTools,
 		Bypass:               autoApproveTools,
 		CollaborationMode:    collaborationMode,
-		ToolApprovalMode:     toolApprovalMode,
-		AgentPreset:          boot.NormalizeAgentPreset(tokenMode),
 		TokenMode:            tokenMode,
+		AgentPreset:          agentPreset,
+		ToolApprovalMode:     toolApprovalMode,
 		Goal:                 goal,
 		GoalStatus:           goalStatus,
 		GoalRuntime:          goalRuntimeViewFromController(snap.ctrl),
@@ -9732,8 +9740,6 @@ func (a *App) SetModelForTab(tabID, name string) (retErr error) {
 		WorkspaceRoot:            snap.workspaceRoot,
 		SessionDir:               sessionDirForSnapshot(snap),
 		EffortOverride:           cloneStringPtr(effortOverride),
-		AgentPreset:              boot.NormalizeAgentPreset(runtime.tokenMode),
-		TokenMode:                runtime.tokenMode,
 		SharedHost:               sharedHost,
 		CleanupPendingReconciler: reconcileDesktopCleanupPending,
 		SubagentParentLive:       a.subagentParentProbeForBuild(tab),
@@ -9920,8 +9926,6 @@ func (a *App) SetEffortForTab(tabID, level string) error {
 		WorkspaceRoot:            snap.workspaceRoot,
 		SessionDir:               sessionDirForSnapshot(snap),
 		EffortOverride:           &effort,
-		AgentPreset:              boot.NormalizeAgentPreset(runtime.tokenMode),
-		TokenMode:                runtime.tokenMode,
 		SharedHost:               sharedHost,
 		CleanupPendingReconciler: reconcileDesktopCleanupPending,
 		SubagentParentLive:       a.subagentParentProbeForBuild(tab),
@@ -9973,85 +9977,49 @@ func (a *App) SetEffortForTab(tabID, level string) error {
 	return nil
 }
 
+// SetAgentPresetDeprecatedNotice is returned by the deprecated execution-mode
+// Wails methods. Reasonix runs one adaptive standard execution; these methods
+// remain bound for one compatibility version as no-op wrappers: they never
+// require an idle tab, never save a mode, and never rebuild an agent.
+const SetAgentPresetDeprecatedNotice = "Reasonix now uses one adaptive standard execution: planning, verification, and review strength follow task risk automatically. Execution modes are no longer switchable; this call is accepted for compatibility and ignored."
+
 func (a *App) SetTokenMode(mode string) error {
-	// Deprecated: dual-write alias for SetAgentPreset.
+	// Deprecated no-op compatibility wrapper.
 	return a.SetAgentPreset(boot.NormalizeAgentPreset(mode))
 }
 
 func (a *App) SetTokenModeForTab(tabID, mode string) error {
-	// Deprecated: dual-write alias for SetAgentPresetForTab.
+	// Deprecated no-op compatibility wrapper.
 	return a.SetAgentPresetForTab(tabID, boot.NormalizeAgentPreset(mode))
 }
 
-// SetAgentPreset switches the active tab's execution setting (执行设定).
+// SetAgentPreset is a deprecated no-op compatibility wrapper.
 func (a *App) SetAgentPreset(preset string) error {
 	return a.SetAgentPresetForTab("", preset)
 }
 
-// SetAgentPresetForTab switches a tab's role setting without rebuilding the
-// controller. Active turns, background jobs, and pending approvals/asks refuse.
+// SetAgentPresetForTab is a deprecated no-op compatibility wrapper: it accepts
+// the legacy argument, does not require an idle tab, saves no mode, rebuilds
+// no agent, and always succeeds with the deprecation notice.
 func (a *App) SetAgentPresetForTab(tabID, preset string) error {
-	preset = boot.NormalizeAgentPreset(preset)
-	legacyMode := boot.TokenModeFromAgentPreset(preset)
-	tab := a.tabByID(tabID)
-	if tab == nil {
-		if strings.TrimSpace(tabID) == "" {
-			return nil
-		}
+	_ = boot.NormalizeAgentPreset(preset)
+	if tab := a.tabByID(tabID); tab == nil && strings.TrimSpace(tabID) != "" {
 		return fmt.Errorf("tab %q not found", tabID)
 	}
-	a.mu.RLock()
-	currentPreset := boot.NormalizeAgentPreset(tab.tokenMode)
-	a.mu.RUnlock()
-	if preset == currentPreset {
-		return nil
-	}
-	// Serialize with model/effort/settings rebuilds and turn admission.
-	a.runtimeRebuildMu.Lock()
-	defer a.runtimeRebuildMu.Unlock()
-	tab.turnStartMu.Lock()
-	defer tab.turnStartMu.Unlock()
-	prevPath := a.reconciledSessionPathForTab(tab)
-	if prevPath == "" {
-		prevPath = a.currentSessionPathFor(tab)
-	}
-	if a.controllerForTab(tab) == nil && prevPath != "" {
-		a.attachExistingSessionRuntime(tab, prevPath, a.ctx)
-	}
-	if err := rebuildControllerActiveWorkErrorFor(a.controllerForTab(tab), "执行设定"); err != nil {
-		return err
-	}
-	if err := a.ensureTabControllerWorkspace(tab); err != nil {
-		return err
-	}
-	ctrl := a.controllerForTab(tab)
-	if ctrl == nil {
-		// No live controller yet: persist the choice for the next build.
-		a.mu.Lock()
-		tab.tokenMode = legacyMode
-		a.mu.Unlock()
-		a.persistTabTokenMode(tab, legacyMode)
-		return nil
-	}
-	// In-place switch: update the agent atomic value, tab state, and dual-write
-	// persistence without boot.Build.
-	ctrl.SetAgentPreset(preset)
-	a.mu.Lock()
-	tab.tokenMode = legacyMode
-	a.mu.Unlock()
-	a.persistTabTokenMode(tab, legacyMode)
-	a.notifyTabRuntimeRebuilt(tab)
+	a.noticeForTab(strings.TrimSpace(tabID), SetAgentPresetDeprecatedNotice)
 	return nil
 }
 
-// persistTabTokenMode dual-writes tokenMode (legacy) for the role setting.
-// Failures keep the in-memory preset (already applied).
-func (a *App) persistTabTokenMode(tab *WorkspaceTab, mode string) {
+// persistTabTokenMode persists the deprecated dual-write compatibility values
+// (agentPreset=balanced, tokenMode=full) so one-version-old clients keep
+// parsing tab state and session metas. The values are fixed; nothing reads
+// them to alter runtime behavior.
+func (a *App) persistTabTokenMode(tab *WorkspaceTab) {
 	if a == nil || tab == nil {
 		return
 	}
-	_ = mode
 	a.mu.Lock()
+	tab.tokenMode = boot.TokenModeFull
 	a.saveTabsLocked()
 	a.mu.Unlock()
 	_ = a.saveTabSessionMetaForCurrentSession(tab)

@@ -350,9 +350,9 @@ type SetSessionConfigOptionParams struct {
 	Value     string `json:"value"`
 }
 
-// SetSessionConfigOptionResult returns the full refreshed config state.
 type SetSessionConfigOptionResult struct {
-	ConfigOptions []SessionConfigOption `json:"configOptions"`
+	ConfigOptions    []SessionConfigOption `json:"configOptions"`
+	DeprecatedNotice string                `json:"deprecatedNotice,omitempty"`
 }
 
 // SessionConfigOption is a single-value ACP session selector.

@@ -139,7 +139,7 @@ const (
 // events. It never carries user prompts, file contents, command args, or
 // reviewer reasoning.
 type CompletionSummaryInfo struct {
-	Preset             string // light | balanced | delivery
+	Preset             string // deprecated wire-compat label; pinned to "balanced"
 	Verdict            string // complete | partial | blocked | continue
 	Mutations          int
 	ChecksPassed       int

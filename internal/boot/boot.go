@@ -133,15 +133,12 @@ type Options struct {
 	// (for example ACP session/new). They are connected eagerly for this
 	// controller but are not persisted to reasonix.toml.
 	ExtraPlugins []plugin.Spec
-	// AgentPreset selects the session role setting (light|balanced|delivery).
-	// Empty falls back to balanced. It controls planning depth, verification
-	// breadth, and independent review frequency without changing the
-	// provider-visible tool schema or base system prompt.
+	// AgentPreset and TokenMode are deprecated no-op compatibility inputs.
+	// Reasonix derives one adaptive standard execution policy per turn from
+	// task risk (internal/taskpolicy); these fields are accepted so old
+	// frontends keep compiling, and ignored.
 	AgentPreset string
-	// TokenMode is the deprecated one-version fallback for AgentPreset.
-	// When AgentPreset is empty, TokenMode is normalized through the legacy
-	// economy/full/delivery mapping. Prefer AgentPreset.
-	TokenMode string
+	TokenMode   string
 	// SessionDir overrides where persisted chat transcripts are written. When
 	// empty, the shared CLI/global session directory is used.
 	SessionDir string
@@ -409,21 +406,8 @@ func build(ctx context.Context, opts Options) (*BuildResult, error) {
 		}
 	}
 	config.NormalizeLegacyMimoCustomProvidersForRefs(cfg, modelName)
-	agentPreset := strings.TrimSpace(opts.AgentPreset)
-	if agentPreset == "" {
-		agentPreset = AgentPresetFromTokenMode(opts.TokenMode)
-	}
-	agentPreset = NormalizeAgentPreset(agentPreset)
-	// tokenMode is dual-write compatibility only; policy uses agentPreset.
-	tokenMode := TokenModeFromAgentPreset(agentPreset)
-	tokenDelivery := agentPreset == AgentPresetDelivery
-	runtimeProfile := capability.ProfileBalanced
-	switch agentPreset {
-	case AgentPresetLight:
-		runtimeProfile = capability.ProfileEconomy
-	case AgentPresetDelivery:
-		runtimeProfile = capability.ProfileDelivery
-	}
+	// Execution modes are gone: opts.AgentPreset/opts.TokenMode are deprecated
+	// no-op inputs kept for one compatibility version of old frontends.
 	keepPolicy := agentKeepPolicy(cfg.Agent.Keep)
 	// Entry resolution: the caller-owned broker is authoritative for every
 	// ref; the extension-merged resolver only owns plugin refs — a config ref
@@ -605,10 +589,9 @@ func build(ctx context.Context, opts Options) (*BuildResult, error) {
 	if workspaceLine := currentWorkspacePromptLine(root); workspaceLine != "" {
 		sysPrompt += "\n\n" + workspaceLine
 	}
-	// Role settings no longer inject mode-specific system prompts. Planning,
-	// verification, and review intensity travel in the per-turn transient
+	// Execution modes no longer exist. Planning, verification, review, and
+	// evidence-closure intensity travel in the per-turn transient
 	// <execution-policy> user block so the cache-stable prefix stays shared.
-	_ = tokenMode
 	if cfg.EnvironmentEnabled() {
 		shellLabel := shell.Kind.String()
 		if strings.TrimSpace(cfg.Tools.Shell.Path) != "" {
@@ -669,7 +652,7 @@ func build(ctx context.Context, opts Options) (*BuildResult, error) {
 			PluginAgentPaths: cfg.PluginPackageAgentOwners(), ExcludedPaths: cfg.SkillExcludedPaths(),
 			DisabledNames: cfg.DisabledSkillNames(), MaxDepth: cfg.SkillMaxDepth(), Stderr: opts.Stderr,
 		})
-		skillStore.ConfigureInvocationPolicy(string(runtimeProfile), nil)
+		skillStore.ConfigureInvocationPolicy("", nil)
 		skills = skillStore.List()
 		allSkillStore = skill.New(skill.Options{ProjectRoot: root, CustomPaths: cfg.SkillCustomPaths(), PluginPaths: cfg.PluginPackageSkillOwners(), PluginAgentPaths: cfg.PluginPackageAgentOwners(), ExcludedPaths: cfg.SkillExcludedPaths(), MaxDepth: cfg.SkillMaxDepth(), Stderr: io.Discard})
 		allSkills = allSkillStore.List()
@@ -1091,7 +1074,6 @@ func build(ctx context.Context, opts Options) (*BuildResult, error) {
 			WithTranscripts(subagentStore, root, modelName, entry.Effort).
 			WithTranscriptIdentityResolver(subagentIdentity).
 			WithMaxSubagentDepth(maxSubagentDepth).
-			WithDeliveryProfile(tokenDelivery).
 			WithAblation(opts.Ablation).
 			WithWorkspaceLease(workspaceLease).
 			WithScheduler(subagentScheduler).
@@ -1224,7 +1206,6 @@ func build(ctx context.Context, opts Options) (*BuildResult, error) {
 			ReasoningLanguage:   agent.ReasoningLanguageFromContext(sctx),
 			SubagentDepth:       childDepth,
 			MaxSubagentDepth:    maxSubagentDepth,
-			DeliveryProfile:     tokenDelivery,
 			Ablation:            opts.Ablation,
 			WorkspaceLease:      workspaceLease,
 		}
@@ -1280,11 +1261,10 @@ func build(ctx context.Context, opts Options) (*BuildResult, error) {
 		runOptions := subagentSkillOptions(sctx, steps, price, ctxWin, childDepth)
 		usageModelRef, _ := subagentIdentity(modelRef, effortRef)
 		runOptions.ModelRef = usageModelRef
-		// Delivery risk gates consume typed reports; outside Delivery a casual
-		// /review run may finish with prose only.
-		if runOptions.DeliveryProfile {
-			runOptions.RequireReviewReportKind = agent.ReviewReportKindForSkill(sk.Name)
-		}
+		// Review gates consume typed, host-verifiable reports so a review
+		// cannot end in unverifiable prose. Review skills run only for
+		// mid/high-risk work under the standard policy.
+		runOptions.RequireReviewReportKind = agent.ReviewReportKindForSkill(sk.Name)
 		// Provider serializers decide whether these images are wire-visible from
 		// the child model's own vision capability. Text-only children retain the
 		// attachment metadata locally but never receive image parts on the wire.
@@ -1405,11 +1385,10 @@ func build(ctx context.Context, opts Options) (*BuildResult, error) {
 		runOptions := subagentSkillOptions(sctx, steps, price, ctxWin, childDepth)
 		usageModelRef, _ := subagentIdentity(modelRef, effortRef)
 		runOptions.ModelRef = usageModelRef
-		// Delivery risk gates consume typed reports; outside Delivery a casual
-		// /review run may finish with prose only.
-		if runOptions.DeliveryProfile {
-			runOptions.RequireReviewReportKind = agent.ReviewReportKindForSkill(sk.Name)
-		}
+		// Review gates consume typed, host-verifiable reports so a review
+		// cannot end in unverifiable prose. Review skills run only for
+		// mid/high-risk work under the standard policy.
+		runOptions.RequireReviewReportKind = agent.ReviewReportKindForSkill(sk.Name)
 		var answer string
 		// See the read-only runner above: the child provider, not the parent
 		// model, owns the final vision decision.
@@ -1591,9 +1570,6 @@ func build(ctx context.Context, opts Options) (*BuildResult, error) {
 	skillStore.ConfigureToolBindings(func(sk skill.Skill) []tool.MCPBinding {
 		return skillMCPBindings(sk, reg, capSpecs, cachedTools, cacheKeyOK)
 	})
-	// Detect dual-model planner early so Balanced/Delivery can attach the same
-	// stable use_capability surface to both Planner and Executor.
-	profile := runtimeProfile
 	var capProxy *agent.UseCapabilityTool
 	// Catalog closes over capRuntime so proxy-connected tools stay routable.
 	// Use AllContractEntries so tool: capabilities include non-provider-visible
@@ -1613,7 +1589,6 @@ func build(ctx context.Context, opts Options) (*BuildResult, error) {
 			Tools:       reg.AllContractEntries(),
 			Skills:      skillStore.List(),
 			Plugins:     cfg.Plugins,
-			Profile:     profile,
 			Connected:   conn,
 			Failed:      failedNow,
 			CachedTools: cachedTools,
@@ -1632,7 +1607,7 @@ func build(ctx context.Context, opts Options) (*BuildResult, error) {
 	capAudit = &capability.Audit{}
 	capProxy = capRuntime.NewFrontend(capLedger, capAudit)
 	reg.Add(capProxy)
-	skillStore.ConfigureInvocationPolicy(string(runtimeProfile), func(requires []string) []string {
+	skillStore.ConfigureInvocationPolicy("", func(requires []string) []string {
 		connected := map[string]bool{}
 		failedNow := map[string]string{}
 		if pluginHost != nil {
@@ -1647,7 +1622,6 @@ func build(ctx context.Context, opts Options) (*BuildResult, error) {
 			Tools:       reg.AllContractEntries(),
 			Skills:      skillStore.List(),
 			Plugins:     cfg.Plugins,
-			Profile:     runtimeProfile,
 			Connected:   connected,
 			Failed:      failedNow,
 			CachedTools: cachedTools,
@@ -1677,8 +1651,6 @@ func build(ctx context.Context, opts Options) (*BuildResult, error) {
 		WriteScheduler:               subagentScheduler,
 		WriteWorkspaceRoot:           root,
 		ProjectChecks:                projectChecks,
-		AgentPreset:                  agentPreset,
-		DeliveryProfile:              tokenDelivery,
 		Ablation:                     opts.Ablation,
 		WorkspaceLease:               workspaceLease,
 		CapabilityLedger:             capLedger,
@@ -1817,7 +1789,6 @@ func build(ctx context.Context, opts Options) (*BuildResult, error) {
 		DisableColdResumePrune: !cfg.ColdResumePruneEnabled(),
 		Shell:                  shell,
 		ApprovalTimeout:        opts.ApprovalTimeout,
-		RuntimeProfile:         runtimeProfile,
 		Ablation:               opts.Ablation,
 		OnRemember: func(rule string) control.RememberResult {
 			return rememberPermissionRule(root, rule)

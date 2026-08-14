@@ -24,6 +24,7 @@ import (
 	"reasonix/internal/planmode"
 	"reasonix/internal/provider"
 	"reasonix/internal/sessiontemp"
+	"reasonix/internal/taskpolicy"
 	"reasonix/internal/tool"
 	"reasonix/internal/workspacelease"
 )
@@ -263,7 +264,6 @@ type TaskTool struct {
 	baseEffort                    string
 	identityProfile               func(modelRef, effort string) (string, string)
 	maxSubagentDepth              int
-	deliveryProfile               bool
 	ablation                      ablation.Set
 	workspaceLease                *workspacelease.Owner
 	// scheduler is the session-scoped concurrency + write-claim controller.
@@ -394,14 +394,6 @@ func (t *TaskTool) WithTranscriptIdentityResolver(resolve func(modelRef, effort 
 
 func (t *TaskTool) WithMaxSubagentDepth(depth int) *TaskTool {
 	t.maxSubagentDepth = NormalizeMaxSubagentDepth(depth)
-	return t
-}
-
-// WithDeliveryProfile propagates the parent's runtime delivery contract into
-// writer-capable sub-agents. Read-only sub-agents may receive the flag too, but
-// the mutation gate remains dormant for them.
-func (t *TaskTool) WithDeliveryProfile(enabled bool) *TaskTool {
-	t.deliveryProfile = enabled
 	return t
 }
 
@@ -903,7 +895,7 @@ func (t *TaskTool) RunProfileSpec(ctx context.Context, spec ProfileExecSpec) (re
 			jobCtx = WithParentSession(jobCtx, parentSession)
 			jobCtx = evidence.WithLedger(jobCtx, backgroundEvidence)
 			defer run.Release()
-			defer func() { jobs.PublishEvidence(jobCtx, backgroundEvidence.Summary()) }()
+			defer publishBackgroundEvidence(jobCtx, backgroundEvidence, t.workspaceRoot)
 			defer func() {
 				if r := recover(); r != nil {
 					panicErr := fmt.Errorf("internal error: panic: %v\n%s", r, debug.Stack())
@@ -1612,27 +1604,34 @@ func (t *TaskTool) runReadOnlySubSession(ctx context.Context, prompt string, sub
 // must stay uniform across those paths — add new fields here, not at call sites.
 func (t *TaskTool) subagentOptions(ctx context.Context, maxSteps int, pricing *provider.Pricing, ctxWin, childDepth int, recoveryTaskID string, mutationObserver *checkpoint.MutationObserver) Options {
 	opts := Options{
-		MaxSteps:          maxSteps,
-		Temperature:       t.temperature,
-		Pricing:           pricing,
-		UsageSource:       event.UsageSourceSubagent,
-		Gate:              t.gate,
-		ContextWindow:     ctxWin,
-		RecentKeep:        t.recentKeep,
-		CompactRatio:      t.compactRatio,
-		ArchiveDir:        t.archiveDir,
-		KeepPolicy:        t.keepPolicy,
-		ResponseLanguage:  ResponseLanguageFromContext(ctx),
-		ReasoningLanguage: ReasoningLanguageFromContext(ctx),
-		SubagentDepth:     childDepth,
-		MaxSubagentDepth:  t.maxDepth(),
-		DeliveryProfile:   t.deliveryProfile,
-		Ablation:          t.ablation,
-		WorkspaceLease:    t.workspaceLease,
-		RecoveryGate:      t.recoveryGate,
-		RecoveryAgentID:   "subagent",
-		RecoveryTaskID:    recoveryTaskID,
-		MutationObserver:  mutationObserver,
+		MaxSteps:           maxSteps,
+		Temperature:        t.temperature,
+		Pricing:            pricing,
+		UsageSource:        event.UsageSourceSubagent,
+		Gate:               t.gate,
+		ContextWindow:      ctxWin,
+		RecentKeep:         t.recentKeep,
+		CompactRatio:       t.compactRatio,
+		ArchiveDir:         t.archiveDir,
+		KeepPolicy:         t.keepPolicy,
+		ResponseLanguage:   ResponseLanguageFromContext(ctx),
+		ReasoningLanguage:  ReasoningLanguageFromContext(ctx),
+		SubagentDepth:      childDepth,
+		MaxSubagentDepth:   t.maxDepth(),
+		Ablation:           t.ablation,
+		WorkspaceLease:     t.workspaceLease,
+		WriteWorkspaceRoot: t.workspaceRoot,
+		RecoveryGate:       t.recoveryGate,
+		RecoveryAgentID:    "subagent",
+		RecoveryTaskID:     recoveryTaskID,
+		MutationObserver:   mutationObserver,
+	}
+	// Writer children inherit the parent turn's frozen risk and closure floors.
+	// The parent publishes its policy into the run context; a child that never
+	// received it (direct unit construction) keeps its own derived policy.
+	if parent, ok := taskpolicy.FromContext(ctx); ok {
+		p := parent
+		opts.InheritedTaskPolicy = &p
 	}
 	return opts
 }
