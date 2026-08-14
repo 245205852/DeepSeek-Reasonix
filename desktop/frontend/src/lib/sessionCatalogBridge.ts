@@ -53,7 +53,10 @@ export function makeMockSessionCatalogBindings(cloneProjectTree: () => ProjectNo
     async GetProjectTreeSnapshot() {
       return {
         revision: 1,
-        projects: cloneProjectTree().map((project) => ({ ...project, children: [] })),
+        projects: cloneProjectTree().map((project) => ({
+          ...project,
+          children: asArray(project.children).filter((topic) => Boolean(topic.pinned)),
+        })),
         catalog: { state: "ready", mode: "memory", revision: 1, indexed: 4, total: 4, repairPending: 0 },
         indexed: 4,
         total: 4,

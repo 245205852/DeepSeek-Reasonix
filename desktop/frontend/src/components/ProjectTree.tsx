@@ -546,8 +546,9 @@ export function ProjectTree({
       if (filtering || expanded.has(key)) void loadProjectTopics(project);
     }
   }, [closeMenu, expanded, loadProjectTopics, query, timeFilter]);
-  // Snapshot is intentionally shells-only. Preserve already loaded pages by
-  // project key so a metadata refresh does not collapse or blank the sidebar.
+  // Snapshot carries project shells plus lightweight pinned topic shells.
+  // Preserve already loaded pages by project key while reconciling pins, so a
+  // metadata refresh does not collapse or blank the sidebar.
   const refresh = useCallback(async (options?: ProjectTreeRefreshOptions) => {
     const reloadRequestedProjects = (projects: ProjectNode[]) => reloadProjectTreeTopics(projects, options, loadProjectTopicsRef.current);
     try {
@@ -565,7 +566,7 @@ export function ProjectTree({
         // Topic pages reload asynchronously. Keep the last painted children
         // until their replacement arrives so a mutation cannot blank every
         // expanded folder for the duration of a catalog scan.
-        return { ...project, children: projectTreeShellChildren(previous?.children) };
+        return { ...project, children: projectTreeShellChildren(previous?.children, project.children) };
       })));
       await reloadRequestedProjects(projects);
     } catch {

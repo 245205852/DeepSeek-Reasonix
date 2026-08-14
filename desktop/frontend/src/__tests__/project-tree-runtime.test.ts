@@ -30,6 +30,7 @@ import {
 import { projectTreeTrashingTopics } from "../lib/projectTreeArchive";
 import { normalizeProjectTreeRuntimeSnapshot } from "../lib/projectTreeRuntime";
 import { runProjectTreeSortRuntimeTests } from "./project-tree-sort-runtime.test";
+import { runProjectTreePinnedShellRuntimeTests } from "./project-tree-pinned-shell-runtime.test";
 import type { ProjectNode } from "../lib/types";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
@@ -747,11 +748,7 @@ eq(
   true,
   "archive refresh reloads only the affected topic folder after preserving the painted siblings",
 );
-eq(
-  projectTreeSource.includes("children: projectTreeShellChildren(previous?.children)"),
-  true,
-  "shell refresh never clears loaded folders while asynchronous topic reloads are pending",
-);
+runProjectTreePinnedShellRuntimeTests(eq, projectTreeSource);
 await runProjectTreeSortRuntimeTests(eq, projectTreeSource);
 
 eq(

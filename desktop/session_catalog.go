@@ -534,6 +534,10 @@ func (a *App) requestSessionCatalogMetadataSync() {
 
 func (a *App) GetProjectTreeSnapshot() ProjectTreeSnapshot {
 	f := loadProjectsFile()
+	deleted := make(map[string]bool, len(f.DeletedTopics))
+	for _, topicID := range f.DeletedTopics {
+		deleted[topicID] = true
+	}
 	projects := []ProjectNode{}
 	if strings.TrimSpace(f.GlobalTitle) != "" || len(f.GlobalTopics) > 0 || len(f.Projects) == 0 {
 		label := strings.TrimSpace(f.GlobalTitle)
@@ -543,7 +547,7 @@ func (a *App) GetProjectTreeSnapshot() ProjectTreeSnapshot {
 		projects = append(projects, ProjectNode{
 			Key: "global_folder", Kind: "global_folder", Label: label,
 			Root: globalWorkspaceRoot(), ProjectColor: normalizeProjectColor(f.GlobalColor),
-			Children: []ProjectNode{},
+			Children: a.pinnedTopicShells("global", "", f.GlobalTopics, f.GlobalPinnedTopics, f.GlobalColor, deleted),
 		})
 	}
 	for _, project := range f.Projects {
@@ -555,7 +559,7 @@ func (a *App) GetProjectTreeSnapshot() ProjectTreeSnapshot {
 			Key: "project_" + project.Root, Kind: "project", Label: label,
 			Root: project.Root, ProjectColor: project.Color,
 			Pinned:   containsDesktopString(f.PinnedProjects, project.Root),
-			Children: []ProjectNode{},
+			Children: a.pinnedTopicShells("project", project.Root, project.Topics, project.PinnedTopics, project.Color, deleted),
 		})
 	}
 	projects = applyPinnedProjectOrder(applyProjectTreeOrder(projects, f.SidebarOrder), f.PinnedProjects)
@@ -565,6 +569,45 @@ func (a *App) GetProjectTreeSnapshot() ProjectTreeSnapshot {
 		Indexed: status.Indexed, Total: status.Total,
 		IndexingDone: a.catalogIndexingDone(status),
 	}
+}
+
+// pinnedTopicShells keeps pinned conversations available in the metadata-only
+// project snapshot. Ordinary topic pages remain lazy, but a collapsed folder
+// must not hide its pinned conversations until the user expands it.
+func (a *App) pinnedTopicShells(scope, workspaceRoot string, topicIDs, pinnedIDs []string, projectColor string, deleted map[string]bool) []ProjectNode {
+	if len(pinnedIDs) == 0 {
+		return []ProjectNode{}
+	}
+	titles := loadTopicTitles(workspaceRoot)
+	sources := loadTopicTitleSources(workspaceRoot)
+	created := loadTopicCreatedAts(workspaceRoot)
+	available := make(map[string]bool, len(topicIDs)+len(titles))
+	for _, topicID := range orderedTopicIDs(topicIDs, titles) {
+		available[topicID] = true
+	}
+	kind := "topic"
+	if scope != "project" {
+		kind = "global_topic"
+	}
+	out := make([]ProjectNode, 0, len(pinnedIDs))
+	for _, topicID := range uniqueStrings(pinnedIDs) {
+		if !available[topicID] || deleted[topicID] {
+			continue
+		}
+		title := strings.TrimSpace(titles[topicID])
+		if title == "" {
+			title = defaultTopicTitle
+		}
+		out = append(out, ProjectNode{
+			Key: kind + "_" + topicID, Kind: kind,
+			Label: a.localizedTopicTitle(title, sources[topicID]), Root: workspaceRoot,
+			TopicID: topicID, ProjectColor: normalizeProjectColor(projectColor),
+			CreatedAt: topicCreatedAtForTree(created, topicID), Pinned: true,
+			TurnsState: string(sessioncatalog.TurnsUnknown), Health: string(sessioncatalog.HealthOK),
+			Children: []ProjectNode{},
+		})
+	}
+	return out
 }
 
 func (a *App) catalogIndexingDone(status SessionCatalogStatus) bool {

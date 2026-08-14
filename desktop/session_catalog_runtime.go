@@ -691,6 +691,10 @@ func (a *App) ListProjectTree() []ProjectNode {
 	}
 	for index := range snapshot.Projects {
 		project := &snapshot.Projects[index]
+		// The lightweight snapshot carries pinned topic shells for collapsed
+		// folders. This compatibility wrapper rebuilds the complete child list,
+		// so start clean to avoid duplicating those shells with catalog rows.
+		project.Children = []ProjectNode{}
 		scope := "project"
 		root := project.Root
 		if project.Kind == "global_folder" {

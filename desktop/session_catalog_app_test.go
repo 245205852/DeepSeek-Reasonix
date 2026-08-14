@@ -75,6 +75,36 @@ func TestProjectTreeSnapshotReturnsProjectShellWithoutMigratingSessions(t *testi
 	}
 }
 
+func TestProjectTreeSnapshotIncludesPinnedTopicsForCollapsedFolders(t *testing.T) {
+	isolateDesktopUserDirs(t)
+	root := t.TempDir()
+	if err := addProject(root, "Pinned Project"); err != nil {
+		t.Fatal(err)
+	}
+	if err := setTopicTitle(root, "ordinary", "Ordinary chat"); err != nil {
+		t.Fatal(err)
+	}
+	if err := setTopicTitle(root, "pinned", "Pinned chat"); err != nil {
+		t.Fatal(err)
+	}
+	app := NewApp()
+	if err := app.SetTopicPinned("pinned", true); err != nil {
+		t.Fatal(err)
+	}
+
+	snapshot := app.GetProjectTreeSnapshot()
+	if len(snapshot.Projects) != 1 {
+		t.Fatalf("project shells = %#v, want one project", snapshot.Projects)
+	}
+	children := snapshot.Projects[0].Children
+	if len(children) != 1 || children[0].TopicID != "pinned" || !children[0].Pinned {
+		t.Fatalf("collapsed project children = %#v, want only pinned topic shell", children)
+	}
+	if children[0].Label != "Pinned chat" {
+		t.Fatalf("pinned topic label = %q, want %q", children[0].Label, "Pinned chat")
+	}
+}
+
 func TestCompatibilityProjectTreeDoesNotMigrateLegacySession(t *testing.T) {
 	isolateDesktopUserDirs(t)
 	root := t.TempDir()
