@@ -7,6 +7,7 @@ import {
   projectTreeShellChildren,
   projectTreeEventAffectsFolder,
   projectTreeRevisionIsFresh,
+  projectTreeTopicPageIsFresh,
   projectTreeShouldApplyShellSnapshot,
   defaultExpandedProjectTreeKeys,
   activeSessionAncestorKeys,
@@ -685,6 +686,15 @@ eq(
   [projectTreeRevisionIsFresh(12, 11), projectTreeRevisionIsFresh(12, 12), projectTreeRevisionIsFresh(12, 13)],
   [false, true, true],
   "project tree ignores stale snapshots and pages while accepting the current revision",
+);
+
+eq(
+  [
+    projectTreeTopicPageIsFresh({ "project-a": 11, "project-b": 9 }, "project-a", 10),
+    projectTreeTopicPageIsFresh({ "project-a": 11, "project-b": 9 }, "project-b", 10),
+  ],
+  [false, true],
+  "a newer revision in one project does not discard another project's slower page",
 );
 
 eq(

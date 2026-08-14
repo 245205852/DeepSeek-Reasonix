@@ -42,6 +42,14 @@ export function projectTreeRevisionIsFresh(currentRevision: number, incomingRevi
   return incomingRevision >= currentRevision;
 }
 
+export function projectTreeTopicPageIsFresh(
+  revisions: Readonly<Record<string, number>>,
+  projectKey: string,
+  incomingRevision: number,
+): boolean {
+  return projectTreeRevisionIsFresh(revisions[projectKey] ?? 0, incomingRevision);
+}
+
 // Project shells come from desktop-projects.json and are valid even when the
 // disposable catalog still reports revision 0. Catalog revision only gates
 // topic pages and non-empty tree refreshes after the first shell is painted.

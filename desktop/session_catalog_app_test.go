@@ -553,6 +553,69 @@ func TestListProjectTopicsUsesAvailableProjectionBeforeEveryGlobalDirectoryIsSca
 	}
 }
 
+func TestListProjectTopicsPaginatesMetadataWhileCatalogIsPartiallyAvailable(t *testing.T) {
+	isolateDesktopUserDirs(t)
+	legacy := config.SessionDir()
+	global := desktopSessionDir(globalWorkspaceRoot())
+	for _, dir := range []string{legacy, global} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := updateProjectsFile(func(f *desktopProjectFile) (bool, error) {
+		f.GlobalTopics = []string{"topic-a", "topic-b", "topic-c"}
+		return true, nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := saveTopicTitles("", map[string]string{
+		"topic-a": "A", "topic-b": "B", "topic-c": "C",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := saveTopicCreatedAts("", map[string]int64{
+		"topic-a": 100, "topic-b": 200, "topic-c": 300,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	app := NewApp()
+	catalog, err := sessioncatalog.Open(context.Background(), sessioncatalog.Options{InMemory: true, DisableRepair: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		app.sessionCatalog.CompareAndSwap(catalog, nil)
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		_ = catalog.Close(ctx)
+	})
+	app.sessionCatalog.Store(catalog)
+	if err := catalog.ReconcileDirectory(context.Background(), sessioncatalog.DirectoryTarget{Path: legacy, Scope: "global"}); err != nil {
+		t.Fatal(err)
+	}
+
+	first, err := app.ListProjectTopics(ProjectTopicPageRequest{Scope: "global", Limit: 2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(first.Items) != 2 || first.Items[0].TopicID != "topic-c" || first.Items[1].TopicID != "topic-b" {
+		t.Fatalf("first page topics = %#v", first.Items)
+	}
+	if first.NextCursor == "" {
+		t.Fatal("first page omitted metadata continuation cursor")
+	}
+	second, err := app.ListProjectTopics(ProjectTopicPageRequest{Scope: "global", Limit: 2, Cursor: first.NextCursor})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(second.Items) != 1 || second.Items[0].TopicID != "topic-a" {
+		t.Fatalf("second page topics = %#v", second.Items)
+	}
+	if second.NextCursor != "" {
+		t.Fatalf("second page next cursor = %q, want empty", second.NextCursor)
+	}
+}
+
 func TestAuthoritativeBotStylePersistIndexesSessionImmediately(t *testing.T) {
 	isolateDesktopUserDirs(t)
 	root := t.TempDir()

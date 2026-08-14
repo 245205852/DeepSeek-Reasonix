@@ -284,6 +284,22 @@ func (a *App) metadataTopicPage(req ProjectTopicPageRequest) ProjectTopicPage {
 				break
 			}
 		}
+	} else if strings.TrimSpace(req.Cursor) != "" {
+		start = len(items)
+		for index, item := range items {
+			after, err := sessioncatalog.TopicSortKeyAfterCursor(
+				req.Cursor, item.Pinned,
+				projectTopicSortValue(item.CreatedAt, item.LastActivityAt, req.SortMode), item.TopicID,
+			)
+			if err != nil {
+				start = 0
+				break
+			}
+			if after {
+				start = index
+				break
+			}
+		}
 	}
 	limit := req.Limit
 	if limit <= 0 {
@@ -606,6 +622,14 @@ func projectTopicSortValue(createdAt, lastActivityAt int64, sortMode string) int
 func encodeProjectTopicCursor(topic sessioncatalog.TopicRecord, sortMode string) string {
 	// Reuse the catalog's keyset cursor encoding by asking for the next page
 	// after this topic. ListTopics accepts the same opaque cursor it emits.
+	pinned := 0
+	if topic.Pinned {
+		pinned = 1
+	}
+	return sessioncatalog.EncodeTopicCursor(pinned, projectTopicSortValue(topic.CreatedAt, topic.LastActivityAt, sortMode), topic.TopicID)
+}
+
+func encodeProjectNodeCursor(topic ProjectNode, sortMode string) string {
 	pinned := 0
 	if topic.Pinned {
 		pinned = 1

@@ -18,6 +18,16 @@ assert.match(panel, /treeRef\.current\.length === 0/, "v2 event re-fetches shell
 assert.match(panel, /void refresh\(\)/, "empty-tree event path calls refresh");
 assert.match(
   panel,
+  /projectTreeTopicPageIsFresh\(topicRevisionRef\.current, key, page\.revision\)/,
+  "topic pages compare revisions within their own project",
+);
+assert.doesNotMatch(
+  panel,
+  /projectTreeRevisionIsFresh\(latestRevisionRef\.current, page\.revision\)/,
+  "an unrelated project's revision cannot discard a valid slower topic page",
+);
+assert.match(
+  panel,
   /onProjectTreeChangedV2[\s\S]*projectTreeRevisionIsFresh\(latestRevisionRef\.current, event\.revision\)/,
   "equal-revision catalog events use the shared freshness contract",
 );

@@ -3,7 +3,6 @@ package main
 import (
 	"os"
 	"sort"
-	"strings"
 
 	"reasonix/internal/sessioncatalog"
 )
@@ -59,9 +58,6 @@ func (a *App) catalogWorkspaceAvailability(catalog *sessioncatalog.Catalog, scop
 }
 
 func (a *App) mergeMetadataTopics(req ProjectTopicPageRequest, page ProjectTopicPage) ProjectTopicPage {
-	if strings.TrimSpace(req.Cursor) != "" {
-		return page
-	}
 	metadata := a.metadataTopicPage(req)
 	seen := make(map[string]struct{}, len(page.Items)+len(metadata.Items))
 	for _, item := range page.Items {
@@ -85,5 +81,20 @@ func (a *App) mergeMetadataTopics(req ProjectTopicPageRequest, page ProjectTopic
 		}
 		return page.Items[i].TopicID < page.Items[j].TopicID
 	})
+	limit := req.Limit
+	if limit <= 0 {
+		limit = sessioncatalog.DefaultLimit
+	}
+	if limit > sessioncatalog.MaxLimit {
+		limit = sessioncatalog.MaxLimit
+	}
+	hasMore := page.NextCursor != "" || metadata.NextCursor != "" || len(page.Items) > limit
+	if len(page.Items) > limit {
+		page.Items = page.Items[:limit]
+	}
+	page.NextCursor = ""
+	if hasMore && len(page.Items) > 0 {
+		page.NextCursor = encodeProjectNodeCursor(page.Items[len(page.Items)-1], req.SortMode)
+	}
 	return page
 }
