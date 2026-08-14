@@ -14,11 +14,6 @@ import (
 )
 
 const (
-	plannerLightResearchRounds = 2
-	plannerFullResearchRounds  = 6
-)
-
-const (
 	plannerReasonExplicitPlanMode    = "explicit_plan_mode"
 	plannerReasonSynthetic           = "synthetic"
 	plannerReasonSlash               = "slash_command"
@@ -217,15 +212,10 @@ func plannerExecutorDecision(reason string) agent.PlannerDecision {
 }
 
 func plannerPlanDecision(route agent.PlannerRoute, depth agent.PlannerDepth, reason string) agent.PlannerDecision {
-	rounds := plannerLightResearchRounds
-	if depth == agent.PlannerDepthFull {
-		rounds = plannerFullResearchRounds
-	}
 	return agent.PlannerDecision{
-		Route:             route,
-		Depth:             depth,
-		Reason:            reason,
-		MaxResearchRounds: rounds,
+		Route:  route,
+		Depth:  depth,
+		Reason: reason,
 	}
 }
 

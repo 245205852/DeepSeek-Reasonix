@@ -549,7 +549,7 @@ func (a *Agent) handleFinalResponse(ctx context.Context, state *turnRuntime, tex
 		a.contextManager().ObserveUsage(usage)
 		return false, a.gracePause(state)
 	}
-	if state.graceRound && (state.landCause.kind == "task_budget" || !state.runLimitHostOwned) {
+	if state.graceRound {
 		// Explicit max_steps and spend budgets are user-selected boundaries.
 		// Preserve the summary, then return a resumable pause so Goal does not
 		// immediately open another Run and silently bypass the chosen limit.
@@ -629,7 +629,8 @@ func (a *Agent) handleToolRound(ctx context.Context, state *turnRuntime, step in
 		return false, fmt.Errorf("model repeatedly called context-unavailable tools without a visible answer: %s", strings.Join(unavailableContextTools, ", "))
 	}
 
-	if boundaryErr, stop := a.stopUnexecutedBoundaryCalls(state, calls, usage); stop {
+	boundaryFinalizer := a.allowsBoundaryTurnFinalizer(ctx, state, calls)
+	if boundaryErr, stop := a.stopUnexecutedBoundaryCalls(ctx, state, calls, usage); stop {
 		return false, boundaryErr
 	}
 
@@ -663,6 +664,20 @@ func (a *Agent) handleToolRound(ctx context.Context, state *turnRuntime, step in
 		a.recordInterruptedDisplay("", "", nil, true, state.workDurationMs())
 		return false, ctx.Err()
 	}
+	if a.successfulTurnFinalizer(ctx, calls, batch) {
+		// submit_plan is the planner's data-bearing final answer. Its paired tool
+		// result is stored, so another acknowledgement adds no host value and can
+		// turn a valid bounded plan into a max-steps pause.
+		a.contextManager().ObserveUsage(usage)
+		return false, nil
+	}
+	if boundaryFinalizer {
+		// The one allowed boundary finalizer ran but was rejected or blocked.
+		// Preserve the one-grace-round contract instead of opening an unbounded
+		// loop of malformed terminal submissions.
+		a.contextManager().ObserveUsage(usage)
+		return false, a.gracePause(state)
+	}
 	if len(unavailableContextTools) > 0 {
 		if hasVisibleFinalAnswer(text) {
 			// Keep the assistant tool call and host error paired in the transcript,
@@ -695,11 +710,11 @@ func (a *Agent) handleToolRound(ctx context.Context, state *turnRuntime, step in
 	// Spend is checked before rounds: it is the axis a runaway is actually
 	// reported in, so on the turns both would catch it should be the one named.
 	if axis, detail := a.task.budget.exceeded(a.taskBudgetLimit(ctx)); axis != "" {
-		a.armFinalizationRound(state, landCause{kind: "task_budget", axis: axis, detail: detail})
+		a.armFinalizationRound(ctx, state, landCause{kind: "task_budget", axis: axis, detail: detail})
 		return true, nil
 	}
 	if state.runMaxSteps > 0 && step+1 >= state.runMaxSteps {
-		a.armFinalizationRound(state, landCause{kind: "max_steps", detail: fmt.Sprintf(
+		a.armFinalizationRound(ctx, state, landCause{kind: "max_steps", detail: fmt.Sprintf(
 			"budget (%s=%d) exhausted: one grace round to finalize", state.runMaxStepsKey, state.runMaxSteps)})
 	}
 	return true, nil

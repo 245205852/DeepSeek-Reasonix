@@ -261,12 +261,12 @@ func TestCoordinatorStructuredPolicyUsesStableDepthMetadata(t *testing.T) {
 		if strings.Contains(input, "light") {
 			return PlannerDecision{
 				Route: PlannerRoutePlanAndExecute, Depth: PlannerDepthLight,
-				Reason: "test_light", MaxResearchRounds: 2,
+				Reason: "test_light",
 			}
 		}
 		return PlannerDecision{
 			Route: PlannerRoutePlanAndExecute, Depth: PlannerDepthFull,
-			Reason: "test_full", MaxResearchRounds: 6,
+			Reason: "test_full",
 		}
 	}
 	executor := New(exec, tool.NewRegistry(), NewSession("exec-sys"), Options{}, event.Discard)
@@ -322,7 +322,7 @@ func TestCoordinatorPlanForApprovalDoesNotDependOnPlannerMarker(t *testing.T) {
 	policy := func(context.Context, string) PlannerDecision {
 		return PlannerDecision{
 			Route: PlannerRoutePlanForApproval, Depth: PlannerDepthFull,
-			Reason: "user_plan_for_approval", MaxResearchRounds: 6,
+			Reason: "user_plan_for_approval",
 		}
 	}
 	executor := New(exec, tool.NewRegistry(), NewSession("exec-sys"), Options{}, event.Discard)
@@ -679,8 +679,8 @@ func TestCoordinatorPlannerMaxStepsUsesExplicitRuntimeKey(t *testing.T) {
 		t.Fatalf("planner session messages = %d, want the incomplete turn rolled back", got)
 	}
 	notices := sink.kinds(event.Notice)
-	if len(notices) == 0 || notices[len(notices)-1].Text != plannerResearchFallbackNotice {
-		t.Fatalf("notices = %+v, want planner research fallback notice", notices)
+	if len(notices) == 0 || notices[len(notices)-1].Text != plannerSafetyFallbackNotice {
+		t.Fatalf("notices = %+v, want planner safety fallback notice", notices)
 	}
 	if detail := notices[len(notices)-1].Detail; !strings.Contains(detail, "planner max_steps") ||
 		strings.Contains(detail, "set planner max_steps") {
@@ -724,53 +724,6 @@ func TestCoordinatorPlannerMaxStepsZeroIsUnlimited(t *testing.T) {
 	}
 	if got := lastUser(exec.requests[0]); !strings.Contains(got, "use both files") {
 		t.Fatalf("executor did not receive planner output: %q", got)
-	}
-}
-
-func TestCoordinatorPlannerDepthAppliesPerTurnResearchBudget(t *testing.T) {
-	planner := &mockProvider{name: "planner", streams: [][]provider.Chunk{
-		{{Type: provider.ChunkToolCall, ToolCall: &provider.ToolCall{ID: "call-1", Name: "read_file", Arguments: `{"path":"a"}`}}, {Type: provider.ChunkDone}},
-		{{Type: provider.ChunkToolCall, ToolCall: &provider.ToolCall{ID: "call-2", Name: "read_file", Arguments: `{"path":"b"}`}}, {Type: provider.ChunkDone}},
-		{{Type: provider.ChunkText, Text: "1. apply the narrow change\n2. run the focused test"}, {Type: provider.ChunkDone}},
-	}}
-	exec := &mockProvider{name: "executor", chunks: []provider.Chunk{
-		{Type: provider.ChunkText, Text: "Done."},
-		{Type: provider.ChunkDone},
-	}}
-	parentReg := tool.NewRegistry()
-	parentReg.Add(coordinatorTestTool{name: "read_file", readOnly: true, output: "ok"})
-	policy := func(context.Context, string) PlannerDecision {
-		return PlannerDecision{
-			Route: PlannerRoutePlanAndExecute, Depth: PlannerDepthLight,
-			Reason: "bounded_work", MaxResearchRounds: 2,
-		}
-	}
-	executor := New(exec, tool.NewRegistry(), NewSession("exec-sys"), Options{}, event.Discard)
-	coord := NewCoordinatorWithPlannerPolicy(
-		planner, NewSession("planner-sys"), nil, PlannerToolRegistry(parentReg), Options{MaxSteps: 0},
-		executor, 0, event.Discard, policy,
-	)
-
-	if err := coord.Run(context.Background(), "make the bounded change"); err != nil {
-		t.Fatalf("Run: %v", err)
-	}
-	if got := len(planner.requests); got != 3 {
-		t.Fatalf("planner requests = %d, want two research rounds plus one finalization round", got)
-	}
-	if got := lastUser(planner.requests[2]); !strings.Contains(got, "planner research rounds") ||
-		!strings.Contains(got, "Do not call any more tools") ||
-		!strings.Contains(got, "label remaining uncertainty") ||
-		strings.Contains(got, "increase planner research rounds") {
-		t.Fatalf("planner did not receive the depth budget finalization nudge: %q", got)
-	}
-	var sawHandoff bool
-	for _, req := range exec.requests {
-		if strings.Contains(lastUser(req), executorHandoffMarker) {
-			sawHandoff = true
-		}
-	}
-	if !sawHandoff {
-		t.Fatalf("executor requests = %d, none received the bounded plan handoff", len(exec.requests))
 	}
 }
 
@@ -1446,7 +1399,7 @@ func TestCoordinatorRollsBackPlannerSessionOnToolPlannerFailure(t *testing.T) {
 	}
 }
 
-func TestCoordinatorPlannerResearchPausePreservesExecutionBoundaries(t *testing.T) {
+func TestCoordinatorPlannerSafetyBoundaryPreservesExecutionBoundaries(t *testing.T) {
 	for _, route := range []PlannerRoute{PlannerRoutePlanOnly, PlannerRoutePlanForApproval} {
 		t.Run(string(route), func(t *testing.T) {
 			planner := &mockProvider{name: "planner", chunks: []provider.Chunk{
@@ -1457,22 +1410,19 @@ func TestCoordinatorPlannerResearchPausePreservesExecutionBoundaries(t *testing.
 			plannerReg := tool.NewRegistry()
 			plannerReg.Add(coordinatorTestTool{name: "read_file", readOnly: true, output: "package main"})
 			policy := func(context.Context, string) PlannerDecision {
-				return PlannerDecision{Route: route, Depth: PlannerDepthFull, Reason: "explicit_boundary", MaxResearchRounds: 1}
+				return PlannerDecision{Route: route, Depth: PlannerDepthFull, Reason: "explicit_boundary"}
 			}
 
 			executor := New(exec, tool.NewRegistry(), NewSession("exec-sys"), Options{}, event.Discard)
 			plannerSess := NewSession("planner-sys")
 			coord := NewCoordinatorWithPlannerPolicy(
-				planner, plannerSess, nil, plannerReg, Options{MaxSteps: 0},
+				planner, plannerSess, nil, plannerReg, Options{MaxSteps: 1, MaxStepsKey: "planner emergency rounds"},
 				executor, 0, event.Discard, policy,
 			)
 
 			err := coord.Run(context.Background(), "plan the migration")
-			if err == nil || err.Error() != plannerResearchBoundaryError {
+			if err == nil || err.Error() != plannerSafetyBoundaryError {
 				t.Fatalf("Run = %v, want the safe planner boundary error", err)
-			}
-			if strings.Contains(err.Error(), "set planner research rounds") {
-				t.Fatalf("pause exposed a non-configurable setting: %q", err)
 			}
 			if got := len(exec.requests); got != 0 {
 				t.Fatalf("executor requests = %d, want none across %s", got, route)

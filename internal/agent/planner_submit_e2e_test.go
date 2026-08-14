@@ -24,8 +24,8 @@ func (r *recordingPlanApprover) RunWithPlannerApproval(ctx context.Context, plan
 	return run(ctx)
 }
 
-// submitPlanCall is one planner round that hands the host a structured plan and
-// then says something unhelpful, which is what a real model does.
+// submitPlanCall includes an unhelpful acknowledgement round to prove the host
+// stops as soon as the structured plan lands and never pays for that round.
 func submitPlanCall(args string) [][]provider.Chunk {
 	return [][]provider.Chunk{
 		{
@@ -74,6 +74,9 @@ func TestSubmittedPlanReachesTheExecutorHandoff(t *testing.T) {
 	}
 	if len(exec.requests) == 0 {
 		t.Fatal("executor never ran")
+	}
+	if got := len(planner.requests); got != 1 {
+		t.Fatalf("planner requests = %d, want submit_plan to end the planner turn immediately", got)
 	}
 	handoff := lastUser(exec.requests[0])
 	for _, want := range []string{

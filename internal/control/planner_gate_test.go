@@ -466,9 +466,6 @@ func TestDecidePlannerRouteMatrix(t *testing.T) {
 			if got.Route != tc.route || got.Depth != tc.depth || got.Reason != tc.reason {
 				t.Fatalf("decision = %+v, want route=%s depth=%s reason=%s", got, tc.route, tc.depth, tc.reason)
 			}
-			if got.Route != agent.PlannerRouteExecutorOnly && got.MaxResearchRounds <= 0 {
-				t.Fatalf("planned decision has no research budget: %+v", got)
-			}
 		})
 	}
 }

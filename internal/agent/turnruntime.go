@@ -10,9 +10,8 @@ import (
 // State an external caller arms before a Run lives in pendingTurn; state that
 // outlives the Run lives in taskRuntime or sessionRuntime.
 type turnRuntime struct {
-	runMaxSteps       int
-	runMaxStepsKey    string
-	runLimitHostOwned bool
+	runMaxSteps    int
+	runMaxStepsKey string
 
 	emptyFinalBlocks   int
 	handoffNudges      int

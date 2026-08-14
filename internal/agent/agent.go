@@ -1224,14 +1224,6 @@ func (a *Agent) reserveParentWrite(runTool tool.Tool, args json.RawMessage, read
 func (a *Agent) Run(ctx context.Context, input string) (runErr error) {
 	runMaxSteps := a.maxSteps
 	runMaxStepsKey := a.maxStepsKey
-	runLimitHostOwned := false
-	if limit, ok := runStepLimitFromContext(ctx); ok {
-		runMaxSteps = limit.steps
-		runLimitHostOwned = true
-		if limit.key != "" {
-			runMaxStepsKey = limit.key
-		}
-	}
 	a.recovery.runSeq.Add(1)
 	// All role settings participate in the workspace lease for the run; the
 	// exclusive write lock is still acquired lazily on the first real writer.
@@ -1283,7 +1275,6 @@ func (a *Agent) Run(ctx context.Context, input string) (runErr error) {
 	}
 	state.runMaxSteps = runMaxSteps
 	state.runMaxStepsKey = runMaxStepsKey
-	state.runLimitHostOwned = runLimitHostOwned
 	state.workDurationMs = workDurationMs
 	return a.runToolLoop(ctx, state)
 }
