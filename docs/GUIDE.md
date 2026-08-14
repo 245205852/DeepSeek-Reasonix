@@ -686,8 +686,8 @@ Mode meanings:
 | Mode | Meaning |
 | --- | --- |
 | Ask | Prompts for fallback writer approvals. |
-| Auto | Auto-allows fallback approvals; explicit `ask` / `deny` rules still apply. |
-| YOLO | Skips ordinary tool approval prompts; `deny`, user `ask` questions, and plan approval prompts still wait. |
+| Auto | Auto-allows fallback approvals, including interactive `remember`/`forget`; explicit `ask` / `deny` rules still apply. |
+| YOLO | Skips ordinary tool approval prompts, including `remember`/`forget`; `deny`, user `ask` questions, and plan approval prompts still wait. |
 | Plan | Directs the model to plan first — a plan-first workflow, not an all-tools read-only mode. Built-in writers still follow the active Ask/Auto/YOLO rules and Sandbox; installed MCP writers, destructive targets, and readers from unauthorized servers are hard-blocked for the whole planning phase (approval cannot release them; they return once Plan exits), and explicit phase-only tools such as `complete_step` wait until approval. |
 | Goal | Pursues a saved objective until complete, blocked, or cleared. |
 
@@ -1048,10 +1048,13 @@ schemas. Use `/memory recall` to see the selected IDs, scores, reasons,
 freshness, budget, and suppression decision.
 
 New, bounded, non-sensitive project/reference facts can be created
-automatically with no setup or approval click. Global facts, user preferences,
-feedback, updates, duplicates, sensitive/oversized content, and every `forget`
-still require explicit confirmation. The storage layer makes the automatic
-grant create-only, so it cannot overwrite a fact that appears concurrently.
+automatically with no setup or approval click. In Ask, global facts, user
+preferences, feedback, updates, duplicates, sensitive/oversized content, and
+every `forget` require explicit confirmation. Interactive Auto treats these
+memory tools as normal fallback operations while preserving explicit `ask` and
+`deny` rules; interactive YOLO bypasses memory ask prompts but still honors
+deny. The storage layer makes the automatic create grant create-only, so it
+cannot overwrite a fact that appears concurrently.
 A top-level headless controller may use the same one-shot low-risk create path;
 sub-agents and headless surfaces without the owning scoped controller fail closed.
 

@@ -301,7 +301,7 @@ reasonix --allowed-tools "Bash(go test ./...)" --allowed-tools read_file
 | 模式 | 行为 |
 | --- | --- |
 | `manual`、`ask` | 普通权限决策会弹出审批。 |
-| `auto` | 自动批准普通 fallback 操作，同时保留显式 ask 和 deny 规则。 |
+| `auto` | 自动批准普通 fallback 操作，包括交互式 `remember`/`forget`，同时保留显式 ask 和 deny 规则。 |
 | `acceptEdits` | 允许文件编辑工具；不等同于完整 Auto 模式。 |
 | `dontAsk` | 未预先允许的请求直接拒绝，不弹出审批。 |
 | `plan` | 以只读 Plan 模式启动交互式会话。 |
@@ -318,9 +318,11 @@ reasonix --allowed-tools "Bash(go test ./...)" --allowed-tools read_file
 `acceptEdits` 放行其列出的文件编辑工具，其他 Ask 决策失败关闭；`auto` 放行普通 writer
 fallback，但仍拒绝显式 ask 规则；`dontAsk` 拒绝未批准的 writer；`bypassPermissions`
 可越过普通 ask 与 writer fallback，但配置的 deny、Sandbox，以及始终需要人工新鲜批准的
-工具（记忆、plan、沙箱逃逸、受管配置写入）仍然生效。在所有模式下，拥有当前项目 store
-的顶层 controller 仍可创建有界、非敏感、create-only 的 project/reference 记忆；其他
-记忆变更在无人确认时仍会被拒绝。
+工具（plan、沙箱逃逸、受管配置写入）仍然生效。交互式 Auto 会放行
+`remember`/`forget` 的默认 fallback，但保留显式 ask 和 deny；交互式 YOLO 会绕过记忆 ask
+审批，但仍遵守 deny。
+在所有无头模式下，拥有当前项目 store 的顶层 controller 仍可创建有界、非敏感、
+create-only 的 project/reference 记忆；其他记忆变更在无人确认时仍会被拒绝。
 
 ## 附加目录
 

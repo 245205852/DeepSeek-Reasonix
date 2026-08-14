@@ -558,8 +558,8 @@ CLI/TUI 文本输入可通过 `[ui].cursor_shape` 设置光标形状，支持 `u
 | 模式 | 含义 |
 | --- | --- |
 | Ask | writer 兜底审批时询问。 |
-| Auto | 自动放行兜底审批；显式 `ask` / `deny` 规则仍生效。 |
-| YOLO | 跳过普通工具审批；`deny`、用户 `ask` 问题和计划批准提示仍会等待。 |
+| Auto | 自动放行兜底审批，包括交互式 `remember`/`forget`；显式 `ask` / `deny` 规则仍生效。 |
+| YOLO | 跳过普通工具审批，包括 `remember`/`forget`；`deny`、用户 `ask` 问题和计划批准提示仍会等待。 |
 | Plan | 要求模型先规划——这是 plan-first 工作流，不是全部工具只读。内置 writer 仍遵守当前 Ask/Auto/YOLO 与 Sandbox；已安装 MCP writer、destructive 目标与未信任 reader 在整个规划阶段硬阻断（审批不能放行，退出 Plan 后恢复）；`complete_step` 等显式阶段工具需等到计划批准后。 |
 | Goal | 持续追一个已保存目标，直到完成、阻塞或清除。 |
 
@@ -825,9 +825,10 @@ Context Engine v2 把上下文分成两个用途不同的层：
 字符追加到本轮 user turn。这段动态后缀不会改写 cache-stable system prompt 或工具 schema。
 运行 `/memory recall` 可查看选中的 ID、score、原因、freshness、预算和 suppressed 决定。
 
-新的、有界、非敏感 project/reference 事实可以零配置自动创建，不弹审批。全局事实、用户偏好、
-feedback、更新、重复项、敏感/超长内容，以及所有 `forget` 仍需显式确认。存储层会把自动授权
-强制为 create-only，因此并发出现的新事实也不会被覆盖。顶层 headless controller 可使用同一条
+新的、有界、非敏感 project/reference 事实可以零配置自动创建，不弹审批。在 Ask 下，全局事实、
+用户偏好、feedback、更新、重复项、敏感/超长内容，以及所有 `forget` 仍需显式确认。交互式 Auto
+把这些记忆工具作为普通 fallback 处理，并保留显式 `ask` / `deny`；交互式 YOLO 会绕过记忆 ask
+审批，但仍遵守 deny。存储层会把自动创建授权强制为 create-only，因此并发出现的新事实也不会被覆盖。顶层 headless controller 可使用同一条
 一次性低风险创建路径；子智能体和不拥有该作用域 controller 的 headless surface 会 fail closed。
 
 `forget` 只归档，不永久删除。每次更新都会快照上一 revision；恢复旧版本或 archive 时总会创建

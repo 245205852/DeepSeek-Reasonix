@@ -505,6 +505,7 @@ func (a *Agent) applyRecoveryAndPermission(ctx context.Context, plan *toolCallPl
 	// (mcp_connect__*) skip ordinary Ask/Auto/dontAsk gates. Only explicit deny
 	// and live authorization apply — first connect of an installed server must
 	// not re-prompt under headless or partial-auto policies.
+	gate := a.svc.gateSnapshot()
 	if isInstalledMCPTool(plan.execTool) || isMCPLifecycleConnectTarget(plan.execTool) {
 		if !mcpServerAuthorized(plan.execTool) {
 			return toolOutcome{
@@ -513,15 +514,15 @@ func (a *Agent) applyRecoveryAndPermission(ctx context.Context, plan *toolCallPl
 				errMsg:  "blocked: MCP server identity is not authorized",
 			}, true
 		}
-		if denyGate, ok := a.svc.gate.(ExplicitDenyGate); ok && denyGate.ExplicitlyDenies(plan.permName, plan.permArgs) {
+		if denyGate, ok := gate.(ExplicitDenyGate); ok && denyGate.ExplicitlyDenies(plan.permName, plan.permArgs) {
 			return toolOutcome{
 				output:  "blocked: denied by permission policy — this tool/command is on the deny list. Do not retry it; choose another approach or stop and explain.",
 				blocked: true,
 				errMsg:  "blocked by permission policy",
 			}, true
 		}
-	} else if a.svc.gate != nil {
-		allow, reason, err := a.svc.gate.Check(ctx, plan.permName, plan.permArgs, plan.readOnly)
+	} else if gate != nil {
+		allow, reason, err := gate.Check(ctx, plan.permName, plan.permArgs, plan.readOnly)
 		if err != nil {
 			return toolOutcome{
 				output:  fmt.Sprintf("blocked: %s (%v)", reason, err),

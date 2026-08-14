@@ -1,6 +1,8 @@
 package agent
 
 import (
+	"sync"
+
 	"reasonix/internal/checkpoint"
 	"reasonix/internal/diff"
 	"reasonix/internal/event"
@@ -30,8 +32,10 @@ type agentServices struct {
 	// names preserve the on-disk v2 contract. nil keeps in-memory gating only.
 	warnState *missingReasoningWarnState
 	// gate is the per-call permission gate for both standard and Plan
-	// workflows. nil disables gating entirely.
-	gate Gate
+	// workflows. Runtime approval-mode switches replace it while a turn may be
+	// executing, so every read/write goes through gateSnapshot/setGate.
+	gateMu sync.RWMutex
+	gate   Gate
 	// extensions is the frozen Extension Protocol v2 dispatcher for this
 	// controller generation; nil means every intercept point passes through
 	// byte-identically. See extensions.go.
@@ -75,6 +79,18 @@ type agentServices struct {
 	// just-made memory change into the next turn, so it applies this session
 	// without touching the cache-stable prefix.
 	memQueue memory.Queue
+}
+
+func (s *agentServices) gateSnapshot() Gate {
+	s.gateMu.RLock()
+	defer s.gateMu.RUnlock()
+	return s.gate
+}
+
+func (s *agentServices) setGate(g Gate) {
+	s.gateMu.Lock()
+	s.gate = g
+	s.gateMu.Unlock()
 }
 
 // newAgentServices binds the collaborators New resolved. It exists so New stays

@@ -2301,17 +2301,17 @@ func (c *Controller) newInteractiveGate() *permission.Gate {
 	default:
 		policy.Mode = permission.Ask
 	}
-	// A session allowlist (e.g. --allowed-tools) must never satisfy a tool that
-	// requires fresh human approval on every call — memory remember/forget, plan
-	// approval, sandbox escape, managed config write. SessionAllow is checked
-	// before Ask in Policy.Decide, so leaving those entries in would let
-	// `--allowed-tools remember` write memory with no prompt. Strip them so the
-	// forced Ask rules below stay authoritative.
+	// SessionAllow must not cover fresh-human tools: it is checked before Ask,
+	// so `--allowed-tools remember` would skip the prompt. Interactive Auto and
+	// YOLO treat remember/forget as ordinary policy decisions; Auto still
+	// preserves an explicit configured Ask rule, while YOLO bypasses it.
 	policy.SessionAllow = rulesWithoutFreshHumanApproval(policy.SessionAllow)
-	policy.Ask = append(policy.Ask,
-		permission.Rule{Tool: memoryRememberTool},
-		permission.Rule{Tool: memoryForgetTool},
-	)
+	if mode != ToolApprovalAuto && mode != ToolApprovalYolo {
+		policy.Ask = append(policy.Ask,
+			permission.Rule{Tool: memoryRememberTool},
+			permission.Rule{Tool: memoryForgetTool},
+		)
+	}
 	var approver permission.Approver = gateApprover{c}
 	if mode == ToolApprovalDontAsk {
 		approver = denyPermissionApprover{}
@@ -5618,11 +5618,9 @@ func (c *Controller) SetToolApprovalMode(mode string) {
 }
 
 // ApplyToolApprovalMode is SetToolApprovalMode reporting which pending
-// approval prompt ids the new posture auto-allowed. Prompts NOT in the
-// returned set are still pending here — fresh user decisions (plan, memory,
-// sandbox escape) never drain, and auto keeps approvals an allow policy would
-// not cover — so a frontend must keep showing them instead of assuming the
-// posture switch resolved everything (#6432).
+// approval prompt ids the new posture auto-allowed. Plan, sandbox escape,
+// and config writes never drain; Auto keeps explicit memory asks but drains
+// fallback ones; YOLO drains both. Frontends must keep the rest (#6432).
 func (c *Controller) ApplyToolApprovalMode(mode string) []string {
 	mode = normalizeToolApprovalMode(mode)
 	// Capture mode-change recovery dismissals before approval drain so a
@@ -6191,12 +6189,9 @@ func (c *Controller) requestApprovalDecisionWithOptions(ctx context.Context, too
 	// runs synchronously and before the dialog is shown. Native Reasonix
 	// PermissionRequest hooks stay advisory-only (see claudePermissionBlocking).
 	//
-	// A hook's auto-allow must never stand in for a human-required decision:
-	// sandbox escapes, Reasonix config writes, memory remember/forget, and
-	// plan approval (RequiresFreshHumanApprovalTool) are deliberately excluded
-	// from YOLO/auto-approval and Guardian too, so a broadly-matched plugin
-	// hook returning "allow" can't silently rubber-stamp them. A deny still
-	// applies universally — refusing is always safe to honor automatically.
+	// Hook auto-allow cannot replace a fresh-human decision. Interactive
+	// YOLO may already have skipped remember/forget via preApproved. Deny
+	// still applies universally — refusing is always safe to honor.
 	if hookSubject, hookArgs, ok := permissionRequestHookPayload(tool, subject, args); ok {
 		if decision, _ := c.hooks.PermissionRequest(ctx, tool, hookSubject, hookArgs); decision != nil {
 			switch {

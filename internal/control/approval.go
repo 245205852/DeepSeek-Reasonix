@@ -263,7 +263,7 @@ func (a *approvalManager) registerDecisionKindWithInput(tool, subject, reason st
 	reply := make(chan approvalReply, 1)
 	autoDrain := false
 	if !fresh && !requireHuman {
-		autoDrain = a.autoApprovalWouldAllowLocked(tool, subject)
+		autoDrain = a.autoApprovalWouldAllowLocked(tool, subject, rawInput)
 	}
 	a.approvals[id] = pendingApproval{
 		id:   id,
@@ -518,6 +518,14 @@ func normalizePlanModeReadOnlyCommandPrefix(prefix string) string {
 // decision helpers (caller holds a.mu)
 
 func (a *approvalManager) bypassAllowsLocked(tool, subject string, args json.RawMessage) bool {
+	if isMemoryApprovalTool(tool) {
+		switch a.toolApprovalMode {
+		case ToolApprovalYolo:
+			return true
+		case ToolApprovalAuto:
+			return a.autoApprovalWouldAllowLocked(tool, subject, args)
+		}
+	}
 	if requiresFreshApprovalTool(tool) {
 		return false
 	}
@@ -535,12 +543,15 @@ func (a *approvalManager) bypassAllowsLocked(tool, subject string, args json.Raw
 	return policy.DecideSubject(tool, false, subject) == permission.Allow
 }
 
-func (a *approvalManager) autoApprovalWouldAllowLocked(tool, subject string) bool {
-	if requiresFreshApprovalTool(tool) {
+func (a *approvalManager) autoApprovalWouldAllowLocked(tool, subject string, args json.RawMessage) bool {
+	if requiresFreshApprovalTool(tool) && !isMemoryApprovalTool(tool) {
 		return false
 	}
 	policy := a.policy
 	policy.Mode = permission.Allow
+	if len(args) > 0 {
+		return policy.Decide(tool, false, args) == permission.Allow
+	}
 	return policy.DecideSubject(tool, false, subject) == permission.Allow
 }
 
@@ -558,7 +569,7 @@ func (a *approvalManager) sessionGrantAllowsLocked(tool, subject string) bool {
 
 // drainedApproval is a pending approval removed by a posture switch, keeping
 // its prompt id so frontends can dismiss exactly the prompts the new posture
-// resolved (fresh/plan/memory prompts stay pending and must stay visible).
+// resolved (plan/sandbox/config prompts stay pending and must stay visible).
 type drainedApproval struct {
 	id    string
 	reply chan approvalReply
@@ -569,7 +580,9 @@ type drainedApproval struct {
 func (a *approvalManager) drainLocked(includeExplicitAsk bool) []drainedApproval {
 	pending := make([]drainedApproval, 0, len(a.approvals))
 	for id, approval := range a.approvals {
-		if approval.fresh || requiresFreshApprovalTool(approval.tool) {
+		memoryBypass := isMemoryApprovalTool(approval.tool) && (a.toolApprovalMode == ToolApprovalYolo ||
+			a.toolApprovalMode == ToolApprovalAuto && approval.autoDrain)
+		if (approval.fresh || requiresFreshApprovalTool(approval.tool)) && !memoryBypass {
 			continue
 		}
 		if approval.requireHuman && !includeExplicitAsk {
@@ -599,14 +612,23 @@ func normalizeToolApprovalMode(mode string) string {
 	}
 }
 
-// RequiresFreshHumanApprovalTool reports whether a tool's unsafe variants must
-// be answered by a human decision, not by YOLO/auto approval, Guardian, or a
-// non-interactive nil approver. A controller that owns the scoped memory store
-// may still classify a bounded new project memory as create-only and allow that
-// narrow operation in interactive or headless mode.
+// RequiresFreshHumanApprovalTool reports tools that session grants,
+// Guardian/hooks, and headless nil approvers cannot authorize. Interactive Auto
+// treats remember/forget as normal policy fallback, while interactive YOLO may
+// also bypass explicit memory ask rules. A controller that owns the scoped
+// memory store may still auto-allow a bounded create-only project memory.
 func RequiresFreshHumanApprovalTool(tool string) bool {
 	switch tool {
 	case planApprovalTool, memoryRememberTool, memoryForgetTool, SandboxEscapeApprovalTool, ManagedConfigWriteApprovalTool:
+		return true
+	default:
+		return false
+	}
+}
+
+func isMemoryApprovalTool(tool string) bool {
+	switch tool {
+	case memoryRememberTool, memoryForgetTool:
 		return true
 	default:
 		return false

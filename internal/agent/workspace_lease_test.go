@@ -115,7 +115,7 @@ func TestDeniedDeliveryWriterDoesNotAcquireWorkspaceLease(t *testing.T) {
 	probeOwner, _ := workspacelease.New(root, locks, nil)
 	writer := &workspaceLeaseTestTool{name: "denied_writer"}
 	a := deliveryLeaseTestAgent(t, deniedOwner, writer)
-	a.svc.gate = workspaceLeaseDenyGate{}
+	a.svc.setGate(workspaceLeaseDenyGate{})
 	deniedOwner.BeginRun()
 	outcome := a.executeOne(context.Background(), &a.turn, providerToolCall("write", writer.Name()))
 	deniedOwner.EndRun()

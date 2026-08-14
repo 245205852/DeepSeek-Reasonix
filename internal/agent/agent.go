@@ -456,14 +456,14 @@ func (a *Agent) SetResponseLanguage(lang string) {
 	a.responseLanguage.Store(NormalizeResponseLanguage(lang))
 }
 
-// SetGate installs the per-call permission gate. Used by interactive CLI sessions to swap the
-// headless gate built in setup for an interactive one that prompts the user;
-// nil disables gating. Safe to call before the run loop starts.
+// SetGate installs the per-call permission gate. Interactive frontends also use
+// it to switch approval modes while a turn is running, so readers take an
+// atomic snapshot through agentServices. nil disables gating.
 func (a *Agent) SetGate(g Gate) {
 	if nilutil.IsNil(g) {
 		g = nil
 	}
-	a.svc.gate = g
+	a.svc.setGate(g)
 }
 
 // SetExtensions installs the extension dispatcher after construction. Boot

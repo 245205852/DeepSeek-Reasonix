@@ -332,7 +332,7 @@ reasonix --allowed-tools "Bash(go test ./...)" --allowed-tools read_file
 | Mode | Behavior |
 | --- | --- |
 | `manual`, `ask` | Ask for ordinary approval decisions. |
-| `auto` | Automatically approve normal fallback operations while preserving explicit ask and deny rules. |
+| `auto` | Automatically approve normal fallback operations, including interactive `remember`/`forget`, while preserving explicit ask and deny rules. |
 | `acceptEdits` | Allow file-editing tools; this is not full Auto mode. |
 | `dontAsk` | Deny unapproved requests without opening an approval prompt. |
 | `plan` | Start the plan-first workflow; tool calls still use the active permissions and sandbox. |
@@ -360,10 +360,13 @@ an explicit ask rule; select it with `--permission-mode auto`, `--auto`, or
 `-y`. `dontAsk` denies unapproved writers.
 `bypassPermissions` runs ordinary calls despite ask rules and writer fallback,
 but configured deny rules, the sandbox, and tools that require fresh human
-approval (memory, plan, sandbox escape, managed config write) still apply. In
-every mode, the owning top-level controller may still create a bounded,
-non-sensitive, create-only project or reference memory; all other memory
-mutations remain denied without a human.
+approval (plan, sandbox escape, managed config write) still apply. Interactive
+Auto auto-allows the default `remember`/`forget` fallback while preserving
+explicit ask and deny rules; interactive YOLO bypasses memory ask prompts but
+still honors deny. In every headless mode, the owning
+top-level controller may still create a bounded, non-sensitive, create-only
+project or reference memory; all other memory mutations remain denied without a
+human.
 
 ## Additional directories
 
